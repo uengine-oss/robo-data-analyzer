@@ -17,6 +17,7 @@ from analyzer.strategy.base.file_context import FileStatus, FileAnalysisContext
 from util.stream_event import (
     emit_data,
     emit_message,
+    emit_phase_event,
     format_graph_result,
 )
 from util.text_utils import log_process
@@ -122,6 +123,9 @@ async def run_phase2(
 
     # 모든 파일 병렬 처리 시작
     tasks = [asyncio.create_task(analyze_file(ctx)) for ctx in contexts]
+    
+    # Phase 2 시작 이벤트
+    yield emit_phase_event(2, "AI 분석", "started", 0, {"canPause": True, "files": total})
 
     # 결과 수신 및 스트리밍
     while completed < total:
@@ -177,7 +181,14 @@ async def run_phase2(
                 analysis_progress=50 + int(completed / total * 50),
                 current_file=result["file"],
             )
+            
+            # 진행률 이벤트
+            progress = int(completed / total * 100)
+            yield emit_phase_event(2, "AI 분석", "progress", progress, {"completed": completed, "total": total})
 
     # 모든 작업 완료 대기
     await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Phase 2 완료 이벤트
+    yield emit_phase_event(2, "AI 분석", "completed", 100, {"batches": stats.llm_batches_executed})
 

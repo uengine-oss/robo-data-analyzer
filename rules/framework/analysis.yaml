@@ -1,6 +1,6 @@
 name: "analyze_java_code"
-description: "Java 코드 범위별 분석 - 클래스 다이어그램 및 Neo4j 그래프 생성용"
-version: "3.0"
+description: "Java 코드 범위별 분석 - 요약 및 변수 역할 추출"
+version: "4.0"
 
 input_schema:
   required:
@@ -13,7 +13,7 @@ input_schema:
 prompt: |
   [ROLE]
   당신은 Java 코드 분석 전문가입니다.
-  주어진 Java 코드를 체계적으로 분석하여 클래스 다이어그램 생성에 필요한 구조화된 정보를 추출해야 합니다.
+  주어진 Java 코드를 체계적으로 분석하여 코드 요약과 변수 역할 정보를 추출합니다.
   
   
   [LANGUAGE_SETTING]
@@ -46,10 +46,10 @@ prompt: |
   - 각 범위는 독립적으로 분석되어야 하며, 누락 또는 초과된 분석 결과는 허용되지 않음
   - 강제 검증 규칙:
      - analysis 각 요소는 startLine/endLine을 반드시 포함할 것 (정수)
-     - 값이 없으면 해당 필드는 다음 기본값을 사용: variables=[], localDependencies=[], calls=[]
+     - 값이 없으면 해당 필드는 다음 기본값을 사용: variables=[]
      - null 사용 절대 금지. 빈값은 빈 배열([]) 또는 빈 객체({})로만 표현
      - 코드펜스(```), 주석(//, /* */), 트레일링 콤마 허용 금지. 순수 JSON만 출력
-     - **⚠️ CRITICAL: 트레일링 콤마(trailing comma) 절대 금지** - 배열이나 객체의 마지막 요소 뒤에 콤마(,)를 붙이지 마세요. 예: `"calls": []` (O), `"calls": [],` (X)
+     - **⚠️ CRITICAL: 트레일링 콤마(trailing comma) 절대 금지** - 배열이나 객체의 마지막 요소 뒤에 콤마(,)를 붙이지 마세요. 예: `"variables": []` (O), `"variables": [],` (X)
   
   
   [ANALYSIS_REQUIREMENTS]
@@ -92,61 +92,24 @@ prompt: |
   
   
   [SECTION_2_VARIABLE_IDENTIFICATION]
-  변수/필드 사용 식별:
+  변수 사용 식별 및 역할 분석:
   
   식별 규칙:
   - 각 범위 내에서 실제로 사용되거나 참조된 변수/필드만 포함
   - 범위 중첩 시 해당 범위에서 직접 사용된 변수만 독립적으로 식별
   
+  역할 분석:
+  - 각 변수가 해당 코드 범위에서 어떤 목적으로 사용되는지 분석
+  - 예시:
+    - count: "주문 수량 누적"
+    - total: "총 금액 계산"
+    - orderList: "처리할 주문 목록 순회"
+    - isValid: "유효성 검증 결과 저장"
   
-  [SECTION_3_LOCAL_DEPENDENCIES]
-  로컬 변수 및 파라미터 타입 추출 (의존 관계용):
-  
-  식별 목적:
-  - 메서드 내에서 로컬 변수로 선언/생성된 사용자 정의 클래스 타입 추출
-  - 메서드 파라미터로 사용되는 사용자 정의 클래스 타입 추출
-  - 클래스 다이어그램의 "의존(Dependency)" 관계 생성에 사용
-  
-  식별 대상:
-  - 메서드 파라미터 타입: `public void attack(Enemy enemy)` → "Enemy"
-  - new 연산자로 생성하는 객체의 타입: `Customer c = new Customer()` → "Customer"
-  - 메서드 반환값을 받는 변수의 타입: `Order order = orderService.findById()` → "Order"
-  - 캐스팅된 타입: `(PaymentService) service` → "PaymentService"
-  - 제네릭 내부 타입: `List<Product> products` → "Product"
-  
-  제외 대상:
-  - primitive 타입, wrapper 타입, String, Object
-  - 컬렉션 자체 (List, Map, Set) - 단, 제네릭 내부 타입은 추출
-  - Java 기본 클래스 (Exception, Date, Optional 등)
-  
-  sourceMember 결정:
-  - 메서드 안: 메서드명 (예: "processOrder", "attack")
-  - 생성자 안: 생성자명/클래스명 (예: "OrderService")
-  
-  
-  [SECTION_4_METHOD_CALLS]
-  ★ 메서드 호출 추출 (CALLS 관계용):
-  
-  각 코드 범위에서 다른 객체/클래스의 메서드를 호출하는 부분을 추출합니다.
-  
-  추출 형식:
-  - "target.methodName" 형태로 추출
-  - target: 호출 대상 (변수명 또는 클래스명)
-  - methodName: 호출되는 메서드명
-  
-  추출 예시:
-  - this.repository.save(entity) → "repository.save"
-  - orderService.findAll() → "orderService.findAll"
-  - UserService.getInstance() → "UserService.getInstance"
-  - items.stream().filter() → "items.stream" (체이닝 첫 호출만)
-  
-  제외 대상 (calls에 포함하지 않음):
-  - 기본 타입 메서드: toString(), hashCode(), equals()
-  - 컬렉션 내장 메서드: list.add(), map.get(), set.contains()
-  - System 호출: System.out.println()
-  - 로깅: log.info(), logger.debug()
-  
-  ⚠️ 같은 범위 내에서 동일 호출이 여러 번 있으면 한 번만 포함
+  역할 작성 규칙:
+  - 한 문장 이내로 간결하게 작성
+  - 해당 범위에서의 구체적인 용도 명시
+  - 변수명만 보고 유추 가능한 내용이 아닌, 코드에서 실제 사용되는 맥락 반영
   
   
   [OUTPUT_FORMAT]
@@ -159,23 +122,19 @@ prompt: |
         "startLine": 범위_시작_라인_번호,
         "endLine": 범위_종료_라인_번호,
         "summary": "3~5문장의 상세한 코드 동작 요약",
-        "variables": ["변수명1", "변수명2"],
-        "localDependencies": [
-          {"type": "타입명", "sourceMember": "발생위치"}
-        ],
-        "calls": ["target.methodName", "target2.methodName2"]
+        "variables": [
+          {"name": "변수명1", "role": "해당 범위에서의 역할"},
+          {"name": "변수명2", "role": "해당 범위에서의 역할"}
+        ]
       }
     ]
   }
   
   출력 제약사항:
   - JSON 형식 외의 부가 설명이나 주석 금지
-  - "variables" 배열 요소는 문자열 타입
-  - "localDependencies" 배열 요소는 객체 타입 (type, sourceMember 필드)
-  - "calls" 배열 요소는 "target.methodName" 형태의 문자열
+  - "variables" 배열 요소는 객체 타입 (name, role 필드)
   - analysis[i]에는 startLine/endLine이 필수
   - 빈 배열도 허용되며 null 값은 사용 금지
   - 코드펜스(```json ... ``` 등) 포함 금지
   - **트레일링 콤마 절대 금지**: 마지막 요소 뒤에 콤마(,)를 붙이지 말 것
   - **유효한 JSON만 출력**: 반드시 json.loads()로 파싱 가능한 형식이어야 함
-

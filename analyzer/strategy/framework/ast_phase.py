@@ -15,6 +15,7 @@ from analyzer.strategy.framework.ast_processor import FrameworkAstProcessor
 from util.stream_event import (
     emit_data,
     emit_message,
+    emit_phase_event,
     format_graph_result,
 )
 from util.text_utils import log_process
@@ -112,6 +113,9 @@ async def run_phase1(
 
     # 모든 파일 병렬 처리 시작
     tasks = [asyncio.create_task(process_file(ctx)) for ctx in contexts]
+    
+    # Phase 1 시작 이벤트
+    yield emit_phase_event(1, "AST 구조 생성", "started", 0, {"canPause": True, "files": total})
 
     # 결과 수신 및 스트리밍
     while completed < total:
@@ -141,7 +145,14 @@ async def run_phase1(
                 analysis_progress=int(completed / total * 50),
                 current_file=result["file"],
             )
+            
+            # 진행률 이벤트
+            progress = int(completed / total * 100)
+            yield emit_phase_event(1, "AST 구조 생성", "progress", progress, {"completed": completed, "total": total})
 
     # 모든 작업 완료 대기
     await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Phase 1 완료 이벤트
+    yield emit_phase_event(1, "AST 구조 생성", "completed", 100, {"nodes": stats.static_nodes_created})
 

@@ -27,6 +27,7 @@ langchain.db
 # Ignore src and target folders
 /src/
 /target/
+/docs/
 
 # Ignore LogComparisonResult.json
 LogComparisonResult.json

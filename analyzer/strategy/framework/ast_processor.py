@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple, Set
 
@@ -34,17 +33,16 @@ from analyzer.strategy.base.processor import BaseAstProcessor
 # 노드 타입 분류
 NON_ANALYSIS_TYPES = frozenset(["FILE", "PACKAGE", "IMPORT"])
 CLASS_TYPES = frozenset(["CLASS", "INTERFACE", "ENUM"])
-INHERITANCE_TYPES = frozenset(["EXTENDS", "IMPLEMENTS"])
 FIELD_TYPES = frozenset(["FIELD"])
 METHOD_TYPES = frozenset(["METHOD", "CONSTRUCTOR"])
-METHOD_SIGNATURE_TYPES = frozenset(["METHOD_SIGNATURE"])
+VARIABLE_TYPES = frozenset(["VARIABLE"])
+
+# 클래스 스켈레톤 생성에 포함할 노드 타입
+SKELETON_KEEP_TYPES = frozenset(["FIELD", "CONSTRUCTOR", "METHOD", "NEW_INSTANCE", "METHOD_CALL"])
 
 # 설정에서 가져오는 상수
 MAX_BATCH_TOKEN = settings.batch.framework_max_batch_token
 MAX_CONCURRENCY = settings.concurrency.framework_max_concurrency
-INHERITANCE_CONCURRENCY = settings.concurrency.inheritance_concurrency
-FIELD_CONCURRENCY = settings.concurrency.field_concurrency
-METHOD_CONCURRENCY = settings.concurrency.method_concurrency
 STATIC_QUERY_BATCH_SIZE = settings.batch.static_query_batch_size
 MAX_SUMMARY_CHUNK_TOKEN = settings.batch.max_summary_chunk_token
 MAX_CONTEXT_TOKEN = settings.batch.max_context_token
@@ -165,38 +163,32 @@ def analyze_class_user_story(summary: str, api_key: str, locale: str) -> Dict[st
     )
 
 
-def analyze_inheritance(declaration_code: str, api_key: str, locale: str) -> Dict[str, Any]:
-    """상속/구현 관계 추출."""
-    return _rule_loader().execute(
-        "inheritance",
-        {"declaration_code": declaration_code, "locale": locale},
-        api_key,
-    )
-
-
-def analyze_field(declaration_code: str, api_key: str, locale: str) -> Dict[str, Any]:
-    """필드 정보 추출."""
-    return _rule_loader().execute(
-        "field",
-        {"declaration_code": declaration_code, "locale": locale},
-        api_key,
-    )
-
-
-def analyze_method(declaration_code: str, api_key: str, locale: str) -> Dict[str, Any]:
-    """메서드 시그니처 분석."""
-    return _rule_loader().execute(
-        "method",
-        {"declaration_code": declaration_code, "locale": locale},
-        api_key,
-    )
-
-
 def analyze_parent_context(skeleton_code: str, ancestor_context: str, api_key: str, locale: str) -> Dict[str, Any]:
     """부모 노드의 스켈레톤 코드에서 핵심 컨텍스트를 추출합니다."""
     return _rule_loader().execute(
         "parent_context",
         {"skeleton_code": skeleton_code, "ancestor_context": ancestor_context, "locale": locale},
+        api_key,
+    )
+
+
+def analyze_class_relations(class_name: str, skeleton_code: str, api_key: str, locale: str) -> Dict[str, Any]:
+    """클래스의 관계(Association, Composition, Dependency, Calls)를 분석합니다."""
+    return _rule_loader().execute(
+        "class_relations",
+        {"class_name": class_name, "skeleton_code": skeleton_code, "locale": locale},
+        api_key,
+    )
+
+
+def analyze_variable_summary(variables: List[Dict[str, Any]], api_key: str, locale: str) -> Dict[str, Any]:
+    """변수 역할 목록을 하나의 요약 설명으로 통합합니다."""
+    from util.rule_loader import RuleLoader
+    # common 디렉토리의 프롬프트 사용
+    loader = RuleLoader(target_lang="common")
+    return loader.execute(
+        "variable_summary",
+        {"variables": variables, "locale": locale},
         api_key,
     )
 
@@ -419,6 +411,9 @@ class FrameworkAstProcessor(BaseAstProcessor):
         
         # 필드 타입 캐시
         self._field_type_cache: Optional[Dict[str, Dict[str, str]]] = None
+        
+        # 변수 역할 맵: {unit_key: {선언라인: [역할1, 역할2, ...]}}
+        self._variable_roles: Dict[str, Dict[int, List[str]]] = {}
 
     # =========================================================================
     # BaseAstProcessor 추상 메서드 구현
@@ -431,10 +426,147 @@ class FrameworkAstProcessor(BaseAstProcessor):
         )
         nodes, classes = collector.collect()
         
-        # 필드 타입 캐시 초기화
+        # 필드 타입 캐시 초기화 및 AST 속성에서 직접 구축
         self._field_type_cache = {key: {} for key in classes} if classes else {}
+        self._build_field_type_cache_from_ast(nodes)
         
         return nodes, classes
+    
+    def _build_field_type_cache_from_ast(self, nodes: List[StatementNode]) -> None:
+        """AST의 fieldType 속성에서 필드 타입 캐시를 직접 구축합니다.
+        
+        LLM 호출 없이 AST 파싱 결과를 활용하여 객체명→클래스명 매핑을 생성합니다.
+        이 매핑은 CALLS 관계 생성 시 객체명으로부터 실제 클래스를 찾는 데 사용됩니다.
+        """
+        if not self._field_type_cache:
+            return
+        
+        for node in nodes:
+            if node.node_type not in FIELD_TYPES:
+                continue
+            if not node.unit_key or node.unit_key not in self._field_type_cache:
+                continue
+            
+            # AST에서 필드명과 타입 추출
+            field_name = self._extract_field_name_from_code(node.code, node)
+            field_type_raw = node.field_type  # AST의 fieldType 속성 사용
+            
+            if field_name and field_type_raw:
+                # 제네릭 타입에서 기본 클래스명 추출 (List<Order> → Order)
+                target_class = self._extract_class_from_type(field_type_raw)
+                if target_class and _is_valid_class_name_for_calls(target_class):
+                    self._field_type_cache[node.unit_key][field_name] = target_class
+                    log_process("ANALYZE", "FIELD_CACHE", 
+                               f"   📝 필드 캐시: {field_name} → {target_class} (클래스: {node.unit_name})")
+    
+    def _extract_field_name_from_code(self, code: str, node: StatementNode) -> Optional[str]:
+        """코드에서 필드명을 추출합니다."""
+        # 코드에서 라인 번호 제거
+        lines = []
+        for line in code.split('\n'):
+            match = re.match(r'^\d+:\s?(.*)', line)
+            if match:
+                lines.append(match.group(1))
+            else:
+                lines.append(line)
+        clean_code = ' '.join(lines)
+        
+        # 필드 선언 패턴: [modifiers] Type fieldName [= value];
+        # private OrderService orderService;
+        # private final List<Order> orders = new ArrayList<>();
+        patterns = [
+            r'(?:private|protected|public|static|final|\s)+\s+[\w<>,\s\[\]]+\s+(\w+)\s*[;=]',
+            r'(\w+)\s*[;=]',  # fallback: 단순 변수명
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, clean_code)
+            if match:
+                return match.group(1)
+        
+        return None
+    
+    def _extract_class_from_type(self, type_str: str) -> Optional[str]:
+        """타입 문자열에서 클래스명을 추출합니다.
+        
+        예시:
+        - List<Order> → Order
+        - Map<String, OrderItem> → OrderItem (마지막 타입 파라미터)
+        - Order → Order
+        - OrderService → OrderService
+        """
+        if not type_str:
+            return None
+        
+        # 기본 타입 및 래퍼 제외
+        if type_str in JAVA_BUILTIN_TYPES:
+            return None
+        
+        # 제네릭 타입 파라미터 추출
+        generic_match = re.search(r'<(.+)>', type_str)
+        if generic_match:
+            params = generic_match.group(1)
+            # 마지막 타입 파라미터 추출 (Map<K, V>에서 V)
+            parts = [p.strip() for p in params.split(',')]
+            for part in reversed(parts):
+                # 중첩 제네릭 처리 (List<List<Order>>)
+                inner_match = re.search(r'<(.+)>', part)
+                if inner_match:
+                    return self._extract_class_from_type(inner_match.group(1))
+                if part not in JAVA_BUILTIN_TYPES and part[0].isupper():
+                    return part
+        
+        # 배열 타입 (Order[])
+        if type_str.endswith('[]'):
+            base_type = type_str[:-2]
+            if base_type not in JAVA_BUILTIN_TYPES:
+                return base_type
+            return None
+        
+        # 단순 클래스명
+        if type_str[0].isupper() and type_str not in JAVA_BUILTIN_TYPES:
+            return type_str
+        
+        return None
+    
+    def _resolve_class_from_object_name(
+        self, 
+        object_or_class: str, 
+        unit_key: Optional[str]
+    ) -> str:
+        """객체명 또는 클래스명에서 실제 클래스명을 해석합니다.
+        
+        1. 필드 타입 캐시에서 객체명→클래스명 매핑을 찾음
+           (orderService → OrderService)
+        2. 없으면 원래 이름 반환 (이미 클래스명인 경우)
+        
+        Args:
+            object_or_class: 객체명 또는 클래스명 (orderService 또는 OrderService)
+            unit_key: 현재 클래스 키 (필드 캐시 조회용)
+            
+        Returns:
+            해석된 클래스명
+        """
+        if not object_or_class:
+            return object_or_class
+        
+        # 이미 대문자로 시작하면 클래스명으로 간주
+        if object_or_class[0].isupper():
+            return object_or_class
+        
+        # 필드 타입 캐시에서 조회
+        if unit_key and self._field_type_cache and unit_key in self._field_type_cache:
+            field_cache = self._field_type_cache[unit_key]
+            if object_or_class in field_cache:
+                resolved = field_cache[object_or_class]
+                log_process("ANALYZE", "CALLS", 
+                           f"   🔗 객체→클래스 매핑: {object_or_class} → {resolved}")
+                return resolved
+        
+        # 캐시에 없으면 관례에 따라 첫 글자를 대문자로 변환 시도
+        # orderService → OrderService
+        conventional_class = object_or_class[0].upper() + object_or_class[1:]
+        return conventional_class
 
     def _get_excluded_context_types(self) -> Set[str]:
         """컨텍스트 생성에서 제외할 노드 타입"""
@@ -500,8 +632,8 @@ class FrameworkAstProcessor(BaseAstProcessor):
             base_set.append(f"__cy_n__.class_name = '{escape_for_cypher(node.unit_name)}'")
 
         if node.has_children:
-            # Framework용 preserve_types 설정
-            preserve_types = INHERITANCE_TYPES | METHOD_TYPES | METHOD_SIGNATURE_TYPES
+            # Framework용 preserve_types 설정 (메서드 시그니처 보존)
+            preserve_types = METHOD_TYPES
             escaped_placeholder = escape_for_cypher(node.get_placeholder_code(preserve_types))
             base_set.append(f"__cy_n__.summarized_code = '{escaped_placeholder}'")
 
@@ -567,41 +699,295 @@ class FrameworkAstProcessor(BaseAstProcessor):
         )
     
     async def _run_preprocessing(self) -> List[str]:
-        """선행 처리: 상속/구현, 필드, 메서드 분석"""
+        """선행 처리: AST 속성에서 상속/구현 관계 생성 + LLM으로 클래스 관계 분석
+        
+        1. AST 속성에서 직접: EXTENDS, IMPLEMENTS
+        2. LLM 분석 (class_relations): ASSOCIATION, COMPOSITION, DEPENDENCY, CALLS
+        """
         queries: List[str] = []
+        class_nodes: List[StatementNode] = []
         
-        # 상속/구현, 필드, 메서드 노드 분류
-        inheritance_nodes = []
-        field_nodes = []
-        method_nodes = []
-            
         for node in self._nodes or []:
-            if node.node_type in INHERITANCE_TYPES:
-                inheritance_nodes.append(node)
-            elif node.node_type in FIELD_TYPES:
-                field_nodes.append(node)
-            elif node.node_type in METHOD_SIGNATURE_TYPES:
-                method_nodes.append(node)
+            # CLASS 노드의 상속/구현 관계 (AST 속성에서 직접)
+            if node.node_type in CLASS_TYPES:
+                queries.extend(self._build_inheritance_from_ast(node))
+                class_nodes.append(node)
         
-        # 병렬 처리
-        tasks = []
-        if inheritance_nodes:
-            tasks.append(self._analyze_inheritance_nodes(inheritance_nodes))
-        if field_nodes:
-            tasks.append(self._analyze_field_nodes(field_nodes))
-        if method_nodes:
-            tasks.append(self._analyze_method_nodes(method_nodes))
+        # CLASS별 관계 분석 (LLM 호출)
+        if class_nodes:
+            relation_queries = await self._analyze_class_relations(class_nodes)
+            queries.extend(relation_queries)
         
-        if tasks:
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            for result in results:
-                if isinstance(result, list):
-                    queries.extend(result)
-                elif isinstance(result, Exception):
-                    # 선행 처리 실패 시 즉시 중단
-                    raise RuntimeError(f"선행 처리 실패: {result}") from result
+        log_process("ANALYZE", "PREPROCESS", 
+                   f"✅ 선행 처리 완료: {len(queries)}개 관계 쿼리 생성")
         
         return queries
+    
+    async def _analyze_class_relations(self, class_nodes: List[StatementNode]) -> List[str]:
+        """CLASS별 관계 분석 (class_relations.yaml LLM 호출)
+        
+        각 클래스의 스켈레톤을 생성하고 LLM으로 관계를 분석합니다.
+        """
+        queries: List[str] = []
+        
+        async def analyze_one(node: StatementNode) -> List[str]:
+            if not node.unit_name:
+                return []
+            
+            # 스켈레톤 생성
+            skeleton = self._build_class_skeleton(node)
+            if not skeleton.strip():
+                return []
+            
+            log_process("ANALYZE", "CLASS_RELATIONS", 
+                       f"🔍 클래스 관계 분석: {node.unit_name}")
+            
+            # LLM 호출
+            result = await asyncio.to_thread(
+                analyze_class_relations,
+                node.unit_name,
+                skeleton,
+                self.api_key,
+                self.locale,
+            )
+            
+            if not isinstance(result, dict):
+                return []
+            
+            return self._build_class_relations_queries(node, result)
+        
+        # 병렬 처리
+        semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
+        
+        async def analyze_with_semaphore(node: StatementNode) -> List[str]:
+            async with semaphore:
+                return await analyze_one(node)
+        
+        results = await asyncio.gather(*[analyze_with_semaphore(n) for n in class_nodes])
+        for r in results:
+            queries.extend(r)
+        
+        return queries
+    
+    def _build_class_relations_queries(self, class_node: StatementNode, result: Dict[str, Any]) -> List[str]:
+        """class_relations LLM 결과에서 관계 쿼리를 생성합니다."""
+        queries: List[str] = []
+        
+        if not class_node.unit_name:
+            return queries
+        
+        parent_kind = class_node.node_type
+        parent_start = class_node.start_line
+        
+        # fieldRelations → ASSOCIATION/COMPOSITION 관계
+        for rel in result.get("fieldRelations", []) or []:
+            if not rel:
+                continue
+            field_name = rel.get("field", "")
+            target_class = rel.get("targetClass", "")
+            rel_type = rel.get("type", "ASSOCIATION")
+            multiplicity = rel.get("multiplicity", "1")
+            
+            if not target_class or not _is_valid_class_name_for_calls(target_class):
+                continue
+            
+            escaped_target = escape_for_cypher(target_class)
+            escaped_field = escape_for_cypher(field_name)
+            
+            queries.append(
+                f"MATCH (__cy_src__:{parent_kind} {{startLine: {parent_start}, {self.node_base_props}}})\n"
+                f"MATCH (__cy_dst__) WHERE (__cy_dst__:CLASS OR __cy_dst__:INTERFACE OR __cy_dst__:ENUM)\n"
+                f"  AND toLower(__cy_dst__.class_name) = toLower('{escaped_target}')\n"
+                f"  AND __cy_src__ <> __cy_dst__\n"
+                f"MERGE (__cy_src__)-[__cy_r__:{rel_type} {{source_member: '{escaped_field}', multiplicity: '{multiplicity}'}}]->(__cy_dst__)\n"
+                f"RETURN __cy_r__"
+            )
+            
+            log_process("ANALYZE", "FIELD_REL", 
+                       f"   🔗 {rel_type}: {class_node.unit_name}.{field_name} → {target_class} [{multiplicity}]")
+        
+        # dependencies → DEPENDENCY 관계
+        for dep in result.get("dependencies", []) or []:
+            if not dep:
+                continue
+            target_class = dep.get("targetClass", "")
+            source_member = dep.get("sourceMember", "unknown")
+            usage = dep.get("usage", "local")
+            
+            if not target_class or not _is_valid_class_name_for_calls(target_class):
+                continue
+            
+            escaped_target = escape_for_cypher(target_class)
+            escaped_member = escape_for_cypher(source_member)
+            escaped_usage = escape_for_cypher(usage)
+            
+            # 이미 ASSOCIATION/COMPOSITION이 있으면 DEPENDENCY 생성 안 함
+            queries.append(
+                f"MATCH (__cy_src__:{parent_kind} {{startLine: {parent_start}, {self.node_base_props}}})\n"
+                f"MATCH (__cy_dst__) WHERE (__cy_dst__:CLASS OR __cy_dst__:INTERFACE OR __cy_dst__:ENUM)\n"
+                f"  AND toLower(__cy_dst__.class_name) = toLower('{escaped_target}')\n"
+                f"  AND __cy_src__ <> __cy_dst__ AND NOT (__cy_src__)-[:ASSOCIATION|COMPOSITION]->(__cy_dst__)\n"
+                f"MERGE (__cy_src__)-[__cy_r__:DEPENDENCY {{usage: '{escaped_usage}', source_member: '{escaped_member}'}}]->(__cy_dst__)\n"
+                f"RETURN __cy_r__"
+            )
+        
+        # calls → CALLS 관계
+        for call in result.get("calls", []) or []:
+            if not call:
+                continue
+            target = call.get("target", "")
+            method = call.get("method", "")
+            target_class = call.get("targetClass", "")
+            
+            # targetClass가 없으면 필드 캐시에서 조회 시도
+            if not target_class and target:
+                target_class = self._resolve_class_from_object_name(target, class_node.unit_key)
+            
+            if not target_class or not _is_valid_class_name_for_calls(target_class):
+                continue
+            
+            escaped_target = escape_for_cypher(target_class)
+            escaped_method = escape_for_cypher(method)
+            
+            queries.append(
+                f"MATCH (__cy_src__:{parent_kind} {{startLine: {parent_start}, {self.node_base_props}}})\n"
+                f"MATCH (__cy_dst__) WHERE (__cy_dst__:CLASS OR __cy_dst__:INTERFACE OR __cy_dst__:ENUM)\n"
+                f"  AND toLower(__cy_dst__.class_name) = toLower('{escaped_target}')\n"
+                f"MERGE (__cy_src__)-[__cy_r__:CALLS {{method: '{escaped_method}'}}]->(__cy_dst__)\n"
+                f"RETURN __cy_r__"
+            )
+        
+        return queries
+    
+    def _build_inheritance_from_ast(self, node: StatementNode) -> List[str]:
+        """CLASS 노드의 AST 속성에서 상속/구현 관계 쿼리를 생성합니다.
+        
+        AST JSON의 extendsType, implementsTypes 속성을 활용합니다.
+        """
+        queries: List[str] = []
+        
+        if not node.unit_name:
+            return queries
+        
+        # EXTENDS 관계 (단일 상속)
+        if node.extends_type:
+            target_class = escape_for_cypher(node.extends_type.strip())
+            if target_class and _is_valid_class_name_for_calls(node.extends_type):
+                queries.append(
+                    f"MATCH (__cy_src__:{node.node_type} {{startLine: {node.start_line}, {self.node_base_props}}})\n"
+                    f"MATCH (__cy_dst__) WHERE (__cy_dst__:CLASS OR __cy_dst__:INTERFACE)\n"
+                    f"  AND toLower(__cy_dst__.class_name) = toLower('{target_class}')\n"
+                    f"MERGE (__cy_src__)-[__cy_r__:EXTENDS]->(__cy_dst__)\n"
+                    f"RETURN __cy_r__"
+                )
+                log_process("ANALYZE", "INHERITANCE", 
+                           f"   🔗 상속: {node.unit_name} extends {node.extends_type}")
+        
+        # IMPLEMENTS 관계 (다중 구현)
+        if node.implements_types:
+            # 콤마로 구분된 인터페이스 목록 파싱
+            interfaces = [i.strip() for i in node.implements_types.split(',')]
+            for iface in interfaces:
+                if not iface or not _is_valid_class_name_for_calls(iface):
+                    continue
+                target_iface = escape_for_cypher(iface)
+                queries.append(
+                    f"MATCH (__cy_src__:{node.node_type} {{startLine: {node.start_line}, {self.node_base_props}}})\n"
+                    f"MATCH (__cy_dst__:INTERFACE) WHERE toLower(__cy_dst__.class_name) = toLower('{target_iface}')\n"
+                    f"MERGE (__cy_src__)-[__cy_r__:IMPLEMENTS]->(__cy_dst__)\n"
+                    f"RETURN __cy_r__"
+                )
+                log_process("ANALYZE", "INHERITANCE", 
+                           f"   🔗 구현: {node.unit_name} implements {iface}")
+        
+        return queries
+    
+    def _determine_multiplicity(self, type_str: str) -> str:
+        """타입 문자열에서 다중성을 결정합니다.
+        
+        컬렉션 타입이면 '*', 아니면 '1'을 반환합니다.
+        """
+        collection_patterns = [
+            r'List\s*<', r'Set\s*<', r'Collection\s*<', r'Map\s*<',
+            r'ArrayList\s*<', r'HashSet\s*<', r'TreeSet\s*<',
+            r'\[\]$',  # 배열
+        ]
+        
+        for pattern in collection_patterns:
+            if re.search(pattern, type_str):
+                return '*'
+        
+        return '1'
+
+    def _build_class_skeleton(self, class_node: StatementNode) -> str:
+        """클래스 노드에서 관계 분석에 필요한 스켈레톤을 생성합니다.
+        
+        유지할 노드 타입:
+        - FIELD: 필드 선언
+        - CONSTRUCTOR: 생성자
+        - METHOD: 시그니처만 (본문 제거)
+        - NEW_INSTANCE: 객체 생성
+        - METHOD_CALL: 메서드 호출
+        
+        제거할 것:
+        - 메서드 본문 (IF, FOR, TRY 등)
+        - 기타 불필요한 노드
+        """
+        skeleton_lines: List[str] = []
+        
+        def collect_skeleton(node: StatementNode, depth: int = 0) -> None:
+            indent = "  " * depth
+            node_type = node.node_type
+            
+            if node_type in SKELETON_KEEP_TYPES:
+                if node_type == "METHOD":
+                    # METHOD는 시그니처만 포함 (본문 제외)
+                    if node.signature:
+                        skeleton_lines.append(f"{indent}[METHOD] {node.signature}")
+                    else:
+                        # fallback: 첫 번째 라인만
+                        first_line = node.code.split('\n')[0] if node.code else ""
+                        skeleton_lines.append(f"{indent}[METHOD] {first_line}")
+                elif node_type == "CONSTRUCTOR":
+                    if node.signature:
+                        skeleton_lines.append(f"{indent}[CONSTRUCTOR] {node.signature}")
+                    else:
+                        first_line = node.code.split('\n')[0] if node.code else ""
+                        skeleton_lines.append(f"{indent}[CONSTRUCTOR] {first_line}")
+                elif node_type == "FIELD":
+                    # 필드: 전체 선언
+                    clean_code = self._clean_code_lines(node.code)
+                    skeleton_lines.append(f"{indent}[FIELD] {clean_code}")
+                elif node_type == "NEW_INSTANCE":
+                    clean_code = self._clean_code_lines(node.code)
+                    skeleton_lines.append(f"{indent}[NEW_INSTANCE] {clean_code}")
+                elif node_type == "METHOD_CALL":
+                    clean_code = self._clean_code_lines(node.code)
+                    skeleton_lines.append(f"{indent}[METHOD_CALL] {clean_code}")
+            
+            # 자식 노드 순회 (METHOD 본문은 제외하되 CONSTRUCTOR 내부는 포함)
+            if node_type not in METHOD_TYPES or node_type == "CONSTRUCTOR":
+                for child in node.children:
+                    collect_skeleton(child, depth + 1 if node_type in SKELETON_KEEP_TYPES else depth)
+        
+        # 클래스 노드의 직접 자식들 순회
+        for child in class_node.children:
+            collect_skeleton(child, 0)
+        
+        return "\n".join(skeleton_lines)
+    
+    def _clean_code_lines(self, code: str) -> str:
+        """코드에서 라인 번호를 제거하고 한 줄로 정리합니다."""
+        if not code:
+            return ""
+        lines = []
+        for line in code.split('\n'):
+            match = re.match(r'^\d+:\s?(.*)', line)
+            if match:
+                lines.append(match.group(1).strip())
+            else:
+                lines.append(line.strip())
+        return ' '.join(lines)
 
     async def _invoke_llm(self, batch: AnalysisBatch) -> Optional[Dict[str, Any]]:
         """LLM 호출 (일반 분석만)"""
@@ -626,7 +1012,11 @@ class FrameworkAstProcessor(BaseAstProcessor):
         llm_result: Any,
         unit_summary_store: Optional[Dict[str, Dict[str, str]]] = None,
     ) -> List[str]:
-        """LLM 분석 결과를 쿼리로 변환"""
+        """LLM 분석 결과를 쿼리로 변환
+        
+        Note: localDependencies, calls 관계는 class_relations.yaml에서 처리됨
+        여기서는 summary와 variables만 처리
+        """
         queries: List[str] = []
         
         # 타입 검증 (실패 시 예외 발생 → 전체 분석 중단)
@@ -653,49 +1043,105 @@ class FrameworkAstProcessor(BaseAstProcessor):
                         key = f"{node.node_type}_{node.start_line}_{node.end_line}"
                         unit_summary_store[node.unit_key][key] = summary
             
-            # DEPENDENCY 관계 (localDependencies)
-            for dep in analysis.get("localDependencies", []) or []:
-                if not dep:
-                    continue
-                dep_type = dep.get("type", "") if isinstance(dep, dict) else str(dep)
-                if not dep_type or not _is_valid_class_name_for_calls(dep_type):
-                    continue
-                source_member = dep.get("sourceMember", "unknown") if isinstance(dep, dict) else "unknown"
-                
-                if not node.unit_kind or not node.parent:
-                    continue
-                
-                queries.append(
-                    f"MATCH (__cy_src__:{node.unit_kind} {{startLine: {node.parent.start_line}, {self.node_base_props}}})\n"
-                    f"MATCH (__cy_dst__) WHERE (__cy_dst__:CLASS OR __cy_dst__:INTERFACE OR __cy_dst__:ENUM)\n"
-                    f"  AND toLower(__cy_dst__.class_name) = toLower('{escape_for_cypher(dep_type)}')\n"
-                    f"  AND __cy_src__ <> __cy_dst__ AND NOT (__cy_src__)-[:ASSOCIATION|COMPOSITION]->(__cy_dst__)\n"
-                    f"MERGE (__cy_src__)-[__cy_r__:DEPENDENCY {{usage: 'local', source_member: '{escape_for_cypher(source_member)}'}}]->(__cy_dst__)\n"
-                    f"RETURN __cy_r__"
-                )
-            
-            # CALLS 관계
-            for call_str in analysis.get("calls", []) or []:
-                if not call_str or not isinstance(call_str, str):
-                    continue
-                parts = call_str.split(".", 1)
-                if len(parts) != 2:
-                    continue
-                target_class, method_name = parts
-                
-                if not _is_valid_class_name_for_calls(target_class):
-                    continue
-                
-                if node.unit_kind and node.parent:
-                    queries.append(
-                        f"MATCH (__cy_src__:{node.unit_kind} {{startLine: {node.parent.start_line}, {self.node_base_props}}})\n"
-                        f"MATCH (__cy_dst__) WHERE (__cy_dst__:CLASS OR __cy_dst__:INTERFACE OR __cy_dst__:ENUM)\n"
-                        f"  AND toLower(__cy_dst__.class_name) = toLower('{escape_for_cypher(target_class)}')\n"
-                        f"MERGE (__cy_src__)-[__cy_r__:CALLS {{method: '{escape_for_cypher(method_name)}'}}]->(__cy_dst__)\n"
-                        f"RETURN __cy_r__"
-                    )
+            # 변수 역할 처리 - 메모리 맵에 누적 (Neo4j 저장은 _process_unit_summaries에서)
+            variables = analysis.get("variables", []) or []
+            if variables:
+                self._accumulate_variable_roles(node, variables)
         
         return queries
+    
+    def _accumulate_variable_roles(
+        self,
+        context_node: StatementNode,
+        variables: List[Any],
+    ) -> None:
+        """변수 역할을 메모리 맵에 누적합니다.
+        
+        Neo4j 저장은 _process_unit_summaries()에서 LLM 요약 후 수행됩니다.
+        
+        Args:
+            context_node: 분석된 코드 범위 노드 (변수 사용 위치 기준)
+            variables: 변수 정보 리스트 [{"name": "count", "role": "누적값 저장"}, ...]
+        """
+        unit_key = context_node.unit_key
+        if not unit_key:
+            return
+        
+        # 유닛별 맵 초기화
+        if unit_key not in self._variable_roles:
+            self._variable_roles[unit_key] = {}
+        
+        for var in variables:
+            if isinstance(var, dict):
+                var_name = var.get("name", "")
+                var_role = var.get("role", "")
+            elif isinstance(var, str):
+                var_name = var
+                var_role = ""
+            else:
+                continue
+            
+            if not var_name or not var_role:
+                continue
+            
+            # 가장 가까운 VARIABLE 노드 찾기
+            nearest_line = self._find_nearest_variable_declaration(
+                var_name, 
+                context_node.start_line,
+                unit_key
+            )
+            
+            if nearest_line is None:
+                continue
+            
+            # 선언 라인별로 역할 누적
+            if nearest_line not in self._variable_roles[unit_key]:
+                self._variable_roles[unit_key][nearest_line] = []
+            
+            # 중복 역할 제거
+            if var_role not in self._variable_roles[unit_key][nearest_line]:
+                self._variable_roles[unit_key][nearest_line].append(var_role)
+    
+    def _find_nearest_variable_declaration(
+        self,
+        var_name: str,
+        usage_line: int,
+        unit_key: Optional[str],
+    ) -> Optional[int]:
+        """사용 위치에서 가장 가까운 변수 선언 라인을 찾습니다.
+        
+        Args:
+            var_name: 변수명
+            usage_line: 변수 사용 라인
+            unit_key: 현재 클래스/유닛 키 (스코프 제한용)
+        
+        Returns:
+            가장 가까운 선언 라인 또는 None
+        """
+        if not self._nodes:
+            return None
+        
+        # 같은 유닛 내에서 VARIABLE 노드 중 변수명 일치하는 것 찾기
+        candidates: List[int] = []
+        
+        for node in self._nodes:
+            if node.node_type not in VARIABLE_TYPES:
+                continue
+            
+            # 유닛 스코프 제한 (같은 클래스/메서드 내에서만)
+            if unit_key and node.unit_key != unit_key:
+                continue
+            
+            # 사용 라인 이전에 선언된 것만
+            if node.start_line > usage_line:
+                continue
+            
+            # 변수명 매칭 (코드에서 변수명 확인)
+            if var_name in (node.code or ""):
+                candidates.append(node.start_line)
+        
+        # 가장 가까운 것 (가장 큰 라인 번호)
+        return max(candidates) if candidates else None
 
     async def _process_unit_summaries(
         self, 
@@ -824,232 +1270,74 @@ class FrameworkAstProcessor(BaseAstProcessor):
                             f"MERGE (__cy_us__)-[:HAS_AC]->(__cy_ac__)\n"
                             f"RETURN __cy_ac__"
                         )
+            
+            # 3. 변수 역할 요약 (신규)
+            var_queries = await self._summarize_unit_variables(class_key)
+            queries.extend(var_queries)
         
         return queries
     
-    # =========================================================================
-    # Framework 전용 메서드
-    # =========================================================================
-
-    async def _analyze_inheritance_nodes(self, nodes: List[StatementNode]) -> List[str]:
-        """상속/구현 노드 분석"""
+    async def _summarize_unit_variables(self, unit_key: str) -> List[str]:
+        """해당 유닛의 변수들 역할을 요약하여 Neo4j 쿼리를 생성합니다.
+        
+        역할이 2개 이상인 변수는 LLM으로 요약, 1개인 변수는 그대로 저장.
+        """
         queries: List[str] = []
-        semaphore = asyncio.Semaphore(INHERITANCE_CONCURRENCY)
+        unit_vars = self._variable_roles.get(unit_key, {})
         
-        async def analyze_one(node: StatementNode) -> List[str]:
-            async with semaphore:
-                try:
-                    result = await asyncio.to_thread(
-                        analyze_inheritance, node.code, self.api_key, self.locale
-                    )
-                    return self._build_inheritance_queries(node, result)
-                except Exception as e:
-                    log_process("ANALYZE", "INHERITANCE", f"❌ 상속 분석 실패 (node={node.start_line}): {e}", logging.ERROR, e)
-                    raise
+        if not unit_vars:
+            return queries
         
-        results = await asyncio.gather(*[analyze_one(n) for n in nodes])
-        for r in results:
-            queries.extend(r)
+        # 역할이 2개 이상인 변수들만 LLM 요약
+        vars_to_summarize: List[Dict[str, Any]] = []
+        single_role_vars: List[Tuple[int, str]] = []  # (선언라인, 역할)
         
-        return queries
-
-    async def _analyze_field_nodes(self, nodes: List[StatementNode]) -> List[str]:
-        """필드 노드 분석"""
-        queries: List[str] = []
-        semaphore = asyncio.Semaphore(FIELD_CONCURRENCY)
+        for var_line, roles in unit_vars.items():
+            if len(roles) >= 2:
+                vars_to_summarize.append({
+                    "name": str(var_line),  # 선언 라인을 키로 사용
+                    "roles": roles
+                })
+            elif len(roles) == 1:
+                single_role_vars.append((var_line, roles[0]))
         
-        async def analyze_one(node: StatementNode) -> List[str]:
-            async with semaphore:
-                try:
-                    result = await asyncio.to_thread(
-                        analyze_field, node.code, self.api_key, self.locale
-                    )
-                    return self._build_field_queries(node, result)
-                except Exception as e:
-                    log_process("ANALYZE", "FIELD", f"❌ 필드 분석 실패 (node={node.start_line}): {e}", logging.ERROR, e)
-                    raise
-        
-        results = await asyncio.gather(*[analyze_one(n) for n in nodes])
-        for r in results:
-            queries.extend(r)
-        
-        return queries
-
-    async def _analyze_method_nodes(self, nodes: List[StatementNode]) -> List[str]:
-        """메서드 시그니처 분석"""
-        queries: List[str] = []
-        semaphore = asyncio.Semaphore(METHOD_CONCURRENCY)
-        
-        async def analyze_one(node: StatementNode) -> List[str]:
-            async with semaphore:
-                try:
-                    result = await asyncio.to_thread(
-                        analyze_method, node.code, self.api_key, self.locale
-                    )
-                    return self._build_method_queries(node, result)
-                except Exception as e:
-                    log_process("ANALYZE", "METHOD", f"❌ 메서드 분석 실패 (node={node.start_line}): {e}", logging.ERROR, e)
-                    raise
-        
-        results = await asyncio.gather(*[analyze_one(n) for n in nodes])
-        for r in results:
-            queries.extend(r)
-        
-        return queries
-
-    def _build_inheritance_queries(self, node: StatementNode, analysis: Dict[str, Any]) -> List[str]:
-        """상속/구현 분석 결과를 쿼리로 변환"""
-        if not isinstance(analysis, dict):
-            raise RuntimeError(f"상속 분석 결과가 유효하지 않습니다 (node={node.start_line}): {type(analysis)}")
-
-        queries: List[str] = []
-        relations = analysis.get("relations") or []
-
-        for rel in relations:
-            to_type = escape_for_cypher(rel.get("toType") or "")
-            rel_type = rel.get("relationType") or "EXTENDS"
-
-            if not to_type:
-                continue
-
-            src_match = f"MATCH (__cy_src__:{node.unit_kind or 'CLASS'} {{startLine: {node.parent.start_line if node.parent else node.start_line}, {self.node_base_props}}})"
-
-            queries.append(
-                f"{src_match}\n"
-                f"MATCH (__cy_dst__) WHERE (__cy_dst__:CLASS OR __cy_dst__:INTERFACE OR __cy_dst__:ENUM)\n"
-                f"  AND toLower(__cy_dst__.class_name) = toLower('{to_type}')\n"
-                f"MERGE (__cy_src__)-[__cy_r__:{rel_type}]->(__cy_dst__)\n"
-                f"RETURN __cy_src__, __cy_dst__, __cy_r__"
-            )
-
-        return queries
-
-    def _build_field_queries(self, node: StatementNode, analysis: Dict[str, Any]) -> List[str]:
-        """필드 분석 결과를 쿼리로 변환"""
-        if not isinstance(analysis, dict):
-            raise RuntimeError(f"필드 분석 결과가 유효하지 않습니다 (node={node.start_line}): {type(analysis)}")
-
-        queries: List[str] = []
-        fields = analysis.get("fields") or []
-
-        for field_info in fields:
-            field_name = escape_for_cypher(field_info.get("field_name") or "")
-            field_type_raw = field_info.get("field_type") or ""
-            field_type = escape_for_cypher(field_type_raw)
-            target_class_raw = field_info.get("target_class")
-            target_class = escape_for_cypher(target_class_raw) if target_class_raw else None
-            visibility = escape_for_cypher(field_info.get("visibility") or "private")
-            is_static = "true" if field_info.get("is_static") else "false"
-            is_final = "true" if field_info.get("is_final") else "false"
-            multiplicity = escape_for_cypher(field_info.get("multiplicity") or "1")
-            association_type = field_info.get("association_type") or "ASSOCIATION"
-
-            if not field_name:
-                continue
-
-            # 필드 타입 캐시 업데이트
-            if node.unit_key and self._field_type_cache and node.unit_key in self._field_type_cache:
-                original_field_name = field_info.get("field_name") or ""
-                self._field_type_cache[node.unit_key][original_field_name] = field_type_raw
-
-            target_class_set = f", __cy_f__.target_class = '{target_class}'" if target_class else ""
-            queries.append(
-                f"MATCH (__cy_f__:FIELD {{startLine: {node.start_line}, {self.node_base_props}}})\n"
-                f"SET __cy_f__.name = '{field_name}', __cy_f__.field_type = '{field_type}', "
-                f"__cy_f__.visibility = '{visibility}', __cy_f__.is_static = {is_static}, __cy_f__.is_final = {is_final}{target_class_set}\n"
-                f"RETURN __cy_f__"
-            )
-
-            if target_class:
-                src_match = f"MATCH (__cy_src__:{node.unit_kind or 'CLASS'} {{startLine: {node.parent.start_line if node.parent else node.start_line}, {self.node_base_props}}})"
-                queries.append(
-                    f"{src_match}\n"
-                    f"MATCH (__cy_dst__) WHERE (__cy_dst__:CLASS OR __cy_dst__:INTERFACE OR __cy_dst__:ENUM)\n"
-                    f"  AND toLower(__cy_dst__.class_name) = toLower('{target_class}')\n"
-                    f"MERGE (__cy_src__)-[__cy_r__:{association_type} {{source_member: '{field_name}', multiplicity: '{multiplicity}'}}]->(__cy_dst__)\n"
-                    f"RETURN __cy_src__, __cy_dst__, __cy_r__"
+        # LLM 요약 호출
+        if vars_to_summarize:
+            try:
+                result = await asyncio.to_thread(
+                    analyze_variable_summary, vars_to_summarize, self.api_key, self.locale
                 )
-
-        return queries
-
-    def _build_method_queries(self, node: StatementNode, analysis: Dict[str, Any]) -> List[str]:
-        """메서드 분석 결과를 쿼리로 변환"""
-        if not isinstance(analysis, dict):
-            raise RuntimeError(f"메서드 분석 결과가 유효하지 않습니다 (node={node.start_line}): {type(analysis)}")
-
-        queries: List[str] = []
+                validated = self.validate_dict_result(result, "변수 역할 요약", allow_none=True)
+                
+                if validated:
+                    for var_sum in validated.get("summaries", []) or []:
+                        var_line_str = var_sum.get("name", "")
+                        summary = var_sum.get("summary", "")
+                        
+                        if var_line_str and summary:
+                            try:
+                                var_line = int(var_line_str)
+                                escaped_summary = escape_for_cypher(summary)
+                                
+                                queries.append(
+                                    f"MATCH (__cy_v__:VARIABLE {{startLine: {var_line}, {self.node_base_props}}})\n"
+                                    f"SET __cy_v__.role = '{escaped_summary}'\n"
+                                    f"RETURN __cy_v__"
+                                )
+                            except ValueError:
+                                pass
+                
+                log_process("ANALYZE", "VARIABLE", f"✅ 변수 역할 요약 완료: {len(vars_to_summarize)}개 변수")
+            except Exception as e:
+                log_process("ANALYZE", "VARIABLE", f"⚠️ 변수 역할 요약 실패: {e}")
         
-        method_name = escape_for_cypher(analysis.get("method_name") or "")
-        return_type = escape_for_cypher(analysis.get("return_type") or "void")
-        visibility = escape_for_cypher(analysis.get("visibility") or "public")
-        is_static = "true" if analysis.get("is_static") else "false"
-        method_kind = escape_for_cypher(analysis.get("method_type") or "normal")
-        parameters = analysis.get("parameters") or []
-        dependencies = analysis.get("dependencies") or []
-
-        queries.append(
-            f"MATCH (__cy_m__:{node.node_type} {{startLine: {node.start_line}, {self.node_base_props}}})\n"
-            f"SET __cy_m__.name = '{method_name}', __cy_m__.return_type = '{return_type}', "
-            f"__cy_m__.visibility = '{visibility}', __cy_m__.is_static = {is_static}, "
-            f"__cy_m__.method_type = '{method_kind}'\n"
-            f"RETURN __cy_m__"
-        )
-
-        # 파라미터 노드
-        for idx, param in enumerate(parameters):
-            param_name = escape_for_cypher(param.get("name") or "")
-            param_type = escape_for_cypher(param.get("type") or "")
-            if not param_name:
-                continue
+        # 역할이 1개인 변수는 그대로 저장
+        for var_line, role in single_role_vars:
+            escaped_role = escape_for_cypher(role)
             queries.append(
-                f"MATCH (__cy_m__:{node.node_type} {{startLine: {node.start_line}, {self.node_base_props}}})\n"
-                f"MERGE (__cy_p__:Parameter {{name: '{param_name}', method_start_line: {node.start_line}, {self.node_base_props}}})\n"
-                f"SET __cy_p__.type = '{param_type}', __cy_p__.index = {idx}\n"
-                f"MERGE (__cy_m__)-[__cy_r__:HAS_PARAMETER]->(__cy_p__)\n"
-                f"RETURN __cy_m__, __cy_p__, __cy_r__"
+                f"MATCH (__cy_v__:VARIABLE {{startLine: {var_line}, {self.node_base_props}}})\n"
+                f"SET __cy_v__.role = '{escaped_role}'\n"
+                f"RETURN __cy_v__"
             )
-
-        # DEPENDENCY 관계
-        for dep in dependencies:
-            target_type = escape_for_cypher(dep.get("target_class") or "")
-            usage = escape_for_cypher(dep.get("usage") or "parameter")
-            is_value_object_cypher = "true" if dep.get("is_value_object") else "false"
-
-            if not target_type:
-                continue
-
-            src_match = f"MATCH (__cy_src__:{node.unit_kind or 'CLASS'} {{startLine: {node.parent.start_line if node.parent else node.start_line}, {self.node_base_props}}})"
-            queries.append(
-                f"{src_match}\n"
-                f"MATCH (__cy_dst__) WHERE (__cy_dst__:CLASS OR __cy_dst__:INTERFACE OR __cy_dst__:ENUM)\n"
-                f"  AND toLower(__cy_dst__.class_name) = toLower('{target_type}')\n"
-                f"  AND __cy_src__ <> __cy_dst__\n"
-                f"  AND NOT (__cy_src__)-[:ASSOCIATION|COMPOSITION]->(__cy_dst__)\n"
-                f"MERGE (__cy_src__)-[__cy_r__:DEPENDENCY {{usage: '{usage}', source_member: '{method_name}'}}]->(__cy_dst__)\n"
-                f"SET __cy_r__.is_value_object = {is_value_object_cypher}\n"
-                f"RETURN __cy_src__, __cy_dst__, __cy_r__"
-            )
-
-        # 필드 할당 패턴
-        field_assignments = analysis.get("field_assignments") or []
-        src_start_line = node.parent.start_line if node.parent else node.start_line
-        for assign in field_assignments:
-            field_name = escape_for_cypher(assign.get("field_name") or "")
-            value_source = assign.get("value_source") or ""
-
-            if not field_name or not value_source:
-                continue
-
-            if value_source == "new":
-                queries.append(
-                    f"MATCH (__cy_field__:FIELD {{name: '{field_name}', {self.node_base_props}}})\n"
-                    f"WHERE __cy_field__.target_class IS NOT NULL\n"
-                    f"MATCH (__cy_src__:{node.unit_kind or 'CLASS'} {{startLine: {src_start_line}, {self.node_base_props}}})"
-                    f"-[__cy_r__:ASSOCIATION {{source_member: '{field_name}'}}]->(__cy_dst__)\n"
-                    f"WITH __cy_src__, __cy_dst__, COALESCE(__cy_r__.multiplicity, '1') AS mult, __cy_r__\n"
-                    f"DELETE __cy_r__\n"
-                    f"MERGE (__cy_src__)-[__cy_r2__:COMPOSITION {{source_member: '{field_name}', multiplicity: mult}}]->(__cy_dst__)\n"
-                    f"RETURN __cy_src__, __cy_dst__, __cy_r2__"
-                )
-
+        
         return queries

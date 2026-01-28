@@ -201,6 +201,18 @@ def extract_parent_context(skeleton_code: str, ancestor_context: str, api_key: s
     raise ValueError(f"parent_context 규칙이 dict가 아닌 값을 반환했습니다: {type(result)}")
 
 
+def analyze_variable_summary(variables: List[Dict[str, Any]], api_key: str, locale: str) -> Dict[str, Any]:
+    """변수 역할 목록을 하나의 요약 설명으로 통합합니다."""
+    from util.rule_loader import RuleLoader
+    # common 디렉토리의 프롬프트 사용
+    loader = RuleLoader(target_lang="common")
+    return loader.execute(
+        "variable_summary",
+        {"variables": variables, "locale": locale},
+        api_key,
+    )
+
+
 # ==================== 노드 수집기 ====================
 class StatementCollector:
     """AST를 후위순회하여 `StatementNode`와 프로시저 정보를 수집합니다.
@@ -432,6 +444,9 @@ class DbmsAstProcessor(BaseAstProcessor):
         
         # 테이블/컬럼 설명 요약용 저장소 (DML 분석에서 수집)
         self._table_summary_store: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        
+        # 변수 역할 맵: {unit_key: {변수명: [역할1, 역할2, ...]}}
+        self._variable_roles: Dict[str, Dict[str, List[str]]] = {}
 
     def _apply_name_case(self, name: str) -> str:
         """메타데이터 대소문자 변환 적용
@@ -686,13 +701,37 @@ class DbmsAstProcessor(BaseAstProcessor):
                             f"RETURN __cy_c__, __cy_p__, __cy_r__"
                         )
                 
-                # 변수 사용 마킹
-                for var_name in analysis.get('variables', []) or []:
+                # 변수 사용 마킹 및 역할 누적 (메모리 맵에 저장, Neo4j 저장은 _process_unit_summaries에서)
+                for var_info in analysis.get('variables', []) or []:
+                    # 새 형식: {"name": "변수명", "role": "역할"} 또는 구 형식: "변수명"
+                    if isinstance(var_info, dict):
+                        var_name = var_info.get("name", "")
+                        var_role = var_info.get("role", "")
+                    else:
+                        var_name = str(var_info)
+                        var_role = ""
+                    
+                    if not var_name:
+                        continue
+                    
+                    escaped_name = escape_for_cypher(var_name)
+                    
+                    # 사용 마킹은 바로 저장
                     queries.append(
-                        f"MATCH (__cy_v__:Variable {{name: '{escape_for_cypher(var_name)}', {self.node_base_props}}})\n"
+                        f"MATCH (__cy_v__:Variable {{name: '{escaped_name}', {self.node_base_props}}})\n"
                         f"SET __cy_v__.`{node.start_line}_{node.end_line}` = 'Used'\n"
                         f"RETURN __cy_v__"
                     )
+                    
+                    # 역할은 메모리 맵에 누적 (나중에 LLM 요약 후 저장)
+                    if var_role and node.unit_key:
+                        if node.unit_key not in self._variable_roles:
+                            self._variable_roles[node.unit_key] = {}
+                        if var_name not in self._variable_roles[node.unit_key]:
+                            self._variable_roles[node.unit_key][var_name] = []
+                        # 중복 역할 제거
+                        if var_role not in self._variable_roles[node.unit_key][var_name]:
+                            self._variable_roles[node.unit_key][var_name].append(var_role)
         
         # 테이블 분석 결과 처리 (None 허용 - 일반 분석만 있는 경우)
         table_result = self.validate_dict_result(
@@ -820,10 +859,77 @@ class DbmsAstProcessor(BaseAstProcessor):
             
             us_count = len(all_user_stories)
             log_process("ANALYZE", "SUMMARY", f"✅ {info.procedure_name}: User Story {us_count}개 생성")
+            
+            # 3. 변수 역할 요약 (신규)
+            var_queries = await self._summarize_unit_variables(proc_key)
+            queries.extend(var_queries)
         
         # 테이블/컬럼 설명 요약 처리
         table_queries = await self._finalize_table_summaries()
         queries.extend(table_queries)
+        
+        return queries
+    
+    async def _summarize_unit_variables(self, unit_key: str) -> List[str]:
+        """해당 유닛의 변수들 역할을 요약하여 Neo4j 쿼리를 생성합니다.
+        
+        역할이 2개 이상인 변수는 LLM으로 요약, 1개인 변수는 그대로 저장.
+        """
+        queries: List[str] = []
+        unit_vars = self._variable_roles.get(unit_key, {})
+        
+        if not unit_vars:
+            return queries
+        
+        # 역할이 2개 이상인 변수들만 LLM 요약
+        vars_to_summarize: List[Dict[str, Any]] = []
+        single_role_vars: List[Tuple[str, str]] = []  # (변수명, 역할)
+        
+        for var_name, roles in unit_vars.items():
+            if len(roles) >= 2:
+                vars_to_summarize.append({
+                    "name": var_name,
+                    "roles": roles
+                })
+            elif len(roles) == 1:
+                single_role_vars.append((var_name, roles[0]))
+        
+        # LLM 요약 호출
+        if vars_to_summarize:
+            try:
+                result = await asyncio.to_thread(
+                    analyze_variable_summary, vars_to_summarize, self.api_key, self.locale
+                )
+                validated = self.validate_dict_result(result, "변수 역할 요약", allow_none=True)
+                
+                if validated:
+                    for var_sum in validated.get("summaries", []) or []:
+                        var_name = var_sum.get("name", "")
+                        summary = var_sum.get("summary", "")
+                        
+                        if var_name and summary:
+                            escaped_name = escape_for_cypher(var_name)
+                            escaped_summary = escape_for_cypher(summary)
+                            
+                            queries.append(
+                                f"MATCH (__cy_v__:Variable {{name: '{escaped_name}', {self.node_base_props}}})\n"
+                                f"SET __cy_v__.role = '{escaped_summary}'\n"
+                                f"RETURN __cy_v__"
+                            )
+                
+                log_process("ANALYZE", "VARIABLE", f"✅ 변수 역할 요약 완료: {len(vars_to_summarize)}개 변수")
+            except Exception as e:
+                log_process("ANALYZE", "VARIABLE", f"⚠️ 변수 역할 요약 실패: {e}")
+        
+        # 역할이 1개인 변수는 그대로 저장
+        for var_name, role in single_role_vars:
+            escaped_name = escape_for_cypher(var_name)
+            escaped_role = escape_for_cypher(role)
+            queries.append(
+                f"MATCH (__cy_v__:Variable {{name: '{escaped_name}', {self.node_base_props}}})\n"
+                f"SET __cy_v__.role = '{escaped_role}'\n"
+                f"RETURN __cy_v__"
+            )
         
         return queries
 

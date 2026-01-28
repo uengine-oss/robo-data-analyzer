@@ -34,8 +34,9 @@ import aiofiles
 from analyzer.neo4j_client import Neo4jClient
 from analyzer.strategy.base_analyzer import BaseStreamingAnalyzer, AnalysisStats
 from analyzer.strategy.base.file_context import FileStatus, FileAnalysisContext
+from analyzer.pipeline_control import pipeline_controller, PipelinePhase
 from config.settings import settings
-from util.stream_event import emit_message
+from util.stream_event import emit_message, emit_phase_event
 from util.text_utils import (
     generate_user_story_document,
     log_process,
@@ -103,6 +104,10 @@ class FrameworkAnalyzer(BaseStreamingAnalyzer):
         """
         total_files = len(file_names)
         self._file_semaphore = asyncio.Semaphore(settings.concurrency.file_concurrency)
+        
+        # 파이프라인 상태 초기화
+        pipeline_controller.reset()
+        pipeline_state = pipeline_controller.get_state()
 
         # LLM 캐시 상태 표시
         if settings.llm.cache_enabled:
@@ -118,7 +123,9 @@ class FrameworkAnalyzer(BaseStreamingAnalyzer):
 
         yield emit_message(f"⚡ 병렬 처리: 파일 {settings.concurrency.file_concurrency}개 동시")
 
-        # ========== 파일 로드 ==========
+        # ========== Phase 1: AST 그래프 생성 ==========
+        pipeline_state.set_phase(PipelinePhase.AST_GENERATION, "AST 구조 그래프 생성 중", 0)
+        
         yield emit_message("")
         yield self.emit_separator()
         yield self.emit_phase_header(1, "🏗️ AST 구조 그래프 생성", f"{total_files}개 파일 병렬")
@@ -127,7 +134,6 @@ class FrameworkAnalyzer(BaseStreamingAnalyzer):
         contexts = await self._load_all_files(file_names, orchestrator)
         yield emit_message(f"   ✓ {len(contexts)}개 파일 로드 완료")
 
-        # ========== Phase 1: AST 그래프 생성 (병렬) ==========
         async for chunk in run_phase1(self, contexts, client, orchestrator, stats):
             yield chunk
 
@@ -139,9 +145,17 @@ class FrameworkAnalyzer(BaseStreamingAnalyzer):
         yield self.emit_phase_complete(1, f"{stats.static_nodes_created}개 노드 생성")
         if ph1_fail_count > 0:
             yield self.emit_warning(f"Phase 1 실패: {ph1_fail_count}개 파일 → Phase 2 스킵 (토큰 절감)")
+        
+        # Phase 1 후 일시정지 체크
+        if not await pipeline_state.wait_if_paused():
+            yield emit_message("⏹️ 파이프라인이 중단되었습니다")
+            pipeline_state.set_phase(PipelinePhase.CANCELLED)
+            return
 
         # ========== Phase 2: LLM 분석 (병렬) - Phase1 성공 파일만 ==========
         ph2_targets = [c for c in contexts if c.status == FileStatus.PH1_OK]
+        
+        pipeline_state.set_phase(PipelinePhase.LLM_ANALYSIS, "AI 분석 중", 0)
         
         yield emit_message("")
         yield self.emit_separator()
@@ -156,6 +170,15 @@ class FrameworkAnalyzer(BaseStreamingAnalyzer):
 
         yield emit_message("")
         yield self.emit_phase_complete(2, f"{stats.llm_batches_executed}개 분석 완료")
+        
+        # Phase 2 후 일시정지 체크
+        if not await pipeline_state.wait_if_paused():
+            yield emit_message("⏹️ 파이프라인이 중단되었습니다")
+            pipeline_state.set_phase(PipelinePhase.CANCELLED)
+            return
+        
+        # 파이프라인 완료
+        pipeline_state.set_phase(PipelinePhase.COMPLETED)
 
     # =========================================================================
     # User Story 문서 생성 (BaseStreamingAnalyzer 구현)

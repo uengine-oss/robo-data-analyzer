@@ -1,6 +1,6 @@
 name: "understand_prompt"
 description: "저장 프로시저/함수 코드 범위별 분석"
-version: "2.0"
+version: "3.0"
 
 input_schema:
   required: []
@@ -120,7 +120,7 @@ prompt: |
   
   
   [SECTION_2_VARIABLE_IDENTIFICATION]
-  변수 식별 및 분류:
+  변수 식별 및 역할 분석:
   
   식별 규칙:
   - 각 범위 내에서 실제로 사용되거나 참조된 변수만 포함
@@ -134,6 +134,19 @@ prompt: |
   - 컬럼 타입: %TYPE으로 선언된 변수
   - 커서 변수: CURSOR로 선언된 변수
   - 예외 변수: EXCEPTION으로 선언된 변수
+  
+  역할 분석:
+  - 각 변수가 해당 코드 범위에서 어떤 목적으로 사용되는지 분석
+  - 예시:
+    - v_total_amount: "주문 총 금액 누적 계산"
+    - p_order_id: "처리할 주문 식별자"
+    - v_status: "주문 상태 임시 저장"
+    - cur_orders: "미처리 주문 목록 순회"
+  
+  역할 작성 규칙:
+  - 한 문장 이내로 간결하게 작성
+  - 해당 범위에서의 구체적인 용도 명시
+  - 변수명만 보고 유추 가능한 내용이 아닌, 코드에서 실제 사용되는 맥락 반영
   
   
   [SECTION_3_PROCEDURE_CALLS]
@@ -167,7 +180,7 @@ prompt: |
   - 예: "[schema_name | package_name].PROC"
   
   
-  [SECTION_7_OUTPUT_FORMAT]
+  [OUTPUT_FORMAT]
   출력 형식 및 구조:
   
   JSON 스키마:
@@ -178,16 +191,19 @@ prompt: |
         "endLine": 범위_종료_라인_번호,
         "summary": "3~5문장의 상세한 코드 동작 요약 (분기조건, 데이터값 포함)",
         "calls": ["호출된 프로시저/함수명칭1", "호출된 프로시저/함수명칭2"],
-        "variables": ["변수명1", "변수명2"]
+        "variables": [
+          {"name": "변수명1", "role": "해당 범위에서의 역할"},
+          {"name": "변수명2", "role": "해당 범위에서의 역할"}
+        ]
       }
     ]
   }
   
   출력 제약사항:
   - JSON 형식 외의 부가 설명이나 주석 금지
-  - "calls", "variables" 배열 요소는 문자열 타입으로 출력
+  - "calls" 배열 요소는 문자열 타입
+  - "variables" 배열 요소는 객체 타입 (name, role 필드)
   - analysis[i]에는 startLine/endLine이 필수
   - 빈 배열도 허용되며 null 값은 사용 금지
   - summary는 지정된 언어로 작성하며, 위의 상세 규칙을 준수
   - 코드펜스(```json ... ``` 등) 포함 금지, 트레일링 콤마 금지
-
