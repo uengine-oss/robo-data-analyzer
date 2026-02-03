@@ -89,8 +89,18 @@ async def analyze_source_code(request: Request):
     
     api_key = extract_api_key(request)
     locale = extract_locale(request)
-    strategy = (body.get("strategy") or "framework").strip().lower()
-    target = (body.get("target") or "java").strip().lower()
+    
+    # 필수 파라미터 검증
+    strategy = body.get("strategy")
+    if not strategy:
+        raise HTTPException(400, "strategy 파라미터가 필요합니다. (framework 또는 dbms)")
+    strategy = strategy.strip().lower()
+    
+    target = body.get("target")
+    if not target:
+        raise HTTPException(400, "target 파라미터가 필요합니다. (java, oracle, postgres 등)")
+    target = target.strip().lower()
+    
     name_case = (body.get("nameCase") or "original").strip().lower()
     
     # API 키 검증
@@ -98,7 +108,7 @@ async def analyze_source_code(request: Request):
     
     # 분석 대상 파일 탐색
     dirs = source_analyze_service.get_analysis_directories(strategy)
-    file_names = source_analyze_service.discover_analyzable_files(strategy, dirs)
+    file_names = source_analyze_service.discover_analyzable_files(strategy, target, dirs)
     has_ddl = source_analyze_service.check_ddl_files_exist(dirs)
     
     if not file_names and not has_ddl:
@@ -224,7 +234,9 @@ async def analyze_lineage(body: LineageAnalyzeRequest):
 @router.post("/schema/semantic-search")
 async def semantic_search_tables(request: Request, body: SemanticSearchRequest):
     """시멘틱 검색: 테이블 설명의 의미적 유사도 기반 검색"""
-    api_key = request.headers.get("X-API-Key") or settings.llm.api_key
+    api_key = request.headers.get("X-API-Key")
+    if not api_key:
+        raise HTTPException(400, "X-API-Key 헤더가 필요합니다.")
     logger.info("[API] 시멘틱 검색 요청 | query=%s", body.query[:50])
     try:
         result = await schema_manage_service.search_tables_by_semantic(
@@ -266,8 +278,10 @@ async def list_schema_tables(search: Optional[str] = None, schema: Optional[str]
 
 
 @router.get("/schema/tables/{table_name}/columns", response_model=List[SchemaColumnInfo])
-async def get_table_columns(table_name: str, schema: str = ""):
+async def get_table_columns(table_name: str, schema: Optional[str] = None):
     """테이블 컬럼 목록 조회"""
+    if schema is None:
+        raise HTTPException(400, "schema 파라미터가 필요합니다.")
     logger.info("[API] 컬럼 조회 | table=%s", table_name)
     try:
         records = await schema_manage_service.fetch_table_columns(table_name, schema)
@@ -354,8 +368,10 @@ async def remove_schema_relationship(
 
 
 @router.get("/schema/tables/{table_name}/references")
-async def get_table_references(table_name: str, schema: str = "", column_name: Optional[str] = None):
+async def get_table_references(table_name: str, schema: Optional[str] = None, column_name: Optional[str] = None):
     """테이블 또는 컬럼이 참조된 프로시저 목록 조회"""
+    if schema is None:
+        raise HTTPException(400, "schema 파라미터가 필요합니다.")
     logger.info("[API] 테이블 참조 조회 | table=%s", table_name)
     try:
         records = await schema_manage_service.fetch_table_references(table_name, schema, column_name)
@@ -407,7 +423,9 @@ async def control_pipeline(body: PipelineControlRequest):
 @router.put("/schema/tables/{table_name}/description")
 async def update_table_description(request: Request, table_name: str, body: TableDescriptionUpdateRequest):
     """테이블 설명 업데이트"""
-    api_key = request.headers.get("X-API-Key") or settings.llm.api_key
+    api_key = request.headers.get("X-API-Key")
+    if not api_key:
+        raise HTTPException(400, "X-API-Key 헤더가 필요합니다.")
     logger.info("[API] 테이블 설명 업데이트 | table=%s", table_name)
     try:
         return await schema_manage_service.update_table_description(
@@ -431,7 +449,9 @@ async def update_column_description(
     body: ColumnDescriptionUpdateRequest
 ):
     """컬럼 설명 업데이트"""
-    api_key = request.headers.get("X-API-Key") or settings.llm.api_key
+    api_key = request.headers.get("X-API-Key")
+    if not api_key:
+        raise HTTPException(400, "X-API-Key 헤더가 필요합니다.")
     logger.info("[API] 컬럼 설명 업데이트 | table=%s | column=%s", table_name, column_name)
     try:
         return await schema_manage_service.update_column_description(
@@ -451,7 +471,9 @@ async def update_column_description(
 @router.post("/schema/vectorize")
 async def vectorize_schema(request: Request, body: VectorizeRequest):
     """전체 스키마 벡터화"""
-    api_key = request.headers.get("X-API-Key") or settings.llm.api_key
+    api_key = request.headers.get("X-API-Key")
+    if not api_key:
+        raise HTTPException(400, "X-API-Key 헤더가 필요합니다.")
     logger.info("[API] 스키마 벡터화 요청")
     try:
         return await schema_manage_service.vectorize_schema_tables(
@@ -477,7 +499,9 @@ async def vectorize_schema(request: Request, body: VectorizeRequest):
 @router.post("/schema/dw-tables")
 async def register_dw_star_schema(request: Request, body: DWStarSchemaRequest):
     """DW 스타스키마 등록"""
-    api_key = request.headers.get("X-API-Key") or settings.llm.api_key
+    api_key = request.headers.get("X-API-Key")
+    if not api_key:
+        raise HTTPException(400, "X-API-Key 헤더가 필요합니다.")
     logger.info("[API] DW 스타스키마 등록 | cube=%s", body.cube_name)
     try:
         return await dw_schema_service.register_star_schema(
@@ -497,8 +521,12 @@ async def register_dw_star_schema(request: Request, body: DWStarSchemaRequest):
 
 
 @router.delete("/schema/dw-tables/{cube_name}")
-async def delete_dw_star_schema(cube_name: str, schema: str = "dw", db_name: str = "postgres"):
+async def delete_dw_star_schema(cube_name: str, schema: Optional[str] = None, db_name: Optional[str] = None):
     """DW 스타스키마 삭제"""
+    if schema is None:
+        raise HTTPException(400, "schema 파라미터가 필요합니다.")
+    if db_name is None:
+        raise HTTPException(400, "db_name 파라미터가 필요합니다.")
     logger.info("[API] DW 스타스키마 삭제 | cube=%s", cube_name)
     try:
         return await dw_schema_service.delete_star_schema(cube_name, schema, db_name)

@@ -39,12 +39,13 @@ async def register_star_schema(
         fact_table: 팩트 테이블 정보
         dimensions: 디멘전 테이블 정보 리스트
         create_embeddings: 임베딩 자동 생성 여부
-        api_key: OpenAI API 키
+        api_key: OpenAI API 키 (create_embeddings가 True일 때 필수)
         
     Returns:
         등록 결과 통계
     """
-    api_key = api_key or settings.llm.api_key
+    if create_embeddings and not api_key:
+        raise HTTPException(400, {"error": "임베딩 생성을 위해 OpenAI API 키가 필요합니다."})
     
     client = Neo4jClient()
     stats = {

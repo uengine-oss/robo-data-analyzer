@@ -68,7 +68,7 @@ async def fetch_all_glossaries() -> dict:
         await client.close()
 
 
-async def create_new_glossary(name: str, description: str = "", type_: str = "Business") -> dict:
+async def create_new_glossary(name: str, description: str, type_: str) -> dict:
     """용어집 생성
     
     Returns:
@@ -467,7 +467,7 @@ async def create_new_domain(name: str, description: str = "") -> dict:
         await client.close()
 
 
-async def create_new_owner(name: str, email: str = "", role: str = "Owner") -> dict:
+async def create_new_owner(name: str, email: str, role: str) -> dict:
     """소유자 생성"""
     query = f"""
         CREATE (__cy_o__:Owner {{name: '{escape_for_cypher(name)}', email: '{escape_for_cypher(email)}', role: '{escape_for_cypher(role)}'}})
@@ -484,7 +484,7 @@ async def create_new_owner(name: str, email: str = "", role: str = "Owner") -> d
         await client.close()
 
 
-async def create_new_tag(name: str, color: str = "#3498db") -> dict:
+async def create_new_tag(name: str, color: str) -> dict:
     """태그 생성"""
     query = f"""
         CREATE (__cy_tag__:Tag {{name: '{escape_for_cypher(name)}', color: '{escape_for_cypher(color)}'}})

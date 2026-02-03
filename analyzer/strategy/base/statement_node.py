@@ -65,6 +65,9 @@ class StatementNode:
     implements_types: Optional[str] = None # 구현 인터페이스 (implements)
     field_type: Optional[str] = None       # 필드 타입
     
+    # Framework 전용: 어노테이션 정보 (DeepAgents 런타임 해석용)
+    annotations: Optional[List[str]] = None  # ["@Entity", "@Table(name='orders')"]
+    
     # 코드 라인 정보
     lines: List[Tuple[int, str]] = field(default_factory=list)
     

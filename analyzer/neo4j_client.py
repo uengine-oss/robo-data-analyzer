@@ -126,7 +126,7 @@ class Neo4jClient:
 
     async def run_graph_query(
         self, 
-        queries: list[str],
+        queries: list[str | dict[str, Any]],
         batch_size: Optional[int] = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """분석 결과 저장용 - 배치 단위로 실행하고 각 배치 결과를 yield
@@ -136,7 +136,9 @@ class Neo4jClient:
         배치 단위로 결과를 yield하여 실시간 스트리밍 가능.
         
         Args:
-            queries: 실행할 Cypher 쿼리 리스트 (MERGE, CREATE 등)
+            queries: 실행할 Cypher 쿼리 리스트
+                - 문자열: 기존 방식 (쿼리 문자열)
+                - 딕셔너리: 파라미터 바인딩 방식 {"query": "...", "params": {...}}
             batch_size: 배치 크기 (None이면 settings에서 가져옴)
             
         Yields:
@@ -167,7 +169,14 @@ class Neo4jClient:
                     
                     for query in batch_queries:
                         # 자동 커밋 모드: 각 쿼리가 즉시 커밋됨
-                        graph = await (await session.run(query)).graph()
+                        # 쿼리가 딕셔너리인 경우 (쿼리+파라미터 바인딩)
+                        if isinstance(query, dict):
+                            query_str = query['query']
+                            params = query.get('params', {})
+                            graph = await (await session.run(query_str, params)).graph()
+                        else:
+                            # 기존 방식 (문자열만)
+                            graph = await (await session.run(query)).graph()
 
                         for node in graph.nodes:
                             self._collect_node(node, nodes)

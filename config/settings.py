@@ -69,11 +69,10 @@ class ConcurrencyConfig:
     # 파일 단위 병렬 처리 (새로 추가)
     file_concurrency: int = field(default_factory=lambda: int(os.getenv("FILE_CONCURRENCY", "5")))
     
-    # 청크/배치 단위 병렬 처리
+    # 청크/배치 단위 병렬 처리 (DBMS/Framework 공통)
     max_concurrency: int = field(default_factory=lambda: int(os.getenv("MAX_CONCURRENCY", "5")))
     
-    # Framework 분석 전용
-    framework_max_concurrency: int = field(default_factory=lambda: int(os.getenv("FRAMEWORK_MAX_CONCURRENCY", "5")))
+    # Framework 분석 세부 설정
     inheritance_concurrency: int = field(default_factory=lambda: int(os.getenv("INHERITANCE_CONCURRENCY", "5")))
     field_concurrency: int = field(default_factory=lambda: int(os.getenv("FIELD_CONCURRENCY", "5")))
     method_concurrency: int = field(default_factory=lambda: int(os.getenv("METHOD_CONCURRENCY", "5")))
@@ -84,9 +83,8 @@ class ConcurrencyConfig:
 
 @dataclass(frozen=True)
 class BatchConfig:
-    """배치 처리 설정"""
+    """배치 처리 설정 (DBMS/Framework 공통)"""
     max_batch_token: int = field(default_factory=lambda: int(os.getenv("MAX_BATCH_TOKEN", "1000")))
-    framework_max_batch_token: int = field(default_factory=lambda: int(os.getenv("FRAMEWORK_MAX_BATCH_TOKEN", "1000")))
     max_summary_chunk_token: int = field(default_factory=lambda: int(os.getenv("MAX_SUMMARY_CHUNK_TOKEN", "5000")))
     static_query_batch_size: int = field(default_factory=lambda: int(os.getenv("STATIC_QUERY_BATCH_SIZE", "40")))
     # Neo4j 쿼리 배치 사이즈 (스트리밍 단위)

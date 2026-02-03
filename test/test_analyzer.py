@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from service.source_analyze_service import AnalysisContext, run_source_analysis, discover_analyzable_files
+from service.source_analyze_service import AnalysisContext, run_source_analysis, discover_analyzable_files, get_analysis_directories
 from analyzer.neo4j_client import Neo4jClient
 
 # ==================== 프로젝트 경로 설정 ====================
@@ -39,8 +39,15 @@ os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 TEST_API_KEY = os.getenv("LLM_API_KEY")
 TEST_DB_NAME = os.getenv("TEST_DB_NAME", "test").strip() or "test"
 TEST_LOCALE = os.getenv("TEST_LOCALE", "ko").strip() or "ko"
-TEST_DBMS = os.getenv("TEST_DBMS", "postgres").strip() or "postgres"
 TEST_ANALYSIS_STRATEGY = os.getenv("TEST_ANALYSIS_STRATEGY", "dbms").strip().lower() or "dbms"
+TEST_TARGET = os.getenv("TEST_TARGET", "").strip()
+
+# target 기본값 설정 (strategy에 따라)
+if not TEST_TARGET:
+    if TEST_ANALYSIS_STRATEGY == "dbms":
+        TEST_TARGET = "postgres"  # DBMS 기본값
+    else:  # framework
+        TEST_TARGET = "java"  # Framework 기본값
 
 IS_FRAMEWORK = TEST_ANALYSIS_STRATEGY == "framework"
 STRATEGY_LABEL = "FRAMEWORK" if IS_FRAMEWORK else "DBMS"
@@ -86,7 +93,8 @@ async def test_full_analysis_pipeline(real_neo4j: Neo4jClient):
     
     # 소스 파일 탐색
     try:
-        source_files = discover_analyzable_files(strategy=TEST_ANALYSIS_STRATEGY)
+        dirs = get_analysis_directories(strategy=TEST_ANALYSIS_STRATEGY)
+        source_files = discover_analyzable_files(strategy=TEST_ANALYSIS_STRATEGY, target=TEST_TARGET, dirs=dirs)
     except Exception as e:
         pytest.skip(f"소스 파일 탐색 실패: {e}")
     
@@ -102,7 +110,7 @@ async def test_full_analysis_pipeline(real_neo4j: Neo4jClient):
         api_key=TEST_API_KEY,
         locale=TEST_LOCALE,
         strategy=TEST_ANALYSIS_STRATEGY,
-        target=TEST_DBMS if TEST_ANALYSIS_STRATEGY == "dbms" else "java",
+        target=TEST_TARGET,
     ):
         event_count += 1
     

@@ -25,12 +25,23 @@ from util.file_type_detector import detect_batch_file_types
 # 상수
 # =============================================================================
 
-# 전략별 소스 파일 확장자
+# 전략별 소스 파일 확장자 (우선순위 순서)
 STRATEGY_EXTENSIONS = {
-    "framework": {".java", ".kt", ".scala"},
-    "dbms": {".sql", ".pls", ".pck", ".pkb", ".pks", ".trg", ".fnc", ".prc"},
+    "framework": [".java", ".kt", ".scala", ".py"],  # 리스트로 변경 (순서 보장)
+    "dbms": [".sql", ".pls", ".pck", ".pkb", ".pks", ".trg", ".fnc", ".prc"],
 }
-DEFAULT_EXTENSIONS = {".java", ".sql"}
+DEFAULT_EXTENSIONS = [".java", ".sql"]
+
+# target → 확장자 매핑
+TARGET_TO_EXTENSION = {
+    "java": ".java",
+    "kotlin": ".kt",
+    "scala": ".scala",
+    "python": ".py",
+    "oracle": ".sql",
+    "postgres": ".sql",
+    "mysql": ".sql",
+}
 
 
 # =============================================================================
@@ -53,15 +64,17 @@ def detect_source_file_types(files: list[tuple[str, str]]) -> dict:
 # 디렉토리 경로 관리
 # =============================================================================
 
-def get_analysis_directories(strategy: str = "framework") -> dict[str, str]:
+def get_analysis_directories(strategy: str) -> dict[str, str]:
     """분석에 필요한 디렉토리 경로 반환
     
     Args:
-        strategy: 분석 전략 (framework, dbms)
+        strategy: 분석 전략 (framework, dbms, 필수)
         
     Returns:
         {"ddl": path, "src": path, "analysis": path}
     """
+    if not strategy:
+        raise ValueError("strategy는 필수 파라미터입니다.")
     return {
         "ddl": os.path.join(settings.path.data_dir, "ddl"),
         "src": os.path.join(settings.path.data_dir, "source"),
@@ -109,8 +122,9 @@ def check_ddl_files_exist(dirs: dict[str, str]) -> bool:
 # =============================================================================
 
 def discover_analyzable_files(
-    strategy: str = "framework",
-    dirs: dict[str, str] = None
+    strategy: str,
+    target: str,
+    dirs: dict[str, str]
 ) -> list[tuple[str, str]]:
     """analysis/ 디렉토리에서 분석 가능한 JSON 파일 목록 탐색
     
@@ -119,15 +133,20 @@ def discover_analyzable_files(
     DDL만 있는 경우(analysis 디렉토리가 없는 경우) 빈 리스트 반환.
     
     Args:
-        strategy: 분석 전략 (framework, dbms)
-        dirs: 디렉토리 경로 딕셔너리 (없으면 자동 생성)
+        strategy: 분석 전략 (framework, dbms, 필수)
+        target: 타겟 언어 (java, kotlin, scala, python, oracle, postgres 등, 필수)
+        dirs: 디렉토리 경로 딕셔너리 (필수)
         
     Returns:
         [(directory, file_name), ...] 형태의 튜플 리스트
         file_name은 원본 소스 파일명 (예: procedure.sql)으로 반환
     """
-    if dirs is None:
-        dirs = get_analysis_directories(strategy)
+    if not strategy:
+        raise ValueError("strategy는 필수 파라미터입니다.")
+    if not target:
+        raise ValueError("target은 필수 파라미터입니다.")
+    if not dirs:
+        raise ValueError("dirs는 필수 파라미터입니다.")
     
     analysis_dir = dirs.get("analysis", "")
     
@@ -136,7 +155,14 @@ def discover_analyzable_files(
         logging.info("analysis 디렉토리가 없습니다 (DDL만 있는 경우일 수 있음): %s", analysis_dir)
         return []
     
-    extensions = STRATEGY_EXTENSIONS.get(strategy, DEFAULT_EXTENSIONS)
+    # target에 맞는 확장자 사용 (없으면 strategy의 첫 번째 확장자 사용)
+    target_lower = (target or "java").lower()
+    target_ext = TARGET_TO_EXTENSION.get(target_lower)
+    
+    if not target_ext:
+        # target 매핑에 없으면 strategy의 첫 번째 확장자 사용
+        target_ext = extensions[0] if extensions else ".sql"
+    
     result = []
     
     # analysis 디렉토리를 직접 순회하여 JSON 파일 탐색
@@ -151,15 +177,13 @@ def discover_analyzable_files(
             # JSON 파일명에서 원본 소스 파일명 추론
             base_name = os.path.splitext(json_file)[0]
             
-            # 원본 확장자 확인 (strategy에 따른 확장자 중 하나)
-            # 기본적으로 첫 번째 확장자 사용 (dbms: .sql, framework: .java)
-            default_ext = list(extensions)[0] if extensions else ".sql"
-            source_file_name = f"{base_name}{default_ext}"
+            # target에 맞는 확장자 사용
+            source_file_name = f"{base_name}{target_ext}"
             
             result.append((directory, source_file_name))
     
     result.sort()
-    logging.info("분석 가능 소스 파일: %d개", len(result))
+    logging.info("분석 가능 소스 파일: %d개 (target=%s, extension=%s)", len(result), target, target_ext)
     return result
 
 
@@ -237,16 +261,26 @@ class AnalysisContext:
     def __init__(
         self,
         api_key: str,
-        locale: str = "ko",
-        strategy: str = "framework",
-        target: str = "java",
-        name_case: str = "original",
+        locale: str,
+        strategy: str,
+        target: str,
+        name_case: str,
     ):
+        if not api_key:
+            raise ValueError("api_key는 필수 파라미터입니다.")
+        if not locale:
+            raise ValueError("locale은 필수 파라미터입니다.")
+        if not strategy:
+            raise ValueError("strategy는 필수 파라미터입니다.")
+        if not target:
+            raise ValueError("target은 필수 파라미터입니다.")
+        if not name_case:
+            raise ValueError("name_case는 필수 파라미터입니다.")
         self.api_key = api_key
         self.locale = locale
-        self.strategy = (strategy or "framework").lower()
-        self.target = (target or "java").lower()
-        self.name_case = (name_case or "original").lower()
+        self.strategy = strategy.lower()
+        self.target = target.lower()
+        self.name_case = name_case.lower()
         self.dirs = get_analysis_directories(strategy)
     
     def get_directory_dirs(self, directory: str) -> dict[str, str]:

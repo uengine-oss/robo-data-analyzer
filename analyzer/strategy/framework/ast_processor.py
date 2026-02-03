@@ -40,9 +40,9 @@ VARIABLE_TYPES = frozenset(["VARIABLE"])
 # 클래스 스켈레톤 생성에 포함할 노드 타입
 SKELETON_KEEP_TYPES = frozenset(["FIELD", "CONSTRUCTOR", "METHOD", "NEW_INSTANCE", "METHOD_CALL"])
 
-# 설정에서 가져오는 상수
-MAX_BATCH_TOKEN = settings.batch.framework_max_batch_token
-MAX_CONCURRENCY = settings.concurrency.framework_max_concurrency
+# 설정에서 가져오는 상수 (DBMS와 공통)
+MAX_BATCH_TOKEN = settings.batch.max_batch_token
+MAX_CONCURRENCY = settings.concurrency.max_concurrency
 STATIC_QUERY_BATCH_SIZE = settings.batch.static_query_batch_size
 MAX_SUMMARY_CHUNK_TOKEN = settings.batch.max_summary_chunk_token
 MAX_CONTEXT_TOKEN = settings.batch.max_context_token
@@ -656,7 +656,7 @@ class FrameworkAstProcessor(BaseAstProcessor):
         return queries
 
     def _build_relationship_queries(self) -> List[str]:
-        """정적 관계 쿼리 (HAS_METHOD, HAS_FIELD, CONTAINS, PARENT_OF)를 생성합니다."""
+        """정적 관계 쿼리 (HAS_METHOD, HAS_FIELD, CONTAINS, PARENT_OF, NEXT)를 생성합니다."""
         queries: List[str] = []
         
         for node in self._nodes or []:
@@ -678,7 +678,51 @@ class FrameworkAstProcessor(BaseAstProcessor):
             else:
                 queries.append(self._build_parent_of_query(parent, node))
         
+        # DeepAgents 런타임 해석용: NEXT 관계 (형제 노드 간 순차 실행 흐름)
+        queries.extend(self._build_next_relationships())
+        
         return queries
+    
+    def _build_next_relationships(self) -> List[str]:
+        """형제 노드 간 NEXT 관계 쿼리를 생성합니다.
+        
+        같은 부모를 가진 노드들 사이에 startLine 순서대로 NEXT 관계를 생성합니다.
+        실행 순서 추적에 사용됩니다.
+        """
+        queries: List[str] = []
+        
+        # 부모별로 자식 그룹화
+        parent_children_map: Dict[int, List[StatementNode]] = {}
+        for node in self._nodes or []:
+            if node.parent:
+                parent_id = node.parent.node_id
+                if parent_id not in parent_children_map:
+                    parent_children_map[parent_id] = []
+                parent_children_map[parent_id].append(node)
+        
+        # 각 그룹에서 순차 관계 생성
+        for parent_id, children in parent_children_map.items():
+            if len(children) < 2:
+                continue
+            
+            # startLine 기준 정렬
+            sorted_children = sorted(children, key=lambda n: n.start_line)
+            
+            for i in range(len(sorted_children) - 1):
+                current = sorted_children[i]
+                next_node = sorted_children[i + 1]
+                queries.append(self._build_next_query(current, next_node))
+        
+        return queries
+    
+    def _build_next_query(self, current: StatementNode, next_node: StatementNode) -> str:
+        """NEXT 관계 쿼리 (순차 실행 흐름)"""
+        return (
+            f"MATCH (__cy_curr__:{current.node_type} {{startLine: {current.start_line}, {self.node_base_props}}})\n"
+            f"MATCH (__cy_next__:{next_node.node_type} {{startLine: {next_node.start_line}, {self.node_base_props}}})\n"
+            f"MERGE (__cy_curr__)-[__cy_r__:NEXT]->(__cy_next__)\n"
+            f"RETURN __cy_r__"
+        )
     
     def _build_has_method_query(self, parent: StatementNode, child: StatementNode) -> str:
         """HAS_METHOD 관계 쿼리"""
@@ -1047,6 +1091,42 @@ class FrameworkAstProcessor(BaseAstProcessor):
             variables = analysis.get("variables", []) or []
             if variables:
                 self._accumulate_variable_roles(node, variables)
+            
+            # DeepAgents 런타임 해석용: 후보 마킹
+            # LLM이 직접 판단한 react_candidate, external_hints, search_tokens, missing_bindings, confidence를 저장
+            react_candidate = analysis.get("react_candidate", False)
+            external_hints = analysis.get("external_hints") or []  # 이미 key=value 형식
+            search_tokens = analysis.get("search_tokens") or []  # 비즈니스 단어 토큰
+            missing_bindings = analysis.get("missing_bindings") or []
+            confidence = analysis.get("confidence", 0.0)
+            
+            if react_candidate:
+                # external_hints가 빈 배열이면 로그 남기고 마킹하지 않음
+                if not external_hints:
+                    log_process(
+                        "ANALYZE", 
+                        "CANDIDATE", 
+                        f"⚠️ react_candidate=true인데 external_hints가 비어있음 (라인 {node.start_line}-{node.end_line}, 노드: {node.node_type}). 프롬프트를 따르지 않음. 마킹 스킵."
+                    )
+                else:
+                    # 파라미터 바인딩 방식 사용 (특수문자 안전 처리)
+                    queries.append({
+                        'query': (
+                    f"MATCH (__cy_n__:{node.node_type} {{startLine: {node.start_line}, {self.node_base_props}}})\n"
+                    f"SET __cy_n__.resolution_candidate = true,\n"
+                            f"    __cy_n__.external_hints = $external_hints,\n"
+                            f"    __cy_n__.search_tokens = $search_tokens,\n"
+                            f"    __cy_n__.missing_bindings = $missing_bindings,\n"
+                            f"    __cy_n__.confidence = $confidence\n"
+                    f"RETURN __cy_n__"
+                        ),
+                        'params': {
+                            'external_hints': external_hints[:3],  # 최대 3개
+                            'search_tokens': search_tokens[:10],  # 최대 10개
+                            'missing_bindings': missing_bindings[:2],  # 최대 2개
+                            'confidence': confidence
+                        }
+                    })
         
         return queries
     
@@ -1258,18 +1338,29 @@ class FrameworkAstProcessor(BaseAstProcessor):
                     
                     for ac_idx, ac in enumerate(us.get('acceptance_criteria', []) or [], 1):
                         ac_id = ac.get('id', f"AC-{us_idx}-{ac_idx}")
-                        ac_title = escape_for_cypher(ac.get('title', ''))
-                        ac_given = escape_for_cypher(ac.get('given', ''))
-                        ac_when = escape_for_cypher(ac.get('when', ''))
-                        ac_then = escape_for_cypher(ac.get('then', ''))
+                        ac_title = escape_for_cypher(ac.get('title', ''))  # title은 짧아서 기존 방식 유지
+                        # given, when, then은 파라미터 바인딩 사용 (특수문자 포함 가능)
+                        ac_given = ac.get('given', '')
+                        ac_when = ac.get('when', '')
+                        ac_then = ac.get('then', '')
                         
-                        queries.append(
+                        # 파라미터 바인딩 쿼리 생성
+                        query_with_params = {
+                            'query': (
                             f"MATCH (__cy_us__:UserStory {{id: '{escape_for_cypher(us_id)}', class_name: '{class_name_escaped}', {self.node_base_props}}})\n"
                             f"MERGE (__cy_ac__:AcceptanceCriteria {{id: '{escape_for_cypher(ac_id)}', user_story_id: '{escape_for_cypher(us_id)}', {self.node_base_props}}})\n"
-                            f"SET __cy_ac__.title = '{ac_title}', __cy_ac__.given = '{ac_given}', __cy_ac__.when = '{ac_when}', __cy_ac__.then = '{ac_then}'\n"
+                                f"SET __cy_ac__.title = $ac_title, __cy_ac__.given = $ac_given, __cy_ac__.when = $ac_when, __cy_ac__.then = $ac_then\n"
                             f"MERGE (__cy_us__)-[:HAS_AC]->(__cy_ac__)\n"
                             f"RETURN __cy_ac__"
-                        )
+                            ),
+                            'params': {
+                                'ac_title': ac_title,
+                                'ac_given': ac_given,
+                                'ac_when': ac_when,
+                                'ac_then': ac_then
+                            }
+                        }
+                        queries.append(query_with_params)
             
             # 3. 변수 역할 요약 (신규)
             var_queries = await self._summarize_unit_variables(class_key)

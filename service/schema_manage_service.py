@@ -30,21 +30,19 @@ logger = logging.getLogger(__name__)
 
 async def search_tables_by_semantic(
     query: str,
-    limit: int = 10,
-    api_key: str = None
+    limit: int,
+    api_key: str
 ) -> list:
     """시멘틱 검색: 테이블 설명의 의미적 유사도 기반 검색
     
     Args:
         query: 검색 쿼리
         limit: 결과 제한
-        api_key: OpenAI API 키
+        api_key: OpenAI API 키 (필수)
         
     Returns:
         [{"name": str, "schema": str, "description": str, "similarity": float}, ...]
     """
-    api_key = api_key or settings.llm.api_key
-    
     if not api_key:
         raise HTTPException(400, {"error": "OpenAI API 키가 필요합니다."})
     
@@ -503,11 +501,12 @@ async def vectorize_schema_tables(
 ) -> dict:
     """전체 스키마 벡터화
     
+    Args:
+        api_key: OpenAI API 키 (필수)
+    
     Returns:
         벡터화 결과 통계
     """
-    api_key = api_key or settings.llm.api_key
-    
     if not api_key:
         raise HTTPException(400, {"error": "OpenAI API 키가 필요합니다."})
     

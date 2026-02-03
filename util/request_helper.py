@@ -9,7 +9,10 @@ from config.settings import settings
 
 
 def extract_api_key(request: Request, missing_status: int = 401) -> str:
-    """API 키 추출 (헤더 → 환경 변수 순서로 폴백)
+    """API 키 추출 (헤더에서만 추출, 환경변수 폴백 없음)
+    
+    주의: 이 함수는 환경변수로 폴백하지 않습니다.
+    헤더에 API 키가 없으면 HTTPException을 발생시킵니다.
     
     Args:
         request: FastAPI Request 객체
@@ -21,20 +24,16 @@ def extract_api_key(request: Request, missing_status: int = 401) -> str:
     Raises:
         HTTPException: API 키가 없을 때
     """
-    # 1. 헤더에서 API 키 추출
+    # 헤더에서 API 키 추출
     api_key = (
         request.headers.get("OpenAI-Api-Key") or
         request.headers.get("Anthropic-Api-Key")
     )
     
-    # 2. 헤더에 없으면 환경 변수에서 폴백
-    if not api_key:
-        api_key = settings.llm.api_key
-    
     if not api_key:
         raise HTTPException(
             missing_status, 
-            "요청 헤더 누락: OpenAI-Api-Key 또는 Anthropic-Api-Key (환경변수 LLM_API_KEY도 설정되지 않음)"
+            "요청 헤더 누락: OpenAI-Api-Key 또는 Anthropic-Api-Key 헤더가 필요합니다."
         )
     return api_key
 
