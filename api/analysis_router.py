@@ -251,6 +251,7 @@ async def list_schema_tables(search: Optional[str] = None, schema: Optional[str]
             SchemaTableInfo(
                 name=r["name"],
                 table_schema=r["schema"] or "",
+                datasource=r.get("datasource") or "",
                 description=r["description"] or "",
                 description_source=r.get("description_source") or "",
                 analyzed_description=r.get("analyzed_description") or "",

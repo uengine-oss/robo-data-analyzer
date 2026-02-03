@@ -164,11 +164,12 @@ async def fetch_schema_tables(
             WITH __cy_t__, count(__cy_c__) AS col_count
             RETURN __cy_t__.name AS name,
                    __cy_t__.schema AS schema,
+                   __cy_t__.datasource AS datasource,
                    __cy_t__.description AS description,
                    __cy_t__.description_source AS description_source,
                    __cy_t__.analyzed_description AS analyzed_description,
                    col_count AS column_count
-            ORDER BY __cy_t__.name
+            ORDER BY __cy_t__.datasource, __cy_t__.schema, __cy_t__.name
             LIMIT {limit}
         """
         
@@ -227,13 +228,21 @@ async def fetch_table_columns(
 async def fetch_schema_relationships() -> list:
     """테이블 관계 목록 조회
     
+    모든 관계 타입을 조회합니다:
+    - FK_TO_TABLE: 기본 FK 관계
+    - ONE_TO_ONE: 1:1 관계
+    - ONE_TO_MANY: 1:N 관계
+    - MANY_TO_ONE: N:1 관계
+    - MANY_TO_MANY: N:N 관계
+    
     Returns:
         관계 정보 리스트
     """
     client = Neo4jClient()
     try:
         query = """
-            MATCH (__cy_t1__:Table)-[__cy_r__:FK_TO_TABLE]->(__cy_t2__:Table)
+            MATCH (__cy_t1__:Table)-[__cy_r__]->(__cy_t2__:Table)
+            WHERE type(__cy_r__) IN ['FK_TO_TABLE', 'ONE_TO_ONE', 'ONE_TO_MANY', 'MANY_TO_ONE', 'MANY_TO_MANY']
             RETURN __cy_t1__.name AS from_table,
                    __cy_t1__.schema AS from_schema,
                    __cy_r__.sourceColumn AS from_column,
@@ -297,14 +306,17 @@ async def delete_schema_relationship(
 ) -> dict:
     """테이블 관계 삭제
     
+    모든 관계 타입을 삭제합니다 (FK_TO_TABLE, ONE_TO_ONE, ONE_TO_MANY, MANY_TO_ONE, MANY_TO_MANY)
+    
     Returns:
         삭제 결과
     """
     client = Neo4jClient()
     try:
         query = f"""
-            MATCH (__cy_t1__:Table {{name: '{escape_for_cypher(from_table)}'}})-[__cy_r__:FK_TO_TABLE]->(__cy_t2__:Table {{name: '{escape_for_cypher(to_table)}'}})
-            WHERE __cy_r__.sourceColumn = '{escape_for_cypher(from_column)}' 
+            MATCH (__cy_t1__:Table {{name: '{escape_for_cypher(from_table)}'}})-[__cy_r__]->(__cy_t2__:Table {{name: '{escape_for_cypher(to_table)}'}})
+            WHERE type(__cy_r__) IN ['FK_TO_TABLE', 'ONE_TO_ONE', 'ONE_TO_MANY', 'MANY_TO_ONE', 'MANY_TO_MANY']
+              AND __cy_r__.sourceColumn = '{escape_for_cypher(from_column)}' 
               AND __cy_r__.targetColumn = '{escape_for_cypher(to_column)}'
             DELETE __cy_r__
             RETURN count(*) AS deleted
