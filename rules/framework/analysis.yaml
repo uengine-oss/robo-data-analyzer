@@ -1,6 +1,6 @@
 name: "analyze_java_code"
-description: "Java 코드 범위별 분석 - 요약 및 변수 역할 추출"
-version: "4.0"
+description: "Java 코드 범위별 분석 - 클래스 다이어그램 및 Neo4j 그래프 생성용"
+version: "3.0"
 
 input_schema:
   required:
@@ -13,7 +13,7 @@ input_schema:
 prompt: |
   [ROLE]
   당신은 Java 코드 분석 전문가입니다.
-  주어진 Java 코드를 체계적으로 분석하여 코드 요약과 변수 역할 정보를 추출합니다.
+  주어진 Java 코드를 체계적으로 분석하여 클래스 다이어그램 생성에 필요한 구조화된 정보를 추출해야 합니다.
   
   
   [LANGUAGE_SETTING]
@@ -46,10 +46,10 @@ prompt: |
   - 각 범위는 독립적으로 분석되어야 하며, 누락 또는 초과된 분석 결과는 허용되지 않음
   - 강제 검증 규칙:
      - analysis 각 요소는 startLine/endLine을 반드시 포함할 것 (정수)
-     - 값이 없으면 해당 필드는 다음 기본값을 사용: variables=[]
+     - 값이 없으면 해당 필드는 다음 기본값을 사용: variables=[], localDependencies=[], calls=[]
      - null 사용 절대 금지. 빈값은 빈 배열([]) 또는 빈 객체({})로만 표현
      - 코드펜스(```), 주석(//, /* */), 트레일링 콤마 허용 금지. 순수 JSON만 출력
-     - **⚠️ CRITICAL: 트레일링 콤마(trailing comma) 절대 금지** - 배열이나 객체의 마지막 요소 뒤에 콤마(,)를 붙이지 마세요. 예: `"variables": []` (O), `"variables": [],` (X)
+     - **⚠️ CRITICAL: 트레일링 콤마(trailing comma) 절대 금지** - 배열이나 객체의 마지막 요소 뒤에 콤마(,)를 붙이지 마세요. 예: `"calls": []` (O), `"calls": [],` (X)
   
   
   [ANALYSIS_REQUIREMENTS]
@@ -92,154 +92,61 @@ prompt: |
   
   
   [SECTION_2_VARIABLE_IDENTIFICATION]
-  변수 사용 식별 및 역할 분석:
+  변수/필드 사용 식별:
   
   식별 규칙:
   - 각 범위 내에서 실제로 사용되거나 참조된 변수/필드만 포함
   - 범위 중첩 시 해당 범위에서 직접 사용된 변수만 독립적으로 식별
   
-  역할 분석:
-  - 각 변수가 해당 코드 범위에서 어떤 목적으로 사용되는지 분석
-  - 예시:
-    - count: "주문 수량 누적"
-    - total: "총 금액 계산"
-    - orderList: "처리할 주문 목록 순회"
-    - isValid: "유효성 검증 결과 저장"
   
-  역할 작성 규칙:
-  - 한 문장 이내로 간결하게 작성
-  - 해당 범위에서의 구체적인 용도 명시
-  - 변수명만 보고 유추 가능한 내용이 아닌, 코드에서 실제 사용되는 맥락 반영
+  [SECTION_3_LOCAL_DEPENDENCIES]
+  로컬 변수 및 파라미터 타입 추출 (의존 관계용):
   
+  식별 목적:
+  - 메서드 내에서 로컬 변수로 선언/생성된 사용자 정의 클래스 타입 추출
+  - 메서드 파라미터로 사용되는 사용자 정의 클래스 타입 추출
+  - 클래스 다이어그램의 "의존(Dependency)" 관계 생성에 사용
   
-  [SECTION_3_RUNTIME_CANDIDATE]
-  DeepAgents 런타임 해석 후보 탐지:
+  식별 대상:
+  - 메서드 파라미터 타입: `public void attack(Enemy enemy)` → "Enemy"
+  - new 연산자로 생성하는 객체의 타입: `Customer c = new Customer()` → "Customer"
+  - 메서드 반환값을 받는 변수의 타입: `Order order = orderService.findById()` → "Order"
+  - 캐스팅된 타입: `(PaymentService) service` → "PaymentService"
+  - 제네릭 내부 타입: `List<Product> products` → "Product"
   
-  코드에서 "테이블/엔티티를 코드만 보고 확정할 수 없는" 동적 참조를 탐지합니다.
-  이 정보는 DeepAgents가 외부 설정 파일(XML, YAML)을 검색해 실제 테이블을 확정하는 데 사용됩니다.
+  제외 대상:
+  - primitive 타입, wrapper 타입, String, Object
+  - 컬렉션 자체 (List, Map, Set) - 단, 제네릭 내부 타입은 추출
+  - Java 기본 클래스 (Exception, Date, Optional 등)
   
-  ★ 핵심 원칙: LLM은 "확정"하지 않음. "후보 표시 + 찾을 힌트"만 제공.
-  
-  
-  후보 판정 기준 (react_candidate = true):
-  
-  1. 테이블/엔티티 정의가 외부 파일에 있는 경우:
-     - OFBiz: delegator.findByAnd("EntityName", ...) → entity 정의는 entitydef/*.xml에 있음
-     - MyBatis: sqlSession.selectOne("namespace.queryId", ...) → SQL은 mapper/*.xml에 있음
-     - Spring: @ConfigurationProperties 또는 @Value → 설정은 application.yml에 있음
-  
-  2. 테이블명이 코드에 직접 없고 간접 참조인 경우:
-     - 변수를 통한 동적 테이블명: tableName 변수로 쿼리
-     - 설정 기반 테이블명: properties에서 읽어온 테이블명
+  sourceMember 결정:
+  - 메서드 안: 메서드명 (예: "processOrder", "attack")
+  - 생성자 안: 생성자명/클래스명 (예: "OrderService")
   
   
-  후보가 아닌 경우 (react_candidate = false):
+  [SECTION_4_METHOD_CALLS]
+  ★ 메서드 호출 추출 (CALLS 관계용):
   
-  - SQL/테이블이 코드에 직접 보이는 경우: "SELECT * FROM ORDERS"
-  - JPA @Entity 클래스가 같은 코드베이스에 있는 경우 (그래프 탐색으로 해결 가능)
+  각 코드 범위에서 다른 객체/클래스의 메서드를 호출하는 부분을 추출합니다.
   
+  추출 형식:
+  - "target.methodName" 형태로 추출
+  - target: 호출 대상 (변수명 또는 클래스명)
+  - methodName: 호출되는 메서드명
   
-  external_hints 작성 규칙 (최대 3개, key=value 형식):
+  추출 예시:
+  - this.repository.save(entity) → "repository.save"
+  - orderService.findAll() → "orderService.findAll"
+  - UserService.getInstance() → "UserService.getInstance"
+  - items.stream().filter() → "items.stream" (체이닝 첫 호출만)
   
-  ⚠️ 중요: react_candidate = true인 경우 external_hints는 반드시 제공해야 합니다.
-  힌트를 추출할 수 없는 경우에도 최소한의 힌트를 생성하세요.
+  제외 대상 (calls에 포함하지 않음):
+  - 기본 타입 메서드: toString(), hashCode(), equals()
+  - 컬렉션 내장 메서드: list.add(), map.get(), set.contains()
+  - System 호출: System.out.println()
+  - 로깅: log.info(), logger.debug()
   
-  허용되는 힌트 타입 (프레임워크 중립):
-  - entity=EntityName       (엔티티 이름 - OFBiz 등)
-  - service=serviceName     (서비스 이름)
-  - queryId=namespace.id    (쿼리 ID - MyBatis mapper ID 등)
-  - namespace=com.example   (네임스페이스)
-  - configKey=config.key    (설정 파일 키)
-  - resource=path/file.xml  (리소스 파일 경로)
-  - symbol=identifierName   (일반 식별자 - 변수명, 메서드명 등)
-  - dynamic=variableName    (동적으로 결정되는 변수 - 런타임 값 필요)
-  - search=keyword          (그래프 탐색/파일 검색이 필요한 키워드)
-  - db_kind=jpa|mybatis|jdbc|ofbiz|unknown (DB 접근 기술 추정 - 확정 아님)
-  
-  
-  search_tokens 작성 규칙 (비즈니스 단어 쪼개기):
-  
-  ⚠️ 중요: react_candidate = true인 경우 search_tokens는 반드시 제공해야 합니다.
-  external_hints의 값들에서 비즈니스 의미가 있는 단어를 추출합니다.
-  
-  추출 규칙:
-  1. CamelCase 분리: getOrdersByStatus → ["get", "orders", "by", "status"]
-  2. 점(.) 분리: orderService.createOrder → ["order", "service", "create", "order"]
-  3. 언더스코어(_) 분리: ORDER_HEADER → ["order", "header"]
-  4. 숫자/특수문자 제거 후 의미있는 단어만 포함
-  5. 2글자 이상인 단어만 포함
-  6. 중복 제거
-  
-  예시:
-  - external_hints: ["service=orderService.getOrdersByStatus"]
-    → search_tokens: ["order", "service", "orders", "status"]
-  - external_hints: ["entity=OrderHeader", "entity=OrderItem"]
-    → search_tokens: ["order", "header", "item"]
-  - external_hints: ["queryId=com.example.order.mapper.OrderMapper.selectOrderById"]
-    → search_tokens: ["order", "mapper", "select", "id"]
-  
-  힌트 생성 전략:
-  
-  1. 명확한 리터럴이 있는 경우:
-  - delegator.findByAnd("Product", ...) → ["entity=Product"]
-  - dispatcher.runSync("createOrder", ...) → ["service=createOrder"]
-     - sqlSession.selectList("OrderMapper.selectPaidOrders", ...) 
-       → ["queryId=OrderMapper.selectPaidOrders", "namespace=OrderMapper"]
-  
-  2. 동적 결정되는 경우 (변수값을 알 수 없음):
-     - String tableName = getTableName(); sqlSession.selectList("SELECT * FROM " + tableName);
-       → ["symbol=tableName", "dynamic=tableName", "search=tableName"]
-     - String methodName = "find" + entityType; method.invoke(dao, ...);
-       → ["symbol=methodName", "dynamic=entityType", "search=methodName"]
-     - <T> T findById(Class<T> entityClass, String id);
-       → ["symbol=entityClass", "search=entityClass"]
-  
-  3. missing_bindings와 연계:
-     - missing_bindings에 있는 식별자를 external_hints에 symbol 또는 search로 포함
-     - 예: missing_bindings=["delegator", "tableName"]
-       → external_hints=["symbol=delegator", "symbol=tableName", "search=tableName"]
-  
-  4. 힌트 추출이 어려운 경우:
-     - 코드에 나타난 변수명/메서드명을 symbol로 제공
-     - 동적 결정되는 경우 dynamic 또는 search 추가
-     - 최소한 1개 이상의 힌트는 반드시 제공
-  
-  
-  missing_bindings 작성 규칙 (최대 2개):
-  
-  ⚠️ 중요: react_candidate = true인 경우 missing_bindings는 반드시 제공해야 합니다.
-  코드에서 사용되는 식별자 중 정의/선언을 찾을 수 없는 것이 있으면 반드시 포함하세요.
-  
-  코드에서 참조하지만 바인딩/선언을 찾을 수 없는 식별자:
-  - 외부에서 주입된 것으로 보이는 변수 (예: delegator, dispatcher, sqlSession)
-  - 정의를 찾을 수 없는 필드 (예: this.productStoreName)
-  - 상위 스코프에서 와야 하지만 보이지 않는 객체
-  - 메서드 파라미터나 지역 변수가 아닌데 사용되는 식별자
-  
-  분석 방법:
-  1. 코드에서 사용되는 모든 식별자를 확인
-  2. 각 식별자의 선언/정의 위치를 찾기
-  3. 현재 파일/클래스/메서드 스코프에서 찾을 수 없으면 missing_bindings에 추가
-  
-  예시:
-  - delegator 객체가 사용되지만 선언이 보이지 않음 → ["delegator"]
-  - productStoreName 변수가 어디서 오는지 불명 → ["productStoreName"]
-  - sqlSession.selectList(...)에서 sqlSession이 선언되지 않음 → ["sqlSession"]
-  - dispatcher.runSync(...)에서 dispatcher가 선언되지 않음 → ["dispatcher"]
-  
-  ⚠️ 주의: react_candidate = true인데 missing_bindings가 []인 경우는 거의 없어야 합니다.
-  코드에서 사용되는 모든 식별자의 출처를 확인하고, 찾을 수 없으면 반드시 포함하세요.
-  
-  
-  confidence 작성 규칙 (0.0 ~ 1.0):
-  
-  ⚠️ 중요: react_candidate = true인 경우 confidence는 0.0이면 안 됩니다.
-  최소 0.4 이상의 값을 제공해야 합니다.
-  
-  - 1.0: 확실히 외부 정의 필요 (명확한 패턴 매칭)
-  - 0.7~0.9: 높은 확률로 외부 정의 필요
-  - 0.4~0.6: 불확실, 추가 분석 필요
-  - 0.0~0.3: 아마 외부 정의 불필요 (react_candidate=true면 사용 금지)
+  ⚠️ 같은 범위 내에서 동일 호출이 여러 번 있으면 한 번만 포함
   
   
   [OUTPUT_FORMAT]
@@ -252,96 +159,22 @@ prompt: |
         "startLine": 범위_시작_라인_번호,
         "endLine": 범위_종료_라인_번호,
         "summary": "3~5문장의 상세한 코드 동작 요약",
-        "variables": [
-          {"name": "변수명1", "role": "해당 범위에서의 역할"},
-          {"name": "변수명2", "role": "해당 범위에서의 역할"}
+        "variables": ["변수명1", "변수명2"],
+        "localDependencies": [
+          {"type": "타입명", "sourceMember": "발생위치"}
         ],
-        "react_candidate": true_또는_false,
-        "external_hints": ["entity=EntityName", "service=serviceName"],
-        "search_tokens": ["order", "header", "entity"],
-        "missing_bindings": ["바인딩_누락_식별자"],
-        "confidence": 0.0에서_1.0_사이_실수
-      }
-    ]
-  }
-  
-  예시 1 - 확정 가능한 노드 (코드에 SQL이 직접 있음):
-  {
-    "analysis": [
-      {
-        "startLine": 10,
-        "endLine": 25,
-        "summary": "ORDERS 테이블에서 주문 목록을 조회하는 메서드입니다.",
-        "variables": [{"name": "orders", "role": "조회된 주문 목록 저장"}],
-        "react_candidate": false,
-        "external_hints": [],
-        "missing_bindings": [],
-        "confidence": 0.0
-      }
-    ]
-  }
-  
-  예시 2 - 확정 불가 노드 (외부 정의 필요):
-  {
-    "analysis": [
-      {
-        "startLine": 30,
-        "endLine": 50,
-        "summary": "Product 엔티티를 조회하여 상품 정보를 반환합니다. 테이블 정의는 외부 entitydef에 있습니다.",
-        "variables": [{"name": "product", "role": "조회된 상품 엔티티"}],
-        "react_candidate": true,
-        "external_hints": ["entity=Product"],
-        "search_tokens": ["product"],
-        "missing_bindings": ["delegator"],
-        "confidence": 0.85
-      }
-    ]
-  }
-  
-  예시 3 - 동적 테이블명 (힌트 추출 어려움):
-  {
-    "analysis": [
-      {
-        "startLine": 50,
-        "endLine": 55,
-        "summary": "동적 테이블명을 사용하여 쿼리를 실행합니다. tableName 변수는 런타임에 결정되므로 코드만으로는 테이블명을 확정할 수 없습니다. 내부 그래프 탐색 및 설정 파일 검색이 필요합니다.",
-        "variables": [{"name": "tableName", "role": "런타임에 결정되는 테이블명"}],
-        "react_candidate": true,
-        "external_hints": ["symbol=tableName", "dynamic=tableName", "search=tableName"],
-        "search_tokens": ["table", "name"],
-        "missing_bindings": ["tableName"],
-        "confidence": 0.6
-      }
-    ]
-  }
-  
-  예시 4 - 서비스 호출 (비즈니스 단어 쪼개기):
-  {
-    "analysis": [
-      {
-        "startLine": 60,
-        "endLine": 80,
-        "summary": "orderService의 getOrdersByStatus 메서드를 호출하여 주문 상태별 목록을 조회합니다.",
-        "variables": [{"name": "orderService", "role": "주문 서비스 객체"}],
-        "react_candidate": true,
-        "external_hints": ["service=orderService.getOrdersByStatus", "symbol=orderService"],
-        "search_tokens": ["order", "service", "orders", "status"],
-        "missing_bindings": ["orderService"],
-        "confidence": 0.75
+        "calls": ["target.methodName", "target2.methodName2"]
       }
     ]
   }
   
   출력 제약사항:
   - JSON 형식 외의 부가 설명이나 주석 금지
-  - "variables" 배열: 객체 타입 (name, role 필드)
-  - "react_candidate": boolean (true/false) - 외부 정의가 필요하면 true
-  - "external_hints": string[] (최대 3개, key=value 형식) - react_candidate=true면 반드시 1개 이상 제공 (빈 배열 [] 금지)
-  - "search_tokens": string[] - external_hints에서 추출한 비즈니스 단어 목록. react_candidate=true면 반드시 1개 이상 제공
-  - "missing_bindings": string[] (최대 2개) - react_candidate=true면 반드시 1개 이상 제공 (빈 배열 [] 금지)
-  - "confidence": float (0.0~1.0) - react_candidate=false면 0.0, react_candidate=true면 0.4 이상 (0.0 금지)
+  - "variables" 배열 요소는 문자열 타입
+  - "localDependencies" 배열 요소는 객체 타입 (type, sourceMember 필드)
+  - "calls" 배열 요소는 "target.methodName" 형태의 문자열
   - analysis[i]에는 startLine/endLine이 필수
-  - null 사용 금지. 빈값은 빈 배열([])로 표현
+  - 빈 배열도 허용되며 null 값은 사용 금지
   - 코드펜스(```json ... ``` 등) 포함 금지
   - **트레일링 콤마 절대 금지**: 마지막 요소 뒤에 콤마(,)를 붙이지 말 것
   - **유효한 JSON만 출력**: 반드시 json.loads()로 파싱 가능한 형식이어야 함

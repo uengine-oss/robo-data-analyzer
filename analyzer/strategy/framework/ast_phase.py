@@ -8,7 +8,7 @@ import asyncio
 import logging
 from typing import Any, AsyncGenerator, List
 
-from analyzer.neo4j_client import Neo4jClient
+from client.neo4j_client import Neo4jClient
 from analyzer.strategy.base_analyzer import AnalysisStats
 from analyzer.strategy.base.file_context import FileStatus, FileAnalysisContext
 from analyzer.strategy.framework.ast_processor import FrameworkAstProcessor

@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Optional, List
 import logging
 
-from analyzer.neo4j_client import Neo4jClient
+from client.neo4j_client import Neo4jClient
 from util.stream_event import (
     emit_message,
     emit_error,
@@ -116,12 +116,12 @@ class AnalysisStats:
     total_nodes: int = 0
     total_rels: int = 0
     
-    def add_graph_result(self, graph: dict, is_static: bool = False) -> None:
+    def add_graph_result(self, graph: dict, is_static: bool) -> None:
         """그래프 결과에서 통계 누적
         
         Args:
-            graph: Neo4j 그래프 결과
-            is_static: True이면 정적 그래프, False이면 LLM 분석 결과
+            graph: Neo4j 그래프 결과 (필수)
+            is_static: True이면 정적 그래프, False이면 LLM 분석 결과 (필수)
         """
         node_count = len(graph.get("Nodes", []))
         rel_count = len(graph.get("Relationships", []))
@@ -145,10 +145,17 @@ class AnalysisStats:
         self.total_nodes += tables + columns
         self.total_rels += fks
     
-    def mark_file_failed(self, file_name: str, reason: str = "") -> None:
-        """파일 실패 기록 (토큰 절감을 위해 추적)"""
+    def mark_file_failed(self, file_name: str, reason: str) -> None:
+        """파일 실패 기록 (토큰 절감을 위해 추적)
+        
+        Args:
+            file_name: 실패한 파일명 (필수)
+            reason: 실패 사유 (필수 - 디버깅을 위해 반드시 제공)
+        """
+        if not reason:
+            raise ValueError(f"file_name={file_name}: 실패 사유(reason)가 비어있습니다")
         self.files_failed += 1
-        self.failed_files.append(f"{file_name}: {reason}" if reason else file_name)
+        self.failed_files.append(f"{file_name}: {reason}")
 
 
 class BaseStreamingAnalyzer(AnalyzerStrategy):

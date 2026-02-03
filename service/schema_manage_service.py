@@ -15,10 +15,9 @@ from typing import Optional, List
 
 from fastapi import HTTPException
 
-from analyzer.neo4j_client import Neo4jClient
+from client.neo4j_client import Neo4jClient
 from client.embedding_client import EmbeddingClient
 from config.settings import settings
-from util.text_utils import escape_for_cypher
 
 
 logger = logging.getLogger(__name__)
@@ -142,33 +141,38 @@ async def fetch_schema_tables(
     client = Neo4jClient()
     try:
         where_conditions = []
+        params = {"limit": limit}
         
         if schema:
-            where_conditions.append(f"__cy_t__.schema = '{escape_for_cypher(schema)}'")
+            where_conditions.append("__cy_t__.schema = $schema")
+            params["schema"] = schema
         
         if search:
-            search_escaped = escape_for_cypher(search)
             where_conditions.append(
-                f"(toLower(__cy_t__.name) CONTAINS toLower('{search_escaped}') "
-                f"OR toLower(__cy_t__.description) CONTAINS toLower('{search_escaped}'))"
+                "(toLower(__cy_t__.name) CONTAINS toLower($search) "
+                "OR toLower(__cy_t__.description) CONTAINS toLower($search))"
             )
+            params["search"] = search
         
         where_clause = " AND ".join(where_conditions) if where_conditions else "true"
         
-        query = f"""
-            MATCH (__cy_t__:Table)
-            WHERE {where_clause}
-            OPTIONAL MATCH (__cy_t__)-[:HAS_COLUMN]->(__cy_c__:Column)
-            WITH __cy_t__, count(__cy_c__) AS col_count
-            RETURN __cy_t__.name AS name,
-                   __cy_t__.schema AS schema,
-                   __cy_t__.description AS description,
-                   __cy_t__.description_source AS description_source,
-                   __cy_t__.analyzed_description AS analyzed_description,
-                   col_count AS column_count
-            ORDER BY __cy_t__.name
-            LIMIT {limit}
-        """
+        query = {
+            "query": f"""
+                MATCH (__cy_t__:Table)
+                WHERE {where_clause}
+                OPTIONAL MATCH (__cy_t__)-[:HAS_COLUMN]->(__cy_c__:Column)
+                WITH __cy_t__, count(__cy_c__) AS col_count
+                RETURN __cy_t__.name AS name,
+                       __cy_t__.schema AS schema,
+                       __cy_t__.description AS description,
+                       __cy_t__.description_source AS description_source,
+                       __cy_t__.analyzed_description AS analyzed_description,
+                       col_count AS column_count
+                ORDER BY __cy_t__.name
+                LIMIT $limit
+            """,
+            "parameters": params
+        }
         
         results = await client.execute_queries([query])
         return results[0] if results else []
@@ -191,26 +195,29 @@ async def fetch_table_columns(
     """
     client = Neo4jClient()
     try:
-        safe_table = escape_for_cypher(table_name)
-        safe_schema = escape_for_cypher(schema) if schema else ""
+        params = {"table_name": table_name}
         
-        if safe_schema:
-            where_clause = f"__cy_t__.name = '{safe_table}' AND __cy_t__.schema = '{safe_schema}'"
+        if schema:
+            where_clause = "__cy_t__.name = $table_name AND __cy_t__.schema = $schema"
+            params["schema"] = schema
         else:
-            where_clause = f"(__cy_t__.name = '{safe_table}' OR __cy_t__.fqn ENDS WITH '{safe_table}')"
+            where_clause = "(__cy_t__.name = $table_name OR __cy_t__.fqn ENDS WITH $table_name)"
         
-        query = f"""
-            MATCH (__cy_t__:Table)-[:HAS_COLUMN]->(__cy_c__:Column)
-            WHERE {where_clause}
-            RETURN __cy_c__.name AS name,
-                   __cy_t__.name AS table_name,
-                   __cy_c__.dtype AS dtype,
-                   __cy_c__.nullable AS nullable,
-                   __cy_c__.description AS description,
-                   __cy_c__.description_source AS description_source,
-                   __cy_c__.analyzed_description AS analyzed_description
-            ORDER BY __cy_c__.name
-        """
+        query = {
+            "query": f"""
+                MATCH (__cy_t__:Table)-[:HAS_COLUMN]->(__cy_c__:Column)
+                WHERE {where_clause}
+                RETURN __cy_c__.name AS name,
+                       __cy_t__.name AS table_name,
+                       __cy_c__.dtype AS dtype,
+                       __cy_c__.nullable AS nullable,
+                       __cy_c__.description AS description,
+                       __cy_c__.description_source AS description_source,
+                       __cy_c__.analyzed_description AS analyzed_description
+                ORDER BY __cy_c__.name
+            """,
+            "parameters": params
+        }
         
         results = await client.execute_queries([query])
         return results[0] if results else []
@@ -266,16 +273,26 @@ async def create_schema_relationship(
     """
     client = Neo4jClient()
     try:
-        query = f"""
-            MATCH (__cy_t1__:Table {{name: '{escape_for_cypher(from_table)}'}})
-            MATCH (__cy_t2__:Table {{name: '{escape_for_cypher(to_table)}'}})
-            MERGE (__cy_t1__)-[__cy_r__:{relationship_type}]->(__cy_t2__)
-            SET __cy_r__.sourceColumn = '{escape_for_cypher(from_column)}',
-                __cy_r__.targetColumn = '{escape_for_cypher(to_column)}',
-                __cy_r__.description = '{escape_for_cypher(description)}',
-                __cy_r__.source = 'user'
-            RETURN __cy_t1__.name AS from_table, __cy_t2__.name AS to_table
-        """
+        # 관계 타입은 동적이므로 f-string 사용하되, 다른 값들은 파라미터화
+        query = {
+            "query": f"""
+                MATCH (__cy_t1__:Table {{name: $from_table}})
+                MATCH (__cy_t2__:Table {{name: $to_table}})
+                MERGE (__cy_t1__)-[__cy_r__:{relationship_type}]->(__cy_t2__)
+                SET __cy_r__.sourceColumn = $from_column,
+                    __cy_r__.targetColumn = $to_column,
+                    __cy_r__.description = $description,
+                    __cy_r__.source = 'user'
+                RETURN __cy_t1__.name AS from_table, __cy_t2__.name AS to_table
+            """,
+            "parameters": {
+                "from_table": from_table,
+                "to_table": to_table,
+                "from_column": from_column,
+                "to_column": to_column,
+                "description": description,
+            }
+        }
         
         results = await client.execute_queries([query])
         
@@ -300,13 +317,21 @@ async def delete_schema_relationship(
     """
     client = Neo4jClient()
     try:
-        query = f"""
-            MATCH (__cy_t1__:Table {{name: '{escape_for_cypher(from_table)}'}})-[__cy_r__:FK_TO_TABLE]->(__cy_t2__:Table {{name: '{escape_for_cypher(to_table)}'}})
-            WHERE __cy_r__.sourceColumn = '{escape_for_cypher(from_column)}' 
-              AND __cy_r__.targetColumn = '{escape_for_cypher(to_column)}'
-            DELETE __cy_r__
-            RETURN count(*) AS deleted
-        """
+        query = {
+            "query": """
+                MATCH (__cy_t1__:Table {name: $from_table})-[__cy_r__:FK_TO_TABLE]->(__cy_t2__:Table {name: $to_table})
+                WHERE __cy_r__.sourceColumn = $from_column 
+                  AND __cy_r__.targetColumn = $to_column
+                DELETE __cy_r__
+                RETURN count(*) AS deleted
+            """,
+            "parameters": {
+                "from_table": from_table,
+                "to_table": to_table,
+                "from_column": from_column,
+                "to_column": to_column,
+            }
+        }
         
         results = await client.execute_queries([query])
         deleted = results[0][0]["deleted"] if results and results[0] else 0
@@ -332,23 +357,24 @@ async def fetch_table_references(
     """
     client = Neo4jClient()
     try:
-        safe_table = escape_for_cypher(table_name)
-        
-        query = f"""
-            MATCH (__cy_s__)-[:FROM|WRITES]->(__cy_t__:Table)
-            WHERE __cy_t__.name = '{safe_table}' OR __cy_t__.fqn ENDS WITH '{safe_table}'
-            OPTIONAL MATCH (__cy_p__)-[:PARENT_OF*]->(__cy_s__)
-            WHERE __cy_p__:PROCEDURE OR __cy_p__:FUNCTION
-            RETURN DISTINCT __cy_p__.name AS procedure_name,
-                   labels(__cy_p__)[0] AS procedure_type,
-                   __cy_s__.start_line AS start_line,
-                   type(()-[__cy_r__]->(__cy_t__))[0] AS access_type,
-                   __cy_s__.type AS statement_type,
-                   __cy_s__.start_line AS statement_line,
-                   __cy_p__.file_name AS file_name,
-                   __cy_p__.file_directory AS file_directory
-            ORDER BY __cy_p__.name, __cy_s__.start_line
-        """
+        query = {
+            "query": """
+                MATCH (__cy_s__)-[:FROM|WRITES]->(__cy_t__:Table)
+                WHERE __cy_t__.name = $table_name OR __cy_t__.fqn ENDS WITH $table_name
+                OPTIONAL MATCH (__cy_p__)-[:PARENT_OF*]->(__cy_s__)
+                WHERE __cy_p__:PROCEDURE OR __cy_p__:FUNCTION
+                RETURN DISTINCT __cy_p__.name AS procedure_name,
+                       labels(__cy_p__)[0] AS procedure_type,
+                       __cy_s__.start_line AS start_line,
+                       type(()-[__cy_r__]->(__cy_t__))[0] AS access_type,
+                       __cy_s__.type AS statement_type,
+                       __cy_s__.start_line AS statement_line,
+                       __cy_p__.file_name AS file_name,
+                       __cy_p__.file_directory AS file_directory
+                ORDER BY __cy_p__.name, __cy_s__.start_line
+            """,
+            "parameters": {"table_name": table_name}
+        }
         
         results = await client.execute_queries([query])
         return results[0] if results else []
@@ -367,22 +393,26 @@ async def fetch_procedure_statements(
     """
     client = Neo4jClient()
     try:
-        safe_proc = escape_for_cypher(procedure_name)
+        params = {"procedure_name": procedure_name}
+        where_clause = "__cy_p__.name = $procedure_name"
         
-        where_clause = f"__cy_p__.name = '{safe_proc}'"
         if file_directory:
-            where_clause += f" AND __cy_p__.file_directory = '{escape_for_cypher(file_directory)}'"
+            where_clause += " AND __cy_p__.file_directory = $file_directory"
+            params["file_directory"] = file_directory
         
-        query = f"""
-            MATCH (__cy_p__)-[:PARENT_OF*]->(__cy_s__)
-            WHERE ({where_clause}) AND (__cy_s__:Statement OR __cy_s__.type IS NOT NULL)
-            RETURN __cy_s__.start_line AS start_line,
-                   __cy_s__.end_line AS end_line,
-                   __cy_s__.type AS statement_type,
-                   __cy_s__.summary AS summary,
-                   __cy_s__.ai_description AS ai_description
-            ORDER BY __cy_s__.start_line
-        """
+        query = {
+            "query": f"""
+                MATCH (__cy_p__)-[:PARENT_OF*]->(__cy_s__)
+                WHERE ({where_clause}) AND (__cy_s__:Statement OR __cy_s__.type IS NOT NULL)
+                RETURN __cy_s__.start_line AS start_line,
+                       __cy_s__.end_line AS end_line,
+                       __cy_s__.type AS statement_type,
+                       __cy_s__.summary AS summary,
+                       __cy_s__.ai_description AS ai_description
+                ORDER BY __cy_s__.start_line
+            """,
+            "parameters": params
+        }
         
         results = await client.execute_queries([query])
         return results[0] if results else []
@@ -407,18 +437,21 @@ async def update_table_description(
     """
     client = Neo4jClient()
     try:
-        safe_table = escape_for_cypher(table_name)
-        safe_schema = escape_for_cypher(schema)
-        safe_desc = escape_for_cypher(description)
-        
-        query = f"""
-            MATCH (__cy_t__:Table)
-            WHERE __cy_t__.name = '{safe_table}' 
-              AND (__cy_t__.schema = '{safe_schema}' OR __cy_t__.schema IS NULL)
-            SET __cy_t__.description = '{safe_desc}',
-                __cy_t__.description_source = 'user'
-            RETURN __cy_t__.name AS name
-        """
+        query = {
+            "query": """
+                MATCH (__cy_t__:Table)
+                WHERE __cy_t__.name = $table_name 
+                  AND (__cy_t__.schema = $schema OR __cy_t__.schema IS NULL)
+                SET __cy_t__.description = $description,
+                    __cy_t__.description_source = 'user'
+                RETURN __cy_t__.name AS name
+            """,
+            "parameters": {
+                "table_name": table_name,
+                "schema": schema,
+                "description": description,
+            }
+        }
         
         results = await client.execute_queries([query])
         
@@ -435,10 +468,16 @@ async def update_table_description(
                 embedding = await embedding_client.embed_text(description)
                 
                 if embedding:
-                    embedding_query = f"""
-                        MATCH (__cy_t__:Table {{name: '{safe_table}'}})
-                        SET __cy_t__.embedding = {embedding}
-                    """
+                    embedding_query = {
+                        "query": """
+                            MATCH (__cy_t__:Table {name: $table_name})
+                            SET __cy_t__.embedding = $embedding
+                        """,
+                        "parameters": {
+                            "table_name": table_name,
+                            "embedding": embedding,
+                        }
+                    }
                     await client.execute_queries([embedding_query])
             except Exception as e:
                 error_msg = f"임베딩 업데이트 실패: {e}"
@@ -464,17 +503,20 @@ async def update_column_description(
     """
     client = Neo4jClient()
     try:
-        safe_table = escape_for_cypher(table_name)
-        safe_column = escape_for_cypher(column_name)
-        safe_desc = escape_for_cypher(description)
-        
-        query = f"""
-            MATCH (__cy_t__:Table)-[:HAS_COLUMN]->(__cy_c__:Column)
-            WHERE __cy_t__.name = '{safe_table}' AND __cy_c__.name = '{safe_column}'
-            SET __cy_c__.description = '{safe_desc}',
-                __cy_c__.description_source = 'user'
-            RETURN __cy_c__.name AS name
-        """
+        query = {
+            "query": """
+                MATCH (__cy_t__:Table)-[:HAS_COLUMN]->(__cy_c__:Column)
+                WHERE __cy_t__.name = $table_name AND __cy_c__.name = $column_name
+                SET __cy_c__.description = $description,
+                    __cy_c__.description_source = 'user'
+                RETURN __cy_c__.name AS name
+            """,
+            "parameters": {
+                "table_name": table_name,
+                "column_name": column_name,
+                "description": description,
+            }
+        }
         
         results = await client.execute_queries([query])
         
@@ -520,21 +562,28 @@ async def vectorize_schema_tables(
     try:
         if include_tables:
             # 테이블 벡터화
-            where_clause = ""
-            if schema:
-                where_clause = f"WHERE __cy_t__.schema = '{escape_for_cypher(schema)}'"
-            if not reembed_existing:
-                where_clause += " AND " if where_clause else "WHERE "
-                where_clause += "__cy_t__.embedding IS NULL"
+            where_conditions = []
+            params = {"batch_size": batch_size}
             
-            query = f"""
-                MATCH (__cy_t__:Table)
-                {where_clause}
-                RETURN __cy_t__.name AS name, 
-                       __cy_t__.description AS description,
-                       __cy_t__.schema AS schema
-                LIMIT {batch_size}
-            """
+            if schema:
+                where_conditions.append("__cy_t__.schema = $schema")
+                params["schema"] = schema
+            if not reembed_existing:
+                where_conditions.append("__cy_t__.embedding IS NULL")
+            
+            where_clause = "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
+            
+            query = {
+                "query": f"""
+                    MATCH (__cy_t__:Table)
+                    {where_clause}
+                    RETURN __cy_t__.name AS name, 
+                           __cy_t__.description AS description,
+                           __cy_t__.schema AS schema
+                    LIMIT $batch_size
+                """,
+                "parameters": params
+            }
             
             results = await client.execute_queries([query])
             tables = results[0] if results else []
@@ -548,10 +597,16 @@ async def vectorize_schema_tables(
                     embedding = await embedding_client.embed_text(text)
                     
                     if embedding:
-                        update_query = f"""
-                            MATCH (__cy_t__:Table {{name: '{escape_for_cypher(table["name"])}'}})
-                            SET __cy_t__.embedding = {embedding}
-                        """
+                        update_query = {
+                            "query": """
+                                MATCH (__cy_t__:Table {name: $table_name})
+                                SET __cy_t__.embedding = $embedding
+                            """,
+                            "parameters": {
+                                "table_name": table["name"],
+                                "embedding": embedding,
+                            }
+                        }
                         await client.execute_queries([update_query])
                         stats["tables_processed"] += 1
                 except Exception as e:

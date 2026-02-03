@@ -12,8 +12,7 @@ import logging
 from typing import Optional, List
 from datetime import datetime
 
-from analyzer.neo4j_client import Neo4jClient
-from util.text_utils import escape_for_cypher
+from client.neo4j_client import Neo4jClient
 
 
 logger = logging.getLogger(__name__)
@@ -76,16 +75,24 @@ async def create_new_glossary(name: str, description: str, type_: str) -> dict:
     """
     timestamp = get_current_timestamp()
     
-    query = f"""
-        CREATE (__cy_g__:Glossary {{
-            name: '{escape_for_cypher(name)}',
-            description: '{escape_for_cypher(description)}',
-            type: '{escape_for_cypher(type_)}',
-            created_at: '{timestamp}',
-            updated_at: '{timestamp}'
-        }})
-        RETURN elementId(__cy_g__) as id, __cy_g__.name as name
-    """
+    query = {
+        "query": """
+            CREATE (__cy_g__:Glossary {
+                name: $name,
+                description: $description,
+                type: $type,
+                created_at: $timestamp,
+                updated_at: $timestamp
+            })
+            RETURN elementId(__cy_g__) as id, __cy_g__.name as name
+        """,
+        "parameters": {
+            "name": name,
+            "description": description,
+            "type": type_,
+            "timestamp": timestamp,
+        }
+    }
     
     client = Neo4jClient()
     try:
@@ -108,20 +115,23 @@ async def fetch_glossary_by_id(glossary_id: str) -> dict:
     Returns:
         용어집 정보
     """
-    query = f"""
-        MATCH (__cy_g__:Glossary)
-        WHERE elementId(__cy_g__) = '{escape_for_cypher(glossary_id)}'
-        OPTIONAL MATCH (__cy_g__)-[:HAS_TERM]->(__cy_t__:Term)
-        WITH __cy_g__, count(__cy_t__) as termCount
-        RETURN 
-            elementId(__cy_g__) as id,
-            __cy_g__.name as name,
-            __cy_g__.description as description,
-            __cy_g__.type as type,
-            __cy_g__.created_at as createdAt,
-            __cy_g__.updated_at as updatedAt,
-            termCount
-    """
+    query = {
+        "query": """
+            MATCH (__cy_g__:Glossary)
+            WHERE elementId(__cy_g__) = $glossary_id
+            OPTIONAL MATCH (__cy_g__)-[:HAS_TERM]->(__cy_t__:Term)
+            WITH __cy_g__, count(__cy_t__) as termCount
+            RETURN 
+                elementId(__cy_g__) as id,
+                __cy_g__.name as name,
+                __cy_g__.description as description,
+                __cy_g__.type as type,
+                __cy_g__.created_at as createdAt,
+                __cy_g__.updated_at as updatedAt,
+                termCount
+        """,
+        "parameters": {"glossary_id": glossary_id}
+    }
     
     client = Neo4jClient()
     try:
@@ -153,21 +163,28 @@ async def update_glossary_info(
     Returns:
         수정 결과
     """
-    set_clauses = [f"__cy_g__.updated_at = '{get_current_timestamp()}'"]
+    set_clauses = ["__cy_g__.updated_at = $timestamp"]
+    params = {"glossary_id": glossary_id, "timestamp": get_current_timestamp()}
     
     if name is not None:
-        set_clauses.append(f"__cy_g__.name = '{escape_for_cypher(name)}'")
+        set_clauses.append("__cy_g__.name = $name")
+        params["name"] = name
     if description is not None:
-        set_clauses.append(f"__cy_g__.description = '{escape_for_cypher(description)}'")
+        set_clauses.append("__cy_g__.description = $description")
+        params["description"] = description
     if type_ is not None:
-        set_clauses.append(f"__cy_g__.type = '{escape_for_cypher(type_)}'")
+        set_clauses.append("__cy_g__.type = $type")
+        params["type"] = type_
     
-    query = f"""
-        MATCH (__cy_g__:Glossary)
-        WHERE elementId(__cy_g__) = '{escape_for_cypher(glossary_id)}'
-        SET {', '.join(set_clauses)}
-        RETURN elementId(__cy_g__) as id
-    """
+    query = {
+        "query": f"""
+            MATCH (__cy_g__:Glossary)
+            WHERE elementId(__cy_g__) = $glossary_id
+            SET {', '.join(set_clauses)}
+            RETURN elementId(__cy_g__) as id
+        """,
+        "parameters": params
+    }
     
     client = Neo4jClient()
     try:
@@ -185,13 +202,16 @@ async def delete_glossary_by_id(glossary_id: str) -> dict:
     Returns:
         삭제 결과
     """
-    query = f"""
-        MATCH (__cy_g__:Glossary)
-        WHERE elementId(__cy_g__) = '{escape_for_cypher(glossary_id)}'
-        OPTIONAL MATCH (__cy_g__)-[:HAS_TERM]->(__cy_t__:Term)
-        DETACH DELETE __cy_g__, __cy_t__
-        RETURN count(*) as deleted
-    """
+    query = {
+        "query": """
+            MATCH (__cy_g__:Glossary)
+            WHERE elementId(__cy_g__) = $glossary_id
+            OPTIONAL MATCH (__cy_g__)-[:HAS_TERM]->(__cy_t__:Term)
+            DETACH DELETE __cy_g__, __cy_t__
+            RETURN count(*) as deleted
+        """,
+        "parameters": {"glossary_id": glossary_id}
+    }
     
     client = Neo4jClient()
     try:
@@ -215,26 +235,31 @@ async def fetch_glossary_terms(
     Returns:
         {"terms": [...]}
     """
-    where_clause = f"elementId(__cy_g__) = '{escape_for_cypher(glossary_id)}'"
+    params = {"glossary_id": glossary_id, "limit": limit}
+    where_clause = "elementId(__cy_g__) = $glossary_id"
     
     if search:
-        where_clause += f" AND (toLower(__cy_t__.name) CONTAINS toLower('{escape_for_cypher(search)}'))"
+        where_clause += " AND (toLower(__cy_t__.name) CONTAINS toLower($search))"
+        params["search"] = search
     
-    query = f"""
-        MATCH (__cy_g__:Glossary)-[:HAS_TERM]->(__cy_t__:Term)
-        WHERE {where_clause}
-        OPTIONAL MATCH (__cy_t__)-[:BELONGS_TO_DOMAIN]->(__cy_d__:Domain)
-        OPTIONAL MATCH (__cy_t__)-[:HAS_TAG]->(__cy_tag__:Tag)
-        RETURN 
-            elementId(__cy_t__) as id,
-            __cy_t__.name as name,
-            __cy_t__.description as description,
-            __cy_t__.status as status,
-            collect(DISTINCT __cy_d__.name) as domains,
-            collect(DISTINCT __cy_tag__.name) as tags
-        ORDER BY __cy_t__.name
-        LIMIT {limit}
-    """
+    query = {
+        "query": f"""
+            MATCH (__cy_g__:Glossary)-[:HAS_TERM]->(__cy_t__:Term)
+            WHERE {where_clause}
+            OPTIONAL MATCH (__cy_t__)-[:BELONGS_TO_DOMAIN]->(__cy_d__:Domain)
+            OPTIONAL MATCH (__cy_t__)-[:HAS_TAG]->(__cy_tag__:Tag)
+            RETURN 
+                elementId(__cy_t__) as id,
+                __cy_t__.name as name,
+                __cy_t__.description as description,
+                __cy_t__.status as status,
+                collect(DISTINCT __cy_d__.name) as domains,
+                collect(DISTINCT __cy_tag__.name) as tags
+            ORDER BY __cy_t__.name
+            LIMIT $limit
+        """,
+        "parameters": params
+    }
     
     client = Neo4jClient()
     try:
@@ -265,18 +290,27 @@ async def create_new_term(glossary_id: str, term_data: dict) -> dict:
     description = term_data.get("description", "")
     status = term_data.get("status", "Draft")
     
-    query = f"""
-        MATCH (__cy_g__:Glossary)
-        WHERE elementId(__cy_g__) = '{escape_for_cypher(glossary_id)}'
-        CREATE (__cy_g__)-[:HAS_TERM]->(__cy_t__:Term {{
-            name: '{escape_for_cypher(name)}',
-            description: '{escape_for_cypher(description)}',
-            status: '{escape_for_cypher(status)}',
-            created_at: '{timestamp}',
-            updated_at: '{timestamp}'
-        }})
-        RETURN elementId(__cy_t__) as id, __cy_t__.name as name
-    """
+    query = {
+        "query": """
+            MATCH (__cy_g__:Glossary)
+            WHERE elementId(__cy_g__) = $glossary_id
+            CREATE (__cy_g__)-[:HAS_TERM]->(__cy_t__:Term {
+                name: $name,
+                description: $description,
+                status: $status,
+                created_at: $timestamp,
+                updated_at: $timestamp
+            })
+            RETURN elementId(__cy_t__) as id, __cy_t__.name as name
+        """,
+        "parameters": {
+            "glossary_id": glossary_id,
+            "name": name,
+            "description": description,
+            "status": status,
+            "timestamp": timestamp,
+        }
+    }
     
     client = Neo4jClient()
     try:
@@ -299,23 +333,26 @@ async def fetch_term_by_id(glossary_id: str, term_id: str) -> dict:
     Returns:
         용어 정보
     """
-    query = f"""
-        MATCH (__cy_g__:Glossary)-[:HAS_TERM]->(__cy_t__:Term)
-        WHERE elementId(__cy_g__) = '{escape_for_cypher(glossary_id)}'
-          AND elementId(__cy_t__) = '{escape_for_cypher(term_id)}'
-        OPTIONAL MATCH (__cy_t__)-[:BELONGS_TO_DOMAIN]->(__cy_d__:Domain)
-        OPTIONAL MATCH (__cy_t__)-[:HAS_TAG]->(__cy_tag__:Tag)
-        OPTIONAL MATCH (__cy_t__)-[:OWNED_BY]->(__cy_o__:Owner)
-        RETURN 
-            elementId(__cy_t__) as id,
-            __cy_t__.name as name,
-            __cy_t__.description as description,
-            __cy_t__.status as status,
-            __cy_t__.synonyms as synonyms,
-            collect(DISTINCT __cy_d__.name) as domains,
-            collect(DISTINCT __cy_tag__.name) as tags,
-            collect(DISTINCT __cy_o__.name) as owners
-    """
+    query = {
+        "query": """
+            MATCH (__cy_g__:Glossary)-[:HAS_TERM]->(__cy_t__:Term)
+            WHERE elementId(__cy_g__) = $glossary_id
+              AND elementId(__cy_t__) = $term_id
+            OPTIONAL MATCH (__cy_t__)-[:BELONGS_TO_DOMAIN]->(__cy_d__:Domain)
+            OPTIONAL MATCH (__cy_t__)-[:HAS_TAG]->(__cy_tag__:Tag)
+            OPTIONAL MATCH (__cy_t__)-[:OWNED_BY]->(__cy_o__:Owner)
+            RETURN 
+                elementId(__cy_t__) as id,
+                __cy_t__.name as name,
+                __cy_t__.description as description,
+                __cy_t__.status as status,
+                __cy_t__.synonyms as synonyms,
+                collect(DISTINCT __cy_d__.name) as domains,
+                collect(DISTINCT __cy_tag__.name) as tags,
+                collect(DISTINCT __cy_o__.name) as owners
+        """,
+        "parameters": {"glossary_id": glossary_id, "term_id": term_id}
+    }
     
     client = Neo4jClient()
     try:
@@ -343,22 +380,29 @@ async def update_term_info(glossary_id: str, term_id: str, term_data: dict) -> d
     Returns:
         수정 결과
     """
-    set_clauses = [f"__cy_t__.updated_at = '{get_current_timestamp()}'"]
+    set_clauses = ["__cy_t__.updated_at = $timestamp"]
+    params = {"glossary_id": glossary_id, "term_id": term_id, "timestamp": get_current_timestamp()}
     
     if term_data.get("name") is not None:
-        set_clauses.append(f"__cy_t__.name = '{escape_for_cypher(term_data['name'])}'")
+        set_clauses.append("__cy_t__.name = $name")
+        params["name"] = term_data["name"]
     if term_data.get("description") is not None:
-        set_clauses.append(f"__cy_t__.description = '{escape_for_cypher(term_data['description'])}'")
+        set_clauses.append("__cy_t__.description = $description")
+        params["description"] = term_data["description"]
     if term_data.get("status") is not None:
-        set_clauses.append(f"__cy_t__.status = '{escape_for_cypher(term_data['status'])}'")
+        set_clauses.append("__cy_t__.status = $status")
+        params["status"] = term_data["status"]
     
-    query = f"""
-        MATCH (__cy_g__:Glossary)-[:HAS_TERM]->(__cy_t__:Term)
-        WHERE elementId(__cy_g__) = '{escape_for_cypher(glossary_id)}'
-          AND elementId(__cy_t__) = '{escape_for_cypher(term_id)}'
-        SET {', '.join(set_clauses)}
-        RETURN elementId(__cy_t__) as id
-    """
+    query = {
+        "query": f"""
+            MATCH (__cy_g__:Glossary)-[:HAS_TERM]->(__cy_t__:Term)
+            WHERE elementId(__cy_g__) = $glossary_id
+              AND elementId(__cy_t__) = $term_id
+            SET {', '.join(set_clauses)}
+            RETURN elementId(__cy_t__) as id
+        """,
+        "parameters": params
+    }
     
     client = Neo4jClient()
     try:
@@ -376,13 +420,16 @@ async def delete_term_by_id(glossary_id: str, term_id: str) -> dict:
     Returns:
         삭제 결과
     """
-    query = f"""
-        MATCH (__cy_g__:Glossary)-[:HAS_TERM]->(__cy_t__:Term)
-        WHERE elementId(__cy_g__) = '{escape_for_cypher(glossary_id)}'
-          AND elementId(__cy_t__) = '{escape_for_cypher(term_id)}'
-        DETACH DELETE __cy_t__
-        RETURN count(*) as deleted
-    """
+    query = {
+        "query": """
+            MATCH (__cy_g__:Glossary)-[:HAS_TERM]->(__cy_t__:Term)
+            WHERE elementId(__cy_g__) = $glossary_id
+              AND elementId(__cy_t__) = $term_id
+            DETACH DELETE __cy_t__
+            RETURN count(*) as deleted
+        """,
+        "parameters": {"glossary_id": glossary_id, "term_id": term_id}
+    }
     
     client = Neo4jClient()
     try:
@@ -452,10 +499,13 @@ async def fetch_all_tags() -> dict:
 
 async def create_new_domain(name: str, description: str = "") -> dict:
     """도메인 생성"""
-    query = f"""
-        CREATE (__cy_d__:Domain {{name: '{escape_for_cypher(name)}', description: '{escape_for_cypher(description)}'}})
-        RETURN elementId(__cy_d__) as id, __cy_d__.name as name
-    """
+    query = {
+        "query": """
+            CREATE (__cy_d__:Domain {name: $name, description: $description})
+            RETURN elementId(__cy_d__) as id, __cy_d__.name as name
+        """,
+        "parameters": {"name": name, "description": description}
+    }
     
     client = Neo4jClient()
     try:
@@ -469,10 +519,13 @@ async def create_new_domain(name: str, description: str = "") -> dict:
 
 async def create_new_owner(name: str, email: str, role: str) -> dict:
     """소유자 생성"""
-    query = f"""
-        CREATE (__cy_o__:Owner {{name: '{escape_for_cypher(name)}', email: '{escape_for_cypher(email)}', role: '{escape_for_cypher(role)}'}})
-        RETURN elementId(__cy_o__) as id, __cy_o__.name as name
-    """
+    query = {
+        "query": """
+            CREATE (__cy_o__:Owner {name: $name, email: $email, role: $role})
+            RETURN elementId(__cy_o__) as id, __cy_o__.name as name
+        """,
+        "parameters": {"name": name, "email": email, "role": role}
+    }
     
     client = Neo4jClient()
     try:
@@ -486,10 +539,13 @@ async def create_new_owner(name: str, email: str, role: str) -> dict:
 
 async def create_new_tag(name: str, color: str) -> dict:
     """태그 생성"""
-    query = f"""
-        CREATE (__cy_tag__:Tag {{name: '{escape_for_cypher(name)}', color: '{escape_for_cypher(color)}'}})
-        RETURN elementId(__cy_tag__) as id, __cy_tag__.name as name
-    """
+    query = {
+        "query": """
+            CREATE (__cy_tag__:Tag {name: $name, color: $color})
+            RETURN elementId(__cy_tag__) as id, __cy_tag__.name as name
+        """,
+        "parameters": {"name": name, "color": color}
+    }
     
     client = Neo4jClient()
     try:

@@ -13,7 +13,7 @@ from typing import Any, AsyncGenerator
 import aiohttp
 from openai import AsyncOpenAI
 
-from analyzer.neo4j_client import Neo4jClient
+from client.neo4j_client import Neo4jClient
 from analyzer.strategy.base_analyzer import AnalysisStats
 from config.settings import settings
 from service.metadata_enrichment_service import MetadataEnrichmentService

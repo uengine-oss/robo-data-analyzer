@@ -2,7 +2,7 @@
 
 핵심 유틸리티 함수:
 - 토큰 계산
-- 문자열 처리 (Cypher 이스케이프)
+- 문자열/JSON 파싱
 - User Story 문서 생성
 - 스트리밍 이벤트 (stream_event에서 re-export)
 """
@@ -48,11 +48,6 @@ ENCODER = tiktoken.get_encoding("cl100k_base")
 #==============================================================================
 # 문자열/JSON 유틸리티
 #==============================================================================
-
-def escape_for_cypher(text: str) -> str:
-    """Cypher 쿼리용 문자열 이스케이프"""
-    return str(text).replace("'", "\\'")
-
 
 def parse_json_maybe(data):
     """JSON 문자열을 파싱하거나 리스트/딕셔너리는 그대로 반환"""

@@ -11,7 +11,7 @@ from typing import Any, AsyncGenerator, Dict, List, Set, Tuple
 
 import aiofiles
 
-from analyzer.neo4j_client import Neo4jClient
+from client.neo4j_client import Neo4jClient
 from analyzer.strategy.base_analyzer import AnalysisStats
 from analyzer.ddl_static_parser import parse_ddl as regex_parse_ddl
 from util.stream_event import (
@@ -20,7 +20,6 @@ from util.stream_event import (
     emit_phase_event,
 )
 from util.text_utils import (
-    escape_for_cypher,
     log_process,
     parse_table_identifier,
     calculate_code_token,
@@ -265,7 +264,7 @@ async def process_ddl(
                 "db": db_name,
                 "schema": schema,
                 "name": parsed_name,
-                "description": escape_for_cypher(comment),
+                "description": comment,  # UNWIND 파라미터화로 이스케이프 불필요
                 "description_source": "ddl" if comment else "",
                 "table_type": table_type
             })
@@ -306,10 +305,10 @@ async def process_ddl(
             fqn = ".".join(filter(None, [schema, parsed_name, col_name])).lower()
             
             col_data = {
-                "fqn": escape_for_cypher(fqn),
-                "name": escape_for_cypher(col_name),
-                "dtype": escape_for_cypher(col_type),
-                "description": escape_for_cypher(col_comment),
+                "fqn": fqn,  # UNWIND 파라미터화로 이스케이프 불필요
+                "name": col_name,
+                "dtype": col_type,
+                "description": col_comment,
                 "description_source": "ddl" if col_comment else "",
                 "nullable": col_nullable,
                 "table_db": db_name,
@@ -340,11 +339,11 @@ async def process_ddl(
                 "from_db": db_name,
                 "from_schema": schema,
                 "from_table": parsed_name,
-                "from_column": escape_for_cypher(src_col),
+                "from_column": src_col,  # UNWIND 파라미터화로 이스케이프 불필요
                 "to_db": db_name,
                 "to_schema": ref_schema_final or "",
                 "to_table": ref_table or "",
-                "to_column": escape_for_cypher(ref_col)
+                "to_column": ref_col
             })
             ddl_stats["fks"] += 1
 

@@ -19,8 +19,8 @@ import logging
 from typing import Optional, Dict, List, Tuple
 from dataclasses import dataclass, field
 
-from analyzer.neo4j_client import Neo4jClient
-from util.text_utils import escape_for_cypher, log_process
+from client.neo4j_client import Neo4jClient
+from util.text_utils import log_process
 
 logger = logging.getLogger(__name__)
 
@@ -266,59 +266,78 @@ class LineageAnalyzer:
             if not lineage.is_etl:
                 continue  # ETL 패턴이 아니면 스킵
             
-            etl_name = escape_for_cypher(lineage.etl_name)
             proc_name = self._apply_name_case(lineage.etl_name, name_case)
-            escaped_proc_name = escape_for_cypher(proc_name)
             
             # 기존 PROCEDURE/FUNCTION 노드에 ETL 플래그 설정
-            queries.append(f"""
-                MATCH (__cy_proc__)
-                WHERE (__cy_proc__:PROCEDURE OR __cy_proc__:FUNCTION)
-                  AND __cy_proc__.procedure_name =~ '(?i){escaped_proc_name}'
-                SET __cy_proc__.is_etl = true,
-                    __cy_proc__.etl_operation = '{lineage.operation_type}',
-                    __cy_proc__.etl_source_count = {len(lineage.source_tables)},
-                    __cy_proc__.etl_target_count = {len(lineage.target_tables)}
-                RETURN __cy_proc__
-            """)
+            queries.append({
+                "query": """
+                    MATCH (__cy_proc__)
+                    WHERE (__cy_proc__:PROCEDURE OR __cy_proc__:FUNCTION)
+                      AND toLower(__cy_proc__.procedure_name) = toLower($proc_name)
+                    SET __cy_proc__.is_etl = true,
+                        __cy_proc__.etl_operation = $operation_type,
+                        __cy_proc__.etl_source_count = $source_count,
+                        __cy_proc__.etl_target_count = $target_count
+                    RETURN __cy_proc__
+                """,
+                "parameters": {
+                    "proc_name": proc_name,
+                    "operation_type": lineage.operation_type,
+                    "source_count": len(lineage.source_tables),
+                    "target_count": len(lineage.target_tables),
+                }
+            })
             stats["etl_nodes"] += 1
             
             # 소스 테이블 → ETL 관계 (ETL_READS)
             for source in lineage.source_tables:
                 source_table = self._parse_table_name(source, name_case)
-                table_name = escape_for_cypher(source_table["name"])
-                schema_name = escape_for_cypher(source_table["schema"])
                 
                 # 테이블명만으로 매칭 (스키마는 선택적)
-                queries.append(f"""
-                    MATCH (__cy_proc__)
-                    WHERE (__cy_proc__:PROCEDURE OR __cy_proc__:FUNCTION)
-                      AND __cy_proc__.procedure_name =~ '(?i){escaped_proc_name}'
-                    MATCH (__cy_t__:Table)
-                    WHERE __cy_t__.name =~ '(?i){table_name}'
-                    MERGE (__cy_proc__)-[__cy_r__:ETL_READS]->(__cy_t__)
-                    SET __cy_r__.operation = '{lineage.operation_type}',
-                        __cy_r__.file_name = '{escape_for_cypher(file_name)}'
-                    RETURN __cy_proc__, __cy_r__, __cy_t__
-                """)
+                queries.append({
+                    "query": """
+                        MATCH (__cy_proc__)
+                        WHERE (__cy_proc__:PROCEDURE OR __cy_proc__:FUNCTION)
+                          AND toLower(__cy_proc__.procedure_name) = toLower($proc_name)
+                        MATCH (__cy_t__:Table)
+                        WHERE toLower(__cy_t__.name) = toLower($table_name)
+                        MERGE (__cy_proc__)-[__cy_r__:ETL_READS]->(__cy_t__)
+                        SET __cy_r__.operation = $operation_type,
+                            __cy_r__.file_name = $file_name
+                        RETURN __cy_proc__, __cy_r__, __cy_t__
+                    """,
+                    "parameters": {
+                        "proc_name": proc_name,
+                        "table_name": source_table["name"],
+                        "operation_type": lineage.operation_type,
+                        "file_name": file_name,
+                    }
+                })
                 stats["etl_reads"] += 1
             
             # ETL → 타겟 테이블 관계 (ETL_WRITES)
             for target in lineage.target_tables:
                 target_table = self._parse_table_name(target, name_case)
-                table_name = escape_for_cypher(target_table["name"])
                 
-                queries.append(f"""
-                    MATCH (__cy_proc__)
-                    WHERE (__cy_proc__:PROCEDURE OR __cy_proc__:FUNCTION)
-                      AND __cy_proc__.procedure_name =~ '(?i){escaped_proc_name}'
-                    MATCH (__cy_t__:Table)
-                    WHERE __cy_t__.name =~ '(?i){table_name}'
-                    MERGE (__cy_proc__)-[__cy_r__:ETL_WRITES]->(__cy_t__)
-                    SET __cy_r__.operation = '{lineage.operation_type}',
-                        __cy_r__.file_name = '{escape_for_cypher(file_name)}'
-                    RETURN __cy_proc__, __cy_r__, __cy_t__
-                """)
+                queries.append({
+                    "query": """
+                        MATCH (__cy_proc__)
+                        WHERE (__cy_proc__:PROCEDURE OR __cy_proc__:FUNCTION)
+                          AND toLower(__cy_proc__.procedure_name) = toLower($proc_name)
+                        MATCH (__cy_t__:Table)
+                        WHERE toLower(__cy_t__.name) = toLower($table_name)
+                        MERGE (__cy_proc__)-[__cy_r__:ETL_WRITES]->(__cy_t__)
+                        SET __cy_r__.operation = $operation_type,
+                            __cy_r__.file_name = $file_name
+                        RETURN __cy_proc__, __cy_r__, __cy_t__
+                    """,
+                    "parameters": {
+                        "proc_name": proc_name,
+                        "table_name": target_table["name"],
+                        "operation_type": lineage.operation_type,
+                        "file_name": file_name,
+                    }
+                })
                 stats["etl_writes"] += 1
             
             # 소스 테이블 → 타겟 테이블 직접 연결 (DATA_FLOWS_TO)
@@ -326,20 +345,27 @@ class LineageAnalyzer:
                 for target in lineage.target_tables:
                     source_table = self._parse_table_name(source, name_case)
                     target_table = self._parse_table_name(target, name_case)
-                    src_name = escape_for_cypher(source_table["name"])
-                    tgt_name = escape_for_cypher(target_table["name"])
                     
-                    queries.append(f"""
-                        MATCH (__cy_src__:Table)
-                        WHERE __cy_src__.name =~ '(?i){src_name}'
-                        MATCH (__cy_tgt__:Table)
-                        WHERE __cy_tgt__.name =~ '(?i){tgt_name}'
-                        MERGE (__cy_src__)-[__cy_r__:DATA_FLOWS_TO]->(__cy_tgt__)
-                        SET __cy_r__.via_etl = '{etl_name}',
-                            __cy_r__.operation = '{lineage.operation_type}',
-                            __cy_r__.file_name = '{escape_for_cypher(file_name)}'
-                        RETURN __cy_src__, __cy_r__, __cy_tgt__
-                    """)
+                    queries.append({
+                        "query": """
+                            MATCH (__cy_src__:Table)
+                            WHERE toLower(__cy_src__.name) = toLower($src_name)
+                            MATCH (__cy_tgt__:Table)
+                            WHERE toLower(__cy_tgt__.name) = toLower($tgt_name)
+                            MERGE (__cy_src__)-[__cy_r__:DATA_FLOWS_TO]->(__cy_tgt__)
+                            SET __cy_r__.via_etl = $etl_name,
+                                __cy_r__.operation = $operation_type,
+                                __cy_r__.file_name = $file_name
+                            RETURN __cy_src__, __cy_r__, __cy_tgt__
+                        """,
+                        "parameters": {
+                            "src_name": source_table["name"],
+                            "tgt_name": target_table["name"],
+                            "etl_name": lineage.etl_name,
+                            "operation_type": lineage.operation_type,
+                            "file_name": file_name,
+                        }
+                    })
                     stats["data_flows"] += 1
         
         if queries:

@@ -9,7 +9,7 @@ import logging
 import time
 from typing import Any, AsyncGenerator
 
-from analyzer.neo4j_client import Neo4jClient
+from client.neo4j_client import Neo4jClient
 from analyzer.strategy.base_analyzer import AnalysisStats
 from client.embedding_client import EmbeddingClient
 from config.settings import settings

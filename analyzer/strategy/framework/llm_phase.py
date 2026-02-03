@@ -11,14 +11,13 @@ import asyncio
 import logging
 from typing import Any, AsyncGenerator, List
 
-from analyzer.neo4j_client import Neo4jClient
+from client.neo4j_client import Neo4jClient
 from analyzer.strategy.base_analyzer import AnalysisStats
 from analyzer.strategy.base.file_context import FileStatus, FileAnalysisContext
 from util.stream_event import (
     emit_data,
     emit_message,
     emit_phase_event,
-    format_graph_result,
 )
 from util.text_utils import log_process
 
@@ -54,6 +53,14 @@ async def run_phase2(
     completed = 0
     total = len(contexts)
     results_queue: asyncio.Queue = asyncio.Queue()
+    
+    # 시작 메시지 - 전체 현황 표시
+    max_workers = analyzer._file_semaphore._value if hasattr(analyzer._file_semaphore, '_value') else 5
+    yield emit_message(f"")
+    yield emit_message(f"┌─────────────────────────────────────────────────────────┐")
+    yield emit_message(f"│  📊 Phase 2: AI 분석 시작                                │")
+    yield emit_message(f"│     총 {total}개 파일, 동시 처리: {max_workers}개                         │")
+    yield emit_message(f"└─────────────────────────────────────────────────────────┘")
 
     async def analyze_file(ctx: FileAnalysisContext):
         async with analyzer._file_semaphore:
@@ -142,16 +149,20 @@ async def run_phase2(
             batch = result.get("batch", 0)
             total_batches = result.get("total_batches", 0)
             graph = result.get("graph")
-            yield emit_message(f"      📦 {result['file']}: 배치 {batch}/{total_batches} 저장 완료")
+            node_count = len(graph.get("Nodes", [])) if graph else 0
+            yield emit_message(f"│     📦 배치 {batch}/{total_batches} 저장 (노드 {node_count}개)")
             # 배치별 그래프 데이터 즉시 전송
             if graph:
                 yield emit_data(graph=graph)
             continue
         
         completed += 1
+        remaining = total - completed
         
         if result_type == "error":
-            yield emit_message(f"   ❌ [{completed}/{total}] {result['file']}: {result['message'][:50]}")
+            yield emit_message(f"├─ ❌ [{completed}/{total}] {result['file']}")
+            yield emit_message(f"│     오류: {result['message'][:80]}")
+            yield emit_message(f"│     남은 파일: {remaining}개")
             stats.mark_file_failed(result['file'], "Phase2 실패")
         else:
             stats.llm_batches_executed += 1
@@ -161,30 +172,51 @@ async def run_phase2(
             # 배치 실패 정보 표시
             failed_batches = result.get("failed_batches", 0)
             failed_details = result.get("failed_details", [])
-            fail_info = f" (배치 {failed_batches}개 실패)" if failed_batches > 0 else ""
             
-            graph_msg = format_graph_result(graph)
-            yield emit_message(f"   ✓ [{completed}/{total}] {result['file']} (쿼리 {result['query_count']}개){fail_info}")
-            if graph_msg:
-                for line in graph_msg.split("\n")[:3]:
-                    yield emit_message(f"      {line}")
+            # 분석 결과 상세 집계
+            node_count = len(graph.get("Nodes", []))
+            rel_count = len(graph.get("Relationships", []))
+            
+            # 상태 아이콘 선택
+            status_icon = "✅" if failed_batches == 0 else "⚠️"
+            
+            # 파일 완료 메시지 (트리 구조)
+            yield emit_message(f"├─ {status_icon} [{completed}/{total}] {result['file']}")
+            yield emit_message(f"│     쿼리: {result['query_count']}개, 노드: {node_count}개, 관계: {rel_count}개")
+            
+            if remaining > 0:
+                yield emit_message(f"│     남은 파일: {remaining}개")
             
             # 실패 상세 정보 출력 (최대 3개)
             if failed_details:
                 stats.llm_batches_failed += len(failed_details)
                 for detail in failed_details[:3]:
-                    yield emit_message(f"      ⚠️ 배치 #{detail['batch_id']} ({detail['node_ranges']}): {detail['error'][:50]}")
+                    yield emit_message(f"│     ⚠️ 배치 #{detail['batch_id']}: {detail['error'][:50]}")
+            
+            # Phase 2 진행률 계산 (50-100% 범위 사용)
+            phase2_progress = 50 + int(completed / total * 50)
+            
+            yield emit_phase_event(
+                phase_num=2,
+                phase_name="AI 분석",
+                status="in_progress",
+                progress=phase2_progress,
+                details={
+                    "file": result['file'],
+                    "queries": result['query_count'],
+                    "nodes_updated": node_count,
+                    "relationships_updated": rel_count,
+                    "completed": completed,
+                    "total": total
+                }
+            )
             
             yield emit_data(
                 graph=graph,
                 line_number=0,
-                analysis_progress=50 + int(completed / total * 50),
+                analysis_progress=phase2_progress,
                 current_file=result["file"],
             )
-            
-            # 진행률 이벤트
-            progress = int(completed / total * 100)
-            yield emit_phase_event(2, "AI 분석", "progress", progress, {"completed": completed, "total": total})
 
     # 모든 작업 완료 대기
     await asyncio.gather(*tasks, return_exceptions=True)

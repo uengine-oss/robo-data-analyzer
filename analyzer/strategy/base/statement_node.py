@@ -65,7 +65,7 @@ class StatementNode:
     implements_types: Optional[str] = None # 구현 인터페이스 (implements)
     field_type: Optional[str] = None       # 필드 타입
     
-    # Framework 전용: 어노테이션 정보 (DeepAgents 런타임 해석용)
+    # Framework 전용: 어노테이션 정보
     annotations: Optional[List[str]] = None  # ["@Entity", "@Table(name='orders')"]
     
     # 코드 라인 정보
@@ -78,6 +78,7 @@ class StatementNode:
     # LLM 분석 결과
     summary: Optional[str] = None
     context: Optional[str] = None  # 부모 컨텍스트 (자식 분석 시 전달됨)
+    sibling_context: Optional[str] = None  # 이전 형제 컨텍스트
     ok: bool = True  # LLM 분석 성공 여부 (자식 실패 시 부모도 False)
     
     # 비동기 이벤트
@@ -238,10 +239,14 @@ class StatementNode:
 
         return '\n'.join(result_lines)
 
-    def get_ancestor_context(self, max_tokens: int = MAX_CONTEXT_TOKEN) -> str:
+    def get_ancestor_context(self, max_tokens: int) -> str:
         """조상 노드들의 컨텍스트를 결합하여 반환합니다.
         
+        부모 컨텍스트와 형제 컨텍스트를 모두 포함합니다.
         가장 가까운 조상부터 토큰 상한까지 누적합니다.
+        
+        Args:
+            max_tokens: 최대 토큰 수
         """
         if not self.parent:
             return ""
@@ -255,11 +260,17 @@ class StatementNode:
             if current.context:
                 ctx_tokens = calculate_code_token(current.context)
                 if ctx_tokens <= remaining:
-                    context_parts.insert(0, current.context)
+                    context_parts.insert(0, f"[부모] {current.context}")
                     remaining -= ctx_tokens
                 else:
                     # 토큰 초과 시 중단
                     break
+            # 형제 컨텍스트도 포함
+            if current.sibling_context:
+                sib_tokens = calculate_code_token(current.sibling_context)
+                if sib_tokens <= remaining:
+                    context_parts.insert(0, f"[형제] {current.sibling_context}")
+                    remaining -= sib_tokens
             current = current.parent
 
         if not context_parts:
@@ -267,7 +278,7 @@ class StatementNode:
 
         return "[CONTEXT]\n" + "\n---\n".join(context_parts) + "\n[/CONTEXT]\n"
 
-    def needs_context_generation(self, excluded_types: Optional[Set[str]] = None) -> bool:
+    def needs_context_generation(self, excluded_types: Set[str]) -> bool:
         """이 노드가 컨텍스트 생성이 필요한 부모 노드인지 확인합니다.
         
         조건:
@@ -278,10 +289,50 @@ class StatementNode:
         Args:
             excluded_types: 제외할 노드 타입 (DBMS: PROCEDURE_TYPES, Framework: CLASS_TYPES)
         """
-        excluded_types = excluded_types or set()
         return (
             self.has_children
             and self.analyzable
             and self.node_type not in excluded_types
         )
+
+    def get_previous_sibling(self) -> Optional["StatementNode"]:
+        """같은 부모의 이전 형제 노드를 반환합니다.
+        
+        startLine 기준으로 정렬하여 현재 노드 바로 앞의 형제를 찾습니다.
+        
+        Returns:
+            이전 형제 노드 또는 None (첫 번째 자식이거나 부모가 없는 경우)
+        """
+        if not self.parent:
+            return None
+        
+        siblings = self.parent.children
+        if not siblings or len(siblings) < 2:
+            return None
+        
+        # startLine 기준 정렬
+        sorted_siblings = sorted(siblings, key=lambda n: n.start_line)
+        
+        # 현재 노드의 인덱스 찾기
+        current_idx = -1
+        for i, sib in enumerate(sorted_siblings):
+            if sib.node_id == self.node_id:
+                current_idx = i
+                break
+        
+        if current_idx <= 0:
+            return None
+        
+        return sorted_siblings[current_idx - 1]
+
+    def get_sibling_code(self) -> str:
+        """이전 형제 노드의 원문 코드를 반환합니다.
+        
+        Returns:
+            이전 형제의 원문 코드 또는 빈 문자열
+        """
+        sibling = self.get_previous_sibling()
+        if not sibling:
+            return ""
+        return sibling.get_raw_code()
 

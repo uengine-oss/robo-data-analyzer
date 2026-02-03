@@ -10,7 +10,7 @@ from typing import Any, AsyncGenerator, List
 
 import aiofiles
 
-from analyzer.neo4j_client import Neo4jClient
+from client.neo4j_client import Neo4jClient
 from analyzer.strategy.base_analyzer import AnalysisStats
 from analyzer.lineage_analyzer import LineageAnalyzer, LineageInfo
 from util.stream_event import emit_message, emit_phase_event

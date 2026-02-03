@@ -26,7 +26,7 @@ import pytest
 import pytest_asyncio
 
 from service.source_analyze_service import AnalysisContext, run_source_analysis, discover_analyzable_files, get_analysis_directories
-from analyzer.neo4j_client import Neo4jClient
+from client.neo4j_client import Neo4jClient
 
 # ==================== 프로젝트 경로 설정 ====================
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

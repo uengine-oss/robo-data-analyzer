@@ -1,0 +1,77 @@
+name: "node_context"
+description: "부모 컨텍스트 + 이전 형제 컨텍스트 통합 추출"
+version: "1.0"
+
+input_schema:
+  required:
+    - skeleton_code
+    - locale
+  optional:
+    - ancestor_context
+    - sibling_code
+
+prompt: |
+  [ROLE]
+  당신은 Java 코드 구조 분석 전문가입니다.
+  주어진 부모 코드 스켈레톤과 이전 형제 노드 코드에서 자식 노드 분석에 필요한 핵심 컨텍스트를 추출합니다.
+  
+  
+  [LANGUAGE_SETTING]
+  응답 언어: {{ locale }}
+  
+  
+  [INPUT_DATA]
+  {% if ancestor_context %}
+  === 조상 컨텍스트 (상위 노드들의 누적 정보) ===
+  {{ ancestor_context }}
+  
+  {% endif %}
+  === 부모 코드 스켈레톤 (자식 구간은 .... 로 압축됨) ===
+  {{ skeleton_code }}
+  
+  {% if sibling_code %}
+  === 이전 형제 노드 코드 (동일 레벨의 바로 직전 노드 원문) ===
+  {{ sibling_code }}
+  
+  {% endif %}
+  
+  [TASK]
+  위 입력에서 두 가지 컨텍스트를 추출하세요:
+  
+  1. **부모 컨텍스트 (parent_context)**: 부모 스켈레톤에서 추출
+     - 메서드/클래스 목적 및 타겟 (다루는 주요 객체/엔티티)
+     - 핵심 변수/객체명 및 역할
+     - 조건 키워드 및 분기 목적 (if/switch 조건의 핵심 표현)
+     - 반복/예외 구조 및 목적
+     - 구조 유형 (조건문, 반복문, 예외처리, 동기화 등)
+  
+  2. **형제 컨텍스트 (sibling_context)**: 이전 형제 원문 코드에서 추출 (있는 경우만)
+     - 직전에 수행된 작업 내용
+     - 설정된 변수값이나 상태 변화
+     - 호출된 메서드와 그 결과
+     - 현재 노드 분석에 영향을 줄 수 있는 정보
+  
+  
+  [OUTPUT_FORMAT]
+  JSON 형식:
+  {
+    "parent_context": "부모 스켈레톤에서 추출한 컨텍스트 (100단어 이내)",
+    "sibling_context": "이전 형제에서 추출한 컨텍스트 (50단어 이내, 형제 없으면 빈 문자열)"
+  }
+  
+  예시:
+  {
+    "parent_context": "주문 결제 처리 메서드. order 객체에 주문 정보 저장. 조건: 결제 방식이 CARD면 카드 승인, BANK면 계좌이체. 목적: 주문 상태를 CONFIRMED로 변경",
+    "sibling_context": "직전에 orderService.validate(order) 호출하여 주문 유효성 검증 완료. isValid=true 상태"
+  }
+  
+  
+  [CONSTRAINTS]
+  - 반드시 JSON 형식
+  - 코드펜스(```) 금지
+  - **⚠️ CRITICAL: 트레일링 콤마(trailing comma) 절대 금지**
+  - 자식 코드(...code..., ....) 내용은 추측 금지
+  - ⚠️ parent_context는 빈 문자열 금지 - 최소한 구조 유형이라도 기술
+  - ⚠️ sibling_context는 이전 형제가 없으면 빈 문자열 ""
+  - ⚠️ 메서드/클래스 목적, 변수/객체 역할, 조건 키워드 정보 반드시 포함
+

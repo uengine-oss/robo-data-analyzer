@@ -2,23 +2,17 @@
 
 AST 기반 Java 코드 분석 → Neo4j 클래스 다이어그램 그래프 생성.
 
-분석 흐름 (3단계 + 이중 병렬):
+분석 흐름 (2단계 + 이중 병렬):
 1. [Phase 1] 모든 파일 AST 그래프 생성 (병렬)
    - 정적 노드 생성: CLASS, INTERFACE, METHOD, FIELD
-   - 정적 관계 생성: HAS_METHOD, HAS_FIELD, CONTAINS, NEXT
+   - 정적 관계 생성: HAS_METHOD, HAS_FIELD, CONTAINS
    
 2. [Phase 2] 모든 파일 LLM 분석 (파일 병렬 + 청크 병렬)
    - 코드 요약 및 분석
    - CALLS 관계 생성 (MATCH로 기존 노드 조회)
    - DEPENDENCY 관계 생성
-   - external_hints + resolution_candidate 마킹 (DeepAgents 후보)
    
-3. [Phase 3] DeepAgents 런타임 해석 (외부 참조 확정)
-   - 외부 설정 파일 (docs/*.xml, *.yaml) 검색
-   - 엔티티/서비스/매퍼 매핑 확정
-   - USES_TABLE, RESOLVES_TO 관계 생성
-   
-4. [Phase 4] User Story 문서 생성 (BaseStreamingAnalyzer 공통)
+3. [Phase 3] User Story 문서 생성 (BaseStreamingAnalyzer 공통)
 
 파일 상태 관리:
 - Phase1 실패 파일은 Phase2 스킵 (토큰 절감)
@@ -27,7 +21,6 @@ AST 기반 Java 코드 분석 → Neo4j 클래스 다이어그램 그래프 생�
 Phase 로직은 각 phase 파일에 분리되어 있습니다:
 - ast_phase.py: AST 그래프 생성 (Phase 1)
 - llm_phase.py: LLM 분석 (Phase 2)
-- deepagents/runtime_resolution_phase.py: 런타임 해석 (Phase 3)
 """
 
 import asyncio
@@ -38,12 +31,12 @@ from typing import Any, AsyncGenerator, Optional, List
 
 import aiofiles
 
-from analyzer.neo4j_client import Neo4jClient
+from client.neo4j_client import Neo4jClient
 from analyzer.strategy.base_analyzer import BaseStreamingAnalyzer, AnalysisStats
 from analyzer.strategy.base.file_context import FileStatus, FileAnalysisContext
 from analyzer.pipeline_control import pipeline_controller, PipelinePhase
 from config.settings import settings
-from util.stream_event import emit_message, emit_phase_event
+from util.stream_event import emit_message
 from util.text_utils import (
     generate_user_story_document,
     log_process,
@@ -52,10 +45,6 @@ from util.text_utils import (
 # Phase 파일들에서 import
 from analyzer.strategy.framework.ast_phase import run_phase1
 from analyzer.strategy.framework.llm_phase import run_phase2
-from analyzer.strategy.framework.deepagents.phase.runtime_resolution_phase import (
-    RuntimeResolutionPhase,
-    PhaseConfig as DeepAgentsConfig,
-)
 
 
 class FrameworkAnalyzer(BaseStreamingAnalyzer):
@@ -187,22 +176,6 @@ class FrameworkAnalyzer(BaseStreamingAnalyzer):
             yield emit_message("⏹️ 파이프라인이 중단되었습니다")
             pipeline_state.set_phase(PipelinePhase.CANCELLED)
             return
-
-        # ========== Phase 3: DeepAgents 런타임 해석 ==========
-        # LLM 분석에서 마킹된 외부 참조 후보 처리
-        yield emit_message("")
-        yield self.emit_separator()
-        yield self.emit_phase_header(3, "🔍 런타임 해석", "외부 참조 확정")
-        yield self.emit_separator()
-        
-        async for chunk in self._run_deepagents_phase(client):
-            yield chunk
-        
-        # Phase 3 후 일시정지 체크
-        if not await pipeline_state.wait_if_paused():
-            yield emit_message("⏹️ 파이프라인이 중단되었습니다")
-            pipeline_state.set_phase(PipelinePhase.CANCELLED)
-            return
         
         # 파이프라인 완료
         pipeline_state.set_phase(PipelinePhase.COMPLETED)
@@ -298,99 +271,3 @@ class FrameworkAnalyzer(BaseStreamingAnalyzer):
 
         tasks = [load_single(d, f) for d, f in file_names]
         return await asyncio.gather(*tasks)
-
-    # =========================================================================
-    # Phase 3: DeepAgents 런타임 해석
-    # =========================================================================
-
-    async def _run_deepagents_phase(
-        self,
-        client: Neo4jClient,
-    ) -> AsyncGenerator[bytes, None]:
-        """DeepAgents 런타임 해석 Phase 실행
-        
-        LLM 분석에서 마킹된 외부 참조 후보(external_hints, resolution_candidate)를
-        DeepAgents 파이프라인으로 처리하여 USES_TABLE, RESOLVES_TO 관계를 확정합니다.
-        
-        경로 구조:
-        - docs_root: data/docs/{project}/ (외부 설정 파일 - 프로젝트 루트)
-        - ddl_root: data/ddl/ (DDL 파일 - 프로젝트 루트)
-        - runs_root: data/runs/ (작업 워크스페이스 - 프로젝트 루트)
-        - skills_root: analyzer/strategy/framework/deepagents/resources/skills/ (기본값)
-        - memory_root: analyzer/strategy/framework/deepagents/resources/memory/ (기본값)
-        - reports_root: analyzer/strategy/framework/deepagents/resources/reports/ (기본값)
-        """
-        # 설정
-        docs_root = os.path.join(settings.path.data_dir, "docs")
-        ddl_root = os.path.join(settings.path.data_dir, "ddl")
-        runs_root = os.path.join(settings.path.data_dir, "runs")
-        
-        # docs 폴더가 없으면 Phase 스킵
-        if not os.path.exists(docs_root):
-            yield emit_message("   ℹ️ 외부 설정 파일(docs/) 없음 - 런타임 해석 스킵")
-            yield emit_message("")
-            yield self.emit_phase_complete(3, "스킵됨 (docs 폴더 없음)")
-            return
-        
-        try:
-            # DeepAgents Phase 설정
-            config = DeepAgentsConfig(
-                docs_root=docs_root,
-                ddl_root=ddl_root,
-                runs_root=runs_root,
-                max_workers=settings.concurrency.max_concurrency,
-                max_candidates_per_run=1000,
-                min_confidence=0.7,
-            )
-            
-            # Phase 실행
-            phase = RuntimeResolutionPhase(client._driver, config)
-            
-            # 후보 수 조회
-            pending_count = await phase.enqueuer.get_pending_count()
-            
-            if pending_count == 0:
-                yield emit_message("   ℹ️ 해석 대기 중인 외부 참조 없음")
-                yield emit_message("")
-                yield self.emit_phase_complete(3, "처리 대상 없음")
-                return
-            
-            yield emit_message(f"   📋 해석 대기 후보: {pending_count}개")
-            yield emit_message("   🚀 DeepAgents 파이프라인 시작...")
-            
-            # Phase 실행
-            result = await phase.run()
-            
-            # 결과 요약
-            yield emit_message("")
-            yield emit_message(f"   ✅ 처리 완료: {result.processed}/{result.total_candidates}")
-            yield emit_message(f"      - 성공: {result.success}")
-            yield emit_message(f"      - 실패: {result.failed}")
-            yield emit_message(f"      - 검토 대기: {result.pending_review}")
-            yield emit_message(f"      - 소요 시간: {result.duration_seconds:.1f}초")
-            
-            if result.errors:
-                yield emit_message(f"   ⚠️ 오류 {len(result.errors)}건:")
-                for err in result.errors[:5]:  # 최대 5개만 표시
-                    yield emit_message(f"      - {err[:100]}...")
-            
-            yield emit_message("")
-            yield self.emit_phase_complete(
-                3, 
-                f"{result.success}개 해석 완료, {result.pending_review}개 검토 대기"
-            )
-            
-            # 상세 결과 이벤트
-            yield emit_phase_event(
-                3,
-                "런타임 해석",
-                "completed",
-                100,
-                result.to_dict()
-            )
-            
-        except Exception as e:
-            log_process("ANALYZE", "DEEPAGENTS", f"런타임 해석 실패: {e}", logging.ERROR)
-            yield emit_message(f"   ❌ 런타임 해석 실패: {e}")
-            yield emit_message("")
-            yield self.emit_phase_complete(3, f"실패: {str(e)[:50]}")

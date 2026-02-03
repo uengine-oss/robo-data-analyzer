@@ -12,10 +12,9 @@ from typing import List, Optional
 
 from fastapi import HTTPException
 
-from analyzer.neo4j_client import Neo4jClient
+from client.neo4j_client import Neo4jClient
 from client.embedding_client import EmbeddingClient
 from config.settings import settings
-from util.text_utils import escape_for_cypher
 
 
 logger = logging.getLogger(__name__)
@@ -66,15 +65,24 @@ async def register_star_schema(
         fact_name = fact_table.get("name", "")
         fact_fqn = f"{dw_schema}.{fact_name}"
         
-        fact_query = f"""
-            MERGE (__cy_t__:Table {{fqn: '{escape_for_cypher(fact_fqn)}'}})
-            SET __cy_t__.name = '{escape_for_cypher(fact_name)}',
-                __cy_t__.schema = '{escape_for_cypher(dw_schema)}',
-                __cy_t__.db_name = '{escape_for_cypher(db_name)}',
-                __cy_t__.table_type = 'FACT',
-                __cy_t__.cube_name = '{escape_for_cypher(cube_name)}'
-            RETURN __cy_t__.name AS name
-        """
+        fact_query = {
+            "query": """
+                MERGE (__cy_t__:Table {fqn: $fqn})
+                SET __cy_t__.name = $name,
+                    __cy_t__.schema = $schema,
+                    __cy_t__.db_name = $db_name,
+                    __cy_t__.table_type = 'FACT',
+                    __cy_t__.cube_name = $cube_name
+                RETURN __cy_t__.name AS name
+            """,
+            "parameters": {
+                "fqn": fact_fqn,
+                "name": fact_name,
+                "schema": dw_schema,
+                "db_name": db_name,
+                "cube_name": cube_name,
+            }
+        }
         
         await client.execute_queries([fact_query])
         stats["tables_created"] += 1
@@ -82,15 +90,26 @@ async def register_star_schema(
         # 팩트 테이블 컬럼 생성
         for col in fact_table.get("columns", []):
             col_fqn = f"{fact_fqn}.{col['name']}"
-            col_query = f"""
-                MATCH (__cy_t__:Table {{fqn: '{escape_for_cypher(fact_fqn)}'}})
-                MERGE (__cy_t__)-[:HAS_COLUMN]->(__cy_c__:Column {{fqn: '{escape_for_cypher(col_fqn)}'}})
-                SET __cy_c__.name = '{escape_for_cypher(col["name"])}',
-                    __cy_c__.dtype = '{escape_for_cypher(col.get("dtype", "VARCHAR"))}',
-                    __cy_c__.description = '{escape_for_cypher(col.get("description") or "")}',
-                    __cy_c__.is_pk = {str(col.get("is_pk", False)).lower()},
-                    __cy_c__.is_fk = {str(col.get("is_fk", False)).lower()}
-            """
+            col_query = {
+                "query": """
+                    MATCH (__cy_t__:Table {fqn: $table_fqn})
+                    MERGE (__cy_t__)-[:HAS_COLUMN]->(__cy_c__:Column {fqn: $col_fqn})
+                    SET __cy_c__.name = $col_name,
+                        __cy_c__.dtype = $dtype,
+                        __cy_c__.description = $description,
+                        __cy_c__.is_pk = $is_pk,
+                        __cy_c__.is_fk = $is_fk
+                """,
+                "parameters": {
+                    "table_fqn": fact_fqn,
+                    "col_fqn": col_fqn,
+                    "col_name": col["name"],
+                    "dtype": col.get("dtype", "VARCHAR"),
+                    "description": col.get("description") or "",
+                    "is_pk": col.get("is_pk", False),
+                    "is_fk": col.get("is_fk", False),
+                }
+            }
             await client.execute_queries([col_query])
             stats["columns_created"] += 1
         
@@ -99,15 +118,24 @@ async def register_star_schema(
             dim_name = dim.get("name", "")
             dim_fqn = f"{dw_schema}.{dim_name}"
             
-            dim_query = f"""
-                MERGE (__cy_t__:Table {{fqn: '{escape_for_cypher(dim_fqn)}'}})
-                SET __cy_t__.name = '{escape_for_cypher(dim_name)}',
-                    __cy_t__.schema = '{escape_for_cypher(dw_schema)}',
-                    __cy_t__.db_name = '{escape_for_cypher(db_name)}',
-                    __cy_t__.table_type = 'DIMENSION',
-                    __cy_t__.cube_name = '{escape_for_cypher(cube_name)}'
-                RETURN __cy_t__.name AS name
-            """
+            dim_query = {
+                "query": """
+                    MERGE (__cy_t__:Table {fqn: $fqn})
+                    SET __cy_t__.name = $name,
+                        __cy_t__.schema = $schema,
+                        __cy_t__.db_name = $db_name,
+                        __cy_t__.table_type = 'DIMENSION',
+                        __cy_t__.cube_name = $cube_name
+                    RETURN __cy_t__.name AS name
+                """,
+                "parameters": {
+                    "fqn": dim_fqn,
+                    "name": dim_name,
+                    "schema": dw_schema,
+                    "db_name": db_name,
+                    "cube_name": cube_name,
+                }
+            }
             
             await client.execute_queries([dim_query])
             stats["tables_created"] += 1
@@ -115,13 +143,22 @@ async def register_star_schema(
             # 디멘전 테이블 컬럼 생성
             for col in dim.get("columns", []):
                 col_fqn = f"{dim_fqn}.{col['name']}"
-                col_query = f"""
-                    MATCH (__cy_t__:Table {{fqn: '{escape_for_cypher(dim_fqn)}'}})
-                    MERGE (__cy_t__)-[:HAS_COLUMN]->(__cy_c__:Column {{fqn: '{escape_for_cypher(col_fqn)}'}})
-                    SET __cy_c__.name = '{escape_for_cypher(col["name"])}',
-                        __cy_c__.dtype = '{escape_for_cypher(col.get("dtype", "VARCHAR"))}',
-                        __cy_c__.description = '{escape_for_cypher(col.get("description") or "")}'
-                """
+                col_query = {
+                    "query": """
+                        MATCH (__cy_t__:Table {fqn: $table_fqn})
+                        MERGE (__cy_t__)-[:HAS_COLUMN]->(__cy_c__:Column {fqn: $col_fqn})
+                        SET __cy_c__.name = $col_name,
+                            __cy_c__.dtype = $dtype,
+                            __cy_c__.description = $description
+                    """,
+                    "parameters": {
+                        "table_fqn": dim_fqn,
+                        "col_fqn": col_fqn,
+                        "col_name": col["name"],
+                        "dtype": col.get("dtype", "VARCHAR"),
+                        "description": col.get("description") or "",
+                    }
+                }
                 await client.execute_queries([col_query])
                 stats["columns_created"] += 1
         
@@ -129,13 +166,20 @@ async def register_star_schema(
         for col in fact_table.get("columns", []):
             if col.get("is_fk") and col.get("fk_target_table"):
                 target_table = col["fk_target_table"]
-                fk_query = f"""
-                    MATCH (__cy_f__:Table {{fqn: '{escape_for_cypher(fact_fqn)}'}})
-                    MATCH (__cy_d__:Table {{fqn: '{escape_for_cypher(target_table)}'}})
-                    MERGE (__cy_f__)-[__cy_r__:FK_TO_TABLE]->(__cy_d__)
-                    SET __cy_r__.sourceColumn = '{escape_for_cypher(col["name"])}',
-                        __cy_r__.source = 'user'
-                """
+                fk_query = {
+                    "query": """
+                        MATCH (__cy_f__:Table {fqn: $fact_fqn})
+                        MATCH (__cy_d__:Table {fqn: $target_fqn})
+                        MERGE (__cy_f__)-[__cy_r__:FK_TO_TABLE]->(__cy_d__)
+                        SET __cy_r__.sourceColumn = $source_column,
+                            __cy_r__.source = 'user'
+                    """,
+                    "parameters": {
+                        "fact_fqn": fact_fqn,
+                        "target_fqn": target_table,
+                        "source_column": col["name"],
+                    }
+                }
                 await client.execute_queries([fk_query])
                 stats["relationships_created"] += 1
         
@@ -151,10 +195,16 @@ async def register_star_schema(
                 fact_embedding = await embedding_client.embed_text(fact_text)
                 
                 if fact_embedding:
-                    embed_query = f"""
-                        MATCH (__cy_t__:Table {{fqn: '{escape_for_cypher(fact_fqn)}'}})
-                        SET __cy_t__.embedding = {fact_embedding}
-                    """
+                    embed_query = {
+                        "query": """
+                            MATCH (__cy_t__:Table {fqn: $fqn})
+                            SET __cy_t__.embedding = $embedding
+                        """,
+                        "parameters": {
+                            "fqn": fact_fqn,
+                            "embedding": fact_embedding,
+                        }
+                    }
                     await client.execute_queries([embed_query])
                     stats["embeddings_created"] += 1
             except Exception as e:
@@ -174,10 +224,16 @@ async def register_star_schema(
                     dim_embedding = await embedding_client.embed_text(dim_text)
                     
                     if dim_embedding:
-                        embed_query = f"""
-                            MATCH (__cy_t__:Table {{fqn: '{escape_for_cypher(dim_fqn)}'}})
-                            SET __cy_t__.embedding = {dim_embedding}
-                        """
+                        embed_query = {
+                            "query": """
+                                MATCH (__cy_t__:Table {fqn: $fqn})
+                                SET __cy_t__.embedding = $embedding
+                            """,
+                            "parameters": {
+                                "fqn": dim_fqn,
+                                "embedding": dim_embedding,
+                            }
+                        }
                         await client.execute_queries([embed_query])
                         stats["embeddings_created"] += 1
                 except Exception as e:
@@ -211,13 +267,16 @@ async def delete_star_schema(
     client = Neo4jClient()
     try:
         # 큐브에 속한 모든 테이블과 컬럼, 관계 삭제
-        query = f"""
-            MATCH (__cy_t__:Table {{cube_name: '{escape_for_cypher(cube_name)}'}})
-            OPTIONAL MATCH (__cy_t__)-[:HAS_COLUMN]->(__cy_c__:Column)
-            OPTIONAL MATCH (__cy_t__)-[__cy_r__:FK_TO_TABLE]->()
-            DETACH DELETE __cy_t__, __cy_c__
-            RETURN count(DISTINCT __cy_t__) AS deleted_tables
-        """
+        query = {
+            "query": """
+                MATCH (__cy_t__:Table {cube_name: $cube_name})
+                OPTIONAL MATCH (__cy_t__)-[:HAS_COLUMN]->(__cy_c__:Column)
+                OPTIONAL MATCH (__cy_t__)-[__cy_r__:FK_TO_TABLE]->()
+                DETACH DELETE __cy_t__, __cy_c__
+                RETURN count(DISTINCT __cy_t__) AS deleted_tables
+            """,
+            "parameters": {"cube_name": cube_name}
+        }
         
         results = await client.execute_queries([query])
         deleted = results[0][0]["deleted_tables"] if results and results[0] else 0

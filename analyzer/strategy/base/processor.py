@@ -4,7 +4,7 @@
 
 파이프라인:
 - Phase 1: build_static_graph_queries() - 정적 그래프 쿼리 생성
-- Phase 1.5: _generate_parent_contexts() - 부모 컨텍스트 생성
+- Phase 1.5: _generate_node_contexts() - 노드 컨텍스트 생성 (부모 + 이전 형제)
 - Phase 2: run_llm_analysis() - LLM 분석
 
 전략별 구현 필요:
@@ -20,10 +20,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Tuple, Set
+from typing import Any, Dict, List, Optional, Tuple, Set, Union
 
 from config.settings import settings
-from util.text_utils import escape_for_cypher, calculate_code_token, log_process
+from util.text_utils import calculate_code_token, log_process
 from analyzer.pipeline_control import pipeline_controller
 
 from analyzer.strategy.base.statement_node import StatementNode
@@ -31,6 +31,7 @@ from analyzer.strategy.base.batch import AnalysisBatch, BatchPlanner
 
 # 설정에서 가져오는 상수
 MAX_CONCURRENCY = settings.concurrency.max_concurrency
+MAX_CONTEXT_TOKEN = settings.batch.max_context_token
 
 
 class BaseAstProcessor(ABC):
@@ -38,7 +39,7 @@ class BaseAstProcessor(ABC):
     
     2단계 분석 지원:
     - Phase 1: build_static_graph_queries() - 정적 그래프 쿼리 생성
-    - Phase 1.5: _generate_parent_contexts() - 부모 컨텍스트 생성
+    - Phase 1.5: _generate_node_contexts() - 노드 컨텍스트 생성 (부모 + 이전 형제)
     - Phase 2: run_llm_analysis() - LLM 분석 후 업데이트 쿼리 생성
     
     전략별로 오버라이드해야 하는 메서드:
@@ -49,7 +50,7 @@ class BaseAstProcessor(ABC):
     - _invoke_llm(): LLM 호출
     - _build_analysis_queries(): 분석 결과 쿼리 변환
     - _process_unit_summaries(): 단위 요약 처리
-    - _extract_parent_context(): 부모 컨텍스트 추출
+    - _extract_node_context(): 노드 컨텍스트 추출 (부모 + 이전 형제)
     - _get_excluded_context_types(): 컨텍스트 생성 제외 타입
     - _get_unit_info_dict(): 단위(프로시저/클래스) 정보 딕셔너리
     """
@@ -79,10 +80,6 @@ class BaseAstProcessor(ABC):
         
         # full_directory: 디렉토리 + 파일명 (Neo4j directory 속성으로 사용)
         self.full_directory = f"{normalized_dir}/{file_name}" if normalized_dir else file_name
-
-        self.node_base_props = (
-            f"directory: '{escape_for_cypher(self.full_directory)}', file_name: '{file_name}'"
-        )
         
         self.max_workers = MAX_CONCURRENCY
         self.file_last_line = last_line
@@ -107,21 +104,21 @@ class BaseAstProcessor(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def _build_static_node_queries(self, node: StatementNode) -> List[str]:
-        """정적 노드 생성 쿼리 리스트를 반환합니다."""
+    def _build_static_node_queries(self, node: StatementNode) -> List[Union[str, Dict[str, Any]]]:
+        """정적 노드 생성 쿼리 리스트를 반환합니다 (파라미터화된 Dict 포함)."""
         raise NotImplementedError
 
     @abstractmethod
-    def _build_relationship_queries(self) -> List[str]:
-        """정적 관계 쿼리를 생성합니다."""
+    def _build_relationship_queries(self) -> List[Union[str, Dict[str, Any]]]:
+        """정적 관계 쿼리를 생성합니다 (파라미터화된 Dict 포함)."""
         raise NotImplementedError
 
     @abstractmethod
-    async def _run_preprocessing(self) -> List[str]:
+    async def _run_preprocessing(self) -> List[Union[str, Dict[str, Any]]]:
         """선행 처리 (변수/상속/필드/메서드 분석) 후 쿼리를 반환합니다.
         
         Returns:
-            선행 처리 쿼리 리스트
+            선행 처리 쿼리 리스트 (파라미터화된 Dict 포함)
         """
         raise NotImplementedError
 
@@ -139,8 +136,8 @@ class BaseAstProcessor(ABC):
         self, 
         batch: AnalysisBatch, 
         llm_result: Any,
-        unit_summary_store: Optional[Dict[str, Dict[str, str]]] = None,
-    ) -> List[str]:
+        unit_summary_store: Optional[Dict[str, Dict[str, str]]],
+    ) -> List[Union[str, Dict[str, Any]]]:
         """LLM 분석 결과를 쿼리로 변환합니다.
         
         Args:
@@ -149,7 +146,7 @@ class BaseAstProcessor(ABC):
             unit_summary_store: 단위별 summary 저장소 (프로시저/클래스)
             
         Returns:
-            분석 결과 업데이트 쿼리 리스트
+            분석 결과 업데이트 쿼리 리스트 (파라미터화된 Dict 포함)
         """
         raise NotImplementedError
 
@@ -157,31 +154,33 @@ class BaseAstProcessor(ABC):
     async def _process_unit_summaries(
         self, 
         unit_summary_store: Dict[str, Dict[str, str]]
-    ) -> List[str]:
+    ) -> List[Union[str, Dict[str, Any]]]:
         """단위(프로시저/클래스)별 summary를 처리하여 쿼리를 반환합니다.
         
         Args:
             unit_summary_store: 단위별 summary 저장소
             
         Returns:
-            단위 요약 쿼리 리스트
+            단위 요약 쿼리 리스트 (파라미터화된 Dict 포함)
         """
         raise NotImplementedError
 
     @abstractmethod
-    async def _extract_parent_context(
+    async def _extract_node_context(
         self, 
         skeleton_code: str, 
-        ancestor_context: str
-    ) -> str:
-        """부모 노드의 스켈레톤 코드에서 핵심 컨텍스트를 추출합니다.
+        ancestor_context: str,
+        sibling_code: str,
+    ) -> Tuple[str, str]:
+        """부모 스켈레톤 + 이전 형제 코드에서 컨텍스트를 추출합니다.
         
         Args:
             skeleton_code: 자식 구간이 .... 로 압축된 부모 코드
             ancestor_context: 조상 노드들의 누적 컨텍스트
+            sibling_code: 이전 형제 노드의 원문 코드 (없으면 빈 문자열)
             
         Returns:
-            핵심 컨텍스트 문자열
+            (parent_context, sibling_context) 튜플
         """
         raise NotImplementedError
 
@@ -212,11 +211,11 @@ class BaseAstProcessor(ABC):
     # Phase 1: 정적 그래프 쿼리 생성
     # =========================================================================
     
-    def build_static_graph_queries(self) -> List[str]:
+    def build_static_graph_queries(self) -> List[Union[str, Dict[str, Any]]]:
         """[Phase 1] AST를 수집하고 정적 그래프 쿼리를 생성합니다.
         
         Returns:
-            정적 노드 및 관계 생성 쿼리 리스트
+            정적 노드 및 관계 생성 쿼리 리스트 (문자열 또는 파라미터화된 Dict)
         """
         log_process("ANALYZE", "PHASE1", f"🏗️ {self.full_directory} 정적 그래프 생성")
         
@@ -227,8 +226,8 @@ class BaseAstProcessor(ABC):
             log_process("ANALYZE", "PHASE1", f"⚠️ {self.full_directory}: 분석 대상 노드 없음")
             return []
         
-        # 정적 노드 쿼리 생성
-        queries: List[str] = []
+        # 정적 노드 쿼리 생성 (파라미터화된 Dict 쿼리도 포함)
+        queries: List[Union[str, Dict[str, Any]]] = []
         for node in self._nodes:
             queries.extend(self._build_static_node_queries(node))
         
@@ -239,16 +238,16 @@ class BaseAstProcessor(ABC):
         return queries
 
     # =========================================================================
-    # Phase 1.5: 부모 컨텍스트 생성 (Top-down)
+    # Phase 1.5: 노드 컨텍스트 생성 (부모 + 이전 형제)
     # =========================================================================
     
-    async def _generate_parent_contexts(self) -> None:
+    async def _generate_node_contexts(self) -> None:
         """부모 노드들의 컨텍스트를 Top-down 순서로 생성합니다.
         
         처리 흐름:
         1. 부모 노드들을 깊이 순으로 정렬 (얕은 것 먼저)
-        2. 각 부모에 대해 스켈레톤 + 조상 컨텍스트 → LLM → 컨텍스트 추출
-        3. 추출된 컨텍스트를 노드에 저장
+        2. 각 부모에 대해 스켈레톤 + 이전 형제 원문 + 조상 컨텍스트 → LLM → 컨텍스트 추출
+        3. 추출된 parent_context와 sibling_context를 노드에 저장
         4. context_ready_event 설정
         """
         if not self._nodes:
@@ -281,7 +280,7 @@ class BaseAstProcessor(ABC):
         # 깊이 순으로 정렬 (얕은 것 먼저 → Top-down 보장)
         parent_nodes.sort(key=get_depth)
         
-        log_process("ANALYZE", "CONTEXT", f"🔄 부모 컨텍스트 생성 시작: {len(parent_nodes)}개 노드")
+        log_process("ANALYZE", "CONTEXT", f"🔄 노드 컨텍스트 생성 시작: {len(parent_nodes)}개 노드")
         
         # 순차적으로 처리 (깊이 순서 보장)
         # 같은 깊이의 노드들은 병렬 처리 가능
@@ -299,16 +298,22 @@ class BaseAstProcessor(ABC):
                         if node.parent and node.parent.needs_context_generation(excluded_types):
                             await node.parent.context_ready_event.wait()
                         
-                        # 스켈레톤 코드 생성
+                        # 스켈레톤 코드 생성 (부모 틀)
                         skeleton = node.get_skeleton_code()
                         
                         # 조상 컨텍스트 수집
-                        ancestor_ctx = node.get_ancestor_context()
+                        ancestor_ctx = node.get_ancestor_context(MAX_CONTEXT_TOKEN)
                         
-                        # LLM 호출하여 컨텍스트 추출
-                        context = await self._extract_parent_context(skeleton, ancestor_ctx)
+                        # 이전 형제 원문 코드
+                        sibling_code = node.get_sibling_code()
                         
-                        node.context = context
+                        # LLM 호출하여 컨텍스트 추출 (부모 + 형제)
+                        parent_ctx, sibling_ctx = await self._extract_node_context(
+                            skeleton, ancestor_ctx, sibling_code
+                        )
+                        
+                        node.context = parent_ctx
+                        node.sibling_context = sibling_ctx
                         log_process("ANALYZE", "CONTEXT", f"✅ 컨텍스트 생성 완료: {node.node_type}[{node.start_line}~{node.end_line}]")
                     except Exception as e:
                         log_process("ANALYZE", "CONTEXT", f"❌ 컨텍스트 생성 실패 (치명적): {node.node_type}[{node.start_line}]: {e}", logging.ERROR)
@@ -341,13 +346,13 @@ class BaseAstProcessor(ABC):
             if not node.context_ready_event.is_set():
                 node.context_ready_event.set()
         
-        log_process("ANALYZE", "CONTEXT", f"✅ 부모 컨텍스트 생성 완료: {len(parent_nodes)}개")
+        log_process("ANALYZE", "CONTEXT", f"✅ 노드 컨텍스트 생성 완료: {len(parent_nodes)}개")
 
     # =========================================================================
     # Phase 2: LLM 분석
     # =========================================================================
     
-    async def run_llm_analysis(self) -> Tuple[List[str], int, List[Dict[str, Any]]]:
+    async def run_llm_analysis(self) -> Tuple[List[Union[str, Dict[str, Any]]], int, List[Dict[str, Any]]]:
         """[Phase 2] LLM 분석을 실행하고 업데이트 쿼리를 생성합니다.
         
         중요: 자식→부모 요약 의존성을 보장하기 위해 completion_event 기반 대기
@@ -362,7 +367,7 @@ class BaseAstProcessor(ABC):
         
         log_process("ANALYZE", "PHASE2", f"🤖 {self.full_directory} LLM 분석 시작")
         
-        all_queries: List[str] = []
+        all_queries: List[Union[str, Dict[str, Any]]] = []
         failed_batch_count = 0
         all_failed_details: List[Dict[str, Any]] = []
         
@@ -371,7 +376,7 @@ class BaseAstProcessor(ABC):
         all_queries.extend(preprocessing_queries)
         
         # Phase 1.5: 부모 컨텍스트 생성 (Top-down)
-        await self._generate_parent_contexts()
+        await self._generate_node_contexts()
         
         # 배치 분석
         planner = BatchPlanner()
@@ -574,24 +579,40 @@ class BaseAstProcessor(ABC):
         return chunks
 
     # =========================================================================
-    # 공통 관계 쿼리 빌더
+    # 공통 관계 쿼리 빌더 (파라미터화)
     # =========================================================================
 
-    def _build_contains_query(self, parent: "StatementNode", child: "StatementNode") -> str:
-        """CONTAINS 관계 쿼리 (공통)"""
-        return (
-            f"MATCH (__cy_p__:{parent.node_type} {{startLine: {parent.start_line}, {self.node_base_props}}})\n"
-            f"MATCH (__cy_c__:{child.node_type} {{startLine: {child.start_line}, {self.node_base_props}}})\n"
-            f"MERGE (__cy_p__)-[__cy_r__:CONTAINS]->(__cy_c__)\n"
-            f"RETURN __cy_r__"
-        )
+    def _build_contains_query(self, parent: "StatementNode", child: "StatementNode") -> Dict[str, Any]:
+        """CONTAINS 관계 쿼리 (파라미터화)"""
+        return {
+            "query": (
+                f"MATCH (__cy_p__:{parent.node_type} {{startLine: $parent_line, directory: $directory, file_name: $file_name}})\n"
+                f"MATCH (__cy_c__:{child.node_type} {{startLine: $child_line, directory: $directory, file_name: $file_name}})\n"
+                f"MERGE (__cy_p__)-[__cy_r__:CONTAINS]->(__cy_c__)\n"
+                f"RETURN __cy_r__"
+            ),
+            "params": {
+                "parent_line": parent.start_line,
+                "child_line": child.start_line,
+                "directory": self.full_directory,
+                "file_name": self.file_name,
+            }
+        }
 
-    def _build_parent_of_query(self, parent: "StatementNode", child: "StatementNode") -> str:
-        """PARENT_OF 관계 쿼리 (공통)"""
-        return (
-            f"MATCH (__cy_p__:{parent.node_type} {{startLine: {parent.start_line}, {self.node_base_props}}})\n"
-            f"MATCH (__cy_c__:{child.node_type} {{startLine: {child.start_line}, {self.node_base_props}}})\n"
-            f"MERGE (__cy_p__)-[__cy_r__:PARENT_OF]->(__cy_c__)\n"
-            f"RETURN __cy_r__"
-        )
+    def _build_parent_of_query(self, parent: "StatementNode", child: "StatementNode") -> Dict[str, Any]:
+        """PARENT_OF 관계 쿼리 (파라미터화)"""
+        return {
+            "query": (
+                f"MATCH (__cy_p__:{parent.node_type} {{startLine: $parent_line, directory: $directory, file_name: $file_name}})\n"
+                f"MATCH (__cy_c__:{child.node_type} {{startLine: $child_line, directory: $directory, file_name: $file_name}})\n"
+                f"MERGE (__cy_p__)-[__cy_r__:PARENT_OF]->(__cy_c__)\n"
+                f"RETURN __cy_r__"
+            ),
+            "params": {
+                "parent_line": parent.start_line,
+                "child_line": child.start_line,
+                "directory": self.full_directory,
+                "file_name": self.file_name,
+            }
+        }
 

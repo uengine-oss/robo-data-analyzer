@@ -18,12 +18,12 @@ import asyncio
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple, Set
+from typing import Any, Dict, List, Optional, Tuple, Set, Union
 
 from config.settings import settings
 from util.rule_loader import RuleLoader
 # Exceptions: 모든 커스텀 예외는 RuntimeError로 대체됨
-from util.text_utils import calculate_code_token, escape_for_cypher, parse_table_identifier, log_process
+from util.text_utils import calculate_code_token, parse_table_identifier, log_process
 
 from analyzer.strategy.base.statement_node import StatementNode
 from analyzer.strategy.base.batch import AnalysisBatch
@@ -188,17 +188,39 @@ def analyze_variables(declaration_code: str, api_key: str, locale: str) -> Dict[
     )
 
 
-def extract_parent_context(skeleton_code: str, ancestor_context: str, api_key: str, locale: str) -> str:
-    """부모 노드의 핵심 컨텍스트를 추출합니다."""
+def extract_node_context(
+    skeleton_code: str, 
+    ancestor_context: str, 
+    sibling_code: str,
+    api_key: str, 
+    locale: str,
+) -> Tuple[str, str]:
+    """부모 스켈레톤 + 이전 형제 코드에서 컨텍스트를 추출합니다.
+    
+    Returns:
+        (parent_context, sibling_context) 튜플
+    """
     result = _rule_loader().execute(
-        "parent_context",
-        {"skeleton_code": skeleton_code, "ancestor_context": ancestor_context, "locale": locale},
+        "node_context",
+        {
+            "skeleton_code": skeleton_code, 
+            "ancestor_context": ancestor_context, 
+            "sibling_code": sibling_code,
+            "locale": locale,
+        },
         api_key,
     )
 
-    if isinstance(result, dict):
-        return result.get("context_summary", "").strip()
-    raise ValueError(f"parent_context 규칙이 dict가 아닌 값을 반환했습니다: {type(result)}")
+    if not isinstance(result, dict):
+        raise ValueError(f"node_context 규칙이 dict가 아닌 값을 반환했습니다: {type(result)}")
+    
+    parent_ctx = result.get("parent_context", "").strip()
+    sibling_ctx = result.get("sibling_context", "").strip()
+    
+    if not parent_ctx:
+        raise ValueError("node_context 규칙이 빈 parent_context를 반환했습니다")
+    
+    return parent_ctx, sibling_ctx
 
 
 def analyze_variable_summary(variables: List[Dict[str, Any]], api_key: str, locale: str) -> Dict[str, Any]:
@@ -484,19 +506,25 @@ class DbmsAstProcessor(BaseAstProcessor):
         """DBMS는 DML 범위 포함"""
         return True
 
-    async def _extract_parent_context(self, skeleton_code: str, ancestor_context: str) -> str:
-        """부모 컨텍스트 추출"""
+    async def _extract_node_context(
+        self, 
+        skeleton_code: str, 
+        ancestor_context: str,
+        sibling_code: str,
+    ) -> Tuple[str, str]:
+        """부모 + 이전 형제 컨텍스트 추출"""
         return await asyncio.to_thread(
-            extract_parent_context,
+            extract_node_context,
             skeleton_code,
             ancestor_context,
+            sibling_code,
             self.api_key,
             self.locale,
         )
 
-    def _build_static_node_queries(self, node: StatementNode) -> List[str]:
-        """정적 노드 생성 쿼리 리스트를 반환합니다."""
-        queries: List[str] = []
+    def _build_static_node_queries(self, node: StatementNode) -> List[Union[str, Dict[str, Any]]]:
+        """정적 노드 생성 쿼리 리스트를 반환합니다 (파라미터화)."""
+        queries: List[Union[str, Dict[str, Any]]] = []
         label = node.node_type
         
         # name 속성 결정
@@ -507,62 +535,84 @@ class DbmsAstProcessor(BaseAstProcessor):
         else:
             node_name = f"{label}[{node.start_line}]"
         
-        escaped_name = escape_for_cypher(node_name)
-        has_children = "true" if node.has_children else "false"
-        escaped_code = escape_for_cypher(node.code)
+        # 기본 파라미터
+        params: Dict[str, Any] = {
+            "start_line": node.start_line,
+            "end_line": node.end_line,
+            "directory": self.full_directory,
+            "file_name": self.file_name,
+            "node_name": node_name,
+            "node_code": node.code,
+            "token": node.token,
+            "has_children": node.has_children,
+        }
         
-        base_set = [
-            f"__cy_n__.endLine = {node.end_line}",
-            f"__cy_n__.name = '{escaped_name}'",
-            f"__cy_n__.node_code = '{escaped_code}'",
-            f"__cy_n__.token = {node.token}",
-            f"__cy_n__.has_children = {has_children}",
+        # 동적 SET 절 구성
+        set_parts = [
+            "__cy_n__.endLine = $end_line",
+            "__cy_n__.name = $node_name",
+            "__cy_n__.node_code = $node_code",
+            "__cy_n__.token = $token",
+            "__cy_n__.has_children = $has_children",
         ]
         
         # AST JSON 메타데이터 속성 추가 (있는 경우만)
         if node.signature:
-            base_set.append(f"__cy_n__.signature = '{escape_for_cypher(node.signature)}'")
+            set_parts.append("__cy_n__.signature = $signature")
+            params["signature"] = node.signature
         if node.parameters:
-            base_set.append(f"__cy_n__.parameters = '{escape_for_cypher(node.parameters)}'")
+            set_parts.append("__cy_n__.parameters = $parameters")
+            params["parameters"] = node.parameters
         
         # PROCEDURE/FUNCTION: procedure_name, schema_name, procedure_type 속성 추가
         if label in PROCEDURE_TYPES and node.unit_name:
-            base_set.append(f"__cy_n__.procedure_name = '{escape_for_cypher(node.unit_name)}'")
-            base_set.append(f"__cy_n__.procedure_type = '{label}'")
+            set_parts.append("__cy_n__.procedure_name = $procedure_name")
+            set_parts.append("__cy_n__.procedure_type = $procedure_type")
+            params["procedure_name"] = node.unit_name
+            params["procedure_type"] = label
             if node.schema_name:
-                base_set.append(f"__cy_n__.schema_name = '{escape_for_cypher(node.schema_name)}'")
+                set_parts.append("__cy_n__.schema_name = $schema_name")
+                params["schema_name"] = node.schema_name
         elif node.unit_name:
-            base_set.append(f"__cy_n__.procedure_name = '{escape_for_cypher(node.unit_name)}'")
+            set_parts.append("__cy_n__.procedure_name = $procedure_name")
+            params["procedure_name"] = node.unit_name
             if node.schema_name:
-                base_set.append(f"__cy_n__.schema_name = '{escape_for_cypher(node.schema_name)}'")
+                set_parts.append("__cy_n__.schema_name = $schema_name")
+                params["schema_name"] = node.schema_name
         
         if node.has_children:
-            escaped_placeholder = escape_for_cypher(node.get_placeholder_code())
-            base_set.append(f"__cy_n__.summarized_code = '{escaped_placeholder}'")
+            set_parts.append("__cy_n__.summarized_code = $summarized_code")
+            params["summarized_code"] = node.get_placeholder_code()
         
-        base_set_str = ", ".join(base_set)
+        set_clause = ", ".join(set_parts)
         
         # PROCEDURE/FUNCTION 노드: MERGE로 생성 (중복 방지)
         if label in PROCEDURE_TYPES and node.unit_name:
-            escaped_proc_name = escape_for_cypher(node.unit_name)
-            escaped_schema = escape_for_cypher(node.schema_name or "")
-            schema_match = f"schema_name: '{escaped_schema}', " if node.schema_name else ""
-            queries.append(
-                f"MERGE (__cy_n__:{label} {{{schema_match}procedure_name: '{escaped_proc_name}'}})\n"
-                f"SET __cy_n__.startLine = {node.start_line}, __cy_n__.directory = '{escape_for_cypher(self.full_directory)}', __cy_n__.file_name = '{self.file_name}', {base_set_str}\n"
-                f"RETURN __cy_n__"
-            )
+            if node.schema_name:
+                query = (
+                    f"MERGE (__cy_n__:{label} {{schema_name: $schema_name, procedure_name: $procedure_name}})\n"
+                    f"SET __cy_n__.startLine = $start_line, __cy_n__.directory = $directory, __cy_n__.file_name = $file_name, {set_clause}\n"
+                    f"RETURN __cy_n__"
+                )
+            else:
+                query = (
+                    f"MERGE (__cy_n__:{label} {{procedure_name: $procedure_name}})\n"
+                    f"SET __cy_n__.startLine = $start_line, __cy_n__.directory = $directory, __cy_n__.file_name = $file_name, {set_clause}\n"
+                    f"RETURN __cy_n__"
+                )
+            queries.append({"query": query, "params": params})
         else:
-            queries.append(
-                f"MERGE (__cy_n__:{label} {{startLine: {node.start_line}, {self.node_base_props}}})\n"
-                f"SET {base_set_str}\n"
+            query = (
+                f"MERGE (__cy_n__:{label} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
+                f"SET {set_clause}\n"
                 f"RETURN __cy_n__"
             )
+            queries.append({"query": query, "params": params})
         return queries
 
-    def _build_relationship_queries(self) -> List[str]:
-        """정적 관계 쿼리 (CONTAINS, PARENT_OF, NEXT)를 생성합니다."""
-        queries: List[str] = []
+    def _build_relationship_queries(self) -> List[Union[str, Dict[str, Any]]]:
+        """정적 관계 쿼리 (CONTAINS, PARENT_OF, NEXT)를 생성합니다 (파라미터화)."""
+        queries: List[Union[str, Dict[str, Any]]] = []
         
         for node in self._nodes or []:
             for child in node.children:
@@ -580,14 +630,22 @@ class DbmsAstProcessor(BaseAstProcessor):
         
         return queries
     
-    def _build_next_query(self, prev: StatementNode, current: StatementNode) -> str:
-        """NEXT 관계 쿼리"""
-        return (
-            f"MATCH (__cy_prev__:{prev.node_type} {{startLine: {prev.start_line}, {self.node_base_props}}})\n"
-            f"MATCH (__cy_curr__:{current.node_type} {{startLine: {current.start_line}, {self.node_base_props}}})\n"
-            f"MERGE (__cy_prev__)-[__cy_r__:NEXT]->(__cy_curr__)\n"
-            f"RETURN __cy_r__"
-        )
+    def _build_next_query(self, prev: StatementNode, current: StatementNode) -> Dict[str, Any]:
+        """NEXT 관계 쿼리 (파라미터화)"""
+        return {
+            "query": (
+                f"MATCH (__cy_prev__:{prev.node_type} {{startLine: $prev_line, directory: $directory, file_name: $file_name}})\n"
+                f"MATCH (__cy_curr__:{current.node_type} {{startLine: $curr_line, directory: $directory, file_name: $file_name}})\n"
+                f"MERGE (__cy_prev__)-[__cy_r__:NEXT]->(__cy_curr__)\n"
+                f"RETURN __cy_r__"
+            ),
+            "params": {
+                "prev_line": prev.start_line,
+                "curr_line": current.start_line,
+                "directory": self.full_directory,
+                "file_name": self.file_name,
+            }
+        }
 
     async def _run_preprocessing(self) -> List[str]:
         """변수 선행 처리"""
@@ -635,10 +693,10 @@ class DbmsAstProcessor(BaseAstProcessor):
         self, 
         batch: AnalysisBatch, 
         llm_result: Any,
-        unit_summary_store: Optional[Dict[str, Dict[str, str]]] = None,
-    ) -> List[str]:
-        """LLM 분석 결과를 쿼리로 변환"""
-        queries: List[str] = []
+        unit_summary_store: Optional[Dict[str, Dict[str, str]]],
+    ) -> List[Union[str, Dict[str, Any]]]:
+        """LLM 분석 결과를 쿼리로 변환 (파라미터화)"""
+        queries: List[Union[str, Dict[str, Any]]] = []
         
         # llm_result는 (general_result, table_result) 튜플이어야 함
         if not isinstance(llm_result, tuple):
@@ -659,19 +717,29 @@ class DbmsAstProcessor(BaseAstProcessor):
                 # Summary 업데이트
                 summary = analysis.get("summary") or ""
                 if summary:
-                    escaped_summary = escape_for_cypher(str(summary))
-                    escaped_code = escape_for_cypher(node.code)
                     node_name = build_statement_name(node.node_type, node.start_line)
-                    escaped_node_name = escape_for_cypher(node_name)
-                    
-                    queries.append(
-                        f"MATCH (__cy_n__:{node.node_type} {{startLine: {node.start_line}, {self.node_base_props}}})\n"
-                        f"SET __cy_n__.endLine = {node.end_line}, __cy_n__.name = '{escaped_node_name}', "
-                        f"__cy_n__.summary = '{escaped_summary}', __cy_n__.node_code = '{escaped_code}', "
-                        f"__cy_n__.token = {node.token}, __cy_n__.procedure_name = '{escape_for_cypher(node.unit_name or '')}', "
-                        f"__cy_n__.has_children = {'true' if node.has_children else 'false'}\n"
-                        f"RETURN __cy_n__"
-                    )
+                    queries.append({
+                        "query": (
+                            f"MATCH (__cy_n__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
+                            f"SET __cy_n__.endLine = $end_line, __cy_n__.name = $node_name, "
+                            f"__cy_n__.summary = $summary, __cy_n__.node_code = $node_code, "
+                            f"__cy_n__.token = $token, __cy_n__.procedure_name = $procedure_name, "
+                            f"__cy_n__.has_children = $has_children\n"
+                            f"RETURN __cy_n__"
+                        ),
+                        "params": {
+                            "start_line": node.start_line,
+                            "end_line": node.end_line,
+                            "directory": self.full_directory,
+                            "file_name": self.file_name,
+                            "node_name": node_name,
+                            "summary": str(summary),
+                            "node_code": node.code,
+                            "token": node.token,
+                            "procedure_name": node.unit_name or "",
+                            "has_children": node.has_children,
+                        }
+                    })
                     
                     # 프로시저별 summary 저장
                     if unit_summary_store is not None and node.unit_key:
@@ -683,23 +751,37 @@ class DbmsAstProcessor(BaseAstProcessor):
                 for call_name in analysis.get('calls', []) or []:
                     if '.' in call_name:
                         package_raw, proc_raw = call_name.split('.', 1)
-                        package_name = escape_for_cypher(package_raw.strip())
-                        proc_name = escape_for_cypher(proc_raw.strip())
-                        queries.append(
-                            f"MATCH (__cy_c__:{node.node_type} {{startLine: {node.start_line}, {self.node_base_props}}})\n"
-                            f"MERGE (__cy_target__:PROCEDURE {{directory: '{package_name}', procedure_name: '{proc_name}'}})\n"
-                            f"MERGE (__cy_c__)-[__cy_r__:CALL {{scope: 'external'}}]->(__cy_target__)\n"
-                            f"RETURN __cy_c__, __cy_target__, __cy_r__"
-                        )
+                        queries.append({
+                            "query": (
+                                f"MATCH (__cy_c__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
+                                f"MERGE (__cy_target__:PROCEDURE {{directory: $package_name, procedure_name: $proc_name}})\n"
+                                f"MERGE (__cy_c__)-[__cy_r__:CALL {{scope: 'external'}}]->(__cy_target__)\n"
+                                f"RETURN __cy_c__, __cy_target__, __cy_r__"
+                            ),
+                            "params": {
+                                "start_line": node.start_line,
+                                "directory": self.full_directory,
+                                "file_name": self.file_name,
+                                "package_name": package_raw.strip(),
+                                "proc_name": proc_raw.strip(),
+                            }
+                        })
                     else:
-                        escaped_call = escape_for_cypher(call_name)
-                        queries.append(
-                            f"MATCH (__cy_c__:{node.node_type} {{startLine: {node.start_line}, {self.node_base_props}}})\n"
-                            f"MATCH (__cy_p__ {{procedure_name: '{escaped_call}', {self.node_base_props}}})\n"
-                            f"WHERE __cy_p__:PROCEDURE OR __cy_p__:FUNCTION\n"
-                            f"MERGE (__cy_c__)-[__cy_r__:CALL {{scope: 'internal'}}]->(__cy_p__)\n"
-                            f"RETURN __cy_c__, __cy_p__, __cy_r__"
-                        )
+                        queries.append({
+                            "query": (
+                                f"MATCH (__cy_c__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
+                                f"MATCH (__cy_p__ {{procedure_name: $call_name, directory: $directory, file_name: $file_name}})\n"
+                                f"WHERE __cy_p__:PROCEDURE OR __cy_p__:FUNCTION\n"
+                                f"MERGE (__cy_c__)-[__cy_r__:CALL {{scope: 'internal'}}]->(__cy_p__)\n"
+                                f"RETURN __cy_c__, __cy_p__, __cy_r__"
+                            ),
+                            "params": {
+                                "start_line": node.start_line,
+                                "directory": self.full_directory,
+                                "file_name": self.file_name,
+                                "call_name": call_name,
+                            }
+                        })
                 
                 # 변수 사용 마킹 및 역할 누적 (메모리 맵에 저장, Neo4j 저장은 _process_unit_summaries에서)
                 for var_info in analysis.get('variables', []) or []:
@@ -714,14 +796,20 @@ class DbmsAstProcessor(BaseAstProcessor):
                     if not var_name:
                         continue
                     
-                    escaped_name = escape_for_cypher(var_name)
-                    
                     # 사용 마킹은 바로 저장
-                    queries.append(
-                        f"MATCH (__cy_v__:Variable {{name: '{escaped_name}', {self.node_base_props}}})\n"
-                        f"SET __cy_v__.`{node.start_line}_{node.end_line}` = 'Used'\n"
-                        f"RETURN __cy_v__"
-                    )
+                    usage_key = f"{node.start_line}_{node.end_line}"
+                    queries.append({
+                        "query": (
+                            f"MATCH (__cy_v__:Variable {{name: $var_name, directory: $directory, file_name: $file_name}})\n"
+                            f"SET __cy_v__.`{usage_key}` = 'Used'\n"
+                            f"RETURN __cy_v__"
+                        ),
+                        "params": {
+                            "var_name": var_name,
+                            "directory": self.full_directory,
+                            "file_name": self.file_name,
+                        }
+                    })
                     
                     # 역할은 메모리 맵에 누적 (나중에 LLM 요약 후 저장)
                     if var_role and node.unit_key:
@@ -746,9 +834,9 @@ class DbmsAstProcessor(BaseAstProcessor):
     async def _process_unit_summaries(
         self, 
         unit_summary_store: Dict[str, Dict[str, str]]
-    ) -> List[str]:
-        """프로시저별 summary 처리 + 테이블/컬럼 설명 보강"""
-        queries: List[str] = []
+    ) -> List[Union[str, Dict[str, Any]]]:
+        """프로시저별 summary 처리 + 테이블/컬럼 설명 보강 (파라미터화)"""
+        queries: List[Union[str, Dict[str, Any]]] = []
         
         procedures = self._unit_info
         if not procedures:
@@ -815,47 +903,67 @@ class DbmsAstProcessor(BaseAstProcessor):
                 validated = self.validate_dict_result(us_result, "User Story")
                 all_user_stories = validated.get('user_stories', []) or []
             
-            # Neo4j 쿼리 생성
-            summary_json = json.dumps(final_summary, ensure_ascii=False)
-            queries.append(
-                f"MATCH (__cy_n__:{info.procedure_type} {{procedure_name: '{escape_for_cypher(info.procedure_name)}', {self.node_base_props}}})\n"
-                f"SET __cy_n__.summary = {summary_json}\n"
-                f"RETURN __cy_n__"
-            )
+            # Neo4j 쿼리 생성 (파라미터화)
+            queries.append({
+                "query": (
+                    f"MATCH (__cy_n__:{info.procedure_type} {{procedure_name: $procedure_name, directory: $directory, file_name: $file_name}})\n"
+                    f"SET __cy_n__.summary = $summary\n"
+                    f"RETURN __cy_n__"
+                ),
+                "params": {
+                    "procedure_name": info.procedure_name,
+                    "directory": self.full_directory,
+                    "file_name": self.file_name,
+                    "summary": final_summary,
+                }
+            })
             
             # User Story 노드 생성
-            proc_name_escaped = escape_for_cypher(info.procedure_name)
             for us_idx, us in enumerate(all_user_stories, 1):
                 us_id = us.get('id', f"US-{us_idx}")
-                role = escape_for_cypher(us.get('role', ''))
-                goal = escape_for_cypher(us.get('goal', ''))
-                benefit = escape_for_cypher(us.get('benefit', ''))
-                
-                queries.append(
-                    f"MATCH (__cy_p__:{info.procedure_type} {{procedure_name: '{proc_name_escaped}', {self.node_base_props}}})\n"
-                    f"MERGE (__cy_us__:UserStory {{id: '{us_id}', procedure_name: '{proc_name_escaped}', {self.node_base_props}}})\n"
-                    f"SET __cy_us__.role = '{role}', __cy_us__.goal = '{goal}', __cy_us__.benefit = '{benefit}'\n"
-                    f"MERGE (__cy_p__)-[__cy_r__:HAS_USER_STORY]->(__cy_us__)\n"
-                    f"RETURN __cy_p__, __cy_us__, __cy_r__"
-                )
+                queries.append({
+                    "query": (
+                        f"MATCH (__cy_p__:{info.procedure_type} {{procedure_name: $procedure_name, directory: $directory, file_name: $file_name}})\n"
+                        f"MERGE (__cy_us__:UserStory {{id: $us_id, procedure_name: $procedure_name, directory: $directory, file_name: $file_name}})\n"
+                        f"SET __cy_us__.role = $role, __cy_us__.goal = $goal, __cy_us__.benefit = $benefit\n"
+                        f"MERGE (__cy_p__)-[__cy_r__:HAS_USER_STORY]->(__cy_us__)\n"
+                        f"RETURN __cy_p__, __cy_us__, __cy_r__"
+                    ),
+                    "params": {
+                        "procedure_name": info.procedure_name,
+                        "directory": self.full_directory,
+                        "file_name": self.file_name,
+                        "us_id": us_id,
+                        "role": us.get('role', ''),
+                        "goal": us.get('goal', ''),
+                        "benefit": us.get('benefit', ''),
+                    }
+                })
                 
                 # Acceptance Criteria 노드
                 for ac_idx, ac in enumerate(us.get('acceptance_criteria', []), 1):
                     if not isinstance(ac, dict):
                         continue
                     ac_id = ac.get('id', f"AC-{us_idx}-{ac_idx}")
-                    ac_title = escape_for_cypher(ac.get('title', ''))
-                    ac_given = json.dumps(ac.get('given', []), ensure_ascii=False)
-                    ac_when = json.dumps(ac.get('when', []), ensure_ascii=False)
-                    ac_then = json.dumps(ac.get('then', []), ensure_ascii=False)
-                    
-                    queries.append(
-                        f"MATCH (__cy_us__:UserStory {{id: '{us_id}', {self.node_base_props}}})\n"
-                        f"MERGE (__cy_ac__:AcceptanceCriteria {{id: '{ac_id}', user_story_id: '{us_id}', {self.node_base_props}}})\n"
-                        f"SET __cy_ac__.title = '{ac_title}', __cy_ac__.given = {ac_given}, __cy_ac__.when = {ac_when}, __cy_ac__.then = {ac_then}\n"
-                        f"MERGE (__cy_us__)-[__cy_r__:HAS_AC]->(__cy_ac__)\n"
-                        f"RETURN __cy_us__, __cy_ac__, __cy_r__"
-                    )
+                    queries.append({
+                        "query": (
+                            f"MATCH (__cy_us__:UserStory {{id: $us_id, directory: $directory, file_name: $file_name}})\n"
+                            f"MERGE (__cy_ac__:AcceptanceCriteria {{id: $ac_id, user_story_id: $us_id, directory: $directory, file_name: $file_name}})\n"
+                            f"SET __cy_ac__.title = $title, __cy_ac__.given = $given, __cy_ac__.when_clause = $when_clause, __cy_ac__.then_clause = $then_clause\n"
+                            f"MERGE (__cy_us__)-[__cy_r__:HAS_AC]->(__cy_ac__)\n"
+                            f"RETURN __cy_us__, __cy_ac__, __cy_r__"
+                        ),
+                        "params": {
+                            "us_id": us_id,
+                            "ac_id": ac_id,
+                            "directory": self.full_directory,
+                            "file_name": self.file_name,
+                            "title": ac.get('title', ''),
+                            "given": json.dumps(ac.get('given', []), ensure_ascii=False),
+                            "when_clause": json.dumps(ac.get('when', []), ensure_ascii=False),
+                            "then_clause": json.dumps(ac.get('then', []), ensure_ascii=False),
+                        }
+                    })
             
             us_count = len(all_user_stories)
             log_process("ANALYZE", "SUMMARY", f"✅ {info.procedure_name}: User Story {us_count}개 생성")
@@ -870,12 +978,12 @@ class DbmsAstProcessor(BaseAstProcessor):
         
         return queries
     
-    async def _summarize_unit_variables(self, unit_key: str) -> List[str]:
-        """해당 유닛의 변수들 역할을 요약하여 Neo4j 쿼리를 생성합니다.
+    async def _summarize_unit_variables(self, unit_key: str) -> List[Union[str, Dict[str, Any]]]:
+        """해당 유닛의 변수들 역할을 요약하여 Neo4j 쿼리를 생성합니다 (파라미터화).
         
         역할이 2개 이상인 변수는 LLM으로 요약, 1개인 변수는 그대로 저장.
         """
-        queries: List[str] = []
+        queries: List[Union[str, Dict[str, Any]]] = []
         unit_vars = self._variable_roles.get(unit_key, {})
         
         if not unit_vars:
@@ -908,14 +1016,19 @@ class DbmsAstProcessor(BaseAstProcessor):
                         summary = var_sum.get("summary", "")
                         
                         if var_name and summary:
-                            escaped_name = escape_for_cypher(var_name)
-                            escaped_summary = escape_for_cypher(summary)
-                            
-                            queries.append(
-                                f"MATCH (__cy_v__:Variable {{name: '{escaped_name}', {self.node_base_props}}})\n"
-                                f"SET __cy_v__.role = '{escaped_summary}'\n"
-                                f"RETURN __cy_v__"
-                            )
+                            queries.append({
+                                "query": (
+                                    f"MATCH (__cy_v__:Variable {{name: $var_name, directory: $directory, file_name: $file_name}})\n"
+                                    f"SET __cy_v__.role = $role\n"
+                                    f"RETURN __cy_v__"
+                                ),
+                                "params": {
+                                    "var_name": var_name,
+                                    "directory": self.full_directory,
+                                    "file_name": self.file_name,
+                                    "role": summary,
+                                }
+                            })
                 
                 log_process("ANALYZE", "VARIABLE", f"✅ 변수 역할 요약 완료: {len(vars_to_summarize)}개 변수")
             except Exception as e:
@@ -923,13 +1036,19 @@ class DbmsAstProcessor(BaseAstProcessor):
         
         # 역할이 1개인 변수는 그대로 저장
         for var_name, role in single_role_vars:
-            escaped_name = escape_for_cypher(var_name)
-            escaped_role = escape_for_cypher(role)
-            queries.append(
-                f"MATCH (__cy_v__:Variable {{name: '{escaped_name}', {self.node_base_props}}})\n"
-                f"SET __cy_v__.role = '{escaped_role}'\n"
-                f"RETURN __cy_v__"
-            )
+            queries.append({
+                "query": (
+                    f"MATCH (__cy_v__:Variable {{name: $var_name, directory: $directory, file_name: $file_name}})\n"
+                    f"SET __cy_v__.role = $role\n"
+                    f"RETURN __cy_v__"
+                ),
+                "params": {
+                    "var_name": var_name,
+                    "directory": self.full_directory,
+                    "file_name": self.file_name,
+                    "role": role,
+                }
+            })
         
         return queries
 
@@ -937,9 +1056,9 @@ class DbmsAstProcessor(BaseAstProcessor):
     # DBMS 전용 메서드
     # =========================================================================
 
-    async def _analyze_variable_nodes(self) -> List[str]:
-        """변수 선언 노드를 분석하고 쿼리를 생성합니다."""
-        queries: List[str] = []
+    async def _analyze_variable_nodes(self) -> List[Union[str, Dict[str, Any]]]:
+        """변수 선언 노드를 분석하고 쿼리를 생성합니다 (파라미터화)."""
+        queries: List[Union[str, Dict[str, Any]]] = []
         variable_nodes = [n for n in (self._nodes or []) if n.node_type in VARIABLE_DECLARATION_TYPES]
         
         if not variable_nodes:
@@ -947,7 +1066,7 @@ class DbmsAstProcessor(BaseAstProcessor):
         
         semaphore = asyncio.Semaphore(VARIABLE_CONCURRENCY)
         
-        async def analyze_one(node: StatementNode) -> List[str]:
+        async def analyze_one(node: StatementNode) -> List[Union[str, Dict[str, Any]]]:
             """변수 분석 (실패 시 예외 발생 → 전체 분석 중단)"""
             async with semaphore:
                 result = await asyncio.to_thread(
@@ -961,9 +1080,9 @@ class DbmsAstProcessor(BaseAstProcessor):
         
         return queries
 
-    def _build_variable_queries(self, node: StatementNode, result: Dict[str, Any]) -> List[str]:
-        """변수 분석 결과를 쿼리로 변환"""
-        queries: List[str] = []
+    def _build_variable_queries(self, node: StatementNode, result: Dict[str, Any]) -> List[Union[str, Dict[str, Any]]]:
+        """변수 분석 결과를 쿼리로 변환 (파라미터화)"""
+        queries: List[Union[str, Dict[str, Any]]] = []
         
         if not isinstance(result, dict):
             raise RuntimeError(f"변수 분석 결과가 dict가 아님 (node={node.start_line}): {type(result).__name__}")
@@ -971,8 +1090,6 @@ class DbmsAstProcessor(BaseAstProcessor):
         variables = result.get("variables") or []
         if not variables:
             return queries
-        
-        node_match = f"MATCH (__cy_n__:{node.node_type} {{startLine: {node.start_line}, {self.node_base_props}}})"
         
         for var in variables:
             var_name = var.get("name", "")
@@ -983,18 +1100,24 @@ class DbmsAstProcessor(BaseAstProcessor):
             if not var_name:
                 continue
             
-            escaped_name = escape_for_cypher(var_name)
-            escaped_type = escape_for_cypher(var_type)
-            escaped_role = escape_for_cypher(VARIABLE_ROLE_MAP.get(var_role, var_role))
-            escaped_desc = escape_for_cypher(var_desc)
-            
-            queries.append(
-                f"{node_match}\n"
-                f"MERGE (__cy_v__:Variable {{name: '{escaped_name}', {self.node_base_props}}})\n"
-                f"SET __cy_v__.type = '{escaped_type}', __cy_v__.role = '{escaped_role}', __cy_v__.description = '{escaped_desc}'\n"
-                f"MERGE (__cy_n__)-[:DECLARES]->(__cy_v__)\n"
-                f"RETURN __cy_v__"
-            )
+            queries.append({
+                "query": (
+                    f"MATCH (__cy_n__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
+                    f"MERGE (__cy_v__:Variable {{name: $var_name, directory: $directory, file_name: $file_name}})\n"
+                    f"SET __cy_v__.type = $var_type, __cy_v__.role = $var_role, __cy_v__.description = $var_desc\n"
+                    f"MERGE (__cy_n__)-[:DECLARES]->(__cy_v__)\n"
+                    f"RETURN __cy_v__"
+                ),
+                "params": {
+                    "start_line": node.start_line,
+                    "directory": self.full_directory,
+                    "file_name": self.file_name,
+                    "var_name": var_name,
+                    "var_type": var_type,
+                    "var_role": VARIABLE_ROLE_MAP.get(var_role, var_role),
+                    "var_desc": var_desc,
+                }
+            })
         
         return queries
 
@@ -1002,9 +1125,9 @@ class DbmsAstProcessor(BaseAstProcessor):
         self,
         batch: AnalysisBatch,
         table_result: Dict[str, Any]
-    ) -> List[str]:
-        """DML 테이블 분석 결과를 쿼리로 변환"""
-        queries: List[str] = []
+    ) -> List[Union[str, Dict[str, Any]]]:
+        """DML 테이블 분석 결과를 쿼리로 변환 (파라미터화)"""
+        queries: List[Union[str, Dict[str, Any]]] = []
         node_map: Dict[Tuple[int, int], StatementNode] = {
             (node.start_line, node.end_line): node for node in batch.nodes
         }
@@ -1025,9 +1148,14 @@ class DbmsAstProcessor(BaseAstProcessor):
             if not node:
                 continue
             
-            node_merge = f"MATCH (__cy_n__:{node.node_type} {{startLine: {node.start_line}, {self.node_base_props}}})"
+            # 노드 매치 쿼리 (파라미터화된 버전에서는 동적으로 생성)
+            node_match_params = {
+                "start_line": node.start_line,
+                "directory": self.full_directory,
+                "file_name": self.file_name,
+            }
             
-            # CREATE_TEMP_TABLE 처리
+            # CREATE_TEMP_TABLE 처리 (파라미터화)
             if node.node_type == 'CREATE_TEMP_TABLE':
                 for entry in tables:
                     table_name = (entry.get('table') or '').strip()
@@ -1037,12 +1165,21 @@ class DbmsAstProcessor(BaseAstProcessor):
                     # 대소문자 변환 적용
                     schema_part = self._apply_name_case(schema_part_raw)
                     name_part = self._apply_name_case(name_part_raw)
-                    queries.append(
-                        f"{node_merge}\n"
-                        f"SET __cy_n__:Table, __cy_n__.name = '{escape_for_cypher(name_part)}', "
-                        f"__cy_n__.schema = '{escape_for_cypher(schema_part)}', __cy_n__.db = '{self.dbms}'\n"
-                        f"RETURN __cy_n__"
-                    )
+                    queries.append({
+                        "query": (
+                            f"MATCH (__cy_n__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
+                            f"SET __cy_n__:Table, __cy_n__.name = $name, __cy_n__.schema = $schema, __cy_n__.db = $db\n"
+                            f"RETURN __cy_n__"
+                        ),
+                        "params": {
+                            "start_line": node.start_line,
+                            "directory": self.full_directory,
+                            "file_name": self.file_name,
+                            "name": name_part,
+                            "schema": schema_part,
+                            "db": self.dbms,
+                        }
+                    })
                 continue
             
             # 일반 DML 테이블 처리
@@ -1079,24 +1216,40 @@ class DbmsAstProcessor(BaseAstProcessor):
                 if 'w' in access_mode:
                     rel_types.append(TABLE_RELATIONSHIP_MAP.get('w', 'WRITES'))
                 
-                table_merge = self._build_table_merge(name_part, schema_part, preserve_vars=['__cy_n__'], skip_case_conversion=skip_case_conversion)
+                table_merge_result = self._build_table_merge(name_part, schema_part, preserve_vars=['__cy_n__'], skip_case_conversion=skip_case_conversion)
                 
                 table_desc_raw = entry.get('tableDescription') or entry.get('description') or ''
                 bucket_key = self._record_table_summary(schema_part, name_part, table_desc_raw, skip_case_conversion=skip_case_conversion)
                 
-                table_query = f"{node_merge}\nWITH __cy_n__\n{table_merge}\nSET __cy_t__.db = coalesce(__cy_t__.db, '{self.dbms}')"
-                
-                if db_link_value:
-                    table_query += f"\nSET __cy_t__.db_link = COALESCE(__cy_t__.db_link, '{db_link_value}')"
-                
+                # 파라미터화된 쿼리 생성
+                rel_merge_parts = []
                 for i, rel_type in enumerate(rel_types):
-                    table_query += f"\nMERGE (__cy_n__)-[__cy_r{i}__:{rel_type}]->(__cy_t__)"
+                    rel_merge_parts.append(f"MERGE (__cy_n__)-[__cy_r{i}__:{rel_type}]->(__cy_t__)")
                 
-                table_query += "\nRETURN __cy_n__, __cy_t__"
-                queries.append(table_query)
+                db_link_set = f"\nSET __cy_t__.db_link = COALESCE(__cy_t__.db_link, $db_link)" if db_link_value else ""
+                rel_merge_str = "\n".join(rel_merge_parts)
                 
-                # 컬럼 처리 (컬럼용은 preserve_vars=None으로 별도 생성)
-                table_merge_for_column = self._build_table_merge(name_part, schema_part, preserve_vars=None, skip_case_conversion=skip_case_conversion)
+                table_query = (
+                    f"MATCH (__cy_n__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
+                    f"WITH __cy_n__\n"
+                    f"{table_merge_result['query']}\n"
+                    f"SET __cy_t__.db = coalesce(__cy_t__.db, $db)"
+                    f"{db_link_set}"
+                    f"\n{rel_merge_str}" if rel_merge_str else ""
+                    f"\nRETURN __cy_n__, __cy_t__"
+                )
+                
+                params = {
+                    **node_match_params,
+                    **table_merge_result["params"],
+                }
+                if db_link_value:
+                    params["db_link"] = db_link_value
+                
+                queries.append({"query": table_query, "params": params})
+                
+                # 컬럼 처리 (파라미터화)
+                table_merge_for_column_result = self._build_table_merge(name_part, schema_part, preserve_vars=None, skip_case_conversion=skip_case_conversion)
                 
                 # DDL 컬럼 메타데이터 조회 (원본 대소문자 사용을 위해)
                 ddl_columns = ddl_meta.get('columns', {}) if ddl_meta else {}
@@ -1133,68 +1286,69 @@ class DbmsAstProcessor(BaseAstProcessor):
                         examples=column.get('examples') or [],
                     )
                     
-                    col_type = escape_for_cypher(raw_dtype)
-                    col_desc = escape_for_cypher(raw_column_desc)
-                    nullable = 'true' if column.get('nullable', True) else 'false'
-                    escaped_col_name = escape_for_cypher(column_name)
-                    
                     # 대소문자 변환이 이미 _build_table_merge에서 적용됨
-                    converted_name_part = self._apply_name_case(name_part)
-                    converted_schema_part = self._apply_name_case(schema_part) if schema_part else None
+                    converted_name_part = table_merge_for_column_result["converted_table_name"]
+                    converted_schema_part = table_merge_for_column_result["effective_schema"]
                     
-                    # 컬럼명에 특수문자가 있을 수 있으므로 모두 이스케이프
-                    escaped_name_part = escape_for_cypher(converted_name_part)
-                    escaped_column_name_for_fqn = escape_for_cypher(column_name)
+                    # fqn 생성
+                    fqn = '.'.join(filter(None, [converted_schema_part, converted_name_part, column_name])).lower()
                     
-                    if converted_schema_part:
-                        escaped_schema_part = escape_for_cypher(converted_schema_part)
-                        fqn = escape_for_cypher('.'.join(filter(None, [converted_schema_part, converted_name_part, column_name])).lower())
-                        # Column MERGE: fqn 기준 (고유키)
-                        queries.append(
-                            f"{table_merge_for_column}\nWITH __cy_t__\n"
-                            f"MERGE (__cy_c__:Column {{fqn: '{fqn}'}})\n"
-                            f"SET __cy_c__.name = '{escaped_col_name}', __cy_c__.dtype = '{col_type}', "
-                            f"__cy_c__.description = '{col_desc}', __cy_c__.description_source = 'procedure', __cy_c__.nullable = '{nullable}'\n"
-                            f"MERGE (__cy_t__)-[__cy_r__:HAS_COLUMN]->(__cy_c__)\n"
-                            f"RETURN __cy_t__, __cy_c__, __cy_r__"
-                        )
-                    else:
-                        # schema가 없는 경우 동적 fqn 계산 대신 정적 fqn 사용
-                        # (CASE WHEN 구문은 컬럼명 특수문자로 인해 구문 오류 발생 가능)
-                        fqn = escape_for_cypher('.'.join(filter(None, [converted_name_part, column_name])).lower())
-                        # Column MERGE: fqn 기준
-                        queries.append(
-                            f"{table_merge_for_column}\nWITH __cy_t__\n"
-                            f"MERGE (__cy_c__:Column {{fqn: '{fqn}'}})\n"
-                            f"ON CREATE SET __cy_c__.name = '{escaped_col_name}', __cy_c__.dtype = '{col_type}', "
-                            f"__cy_c__.description = '{col_desc}', __cy_c__.description_source = 'procedure', __cy_c__.nullable = '{nullable}'\n"
-                            f"MERGE (__cy_t__)-[__cy_r__:HAS_COLUMN]->(__cy_c__)\n"
-                            f"RETURN __cy_t__, __cy_c__, __cy_r__"
-                        )
+                    # 파라미터화된 쿼리 생성
+                    col_query = (
+                        f"{table_merge_for_column_result['query']}\nWITH __cy_t__\n"
+                        f"MERGE (__cy_c__:Column {{fqn: $fqn}})\n"
+                        f"SET __cy_c__.name = $col_name, __cy_c__.dtype = $col_type, "
+                        f"__cy_c__.description = $col_desc, __cy_c__.description_source = 'procedure', __cy_c__.nullable = $nullable\n"
+                        f"MERGE (__cy_t__)-[__cy_r__:HAS_COLUMN]->(__cy_c__)\n"
+                        f"RETURN __cy_t__, __cy_c__, __cy_r__"
+                    )
+                    
+                    queries.append({
+                        "query": col_query,
+                        "params": {
+                            **table_merge_for_column_result["params"],
+                            "fqn": fqn,
+                            "col_name": column_name,
+                            "col_type": raw_dtype,
+                            "col_desc": raw_column_desc,
+                            "nullable": column.get('nullable', True),
+                        }
+                    })
             
-            # DBLink 처리
+            # DBLink 처리 (파라미터화)
             for link_item in range_entry.get('dbLinks', []) or []:
                 link_name_raw = (link_item.get('name') or '').strip()
                 if not link_name_raw:
                     continue
-                mode = escape_for_cypher((link_item.get('mode') or 'r').lower())
+                mode = (link_item.get('mode') or 'r').lower()
                 schema_link_raw, name_link_raw, link_name = parse_table_identifier(link_name_raw)
                 # 대소문자 변환 적용
                 schema_link = self._apply_name_case(schema_link_raw)
                 name_link = self._apply_name_case(name_link_raw)
-                escaped_link_name = escape_for_cypher(link_name)
-                remote_merge = self._build_table_merge(name_link, schema_link)
-                queries.append(
-                    f"{remote_merge}\nSET __cy_t__.db_link = '{escaped_link_name}'\n"
+                remote_merge_result = self._build_table_merge(name_link, schema_link)
+                
+                dblink_query = (
+                    f"{remote_merge_result['query']}\n"
+                    f"SET __cy_t__.db_link = $link_name\n"
                     f"WITH __cy_t__\n"
-                    f"MERGE (__cy_l__:DBLink {{name: '{escaped_link_name}'}})\n"
+                    f"MERGE (__cy_l__:DBLink {{name: $link_name}})\n"
                     f"MERGE (__cy_l__)-[__cy_r1__:CONTAINS]->(__cy_t__)\n"
-                    f"WITH __cy_t__, __cy_l__\n{node_merge}\n"
-                    f"MERGE (__cy_n__)-[__cy_r2__:DB_LINK {{mode: '{mode}'}}]->(__cy_t__)\n"
+                    f"WITH __cy_t__, __cy_l__\n"
+                    f"MATCH (__cy_n__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
+                    f"MERGE (__cy_n__)-[__cy_r2__:DB_LINK {{mode: $mode}}]->(__cy_t__)\n"
                     f"RETURN __cy_l__, __cy_t__, __cy_n__"
                 )
+                queries.append({
+                    "query": dblink_query,
+                    "params": {
+                        **remote_merge_result["params"],
+                        **node_match_params,
+                        "link_name": link_name,
+                        "mode": mode,
+                    }
+                })
             
-            # FK 관계 처리
+            # FK 관계 처리 (파라미터화)
             fk_relations = range_entry.get('fkRelations', []) or []
             for relation in fk_relations:
                 src_table = (relation.get('sourceTable') or '').strip()
@@ -1218,25 +1372,32 @@ class DbmsAstProcessor(BaseAstProcessor):
                 effective_src_schema = src_schema if src_schema else self._apply_name_case(self.default_schema)
                 effective_tgt_schema = tgt_schema if tgt_schema else self._apply_name_case(self.default_schema)
                 
-                src_props = f"schema: '{escape_for_cypher(effective_src_schema)}', name: '{escape_for_cypher(src_name)}', db: '{self.dbms}'"
-                tgt_props = f"schema: '{escape_for_cypher(effective_tgt_schema)}', name: '{escape_for_cypher(tgt_name)}', db: '{self.dbms}'"
-                
                 # 각 FK 매핑마다 별도의 FK_TO_TABLE 관계 생성
                 # 속성: sourceColumn, targetColumn, type, source
                 # source='procedure': 스토어드 프로시저 분석에서 추출 (점선 표시)
                 for src_col, tgt_col in zip(src_columns, tgt_columns):
                     # 컬럼명에도 대소문자 변환 적용
-                    escaped_src_col = escape_for_cypher(self._apply_name_case(src_col))
-                    escaped_tgt_col = escape_for_cypher(self._apply_name_case(tgt_col))
+                    converted_src_col = self._apply_name_case(src_col)
+                    converted_tgt_col = self._apply_name_case(tgt_col)
                     
-                    fk_query = (
-                        f"MATCH (__cy_st__:Table {{{src_props}}})\n"
-                        f"MATCH (__cy_tt__:Table {{{tgt_props}}})\n"
-                        f"MERGE (__cy_st__)-[__cy_r__:FK_TO_TABLE {{sourceColumn: '{escaped_src_col}', targetColumn: '{escaped_tgt_col}'}}]->(__cy_tt__)\n"
-                        f"ON CREATE SET __cy_r__.type = 'many_to_one', __cy_r__.source = 'procedure'\n"
-                        f"RETURN __cy_st__, __cy_tt__, __cy_r__"
-                    )
-                    queries.append(fk_query)
+                    queries.append({
+                        "query": (
+                            f"MATCH (__cy_st__:Table {{schema: $src_schema, name: $src_name, db: $db}})\n"
+                            f"MATCH (__cy_tt__:Table {{schema: $tgt_schema, name: $tgt_name, db: $db}})\n"
+                            f"MERGE (__cy_st__)-[__cy_r__:FK_TO_TABLE {{sourceColumn: $src_col, targetColumn: $tgt_col}}]->(__cy_tt__)\n"
+                            f"ON CREATE SET __cy_r__.type = 'many_to_one', __cy_r__.source = 'procedure'\n"
+                            f"RETURN __cy_st__, __cy_tt__, __cy_r__"
+                        ),
+                        "params": {
+                            "src_schema": effective_src_schema,
+                            "src_name": src_name,
+                            "tgt_schema": effective_tgt_schema,
+                            "tgt_name": tgt_name,
+                            "db": self.dbms,
+                            "src_col": converted_src_col,
+                            "tgt_col": converted_tgt_col,
+                        }
+                    })
                 
                 # Column 간 FK_TO 관계도 생성
                 # source='procedure': 스토어드 프로시저 분석에서 추출 (점선 표시)
@@ -1245,21 +1406,27 @@ class DbmsAstProcessor(BaseAstProcessor):
                     converted_src_col = self._apply_name_case(src_col)
                     converted_tgt_col = self._apply_name_case(tgt_col)
                     # fqn 생성 시에도 effective_schema 사용 (테이블 생성과 일관성 유지)
-                    src_fqn = escape_for_cypher('.'.join(filter(None, [effective_src_schema, src_name, converted_src_col])).lower())
-                    tgt_fqn = escape_for_cypher('.'.join(filter(None, [effective_tgt_schema, tgt_name, converted_tgt_col])).lower())
-                    fk_col_query = (
-                        f"MATCH (__cy_sc__:Column {{fqn: '{src_fqn}'}})\n"
-                        f"MATCH (__cy_dc__:Column {{fqn: '{tgt_fqn}'}})\n"
-                        f"MERGE (__cy_sc__)-[__cy_r__:FK_TO]->(__cy_dc__)\n"
-                        f"ON CREATE SET __cy_r__.source = 'procedure'\n"
-                        f"RETURN __cy_sc__, __cy_dc__, __cy_r__"
-                    )
-                    queries.append(fk_col_query)
+                    src_fqn = '.'.join(filter(None, [effective_src_schema, src_name, converted_src_col])).lower()
+                    tgt_fqn = '.'.join(filter(None, [effective_tgt_schema, tgt_name, converted_tgt_col])).lower()
+                    
+                    queries.append({
+                        "query": (
+                            f"MATCH (__cy_sc__:Column {{fqn: $src_fqn}})\n"
+                            f"MATCH (__cy_dc__:Column {{fqn: $tgt_fqn}})\n"
+                            f"MERGE (__cy_sc__)-[__cy_r__:FK_TO]->(__cy_dc__)\n"
+                            f"ON CREATE SET __cy_r__.source = 'procedure'\n"
+                            f"RETURN __cy_sc__, __cy_dc__, __cy_r__"
+                        ),
+                        "params": {
+                            "src_fqn": src_fqn,
+                            "tgt_fqn": tgt_fqn,
+                        }
+                    })
         
         return queries
     
-    def _build_table_merge(self, table_name: str, schema: Optional[str], preserve_vars: Optional[List[str]] = None, skip_case_conversion: bool = False) -> str:
-        """테이블 MERGE 쿼리 (Schema 노드 및 BELONGS_TO 관계 포함)
+    def _build_table_merge(self, table_name: str, schema: Optional[str], preserve_vars: Optional[List[str]] = None, skip_case_conversion: bool = False) -> Dict[str, Any]:
+        """테이블 MERGE 쿼리 (Schema 노드 및 BELONGS_TO 관계 포함) - 파라미터화
         
         DDL 처리와 일관성을 위해 schema가 없으면 default_schema 사용.
         default_schema도 없으면 'public' 사용.
@@ -1270,6 +1437,9 @@ class DbmsAstProcessor(BaseAstProcessor):
             schema: 스키마 이름 (없으면 default_schema 사용)
             preserve_vars: WITH 절에서 유지할 변수 목록 (예: ['__cy_n__'] -> WITH __cy_n__, __cy_s__)
             skip_case_conversion: True면 대소문자 변환을 건너뜀 (이미 변환된 값인 경우)
+            
+        Returns:
+            {"query": str, "params": dict, "effective_schema": str, "table_name": str}
         """
         # schema가 없으면 default_schema 사용, default_schema도 없으면 'public'
         effective_schema = schema if schema else (self.default_schema if self.default_schema else 'public')
@@ -1281,23 +1451,29 @@ class DbmsAstProcessor(BaseAstProcessor):
         else:
             converted_table_name = table_name
         
-        schema_value = escape_for_cypher(effective_schema)
-        escaped_name = escape_for_cypher(converted_table_name)
-        
         # WITH 절 구성: preserve_vars가 있으면 해당 변수들도 함께 유지
         if preserve_vars:
             with_vars = ", ".join(preserve_vars + ["__cy_s__"])
         else:
             with_vars = "__cy_s__"
         
-        # Schema MERGE + Table MERGE + BELONGS_TO 관계
+        # Schema MERGE + Table MERGE + BELONGS_TO 관계 (파라미터화)
         # MERGE 키: db, schema, name만 사용 (같은 스키마/테이블명이면 같은 노드)
-        return (
-            f"MERGE (__cy_s__:Schema {{db: '{self.dbms}', name: '{schema_value}'}})\n"
-            f"WITH {with_vars}\n"
-            f"MERGE (__cy_t__:Table {{name: '{escaped_name}', schema: '{schema_value}', db: '{self.dbms}'}})\n"
-            f"MERGE (__cy_t__)-[:BELONGS_TO]->(__cy_s__)"
-        )
+        return {
+            "query": (
+                f"MERGE (__cy_s__:Schema {{db: $db, name: $schema_name}})\n"
+                f"WITH {with_vars}\n"
+                f"MERGE (__cy_t__:Table {{name: $table_name, schema: $schema_name, db: $db}})\n"
+                f"MERGE (__cy_t__)-[:BELONGS_TO]->(__cy_s__)"
+            ),
+            "params": {
+                "db": self.dbms,
+                "schema_name": effective_schema,
+                "table_name": converted_table_name,
+            },
+            "effective_schema": effective_schema,
+            "converted_table_name": converted_table_name,
+        }
 
     def _record_table_summary(self, schema: Optional[str], name: str, description: Optional[str], skip_case_conversion: bool = False) -> Tuple[str, str]:
         """테이블 설명 누적
@@ -1383,7 +1559,7 @@ class DbmsAstProcessor(BaseAstProcessor):
             return []
         
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        all_queries: List[str] = []
+        all_queries: List[Union[str, Dict[str, Any]]] = []
         for result in results:
             if isinstance(result, Exception):
                 log_process("ANALYZE", "TABLE_SUMMARY", f"❌ 테이블 요약 오류: {result}", logging.ERROR)
@@ -1455,28 +1631,28 @@ class DbmsAstProcessor(BaseAstProcessor):
         if not isinstance(result, dict):
             raise RuntimeError(f"테이블 요약 결과가 dict가 아님 ({schema_key}.{name_key}): {type(result).__name__}")
         
-        queries: List[str] = []
+        queries: List[Union[str, Dict[str, Any]]] = []
         llm_table_desc = (result.get('tableDescription') or '').strip()
-        escaped_schema = escape_for_cypher(schema_key)
-        escaped_name = escape_for_cypher(name_key)
-        # MATCH 조건: db, schema, name만 사용 (스키마/테이블명이 같으면 같은 노드로 취급)
-        table_props = (
-            f"schema: '{escaped_schema}', name: '{escaped_name}', db: '{self.dbms}'"
-        )
         
         if llm_table_desc:
-            escaped_llm_table_desc = escape_for_cypher(llm_table_desc)
-            # 프로시저 분석 결과는 analyzed_description에 항상 저장
+            # 프로시저 분석 결과는 analyzed_description에 항상 저장 (파라미터화)
             # 기존 description이 비어있을 때만 description에도 저장 + description_source='procedure' 설정
-            # description_source는 description이 비어있을 때만 'procedure'로 설정
-            queries.append(
-                f"MATCH (__cy_t__:Table {{{table_props}}})\n"
-                f"SET __cy_t__.analyzed_description = '{escaped_llm_table_desc}'\n"
-                f"WITH __cy_t__\n"
-                f"WHERE __cy_t__.description IS NULL OR __cy_t__.description = ''\n"
-                f"SET __cy_t__.description = '{escaped_llm_table_desc}', __cy_t__.description_source = 'procedure'\n"
-                f"RETURN __cy_t__"
-            )
+            queries.append({
+                "query": (
+                    f"MATCH (__cy_t__:Table {{schema: $schema, name: $name, db: $db}})\n"
+                    f"SET __cy_t__.analyzed_description = $llm_desc\n"
+                    f"WITH __cy_t__\n"
+                    f"WHERE __cy_t__.description IS NULL OR __cy_t__.description = ''\n"
+                    f"SET __cy_t__.description = $llm_desc, __cy_t__.description_source = 'procedure'\n"
+                    f"RETURN __cy_t__"
+                ),
+                "params": {
+                    "schema": schema_key,
+                    "name": name_key,
+                    "db": self.dbms,
+                    "llm_desc": llm_table_desc,
+                }
+            })
         
         for column_info in result.get('columns', []) or []:
             column_name = (column_info.get('name') or '').strip()
@@ -1484,22 +1660,22 @@ class DbmsAstProcessor(BaseAstProcessor):
             if not column_name or not llm_column_desc:
                 continue
             
-            # fqn과 column_name 모두 이스케이프 필요 (특수문자 포함 가능)
-            escaped_column_name = escape_for_cypher(column_name)
             fqn = '.'.join(filter(None, [schema_key, name_key, column_name])).lower()
-            escaped_fqn = escape_for_cypher(fqn)
-            # MATCH 조건: fqn 기준
-            column_props = f"fqn: '{escaped_fqn}'"
-            escaped_llm_column_desc = escape_for_cypher(llm_column_desc)
-            # 프로시저 분석 결과는 analyzed_description에 항상 저장
+            # 프로시저 분석 결과는 analyzed_description에 항상 저장 (파라미터화)
             # 기존 description이 비어있을 때만 description에도 저장 + description_source='procedure' 설정
-            queries.append(
-                f"MATCH (__cy_c__:Column {{{column_props}}})\n"
-                f"SET __cy_c__.analyzed_description = '{escaped_llm_column_desc}'\n"
-                f"WITH __cy_c__\n"
-                f"WHERE __cy_c__.description IS NULL OR __cy_c__.description = ''\n"
-                f"SET __cy_c__.description = '{escaped_llm_column_desc}', __cy_c__.description_source = 'procedure'\n"
-                f"RETURN __cy_c__"
-            )
+            queries.append({
+                "query": (
+                    f"MATCH (__cy_c__:Column {{fqn: $fqn}})\n"
+                    f"SET __cy_c__.analyzed_description = $llm_desc\n"
+                    f"WITH __cy_c__\n"
+                    f"WHERE __cy_c__.description IS NULL OR __cy_c__.description = ''\n"
+                    f"SET __cy_c__.description = $llm_desc, __cy_c__.description_source = 'procedure'\n"
+                    f"RETURN __cy_c__"
+                ),
+                "params": {
+                    "fqn": fqn,
+                    "llm_desc": llm_column_desc,
+                }
+            })
         
         return queries

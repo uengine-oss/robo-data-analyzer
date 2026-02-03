@@ -15,7 +15,7 @@ import shutil
 
 from fastapi import HTTPException
 
-from analyzer.neo4j_client import Neo4jClient
+from client.neo4j_client import Neo4jClient
 from config.settings import settings
 
 
@@ -113,44 +113,48 @@ async def fetch_related_tables(table_name: str) -> dict:
     """
     client = Neo4jClient()
     try:
-        safe_table_name = table_name.replace("'", "\\'").replace('"', '\\"')
-        
         # FK_TO_TABLE 관계 조회
-        fk_query = f"""
-            MATCH (__cy_t1__:Table)-[__cy_r__:FK_TO_TABLE]->(__cy_t2__:Table)
-            WHERE __cy_t1__.name = '{safe_table_name}' OR __cy_t2__.name = '{safe_table_name}'
-               OR __cy_t1__.fqn ENDS WITH '{safe_table_name}' OR __cy_t2__.fqn ENDS WITH '{safe_table_name}'
-            RETURN __cy_t1__.name AS from_table, 
-                   __cy_t1__.schema_name AS from_schema,
-                   __cy_t1__.description AS from_desc,
-                   __cy_t2__.name AS to_table, 
-                   __cy_t2__.schema_name AS to_schema,
-                   __cy_t2__.description AS to_desc,
-                   __cy_r__.sourceColumn AS source_column,
-                   __cy_r__.targetColumn AS target_column,
-                   COALESCE(__cy_r__.source, 'ddl') AS source,
-                   type(__cy_r__) AS rel_type
-        """
+        fk_query = {
+            "query": """
+                MATCH (__cy_t1__:Table)-[__cy_r__:FK_TO_TABLE]->(__cy_t2__:Table)
+                WHERE __cy_t1__.name = $table_name OR __cy_t2__.name = $table_name
+                   OR __cy_t1__.fqn ENDS WITH $table_name OR __cy_t2__.fqn ENDS WITH $table_name
+                RETURN __cy_t1__.name AS from_table, 
+                       __cy_t1__.schema_name AS from_schema,
+                       __cy_t1__.description AS from_desc,
+                       __cy_t2__.name AS to_table, 
+                       __cy_t2__.schema_name AS to_schema,
+                       __cy_t2__.description AS to_desc,
+                       __cy_r__.sourceColumn AS source_column,
+                       __cy_r__.targetColumn AS target_column,
+                       COALESCE(__cy_r__.source, 'ddl') AS source,
+                       type(__cy_r__) AS rel_type
+            """,
+            "parameters": {"table_name": table_name}
+        }
         
         # 같은 프로시저에서 참조되는 테이블 (CO_REFERENCED)
-        proc_query = f"""
-            MATCH (__cy_t__:Table)
-            WHERE __cy_t__.name = '{safe_table_name}' OR __cy_t__.fqn ENDS WITH '{safe_table_name}'
-            
-            OPTIONAL MATCH (__cy_t__)<-[:FROM|WRITES]-(__cy_s1__)<-[:PARENT_OF*]-(__cy_proc__)
-            OPTIONAL MATCH (__cy_proc__)-[:PARENT_OF*]->(__cy_s2__)-[:FROM|WRITES]->(__cy_t2__:Table)
-            WHERE __cy_t2__ <> __cy_t__
-            
-            WITH __cy_t__, COLLECT(DISTINCT {{
-                name: __cy_t2__.name, 
-                schema: __cy_t2__.schema_name, 
-                description: __cy_t2__.description
-            }}) AS proc_related
-            
-            RETURN __cy_t__.name AS base_table, 
-                   __cy_t__.schema_name AS base_schema,
-                   proc_related
-        """
+        proc_query = {
+            "query": """
+                MATCH (__cy_t__:Table)
+                WHERE __cy_t__.name = $table_name OR __cy_t__.fqn ENDS WITH $table_name
+                
+                OPTIONAL MATCH (__cy_t__)<-[:FROM|WRITES]-(__cy_s1__)<-[:PARENT_OF*]-(__cy_proc__)
+                OPTIONAL MATCH (__cy_proc__)-[:PARENT_OF*]->(__cy_s2__)-[:FROM|WRITES]->(__cy_t2__:Table)
+                WHERE __cy_t2__ <> __cy_t__
+                
+                WITH __cy_t__, COLLECT(DISTINCT {
+                    name: __cy_t2__.name, 
+                    schema: __cy_t2__.schema_name, 
+                    description: __cy_t2__.description
+                }) AS proc_related
+                
+                RETURN __cy_t__.name AS base_table, 
+                       __cy_t__.schema_name AS base_schema,
+                       proc_related
+            """,
+            "parameters": {"table_name": table_name}
+        }
         
         fk_results = await client.execute_queries([fk_query])
         proc_results = await client.execute_queries([proc_query])

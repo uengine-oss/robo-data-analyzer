@@ -17,12 +17,12 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from typing import Any, Dict, List, Optional, Tuple, Set
+from typing import Any, Dict, List, Optional, Tuple, Set, Union
 
 from config.settings import settings
 from util.rule_loader import RuleLoader
 # Exceptions: 모든 커스텀 예외는 RuntimeError로 대체됨
-from util.text_utils import calculate_code_token, escape_for_cypher, log_process
+from util.text_utils import calculate_code_token, log_process
 
 from analyzer.strategy.base.statement_node import StatementNode
 from analyzer.strategy.base.batch import AnalysisBatch
@@ -163,13 +163,39 @@ def analyze_class_user_story(summary: str, api_key: str, locale: str) -> Dict[st
     )
 
 
-def analyze_parent_context(skeleton_code: str, ancestor_context: str, api_key: str, locale: str) -> Dict[str, Any]:
-    """부모 노드의 스켈레톤 코드에서 핵심 컨텍스트를 추출합니다."""
-    return _rule_loader().execute(
-        "parent_context",
-        {"skeleton_code": skeleton_code, "ancestor_context": ancestor_context, "locale": locale},
+def analyze_node_context(
+    skeleton_code: str, 
+    ancestor_context: str, 
+    sibling_code: str,
+    api_key: str, 
+    locale: str,
+) -> Tuple[str, str]:
+    """부모 스켈레톤 + 이전 형제 코드에서 컨텍스트를 추출합니다.
+    
+    Returns:
+        (parent_context, sibling_context) 튜플
+    """
+    result = _rule_loader().execute(
+        "node_context",
+        {
+            "skeleton_code": skeleton_code, 
+            "ancestor_context": ancestor_context, 
+            "sibling_code": sibling_code,
+            "locale": locale,
+        },
         api_key,
     )
+    
+    if not isinstance(result, dict):
+        raise ValueError(f"node_context 규칙이 dict가 아닌 값을 반환했습니다: {type(result)}")
+    
+    parent_ctx = result.get("parent_context", "").strip()
+    sibling_ctx = result.get("sibling_context", "").strip()
+    
+    if not parent_ctx:
+        raise ValueError("node_context 규칙이 빈 parent_context를 반환했습니다")
+    
+    return parent_ctx, sibling_ctx
 
 
 def analyze_class_relations(class_name: str, skeleton_code: str, api_key: str, locale: str) -> Dict[str, Any]:
@@ -572,18 +598,25 @@ class FrameworkAstProcessor(BaseAstProcessor):
         """컨텍스트 생성에서 제외할 노드 타입"""
         return CLASS_TYPES
 
-    async def _extract_parent_context(self, skeleton_code: str, ancestor_context: str) -> str:
-        """부모 컨텍스트 추출"""
-        result = await asyncio.to_thread(
-            analyze_parent_context, skeleton_code, ancestor_context, self.api_key, self.locale
+    async def _extract_node_context(
+        self, 
+        skeleton_code: str, 
+        ancestor_context: str,
+        sibling_code: str,
+    ) -> Tuple[str, str]:
+        """부모 + 이전 형제 컨텍스트 추출"""
+        return await asyncio.to_thread(
+            analyze_node_context,
+            skeleton_code,
+            ancestor_context,
+            sibling_code,
+            self.api_key,
+            self.locale,
         )
-        if isinstance(result, dict):
-            return result.get("context_summary", "")
-        raise ValueError(f"parent_context 규칙이 dict가 아닌 값을 반환했습니다: {type(result)}")
 
-    def _build_static_node_queries(self, node: StatementNode) -> List[str]:
-        """정적 노드 생성 쿼리 리스트를 반환합니다."""
-        queries: List[str] = []
+    def _build_static_node_queries(self, node: StatementNode) -> List[Union[str, Dict[str, Any]]]:
+        """정적 노드 생성 쿼리 리스트를 반환합니다 (파라미터화)."""
+        queries: List[Union[str, Dict[str, Any]]] = []
         label = node.node_type
         
         # name 속성 결정
@@ -594,70 +627,91 @@ class FrameworkAstProcessor(BaseAstProcessor):
         else:
             node_name = f"{label}[{node.start_line}]"
         
-        escaped_name = escape_for_cypher(node_name)
-        has_children = "true" if node.has_children else "false"
-        escaped_code = escape_for_cypher(node.code)
+        # 기본 파라미터
+        params: Dict[str, Any] = {
+            "start_line": node.start_line,
+            "end_line": node.end_line,
+            "directory": self.full_directory,
+            "file_name": self.file_name,
+            "node_name": node_name,
+            "node_code": node.code,
+            "token": node.token,
+            "has_children": node.has_children,
+        }
 
-        base_set = [
-            f"__cy_n__.endLine = {node.end_line}",
-            f"__cy_n__.name = '{escaped_name}'",
-            f"__cy_n__.node_code = '{escaped_code}'",
-            f"__cy_n__.token = {node.token}",
-            f"__cy_n__.has_children = {has_children}",
+        # 동적 SET 절 구성
+        set_parts = [
+            "__cy_n__.endLine = $end_line",
+            "__cy_n__.name = $node_name",
+            "__cy_n__.node_code = $node_code",
+            "__cy_n__.token = $token",
+            "__cy_n__.has_children = $has_children",
         ]
         
         # AST JSON 메타데이터 속성 추가 (있는 경우만)
         if node.signature:
-            base_set.append(f"__cy_n__.signature = '{escape_for_cypher(node.signature)}'")
+            set_parts.append("__cy_n__.signature = $signature")
+            params["signature"] = node.signature
         if node.modifiers:
-            base_set.append(f"__cy_n__.modifiers = '{escape_for_cypher(node.modifiers)}'")
+            set_parts.append("__cy_n__.modifiers = $modifiers")
+            params["modifiers"] = node.modifiers
         if node.return_type:
-            base_set.append(f"__cy_n__.returnType = '{escape_for_cypher(node.return_type)}'")
+            set_parts.append("__cy_n__.returnType = $return_type")
+            params["return_type"] = node.return_type
         if node.parameters:
-            base_set.append(f"__cy_n__.parameters = '{escape_for_cypher(node.parameters)}'")
+            set_parts.append("__cy_n__.parameters = $parameters")
+            params["parameters"] = node.parameters
         if node.generic_type:
-            base_set.append(f"__cy_n__.genericType = '{escape_for_cypher(node.generic_type)}'")
+            set_parts.append("__cy_n__.genericType = $generic_type")
+            params["generic_type"] = node.generic_type
         if node.extends_type:
-            base_set.append(f"__cy_n__.extendsType = '{escape_for_cypher(node.extends_type)}'")
+            set_parts.append("__cy_n__.extendsType = $extends_type")
+            params["extends_type"] = node.extends_type
         if node.implements_types:
-            base_set.append(f"__cy_n__.implementsTypes = '{escape_for_cypher(node.implements_types)}'")
+            set_parts.append("__cy_n__.implementsTypes = $implements_types")
+            params["implements_types"] = node.implements_types
         if node.field_type:
-            base_set.append(f"__cy_n__.fieldType = '{escape_for_cypher(node.field_type)}'")
+            set_parts.append("__cy_n__.fieldType = $field_type")
+            params["field_type"] = node.field_type
 
         # CLASS/INTERFACE 등: class_name과 type 속성 추가
         if label in CLASS_TYPES and node.unit_name:
-            base_set.append(f"__cy_n__.class_name = '{escape_for_cypher(node.unit_name)}'")
-            base_set.append(f"__cy_n__.type = '{label}'")
+            set_parts.append("__cy_n__.class_name = $class_name")
+            set_parts.append("__cy_n__.type = $class_type")
+            params["class_name"] = node.unit_name
+            params["class_type"] = label
         elif node.unit_name:
-            base_set.append(f"__cy_n__.class_name = '{escape_for_cypher(node.unit_name)}'")
+            set_parts.append("__cy_n__.class_name = $class_name")
+            params["class_name"] = node.unit_name
 
         if node.has_children:
             # Framework용 preserve_types 설정 (메서드 시그니처 보존)
             preserve_types = METHOD_TYPES
-            escaped_placeholder = escape_for_cypher(node.get_placeholder_code(preserve_types))
-            base_set.append(f"__cy_n__.summarized_code = '{escaped_placeholder}'")
+            set_parts.append("__cy_n__.summarized_code = $summarized_code")
+            params["summarized_code"] = node.get_placeholder_code(preserve_types)
 
-        base_set_str = ", ".join(base_set)
+        set_clause = ", ".join(set_parts)
         
         # CLASS/INTERFACE/ENUM 노드: MERGE로 생성 (중복 방지)
         if label in ("CLASS", "INTERFACE", "ENUM") and node.unit_name:
-            escaped_class_name = escape_for_cypher(node.unit_name)
-            queries.append(
-                f"MERGE (__cy_n__:{label} {{class_name: '{escaped_class_name}'}})\n"
-                f"SET __cy_n__.startLine = {node.start_line}, __cy_n__.directory = '{escape_for_cypher(self.full_directory)}', __cy_n__.file_name = '{self.file_name}', {base_set_str}\n"
+            query = (
+                f"MERGE (__cy_n__:{label} {{class_name: $class_name}})\n"
+                f"SET __cy_n__.startLine = $start_line, __cy_n__.directory = $directory, __cy_n__.file_name = $file_name, {set_clause}\n"
                 f"RETURN __cy_n__"
             )
+            queries.append({"query": query, "params": params})
         else:
-            queries.append(
-                f"MERGE (__cy_n__:{label} {{startLine: {node.start_line}, {self.node_base_props}}})\n"
-                f"SET {base_set_str}\n"
+            query = (
+                f"MERGE (__cy_n__:{label} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
+                f"SET {set_clause}\n"
                 f"RETURN __cy_n__"
             )
+            queries.append({"query": query, "params": params})
         return queries
 
-    def _build_relationship_queries(self) -> List[str]:
-        """정적 관계 쿼리 (HAS_METHOD, HAS_FIELD, CONTAINS, PARENT_OF, NEXT)를 생성합니다."""
-        queries: List[str] = []
+    def _build_relationship_queries(self) -> List[Union[str, Dict[str, Any]]]:
+        """정적 관계 쿼리 (HAS_METHOD, HAS_FIELD, CONTAINS, PARENT_OF, NEXT)를 생성합니다 (파라미터화)."""
+        queries: List[Union[str, Dict[str, Any]]] = []
         
         for node in self._nodes or []:
             if not node.parent:
@@ -678,77 +732,49 @@ class FrameworkAstProcessor(BaseAstProcessor):
             else:
                 queries.append(self._build_parent_of_query(parent, node))
         
-        # DeepAgents 런타임 해석용: NEXT 관계 (형제 노드 간 순차 실행 흐름)
-        queries.extend(self._build_next_relationships())
-        
         return queries
     
-    def _build_next_relationships(self) -> List[str]:
-        """형제 노드 간 NEXT 관계 쿼리를 생성합니다.
-        
-        같은 부모를 가진 노드들 사이에 startLine 순서대로 NEXT 관계를 생성합니다.
-        실행 순서 추적에 사용됩니다.
-        """
-        queries: List[str] = []
-        
-        # 부모별로 자식 그룹화
-        parent_children_map: Dict[int, List[StatementNode]] = {}
-        for node in self._nodes or []:
-            if node.parent:
-                parent_id = node.parent.node_id
-                if parent_id not in parent_children_map:
-                    parent_children_map[parent_id] = []
-                parent_children_map[parent_id].append(node)
-        
-        # 각 그룹에서 순차 관계 생성
-        for parent_id, children in parent_children_map.items():
-            if len(children) < 2:
-                continue
-            
-            # startLine 기준 정렬
-            sorted_children = sorted(children, key=lambda n: n.start_line)
-            
-            for i in range(len(sorted_children) - 1):
-                current = sorted_children[i]
-                next_node = sorted_children[i + 1]
-                queries.append(self._build_next_query(current, next_node))
-        
-        return queries
+    def _build_has_method_query(self, parent: StatementNode, child: StatementNode) -> Dict[str, Any]:
+        """HAS_METHOD 관계 쿼리 (파라미터화)"""
+        return {
+            "query": (
+                f"MATCH (__cy_p__:{parent.node_type} {{startLine: $parent_line, directory: $directory, file_name: $file_name}})\n"
+                f"MATCH (__cy_c__:{child.node_type} {{startLine: $child_line, directory: $directory, file_name: $file_name}})\n"
+                f"MERGE (__cy_p__)-[__cy_r__:HAS_METHOD]->(__cy_c__)\n"
+                f"RETURN __cy_r__"
+            ),
+            "params": {
+                "parent_line": parent.start_line,
+                "child_line": child.start_line,
+                "directory": self.full_directory,
+                "file_name": self.file_name,
+            }
+        }
     
-    def _build_next_query(self, current: StatementNode, next_node: StatementNode) -> str:
-        """NEXT 관계 쿼리 (순차 실행 흐름)"""
-        return (
-            f"MATCH (__cy_curr__:{current.node_type} {{startLine: {current.start_line}, {self.node_base_props}}})\n"
-            f"MATCH (__cy_next__:{next_node.node_type} {{startLine: {next_node.start_line}, {self.node_base_props}}})\n"
-            f"MERGE (__cy_curr__)-[__cy_r__:NEXT]->(__cy_next__)\n"
-            f"RETURN __cy_r__"
-        )
+    def _build_has_field_query(self, parent: StatementNode, child: StatementNode) -> Dict[str, Any]:
+        """HAS_FIELD 관계 쿼리 (파라미터화)"""
+        return {
+            "query": (
+                f"MATCH (__cy_p__:{parent.node_type} {{startLine: $parent_line, directory: $directory, file_name: $file_name}})\n"
+                f"MATCH (__cy_c__:{child.node_type} {{startLine: $child_line, directory: $directory, file_name: $file_name}})\n"
+                f"MERGE (__cy_p__)-[__cy_r__:HAS_FIELD]->(__cy_c__)\n"
+                f"RETURN __cy_r__"
+            ),
+            "params": {
+                "parent_line": parent.start_line,
+                "child_line": child.start_line,
+                "directory": self.full_directory,
+                "file_name": self.file_name,
+            }
+        }
     
-    def _build_has_method_query(self, parent: StatementNode, child: StatementNode) -> str:
-        """HAS_METHOD 관계 쿼리"""
-        return (
-            f"MATCH (__cy_p__:{parent.node_type} {{startLine: {parent.start_line}, {self.node_base_props}}})\n"
-            f"MATCH (__cy_c__:{child.node_type} {{startLine: {child.start_line}, {self.node_base_props}}})\n"
-            f"MERGE (__cy_p__)-[__cy_r__:HAS_METHOD]->(__cy_c__)\n"
-            f"RETURN __cy_r__"
-        )
-    
-    def _build_has_field_query(self, parent: StatementNode, child: StatementNode) -> str:
-        """HAS_FIELD 관계 쿼리"""
-        return (
-            f"MATCH (__cy_p__:{parent.node_type} {{startLine: {parent.start_line}, {self.node_base_props}}})\n"
-            f"MATCH (__cy_c__:{child.node_type} {{startLine: {child.start_line}, {self.node_base_props}}})\n"
-            f"MERGE (__cy_p__)-[__cy_r__:HAS_FIELD]->(__cy_c__)\n"
-            f"RETURN __cy_r__"
-        )
-    
-    async def _run_preprocessing(self) -> List[str]:
-        """선행 처리: AST 속성에서 상속/구현 관계 생성 + LLM으로 클래스 관계 분석
+    async def _run_preprocessing(self) -> List[Union[str, Dict[str, Any]]]:
+        """선행 처리: AST 속성에서 상속/구현 관계 생성 + LLM으로 클래스 관계 분석 (파라미터화)
         
         1. AST 속성에서 직접: EXTENDS, IMPLEMENTS
         2. LLM 분석 (class_relations): ASSOCIATION, COMPOSITION, DEPENDENCY, CALLS
         """
-        queries: List[str] = []
+        queries: List[Union[str, Dict[str, Any]]] = []
         class_nodes: List[StatementNode] = []
         
         for node in self._nodes or []:
@@ -767,14 +793,14 @@ class FrameworkAstProcessor(BaseAstProcessor):
         
         return queries
     
-    async def _analyze_class_relations(self, class_nodes: List[StatementNode]) -> List[str]:
+    async def _analyze_class_relations(self, class_nodes: List[StatementNode]) -> List[Union[str, Dict[str, Any]]]:
         """CLASS별 관계 분석 (class_relations.yaml LLM 호출)
         
         각 클래스의 스켈레톤을 생성하고 LLM으로 관계를 분석합니다.
         """
-        queries: List[str] = []
+        queries: List[Union[str, Dict[str, Any]]] = []
         
-        async def analyze_one(node: StatementNode) -> List[str]:
+        async def analyze_one(node: StatementNode) -> List[Union[str, Dict[str, Any]]]:
             if not node.unit_name:
                 return []
             
@@ -803,7 +829,7 @@ class FrameworkAstProcessor(BaseAstProcessor):
         # 병렬 처리
         semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
         
-        async def analyze_with_semaphore(node: StatementNode) -> List[str]:
+        async def analyze_with_semaphore(node: StatementNode) -> List[Union[str, Dict[str, Any]]]:
             async with semaphore:
                 return await analyze_one(node)
         
@@ -813,9 +839,9 @@ class FrameworkAstProcessor(BaseAstProcessor):
         
         return queries
     
-    def _build_class_relations_queries(self, class_node: StatementNode, result: Dict[str, Any]) -> List[str]:
-        """class_relations LLM 결과에서 관계 쿼리를 생성합니다."""
-        queries: List[str] = []
+    def _build_class_relations_queries(self, class_node: StatementNode, result: Dict[str, Any]) -> List[Union[str, Dict[str, Any]]]:
+        """class_relations LLM 결과에서 관계 쿼리를 생성합니다 (파라미터화)."""
+        queries: List[Union[str, Dict[str, Any]]] = []
         
         if not class_node.unit_name:
             return queries
@@ -835,17 +861,24 @@ class FrameworkAstProcessor(BaseAstProcessor):
             if not target_class or not _is_valid_class_name_for_calls(target_class):
                 continue
             
-            escaped_target = escape_for_cypher(target_class)
-            escaped_field = escape_for_cypher(field_name)
-            
-            queries.append(
-                f"MATCH (__cy_src__:{parent_kind} {{startLine: {parent_start}, {self.node_base_props}}})\n"
-                f"MATCH (__cy_dst__) WHERE (__cy_dst__:CLASS OR __cy_dst__:INTERFACE OR __cy_dst__:ENUM)\n"
-                f"  AND toLower(__cy_dst__.class_name) = toLower('{escaped_target}')\n"
-                f"  AND __cy_src__ <> __cy_dst__\n"
-                f"MERGE (__cy_src__)-[__cy_r__:{rel_type} {{source_member: '{escaped_field}', multiplicity: '{multiplicity}'}}]->(__cy_dst__)\n"
-                f"RETURN __cy_r__"
-            )
+            queries.append({
+                "query": (
+                    f"MATCH (__cy_src__:{parent_kind} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
+                    f"MATCH (__cy_dst__) WHERE (__cy_dst__:CLASS OR __cy_dst__:INTERFACE OR __cy_dst__:ENUM)\n"
+                    f"  AND toLower(__cy_dst__.class_name) = toLower($target_class)\n"
+                    f"  AND __cy_src__ <> __cy_dst__\n"
+                    f"MERGE (__cy_src__)-[__cy_r__:{rel_type} {{source_member: $field_name, multiplicity: $multiplicity}}]->(__cy_dst__)\n"
+                    f"RETURN __cy_r__"
+                ),
+                "params": {
+                    "start_line": parent_start,
+                    "directory": self.full_directory,
+                    "file_name": self.file_name,
+                    "target_class": target_class,
+                    "field_name": field_name,
+                    "multiplicity": multiplicity,
+                }
+            })
             
             log_process("ANALYZE", "FIELD_REL", 
                        f"   🔗 {rel_type}: {class_node.unit_name}.{field_name} → {target_class} [{multiplicity}]")
@@ -861,19 +894,25 @@ class FrameworkAstProcessor(BaseAstProcessor):
             if not target_class or not _is_valid_class_name_for_calls(target_class):
                 continue
             
-            escaped_target = escape_for_cypher(target_class)
-            escaped_member = escape_for_cypher(source_member)
-            escaped_usage = escape_for_cypher(usage)
-            
             # 이미 ASSOCIATION/COMPOSITION이 있으면 DEPENDENCY 생성 안 함
-            queries.append(
-                f"MATCH (__cy_src__:{parent_kind} {{startLine: {parent_start}, {self.node_base_props}}})\n"
-                f"MATCH (__cy_dst__) WHERE (__cy_dst__:CLASS OR __cy_dst__:INTERFACE OR __cy_dst__:ENUM)\n"
-                f"  AND toLower(__cy_dst__.class_name) = toLower('{escaped_target}')\n"
-                f"  AND __cy_src__ <> __cy_dst__ AND NOT (__cy_src__)-[:ASSOCIATION|COMPOSITION]->(__cy_dst__)\n"
-                f"MERGE (__cy_src__)-[__cy_r__:DEPENDENCY {{usage: '{escaped_usage}', source_member: '{escaped_member}'}}]->(__cy_dst__)\n"
-                f"RETURN __cy_r__"
-            )
+            queries.append({
+                "query": (
+                    f"MATCH (__cy_src__:{parent_kind} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
+                    f"MATCH (__cy_dst__) WHERE (__cy_dst__:CLASS OR __cy_dst__:INTERFACE OR __cy_dst__:ENUM)\n"
+                    f"  AND toLower(__cy_dst__.class_name) = toLower($target_class)\n"
+                    f"  AND __cy_src__ <> __cy_dst__ AND NOT (__cy_src__)-[:ASSOCIATION|COMPOSITION]->(__cy_dst__)\n"
+                    f"MERGE (__cy_src__)-[__cy_r__:DEPENDENCY {{usage: $usage, source_member: $source_member}}]->(__cy_dst__)\n"
+                    f"RETURN __cy_r__"
+                ),
+                "params": {
+                    "start_line": parent_start,
+                    "directory": self.full_directory,
+                    "file_name": self.file_name,
+                    "target_class": target_class,
+                    "source_member": source_member,
+                    "usage": usage,
+                }
+            })
         
         # calls → CALLS 관계
         for call in result.get("calls", []) or []:
@@ -890,40 +929,54 @@ class FrameworkAstProcessor(BaseAstProcessor):
             if not target_class or not _is_valid_class_name_for_calls(target_class):
                 continue
             
-            escaped_target = escape_for_cypher(target_class)
-            escaped_method = escape_for_cypher(method)
-            
-            queries.append(
-                f"MATCH (__cy_src__:{parent_kind} {{startLine: {parent_start}, {self.node_base_props}}})\n"
-                f"MATCH (__cy_dst__) WHERE (__cy_dst__:CLASS OR __cy_dst__:INTERFACE OR __cy_dst__:ENUM)\n"
-                f"  AND toLower(__cy_dst__.class_name) = toLower('{escaped_target}')\n"
-                f"MERGE (__cy_src__)-[__cy_r__:CALLS {{method: '{escaped_method}'}}]->(__cy_dst__)\n"
-                f"RETURN __cy_r__"
-            )
+            queries.append({
+                "query": (
+                    f"MATCH (__cy_src__:{parent_kind} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
+                    f"MATCH (__cy_dst__) WHERE (__cy_dst__:CLASS OR __cy_dst__:INTERFACE OR __cy_dst__:ENUM)\n"
+                    f"  AND toLower(__cy_dst__.class_name) = toLower($target_class)\n"
+                    f"MERGE (__cy_src__)-[__cy_r__:CALLS {{method: $method}}]->(__cy_dst__)\n"
+                    f"RETURN __cy_r__"
+                ),
+                "params": {
+                    "start_line": parent_start,
+                    "directory": self.full_directory,
+                    "file_name": self.file_name,
+                    "target_class": target_class,
+                    "method": method,
+                }
+            })
         
         return queries
     
-    def _build_inheritance_from_ast(self, node: StatementNode) -> List[str]:
-        """CLASS 노드의 AST 속성에서 상속/구현 관계 쿼리를 생성합니다.
+    def _build_inheritance_from_ast(self, node: StatementNode) -> List[Union[str, Dict[str, Any]]]:
+        """CLASS 노드의 AST 속성에서 상속/구현 관계 쿼리를 생성합니다 (파라미터화).
         
         AST JSON의 extendsType, implementsTypes 속성을 활용합니다.
         """
-        queries: List[str] = []
+        queries: List[Union[str, Dict[str, Any]]] = []
         
         if not node.unit_name:
             return queries
         
         # EXTENDS 관계 (단일 상속)
         if node.extends_type:
-            target_class = escape_for_cypher(node.extends_type.strip())
+            target_class = node.extends_type.strip()
             if target_class and _is_valid_class_name_for_calls(node.extends_type):
-                queries.append(
-                    f"MATCH (__cy_src__:{node.node_type} {{startLine: {node.start_line}, {self.node_base_props}}})\n"
-                    f"MATCH (__cy_dst__) WHERE (__cy_dst__:CLASS OR __cy_dst__:INTERFACE)\n"
-                    f"  AND toLower(__cy_dst__.class_name) = toLower('{target_class}')\n"
-                    f"MERGE (__cy_src__)-[__cy_r__:EXTENDS]->(__cy_dst__)\n"
-                    f"RETURN __cy_r__"
-                )
+                queries.append({
+                    "query": (
+                        f"MATCH (__cy_src__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
+                        f"MATCH (__cy_dst__) WHERE (__cy_dst__:CLASS OR __cy_dst__:INTERFACE)\n"
+                        f"  AND toLower(__cy_dst__.class_name) = toLower($target_class)\n"
+                        f"MERGE (__cy_src__)-[__cy_r__:EXTENDS]->(__cy_dst__)\n"
+                        f"RETURN __cy_r__"
+                    ),
+                    "params": {
+                        "start_line": node.start_line,
+                        "directory": self.full_directory,
+                        "file_name": self.file_name,
+                        "target_class": target_class,
+                    }
+                })
                 log_process("ANALYZE", "INHERITANCE", 
                            f"   🔗 상속: {node.unit_name} extends {node.extends_type}")
         
@@ -934,13 +987,20 @@ class FrameworkAstProcessor(BaseAstProcessor):
             for iface in interfaces:
                 if not iface or not _is_valid_class_name_for_calls(iface):
                     continue
-                target_iface = escape_for_cypher(iface)
-                queries.append(
-                    f"MATCH (__cy_src__:{node.node_type} {{startLine: {node.start_line}, {self.node_base_props}}})\n"
-                    f"MATCH (__cy_dst__:INTERFACE) WHERE toLower(__cy_dst__.class_name) = toLower('{target_iface}')\n"
-                    f"MERGE (__cy_src__)-[__cy_r__:IMPLEMENTS]->(__cy_dst__)\n"
-                    f"RETURN __cy_r__"
-                )
+                queries.append({
+                    "query": (
+                        f"MATCH (__cy_src__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
+                        f"MATCH (__cy_dst__:INTERFACE) WHERE toLower(__cy_dst__.class_name) = toLower($target_iface)\n"
+                        f"MERGE (__cy_src__)-[__cy_r__:IMPLEMENTS]->(__cy_dst__)\n"
+                        f"RETURN __cy_r__"
+                    ),
+                    "params": {
+                        "start_line": node.start_line,
+                        "directory": self.full_directory,
+                        "file_name": self.file_name,
+                        "target_iface": iface,
+                    }
+                })
                 log_process("ANALYZE", "INHERITANCE", 
                            f"   🔗 구현: {node.unit_name} implements {iface}")
         
@@ -1054,14 +1114,14 @@ class FrameworkAstProcessor(BaseAstProcessor):
         self, 
         batch: AnalysisBatch, 
         llm_result: Any,
-        unit_summary_store: Optional[Dict[str, Dict[str, str]]] = None,
-    ) -> List[str]:
-        """LLM 분석 결과를 쿼리로 변환
+        unit_summary_store: Optional[Dict[str, Dict[str, str]]],
+    ) -> List[Union[str, Dict[str, Any]]]:
+        """LLM 분석 결과를 쿼리로 변환 (파라미터화)
         
         Note: localDependencies, calls 관계는 class_relations.yaml에서 처리됨
         여기서는 summary와 variables만 처리
         """
-        queries: List[str] = []
+        queries: List[Union[str, Dict[str, Any]]] = []
         
         # 타입 검증 (실패 시 예외 발생 → 전체 분석 중단)
         llm_result = self.validate_dict_result(llm_result, "llm_result", batch.batch_id)
@@ -1074,12 +1134,19 @@ class FrameworkAstProcessor(BaseAstProcessor):
             # 요약 업데이트
             summary = analysis.get("summary") or ""
             if summary:
-                escaped_summary = escape_for_cypher(str(summary))
-                queries.append(
-                    f"MATCH (__cy_n__:{node.node_type} {{startLine: {node.start_line}, {self.node_base_props}}})\n"
-                    f"SET __cy_n__.summary = '{escaped_summary}'\n"
-                    f"RETURN __cy_n__"
-                )
+                queries.append({
+                    "query": (
+                        f"MATCH (__cy_n__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
+                        f"SET __cy_n__.summary = $summary\n"
+                        f"RETURN __cy_n__"
+                    ),
+                    "params": {
+                        "start_line": node.start_line,
+                        "directory": self.full_directory,
+                        "file_name": self.file_name,
+                        "summary": str(summary),
+                    }
+                })
                 
                 # 클래스별 summary 저장
                 if unit_summary_store is not None and node.unit_key:
@@ -1091,42 +1158,6 @@ class FrameworkAstProcessor(BaseAstProcessor):
             variables = analysis.get("variables", []) or []
             if variables:
                 self._accumulate_variable_roles(node, variables)
-            
-            # DeepAgents 런타임 해석용: 후보 마킹
-            # LLM이 직접 판단한 react_candidate, external_hints, search_tokens, missing_bindings, confidence를 저장
-            react_candidate = analysis.get("react_candidate", False)
-            external_hints = analysis.get("external_hints") or []  # 이미 key=value 형식
-            search_tokens = analysis.get("search_tokens") or []  # 비즈니스 단어 토큰
-            missing_bindings = analysis.get("missing_bindings") or []
-            confidence = analysis.get("confidence", 0.0)
-            
-            if react_candidate:
-                # external_hints가 빈 배열이면 로그 남기고 마킹하지 않음
-                if not external_hints:
-                    log_process(
-                        "ANALYZE", 
-                        "CANDIDATE", 
-                        f"⚠️ react_candidate=true인데 external_hints가 비어있음 (라인 {node.start_line}-{node.end_line}, 노드: {node.node_type}). 프롬프트를 따르지 않음. 마킹 스킵."
-                    )
-                else:
-                    # 파라미터 바인딩 방식 사용 (특수문자 안전 처리)
-                    queries.append({
-                        'query': (
-                    f"MATCH (__cy_n__:{node.node_type} {{startLine: {node.start_line}, {self.node_base_props}}})\n"
-                    f"SET __cy_n__.resolution_candidate = true,\n"
-                            f"    __cy_n__.external_hints = $external_hints,\n"
-                            f"    __cy_n__.search_tokens = $search_tokens,\n"
-                            f"    __cy_n__.missing_bindings = $missing_bindings,\n"
-                            f"    __cy_n__.confidence = $confidence\n"
-                    f"RETURN __cy_n__"
-                        ),
-                        'params': {
-                            'external_hints': external_hints[:3],  # 최대 3개
-                            'search_tokens': search_tokens[:10],  # 최대 10개
-                            'missing_bindings': missing_bindings[:2],  # 최대 2개
-                            'confidence': confidence
-                        }
-                    })
         
         return queries
     
@@ -1226,9 +1257,9 @@ class FrameworkAstProcessor(BaseAstProcessor):
     async def _process_unit_summaries(
         self, 
         unit_summary_store: Dict[str, Dict[str, str]]
-    ) -> List[str]:
-        """클래스별 summary 처리"""
-        queries: List[str] = []
+    ) -> List[Union[str, Dict[str, Any]]]:
+        """클래스별 summary 처리 (파라미터화)"""
+        queries: List[Union[str, Dict[str, Any]]] = []
         
         classes = self._unit_info
         if not classes:
@@ -1310,57 +1341,69 @@ class FrameworkAstProcessor(BaseAstProcessor):
             if not final_summary:
                 continue
             
-            # Neo4j 쿼리 생성
-            escaped_summary = escape_for_cypher(str(final_summary))
+            # Neo4j 쿼리 생성 (파라미터화)
+            queries.append({
+                "query": (
+                    f"MATCH (__cy_n__:{info.kind} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
+                    f"SET __cy_n__.summary = $summary\n"
+                    f"RETURN __cy_n__"
+                ),
+                "params": {
+                    "start_line": info.node_start,
+                    "directory": self.full_directory,
+                    "file_name": self.file_name,
+                    "summary": str(final_summary),
+                }
+            })
             
-            queries.append(
-                f"MATCH (__cy_n__:{info.kind} {{startLine: {info.node_start}, {self.node_base_props}}})\n"
-                f"SET __cy_n__.summary = '{escaped_summary}'\n"
-                f"RETURN __cy_n__"
-            )
-            
-            # User Story 노드 생성
+            # User Story 노드 생성 (파라미터화)
             if all_user_stories:
-                class_name_escaped = escape_for_cypher(info.name)
                 for us_idx, us in enumerate(all_user_stories, 1):
                     us_id = us.get('id', f"US-{us_idx}")
-                    role = escape_for_cypher(us.get('role', ''))
-                    goal = escape_for_cypher(us.get('goal', ''))
-                    benefit = escape_for_cypher(us.get('benefit', ''))
                     
-                    queries.append(
-                        f"MATCH (__cy_c__:{info.kind} {{startLine: {info.node_start}, {self.node_base_props}}})\n"
-                        f"MERGE (__cy_us__:UserStory {{id: '{escape_for_cypher(us_id)}', class_name: '{class_name_escaped}', {self.node_base_props}}})\n"
-                        f"SET __cy_us__.role = '{role}', __cy_us__.goal = '{goal}', __cy_us__.benefit = '{benefit}'\n"
-                        f"MERGE (__cy_c__)-[:HAS_USER_STORY]->(__cy_us__)\n"
-                        f"RETURN __cy_us__"
-                    )
+                    queries.append({
+                        "query": (
+                            f"MATCH (__cy_c__:{info.kind} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
+                            f"MERGE (__cy_us__:UserStory {{id: $us_id, class_name: $class_name, directory: $directory, file_name: $file_name}})\n"
+                            f"SET __cy_us__.role = $role, __cy_us__.goal = $goal, __cy_us__.benefit = $benefit\n"
+                            f"MERGE (__cy_c__)-[:HAS_USER_STORY]->(__cy_us__)\n"
+                            f"RETURN __cy_us__"
+                        ),
+                        "params": {
+                            "start_line": info.node_start,
+                            "directory": self.full_directory,
+                            "file_name": self.file_name,
+                            "us_id": us_id,
+                            "class_name": info.name,
+                            "role": us.get('role', ''),
+                            "goal": us.get('goal', ''),
+                            "benefit": us.get('benefit', ''),
+                        }
+                    })
                     
                     for ac_idx, ac in enumerate(us.get('acceptance_criteria', []) or [], 1):
                         ac_id = ac.get('id', f"AC-{us_idx}-{ac_idx}")
-                        ac_title = escape_for_cypher(ac.get('title', ''))  # title은 짧아서 기존 방식 유지
-                        # given, when, then은 파라미터 바인딩 사용 (특수문자 포함 가능)
-                        ac_given = ac.get('given', '')
-                        ac_when = ac.get('when', '')
-                        ac_then = ac.get('then', '')
                         
-                        # 파라미터 바인딩 쿼리 생성
-                        query_with_params = {
-                            'query': (
-                            f"MATCH (__cy_us__:UserStory {{id: '{escape_for_cypher(us_id)}', class_name: '{class_name_escaped}', {self.node_base_props}}})\n"
-                            f"MERGE (__cy_ac__:AcceptanceCriteria {{id: '{escape_for_cypher(ac_id)}', user_story_id: '{escape_for_cypher(us_id)}', {self.node_base_props}}})\n"
-                                f"SET __cy_ac__.title = $ac_title, __cy_ac__.given = $ac_given, __cy_ac__.when = $ac_when, __cy_ac__.then = $ac_then\n"
-                            f"MERGE (__cy_us__)-[:HAS_AC]->(__cy_ac__)\n"
-                            f"RETURN __cy_ac__"
+                        queries.append({
+                            "query": (
+                                f"MATCH (__cy_us__:UserStory {{id: $us_id, class_name: $class_name, directory: $directory, file_name: $file_name}})\n"
+                                f"MERGE (__cy_ac__:AcceptanceCriteria {{id: $ac_id, user_story_id: $us_id, directory: $directory, file_name: $file_name}})\n"
+                                f"SET __cy_ac__.title = $ac_title, __cy_ac__.given = $ac_given, __cy_ac__.when_clause = $ac_when, __cy_ac__.then_clause = $ac_then\n"
+                                f"MERGE (__cy_us__)-[:HAS_AC]->(__cy_ac__)\n"
+                                f"RETURN __cy_ac__"
                             ),
-                            'params': {
-                                'ac_title': ac_title,
-                                'ac_given': ac_given,
-                                'ac_when': ac_when,
-                                'ac_then': ac_then
+                            "params": {
+                                "us_id": us_id,
+                                "class_name": info.name,
+                                "directory": self.full_directory,
+                                "file_name": self.file_name,
+                                "ac_id": ac_id,
+                                "ac_title": ac.get('title', ''),
+                                "ac_given": ac.get('given', ''),
+                                "ac_when": ac.get('when', ''),
+                                "ac_then": ac.get('then', ''),
                             }
-                        }
-                        queries.append(query_with_params)
+                        })
             
             # 3. 변수 역할 요약 (신규)
             var_queries = await self._summarize_unit_variables(class_key)
@@ -1368,12 +1411,12 @@ class FrameworkAstProcessor(BaseAstProcessor):
         
         return queries
     
-    async def _summarize_unit_variables(self, unit_key: str) -> List[str]:
-        """해당 유닛의 변수들 역할을 요약하여 Neo4j 쿼리를 생성합니다.
+    async def _summarize_unit_variables(self, unit_key: str) -> List[Union[str, Dict[str, Any]]]:
+        """해당 유닛의 변수들 역할을 요약하여 Neo4j 쿼리를 생성합니다 (파라미터화).
         
         역할이 2개 이상인 변수는 LLM으로 요약, 1개인 변수는 그대로 저장.
         """
-        queries: List[str] = []
+        queries: List[Union[str, Dict[str, Any]]] = []
         unit_vars = self._variable_roles.get(unit_key, {})
         
         if not unit_vars:
@@ -1408,13 +1451,19 @@ class FrameworkAstProcessor(BaseAstProcessor):
                         if var_line_str and summary:
                             try:
                                 var_line = int(var_line_str)
-                                escaped_summary = escape_for_cypher(summary)
-                                
-                                queries.append(
-                                    f"MATCH (__cy_v__:VARIABLE {{startLine: {var_line}, {self.node_base_props}}})\n"
-                                    f"SET __cy_v__.role = '{escaped_summary}'\n"
-                                    f"RETURN __cy_v__"
-                                )
+                                queries.append({
+                                    "query": (
+                                        f"MATCH (__cy_v__:VARIABLE {{startLine: $var_line, directory: $directory, file_name: $file_name}})\n"
+                                        f"SET __cy_v__.role = $role\n"
+                                        f"RETURN __cy_v__"
+                                    ),
+                                    "params": {
+                                        "var_line": var_line,
+                                        "directory": self.full_directory,
+                                        "file_name": self.file_name,
+                                        "role": summary,
+                                    }
+                                })
                             except ValueError:
                                 pass
                 
@@ -1424,11 +1473,18 @@ class FrameworkAstProcessor(BaseAstProcessor):
         
         # 역할이 1개인 변수는 그대로 저장
         for var_line, role in single_role_vars:
-            escaped_role = escape_for_cypher(role)
-            queries.append(
-                f"MATCH (__cy_v__:VARIABLE {{startLine: {var_line}, {self.node_base_props}}})\n"
-                f"SET __cy_v__.role = '{escaped_role}'\n"
-                f"RETURN __cy_v__"
-            )
+            queries.append({
+                "query": (
+                    f"MATCH (__cy_v__:VARIABLE {{startLine: $var_line, directory: $directory, file_name: $file_name}})\n"
+                    f"SET __cy_v__.role = $role\n"
+                    f"RETURN __cy_v__"
+                ),
+                "params": {
+                    "var_line": var_line,
+                    "directory": self.full_directory,
+                    "file_name": self.file_name,
+                    "role": role,
+                }
+            })
         
         return queries

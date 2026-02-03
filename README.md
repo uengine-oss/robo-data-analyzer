@@ -677,7 +677,6 @@ robo_analyzer_core/
 │   │   └── execute()            # 프롬프트 실행 (LLM 호출)
 │   │
 │   └── utility_tool.py         # 범용 유틸리티 함수
-│       ├── escape_for_cypher()  # Cypher 이스케이프
 │       ├── calculate_code_token() # 토큰 계산
 │       └── generate_user_story_document() # User Story 문서 생성
 │

@@ -14,7 +14,7 @@ import aiohttp
 from openai import AsyncOpenAI
 from rapidfuzz import fuzz
 
-from analyzer.neo4j_client import Neo4jClient
+from client.neo4j_client import Neo4jClient
 from config.settings import settings
 from util.stream_event import emit_message, emit_phase_event
 from util.text_utils import log_process

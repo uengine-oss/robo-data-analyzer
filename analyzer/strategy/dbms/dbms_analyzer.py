@@ -23,7 +23,7 @@ from typing import Any, AsyncGenerator, Optional, List, Dict, Tuple
 
 import aiofiles
 
-from analyzer.neo4j_client import Neo4jClient
+from client.neo4j_client import Neo4jClient
 from analyzer.strategy.base_analyzer import BaseStreamingAnalyzer, AnalysisStats
 from analyzer.strategy.base.file_context import FileStatus, FileAnalysisContext
 from analyzer.pipeline_control import pipeline_controller, PipelinePhase
