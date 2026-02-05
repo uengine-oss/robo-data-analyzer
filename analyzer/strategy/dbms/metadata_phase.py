@@ -226,14 +226,20 @@ async def run_metadata_phase(
             
             # =======================================================================
             # 5. FK 관계 추론 (선택적)
+            # - UI에서 inferFkRelations 옵션을 선택한 경우에만 실행
+            # - 또는 설정에서 fk_inference_enabled가 활성화된 경우
             # =======================================================================
-            if settings.metadata_enrichment.fk_inference_enabled:
+            # orchestrator에서 infer_fk_relations 옵션 확인 (UI에서 선택)
+            infer_fk_from_ui = getattr(orchestrator, 'infer_fk_relations', False)
+            fk_inference_enabled = infer_fk_from_ui or settings.metadata_enrichment.fk_inference_enabled
+            
+            if fk_inference_enabled:
                 async for chunk in _run_fk_inference(
                     analyzer, client, session, enrichment_service, stats
                 ):
                     yield chunk
             else:
-                yield emit_message("   ⏭️ FK 관계 추론이 비활성화되어 있습니다")
+                yield emit_message("   ⏭️ FK 관계 자동 추론이 비활성화되어 있습니다 (인제스천 시작 시 옵션에서 활성화 가능)")
             
             yield emit_phase_event(
                 phase_num=3.5,

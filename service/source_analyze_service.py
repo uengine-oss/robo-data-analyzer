@@ -198,6 +198,8 @@ async def run_source_analysis(
     strategy: str = "framework",
     target: str = "java",
     name_case: str = "original",
+    datasource_name: str = "",
+    infer_fk_relations: bool = False,
 ) -> AsyncGenerator[bytes, None]:
     """소스 파일 분석 → Neo4j 그래프 이벤트 스트리밍
     
@@ -208,6 +210,8 @@ async def run_source_analysis(
         strategy: 분석 전략 (framework, dbms)
         target: 타겟 언어 (java, oracle 등)
         name_case: 메타데이터 대소문자 변환 옵션
+        datasource_name: 타겟 데이터 소스 이름 (Neo4j에서 연결할 DataSource 노드명)
+        infer_fk_relations: FK 관계 자동 추론 여부 (기본: False)
         
     Yields:
         NDJSON 스트리밍 이벤트
@@ -219,6 +223,8 @@ async def run_source_analysis(
         strategy=strategy,
         target=target,
         name_case=name_case,
+        datasource_name=datasource_name,
+        infer_fk_relations=infer_fk_relations,
     )
     
     analyzer = AnalyzerFactory.create(strategy)
@@ -232,7 +238,7 @@ class AnalysisContext:
     BaseAnalyzer에서 사용하는 orchestrator 인터페이스를 구현합니다.
     """
     
-    __slots__ = ("api_key", "locale", "strategy", "target", "name_case", "dirs")
+    __slots__ = ("api_key", "locale", "strategy", "target", "name_case", "datasource_name", "infer_fk_relations", "dirs")
     
     def __init__(
         self,
@@ -241,12 +247,16 @@ class AnalysisContext:
         strategy: str = "framework",
         target: str = "java",
         name_case: str = "original",
+        datasource_name: str = "",
+        infer_fk_relations: bool = False,
     ):
         self.api_key = api_key
         self.locale = locale
         self.strategy = (strategy or "framework").lower()
         self.target = (target or "java").lower()
         self.name_case = (name_case or "original").lower()
+        self.datasource_name = (datasource_name or "").strip()  # 타겟 데이터 소스 이름
+        self.infer_fk_relations = infer_fk_relations  # FK 관계 자동 추론 여부
         self.dirs = get_analysis_directories(strategy)
     
     def get_directory_dirs(self, directory: str) -> dict[str, str]:

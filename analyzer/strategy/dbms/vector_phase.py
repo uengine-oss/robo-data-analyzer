@@ -60,21 +60,24 @@ async def run_vectorize_phase(
         details={"step": "table_vectorizing"}
     )
     
-    # description과 analyzed_description을 합쳐서 임베딩 생성 (검색 품질 향상)
+    # description이 없어도 테이블명으로 임베딩 생성 (fallback 지원)
     table_query = """
     MATCH (__cy_t__:Table)
     WHERE (__cy_t__.vector IS NULL OR size(__cy_t__.vector) = 0)
-      AND (__cy_t__.description IS NOT NULL OR __cy_t__.analyzed_description IS NOT NULL)
     RETURN elementId(__cy_t__) AS tid, 
            __cy_t__.name AS name,
            __cy_t__.schema AS schema,
-           trim(
-             coalesce(__cy_t__.description, '') + 
-             CASE WHEN __cy_t__.analyzed_description IS NOT NULL AND __cy_t__.analyzed_description <> '' 
-                  THEN ' | AI 분석: ' + __cy_t__.analyzed_description 
-                  ELSE '' 
-             END
-           ) AS description
+           CASE 
+             WHEN __cy_t__.description IS NOT NULL AND __cy_t__.description <> ''
+               THEN __cy_t__.description + 
+                    CASE WHEN __cy_t__.analyzed_description IS NOT NULL AND __cy_t__.analyzed_description <> '' 
+                         THEN ' | AI 분석: ' + __cy_t__.analyzed_description 
+                         ELSE '' 
+                    END
+             WHEN __cy_t__.analyzed_description IS NOT NULL AND __cy_t__.analyzed_description <> ''
+               THEN __cy_t__.analyzed_description
+             ELSE NULL
+           END AS description
     ORDER BY __cy_t__.schema, __cy_t__.name
     """
     
@@ -97,17 +100,24 @@ async def run_vectorize_phase(
                 batch_num = batch_idx // batch_size + 1
                 total_batches = (total_tables + batch_size - 1) // batch_size
                 
-                # 유효한 테이블만 필터링
+                # 유효한 테이블만 필터링 (description이 없으면 테이블명 사용)
                 valid_items = []
                 texts = []
                 for item in batch:
+                    table_name = item.get("name", "")
+                    schema_name = item.get("schema", "")
                     description = item.get("description", "") or ""
-                    if not description:
-                        continue
-                    text = embedding_client.format_table_text(
-                        table_name=item.get("name", ""),
-                        description=description
-                    )
+                    
+                    # description이 없으면 테이블명과 스키마로 임베딩 텍스트 생성
+                    if description:
+                        text = embedding_client.format_table_text(
+                            table_name=table_name,
+                            description=description
+                        )
+                    else:
+                        # fallback: 테이블명과 스키마명으로 임베딩
+                        text = f"테이블: {schema_name}.{table_name}" if schema_name else f"테이블: {table_name}"
+                    
                     texts.append(text)
                     valid_items.append(item)
                 

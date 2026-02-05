@@ -254,14 +254,15 @@ async def fetch_related_tables(table_name: str) -> dict:
 # =============================================================================
 
 async def cleanup_neo4j_graph() -> None:
-    """Neo4j 그래프 데이터 삭제 (파일 시스템 유지)"""
+    """Neo4j 그래프 데이터 삭제 (파일 시스템 유지, DataSource 노드 제외)"""
     client = Neo4jClient()
     
     try:
+        # DataSource 노드는 인제스천과 무관하므로 삭제에서 제외
         await client.execute_queries([
-            "MATCH (__cy_n__) DETACH DELETE __cy_n__"
+            "MATCH (__cy_n__) WHERE NOT __cy_n__:DataSource DETACH DELETE __cy_n__"
         ])
-        logging.info("Neo4j 데이터 삭제 완료")
+        logging.info("Neo4j 데이터 삭제 완료 (DataSource 제외)")
     except Exception as e:
         logging.error("Neo4j 데이터 삭제 오류: %s", e)
         raise RuntimeError(f"Neo4j 데이터 삭제 오류: {e}")
@@ -270,7 +271,7 @@ async def cleanup_neo4j_graph() -> None:
 
 
 async def cleanup_all_graph_data(include_files: bool = True) -> None:
-    """데이터 전체 삭제
+    """데이터 전체 삭제 (DataSource 노드 제외)
     
     Args:
         include_files: True면 파일 시스템도 함께 삭제, False면 Neo4j만 삭제
@@ -286,11 +287,11 @@ async def cleanup_all_graph_data(include_files: bool = True) -> None:
                 os.makedirs(dir_path)
                 logging.info("디렉토리 초기화: %s", dir_path)
         
-        # Neo4j 데이터 삭제
+        # Neo4j 데이터 삭제 (DataSource 노드는 인제스천과 무관하므로 제외)
         await client.execute_queries([
-            "MATCH (__cy_n__) DETACH DELETE __cy_n__"
+            "MATCH (__cy_n__) WHERE NOT __cy_n__:DataSource DETACH DELETE __cy_n__"
         ])
-        logging.info("Neo4j 데이터 삭제 완료")
+        logging.info("Neo4j 데이터 삭제 완료 (DataSource 제외)")
     except Exception as e:
         logging.error("데이터 삭제 오류: %s", e)
         raise RuntimeError(f"데이터 삭제 오류: {e}")

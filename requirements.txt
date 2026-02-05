@@ -38,3 +38,6 @@ pytest>=7.0.0
 pandas==2.2.3
 openpyxl==3.1.5
 xlrd==2.0.1
+
+# 문자열 유사도 계산
+rapidfuzz>=3.0.0

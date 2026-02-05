@@ -96,13 +96,14 @@ class Neo4jClient:
     #    - DDL 처리 시 생성된 노드/관계 반환
     # =========================================================================
 
-    async def execute_queries(self, queries: list[str]) -> list[Any]:
+    async def execute_queries(self, queries: list[str], params: Optional[dict] = None) -> list[Any]:
         """Cypher 쿼리 실행 및 결과 반환 (조회/CRUD용)
         
         모든 쿼리를 순차 실행하고 각 쿼리의 결과를 반환합니다.
         
         Args:
             queries: 실행할 Cypher 쿼리 리스트
+            params: 쿼리 파라미터 (선택사항, 모든 쿼리에 동일하게 적용)
             
         Returns:
             각 쿼리의 결과 데이터 리스트 [[쿼리1결과], [쿼리2결과], ...]
@@ -117,7 +118,7 @@ class Neo4jClient:
             async with self._driver.session(database=self._database) as session:
                 results = []
                 for query in queries:
-                    query_result = await session.run(query)
+                    query_result = await session.run(query, params or {})
                     results.append(await query_result.data())
                 return results
                 

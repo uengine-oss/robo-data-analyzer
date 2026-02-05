@@ -9,6 +9,9 @@ LLM 호출 없이 즉시 처리되어 대용량 DDL 파일도 빠르게 분석�
 - COMMENT ON COLUMN SCHEMA."TABLE_NAME"."COLUMN_NAME" IS '설명';
 - ALTER TABLE ... ADD PRIMARY KEY (columns);
 - ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY ... REFERENCES ...;
+- CREATE TABLE 내 인라인 FOREIGN KEY (column) REFERENCES table(column);
+- CREATE TABLE 내 인라인 PRIMARY KEY (columns);
+- 컬럼 정의 끝의 인라인 주석 (-- 설명);
 """
 
 import re
@@ -55,11 +58,25 @@ class DDLParser:
             re.IGNORECASE
         )
         
-        # FOREIGN KEY 패턴
+        # FOREIGN KEY 패턴 (ALTER TABLE)
         self.fk_pattern = re.compile(
             r'ALTER\s+TABLE\s+([\w\.\"]+)\s+ADD\s+(?:CONSTRAINT\s+[\w\"]+\s+)?'
             r'FOREIGN\s+KEY\s*\(([^)]+)\)\s+'
             r'REFERENCES\s+([\w\.\"]+)\s*\(([^)]+)\)',
+            re.IGNORECASE
+        )
+        
+        # 인라인 FOREIGN KEY 패턴 (CREATE TABLE 내부)
+        # FOREIGN KEY (column) REFERENCES schema.table(column)
+        self.inline_fk_pattern = re.compile(
+            r'FOREIGN\s+KEY\s*\(([^)]+)\)\s+REFERENCES\s+([\w\.\"]+)\s*\(([^)]+)\)',
+            re.IGNORECASE
+        )
+        
+        # 인라인 PRIMARY KEY 패턴 (CREATE TABLE 내부)
+        # PRIMARY KEY (col1, col2)
+        self.inline_pk_pattern = re.compile(
+            r'PRIMARY\s+KEY\s*\(([^)]+)\)',
             re.IGNORECASE
         )
         
@@ -95,6 +112,27 @@ class DDLParser:
             
             columns = self._parse_columns(columns_def)
             
+            # 인라인 FK 파싱 (CREATE TABLE 내부)
+            inline_fks = []
+            for fk_match in self.inline_fk_pattern.finditer(columns_def):
+                src_columns = [self._strip_quotes(c.strip()) for c in fk_match.group(1).split(",")]
+                ref_table = fk_match.group(2)
+                ref_columns = [self._strip_quotes(c.strip()) for c in fk_match.group(3).split(",")]
+                
+                ref_schema, ref_name = self._parse_table_name(ref_table)
+                
+                for src_col, ref_col in zip(src_columns, ref_columns):
+                    inline_fks.append({
+                        "column": src_col,
+                        "ref": f"{ref_schema}.{ref_name}.{ref_col}" if ref_schema else f"{ref_name}.{ref_col}",
+                    })
+            
+            # 인라인 PK 파싱 (CREATE TABLE 내부)
+            inline_pks = []
+            for pk_match in self.inline_pk_pattern.finditer(columns_def):
+                pk_columns = [self._strip_quotes(c.strip()) for c in pk_match.group(1).split(",")]
+                inline_pks.extend(pk_columns)
+            
             tables[table_key] = {
                 "table": {
                     "schema": schema,
@@ -103,9 +141,11 @@ class DDLParser:
                     "table_type": "BASE TABLE",
                 },
                 "columns": columns,
-                "foreignKeys": [],
-                "primaryKeys": [],
+                "foreignKeys": inline_fks,
+                "primaryKeys": inline_pks,
             }
+            
+            logger.debug(f"[DDL_PARSER] 테이블 {table_key}: 컬럼 {len(columns)}개, 인라인 FK {len(inline_fks)}개, 인라인 PK {len(inline_pks)}개")
         
         # 2. 테이블 코멘트 파싱
         for match in self.table_comment_pattern.finditer(ddl_content):
@@ -206,14 +246,34 @@ class DDLParser:
         """
         columns = []
         
-        # 각 줄을 파싱 (CONSTRAINT 줄 제외)
+        # 각 줄을 파싱 (CONSTRAINT, PRIMARY KEY, FOREIGN KEY 줄 제외)
         for line in columns_def.split("\n"):
             line = line.strip()
-            if not line or line.upper().startswith("CONSTRAINT") or line.upper().startswith("PRIMARY"):
+            if not line:
                 continue
+            
+            # 제약조건 정의 줄 스킵
+            upper_line = line.upper()
+            if (upper_line.startswith("CONSTRAINT") or 
+                upper_line.startswith("PRIMARY") or 
+                upper_line.startswith("FOREIGN") or
+                upper_line.startswith("UNIQUE") or
+                upper_line.startswith("CHECK")):
+                continue
+            
+            # 인라인 주석 추출 (-- 이후의 내용)
+            comment = ""
+            comment_match = re.search(r'--\s*(.+)$', line)
+            if comment_match:
+                comment = comment_match.group(1).strip()
+                # 주석 부분 제거
+                line = line[:comment_match.start()].strip()
             
             # 마지막 쉼표 제거
             line = line.rstrip(",").strip()
+            
+            if not line:
+                continue
             
             # 컬럼 정의 파싱
             col_match = re.match(
@@ -230,12 +290,14 @@ class DDLParser:
                 constraints = col_match.group(3).upper() if col_match.group(3) else ""
                 
                 nullable = "NOT NULL" not in constraints
+                is_primary = "PRIMARY KEY" in constraints or "PRIMARY" in constraints
                 
                 columns.append({
                     "name": col_name,
                     "dtype": col_type,
                     "nullable": nullable,
-                    "comment": "",
+                    "comment": comment,
+                    "primary_key": is_primary,
                 })
         
         return columns
