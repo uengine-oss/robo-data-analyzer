@@ -84,11 +84,12 @@ class RuleLoader:
         if missing:
             raise ValueError(f"필수 필드 누락: {', '.join(missing)}")
         
-        # 선택 필드 기본값 설정
+        # 선택 필드 기본값 설정 (딕셔너리 형식인 경우만)
         optional = rule.get("input_schema", {}).get("optional", {})
-        for field, spec in optional.items():
-            if field not in validated and isinstance(spec, dict) and "default" in spec:
-                validated[field] = spec["default"]
+        if isinstance(optional, dict):
+            for field, spec in optional.items():
+                if field not in validated and isinstance(spec, dict) and "default" in spec:
+                    validated[field] = spec["default"]
         
         return validated
     

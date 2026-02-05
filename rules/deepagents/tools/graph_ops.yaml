@@ -1,0 +1,138 @@
+name: "graph_ops"
+description: "그래프 조작 도구 정의"
+version: "1.0"
+
+tools:
+  upsert_non_target_blocks:
+    description: |
+      비타겟 파일의 블록을 Neo4j에 적재합니다.
+      기존 블록을 삭제하고 새 블록을 생성합니다.
+      
+    parameters:
+      file_path:
+        type: string
+        required: true
+        description: "대상 파일 경로"
+        
+      blocks:
+        type: array
+        required: true
+        description: |
+          블록 리스트.
+          각 블록: {start_line, end_line, code, summary}
+          
+    returns:
+      type: object
+      description: |
+        적재 결과.
+        {file_node_id, block_count, success}
+        
+    example:
+      input:
+        file_path: "config/application.yml"
+        blocks:
+          - {start_line: 1, end_line: 50, code: "...", summary: {...}}
+          - {start_line: 51, end_line: 100, code: "...", summary: {...}}
+      output:
+        {file_node_id: "4:abc:123", block_count: 2, success: true}
+        
+  regenerate_summary:
+    description: |
+      지정된 노드의 summary를 재생성합니다.
+      B 수정(요약 문제)에 사용됩니다.
+      
+    parameters:
+      node_ids:
+        type: array
+        required: true
+        description: "재생성 대상 노드 ID 리스트"
+        
+      style:
+        type: string
+        required: false
+        default: "keywords+kind"
+        description: |
+          summary 스타일.
+          - keywords+kind: 키워드 + 분류 포함 (기본)
+          - brief: 간단한 요약만
+          - detailed: 상세 요약
+          
+    returns:
+      type: object
+      description: |
+        재생성 결과.
+        {updated_count, failed_count, details}
+        
+  update_link_confidence:
+    description: |
+      REFERS_TO 관계의 confidence를 업데이트합니다.
+      C 수정(연결 문제)에 사용됩니다.
+      
+    parameters:
+      link_id:
+        type: string
+        required: true
+        description: "관계 elementId"
+        
+      confidence:
+        type: number
+        required: true
+        description: "새 confidence 값 (0~1)"
+        
+      evidence:
+        type: string
+        required: false
+        description: "업데이트 근거"
+        
+    returns:
+      type: object
+      description: "{success, old_confidence, new_confidence}"
+      
+  deactivate_link:
+    description: |
+      REFERS_TO 관계를 비활성화합니다.
+      삭제 대신 active=false로 설정합니다.
+      
+    parameters:
+      link_id:
+        type: string
+        required: true
+        description: "관계 elementId"
+        
+      reason:
+        type: string
+        required: true
+        description: "비활성화 사유"
+        
+    returns:
+      type: object
+      description: "{success, reason}"
+      
+correction_operations:
+  A_rechunk:
+    description: "블록 재분할"
+    steps:
+      - "대상 파일 식별"
+      - "chunker_agent로 새 규칙 생성"
+      - "기존 블록 DETACH DELETE"
+      - "새 블록 CREATE"
+      - "log_correction('A', 'RECHUNK', ...)"
+      
+  B_resummarize:
+    description: "요약 재생성"
+    steps:
+      - "대상 노드 식별"
+      - "summarizer_agent로 새 summary 생성"
+      - "노드 summary 속성 UPDATE"
+      - "summary_vec 재생성"
+      - "log_correction('B', 'RESUMMARIZE', ...)"
+      
+  C_relink:
+    description: "연결 재설정"
+    steps:
+      - "대상 관계 식별"
+      - "linker_agent로 평가"
+      - "기존 관계 active=false"
+      - "새 관계 CREATE"
+      - "log_correction('C', 'RELINK', ...)"
+

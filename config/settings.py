@@ -14,6 +14,11 @@ from dotenv import load_dotenv
 project_root = Path(__file__).resolve().parents[1]
 load_dotenv(dotenv_path=project_root / ".env")
 
+# deepagents용 OPENAI_API_KEY 동기화 (LLM_API_KEY와 동일하게)
+_llm_api_key = os.getenv("LLM_API_KEY", "")
+if _llm_api_key:
+    os.environ["OPENAI_API_KEY"] = _llm_api_key
+
 
 def _get_base_dir() -> str:
     """프로젝트 루트 디렉토리 경로 반환
@@ -66,16 +71,11 @@ class LLMConfig:
 @dataclass(frozen=True)
 class ConcurrencyConfig:
     """병렬 처리 설정"""
-    # 파일 단위 병렬 처리 (새로 추가)
+    # 파일 단위 병렬 처리
     file_concurrency: int = field(default_factory=lambda: int(os.getenv("FILE_CONCURRENCY", "5")))
     
     # 청크/배치 단위 병렬 처리 (DBMS/Framework 공통)
     max_concurrency: int = field(default_factory=lambda: int(os.getenv("MAX_CONCURRENCY", "5")))
-    
-    # Framework 분석 세부 설정
-    inheritance_concurrency: int = field(default_factory=lambda: int(os.getenv("INHERITANCE_CONCURRENCY", "5")))
-    field_concurrency: int = field(default_factory=lambda: int(os.getenv("FIELD_CONCURRENCY", "5")))
-    method_concurrency: int = field(default_factory=lambda: int(os.getenv("METHOD_CONCURRENCY", "5")))
     
     # DBMS 분석 전용
     variable_concurrency: int = field(default_factory=lambda: int(os.getenv("VARIABLE_CONCURRENCY", "5")))
@@ -153,4 +153,44 @@ def get_settings() -> AnalyzerConfig:
 
 # 전역 설정 인스턴스
 settings = get_settings()
+
+
+# ============================================================================
+# API 키 관리 함수
+# ============================================================================
+
+def set_openai_api_key(api_key: str) -> None:
+    """OPENAI_API_KEY 환경변수 설정
+    
+    DeepAgents 라이브러리가 내부적으로 OPENAI_API_KEY 환경변수를 사용하므로,
+    이 함수를 통해 API 키를 설정합니다.
+    
+    사용 시점:
+    - Router에서 사용자 API 키 유효성 검증 후 호출
+    - 테스트 시작 시 환경변수 LLM_API_KEY에서 가져와서 호출
+    
+    Args:
+        api_key: OpenAI API 키
+    """
+    os.environ["OPENAI_API_KEY"] = api_key
+
+
+def init_openai_api_key_from_env() -> None:
+    """환경변수 LLM_API_KEY에서 OPENAI_API_KEY 초기화
+    
+    테스트 환경에서 사용합니다.
+    서비스 시작 시 또는 테스트 setup 시 호출하세요.
+    """
+    llm_api_key = os.getenv("LLM_API_KEY", "")
+    if llm_api_key:
+        os.environ["OPENAI_API_KEY"] = llm_api_key
+
+
+def get_current_openai_api_key() -> str:
+    """현재 설정된 OPENAI_API_KEY 반환
+    
+    Returns:
+        현재 OPENAI_API_KEY 환경변수 값
+    """
+    return os.getenv("OPENAI_API_KEY", "")
 

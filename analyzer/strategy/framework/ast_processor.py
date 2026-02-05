@@ -740,8 +740,8 @@ class FrameworkAstProcessor(BaseAstProcessor):
             "query": (
                 f"MATCH (__cy_p__:{parent.node_type} {{startLine: $parent_line, directory: $directory, file_name: $file_name}})\n"
                 f"MATCH (__cy_c__:{child.node_type} {{startLine: $child_line, directory: $directory, file_name: $file_name}})\n"
-                f"MERGE (__cy_p__)-[__cy_r__:HAS_METHOD]->(__cy_c__)\n"
-                f"RETURN __cy_r__"
+            f"MERGE (__cy_p__)-[__cy_r__:HAS_METHOD]->(__cy_c__)\n"
+            f"RETURN __cy_r__"
             ),
             "params": {
                 "parent_line": parent.start_line,
@@ -757,8 +757,8 @@ class FrameworkAstProcessor(BaseAstProcessor):
             "query": (
                 f"MATCH (__cy_p__:{parent.node_type} {{startLine: $parent_line, directory: $directory, file_name: $file_name}})\n"
                 f"MATCH (__cy_c__:{child.node_type} {{startLine: $child_line, directory: $directory, file_name: $file_name}})\n"
-                f"MERGE (__cy_p__)-[__cy_r__:HAS_FIELD]->(__cy_c__)\n"
-                f"RETURN __cy_r__"
+            f"MERGE (__cy_p__)-[__cy_r__:HAS_FIELD]->(__cy_c__)\n"
+            f"RETURN __cy_r__"
             ),
             "params": {
                 "parent_line": parent.start_line,
@@ -864,11 +864,11 @@ class FrameworkAstProcessor(BaseAstProcessor):
             queries.append({
                 "query": (
                     f"MATCH (__cy_src__:{parent_kind} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
-                    f"MATCH (__cy_dst__) WHERE (__cy_dst__:CLASS OR __cy_dst__:INTERFACE OR __cy_dst__:ENUM)\n"
+                f"MATCH (__cy_dst__) WHERE (__cy_dst__:CLASS OR __cy_dst__:INTERFACE OR __cy_dst__:ENUM)\n"
                     f"  AND toLower(__cy_dst__.class_name) = toLower($target_class)\n"
-                    f"  AND __cy_src__ <> __cy_dst__\n"
+                f"  AND __cy_src__ <> __cy_dst__\n"
                     f"MERGE (__cy_src__)-[__cy_r__:{rel_type} {{source_member: $field_name, multiplicity: $multiplicity}}]->(__cy_dst__)\n"
-                    f"RETURN __cy_r__"
+                f"RETURN __cy_r__"
                 ),
                 "params": {
                     "start_line": parent_start,
@@ -898,11 +898,11 @@ class FrameworkAstProcessor(BaseAstProcessor):
             queries.append({
                 "query": (
                     f"MATCH (__cy_src__:{parent_kind} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
-                    f"MATCH (__cy_dst__) WHERE (__cy_dst__:CLASS OR __cy_dst__:INTERFACE OR __cy_dst__:ENUM)\n"
+                f"MATCH (__cy_dst__) WHERE (__cy_dst__:CLASS OR __cy_dst__:INTERFACE OR __cy_dst__:ENUM)\n"
                     f"  AND toLower(__cy_dst__.class_name) = toLower($target_class)\n"
-                    f"  AND __cy_src__ <> __cy_dst__ AND NOT (__cy_src__)-[:ASSOCIATION|COMPOSITION]->(__cy_dst__)\n"
+                f"  AND __cy_src__ <> __cy_dst__ AND NOT (__cy_src__)-[:ASSOCIATION|COMPOSITION]->(__cy_dst__)\n"
                     f"MERGE (__cy_src__)-[__cy_r__:DEPENDENCY {{usage: $usage, source_member: $source_member}}]->(__cy_dst__)\n"
-                    f"RETURN __cy_r__"
+                f"RETURN __cy_r__"
                 ),
                 "params": {
                     "start_line": parent_start,
@@ -932,10 +932,10 @@ class FrameworkAstProcessor(BaseAstProcessor):
             queries.append({
                 "query": (
                     f"MATCH (__cy_src__:{parent_kind} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
-                    f"MATCH (__cy_dst__) WHERE (__cy_dst__:CLASS OR __cy_dst__:INTERFACE OR __cy_dst__:ENUM)\n"
+                f"MATCH (__cy_dst__) WHERE (__cy_dst__:CLASS OR __cy_dst__:INTERFACE OR __cy_dst__:ENUM)\n"
                     f"  AND toLower(__cy_dst__.class_name) = toLower($target_class)\n"
                     f"MERGE (__cy_src__)-[__cy_r__:CALLS {{method: $method}}]->(__cy_dst__)\n"
-                    f"RETURN __cy_r__"
+                f"RETURN __cy_r__"
                 ),
                 "params": {
                     "start_line": parent_start,
@@ -965,10 +965,10 @@ class FrameworkAstProcessor(BaseAstProcessor):
                 queries.append({
                     "query": (
                         f"MATCH (__cy_src__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
-                        f"MATCH (__cy_dst__) WHERE (__cy_dst__:CLASS OR __cy_dst__:INTERFACE)\n"
+                    f"MATCH (__cy_dst__) WHERE (__cy_dst__:CLASS OR __cy_dst__:INTERFACE)\n"
                         f"  AND toLower(__cy_dst__.class_name) = toLower($target_class)\n"
-                        f"MERGE (__cy_src__)-[__cy_r__:EXTENDS]->(__cy_dst__)\n"
-                        f"RETURN __cy_r__"
+                    f"MERGE (__cy_src__)-[__cy_r__:EXTENDS]->(__cy_dst__)\n"
+                    f"RETURN __cy_r__"
                     ),
                     "params": {
                         "start_line": node.start_line,
@@ -991,8 +991,8 @@ class FrameworkAstProcessor(BaseAstProcessor):
                     "query": (
                         f"MATCH (__cy_src__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
                         f"MATCH (__cy_dst__:INTERFACE) WHERE toLower(__cy_dst__.class_name) = toLower($target_iface)\n"
-                        f"MERGE (__cy_src__)-[__cy_r__:IMPLEMENTS]->(__cy_dst__)\n"
-                        f"RETURN __cy_r__"
+                    f"MERGE (__cy_src__)-[__cy_r__:IMPLEMENTS]->(__cy_dst__)\n"
+                    f"RETURN __cy_r__"
                     ),
                     "params": {
                         "start_line": node.start_line,
@@ -1120,6 +1120,10 @@ class FrameworkAstProcessor(BaseAstProcessor):
         
         Note: localDependencies, calls 관계는 class_relations.yaml에서 처리됨
         여기서는 summary와 variables만 처리
+        
+        응답 형식 (v3.0):
+        - analysis[]: 각 범위별 summary, localDependencies, calls
+        - variables[]: 최상위 레벨, 각 변수에 line 필드 포함 (중복 방지)
         """
         queries: List[Union[str, Dict[str, Any]]] = []
         
@@ -1127,6 +1131,7 @@ class FrameworkAstProcessor(BaseAstProcessor):
         llm_result = self.validate_dict_result(llm_result, "llm_result", batch.batch_id)
         analysis_list = llm_result.get("analysis") or []
         
+        # 1. 각 범위별 summary 처리
         for node, analysis in zip(batch.nodes, analysis_list):
             if not analysis:
                 continue
@@ -1138,7 +1143,7 @@ class FrameworkAstProcessor(BaseAstProcessor):
                     "query": (
                         f"MATCH (__cy_n__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
                         f"SET __cy_n__.summary = $summary\n"
-                        f"RETURN __cy_n__"
+                    f"RETURN __cy_n__"
                     ),
                     "params": {
                         "start_line": node.start_line,
@@ -1153,11 +1158,174 @@ class FrameworkAstProcessor(BaseAstProcessor):
                     if node.unit_key in unit_summary_store:
                         key = f"{node.node_type}_{node.start_line}_{node.end_line}"
                         unit_summary_store[node.unit_key][key] = summary
+        
+        # 2. 최상위 variables 처리 (라인 기반, 중복 없음)
+        variables = llm_result.get("variables", []) or []
+        if variables:
+            # 라인 → 노드 매핑 구성
+            line_to_node: Dict[int, StatementNode] = {}
+            for node in batch.nodes:
+                for line in range(node.start_line, node.end_line + 1):
+                    # 더 작은 범위의 노드가 우선 (이미 있으면 덮어쓰지 않음)
+                    if line not in line_to_node:
+                        line_to_node[line] = node
             
-            # 변수 역할 처리 - 메모리 맵에 누적 (Neo4j 저장은 _process_unit_summaries에서)
-            variables = analysis.get("variables", []) or []
-            if variables:
-                self._accumulate_variable_roles(node, variables)
+            # 변수별 USES 관계 생성
+            uses_queries = self._build_uses_queries_by_line(variables, line_to_node)
+            queries.extend(uses_queries)
+            
+            # 변수 역할 누적 (기존 로직 호환)
+            for var in variables:
+                if isinstance(var, dict):
+                    line = var.get("line")
+                    if line and line in line_to_node:
+                        node = line_to_node[line]
+                        self._accumulate_variable_roles(node, [var])
+        
+        return queries
+    
+    def _build_uses_queries(
+        self,
+        node: StatementNode,
+        variables: List[Any],
+    ) -> List[Dict[str, Any]]:
+        """SymbolRef 노드와 USES 관계 쿼리를 생성합니다.
+        
+        흐름 보존 목적: 정확한 타입 판별이 아닌, 이름 사용 사실만 기록
+        
+        Args:
+            node: 분석된 코드 범위 노드 (METHOD 등)
+            variables: [{"name": "v", "role": "write"}, ...] 형식의 리스트
+            
+        Returns:
+            SymbolRef 노드 생성 + USES 관계 생성 쿼리 리스트
+        """
+        queries: List[Dict[str, Any]] = []
+        
+        # 소속 클래스 정보
+        class_name = node.unit_name or "unknown"
+        
+        for var in variables:
+            if isinstance(var, dict):
+                var_name = var.get("name", "")
+                var_role = var.get("role", "read")
+            elif isinstance(var, str):
+                # 호환성: 기존 형식 (문자열 배열) 지원
+                var_name = var
+                var_role = "read"
+            else:
+                continue
+            
+            if not var_name:
+                continue
+            
+            # 1. SymbolRef 노드 생성 또는 재사용
+            queries.append({
+                "query": (
+                    "MERGE (__cy_s__:SymbolRef {name: $sym_name, scope_class: $scope_class})\n"
+                    "RETURN __cy_s__"
+                ),
+                "params": {
+                    "sym_name": var_name,
+                    "scope_class": class_name,
+                }
+            })
+            
+            # 2. METHOD → SymbolRef USES 관계 생성
+            queries.append({
+                "query": (
+                    f"MATCH (__cy_n__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
+                    "MATCH (__cy_s__:SymbolRef {name: $sym_name, scope_class: $scope_class})\n"
+                    "MERGE (__cy_n__)-[__cy_r__:USES {role: $role}]->(__cy_s__)\n"
+                    "RETURN __cy_r__"
+                ),
+                "params": {
+                    "start_line": node.start_line,
+                    "directory": self.full_directory,
+                    "file_name": self.file_name,
+                    "sym_name": var_name,
+                    "scope_class": class_name,
+                    "role": var_role,
+                }
+            })
+            
+            log_process("ANALYZE", "USES", 
+                       f"   🔗 USES: {node.node_type}[{node.start_line}] -[{var_role}]-> {var_name}")
+        
+        return queries
+    
+    def _build_uses_queries_by_line(
+        self,
+        variables: List[Dict[str, Any]],
+        line_to_node: Dict[int, "StatementNode"],
+    ) -> List[Dict[str, Any]]:
+        """라인 기반 variables를 USES 관계 쿼리로 변환합니다.
+        
+        v3.0 형식: 최상위 variables 배열, 각 변수에 line 필드 포함
+        
+        Args:
+            variables: [{"line": 30, "name": "v", "role": "write"}, ...]
+            line_to_node: 라인 번호 → 노드 매핑
+            
+        Returns:
+            SymbolRef 노드 생성 + USES 관계 생성 쿼리 리스트
+        """
+        queries: List[Dict[str, Any]] = []
+        
+        for var in variables:
+            if not isinstance(var, dict):
+                continue
+            
+            line = var.get("line")
+            var_name = var.get("name", "")
+            var_role = var.get("role", "read")
+            
+            if not var_name:
+                continue
+            
+            # 라인에 해당하는 노드 찾기
+            node = line_to_node.get(line) if line else None
+            
+            if not node:
+                # 노드를 찾지 못하면 스킵 (로그만 남김)
+                log_process("ANALYZE", "USES", 
+                           f"   ⚠️ USES 스킵: 라인 {line}에 해당하는 노드 없음 ({var_name})")
+                continue
+            
+            class_name = node.unit_name or "unknown"
+            
+            # 1. SymbolRef 노드 생성 또는 재사용
+            queries.append({
+                "query": (
+                    "MERGE (__cy_s__:SymbolRef {name: $sym_name, scope_class: $scope_class})\n"
+                    "RETURN __cy_s__"
+                ),
+                "params": {
+                    "sym_name": var_name,
+                    "scope_class": class_name,
+                }
+            })
+            
+            # 2. 노드 → SymbolRef USES 관계 생성
+            queries.append({
+                "query": (
+                    f"MATCH (__cy_n__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
+                    "MATCH (__cy_s__:SymbolRef {name: $sym_name, scope_class: $scope_class})\n"
+                    "MERGE (__cy_n__)-[__cy_r__:USES {role: $role}]->(__cy_s__)\n"
+                    "RETURN __cy_r__"
+                ),
+                "params": {
+                    "start_line": node.start_line,
+                    "directory": self.full_directory,
+                    "file_name": self.file_name,
+                    "sym_name": var_name,
+                    "scope_class": class_name,
+                    "role": var_role,
+                }
+            })
+            
+            log_process("ANALYZE", "USES", 
+                       f"   🔗 USES: {node.node_type}[{node.start_line}] -[{var_role}]-> {var_name} (line:{line})")
         
         return queries
     
@@ -1346,7 +1514,7 @@ class FrameworkAstProcessor(BaseAstProcessor):
                 "query": (
                     f"MATCH (__cy_n__:{info.kind} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
                     f"SET __cy_n__.summary = $summary\n"
-                    f"RETURN __cy_n__"
+                f"RETURN __cy_n__"
                 ),
                 "params": {
                     "start_line": info.node_start,
@@ -1366,8 +1534,8 @@ class FrameworkAstProcessor(BaseAstProcessor):
                             f"MATCH (__cy_c__:{info.kind} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
                             f"MERGE (__cy_us__:UserStory {{id: $us_id, class_name: $class_name, directory: $directory, file_name: $file_name}})\n"
                             f"SET __cy_us__.role = $role, __cy_us__.goal = $goal, __cy_us__.benefit = $benefit\n"
-                            f"MERGE (__cy_c__)-[:HAS_USER_STORY]->(__cy_us__)\n"
-                            f"RETURN __cy_us__"
+                        f"MERGE (__cy_c__)-[:HAS_USER_STORY]->(__cy_us__)\n"
+                        f"RETURN __cy_us__"
                         ),
                         "params": {
                             "start_line": info.node_start,
@@ -1389,8 +1557,8 @@ class FrameworkAstProcessor(BaseAstProcessor):
                                 f"MATCH (__cy_us__:UserStory {{id: $us_id, class_name: $class_name, directory: $directory, file_name: $file_name}})\n"
                                 f"MERGE (__cy_ac__:AcceptanceCriteria {{id: $ac_id, user_story_id: $us_id, directory: $directory, file_name: $file_name}})\n"
                                 f"SET __cy_ac__.title = $ac_title, __cy_ac__.given = $ac_given, __cy_ac__.when_clause = $ac_when, __cy_ac__.then_clause = $ac_then\n"
-                                f"MERGE (__cy_us__)-[:HAS_AC]->(__cy_ac__)\n"
-                                f"RETURN __cy_ac__"
+                            f"MERGE (__cy_us__)-[:HAS_AC]->(__cy_ac__)\n"
+                            f"RETURN __cy_ac__"
                             ),
                             "params": {
                                 "us_id": us_id,
@@ -1455,7 +1623,7 @@ class FrameworkAstProcessor(BaseAstProcessor):
                                     "query": (
                                         f"MATCH (__cy_v__:VARIABLE {{startLine: $var_line, directory: $directory, file_name: $file_name}})\n"
                                         f"SET __cy_v__.role = $role\n"
-                                        f"RETURN __cy_v__"
+                                    f"RETURN __cy_v__"
                                     ),
                                     "params": {
                                         "var_line": var_line,
@@ -1477,7 +1645,7 @@ class FrameworkAstProcessor(BaseAstProcessor):
                 "query": (
                     f"MATCH (__cy_v__:VARIABLE {{startLine: $var_line, directory: $directory, file_name: $file_name}})\n"
                     f"SET __cy_v__.role = $role\n"
-                    f"RETURN __cy_v__"
+                f"RETURN __cy_v__"
                 ),
                 "params": {
                     "var_line": var_line,

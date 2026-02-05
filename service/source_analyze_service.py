@@ -155,19 +155,26 @@ def discover_analyzable_files(
         logging.info("analysis 디렉토리가 없습니다 (DDL만 있는 경우일 수 있음): %s", analysis_dir)
         return []
     
+    # target 하위 폴더 사용 (analysis/target/)
+    target_analysis_dir = os.path.join(analysis_dir, "target")
+    if not os.path.isdir(target_analysis_dir):
+        logging.info("analysis/target 디렉토리가 없습니다: %s", target_analysis_dir)
+        return []
+    
     # target에 맞는 확장자 사용 (없으면 strategy의 첫 번째 확장자 사용)
     target_lower = (target or "java").lower()
     target_ext = TARGET_TO_EXTENSION.get(target_lower)
     
     if not target_ext:
         # target 매핑에 없으면 strategy의 첫 번째 확장자 사용
+        extensions = STRATEGY_EXTENSIONS.get(strategy, DEFAULT_EXTENSIONS)
         target_ext = extensions[0] if extensions else ".sql"
     
     result = []
     
-    # analysis 디렉토리를 직접 순회하여 JSON 파일 탐색
-    for root, _, files in os.walk(analysis_dir):
-        rel_dir = os.path.relpath(root, analysis_dir)
+    # analysis/target 디렉토리를 직접 순회하여 JSON 파일 탐색
+    for root, _, files in os.walk(target_analysis_dir):
+        rel_dir = os.path.relpath(root, target_analysis_dir)
         directory = "" if rel_dir == "." else rel_dir
         
         for json_file in files:

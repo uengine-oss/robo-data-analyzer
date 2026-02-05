@@ -371,7 +371,7 @@ class DbmsAnalyzer(BaseStreamingAnalyzer):
         
         async def load_single(directory: str, file_name: str) -> FileAnalysisContext:
             base_name = os.path.splitext(file_name)[0]
-            ast_path = os.path.join(orchestrator.dirs["analysis"], directory, f"{base_name}.json")
+            ast_path = os.path.join(orchestrator.dirs["analysis"], "target", directory, f"{base_name}.json")
 
             async with aiofiles.open(ast_path, "r", encoding="utf-8") as ast_file:
                 ast_content = await ast_file.read()

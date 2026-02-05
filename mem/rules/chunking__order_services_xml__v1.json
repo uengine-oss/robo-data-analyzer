@@ -1,0 +1,73 @@
+{
+  "file_type": "xml",
+  "boundary": "delimiter",
+  "max_block_lines": 150,
+  "key_patterns": [
+    "^\\s*<services\\b",
+    "^\\s*<service\\b",
+    "^\\s*</service>\\s*$",
+    "^\\s*</services>\\s*$",
+    "name=\"[^\"]+\"",
+    "invoke=\"[^\"]+\"",
+    "location=\"[^\"]+\"",
+    "^\\s*<attribute\\b",
+    "^\\s*<auto-attributes\\b"
+  ],
+  "notes": "reasoning: 제공된 누적 패턴 메모리에서 discovered/confirmed가 비어 있어 승격/거절 대상이 없음. 본 파일은 전형적인 OFBiz services.xml 구조로, <service>...</service>가 독립 의미 단위(서비스 정의)이며 내부 attribute들이 해당 서비스의 계약(입출력)을 형성하므로 중간 분리 금지. 따라서 delimiter 기반으로 </service>에서만 블록 경계를 잡는 것이 문맥 보존(태그쌍, 서비스 정의 단위 유지)에 부합. 대용량(만 라인)에서도 service 단위로 자르면 각 블록이 80~200 라인에 수렴하며, 특정 서비스가 200 라인을 초과하더라도 </service>까지 포함해야 함.",
+  "version": 1,
+  "confidence": 0.86,
+  "confirmed_patterns": [],
+  "block_roles": [
+    {
+      "lines": "1-12",
+      "role": "XML 헤더/주석 및 루트 <services> 메타(설명, vendor, version)",
+      "entities": []
+    },
+    {
+      "lines": "13-25",
+      "role": "서비스 정의: createOrderHeader (주문 헤더 생성) - OUT pk, IN nonpk 및 추가 IN 파라미터",
+      "entities": [
+        "createOrderHeader",
+        "OrderServices.createOrderHeader"
+      ]
+    },
+    {
+      "lines": "27-38",
+      "role": "서비스 정의: createOrderItem (주문 아이템 생성) - orderId INOUT, orderItemSeqId OUT 등",
+      "entities": [
+        "createOrderItem",
+        "OrderServices.createOrderItem"
+      ]
+    },
+    {
+      "lines": "40-48",
+      "role": "서비스 정의: updateOrderHeader (주문 헤더 업데이트)",
+      "entities": [
+        "updateOrderHeader",
+        "OrderServices.updateOrderHeader"
+      ]
+    },
+    {
+      "lines": "50-57",
+      "role": "서비스 정의: cancelOrderItem (주문 아이템 취소)",
+      "entities": [
+        "cancelOrderItem",
+        "OrderServices.cancelOrderItem"
+      ]
+    },
+    {
+      "lines": "59-66",
+      "role": "서비스 정의: getOrderHeaderInformation (주문 헤더/아이템/조정 정보 조회) - OUT 리스트/GenericValue 반환",
+      "entities": [
+        "getOrderHeaderInformation",
+        "OrderServices.getOrderHeaderInformation"
+      ]
+    },
+    {
+      "lines": "68-69",
+      "role": "루트 </services> 종료 태그 및 파일 끝",
+      "entities": []
+    }
+  ],
+  "delimiter": "---"
+}

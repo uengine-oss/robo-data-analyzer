@@ -1,0 +1,62 @@
+{
+  "file_type": "yaml",
+  "boundary": "top_level_key",
+  "max_block_lines": 150,
+  "key_patterns": [
+    "^(spring|mybatis|ofbiz|order|logging):\\s*$",
+    "^[a-zA-Z0-9_.-]+:\\s*.*$"
+  ],
+  "notes": "reasoning: 본 파일은 application.yaml 형태의 Spring Boot 설정으로 보이며, 0레벨(들여쓰기 없음) 키가 설정 그룹의 시작을 명확히 나타냄(spring:, mybatis:, ofbiz:, order:, logging:). 각 그룹은 내부에 다단계 하위 키가 존재하므로(예: spring.datasource.hikari.* / spring.jpa.properties.hibernate.* / order.auto-cancel.*) 문맥 보존을 위해 최상위 키 단위로 청크를 나누는 것이 적절함. 구분자(---)나 INI 섹션 헤더, XML 태그, SQL 종결자 같은 delimiter 기반 분할 신호는 없음. 라인 수가 짧아(58라인) 실제 분할 시에는 spring 블록(4-26), mybatis(27-33), ofbiz(35-44), order(46-52), logging(53-57)처럼 80라인 미만 블록이 생길 수 있으나, 대용량 파일에서 반복될 경우를 고려하면 규칙은 최상위 키 기준이 안정적임.",
+  "version": 1,
+  "confidence": 0.78,
+  "confirmed_patterns": [],
+  "block_roles": [
+    {
+      "lines": "1-3",
+      "role": "파일 주석/설명 헤더",
+      "entities": []
+    },
+    {
+      "lines": "4-26",
+      "role": "Spring Boot 기본 설정(spring.application, datasource/hikari, jpa/hibernate)",
+      "entities": [
+        "spring",
+        "spring.datasource",
+        "spring.jpa"
+      ]
+    },
+    {
+      "lines": "27-33",
+      "role": "MyBatis 설정(mapper-locations, type-aliases, configuration)",
+      "entities": [
+        "mybatis"
+      ]
+    },
+    {
+      "lines": "34-44",
+      "role": "OFBiz 연동 설정(delegator/entity-engine/service-engine)",
+      "entities": [
+        "ofbiz",
+        "ofbiz.delegator",
+        "ofbiz.entity-engine",
+        "ofbiz.service-engine"
+      ]
+    },
+    {
+      "lines": "45-52",
+      "role": "주문 서비스 도메인 설정(order.* 및 auto-cancel 정책)",
+      "entities": [
+        "order",
+        "order.auto-cancel"
+      ]
+    },
+    {
+      "lines": "53-57",
+      "role": "로깅 레벨 설정(logging.level.*)",
+      "entities": [
+        "logging",
+        "logging.level"
+      ]
+    }
+  ]
+}

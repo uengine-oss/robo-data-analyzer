@@ -2,7 +2,7 @@
 
 AST 기반 Java 코드 분석 → Neo4j 클래스 다이어그램 그래프 생성.
 
-분석 흐름 (2단계 + 이중 병렬):
+분석 흐름 (3단계 + 이중 병렬):
 1. [Phase 1] 모든 파일 AST 그래프 생성 (병렬)
    - 정적 노드 생성: CLASS, INTERFACE, METHOD, FIELD
    - 정적 관계 생성: HAS_METHOD, HAS_FIELD, CONTAINS
@@ -11,8 +11,14 @@ AST 기반 Java 코드 분석 → Neo4j 클래스 다이어그램 그래프 생�
    - 코드 요약 및 분석
    - CALLS 관계 생성 (MATCH로 기존 노드 조회)
    - DEPENDENCY 관계 생성
+   - 즉시 summary 벡터화 (summary_vec)
    
-3. [Phase 3] User Story 문서 생성 (BaseStreamingAnalyzer 공통)
+3. [Phase 3] 비타겟 파일 분석 (LangGraph + DeepAgents)
+   - 설정 파일, 리소스 파일 등 분석
+   - 블록화 → Summary 생성 → REFERS_TO 관계 생성
+   - 메모리 운영 (mem/runs, mem/project)
+   
+4. [Phase 4] User Story 문서 생성 (BaseStreamingAnalyzer 공통)
 
 파일 상태 관리:
 - Phase1 실패 파일은 Phase2 스킵 (토큰 절감)
@@ -21,6 +27,7 @@ AST 기반 Java 코드 분석 → Neo4j 클래스 다이어그램 그래프 생�
 Phase 로직은 각 phase 파일에 분리되어 있습니다:
 - ast_phase.py: AST 그래프 생성 (Phase 1)
 - llm_phase.py: LLM 분석 (Phase 2)
+- nontarget/: 비타겟 파일 분석 (Phase 3)
 """
 
 import asyncio
@@ -45,6 +52,7 @@ from util.text_utils import (
 # Phase 파일들에서 import
 from analyzer.strategy.framework.ast_phase import run_phase1
 from analyzer.strategy.framework.llm_phase import run_phase2
+from analyzer.strategy.framework.nontarget import run_nontarget_phase
 
 
 class FrameworkAnalyzer(BaseStreamingAnalyzer):
@@ -177,6 +185,29 @@ class FrameworkAnalyzer(BaseStreamingAnalyzer):
             pipeline_state.set_phase(PipelinePhase.CANCELLED)
             return
         
+        # ========== Phase 3: 비타겟 파일 분석 (DeepAgents) ==========
+        yield emit_message("")
+        yield self.emit_separator()
+        yield self.emit_phase_header(3, "📄 비타겟 파일 분석", "LangGraph + DeepAgents")
+        yield self.emit_separator()
+        
+        async for chunk in run_nontarget_phase(
+            analyzer=self,
+            client=client,
+            orchestrator=orchestrator,
+            stats=stats,
+        ):
+            yield chunk
+        
+        yield emit_message("")
+        yield self.emit_phase_complete(3, "비타겟 파일 분석 완료")
+        
+        # Phase 3 후 일시정지 체크
+        if not await pipeline_state.wait_if_paused():
+            yield emit_message("⏹️ 파이프라인이 중단되었습니다")
+            pipeline_state.set_phase(PipelinePhase.CANCELLED)
+            return
+        
         # 파이프라인 완료
         pipeline_state.set_phase(PipelinePhase.COMPLETED)
 
@@ -259,7 +290,7 @@ class FrameworkAnalyzer(BaseStreamingAnalyzer):
         
         async def load_single(directory: str, file_name: str) -> FileAnalysisContext:
             base_name = os.path.splitext(file_name)[0]
-            ast_path = os.path.join(orchestrator.dirs["analysis"], directory, f"{base_name}.json")
+            ast_path = os.path.join(orchestrator.dirs["analysis"], "target", directory, f"{base_name}.json")
 
             async with aiofiles.open(ast_path, "r", encoding="utf-8") as ast_file:
                 ast_content = await ast_file.read()

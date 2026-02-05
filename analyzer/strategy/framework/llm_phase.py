@@ -5,21 +5,108 @@ framework_analyzer.py에서 분리된 Phase 2 로직입니다.
 
 핵심 로직(summary 청크 분석, User Story 생성)은
 ast_processor.py의 run_llm_analysis() 내부에서 처리됩니다.
+
+Phase 2.5: 배치 완료 시 즉시 summary_vec 벡터화
 """
 
 import asyncio
 import logging
+import time
 from typing import Any, AsyncGenerator, List
 
+from openai import AsyncOpenAI
+
 from client.neo4j_client import Neo4jClient
+from client.embedding_client import EmbeddingClient
 from analyzer.strategy.base_analyzer import AnalysisStats
 from analyzer.strategy.base.file_context import FileStatus, FileAnalysisContext
+from config.settings import settings
 from util.stream_event import (
     emit_data,
     emit_message,
     emit_phase_event,
 )
 from util.text_utils import log_process
+
+
+async def vectorize_summaries(
+    analyzer: Any,
+    client: Neo4jClient,
+    api_key: str,
+    file_name: str,
+) -> int:
+    """파일의 모든 노드 summary를 벡터화합니다.
+    
+    Args:
+        analyzer: FrameworkAnalyzer 인스턴스
+        client: Neo4j 클라이언트
+        api_key: OpenAI API 키
+        file_name: 대상 파일명
+        
+    Returns:
+        벡터화된 노드 수
+    """
+    if not api_key:
+        return 0
+    
+    openai_client = AsyncOpenAI(api_key=api_key)
+    embedding_client = EmbeddingClient(openai_client)
+    
+    # summary가 있고 summary_vec이 없는 노드 조회
+    query = """
+    MATCH (__cy_n__)
+    WHERE (__cy_n__:CLASS OR __cy_n__:INTERFACE OR __cy_n__:METHOD OR __cy_n__:FIELD OR __cy_n__:ENUM)
+      AND __cy_n__.file_name = $file_name
+      AND __cy_n__.summary IS NOT NULL
+      AND __cy_n__.summary <> ''
+      AND (__cy_n__.summary_vec IS NULL OR size(__cy_n__.summary_vec) = 0)
+    RETURN elementId(__cy_n__) AS nid, 
+           __cy_n__.summary AS summary,
+           labels(__cy_n__)[0] AS node_type
+    """
+    
+    async with analyzer._cypher_lock:
+        result = await client.execute_with_params(query, {"file_name": file_name})
+    
+    nodes = result if result else []
+    if not nodes:
+        return 0
+    
+    # 배치 처리 (50개씩)
+    batch_size = 50
+    vectorized_count = 0
+    
+    for i in range(0, len(nodes), batch_size):
+        batch = nodes[i:i + batch_size]
+        texts = [item.get("summary", "") for item in batch]
+        
+        embed_start = time.time()
+        vectors = await embedding_client.embed_batch(texts)
+        embed_time = time.time() - embed_start
+        
+        log_process("VECTORIZE", "SUMMARY", f"{file_name}: {len(vectors)}개 노드 임베딩 완료 ({embed_time:.2f}초)")
+        
+        # UNWIND로 한번에 저장
+        vector_updates = []
+        for item, vector in zip(batch, vectors):
+            if vector:
+                vector_updates.append({
+                    "nid": item['nid'],
+                    "vector": vector
+                })
+                vectorized_count += 1
+        
+        if vector_updates:
+            update_query = """
+            UNWIND $items AS item
+            MATCH (__cy_n__) WHERE elementId(__cy_n__) = item.nid
+            SET __cy_n__.summary_vec = item.vector
+            RETURN __cy_n__
+            """
+            async with analyzer._cypher_lock:
+                await client.execute_with_params(update_query, {"items": vector_updates})
+    
+    return vectorized_count
 
 
 async def run_phase2(
@@ -94,6 +181,14 @@ async def run_phase2(
                             })
                     
                     graph = {"Nodes": list(all_nodes.values()), "Relationships": list(all_relationships.values())}
+                    
+                    # Phase 2.5: 즉시 벡터화 (배치 완료 후)
+                    vectorized = await vectorize_summaries(
+                        analyzer, client, orchestrator.api_key, ctx.file_name
+                    )
+                    if vectorized > 0:
+                        log_process("VECTORIZE", "SUMMARY", f"✅ {ctx.file_name}: {vectorized}개 노드 summary_vec 저장 완료")
+                    
                     ctx.status = FileStatus.PH2_OK
                     await results_queue.put({
                         "type": "success",
@@ -102,6 +197,7 @@ async def run_phase2(
                         "query_count": len(analysis_queries),
                         "failed_batches": failed_batch_count,
                         "failed_details": failed_details,
+                        "vectorized": vectorized,
                     })
                 else:
                     ctx.status = FileStatus.PH2_OK
@@ -181,8 +277,9 @@ async def run_phase2(
             status_icon = "✅" if failed_batches == 0 else "⚠️"
             
             # 파일 완료 메시지 (트리 구조)
+            vectorized = result.get("vectorized", 0)
             yield emit_message(f"├─ {status_icon} [{completed}/{total}] {result['file']}")
-            yield emit_message(f"│     쿼리: {result['query_count']}개, 노드: {node_count}개, 관계: {rel_count}개")
+            yield emit_message(f"│     쿼리: {result['query_count']}개, 노드: {node_count}개, 관계: {rel_count}개, 벡터: {vectorized}개")
             
             if remaining > 0:
                 yield emit_message(f"│     남은 파일: {remaining}개")

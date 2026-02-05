@@ -1,0 +1,52 @@
+{
+  "file_type": "xml",
+  "boundary": "delimiter",
+  "max_block_lines": 150,
+  "key_patterns": [
+    "^\\s*<entitymodel\\b",
+    "^\\s*<entity\\b",
+    "</entity>\\s*$",
+    "entity-name=\\\"[^\\\"]+\\\"",
+    "table-name=\\\"[^\\\"]+\\\"",
+    "^\\s*<field\\b",
+    "\\bname=\\\"[^\\\"]+\\\"",
+    "^\\s*<prim-key\\b",
+    "^\\s*<relation\\b",
+    "rel-entity-name=\\\"[^\\\"]+\\\"",
+    "fk-name=\\\"[^\\\"]+\\\"",
+    "^\\s*<key-map\\b"
+  ],
+  "notes": "reasoning: 샘플 전체가 XML이며 OFBiz entitymodel 스키마(entitymodel.xsd)를 참조. 의미 단위는 <entity>...</entity> 엔티티 정의이며, 엔티티 내부에는 다수의 <field>와 <prim-key>, <relation>(+<key-map>)이 포함되어 있어 중간 절단 시 문맥 훼손 위험이 큼. 따라서 청크 경계는 </entity>를 delimiter로 삼고, 파일 헤더(<?xml..>~<title>/<description>)는 첫 엔티티와 같은 블록 또는 별도 소형 블록으로 유지하는 것이 안전. 이 파일은 107라인으로 2개 엔티티이므로 실제 분할은 [헤더+OrderHeader], [OrderItem], [</entitymodel> 꼬리]처럼 가능하나, 루트 태그 쌍 분리를 피하려면 마지막 </entitymodel>을 마지막 엔티티 블록에 포함하는 방식이 가장 무난.",
+  "version": 1,
+  "confidence": 0.78,
+  "confirmed_patterns": [],
+  "block_roles": [
+    {
+      "lines": "1-11",
+      "role": "XML 헤더/주석 및 entitymodel 루트+메타(title/description)",
+      "entities": []
+    },
+    {
+      "lines": "12-50",
+      "role": "ORDER_HEADER 엔티티 정의 (OrderHeader)",
+      "entities": [
+        "ORDER_HEADER",
+        "OrderHeader"
+      ]
+    },
+    {
+      "lines": "52-104",
+      "role": "ORDER_ITEM 엔티티 정의 (OrderItem)",
+      "entities": [
+        "ORDER_ITEM",
+        "OrderItem"
+      ]
+    },
+    {
+      "lines": "106-106",
+      "role": "entitymodel 루트 종료 태그",
+      "entities": []
+    }
+  ],
+  "delimiter": "---"
+}

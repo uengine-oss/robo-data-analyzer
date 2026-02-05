@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
 # 설정에서 가져오는 상수
 MAX_BATCH_TOKEN = settings.batch.max_batch_token
+MAX_CONTEXT_TOKEN = settings.batch.max_context_token
 
 
 @dataclass(slots=True)
@@ -57,7 +58,7 @@ class AnalysisBatch:
             code = node.get_compact_code()
             code_parts.append(code)
             
-            context = node.get_ancestor_context()
+            context = node.get_ancestor_context(MAX_CONTEXT_TOKEN)
             if context:
                 context_parts.append(context)
             else:
@@ -84,7 +85,7 @@ class AnalysisBatch:
             code = node.get_compact_code() if node.has_children else node.get_raw_code()
             code_parts.append(code)
             
-            context = node.get_ancestor_context()
+            context = node.get_ancestor_context(MAX_CONTEXT_TOKEN)
             if context:
                 context_parts.append(context)
             else:

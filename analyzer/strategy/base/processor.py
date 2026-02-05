@@ -588,8 +588,8 @@ class BaseAstProcessor(ABC):
             "query": (
                 f"MATCH (__cy_p__:{parent.node_type} {{startLine: $parent_line, directory: $directory, file_name: $file_name}})\n"
                 f"MATCH (__cy_c__:{child.node_type} {{startLine: $child_line, directory: $directory, file_name: $file_name}})\n"
-                f"MERGE (__cy_p__)-[__cy_r__:CONTAINS]->(__cy_c__)\n"
-                f"RETURN __cy_r__"
+            f"MERGE (__cy_p__)-[__cy_r__:CONTAINS]->(__cy_c__)\n"
+            f"RETURN __cy_r__"
             ),
             "params": {
                 "parent_line": parent.start_line,
@@ -605,8 +605,8 @@ class BaseAstProcessor(ABC):
             "query": (
                 f"MATCH (__cy_p__:{parent.node_type} {{startLine: $parent_line, directory: $directory, file_name: $file_name}})\n"
                 f"MATCH (__cy_c__:{child.node_type} {{startLine: $child_line, directory: $directory, file_name: $file_name}})\n"
-                f"MERGE (__cy_p__)-[__cy_r__:PARENT_OF]->(__cy_c__)\n"
-                f"RETURN __cy_r__"
+            f"MERGE (__cy_p__)-[__cy_r__:PARENT_OF]->(__cy_c__)\n"
+            f"RETURN __cy_r__"
             ),
             "params": {
                 "parent_line": parent.start_line,

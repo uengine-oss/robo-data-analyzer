@@ -592,14 +592,14 @@ class DbmsAstProcessor(BaseAstProcessor):
                 query = (
                     f"MERGE (__cy_n__:{label} {{schema_name: $schema_name, procedure_name: $procedure_name}})\n"
                     f"SET __cy_n__.startLine = $start_line, __cy_n__.directory = $directory, __cy_n__.file_name = $file_name, {set_clause}\n"
-                    f"RETURN __cy_n__"
-                )
+                f"RETURN __cy_n__"
+            )
             else:
                 query = (
                     f"MERGE (__cy_n__:{label} {{procedure_name: $procedure_name}})\n"
                     f"SET __cy_n__.startLine = $start_line, __cy_n__.directory = $directory, __cy_n__.file_name = $file_name, {set_clause}\n"
-                    f"RETURN __cy_n__"
-                )
+                f"RETURN __cy_n__"
+            )
             queries.append({"query": query, "params": params})
         else:
             query = (
@@ -636,8 +636,8 @@ class DbmsAstProcessor(BaseAstProcessor):
             "query": (
                 f"MATCH (__cy_prev__:{prev.node_type} {{startLine: $prev_line, directory: $directory, file_name: $file_name}})\n"
                 f"MATCH (__cy_curr__:{current.node_type} {{startLine: $curr_line, directory: $directory, file_name: $file_name}})\n"
-                f"MERGE (__cy_prev__)-[__cy_r__:NEXT]->(__cy_curr__)\n"
-                f"RETURN __cy_r__"
+            f"MERGE (__cy_prev__)-[__cy_r__:NEXT]->(__cy_curr__)\n"
+            f"RETURN __cy_r__"
             ),
             "params": {
                 "prev_line": prev.start_line,
@@ -725,7 +725,7 @@ class DbmsAstProcessor(BaseAstProcessor):
                             f"__cy_n__.summary = $summary, __cy_n__.node_code = $node_code, "
                             f"__cy_n__.token = $token, __cy_n__.procedure_name = $procedure_name, "
                             f"__cy_n__.has_children = $has_children\n"
-                            f"RETURN __cy_n__"
+                        f"RETURN __cy_n__"
                         ),
                         "params": {
                             "start_line": node.start_line,
@@ -755,8 +755,8 @@ class DbmsAstProcessor(BaseAstProcessor):
                             "query": (
                                 f"MATCH (__cy_c__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
                                 f"MERGE (__cy_target__:PROCEDURE {{directory: $package_name, procedure_name: $proc_name}})\n"
-                                f"MERGE (__cy_c__)-[__cy_r__:CALL {{scope: 'external'}}]->(__cy_target__)\n"
-                                f"RETURN __cy_c__, __cy_target__, __cy_r__"
+                            f"MERGE (__cy_c__)-[__cy_r__:CALL {{scope: 'external'}}]->(__cy_target__)\n"
+                            f"RETURN __cy_c__, __cy_target__, __cy_r__"
                             ),
                             "params": {
                                 "start_line": node.start_line,
@@ -771,9 +771,9 @@ class DbmsAstProcessor(BaseAstProcessor):
                             "query": (
                                 f"MATCH (__cy_c__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
                                 f"MATCH (__cy_p__ {{procedure_name: $call_name, directory: $directory, file_name: $file_name}})\n"
-                                f"WHERE __cy_p__:PROCEDURE OR __cy_p__:FUNCTION\n"
-                                f"MERGE (__cy_c__)-[__cy_r__:CALL {{scope: 'internal'}}]->(__cy_p__)\n"
-                                f"RETURN __cy_c__, __cy_p__, __cy_r__"
+                            f"WHERE __cy_p__:PROCEDURE OR __cy_p__:FUNCTION\n"
+                            f"MERGE (__cy_c__)-[__cy_r__:CALL {{scope: 'internal'}}]->(__cy_p__)\n"
+                            f"RETURN __cy_c__, __cy_p__, __cy_r__"
                             ),
                             "params": {
                                 "start_line": node.start_line,
@@ -802,7 +802,7 @@ class DbmsAstProcessor(BaseAstProcessor):
                         "query": (
                             f"MATCH (__cy_v__:Variable {{name: $var_name, directory: $directory, file_name: $file_name}})\n"
                             f"SET __cy_v__.`{usage_key}` = 'Used'\n"
-                            f"RETURN __cy_v__"
+                        f"RETURN __cy_v__"
                         ),
                         "params": {
                             "var_name": var_name,
@@ -908,7 +908,7 @@ class DbmsAstProcessor(BaseAstProcessor):
                 "query": (
                     f"MATCH (__cy_n__:{info.procedure_type} {{procedure_name: $procedure_name, directory: $directory, file_name: $file_name}})\n"
                     f"SET __cy_n__.summary = $summary\n"
-                    f"RETURN __cy_n__"
+                f"RETURN __cy_n__"
                 ),
                 "params": {
                     "procedure_name": info.procedure_name,
@@ -926,8 +926,8 @@ class DbmsAstProcessor(BaseAstProcessor):
                         f"MATCH (__cy_p__:{info.procedure_type} {{procedure_name: $procedure_name, directory: $directory, file_name: $file_name}})\n"
                         f"MERGE (__cy_us__:UserStory {{id: $us_id, procedure_name: $procedure_name, directory: $directory, file_name: $file_name}})\n"
                         f"SET __cy_us__.role = $role, __cy_us__.goal = $goal, __cy_us__.benefit = $benefit\n"
-                        f"MERGE (__cy_p__)-[__cy_r__:HAS_USER_STORY]->(__cy_us__)\n"
-                        f"RETURN __cy_p__, __cy_us__, __cy_r__"
+                    f"MERGE (__cy_p__)-[__cy_r__:HAS_USER_STORY]->(__cy_us__)\n"
+                    f"RETURN __cy_p__, __cy_us__, __cy_r__"
                     ),
                     "params": {
                         "procedure_name": info.procedure_name,
@@ -950,8 +950,8 @@ class DbmsAstProcessor(BaseAstProcessor):
                             f"MATCH (__cy_us__:UserStory {{id: $us_id, directory: $directory, file_name: $file_name}})\n"
                             f"MERGE (__cy_ac__:AcceptanceCriteria {{id: $ac_id, user_story_id: $us_id, directory: $directory, file_name: $file_name}})\n"
                             f"SET __cy_ac__.title = $title, __cy_ac__.given = $given, __cy_ac__.when_clause = $when_clause, __cy_ac__.then_clause = $then_clause\n"
-                            f"MERGE (__cy_us__)-[__cy_r__:HAS_AC]->(__cy_ac__)\n"
-                            f"RETURN __cy_us__, __cy_ac__, __cy_r__"
+                        f"MERGE (__cy_us__)-[__cy_r__:HAS_AC]->(__cy_ac__)\n"
+                        f"RETURN __cy_us__, __cy_ac__, __cy_r__"
                         ),
                         "params": {
                             "us_id": us_id,
@@ -1020,7 +1020,7 @@ class DbmsAstProcessor(BaseAstProcessor):
                                 "query": (
                                     f"MATCH (__cy_v__:Variable {{name: $var_name, directory: $directory, file_name: $file_name}})\n"
                                     f"SET __cy_v__.role = $role\n"
-                                    f"RETURN __cy_v__"
+                                f"RETURN __cy_v__"
                                 ),
                                 "params": {
                                     "var_name": var_name,
@@ -1040,7 +1040,7 @@ class DbmsAstProcessor(BaseAstProcessor):
                 "query": (
                     f"MATCH (__cy_v__:Variable {{name: $var_name, directory: $directory, file_name: $file_name}})\n"
                     f"SET __cy_v__.role = $role\n"
-                    f"RETURN __cy_v__"
+                f"RETURN __cy_v__"
                 ),
                 "params": {
                     "var_name": var_name,
@@ -1105,8 +1105,8 @@ class DbmsAstProcessor(BaseAstProcessor):
                     f"MATCH (__cy_n__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
                     f"MERGE (__cy_v__:Variable {{name: $var_name, directory: $directory, file_name: $file_name}})\n"
                     f"SET __cy_v__.type = $var_type, __cy_v__.role = $var_role, __cy_v__.description = $var_desc\n"
-                    f"MERGE (__cy_n__)-[:DECLARES]->(__cy_v__)\n"
-                    f"RETURN __cy_v__"
+                f"MERGE (__cy_n__)-[:DECLARES]->(__cy_v__)\n"
+                f"RETURN __cy_v__"
                 ),
                 "params": {
                     "start_line": node.start_line,
@@ -1169,7 +1169,7 @@ class DbmsAstProcessor(BaseAstProcessor):
                         "query": (
                             f"MATCH (__cy_n__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
                             f"SET __cy_n__:Table, __cy_n__.name = $name, __cy_n__.schema = $schema, __cy_n__.db = $db\n"
-                            f"RETURN __cy_n__"
+                        f"RETURN __cy_n__"
                         ),
                         "params": {
                             "start_line": node.start_line,
@@ -1299,10 +1299,10 @@ class DbmsAstProcessor(BaseAstProcessor):
                         f"MERGE (__cy_c__:Column {{fqn: $fqn}})\n"
                         f"SET __cy_c__.name = $col_name, __cy_c__.dtype = $col_type, "
                         f"__cy_c__.description = $col_desc, __cy_c__.description_source = 'procedure', __cy_c__.nullable = $nullable\n"
-                        f"MERGE (__cy_t__)-[__cy_r__:HAS_COLUMN]->(__cy_c__)\n"
-                        f"RETURN __cy_t__, __cy_c__, __cy_r__"
-                    )
-                    
+                            f"MERGE (__cy_t__)-[__cy_r__:HAS_COLUMN]->(__cy_c__)\n"
+                            f"RETURN __cy_t__, __cy_c__, __cy_r__"
+                        )
+            
                     queries.append({
                         "query": col_query,
                         "params": {
@@ -1385,8 +1385,8 @@ class DbmsAstProcessor(BaseAstProcessor):
                             f"MATCH (__cy_st__:Table {{schema: $src_schema, name: $src_name, db: $db}})\n"
                             f"MATCH (__cy_tt__:Table {{schema: $tgt_schema, name: $tgt_name, db: $db}})\n"
                             f"MERGE (__cy_st__)-[__cy_r__:FK_TO_TABLE {{sourceColumn: $src_col, targetColumn: $tgt_col}}]->(__cy_tt__)\n"
-                            f"ON CREATE SET __cy_r__.type = 'many_to_one', __cy_r__.source = 'procedure'\n"
-                            f"RETURN __cy_st__, __cy_tt__, __cy_r__"
+                        f"ON CREATE SET __cy_r__.type = 'many_to_one', __cy_r__.source = 'procedure'\n"
+                        f"RETURN __cy_st__, __cy_tt__, __cy_r__"
                         ),
                         "params": {
                             "src_schema": effective_src_schema,
@@ -1413,9 +1413,9 @@ class DbmsAstProcessor(BaseAstProcessor):
                         "query": (
                             f"MATCH (__cy_sc__:Column {{fqn: $src_fqn}})\n"
                             f"MATCH (__cy_dc__:Column {{fqn: $tgt_fqn}})\n"
-                            f"MERGE (__cy_sc__)-[__cy_r__:FK_TO]->(__cy_dc__)\n"
-                            f"ON CREATE SET __cy_r__.source = 'procedure'\n"
-                            f"RETURN __cy_sc__, __cy_dc__, __cy_r__"
+                        f"MERGE (__cy_sc__)-[__cy_r__:FK_TO]->(__cy_dc__)\n"
+                        f"ON CREATE SET __cy_r__.source = 'procedure'\n"
+                        f"RETURN __cy_sc__, __cy_dc__, __cy_r__"
                         ),
                         "params": {
                             "src_fqn": src_fqn,
@@ -1462,9 +1462,9 @@ class DbmsAstProcessor(BaseAstProcessor):
         return {
             "query": (
                 f"MERGE (__cy_s__:Schema {{db: $db, name: $schema_name}})\n"
-                f"WITH {with_vars}\n"
+            f"WITH {with_vars}\n"
                 f"MERGE (__cy_t__:Table {{name: $table_name, schema: $schema_name, db: $db}})\n"
-                f"MERGE (__cy_t__)-[:BELONGS_TO]->(__cy_s__)"
+            f"MERGE (__cy_t__)-[:BELONGS_TO]->(__cy_s__)"
             ),
             "params": {
                 "db": self.dbms,
@@ -1641,10 +1641,10 @@ class DbmsAstProcessor(BaseAstProcessor):
                 "query": (
                     f"MATCH (__cy_t__:Table {{schema: $schema, name: $name, db: $db}})\n"
                     f"SET __cy_t__.analyzed_description = $llm_desc\n"
-                    f"WITH __cy_t__\n"
-                    f"WHERE __cy_t__.description IS NULL OR __cy_t__.description = ''\n"
+                f"WITH __cy_t__\n"
+                f"WHERE __cy_t__.description IS NULL OR __cy_t__.description = ''\n"
                     f"SET __cy_t__.description = $llm_desc, __cy_t__.description_source = 'procedure'\n"
-                    f"RETURN __cy_t__"
+                f"RETURN __cy_t__"
                 ),
                 "params": {
                     "schema": schema_key,
@@ -1667,10 +1667,10 @@ class DbmsAstProcessor(BaseAstProcessor):
                 "query": (
                     f"MATCH (__cy_c__:Column {{fqn: $fqn}})\n"
                     f"SET __cy_c__.analyzed_description = $llm_desc\n"
-                    f"WITH __cy_c__\n"
-                    f"WHERE __cy_c__.description IS NULL OR __cy_c__.description = ''\n"
+                f"WITH __cy_c__\n"
+                f"WHERE __cy_c__.description IS NULL OR __cy_c__.description = ''\n"
                     f"SET __cy_c__.description = $llm_desc, __cy_c__.description_source = 'procedure'\n"
-                    f"RETURN __cy_c__"
+                f"RETURN __cy_c__"
                 ),
                 "params": {
                     "fqn": fqn,
