@@ -5,6 +5,11 @@ Framework 분석 파이프라인의 Phase 3을 담당합니다.
 
 비타겟 파일: target 언어 확장자가 아닌 모든 텍스트 파일
 - XML, YAML, properties, groovy, SQL 등
+
+[변경됨] 에이전트 1회 생성 → 모든 파일에 재사용
+- Main Agent (서브에이전트 포함)를 Phase 시작 시 1회 생성
+- 각 파일은 동일한 에이전트에 task 메시지만 변경하여 처리
+- 에이전트 재생성 오버헤드 제거로 성능 대폭 개선
 """
 
 import os
@@ -13,7 +18,9 @@ from typing import Any, AsyncGenerator, List
 from analyzer.strategy.base_analyzer import AnalysisStats
 from client.neo4j_client import Neo4jClient
 from analyzer.strategy.framework.nontarget.workflow import run_workflow, RuntimeCtx
-from analyzer.strategy.framework.nontarget.nontarget_logger import log_nontarget
+from analyzer.strategy.framework.nontarget.agents.deepagents_client import DeepAgentsClient
+from analyzer.strategy.framework.nontarget.tools.search_tool import ensure_vector_indexes
+from analyzer.strategy.framework.nontarget.utils.nontarget_logger import log_nontarget
 from util.stream_event import emit_message
 
 
@@ -48,6 +55,11 @@ async def run_nontarget_phase(
     """Phase 3: 비타겟 파일 분석
     
     analysis/nontarget 디렉토리에서 비타겟 파일(설정, 리소스 등)을 찾아 분석합니다.
+    
+    ⚠️ 에이전트 1회 생성:
+    - Main Agent (서브에이전트 포함)를 Phase 시작 시 1회만 생성
+    - 모든 파일은 동일한 에이전트에 task 메시지만 변경하여 처리
+    - 시스템 프롬프트는 정적, 파일별 동적 데이터는 HumanMessage로 전달
     
     Args:
         analyzer: FrameworkAnalyzer 인스턴스
@@ -92,7 +104,33 @@ async def run_nontarget_phase(
         cypher_lock=analyzer._cypher_lock,
     )
     
-    # 각 파일 처리
+    # ==================================================================
+    # ⚠️ 벡터 인덱스 확인/생성 (의미 검색에 필요)
+    # ==================================================================
+    try:
+        created_indexes = await ensure_vector_indexes(ctx)
+        if created_indexes:
+            yield emit_message(f"   🗂️ 벡터 인덱스 {len(created_indexes)}개 생성: {created_indexes}")
+    except Exception as e:
+        log_nontarget("PHASE", f"벡터 인덱스 확인 실패 (비치명적): {e}")
+    
+    # ==================================================================
+    # ⚠️ 에이전트 1회 생성 (모든 파일에 재사용)
+    # 시스템 프롬프트는 정적이므로 inputs 불필요
+    # 파일별 동적 데이터는 task 메시지(HumanMessage)로 전달
+    # ==================================================================
+    deepagents_client = DeepAgentsClient()
+    
+    try:
+        main_agent = deepagents_client.create_main_agent_with_subagents(ctx)
+        log_nontarget("PHASE", "메인 에이전트 1회 생성 완료 (모든 파일에 재사용)")
+        yield emit_message("   🤖 메인 에이전트 생성 완료 (1회 생성, 모든 파일에 재사용)")
+    except Exception as e:
+        log_nontarget("PHASE", f"에이전트 생성 실패: {e}")
+        yield emit_message(f"   ❌ 에이전트 생성 실패: {str(e)[:80]}")
+        return
+    
+    # 각 파일 처리 (동일 에이전트 재사용)
     for i, file_path in enumerate(nontarget_files, 1):
         # 상대 경로로 표시
         rel_path = os.path.relpath(file_path, nontarget_dir)
@@ -101,10 +139,12 @@ async def run_nontarget_phase(
         yield emit_message(f"   ├─ [{i}/{len(nontarget_files)}] {rel_path}")
         
         try:
-            # 워크플로우 실행 (RuntimeCtx 전달)
+            # 워크플로우 실행 (사전 생성된 에이전트 전달)
             final_state = await run_workflow(
                 file_path=file_path,
                 ctx=ctx,
+                main_agent=main_agent,
+                deepagents_client=deepagents_client,
             )
             
             blocks_count = len(final_state.get("blocks", []))

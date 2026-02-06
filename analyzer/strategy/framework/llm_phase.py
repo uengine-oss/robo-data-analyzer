@@ -53,9 +53,16 @@ async def vectorize_summaries(
     embedding_client = EmbeddingClient(openai_client)
     
     # summary가 있고 summary_vec이 없는 노드 조회
+    # 벡터화 대상 노드:
+    # - METHOD / CONSTRUCTOR: 실행 단위
+    # - FIELD: 상태 정보
+    # - VARIABLE / METHOD_CALL / NEW_INSTANCE / ASSIGNMENT: 메서드 내부 동작
+    #   (관계 추적 시 METHOD를 통해 도달 가능)
     query = """
     MATCH (__cy_n__)
-    WHERE (__cy_n__:CLASS OR __cy_n__:INTERFACE OR __cy_n__:METHOD OR __cy_n__:FIELD OR __cy_n__:ENUM)
+    WHERE (__cy_n__:METHOD OR __cy_n__:CONSTRUCTOR OR __cy_n__:FIELD
+           OR __cy_n__:VARIABLE OR __cy_n__:METHOD_CALL
+           OR __cy_n__:NEW_INSTANCE OR __cy_n__:ASSIGNMENT)
       AND __cy_n__.file_name = $file_name
       AND __cy_n__.summary IS NOT NULL
       AND __cy_n__.summary <> ''

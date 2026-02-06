@@ -1,0 +1,19 @@
+{
+  "file_ext": ".xml",
+  "file_type": "ofbiz_services_def",
+  "boundary_rules": [
+    "헤더: XML 선언/주석/<services> 오픈 태그부터 첫 <service> 직전까지 1개 블록",
+    "서비스 블록: 각 <service ...>...</service>를 원자 블록으로 분할(내부 attribute/auto-attributes로 분할 금지)",
+    "푸터: </services> 종료 태그는 별도 블록(선택)"
+  ],
+  "block_start_pattern": "^\\s*<service\\b",
+  "block_end_pattern": "^\\s*</service>",
+  "block_role_hints": {
+    "<services": "header_section",
+    "<service": "service_definition",
+    "</services>": "footer_section"
+  },
+  "learned_from": [
+    "C:/uEngine/robo/ROBO-A/data/analysis/nontarget/SAMPLE/servicedef/order-services.xml"
+  ]
+}

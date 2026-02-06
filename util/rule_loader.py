@@ -117,6 +117,28 @@ class RuleLoader:
         except TemplateError as e:
             raise ValueError(f"프롬프트 렌더링 오류 ({rule_name}): {e}")
     
+    def render_task(self, rule_name: str, inputs: Dict[str, Any]) -> str:
+        """task 필드 렌더링 (user_input으로 사용)
+        
+        Args:
+            rule_name: 규칙 이름 (YAML 파일명, 확장자 제외)
+            inputs: 프롬프트 입력값
+            
+        Returns:
+            렌더링된 task 문자열. task 필드가 없으면 기본 메시지 반환.
+        """
+        rule = self._load_rule(rule_name)
+        validated = self.validate_inputs(rule, inputs)
+        
+        task_template = rule.get("task", "")
+        if not task_template:
+            return "위 입력 데이터를 분석하여 결과를 JSON 형식으로 출력하세요."
+        
+        try:
+            return Template(task_template).render(**validated)
+        except TemplateError as e:
+            raise ValueError(f"task 렌더링 오류 ({rule_name}): {e}")
+    
     def execute(
         self, 
         rule_name: str, 

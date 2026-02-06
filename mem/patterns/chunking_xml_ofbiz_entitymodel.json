@@ -1,0 +1,26 @@
+{
+  "file_ext": ".xml",
+  "format": "ofbiz-entitymodel",
+  "boundary_rules": [
+    "헤더는 파일 시작(<?xml...?>)부터 첫 <entity ...> 직전까지",
+    "엔티티 블록 시작 신호: ^\\s*<entity\\b",
+    "엔티티 블록은 </entity> 까지를 하나의 원자 단위로 유지(내부 field/prim-key/relation로 분할 금지)",
+    "문서 종료 태그 </entitymodel> 은 footer 블록으로 별도 분리"
+  ],
+  "block_role_hints": {
+    "header": "OFBiz entitymodel header",
+    "entity": "OFBiz entity <entity-name> definition",
+    "footer": "OFBiz entitymodel footer"
+  },
+  "key_patterns": [
+    "<entity entity-name=... table-name=...>",
+    "<field name=... type=...>",
+    "<prim-key field=...>",
+    "<relation type=... rel-entity-name=...>",
+    "<key-map field-name=...>"
+  ],
+  "confidence": 0.9,
+  "learned_from": [
+    "C:/uEngine/robo/ROBO-A/data/analysis/nontarget/SAMPLE/entitydef/order-entitymodel.xml"
+  ]
+}

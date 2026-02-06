@@ -1,0 +1,33 @@
+{
+  "file_ext": ".yaml",
+  "boundary_rules": [
+    "최상위 키(들여쓰기 0) 변경 시 새 블록 시작",
+    "섹션 설명 주석(# ...)은 바로 뒤 최상위 키 블록에 포함(문맥 보존)",
+    "파일 시작 연속 주석은 header 블록으로 별도 분리 가능"
+  ],
+  "block_role_hints": {
+    "spring": "config-spring",
+    "spring.datasource": "config-db",
+    "spring.jpa": "config-jpa",
+    "mybatis": "config-mybatis",
+    "ofbiz": "config-ofbiz",
+    "order": "config-domain",
+    "logging.level": "config-logging"
+  },
+  "learned_from": [
+    "C:/uEngine/robo/ROBO-A/data/analysis/nontarget/SAMPLE/config/application.yaml"
+  ],
+  "example_boundaries": [
+    {
+      "file": "application.yaml",
+      "blocks": [
+        "header(주석)",
+        "spring:",
+        "mybatis:",
+        "# OFBiz integration + ofbiz:",
+        "# Order service configuration + order:",
+        "logging:"
+      ]
+    }
+  ]
+}

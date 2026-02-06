@@ -1,0 +1,14 @@
+## application.yaml (order-service)
+- spring.application.name: order-service
+- spring.datasource.url: jdbc:postgresql://localhost:5432/orderdb
+- spring.datasource.username: order_user
+- spring.datasource.password: ${DB_PASSWORD:secret}
+- spring.datasource.driver-class-name: org.postgresql.Driver
+- spring.jpa.hibernate.ddl-auto: validate
+- mybatis.mapper-locations: classpath:mapper/**/*.xml
+- mybatis.type-aliases-package: com.example.order.domain
+- ofbiz.delegator.datasource: localpostgres
+- ofbiz.entity-engine.xml-path: entitydefs/
+- ofbiz.service-engine.xml-path: servicedef/
+- order.auto-cancel.enabled: true (days=30)
+- logging.level: com.example.order/org.hibernate.SQL/org.mybatis = DEBUG
