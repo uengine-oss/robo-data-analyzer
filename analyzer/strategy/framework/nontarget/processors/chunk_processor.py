@@ -1,20 +1,16 @@
-"""비타겟 파일 블록화 로직
+"""비타겟 파일 블록화 로직 (레거시 하위호환)
 
 파일을 의미 있는 블록으로 분할합니다.
 규칙 기반 또는 라인 기반 블록화를 지원합니다.
 
-반복 샘플링:
-- 대용량 파일(만 라인 이상)에서도 패턴을 정확히 파악
-- 여러 구간을 순차적으로 분석하여 패턴 메모리에 축적
-- 발견된 패턴을 다른 구간에서 검증하여 확정
+NOTE: 새 파이프라인에서는 block_splitter.py를 사용합니다.
+이 모듈은 하위 호환성을 위해 유지됩니다.
 """
 
 import json
 import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
-
-from langchain_core.messages import HumanMessage
 
 from analyzer.strategy.framework.nontarget.utils.nontarget_logger import log_nontarget
 
@@ -388,168 +384,9 @@ def extract_chunks_for_analysis(
     return chunks
 
 
-# 하위 호환성을 위한 별칭
-def extract_samples_iterative(
-    file_path: str,
-    sample_lines: int = 500,
-    num_samples: int = None,  # 무시됨 - 전체 파일 분석
-) -> List[Dict[str, Any]]:
-    """[DEPRECATED] extract_chunks_for_analysis 사용을 권장합니다."""
-    chunks = extract_chunks_for_analysis(file_path, sample_lines)
-    # 기존 형식으로 변환
-    return [
-        {
-            "section": chunk["progress"],
-            "line_start": chunk["line_start"],
-            "line_end": chunk["line_end"],
-            "text": chunk["text"],
-        }
-        for chunk in chunks
-    ]
-
-
-# [제거됨] _merge_patterns - 에이전트가 직접 read_memory/write_memory로 자율 관리
-# 시스템이 하드코딩으로 패턴 병합하지 않음
-
-
-def _finalize_rules(pattern_memory: Dict[str, Any], file_path: str) -> Dict[str, Any]:
-    """패턴 메모리에서 최종 규칙 생성
-    
-    Args:
-        pattern_memory: 축적된 패턴 메모리
-        file_path: 파일 경로 (타입 추론용)
-        
-    Returns:
-        블록화 규칙 JSON
-    """
-    # 파일 타입 추론
-    ext = os.path.splitext(file_path)[1].lower()
-    file_type_map = {
-        ".yaml": "yaml", ".yml": "yaml",
-        ".xml": "xml",
-        ".properties": "properties",
-        ".ini": "ini",
-        ".json": "json",
-        ".sql": "sql",
-    }
-    file_type = file_type_map.get(ext, "text")
-    
-    boundary = pattern_memory.get("boundary_type", "line")
-    key_patterns = pattern_memory.get("key_patterns", [])
-    confidence = pattern_memory.get("confidence", 0.5)
-    
-    # 최종 규칙 생성
-    rules = {
-        "file_type": file_type,
-        "boundary": boundary,
-        "max_block_lines": 150 if boundary != "line" else 200,
-        "key_patterns": key_patterns,
-        "notes": pattern_memory.get("notes", ""),
-        "version": 1,
-        "confidence": confidence,
-        "confirmed_patterns": pattern_memory.get("confirmed_patterns", []),
-        "block_roles": pattern_memory.get("block_roles", []),  # 블록 역할 정보
-    }
-    
-    # delimiter 타입이면 추가 정보
-    if boundary == "delimiter":
-        # confirmed_patterns에서 delimiter 추출 시도
-        delimiters = [p for p in pattern_memory.get("confirmed_patterns", []) if len(p) < 10]
-        if delimiters:
-            rules["delimiter"] = delimiters[0]
-        else:
-            rules["delimiter"] = "---"
-    
-    log_nontarget("CHUNK", f"규칙 확정: boundary={boundary}, confidence={confidence:.2f}")
-    return rules
-
-
-def discover_patterns_iteratively(
-    file_path: str,
-    ctx: Optional[Any] = None,
-) -> Dict[str, Any]:
-    """500줄씩 순차 처리하며 패턴 발견 및 메모리 축적
-    
-    에이전트가 read_memory/write_memory 도구를 사용하여:
-    1. 기존 패턴 정보 확인 (mem/patterns/)
-    2. 500줄씩 순차 분석하며 패턴 발견
-    3. pattern_memory 축적하여 다음 청크로 전달
-    4. 패턴 정보 메모리에 직접 저장
-    
-    Args:
-        file_path: 대상 파일 경로
-        ctx: RuntimeCtx (선택)
-        
-    Returns:
-        블록화 규칙 JSON
-    """
-    from analyzer.strategy.framework.nontarget.agents.deepagents_client import (
-        DeepAgentsClient,
-        infer_chunking_rules,
-        _extract_agent_output,
-        _parse_json_from_output,
-    )
-    
-    import time
-    
-    # 파일을 500줄씩 분할
-    chunks = extract_chunks_for_analysis(file_path, chunk_lines=500)
-    
-    if not chunks:
-        raise RuntimeError(f"파일 분석용 청크 추출 실패: {file_path}")
-    
-    total_chunks = len(chunks)
-    log_nontarget("CHUNK", f"순차 패턴 분석 시작: {file_path} ({total_chunks}개 청크)")
-    
-    # 패턴 메모리 축적
-    pattern_memory = ""
-    final_rules: Dict[str, Any] = {}
-    
-    for chunk in chunks:
-        chunk_idx = chunk["chunk_idx"]
-        
-        log_nontarget("CHUNK", f"청크 {chunk_idx + 1}/{total_chunks} 분석 중...")
-        
-        try:
-            # 각 청크마다 에이전트 호출 (pattern_memory 전달)
-            rules = infer_chunking_rules(
-                sample_text=chunk["text"],
-                file_path=file_path,
-                ctx=ctx,
-                chunk_idx=chunk_idx,
-                total_chunks=total_chunks,
-                pattern_memory=pattern_memory,
-            )
-            
-            # 패턴 메모리 업데이트 (다음 청크로 전달)
-            pattern_memory = rules.get("pattern_memory", "")
-            if not pattern_memory:
-                # pattern_memory가 없으면 중요 정보 축적
-                pattern_memory = f"boundary: {rules.get('boundary', 'unknown')}, "
-                pattern_memory += f"file_type: {rules.get('file_type', 'unknown')}, "
-                pattern_memory += f"key_patterns: {rules.get('key_patterns', [])}, "
-                pattern_memory += f"confirmed_patterns: {rules.get('confirmed_patterns', [])}"
-            
-            # 마지막 청크의 규칙을 최종 규칙으로 사용
-            final_rules = rules
-            
-            log_nontarget("CHUNK", f"청크 {chunk_idx + 1}/{total_chunks} 완료: confidence={rules.get('confidence', 0):.2f}")
-            
-        except Exception as e:
-            log_nontarget("CHUNK", f"청크 {chunk_idx + 1} 분석 실패: {e}")
-    
-    # 규칙에 필수 필드 보장
-    file_ext = os.path.splitext(file_path)[1].lower()
-    final_rules.setdefault("file_type", file_ext.replace(".", "") or "text")
-    final_rules.setdefault("boundary", "line")
-    final_rules.setdefault("max_block_lines", 200)
-    final_rules.setdefault("key_patterns", [])
-    final_rules.setdefault("confidence", 0.5)
-    final_rules.setdefault("block_roles", [])
-    final_rules.setdefault("version", 1)
-    
-    log_nontarget("CHUNK", f"패턴 분석 완료: boundary={final_rules.get('boundary')}, confidence={final_rules.get('confidence', 0):.2f}")
-    return final_rules
+# [REMOVED] extract_samples_iterative — 레거시 별칭, 새 파이프라인에서 미사용
+# [REMOVED] _finalize_rules — 레거시 패턴 메모리 → 규칙 변환, block_splitter로 대체
+# [REMOVED] discover_patterns_iteratively — 레거시 에이전트 기반 패턴 발견, run_chunker_2pass로 대체
 
 
 def load_rules_from_memory(file_path: str) -> Optional[Dict[str, Any]]:

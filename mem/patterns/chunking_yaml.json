@@ -1,33 +1,80 @@
 {
   "file_ext": ".yaml",
-  "boundary_rules": [
-    "최상위 키(들여쓰기 0) 변경 시 새 블록 시작",
-    "섹션 설명 주석(# ...)은 바로 뒤 최상위 키 블록에 포함(문맥 보존)",
-    "파일 시작 연속 주석은 header 블록으로 별도 분리 가능"
-  ],
-  "block_role_hints": {
-    "spring": "config-spring",
-    "spring.datasource": "config-db",
-    "spring.jpa": "config-jpa",
-    "mybatis": "config-mybatis",
-    "ofbiz": "config-ofbiz",
-    "order": "config-domain",
-    "logging.level": "config-logging"
-  },
-  "learned_from": [
-    "C:/uEngine/robo/ROBO-A/data/analysis/nontarget/SAMPLE/config/application.yaml"
-  ],
-  "example_boundaries": [
+  "rules": [
     {
-      "file": "application.yaml",
-      "blocks": [
-        "header(주석)",
+      "rule_id": "r1",
+      "pattern": "^(?!\\s)([A-Za-z0-9_-]+):\\s*$",
+      "rule_type": "header",
+      "priority": 9,
+      "confidence": 0.86,
+      "examples": [
         "spring:",
         "mybatis:",
-        "# OFBiz integration + ofbiz:",
-        "# Order service configuration + order:",
         "logging:"
       ]
+    },
+    {
+      "rule_id": "r2",
+      "pattern": "^\\s{2}([A-Za-z0-9_.-]+):\\s*$",
+      "rule_type": "header",
+      "priority": 7,
+      "confidence": 0.78,
+      "examples": [
+        "  datasource:",
+        "  jpa:",
+        "  application:"
+      ]
+    },
+    {
+      "rule_id": "r3",
+      "pattern": "^\\s{4}([A-Za-z0-9_.-]+):\\s*$",
+      "rule_type": "header",
+      "priority": 6,
+      "confidence": 0.72,
+      "examples": [
+        "    name: order-service",
+        "    hikari:",
+        "    properties:"
+      ]
+    },
+    {
+      "rule_id": "r4",
+      "pattern": "^\\s*#\\s+.*$",
+      "rule_type": "delimiter",
+      "priority": 5,
+      "confidence": 0.75,
+      "examples": [
+        "# OFBiz integration",
+        "# Order service configuration"
+      ]
+    },
+    {
+      "rule_id": "r5",
+      "pattern": "^\\s*$",
+      "rule_type": "delimiter",
+      "priority": 3,
+      "confidence": 0.7,
+      "examples": [
+        "",
+        ""
+      ]
+    },
+    {
+      "rule_id": "r6",
+      "pattern": "^\\s{2,}([A-Za-z0-9_.-]+):\\s+.+$",
+      "rule_type": "key_value",
+      "priority": 6,
+      "confidence": 0.82,
+      "examples": [
+        "    name: order-service",
+        "    url: jdbc:postgresql://localhost:5432/orderdb",
+        "    password: ${DB_PASSWORD:secret}"
+      ]
     }
-  ]
+  ],
+  "boundaries_count": 5,
+  "blocks_count": 6,
+  "hint": "규칙 6개 → 6개 블록",
+  "learned_from": "C:\\uEngine\\robo\\ROBO-A\\data\\analysis\\nontarget\\SAMPLE\\config\\application.yaml",
+  "completed": true
 }

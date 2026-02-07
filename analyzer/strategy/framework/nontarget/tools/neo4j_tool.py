@@ -169,7 +169,13 @@ def create_neo4j_cypher_tool_readonly(ctx: Any) -> StructuredTool:
 
 
 def create_neo4j_cypher_tool(ctx: Any) -> StructuredTool:
-    """Neo4j Cypher 쿼리 실행 도구 생성
+    """[DEPRECATED] Neo4j Cypher 쿼리 실행 도구 생성 (쓰기 포함)
+
+    ⚠️ 새 4-Step 파이프라인에서는 에이전트에 쓰기 도구를 제공하지 않습니다.
+    시스템(cypher_templates.py)이 템플릿 Cypher로 저장을 담당합니다.
+
+    이 함수는 API 라우터 등 다른 용도에서 사용될 수 있어 삭제하지 않습니다.
+    에이전트용 도구는 create_neo4j_cypher_tool_readonly()를 사용하세요.
     
     Args:
         ctx: RuntimeCtx (client, cypher_lock)
