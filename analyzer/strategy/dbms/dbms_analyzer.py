@@ -139,10 +139,46 @@ class DbmsAnalyzer(BaseStreamingAnalyzer):
             pipeline_state.set_phase(PipelinePhase.CANCELLED)
             return
 
-        # DDL만 있는 경우 (소스 파일 없음) - Phase 1,2 스킵
+        # DDL만 있는 경우 (소스 파일 없음) - Phase 1,2,3 스킵하고 Phase 3.5, 4 실행
         if total_files == 0:
             yield emit_message("")
-            yield emit_message("📋 DDL 파일만 처리되었습니다 (소스 파일 없음)")
+            yield emit_message("📋 DDL 파일만 처리되었습니다 (소스 파일 없음 → Phase 1,2,3 스킵)")
+            
+            # Phase 3.5: 메타데이터 보강 (샘플 데이터 기반 설명 생성)
+            yield emit_message("   ➡️ Phase 3.5: 메타데이터 보강으로 진행합니다...")
+            pipeline_state.set_phase(PipelinePhase.TABLE_ENRICHMENT, "메타데이터 보강 중", 0)
+            yield emit_phase_event(3.5, "메타데이터 보강", "started", 0, {"canPause": True})
+            yield emit_message("")
+            yield self.emit_separator()
+            yield self.emit_phase_header(3.5, "📋 메타데이터 보강", "샘플 데이터 기반 설명 생성")
+            yield self.emit_separator()
+            
+            async for chunk in run_metadata_phase(self, client, orchestrator, stats):
+                yield chunk
+            
+            yield emit_message("")
+            yield self.emit_phase_complete(3.5, "메타데이터 보강 완료")
+            yield emit_phase_event(3.5, "메타데이터 보강", "completed", 100)
+            
+            # Phase 4: 벡터라이징 (DDL만 있어도 실행)
+            yield emit_message("   ➡️ Phase 4: 벡터라이징으로 진행합니다...")
+            pipeline_state.set_phase(PipelinePhase.VECTORIZING, "테이블/컬럼 벡터라이징 중", 0)
+            yield emit_phase_event(4, "벡터라이징", "started", 0, {"canPause": True})
+            yield emit_message("")
+            yield self.emit_separator()
+            yield self.emit_phase_header(4, "🔢 벡터라이징", "임베딩 생성")
+            yield self.emit_separator()
+            
+            async for chunk in run_vectorize_phase(self, client, orchestrator, stats):
+                yield chunk
+            
+            yield emit_message("")
+            yield self.emit_phase_complete(4, "벡터라이징 완료")
+            yield emit_phase_event(4, "벡터라이징", "completed", 100, {
+                "tables_vectorized": stats.tables_vectorized,
+                "columns_vectorized": stats.columns_vectorized
+            })
+            
             pipeline_state.set_phase(PipelinePhase.COMPLETED)
             return
 

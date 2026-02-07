@@ -124,6 +124,7 @@ async def process_ddl(
     emit_progress: bool = True,
     file_base_progress: int = 0,
     file_end_progress: int = 100,
+    datasource_name: str = "",
 ) -> AsyncGenerator[bytes | Tuple[dict, dict], None]:
     """DDL 파일 처리 및 테이블/컬럼 노드 생성 (스트리밍)
     
@@ -140,6 +141,7 @@ async def process_ddl(
         emit_progress: 진행 상황 메시지 emit 여부
         file_base_progress: 이 파일 처리 시작 시 전체 진행률 (0-100)
         file_end_progress: 이 파일 처리 완료 시 전체 진행률 (0-100)
+        datasource_name: 타겟 데이터 소스 이름 (비어있으면 연결하지 않음)
     
     Yields:
         bytes: 진행 상황 메시지 (emit_message)
@@ -253,7 +255,8 @@ async def process_ddl(
             seen_schemas.add(schema_key)
             schemas_data.append({
                 "db": db_name,
-                "name": schema
+                "name": schema,
+                "datasource": datasource_name  # 데이터 소스 연결용
             })
         
         # 테이블 데이터 수집 (중복 방지)
@@ -266,7 +269,8 @@ async def process_ddl(
                 "name": parsed_name,
                 "description": comment,  # UNWIND 파라미터화로 이스케이프 불필요
                 "description_source": "ddl" if comment else "",
-                "table_type": table_type
+                "table_type": table_type,
+                "datasource": datasource_name  # 데이터 소스 속성 추가
             })
             ddl_stats["tables"] += 1
         
@@ -302,7 +306,8 @@ async def process_ddl(
             col_type = (col.get("dtype") or col.get("type") or "").strip()
             col_nullable = col.get("nullable", True)
             col_comment = (col.get("comment") or "").strip()
-            fqn = ".".join(filter(None, [schema, parsed_name, col_name])).lower()
+            # fqn 형식: datasource.schema.table.column (datasource가 없으면 schema.table.column)
+            fqn = ".".join(filter(None, [datasource_name, schema, parsed_name, col_name])).lower()
             
             col_data = {
                 "fqn": fqn,  # UNWIND 파라미터화로 이스케이프 불필요
@@ -313,7 +318,8 @@ async def process_ddl(
                 "nullable": col_nullable,
                 "table_db": db_name,
                 "table_schema": schema,
-                "table_name": parsed_name
+                "table_name": parsed_name,
+                "datasource": datasource_name  # 데이터 소스 속성 추가
             }
             if col_name_raw.upper() in primary_keys:
                 col_data["pk_constraint"] = f"{parsed_name}_pkey"
@@ -368,13 +374,14 @@ async def process_ddl(
     all_nodes: dict = {}
     all_relationships: dict = {}
     
-    # 1. 스키마 노드 생성
+    # 1. 스키마 노드 생성 (datasource 속성 포함)
     if schemas_data:
         if emit_progress:
-            yield emit_message(f"      📦 [1/6] 스키마 {len(schemas_data)}개 생성 중...")
+            yield emit_message(f"      📦 [1/7] 스키마 {len(schemas_data)}개 생성 중...")
         schema_query = """
         UNWIND $items AS item
         MERGE (__cy_s__:Schema {db: item.db, name: item.name})
+        SET __cy_s__.datasource = CASE WHEN item.datasource <> '' THEN item.datasource ELSE __cy_s__.datasource END
         RETURN __cy_s__
         """
         async with cypher_lock:
@@ -382,16 +389,46 @@ async def process_ddl(
         for node in result.get("Nodes", []):
             all_nodes[node.get("Node ID")] = node
     
-    # 2. 테이블 노드 생성
+    # 1-2. DataSource 노드 생성 및 Schema 관계 생성 (datasource가 지정된 경우만)
+    if schemas_data and datasource_name:
+        if emit_progress:
+            yield emit_message(f"      🔗 DataSource({datasource_name}) 노드 생성 및 스키마 연결 중...")
+        
+        # 먼저 DataSource 노드 MERGE (없으면 생성)
+        ds_create_query = """
+        MERGE (ds:DataSource {name: $datasource_name})
+        ON CREATE SET ds.created_at = datetime(), ds.source = 'ddl_ingestion'
+        RETURN ds
+        """
+        async with cypher_lock:
+            ds_result = await client.execute_queries([ds_create_query], {"datasource_name": datasource_name})
+        
+        # DataSource-Schema HAS_SCHEMA 관계 생성
+        ds_schema_query = """
+        UNWIND $items AS item
+        MATCH (ds:DataSource {name: item.datasource})
+        MATCH (__cy_s__:Schema {db: item.db, name: item.name})
+        MERGE (ds)-[__cy_r__:HAS_SCHEMA]->(__cy_s__)
+        RETURN ds, __cy_r__, __cy_s__
+        """
+        async with cypher_lock:
+            result = await client.run_batch_unwind(ds_schema_query, schemas_data)
+        for node in result.get("Nodes", []):
+            all_nodes[node.get("Node ID")] = node
+        for rel in result.get("Relationships", []):
+            all_relationships[rel.get("Relationship ID")] = rel
+    
+    # 2. 테이블 노드 생성 (datasource 속성 포함)
     if tables_data:
         if emit_progress:
-            yield emit_message(f"      📦 [2/6] 테이블 {len(tables_data)}개 생성 중...")
+            yield emit_message(f"      📦 [2/7] 테이블 {len(tables_data)}개 생성 중...")
         table_query = """
         UNWIND $items AS item
         MERGE (__cy_t__:Table {db: item.db, schema: item.schema, name: item.name})
         SET __cy_t__.description = item.description,
             __cy_t__.description_source = item.description_source,
-            __cy_t__.table_type = item.table_type
+            __cy_t__.table_type = item.table_type,
+            __cy_t__.datasource = CASE WHEN item.datasource <> '' THEN item.datasource ELSE __cy_t__.datasource END
         RETURN __cy_t__
         """
         async with cypher_lock:
@@ -402,7 +439,7 @@ async def process_ddl(
     # 3. 테이블-스키마 관계 생성
     if tables_data:
         if emit_progress:
-            yield emit_message(f"      📦 [3/6] 테이블-스키마 관계 {len(tables_data)}개 생성 중...")
+            yield emit_message(f"      📦 [3/7] 테이블-스키마 관계 {len(tables_data)}개 생성 중...")
         belongs_query = """
         UNWIND $items AS item
         MATCH (__cy_t__:Table {db: item.db, schema: item.schema, name: item.name})
@@ -417,10 +454,10 @@ async def process_ddl(
         for rel in result.get("Relationships", []):
             all_relationships[rel.get("Relationship ID")] = rel
     
-    # 4. 컬럼 노드 생성
+    # 4. 컬럼 노드 생성 (datasource 속성 포함)
     if columns_data:
         if emit_progress:
-            yield emit_message(f"      📦 [4/6] 컬럼 {len(columns_data)}개 생성 중...")
+            yield emit_message(f"      📦 [4/7] 컬럼 {len(columns_data)}개 생성 중...")
         column_query = """
         UNWIND $items AS item
         MERGE (__cy_c__:Column {fqn: item.fqn})
@@ -429,7 +466,8 @@ async def process_ddl(
             __cy_c__.description = item.description,
             __cy_c__.description_source = item.description_source,
             __cy_c__.nullable = item.nullable,
-            __cy_c__.pk_constraint = CASE WHEN item.pk_constraint IS NOT NULL THEN item.pk_constraint ELSE __cy_c__.pk_constraint END
+            __cy_c__.pk_constraint = CASE WHEN item.pk_constraint IS NOT NULL THEN item.pk_constraint ELSE __cy_c__.pk_constraint END,
+            __cy_c__.datasource = CASE WHEN item.datasource <> '' THEN item.datasource ELSE __cy_c__.datasource END
         RETURN __cy_c__
         """
         async with cypher_lock:
@@ -440,7 +478,7 @@ async def process_ddl(
     # 5. 테이블-컬럼 관계 생성
     if columns_data:
         if emit_progress:
-            yield emit_message(f"      📦 [5/6] 테이블-컬럼 관계 {len(columns_data)}개 생성 중...")
+            yield emit_message(f"      📦 [5/7] 테이블-컬럼 관계 {len(columns_data)}개 생성 중...")
         has_column_query = """
         UNWIND $items AS item
         MATCH (__cy_t__:Table {db: item.table_db, schema: item.table_schema, name: item.table_name})
@@ -458,7 +496,7 @@ async def process_ddl(
     # 6. FK 관계 생성 (참조 테이블 MERGE + FK 관계)
     if fks_data:
         if emit_progress:
-            yield emit_message(f"      📦 [6/6] FK 관계 {len(fks_data)}개 생성 중...")
+            yield emit_message(f"      📦 [6/7] FK 관계 {len(fks_data)}개 생성 중...")
         # 먼저 참조 테이블이 없으면 생성
         ref_tables_query = """
         UNWIND $items AS item
@@ -568,6 +606,9 @@ async def run_ddl_phase(
         ddl_graph = None
         ddl_stats_file = {"tables": 0, "columns": 0, "fks": 0}
         
+        # orchestrator에서 데이터 소스 이름 가져오기 (없으면 빈 문자열)
+        ds_name = getattr(orchestrator, 'datasource_name', '') or ''
+        
         async for item in process_ddl(
             ddl_path=os.path.join(ddl_dir, ddl_file),
             client=client,
@@ -579,6 +620,7 @@ async def run_ddl_phase(
             emit_progress=True,
             file_base_progress=file_base_progress,
             file_end_progress=file_end_progress,
+            datasource_name=ds_name,
         ):
             if isinstance(item, tuple):
                 # 최종 결과 (ddl_graph, ddl_stats)

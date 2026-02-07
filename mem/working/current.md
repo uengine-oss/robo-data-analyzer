@@ -1,5 +1,5 @@
 # 현재 작업
-- 처리 중 파일: SAMPLE/servicedef/order-services.xml
-- 배치: 0/0 (총 1개 배치)
-- 진행 상태: service-engine XML 블록 요약/키워드 추출 완료(테이블 직접 참조 없음)
-- 발견 사항: OFBiz 서비스(createOrderHeader/createOrderItem/updateOrderHeader/cancelOrderItem/getOrderHeaderInformation) 정의 및 Java 구현체(OrderServices) 매핑
+- 처리 중 파일: SAMPLE/config/application.yaml
+- 입력 kind: config
+- 검색/연결: application.yaml 블록(2927,2928,2929,2930,2931,2932)에서 Spring/MyBatis/OFBiz/Order 설정 키 및 관련 코드 노드( OrderController의 @Value / FIELD )를 후보로 REFERS_TO 생성
+- 테이블 탐색: kind=config 규칙에 따라 테이블/컬럼 관계 생성은 생략 (테이블 직접 참조 아님)
