@@ -408,12 +408,14 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
     # =========================================================================
 
     @staticmethod
-    def emit_phase_header(phase_num: int, title: str, detail: str = "") -> bytes:
+    def emit_phase_header(phase_num, title: str, detail: str = "") -> bytes:
         """단계 헤더 메시지 생성
         
         예: 🏗️ [1단계] AST 구조 그래프 생성 (10개 파일)
+        Args:
+            phase_num: 단계 번호 (int, float, str 모두 가능. 예: 1, 2.5, "2.5")
         """
-        phase_title = f"[{phase_num}단계] " if phase_num > 0 else ""
+        phase_title = f"[{phase_num}단계] " if phase_num else ""
         return emit_message(f"{phase_title}{title}" + (f" ({detail})" if detail else ""))
 
     @staticmethod
@@ -447,10 +449,12 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
         return emit_message(f"   → {rel_type} 관계: {source} → {target}")
 
     @staticmethod
-    def emit_phase_complete(phase_num: int, summary: str) -> bytes:
+    def emit_phase_complete(phase_num, summary: str) -> bytes:
         """단계 완료 메시지
         
         예: ✅ 1단계 완료: 구조 노드 25개 생성
+        Args:
+            phase_num: 단계 번호 (int, float, str 모두 가능. 예: 1, 2.5, "2.5")
         """
         return emit_message(f"   ✅ {phase_num}단계 완료: {summary}")
 

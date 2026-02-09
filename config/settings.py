@@ -123,6 +123,13 @@ class MetadataEnrichmentConfig:
 
 
 @dataclass(frozen=True)
+class PipelineFeatureConfig:
+    """파이프라인 기능 토글"""
+    # 스테레오타입 분류 Phase (Phase 2.5) 활성화 여부
+    stereotype_enabled: bool = field(default_factory=lambda: os.getenv("STEREOTYPE_ENABLED", "false").lower() == "true")
+
+
+@dataclass(frozen=True)
 class AnalyzerConfig:
     """ROBO Analyzer 통합 설정"""
     neo4j: Neo4jConfig = field(default_factory=Neo4jConfig)
@@ -131,6 +138,7 @@ class AnalyzerConfig:
     batch: BatchConfig = field(default_factory=BatchConfig)
     path: PathConfig = field(default_factory=PathConfig)
     metadata_enrichment: MetadataEnrichmentConfig = field(default_factory=MetadataEnrichmentConfig)
+    feature: PipelineFeatureConfig = field(default_factory=PipelineFeatureConfig)
     
     # API 설정
     api_prefix: str = "/robo"

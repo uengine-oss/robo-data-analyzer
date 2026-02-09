@@ -63,13 +63,16 @@ class BaseAstProcessor(ABC):
         api_key: str,
         locale: str,
         last_line: int,
+        source_content: str = "",
     ):
         """공통 초기화
         
-        file_content는 더 이상 필요하지 않음 - AST JSON의 code 속성 사용.
+        source_content: 원본 소스 파일 내용. AST JSON에 code 속성이 없을 때
+        startLine/endLine으로 코드를 추출하는 fallback으로 사용.
         """
         self.antlr_data = antlr_data
         self.last_line = last_line
+        self.source_content = source_content
         
         # Windows 경로 구분자(\\)를 /로 변환하여 일관성 유지
         normalized_dir = directory.replace('\\', '/') if directory else ''

@@ -19,6 +19,7 @@ class PipelinePhase(Enum):
     DDL_PROCESSING = "ddl_processing"           # Phase 0: DDL 처리
     AST_GENERATION = "ast_generation"           # Phase 1: AST 그래프 생성
     LLM_ANALYSIS = "llm_analysis"               # Phase 2: LLM 분석
+    STEREOTYPE_CLASSIFICATION = "stereotype_classification"  # Phase 2.5: 스테레오타입 분류
     TABLE_ENRICHMENT = "table_enrichment"       # Phase 3: 테이블 설명 보강
     VECTORIZING = "vectorizing"                 # Phase 4: 벡터라이징 (임베딩 생성)
     LINEAGE_ANALYSIS = "lineage_analysis"       # Phase 5: 데이터 리니지 분석
@@ -59,6 +60,7 @@ PIPELINE_PHASES = [
     PhaseInfo(PipelinePhase.DDL_PROCESSING, "DDL 처리", "DDL 파싱 → 테이블/컬럼/스키마 노드 생성", 0, True),
     PhaseInfo(PipelinePhase.AST_GENERATION, "AST 구조 생성", "프로시저/함수 파싱 → 정적 그래프 생성", 1, True),
     PhaseInfo(PipelinePhase.LLM_ANALYSIS, "AI 분석", "LLM으로 스테이트먼트-테이블 관계 식별", 2, True),
+    PhaseInfo(PipelinePhase.STEREOTYPE_CLASSIFICATION, "스테레오타입 분류", "LLM으로 클래스/메서드 아키텍처 역할 분류", 2.5, True),
     PhaseInfo(PipelinePhase.TABLE_ENRICHMENT, "테이블 설명 보강", "분석 결과로 테이블/컬럼 설명 업데이트", 3, True),
     PhaseInfo(PipelinePhase.VECTORIZING, "벡터라이징", "테이블/컬럼 임베딩 생성", 4, True),
     PhaseInfo(PipelinePhase.LINEAGE_ANALYSIS, "리니지 분석", "ETL 패턴 감지 → 데이터 흐름 관계 생성", 5, True),

@@ -2,23 +2,30 @@
 
 AST 기반 Java 코드 분석 → Neo4j 클래스 다이어그램 그래프 생성.
 
-분석 흐름 (3단계 + 이중 병렬):
+분석 흐름 (4단계 + 이중 병렬):
 1. [Phase 1] 모든 파일 AST 그래프 생성 (병렬)
    - 정적 노드 생성: CLASS, INTERFACE, METHOD, FIELD
    - 정적 관계 생성: HAS_METHOD, HAS_FIELD, CONTAINS
+   - 규칙 기반 스테레오타입 선분류 (어노테이션/이름 패턴)
    
 2. [Phase 2] 모든 파일 LLM 분석 (파일 병렬 + 청크 병렬)
    - 코드 요약 및 분석
    - CALLS 관계 생성 (MATCH로 기존 노드 조회)
    - DEPENDENCY 관계 생성
    - 즉시 summary 벡터화 (summary_vec)
+
+3. [Phase 2.5] 스테레오타입 분류 (LLM 기반)
+   - Phase 2에서 생성된 summary를 기반으로
+   - LLM이 전체 맥락을 보고 아키텍처 역할(스테레오타입) 일괄 분류
+   - Neo4j 멀티 레이블 추가 (Controller, Service, Entity 등)
+   - 클래스 + 메서드 모두 대상
    
-3. [Phase 3] 비타겟 파일 분석 (LangGraph + DeepAgents)
+4. [Phase 3] 비타겟 파일 분석 (LangGraph + DeepAgents)
    - 설정 파일, 리소스 파일 등 분석
    - 블록화 → Summary 생성 → REFERS_TO 관계 생성
    - 메모리 운영 (mem/runs, mem/project)
    
-4. [Phase 4] User Story 문서 생성 (BaseStreamingAnalyzer 공통)
+5. [Phase 4] User Story 문서 생성 (BaseStreamingAnalyzer 공통)
 
 파일 상태 관리:
 - Phase1 실패 파일은 Phase2 스킵 (토큰 절감)
@@ -27,6 +34,7 @@ AST 기반 Java 코드 분석 → Neo4j 클래스 다이어그램 그래프 생�
 Phase 로직은 각 phase 파일에 분리되어 있습니다:
 - ast_phase.py: AST 그래프 생성 (Phase 1)
 - llm_phase.py: LLM 분석 (Phase 2)
+- stereotype_phase.py: 스테레오타입 분류 (Phase 2.5)
 - nontarget/: 비타겟 파일 분석 (Phase 3)
 """
 
@@ -52,6 +60,7 @@ from util.text_utils import (
 # Phase 파일들에서 import
 from analyzer.strategy.framework.ast_phase import run_phase1
 from analyzer.strategy.framework.llm_phase import run_phase2
+from analyzer.strategy.framework.stereotype_phase import run_stereotype_phase
 from analyzer.strategy.framework.nontarget import run_nontarget_phase
 
 
@@ -184,6 +193,41 @@ class FrameworkAnalyzer(BaseStreamingAnalyzer):
             yield emit_message("⏹️ 파이프라인이 중단되었습니다")
             pipeline_state.set_phase(PipelinePhase.CANCELLED)
             return
+
+        # ========== Phase 2.5: 스테레오타입 분류 (LLM 기반, 설정으로 ON/OFF) ==========
+        if settings.feature.stereotype_enabled:
+            pipeline_state.set_phase(
+                PipelinePhase.STEREOTYPE_CLASSIFICATION,
+                "스테레오타입 분류 중", 0,
+            )
+
+            yield emit_message("")
+            yield self.emit_separator()
+            yield self.emit_phase_header(
+                "2.5", "🏷️ 스테레오타입 분류",
+                "LLM 기반 아키텍처 역할 분류",
+            )
+            yield self.emit_separator()
+
+            async for chunk in run_stereotype_phase(
+                analyzer=self,
+                client=client,
+                orchestrator=orchestrator,
+                stats=stats,
+            ):
+                yield chunk
+
+            yield emit_message("")
+            yield self.emit_phase_complete("2.5", "스테레오타입 분류 완료")
+
+            # Phase 2.5 후 일시정지 체크
+            if not await pipeline_state.wait_if_paused():
+                yield emit_message("⏹️ 파이프라인이 중단되었습니다")
+                pipeline_state.set_phase(PipelinePhase.CANCELLED)
+                return
+        else:
+            yield emit_message("")
+            yield emit_message("   ℹ️ 스테레오타입 분류 스킵 (STEREOTYPE_ENABLED=false)")
         
         # ========== Phase 3: 비타겟 파일 분석 (DeepAgents) ==========
         yield emit_message("")
@@ -283,22 +327,36 @@ class FrameworkAnalyzer(BaseStreamingAnalyzer):
         file_names: list[tuple[str, str]],
         orchestrator: Any,
     ) -> List[FileAnalysisContext]:
-        """모든 파일의 AST JSON을 병렬로 로드합니다.
+        """모든 파일의 AST JSON과 소스 파일을 병렬로 로드합니다.
         
-        source 파일은 더 이상 읽지 않습니다 - AST JSON의 code 속성 사용.
+        AST JSON에 code 속성이 없는 경우 (Java ANTLR 등),
+        소스 파일에서 startLine/endLine으로 코드를 추출하여 사용합니다.
         """
         
         async def load_single(directory: str, file_name: str) -> FileAnalysisContext:
             base_name = os.path.splitext(file_name)[0]
             ast_path = os.path.join(orchestrator.dirs["analysis"], "target", directory, f"{base_name}.json")
+            source_path = os.path.join(orchestrator.dirs["src"], directory, file_name)
 
+            # AST JSON 로드
             async with aiofiles.open(ast_path, "r", encoding="utf-8") as ast_file:
                 ast_content = await ast_file.read()
-                return FileAnalysisContext(
-                    directory=directory,
-                    file_name=file_name,
-                    ast_data=json.loads(ast_content),
-                )
+            
+            # 소스 파일 로드 (없으면 빈 문자열)
+            source_content = ""
+            if os.path.isfile(source_path):
+                try:
+                    async with aiofiles.open(source_path, "r", encoding="utf-8") as src_file:
+                        source_content = await src_file.read()
+                except Exception:
+                    pass  # 소스 파일 읽기 실패해도 AST JSON의 code 속성으로 대체 가능
+
+            return FileAnalysisContext(
+                directory=directory,
+                file_name=file_name,
+                ast_data=json.loads(ast_content),
+                source_content=source_content,
+            )
 
         tasks = [load_single(d, f) for d, f in file_names]
         return await asyncio.gather(*tasks)

@@ -54,6 +54,7 @@ class StatementNode:
     # 전략별 확장 필드 (선택적)
     schema_name: Optional[str] = None   # DBMS 전용: 스키마 이름
     dml: bool = False                   # DBMS 전용: DML 문장 여부
+    package_name: Optional[str] = None  # Framework 전용: 패키지명 (com.example.service)
     
     # AST JSON에서 추출한 메타데이터 (선택적)
     signature: Optional[str] = None        # 함수/프로시저 시그니처
@@ -67,6 +68,12 @@ class StatementNode:
     
     # Framework 전용: 어노테이션 정보
     annotations: Optional[List[str]] = None  # ["@Entity", "@Table(name='orders')"]
+    
+    # Framework 전용: 메서드 호출 대상 정보 (METHOD_CALL 노드용)
+    call_target_class: Optional[str] = None   # 호출 대상 클래스/변수 (예: "logger", "SqlMapper")
+    call_target_method: Optional[str] = None  # 호출 메서드명 (예: "debug", "insert")
+    parent_method_line: Optional[int] = None  # 소속 메서드의 시작 라인 (관계 생성용)
+    class_references: Optional[List[str]] = None  # 코드에서 참조하는 클래스명 목록
     
     # 코드 라인 정보
     lines: List[Tuple[int, str]] = field(default_factory=list)
