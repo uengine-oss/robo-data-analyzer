@@ -9,11 +9,10 @@ import logging
 import os
 from typing import Any, AsyncGenerator, Dict, List, Set, Tuple
 
-import aiofiles
-
 from client.neo4j_client import Neo4jClient
 from analyzer.strategy.base_analyzer import AnalysisStats
 from analyzer.ddl_static_parser import parse_ddl as regex_parse_ddl
+from util.encoding_utils import read_text_with_fallback
 from util.stream_event import (
     emit_data,
     emit_message,
@@ -155,8 +154,12 @@ async def process_ddl(
     saving_start = parsing_end  # 저장 시작 = 파싱 종료 시점
     saving_end = file_end_progress  # 저장 종료 = 파일 처리 완료 시점
     
-    async with aiofiles.open(ddl_path, "r", encoding="utf-8") as f:
-        ddl_content = await f.read()
+    ddl_content, encoding_used = await read_text_with_fallback(
+        ddl_path,
+        preferred_encodings=("utf-8", "utf-8-sig", "cp949", "euc-kr"),
+    )
+    if encoding_used != "utf-8":
+        log_process("ANALYZE", "DDL", f"DDL 인코딩 fallback 적용: {file_name} ({encoding_used})")
     
     total_tokens = calculate_code_token(ddl_content)
     

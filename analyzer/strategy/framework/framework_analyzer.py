@@ -44,13 +44,12 @@ import logging
 import os
 from typing import Any, AsyncGenerator, Optional, List
 
-import aiofiles
-
 from client.neo4j_client import Neo4jClient
 from analyzer.strategy.base_analyzer import BaseStreamingAnalyzer, AnalysisStats
 from analyzer.strategy.base.file_context import FileStatus, FileAnalysisContext
 from analyzer.pipeline_control import pipeline_controller, PipelinePhase
 from config.settings import settings
+from util.encoding_utils import read_text_with_fallback
 from util.stream_event import emit_message
 from util.text_utils import (
     generate_user_story_document,
@@ -339,15 +338,25 @@ class FrameworkAnalyzer(BaseStreamingAnalyzer):
             source_path = os.path.join(orchestrator.dirs["src"], directory, file_name)
 
             # AST JSON 로드
-            async with aiofiles.open(ast_path, "r", encoding="utf-8") as ast_file:
-                ast_content = await ast_file.read()
+            ast_content, ast_encoding = await read_text_with_fallback(
+                ast_path,
+                preferred_encodings=("utf-8", "utf-8-sig", "cp949", "euc-kr"),
+            )
+            if ast_encoding != "utf-8":
+                logging.info(
+                    "[FILE_ENCODING] AST JSON fallback decoding: %s (encoding=%s)",
+                    ast_path,
+                    ast_encoding,
+                )
             
             # 소스 파일 로드 (없으면 빈 문자열)
             source_content = ""
             if os.path.isfile(source_path):
                 try:
-                    async with aiofiles.open(source_path, "r", encoding="utf-8") as src_file:
-                        source_content = await src_file.read()
+                    source_content, _ = await read_text_with_fallback(
+                        source_path,
+                        preferred_encodings=("utf-8", "utf-8-sig", "cp949", "euc-kr"),
+                    )
                 except Exception:
                     pass  # 소스 파일 읽기 실패해도 AST JSON의 code 속성으로 대체 가능
 

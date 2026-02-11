@@ -21,13 +21,12 @@ import logging
 import os
 from typing import Any, AsyncGenerator, Optional, List, Dict, Tuple
 
-import aiofiles
-
 from client.neo4j_client import Neo4jClient
 from analyzer.strategy.base_analyzer import BaseStreamingAnalyzer, AnalysisStats
 from analyzer.strategy.base.file_context import FileStatus, FileAnalysisContext
 from analyzer.pipeline_control import pipeline_controller, PipelinePhase
 from config.settings import settings
+from util.encoding_utils import read_text_with_fallback
 from util.stream_event import (
     emit_message,
     emit_phase_event,
@@ -408,14 +407,21 @@ class DbmsAnalyzer(BaseStreamingAnalyzer):
         async def load_single(directory: str, file_name: str) -> FileAnalysisContext:
             base_name = os.path.splitext(file_name)[0]
             ast_path = os.path.join(orchestrator.dirs["analysis"], "target", directory, f"{base_name}.json")
-
-            async with aiofiles.open(ast_path, "r", encoding="utf-8") as ast_file:
-                ast_content = await ast_file.read()
-                return FileAnalysisContext(
-                    directory=directory,
-                    file_name=file_name,
-                    ast_data=json.loads(ast_content),
+            ast_content, encoding_used = await read_text_with_fallback(
+                ast_path,
+                preferred_encodings=("utf-8", "utf-8-sig", "cp949", "euc-kr"),
+            )
+            if encoding_used != "utf-8":
+                logging.info(
+                    "[FILE_ENCODING] AST JSON fallback decoding: %s (encoding=%s)",
+                    ast_path,
+                    encoding_used,
                 )
+            return FileAnalysisContext(
+                directory=directory,
+                file_name=file_name,
+                ast_data=json.loads(ast_content),
+            )
 
         tasks = [load_single(d, f) for d, f in file_names]
         return await asyncio.gather(*tasks)
