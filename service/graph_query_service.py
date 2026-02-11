@@ -11,15 +11,92 @@ Neo4j 그래프 데이터의 조회, 삭제, 정리 기능을 제공합니다.
 
 import logging
 import os
+import re
 import shutil
-
-from fastapi import HTTPException
+from typing import Any
 
 from client.neo4j_client import Neo4jClient
 from config.settings import settings
 
 
 logger = logging.getLogger(__name__)
+
+
+# 벡터 임베딩은 그래프 렌더링에 불필요하고 응답을 과도하게 키우므로 제외합니다.
+_VECTOR_KEY_HINTS = ("vector",)
+_EMBEDDING_KEY_HINTS = ("embedding",)
+_CYPHER_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _is_large_numeric_vector(value: Any, min_len: int = 128) -> bool:
+    """벡터로 간주할 수 있는 고차원 숫자 배열 여부."""
+    if not isinstance(value, (list, tuple)):
+        return False
+    if len(value) < min_len:
+        return False
+    # 전체 순회 비용을 줄이기 위해 앞부분 샘플만 검사
+    sample = value[: min(32, len(value))]
+    return all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in sample)
+
+
+def _should_exclude_property(key: str, value: Any) -> bool:
+    """그래프 응답에서 제외할 대용량 속성 판별."""
+    key_lower = key.lower()
+
+    # 현재/미래의 vector 계열 키를 가장 우선적으로 제외
+    if any(hint in key_lower for hint in _VECTOR_KEY_HINTS):
+        return True
+
+    # 임베딩 계열은 숫자 벡터일 때만 제외(설명 텍스트 등은 유지)
+    if any(hint in key_lower for hint in _EMBEDDING_KEY_HINTS) and _is_large_numeric_vector(value, min_len=64):
+        return True
+
+    # 키 명명 규칙이 달라져도 고차원 숫자 배열이면 벡터로 간주
+    if _is_large_numeric_vector(value):
+        return True
+
+    return False
+
+
+def _sanitize_graph_properties(raw_props: Any) -> dict[str, Any]:
+    """그래프 API 응답용 속성 필터링."""
+    if not isinstance(raw_props, dict):
+        return {}
+
+    return {
+        key: value
+        for key, value in raw_props.items()
+        if not _should_exclude_property(str(key), value)
+    }
+
+
+def _is_valid_cypher_identifier(name: str) -> bool:
+    return bool(_CYPHER_IDENTIFIER_PATTERN.match(name))
+
+
+async def _discover_vector_property_keys(client: Neo4jClient) -> list[str]:
+    """DB에 존재하는 vector 계열 속성 키 목록을 조회."""
+    results = await client.execute_queries([
+        "CALL db.propertyKeys() YIELD propertyKey RETURN propertyKey"
+    ])
+    rows = results[0] if results else []
+    keys = []
+    for row in rows:
+        key = row.get("propertyKey")
+        if not isinstance(key, str):
+            continue
+        if any(hint in key.lower() for hint in _VECTOR_KEY_HINTS) and _is_valid_cypher_identifier(key):
+            keys.append(key)
+
+    # 쿼리 문자열 안정성을 위해 정렬/중복제거
+    return sorted(set(keys))
+
+
+def _build_null_projection_suffix(property_keys: list[str]) -> str:
+    """map projection에서 특정 속성을 null로 덮어쓰기 위한 suffix 생성."""
+    if not property_keys:
+        return ""
+    return "".join(f", {key}: null" for key in property_keys)
 
 
 # =============================================================================
@@ -55,44 +132,60 @@ async def fetch_graph_data() -> dict:
     """
     client = Neo4jClient()
     try:
+        vector_keys = await _discover_vector_property_keys(client)
+        null_projection_suffix = _build_null_projection_suffix(vector_keys)
+
         # 노드 조회 (전체 노드)
-        node_query = """
+        node_query = f"""
             MATCH (__cy_n__)
-            RETURN elementId(__cy_n__) AS nodeId, labels(__cy_n__) AS labels, properties(__cy_n__) AS props
+            RETURN elementId(__cy_n__) AS nodeId, labels(__cy_n__) AS labels, __cy_n__{{.*{null_projection_suffix}}} AS props
         """
         
         # 관계 조회 (전체 관계)
-        rel_query = """
+        rel_query = f"""
             MATCH (__cy_a__)-[__cy_r__]->(__cy_b__)
             RETURN elementId(__cy_r__) AS relId, 
                    elementId(__cy_a__) AS startId, 
                    elementId(__cy_b__) AS endId, 
                    type(__cy_r__) AS relType, 
-                   properties(__cy_r__) AS props
+                   __cy_r__{{.*{null_projection_suffix}}} AS props
         """
         
         results = await client.execute_queries([node_query, rel_query])
         node_result = results[0] if results else []
         rel_result = results[1] if len(results) > 1 else []
         
-        # 응답 형식 변환
+        # 응답 형식 변환 (대용량 벡터 속성 제외)
         nodes = []
+        filtered_node_prop_count = 0
         for record in node_result:
+            raw_props = record.get("props") or {}
+            safe_props = _sanitize_graph_properties(raw_props)
+            filtered_node_prop_count += max(0, len(raw_props) - len(safe_props))
             nodes.append({
                 "Node ID": record["nodeId"],
                 "Labels": record["labels"],
-                "Properties": record["props"]
+                "Properties": safe_props
             })
         
         relationships = []
+        filtered_rel_prop_count = 0
         for record in rel_result:
+            raw_props = record.get("props") or {}
+            safe_props = _sanitize_graph_properties(raw_props)
+            filtered_rel_prop_count += max(0, len(raw_props) - len(safe_props))
             relationships.append({
                 "Relationship ID": record["relId"],
                 "Start Node ID": record["startId"],
                 "End Node ID": record["endId"],
                 "Type": record["relType"],
-                "Properties": record["props"]
+                "Properties": safe_props
             })
+
+        logger.info(
+            "[GraphAPI] graph payload sanitized | nodes=%d rels=%d vector_keys=%d filtered_node_props=%d filtered_rel_props=%d",
+            len(nodes), len(relationships), len(vector_keys), filtered_node_prop_count, filtered_rel_prop_count
+        )
         
         return {
             "Nodes": nodes,
