@@ -1,114 +1,120 @@
-name: "classify_stereotypes"
-description: "LLM 기반 클래스/메서드 스테레오타입 분류 - 전체 분석 결과를 기반으로 역할 레이블 부여"
-version: "1.0"
+name: "stereotype"
+description: "클래스/인터페이스 전체 요약 + 스테레오타입 판별 (Summary + Stereotype 통합)"
+version: "2.0"
 
 input_schema:
   required:
-    - classes
+    - summaries
     - locale
-  optional: {}
+  optional:
+    - class_meta
 
 prompt: |
   [ROLE]
-  당신은 소프트웨어 아키텍처 분석 전문가입니다.
-  분석이 완료된 클래스/인터페이스와 그 멤버들의 요약 정보를 바탕으로,
-  각 클래스와 메서드의 **아키텍처 역할(스테레오타입)**을 분류해야 합니다.
+  당신은 Java 클래스/인터페이스의 구조, 책임, 비즈니스 로직을 분석하는 전문가입니다.
+  멤버 분석 결과를 종합하여 클래스의 역할을 상세하게 설명하고, 아키텍처 역할(스테레오타입)을 분류합니다.
   
   
   [LANGUAGE_SETTING]
   응답 언어: {{ locale }}
+  모든 분석 결과와 설명은 지정된 언어로 생성해야 합니다.
   
   
   [INPUT_DATA]
-  분석된 클래스/인터페이스 목록:
-  {{ classes }}
+  {% if class_meta %}클래스 메타 정보 (주석 + 어노테이션): {{ class_meta }}{% endif %}
+  
+  멤버 분석 결과:
+  {{ summaries }}
   
   
-  [STEREOTYPE_VOCABULARY]
+  ===============================================
+  [TASK 1: 상세 요약 (DETAILED_SUMMARY)]
+  ===============================================
   
-  ★ 클래스 스테레오타입 (복수 선택 가능):
+  멤버 요약들을 종합하여 클래스 전체 역할을 상세하게 설명하세요.
   
-  | 스테레오타입     | 설명                                              | 판단 기준 |
-  |-----------------|--------------------------------------------------|-----------|
-  | Controller      | HTTP 요청을 처리하는 REST/MVC 컨트롤러             | @RestController, @Controller, 엔드포인트 메서드 포함 |
-  | Service         | 비즈니스 로직을 처리하는 서비스 레이어               | @Service, 비즈니스 규칙 처리, 트랜잭션 관리 |
-  | Repository      | 데이터 액세스 레이어 (DAO)                          | @Repository, JpaRepository 상속, DB 조회/저장 |
-  | Entity          | JPA 엔티티 / 도메인 모델                           | @Entity, @Table, 영속성 매핑, 도메인 상태 보유 |
-  | DTO             | 데이터 전송 객체 (Request/Response/Command/Event)   | 데이터 운반 목적, 비즈니스 로직 없음, 필드+getter/setter |
-  | Config          | 설정/구성 클래스                                    | @Configuration, @Bean 메서드, 환경 설정 |
-  | Component       | 범용 Spring 컴포넌트                               | @Component, 특정 역할에 해당하지 않는 빈 |
-  | Aspect          | AOP 관점                                          | @Aspect, Around/Before/After advice |
-  | Filter          | 서블릿 필터 / 인터셉터                              | Filter 구현, OncePerRequestFilter 상속 |
-  | Listener        | 이벤트 리스너                                      | @EventListener, ApplicationListener 구현 |
-  | Validator       | 데이터 검증 클래스                                  | Validator 구현, 입력 검증 로직 |
-  | Mapper          | 객체 변환/매핑 클래스                               | 객체 간 변환 로직, Converter/Transformer |
-  | Util            | 유틸리티 / 헬퍼 클래스                              | static 메서드 중심, 상태 없음, 범용 도구 |
-  | ExceptionHandler| 예외 처리 클래스                                    | @ControllerAdvice, Exception 상속 |
-  | Gateway         | API 게이트웨이 / 라우팅                             | 요청 라우팅, 프록시, API 집계 |
-  | Facade          | 복잡한 서브시스템을 단순화하는 퍼사드                 | 여러 서비스를 조합하여 단순 인터페이스 제공 |
-  | Factory         | 객체 생성 팩토리                                    | 객체 인스턴스 생성 로직 집중 |
-  | Scheduler       | 스케줄링/배치 작업 클래스                            | @Scheduled, 주기적 작업 실행 |
-  | Client          | 외부 서비스 호출 클라이언트                          | RestTemplate, WebClient, Feign 사용 |
-  | Enum            | 열거형 타입                                        | enum 키워드, 상수 정의 |
+  ★ 필수 포함 사항:
+  1. 핵심 책임 및 역할 (이 클래스가 어떤 도메인/기능을 담당하는지)
+  2. 주요 분기 조건과 비즈니스 규칙 (enum, 상수, 상태값 명시)
+  3. 데이터 값 및 상수 (모든 리터럴 값)
+  4. 협력 객체 및 의존성 (주입받는 서비스/컴포넌트)
+  5. 예외 처리 및 검증 규칙
   
-  ★ 메서드 스테레오타입 (복수 선택 가능):
-  
-  | 스테레오타입     | 설명                                              | 판단 기준 |
-  |-----------------|--------------------------------------------------|-----------|
-  | Endpoint        | REST API 엔드포인트                                | @GetMapping, @PostMapping 등, HTTP 요청 처리 |
-  | Query           | 데이터 조회 메서드                                  | find*, get*, search*, 읽기 전용 동작 |
-  | Command         | 데이터 변경 메서드                                  | create*, save*, update*, delete*, 상태 변경 |
-  | Getter          | 단순 속성 접근자                                    | getXxx, 필드 반환만 수행 |
-  | Setter          | 단순 속성 설정자                                    | setXxx, 필드 설정만 수행 |
-  | Lifecycle       | 라이프사이클 메서드                                 | @PostConstruct, @PreDestroy, main() |
-  | Scheduled       | 스케줄 실행 메서드                                  | @Scheduled, 주기적 실행 |
-  | EventHandler    | 이벤트 처리 메서드                                  | @EventListener, on* 패턴, 이벤트 반응 |
-  | Init            | 초기화 메서드                                      | init*, setup*, configure*, 초기 설정 |
-  | Transactional   | 트랜잭션 메서드                                     | @Transactional, DB 트랜잭션 관리 |
-  | Callback        | 콜백/훅 메서드                                     | 프레임워크 훅, 콜백 인터페이스 구현 |
-  | Validation      | 입력 검증 메서드                                    | validate*, check*, 입력 검증 로직 |
-  | Transformation  | 데이터 변환 메서드                                  | convert*, map*, transform*, 데이터 형변환 |
-  | BusinessLogic   | 핵심 비즈니스 로직                                  | 도메인 규칙 처리, 비즈니스 판단 로직 |
+  요약 작성 규칙:
+  - 최소 10문장 이상으로 상세하게 작성
+  - 멤버 요약에 있는 모든 중요 정보를 누락 없이 포함
+  - 추상적 표현 금지, 구체적인 값과 조건 명시
+  - 가능한 한 실제 코드에 등장하는 클래스명, 메서드명, 필드명, 상수/enum/상태값, 의존 객체 이름을 그대로 텍스트 안에 명시하세요.
+  - summary 텍스트 안에서는 Controller, Service, Repository, DTO, Util, Entity 등 스테레오타입/레이어 이름으로 클래스를 분류하거나 단정하지 마세요.
+  - 이 파일의 [TASK 2]에서 별도로 스테레오타입(classStereotype, methodStereotypes)을 선택하므로, summary는 오직 "무엇을 어떻게 하는지"를 구체적으로 설명하는 데만 집중하세요.
   
   
-  [CLASSIFICATION_RULES]
-  분류 규칙:
+  ===============================================
+  [TASK 2: 스테레오타입 분류 (STEREOTYPE)]
+  ===============================================
   
-  1. **요약 내용 우선**: 어노테이션/이름 패턴보다 실제 코드 동작(summary)을 우선 판단
-  2. **복수 분류 허용**: 하나의 클래스/메서드에 여러 스테레오타입 가능
-     예: Service + Facade (서비스이면서 여러 하위 서비스를 조합)
-  3. **맥락 고려**: 같은 프로젝트 내 다른 클래스와의 관계를 고려
-     예: OrderController가 OrderService를 주입하면 Service 패턴 확인
-  4. **확신이 없으면 생략**: 불확실한 분류보다 미분류가 나음
-  5. **기존 스테레오타입 참고**: rule_stereotype이 이미 부여된 경우 참고하되, 
-     요약 내용과 맞지 않으면 수정 가능
+  어노테이션 + 멤버 summary를 기반으로 아키텍처 역할을 분류하세요.
+  
+  [클래스 스테레오타입] (하나만 선택):
+  - Controller: REST/MVC 컨트롤러 (@RestController, @Controller)
+  - Service: 비즈니스 서비스 (@Service)
+  - Repository: 데이터 액세스 (@Repository, JpaRepository 상속)
+  - Entity: JPA 엔티티 (@Entity, @Table)
+  - DTO: 데이터 전송 객체 (Request/Response/DTO)
+  - Config: 설정 클래스 (@Configuration)
+  - Component: 범용 컴포넌트 (@Component)
+  - Aspect: AOP 관점 (@Aspect)
+  - Filter: 필터/인터셉터
+  - Listener: 이벤트 리스너
+  - Mapper: 객체 매핑
+  - Util: 유틸리티/헬퍼
+  - ExceptionHandler: 예외 처리 (@ControllerAdvice)
+  - Enum: 열거형
+  
+  [메서드 스테레오타입] (각 메서드별 하나만 선택):
+  - Endpoint: REST API 엔드포인트 (@XxxMapping)
+  - Query: 조회 메서드
+  - Command: 변경 메서드 (생성/수정/삭제)
+  - Getter: 단순 getter
+  - Setter: 단순 setter
+  - Lifecycle: 라이프사이클 (@PostConstruct, main)
+  - Scheduled: 스케줄 메서드 (@Scheduled)
+  - EventHandler: 이벤트 핸들러
+  - Init: 초기화 메서드
+  - Transactional: 트랜잭션 메서드
+  - BusinessLogic: 기타 비즈니스 로직
+  - Validation: 검증 메서드
   
   
+  ===============================================
   [OUTPUT_FORMAT]
-  JSON 스키마:
+  ===============================================
+  
+  다음 JSON 형식으로만 결과를 반환하세요:
+  
   {
-    "classifications": [
-      {
-        "class_name": "클래스명",
-        "class_stereotypes": ["스테레오타입1", "스테레오타입2"],
-        "reasoning": "분류 근거 (1문장)",
-        "methods": [
-          {
-            "method_name": "메서드명",
-            "startLine": 시작라인,
-            "stereotypes": ["스테레오타입1"],
-            "reasoning": "분류 근거 (1문장)"
-          }
-        ]
-      }
-    ]
+    "summary": "최소 10문장 이상의 매우 상세한 클래스 요약",
+    "classStereotype": "Service",
+    "methodStereotypes": {
+      "getUserById": "Query",
+      "createUser": "Command"
+    }
   }
   
   출력 제약사항:
   - JSON 형식 외의 부가 설명이나 주석 금지
-  - 코드펜스(```json ... ```) 포함 금지
+  - null 값 사용 금지
+  - 코드펜스 포함 금지
   - 트레일링 콤마 절대 금지
-  - null 사용 금지, 빈값은 빈 배열([])
-  - class_stereotypes/stereotypes는 위 표에 정의된 값만 사용
-  - methods 배열에는 Getter/Setter가 아닌 주요 메서드만 포함 (getter/setter는 생략 가능)
-  - 유효한 JSON만 출력
+  - classStereotype: 위 목록에서 하나 선택
+  - methodStereotypes: 메서드명을 키, 스테레오타입을 값으로
+
+output_schema:
+  type: object
+  properties:
+    summary: { type: string }
+    classStereotype: { type: string }
+    methodStereotypes:
+      type: object
+      additionalProperties: { type: string }
+

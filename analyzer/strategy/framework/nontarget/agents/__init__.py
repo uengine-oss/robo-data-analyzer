@@ -1,7 +1,7 @@
 """에이전트 패키지
 
-4개 독립 DeepAgents 클라이언트 및 응답 파싱 헬퍼입니다.
-레거시 함수(infer_chunking_rules, generate_summary_with_agent 등)는 삭제됨.
+Chunker 전용 DeepAgents 클라이언트 및 응답 파싱 헬퍼입니다.
+Step 1(청킹)만 DeepAgent 사용, Step 2/3/4는 RuleLoader LLM chain.
 """
 
 from analyzer.strategy.framework.nontarget.agents.deepagents_client import (

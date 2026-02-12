@@ -3,7 +3,9 @@ description: "클래스/인터페이스 User Story + AC 생성"
 version: "1.0"
 
 input_schema:
-  required: []
+  required:
+    - summary
+    - locale
   optional: {}
 
 prompt: |

@@ -1,12 +1,11 @@
 """LLM 분석 Phase (Phase 2) - Framework
 
 framework_analyzer.py에서 분리된 Phase 2 로직입니다.
-모든 로직은 100% 보존되며, 위치만 변경되었습니다.
 
-핵심 로직(summary 청크 분석, User Story 생성)은
+핵심 로직(summary + stereotype + DEPENDENCY/CALLS/USES 관계 생성)은
 ast_processor.py의 run_llm_analysis() 내부에서 처리됩니다.
 
-Phase 2.5: 배치 완료 시 즉시 summary_vec 벡터화
+배치 완료 시 즉시 summary_vec 벡터화.
 """
 
 import asyncio
@@ -53,16 +52,10 @@ async def vectorize_summaries(
     embedding_client = EmbeddingClient(openai_client)
     
     # summary가 있고 summary_vec이 없는 노드 조회
-    # 벡터화 대상 노드:
-    # - METHOD / CONSTRUCTOR: 실행 단위
-    # - FIELD: 상태 정보
-    # - VARIABLE / METHOD_CALL / NEW_INSTANCE / ASSIGNMENT: 메서드 내부 동작
-    #   (관계 추적 시 METHOD를 통해 도달 가능)
+    # 벡터화 대상 노드: METHOD / CONSTRUCTOR / FIELD
     query = """
     MATCH (__cy_n__)
-    WHERE (__cy_n__:METHOD OR __cy_n__:CONSTRUCTOR OR __cy_n__:FIELD
-           OR __cy_n__:VARIABLE OR __cy_n__:METHOD_CALL
-           OR __cy_n__:NEW_INSTANCE OR __cy_n__:ASSIGNMENT)
+    WHERE (__cy_n__:METHOD OR __cy_n__:CONSTRUCTOR OR __cy_n__:FIELD)
       AND __cy_n__.file_name = $file_name
       AND __cy_n__.summary IS NOT NULL
       AND __cy_n__.summary <> ''

@@ -312,7 +312,11 @@ def _scan_with_rules(
     raw_lines: List[str],
     rules: List[ChunkingRule],
 ) -> List[int]:
-    """규칙을 파일에 적용하여 경계를 생성합니다."""
+    """규칙을 파일에 적용하여 경계를 생성합니다.
+
+    ChunkerAgent가 학습한 모든 규칙을 적용합니다.
+    블록 분리 판단은 에이전트 프롬프트에 위임합니다.
+    """
     if not rules:
         return []
 

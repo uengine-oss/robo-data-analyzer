@@ -1,6 +1,6 @@
 name: "analyze_java_code"
 description: "Java 코드 범위별 분석 - 클래스 다이어그램 및 Neo4j 그래프 생성용"
-version: "3.0"
+version: "4.0"
 
 input_schema:
   required:
@@ -8,7 +8,8 @@ input_schema:
     - ranges
     - count
     - locale
-  optional: {}
+  optional:
+    - context
 
 prompt: |
   [ROLE]
@@ -23,12 +24,13 @@ prompt: |
   
   [INPUT_DATA]
   {% if context %}
-  부모 컨텍스트 (상위 코드 구조에서 추출한 핵심 정보):
+  부모 컨텍스트 (클래스 어노테이션 + 주석으로 정적 구성):
   {{ context }}
   
-  이 컨텍스트는 현재 분석 대상 코드의 부모 노드에서 추출한 정보입니다.
-  - 변수/객체/조건 정보를 참고하여 현재 코드의 실행 맥락을 이해하세요.
-  - summary 작성 시 컨텍스트 정보를 참고하여 정확한 설명을 작성하세요.
+  위 컨텍스트는 소속 클래스의 어노테이션과 주석입니다.
+  - 이 컨텍스트로 클래스의 책임과 도메인(무엇을 처리하는 클래스인지)을 이해하는 데 활용하세요.
+  - 단, summary 안에서 Controller, Service, Repository, DTO, Util 등 스테레오타입/레이어 이름을 추측하여 직접 적지 마세요.
+  - summary는 "무엇을 하는지"를 실제 코드 흐름과 식별자를 기반으로 구체적으로 설명하는 데만 사용하세요.
   
   {% endif %}
   분석 대상 Java 코드:
@@ -46,7 +48,7 @@ prompt: |
   - 각 범위는 독립적으로 분석되어야 하며, 누락 또는 초과된 분석 결과는 허용되지 않음
   - 강제 검증 규칙:
      - analysis 각 요소는 startLine/endLine을 반드시 포함할 것 (정수)
-     - 값이 없으면 해당 필드는 다음 기본값을 사용: variables=[], localDependencies=[], calls=[]
+     - 값이 없으면 해당 필드는 다음 기본값을 사용: dependencies=[], calls=[]
      - null 사용 절대 금지. 빈값은 빈 배열([]) 또는 빈 객체({})로만 표현
      - 코드펜스(```), 주석(//, /* */), 트레일링 콤마 허용 금지. 순수 JSON만 출력
      - **⚠️ CRITICAL: 트레일링 콤마(trailing comma) 절대 금지** - 배열이나 객체의 마지막 요소 뒤에 콤마(,)를 붙이지 마세요. 예: `"calls": []` (O), `"calls": [],` (X)
@@ -68,6 +70,7 @@ prompt: |
   - 반복 처리 로직: for, while, do-while 문의 조건과 반복 목적
   - 예외 처리: try-catch-finally 블록의 처리 방식과 목적
   - 객체 생성: new 연산자로 생성되는 객체와 그 목적
+  - 변수 활용: 어떤 변수가 어떻게 사용되고 데이터가 어디로 흐르는지
   
   ★ 반드시 포함해야 할 내용 (해당하는 경우):
   
@@ -85,73 +88,43 @@ prompt: |
   4. 예외 처리
      - 어떤 예외를 잡아서 어떻게 처리하는지
   
+  5. 변수 활용 정보
+     - 주요 변수가 어디서 생성되어 어떤 메서드로 전달되는지
+     - 객체 생성 및 초기화 패턴
+  
   요약 작성 규칙:
   - 3~5문장으로 상세하게 작성
   - 코드에 나온 실제 값(상태값, 조건값, 상수)을 포함
   - 비즈니스 맥락이 드러나도록 서술
+  - **반드시 부모 컨텍스트(context)를 활용하여, 이 메서드가 속한 클래스/모듈이 하는 일과의 관계를 설명합니다.**
+    - context에는 "클래스: XXX", "클래스 주석: ...", "클래스 어노테이션: @..." 등이 포함될 수 있습니다.
+    - summary의 첫 문장은 가능하면 "이 클래스는 무엇을 하는지" + "이 메서드는 그 안에서 어떤 역할인지"를 연결해서 설명하세요.
+    - 예: "CmbsBookDDTO는 CMBS 북 정보를 담는 DTO이며, getQueryOutcomMgtBrnName 메서드는 조회 조건에 사용될 성과관리부점명을 반환한다."
   - 핵심 식별자 필수 포함:
     - 메서드명: 분석 대상 메서드의 이름
     - 클래스명: 관련된 클래스/인터페이스 이름
     - 변수명/필드명: 주요 변수와 필드 이름
     - 호출 대상: 호출하는 메서드/서비스 이름
-  - 예시: "processOrder 메서드는 OrderService.createOrder()를 호출하여 Order 객체를 생성하고, orderRepository에 저장한다."
+  - 가능한 한 실제 코드에 나온 식별자(메서드 시그니처, 파라미터명, 필드명, 의존 클래스명, 호출 메서드명 등)를 그대로 텍스트 안에 명시하세요.
+  - summary에서는 Controller, Service, Repository, DTO, Util, Entity 등 아키텍처 레이어/스테레오타입 명칭으로 메서드나 클래스를 분류하거나 단정하지 마세요.
+    - 단, context 안에 이미 그러한 용어가 포함되어 있다면, 그것을 참고하여 "무엇을 하는지"를 더 구체적으로 풀어서 설명하는 데만 사용합니다.
+  - 예시: "processOrder 메서드는 OrderService.createOrder()를 호출하여 Order 객체를 생성하고, orderRepository.save(order)로 저장하며, 실패 시 OrderStatus.CANCELLED로 상태를 변경한다."
   
   
-  [SECTION_2_VARIABLE_IDENTIFICATION]
-  변수/필드/객체 사용 식별 (흐름 추적용):
+  [SECTION_2_DEPENDENCIES]
+  ★ 클래스 간 관계 추출 (UML 관계 판별):
   
-  목적:
-  - 값이 어디로 흘러가는지 추적 (USES 관계 생성용)
-  - 키워드 매칭이 실패해도 흐름을 추적할 수 있도록 함
+  메서드 본문에서 사용되는 사용자 정의 클래스를 식별하고,
+  각각의 UML 관계 타입(DEPENDENCY / COMPOSITION / AGGREGATION)을 판별합니다.
   
-  ⚠️ 중요: variables는 analysis 배열 안이 아닌, 최상위 레벨에 별도 배열로 작성합니다.
-  각 변수에 실제 사용된 라인 번호(line)를 명시하여 중복을 방지합니다.
-  
-  식별 규칙:
-  - 변수가 실제 사용된 **라인 번호**를 정확히 기록
-  - 같은 라인에서 같은 변수가 여러 역할로 사용되면 각각 별도 항목으로 기록
-  - 부모/자식 범위 중첩과 무관하게, 실제 코드 라인 기준으로 한 번만 기록
-  - **type은 추론하지 않음** (정보 부족으로 불가능)
-  - **line, name, role만 식별**
-  
-  식별 대상 (각각 따로 식별):
-  - 변수명: v, count, result
-  - 객체명: orderService, repository, config, cfg
-  - 필드명: currency, name, status (객체명 없이 필드명만)
-  
-  ⚠️ 중요: "객체.필드" 형태가 아닌, 객체명과 필드명을 **따로따로** 식별합니다.
-  
-  role 종류:
-  - "read": 값을 읽음 (변수 참조, 객체 접근, 메서드 호출 대상)
-  - "write": 값을 할당/저장 (=, +=, 등)
-  - "init": 객체를 생성하여 할당 (new 연산자로 초기화된 변수)
-  - "pass": 메서드 인자로 전달
-  
-  식별 예시 (라인 번호 포함):
-  - 30행: String v = env.getProperty("key")
-    → {"line": 30, "name": "v", "role": "write"}, {"line": 30, "name": "env", "role": "read"}
-  - 31행: cfg.setCurrency(v)
-    → {"line": 31, "name": "cfg", "role": "read"}, {"line": 31, "name": "v", "role": "pass"}
-  - 32행: OrderConfig config = new OrderConfig()
-    → {"line": 32, "name": "config", "role": "init"}
-  - 33행: cfg.currency = value
-    → {"line": 33, "name": "cfg", "role": "read"}, {"line": 33, "name": "currency", "role": "write"}, {"line": 33, "name": "value", "role": "read"}
-  
-  
-  [SECTION_3_LOCAL_DEPENDENCIES]
-  로컬 변수 및 파라미터 타입 추출 (의존 관계용):
-  
-  식별 목적:
-  - 메서드 내에서 로컬 변수로 선언/생성된 사용자 정의 클래스 타입 추출
-  - 메서드 파라미터로 사용되는 사용자 정의 클래스 타입 추출
-  - 클래스 다이어그램의 "의존(Dependency)" 관계 생성에 사용
-  
-  식별 대상:
-  - 메서드 파라미터 타입: `public void attack(Enemy enemy)` → "Enemy"
-  - new 연산자로 생성하는 객체의 타입: `Customer c = new Customer()` → "Customer"
-  - 메서드 반환값을 받는 변수의 타입: `Order order = orderService.findById()` → "Order"
-  - 캐스팅된 타입: `(PaymentService) service` → "PaymentService"
-  - 제네릭 내부 타입: `List<Product> products` → "Product"
+  식별 대상과 usage 분류:
+  - "parameter": 메서드 파라미터 타입 → `void attack(Enemy enemy)` → Enemy
+  - "return": 반환 타입 → `Order findOrder()` → Order
+  - "local_new": new 연산자 생성 → `Customer c = new Customer()` → Customer
+  - "local_var": 메서드 내 로컬 변수 타입 → `Order order = service.findById()` → Order
+  - "cast": 캐스팅 → `(PaymentService) service` → PaymentService
+  - "generic": 제네릭 내부 타입 → `List<Product> products` → Product
+  - "field_call": 필드를 통한 호출 → `userRepository.findById()` → UserRepository
   
   제외 대상:
   - primitive 타입, wrapper 타입, String, Object
@@ -162,11 +135,32 @@ prompt: |
   - 메서드 안: 메서드명 (예: "processOrder", "attack")
   - 생성자 안: 생성자명/클래스명 (예: "OrderService")
   
+  ★ relationType 판별 (3가지 중 하나 선택):
   
-  [SECTION_4_METHOD_CALLS]
+  "COMPOSITION" — 필드 기반 + 생명주기 종속:
+  - 이 메서드(또는 클래스)가 해당 객체를 직접 new로 생성/관리
+  - 전체 없이 부분이 존재할 수 없는 강한 소유
+  - 예: `cuzMsg = new CustomizeMessage()` → usage: "field_call", relationType: "COMPOSITION"
+  
+  "AGGREGATION" — 필드 기반 + 생명주기 독립:
+  - 전체-부분 관계이지만 부분이 독립적으로 존재 가능
+  - 외부에서 주입받거나 공유 가능한 객체
+  - 예: `this.employees.add(emp)` → usage: "field_call", relationType: "AGGREGATION"
+  
+  "DEPENDENCY" — 기본값, 위 둘에 해당하지 않는 모든 경우:
+  - 파라미터/반환/로컬변수/캐스팅/제네릭 등 비필드 기반 사용
+  - 서비스/유틸리티 참조 등 도메인적 전체-부분이 아닌 관계
+  - 예: `KBData kbData` (파라미터) → usage: "parameter", relationType: "DEPENDENCY"
+  
+  
+  [SECTION_3_METHOD_CALLS]
   ★ 메서드 호출 추출 (CALLS 관계용):
   
-  각 코드 범위에서 다른 객체/클래스의 메서드를 호출하는 부분을 추출합니다.
+  각 코드 범위에서 **분석 범위 내 다른 클래스**의 메서드를 호출하는 부분만 추출합니다.
+  
+  ⚠️ 핵심 원칙: **오직 다른 비즈니스 클래스의 메서드 호출만 추출**
+  - 같은 클래스 내부 메서드 호출은 제외
+  - Java 표준 라이브러리 호출은 모두 제외
   
   추출 형식:
   - "target.methodName" 형태로 추출
@@ -177,13 +171,25 @@ prompt: |
   - this.repository.save(entity) → "repository.save"
   - orderService.findAll() → "orderService.findAll"
   - UserService.getInstance() → "UserService.getInstance"
-  - items.stream().filter() → "items.stream" (체이닝 첫 호출만)
   
   제외 대상 (calls에 포함하지 않음):
-  - 기본 타입 메서드: toString(), hashCode(), equals()
-  - 컬렉션 내장 메서드: list.add(), map.get(), set.contains()
-  - System 호출: System.out.println()
-  - 로깅: log.info(), logger.debug()
+  - Java 표준 라이브러리 전체:
+    - Stream API: stream(), filter(), map(), flatMap(), collect(), forEach() 등
+    - Optional API: orElse(), orElseThrow(), isPresent(), ifPresent() 등
+    - Object 메서드: toString(), hashCode(), equals(), getClass() 등
+    - 컬렉션 내장 메서드: list.add(), map.get(), set.contains(), size() 등
+    - String 메서드: substring(), trim(), toLowerCase() 등
+  - System 호출: System.out.println() 등
+  - 로깅: log.info(), logger.debug() 등
+  - 같은 클래스 내부 메서드: this.method(), method() 등
+  - 기본 타입/래퍼 메서드: Integer.parseInt(), Long.valueOf() 등
+  
+  ⚠️ 체이닝 처리:
+  - 체이닝 전체가 Java 표준 라이브러리인 경우 모두 제외
+    - items.stream().filter().map() → 모두 제외 (stream()도 Java 표준 라이브러리)
+    - optional.orElseThrow() → 제외
+  - 체이닝 중 비즈니스 클래스 메서드만 추출
+    - userRepository.findById(id).orElseThrow() → "userRepository.findById"만 추출
   
   ⚠️ 같은 범위 내에서 동일 호출이 여러 번 있으면 한 번만 포함
   
@@ -197,29 +203,20 @@ prompt: |
       {
         "startLine": 범위_시작_라인_번호,
         "endLine": 범위_종료_라인_번호,
-        "summary": "3~5문장. 메서드명, 클래스명, 변수명, 호출 대상 등 핵심 식별자를 반드시 포함한 상세한 코드 동작 요약",
-        "localDependencies": [
-          {"type": "타입명", "sourceMember": "발생위치"}
+        "summary": "3~5문장. 메서드명, 클래스명, 변수명, 호출 대상 등 핵심 식별자와 변수 활용 정보를 포함한 상세한 코드 동작 요약",
+        "dependencies": [
+          {"targetClass": "타겟클래스명", "sourceMember": "메서드명", "usage": "field_call|local_new|parameter|return|cast|generic|local_var", "relationType": "DEPENDENCY|COMPOSITION|AGGREGATION"}
         ],
         "calls": ["target.methodName", "target2.methodName2"]
       }
-    ],
-    "variables": [
-      {"line": 실제_사용_라인_번호, "name": "변수명", "role": "read"},
-      {"line": 실제_사용_라인_번호, "name": "객체명", "role": "read"},
-      {"line": 실제_사용_라인_번호, "name": "필드명", "role": "write"},
-      {"line": 실제_사용_라인_번호, "name": "초기화된_변수명", "role": "init"}
     ]
   }
   
   출력 제약사항:
   - JSON 형식 외의 부가 설명이나 주석 금지
-  - "variables"는 최상위 레벨 배열 (analysis 안에 넣지 말 것!)
-  - "variables" 배열 요소는 객체 타입 (line, name, role 필드 필수)
-  - line 값은 변수가 실제 사용된 코드 라인 번호 (정수)
-  - role 값은 "read", "write", "init", "pass" 중 하나
-  - "localDependencies" 배열 요소는 객체 타입 (type, sourceMember 필드)
+  - "dependencies" 배열 요소는 객체 타입 (targetClass, sourceMember, usage, relationType 필드)
   - "calls" 배열 요소는 "target.methodName" 형태의 문자열
+  - calls에는 오직 다른 비즈니스 클래스의 메서드 호출만 포함 (Java 표준 라이브러리 제외)
   - analysis[i]에는 startLine/endLine이 필수
   - 빈 배열도 허용되며 null 값은 사용 금지
   - 코드펜스(```json ... ``` 등) 포함 금지

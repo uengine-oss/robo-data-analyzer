@@ -57,6 +57,7 @@ class StatementNode:
     package_name: Optional[str] = None  # Framework 전용: 패키지명 (com.example.service)
     
     # AST JSON에서 추출한 메타데이터 (선택적)
+    name: Optional[str] = None            # 노드 이름 (ANTLR name 속성)
     signature: Optional[str] = None        # 함수/프로시저 시그니처
     modifiers: Optional[str] = None        # public, private, static 등 수정자
     return_type: Optional[str] = None      # 반환 타입
@@ -67,13 +68,10 @@ class StatementNode:
     field_type: Optional[str] = None       # 필드 타입
     
     # Framework 전용: 어노테이션 정보
-    annotations: Optional[List[str]] = None  # ["@Entity", "@Table(name='orders')"]
+    annotations: Optional[str] = None         # 어노테이션 문자열 (예: "@Entity @Table(name='orders')")
     
-    # Framework 전용: 메서드 호출 대상 정보 (METHOD_CALL 노드용)
-    call_target_class: Optional[str] = None   # 호출 대상 클래스/변수 (예: "logger", "SqlMapper")
-    call_target_method: Optional[str] = None  # 호출 메서드명 (예: "debug", "insert")
-    parent_method_line: Optional[int] = None  # 소속 메서드의 시작 라인 (관계 생성용)
-    class_references: Optional[List[str]] = None  # 코드에서 참조하는 클래스명 목록
+    # Framework 전용: 주석 정보
+    comment: Optional[str] = None             # Javadoc/주석 (ANTLR comment 속성)
     
     # 코드 라인 정보
     lines: List[Tuple[int, str]] = field(default_factory=list)
@@ -110,11 +108,16 @@ class StatementNode:
         """
         if not self.children:
             return self.code  # 원본과 동일하게 self.code 반환
-
+        
+        # VARIABLE 노드는 분석 대상이 아니므로 compact 코드 생성에서 제외
+        filtered_children = [c for c in self.children if c.node_type != "VARIABLE"]
+        if not filtered_children:
+            return self.code
+        
         result_lines: List[str] = []
         line_index = 0
         total_lines = len(self.lines)
-        sorted_children = sorted(self.children, key=lambda child: child.start_line)
+        sorted_children = sorted(filtered_children, key=lambda child: child.start_line)
 
         for child in sorted_children:
             # 자식 이전의 부모 고유 코드를 그대로 복사합니다.
@@ -177,10 +180,15 @@ class StatementNode:
             assign_nodes = find_assign_nodes_recursive(self)
             assign_node_set = {(n.start_line, n.end_line) for n in assign_nodes}
 
+        # VARIABLE 노드는 placeholder 생성 시 무시 (부모 코드만 유지)
+        filtered_children = [c for c in self.children if c.node_type != "VARIABLE"]
+        if not filtered_children:
+            return self.get_raw_code()
+        
         result_lines: List[str] = []
         line_index = 0
         total_lines = len(self.lines)
-        sorted_children = sorted(self.children, key=lambda child: child.start_line)
+        sorted_children = sorted(filtered_children, key=lambda child: child.start_line)
 
         for child in sorted_children:
             # 자식 이전의 부모 코드를 그대로 출력
@@ -224,9 +232,14 @@ class StatementNode:
         """
         if not self.children:
             return self.get_raw_code()
-
+        
+        # VARIABLE 노드는 스켈레톤 생성에서 제외 (컨텍스트 노이즈 감소)
+        filtered_children = [c for c in self.children if c.node_type != "VARIABLE"]
+        if not filtered_children:
+            return self.get_raw_code()
+        
         result_lines: List[str] = []
-        sorted_children = sorted(self.children, key=lambda child: child.start_line)
+        sorted_children = sorted(filtered_children, key=lambda child: child.start_line)
         in_child_block = False
 
         for line_no, text in self.lines:

@@ -208,7 +208,7 @@ async def fetch_table_columns(
                 RETURN __cy_c__.name AS name,
                        __cy_t__.name AS table_name,
                        __cy_c__.dtype AS dtype,
-                       __cy_c__.nullable AS nullable,
+                       COALESCE(__cy_c__.nullable, true) AS nullable,
                        __cy_c__.description AS description,
                        __cy_c__.description_source AS description_source,
                        __cy_c__.analyzed_description AS analyzed_description
