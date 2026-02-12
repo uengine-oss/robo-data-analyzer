@@ -106,11 +106,15 @@ class DDLParser:
         for match in self.create_table_pattern.finditer(ddl_content):
             full_name = match.group(1)
             columns_def = match.group(2)
+            create_table_start = match.start()
             
             schema, table_name = self._parse_table_name(full_name)
             table_key = f"{schema}.{table_name}".lower()
             
             columns = self._parse_columns(columns_def)
+            
+            # CREATE TABLE 위의 주석 추출
+            table_comment = self._extract_table_comment(ddl_content, create_table_start)
             
             # 인라인 FK 파싱 (CREATE TABLE 내부)
             inline_fks = []
@@ -137,7 +141,7 @@ class DDLParser:
                 "table": {
                     "schema": schema,
                     "name": table_name,
-                    "comment": "",
+                    "comment": table_comment,
                     "table_type": "BASE TABLE",
                 },
                 "columns": columns,
@@ -234,6 +238,48 @@ class DDLParser:
             if (s[0] == '"' and s[-1] == '"') or (s[0] == "'" and s[-1] == "'"):
                 return s[1:-1]
         return s
+    
+    def _extract_table_comment(self, ddl_content: str, create_table_start: int) -> str:
+        """CREATE TABLE 위의 주석 추출
+        
+        Args:
+            ddl_content: DDL 전체 내용
+            create_table_start: CREATE TABLE 시작 위치
+            
+        Returns:
+            추출된 주석 (한 줄이면 그대로, 블록이면 합쳐서)
+        """
+        if create_table_start == 0:
+            return ""
+        
+        # CREATE TABLE 이전 텍스트
+        before_text = ddl_content[:create_table_start]
+        lines = before_text.split('\n')
+        
+        # 역순으로 검사하여 연속된 주석 블록 찾기
+        comment_lines = []
+        for line in reversed(lines):
+            stripped = line.strip()
+            # 빈 줄이면 중단
+            if not stripped:
+                if comment_lines:
+                    break
+                continue
+            # -- 주석이면 수집
+            if stripped.startswith('--'):
+                comment_text = stripped[2:].strip()
+                if comment_text:
+                    comment_lines.insert(0, comment_text)
+            else:
+                # 주석이 아닌 줄이면 중단
+                if comment_lines:
+                    break
+        
+        if not comment_lines:
+            return ""
+        
+        # 한 줄이면 그대로, 여러 줄이면 합치기
+        return comment_lines[0] if len(comment_lines) == 1 else '\n'.join(comment_lines)
     
     def _parse_columns(self, columns_def: str) -> List[Dict[str, Any]]:
         """컬럼 정의 파싱
