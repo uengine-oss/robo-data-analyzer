@@ -124,6 +124,7 @@ class MetadataEnrichmentConfig:
     fk_sample_size: int = field(default_factory=lambda: int(os.getenv("FK_SAMPLE_SIZE", "25")))
     fk_similarity_threshold: float = field(default_factory=lambda: float(os.getenv("FK_SIMILARITY_THRESHOLD", "0.8")))
     fk_match_ratio_threshold: float = field(default_factory=lambda: float(os.getenv("FK_MATCH_RATIO_THRESHOLD", "0.8")))
+    fk_concurrency: int = field(default_factory=lambda: int(os.getenv("FK_CONCURRENCY", "5")))
 
 
 @dataclass(frozen=True)

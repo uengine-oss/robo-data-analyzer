@@ -49,20 +49,35 @@ class AnalysisBatch:
         
         Returns:
             (code, context) 튜플 - 코드와 컨텍스트를 분리
+            code: 주석 + 어노테이션 + 코드 순서로 구성
         """
         code_parts: List[str] = []
         context_parts: List[str] = []
         
         for node in self.nodes:
-            # 원본과 동일하게 항상 get_compact_code() 호출
-            code = node.get_compact_code()
-            code_parts.append(code)
-            
+            # 부모 컨텍스트 (변경 없음)
             context = node.get_ancestor_context(MAX_CONTEXT_TOKEN)
             if context:
                 context_parts.append(context)
             else:
                 context_parts.append("")
+            
+            # 코드 본문: 주석 + 어노테이션 + 코드
+            code_lines = []
+            
+            # 1. 주석 추가
+            if node.comment:
+                code_lines.append(f"주석: {node.comment}")
+            
+            # 2. 어노테이션 추가
+            if node.annotations:
+                code_lines.append(f"어노테이션: {node.annotations}")
+            
+            # 3. 코드 추가
+            code = node.get_compact_code()
+            code_lines.append(code)
+            
+            code_parts.append('\n'.join(code_lines))
         
         return '\n\n'.join(code_parts), '\n\n'.join(context_parts)
 

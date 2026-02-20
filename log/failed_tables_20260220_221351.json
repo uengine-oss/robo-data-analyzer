@@ -1,0 +1,174 @@
+{
+  "statistics": {
+    "total_failed": 26,
+    "failure_reasons": {
+      "샘플 데이터 없음": 26
+    },
+    "no_data_tables_count": 26
+  },
+  "tables_by_reason": {
+    "샘플 데이터 없음": [
+      "\"RWIS\".\"CALC_KEPCO_RDF01HH_MAST_TB\"",
+      "\"RWIS\".\"CALC_KEPCO_RDF01HH_TRNS_TB\"",
+      "\"RWIS\".\"H2T_ACTION_TB\"",
+      "\"RWIS\".\"H2T_ACTION_TEST\"",
+      "\"RWIS\".\"IWSPHALLTAGSTAT_TB\"",
+      "\"RWIS\".\"IWSPHALLTAG_TB\"",
+      "\"RWIS\".\"IWSPHALMLOG_TB\"",
+      "\"RWIS\".\"IWSPHEVENT_TB\"",
+      "\"RWIS\".\"IWSPHNEWEQUIPTAG_TB\"",
+      "\"RWIS\".\"IWSPHSMSTRAN_TB\"",
+      "\"RWIS\".\"IWSPISOLVE_TB\"",
+      "\"RWIS\".\"OPNSUNSI_TB\"",
+      "\"RWIS\".\"OPNTAG_TB\"",
+      "\"RWIS\".\"RDD01DD_TB_0728_TEST\"",
+      "\"RWIS\".\"RDD01DD_YCTIDB_TMP_2023012516\"",
+      "\"RWIS\".\"RDF01HH_TB_TEST\"",
+      "\"RWIS\".\"RDF01HH_YCTIDB_TMP_20240123\"",
+      "\"RWIS\".\"RDF01HH_YCTIDB_TMP_20240924\"",
+      "\"RWIS\".\"RDF01HH_YCTIDB_TMP_TEST\"",
+      "\"RWIS\".\"RDITAGDELLOG_TB\"",
+      "\"RWIS\".\"RDR01MI_YCTIDB_TMP_20240905\"",
+      "\"RWIS\".\"RDR01MI_YCTIDB_TMP_20240906\"",
+      "\"RWIS\".\"RDR01MI_YCTIDB_TMP_20240919\"",
+      "\"RWIS\".\"RDR01MI_YCTIDB_TMP_20250317\"",
+      "\"RWIS\".\"TMP_UP_TRAN2DAON_RDD01DD_TB_2024BAK\"",
+      "\"RWIS\".\"TMP_UP_TRAN2FA_RDITAG_TB\""
+    ]
+  },
+  "no_data_tables": [
+    "\"RWIS\".\"CALC_KEPCO_RDF01HH_MAST_TB\"",
+    "\"RWIS\".\"CALC_KEPCO_RDF01HH_TRNS_TB\"",
+    "\"RWIS\".\"H2T_ACTION_TB\"",
+    "\"RWIS\".\"H2T_ACTION_TEST\"",
+    "\"RWIS\".\"IWSPHALLTAGSTAT_TB\"",
+    "\"RWIS\".\"IWSPHALLTAG_TB\"",
+    "\"RWIS\".\"IWSPHALMLOG_TB\"",
+    "\"RWIS\".\"IWSPHEVENT_TB\"",
+    "\"RWIS\".\"IWSPHNEWEQUIPTAG_TB\"",
+    "\"RWIS\".\"IWSPHSMSTRAN_TB\"",
+    "\"RWIS\".\"IWSPISOLVE_TB\"",
+    "\"RWIS\".\"OPNSUNSI_TB\"",
+    "\"RWIS\".\"OPNTAG_TB\"",
+    "\"RWIS\".\"RDD01DD_TB_0728_TEST\"",
+    "\"RWIS\".\"RDD01DD_YCTIDB_TMP_2023012516\"",
+    "\"RWIS\".\"RDF01HH_TB_TEST\"",
+    "\"RWIS\".\"RDF01HH_YCTIDB_TMP_20240123\"",
+    "\"RWIS\".\"RDF01HH_YCTIDB_TMP_20240924\"",
+    "\"RWIS\".\"RDF01HH_YCTIDB_TMP_TEST\"",
+    "\"RWIS\".\"RDITAGDELLOG_TB\"",
+    "\"RWIS\".\"RDR01MI_YCTIDB_TMP_20240905\"",
+    "\"RWIS\".\"RDR01MI_YCTIDB_TMP_20240906\"",
+    "\"RWIS\".\"RDR01MI_YCTIDB_TMP_20240919\"",
+    "\"RWIS\".\"RDR01MI_YCTIDB_TMP_20250317\"",
+    "\"RWIS\".\"TMP_UP_TRAN2DAON_RDD01DD_TB_2024BAK\"",
+    "\"RWIS\".\"TMP_UP_TRAN2FA_RDITAG_TB\""
+  ],
+  "all_failed_tables": [
+    {
+      "table": "\"RWIS\".\"CALC_KEPCO_RDF01HH_MAST_TB\"",
+      "reason": "샘플 데이터 없음 (SQL: SELECT * FROM \"RWIS\".\"CALC_KEPCO_RDF01HH_MAST_TB\" LIMIT 25)"
+    },
+    {
+      "table": "\"RWIS\".\"CALC_KEPCO_RDF01HH_TRNS_TB\"",
+      "reason": "샘플 데이터 없음 (SQL: SELECT * FROM \"RWIS\".\"CALC_KEPCO_RDF01HH_TRNS_TB\" LIMIT 25)"
+    },
+    {
+      "table": "\"RWIS\".\"H2T_ACTION_TB\"",
+      "reason": "샘플 데이터 없음 (SQL: SELECT * FROM \"RWIS\".\"H2T_ACTION_TB\" LIMIT 25)"
+    },
+    {
+      "table": "\"RWIS\".\"H2T_ACTION_TEST\"",
+      "reason": "샘플 데이터 없음 (SQL: SELECT * FROM \"RWIS\".\"H2T_ACTION_TEST\" LIMIT 25)"
+    },
+    {
+      "table": "\"RWIS\".\"IWSPHALLTAGSTAT_TB\"",
+      "reason": "샘플 데이터 없음 (SQL: SELECT * FROM \"RWIS\".\"IWSPHALLTAGSTAT_TB\" LIMIT 25)"
+    },
+    {
+      "table": "\"RWIS\".\"IWSPHALLTAG_TB\"",
+      "reason": "샘플 데이터 없음 (SQL: SELECT * FROM \"RWIS\".\"IWSPHALLTAG_TB\" LIMIT 25)"
+    },
+    {
+      "table": "\"RWIS\".\"IWSPHALMLOG_TB\"",
+      "reason": "샘플 데이터 없음 (SQL: SELECT * FROM \"RWIS\".\"IWSPHALMLOG_TB\" LIMIT 25)"
+    },
+    {
+      "table": "\"RWIS\".\"IWSPHEVENT_TB\"",
+      "reason": "샘플 데이터 없음 (SQL: SELECT * FROM \"RWIS\".\"IWSPHEVENT_TB\" LIMIT 25)"
+    },
+    {
+      "table": "\"RWIS\".\"IWSPHNEWEQUIPTAG_TB\"",
+      "reason": "샘플 데이터 없음 (SQL: SELECT * FROM \"RWIS\".\"IWSPHNEWEQUIPTAG_TB\" LIMIT 25)"
+    },
+    {
+      "table": "\"RWIS\".\"IWSPHSMSTRAN_TB\"",
+      "reason": "샘플 데이터 없음 (SQL: SELECT * FROM \"RWIS\".\"IWSPHSMSTRAN_TB\" LIMIT 25)"
+    },
+    {
+      "table": "\"RWIS\".\"IWSPISOLVE_TB\"",
+      "reason": "샘플 데이터 없음 (SQL: SELECT * FROM \"RWIS\".\"IWSPISOLVE_TB\" LIMIT 25)"
+    },
+    {
+      "table": "\"RWIS\".\"OPNSUNSI_TB\"",
+      "reason": "샘플 데이터 없음 (SQL: SELECT * FROM \"RWIS\".\"OPNSUNSI_TB\" LIMIT 25)"
+    },
+    {
+      "table": "\"RWIS\".\"OPNTAG_TB\"",
+      "reason": "샘플 데이터 없음 (SQL: SELECT * FROM \"RWIS\".\"OPNTAG_TB\" LIMIT 25)"
+    },
+    {
+      "table": "\"RWIS\".\"RDD01DD_TB_0728_TEST\"",
+      "reason": "샘플 데이터 없음 (SQL: SELECT * FROM \"RWIS\".\"RDD01DD_TB_0728_TEST\" LIMIT 25)"
+    },
+    {
+      "table": "\"RWIS\".\"RDD01DD_YCTIDB_TMP_2023012516\"",
+      "reason": "샘플 데이터 없음 (SQL: SELECT * FROM \"RWIS\".\"RDD01DD_YCTIDB_TMP_2023012516\" LIMIT 25)"
+    },
+    {
+      "table": "\"RWIS\".\"RDF01HH_TB_TEST\"",
+      "reason": "샘플 데이터 없음 (SQL: SELECT * FROM \"RWIS\".\"RDF01HH_TB_TEST\" LIMIT 25)"
+    },
+    {
+      "table": "\"RWIS\".\"RDF01HH_YCTIDB_TMP_20240123\"",
+      "reason": "샘플 데이터 없음 (SQL: SELECT * FROM \"RWIS\".\"RDF01HH_YCTIDB_TMP_20240123\" LIMIT 25)"
+    },
+    {
+      "table": "\"RWIS\".\"RDF01HH_YCTIDB_TMP_20240924\"",
+      "reason": "샘플 데이터 없음 (SQL: SELECT * FROM \"RWIS\".\"RDF01HH_YCTIDB_TMP_20240924\" LIMIT 25)"
+    },
+    {
+      "table": "\"RWIS\".\"RDF01HH_YCTIDB_TMP_TEST\"",
+      "reason": "샘플 데이터 없음 (SQL: SELECT * FROM \"RWIS\".\"RDF01HH_YCTIDB_TMP_TEST\" LIMIT 25)"
+    },
+    {
+      "table": "\"RWIS\".\"RDITAGDELLOG_TB\"",
+      "reason": "샘플 데이터 없음 (SQL: SELECT * FROM \"RWIS\".\"RDITAGDELLOG_TB\" LIMIT 25)"
+    },
+    {
+      "table": "\"RWIS\".\"RDR01MI_YCTIDB_TMP_20240905\"",
+      "reason": "샘플 데이터 없음 (SQL: SELECT * FROM \"RWIS\".\"RDR01MI_YCTIDB_TMP_20240905\" LIMIT 25)"
+    },
+    {
+      "table": "\"RWIS\".\"RDR01MI_YCTIDB_TMP_20240906\"",
+      "reason": "샘플 데이터 없음 (SQL: SELECT * FROM \"RWIS\".\"RDR01MI_YCTIDB_TMP_20240906\" LIMIT 25)"
+    },
+    {
+      "table": "\"RWIS\".\"RDR01MI_YCTIDB_TMP_20240919\"",
+      "reason": "샘플 데이터 없음 (SQL: SELECT * FROM \"RWIS\".\"RDR01MI_YCTIDB_TMP_20240919\" LIMIT 25)"
+    },
+    {
+      "table": "\"RWIS\".\"RDR01MI_YCTIDB_TMP_20250317\"",
+      "reason": "샘플 데이터 없음 (SQL: SELECT * FROM \"RWIS\".\"RDR01MI_YCTIDB_TMP_20250317\" LIMIT 25)"
+    },
+    {
+      "table": "\"RWIS\".\"TMP_UP_TRAN2DAON_RDD01DD_TB_2024BAK\"",
+      "reason": "샘플 데이터 없음 (SQL: SELECT * FROM \"RWIS\".\"TMP_UP_TRAN2DAON_RDD01DD_TB_2024BAK\" LIMIT 25)"
+    },
+    {
+      "table": "\"RWIS\".\"TMP_UP_TRAN2FA_RDITAG_TB\"",
+      "reason": "샘플 데이터 없음 (SQL: SELECT * FROM \"RWIS\".\"TMP_UP_TRAN2FA_RDITAG_TB\" LIMIT 25)"
+    }
+  ],
+  "generated_at": "2026-02-20T22:13:51.086537"
+}

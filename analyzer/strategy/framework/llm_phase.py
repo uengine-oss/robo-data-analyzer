@@ -1,9 +1,15 @@
 """LLM 분석 Phase (Phase 2) - Framework
 
-framework_analyzer.py에서 분리된 Phase 2 로직입니다.
+framework_analyzer.py에서 분리된 Phase 2 오케스트레이터입니다.
 
 핵심 로직(summary + stereotype + DEPENDENCY/CALLS/USES 관계 생성)은
 ast_processor.py의 run_llm_analysis() 내부에서 처리됩니다.
+
+각 Phase는 별도 파일로 분리되어 있습니다:
+- method_enhancement.py: 메서드 Summary 보강
+- class_summary.py: 클래스 Summary 생성
+- stereotype.py: 스테레오타입 판정
+- user_story.py: User Story 생성
 
 배치 완료 시 즉시 summary_vec 벡터화.
 """
@@ -14,12 +20,12 @@ import time
 from typing import Any, AsyncGenerator, List
 
 from openai import AsyncOpenAI
+from httpx import Timeout
 
 from client.neo4j_client import Neo4jClient
 from client.embedding_client import EmbeddingClient
 from analyzer.strategy.base_analyzer import AnalysisStats
 from analyzer.strategy.base.file_context import FileStatus, FileAnalysisContext
-from config.settings import settings
 from util.stream_event import (
     emit_data,
     emit_message,
@@ -48,7 +54,13 @@ async def vectorize_summaries(
     if not api_key:
         return 0
     
-    openai_client = AsyncOpenAI(api_key=api_key)
+    # 타임아웃 설정 (연결: 120초, 읽기: 300초)
+    timeout = Timeout(120.0, connect=120.0, read=300.0)
+    openai_client = AsyncOpenAI(
+        api_key=api_key,
+        timeout=timeout,
+        max_retries=3
+    )
     embedding_client = EmbeddingClient(openai_client)
     
     # summary가 있고 summary_vec이 없는 노드 조회
@@ -72,8 +84,8 @@ async def vectorize_summaries(
     if not nodes:
         return 0
     
-    # 배치 처리 (50개씩)
-    batch_size = 50
+    # 배치 처리 (30개씩)
+    batch_size = 30
     vectorized_count = 0
     
     for i in range(0, len(nodes), batch_size):
@@ -87,6 +99,9 @@ async def vectorize_summaries(
         log_process("VECTORIZE", "SUMMARY", f"{file_name}: {len(vectors)}개 노드 임베딩 완료 ({embed_time:.2f}초)")
         
         # UNWIND로 한번에 저장
+        if not vectors:
+            continue
+            
         vector_updates = []
         for item, vector in zip(batch, vectors):
             if vector:
@@ -120,11 +135,10 @@ async def run_phase2(
     
     Phase1 실패 파일은 이미 필터링되어 전달되지 않음 (토큰 절감).
     
-    핵심: ctx.processor.run_llm_analysis()를 호출하여 모든 LLM 분석 수행
-    - summary 청크 분할/통합 (_process_unit_summaries)
-    - User Story 생성 (analyze_user_story)
-    
-    위 로직들은 모두 ast_processor.py에 있으며, 이 함수에서는 호출만 담당.
+    실행 단계:
+    1. Phase 2: 모든 파일의 LLM 배치 분석 (기본 summary 생성)
+    2. Phase 2.0: 전체 그래프 메서드 summary 보강
+    3. Phase 2.1~2.4: 각 파일의 단위 summary 처리 (클래스 summary, 스테레오타입, 유저스토리)
     
     Args:
         analyzer: FrameworkAnalyzer 인스턴스 (공유 상태 접근용)
@@ -155,59 +169,57 @@ async def run_phase2(
                 if not ctx.processor:
                     raise RuntimeError(f"Phase 1에서 프로세서 초기화 실패: {ctx.file_name}")
                 
-                # LLM 분석 실행 (튜플 반환: queries, failed_batch_count, failed_details)
-                # 이 호출 내에서 summary 청크 분석, User Story 생성이 모두 처리됨
-                analysis_queries, failed_batch_count, failed_details = await ctx.processor.run_llm_analysis()
+                # 배치별 그래프 누적용 (통계 집계에 사용)
+                all_nodes = {}
+                all_relationships = {}
                 
-                if analysis_queries:
-                    all_nodes = {}
-                    all_relationships = {}
+                async def on_queries_ready(queries, batch_id, total_batches):
+                    """LLM 배치 완료 즉시 Neo4j 저장 + 프론트 스트리밍"""
+                    if not queries:
+                        return
                     async with analyzer._cypher_lock:
-                        async for batch_result in client.run_graph_query(analysis_queries):
+                        async for batch_result in client.run_graph_query(queries):
                             for node in batch_result.get("Nodes", []):
                                 all_nodes[node["Node ID"]] = node
                             for rel in batch_result.get("Relationships", []):
                                 all_relationships[rel["Relationship ID"]] = rel
-                            # 배치 진행률 스트리밍 (그래프 데이터 포함)
                             await results_queue.put({
                                 "type": "batch_progress",
                                 "file": ctx.file_name,
-                                "batch": batch_result.get("batch", 0),
-                                "total_batches": batch_result.get("total_batches", 0),
+                                "batch_id": batch_id,
+                                "total_batches": total_batches,
                                 "graph": {
                                     "Nodes": batch_result.get("Nodes", []),
                                     "Relationships": batch_result.get("Relationships", []),
                                 },
                             })
-                    
-                    graph = {"Nodes": list(all_nodes.values()), "Relationships": list(all_relationships.values())}
-                    
-                    # Phase 2.5: 즉시 벡터화 (배치 완료 후)
-                    vectorized = await vectorize_summaries(
-                        analyzer, client, orchestrator.api_key, ctx.file_name
-                    )
-                    if vectorized > 0:
-                        log_process("VECTORIZE", "SUMMARY", f"✅ {ctx.file_name}: {vectorized}개 노드 summary_vec 저장 완료")
-                    
-                    ctx.status = FileStatus.PH2_OK
-                    await results_queue.put({
-                        "type": "success",
-                        "file": ctx.file_name,
-                        "graph": graph,
-                        "query_count": len(analysis_queries),
-                        "failed_batches": failed_batch_count,
-                        "failed_details": failed_details,
-                        "vectorized": vectorized,
-                    })
-                else:
-                    ctx.status = FileStatus.PH2_OK
-                    await results_queue.put({
-                        "type": "success",
-                        "file": ctx.file_name,
-                        "graph": {"Nodes": [], "Relationships": []},
-                        "query_count": 0,
-                        "failed_batches": failed_batch_count,
-                    })
+                
+                # Phase 2: LLM 배치 분석 (기본 summary 생성)
+                analysis_queries, failed_batch_count, failed_details, unit_summary_store = await ctx.processor.run_llm_analysis(
+                    on_queries_ready=on_queries_ready,
+                )
+                # unit_summary_store를 ctx에 저장 (Phase 2.0 후 사용)
+                ctx.unit_summary_store = unit_summary_store
+                
+                graph = {"Nodes": list(all_nodes.values()), "Relationships": list(all_relationships.values())}
+                
+                # Phase 2.5: 즉시 벡터화 (모든 배치 완료 후)
+                vectorized = await vectorize_summaries(
+                    analyzer, client, orchestrator.api_key, ctx.file_name
+                )
+                if vectorized > 0:
+                    log_process("VECTORIZE", "SUMMARY", f"✅ {ctx.file_name}: {vectorized}개 노드 summary_vec 저장 완료")
+                
+                ctx.status = FileStatus.PH2_OK
+                await results_queue.put({
+                    "type": "success",
+                    "file": ctx.file_name,
+                    "graph": graph,
+                    "query_count": len(analysis_queries),
+                    "failed_batches": failed_batch_count,
+                    "failed_details": failed_details,
+                    "vectorized": vectorized,
+                })
                 
                 # 배치 실패가 있으면 즉시 중단 - 부분 실패 허용 안함
                 if failed_batch_count > 0:
@@ -240,16 +252,17 @@ async def run_phase2(
             yield emit_message(f"   ⚠️ {result['file']}: {result['message']}")
             continue
         
-        # 배치 진행률은 카운트하지 않음 (중간 진행 상태)
+        # 배치 진행률은 카운트하지 않음 (중간 진행 상태) — 배치별 즉시 스트리밍
         if result_type == "batch_progress":
-            batch = result.get("batch", 0)
+            batch_id = result.get("batch_id", 0)
             total_batches = result.get("total_batches", 0)
             graph = result.get("graph")
             node_count = len(graph.get("Nodes", [])) if graph else 0
-            yield emit_message(f"│     📦 배치 {batch}/{total_batches} 저장 (노드 {node_count}개)")
+            batch_label = f"#{batch_id}/{total_batches}" if total_batches > 0 else f"#{batch_id}"
+            yield emit_message(f"│     📦 배치 {batch_label} 저장 완료 (노드 {node_count}개)")
             # 배치별 그래프 데이터 즉시 전송
             if graph:
-                yield emit_data(graph=graph)
+                yield emit_data(graph=graph, current_file=result.get("file"))
             continue
         
         completed += 1
@@ -308,9 +321,8 @@ async def run_phase2(
                 }
             )
             
+            # 그래프 데이터는 이미 배치별로 전송 완료 — 진행률만 전송
             yield emit_data(
-                graph=graph,
-                line_number=0,
                 analysis_progress=phase2_progress,
                 current_file=result["file"],
             )
@@ -318,6 +330,28 @@ async def run_phase2(
     # 모든 작업 완료 대기
     await asyncio.gather(*tasks, return_exceptions=True)
     
+    # Phase 2.0: 메서드 Summary 보강 (전체 그래프, 모든 파일 완료 후)
+    from analyzer.strategy.framework.method_enhancement import run_phase2_0_enhancement
+    async for chunk in run_phase2_0_enhancement(analyzer, contexts, client, orchestrator, stats):
+        yield chunk
+    
+    # Phase 2.1: 클래스 Summary 생성 (병렬)
+    from analyzer.strategy.framework.class_summary import run_phase2_1_class_summary
+    async for chunk in run_phase2_1_class_summary(analyzer, contexts, client, orchestrator, stats):
+        yield chunk
+    
+    # Phase 2.2: 스테레오타입 판정 (병렬)
+    from analyzer.strategy.framework.stereotype import run_phase2_2_stereotype
+    async for chunk in run_phase2_2_stereotype(analyzer, contexts, client, orchestrator, stats):
+        yield chunk
+    
+    # Phase 2.3: User Story 생성 (병렬)
+    from analyzer.strategy.framework.user_story import run_phase2_3_user_story
+    async for chunk in run_phase2_3_user_story(analyzer, contexts, client, orchestrator, stats):
+        yield chunk
+    
     # Phase 2 완료 이벤트
     yield emit_phase_event(2, "AI 분석", "completed", 100, {"batches": stats.llm_batches_executed})
+
+
 

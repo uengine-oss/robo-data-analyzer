@@ -312,6 +312,9 @@ async def process_ddl(
             # fqn 형식: datasource.schema.table.column (datasource가 없으면 schema.table.column)
             fqn = ".".join(filter(None, [datasource_name, schema, parsed_name, col_name])).lower()
             
+            # PK 여부 확인 (컬럼 정의의 primary_key 속성 또는 primary_keys 리스트에서 확인)
+            is_primary_key = col.get("primary_key", False) or (col_name_raw.upper() in primary_keys)
+            
             col_data = {
                 "fqn": fqn,  # UNWIND 파라미터화로 이스케이프 불필요
                 "name": col_name,
@@ -319,12 +322,13 @@ async def process_ddl(
                 "description": col_comment,
                 "description_source": "ddl" if col_comment else "",
                 "nullable": col_nullable,
+                "is_primary_key": is_primary_key,  # PK 여부 저장
                 "table_db": db_name,
                 "table_schema": schema,
                 "table_name": parsed_name,
                 "datasource": datasource_name  # 데이터 소스 속성 추가
             }
-            if col_name_raw.upper() in primary_keys:
+            if is_primary_key:
                 col_data["pk_constraint"] = f"{parsed_name}_pkey"
             
             columns_data.append(col_data)
@@ -469,6 +473,7 @@ async def process_ddl(
             __cy_c__.description = item.description,
             __cy_c__.description_source = item.description_source,
             __cy_c__.nullable = item.nullable,
+            __cy_c__.is_primary_key = item.is_primary_key,
             __cy_c__.pk_constraint = CASE WHEN item.pk_constraint IS NOT NULL THEN item.pk_constraint ELSE __cy_c__.pk_constraint END,
             __cy_c__.datasource = CASE WHEN item.datasource <> '' THEN item.datasource ELSE __cy_c__.datasource END
         RETURN __cy_c__

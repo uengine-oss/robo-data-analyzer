@@ -52,7 +52,7 @@ from util.text_utils import (
 )
 
 # Phase 파일들에서 import
-from analyzer.strategy.framework.ast_phase import run_phase1
+from analyzer.strategy.framework.ast_phase import run_phase1, run_phase1_5_association
 from analyzer.strategy.framework.llm_phase import run_phase2
 from analyzer.strategy.framework.nontarget import run_nontarget_phase
 
@@ -162,6 +162,28 @@ class FrameworkAnalyzer(BaseStreamingAnalyzer):
             pipeline_state.set_phase(PipelinePhase.CANCELLED)
             return
 
+        # ========== Phase 1.5: UML ASSOCIATION 생성 (병렬) - Phase1 성공 파일만 ==========
+        ph1_5_targets = [c for c in contexts if c.status == FileStatus.PH1_OK]
+        
+        pipeline_state.set_phase(PipelinePhase.AST_GENERATION, "UML ASSOCIATION 생성 중", 0)
+        
+        yield emit_message("")
+        yield self.emit_separator()
+        yield self.emit_phase_header(1.5, "🔗 UML ASSOCIATION 생성", f"{len(ph1_5_targets)}개 파일 병렬")
+        yield self.emit_separator()
+        
+        async for chunk in run_phase1_5_association(self, ph1_5_targets, client, orchestrator, stats):
+            yield chunk
+        
+        yield emit_message("")
+        yield self.emit_phase_complete(1.5, "ASSOCIATION 관계 생성 완료")
+        
+        # Phase 1.5 후 일시정지 체크
+        if not await pipeline_state.wait_if_paused():
+            yield emit_message("⏹️ 파이프라인이 중단되었습니다")
+            pipeline_state.set_phase(PipelinePhase.CANCELLED)
+            return
+
         # ========== Phase 2: LLM 분석 (병렬) - Phase1 성공 파일만 ==========
         ph2_targets = [c for c in contexts if c.status == FileStatus.PH1_OK]
         
@@ -187,22 +209,31 @@ class FrameworkAnalyzer(BaseStreamingAnalyzer):
             pipeline_state.set_phase(PipelinePhase.CANCELLED)
             return
         
-        # ========== Phase 3: 비타겟 파일 분석 (DeepAgents) ==========
-        yield emit_message("")
-        yield self.emit_separator()
-        yield self.emit_phase_header(3, "📄 비타겟 파일 분석", "LangGraph + DeepAgents")
-        yield self.emit_separator()
+        # ========== Phase 3: 비타겟 파일 분석 (nontarget) ==========
+        # 파일 분류: Java/Kotlin 파일과 nontarget 파일 분리
+        java_files = [(d, f) for d, f in file_names if f.endswith(('.java', '.kt'))]
+        nontarget_files = [(d, f) for d, f in file_names if not f.endswith(('.java', '.kt'))]
         
-        async for chunk in run_nontarget_phase(
-            analyzer=self,
-            client=client,
-            orchestrator=orchestrator,
-            stats=stats,
-        ):
-            yield chunk
-        
-        yield emit_message("")
-        yield self.emit_phase_complete(3, "비타겟 파일 분석 완료")
+        if nontarget_files:
+            yield emit_message("")
+            yield self.emit_separator()
+            yield self.emit_phase_header(3, "📄 비타겟 파일 분석", f"{len(nontarget_files)}개 파일")
+            yield self.emit_separator()
+            
+            async for chunk in run_nontarget_phase(
+                analyzer=self,
+                file_names=nontarget_files,
+                client=client,
+                orchestrator=orchestrator,
+                stats=stats,
+            ):
+                yield chunk
+            
+            yield emit_message("")
+            yield self.emit_phase_complete(3, "비타겟 파일 분석 완료")
+        else:
+            yield emit_message("")
+            yield emit_message("   ℹ️ 비타겟 파일 없음 (Java/Kotlin 파일만 존재)")
         
         # Phase 3 후 일시정지 체크
         if not await pipeline_state.wait_if_paused():

@@ -194,6 +194,27 @@ def emit_phase_event(
     return emit_bytes(payload)
 
 
+def emit_phase_result(
+    phase_num: float,
+    result_data: dict[str, Any],
+) -> bytes:
+    """Phase 결과 데이터 전송
+    
+    Phase 함수가 최종 결과를 반환할 때 사용합니다.
+    호출자는 이 이벤트를 감지하여 결과를 수집할 수 있습니다.
+    
+    Args:
+        phase_num: 단계 번호 (1.5, 2.5, 3, 4, 5, 5.5, 6 등)
+        result_data: Phase 결과 데이터 (예: {"project_structure": ..., "chunks": ..., "nodes": ..., "edges": ...})
+    """
+    payload = {
+        "type": "phase_result",
+        "phase": phase_num,
+        "data": result_data,
+    }
+    return emit_bytes(payload)
+
+
 def format_graph_result(graph: dict) -> str:
     """Neo4j 그래프 결과를 사용자 친화적 메시지로 변환
     

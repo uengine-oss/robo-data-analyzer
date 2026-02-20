@@ -62,8 +62,9 @@ async def run_lineage_phase(
         details={"total_files": total_files}
     )
     
-    # 리니지 분석기 생성
-    lineage_analyzer = LineageAnalyzer(dbms="oracle")
+    # 리니지 분석기 생성 (orchestrator.target 사용, 기본값: oracle)
+    dbms = getattr(orchestrator, "target", "oracle") or "oracle"
+    lineage_analyzer = LineageAnalyzer(dbms=dbms)
     all_lineages: List[LineageInfo] = []
     files_with_etl = 0
     

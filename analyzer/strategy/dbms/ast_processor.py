@@ -22,7 +22,6 @@ from typing import Any, Dict, List, Optional, Tuple, Set, Union
 
 from config.settings import settings
 from util.rule_loader import RuleLoader
-# Exceptions: 모든 커스텀 예외는 RuntimeError로 대체됨
 from util.text_utils import calculate_code_token, parse_table_identifier, log_process
 
 from analyzer.strategy.base.statement_node import StatementNode
@@ -34,7 +33,6 @@ from analyzer.strategy.base.processor import BaseAstProcessor
 # 노드 타입 분류
 PROCEDURE_TYPES = frozenset(["PROCEDURE", "FUNCTION", "CREATE_PROCEDURE_BODY", "TRIGGER", "BEGIN"])
 NON_ANALYSIS_TYPES = frozenset(["CREATE_PROCEDURE_BODY", "FILE", "PROCEDURE", "FUNCTION", "DECLARE", "TRIGGER", "SPEC"])
-NON_NEXT_RECURSIVE_TYPES = frozenset(["FUNCTION", "PROCEDURE", "PACKAGE_VARIABLE", "TRIGGER"])
 DML_STATEMENT_TYPES = frozenset(["SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "EXECUTE_IMMEDIATE", "FETCH", "CREATE_TEMP_TABLE", "CTE", "OPEN_CURSOR", "CURSOR_VARIABLE"])
 VARIABLE_DECLARATION_TYPES = frozenset(["PACKAGE_VARIABLE", "DECLARE", "SPEC"])
 
@@ -47,16 +45,12 @@ VARIABLE_ROLE_MAP = {
 }
 
 # 설정에서 가져오는 상수
-STATIC_QUERY_BATCH_SIZE = settings.batch.static_query_batch_size
 VARIABLE_CONCURRENCY = settings.concurrency.variable_concurrency
 MAX_BATCH_TOKEN = settings.batch.max_batch_token
 MAX_CONCURRENCY = settings.concurrency.max_concurrency
 MAX_SUMMARY_CHUNK_TOKEN = settings.batch.max_summary_chunk_token
 MAX_CONTEXT_TOKEN = settings.batch.max_context_token
 PARENT_EXPAND_THRESHOLD = settings.batch.parent_expand_threshold
-
-# 정규식 패턴
-LINE_NUMBER_PATTERN = re.compile(r"^\d+\s*:")
 
 
 # ==================== 데이터 클래스 ====================
@@ -113,32 +107,30 @@ def build_statement_name(node_type: str, start_line: int) -> str:
 
 
 # ==================== RuleLoader 헬퍼 ====================
+_rule_loader_cache: Optional[RuleLoader] = None
+
 def _rule_loader() -> RuleLoader:
-    return RuleLoader(target_lang="dbms")
+    """RuleLoader 인스턴스를 캐싱하여 재사용"""
+    global _rule_loader_cache
+    if _rule_loader_cache is None:
+        _rule_loader_cache = RuleLoader(target_lang="dbms")
+    return _rule_loader_cache
 
 
 def analyze_code(code: str, context: str, ranges: list, count: int, api_key: str, locale: str) -> Dict[str, Any]:
-    """코드 분석 (컨텍스트와 코드 분리 전달)"""
+    """코드 분석"""
     inputs = {"code": code, "ranges": ranges, "count": count, "locale": locale}
     if context.strip():
         inputs["context"] = context
-    return _rule_loader().execute(
-        "analysis",
-        inputs,
-        api_key,
-    )
+    return _rule_loader().execute("analysis", inputs, api_key)
 
 
 def analyze_dml_tables(code: str, context: str, ranges: list, api_key: str, locale: str) -> Dict[str, Any]:
-    """DML 테이블 분석 (컨텍스트와 코드 분리 전달)"""
+    """DML 테이블 분석"""
     inputs = {"code": code, "ranges": ranges, "locale": locale}
     if context.strip():
         inputs["context"] = context
-    return _rule_loader().execute(
-        "dml",
-        inputs,
-        api_key,
-    )
+    return _rule_loader().execute("dml", inputs, api_key)
 
 
 def analyze_summary_only(summaries: dict, api_key: str, locale: str, previous_summary: str = "") -> Dict[str, Any]:
@@ -195,11 +187,7 @@ def extract_node_context(
     api_key: str, 
     locale: str,
 ) -> Tuple[str, str]:
-    """부모 스켈레톤 + 이전 형제 코드에서 컨텍스트를 추출합니다.
-    
-    Returns:
-        (parent_context, sibling_context) 튜플
-    """
+    """부모 스켈레톤 + 이전 형제 코드에서 컨텍스트 추출"""
     result = _rule_loader().execute(
         "node_context",
         {
@@ -223,12 +211,14 @@ def extract_node_context(
     return parent_ctx, sibling_ctx
 
 
+_common_rule_loader_cache: Optional[RuleLoader] = None
+
 def analyze_variable_summary(variables: List[Dict[str, Any]], api_key: str, locale: str) -> Dict[str, Any]:
     """변수 역할 목록을 하나의 요약 설명으로 통합합니다."""
-    from util.rule_loader import RuleLoader
-    # common 디렉토리의 프롬프트 사용
-    loader = RuleLoader(target_lang="common")
-    return loader.execute(
+    global _common_rule_loader_cache
+    if _common_rule_loader_cache is None:
+        _common_rule_loader_cache = RuleLoader(target_lang="common")
+    return _common_rule_loader_cache.execute(
         "variable_summary",
         {"variables": variables, "locale": locale},
         api_key,
@@ -237,12 +227,9 @@ def analyze_variable_summary(variables: List[Dict[str, Any]], api_key: str, loca
 
 # ==================== 노드 수집기 ====================
 class StatementCollector:
-    """AST를 후위순회하여 `StatementNode`와 프로시저 정보를 수집합니다.
+    """AST를 후위순회하여 StatementNode와 프로시저 정보를 수집"""
     
-    file_content는 더 이상 필요하지 않음 - AST JSON의 code 속성 사용.
-    """
     def __init__(self, antlr_data: Dict[str, Any], directory: str, file_name: str):
-        """수집기에 필요한 AST 데이터와 파일 메타 정보를 초기화합니다."""
         self.antlr_data = antlr_data
         self.directory = directory
         self.file_name = file_name
@@ -251,45 +238,32 @@ class StatementCollector:
         self._node_id = 0
 
     def _parse_code_to_lines(self, code: str, start_line: int, end_line: int) -> List[Tuple[int, str]]:
-        """JSON code 속성을 [(line_no, text), ...] 형태로 파싱합니다.
-        
-        Args:
-            code: '1: CREATE...\n2: ...' 또는 '1: CREATE...\r\n2: ...' 형태의 문자열
-            start_line: 노드 시작 라인 (fallback용)
-            end_line: 노드 종료 라인 (fallback용)
-            
-        Returns:
-            [(line_no, text), ...] 형태의 튜플 리스트
-        """
+        """코드를 라인별로 파싱하여 [(line_no, text), ...] 형태로 반환"""
         if not code:
             return []
         
-        # \r\n 또는 \n으로 분리
         lines = code.replace('\r\n', '\n').split('\n')
         parsed_lines: List[Tuple[int, str]] = []
         
         for line in lines:
             if not line:
                 continue
-            # '123: text' 형태 파싱
+            
             match = re.match(r'^(\d+):\s?(.*)', line)
             if match:
                 line_no = int(match.group(1))
                 text = match.group(2)
                 parsed_lines.append((line_no, text))
             else:
-                # 매칭 실패 시 전체 라인을 텍스트로 (fallback)
                 if parsed_lines:
-                    last_no = parsed_lines[-1][0]
-                    parsed_lines.append((last_no + 1, line))
+                    parsed_lines.append((parsed_lines[-1][0] + 1, line))
                 else:
                     parsed_lines.append((start_line, line))
         
         return parsed_lines
 
     def collect(self) -> Tuple[List[StatementNode], Dict[str, ProcedureInfo]]:
-        """AST 전역을 후위 순회하여 노드 목록과 프로시저 정보를 생성합니다."""
-        # 루트 노드부터 후위순회합니다 (자식 → 부모 순서 보장)
+        """AST를 후위 순회하여 노드 목록과 프로시저 정보를 생성"""
         self._visit(self.antlr_data, current_proc=None, current_type=None, current_schema=None)
         return self.nodes, self.procedures
 
@@ -313,24 +287,26 @@ class StatementCollector:
         current_type: Optional[str],
         current_schema: Optional[str],
     ) -> Optional[StatementNode]:
-        """재귀적으로 AST를 내려가며 StatementNode를 생성하고 부모-자식 관계를 구축합니다."""
+        """재귀적으로 AST를 순회하며 StatementNode 생성 및 부모-자식 관계 구축"""
         start_line = node['startLine']
         end_line = node['endLine']
         node_type = node['type']
         children = node.get('children', []) or []
 
-        child_nodes: List[StatementNode] = []
+        # --- 프로시저 처리 ---
         procedure_key = current_proc
         procedure_type = current_type
         schema_name = current_schema
 
-        # AST JSON의 code 속성에서 라인 정보 추출
-        # code 형식: "1: CREATE...\r\n2: ..."
+        comment = node.get('comment')
         raw_code = node.get('code', '')
         line_entries = self._parse_code_to_lines(raw_code, start_line, end_line)
         code = '\n'.join(f"{line_no}: {text}" for line_no, text in line_entries)
+        
+        # --- 주석을 코드 앞에 prepend (LLM 컨텍스트 강화) ---
+        if comment and comment.strip():
+            code = f"/* {comment.strip()} */\n{code}"
 
-        # 프로시저 타입 처리: PROCEDURE/FUNCTION/TRIGGER/BEGIN
         if self._should_treat_as_procedure(node_type, current_proc):
             if node_type == "BEGIN":
                 procedure_key = self._make_proc_key(None, start_line)
@@ -338,16 +314,13 @@ class StatementCollector:
                 schema_name = None
                 proc_name = f"anonymous_{start_line}"
             else:
-                # JSON에서 name, schema 직접 추출 (정규식 추출보다 정확)
                 name_from_json = node.get('name')
                 schema_from_json = node.get('schema')
                 
-                # JSON에 name이 있으면 사용, 없으면 기존 정규식 fallback
                 if name_from_json:
                     name_candidate = name_from_json
                     schema_candidate = schema_from_json
                 else:
-                    # fallback: 기존 정규식 추출 (deprecated)
                     schema_candidate, name_candidate = get_procedure_name_from_code(code)
                 
                 procedure_key = self._make_proc_key(name_candidate, start_line)
@@ -366,18 +339,19 @@ class StatementCollector:
                 )
                 log_process("ANALYZE", "COLLECT", f"📋 프로시저 선언 발견: {proc_name} (라인 {start_line}~{end_line})")
 
+        # --- 자식 순회 ---
+        child_nodes: List[StatementNode] = []
         for child in children:
             child_node = self._visit(child, procedure_key, procedure_type, schema_name)
             if child_node is not None:
                 child_nodes.append(child_node)
 
-        # 분석 가능 여부 계산 (원본과 동일하게 NON_ANALYSIS_TYPES 기준)
+        # --- 노드 생성 ---
         analyzable = node_type not in NON_ANALYSIS_TYPES
         token = calculate_code_token(code)
         dml = node_type in DML_STATEMENT_TYPES
         has_children = bool(child_nodes)
 
-        # 현재 프로시저 정보 조회
         proc_info = self.procedures.get(procedure_key) if procedure_key else None
         proc_name = proc_info.procedure_name if proc_info else None
 
@@ -391,33 +365,26 @@ class StatementCollector:
             token=token,
             has_children=has_children,
             analyzable=analyzable,
-            # 통합 필드
             unit_key=procedure_key,
             unit_name=proc_name,
             unit_kind=procedure_type,
-            # DBMS 전용 필드
             schema_name=schema_name,
             dml=dml,
-            # AST JSON 메타데이터 (선택적)
             signature=node.get('signature'),
             parameters=node.get('parameters'),
+            comment=comment,
             lines=line_entries,
         )
         for child_node in child_nodes:
             child_node.parent = statement_node
         statement_node.children.extend(child_nodes)
 
-        # 프로시저 요약 완료 시점을 판별하기 위해 pending 노드 수를 추적합니다.
-        # analyzable=True인 노드는 배치에 포함되므로, completion_event는 배치 완료 시에만 설정
-        # analyzable=False인 노드는 배치에 포함되지 않으므로, 수집 시 처리
+        # --- 완료 처리 ---
         if not analyzable:
-            # 배치에 포함되지 않는 노드는 수집 시 summary + completion_event 설정
             statement_node.summary = statement_node.get_raw_code()
             statement_node.completion_event.set()
         elif procedure_key and procedure_key in self.procedures:
-            # 프로시저에 속한 분석 대상 노드
             self.procedures[procedure_key].pending_nodes += 1
-        # else: analyzable=True이지만 procedure_key 없음 → 배치에서 LLM 분석 후 completion_event 설정됨
 
         self.nodes.append(statement_node)
         log_process("ANALYZE", "COLLECT", f"✅ {node_type} 노드 수집 완료: 라인 {start_line}~{end_line}, 토큰 {token}, 자식 {len(child_nodes)}개")
@@ -426,11 +393,8 @@ class StatementCollector:
 
 # ==================== AST 프로세서 본체 ====================
 class DbmsAstProcessor(BaseAstProcessor):
-    """DBMS AST 처리 및 LLM 분석 파이프라인
+    """DBMS AST 처리 및 LLM 분석 파이프라인"""
     
-    BaseAstProcessor를 상속하여 공통 파이프라인 재사용.
-    DBMS 전용 로직만 구현.
-    """
     def __init__(
         self,
         antlr_data: dict,
@@ -444,10 +408,6 @@ class DbmsAstProcessor(BaseAstProcessor):
         ddl_table_metadata: Optional[Dict[Tuple[str, str], Dict[str, Any]]] = None,
         name_case: str = "original",
     ):
-        """DBMS Analyzer 초기화
-        
-        file_content는 더 이상 필요하지 않음 - AST JSON의 code 속성 사용.
-        """
         super().__init__(
             antlr_data=antlr_data,
             directory=directory,
@@ -460,32 +420,61 @@ class DbmsAstProcessor(BaseAstProcessor):
         self.dbms = (dbms or 'postgres').lower()
         self.default_schema = default_schema
         self._ddl_table_metadata = ddl_table_metadata or {}
-        self.name_case = (name_case or 'original').lower()  # original, uppercase, lowercase
+        self.name_case = (name_case or 'original').lower()
         
-        self.table_base_props = ""
-        
-        # 테이블/컬럼 설명 요약용 저장소 (DML 분석에서 수집)
         self._table_summary_store: Dict[Tuple[str, str], Dict[str, Any]] = {}
-        
-        # 변수 역할 맵: {unit_key: {변수명: [역할1, 역할2, ...]}}
         self._variable_roles: Dict[str, Dict[str, List[str]]] = {}
 
     def _apply_name_case(self, name: str) -> str:
-        """메타데이터 대소문자 변환 적용
-        
-        Args:
-            name: 변환할 이름 (테이블명, 컬럼명, 스키마명 등)
-        
-        Returns:
-            변환된 이름
-        """
+        """대소문자 변환 적용"""
         if not name:
             return name
         if self.name_case == "uppercase":
             return name.upper()
         elif self.name_case == "lowercase":
             return name.lower()
-        return name  # original: 그대로 반환
+        return name
+    
+    def _get_effective_schema(self, schema: Optional[str]) -> str:
+        """스키마가 없으면 default_schema 사용"""
+        return schema if schema else (self.default_schema if self.default_schema else 'public')
+    
+    def _get_ddl_metadata(self, schema: Optional[str], table_name: str) -> Tuple[Dict[str, Any], bool]:
+        """DDL 메타데이터 조회 및 대소문자 변환 여부 결정"""
+        effective_schema = self._get_effective_schema(schema)
+        ddl_lookup_key = (
+            (effective_schema.lower() if effective_schema else 'public'),
+            table_name.lower()
+        )
+        ddl_meta = self._ddl_table_metadata.get(ddl_lookup_key, {})
+        skip_case_conversion = bool(ddl_meta and ddl_meta.get('original_name'))
+        return ddl_meta, skip_case_conversion
+    
+    def _resolve_table_name_with_ddl(self, schema_raw: Optional[str], name_raw: str) -> Tuple[str, str, bool]:
+        """DDL 캐시를 고려하여 테이블명 정규화"""
+        ddl_meta, skip_case_conversion = self._get_ddl_metadata(schema_raw, name_raw)
+        
+        if skip_case_conversion:
+            effective_schema = self._get_effective_schema(schema_raw)
+            schema_part = ddl_meta.get('original_schema', self._apply_name_case(effective_schema))
+            name_part = ddl_meta.get('original_name')
+        else:
+            schema_part = self._apply_name_case(schema_raw) if schema_raw else self._apply_name_case(self.default_schema)
+            name_part = self._apply_name_case(name_raw)
+        
+        return schema_part, name_part, skip_case_conversion
+    
+    def _resolve_column_name_with_ddl(self, column_name_raw: str, ddl_columns: Dict[str, Any]) -> str:
+        """DDL 캐시를 고려하여 컬럼명 정규화"""
+        ddl_col_meta = ddl_columns.get(column_name_raw.upper() if self.name_case == 'uppercase' else column_name_raw)
+        if ddl_col_meta is not None:
+            return column_name_raw.upper() if self.name_case == 'uppercase' else column_name_raw
+        
+        for ddl_col_name in ddl_columns.keys():
+            if ddl_col_name.lower() == column_name_raw.lower():
+                return ddl_col_name
+        
+        return self._apply_name_case(column_name_raw)
 
     # =========================================================================
     # BaseAstProcessor 추상 메서드 구현
@@ -523,11 +512,11 @@ class DbmsAstProcessor(BaseAstProcessor):
         )
 
     def _build_static_node_queries(self, node: StatementNode) -> List[Union[str, Dict[str, Any]]]:
-        """정적 노드 생성 쿼리 리스트를 반환합니다 (파라미터화)."""
+        """정적 노드 생성 쿼리 생성"""
         queries: List[Union[str, Dict[str, Any]]] = []
         label = node.node_type
         
-        # name 속성 결정
+        # --- 이름 결정 ---
         if label == "FILE":
             node_name = self.file_name
         elif label in PROCEDURE_TYPES and node.unit_name:
@@ -535,7 +524,7 @@ class DbmsAstProcessor(BaseAstProcessor):
         else:
             node_name = f"{label}[{node.start_line}]"
         
-        # 기본 파라미터
+        # --- 파라미터 구성 ---
         params: Dict[str, Any] = {
             "start_line": node.start_line,
             "end_line": node.end_line,
@@ -547,7 +536,6 @@ class DbmsAstProcessor(BaseAstProcessor):
             "has_children": node.has_children,
         }
         
-        # 동적 SET 절 구성
         set_parts = [
             "__cy_n__.endLine = $end_line",
             "__cy_n__.name = $node_name",
@@ -556,7 +544,6 @@ class DbmsAstProcessor(BaseAstProcessor):
             "__cy_n__.has_children = $has_children",
         ]
         
-        # AST JSON 메타데이터 속성 추가 (있는 경우만)
         if node.signature:
             set_parts.append("__cy_n__.signature = $signature")
             params["signature"] = node.signature
@@ -564,7 +551,6 @@ class DbmsAstProcessor(BaseAstProcessor):
             set_parts.append("__cy_n__.parameters = $parameters")
             params["parameters"] = node.parameters
         
-        # PROCEDURE/FUNCTION: procedure_name, schema_name, procedure_type 속성 추가
         if label in PROCEDURE_TYPES and node.unit_name:
             set_parts.append("__cy_n__.procedure_name = $procedure_name")
             set_parts.append("__cy_n__.procedure_type = $procedure_type")
@@ -586,20 +572,20 @@ class DbmsAstProcessor(BaseAstProcessor):
         
         set_clause = ", ".join(set_parts)
         
-        # PROCEDURE/FUNCTION 노드: MERGE로 생성 (중복 방지)
+        # --- 쿼리 생성 ---
         if label in PROCEDURE_TYPES and node.unit_name:
             if node.schema_name:
                 query = (
                     f"MERGE (__cy_n__:{label} {{schema_name: $schema_name, procedure_name: $procedure_name}})\n"
                     f"SET __cy_n__.startLine = $start_line, __cy_n__.directory = $directory, __cy_n__.file_name = $file_name, {set_clause}\n"
-                f"RETURN __cy_n__"
-            )
+                    f"RETURN __cy_n__"
+                )
             else:
                 query = (
                     f"MERGE (__cy_n__:{label} {{procedure_name: $procedure_name}})\n"
                     f"SET __cy_n__.startLine = $start_line, __cy_n__.directory = $directory, __cy_n__.file_name = $file_name, {set_clause}\n"
-                f"RETURN __cy_n__"
-            )
+                    f"RETURN __cy_n__"
+                )
             queries.append({"query": query, "params": params})
         else:
             query = (
@@ -611,7 +597,7 @@ class DbmsAstProcessor(BaseAstProcessor):
         return queries
 
     def _build_relationship_queries(self) -> List[Union[str, Dict[str, Any]]]:
-        """정적 관계 쿼리 (CONTAINS, PARENT_OF, NEXT)를 생성합니다 (파라미터화)."""
+        """정적 관계 쿼리 생성 (CONTAINS, PARENT_OF, NEXT)"""
         queries: List[Union[str, Dict[str, Any]]] = []
         
         for node in self._nodes or []:
@@ -621,7 +607,6 @@ class DbmsAstProcessor(BaseAstProcessor):
                 else:
                     queries.append(self._build_parent_of_query(node, child))
             
-            # NEXT 관계
             prev = None
             for child in node.children:
                 if prev:
@@ -631,7 +616,7 @@ class DbmsAstProcessor(BaseAstProcessor):
         return queries
     
     def _build_next_query(self, prev: StatementNode, current: StatementNode) -> Dict[str, Any]:
-        """NEXT 관계 쿼리 (파라미터화)"""
+        """NEXT 관계 쿼리 생성"""
         return {
             "query": (
                 f"MATCH (__cy_prev__:{prev.node_type} {{startLine: $prev_line, directory: $directory, file_name: $file_name}})\n"
@@ -680,14 +665,14 @@ class DbmsAstProcessor(BaseAstProcessor):
             )
 
         if general_task and table_task:
-            # asyncio.gather는 list를 반환하므로 tuple로 변환
             results = await asyncio.gather(general_task, table_task)
             return tuple(results)
-        if general_task:
+        elif general_task:
             return await general_task, None
-        if table_task:
+        elif table_task:
             return None, await table_task
-        raise RuntimeError("LLM 분석 대상이 없습니다")
+        else:
+            raise RuntimeError("LLM 분석 대상이 없습니다")
 
     def _build_analysis_queries(
         self, 
@@ -695,26 +680,25 @@ class DbmsAstProcessor(BaseAstProcessor):
         llm_result: Any,
         unit_summary_store: Optional[Dict[str, Dict[str, str]]],
     ) -> List[Union[str, Dict[str, Any]]]:
-        """LLM 분석 결과를 쿼리로 변환 (파라미터화)"""
+        """LLM 분석 결과를 쿼리로 변환"""
         queries: List[Union[str, Dict[str, Any]]] = []
         
-        # llm_result는 (general_result, table_result) 튜플이어야 함
+        # --- 결과 검증 ---
         if not isinstance(llm_result, tuple):
             raise RuntimeError(f"배치#{batch.batch_id} llm_result가 tuple이 아님: {type(llm_result).__name__}")
         
         general_result, table_result = llm_result
         
-        # 일반 분석 결과 처리 (None 허용 - 테이블 분석만 있는 경우)
+        # --- Summary 처리 ---
         general_result = self.validate_dict_result(
             general_result, "general_result", batch.batch_id, allow_none=True
         )
-        if general_result:  # 빈 dict이면 스킵
+        if general_result:
             analysis_list = general_result.get("analysis") or []
             for node, analysis in zip(batch.nodes, analysis_list):
                 if not analysis:
                     continue
                 
-                # Summary 업데이트
                 summary = analysis.get("summary") or ""
                 if summary:
                     node_name = build_statement_name(node.node_type, node.start_line)
@@ -725,7 +709,7 @@ class DbmsAstProcessor(BaseAstProcessor):
                             f"__cy_n__.summary = $summary, __cy_n__.node_code = $node_code, "
                             f"__cy_n__.token = $token, __cy_n__.procedure_name = $procedure_name, "
                             f"__cy_n__.has_children = $has_children\n"
-                        f"RETURN __cy_n__"
+                            f"RETURN __cy_n__"
                         ),
                         "params": {
                             "start_line": node.start_line,
@@ -741,13 +725,11 @@ class DbmsAstProcessor(BaseAstProcessor):
                         }
                     })
                     
-                    # 프로시저별 summary 저장
-                    if unit_summary_store is not None and node.unit_key:
-                        if node.unit_key in unit_summary_store:
-                            key = f"{node.node_type}_{node.start_line}_{node.end_line}"
-                            unit_summary_store[node.unit_key][key] = summary
+                    if unit_summary_store is not None and node.unit_key and node.unit_key in unit_summary_store:
+                        key = f"{node.node_type}_{node.start_line}_{node.end_line}"
+                        unit_summary_store[node.unit_key][key] = summary
                 
-                # CALL 관계 생성
+                # --- CALL 관계 생성 ---
                 for call_name in analysis.get('calls', []) or []:
                     if '.' in call_name:
                         package_raw, proc_raw = call_name.split('.', 1)
@@ -755,8 +737,8 @@ class DbmsAstProcessor(BaseAstProcessor):
                             "query": (
                                 f"MATCH (__cy_c__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
                                 f"MERGE (__cy_target__:PROCEDURE {{directory: $package_name, procedure_name: $proc_name}})\n"
-                            f"MERGE (__cy_c__)-[__cy_r__:CALL {{scope: 'external'}}]->(__cy_target__)\n"
-                            f"RETURN __cy_c__, __cy_target__, __cy_r__"
+                                f"MERGE (__cy_c__)-[__cy_r__:CALL {{scope: 'external'}}]->(__cy_target__)\n"
+                                f"RETURN __cy_c__, __cy_target__, __cy_r__"
                             ),
                             "params": {
                                 "start_line": node.start_line,
@@ -771,9 +753,9 @@ class DbmsAstProcessor(BaseAstProcessor):
                             "query": (
                                 f"MATCH (__cy_c__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
                                 f"MATCH (__cy_p__ {{procedure_name: $call_name, directory: $directory, file_name: $file_name}})\n"
-                            f"WHERE __cy_p__:PROCEDURE OR __cy_p__:FUNCTION\n"
-                            f"MERGE (__cy_c__)-[__cy_r__:CALL {{scope: 'internal'}}]->(__cy_p__)\n"
-                            f"RETURN __cy_c__, __cy_p__, __cy_r__"
+                                f"WHERE __cy_p__:PROCEDURE OR __cy_p__:FUNCTION\n"
+                                f"MERGE (__cy_c__)-[__cy_r__:CALL {{scope: 'internal'}}]->(__cy_p__)\n"
+                                f"RETURN __cy_c__, __cy_p__, __cy_r__"
                             ),
                             "params": {
                                 "start_line": node.start_line,
@@ -783,226 +765,40 @@ class DbmsAstProcessor(BaseAstProcessor):
                             }
                         })
                 
-                # 변수 사용 마킹 및 역할 누적 (메모리 맵에 저장, Neo4j 저장은 _process_unit_summaries에서)
-                for var_info in analysis.get('variables', []) or []:
-                    # 새 형식: {"name": "변수명", "role": "역할"} 또는 구 형식: "변수명"
-                    if isinstance(var_info, dict):
-                        var_name = var_info.get("name", "")
-                        var_role = var_info.get("role", "")
-                    else:
-                        var_name = str(var_info)
-                        var_role = ""
-                    
-                    if not var_name:
-                        continue
-                    
-                    # 사용 마킹은 바로 저장
-                    usage_key = f"{node.start_line}_{node.end_line}"
-                    queries.append({
-                        "query": (
-                            f"MATCH (__cy_v__:Variable {{name: $var_name, directory: $directory, file_name: $file_name}})\n"
-                            f"SET __cy_v__.`{usage_key}` = 'Used'\n"
-                        f"RETURN __cy_v__"
-                        ),
-                        "params": {
-                            "var_name": var_name,
-                            "directory": self.full_directory,
-                            "file_name": self.file_name,
-                        }
-                    })
-                    
-                    # 역할은 메모리 맵에 누적 (나중에 LLM 요약 후 저장)
-                    if var_role and node.unit_key:
-                        if node.unit_key not in self._variable_roles:
-                            self._variable_roles[node.unit_key] = {}
-                        if var_name not in self._variable_roles[node.unit_key]:
-                            self._variable_roles[node.unit_key][var_name] = []
-                        # 중복 역할 제거
-                        if var_role not in self._variable_roles[node.unit_key][var_name]:
-                            self._variable_roles[node.unit_key][var_name].append(var_role)
+                # --- 변수 처리 ---
+                var_queries = self._process_variable_usage(node, analysis.get('variables', []) or [])
+                queries.extend(var_queries)
         
-        # 테이블 분석 결과 처리 (None 허용 - 일반 분석만 있는 경우)
+        # --- 테이블 처리 ---
         table_result = self.validate_dict_result(
             table_result, "table_result", batch.batch_id, allow_none=True
         )
-        if table_result:  # 빈 dict이면 스킵
+        if table_result:
             table_queries = self._build_table_queries(batch, table_result)
             queries.extend(table_queries)
         
         return queries
 
-    async def _process_unit_summaries(
-        self, 
-        unit_summary_store: Dict[str, Dict[str, str]]
-    ) -> List[Union[str, Dict[str, Any]]]:
-        """프로시저별 summary 처리 + 테이블/컬럼 설명 보강 (파라미터화)"""
-        queries: List[Union[str, Dict[str, Any]]] = []
-        
-        procedures = self._unit_info
-        if not procedures:
-            # 프로시저가 없어도 테이블/컬럼 설명 보강은 실행해야 함
-            table_queries = await self._finalize_table_summaries()
-            queries.extend(table_queries)
-            return queries
-        
-        for proc_key, info in procedures.items():
-            summaries = unit_summary_store.get(proc_key, {})
-            if not summaries:
-                continue
-            
-            # 프로시저 최상위 노드 찾기
-            proc_root = next(
-                (n for n in (self._nodes or []) 
-                 if n.unit_key == proc_key and n.parent is None),
-                None,
-            )
-            if proc_root and not proc_root.ok:
-                log_process("ANALYZE", "SUMMARY", f"⚠️ {info.procedure_name}: 하위 분석 실패로 최종 summary 생성 스킵")
-                continue
-            
-            # 청크 분할
-            chunks = self._split_summaries_by_token(summaries, MAX_SUMMARY_CHUNK_TOKEN)
-            if not chunks:
-                continue
-            
-            log_process("ANALYZE", "SUMMARY", f"📦 {info.procedure_name}: summary 청크 분할 ({len(chunks)}개)")
-            
-            # 청크별 처리 (실패 시 예외 발생 → 전체 분석 중단)
-            async def process_chunk(chunk: dict) -> str:
-                result = await asyncio.to_thread(
-                    analyze_summary_only, chunk, self.api_key, self.locale, ""
-                )
-                validated = self.validate_dict_result(result, "청크 분석")
-                return validated.get('summary', '')
-            
-            chunk_results = await asyncio.gather(*[process_chunk(c) for c in chunks])
-            chunk_results = [r for r in chunk_results if r]
-            
-            if not chunk_results:
-                raise RuntimeError(f"{info.procedure_name}: 청크 처리 결과가 모두 비어있음")
-            
-            # 청크 통합
-            if len(chunk_results) == 1:
-                final_summary = chunk_results[0]
-            else:
-                combined = {f"CHUNK_{i+1}": s for i, s in enumerate(chunk_results)}
-                result = await asyncio.to_thread(
-                    analyze_summary_only, combined, self.api_key, self.locale, ""
-                )
-                validated = self.validate_dict_result(result, "청크 통합")
-                final_summary = validated.get('summary') or "\n\n".join(chunk_results)
-            
-            log_process("ANALYZE", "SUMMARY", f"✅ {info.procedure_name}: summary 통합 완료")
-            
-            # User Story 생성 (실패 시 예외 발생)
-            all_user_stories = []
-            if final_summary:
-                us_result = await asyncio.to_thread(
-                    analyze_user_story, final_summary, self.api_key, self.locale
-                )
-                validated = self.validate_dict_result(us_result, "User Story")
-                all_user_stories = validated.get('user_stories', []) or []
-            
-            # Neo4j 쿼리 생성 (파라미터화)
-            queries.append({
-                "query": (
-                    f"MATCH (__cy_n__:{info.procedure_type} {{procedure_name: $procedure_name, directory: $directory, file_name: $file_name}})\n"
-                    f"SET __cy_n__.summary = $summary\n"
-                f"RETURN __cy_n__"
-                ),
-                "params": {
-                    "procedure_name": info.procedure_name,
-                    "directory": self.full_directory,
-                    "file_name": self.file_name,
-                    "summary": final_summary,
-                }
-            })
-            
-            # User Story 노드 생성
-            for us_idx, us in enumerate(all_user_stories, 1):
-                us_id = us.get('id', f"US-{us_idx}")
-                queries.append({
-                    "query": (
-                        f"MATCH (__cy_p__:{info.procedure_type} {{procedure_name: $procedure_name, directory: $directory, file_name: $file_name}})\n"
-                        f"MERGE (__cy_us__:UserStory {{id: $us_id, procedure_name: $procedure_name, directory: $directory, file_name: $file_name}})\n"
-                        f"SET __cy_us__.role = $role, __cy_us__.goal = $goal, __cy_us__.benefit = $benefit\n"
-                    f"MERGE (__cy_p__)-[__cy_r__:HAS_USER_STORY]->(__cy_us__)\n"
-                    f"RETURN __cy_p__, __cy_us__, __cy_r__"
-                    ),
-                    "params": {
-                        "procedure_name": info.procedure_name,
-                        "directory": self.full_directory,
-                        "file_name": self.file_name,
-                        "us_id": us_id,
-                        "role": us.get('role', ''),
-                        "goal": us.get('goal', ''),
-                        "benefit": us.get('benefit', ''),
-                    }
-                })
-                
-                # Acceptance Criteria 노드
-                for ac_idx, ac in enumerate(us.get('acceptance_criteria', []), 1):
-                    if not isinstance(ac, dict):
-                        continue
-                    ac_id = ac.get('id', f"AC-{us_idx}-{ac_idx}")
-                    queries.append({
-                        "query": (
-                            f"MATCH (__cy_us__:UserStory {{id: $us_id, directory: $directory, file_name: $file_name}})\n"
-                            f"MERGE (__cy_ac__:AcceptanceCriteria {{id: $ac_id, user_story_id: $us_id, directory: $directory, file_name: $file_name}})\n"
-                            f"SET __cy_ac__.title = $title, __cy_ac__.given = $given, __cy_ac__.when_clause = $when_clause, __cy_ac__.then_clause = $then_clause\n"
-                        f"MERGE (__cy_us__)-[__cy_r__:HAS_AC]->(__cy_ac__)\n"
-                        f"RETURN __cy_us__, __cy_ac__, __cy_r__"
-                        ),
-                        "params": {
-                            "us_id": us_id,
-                            "ac_id": ac_id,
-                            "directory": self.full_directory,
-                            "file_name": self.file_name,
-                            "title": ac.get('title', ''),
-                            "given": json.dumps(ac.get('given', []), ensure_ascii=False),
-                            "when_clause": json.dumps(ac.get('when', []), ensure_ascii=False),
-                            "then_clause": json.dumps(ac.get('then', []), ensure_ascii=False),
-                        }
-                    })
-            
-            us_count = len(all_user_stories)
-            log_process("ANALYZE", "SUMMARY", f"✅ {info.procedure_name}: User Story {us_count}개 생성")
-            
-            # 3. 변수 역할 요약 (신규)
-            var_queries = await self._summarize_unit_variables(proc_key)
-            queries.extend(var_queries)
-        
-        # 테이블/컬럼 설명 요약 처리
-        table_queries = await self._finalize_table_summaries()
-        queries.extend(table_queries)
-        
-        return queries
-    
+
     async def _summarize_unit_variables(self, unit_key: str) -> List[Union[str, Dict[str, Any]]]:
-        """해당 유닛의 변수들 역할을 요약하여 Neo4j 쿼리를 생성합니다 (파라미터화).
-        
-        역할이 2개 이상인 변수는 LLM으로 요약, 1개인 변수는 그대로 저장.
-        """
-        queries: List[Union[str, Dict[str, Any]]] = []
+        """변수 역할 요약하여 Neo4j 쿼리 생성 (역할 2개 이상은 LLM 요약, 1개는 그대로 저장)"""
         unit_vars = self._variable_roles.get(unit_key, {})
-        
         if not unit_vars:
-            return queries
+            return []
         
-        # 역할이 2개 이상인 변수들만 LLM 요약
-        vars_to_summarize: List[Dict[str, Any]] = []
-        single_role_vars: List[Tuple[str, str]] = []  # (변수명, 역할)
+        vars_to_summarize = [
+            {"name": var_name, "roles": roles}
+            for var_name, roles in unit_vars.items()
+            if len(roles) >= 2
+        ]
+        single_role_vars = [
+            (var_name, roles[0])
+            for var_name, roles in unit_vars.items()
+            if len(roles) == 1
+        ]
         
-        for var_name, roles in unit_vars.items():
-            if len(roles) >= 2:
-                vars_to_summarize.append({
-                    "name": var_name,
-                    "roles": roles
-                })
-            elif len(roles) == 1:
-                single_role_vars.append((var_name, roles[0]))
+        queries: List[Union[str, Dict[str, Any]]] = []
         
-        # LLM 요약 호출
         if vars_to_summarize:
             try:
                 result = await asyncio.to_thread(
@@ -1011,36 +807,34 @@ class DbmsAstProcessor(BaseAstProcessor):
                 validated = self.validate_dict_result(result, "변수 역할 요약", allow_none=True)
                 
                 if validated:
-                    for var_sum in validated.get("summaries", []) or []:
-                        var_name = var_sum.get("name", "")
-                        summary = var_sum.get("summary", "")
-                        
-                        if var_name and summary:
-                            queries.append({
-                                "query": (
-                                    f"MATCH (__cy_v__:Variable {{name: $var_name, directory: $directory, file_name: $file_name}})\n"
-                                    f"SET __cy_v__.role = $role\n"
+                    queries.extend([
+                        {
+                            "query": (
+                                f"MATCH (__cy_v__:Variable {{name: $var_name, directory: $directory, file_name: $file_name}})\n"
+                                f"SET __cy_v__.role = $role\n"
                                 f"RETURN __cy_v__"
-                                ),
-                                "params": {
-                                    "var_name": var_name,
-                                    "directory": self.full_directory,
-                                    "file_name": self.file_name,
-                                    "role": summary,
-                                }
-                            })
+                            ),
+                            "params": {
+                                "var_name": var_sum.get("name", ""),
+                                "directory": self.full_directory,
+                                "file_name": self.file_name,
+                                "role": var_sum.get("summary", ""),
+                            }
+                        }
+                        for var_sum in validated.get("summaries", []) or []
+                        if var_sum.get("name") and var_sum.get("summary")
+                    ])
                 
                 log_process("ANALYZE", "VARIABLE", f"✅ 변수 역할 요약 완료: {len(vars_to_summarize)}개 변수")
             except Exception as e:
                 log_process("ANALYZE", "VARIABLE", f"⚠️ 변수 역할 요약 실패: {e}")
         
-        # 역할이 1개인 변수는 그대로 저장
-        for var_name, role in single_role_vars:
-            queries.append({
+        queries.extend([
+            {
                 "query": (
                     f"MATCH (__cy_v__:Variable {{name: $var_name, directory: $directory, file_name: $file_name}})\n"
                     f"SET __cy_v__.role = $role\n"
-                f"RETURN __cy_v__"
+                    f"RETURN __cy_v__"
                 ),
                 "params": {
                     "var_name": var_name,
@@ -1048,7 +842,66 @@ class DbmsAstProcessor(BaseAstProcessor):
                     "file_name": self.file_name,
                     "role": role,
                 }
+            }
+            for var_name, role in single_role_vars
+        ])
+        
+        return queries
+    
+    # =========================================================================
+    # Phase 2.2: User Story 쿼리 생성 (제거됨)
+    # =========================================================================
+    
+    # NOTE: _build_user_story_queries는 user_story.py로 이동되었습니다.
+    
+    def _build_user_story_queries(self, procedure_type: str, procedure_name: str, user_stories: List[Dict[str, Any]]) -> List[Union[str, Dict[str, Any]]]:
+        """User Story 및 Acceptance Criteria 쿼리 생성"""
+        queries: List[Union[str, Dict[str, Any]]] = []
+        
+        for us_idx, us in enumerate(user_stories, 1):
+            us_id = us.get('id', f"US-{us_idx}")
+            queries.append({
+                "query": (
+                    f"MATCH (__cy_p__:{procedure_type} {{procedure_name: $procedure_name, directory: $directory, file_name: $file_name}})\n"
+                    f"MERGE (__cy_us__:UserStory {{id: $us_id, procedure_name: $procedure_name, directory: $directory, file_name: $file_name}})\n"
+                    f"SET __cy_us__.role = $role, __cy_us__.goal = $goal, __cy_us__.benefit = $benefit\n"
+                    f"MERGE (__cy_p__)-[__cy_r__:HAS_USER_STORY]->(__cy_us__)\n"
+                    f"RETURN __cy_p__, __cy_us__, __cy_r__"
+                ),
+                "params": {
+                    "procedure_name": procedure_name,
+                    "directory": self.full_directory,
+                    "file_name": self.file_name,
+                    "us_id": us_id,
+                    "role": us.get('role', ''),
+                    "goal": us.get('goal', ''),
+                    "benefit": us.get('benefit', ''),
+                }
             })
+            
+            for ac_idx, ac in enumerate(us.get('acceptance_criteria', []), 1):
+                if not isinstance(ac, dict):
+                    continue
+                ac_id = ac.get('id', f"AC-{us_idx}-{ac_idx}")
+                queries.append({
+                    "query": (
+                        f"MATCH (__cy_us__:UserStory {{id: $us_id, directory: $directory, file_name: $file_name}})\n"
+                        f"MERGE (__cy_ac__:AcceptanceCriteria {{id: $ac_id, user_story_id: $us_id, directory: $directory, file_name: $file_name}})\n"
+                        f"SET __cy_ac__.title = $title, __cy_ac__.given = $given, __cy_ac__.when_clause = $when_clause, __cy_ac__.then_clause = $then_clause\n"
+                        f"MERGE (__cy_us__)-[__cy_r__:HAS_AC]->(__cy_ac__)\n"
+                        f"RETURN __cy_us__, __cy_ac__, __cy_r__"
+                    ),
+                    "params": {
+                        "us_id": us_id,
+                        "ac_id": ac_id,
+                        "directory": self.full_directory,
+                        "file_name": self.file_name,
+                        "title": ac.get('title', ''),
+                        "given": json.dumps(ac.get('given', []), ensure_ascii=False),
+                        "when_clause": json.dumps(ac.get('when', []), ensure_ascii=False),
+                        "then_clause": json.dumps(ac.get('then', []), ensure_ascii=False),
+                    }
+                })
         
         return queries
 
@@ -1057,17 +910,14 @@ class DbmsAstProcessor(BaseAstProcessor):
     # =========================================================================
 
     async def _analyze_variable_nodes(self) -> List[Union[str, Dict[str, Any]]]:
-        """변수 선언 노드를 분석하고 쿼리를 생성합니다 (파라미터화)."""
-        queries: List[Union[str, Dict[str, Any]]] = []
+        """변수 선언 노드 분석 및 쿼리 생성"""
         variable_nodes = [n for n in (self._nodes or []) if n.node_type in VARIABLE_DECLARATION_TYPES]
-        
         if not variable_nodes:
-            return queries
+            return []
         
         semaphore = asyncio.Semaphore(VARIABLE_CONCURRENCY)
         
         async def analyze_one(node: StatementNode) -> List[Union[str, Dict[str, Any]]]:
-            """변수 분석 (실패 시 예외 발생 → 전체 분석 중단)"""
             async with semaphore:
                 result = await asyncio.to_thread(
                     analyze_variables, node.code, self.api_key, self.locale
@@ -1075,21 +925,61 @@ class DbmsAstProcessor(BaseAstProcessor):
                 return self._build_variable_queries(node, result)
         
         results = await asyncio.gather(*[analyze_one(n) for n in variable_nodes])
+        queries: List[Union[str, Dict[str, Any]]] = []
         for r in results:
             queries.extend(r)
         
         return queries
 
-    def _build_variable_queries(self, node: StatementNode, result: Dict[str, Any]) -> List[Union[str, Dict[str, Any]]]:
-        """변수 분석 결과를 쿼리로 변환 (파라미터화)"""
+    def _process_variable_usage(self, node: StatementNode, variables: List[Any]) -> List[Union[str, Dict[str, Any]]]:
+        """변수 사용 마킹 및 역할 누적 처리"""
         queries: List[Union[str, Dict[str, Any]]] = []
         
+        for var_info in variables:
+            if isinstance(var_info, dict):
+                var_name = var_info.get("name", "")
+                var_role = var_info.get("role", "")
+            else:
+                var_name = str(var_info)
+                var_role = ""
+            
+            if not var_name:
+                continue
+            
+            usage_key = f"{node.start_line}_{node.end_line}"
+            queries.append({
+                "query": (
+                    f"MATCH (__cy_v__:Variable {{name: $var_name, directory: $directory, file_name: $file_name}})\n"
+                    f"SET __cy_v__.`{usage_key}` = 'Used'\n"
+                    f"RETURN __cy_v__"
+                ),
+                "params": {
+                    "var_name": var_name,
+                    "directory": self.full_directory,
+                    "file_name": self.file_name,
+                }
+            })
+            
+            if var_role and node.unit_key:
+                if node.unit_key not in self._variable_roles:
+                    self._variable_roles[node.unit_key] = {}
+                if var_name not in self._variable_roles[node.unit_key]:
+                    self._variable_roles[node.unit_key][var_name] = []
+                if var_role not in self._variable_roles[node.unit_key][var_name]:
+                    self._variable_roles[node.unit_key][var_name].append(var_role)
+        
+        return queries
+    
+    def _build_variable_queries(self, node: StatementNode, result: Dict[str, Any]) -> List[Union[str, Dict[str, Any]]]:
+        """변수 분석 결과를 쿼리로 변환"""
         if not isinstance(result, dict):
             raise RuntimeError(f"변수 분석 결과가 dict가 아님 (node={node.start_line}): {type(result).__name__}")
         
         variables = result.get("variables") or []
         if not variables:
-            return queries
+            return []
+        
+        queries: List[Union[str, Dict[str, Any]]] = []
         
         for var in variables:
             var_name = var.get("name", "")
@@ -1126,7 +1016,7 @@ class DbmsAstProcessor(BaseAstProcessor):
         batch: AnalysisBatch,
         table_result: Dict[str, Any]
     ) -> List[Union[str, Dict[str, Any]]]:
-        """DML 테이블 분석 결과를 쿼리로 변환 (파라미터화)"""
+        """DML 테이블 분석 결과를 쿼리로 변환"""
         queries: List[Union[str, Dict[str, Any]]] = []
         node_map: Dict[Tuple[int, int], StatementNode] = {
             (node.start_line, node.end_line): node for node in batch.nodes
@@ -1134,13 +1024,9 @@ class DbmsAstProcessor(BaseAstProcessor):
         ranges = table_result.get('ranges', []) or []
         
         for range_entry in ranges:
-            start_line = range_entry.get('startLine')
-            end_line = range_entry.get('endLine')
-            tables = range_entry.get('tables') or []
-            
             try:
-                start_line = int(start_line)
-                end_line = int(end_line)
+                start_line = int(range_entry.get('startLine'))
+                end_line = int(range_entry.get('endLine'))
             except (TypeError, ValueError) as e:
                 raise RuntimeError(f"LLM 테이블 분석 결과에 잘못된 라인 번호: startLine={range_entry.get('startLine')}, endLine={range_entry.get('endLine')}") from e
             
@@ -1148,317 +1034,308 @@ class DbmsAstProcessor(BaseAstProcessor):
             if not node:
                 continue
             
-            # 노드 매치 쿼리 (파라미터화된 버전에서는 동적으로 생성)
             node_match_params = {
                 "start_line": node.start_line,
                 "directory": self.full_directory,
                 "file_name": self.file_name,
             }
             
-            # CREATE_TEMP_TABLE 처리 (파라미터화)
             if node.node_type == 'CREATE_TEMP_TABLE':
-                for entry in tables:
-                    table_name = (entry.get('table') or '').strip()
-                    if not table_name:
-                        continue
-                    schema_part_raw, name_part_raw, _ = parse_table_identifier(table_name)
-                    # 대소문자 변환 적용
-                    schema_part = self._apply_name_case(schema_part_raw)
-                    name_part = self._apply_name_case(name_part_raw)
-                    queries.append({
-                        "query": (
-                            f"MATCH (__cy_n__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
-                            f"SET __cy_n__:Table, __cy_n__.name = $name, __cy_n__.schema = $schema, __cy_n__.db = $db\n"
-                        f"RETURN __cy_n__"
-                        ),
-                        "params": {
-                            "start_line": node.start_line,
-                            "directory": self.full_directory,
-                            "file_name": self.file_name,
-                            "name": name_part,
-                            "schema": schema_part,
-                            "db": self.dbms,
-                        }
-                    })
+                queries.extend(self._process_create_temp_table(node, range_entry.get('tables', []), node_match_params))
                 continue
             
-            # 일반 DML 테이블 처리
-            for entry in tables:
-                table_name = (entry.get('table') or '').strip()
-                if not table_name:
-                    continue
-                
-                schema_part_raw, name_part_raw, db_link_value = parse_table_identifier(table_name)
-                
-                # DDL 캐시에서 원본 대소문자 조회
-                # LLM이 반환한 테이블명이 DDL에 존재하면 DDL의 대소문자를 사용
-                # 이렇게 하면 DDL 테이블과 동일한 노드에 업데이트됨
-                effective_schema = schema_part_raw if schema_part_raw else self.default_schema
-                ddl_lookup_key = (effective_schema.lower() if effective_schema else 'public', name_part_raw.lower())
-                ddl_meta = self._ddl_table_metadata.get(ddl_lookup_key, {})
-                
-                # DDL 캐시에서 조회 성공 여부
-                skip_case_conversion = False
-                if ddl_meta and ddl_meta.get('original_name'):
-                    # DDL에 존재하는 테이블: DDL의 원본 대소문자 사용
-                    schema_part = ddl_meta.get('original_schema', self._apply_name_case(effective_schema or 'public'))
-                    name_part = ddl_meta.get('original_name')
-                    skip_case_conversion = True  # 이미 DDL에서 변환된 값이므로 다시 변환하지 않음
-                else:
-                    # DDL에 없는 테이블: name_case 변환 적용
-                    schema_part = self._apply_name_case(schema_part_raw)
-                    name_part = self._apply_name_case(name_part_raw)
-                
-                access_mode = (entry.get('accessMode') or entry.get('mode') or 'r').lower()
-                rel_types = []
-                if 'r' in access_mode:
-                    rel_types.append(TABLE_RELATIONSHIP_MAP.get('r', 'FROM'))
-                if 'w' in access_mode:
-                    rel_types.append(TABLE_RELATIONSHIP_MAP.get('w', 'WRITES'))
-                
-                table_merge_result = self._build_table_merge(name_part, schema_part, preserve_vars=['__cy_n__'], skip_case_conversion=skip_case_conversion)
-                
-                table_desc_raw = entry.get('tableDescription') or entry.get('description') or ''
-                bucket_key = self._record_table_summary(schema_part, name_part, table_desc_raw, skip_case_conversion=skip_case_conversion)
-                
-                # 파라미터화된 쿼리 생성
-                rel_merge_parts = []
-                for i, rel_type in enumerate(rel_types):
-                    rel_merge_parts.append(f"MERGE (__cy_n__)-[__cy_r{i}__:{rel_type}]->(__cy_t__)")
-                
-                db_link_set = f"\nSET __cy_t__.db_link = COALESCE(__cy_t__.db_link, $db_link)" if db_link_value else ""
-                rel_merge_str = "\n".join(rel_merge_parts)
-                
-                table_query = (
+            queries.extend(self._process_dml_tables(node, range_entry.get('tables', []), node_match_params))
+            queries.extend(self._process_dblinks(node, range_entry.get('dbLinks', []), node_match_params))
+            queries.extend(self._process_fk_relations(range_entry.get('fkRelations', [])))
+        
+        return queries
+    
+    def _process_create_temp_table(
+        self,
+        node: StatementNode,
+        tables: List[Dict[str, Any]],
+        node_match_params: Dict[str, Any]
+    ) -> List[Union[str, Dict[str, Any]]]:
+        """CREATE_TEMP_TABLE 처리"""
+        queries: List[Union[str, Dict[str, Any]]] = []
+        
+        for entry in tables:
+            table_name = (entry.get('table') or '').strip()
+            if not table_name:
+                continue
+            
+            schema_part_raw, name_part_raw, _ = parse_table_identifier(table_name)
+            schema_part = self._apply_name_case(schema_part_raw or self.default_schema)
+            name_part = self._apply_name_case(name_part_raw)
+            
+            queries.append({
+                "query": (
                     f"MATCH (__cy_n__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
-                    f"WITH __cy_n__\n"
-                    f"{table_merge_result['query']}\n"
-                    f"SET __cy_t__.db = coalesce(__cy_t__.db, $db)"
-                    f"{db_link_set}"
-                    f"\n{rel_merge_str}" if rel_merge_str else ""
-                    f"\nRETURN __cy_n__, __cy_t__"
-                )
-                
-                params = {
+                    f"SET __cy_n__:Table, __cy_n__.name = $name, __cy_n__.schema = $schema, __cy_n__.db = $db\n"
+                    f"RETURN __cy_n__"
+                ),
+                "params": {
                     **node_match_params,
-                    **table_merge_result["params"],
+                    "name": name_part,
+                    "schema": schema_part,
+                    "db": self.dbms,
                 }
-                if db_link_value:
-                    params["db_link"] = db_link_value
-                
-                queries.append({"query": table_query, "params": params})
-                
-                # 컬럼 처리 (파라미터화)
-                table_merge_for_column_result = self._build_table_merge(name_part, schema_part, preserve_vars=None, skip_case_conversion=skip_case_conversion)
-                
-                # DDL 컬럼 메타데이터 조회 (원본 대소문자 사용을 위해)
-                ddl_columns = ddl_meta.get('columns', {}) if ddl_meta else {}
-                
-                for column in entry.get('columns', []) or []:
-                    column_name_raw = (column.get('name') or '').strip()
-                    if not column_name_raw:
-                        continue
-                    
-                    # DDL 캐시에서 컬럼의 원본 대소문자 조회
-                    # DDL 컬럼은 이미 name_case가 적용된 이름으로 저장됨
-                    ddl_col_meta = ddl_columns.get(column_name_raw.upper() if self.name_case == 'uppercase' else column_name_raw)
-                    if ddl_col_meta is None:
-                        # 대소문자 무관하게 검색
-                        for ddl_col_name in ddl_columns.keys():
-                            if ddl_col_name.lower() == column_name_raw.lower():
-                                column_name = ddl_col_name  # DDL의 원본 대소문자 사용
-                                break
-                        else:
-                            column_name = self._apply_name_case(column_name_raw)
-                    else:
-                        # DDL에서 찾은 컬럼명 사용 (이미 변환됨)
-                        column_name = column_name_raw.upper() if self.name_case == 'uppercase' else column_name_raw
-                    
-                    raw_dtype = column.get('dtype') or ''
-                    raw_column_desc = (column.get('description') or column.get('comment') or '').strip()
-                    
-                    self._record_column_summary(
-                        bucket_key,
-                        column_name,
-                        raw_column_desc,
-                        dtype=raw_dtype,
-                        nullable=column.get('nullable', True),
-                        examples=column.get('examples') or [],
-                    )
-                    
-                    # 대소문자 변환이 이미 _build_table_merge에서 적용됨
-                    converted_name_part = table_merge_for_column_result["converted_table_name"]
-                    converted_schema_part = table_merge_for_column_result["effective_schema"]
-                    
-                    # fqn 생성
-                    fqn = '.'.join(filter(None, [converted_schema_part, converted_name_part, column_name])).lower()
-                    
-                    # 파라미터화된 쿼리 생성
-                    col_query = (
-                        f"{table_merge_for_column_result['query']}\nWITH __cy_t__\n"
-                        f"MERGE (__cy_c__:Column {{fqn: $fqn}})\n"
-                        f"SET __cy_c__.name = $col_name, __cy_c__.dtype = $col_type, "
-                        f"__cy_c__.description = $col_desc, __cy_c__.description_source = 'procedure', __cy_c__.nullable = $nullable\n"
-                            f"MERGE (__cy_t__)-[__cy_r__:HAS_COLUMN]->(__cy_c__)\n"
-                            f"RETURN __cy_t__, __cy_c__, __cy_r__"
-                        )
+            })
+        
+        return queries
+    
+    def _process_dml_tables(
+        self,
+        node: StatementNode,
+        tables: List[Dict[str, Any]],
+        node_match_params: Dict[str, Any]
+    ) -> List[Union[str, Dict[str, Any]]]:
+        """일반 DML 테이블 처리"""
+        queries: List[Union[str, Dict[str, Any]]] = []
+        table_merge_cache: Dict[Tuple[str, str, bool], Dict[str, Any]] = {}
+        
+        for entry in tables:
+            table_name = (entry.get('table') or '').strip()
+            if not table_name:
+                continue
             
-                    queries.append({
-                        "query": col_query,
-                        "params": {
-                            **table_merge_for_column_result["params"],
-                            "fqn": fqn,
-                            "col_name": column_name,
-                            "col_type": raw_dtype,
-                            "col_desc": raw_column_desc,
-                            "nullable": column.get('nullable', True),
-                        }
-                    })
+            # --- 테이블 정규화 ---
+            schema_part_raw, name_part_raw, db_link_value = parse_table_identifier(table_name)
+            schema_part, name_part, skip_case_conversion = self._resolve_table_name_with_ddl(schema_part_raw, name_part_raw)
             
-            # DBLink 처리 (파라미터화)
-            for link_item in range_entry.get('dbLinks', []) or []:
-                link_name_raw = (link_item.get('name') or '').strip()
-                if not link_name_raw:
-                    continue
-                mode = (link_item.get('mode') or 'r').lower()
-                schema_link_raw, name_link_raw, link_name = parse_table_identifier(link_name_raw)
-                # 대소문자 변환 적용
-                schema_link = self._apply_name_case(schema_link_raw)
-                name_link = self._apply_name_case(name_link_raw)
-                remote_merge_result = self._build_table_merge(name_link, schema_link)
-                
-                dblink_query = (
-                    f"{remote_merge_result['query']}\n"
-                    f"SET __cy_t__.db_link = $link_name\n"
-                    f"WITH __cy_t__\n"
-                    f"MERGE (__cy_l__:DBLink {{name: $link_name}})\n"
-                    f"MERGE (__cy_l__)-[__cy_r1__:CONTAINS]->(__cy_t__)\n"
-                    f"WITH __cy_t__, __cy_l__\n"
-                    f"MATCH (__cy_n__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
-                    f"MERGE (__cy_n__)-[__cy_r2__:DB_LINK {{mode: $mode}}]->(__cy_t__)\n"
-                    f"RETURN __cy_l__, __cy_t__, __cy_n__"
+            cache_key = (name_part, schema_part, skip_case_conversion)
+            if cache_key not in table_merge_cache:
+                table_merge_cache[cache_key] = self._build_table_merge(
+                    name_part, schema_part, preserve_vars=['__cy_n__'], skip_case_conversion=skip_case_conversion
                 )
-                queries.append({
-                    "query": dblink_query,
-                    "params": {
-                        **remote_merge_result["params"],
-                        **node_match_params,
-                        "link_name": link_name,
-                        "mode": mode,
-                    }
-                })
+            table_merge_result = table_merge_cache[cache_key]
             
-            # FK 관계 처리 (파라미터화)
-            fk_relations = range_entry.get('fkRelations', []) or []
-            for relation in fk_relations:
-                src_table = (relation.get('sourceTable') or '').strip()
-                tgt_table = (relation.get('targetTable') or '').strip()
-                src_columns = [c.strip() for c in (relation.get('sourceColumns') or []) if c]
-                tgt_columns = [c.strip() for c in (relation.get('targetColumns') or []) if c]
+            # --- 관계 생성 ---
+            access_mode = (entry.get('accessMode') or entry.get('mode') or 'r').lower()
+            rel_types = [TABLE_RELATIONSHIP_MAP.get(mode, mode.upper()) for mode in ['r', 'w'] if mode in access_mode]
+            
+            table_desc_raw = entry.get('tableDescription') or entry.get('description') or ''
+            bucket_key = self._record_table_summary(schema_part, name_part, table_desc_raw, skip_case_conversion=skip_case_conversion)
+            
+            rel_merge_parts = [f"MERGE (__cy_n__)-[__cy_r{i}__:{rel_type}]->(__cy_t__)" for i, rel_type in enumerate(rel_types)]
+            db_link_set = f"\nSET __cy_t__.db_link = COALESCE(__cy_t__.db_link, $db_link)" if db_link_value else ""
+            rel_merge_str = "\n".join(rel_merge_parts)
+            
+            table_query = (
+                f"MATCH (__cy_n__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
+                f"WITH __cy_n__\n"
+                f"{table_merge_result['query']}\n"
+                f"SET __cy_t__.db = coalesce(__cy_t__.db, $db)"
+                f"{db_link_set}"
+                f"\n{rel_merge_str}" if rel_merge_str else ""
+                f"\nRETURN __cy_n__, __cy_t__"
+            )
+            
+            params = {**node_match_params, **table_merge_result["params"]}
+            if db_link_value:
+                params["db_link"] = db_link_value
+            
+            queries.append({"query": table_query, "params": params})
+            
+            # --- 컬럼 처리 ---
+            column_queries = self._process_table_columns(
+                entry.get('columns', []),
+                name_part,
+                schema_part,
+                bucket_key,
+                skip_case_conversion
+            )
+            queries.extend(column_queries)
+        
+        return queries
+    
+    def _process_table_columns(
+        self,
+        columns: List[Dict[str, Any]],
+        table_name: str,
+        schema: str,
+        bucket_key: Tuple[str, str],
+        skip_case_conversion: bool
+    ) -> List[Union[str, Dict[str, Any]]]:
+        """컬럼 처리"""
+        queries: List[Union[str, Dict[str, Any]]] = []
+        
+        table_merge_result = self._build_table_merge(table_name, schema, preserve_vars=None, skip_case_conversion=skip_case_conversion)
+        ddl_meta, _ = self._get_ddl_metadata(schema, table_name)
+        ddl_columns = ddl_meta.get('columns', {}) if ddl_meta else {}
+        
+        for column in columns:
+            column_name_raw = (column.get('name') or '').strip()
+            if not column_name_raw:
+                continue
+            
+            column_name = self._resolve_column_name_with_ddl(column_name_raw, ddl_columns)
+            
+            raw_dtype = column.get('dtype') or ''
+            raw_column_desc = (column.get('description') or column.get('comment') or '').strip()
+            
+            self._record_column_summary(
+                bucket_key,
+                column_name,
+                raw_column_desc,
+                dtype=raw_dtype,
+                nullable=column.get('nullable', True),
+                examples=column.get('examples') or [],
+            )
+            
+            converted_name_part = table_merge_result["converted_table_name"]
+            converted_schema_part = table_merge_result["effective_schema"]
+            fqn = '.'.join(filter(None, [converted_schema_part, converted_name_part, column_name])).lower()
+            
+            col_query = (
+                f"{table_merge_result['query']}\nWITH __cy_t__\n"
+                f"MERGE (__cy_c__:Column {{fqn: $fqn}})\n"
+                f"SET __cy_c__.name = $col_name, __cy_c__.dtype = $col_type, "
+                f"__cy_c__.description = $col_desc, __cy_c__.description_source = 'procedure', __cy_c__.nullable = $nullable\n"
+                f"MERGE (__cy_t__)-[__cy_r__:HAS_COLUMN]->(__cy_c__)\n"
+                f"RETURN __cy_t__, __cy_c__, __cy_r__"
+            )
+            
+            queries.append({
+                "query": col_query,
+                "params": {
+                    **table_merge_result["params"],
+                    "fqn": fqn,
+                    "col_name": column_name,
+                    "col_type": raw_dtype,
+                    "col_desc": raw_column_desc,
+                    "nullable": column.get('nullable', True),
+                }
+            })
+        
+        return queries
+    
+    def _process_dblinks(
+        self,
+        node: StatementNode,
+        db_links: List[Dict[str, Any]],
+        node_match_params: Dict[str, Any]
+    ) -> List[Union[str, Dict[str, Any]]]:
+        """DBLink 처리"""
+        queries: List[Union[str, Dict[str, Any]]] = []
+        
+        for link_item in db_links:
+            link_name_raw = (link_item.get('name') or '').strip()
+            if not link_name_raw:
+                continue
+            
+            mode = (link_item.get('mode') or 'r').lower()
+            schema_link_raw, name_link_raw, link_name = parse_table_identifier(link_name_raw)
+            schema_link = self._apply_name_case(schema_link_raw or self.default_schema)
+            name_link = self._apply_name_case(name_link_raw)
+            remote_merge_result = self._build_table_merge(name_link, schema_link)
+            
+            dblink_query = (
+                f"{remote_merge_result['query']}\n"
+                f"SET __cy_t__.db_link = $link_name\n"
+                f"WITH __cy_t__\n"
+                f"MERGE (__cy_l__:DBLink {{name: $link_name}})\n"
+                f"MERGE (__cy_l__)-[__cy_r1__:CONTAINS]->(__cy_t__)\n"
+                f"WITH __cy_t__, __cy_l__\n"
+                f"MATCH (__cy_n__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
+                f"MERGE (__cy_n__)-[__cy_r2__:DB_LINK {{mode: $mode}}]->(__cy_t__)\n"
+                f"RETURN __cy_l__, __cy_t__, __cy_n__"
+            )
+            
+            queries.append({
+                "query": dblink_query,
+                "params": {
+                    **remote_merge_result["params"],
+                    **node_match_params,
+                    "link_name": link_name,
+                    "mode": mode,
+                }
+            })
+        
+        return queries
+    
+    def _process_fk_relations(
+        self,
+        fk_relations: List[Dict[str, Any]]
+    ) -> List[Union[str, Dict[str, Any]]]:
+        """FK 관계 처리 (FK_TO_TABLE과 FK_TO를 한 번의 루프에서 생성)"""
+        queries: List[Union[str, Dict[str, Any]]] = []
+        
+        for relation in fk_relations:
+            src_table = (relation.get('sourceTable') or '').strip()
+            tgt_table = (relation.get('targetTable') or '').strip()
+            src_columns = [c.strip() for c in (relation.get('sourceColumns') or []) if c]
+            tgt_columns = [c.strip() for c in (relation.get('targetColumns') or []) if c]
+            
+            if not (src_table and tgt_table and src_columns and tgt_columns):
+                continue
+            
+            src_schema_raw, src_name_raw, _ = parse_table_identifier(src_table)
+            tgt_schema_raw, tgt_name_raw, _ = parse_table_identifier(tgt_table)
+            
+            src_schema, src_name, _ = self._resolve_table_name_with_ddl(src_schema_raw, src_name_raw)
+            tgt_schema, tgt_name, _ = self._resolve_table_name_with_ddl(tgt_schema_raw, tgt_name_raw)
+            
+            effective_src_schema = src_schema or self._apply_name_case(self.default_schema)
+            effective_tgt_schema = tgt_schema or self._apply_name_case(self.default_schema)
+            
+            for src_col, tgt_col in zip(src_columns, tgt_columns):
+                converted_src_col = self._apply_name_case(src_col)
+                converted_tgt_col = self._apply_name_case(tgt_col)
                 
-                if not (src_table and tgt_table and src_columns and tgt_columns):
-                    continue
-                
-                src_schema_raw, src_name_raw, _ = parse_table_identifier(src_table)
-                tgt_schema_raw, tgt_name_raw, _ = parse_table_identifier(tgt_table)
-                
-                # 대소문자 변환 적용
-                src_schema = self._apply_name_case(src_schema_raw)
-                src_name = self._apply_name_case(src_name_raw)
-                tgt_schema = self._apply_name_case(tgt_schema_raw)
-                tgt_name = self._apply_name_case(tgt_name_raw)
-                
-                # schema가 없으면 default_schema 사용 (테이블 생성과 일관성 유지)
-                effective_src_schema = src_schema if src_schema else self._apply_name_case(self.default_schema)
-                effective_tgt_schema = tgt_schema if tgt_schema else self._apply_name_case(self.default_schema)
-                
-                # 각 FK 매핑마다 별도의 FK_TO_TABLE 관계 생성
-                # 속성: sourceColumn, targetColumn, type, source
-                # source='procedure': 스토어드 프로시저 분석에서 추출 (점선 표시)
-                for src_col, tgt_col in zip(src_columns, tgt_columns):
-                    # 컬럼명에도 대소문자 변환 적용
-                    converted_src_col = self._apply_name_case(src_col)
-                    converted_tgt_col = self._apply_name_case(tgt_col)
-                    
-                    queries.append({
-                        "query": (
-                            f"MATCH (__cy_st__:Table {{schema: $src_schema, name: $src_name, db: $db}})\n"
-                            f"MATCH (__cy_tt__:Table {{schema: $tgt_schema, name: $tgt_name, db: $db}})\n"
-                            f"MERGE (__cy_st__)-[__cy_r__:FK_TO_TABLE {{sourceColumn: $src_col, targetColumn: $tgt_col}}]->(__cy_tt__)\n"
+                queries.append({
+                    "query": (
+                        f"MATCH (__cy_st__:Table {{schema: $src_schema, name: $src_name, db: $db}})\n"
+                        f"MATCH (__cy_tt__:Table {{schema: $tgt_schema, name: $tgt_name, db: $db}})\n"
+                        f"MERGE (__cy_st__)-[__cy_r__:FK_TO_TABLE {{sourceColumn: $src_col, targetColumn: $tgt_col}}]->(__cy_tt__)\n"
                         f"ON CREATE SET __cy_r__.type = 'many_to_one', __cy_r__.source = 'procedure'\n"
                         f"RETURN __cy_st__, __cy_tt__, __cy_r__"
-                        ),
-                        "params": {
-                            "src_schema": effective_src_schema,
-                            "src_name": src_name,
-                            "tgt_schema": effective_tgt_schema,
-                            "tgt_name": tgt_name,
-                            "db": self.dbms,
-                            "src_col": converted_src_col,
-                            "tgt_col": converted_tgt_col,
-                        }
-                    })
+                    ),
+                    "params": {
+                        "src_schema": effective_src_schema,
+                        "src_name": src_name,
+                        "tgt_schema": effective_tgt_schema,
+                        "tgt_name": tgt_name,
+                        "db": self.dbms,
+                        "src_col": converted_src_col,
+                        "tgt_col": converted_tgt_col,
+                    }
+                })
                 
-                # Column 간 FK_TO 관계도 생성
-                # source='procedure': 스토어드 프로시저 분석에서 추출 (점선 표시)
-                for src_col, tgt_col in zip(src_columns, tgt_columns):
-                    # 컬럼명에도 대소문자 변환 적용
-                    converted_src_col = self._apply_name_case(src_col)
-                    converted_tgt_col = self._apply_name_case(tgt_col)
-                    # fqn 생성 시에도 effective_schema 사용 (테이블 생성과 일관성 유지)
-                    src_fqn = '.'.join(filter(None, [effective_src_schema, src_name, converted_src_col])).lower()
-                    tgt_fqn = '.'.join(filter(None, [effective_tgt_schema, tgt_name, converted_tgt_col])).lower()
-                    
-                    queries.append({
-                        "query": (
-                            f"MATCH (__cy_sc__:Column {{fqn: $src_fqn}})\n"
-                            f"MATCH (__cy_dc__:Column {{fqn: $tgt_fqn}})\n"
+                src_fqn = '.'.join(filter(None, [effective_src_schema, src_name, converted_src_col])).lower()
+                tgt_fqn = '.'.join(filter(None, [effective_tgt_schema, tgt_name, converted_tgt_col])).lower()
+                
+                queries.append({
+                    "query": (
+                        f"MATCH (__cy_sc__:Column {{fqn: $src_fqn}})\n"
+                        f"MATCH (__cy_dc__:Column {{fqn: $tgt_fqn}})\n"
                         f"MERGE (__cy_sc__)-[__cy_r__:FK_TO]->(__cy_dc__)\n"
                         f"ON CREATE SET __cy_r__.source = 'procedure'\n"
                         f"RETURN __cy_sc__, __cy_dc__, __cy_r__"
-                        ),
-                        "params": {
-                            "src_fqn": src_fqn,
-                            "tgt_fqn": tgt_fqn,
-                        }
-                    })
+                    ),
+                    "params": {
+                        "src_fqn": src_fqn,
+                        "tgt_fqn": tgt_fqn,
+                    }
+                })
         
         return queries
     
     def _build_table_merge(self, table_name: str, schema: Optional[str], preserve_vars: Optional[List[str]] = None, skip_case_conversion: bool = False) -> Dict[str, Any]:
-        """테이블 MERGE 쿼리 (Schema 노드 및 BELONGS_TO 관계 포함) - 파라미터화
+        """테이블 MERGE 쿼리 생성 (Schema 노드 및 BELONGS_TO 관계 포함)"""
+        effective_schema = self._get_effective_schema(schema)
         
-        DDL 처리와 일관성을 위해 schema가 없으면 default_schema 사용.
-        default_schema도 없으면 'public' 사용.
-        Schema 노드를 먼저 생성하고 Table이 Schema에 BELONGS_TO 관계로 연결됨.
-        
-        Args:
-            table_name: 테이블 이름
-            schema: 스키마 이름 (없으면 default_schema 사용)
-            preserve_vars: WITH 절에서 유지할 변수 목록 (예: ['__cy_n__'] -> WITH __cy_n__, __cy_s__)
-            skip_case_conversion: True면 대소문자 변환을 건너뜀 (이미 변환된 값인 경우)
-            
-        Returns:
-            {"query": str, "params": dict, "effective_schema": str, "table_name": str}
-        """
-        # schema가 없으면 default_schema 사용, default_schema도 없으면 'public'
-        effective_schema = schema if schema else (self.default_schema if self.default_schema else 'public')
-        
-        # 대소문자 변환 적용 (skip_case_conversion이 False인 경우에만)
         if not skip_case_conversion:
             effective_schema = self._apply_name_case(effective_schema)
             converted_table_name = self._apply_name_case(table_name)
         else:
             converted_table_name = table_name
         
-        # WITH 절 구성: preserve_vars가 있으면 해당 변수들도 함께 유지
         if preserve_vars:
             with_vars = ", ".join(preserve_vars + ["__cy_s__"])
         else:
             with_vars = "__cy_s__"
         
-        # Schema MERGE + Table MERGE + BELONGS_TO 관계 (파라미터화)
-        # MERGE 키: db, schema, name만 사용 (같은 스키마/테이블명이면 같은 노드)
         return {
             "query": (
                 f"MERGE (__cy_s__:Schema {{db: $db, name: $schema_name}})\n"
@@ -1476,23 +1353,9 @@ class DbmsAstProcessor(BaseAstProcessor):
         }
 
     def _record_table_summary(self, schema: Optional[str], name: str, description: Optional[str], skip_case_conversion: bool = False) -> Tuple[str, str]:
-        """테이블 설명 누적
+        """테이블 설명 누적"""
+        effective_schema = self._get_effective_schema(schema)
         
-        테이블 생성 시 _build_table_merge에서 default_schema를 사용하므로,
-        여기서도 동일하게 처리하여 MATCH 쿼리가 정확히 매칭되도록 함.
-        
-        중요: _apply_name_case를 적용하여 Neo4j에 저장된 테이블명과 일치시켜야 함.
-        
-        Args:
-            schema: 스키마 이름
-            name: 테이블 이름  
-            description: 테이블 설명
-            skip_case_conversion: True면 대소문자 변환을 건너뜀 (DDL 캐시에서 이미 변환된 값인 경우)
-        """
-        # 테이블 생성 시 schema 처리와 일관성 유지 (default_schema 사용)
-        effective_schema = schema if schema else (self.default_schema if self.default_schema else 'public')
-        
-        # 대소문자 변환 적용 (skip_case_conversion이 False인 경우에만)
         if skip_case_conversion:
             schema_key = effective_schema
             name_key = name
@@ -1500,10 +1363,7 @@ class DbmsAstProcessor(BaseAstProcessor):
             schema_key = self._apply_name_case(effective_schema)
             name_key = self._apply_name_case(name)
         
-        bucket = self._table_summary_store.get((schema_key, name_key))
-        if bucket is None:
-            bucket = {"summaries": set(), "columns": {}}
-            self._table_summary_store[(schema_key, name_key)] = bucket
+        bucket = self._table_summary_store.setdefault((schema_key, name_key), {"summaries": set(), "columns": {}})
         text = (description or '').strip()
         if text:
             bucket["summaries"].add(text)
@@ -1518,14 +1378,10 @@ class DbmsAstProcessor(BaseAstProcessor):
         nullable: Optional[bool] = None,
         examples: Optional[List[str]] = None,
     ):
-        """컬럼 설명 누적
-        
-        중요: 컬럼명에 _apply_name_case를 적용하여 Neo4j에 저장된 컬럼명과 일치시켜야 함.
-        """
+        """컬럼 설명 누적"""
         text = (description or '').strip()
         bucket = self._table_summary_store.setdefault(table_key, {"summaries": set(), "columns": {}})
         columns = bucket["columns"]
-        # 대소문자 변환 적용 (DDL 처리와 동일하게)
         canonical = self._apply_name_case(column_name)
         entry = columns.get(canonical)
         if entry is None:
@@ -1543,6 +1399,12 @@ class DbmsAstProcessor(BaseAstProcessor):
                     s = str(v).strip()
                     if s:
                         entry["examples"].add(s)
+    
+    # =========================================================================
+    # Phase 2.4: 테이블/컬럼 설명 요약 (제거됨)
+    # =========================================================================
+    
+    # NOTE: _finalize_table_summaries와 _summarize_table은 table_summary.py로 이동되었습니다.
     
     async def _finalize_table_summaries(self) -> List[str]:
         """테이블/컬럼 설명 요약"""
@@ -1573,6 +1435,7 @@ class DbmsAstProcessor(BaseAstProcessor):
         """테이블 요약 처리"""
         schema_key, name_key = table_key
         
+        # --- 메타데이터 수집 ---
         ddl_key = (schema_key.lower(), name_key.lower())
         ddl_meta = self._ddl_table_metadata.get(ddl_key, {})
         ddl_description = (ddl_meta.get('description') or '').strip()
@@ -1618,6 +1481,7 @@ class DbmsAstProcessor(BaseAstProcessor):
                     "examples": [],
                 }
         
+        # --- LLM 호출 ---
         result = await asyncio.to_thread(
             summarize_table_metadata,
             table_display,
@@ -1631,20 +1495,19 @@ class DbmsAstProcessor(BaseAstProcessor):
         if not isinstance(result, dict):
             raise RuntimeError(f"테이블 요약 결과가 dict가 아님 ({schema_key}.{name_key}): {type(result).__name__}")
         
+        # --- 쿼리 생성 ---
         queries: List[Union[str, Dict[str, Any]]] = []
         llm_table_desc = (result.get('tableDescription') or '').strip()
         
         if llm_table_desc:
-            # 프로시저 분석 결과는 analyzed_description에 항상 저장 (파라미터화)
-            # 기존 description이 비어있을 때만 description에도 저장 + description_source='procedure' 설정
             queries.append({
                 "query": (
                     f"MATCH (__cy_t__:Table {{schema: $schema, name: $name, db: $db}})\n"
                     f"SET __cy_t__.analyzed_description = $llm_desc\n"
-                f"WITH __cy_t__\n"
-                f"WHERE __cy_t__.description IS NULL OR __cy_t__.description = ''\n"
+                    f"WITH __cy_t__\n"
+                    f"WHERE __cy_t__.description IS NULL OR __cy_t__.description = ''\n"
                     f"SET __cy_t__.description = $llm_desc, __cy_t__.description_source = 'procedure'\n"
-                f"RETURN __cy_t__"
+                    f"RETURN __cy_t__"
                 ),
                 "params": {
                     "schema": schema_key,
@@ -1661,16 +1524,14 @@ class DbmsAstProcessor(BaseAstProcessor):
                 continue
             
             fqn = '.'.join(filter(None, [schema_key, name_key, column_name])).lower()
-            # 프로시저 분석 결과는 analyzed_description에 항상 저장 (파라미터화)
-            # 기존 description이 비어있을 때만 description에도 저장 + description_source='procedure' 설정
             queries.append({
                 "query": (
                     f"MATCH (__cy_c__:Column {{fqn: $fqn}})\n"
                     f"SET __cy_c__.analyzed_description = $llm_desc\n"
-                f"WITH __cy_c__\n"
-                f"WHERE __cy_c__.description IS NULL OR __cy_c__.description = ''\n"
+                    f"WITH __cy_c__\n"
+                    f"WHERE __cy_c__.description IS NULL OR __cy_c__.description = ''\n"
                     f"SET __cy_c__.description = $llm_desc, __cy_c__.description_source = 'procedure'\n"
-                f"RETURN __cy_c__"
+                    f"RETURN __cy_c__"
                 ),
                 "params": {
                     "fqn": fqn,

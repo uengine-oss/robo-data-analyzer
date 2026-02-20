@@ -682,12 +682,11 @@ robo_analyzer_core/
 │
 ├── rules/                       # LLM 프롬프트 규칙 (YAML)
 │   ├── framework/              # Framework 분석 프롬프트
-│   │   ├── analysis.yaml       # 코드 분석 (calls 배열 포함)
-│   │   ├── class_summary_only.yaml # 클래스 요약
-│   │   ├── class_user_story.yaml # 클래스 User Story
-│   │   ├── field.yaml          # 필드 분석
-│   │   ├── inheritance.yaml    # 상속 관계 분석
-│   │   └── method.yaml         # 메서드 분석
+│   │   ├── analysis.yaml       # 코드 분석 (summary, dependencies, calls)
+│   │   ├── association.yaml    # 필드 기반 ASSOCIATION 관계 분석
+│   │   ├── class_user_story.yaml # 클래스 User Story 생성
+│   │   ├── method_summary_enhancement.yaml # 메서드 summary 보강
+│   │   └── stereotype.yaml     # 클래스/메서드 스테레오타입 분류
 │   │
 │   └── dbms/                   # DBMS 분석 프롬프트
 │       ├── analysis.yaml       # 코드 분석

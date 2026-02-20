@@ -153,20 +153,6 @@ class BaseAstProcessor(ABC):
         """
         raise NotImplementedError
 
-    @abstractmethod
-    async def _process_unit_summaries(
-        self, 
-        unit_summary_store: Dict[str, Dict[str, str]]
-    ) -> List[Union[str, Dict[str, Any]]]:
-        """단위(프로시저/클래스)별 summary를 처리하여 쿼리를 반환합니다.
-        
-        Args:
-            unit_summary_store: 단위별 summary 저장소
-            
-        Returns:
-            단위 요약 쿼리 리스트 (파라미터화된 Dict 포함)
-        """
-        raise NotImplementedError
 
     @abstractmethod
     async def _extract_node_context(
@@ -355,15 +341,23 @@ class BaseAstProcessor(ABC):
     # Phase 2: LLM 분석
     # =========================================================================
     
-    async def run_llm_analysis(self) -> Tuple[List[Union[str, Dict[str, Any]]], int, List[Dict[str, Any]]]:
-        """[Phase 2] LLM 분석을 실행하고 업데이트 쿼리를 생성합니다.
+    async def run_llm_analysis(
+        self,
+        on_queries_ready=None,
+    ) -> Tuple[List[Union[str, Dict[str, Any]]], int, List[Dict[str, Any]], Dict[str, Dict[str, str]]]:
+        """[Phase 2] LLM 분석을 실행하고 배치별로 즉시 쿼리를 전달합니다.
         
         중요: 자식→부모 요약 의존성을 보장하기 위해 completion_event 기반 대기
         - 부모 노드는 자식 노드의 completion_event를 기다린 후 실행
         - leaf 노드는 바로 실행, parent 노드는 자식 완료 후 실행
         
+        Args:
+            on_queries_ready: 배치별 쿼리 즉시 전달 콜백 (선택).
+                async def on_queries_ready(queries, batch_id, total_batches)
+                호출 시 즉시 Neo4j 저장 + 프론트 스트리밍 수행.
+        
         Returns:
-            (분석 결과 업데이트 쿼리 리스트, 실패한 배치 수, 실패 상세 정보 리스트)
+            (분석 결과 업데이트 쿼리 리스트, 실패한 배치 수, 실패 상세 정보 리스트, unit_summary_store)
         """
         if self._nodes is None:
             raise RuntimeError(f"Phase 1이 먼저 실행되어야 합니다: {self.file_name}")
@@ -374,9 +368,11 @@ class BaseAstProcessor(ABC):
         failed_batch_count = 0
         all_failed_details: List[Dict[str, Any]] = []
         
-        # 선행 처리
-        preprocessing_queries = await self._run_preprocessing()
-        all_queries.extend(preprocessing_queries)
+        # 선행 처리 제거 (Phase 1.5로 이동됨)
+        # preprocessing_queries = await self._run_preprocessing()
+        # all_queries.extend(preprocessing_queries)
+        # if on_queries_ready and preprocessing_queries:
+        #     await on_queries_ready(preprocessing_queries, 0, 0)
         
         # Phase 1.5: 부모 컨텍스트 생성 (Top-down)
         await self._generate_node_contexts()
@@ -387,7 +383,7 @@ class BaseAstProcessor(ABC):
         
         if not batches:
             log_process("ANALYZE", "PHASE2", f"⚠️ {self.full_directory}: 분석 대상 배치 없음")
-            return all_queries, 0, []
+            return all_queries, 0, [], {}
         
         log_process("ANALYZE", "PHASE2", f"📊 배치 {len(batches)}개 (completion_event 기반 의존성 보장)")
         
@@ -432,6 +428,9 @@ class BaseAstProcessor(ABC):
                     self._apply_summary_to_nodes(batch, llm_result)
                     
                     queries = self._build_analysis_queries(batch, llm_result, unit_summary_store)
+                    # 배치 완료 즉시 Neo4j 저장 + 스트리밍
+                    if on_queries_ready and queries:
+                        await on_queries_ready(queries, batch.batch_id, len(batches))
                     return queries, {"batch": batch, "result": llm_result}
                 except Exception:
                     # 배치 실패 시 모든 노드를 ok=False로 마킹
@@ -478,16 +477,12 @@ class BaseAstProcessor(ABC):
         failed_batch_count += fail_count
         all_failed_details.extend(failed_details)
         
-        # 단위별 summary 처리 (프로시저/클래스가 없어도 테이블 설명 보강 등 후처리 수행)
-        unit_queries = await self._process_unit_summaries(unit_summary_store)
-        all_queries.extend(unit_queries)
-        
         # 배치 실패 시 즉시 중단 - 부분 실패 허용 안함
         if failed_batch_count > 0:
             raise RuntimeError(f"{self.full_directory}: {failed_batch_count}개 배치 실패 (상세: {all_failed_details})")
         
         log_process("ANALYZE", "PHASE2", f"✅ {self.full_directory}: {len(all_queries)}개 업데이트 쿼리")
-        return all_queries, failed_batch_count, all_failed_details
+        return all_queries, failed_batch_count, all_failed_details, unit_summary_store
 
     def _apply_summary_to_nodes(self, batch: AnalysisBatch, llm_result: Any) -> None:
         """LLM 결과에서 summary를 추출하여 노드에 적용합니다.

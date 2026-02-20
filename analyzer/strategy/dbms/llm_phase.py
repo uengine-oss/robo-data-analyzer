@@ -67,50 +67,46 @@ async def run_phase2(
                 if not ctx.processor:
                     raise RuntimeError(f"Phase 1에서 프로세서 초기화 실패: {ctx.file_name}")
                 
-                # LLM 분석 실행 (튜플 반환: queries, failed_batch_count, failed_details)
-                # 이 호출 내에서 summary 청크 분석, User Story 생성, 테이블 요약이 모두 처리됨
-                analysis_queries, failed_batch_count, failed_details = await ctx.processor.run_llm_analysis()
+                # 배치별 그래프 누적용 (통계 집계에 사용)
+                all_nodes = {}
+                all_relationships = {}
                 
-                if analysis_queries:
-                    all_nodes = {}
-                    all_relationships = {}
+                async def on_queries_ready(queries, batch_id, total_batches):
+                    """LLM 배치 완료 즉시 Neo4j 저장 + 프론트 스트리밍"""
+                    if not queries:
+                        return
                     async with analyzer._cypher_lock:
-                        async for batch_result in client.run_graph_query(analysis_queries):
+                        async for batch_result in client.run_graph_query(queries):
                             for node in batch_result.get("Nodes", []):
                                 all_nodes[node["Node ID"]] = node
                             for rel in batch_result.get("Relationships", []):
                                 all_relationships[rel["Relationship ID"]] = rel
-                            # 배치 진행률 스트리밍 (그래프 데이터 포함)
                             await results_queue.put({
                                 "type": "batch_progress",
                                 "file": ctx.file_name,
-                                "batch": batch_result.get("batch", 0),
-                                "total_batches": batch_result.get("total_batches", 0),
+                                "batch_id": batch_id,
+                                "total_batches": total_batches,
                                 "graph": {
                                     "Nodes": batch_result.get("Nodes", []),
                                     "Relationships": batch_result.get("Relationships", []),
                                 },
                             })
-                    
-                    graph = {"Nodes": list(all_nodes.values()), "Relationships": list(all_relationships.values())}
-                    ctx.status = FileStatus.PH2_OK
-                    await results_queue.put({
-                        "type": "success",
-                        "file": ctx.file_name,
-                        "graph": graph,
-                        "query_count": len(analysis_queries),
-                        "failed_batches": failed_batch_count,
-                        "failed_details": failed_details,
-                    })
-                else:
-                    ctx.status = FileStatus.PH2_OK
-                    await results_queue.put({
-                        "type": "success",
-                        "file": ctx.file_name,
-                        "graph": {"Nodes": [], "Relationships": []},
-                        "query_count": 0,
-                        "failed_batches": failed_batch_count,
-                    })
+                
+                # LLM 분석 실행 — 각 배치 완료 시 on_queries_ready 콜백으로 즉시 저장/스트림
+                analysis_queries, failed_batch_count, failed_details, _ = await ctx.processor.run_llm_analysis(
+                    on_queries_ready=on_queries_ready,
+                )
+                
+                graph = {"Nodes": list(all_nodes.values()), "Relationships": list(all_relationships.values())}
+                ctx.status = FileStatus.PH2_OK
+                await results_queue.put({
+                    "type": "success",
+                    "file": ctx.file_name,
+                    "graph": graph,
+                    "query_count": len(analysis_queries),
+                    "failed_batches": failed_batch_count,
+                    "failed_details": failed_details,
+                })
                 
                 # 배치 실패가 있으면 즉시 중단 - 부분 실패 허용 안함
                 if failed_batch_count > 0:
@@ -140,16 +136,23 @@ async def run_phase2(
             yield emit_message(f"   ⚠️ {result['file']}: {result['message']}")
             continue
         
-        # 배치 진행률은 카운트하지 않음 (중간 진행 상태)
+        # 배치 진행률은 카운트하지 않음 (중간 진행 상태) — 배치별 즉시 스트리밍
         if result_type == "batch_progress":
-            batch = result.get("batch", 0)
+            batch_id = result.get("batch_id", 0)
             total_batches = result.get("total_batches", 0)
             graph = result.get("graph")
             node_count = len(graph.get("Nodes", [])) if graph else 0
-            yield emit_message(f"│     📦 배치 {batch}/{total_batches} 저장 (노드 {node_count}개)")
+            batch_label = f"#{batch_id}/{total_batches}" if total_batches > 0 else f"#{batch_id}"
+            # 시스템 로그에도 배치 스트림 전송 완료 기록
+            log_process(
+                "STREAM",
+                "BATCH",
+                f"{result.get('file')}: 스트림 전송 완료 (배치 {batch_label}, 노드 {node_count}개)",
+            )
+            yield emit_message(f"│     📦 배치 {batch_label} 저장 완료 (노드 {node_count}개)")
             # 배치별 그래프 데이터 즉시 전송
             if graph:
-                yield emit_data(graph=graph)
+                yield emit_data(graph=graph, current_file=result.get("file"))
             continue
         
         completed += 1
@@ -228,13 +231,30 @@ async def run_phase2(
                 }
             )
             
+            # 그래프 데이터는 이미 배치별로 전송 완료 — 진행률만 전송
             yield emit_data(
-                graph=graph,
-                line_number=0,
                 analysis_progress=phase2_progress,
                 current_file=result["file"],
             )
 
     # 모든 작업 완료 대기
     await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Phase 2.1: 프로시저 Summary 생성 (병렬)
+    from analyzer.strategy.dbms.procedure_summary import run_phase2_1_procedure_summary
+    async for chunk in run_phase2_1_procedure_summary(analyzer, contexts, client, orchestrator, stats):
+        yield chunk
+    
+    # Phase 2.2: User Story 생성 (병렬)
+    from analyzer.strategy.dbms.user_story import run_phase2_2_user_story
+    async for chunk in run_phase2_2_user_story(analyzer, contexts, client, orchestrator, stats):
+        yield chunk
+    
+    # Phase 2.4: 테이블/컬럼 설명 요약
+    from analyzer.strategy.dbms.table_summary import run_phase2_4_table_summary
+    async for chunk in run_phase2_4_table_summary(analyzer, contexts, client, orchestrator, stats):
+        yield chunk
+    
+    # Phase 2 완료 이벤트
+    yield emit_phase_event(2, "AI 분석", "completed", 100, {"batches": stats.llm_batches_executed})
 
