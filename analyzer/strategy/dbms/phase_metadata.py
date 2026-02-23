@@ -1,10 +1,7 @@
-"""메타데이터 보강 Phase (Phase 3.5) - DBMS
+"""Phase 3.5: 메타데이터 보강 - DBMS
 
-Text2SQL API를 통해 샘플 데이터를 조회하고,
-LLM으로 테이블/컬럼 설명을 생성합니다.
-FK 관계도 샘플 데이터 매칭으로 추론합니다.
-
-벡터라이징 전에 실행되어, 벡터 생성 품질을 향상시킵니다.
+Text2SQL API로 샘플 데이터 조회 후 LLM으로 테이블/컬럼 설명 생성.
+FK 관계 추론 포함. dbms_pipeline에서 호출.
 """
 
 import asyncio
@@ -39,8 +36,8 @@ FK_PROGRESS_RANGE = (0, 50)  # FK 추론 진행률 범위
 DESC_PROGRESS_RANGE = (50, 100)  # 설명 생성 진행률 범위
 
 
-async def run_metadata_phase(
-    analyzer: Any,
+async def run_phase_metadata(
+    pipeline: Any,
     client: Neo4jClient,
     orchestrator: Any,
     stats: AnalysisStats,
@@ -53,7 +50,7 @@ async def run_metadata_phase(
     4. Neo4j에 description 업데이트
     
     Args:
-        analyzer: DbmsAnalyzer 인스턴스
+        pipeline: DbmsPipeline 인스턴스 (총괄 파이프라인)
         client: Neo4j 클라이언트
         orchestrator: 오케스트레이터
         stats: 분석 통계
@@ -74,7 +71,7 @@ async def run_metadata_phase(
     
     # description 없는 테이블 조회
     tables_to_enrich = []
-    async for chunk in _get_tables_without_description(analyzer, client):
+    async for chunk in _get_tables_without_description(pipeline, client):
         if isinstance(chunk, list):
             tables_to_enrich = chunk
         else:
@@ -100,7 +97,7 @@ async def run_metadata_phase(
         if fk_enabled:
             yield emit_message(f"   🔍 FK 추론 활성화됨 (소스 테이블: {len(tables_to_enrich)}개)")
             async for chunk in _run_fk_inference(
-                analyzer, client, session, enrichment_service, stats, tables_to_enrich
+                pipeline, client, session, enrichment_service, stats, tables_to_enrich
             ):
                 yield chunk
         else:
@@ -108,7 +105,7 @@ async def run_metadata_phase(
         
         # 설명 생성 및 업데이트
         async for chunk in _enrich_table_descriptions(
-            analyzer, client, session, enrichment_service, stats, tables_to_enrich
+            pipeline, client, session, enrichment_service, stats, tables_to_enrich
         ):
             yield chunk
         
@@ -166,7 +163,7 @@ async def _init_enrichment_service(
 
 
 async def _get_tables_without_description(
-    analyzer: Any, client: Neo4jClient
+    pipeline: Any, client: Neo4jClient
 ) -> AsyncGenerator[bytes | List[Dict[str, Any]], None]:
     """description이 없는 테이블 목록 조회"""
     yield emit_message("   🔍 [Phase 3.5-1] description이 비어있는 테이블 조회 중...")
@@ -187,7 +184,7 @@ async def _get_tables_without_description(
     """
     
     try:
-        async with analyzer._cypher_lock:
+        async with pipeline._cypher_lock:
             total_results = await client.execute_queries([total_query])
             results = await client.execute_queries([query])
         
@@ -243,7 +240,7 @@ def _is_fk_inference_enabled(orchestrator: Any) -> bool:
 
 
 async def _enrich_table_descriptions(
-    analyzer: Any,
+    pipeline: Any,
     client: Neo4jClient,
     session: aiohttp.ClientSession,
     enrichment_service: MetadataEnrichmentService,
@@ -288,7 +285,7 @@ async def _enrich_table_descriptions(
             t_updated, c_updated = 0, 0
             failure_reason = None
             async for chunk in _process_table_description(
-                analyzer, client, session, enrichment_service, table_name, schema_name, full_table_name
+                pipeline, client, session, enrichment_service, table_name, schema_name, full_table_name
             ):
                 if isinstance(chunk, tuple):
                     t_updated, c_updated = chunk
@@ -380,7 +377,7 @@ async def _enrich_table_descriptions(
 
 
 async def _process_table_description(
-    analyzer: Any,
+    pipeline: Any,
     client: Neo4jClient,
     session: aiohttp.ClientSession,
     enrichment_service: MetadataEnrichmentService,
@@ -405,7 +402,7 @@ async def _process_table_description(
         return
     
     # 컬럼 정보 조회
-    columns_info = await _get_columns_info(analyzer, client, table_name, schema_name)
+    columns_info = await _get_columns_info(pipeline, client, table_name, schema_name)
     
     if not columns_info:
         yield f"컬럼 정보 조회 실패"
@@ -429,7 +426,7 @@ async def _process_table_description(
     
     # Neo4j 업데이트
     try:
-        async with analyzer._cypher_lock:
+        async with pipeline._cypher_lock:
             t_updated, c_updated = await enrichment_service.update_descriptions_in_neo4j(
                 table_name, schema_name, descriptions
             )
@@ -446,7 +443,7 @@ async def _process_table_description(
     yield (t_updated, c_updated)
 
 
-async def _get_columns_info(analyzer: Any, client: Neo4jClient, table_name: str, schema_name: str) -> List[Dict[str, Any]]:
+async def _get_columns_info(pipeline: Any, client: Neo4jClient, table_name: str, schema_name: str) -> List[Dict[str, Any]]:
     """컬럼 정보 조회"""
     query = """
     MATCH (t:Table {name: $table_name})-[:HAS_COLUMN]->(c:Column)
@@ -457,7 +454,7 @@ async def _get_columns_info(analyzer: Any, client: Neo4jClient, table_name: str,
     ORDER BY c.name
     """
     
-    async with analyzer._cypher_lock:
+    async with pipeline._cypher_lock:
         result = await client.execute_with_params(query, {"table_name": table_name, "schema_name": schema_name})
     
     return result if isinstance(result, list) else []
@@ -530,7 +527,7 @@ async def _complete_phase(stats: AnalysisStats) -> AsyncGenerator[bytes, None]:
 
 
 async def _run_fk_inference(
-    analyzer: Any,
+    pipeline: Any,
     client: Neo4jClient,
     session: aiohttp.ClientSession,
     enrichment_service: MetadataEnrichmentService,
@@ -550,7 +547,7 @@ async def _run_fk_inference(
     
     # 테이블 목록 조회
     source_tables, all_tables = [], []
-    async for chunk in _get_fk_inference_tables(analyzer, client, tables_without_desc):
+    async for chunk in _get_fk_inference_tables(pipeline, client, tables_without_desc):
         if isinstance(chunk, tuple):
             source_tables, all_tables = chunk
         else:
@@ -584,7 +581,7 @@ async def _run_fk_inference(
     # 검증 및 저장
     verified_count = 0
     async for chunk in _verify_and_save_fk_relationships(
-        analyzer, client, session, enrichment_service, candidates
+        pipeline, client, session, enrichment_service, candidates
     ):
         if isinstance(chunk, int):
             verified_count = chunk
@@ -599,14 +596,14 @@ async def _run_fk_inference(
 
 
 async def _save_fk_candidates_to_file(candidates: List[Dict[str, Any]]) -> None:
-    """FK 후보 선정 결과를 JSON 파일로 저장 (상세 통계 포함) - log 폴더에 저장"""
+    """FK 후보 선정 결과를 JSON 파일로 저장 (상세 통계 포함) - logs 폴더에 저장"""
     try:
         # 프로젝트 루트 디렉토리 찾기 (현재 파일 기준으로 3단계 상위)
         current_file = Path(__file__)
         project_root = current_file.parent.parent.parent.parent  # analyzer/strategy/dbms -> 프로젝트 루트
         
         # log 폴더 생성 (없으면)
-        log_dir = project_root / "log"
+        log_dir = project_root / "logs"
         log_dir.mkdir(exist_ok=True)
         
         # 파일명: fk_candidates_YYYYMMDD_HHMMSS.json
@@ -762,7 +759,7 @@ async def _save_failed_tables_to_file(
 
 
 async def _get_fk_inference_tables(
-    analyzer: Any, client: Neo4jClient, tables_without_desc: List[Dict[str, Any]]
+    pipeline: Any, client: Neo4jClient, tables_without_desc: List[Dict[str, Any]]
 ) -> AsyncGenerator[bytes | tuple[List[Dict[str, Any]], List[Dict[str, Any]]], None]:
     """FK 추론용 테이블 목록 조회
     
@@ -822,7 +819,7 @@ async def _get_fk_inference_tables(
     """
     
     try:
-        async with analyzer._cypher_lock:
+        async with pipeline._cypher_lock:
             source_results = await client.execute_with_params(
                 source_query,
                 {"table_pairs": source_table_pairs}
@@ -913,7 +910,7 @@ def _normalize_failure_reason(reason: str) -> str:
 
 
 async def _verify_and_save_fk_relationships(
-    analyzer: Any,
+    pipeline: Any,
     client: Neo4jClient,
     session: aiohttp.ClientSession,
     enrichment_service: MetadataEnrichmentService,
@@ -961,7 +958,7 @@ async def _verify_and_save_fk_relationships(
             
             # 성공한 경우 → 저장
             if result.get("success") is not False:
-                if await _check_and_save_fk_relationship(analyzer, client, enrichment_service, result):
+                if await _check_and_save_fk_relationship(pipeline, client, enrichment_service, result):
                     verified_count += 1
                     from_key = f"{result.get('from_schema')}.{result.get('from_table')}.{result.get('from_column')}"
                     to_key = f"{result.get('to_schema')}.{result.get('to_table')}.{result.get('to_column')}"
@@ -992,7 +989,7 @@ async def _verify_and_save_fk_relationships(
 
 
 async def _check_and_save_fk_relationship(
-    analyzer: Any,
+    pipeline: Any,
     client: Neo4jClient,
     enrichment_service: MetadataEnrichmentService,
     result: Dict[str, Any],
@@ -1007,7 +1004,7 @@ async def _check_and_save_fk_relationship(
     RETURN r, c2.is_primary_key AS existing_from_is_pk, c1.is_primary_key AS existing_to_is_pk
     """
     
-    async with analyzer._cypher_lock:
+    async with pipeline._cypher_lock:
         reverse_result = await client.execute_with_params(
             reverse_check_query,
             {

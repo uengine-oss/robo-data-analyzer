@@ -20,8 +20,8 @@ from util.stream_event import (
 from util.text_utils import log_process
 
 
-async def run_vectorize_phase(
-    analyzer: Any,
+async def run_phase_vector(
+    pipeline: Any,
     client: Neo4jClient,
     orchestrator: Any,
     stats: AnalysisStats,
@@ -32,7 +32,7 @@ async def run_vectorize_phase(
     배치 처리로 성능 최적화
     
     Args:
-        analyzer: DbmsAnalyzer 인스턴스 (공유 상태 접근용)
+        pipeline: DbmsPipeline 인스턴스 (총괄 파이프라인)
         client: Neo4j 클라이언트
         orchestrator: 오케스트레이터
         stats: 분석 통계
@@ -82,7 +82,7 @@ async def run_vectorize_phase(
     """
     
     try:
-        async with analyzer._cypher_lock:
+        async with pipeline._cypher_lock:
             result = await client.execute_queries([table_query])
         
         tables = result[0] if result and result[0] else []
@@ -160,7 +160,7 @@ async def run_vectorize_phase(
                     SET __cy_t__.vector = item.vector
                     RETURN __cy_t__
                     """
-                    async with analyzer._cypher_lock:
+                    async with pipeline._cypher_lock:
                         await client.execute_with_params(update_query, {"items": vector_updates})
                     
                     yield emit_message(f"      ✓ [{batch_num}/{total_batches}] {len(vector_updates)}개 테이블 벡터 저장 완료")
@@ -204,7 +204,7 @@ async def run_vectorize_phase(
     """
     
     try:
-        async with analyzer._cypher_lock:
+        async with pipeline._cypher_lock:
             result = await client.execute_queries([column_query])
         
         columns = result[0] if result and result[0] else []
@@ -268,7 +268,7 @@ async def run_vectorize_phase(
                     SET __cy_c__.vector = item.vector
                     RETURN __cy_c__
                     """
-                    async with analyzer._cypher_lock:
+                    async with pipeline._cypher_lock:
                         await client.execute_with_params(update_query, {"items": vector_updates})
                     
                     yield emit_message(f"      ✓ [{batch_num}/{total_batches}] {len(vector_updates)}개 컬럼 벡터 저장 완료")

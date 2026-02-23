@@ -20,8 +20,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from client.neo4j_client import Neo4jClient
 from analyzer.strategy.base_analyzer import AnalysisStats
-from analyzer.strategy.dbms.metadata_phase import run_metadata_phase
-from analyzer.strategy.dbms.ddl_phase import run_ddl_phase
+from analyzer.strategy.dbms.phase_metadata import run_phase_metadata
+from analyzer.strategy.dbms.phase_ddl import run_phase_ddl
 from config.settings import settings
 from service.source_analyze_service import get_analysis_directories
 
@@ -216,7 +216,7 @@ async def main():
         ddl_nodes_count = 0
         ddl_rels_count = 0
         
-        async for chunk in run_ddl_phase(analyzer, client, orchestrator, stats):
+        async for chunk in run_phase_ddl(analyzer, client, orchestrator, stats):
             if isinstance(chunk, bytes):
                 try:
                     message_str = chunk.decode('utf-8', errors='ignore').strip()
@@ -273,7 +273,7 @@ async def main():
         node_events_count = 0
         relationship_events_count = 0
         
-        async for chunk in run_metadata_phase(analyzer, client, orchestrator, stats):
+        async for chunk in run_phase_metadata(analyzer, client, orchestrator, stats):
             # 스트리밍 데이터 처리
             if isinstance(chunk, bytes):
                 try:

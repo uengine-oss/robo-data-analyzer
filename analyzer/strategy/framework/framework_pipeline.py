@@ -1,35 +1,6 @@
-"""Framework 코드 분석 전략 - Java, Kotlin 등
+"""Framework 분석 총괄 파이프라인
 
-ANTLR JSON 결과물 기반 Java 코드 분석 → Neo4j 클래스 다이어그램 그래프 생성.
-
-분석 흐름 (3단계 + 이중 병렬):
-1. [Phase 1] 모든 파일 AST 그래프 생성 (병렬)
-   - 정적 노드 생성: CLASS, INTERFACE, METHOD, FIELD (ANTLR JSON 기반)
-   - 정적 관계 생성: HAS_METHOD, HAS_FIELD, CONTAINS, EXTENDS, IMPLEMENTS
-   - 필드 기반 ASSOCIATION 후보 생성 (association.yaml LLM)
-   
-2. [Phase 2] 모든 파일 LLM 분석 (파일 병렬 + 청크 병렬)
-   - 코드 요약 및 분석 (analysis.yaml)
-   - DEPENDENCY 관계 생성 (메서드 본문 분석)
-   - CALLS 관계 생성 (다른 비즈니스 클래스 메서드 호출)
-   - USES 관계 자동 파생 (DEPENDENCY/CALLS에서)
-   - 클래스 요약 + 스테레오타입 통합 처리 (stereotype.yaml)
-   - 즉시 summary 벡터화 (summary_vec)
-
-3. [Phase 3] 비타겟 파일 분석 (LangGraph + DeepAgents)
-   - 설정 파일, 리소스 파일 등 분석
-   - 블록화 → Summary 생성 → REFERS_TO 관계 생성
-   
-4. [Phase 4] User Story 문서 생성 (BaseStreamingAnalyzer 공통)
-
-파일 상태 관리:
-- Phase1 실패 파일은 Phase2 스킵 (토큰 절감)
-- 파일별 SUCCESS/FAILED/SKIPPED 상태 추적
-
-Phase 로직은 각 phase 파일에 분리되어 있습니다:
-- ast_phase.py: AST 그래프 생성 (Phase 1)
-- llm_phase.py: LLM 분석 (Phase 2)
-- nontarget/: 비타겟 파일 분석 (Phase 3)
+Phase 1~3 순차 실행. BaseStreamingAnalyzer 구현.
 """
 
 import asyncio
@@ -38,9 +9,8 @@ import logging
 import os
 from typing import Any, AsyncGenerator, Optional, List
 
-import aiofiles
-
 from client.neo4j_client import Neo4jClient
+from util.encoding_utils import read_text_with_fallback
 from analyzer.strategy.base_analyzer import BaseStreamingAnalyzer, AnalysisStats
 from analyzer.strategy.base.file_context import FileStatus, FileAnalysisContext
 from analyzer.pipeline_control import pipeline_controller, PipelinePhase
@@ -51,50 +21,35 @@ from util.text_utils import (
     log_process,
 )
 
-# Phase 파일들에서 import
-from analyzer.strategy.framework.ast_phase import run_phase1, run_phase1_5_association
-from analyzer.strategy.framework.llm_phase import run_phase2
-from analyzer.strategy.framework.nontarget import run_nontarget_phase
+from analyzer.strategy.framework.phase_ast import run_phase1, run_phase1_5_association
+from analyzer.strategy.framework.phase_llm import run_phase2
+from analyzer.strategy.framework.phase_nontarget import run_phase_nontarget
 
 
-class FrameworkAnalyzer(BaseStreamingAnalyzer):
-    """Java/Framework 코드 분석 전략
+class FrameworkPipeline(BaseStreamingAnalyzer):
+    """Java/Framework 코드 분석 총괄 파이프라인
     
-    2단계 분석 + 이중 병렬 처리:
-    - Phase 1: 모든 파일 AST 그래프 생성 (병렬)
-    - Phase 2: 모든 파일 LLM 분석 (병렬) - Phase1 실패 파일 제외
-    - Phase 3: User Story 문서 생성 (부모 클래스 공통)
-    
-    파이프라인 특성:
-    - 병렬 처리: 파일 단위로 동시 분석
-    - 동시성 보호: Cypher 쿼리 락 사용
-    - 프로세서 재사용: Phase 1에서 생성한 프로세서를 Phase 2에서 재사용
-    - 토큰 절감: Phase1 실패 파일은 Phase2 스킵
+    Phase 1: AST 그래프 생성 (병렬)
+    Phase 1.5: UML ASSOCIATION 생성
+    Phase 2: LLM 분석 (병렬)
+    Phase 3: 비타겟 파일 분석
     """
 
-    # =========================================================================
-    # 전략 메타데이터 (BaseStreamingAnalyzer 구현)
-    # =========================================================================
-    
     @property
     def strategy_name(self) -> str:
         return "프레임워크"
-    
+
     @property
     def strategy_emoji(self) -> str:
         return "🚀"
-    
+
     @property
     def file_type_description(self) -> str:
         return "Java/Kotlin 파일"
 
     def __init__(self):
-        self._cypher_lock = asyncio.Lock()  # Cypher 쿼리 동시성 보호
+        self._cypher_lock = asyncio.Lock()
         self._file_semaphore: Optional[asyncio.Semaphore] = None
-
-    # =========================================================================
-    # 메인 파이프라인 (BaseStreamingAnalyzer 구현)
-    # =========================================================================
 
     async def run_pipeline(
         self,
@@ -103,23 +58,13 @@ class FrameworkAnalyzer(BaseStreamingAnalyzer):
         orchestrator: Any,
         stats: AnalysisStats,
     ) -> AsyncGenerator[bytes, None]:
-        """Framework 분석 파이프라인 실행
-        
-        흐름:
-        1. 파일 로드 (병렬)
-        2. Phase 1: AST 그래프 생성 (병렬)
-        3. Phase 2: LLM 분석 (병렬) - Phase1 실패 파일 제외 (토큰 절감)
-        
-        Note: User Story Phase는 부모 클래스에서 처리
-        """
+        """Framework 분석 파이프라인 실행"""
         total_files = len(file_names)
         self._file_semaphore = asyncio.Semaphore(settings.concurrency.file_concurrency)
-        
-        # 파이프라인 상태 초기화
+
         pipeline_controller.reset()
         pipeline_state = pipeline_controller.get_state()
 
-        # LLM 캐시 상태 표시
         if settings.llm.cache_enabled:
             cache_path = settings.llm.cache_db_path
             if not os.path.isabs(cache_path):
@@ -133,9 +78,7 @@ class FrameworkAnalyzer(BaseStreamingAnalyzer):
 
         yield emit_message(f"⚡ 병렬 처리: 파일 {settings.concurrency.file_concurrency}개 동시")
 
-        # ========== Phase 1: AST 그래프 생성 ==========
         pipeline_state.set_phase(PipelinePhase.AST_GENERATION, "AST 구조 그래프 생성 중", 0)
-        
         yield emit_message("")
         yield self.emit_separator()
         yield self.emit_phase_header(1, "🏗️ AST 구조 그래프 생성", f"{total_files}개 파일 병렬")
@@ -147,53 +90,42 @@ class FrameworkAnalyzer(BaseStreamingAnalyzer):
         async for chunk in run_phase1(self, contexts, client, orchestrator, stats):
             yield chunk
 
-        # Phase 1 결과 요약
-        ph1_ok_count = sum(1 for c in contexts if c.status == FileStatus.PH1_OK)
         ph1_fail_count = sum(1 for c in contexts if c.status == FileStatus.PH1_FAIL)
-        
         yield emit_message("")
         yield self.emit_phase_complete(1, f"{stats.static_nodes_created}개 노드 생성")
         if ph1_fail_count > 0:
             yield self.emit_warning(f"Phase 1 실패: {ph1_fail_count}개 파일 → Phase 2 스킵 (토큰 절감)")
-        
-        # Phase 1 후 일시정지 체크
+
         if not await pipeline_state.wait_if_paused():
             yield emit_message("⏹️ 파이프라인이 중단되었습니다")
             pipeline_state.set_phase(PipelinePhase.CANCELLED)
             return
 
-        # ========== Phase 1.5: UML ASSOCIATION 생성 (병렬) - Phase1 성공 파일만 ==========
         ph1_5_targets = [c for c in contexts if c.status == FileStatus.PH1_OK]
-        
         pipeline_state.set_phase(PipelinePhase.AST_GENERATION, "UML ASSOCIATION 생성 중", 0)
-        
         yield emit_message("")
         yield self.emit_separator()
         yield self.emit_phase_header(1.5, "🔗 UML ASSOCIATION 생성", f"{len(ph1_5_targets)}개 파일 병렬")
         yield self.emit_separator()
-        
+
         async for chunk in run_phase1_5_association(self, ph1_5_targets, client, orchestrator, stats):
             yield chunk
-        
+
         yield emit_message("")
         yield self.emit_phase_complete(1.5, "ASSOCIATION 관계 생성 완료")
-        
-        # Phase 1.5 후 일시정지 체크
+
         if not await pipeline_state.wait_if_paused():
             yield emit_message("⏹️ 파이프라인이 중단되었습니다")
             pipeline_state.set_phase(PipelinePhase.CANCELLED)
             return
 
-        # ========== Phase 2: LLM 분석 (병렬) - Phase1 성공 파일만 ==========
         ph2_targets = [c for c in contexts if c.status == FileStatus.PH1_OK]
-        
         pipeline_state.set_phase(PipelinePhase.LLM_ANALYSIS, "AI 분석 중", 0)
-        
         yield emit_message("")
         yield self.emit_separator()
         yield self.emit_phase_header(2, "🤖 AI 분석", f"{len(ph2_targets)}개 파일 병렬")
         yield self.emit_separator()
-        
+
         if ph1_fail_count > 0:
             yield emit_message(f"   ℹ️ {ph1_fail_count}개 파일은 Phase 1 실패로 스킵됨 (토큰 절감)")
 
@@ -202,25 +134,20 @@ class FrameworkAnalyzer(BaseStreamingAnalyzer):
 
         yield emit_message("")
         yield self.emit_phase_complete(2, f"{stats.llm_batches_executed}개 분석 완료")
-        
-        # Phase 2 후 일시정지 체크
+
         if not await pipeline_state.wait_if_paused():
             yield emit_message("⏹️ 파이프라인이 중단되었습니다")
             pipeline_state.set_phase(PipelinePhase.CANCELLED)
             return
-        
-        # ========== Phase 3: 비타겟 파일 분석 (nontarget) ==========
-        # 파일 분류: Java/Kotlin 파일과 nontarget 파일 분리
-        java_files = [(d, f) for d, f in file_names if f.endswith(('.java', '.kt'))]
+
         nontarget_files = [(d, f) for d, f in file_names if not f.endswith(('.java', '.kt'))]
-        
         if nontarget_files:
             yield emit_message("")
             yield self.emit_separator()
             yield self.emit_phase_header(3, "📄 비타겟 파일 분석", f"{len(nontarget_files)}개 파일")
             yield self.emit_separator()
-            
-            async for chunk in run_nontarget_phase(
+
+            async for chunk in run_phase_nontarget(
                 analyzer=self,
                 file_names=nontarget_files,
                 client=client,
@@ -228,25 +155,47 @@ class FrameworkAnalyzer(BaseStreamingAnalyzer):
                 stats=stats,
             ):
                 yield chunk
-            
+
             yield emit_message("")
             yield self.emit_phase_complete(3, "비타겟 파일 분석 완료")
         else:
             yield emit_message("")
             yield emit_message("   ℹ️ 비타겟 파일 없음 (Java/Kotlin 파일만 존재)")
-        
-        # Phase 3 후 일시정지 체크
+
         if not await pipeline_state.wait_if_paused():
             yield emit_message("⏹️ 파이프라인이 중단되었습니다")
             pipeline_state.set_phase(PipelinePhase.CANCELLED)
             return
-        
-        # 파이프라인 완료
+
         pipeline_state.set_phase(PipelinePhase.COMPLETED)
 
-    # =========================================================================
-    # User Story 문서 생성 (BaseStreamingAnalyzer 구현)
-    # =========================================================================
+    async def _load_all_files(
+        self,
+        file_names: list[tuple[str, str]],
+        orchestrator: Any,
+    ) -> List[FileAnalysisContext]:
+        """모든 파일의 AST JSON을 병렬로 로드"""
+        async def load_single(directory: str, file_name: str) -> FileAnalysisContext:
+            base_name = os.path.splitext(file_name)[0]
+            ast_path = os.path.join(orchestrator.dirs["analysis"], "target", directory, f"{base_name}.json")
+            try:
+                ast_content, encoding_used = await read_text_with_fallback(
+                    ast_path, preferred_encodings=("utf-8", "utf-8-sig", "cp949", "euc-kr")
+                )
+                if encoding_used != "utf-8":
+                    logging.info("[FILE_ENCODING] AST JSON fallback decoding: %s (encoding=%s)", ast_path, encoding_used)
+                return FileAnalysisContext(directory=directory, file_name=file_name, ast_data=json.loads(ast_content))
+            except FileNotFoundError:
+                raise RuntimeError(
+                    f"ANTLR JSON 파일을 찾을 수 없습니다: {ast_path}\n"
+                    "ANTLR 파싱이 실패했거나 파일이 생성되지 않았습니다."
+                )
+            except json.JSONDecodeError as e:
+                raise RuntimeError(
+                    f"ANTLR JSON 파싱 오류 ({file_name}): {e}\n"
+                    "ANTLR 파서가 올바른 JSON을 생성하지 못했습니다."
+                )
+        return await asyncio.gather(*[load_single(d, f) for d, f in file_names])
 
     async def build_user_story_doc(
         self,
@@ -280,10 +229,10 @@ class FrameworkAnalyzer(BaseStreamingAnalyzer):
                    labels(__cy_n__)[0] AS type
             ORDER BY __cy_n__.file_name, __cy_n__.start_line
         """
-        
+
         async with self._cypher_lock:
             results = await client.execute_queries([query])
-        
+
         if not results or not results[0]:
             log_process(
                 "ANALYZE", "USER_STORY",
@@ -291,15 +240,15 @@ class FrameworkAnalyzer(BaseStreamingAnalyzer):
                 logging.INFO
             )
             return None
-        
+
         filtered = [
             r for r in results[0]
             if r.get("summary") or (r.get("user_stories") and len(r["user_stories"]) > 0)
         ]
-        
+
         if not filtered:
             return None
-        
+
         log_process("ANALYZE", "USER_STORY", f"User Story 생성 | 대상={len(filtered)}개 클래스")
         return generate_user_story_document(
             results=filtered,
@@ -307,45 +256,5 @@ class FrameworkAnalyzer(BaseStreamingAnalyzer):
             source_type="Java 클래스/인터페이스",
         )
 
-    # =========================================================================
-    # 파일 로드
-    # =========================================================================
 
-    async def _load_all_files(
-        self,
-        file_names: list[tuple[str, str]],
-        orchestrator: Any,
-    ) -> List[FileAnalysisContext]:
-        """모든 파일의 AST JSON을 병렬로 로드합니다.
-        
-        ANTLR JSON에 code 속성이 항상 포함되므로 소스 파일 로드 불필요.
-        """
-        
-        async def load_single(directory: str, file_name: str) -> FileAnalysisContext:
-            base_name = os.path.splitext(file_name)[0]
-            ast_path = os.path.join(orchestrator.dirs["analysis"], "target", directory, f"{base_name}.json")
-
-            # AST JSON 로드 (ANTLR 오류시 즉시 중단)
-            try:
-                async with aiofiles.open(ast_path, "r", encoding="utf-8") as ast_file:
-                    ast_content = await ast_file.read()
-                ast_data = json.loads(ast_content)
-            except FileNotFoundError:
-                raise RuntimeError(
-                    f"ANTLR JSON 파일을 찾을 수 없습니다: {ast_path}\n"
-                    f"ANTLR 파싱이 실패했거나 파일이 생성되지 않았습니다."
-                )
-            except json.JSONDecodeError as e:
-                raise RuntimeError(
-                    f"ANTLR JSON 파싱 오류 ({file_name}): {e}\n"
-                    f"ANTLR 파서가 올바른 JSON을 생성하지 못했습니다."
-                )
-
-            return FileAnalysisContext(
-                directory=directory,
-                file_name=file_name,
-                ast_data=ast_data,
-            )
-
-        tasks = [load_single(d, f) for d, f in file_names]
-        return await asyncio.gather(*tasks)
+FrameworkAnalyzer = FrameworkPipeline

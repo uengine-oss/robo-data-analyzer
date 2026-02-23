@@ -1,6 +1,6 @@
 """AST 그래프 생성 Phase (Phase 1) - Framework
 
-framework_analyzer.py에서 분리된 Phase 1 로직입니다.
+framework_pipeline.py에서 분리된 Phase 1 로직입니다.
 모든 로직은 100% 보존되며, 위치만 변경되었습니다.
 """
 
@@ -11,7 +11,7 @@ from typing import Any, AsyncGenerator, List
 from client.neo4j_client import Neo4jClient
 from analyzer.strategy.base_analyzer import AnalysisStats
 from analyzer.strategy.base.file_context import FileStatus, FileAnalysisContext
-from analyzer.strategy.framework.ast_processor import FrameworkAstProcessor
+from analyzer.strategy.framework._ast_core import FrameworkAstProcessor
 from util.stream_event import (
     emit_data,
     emit_message,
@@ -175,7 +175,7 @@ async def run_phase1_5_association(
         orchestrator: 오케스트레이터
         stats: 분석 통계
     """
-    from analyzer.strategy.framework.ast_processor import CLASS_TYPES, FIELD_TYPES, analyze_association
+    from analyzer.strategy.framework._ast_core import CLASS_TYPES, FIELD_TYPES, analyze_association
     
     # Phase 1 성공 파일만 처리
     success_contexts = [ctx for ctx in contexts if ctx.status == FileStatus.PH1_OK and ctx.processor]
@@ -289,19 +289,15 @@ async def run_phase1_5_association(
                                 all_nodes[node["Node ID"]] = node
                             for rel in batch_result.get("Relationships", []):
                                 all_relationships[rel["Relationship ID"]] = rel
-                            yield emit_data(
-                                graph={
-                                    "Nodes": batch_result.get("Nodes", []),
-                                    "Relationships": batch_result.get("Relationships", []),
-                                }
-                            )
                     
                     log_process("ANALYZE", "PHASE_1.5", f"✅ {ctx.file_name}: ASSOCIATION {len(all_queries)}개 생성")
                 
+                graph = {"Nodes": list(all_nodes.values()), "Relationships": list(all_relationships.values())}
                 await results_queue.put({
                     "type": "success",
                     "file": ctx.file_name,
                     "query_count": len(all_queries),
+                    "graph": graph,
                 })
                 
             except Exception as e:
@@ -330,6 +326,9 @@ async def run_phase1_5_association(
             yield emit_message(f"   ❌ [{completed}/{total}] {result['file']}: {result['message'][:50]}")
         else:
             yield emit_message(f"   ✓ [{completed}/{total}] {result['file']}: {result.get('query_count', 0)}개 ASSOCIATION")
+            graph = result.get("graph")
+            if graph:
+                yield emit_data(graph=graph)
             
             # 진행률 이벤트
             progress = int(completed / total * 100)

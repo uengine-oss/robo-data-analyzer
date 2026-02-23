@@ -12,8 +12,8 @@ from typing import TYPE_CHECKING
 from .base_analyzer import AnalyzerStrategy
 
 if TYPE_CHECKING:
-    from .framework.framework_analyzer import FrameworkAnalyzer
-    from .dbms.dbms_analyzer import DbmsAnalyzer
+    from .framework.framework_pipeline import FrameworkAnalyzer
+    from .dbms.dbms_pipeline import DbmsPipeline
 
 
 class AnalyzerFactory:
@@ -58,10 +58,10 @@ class AnalyzerFactory:
     @classmethod
     def _load_strategies(cls) -> None:
         """전략 클래스 지연 로딩"""
-        from .framework.framework_analyzer import FrameworkAnalyzer
-        from .dbms.dbms_analyzer import DbmsAnalyzer
+        from .framework.framework_pipeline import FrameworkAnalyzer
+        from .dbms.dbms_pipeline import DbmsPipeline
         
         cls._strategies = {
             "framework": FrameworkAnalyzer,
-            "dbms": DbmsAnalyzer,
+            "dbms": DbmsPipeline,
         }

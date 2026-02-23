@@ -17,8 +17,8 @@ from util.stream_event import emit_message, emit_phase_event
 from util.text_utils import log_process
 
 
-async def run_lineage_phase(
-    analyzer: Any,
+async def run_phase_lineage(
+    pipeline: Any,
     client: Neo4jClient,
     orchestrator: Any,
     stats: AnalysisStats,
@@ -29,7 +29,7 @@ async def run_lineage_phase(
     Source 테이블 → ETL → Target 테이블 간 데이터 흐름 관계를 생성합니다.
     
     Args:
-        analyzer: DbmsAnalyzer 인스턴스 (공유 상태 접근용)
+        pipeline: DbmsPipeline 인스턴스 (총괄 파이프라인)
         client: Neo4j 클라이언트
         orchestrator: 오케스트레이터
         stats: 분석 통계

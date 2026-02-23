@@ -576,14 +576,14 @@ class DbmsAstProcessor(BaseAstProcessor):
         if label in PROCEDURE_TYPES and node.unit_name:
             if node.schema_name:
                 query = (
-                    f"MERGE (__cy_n__:{label} {{schema_name: $schema_name, procedure_name: $procedure_name}})\n"
-                    f"SET __cy_n__.startLine = $start_line, __cy_n__.directory = $directory, __cy_n__.file_name = $file_name, {set_clause}\n"
+                    f"MERGE (__cy_n__:{label} {{schema_name: $schema_name, procedure_name: $procedure_name, directory: $directory, file_name: $file_name}})\n"
+                    f"SET __cy_n__.startLine = $start_line, {set_clause}\n"
                     f"RETURN __cy_n__"
                 )
             else:
                 query = (
-                    f"MERGE (__cy_n__:{label} {{procedure_name: $procedure_name}})\n"
-                    f"SET __cy_n__.startLine = $start_line, __cy_n__.directory = $directory, __cy_n__.file_name = $file_name, {set_clause}\n"
+                    f"MERGE (__cy_n__:{label} {{procedure_name: $procedure_name, directory: $directory, file_name: $file_name}})\n"
+                    f"SET __cy_n__.startLine = $start_line, {set_clause}\n"
                     f"RETURN __cy_n__"
                 )
             queries.append({"query": query, "params": params})

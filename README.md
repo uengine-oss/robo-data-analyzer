@@ -609,7 +609,7 @@ robo_analyzer_core/
 │       ├── analyzer_factory.py # 전략 팩토리
 │       │
 │       ├── framework/          # Framework (Java/Kotlin) 분석
-│       │   ├── framework_analyzer.py  # FrameworkAnalyzer
+│       │   ├── framework_pipeline.py  # FrameworkPipeline (총괄)
 │       │   │   ├── run_pipeline()     # Phase 1 → Phase 2 → Phase 3
 │       │   │   ├── _load_all_files()  # 모든 파일 로드 (병렬)
 │       │   │   ├── _run_phase1()      # Phase 1: 모든 파일 AST (병렬)
