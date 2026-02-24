@@ -2,7 +2,7 @@
 
 주요 클래스:
 - FrameworkPipeline: 총괄 파이프라인
-- FrameworkAnalyzer: FrameworkPipeline 별칭 (하위 호환)
+- FrameworkAnalyzer: FrameworkPipeline 별칭
 - FrameworkAstProcessor: AST 처리 및 LLM 분석
 """
 

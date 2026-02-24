@@ -9,7 +9,6 @@
 
 전략별 구현 필요:
 - _collect_nodes(): AST 수집
-- _run_preprocessing(): 선행 처리
 - _invoke_llm(): LLM 호출
 - _build_analysis_queries(): 분석 결과 쿼리 변환
 - _process_unit_summaries(): 단위 요약 처리
@@ -46,7 +45,6 @@ class BaseAstProcessor(ABC):
     - _collect_nodes(): AST 수집
     - _build_static_node_queries(): 정적 노드 쿼리 생성
     - _build_relationship_queries(): 관계 쿼리 생성
-    - _run_preprocessing(): 선행 처리
     - _invoke_llm(): LLM 호출
     - _build_analysis_queries(): 분석 결과 쿼리 변환
     - _process_unit_summaries(): 단위 요약 처리
@@ -114,15 +112,6 @@ class BaseAstProcessor(ABC):
     @abstractmethod
     def _build_relationship_queries(self) -> List[Union[str, Dict[str, Any]]]:
         """정적 관계 쿼리를 생성합니다 (파라미터화된 Dict 포함)."""
-        raise NotImplementedError
-
-    @abstractmethod
-    async def _run_preprocessing(self) -> List[Union[str, Dict[str, Any]]]:
-        """선행 처리 (변수/상속/필드/메서드 분석) 후 쿼리를 반환합니다.
-        
-        Returns:
-            선행 처리 쿼리 리스트 (파라미터화된 Dict 포함)
-        """
         raise NotImplementedError
 
     @abstractmethod
@@ -195,6 +184,10 @@ class BaseAstProcessor(ABC):
             False: DML 분석 불필요 (기본값)
         """
         return False
+
+    async def _run_preprocessing(self) -> List[Union[str, Dict[str, Any]]]:
+        """선행 처리 (DBMS에서 오버라이드). 기본은 빈 리스트."""
+        return []
 
     # =========================================================================
     # Phase 1: 정적 그래프 쿼리 생성
@@ -367,14 +360,7 @@ class BaseAstProcessor(ABC):
         all_queries: List[Union[str, Dict[str, Any]]] = []
         failed_batch_count = 0
         all_failed_details: List[Dict[str, Any]] = []
-        
-        # 선행 처리 제거 (Phase 1.5로 이동됨)
-        # preprocessing_queries = await self._run_preprocessing()
-        # all_queries.extend(preprocessing_queries)
-        # if on_queries_ready and preprocessing_queries:
-        #     await on_queries_ready(preprocessing_queries, 0, 0)
-        
-        # Phase 1.5: 부모 컨텍스트 생성 (Top-down)
+
         await self._generate_node_contexts()
         
         # 배치 분석

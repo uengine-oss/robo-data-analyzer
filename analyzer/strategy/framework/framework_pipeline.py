@@ -21,7 +21,8 @@ from util.text_utils import (
     log_process,
 )
 
-from analyzer.strategy.framework.phase_ast import run_phase1, run_phase1_5_association
+from analyzer.strategy.framework.phase_ast import run_phase1
+from analyzer.strategy.framework.uml_relations import run_phase1_5_association
 from analyzer.strategy.framework.phase_llm import run_phase2
 from analyzer.strategy.framework.phase_nontarget import run_phase_nontarget
 

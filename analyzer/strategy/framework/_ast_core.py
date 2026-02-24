@@ -581,43 +581,11 @@ class FrameworkAstProcessor(BaseAstProcessor):
             elif node.node_type in FIELD_TYPES and parent.node_type in CLASS_TYPES:
                 queries.append(self._build_has_field_query(parent, node))
         
-        # --- 상속/구현 관계 ---
-        for node in self._nodes:
-            if node.node_type in CLASS_TYPES:
-                queries.extend(self._build_inheritance_from_ast(node))
-        
-        # --- 후처리: EXTERNAL → INTERNAL 전환 ---
-        queries.append({
-            "query": (
-                "MATCH (src)-[r:EXTENDS]->(ext:EXTERNAL)\n"
-                "MATCH (real:CLASS:INTERNAL) WHERE toLower(real.class_name) = toLower(ext.class_name)\n"
-                "MERGE (src)-[:EXTENDS]->(real)\n"
-                "DELETE r\n"
-                "RETURN count(*) AS extends_resolved"
-            ),
-            "params": {}
-        })
-        queries.append({
-            "query": (
-                "MATCH (src)-[r:IMPLEMENTS]->(ext:EXTERNAL)\n"
-                "MATCH (real:INTERFACE:INTERNAL) WHERE toLower(real.class_name) = toLower(ext.class_name)\n"
-                "MERGE (src)-[:IMPLEMENTS]->(real)\n"
-                "DELETE r\n"
-                "RETURN count(*) AS implements_resolved"
-            ),
-            "params": {}
-        })
-        
-        queries.append({
-            "query": (
-                "MATCH (ext:EXTERNAL)\n"
-                "WHERE EXISTS { MATCH (real:INTERNAL) WHERE (real:CLASS OR real:INTERFACE)\n"
-                "  AND toLower(real.class_name) = toLower(ext.class_name) }\n"
-                "DETACH DELETE ext\n"
-                "RETURN count(*) AS external_cleaned"
-            ),
-            "params": {}
-        })
+        # --- UML: 상속/구현 관계 (uml_relations) ---
+        from analyzer.strategy.framework import uml_relations
+        class_nodes = [n for n in self._nodes if n.node_type in CLASS_TYPES]
+        queries.extend(uml_relations.build_inheritance_queries(class_nodes))
+        queries.extend(uml_relations.build_external_resolution_queries())
         
         return queries
     
@@ -664,92 +632,7 @@ class FrameworkAstProcessor(BaseAstProcessor):
     def _build_has_field_query(self, parent: StatementNode, child: StatementNode) -> Dict[str, Any]:
         """HAS_FIELD 관계 쿼리 생성"""
         return self._build_has_relationship_query(parent, child, "HAS_FIELD")
-    
-    async def _run_preprocessing(self) -> List[Union[str, Dict[str, Any]]]:
-        """선행 처리: 필드 기반 ASSOCIATION 후보 관계 생성
-        
-        NOTE: 이 메서드는 Phase 1.5로 이동되었습니다.
-        ast_phase.py의 run_phase1_5_association()을 사용하세요.
-        이 메서드는 호환성을 위해 유지되며 빈 리스트를 반환합니다.
-        """
-        # Phase 1.5로 이동됨 (ast_phase.py의 run_phase1_5_association 참조)
-        return []
-    
-    
-    def _build_inheritance_from_ast(self, node: StatementNode) -> List[Union[str, Dict[str, Any]]]:
-        """AST 속성에서 상속/구현 관계 쿼리 생성"""
-        queries: List[Union[str, Dict[str, Any]]] = []
-        
-        if not node.unit_name:
-            return queries
-        
-        # --- EXTENDS 처리 ---
-        if node.extends_type:
-            target_class = node.extends_type.strip()
-            if target_class:
-                queries.append({
-                    "query": (
-                        "MERGE (__cy_ext__:CLASS:EXTERNAL {class_name: $target_class})\n"
-                        "SET __cy_ext__.name = $target_class\n"
-                        "RETURN __cy_ext__"
-                    ),
-                    "params": {"target_class": target_class}
-                })
-                
-                queries.append({
-                    "query": (
-                        f"MATCH (__cy_src__:{node.node_type} {{package_name: $package_name, class_name: $class_name}})\n"
-                        f"MATCH (__cy_ext__:CLASS:EXTERNAL {{class_name: $target_class}})\n"
-                        f"MERGE (__cy_src__)-[__cy_r__:EXTENDS]->(__cy_ext__)\n"
-                        f"RETURN __cy_r__"
-                    ),
-                    "params": {
-                        "package_name": node.package_name,
-                        "class_name": node.unit_name,
-                        "target_class": target_class,
-                    }
-                })
-                log_process("ANALYZE", "INHERITANCE", 
-                           f"   🔗 상속: {node.unit_name} extends {target_class} (EXTERNAL)")
-        
-        # --- IMPLEMENTS 처리 ---
-        if node.implements_types:
-            interfaces = [i.strip() for i in node.implements_types.split(',')]
-            for iface in interfaces:
-                if not iface:
-                    continue
-                    
-                queries.append({
-                    "query": (
-                        f"MATCH (__cy_src__:{node.node_type} {{package_name: $package_name, class_name: $class_name}})\n"
-                        f"OPTIONAL MATCH (__cy_iface__:INTERFACE) WHERE toLower(__cy_iface__.class_name) = toLower($target_iface)\n"
-                        f"WITH __cy_src__, __cy_iface__\n"
-                        f"CALL {{\n"
-                        f"  WITH __cy_src__, __cy_iface__\n"
-                        f"  WITH __cy_src__, __cy_iface__ WHERE __cy_iface__ IS NOT NULL\n"
-                        f"  MERGE (__cy_src__)-[:IMPLEMENTS]->(__cy_iface__)\n"
-                        f"  RETURN 1 AS done\n"
-                        f"  UNION ALL\n"
-                        f"  WITH __cy_src__, __cy_iface__\n"
-                        f"  WITH __cy_src__ WHERE __cy_iface__ IS NULL\n"
-                        f"  MERGE (__cy_ext__:INTERFACE:EXTERNAL {{class_name: $target_iface}})\n"
-                        f"  SET __cy_ext__.name = $target_iface\n"
-                        f"  MERGE (__cy_src__)-[:IMPLEMENTS]->(__cy_ext__)\n"
-                        f"  RETURN 1 AS done\n"
-                        f"}}\n"
-                        f"RETURN done"
-                    ),
-                    "params": {
-                        "package_name": node.package_name,
-                        "class_name": node.unit_name,
-                        "target_iface": iface,
-                    }
-                })
-                log_process("ANALYZE", "INHERITANCE", 
-                           f"   🔗 구현: {node.unit_name} implements {iface}")
-        
-        return queries
-    
+
     async def _invoke_llm(self, batch: AnalysisBatch) -> Optional[Dict[str, Any]]:
         """LLM 호출 (일반 분석만)"""
         if not batch.ranges:
@@ -767,74 +650,6 @@ class FrameworkAstProcessor(BaseAstProcessor):
         )
         return result
 
-    def _build_field_type_map(self) -> Dict[str, str]:
-        """FIELD 노드에서 field_name → fieldType 매핑 구축"""
-        return {
-            node.name: node.field_type
-            for node in self._nodes
-            if node.node_type in FIELD_TYPES and node.field_type and node.name
-        }
-
-    def _build_param_type_map(self, node: StatementNode) -> Dict[str, str]:
-        """parameters 문자열에서 paramName → paramType 매핑 생성"""
-        param_map: Dict[str, str] = {}
-
-        if not node.parameters or not isinstance(node.parameters, str):
-            return param_map
-
-        raw = node.parameters.strip()
-        if not raw:
-            return param_map
-
-        for part in raw.split(","):
-            seg = part.strip()
-            if not seg:
-                continue
-
-            seg = seg.replace("(", " ").replace(")", " ")
-            tokens = [t for t in seg.split() if t]
-            if len(tokens) < 2:
-                continue
-
-            param_name = tokens[-1]
-            type_tokens = tokens[:-1]
-            param_type = type_tokens[-1]
-
-            if param_name in param_map and param_map[param_name] != param_type:
-                continue
-
-            param_map[param_name] = param_type
-
-        return param_map
-
-    def _build_local_var_type_map(self, method_node: StatementNode) -> Dict[str, str]:
-        """메서드 내부 VARIABLE 노드에서 varName → varType 매핑 생성"""
-        local_map: Dict[str, str] = {}
-        conflicts: set[str] = set()
-
-        def visit(n: StatementNode) -> None:
-            if n is not method_node and n.node_type in METHOD_TYPES:
-                return
-
-            for child in n.children:
-                if child.node_type == "VARIABLE" and child.field_type and child.name:
-                    var_name = child.name
-                    var_type = child.field_type
-                    if var_name in local_map and local_map[var_name] != var_type:
-                        conflicts.add(var_name)
-                    else:
-                        local_map[var_name] = var_type
-
-                if child.children:
-                    visit(child)
-
-        visit(method_node)
-
-        for name in conflicts:
-            local_map.pop(name, None)
-
-        return local_map
-
     def _build_analysis_queries(
         self, 
         batch: AnalysisBatch, 
@@ -842,22 +657,18 @@ class FrameworkAstProcessor(BaseAstProcessor):
         unit_summary_store: Optional[Dict[str, Dict[str, str]]],
     ) -> List[Union[str, Dict[str, Any]]]:
         """LLM 분석 결과를 쿼리로 변환"""
+        from analyzer.strategy.framework import uml_relations
+
         queries: List[Union[str, Dict[str, Any]]] = []
-        
-        # --- 결과 검증 ---
+
         llm_result = self.validate_dict_result(llm_result, "llm_result", batch.batch_id)
         analysis_list = llm_result.get("analysis", [])
-        
-        field_map = self._build_field_type_map()
-        
-        # --- 각 범위별 처리 ---
-        for node, analysis in zip(batch.nodes, analysis_list):
-            param_type_map: Dict[str, str] = {}
-            local_type_map: Dict[str, str] = {}
 
-            if node.node_type in METHOD_TYPES:
-                param_type_map = self._build_param_type_map(node)
-                local_type_map = self._build_local_var_type_map(node)
+        field_map = uml_relations.build_field_type_map(self._nodes)
+
+        for node, analysis in zip(batch.nodes, analysis_list):
+            param_type_map = uml_relations.build_param_type_map(node) if node.node_type in METHOD_TYPES else {}
+            local_type_map = uml_relations.build_local_var_type_map(node) if node.node_type in METHOD_TYPES else {}
 
             # --- Summary 처리 ---
             summary = analysis.get("summary")
@@ -880,150 +691,10 @@ class FrameworkAstProcessor(BaseAstProcessor):
                     key = f"{node.node_type}_{node.start_line}_{node.end_line}"
                     unit_summary_store[node.unit_key][key] = summary
         
-            # --- Dependencies 처리 ---
-            for dep in analysis.get("dependencies", []):
-                target_class = dep.get("targetClass")
-                if not target_class or not node.unit_name:
-                    continue
-                source_member = dep.get("sourceMember", "")
-                usage = dep.get("usage", "")
-                rel_type = dep.get("relationType", "DEPENDENCY")
-                
-                if rel_type in ("COMPOSITION", "AGGREGATION"):
-                    queries.append({
-                        "query": (
-                            f"MATCH (__cy_src__:INTERNAL) WHERE (__cy_src__:CLASS OR __cy_src__:INTERFACE)\n"
-                            f"  AND toLower(__cy_src__.class_name) = toLower($src_class)\n"
-                            f"MATCH (__cy_tgt__) WHERE (__cy_tgt__:CLASS OR __cy_tgt__:INTERFACE)\n"
-                            f"  AND toLower(__cy_tgt__.class_name) = toLower($target_class)\n"
-                            f"OPTIONAL MATCH (__cy_src__)-[__old__:ASSOCIATION]->(__cy_tgt__)\n"
-                            f"WITH __cy_src__, __cy_tgt__, __old__, __old__.field AS f, __old__.multiplicity AS m\n"
-                            f"DELETE __old__\n"
-                            f"MERGE (__cy_src__)-[__cy_r__:{rel_type} {{field: COALESCE(f, ''), multiplicity: COALESCE(m, '1'), source_member: $source_member}}]->(__cy_tgt__)\n"
-                            f"RETURN __cy_r__"
-                        ),
-                        "params": {
-                            "src_class": node.unit_name,
-                            "target_class": target_class,
-                            "source_member": source_member,
-                        }
-                    })
-                    log_process("ANALYZE", "RELATION_UPGRADE",
-                               f"   🔗 ASSOCIATION→{rel_type}: {node.unit_name} → {target_class}")
-                else:
-                    queries.append({
-                        "query": (
-                            f"MATCH (__cy_src__:INTERNAL) WHERE (__cy_src__:CLASS OR __cy_src__:INTERFACE)\n"
-                            f"  AND toLower(__cy_src__.class_name) = toLower($src_class)\n"
-                            f"MATCH (__cy_tgt__:INTERNAL) WHERE (__cy_tgt__:CLASS OR __cy_tgt__:INTERFACE)\n"
-                            f"  AND toLower(__cy_tgt__.class_name) = toLower($target_class)\n"
-                            f"OPTIONAL MATCH (__cy_src__)-[__rel__:ASSOCIATION|COMPOSITION|AGGREGATION]->(__cy_tgt__)\n"
-                            f"WITH __cy_src__, __cy_tgt__, __rel__\n"
-                            f"WHERE __rel__ IS NULL\n"
-                            f"MERGE (__cy_src__)-[__cy_r__:DEPENDENCY {{source_member: $source_member, usage: $usage}}]->(__cy_tgt__)\n"
-                            f"RETURN __cy_r__"
-                        ),
-                        "params": {
-                            "src_class": node.unit_name,
-                            "target_class": target_class,
-                            "source_member": source_member,
-                            "usage": usage,
-                        }
-                    })
-                
-                queries.append({
-                    "query": (
-                        f"MATCH (__cy_src__:INTERNAL) WHERE (__cy_src__:CLASS OR __cy_src__:INTERFACE)\n"
-                        f"  AND toLower(__cy_src__.class_name) = toLower($src_class)\n"
-                        f"MATCH (__cy_tgt__:INTERNAL) WHERE (__cy_tgt__:CLASS OR __cy_tgt__:INTERFACE)\n"
-                        f"  AND toLower(__cy_tgt__.class_name) = toLower($target_class)\n"
-                        f"  AND __cy_src__ <> __cy_tgt__\n"
-                        f"MERGE (__cy_src__)-[:USES]->(__cy_tgt__)\n"
-                        f"RETURN __cy_src__, __cy_tgt__"
-                    ),
-                    "params": {
-                        "src_class": node.unit_name,
-                        "target_class": target_class,
-                    }
-                })
-            
-            # --- Calls 처리 ---
-            for call_expr in analysis.get("calls", []):
-                if not isinstance(call_expr, str) or "." not in call_expr:
-                    continue
-                
-                parts = call_expr.split(".", 1)
-                object_name = parts[0].strip()
-                method_name = parts[1].strip() if len(parts) > 1 else ""
-                
-                if not object_name or not method_name:
-                    continue
-                
-                target_class = (
-                    local_type_map.get(object_name)
-                    or param_type_map.get(object_name)
-                    or field_map.get(object_name)
-                )
-                
-                if not target_class and object_name[0].isupper():
-                    target_class = object_name
-                
-                if not target_class:
-                    continue
-                
-                queries.append({
-                    "query": (
-                        f"MATCH (__cy_m__:{node.node_type} {{start_line: $method_line, directory: $directory, file_name: $file_name}})\n"
-                        f"MATCH (__cy_tgt_cls__:INTERNAL) WHERE (__cy_tgt_cls__:CLASS OR __cy_tgt_cls__:INTERFACE)\n"
-                        f"  AND toLower(__cy_tgt_cls__.class_name) = toLower($target_class)\n"
-                        f"MATCH (__cy_tgt_cls__)-[:HAS_METHOD]->(__cy_tgt_m__:METHOD)\n"
-                        f"  WHERE toLower(__cy_tgt_m__.name) = toLower($call_method)\n"
-                        f"MERGE (__cy_m__)-[__cy_r__:CALLS {{method: $call_method, code: $call_code}}]->(__cy_tgt_m__)\n"
-                        f"RETURN __cy_r__"
-                    ),
-                    "params": {
-                        "method_line": node.start_line,
-                        "directory": self.full_directory,
-                        "file_name": self.file_name,
-                        "target_class": target_class,
-                        "call_method": method_name,
-                        "call_code": call_expr[:200],
-                    }
-                })
-                
-                if node.unit_name:
-                    queries.append({
-                        "query": (
-                            f"MATCH (__cy_src__:INTERNAL) WHERE (__cy_src__:CLASS OR __cy_src__:INTERFACE)\n"
-                            f"  AND toLower(__cy_src__.class_name) = toLower($src_class)\n"
-                            f"MATCH (__cy_tgt__:INTERNAL) WHERE (__cy_tgt__:CLASS OR __cy_tgt__:INTERFACE)\n"
-                            f"  AND toLower(__cy_tgt__.class_name) = toLower($target_class)\n"
-                            f"  AND __cy_src__ <> __cy_tgt__\n"
-                            f"MERGE (__cy_src__)-[:USES]->(__cy_tgt__)\n"
-                            f"RETURN __cy_src__, __cy_tgt__"
-                        ),
-                        "params": {
-                            "src_class": node.unit_name,
-                            "target_class": target_class,
-                        }
-                    })
-                    
-                    queries.append({
-                        "query": (
-                            f"MATCH (__cy_src__:INTERNAL) WHERE (__cy_src__:CLASS OR __cy_src__:INTERFACE)\n"
-                            f"  AND toLower(__cy_src__.class_name) = toLower($src_class)\n"
-                            f"MATCH (__cy_tgt_cls__:INTERNAL) WHERE (__cy_tgt_cls__:CLASS OR __cy_tgt_cls__:INTERFACE)\n"
-                            f"  AND toLower(__cy_tgt_cls__.class_name) = toLower($target_class)\n"
-                            f"MATCH (__cy_tgt_cls__)-[:HAS_METHOD]->(__cy_tgt_m__:METHOD)\n"
-                            f"  WHERE toLower(__cy_tgt_m__.name) = toLower($call_method)\n"
-                            f"MERGE (__cy_src__)-[:USES]->(__cy_tgt_m__)\n"
-                            f"RETURN __cy_src__, __cy_tgt_m__"
-                        ),
-                        "params": {
-                            "src_class": node.unit_name,
-                            "target_class": target_class,
-                            "call_method": method_name,
-                        }
-                    })
+            # --- UML: Dependencies + Calls (uml_relations) ---
+            queries.extend(uml_relations.build_dependency_and_call_queries(
+                node, analysis, param_type_map, local_type_map, field_map,
+                self.full_directory, self.file_name,
+            ))
         
         return queries
