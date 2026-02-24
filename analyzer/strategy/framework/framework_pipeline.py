@@ -26,6 +26,54 @@ from analyzer.strategy.framework.uml_relations import run_phase1_5_association
 from analyzer.strategy.framework.phase_llm import run_phase2
 from analyzer.strategy.framework.phase_nontarget import run_phase_nontarget
 
+# CLASS/INTERFACE/ENUM only (for class_index + external_refs)
+_CLASS_NODE_TYPES = frozenset({"CLASS", "INTERFACE", "ENUM"})
+
+
+def _build_ast_context_for_phase4(contexts: List[FileAnalysisContext]) -> List[dict]:
+    """Build ast_context list of dicts for Phase 4: class_index and external_refs.
+    One entry per CLASS/INTERFACE/ENUM with stable node_id and aggregated external_refs from methods.
+    """
+    result: List[dict] = []
+    for ctx in contexts:
+        if not ctx.processor or not getattr(ctx.processor, "_nodes", None):
+            continue
+        for node in ctx.processor._nodes:
+            if node.node_type not in _CLASS_NODE_TYPES:
+                continue
+            fqn = (f"{node.package_name}.{node.unit_name}" if node.package_name else (node.unit_name or "")).strip(".")
+            if not fqn:
+                continue
+            node_id = f"CLASS:{fqn}"
+            external_refs: List[dict] = []
+            seen: set[tuple] = set()
+            if getattr(node, "external_refs", None) and isinstance(node.external_refs, list):
+                for r in node.external_refs:
+                    if isinstance(r, dict) and r.get("kind") and r.get("target"):
+                        key = (r.get("kind"), r.get("target"))
+                        if key not in seen:
+                            seen.add(key)
+                            external_refs.append({"kind": r["kind"], "target": r["target"]})
+            for child in getattr(node, "children", []) or []:
+                if not getattr(child, "external_refs", None) or not isinstance(child.external_refs, list):
+                    continue
+                for r in child.external_refs:
+                    if isinstance(r, dict) and r.get("kind") and r.get("target"):
+                        key = (r.get("kind"), r.get("target"))
+                        if key not in seen:
+                            seen.add(key)
+                            external_refs.append({"kind": r["kind"], "target": r["target"]})
+            result.append({
+                "node_type": node.node_type,
+                "node_id": node_id,
+                "fqn": fqn,
+                "name": node.unit_name or "",
+                "package_name": node.package_name or "",
+                "file": getattr(ctx, "directory", "") + "/" + getattr(ctx, "file_name", "") if getattr(ctx, "directory", None) else getattr(ctx, "file_name", ""),
+                "external_refs": external_refs,
+            })
+    return result
+
 
 class FrameworkPipeline(BaseStreamingAnalyzer):
     """Java/Framework 코드 분석 총괄 파이프라인
@@ -142,6 +190,7 @@ class FrameworkPipeline(BaseStreamingAnalyzer):
             return
 
         nontarget_files = [(d, f) for d, f in file_names if not f.endswith(('.java', '.kt'))]
+        ast_context = _build_ast_context_for_phase4(contexts)
         if nontarget_files:
             yield emit_message("")
             yield self.emit_separator()
@@ -154,6 +203,7 @@ class FrameworkPipeline(BaseStreamingAnalyzer):
                 client=client,
                 orchestrator=orchestrator,
                 stats=stats,
+                ast_context=ast_context,
             ):
                 yield chunk
 
@@ -176,6 +226,8 @@ class FrameworkPipeline(BaseStreamingAnalyzer):
         orchestrator: Any,
     ) -> List[FileAnalysisContext]:
         """모든 파일의 AST JSON을 병렬로 로드"""
+        java_files = [(d, f) for d, f in file_names if f.endswith((".java", ".kt"))]
+
         async def load_single(directory: str, file_name: str) -> FileAnalysisContext:
             base_name = os.path.splitext(file_name)[0]
             ast_path = os.path.join(orchestrator.dirs["analysis"], "target", directory, f"{base_name}.json")
@@ -196,7 +248,7 @@ class FrameworkPipeline(BaseStreamingAnalyzer):
                     f"ANTLR JSON 파싱 오류 ({file_name}): {e}\n"
                     "ANTLR 파서가 올바른 JSON을 생성하지 못했습니다."
                 )
-        return await asyncio.gather(*[load_single(d, f) for d, f in file_names])
+        return await asyncio.gather(*[load_single(d, f) for d, f in java_files])
 
     async def build_user_story_doc(
         self,

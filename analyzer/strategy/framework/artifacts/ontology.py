@@ -1,4 +1,4 @@
-"""Phase 5 (nontarget): Ontology Construction - Build Neo4j graph.
+"""Ontology - Build Neo4j graph.
 
 노드 타입/속성을 Framework 스키마에 맞춤:
 - JavaClass → CLASS
@@ -26,7 +26,7 @@ from config.settings import settings
 from util.stream_event import emit_data, emit_message, emit_phase_event, emit_phase_result
 from util.text_utils import log_process
 
-from analyzer.strategy.framework.nontarget.data_models import (
+from analyzer.strategy.framework.artifacts.data_models import (
     Chunk,
     EdgeType,
     FileCategory,
@@ -36,7 +36,7 @@ from analyzer.strategy.framework.nontarget.data_models import (
     ProjectStructure,
     Relationship,
 )
-from analyzer.strategy.framework.nontarget.phase4_relationships import _map_edge_type_to_framework
+from analyzer.strategy.framework.artifacts.relationships import _map_edge_type_to_framework
 
 
 def _map_node_label_to_framework(label: str) -> str:
@@ -71,7 +71,7 @@ def _path_to_package_name(relative_path: str) -> str:
     return ""
 
 
-async def run_phase5_ontology(
+async def run_ontology(
     project: ProjectStructure,
     chunks: list[Chunk],
     relationships: list[Relationship],
@@ -79,8 +79,11 @@ async def run_phase5_ontology(
     class_index: dict[str, dict[str, Any]] | None = None,
     bean_index: dict[str, dict[str, Any]] | None = None,
     sql_index: dict[str, dict[str, Any]] | None = None,
+    ast_context: list[Any] | None = None,
+    nodes_out: list[GraphNode] | None = None,
+    edges_out: list[GraphEdge] | None = None,
 ) -> AsyncGenerator[bytes, None]:
-    """Phase 5 (nontarget): 온톨로지 구축 - Neo4j 그래프 생성
+    """온톨로지 구축 - Neo4j 그래프 생성
     
     Args:
         project: Phase 1.5에서 생성된 프로젝트 구조
@@ -90,6 +93,7 @@ async def run_phase5_ontology(
         class_index: 클래스 인덱스 (Phase 4에서 생성)
         bean_index: 빈 인덱스 (Phase 4에서 생성)
         sql_index: SQL 인덱스 (Phase 4에서 생성)
+        ast_context: Java AST 노드 리스트 (JPA 등 persistence 추출용)
     
     Yields:
         NDJSON 스트리밍 데이터
@@ -110,13 +114,13 @@ async def run_phase5_ontology(
         edges.extend(package_edges)
         log_process("ANALYZE", "PHASE_5", f"패키지 노드 {len(package_nodes)}개 생성")
         
-        # Class/Interface nodes (nontarget에서 클래스는 거의 없지만, 혹시 모를 경우 대비)
+        # Class/Interface nodes (artifacts에서 클래스는 거의 없지만, 혹시 모를 경우 대비)
         class_nodes, interface_nodes = _create_class_and_interface_nodes(chunks)
         nodes.extend(class_nodes)
         nodes.extend(interface_nodes)
         log_process("ANALYZE", "PHASE_5", f"클래스 노드 {len(class_nodes)}개, 인터페이스 노드 {len(interface_nodes)}개 생성")
         
-        # Method/Field nodes (nontarget에서도 가능)
+        # Method/Field nodes (artifacts에서도 가능)
         method_nodes = _create_method_nodes(chunks)
         field_nodes = _create_field_nodes(chunks)
         nodes.extend(method_nodes)
@@ -142,6 +146,14 @@ async def run_phase5_ontology(
         config_nodes = _create_config_nodes(project, chunks)
         nodes.extend(config_nodes)
         log_process("ANALYZE", "PHASE_5", f"Config 노드 {len(config_nodes)}개 생성")
+
+        # Persistence: SqlMap/JPA 등에서 Table/Column 추출 후 Neo4j 저장
+        from analyzer.strategy.framework.persistence import run_all, write_to_neo4j
+        persistence_result = run_all(chunks, ast_context or [], db="")
+        if persistence_result.tables or persistence_result.columns:
+            log_process("ANALYZE", "PHASE_5", f"Persistence 테이블 {len(persistence_result.tables)}개, 컬럼 {len(persistence_result.columns)}개 추출")
+            async for payload in write_to_neo4j(persistence_result, client, datasource=""):
+                yield payload
         
         # 5-B: Create edges
         log_process("ANALYZE", "PHASE_5", "관계 생성 중...")
@@ -204,11 +216,19 @@ async def run_phase5_ontology(
             "total_edges": len(edges),
         })
         
-        # Phase 결과 반환
+        # Phase 결과 반환 (요약 정보만 전송)
         yield emit_phase_result(5, {
-            "nodes": nodes,
-            "edges": edges,
+            "total_nodes": len(nodes),
+            "total_edges": len(edges),
         })
+        
+        # 호출 측에 실제 노드/관계 리스트 전달
+        if nodes_out is not None:
+            nodes_out.clear()
+            nodes_out.extend(nodes)
+        if edges_out is not None:
+            edges_out.clear()
+            edges_out.extend(edges)
         
     except Exception as e:
         log_process("ANALYZE", "ERROR", f"Phase 5 실패: {e}", exc_info=True)
@@ -540,17 +560,14 @@ def _nodes_to_cypher_queries(nodes: list[GraphNode]) -> list[dict[str, Any]]:
     queries: list[dict[str, Any]] = []
     
     for node in nodes:
-        label = node.label  # 이미 Framework 스키마에 맞춘 문자열
+        label = node.label
         props = node.properties.copy()
-        
-        # node_id를 properties에 추가 (MERGE 조건용)
-        node_id_prop = props.get("fqn") or props.get("id") or props.get("sql_id") or node.node_id
+        props["node_id"] = node.node_id
         
         query = f"MERGE (__cy_n__:{label} {{"
         query_parts = []
         params: dict[str, Any] = {}
         
-        # node_id를 고유 식별자로 사용
         if "fqn" in props:
             query_parts.append("fqn: $fqn")
             params["fqn"] = props["fqn"]
@@ -561,7 +578,6 @@ def _nodes_to_cypher_queries(nodes: list[GraphNode]) -> list[dict[str, Any]]:
             query_parts.append("sql_id: $sql_id")
             params["sql_id"] = props["sql_id"]
         else:
-            # Fallback: node_id 사용
             query_parts.append("node_id: $node_id")
             params["node_id"] = node.node_id
         
@@ -581,16 +597,18 @@ def _nodes_to_cypher_queries(nodes: list[GraphNode]) -> list[dict[str, Any]]:
 
 
 def _edges_to_cypher_queries(edges: list[GraphEdge]) -> list[dict[str, Any]]:
-    """Convert GraphEdge list to Cypher queries."""
+    """Convert GraphEdge list to Cypher queries.
+    All nodes are matched by their node_id property.
+    """
     queries: list[dict[str, Any]] = []
     
     for edge in edges:
-        edge_type = edge.edge_type  # 이미 Framework 스키마에 맞춘 문자열
+        edge_type = edge.edge_type
         props = edge.properties.copy()
         
         query = (
-            "MATCH (__cy_src__) WHERE id(__cy_src__) = $source_id OR elementId(__cy_src__) = $source_id\n"
-            "MATCH (__cy_tgt__) WHERE id(__cy_tgt__) = $target_id OR elementId(__cy_tgt__) = $target_id\n"
+            "MATCH (__cy_src__) WHERE __cy_src__.node_id = $source_id\n"
+            "MATCH (__cy_tgt__) WHERE __cy_tgt__.node_id = $target_id\n"
             f"MERGE (__cy_src__)-[__cy_r__:{edge_type}]->(__cy_tgt__)\n"
             "SET __cy_r__ += $props\n"
             "RETURN __cy_r__"

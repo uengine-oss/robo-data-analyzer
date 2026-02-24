@@ -1,4 +1,4 @@
-"""Phase 6 (nontarget): Validation & Refinement - Verify ontology completeness, connectivity, consistency.
+"""Validation - Verify ontology completeness, connectivity, consistency.
 
 Neo4jClient 통합 및 Framework 스키마에 맞춤.
 """
@@ -12,7 +12,7 @@ from config.settings import settings
 from util.stream_event import emit_data, emit_message, emit_phase_event, emit_phase_result
 from util.text_utils import log_process
 
-from analyzer.strategy.framework.nontarget.data_models import (
+from analyzer.strategy.framework.artifacts.data_models import (
     GraphEdge,
     GraphNode,
     ProjectStructure,
@@ -21,14 +21,14 @@ from analyzer.strategy.framework.nontarget.data_models import (
 )
 
 
-async def run_phase6_validation(
+async def run_validation(
     project: ProjectStructure,
     nodes: list[GraphNode],
     edges: list[GraphEdge],
     relationships: list[Relationship],
     client: Neo4jClient,
 ) -> AsyncGenerator[bytes, None]:
-    """Phase 6 (nontarget): 검증 및 정제
+    """검증 및 정제
     
     Args:
         project: Phase 1.5에서 생성된 프로젝트 구조

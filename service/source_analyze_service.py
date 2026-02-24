@@ -71,15 +71,18 @@ def get_analysis_directories(strategy: str) -> dict[str, str]:
         strategy: 분석 전략 (framework, dbms, 필수)
         
     Returns:
-        {"ddl": path, "src": path, "analysis": path}
+        {"ddl": path, "src": path, "analysis": path, "nontarget": path (framework만)}
     """
     if not strategy:
         raise ValueError("strategy는 필수 파라미터입니다.")
-    return {
+    dirs = {
         "ddl": os.path.join(settings.path.data_dir, "ddl"),
         "src": os.path.join(settings.path.data_dir, "source"),
         "analysis": os.path.join(settings.path.data_dir, "analysis"),
     }
+    if strategy == "framework":
+        dirs["nontarget"] = os.path.join(settings.path.data_dir, "analysis", "nontarget")
+    return dirs
 
 
 def get_directory_paths(directory: str, base_dirs: dict[str, str]) -> dict[str, str]:
@@ -191,6 +194,41 @@ def discover_analyzable_files(
     
     result.sort()
     logging.info("분석 가능 소스 파일: %d개 (target=%s, extension=%s)", len(result), target, target_ext)
+    return result
+
+
+def discover_nontarget_files(strategy: str, dirs: dict[str, str]) -> list[tuple[str, str]]:
+    """data/analysis/nontarget/ 디렉토리에서 비타겟 원본 파일 목록 탐색 (framework 전용)
+    
+    XML, YAML, Properties 등 원본 파일을 직접 스캔합니다.
+    project_root(=data) 기준 (directory, file_name) → data/analysis/nontarget/... 경로로 해석.
+    
+    Args:
+        strategy: 분석 전략 (framework일 때만 수행)
+        dirs: get_analysis_directories 결과
+        
+    Returns:
+        [(directory, file_name), ...]
+    """
+    if strategy != "framework":
+        return []
+    
+    nontarget_dir = dirs.get("nontarget", "")
+    if not nontarget_dir or not os.path.isdir(nontarget_dir):
+        return []
+    
+    extensions = (".xml", ".yml", ".yaml", ".properties", ".sqlmap")
+    result = []
+    for root, _, files in os.walk(nontarget_dir):
+        rel = os.path.relpath(root, nontarget_dir)
+        directory = f"analysis/nontarget/{rel}" if rel != "." else "analysis/nontarget"
+        
+        for f in files:
+            if f.lower().endswith(extensions):
+                result.append((directory, f))
+    
+    result.sort()
+    logging.info("비타겟 파일: %d개", len(result))
     return result
 
 

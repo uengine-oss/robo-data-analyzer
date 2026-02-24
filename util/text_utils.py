@@ -27,18 +27,40 @@ from util.stream_event import (
 )
 
 
-def log_process(context: str, stage: str, message: str, level: int = logging.INFO, exc: Exception | None = None) -> None:
+#! 수정 필요 통일화
+def log_process(
+    context: str,
+    stage: str,
+    message: str,
+    level: int | str = logging.INFO,
+    exc: Exception | None = None,
+    exc_info: bool = False,
+) -> None:
     """
     공통 파이프라인 로그 출력 헬퍼.
     - context: 'DBMS', 'FRAMEWORK' 등 분석 타입
     - stage: 논리적 단계 이름
     - message: 사용자 친화적 설명
-    - level: logging 모듈 레벨
+    - level: logging 모듈 레벨 또는 문자열(\"DEBUG\", \"INFO\" 등)
     - exc: 예외 객체 전달 시 스택 트레이스까지 출력
+    - exc_info: 기존 코드 호환용 플래그 (True면 스택 트레이스 출력)
     """
     ctx = (context or "APP").upper()
     stage_text = (stage or "STAGE").upper()
-    logging.log(level, f"[{ctx}:{stage_text}] {message}", exc_info=exc)
+
+    # 문자열 레벨도 허용 (기존 코드 호환)
+    if isinstance(level, str):
+        level = getattr(logging, level.upper(), logging.INFO)
+
+    # exc 또는 exc_info 중 하나라도 설정되면 스택 트레이스 출력
+    if exc is not None:
+        real_exc_info: Exception | bool | None = exc
+    elif exc_info:
+        real_exc_info = True
+    else:
+        real_exc_info = None
+
+    logging.log(level, f"[{ctx}:{stage_text}] {message}", exc_info=real_exc_info)
 
 
 # tiktoken 인코더 초기화

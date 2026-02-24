@@ -1,4 +1,4 @@
-"""Phase 4 (nontarget): Relationship Discovery - Identify explicit and implicit relations between entities.
+"""Relationships - Identify explicit and implicit relations between entities.
 
 관계 타입은 Framework 스키마에 맞춰 변환됩니다:
 - DEPENDS_ON → DEPENDENCY
@@ -16,7 +16,7 @@ from config.settings import settings
 from util.stream_event import emit_data, emit_message, emit_phase_event, emit_phase_result
 from util.text_utils import log_process
 
-from analyzer.strategy.framework.nontarget.data_models import (
+from analyzer.strategy.framework.artifacts.data_models import (
     Chunk,
     EdgeType,
     FileCategory,
@@ -40,6 +40,7 @@ def _map_edge_type_to_framework(edge_type: EdgeType) -> str:
         EdgeType.CONTAINS: "CONTAINS",
         EdgeType.HAS_METHOD: "HAS_METHOD",
         EdgeType.MAPS_TO_SQL: "MAPS_TO_SQL",
+        EdgeType.MAPS_TO_TABLE: "MAPS_TO_TABLE",
         EdgeType.CALLS_SQL: "CALLS_SQL",
         EdgeType.REFERENCES_BEAN: "REFERENCES_BEAN",
         EdgeType.CONFIGURES: "CONFIGURES",
@@ -53,46 +54,61 @@ def _map_edge_type_to_framework(edge_type: EdgeType) -> str:
     return mapping.get(edge_type, edge_type.value)
 
 
-async def run_phase4_relationships(
+async def run_relationships(
     project: ProjectStructure,
     chunks: list[Chunk],
     generated_codes: dict | None = None,
+    ast_context: list[Any] | None = None,
+    relationships_out: list[Relationship] | None = None,
+    class_index_out: dict[str, dict[str, Any]] | None = None,
+    bean_index_out: dict[str, dict[str, Any]] | None = None,
+    sql_index_out: dict[str, dict[str, Any]] | None = None,
+    table_index_out: dict[str, dict[str, Any]] | None = None,
 ) -> AsyncGenerator[bytes, None]:
-    """Phase 4 (nontarget): 관계 발견
-    
+    """관계 발견
+
     Args:
         project: Phase 1.5에서 생성된 프로젝트 구조
         chunks: Phase 3에서 생성된 청크
         generated_codes: LLM 생성 코드 (현재는 미사용)
-    
+        ast_context: Java AST 노드 정보 리스트 (class_index 및 external_refs용). 각 항목은 node_id, fqn, name, package_name, external_refs 등 포함.
+
     Yields:
         NDJSON 스트리밍 데이터
     """
     # Phase 4 시작 이벤트
     yield emit_phase_event(4, "비타겟 관계 발견", "started", 0, {"canPause": True})
-    
+
     try:
         all_relationships: list[Relationship] = []
         pattern_rules: list[PatternRule] = []
-        
+
         # Build indexes for efficient lookup
         log_process("ANALYZE", "PHASE_4", "인덱스 구축 중...")
-        class_index = _build_class_index(chunks)
+        class_index = _build_class_index_from_ast(ast_context) if ast_context else _build_class_index(chunks)
         file_index = _build_file_index(project.files)
         bean_index = _build_bean_index(chunks)
         sql_index = _build_sql_index(chunks)
-        
+        table_index = _build_table_index(chunks)
+
         log_process(
             "ANALYZE", "PHASE_4",
             f"인덱스 구축 완료: {len(class_index)}개 클래스, {len(bean_index)}개 빈, "
-            f"{len(sql_index)}개 SQL, {len(file_index)}개 파일"
+            f"{len(sql_index)}개 SQL, {len(table_index)}개 테이블, {len(file_index)}개 파일"
         )
-        
-        # 4-A: Explicit relations
+
+        # 4-A: Explicit relations (chunk-based: SQL→Class, Bean→Class 등)
         log_process("ANALYZE", "PHASE_4", "명시적 관계 발견 중...")
         explicit = await _discover_explicit_relations(chunks, class_index, bean_index, sql_index)
         all_relationships.extend(explicit)
         log_process("ANALYZE", "PHASE_4", f"명시적 관계 {len(explicit)}개 발견")
+
+        # 4-A-2: Java → 외부 리소스 (externalRefs, kind 기반 디스패치)
+        if ast_context and class_index:
+            external_rel = _discover_external_refs_relations(ast_context, sql_index, table_index)
+            all_relationships.extend(external_rel)
+            if external_rel:
+                log_process("ANALYZE", "PHASE_4", f"externalRefs 기반 관계 {len(external_rel)}개 발견")
         
         # 4-B: Implicit relations
         log_process("ANALYZE", "PHASE_4", "암시적 관계 발견 중...")
@@ -127,14 +143,30 @@ async def run_phase4_relationships(
             "pattern_based": len(additional),
         })
         
-        # Phase 결과 반환
+        # Phase 결과 반환 (요약 정보만 전송)
         yield emit_phase_result(4, {
-            "relationships": all_relationships,
-            "class_index": class_index,
-            "bean_index": bean_index,
-            "sql_index": sql_index,
-            "pattern_rules": pattern_rules,
+            "total_relationships": len(all_relationships),
+            "explicit": len(explicit),
+            "implicit": len(implicit),
+            "pattern_based": len(additional),
         })
+        
+        # 호출 측에 실제 객체 전달
+        if relationships_out is not None:
+            relationships_out.clear()
+            relationships_out.extend(all_relationships)
+        if class_index_out is not None:
+            class_index_out.clear()
+            class_index_out.update(class_index)
+        if bean_index_out is not None:
+            bean_index_out.clear()
+            bean_index_out.update(bean_index)
+        if sql_index_out is not None:
+            sql_index_out.clear()
+            sql_index_out.update(sql_index)
+        if table_index_out is not None:
+            table_index_out.clear()
+            table_index_out.update(table_index)
         
     except Exception as e:
         log_process("ANALYZE", "ERROR", f"Phase 4 실패: {e}", exc_info=True)
@@ -142,8 +174,38 @@ async def run_phase4_relationships(
         raise
 
 
+def _build_class_index_from_ast(ast_context: list[Any]) -> dict[str, dict[str, Any]]:
+    """Build class index from Java AST context (node_id, fqn, name, package_name)."""
+    index: dict[str, dict[str, Any]] = {}
+    for item in ast_context:
+        if not isinstance(item, dict):
+            continue
+        node_type = item.get("node_type", "")
+        if node_type not in ("CLASS", "INTERFACE", "ENUM"):
+            continue
+        node_id = item.get("node_id") or item.get("chunk_id")
+        fqn = item.get("fqn", "")
+        name = item.get("name") or item.get("unit_name") or (fqn.split(".")[-1] if fqn else "")
+        package = item.get("package_name") or item.get("package", "")
+        if not node_id:
+            continue
+        entry = {
+            "chunk_id": node_id,
+            "name": name,
+            "fqn": fqn,
+            "package": package,
+            "file": item.get("file", ""),
+            "imports": item.get("imports", []),
+        }
+        if fqn:
+            index[fqn] = entry
+        if name and name != fqn:
+            index[name] = entry
+    return index
+
+
 def _build_class_index(chunks: list[Chunk]) -> dict[str, dict[str, Any]]:
-    """Build an index of classes (from nontarget chunks, if any)."""
+    """Build an index of classes (from artifacts chunks, if any)."""
     index: dict[str, dict[str, Any]] = {}
     for chunk in chunks:
         if chunk.metadata.chunk_type == "class":
@@ -162,6 +224,80 @@ def _build_class_index(chunks: list[Chunk]) -> dict[str, dict[str, Any]]:
                 if name and name != fqn:
                     index[name] = index[fqn]
     return index
+
+
+def _build_table_index(chunks: list[Chunk]) -> dict[str, dict[str, Any]]:
+    """Build table index from SQL statement chunks (table name -> node_id for Phase 5 Table node)."""
+    from util.sql_analyzer import extract_tables_from_sql
+
+    index: dict[str, dict[str, Any]] = {}
+    for chunk in chunks:
+        if chunk.metadata.chunk_type != "sql_statement":
+            continue
+        sql_text = chunk.content or ""
+        tables = extract_tables_from_sql(sql_text)
+        for tbl in tables:
+            schema = tbl.get("schema", "")
+            table = tbl.get("table", "")
+            full_name = f"{schema}.{table}" if schema else table
+            if not full_name:
+                continue
+            node_id = f"table:{full_name}"
+            index[full_name] = {"node_id": node_id, "schema": schema, "table": table}
+            # Also index by table name only for JPA-style "USERS"
+            if schema and table and table not in index:
+                index[table] = {"node_id": node_id, "schema": schema, "table": table}
+    return index
+
+
+def _discover_external_refs_relations(
+    ast_context: list[Any],
+    sql_index: dict[str, dict[str, Any]],
+    table_index: dict[str, dict[str, Any]],
+) -> list[Relationship]:
+    """Discover Java -> external resource relations from ast_context.external_refs (kind-based dispatch)."""
+    relationships: list[Relationship] = []
+    for item in ast_context:
+        if not isinstance(item, dict):
+            continue
+        node_id = item.get("node_id") or item.get("chunk_id")
+        external_refs = item.get("external_refs") or item.get("externalRefs") or []
+        if not node_id or not external_refs:
+            continue
+        for ref in external_refs:
+            if not isinstance(ref, dict):
+                continue
+            kind = (ref.get("kind") or "").strip().lower()
+            target = (ref.get("target") or "").strip()
+            if not target:
+                continue
+            if kind == "mybatis_sql":
+                info = sql_index.get(target)
+                if info:
+                    relationships.append(Relationship(
+                        source_id=node_id,
+                        target_id=info["chunk_id"],
+                        edge_type=EdgeType.MAPS_TO_SQL,
+                        confidence=1.0,
+                        properties={"discovery_method": "externalRefs:mybatis_sql", "sql_reference": target},
+                    ))
+            elif kind == "jpa_table":
+                info = table_index.get(target) or table_index.get(target.upper())
+                if info:
+                    relationships.append(Relationship(
+                        source_id=node_id,
+                        target_id=info["node_id"],
+                        edge_type=EdgeType.MAPS_TO_TABLE,
+                        confidence=1.0,
+                        properties={"discovery_method": "externalRefs:jpa_table", "table": target},
+                    ))
+            elif kind == "jpa_column":
+                # column_index could be added later; for now skip or use table.column -> column node_id
+                pass
+            elif kind == "config_key":
+                # config_index from yaml/properties chunks could be added later
+                pass
+    return relationships
 
 
 def _build_file_index(files: list[FileInfo]) -> dict[str, FileInfo]:

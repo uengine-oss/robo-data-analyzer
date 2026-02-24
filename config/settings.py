@@ -80,8 +80,8 @@ class ConcurrencyConfig:
     # DBMS 분석 전용
     variable_concurrency: int = field(default_factory=lambda: int(os.getenv("VARIABLE_CONCURRENCY", "5")))
     
-    # NONTARGET Summary 배치 병렬 처리
-    nontarget_batch_concurrency: int = field(default_factory=lambda: int(os.getenv("NONTARGET_BATCH_CONCURRENCY", "20")))
+    # Artifacts Summary 배치 병렬 처리
+    artifacts_batch_concurrency: int = field(default_factory=lambda: int(os.getenv("ARTIFACTS_BATCH_CONCURRENCY", "20")))
 
 
 

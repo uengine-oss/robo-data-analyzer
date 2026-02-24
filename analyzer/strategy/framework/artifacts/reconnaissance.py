@@ -1,4 +1,4 @@
-"""Phase 1.5 (nontarget): Project Reconnaissance - File system traversal, type identification, metadata extraction.
+"""Reconnaissance - Project file system traversal, type identification, metadata extraction.
 
 Java 파일은 제외됩니다 (ANTLR로 처리).
 """
@@ -14,22 +14,22 @@ from config.settings import settings
 from util.stream_event import emit_data, emit_message, emit_phase_event, emit_phase_result
 from util.text_utils import log_process
 
-from analyzer.strategy.framework.nontarget.data_models import (
+from analyzer.strategy.framework.artifacts.data_models import (
     FileCategory,
     FileInfo,
     PhaseResult,
     PhaseStatus,
     ProjectStructure,
 )
-from analyzer.strategy.framework.nontarget.file_identifier import identify_file_type
+from analyzer.strategy.framework.artifacts.file_identifier import identify_file_type
 
 
-async def run_phase1_5_reconnaissance(
+async def run_reconnaissance(
     root_path: Path,
     exclude_patterns: list[str] | None = None,
     max_file_size_mb: float = 10.0,
 ) -> AsyncGenerator[bytes, None]:
-    """Phase 1.5 (nontarget): 프로젝트 정찰 - 파일 시스템 탐색, 타입 식별, 메타데이터 추출
+    """프로젝트 정찰 - 파일 시스템 탐색, 타입 식별, 메타데이터 추출
     
     Java 파일은 제외됩니다 (.java, .kt 확장자 필터링).
     

@@ -1,4 +1,4 @@
-"""Core data models for nontarget file processing.
+"""Core data models for artifacts file processing.
 
 Framework 스키마에 맞춘 데이터 모델입니다.
 deep-agents-modernizer의 데이터 모델을 기반으로 하되, Framework 스키마에 맞춰 수정되었습니다.
@@ -71,6 +71,7 @@ class EdgeType(str, enum.Enum):
     IMPLEMENTS = "IMPLEMENTS"
     DEPENDS_ON = "DEPENDENCY"  # Framework와 통일 (Phase 4, 5에서 사용)
     MAPS_TO_SQL = "MAPS_TO_SQL"
+    MAPS_TO_TABLE = "MAPS_TO_TABLE"
     REFERENCES_BEAN = "REFERENCES_BEAN"
     CONFIGURES = "CONFIGURES"
     MATCHES_BY_NAME = "MATCHES_BY_NAME"
@@ -250,4 +251,3 @@ class ValidationReport:
     total_nodes: int = 0
     total_edges: int = 0
     issues: list[str] = field(default_factory=list)
-

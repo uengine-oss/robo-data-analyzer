@@ -1,4 +1,4 @@
-"""Phase 5.5 (nontarget): Bottom-Up LLM Enrichment — summarise nodes and discover call edges.
+"""Enrichment - Bottom-Up LLM Enrichment, summarise nodes and discover call edges.
 
 LLMClient/Neo4jClient 통합 및 Framework 스키마에 맞춤.
 """
@@ -15,13 +15,13 @@ from config.settings import settings
 from util.stream_event import emit_data, emit_message, emit_phase_event, emit_phase_result
 from util.text_utils import log_process
 
-from analyzer.strategy.framework.nontarget.data_models import (
+from analyzer.strategy.framework.artifacts.data_models import (
     Chunk,
     GraphEdge,
     GraphNode,
     ProjectStructure,
 )
-from analyzer.strategy.framework.nontarget.phase4_relationships import _map_edge_type_to_framework
+from analyzer.strategy.framework.artifacts.relationships import _map_edge_type_to_framework
 
 # Regex patterns for SQL mapper calls
 _SQL_CALL_PATTERN = re.compile(
@@ -35,7 +35,7 @@ _METHOD_CALL_PATTERN = re.compile(
 )
 
 
-async def run_phase5_5_enrichment(
+async def run_enrichment(
     project: ProjectStructure,
     chunks: list[Chunk],
     nodes: list[GraphNode],
@@ -45,7 +45,7 @@ async def run_phase5_5_enrichment(
     class_index: dict[str, Any] | None = None,
     sql_index: dict[str, Any] | None = None,
 ) -> AsyncGenerator[bytes, None]:
-    """Phase 5.5 (nontarget): Bottom-up LLM 보강
+    """Bottom-up LLM 보강
     
     Args:
         project: Phase 1.5에서 생성된 프로젝트 구조

@@ -8,11 +8,12 @@ from __future__ import annotations
 import mimetypes
 from pathlib import Path
 
-from analyzer.strategy.framework.nontarget.data_models import FileCategory
+from analyzer.strategy.framework.artifacts.data_models import FileCategory
 
 # Map of known extensions to categories (Java 제외)
 EXTENSION_MAP: dict[str, FileCategory] = {
     ".xml": FileCategory.XML_CONFIG,
+    ".sqlmap": FileCategory.XML_SQLMAP,
     ".yml": FileCategory.YAML,
     ".yaml": FileCategory.YAML,
     ".properties": FileCategory.PROPERTIES,
@@ -74,10 +75,8 @@ def identify_file_type(path: Path) -> tuple[FileCategory, str, str]:
 def _classify_xml(path: Path) -> tuple[FileCategory, str]:
     """Classify XML files into sub-types by reading a content sample."""
     try:
-        # Read raw bytes and decode for classification
         with open(path, "rb") as f:
             raw = f.read(2048)
-        # Try utf-8 first, then euc-kr
         try:
             sample = raw.decode("utf-8").lower()
         except UnicodeDecodeError:
@@ -111,7 +110,6 @@ def _identify_by_content(path: Path) -> tuple[FileCategory, str]:
     except OSError:
         return FileCategory.UNKNOWN, "unknown"
 
-    # Check if binary
     try:
         header.decode("utf-8")
     except UnicodeDecodeError:
@@ -119,26 +117,19 @@ def _identify_by_content(path: Path) -> tuple[FileCategory, str]:
 
     text_sample = header.decode("utf-8", errors="ignore").strip()
 
-    # Check for XML
     if text_sample.startswith("<?xml") or text_sample.startswith("<"):
         return _classify_xml(path)
 
-    # Check for JSON
     if text_sample.startswith("{") or text_sample.startswith("["):
         return FileCategory.JSON, "json"
 
-    # Check for YAML
     if text_sample.startswith("---") or ": " in text_sample[:200]:
         return FileCategory.YAML, "yaml"
 
-    # Check for properties
     if "=" in text_sample[:200] and not text_sample.startswith("#!"):
         lines = text_sample.split("\n")[:5]
         kv_lines = sum(1 for line in lines if "=" in line and not line.strip().startswith("#"))
         if kv_lines >= 2:
             return FileCategory.PROPERTIES, "properties"
 
-    # Java source는 이미 제외됨 (확장자 체크에서)
-
     return FileCategory.TEXT, "text"
-

@@ -458,11 +458,14 @@ class FrameworkAstProcessor(BaseAstProcessor):
             set_parts.append("__cy_n__.type = $class_type")
             params["class_name"] = node.unit_name
             params["class_type"] = label
+            fqn = f"{node.package_name}.{node.unit_name}" if node.package_name else (node.unit_name or "")
             if node.package_name:
                 set_parts.append("__cy_n__.package_name = $package_name")
                 params["package_name"] = node.package_name
                 set_parts.append("__cy_n__.fqn = $fqn")
-                params["fqn"] = f"{node.package_name}.{node.unit_name}"
+                params["fqn"] = fqn
+            set_parts.append("__cy_n__.node_id = $node_id")
+            params["node_id"] = f"CLASS:{fqn}"
         elif node.unit_name:
             set_parts.append("__cy_n__.class_name = $class_name")
             params["class_name"] = node.unit_name

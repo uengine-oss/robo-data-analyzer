@@ -1,4 +1,4 @@
-"""Phase 2.5 (nontarget): Schema Discovery - Infer schemas for each file format, then generate parser code via LLM.
+"""Schema Discovery - Infer schemas for each file format, then generate parser code via LLM.
 
 Java 파일은 제외됩니다 (ANTLR로 처리).
 """
@@ -14,7 +14,7 @@ from config.settings import settings
 from util.stream_event import emit_data, emit_message, emit_phase_event, emit_phase_result
 from util.text_utils import log_process
 
-from analyzer.strategy.framework.nontarget.data_models import (
+from analyzer.strategy.framework.artifacts.data_models import (
     FileCategory,
     FileInfo,
     FormatRegistry,
@@ -26,13 +26,15 @@ from analyzer.strategy.framework.nontarget.data_models import (
 )
 
 
-async def run_phase2_5_schema_discovery(
+async def run_schema_discovery(
     project: ProjectStructure,
     api_key: str,
     schema_sample_count: int = 5,
     use_code_generation: bool = True,
+    registry: FormatRegistry | None = None,
+    generated_codes: dict[str, dict[str, Any]] | None = None,
 ) -> AsyncGenerator[bytes, None]:
-    """Phase 2.5 (nontarget): 스키마 발견 - 모든 파일 형식에 대한 스키마 추론 및 LLM을 통한 파서 코드 생성
+    """스키마 발견 - 모든 파일 형식에 대한 스키마 추론 및 LLM을 통한 파서 코드 생성
     
     Java 파일은 제외됩니다.
     
@@ -49,7 +51,11 @@ async def run_phase2_5_schema_discovery(
     yield emit_phase_event(2.5, "비타겟 스키마 발견", "started", 0, {"canPause": True})
     
     try:
-        registry = FormatRegistry()
+        # 호출 측에서 전달한 레지스트리가 있으면 그대로 사용하고, 없으면 새로 생성
+        if registry is None:
+            registry = FormatRegistry()
+        if generated_codes is None:
+            generated_codes = {}
         
         # Group files by category
         log_process("ANALYZE", "PHASE_2.5", "카테고리별 파일 그룹화 중...")
@@ -91,7 +97,6 @@ async def run_phase2_5_schema_discovery(
         registry.similarity_map = _build_similarity_map(registry.schemas)
         
         # Dynamic code generation via LLM
-        generated_codes: dict[str, dict[str, Any]] = {}
         if use_code_generation and api_key:
             log_process("ANALYZE", "PHASE_2.5", "LLM을 통한 동적 코드 생성 중...")
             # TODO: CodeGenerator 통합 필요 (나중에 구현)
@@ -105,16 +110,17 @@ async def run_phase2_5_schema_discovery(
             f"요약: {len(registry.schemas)}개 스키마 발견, {len(generated_codes)}개 코드 아티팩트 생성"
         )
         
-        # Phase 2.5 완료 이벤트
+        # Phase 2.5 완료 이벤트 (요약 정보만 포함)
         yield emit_phase_event(2.5, "비타겟 스키마 발견", "completed", 100, {
             "schemas": len(registry.schemas),
             "generated_codes": len(generated_codes),
         })
         
-        # Phase 결과 반환
+        # Phase 결과 반환 (직렬화 가능한 요약 정보만 전송)
         yield emit_phase_result(2.5, {
-            "format_registry": registry,
-            "generated_codes": generated_codes,
+            "schema_count": len(registry.schemas),
+            "schema_categories": list(registry.schemas.keys()),
+            "generated_code_count": len(generated_codes),
         })
         
     except Exception as e:

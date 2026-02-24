@@ -1,4 +1,4 @@
-"""Phase 3 (nontarget): Chunking Strategy Derivation - Create semantic chunks from source files.
+"""Chunking - Create semantic chunks from source files.
 
 Java 파일은 제외됩니다 (ANTLR로 처리).
 """
@@ -14,7 +14,7 @@ from config.settings import settings
 from util.stream_event import emit_data, emit_message, emit_phase_event, emit_phase_result
 from util.text_utils import log_process
 
-from analyzer.strategy.framework.nontarget.data_models import (
+from analyzer.strategy.framework.artifacts.data_models import (
     Chunk,
     ChunkingStrategy,
     ChunkMetadata,
@@ -33,12 +33,13 @@ def _chunk_id(file_path: str, chunk_type: str, name: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
-async def run_phase3_chunking(
+async def run_chunking(
     project: ProjectStructure,
     format_registry: FormatRegistry,
     generated_codes: dict | None = None,
+    chunks_out: list[Chunk] | None = None,
 ) -> AsyncGenerator[bytes, None]:
-    """Phase 3 (nontarget): 청킹 전략 도출 및 실행
+    """청킹 전략 도출 및 실행
     
     Java 파일은 제외됩니다.
     
@@ -143,11 +144,16 @@ async def run_phase3_chunking(
             "chunk_type_counts": chunk_type_counts,
         })
         
-        # Phase 결과 반환
+        # Phase 결과 반환 (요약 정보만 전송)
         yield emit_phase_result(3, {
-            "chunks": all_chunks,
+            "total_chunks": len(all_chunks),
             "chunk_stats_by_category": chunk_stats_by_category,
         })
+        
+        # 호출 측에 실제 Chunk 객체 리스트 전달
+        if chunks_out is not None:
+            chunks_out.clear()
+            chunks_out.extend(all_chunks)
         
     except Exception as e:
         log_process("ANALYZE", "ERROR", f"Phase 3 실패: {e}", exc_info=True)
@@ -240,15 +246,15 @@ def _chunk_sqlmap_xml(file_info: FileInfo) -> list[Chunk]:
     """Chunk iBATIS SQL Mapper XML into individual SQL statements."""
     try:
         from lxml import etree
-        
+
         raw_bytes = _read_file_content(file_info, mode="rb")
         tree = etree.fromstring(raw_bytes)
         root = tree
         chunks: list[Chunk] = []
-        
+
         namespace = root.get("namespace", "")
         sql_tags = ["select", "insert", "update", "delete"]
-        
+
         for elem in root.iter():
             local_tag = etree.QName(elem.tag).localname if isinstance(elem.tag, str) else ""
             if local_tag.lower() in sql_tags:
@@ -256,7 +262,7 @@ def _chunk_sqlmap_xml(file_info: FileInfo) -> list[Chunk]:
                 param_class = elem.get("parameterClass", elem.get("parameterType", ""))
                 result_class = elem.get("resultClass", elem.get("resultType", elem.get("resultMap", "")))
                 sql_text = etree.tostring(elem, encoding="unicode", pretty_print=True)
-                
+
                 cid = _chunk_id(file_info.relative_path, "sql", f"{namespace}.{stmt_id}")
                 chunks.append(Chunk(
                     chunk_id=cid,
@@ -273,10 +279,17 @@ def _chunk_sqlmap_xml(file_info: FileInfo) -> list[Chunk]:
                         },
                     ),
                 ))
-        
+
         return chunks
     except Exception as e:
-        log_process("ANALYZE", "PHASE_3", f"SQL map 청킹 실패 ({file_info.relative_path}): {e}", level="DEBUG")
+        # 왜 SQLMAP 전용 청킹이 실패했는지 항상 보이도록 INFO 레벨로 기록
+        from util.text_utils import log_process as _log_process
+        _log_process(
+            "ANALYZE",
+            "PHASE_3",
+            f"SQL map 청킹 실패 ({file_info.relative_path}): {type(e).__name__}: {e}",
+            level="INFO",
+        )
         return _chunk_generic_xml(file_info)
 
 
@@ -323,7 +336,14 @@ def _chunk_spring_xml(file_info: FileInfo) -> list[Chunk]:
         
         return chunks
     except Exception as e:
-        log_process("ANALYZE", "PHASE_3", f"Spring XML 청킹 실패 ({file_info.relative_path}): {e}", level="DEBUG")
+        # Spring XML 청킹 실패 원인도 INFO 레벨로 남겨, 왜 fallback이 발생했는지 즉시 파악 가능하게 함
+        from util.text_utils import log_process as _log_process
+        _log_process(
+            "ANALYZE",
+            "PHASE_3",
+            f"Spring XML 청킹 실패 ({file_info.relative_path}): {type(e).__name__}: {e}",
+            level="INFO",
+        )
         return _chunk_generic_xml(file_info)
 
 
@@ -335,7 +355,7 @@ def _chunk_generic_xml(file_info: FileInfo) -> list[Chunk]:
         tree = etree.ElementTree(etree.fromstring(raw_bytes))
         root = tree.getroot()
         chunks: list[Chunk] = []
-        
+
         for child in root:
             if isinstance(child.tag, str):
                 local_tag = etree.QName(child.tag).localname
@@ -353,9 +373,18 @@ def _chunk_generic_xml(file_info: FileInfo) -> list[Chunk]:
                         },
                     ),
                 ))
-        
+
         return chunks
-    except Exception:
+    except Exception as e:
+        # generic XML 단계까지 실패하면 최종적으로 file 단위 fallback이 일어나므로,
+        # 그 이유를 INFO 레벨로 남겨 디버깅을 쉽게 한다.
+        from util.text_utils import log_process as _log_process
+        _log_process(
+            "ANALYZE",
+            "PHASE_3",
+            f"Generic XML 청킹 실패 ({file_info.relative_path}): {type(e).__name__}: {e}",
+            level="INFO",
+        )
         return _chunk_whole_file(file_info)
 
 
