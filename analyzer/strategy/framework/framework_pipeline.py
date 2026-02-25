@@ -24,7 +24,6 @@ from util.text_utils import (
 from analyzer.strategy.framework.phase_ast import run_phase1
 from analyzer.strategy.framework.uml_relations import run_phase1_5_association
 from analyzer.strategy.framework.phase_llm import run_phase2
-from analyzer.strategy.framework.phase_nontarget import run_phase_nontarget
 
 # CLASS/INTERFACE/ENUM only (for class_index + external_refs)
 _CLASS_NODE_TYPES = frozenset({"CLASS", "INTERFACE", "ENUM"})
@@ -81,7 +80,6 @@ class FrameworkPipeline(BaseStreamingAnalyzer):
     Phase 1: AST 그래프 생성 (병렬)
     Phase 1.5: UML ASSOCIATION 생성
     Phase 2: LLM 분석 (병렬)
-    Phase 3: 비타겟 파일 분석
     """
 
     @property
@@ -183,35 +181,6 @@ class FrameworkPipeline(BaseStreamingAnalyzer):
 
         yield emit_message("")
         yield self.emit_phase_complete(2, f"{stats.llm_batches_executed}개 분석 완료")
-
-        if not await pipeline_state.wait_if_paused():
-            yield emit_message("⏹️ 파이프라인이 중단되었습니다")
-            pipeline_state.set_phase(PipelinePhase.CANCELLED)
-            return
-
-        nontarget_files = [(d, f) for d, f in file_names if not f.endswith(('.java', '.kt'))]
-        ast_context = _build_ast_context_for_phase4(contexts)
-        if nontarget_files:
-            yield emit_message("")
-            yield self.emit_separator()
-            yield self.emit_phase_header(3, "📄 비타겟 파일 분석", f"{len(nontarget_files)}개 파일")
-            yield self.emit_separator()
-
-            async for chunk in run_phase_nontarget(
-                analyzer=self,
-                file_names=nontarget_files,
-                client=client,
-                orchestrator=orchestrator,
-                stats=stats,
-                ast_context=ast_context,
-            ):
-                yield chunk
-
-            yield emit_message("")
-            yield self.emit_phase_complete(3, "비타겟 파일 분석 완료")
-        else:
-            yield emit_message("")
-            yield emit_message("   ℹ️ 비타겟 파일 없음 (Java/Kotlin 파일만 존재)")
 
         if not await pipeline_state.wait_if_paused():
             yield emit_message("⏹️ 파이프라인이 중단되었습니다")

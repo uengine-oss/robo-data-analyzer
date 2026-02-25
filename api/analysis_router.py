@@ -108,10 +108,9 @@ async def analyze_source_code(request: Request):
     # API 키 검증
     await source_analyze_service.validate_llm_api_key(api_key)
     
-    # 분석 대상 파일 탐색 (Java/Kotlin + nontarget)
+    # 분석 대상 파일 탐색 (analysis/target JSON 기반)
     dirs = source_analyze_service.get_analysis_directories(strategy)
     file_names = source_analyze_service.discover_analyzable_files(strategy, target, dirs)
-    file_names += source_analyze_service.discover_nontarget_files(strategy, dirs)
     has_ddl = source_analyze_service.check_ddl_files_exist(dirs)
     
     if not file_names and not has_ddl:

@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from service.source_analyze_service import AnalysisContext, run_source_analysis, discover_analyzable_files, discover_nontarget_files, get_analysis_directories
+from service.source_analyze_service import AnalysisContext, run_source_analysis, discover_analyzable_files, get_analysis_directories
 from client.neo4j_client import Neo4jClient
 
 # ==================== 프로젝트 경로 설정 ====================
@@ -91,11 +91,14 @@ async def test_full_analysis_pipeline(real_neo4j: Neo4jClient):
     """
     _ensure_api_key()
     
-    # 소스 파일 탐색 (Java + nontarget)
+    # 소스 파일 탐색
     try:
         dirs = get_analysis_directories(strategy=TEST_ANALYSIS_STRATEGY)
-        source_files = discover_analyzable_files(strategy=TEST_ANALYSIS_STRATEGY, target=TEST_TARGET, dirs=dirs)
-        source_files += discover_nontarget_files(strategy=TEST_ANALYSIS_STRATEGY, dirs=dirs)
+        source_files = discover_analyzable_files(
+            strategy=TEST_ANALYSIS_STRATEGY,
+            target=TEST_TARGET,
+            dirs=dirs,
+        )
     except Exception as e:
         pytest.skip(f"소스 파일 탐색 실패: {e}")
     
