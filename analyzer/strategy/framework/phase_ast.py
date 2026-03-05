@@ -62,6 +62,7 @@ async def run_phase1(
                     api_key=orchestrator.api_key,
                     locale=orchestrator.locale,
                     last_line=last_line,
+                    source_content=ctx.source_content,
                 )
                 ctx.processor = processor
                 

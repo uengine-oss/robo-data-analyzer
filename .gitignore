@@ -18,6 +18,7 @@ venv/
 
 # etc
 /data/
+/exp/exp_run/
 Pipfile.lock
 langchain.db
 .env

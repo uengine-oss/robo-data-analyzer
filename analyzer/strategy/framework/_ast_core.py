@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple, Set, Union
 
 from config.settings import settings
 from util.rule_loader import RuleLoader
-from util.text_utils import calculate_code_token, log_process
+from util.text_utils import calculate_code_token, log_process, resolve_node_code
 
 from client.neo4j_client import Neo4jClient
 
@@ -204,7 +204,7 @@ class StatementCollector:
         end_line = node.get("endLine", start_line)
         children = node.get("children", [])
 
-        code = node.get('code', '')
+        code = resolve_node_code(node, self.source_content)
         line_entries = self._parse_code_to_lines(code, start_line, end_line)
 
         # --- FILE 처리 ---
@@ -308,6 +308,7 @@ class FrameworkAstProcessor(BaseAstProcessor):
         api_key: str,
         locale: str,
         last_line: int,
+        source_content: str = "",
     ):
         super().__init__(
             antlr_data=antlr_data,
@@ -316,6 +317,7 @@ class FrameworkAstProcessor(BaseAstProcessor):
             api_key=api_key,
             locale=locale,
             last_line=last_line,
+            source_content=source_content,
         )
 
     # =========================================================================
@@ -326,6 +328,7 @@ class FrameworkAstProcessor(BaseAstProcessor):
         """AST 수집"""
         collector = StatementCollector(
             self.antlr_data, self.directory, self.file_name,
+            source_content=getattr(self, "source_content", "") or "",
         )
         return collector.collect()
 

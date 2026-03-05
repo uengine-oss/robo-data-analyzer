@@ -206,7 +206,17 @@ class FrameworkPipeline(BaseStreamingAnalyzer):
                 )
                 if encoding_used != "utf-8":
                     logging.info("[FILE_ENCODING] AST JSON fallback decoding: %s (encoding=%s)", ast_path, encoding_used)
-                return FileAnalysisContext(directory=directory, file_name=file_name, ast_data=json.loads(ast_content))
+                source_content = ""
+                source_dir = orchestrator.dirs.get("source", orchestrator.dirs["analysis"])
+                source_path = os.path.join(source_dir, directory, file_name)
+                if os.path.isfile(source_path):
+                    try:
+                        source_content, _ = await read_text_with_fallback(
+                            source_path, preferred_encodings=("utf-8", "utf-8-sig", "cp949", "euc-kr")
+                        )
+                    except Exception as e:
+                        logging.warning("[FRAMEWORK] 원본 소스 읽기 실패 (source_content 비움): %s - %s", source_path, e)
+                return FileAnalysisContext(directory=directory, file_name=file_name, ast_data=json.loads(ast_content), source_content=source_content)
             except FileNotFoundError:
                 raise RuntimeError(
                     f"ANTLR JSON 파일을 찾을 수 없습니다: {ast_path}\n"

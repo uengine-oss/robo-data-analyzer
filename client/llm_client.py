@@ -14,6 +14,7 @@ LLM 캐싱:
 import logging
 import os
 import requests
+import threading
 from typing import Any, Dict, List, Optional, Union
 
 from langchain_openai import ChatOpenAI
@@ -170,34 +171,33 @@ class CustomLLMClient(BaseChatModel):
 # LLM 캐싱
 # =============================================================================
 
-# LLM 캐싱 초기화 (한 번만 실행)
+# LLM 캐싱 초기화 (한 번만 실행). 병렬 호출 시 락으로 1회만 초기화·로그 출력.
 _cache_initialized = False
+_cache_lock = threading.Lock()
 
 
 def _init_llm_cache():
-    """LLM 캐싱 초기화"""
+    """LLM 캐싱 초기화 (멀티스레드에서도 1회만 실행, 로그 1회만 출력)."""
     global _cache_initialized
-    
+
     if _cache_initialized:
         return
-    
-    config = settings.llm
-    
-    if config.cache_enabled:
-        cache_path = config.cache_db_path
-        # 상대 경로면 프로젝트 루트 기준으로 변환
-        if not os.path.isabs(cache_path):
-            cache_path = os.path.join(settings.path.base_dir, cache_path)
-        
-        try:
-            set_llm_cache(SQLiteCache(database_path=cache_path))
-            logging.info("LLM 캐싱 활성화: %s", cache_path)
-        except Exception as e:
-            logging.warning("LLM 캐싱 초기화 실패: %s", e)
-    else:
-        logging.debug("LLM 캐싱 비활성화됨")
-    
-    _cache_initialized = True
+    with _cache_lock:
+        if _cache_initialized:
+            return
+        config = settings.llm
+        if config.cache_enabled:
+            cache_path = config.cache_db_path
+            if not os.path.isabs(cache_path):
+                cache_path = os.path.join(settings.path.base_dir, cache_path)
+            try:
+                set_llm_cache(SQLiteCache(database_path=cache_path))
+                logging.info("LLM 캐싱 활성화: %s", cache_path)
+            except Exception as e:
+                logging.warning("LLM 캐싱 초기화 실패: %s", e)
+        else:
+            logging.debug("LLM 캐싱 비활성화됨")
+        _cache_initialized = True
 
 
 # =============================================================================

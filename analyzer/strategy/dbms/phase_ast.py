@@ -67,6 +67,7 @@ async def run_phase_ast(
                     default_schema=default_schema,
                     ddl_table_metadata=pipeline._ddl_table_metadata,
                     name_case=name_case,
+                    source_content=ctx.source_content,
                 )
                 ctx.processor = processor
                 queries = processor.build_static_graph_queries()

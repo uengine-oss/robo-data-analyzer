@@ -78,6 +78,52 @@ def parse_json_maybe(data):
     return data or []
 
 
+def add_line_numbers(content: str) -> str:
+    """원본 소스 내용에 각 줄 앞에 'N: '를 붙인 문자열 반환.
+
+    경로/파일 읽기는 하지 않음. 호출측에서 읽은 content만 넘김.
+    """
+    if not content:
+        return ""
+    lines = content.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    return "\n".join(f"{i + 1}: {line}" for i, line in enumerate(lines))
+
+
+def slice_by_line_range(
+    text_with_line_numbers: str,
+    start_line: int,
+    end_line: int,
+) -> str:
+    """라인번호가 붙은 텍스트에서 start_line~end_line 구간만 추출.
+
+    add_line_numbers() 출력 또는 동일 형태(각 줄 "N: 내용")를 가정.
+    """
+    if start_line < 1 or end_line < start_line:
+        return ""
+    lines = text_with_line_numbers.split("\n")
+    start_idx = start_line - 1
+    end_idx = min(end_line, len(lines))
+    if start_idx >= len(lines):
+        return ""
+    return "\n".join(lines[start_idx:end_idx])
+
+
+def resolve_node_code(node: dict, source_content: str) -> str:
+    """AST 노드에 해당하는 코드 문자열 반환.
+
+    JSON에는 code 필드가 없으므로, 항상 원본(source_content)을 노드의
+    startLine/endLine으로 슬라이스한 결과만 반환한다.
+    """
+    if not source_content:
+        return ""
+    start_line = node.get("startLine", 0) or node.get("start_line", 0)
+    end_line = node.get("endLine", 0) or node.get("end_line", start_line)
+    if start_line < 1 or end_line < start_line:
+        return ""
+    text_with_lines = add_line_numbers(source_content)
+    return slice_by_line_range(text_with_lines, start_line, end_line)
+
+
 #==============================================================================
 # 스키마/테이블 파싱 유틸리티
 #==============================================================================

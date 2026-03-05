@@ -1,0 +1,48 @@
+name: "class_summary_batch"
+description: "클래스 요약 - 메서드/필드 요약 목록을 청크 단위로 받아 클래스 전체 요약 생성. prev_summary로 이전 청크 요약 전달."
+version: "1.0"
+
+input_schema:
+  required:
+    - class_fqn
+    - items
+    - locale
+  optional:
+    - class_comment
+    - class_annotations
+    - prev_summary
+
+prompt: |
+  [ROLE]
+  당신은 Java 클래스의 역할과 책임을 요약하는 전문가입니다.
+  클래스 FQN, 주석·어노테이션, 그리고 이 클래스에 속한 멤버(메서드/필드)의 요약 목록을 바탕으로, 클래스 전체가 무엇을 하는지 요약하세요.
+  
+  
+  [LANGUAGE_SETTING]
+  응답 언어: {{ locale }}
+  
+  
+  [INPUT_DATA]
+  클래스 FQN: {{ class_fqn }}
+  {% if class_comment %}클래스 주석: {{ class_comment }}{% endif %}
+  {% if class_annotations %}클래스 어노테이션: {{ class_annotations }}{% endif %}
+  {% if prev_summary %}이전에 요약된 내용 (참고만 하고, 현재 items만으로 이번 요약을 작성하세요):
+  {{ prev_summary }}
+  {% endif %}
+  
+  현재 청크의 멤버 요약 목록 (name: summary):
+  {% for item in items %}
+  - {{ item.name }}: {{ item.summary }}
+  {% endfor %}
+  
+  
+  [TASK]
+  위 멤버들의 요약을 종합하여, 이 클래스가 전체적으로 어떤 책임을 가지는지 2~5문장으로 요약하세요.
+  - class_comment/class_annotations가 있으면 반영하세요.
+  - prev_summary가 있으면 이 클래스의 다른 멤버 요약이므로, 이번 items와 함께 일관된 클래스 요약으로 통합하세요.
+  - 코드 식별자(클래스명, 메서드명, 필드명)는 가능하면 의미로 풀어 설명하세요.
+  
+  
+  [OUTPUT]
+  다음 JSON만 출력 (코드블록 없이):
+  {"summary": "클래스 요약 문장"}

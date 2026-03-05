@@ -259,14 +259,22 @@ class DbmsPipeline(BaseStreamingAnalyzer):
         return generate_user_story_document(results=filtered, source_name="ROBO", source_type="DBMS 프로시저/함수")
 
     async def _load_all_files(self, file_names: list[tuple[str, str]], orchestrator: Any) -> List[FileAnalysisContext]:
-        """모든 파일의 AST JSON을 병렬로 로드"""
+        """모든 파일의 AST JSON과 원본 소스를 병렬로 로드 (AST에 code 없음 → source_content로 슬라이스)"""
         async def load_single(directory: str, file_name: str) -> FileAnalysisContext:
             base_name = os.path.splitext(file_name)[0]
             ast_path = os.path.join(orchestrator.dirs["analysis"], "target", directory, f"{base_name}.json")
             ast_content, encoding_used = await read_text_with_fallback(ast_path, preferred_encodings=("utf-8", "utf-8-sig", "cp949", "euc-kr"))
             if encoding_used != "utf-8":
                 logging.info("[FILE_ENCODING] AST JSON fallback decoding: %s (encoding=%s)", ast_path, encoding_used)
-            return FileAnalysisContext(directory=directory, file_name=file_name, ast_data=json.loads(ast_content))
+            source_content = ""
+            source_dir = orchestrator.dirs.get("source", orchestrator.dirs["analysis"])
+            source_path = os.path.join(source_dir, directory, file_name)
+            if os.path.isfile(source_path):
+                try:
+                    source_content, _ = await read_text_with_fallback(source_path, preferred_encodings=("utf-8", "utf-8-sig", "cp949", "euc-kr"))
+                except Exception as e:
+                    logging.warning("[DBMS] 원본 소스 읽기 실패 (source_content 비움): %s - %s", source_path, e)
+            return FileAnalysisContext(directory=directory, file_name=file_name, ast_data=json.loads(ast_content), source_content=source_content)
         return await asyncio.gather(*[load_single(d, f) for d, f in file_names])
 
 

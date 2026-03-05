@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple, Set, Union
 
 from config.settings import settings
 from util.rule_loader import RuleLoader
-from util.text_utils import calculate_code_token, parse_table_identifier, log_process
+from util.text_utils import calculate_code_token, parse_table_identifier, log_process, resolve_node_code
 
 from analyzer.strategy.base.statement_node import StatementNode
 from analyzer.strategy.base.batch import AnalysisBatch
@@ -229,10 +229,11 @@ def analyze_variable_summary(variables: List[Dict[str, Any]], api_key: str, loca
 class StatementCollector:
     """AST를 후위순회하여 StatementNode와 프로시저 정보를 수집"""
     
-    def __init__(self, antlr_data: Dict[str, Any], directory: str, file_name: str):
+    def __init__(self, antlr_data: Dict[str, Any], directory: str, file_name: str, source_content: str = ""):
         self.antlr_data = antlr_data
         self.directory = directory
         self.file_name = file_name
+        self.source_content = source_content or ""
         self.nodes: List[StatementNode] = []
         self.procedures: Dict[str, ProcedureInfo] = {}
         self._node_id = 0
@@ -299,7 +300,7 @@ class StatementCollector:
         schema_name = current_schema
 
         comment = node.get('comment')
-        raw_code = node.get('code', '')
+        raw_code = resolve_node_code(node, self.source_content)
         line_entries = self._parse_code_to_lines(raw_code, start_line, end_line)
         code = '\n'.join(f"{line_no}: {text}" for line_no, text in line_entries)
         
@@ -407,6 +408,7 @@ class DbmsAstProcessor(BaseAstProcessor):
         default_schema: str = "public",
         ddl_table_metadata: Optional[Dict[Tuple[str, str], Dict[str, Any]]] = None,
         name_case: str = "original",
+        source_content: str = "",
     ):
         super().__init__(
             antlr_data=antlr_data,
@@ -415,6 +417,7 @@ class DbmsAstProcessor(BaseAstProcessor):
             api_key=api_key,
             locale=locale,
             last_line=last_line,
+            source_content=source_content,
         )
         
         self.dbms = (dbms or 'postgres').lower()
@@ -483,7 +486,8 @@ class DbmsAstProcessor(BaseAstProcessor):
     def _collect_nodes(self) -> Tuple[List[StatementNode], Dict[str, ProcedureInfo]]:
         """AST 수집"""
         collector = StatementCollector(
-            self.antlr_data, self.directory, self.file_name
+            self.antlr_data, self.directory, self.file_name,
+            source_content=getattr(self, "source_content", "") or "",
         )
         return collector.collect()
 
