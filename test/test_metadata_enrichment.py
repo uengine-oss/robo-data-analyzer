@@ -20,8 +20,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from client.neo4j_client import Neo4jClient
 from analyzer.strategy.base_analyzer import AnalysisStats
-from analyzer.strategy.dbms.phase_metadata import run_phase_metadata
-from analyzer.strategy.dbms.phase_ddl import run_phase_ddl
+from analyzer.strategy.dbms.pipeline.phase_metadata import run_phase_metadata
+from analyzer.strategy.dbms.pipeline.phases import run_phase_ddl
 from config.settings import settings
 from service.source_analyze_service import get_analysis_directories
 
@@ -174,22 +174,22 @@ async def main():
         
         def emit_skip(self, message: str):
             """스킵 메시지"""
-            from util.stream_event import emit_message
+            from util.ndjson_stream import emit_message
             return emit_message(f"   ⏭️ {message}")
         
         def emit_separator(self):
             """구분선"""
-            from util.stream_event import emit_message
+            from util.ndjson_stream import emit_message
             return emit_message("")
         
         def emit_phase_header(self, phase_num: int, title: str, subtitle: str):
             """Phase 헤더"""
-            from util.stream_event import emit_message
+            from util.ndjson_stream import emit_message
             return emit_message(f"   {title} ({subtitle})")
         
         def emit_file_start(self, idx: int, total: int, filename: str):
             """파일 시작 메시지"""
-            from util.stream_event import emit_message
+            from util.ndjson_stream import emit_message
             return emit_message(f"   📄 [{idx}/{total}] {filename} 처리 중...")
     
     class Orchestrator:

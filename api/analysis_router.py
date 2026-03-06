@@ -2,7 +2,6 @@
 
 엔드포인트:
 - POST /robo/analyze/      : 소스 파일 분석 → Neo4j 그래프 생성
-- POST /robo/detect-types/ : 파일 내용 기반 타입 자동 감지
 - GET /robo/check-data/    : Neo4j에 기존 데이터 존재 여부 확인
 - DELETE /robo/data/       : 사용자 데이터 전체 삭제
 - GET /robo/lineage/       : 데이터 리니지 그래프 조회
@@ -18,8 +17,6 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from api.request_models import (
-    FileContent,
-    DetectTypesRequest,
     LineageAnalyzeRequest,
     LineageGraphResponse,
     SchemaTableInfo,
@@ -45,37 +42,11 @@ from service import (
     dw_schema_service,
 )
 from util.request_helper import extract_api_key, extract_locale
-from util.stream_event import build_error_body, stream_with_error_boundary
+from util.ndjson_stream import build_error_body, stream_with_error_boundary
 
 
 router = APIRouter(prefix=settings.api_prefix)
 logger = logging.getLogger(__name__)
-
-
-# =============================================================================
-# 파일 타입 감지 API
-# =============================================================================
-
-@router.post("/detect-types/")
-async def detect_file_types(request: DetectTypesRequest):
-    """파일 내용을 분석하여 소스 코드 타입 자동 감지"""
-    logger.info("[API] 파일 타입 감지 요청 | files=%d", len(request.files))
-    
-    try:
-        files_data = [(f.fileName, f.content) for f in request.files]
-        result = source_analyze_service.detect_source_file_types(files_data)
-        
-        logger.info(
-            "[API] 파일 타입 감지 완료 | total=%d | strategy=%s | target=%s",
-            result["summary"]["total"],
-            result["summary"]["suggestedStrategy"],
-            result["summary"]["suggestedTarget"],
-        )
-        
-        return result
-    except Exception as e:
-        logger.error("[API] 파일 타입 감지 실패 | error=%s", e)
-        raise HTTPException(500, f"파일 타입 감지 실패: {e}")
 
 
 # =============================================================================

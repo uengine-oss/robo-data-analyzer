@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(wc:*)",
+      "Bash(grep:*)",
+      "Bash(ls:*)",
+      "Bash(/tmp/unused_analysis.txt:*)",
+      "Read(//tmp/**)",
+      "Bash(sed:*)",
+      "Bash(rm:*)"
+    ]
+  }
+}

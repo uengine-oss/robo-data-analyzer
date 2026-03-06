@@ -17,10 +17,9 @@ __all__ = [
 
 def __getattr__(name: str):
     """Lazy import로 순환 참조 방지
-    
-    client.neo4j_client → analyzer.pipeline_control 경로에서
-    analyzer/__init__.py가 실행될 때 .strategy를 즉시 로드하면
-    base_analyzer → client.neo4j_client 순환 참조가 발생함.
+
+    pipeline_control은 core/로 이동됨.
+    여전히 Lazy import를 유지하여 순환 참조 위험을 방지.
     """
     if name == "AnalyzerFactory":
         from .strategy import AnalyzerFactory

@@ -16,11 +16,17 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
 from typing import Any, AsyncGenerator, Optional, List
 import logging
 
 from client.neo4j_client import Neo4jClient
-from util.stream_event import (
+from config.settings import settings
+
+# 실행 로그 파일명 (logs/ 디렉터리 아래에 기록)
+ANALYZER_LOG_FILENAME = "analyzer.log"
+from util.ndjson_stream import (
     emit_message,
     emit_error,
     emit_complete,
@@ -202,6 +208,7 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
         client: Neo4jClient,
         orchestrator: Any,
         stats: AnalysisStats,
+        run_dir: Optional[str] = None,
     ) -> AsyncGenerator[bytes, None]:
         """전략별 분석 파이프라인 실행
         
@@ -215,6 +222,7 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
             client: Neo4j 클라이언트
             orchestrator: 서비스 오케스트레이터
             stats: 분석 통계 (업데이트 필요)
+            run_dir: 로그·산출물 저장 루트 (logs/analysis.run/<run_id>, exp_run과 동일 개념)
             
         Yields:
             NDJSON 바이트 스트림
@@ -245,6 +253,31 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
     # 공통 프레임 (Template Method 패턴)
     # =========================================================================
 
+    def _attach_run_log_file_handler(self) -> tuple[Optional[logging.FileHandler], Optional[Path]]:
+        """실행 로그를 logs/analysis.run/<run_id>/ 아래에 기록. exp_run과 동일하게 런별 폴더에 모든 산출물 기록.
+        Returns:
+            (FileHandler, run_dir). run_dir은 해당 런의 루트 폴더(로그·artifacts·chunk_bundles 등 저장용).
+        """
+        run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_dir = Path(settings.path.audit_dir) / "analysis.run" / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        log_path = run_dir / ANALYZER_LOG_FILENAME
+        handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s"))
+        logging.getLogger().addHandler(handler)
+        logging.getLogger(__name__).info("[ANALYZER] run_dir=%s  로그=%s (모든 산출물·로그 여기 기록)", run_dir, log_path.name)
+        return handler, run_dir
+
+    def _detach_run_log_file_handler(self, handler: Optional[logging.FileHandler]) -> None:
+        """_attach_run_log_file_handler로 추가한 핸들러를 제거하고 닫음."""
+        if not handler:
+            return
+        try:
+            logging.getLogger().removeHandler(handler)
+            handler.close()
+        except Exception:
+            pass
+
     async def analyze(
         self,
         file_names: list[tuple[str, str]],
@@ -265,6 +298,7 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
         stats = AnalysisStats()
         stats.files_total = len(file_names)
 
+        log_file_handler, run_dir = self._attach_run_log_file_handler()
         try:
             # ========== 1. 분석 시작 ==========
             async for chunk in self._emit_analysis_start(orchestrator, stats.files_total):
@@ -279,7 +313,8 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
                 yield chunk
 
             # ========== 4. 전략별 파이프라인 실행 ==========
-            async for chunk in self.run_pipeline(file_names, client, orchestrator, stats):
+            run_dir_str = str(run_dir) if run_dir else None
+            async for chunk in self.run_pipeline(file_names, client, orchestrator, stats, run_dir=run_dir_str):
                 yield chunk
 
             # ========== 5. User Story Phase (공통) ==========
@@ -301,6 +336,7 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
             yield emit_error(error_msg)
             raise RuntimeError(error_msg) from e
         finally:
+            self._detach_run_log_file_handler(log_file_handler)
             await client.close()
 
     # =========================================================================

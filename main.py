@@ -28,7 +28,7 @@ logger = get_logger(__name__)
 app = FastAPI(
     title="ROBO Analyzer",
     description="소스 코드 분석 및 Neo4j 그래프 변환 서비스",
-    version="2.0.0",
+    version=settings.version,
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -71,7 +71,7 @@ async def runtime_error_handler(request: Request, exc: RuntimeError):
 @app.get("/")
 async def health_check():
     """헬스체크 엔드포인트"""
-    return {"status": "ok", "service": "robo-analyzer", "version": "2.0.0"}
+    return {"status": "ok", "service": "robo-analyzer", "version": settings.version}
 
 
 @app.get("/health")
@@ -80,7 +80,7 @@ async def health():
     return {
         "status": "healthy",
         "service": "robo-analyzer",
-        "version": "2.0.0",
+        "version": settings.version,
         "config": {
             "file_concurrency": settings.concurrency.file_concurrency,
             "max_concurrency": settings.concurrency.max_concurrency,

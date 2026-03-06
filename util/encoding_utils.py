@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Sequence
+import json
+from pathlib import Path
+from typing import Any, Sequence
 
 import aiofiles
 
@@ -46,3 +48,33 @@ async def read_text_with_fallback(
     raise RuntimeError(
         f"파일 디코딩 실패: {file_path} (tried: {tried}) - {error_detail}"
     )
+
+
+# =========================================================================
+# 동기 버전
+# =========================================================================
+
+def read_text_with_fallback_sync(
+    path: str | Path,
+    encodings: tuple[str, ...] = DEFAULT_ENCODING_CANDIDATES,
+) -> str:
+    """여러 인코딩을 순서대로 시도하여 텍스트 파일을 읽는다. 모두 실패하면 replace 모드."""
+    p = Path(path)
+    for enc in encodings:
+        try:
+            return p.read_text(encoding=enc)
+        except Exception:
+            continue
+    return p.read_bytes().decode("utf-8", errors="replace")
+
+
+def read_json_with_fallback(
+    path: str | Path,
+    encodings: tuple[str, ...] = DEFAULT_ENCODING_CANDIDATES,
+) -> Any:
+    """인코딩 fallback으로 JSON 파일을 로드한다."""
+    text = read_text_with_fallback_sync(path, encodings)
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, TypeError) as e:
+        raise RuntimeError(f"JSON 로드 실패: {path}") from e

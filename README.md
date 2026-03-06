@@ -207,7 +207,7 @@ summary = validated.get('summary', '')
      - 공통 스트리밍 메시지
      - User Story 생성 (공통 포맷)
      - 완료 통계 및 예외 처리
-   - **FrameworkAnalyzer / DbmsAnalyzer**: 전략별 구현
+  - **FrameworkPipeline / DbmsPipeline**: 전략별 구현
      - Phase 1: 모든 파일 AST 그래프 생성 (병렬)
      - Phase 1.5: 부모 컨텍스트 생성 (DBMS만, Top-down)
      - Phase 2: 모든 파일 LLM 분석 (병렬, 자식→부모 의존성 보장)

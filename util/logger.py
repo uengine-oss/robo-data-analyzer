@@ -136,29 +136,37 @@ class log_context:
             _log_context.reset(self.token)
 
 
-def log_phase(phase: str, message: str, **kwargs) -> None:
-    """분석 단계 로그 출력
-    
-    Args:
-        phase: 단계 이름 (예: "AST", "LLM", "NEO4J")
-        message: 메시지
-        **kwargs: 추가 컨텍스트
+def log_process(
+    context: str,
+    stage: str,
+    message: str,
+    level: int | str = logging.INFO,
+    exc: Exception | None = None,
+    exc_info: bool = False,
+) -> None:
+    """공통 파이프라인 로그 출력 헬퍼.
+
+    - context: 'DBMS', 'FRAMEWORK' 등 분석 타입
+    - stage: 논리적 단계 이름
+    - message: 사용자 친화적 설명
+    - level: logging 모듈 레벨 또는 문자열("DEBUG", "INFO" 등)
+    - exc: 예외 객체 전달 시 스택 트레이스까지 출력
+    - exc_info: 기존 코드 호환용 플래그 (True면 스택 트레이스 출력)
     """
-    logger = get_logger("robo.analyzer")
-    extra = {**kwargs, "phase": phase}
-    logger.info(message, extra=extra)
+    ctx = (context or "APP").upper()
+    stage_text = (stage or "STAGE").upper()
+
+    if isinstance(level, str):
+        level = getattr(logging, level.upper(), logging.INFO)
+
+    if exc is not None:
+        real_exc_info: Exception | bool | None = exc
+    elif exc_info:
+        real_exc_info = True
+    else:
+        real_exc_info = None
+
+    logging.log(level, f"[{ctx}:{stage_text}] {message}", exc_info=real_exc_info)
 
 
-def log_progress(current: int, total: int, item: str, **kwargs) -> None:
-    """진행률 로그 출력
-    
-    Args:
-        current: 현재 항목 번호
-        total: 전체 항목 수
-        item: 항목 설명
-        **kwargs: 추가 컨텍스트
-    """
-    percent = int((current / total) * 100) if total > 0 else 0
-    logger = get_logger("robo.analyzer")
-    logger.info(f"[{current}/{total}] {item} ({percent}%)", extra=kwargs)
 

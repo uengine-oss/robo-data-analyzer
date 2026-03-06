@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 DESCRIPTION_SOURCE = "sample_data_inference"
 TEXT2SQL_ENDPOINT = "/text2sql/direct-sql"
 SAMPLE_DATA_LIMIT = 10  # LLM 프롬프트용 샘플 데이터 최대 행 수
-TIMEOUT_CONNECT = 5  # 연결 타임아웃 (초)
-TIMEOUT_REQUEST = 30  # 요청 타임아웃 (초)
+TIMEOUT_CONNECT = settings.metadata_enrichment.timeout_connect
+TIMEOUT_REQUEST = settings.metadata_enrichment.timeout_request
 
 # 데이터 타입 그룹
 NUMERIC_TYPES = {"int", "integer", "bigint", "smallint", "serial", "bigserial", "smallserial", "numeric", "decimal", "float", "double", "real", "number"}

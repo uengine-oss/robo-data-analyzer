@@ -204,16 +204,10 @@ def _init_llm_cache():
 # LLM 클라이언트 팩토리
 # =============================================================================
 
-# 추론 모델 (thinking 기반)
-REASONING_MODELS = frozenset({
-    "gpt-5", "o1", "o1-pro", "o1-mini", "o1-preview", "o3", "o3-mini", "o4-mini"
-})
-
-
 def _is_reasoning_model(model: str) -> bool:
     """추론 모델 여부 확인"""
     model_lower = model.lower() if model else ""
-    return any(rm in model_lower for rm in REASONING_MODELS)
+    return any(rm in model_lower for rm in settings.llm.reasoning_models)
 
 
 def get_llm(
@@ -267,7 +261,7 @@ def get_llm(
         "base_url": base_url,
         "api_key": api_key,
         "max_tokens": max_tokens,
-        "temperature": 0.2,
+        "temperature": config.temperature,
     }
 
     # 추론 모델 특수 처리

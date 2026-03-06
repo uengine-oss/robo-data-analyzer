@@ -18,7 +18,6 @@ from fastapi import HTTPException
 from analyzer.strategy import AnalyzerFactory
 from client.llm_client import get_llm
 from config.settings import settings
-from util.file_type_detector import detect_batch_file_types
 
 
 # =============================================================================
@@ -42,22 +41,6 @@ TARGET_TO_EXTENSION = {
     "postgres": ".sql",
     "mysql": ".sql",
 }
-
-
-# =============================================================================
-# 파일 타입 감지
-# =============================================================================
-
-def detect_source_file_types(files: list[tuple[str, str]]) -> dict:
-    """파일 내용을 분석하여 소스 코드 타입 자동 감지
-    
-    Args:
-        files: [(fileName, content), ...] 튜플 리스트
-        
-    Returns:
-        감지 결과 딕셔너리
-    """
-    return detect_batch_file_types(files)
 
 
 # =============================================================================

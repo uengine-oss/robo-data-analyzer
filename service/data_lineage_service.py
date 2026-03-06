@@ -10,7 +10,7 @@
 import logging
 
 from client.neo4j_client import Neo4jClient
-from analyzer.lineage_analyzer import analyze_lineage_from_sql as _analyze_lineage
+from analyzer.strategy.dbms.linking.lineage_analyzer import analyze_lineage_from_sql as _analyze_lineage
 
 
 logger = logging.getLogger(__name__)

@@ -44,7 +44,7 @@ class PhaseInfo:
     description: str
     order: int
     can_pause: bool = True
-    
+
     def to_dict(self) -> dict:
         return {
             "phase": self.phase.value,
@@ -76,16 +76,16 @@ class PipelineState:
     is_stopped: bool = False
     phase_progress: int = 0  # 0-100
     phase_message: str = ""
-    
+
     # 동기화용 이벤트
     _pause_event: asyncio.Event = field(default_factory=asyncio.Event)
     _resume_event: asyncio.Event = field(default_factory=asyncio.Event)
-    
+
     def __post_init__(self):
         # 초기 상태: 정지되지 않음 (실행 가능)
         self._pause_event.set()  # pause_event가 set되어 있으면 실행 가능
         self._resume_event.clear()
-    
+
     def to_dict(self) -> dict:
         phase_info = next((p for p in PIPELINE_PHASES if p.phase == self.current_phase), None)
         return {
@@ -98,24 +98,24 @@ class PipelineState:
             "phaseMessage": self.phase_message,
             "phases": [p.to_dict() for p in PIPELINE_PHASES],
         }
-    
+
     async def wait_if_paused(self) -> bool:
         """일시정지 상태면 대기, 중단되면 False 반환"""
         if self.is_stopped:
             return False
-        
+
         if self.is_paused:
             logger.info("일시정지 대기 중...")
             # resume_event가 set될 때까지 대기
             await self._resume_event.wait()
-            
+
             if self.is_stopped:
                 return False
-                
+
             logger.info("재개됨")
-        
+
         return True
-    
+
     def pause(self):
         """일시정지"""
         if not self.is_stopped:
@@ -123,7 +123,7 @@ class PipelineState:
             self._pause_event.clear()
             self._resume_event.clear()
             logger.info("일시정지 요청")
-    
+
     def resume(self):
         """재개"""
         if self.is_paused and not self.is_stopped:
@@ -131,7 +131,7 @@ class PipelineState:
             self._pause_event.set()
             self._resume_event.set()
             logger.info("재개 요청")
-    
+
     def stop(self):
         """중단"""
         self.is_stopped = True
@@ -139,7 +139,7 @@ class PipelineState:
         self._pause_event.set()  # 대기 중인 작업 깨우기
         self._resume_event.set()  # 대기 중인 작업 깨우기
         logger.info("중단 요청")
-    
+
     def reset(self):
         """상태 초기화"""
         self.current_phase = PipelinePhase.IDLE
@@ -149,14 +149,14 @@ class PipelineState:
         self.phase_message = ""
         self._pause_event.set()
         self._resume_event.clear()
-    
+
     def set_phase(self, phase: PipelinePhase, message: str = "", progress: int = 0):
         """현재 단계 설정"""
         self.current_phase = phase
         self.phase_message = message
         self.phase_progress = progress
         logger.info(f"단계: {phase.value} - {message}")
-    
+
     def update_progress(self, progress: int, message: str = ""):
         """진행률 업데이트"""
         self.phase_progress = min(100, max(0, progress))
@@ -166,26 +166,26 @@ class PipelineState:
 
 class PipelineController:
     """파이프라인 제어 싱글톤 (단일 세션)"""
-    
+
     _instance: Optional['PipelineController'] = None
     _state: Optional[PipelineState] = None
-    
+
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._state = PipelineState()
         return cls._instance
-    
+
     def get_state(self) -> PipelineState:
         """상태 조회"""
         if self._state is None:
             self._state = PipelineState()
         return self._state
-    
+
     def reset(self):
         """상태 초기화"""
         self.get_state().reset()
-    
+
     def pause(self) -> bool:
         """일시정지"""
         state = self.get_state()
@@ -193,7 +193,7 @@ class PipelineController:
             state.pause()
             return True
         return False
-    
+
     def resume(self) -> bool:
         """재개"""
         state = self.get_state()
@@ -201,7 +201,7 @@ class PipelineController:
             state.resume()
             return True
         return False
-    
+
     def stop(self) -> bool:
         """중단"""
         state = self.get_state()
@@ -209,24 +209,24 @@ class PipelineController:
             state.stop()
             return True
         return False
-    
+
     async def check_continue(self) -> bool:
         """계속 진행 가능 여부 체크
-        
+
         배치 처리 등에서 간단히 호출:
             if not await pipeline_controller.check_continue():
                 return  # 중단됨
-        
+
         Returns:
             True: 계속 진행 가능
             False: 중단됨 (stop 호출됨)
         """
         return await self.get_state().wait_if_paused()
-    
+
     def get_status(self) -> dict:
         """상태 조회"""
         return self.get_state().to_dict()
-    
+
     def get_phases_info(self) -> list:
         """전체 단계 정보"""
         return [p.to_dict() for p in PIPELINE_PHASES]

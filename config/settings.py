@@ -63,6 +63,12 @@ class LLMConfig:
     reasoning_effort: str = field(default_factory=lambda: os.getenv("LLM_REASONING_EFFORT", "medium"))
     is_custom: bool = field(default_factory=lambda: os.getenv("IS_CUSTOM_LLM", "").lower() == "true")
     company_name: Optional[str] = field(default_factory=lambda: os.getenv("COMPANY_NAME"))
+    # LLM 동작 설정
+    temperature: float = field(default_factory=lambda: float(os.getenv("LLM_TEMPERATURE", "0.2")))
+    reasoning_models: frozenset = field(default_factory=lambda: frozenset({
+        "gpt-5", "o1", "o1-pro", "o1-mini", "o1-preview", "o3", "o3-mini", "o4-mini"
+    }))
+    embedding_model: str = field(default_factory=lambda: os.getenv("EMBEDDING_MODEL", "text-embedding-3-small"))
     # LLM 캐싱 설정
     cache_enabled: bool = field(default_factory=lambda: os.getenv("LLM_CACHE_ENABLED", "true").lower() == "true")
     cache_db_path: str = field(default_factory=lambda: os.getenv("LLM_CACHE_DB", ".llm_cache.db"))
@@ -122,6 +128,9 @@ class MetadataEnrichmentConfig:
     fk_similarity_threshold: float = field(default_factory=lambda: float(os.getenv("FK_SIMILARITY_THRESHOLD", "0.8")))
     fk_match_ratio_threshold: float = field(default_factory=lambda: float(os.getenv("FK_MATCH_RATIO_THRESHOLD", "0.8")))
     fk_concurrency: int = field(default_factory=lambda: int(os.getenv("FK_CONCURRENCY", "5")))
+    # HTTP 타임아웃
+    timeout_connect: int = field(default_factory=lambda: int(os.getenv("METADATA_TIMEOUT_CONNECT", "5")))
+    timeout_request: int = field(default_factory=lambda: int(os.getenv("METADATA_TIMEOUT_REQUEST", "30")))
 
 
 @dataclass(frozen=True)
@@ -141,6 +150,12 @@ class AnalyzerConfig:
     path: PathConfig = field(default_factory=PathConfig)
     metadata_enrichment: MetadataEnrichmentConfig = field(default_factory=MetadataEnrichmentConfig)
     feature: PipelineFeatureConfig = field(default_factory=PipelineFeatureConfig)
+    
+    # 버전
+    version: str = "2.0.0"
+
+    # 분석 결과 출력 언어
+    locale: str = field(default_factory=lambda: os.getenv("EXP_LOCALE", "ko"))
     
     # API 설정
     api_prefix: str = "/robo"

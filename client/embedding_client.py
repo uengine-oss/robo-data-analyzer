@@ -12,7 +12,7 @@ class EmbeddingClient:
     
     def __init__(self, client: Optional[AsyncOpenAI] = None):
         self.client = client
-        self.model = getattr(settings, 'openai_embedding_model', 'text-embedding-3-small')
+        self.model = settings.llm.embedding_model
     
     async def embed_text(self, text: str) -> List[float]:
         """Generate embedding for a single text"""
