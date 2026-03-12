@@ -23,7 +23,7 @@ class PipelinePhase(Enum):
     TABLE_ENRICHMENT = "table_enrichment"       # Phase 3: 테이블 설명 보강
     VECTORIZING = "vectorizing"                 # Phase 4: 벡터라이징 (임베딩 생성)
     LINEAGE_ANALYSIS = "lineage_analysis"       # Phase 5: 데이터 리니지 분석
-    USER_STORY = "user_story"                   # Phase 6: User Story 생성
+    REPORT_GENERATION = "report_generation"       # Phase 6: 분석 보고서 생성
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -64,7 +64,7 @@ PIPELINE_PHASES = [
     PhaseInfo(PipelinePhase.TABLE_ENRICHMENT, "테이블 설명 보강", "분석 결과로 테이블/컬럼 설명 업데이트", 3, True),
     PhaseInfo(PipelinePhase.VECTORIZING, "벡터라이징", "테이블/컬럼 임베딩 생성", 4, True),
     PhaseInfo(PipelinePhase.LINEAGE_ANALYSIS, "리니지 분석", "ETL 패턴 감지 → 데이터 흐름 관계 생성", 5, True),
-    PhaseInfo(PipelinePhase.USER_STORY, "User Story 생성", "분석 결과 → User Story 문서 생성", 6, False),
+    PhaseInfo(PipelinePhase.REPORT_GENERATION, "분석 보고서 생성", "분석 결과 → 마크다운 보고서 생성", 6, False),
 ]
 
 

@@ -9,7 +9,6 @@
 - dw_schema_service: DW 스타스키마
 - glossary_manage_service: 용어집 관리
 - metadata_enrichment_service: 메타데이터 보강
-- user_story_document: User Story 문서 생성
 """
 
 __all__ = [
@@ -19,8 +18,6 @@ __all__ = [
     "delete_graph_data",
     "check_graph_data_exists",
     "MetadataEnrichmentService",
-    "generate_user_story_document",
-    "aggregate_user_stories_from_results",
     "get_pipeline_status",
     "control_pipeline_action",
 ]
@@ -37,9 +34,6 @@ def __getattr__(name: str):
     if name == "MetadataEnrichmentService":
         from .metadata_enrichment_service import MetadataEnrichmentService
         return MetadataEnrichmentService
-    if name in ("generate_user_story_document", "aggregate_user_stories_from_results"):
-        from . import user_story_document as _usd
-        return getattr(_usd, name)
     if name in ("get_pipeline_status", "control_pipeline_action"):
         from . import pipeline_control_service as _pcs
         return getattr(_pcs, name)

@@ -52,8 +52,7 @@ class ProcessingPlan:
     """처리 계획: 분류된 작업 목록."""
     java_ast_jobs: List[str] = field(default_factory=list)   # 파일 경로
     xml_sqlmap_jobs: List[str] = field(default_factory=list)
-    xml_ejb_jobs: List[str] = field(default_factory=list)   # ejb-jar.xml
-    xml_entitymodel_jobs: List[str] = field(default_factory=list)  # entitymodel.xml (ofbiz)
+    xml_artifact_jobs: List[str] = field(default_factory=list)  # ejb-jar.xml, entitymodel.xml 등 아티팩트 XML
     yaml_jobs: List[str] = field(default_factory=list)
     properties_jobs: List[str] = field(default_factory=list)
     json_jobs: List[str] = field(default_factory=list)
@@ -63,8 +62,7 @@ class ProcessingPlan:
         """모든 job 유형을 (category, paths) 쌍으로 순회."""
         yield "java_ast", self.java_ast_jobs
         yield "xml_sqlmap", self.xml_sqlmap_jobs
-        yield "xml_ejb", self.xml_ejb_jobs
-        yield "xml_entitymodel", self.xml_entitymodel_jobs
+        yield "xml_artifact", self.xml_artifact_jobs
         yield "yaml", self.yaml_jobs
         yield "properties", self.properties_jobs
         yield "json", self.json_jobs
@@ -202,12 +200,14 @@ class ConfigSectionChunk:
 class ArtifactChunk:
     """비표준 포맷(ejb-jar.xml, entitymodel.xml 등)에서 추출한 청크. REFER_TO 대상(선택)."""
     chunk_id: str
-    chunk_type: str   # e.g. "ejb_bean", "entitymodel_entity"
+    chunk_type: str   # e.g. "entity", "cmp_mapping"
     hint_key: Optional[str] = None
     text: str = ""
     source_path: str = ""
     start_line: int = 0
     end_line: int = 0
+    # EJB XML에서 추출한 관련 클래스 FQN 목록 (ejb-class, home, remote 등)
+    related_class_fqns: Optional[List[str]] = None
 
 
 # ---------------------------------------------------------------------------

@@ -8,7 +8,7 @@ import logging
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Generator, List, Optional, Set, Tuple
 
 from config.settings import settings
 from analyzer.strategy.framework.models import (
@@ -148,6 +148,41 @@ def _build_linked_architecture_context(
     return out
 
 
+def _build_class_fields_context(
+    class_key: Optional[str],
+    field_facts_list: Optional[List[FieldFacts]],
+    max_len: int = 500,
+) -> str:
+    """해당 클래스의 필드/상수 선언을 간결한 문자열로 구성. 메서드 분석 context용.
+
+    static final 상수를 우선 포함하여 LLM이 상수값을 해석할 수 있도록 한다.
+    """
+    if not class_key or not field_facts_list:
+        return ""
+    fields = [f for f in field_facts_list if f.class_key == class_key]
+    if not fields:
+        return ""
+    parts: List[str] = []
+    # static final 상수를 우선 배치
+    constants = [f for f in fields if f.code and ("static" in f.code.lower() and "final" in f.code.lower())]
+    others = [f for f in fields if f not in constants]
+    for f in constants + others:
+        code_line = (f.code or "").strip()
+        if code_line:
+            # 한 줄로 압축
+            code_line = " ".join(code_line.split())
+            parts.append(code_line)
+        else:
+            entry = f.name
+            if f.field_type:
+                entry = f"{f.field_type} {f.name}"
+            parts.append(entry)
+    result = " | ".join(parts)
+    if len(result) > max_len:
+        result = result[:max_len - 15] + " ... [truncated]"
+    return result
+
+
 def _invoke_analysis_llm(
     m: MethodFacts,
     api_key: str,
@@ -158,6 +193,7 @@ def _invoke_analysis_llm(
     class_annotations: Optional[str] = None,
     linked_architecture_context: Optional[str] = None,
     called_method_summaries: Optional[List[Dict[str, Any]]] = None,
+    class_fields_context: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """메서드 1개에 대해 analysis 규칙 실행 → summary/calls/dependencies/stereotype.
 
@@ -192,6 +228,8 @@ def _invoke_analysis_llm(
         context_parts.append("calls_outgoing: " + ", ".join(calls_outgoing[:20]))
     if reads_writes_summary:
         context_parts.append("reads_writes: " + reads_writes_summary)
+    if class_fields_context and class_fields_context.strip():
+        context_parts.append("[CLASS_CONSTANTS_AND_FIELDS] " + class_fields_context.strip())
     if linked_architecture_context and linked_architecture_context.strip():
         context_parts.append(linked_architecture_context.strip())
     if called_method_summaries:
@@ -247,6 +285,7 @@ def _process_one_method_for_analysis(
     config_index: Optional[Dict[str, Any]] = None,
     class_key_index: Optional[Dict[str, Tuple[Optional[str], Optional[str]]]] = None,
     called_summaries: Optional[List[Dict[str, Any]]] = None,
+    field_facts_list: Optional[List[FieldFacts]] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """단일 메서드에 대해 stereotype + (summary, calls, dependencies) 계산.
 
@@ -271,6 +310,7 @@ def _process_one_method_for_analysis(
         total_max_len=LINKED_ARCHITECTURE_CONTEXT_MAX,
     )
     class_comment, class_annotations = _get_class_context(class_key_index or {}, m.class_key)
+    fields_ctx = _build_class_fields_context(m.class_key, field_facts_list)
     calls: List[str] = []
     dependencies: List[Dict[str, Any]] = []
     stereotype = fallback_stereotype
@@ -285,6 +325,7 @@ def _process_one_method_for_analysis(
             class_annotations=class_annotations,
             linked_architecture_context=linked_architecture_context or None,
             called_method_summaries=called_summaries,
+            class_fields_context=fields_ctx or None,
         )
         if analysis:
             if analysis.get("summary"):
@@ -294,6 +335,7 @@ def _process_one_method_for_analysis(
             raw_stereotype = (analysis.get("stereotype") or "").strip().lower()
             if raw_stereotype in ("command", "readmodel"):
                 stereotype = raw_stereotype
+
     data = {
         "stereotype": stereotype,
         "summary": summary,
@@ -302,6 +344,9 @@ def _process_one_method_for_analysis(
         "dependencies": dependencies,
     }
     return m.method_id, data
+
+
+_STEP6_BATCH_SIZE = 20
 
 
 def run_step6(
@@ -316,12 +361,12 @@ def run_step6(
     sql_index: Optional[Dict[str, Any]] = None,
     config_index: Optional[Dict[str, Any]] = None,
     calls_edges: Optional[List[CallsEdge]] = None,
-) -> Dict[str, Dict[str, Any]]:
-    """메서드별 stereotype, summary.
+    field_facts_list: Optional[List[FieldFacts]] = None,
+) -> Generator[Dict[str, Dict[str, Any]], None, None]:
+    """메서드별 stereotype, summary — 20개씩 배치로 yield.
 
-    - LLM 사용(O) + calls_edges 있음  → 호출 그래프 하위 → 상위 순으로 레벨별 병렬 처리.
-      하위 메서드 summary를 context에 포함해 한 번의 LLM 호출로 최종 summary를 생성.
-    - 그 외(LLM 미사용 / calls_edges 없음) → 기존 방식대로 메서드 단위 개별 처리.
+    - LLM 사용(O) + calls_edges 있음  → 호출 그래프 하위 → 상위 순으로 레벨별 병렬, 20개씩 yield.
+    - 그 외(LLM 미사용 / calls_edges 없음) → 기존 방식대로 메서드 단위 개별 처리, 20개씩 yield.
     """
     api_key = api_key or settings.llm.api_key or os.getenv("LLM_API_KEY", "")
     class_key_index = _build_class_key_index(class_index or {})
@@ -333,8 +378,12 @@ def run_step6(
         parallel,
         len(calls_edges or []),
     )
-    result: Dict[str, Dict[str, Any]] = {}
+    total_yielded = 0
     effective_api_key = api_key if use_llm else ""
+
+    def _flush_batch(batch: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        """배치를 복사하여 반환 (yield 용)."""
+        return dict(batch)
 
     # LLM을 못 쓰는 경우 / 호출 그래프가 없는 경우 → 기존 방식 유지
     if not (use_llm and effective_api_key and calls_edges):
@@ -349,6 +398,7 @@ def run_step6(
                 workers_actual,
             )
             completed = 0
+            batch: Dict[str, Dict[str, Any]] = {}
             with ThreadPoolExecutor(max_workers=workers_actual) as executor:
                 futures = {
                     executor.submit(
@@ -363,18 +413,19 @@ def run_step6(
                         config_index,
                         class_key_index,
                         None,
+                        field_facts_list,
                     ): m
                     for m in method_facts_list
                 }
                 for future in as_completed(futures):
                     try:
                         method_id, data = future.result()
-                        result[method_id] = data
+                        batch[method_id] = data
                     except Exception as e:
                         m = futures[future]
                         logger.warning("[FW:STEP6] 병렬 분석 예외 method_id=%s: %s", m.method_id, e)
                         stereotype = compute_stereotype(m.method_id, refer_to_edges, reads_writes)
-                        result[m.method_id] = {
+                        batch[m.method_id] = {
                             "stereotype": stereotype,
                             "summary": f"{m.fqn} ({stereotype}); lines {m.start_line}-{m.end_line}",
                             "fqn": m.fqn,
@@ -382,11 +433,20 @@ def run_step6(
                             "dependencies": [],
                         }
                     completed += 1
+                    if len(batch) >= _STEP6_BATCH_SIZE:
+                        total_yielded += len(batch)
+                        logger.debug("[FW:STEP6] 배치 yield  %d/%d", total_yielded, total)
+                        yield _flush_batch(batch)
+                        batch.clear()
                     if completed == total:
                         logger.info("[FW:STEP6] analysis LLM 완료  %d/%d", completed, total)
                     else:
                         logger.debug("[FW:STEP6] analysis LLM 진행  %d/%d", completed, total)
+            if batch:
+                total_yielded += len(batch)
+                yield _flush_batch(batch)
         else:
+            batch = {}
             for m in method_facts_list:
                 try:
                     method_id, data = _process_one_method_for_analysis(
@@ -400,20 +460,28 @@ def run_step6(
                         config_index,
                         class_key_index,
                         None,
+                        field_facts_list,
                     )
-                    result[method_id] = data
+                    batch[method_id] = data
                 except Exception as e:
                     logger.warning("[FW:STEP6] 순차 분석 예외 method_id=%s: %s", m.method_id, e)
                     stereotype = compute_stereotype(m.method_id, refer_to_edges, reads_writes)
-                    result[m.method_id] = {
+                    batch[m.method_id] = {
                         "stereotype": stereotype,
                         "summary": f"{m.fqn} ({stereotype}); lines {m.start_line}-{m.end_line}",
                         "fqn": m.fqn,
                         "calls": [],
                         "dependencies": [],
                     }
-        logger.info("[FW:STEP6] 요약 완료 | summary_count=%d", len(result))
-        return result
+                if len(batch) >= _STEP6_BATCH_SIZE:
+                    total_yielded += len(batch)
+                    yield _flush_batch(batch)
+                    batch.clear()
+            if batch:
+                total_yielded += len(batch)
+                yield _flush_batch(batch)
+        logger.info("[FW:STEP6] 요약 완료 | summary_count=%d", total_yielded)
+        return
 
     # -------- 호출 그래프 기반 bottom-up 요약 (단일 LLM 호출 경로) --------
     method_by_id: Dict[str, MethodFacts] = {m.method_id: m for m in method_facts_list}
@@ -433,12 +501,12 @@ def run_step6(
     remaining_children: Dict[str, int] = {c: len(children[c]) for c in children}
 
     summary_cache: Dict[str, str] = {}
+    result: Dict[str, Dict[str, Any]] = {}
 
     workers = settings.concurrency.max_concurrency
 
     def summarize_one(node_id: str) -> Tuple[str, Dict[str, Any]]:
         m = method_by_id[node_id]
-        # 하위 메서드 summary를 context에 넣기 위한 준비
         called_list: List[Dict[str, Any]] = []
         for callee_id in children.get(node_id, []):
             if callee_id not in summary_cache:
@@ -468,6 +536,7 @@ def run_step6(
             config_index,
             class_key_index,
             called_list or None,
+            field_facts_list,
         )
         return node_id, data
 
@@ -485,7 +554,7 @@ def run_step6(
             len(current_batch),
         )
 
-        # 레벨 내에서는 병렬 처리
+        batch: Dict[str, Dict[str, Any]] = {}
         max_workers = max(1, min(workers, len(current_batch)))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(summarize_one, nid): nid for nid in current_batch}
@@ -496,6 +565,7 @@ def run_step6(
                     result[node_id] = data
                     summary_cache[node_id] = data.get("summary", "")
                     processed.add(node_id)
+                    batch[node_id] = data
                     processed_id = node_id
                 except Exception as e:
                     logger.warning("[FW:STEP6] 호출 그래프 요약 예외 method_id=%s: %s", nid, e)
@@ -511,9 +581,10 @@ def run_step6(
                     result[nid] = fallback
                     summary_cache[nid] = fallback["summary"]
                     processed.add(nid)
+                    batch[nid] = fallback
                     processed_id = nid
 
-                # 부모 노드 준비: 자식이 모두 처리되었을 때 ready_queue에 추가
+                # 부모 노드 준비
                 if processed_id in parents:
                     for p in parents[processed_id]:
                         if p in remaining_children:
@@ -521,12 +592,25 @@ def run_step6(
                             if remaining_children[p] == 0:
                                 ready_queue.append(p)
 
-    # 아직 처리 안 된 노드(사이클 등)가 있으면 fallback으로 개별 처리
+                # 20개 모이면 yield
+                if len(batch) >= _STEP6_BATCH_SIZE:
+                    total_yielded += len(batch)
+                    logger.debug("[FW:STEP6] 배치 yield (레벨 %d)  %d개", step, len(batch))
+                    yield _flush_batch(batch)
+                    batch.clear()
+
+        # 레벨 종료 시 남은 배치 flush
+        if batch:
+            total_yielded += len(batch)
+            yield _flush_batch(batch)
+
+    # 사이클 등으로 처리 안 된 노드 fallback
     remaining = node_ids - processed
     if remaining:
         logger.warning(
             "[FW:STEP6] 호출 그래프 요약에서 처리되지 않은 노드 존재 | remaining=%d", len(remaining)
         )
+        batch = {}
         for mid in remaining:
             m = method_by_id[mid]
             try:
@@ -541,21 +625,28 @@ def run_step6(
                     config_index,
                     class_key_index,
                     None,
+                    field_facts_list,
                 )
-                result[mid] = data
+                batch[mid] = data
             except Exception as e:
                 logger.warning("[FW:STEP6] remaining 노드 개별 처리 예외 method_id=%s: %s", mid, e)
                 stereotype = compute_stereotype(m.method_id, refer_to_edges, reads_writes)
-                result[mid] = {
+                batch[mid] = {
                     "stereotype": stereotype,
                     "summary": f"{m.fqn} ({stereotype}); lines {m.start_line}-{m.end_line}",
                     "fqn": m.fqn,
                     "calls": [],
                     "dependencies": [],
                 }
+            if len(batch) >= _STEP6_BATCH_SIZE:
+                total_yielded += len(batch)
+                yield _flush_batch(batch)
+                batch.clear()
+        if batch:
+            total_yielded += len(batch)
+            yield _flush_batch(batch)
 
-    logger.info("[FW:STEP6] 호출 그래프 기반 요약 완료 | summary_count=%d", len(result))
-    return result
+    logger.info("[FW:STEP6] 호출 그래프 기반 요약 완료 | summary_count=%d", total_yielded)
 
 
 def _build_field_code_map(
@@ -635,12 +726,12 @@ def run_field_summary(
     run_dir: Optional[str] = None,
     api_key: Optional[str] = None,
     locale: str = "ko",
-) -> Dict[str, Dict[str, Any]]:
-    """필드별 요약. 호출 관계 없으므로 병렬만 수행."""
+) -> Generator[Dict[str, Dict[str, Any]], None, None]:
+    """필드별 요약 — 완료 즉시 yield."""
     api_key = api_key or settings.llm.api_key or os.getenv("LLM_API_KEY", "")
     if not field_facts_list:
         logger.info("[FW:STEP6] Field 요약 스킵 | field_facts=0")
-        return {}
+        return
     class_key_index = _build_class_key_index(class_index or {})
     field_code_map = _build_field_code_map(data_dir, run_dir)
     logger.info(
@@ -681,7 +772,9 @@ def run_field_summary(
             "field_type": getattr(f, "field_type", None),
         }
 
-    result: Dict[str, Dict[str, Any]] = {}
+    _FIELD_BATCH_SIZE = 20
+    total_yielded = 0
+    batch: Dict[str, Dict[str, Any]] = {}
     workers = settings.concurrency.max_concurrency
     if workers > 1:
         with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -689,21 +782,31 @@ def run_field_summary(
             for future in as_completed(futures):
                 try:
                     field_id, data = future.result()
-                    result[field_id] = data
+                    total_yielded += 1
+                    batch[field_id] = data
                 except Exception as e:
                     f = futures[future]
                     logger.warning("[FW:STEP6] Field 요약 예외 field_id=%s: %s", f.field_id, e)
-                    result[f.field_id] = {
+                    total_yielded += 1
+                    batch[f.field_id] = {
                         "summary": f"{f.name}; lines {f.start_line}-{f.end_line}",
                         "name": f.name,
                         "field_type": getattr(f, "field_type", None),
                     }
+                if len(batch) >= _FIELD_BATCH_SIZE:
+                    yield batch
+                    batch = {}
     else:
         for f in field_facts_list:
             field_id, data = process_one(f)
-            result[field_id] = data
-    logger.info("[FW:STEP6] Field 요약 완료 | summary_count=%d", len(result))
-    return result
+            total_yielded += 1
+            batch[field_id] = data
+            if len(batch) >= _FIELD_BATCH_SIZE:
+                yield batch
+                batch = {}
+    if batch:
+        yield batch
+    logger.info("[FW:STEP6] Field 요약 완료 | summary_count=%d", total_yielded)
 
 
 def _class_key_to_fqn(class_index: Dict[str, Any]) -> Dict[str, str]:
@@ -762,8 +865,8 @@ def run_class_summary(
     field_facts_list: List[FieldFacts],
     api_key: Optional[str] = None,
     locale: str = "ko",
-) -> Dict[str, Dict[str, Any]]:
-    """클래스별 요약. 메서드/필드가 많으면 청킹 후 prev_summary로 순차 요약."""
+) -> Generator[Dict[str, Dict[str, Any]], None, None]:
+    """클래스별 요약 — 클래스 완료 즉시 yield."""
     api_key = api_key or settings.llm.api_key or os.getenv("LLM_API_KEY", "")
     class_key_index = _build_class_key_index(class_index or {})
     key_to_fqn = _class_key_to_fqn(class_index)
@@ -785,13 +888,12 @@ def run_class_summary(
         summary = (data or {}).get("summary", "") or f"{f.name}; field"
         by_class.setdefault(ck, []).append({"name": f.name, "summary": summary})
 
-    result: Dict[str, Dict[str, Any]] = {}
-    for class_key, items in by_class.items():
+    def _summarize_one_class(class_key: str, items: List[Dict[str, Any]]) -> Tuple[str, str]:
+        """단일 클래스 요약 — 스레드 안전."""
         class_fqn = key_to_fqn.get(class_key) or class_key
-        class_comment, class_annotations = _get_class_context(class_key_index, class_key)
         if not items:
-            result[class_fqn] = {"summary": ""}
-            continue
+            return class_fqn, ""
+        class_comment, class_annotations = _get_class_context(class_key_index, class_key)
         chunks: List[List[Dict[str, Any]]] = []
         current: List[Dict[str, Any]] = []
         current_tokens = 0
@@ -822,67 +924,42 @@ def run_class_summary(
                 prev_summary = "; ".join(
                     f"{x.get('name', '')}: {x.get('summary', '')}" for x in chunk
                 )[:500]
-        result[class_fqn] = {"summary": prev_summary or ""}
-    logger.info("[FW:STEP6] Class 요약 완료 | class_count=%d", len(result))
-    return result
+        return class_fqn, prev_summary or ""
 
-
-def run_user_story_generation(
-    summary_by_class: Dict[str, Dict[str, Any]],
-    class_index: Dict[str, Any],
-    api_key: Optional[str] = None,
-    locale: str = "ko",
-) -> List[Dict[str, Any]]:
-    """클래스 요약 기반 User Story 생성 (class_user_story 규칙)."""
-    api_key = api_key or settings.llm.api_key or os.getenv("LLM_API_KEY", "")
-    if not api_key or not summary_by_class:
-        logger.info(
-            "[FW:STEP6] User Story 스킵 | api_key=%s summary_by_class 개수=%d",
-            bool(api_key),
-            len(summary_by_class or {}),
-        )
-        return []
-    logger.info(
-        "[FW:STEP6] User Story 생성 시작 | 클래스 총 %d개",
-        len(summary_by_class),
-    )
-    user_stories: List[Dict[str, Any]] = []
-    try:
-        loader = get_rule_loader("framework")
-        for class_fqn, data in summary_by_class.items():
-            summary = (data or {}).get("summary", "")
-            if not summary:
-                continue
-            try:
-                result = loader.execute(
-                    "class_user_story",
-                    {"summary": summary, "locale": locale},
-                    api_key=api_key,
-                )
-                if not isinstance(result, Dict):
-                    logger.warning(
-                        "[FW:STEP6] class_user_story 비정상 응답 class_fqn=%s type=%s",
-                        class_fqn,
-                        type(result).__name__,
-                    )
-                    continue
-                raw = result.get("user_stories")
-                if raw and isinstance(raw, list):
-                    for us in raw:
-                        if isinstance(us, dict):
-                            user_stories.append({"class_fqn": class_fqn, **us})
-                    logger.info(
-                        "[FW:STEP6] class_user_story 완료 class_fqn=%s user_stories=%d",
-                        class_fqn,
-                        len(raw),
-                    )
-            except Exception as e:
-                logger.warning("[FW:STEP6] class_user_story 실패 class_fqn=%s: %s", class_fqn, e)
-    except Exception as e:
-        logger.warning("[FW:STEP6] User Story 생성 스킵: %s", e)
-    if user_stories:
-        logger.info("[FW:STEP6] User Story 생성 완료 | 총 %d건", len(user_stories))
-    return user_stories
+    _CLASS_BATCH_SIZE = 5
+    total_yielded = 0
+    batch: Dict[str, Dict[str, Any]] = {}
+    workers = min(settings.concurrency.max_concurrency, 4)
+    if workers > 1:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(_summarize_one_class, ck, items): ck
+                for ck, items in by_class.items()
+            }
+            for future in as_completed(futures):
+                try:
+                    class_fqn, summary = future.result()
+                except Exception as e:
+                    ck = futures[future]
+                    class_fqn = key_to_fqn.get(ck) or ck
+                    summary = ""
+                    logger.warning("[FW:STEP6] Class 요약 예외 class=%s: %s", class_fqn, e)
+                total_yielded += 1
+                batch[class_fqn] = {"summary": summary}
+                if len(batch) >= _CLASS_BATCH_SIZE:
+                    yield batch
+                    batch = {}
+    else:
+        for class_key, items in by_class.items():
+            class_fqn, summary = _summarize_one_class(class_key, items)
+            total_yielded += 1
+            batch[class_fqn] = {"summary": summary}
+            if len(batch) >= _CLASS_BATCH_SIZE:
+                yield batch
+                batch = {}
+    if batch:
+        yield batch
+    logger.info("[FW:STEP6] Class 요약 완료 | class_count=%d", total_yielded)
 
 
 def _invoke_method_summary_enhancement(

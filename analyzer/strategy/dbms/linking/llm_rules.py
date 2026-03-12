@@ -46,14 +46,6 @@ def analyze_summary_only(summaries: dict, api_key: str, locale: str, previous_su
     )
 
 
-def analyze_user_story(summary: str, api_key: str, locale: str) -> Dict[str, Any]:
-    """프로시저/함수 User Story + AC 생성."""
-    return _rule_loader().execute(
-        "procedure_user_story",
-        {"summary": summary, "locale": locale},
-        api_key,
-    )
-
 
 def summarize_table_metadata(
     table_name: str,
@@ -134,7 +126,6 @@ __all__ = [
     "analyze_code",
     "analyze_dml_tables",
     "analyze_summary_only",
-    "analyze_user_story",
     "summarize_table_metadata",
     "analyze_variables",
     "extract_node_context",

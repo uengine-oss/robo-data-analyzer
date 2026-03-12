@@ -344,7 +344,7 @@ async def run_phase_llm(
 
         completed += 1
         remaining = total - completed
-        phase2_progress = 50 + int(completed / total * 50)
+        phase2_progress = int(completed / total * 100)
 
         if result_type == "error":
             yield emit_message(f"├─ ❌ [{completed}/{total}] {result['file']}")
@@ -394,14 +394,15 @@ async def run_phase_llm(
     yield emit_phase_event(2, "AI 분석", "completed", 100, {"batches": stats.llm_batches_executed})
 
 
-# ========== Phase 4: Vector ==========
+# ========== Phase: Vector ==========
 async def run_phase_vector(
     pipeline: Any,
     client: Neo4jClient,
     orchestrator: Any,
     stats: AnalysisStats,
+    phase_num: int = 4,
 ) -> AsyncGenerator[bytes, None]:
-    """Phase 4: 테이블/컬럼 벡터라이징 (배치 최적화)
+    """테이블/컬럼 벡터라이징 (배치 최적화)
 
     Neo4j에 저장된 테이블/컬럼의 description을 기반으로 임베딩 생성
     배치 처리로 성능 최적화
@@ -411,6 +412,7 @@ async def run_phase_vector(
         client: Neo4j 클라이언트
         orchestrator: 오케스트레이터
         stats: 분석 통계
+        phase_num: 프론트엔드에 전달할 phase 번호 (기본 4)
     """
     from openai import AsyncOpenAI
 
@@ -426,13 +428,13 @@ async def run_phase_vector(
     # ===========================================
     # 테이블 벡터라이징 (배치 처리)
     # ===========================================
-    yield emit_message("   📊 [Phase 4-1] 테이블 벡터라이징 시작...")
+    yield emit_message(f"   📊 [Phase {phase_num}-1] 테이블 벡터라이징 시작...")
     yield emit_phase_event(
-        phase_num=4,
+        phase_num=phase_num,
         phase_name="벡터라이징",
         status="in_progress",
         progress=0,
-        details={"step": "table_vectorizing"}
+        details={"step": "테이블 벡터라이징"}
     )
 
     # description이 없어도 테이블명으로 임베딩 생성 (fallback 지원)
@@ -504,11 +506,11 @@ async def run_phase_vector(
                 log_process("VECTORIZE", "TABLE", f"배치 #{batch_num}/{total_batches} 테이블 {len(valid_items)}개 임베딩 생성 시작", logging.INFO)
                 yield emit_message(f"      🔄 [{batch_num}/{total_batches}] 테이블 {len(valid_items)}개 임베딩 생성 중...")
                 yield emit_phase_event(
-                    phase_num=4,
+                    phase_num=phase_num,
                     phase_name="벡터라이징",
                     status="in_progress",
                     progress=batch_progress,
-                    details={"step": "table_embedding", "batch": batch_num, "total_batches": total_batches}
+                    details={"step": "테이블 임베딩", "done": batch_num, "total": total_batches}
                 )
 
                 # 배치 임베딩 API 호출 (시간 측정)
@@ -550,13 +552,13 @@ async def run_phase_vector(
     # ===========================================
     # 컬럼 벡터라이징 (배치 처리)
     # ===========================================
-    yield emit_message("   📊 [Phase 4-2] 컬럼 벡터라이징 시작...")
+    yield emit_message(f"   📊 [Phase {phase_num}-2] 컬럼 벡터라이징 시작...")
     yield emit_phase_event(
-        phase_num=4,
+        phase_num=phase_num,
         phase_name="벡터라이징",
         status="in_progress",
         progress=25,
-        details={"step": "column_vectorizing"}
+        details={"step": "컬럼 벡터라이징"}
     )
 
     # description과 analyzed_description을 합쳐서 임베딩 생성 (검색 품질 향상)
@@ -612,11 +614,11 @@ async def run_phase_vector(
                 log_process("VECTORIZE", "COLUMN", f"배치 #{batch_num}/{total_batches} 컬럼 {len(texts)}개 임베딩 생성 시작", logging.INFO)
                 yield emit_message(f"      🔄 [{batch_num}/{total_batches}] 컬럼 {len(texts)}개 임베딩 생성 중...")
                 yield emit_phase_event(
-                    phase_num=4,
+                    phase_num=phase_num,
                     phase_name="벡터라이징",
                     status="in_progress",
                     progress=batch_progress,
-                    details={"step": "column_embedding", "batch": batch_num, "total_batches": total_batches, "done": i, "total": total_columns}
+                    details={"step": "컬럼 임베딩", "done": batch_num, "total": total_batches}
                 )
 
                 # 배치 임베딩 API 호출 (시간 측정)
@@ -650,7 +652,7 @@ async def run_phase_vector(
 
             yield emit_message(f"   ✅ 컬럼 벡터라이징 완료: {stats.columns_vectorized}개 컬럼")
             yield emit_phase_event(
-                phase_num=4,
+                phase_num=phase_num,
                 phase_name="벡터라이징",
                 status="completed",
                 progress=100,
@@ -663,12 +665,13 @@ async def run_phase_vector(
         raise RuntimeError(error_msg) from e
 
 
-# ========== Phase 5: Lineage ==========
+# ========== Phase: Lineage ==========
 async def run_phase_lineage(
     pipeline: Any,
     client: Neo4jClient,
     orchestrator: Any,
     stats: AnalysisStats,
+    phase_num: int = 5,
 ) -> AsyncGenerator[bytes, None]:
     """ETL 패턴 감지 및 데이터 리니지 관계 생성
 
@@ -680,6 +683,7 @@ async def run_phase_lineage(
         client: Neo4j 클라이언트
         orchestrator: 오케스트레이터
         stats: 분석 통계
+        phase_num: 프론트엔드에 전달할 phase 번호 (기본 5)
     """
     source_dir = orchestrator.dirs.get("source", "")
 
@@ -700,9 +704,9 @@ async def run_phase_lineage(
 
     total_files = len(sql_files)
     log_process("LINEAGE", "START", f"리니지 분석 시작: {total_files}개 SP 파일", logging.INFO)
-    yield emit_message(f"   🔍 [Phase 5] {total_files}개 SP 파일에서 ETL 패턴 분석 시작...")
+    yield emit_message(f"   🔍 [Phase {phase_num}] {total_files}개 SP 파일에서 ETL 패턴 분석 시작...")
     yield emit_phase_event(
-        phase_num=5,
+        phase_num=phase_num,
         phase_name="리니지 분석",
         status="in_progress",
         progress=0,
@@ -754,7 +758,7 @@ async def run_phase_lineage(
                 yield emit_message(f"      ⏭️ [{idx}/{total_files}] {file_name}: ETL 패턴 없음")
 
             yield emit_phase_event(
-                phase_num=5,
+                phase_num=phase_num,
                 phase_name="리니지 분석",
                 status="in_progress",
                 progress=progress,
@@ -773,11 +777,11 @@ async def run_phase_lineage(
         log_process("LINEAGE", "SAVE_START", f"Neo4j 저장 시작: {len(all_lineages)}개 ETL 패턴", logging.INFO)
         yield emit_message(f"\n   💾 총 {len(all_lineages)}개 ETL 패턴 → Neo4j 저장 중...")
         yield emit_phase_event(
-            phase_num=5,
+            phase_num=phase_num,
             phase_name="리니지 분석",
             status="in_progress",
             progress=85,
-            details={"step": "saving", "etl_count": len(all_lineages)}
+            details={"step": "Neo4j 저장", "total": len(all_lineages)}
         )
 
         try:
@@ -814,7 +818,7 @@ async def run_phase_lineage(
                 f"DATA_FLOWS_TO {result.get('data_flows', 0)}개"
             )
             yield emit_phase_event(
-                phase_num=5,
+                phase_num=phase_num,
                 phase_name="리니지 분석",
                 status="completed",
                 progress=100,
@@ -835,7 +839,7 @@ async def run_phase_lineage(
         log_process("LINEAGE", "SKIP", "ETL 패턴 없음 - 리니지 관계 미생성", logging.INFO)
         yield emit_message("   ℹ️ ETL 패턴 없음 → 리니지 관계 미생성")
         yield emit_phase_event(
-            phase_num=5,
+            phase_num=phase_num,
             phase_name="리니지 분석",
             status="completed",
             progress=100,

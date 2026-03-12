@@ -109,7 +109,25 @@ def resolve_calls_and_uses(
         caller_class_fqn = method_id.rsplit(".", 1)[0] if "." in method_id else ""
         param_type_map = build_param_type_map_from_params(caller.params or "")
         field_map = build_field_map_for_class(field_facts_list, caller.class_key or "")
+
+        # dependencies에서 local_type_map 구축 (LLM이 추출한 로컬 변수/파라미터 타입 정보)
         local_type_map: Dict[str, str] = {}
+        for dep in dependencies:
+            if not isinstance(dep, dict):
+                continue
+            usage = (dep.get("usage") or "").strip()
+            target_cls = (dep.get("targetClass") or "").strip()
+            src_member = (dep.get("sourceMember") or "").strip()
+            if not target_cls:
+                continue
+            # local_new/local_var: sourceMember가 메서드명이므로 직접 매핑 안 됨
+            # 대신 targetClass 자체를 소문자 첫글자로 변환해서 추정
+            # ex) LoanApplication → loanApplication
+            if usage in ("local_new", "local_var") and target_cls[0].isupper():
+                inferred_var = target_cls[0].lower() + target_cls[1:]
+                local_type_map[inferred_var] = target_cls
+            # field_call: sourceMember가 메서드명, targetClass가 필드 타입
+            # field_map에서 이미 처리됨
 
         for call_expr in calls:
             if not isinstance(call_expr, str) or "." not in call_expr:
@@ -127,12 +145,24 @@ def resolve_calls_and_uses(
             if not target_class and object_name and object_name[0].isupper():
                 target_class = object_name
             if not target_class:
+                logger.debug("[FW:CALL_RESOLVE] 스킵 | reason=obj_type_unknown obj=%s call=%s", object_name, call_expr)
                 continue
             callee_method_id = _find_callee_method_id(method_facts_list, class_index, target_class, method_name)
-            if not callee_method_id:
-                logger.info("[FW:CALL_RESOLVE] 스킵 | reason=callee_not_found target_class=%s method_name=%s", target_class, method_name)
             if callee_method_id:
                 calls_edges.append(CallsEdge(caller_method_id=method_id, callee_method_id=callee_method_id, call_code=call_expr))
+            else:
+                # 프로젝트 내 못 찾음 → external CALLS 생성
+                target_fqn_ext = _resolve_target_fqn(class_index, target_class)
+                if target_fqn_ext:
+                    # class_index에 있는데 메서드가 없음 (인터페이스 등) → internal unresolved, 스킵
+                    logger.debug("[FW:CALL_RESOLVE] 스킵 | reason=method_not_found_in_internal class=%s method=%s", target_class, method_name)
+                elif not _is_stdlib_class(target_class):
+                    # 표준 라이브러리가 아닌 외부 클래스 → external CALLS
+                    ext_callee_id = f"external:{target_class}#{method_name}"
+                    calls_edges.append(CallsEdge(
+                        caller_method_id=method_id, callee_method_id=ext_callee_id,
+                        call_code=call_expr, scope="external",
+                    ))
             target_fqn = _resolve_target_fqn(class_index, target_class)
             if target_fqn and caller_class_fqn and caller_class_fqn != target_fqn:
                 uses_edges.append(UsesEdge(from_fqn=caller_class_fqn, to_fqn=target_fqn))
@@ -160,6 +190,8 @@ def resolve_calls_and_uses(
 
 # call_code에서 receiver.methodName( 휴리스틱 추출
 OBJ_METHOD_PATTERN = re.compile(r"(\w+)\s*\.\s*(\w+)\s*\(")
+# 객체 없이 methodName( 만 있는 경우 (같은 클래스 내부 호출)
+BARE_METHOD_PATTERN = re.compile(r"(?:^|=\s*)(\w+)\s*\(")
 
 def _load_java_stdlib() -> frozenset:
     """java_stdlib.json에서 Java 표준 라이브러리 클래스명 로드."""
@@ -226,6 +258,13 @@ def extract_obj_method_from_call_code(call_code: str) -> Tuple[Optional[str], Op
     m = OBJ_METHOD_PATTERN.search(call_code)
     if m:
         return m.group(1), m.group(2)
+    # 객체 프리픽스 없는 bare 호출 → this 호출로 간주
+    bare = BARE_METHOD_PATTERN.search(call_code)
+    if bare:
+        method_name = bare.group(1)
+        # Java 키워드/표준 생성자는 제외
+        if method_name not in ("new", "return", "throw", "if", "while", "for", "switch", "try", "catch"):
+            return "this", method_name
     return None, None
 
 
@@ -336,7 +375,10 @@ def resolve_calls_deterministic(
         if not caller_id or not method_name:
             logger.debug("[FW:CALL_BATCH] resolve 스킵 | reason=missing_caller_or_method call_id=%s", r.get("call_id"))
             continue
-        className = resolve_obj_to_type(caller_id, obj_name or "", type_map, method_to_class) if obj_name else None
+        if obj_name:
+            className = resolve_obj_to_type(caller_id, obj_name, type_map, method_to_class)
+        else:
+            className = method_to_class.get(caller_id)  # this 호출로 간주
         if not className:
             unresolved.append(dict(r, className=None))  # external 시 obj_name으로 표시
             logger.debug("[FW:CALL_BATCH] resolve 스킵 | reason=obj_not_resolved obj_name=%s caller_id=%s", obj_name, caller_id)
@@ -444,6 +486,36 @@ def derive_uses_from_calls(
     return out
 
 
+def _flatten_one_batch(
+    batch: List[Tuple[str, List[Dict[str, Any]]]],
+    llm_results: Dict[str, List[Dict[str, Any]]],
+    call_records_by_method: Dict[str, List[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """한 배치의 LLM 결과를 flat 레코드로 변환."""
+    flat: List[Dict[str, Any]] = []
+    for method_id, _calls_input in batch:
+        by_call_id = {
+            r.get("call_id"): r
+            for r in (llm_results.get(method_id) or [])
+            if r.get("call_id")
+        }
+        for r in call_records_by_method.get(method_id, []):
+            cid = r.get("call_id", "")
+            info = by_call_id.get(cid, {})
+            obj_name = info.get("obj_name") or None
+            method_name = info.get("method_name") or None
+            if obj_name and _is_stdlib_class(obj_name):
+                obj_name, method_name = "", ""
+            flat.append({
+                "parent_method_id": method_id,
+                "call_id": cid,
+                "call_code": r.get("call_code", ""),
+                "objName": obj_name,
+                "methodName": method_name,
+            })
+    return flat
+
+
 def run_call_batch_pipeline(
     data_dir: str,
     method_facts_list: List[Any],
@@ -453,8 +525,10 @@ def run_call_batch_pipeline(
     use_llm: bool = True,
     api_key: Optional[str] = None,
     run_dir: Optional[str] = None,
+    on_batch: Optional[Any] = None,
 ) -> Tuple[List[CallsEdge], List[Dict[str, Any]]]:
     """CallBatch 로드 → objName/methodName 추출(LLM 필수 시 RuleLoader, 없으면 휴리스틱) → Deterministic Link.
+    on_batch 콜백: 각 LLM 배치 완료 시 (edges, unresolved) 전달.
     run_dir 있으면 해당 run_dir/chunk_bundles에서 ChunkBundle을 로드."""
     from analyzer.strategy.framework.parsing.chunk_bundle import _get_chunk_bundle_dir_from_run_dir
     chunk_dir = _get_chunk_bundle_dir_from_run_dir(run_dir) if run_dir else None
@@ -474,9 +548,16 @@ def run_call_batch_pipeline(
     )
     type_map = build_type_map_3layer(symbol_type_index, field_facts_list, method_facts_list)
     m2c = method_to_class_map(method_facts_list)
+    internal_class_fqns = set(method_index_by_class.keys())
+    is_domain_class = lambda cn: bool(
+        cn and str(cn).strip() and str(cn).strip()[0].isupper() and not _is_stdlib_class(str(cn).strip())
+    )
+    class_map = build_class_map_with_scope(type_map, m2c, internal_class_fqns, is_domain_class)
 
-    flat: List[Dict[str, Any]] = []
+    all_edges: List[CallsEdge] = []
+    all_unresolved: List[Dict[str, Any]] = []
     key = api_key or ""
+
     if use_llm and key:
         max_tokens = settings.batch.max_batch_token * 2
         batches = _build_call_batches(call_records_by_method, max_tokens)
@@ -486,41 +567,37 @@ def run_call_batch_pipeline(
             len(batches),
             max_tokens,
         )
-        batch_results: Dict[str, List[Dict[str, Any]]] = {}
         workers = settings.concurrency.max_concurrency
+
+        def _process_and_resolve(batch: List[Tuple[str, List[Dict[str, Any]]]]) -> Tuple[List[CallsEdge], List[Dict[str, Any]]]:
+            """한 배치: LLM 추출 → flatten → resolve → external edges."""
+            llm_out = _extract_calls_batch_via_llm(batch, key)
+            batch_flat = _flatten_one_batch(batch, llm_out, call_records_by_method)
+            batch_edges, batch_unresolved = resolve_calls_deterministic(batch_flat, type_map, method_index_by_class, m2c)
+            batch_external = build_external_calls_edges(batch_unresolved, class_map)
+            return batch_edges + batch_external, batch_unresolved
+
         if workers <= 1:
             for batch in batches:
-                one = _extract_calls_batch_via_llm(batch, key)
-                for mid, results_list in one.items():
-                    batch_results.setdefault(mid, []).extend(results_list)
+                batch_edges, batch_unresolved = _process_and_resolve(batch)
+                all_edges.extend(batch_edges)
+                all_unresolved.extend(batch_unresolved)
+                if on_batch and batch_edges:
+                    on_batch(batch_edges, batch_unresolved)
         else:
             with ThreadPoolExecutor(max_workers=workers) as executor:
-                futures = {executor.submit(_extract_calls_batch_via_llm, batch, key): batch for batch in batches}
+                futures = {executor.submit(_process_and_resolve, batch): batch for batch in batches}
                 for future in as_completed(futures):
                     try:
-                        one = future.result()
-                        for mid, results_list in one.items():
-                            batch_results.setdefault(mid, []).extend(results_list)
+                        batch_edges, batch_unresolved = future.result()
+                        all_edges.extend(batch_edges)
+                        all_unresolved.extend(batch_unresolved)
+                        if on_batch and batch_edges:
+                            on_batch(batch_edges, batch_unresolved)
                     except Exception as ex:
                         logger.warning("[FW:CALL_BATCH] 배치 LLM 처리 예외: %s", ex)
-        for method_id, recs in call_records_by_method.items():
-            by_call_id = {r.get("call_id"): r for r in (batch_results.get(method_id) or []) if r.get("call_id")}
-            for r in recs:
-                cid = r.get("call_id", "")
-                info = by_call_id.get(cid, {})
-                obj_name = info.get("obj_name") or None
-                method_name = info.get("method_name") or None
-                # 방어: LLM이 표준 라이브러리도 반환한 경우 제외 (framework analysis와 동일)
-                if obj_name and _is_stdlib_class(obj_name):
-                    obj_name, method_name = "", ""
-                flat.append({
-                    "parent_method_id": method_id,
-                    "call_id": cid,
-                    "call_code": r.get("call_code", ""),
-                    "objName": obj_name,
-                    "methodName": method_name,
-                })
     else:
+        flat: List[Dict[str, Any]] = []
         for method_id, recs in call_records_by_method.items():
             for r in recs:
                 call_code = r.get("call_code", "")
@@ -534,22 +611,16 @@ def run_call_batch_pipeline(
                     "objName": obj_name,
                     "methodName": method_name,
                 })
+        edges, unresolved = resolve_calls_deterministic(flat, type_map, method_index_by_class, m2c)
+        external_edges = build_external_calls_edges(unresolved, class_map)
+        all_edges = edges + external_edges
+        all_unresolved = unresolved
+        if on_batch and all_edges:
+            on_batch(all_edges, all_unresolved)
 
     logger.info(
-        "[FW:CALL_BATCH] 추출 방식 | use_llm=%s api_key_set=%s flat_records=%d",
-        use_llm,
-        bool(key),
-        len(flat),
+        "[FW:CALL_BATCH] 파이프라인 완료 | edges=%d unresolved=%d",
+        len(all_edges),
+        len(all_unresolved),
     )
-    edges, unresolved = resolve_calls_deterministic(flat, type_map, method_index_by_class, m2c)
-    internal_class_fqns = set(method_index_by_class.keys())
-    is_domain_class = lambda cn: bool(
-        cn and str(cn).strip() and str(cn).strip()[0].isupper() and not _is_stdlib_class(str(cn).strip())
-    )
-    class_map = build_class_map_with_scope(type_map, m2c, internal_class_fqns, is_domain_class)
-    external_edges = build_external_calls_edges(unresolved, class_map)
-    all_edges = edges + external_edges
-    if unresolved and not key:
-        logger.info("[CALL_BATCH] api_key 없음: unresolved %d건 관계 생성 스킵 (로그만)", len(unresolved))
-    logger.info("[FW:CALL_BATCH] 파이프라인 완료 | internal=%d external=%d unresolved=%d", len(edges), len(external_edges), len(unresolved))
-    return all_edges, unresolved
+    return all_edges, all_unresolved

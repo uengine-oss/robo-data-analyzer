@@ -36,7 +36,6 @@ from analyzer.strategy.framework.linking.summarizer import (  # noqa: F401
     run_step6,
     run_field_summary,
     run_class_summary,
-    run_user_story_generation,
 )
 from analyzer.strategy.framework.linking.call_graph import (  # noqa: F401
     derive_uses_from_calls,
@@ -58,5 +57,6 @@ from analyzer.strategy.framework.graph.queries import (  # noqa: F401
     build_uml_dependency_queries,
     build_field_summary_queries,
     build_class_summary_queries,
-    build_user_story_queries,
+    build_table_description_enrichment_query,
+    build_table_description_update_queries,
 )

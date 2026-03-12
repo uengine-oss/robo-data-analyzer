@@ -208,12 +208,70 @@ def build_artifact_chunk_queries(artifact_chunks: List[ArtifactChunk]) -> List[D
     """ArtifactChunk 노드 MERGE (chunk_id 기준). file_path·code_text 온톨로지 통일(자바 청크와 동일)."""
     queries = []
     for c in artifact_chunks:
+        src = c.source_path or ""
+        # file_path에서 directory, file_name 추출
+        if "/" in src:
+            directory = src.rsplit("/", 1)[0]
+            file_name = src.rsplit("/", 1)[1]
+        elif "\\" in src:
+            directory = src.rsplit("\\", 1)[0]
+            file_name = src.rsplit("\\", 1)[1]
+        else:
+            directory = ""
+            file_name = src
         queries.append(_merge_node_query("ARTIFACT_CHUNK", "chunk_id", c.chunk_id, {
             "chunk_type": c.chunk_type or "", "hint_key": c.hint_key or "",
             "code_text": (c.text or "")[:_ARTIFACT_CODE_MAX],
-            "file_path": c.source_path or "",
+            "file_path": src,
+            "directory": directory,
+            "file_name": file_name,
             "start_line": c.start_line, "end_line": c.end_line,
         }))
+    return queries
+
+
+def build_artifact_class_refer_to_queries(
+    artifact_chunks: List[ArtifactChunk],
+    class_index: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """(ARTIFACT_CHUNK)-[:REFER_TO]->(CLASS). EJB XML에서 추출한 related_class_fqns로 연결."""
+    queries = []
+    # class_index에서 short name → fqn 매핑 구축
+    name_to_fqn: Dict[str, str] = {}
+    for info in class_index.values():
+        if not isinstance(info, dict):
+            continue
+        fqn = info.get("fqn") or info.get("class_key")
+        name = info.get("name") or (fqn.rsplit(".", 1)[-1] if fqn else "")
+        if fqn:
+            name_to_fqn[fqn] = fqn  # full FQN match
+            if name:
+                name_to_fqn.setdefault(name, fqn)  # short name fallback
+
+    seen: set = set()
+    for c in artifact_chunks:
+        if not c.related_class_fqns:
+            continue
+        for ref_fqn in c.related_class_fqns:
+            # FQN 직접 매칭 또는 short name 매칭
+            target_fqn = name_to_fqn.get(ref_fqn)
+            if not target_fqn:
+                short = ref_fqn.rsplit(".", 1)[-1] if "." in ref_fqn else ref_fqn
+                target_fqn = name_to_fqn.get(short)
+            if not target_fqn:
+                continue
+            key = (c.chunk_id, target_fqn)
+            if key in seen:
+                continue
+            seen.add(key)
+            q = (
+                "MATCH (a:ARTIFACT_CHUNK {chunk_id: $chunk_id})\n"
+                "MATCH (c:CLASS {fqn: $class_fqn})\n"
+                "MERGE (a)-[r:REFER_TO]->(c)\n"
+                "SET r.updated_at = timestamp()\n"
+                "RETURN r"
+            )
+            queries.append({"query": q, "params": {"chunk_id": c.chunk_id, "class_fqn": target_fqn}})
     return queries
 
 
@@ -287,7 +345,7 @@ def build_column_queries(column_refs: List[ColumnRef]) -> List[Dict[str, Any]]:
             continue
         seen.add(fqn)
         q = (
-            "MERGE (n:COLUMN {fqn: $fqn})\n"
+            "MERGE (n:Column {fqn: $fqn})\n"
             "ON CREATE SET n.created_at = timestamp(), n.name = $name, n.dtype = $dtype,\n"
             "  n.description = $description, n.nullable = $nullable\n"
             "ON MATCH SET n.updated_at = timestamp(),\n"
@@ -319,7 +377,7 @@ def build_chunk_bundle_queries(bundles: List[ChunkBundle]) -> List[Dict[str, Any
         "c.file_path = $file_path, c.start_line = $start_line, c.end_line = $end_line,\n"
         "c.code_text = $code_text, c.updated_at = timestamp()\n"
         "WITH c\n"
-        "MERGE (m:Method {method_id: $parent_method_id})\n"
+        "MERGE (m:METHOD {method_id: $parent_method_id})\n"
         "MERGE (m)-[:HAS_CHUNK]->(c)\n"
         "RETURN c"
     )
@@ -330,7 +388,7 @@ def build_chunk_bundle_queries(bundles: List[ChunkBundle]) -> List[Dict[str, Any
         "c.file_path = $file_path, c.start_line = $start_line, c.end_line = $end_line,\n"
         "c.code_text = $code_text, c.var_name = $var_name, c.var_type = $var_type, c.updated_at = timestamp()\n"
         "WITH c\n"
-        "MERGE (m:Method {method_id: $parent_method_id})\n"
+        "MERGE (m:METHOD {method_id: $parent_method_id})\n"
         "MERGE (m)-[:HAS_CHUNK]->(c)\n"
         "RETURN c"
     )
@@ -466,7 +524,7 @@ def build_has_column_queries(column_refs: List[ColumnRef]) -> List[Dict[str, Any
         seen.add(key)
         q = (
             "MATCH (t:Table {db: $db, schema: $schema, name: $name})\n"
-            "MATCH (col:COLUMN {fqn: $fqn})\n"
+            "MATCH (col:Column {fqn: $fqn})\n"
             "MERGE (t)-[r:HAS_COLUMN]->(col)\n"
             "SET r.updated_at = timestamp()\n"
             "RETURN r"
@@ -652,119 +710,81 @@ def build_refer_to_queries(edges: List[ReferToEdge]) -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 def build_method_summary_queries(summary_by_method: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """이미 있는 METHOD 노드에 summary·stereotype 속성 및 스테레오타입 레이블(COMMAND/READMODEL)만 추가."""
-    queries = []
+    """이미 있는 METHOD 노드에 summary·stereotype 속성 및 스테레오타입 레이블(COMMAND/READMODEL)만 추가.
+
+    UNWIND 기반 배치 처리: stereotype별(COMMAND/READMODEL) 2개 쿼리로 분할.
+    """
+    commands = []
+    readmodels = []
     for method_id, data in summary_by_method.items():
         ster = _normalize_stereotype(data.get("stereotype"))
         summary = (data.get("summary") or "").strip()
-        label_set = "SET n:COMMAND" if ster == "command" else "SET n:READMODEL"
-        q = (
-            "MATCH (n:METHOD {method_id: $method_id})\n"
-            "SET n.updated_at = timestamp(), n.stereotype = $stereotype, n.summary = $summary\n"
-            "REMOVE n:COMMAND, n:READMODEL\n"
-            f"{label_set}\n"
-            "RETURN n"
-        )
-        queries.append({"query": q, "params": {"method_id": method_id, "stereotype": ster, "summary": summary}})
+        row = {"method_id": method_id, "stereotype": ster, "summary": summary}
+        if ster == "command":
+            commands.append(row)
+        else:
+            readmodels.append(row)
+
+    queries = []
+    if commands:
+        queries.append({
+            "query": (
+                "UNWIND $rows AS row\n"
+                "MATCH (n:METHOD {method_id: row.method_id})\n"
+                "SET n.updated_at = timestamp(), n.stereotype = row.stereotype, n.summary = row.summary\n"
+                "REMOVE n:COMMAND, n:READMODEL\n"
+                "SET n:COMMAND\n"
+                "RETURN n"
+            ),
+            "params": {"rows": commands},
+        })
+    if readmodels:
+        queries.append({
+            "query": (
+                "UNWIND $rows AS row\n"
+                "MATCH (n:METHOD {method_id: row.method_id})\n"
+                "SET n.updated_at = timestamp(), n.stereotype = row.stereotype, n.summary = row.summary\n"
+                "REMOVE n:COMMAND, n:READMODEL\n"
+                "SET n:READMODEL\n"
+                "RETURN n"
+            ),
+            "params": {"rows": readmodels},
+        })
     return queries
 
 
 def build_field_summary_queries(summary_by_field: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """FIELD 노드에 summary 속성 업데이트."""
-    queries = []
-    for field_id, data in summary_by_field.items():
-        q = (
-            "MATCH (n:FIELD {field_id: $field_id})\n"
+    """FIELD 노드에 summary 속성 업데이트. UNWIND 배치."""
+    if not summary_by_field:
+        return []
+    rows = [{"field_id": fid, "summary": data.get("summary", "")} for fid, data in summary_by_field.items()]
+    return [{
+        "query": (
+            "UNWIND $rows AS row\n"
+            "MATCH (n:FIELD {field_id: row.field_id})\n"
             "SET n.updated_at = timestamp(),\n"
-            "  n.summary = CASE WHEN $summary IS NOT NULL AND trim(toString($summary)) <> '' THEN $summary ELSE n.summary END\n"
+            "  n.summary = CASE WHEN row.summary IS NOT NULL AND trim(toString(row.summary)) <> '' THEN row.summary ELSE n.summary END\n"
             "RETURN n"
-        )
-        queries.append({"query": q, "params": {"field_id": field_id, "summary": data.get("summary", "")}})
-    return queries
+        ),
+        "params": {"rows": rows},
+    }]
 
 
 def build_class_summary_queries(summary_by_class: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """CLASS 노드에 summary 속성 업데이트 (fqn 기준)."""
-    queries = []
-    for class_fqn, data in summary_by_class.items():
-        q = (
-            "MATCH (n:CLASS {fqn: $fqn})\n"
+    """CLASS 노드에 summary 속성 업데이트 (fqn 기준). UNWIND 배치."""
+    if not summary_by_class:
+        return []
+    rows = [{"fqn": fqn, "summary": data.get("summary", "")} for fqn, data in summary_by_class.items()]
+    return [{
+        "query": (
+            "UNWIND $rows AS row\n"
+            "MATCH (n:CLASS {fqn: row.fqn})\n"
             "SET n.updated_at = timestamp(),\n"
-            "  n.summary = CASE WHEN $summary IS NOT NULL AND trim(toString($summary)) <> '' THEN $summary ELSE n.summary END\n"
+            "  n.summary = CASE WHEN row.summary IS NOT NULL AND trim(toString(row.summary)) <> '' THEN row.summary ELSE n.summary END\n"
             "RETURN n"
-        )
-        queries.append({"query": q, "params": {"fqn": class_fqn, "summary": data.get("summary", "")}})
-    return queries
-
-
-def build_user_story_queries(user_stories: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """USER_STORY 노드 생성, (CLASS)-[:HAS_USER_STORY]->(USER_STORY), AC 노드 및 (USER_STORY)-[:HAS_AC]->(ACCEPTANCE_CRITERIA) 생성."""
-    queries = []
-    for us in user_stories or []:
-        if not isinstance(us, dict):
-            continue
-        class_fqn = (us.get("class_fqn") or "").strip()
-        story_id = (us.get("id") or "").strip() or "US-0"
-        user_story_id = f"{class_fqn}|{story_id}" if class_fqn else story_id
-        role = (us.get("role") or "").strip()
-        goal = (us.get("goal") or "").strip()
-        benefit = (us.get("benefit") or "").strip()
-        ac_list = us.get("acceptance_criteria")
-        acceptance_criteria_json = json.dumps(ac_list, ensure_ascii=False) if ac_list is not None else "[]"
-        q = (
-            "MERGE (c:CLASS {fqn: $class_fqn})\n"
-            "MERGE (u:USER_STORY {user_story_id: $user_story_id})\n"
-            "ON CREATE SET u.created_at = timestamp(), u.class_fqn = $class_fqn, u.story_id = $story_id,\n"
-            "  u.role = $role, u.goal = $goal, u.benefit = $benefit, u.acceptance_criteria = $acceptance_criteria\n"
-            "ON MATCH SET u.updated_at = timestamp(), u.role = $role, u.goal = $goal, u.benefit = $benefit,\n"
-            "  u.acceptance_criteria = $acceptance_criteria\n"
-            "WITH c, u\n"
-            "MERGE (c)-[r:HAS_USER_STORY]->(u)\n"
-            "ON CREATE SET r.created_at = timestamp()\n"
-            "ON MATCH SET r.updated_at = timestamp()\n"
-            "RETURN u"
-        )
-        queries.append({
-            "query": q,
-            "params": {
-                "class_fqn": class_fqn, "user_story_id": user_story_id, "story_id": story_id,
-                "role": role[:500] if role else "", "goal": goal[:1000] if goal else "",
-                "benefit": benefit[:500] if benefit else "",
-                "acceptance_criteria": acceptance_criteria_json[:8000] if acceptance_criteria_json else "[]",
-            },
-        })
-        for ac_idx, ac in enumerate(us.get("acceptance_criteria") or [], 1):
-            if not isinstance(ac, dict):
-                continue
-            ac_id = ac.get("id") or f"AC-{story_id}-{ac_idx}"
-            ac_node_id = f"{user_story_id}|{ac_id}"
-            title = (ac.get("title") or "")[:500]
-            given_val = ac.get("given")
-            when_val = ac.get("when")
-            then_val = ac.get("then")
-            given_str = json.dumps(given_val, ensure_ascii=False)[:2000] if given_val is not None else "[]"
-            when_str = json.dumps(when_val, ensure_ascii=False)[:2000] if when_val is not None else "[]"
-            then_str = json.dumps(then_val, ensure_ascii=False)[:2000] if then_val is not None else "[]"
-            q_ac = (
-                "MATCH (u:USER_STORY {user_story_id: $user_story_id})\n"
-                "MERGE (ac:ACCEPTANCE_CRITERIA {ac_id: $ac_id})\n"
-                "ON CREATE SET ac.user_story_id = $user_story_id, ac.created_at = timestamp()\n"
-                "ON MATCH SET ac.updated_at = timestamp()\n"
-                "SET ac.title = $title, ac.given = $given, ac.when_clause = $when_clause, ac.then_clause = $then_clause\n"
-                "WITH u, ac\n"
-                "MERGE (u)-[r:HAS_AC]->(ac)\n"
-                "ON CREATE SET r.created_at = timestamp()\n"
-                "ON MATCH SET r.updated_at = timestamp()\n"
-                "RETURN ac"
-            )
-            queries.append({
-                "query": q_ac,
-                "params": {
-                    "user_story_id": user_story_id, "ac_id": ac_node_id,
-                    "title": title, "given": given_str, "when_clause": when_str, "then_clause": then_str,
-                },
-            })
-    return queries
+        ),
+        "params": {"rows": rows},
+    }]
 
 
 # ---------------------------------------------------------------------------
@@ -772,8 +792,9 @@ def build_user_story_queries(user_stories: List[Dict[str, Any]]) -> List[Dict[st
 # ---------------------------------------------------------------------------
 
 def build_calls_queries(edges: List[CallsEdge]) -> List[Dict[str, Any]]:
-    """(METHOD)-[:CALLS]->(METHOD). 클래스명(class_name) + 메서드명(name)으로만 MATCH."""
-    queries = []
+    """(METHOD)-[:CALLS]->(METHOD). UNWIND 배치: internal/external 2개 쿼리."""
+    internal_rows = []
+    external_rows = []
     for e in edges:
         scope = getattr(e, "scope", "internal")
         caller_cfqn, caller_mname = _class_fqn_and_method_name(e.caller_method_id)
@@ -788,87 +809,113 @@ def build_calls_queries(edges: List[CallsEdge]) -> List[Dict[str, Any]]:
                 _ext_class, _ext_method = (e.callee_method_id or "").split(":", 1)[1].split("#", 1)
                 callee_class_name_ext = _ext_class.strip()
                 callee_method_name_ext = _ext_method.strip()
-            q = (
-                "MATCH (a:METHOD)\n"
-                "WHERE a.class_name = $caller_class_name AND a.name = $caller_method_name\n"
-                "MERGE (ec:CLASS:EXTERNAL_CLASS {class_name: $callee_class_name})\n"
-                "ON CREATE SET ec.name = $callee_class_name, ec.created_at = timestamp()\n"
-                "ON MATCH SET ec.updated_at = timestamp()\n"
-                "MERGE (b:METHOD:EXTERNAL_METHOD {method_id: $callee_method_id})\n"
-                "ON CREATE SET b.created_at = timestamp(), b.class_name = $callee_class_name, b.name = $callee_method_name\n"
-                "ON MATCH SET b.updated_at = timestamp(), b.class_name = $callee_class_name, b.name = $callee_method_name\n"
-                "MERGE (ec)-[:HAS_METHOD]->(b)\n"
-                "WITH a, b\n"
-                "WHERE a <> b\n"
-                "MERGE (a)-[r:CALLS]->(b)\n"
-                "ON CREATE SET r.call_code = $call_code, r.scope = 'external', r.created_at = timestamp()\n"
-                "ON MATCH SET r.updated_at = timestamp(), r.scope = 'external'\n"
-                "RETURN r"
-            )
-            params = {
+            external_rows.append({
                 "caller_class_name": caller_class_name, "caller_method_name": caller_mname,
                 "callee_method_id": e.callee_method_id,
                 "callee_class_name": callee_class_name_ext, "callee_method_name": callee_method_name_ext,
                 "call_code": (e.call_code or "")[:200],
-            }
+            })
         else:
-            q = (
-                "MATCH (a:METHOD)\n"
-                "WHERE a.class_name = $caller_class_name AND a.name = $caller_method_name\n"
-                "MATCH (b:METHOD)\n"
-                "WHERE b.class_name = $callee_class_name AND b.name = $callee_method_name\n"
-                "WITH a, b\n"
-                "WHERE a <> b\n"
-                "MERGE (a)-[r:CALLS]->(b)\n"
-                "ON CREATE SET r.call_code = $call_code, r.scope = 'internal', r.created_at = timestamp()\n"
-                "ON MATCH SET r.updated_at = timestamp(), r.scope = COALESCE(r.scope, 'internal')\n"
-                "RETURN r"
-            )
-            params = {
+            internal_rows.append({
                 "caller_class_name": caller_class_name, "caller_method_name": caller_mname,
                 "callee_class_name": callee_class_name, "callee_method_name": callee_mname,
                 "call_code": (e.call_code or "")[:200],
-            }
-        queries.append({"query": q, "params": params})
+            })
+
+    queries = []
+    if internal_rows:
+        queries.append({
+            "query": (
+                "UNWIND $rows AS row\n"
+                "MATCH (a:METHOD)\n"
+                "WHERE a.class_name = row.caller_class_name AND a.name = row.caller_method_name\n"
+                "MATCH (b:METHOD)\n"
+                "WHERE b.class_name = row.callee_class_name AND b.name = row.callee_method_name\n"
+                "WITH a, b, row\n"
+                "WHERE a <> b\n"
+                "MERGE (a)-[r:CALLS]->(b)\n"
+                "ON CREATE SET r.call_code = row.call_code, r.scope = 'internal', r.created_at = timestamp()\n"
+                "ON MATCH SET r.updated_at = timestamp(), r.scope = COALESCE(r.scope, 'internal')\n"
+                "RETURN r"
+            ),
+            "params": {"rows": internal_rows},
+        })
+    if external_rows:
+        queries.append({
+            "query": (
+                "UNWIND $rows AS row\n"
+                "MATCH (a:METHOD)\n"
+                "WHERE a.class_name = row.caller_class_name AND a.name = row.caller_method_name\n"
+                "MERGE (ec:CLASS:EXTERNAL_CLASS {class_name: row.callee_class_name})\n"
+                "ON CREATE SET ec.name = row.callee_class_name, ec.created_at = timestamp()\n"
+                "ON MATCH SET ec.updated_at = timestamp()\n"
+                "MERGE (b:METHOD:EXTERNAL_METHOD {method_id: row.callee_method_id})\n"
+                "ON CREATE SET b.created_at = timestamp(), b.class_name = row.callee_class_name, b.name = row.callee_method_name\n"
+                "ON MATCH SET b.updated_at = timestamp(), b.class_name = row.callee_class_name, b.name = row.callee_method_name\n"
+                "MERGE (ec)-[:HAS_METHOD]->(b)\n"
+                "WITH a, b, row\n"
+                "WHERE a <> b\n"
+                "MERGE (a)-[r:CALLS]->(b)\n"
+                "ON CREATE SET r.call_code = row.call_code, r.scope = 'external', r.created_at = timestamp()\n"
+                "ON MATCH SET r.updated_at = timestamp(), r.scope = 'external'\n"
+                "RETURN r"
+            ),
+            "params": {"rows": external_rows},
+        })
     return queries
 
 
 def build_uses_queries(edges: List[UsesEdge]) -> List[Dict[str, Any]]:
-    """(CLASS)-[:USES]->(CLASS). external일 때 대상은 MERGE CLASS:EXTERNAL_CLASS."""
-    queries = []
+    """(CLASS)-[:USES]->(CLASS). UNWIND 배치: internal/external 2개 쿼리."""
+    internal_rows = []
+    external_rows = []
     for e in edges:
         from_class_name = (e.from_fqn or "").rsplit(".", 1)[-1] if e.from_fqn else ""
         to_class_name = (e.to_fqn or "").rsplit(".", 1)[-1] if e.to_fqn else ""
         if not from_class_name or not to_class_name or from_class_name == to_class_name:
             continue
         scope = getattr(e, "scope", "internal")
+        row = {"from_class_name": from_class_name, "to_class_name": to_class_name}
         if scope == "external":
-            q = (
-                "MATCH (a:CLASS)\n"
-                "WHERE a.class_name = $from_class_name\n"
-                "MERGE (b:CLASS:EXTERNAL_CLASS {class_name: $to_class_name})\n"
-                "ON CREATE SET b.name = $to_class_name\n"
-                "WITH a, b\n"
-                "WHERE a <> b\n"
-                "MERGE (a)-[r:USES]->(b)\n"
-                "ON CREATE SET r.scope = 'external', r.created_at = timestamp()\n"
-                "ON MATCH SET r.updated_at = timestamp(), r.scope = 'external'\n"
-                "RETURN r"
-            )
+            external_rows.append(row)
         else:
-            q = (
+            internal_rows.append(row)
+
+    queries = []
+    if internal_rows:
+        queries.append({
+            "query": (
+                "UNWIND $rows AS row\n"
                 "MATCH (a:CLASS)\n"
-                "WHERE a.class_name = $from_class_name\n"
+                "WHERE a.class_name = row.from_class_name\n"
                 "MATCH (b:CLASS)\n"
-                "WHERE b.class_name = $to_class_name\n"
+                "WHERE b.class_name = row.to_class_name\n"
                 "WITH a, b\n"
                 "WHERE a <> b\n"
                 "MERGE (a)-[r:USES]->(b)\n"
                 "ON CREATE SET r.scope = 'internal', r.created_at = timestamp()\n"
                 "ON MATCH SET r.updated_at = timestamp(), r.scope = COALESCE(r.scope, 'internal')\n"
                 "RETURN r"
-            )
-        queries.append({"query": q, "params": {"from_class_name": from_class_name, "to_class_name": to_class_name}})
+            ),
+            "params": {"rows": internal_rows},
+        })
+    if external_rows:
+        queries.append({
+            "query": (
+                "UNWIND $rows AS row\n"
+                "MATCH (a:CLASS)\n"
+                "WHERE a.class_name = row.from_class_name\n"
+                "MERGE (b:CLASS:EXTERNAL_CLASS {class_name: row.to_class_name})\n"
+                "ON CREATE SET b.name = row.to_class_name\n"
+                "WITH a, b\n"
+                "WHERE a <> b\n"
+                "MERGE (a)-[r:USES]->(b)\n"
+                "ON CREATE SET r.scope = 'external', r.created_at = timestamp()\n"
+                "ON MATCH SET r.updated_at = timestamp(), r.scope = 'external'\n"
+                "RETURN r"
+            ),
+            "params": {"rows": external_rows},
+        })
     return queries
 
 
@@ -983,8 +1030,10 @@ def build_uml_dependency_queries(
     method_facts_list: List[Any],
     class_index: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    """Step6 summary_by_method의 dependencies로 DEPENDENCY/COMPOSITION/AGGREGATION 쿼리 생성."""
-    queries: List[Dict[str, Any]] = []
+    """Step6 summary_by_method의 dependencies로 DEPENDENCY/COMPOSITION/AGGREGATION 쿼리 생성.
+
+    UNWIND 배치: (rel_type, internal/external) 조합별로 그룹화하여 최소 쿼리 수로 실행.
+    """
     key_to_fqn = _class_key_to_fqn(class_index)
     method_id_to_class_fqn: Dict[str, str] = {}
     for m in method_facts_list or []:
@@ -994,6 +1043,9 @@ def build_uml_dependency_queries(
         class_fqn = key_to_fqn.get(getattr(m, "class_key", "") or "")
         if class_fqn:
             method_id_to_class_fqn[mid] = class_fqn
+
+    # (rel_type, is_internal) → rows
+    groups: Dict[tuple, list] = {}
     seen: set = set()
     for method_id, data in (summary_by_method or {}).items():
         if not isinstance(data, dict):
@@ -1011,73 +1063,72 @@ def build_uml_dependency_queries(
             source_member = dep.get("sourceMember", "")
             usage = dep.get("usage", "")
             rel_type = (dep.get("relationType") or "DEPENDENCY").strip().upper()
-            if rel_type not in ("DEPENDENCY", "COMPOSITION", "AGGREGATION"):
+            if rel_type not in ("DEPENDENCY", "COMPOSITION", "AGGREGATION", "ASSOCIATION"):
                 rel_type = "DEPENDENCY"
             target_fqn = _target_fqn_from_class_index(class_index, target_class)
-            if target_fqn:
-                dup_key = (source_fqn, target_fqn, rel_type)
-                if dup_key in seen:
-                    continue
-                seen.add(dup_key)
-                if rel_type in ("COMPOSITION", "AGGREGATION"):
-                    q = (
-                        "MATCH (src:CLASS {fqn: $source_fqn})\n"
-                        "MATCH (t:CLASS {fqn: $target_fqn})\n"
-                        f"MERGE (src)-[r:{rel_type} {{source_member: $source_member}}]->(t)\n"
-                        "ON CREATE SET r.created_at = timestamp()\n"
-                        "ON MATCH SET r.updated_at = timestamp()\n"
-                        "RETURN r"
-                    )
-                    queries.append({"query": q, "params": {
-                        "source_fqn": source_fqn, "target_fqn": target_fqn, "source_member": source_member[:200],
-                    }})
-                else:
-                    q = (
-                        "MATCH (src:CLASS {fqn: $source_fqn})\n"
-                        "MATCH (t:CLASS {fqn: $target_fqn})\n"
-                        "MERGE (src)-[r:DEPENDENCY {source_member: $source_member, usage: $usage}]->(t)\n"
-                        "ON CREATE SET r.created_at = timestamp()\n"
-                        "ON MATCH SET r.updated_at = timestamp()\n"
-                        "RETURN r"
-                    )
-                    queries.append({"query": q, "params": {
-                        "source_fqn": source_fqn, "target_fqn": target_fqn,
-                        "source_member": source_member[:200], "usage": (usage or "")[:200],
-                    }})
+            is_internal = target_fqn is not None
+            dup_key = (source_fqn, target_fqn or target_class, rel_type)
+            if dup_key in seen:
+                continue
+            seen.add(dup_key)
+            group_key = (rel_type, is_internal)
+            groups.setdefault(group_key, []).append({
+                "source_fqn": source_fqn,
+                "target_fqn": target_fqn or "",
+                "target_class_name": target_class,
+                "source_member": source_member[:200],
+                "usage": (usage or "")[:200],
+            })
+
+    queries: List[Dict[str, Any]] = []
+    for (rel_type, is_internal), rows in groups.items():
+        if is_internal:
+            if rel_type == "DEPENDENCY":
+                q = (
+                    "UNWIND $rows AS row\n"
+                    "MATCH (src:CLASS {fqn: row.source_fqn})\n"
+                    "MATCH (t:CLASS {fqn: row.target_fqn})\n"
+                    "MERGE (src)-[r:DEPENDENCY {source_member: row.source_member, usage: row.usage}]->(t)\n"
+                    "ON CREATE SET r.created_at = timestamp()\n"
+                    "ON MATCH SET r.updated_at = timestamp()\n"
+                    "RETURN r"
+                )
             else:
-                dup_key = (source_fqn, target_class, rel_type)
-                if dup_key in seen:
-                    continue
-                seen.add(dup_key)
-                if rel_type in ("COMPOSITION", "AGGREGATION"):
-                    q = (
-                        "MATCH (src:CLASS {fqn: $source_fqn})\n"
-                        "MERGE (t:CLASS:EXTERNAL_CLASS {class_name: $target_class_name})\n"
-                        "ON CREATE SET t.name = $target_class_name, t.created_at = timestamp()\n"
-                        "ON MATCH SET t.updated_at = timestamp()\n"
-                        f"MERGE (src)-[r:{rel_type} {{source_member: $source_member}}]->(t)\n"
-                        "ON CREATE SET r.created_at = timestamp()\n"
-                        "ON MATCH SET r.updated_at = timestamp()\n"
-                        "RETURN r"
-                    )
-                    queries.append({"query": q, "params": {
-                        "source_fqn": source_fqn, "target_class_name": target_class, "source_member": source_member[:200],
-                    }})
-                else:
-                    q = (
-                        "MATCH (src:CLASS {fqn: $source_fqn})\n"
-                        "MERGE (t:CLASS:EXTERNAL_CLASS {class_name: $target_class_name})\n"
-                        "ON CREATE SET t.name = $target_class_name, t.created_at = timestamp()\n"
-                        "ON MATCH SET t.updated_at = timestamp()\n"
-                        "MERGE (src)-[r:DEPENDENCY {source_member: $source_member, usage: $usage}]->(t)\n"
-                        "ON CREATE SET r.created_at = timestamp()\n"
-                        "ON MATCH SET r.updated_at = timestamp()\n"
-                        "RETURN r"
-                    )
-                    queries.append({"query": q, "params": {
-                        "source_fqn": source_fqn, "target_class_name": target_class,
-                        "source_member": source_member[:200], "usage": (usage or "")[:200],
-                    }})
+                q = (
+                    "UNWIND $rows AS row\n"
+                    "MATCH (src:CLASS {fqn: row.source_fqn})\n"
+                    "MATCH (t:CLASS {fqn: row.target_fqn})\n"
+                    f"MERGE (src)-[r:{rel_type} {{source_member: row.source_member}}]->(t)\n"
+                    "ON CREATE SET r.created_at = timestamp()\n"
+                    "ON MATCH SET r.updated_at = timestamp()\n"
+                    "RETURN r"
+                )
+        else:
+            if rel_type == "DEPENDENCY":
+                q = (
+                    "UNWIND $rows AS row\n"
+                    "MATCH (src:CLASS {fqn: row.source_fqn})\n"
+                    "MERGE (t:CLASS:EXTERNAL_CLASS {class_name: row.target_class_name})\n"
+                    "ON CREATE SET t.name = row.target_class_name, t.created_at = timestamp()\n"
+                    "ON MATCH SET t.updated_at = timestamp()\n"
+                    "MERGE (src)-[r:DEPENDENCY {source_member: row.source_member, usage: row.usage}]->(t)\n"
+                    "ON CREATE SET r.created_at = timestamp()\n"
+                    "ON MATCH SET r.updated_at = timestamp()\n"
+                    "RETURN r"
+                )
+            else:
+                q = (
+                    "UNWIND $rows AS row\n"
+                    "MATCH (src:CLASS {fqn: row.source_fqn})\n"
+                    "MERGE (t:CLASS:EXTERNAL_CLASS {class_name: row.target_class_name})\n"
+                    "ON CREATE SET t.name = row.target_class_name, t.created_at = timestamp()\n"
+                    "ON MATCH SET t.updated_at = timestamp()\n"
+                    f"MERGE (src)-[r:{rel_type} {{source_member: row.source_member}}]->(t)\n"
+                    "ON CREATE SET r.created_at = timestamp()\n"
+                    "ON MATCH SET r.updated_at = timestamp()\n"
+                    "RETURN r"
+                )
+        queries.append({"query": q, "params": {"rows": rows}})
     return queries
 
 
@@ -1114,7 +1165,8 @@ build_config_sections_unwind = _build_unwind_query(
 build_artifact_chunks_unwind = _build_unwind_query(
     "ARTIFACT_CHUNK", "chunk_id",
     "n.chunk_type = row.chunk_type, n.hint_key = row.hint_key, n.code_text = row.code_text, "
-    "n.file_path = row.file_path, n.start_line = row.start_line, n.end_line = row.end_line")
+    "n.file_path = row.file_path, n.directory = row.directory, n.file_name = row.file_name, "
+    "n.start_line = row.start_line, n.end_line = row.end_line")
 
 
 def build_chunk_bundle_chunks_unwind(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1136,3 +1188,52 @@ def build_chunk_bundle_chunks_unwind(rows: List[Dict[str, Any]]) -> Dict[str, An
         "MERGE (m)-[:HAS_CHUNK]->(c)"
     )
     return {"query": q, "params": {"rows": rows}}
+
+
+# ---------------------------------------------------------------------------
+# Table Description 보강 (메서드 summary 기반)
+# ---------------------------------------------------------------------------
+
+def build_table_description_enrichment_query() -> str:
+    """READS/WRITES 관계로 연결된 메서드 summary를 수집하는 Neo4j 쿼리."""
+    return (
+        "MATCH (m:METHOD)-[rw:READS|WRITES]->(t:Table)\n"
+        "WHERE m.summary IS NOT NULL AND m.summary <> ''\n"
+        "WITH t, collect(DISTINCT m.summary) AS method_summaries\n"
+        "WHERE size(method_summaries) > 0\n"
+        "RETURN t.db AS db, t.schema AS schema, t.name AS name,\n"
+        "       t.description AS current_description,\n"
+        "       method_summaries"
+    )
+
+
+def build_table_description_update_queries(
+    enrichments: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """테이블 description 보강 쿼리 빌드.
+
+    enrichments: [{db, schema, name, enriched_description}, ...]
+    """
+    queries = []
+    for item in enrichments:
+        q = (
+            "MATCH (t:Table {db: $db, schema: $schema, name: $name})\n"
+            "SET t.enriched_description = $enriched_description,\n"
+            "    t.description = CASE\n"
+            "      WHEN t.description IS NULL OR trim(toString(t.description)) = ''\n"
+            "      THEN $enriched_description\n"
+            "      ELSE t.description\n"
+            "    END,\n"
+            "    t.updated_at = timestamp()\n"
+            "RETURN t"
+        )
+        queries.append({
+            "query": q,
+            "params": {
+                "db": item.get("db", ""),
+                "schema": item.get("schema", ""),
+                "name": item.get("name", ""),
+                "enriched_description": item.get("enriched_description", ""),
+            },
+        })
+    return queries

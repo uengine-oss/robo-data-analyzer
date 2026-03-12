@@ -91,7 +91,7 @@ class ConcurrencyConfig:
 @dataclass(frozen=True)
 class BatchConfig:
     """배치 처리 설정 (DBMS/Framework 공통)"""
-    max_batch_token: int = field(default_factory=lambda: int(os.getenv("MAX_BATCH_TOKEN", "1000")))
+    max_batch_token: int = field(default_factory=lambda: int(os.getenv("MAX_BATCH_TOKEN", "4000")))
     max_summary_chunk_token: int = field(default_factory=lambda: int(os.getenv("MAX_SUMMARY_CHUNK_TOKEN", "5000")))
     static_query_batch_size: int = field(default_factory=lambda: int(os.getenv("STATIC_QUERY_BATCH_SIZE", "40")))
     # Neo4j 쿼리 배치 사이즈 (스트리밍 단위)

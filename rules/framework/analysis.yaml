@@ -91,11 +91,26 @@ prompt: |
   - 예외 처리: 어떤 예외를 잡아서 어떻게 처리하는지 명시
   - 변수 활용 정보: 주요 변수의 생성 위치와 전달 경로를 명시
   
-  ★★★ 코드 식별자 완전 제거 원칙 (최우선) ★★★
-  - 메서드명, 변수명, 필드명, 파라미터명, 객체명, 클래스명 등 모든 코드 식별자는 절대 사용하지 마세요.
-  - 예: "cmbsBookDTO", "tmpCmbsBookDTO", "createCmbsBook", "OrderService", "processPayment" 등은 모두 제거
+  ★★★ 기술적 식별자 제거 / 비즈니스 도메인 속성명 보존 원칙 (최우선) ★★★
+
+  제거 대상 (기술적 구현 식별자):
+  - 메서드명, 로컬 변수명, 파라미터명, 객체명, 클래스명은 제거하고 의미로 설명하세요.
+  - 예: "tmpBean", "ctx", "result", "loanApp", "processPayment()", "OrderService" → 제거
   - 대신 의미로 설명: "등록용 정보", "검증용 정보", "등록 요청", "주문 처리 서비스", "주문 결제 처리" 등
-  - 상태코드값, enum 값, 상수값, 설정값 등 의미 있는 값만 유지 (예: PENDING, CONFIRMED, B3800004, N0000004 등)
+
+  보존 대상 (비즈니스 도메인 데이터 속성):
+  - 엔티티/도메인 객체의 필드명이 비즈니스 데이터를 직접 표현하는 경우에는 유지하세요.
+  - 예: orderStatus(주문상태), totalAmount(합계금액), quantity(수량) 등 비즈니스 의미를 가진 필드명
+  - enum 값, 상태값, 상수, 비즈니스 판단에 쓰이는 구체적 수치는 반드시 포함하세요.
+    예: PENDING, APPROVED, REJECTED, B3800004, N0000004
+
+  ★ 상수값 해석 원칙 (필수):
+  - 코드에서 상수명을 참조하는 경우(예: score < THRESHOLD_VALUE),
+    [CLASS_CONSTANTS_AND_FIELDS] 컨텍스트를 참고하여 실제 수치로 해석하세요.
+    예: THRESHOLD_VALUE=100이면 → "점수가 100 미만이면 기준 미달"
+  - 비교 연산자(>=, <, <=, >)를 정확히 기술하세요. 경계값 포함/미포함이 중요합니다.
+    예: "score < 100이면 거절" (100 미만), "ratio >= 0.50이면 초과" (0.50 이상)
+  - 상태 전이가 있으면 "status를 A에서 B로 변경한다" 형태로 명시하세요.
   
   ★★★ 임시/확정 구분 명확화 원칙 ★★★
   - "임시 객체에 담는다", "객체에 설정한다" 등 모호한 표현 금지
@@ -111,7 +126,9 @@ prompt: |
   
   ★ 요약 작성 형식 (의미 중심 자연어):
   - 3~5문장으로 상세하게 작성하되, 각 문장이 의미 있는 정보를 담도록 하세요.
-  - **의미 중심 자연어로 작성**: 모든 코드 식별자(메서드명, 변수명, 필드명, 파라미터명, 객체명, 클래스명)는 제거하고 의미로 설명하세요.
+  - **의미 중심 자연어로 작성**: 메서드명, 로컬 변수명, 파라미터명, 객체명, 클래스명 등 기술적 식별자는 제거하고 의미로 설명하세요. 단, 비즈니스 데이터를 나타내는 엔티티 필드명은 그대로 유지하거나 "(한글명)" 형태로 병기하세요.
+  - **상수는 실제 값으로 해석**: [CLASS_CONSTANTS_AND_FIELDS] 컨텍스트에 상수 정의가 있으면 상수명 대신 실제 값을 사용하세요. 예: "MAX_RETRY_COUNT 기준" → "3회 기준"
+  - **비교 연산자 정확 표기**: >=, <, <=, > 를 정확히 기술하세요. "이상"과 "초과", "이하"와 "미만"을 혼동하지 마세요.
   - **상태코드값/식별자는 유지**: enum 값, 상태값, 상수값, 설정값 등 의미 있는 식별자는 그대로 포함하세요 (예: PENDING, CONFIRMED, CANCELLED, 'CARD', 'BANK', B3800004, N0000004 등).
   - **비즈니스 맥락 중심**: "무엇을 하는지", "왜 하는지"를 자연어로 설명하되, 구체적인 값과 조건을 포함하세요.
   - summary에서는 Controller, Service, Repository, DTO, Util, Entity 등 아키텍처 레이어/스테레오타입 명칭으로 메서드나 클래스를 분류하거나 단정하지 마세요. 단, context 안에 이미 그러한 용어가 포함되어 있다면, 그것을 참고하여 "무엇을 하는지"를 더 구체적으로 풀어서 설명하는 데만 사용하세요.
@@ -153,21 +170,26 @@ prompt: |
   - 메서드 안: 메서드명 (예: "processOrder", "attack")
   - 생성자 안: 생성자명/클래스명 (예: "OrderService")
   
-  ★ relationType 판별 (3가지 중 하나 선택):
-  
+  ★ relationType 판별 (4가지 중 하나 선택):
+
   "COMPOSITION" — 필드 기반 + 생명주기 종속:
   - 이 메서드(또는 클래스)가 해당 객체를 직접 new로 생성/관리
   - 전체 없이 부분이 존재할 수 없는 강한 소유
   - 예: `cuzMsg = new CustomizeMessage()` → usage: "field_call", relationType: "COMPOSITION"
-  
+
   "AGGREGATION" — 필드 기반 + 생명주기 독립:
   - 전체-부분 관계이지만 부분이 독립적으로 존재 가능
-  - 외부에서 주입받거나 공유 가능한 객체
+  - 외부에서 주입받거나 공유 가능한 객체 (컬렉션 포함)
   - 예: `this.employees.add(emp)` → usage: "field_call", relationType: "AGGREGATION"
-  
-  "DEPENDENCY" — 기본값, 위 둘에 해당하지 않는 모든 경우:
+
+  "ASSOCIATION" — 필드 기반 + 단순 참조 (전체-부분 아님):
+  - 필드로 다른 클래스를 참조하지만 소유/부분 관계가 아닌 동등한 연관
+  - DI로 주입받는 서비스/리포지토리 참조, 단순 필드 타입 참조
+  - 예: `@Autowired UserRepository userRepo` → usage: "field_call", relationType: "ASSOCIATION"
+  - 예: `private PaymentService paymentService` → usage: "field_call", relationType: "ASSOCIATION"
+
+  "DEPENDENCY" — 비필드 기반 사용 (위 셋에 해당하지 않는 모든 경우):
   - 파라미터/반환/로컬변수/캐스팅/제네릭 등 비필드 기반 사용
-  - 서비스/유틸리티 참조 등 도메인적 전체-부분이 아닌 관계
   - 예: `KBData kbData` (파라미터) → usage: "parameter", relationType: "DEPENDENCY"
   
   
@@ -265,7 +287,7 @@ prompt: |
         "stereotype": "command 또는 readmodel (필수. 상태 변경 명령이면 command, 조회면 readmodel)",
         "summary": "3~5문장. 메서드명, 클래스명, 변수명, 호출 대상 등 핵심 식별자와 변수 활용 정보를 포함한 상세한 코드 동작 요약",
         "dependencies": [
-          {"targetClass": "타겟클래스명", "sourceMember": "메서드명", "usage": "field_call|local_new|parameter|return|cast|generic|local_var", "relationType": "DEPENDENCY|COMPOSITION|AGGREGATION"}
+          {"targetClass": "타겟클래스명", "sourceMember": "메서드명", "usage": "field_call|local_new|parameter|return|cast|generic|local_var", "relationType": "DEPENDENCY|COMPOSITION|AGGREGATION|ASSOCIATION"}
         ],
         "calls": ["target.methodName", "target2.methodName2"],
         "externalRefs": [{"kind": "mybatis_sql|jpa_table|jpa_column|config_key", "target": "식별자문자열"}]

@@ -4,7 +4,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Generator, List, Optional, Tuple
 
 from config.settings import settings
 from util.artifact_logger import log_llm_interaction
@@ -335,15 +335,12 @@ def run_deep_agent(
     state: Dict[str, Any],
     api_key: Optional[str] = None,
     run_dir: Optional[Path] = None,
-) -> Tuple[List[ReferToEdge], List[MethodTableEdge]]:
-    """unresolved 목록을 DeepAgent 로 처리한다. (new_refer_to_edges, new_method_table_edges) 를 반환."""
+) -> Generator[Tuple[List[ReferToEdge], List[MethodTableEdge]], None, None]:
+    """unresolved 목록을 DeepAgent 로 처리. 항목별로 (refer_to, method_table) yield."""
     logger.info("[FW:DEEPAGENT] 진입 | unresolved=%d api_key_set=%s run_dir=%s", len(unresolved_list), bool(api_key), run_dir)
     if not unresolved_list:
         logger.info("[FW:DEEPAGENT] unresolved 없음 → 즉시 종료")
-        return [], []
-
-    new_refer: List[ReferToEdge] = []
-    new_mt: List[MethodTableEdge] = []
+        return
 
     verbose = os.environ.get("FW_DEEPAGENT_VERBOSE", "true").strip().lower() == "true"
 
@@ -352,7 +349,7 @@ def run_deep_agent(
         from client.llm_client import get_llm
     except Exception as e:
         logger.warning("[FW:DEEPAGENT] deepagents 미설치 또는 LLM 클라이언트 없음: %s", e)
-        return new_refer, new_mt
+        return
 
     # span_index / chunk_index 가 state 에 없으면 자동 빌드
     if run_dir:
@@ -407,6 +404,8 @@ def run_deep_agent(
         return refer_collector, table_collector
 
     total = len(unresolved_list)
+    total_refer = 0
+    total_mt = 0
     logger.info("[FW:DEEPAGENT] 병렬 처리 시작 | items=%d workers=%d", total, max_workers)
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -418,10 +417,11 @@ def run_deep_agent(
         for future in as_completed(futures):
             try:
                 refer_result, mt_result = future.result()
-                new_refer.extend(refer_result)
-                new_mt.extend(mt_result)
+                if refer_result or mt_result:
+                    total_refer += len(refer_result)
+                    total_mt += len(mt_result)
+                    yield (refer_result, mt_result)
             except Exception as ex:
                 logger.warning("[FW:DEEPAGENT] 워커 예외: %s", ex)
 
-    logger.info("[FW:DEEPAGENT] 종료 | new_refer=%d new_mt=%d", len(new_refer), len(new_mt))
-    return new_refer, new_mt
+    logger.info("[FW:DEEPAGENT] 종료 | new_refer=%d new_mt=%d", total_refer, total_mt)

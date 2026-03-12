@@ -2,7 +2,7 @@
 
 Phase 1: AST 정적 그래프. 스캔 + Java AST + 아티팩트 파싱 + 인덱스 구축 + Neo4j 반영.
 Phase 2: LLM 링킹. SQL→Table, Call batch, UML, analysis LLM.
-Phase 3: 후처리. 요약 보강, Field/Class 요약, User Story 생성.
+Phase 3: 후처리. 요약 보강, Field/Class 요약, Table Description 보강.
 
 기존 phase_ast / phase_llm / phase_post 를 하나의 thin 오케스트레이터 모듈로 통합.
 """
@@ -20,7 +20,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 from client.neo4j_client import Neo4jClient
 from analyzer.strategy.base_analyzer import AnalysisStats
 from config.settings import settings
-from util.ndjson_stream import emit_message, emit_data
+from util.ndjson_stream import emit_message, emit_data, emit_phase_event, PhaseTracker
 from util.text_utils import read_text_with_fallback, read_json_with_fallback
 from analyzer.strategy.framework.internal import (
     FrameworkAstProcessor,
@@ -36,7 +36,6 @@ from analyzer.strategy.framework.internal import (
     load_field_chunks_from_bundles,
     run_field_summary,
     run_class_summary,
-    run_user_story_generation,
 )
 from analyzer.strategy.framework.models import (
     FileCatalogEntry,
@@ -73,18 +72,20 @@ from analyzer.strategy.framework.graph.queries import (
     build_method_table_from_writes_queries,
     build_class_table_refer_to_queries,
     build_artifact_table_refer_to_queries,
+    build_artifact_class_refer_to_queries,
     build_method_summary_queries,
     build_uml_dependency_queries,
     build_field_summary_queries,
     build_class_summary_queries,
-    build_user_story_queries,
+    build_table_description_enrichment_query,
+    build_table_description_update_queries,
 )
 from analyzer.strategy.framework.graph.writer import run_graph_queries
 from analyzer.strategy.framework.linking.deep_agent import run_deep_agent
 
 # Phase 1 에서 사용하는 함수들
 from analyzer.strategy.framework.parsing.scanner import scan_project
-from analyzer.strategy.framework.parsing.ast_walker import run_step2
+from analyzer.strategy.framework.parsing.ast_walker import run_step2, _extract_package_fqns
 from analyzer.strategy.framework.parsing.parsers.base import run_step3
 from analyzer.strategy.framework.parsing.indexer import run_step4
 
@@ -110,15 +111,15 @@ async def run_phase_ast(
     source_dir = str(Path(data_dir) / "source")
     nontarget_dir = str(Path(data_dir) / "analysis" / "nontarget")
 
-    yield emit_message("📂 Step 1: 프로젝트 스캔")
+    yield emit_message("📂 프로젝트 스캔 시작")
 
     # --- Step 1: 스캔 ---
     scan_roots = [(source_dir, "source"), (nontarget_dir, "analysis/nontarget")]
     catalog, plan = scan_project(scan_roots=scan_roots)
     logger.info("[FW:PHASE1] 스캔 완료 | catalog=%d java_ast=%d xml_sqlmap=%d", len(catalog), len(plan.java_ast_jobs), len(plan.xml_sqlmap_jobs))
 
-    # --- Step 2: Java AST ---
-    yield emit_message(f"🔍 Step 2: Java AST 파싱 ({len(plan.java_ast_jobs)} 파일)")
+    # --- Step 2: Java AST (파일별 점진적 스트리밍) ---
+    yield emit_message(f"🔍 Java AST 파싱 ({len(plan.java_ast_jobs)}개 파일)")
     base = Path(data_dir).resolve()
     java_ast_paths = [str(base / p) if not Path(p).is_absolute() else p for p in plan.java_ast_jobs]
 
@@ -132,47 +133,108 @@ async def run_phase_ast(
         run_path.mkdir(parents=True, exist_ok=True)
         pipeline._pipeline_state["run_dir"] = run_dir
         logger.info("[FW:PHASE1] run_dir 미설정 → 생성 | run_dir=%s (chunk_bundles는 data가 아닌 여기 저장)", run_dir)
-    (
-        method_facts_list, class_index_ast, package_fqns,
-        field_facts_list, symbol_type_index, method_index,
-        method_index_by_class, class_index_simple, ref_candidates_by_method,
-    ) = run_step2(java_ast_paths, data_dir=data_dir, run_dir=run_dir)
 
-    # Neo4j: Package/Class/Method/Field 노드 반영
-    if method_facts_list or class_index_ast:
+    # 파일별 누적 변수
+    method_facts_list: list[MethodFacts] = []
+    class_index_ast: dict[str, Any] = {}
+    field_facts_list: list[FieldFacts] = []
+    symbol_type_index: dict[str, dict[str, str]] = {}
+    method_index: dict[str, str] = {}
+    method_index_by_class: dict[str, dict[str, list[str]]] = {}
+    class_index_simple: dict[str, list[str]] = {}
+    ref_candidates_by_method: dict[str, list[dict[str, Any]]] = {}
+
+    ast_total = len(java_ast_paths)
+    ast_done = 0
+    for file_result in run_step2(java_ast_paths, data_dir=data_dir, run_dir=run_dir):
+        ast_done += 1
+        facts = file_result["facts"]
+        cidx = file_result["cidx"]
+        fields = file_result["fields"]
+
+        # 누적
+        method_facts_list.extend(facts)
+        class_index_ast.update(cidx)
+        field_facts_list.extend(fields)
+        for name, fqns in file_result["class_index_simple"].items():
+            class_index_simple.setdefault(name, []).extend(fqns)
+        for mid, types in file_result["sym_idx"].items():
+            symbol_type_index.setdefault(mid, {}).update(types)
+        method_index.update(file_result["meth_idx"])
+        for cls, by_name in file_result["meth_by_cls"].items():
+            for mname, ids in by_name.items():
+                method_index_by_class.setdefault(cls, {}).setdefault(mname, []).extend(ids)
+        for mid, cands in file_result["ref_cands"].items():
+            ref_candidates_by_method.setdefault(mid, []).extend(cands)
+
+        # 파일별 Neo4j 스트리밍
+        if facts or cidx:
+            try:
+                queries: list[dict[str, Any]] = []
+                queries.extend(build_class_queries(cidx))
+                queries.extend(build_method_queries(facts))
+                queries.extend(build_field_queries(fields))
+                # NOTE: build_belongs_to_package_queries는 PACKAGE 노드 생성 후에 실행해야 함
+                queries.extend(build_has_method_queries(facts, cidx))
+                queries.extend(build_has_field_queries(fields, cidx))
+                if queries:
+                    async for graph in run_graph_queries(client, queries, label=f"PHASE1:AST:{file_result['file_name']}"):
+                        yield emit_data(graph=graph)
+            except Exception as e:
+                logger.warning("[FW:PHASE1] Neo4j AST 반영 실패 (%s): %s", file_result["file_name"], e)
+        # AST 파일별 진행률 (0~70% of phase, 나머지는 아티팩트/인덱스)
+        ast_progress = int((ast_done / ast_total) * 70) if ast_total else 70
+        yield emit_phase_event(0, "AST 정적 그래프", "in_progress", ast_progress,
+                               {"completed": ast_done, "total": ast_total, "file": file_result["file_name"]})
+
+    # 패키지 노드 (전체 class_index 누적 후)
+    package_fqns = _extract_package_fqns(class_index_ast)
+    if package_fqns:
         try:
-            queries = []
             expanded_pkg = _expand_package_fqns(package_fqns)
-            queries.extend(build_package_queries(expanded_pkg))
-            queries.extend(build_package_hierarchy_queries(package_fqns))
-            queries.extend(build_class_queries(class_index_ast))
-            queries.extend(build_method_queries(method_facts_list))
-            queries.extend(build_field_queries(field_facts_list))
-            queries.extend(build_belongs_to_package_queries(class_index_ast))
-            queries.extend(build_has_method_queries(method_facts_list, class_index_ast))
-            queries.extend(build_has_field_queries(field_facts_list, class_index_ast))
-            if queries:
-                await run_graph_queries(client, queries, label="PHASE1:AST")
+            pkg_queries: list[dict[str, Any]] = []
+            pkg_queries.extend(build_package_queries(expanded_pkg))
+            pkg_queries.extend(build_package_hierarchy_queries(package_fqns))
+            if pkg_queries:
+                async for graph in run_graph_queries(client, pkg_queries, label="PHASE1:PACKAGE"):
+                    yield emit_data(graph=graph)
         except Exception as e:
-            logger.warning("[FW:PHASE1] Neo4j AST 반영 실패: %s", e)
+            logger.warning("[FW:PHASE1] Neo4j 패키지 반영 실패: %s", e)
+
+    # CLASS/INTERFACE/ENUM → PACKAGE 관계 (PACKAGE 노드 생성 후에 실행)
+    if class_index_ast:
+        try:
+            btp_queries = build_belongs_to_package_queries(class_index_ast)
+            if btp_queries:
+                async for graph in run_graph_queries(client, btp_queries, label="PHASE1:BELONGS_TO_PACKAGE"):
+                    yield emit_data(graph=graph)
+        except Exception as e:
+            logger.warning("[FW:PHASE1] Neo4j CLASS→PACKAGE 관계 반영 실패: %s", e)
 
     stats.total_nodes += len(method_facts_list) + len(field_facts_list)
-    yield emit_message(f"✅ AST 완료 | methods={len(method_facts_list)} classes={len(class_index_ast)} fields={len(field_facts_list)}")
+    yield emit_message(f"  └─ AST 완료 | 메서드 {len(method_facts_list)}개, 클래스 {len(class_index_ast)}개, 필드 {len(field_facts_list)}개")
 
     # --- Step 3: 아티팩트 ---
     xml_paths = [str(base / p) if not Path(p).is_absolute() else p for p in plan.xml_sqlmap_jobs]
     yaml_paths = [str(base / p) if not Path(p).is_absolute() else p for p in plan.yaml_jobs]
     prop_paths = [str(base / p) if not Path(p).is_absolute() else p for p in plan.properties_jobs]
-    xml_ejb_paths = [str(base / p) if not Path(p).is_absolute() else p for p in plan.xml_ejb_jobs]
-    xml_entitymodel_paths = [str(base / p) if not Path(p).is_absolute() else p for p in plan.xml_entitymodel_jobs]
+    xml_artifact_paths = [str(base / p) if not Path(p).is_absolute() else p for p in plan.xml_artifact_jobs]
 
-    yield emit_message(f"📄 Step 3: 아티팩트 파싱 | xml={len(xml_paths)} yaml={len(yaml_paths)}")
+    yield emit_message(f"📄 아티팩트 파싱 | SQL맵 {len(xml_paths)}개, XML {len(xml_artifact_paths)}개, YAML {len(yaml_paths)}개, Properties {len(prop_paths)}개")
     sql_chunks, config_chunks, artifact_chunks = run_step3(
         xml_paths, yaml_paths, prop_paths,
-        xml_ejb_jobs=xml_ejb_paths, xml_entitymodel_jobs=xml_entitymodel_paths,
+        xml_artifact_jobs=xml_artifact_paths,
     )
 
-    # Neo4j: SqlStatement/Config/Artifact 노드 반영
+    # Artifact breakdown 로그
+    if artifact_chunks:
+        from collections import Counter
+        ct_counts = Counter(c.chunk_type for c in artifact_chunks)
+        entity_count = sum(v for k, v in ct_counts.items() if k == "entity")
+        breakdown = ", ".join(f"{k}={v}" for k, v in ct_counts.most_common())
+        logger.info("[FW:PHASE1] artifact 전체=%d, entity→table 대상=%d | %s", len(artifact_chunks), entity_count, breakdown)
+
+    # Neo4j: SqlStatement/Config/Artifact 노드 반영 (배치 단위 점진적 전송)
     if sql_chunks or config_chunks or artifact_chunks:
         try:
             queries = []
@@ -180,7 +242,8 @@ async def run_phase_ast(
             queries.extend(build_config_section_queries(config_chunks))
             queries.extend(build_artifact_chunk_queries(artifact_chunks))
             if queries:
-                await run_graph_queries(client, queries, label="PHASE1:ARTIFACT")
+                async for graph in run_graph_queries(client, queries, label="PHASE1:ARTIFACT"):
+                    yield emit_data(graph=graph)
         except Exception as e:
             logger.warning("[FW:PHASE1] Neo4j 아티팩트 반영 실패: %s", e)
 
@@ -212,7 +275,7 @@ async def run_phase_ast(
         "artifact_index": artifact_index,
     })
 
-    yield emit_message(f"✅ Phase 1 완료 | sql={len(sql_chunks)} config={len(config_chunks)}")
+    yield emit_message(f"✅ Phase 1 완료 | SQL {len(sql_chunks)}개, 설정 {len(config_chunks)}개, 아티팩트 {len(artifact_chunks)}개")
 
 
 # ---------------------------------------------------------------------------
@@ -231,24 +294,38 @@ async def run_phase_llm(
     sql_index = st["sql_index"]
     sql_chunks = st["sql_chunks"]
 
-    yield emit_message("🔗 Step 5: 링킹 시작 (SQL→Table, Call, UML)")
+    yield emit_message("🔗 링킹 시작 (참조 해석 → SQL→Table → Call → DeepAgent)")
+
+    # PhaseTracker: LLM 링킹 단계 가중치 기반 진행률
+    tracker = PhaseTracker(1, "LLM 링킹", total_phases=3)
+    tracker.define_steps([
+        ("결정론적 링킹", 10),       # step 0
+        ("LLM 배치 링킹", 55),      # step 1 (table+call 통합) — tick per batch
+        ("후처리", 10),              # step 2
+        ("DeepAgent 의미 추적", 25), # step 3
+    ])
 
     data_dir = st.get("data_dir") or settings.path.data_dir
     field_chunks = load_field_chunks_from_bundles(data_dir)
 
-    (
-        refer_to_edges,
-        reads_writes,
-        fk_edges,
-        column_refs,
-        method_table_edges,
-        unresolved,
-        calls_edges_from_batch,
-        unresolved_calls,
-        table_descriptions,
-        class_table_edges,
-        artifact_table_edges,
-    ) = run_step5(
+    # Step 5: 단계별 점진적 스트리밍
+    refer_to_edges: list = []
+    reads_writes: list = []
+    fk_edges: list = []
+    column_refs: list = []
+    method_table_edges: list = []
+    unresolved: list = []
+    calls_edges_from_batch: list = []
+    unresolved_calls: list = []
+    table_descriptions: dict = {}
+    class_table_edges: list = []
+    artifact_table_edges: list = []
+    all_calls: list = []
+    uses_edges: list = []
+    table_batch_count = 0
+    call_batch_count = 0
+
+    for step_result in run_step5(
         method_facts_list,
         sql_index,
         sql_chunks,
@@ -263,36 +340,103 @@ async def run_phase_llm(
         run_dir=st.get("run_dir"),
         artifact_index=st.get("artifact_index"),
         artifact_chunks=st.get("artifact_chunks"),
-    )
+    ):
+        stage = step_result["stage"]
 
-    all_calls = list(calls_edges_from_batch or [])
-    uses_edges = derive_uses_from_calls(all_calls, method_facts_list)
+        if stage == "deterministic":
+            refer_to_edges = step_result["refer_to_edges"]
+            unresolved = step_result["unresolved"]
+            try:
+                queries = build_refer_to_queries(refer_to_edges)
+                if queries:
+                    async for graph in run_graph_queries(client, queries, label="PHASE2:DETERMINISTIC"):
+                        yield emit_data(graph=graph)
+            except Exception as e:
+                logger.warning("[FW:PHASE2] Neo4j 결정론적 링킹 반영 실패: %s", e)
+            yield tracker.begin_step(0, 1)
+            yield tracker.end_step(f"참조 {len(refer_to_edges)}건 연결, 미해결 {len(unresolved)}건")
+            # LLM 배치 링킹 시작 (table_batch + call_batch 병렬)
+            # 추정 배치 수: sql(20건씩) + call(20건씩)
+            est_batches = max(1, (len(sql_chunks) + 19) // 20 + (len(method_facts_list) + 19) // 20)
+            yield tracker.begin_step(1, est_batches)
 
-    # Neo4j: 결정론적 결과 먼저 반영 (DeepAgent 전에)
-    try:
-        queries = []
-        queries.extend(build_refer_to_queries(refer_to_edges))
-        queries.extend(build_reads_writes_queries(reads_writes))
-        queries.extend(build_table_queries_from_reads_writes(reads_writes, table_descriptions=table_descriptions or {}))
-        if column_refs:
-            queries.extend(build_column_queries(column_refs))
-            queries.extend(build_has_column_queries(column_refs))
-        queries.extend(build_method_table_from_writes_queries(method_table_edges))
-        queries.extend(build_class_table_refer_to_queries(class_table_edges))
-        queries.extend(build_artifact_table_refer_to_queries(artifact_table_edges))
-        queries.extend(build_calls_queries(all_calls))
-        queries.extend(build_uses_queries(uses_edges))
-        if queries:
-            await run_graph_queries(client, queries, label="PHASE2:LINKING")
-    except Exception as e:
-        logger.warning("[FW:PHASE2] Neo4j 결정론적 링킹 반영 실패: %s", e)
+        elif stage == "table_batch":
+            batch_edges = step_result["edges"]
+            batch_fk = step_result["fk"]
+            batch_col = step_result["col"]
+            batch_desc = step_result["desc"]
+            reads_writes.extend(batch_edges)
+            fk_edges.extend(batch_fk)
+            column_refs.extend(batch_col)
+            table_descriptions.update(batch_desc or {})
+            table_batch_count += 1
+            try:
+                queries: list = []
+                queries.extend(build_reads_writes_queries(batch_edges))
+                queries.extend(build_table_queries_from_reads_writes(batch_edges, table_descriptions=batch_desc or {}))
+                if batch_col:
+                    queries.extend(build_column_queries(batch_col))
+                    queries.extend(build_has_column_queries(batch_col))
+                if queries:
+                    async for graph in run_graph_queries(client, queries, label="PHASE2:TABLE_BATCH"):
+                        yield emit_data(graph=graph)
+            except Exception as e:
+                logger.warning("[FW:PHASE2] Neo4j table 배치 반영 실패: %s", e)
+            yield tracker.tick_quiet()
 
-    yield emit_message(f"🔗 결정론적 링킹 완료 | refer_to={len(refer_to_edges)} class_table={len(class_table_edges)} artifact_table={len(artifact_table_edges)} calls={len(all_calls)} uses={len(uses_edges)}")
+        elif stage == "call_batch":
+            batch_call_edges = step_result["edges"]
+            batch_call_unresolved = step_result["unresolved"]
+            all_calls.extend(batch_call_edges)
+            calls_edges_from_batch.extend(batch_call_edges)
+            unresolved_calls.extend(batch_call_unresolved)
+            uses_batch = derive_uses_from_calls(batch_call_edges, method_facts_list)
+            uses_edges.extend(uses_batch)
+            call_batch_count += 1
+            try:
+                queries = []
+                queries.extend(build_calls_queries(batch_call_edges))
+                queries.extend(build_uses_queries(uses_batch))
+                if queries:
+                    async for graph in run_graph_queries(client, queries, label="PHASE2:CALL_BATCH"):
+                        yield emit_data(graph=graph)
+            except Exception as e:
+                logger.warning("[FW:PHASE2] Neo4j call 배치 반영 실패: %s", e)
+            yield tracker.tick_quiet()
 
-    # DeepAgent: 인덱스 키 매칭 실패 항목만 의미 기반 추적
-    # unresolved 는 link_chunks_to_indexes 에서 나온 것만 포함 (CALL_REF/NEW_INSTANCE_REF 실패는 이미 제외됨)
-    if unresolved:
-        yield emit_message(f"🔍 DeepAgent: 미해결 {len(unresolved)}건 의미 추적 시작")
+        elif stage == "post":
+            yield tracker.end_step(f"Table LLM {table_batch_count}건, Call LLM {call_batch_count}건 완료")
+            reads_writes = step_result["reads_writes"]
+            fk_edges = step_result["fk_edges"]
+            column_refs = step_result["column_refs"]
+            method_table_edges = step_result["method_table_edges"]
+            class_table_edges = step_result["class_table_edges"]
+            artifact_table_edges = step_result["artifact_table_edges"]
+            try:
+                queries = []
+                queries.extend(build_method_table_from_writes_queries(method_table_edges))
+                queries.extend(build_class_table_refer_to_queries(class_table_edges))
+                queries.extend(build_artifact_table_refer_to_queries(artifact_table_edges))
+                # ARTIFACT_CHUNK → CLASS 연결 (EJB XML의 ejb-class/home/remote FQN 기반)
+                artifact_chunks_from_state = st.get("artifact_chunks") or []
+                class_index_from_state = st.get("class_index") or {}
+                artifact_class_rels = build_artifact_class_refer_to_queries(artifact_chunks_from_state, class_index_from_state)
+                queries.extend(artifact_class_rels)
+                if queries:
+                    async for graph in run_graph_queries(client, queries, label="PHASE2:POST"):
+                        yield emit_data(graph=graph)
+            except Exception as e:
+                logger.warning("[FW:PHASE2] Neo4j 후처리 반영 실패: %s", e)
+            yield tracker.begin_step(2, 1)
+            artifact_class_count = len(artifact_class_rels) if 'artifact_class_rels' in dir() else 0
+            yield tracker.end_step(f"Method→Table {len(method_table_edges)}건, Class→Table {len(class_table_edges)}건, Artifact→Table {len(artifact_table_edges)}건, Artifact→Class {artifact_class_count}건")
+
+    # DeepAgent: 항목별 점진적 스트리밍
+    if not unresolved:
+        yield tracker.begin_step(3, 1)
+        yield tracker.end_step("미해결 0건 (건너뜀)")
+    else:
+        yield tracker.begin_step(3, len(unresolved))
         api_key = settings.llm.api_key
         run_dir_path = Path(st["run_dir"]) if st.get("run_dir") else None
         deep_state = {
@@ -304,78 +448,54 @@ async def run_phase_llm(
             "span_index": st.get("span_index"),
             "chunk_index": st.get("chunk_index"),
         }
-        da_refer, da_mt = run_deep_agent(
+        da_refer_all: list = []
+        da_mt_all: list = []
+        for item_refer, item_mt in run_deep_agent(
             unresolved,
             deep_state,
             api_key=api_key,
             run_dir=run_dir_path,
-        )
-        if da_refer:
-            refer_to_edges.extend(da_refer)
-            logger.info("[FW:PHASE2] DeepAgent REFER_TO 추가 | count=%d", len(da_refer))
-        if da_mt:
-            method_table_edges.extend(da_mt)
-            logger.info("[FW:PHASE2] DeepAgent Method→Table 직접 추가 | count=%d", len(da_mt))
+        ):
+            da_refer_all.extend(item_refer)
+            da_mt_all.extend(item_mt)
+            # 항목별 Neo4j 스트리밍
+            try:
+                da_queries: list = []
+                if item_refer:
+                    da_queries.extend(build_refer_to_queries(item_refer))
+                if item_mt:
+                    da_queries.extend(build_method_table_from_writes_queries(item_mt))
+                if da_queries:
+                    async for graph in run_graph_queries(client, da_queries, label="PHASE2:DEEPAGENT"):
+                        yield emit_data(graph=graph)
+            except Exception as e:
+                logger.warning("[FW:PHASE2] Neo4j DeepAgent 항목 반영 실패: %s", e)
+
+        if da_refer_all:
+            refer_to_edges.extend(da_refer_all)
+            logger.info("[FW:PHASE2] DeepAgent REFER_TO 추가 | count=%d", len(da_refer_all))
+        if da_mt_all:
+            method_table_edges.extend(da_mt_all)
+            logger.info("[FW:PHASE2] DeepAgent Method→Table 직접 추가 | count=%d", len(da_mt_all))
         # DeepAgent refer_to에서 Method→ArtifactChunk→Table 체인으로 Method→Table 자동 유도
-        if da_refer and artifact_table_edges:
+        if da_refer_all and artifact_table_edges:
             from analyzer.strategy.framework.linking.orchestrator import derive_method_table_edges
-            da_derived_mt = derive_method_table_edges(da_refer, reads_writes, artifact_table_edges=artifact_table_edges)
+            da_derived_mt = derive_method_table_edges(da_refer_all, reads_writes, artifact_table_edges=artifact_table_edges)
             if da_derived_mt:
                 method_table_edges.extend(da_derived_mt)
-                da_mt.extend(da_derived_mt)  # Neo4j 반영용
                 logger.info("[FW:PHASE2] DeepAgent Method→Table 유도 | count=%d", len(da_derived_mt))
+                try:
+                    derived_queries = build_method_table_from_writes_queries(da_derived_mt)
+                    if derived_queries:
+                        async for graph in run_graph_queries(client, derived_queries, label="PHASE2:DEEPAGENT_DERIVED"):
+                            yield emit_data(graph=graph)
+                except Exception as e:
+                    logger.warning("[FW:PHASE2] Neo4j DeepAgent 유도 반영 실패: %s", e)
         # deepagent 가 빌드한 index 를 pipeline state 에 보존
         if deep_state.get("span_index"):
             st.setdefault("span_index", deep_state["span_index"])
             st.setdefault("chunk_index", deep_state["chunk_index"])
-        # DeepAgent 결과를 Neo4j에 추가 반영
-        try:
-            da_queries = []
-            if da_refer:
-                da_queries.extend(build_refer_to_queries(da_refer))
-            if da_mt:
-                da_queries.extend(build_method_table_from_writes_queries(da_mt))
-            if da_queries:
-                await run_graph_queries(client, da_queries, label="PHASE2:DEEPAGENT")
-        except Exception as e:
-            logger.warning("[FW:PHASE2] Neo4j DeepAgent 결과 반영 실패: %s", e)
-        yield emit_message(f"🔍 DeepAgent 완료 | refer_to={len(da_refer)} method_table={len(da_mt)}")
-
-    # analysis LLM (method summary + stereotype)
-    yield emit_message("🤖 Step 6: analysis LLM (메서드 요약)")
-    api_key = settings.llm.api_key
-    locale = settings.locale
-
-    summary_by_method = run_step6(
-        method_facts_list,
-        refer_to_edges,
-        reads_writes,
-        use_llm=bool(api_key),
-        api_key=api_key,
-        locale=locale,
-        parallel=True,
-        class_index=st.get("class_index"),
-        sql_index=sql_index,
-        config_index=st.get("config_index"),
-        calls_edges=all_calls,
-    )
-
-    # Neo4j: method summary 반영
-    if summary_by_method:
-        try:
-            queries = []
-            queries.extend(build_method_summary_queries(summary_by_method))
-            queries.extend(
-                build_uml_dependency_queries(
-                    summary_by_method,
-                    method_facts_list,
-                    st.get("class_index") or {},
-                )
-            )
-            if queries:
-                await run_graph_queries(client, queries, label="PHASE2:SUMMARY")
-        except Exception as e:
-            logger.warning("[FW:PHASE2] Neo4j summary 반영 실패: %s", e)
+        yield tracker.end_step(f"REFER_TO {len(da_refer_all)}건, Method→Table {len(da_mt_all)}건 추가")
 
     stats.total_nodes += len(refer_to_edges) + len(all_calls)
     st.update({
@@ -390,11 +510,10 @@ async def run_phase_llm(
         "unresolved_calls": unresolved_calls,
         "calls_edges": all_calls,
         "uses_edges": uses_edges,
-        "summary_by_method": summary_by_method,
         "table_descriptions": table_descriptions,
     })
 
-    yield emit_message(f"✅ Phase 2 완료 | summary={len(summary_by_method)}")
+    yield emit_message(f"✅ Phase 2 완료 | 참조 {len(refer_to_edges)}건, CALLS {len(all_calls)}건, Table배치 {table_batch_count}건, Call배치 {call_batch_count}건")
 
 
 # ---------------------------------------------------------------------------
@@ -407,67 +526,190 @@ async def run_phase_post(
     orchestrator: Any,
     stats: AnalysisStats,
 ) -> AsyncGenerator[bytes, None]:
-    """Phase 3: 호출 그래프 기반 요약 보강, Field/Class 요약, User Story."""
+    """Phase 3: 메서드 요약, Field/Class 요약, Table Description 보강."""
     st = pipeline._pipeline_state
-    summary_by_method = st.get("summary_by_method") or {}
     method_facts_list = st.get("method_facts_list") or []
     field_facts_list = st.get("field_facts_list") or []
     class_index = st.get("class_index") or {}
+    refer_to_edges = st.get("refer_to_edges") or []
+    reads_writes = st.get("reads_writes") or []
+    all_calls = st.get("calls_edges") or []
+    sql_index = st.get("sql_index") or {}
     api_key = settings.llm.api_key
     locale = settings.locale
 
-    # --- Field 요약 ---
-    yield emit_message("📝 Field 요약")
-    summary_by_field = run_field_summary(
+    # PhaseTracker: 후처리 단계 가중치 기반 진행률
+    tracker = PhaseTracker(2, "후처리", total_phases=3)
+    tracker.define_steps([
+        ("메서드 요약", 35),        # step 0
+        ("Field 요약", 15),         # step 1
+        ("Class 요약", 25),         # step 2
+        ("Table Description 보강", 25),  # step 3
+    ])
+
+    # --- 메서드 요약 (Step 6: analysis LLM — 20개씩 배치 점진적 스트리밍) ---
+    total_summary_batches = max(1, (len(method_facts_list) + 19) // 20)
+    yield tracker.begin_step(0, total_summary_batches)
+
+    summary_by_method: dict = {}
+    for summary_batch in run_step6(
+        method_facts_list,
+        refer_to_edges,
+        reads_writes,
+        use_llm=bool(api_key),
+        api_key=api_key,
+        locale=locale,
+        parallel=True,
+        class_index=class_index,
+        sql_index=sql_index,
+        config_index=st.get("config_index"),
+        calls_edges=all_calls,
+        field_facts_list=field_facts_list,
+    ):
+        summary_by_method.update(summary_batch)
+        yield tracker.tick_quiet()
+        try:
+            queries = []
+            queries.extend(build_method_summary_queries(summary_batch))
+            queries.extend(
+                build_uml_dependency_queries(
+                    summary_batch,
+                    method_facts_list,
+                    class_index,
+                )
+            )
+            if queries:
+                async for graph in run_graph_queries(client, queries, label="PHASE3:SUMMARY"):
+                    yield emit_data(graph=graph)
+        except Exception as e:
+            logger.warning("[FW:PHASE3] Neo4j summary 배치 반영 실패: %s", e)
+
+    st["summary_by_method"] = summary_by_method
+    yield tracker.end_step(f"메서드 {len(summary_by_method)}개 요약 완료")
+
+    # --- Field 요약 (완료 즉시 스트리밍) ---
+    field_total = max(1, len(field_facts_list))
+    yield tracker.begin_step(1, field_total)
+    summary_by_field: Dict[str, Any] = {}
+    for field_batch in run_field_summary(
         field_facts_list, class_index,
         data_dir=st.get("data_dir", ""),
+        run_dir=st.get("run_dir"),
         api_key=api_key, locale=locale,
-    )
-    if summary_by_field:
+    ):
+        summary_by_field.update(field_batch)
+        yield tracker.tick_quiet(len(field_batch))
         try:
-            queries = build_field_summary_queries(summary_by_field)
+            queries = build_field_summary_queries(field_batch)
             if queries:
-                await run_graph_queries(client, queries, label="PHASE3:FIELD_SUMMARY")
+                async for graph in run_graph_queries(client, queries, label="PHASE3:FIELD_SUMMARY"):
+                    yield emit_data(graph=graph)
         except Exception as e:
             logger.warning("[FW:PHASE3] Neo4j field summary 반영 실패: %s", e)
 
-    # --- Class 요약 ---
-    yield emit_message("📋 Class 요약")
-    summary_by_class = run_class_summary(
+    yield tracker.end_step(f"필드 {len(summary_by_field)}개 요약 완료")
+
+    # --- Class 요약 (클래스별 스트리밍) ---
+    class_total = max(1, len(class_index))
+    yield tracker.begin_step(2, class_total)
+    summary_by_class: Dict[str, Any] = {}
+    for class_batch in run_class_summary(
         class_index, summary_by_method, summary_by_field,
         method_facts_list, field_facts_list,
         api_key=api_key, locale=locale,
-    )
-    if summary_by_class:
+    ):
+        summary_by_class.update(class_batch)
+        yield tracker.tick_quiet(len(class_batch))
         try:
-            queries = build_class_summary_queries(summary_by_class)
+            queries = build_class_summary_queries(class_batch)
             if queries:
-                await run_graph_queries(client, queries, label="PHASE3:CLASS_SUMMARY")
+                async for graph in run_graph_queries(client, queries, label="PHASE3:CLASS_SUMMARY"):
+                    yield emit_data(graph=graph)
         except Exception as e:
             logger.warning("[FW:PHASE3] Neo4j class summary 반영 실패: %s", e)
 
-    # --- User Story ---
-    yield emit_message("📖 User Story 생성")
-    user_stories: List[Dict[str, Any]] = []
-    try:
-        user_stories = run_user_story_generation(
-            summary_by_class or {}, class_index,
-            api_key=api_key, locale=locale,
-        )
-        if user_stories:
-            try:
-                queries = build_user_story_queries(user_stories)
-                if queries:
-                    await run_graph_queries(client, queries, label="PHASE3:USER_STORY")
-            except Exception as e:
-                logger.warning("[FW:PHASE3] Neo4j user story 반영 실패: %s", e)
-    except Exception as e:
-        logger.warning("[FW:PHASE3] User story 생성 실패: %s", e)
+    yield tracker.end_step(f"클래스 {len(summary_by_class)}개 요약 완료")
+
+    # --- Table Description 보강 (메서드 summary 기반) ---
+    yield tracker.begin_step(3, 1)
+    enriched_table_count = 0
+    if api_key and summary_by_method:
+        try:
+            enrichment_query = build_table_description_enrichment_query()
+            table_results = await client.execute_queries([enrichment_query])
+            tables_with_summaries = table_results[0] if table_results and table_results[0] else []
+
+            if tables_with_summaries:
+                yield emit_message(f"  ├─ {len(tables_with_summaries)}개 테이블 LLM 설명 보강 중...")
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                from util.prompt_executor import RuleLoader
+
+                loader = RuleLoader(target_lang="dbms")
+
+                def _enrich_one_table(table_info: dict) -> Optional[Dict[str, Any]]:
+                    name = table_info.get("name", "")
+                    schema = table_info.get("schema", "")
+                    current_desc = table_info.get("current_description") or ""
+                    method_summaries = table_info.get("method_summaries") or []
+                    table_display = f"{schema}.{name}" if schema else name
+                    # 메서드 summary를 table_sentences로 전달
+                    sentences = [f"[메서드 요약] {s}" for s in method_summaries[:20]]
+                    if current_desc:
+                        sentences.insert(0, f"[기존 설명] {current_desc}")
+                    result = loader.execute(
+                        "table_summary",
+                        {
+                            "table_name": table_display,
+                            "table_sentences": sentences,
+                            "column_sentences": {},
+                            "column_metadata": {},
+                            "locale": locale,
+                        },
+                        api_key=api_key,
+                    )
+                    if isinstance(result, dict) and result.get("tableDescription"):
+                        return {
+                            "db": table_info.get("db", ""),
+                            "schema": schema,
+                            "name": name,
+                            "enriched_description": result["tableDescription"],
+                        }
+                    return None
+
+                workers = max(1, settings.concurrency.max_concurrency)
+                enrichments: List[Dict[str, Any]] = []
+                with ThreadPoolExecutor(max_workers=workers) as executor:
+                    futures = {executor.submit(_enrich_one_table, t): t for t in tables_with_summaries}
+                    for future in as_completed(futures):
+                        try:
+                            result = future.result()
+                            if result:
+                                enrichments.append(result)
+                        except Exception as e:
+                            t = futures[future]
+                            logger.warning("[FW:PHASE3] Table description 보강 실패 (%s): %s", t.get("name", ""), e)
+
+                if enrichments:
+                    enriched_table_count = len(enrichments)
+                    try:
+                        queries = build_table_description_update_queries(enrichments)
+                        if queries:
+                            async for graph in run_graph_queries(client, queries, label="PHASE3:TABLE_ENRICHMENT"):
+                                yield emit_data(graph=graph)
+                    except Exception as e:
+                        logger.warning("[FW:PHASE3] Neo4j table description 보강 반영 실패: %s", e)
+        except Exception as e:
+            logger.warning("[FW:PHASE3] Table description 보강 스킵: %s", e)
+
+    yield tracker.end_step(f"테이블 {enriched_table_count}개 설명 보강")
 
     st.update({
         "summary_by_field": summary_by_field,
         "summary_by_class": summary_by_class,
-        "user_stories": user_stories,
     })
 
-    yield emit_message(f"✅ Phase 3 완료 | field_summary={len(summary_by_field)} class_summary={len(summary_by_class)} user_stories={len(user_stories)}")
+    yield emit_message(
+        f"✅ Phase 3 완료 | 메서드요약 {len(summary_by_method)}개, "
+        f"필드요약 {len(summary_by_field)}개, 클래스요약 {len(summary_by_class)}개, "
+        f"테이블보강 {enriched_table_count}개"
+    )

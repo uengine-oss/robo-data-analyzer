@@ -23,12 +23,6 @@ from util.logger import log_process  # noqa: F401, E402
 from util.encoding_utils import read_text_with_fallback_sync as read_text_with_fallback  # noqa: F401, E402
 from util.encoding_utils import read_json_with_fallback  # noqa: F401, E402
 
-# User Story 도메인 로직 → service/user_story_document.py
-from service.user_story_document import (  # noqa: F401, E402
-    generate_user_story_document,
-    aggregate_user_stories_from_results,
-)
-
 
 # tiktoken 인코더 초기화
 ENCODER = tiktoken.get_encoding("cl100k_base")

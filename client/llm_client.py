@@ -262,6 +262,7 @@ def get_llm(
         "api_key": api_key,
         "max_tokens": max_tokens,
         "temperature": config.temperature,
+        "max_retries": 5,
     }
 
     # 추론 모델 특수 처리

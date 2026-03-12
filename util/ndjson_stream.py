@@ -122,6 +122,106 @@ def emit_phase_event(
     return emit_bytes(payload)
 
 
+class PhaseTracker:
+    """Phase 내 서브스텝 가중치 기반 진행률 자동 계산 + 통일된 로그 emit.
+
+    사용 예시::
+
+        tracker = PhaseTracker(1, "LLM 분석", total_phases=3)
+        tracker.define_steps([
+            ("결정론적 링킹", 5),
+            ("SQL→Table 매칭", 20),
+            ("Call 매칭", 20),
+            ("후처리", 5),
+            ("메서드 요약", 50),
+        ])
+        yield tracker.begin_step(0, len(items))
+        for item in items:
+            msg, evt = tracker.tick()
+            yield msg; yield evt
+        yield tracker.end_step("refer_to=42")
+    """
+
+    def __init__(self, phase_num: int, phase_name: str, total_phases: int):
+        self.phase_num = phase_num
+        self.phase_name = phase_name
+        self.total_phases = total_phases
+        self._steps: list[dict[str, Any]] = []
+        self._current_step_idx = 0
+
+    def define_steps(self, steps: list[tuple[str, int]]) -> None:
+        """서브스텝 정의. steps = [(name, weight), ...] weight 합 = 100"""
+        self._steps = [
+            {"name": n, "weight": w, "total": 0, "done": 0}
+            for n, w in steps
+        ]
+
+    def begin_step(self, step_idx: int, total_items: int) -> bytes:
+        """서브스텝 시작 — 메시지 + phase_event emit 결합"""
+        self._current_step_idx = step_idx
+        step = self._steps[step_idx]
+        step["total"] = total_items
+        step["done"] = 0
+        progress = self._calc_progress()
+        step_label = f"[{self.phase_num + 1}/{self.total_phases}단계] {step['name']}"
+        msg = f"{step_label} ({total_items}건)"
+        return (
+            emit_message(msg)
+            + emit_phase_event(
+                self.phase_num, self.phase_name, "in_progress", progress,
+                {"step": step["name"], "total": total_items},
+            )
+        )
+
+    def tick(self, count: int = 1) -> tuple[bytes, bytes]:
+        """아이템 완료 — (message, phase_event) 튜플 반환. 메인 스레드에서만 호출."""
+        step = self._steps[self._current_step_idx]
+        step["done"] += count
+        progress = self._calc_progress()
+        msg = emit_message(
+            f"  ├─ [{step['done']}/{step['total']}] {step['name']} 처리 중..."
+        )
+        evt = emit_phase_event(
+            self.phase_num, self.phase_name, "in_progress", progress,
+            {"step": step["name"], "done": step["done"], "total": step["total"]},
+        )
+        return (msg, evt)
+
+    def tick_quiet(self, count: int = 1) -> bytes:
+        """아이템 완료 — phase_event만 반환 (메시지 없이 진행률만 업데이트)."""
+        step = self._steps[self._current_step_idx]
+        step["done"] += count
+        progress = self._calc_progress()
+        return emit_phase_event(
+            self.phase_num, self.phase_name, "in_progress", progress,
+            {"step": step["name"], "done": step["done"], "total": step["total"]},
+        )
+
+    def end_step(self, metrics: str = "") -> bytes:
+        """서브스텝 완료 요약 + phase_event 진행률 갱신"""
+        step = self._steps[self._current_step_idx]
+        step["done"] = step["total"]  # 완료로 마킹
+        progress = self._calc_progress()
+        suffix = f" | {metrics}" if metrics else ""
+        return (
+            emit_message(f"  └─ {step['name']} 완료{suffix}")
+            + emit_phase_event(
+                self.phase_num, self.phase_name, "in_progress", progress,
+                {"step": step["name"], "done": step["total"], "total": step["total"]},
+            )
+        )
+
+    def _calc_progress(self) -> int:
+        """전체 가중치 기반 진행률 계산 (0~100)"""
+        total_progress = 0
+        for i, step in enumerate(self._steps):
+            if i < self._current_step_idx:
+                total_progress += step["weight"]
+            elif i == self._current_step_idx and step["total"] > 0:
+                total_progress += int(step["done"] / step["total"] * step["weight"])
+        return min(total_progress, 100)
+
+
 def build_error_body(
     exc: Exception,
     trace_id: Optional[str] = None,

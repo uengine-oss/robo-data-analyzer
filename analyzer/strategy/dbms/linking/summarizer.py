@@ -35,14 +35,6 @@ def _analyze_summary_only(summaries: dict, api_key: str, locale: str, previous_s
     )
 
 
-def _analyze_user_story(summary: str, api_key: str, locale: str) -> Dict[str, Any]:
-    return _rule_loader().execute(
-        "procedure_user_story",
-        {"summary": summary, "locale": locale},
-        api_key,
-    )
-
-
 def _summarize_table_metadata(
     table_name: str,
     table_sentences: list,
@@ -185,7 +177,7 @@ async def _run_procedure_summary(
                 await results_queue.put({"type": "error", "procedure": info.procedure_name, "file": ctx.file_name, "message": str(e)})
                 raise
 
-    yield emit_phase_event(2.1, "프로시저 Summary", "started", 0, {"procedures": total})
+    yield emit_phase_event(2, "AI 분석", "in_progress", 60, {"step": "프로시저 Summary", "total": total})
     tasks = [asyncio.create_task(process_procedure(ctx, proc, pk, inf, summ)) for ctx, proc, pk, inf, summ in all_procedures]
     while completed < total:
         result = await asyncio.wait_for(results_queue.get(), timeout=300.0)
@@ -197,100 +189,12 @@ async def _run_procedure_summary(
             yield emit_message(f"   ❌ [{completed}/{total}] {result['file']}/{result['procedure']}: {result.get('message', '')[:50]}")
         else:
             yield emit_message(f"   ✓ [{completed}/{total}] {result['file']}/{result['procedure']}: summary 생성")
-        yield emit_phase_event(2.1, "프로시저 Summary", "progress", int(completed / total * 100), {"completed": completed, "total": total})
+        yield emit_phase_event(2, "AI 분석", "in_progress", 60 + int(completed / total * 15), {"step": "프로시저 Summary", "done": completed, "total": total})
     await asyncio.gather(*tasks, return_exceptions=True)
-    yield emit_phase_event(2.1, "프로시저 Summary", "completed", 100, {"procedures": total})
+    yield emit_phase_event(2, "AI 분석", "in_progress", 75, {"step": "프로시저 Summary 완료", "total": total})
 
 
-# ========== 2. User Story ==========
-def _build_user_story_queries(procedure_type: str, procedure_name: str, directory: str, file_name: str, user_stories: List[Dict], schema_name: str | None = None) -> List[Dict]:
-    queries = []
-    for us_idx, us in enumerate(user_stories, 1):
-        us_id = us.get('id', f"US-{us_idx}")
-        if schema_name:
-            match_cypher = f"MATCH (__cy_p__:{procedure_type} {{schema_name: $schema_name, procedure_name: $procedure_name, directory: $directory, file_name: $file_name}})"
-            us_params = {"schema_name": schema_name, "procedure_name": procedure_name, "directory": directory, "file_name": file_name, "us_id": us_id, "role": us.get('role', ''), "goal": us.get('goal', ''), "benefit": us.get('benefit', '')}
-        else:
-            match_cypher = f"MATCH (__cy_p__:{procedure_type} {{procedure_name: $procedure_name, directory: $directory, file_name: $file_name}})"
-            us_params = {"procedure_name": procedure_name, "directory": directory, "file_name": file_name, "us_id": us_id, "role": us.get('role', ''), "goal": us.get('goal', ''), "benefit": us.get('benefit', '')}
-        queries.append({
-            "query": f"{match_cypher} MERGE (__cy_us__:UserStory {{id: $us_id, procedure_name: $procedure_name, directory: $directory, file_name: $file_name}}) SET __cy_us__.role = $role, __cy_us__.goal = $goal, __cy_us__.benefit = $benefit MERGE (__cy_p__)-[__cy_r__:HAS_USER_STORY]->(__cy_us__) RETURN __cy_p__, __cy_us__, __cy_r__",
-            "params": us_params,
-        })
-        for ac_idx, ac in enumerate(us.get('acceptance_criteria', []), 1):
-            if not isinstance(ac, dict):
-                continue
-            ac_id = ac.get('id', f"AC-{us_idx}-{ac_idx}")
-            queries.append({
-                "query": f"MATCH (__cy_us__:UserStory {{id: $us_id, directory: $directory, file_name: $file_name}}) MERGE (__cy_ac__:AcceptanceCriteria {{id: $ac_id, user_story_id: $us_id, directory: $directory, file_name: $file_name}}) SET __cy_ac__.title = $title, __cy_ac__.given = $given, __cy_ac__.when_clause = $when_clause, __cy_ac__.then_clause = $then_clause MERGE (__cy_us__)-[__cy_r__:HAS_AC]->(__cy_ac__) RETURN __cy_us__, __cy_ac__, __cy_r__",
-                "params": {"us_id": us_id, "ac_id": ac_id, "directory": directory, "file_name": file_name, "title": ac.get('title', ''), "given": str(ac.get('given', [])), "when_clause": str(ac.get('when', [])), "then_clause": str(ac.get('then', []))},
-            })
-    return queries
-
-
-async def _run_user_story(
-    pipeline: Any,
-    contexts: List[FileAnalysisContext],
-    client: Neo4jClient,
-    orchestrator: Any,
-) -> AsyncGenerator[bytes, None]:
-    all_procedures = []
-    for ctx in contexts:
-        if ctx.status == FileStatus.PH2_OK and ctx.processor and hasattr(ctx, 'procedure_summaries') and ctx.procedure_summaries:
-            for proc_key, summary_data in ctx.procedure_summaries.items():
-                info = summary_data.get("procedure_info")
-                if info:
-                    all_procedures.append((ctx, ctx.processor, proc_key, info, summary_data))
-    if not all_procedures:
-        yield emit_message("   ℹ️ User Story: 처리할 프로시저 없음")
-        return
-    total = len(all_procedures)
-    completed = 0
-    results_queue: asyncio.Queue = asyncio.Queue()
-    semaphore = asyncio.Semaphore(settings.concurrency.max_concurrency)
-
-    async def process_procedure(ctx, processor, proc_key, info, summary_data):
-        async with semaphore:
-            try:
-                final_summary = summary_data["final_summary"]
-                if not final_summary:
-                    user_stories_raw = []
-                else:
-                    r = await asyncio.to_thread(_analyze_user_story, final_summary, orchestrator.api_key, orchestrator.locale)
-                    user_stories_raw = r.get('user_stories', []) or [] if isinstance(r, dict) else []
-                queries = []
-                if user_stories_raw:
-                    queries = _build_user_story_queries(info.procedure_type, info.procedure_name, processor.full_directory, processor.file_name, user_stories_raw, info.schema_name)
-                if queries:
-                    for i in range(0, len(queries), 30):
-                        batch = queries[i:i + 30]
-                        async with pipeline._cypher_lock:
-                            async for br in client.run_graph_query(batch):
-                                await results_queue.put({"type": "graph", "graph": {"Nodes": br.get("Nodes", []), "Relationships": br.get("Relationships", [])}})
-                await results_queue.put({"type": "success", "procedure": info.procedure_name, "file": ctx.file_name, "user_stories": len(user_stories_raw)})
-            except Exception as e:
-                log_process("ANALYZE", "ERROR", f"User Story 오류 ({ctx.file_name}/{info.procedure_name}): {e}", logging.ERROR, e)
-                await results_queue.put({"type": "error", "procedure": info.procedure_name, "file": ctx.file_name, "message": str(e)})
-                raise
-
-    yield emit_phase_event(2.2, "User Story", "started", 0, {"procedures": total})
-    tasks = [asyncio.create_task(process_procedure(ctx, proc, pk, inf, sd)) for ctx, proc, pk, inf, sd in all_procedures]
-    while completed < total:
-        result = await asyncio.wait_for(results_queue.get(), timeout=300.0)
-        if result.get("type") == "graph":
-            yield emit_data(graph=result["graph"])
-            continue
-        completed += 1
-        if result.get("type") == "error":
-            yield emit_message(f"   ❌ [{completed}/{total}] {result['file']}/{result['procedure']}: {result.get('message', '')[:50]}")
-        else:
-            yield emit_message(f"   ✓ [{completed}/{total}] {result['file']}/{result['procedure']}: User Story {result.get('user_stories', 0)}개")
-        yield emit_phase_event(2.2, "User Story", "progress", int(completed / total * 100), {"completed": completed, "total": total})
-    await asyncio.gather(*tasks, return_exceptions=True)
-    yield emit_phase_event(2.2, "User Story", "completed", 100, {"procedures": total})
-
-
-# ========== 3. 테이블/컬럼 설명 요약 ==========
+# ========== 2. 테이블/컬럼 설명 요약 ==========
 async def _summarize_table(
     table_key: Tuple[str, str],
     data: Dict,
@@ -370,9 +274,9 @@ async def _run_table_summary(
             if not dbms_name and hasattr(proc, 'dbms'):
                 dbms_name = proc.dbms
     if not all_table_stores:
-        yield emit_phase_event(2.4, "테이블/컬럼 설명 요약", "completed", 100, {"tables": 0})
+        yield emit_phase_event(2, "AI 분석", "in_progress", 100, {"step": "테이블 요약 완료", "tables": 0})
         return
-    yield emit_phase_event(2.4, "테이블/컬럼 설명 요약", "started", 0, {"tables": len(all_table_stores)})
+    yield emit_phase_event(2, "AI 분석", "in_progress", 85, {"step": "테이블/컬럼 설명 요약", "total": len(all_table_stores)})
     tasks = [_summarize_table(table_key, {"summaries": list(data["summaries"]), "columns": data["columns"]}, all_ddl_metadata, dbms_name or "", orchestrator.api_key, orchestrator.locale) for table_key, data in all_table_stores.items()]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     all_queries = []
@@ -384,7 +288,7 @@ async def _run_table_summary(
         elif r:
             all_queries.extend(r)
             yield emit_message(f"   ✓ [{completed}/{len(tasks)}] 테이블 요약 완료")
-        yield emit_phase_event(2.4, "테이블/컬럼 설명 요약", "progress", int(completed / len(tasks) * 100), {"completed": completed, "total": len(tasks)})
+        yield emit_phase_event(2, "AI 분석", "in_progress", 85 + int(completed / len(tasks) * 15), {"step": "테이블/컬럼 설명 요약", "done": completed, "total": len(tasks)})
     if all_queries:
         async with pipeline._cypher_lock:
             async for br in client.run_graph_query(all_queries):
@@ -392,7 +296,7 @@ async def _run_table_summary(
     for ctx in contexts:
         if ctx.processor and hasattr(ctx.processor, '_table_summary_store'):
             ctx.processor._table_summary_store.clear()
-    yield emit_phase_event(2.4, "테이블/컬럼 설명 요약", "completed", 100, {"tables": len(tasks), "queries": len(all_queries)})
+    yield emit_phase_event(2, "AI 분석", "in_progress", 100, {"step": "테이블/컬럼 설명 요약 완료", "tables": len(tasks), "queries": len(all_queries)})
 
 
 # ========== Phase 3 통합 진입점 ==========
@@ -403,10 +307,8 @@ async def run_phase_post(
     orchestrator: Any,
     stats: AnalysisStats,
 ) -> AsyncGenerator[bytes, None]:
-    """Phase 3: 후처리 - 프로시저 요약 → User Story → 테이블 요약"""
+    """Phase 3: 후처리 - 프로시저 요약 → 테이블 요약"""
     async for chunk in _run_procedure_summary(pipeline, contexts, client, orchestrator):
-        yield chunk
-    async for chunk in _run_user_story(pipeline, contexts, client, orchestrator):
         yield chunk
     async for chunk in _run_table_summary(pipeline, contexts, client, orchestrator):
         yield chunk

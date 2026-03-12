@@ -33,13 +33,13 @@ LOG_GRAPH = "[FW:GRAPH]"
 ENTITY_SIGNALS_ANNOTATION = ["@Entity", "@Table", "@MappedSuperclass", "@Document", "@RedisHash"]
 
 # Scan skip directories
-SKIP_DIRS = frozenset({"ddl", ".git", "node_modules", "__pycache__", ".venv", "venv"})
+SKIP_DIRS = frozenset({"ddl", ".git", "node_modules", "__pycache__", ".venv", "venv", "target", "build"})
 
 # File categories
 CATEGORY_JAVA_AST = "java_ast"
 CATEGORY_XML_SQLMAP = "xml_sqlmap"
-CATEGORY_XML_EJB = "xml_ejb"
-CATEGORY_XML_ENTITYMODEL = "xml_entitymodel"
+CATEGORY_XML_ARTIFACT = "xml_artifact"
+CATEGORY_XML_EJB = CATEGORY_XML_ARTIFACT  # 하위호환 별칭
 CATEGORY_XML_CMP_MAPPING = "xml_cmp_mapping"
 CATEGORY_XML = "xml"
 CATEGORY_YAML = "yaml"

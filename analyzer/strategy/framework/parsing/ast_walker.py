@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Generator, List, Optional, Tuple
 
 from analyzer.strategy.framework._ast_core import (
     FrameworkAstProcessor,
@@ -362,18 +362,13 @@ def run_step2(
     java_ast_jobs: List[str],
     data_dir: Optional[str] = None,
     run_dir: Optional[str] = None,
-) -> Tuple[
-    List[MethodFacts],
-    Dict[str, Any],
-    List[str],
-    List[FieldFacts],
-    Dict[str, Dict[str, str]],
-    Dict[str, str],
-    Dict[str, Dict[str, List[str]]],
-    Dict[str, List[str]],
-    Dict[str, List[Dict[str, Any]]],
-]:
-    """모든 java_ast_jobs에 대해 MethodFacts, class_index, ... 수집. run_dir 있으면 ChunkBundle을 run_dir/chunk_bundles에 저장, 없으면 data_dir/chunk_bundles."""
+) -> Generator[Dict[str, Any], None, None]:
+    """파일별로 AST 결과를 yield. 호출자가 누적 및 Neo4j 반영.
+
+    Yields:
+        Dict with keys: facts, cidx, fields, class_index_simple,
+        sym_idx, meth_idx, meth_by_cls, ref_cands, file_name
+    """
     logger.info(
         "[FW:STEP2] Java AST 진입 | paths=%d data_dir=%s run_dir=%s",
         len(java_ast_jobs),
@@ -384,14 +379,6 @@ def run_step2(
         "[FW:STEP2] [섹션] 파일별 처리: AST 파싱 → MethodFacts, ChunkBundle 생성·저장 | 파일 %d개",
         len(java_ast_jobs),
     )
-    all_facts: List[MethodFacts] = []
-    merged_class_index: Dict[str, Any] = {}
-    all_fields: List[FieldFacts] = []
-    merged_symbol_type_index: Dict[str, Dict[str, str]] = {}
-    merged_method_index: Dict[str, str] = {}
-    merged_method_index_by_class: Dict[str, Dict[str, List[str]]] = {}
-    merged_class_index_simple: Dict[str, List[str]] = {}
-    merged_ref_candidates_by_method: Dict[str, List[Dict[str, Any]]] = {}
 
     source_dir: Optional[Path] = None
     if data_dir:
@@ -425,14 +412,6 @@ def run_step2(
                 chunk_vars,
                 ref_cands,
             ) = collect_ast_indices_and_chunk_data(ast_data)
-            for mid, cands in ref_cands.items():
-                merged_ref_candidates_by_method.setdefault(mid, []).extend(cands)
-            for mid, types in sym_idx.items():
-                merged_symbol_type_index.setdefault(mid, {}).update(types)
-            merged_method_index.update(meth_idx)
-            for cls, by_name in meth_by_cls.items():
-                for mname, ids in by_name.items():
-                    merged_method_index_by_class.setdefault(cls, {}).setdefault(mname, []).extend(ids)
 
             if data_dir and chunk_m and source_path_for_bundle:
                 field_chunk_input = [
@@ -477,40 +456,22 @@ def run_step2(
                         if fl.field_id in fid_to_code and fid_to_code[fl.field_id]:
                             fl.code = fid_to_code[fl.field_id]
 
-            all_facts.extend(facts)
-            merged_class_index.update(cidx)
-            all_fields.extend(fields)
-            for name, fqns in class_index_simple.items():
-                merged_class_index_simple.setdefault(name, []).extend(fqns)
             logger.info(
                 "[FW:STEP2] 파일 처리 완료 | file=%s methods=%d classes=%d",
                 Path(path).name,
                 len(facts),
                 len(cidx),
             )
+            yield {
+                "facts": facts,
+                "cidx": cidx,
+                "fields": fields,
+                "class_index_simple": class_index_simple,
+                "sym_idx": sym_idx,
+                "meth_idx": meth_idx,
+                "meth_by_cls": meth_by_cls,
+                "ref_cands": ref_cands,
+                "file_name": Path(path).name,
+            }
         except Exception as e:
             logger.warning("AST 처리 스킵 %s: %s", Path(path).name, e)
-
-    package_fqns = _extract_package_fqns(merged_class_index)
-    logger.info(
-        "[FW:STEP2] 완료 | method_facts=%d class_index_ast=%d package_fqns=%d field_facts=%d symbol_type_index_keys=%d method_index=%d method_index_by_class_keys=%d ref_candidates_methods=%d",
-        len(all_facts),
-        len(merged_class_index),
-        len(package_fqns),
-        len(all_fields),
-        len(merged_symbol_type_index),
-        len(merged_method_index),
-        len(merged_method_index_by_class),
-        len(merged_ref_candidates_by_method),
-    )
-    return (
-        all_facts,
-        merged_class_index,
-        package_fqns,
-        all_fields,
-        merged_symbol_type_index,
-        merged_method_index,
-        merged_method_index_by_class,
-        merged_class_index_simple,
-        merged_ref_candidates_by_method,
-    )

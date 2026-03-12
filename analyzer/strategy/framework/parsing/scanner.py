@@ -13,8 +13,7 @@ from analyzer.strategy.framework.common.constants import (
     SKIP_DIRS,
     CATEGORY_JAVA_AST,
     CATEGORY_XML_SQLMAP,
-    CATEGORY_XML_EJB,
-    CATEGORY_XML_ENTITYMODEL,
+    CATEGORY_XML_ARTIFACT,
     CATEGORY_XML_CMP_MAPPING,
     CATEGORY_XML,
     CATEGORY_YAML,
@@ -79,9 +78,9 @@ def _classify_file(path: Path, ext: str, signature: bytes) -> str:
         if "cmp-rdbms-jar" in path_lower or "jbosscmp-jdbc" in path_lower:
             return CATEGORY_XML_CMP_MAPPING
         if "ejb-jar" in path_lower or "ejb-jar" in sig_lower:
-            return CATEGORY_XML_EJB
+            return CATEGORY_XML_ARTIFACT
         if "entitymodel" in path_lower or "entitymodel" in sig_lower:
-            return CATEGORY_XML_ENTITYMODEL
+            return CATEGORY_XML_ARTIFACT
         if "<mapper" in sig_str or ("<?xml" in sig_str and "mapper" in sig_lower):
             return CATEGORY_XML_SQLMAP
         return CATEGORY_XML
@@ -134,10 +133,8 @@ def _process_one_file(
             plan.java_ast_jobs.append(path_str)
         elif category == CATEGORY_XML_SQLMAP:
             plan.xml_sqlmap_jobs.append(path_str)
-        elif category == CATEGORY_XML_EJB:
-            plan.xml_ejb_jobs.append(path_str)
-        elif category == CATEGORY_XML_ENTITYMODEL:
-            plan.xml_entitymodel_jobs.append(path_str)
+        elif category == CATEGORY_XML_ARTIFACT:
+            plan.xml_artifact_jobs.append(path_str)
         elif category == CATEGORY_XML_CMP_MAPPING:
             plan.xml_cmp_mapping_jobs.append(path_str)
         elif category == CATEGORY_YAML:

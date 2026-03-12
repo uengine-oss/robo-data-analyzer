@@ -619,6 +619,7 @@ def _link_sql_to_tables_per_key_pipeline(
     results_by_key: Dict[str, List[Any]],
     api_key: str,
     workers: int,
+    on_batch: Optional[Any] = None,
 ) -> Tuple[List[ReadsWritesEdge], List[FkEdge], List[ColumnRef], Dict[Tuple[str, str], str]]:
     """키 단위 파이프라인: sql_key별로 조각을 순차 처리, 서로 다른 키는 병렬."""
     edges: List[ReadsWritesEdge] = []
@@ -671,6 +672,10 @@ def _link_sql_to_tables_per_key_pipeline(
                 n, t = completed_count[0], total_pieces
                 if n % 10 == 0 or n == t:
                     logger.info("[FW:STEP5] SQL→테이블(키 단위 파이프라인) 완료 %d/%d", n, t)
+            # 배치 완료 즉시 콜백 (lock 밖에서)
+            if on_batch and (e or fk or col):
+                on_batch(e, fk, col, batch_desc or {})
+            with lock:
                 if piece_i + 1 < len(by_key[key]):
                     chunk_next = by_key[key][piece_i + 1]
                     prev_next = _format_prev_summary(results_by_key.get(key, [])[: piece_i + 1])
@@ -708,6 +713,7 @@ def link_sql_to_tables(
     sql_chunks: List[SqlStatementChunk],
     api_key: Optional[str] = None,
     max_workers: Optional[int] = None,
+    on_batch: Optional[Any] = None,
 ) -> Tuple[List[ReadsWritesEdge], List[FkEdge], List[ColumnRef], Dict[Tuple[str, str], str]]:
     """SqlStatement → Table (LLM). table_descriptions: (schema, table_name) → description."""
     edges: List[ReadsWritesEdge] = []
@@ -749,6 +755,7 @@ def link_sql_to_tables(
             results_by_key,
             api_key,
             workers,
+            on_batch=on_batch,
         )
     else:
         for round_i in range(max_pieces):
@@ -803,6 +810,8 @@ def link_sql_to_tables(
                         if ckey not in seen_col:
                             seen_col.add(ckey)
                             column_refs.append(c)
+                    if on_batch and (e or fk or col):
+                        on_batch(e, fk, col, batch_desc or {})
             else:
                 total_batches = len(batches)
                 completed = 0
@@ -840,6 +849,8 @@ def link_sql_to_tables(
                                 if ckey not in seen_col:
                                     seen_col.add(ckey)
                                     column_refs.append(c)
+                            if on_batch and (e or fk or col):
+                                on_batch(e, fk, col, batch_desc or {})
                         except Exception as ex:
                             logger.warning("[FW:STEP5] SQL 배치 LLM 처리 예외: %s", ex)
                         completed += 1

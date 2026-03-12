@@ -1,4 +1,4 @@
-"""Phase 3.5: 메타데이터 보강 - DBMS
+"""메타데이터 보강 - DBMS
 
 Text2SQL API로 샘플 데이터 조회 후 LLM으로 테이블/컬럼 설명 생성.
 FK 관계 추론 포함. dbms_pipeline에서 호출.
@@ -28,9 +28,9 @@ from util.ndjson_stream import (
 )
 from util.text_utils import log_process
 
-# 상수
-PHASE_NUM = 3.5
+# 상수 (기본값 — run_phase_metadata()의 phase_num 파라미터로 오버라이드 가능)
 PHASE_NAME = "메타데이터 보강"
+_phase_num: int = 3  # 모듈 내부 함수들이 참조하는 현재 phase 번호
 DESCRIPTION_SOURCE = "sample_data_inference"
 FK_PROGRESS_RANGE = (0, 50)  # FK 추론 진행률 범위
 DESC_PROGRESS_RANGE = (50, 100)  # 설명 생성 진행률 범위
@@ -41,8 +41,9 @@ async def run_phase_metadata(
     client: Neo4jClient,
     orchestrator: Any,
     stats: AnalysisStats,
+    phase_num: int = 3,
 ) -> AsyncGenerator[bytes, None]:
-    """Phase 3.5: 메타데이터 보강 (Text2SQL 기반)
+    """메타데이터 보강 (Text2SQL 기반)
     
     1. description이 없는 테이블 목록 조회
     2. FK 관계 추론 (선택적)
@@ -54,7 +55,10 @@ async def run_phase_metadata(
         client: Neo4j 클라이언트
         orchestrator: 오케스트레이터
         stats: 분석 통계
+        phase_num: 프론트엔드에 전달할 phase 번호 (기본 3)
     """
+    global _phase_num
+    _phase_num = phase_num
     async for chunk in _init_phase():
         yield chunk
     
@@ -117,9 +121,9 @@ async def run_phase_metadata(
 async def _init_phase() -> AsyncGenerator[bytes, None]:
     """Phase 초기화"""
     log_process("METADATA", "START", "메타데이터 보강 단계 시작", logging.INFO)
-    yield emit_message(f"   🚀 [Phase {PHASE_NUM}] {PHASE_NAME} 시작...")
+    yield emit_message(f"   🚀 [Phase {_phase_num}] {PHASE_NAME} 시작...")
     yield emit_phase_event(
-        phase_num=PHASE_NUM,
+        phase_num=_phase_num,
         phase_name=PHASE_NAME,
         status="in_progress",
         progress=0,
@@ -166,7 +170,7 @@ async def _get_tables_without_description(
     pipeline: Any, client: Neo4jClient
 ) -> AsyncGenerator[bytes | List[Dict[str, Any]], None]:
     """description이 없는 테이블 목록 조회"""
-    yield emit_message("   🔍 [Phase 3.5-1] description이 비어있는 테이블 조회 중...")
+    yield emit_message(f"   🔍 [Phase {_phase_num}-1] description이 비어있는 테이블 조회 중...")
     
     # 전체 테이블 수 조회
     total_query = """
@@ -250,7 +254,7 @@ async def _enrich_table_descriptions(
     """테이블 설명 생성 및 업데이트"""
     total_tables = len(tables_to_enrich)
     
-    yield emit_message("   📊 [Phase 3.5-3] 샘플 데이터 기반 설명 생성 중...")
+    yield emit_message(f"   📊 [Phase {_phase_num}-3] 샘플 데이터 기반 설명 생성 중...")
     yield emit_message(f"      → 보강 대상 테이블: {total_tables}개 (설명이 없는 테이블)")
     
     enriched_count = 0
@@ -269,7 +273,7 @@ async def _enrich_table_descriptions(
             progress = DESC_PROGRESS_RANGE[0] + int((idx / total_tables) * (DESC_PROGRESS_RANGE[1] - DESC_PROGRESS_RANGE[0]))
             yield emit_message(f"      🔄 진행: {idx+1}/{total_tables} (완료: {enriched_count}개, 실패: {len(failed_tables)}개)")
             yield emit_phase_event(
-                phase_num=PHASE_NUM,
+                phase_num=_phase_num,
                 phase_name=PHASE_NAME,
                 status="in_progress",
                 progress=progress,
@@ -515,7 +519,7 @@ async def _emit_description_updates(
 async def _complete_phase(stats: AnalysisStats) -> AsyncGenerator[bytes, None]:
     """Phase 완료 이벤트"""
     yield emit_phase_event(
-        phase_num=PHASE_NUM,
+        phase_num=_phase_num,
         phase_name=PHASE_NAME,
         status="completed",
         progress=100,
@@ -536,9 +540,9 @@ async def _run_fk_inference(
 ) -> AsyncGenerator[bytes, None]:
     """FK 관계 추론 실행"""
     log_process("FK_INFERENCE", "START", "FK 관계 추론 시작", logging.INFO)
-    yield emit_message("   🔗 [Phase 3.5-2] FK 관계 추론 시작...")
+    yield emit_message(f"   🔗 [Phase {_phase_num}-2] FK 관계 추론 시작...")
     yield emit_phase_event(
-        phase_num=PHASE_NUM,
+        phase_num=_phase_num,
         phase_name="FK 관계 추론",
         status="in_progress",
         progress=0,

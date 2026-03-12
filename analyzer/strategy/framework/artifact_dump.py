@@ -33,7 +33,7 @@ PIPELINE_FLOW_MD = """# Framework 파이프라인 흐름
 - **산출물**: method_facts_list, class_index_ast, field_facts_list, ChunkBundle → run_dir/chunk_bundles
 
 ## Step3 아티팩트
-- **입력**: xml_sqlmap, yaml, properties, xml_ejb, xml_entitymodel
+- **입력**: xml_sqlmap, yaml, properties, xml_artifact (ejb-jar, entitymodel 등)
 - **산출물**: sql_chunks, config_chunks, artifact_chunks
 
 ## Step4 인덱스
@@ -219,8 +219,5 @@ def dump_phase3_artifacts(state: Dict[str, Any], run_dir: Path) -> None:
     summary_by_class = state.get("summary_by_class") or {}
     if summary_by_class:
         _write_json(base / "step6_summary_by_class.json", _to_serializable(summary_by_class), ensure_ascii=False)
-    user_stories = state.get("user_stories") or []
-    if user_stories:
-        _write_json(base / "step6_user_stories.json", _to_serializable(user_stories), ensure_ascii=False)
 
     logger.info("[FW:ARTIFACT] Phase3 산출물 저장 | dir=%s", base)

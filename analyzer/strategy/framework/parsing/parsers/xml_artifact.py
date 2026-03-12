@@ -27,7 +27,13 @@ def parse_ejb_jar(path: str) -> List[ArtifactChunk]:
             chunk_id = f"{file_path}:{hint}:{id(elem)}" if hint else f"{file_path}:{id(elem)}"
             snippet = etree.tostring(elem, encoding="unicode")
             sl = getattr(elem, "sourceline", None) or 0
-            chunk_type = "ejb_entity" if tag == "entity" else "ejb_bean"
+            chunk_type = "entity"
+            # EJB XML에서 관련 클래스 FQN 추출 (ejb-class, home, remote, local, local-home)
+            related_fqns: List[str] = []
+            for fqn_tag in ("ejb-class", "home", "remote", "local", "local-home"):
+                el = elem.find(f".//{{*}}{fqn_tag}")
+                if el is not None and el.text and el.text.strip():
+                    related_fqns.append(el.text.strip())
             chunks.append(
                 ArtifactChunk(
                     chunk_id=chunk_id,
@@ -37,6 +43,7 @@ def parse_ejb_jar(path: str) -> List[ArtifactChunk]:
                     source_path=file_path,
                     start_line=sl,
                     end_line=sl + max(0, snippet.count("\n")),
+                    related_class_fqns=related_fqns or None,
                 )
             )
         logger.info(

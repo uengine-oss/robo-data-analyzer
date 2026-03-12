@@ -30,7 +30,7 @@ def parse_entitymodel_xml(path: str) -> List[ArtifactChunk]:
             chunks.append(
                 ArtifactChunk(
                     chunk_id=chunk_id,
-                    chunk_type="entitymodel_entity",
+                    chunk_type="entity",
                     hint_key=name or None,
                     text=snippet.strip()[:2000],
                     source_path=file_path,

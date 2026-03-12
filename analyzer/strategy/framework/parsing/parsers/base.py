@@ -32,28 +32,38 @@ def _parse_xml_safe(path: str, parser_fn):
     return parser_fn(root, path)
 
 
+def _is_entitymodel_xml(path: str) -> bool:
+    """파일명 또는 내용에서 entitymodel XML 여부 판단."""
+    name_lower = Path(path).name.lower()
+    if "entitymodel" in name_lower:
+        return True
+    try:
+        sig = read_text_with_fallback(path)[:2048].lower()
+        return "entitymodel" in sig
+    except Exception:
+        return False
+
+
 def run_step3(
     xml_sqlmap_jobs: List[str],
     yaml_jobs: List[str],
     properties_jobs: List[str],
-    xml_ejb_jobs: Optional[List[str]] = None,
-    xml_entitymodel_jobs: Optional[List[str]] = None,
+    xml_artifact_jobs: Optional[List[str]] = None,
     xml_cmp_mapping_jobs: Optional[List[str]] = None,
 ) -> Tuple[List[SqlStatementChunk], List[ConfigSectionChunk], List[ArtifactChunk]]:
     """Step 3 전체: SqlStatement + ConfigSection + Artifact 청크 생성."""
     from .mybatis import parse_mybatis_xml
     from .yaml_config import parse_yaml_config
     from .properties import parse_properties
-    from .ejb import parse_ejb_jar
+    from .xml_artifact import parse_ejb_jar
     from .entitymodel import parse_entitymodel_xml
 
     logger.info(
-        "[FW:STEP3] 아티팩트 진입 | xml_sqlmap=%d yaml=%d properties=%d xml_ejb=%d xml_entitymodel=%d xml_cmp_mapping=%d",
+        "[FW:STEP3] 아티팩트 진입 | xml_sqlmap=%d yaml=%d properties=%d xml_artifact=%d xml_cmp_mapping=%d",
         len(xml_sqlmap_jobs),
         len(yaml_jobs),
         len(properties_jobs),
-        len(xml_ejb_jobs or []),
-        len(xml_entitymodel_jobs or []),
+        len(xml_artifact_jobs or []),
         len(xml_cmp_mapping_jobs or []),
     )
     sql_chunks: List[SqlStatementChunk] = []
@@ -86,23 +96,17 @@ def run_step3(
         chunks_props = parse_properties(p)
         config_chunks.extend(chunks_props)
 
-    if xml_ejb_jobs:
+    if xml_artifact_jobs:
         logger.info(
-            "[FW:STEP3] [섹션] EJB XML 파싱 → ArtifactChunk | 파일 %d개",
-            len(xml_ejb_jobs),
+            "[FW:STEP3] [섹션] XML Artifact 파싱 → ArtifactChunk | 파일 %d개",
+            len(xml_artifact_jobs or []),
         )
-    for p in xml_ejb_jobs or []:
-        chunks_ejb = parse_ejb_jar(p)
-        artifact_chunks.extend(chunks_ejb)
-
-    if xml_entitymodel_jobs:
-        logger.info(
-            "[FW:STEP3] [섹션] entitymodel XML 파싱 → ArtifactChunk | 파일 %d개",
-            len(xml_entitymodel_jobs),
-        )
-    for p in xml_entitymodel_jobs or []:
-        chunks_entity = parse_entitymodel_xml(p)
-        artifact_chunks.extend(chunks_entity)
+    for p in xml_artifact_jobs or []:
+        if _is_entitymodel_xml(p):
+            chunks_art = parse_entitymodel_xml(p)
+        else:
+            chunks_art = parse_ejb_jar(p)
+        artifact_chunks.extend(chunks_art)
 
     if xml_cmp_mapping_jobs:
         logger.info(

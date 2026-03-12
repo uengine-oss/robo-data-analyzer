@@ -11,12 +11,12 @@
 설계 원칙:
 - 공통 프레임(바깥 뼈대)은 BaseStreamingAnalyzer가 담당
 - 내부 파이프라인(분석 단계, 순서)은 각 전략(Dbms/Framework)이 책임
-- User Story Phase는 부모가 출력 규칙을 통제, 전략은 데이터 조회만 담당
+- 분석 보고서 생성은 service/analysis_report.py에서 처리
 """
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime
+
 from pathlib import Path
 from typing import Any, AsyncGenerator, Optional, List
 import logging
@@ -172,9 +172,9 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
     2. Neo4j 초기화 및 제약조건 보장
     3. 기존 결과 존재 여부 확인 (증분/신규)
     4. 전략별 파이프라인 실행 위임
-    5. User Story Phase 출력 (공통 규칙)
+    5. 분석 보고서 생성
     6. 예외 처리 및 리소스 정리 (close)
-    
+
     이 레벨에서는 "어떻게" 분석하는지는 모른다.
     오직 "언제 무엇을 호출한다"만 책임진다.
     """
@@ -229,25 +229,70 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
         """
         raise NotImplementedError
 
-    @abstractmethod
-    async def build_user_story_doc(
+    async def build_analysis_report(
         self,
         client: Neo4jClient,
         orchestrator: Any,
     ) -> Optional[str]:
-        """User Story 문서 생성 (전략별 데이터 조회)
-        
-        전략은 "어떤 데이터를 어떻게 조회할지"만 책임진다.
-        출력 형식은 부모 클래스가 통제한다.
-        
-        Args:
-            client: Neo4j 클라이언트
-            orchestrator: 서비스 오케스트레이터
-            
-        Returns:
-            생성된 User Story 문서 문자열 또는 None
+        """Neo4j에서 전체 그래프를 조회하여 분석 보고서 생성.
+
+        전략(Framework/DBMS)은 그래프 내용에서 자동 감지합니다.
         """
-        raise NotImplementedError
+        from service.graph_query_service import (
+            _discover_vector_property_keys,
+            _build_null_projection_suffix,
+            _sanitize_graph_properties,
+        )
+
+        vector_keys = await _discover_vector_property_keys(client)
+        null_suffix = _build_null_projection_suffix(vector_keys)
+
+        node_query = f"""
+            MATCH (__cy_n__)
+            RETURN elementId(__cy_n__) AS nodeId,
+                   labels(__cy_n__) AS labels,
+                   __cy_n__{{.*{null_suffix}}} AS props
+        """
+        rel_query = f"""
+            MATCH (__cy_a__)-[__cy_r__]->(__cy_b__)
+            RETURN elementId(__cy_r__) AS relId,
+                   elementId(__cy_a__) AS startId,
+                   elementId(__cy_b__) AS endId,
+                   type(__cy_r__) AS relType,
+                   __cy_r__{{.*{null_suffix}}} AS props
+        """
+
+        results = await client.execute_queries([node_query, rel_query])
+        node_result = results[0] if results else []
+        rel_result = results[1] if len(results) > 1 else []
+
+        if not node_result:
+            return None
+
+        nodes = []
+        for rec in node_result:
+            props = _sanitize_graph_properties(rec.get("props") or {})
+            nodes.append({
+                "Node ID": rec["nodeId"],
+                "Labels": rec["labels"],
+                "Properties": props,
+            })
+
+        relationships = []
+        for rec in rel_result:
+            props = _sanitize_graph_properties(rec.get("props") or {})
+            relationships.append({
+                "Relationship ID": rec["relId"],
+                "Start Node ID": rec["startId"],
+                "End Node ID": rec["endId"],
+                "Type": rec["relType"],
+                "Properties": props,
+            })
+
+        graph_data = {"Nodes": nodes, "Relationships": relationships}
+
+        from analyzer.report import generate_analysis_report_from_graph
+        return generate_analysis_report_from_graph(graph_data)
 
     # =========================================================================
     # 공통 프레임 (Template Method 패턴)
@@ -258,8 +303,11 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
         Returns:
             (FileHandler, run_dir). run_dir은 해당 런의 루트 폴더(로그·artifacts·chunk_bundles 등 저장용).
         """
-        run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-        run_dir = Path(settings.path.audit_dir) / "analysis.run" / run_id
+        run_dir = Path(settings.path.audit_dir) / "analysis.run" / "latest"
+        # 이전 실행 결과를 덮어씀
+        if run_dir.exists():
+            import shutil
+            shutil.rmtree(run_dir, ignore_errors=True)
         run_dir.mkdir(parents=True, exist_ok=True)
         log_path = run_dir / ANALYZER_LOG_FILENAME
         handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
@@ -291,7 +339,7 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
         2. Neo4j 초기화
         3. 증분/신규 모드 판단
         4. 전략별 파이프라인 위임 (run_pipeline)
-        5. User Story Phase (공통)
+        5. 분석 보고서 생성
         6. 완료 메시지 및 리소스 정리
         """
         client = Neo4jClient()
@@ -317,8 +365,8 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
             async for chunk in self.run_pipeline(file_names, client, orchestrator, stats, run_dir=run_dir_str):
                 yield chunk
 
-            # ========== 5. User Story Phase (공통) ==========
-            async for chunk in self._emit_user_story_phase(client, orchestrator):
+            # ========== 5. 분석 보고서 생성 ==========
+            async for chunk in self._emit_report_phase(client, orchestrator, run_dir=run_dir):
                 yield chunk
 
             # ========== 6. 완료 메시지 ==========
@@ -340,46 +388,47 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
             await client.close()
 
     # =========================================================================
-    # User Story Phase 공통 구현
+    # 분석 보고서 Phase 공통 구현
     # =========================================================================
 
-    async def _emit_user_story_phase(
+    async def _emit_report_phase(
         self,
         client: Neo4jClient,
         orchestrator: Any,
+        run_dir: Optional[Path] = None,
     ) -> AsyncGenerator[bytes, None]:
-        """User Story 문서 생성 단계 (공통)
-        
-        출력 형식:
-        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        📝 [최종 단계] User Story 문서 생성
-        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-           ✓ User Story 문서 생성 완료
-        """
+        """분석 보고서 생성 단계 (공통)"""
         yield emit_message("")
         yield self.emit_separator()
-        yield self.emit_phase_header(0, "📝 User Story 문서 생성")
+        yield self.emit_phase_header(0, "📝 분석 보고서 생성")
         yield self.emit_separator()
-        
+
         try:
-            user_story_doc = await self.build_user_story_doc(client, orchestrator)
-            
-            if user_story_doc:
+            report = await self.build_analysis_report(client, orchestrator)
+
+            if report:
+                if run_dir:
+                    try:
+                        report_path = Path(run_dir) / "analysis_report.md"
+                        report_path.write_text(report, encoding="utf-8")
+                        logging.getLogger(__name__).info("[REPORT] 보고서 저장: %s", report_path)
+                    except Exception as e:
+                        logging.getLogger(__name__).warning("[REPORT] 보고서 저장 실패: %s", e)
+
                 yield emit_data(
                     graph={"Nodes": [], "Relationships": []},
                     line_number=0,
                     analysis_progress=100,
-                    current_file="user_stories.md",
-                    user_story_document=user_story_doc,
-                    event_type="user_story_document",
+                    current_file="analysis_report.md",
+                    event_type="analysis_report",
                 )
-                yield emit_message("   ✓ User Story 문서 생성 완료")
+                yield emit_message("   ✓ 분석 보고서 생성 완료")
             else:
-                yield self.emit_skip("추출할 User Story 없음")
-                
+                yield self.emit_skip("보고서 생성 대상 없음")
+
         except RuntimeError as e:
-            log_process("ANALYZE", "USER_STORY", f"User Story 생성 실패: {e}", logging.ERROR)
-            raise  # 즉시 중단 - 부분 실패 허용 안함
+            log_process("ANALYZE", "REPORT", f"보고서 생성 실패: {e}", logging.ERROR)
+            raise
 
     # =========================================================================
     # 공통 메시지 emit 헬퍼

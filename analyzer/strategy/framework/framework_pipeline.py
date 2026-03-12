@@ -2,7 +2,7 @@
 
 Phase 1: AST 정적 그래프 (스캔 + Java AST + 아티팩트 + 인덱스)
 Phase 2: LLM 링킹 (SQL→Table, Call batch, UML, analysis)
-Phase 3: 후처리 (요약 보강, Field/Class 요약, User Story)
+Phase 3: 후처리 (요약 보강, Field/Class 요약, Table Description 보강)
 
 BaseStreamingAnalyzer 구현으로 AnalyzerFactory.create("framework")로 사용 가능.
 """
@@ -19,7 +19,6 @@ from analyzer.strategy.base_analyzer import BaseStreamingAnalyzer, AnalysisStats
 from analyzer.pipeline_control import pipeline_controller, PipelinePhase
 from config.settings import settings
 from util.ndjson_stream import emit_message, emit_phase_event
-from util.text_utils import generate_user_story_document
 
 from analyzer.strategy.framework.pipeline.phases import run_phase_ast, run_phase_llm, run_phase_post
 
@@ -31,7 +30,7 @@ class FrameworkPipeline(BaseStreamingAnalyzer):
 
     Phase 1: AST 정적 그래프 (스캔 + Java AST + 아티팩트 + 인덱스)
     Phase 2: LLM 링킹 (SQL→Table, Call batch, UML, analysis LLM)
-    Phase 3: 후처리 (요약 보강, Field/Class 요약, User Story)
+    Phase 3: 후처리 (요약 보강, Field/Class 요약, Table Description 보강)
     """
 
     @property
@@ -106,7 +105,7 @@ class FrameworkPipeline(BaseStreamingAnalyzer):
             return
 
         # ========== Phase 3: 후처리 ==========
-        ps.set_phase(PipelinePhase.USER_STORY, "후처리 중", 0)
+        ps.set_phase(PipelinePhase.REPORT_GENERATION, "후처리 중", 0)
         yield emit_phase_event(3, "후처리", "started", 0, {"canPause": True})
         async for chunk in run_phase_post(self, client, orchestrator, stats):
             yield chunk
@@ -118,12 +117,3 @@ class FrameworkPipeline(BaseStreamingAnalyzer):
             except Exception as e:
                 logger.warning("[FW:ARTIFACT] Phase3 산출물 덤프 실패: %s", e)
 
-    async def build_user_story_doc(
-        self,
-        client: Neo4jClient,
-        orchestrator: Any,
-    ) -> Optional[str]:
-        user_stories = self._pipeline_state.get("user_stories")
-        if not user_stories:
-            return None
-        return generate_user_story_document(user_stories)

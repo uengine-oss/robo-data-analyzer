@@ -275,13 +275,7 @@ def link_chunks_to_indexes(
             if hint and ("ArtifactChunk", hint) in matched_keys:
                 continue
             chunk_type = getattr(ac, "chunk_type", "")
-            # chunk_type으로 category 결정
-            if chunk_type in ("ejb_entity", "entitymodel_entity"):
-                category = "entity"
-            elif chunk_type in ("ejb_bean",):
-                category = "bean"
-            else:
-                category = "artifact"
+            category = chunk_type if chunk_type else "artifact"
             unresolved.append(UnresolvedLink(
                 method_id="", caller_fqn="",
                 ref_candidates=[{

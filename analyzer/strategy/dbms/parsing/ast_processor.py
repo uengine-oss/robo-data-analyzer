@@ -1092,63 +1092,6 @@ class DbmsAstProcessor(BaseAstProcessor):
         return queries
 
     # =========================================================================
-    # Phase 2.2: User Story 쿼리 생성 (제거됨)
-    # =========================================================================
-
-    # NOTE: _build_user_story_queries는 user_story.py로 이동되었습니다.
-
-    def _build_user_story_queries(self, procedure_type: str, procedure_name: str, user_stories: List[Dict[str, Any]]) -> List[Union[str, Dict[str, Any]]]:
-        """User Story 및 Acceptance Criteria 쿼리 생성"""
-        queries: List[Union[str, Dict[str, Any]]] = []
-
-        for us_idx, us in enumerate(user_stories, 1):
-            us_id = us.get('id', f"US-{us_idx}")
-            queries.append({
-                "query": (
-                    f"MATCH (__cy_p__:{procedure_type} {{procedure_name: $procedure_name, directory: $directory, file_name: $file_name}})\n"
-                    f"MERGE (__cy_us__:UserStory {{id: $us_id, procedure_name: $procedure_name, directory: $directory, file_name: $file_name}})\n"
-                    f"SET __cy_us__.role = $role, __cy_us__.goal = $goal, __cy_us__.benefit = $benefit\n"
-                    f"MERGE (__cy_p__)-[__cy_r__:HAS_USER_STORY]->(__cy_us__)\n"
-                    f"RETURN __cy_p__, __cy_us__, __cy_r__"
-                ),
-                "params": {
-                    "procedure_name": procedure_name,
-                    "directory": self.full_directory,
-                    "file_name": self.file_name,
-                    "us_id": us_id,
-                    "role": us.get('role', ''),
-                    "goal": us.get('goal', ''),
-                    "benefit": us.get('benefit', ''),
-                }
-            })
-
-            for ac_idx, ac in enumerate(us.get('acceptance_criteria', []), 1):
-                if not isinstance(ac, dict):
-                    continue
-                ac_id = ac.get('id', f"AC-{us_idx}-{ac_idx}")
-                queries.append({
-                    "query": (
-                        f"MATCH (__cy_us__:UserStory {{id: $us_id, directory: $directory, file_name: $file_name}})\n"
-                        f"MERGE (__cy_ac__:AcceptanceCriteria {{id: $ac_id, user_story_id: $us_id, directory: $directory, file_name: $file_name}})\n"
-                        f"SET __cy_ac__.title = $title, __cy_ac__.given = $given, __cy_ac__.when_clause = $when_clause, __cy_ac__.then_clause = $then_clause\n"
-                        f"MERGE (__cy_us__)-[__cy_r__:HAS_AC]->(__cy_ac__)\n"
-                        f"RETURN __cy_us__, __cy_ac__, __cy_r__"
-                    ),
-                    "params": {
-                        "us_id": us_id,
-                        "ac_id": ac_id,
-                        "directory": self.full_directory,
-                        "file_name": self.file_name,
-                        "title": ac.get('title', ''),
-                        "given": json.dumps(ac.get('given', []), ensure_ascii=False),
-                        "when_clause": json.dumps(ac.get('when', []), ensure_ascii=False),
-                        "then_clause": json.dumps(ac.get('then', []), ensure_ascii=False),
-                    }
-                })
-
-        return queries
-
-    # =========================================================================
     # DBMS 전용 메서드
     # =========================================================================
 

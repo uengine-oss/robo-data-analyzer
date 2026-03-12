@@ -203,8 +203,8 @@ async def fetch_table_columns(
         
         query = {
             "query": f"""
-                MATCH (__cy_t__:Table)-[:HAS_COLUMN]->(__cy_c__:Column)
-                WHERE {where_clause}
+                MATCH (__cy_t__:Table)-[:HAS_COLUMN]->(__cy_c__)
+                WHERE __cy_c__:Column AND {where_clause}
                 RETURN __cy_c__.name AS name,
                        __cy_t__.name AS table_name,
                        __cy_c__.dtype AS dtype,

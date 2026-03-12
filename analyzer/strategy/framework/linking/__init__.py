@@ -18,7 +18,7 @@ from .sql_extractor import link_sql_to_tables  # noqa: F401
 from .deep_agent import run_deep_agent  # noqa: F401
 from .summarizer import (  # noqa: F401
     run_step6, run_field_summary, run_class_summary,
-    run_user_story_generation, compute_stereotype,
+    compute_stereotype,
     run_summary_enhancement_by_call_graph,
 )
 from .orchestrator import run_step5, derive_method_table_edges  # noqa: F401

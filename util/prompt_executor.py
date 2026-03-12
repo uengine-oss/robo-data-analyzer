@@ -20,6 +20,7 @@ LLM 프롬프트를 YAML 파일로 관리하고 Jinja2로 렌더링합니다.
 import json
 import logging
 import os
+import time
 from functools import lru_cache
 from typing import Any, Dict
 
@@ -31,6 +32,9 @@ from langchain_core.runnables import RunnablePassthrough
 
 from util.artifact_logger import invoke_with_audit
 from client.llm_client import get_llm
+
+_MAX_RETRIES = 3
+_RETRY_BASE_DELAY = 2.0  # seconds
 
 logger = logging.getLogger(__name__)
 
@@ -137,39 +141,56 @@ class RuleLoader:
         api_key: str,
         model: str | None = None,
     ) -> Dict[str, Any]:
-        """프롬프트 실행 (LLM 호출)"""
-        try:
-            _ = self._load_rule(rule_name)
-            prompt_text = self.render_prompt(rule_name, inputs)
-            rule_path = os.path.join(self.rule_dir, f"{rule_name}.yaml")
+        """프롬프트 실행 (LLM 호출, 429 Rate Limit 자동 재시도)"""
+        _ = self._load_rule(rule_name)
+        prompt_text = self.render_prompt(rule_name, inputs)
+        rule_path = os.path.join(self.rule_dir, f"{rule_name}.yaml")
 
-            llm = get_llm(api_key=api_key, model=model)
-            chain = (
-                RunnablePassthrough()
-                | PromptTemplate.from_template("{prompt}")
-                | llm
-                | JsonOutputParser()
-            )
+        llm = get_llm(api_key=api_key, model=model)
+        chain = (
+            RunnablePassthrough()
+            | PromptTemplate.from_template("{prompt}")
+            | llm
+            | JsonOutputParser()
+        )
 
-            result = invoke_with_audit(
-                chain,
-                {"prompt": prompt_text},
-                prompt_name=f"rules/{self.target_lang}/{rule_name}",
-                input_payload={
-                    "inputs": _safe_copy(inputs),
-                    "renderedPrompt": prompt_text,
-                },
-                metadata={
-                    "rule": rule_name,
-                    "targetLang": self.target_lang,
-                    "rulePath": rule_path,
-                },
-            )
-            return result
+        last_error: Exception | None = None
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                result = invoke_with_audit(
+                    chain,
+                    {"prompt": prompt_text},
+                    prompt_name=f"rules/{self.target_lang}/{rule_name}",
+                    input_payload={
+                        "inputs": _safe_copy(inputs),
+                        "renderedPrompt": prompt_text,
+                    },
+                    metadata={
+                        "rule": rule_name,
+                        "targetLang": self.target_lang,
+                        "rulePath": rule_path,
+                    },
+                )
+                return result
 
-        except Exception as e:
-            logger.error("[RULE] 프롬프트 실행 실패 | rule=%s | error=%s", rule_name, e)
-            raise RuntimeError(f"{rule_name} 프롬프트 실행 중 오류: {e}")
+            except Exception as e:
+                last_error = e
+                err_str = str(e)
+                is_rate_limit = "429" in err_str or "rate" in err_str.lower() or "quota" in err_str.lower()
+
+                if is_rate_limit and attempt < _MAX_RETRIES:
+                    delay = _RETRY_BASE_DELAY * (2 ** attempt)
+                    logger.warning(
+                        "[RULE] 429 Rate Limit | rule=%s | attempt=%d/%d | %.1fs 후 재시도",
+                        rule_name, attempt + 1, _MAX_RETRIES, delay,
+                    )
+                    time.sleep(delay)
+                    continue
+
+                logger.error("[RULE] 프롬프트 실행 실패 | rule=%s | error=%s", rule_name, e)
+                raise RuntimeError(f"{rule_name} 프롬프트 실행 중 오류: {e}")
+
+        raise RuntimeError(f"{rule_name} 프롬프트 실행 중 오류: {last_error}")
 
     def clear_cache(self):
         """캐시 초기화"""

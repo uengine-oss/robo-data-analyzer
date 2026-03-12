@@ -684,7 +684,8 @@ robo_analyzer_core/
 │   ├── framework/              # Framework 분석 프롬프트
 │   │   ├── analysis.yaml       # 코드 분석 (summary, dependencies, calls)
 │   │   ├── association.yaml    # 필드 기반 ASSOCIATION 관계 분석
-│   │   ├── class_user_story.yaml # 클래스 User Story 생성
+│   │   ├── user_story_map.yaml  # User Story Map 단계 (청크별 후보 생성)
+│   │   ├── user_story_reduce.yaml # User Story Reduce 단계 (통합/중복제거)
 │   │   ├── method_summary_enhancement.yaml # 메서드 summary 보강
 │   │   └── stereotype.yaml     # 클래스/메서드 스테레오타입 분류
 │   │

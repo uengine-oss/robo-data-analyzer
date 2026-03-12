@@ -1,11 +1,10 @@
 """Cypher 쿼리 빌더 통합
 
-DDL UNWIND 쿼리 템플릿 및 User Story 쿼리 빌더.
-phase_ddl.py, phase_post.py에서 추출.
+DDL UNWIND 쿼리 템플릿.
+phase_ddl.py에서 추출.
 """
 
 # DDL UNWIND 쿼리는 phase_ddl.py의 process_ddl() 내에 인라인으로 존재
-# User Story 쿼리는 phase_post.py의 _build_user_story_queries()에 존재
 # 여기서는 공통 쿼리 상수만 정의
 
 SCHEMA_MERGE_QUERY = """

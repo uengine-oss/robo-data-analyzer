@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import logging
 import os
+import queue as queue_mod
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Generator, List, Optional, Set, Tuple
 
 from config.settings import settings
 from analyzer.strategy.framework.models import (
@@ -114,20 +116,15 @@ def run_step5(
     run_dir: Optional[str] = None,
     artifact_index: Optional[Dict[str, ArtifactChunk]] = None,
     artifact_chunks: Optional[List[ArtifactChunk]] = None,
-) -> Tuple[
-    List[ReferToEdge],
-    List[ReadsWritesEdge],
-    List[FkEdge],
-    List[ColumnRef],
-    List[MethodTableEdge],
-    List[UnresolvedLink],
-    List[CallsEdge],
-    List[Any],
-    Dict[Tuple[str, str], str],  # table_descriptions
-    List[ClassTableEdge],
-    List[ArtifactTableEdge],
-]:
-    """Step 5: Method/Field→REFER_TO, SQL→Table(LLM), Call LLM. entity::→(CLASS)-[:REFER_TO]->(TABLE), entity_xml::→(ARTIFACT_CHUNK)-[:REFER_TO]->(TABLE)."""
+) -> Generator[Dict[str, Any], None, None]:
+    """Step 5: 링킹 — 단계별로 결과를 yield.
+
+    Yields:
+        stage="deterministic": refer_to_edges, unresolved
+        stage="table_llm": reads_writes, fk_edges, column_refs, table_descriptions
+        stage="call_llm": calls_edges, unresolved_calls
+        stage="post": reads_writes(final), method_table_edges, class_table_edges, artifact_table_edges
+    """
     config_count = len(config_index) if config_index else 0
     logger.info(
         "[FW:STEP5] 링킹 진입  method_facts=%d sql_index=%d sql_chunks=%d config_index=%d field_chunks=%s",
@@ -154,8 +151,6 @@ def run_step5(
     )
 
     # ref_candidates_by_method 기반 결정론 해석 (CALL_REF / NEW_INSTANCE_REF)
-    # CALL_REF / NEW_INSTANCE_REF 실패 → skip (deepagent 대상 아님)
-    # SQL_KEY_LITERAL / CONFIG_KEY_REF 실패 → unresolved → deepagent 대상
     if ref_candidates_by_method:
         method_index: Dict[str, MethodFacts] = {m.method_id: m for m in method_facts_list}
         rc_matched = 0
@@ -186,6 +181,13 @@ def run_step5(
             rc_matched, rc_unresolved,
         )
 
+    # ── 1단계 yield: 결정론적 결과 ──
+    yield {
+        "stage": "deterministic",
+        "refer_to_edges": refer_to_edges,
+        "unresolved": unresolved,
+    }
+
     api_key = settings.llm.api_key or os.environ.get("LLM_API_KEY", "")
 
     combined_table_chunks: List[SqlStatementChunk] = list(sql_chunks or [])
@@ -215,7 +217,7 @@ def run_step5(
         )
     for ac in (artifact_chunks or []):
         ct = getattr(ac, "chunk_type", "")
-        if ct not in ("ejb_entity", "entitymodel_entity"):
+        if ct not in ("entity", "cmp_mapping"):
             continue
         text = (getattr(ac, "text", "") or "").strip()
         if not text:
@@ -239,29 +241,8 @@ def run_step5(
             entity_count,
         )
 
-    def _run_table_llm() -> Tuple[List[ReadsWritesEdge], List[FkEdge], List[ColumnRef], Dict[Tuple[str, str], str]]:
-        from analyzer.strategy.framework.linking.sql_extractor import link_sql_to_tables
-
-        return link_sql_to_tables(combined_table_chunks, api_key=api_key)
-
-    def _run_call_llm() -> Tuple[List[CallsEdge], List[Any]]:
-        return run_call_batch_pipeline(
-            data_dir or "",
-            method_facts_list,
-            field_facts_list or [],
-            symbol_type_index or {},
-            method_index_by_class or {},
-            use_llm=True,
-            api_key=api_key,
-            run_dir=run_dir,
-        )
-
-    def _run_uml() -> None:
-        # 기존 UML LLM은 framework에서는 별도 Neo4j 플로우로 대체됨.
-        return None
-
     logger.info(
-        "[FW:STEP5] [3갈래] SQL→테이블 / Call LLM / UML 병렬 실행 (Neo4j flush는 Phase에서 처리)",
+        "[FW:STEP5] [3갈래] SQL→테이블 / Call LLM / UML 병렬 실행 (배치별 점진 전송)",
     )
     reads_writes_list: List[ReadsWritesEdge] = []
     fk_edges_list: List[FkEdge] = []
@@ -270,21 +251,73 @@ def run_step5(
     calls_edges: List[CallsEdge] = []
     unresolved_calls: List[Any] = []
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        future_table = executor.submit(_run_table_llm)
-        future_call = executor.submit(_run_call_llm)
-        future_uml = executor.submit(_run_uml)
-        for future in as_completed([future_table, future_call, future_uml]):
-            try:
-                if future is future_table:
-                    reads_writes_list, fk_edges_list, column_refs_list, table_descriptions = future.result()
-                elif future is future_call:
-                    calls_edges, unresolved_calls = future.result()
-                else:
-                    future.result()
-            except Exception as e:
-                logger.warning("[FW:STEP5] 병렬 갈래 예외: %s", e)
+    # queue 기반 병렬: 각 LLM 배치 완료 즉시 yield
+    result_q: queue_mod.Queue = queue_mod.Queue()
 
+    def _run_table_thread() -> None:
+        try:
+            from analyzer.strategy.framework.linking.sql_extractor import link_sql_to_tables
+            link_sql_to_tables(
+                combined_table_chunks,
+                api_key=api_key,
+                on_batch=lambda e, fk, col, desc: result_q.put(
+                    ("table_batch", {"edges": e, "fk": fk, "col": col, "desc": desc})
+                ),
+            )
+        except Exception as ex:
+            logger.warning("[FW:STEP5] Table LLM 스레드 예외: %s", ex)
+        result_q.put(("table_done", None))
+
+    def _run_call_thread() -> None:
+        try:
+            run_call_batch_pipeline(
+                data_dir or "",
+                method_facts_list,
+                field_facts_list or [],
+                symbol_type_index or {},
+                method_index_by_class or {},
+                use_llm=True,
+                api_key=api_key,
+                run_dir=run_dir,
+                on_batch=lambda edges, unresolved: result_q.put(
+                    ("call_batch", {"edges": edges, "unresolved": unresolved})
+                ),
+            )
+        except Exception as ex:
+            logger.warning("[FW:STEP5] Call LLM 스레드 예외: %s", ex)
+        result_q.put(("call_done", None))
+
+    t_table = threading.Thread(target=_run_table_thread, daemon=True)
+    t_call = threading.Thread(target=_run_call_thread, daemon=True)
+    t_table.start()
+    t_call.start()
+
+    done_count = 0
+    while done_count < 2:
+        try:
+            tag, data = result_q.get(timeout=1.0)
+        except queue_mod.Empty:
+            continue
+        if tag.endswith("_done"):
+            done_count += 1
+            continue
+        if tag == "table_batch":
+            reads_writes_list.extend(data["edges"])
+            fk_edges_list.extend(data["fk"])
+            column_refs_list.extend(data["col"])
+            for (s, n), d in (data["desc"] or {}).items():
+                if d and (s, n) not in table_descriptions:
+                    table_descriptions[(s, n)] = d
+            yield {"stage": "table_batch", **data}
+        elif tag == "call_batch":
+            calls_edges.extend(data["edges"])
+            unresolved_calls.extend(data["unresolved"])
+            yield {"stage": "call_batch", **data}
+
+    t_table.join()
+    t_call.join()
+
+    # ── 후처리: entity fallback + edge 유도 ──
     reads_writes = list(reads_writes_list)
     entity_fqns_with_rw = {
         (getattr(rw, "sql_key", "") or "").split("::", 1)[-1].strip()
@@ -313,15 +346,7 @@ def run_step5(
     fk_edges = fk_edges_list
     column_refs = column_refs_list
 
-    logger.info(
-        "[FW:STEP5] [완료] reads_writes=%d  fk_edges=%d  column_refs=%d  calls=%d  unresolved_calls=%d",
-        len(reads_writes),
-        len(fk_edges),
-        len(column_refs),
-        len(calls_edges),
-        len(unresolved_calls),
-    )
-    # entity::FQN → (CLASS)-[:REFER_TO]->(TABLE). 자바 엔티티 클래스 전용.
+    # entity::FQN → (CLASS)-[:REFER_TO]->(TABLE)
     seen_ct: Set[Tuple[str, str, str]] = set()
     class_table_edges: List[ClassTableEdge] = []
     for rw in reads_writes:
@@ -341,7 +366,7 @@ def run_step5(
         seen_ct.add(key)
         class_table_edges.append(ClassTableEdge(class_fqn=class_fqn, table_schema=schema, table_name=name))
 
-    # entity_xml::chunk_id → (ARTIFACT_CHUNK)-[:REFER_TO]->(TABLE). EJB XML 전용.
+    # entity_xml::chunk_id → (ARTIFACT_CHUNK)-[:REFER_TO]->(TABLE)
     seen_at: Set[Tuple[str, str, str]] = set()
     artifact_table_edges: List[ArtifactTableEdge] = []
     for rw in reads_writes:
@@ -361,12 +386,12 @@ def run_step5(
         seen_at.add(key)
         artifact_table_edges.append(ArtifactTableEdge(chunk_id=chunk_id, table_schema=schema, table_name=name))
 
-    # Method→Table 자동 유도: SQL 경로 + ArtifactChunk 경로 모두 처리
+    # Method→Table 자동 유도
     logger.info("[FW:STEP5] [Method–Table] REFER_TO + READS/WRITES 엣지 유도")
     method_table_edges = derive_method_table_edges(refer_to_edges, reads_writes, artifact_table_edges=artifact_table_edges)
 
     logger.info(
-        "[FW:STEP5] 링킹 완료  refer_to=%d  reads_writes=%d  method_table=%d  class_table=%d  artifact_table=%d  미연결=%d",
+        "[FW:STEP5] 링킹 완료  REFER_TO=%d  reads_writes=%d  Method→Table=%d  Class→Table=%d  Artifact→Table=%d  미연결=%d",
         len(refer_to_edges),
         len(reads_writes),
         len(method_table_edges),
@@ -374,16 +399,14 @@ def run_step5(
         len(artifact_table_edges),
         len(unresolved),
     )
-    return (
-        refer_to_edges,
-        reads_writes,
-        fk_edges,
-        column_refs,
-        method_table_edges,
-        unresolved,
-        calls_edges,
-        unresolved_calls,
-        table_descriptions,
-        class_table_edges,
-        artifact_table_edges,
-    )
+
+    # ── 4단계 yield: 후처리 결과 ──
+    yield {
+        "stage": "post",
+        "reads_writes": reads_writes,
+        "fk_edges": fk_edges,
+        "column_refs": column_refs,
+        "method_table_edges": method_table_edges,
+        "class_table_edges": class_table_edges,
+        "artifact_table_edges": artifact_table_edges,
+    }
