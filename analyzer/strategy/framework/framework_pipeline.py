@@ -1,6 +1,7 @@
-"""Framework(Java/Kotlin) 분석 총괄 파이프라인.
+"""Framework 분석 총괄 파이프라인 (Java/Kotlin/C/Python 등 범용).
 
-Phase 1: AST 정적 그래프 (스캔 + Java AST + 아티팩트 + 인덱스)
+Phase 0 (선택적): DDL 처리 (DDL 파일 있을 때만)
+Phase 1: AST 정적 그래프 (스캔 + AST + 아티팩트 + 인덱스)
 Phase 2: LLM 링킹 (SQL→Table, Call batch, UML, analysis)
 Phase 3: 후처리 (요약 보강, Field/Class 요약, Table Description 보강)
 
@@ -20,15 +21,37 @@ from analyzer.pipeline_control import pipeline_controller, PipelinePhase
 from config.settings import settings
 from util.ndjson_stream import emit_message, emit_phase_event
 
-from analyzer.strategy.framework.pipeline.phases import run_phase_ast, run_phase_llm, run_phase_post
+from analyzer.strategy.framework.pipeline.phases import run_phase_ddl, run_phase_ast, run_phase_llm, run_phase_post
 
 logger = logging.getLogger(__name__)
 
 
-class FrameworkPipeline(BaseStreamingAnalyzer):
-    """Framework(Java/Kotlin) 분석 총괄 파이프라인.
+# backward compat — LangProfile이 없을 때 fallback
+_LANG_EMOJI = {"java": "☕", "c": "⚙️", "python": "🐍", "go": "🔵", "kotlin": "☕", "scala": "☕", "rust": "🦀"}
+_LANG_DESC = {"java": "Java/Kotlin", "c": "C/C++", "python": "Python", "go": "Go", "kotlin": "Kotlin", "scala": "Scala", "rust": "Rust"}
 
-    Phase 1: AST 정적 그래프 (스캔 + Java AST + 아티팩트 + 인덱스)
+
+def _get_lang_emoji(lang: str) -> str:
+    try:
+        from analyzer.strategy.framework.common.lang_profile import get_lang_profile
+        return get_lang_profile().emoji(lang)
+    except Exception:
+        return _LANG_EMOJI.get(lang, "☕")
+
+
+def _get_lang_desc(lang: str) -> str:
+    try:
+        from analyzer.strategy.framework.common.lang_profile import get_lang_profile
+        return get_lang_profile().display_name(lang)
+    except Exception:
+        return _LANG_DESC.get(lang, lang)
+
+
+class FrameworkPipeline(BaseStreamingAnalyzer):
+    """Framework 분석 총괄 파이프라인 (범용 — Java/Kotlin/C/Python 등).
+
+    Phase 0 (선택적): DDL 처리 (DDL 파일 있을 때만)
+    Phase 1: AST 정적 그래프 (스캔 + AST + 아티팩트 + 인덱스)
     Phase 2: LLM 링킹 (SQL→Table, Call batch, UML, analysis LLM)
     Phase 3: 후처리 (요약 보강, Field/Class 요약, Table Description 보강)
     """
@@ -39,11 +62,13 @@ class FrameworkPipeline(BaseStreamingAnalyzer):
 
     @property
     def strategy_emoji(self) -> str:
-        return "☕"
+        lang = self._pipeline_state.get("lang", "java")
+        return _get_lang_emoji(lang)
 
     @property
     def file_type_description(self) -> str:
-        return "Java/Kotlin 파일"
+        lang = self._pipeline_state.get("lang", "java")
+        return f"{_get_lang_desc(lang)} 파일"
 
     def __init__(self):
         self._cypher_lock = asyncio.Lock()
@@ -71,6 +96,15 @@ class FrameworkPipeline(BaseStreamingAnalyzer):
         self._pipeline_state["run_dir"] = run_dir
 
         yield emit_message(f"☕ Framework 분석 시작 | 파일 {len(file_names)}개")
+
+        # ========== Phase 0 (선택적): DDL ==========
+        from analyzer.common.ddl_utils import list_ddl_files
+        ddl_files = list_ddl_files(orchestrator)
+        if ddl_files:
+            yield emit_phase_event(0, "DDL 스키마 수집", "started", 0)
+            async for chunk in run_phase_ddl(self, client, orchestrator, stats):
+                yield chunk
+            yield emit_phase_event(0, "DDL 스키마 수집", "completed", 100)
 
         # ========== Phase 1: AST ==========
         ps.set_phase(PipelinePhase.AST_GENERATION, "AST 정적 그래프 생성 중", 0)

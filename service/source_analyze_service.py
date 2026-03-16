@@ -26,7 +26,7 @@ from config.settings import settings
 
 # 전략별 소스 파일 확장자 (우선순위 순서)
 STRATEGY_EXTENSIONS = {
-    "framework": [".java", ".kt", ".scala", ".py"],  # 리스트로 변경 (순서 보장)
+    "framework": [".java", ".kt", ".scala", ".py", ".c", ".h", ".go", ".rs"],
     "dbms": [".sql", ".pls", ".pck", ".pkb", ".pks", ".trg", ".fnc", ".prc"],
 }
 DEFAULT_EXTENSIONS = [".java", ".sql"]
@@ -37,6 +37,9 @@ TARGET_TO_EXTENSION = {
     "kotlin": ".kt",
     "scala": ".scala",
     "python": ".py",
+    "c": ".c",
+    "go": ".go",
+    "rust": ".rs",
     "oracle": ".sql",
     "postgres": ".sql",
     "mysql": ".sql",

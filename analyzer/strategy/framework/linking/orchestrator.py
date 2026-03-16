@@ -191,8 +191,22 @@ def run_step5(
     api_key = settings.llm.api_key or os.environ.get("LLM_API_KEY", "")
 
     combined_table_chunks: List[SqlStatementChunk] = list(sql_chunks or [])
+
+    # XML entity에서 이미 처리된 클래스 FQN 수집 → 중복 방지
+    xml_entity_class_set: set = set()
+    for ac in (artifact_chunks or []):
+        ct = getattr(ac, "chunk_type", "")
+        if ct in ("entity", "cmp_mapping"):
+            for fqn_val in (getattr(ac, "related_class_fqns", None) or []):
+                xml_entity_class_set.add(fqn_val)
+                xml_entity_class_set.add(fqn_val.rsplit(".", 1)[-1])  # 단순 클래스명도
+
     entity_fqns = identify_entity_classes(class_index or {})
     for fqn in entity_fqns:
+        # XML에서 이미 처리된 클래스면 TABLE 중복 생성 방지
+        if fqn in xml_entity_class_set or fqn.rsplit(".", 1)[-1] in xml_entity_class_set:
+            logger.debug("[FW:STEP5] 엔티티 스킵 (XML에서 이미 처리) | fqn=%s", fqn)
+            continue
         info = (class_index or {}).get(fqn)
         if not isinstance(info, dict):
             continue

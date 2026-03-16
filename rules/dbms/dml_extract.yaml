@@ -1,4 +1,4 @@
-name: "understand_dml_table_prompt"
+name: "dml_extract"
 description: "DML 범위별 테이블/컬럼/관계 추출"
 version: "1.0"
 

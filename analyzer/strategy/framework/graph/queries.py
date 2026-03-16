@@ -128,18 +128,24 @@ def _target_fqn_from_class_index(class_index: Dict[str, Any], target_name: str) 
 # Node MERGE queries (using _merge_node_query)
 # ---------------------------------------------------------------------------
 
-def build_method_queries(method_facts_list: List[MethodFacts]) -> List[Dict[str, Any]]:
-    """Method 노드 MERGE. framework와 동일 속성: name(메서드명), class_name(클래스 짧은이름), class_fqn, type 등."""
+def build_method_queries(method_facts_list: List[MethodFacts], node_kinds: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
+    """Method 노드 MERGE. framework와 동일 속성: name(메서드명), class_name(클래스 짧은이름), class_fqn, type 등.
+
+    Args:
+        node_kinds: method_id → 원래 노드타입 (FUNCTION, METHOD 등) 매핑. kind 속성에 저장.
+    """
     queries = []
     for m in method_facts_list:
         class_fqn, method_name = _class_fqn_and_method_name(m.fqn)
         class_name_short = class_fqn.rsplit(".", 1)[-1] if class_fqn else ""
+        kind = (node_kinds or {}).get(m.method_id, "METHOD")
         queries.append(_merge_node_query("METHOD", "method_id", m.method_id, {
             "signature": m.signature or "",
             "start_line": m.start_line, "end_line": m.end_line,
             "code_ref": m.code_ref or "", "class_key": m.class_key or "",
             "package_name": m.package_name or "",
             "class_name": class_name_short, "name": method_name,
+            "kind": kind,
             "code_text": (m.code or "")[:_CHUNK_CODE_MAX],
         }))
     return queries
@@ -460,14 +466,17 @@ def build_has_method_queries(
     method_facts_list: List[MethodFacts],
     class_index: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    """(CLASS)-[:HAS_METHOD]->(METHOD) 관계."""
+    """(CLASS)-[:HAS_METHOD]->(METHOD) 또는 (PACKAGE)-[:BELONGS_TO_PACKAGE]->(METHOD) 관계."""
     key_to_fqn = _class_key_to_fqn(class_index)
     queries = []
     for m in method_facts_list:
         class_fqn = key_to_fqn.get(m.class_key) if m.class_key else None
-        if not class_fqn:
-            continue
-        queries.append(_merge_rel_query("CLASS", "fqn", class_fqn, "METHOD", "method_id", m.method_id, "HAS_METHOD"))
+        if class_fqn:
+            # 컨테이너 있음: CLASS → METHOD
+            queries.append(_merge_rel_query("CLASS", "fqn", class_fqn, "METHOD", "method_id", m.method_id, "HAS_METHOD"))
+        elif m.package_name:
+            # 컨테이너 없음 (C FUNCTION 등): PACKAGE → METHOD
+            queries.append(_merge_rel_query("PACKAGE", "fqn", m.package_name, "METHOD", "method_id", m.method_id, "BELONGS_TO_PACKAGE"))
     return queries
 
 

@@ -35,14 +35,9 @@ ENTITY_SIGNALS_ANNOTATION = ["@Entity", "@Table", "@MappedSuperclass", "@Documen
 # Scan skip directories
 SKIP_DIRS = frozenset({"ddl", ".git", "node_modules", "__pycache__", ".venv", "venv", "target", "build"})
 
-# File categories
-CATEGORY_JAVA_AST = "java_ast"
-CATEGORY_XML_SQLMAP = "xml_sqlmap"
-CATEGORY_XML_ARTIFACT = "xml_artifact"
-CATEGORY_XML_EJB = CATEGORY_XML_ARTIFACT  # 하위호환 별칭
-CATEGORY_XML_CMP_MAPPING = "xml_cmp_mapping"
-CATEGORY_XML = "xml"
-CATEGORY_YAML = "yaml"
-CATEGORY_PROPERTIES = "properties"
-CATEGORY_JSON = "json"
-CATEGORY_DOCS = "docs"
+# File categories — 범용 (용도 기반)
+CATEGORY_SOURCE_AST = "source_ast"       # 소스코드 AST (모든 언어)
+CATEGORY_SQL = "sql"                     # SQL 매핑
+CATEGORY_ENTITY = "entity"               # 엔티티 정의
+CATEGORY_CONFIG = "config"               # 설정 파일 (yaml, properties, json, 일반 xml)
+CATEGORY_DOCS = "docs"                   # 문서

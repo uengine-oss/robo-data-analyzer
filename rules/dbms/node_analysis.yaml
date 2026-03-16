@@ -1,4 +1,4 @@
-name: "understand_prompt"
+name: "node_analysis"
 description: "저장 프로시저/함수 코드 범위별 분석"
 version: "3.0"
 

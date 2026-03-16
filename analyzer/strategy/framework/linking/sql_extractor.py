@@ -363,7 +363,7 @@ def _extract_tables_columns_fk_via_llm(
     try:
         loader = get_rule_loader("framework")
         result = loader.execute(
-            "sql_table_extract",
+            "table_extract",
             {"sql_items": [{"sql_key": sql_key or "", "sql_text": text, "prev_summary": ""}]},
             api_key=api_key,
         )
@@ -451,7 +451,7 @@ def _extract_tables_columns_fk_batch_via_llm(
         )
     try:
         result = loader.execute(
-            "sql_table_extract",
+            "table_extract",
             {"sql_items": sql_items},
             api_key=api_key,
         )

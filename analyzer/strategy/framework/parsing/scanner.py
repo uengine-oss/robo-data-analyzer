@@ -11,16 +11,13 @@ from typing import List, Optional, Tuple
 from config.settings import settings
 from analyzer.strategy.framework.common.constants import (
     SKIP_DIRS,
-    CATEGORY_JAVA_AST,
-    CATEGORY_XML_SQLMAP,
-    CATEGORY_XML_ARTIFACT,
-    CATEGORY_XML_CMP_MAPPING,
-    CATEGORY_XML,
-    CATEGORY_YAML,
-    CATEGORY_PROPERTIES,
-    CATEGORY_JSON,
+    CATEGORY_SOURCE_AST,
+    CATEGORY_SQL,
+    CATEGORY_ENTITY,
+    CATEGORY_CONFIG,
     CATEGORY_DOCS,
 )
+from analyzer.strategy.framework.common.ontology import get_ontology
 from analyzer.strategy.framework.models import (
     FileCatalogEntry,
     ProcessingPlan,
@@ -65,34 +62,31 @@ def _read_signature(path: Path, max_bytes: int = 2048) -> bytes:
         return b""
 
 
-def _classify_file(path: Path, ext: str, signature: bytes) -> str:
+def _classify_file(path: Path, ext: str, signature: bytes, lang: str = "java") -> str:
     ext_lower = ext.lower()
     sig_str = (signature.decode("utf-8", errors="ignore") if signature else "")[:2048]
     sig_lower = sig_str.lower()
 
-    if ext_lower == ".java":
-        return CATEGORY_JAVA_AST
+    onto = get_ontology()
+    if ext_lower in onto.source_extensions(lang):
+        return CATEGORY_SOURCE_AST
 
     if ext_lower in (".xml",):
-        path_lower = path.name.lower()
-        if "cmp-rdbms-jar" in path_lower or "jbosscmp-jdbc" in path_lower:
-            return CATEGORY_XML_CMP_MAPPING
-        if "ejb-jar" in path_lower or "ejb-jar" in sig_lower:
-            return CATEGORY_XML_ARTIFACT
-        if "entitymodel" in path_lower or "entitymodel" in sig_lower:
-            return CATEGORY_XML_ARTIFACT
-        if "<mapper" in sig_str or ("<?xml" in sig_str and "mapper" in sig_lower):
-            return CATEGORY_XML_SQLMAP
-        return CATEGORY_XML
+        # 시그니처(내용) 기반 분류 — 태그로만 판단
+        if "<entity" in sig_lower or "<hibernate-mapping" in sig_lower:
+            return CATEGORY_ENTITY
+        if "<mapper" in sig_lower or "<sqlmap" in sig_lower:
+            return CATEGORY_SQL
+        return CATEGORY_CONFIG
 
     if ext_lower in (".yaml", ".yml"):
-        return CATEGORY_YAML
+        return CATEGORY_CONFIG
 
     if ext_lower == ".properties":
-        return CATEGORY_PROPERTIES
+        return CATEGORY_CONFIG
 
     if ext_lower == ".json":
-        return CATEGORY_JSON
+        return CATEGORY_CONFIG
 
     return CATEGORY_DOCS
 
@@ -113,13 +107,14 @@ def _process_one_file(
     path_str: str,
     catalog: List[FileCatalogEntry],
     plan: ProcessingPlan,
+    lang: str = "java",
 ) -> None:
     try:
         stat = path.stat()
         ext = path.suffix
         signature = _read_signature(path)
         encoding = _detect_encoding_chardet(path)
-        category = _classify_file(path, ext, signature)
+        category = _classify_file(path, ext, signature, lang=lang)
         entry = FileCatalogEntry(
             path=path_str,
             ext=ext,
@@ -129,20 +124,16 @@ def _process_one_file(
             hash_val=_file_hash(path),
         )
         catalog.append(entry)
-        if category == CATEGORY_JAVA_AST:
-            plan.java_ast_jobs.append(path_str)
-        elif category == CATEGORY_XML_SQLMAP:
-            plan.xml_sqlmap_jobs.append(path_str)
-        elif category == CATEGORY_XML_ARTIFACT:
-            plan.xml_artifact_jobs.append(path_str)
-        elif category == CATEGORY_XML_CMP_MAPPING:
-            plan.xml_cmp_mapping_jobs.append(path_str)
-        elif category == CATEGORY_YAML:
-            plan.yaml_jobs.append(path_str)
-        elif category == CATEGORY_PROPERTIES:
-            plan.properties_jobs.append(path_str)
-        elif category == CATEGORY_JSON:
-            plan.json_jobs.append(path_str)
+        if category == CATEGORY_SOURCE_AST:
+            plan.source_ast_jobs.append(path_str)
+        elif category == CATEGORY_SQL:
+            plan.sql_jobs.append(path_str)
+        elif category == CATEGORY_ENTITY:
+            plan.entity_jobs.append(path_str)
+        elif category == CATEGORY_CONFIG:
+            plan.config_jobs.append(path_str)
+        elif category == CATEGORY_DOCS:
+            plan.docs_jobs.append(path_str)
         else:
             plan.docs_jobs.append(path_str)
     except Exception as e:
@@ -153,6 +144,7 @@ def scan_project(
     project_root: Optional[str] = None,
     scan_roots: Optional[List[Tuple[str, str]]] = None,
     use_pathlib: bool = True,
+    lang: str = "java",
 ) -> Tuple[List[FileCatalogEntry], ProcessingPlan]:
     catalog: List[FileCatalogEntry] = []
     plan = ProcessingPlan()
@@ -184,7 +176,7 @@ def scan_project(
             try:
                 rel = path.resolve().relative_to(root)
                 path_str = (path_prefix + "/" + str(rel)).replace("\\", "/")
-                _process_one_file(path, path_str, catalog, plan)
+                _process_one_file(path, path_str, catalog, plan, lang=lang)
             except Exception as e:
                 logger.debug("스캔 스킵 %s: %s", path, e)
     else:
@@ -216,14 +208,17 @@ def scan_project(
             try:
                 rel = path.relative_to(base_dir) if base_dir != path else path.name
                 path_str = str(rel).replace("\\", "/")
-                _process_one_file(path, path_str, catalog, plan)
+                _process_one_file(path, path_str, catalog, plan, lang=lang)
             except Exception as e:
                 logger.debug("스캔 스킵 %s: %s", path, e)
 
     logger.debug(
-        "[FW:STEP1] 스캔 완료 | catalog=%d java_ast=%d xml_sqlmap=%d",
+        "[FW:STEP1] 스캔 완료 | catalog=%d source_ast=%d sql=%d entity=%d config=%d lang=%s",
         len(catalog),
-        len(plan.java_ast_jobs),
-        len(plan.xml_sqlmap_jobs),
+        len(plan.source_ast_jobs),
+        len(plan.sql_jobs),
+        len(plan.entity_jobs),
+        len(plan.config_jobs),
+        lang,
     )
     return catalog, plan

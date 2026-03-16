@@ -5,8 +5,7 @@ from .type_resolver import (  # noqa: F401
 )
 from .matcher import (  # noqa: F401
     link_chunks_to_indexes, resolve_candidates,
-    extract_reference_candidates_from_code,
-    extract_quoted_strings, extract_sql_keys_from_code,
+    extract_quoted_strings,
     identify_entity_classes,
 )
 from .call_graph import (  # noqa: F401
@@ -19,6 +18,5 @@ from .deep_agent import run_deep_agent  # noqa: F401
 from .summarizer import (  # noqa: F401
     run_step6, run_field_summary, run_class_summary,
     compute_stereotype,
-    run_summary_enhancement_by_call_graph,
 )
 from .orchestrator import run_step5, derive_method_table_edges  # noqa: F401

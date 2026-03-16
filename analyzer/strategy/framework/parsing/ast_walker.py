@@ -1,4 +1,4 @@
-"""Step 2: Java AST 순회 및 MethodFacts/ChunkBundle 생성."""
+"""Step 2: AST 순회 및 MethodFacts/ChunkBundle 생성 (범용 — Java/C/Python 등)."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from analyzer.strategy.framework._ast_core import (
     FIELD_TYPES,
     METHOD_TYPES,
 )
+from analyzer.strategy.framework.common.ontology import get_ontology
 from analyzer.strategy.framework.models import (
     FieldFacts,
     MethodFacts,
@@ -65,8 +66,14 @@ def _visit_ast_for_indices(
     class_fqn: Optional[str],
     method_id: Optional[str],
     ctx: AstVisitorContext,
+    lang: str = "java",
 ) -> None:
     """Raw AST 순회: symbol_type_index, method_index, ChunkBundle용 리스트 수집."""
+    onto = get_ontology()
+    container_types = onto.container_types(lang)
+    method_types = onto.method_types(lang)
+    call_types = onto.call_types(lang)
+
     node_type = node.get("type", "")
     start_line = node.get("startLine", 0)
     end_line = node.get("endLine", 0)
@@ -79,17 +86,20 @@ def _visit_ast_for_indices(
         if pkg:
             package_name = pkg
 
-    if node_type in CLASS_TYPES:
+    if node_type in container_types:
         class_name = node.get("name") or class_name
         if package_name and class_name:
             class_fqn = f"{package_name}.{class_name}"
         else:
             class_fqn = class_name
 
-    if node_type in METHOD_TYPES:
+    if node_type in method_types:
         method_name = node.get("name", "")
         if class_fqn and method_name:
             method_id = f"{class_fqn}.{method_name}"
+        elif package_name and method_name:
+            # No-container (C FUNCTION 등): package.functionName
+            method_id = f"{package_name}.{method_name}"
         else:
             method_id = method_id or f"unknown_{start_line}"
         if method_id and method_id not in ctx.method_index:
@@ -129,7 +139,14 @@ def _visit_ast_for_indices(
                 }
             )
 
-        if ch_type == NODE_METHOD_CALL and method_id:
+        # GLOBAL_VARIABLE: 함수 밖 변수 → __global__ 키에 수집
+        if ch_type == NODE_VARIABLE and not method_id:
+            var_name = ch.get("name", "")
+            var_type = ch.get("fieldType")
+            if var_name:
+                ctx.symbol_type_index.setdefault("__global__", {})[var_name] = var_type or ""
+
+        if ch_type in call_types and method_id:
             seq = ctx.method_call_seq.get(method_id, 0)
             call_id = f"C:{ch_start}:{ch_end}:{seq}"
             ctx.method_call_seq[method_id] = seq + 1
@@ -159,11 +176,12 @@ def _visit_ast_for_indices(
                 }
             )
 
-        _visit_ast_for_indices(ch, package_name, class_name, class_fqn, method_id, ctx)
+        _visit_ast_for_indices(ch, package_name, class_name, class_fqn, method_id, ctx, lang=lang)
 
 
 def collect_ast_indices_and_chunk_data(
     ast_data: dict,
+    lang: str = "java",
 ) -> Tuple[
     Dict[str, Dict[str, str]],
     Dict[str, str],
@@ -177,11 +195,11 @@ def collect_ast_indices_and_chunk_data(
     ctx = AstVisitorContext()
 
     if ast_data.get("type") == "FILE":
-        _visit_ast_for_indices(ast_data, None, None, None, None, ctx)
+        _visit_ast_for_indices(ast_data, None, None, None, None, ctx, lang=lang)
     else:
         for node in ast_data.get("children", [ast_data]):
             if isinstance(node, dict):
-                _visit_ast_for_indices(node, None, None, None, None, ctx)
+                _visit_ast_for_indices(node, None, None, None, None, ctx, lang=lang)
 
     return (
         ctx.symbol_type_index,
@@ -198,8 +216,14 @@ def build_method_facts_and_class_index(
     ast_path: str,
     ast_data: dict,
     data_dir: Optional[str] = None,
+    lang: str = "java",
 ) -> Tuple[List[MethodFacts], Dict[str, Any], List[FieldFacts], Dict[str, List[str]]]:
     """한 AST 파일에서 MethodFacts, class_index, FieldFacts 리스트 생성."""
+    onto = get_ontology()
+    container_types = onto.container_types(lang)
+    method_types = onto.method_types(lang)
+    field_types = onto.field_types(lang)
+
     p = Path(ast_path)
     parts = p.parts
     if "analysis" in parts and "target" in parts:
@@ -212,7 +236,7 @@ def build_method_facts_and_class_index(
 
     source_content = ""
     if data_dir:
-        source_path = _source_path_for_ast(data_dir, ast_path)
+        source_path = _source_path_for_ast(data_dir, ast_path, lang=lang)
         if source_path:
             try:
                 source_content = read_text_with_fallback(source_path)
@@ -226,18 +250,19 @@ def build_method_facts_and_class_index(
         file_name=file_name,
         last_line=last_line,
         source_content=source_content,
+        lang=lang,
     )
     processor.build_static_graph_queries()
 
     nodes = processor._nodes
-    classes = processor._unit_info  # Dict[str, ClassInfo]
+    classes = processor._unit_info  # Dict[str, ClassInfo]  # noqa: F841
 
     method_facts_list: List[MethodFacts] = []
     class_index: Dict[str, Any] = {}
     field_facts_list: List[FieldFacts] = []
 
     for node in nodes:
-        if node.node_type in FIELD_TYPES and node.unit_key and node.name:
+        if node.node_type in field_types and node.unit_key and node.name:
             field_id = f"{node.unit_key}#{node.name}_{node.start_line}"
             code_ref = f"{directory}/{file_name}:{node.start_line}-{node.end_line}"
             field_facts_list.append(
@@ -253,7 +278,7 @@ def build_method_facts_and_class_index(
                     annotations=getattr(node, "annotations", None),
                 )
             )
-        if node.node_type in CLASS_TYPES and node.unit_name:
+        if node.node_type in container_types and node.unit_name:
             fqn = f"{node.package_name}.{node.unit_name}" if node.package_name else node.unit_name
             class_index[fqn] = {
                 "class_key": node.unit_key,
@@ -271,11 +296,15 @@ def build_method_facts_and_class_index(
             if node.package_name:
                 class_index[node.unit_name] = class_index[fqn]
 
-        if node.node_type in METHOD_TYPES and node.name:
+        if node.node_type in method_types and node.name:
             if node.package_name and node.unit_name:
+                # Java: package.Class.method
                 fqn = f"{node.package_name}.{node.unit_name}.{node.name}"
+            elif node.package_name:
+                # No-container (C FUNCTION 등): package.functionName
+                fqn = f"{node.package_name}.{node.name}"
             else:
-                fqn = f"{node.unit_name or 'Unknown'}.{node.name}"
+                fqn = node.name
             method_id = fqn or f"{node.unit_key}#{node.name}"
             code_ref = f"{directory}/{file_name}:{node.start_line}-{node.end_line}"
             method_facts_list.append(
@@ -320,10 +349,12 @@ def _extract_package_fqns(class_index: Dict[str, Any]) -> List[str]:
     return sorted(out)
 
 
-def _ast_json_path_for_java(data_dir: str, java_path: str) -> Optional[str]:
-    """source .java 경로에 대응하는 target AST JSON 경로 (같은 상대경로, 확장자만 .json)."""
-    p = Path(java_path)
-    if p.suffix.lower() != ".java":
+def _ast_json_path_for_source(data_dir: str, source_path: str, lang: str = "java") -> Optional[str]:
+    """source 파일 경로에 대응하는 target AST JSON 경로 (같은 상대경로, 확장자만 .json)."""
+    onto = get_ontology()
+    source_exts = onto.source_extensions(lang)
+    p = Path(source_path)
+    if p.suffix.lower() not in source_exts:
         return None
     source_dir = (Path(data_dir) / "source").resolve()
     try:
@@ -335,8 +366,14 @@ def _ast_json_path_for_java(data_dir: str, java_path: str) -> Optional[str]:
     return str(target_path) if target_path.is_file() else None
 
 
-def _source_path_for_ast(data_dir: str, ast_path: str) -> Optional[str]:
-    """AST JSON 경로에 대응하는 원본 .java 경로 (source 디렉터리 또는 target과 동일 상대경로)."""
+# 하위호환 alias
+_ast_json_path_for_java = _ast_json_path_for_source
+
+
+def _source_path_for_ast(data_dir: str, ast_path: str, lang: str = "java") -> Optional[str]:
+    """AST JSON 경로에 대응하는 원본 소스 파일 경로."""
+    onto = get_ontology()
+    source_exts = onto.source_extensions(lang)
     base = Path(data_dir)
     p = Path(ast_path)
     parts = p.parts
@@ -347,21 +384,23 @@ def _source_path_for_ast(data_dir: str, ast_path: str) -> Optional[str]:
         rel_parts = p.parts
     rel_stem = "/".join(rel_parts[:-1]) if len(rel_parts) > 1 else ""
     stem_name = Path(rel_parts[-1]).stem if rel_parts else p.stem
-    rel_java = f"{rel_stem}/{stem_name}.java" if rel_stem else f"{stem_name}.java"
-    candidates = [
-        base / "source" / rel_java,
-        base / rel_java,
-    ]
-    for c in candidates:
-        if c.is_file():
-            return str(c)
+    for ext in source_exts:
+        rel_source = f"{rel_stem}/{stem_name}{ext}" if rel_stem else f"{stem_name}{ext}"
+        candidates = [
+            base / "source" / rel_source,
+            base / rel_source,
+        ]
+        for c in candidates:
+            if c.is_file():
+                return str(c)
     return None
 
 
 def run_step2(
-    java_ast_jobs: List[str],
+    source_ast_jobs: List[str],
     data_dir: Optional[str] = None,
     run_dir: Optional[str] = None,
+    lang: str = "java",
 ) -> Generator[Dict[str, Any], None, None]:
     """파일별로 AST 결과를 yield. 호출자가 누적 및 Neo4j 반영.
 
@@ -369,38 +408,43 @@ def run_step2(
         Dict with keys: facts, cidx, fields, class_index_simple,
         sym_idx, meth_idx, meth_by_cls, ref_cands, file_name
     """
+    onto = get_ontology()
+    source_exts = set(onto.source_extensions(lang))
+
     logger.info(
-        "[FW:STEP2] Java AST 진입 | paths=%d data_dir=%s run_dir=%s",
-        len(java_ast_jobs),
+        "[FW:STEP2] AST 진입 | lang=%s paths=%d data_dir=%s run_dir=%s",
+        lang,
+        len(source_ast_jobs),
         data_dir or "",
         run_dir or "",
     )
     logger.info(
         "[FW:STEP2] [섹션] 파일별 처리: AST 파싱 → MethodFacts, ChunkBundle 생성·저장 | 파일 %d개",
-        len(java_ast_jobs),
+        len(source_ast_jobs),
     )
 
     source_dir: Optional[Path] = None
     if data_dir:
         source_dir = (Path(data_dir) / "source").resolve()
 
-    for path in java_ast_jobs:
+    for path in source_ast_jobs:
         try:
             ast_path_val: Optional[str] = None
             source_path_for_bundle: Optional[str] = None
-            if path.lower().endswith(".java") and data_dir:
-                ast_path_val = _ast_json_path_for_java(data_dir, path)
+            path_ext = Path(path).suffix.lower()
+            if path_ext in source_exts and data_dir:
+                ast_path_val = _ast_json_path_for_source(data_dir, path, lang=lang)
                 if not ast_path_val:
                     logger.warning("AST JSON 없음, 스킵 | java=%s", path)
                     continue
                 source_path_for_bundle = path
             else:
                 ast_path_val = path
-                source_path_for_bundle = _source_path_for_ast(data_dir, path) if data_dir else None
+                source_path_for_bundle = _source_path_for_ast(data_dir, path, lang=lang) if data_dir else None
 
             ast_data = load_ast_json(ast_path_val)
             facts, cidx, fields, class_index_simple = build_method_facts_and_class_index(
-                ast_path_val, ast_data, data_dir=data_dir
+                ast_path_val, ast_data, data_dir=data_dir, lang=lang,
             )
 
             (
@@ -411,7 +455,7 @@ def run_step2(
                 chunk_calls,
                 chunk_vars,
                 ref_cands,
-            ) = collect_ast_indices_and_chunk_data(ast_data)
+            ) = collect_ast_indices_and_chunk_data(ast_data, lang=lang)
 
             if data_dir and chunk_m and source_path_for_bundle:
                 field_chunk_input = [
@@ -431,7 +475,9 @@ def run_step2(
                     if source_dir:
                         try:
                             rel = p_for_key.resolve().relative_to(source_dir)
-                            rel_key = "_".join(rel.parts).replace(".java", "")
+                            rel_key = "_".join(rel.parts)
+                            for _ext in source_exts:
+                                rel_key = rel_key.replace(_ext, "")
                         except ValueError:
                             rel_key = p_for_key.stem
                     else:

@@ -1,4 +1,4 @@
-name: "sql_table_extract"
+name: "table_extract"
 description: "SQL 청크(단일/배치)에서 테이블·컬럼·FK 추출. 입력은 항상 sql_items 배열."
 version: "1.0"
 
@@ -14,16 +14,15 @@ prompt: |
   [입력 타입]
   입력은 세 종류가 섞여 있을 수 있습니다:
   1) SQL 문자열 (SELECT/INSERT/UPDATE/DELETE) - 기존과 동일하게 FROM/JOIN에서 테이블, 컬럼 추출
-  2) 엔티티 정의 XML (EJB ejb-jar.xml, OFBiz entitymodel.xml 등)
-     - abstract-schema-name, entity-name → 테이블명 (관례: CamelCase → SCREAMING_SNAKE_CASE, 예: LoanApplication → LOAN_APPLICATION)
-     - cmp-field > field-name → 컬럼명 (관례: camelCase → SCREAMING_SNAKE_CASE, 예: applicationId → APPLICATION_ID)
-     - primkey-field → PK 컬럼
-     - BMP(Bean-Managed Persistence) 엔티티: cmp-field가 없더라도 entity-name으로 테이블을 반드시 추출하세요. 컬럼이 없으면 columns=[]로 출력하되 tables는 반드시 생성합니다.
-  3) 엔티티 클래스 필드 목록 (Java)
-     - @Table(name="X") 있으면 테이블명 X
-     - @Column(name="Y") 있으면 컬럼명 Y
-     - 어노테이션 없으면 필드명에서 컬럼명 추론 (camelCase → SCREAMING_SNAKE_CASE 관례)
-     - implements EntityBean / @Entity 등은 해당 클래스가 엔티티임을 의미
+  2) 엔티티 정의 (XML 또는 텍스트)
+     - 엔티티명/스키마명 → 테이블명 (관례: CamelCase → SCREAMING_SNAKE_CASE, 예: LoanApplication → LOAN_APPLICATION)
+     - 필드명 → 컬럼명 (관례: camelCase → SCREAMING_SNAKE_CASE, 예: applicationId → APPLICATION_ID)
+     - PK 필드 → PK 컬럼
+     - 필드가 없는 엔티티도 entity-name으로 테이블을 반드시 추출하세요. 컬럼이 없으면 columns=[]로 출력하되 tables는 반드시 생성합니다.
+  3) 엔티티 클래스 필드 목록 (어떤 언어든)
+     - 테이블 매핑 어노테이션/속성이 있으면 해당 값 사용
+     - 없으면 필드명에서 컬럼명 추론 (camelCase → SCREAMING_SNAKE_CASE 관례)
+     - 엔티티 마커(어노테이션, 상속 등)가 있으면 해당 클래스가 DB 엔티티임
   어떤 형식이든 동일한 출력 포맷(tables, columns, fks)으로 추출하세요.
 
   [핵심 원칙 — 반복하여 준수]

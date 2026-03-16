@@ -1,0 +1,21 @@
+[
+  "print", "input", "len", "range", "enumerate", "zip", "map", "filter", "sorted", "reversed",
+  "type", "isinstance", "issubclass", "hasattr", "getattr", "setattr", "delattr",
+  "int", "float", "str", "bool", "list", "dict", "set", "tuple", "frozenset", "bytes", "bytearray",
+  "min", "max", "sum", "abs", "round", "pow", "divmod",
+  "open", "close", "read", "write",
+  "id", "hash", "repr", "format", "chr", "ord",
+  "iter", "next", "super", "property", "staticmethod", "classmethod",
+  "any", "all",
+  "vars", "dir", "globals", "locals",
+  "callable", "eval", "exec", "compile",
+  "Exception", "ValueError", "TypeError", "KeyError", "IndexError", "AttributeError",
+  "RuntimeError", "StopIteration", "FileNotFoundError", "IOError", "OSError",
+  "os", "sys", "io", "re", "json", "math", "datetime", "time", "collections",
+  "functools", "itertools", "pathlib", "logging", "typing", "abc", "copy",
+  "subprocess", "threading", "multiprocessing", "socket", "http", "urllib",
+  "unittest", "pytest",
+  "dataclasses", "enum",
+  "None", "True", "False",
+  "object", "BaseException"
+]

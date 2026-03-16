@@ -31,16 +31,17 @@ from analyzer.strategy.framework.linking.type_resolver import (
 )
 from util.text_utils import (
     calculate_code_token as estimate_tokens,
-    parse_java_params,
+    parse_java_params,  # backward compat
+    parse_params,
 )
 from util.prompt_executor import get_rule_loader
 
 logger = logging.getLogger(__name__)
 
 
-def build_param_type_map_from_params(params: str) -> Dict[str, str]:
-    """parameters 문자열에서 paramName → paramType 매핑."""
-    return parse_java_params(params)
+def build_param_type_map_from_params(params: str, param_style: str = "type_name") -> Dict[str, str]:
+    """parameters 문자열에서 paramName → paramType 매핑 (범용)."""
+    return parse_params(params, param_style)
 
 
 def build_field_map_for_class(
@@ -203,7 +204,28 @@ def _load_java_stdlib() -> frozenset:
         logger.warning("[FW:CALL_BATCH] java_stdlib.json 로드 실패, 빈 set 사용: %s", e)
         return frozenset()
 
-JAVA_STDLIB_CLASSES = _load_java_stdlib()
+JAVA_STDLIB_CLASSES = _load_java_stdlib()  # backward compat
+
+
+def _load_stdlib(lang: str) -> frozenset:
+    """lang_profile.yaml 기반 범용 stdlib 로드."""
+    from analyzer.strategy.framework.common.lang_profile import get_lang_profile
+    try:
+        return get_lang_profile().stdlib_classes(lang)
+    except Exception:
+        if lang == "java":
+            return JAVA_STDLIB_CLASSES
+        return frozenset()
+
+
+# 현재 파이프라인 실행 중 사용할 stdlib (lang 파라미터로 동적 설정)
+_ACTIVE_STDLIB: frozenset = JAVA_STDLIB_CLASSES
+
+
+def set_active_stdlib(lang: str) -> None:
+    """파이프라인 시작 시 호출하여 해당 언어의 stdlib로 전환."""
+    global _ACTIVE_STDLIB
+    _ACTIVE_STDLIB = _load_stdlib(lang)
 
 
 def load_call_records_from_chunk_bundles(
@@ -333,13 +355,13 @@ def _extract_calls_batch_via_llm(
 
 
 def _is_stdlib_class(name: Optional[str]) -> bool:
-    """Java 표준/기본 라이브러리 클래스면 True. LLM 방어 로직용."""
+    """표준/기본 라이브러리 클래스면 True. LLM 방어 로직용."""
     if not name or not isinstance(name, str):
         return False
     n = name.strip()
     if not n:
         return False
-    return n in JAVA_STDLIB_CLASSES or n.split(".")[-1] in JAVA_STDLIB_CLASSES
+    return n in _ACTIVE_STDLIB or n.split(".")[-1] in _ACTIVE_STDLIB
 
 
 def _candidates_for_class_and_method(

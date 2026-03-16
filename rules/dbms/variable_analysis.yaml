@@ -1,4 +1,4 @@
-name: "understand_variables_prompt"
+name: "variable_analysis"
 description: "프로시저 변수 선언 분석"
 version: "1.0"
 

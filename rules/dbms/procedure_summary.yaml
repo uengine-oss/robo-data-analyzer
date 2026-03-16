@@ -1,4 +1,4 @@
-name: "understand_summary_only_prompt"
+name: "procedure_summary"
 description: "프로시저/함수 전체 요약 생성 (Summary만)"
 version: "1.0"
 

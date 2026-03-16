@@ -16,8 +16,9 @@ from client.neo4j_client import Neo4jClient
 from analyzer.strategy.base_analyzer import AnalysisStats
 from analyzer.strategy.dbms.common.models import FileStatus, FileAnalysisContext
 from analyzer.strategy.dbms.parsing.ast_processor import DbmsAstProcessor
-from analyzer.strategy.dbms.common.utils import resolve_default_schema, list_ddl_files
-from analyzer.strategy.dbms.parsing.ddl_processor import process_ddl
+from analyzer.strategy.dbms.common.utils import resolve_default_schema
+from analyzer.common.ddl_utils import list_ddl_files
+from analyzer.common.ddl_processor import process_ddl
 from analyzer.strategy.dbms.linking.lineage_analyzer import LineageAnalyzer, LineageInfo
 from client.embedding_client import EmbeddingClient
 from config.settings import settings

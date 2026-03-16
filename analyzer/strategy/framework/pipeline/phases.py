@@ -93,6 +93,71 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Phase 0: DDL (선택적 — DDL 파일 있을 때만)
+# ---------------------------------------------------------------------------
+
+async def run_phase_ddl(
+    pipeline: Any,
+    client: Neo4jClient,
+    orchestrator: Any,
+    stats: AnalysisStats,
+) -> AsyncGenerator[bytes, None]:
+    """Phase 0: DDL 파일 처리 (선택적).
+
+    DDL 파일이 업로드되어 있으면 테이블/컬럼/FK 스키마를 Neo4j에 생성.
+    DDL 파일이 없으면 자연스럽게 스킵됨.
+    """
+    from analyzer.common.ddl_utils import list_ddl_files
+    from analyzer.common.ddl_processor import process_ddl
+
+    ddl_files = list_ddl_files(orchestrator)
+    if not ddl_files:
+        yield emit_message("📋 DDL 파일 없음 — DDL 처리 생략")
+        return
+
+    ddl_dir = orchestrator.dirs.get("ddl", "")
+    ddl_schemas: set[str] = set()
+    ddl_table_metadata: dict = {}
+    total_files = len(ddl_files)
+    datasource_name = getattr(orchestrator, "datasource_name", "")
+
+    yield emit_message(f"📋 DDL 파일 {total_files}개 처리 시작")
+
+    for idx, fname in enumerate(ddl_files):
+        ddl_path = os.path.join(ddl_dir, fname)
+        file_base = int((idx / total_files) * 100)
+        file_end = int(((idx + 1) / total_files) * 100)
+
+        yield emit_message(f"  📄 [{idx+1}/{total_files}] {fname}")
+        try:
+            async for chunk in process_ddl(
+                ddl_path=ddl_path,
+                client=client,
+                file_name=fname,
+                orchestrator=orchestrator,
+                cypher_lock=pipeline._cypher_lock,
+                ddl_schemas=ddl_schemas,
+                ddl_table_metadata=ddl_table_metadata,
+                emit_progress=True,
+                file_base_progress=file_base,
+                file_end_progress=file_end,
+                datasource_name=datasource_name,
+            ):
+                if isinstance(chunk, bytes):
+                    yield chunk
+                else:
+                    # (result, ddl_stats) 튜플 — 스트리밍에서 무시
+                    pass
+        except Exception as e:
+            logger.warning("[FW:DDL] DDL 파일 처리 실패: %s — %s", fname, e)
+            yield emit_message(f"  ⚠️ DDL 처리 실패: {fname} ({str(e)[:60]})")
+
+    pipeline._pipeline_state["ddl_schemas"] = ddl_schemas
+    pipeline._pipeline_state["ddl_table_metadata"] = ddl_table_metadata
+    yield emit_message(f"✅ DDL 처리 완료: 스키마 {len(ddl_schemas)}개, 테이블 메타데이터 {len(ddl_table_metadata)}개")
+
+
+# ---------------------------------------------------------------------------
 # Phase 1: AST
 # ---------------------------------------------------------------------------
 
@@ -114,14 +179,16 @@ async def run_phase_ast(
     yield emit_message("📂 프로젝트 스캔 시작")
 
     # --- Step 1: 스캔 ---
-    scan_roots = [(source_dir, "source"), (nontarget_dir, "analysis/nontarget")]
-    catalog, plan = scan_project(scan_roots=scan_roots)
-    logger.info("[FW:PHASE1] 스캔 완료 | catalog=%d java_ast=%d xml_sqlmap=%d", len(catalog), len(plan.java_ast_jobs), len(plan.xml_sqlmap_jobs))
+    lang = getattr(orchestrator, "target", "java") or "java"
 
-    # --- Step 2: Java AST (파일별 점진적 스트리밍) ---
-    yield emit_message(f"🔍 Java AST 파싱 ({len(plan.java_ast_jobs)}개 파일)")
+    scan_roots = [(source_dir, "source"), (nontarget_dir, "analysis/nontarget")]
+    catalog, plan = scan_project(scan_roots=scan_roots, lang=lang)
+    logger.info("[FW:PHASE1] 스캔 완료 | catalog=%d source_ast=%d sql=%d entity=%d config=%d lang=%s", len(catalog), len(plan.source_ast_jobs), len(plan.sql_jobs), len(plan.entity_jobs), len(plan.config_jobs), lang)
+
+    # --- Step 2: AST (파일별 점진적 스트리밍) ---
+    yield emit_message(f"🔍 AST 파싱 ({len(plan.source_ast_jobs)}개 파일, lang={lang})")
     base = Path(data_dir).resolve()
-    java_ast_paths = [str(base / p) if not Path(p).is_absolute() else p for p in plan.java_ast_jobs]
+    source_ast_paths = [str(base / p) if not Path(p).is_absolute() else p for p in plan.source_ast_jobs]
 
     run_dir = pipeline._pipeline_state.get("run_dir")
     if not run_dir:
@@ -133,6 +200,11 @@ async def run_phase_ast(
         run_path.mkdir(parents=True, exist_ok=True)
         pipeline._pipeline_state["run_dir"] = run_dir
         logger.info("[FW:PHASE1] run_dir 미설정 → 생성 | run_dir=%s (chunk_bundles는 data가 아닌 여기 저장)", run_dir)
+    pipeline._pipeline_state["lang"] = lang
+
+    # 해당 언어의 stdlib로 전환
+    from analyzer.strategy.framework.linking.call_graph import set_active_stdlib
+    set_active_stdlib(lang)
 
     # 파일별 누적 변수
     method_facts_list: list[MethodFacts] = []
@@ -144,9 +216,9 @@ async def run_phase_ast(
     class_index_simple: dict[str, list[str]] = {}
     ref_candidates_by_method: dict[str, list[dict[str, Any]]] = {}
 
-    ast_total = len(java_ast_paths)
+    ast_total = len(source_ast_paths)
     ast_done = 0
-    for file_result in run_step2(java_ast_paths, data_dir=data_dir, run_dir=run_dir):
+    for file_result in run_step2(source_ast_paths, data_dir=data_dir, run_dir=run_dir, lang=lang):
         ast_done += 1
         facts = file_result["facts"]
         cidx = file_result["cidx"]
@@ -215,15 +287,14 @@ async def run_phase_ast(
     yield emit_message(f"  └─ AST 완료 | 메서드 {len(method_facts_list)}개, 클래스 {len(class_index_ast)}개, 필드 {len(field_facts_list)}개")
 
     # --- Step 3: 아티팩트 ---
-    xml_paths = [str(base / p) if not Path(p).is_absolute() else p for p in plan.xml_sqlmap_jobs]
-    yaml_paths = [str(base / p) if not Path(p).is_absolute() else p for p in plan.yaml_jobs]
-    prop_paths = [str(base / p) if not Path(p).is_absolute() else p for p in plan.properties_jobs]
-    xml_artifact_paths = [str(base / p) if not Path(p).is_absolute() else p for p in plan.xml_artifact_jobs]
+    sql_xml_paths = [str(base / p) if not Path(p).is_absolute() else p for p in plan.sql_jobs]
+    entity_xml_paths = [str(base / p) if not Path(p).is_absolute() else p for p in plan.entity_jobs]
+    config_paths = [str(base / p) if not Path(p).is_absolute() else p for p in plan.config_jobs]
 
-    yield emit_message(f"📄 아티팩트 파싱 | SQL맵 {len(xml_paths)}개, XML {len(xml_artifact_paths)}개, YAML {len(yaml_paths)}개, Properties {len(prop_paths)}개")
+    yield emit_message(f"📄 아티팩트 파싱 | SQL {len(sql_xml_paths)}개, Entity {len(entity_xml_paths)}개, Config {len(config_paths)}개")
     sql_chunks, config_chunks, artifact_chunks = run_step3(
-        xml_paths, yaml_paths, prop_paths,
-        xml_artifact_jobs=xml_artifact_paths,
+        sql_xml_paths, config_paths, [],
+        xml_artifact_jobs=entity_xml_paths,
     )
 
     # Artifact breakdown 로그
@@ -565,6 +636,7 @@ async def run_phase_post(
         config_index=st.get("config_index"),
         calls_edges=all_calls,
         field_facts_list=field_facts_list,
+        lang=st.get("lang", "java"),
     ):
         summary_by_method.update(summary_batch)
         yield tracker.tick_quiet()

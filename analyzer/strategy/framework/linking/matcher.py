@@ -25,12 +25,21 @@ from analyzer.strategy.framework.common.utils import (
 logger = logging.getLogger(__name__)
 
 
-ENTITY_SIGNALS_ANNOTATION = ["@Entity", "@Table", "@MappedSuperclass", "@Document", "@RedisHash"]
+# 엔티티 시그널 — 언어/프레임워크 무관 (어노테이션, 상속 패턴)
+ENTITY_SIGNALS_ANNOTATION = [
+    # Java
+    "@Entity", "@Table", "@MappedSuperclass", "@Document", "@RedisHash",
+    # Python
+    "db.Model", "models.Model",
+    # C# (.NET)
+    "[Table", "[Key",
+    # General
+    "EntityBean",
+]
 
 
 def identify_entity_classes(class_index: Dict[str, Any]) -> set:
-    """class_index에서 엔티티 후보 FQN 집합을 반환. JPA 등 어노테이션만 사용.
-    EJB(EntityBean 상속/구현)는 여기서 제외하며, 엔티티↔테이블 매핑은 ejb-jar.xml 등 artifact( entity_xml:: )로만 처리한다."""
+    """class_index에서 엔티티 후보 FQN 집합을 반환. 어노테이션/상속 패턴으로 판별 (범용)."""
     entity_fqns: set = set()
     for fqn, info in class_index.items():
         if not isinstance(info, dict):
@@ -47,9 +56,6 @@ def _infer_table_name_from_entity_fqn(fqn: str) -> str:
 
 
 QUOTED_STRING_PATTERN = re.compile(r'["\']([^"\']+)["\']')
-SQL_LITERAL_START = re.compile(r'["\']\s*(SELECT|INSERT|UPDATE|DELETE)\s', re.IGNORECASE)
-CONFIG_KEY_PATTERN = re.compile(r'\.(?:getProperty|get)\s*\(\s*["\']([^"\']+)["\']', re.IGNORECASE)
-DATA_PATH_PATTERN = re.compile(r'\.(?:getString|get)\s*\(\s*["\']@([^"\']+)["\']', re.IGNORECASE)
 
 
 def extract_quoted_strings(code: str) -> List[str]:
@@ -64,54 +70,6 @@ def extract_quoted_strings(code: str) -> List[str]:
     return out
 
 
-def extract_sql_keys_from_code(code: str, sql_index_keys: Optional[Dict[str, Any]] = None) -> List[str]:
-    """메서드 코드에서 SQL 키 추출. sql_index_keys 있으면 단순 문자열 매칭(따옴표 문자열 중 인덱스에 있는 것만)."""
-    if sql_index_keys is not None:
-        keys_set = set(sql_index_keys) if not hasattr(sql_index_keys, "keys") else set(sql_index_keys.keys())
-        return [s for s in extract_quoted_strings(code) if s in keys_set]
-    return [s for s in extract_quoted_strings(code)]
-
-
-def extract_reference_candidates_from_code(
-    code: str,
-    method_id: str,
-    code_ref: str,
-    start_line: int,
-    end_line: int,
-    sql_index_keys: Optional[Dict[str, Any]] = None,
-) -> List[ReferenceCandidate]:
-    """코드 문자열에서 참조 후보 추출. sql_index_keys 있으면 따옴표 문자열 중 인덱스에 있는 것을 SQL_KEY_LITERAL로 추가."""
-    candidates: List[ReferenceCandidate] = []
-    if sql_index_keys is not None:
-        keys_set = set(sql_index_keys.keys()) if hasattr(sql_index_keys, "keys") else set(sql_index_keys)
-        for s in extract_quoted_strings(code):
-            if s in keys_set:
-                candidates.append(
-                    ReferenceCandidate(kind="SQL_KEY_LITERAL", value=s, line_range=(start_line, end_line))
-                )
-    else:
-        for s in extract_quoted_strings(code):
-            if "." in s:
-                candidates.append(
-                    ReferenceCandidate(kind="SQL_KEY_LITERAL", value=s, line_range=(start_line, end_line))
-                )
-    if SQL_LITERAL_START.search(code):
-        candidates.append(
-            ReferenceCandidate(kind="SQL_LITERAL", value=code[:500], line_range=(start_line, end_line))
-        )
-    for m in CONFIG_KEY_PATTERN.finditer(code):
-        candidates.append(
-            ReferenceCandidate(kind="CONFIG_KEY_REF", value=m.group(1), line_range=(start_line, end_line))
-        )
-    for m in DATA_PATH_PATTERN.finditer(code):
-        candidates.append(
-            ReferenceCandidate(
-                kind="DATA_PATH_REF",
-                path="@" + m.group(1),
-                line_range=(start_line, end_line),
-            )
-        )
-    return candidates
 
 
 def _key_in_code(code: str, key: str) -> bool:
@@ -182,17 +140,6 @@ def link_chunks_to_indexes(
                 if _key_in_code(code, key):
                     add_edge(m.method_id, None, "ConfigSection", key, evidence)
                     matched_keys.add(("ConfigSection", key))
-        if class_index:
-            for key, info in class_index.items():
-                if not _key_in_code(code, key):
-                    continue
-                target_id = key
-                if isinstance(info, dict):
-                    target_id = info.get("fqn", key) or key
-                elif info is not None:
-                    target_id = str(info)
-                add_edge(m.method_id, None, "Class", target_id, evidence)
-                matched_keys.add(("Class", key))
         if artifact_key_index:
             for key, chunk_ids in artifact_key_index.items():
                 if not _key_in_code(code, key):
@@ -219,17 +166,6 @@ def link_chunks_to_indexes(
                     if _key_in_code(code, key):
                         add_edge("", field_id, "ConfigSection", key, evidence)
                         matched_keys.add(("ConfigSection", key))
-            if class_index:
-                for key, info in class_index.items():
-                    if not _key_in_code(code, key):
-                        continue
-                    target_id = key
-                    if isinstance(info, dict):
-                        target_id = info.get("fqn", key) or key
-                    elif info is not None:
-                        target_id = str(info)
-                    add_edge("", field_id, "Class", target_id, evidence)
-                    matched_keys.add(("Class", key))
             if artifact_key_index:
                 for key, chunk_ids in artifact_key_index.items():
                     if not _key_in_code(code, key):
@@ -276,6 +212,10 @@ def link_chunks_to_indexes(
                 continue
             chunk_type = getattr(ac, "chunk_type", "")
             category = chunk_type if chunk_type else "artifact"
+            # 원문 전달 (토큰 한도 내에서, 초과 시 잘라서)
+            full_text = (getattr(ac, "text", "") or "").strip()
+            _MAX_SNIPPET_CHARS = 6000  # ~2000 토큰 상당
+            snippet = full_text if len(full_text) <= _MAX_SNIPPET_CHARS else full_text[:_MAX_SNIPPET_CHARS]
             unresolved.append(UnresolvedLink(
                 method_id="", caller_fqn="",
                 ref_candidates=[{
@@ -284,7 +224,7 @@ def link_chunks_to_indexes(
                     "chunk_id": chunk_id_clean,
                     "category": category,
                     "chunk_type": chunk_type,
-                    "text_snippet": (getattr(ac, "text", "") or "")[:500],
+                    "text_snippet": snippet,
                     "file_path": getattr(ac, "source_path", ""),
                 }],
             ))

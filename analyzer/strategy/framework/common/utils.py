@@ -74,3 +74,24 @@ def infer_table_name_from_entity_fqn(fqn: str) -> str:
     if not simple:
         return ""
     return re.sub(r"([A-Z])", r"_\1", simple).strip("_").upper() or simple.upper()
+
+
+def normalize_table_name(name: str) -> str:
+    """테이블명 정규화. CamelCase/snake_case → UPPER_SNAKE_CASE.
+
+    예: LoanApplication → LOAN_APPLICATION
+        loan_application → LOAN_APPLICATION
+        LOAN_APPLICATION → LOAN_APPLICATION
+    """
+    import re
+    if not name or not name.strip():
+        return ""
+    n = name.strip()
+    # 이미 UPPER_SNAKE_CASE면 그대로
+    if n == n.upper() and "_" in n:
+        return n
+    # CamelCase → UPPER_SNAKE_CASE
+    result = re.sub(r"([A-Z])", r"_\1", n).strip("_").upper()
+    # 연속 언더스코어 제거
+    result = re.sub(r"_+", "_", result)
+    return result or n.upper()

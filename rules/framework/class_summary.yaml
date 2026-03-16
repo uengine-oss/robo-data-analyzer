@@ -1,4 +1,4 @@
-name: "class_summary_batch"
+name: "class_summary"
 description: "클래스 요약 - 메서드/필드 요약 목록을 청크 단위로 받아 클래스 전체 요약 생성. prev_summary로 이전 청크 요약 전달."
 version: "1.0"
 

@@ -140,11 +140,11 @@ def calculate_code_token(code: Union[str, Dict, List]) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Java 파라미터 파싱
+# 파라미터 파싱 (범용)
 # ---------------------------------------------------------------------------
 
-def parse_java_params(params_str: str) -> Dict[str, str]:
-    """Java 메서드 파라미터 문자열 'Type1 name1, Type2 name2' → {name: Type} 매핑."""
+def _parse_type_name(params_str: str) -> Dict[str, str]:
+    """'Type name' 형식 (Java, C): 'int count, String name' → {count: int, name: String}."""
     param_map: Dict[str, str] = {}
     if not params_str or not isinstance(params_str, str):
         return param_map
@@ -161,3 +161,60 @@ def parse_java_params(params_str: str) -> Dict[str, str]:
         if param_name not in param_map:
             param_map[param_name] = param_type
     return param_map
+
+
+def _parse_name_colon_type(params_str: str) -> Dict[str, str]:
+    """'name: Type' 형식 (Python, Kotlin): 'name: str, age: int' → {name: str, age: int}."""
+    param_map: Dict[str, str] = {}
+    if not params_str or not isinstance(params_str, str):
+        return param_map
+    raw = params_str.strip()
+    if not raw:
+        return param_map
+    for part in raw.split(","):
+        if ":" not in part:
+            continue
+        name_part, type_part = part.split(":", 1)
+        name = name_part.strip()
+        typ = type_part.strip()
+        if name and typ and name not in param_map:
+            param_map[name] = typ
+    return param_map
+
+
+def _parse_name_type(params_str: str) -> Dict[str, str]:
+    """'name Type' 형식 (Go): 'count int, name string' → {count: int, name: string}."""
+    param_map: Dict[str, str] = {}
+    if not params_str or not isinstance(params_str, str):
+        return param_map
+    raw = params_str.strip()
+    if not raw:
+        return param_map
+    for part in raw.split(","):
+        seg = part.strip()
+        tokens = [t for t in seg.split() if t]
+        if len(tokens) < 2:
+            continue
+        param_name = tokens[0]
+        param_type = tokens[1]
+        if param_name not in param_map:
+            param_map[param_name] = param_type
+    return param_map
+
+
+_PARAM_PARSERS = {
+    "type_name": _parse_type_name,
+    "name_colon_type": _parse_name_colon_type,
+    "name_type": _parse_name_type,
+}
+
+
+def parse_params(params_str: str, style: str = "type_name") -> Dict[str, str]:
+    """범용 파라미터 파서. style에 따라 적절한 파서 선택."""
+    parser = _PARAM_PARSERS.get(style, _parse_type_name)
+    return parser(params_str)
+
+
+def parse_java_params(params_str: str) -> Dict[str, str]:
+    """하위호환 alias."""
+    return parse_params(params_str, "type_name")

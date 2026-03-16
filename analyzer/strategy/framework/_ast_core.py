@@ -220,12 +220,16 @@ def _log_process(_ctx: str, _stage: str, message: str, **kwargs: Any) -> None:
     logger.debug("[%s][%s] %s", _ctx, _stage, message)
 
 
-# 노드 타입
-CLASS_TYPES = frozenset(["CLASS", "INTERFACE", "ENUM"])
-FIELD_TYPES = frozenset(["FIELD"])
-METHOD_TYPES = frozenset(["METHOD", "CONSTRUCTOR"])
+# 노드 타입 — ontology에서 Java 기본값 로딩 (하위호환, backward compat)
+# 실제 파이프라인에서는 StatementCollector가 lang 파라미터로 동적 로딩
+from .common.ontology import get_ontology as _get_ontology
+
+_onto = _get_ontology()
+CLASS_TYPES = _onto.container_types("java")
+FIELD_TYPES = _onto.field_types("java")
+METHOD_TYPES = _onto.method_types("java")
 ANALYZABLE_NODE_TYPES = METHOD_TYPES | FIELD_TYPES
-SILENT_NODE_TYPES = frozenset(["VARIABLE"])
+SILENT_NODE_TYPES = _onto.silent_types("java")
 GRAPH_NODE_TYPES = CLASS_TYPES | METHOD_TYPES | FIELD_TYPES
 
 
@@ -268,11 +272,18 @@ class ClassInfo:
 class StatementCollector:
     """AST를 후위순회하여 StatementNode와 클래스 정보를 수집."""
 
-    def __init__(self, antlr_data: Dict[str, Any], directory: str, file_name: str, source_content: str = ""):
+    def __init__(self, antlr_data: Dict[str, Any], directory: str, file_name: str, source_content: str = "", lang: str = "java"):
         self.antlr_data = antlr_data
         self.directory = directory
         self.file_name = file_name
         self.source_content = source_content or ""
+        self.lang = lang
+        onto = _get_ontology()
+        self._container_types = onto.container_types(lang)
+        self._method_types = onto.method_types(lang)
+        self._field_types = onto.field_types(lang)
+        self._analyzable_types = onto.analyzable_types(lang)
+        self._silent_types = onto.silent_types(lang)
         self.nodes: List[StatementNode] = []
         self.classes: Dict[str, ClassInfo] = {}
         self._node_id = 0
@@ -343,7 +354,7 @@ class StatementCollector:
                 package_name = extracted_pkg.replace("/", ".") if "/" in extracted_pkg else extracted_pkg
             _log_process("ANALYZE", "COLLECT", f"패키지 발견: {package_name}")
 
-        if node_type in CLASS_TYPES:
+        if node_type in self._container_types:
             extracted_name = node.get("name")
             class_key = self._make_class_key(package_name, extracted_name, start_line)
             class_name = extracted_name
@@ -359,7 +370,7 @@ class StatementCollector:
                 )
             _log_process(
                 "ANALYZE", "COLLECT",
-                f"클래스 발견: {package_name}.{extracted_name} ({node_type})",
+                f"컨테이너 발견: {package_name}.{extracted_name} ({node_type})",
             )
 
         child_nodes: List[StatementNode] = []
@@ -368,8 +379,8 @@ class StatementCollector:
             if cn:
                 child_nodes.append(cn)
 
-        analyzable = node_type in ANALYZABLE_NODE_TYPES
-        is_silent = node_type in SILENT_NODE_TYPES
+        analyzable = node_type in self._analyzable_types
+        is_silent = node_type in self._silent_types
         token = _token_count(code)
 
         extends_type = node.get("extendsType") or node.get("extends")
@@ -406,7 +417,7 @@ class StatementCollector:
             c.parent = st
         st.children.extend(child_nodes)
 
-        if not analyzable and node_type not in CLASS_TYPES:
+        if not analyzable and node_type not in self._container_types:
             st.summary = st.get_raw_code()
             st.completion_event.set()
         elif analyzable and class_key and class_key in self.classes:
@@ -435,6 +446,7 @@ class FrameworkAstProcessor(BaseAstProcessor):
         file_name: str,
         last_line: int,
         source_content: str = "",
+        lang: str = "java",
     ):
         super().__init__(
             antlr_data=antlr_data,
@@ -443,11 +455,13 @@ class FrameworkAstProcessor(BaseAstProcessor):
             last_line=last_line,
             source_content=source_content,
         )
+        self._lang = lang
 
     def _collect_nodes(self) -> Tuple[List[StatementNode], Dict[str, ClassInfo]]:
         collector = StatementCollector(
             self.antlr_data, self.directory, self.file_name,
             source_content=getattr(self, "source_content", "") or "",
+            lang=self._lang,
         )
         return collector.collect()
 

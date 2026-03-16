@@ -29,7 +29,7 @@ def _rule_loader() -> RuleLoader:
 
 def _analyze_summary_only(summaries: dict, api_key: str, locale: str, previous_summary: str = "") -> Dict[str, Any]:
     return _rule_loader().execute(
-        "procedure_summary_only",
+        "procedure_summary",
         {"summaries": summaries, "locale": locale, "previous_summary": previous_summary},
         api_key,
     )

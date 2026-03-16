@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 SYSTEM_PROMPT = """
-당신은 레거시 엔터프라이즈 시스템에서 미매칭된 인덱스 키를 추적해
+당신은 소스코드에서 미매칭된 인덱스 키를 추적해
 코드 내 실제 사용처를 찾아 그래프 관계를 생성하는 전문가 에이전트입니다.
 
 [절대 규칙]
@@ -43,45 +43,40 @@ SYSTEM_PROMPT = """
 [종류별 추적 전략]
 입력의 category 필드를 보고 아래 전략을 적용하십시오.
 
-== category: "entity" (EJB 엔티티 / 테이블 관련) ==
-목표: 이 엔티티를 CRUD하는 메서드를 모두 찾아 Method→ArtifactChunk, Method→Table 관계 생성.
-절차:
-  1) 엔티티 이름(key)으로 bundle_search(kind="symbol") → 관련 상수 정의 찾기
-     예: "LoanApplicationEntity" 검색 → JNDI_LOAN_APPLICATION_ENTITY 상수 발견
-  2) bundle_get_chunk로 상수의 실제 값 확인
-     예: JNDI_LOAN_APPLICATION_ENTITY = "java:comp/env/ejb/LoanApplicationEntity"
-  3) 그 상수명으로 다시 bundle_search(kind="symbol") → 사용하는 메서드 코드 발견
-     예: ServiceLocator.getInstance().getLocalHome(LoanConstants.JNDI_LOAN_APPLICATION_ENTITY)
-  4) bundle_get_chunk로 해당 메서드 코드를 열어 CRUD 패턴 확인
-     - create(), remove() → WRITES
-     - findByPrimaryKey(), findAll(), findByXxx() → READS
-  5) artifact_lookup_tool(엔티티명)로 entity_xml 정의를 확인, 테이블명 파악
-     (abstract-schema-name 에서 CamelCase → SCREAMING_SNAKE_CASE 관례)
-  6) 관계 생성:
-     - graph_create_refer_to_tool("ArtifactChunk", chunk_id, evidence, source_method_id=발견한 메서드 ID)
-     - graph_create_table_access_tool(테이블명, "READS" 또는 "WRITES", evidence, source_method_id=발견한 메서드 ID)
-  주의: 하나의 엔티티를 여러 메서드가 사용할 수 있습니다. 발견된 모든 메서드에 대해 관계를 생성하십시오.
+== category: "entity" 또는 "bean" 또는 기타 아키텍트 청크 ==
+목표: 이 아키텍트 청크(엔티티/서비스/설정 등)를 사용하는 메서드를 찾아 관계 생성.
 
-== category: "bean" (EJB 세션 빈 관련) ==
-목표: 이 세션 빈을 호출하는 메서드를 찾아 Method→ArtifactChunk 관계 생성.
+입력 정보:
+  - key: 힌트 이름 (예: "LoanApplicationEntity", "DataSourceConfig" 등)
+  - text_snippet: 정의 원문 (XML/설정 등) — 여기에 관련 클래스명, 인터페이스명, 메서드명,
+    설정 키 등 소스코드에서 참조될 수 있는 모든 식별자가 포함되어 있습니다.
+    **원문을 먼저 읽고** 등장하는 식별자를 파악한 뒤 검색에 활용하십시오.
+
 절차:
-  1) 빈 이름(key)으로 bundle_search(kind="symbol") → JNDI 상수나 Home 인터페이스 사용처 검색
-  2) 상수 값 확인 → 사용하는 메서드 추적 (entity와 동일 패턴)
-  3) graph_create_refer_to_tool("ArtifactChunk", chunk_id, evidence, source_method_id=발견한 메서드 ID)
+  1) text_snippet(원문)에서 등장하는 클래스명, 인터페이스명, 메서드명, 키 등을 모두 파악
+  2) 파악된 이름들로 bundle_search(kind="symbol") → 소스코드에서 사용처 추적
+  3) 해당 메서드 코드를 열어 사용 패턴 확인
+     - 엔티티인 경우: create/save/insert → WRITES, find/get/select → READS
+     - 서비스/빈인 경우: 호출 관계 파악
+     - 설정인 경우: 참조 관계 파악
+  4) 관계 생성:
+     - graph_create_refer_to_tool("ArtifactChunk", chunk_id, evidence, source_method_id)
+     - 테이블 접근이 확인되면: graph_create_table_access_tool(테이블명, "READS"/"WRITES", evidence, source_method_id)
+  주의: 하나의 청크를 여러 메서드가 사용할 수 있습니다. 발견된 모든 메서드에 대해 관계를 생성하십시오.
 
 == category: "sql" (SQL 문 관련) ==
 목표: 이 SQL을 실행하는 메서드를 찾아 Method→SqlStatement 관계 생성.
 절차:
   1) sql_key나 파일명으로 bundle_search → 해당 SQL ID를 참조하는 코드 검색
-  2) 매퍼 인터페이스명, namespace 등으로 추가 검색
-  3) graph_create_refer_to_tool("SqlStatement", sql_key, evidence, source_method_id=발견한 메서드 ID)
+  2) context에 related_classes가 있으면 해당 클래스명으로도 검색 (중복 메서드명 구분)
+  3) graph_create_refer_to_tool("SqlStatement", sql_key, evidence, source_method_id)
 
 == category: "config" (설정 관련) ==
 목표: 이 설정을 읽는 메서드를 찾아 Method→ConfigSection 관계 생성.
 절차:
   1) 설정 키나 파일명으로 bundle_search → 해당 설정을 참조하는 코드 검색
   2) config_lookup_tool로 설정 값 확인, 관련 키워드로 추가 검색
-  3) graph_create_refer_to_tool("ConfigSection", config_key, evidence, source_method_id=발견한 메서드 ID)
+  3) graph_create_refer_to_tool("ConfigSection", config_key, evidence, source_method_id)
 
 [출력 지침]
 - source_method_id는 반드시 bundle_search/bundle_get_chunk에서 발견한 실제 메서드의 chunk_id를 사용하십시오.
@@ -289,25 +284,17 @@ def _build_unmatched_user_message(u: UnresolvedLink) -> str:
     header = f"미매칭 인덱스 키 (category: {category})\n"
     header += f"target_type: {target_type}\nkey: {key}\n"
 
-    if category == "entity":
+    if category in ("entity", "bean", "cmp_mapping"):
         header += (
             f"chunk_type: {info.get('chunk_type', '')}\n"
             f"file_path: {info.get('file_path', '')}\n"
-            f"text_snippet:\n{info.get('text_snippet', '')}\n\n"
-            f"이 엔티티를 CRUD하는 메서드를 찾으십시오.\n"
-            f"1) 엔티티명 '{key}'으로 bundle_search → 관련 상수/변수 정의 찾기\n"
-            f"2) 상수 사용처 추적 → Home interface lookup 메서드 발견\n"
-            f"3) 발견된 각 메서드에 대해 CRUD 패턴(create→WRITES, find→READS 등) 판별\n"
-            f"4) graph_create_refer_to_tool + graph_create_table_access_tool 생성 (source_method_id 필수)\n"
-        )
-    elif category == "bean":
-        header += (
-            f"chunk_type: {info.get('chunk_type', '')}\n"
-            f"file_path: {info.get('file_path', '')}\n"
-            f"text_snippet:\n{info.get('text_snippet', '')}\n\n"
-            f"이 세션 빈을 호출하는 메서드를 찾으십시오.\n"
-            f"1) 빈명 '{key}'으로 bundle_search → JNDI 상수 또는 Home interface 사용처 검색\n"
-            f"2) 발견된 각 메서드에 대해 graph_create_refer_to_tool 생성 (source_method_id 필수)\n"
+            f"[정의 원문]\n{info.get('text_snippet', '')}\n\n"
+            f"위 원문에서 클래스명, 인터페이스명, 메서드명 등 식별자를 먼저 파악한 뒤,\n"
+            f"이 청크를 사용하는 메서드를 찾으십시오.\n"
+            f"1) 원문에 등장하는 식별자로 bundle_search → 소스코드 사용처 추적\n"
+            f"2) 발견된 각 메서드의 사용 패턴 판별 (CRUD, 호출, 참조 등)\n"
+            f"3) graph_create_refer_to_tool 생성 (source_method_id 필수)\n"
+            f"4) 테이블 접근이 확인되면 graph_create_table_access_tool도 생성\n"
         )
     elif category == "sql":
         header += (

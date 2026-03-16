@@ -26,7 +26,7 @@ def analyze_code(code: str, context: str, ranges: list, count: int, api_key: str
     inputs = {"code": code, "ranges": ranges, "count": count, "locale": locale}
     if context.strip():
         inputs["context"] = context
-    return _rule_loader().execute("analysis", inputs, api_key)
+    return _rule_loader().execute("node_analysis", inputs, api_key)
 
 
 def analyze_dml_tables(code: str, context: str, ranges: list, api_key: str, locale: str) -> Dict[str, Any]:
@@ -34,13 +34,13 @@ def analyze_dml_tables(code: str, context: str, ranges: list, api_key: str, loca
     inputs = {"code": code, "ranges": ranges, "locale": locale}
     if context.strip():
         inputs["context"] = context
-    return _rule_loader().execute("dml", inputs, api_key)
+    return _rule_loader().execute("dml_extract", inputs, api_key)
 
 
 def analyze_summary_only(summaries: dict, api_key: str, locale: str, previous_summary: str = "") -> Dict[str, Any]:
     """프로시저/함수 전체 요약 생성 (Summary만)."""
     return _rule_loader().execute(
-        "procedure_summary_only",
+        "procedure_summary",
         {"summaries": summaries, "locale": locale, "previous_summary": previous_summary},
         api_key,
     )
@@ -70,7 +70,7 @@ def summarize_table_metadata(
 
 def analyze_variables(declaration_code: str, api_key: str, locale: str) -> Dict[str, Any]:
     return _rule_loader().execute(
-        "variables",
+        "variable_analysis",
         {"declaration_code": declaration_code, "locale": locale},
         api_key,
     )
@@ -107,14 +107,9 @@ def extract_node_context(
     return parent_ctx, sibling_ctx
 
 
-_common_rule_loader_cache: Optional[RuleLoader] = None
-
 def analyze_variable_summary(variables: List[Dict[str, Any]], api_key: str, locale: str) -> Dict[str, Any]:
     """변수 역할 목록을 하나의 요약 설명으로 통합합니다."""
-    global _common_rule_loader_cache
-    if _common_rule_loader_cache is None:
-        _common_rule_loader_cache = RuleLoader(target_lang="common")
-    return _common_rule_loader_cache.execute(
+    return _rule_loader().execute(
         "variable_summary",
         {"variables": variables, "locale": locale},
         api_key,

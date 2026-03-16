@@ -1,4 +1,4 @@
-name: "understand_table_summary_prompt"
+name: "table_summary"
 description: "테이블/컬럼 요약 생성"
 version: "1.0"
 

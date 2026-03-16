@@ -9,7 +9,7 @@ input_schema:
 
 prompt: |
   [ROLE]
-  당신은 Java 코드 분석 전문가입니다. 아래 메서드(들)의 호출 코드가 번호 순서대로 나열되어 있습니다. 각 call_code에서 비즈니스 메서드 호출의 obj_name과 method_name을 추출하세요.
+  당신은 {{ language | default("Java") }} 코드 분석 전문가입니다. 아래 메서드(들)의 호출 코드가 번호 순서대로 나열되어 있습니다. 각 call_code에서 비즈니스 메서드/함수 호출의 obj_name과 method_name을 추출하세요.
 
   [SECTION_METHOD_CALLS]
   ★ 메서드 호출 추출 (CALLS 관계용):
@@ -18,7 +18,7 @@ prompt: |
   같은 클래스 내부 호출도 포함합니다.
 
   ⚠️ 핵심 원칙: **비즈니스 메서드 호출은 모두 추출 (같은 클래스 포함)**
-  - Java 표준 라이브러리 호출만 제외
+  - {{ language | default("Java") }} 표준 라이브러리 호출만 제외
 
   추출 형식:
   - "target.methodName" 형태 → obj_name=target, method_name=methodName

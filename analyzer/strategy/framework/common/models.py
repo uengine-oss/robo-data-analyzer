@@ -11,18 +11,22 @@ from typing import Any, Dict, List, Optional
 # ---------------------------------------------------------------------------
 
 ONTOLOGY_INTERNAL_NODE_TYPES = frozenset({
-    "VARIABLE",
-    "METHOD_CALL",
+    "VARIABLE", "GLOBAL_VARIABLE",
+    "METHOD_CALL", "FUNCTION_CALL",
     "NEW_INSTANCE",
-    "IMPORT",
+    "IMPORT", "INCLUDE",
     "FILE",
     "ASSIGNMENT",
+    "TYPEDEF", "ENUM_CONSTANT",
 })
 
 NODE_VARIABLE = "VARIABLE"
+NODE_GLOBAL_VARIABLE = "GLOBAL_VARIABLE"
 NODE_METHOD_CALL = "METHOD_CALL"
+NODE_FUNCTION_CALL = "FUNCTION_CALL"
 NODE_NEW_INSTANCE = "NEW_INSTANCE"
 NODE_IMPORT = "IMPORT"
+NODE_INCLUDE = "INCLUDE"
 NODE_FILE = "FILE"
 
 
@@ -49,23 +53,44 @@ class FileCatalogEntry:
 
 @dataclass
 class ProcessingPlan:
-    """처리 계획: 분류된 작업 목록."""
-    java_ast_jobs: List[str] = field(default_factory=list)   # 파일 경로
-    xml_sqlmap_jobs: List[str] = field(default_factory=list)
-    xml_artifact_jobs: List[str] = field(default_factory=list)  # ejb-jar.xml, entitymodel.xml 등 아티팩트 XML
-    yaml_jobs: List[str] = field(default_factory=list)
-    properties_jobs: List[str] = field(default_factory=list)
-    json_jobs: List[str] = field(default_factory=list)
-    docs_jobs: List[str] = field(default_factory=list)  # 비정형문서 전용
+    """처리 계획: 분류된 작업 목록 (범용)."""
+    source_ast_jobs: List[str] = field(default_factory=list)   # 소스코드 파일 (모든 언어)
+    sql_jobs: List[str] = field(default_factory=list)          # SQL 매핑 XML
+    entity_jobs: List[str] = field(default_factory=list)       # 엔티티 정의 XML
+    config_jobs: List[str] = field(default_factory=list)       # 설정 파일 (yaml, properties, json, 일반 xml)
+    docs_jobs: List[str] = field(default_factory=list)         # 비정형 문서
+
+    # 하위호환 alias (property)
+    @property
+    def java_ast_jobs(self) -> List[str]:
+        return self.source_ast_jobs
+
+    @property
+    def xml_sqlmap_jobs(self) -> List[str]:
+        return self.sql_jobs
+
+    @property
+    def xml_artifact_jobs(self) -> List[str]:
+        return self.entity_jobs
+
+    @property
+    def yaml_jobs(self) -> List[str]:
+        return self.config_jobs
+
+    @property
+    def properties_jobs(self) -> List[str]:
+        return self.config_jobs
+
+    @property
+    def json_jobs(self) -> List[str]:
+        return self.config_jobs
 
     def iter_jobs(self):
         """모든 job 유형을 (category, paths) 쌍으로 순회."""
-        yield "java_ast", self.java_ast_jobs
-        yield "xml_sqlmap", self.xml_sqlmap_jobs
-        yield "xml_artifact", self.xml_artifact_jobs
-        yield "yaml", self.yaml_jobs
-        yield "properties", self.properties_jobs
-        yield "json", self.json_jobs
+        yield "source_ast", self.source_ast_jobs
+        yield "sql", self.sql_jobs
+        yield "entity", self.entity_jobs
+        yield "config", self.config_jobs
         yield "docs", self.docs_jobs
 
 

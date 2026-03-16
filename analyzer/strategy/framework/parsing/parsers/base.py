@@ -32,101 +32,71 @@ def _parse_xml_safe(path: str, parser_fn):
     return parser_fn(root, path)
 
 
-def _is_entitymodel_xml(path: str) -> bool:
-    """파일명 또는 내용에서 entitymodel XML 여부 판단."""
-    name_lower = Path(path).name.lower()
-    if "entitymodel" in name_lower:
-        return True
-    try:
-        sig = read_text_with_fallback(path)[:2048].lower()
-        return "entitymodel" in sig
-    except Exception:
-        return False
-
-
 def run_step3(
-    xml_sqlmap_jobs: List[str],
-    yaml_jobs: List[str],
-    properties_jobs: List[str],
+    sql_jobs: List[str],
+    config_jobs: List[str],
+    _unused: Optional[List[str]] = None,
+    *,
     xml_artifact_jobs: Optional[List[str]] = None,
+    entity_jobs: Optional[List[str]] = None,
     xml_cmp_mapping_jobs: Optional[List[str]] = None,
 ) -> Tuple[List[SqlStatementChunk], List[ConfigSectionChunk], List[ArtifactChunk]]:
-    """Step 3 전체: SqlStatement + ConfigSection + Artifact 청크 생성."""
-    from .mybatis import parse_mybatis_xml
+    """Step 3 전체: SqlStatement + ConfigSection + Artifact 청크 생성.
+
+    범용 — sql/entity/config 3종 분류. 프레임워크 구분 없음.
+    모든 XML은 parse_xml_universal()로 통합 처리.
+    """
     from .yaml_config import parse_yaml_config
     from .properties import parse_properties
-    from .xml_artifact import parse_ejb_jar
-    from .entitymodel import parse_entitymodel_xml
+    from .xml_universal import parse_xml_universal
+
+    # entity_jobs와 xml_artifact_jobs 통합 (backward compat)
+    all_entity_jobs = list(entity_jobs or []) + list(xml_artifact_jobs or [])
+    # 모든 XML을 한 곳에서 처리
+    all_xml_jobs = list(sql_jobs) + list(all_entity_jobs)
 
     logger.info(
-        "[FW:STEP3] 아티팩트 진입 | xml_sqlmap=%d yaml=%d properties=%d xml_artifact=%d xml_cmp_mapping=%d",
-        len(xml_sqlmap_jobs),
-        len(yaml_jobs),
-        len(properties_jobs),
-        len(xml_artifact_jobs or []),
-        len(xml_cmp_mapping_jobs or []),
+        "[FW:STEP3] 아티팩트 진입 | xml=%d config=%d (sql=%d entity=%d)",
+        len(all_xml_jobs),
+        len(config_jobs),
+        len(sql_jobs),
+        len(all_entity_jobs),
     )
     sql_chunks: List[SqlStatementChunk] = []
     config_chunks: List[ConfigSectionChunk] = []
     artifact_chunks: List[ArtifactChunk] = []
 
-    logger.info(
-        "[FW:STEP3] [섹션] MyBatis XML 파싱 → SqlStatementChunk | 파일 %d개",
-        len(xml_sqlmap_jobs),
-    )
-    for path in xml_sqlmap_jobs:
-        chunks_sql = parse_mybatis_xml(path)
-        sql_chunks.extend(chunks_sql)
+    # XML 파싱 — 범용 파서로 통합 (sql/entity 구분은 파서가 태그로 판단)
+    if all_xml_jobs:
+        logger.info("[FW:STEP3] [섹션] XML 범용 파싱 | 파일 %d개", len(all_xml_jobs))
+    for path in all_xml_jobs:
+        xml_sql, xml_entities = parse_xml_universal(path)
+        sql_chunks.extend(xml_sql)
+        artifact_chunks.extend(xml_entities)
 
-    if yaml_jobs:
-        logger.info(
-            "[FW:STEP3] [섹션] YAML 설정 파싱 → ConfigSectionChunk | 파일 %d개",
-            len(yaml_jobs),
-        )
-    for p in yaml_jobs:
-        chunks_yaml = parse_yaml_config(p)
-        config_chunks.extend(chunks_yaml)
+    # 설정 파일 파싱 (yaml, properties)
+    if config_jobs:
+        logger.info("[FW:STEP3] [섹션] Config 파싱 | 파일 %d개", len(config_jobs))
+    for p in config_jobs:
+        ext = Path(p).suffix.lower()
+        if ext in (".yaml", ".yml"):
+            config_chunks.extend(parse_yaml_config(p))
+        elif ext == ".properties":
+            config_chunks.extend(parse_properties(p))
 
-    if properties_jobs:
-        logger.info(
-            "[FW:STEP3] [섹션] properties 파싱 → ConfigSectionChunk | 파일 %d개",
-            len(properties_jobs),
-        )
-    for p in properties_jobs:
-        chunks_props = parse_properties(p)
-        config_chunks.extend(chunks_props)
-
-    if xml_artifact_jobs:
-        logger.info(
-            "[FW:STEP3] [섹션] XML Artifact 파싱 → ArtifactChunk | 파일 %d개",
-            len(xml_artifact_jobs or []),
-        )
-    for p in xml_artifact_jobs or []:
-        if _is_entitymodel_xml(p):
-            chunks_art = parse_entitymodel_xml(p)
-        else:
-            chunks_art = parse_ejb_jar(p)
-        artifact_chunks.extend(chunks_art)
-
+    # CMP 매핑 (하위호환)
     if xml_cmp_mapping_jobs:
-        logger.info(
-            "[FW:STEP3] [섹션] CMP 매핑 XML 파싱 → ArtifactChunk(cmp_mapping) | 파일 %d개",
-            len(xml_cmp_mapping_jobs),
-        )
+        logger.info("[FW:STEP3] [섹션] CMP 매핑 XML | 파일 %d개", len(xml_cmp_mapping_jobs))
     for p in xml_cmp_mapping_jobs or []:
         try:
             text = read_text_with_fallback(p)
         except Exception as e:
-            logger.info(
-                "[FW:STEP3] 스킵 | parser=cmp_mapping file=%s reason=read_error error=%s",
-                Path(p).name,
-                e,
-            )
+            logger.info("[FW:STEP3] 스킵 | parser=cmp_mapping file=%s error=%s", Path(p).name, e)
             continue
         snippet = text.strip()[:2000]
         sl = 1
         el = max(1, snippet.count("\n") + 1)
-        chunk = ArtifactChunk(
+        artifact_chunks.append(ArtifactChunk(
             chunk_id=f"{p}:cmp_mapping",
             chunk_type="cmp_mapping",
             hint_key=None,
@@ -134,8 +104,7 @@ def run_step3(
             source_path=p,
             start_line=sl,
             end_line=el,
-        )
-        artifact_chunks.append(chunk)
+        ))
 
     logger.info(
         "[FW:STEP3] 아티팩트 완료 | sql_chunks=%d config_chunks=%d artifact_chunks=%d",

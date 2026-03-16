@@ -1,0 +1,52 @@
+# 언어별 프로필 — stdlib 무시 목록, 파라미터 파서 형식, 네이밍 규칙
+# 새 언어 추가 시 이 파일에 섹션만 추가하면 됨.
+
+profiles:
+  java:
+    stdlib_file: "java_stdlib.json"        # internal/ 디렉토리 기준
+    param_style: "type_name"               # "Type name" → {name: Type}
+    naming_convention: "camelCase"
+    display_name: "Java"
+    emoji: "\u2615"                        # ☕
+
+  c:
+    stdlib_file: "c_stdlib.json"
+    param_style: "type_name"               # "int count" → {count: int}
+    naming_convention: "snake_case"
+    display_name: "C"
+    emoji: "\U0001f1e8"                    # 🇨
+
+  python:
+    stdlib_file: "python_stdlib.json"
+    param_style: "name_colon_type"         # "name: str" → {name: str}
+    naming_convention: "snake_case"
+    display_name: "Python"
+    emoji: "\U0001f40d"                    # 🐍
+
+  go:
+    stdlib_file: "go_stdlib.json"
+    param_style: "name_type"               # "name string" → {name: string}
+    naming_convention: "camelCase"
+    display_name: "Go"
+    emoji: "\U0001f439"                    # 🐹
+
+  kotlin:
+    stdlib_file: "kotlin_stdlib.json"
+    param_style: "name_colon_type"         # "name: String" → {name: String}
+    naming_convention: "camelCase"
+    display_name: "Kotlin"
+    emoji: "\U0001f1f0"                    # 🇰
+
+  scala:
+    stdlib_file: "scala_stdlib.json"
+    param_style: "name_colon_type"
+    naming_convention: "camelCase"
+    display_name: "Scala"
+    emoji: "\U0001f534"                    # 🔴
+
+  rust:
+    stdlib_file: "rust_stdlib.json"
+    param_style: "name_colon_type"         # "name: String" → {name: String}
+    naming_convention: "snake_case"
+    display_name: "Rust"
+    emoji: "\u2699\ufe0f"                  # ⚙️

@@ -1,0 +1,47 @@
+roles:
+  container:        # CLASS 역할 (Neo4j 라벨: CLASS)
+    java:    [CLASS, INTERFACE, ENUM]
+    c:       [STRUCT, UNION, ENUM]
+    python:  [CLASS]
+    go:      [STRUCT, INTERFACE]
+
+  method:           # METHOD 역할 (Neo4j 라벨: METHOD)
+    java:    [METHOD, CONSTRUCTOR]
+    c:       [FUNCTION]
+    python:  [METHOD, FUNCTION]
+    go:      [FUNCTION, METHOD]
+
+  field:            # FIELD 역할 (Neo4j 라벨: FIELD)
+    java:    [FIELD]
+    c:       [FIELD]
+    python:  [FIELD]
+    go:      [FIELD]
+
+  silent:           # 수집되지만 로그 안 남기는 노드
+    java:    [VARIABLE]
+    c:       [VARIABLE, GLOBAL_VARIABLE, ENUM_CONSTANT, TYPEDEF]
+    python:  [VARIABLE]
+
+  internal:         # Neo4j 미저장, 분석 중에만 사용
+    java:    [VARIABLE, METHOD_CALL, NEW_INSTANCE, IMPORT, FILE, ASSIGNMENT]
+    c:       [VARIABLE, GLOBAL_VARIABLE, FUNCTION_CALL, INCLUDE, FILE, TYPEDEF, ENUM_CONSTANT]
+    python:  [VARIABLE, IMPORT, FILE, ASSIGNMENT]
+
+  call:             # 호출 참조 노드 (ref_candidates 수집 대상)
+    java:    [METHOD_CALL, NEW_INSTANCE]
+    c:       [FUNCTION_CALL]
+    python:  [METHOD_CALL]
+
+  import:           # 의존성 참조 노드
+    java:    [IMPORT]
+    c:       [INCLUDE]
+    python:  [IMPORT]
+
+extensions:         # 언어별 소스 확장자
+  java:    [".java"]
+  c:       [".c", ".h"]
+  python:  [".py"]
+  go:      [".go"]
+  kotlin:  [".kt"]
+  scala:   [".scala"]
+  rust:    [".rs"]

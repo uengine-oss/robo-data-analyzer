@@ -1,28 +1,16 @@
 """DBMS 전략 공통 유틸리티 함수
 
 phase_ddl.py + _ast_core.py에서 추출한 순수 유틸 함수.
+DDL 관련 공통 함수는 analyzer.common.ddl_utils로 이동, 여기서 re-export.
 """
 
 from __future__ import annotations
 
-import os
 import re
-from typing import Any, List, Optional, Set, Tuple
+from typing import Optional, Set, Tuple
 
-from util.text_utils import log_process
-
-
-# ==================== phase_ddl.py에서 추출 ====================
-
-def apply_name_case(name: str, name_case: str) -> str:
-    """메타데이터 대소문자 변환 적용"""
-    if not name:
-        return name
-    if name_case == "uppercase":
-        return name.upper()
-    elif name_case == "lowercase":
-        return name.lower()
-    return name
+# DDL 공통 함수 re-export (하위호환)
+from analyzer.common.ddl_utils import apply_name_case, list_ddl_files  # noqa: F401
 
 
 def resolve_default_schema(
@@ -48,33 +36,6 @@ def resolve_default_schema(
                 return matched
 
     return apply_name_case(parts[-1], name_case)
-
-
-def list_ddl_files(orchestrator: Any) -> List[str]:
-    """DDL 파일 목록 조회
-
-    DDL 디렉토리가 없거나 파일이 없으면 빈 리스트 반환 (경고 처리, 에러 아님)
-    """
-    ddl_dir = orchestrator.dirs.get("ddl", "")
-    if not ddl_dir:
-        log_process("ANALYZE", "DDL", "DDL 디렉토리 설정 없음 - DDL 처리 생략")
-        return []
-    if not os.path.isdir(ddl_dir):
-        log_process("ANALYZE", "DDL", f"DDL 디렉토리 없음: {ddl_dir} - DDL 처리 생략")
-        return []
-    try:
-        files = sorted(
-            f for f in os.listdir(ddl_dir)
-            if os.path.isfile(os.path.join(ddl_dir, f))
-        )
-        if not files:
-            log_process("ANALYZE", "DDL", f"DDL 디렉토리에 파일 없음: {ddl_dir} - DDL 처리 생략")
-            return []
-        log_process("ANALYZE", "DDL", f"DDL 파일 발견: {len(files)}개")
-        return files
-    except OSError as e:
-        log_process("ANALYZE", "DDL", f"DDL 디렉토리 읽기 실패: {ddl_dir} - {e}")
-        return []
 
 
 # ==================== _ast_core.py에서 추출 ====================

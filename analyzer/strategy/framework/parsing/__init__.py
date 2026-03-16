@@ -22,11 +22,8 @@ from .indexer import (  # noqa: F401
     run_step4,
 )
 from .parsers import (  # noqa: F401
-    parse_mybatis_xml,
     parse_yaml_config,
     parse_properties,
-    parse_ejb_jar,
-    parse_entitymodel_xml,
-    extract_ejb2_beans_from_ejb_jar,
+    parse_xml_universal,
     run_step3,
 )

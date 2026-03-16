@@ -102,9 +102,11 @@ def _build_linked_architecture_context(
     sql_index: Optional[Dict[str, Any]] = None,
     config_index: Optional[Dict[str, Any]] = None,
     class_index: Optional[Dict[str, Any]] = None,
+    field_facts_list: Optional[List[FieldFacts]] = None,
     sql_text_max_len: int = 800,
     config_snippet_max_len: int = 500,
     class_info_max_len: int = 300,
+    class_fields_max_len: int = 400,
     total_max_len: int = 0,
 ) -> str:
     """메서드가 참조하는 모든 아키텍처 노드(SQL, Config, Class)의 내용을 하나의 문자열로 구성. LLM context용."""
@@ -139,6 +141,11 @@ def _build_linked_architecture_context(
             name = info.get("name") or info.get("class_key") or cid
             comment = (info.get("comment") or "")[:class_info_max_len]
             desc = f"name: {name}" + (f" | comment: {comment}" if comment else "")
+            # 참조 클래스의 필드 정보 포함 (엔티티-테이블 관계 추론용)
+            ref_class_key = info.get("class_key") or cid
+            fields_desc = _build_class_fields_context(ref_class_key, field_facts_list, max_len=class_fields_max_len)
+            if fields_desc:
+                desc += f" | fields: {fields_desc}"
         else:
             desc = str(cid)
         parts.append(f"[연결된 Class] target_id: {cid} | {desc}")
@@ -194,6 +201,7 @@ def _invoke_analysis_llm(
     linked_architecture_context: Optional[str] = None,
     called_method_summaries: Optional[List[Dict[str, Any]]] = None,
     class_fields_context: Optional[str] = None,
+    lang: str = "java",
 ) -> Optional[Dict[str, Any]]:
     """메서드 1개에 대해 analysis 규칙 실행 → summary/calls/dependencies/stereotype.
 
@@ -207,11 +215,19 @@ def _invoke_analysis_llm(
         return None
     code = m.code.strip()
     ranges = [{"startLine": m.start_line, "endLine": m.end_line}]
+    # lang → display_name (Java, C, Python 등)
+    try:
+        from analyzer.strategy.framework.common.lang_profile import get_lang_profile
+        language = get_lang_profile().display_name(lang)
+    except Exception:
+        language = lang.capitalize()
+
     inputs: Dict[str, Any] = {
         "code": code,
         "ranges": ranges,
         "count": 1,
         "locale": locale,
+        "language": language,
     }
     context_parts: List[str] = []
     if class_comment:
@@ -255,7 +271,7 @@ def _invoke_analysis_llm(
         inputs["context"] = context
     try:
         loader = get_rule_loader("framework")
-        result = loader.execute("analysis", inputs, api_key=api_key)
+        result = loader.execute("method_summary", inputs, api_key=api_key)
         analysis_list = result.get("analysis") if isinstance(result, dict) else None
         if not analysis_list:
             logger.info("[FW:STEP6] LLM 스킵 | method_id=%s reason=empty_analysis_result", m.method_id)
@@ -307,6 +323,7 @@ def _process_one_method_for_analysis(
         sql_index=sql_index,
         config_index=config_index,
         class_index=class_index,
+        field_facts_list=field_facts_list,
         total_max_len=LINKED_ARCHITECTURE_CONTEXT_MAX,
     )
     class_comment, class_annotations = _get_class_context(class_key_index or {}, m.class_key)
@@ -362,6 +379,7 @@ def run_step6(
     config_index: Optional[Dict[str, Any]] = None,
     calls_edges: Optional[List[CallsEdge]] = None,
     field_facts_list: Optional[List[FieldFacts]] = None,
+    lang: str = "java",
 ) -> Generator[Dict[str, Dict[str, Any]], None, None]:
     """메서드별 stereotype, summary — 20개씩 배치로 yield.
 
@@ -849,7 +867,7 @@ def _invoke_class_summary_llm(
         inputs["prev_summary"] = prev_summary[:800] if len(prev_summary) > 800 else prev_summary
     try:
         loader = get_rule_loader("framework")
-        result = loader.execute("class_summary_batch", inputs, api_key=api_key)
+        result = loader.execute("class_summary", inputs, api_key=api_key)
         if isinstance(result, Dict) and result.get("summary"):
             return result["summary"]
     except Exception as e:
@@ -960,159 +978,3 @@ def run_class_summary(
     if batch:
         yield batch
     logger.info("[FW:STEP6] Class 요약 완료 | class_count=%d", total_yielded)
-
-
-def _invoke_method_summary_enhancement(
-    current_summary: str,
-    called_summaries: List[Dict[str, Any]],
-    api_key: str,
-    locale: str = "ko",
-    class_name: Optional[str] = None,
-    class_comment: Optional[str] = None,
-    class_annotations: Optional[str] = None,
-) -> Optional[str]:
-    """method_summary_enhancement 규칙 실행 → 보강된 summary 반환."""
-    if not api_key or not current_summary:
-        return current_summary
-    inputs: Dict[str, Any] = {
-        "current_summary": current_summary,
-        "called_methods": called_summaries,
-        "locale": locale,
-    }
-    if class_name:
-        inputs["class_name"] = class_name
-    if class_comment:
-        inputs["class_comment"] = class_comment
-    if class_annotations:
-        inputs["class_annotations"] = class_annotations
-    try:
-        loader = get_rule_loader("framework")
-        result = loader.execute("method_summary_enhancement", inputs, api_key=api_key)
-        if isinstance(result, Dict) and result.get("summary"):
-            return result["summary"]
-    except Exception as e:
-        logger.warning("[FW:STEP6] method_summary_enhancement 실패: %s", e)
-    return current_summary
-
-
-def run_summary_enhancement_by_call_graph(
-    summary_by_method: Dict[str, Dict[str, Any]],
-    calls_edges: List[CallsEdge],
-    method_facts_list: List[MethodFacts],
-    api_key: Optional[str] = None,
-    locale: str = "ko",
-    class_index: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Dict[str, Any]]:
-    """호출 그래프 기준 리프→상위 순으로 동일 레벨 병렬 보강."""
-    api_key = api_key or settings.llm.api_key or os.getenv("LLM_API_KEY", "")
-    class_key_index = _build_class_key_index(class_index or {})
-    method_by_id: Dict[str, MethodFacts] = {m.method_id: m for m in method_facts_list}
-    node_ids = set(summary_by_method.keys())
-    children: Dict[str, List[str]] = {}
-    parents: Dict[str, List[str]] = {}
-    for e in calls_edges or []:
-        c = e.caller_method_id
-        cal = e.callee_method_id
-        if not c or not cal or c not in node_ids or cal not in node_ids:
-            continue
-        children.setdefault(c, []).append(cal)
-        parents.setdefault(cal, []).append(c)
-    leaf_ids = [n for n in node_ids if n not in children]
-    remaining_children: Dict[str, int] = {c: len(children[c]) for c in children}
-    summary_cache: Dict[str, str] = {}
-    for mid in leaf_ids:
-        summary_cache[mid] = (summary_by_method.get(mid) or {}).get("summary", "")
-    ready_queue: List[str] = []
-    for mid in leaf_ids:
-        for p in parents.get(mid, []):
-            if p in remaining_children:
-                remaining_children[p] -= 1
-                if remaining_children[p] == 0:
-                    ready_queue.append(p)
-    if not ready_queue:
-        logger.info("[FW:STEP6] 호출 그래프 보강: 보강 대상 노드 없음 (리프만 있음)")
-        return summary_by_method
-
-    workers = settings.concurrency.max_concurrency
-    step = 0
-    while ready_queue:
-        step += 1
-        current_batch = list(ready_queue)
-        ready_queue = []
-        logger.info(
-            "[FW:STEP6] 호출 그래프 보강 Step %d | 레벨 노드 %d개 (병렬)",
-            step,
-            len(current_batch),
-        )
-
-        def enhance_one(node_id: str) -> Tuple[str, str]:
-            data = summary_by_method.get(node_id) or {}
-            current_summary = summary_cache.get(node_id) or data.get("summary", "")
-            if not current_summary:
-                return node_id, current_summary
-            called_summaries = []
-            for callee_id in children.get(node_id, []):
-                if callee_id not in summary_cache:
-                    continue
-                callee_m = method_by_id.get(callee_id)
-                if callee_m:
-                    fqn = getattr(callee_m, "fqn", "") or ""
-                    class_fqn = fqn.rsplit(".", 1)[0] if "." in fqn else ""
-                    class_name = class_fqn.split(".")[-1] if class_fqn else ""
-                    method_name = fqn.rsplit(".", 1)[-1] if "." in fqn else fqn
-                    called_summaries.append(
-                        {
-                            "class_name": class_name,
-                            "method_name": method_name,
-                            "summary": summary_cache[callee_id],
-                        }
-                    )
-            caller_m = method_by_id.get(node_id)
-            class_name = None
-            class_comment = None
-            class_annotations = None
-            if caller_m:
-                fqn = getattr(caller_m, "fqn", "") or ""
-                class_name = fqn.rsplit(".", 1)[0].split(".")[-1] if "." in fqn else None
-                class_comment, class_annotations = _get_class_context(
-                    class_key_index,
-                    getattr(caller_m, "class_key", None),
-                )
-            enhanced = _invoke_method_summary_enhancement(
-                current_summary,
-                called_summaries,
-                api_key or "",
-                locale,
-                class_name=class_name,
-                class_comment=class_comment,
-                class_annotations=class_annotations,
-            )
-            return node_id, (enhanced or current_summary)
-
-        with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
-            futures = {executor.submit(enhance_one, nid): nid for nid in current_batch}
-            for future in as_completed(futures):
-                nid = futures[future]
-                try:
-                    node_id, enhanced_summary = future.result()
-                    summary_cache[node_id] = enhanced_summary
-                    processed_id = node_id
-                except Exception as e:
-                    logger.warning("[FW:STEP6] 보강 예외 method_id=%s: %s", nid, e)
-                    summary_cache[nid] = (summary_by_method.get(nid) or {}).get("summary", "")
-                    processed_id = nid
-                if processed_id in parents:
-                    for p in parents[processed_id]:
-                        if p in remaining_children:
-                            remaining_children[p] -= 1
-                            if remaining_children[p] == 0:
-                                ready_queue.append(p)
-    out = dict(summary_by_method)
-    for mid, summary in summary_cache.items():
-        if mid in out:
-            out[mid] = {**out[mid], "summary": summary}
-    logger.info(
-        "[FW:STEP6] 호출 그래프 보강 완료 | summary_count=%d",
-        len(out),
-    )
-    return out

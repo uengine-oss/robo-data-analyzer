@@ -144,6 +144,8 @@ class RuleLoader:
         """프롬프트 실행 (LLM 호출, 429 Rate Limit 자동 재시도)"""
         _ = self._load_rule(rule_name)
         prompt_text = self.render_prompt(rule_name, inputs)
+        # 제어 문자 제거 (null byte, BOM 등 → API 400 에러 방지)
+        prompt_text = prompt_text.replace("\x00", "").replace("\ufeff", "")
         rule_path = os.path.join(self.rule_dir, f"{rule_name}.yaml")
 
         llm = get_llm(api_key=api_key, model=model)
@@ -177,8 +179,9 @@ class RuleLoader:
                 last_error = e
                 err_str = str(e)
                 is_rate_limit = "429" in err_str or "rate" in err_str.lower() or "quota" in err_str.lower()
+                is_bad_request = "400" in err_str and "parse" in err_str.lower()
 
-                if is_rate_limit and attempt < _MAX_RETRIES:
+                if (is_rate_limit or is_bad_request) and attempt < _MAX_RETRIES:
                     delay = _RETRY_BASE_DELAY * (2 ** attempt)
                     logger.warning(
                         "[RULE] 429 Rate Limit | rule=%s | attempt=%d/%d | %.1fs 후 재시도",
