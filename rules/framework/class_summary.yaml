@@ -11,21 +11,23 @@ input_schema:
     - class_comment
     - class_annotations
     - prev_summary
+    - kind
 
 prompt: |
   [ROLE]
-  당신은 Java 클래스의 역할과 책임을 요약하는 전문가입니다.
-  클래스 FQN, 주석·어노테이션, 그리고 이 클래스에 속한 멤버(메서드/필드)의 요약 목록을 바탕으로, 클래스 전체가 무엇을 하는지 요약하세요.
-  
-  
+  당신은 클래스/모듈/구조체의 역할과 책임을 요약하는 전문가입니다.
+  FQN, 주석·어노테이션, 그리고 이 단위에 속한 멤버(메서드/필드)의 요약 목록을 바탕으로, 전체가 무엇을 하는지 요약하세요.
+
+
   [LANGUAGE_SETTING]
   응답 언어: {{ locale }}
-  
-  
+
+
   [INPUT_DATA]
-  클래스 FQN: {{ class_fqn }}
-  {% if class_comment %}클래스 주석: {{ class_comment }}{% endif %}
-  {% if class_annotations %}클래스 어노테이션: {{ class_annotations }}{% endif %}
+  FQN: {{ class_fqn }}
+  {% if kind %}노드 종류: {{ kind }}{% endif %}
+  {% if class_comment %}주석: {{ class_comment }}{% endif %}
+  {% if class_annotations %}어노테이션: {{ class_annotations }}{% endif %}
   {% if prev_summary %}이전에 요약된 내용 (참고만 하고, 현재 items만으로 이번 요약을 작성하세요):
   {{ prev_summary }}
   {% endif %}
@@ -36,7 +38,7 @@ prompt: |
   {% endfor %}
   
   
-  [TASK]
+  [TASK 1: 클래스 요약]
   위 멤버들의 요약을 종합하여, 이 클래스가 전체적으로 어떤 책임을 가지는지 2~5문장으로 요약하세요.
   - class_comment/class_annotations가 있으면 반영하세요.
   - prev_summary가 있으면 이 클래스의 다른 멤버 요약이므로, 이번 items와 함께 일관된 클래스 요약으로 통합하세요.
@@ -44,8 +46,51 @@ prompt: |
   - 단, 비즈니스 도메인 데이터를 나타내는 필드명(엔티티 속성명)은 그대로 유지하거나 "(속성 한글명)" 형태로 병기하세요.
   - 메서드 요약에 나타난 구체적 수치, 비교연산자(<, >=, <= 등), 상태값은 반드시 클래스 요약에도 포함하세요.
   - 상태 전이 흐름이 있으면 "A → B → C" 형태로 명시하세요.
-  
-  
+
+
+  [TASK 2: 스테레오타입 분류]
+  {% if kind == "FILE" %}
+  이 단위는 C 소스파일(모듈)입니다. 아래 목록 중 **하나만** 선택하세요:
+  - **Module**: 소스파일 단위 함수 모음 (기본값)
+  - **Service**: 비즈니스 로직 처리
+  - **Repository**: 데이터 액세스 (DB CRUD)
+  - **Controller**: 요청 처리/라우팅
+  - **Util**: 유틸리티/헬퍼 함수
+  - **Config**: 설정/초기화
+  - **Scheduler**: 스케줄러/배치
+  - **Client**: 외부 시스템 연동
+  - **Gateway**: 외부 시스템 게이트웨이
+  {% elif kind == "STRUCT" or kind == "UNION" %}
+  이 단위는 C 구조체/공용체(데이터 정의)입니다. 아래 목록 중 **하나만** 선택하세요:
+  - **Entity**: DB 테이블에 매핑되는 데이터 구조체
+  - **DTO**: 데이터 전송/변환용 구조체
+  - **DataStructure**: 범용 데이터 구조 (기본값)
+  - **Config**: 설정 데이터 구조체
+  - **Enum**: 열거형
+  {% else %}
+  어노테이션, 클래스명 패턴, 멤버 요약을 종합하여 아래 목록 중 **하나만** 선택하세요:
+  - **Controller**: REST/MVC 컨트롤러 (@RestController, @Controller)
+  - **Service**: 비즈니스 서비스 (@Service)
+  - **Repository**: 데이터 액세스 (@Repository, JpaRepository 상속)
+  - **Entity**: JPA 엔티티 (@Entity, @Table)
+  - **DTO**: 데이터 전송 객체 (Request/Response/DTO 이름 패턴)
+  - **Config**: 설정 클래스 (@Configuration)
+  - **Component**: 범용 컴포넌트 (@Component)
+  - **Aspect**: AOP 관점 (@Aspect)
+  - **Filter**: 필터/인터셉터
+  - **Listener**: 이벤트 리스너
+  - **Mapper**: 객체 매핑
+  - **Util**: 유틸리티/헬퍼
+  - **ExceptionHandler**: 예외 처리 (@ControllerAdvice)
+  - **Enum**: 열거형
+  - **Gateway**: 외부 시스템 연동 게이트웨이
+  - **Facade**: 퍼사드 패턴
+  - **Factory**: 팩토리 패턴
+  - **Scheduler**: 스케줄러 (@Scheduled 포함 클래스)
+  - **Client**: 외부 API 클라이언트
+  {% endif %}
+
+
   [OUTPUT]
   다음 JSON만 출력 (코드블록 없이):
-  {"summary": "클래스 요약 문장"}
+  {"summary": "클래스 요약 문장", "classStereotype": "Service"}

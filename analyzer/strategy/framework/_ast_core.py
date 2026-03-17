@@ -332,6 +332,13 @@ class StatementCollector:
             return dir_part.replace("/", ".")
         return None
 
+    @staticmethod
+    def _stem_from_filename(file_name: str) -> str:
+        """파일명에서 확장자 제거. 예: 'svc_plan.c' → 'svc_plan'"""
+        if "." in file_name:
+            return file_name.rsplit(".", 1)[0]
+        return file_name
+
     def _visit(
         self,
         node: Dict[str, Any],
@@ -354,7 +361,27 @@ class StatementCollector:
                 package_name = extracted_pkg.replace("/", ".") if "/" in extracted_pkg else extracted_pkg
             _log_process("ANALYZE", "COLLECT", f"패키지 발견: {package_name}")
 
-        if node_type in self._container_types:
+            # C 언어: FILE 노드를 container(Class)로 등록 — 함수의 소속 컨테이너 역할
+            if node_type in self._container_types:
+                file_stem = self._stem_from_filename(self.file_name)
+                class_key = self._make_class_key(package_name, file_stem, start_line)
+                class_name = file_stem
+                class_kind = "FILE"
+                if class_key not in self.classes:
+                    self.classes[class_key] = ClassInfo(
+                        key=class_key,
+                        name=file_stem,
+                        kind="FILE",
+                        node_start=start_line,
+                        node_end=end_line,
+                        package_name=package_name,
+                    )
+                _log_process(
+                    "ANALYZE", "COLLECT",
+                    f"파일 컨테이너 등록: {package_name}.{file_stem} (FILE)",
+                )
+
+        if node_type in self._container_types and node_type != "FILE":
             extracted_name = node.get("name")
             class_key = self._make_class_key(package_name, extracted_name, start_line)
             class_name = extracted_name

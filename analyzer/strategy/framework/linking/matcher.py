@@ -19,7 +19,6 @@ from analyzer.strategy.framework.models import (
 )
 from analyzer.strategy.framework.common.utils import (
     key_in_code,
-    infer_table_name_from_entity_fqn,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,9 +49,25 @@ def identify_entity_classes(class_index: Dict[str, Any]) -> set:
     return entity_fqns
 
 
-def _infer_table_name_from_entity_fqn(fqn: str) -> str:
-    """자바 엔티티 FQN에서 테이블명 추론. CollateralBean -> COLLATERAL."""
-    return infer_table_name_from_entity_fqn(fqn)
+def has_external_entity_info(
+    artifact_index: Optional[Dict[str, Any]] = None,
+    class_index: Optional[Dict[str, Any]] = None,
+    ddl_table_metadata: Optional[Dict[str, Any]] = None,
+    **extra_sources: Any,
+) -> bool:
+    """외부 소스에서 엔티티/테이블 정보가 이미 존재하는지 판별. 소스 종류를 한정하지 않음."""
+    if ddl_table_metadata:
+        return True
+    if artifact_index:
+        for ac in artifact_index.values():
+            if getattr(ac, "chunk_type", "") in ("entity", "cmp_mapping"):
+                return True
+    if class_index and identify_entity_classes(class_index):
+        return True
+    for src in extra_sources.values():
+        if src:
+            return True
+    return False
 
 
 QUOTED_STRING_PATTERN = re.compile(r'["\']([^"\']+)["\']')

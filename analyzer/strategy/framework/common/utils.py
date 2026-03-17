@@ -61,37 +61,3 @@ def external_callee_class(callee_method_id: str) -> Optional[str]:
     return rest.strip() or None
 
 
-def infer_table_name_from_entity_fqn(fqn: str) -> str:
-    """자바 엔티티 FQN에서 테이블명 추론. CollateralBean -> COLLATERAL."""
-    import re
-    if not fqn or not fqn.strip():
-        return ""
-    simple = fqn.strip().rsplit(".", 1)[-1] if "." in fqn else fqn.strip()
-    for suffix in ("Bean", "Local", "LocalHome", "DTO", "Entity", "Impl"):
-        if simple.endswith(suffix) and len(simple) > len(suffix):
-            simple = simple[: -len(suffix)]
-            break
-    if not simple:
-        return ""
-    return re.sub(r"([A-Z])", r"_\1", simple).strip("_").upper() or simple.upper()
-
-
-def normalize_table_name(name: str) -> str:
-    """테이블명 정규화. CamelCase/snake_case → UPPER_SNAKE_CASE.
-
-    예: LoanApplication → LOAN_APPLICATION
-        loan_application → LOAN_APPLICATION
-        LOAN_APPLICATION → LOAN_APPLICATION
-    """
-    import re
-    if not name or not name.strip():
-        return ""
-    n = name.strip()
-    # 이미 UPPER_SNAKE_CASE면 그대로
-    if n == n.upper() and "_" in n:
-        return n
-    # CamelCase → UPPER_SNAKE_CASE
-    result = re.sub(r"([A-Z])", r"_\1", n).strip("_").upper()
-    # 연속 언더스코어 제거
-    result = re.sub(r"_+", "_", result)
-    return result or n.upper()

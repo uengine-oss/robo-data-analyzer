@@ -81,7 +81,8 @@ from analyzer.strategy.framework.graph.queries import (
     build_table_description_update_queries,
 )
 from analyzer.strategy.framework.graph.writer import run_graph_queries
-from analyzer.strategy.framework.linking.deep_agent import run_deep_agent
+from analyzer.strategy.framework.linking.deep_agent import run_deep_agent, run_deep_agent_entity_identification
+from analyzer.strategy.framework.linking.matcher import has_external_entity_info
 
 # Phase 1 에서 사용하는 함수들
 from analyzer.strategy.framework.parsing.scanner import scan_project
@@ -411,6 +412,7 @@ async def run_phase_llm(
         run_dir=st.get("run_dir"),
         artifact_index=st.get("artifact_index"),
         artifact_chunks=st.get("artifact_chunks"),
+        ddl_table_metadata=pipeline._pipeline_state.get("ddl_table_metadata"),
     ):
         stage = step_result["stage"]
 
@@ -501,6 +503,59 @@ async def run_phase_llm(
             yield tracker.begin_step(2, 1)
             artifact_class_count = len(artifact_class_rels) if 'artifact_class_rels' in dir() else 0
             yield tracker.end_step(f"Method→Table {len(method_table_edges)}건, Class→Table {len(class_table_edges)}건, Artifact→Table {len(artifact_table_edges)}건, Artifact→Class {artifact_class_count}건")
+
+    # DeepAgent 엔티티 식별 — 시나리오별 분기
+    # 시나리오 1 (DDL + 외부파일): 현행 결정론 매칭으로 충분 → 스킵
+    # 시나리오 2 (DDL만): 테이블명 컨텍스트 + 코드 추적 → DeepAgent 실행
+    # 시나리오 3 (외부파일만): 현행 table_extract LLM으로 충분 → 스킵
+    # 시나리오 4 (아무것도 없음): 후보 기반 엔티티 식별 → DeepAgent 실행
+    ddl_meta = pipeline._pipeline_state.get("ddl_table_metadata") or {}
+    _has_external_files = has_external_entity_info(
+        artifact_index=st.get("artifact_index"),
+        class_index=st.get("class_index"),
+    )
+    _needs_deep_entity = (
+        (bool(ddl_meta) and not _has_external_files)  # 시나리오 2: DDL만
+        or (not ddl_meta and not _has_external_files)  # 시나리오 4: 아무것도 없음
+    )
+
+    if _needs_deep_entity:
+        scenario = "ddl_only" if ddl_meta else "no_external"
+        logger.info("[FW:PHASE2] DeepAgent 엔티티 식별 실행 (scenario=%s)", scenario)
+        entity_api_key = settings.llm.api_key
+        entity_run_dir = Path(st["run_dir"]) if st.get("run_dir") else None
+        entity_state = {
+            "sql_index": sql_index,
+            "config_index": st.get("config_index") or {},
+            "artifact_index": st.get("artifact_index") or {},
+            "data_dir": data_dir,
+            "run_dir": str(entity_run_dir) if entity_run_dir else None,
+            "span_index": st.get("span_index"),
+            "chunk_index": st.get("chunk_index"),
+        }
+        entity_mt_edges = run_deep_agent_entity_identification(
+            st.get("class_index") or {},
+            entity_state,
+            api_key=entity_api_key,
+            run_dir=entity_run_dir,
+            ddl_table_metadata=ddl_meta or None,
+        )
+        if entity_mt_edges:
+            method_table_edges.extend(entity_mt_edges)
+            logger.info("[FW:PHASE2] DeepAgent 엔티티 식별 완료 | Method→Table %d건", len(entity_mt_edges))
+            try:
+                eid_queries = build_method_table_from_writes_queries(entity_mt_edges)
+                if eid_queries:
+                    async for graph in run_graph_queries(client, eid_queries, label="PHASE2:ENTITY_ID"):
+                        yield emit_data(graph=graph)
+            except Exception as e:
+                logger.warning("[FW:PHASE2] Neo4j 엔티티 식별 반영 실패: %s", e)
+        # bundle index를 state에 보존 (후속 DeepAgent 재사용)
+        if entity_state.get("span_index"):
+            st.setdefault("span_index", entity_state["span_index"])
+            st.setdefault("chunk_index", entity_state["chunk_index"])
+    else:
+        logger.info("[FW:PHASE2] 외부 엔티티 정보 충분 — DeepAgent 엔티티 식별 스킵")
 
     # DeepAgent: 항목별 점진적 스트리밍
     if not unresolved:

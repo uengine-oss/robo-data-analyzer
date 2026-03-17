@@ -1,7 +1,7 @@
 roles:
   container:        # CLASS 역할 (Neo4j 라벨: CLASS)
     java:    [CLASS, INTERFACE, ENUM]
-    c:       [STRUCT, UNION, ENUM]
+    c:       [FILE, STRUCT, UNION, ENUM]
     python:  [CLASS]
     go:      [STRUCT, INTERFACE]
 
@@ -24,7 +24,7 @@ roles:
 
   internal:         # Neo4j 미저장, 분석 중에만 사용
     java:    [VARIABLE, METHOD_CALL, NEW_INSTANCE, IMPORT, FILE, ASSIGNMENT]
-    c:       [VARIABLE, GLOBAL_VARIABLE, FUNCTION_CALL, INCLUDE, FILE, TYPEDEF, ENUM_CONSTANT]
+    c:       [VARIABLE, GLOBAL_VARIABLE, FUNCTION_CALL, INCLUDE, TYPEDEF, ENUM_CONSTANT]
     python:  [VARIABLE, IMPORT, FILE, ASSIGNMENT]
 
   call:             # 호출 참조 노드 (ref_candidates 수집 대상)

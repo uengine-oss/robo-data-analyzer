@@ -281,44 +281,78 @@ def chunk_bundle_path_for_ast_path(data_dir: str, ast_path: str) -> str:
 def build_bundle_span_index(
     data_dir: Optional[str] = None,
     chunk_bundle_dir: Optional[str] = None,
+    artifact_index: Optional[Dict[str, Any]] = None,
+    sql_index: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
-    """ChunkBundle 전체 로드 후 span_index(문자열 키), chunk_index 반환. LangSmith 직렬화를 위해 tuple 키 사용 안 함."""
+    """ChunkBundle 전체 로드 후 span_index(문자열 키), chunk_index 반환.
+
+    artifact_index, sql_index가 전달되면 해당 청크도 chunk_index에 통합하여
+    bundle_search()로 소스코드·XML·SQL 통합 검색이 가능하도록 한다.
+    """
     base = Path(chunk_bundle_dir) if chunk_bundle_dir else Path(_get_chunk_bundle_dir(data_dir or ""))
     span_index: Dict[str, Dict[str, Any]] = {}
     chunk_index: Dict[str, Dict[str, Any]] = {}
     if not base.is_dir():
         logger.info("[FW:CHUNK] span_index 스킵 | reason=dir_not_found dir=%s", base.name)
-        return span_index, chunk_index
-    for path in base.glob("*.json"):
-        try:
-            bundle = load_chunk_bundle(path)
-            fp = bundle.file_meta.file_path
-            for m in bundle.methods:
-                if m.method_code:
-                    key = _span_index_key(fp, m.start_line, m.end_line)
-                    cid = m.method_id
-                    span_index[key] = {"chunk_id": cid, "text": m.method_code, "filePath": fp, "span": [m.start_line, m.end_line]}
-                    chunk_index[cid] = {"filePath": fp, "span": [m.start_line, m.end_line], "text": m.method_code}
-            for c in bundle.method_calls:
-                if c.call_code:
-                    key = _span_index_key(fp, c.start_line, c.end_line)
-                    cid = c.call_id
-                    span_index[key] = {"chunk_id": cid, "text": c.call_code, "filePath": fp, "span": [c.start_line, c.end_line]}
-                    chunk_index[cid] = {"filePath": fp, "span": [c.start_line, c.end_line], "text": c.call_code}
-            for v in bundle.variables:
-                if v.initializer_code:
-                    key = _span_index_key(fp, v.start_line, v.end_line)
-                    cid = f"C:{v.start_line}:{v.end_line}:var"
-                    span_index[key] = {"chunk_id": cid, "text": v.initializer_code, "filePath": fp, "span": [v.start_line, v.end_line]}
-                    chunk_index[cid] = {"filePath": fp, "span": [v.start_line, v.end_line], "text": v.initializer_code}
-            for f in getattr(bundle, "fields", []):
-                if f.field_code:
-                    key = _span_index_key(fp, f.start_line, f.end_line)
-                    span_index[key] = {"chunk_id": f.field_id, "text": f.field_code, "filePath": fp, "span": [f.start_line, f.end_line]}
-                    chunk_index[f.field_id] = {"filePath": fp, "span": [f.start_line, f.end_line], "text": f.field_code}
-        except Exception as e:
-            logger.debug("ChunkBundle 인덱스 스킵 %s: %s", path.name, e)
-    logger.info("[FW:CHUNK] span_index 완료 | span_count=%d chunk_count=%d", len(span_index), len(chunk_index))
+    else:
+        for path in base.glob("*.json"):
+            try:
+                bundle = load_chunk_bundle(path)
+                fp = bundle.file_meta.file_path
+                for m in bundle.methods:
+                    if m.method_code:
+                        key = _span_index_key(fp, m.start_line, m.end_line)
+                        cid = m.method_id
+                        span_index[key] = {"chunk_id": cid, "text": m.method_code, "filePath": fp, "span": [m.start_line, m.end_line]}
+                        chunk_index[cid] = {"filePath": fp, "span": [m.start_line, m.end_line], "text": m.method_code}
+                for c in bundle.method_calls:
+                    if c.call_code:
+                        key = _span_index_key(fp, c.start_line, c.end_line)
+                        cid = c.call_id
+                        span_index[key] = {"chunk_id": cid, "text": c.call_code, "filePath": fp, "span": [c.start_line, c.end_line]}
+                        chunk_index[cid] = {"filePath": fp, "span": [c.start_line, c.end_line], "text": c.call_code}
+                for v in bundle.variables:
+                    if v.initializer_code:
+                        key = _span_index_key(fp, v.start_line, v.end_line)
+                        cid = f"C:{v.start_line}:{v.end_line}:var"
+                        span_index[key] = {"chunk_id": cid, "text": v.initializer_code, "filePath": fp, "span": [v.start_line, v.end_line]}
+                        chunk_index[cid] = {"filePath": fp, "span": [v.start_line, v.end_line], "text": v.initializer_code}
+                for f in getattr(bundle, "fields", []):
+                    if f.field_code:
+                        key = _span_index_key(fp, f.start_line, f.end_line)
+                        span_index[key] = {"chunk_id": f.field_id, "text": f.field_code, "filePath": fp, "span": [f.start_line, f.end_line]}
+                        chunk_index[f.field_id] = {"filePath": fp, "span": [f.start_line, f.end_line], "text": f.field_code}
+            except Exception as e:
+                logger.debug("ChunkBundle 인덱스 스킵 %s: %s", path.name, e)
+
+    # artifact 청크 (XML entity 정의, EJB 매핑 등) 통합
+    art_count = 0
+    for cid, ac in (artifact_index or {}).items():
+        text = (getattr(ac, "text", "") or "").strip()
+        if not text:
+            continue
+        fp = getattr(ac, "source_path", "") or ""
+        sl = getattr(ac, "start_line", 0)
+        el = getattr(ac, "end_line", 0)
+        chunk_index[cid] = {"filePath": fp, "span": [sl, el], "text": text, "chunk_type": "artifact"}
+        art_count += 1
+
+    # SQL 청크 (SQL 매핑 XML의 SQL문) 통합
+    sql_count = 0
+    for sql_key, stmt in (sql_index or {}).items():
+        text = (getattr(stmt, "sql_text", "") or "").strip()
+        if not text:
+            continue
+        fp = getattr(stmt, "file_path", "") or ""
+        sl = getattr(stmt, "start_line", 0)
+        el = getattr(stmt, "end_line", 0)
+        chunk_index[sql_key] = {"filePath": fp, "span": [sl, el], "text": text, "chunk_type": "sql"}
+        sql_count += 1
+
+    logger.info(
+        "[FW:CHUNK] span_index 완료 | span_count=%d chunk_count=%d (artifact=%d sql=%d)",
+        len(span_index), len(chunk_index), art_count, sql_count,
+    )
     return span_index, chunk_index
 
 

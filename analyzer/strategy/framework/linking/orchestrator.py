@@ -34,7 +34,7 @@ from analyzer.strategy.framework.linking.matcher import (
     link_chunks_to_indexes,
     resolve_candidates,
     identify_entity_classes,
-    _infer_table_name_from_entity_fqn,
+    has_external_entity_info,
 )
 from analyzer.strategy.framework.linking.call_graph import run_call_batch_pipeline
 
@@ -116,6 +116,7 @@ def run_step5(
     run_dir: Optional[str] = None,
     artifact_index: Optional[Dict[str, ArtifactChunk]] = None,
     artifact_chunks: Optional[List[ArtifactChunk]] = None,
+    ddl_table_metadata: Optional[Dict[str, Any]] = None,
 ) -> Generator[Dict[str, Any], None, None]:
     """Step 5: 링킹 — 단계별로 결과를 yield.
 
@@ -192,68 +193,70 @@ def run_step5(
 
     combined_table_chunks: List[SqlStatementChunk] = list(sql_chunks or [])
 
-    # XML entity에서 이미 처리된 클래스 FQN 수집 → 중복 방지
-    xml_entity_class_set: set = set()
-    for ac in (artifact_chunks or []):
-        ct = getattr(ac, "chunk_type", "")
-        if ct in ("entity", "cmp_mapping"):
-            for fqn_val in (getattr(ac, "related_class_fqns", None) or []):
-                xml_entity_class_set.add(fqn_val)
-                xml_entity_class_set.add(fqn_val.rsplit(".", 1)[-1])  # 단순 클래스명도
+    # 3단계 우선순위: DDL → 외부파일(XML/어노테이션) → DeepAgent(phases.py에서 처리)
+    _has_external = has_external_entity_info(
+        artifact_index=artifact_index,
+        class_index=class_index,
+        ddl_table_metadata=ddl_table_metadata,
+    )
 
-    entity_fqns = identify_entity_classes(class_index or {})
-    for fqn in entity_fqns:
-        # XML에서 이미 처리된 클래스면 TABLE 중복 생성 방지
-        if fqn in xml_entity_class_set or fqn.rsplit(".", 1)[-1] in xml_entity_class_set:
-            logger.debug("[FW:STEP5] 엔티티 스킵 (XML에서 이미 처리) | fqn=%s", fqn)
-            continue
-        info = (class_index or {}).get(fqn)
-        if not isinstance(info, dict):
-            continue
-        class_key = info.get("class_key") or fqn
-        fields = [f for f in (field_facts_list or []) if getattr(f, "class_key", "") == class_key]
-        if not fields:
-            continue
-        field_text = "\n".join(
-            f"{f.name} ({getattr(f, 'field_type', '?')})"
-            + (f" {f.annotations}" if getattr(f, "annotations", None) else "")
-            for f in fields
-        )
-        combined_table_chunks.append(
-            SqlStatementChunk(
-                sql_key=f"entity::{fqn}",
-                sql_type="entity_definition",
-                sql_text=field_text,
-                start_line=0,
-                end_line=0,
-                file_path="",
+    if _has_external and not ddl_table_metadata:
+        # 외부파일(XML entity, 어노테이션) 존재 → entity 청크를 table LLM 입력에 합류
+        entity_fqns = identify_entity_classes(class_index or {})
+        for fqn in entity_fqns:
+            info = (class_index or {}).get(fqn)
+            if not isinstance(info, dict):
+                continue
+            class_key = info.get("class_key") or fqn
+            fields = [f for f in (field_facts_list or []) if getattr(f, "class_key", "") == class_key]
+            if not fields:
+                continue
+            field_text = "\n".join(
+                f"{f.name} ({getattr(f, 'field_type', '?')})"
+                + (f" {f.annotations}" if getattr(f, "annotations", None) else "")
+                for f in fields
             )
-        )
-    for ac in (artifact_chunks or []):
-        ct = getattr(ac, "chunk_type", "")
-        if ct not in ("entity", "cmp_mapping"):
-            continue
-        text = (getattr(ac, "text", "") or "").strip()
-        if not text:
-            continue
-        combined_table_chunks.append(
-            SqlStatementChunk(
-                sql_key=f"entity_xml::{getattr(ac, 'chunk_id', '')}",
-                sql_type="entity_definition",
-                sql_text=text,
-                start_line=getattr(ac, "start_line", 0),
-                end_line=getattr(ac, "end_line", 0),
-                file_path=getattr(ac, "source_path", ""),
+            combined_table_chunks.append(
+                SqlStatementChunk(
+                    sql_key=f"entity::{fqn}",
+                    sql_type="entity_definition",
+                    sql_text=field_text,
+                    start_line=0,
+                    end_line=0,
+                    file_path="",
+                )
             )
-        )
-    entity_count = len(combined_table_chunks) - len(sql_chunks or [])
-    if entity_count:
-        logger.info(
-            "[FW:STEP5] 엔티티 청크 %d개를 table LLM 입력에 합류 (sql=%d + entity=%d)",
-            entity_count,
-            len(sql_chunks or []),
-            entity_count,
-        )
+        for ac in (artifact_chunks or []):
+            ct = getattr(ac, "chunk_type", "")
+            if ct not in ("entity", "cmp_mapping"):
+                continue
+            text = (getattr(ac, "text", "") or "").strip()
+            if not text:
+                continue
+            combined_table_chunks.append(
+                SqlStatementChunk(
+                    sql_key=f"entity_xml::{getattr(ac, 'chunk_id', '')}",
+                    sql_type="entity_definition",
+                    sql_text=text,
+                    start_line=getattr(ac, "start_line", 0),
+                    end_line=getattr(ac, "end_line", 0),
+                    file_path=getattr(ac, "source_path", ""),
+                )
+            )
+        entity_count = len(combined_table_chunks) - len(sql_chunks or [])
+        if entity_count:
+            logger.info(
+                "[FW:STEP5] 엔티티 청크 %d개를 table LLM 입력에 합류 (sql=%d + entity=%d)",
+                entity_count,
+                len(sql_chunks or []),
+                entity_count,
+            )
+    else:
+        entity_fqns = set()
+        if ddl_table_metadata:
+            logger.info("[FW:STEP5] DDL 테이블 메타데이터 존재 — 엔티티 청크 생성 스킵")
+        elif not _has_external:
+            logger.info("[FW:STEP5] 외부 엔티티 정보 없음 — DeepAgent 엔티티 식별 대상")
 
     logger.info(
         "[FW:STEP5] [3갈래] SQL→테이블 / Call LLM / UML 병렬 실행 (배치별 점진 전송)",
@@ -331,32 +334,8 @@ def run_step5(
     t_table.join()
     t_call.join()
 
-    # ── 후처리: entity fallback + edge 유도 ──
+    # ── 후처리: edge 유도 ──
     reads_writes = list(reads_writes_list)
-    entity_fqns_with_rw = {
-        (getattr(rw, "sql_key", "") or "").split("::", 1)[-1].strip()
-        for rw in reads_writes
-        if (getattr(rw, "sql_key", "") or "").startswith("entity::")
-    }
-    for fqn in entity_fqns:
-        if fqn in entity_fqns_with_rw:
-            continue
-        table_name = _infer_table_name_from_entity_fqn(fqn)
-        if table_name:
-            reads_writes.append(
-                ReadsWritesEdge(
-                    sql_key=f"entity::{fqn}",
-                    table_schema="",
-                    table_name=table_name,
-                    relation="SELECT",
-                )
-            )
-            entity_fqns_with_rw.add(fqn)
-    if len(reads_writes) > len(reads_writes_list):
-        logger.info(
-            "[FW:STEP5] entity:: reads_writes 보정 | 추가=%d (자바 클래스명→테이블명 추론)",
-            len(reads_writes) - len(reads_writes_list),
-        )
     fk_edges = fk_edges_list
     column_refs = column_refs_list
 

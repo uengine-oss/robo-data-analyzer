@@ -66,6 +66,23 @@ class DDLParser:
             re.IGNORECASE
         )
 
+        # ALTER TABLE 블록 패턴 (DROP/ADD 액션 혼합 지원)
+        self.alter_table_pattern = re.compile(
+            r'ALTER\s+TABLE\s+([\w\.\"]+)\s+(.*?);',
+            re.IGNORECASE | re.DOTALL
+        )
+
+        # ALTER TABLE 액션 내 ADD PRIMARY KEY / ADD FOREIGN KEY 패턴
+        self.alter_action_pk_pattern = re.compile(
+            r'ADD\s+(?:CONSTRAINT\s+[\w\"]+\s+)?PRIMARY\s+KEY\s*\(([^)]+)\)',
+            re.IGNORECASE
+        )
+        self.alter_action_fk_pattern = re.compile(
+            r'ADD\s+(?:CONSTRAINT\s+[\w\"]+\s+)?FOREIGN\s+KEY\s*\(([^)]+)\)\s+'
+            r'REFERENCES\s+([\w\.\"]+)\s*\(([^)]+)\)',
+            re.IGNORECASE
+        )
+
         # 인라인 FOREIGN KEY 패턴 (CREATE TABLE 내부)
         # FOREIGN KEY (column) REFERENCES schema.table(column)
         self.inline_fk_pattern = re.compile(
@@ -177,34 +194,36 @@ class DDLParser:
                         col["comment"] = comment
                         break
 
-        # 4. PRIMARY KEY 파싱
-        for match in self.pk_pattern.finditer(ddl_content):
+        # 4~5. ALTER TABLE 액션 기반 PRIMARY KEY / FOREIGN KEY 파싱
+        # DROP CONSTRAINT, ADD CONSTRAINT ... NOT VALID 같은 혼합 구문을 지원한다.
+        for match in self.alter_table_pattern.finditer(ddl_content):
             full_name = match.group(1)
-            pk_columns = [self._strip_quotes(c.strip()) for c in match.group(2).split(",")]
+            alter_actions = match.group(2)
 
             schema, table_name = self._parse_table_name(full_name)
             table_key = f"{schema}.{table_name}".lower()
+            if table_key not in tables:
+                continue
 
-            if table_key in tables:
-                tables[table_key]["primaryKeys"] = pk_columns
+            for action in self._split_alter_actions(alter_actions):
+                pk_match = self.alter_action_pk_pattern.search(action)
+                if pk_match:
+                    pk_columns = [self._strip_quotes(c.strip()) for c in pk_match.group(1).split(",")]
+                    tables[table_key]["primaryKeys"] = pk_columns
+                    continue
 
-        # 5. FOREIGN KEY 파싱
-        for match in self.fk_pattern.finditer(ddl_content):
-            src_table = match.group(1)
-            src_columns = [self._strip_quotes(c.strip()) for c in match.group(2).split(",")]
-            ref_table = match.group(3)
-            ref_columns = [self._strip_quotes(c.strip()) for c in match.group(4).split(",")]
+                fk_match = self.alter_action_fk_pattern.search(action)
+                if fk_match:
+                    src_columns = [self._strip_quotes(c.strip()) for c in fk_match.group(1).split(",")]
+                    ref_table = fk_match.group(2)
+                    ref_columns = [self._strip_quotes(c.strip()) for c in fk_match.group(3).split(",")]
 
-            src_schema, src_name = self._parse_table_name(src_table)
-            ref_schema, ref_name = self._parse_table_name(ref_table)
-            table_key = f"{src_schema}.{src_name}".lower()
-
-            if table_key in tables:
-                for src_col, ref_col in zip(src_columns, ref_columns):
-                    tables[table_key]["foreignKeys"].append({
-                        "column": src_col,
-                        "ref": f"{ref_schema}.{ref_name}.{ref_col}" if ref_schema else f"{ref_name}.{ref_col}",
-                    })
+                    ref_schema, ref_name = self._parse_table_name(ref_table)
+                    for src_col, ref_col in zip(src_columns, ref_columns):
+                        tables[table_key]["foreignKeys"].append({
+                            "column": src_col,
+                            "ref": f"{ref_schema}.{ref_name}.{ref_col}" if ref_schema else f"{ref_name}.{ref_col}",
+                        })
 
         # 결과 변환
         result = {"analysis": list(tables.values())}
@@ -271,15 +290,75 @@ class DDLParser:
                 if comment_text:
                     comment_lines.insert(0, comment_text)
             else:
-                # 주석이 아닌 줄이면 중단
-                if comment_lines:
-                    break
+                # 주석이 아닌 줄(SQL 구문)을 만나면 항상 중단
+                # comment_lines 유무와 관계없이 중단하여 파일 헤더 주석이
+                # 다른 테이블의 설명으로 잘못 포함되는 것을 방지
+                break
 
         if not comment_lines:
             return ""
 
         # 한 줄이면 그대로, 여러 줄이면 합치기
         return comment_lines[0] if len(comment_lines) == 1 else '\n'.join(comment_lines)
+
+    def _split_alter_actions(self, actions: str) -> List[str]:
+        """ALTER TABLE 액션 문자열을 최상위 콤마 기준으로 분리
+
+        괄호 내부의 콤마는 무시하고, 인용부호(따옴표) 이스케이프도 처리합니다.
+
+        예:
+            DROP CONSTRAINT a, ADD CONSTRAINT b FOREIGN KEY (x) REFERENCES t(y), DROP CONSTRAINT c
+        """
+        result: List[str] = []
+        current: List[str] = []
+        paren_depth = 0
+        in_single_quote = False
+        in_double_quote = False
+
+        i = 0
+        while i < len(actions):
+            ch = actions[i]
+
+            # 작은따옴표 문자열 처리 ('' 이스케이프 지원)
+            if not in_double_quote and ch == "'":
+                if in_single_quote and i + 1 < len(actions) and actions[i + 1] == "'":
+                    current.append(ch)
+                    current.append(actions[i + 1])
+                    i += 2
+                    continue
+                in_single_quote = not in_single_quote
+                current.append(ch)
+                i += 1
+                continue
+
+            # 큰따옴표 식별자 처리
+            if not in_single_quote and ch == '"':
+                in_double_quote = not in_double_quote
+                current.append(ch)
+                i += 1
+                continue
+
+            if not in_single_quote and not in_double_quote:
+                if ch == '(':
+                    paren_depth += 1
+                elif ch == ')' and paren_depth > 0:
+                    paren_depth -= 1
+                elif ch == ',' and paren_depth == 0:
+                    action = ''.join(current).strip()
+                    if action:
+                        result.append(action)
+                    current = []
+                    i += 1
+                    continue
+
+            current.append(ch)
+            i += 1
+
+        tail = ''.join(current).strip()
+        if tail:
+            result.append(tail)
+
+        return result
 
     def _parse_columns(self, columns_def: str) -> List[Dict[str, Any]]:
         """컬럼 정의 파싱

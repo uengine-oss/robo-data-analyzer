@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 
 from api.analysis_router import router
 from api.glossary_router import router as glossary_router
+from api.business_calendar_router import router as business_calendar_router
 from config.settings import settings
 from util.logger import setup_logging, get_logger
 
@@ -45,6 +46,7 @@ app.add_middleware(
 # 라우터 등록
 app.include_router(router)
 app.include_router(glossary_router)
+app.include_router(business_calendar_router)
 
 
 # =============================================================================

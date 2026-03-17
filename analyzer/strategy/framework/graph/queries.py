@@ -719,16 +719,24 @@ def build_refer_to_queries(edges: List[ReferToEdge]) -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 def build_method_summary_queries(summary_by_method: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """이미 있는 METHOD 노드에 summary·stereotype 속성 및 스테레오타입 레이블(COMMAND/READMODEL)만 추가.
+    """이미 있는 METHOD 노드에 summary·stereotype·methodStereotype 속성 및 레이블 추가.
 
-    UNWIND 기반 배치 처리: stereotype별(COMMAND/READMODEL) 2개 쿼리로 분할.
+    UNWIND 기반 배치 처리:
+    - CQRS stereotype: COMMAND/READMODEL 레이블
+    - methodStereotype: Endpoint/Query/Command 등 아키텍처 역할 레이블
     """
+    from analyzer.strategy.framework.linking.summarizer import VALID_METHOD_STEREOTYPES
+
+    # CQRS stereotype별 그룹핑
     commands = []
     readmodels = []
     for method_id, data in summary_by_method.items():
         ster = _normalize_stereotype(data.get("stereotype"))
         summary = (data.get("summary") or "").strip()
-        row = {"method_id": method_id, "stereotype": ster, "summary": summary}
+        method_st = (data.get("methodStereotype") or "").strip()
+        if method_st not in VALID_METHOD_STEREOTYPES:
+            method_st = ""
+        row = {"method_id": method_id, "stereotype": ster, "summary": summary, "methodStereotype": method_st}
         if ster == "command":
             commands.append(row)
         else:
@@ -740,7 +748,7 @@ def build_method_summary_queries(summary_by_method: Dict[str, Dict[str, Any]]) -
             "query": (
                 "UNWIND $rows AS row\n"
                 "MATCH (n:METHOD {method_id: row.method_id})\n"
-                "SET n.updated_at = timestamp(), n.stereotype = row.stereotype, n.summary = row.summary\n"
+                "SET n.updated_at = timestamp(), n.stereotype = row.stereotype, n.summary = row.summary, n.methodStereotype = row.methodStereotype\n"
                 "REMOVE n:COMMAND, n:READMODEL\n"
                 "SET n:COMMAND\n"
                 "RETURN n"
@@ -752,13 +760,32 @@ def build_method_summary_queries(summary_by_method: Dict[str, Dict[str, Any]]) -
             "query": (
                 "UNWIND $rows AS row\n"
                 "MATCH (n:METHOD {method_id: row.method_id})\n"
-                "SET n.updated_at = timestamp(), n.stereotype = row.stereotype, n.summary = row.summary\n"
+                "SET n.updated_at = timestamp(), n.stereotype = row.stereotype, n.summary = row.summary, n.methodStereotype = row.methodStereotype\n"
                 "REMOVE n:COMMAND, n:READMODEL\n"
                 "SET n:READMODEL\n"
                 "RETURN n"
             ),
             "params": {"rows": readmodels},
         })
+
+    # methodStereotype별 레이블 추가 (별도 쿼리 — 동적 레이블은 Cypher 리터럴이어야 함)
+    method_st_groups: Dict[str, List[str]] = {}
+    for method_id, data in summary_by_method.items():
+        method_st = (data.get("methodStereotype") or "").strip()
+        if method_st in VALID_METHOD_STEREOTYPES:
+            method_st_groups.setdefault(method_st, []).append(method_id)
+
+    for label, method_ids in method_st_groups.items():
+        queries.append({
+            "query": (
+                "UNWIND $ids AS mid\n"
+                f"MATCH (n:METHOD {{method_id: mid}})\n"
+                f"SET n:{label}\n"
+                "RETURN n"
+            ),
+            "params": {"ids": method_ids},
+        })
+
     return queries
 
 
@@ -780,20 +807,49 @@ def build_field_summary_queries(summary_by_field: Dict[str, Dict[str, Any]]) -> 
 
 
 def build_class_summary_queries(summary_by_class: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """CLASS 노드에 summary 속성 업데이트 (fqn 기준). UNWIND 배치."""
+    """CLASS 노드에 summary·classStereotype 속성 및 레이블 업데이트 (fqn 기준). UNWIND 배치."""
+    from analyzer.strategy.framework.linking.summarizer import VALID_CLASS_STEREOTYPES
+
     if not summary_by_class:
         return []
-    rows = [{"fqn": fqn, "summary": data.get("summary", "")} for fqn, data in summary_by_class.items()]
-    return [{
+    rows = []
+    for fqn, data in summary_by_class.items():
+        class_st = (data.get("classStereotype") or "").strip()
+        if class_st not in VALID_CLASS_STEREOTYPES:
+            class_st = ""
+        rows.append({"fqn": fqn, "summary": data.get("summary", ""), "classStereotype": class_st})
+
+    queries = [{
         "query": (
             "UNWIND $rows AS row\n"
             "MATCH (n:CLASS {fqn: row.fqn})\n"
             "SET n.updated_at = timestamp(),\n"
-            "  n.summary = CASE WHEN row.summary IS NOT NULL AND trim(toString(row.summary)) <> '' THEN row.summary ELSE n.summary END\n"
+            "  n.summary = CASE WHEN row.summary IS NOT NULL AND trim(toString(row.summary)) <> '' THEN row.summary ELSE n.summary END,\n"
+            "  n.classStereotype = row.classStereotype\n"
             "RETURN n"
         ),
         "params": {"rows": rows},
     }]
+
+    # classStereotype별 레이블 추가 (동적 레이블은 Cypher 리터럴이어야 함)
+    class_st_groups: Dict[str, List[str]] = {}
+    for fqn, data in summary_by_class.items():
+        class_st = (data.get("classStereotype") or "").strip()
+        if class_st in VALID_CLASS_STEREOTYPES:
+            class_st_groups.setdefault(class_st, []).append(fqn)
+
+    for label, fqns in class_st_groups.items():
+        queries.append({
+            "query": (
+                "UNWIND $fqns AS f\n"
+                f"MATCH (n:CLASS {{fqn: f}})\n"
+                f"SET n:{label}\n"
+                "RETURN n"
+            ),
+            "params": {"fqns": fqns},
+        })
+
+    return queries
 
 
 # ---------------------------------------------------------------------------

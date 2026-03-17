@@ -86,7 +86,16 @@ def _visit_ast_for_indices(
         if pkg:
             package_name = pkg
 
-    if node_type in container_types:
+        # C 언어: FILE이 container일 때 파일명을 class_fqn으로 등록
+        if node_type in container_types:
+            file_path = node.get("filePath", "")
+            file_basename = file_path.replace("\\", "/").rsplit("/", 1)[-1] if file_path else ""
+            file_stem = file_basename.rsplit(".", 1)[0] if "." in file_basename else file_basename
+            if file_stem:
+                class_name = file_stem
+                class_fqn = f"{package_name}.{file_stem}" if package_name else file_stem
+
+    if node_type in container_types and node_type != "FILE":
         class_name = node.get("name") or class_name
         if package_name and class_name:
             class_fqn = f"{package_name}.{class_name}"
@@ -98,7 +107,7 @@ def _visit_ast_for_indices(
         if class_fqn and method_name:
             method_id = f"{class_fqn}.{method_name}"
         elif package_name and method_name:
-            # No-container (C FUNCTION 등): package.functionName
+            # fallback: package.functionName
             method_id = f"{package_name}.{method_name}"
         else:
             method_id = method_id or f"unknown_{start_line}"
@@ -279,13 +288,15 @@ def build_method_facts_and_class_index(
                 )
             )
         if node.node_type in container_types and node.unit_name:
+            # FILE 노드: unit_kind를 통해 kind를 "FILE"로 저장
+            kind = node.unit_kind if node.unit_kind else node.node_type
             fqn = f"{node.package_name}.{node.unit_name}" if node.package_name else node.unit_name
             class_index[fqn] = {
                 "class_key": node.unit_key,
                 "fqn": fqn,
                 "package_name": node.package_name,
                 "name": node.unit_name,
-                "kind": node.node_type,
+                "kind": kind,
                 "start_line": node.start_line,
                 "end_line": node.end_line,
                 "comment": getattr(node, "comment", None),
@@ -298,10 +309,10 @@ def build_method_facts_and_class_index(
 
         if node.node_type in method_types and node.name:
             if node.package_name and node.unit_name:
-                # Java: package.Class.method
+                # Java: package.Class.method / C: package.fileName.functionName
                 fqn = f"{node.package_name}.{node.unit_name}.{node.name}"
             elif node.package_name:
-                # No-container (C FUNCTION 등): package.functionName
+                # fallback: package.functionName
                 fqn = f"{node.package_name}.{node.name}"
             else:
                 fqn = node.name

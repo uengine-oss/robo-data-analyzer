@@ -28,6 +28,21 @@ from util.prompt_executor import get_rule_loader
 logger = logging.getLogger(__name__)
 
 
+VALID_METHOD_STEREOTYPES = frozenset({
+    "Endpoint", "Query", "Command", "Getter", "Setter",
+    "Lifecycle", "Scheduled", "EventHandler", "Init",
+    "Transactional", "Validation", "BusinessLogic",
+})
+
+VALID_CLASS_STEREOTYPES = frozenset({
+    "Controller", "Service", "Repository", "Entity", "DTO",
+    "Config", "Component", "Aspect", "Filter", "Listener",
+    "Validator", "Mapper", "Util", "ExceptionHandler",
+    "Gateway", "Facade", "Factory", "Scheduler", "Client", "Enum",
+    "Module", "DataStructure",
+})
+
+
 def compute_stereotype(
     method_id: str,
     refer_to_edges: List[ReferToEdge],
@@ -141,7 +156,7 @@ def _build_linked_architecture_context(
             name = info.get("name") or info.get("class_key") or cid
             comment = (info.get("comment") or "")[:class_info_max_len]
             desc = f"name: {name}" + (f" | comment: {comment}" if comment else "")
-            # 참조 클래스의 필드 정보 포함 (엔티티-테이블 관계 추론용)
+            # 참조 클래스의 필드 정보 포함 (LLM 분석 컨텍스트용)
             ref_class_key = info.get("class_key") or cid
             fields_desc = _build_class_fields_context(ref_class_key, field_facts_list, max_len=class_fields_max_len)
             if fields_desc:
@@ -331,6 +346,7 @@ def _process_one_method_for_analysis(
     calls: List[str] = []
     dependencies: List[Dict[str, Any]] = []
     stereotype = fallback_stereotype
+    method_stereotype = ""
     if api_key:
         analysis = _invoke_analysis_llm(
             m,
@@ -352,9 +368,13 @@ def _process_one_method_for_analysis(
             raw_stereotype = (analysis.get("stereotype") or "").strip().lower()
             if raw_stereotype in ("command", "readmodel"):
                 stereotype = raw_stereotype
+            raw_method_st = (analysis.get("methodStereotype") or "").strip()
+            if raw_method_st in VALID_METHOD_STEREOTYPES:
+                method_stereotype = raw_method_st
 
     data = {
         "stereotype": stereotype,
+        "methodStereotype": method_stereotype,
         "summary": summary,
         "fqn": m.fqn,
         "calls": calls,
@@ -558,26 +578,26 @@ def run_step6(
         )
         return node_id, data
 
-    ready_queue: List[str] = list(leaf_ids)
     processed: Set[str] = set()
-    step = 0
+    batch: Dict[str, Dict[str, Any]] = {}
+    max_workers = max(1, workers)
 
-    while ready_queue:
-        current_batch = list(ready_queue)
-        ready_queue = []
-        step += 1
-        logger.info(
-            "[FW:STEP6] 호출 그래프 기반 요약 Step %d | 레벨 노드 %d개 (병렬)",
-            step,
-            len(current_batch),
-        )
+    logger.info(
+        "[FW:STEP6] 호출 그래프 기반 요약 시작 (즉시 실행 모드) | leaf=%d 전체=%d 워커=%d",
+        len(leaf_ids),
+        len(node_ids),
+        max_workers,
+    )
 
-        batch: Dict[str, Dict[str, Any]] = {}
-        max_workers = max(1, min(workers, len(current_batch)))
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(summarize_one, nid): nid for nid in current_batch}
-            for future in as_completed(futures):
-                nid = futures[future]
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # leaf 노드부터 즉시 submit
+        futures = {executor.submit(summarize_one, nid): nid for nid in leaf_ids}
+
+        while futures:
+            # 완료된 future 하나씩 처리
+            done_iter = as_completed(futures)
+            for future in done_iter:
+                nid = futures.pop(future)
                 try:
                     node_id, data = future.result()
                     result[node_id] = data
@@ -602,25 +622,26 @@ def run_step6(
                     batch[nid] = fallback
                     processed_id = nid
 
-                # 부모 노드 준비
-                if processed_id in parents:
-                    for p in parents[processed_id]:
-                        if p in remaining_children:
-                            remaining_children[p] -= 1
-                            if remaining_children[p] == 0:
-                                ready_queue.append(p)
+                # 부모 노드가 ready되면 즉시 submit
+                for p in parents.get(processed_id, []):
+                    if p in remaining_children:
+                        remaining_children[p] -= 1
+                        if remaining_children[p] == 0:
+                            futures[executor.submit(summarize_one, p)] = p
 
                 # 20개 모이면 yield
                 if len(batch) >= _STEP6_BATCH_SIZE:
                     total_yielded += len(batch)
-                    logger.debug("[FW:STEP6] 배치 yield (레벨 %d)  %d개", step, len(batch))
+                    logger.debug("[FW:STEP6] 배치 yield  %d개", len(batch))
                     yield _flush_batch(batch)
                     batch.clear()
 
-        # 레벨 종료 시 남은 배치 flush
-        if batch:
-            total_yielded += len(batch)
-            yield _flush_batch(batch)
+                break  # as_completed iterator를 갱신하기 위해 재진입
+
+    # 남은 배치 flush
+    if batch:
+        total_yielded += len(batch)
+        yield _flush_batch(batch)
 
     # 사이클 등으로 처리 안 된 노드 fallback
     remaining = node_ids - processed
@@ -848,15 +869,18 @@ def _invoke_class_summary_llm(
     prev_summary: Optional[str],
     api_key: str,
     locale: str = "ko",
-) -> Optional[str]:
-    """class_summary_batch 규칙 실행 → 클래스 요약 1개 반환."""
+    kind: Optional[str] = None,
+) -> Tuple[Optional[str], str]:
+    """class_summary_batch 규칙 실행 → (클래스 요약, classStereotype) 반환."""
     if not api_key or not items:
-        return None
+        return None, ""
     inputs: Dict[str, Any] = {
         "class_fqn": class_fqn,
         "items": items,
         "locale": locale,
     }
+    if kind:
+        inputs["kind"] = kind
     if class_comment:
         inputs["class_comment"] = class_comment[:500] if len(class_comment) > 500 else class_comment
     if class_annotations:
@@ -868,11 +892,14 @@ def _invoke_class_summary_llm(
     try:
         loader = get_rule_loader("framework")
         result = loader.execute("class_summary", inputs, api_key=api_key)
-        if isinstance(result, Dict) and result.get("summary"):
-            return result["summary"]
+        if isinstance(result, Dict):
+            summary = result.get("summary") or None
+            raw_class_st = (result.get("classStereotype") or "").strip()
+            class_stereotype = raw_class_st if raw_class_st in VALID_CLASS_STEREOTYPES else ""
+            return summary, class_stereotype
     except Exception as e:
         logger.warning("[FW:STEP6] class_summary_batch LLM 실패 class_fqn=%s: %s", class_fqn, e)
-    return None
+    return None, ""
 
 
 def run_class_summary(
@@ -888,6 +915,12 @@ def run_class_summary(
     api_key = api_key or settings.llm.api_key or os.getenv("LLM_API_KEY", "")
     class_key_index = _build_class_key_index(class_index or {})
     key_to_fqn = _class_key_to_fqn(class_index)
+
+    # class_key → kind 매핑 (FILE, STRUCT, CLASS 등)
+    key_to_kind: Dict[str, str] = {}
+    for info in (class_index or {}).values():
+        if isinstance(info, dict) and info.get("class_key"):
+            key_to_kind[info["class_key"]] = info.get("kind", "CLASS")
 
     by_class: Dict[str, List[Dict[str, Any]]] = {}
     for m in method_facts_list or []:
@@ -906,12 +939,13 @@ def run_class_summary(
         summary = (data or {}).get("summary", "") or f"{f.name}; field"
         by_class.setdefault(ck, []).append({"name": f.name, "summary": summary})
 
-    def _summarize_one_class(class_key: str, items: List[Dict[str, Any]]) -> Tuple[str, str]:
-        """단일 클래스 요약 — 스레드 안전."""
+    def _summarize_one_class(class_key: str, items: List[Dict[str, Any]]) -> Tuple[str, str, str]:
+        """단일 클래스 요약 — 스레드 안전. (class_fqn, summary, classStereotype) 반환."""
         class_fqn = key_to_fqn.get(class_key) or class_key
         if not items:
-            return class_fqn, ""
+            return class_fqn, "", ""
         class_comment, class_annotations = _get_class_context(class_key_index, class_key)
+        class_kind = key_to_kind.get(class_key)
         chunks: List[List[Dict[str, Any]]] = []
         current: List[Dict[str, Any]] = []
         current_tokens = 0
@@ -927,9 +961,10 @@ def run_class_summary(
         if current:
             chunks.append(current)
         prev_summary: Optional[str] = None
+        class_stereotype = ""
         for chunk in chunks:
             if api_key:
-                prev_summary = _invoke_class_summary_llm(
+                result_summary, result_stereotype = _invoke_class_summary_llm(
                     class_fqn,
                     chunk,
                     class_comment,
@@ -937,12 +972,16 @@ def run_class_summary(
                     prev_summary,
                     api_key,
                     locale,
-                ) or prev_summary
+                    kind=class_kind,
+                )
+                prev_summary = result_summary or prev_summary
+                if result_stereotype:
+                    class_stereotype = result_stereotype
             else:
                 prev_summary = "; ".join(
                     f"{x.get('name', '')}: {x.get('summary', '')}" for x in chunk
                 )[:500]
-        return class_fqn, prev_summary or ""
+        return class_fqn, prev_summary or "", class_stereotype
 
     _CLASS_BATCH_SIZE = 5
     total_yielded = 0
@@ -956,22 +995,23 @@ def run_class_summary(
             }
             for future in as_completed(futures):
                 try:
-                    class_fqn, summary = future.result()
+                    class_fqn, summary, class_stereotype = future.result()
                 except Exception as e:
                     ck = futures[future]
                     class_fqn = key_to_fqn.get(ck) or ck
                     summary = ""
+                    class_stereotype = ""
                     logger.warning("[FW:STEP6] Class 요약 예외 class=%s: %s", class_fqn, e)
                 total_yielded += 1
-                batch[class_fqn] = {"summary": summary}
+                batch[class_fqn] = {"summary": summary, "classStereotype": class_stereotype}
                 if len(batch) >= _CLASS_BATCH_SIZE:
                     yield batch
                     batch = {}
     else:
         for class_key, items in by_class.items():
-            class_fqn, summary = _summarize_one_class(class_key, items)
+            class_fqn, summary, class_stereotype = _summarize_one_class(class_key, items)
             total_yielded += 1
-            batch[class_fqn] = {"summary": summary}
+            batch[class_fqn] = {"summary": summary, "classStereotype": class_stereotype}
             if len(batch) >= _CLASS_BATCH_SIZE:
                 yield batch
                 batch = {}

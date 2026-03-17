@@ -7,6 +7,7 @@ from .matcher import (  # noqa: F401
     link_chunks_to_indexes, resolve_candidates,
     extract_quoted_strings,
     identify_entity_classes,
+    has_external_entity_info,
 )
 from .call_graph import (  # noqa: F401
     resolve_calls_and_uses, run_call_batch_pipeline,
@@ -14,9 +15,10 @@ from .call_graph import (  # noqa: F401
     load_call_records_from_chunk_bundles,
 )
 from .sql_extractor import link_sql_to_tables  # noqa: F401
-from .deep_agent import run_deep_agent  # noqa: F401
+from .deep_agent import run_deep_agent, run_deep_agent_entity_identification  # noqa: F401
 from .summarizer import (  # noqa: F401
     run_step6, run_field_summary, run_class_summary,
     compute_stereotype,
+    VALID_METHOD_STEREOTYPES, VALID_CLASS_STEREOTYPES,
 )
 from .orchestrator import run_step5, derive_method_table_edges  # noqa: F401

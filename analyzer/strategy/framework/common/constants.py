@@ -15,9 +15,6 @@ SQL_SPLIT_THRESHOLD = 8000
 SQL_MAX_CHUNKS = 20
 ARTIFACT_CODE_MAX = 8000
 
-# Entity prefixes
-ENTITY_PREFIX = "entity::"
-ENTITY_XML_PREFIX = "entity_xml::"
 EXTERNAL_PREFIX = "external:"
 EXTERNAL_SEP = "#"
 
@@ -28,9 +25,6 @@ LOG_LINK = "[FW:LINK]"
 LOG_ANALYSIS = "[FW:ANALYSIS]"
 LOG_SUMMARY = "[FW:SUMMARY]"
 LOG_GRAPH = "[FW:GRAPH]"
-
-# Entity annotation signals
-ENTITY_SIGNALS_ANNOTATION = ["@Entity", "@Table", "@MappedSuperclass", "@Document", "@RedisHash"]
 
 # Scan skip directories
 SKIP_DIRS = frozenset({"ddl", ".git", "node_modules", "__pycache__", ".venv", "venv", "target", "build"})
