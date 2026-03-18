@@ -36,6 +36,7 @@ from analyzer.strategy.dbms.common.constants import (
     VARIABLE_DECLARATION_TYPES, TABLE_RELATIONSHIP_MAP, VARIABLE_ROLE_MAP,
     VARIABLE_CONCURRENCY, MAX_BATCH_TOKEN, MAX_CONCURRENCY,
     MAX_SUMMARY_CHUNK_TOKEN, MAX_CONTEXT_TOKEN, PARENT_EXPAND_THRESHOLD,
+    DBMS_SYSTEM_PACKAGES,
 )
 from analyzer.strategy.dbms.common.utils import get_procedure_name_from_code, build_statement_name
 from analyzer.strategy.dbms.linking.llm_rules import (
@@ -976,6 +977,9 @@ class DbmsAstProcessor(BaseAstProcessor):
                 for call_name in analysis.get('calls', []) or []:
                     if '.' in call_name:
                         package_raw, proc_raw = call_name.split('.', 1)
+                        # 시스템 패키지 호출은 무시 (DBMS_OUTPUT, UTL_FILE 등)
+                        if package_raw.strip().upper() in DBMS_SYSTEM_PACKAGES:
+                            continue
                         queries.append({
                             "query": (
                                 f"MATCH (__cy_c__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
@@ -995,7 +999,7 @@ class DbmsAstProcessor(BaseAstProcessor):
                         queries.append({
                             "query": (
                                 f"MATCH (__cy_c__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
-                                f"MATCH (__cy_p__ {{procedure_name: $call_name, directory: $directory, file_name: $file_name}})\n"
+                                f"MATCH (__cy_p__ {{procedure_name: $call_name}})\n"
                                 f"WHERE __cy_p__:PROCEDURE OR __cy_p__:FUNCTION\n"
                                 f"MERGE (__cy_c__)-[__cy_r__:CALL {{scope: 'internal'}}]->(__cy_p__)\n"
                                 f"RETURN __cy_c__, __cy_p__, __cy_r__"

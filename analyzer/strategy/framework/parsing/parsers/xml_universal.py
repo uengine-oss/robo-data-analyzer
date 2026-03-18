@@ -53,6 +53,8 @@ def parse_xml_universal(path: str) -> Tuple[List[SqlStatementChunk], List[Artifa
         namespace = root.get("namespace", "").strip()
         if not namespace:
             for elem in root.iter():
+                if not isinstance(elem.tag, str):
+                    continue
                 if "namespace" in elem.attrib:
                     namespace = elem.get("namespace", "").strip()
                     break

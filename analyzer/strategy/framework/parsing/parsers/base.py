@@ -12,8 +12,14 @@ logger = logging.getLogger(__name__)
 
 
 def _local_tag(elem) -> str:
-    """XML 요소의 네임스페이스를 제거한 로컬 태그명."""
-    return elem.tag.split("}")[-1] if "}" in str(elem.tag) else elem.tag
+    """XML 요소의 네임스페이스를 제거한 로컬 태그명.
+
+    Comment·ProcessingInstruction 등 tag가 문자열이 아닌 노드는 빈 문자열을 반환한다.
+    """
+    tag = elem.tag
+    if not isinstance(tag, str):
+        return ""
+    return tag.split("}")[-1] if "}" in tag else tag
 
 
 def _parse_xml_safe(path: str, parser_fn):

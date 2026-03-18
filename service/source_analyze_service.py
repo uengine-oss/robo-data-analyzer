@@ -57,13 +57,13 @@ def get_analysis_directories(strategy: str) -> dict[str, str]:
         strategy: 분석 전략 (framework, dbms, 필수)
         
     Returns:
-        {"ddl": path, "src": path, "analysis": path}
+        {"ddl": path, "source": path, "analysis": path}
     """
     if not strategy:
         raise ValueError("strategy는 필수 파라미터입니다.")
     return {
         "ddl": os.path.join(settings.path.data_dir, "ddl"),
-        "src": os.path.join(settings.path.data_dir, "source"),
+        "source": os.path.join(settings.path.data_dir, "source"),
         "analysis": os.path.join(settings.path.data_dir, "analysis"),
     }
 
@@ -76,10 +76,10 @@ def get_directory_paths(directory: str, base_dirs: dict[str, str]) -> dict[str, 
         base_dirs: 기본 디렉토리 경로
         
     Returns:
-        {"src": path, "analysis": path}
+        {"source": path, "analysis": path}
     """
     return {
-        "src": os.path.join(base_dirs["src"], directory),
+        "source": os.path.join(base_dirs["source"], directory),
         "analysis": os.path.join(base_dirs["analysis"], directory),
     }
 
