@@ -19,7 +19,7 @@ from analyzer.strategy.framework.models import (
     ChunkBundleFile,
     ChunkBundleField,
     ChunkBundleMethod,
-    ChunkBundleMethodCall,
+    ChunkBundleFunctionCall,
     ChunkBundleVariable,
 )
 
@@ -60,12 +60,12 @@ def _file_hash(path: Path, encoding: str = "utf-8") -> Optional[str]:
 def build_chunk_bundle_from_source(
     source_path: str | Path,
     encoding: Optional[str],
-    methods: List[Dict[str, Any]],  # method_id, start_line, end_line
-    method_calls: List[Dict[str, Any]],  # parent_method_id, call_id, start_line, end_line
-    variables: List[Dict[str, Any]],  # parent_method_id, var_name, var_type, start_line, end_line, flags
-    fields: Optional[List[Dict[str, Any]]] = None,  # field_id, start_line, end_line
+    methods: List[Dict[str, Any]],  # function_id, start_line, end_line
+    function_calls: List[Dict[str, Any]],  # parent_function_id, call_id, start_line, end_line
+    variables: List[Dict[str, Any]],  # parent_function_id, var_name, var_type, start_line, end_line, flags
+    fields: Optional[List[Dict[str, Any]]] = None,  # variable_id, start_line, end_line
 ) -> Optional[ChunkBundle]:
-    """원본 소스를 slice하여 method_code/call_code를 채운 ChunkBundle 생성.
+    """원본 소스를 slice하여 function_code/call_code를 채운 ChunkBundle 생성.
 
     analysis JSON이 있는 파일에 대해서만 호출. source_path에 해당 파일이 없으면 None.
     """
@@ -94,24 +94,24 @@ def build_chunk_bundle_from_source(
     for m in methods:
         start_line = int(m.get("start_line", 0))
         end_line = int(m.get("end_line", 0))
-        method_code = slice_by_line_range(text_with_lines, start_line, end_line) if end_line >= start_line else None
+        function_code = slice_by_line_range(text_with_lines, start_line, end_line) if end_line >= start_line else None
         bundle_methods.append(
             ChunkBundleMethod(
-                method_id=m["method_id"],
+                function_id=m["function_id"],
                 start_line=start_line,
                 end_line=end_line,
-                method_code=method_code,
+                function_code=function_code,
             )
         )
 
-    bundle_calls: List[ChunkBundleMethodCall] = []
-    for c in method_calls:
+    bundle_calls: List[ChunkBundleFunctionCall] = []
+    for c in function_calls:
         start_line = int(c.get("start_line", 0))
         end_line = int(c.get("end_line", 0))
         call_code = slice_by_line_range(text_with_lines, start_line, end_line) if end_line >= start_line else ""
         bundle_calls.append(
-            ChunkBundleMethodCall(
-                parent_method_id=c["parent_method_id"],
+            ChunkBundleFunctionCall(
+                parent_function_id=c["parent_function_id"],
                 call_id=c["call_id"],
                 start_line=start_line,
                 end_line=end_line,
@@ -129,7 +129,7 @@ def build_chunk_bundle_from_source(
             initializer_code = slice_by_line_range(text_with_lines, start_line, end_line)
         bundle_vars.append(
             ChunkBundleVariable(
-                parent_method_id=v["parent_method_id"],
+                parent_function_id=v["parent_function_id"],
                 var_name=v["var_name"],
                 var_type=v.get("var_type"),
                 start_line=start_line,
@@ -143,25 +143,25 @@ def build_chunk_bundle_from_source(
     for f in fields or []:
         start_line = int(f.get("start_line", 0))
         end_line = int(f.get("end_line", 0))
-        field_code = slice_by_line_range(text_with_lines, start_line, end_line) if end_line >= start_line else None
+        variable_code = slice_by_line_range(text_with_lines, start_line, end_line) if end_line >= start_line else None
         bundle_fields.append(
             ChunkBundleField(
-                field_id=f["field_id"],
+                variable_id=f["variable_id"],
                 start_line=start_line,
                 end_line=end_line,
-                field_code=field_code,
+                variable_code=variable_code,
             )
         )
 
     out = ChunkBundle(
         file_meta=file_meta,
         methods=bundle_methods,
-        method_calls=bundle_calls,
+        function_calls=bundle_calls,
         variables=bundle_vars,
         fields=bundle_fields,
     )
     logger.info(
-        "[FW:CHUNK] 번들 생성 완료 | file=%s methods=%d method_calls=%d variables=%d fields=%d",
+        "[FW:CHUNK] 번들 생성 완료 | file=%s methods=%d function_calls=%d variables=%d fields=%d",
         path.name,
         len(bundle_methods),
         len(bundle_calls),
@@ -177,7 +177,7 @@ def _bundle_to_dict(bundle: ChunkBundle) -> Dict[str, Any]:
     return {
         "file_meta": asdict(bundle.file_meta),
         "methods": [asdict(m) for m in bundle.methods],
-        "method_calls": [asdict(c) for c in bundle.method_calls],
+        "function_calls": [asdict(c) for c in bundle.function_calls],
         "variables": [asdict(v) for v in bundle.variables],
         "fields": [asdict(f) for f in getattr(bundle, "fields", [])],
     }
@@ -187,7 +187,7 @@ def _dict_to_bundle(data: Dict[str, Any]) -> ChunkBundle:
     """dict에서 ChunkBundle 복원."""
     def var_from_dict(v: Dict[str, Any]) -> ChunkBundleVariable:
         return ChunkBundleVariable(
-            parent_method_id=v["parent_method_id"],
+            parent_function_id=v["parent_function_id"],
             var_name=v["var_name"],
             var_type=v.get("var_type"),
             start_line=int(v.get("start_line", 0)),
@@ -199,7 +199,7 @@ def _dict_to_bundle(data: Dict[str, Any]) -> ChunkBundle:
     return ChunkBundle(
         file_meta=ChunkBundleFile(**data["file_meta"]),
         methods=[ChunkBundleMethod(**m) for m in data["methods"]],
-        method_calls=[ChunkBundleMethodCall(**c) for c in data["method_calls"]],
+        function_calls=[ChunkBundleFunctionCall(**c) for c in data.get("function_calls") or data.get("method_calls") or []],
         variables=[var_from_dict(v) for v in data["variables"]],
         fields=[ChunkBundleField(**f) for f in fields_data],
     )
@@ -239,7 +239,7 @@ def load_field_chunks_from_bundles(
     data_dir: str = "",
     chunk_bundle_dir: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """모든 ChunkBundle에서 FIELD 청크 수집. link_chunks_to_indexes용 {field_id, code, code_ref, line_range} 리스트."""
+    """모든 ChunkBundle에서 VARIABLE 청크 수집. link_chunks_to_indexes용 {variable_id, code, code_ref, line_range} 리스트."""
     base = Path(chunk_bundle_dir) if chunk_bundle_dir else Path(_get_chunk_bundle_dir(data_dir))
     out: List[Dict[str, Any]] = []
     if not base.is_dir():
@@ -249,10 +249,10 @@ def load_field_chunks_from_bundles(
             bundle = load_chunk_bundle(path)
             fp = bundle.file_meta.file_path
             for f in getattr(bundle, "fields", []):
-                if getattr(f, "field_code", None):
+                if getattr(f, "variable_code", None):
                     out.append({
-                        "field_id": f.field_id,
-                        "code": f.field_code,
+                        "variable_id": f.variable_id,
+                        "code": f.variable_code,
                         "code_ref": fp,
                         "line_range": (f.start_line, f.end_line),
                     })
@@ -300,12 +300,12 @@ def build_bundle_span_index(
                 bundle = load_chunk_bundle(path)
                 fp = bundle.file_meta.file_path
                 for m in bundle.methods:
-                    if m.method_code:
+                    if m.function_code:
                         key = _span_index_key(fp, m.start_line, m.end_line)
-                        cid = m.method_id
-                        span_index[key] = {"chunk_id": cid, "text": m.method_code, "filePath": fp, "span": [m.start_line, m.end_line]}
-                        chunk_index[cid] = {"filePath": fp, "span": [m.start_line, m.end_line], "text": m.method_code}
-                for c in bundle.method_calls:
+                        cid = m.function_id
+                        span_index[key] = {"chunk_id": cid, "text": m.function_code, "filePath": fp, "span": [m.start_line, m.end_line]}
+                        chunk_index[cid] = {"filePath": fp, "span": [m.start_line, m.end_line], "text": m.function_code}
+                for c in bundle.function_calls:
                     if c.call_code:
                         key = _span_index_key(fp, c.start_line, c.end_line)
                         cid = c.call_id
@@ -318,10 +318,10 @@ def build_bundle_span_index(
                         span_index[key] = {"chunk_id": cid, "text": v.initializer_code, "filePath": fp, "span": [v.start_line, v.end_line]}
                         chunk_index[cid] = {"filePath": fp, "span": [v.start_line, v.end_line], "text": v.initializer_code}
                 for f in getattr(bundle, "fields", []):
-                    if f.field_code:
+                    if f.variable_code:
                         key = _span_index_key(fp, f.start_line, f.end_line)
-                        span_index[key] = {"chunk_id": f.field_id, "text": f.field_code, "filePath": fp, "span": [f.start_line, f.end_line]}
-                        chunk_index[f.field_id] = {"filePath": fp, "span": [f.start_line, f.end_line], "text": f.field_code}
+                        span_index[key] = {"chunk_id": f.variable_id, "text": f.variable_code, "filePath": fp, "span": [f.start_line, f.end_line]}
+                        chunk_index[f.variable_id] = {"filePath": fp, "span": [f.start_line, f.end_line], "text": f.variable_code}
             except Exception as e:
                 logger.debug("ChunkBundle 인덱스 스킵 %s: %s", path.name, e)
 
@@ -331,7 +331,7 @@ def build_bundle_span_index(
         text = (getattr(ac, "text", "") or "").strip()
         if not text:
             continue
-        fp = getattr(ac, "source_path", "") or ""
+        fp = getattr(ac, "source_path", "")
         sl = getattr(ac, "start_line", 0)
         el = getattr(ac, "end_line", 0)
         chunk_index[cid] = {"filePath": fp, "span": [sl, el], "text": text, "chunk_type": "artifact"}
@@ -343,7 +343,7 @@ def build_bundle_span_index(
         text = (getattr(stmt, "sql_text", "") or "").strip()
         if not text:
             continue
-        fp = getattr(stmt, "file_path", "") or ""
+        fp = getattr(stmt, "file_path", "")
         sl = getattr(stmt, "start_line", 0)
         el = getattr(stmt, "end_line", 0)
         chunk_index[sql_key] = {"filePath": fp, "span": [sl, el], "text": text, "chunk_type": "sql"}

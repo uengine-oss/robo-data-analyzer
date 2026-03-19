@@ -125,13 +125,13 @@ async def test_full_analysis_pipeline(real_neo4j: Neo4jClient):
     
     # 결과 검증
     if IS_FRAMEWORK:
-        # Framework: CLASS/INTERFACE 노드 확인
+        # Framework: MODULE 노드 확인
         result = await real_neo4j.execute_queries([
-            "MATCH (__cy_c__) WHERE (__cy_c__:CLASS OR __cy_c__:INTERFACE) "
+            "MATCH (__cy_c__:MODULE) "
             "RETURN count(__cy_c__) AS c"
         ])
         node_count = int(result[0][0]["c"])
-        assert node_count > 0, "CLASS/INTERFACE 노드가 생성되지 않았습니다"
+        assert node_count > 0, "MODULE 노드가 생성되지 않았습니다"
         print(f"\n[RESULT - {STRATEGY_LABEL}] elapsed={elapsed:.2f}s events={event_count} files={len(source_files)} classes={node_count}")
     else:
         # DBMS: PROCEDURE/FUNCTION 노드 확인

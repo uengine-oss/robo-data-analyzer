@@ -1381,7 +1381,7 @@ class DbmsAstProcessor(BaseAstProcessor):
                 f"{table_merge_result['query']}\nWITH __cy_t__\n"
                 f"MERGE (__cy_c__:Column {{fqn: $fqn}})\n"
                 f"SET __cy_c__.name = $col_name, __cy_c__.dtype = $col_type, "
-                f"__cy_c__.description = $col_desc, __cy_c__.description_source = 'procedure', __cy_c__.nullable = $nullable\n"
+                f"__cy_c__.description = $col_desc, __cy_c__.description_source = 'code', __cy_c__.nullable = $nullable\n"
                 f"MERGE (__cy_t__)-[__cy_r__:HAS_COLUMN]->(__cy_c__)\n"
                 f"RETURN __cy_t__, __cy_c__, __cy_r__"
             )
@@ -1700,7 +1700,7 @@ class DbmsAstProcessor(BaseAstProcessor):
                     f"SET __cy_t__.analyzed_description = $llm_desc\n"
                     f"WITH __cy_t__\n"
                     f"WHERE __cy_t__.description IS NULL OR __cy_t__.description = ''\n"
-                    f"SET __cy_t__.description = $llm_desc, __cy_t__.description_source = 'procedure'\n"
+                    f"SET __cy_t__.description = $llm_desc, __cy_t__.description_source = 'code'\n"
                     f"RETURN __cy_t__"
                 ),
                 "params": {
@@ -1724,7 +1724,7 @@ class DbmsAstProcessor(BaseAstProcessor):
                     f"SET __cy_c__.analyzed_description = $llm_desc\n"
                     f"WITH __cy_c__\n"
                     f"WHERE __cy_c__.description IS NULL OR __cy_c__.description = ''\n"
-                    f"SET __cy_c__.description = $llm_desc, __cy_c__.description_source = 'procedure'\n"
+                    f"SET __cy_c__.description = $llm_desc, __cy_c__.description_source = 'code'\n"
                     f"RETURN __cy_c__"
                 ),
                 "params": {

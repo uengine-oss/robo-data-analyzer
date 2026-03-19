@@ -1,30 +1,36 @@
 roles:
-  container:        # CLASS 역할 (Neo4j 라벨: CLASS)
+  module:           # MODULE 역할 (Neo4j 라벨: MODULE) — 파일/클래스/구조체 등 컨테이너
     java:    [CLASS, INTERFACE, ENUM]
     c:       [FILE, STRUCT, UNION, ENUM]
     python:  [CLASS]
     go:      [STRUCT, INTERFACE]
 
-  method:           # METHOD 역할 (Neo4j 라벨: METHOD)
+  function:         # FUNCTION 역할 (Neo4j 라벨: FUNCTION) — 메서드/함수/생성자
     java:    [METHOD, CONSTRUCTOR]
     c:       [FUNCTION]
     python:  [METHOD, FUNCTION]
     go:      [FUNCTION, METHOD]
 
-  field:            # FIELD 역할 (Neo4j 라벨: FIELD)
+  variable:         # VARIABLE 역할 (Neo4j 라벨: VARIABLE) — 값이 변할 수 있는 데이터
     java:    [FIELD]
-    c:       [FIELD]
+    c:       [FIELD, MEMBER, GLOBAL_VARIABLE]
     python:  [FIELD]
     go:      [FIELD]
 
+  constant:         # CONSTANT 역할 (Neo4j 라벨: CONSTANT) — 값이 고정된 데이터
+    java:    []
+    c:       [DEFINE]
+    python:  []
+    go:      []
+
   silent:           # 수집되지만 로그 안 남기는 노드
     java:    [VARIABLE]
-    c:       [VARIABLE, GLOBAL_VARIABLE, ENUM_CONSTANT, TYPEDEF]
+    c:       [VARIABLE, ENUM_CONSTANT, TYPEDEF]
     python:  [VARIABLE]
 
   internal:         # Neo4j 미저장, 분석 중에만 사용
     java:    [VARIABLE, METHOD_CALL, NEW_INSTANCE, IMPORT, FILE, ASSIGNMENT]
-    c:       [VARIABLE, GLOBAL_VARIABLE, FUNCTION_CALL, INCLUDE, TYPEDEF, ENUM_CONSTANT]
+    c:       [VARIABLE, FUNCTION_CALL, INCLUDE, TYPEDEF, ENUM_CONSTANT]
     python:  [VARIABLE, IMPORT, FILE, ASSIGNMENT]
 
   call:             # 호출 참조 노드 (ref_candidates 수집 대상)
@@ -36,6 +42,16 @@ roles:
     java:    [IMPORT]
     c:       [INCLUDE]
     python:  [IMPORT]
+
+paradigm:           # 언어별 패러다임 분류 (UML 관계 추출 분기용)
+  oop:        [java, python, kotlin, scala]
+  procedural: [c]
+  mixed:      [go]
+
+stereotypes:        # 언어별 허용 스테레오타입 (Neo4j 라벨로 추가)
+  common:     [Init, Query, Command, Handler, Validation, BusinessLogic]
+  oop:        [Endpoint, Getter, Setter, Lifecycle, Scheduled, Transactional]
+  # common + oop 언어는 common + oop, procedural 언어는 common만
 
 extensions:         # 언어별 소스 확장자
   java:    [".java"]

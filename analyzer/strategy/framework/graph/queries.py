@@ -15,14 +15,14 @@ from analyzer.strategy.framework.common.models import (
     ArtifactTableEdge,
     CallsEdge,
     ChunkBundle,
-    ClassTableEdge,
+    ModuleTableEdge,
     ConfigSectionChunk,
     ReferToEdge,
     ColumnRef,
     FkEdge,
-    FieldFacts,
-    MethodFacts,
-    MethodTableEdge,
+    VariableFacts,
+    FunctionFacts,
+    FunctionTableEdge,
     ReadsWritesEdge,
     SqlStatementChunk,
     UsesEdge,
@@ -47,37 +47,55 @@ _SQL_TEXT_MAX = SQL_TEXT_MAX
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _extract_short_name(fqn: Optional[str]) -> str:
+    """FQN에서 마지막 이름 추출 (예: 'com.abc.Foo' → 'Foo')."""
+    if not fqn:
+        return ""
+    return fqn.rsplit(".", 1)[-1]
+
+
+def _split_file_path(path: str) -> tuple[str, str]:
+    """경로를 디렉토리와 파일명으로 분리 (/ 및 \\ 지원)."""
+    if "/" in path:
+        parts = path.rsplit("/", 1)
+        return parts[0], parts[1]
+    if "\\" in path:
+        parts = path.rsplit("\\", 1)
+        return parts[0], parts[1]
+    return "", path
+
+
+def _build_column_fqn(schema: str, table: str, column: str) -> str:
+    """Column FQN 생성 (schema.table.column)."""
+    s = (schema or "").strip() or TABLE_SCHEMA_DEFAULT
+    return f"{s}.{table}.{column}"
+
+
 def _normalize_stereotype(value: Any) -> str:
     """command/readmodel만 허용, 그 외는 readmodel."""
     s = (value or "").strip().lower()
     return s if s in ("command", "readmodel") else "readmodel"
 
 
-def _class_fqn_and_method_name(fqn: Optional[str]) -> tuple[str, str]:
-    """fqn(예: com.abc.Foo.bar) → (class_fqn, method_name)."""
+def _module_fqn_and_function_name(fqn: Optional[str]) -> tuple[str, str]:
+    """fqn(예: com.abc.Foo.bar) → (module_fqn, function_name)."""
     if not fqn or "." not in fqn:
         return (fqn or "", "")
-    return fqn.rsplit(".", 1)[0], fqn.rsplit(".", 1)[1]
+    parts = fqn.rsplit(".", 1)
+    return parts[0], parts[1]
 
 
-def _class_key_to_fqn(class_index: Dict[str, Any]) -> Dict[str, str]:
-    """class_key -> fqn 매핑."""
+def _module_key_to_fqn(module_index: Dict[str, Any]) -> Dict[str, str]:
+    """module_key -> fqn 매핑."""
     out = {}
-    for info in class_index.values():
+    for info in module_index.values():
         if not isinstance(info, dict):
             continue
-        key = info.get("class_key")
+        key = info.get("module_key")
         fqn = info.get("fqn")
         if key and fqn:
             out[key] = fqn
     return out
-
-
-def _column_fqn(schema: str, table: str, column: str) -> str:
-    """COLUMN 노드 fqn: schema.table.column 또는 table.column."""
-    if not column:
-        return ""
-    return f"{schema}.{table}.{column}" if schema else f"{table}.{column}"
 
 
 def _expand_package_fqns(package_fqns: List[str]) -> List[str]:
@@ -107,18 +125,18 @@ def _refer_to_relation_type(target_type: str) -> str:
     return "REFER_TO"
 
 
-def _target_fqn_from_class_index(class_index: Dict[str, Any], target_name: str) -> Optional[str]:
-    """class_index에서 짧은 이름(target_name)으로 fqn 찾기. 없으면 None."""
-    if not target_name or not isinstance(class_index, dict):
+def _target_fqn_from_module_index(module_index: Dict[str, Any], target_name: str) -> Optional[str]:
+    """module_index에서 짧은 이름(target_name)으로 fqn 찾기. 없으면 None."""
+    if not target_name or not isinstance(module_index, dict):
         return None
     target = (target_name or "").strip()
     if not target:
         return None
-    for info in class_index.values():
+    for info in module_index.values():
         if not isinstance(info, dict):
             continue
-        fqn = info.get("fqn") or info.get("class_key")
-        name = info.get("name") or (fqn.rsplit(".", 1)[-1] if fqn else "")
+        fqn = info.get("fqn") or info.get("module_key")
+        name = info.get("name") or _extract_short_name(fqn)
         if name and (name == target or (fqn and fqn == target)):
             return fqn
     return None
@@ -128,49 +146,48 @@ def _target_fqn_from_class_index(class_index: Dict[str, Any], target_name: str) 
 # Node MERGE queries (using _merge_node_query)
 # ---------------------------------------------------------------------------
 
-def build_method_queries(method_facts_list: List[MethodFacts], node_kinds: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
-    """Method 노드 MERGE. framework와 동일 속성: name(메서드명), class_name(클래스 짧은이름), class_fqn, type 등.
+def build_function_queries(function_facts_list: List[FunctionFacts], node_kinds: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
+    """Method 노드 MERGE. framework와 동일 속성: name(메서드명), module_name(모듈 짧은이름), module_fqn, type 등.
 
     Args:
-        node_kinds: method_id → 원래 노드타입 (FUNCTION, METHOD 등) 매핑. kind 속성에 저장.
+        node_kinds: function_id → 원래 노드타입 (FUNCTION, METHOD 등) 매핑. kind 속성에 저장.
     """
     queries = []
-    for m in method_facts_list:
-        class_fqn, method_name = _class_fqn_and_method_name(m.fqn)
-        class_name_short = class_fqn.rsplit(".", 1)[-1] if class_fqn else ""
-        kind = (node_kinds or {}).get(m.method_id, "METHOD")
-        queries.append(_merge_node_query("METHOD", "method_id", m.method_id, {
+    for m in function_facts_list:
+        module_fqn, function_name = _module_fqn_and_function_name(m.fqn)
+        module_name_short = _extract_short_name(module_fqn)
+        kind = (node_kinds or {}).get(m.function_id, "METHOD")
+        queries.append(_merge_node_query("FUNCTION", "function_id", m.function_id, {
             "signature": m.signature or "",
             "start_line": m.start_line, "end_line": m.end_line,
-            "code_ref": m.code_ref or "", "class_key": m.class_key or "",
+            "code_ref": m.code_ref or "", "module_key": m.module_key or "",
             "package_name": m.package_name or "",
-            "class_name": class_name_short, "name": method_name,
-            "kind": kind,
+            "module_name": module_name_short, "name": function_name,
             "code_text": (m.code or "")[:_CHUNK_CODE_MAX],
-        }))
+        }, sub_label=kind))
     return queries
 
 
-def build_class_queries(class_index: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """CLASS 노드 MERGE. framework와 동일 속성: class_name, name, type, package_name, fqn."""
+def build_module_queries(module_index: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """MODULE 노드 MERGE. framework와 동일 속성: module_name, name, type, package_name, fqn."""
     seen = set()
     queries = []
-    for info in class_index.values():
+    for info in module_index.values():
         if not isinstance(info, dict):
             continue
-        fqn = info.get("fqn") or info.get("class_key")
+        fqn = info.get("fqn") or info.get("module_key")
         if not fqn or fqn in seen:
             continue
         seen.add(fqn)
         name = info.get("name", "")
         if not name and fqn:
-            name = fqn.rsplit(".", 1)[-1]
+            name = _extract_short_name(fqn)
         kind = info.get("kind", "CLASS")
-        queries.append(_merge_node_query("CLASS", "fqn", fqn, {
-            "class_key": info.get("class_key", fqn), "name": name,
-            "class_name": name, "type": kind, "kind": kind,
+        queries.append(_merge_node_query("MODULE", "fqn", fqn, {
+            "module_key": info.get("module_key", fqn), "name": name,
+            "module_name": name, "type": kind,
             "package_name": info.get("package_name") or "",
-        }))
+        }, sub_label=kind))
     return queries
 
 
@@ -180,22 +197,31 @@ def build_package_queries(package_fqns: List[str]) -> List[Dict[str, Any]]:
     for fqn in package_fqns:
         if not fqn:
             continue
-        segment = fqn.rsplit(".", 1)[-1] if "." in fqn else fqn
+        segment = _extract_short_name(fqn)
         queries.append(_merge_node_query("PACKAGE", "fqn", fqn, {"name": segment}))
     return queries
 
 
-def build_field_queries(field_facts_list: List[FieldFacts]) -> List[Dict[str, Any]]:
-    """FIELD 노드 MERGE. framework와 동일 속성: name, class_name, field_type 등."""
+def build_variable_queries(variable_facts_list: List[VariableFacts], node_kinds: Optional[Dict[str, str]] = None, lang: str = "java") -> List[Dict[str, Any]]:
+    """VARIABLE/CONSTANT 노드 MERGE. ontology 기반으로 primary 라벨 결정.
+
+    Args:
+        node_kinds: variable_id → 원래 노드타입 (FIELD, DEFINE 등) 매핑. sub_label로 저장.
+        lang: 언어 코드. ontology에서 primary 라벨(VARIABLE/CONSTANT) 결정에 사용.
+    """
+    from analyzer.strategy.framework.common.ontology import get_ontology
+    onto = get_ontology()
     queries = []
-    for f in field_facts_list:
-        class_name = (f.class_key.rsplit(".", 1)[-1].split(":")[0] if f.class_key else "") or ""
-        queries.append(_merge_node_query("FIELD", "field_id", f.field_id, {
-            "name": f.name, "class_name": class_name,
+    for f in variable_facts_list:
+        module_name = _extract_short_name(f.module_key).split(":")[0]
+        kind = (node_kinds or {}).get(f.variable_id, "FIELD")
+        primary = onto.primary_label_for(kind, lang)
+        queries.append(_merge_node_query(primary, "variable_id", f.variable_id, {
+            "name": f.name, "module_name": module_name,
             "start_line": f.start_line, "end_line": f.end_line,
-            "field_type": f.field_type or "", "code_ref": f.code_ref or "",
+            "variable_type": f.variable_type or "", "code_ref": f.code_ref or "",
             "code_text": (f.code or "")[:_CHUNK_CODE_MAX],
-        }))
+        }, sub_label=kind))
     return queries
 
 
@@ -211,20 +237,11 @@ def build_config_section_queries(config_chunks: List[ConfigSectionChunk]) -> Lis
 
 
 def build_artifact_chunk_queries(artifact_chunks: List[ArtifactChunk]) -> List[Dict[str, Any]]:
-    """ArtifactChunk 노드 MERGE (chunk_id 기준). file_path·code_text 온톨로지 통일(자바 청크와 동일)."""
+    """ArtifactChunk 노드 MERGE (chunk_id 기준). file_path·code_text 온톨로지 통일(코드 청크와 동일)."""
     queries = []
     for c in artifact_chunks:
         src = c.source_path or ""
-        # file_path에서 directory, file_name 추출
-        if "/" in src:
-            directory = src.rsplit("/", 1)[0]
-            file_name = src.rsplit("/", 1)[1]
-        elif "\\" in src:
-            directory = src.rsplit("\\", 1)[0]
-            file_name = src.rsplit("\\", 1)[1]
-        else:
-            directory = ""
-            file_name = src
+        directory, file_name = _split_file_path(src)
         queries.append(_merge_node_query("ARTIFACT_CHUNK", "chunk_id", c.chunk_id, {
             "chunk_type": c.chunk_type or "", "hint_key": c.hint_key or "",
             "code_text": (c.text or "")[:_ARTIFACT_CODE_MAX],
@@ -236,19 +253,19 @@ def build_artifact_chunk_queries(artifact_chunks: List[ArtifactChunk]) -> List[D
     return queries
 
 
-def build_artifact_class_refer_to_queries(
+def build_artifact_module_refer_to_queries(
     artifact_chunks: List[ArtifactChunk],
-    class_index: Dict[str, Any],
+    module_index: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    """(ARTIFACT_CHUNK)-[:REFER_TO]->(CLASS). EJB XML에서 추출한 related_class_fqns로 연결."""
+    """(ARTIFACT_CHUNK)-[:REFER_TO]->(MODULE). EJB XML에서 추출한 related_module_fqns로 연결."""
     queries = []
-    # class_index에서 short name → fqn 매핑 구축
+    # module_index에서 short name → fqn 매핑 구축
     name_to_fqn: Dict[str, str] = {}
-    for info in class_index.values():
+    for info in module_index.values():
         if not isinstance(info, dict):
             continue
-        fqn = info.get("fqn") or info.get("class_key")
-        name = info.get("name") or (fqn.rsplit(".", 1)[-1] if fqn else "")
+        fqn = info.get("fqn") or info.get("module_key")
+        name = info.get("name") or _extract_short_name(fqn)
         if fqn:
             name_to_fqn[fqn] = fqn  # full FQN match
             if name:
@@ -256,13 +273,13 @@ def build_artifact_class_refer_to_queries(
 
     seen: set = set()
     for c in artifact_chunks:
-        if not c.related_class_fqns:
+        if not c.related_module_fqns:
             continue
-        for ref_fqn in c.related_class_fqns:
+        for ref_fqn in c.related_module_fqns:
             # FQN 직접 매칭 또는 short name 매칭
             target_fqn = name_to_fqn.get(ref_fqn)
             if not target_fqn:
-                short = ref_fqn.rsplit(".", 1)[-1] if "." in ref_fqn else ref_fqn
+                short = _extract_short_name(ref_fqn)
                 target_fqn = name_to_fqn.get(short)
             if not target_fqn:
                 continue
@@ -272,12 +289,12 @@ def build_artifact_class_refer_to_queries(
             seen.add(key)
             q = (
                 "MATCH (a:ARTIFACT_CHUNK {chunk_id: $chunk_id})\n"
-                "MATCH (c:CLASS {fqn: $class_fqn})\n"
+                "MATCH (c:MODULE {fqn: $module_fqn})\n"
                 "MERGE (a)-[r:REFER_TO]->(c)\n"
                 "SET r.updated_at = timestamp()\n"
                 "RETURN r"
             )
-            queries.append({"query": q, "params": {"chunk_id": c.chunk_id, "class_fqn": target_fqn}})
+            queries.append({"query": q, "params": {"chunk_id": c.chunk_id, "module_fqn": target_fqn}})
     return queries
 
 
@@ -346,7 +363,7 @@ def build_column_queries(column_refs: List[ColumnRef]) -> List[Dict[str, Any]]:
         if (c.table_name or "").strip().lower() in _EXCLUDED_TABLE_NAMES:
             continue
         _schema = (c.table_schema or "").strip() or TABLE_SCHEMA_DEFAULT
-        fqn = f"{_schema}.{c.table_name}.{c.column_name}" if _schema else f"{c.table_name}.{c.column_name}"
+        fqn = _build_column_fqn(_schema, c.table_name, c.column_name)
         if fqn in seen:
             continue
         seen.add(fqn)
@@ -379,50 +396,50 @@ def build_chunk_bundle_queries(bundles: List[ChunkBundle]) -> List[Dict[str, Any
     _chunk_q = (
         "MERGE (c:ChunkBundleChunk {chunk_id: $chunk_id})\n"
         "ON CREATE SET c.created_at = timestamp()\n"
-        "SET c.chunk_type = $chunk_type, c.parent_method_id = $parent_method_id,\n"
+        "SET c.chunk_type = $chunk_type, c.parent_function_id = $parent_function_id,\n"
         "c.file_path = $file_path, c.start_line = $start_line, c.end_line = $end_line,\n"
         "c.code_text = $code_text, c.updated_at = timestamp()\n"
         "WITH c\n"
-        "MERGE (m:METHOD {method_id: $parent_method_id})\n"
+        "MERGE (m:FUNCTION {function_id: $parent_function_id})\n"
         "MERGE (m)-[:HAS_CHUNK]->(c)\n"
         "RETURN c"
     )
     _var_q = (
         "MERGE (c:ChunkBundleChunk {chunk_id: $chunk_id})\n"
         "ON CREATE SET c.created_at = timestamp()\n"
-        "SET c.chunk_type = $chunk_type, c.parent_method_id = $parent_method_id,\n"
+        "SET c.chunk_type = $chunk_type, c.parent_function_id = $parent_function_id,\n"
         "c.file_path = $file_path, c.start_line = $start_line, c.end_line = $end_line,\n"
         "c.code_text = $code_text, c.var_name = $var_name, c.var_type = $var_type, c.updated_at = timestamp()\n"
-        "WITH c\n"
-        "MERGE (m:METHOD {method_id: $parent_method_id})\n"
+        "With c\n"
+        "MERGE (m:FUNCTION {function_id: $parent_function_id})\n"
         "MERGE (m)-[:HAS_CHUNK]->(c)\n"
         "RETURN c"
     )
     for bundle in bundles:
         fp = bundle.file_meta.file_path or ""
         for m in bundle.methods:
-            if not m.method_id:
+            if not m.function_id:
                 continue
             queries.append({"query": _chunk_q, "params": {
-                "chunk_id": m.method_id, "chunk_type": "method_code",
-                "parent_method_id": m.method_id, "file_path": fp,
+                "chunk_id": m.function_id, "chunk_type": "function_code",
+                "parent_function_id": m.function_id, "file_path": fp,
                 "start_line": m.start_line, "end_line": m.end_line,
-                "code_text": (m.method_code or "")[:_CHUNK_CODE_MAX],
+                "code_text": (m.function_code or "")[:_CHUNK_CODE_MAX],
             }})
-        for c in bundle.method_calls:
+        for c in bundle.function_calls:
             if not c.call_id:
                 continue
             queries.append({"query": _chunk_q, "params": {
-                "chunk_id": c.call_id, "chunk_type": "method_call",
-                "parent_method_id": c.parent_method_id, "file_path": fp,
+                "chunk_id": c.call_id, "chunk_type": "function_call",
+                "parent_function_id": c.parent_function_id, "file_path": fp,
                 "start_line": c.start_line, "end_line": c.end_line,
                 "code_text": (c.call_code or "")[:_CHUNK_CODE_MAX],
             }})
         for v in bundle.variables:
-            cid = f"var:{v.parent_method_id}:{v.start_line}:{v.end_line}:{v.var_name}"
+            cid = f"var:{v.parent_function_id}:{v.start_line}:{v.end_line}:{v.var_name}"
             queries.append({"query": _var_q, "params": {
                 "chunk_id": cid, "chunk_type": "variable",
-                "parent_method_id": v.parent_method_id, "file_path": fp,
+                "parent_function_id": v.parent_function_id, "file_path": fp,
                 "start_line": v.start_line, "end_line": v.end_line,
                 "code_text": (v.initializer_code or "")[:_CHUNK_CODE_MAX],
                 "var_name": v.var_name or "", "var_type": v.var_type or "",
@@ -446,52 +463,52 @@ def build_package_hierarchy_queries(package_fqns: List[str]) -> List[Dict[str, A
     return queries
 
 
-def build_belongs_to_package_queries(class_index: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """(CLASS)-[:BELONGS_TO_PACKAGE]->(PACKAGE) 관계."""
+def build_belongs_to_package_queries(module_index: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """(MODULE)-[:BELONGS_TO_PACKAGE]->(PACKAGE) 관계."""
     seen = set()
     queries = []
-    for info in class_index.values():
+    for info in module_index.values():
         if not isinstance(info, dict):
             continue
-        fqn = info.get("fqn") or info.get("class_key")
+        fqn = info.get("fqn") or info.get("module_key")
         pkg = info.get("package_name")
         if not fqn or not pkg or (fqn, pkg) in seen:
             continue
         seen.add((fqn, pkg))
-        queries.append(_merge_rel_query("CLASS", "fqn", fqn, "PACKAGE", "fqn", pkg, "BELONGS_TO_PACKAGE"))
+        queries.append(_merge_rel_query("MODULE", "fqn", fqn, "PACKAGE", "fqn", pkg, "BELONGS_TO_PACKAGE"))
     return queries
 
 
-def build_has_method_queries(
-    method_facts_list: List[MethodFacts],
-    class_index: Dict[str, Any],
+def build_has_function_queries(
+    function_facts_list: List[FunctionFacts],
+    module_index: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    """(CLASS)-[:HAS_METHOD]->(METHOD) 또는 (PACKAGE)-[:BELONGS_TO_PACKAGE]->(METHOD) 관계."""
-    key_to_fqn = _class_key_to_fqn(class_index)
+    """(MODULE)-[:HAS_FUNCTION]->(FUNCTION) 또는 (PACKAGE)-[:BELONGS_TO_PACKAGE]->(FUNCTION) 관계."""
+    key_to_fqn = _module_key_to_fqn(module_index)
     queries = []
-    for m in method_facts_list:
-        class_fqn = key_to_fqn.get(m.class_key) if m.class_key else None
-        if class_fqn:
-            # 컨테이너 있음: CLASS → METHOD
-            queries.append(_merge_rel_query("CLASS", "fqn", class_fqn, "METHOD", "method_id", m.method_id, "HAS_METHOD"))
+    for m in function_facts_list:
+        module_fqn = key_to_fqn.get(m.module_key) if m.module_key else None
+        if module_fqn:
+            # 컨테이너 있음: MODULE → FUNCTION
+            queries.append(_merge_rel_query("MODULE", "fqn", module_fqn, "FUNCTION", "function_id", m.function_id, "HAS_FUNCTION"))
         elif m.package_name:
-            # 컨테이너 없음 (C FUNCTION 등): PACKAGE → METHOD
-            queries.append(_merge_rel_query("PACKAGE", "fqn", m.package_name, "METHOD", "method_id", m.method_id, "BELONGS_TO_PACKAGE"))
+            # 컨테이너 없음 (C FUNCTION 등): PACKAGE → FUNCTION
+            queries.append(_merge_rel_query("PACKAGE", "fqn", m.package_name, "FUNCTION", "function_id", m.function_id, "BELONGS_TO_PACKAGE"))
     return queries
 
 
-def build_has_field_queries(
-    field_facts_list: List[FieldFacts],
-    class_index: Dict[str, Any],
+def build_has_variable_queries(
+    variable_facts_list: List[VariableFacts],
+    module_index: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    """(CLASS)-[:HAS_FIELD]->(FIELD) 관계."""
-    key_to_fqn = _class_key_to_fqn(class_index)
+    """(MODULE)-[:HAS_VARIABLE]->(VARIABLE) 관계."""
+    key_to_fqn = _module_key_to_fqn(module_index)
     queries = []
-    for f in field_facts_list:
-        class_fqn = key_to_fqn.get(f.class_key)
-        if not class_fqn:
+    for f in variable_facts_list:
+        module_fqn = key_to_fqn.get(f.module_key)
+        if not module_fqn:
             continue
-        queries.append(_merge_rel_query("CLASS", "fqn", class_fqn, "FIELD", "field_id", f.field_id, "HAS_FIELD"))
+        queries.append(_merge_rel_query("MODULE", "fqn", module_fqn, "VARIABLE", "variable_id", f.variable_id, "HAS_VARIABLE"))
     return queries
 
 
@@ -507,8 +524,8 @@ def build_fk_to_column_queries(fk_edges: List[FkEdge]) -> List[Dict[str, Any]]:
         to_col = e.to_column or ""
         if not from_col or not to_col:
             continue
-        from_fqn = _column_fqn(e.from_schema or "", e.from_table or "", from_col)
-        to_fqn = _column_fqn(e.to_schema or "", e.to_table or "", to_col)
+        from_fqn = _build_column_fqn(e.from_schema or "", e.from_table or "", from_col)
+        to_fqn = _build_column_fqn(e.to_schema or "", e.to_table or "", to_col)
         if not from_fqn or not to_fqn:
             continue
         queries.append(_merge_rel_query("COLUMN", "fqn", from_fqn, "COLUMN", "fqn", to_fqn, "FK_TO_COLUMN"))
@@ -526,7 +543,7 @@ def build_has_column_queries(column_refs: List[ColumnRef]) -> List[Dict[str, Any
             continue
         schema = (c.table_schema or "").strip() or TABLE_SCHEMA_DEFAULT
         name = c.table_name or ""
-        fqn = f"{schema}.{name}.{c.column_name}" if schema else f"{name}.{c.column_name}"
+        fqn = _build_column_fqn(schema, name, c.column_name)
         key = (schema, name, fqn)
         if key in seen:
             continue
@@ -595,8 +612,9 @@ def build_reads_writes_queries(edges: List[ReadsWritesEdge]) -> List[Dict[str, A
     return queries
 
 
-def build_method_table_from_writes_queries(edges: List[MethodTableEdge]) -> List[Dict[str, Any]]:
-    """(Method|Field)-[:READS|WRITES]->(Table) 관계. DUAL 등 제외. db/schema 빈 값은 postgres/public."""
+def build_function_table_from_writes_queries(edges: List[FunctionTableEdge]) -> List[Dict[str, Any]]:
+    """(Function|Field)-[:READS|WRITES]->(Table) 관계. DUAL 등 제외. db/schema 빈 값은 postgres/public.
+    Table 노드가 없으면 MERGE로 자동 생성 (DeepAgent 시나리오 4 대응)."""
     queries = []
     for e in edges:
         schema = (e.table_schema or "").strip() or TABLE_SCHEMA_DEFAULT
@@ -604,36 +622,103 @@ def build_method_table_from_writes_queries(edges: List[MethodTableEdge]) -> List
         if (name or "").strip().lower() in _EXCLUDED_TABLE_NAMES:
             continue
         rel = e.relation or "READS"
-        use_field = getattr(e, "field_id", None)
-        source_match = "MATCH (f:FIELD {field_id: $field_id})\n" if use_field else "MATCH (m:METHOD {method_id: $method_id})\n"
+        use_field = getattr(e, "variable_id", None)
+        source_match = "MATCH (f:VARIABLE {variable_id: $variable_id})\n" if use_field else "MATCH (m:FUNCTION {function_id: $function_id})\n"
         source_node = "f" if use_field else "m"
+        table_id = f"{schema}.{name}" if schema else name
         q = (
             source_match
-            + "MATCH (t:Table {db: $db, schema: $schema, name: $name})\n"
-            f"MERGE ({source_node})-[r:{rel}]->(t)\n"
+            + "MERGE (t:Table {db: $db, schema: $schema, name: $name})\n"
+            + "ON CREATE SET t.created_at = timestamp(), t.table_id = $table_id\n"
+            + f"MERGE ({source_node})-[r:{rel}]->(t)\n"
             "SET r.updated_at = timestamp()\n"
             "RETURN r"
         )
-        params: Dict[str, Any] = {"method_id": e.method_id, "db": TABLE_DB_DEFAULT, "schema": schema, "name": name}
+        params: Dict[str, Any] = {"function_id": e.function_id, "db": TABLE_DB_DEFAULT, "schema": schema, "name": name, "table_id": table_id}
         if use_field:
-            params["field_id"] = e.field_id
+            params["variable_id"] = e.variable_id
         queries.append({"query": q, "params": params})
     return queries
 
 
-def build_class_table_refer_to_queries(edges: List[ClassTableEdge]) -> List[Dict[str, Any]]:
-    """엔티티 (CLASS)-[:REFER_TO]->(TABLE) 출처 연결. DUAL 등 제외."""
+def build_table_from_entity_classes(
+    entity_fqns: set,
+    module_index: Dict[str, Any],
+    schema_default: str = "",
+) -> List[Dict[str, Any]]:
+    """엔티티로 확정된 클래스/구조체의 VARIABLE로 Table + Column + HAS_COLUMN 노드/관계 생성.
+
+    테이블명 = 클래스/구조체명 그대로 사용 (이름 변환 없음).
+    컬럼명 = VARIABLE명 그대로 사용.
+    """
+    column_refs: List[ColumnRef] = []
+    table_names: set = set()
+
+    for fqn in entity_fqns:
+        info = module_index.get(fqn)
+        if not isinstance(info, dict):
+            continue
+        module_name = info.get("name", "")
+        if not module_name:
+            continue
+        table_name = module_name  # 이름 변환 없이 그대로 사용
+        schema = schema_default or TABLE_SCHEMA_DEFAULT
+        table_names.add((schema, table_name))
+
+        # VARIABLE 목록에서 Column 정보 추출
+        fields = info.get("fields") or []
+        for field in fields:
+            if not isinstance(field, dict):
+                continue
+            col_name = field.get("name", "")
+            if not col_name:
+                continue
+            column_refs.append(ColumnRef(
+                table_schema=schema,
+                table_name=table_name,
+                column_name=col_name,
+                dtype=field.get("variableType") or field.get("type") or "",
+                description="",
+                nullable=True,
+            ))
+
+    # Table + Column + HAS_COLUMN 쿼리 생성
+    queries: List[Dict[str, Any]] = []
+
+    # Table 노드 MERGE
+    for schema, name in table_names:
+        table_id = f"{schema}.{name}" if schema else name
+        q = (
+            "MERGE (n:Table {db: $db, schema: $schema, name: $name})\n"
+            "ON CREATE SET n.created_at = timestamp(), n.table_id = $table_id\n"
+            "ON MATCH SET n.updated_at = timestamp()\n"
+            "RETURN n"
+        )
+        queries.append({
+            "query": q,
+            "params": {"db": TABLE_DB_DEFAULT, "schema": schema, "name": name, "table_id": table_id},
+        })
+
+    # Column 노드 MERGE + HAS_COLUMN 관계
+    queries.extend(build_column_queries(column_refs))
+    queries.extend(build_has_column_queries(column_refs))
+
+    return queries
+
+
+def build_module_table_refer_to_queries(edges: List[ModuleTableEdge]) -> List[Dict[str, Any]]:
+    """엔티티 (MODULE)-[:REFER_TO]->(TABLE) 출처 연결. DUAL 등 제외."""
     queries = []
     for e in edges:
         schema = (e.table_schema or "").strip() or TABLE_SCHEMA_DEFAULT
         name = (e.table_name or "").strip()
         if (name or "").lower() in _EXCLUDED_TABLE_NAMES:
             continue
-        fqn = (e.class_fqn or "").strip()
+        fqn = (e.module_fqn or "").strip()
         if not fqn:
             continue
         q = (
-            "MATCH (c:CLASS {fqn: $class_fqn})\n"
+            "MATCH (c:MODULE {fqn: $module_fqn})\n"
             "MATCH (t:Table {db: $db, schema: $schema, name: $name})\n"
             "MERGE (c)-[r:REFER_TO]->(t)\n"
             "SET r.updated_at = timestamp()\n"
@@ -641,7 +726,7 @@ def build_class_table_refer_to_queries(edges: List[ClassTableEdge]) -> List[Dict
         )
         queries.append({
             "query": q,
-            "params": {"class_fqn": fqn, "db": TABLE_DB_DEFAULT, "schema": schema, "name": name},
+            "params": {"module_fqn": fqn, "db": TABLE_DB_DEFAULT, "schema": schema, "name": name},
         })
     return queries
 
@@ -683,15 +768,15 @@ def build_refer_to_queries(edges: List[ReferToEdge]) -> List[Dict[str, Any]]:
             match_clause = "MATCH (t:CONFIG_SECTION {config_key_path: $target_id})\n"
         elif target_type == "ArtifactChunk":
             match_clause = "MATCH (t:ARTIFACT_CHUNK {chunk_id: $target_id})\n"
-        elif target_type in ("Class", "CLASS"):
-            match_clause = "MATCH (t:CLASS {fqn: $target_id})\n"
+        elif target_type in ("Module", "MODULE"):
+            match_clause = "MATCH (t:MODULE {fqn: $target_id})\n"
         else:
             match_clause = "MATCH (t:SQL_STATEMENT {sql_key: $target_id})\n"
-        source_node = "f" if getattr(e, "field_id", None) else "m"
+        source_node = "f" if getattr(e, "variable_id", None) else "m"
         source_match = (
-            "MATCH (f:FIELD {field_id: $field_id})\n"
-            if getattr(e, "field_id", None)
-            else "MATCH (m:METHOD {method_id: $method_id})\n"
+            "MATCH (f:VARIABLE {variable_id: $variable_id})\n"
+            if getattr(e, "variable_id", None)
+            else "MATCH (m:FUNCTION {function_id: $function_id})\n"
         )
         q = (
             source_match
@@ -703,13 +788,13 @@ def build_refer_to_queries(edges: List[ReferToEdge]) -> List[Dict[str, Any]]:
             "RETURN r"
         )
         params: Dict[str, Any] = {
-            "method_id": getattr(e, "method_id", None),
+            "function_id": getattr(e, "function_id", None),
             "target_type": e.target_type,
             "target_id": e.target_id,
             "confidence": e.confidence,
         }
-        if getattr(e, "field_id", None):
-            params["field_id"] = e.field_id
+        if getattr(e, "variable_id", None):
+            params["variable_id"] = e.variable_id
         queries.append({"query": q, "params": params})
     return queries
 
@@ -718,86 +803,102 @@ def build_refer_to_queries(edges: List[ReferToEdge]) -> List[Dict[str, Any]]:
 # Summary / label update queries
 # ---------------------------------------------------------------------------
 
-def build_method_summary_queries(summary_by_method: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """이미 있는 METHOD 노드에 summary·stereotype·methodStereotype 속성 및 레이블 추가.
+def build_function_summary_queries(summary_by_function: Dict[str, Dict[str, Any]], lang: str = "java") -> List[Dict[str, Any]]:
+    """FUNCTION 노드에 summary·stereotype·methodStereotype 속성 및 언어별 스테레오타입 레이블 추가.
 
-    UNWIND 기반 배치 처리:
-    - CQRS stereotype: COMMAND/READMODEL 레이블
-    - methodStereotype: Endpoint/Query/Command 등 아키텍처 역할 레이블
+    lang에 따라 허용되는 스테레오타입만 Neo4j 라벨로 추가.
     """
     from analyzer.strategy.framework.linking.summarizer import VALID_METHOD_STEREOTYPES
+    from analyzer.strategy.framework.common.ontology import get_ontology
+    onto = get_ontology()
+    valid_for_lang = onto.valid_stereotypes(lang)
 
-    # CQRS stereotype별 그룹핑
+    # CQRS stereotype별 그룹핑 (OOP만 라벨 추가, 비OOP는 속성만)
     commands = []
     readmodels = []
-    for method_id, data in summary_by_method.items():
+    for function_id, data in summary_by_function.items():
         ster = _normalize_stereotype(data.get("stereotype"))
         summary = (data.get("summary") or "").strip()
         method_st = (data.get("methodStereotype") or "").strip()
         if method_st not in VALID_METHOD_STEREOTYPES:
             method_st = ""
-        row = {"method_id": method_id, "stereotype": ster, "summary": summary, "methodStereotype": method_st}
+        row = {"function_id": function_id, "stereotype": ster, "summary": summary, "methodStereotype": method_st}
         if ster == "command":
             commands.append(row)
         else:
             readmodels.append(row)
 
     queries = []
-    if commands:
-        queries.append({
-            "query": (
-                "UNWIND $rows AS row\n"
-                "MATCH (n:METHOD {method_id: row.method_id})\n"
-                "SET n.updated_at = timestamp(), n.stereotype = row.stereotype, n.summary = row.summary, n.methodStereotype = row.methodStereotype\n"
-                "REMOVE n:COMMAND, n:READMODEL\n"
-                "SET n:COMMAND\n"
-                "RETURN n"
-            ),
-            "params": {"rows": commands},
-        })
-    if readmodels:
-        queries.append({
-            "query": (
-                "UNWIND $rows AS row\n"
-                "MATCH (n:METHOD {method_id: row.method_id})\n"
-                "SET n.updated_at = timestamp(), n.stereotype = row.stereotype, n.summary = row.summary, n.methodStereotype = row.methodStereotype\n"
-                "REMOVE n:COMMAND, n:READMODEL\n"
-                "SET n:READMODEL\n"
-                "RETURN n"
-            ),
-            "params": {"rows": readmodels},
-        })
+    # CQRS stereotype 라벨 (OOP 언어만)
+    if onto.is_oop(lang):
+        if commands:
+            queries.append({
+                "query": (
+                    "UNWIND $rows AS row\n"
+                    "MATCH (n:FUNCTION {function_id: row.function_id})\n"
+                    "SET n.updated_at = timestamp(), n.stereotype = row.stereotype, n.summary = row.summary, n.methodStereotype = row.methodStereotype\n"
+                    "REMOVE n:COMMAND, n:READMODEL\n"
+                    "SET n:COMMAND\n"
+                    "RETURN n"
+                ),
+                "params": {"rows": commands},
+            })
+        if readmodels:
+            queries.append({
+                "query": (
+                    "UNWIND $rows AS row\n"
+                    "MATCH (n:FUNCTION {function_id: row.function_id})\n"
+                    "SET n.updated_at = timestamp(), n.stereotype = row.stereotype, n.summary = row.summary, n.methodStereotype = row.methodStereotype\n"
+                    "REMOVE n:COMMAND, n:READMODEL\n"
+                    "SET n:READMODEL\n"
+                    "RETURN n"
+                ),
+                "params": {"rows": readmodels},
+            })
+    else:
+        # 비OOP: 속성만 저장, CQRS 라벨 없음
+        all_rows = commands + readmodels
+        if all_rows:
+            queries.append({
+                "query": (
+                    "UNWIND $rows AS row\n"
+                    "MATCH (n:FUNCTION {function_id: row.function_id})\n"
+                    "SET n.updated_at = timestamp(), n.stereotype = row.stereotype, n.summary = row.summary, n.methodStereotype = row.methodStereotype\n"
+                    "RETURN n"
+                ),
+                "params": {"rows": all_rows},
+            })
 
-    # methodStereotype별 레이블 추가 (별도 쿼리 — 동적 레이블은 Cypher 리터럴이어야 함)
+    # methodStereotype 라벨 (언어에 맞는 것만)
     method_st_groups: Dict[str, List[str]] = {}
-    for method_id, data in summary_by_method.items():
+    for function_id, data in summary_by_function.items():
         method_st = (data.get("methodStereotype") or "").strip()
-        if method_st in VALID_METHOD_STEREOTYPES:
-            method_st_groups.setdefault(method_st, []).append(method_id)
+        if method_st in VALID_METHOD_STEREOTYPES and method_st in valid_for_lang:
+            method_st_groups.setdefault(method_st, []).append(function_id)
 
-    for label, method_ids in method_st_groups.items():
+    for label, function_ids in method_st_groups.items():
         queries.append({
             "query": (
                 "UNWIND $ids AS mid\n"
-                f"MATCH (n:METHOD {{method_id: mid}})\n"
+                f"MATCH (n:FUNCTION {{function_id: mid}})\n"
                 f"SET n:{label}\n"
                 "RETURN n"
             ),
-            "params": {"ids": method_ids},
+            "params": {"ids": function_ids},
         })
 
     return queries
 
 
-def build_field_summary_queries(summary_by_field: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """FIELD 노드에 summary 속성 업데이트. UNWIND 배치."""
-    if not summary_by_field:
+def build_variable_summary_queries(summary_by_variable: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """VARIABLE 노드에 summary 속성 업데이트. UNWIND 배치."""
+    if not summary_by_variable:
         return []
-    rows = [{"field_id": fid, "summary": data.get("summary", "")} for fid, data in summary_by_field.items()]
+    rows = [{"variable_id": vid, "summary": data.get("summary", "")} for vid, data in summary_by_variable.items()]
     return [{
         "query": (
             "UNWIND $rows AS row\n"
-            "MATCH (n:FIELD {field_id: row.field_id})\n"
+            "MATCH (n:VARIABLE {variable_id: row.variable_id})\n"
             "SET n.updated_at = timestamp(),\n"
             "  n.summary = CASE WHEN row.summary IS NOT NULL AND trim(toString(row.summary)) <> '' THEN row.summary ELSE n.summary END\n"
             "RETURN n"
@@ -806,48 +907,51 @@ def build_field_summary_queries(summary_by_field: Dict[str, Dict[str, Any]]) -> 
     }]
 
 
-def build_class_summary_queries(summary_by_class: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """CLASS 노드에 summary·classStereotype 속성 및 레이블 업데이트 (fqn 기준). UNWIND 배치."""
-    from analyzer.strategy.framework.linking.summarizer import VALID_CLASS_STEREOTYPES
+def build_module_summary_queries(summary_by_module: Dict[str, Dict[str, Any]], lang: str = "java") -> List[Dict[str, Any]]:
+    """MODULE 노드에 summary·moduleStereotype 속성 및 언어별 레이블 업데이트 (fqn 기준). UNWIND 배치."""
+    from analyzer.strategy.framework.linking.summarizer import VALID_MODULE_STEREOTYPES
+    from analyzer.strategy.framework.common.ontology import get_ontology
+    onto = get_ontology()
 
-    if not summary_by_class:
+    if not summary_by_module:
         return []
     rows = []
-    for fqn, data in summary_by_class.items():
-        class_st = (data.get("classStereotype") or "").strip()
-        if class_st not in VALID_CLASS_STEREOTYPES:
-            class_st = ""
-        rows.append({"fqn": fqn, "summary": data.get("summary", ""), "classStereotype": class_st})
+    for fqn, data in summary_by_module.items():
+        module_st = (data.get("moduleStereotype") or "").strip()
+        if module_st not in VALID_MODULE_STEREOTYPES:
+            module_st = ""
+        rows.append({"fqn": fqn, "summary": data.get("summary", ""), "moduleStereotype": module_st})
 
     queries = [{
         "query": (
             "UNWIND $rows AS row\n"
-            "MATCH (n:CLASS {fqn: row.fqn})\n"
+            "MATCH (n:MODULE {fqn: row.fqn})\n"
             "SET n.updated_at = timestamp(),\n"
             "  n.summary = CASE WHEN row.summary IS NOT NULL AND trim(toString(row.summary)) <> '' THEN row.summary ELSE n.summary END,\n"
-            "  n.classStereotype = row.classStereotype\n"
+            "  n.moduleStereotype = row.moduleStereotype\n"
             "RETURN n"
         ),
         "params": {"rows": rows},
     }]
 
-    # classStereotype별 레이블 추가 (동적 레이블은 Cypher 리터럴이어야 함)
-    class_st_groups: Dict[str, List[str]] = {}
-    for fqn, data in summary_by_class.items():
-        class_st = (data.get("classStereotype") or "").strip()
-        if class_st in VALID_CLASS_STEREOTYPES:
-            class_st_groups.setdefault(class_st, []).append(fqn)
+    # moduleStereotype 라벨 (OOP 언어만)
+    if onto.is_oop(lang):
+        module_st_groups: Dict[str, List[str]] = {}
+        for fqn, data in summary_by_module.items():
+            module_st = (data.get("moduleStereotype") or "").strip()
+            if module_st in VALID_MODULE_STEREOTYPES:
+                module_st_groups.setdefault(module_st, []).append(fqn)
 
-    for label, fqns in class_st_groups.items():
-        queries.append({
-            "query": (
-                "UNWIND $fqns AS f\n"
-                f"MATCH (n:CLASS {{fqn: f}})\n"
-                f"SET n:{label}\n"
-                "RETURN n"
-            ),
-            "params": {"fqns": fqns},
-        })
+        for label, fqns in module_st_groups.items():
+            queries.append({
+                "query": (
+                    "UNWIND $fqns AS f\n"
+                    f"MATCH (n:MODULE {{fqn: f}})\n"
+                    f"SET n:{label}\n"
+                    "RETURN n"
+                ),
+                "params": {"fqns": fqns},
+            })
 
     return queries
 
@@ -862,28 +966,28 @@ def build_calls_queries(edges: List[CallsEdge]) -> List[Dict[str, Any]]:
     external_rows = []
     for e in edges:
         scope = getattr(e, "scope", "internal")
-        caller_cfqn, caller_mname = _class_fqn_and_method_name(e.caller_method_id)
-        callee_cfqn, callee_mname = _class_fqn_and_method_name(e.callee_method_id)
-        caller_class_name = caller_cfqn.rsplit(".", 1)[-1] if caller_cfqn else ""
-        callee_class_name = callee_cfqn.rsplit(".", 1)[-1] if callee_cfqn else ""
+        caller_cfqn, caller_mname = _module_fqn_and_function_name(e.caller_function_id)
+        callee_cfqn, callee_mname = _module_fqn_and_function_name(e.callee_function_id)
+        caller_module_name = _extract_short_name(caller_cfqn)
+        callee_module_name = _extract_short_name(callee_cfqn)
 
-        if scope == "external" or (e.callee_method_id or "").startswith("external:"):
-            callee_class_name_ext = callee_class_name
-            callee_method_name_ext = callee_mname
-            if (e.callee_method_id or "").startswith("external:") and "#" in (e.callee_method_id or ""):
-                _ext_class, _ext_method = (e.callee_method_id or "").split(":", 1)[1].split("#", 1)
-                callee_class_name_ext = _ext_class.strip()
-                callee_method_name_ext = _ext_method.strip()
+        if scope == "external" or (e.callee_function_id or "").startswith("external:"):
+            callee_module_name_ext = callee_module_name
+            callee_function_name_ext = callee_mname
+            if (e.callee_function_id or "").startswith("external:") and "#" in (e.callee_function_id or ""):
+                _ext_class, _ext_method = (e.callee_function_id or "").split(":", 1)[1].split("#", 1)
+                callee_module_name_ext = _ext_class.strip()
+                callee_function_name_ext = _ext_method.strip()
             external_rows.append({
-                "caller_class_name": caller_class_name, "caller_method_name": caller_mname,
-                "callee_method_id": e.callee_method_id,
-                "callee_class_name": callee_class_name_ext, "callee_method_name": callee_method_name_ext,
+                "caller_module_name": caller_module_name, "caller_function_name": caller_mname,
+                "callee_function_id": e.callee_function_id,
+                "callee_module_name": callee_module_name_ext, "callee_function_name": callee_function_name_ext,
                 "call_code": (e.call_code or "")[:200],
             })
         else:
             internal_rows.append({
-                "caller_class_name": caller_class_name, "caller_method_name": caller_mname,
-                "callee_class_name": callee_class_name, "callee_method_name": callee_mname,
+                "caller_module_name": caller_module_name, "caller_function_name": caller_mname,
+                "callee_module_name": callee_module_name, "callee_function_name": callee_mname,
                 "call_code": (e.call_code or "")[:200],
             })
 
@@ -892,10 +996,10 @@ def build_calls_queries(edges: List[CallsEdge]) -> List[Dict[str, Any]]:
         queries.append({
             "query": (
                 "UNWIND $rows AS row\n"
-                "MATCH (a:METHOD)\n"
-                "WHERE a.class_name = row.caller_class_name AND a.name = row.caller_method_name\n"
-                "MATCH (b:METHOD)\n"
-                "WHERE b.class_name = row.callee_class_name AND b.name = row.callee_method_name\n"
+                "MATCH (a:FUNCTION)\n"
+                "WHERE a.module_name = row.caller_module_name AND a.name = row.caller_function_name\n"
+                "MATCH (b:FUNCTION)\n"
+                "WHERE b.module_name = row.callee_module_name AND b.name = row.callee_function_name\n"
                 "WITH a, b, row\n"
                 "WHERE a <> b\n"
                 "MERGE (a)-[r:CALLS]->(b)\n"
@@ -909,16 +1013,16 @@ def build_calls_queries(edges: List[CallsEdge]) -> List[Dict[str, Any]]:
         queries.append({
             "query": (
                 "UNWIND $rows AS row\n"
-                "MATCH (a:METHOD)\n"
-                "WHERE a.class_name = row.caller_class_name AND a.name = row.caller_method_name\n"
-                "MERGE (ec:CLASS:EXTERNAL_CLASS {class_name: row.callee_class_name})\n"
-                "ON CREATE SET ec.name = row.callee_class_name, ec.created_at = timestamp()\n"
+                "MATCH (a:FUNCTION)\n"
+                "WHERE a.module_name = row.caller_module_name AND a.name = row.caller_function_name\n"
+                "MERGE (ec:MODULE:CLASS:EXTERNAL {module_name: row.callee_module_name})\n"
+                "ON CREATE SET ec.name = row.callee_module_name, ec.created_at = timestamp()\n"
                 "ON MATCH SET ec.updated_at = timestamp()\n"
-                "MERGE (b:METHOD:EXTERNAL_METHOD {method_id: row.callee_method_id})\n"
-                "ON CREATE SET b.created_at = timestamp(), b.class_name = row.callee_class_name, b.name = row.callee_method_name\n"
-                "ON MATCH SET b.updated_at = timestamp(), b.class_name = row.callee_class_name, b.name = row.callee_method_name\n"
-                "MERGE (ec)-[:HAS_METHOD]->(b)\n"
-                "WITH a, b, row\n"
+                "MERGE (b:FUNCTION:METHOD:EXTERNAL {function_id: row.callee_function_id})\n"
+                "ON CREATE SET b.created_at = timestamp(), b.module_name = row.callee_module_name, b.name = row.callee_function_name\n"
+                "ON MATCH SET b.updated_at = timestamp(), b.module_name = row.callee_module_name, b.name = row.callee_function_name\n"
+                "MERGE (ec)-[:HAS_FUNCTION]->(b)\n"
+                "With a, b, row\n"
                 "WHERE a <> b\n"
                 "MERGE (a)-[r:CALLS]->(b)\n"
                 "ON CREATE SET r.call_code = row.call_code, r.scope = 'external', r.created_at = timestamp()\n"
@@ -931,16 +1035,16 @@ def build_calls_queries(edges: List[CallsEdge]) -> List[Dict[str, Any]]:
 
 
 def build_uses_queries(edges: List[UsesEdge]) -> List[Dict[str, Any]]:
-    """(CLASS)-[:USES]->(CLASS). UNWIND 배치: internal/external 2개 쿼리."""
+    """(MODULE)-[:USES]->(MODULE). UNWIND 배치: internal/external 2개 쿼리."""
     internal_rows = []
     external_rows = []
     for e in edges:
-        from_class_name = (e.from_fqn or "").rsplit(".", 1)[-1] if e.from_fqn else ""
-        to_class_name = (e.to_fqn or "").rsplit(".", 1)[-1] if e.to_fqn else ""
-        if not from_class_name or not to_class_name or from_class_name == to_class_name:
+        from_module_name = _extract_short_name(e.from_fqn)
+        to_module_name = _extract_short_name(e.to_fqn)
+        if not from_module_name or not to_module_name or from_module_name == to_module_name:
             continue
         scope = getattr(e, "scope", "internal")
-        row = {"from_class_name": from_class_name, "to_class_name": to_class_name}
+        row = {"from_module_name": from_module_name, "to_module_name": to_module_name}
         if scope == "external":
             external_rows.append(row)
         else:
@@ -951,11 +1055,11 @@ def build_uses_queries(edges: List[UsesEdge]) -> List[Dict[str, Any]]:
         queries.append({
             "query": (
                 "UNWIND $rows AS row\n"
-                "MATCH (a:CLASS)\n"
-                "WHERE a.class_name = row.from_class_name\n"
-                "MATCH (b:CLASS)\n"
-                "WHERE b.class_name = row.to_class_name\n"
-                "WITH a, b\n"
+                "MATCH (a:MODULE)\n"
+                "WHERE a.module_name = row.from_module_name\n"
+                "MATCH (b:MODULE)\n"
+                "WHERE b.module_name = row.to_module_name\n"
+                "With a, b\n"
                 "WHERE a <> b\n"
                 "MERGE (a)-[r:USES]->(b)\n"
                 "ON CREATE SET r.scope = 'internal', r.created_at = timestamp()\n"
@@ -968,11 +1072,11 @@ def build_uses_queries(edges: List[UsesEdge]) -> List[Dict[str, Any]]:
         queries.append({
             "query": (
                 "UNWIND $rows AS row\n"
-                "MATCH (a:CLASS)\n"
-                "WHERE a.class_name = row.from_class_name\n"
-                "MERGE (b:CLASS:EXTERNAL_CLASS {class_name: row.to_class_name})\n"
-                "ON CREATE SET b.name = row.to_class_name\n"
-                "WITH a, b\n"
+                "MATCH (a:MODULE)\n"
+                "WHERE a.module_name = row.from_module_name\n"
+                "MERGE (b:MODULE:CLASS:EXTERNAL {module_name: row.to_module_name})\n"
+                "ON CREATE SET b.name = row.to_module_name\n"
+                "With a, b\n"
                 "WHERE a <> b\n"
                 "MERGE (a)-[r:USES]->(b)\n"
                 "ON CREATE SET r.scope = 'external', r.created_at = timestamp()\n"
@@ -988,34 +1092,34 @@ def build_uses_queries(edges: List[UsesEdge]) -> List[Dict[str, Any]]:
 # UML: 상속(EXTENDS/IMPLEMENTS), 연관(ASSOCIATION), 의존/합성/집합
 # ---------------------------------------------------------------------------
 
-def build_uml_inheritance_queries(class_index: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """class_index의 extends_type, implements_types로 EXTENDS/IMPLEMENTS 쿼리 생성."""
+def build_uml_inheritance_queries(module_index: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """module_index의 extends_type, implements_types로 EXTENDS/IMPLEMENTS 쿼리 생성."""
     queries: List[Dict[str, Any]] = []
     seen_src = set()
     _internal_q = (
-        "MERGE (src:CLASS {fqn: $source_fqn})\n"
+        "MERGE (src:MODULE {fqn: $source_fqn})\n"
         "ON CREATE SET src.created_at = timestamp()\n"
         "ON MATCH SET src.updated_at = timestamp()\n"
         "WITH src\n"
-        "MATCH (t:CLASS {fqn: $target_fqn})\n"
+        "MATCH (t:MODULE {fqn: $target_fqn})\n"
         "MERGE (src)-[:{}]->(t)\n"
         "RETURN 1"
     )
     _external_q = (
-        "MERGE (src:CLASS {fqn: $source_fqn})\n"
+        "MERGE (src:MODULE {fqn: $source_fqn})\n"
         "ON CREATE SET src.created_at = timestamp()\n"
         "ON MATCH SET src.updated_at = timestamp()\n"
         "WITH src\n"
-        "MERGE (t:CLASS:EXTERNAL_CLASS {class_name: $target_class_name})\n"
-        "ON CREATE SET t.name = $target_class_name, t.created_at = timestamp()\n"
+        "MERGE (t:MODULE:CLASS:EXTERNAL {module_name: $target_module_name})\n"
+        "ON CREATE SET t.name = $target_module_name, t.created_at = timestamp()\n"
         "ON MATCH SET t.updated_at = timestamp()\n"
         "MERGE (src)-[:{}]->(t)\n"
         "RETURN 1"
     )
-    for info in class_index.values():
+    for info in module_index.values():
         if not isinstance(info, dict):
             continue
-        source_fqn = info.get("fqn") or info.get("class_key")
+        source_fqn = info.get("fqn") or info.get("module_key")
         if not source_fqn or source_fqn in seen_src:
             continue
         seen_src.add(source_fqn)
@@ -1023,11 +1127,11 @@ def build_uml_inheritance_queries(class_index: Dict[str, Any]) -> List[Dict[str,
         extends_type = info.get("extends_type")
         if extends_type and str(extends_type).strip():
             target_name = str(extends_type).strip()
-            target_fqn = _target_fqn_from_class_index(class_index, target_name)
+            target_fqn = _target_fqn_from_module_index(module_index, target_name)
             if target_fqn:
                 queries.append({"query": _internal_q.format("EXTENDS"), "params": {"source_fqn": source_fqn, "target_fqn": target_fqn}})
             else:
-                queries.append({"query": _external_q.format("EXTENDS"), "params": {"source_fqn": source_fqn, "target_class_name": target_name}})
+                queries.append({"query": _external_q.format("EXTENDS"), "params": {"source_fqn": source_fqn, "target_module_name": target_name}})
 
         implements_types = info.get("implements_types")
         if implements_types and str(implements_types).strip():
@@ -1035,104 +1139,104 @@ def build_uml_inheritance_queries(class_index: Dict[str, Any]) -> List[Dict[str,
                 target_name = part.strip()
                 if not target_name:
                     continue
-                target_fqn = _target_fqn_from_class_index(class_index, target_name)
+                target_fqn = _target_fqn_from_module_index(module_index, target_name)
                 if target_fqn:
                     queries.append({"query": _internal_q.format("IMPLEMENTS"), "params": {"source_fqn": source_fqn, "target_fqn": target_fqn}})
                 else:
-                    queries.append({"query": _external_q.format("IMPLEMENTS"), "params": {"source_fqn": source_fqn, "target_class_name": target_name}})
+                    queries.append({"query": _external_q.format("IMPLEMENTS"), "params": {"source_fqn": source_fqn, "target_module_name": target_name}})
     return queries
 
 
 def build_uml_association_queries(
-    class_index: Dict[str, Any],
-    field_relations_by_class: Dict[str, List[Dict[str, Any]]],
+    module_index: Dict[str, Any],
+    variable_relations_by_module: Dict[str, List[Dict[str, Any]]],
 ) -> List[Dict[str, Any]]:
-    """클래스별 fieldRelations(LLM association 결과)로 (CLASS)-[:ASSOCIATION]->(CLASS) 쿼리 생성."""
+    """모듈별 fieldRelations(LLM association 결과)로 (MODULE)-[:ASSOCIATION]->(MODULE) 쿼리 생성."""
     queries: List[Dict[str, Any]] = []
-    key_to_fqn = _class_key_to_fqn(class_index)
-    for class_key_or_fqn, field_relations in (field_relations_by_class or {}).items():
-        source_fqn = key_to_fqn.get(class_key_or_fqn) or (
-            class_index.get(class_key_or_fqn, {}).get("fqn") if isinstance(class_index.get(class_key_or_fqn), dict) else class_key_or_fqn
+    key_to_fqn = _module_key_to_fqn(module_index)
+    for module_key_or_fqn, member_relations in (variable_relations_by_module or {}).items():
+        source_fqn = key_to_fqn.get(module_key_or_fqn) or (
+            module_index.get(module_key_or_fqn, {}).get("fqn") if isinstance(module_index.get(module_key_or_fqn), dict) else module_key_or_fqn
         )
         if not source_fqn:
             continue
-        for rel in field_relations or []:
-            target_class = (rel.get("targetClass") or "").strip()
-            if not target_class:
+        for rel in member_relations or []:
+            target_module = (rel.get("targetModule") or "").strip()
+            if not target_module:
                 continue
             multiplicity = rel.get("multiplicity", "1")
-            field_name = rel.get("field", "")
-            target_fqn = _target_fqn_from_class_index(class_index, target_class)
+            member_name = rel.get("member", "")
+            target_fqn = _target_fqn_from_module_index(module_index, target_module)
             if target_fqn:
                 q = (
-                    "MATCH (src:CLASS {fqn: $source_fqn})\n"
-                    "MATCH (t:CLASS {fqn: $target_fqn})\n"
-                    "MERGE (src)-[r:ASSOCIATION {field: $field_name, multiplicity: $multiplicity}]->(t)\n"
+                    "MATCH (src:MODULE {fqn: $source_fqn})\n"
+                    "MATCH (t:MODULE {fqn: $target_fqn})\n"
+                    "MERGE (src)-[r:ASSOCIATION {member: $member_name, multiplicity: $multiplicity}]->(t)\n"
                     "RETURN r"
                 )
                 queries.append({"query": q, "params": {
                     "source_fqn": source_fqn, "target_fqn": target_fqn,
-                    "field_name": field_name, "multiplicity": multiplicity,
+                    "member_name": member_name, "multiplicity": multiplicity,
                 }})
             else:
                 q = (
-                    "MATCH (src:CLASS {fqn: $source_fqn})\n"
-                    "MERGE (t:CLASS:EXTERNAL_CLASS {class_name: $target_class_name})\n"
-                    "ON CREATE SET t.name = $target_class_name, t.created_at = timestamp()\n"
+                    "MATCH (src:MODULE {fqn: $source_fqn})\n"
+                    "MERGE (t:MODULE:CLASS:EXTERNAL {module_name: $target_module_name})\n"
+                    "ON CREATE SET t.name = $target_module_name, t.created_at = timestamp()\n"
                     "ON MATCH SET t.updated_at = timestamp()\n"
-                    "MERGE (src)-[r:ASSOCIATION {field: $field_name, multiplicity: $multiplicity}]->(t)\n"
+                    "MERGE (src)-[r:ASSOCIATION {member: $member_name, multiplicity: $multiplicity}]->(t)\n"
                     "RETURN r"
                 )
                 queries.append({"query": q, "params": {
-                    "source_fqn": source_fqn, "target_class_name": target_class,
-                    "field_name": field_name, "multiplicity": multiplicity,
+                    "source_fqn": source_fqn, "target_module_name": target_module,
+                    "member_name": member_name, "multiplicity": multiplicity,
                 }})
     return queries
 
 
 def build_uml_dependency_queries(
-    summary_by_method: Dict[str, Dict[str, Any]],
-    method_facts_list: List[Any],
-    class_index: Dict[str, Any],
+    summary_by_function: Dict[str, Dict[str, Any]],
+    function_facts_list: List[Any],
+    module_index: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    """Step6 summary_by_method의 dependencies로 DEPENDENCY/COMPOSITION/AGGREGATION 쿼리 생성.
+    """Step6 summary_by_function의 dependencies로 DEPENDENCY/COMPOSITION/AGGREGATION 쿼리 생성.
 
     UNWIND 배치: (rel_type, internal/external) 조합별로 그룹화하여 최소 쿼리 수로 실행.
     """
-    key_to_fqn = _class_key_to_fqn(class_index)
-    method_id_to_class_fqn: Dict[str, str] = {}
-    for m in method_facts_list or []:
-        mid = getattr(m, "method_id", None)
+    key_to_fqn = _module_key_to_fqn(module_index)
+    method_id_to_module_fqn: Dict[str, str] = {}
+    for m in function_facts_list or []:
+        mid = getattr(m, "function_id", None)
         if not mid:
             continue
-        class_fqn = key_to_fqn.get(getattr(m, "class_key", "") or "")
-        if class_fqn:
-            method_id_to_class_fqn[mid] = class_fqn
+        module_fqn = key_to_fqn.get(getattr(m, "module_key", ""))
+        if module_fqn:
+            method_id_to_module_fqn[mid] = module_fqn
 
     # (rel_type, is_internal) → rows
     groups: Dict[tuple, list] = {}
     seen: set = set()
-    for method_id, data in (summary_by_method or {}).items():
+    for function_id, data in (summary_by_function or {}).items():
         if not isinstance(data, dict):
             continue
-        source_fqn = method_id_to_class_fqn.get(method_id)
+        source_fqn = method_id_to_module_fqn.get(function_id)
         if not source_fqn:
             continue
         deps = data.get("dependencies") or []
         for dep in deps:
             if not isinstance(dep, dict):
                 continue
-            target_class = (dep.get("targetClass") or "").strip()
-            if not target_class:
+            target_module = (dep.get("targetModule") or "").strip()
+            if not target_module:
                 continue
             source_member = dep.get("sourceMember", "")
             usage = dep.get("usage", "")
             rel_type = (dep.get("relationType") or "DEPENDENCY").strip().upper()
             if rel_type not in ("DEPENDENCY", "COMPOSITION", "AGGREGATION", "ASSOCIATION"):
                 rel_type = "DEPENDENCY"
-            target_fqn = _target_fqn_from_class_index(class_index, target_class)
+            target_fqn = _target_fqn_from_module_index(module_index, target_module)
             is_internal = target_fqn is not None
-            dup_key = (source_fqn, target_fqn or target_class, rel_type)
+            dup_key = (source_fqn, target_fqn or target_module, rel_type)
             if dup_key in seen:
                 continue
             seen.add(dup_key)
@@ -1140,7 +1244,7 @@ def build_uml_dependency_queries(
             groups.setdefault(group_key, []).append({
                 "source_fqn": source_fqn,
                 "target_fqn": target_fqn or "",
-                "target_class_name": target_class,
+                "target_module_name": target_module,
                 "source_member": source_member[:200],
                 "usage": (usage or "")[:200],
             })
@@ -1151,8 +1255,8 @@ def build_uml_dependency_queries(
             if rel_type == "DEPENDENCY":
                 q = (
                     "UNWIND $rows AS row\n"
-                    "MATCH (src:CLASS {fqn: row.source_fqn})\n"
-                    "MATCH (t:CLASS {fqn: row.target_fqn})\n"
+                    "MATCH (src:MODULE {fqn: row.source_fqn})\n"
+                    "MATCH (t:MODULE {fqn: row.target_fqn})\n"
                     "MERGE (src)-[r:DEPENDENCY {source_member: row.source_member, usage: row.usage}]->(t)\n"
                     "ON CREATE SET r.created_at = timestamp()\n"
                     "ON MATCH SET r.updated_at = timestamp()\n"
@@ -1161,8 +1265,8 @@ def build_uml_dependency_queries(
             else:
                 q = (
                     "UNWIND $rows AS row\n"
-                    "MATCH (src:CLASS {fqn: row.source_fqn})\n"
-                    "MATCH (t:CLASS {fqn: row.target_fqn})\n"
+                    "MATCH (src:MODULE {fqn: row.source_fqn})\n"
+                    "MATCH (t:MODULE {fqn: row.target_fqn})\n"
                     f"MERGE (src)-[r:{rel_type} {{source_member: row.source_member}}]->(t)\n"
                     "ON CREATE SET r.created_at = timestamp()\n"
                     "ON MATCH SET r.updated_at = timestamp()\n"
@@ -1172,9 +1276,9 @@ def build_uml_dependency_queries(
             if rel_type == "DEPENDENCY":
                 q = (
                     "UNWIND $rows AS row\n"
-                    "MATCH (src:CLASS {fqn: row.source_fqn})\n"
-                    "MERGE (t:CLASS:EXTERNAL_CLASS {class_name: row.target_class_name})\n"
-                    "ON CREATE SET t.name = row.target_class_name, t.created_at = timestamp()\n"
+                    "MATCH (src:MODULE {fqn: row.source_fqn})\n"
+                    "MERGE (t:MODULE:CLASS:EXTERNAL {module_name: row.target_module_name})\n"
+                    "ON CREATE SET t.name = row.target_module_name, t.created_at = timestamp()\n"
                     "ON MATCH SET t.updated_at = timestamp()\n"
                     "MERGE (src)-[r:DEPENDENCY {source_member: row.source_member, usage: row.usage}]->(t)\n"
                     "ON CREATE SET r.created_at = timestamp()\n"
@@ -1184,9 +1288,9 @@ def build_uml_dependency_queries(
             else:
                 q = (
                     "UNWIND $rows AS row\n"
-                    "MATCH (src:CLASS {fqn: row.source_fqn})\n"
-                    "MERGE (t:CLASS:EXTERNAL_CLASS {class_name: row.target_class_name})\n"
-                    "ON CREATE SET t.name = row.target_class_name, t.created_at = timestamp()\n"
+                    "MATCH (src:MODULE {fqn: row.source_fqn})\n"
+                    "MERGE (t:MODULE:CLASS:EXTERNAL {module_name: row.target_module_name})\n"
+                    "ON CREATE SET t.name = row.target_module_name, t.created_at = timestamp()\n"
                     "ON MATCH SET t.updated_at = timestamp()\n"
                     f"MERGE (src)-[r:{rel_type} {{source_member: row.source_member}}]->(t)\n"
                     "ON CREATE SET r.created_at = timestamp()\n"
@@ -1204,20 +1308,20 @@ def build_uml_dependency_queries(
 build_packages_unwind = _build_unwind_query(
     "PACKAGE", "fqn", "n.name = row.segment")
 
-build_classes_unwind = _build_unwind_query(
-    "CLASS", "fqn",
-    "n.class_key = row.class_key, n.name = row.name, n.kind = row.kind, n.package_name = row.package_name")
+build_modules_unwind = _build_unwind_query(
+    "MODULE", "fqn",
+    "n.module_key = row.module_key, n.name = row.name, n.package_name = row.package_name")
 
-build_methods_unwind = _build_unwind_query(
-    "METHOD", "method_id",
+build_functions_unwind = _build_unwind_query(
+    "FUNCTION", "function_id",
     "n.signature = row.signature, n.start_line = row.start_line, n.end_line = row.end_line, "
-    "n.code_ref = row.code_ref, n.class_key = row.class_key, n.package_name = row.package_name, "
+    "n.code_ref = row.code_ref, n.module_key = row.module_key, n.package_name = row.package_name, "
     "n.code_text = row.code_text")
 
-build_fields_unwind = _build_unwind_query(
-    "FIELD", "field_id",
+build_variables_unwind = _build_unwind_query(
+    "VARIABLE", "variable_id",
     "n.name = row.name, n.start_line = row.start_line, n.end_line = row.end_line, "
-    "n.field_type = row.field_type, n.code_ref = row.code_ref, n.code_text = row.code_text")
+    "n.variable_type = row.variable_type, n.code_ref = row.code_ref, n.code_text = row.code_text")
 
 build_sql_statements_unwind = _build_unwind_query(
     "SQL_STATEMENT", "sql_key",
@@ -1245,11 +1349,11 @@ def build_chunk_bundle_chunks_unwind(rows: List[Dict[str, Any]]) -> Dict[str, An
         "UNWIND $rows AS row\n"
         "MERGE (c:ChunkBundleChunk {chunk_id: row.chunk_id})\n"
         "ON CREATE SET c.created_at = timestamp()\n"
-        "SET c.chunk_type = row.chunk_type, c.parent_method_id = row.parent_method_id,\n"
+        "SET c.chunk_type = row.chunk_type, c.parent_function_id = row.parent_function_id,\n"
         "c.file_path = row.file_path, c.start_line = row.start_line, c.end_line = row.end_line,\n"
         "c.code_text = row.code_text, c.var_name = row.var_name, c.var_type = row.var_type, c.updated_at = timestamp()\n"
         "WITH c, row\n"
-        "MERGE (m:METHOD {method_id: row.parent_method_id})\n"
+        "MERGE (m:FUNCTION {function_id: row.parent_function_id})\n"
         "MERGE (m)-[:HAS_CHUNK]->(c)"
     )
     return {"query": q, "params": {"rows": rows}}
@@ -1260,15 +1364,22 @@ def build_chunk_bundle_chunks_unwind(rows: List[Dict[str, Any]]) -> Dict[str, An
 # ---------------------------------------------------------------------------
 
 def build_table_description_enrichment_query() -> str:
-    """READS/WRITES 관계로 연결된 메서드 summary를 수집하는 Neo4j 쿼리."""
+    """READS/WRITES 관계로 연결된 메서드 summary + 컬럼 메타데이터를 수집하는 Neo4j 쿼리."""
     return (
-        "MATCH (m:METHOD)-[rw:READS|WRITES]->(t:Table)\n"
+        "MATCH (m:FUNCTION)-[rw:READS|WRITES]->(t:Table)\n"
         "WHERE m.summary IS NOT NULL AND m.summary <> ''\n"
         "WITH t, collect(DISTINCT m.summary) AS method_summaries\n"
         "WHERE size(method_summaries) > 0\n"
+        "OPTIONAL MATCH (t)-[:HAS_COLUMN]->(c:Column)\n"
+        "WITH t, method_summaries,\n"
+        "     collect(CASE WHEN c IS NOT NULL THEN {\n"
+        "       name: c.name, dtype: c.dtype,\n"
+        "       description: COALESCE(c.description, ''),\n"
+        "       nullable: c.nullable, is_primary_key: c.is_primary_key\n"
+        "     } END) AS columns\n"
         "RETURN t.db AS db, t.schema AS schema, t.name AS name,\n"
         "       t.description AS current_description,\n"
-        "       method_summaries"
+        "       method_summaries, columns"
     )
 
 
@@ -1289,6 +1400,7 @@ def build_table_description_update_queries(
             "      THEN $enriched_description\n"
             "      ELSE t.description\n"
             "    END,\n"
+            "    t.description_source = COALESCE(t.description_source, '') + CASE WHEN t.description_source IS NULL OR t.description_source = '' THEN 'code' ELSE '' END,\n"
             "    t.updated_at = timestamp()\n"
             "RETURN t"
         )
@@ -1302,3 +1414,5 @@ def build_table_description_update_queries(
             },
         })
     return queries
+
+

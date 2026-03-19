@@ -9,13 +9,13 @@ from analyzer.strategy.framework.common.models import (
     ArtifactChunk,
     ArtifactTableEdge,
     CallsEdge,
-    ClassTableEdge,
+    ModuleTableEdge,
     ColumnRef,
     ConfigSectionChunk,
-    FieldFacts,
+    VariableFacts,
     FkEdge,
-    MethodFacts,
-    MethodTableEdge,
+    FunctionFacts,
+    FunctionTableEdge,
     ProcessingPlan,
     FileCatalogEntry,
     ReferToEdge,
@@ -38,15 +38,15 @@ class FrameworkPipelineState:
     plan: Optional[ProcessingPlan] = None
 
     # Step 2: AST
-    method_facts_list: List[MethodFacts] = field(default_factory=list)
-    field_facts_list: List[FieldFacts] = field(default_factory=list)
-    class_index_ast: Dict[str, Any] = field(default_factory=dict)
+    function_facts_list: List[FunctionFacts] = field(default_factory=list)
+    variable_facts_list: List[VariableFacts] = field(default_factory=list)
+    module_index_ast: Dict[str, Any] = field(default_factory=dict)
     package_fqns: List[str] = field(default_factory=list)
     symbol_type_index: Dict[str, Dict[str, str]] = field(default_factory=dict)
-    method_index: Dict[str, str] = field(default_factory=dict)
-    method_index_by_class: Dict[str, Dict[str, List[str]]] = field(default_factory=dict)
-    class_index_simple: Dict[str, List[str]] = field(default_factory=dict)
-    ref_candidates_by_method: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
+    function_index: Dict[str, str] = field(default_factory=dict)
+    function_index_by_module: Dict[str, Dict[str, List[str]]] = field(default_factory=dict)
+    module_index_simple: Dict[str, List[str]] = field(default_factory=dict)
+    ref_candidates_by_function: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
 
     # Step 3: Artifacts
     sql_chunks: List[SqlStatementChunk] = field(default_factory=list)
@@ -55,7 +55,7 @@ class FrameworkPipelineState:
 
     # Step 4: Indexes
     sql_index: Dict[str, SqlStatementChunk] = field(default_factory=dict)
-    class_index: Dict[str, Any] = field(default_factory=dict)
+    module_index: Dict[str, Any] = field(default_factory=dict)
     config_index: Dict[str, ConfigSectionChunk] = field(default_factory=dict)
     artifact_index: Dict[str, ArtifactChunk] = field(default_factory=dict)
 
@@ -64,8 +64,8 @@ class FrameworkPipelineState:
     reads_writes: List[ReadsWritesEdge] = field(default_factory=list)
     fk_edges: List[FkEdge] = field(default_factory=list)
     column_refs: List[ColumnRef] = field(default_factory=list)
-    method_table_edges: List[MethodTableEdge] = field(default_factory=list)
-    class_table_edges: List[ClassTableEdge] = field(default_factory=list)
+    function_table_edges: List[FunctionTableEdge] = field(default_factory=list)
+    module_table_edges: List[ModuleTableEdge] = field(default_factory=list)
     artifact_table_edges: List[ArtifactTableEdge] = field(default_factory=list)
     unresolved: List[UnresolvedLink] = field(default_factory=list)
     calls_edges: List[CallsEdge] = field(default_factory=list)
@@ -75,9 +75,9 @@ class FrameworkPipelineState:
     table_descriptions: Dict[Any, str] = field(default_factory=dict)
 
     # Step 6: Summary
-    summary_by_method: Dict[str, Dict[str, Any]] = field(default_factory=dict)
-    summary_by_field: Dict[str, Dict[str, Any]] = field(default_factory=dict)
-    summary_by_class: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    summary_by_function: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    summary_by_variable: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    summary_by_module: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     user_stories: List[Dict[str, Any]] = field(default_factory=list)
 
     # DeepAgent

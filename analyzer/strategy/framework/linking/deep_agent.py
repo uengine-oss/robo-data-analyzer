@@ -9,8 +9,8 @@ from typing import Any, Dict, Generator, List, Optional, Tuple
 from config.settings import settings
 from util.artifact_logger import log_llm_interaction
 from analyzer.strategy.framework.models import (
-    MethodFacts,
-    MethodTableEdge,
+    FunctionFacts,
+    FunctionTableEdge,
     ReferToEdge,
     UnresolvedLink,
     ArtifactChunk,
@@ -32,7 +32,7 @@ SYSTEM_PROMPT = """
 - 확신이 없으면 엣지를 생성하지 마십시오.
 
 [도구]
-- bundle_search_tool(query, kind="symbol"|"text"): 코드 청크 검색. 결과에 chunk_id, filePath, className 포함.
+- bundle_search_tool(query, kind="symbol"|"text"): 코드 청크 검색. 결과에 chunk_id, filePath, moduleName 포함.
 - bundle_get_chunk_tool(chunk_id): chunk_id로 코드 조각 조회.
 - sql_lookup_tool(sql_key): SQL 문 조회.
 - config_lookup_tool(config_key): 설정 엔트리 조회.
@@ -68,7 +68,7 @@ SYSTEM_PROMPT = """
 목표: 이 SQL을 실행하는 메서드를 찾아 Method→SqlStatement 관계 생성.
 절차:
   1) sql_key나 파일명으로 bundle_search → 해당 SQL ID를 참조하는 코드 검색
-  2) context에 related_classes가 있으면 해당 클래스명으로도 검색 (중복 메서드명 구분)
+  2) context에 related_modules가 있으면 해당 모듈명으로도 검색 (중복 메서드명 구분)
   3) graph_create_refer_to_tool("SqlStatement", sql_key, evidence, source_method_id)
 
 == category: "config" (설정 관련) ==
@@ -92,8 +92,8 @@ def sql_lookup(sql_key: str, sql_index: Dict[str, SqlStatementChunk]) -> Optiona
     return {
         "sql_key": stmt.sql_key,
         "sql_type": stmt.sql_type,
-        "sql_text": getattr(stmt, "sql_text", "") or "",
-        "file_path": getattr(stmt, "file_path", "") or "",
+        "sql_text": getattr(stmt, "sql_text", ""),
+        "file_path": getattr(stmt, "file_path", ""),
         "start_line": getattr(stmt, "start_line", 0),
         "end_line": getattr(stmt, "end_line", 0),
     }
@@ -105,8 +105,8 @@ def config_lookup(config_key: str, config_index: Dict[str, ConfigSectionChunk]) 
         return None
     return {
         "config_key_path": cfg.config_key_path,
-        "value": getattr(cfg, "raw_snippet", "") or getattr(cfg, "value", "") or "",
-        "file_path": getattr(cfg, "file_path", "") or "",
+        "value": getattr(cfg, "raw_snippet", "") or getattr(cfg, "value", ""),
+        "file_path": getattr(cfg, "file_path", ""),
         "start_line": getattr(cfg, "start_line", 0),
         "end_line": getattr(cfg, "end_line", 0),
     }
@@ -128,10 +128,10 @@ def build_artifact_lookup_index(artifact_index: Dict[str, ArtifactChunk]) -> Dic
 
 def build_tools(
     state: Dict[str, Any],
-    method_id: str,
+    function_id: str,
     refer_collector: List[ReferToEdge],
-    table_collector: List[MethodTableEdge],
-    field_id: Optional[str] = None,
+    table_collector: List[FunctionTableEdge],
+    variable_id: Optional[str] = None,
 ) -> List[Any]:
     """LangChain/deepagents 호환 툴 목록 생성. ChunkBundle + 인덱스 + 그래프 조작만 노출."""
     from langchain_core.tools import tool
@@ -176,72 +176,72 @@ def build_tools(
             "chunk_id": cid,
             "chunk_type": getattr(ac, "chunk_type", ""),
             "hint_key": getattr(ac, "hint_key", ""),
-            "file_path": getattr(ac, "source_path", "") or "",
+            "file_path": getattr(ac, "source_path", ""),
             "start_line": getattr(ac, "start_line", 0),
             "end_line": getattr(ac, "end_line", 0),
-            "text": (getattr(ac, "text", "") or "")[:2000],
+            "text": getattr(ac, "text", "")[:2000],
         }
         return json.dumps(data, ensure_ascii=False)
 
-    def _enrich_with_classname(result: Dict[str, Any]) -> Dict[str, Any]:
-        """filePath에서 className 추출하여 결과에 추가."""
+    def _enrich_with_modulename(result: Dict[str, Any]) -> Dict[str, Any]:
+        """filePath에서 moduleName 추출하여 결과에 추가."""
         fp = result.get("filePath", "")
         if fp:
             fname = fp.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
             name = fname.rsplit(".", 1)[0] if "." in fname else fname
-            result["className"] = name
+            result["moduleName"] = name
         return result
 
     @tool
     def bundle_search_tool(query: str, kind: str = "symbol") -> str:
-        """ChunkBundle에서 심볼/텍스트를 검색. kind: symbol|text. 결과에 chunk_id, filePath, className 포함."""
+        """ChunkBundle에서 심볼/텍스트를 검색. kind: symbol|text. 결과에 chunk_id, filePath, moduleName 포함."""
         results = _bundle_search(data_dir, query, kind, span_index=span_index, chunk_index=chunk_index)
-        return json.dumps([_enrich_with_classname(r) for r in results[:20]], ensure_ascii=False)
+        return json.dumps([_enrich_with_modulename(r) for r in results[:20]], ensure_ascii=False)
 
     @tool
     def bundle_get_chunk_tool(chunk_id: str) -> str:
-        """chunk_id로 코드 조각을 조회. 결과에 text, filePath, className, span 포함."""
+        """chunk_id로 코드 조각을 조회. 결과에 text, filePath, moduleName, span 포함."""
         r = _bundle_get_chunk(chunk_id, chunk_index=chunk_index)
         if r:
-            _enrich_with_classname(r)
+            _enrich_with_modulename(r)
         return json.dumps(r, ensure_ascii=False) if r else ""
 
     @tool
-    def graph_create_refer_to_tool(target_type: str, target_key: str, evidence: str = "", source_method_id: str = "") -> str:
+    def graph_create_refer_to_tool(target_type: str, target_key: str, evidence: str = "", source_function_id: str = "") -> str:
         """Method/Field → (SqlStatement|ConfigSection|ArtifactChunk|Class) REFER_TO 엣지를 생성한다.
-        source_method_id: 미매칭 인덱스 키 탐색 시 발견한 메서드 ID. 비워두면 기본 method_id 사용."""
-        mid = source_method_id.strip() if source_method_id else method_id
+        source_function_id: 미매칭 인덱스 키 탐색 시 발견한 메서드 ID. 비워두면 기본 function_id 사용."""
+        mid = source_function_id.strip() if source_function_id else function_id
         if not mid:
-            return "error: source_method_id required (no default method_id)"
+            return "error: source_function_id required (no default function_id)"
         refer_collector.append(
             ReferToEdge(
-                method_id=mid,
+                function_id=mid,
                 target_type=target_type,
                 target_id=target_key,
                 evidence={"note": evidence} if evidence else {},
                 confidence=0.9,
-                field_id=field_id,
+                variable_id=variable_id,
             )
         )
         return "ok"
 
     @tool
-    def graph_create_table_access_tool(table_name: str, access: str, evidence: str = "", source_method_id: str = "") -> str:
+    def graph_create_table_access_tool(table_name: str, access: str, evidence: str = "", source_function_id: str = "") -> str:
         """Method/Field → Table READS/WRITES 엣지를 생성한다.
-        source_method_id: 미매칭 인덱스 키 탐색 시 발견한 메서드 ID. 비워두면 기본 method_id 사용."""
-        mid = source_method_id.strip() if source_method_id else method_id
+        source_function_id: 미매칭 인덱스 키 탐색 시 발견한 메서드 ID. 비워두면 기본 function_id 사용."""
+        mid = source_function_id.strip() if source_function_id else function_id
         if not mid:
-            return "error: source_method_id required (no default method_id)"
+            return "error: source_function_id required (no default function_id)"
         rel = access.upper() if access else "READS"
         if rel not in ("READS", "WRITES"):
             rel = "READS"
         table_collector.append(
-            MethodTableEdge(
-                method_id=mid,
+            FunctionTableEdge(
+                function_id=mid,
                 table_schema="",
                 table_name=table_name,
                 relation=_sql_op_to_method_relation("INSERT" if rel == "WRITES" else "SELECT"),
-                field_id=field_id,
+                variable_id=variable_id,
             )
         )
         return "ok"
@@ -327,8 +327,8 @@ def run_deep_agent(
     state: Dict[str, Any],
     api_key: Optional[str] = None,
     run_dir: Optional[Path] = None,
-) -> Generator[Tuple[List[ReferToEdge], List[MethodTableEdge]], None, None]:
-    """unresolved 목록을 DeepAgent 로 처리. 항목별로 (refer_to, method_table) yield."""
+) -> Generator[Tuple[List[ReferToEdge], List[FunctionTableEdge]], None, None]:
+    """unresolved 목록을 DeepAgent 로 처리. 항목별로 (refer_to, function_table) yield."""
     logger.info("[FW:DEEPAGENT] 진입 | unresolved=%d api_key_set=%s run_dir=%s", len(unresolved_list), bool(api_key), run_dir)
     if not unresolved_list:
         logger.info("[FW:DEEPAGENT] unresolved 없음 → 즉시 종료")
@@ -351,9 +351,9 @@ def run_deep_agent(
     model = get_llm(api_key=api_key) if api_key else get_llm()
     max_workers = min(len(unresolved_list), settings.concurrency.max_concurrency)
 
-    def _process_one(idx: int, u: UnresolvedLink) -> Tuple[List[ReferToEdge], List[MethodTableEdge]]:
-        has_method = bool(u.method_id and u.method_id.strip())
-        label = u.method_id if has_method else "(unmatched key)"
+    def _process_one(idx: int, u: UnresolvedLink) -> Tuple[List[ReferToEdge], List[FunctionTableEdge]]:
+        has_method = bool(u.function_id and u.function_id.strip())
+        label = u.function_id if has_method else "(unmatched key)"
         logger.info("[FW:DEEPAGENT] LLM 처리 (%d/%d) %s", idx, total, label)
         if verbose and u.ref_candidates:
             parts: List[str] = []
@@ -365,13 +365,13 @@ def run_deep_agent(
             logger.info("[FW:DEEPAGENT] 후보 요약 | %s candidates=%s", label, "; ".join(parts))
 
         refer_collector: List[ReferToEdge] = []
-        table_collector: List[MethodTableEdge] = []
-        tools = build_tools(state, u.method_id or "", refer_collector, table_collector, field_id=u.field_id)
+        table_collector: List[FunctionTableEdge] = []
+        tools = build_tools(state, u.function_id or "", refer_collector, table_collector, variable_id=u.variable_id)
 
         agent = create_deep_agent(model=model, tools=tools, system_prompt=SYSTEM_PROMPT)
 
         if has_method:
-            user_content = f"method_id: {u.method_id}\nref_candidates: {json.dumps(u.ref_candidates, ensure_ascii=False, default=str)}"
+            user_content = f"function_id: {u.function_id}\nref_candidates: {json.dumps(u.ref_candidates, ensure_ascii=False, default=str)}"
         else:
             user_content = _build_unmatched_user_message(u)
 
@@ -384,7 +384,7 @@ def run_deep_agent(
                     "refer_to": len(refer_collector),
                     "table_access": len(table_collector),
                 },
-                metadata={"method_id": u.method_id or "", "idx": idx, "total": total},
+                metadata={"function_id": u.function_id or "", "idx": idx, "total": total},
             )
             if verbose and (refer_collector or table_collector):
                 logger.info(
@@ -420,7 +420,7 @@ def run_deep_agent(
 
 
 # ---------------------------------------------------------------------------
-# DeepAgent 엔티티 식별 — 시나리오별 Method→Table 연결
+# DeepAgent 엔티티 식별 — 시나리오별 Function→Table 연결
 # ---------------------------------------------------------------------------
 
 ENTITY_IDENTIFICATION_SYSTEM_PROMPT = """
@@ -429,7 +429,7 @@ ENTITY_IDENTIFICATION_SYSTEM_PROMPT = """
 
 [목표]
 입력으로 주어지는 정보(DDL 테이블 목록 또는 클래스/구조체 후보)를 기반으로
-코드에서 DB 접근 패턴을 추적하여 Method→Table 관계를 생성합니다.
+코드에서 DB 접근 패턴을 추적하여 Function→Table 관계를 생성합니다.
 
 [판단 기준 — 엔티티 vs DTO/VO]
 엔티티 시그널 (하나 이상이면 엔티티):
@@ -453,7 +453,7 @@ DTO/VO 시그널 (이것만 있으면 엔티티 아님):
 - bundle_search_tool(query, kind="symbol"|"text"): 코드·XML·SQL 통합 검색.
 - bundle_get_chunk_tool(chunk_id): chunk_id로 코드/XML/SQL 조각 조회.
 - graph_create_table_access_tool(table_name, access, evidence, source_method_id):
-  Method→Table 접근 관계 등록. access: "READS" 또는 "WRITES". source_method_id 필수.
+  Function→Table 접근 관계 등록. access: "READS" 또는 "WRITES". source_method_id 필수.
 
 [절차]
 1) 입력에 DB 테이블 목록이 있으면: 각 테이블명으로 bundle_search → 관련 코드/XML/SQL 추적
@@ -518,13 +518,13 @@ def _build_entity_id_user_message(
 
 
 def run_deep_agent_entity_identification(
-    class_index: Dict[str, Any],
+    module_index: Dict[str, Any],
     state: Dict[str, Any],
     api_key: Optional[str] = None,
     run_dir: Optional[Path] = None,
     ddl_table_metadata: Optional[Dict] = None,
-) -> List[MethodTableEdge]:
-    """DeepAgent로 엔티티 식별 + Method→Table 연결.
+) -> List[FunctionTableEdge]:
+    """DeepAgent로 엔티티 식별 + Function→Table 연결.
 
     시나리오별 동작:
     - DDL만 있음: 테이블명을 컨텍스트로 전달, 코드에서 관련 메서드 추적
@@ -532,10 +532,10 @@ def run_deep_agent_entity_identification(
     - DDL + 후보: 테이블 컨텍스트 + 후보 목록 모두 전달
 
     Returns:
-        List[MethodTableEdge]: 식별된 Method→Table 접근 엣지 목록.
+        List[FunctionTableEdge]: 식별된 Function→Table 접근 엣지 목록.
     """
     has_ddl = bool(ddl_table_metadata)
-    has_candidates = bool(class_index)
+    has_candidates = bool(module_index)
 
     if not has_ddl and not has_candidates:
         logger.info("[FW:DEEPAGENT:ENTITY] DDL도 후보도 없음 → 즉시 종료")
@@ -557,7 +557,7 @@ def run_deep_agent_entity_identification(
     # 후보 수집 + 디렉토리명 사전 체크
     # FILE(C 소스파일 컨테이너)은 엔티티 후보에서 제외 — STRUCT/UNION만 대상
     candidates: List[Dict[str, str]] = []
-    for fqn, info in (class_index or {}).items():
+    for fqn, info in (module_index or {}).items():
         if not isinstance(info, dict):
             continue
         if info.get("kind") == "FILE":
@@ -587,7 +587,7 @@ def run_deep_agent_entity_identification(
         len(ddl_table_metadata or {}), len(candidates),
     )
 
-    table_collector: List[MethodTableEdge] = []
+    table_collector: List[FunctionTableEdge] = []
     refer_collector: List[ReferToEdge] = []
     tools = build_tools(state, "", refer_collector, table_collector)
 
@@ -630,5 +630,5 @@ def run_deep_agent_entity_identification(
             except Exception as ex:
                 logger.warning("[FW:DEEPAGENT:ENTITY] invoke 실패 batch=%d: %s", i, ex)
 
-    logger.info("[FW:DEEPAGENT:ENTITY] 종료 | method_table_edges=%d", len(table_collector))
+    logger.info("[FW:DEEPAGENT:ENTITY] 종료 | function_table_edges=%d", len(table_collector))
     return table_collector

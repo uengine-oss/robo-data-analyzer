@@ -236,14 +236,14 @@ async def _summarize_table(
     queries = []
     llm_table_desc = (result.get('tableDescription') or '').strip()
     if llm_table_desc:
-        queries.append({"query": "MATCH (__cy_t__:Table {schema: $schema, name: $name, db: $db}) SET __cy_t__.analyzed_description = $llm_desc WITH __cy_t__ WHERE __cy_t__.description IS NULL OR __cy_t__.description = '' SET __cy_t__.description = $llm_desc, __cy_t__.description_source = 'procedure' RETURN __cy_t__", "params": {"schema": schema_key, "name": name_key, "db": dbms, "llm_desc": llm_table_desc}})
+        queries.append({"query": "MATCH (__cy_t__:Table {schema: $schema, name: $name, db: $db}) SET __cy_t__.analyzed_description = $llm_desc WITH __cy_t__ WHERE __cy_t__.description IS NULL OR __cy_t__.description = '' SET __cy_t__.description = $llm_desc, __cy_t__.description_source = 'code' RETURN __cy_t__", "params": {"schema": schema_key, "name": name_key, "db": dbms, "llm_desc": llm_table_desc}})
     for column_info in result.get('columns', []) or []:
         column_name = (column_info.get('name') or '').strip()
         llm_column_desc = (column_info.get('description') or '').strip()
         if not column_name or not llm_column_desc:
             continue
         fqn = '.'.join(filter(None, [schema_key, name_key, column_name])).lower()
-        queries.append({"query": "MATCH (__cy_c__:Column {fqn: $fqn}) SET __cy_c__.analyzed_description = $llm_desc WITH __cy_c__ WHERE __cy_c__.description IS NULL OR __cy_c__.description = '' SET __cy_c__.description = $llm_desc, __cy_c__.description_source = 'procedure' RETURN __cy_c__", "params": {"fqn": fqn, "llm_desc": llm_column_desc}})
+        queries.append({"query": "MATCH (__cy_c__:Column {fqn: $fqn}) SET __cy_c__.analyzed_description = $llm_desc WITH __cy_c__ WHERE __cy_c__.description IS NULL OR __cy_c__.description = '' SET __cy_c__.description = $llm_desc, __cy_c__.description_source = 'code' RETURN __cy_c__", "params": {"fqn": fqn, "llm_desc": llm_column_desc}})
     return queries
 
 

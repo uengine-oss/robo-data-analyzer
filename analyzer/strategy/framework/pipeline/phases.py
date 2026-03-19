@@ -1,8 +1,8 @@
 """Phase 1/2/3 통합 오케스트레이터.
 
-Phase 1: AST 정적 그래프. 스캔 + Java AST + 아티팩트 파싱 + 인덱스 구축 + Neo4j 반영.
+Phase 1: AST 정적 그래프. 스캔 + AST 파싱 + 아티팩트 파싱 + 인덱스 구축 + Neo4j 반영.
 Phase 2: LLM 링킹. SQL→Table, Call batch, UML, analysis LLM.
-Phase 3: 후처리. 요약 보강, Field/Class 요약, Table Description 보강.
+Phase 3: 후처리. 요약 보강, Field/Module 요약, Table Description 보강.
 
 기존 phase_ast / phase_llm / phase_post 를 하나의 thin 오케스트레이터 모듈로 통합.
 """
@@ -24,9 +24,9 @@ from util.ndjson_stream import emit_message, emit_data, emit_phase_event, PhaseT
 from util.text_utils import read_text_with_fallback, read_json_with_fallback
 from analyzer.strategy.framework.internal import (
     FrameworkAstProcessor,
-    CLASS_TYPES,
-    FIELD_TYPES,
-    METHOD_TYPES,
+    MODULE_TYPES,
+    VARIABLE_TYPES,
+    FUNCTION_TYPES,
     build_chunk_bundle_from_source,
     save_chunk_bundle,
     _get_chunk_bundle_dir_from_run_dir,
@@ -34,14 +34,14 @@ from analyzer.strategy.framework.internal import (
     run_step6,
     derive_uses_from_calls,
     load_field_chunks_from_bundles,
-    run_field_summary,
-    run_class_summary,
+    run_variable_summary,
+    run_module_summary,
 )
 from analyzer.strategy.framework.models import (
     FileCatalogEntry,
     ProcessingPlan,
-    FieldFacts,
-    MethodFacts,
+    VariableFacts,
+    FunctionFacts,
     SqlStatementChunk,
     ConfigSectionChunk,
     ArtifactChunk,
@@ -51,12 +51,12 @@ from analyzer.strategy.framework.models import (
 )
 from analyzer.strategy.framework.graph.queries import (
     build_package_queries,
-    build_class_queries,
-    build_method_queries,
-    build_field_queries,
+    build_module_queries,
+    build_function_queries,
+    build_variable_queries,
     build_belongs_to_package_queries,
-    build_has_method_queries,
-    build_has_field_queries,
+    build_has_function_queries,
+    build_has_variable_queries,
     _expand_package_fqns,
     build_package_hierarchy_queries,
     build_sql_statement_queries,
@@ -69,14 +69,15 @@ from analyzer.strategy.framework.graph.queries import (
     build_table_queries_from_reads_writes,
     build_column_queries,
     build_has_column_queries,
-    build_method_table_from_writes_queries,
-    build_class_table_refer_to_queries,
+    build_function_table_from_writes_queries,
+    build_table_from_entity_classes,
+    build_module_table_refer_to_queries,
     build_artifact_table_refer_to_queries,
-    build_artifact_class_refer_to_queries,
-    build_method_summary_queries,
+    build_artifact_module_refer_to_queries,
+    build_function_summary_queries,
     build_uml_dependency_queries,
-    build_field_summary_queries,
-    build_class_summary_queries,
+    build_variable_summary_queries,
+    build_module_summary_queries,
     build_table_description_enrichment_query,
     build_table_description_update_queries,
 )
@@ -91,6 +92,52 @@ from analyzer.strategy.framework.parsing.parsers.base import run_step3
 from analyzer.strategy.framework.parsing.indexer import run_step4
 
 logger = logging.getLogger(__name__)
+
+
+def _build_column_description_update_queries(
+    db: str, schema: str, table_name: str, columns: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """LLM table_summary가 반환한 컬럼별 description을 Neo4j Column 노드에 반영."""
+    queries = []
+    for col in columns:
+        col_name = col.get("name", "").strip()
+        col_desc = col.get("description", "").strip()
+        if not col_name or not col_desc:
+            continue
+        q = (
+            "MATCH (t:Table)-[:HAS_COLUMN]->(c:Column)\n"
+            "WHERE (t.name = $table_name OR t.fqn ENDS WITH $table_name)\n"
+            "  AND toUpper(c.name) = toUpper($col_name)\n"
+            "SET c.description = CASE\n"
+            "      WHEN c.description IS NULL OR trim(toString(c.description)) = ''\n"
+            "      THEN $col_desc\n"
+            "      ELSE c.description + ' | ' + $col_desc\n"
+            "    END,\n"
+            "    c.updated_at = timestamp()\n"
+            "RETURN c"
+        )
+        queries.append({
+            "query": q,
+            "params": {"table_name": table_name, "col_name": col_name, "col_desc": col_desc},
+        })
+    return queries
+
+
+def _collect_entity_fqns_from_edges(
+    edges: list,
+    module_index: Dict[str, Any],
+) -> set:
+    """DeepAgent FunctionTableEdge에서 table_name을 추출하고,
+    module_index에서 동일한 이름의 클래스/구조체 FQN을 반환."""
+    table_names = {e.table_name for e in edges if e.table_name}
+    entity_fqns: set = set()
+    for fqn, info in module_index.items():
+        if not isinstance(info, dict):
+            continue
+        module_name = info.get("name", "")
+        if module_name in table_names:
+            entity_fqns.add(fqn)
+    return entity_fqns
 
 
 # ---------------------------------------------------------------------------
@@ -146,9 +193,6 @@ async def run_phase_ddl(
             ):
                 if isinstance(chunk, bytes):
                     yield chunk
-                else:
-                    # (result, ddl_stats) 튜플 — 스트리밍에서 무시
-                    pass
         except Exception as e:
             logger.warning("[FW:DDL] DDL 파일 처리 실패: %s — %s", fname, e)
             yield emit_message(f"  ⚠️ DDL 처리 실패: {fname} ({str(e)[:60]})")
@@ -169,7 +213,7 @@ async def run_phase_ast(
     orchestrator: Any,
     stats: AnalysisStats,
 ) -> AsyncGenerator[bytes, None]:
-    """Phase 1: 스캔 → Java AST → 아티팩트 → 인덱스 구축.
+    """Phase 1: 스캔 → AST 파싱 → 아티팩트 → 인덱스 구축.
 
     결과는 pipeline._pipeline_state에 저장되어 후속 Phase에서 사용.
     """
@@ -208,14 +252,15 @@ async def run_phase_ast(
     set_active_stdlib(lang)
 
     # 파일별 누적 변수
-    method_facts_list: list[MethodFacts] = []
-    class_index_ast: dict[str, Any] = {}
-    field_facts_list: list[FieldFacts] = []
+    function_facts_list: list[FunctionFacts] = []
+    module_index_ast: dict[str, Any] = {}
+    variable_facts_list: list[VariableFacts] = []
     symbol_type_index: dict[str, dict[str, str]] = {}
-    method_index: dict[str, str] = {}
-    method_index_by_class: dict[str, dict[str, list[str]]] = {}
-    class_index_simple: dict[str, list[str]] = {}
-    ref_candidates_by_method: dict[str, list[dict[str, Any]]] = {}
+    function_index: dict[str, str] = {}
+    function_index_by_module: dict[str, dict[str, list[str]]] = {}
+    module_index_simple: dict[str, list[str]] = {}
+    ref_candidates_by_function: dict[str, list[dict[str, Any]]] = {}
+    node_kinds_all: dict[str, str] = {}  # function_id → 원래 노드타입 (FUNCTION, METHOD 등)
 
     ast_total = len(source_ast_paths)
     ast_done = 0
@@ -226,30 +271,32 @@ async def run_phase_ast(
         fields = file_result["fields"]
 
         # 누적
-        method_facts_list.extend(facts)
-        class_index_ast.update(cidx)
-        field_facts_list.extend(fields)
-        for name, fqns in file_result["class_index_simple"].items():
-            class_index_simple.setdefault(name, []).extend(fqns)
+        function_facts_list.extend(facts)
+        module_index_ast.update(cidx)
+        variable_facts_list.extend(fields)
+        for name, fqns in file_result["module_index_simple"].items():
+            module_index_simple.setdefault(name, []).extend(fqns)
         for mid, types in file_result["sym_idx"].items():
             symbol_type_index.setdefault(mid, {}).update(types)
-        method_index.update(file_result["meth_idx"])
+        function_index.update(file_result["meth_idx"])
         for cls, by_name in file_result["meth_by_cls"].items():
             for mname, ids in by_name.items():
-                method_index_by_class.setdefault(cls, {}).setdefault(mname, []).extend(ids)
+                function_index_by_module.setdefault(cls, {}).setdefault(mname, []).extend(ids)
         for mid, cands in file_result["ref_cands"].items():
-            ref_candidates_by_method.setdefault(mid, []).extend(cands)
+            ref_candidates_by_function.setdefault(mid, []).extend(cands)
+        node_kinds_all.update(file_result.get("node_kinds", {}))
 
         # 파일별 Neo4j 스트리밍
         if facts or cidx:
             try:
+                file_node_kinds = file_result.get("node_kinds", {})
                 queries: list[dict[str, Any]] = []
-                queries.extend(build_class_queries(cidx))
-                queries.extend(build_method_queries(facts))
-                queries.extend(build_field_queries(fields))
+                queries.extend(build_module_queries(cidx))
+                queries.extend(build_function_queries(facts, node_kinds=file_node_kinds))
+                queries.extend(build_variable_queries(fields, node_kinds=file_node_kinds, lang=lang))
                 # NOTE: build_belongs_to_package_queries는 PACKAGE 노드 생성 후에 실행해야 함
-                queries.extend(build_has_method_queries(facts, cidx))
-                queries.extend(build_has_field_queries(fields, cidx))
+                queries.extend(build_has_function_queries(facts, cidx))
+                queries.extend(build_has_variable_queries(fields, cidx))
                 if queries:
                     async for graph in run_graph_queries(client, queries, label=f"PHASE1:AST:{file_result['file_name']}"):
                         yield emit_data(graph=graph)
@@ -260,8 +307,8 @@ async def run_phase_ast(
         yield emit_phase_event(0, "AST 정적 그래프", "in_progress", ast_progress,
                                {"completed": ast_done, "total": ast_total, "file": file_result["file_name"]})
 
-    # 패키지 노드 (전체 class_index 누적 후)
-    package_fqns = _extract_package_fqns(class_index_ast)
+    # 패키지 노드 (전체 module_index 누적 후)
+    package_fqns = _extract_package_fqns(module_index_ast)
     if package_fqns:
         try:
             expanded_pkg = _expand_package_fqns(package_fqns)
@@ -274,18 +321,18 @@ async def run_phase_ast(
         except Exception as e:
             logger.warning("[FW:PHASE1] Neo4j 패키지 반영 실패: %s", e)
 
-    # CLASS/INTERFACE/ENUM → PACKAGE 관계 (PACKAGE 노드 생성 후에 실행)
-    if class_index_ast:
+    # MODULE → PACKAGE 관계 (PACKAGE 노드 생성 후에 실행)
+    if module_index_ast:
         try:
-            btp_queries = build_belongs_to_package_queries(class_index_ast)
+            btp_queries = build_belongs_to_package_queries(module_index_ast)
             if btp_queries:
                 async for graph in run_graph_queries(client, btp_queries, label="PHASE1:BELONGS_TO_PACKAGE"):
                     yield emit_data(graph=graph)
         except Exception as e:
-            logger.warning("[FW:PHASE1] Neo4j CLASS→PACKAGE 관계 반영 실패: %s", e)
+            logger.warning("[FW:PHASE1] Neo4j MODULE→PACKAGE 관계 반영 실패: %s", e)
 
-    stats.total_nodes += len(method_facts_list) + len(field_facts_list)
-    yield emit_message(f"  └─ AST 완료 | 메서드 {len(method_facts_list)}개, 클래스 {len(class_index_ast)}개, 필드 {len(field_facts_list)}개")
+    stats.total_nodes += len(function_facts_list) + len(variable_facts_list)
+    yield emit_message(f"  └─ AST 완료 | 메서드 {len(function_facts_list)}개, 클래스 {len(module_index_ast)}개, 필드 {len(variable_facts_list)}개")
 
     # --- Step 3: 아티팩트 ---
     sql_xml_paths = [str(base / p) if not Path(p).is_absolute() else p for p in plan.sql_jobs]
@@ -320,8 +367,8 @@ async def run_phase_ast(
             logger.warning("[FW:PHASE1] Neo4j 아티팩트 반영 실패: %s", e)
 
     # --- Step 4: 인덱스 구축 ---
-    sql_index, class_index, config_index, artifact_index = run_step4(
-        sql_chunks, method_facts_list, class_index_ast, config_chunks, artifact_chunks=artifact_chunks,
+    sql_index, module_index, config_index, artifact_index = run_step4(
+        sql_chunks, function_facts_list, module_index_ast, config_chunks, artifact_chunks=artifact_chunks,
     )
 
     # pipeline state에 저장
@@ -329,20 +376,20 @@ async def run_phase_ast(
         "data_dir": data_dir,
         "catalog": catalog,
         "plan": plan,
-        "method_facts_list": method_facts_list,
-        "class_index_ast": class_index_ast,
+        "function_facts_list": function_facts_list,
+        "module_index_ast": module_index_ast,
         "package_fqns": package_fqns,
-        "field_facts_list": field_facts_list,
+        "variable_facts_list": variable_facts_list,
         "symbol_type_index": symbol_type_index,
-        "method_index": method_index,
-        "method_index_by_class": method_index_by_class,
-        "class_index_simple": class_index_simple,
-        "ref_candidates_by_method": ref_candidates_by_method,
+        "function_index": function_index,
+        "function_index_by_module": function_index_by_module,
+        "module_index_simple": module_index_simple,
+        "ref_candidates_by_function": ref_candidates_by_function,
         "sql_chunks": sql_chunks,
         "config_chunks": config_chunks,
         "artifact_chunks": artifact_chunks,
         "sql_index": sql_index,
-        "class_index": class_index,
+        "module_index": module_index,
         "config_index": config_index,
         "artifact_index": artifact_index,
     })
@@ -362,7 +409,7 @@ async def run_phase_llm(
 ) -> AsyncGenerator[bytes, None]:
     """Phase 2: 링킹 (SQL→Table LLM, Call batch, UML, analysis LLM)."""
     st = pipeline._pipeline_state
-    method_facts_list = st["method_facts_list"]
+    function_facts_list = st["function_facts_list"]
     sql_index = st["sql_index"]
     sql_chunks = st["sql_chunks"]
 
@@ -385,12 +432,12 @@ async def run_phase_llm(
     reads_writes: list = []
     fk_edges: list = []
     column_refs: list = []
-    method_table_edges: list = []
+    function_table_edges: list = []
     unresolved: list = []
     calls_edges_from_batch: list = []
     unresolved_calls: list = []
     table_descriptions: dict = {}
-    class_table_edges: list = []
+    module_table_edges: list = []
     artifact_table_edges: list = []
     all_calls: list = []
     uses_edges: list = []
@@ -398,17 +445,17 @@ async def run_phase_llm(
     call_batch_count = 0
 
     for step_result in run_step5(
-        method_facts_list,
+        function_facts_list,
         sql_index,
         sql_chunks,
         config_index=st.get("config_index"),
-        ref_candidates_by_method=st.get("ref_candidates_by_method"),
+        ref_candidates_by_function=st.get("ref_candidates_by_function"),
         symbol_type_index=st.get("symbol_type_index"),
-        class_index=st.get("class_index"),
+        module_index=st.get("module_index"),
         field_chunks=field_chunks,
         data_dir=data_dir,
-        field_facts_list=st.get("field_facts_list"),
-        method_index_by_class=st.get("method_index_by_class"),
+        variable_facts_list=st.get("variable_facts_list"),
+        function_index_by_module=st.get("function_index_by_module"),
         run_dir=st.get("run_dir"),
         artifact_index=st.get("artifact_index"),
         artifact_chunks=st.get("artifact_chunks"),
@@ -430,7 +477,7 @@ async def run_phase_llm(
             yield tracker.end_step(f"참조 {len(refer_to_edges)}건 연결, 미해결 {len(unresolved)}건")
             # LLM 배치 링킹 시작 (table_batch + call_batch 병렬)
             # 추정 배치 수: sql(20건씩) + call(20건씩)
-            est_batches = max(1, (len(sql_chunks) + 19) // 20 + (len(method_facts_list) + 19) // 20)
+            est_batches = max(1, (len(sql_chunks) + 19) // 20 + (len(function_facts_list) + 19) // 20)
             yield tracker.begin_step(1, est_batches)
 
         elif stage == "table_batch":
@@ -463,7 +510,7 @@ async def run_phase_llm(
             all_calls.extend(batch_call_edges)
             calls_edges_from_batch.extend(batch_call_edges)
             unresolved_calls.extend(batch_call_unresolved)
-            uses_batch = derive_uses_from_calls(batch_call_edges, method_facts_list)
+            uses_batch = derive_uses_from_calls(batch_call_edges, function_facts_list)
             uses_edges.extend(uses_batch)
             call_batch_count += 1
             try:
@@ -482,27 +529,27 @@ async def run_phase_llm(
             reads_writes = step_result["reads_writes"]
             fk_edges = step_result["fk_edges"]
             column_refs = step_result["column_refs"]
-            method_table_edges = step_result["method_table_edges"]
-            class_table_edges = step_result["class_table_edges"]
+            function_table_edges = step_result["function_table_edges"]
+            module_table_edges = step_result["module_table_edges"]
             artifact_table_edges = step_result["artifact_table_edges"]
             try:
                 queries = []
-                queries.extend(build_method_table_from_writes_queries(method_table_edges))
-                queries.extend(build_class_table_refer_to_queries(class_table_edges))
+                queries.extend(build_function_table_from_writes_queries(function_table_edges))
+                queries.extend(build_module_table_refer_to_queries(module_table_edges))
                 queries.extend(build_artifact_table_refer_to_queries(artifact_table_edges))
-                # ARTIFACT_CHUNK → CLASS 연결 (EJB XML의 ejb-class/home/remote FQN 기반)
+                # ARTIFACT_CHUNK → MODULE 연결 (EJB XML의 ejb-class/home/remote FQN 기반)
                 artifact_chunks_from_state = st.get("artifact_chunks") or []
-                class_index_from_state = st.get("class_index") or {}
-                artifact_class_rels = build_artifact_class_refer_to_queries(artifact_chunks_from_state, class_index_from_state)
-                queries.extend(artifact_class_rels)
+                module_index_from_state = st.get("module_index") or {}
+                artifact_module_rels = build_artifact_module_refer_to_queries(artifact_chunks_from_state, module_index_from_state)
+                queries.extend(artifact_module_rels)
                 if queries:
                     async for graph in run_graph_queries(client, queries, label="PHASE2:POST"):
                         yield emit_data(graph=graph)
             except Exception as e:
                 logger.warning("[FW:PHASE2] Neo4j 후처리 반영 실패: %s", e)
             yield tracker.begin_step(2, 1)
-            artifact_class_count = len(artifact_class_rels) if 'artifact_class_rels' in dir() else 0
-            yield tracker.end_step(f"Method→Table {len(method_table_edges)}건, Class→Table {len(class_table_edges)}건, Artifact→Table {len(artifact_table_edges)}건, Artifact→Class {artifact_class_count}건")
+            artifact_module_count = len(artifact_module_rels) if 'artifact_module_rels' in dir() else 0
+            yield tracker.end_step(f"Function→Table {len(function_table_edges)}건, Module→Table {len(module_table_edges)}건, Artifact→Table {len(artifact_table_edges)}건, Artifact→Module {artifact_module_count}건")
 
     # DeepAgent 엔티티 식별 — 시나리오별 분기
     # 시나리오 1 (DDL + 외부파일): 현행 결정론 매칭으로 충분 → 스킵
@@ -512,7 +559,7 @@ async def run_phase_llm(
     ddl_meta = pipeline._pipeline_state.get("ddl_table_metadata") or {}
     _has_external_files = has_external_entity_info(
         artifact_index=st.get("artifact_index"),
-        class_index=st.get("class_index"),
+        module_index=st.get("module_index"),
     )
     _needs_deep_entity = (
         (bool(ddl_meta) and not _has_external_files)  # 시나리오 2: DDL만
@@ -534,17 +581,26 @@ async def run_phase_llm(
             "chunk_index": st.get("chunk_index"),
         }
         entity_mt_edges = run_deep_agent_entity_identification(
-            st.get("class_index") or {},
+            st.get("module_index") or {},
             entity_state,
             api_key=entity_api_key,
             run_dir=entity_run_dir,
             ddl_table_metadata=ddl_meta or None,
         )
         if entity_mt_edges:
-            method_table_edges.extend(entity_mt_edges)
-            logger.info("[FW:PHASE2] DeepAgent 엔티티 식별 완료 | Method→Table %d건", len(entity_mt_edges))
+            function_table_edges.extend(entity_mt_edges)
+            logger.info("[FW:PHASE2] DeepAgent 엔티티 식별 완료 | Function→Table %d건", len(entity_mt_edges))
             try:
-                eid_queries = build_method_table_from_writes_queries(entity_mt_edges)
+                # DeepAgent가 반환한 테이블명으로 module_index에서 FQN 조회 → Table/Column 노드 먼저 생성
+                _entity_fqns = _collect_entity_fqns_from_edges(entity_mt_edges, st.get("module_index") or {})
+                if _entity_fqns:
+                    entity_tbl_queries = build_table_from_entity_classes(_entity_fqns, st.get("module_index") or {})
+                    if entity_tbl_queries:
+                        logger.info("[FW:PHASE2] 엔티티 Table/Column 생성 | classes=%d queries=%d", len(_entity_fqns), len(entity_tbl_queries))
+                        async for graph in run_graph_queries(client, entity_tbl_queries, label="PHASE2:ENTITY_TABLE"):
+                            yield emit_data(graph=graph)
+                # Function→Table 관계 연결 (Table 노드가 이제 존재하므로 성공)
+                eid_queries = build_function_table_from_writes_queries(entity_mt_edges)
                 if eid_queries:
                     async for graph in run_graph_queries(client, eid_queries, label="PHASE2:ENTITY_ID"):
                         yield emit_data(graph=graph)
@@ -555,7 +611,21 @@ async def run_phase_llm(
             st.setdefault("span_index", entity_state["span_index"])
             st.setdefault("chunk_index", entity_state["chunk_index"])
     else:
-        logger.info("[FW:PHASE2] 외부 엔티티 정보 충분 — DeepAgent 엔티티 식별 스킵")
+        # 시나리오 3: 외부 엔티티 정보(경로/어노테이션) 존재 → 자동 식별 후 Table/Column 생성
+        from analyzer.strategy.framework.linking.matcher import identify_entity_classes
+        auto_entity_fqns = identify_entity_classes(st.get("module_index") or {})
+        if auto_entity_fqns:
+            logger.info("[FW:PHASE2] 자동 엔티티 식별 (경로/어노테이션) | classes=%d", len(auto_entity_fqns))
+            try:
+                auto_tbl_queries = build_table_from_entity_classes(auto_entity_fqns, st.get("module_index") or {})
+                if auto_tbl_queries:
+                    async for graph in run_graph_queries(client, auto_tbl_queries, label="PHASE2:AUTO_ENTITY_TABLE"):
+                        yield emit_data(graph=graph)
+                    logger.info("[FW:PHASE2] 자동 엔티티 Table/Column 생성 완료 | queries=%d", len(auto_tbl_queries))
+            except Exception as e:
+                logger.warning("[FW:PHASE2] 자동 엔티티 Table/Column 생성 실패: %s", e)
+        else:
+            logger.info("[FW:PHASE2] 외부 엔티티 정보 충분 — DeepAgent 엔티티 식별 스킵")
 
     # DeepAgent: 항목별 점진적 스트리밍
     if not unresolved:
@@ -590,7 +660,7 @@ async def run_phase_llm(
                 if item_refer:
                     da_queries.extend(build_refer_to_queries(item_refer))
                 if item_mt:
-                    da_queries.extend(build_method_table_from_writes_queries(item_mt))
+                    da_queries.extend(build_function_table_from_writes_queries(item_mt))
                 if da_queries:
                     async for graph in run_graph_queries(client, da_queries, label="PHASE2:DEEPAGENT"):
                         yield emit_data(graph=graph)
@@ -601,17 +671,17 @@ async def run_phase_llm(
             refer_to_edges.extend(da_refer_all)
             logger.info("[FW:PHASE2] DeepAgent REFER_TO 추가 | count=%d", len(da_refer_all))
         if da_mt_all:
-            method_table_edges.extend(da_mt_all)
-            logger.info("[FW:PHASE2] DeepAgent Method→Table 직접 추가 | count=%d", len(da_mt_all))
-        # DeepAgent refer_to에서 Method→ArtifactChunk→Table 체인으로 Method→Table 자동 유도
+            function_table_edges.extend(da_mt_all)
+            logger.info("[FW:PHASE2] DeepAgent Function→Table 직접 추가 | count=%d", len(da_mt_all))
+        # DeepAgent refer_to에서 Method→ArtifactChunk→Table 체인으로 Function→Table 자동 유도
         if da_refer_all and artifact_table_edges:
-            from analyzer.strategy.framework.linking.orchestrator import derive_method_table_edges
-            da_derived_mt = derive_method_table_edges(da_refer_all, reads_writes, artifact_table_edges=artifact_table_edges)
+            from analyzer.strategy.framework.linking.orchestrator import derive_function_table_edges
+            da_derived_mt = derive_function_table_edges(da_refer_all, reads_writes, artifact_table_edges=artifact_table_edges)
             if da_derived_mt:
-                method_table_edges.extend(da_derived_mt)
-                logger.info("[FW:PHASE2] DeepAgent Method→Table 유도 | count=%d", len(da_derived_mt))
+                function_table_edges.extend(da_derived_mt)
+                logger.info("[FW:PHASE2] DeepAgent Function→Table 유도 | count=%d", len(da_derived_mt))
                 try:
-                    derived_queries = build_method_table_from_writes_queries(da_derived_mt)
+                    derived_queries = build_function_table_from_writes_queries(da_derived_mt)
                     if derived_queries:
                         async for graph in run_graph_queries(client, derived_queries, label="PHASE2:DEEPAGENT_DERIVED"):
                             yield emit_data(graph=graph)
@@ -621,7 +691,7 @@ async def run_phase_llm(
         if deep_state.get("span_index"):
             st.setdefault("span_index", deep_state["span_index"])
             st.setdefault("chunk_index", deep_state["chunk_index"])
-        yield tracker.end_step(f"REFER_TO {len(da_refer_all)}건, Method→Table {len(da_mt_all)}건 추가")
+        yield tracker.end_step(f"REFER_TO {len(da_refer_all)}건, Function→Table {len(da_mt_all)}건 추가")
 
     stats.total_nodes += len(refer_to_edges) + len(all_calls)
     st.update({
@@ -629,8 +699,8 @@ async def run_phase_llm(
         "reads_writes": reads_writes,
         "fk_edges": fk_edges,
         "column_refs": column_refs,
-        "method_table_edges": method_table_edges,
-        "class_table_edges": class_table_edges,
+        "function_table_edges": function_table_edges,
+        "module_table_edges": module_table_edges,
         "unresolved": unresolved,
         "calls_edges_from_batch": calls_edges_from_batch,
         "unresolved_calls": unresolved_calls,
@@ -652,11 +722,11 @@ async def run_phase_post(
     orchestrator: Any,
     stats: AnalysisStats,
 ) -> AsyncGenerator[bytes, None]:
-    """Phase 3: 메서드 요약, Field/Class 요약, Table Description 보강."""
+    """Phase 3: 메서드 요약, Field/Module 요약, Table Description 보강."""
     st = pipeline._pipeline_state
-    method_facts_list = st.get("method_facts_list") or []
-    field_facts_list = st.get("field_facts_list") or []
-    class_index = st.get("class_index") or {}
+    function_facts_list = st.get("function_facts_list") or []
+    variable_facts_list = st.get("variable_facts_list") or []
+    module_index = st.get("module_index") or {}
     refer_to_edges = st.get("refer_to_edges") or []
     reads_writes = st.get("reads_writes") or []
     all_calls = st.get("calls_edges") or []
@@ -669,98 +739,183 @@ async def run_phase_post(
     tracker.define_steps([
         ("메서드 요약", 35),        # step 0
         ("Field 요약", 15),         # step 1
-        ("Class 요약", 25),         # step 2
+        ("Module 요약", 25),        # step 2
         ("Table Description 보강", 25),  # step 3
     ])
 
     # --- 메서드 요약 (Step 6: analysis LLM — 20개씩 배치 점진적 스트리밍) ---
-    total_summary_batches = max(1, (len(method_facts_list) + 19) // 20)
+    total_summary_batches = max(1, (len(function_facts_list) + 19) // 20)
     yield tracker.begin_step(0, total_summary_batches)
 
-    summary_by_method: dict = {}
+    summary_by_function: dict = {}
     for summary_batch in run_step6(
-        method_facts_list,
+        function_facts_list,
         refer_to_edges,
         reads_writes,
         use_llm=bool(api_key),
         api_key=api_key,
         locale=locale,
         parallel=True,
-        class_index=class_index,
+        module_index=module_index,
         sql_index=sql_index,
         config_index=st.get("config_index"),
         calls_edges=all_calls,
-        field_facts_list=field_facts_list,
+        variable_facts_list=variable_facts_list,
         lang=st.get("lang", "java"),
     ):
-        summary_by_method.update(summary_batch)
+        summary_by_function.update(summary_batch)
         yield tracker.tick_quiet()
+        # --- Build queries in logical sections; each section has its own try/except
+        #     so a failure in one does not silently suppress the others. ---
+        queries: list[dict[str, Any]] = []
+        lang = st.get("lang", "java")
+
+        # 1) Function summary queries
         try:
-            queries = []
-            queries.extend(build_method_summary_queries(summary_batch))
-            queries.extend(
-                build_uml_dependency_queries(
-                    summary_batch,
-                    method_facts_list,
-                    class_index,
+            queries.extend(build_function_summary_queries(summary_batch, lang=lang))
+        except Exception as e:
+            logger.warning("[FW:PHASE3] function summary 쿼리 빌드 실패: %s", e)
+
+        # 2) UML dependency queries (OOP only)
+        try:
+            from analyzer.strategy.framework.common.ontology import get_ontology
+            if get_ontology().is_oop(lang):
+                queries.extend(
+                    build_uml_dependency_queries(
+                        summary_batch,
+                        function_facts_list,
+                        module_index,
+                    )
                 )
-            )
+        except Exception as e:
+            logger.warning("[FW:PHASE3] UML dependency 쿼리 빌드 실패: %s", e)
+
+        # 3) variableRefs: FUNCTION→VARIABLE/CONSTANT REFERENCES 관계
+        try:
+            for _mid, analysis in summary_batch.items():
+                var_refs = analysis.get("variableRefs") or []
+                if var_refs and _mid:
+                    for var_name in var_refs:
+                        var_name = (var_name or "").strip()
+                        if not var_name:
+                            continue
+                        queries.append({
+                            "query": (
+                                "MATCH (m:FUNCTION {function_id: $function_id})\n"
+                                "MATCH (v) WHERE (v:VARIABLE OR v:CONSTANT) AND v.name = $var_name\n"
+                                "MERGE (m)-[r:REFERENCES]->(v)\n"
+                                "ON CREATE SET r.created_at = timestamp()\n"
+                                "ON MATCH SET r.updated_at = timestamp()\n"
+                                "RETURN r"
+                            ),
+                            "params": {"function_id": _mid, "var_name": var_name},
+                        })
+        except Exception as e:
+            logger.warning("[FW:PHASE3] variableRefs 쿼리 빌드 실패: %s", e)
+
+        # 4) tableInsights: Table/Column description 점진적 보강
+        try:
+            for _mid, analysis in summary_batch.items():
+                for insight in (analysis.get("tableInsights") or []):
+                    tbl_name = (insight.get("tableName") or "").strip()
+                    tbl_desc = (insight.get("description") or "").strip()
+                    if tbl_name and tbl_desc:
+                        queries.append({
+                            "query": (
+                                "MATCH (t:Table)\n"
+                                "WHERE t.name = $name OR t.fqn ENDS WITH $name\n"
+                                "SET t.description = CASE\n"
+                                "      WHEN t.description IS NULL OR trim(toString(t.description)) = ''\n"
+                                "      THEN $desc\n"
+                                "      ELSE t.description + ' | ' + $desc\n"
+                                "    END,\n"
+                                "    t.description_source = COALESCE(t.description_source, '') + CASE WHEN t.description_source IS NULL OR t.description_source = '' THEN 'code' ELSE '' END,\n"
+                                "    t.updated_at = timestamp()\n"
+                                "RETURN t"
+                            ),
+                            "params": {"name": tbl_name, "desc": tbl_desc},
+                        })
+                    for col in (insight.get("columns") or []):
+                        col_name = (col.get("name") or "").strip()
+                        col_desc = (col.get("description") or "").strip()
+                        if tbl_name and col_name and col_desc:
+                            queries.append({
+                                "query": (
+                                    "MATCH (t:Table)-[:HAS_COLUMN]->(c:Column)\n"
+                                    "WHERE (t.name = $tbl_name OR t.fqn ENDS WITH $tbl_name)\n"
+                                    "  AND toUpper(c.name) = toUpper($col_name)\n"
+                                    "SET c.description = CASE\n"
+                                    "      WHEN c.description IS NULL OR trim(toString(c.description)) = ''\n"
+                                    "      THEN $col_desc\n"
+                                    "      ELSE c.description + ' | ' + $col_desc\n"
+                                    "    END,\n"
+                                    "    c.description_source = COALESCE(c.description_source, '') + CASE WHEN c.description_source IS NULL OR c.description_source = '' THEN 'code' ELSE '' END,\n"
+                                    "    c.updated_at = timestamp()\n"
+                                    "RETURN c"
+                                ),
+                                "params": {"tbl_name": tbl_name, "col_name": col_name, "col_desc": col_desc},
+                            })
+        except Exception as e:
+            logger.warning("[FW:PHASE3] tableInsights 쿼리 빌드 실패: %s", e)
+
+        # 5) Execute all accumulated queries against Neo4j
+        try:
             if queries:
                 async for graph in run_graph_queries(client, queries, label="PHASE3:SUMMARY"):
                     yield emit_data(graph=graph)
         except Exception as e:
             logger.warning("[FW:PHASE3] Neo4j summary 배치 반영 실패: %s", e)
 
-    st["summary_by_method"] = summary_by_method
-    yield tracker.end_step(f"메서드 {len(summary_by_method)}개 요약 완료")
+    st["summary_by_function"] = summary_by_function
+    yield tracker.end_step(f"메서드 {len(summary_by_function)}개 요약 완료")
 
     # --- Field 요약 (완료 즉시 스트리밍) ---
-    field_total = max(1, len(field_facts_list))
+    field_total = max(1, len(variable_facts_list))
     yield tracker.begin_step(1, field_total)
-    summary_by_field: Dict[str, Any] = {}
-    for field_batch in run_field_summary(
-        field_facts_list, class_index,
+    summary_by_variable: Dict[str, Any] = {}
+    for field_batch in run_variable_summary(
+        variable_facts_list, module_index,
         data_dir=st.get("data_dir", ""),
         run_dir=st.get("run_dir"),
         api_key=api_key, locale=locale,
     ):
-        summary_by_field.update(field_batch)
+        summary_by_variable.update(field_batch)
         yield tracker.tick_quiet(len(field_batch))
         try:
-            queries = build_field_summary_queries(field_batch)
+            queries = build_variable_summary_queries(field_batch)
             if queries:
                 async for graph in run_graph_queries(client, queries, label="PHASE3:FIELD_SUMMARY"):
                     yield emit_data(graph=graph)
         except Exception as e:
             logger.warning("[FW:PHASE3] Neo4j field summary 반영 실패: %s", e)
 
-    yield tracker.end_step(f"필드 {len(summary_by_field)}개 요약 완료")
+    yield tracker.end_step(f"필드 {len(summary_by_variable)}개 요약 완료")
 
-    # --- Class 요약 (클래스별 스트리밍) ---
-    class_total = max(1, len(class_index))
-    yield tracker.begin_step(2, class_total)
-    summary_by_class: Dict[str, Any] = {}
-    for class_batch in run_class_summary(
-        class_index, summary_by_method, summary_by_field,
-        method_facts_list, field_facts_list,
+    # --- Module 요약 (모듈별 스트리밍) ---
+    module_total = max(1, len(module_index))
+    yield tracker.begin_step(2, module_total)
+    summary_by_module: Dict[str, Any] = {}
+    for module_batch in run_module_summary(
+        module_index, summary_by_function, summary_by_variable,
+        function_facts_list, variable_facts_list,
         api_key=api_key, locale=locale,
     ):
-        summary_by_class.update(class_batch)
-        yield tracker.tick_quiet(len(class_batch))
+        summary_by_module.update(module_batch)
+        yield tracker.tick_quiet(len(module_batch))
         try:
-            queries = build_class_summary_queries(class_batch)
+            queries = build_module_summary_queries(module_batch, lang=st.get("lang", "java"))
             if queries:
-                async for graph in run_graph_queries(client, queries, label="PHASE3:CLASS_SUMMARY"):
+                async for graph in run_graph_queries(client, queries, label="PHASE3:MODULE_SUMMARY"):
                     yield emit_data(graph=graph)
         except Exception as e:
-            logger.warning("[FW:PHASE3] Neo4j class summary 반영 실패: %s", e)
+            logger.warning("[FW:PHASE3] Neo4j module summary 반영 실패: %s", e)
 
-    yield tracker.end_step(f"클래스 {len(summary_by_class)}개 요약 완료")
+    yield tracker.end_step(f"클래스 {len(summary_by_module)}개 요약 완료")
 
     # --- Table Description 보강 (메서드 summary 기반) ---
     yield tracker.begin_step(3, 1)
     enriched_table_count = 0
-    if api_key and summary_by_method:
+    if api_key and summary_by_function:
         try:
             enrichment_query = build_table_description_enrichment_query()
             table_results = await client.execute_queries([enrichment_query])
@@ -778,18 +933,30 @@ async def run_phase_post(
                     schema = table_info.get("schema", "")
                     current_desc = table_info.get("current_description") or ""
                     method_summaries = table_info.get("method_summaries") or []
+                    columns_meta = table_info.get("columns") or []
                     table_display = f"{schema}.{name}" if schema else name
                     # 메서드 summary를 table_sentences로 전달
                     sentences = [f"[메서드 요약] {s}" for s in method_summaries[:20]]
                     if current_desc:
                         sentences.insert(0, f"[기존 설명] {current_desc}")
+                    # 컬럼 메타데이터를 LLM에 전달
+                    col_metadata = {}
+                    for col in columns_meta:
+                        col_name = col.get("name", "")
+                        if col_name:
+                            col_metadata[col_name] = {
+                                "dtype": col.get("dtype", ""),
+                                "nullable": col.get("nullable"),
+                                "is_primary_key": col.get("is_primary_key"),
+                                "description": col.get("description", ""),
+                            }
                     result = loader.execute(
                         "table_summary",
                         {
                             "table_name": table_display,
                             "table_sentences": sentences,
                             "column_sentences": {},
-                            "column_metadata": {},
+                            "column_metadata": col_metadata,
                             "locale": locale,
                         },
                         api_key=api_key,
@@ -800,6 +967,7 @@ async def run_phase_post(
                             "schema": schema,
                             "name": name,
                             "enriched_description": result["tableDescription"],
+                            "columns": result.get("columns") or [],
                         }
                     return None
 
@@ -820,23 +988,35 @@ async def run_phase_post(
                     enriched_table_count = len(enrichments)
                     try:
                         queries = build_table_description_update_queries(enrichments)
+                        # Column description 보강 (LLM이 반환한 columns 활용)
+                        for item in enrichments:
+                            columns = item.get("columns") or []
+                            if columns:
+                                queries.extend(
+                                    _build_column_description_update_queries(
+                                        item.get("db", ""),
+                                        item.get("schema", ""),
+                                        item.get("name", ""),
+                                        columns,
+                                    )
+                                )
                         if queries:
                             async for graph in run_graph_queries(client, queries, label="PHASE3:TABLE_ENRICHMENT"):
                                 yield emit_data(graph=graph)
                     except Exception as e:
-                        logger.warning("[FW:PHASE3] Neo4j table description 보강 반영 실패: %s", e)
+                        logger.warning("[FW:PHASE3] Neo4j table/column description 보강 반영 실패: %s", e)
         except Exception as e:
             logger.warning("[FW:PHASE3] Table description 보강 스킵: %s", e)
 
     yield tracker.end_step(f"테이블 {enriched_table_count}개 설명 보강")
 
     st.update({
-        "summary_by_field": summary_by_field,
-        "summary_by_class": summary_by_class,
+        "summary_by_variable": summary_by_variable,
+        "summary_by_module": summary_by_module,
     })
 
     yield emit_message(
-        f"✅ Phase 3 완료 | 메서드요약 {len(summary_by_method)}개, "
-        f"필드요약 {len(summary_by_field)}개, 클래스요약 {len(summary_by_class)}개, "
+        f"✅ Phase 3 완료 | 메서드요약 {len(summary_by_function)}개, "
+        f"필드요약 {len(summary_by_variable)}개, 클래스요약 {len(summary_by_module)}개, "
         f"테이블보강 {enriched_table_count}개"
     )

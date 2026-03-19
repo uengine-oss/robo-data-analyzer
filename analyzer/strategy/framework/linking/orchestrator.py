@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# Step 5 오케스트레이터: run_step5, derive_method_table_edges
+# Step 5 오케스트레이터: run_step5, derive_function_table_edges
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -15,8 +15,8 @@ from typing import Any, Dict, Generator, List, Optional, Set, Tuple
 from config.settings import settings
 from analyzer.strategy.framework.models import (
     CallsEdge,
-    MethodFacts,
-    FieldFacts,
+    FunctionFacts,
+    VariableFacts,
     SqlStatementChunk,
     ConfigSectionChunk,
     ArtifactChunk,
@@ -24,12 +24,12 @@ from analyzer.strategy.framework.models import (
     ReadsWritesEdge,
     FkEdge,
     ColumnRef,
-    MethodTableEdge,
-    ClassTableEdge,
+    FunctionTableEdge,
+    ModuleTableEdge,
     ArtifactTableEdge,
     UnresolvedLink,
 )
-from analyzer.strategy.framework.common.utils import sql_op_to_method_relation as _sql_op_to_method_relation
+from analyzer.strategy.framework.common.utils import sql_op_to_method_relation as _sql_op_to_function_relation
 from analyzer.strategy.framework.linking.matcher import (
     link_chunks_to_indexes,
     resolve_candidates,
@@ -41,17 +41,17 @@ from analyzer.strategy.framework.linking.call_graph import run_call_batch_pipeli
 logger = logging.getLogger(__name__)
 
 
-def derive_method_table_edges(
+def derive_function_table_edges(
     refer_to_edges: List[ReferToEdge],
     reads_writes: List[ReadsWritesEdge],
     artifact_table_edges: Optional[List[ArtifactTableEdge]] = None,
-) -> List[MethodTableEdge]:
-    """Method→SqlStatement/ArtifactChunk + reads_writes/artifact_table 체인으로 Method→Table(READS/WRITES) 자동 유도.
+) -> List[FunctionTableEdge]:
+    """Function→SqlStatement/ArtifactChunk + reads_writes/artifact_table 체인으로 Function→Table(READS/WRITES) 자동 유도.
 
-    1) Method─REFER_TO→SqlStatement + SqlStatement→Table(reads_writes) → Method─READS/WRITES→Table
-    2) Method─REFER_TO→ArtifactChunk + ArtifactChunk→Table(artifact_table_edges) → Method─READS/WRITES→Table
+    1) Function─REFER_TO→SqlStatement + SqlStatement→Table(reads_writes) → Function─READS/WRITES→Table
+    2) Function─REFER_TO→ArtifactChunk + ArtifactChunk→Table(artifact_table_edges) → Function─READS/WRITES→Table
     """
-    result: List[MethodTableEdge] = []
+    result: List[FunctionTableEdge] = []
     seen: set = set()
 
     # 1) SQL 경로: SqlStatement → Table
@@ -60,19 +60,19 @@ def derive_method_table_edges(
         if rw.sql_key not in sql_to_tables:
             sql_to_tables[rw.sql_key] = []
         sql_to_tables[rw.sql_key].append((rw.table_schema, rw.table_name, rw.relation))
-    for re_ in refer_to_edges:
-        if re_.target_type != "SqlStatement":
+    for edge in refer_to_edges:
+        if edge.target_type != "SqlStatement":
             continue
-        field_id = getattr(re_, "field_id", None)
-        for schema, table, sql_rel in sql_to_tables.get(re_.target_id, []):
-            method_rel = _sql_op_to_method_relation(sql_rel)
-            dedup_key = (re_.method_id, field_id or "", schema, table, method_rel)
+        variable_id = getattr(edge, "variable_id", None)
+        for schema, table, sql_rel in sql_to_tables.get(edge.target_id, []):
+            function_rel = _sql_op_to_function_relation(sql_rel)
+            dedup_key = (edge.function_id, variable_id or "", schema, table, function_rel)
             if dedup_key in seen:
                 continue
             seen.add(dedup_key)
-            result.append(MethodTableEdge(
-                method_id=re_.method_id, table_schema=schema,
-                table_name=table, relation=method_rel, field_id=field_id,
+            result.append(FunctionTableEdge(
+                function_id=edge.function_id, table_schema=schema,
+                table_name=table, relation=function_rel, variable_id=variable_id,
             ))
 
     # 2) Artifact 경로: ArtifactChunk → Table
@@ -82,37 +82,37 @@ def derive_method_table_edges(
             cid = (at.chunk_id or "").strip()
             if cid:
                 chunk_to_tables.setdefault(cid, []).append((at.table_schema, at.table_name))
-        for re_ in refer_to_edges:
-            if re_.target_type != "ArtifactChunk":
+        for edge in refer_to_edges:
+            if edge.target_type != "ArtifactChunk":
                 continue
-            field_id = getattr(re_, "field_id", None)
-            for schema, table in chunk_to_tables.get(re_.target_id, []):
+            variable_id = getattr(edge, "variable_id", None)
+            for schema, table in chunk_to_tables.get(edge.target_id, []):
                 # ArtifactChunk 경로는 기본 READS (CRUD 세분화는 deepagent confidence에 의존)
-                method_rel = "READS"
-                dedup_key = (re_.method_id, field_id or "", schema, table, method_rel)
+                function_rel = "READS"
+                dedup_key = (edge.function_id, variable_id or "", schema, table, function_rel)
                 if dedup_key in seen:
                     continue
                 seen.add(dedup_key)
-                result.append(MethodTableEdge(
-                    method_id=re_.method_id, table_schema=schema,
-                    table_name=table, relation=method_rel, field_id=field_id,
+                result.append(FunctionTableEdge(
+                    function_id=edge.function_id, table_schema=schema,
+                    table_name=table, relation=function_rel, variable_id=variable_id,
                 ))
 
     return result
 
 
 def run_step5(
-    method_facts_list: List[MethodFacts],
+    function_facts_list: List[FunctionFacts],
     sql_index: Dict[str, SqlStatementChunk],
     sql_chunks: List[SqlStatementChunk],
     config_index: Optional[Dict[str, ConfigSectionChunk]] = None,
-    ref_candidates_by_method: Optional[Dict[str, List[Any]]] = None,
+    ref_candidates_by_function: Optional[Dict[str, List[Any]]] = None,
     symbol_type_index: Optional[Dict[str, Dict[str, str]]] = None,
-    class_index: Optional[Dict[str, Any]] = None,
+    module_index: Optional[Dict[str, Any]] = None,
     field_chunks: Optional[List[Dict[str, Any]]] = None,
     data_dir: Optional[str] = None,
-    field_facts_list: Optional[List[FieldFacts]] = None,
-    method_index_by_class: Optional[Dict[str, Dict[str, List[str]]]] = None,
+    variable_facts_list: Optional[List[VariableFacts]] = None,
+    function_index_by_module: Optional[Dict[str, Dict[str, List[str]]]] = None,
     run_dir: Optional[str] = None,
     artifact_index: Optional[Dict[str, ArtifactChunk]] = None,
     artifact_chunks: Optional[List[ArtifactChunk]] = None,
@@ -124,12 +124,12 @@ def run_step5(
         stage="deterministic": refer_to_edges, unresolved
         stage="table_llm": reads_writes, fk_edges, column_refs, table_descriptions
         stage="call_llm": calls_edges, unresolved_calls
-        stage="post": reads_writes(final), method_table_edges, class_table_edges, artifact_table_edges
+        stage="post": reads_writes(final), function_table_edges, module_table_edges, artifact_table_edges
     """
     config_count = len(config_index) if config_index else 0
     logger.info(
-        "[FW:STEP5] 링킹 진입  method_facts=%d sql_index=%d sql_chunks=%d config_index=%d field_chunks=%s",
-        len(method_facts_list),
+        "[FW:STEP5] 링킹 진입  function_facts=%d sql_index=%d sql_chunks=%d config_index=%d variable_chunks=%s",
+        len(function_facts_list),
         len(sql_index),
         len(sql_chunks),
         config_count,
@@ -137,11 +137,11 @@ def run_step5(
     )
     logger.info("[FW:STEP5] [매칭] 결정론 매칭 (키 in 코드, sql/config/class/artifact 인덱스)")
     refer_to_edges, unresolved = link_chunks_to_indexes(
-        method_facts_list,
+        function_facts_list,
         field_chunks=field_chunks,
         sql_index=sql_index,
         config_index=config_index,
-        class_index=class_index,
+        module_index=module_index,
         artifact_index=artifact_index,
     )
     det_matched = len(refer_to_edges)
@@ -151,13 +151,13 @@ def run_step5(
         len(unresolved),
     )
 
-    # ref_candidates_by_method 기반 결정론 해석 (CALL_REF / NEW_INSTANCE_REF)
-    if ref_candidates_by_method:
-        method_index: Dict[str, MethodFacts] = {m.method_id: m for m in method_facts_list}
+    # ref_candidates_by_function 기반 결정론 해석 (CALL_REF / NEW_INSTANCE_REF)
+    if ref_candidates_by_function:
+        function_index: Dict[str, FunctionFacts] = {m.function_id: m for m in function_facts_list}
         rc_matched = 0
         rc_unresolved = 0
-        for mid, cands in ref_candidates_by_method.items():
-            mf = method_index.get(mid)
+        for mid, cands in ref_candidates_by_function.items():
+            mf = function_index.get(mid)
             caller_fqn = getattr(mf, "fqn", "") if mf else mid
             code_ref = getattr(mf, "code_ref", None) if mf else None
             add_edges, add_unresolved = resolve_candidates(
@@ -167,7 +167,7 @@ def run_step5(
                 cands,
                 sql_index=sql_index,
                 config_index=config_index,
-                class_index=class_index,
+                module_index=module_index,
                 symbol_type_index=symbol_type_index or {},
                 artifact_index=artifact_index,
             )
@@ -196,23 +196,23 @@ def run_step5(
     # 3단계 우선순위: DDL → 외부파일(XML/어노테이션) → DeepAgent(phases.py에서 처리)
     _has_external = has_external_entity_info(
         artifact_index=artifact_index,
-        class_index=class_index,
+        module_index=module_index,
         ddl_table_metadata=ddl_table_metadata,
     )
 
     if _has_external and not ddl_table_metadata:
         # 외부파일(XML entity, 어노테이션) 존재 → entity 청크를 table LLM 입력에 합류
-        entity_fqns = identify_entity_classes(class_index or {})
+        entity_fqns = identify_entity_classes(module_index or {})
         for fqn in entity_fqns:
-            info = (class_index or {}).get(fqn)
+            info = (module_index or {}).get(fqn)
             if not isinstance(info, dict):
                 continue
-            class_key = info.get("class_key") or fqn
-            fields = [f for f in (field_facts_list or []) if getattr(f, "class_key", "") == class_key]
+            module_key = info.get("module_key") or fqn
+            fields = [f for f in (variable_facts_list or []) if getattr(f, "module_key", "") == module_key]
             if not fields:
                 continue
             field_text = "\n".join(
-                f"{f.name} ({getattr(f, 'field_type', '?')})"
+                f"{f.name} ({getattr(f, 'variable_type', '?')})"
                 + (f" {f.annotations}" if getattr(f, "annotations", None) else "")
                 for f in fields
             )
@@ -289,10 +289,10 @@ def run_step5(
         try:
             run_call_batch_pipeline(
                 data_dir or "",
-                method_facts_list,
-                field_facts_list or [],
+                function_facts_list,
+                variable_facts_list or [],
                 symbol_type_index or {},
-                method_index_by_class or {},
+                function_index_by_module or {},
                 use_llm=True,
                 api_key=api_key,
                 run_dir=run_dir,
@@ -339,25 +339,25 @@ def run_step5(
     fk_edges = fk_edges_list
     column_refs = column_refs_list
 
-    # entity::FQN → (CLASS)-[:REFER_TO]->(TABLE)
+    # entity::FQN → (MODULE)-[:REFER_TO]->(TABLE)
     seen_ct: Set[Tuple[str, str, str]] = set()
-    class_table_edges: List[ClassTableEdge] = []
+    module_table_edges: List[ModuleTableEdge] = []
     for rw in reads_writes:
         sql_key = (getattr(rw, "sql_key", "") or "").strip()
         if not sql_key.startswith("entity::"):
             continue
-        class_fqn = sql_key.split("::", 1)[-1].strip()
-        if not class_fqn:
+        module_fqn = sql_key.split("::", 1)[-1].strip()
+        if not module_fqn:
             continue
         schema = (getattr(rw, "table_schema", "") or "").strip()
         name = (getattr(rw, "table_name", "") or "").strip()
         if not name:
             continue
-        key = (class_fqn, schema, name)
+        key = (module_fqn, schema, name)
         if key in seen_ct:
             continue
         seen_ct.add(key)
-        class_table_edges.append(ClassTableEdge(class_fqn=class_fqn, table_schema=schema, table_name=name))
+        module_table_edges.append(ModuleTableEdge(module_fqn=module_fqn, table_schema=schema, table_name=name))
 
     # entity_xml::chunk_id → (ARTIFACT_CHUNK)-[:REFER_TO]->(TABLE)
     seen_at: Set[Tuple[str, str, str]] = set()
@@ -379,16 +379,16 @@ def run_step5(
         seen_at.add(key)
         artifact_table_edges.append(ArtifactTableEdge(chunk_id=chunk_id, table_schema=schema, table_name=name))
 
-    # Method→Table 자동 유도
-    logger.info("[FW:STEP5] [Method–Table] REFER_TO + READS/WRITES 엣지 유도")
-    method_table_edges = derive_method_table_edges(refer_to_edges, reads_writes, artifact_table_edges=artifact_table_edges)
+    # Function→Table 자동 유도
+    logger.info("[FW:STEP5] [Function–Table] REFER_TO + READS/WRITES 엣지 유도")
+    function_table_edges = derive_function_table_edges(refer_to_edges, reads_writes, artifact_table_edges=artifact_table_edges)
 
     logger.info(
-        "[FW:STEP5] 링킹 완료  REFER_TO=%d  reads_writes=%d  Method→Table=%d  Class→Table=%d  Artifact→Table=%d  미연결=%d",
+        "[FW:STEP5] 링킹 완료  REFER_TO=%d  reads_writes=%d  Function→Table=%d  Module→Table=%d  Artifact→Table=%d  미연결=%d",
         len(refer_to_edges),
         len(reads_writes),
-        len(method_table_edges),
-        len(class_table_edges),
+        len(function_table_edges),
+        len(module_table_edges),
         len(artifact_table_edges),
         len(unresolved),
     )
@@ -399,7 +399,7 @@ def run_step5(
         "reads_writes": reads_writes,
         "fk_edges": fk_edges,
         "column_refs": column_refs,
-        "method_table_edges": method_table_edges,
-        "class_table_edges": class_table_edges,
+        "function_table_edges": function_table_edges,
+        "module_table_edges": module_table_edges,
         "artifact_table_edges": artifact_table_edges,
     }

@@ -1,7 +1,7 @@
 from .scanner import scan_project  # noqa: F401
 from .ast_walker import (  # noqa: F401
     collect_ast_indices_and_chunk_data,
-    build_method_facts_and_class_index,
+    build_function_facts_and_module_index,
     run_step2,
 )
 from .chunk_bundle import (  # noqa: F401
@@ -16,7 +16,7 @@ from .chunk_bundle import (  # noqa: F401
 )
 from .indexer import (  # noqa: F401
     build_sql_index,
-    build_class_index,
+    build_module_index,
     build_config_index,
     build_artifact_index,
     run_step4,

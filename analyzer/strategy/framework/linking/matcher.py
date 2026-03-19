@@ -9,7 +9,7 @@ import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from analyzer.strategy.framework.models import (
-    MethodFacts,
+    FunctionFacts,
     SqlStatementChunk,
     ConfigSectionChunk,
     ArtifactChunk,
@@ -26,21 +26,21 @@ logger = logging.getLogger(__name__)
 
 # 엔티티 시그널 — 언어/프레임워크 무관 (어노테이션, 상속 패턴)
 ENTITY_SIGNALS_ANNOTATION = [
-    # Java
+    # JVM (Java, Kotlin, etc.)
     "@Entity", "@Table", "@MappedSuperclass", "@Document", "@RedisHash",
-    # Python
+    # Python (Django, SQLAlchemy)
     "db.Model", "models.Model",
-    # C# (.NET)
+    # .NET (C#, etc.)
     "[Table", "[Key",
     # General
     "EntityBean",
 ]
 
 
-def identify_entity_classes(class_index: Dict[str, Any]) -> set:
-    """class_index에서 엔티티 후보 FQN 집합을 반환. 어노테이션/상속 패턴으로 판별 (범용)."""
+def identify_entity_classes(module_index: Dict[str, Any]) -> set:
+    """module_index에서 엔티티 후보 FQN 집합을 반환. 어노테이션/상속 패턴으로 판별 (범용)."""
     entity_fqns: set = set()
-    for fqn, info in class_index.items():
+    for fqn, info in module_index.items():
         if not isinstance(info, dict):
             continue
         ann = str(info.get("annotations") or "")
@@ -51,7 +51,7 @@ def identify_entity_classes(class_index: Dict[str, Any]) -> set:
 
 def has_external_entity_info(
     artifact_index: Optional[Dict[str, Any]] = None,
-    class_index: Optional[Dict[str, Any]] = None,
+    module_index: Optional[Dict[str, Any]] = None,
     ddl_table_metadata: Optional[Dict[str, Any]] = None,
     **extra_sources: Any,
 ) -> bool:
@@ -62,7 +62,7 @@ def has_external_entity_info(
         for ac in artifact_index.values():
             if getattr(ac, "chunk_type", "") in ("entity", "cmp_mapping"):
                 return True
-    if class_index and identify_entity_classes(class_index):
+    if module_index and identify_entity_classes(module_index):
         return True
     for src in extra_sources.values():
         if src:
@@ -93,11 +93,11 @@ def _key_in_code(code: str, key: str) -> bool:
 
 
 def link_chunks_to_indexes(
-    method_facts_list: List[MethodFacts],
+    function_facts_list: List[FunctionFacts],
     field_chunks: Optional[List[Dict[str, Any]]] = None,
     sql_index: Optional[Dict[str, SqlStatementChunk]] = None,
     config_index: Optional[Dict[str, ConfigSectionChunk]] = None,
-    class_index: Optional[Dict[str, Any]] = None,
+    module_index: Optional[Dict[str, Any]] = None,
     artifact_index: Optional[Dict[str, ArtifactChunk]] = None,
 ) -> Tuple[List[ReferToEdge], List[UnresolvedLink]]:
     """Method/Field 청크 코드에 인덱스 키가 있으면 REFER_TO 연결. 문자열 추출/패턴 없이 key in code 만 검사."""
@@ -119,28 +119,28 @@ def link_chunks_to_indexes(
             for k in keys:
                 artifact_key_index.setdefault(k, []).append(key_id)
 
-    def add_edge(method_id: str, field_id: Optional[str], target_type: str, target_id: str, evidence: Dict[str, Any]) -> None:
-        sid = field_id if field_id else method_id
-        kind = "Field" if field_id else "Method"
+    def add_edge(function_id: str, variable_id: Optional[str], target_type: str, target_id: str, evidence: Dict[str, Any]) -> None:
+        sid = variable_id if variable_id else function_id
+        kind = "Variable" if variable_id else "Function"
         t = (sid, kind, target_type, target_id)
         if t in seen:
             return
         seen.add(t)
         edges.append(
             ReferToEdge(
-                method_id=method_id,
+                function_id=function_id,
                 target_type=target_type,
                 target_id=target_id,
                 evidence=evidence,
                 confidence=1.0,
-                field_id=field_id,
+                variable_id=variable_id,
             )
         )
 
     # 매칭된 인덱스 키 추적 (매칭 실패 키 → unresolved → deepagent)
     matched_keys: Set[Tuple[str, str]] = set()  # (target_type, key)
 
-    for m in method_facts_list:
+    for m in function_facts_list:
         code = (m.code or "").strip()
         if not code:
             continue
@@ -148,12 +148,12 @@ def link_chunks_to_indexes(
         if sql_index:
             for key in sql_index:
                 if _key_in_code(code, key):
-                    add_edge(m.method_id, None, "SqlStatement", key, evidence)
+                    add_edge(m.function_id, None, "SqlStatement", key, evidence)
                     matched_keys.add(("SqlStatement", key))
         if config_index:
             for key in config_index.keys():
                 if _key_in_code(code, key):
-                    add_edge(m.method_id, None, "ConfigSection", key, evidence)
+                    add_edge(m.function_id, None, "ConfigSection", key, evidence)
                     matched_keys.add(("ConfigSection", key))
         if artifact_key_index:
             for key, chunk_ids in artifact_key_index.items():
@@ -161,25 +161,25 @@ def link_chunks_to_indexes(
                     continue
                 for cid in chunk_ids:
                     if cid:
-                        add_edge(m.method_id, None, "ArtifactChunk", cid, evidence)
+                        add_edge(m.function_id, None, "ArtifactChunk", cid, evidence)
                         matched_keys.add(("ArtifactChunk", key))
 
     if field_chunks:
         for fc in field_chunks:
-            field_id = fc.get("field_id") or ""
+            variable_id = fc.get("variable_id") or ""
             code = (fc.get("code") or "").strip()
-            if not field_id or not code:
+            if not variable_id or not code:
                 continue
             evidence = {"file": fc.get("code_ref"), "line_range": fc.get("line_range")}
             if sql_index:
                 for key in sql_index:
                     if _key_in_code(code, key):
-                        add_edge("", field_id, "SqlStatement", key, evidence)
+                        add_edge("", variable_id, "SqlStatement", key, evidence)
                         matched_keys.add(("SqlStatement", key))
             if config_index:
                 for key in config_index.keys():
                     if _key_in_code(code, key):
-                        add_edge("", field_id, "ConfigSection", key, evidence)
+                        add_edge("", variable_id, "ConfigSection", key, evidence)
                         matched_keys.add(("ConfigSection", key))
             if artifact_key_index:
                 for key, chunk_ids in artifact_key_index.items():
@@ -187,7 +187,7 @@ def link_chunks_to_indexes(
                         continue
                     for cid in chunk_ids:
                         if cid:
-                            add_edge("", field_id, "ArtifactChunk", cid, evidence)
+                            add_edge("", variable_id, "ArtifactChunk", cid, evidence)
                             matched_keys.add(("ArtifactChunk", key))
 
     # 매칭 실패 인덱스 키 수집 → unresolved (deepagent 대상)
@@ -196,7 +196,7 @@ def link_chunks_to_indexes(
         for key, stmt in sql_index.items():
             if ("SqlStatement", key) not in matched_keys:
                 unresolved.append(UnresolvedLink(
-                    method_id="", caller_fqn="",
+                    function_id="", caller_fqn="",
                     ref_candidates=[{
                         "target_type": "SqlStatement",
                         "key": key,
@@ -209,7 +209,7 @@ def link_chunks_to_indexes(
         for key, cfg in config_index.items():
             if ("ConfigSection", key) not in matched_keys:
                 unresolved.append(UnresolvedLink(
-                    method_id="", caller_fqn="",
+                    function_id="", caller_fqn="",
                     ref_candidates=[{
                         "target_type": "ConfigSection",
                         "key": key,
@@ -232,7 +232,7 @@ def link_chunks_to_indexes(
             _MAX_SNIPPET_CHARS = 6000  # ~2000 토큰 상당
             snippet = full_text if len(full_text) <= _MAX_SNIPPET_CHARS else full_text[:_MAX_SNIPPET_CHARS]
             unresolved.append(UnresolvedLink(
-                method_id="", caller_fqn="",
+                function_id="", caller_fqn="",
                 ref_candidates=[{
                     "target_type": "ArtifactChunk",
                     "key": hint or chunk_id_clean,
@@ -252,13 +252,13 @@ def link_chunks_to_indexes(
 
 
 def resolve_candidates(
-    method_id: str,
+    function_id: str,
     caller_fqn: str,
     code_ref: Optional[str],
     candidates: List[Any],
     sql_index: Optional[Dict[str, SqlStatementChunk]],
     config_index: Optional[Dict[str, ConfigSectionChunk]],
-    class_index: Optional[Dict[str, Any]],
+    module_index: Optional[Dict[str, Any]],
     symbol_type_index: Optional[Dict[str, Dict[str, str]]],
     artifact_index: Optional[Dict[str, ArtifactChunk]] = None,
 ) -> Tuple[List[ReferToEdge], List[UnresolvedLink]]:
@@ -266,7 +266,7 @@ def resolve_candidates(
     edges: List[ReferToEdge] = []
     unresolved: List[UnresolvedLink] = []
     sym_idx = symbol_type_index or {}
-    class_idx = class_index or {}
+    module_idx = module_index or {}
     art_idx = artifact_index or {}
 
     def _as_dict(c: Any) -> Dict[str, Any]:
@@ -277,8 +277,8 @@ def resolve_candidates(
                 "kind": c.kind,
                 "value": c.value,
                 "receiver": c.receiver,
-                "method_name": c.method_name,
-                "className": c.className,
+                "function_name": c.function_name,
+                "moduleName": c.moduleName,
                 "path": c.path,
                 "line_range": c.line_range,
                 "code_snippet": c.code_snippet,
@@ -298,12 +298,12 @@ def resolve_candidates(
                 target_type, target_id = "SqlStatement", value
             else:
                 unresolved.append(
-                    UnresolvedLink(method_id=method_id, caller_fqn=caller_fqn, ref_candidates=[c], file=code_ref, line_range=c.get("line_range"))
+                    UnresolvedLink(function_id=function_id, caller_fqn=caller_fqn, ref_candidates=[c], file=code_ref, line_range=c.get("line_range"))
                 )
                 continue
         elif kind == "SQL_LITERAL":
             unresolved.append(
-                UnresolvedLink(method_id=method_id, caller_fqn=caller_fqn, ref_candidates=[c], file=code_ref, line_range=c.get("line_range"))
+                UnresolvedLink(function_id=function_id, caller_fqn=caller_fqn, ref_candidates=[c], file=code_ref, line_range=c.get("line_range"))
             )
             continue
         elif kind == "CONFIG_KEY_REF" and value and config_index:
@@ -311,30 +311,30 @@ def resolve_candidates(
                 target_type, target_id = "ConfigSection", value
             else:
                 unresolved.append(
-                    UnresolvedLink(method_id=method_id, caller_fqn=caller_fqn, ref_candidates=[c], file=code_ref, line_range=c.get("line_range"))
+                    UnresolvedLink(function_id=function_id, caller_fqn=caller_fqn, ref_candidates=[c], file=code_ref, line_range=c.get("line_range"))
                 )
                 continue
 
         # 호출/인스턴스 → Class 결정 (실패 시 skip, deepagent 대상 아님)
         elif kind == "CALL_REF":
             receiver = c.get("receiver")
-            receiver_type = (sym_idx.get(method_id) or {}).get(receiver) if receiver else None
+            receiver_type = (sym_idx.get(function_id) or {}).get(receiver) if receiver else None
             if receiver_type:
-                info = class_idx.get(receiver_type)
+                info = module_idx.get(receiver_type)
                 if isinstance(info, dict):
-                    target_type, target_id = "Class", info.get("fqn") or receiver_type
+                    target_type, target_id = "Module", info.get("fqn") or receiver_type
                 elif info:
-                    target_type, target_id = "Class", str(info)
+                    target_type, target_id = "Module", str(info)
             if not target_type:
                 continue  # 클래스 매핑 실패 → skip (deepagent 대상 아님)
         elif kind == "NEW_INSTANCE_REF":
-            class_name = c.get("className")
-            if class_name:
-                info = class_idx.get(class_name)
+            module_name = c.get("moduleName")
+            if module_name:
+                info = module_idx.get(module_name)
                 if isinstance(info, dict):
-                    target_type, target_id = "Class", info.get("fqn", class_name)
-                elif class_name in class_idx:
-                    target_type, target_id = "Class", class_name
+                    target_type, target_id = "Module", info.get("fqn", module_name)
+                elif module_name in module_idx:
+                    target_type, target_id = "Module", module_name
             if not target_type:
                 continue  # 클래스 매핑 실패 → skip (deepagent 대상 아님)
 
@@ -344,12 +344,12 @@ def resolve_candidates(
         if target_type and target_id:
             edges.append(
                 ReferToEdge(
-                    method_id=method_id,
+                    function_id=function_id,
                     target_type=target_type,
                     target_id=target_id,
                     evidence={"file": code_ref, "candidate_kind": kind},
                     confidence=1.0,
-                    field_id=None,
+                    variable_id=None,
                 )
             )
 

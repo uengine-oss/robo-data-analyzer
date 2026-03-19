@@ -5,19 +5,33 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, List
 
 
-def _merge_node_query(label: str, key_field: str, key_val, props: dict) -> dict:
-    """Generic MERGE (n:Label {key: $key}) ON CREATE SET ... ON MATCH SET ... builder."""
+def _merge_node_query(label: str, key_field: str, key_val, props: dict, sub_label: str | None = None) -> dict:
+    """Generic MERGE (n:Label:SubLabel {key: $key}) ON CREATE SET ... ON MATCH SET ... builder.
+
+    label: primary 역할 라벨 (MODULE, FUNCTION, VARIABLE, CONSTANT 등)
+    sub_label: 실제 AST 타입 서브레이블 (CLASS, METHOD, DEFINE 등). None이면 생략.
+    """
+    # kind 속성은 더 이상 저장하지 않음 — 서브레이블로 대체
+    filtered_props = {k: v for k, v in props.items() if k != "kind"}
+
     set_parts = [f"n.{key_field} = ${key_field}"]
     params = {key_field: key_val}
-    for prop, val in props.items():
+    for prop, val in filtered_props.items():
         set_parts.append(
             f"n.{prop} = CASE WHEN ${prop} IS NOT NULL AND trim(toString(${prop})) <> '' "
             f"THEN ${prop} ELSE n.{prop} END"
         )
         params[prop] = val
     set_clause = ", ".join(set_parts)
+
+    # primary와 sub_label이 동일하면 서브레이블 생략 (Neo4j는 동일 라벨 중복 불가)
+    # 예: C FUNCTION → primary=FUNCTION, sub=FUNCTION → 그냥 :FUNCTION
+    if sub_label and sub_label != label:
+        label_str = f"{label}:{sub_label}"
+    else:
+        label_str = label
     q = (
-        f"MERGE (n:{label} {{{key_field}: ${key_field}}})\n"
+        f"MERGE (n:{label_str} {{{key_field}: ${key_field}}})\n"
         f"ON CREATE SET {set_clause}, n.created_at = timestamp()\n"
         f"ON MATCH SET {set_clause}, n.updated_at = timestamp()\n"
         "RETURN n"

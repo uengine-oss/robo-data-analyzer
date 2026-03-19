@@ -1,4 +1,4 @@
-name: "method_summary"
+name: "function_summary"
 description: "소스코드 범위별 분석 - 클래스 다이어그램 및 Neo4j 그래프 생성용 (범용)"
 version: "4.0"
 
@@ -146,9 +146,10 @@ prompt: |
   "주문을 처리하고 결제를 진행합니다." (구체적인 값, 조건, 비즈니스 의미가 없음)
   
   
+  {% if is_oop | default(true) %}
   [SECTION_2_DEPENDENCIES]
   ★ 클래스 간 관계 추출 (UML 관계 판별):
-  
+
   메서드 본문에서 사용되는 사용자 정의 클래스를 식별하고,
   각각의 UML 관계 타입(DEPENDENCY / COMPOSITION / AGGREGATION)을 판별합니다.
   
@@ -191,8 +192,9 @@ prompt: |
   "DEPENDENCY" — 비필드 기반 사용 (위 셋에 해당하지 않는 모든 경우):
   - 파라미터/반환/로컬변수/캐스팅/제네릭 등 비필드 기반 사용
   - 예: `KBData kbData` (파라미터) → usage: "parameter", relationType: "DEPENDENCY"
-  
-  
+  {% endif %}
+
+
   [SECTION_3_METHOD_CALLS]
   ★ 메서드 호출 추출 (CALLS 관계용):
   
@@ -203,9 +205,9 @@ prompt: |
   - Java 표준 라이브러리 호출은 모두 제외
   
   추출 형식:
-  - "target.methodName" 형태로 추출
-  - target: 호출 대상 (변수명 또는 클래스명)
-  - methodName: 호출되는 메서드명
+  - "target.functionName" 형태로 추출
+  - target: 호출 대상 (변수명 또는 모듈명)
+  - functionName: 호출되는 함수/메서드명
   
   추출 예시:
   - this.repository.save(entity) → "repository.save"
@@ -264,8 +266,32 @@ prompt: |
   
   주의: calls 배열은 기존대로 다른 비즈니스 클래스 메서드 호출만 포함. externalRefs와 혼동하지 말 것.
   해당하는 참조가 없으면 externalRefs는 빈 배열 [] 로 두세요.
-  
-  
+
+
+  [SECTION_4B_VARIABLE_REFS]
+  ★ 전역 변수/상수 참조 추출 (variableRefs):
+
+  코드에서 참조하는 **전역 변수, 상수, #define 매크로, 구조체 멤버** 등의 식별자 이름을 추출합니다.
+  로컬 변수(함수 내부에서 선언된 변수)는 제외하고, **함수 외부에서 정의된 식별자만** 추출합니다.
+
+  추출 대상:
+  - 전역 변수 참조 (예: `worker_count++`, `g_shutdown = 1`)
+  - #define 상수 참조 (예: `if (rc != TPOK)`, `buf[SWING_MAX_SQL_LEN]`)
+  - enum 상수 참조 (예: `status = STATUS_ACTIVE`)
+  - 구조체 필드 접근의 필드명 (예: `entry->call_count` → "call_count")
+  - 클래스 필드 접근 (예: `this.orderStatus` → "orderStatus")
+
+  제외 대상:
+  - 함수 내부에서 선언된 로컬 변수 (int rc, char buf[] 등)
+  - 함수 파라미터
+  - 표준 라이브러리 상수 (NULL, EOF, TRUE, FALSE, EXIT_SUCCESS 등)
+  - 타입명 (int, char, struct 등)
+
+  출력: 식별자 이름 문자열의 배열 (중복 제거)
+  예: ["TPOK", "worker_count", "g_shutdown", "SWING_MAX_SQL_LEN"]
+  참조가 없으면 빈 배열 [] 로 두세요.
+
+
   [SECTION_5_STEREOTYPE]
   ★ 스테레오타입 판단 (stereotype + methodStereotype 필수):
 
@@ -280,19 +306,25 @@ prompt: |
   - SQL에 CUD가 있어도 "의도"가 조회이거나 부수효과만 있으면 readmodel. 반드시 둘 중 하나만 출력하세요.
 
   (B) 아키텍처 역할 스테레오타입 (methodStereotype 필드):
-  어노테이션, 이름 패턴, 코드 의미를 종합하여 아래 목록 중 **하나만** 선택하세요:
-  - **Endpoint**: REST API 엔드포인트 (@GetMapping, @PostMapping, @RequestMapping 등)
-  - **Query**: 조회 메서드 (findBy, getBy, select, search, list 등)
-  - **Command**: 변경 메서드 (create, save, update, delete, process, execute 등)
-  - **Getter**: 단순 getter (getXxx, isXxx)
+  어노테이션, 이름 패턴, 코드 의미를 종합하여 아래 목록 중 **하나만** 선택하세요.
+  ⚠️ 반드시 아래 허용 목록에 있는 값만 사용하세요:
+
+  허용 목록: {{ valid_stereotypes | default(["Init", "Query", "Command", "Handler", "Validation", "BusinessLogic"]) }}
+
+  각 스테레오타입 판단 기준:
+  - **Init**: 초기화 함수 (main, init_, setup, @PostConstruct, __init__)
+  - **Query**: 조회/읽기 위주 (findBy, getBy, select, search, list, fetch)
+  - **Command**: 변경/쓰기 위주 (create, save, update, delete, process, execute)
+  - **Handler**: 이벤트/신호/콜백 처리 (signal handler, ISR, @EventListener, onXxx, callback)
+  - **Validation**: 검증 (validate, check, verify)
+  - **BusinessLogic**: 위 어느 것에도 해당하지 않는 비즈니스 로직 (기본값)
+  {% if is_oop | default(true) %}- **Endpoint**: REST API 엔드포인트 (@GetMapping, @PostMapping, @app.route)
+  - **Getter**: 단순 getter (getXxx, isXxx, @property)
   - **Setter**: 단순 setter (setXxx)
-  - **Lifecycle**: 라이프사이클 (@PostConstruct, @PreDestroy, main)
-  - **Scheduled**: 스케줄 메서드 (@Scheduled, cron)
-  - **EventHandler**: 이벤트 핸들러 (@EventListener, onXxx)
-  - **Init**: 초기화 메서드 (init, setup, configure)
+  - **Lifecycle**: 라이프사이클 (@PreDestroy, __del__)
+  - **Scheduled**: 스케줄 메서드 (@Scheduled, cron, @celery.task)
   - **Transactional**: 트랜잭션 관리 메서드 (@Transactional)
-  - **Validation**: 검증 메서드 (validate, check, verify)
-  - **BusinessLogic**: 위 어느 것에도 해당하지 않는 비즈니스 로직
+  {% endif %}
   
   
   [OUTPUT_FORMAT]
@@ -307,27 +339,42 @@ prompt: |
         "startLine": 범위_시작_라인_번호,
         "endLine": 범위_종료_라인_번호,
         "stereotype": "command 또는 readmodel (필수. 상태 변경 명령이면 command, 조회면 readmodel)",
-        "methodStereotype": "Endpoint|Query|Command|Getter|Setter|Lifecycle|Scheduled|EventHandler|Init|Transactional|Validation|BusinessLogic (필수. 위 목록 중 하나)",
+        "methodStereotype": "허용 목록 중 하나 (필수. {{ valid_stereotypes | default(['Init','Query','Command','Handler','Validation','BusinessLogic']) }} 에서 선택)",
         "summary": "3~5문장. 메서드명, 클래스명, 변수명, 호출 대상 등 핵심 식별자와 변수 활용 정보를 포함한 상세한 코드 동작 요약",
-        "dependencies": [
-          {"targetClass": "타겟클래스명", "sourceMember": "메서드명", "usage": "field_call|local_new|parameter|return|cast|generic|local_var", "relationType": "DEPENDENCY|COMPOSITION|AGGREGATION|ASSOCIATION"}
-        ],
-        "calls": ["target.methodName", "target2.methodName2"],
-        "externalRefs": [{"kind": "sql_mapped|inline_sql|config_key", "target": "식별자문자열"}]
+        {% if is_oop | default(true) %}"dependencies": [
+          {"targetModule": "타겟모듈명", "sourceMember": "메서드명", "usage": "field_call|local_new|parameter|return|cast|generic|local_var", "relationType": "DEPENDENCY|COMPOSITION|AGGREGATION|ASSOCIATION"}
+        ],{% else %}"dependencies": [],{% endif %}
+        "calls": ["target.functionName", "target2.functionName2"],
+        "externalRefs": [{"kind": "sql_mapped|inline_sql|config_key", "target": "식별자문자열"}],
+        "variableRefs": ["전역변수명", "상수명", "구조체필드명"],
+        "tableInsights": [
+          {"tableName": "테이블명", "description": "이 메서드 분석으로 파악된 테이블의 비즈니스 역할 (1~2문장)", "columns": [{"name": "컬럼명", "description": "이 메서드에서 파악된 컬럼 용도 (1문장)"}]}
+        ]
       }
     ]
   }
+
+  [SECTION_6_TABLE_INSIGHTS]
+  tableInsights 작성 규칙:
+  ★ 핵심: 컨텍스트의 reads_writes 또는 연결된 SQL에 테이블 접근 정보가 있을 때**만** 작성합니다.
+  ★ 테이블 접근 정보가 전혀 없으면 반드시 빈 배열 []로 두세요.
+  - 코드 흐름에서 이 메서드가 해당 테이블을 **왜, 어떻게** 사용하는지를 구체적으로 설명합니다.
+  - 테이블 description: 이 메서드 분석으로 새로 파악된 테이블의 비즈니스 역할/목적. 이미 알려진 내용을 반복하지 말고, 이 메서드에서 **새로 알게 된 인사이트**만 작성.
+  - 컬럼 description: 코드에서 직접 참조/사용된 컬럼**만** 포함. 해당 컬럼이 어떤 비즈니스 값을 담고 있는지, 어떤 조건/연산에 사용되는지 설명.
+  - 코드에서 확인할 수 없는 내용은 절대 추측하지 마세요.
   
   출력 제약사항:
   - JSON 형식 외의 부가 설명 금지 (출력에 JSON 주석 포함 금지)
   - "stereotype"은 각 analysis 요소에 필수. 반드시 "command" 또는 "readmodel" 중 하나만 사용
   - "methodStereotype"은 각 analysis 요소에 필수. 위 [SECTION_5_STEREOTYPE] (B)의 목록 중 하나만 사용
-  - "dependencies" 배열 요소는 객체 타입 (targetClass, sourceMember, usage, relationType 필드)
-  - "calls" 배열 요소는 "target.methodName" 형태의 문자열
+  - "dependencies" 배열 요소는 객체 타입 (targetModule, sourceMember, usage, relationType 필드)
+  - "calls" 배열 요소는 "target.functionName" 형태의 문자열
   - calls에는 오직 다른 비즈니스 클래스의 메서드 호출만 포함 (Java 표준 라이브러리 제외)
   - "externalRefs" 배열 요소는 객체 타입 (kind, target 필드). 없거나 해당 없으면 []
   - analysis[i]에는 startLine, endLine, stereotype이 필수
-  - 값이 없으면 해당 필드는 dependencies=[], calls=[], externalRefs=[] 사용
+  - 값이 없으면 해당 필드는 dependencies=[], calls=[], externalRefs=[], variableRefs=[], tableInsights=[] 사용
+  - "variableRefs" 배열 요소는 문자열 (전역변수/상수/필드 식별자명). 없으면 []
+  - "tableInsights"는 컨텍스트에 테이블 접근(reads_writes, 연결된 SQL)이 있을 때만 내용을 채움. 없으면 반드시 []
   - 빈 배열도 허용되며 null 값은 사용 금지
   - 코드펜스(```json ... ``` 등) 포함 금지
   - **트레일링 콤마 절대 금지**: 마지막 요소 뒤에 콤마(,)를 붙이지 말 것

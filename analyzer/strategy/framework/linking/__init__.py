@@ -1,7 +1,7 @@
 from .type_resolver import (  # noqa: F401
-    TypeMap3Layer, MethodScopeMap, ClassScopeMap, RuntimeHintMap,
-    resolve_obj_to_type, build_type_map_3layer, method_to_class_map,
-    build_class_map_with_scope,
+    TypeMap3Layer, MethodScopeMap, ModuleScopeMap, RuntimeHintMap,
+    resolve_obj_to_type, build_type_map_3layer, method_to_module_map,
+    build_module_map_with_scope,
 )
 from .matcher import (  # noqa: F401
     link_chunks_to_indexes, resolve_candidates,
@@ -17,8 +17,8 @@ from .call_graph import (  # noqa: F401
 from .sql_extractor import link_sql_to_tables  # noqa: F401
 from .deep_agent import run_deep_agent, run_deep_agent_entity_identification  # noqa: F401
 from .summarizer import (  # noqa: F401
-    run_step6, run_field_summary, run_class_summary,
+    run_step6, run_variable_summary, run_module_summary,
     compute_stereotype,
-    VALID_METHOD_STEREOTYPES, VALID_CLASS_STEREOTYPES,
+    VALID_METHOD_STEREOTYPES, VALID_MODULE_STEREOTYPES,
 )
-from .orchestrator import run_step5, derive_method_table_edges  # noqa: F401
+from .orchestrator import run_step5, derive_function_table_edges  # noqa: F401

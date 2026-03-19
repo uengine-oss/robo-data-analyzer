@@ -49,10 +49,10 @@ def sql_op_to_method_relation(sql_relation: str) -> str:
     return "READS"
 
 
-def external_callee_class(callee_method_id: str) -> Optional[str]:
-    """external:ClassName#methodName -> ClassName. 아니면 None."""
+def external_callee_class(callee_function_id: str) -> Optional[str]:
+    """external:ModuleName#functionName -> ModuleName. 아니면 None."""
     from analyzer.strategy.framework.common.constants import EXTERNAL_PREFIX, EXTERNAL_SEP
-    s = (callee_method_id or "").strip()
+    s = (callee_function_id or "").strip()
     if not s.startswith(EXTERNAL_PREFIX):
         return None
     rest = s[len(EXTERNAL_PREFIX):]

@@ -14,7 +14,7 @@ Neo4j에서 추출한 그래프 데이터(Nodes + Relationships)를 분석하여
         EXECUTE_IMMEDIATE, FETCH, CTE, OPEN_CURSOR, CREATE_TEMP_TABLE, Variable
 
 지원 관계 타입:
-- 구조적: CONTAINS, HAS_METHOD, HAS_FIELD, BELONGS_TO_PACKAGE, CONTAINS_PACKAGE, HAS_COLUMN
+- 구조적: CONTAINS, HAS_FUNCTION, HAS_VARIABLE, BELONGS_TO_PACKAGE, CONTAINS_PACKAGE, HAS_COLUMN
 - UML: ASSOCIATION, COMPOSITION, AGGREGATION, DEPENDENCY, EXTENDS, IMPLEMENTS
 - 의존성: CALLS, USES, CALL
 - User Story: HAS_USER_STORY, HAS_AC
@@ -31,13 +31,13 @@ from collections import defaultdict
 # 상수 정의
 # ============================================================================
 
-CLASS_LABELS = {"CLASS", "INTERFACE", "ENUM"}
+CLASS_LABELS = {"MODULE"}
 SCOPE_LABELS = {"INTERNAL", "EXTERNAL"}
 DML_LABELS = {"SELECT", "INSERT", "UPDATE", "DELETE", "MERGE",
               "EXECUTE_IMMEDIATE", "FETCH", "CTE", "OPEN_CURSOR", "CREATE_TEMP_TABLE"}
 
 UML_REL_TYPES = {"ASSOCIATION", "COMPOSITION", "AGGREGATION", "DEPENDENCY", "EXTENDS", "IMPLEMENTS"}
-STRUCTURAL_REL_TYPES = {"CONTAINS", "HAS_METHOD", "HAS_FIELD",
+STRUCTURAL_REL_TYPES = {"CONTAINS", "HAS_FUNCTION", "HAS_VARIABLE",
                         "BELONGS_TO_PACKAGE", "CONTAINS_PACKAGE", "HAS_COLUMN"}
 DEPENDENCY_REL_TYPES = {"CALLS", "USES", "CALL"}
 USER_STORY_REL_TYPES = {"HAS_USER_STORY", "HAS_AC"}
@@ -110,7 +110,7 @@ class GraphNode:
         # labels에서 CLASS/INTERFACE/ENUM/METHOD/INTERNAL/EXTERNAL 제외한 나머지
         extras = [lbl for lbl in self.labels
                   if lbl not in CLASS_LABELS and lbl not in SCOPE_LABELS
-                  and lbl not in {"METHOD", "FIELD", "PACKAGE", "UserStory",
+                  and lbl not in {"FUNCTION", "VARIABLE", "CONSTANT", "PACKAGE", "UserStory",
                                   "AcceptanceCriteria", "NONTARGET_FILE",
                                   "NONTARGET_BLOCK", "Table", "Column",
                                   "PROCEDURE", "FUNCTION", "Variable"}
@@ -341,9 +341,9 @@ class GraphAnalyzer:
         labels_set = set(node.labels)
         if labels_set & CLASS_LABELS:
             self.classes.append(node)
-        elif "METHOD" in labels_set:
+        elif "FUNCTION" in labels_set:
             self.methods.append(node)
-        elif "FIELD" in labels_set:
+        elif "VARIABLE" in labels_set or "CONSTANT" in labels_set:
             self.fields.append(node)
         elif "PACKAGE" in labels_set:
             self.packages.append(node)
@@ -625,13 +625,13 @@ body{font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;line-height:1.6;col
         total_rels = len(self.relationships)
         
         # 레이블별 카운트 (이미지와 일치하도록)
-        method_count = self._label_counts.get("METHOD", 0)
-        class_count = self._label_counts.get("CLASS", 0)
+        method_count = self._label_counts.get("FUNCTION", 0)
+        class_count = self._label_counts.get("MODULE", 0)
         interface_count = self._label_counts.get("INTERFACE", 0)
         enum_count = self._label_counts.get("ENUM", 0)
         column_count = self._label_counts.get("Column", 0)
         acceptance_criteria_count = self._label_counts.get("AcceptanceCriteria", 0)
-        field_count = self._label_counts.get("FIELD", 0)
+        field_count = self._label_counts.get("VARIABLE", 0) + self._label_counts.get("CONSTANT", 0)
         package_count = self._label_counts.get("PACKAGE", 0)
         table_count = self._label_counts.get("Table", 0)
         user_story_count = self._label_counts.get("UserStory", 0)
@@ -847,7 +847,7 @@ body{font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;line-height:1.6;col
             h.append(f'<div class="summary-text">{formatted_summary}</div></div>')
 
         # 메서드
-        methods = self._get_children(cls.node_id, "HAS_METHOD")
+        methods = self._get_children(cls.node_id, "HAS_FUNCTION")
         if methods:
             methods.sort(key=lambda m: m.prop("start_line", 0))
             h.append('<div class="sub-section"><h4>🔧 메서드</h4>')
@@ -869,7 +869,7 @@ body{font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;line-height:1.6;col
             h.append('</tbody></table></div>')
 
         # 필드
-        fields = self._get_children(cls.node_id, "HAS_FIELD")
+        fields = self._get_children(cls.node_id, "HAS_VARIABLE")
         if fields:
             fields.sort(key=lambda f: f.prop("start_line", 0))
             h.append('<div class="sub-section"><h4>📌 필드</h4>')
@@ -1581,8 +1581,8 @@ def main():
             scope = cls.scope_label
             st = cls.stereotype
             pkg = cls.prop("package_name")
-            methods = analyzer._get_children(cls.node_id, "HAS_METHOD")
-            fields = analyzer._get_children(cls.node_id, "HAS_FIELD")
+            methods = analyzer._get_children(cls.node_id, "HAS_FUNCTION")
+            fields = analyzer._get_children(cls.node_id, "HAS_VARIABLE")
             us_nodes = analyzer._get_children(cls.node_id, "HAS_USER_STORY")
             uml_count = len(analyzer._get_outgoing_rels(cls.node_id, UML_REL_TYPES))
 

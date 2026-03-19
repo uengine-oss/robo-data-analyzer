@@ -15,12 +15,12 @@ logger = logging.getLogger(__name__)
 SQL_TAGS = frozenset({"select", "insert", "update", "delete"})
 ENTITY_TAGS = frozenset({"entity", "class", "entity-mapping", "hibernate-mapping"})
 
-# FQN 패턴: com.example.ClassName 형태 (entity 블록에서 관련 클래스 추출용)
+# FQN 패턴: com.example.ModuleName 형태 (entity 블록에서 관련 모듈 추출용)
 _FQN_PATTERN = re.compile(r"\b([a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*\.[A-Z]\w*)\b")
 
 
 def _extract_fqns_from_text(text: str) -> List[str]:
-    """텍스트에서 Java/패키지 FQN 패턴을 추출. 예: com.banking.loan.entity.LoanBean"""
+    """텍스트에서 패키지 FQN 패턴을 추출. 예: com.banking.loan.entity.LoanBean"""
     if not text:
         return []
     fqns = []
@@ -123,7 +123,7 @@ def parse_xml_universal(path: str) -> Tuple[List[SqlStatementChunk], List[Artifa
                         source_path=file_path,
                         start_line=start_line,
                         end_line=start_line + max(0, block_text.count("\n")),
-                        related_class_fqns=related_fqns or None,
+                        related_module_fqns=related_fqns or None,
                     )
                 )
 

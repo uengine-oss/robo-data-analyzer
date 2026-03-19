@@ -28,23 +28,23 @@ PIPELINE_FLOW_MD = """# Framework 파이프라인 흐름
 - **입력**: data_dir (source, analysis/nontarget)
 - **산출물**: catalog (FileCatalogEntry), plan (ProcessingPlan)
 
-## Step2 Java AST
-- **입력**: plan.java_ast_jobs
-- **산출물**: method_facts_list, class_index_ast, field_facts_list, ChunkBundle → run_dir/chunk_bundles
+## Step2 AST
+- **입력**: plan.ast_jobs
+- **산출물**: function_facts_list, module_index_ast, variable_facts_list, ChunkBundle → run_dir/chunk_bundles
 
 ## Step3 아티팩트
 - **입력**: xml_sqlmap, yaml, properties, xml_artifact (ejb-jar, entitymodel 등)
 - **산출물**: sql_chunks, config_chunks, artifact_chunks
 
 ## Step4 인덱스
-- **산출물**: sql_index, class_index, config_index, artifact_index
+- **산출물**: sql_index, module_index, config_index, artifact_index
 
 ## Step5 링킹
 - **처리**: REFER_TO 매칭, SQL→Table(LLM), Call batch, analysis LLM
-- **산출물**: refer_to_edges, reads_writes, method_table_edges, class_table_edges, summary_by_method, calls, uses
+- **산출물**: refer_to_edges, reads_writes, function_table_edges, module_table_edges, summary_by_function, calls, uses
 
 ## Step6 요약·후처리
-- **산출물**: summary_by_method(보강), summary_by_field, summary_by_class, user_stories
+- **산출물**: summary_by_function(보강), summary_by_variable, summary_by_module, user_stories
 """
 
 
@@ -86,7 +86,7 @@ def _sort_by_start_line(items: List[Any]) -> List[Any]:
             path = x.get("source_path") or x.get("file_path") or ""
             line = x.get("start_line", 0)
         else:
-            path = getattr(x, "source_path", None) or getattr(x, "file_path", "") or ""
+            path = getattr(x, "source_path", None) or getattr(x, "file_path", "")
             line = getattr(x, "start_line", 0)
         return (path, line)
     return sorted(items, key=key_fn)
@@ -115,13 +115,13 @@ def dump_phase1_artifacts(state: Dict[str, Any], run_dir: Path) -> None:
         _write_json(base / "step1_plan.json", _to_serializable(plan_dict), ensure_ascii=False)
 
     # Step2
-    method_facts_list = state.get("method_facts_list") or []
-    class_index_ast = state.get("class_index_ast") or {}
-    ref_candidates = state.get("ref_candidates_by_method") or {}
-    if method_facts_list:
-        _write_json(base / "step2_method_facts.json", _to_serializable(method_facts_list), ensure_ascii=False)
-    if class_index_ast:
-        _write_json(base / "step2_class_index_ast.json", _to_serializable(class_index_ast), ensure_ascii=False)
+    function_facts_list = state.get("function_facts_list") or []
+    module_index_ast = state.get("module_index_ast") or {}
+    ref_candidates = state.get("ref_candidates_by_function") or {}
+    if function_facts_list:
+        _write_json(base / "step2_function_facts.json", _to_serializable(function_facts_list), ensure_ascii=False)
+    if module_index_ast:
+        _write_json(base / "step2_module_index_ast.json", _to_serializable(module_index_ast), ensure_ascii=False)
     if ref_candidates:
         summary = {k: len(v) for k, v in ref_candidates.items()}
         _write_json(base / "step2_ref_candidates_summary.json", summary, ensure_ascii=False)
@@ -138,7 +138,7 @@ def dump_phase1_artifacts(state: Dict[str, Any], run_dir: Path) -> None:
                         "path": str(p.relative_to(run_dir)),
                         "file_path": getattr(bundle.file_meta, "file_path", ""),
                         "methods": len(bundle.methods),
-                        "method_calls": len(bundle.method_calls),
+                        "function_calls": len(bundle.function_calls),
                         "variables": len(bundle.variables),
                     })
                 except Exception as e:
@@ -163,7 +163,7 @@ def dump_phase1_artifacts(state: Dict[str, Any], run_dir: Path) -> None:
     # Step4
     for name, key in [
         ("step4_sql_index.json", "sql_index"),
-        ("step4_class_index.json", "class_index"),
+        ("step4_module_index.json", "module_index"),
         ("step4_config_index.json", "config_index"),
         ("step4_artifact_index.json", "artifact_index"),
     ]:
@@ -186,9 +186,9 @@ def dump_phase2_artifacts(state: Dict[str, Any], run_dir: Path) -> None:
         ("step5_unresolved.json", "unresolved"),
         ("step5_fk_edges.json", "fk_edges"),
         ("step5_column_refs.json", "column_refs"),
-        ("step5_method_table_edges.json", "method_table_edges"),
-        ("step5_class_table_edges.json", "class_table_edges"),
-        ("step5_summary_by_method.json", "summary_by_method"),
+        ("step5_function_table_edges.json", "function_table_edges"),
+        ("step5_module_table_edges.json", "module_table_edges"),
+        ("step5_summary_by_function.json", "summary_by_function"),
         ("step5_calls_edges_method.json", "calls_edges"),
         ("step5_uses_edges.json", "uses_edges"),
         ("step5_unresolved_calls.json", "unresolved_calls"),
@@ -197,9 +197,9 @@ def dump_phase2_artifacts(state: Dict[str, Any], run_dir: Path) -> None:
         if val is not None:
             _write_json(base / name, _to_serializable(val), ensure_ascii=False)
 
-    summary_by_method = state.get("summary_by_method") or {}
-    if summary_by_method:
-        _write_json(base / "step6_summary_by_method.json", _to_serializable(summary_by_method), ensure_ascii=False)
+    summary_by_function = state.get("summary_by_function") or {}
+    if summary_by_function:
+        _write_json(base / "step6_summary_by_function.json", _to_serializable(summary_by_function), ensure_ascii=False)
     unresolved_calls = state.get("unresolved_calls")
     if unresolved_calls is not None:
         _write_json(base / "step6_unresolved_calls.json", _to_serializable(unresolved_calls), ensure_ascii=False)
@@ -213,11 +213,11 @@ def dump_phase3_artifacts(state: Dict[str, Any], run_dir: Path) -> None:
     base = run_dir / "artifacts"
     base.mkdir(parents=True, exist_ok=True)
 
-    summary_by_field = state.get("summary_by_field") or {}
-    if summary_by_field:
-        _write_json(base / "step6_summary_by_field.json", _to_serializable(summary_by_field), ensure_ascii=False)
-    summary_by_class = state.get("summary_by_class") or {}
-    if summary_by_class:
-        _write_json(base / "step6_summary_by_class.json", _to_serializable(summary_by_class), ensure_ascii=False)
+    summary_by_variable = state.get("summary_by_variable") or {}
+    if summary_by_variable:
+        _write_json(base / "step6_summary_by_variable.json", _to_serializable(summary_by_variable), ensure_ascii=False)
+    summary_by_module = state.get("summary_by_module") or {}
+    if summary_by_module:
+        _write_json(base / "step6_summary_by_module.json", _to_serializable(summary_by_module), ensure_ascii=False)
 
     logger.info("[FW:ARTIFACT] Phase3 산출물 저장 | dir=%s", base)

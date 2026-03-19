@@ -62,11 +62,9 @@ async def run_phase_ddl(
         yield pipeline.emit_file_start(idx, ddl_count, ddl_file)
         file_base_progress = int(((idx - 1) / ddl_count) * 100)
         file_end_progress = int((idx / ddl_count) * 100)
-        ddl_graph = None
-        ddl_stats_file = {"tables": 0, "columns": 0, "fks": 0}
         ds_name = getattr(orchestrator, 'datasource_name', '') or ''
 
-        async for item in process_ddl(
+        async for chunk in process_ddl(
             ddl_path=os.path.join(ddl_dir, ddl_file),
             client=client,
             file_name=ddl_file,
@@ -79,21 +77,9 @@ async def run_phase_ddl(
             file_end_progress=file_end_progress,
             datasource_name=ds_name,
         ):
-            if isinstance(item, tuple):
-                ddl_graph, ddl_stats_file = item
-            else:
-                yield item
-
-        if ddl_stats_file["tables"]:
-            yield emit_message(f"   ✓ Table 노드: {ddl_stats_file['tables']}개")
-        if ddl_stats_file["columns"]:
-            yield emit_message(f"   ✓ Column 노드: {ddl_stats_file['columns']}개")
-        if ddl_stats_file["fks"]:
-            yield emit_message(f"   ✓ FK 관계: {ddl_stats_file['fks']}개")
+            if isinstance(chunk, bytes):
+                yield chunk
         yield emit_phase_event(0, "DDL 처리", "running", file_end_progress)
-        stats.add_ddl_result(ddl_stats_file["tables"], ddl_stats_file["columns"], ddl_stats_file["fks"])
-        if ddl_graph and (ddl_graph.get("Nodes") or ddl_graph.get("Relationships")):
-            yield emit_data(graph=ddl_graph, line_number=0, analysis_progress=0, current_file=f"DDL-{ddl_file}")
 
     yield emit_message("")
     yield emit_message("📊 DDL 처리 완료:")

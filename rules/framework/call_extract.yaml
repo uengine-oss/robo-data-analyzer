@@ -1,39 +1,75 @@
 name: "call_extract"
-description: "메서드 호출 코드에서 obj_name, method_name 추출 (CALLS 관계용). 같은 클래스 내부 호출 포함."
-version: "1.4"
+description: "함수 호출 코드에서 obj_name, function_name 추출 (CALLS 관계용). 같은 파일/모듈 내부 호출 포함. 다국어 지원."
+version: "1.5"
 
 input_schema:
   required:
     - items
-  optional: {}
+  optional:
+    language:
+      default: "Java"
 
 prompt: |
   [ROLE]
-  당신은 {{ language | default("Java") }} 코드 분석 전문가입니다. 아래 메서드(들)의 호출 코드가 번호 순서대로 나열되어 있습니다. 각 call_code에서 비즈니스 메서드/함수 호출의 obj_name과 method_name을 추출하세요.
+  당신은 {{ language | default("Java") }} 코드 분석 전문가입니다. 아래 함수(들)의 호출 코드가 번호 순서대로 나열되어 있습니다. 각 call_code에서 비즈니스 함수/메서드 호출의 obj_name과 function_name을 추출하세요.
 
   [SECTION_METHOD_CALLS]
   ★ 메서드 호출 추출 (CALLS 관계용):
 
-  각 코드 범위에서 **비즈니스 클래스의 메서드 호출**을 추출합니다.
-  같은 클래스 내부 호출도 포함합니다.
+  각 코드 범위에서 **비즈니스 함수/메서드 호출**을 추출합니다.
+  같은 파일/클래스 내부 호출도 포함합니다.
 
-  ⚠️ 핵심 원칙: **비즈니스 메서드 호출은 모두 추출 (같은 클래스 포함)**
+  ⚠️ 핵심 원칙: **비즈니스 함수/메서드 호출은 모두 추출 (같은 파일/클래스 포함)**
   - {{ language | default("Java") }} 표준 라이브러리 호출만 제외
 
+  {% if language == "C" %}
+  ─── C 언어 추출 규칙 ───
+
+  C 언어에서는 클래스/모듈 구분 없이 함수명만 추출합니다.
+  obj_name은 항상 빈 문자열 ""로 출력하세요.
+
   추출 형식:
-  - "target.methodName" 형태 → obj_name=target, method_name=methodName
-  - target: 호출 대상 (변수명 또는 클래스명)
-  - 객체 프리픽스 없는 호출 (같은 클래스 내부) → obj_name="this", method_name=메서드명
+  - 모든 함수 호출: func_name(args) → obj_name="", function_name="func_name"
+  - 구조체 멤버 함수 포인터: svc->handler(args) → obj_name="", function_name="handler"
 
   추출 예시:
-  - this.repository.save(entity) → obj_name=repository, method_name=save
-  - orderService.findAll() → obj_name=orderService, method_name=findAll
-  - UserService.getInstance() → obj_name=UserService, method_name=getInstance
-  - getRepaymentHome() → obj_name=this, method_name=getRepaymentHome
-  - this.generateId() → obj_name=this, method_name=generateId
-  - validateInput(data) → obj_name=this, method_name=validateInput
+  - db_plan_select(plan_id, &plan) → obj_name="", function_name="db_plan_select"
+  - db_subscriber_insert(&sub) → obj_name="", function_name="db_subscriber_insert"
+  - mq_enqueue(queue, req) → obj_name="", function_name="mq_enqueue"
+  - tp_advertise("svc", handler, init, done) → obj_name="", function_name="tp_advertise"
+  - find_service(name) → obj_name="", function_name="find_service"
+  - svc->handler(req, reply) → obj_name="", function_name="handler"
 
-  제외 대상 (이 경우 obj_name, method_name을 빈 문자열 "" 로 출력):
+  제외 대상 (이 경우 obj_name, function_name을 빈 문자열 "" 로 출력):
+  - C 표준 라이브러리: printf, fprintf, sprintf, snprintf, scanf, sscanf
+  - 메모리: malloc, calloc, realloc, free, memcpy, memmove, memset, memcmp
+  - 문자열: strcpy, strncpy, strcat, strncat, strcmp, strncmp, strlen, strstr, strchr, strtok
+  - 변환: atoi, atol, atof, strtol, strtoul, strtod
+  - 파일: fopen, fclose, fread, fwrite, fseek, ftell
+  - 시간: time, clock, localtime, gmtime, strftime, mktime
+  - 수학: sin, cos, tan, sqrt, pow, exp, log, ceil, floor, fabs
+  - 기타: exit, abort, assert, qsort, bsearch, rand, srand
+  - 로깅 매크로: LOG_I, LOG_D, LOG_W, LOG_E, LOG_F (대문자 LOG_ 접두사)
+  - Windows API: EnterCriticalSection, LeaveCriticalSection, InitializeCriticalSection, DeleteCriticalSection, CreateThread, WaitForSingleObject, CloseHandle, SetEvent, QueryPerformanceCounter, QueryPerformanceFrequency, Sleep
+  - POSIX: pthread_mutex_lock, pthread_mutex_unlock, pthread_create, pthread_join
+
+  {% else %}
+  ─── Java/OOP 언어 추출 규칙 ───
+
+  추출 형식:
+  - "target.functionName" 형태 → obj_name=target, function_name=functionName
+  - target: 호출 대상 (변수명 또는 모듈명)
+  - 객체 프리픽스 없는 호출 (같은 모듈 내부) → obj_name="this", function_name=함수명
+
+  추출 예시:
+  - this.repository.save(entity) → obj_name=repository, function_name=save
+  - orderService.findAll() → obj_name=orderService, function_name=findAll
+  - UserService.getInstance() → obj_name=UserService, function_name=getInstance
+  - getRepaymentHome() → obj_name=this, function_name=getRepaymentHome
+  - this.generateId() → obj_name=this, function_name=generateId
+  - validateInput(data) → obj_name=this, function_name=validateInput
+
+  제외 대상 (이 경우 obj_name, function_name을 빈 문자열 "" 로 출력):
   - Java 표준 라이브러리 전체:
     - Stream API: stream(), filter(), map(), flatMap(), collect(), forEach() 등
     - Optional API: orElse(), orElseThrow(), isPresent(), ifPresent() 등
@@ -45,17 +81,19 @@ prompt: |
   - 기본 타입/래퍼 메서드: Integer.parseInt(), Long.valueOf() 등
 
   ⚠️ 체이닝 처리:
-  - 체이닝 전체가 Java 표준 라이브러리인 경우 모두 제외 → obj_name="", method_name=""
+  - 체이닝 전체가 Java 표준 라이브러리인 경우 모두 제외 → obj_name="", function_name=""
     - items.stream().filter().map() → 제외
     - optional.orElseThrow() → 제외
-  - 체이닝 중 비즈니스 클래스 메서드만 추출
-    - userRepository.findById(id).orElseThrow() → obj_name=userRepository, method_name=findById 만 추출
+  - 체이닝 중 비즈니스 모듈 함수만 추출
+    - userRepository.findById(id).orElseThrow() → obj_name=userRepository, function_name=findById 만 추출
+
+  {% endif %}
 
   ⚠️ 같은 범위 내에서 동일 호출이 여러 번 있으면 한 번만 포함
 
   [INPUT] (순서대로 처리하세요)
   {% for item in items %}
-  --- method idx {{ loop.index }} (method_id: {{ item.method_id }}) ---
+  --- function idx {{ loop.index }} (function_id: {{ item.function_id }}) ---
   calls:
   {% for c in item.calls %}
   - call_id: {{ c.call_id }}
@@ -69,9 +107,9 @@ prompt: |
   {
     "results": [
       {
-        "method_id": "입력과 동일한 method_id",
+        "function_id": "입력과 동일한 function_id",
         "results": [
-          {"call_id": "해당 call_id", "obj_name": "변수 또는 클래스명", "method_name": "메서드명"},
+          {"call_id": "해당 call_id", "obj_name": "변수 또는 모듈명", "function_name": "함수명"},
           ...
         ]
       }
@@ -79,7 +117,7 @@ prompt: |
   }
 
   [RULES]
-  - results[i]는 입력의 i번째 메서드에 대한 결과. results[i].results 순서·개수는 해당 메서드의 calls와 동일.
-  - **제외 대상(Java 표준 라이브러리, 로깅 등)은 반드시 obj_name="", method_name="" 로 출력.** call_id는 입력값 그대로.
-  - **같은 클래스 내부 호출(객체 프리픽스 없음, this.method() 등)은 obj_name="this"로 출력.**
+  - results[i]는 입력의 i번째 함수에 대한 결과. results[i].results 순서·개수는 해당 함수의 calls와 동일.
+  - **제외 대상(표준 라이브러리, 로깅 등)은 반드시 obj_name="", function_name="" 로 출력.** call_id는 입력값 그대로.
+  - **같은 파일/모듈 내부 호출(객체 프리픽스 없음)은 obj_name="this"로 출력.**
   - JSON만 출력. 코드펜스, 주석, 트레일링 콤마 금지.

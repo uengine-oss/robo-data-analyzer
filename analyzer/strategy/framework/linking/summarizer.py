@@ -13,8 +13,8 @@ from typing import Any, Dict, Generator, List, Optional, Set, Tuple
 from config.settings import settings
 from analyzer.strategy.framework.models import (
     CallsEdge,
-    MethodFacts,
-    FieldFacts,
+    FunctionFacts,
+    VariableFacts,
     ReferToEdge,
     ReadsWritesEdge,
 )
@@ -34,7 +34,7 @@ VALID_METHOD_STEREOTYPES = frozenset({
     "Transactional", "Validation", "BusinessLogic",
 })
 
-VALID_CLASS_STEREOTYPES = frozenset({
+VALID_MODULE_STEREOTYPES = frozenset({
     "Controller", "Service", "Repository", "Entity", "DTO",
     "Config", "Component", "Aspect", "Filter", "Listener",
     "Validator", "Mapper", "Util", "ExceptionHandler",
@@ -44,12 +44,12 @@ VALID_CLASS_STEREOTYPES = frozenset({
 
 
 def compute_stereotype(
-    method_id: str,
+    function_id: str,
     refer_to_edges: List[ReferToEdge],
     reads_writes: List[ReadsWritesEdge],
 ) -> str:
     """쓰기(WRITES/INSERT/UPDATE/DELETE) 존재 → command, 조회만(상태 변화 없음) → readmodel."""
-    sql_keys = {e.target_id for e in refer_to_edges if e.method_id == method_id and e.target_type == "SqlStatement"}
+    sql_keys = {e.target_id for e in refer_to_edges if e.function_id == function_id and e.target_type == "SqlStatement"}
     writes = any(
         rw.sql_key in sql_keys and rw.relation in ("WRITES", "INSERT", "UPDATE", "DELETE")
         for rw in reads_writes
@@ -59,34 +59,34 @@ def compute_stereotype(
     return "readmodel"
 
 
-def _build_class_key_index(class_index: Dict[str, Any]) -> Dict[str, Tuple[Optional[str], Optional[str]]]:
-    """class_index에서 class_key -> (comment, annotations) 역인덱스 구성."""
+def _build_module_key_index(module_index: Dict[str, Any]) -> Dict[str, Tuple[Optional[str], Optional[str]]]:
+    """module_index에서 module_key -> (comment, annotations) 역인덱스 구성."""
     idx: Dict[str, Tuple[Optional[str], Optional[str]]] = {}
-    for info in (class_index or {}).values():
-        if isinstance(info, dict) and info.get("class_key"):
-            idx[info["class_key"]] = (info.get("comment"), info.get("annotations"))
+    for info in (module_index or {}).values():
+        if isinstance(info, dict) and info.get("module_key"):
+            idx[info["module_key"]] = (info.get("comment"), info.get("annotations"))
     return idx
 
 
-def _get_class_context(
-    class_key_index: Dict[str, Tuple[Optional[str], Optional[str]]],
-    class_key: Optional[str],
+def _get_module_context(
+    module_key_index: Dict[str, Tuple[Optional[str], Optional[str]]],
+    module_key: Optional[str],
 ) -> Tuple[Optional[str], Optional[str]]:
-    """class_key_index에서 class_key에 해당하는 comment, annotations 반환. O(1) 조회."""
-    if not class_key:
+    """module_key_index에서 module_key에 해당하는 comment, annotations 반환. O(1) 조회."""
+    if not module_key:
         return None, None
-    return class_key_index.get(class_key, (None, None))
+    return module_key_index.get(module_key, (None, None))
 
 
 def _build_linked_sql_context(
-    method_id: str,
+    function_id: str,
     refer_to_edges: List[ReferToEdge],
     reads_writes: List[ReadsWritesEdge],
     sql_index: Optional[Dict[str, Any]] = None,
     sql_text_max_len: int = 800,
 ) -> str:
     """메서드가 참조하는 SQL 노드의 내용(SQL 일부 + 테이블·relation)을 하나의 문자열로 구성. LLM context용."""
-    sql_keys = {e.target_id for e in refer_to_edges if e.method_id == method_id and e.target_type == "SqlStatement"}
+    sql_keys = {e.target_id for e in refer_to_edges if e.function_id == function_id and e.target_type == "SqlStatement"}
     if not sql_keys:
         return ""
     parts: List[str] = []
@@ -111,26 +111,26 @@ LINKED_ARCHITECTURE_CONTEXT_MAX = int(os.environ.get("EXP_STEP6_CONTEXT_MAX", "8
 
 
 def _build_linked_architecture_context(
-    method_id: str,
+    function_id: str,
     refer_to_edges: List[ReferToEdge],
     reads_writes: List[ReadsWritesEdge],
     sql_index: Optional[Dict[str, Any]] = None,
     config_index: Optional[Dict[str, Any]] = None,
-    class_index: Optional[Dict[str, Any]] = None,
-    field_facts_list: Optional[List[FieldFacts]] = None,
+    module_index: Optional[Dict[str, Any]] = None,
+    variable_facts_list: Optional[List[VariableFacts]] = None,
     sql_text_max_len: int = 800,
     config_snippet_max_len: int = 500,
-    class_info_max_len: int = 300,
-    class_fields_max_len: int = 400,
+    module_info_max_len: int = 300,
+    module_fields_max_len: int = 400,
     total_max_len: int = 0,
 ) -> str:
-    """메서드가 참조하는 모든 아키텍처 노드(SQL, Config, Class)의 내용을 하나의 문자열로 구성. LLM context용."""
+    """메서드가 참조하는 모든 아키텍처 노드(SQL, Config, Module)의 내용을 하나의 문자열로 구성. LLM context용."""
     parts: List[str] = []
-    sql_ctx = _build_linked_sql_context(method_id, refer_to_edges, reads_writes, sql_index, sql_text_max_len)
+    sql_ctx = _build_linked_sql_context(function_id, refer_to_edges, reads_writes, sql_index, sql_text_max_len)
     if sql_ctx:
         parts.append(sql_ctx)
 
-    config_keys = {e.target_id for e in refer_to_edges if e.method_id == method_id and e.target_type == "ConfigSection"}
+    config_keys = {e.target_id for e in refer_to_edges if e.function_id == function_id and e.target_type == "ConfigSection"}
     for ckey in sorted(config_keys):
         chunk = (config_index or {}).get(ckey)
         snippet = ""
@@ -141,47 +141,47 @@ def _build_linked_architecture_context(
                 snippet = (getattr(chunk, "raw_snippet", "") or "")[:config_snippet_max_len]
         parts.append(f"[연결된 Config] config_key: {ckey} | 내용: {snippet}")
 
-    class_ids = {e.target_id for e in refer_to_edges if e.method_id == method_id and e.target_type == "Class"}
-    for cid in sorted(class_ids):
-        info = (class_index or {}).get(cid)
-        if not info and class_index:
-            for k, v in class_index.items():
+    module_ids = {e.target_id for e in refer_to_edges if e.function_id == function_id and e.target_type == "Module"}
+    for cid in sorted(module_ids):
+        info = (module_index or {}).get(cid)
+        if not info and module_index:
+            for k, v in module_index.items():
                 if not isinstance(v, dict):
                     continue
-                if v.get("fqn") == cid or v.get("class_key") == cid or k == cid:
+                if v.get("fqn") == cid or v.get("module_key") == cid or k == cid:
                     info = v
                     break
         desc = ""
         if isinstance(info, dict):
-            name = info.get("name") or info.get("class_key") or cid
-            comment = (info.get("comment") or "")[:class_info_max_len]
+            name = info.get("name") or info.get("module_key") or cid
+            comment = (info.get("comment") or "")[:module_info_max_len]
             desc = f"name: {name}" + (f" | comment: {comment}" if comment else "")
             # 참조 클래스의 필드 정보 포함 (LLM 분석 컨텍스트용)
-            ref_class_key = info.get("class_key") or cid
-            fields_desc = _build_class_fields_context(ref_class_key, field_facts_list, max_len=class_fields_max_len)
+            ref_module_key = info.get("module_key") or cid
+            fields_desc = _build_module_fields_context(ref_module_key, variable_facts_list, max_len=module_fields_max_len)
             if fields_desc:
                 desc += f" | fields: {fields_desc}"
         else:
             desc = str(cid)
-        parts.append(f"[연결된 Class] target_id: {cid} | {desc}")
+        parts.append(f"[연결된 Module] target_id: {cid} | {desc}")
     out = " ".join(parts) if parts else ""
     if total_max_len > 0 and len(out) > total_max_len:
         out = out[: total_max_len - 20] + " ... [truncated]"
     return out
 
 
-def _build_class_fields_context(
-    class_key: Optional[str],
-    field_facts_list: Optional[List[FieldFacts]],
+def _build_module_fields_context(
+    module_key: Optional[str],
+    variable_facts_list: Optional[List[VariableFacts]],
     max_len: int = 500,
 ) -> str:
     """해당 클래스의 필드/상수 선언을 간결한 문자열로 구성. 메서드 분석 context용.
 
     static final 상수를 우선 포함하여 LLM이 상수값을 해석할 수 있도록 한다.
     """
-    if not class_key or not field_facts_list:
+    if not module_key or not variable_facts_list:
         return ""
-    fields = [f for f in field_facts_list if f.class_key == class_key]
+    fields = [f for f in variable_facts_list if f.module_key == module_key]
     if not fields:
         return ""
     parts: List[str] = []
@@ -196,8 +196,8 @@ def _build_class_fields_context(
             parts.append(code_line)
         else:
             entry = f.name
-            if f.field_type:
-                entry = f"{f.field_type} {f.name}"
+            if f.variable_type:
+                entry = f"{f.variable_type} {f.name}"
             parts.append(entry)
     result = " | ".join(parts)
     if len(result) > max_len:
@@ -206,16 +206,16 @@ def _build_class_fields_context(
 
 
 def _invoke_analysis_llm(
-    m: MethodFacts,
+    m: FunctionFacts,
     api_key: str,
     locale: str = "ko",
     calls_outgoing: Optional[List[str]] = None,
     reads_writes_summary: Optional[str] = None,
-    class_comment: Optional[str] = None,
-    class_annotations: Optional[str] = None,
+    module_comment: Optional[str] = None,
+    module_annotations: Optional[str] = None,
     linked_architecture_context: Optional[str] = None,
     called_method_summaries: Optional[List[Dict[str, Any]]] = None,
-    class_fields_context: Optional[str] = None,
+    module_fields_context: Optional[str] = None,
     lang: str = "java",
 ) -> Optional[Dict[str, Any]]:
     """메서드 1개에 대해 analysis 규칙 실행 → summary/calls/dependencies/stereotype.
@@ -226,7 +226,7 @@ def _invoke_analysis_llm(
     """
     if not api_key or not (m.code or "").strip():
         reason = "no_api_key" if not api_key else "no_code"
-        logger.info("[FW:STEP6] LLM 스킵 | method_id=%s reason=%s", m.method_id, reason)
+        logger.info("[FW:STEP6] LLM 스킵 | function_id=%s reason=%s", m.function_id, reason)
         return None
     code = m.code.strip()
     ranges = [{"startLine": m.start_line, "endLine": m.end_line}]
@@ -237,30 +237,37 @@ def _invoke_analysis_llm(
     except Exception:
         language = lang.capitalize()
 
+    from analyzer.strategy.framework.common.ontology import get_ontology
+    onto = get_ontology()
+    is_oop = onto.is_oop(lang)
+    valid_stereotypes = sorted(onto.valid_stereotypes(lang))
+
     inputs: Dict[str, Any] = {
         "code": code,
         "ranges": ranges,
         "count": 1,
         "locale": locale,
         "language": language,
+        "is_oop": is_oop,
+        "valid_stereotypes": valid_stereotypes,
     }
     context_parts: List[str] = []
-    if class_comment:
+    if module_comment:
         context_parts.append(
-            "class_comment: "
-            + (class_comment[:500] if len(class_comment or "") > 500 else (class_comment or ""))
+            "module_comment: "
+            + (module_comment[:500] if len(module_comment or "") > 500 else (module_comment or ""))
         )
-    if class_annotations:
+    if module_annotations:
         context_parts.append(
-            "class_annotations: "
-            + (class_annotations[:300] if len(class_annotations or "") > 300 else (class_annotations or ""))
+            "module_annotations: "
+            + (module_annotations[:300] if len(module_annotations or "") > 300 else (module_annotations or ""))
         )
     if calls_outgoing:
         context_parts.append("calls_outgoing: " + ", ".join(calls_outgoing[:20]))
     if reads_writes_summary:
         context_parts.append("reads_writes: " + reads_writes_summary)
-    if class_fields_context and class_fields_context.strip():
-        context_parts.append("[CLASS_CONSTANTS_AND_FIELDS] " + class_fields_context.strip())
+    if module_fields_context and module_fields_context.strip():
+        context_parts.append("[CLASS_CONSTANTS_AND_FIELDS] " + module_fields_context.strip())
     if linked_architecture_context and linked_architecture_context.strip():
         context_parts.append(linked_architecture_context.strip())
     if called_method_summaries:
@@ -268,8 +275,8 @@ def _invoke_analysis_llm(
         called_snippets: List[str] = []
         for cs in called_method_summaries[:20]:
             try:
-                cls = str(cs.get("class_name") or "")
-                name = str(cs.get("method_name") or "")
+                cls = str(cs.get("module_name") or "")
+                name = str(cs.get("function_name") or "")
                 summ = str(cs.get("summary") or "")
                 if not summ:
                     continue
@@ -286,37 +293,37 @@ def _invoke_analysis_llm(
         inputs["context"] = context
     try:
         loader = get_rule_loader("framework")
-        result = loader.execute("method_summary", inputs, api_key=api_key)
+        result = loader.execute("function_summary", inputs, api_key=api_key)
         analysis_list = result.get("analysis") if isinstance(result, dict) else None
         if not analysis_list:
-            logger.info("[FW:STEP6] LLM 스킵 | method_id=%s reason=empty_analysis_result", m.method_id)
+            logger.info("[FW:STEP6] LLM 스킵 | function_id=%s reason=empty_analysis_result", m.function_id)
             return None
         out = analysis_list[0]
         logger.info(
-            "[FW:STEP6] LLM 분석 완료 | method_id=%s has_summary=%s calls=%d dependencies=%d",
-            m.method_id,
+            "[FW:STEP6] LLM 분석 완료 | function_id=%s has_summary=%s calls=%d dependencies=%d",
+            m.function_id,
             bool(out.get("summary")),
             len(out.get("calls") or []),
             len(out.get("dependencies") or []),
         )
         return out
     except Exception as e:
-        logger.warning("[FW:STEP6] LLM 분석 실패 method_id=%s error=%s", m.method_id, e)
+        logger.warning("[FW:STEP6] LLM 분석 실패 function_id=%s error=%s", m.function_id, e)
         return None
 
 
 def _process_one_method_for_analysis(
-    m: MethodFacts,
+    m: FunctionFacts,
     refer_to_edges: List[ReferToEdge],
     reads_writes: List[ReadsWritesEdge],
     api_key: str,
     locale: str,
-    class_index: Optional[Dict[str, Any]] = None,
+    module_index: Optional[Dict[str, Any]] = None,
     sql_index: Optional[Dict[str, Any]] = None,
     config_index: Optional[Dict[str, Any]] = None,
-    class_key_index: Optional[Dict[str, Tuple[Optional[str], Optional[str]]]] = None,
+    module_key_index: Optional[Dict[str, Tuple[Optional[str], Optional[str]]]] = None,
     called_summaries: Optional[List[Dict[str, Any]]] = None,
-    field_facts_list: Optional[List[FieldFacts]] = None,
+    variable_facts_list: Optional[List[VariableFacts]] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """단일 메서드에 대해 stereotype + (summary, calls, dependencies) 계산.
 
@@ -324,27 +331,30 @@ def _process_one_method_for_analysis(
     호출 그래프 하위 → 상위 순으로 돌면서, 하위 summary를 context에 포함해 한 번의 LLM 호출로
     가능한 한 완성도 높은 summary를 생성하는 데 사용한다.
     """
-    fallback_stereotype = compute_stereotype(m.method_id, refer_to_edges, reads_writes)
+    fallback_stereotype = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
     summary = f"{m.fqn} ({fallback_stereotype}); lines {m.start_line}-{m.end_line}"
-    calls_outgoing = [f"{e.target_type}:{e.target_id}" for e in refer_to_edges if e.method_id == m.method_id]
-    sql_keys_for_m = {e.target_id for e in refer_to_edges if e.method_id == m.method_id and e.target_type == "SqlStatement"}
+    method_edges = [e for e in refer_to_edges if e.function_id == m.function_id]
+    calls_outgoing = [f"{e.target_type}:{e.target_id}" for e in method_edges]
+    sql_keys_for_m = {e.target_id for e in method_edges if e.target_type == "SqlStatement"}
     rw_summary = ", ".join(
         f"{rw.table_name}({rw.relation})" for rw in reads_writes if rw.sql_key in sql_keys_for_m
     )[:200]
     linked_architecture_context = _build_linked_architecture_context(
-        m.method_id,
+        m.function_id,
         refer_to_edges,
         reads_writes,
         sql_index=sql_index,
         config_index=config_index,
-        class_index=class_index,
-        field_facts_list=field_facts_list,
+        module_index=module_index,
+        variable_facts_list=variable_facts_list,
         total_max_len=LINKED_ARCHITECTURE_CONTEXT_MAX,
     )
-    class_comment, class_annotations = _get_class_context(class_key_index or {}, m.class_key)
-    fields_ctx = _build_class_fields_context(m.class_key, field_facts_list)
+    module_comment, module_annotations = _get_module_context(module_key_index or {}, m.module_key)
+    fields_ctx = _build_module_fields_context(m.module_key, variable_facts_list)
     calls: List[str] = []
     dependencies: List[Dict[str, Any]] = []
+    variable_refs: List[str] = []
+    table_insights: List[Dict[str, Any]] = []
     stereotype = fallback_stereotype
     method_stereotype = ""
     if api_key:
@@ -354,17 +364,18 @@ def _process_one_method_for_analysis(
             locale,
             calls_outgoing=calls_outgoing,
             reads_writes_summary=rw_summary or None,
-            class_comment=class_comment,
-            class_annotations=class_annotations,
+            module_comment=module_comment,
+            module_annotations=module_annotations,
             linked_architecture_context=linked_architecture_context or None,
             called_method_summaries=called_summaries,
-            class_fields_context=fields_ctx or None,
+            module_fields_context=fields_ctx or None,
         )
         if analysis:
-            if analysis.get("summary"):
-                summary = analysis["summary"]
+            summary = analysis.get("summary") or summary
             calls = list(analysis.get("calls") or [])
             dependencies = list(analysis.get("dependencies") or [])
+            variable_refs = list(analysis.get("variableRefs") or [])
+            table_insights = list(analysis.get("tableInsights") or [])
             raw_stereotype = (analysis.get("stereotype") or "").strip().lower()
             if raw_stereotype in ("command", "readmodel"):
                 stereotype = raw_stereotype
@@ -379,26 +390,28 @@ def _process_one_method_for_analysis(
         "fqn": m.fqn,
         "calls": calls,
         "dependencies": dependencies,
+        "variableRefs": variable_refs,
+        "tableInsights": table_insights,
     }
-    return m.method_id, data
+    return m.function_id, data
 
 
 _STEP6_BATCH_SIZE = 20
 
 
 def run_step6(
-    method_facts_list: List[MethodFacts],
+    function_facts_list: List[FunctionFacts],
     refer_to_edges: List[ReferToEdge],
     reads_writes: List[ReadsWritesEdge],
     use_llm: bool = False,
     api_key: Optional[str] = None,
     locale: str = "ko",
     parallel: bool = False,
-    class_index: Optional[Dict[str, Any]] = None,
+    module_index: Optional[Dict[str, Any]] = None,
     sql_index: Optional[Dict[str, Any]] = None,
     config_index: Optional[Dict[str, Any]] = None,
     calls_edges: Optional[List[CallsEdge]] = None,
-    field_facts_list: Optional[List[FieldFacts]] = None,
+    variable_facts_list: Optional[List[VariableFacts]] = None,
     lang: str = "java",
 ) -> Generator[Dict[str, Dict[str, Any]], None, None]:
     """메서드별 stereotype, summary — 20개씩 배치로 yield.
@@ -407,10 +420,10 @@ def run_step6(
     - 그 외(LLM 미사용 / calls_edges 없음) → 기존 방식대로 메서드 단위 개별 처리, 20개씩 yield.
     """
     api_key = api_key or settings.llm.api_key or os.getenv("LLM_API_KEY", "")
-    class_key_index = _build_class_key_index(class_index or {})
+    module_key_index = _build_module_key_index(module_index or {})
     logger.info(
-        "[FW:STEP6] 요약 진입 | method_facts=%d use_llm=%s api_key_set=%s parallel=%s calls_edges=%d",
-        len(method_facts_list),
+        "[FW:STEP6] 요약 진입 | function_facts=%d use_llm=%s api_key_set=%s parallel=%s calls_edges=%d",
+        len(function_facts_list),
         use_llm,
         bool(api_key),
         parallel,
@@ -427,7 +440,7 @@ def run_step6(
     if not (use_llm and effective_api_key and calls_edges):
         if parallel and use_llm and effective_api_key:
             workers = settings.concurrency.max_concurrency
-            total = len(method_facts_list)
+            total = len(function_facts_list)
             workers_actual = max(1, min(workers, total))
             logger.info(
                 "[FW:STEP6] 요약 LLM 병렬 시작 (그래프 미사용) | 메서드=%d 워커=%d (동시에 %d개까지 처리)",
@@ -446,24 +459,24 @@ def run_step6(
                         reads_writes,
                         effective_api_key,
                         locale,
-                        class_index,
+                        module_index,
                         sql_index,
                         config_index,
-                        class_key_index,
+                        module_key_index,
                         None,
-                        field_facts_list,
+                        variable_facts_list,
                     ): m
-                    for m in method_facts_list
+                    for m in function_facts_list
                 }
                 for future in as_completed(futures):
                     try:
-                        method_id, data = future.result()
-                        batch[method_id] = data
+                        function_id, data = future.result()
+                        batch[function_id] = data
                     except Exception as e:
                         m = futures[future]
-                        logger.warning("[FW:STEP6] 병렬 분석 예외 method_id=%s: %s", m.method_id, e)
-                        stereotype = compute_stereotype(m.method_id, refer_to_edges, reads_writes)
-                        batch[m.method_id] = {
+                        logger.warning("[FW:STEP6] 병렬 분석 예외 function_id=%s: %s", m.function_id, e)
+                        stereotype = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
+                        batch[m.function_id] = {
                             "stereotype": stereotype,
                             "summary": f"{m.fqn} ({stereotype}); lines {m.start_line}-{m.end_line}",
                             "fqn": m.fqn,
@@ -485,26 +498,26 @@ def run_step6(
                 yield _flush_batch(batch)
         else:
             batch = {}
-            for m in method_facts_list:
+            for m in function_facts_list:
                 try:
-                    method_id, data = _process_one_method_for_analysis(
+                    function_id, data = _process_one_method_for_analysis(
                         m,
                         refer_to_edges,
                         reads_writes,
                         effective_api_key,
                         locale,
-                        class_index,
+                        module_index,
                         sql_index,
                         config_index,
-                        class_key_index,
+                        module_key_index,
                         None,
-                        field_facts_list,
+                        variable_facts_list,
                     )
-                    batch[method_id] = data
+                    batch[function_id] = data
                 except Exception as e:
-                    logger.warning("[FW:STEP6] 순차 분석 예외 method_id=%s: %s", m.method_id, e)
-                    stereotype = compute_stereotype(m.method_id, refer_to_edges, reads_writes)
-                    batch[m.method_id] = {
+                    logger.warning("[FW:STEP6] 순차 분석 예외 function_id=%s: %s", m.function_id, e)
+                    stereotype = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
+                    batch[m.function_id] = {
                         "stereotype": stereotype,
                         "summary": f"{m.fqn} ({stereotype}); lines {m.start_line}-{m.end_line}",
                         "fqn": m.fqn,
@@ -522,13 +535,13 @@ def run_step6(
         return
 
     # -------- 호출 그래프 기반 bottom-up 요약 (단일 LLM 호출 경로) --------
-    method_by_id: Dict[str, MethodFacts] = {m.method_id: m for m in method_facts_list}
+    method_by_id: Dict[str, FunctionFacts] = {m.function_id: m for m in function_facts_list}
     node_ids = set(method_by_id.keys())
     children: Dict[str, List[str]] = {}
     parents: Dict[str, List[str]] = {}
     for e in calls_edges or []:
-        c = e.caller_method_id
-        cal = e.callee_method_id
+        c = e.caller_function_id
+        cal = e.callee_function_id
         if not c or not cal or c not in node_ids or cal not in node_ids:
             continue
         children.setdefault(c, []).append(cal)
@@ -552,14 +565,14 @@ def run_step6(
             callee_m = method_by_id.get(callee_id)
             if not callee_m:
                 continue
-            fqn = getattr(callee_m, "fqn", "") or ""
-            class_fqn = fqn.rsplit(".", 1)[0] if "." in fqn else ""
-            class_name = class_fqn.split(".")[-1] if class_fqn else ""
-            method_name = fqn.rsplit(".", 1)[-1] if "." in fqn else fqn
+            fqn = getattr(callee_m, "fqn", "")
+            module_fqn = fqn.rsplit(".", 1)[0] if "." in fqn else ""
+            module_name = module_fqn.split(".")[-1] if module_fqn else ""
+            function_name = fqn.rsplit(".", 1)[-1] if "." in fqn else fqn
             called_list.append(
                 {
-                    "class_name": class_name,
-                    "method_name": method_name,
+                    "module_name": module_name,
+                    "function_name": function_name,
                     "summary": summary_cache[callee_id],
                 }
             )
@@ -569,12 +582,12 @@ def run_step6(
             reads_writes,
             effective_api_key,
             locale,
-            class_index,
+            module_index,
             sql_index,
             config_index,
-            class_key_index,
+            module_key_index,
             called_list or None,
-            field_facts_list,
+            variable_facts_list,
         )
         return node_id, data
 
@@ -606,9 +619,9 @@ def run_step6(
                     batch[node_id] = data
                     processed_id = node_id
                 except Exception as e:
-                    logger.warning("[FW:STEP6] 호출 그래프 요약 예외 method_id=%s: %s", nid, e)
+                    logger.warning("[FW:STEP6] 호출 그래프 요약 예외 function_id=%s: %s", nid, e)
                     m = method_by_id[nid]
-                    stereotype = compute_stereotype(m.method_id, refer_to_edges, reads_writes)
+                    stereotype = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
                     fallback = {
                         "stereotype": stereotype,
                         "summary": f"{m.fqn} ({stereotype}); lines {m.start_line}-{m.end_line}",
@@ -659,17 +672,17 @@ def run_step6(
                     reads_writes,
                     effective_api_key,
                     locale,
-                    class_index,
+                    module_index,
                     sql_index,
                     config_index,
-                    class_key_index,
+                    module_key_index,
                     None,
-                    field_facts_list,
+                    variable_facts_list,
                 )
                 batch[mid] = data
             except Exception as e:
-                logger.warning("[FW:STEP6] remaining 노드 개별 처리 예외 method_id=%s: %s", mid, e)
-                stereotype = compute_stereotype(m.method_id, refer_to_edges, reads_writes)
+                logger.warning("[FW:STEP6] remaining 노드 개별 처리 예외 function_id=%s: %s", mid, e)
+                stereotype = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
                 batch[mid] = {
                     "stereotype": stereotype,
                     "summary": f"{m.fqn} ({stereotype}); lines {m.start_line}-{m.end_line}",
@@ -688,21 +701,21 @@ def run_step6(
     logger.info("[FW:STEP6] 호출 그래프 기반 요약 완료 | summary_count=%d", total_yielded)
 
 
-def _build_field_code_map(
+def _build_variable_code_map(
     data_dir: str,
     run_dir: Optional[str],
 ) -> Dict[str, str]:
-    """ChunkBundle에서 field_id -> code 맵 구성. run_dir 있으면 해당 chunk_bundles 사용."""
+    """ChunkBundle에서 variable_id -> code 맵 구성. run_dir 있으면 해당 chunk_bundles 사용."""
     from analyzer.strategy.framework.parsing.chunk_bundle import (
         _get_chunk_bundle_dir_from_run_dir,
         load_field_chunks_from_bundles,
     )
     chunk_dir = _get_chunk_bundle_dir_from_run_dir(run_dir) if run_dir else None
     chunks = load_field_chunks_from_bundles(data_dir or "", chunk_dir)
-    return {c["field_id"]: (c.get("code") or "") for c in chunks if c.get("field_id") and c.get("code")}
+    return {c["variable_id"]: (c.get("code") or "") for c in chunks if c.get("variable_id") and c.get("code")}
 
 
-def _get_field_code_from_ref(
+def _get_variable_code_from_ref(
     code_ref: Optional[str],
     start_line: int,
     end_line: int,
@@ -723,44 +736,44 @@ def _get_field_code_from_ref(
         return ""
 
 
-def _invoke_field_summary_llm(
-    field: FieldFacts,
+def _invoke_variable_summary_llm(
+    field: VariableFacts,
     code: str,
-    class_comment: Optional[str],
-    class_annotations: Optional[str],
+    module_comment: Optional[str],
+    module_annotations: Optional[str],
     api_key: str,
     locale: str = "ko",
 ) -> Optional[str]:
-    """필드 1개에 대해 field_summary 규칙 실행 → summary 반환."""
+    """필드 1개에 대해 variable_summary 규칙 실행 → summary 반환."""
     if not api_key or not (code or "").strip():
         return None
     inputs: Dict[str, Any] = {
         "code": (code or "").strip(),
         "locale": locale,
-        "field_name": field.name,
-        "field_type": getattr(field, "field_type", None),
-        "field_comment": getattr(field, "comment", None),
-        "field_annotations": getattr(field, "annotations", None),
+        "variable_name": field.name,
+        "variable_type": getattr(field, "variable_type", None),
+        "variable_comment": getattr(field, "comment", None),
+        "variable_annotations": getattr(field, "annotations", None),
     }
-    if class_comment:
-        inputs["class_comment"] = class_comment[:500] if len(class_comment) > 500 else class_comment
-    if class_annotations:
-        inputs["class_annotations"] = (
-            class_annotations[:300] if len(class_annotations) > 300 else class_annotations
+    if module_comment:
+        inputs["module_comment"] = module_comment[:500] if len(module_comment) > 500 else module_comment
+    if module_annotations:
+        inputs["module_annotations"] = (
+            module_annotations[:300] if len(module_annotations) > 300 else module_annotations
         )
     try:
         loader = get_rule_loader("framework")
-        result = loader.execute("field_summary", inputs, api_key=api_key)
+        result = loader.execute("variable_summary", inputs, api_key=api_key)
         if isinstance(result, Dict) and result.get("summary"):
             return result["summary"]
     except Exception as e:
-        logger.warning("[FW:STEP6] field_summary LLM 실패 field_id=%s: %s", field.field_id, e)
+        logger.warning("[FW:STEP6] variable_summary LLM 실패 variable_id=%s: %s", field.variable_id, e)
     return None
 
 
-def run_field_summary(
-    field_facts_list: List[FieldFacts],
-    class_index: Dict[str, Any],
+def run_variable_summary(
+    variable_facts_list: List[VariableFacts],
+    module_index: Dict[str, Any],
     data_dir: str = "",
     run_dir: Optional[str] = None,
     api_key: Optional[str] = None,
@@ -768,47 +781,38 @@ def run_field_summary(
 ) -> Generator[Dict[str, Dict[str, Any]], None, None]:
     """필드별 요약 — 완료 즉시 yield."""
     api_key = api_key or settings.llm.api_key or os.getenv("LLM_API_KEY", "")
-    if not field_facts_list:
-        logger.info("[FW:STEP6] Field 요약 스킵 | field_facts=0")
+    if not variable_facts_list:
+        logger.info("[FW:STEP6] Variable 요약 스킵 | variable_facts=0")
         return
-    class_key_index = _build_class_key_index(class_index or {})
-    field_code_map = _build_field_code_map(data_dir, run_dir)
+    module_key_index = _build_module_key_index(module_index or {})
+    variable_code_map = _build_variable_code_map(data_dir, run_dir)
     logger.info(
-        "[FW:STEP6] Field 요약 진입 | fields=%d api_key_set=%s field_code_from_bundles=%d",
-        len(field_facts_list),
+        "[FW:STEP6] Variable 요약 진입 | variables=%d api_key_set=%s variable_code_from_bundles=%d",
+        len(variable_facts_list),
         bool(api_key),
-        len(field_code_map),
+        len(variable_code_map),
     )
 
-    def process_one(f: FieldFacts) -> Tuple[str, Dict[str, Any]]:
-        code = field_code_map.get(f.field_id) or _get_field_code_from_ref(
+    def process_one(f: VariableFacts) -> Tuple[str, Dict[str, Any]]:
+        code = variable_code_map.get(f.variable_id) or _get_variable_code_from_ref(
             f.code_ref,
             f.start_line,
             f.end_line,
             data_dir,
         )
-        class_comment, class_annotations = _get_class_context(class_key_index, f.class_key)
+        module_comment, module_annotations = _get_module_context(module_key_index, f.module_key)
         summary = ""
-        if code.strip():
-            if api_key:
-                summary = _invoke_field_summary_llm(
-                    f,
-                    code,
-                    class_comment,
-                    class_annotations,
-                    api_key,
-                    locale,
-                ) or ""
-            if not summary:
-                summary = (
-                    f"{f.name} ({getattr(f, 'field_type', '') or '?'}); lines {f.start_line}-{f.end_line}"
-                )
-        else:
-            summary = f"{f.name}; lines {f.start_line}-{f.end_line}"
-        return f.field_id, {
+        if code.strip() and api_key:
+            summary = _invoke_variable_summary_llm(f, code, module_comment, module_annotations, api_key, locale) or ""
+        if not summary:
+            if code.strip():
+                summary = f"{f.name} ({getattr(f, 'variable_type', '') or '?'}); lines {f.start_line}-{f.end_line}"
+            else:
+                summary = f"{f.name}; lines {f.start_line}-{f.end_line}"
+        return f.variable_id, {
             "summary": summary,
             "name": f.name,
-            "field_type": getattr(f, "field_type", None),
+            "variable_type": getattr(f, "variable_type", None),
         }
 
     _FIELD_BATCH_SIZE = 20
@@ -817,135 +821,139 @@ def run_field_summary(
     workers = settings.concurrency.max_concurrency
     if workers > 1:
         with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {executor.submit(process_one, f): f for f in field_facts_list}
+            futures = {executor.submit(process_one, f): f for f in variable_facts_list}
             for future in as_completed(futures):
                 try:
-                    field_id, data = future.result()
+                    variable_id, data = future.result()
                     total_yielded += 1
-                    batch[field_id] = data
+                    batch[variable_id] = data
                 except Exception as e:
                     f = futures[future]
-                    logger.warning("[FW:STEP6] Field 요약 예외 field_id=%s: %s", f.field_id, e)
+                    logger.warning("[FW:STEP6] Variable 요약 예외 variable_id=%s: %s", f.variable_id, e)
                     total_yielded += 1
-                    batch[f.field_id] = {
+                    batch[f.variable_id] = {
                         "summary": f"{f.name}; lines {f.start_line}-{f.end_line}",
                         "name": f.name,
-                        "field_type": getattr(f, "field_type", None),
+                        "variable_type": getattr(f, "variable_type", None),
                     }
                 if len(batch) >= _FIELD_BATCH_SIZE:
                     yield batch
                     batch = {}
     else:
-        for f in field_facts_list:
-            field_id, data = process_one(f)
+        for f in variable_facts_list:
+            variable_id, data = process_one(f)
             total_yielded += 1
-            batch[field_id] = data
+            batch[variable_id] = data
             if len(batch) >= _FIELD_BATCH_SIZE:
                 yield batch
                 batch = {}
     if batch:
         yield batch
-    logger.info("[FW:STEP6] Field 요약 완료 | summary_count=%d", total_yielded)
+    logger.info("[FW:STEP6] Variable 요약 완료 | summary_count=%d", total_yielded)
 
 
-def _class_key_to_fqn(class_index: Dict[str, Any]) -> Dict[str, str]:
-    """class_index에서 class_key -> fqn 매핑."""
+def _module_key_to_fqn(module_index: Dict[str, Any]) -> Dict[str, str]:
+    """module_index에서 module_key -> fqn 매핑."""
     out: Dict[str, str] = {}
-    for info in class_index.values() if class_index else []:
+    for info in module_index.values() if module_index else []:
         if not isinstance(info, dict):
             continue
-        key = info.get("class_key")
+        key = info.get("module_key")
         fqn = info.get("fqn")
         if key and fqn:
             out[key] = fqn
     return out
 
 
-def _invoke_class_summary_llm(
-    class_fqn: str,
+def _invoke_module_summary_llm(
+    module_fqn: str,
     items: List[Dict[str, Any]],
-    class_comment: Optional[str],
-    class_annotations: Optional[str],
+    module_comment: Optional[str],
+    module_annotations: Optional[str],
     prev_summary: Optional[str],
     api_key: str,
     locale: str = "ko",
     kind: Optional[str] = None,
 ) -> Tuple[Optional[str], str]:
-    """class_summary_batch 규칙 실행 → (클래스 요약, classStereotype) 반환."""
+    """module_summary_batch 규칙 실행 → (모듈 요약, moduleStereotype) 반환."""
     if not api_key or not items:
         return None, ""
     inputs: Dict[str, Any] = {
-        "class_fqn": class_fqn,
+        "module_fqn": module_fqn,
         "items": items,
         "locale": locale,
     }
     if kind:
         inputs["kind"] = kind
-    if class_comment:
-        inputs["class_comment"] = class_comment[:500] if len(class_comment) > 500 else class_comment
-    if class_annotations:
-        inputs["class_annotations"] = (
-            class_annotations[:300] if len(class_annotations) > 300 else class_annotations
+    if module_comment:
+        inputs["module_comment"] = module_comment[:500] if len(module_comment) > 500 else module_comment
+    if module_annotations:
+        inputs["module_annotations"] = (
+            module_annotations[:300] if len(module_annotations) > 300 else module_annotations
         )
     if prev_summary:
         inputs["prev_summary"] = prev_summary[:800] if len(prev_summary) > 800 else prev_summary
     try:
         loader = get_rule_loader("framework")
-        result = loader.execute("class_summary", inputs, api_key=api_key)
+        result = loader.execute("module_summary", inputs, api_key=api_key)
         if isinstance(result, Dict):
             summary = result.get("summary") or None
-            raw_class_st = (result.get("classStereotype") or "").strip()
-            class_stereotype = raw_class_st if raw_class_st in VALID_CLASS_STEREOTYPES else ""
-            return summary, class_stereotype
+            raw_module_st = (result.get("moduleStereotype") or "").strip()
+            module_stereotype = raw_module_st if raw_module_st in VALID_MODULE_STEREOTYPES else ""
+            return summary, module_stereotype
     except Exception as e:
-        logger.warning("[FW:STEP6] class_summary_batch LLM 실패 class_fqn=%s: %s", class_fqn, e)
+        logger.warning("[FW:STEP6] module_summary_batch LLM 실패 module_fqn=%s: %s", module_fqn, e)
     return None, ""
 
 
-def run_class_summary(
-    class_index: Dict[str, Any],
-    summary_by_method: Dict[str, Dict[str, Any]],
-    summary_by_field: Dict[str, Dict[str, Any]],
-    method_facts_list: List[MethodFacts],
-    field_facts_list: List[FieldFacts],
+def run_module_summary(
+    module_index: Dict[str, Any],
+    summary_by_function: Dict[str, Dict[str, Any]],
+    summary_by_variable: Dict[str, Dict[str, Any]],
+    function_facts_list: List[FunctionFacts],
+    variable_facts_list: List[VariableFacts],
     api_key: Optional[str] = None,
     locale: str = "ko",
 ) -> Generator[Dict[str, Dict[str, Any]], None, None]:
-    """클래스별 요약 — 클래스 완료 즉시 yield."""
+    """모듈별 요약 — 모듈 완료 즉시 yield."""
     api_key = api_key or settings.llm.api_key or os.getenv("LLM_API_KEY", "")
-    class_key_index = _build_class_key_index(class_index or {})
-    key_to_fqn = _class_key_to_fqn(class_index)
+    module_key_index = _build_module_key_index(module_index or {})
+    key_to_fqn = _module_key_to_fqn(module_index)
 
-    # class_key → kind 매핑 (FILE, STRUCT, CLASS 등)
+    # module_key → kind 매핑 (FILE, STRUCT, CLASS 등)
     key_to_kind: Dict[str, str] = {}
-    for info in (class_index or {}).values():
-        if isinstance(info, dict) and info.get("class_key"):
-            key_to_kind[info["class_key"]] = info.get("kind", "CLASS")
+    for info in (module_index or {}).values():
+        if isinstance(info, dict) and info.get("module_key"):
+            key_to_kind[info["module_key"]] = info.get("kind", "CLASS")
 
     by_class: Dict[str, List[Dict[str, Any]]] = {}
-    for m in method_facts_list or []:
-        ck = getattr(m, "class_key", None)
+    for m in function_facts_list or []:
+        ck = getattr(m, "module_key", None)
         if not ck:
             continue
-        name = (m.fqn or "").rsplit(".", 1)[-1] if m.fqn else m.method_id or ""
-        data = summary_by_method.get(m.method_id) if summary_by_method else {}
-        summary = (data or {}).get("summary", "") or f"{name}; method"
+        name = (m.fqn or "").rsplit(".", 1)[-1] if m.fqn else m.function_id or ""
+        data = summary_by_function.get(m.function_id) or {}
+        summary = data.get("summary", "") if isinstance(data, dict) else ""
+        if not summary:
+            summary = f"{name}; method"
         by_class.setdefault(ck, []).append({"name": name, "summary": summary})
-    for f in field_facts_list or []:
-        ck = getattr(f, "class_key", None)
+    for f in variable_facts_list or []:
+        ck = getattr(f, "module_key", None)
         if not ck:
             continue
-        data = summary_by_field.get(f.field_id) if summary_by_field else {}
-        summary = (data or {}).get("summary", "") or f"{f.name}; field"
+        data = summary_by_variable.get(f.variable_id) or {}
+        summary = data.get("summary", "") if isinstance(data, dict) else ""
+        if not summary:
+            summary = f"{f.name}; field"
         by_class.setdefault(ck, []).append({"name": f.name, "summary": summary})
 
-    def _summarize_one_class(class_key: str, items: List[Dict[str, Any]]) -> Tuple[str, str, str]:
-        """단일 클래스 요약 — 스레드 안전. (class_fqn, summary, classStereotype) 반환."""
-        class_fqn = key_to_fqn.get(class_key) or class_key
+    def _summarize_one_module(module_key: str, items: List[Dict[str, Any]]) -> Tuple[str, str, str]:
+        """단일 모듈 요약 — 스레드 안전. (module_fqn, summary, moduleStereotype) 반환."""
+        module_fqn = key_to_fqn.get(module_key) or module_key
         if not items:
-            return class_fqn, "", ""
-        class_comment, class_annotations = _get_class_context(class_key_index, class_key)
-        class_kind = key_to_kind.get(class_key)
+            return module_fqn, "", ""
+        module_comment, module_annotations = _get_module_context(module_key_index, module_key)
+        module_kind = key_to_kind.get(module_key)
         chunks: List[List[Dict[str, Any]]] = []
         current: List[Dict[str, Any]] = []
         current_tokens = 0
@@ -961,27 +969,27 @@ def run_class_summary(
         if current:
             chunks.append(current)
         prev_summary: Optional[str] = None
-        class_stereotype = ""
+        module_stereotype = ""
         for chunk in chunks:
             if api_key:
-                result_summary, result_stereotype = _invoke_class_summary_llm(
-                    class_fqn,
+                result_summary, result_stereotype = _invoke_module_summary_llm(
+                    module_fqn,
                     chunk,
-                    class_comment,
-                    class_annotations,
+                    module_comment,
+                    module_annotations,
                     prev_summary,
                     api_key,
                     locale,
-                    kind=class_kind,
+                    kind=module_kind,
                 )
                 prev_summary = result_summary or prev_summary
                 if result_stereotype:
-                    class_stereotype = result_stereotype
+                    module_stereotype = result_stereotype
             else:
                 prev_summary = "; ".join(
                     f"{x.get('name', '')}: {x.get('summary', '')}" for x in chunk
                 )[:500]
-        return class_fqn, prev_summary or "", class_stereotype
+        return module_fqn, prev_summary or "", module_stereotype
 
     _CLASS_BATCH_SIZE = 5
     total_yielded = 0
@@ -990,31 +998,31 @@ def run_class_summary(
     if workers > 1:
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {
-                executor.submit(_summarize_one_class, ck, items): ck
+                executor.submit(_summarize_one_module, ck, items): ck
                 for ck, items in by_class.items()
             }
             for future in as_completed(futures):
                 try:
-                    class_fqn, summary, class_stereotype = future.result()
+                    module_fqn, summary, module_stereotype = future.result()
                 except Exception as e:
                     ck = futures[future]
-                    class_fqn = key_to_fqn.get(ck) or ck
+                    module_fqn = key_to_fqn.get(ck) or ck
                     summary = ""
-                    class_stereotype = ""
-                    logger.warning("[FW:STEP6] Class 요약 예외 class=%s: %s", class_fqn, e)
+                    module_stereotype = ""
+                    logger.warning("[FW:STEP6] Module 요약 예외 module=%s: %s", module_fqn, e)
                 total_yielded += 1
-                batch[class_fqn] = {"summary": summary, "classStereotype": class_stereotype}
+                batch[module_fqn] = {"summary": summary, "moduleStereotype": module_stereotype}
                 if len(batch) >= _CLASS_BATCH_SIZE:
                     yield batch
                     batch = {}
     else:
-        for class_key, items in by_class.items():
-            class_fqn, summary, class_stereotype = _summarize_one_class(class_key, items)
+        for module_key, items in by_class.items():
+            module_fqn, summary, module_stereotype = _summarize_one_module(module_key, items)
             total_yielded += 1
-            batch[class_fqn] = {"summary": summary, "classStereotype": class_stereotype}
+            batch[module_fqn] = {"summary": summary, "moduleStereotype": module_stereotype}
             if len(batch) >= _CLASS_BATCH_SIZE:
                 yield batch
                 batch = {}
     if batch:
         yield batch
-    logger.info("[FW:STEP6] Class 요약 완료 | class_count=%d", total_yielded)
+    logger.info("[FW:STEP6] Module 요약 완료 | module_count=%d", total_yielded)

@@ -1,4 +1,4 @@
-"""Step 2: AST 순회 및 MethodFacts/ChunkBundle 생성 (범용 — Java/C/Python 등)."""
+"""Step 2: AST 순회 및 FunctionFacts/ChunkBundle 생성 (범용)."""
 
 from __future__ import annotations
 
@@ -9,14 +9,14 @@ from typing import Any, Dict, Generator, List, Optional, Tuple
 
 from analyzer.strategy.framework._ast_core import (
     FrameworkAstProcessor,
-    CLASS_TYPES,
-    FIELD_TYPES,
-    METHOD_TYPES,
+    MODULE_TYPES,
+    VARIABLE_TYPES,
+    FUNCTION_TYPES,
 )
 from analyzer.strategy.framework.common.ontology import get_ontology
 from analyzer.strategy.framework.models import (
-    FieldFacts,
-    MethodFacts,
+    VariableFacts,
+    FunctionFacts,
     NODE_VARIABLE,
     NODE_METHOD_CALL,
     NODE_NEW_INSTANCE,
@@ -34,14 +34,15 @@ logger = logging.getLogger(__name__)
 @dataclass
 class AstVisitorContext:
     symbol_type_index: Dict[str, Dict[str, str]] = field(default_factory=dict)
-    method_index: Dict[str, str] = field(default_factory=dict)
-    method_index_by_class: Dict[str, Dict[str, List[str]]] = field(default_factory=dict)
-    field_types_by_class: Dict[str, Dict[str, str]] = field(default_factory=dict)
-    chunk_methods: List[Dict[str, Any]] = field(default_factory=list)
-    chunk_method_calls: List[Dict[str, Any]] = field(default_factory=list)
+    function_index: Dict[str, str] = field(default_factory=dict)
+    function_index_by_module: Dict[str, Dict[str, List[str]]] = field(default_factory=dict)
+    variable_types_by_module: Dict[str, Dict[str, str]] = field(default_factory=dict)
+    chunk_functions: List[Dict[str, Any]] = field(default_factory=list)
+    chunk_function_calls: List[Dict[str, Any]] = field(default_factory=list)
     chunk_variables: List[Dict[str, Any]] = field(default_factory=list)
-    ref_candidates_by_method: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
-    method_call_seq: Dict[str, int] = field(default_factory=dict)
+    ref_candidates_by_function: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
+    function_call_seq: Dict[str, int] = field(default_factory=dict)
+    node_kinds: Dict[str, str] = field(default_factory=dict)  # function_id → 원래 노드 타입 (FUNCTION, METHOD 등)
 
 
 def _last_line_from_ast(ast_data: dict) -> int:
@@ -62,16 +63,16 @@ def load_ast_json(path: str) -> dict:
 def _visit_ast_for_indices(
     node: Dict[str, Any],
     package_name: Optional[str],
-    class_name: Optional[str],
-    class_fqn: Optional[str],
-    method_id: Optional[str],
+    module_name: Optional[str],
+    module_fqn: Optional[str],
+    function_id: Optional[str],
     ctx: AstVisitorContext,
     lang: str = "java",
 ) -> None:
-    """Raw AST 순회: symbol_type_index, method_index, ChunkBundle용 리스트 수집."""
+    """Raw AST 순회: symbol_type_index, function_index, ChunkBundle용 리스트 수집 (범용)."""
     onto = get_ontology()
     container_types = onto.container_types(lang)
-    method_types = onto.method_types(lang)
+    function_types = onto.function_types(lang)
     call_types = onto.call_types(lang)
 
     node_type = node.get("type", "")
@@ -86,52 +87,53 @@ def _visit_ast_for_indices(
         if pkg:
             package_name = pkg
 
-        # C 언어: FILE이 container일 때 파일명을 class_fqn으로 등록
+        # C 언어: FILE이 container일 때 파일명을 module_fqn으로 등록
         if node_type in container_types:
             file_path = node.get("filePath", "")
             file_basename = file_path.replace("\\", "/").rsplit("/", 1)[-1] if file_path else ""
             file_stem = file_basename.rsplit(".", 1)[0] if "." in file_basename else file_basename
             if file_stem:
-                class_name = file_stem
-                class_fqn = f"{package_name}.{file_stem}" if package_name else file_stem
+                module_name = file_stem
+                module_fqn = f"{package_name}.{file_stem}" if package_name else file_stem
 
     if node_type in container_types and node_type != "FILE":
-        class_name = node.get("name") or class_name
-        if package_name and class_name:
-            class_fqn = f"{package_name}.{class_name}"
+        module_name = node.get("name") or module_name
+        if package_name and module_name:
+            module_fqn = f"{package_name}.{module_name}"
         else:
-            class_fqn = class_name
+            module_fqn = module_name
 
-    if node_type in method_types:
-        method_name = node.get("name", "")
-        if class_fqn and method_name:
-            method_id = f"{class_fqn}.{method_name}"
-        elif package_name and method_name:
+    if node_type in function_types:
+        function_name = node.get("name", "")
+        if module_fqn and function_name:
+            function_id = f"{module_fqn}.{function_name}"
+        elif package_name and function_name:
             # fallback: package.functionName
-            method_id = f"{package_name}.{method_name}"
+            function_id = f"{package_name}.{function_name}"
         else:
-            method_id = method_id or f"unknown_{start_line}"
-        if method_id and method_id not in ctx.method_index:
-            ctx.method_index[method_id] = method_id
-        if class_fqn and method_name:
-            ctx.method_index_by_class.setdefault(class_fqn, {}).setdefault(method_name, []).append(method_id)
-        ctx.chunk_methods.append({"method_id": method_id, "start_line": start_line, "end_line": end_line})
+            function_id = function_id or f"unknown_{start_line}"
+        if function_id and function_id not in ctx.function_index:
+            ctx.function_index[function_id] = function_id
+            ctx.node_kinds[function_id] = node_type  # FUNCTION, METHOD 등 원래 타입 저장
+        if module_fqn and function_name:
+            ctx.function_index_by_module.setdefault(module_fqn, {}).setdefault(function_name, []).append(function_id)
+        ctx.chunk_functions.append({"function_id": function_id, "start_line": start_line, "end_line": end_line})
 
     for ch in children:
         ch_type = ch.get("type", "")
         ch_start = ch.get("startLine", 0)
         ch_end = ch.get("endLine", 0)
 
-        if ch_type == NODE_VARIABLE and method_id:
+        if ch_type == NODE_VARIABLE and function_id:
             var_name = ch.get("name", "")
-            var_type = ch.get("fieldType")
+            var_type = ch.get("variableType")
             if ch.get("initializerContainsNewInstance"):
                 for sub in ch.get("children", []):
                     if isinstance(sub, dict) and sub.get("type") == NODE_NEW_INSTANCE:
                         var_type = sub.get("name") or var_type
                         break
             if var_name:
-                ctx.symbol_type_index.setdefault(method_id, {})[var_name] = var_type or ""
+                ctx.symbol_type_index.setdefault(function_id, {})[var_name] = var_type or ""
             flags: Dict[str, Any] = {}
             if ch.get("initializerContainsMethodCall"):
                 flags["initializerContainsMethodCall"] = True
@@ -139,7 +141,7 @@ def _visit_ast_for_indices(
                 flags["initializerContainsNewInstance"] = True
             ctx.chunk_variables.append(
                 {
-                    "parent_method_id": method_id,
+                    "parent_function_id": function_id,
                     "var_name": var_name,
                     "var_type": var_type,
                     "start_line": ch_start,
@@ -149,43 +151,43 @@ def _visit_ast_for_indices(
             )
 
         # GLOBAL_VARIABLE: 함수 밖 변수 → __global__ 키에 수집
-        if ch_type == NODE_VARIABLE and not method_id:
+        if ch_type == NODE_VARIABLE and not function_id:
             var_name = ch.get("name", "")
-            var_type = ch.get("fieldType")
+            var_type = ch.get("variableType")
             if var_name:
                 ctx.symbol_type_index.setdefault("__global__", {})[var_name] = var_type or ""
 
-        if ch_type in call_types and method_id:
-            seq = ctx.method_call_seq.get(method_id, 0)
+        if ch_type in call_types and function_id:
+            seq = ctx.function_call_seq.get(function_id, 0)
             call_id = f"C:{ch_start}:{ch_end}:{seq}"
-            ctx.method_call_seq[method_id] = seq + 1
-            ctx.chunk_method_calls.append(
+            ctx.function_call_seq[function_id] = seq + 1
+            ctx.chunk_function_calls.append(
                 {
-                    "parent_method_id": method_id,
+                    "parent_function_id": function_id,
                     "call_id": call_id,
                     "start_line": ch_start,
                     "end_line": ch_end,
                 }
             )
-            ctx.ref_candidates_by_method.setdefault(method_id, []).append(
+            ctx.ref_candidates_by_function.setdefault(function_id, []).append(
                 {
                     "kind": "CALL_REF",
                     "receiver": None,
-                    "method_name": ch.get("name"),
+                    "function_name": ch.get("name"),
                     "line_range": (ch_start, ch_end),
                 }
             )
 
-        if ch_type == NODE_NEW_INSTANCE and method_id:
-            ctx.ref_candidates_by_method.setdefault(method_id, []).append(
+        if ch_type == NODE_NEW_INSTANCE and function_id:
+            ctx.ref_candidates_by_function.setdefault(function_id, []).append(
                 {
                     "kind": "NEW_INSTANCE_REF",
-                    "className": ch.get("name"),
+                    "moduleName": ch.get("name"),
                     "line_range": (ch_start, ch_end),
                 }
             )
 
-        _visit_ast_for_indices(ch, package_name, class_name, class_fqn, method_id, ctx, lang=lang)
+        _visit_ast_for_indices(ch, package_name, module_name, module_fqn, function_id, ctx, lang=lang)
 
 
 def collect_ast_indices_and_chunk_data(
@@ -199,8 +201,9 @@ def collect_ast_indices_and_chunk_data(
     List[Dict[str, Any]],
     List[Dict[str, Any]],
     Dict[str, List[Dict[str, Any]]],
+    Dict[str, str],
 ]:
-    """AST에서 symbol_type_index, method_index, method_index_by_class, ChunkBundle용 methods/calls/variables, ref_candidates_by_method 반환."""
+    """AST에서 symbol_type_index, function_index, function_index_by_module, ChunkBundle용 functions/calls/variables, ref_candidates_by_function 반환."""
     ctx = AstVisitorContext()
 
     if ast_data.get("type") == "FILE":
@@ -212,26 +215,27 @@ def collect_ast_indices_and_chunk_data(
 
     return (
         ctx.symbol_type_index,
-        ctx.method_index,
-        ctx.method_index_by_class,
-        ctx.chunk_methods,
-        ctx.chunk_method_calls,
+        ctx.function_index,
+        ctx.function_index_by_module,
+        ctx.chunk_functions,
+        ctx.chunk_function_calls,
         ctx.chunk_variables,
-        ctx.ref_candidates_by_method,
+        ctx.ref_candidates_by_function,
+        ctx.node_kinds,
     )
 
 
-def build_method_facts_and_class_index(
+def build_function_facts_and_module_index(
     ast_path: str,
     ast_data: dict,
     data_dir: Optional[str] = None,
     lang: str = "java",
-) -> Tuple[List[MethodFacts], Dict[str, Any], List[FieldFacts], Dict[str, List[str]]]:
-    """한 AST 파일에서 MethodFacts, class_index, FieldFacts 리스트 생성."""
+) -> Tuple[List[FunctionFacts], Dict[str, Any], List[VariableFacts], Dict[str, List[str]]]:
+    """한 AST 파일에서 FunctionFacts, module_index, VariableFacts 리스트 생성."""
     onto = get_ontology()
     container_types = onto.container_types(lang)
-    method_types = onto.method_types(lang)
-    field_types = onto.field_types(lang)
+    function_types = onto.function_types(lang)
+    variable_types = onto.variable_types(lang)
 
     p = Path(ast_path)
     parts = p.parts
@@ -264,35 +268,40 @@ def build_method_facts_and_class_index(
     processor.build_static_graph_queries()
 
     nodes = processor._nodes
-    classes = processor._unit_info  # Dict[str, ClassInfo]  # noqa: F841
+    classes = processor._unit_info  # Dict[str, ModuleInfo]  # noqa: F841
 
-    method_facts_list: List[MethodFacts] = []
-    class_index: Dict[str, Any] = {}
-    field_facts_list: List[FieldFacts] = []
+    function_facts_list: List[FunctionFacts] = []
+    module_index: Dict[str, Any] = {}
+    variable_facts_list: List[VariableFacts] = []
+    node_kinds: Dict[str, str] = {}  # variable_id/function_id → AST 노드 타입 (서브레이블용)
 
     for node in nodes:
-        if node.node_type in field_types and node.unit_key and node.name:
-            field_id = f"{node.unit_key}#{node.name}_{node.start_line}"
+        if node.node_type in variable_types and node.name:
+            # C 전역변수 등은 unit_key가 없을 수 있음 → 파일 경로 기반 fallback
+            container_key = node.unit_key or f"{directory}/{file_name}"
+            variable_id = f"{container_key}#{node.name}_{node.start_line}"
             code_ref = f"{directory}/{file_name}:{node.start_line}-{node.end_line}"
-            field_facts_list.append(
-                FieldFacts(
-                    field_id=field_id,
-                    class_key=node.unit_key,
+            variable_facts_list.append(
+                VariableFacts(
+                    variable_id=variable_id,
+                    module_key=container_key,
                     name=node.name,
                     start_line=node.start_line,
                     end_line=node.end_line,
-                    field_type=getattr(node, "field_type", None),
+                    variable_type=getattr(node, "variable_type", None),
                     code_ref=code_ref,
                     comment=getattr(node, "comment", None),
                     annotations=getattr(node, "annotations", None),
                 )
             )
+            # variable_id → 원래 AST 노드 타입 저장 (서브레이블용)
+            node_kinds[variable_id] = node.node_type
         if node.node_type in container_types and node.unit_name:
             # FILE 노드: unit_kind를 통해 kind를 "FILE"로 저장
             kind = node.unit_kind if node.unit_kind else node.node_type
             fqn = f"{node.package_name}.{node.unit_name}" if node.package_name else node.unit_name
-            class_index[fqn] = {
-                "class_key": node.unit_key,
+            module_index[fqn] = {
+                "module_key": node.unit_key,
                 "fqn": fqn,
                 "package_name": node.package_name,
                 "name": node.unit_name,
@@ -305,22 +314,22 @@ def build_method_facts_and_class_index(
                 "implements_types": getattr(node, "implements_types", None),
             }
             if node.package_name:
-                class_index[node.unit_name] = class_index[fqn]
+                module_index[node.unit_name] = module_index[fqn]
 
-        if node.node_type in method_types and node.name:
+        if node.node_type in function_types and node.name:
             if node.package_name and node.unit_name:
-                # Java: package.Class.method / C: package.fileName.functionName
+                # OOP: package.Class.method / procedural: package.fileName.functionName
                 fqn = f"{node.package_name}.{node.unit_name}.{node.name}"
             elif node.package_name:
                 # fallback: package.functionName
                 fqn = f"{node.package_name}.{node.name}"
             else:
                 fqn = node.name
-            method_id = fqn or f"{node.unit_key}#{node.name}"
+            function_id = fqn or f"{node.unit_key}#{node.name}"
             code_ref = f"{directory}/{file_name}:{node.start_line}-{node.end_line}"
-            method_facts_list.append(
-                MethodFacts(
-                    method_id=method_id,
+            function_facts_list.append(
+                FunctionFacts(
+                    function_id=function_id,
                     fqn=fqn,
                     signature=node.signature or "",
                     start_line=node.start_line,
@@ -330,27 +339,27 @@ def build_method_facts_and_class_index(
                     return_type=node.return_type,
                     params=node.parameters,
                     code_ref=code_ref,
-                    class_key=node.unit_key,
+                    module_key=node.unit_key,
                     package_name=node.package_name,
                     code=node.code,
                 )
             )
 
-    class_index_simple: Dict[str, List[str]] = {}
-    for fqn, info in class_index.items():
+    module_index_simple: Dict[str, List[str]] = {}
+    for fqn, info in module_index.items():
         if isinstance(info, dict):
             name = info.get("name")
             if name:
-                class_index_simple.setdefault(name, []).append(fqn)
+                module_index_simple.setdefault(name, []).append(fqn)
 
-    return method_facts_list, class_index, field_facts_list, class_index_simple
+    return function_facts_list, module_index, variable_facts_list, module_index_simple, node_kinds
 
 
-def _extract_package_fqns(class_index: Dict[str, Any]) -> List[str]:
-    """class_index에서 고유 package_name 수집."""
+def _extract_package_fqns(module_index: Dict[str, Any]) -> List[str]:
+    """module_index에서 고유 package_name 수집."""
     seen: set = set()
     out: List[str] = []
-    for info in class_index.values():
+    for info in module_index.values():
         if not isinstance(info, dict):
             continue
         pkg = info.get("package_name")
@@ -416,7 +425,7 @@ def run_step2(
     """파일별로 AST 결과를 yield. 호출자가 누적 및 Neo4j 반영.
 
     Yields:
-        Dict with keys: facts, cidx, fields, class_index_simple,
+        Dict with keys: facts, cidx, fields, module_index_simple,
         sym_idx, meth_idx, meth_by_cls, ref_cands, file_name
     """
     onto = get_ontology()
@@ -430,7 +439,7 @@ def run_step2(
         run_dir or "",
     )
     logger.info(
-        "[FW:STEP2] [섹션] 파일별 처리: AST 파싱 → MethodFacts, ChunkBundle 생성·저장 | 파일 %d개",
+        "[FW:STEP2] [섹션] 파일별 처리: AST 파싱 → FunctionFacts, ChunkBundle 생성·저장 | 파일 %d개",
         len(source_ast_jobs),
     )
 
@@ -446,7 +455,7 @@ def run_step2(
             if path_ext in source_exts and data_dir:
                 ast_path_val = _ast_json_path_for_source(data_dir, path, lang=lang)
                 if not ast_path_val:
-                    logger.warning("AST JSON 없음, 스킵 | java=%s", path)
+                    logger.warning("AST JSON 없음, 스킵 | path=%s", path)
                     continue
                 source_path_for_bundle = path
             else:
@@ -454,7 +463,7 @@ def run_step2(
                 source_path_for_bundle = _source_path_for_ast(data_dir, path, lang=lang) if data_dir else None
 
             ast_data = load_ast_json(ast_path_val)
-            facts, cidx, fields, class_index_simple = build_method_facts_and_class_index(
+            facts, cidx, fields, module_index_simple, variable_node_kinds = build_function_facts_and_module_index(
                 ast_path_val, ast_data, data_dir=data_dir, lang=lang,
             )
 
@@ -466,11 +475,14 @@ def run_step2(
                 chunk_calls,
                 chunk_vars,
                 ref_cands,
+                node_kinds,
             ) = collect_ast_indices_and_chunk_data(ast_data, lang=lang)
+            # variable_id → node_type 매핑도 합침 (서브레이블용)
+            node_kinds.update(variable_node_kinds)
 
             if data_dir and chunk_m and source_path_for_bundle:
-                field_chunk_input = [
-                    {"field_id": f.field_id, "start_line": f.start_line, "end_line": f.end_line} for f in fields
+                variable_chunk_input = [
+                    {"variable_id": f.variable_id, "start_line": f.start_line, "end_line": f.end_line} for f in fields
                 ]
                 bundle = build_chunk_bundle_from_source(
                     source_path_for_bundle,
@@ -478,7 +490,7 @@ def run_step2(
                     chunk_m,
                     chunk_calls,
                     chunk_vars,
-                    fields=field_chunk_input,
+                    fields=variable_chunk_input,
                 )
                 if bundle:
                     p_for_key = Path(source_path_for_bundle)
@@ -497,21 +509,21 @@ def run_step2(
                     save_chunk_bundle(data_dir, bundle, rel_key, chunk_bundle_out_dir=chunk_out)
                     logger.debug("ChunkBundle 저장: %s", rel_key)
                     mid_to_code = {
-                        m.method_id: (getattr(m, "method_code", None) or "")
+                        m.function_id: (getattr(m, "function_code", None) or "")
                         for m in bundle.methods
-                        if getattr(m, "method_code", None)
+                        if getattr(m, "function_code", None)
                     }
                     for f in facts:
-                        if f.method_id in mid_to_code and mid_to_code[f.method_id]:
-                            f.code = mid_to_code[f.method_id]
+                        if f.function_id in mid_to_code and mid_to_code[f.function_id]:
+                            f.code = mid_to_code[f.function_id]
                     fid_to_code = {
-                        fl.field_id: (getattr(fl, "field_code", None) or "")
+                        fl.variable_id: (getattr(fl, "variable_code", None) or "")
                         for fl in bundle.fields
-                        if getattr(fl, "field_code", None)
+                        if getattr(fl, "variable_code", None)
                     }
                     for fl in fields:
-                        if fl.field_id in fid_to_code and fid_to_code[fl.field_id]:
-                            fl.code = fid_to_code[fl.field_id]
+                        if fl.variable_id in fid_to_code and fid_to_code[fl.variable_id]:
+                            fl.code = fid_to_code[fl.variable_id]
 
             logger.info(
                 "[FW:STEP2] 파일 처리 완료 | file=%s methods=%d classes=%d",
@@ -523,11 +535,12 @@ def run_step2(
                 "facts": facts,
                 "cidx": cidx,
                 "fields": fields,
-                "class_index_simple": class_index_simple,
+                "module_index_simple": module_index_simple,
                 "sym_idx": sym_idx,
                 "meth_idx": meth_idx,
                 "meth_by_cls": meth_by_cls,
                 "ref_cands": ref_cands,
+                "node_kinds": node_kinds,
                 "file_name": Path(path).name,
             }
         except Exception as e:

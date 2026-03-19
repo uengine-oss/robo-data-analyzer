@@ -9,9 +9,9 @@ Framework 전략의 내부 구현 모듈 집합.
 # --- AST 관련 (parsing/ast_walker → _ast_core) ---
 from analyzer.strategy.framework._ast_core import (  # noqa: F401
     FrameworkAstProcessor,
-    CLASS_TYPES,
-    FIELD_TYPES,
-    METHOD_TYPES,
+    MODULE_TYPES,
+    VARIABLE_TYPES,
+    FUNCTION_TYPES,
 )
 
 # --- ChunkBundle 관련 (parsing/chunk_bundle) ---
@@ -30,12 +30,12 @@ from analyzer.strategy.framework.parsing.chunk_bundle import (  # noqa: F401
 # --- Linking 관련 (linking/orchestrator + matcher + call_graph + summarizer) ---
 from analyzer.strategy.framework.linking.orchestrator import (  # noqa: F401
     run_step5,
-    derive_method_table_edges,
+    derive_function_table_edges,
 )
 from analyzer.strategy.framework.linking.summarizer import (  # noqa: F401
     run_step6,
-    run_field_summary,
-    run_class_summary,
+    run_variable_summary,
+    run_module_summary,
 )
 from analyzer.strategy.framework.linking.call_graph import (  # noqa: F401
     derive_uses_from_calls,
@@ -50,13 +50,13 @@ from analyzer.strategy.framework.graph.queries import (  # noqa: F401
     build_table_queries_from_reads_writes,
     build_column_queries,
     build_has_column_queries,
-    build_method_table_from_writes_queries,
-    build_class_table_refer_to_queries,
+    build_function_table_from_writes_queries,
+    build_module_table_refer_to_queries,
     build_artifact_table_refer_to_queries,
-    build_method_summary_queries,
+    build_function_summary_queries,
     build_uml_dependency_queries,
-    build_field_summary_queries,
-    build_class_summary_queries,
+    build_variable_summary_queries,
+    build_module_summary_queries,
     build_table_description_enrichment_query,
     build_table_description_update_queries,
 )

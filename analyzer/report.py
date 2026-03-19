@@ -26,8 +26,8 @@ logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════════════════════
 
 SCOPE_LABELS = {"INTERNAL", "EXTERNAL"}
-CLASS_LABELS = {"CLASS", "INTERFACE", "ENUM"}
-EXTERNAL_TYPE_LABELS = {"EXTERNAL_CLASS", "EXTERNAL_METHOD"}
+CLASS_LABELS = {"MODULE"}
+EXTERNAL_TYPE_LABELS = {"EXTERNAL"}
 METHOD_ROLE_LABELS = {"READMODEL", "COMMAND"}
 DML_LABELS = {
     "SELECT", "INSERT", "UPDATE", "DELETE", "MERGE",
@@ -36,7 +36,7 @@ DML_LABELS = {
 PROCEDURE_LABELS = {"PROCEDURE", "FUNCTION", "TRIGGER"}
 EXCLUDED_REL_TYPES = {"NEXT", "PARENT_OF"}
 
-STRUCTURAL_REL_TYPES = {"CONTAINS", "HAS_METHOD", "HAS_FIELD", "BELONGS_TO_PACKAGE", "CONTAINS_PACKAGE", "HAS_COLUMN"}
+STRUCTURAL_REL_TYPES = {"CONTAINS", "HAS_FUNCTION", "HAS_VARIABLE", "BELONGS_TO_PACKAGE", "CONTAINS_PACKAGE", "HAS_COLUMN"}
 UML_REL_TYPES = {"EXTENDS", "IMPLEMENTS", "ASSOCIATION", "COMPOSITION", "AGGREGATION", "DEPENDENCY"}
 DEP_REL_TYPES = {"CALLS", "USES", "CALL"}
 DB_REL_TYPES = {"FROM", "READS", "WRITES", "REFERS_TO", "REFER_TO", "FK_TO_TABLE", "FK_TO"}
@@ -91,24 +91,18 @@ class GraphNode:
         for lbl in self.labels:
             if lbl in SCOPE_LABELS or lbl in METHOD_ROLE_LABELS:
                 continue
-            if lbl == "EXTERNAL_CLASS":
-                return "CLASS"
-            if lbl == "EXTERNAL_METHOD":
-                return "METHOD"
+            if lbl == "EXTERNAL":
+                continue
             return lbl
         return self.labels[0] if self.labels else "UNKNOWN"
 
     @property
     def is_internal(self) -> bool:
-        if any(lbl in EXTERNAL_TYPE_LABELS for lbl in self.labels):
-            return False
-        if "EXTERNAL" in self.labels:
-            return False
-        return True
+        return "EXTERNAL" not in self.labels
 
     @property
     def is_external(self) -> bool:
-        return any(lbl in EXTERNAL_TYPE_LABELS for lbl in self.labels) or "EXTERNAL" in self.labels
+        return "EXTERNAL" in self.labels
 
     @property
     def scope_label(self) -> str:
@@ -128,7 +122,7 @@ class GraphNode:
 
     @property
     def display_name(self) -> str:
-        for k in ("class_name", "name", "procedure_name", "fqn", "id"):
+        for k in ("module_name", "name", "procedure_name", "fqn", "id"):
             v = self.properties.get(k)
             if v:
                 return str(v)
@@ -278,11 +272,8 @@ def _parse_nodes(nodes_list: list, graph: GraphData) -> None:
                 continue
             if lbl in METHOD_ROLE_LABELS:
                 continue
-            if lbl in EXTERNAL_TYPE_LABELS:
-                mapped = "CLASS" if lbl == "EXTERNAL_CLASS" else "METHOD"
-                graph._label_counts[mapped] += 1
+            if lbl == "EXTERNAL":
                 graph._label_counts["EXTERNAL"] += 1
-                counted_primary = True
                 continue
             graph._label_counts[lbl] += 1
             counted_primary = True
@@ -348,10 +339,11 @@ def _index_nodes(graph: GraphData) -> None:
         pl = node.primary_label
         if pl in CLASS_LABELS:
             graph.classes.append(node)
-        elif pl == "METHOD":
+        elif pl == "FUNCTION":
             graph.methods.append(node)
-        elif pl == "FIELD":
+        elif pl == "VARIABLE":
             graph.fields.append(node)
+            graph.variables.append(node)
         elif pl == "PACKAGE":
             graph.packages.append(node)
         elif pl == "Table":
@@ -362,8 +354,6 @@ def _index_nodes(graph: GraphData) -> None:
             graph.procedures.append(node)
         elif pl in DML_LABELS:
             graph.dml_nodes.append(node)
-        elif pl == "Variable":
-            graph.variables.append(node)
         elif pl == "NONTARGET_FILE":
             graph.nontarget_files.append(node)
         elif pl == "NONTARGET_BLOCK":
@@ -448,7 +438,7 @@ def _infer_stereotype(graph: GraphData, cls: GraphNode) -> str:
     if stereo:
         return stereo
     method_roles = set()
-    for method in graph.get_children(cls.node_id, "HAS_METHOD"):
+    for method in graph.get_children(cls.node_id, "HAS_FUNCTION"):
         r = method.method_role
         if r:
             method_roles.add(r)
@@ -457,7 +447,7 @@ def _infer_stereotype(graph: GraphData, cls: GraphNode) -> str:
 
 def _get_entity_name(entity: GraphNode) -> str:
     """엔티티의 표시 이름."""
-    for k in ("class_name", "procedure_name", "name"):
+    for k in ("module_name", "procedure_name", "name"):
         v = entity.prop(k)
         if v:
             return str(v)
@@ -581,7 +571,7 @@ def _render_packages(graph: GraphData) -> str:
 
 
 def _render_entity_detail(graph: GraphData, entity: GraphNode) -> str:
-    """단일 엔티티 상세 — CLASS/INTERFACE/ENUM/PROCEDURE/FUNCTION/TRIGGER 모두 동일 포맷."""
+    """단일 엔티티 상세 — MODULE/PROCEDURE/FUNCTION/TRIGGER 모두 동일 포맷."""
     name = _get_entity_name(entity)
     parts = [f"### {name}\n"]
 
@@ -605,7 +595,7 @@ def _render_entity_detail(graph: GraphData, entity: GraphNode) -> str:
 
     # ── 메서드 (METHOD + DML 통합) ──
     members = []
-    for m in sorted(graph.get_children(entity.node_id, "HAS_METHOD"),
+    for m in sorted(graph.get_children(entity.node_id, "HAS_FUNCTION"),
                     key=lambda x: x.prop("start_line", 0) or 0):
         members.append([
             _safe(m.prop("name")),
@@ -629,11 +619,11 @@ def _render_entity_detail(graph: GraphData, entity: GraphNode) -> str:
 
     # ── 필드 (FIELD + Variable 통합) ──
     fields = []
-    for f in sorted(graph.get_children(entity.node_id, "HAS_FIELD"),
+    for f in sorted(graph.get_children(entity.node_id, "HAS_VARIABLE"),
                     key=lambda x: x.prop("start_line", 0) or 0):
         fields.append([
             _safe(f.prop("name")),
-            _safe(f.prop("field_type")),
+            _safe(f.prop("variable_type")),
             _safe(f.prop("modifiers")),
             _safe(f.prop("summary")),
         ])
@@ -667,7 +657,7 @@ def _render_entity_detail(graph: GraphData, entity: GraphNode) -> str:
     for r in graph.get_outgoing_rels(entity.node_id, ENTITY_CALL_REL_TYPES):
         call_rels.append(["→", graph.node_display(r.end_node_id), _safe(r.prop("call_code"))])
     # 메서드 레벨 호출 수집 (CLASS인 경우)
-    for m in graph.get_children(entity.node_id, "HAS_METHOD"):
+    for m in graph.get_children(entity.node_id, "HAS_FUNCTION"):
         for r in graph.get_outgoing_rels(m.node_id, ENTITY_CALL_REL_TYPES):
             call_rels.append(["→", graph.node_display(r.end_node_id), _safe(r.prop("call_code"))])
     for r in graph.get_incoming_rels(entity.node_id, ENTITY_CALL_REL_TYPES):
@@ -683,7 +673,7 @@ def _render_entity_detail(graph: GraphData, entity: GraphNode) -> str:
             _safe(r.prop("evidence")), _safe(r.prop("confidence")),
         ])
     # 메서드/DML 자식의 테이블 접근도 수집
-    for m in graph.get_children(entity.node_id, "HAS_METHOD"):
+    for m in graph.get_children(entity.node_id, "HAS_FUNCTION"):
         for r in graph.get_outgoing_rels(m.node_id, ENTITY_DATA_REL_TYPES):
             data_access.append([
                 graph.node_display(r.end_node_id), r.rel_type,
@@ -697,7 +687,7 @@ def _render_entity_detail(graph: GraphData, entity: GraphNode) -> str:
                     _safe(r.prop("evidence")), _safe(r.prop("confidence")),
                 ])
     # 필드 레벨 접근도 수집
-    for f in graph.get_children(entity.node_id, "HAS_FIELD"):
+    for f in graph.get_children(entity.node_id, "HAS_VARIABLE"):
         for r in graph.get_outgoing_rels(f.node_id, ENTITY_DATA_REL_TYPES):
             data_access.append([
                 graph.node_display(r.end_node_id), r.rel_type,
@@ -910,8 +900,8 @@ def _render_cross_cutting(graph: GraphData) -> str:
             tgt = graph.get_node(rel.end_node_id)
             if src and tgt and tgt.primary_label == "Table":
                 src_name = src.display_name
-                if src.primary_label == "METHOD":
-                    parents = graph.get_parents(src.node_id, "HAS_METHOD")
+                if src.primary_label == "FUNCTION":
+                    parents = graph.get_parents(src.node_id, "HAS_FUNCTION")
                     if parents:
                         src_name = parents[0].display_name
                 elif src.primary_label in DML_LABELS:
@@ -942,8 +932,8 @@ def _render_cross_cutting(graph: GraphData) -> str:
             continue
         name = node.display_name
         ntype = node.primary_label
-        if ntype == "METHOD":
-            parents = graph.get_parents(node.node_id, "HAS_METHOD")
+        if ntype == "FUNCTION":
+            parents = graph.get_parents(node.node_id, "HAS_FUNCTION")
             if parents:
                 name = parents[0].display_name
                 ntype = parents[0].primary_label
@@ -992,7 +982,7 @@ def _render_cross_cutting(graph: GraphData) -> str:
 
 def _build_report(graph: GraphData) -> str:
     """단일 통합 보고서 생성. 전략 무관, 데이터 유무 무관."""
-    # INTERNAL 엔티티 = CLASS + INTERFACE + ENUM + PROCEDURE + FUNCTION + TRIGGER 중 INTERNAL
+    # INTERNAL 엔티티 = MODULE + PROCEDURE + FUNCTION + TRIGGER 중 INTERNAL
     internal_entities = [n for n in graph.classes + graph.procedures if n.is_internal]
     # EXTERNAL 엔티티
     external_entities = [n for n in graph.classes + graph.procedures if n.is_external]

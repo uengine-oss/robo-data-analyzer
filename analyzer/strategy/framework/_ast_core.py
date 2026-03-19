@@ -56,7 +56,7 @@ class StatementNode:
     generic_type: Optional[str] = None
     extends_type: Optional[str] = None
     implements_types: Optional[str] = None
-    field_type: Optional[str] = None
+    variable_type: Optional[str] = None
     annotations: Optional[str] = None
     comment: Optional[str] = None
     lines: List[Tuple[int, str]] = field(default_factory=list)
@@ -220,24 +220,29 @@ def _log_process(_ctx: str, _stage: str, message: str, **kwargs: Any) -> None:
     logger.debug("[%s][%s] %s", _ctx, _stage, message)
 
 
-# 노드 타입 — ontology에서 Java 기본값 로딩 (하위호환, backward compat)
-# 실제 파이프라인에서는 StatementCollector가 lang 파라미터로 동적 로딩
+# Module-level node type constants — loaded from ontology with "java" as default.
+# These Java defaults exist for backward compatibility: older callers that import
+# MODULE_TYPES etc. directly (without specifying a language) still get valid sets.
+# At runtime, StatementCollector loads the correct types dynamically via its
+# `lang` parameter, so these constants are only used as a fallback when no
+# language context is available.
 from .common.ontology import get_ontology as _get_ontology
 
 _onto = _get_ontology()
-CLASS_TYPES = _onto.container_types("java")
-FIELD_TYPES = _onto.field_types("java")
-METHOD_TYPES = _onto.method_types("java")
-ANALYZABLE_NODE_TYPES = METHOD_TYPES | FIELD_TYPES
+MODULE_TYPES = _onto.module_types("java")
+FUNCTION_TYPES = _onto.function_types("java")
+VARIABLE_TYPES = _onto.variable_types("java")
+CONSTANT_TYPES = _onto.constant_types("java")
+ANALYZABLE_NODE_TYPES = FUNCTION_TYPES | VARIABLE_TYPES | CONSTANT_TYPES
 SILENT_NODE_TYPES = _onto.silent_types("java")
-GRAPH_NODE_TYPES = CLASS_TYPES | METHOD_TYPES | FIELD_TYPES
+GRAPH_NODE_TYPES = MODULE_TYPES | FUNCTION_TYPES | VARIABLE_TYPES | CONSTANT_TYPES
 
 
 # ---------------------------------------------------------------------------
-# ClassInfo
+# ModuleInfo
 # ---------------------------------------------------------------------------
 
-class ClassInfo:
+class ModuleInfo:
     """클래스/인터페이스 정보."""
     __slots__ = (
         "key", "name", "kind", "node_start", "node_end",
@@ -280,12 +285,12 @@ class StatementCollector:
         self.lang = lang
         onto = _get_ontology()
         self._container_types = onto.container_types(lang)
-        self._method_types = onto.method_types(lang)
-        self._field_types = onto.field_types(lang)
+        self._function_types = onto.function_types(lang)
+        self._variable_types = onto.variable_types(lang)
         self._analyzable_types = onto.analyzable_types(lang)
         self._silent_types = onto.silent_types(lang)
         self.nodes: List[StatementNode] = []
-        self.classes: Dict[str, ClassInfo] = {}
+        self.classes: Dict[str, ModuleInfo] = {}
         self._node_id = 0
 
     def _parse_code_to_lines(
@@ -308,17 +313,17 @@ class StatementCollector:
             parsed.append((line_no, text))
         return parsed
 
-    def collect(self) -> Tuple[List[StatementNode], Dict[str, ClassInfo]]:
+    def collect(self) -> Tuple[List[StatementNode], Dict[str, ModuleInfo]]:
         self._visit(self.antlr_data, None, None, None, None)
         return self.nodes, self.classes
 
-    def _make_class_key(
+    def _make_module_key(
         self,
         package_name: Optional[str],
-        class_name: Optional[str],
+        module_name: Optional[str],
         start_line: int,
     ) -> str:
-        base = class_name or f"anonymous_{start_line}"
+        base = module_name or f"anonymous_{start_line}"
         if package_name:
             return f"{package_name}.{base}"
         return f"{self.directory}:{self.file_name}:{base}:{start_line}"
@@ -342,9 +347,9 @@ class StatementCollector:
     def _visit(
         self,
         node: Dict[str, Any],
-        class_key: Optional[str],
-        class_name: Optional[str],
-        class_kind: Optional[str],
+        module_key: Optional[str],
+        module_name: Optional[str],
+        module_kind: Optional[str],
         package_name: Optional[str],
     ) -> Optional[StatementNode]:
         node_type = node["type"]
@@ -364,12 +369,12 @@ class StatementCollector:
             # C 언어: FILE 노드를 container(Class)로 등록 — 함수의 소속 컨테이너 역할
             if node_type in self._container_types:
                 file_stem = self._stem_from_filename(self.file_name)
-                class_key = self._make_class_key(package_name, file_stem, start_line)
-                class_name = file_stem
-                class_kind = "FILE"
-                if class_key not in self.classes:
-                    self.classes[class_key] = ClassInfo(
-                        key=class_key,
+                module_key = self._make_module_key(package_name, file_stem, start_line)
+                module_name = file_stem
+                module_kind = "FILE"
+                if module_key not in self.classes:
+                    self.classes[module_key] = ModuleInfo(
+                        key=module_key,
                         name=file_stem,
                         kind="FILE",
                         node_start=start_line,
@@ -383,13 +388,13 @@ class StatementCollector:
 
         if node_type in self._container_types and node_type != "FILE":
             extracted_name = node.get("name")
-            class_key = self._make_class_key(package_name, extracted_name, start_line)
-            class_name = extracted_name
-            class_kind = node_type
-            if class_key not in self.classes:
-                self.classes[class_key] = ClassInfo(
-                    key=class_key,
-                    name=extracted_name or class_key,
+            module_key = self._make_module_key(package_name, extracted_name, start_line)
+            module_name = extracted_name
+            module_kind = node_type
+            if module_key not in self.classes:
+                self.classes[module_key] = ModuleInfo(
+                    key=module_key,
+                    name=extracted_name or module_key,
                     kind=node_type,
                     node_start=start_line,
                     node_end=end_line,
@@ -402,7 +407,7 @@ class StatementCollector:
 
         child_nodes: List[StatementNode] = []
         for ch in children:
-            cn = self._visit(ch, class_key, class_name, class_kind, package_name)
+            cn = self._visit(ch, module_key, module_name, module_kind, package_name)
             if cn:
                 child_nodes.append(cn)
 
@@ -423,9 +428,9 @@ class StatementCollector:
             token=token,
             has_children=bool(child_nodes),
             analyzable=analyzable,
-            unit_key=class_key,
-            unit_name=class_name,
-            unit_kind=class_kind,
+            unit_key=module_key,
+            unit_name=module_name,
+            unit_kind=module_kind,
             package_name=package_name,
             name=node.get("name"),
             signature=node.get("signature"),
@@ -435,7 +440,7 @@ class StatementCollector:
             generic_type=node.get("genericType"),
             extends_type=extends_type,
             implements_types=implements_types,
-            field_type=node.get("fieldType"),
+            variable_type=node.get("variableType"),
             annotations=annotations,
             comment=node.get("comment"),
             lines=line_entries,
@@ -447,8 +452,8 @@ class StatementCollector:
         if not analyzable and node_type not in self._container_types:
             st.summary = st.get_raw_code()
             st.completion_event.set()
-        elif analyzable and class_key and class_key in self.classes:
-            self.classes[class_key].pending_nodes += 1
+        elif analyzable and module_key and module_key in self.classes:
+            self.classes[module_key].pending_nodes += 1
 
         self.nodes.append(st)
         if not is_silent:
@@ -484,10 +489,10 @@ class FrameworkAstProcessor(BaseAstProcessor):
         )
         self._lang = lang
 
-    def _collect_nodes(self) -> Tuple[List[StatementNode], Dict[str, ClassInfo]]:
+    def _collect_nodes(self) -> Tuple[List[StatementNode], Dict[str, ModuleInfo]]:
         collector = StatementCollector(
             self.antlr_data, self.directory, self.file_name,
-            source_content=getattr(self, "source_content", "") or "",
+            source_content=getattr(self, "source_content", ""),
             lang=self._lang,
         )
         return collector.collect()
@@ -497,11 +502,12 @@ __all__ = [
     "StatementNode",
     "BaseAstProcessor",
     "FrameworkAstProcessor",
-    "ClassInfo",
+    "ModuleInfo",
     "StatementCollector",
-    "CLASS_TYPES",
-    "FIELD_TYPES",
-    "METHOD_TYPES",
+    "MODULE_TYPES",
+    "FUNCTION_TYPES",
+    "VARIABLE_TYPES",
+    "CONSTANT_TYPES",
     "ANALYZABLE_NODE_TYPES",
     "SILENT_NODE_TYPES",
     "GRAPH_NODE_TYPES",

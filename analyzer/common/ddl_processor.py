@@ -83,7 +83,10 @@ async def process_ddl(
         raise RuntimeError(f"DDL 정규식 파싱 실패: {e}")
 
     parsed = {"analysis": all_parsed_results}
-    db_name = (orchestrator.target or 'postgres').lower()
+    # target이 프로그래밍 언어(c, java 등)일 때는 DB 기본값 사용
+    _LANG_TARGETS = {"c", "java", "python", "go", "kotlin", "scala", "rust"}
+    _raw_target = (orchestrator.target or "postgres").lower()
+    db_name = "postgres" if _raw_target in _LANG_TARGETS else _raw_target
     name_case = getattr(orchestrator, 'name_case', 'original')
 
     schemas_data = []
@@ -369,16 +372,19 @@ async def process_ddl(
             details={"step": "unwind_completed", "nodes_created": len(all_nodes), "relationships_created": len(all_relationships)}
         )
 
-    result = {"Nodes": list(all_nodes.values()), "Relationships": list(all_relationships.values())}
+    graph = {"Nodes": list(all_nodes.values()), "Relationships": list(all_relationships.values())}
     if emit_progress:
-        yield emit_message(f"   ✅ Neo4j 저장 완료: {len(result['Nodes'])}개 노드, {len(result['Relationships'])}개 관계 생성")
+        yield emit_message(f"   ✅ Neo4j 저장 완료: {len(graph['Nodes'])}개 노드, {len(graph['Relationships'])}개 관계 생성")
         yield emit_phase_event(
             phase_num=0,
             phase_name="DDL 처리",
             status="in_progress",
             progress=saving_end,
-            details={"step": "neo4j_saved", "tables": ddl_stats['tables'], "columns": ddl_stats['columns'], "fks": ddl_stats['fks'], "nodes_created": len(result['Nodes']), "relationships_created": len(result['Relationships'])}
+            details={"step": "neo4j_saved", "tables": ddl_stats['tables'], "columns": ddl_stats['columns'], "fks": ddl_stats['fks'], "nodes_created": len(graph['Nodes']), "relationships_created": len(graph['Relationships'])}
         )
 
+    # 그래프 데이터를 bytes로 직접 스트리밍 (프론트에서 즉시 렌더링)
+    from util.ndjson_stream import emit_data
+    yield emit_data(graph=graph)
+
     log_process("ANALYZE", "DDL", f"DDL 처리 완료: {file_name} (T:{ddl_stats['tables']}, C:{ddl_stats['columns']}, FK:{ddl_stats['fks']})")
-    yield (result, ddl_stats)

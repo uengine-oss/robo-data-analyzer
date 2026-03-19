@@ -254,11 +254,11 @@ def _expand_chunks_with_sql_split(chunks: List[SqlStatementChunk]) -> List[SqlSt
         if len(pieces) <= 1:
             out.append(c)
             continue
-        sql_key = getattr(c, "sql_key", "") or ""
-        sql_type = getattr(c, "sql_type", "") or ""
+        sql_key = getattr(c, "sql_key", "")
+        sql_type = getattr(c, "sql_type", "")
         start_line = getattr(c, "start_line", 0) or 0
         end_line = getattr(c, "end_line", 0) or 0
-        file_path = getattr(c, "file_path", "") or ""
+        file_path = getattr(c, "file_path", "")
         for piece in pieces:
             if not piece.strip():
                 continue
@@ -437,7 +437,7 @@ def _extract_tables_columns_fk_batch_via_llm(
     loader = get_rule_loader("framework")
     sql_items = []
     for i, c in enumerate(batch):
-        sql_key = getattr(c, "sql_key", "") or ""
+        sql_key = getattr(c, "sql_key", "")
         sql_text = (getattr(c, "sql_text", "") or "").strip()
         prev = ""
         if prev_summaries and i < len(prev_summaries):
@@ -473,7 +473,7 @@ def _process_one_sql_chunk(
     api_key: str,
 ) -> Tuple[List[ReadsWritesEdge], List[FkEdge], List[ColumnRef]]:
     """단일 SQL 청크에 대해 LLM 테이블/컬럼/FK 추출. 병렬 호출용."""
-    sql_key = getattr(chunk, "sql_key", "") or ""
+    sql_key = getattr(chunk, "sql_key", "")
     sql_text = (getattr(chunk, "sql_text", "") or "").strip()
     edges: List[ReadsWritesEdge] = []
     fk_edges: List[FkEdge] = []
@@ -511,7 +511,7 @@ def _build_sql_batches(
     current: List[SqlStatementChunk] = []
     current_tokens = 0
     for c in chunks:
-        sql_key = getattr(c, "sql_key", "") or ""
+        sql_key = getattr(c, "sql_key", "")
         sql_text = (getattr(c, "sql_text", "") or "").strip()
         t = estimate_tokens(sql_key) + estimate_tokens(sql_text)
         if t > max_tokens:
@@ -590,7 +590,7 @@ def _process_one_sql_batch(
         for (s, n), d in (desc_map or {}).items():
             if d and (s, n) not in table_descriptions:
                 table_descriptions[(s, n)] = d
-        sql_key = getattr(chunk, "sql_key", "") or ""
+        sql_key = getattr(chunk, "sql_key", "")
         tables_set = {(s or "", t or "") for s, t, _ in tables}
         seen: set = set()
         for schema, table, rel in tables:
@@ -742,7 +742,7 @@ def link_sql_to_tables(
 
     by_key: Dict[str, List[SqlStatementChunk]] = {}
     for c in expanded:
-        k = getattr(c, "sql_key", "") or ""
+        k = getattr(c, "sql_key", "")
         by_key.setdefault(k, []).append(c)
     max_pieces = max(len(v) for v in by_key.values()) if by_key else 0
     results_by_key: Dict[str, List[SqlChunkRawResult]] = {k: [] for k in by_key}
@@ -796,7 +796,7 @@ def link_sql_to_tables(
                     for j, chunk in enumerate(batch):
                         if j < len(raw):
                             results_by_key.setdefault(
-                                getattr(chunk, "sql_key", "") or "",
+                                getattr(chunk, "sql_key", ""),
                                 [],
                             ).append(raw[j])
                     for x in e:
@@ -835,7 +835,7 @@ def link_sql_to_tables(
                             for j, chunk in enumerate(batch):
                                 if j < len(raw):
                                     results_by_key.setdefault(
-                                        getattr(chunk, "sql_key", "") or "",
+                                        getattr(chunk, "sql_key", ""),
                                         [],
                                     ).append(raw[j])
                             for x in e:

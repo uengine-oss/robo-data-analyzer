@@ -1,0 +1,49 @@
+name: "variable_summary"
+description: "변수(멤버/필드) 요약 - 모듈/변수 주석·어노테이션 컨텍스트 반영"
+version: "1.0"
+
+input_schema:
+  required:
+    - code
+    - locale
+  optional:
+    - module_comment
+    - module_annotations
+    - variable_comment
+    - variable_annotations
+    - variable_name
+    - variable_type
+
+prompt: |
+  [ROLE]
+  당신은 모듈의 변수(멤버/필드)를 분석하여 의미 중심의 요약을 작성하는 전문가입니다.
+  주어진 변수 선언/초기화 코드와 모듈·변수 주석·어노테이션을 바탕으로, 이 변수가 무엇을 담는지·어떤 역할인지 요약하세요.
+  
+  
+  [LANGUAGE_SETTING]
+  응답 언어: {{ locale }}
+  모든 분석 결과와 설명은 지정된 언어로 생성해야 합니다.
+  
+  
+  [INPUT_DATA]
+  {% if module_comment %}소속 모듈 주석: {{ module_comment }}{% endif %}
+  {% if module_annotations %}소속 모듈 어노테이션: {{ module_annotations }}{% endif %}
+  {% if variable_comment %}변수 주석: {{ variable_comment }}{% endif %}
+  {% if variable_annotations %}변수 어노테이션: {{ variable_annotations }}{% endif %}
+  {% if variable_name %}변수명: {{ variable_name }}{% endif %}
+  {% if variable_type %}변수 타입: {{ variable_type }}{% endif %}
+
+  변수 코드:
+  {{ code }}
+  
+  
+  [TASK]
+  위 변수가 모듈 내에서 어떤 역할을 하는지, 어떤 데이터를 담는지 의미 중심의 자연어 요약을 한 문장에서 세 문장 이내로 작성하세요.
+  - 주석·어노테이션이 있으면 우선 반영하세요.
+  - 코드 식별자(변수명, 모듈명)는 가능하면 의미로 풀어서 설명하세요.
+  - 상태값, 상수값, 설정값 등 의미 있는 값은 유지해도 됩니다.
+  
+  
+  [OUTPUT]
+  반드시 다음 JSON만 출력하세요. 코드블록이나 설명 없이 JSON만 출력.
+  {"summary": "여기에 요약 문장"}

@@ -1,4 +1,4 @@
-"""Framework 전략 데이터 모델. Edge 타입, MethodFacts, InMemoryGraph 등."""
+"""Framework 전략 데이터 모델. Edge 타입, FunctionFacts, InMemoryGraph 등."""
 
 from __future__ import annotations
 
@@ -100,14 +100,14 @@ class ProcessingPlan:
 
 
 @dataclass
-class FieldFacts:
-    """필드 단위 팩트 (Java AST에서 추출)."""
-    field_id: str
-    class_key: str
+class VariableFacts:
+    """변수 단위 팩트 (AST에서 추출)."""
+    variable_id: str
+    module_key: str
     name: str
     start_line: int
     end_line: int
-    field_type: Optional[str] = None
+    variable_type: Optional[str] = None
     code_ref: Optional[str] = None
     comment: Optional[str] = None
     annotations: Optional[str] = None
@@ -115,9 +115,9 @@ class FieldFacts:
 
 
 @dataclass
-class MethodFacts:
-    """메서드 단위 팩트 (Java AST에서 추출)."""
-    method_id: str
+class FunctionFacts:
+    """함수 단위 팩트 (AST에서 추출)."""
+    function_id: str
     fqn: str
     signature: str
     start_line: int
@@ -127,7 +127,7 @@ class MethodFacts:
     return_type: Optional[str] = None
     params: Optional[str] = None
     code_ref: Optional[str] = None   # file_path + line_range 참조
-    class_key: Optional[str] = None
+    module_key: Optional[str] = None
     package_name: Optional[str] = None
     code: str = ""
 
@@ -147,27 +147,31 @@ class ChunkBundleFile:
 
 @dataclass
 class ChunkBundleMethod:
-    """ChunkBundle 내 METHOD: method_id, span, (선택) method_code(slice+라인번호)."""
-    method_id: str
+    """ChunkBundle 내 METHOD: function_id, span, (선택) function_code(slice+라인번호)."""
+    function_id: str
     start_line: int
     end_line: int
-    method_code: Optional[str] = None
+    function_code: Optional[str] = None
 
 
 @dataclass
-class ChunkBundleMethodCall:
-    """ChunkBundle 내 METHOD_CALL: parent_method_id, call_id, span, call_code(필수)."""
-    parent_method_id: str
+class ChunkBundleFunctionCall:
+    """ChunkBundle 내 FUNCTION_CALL: parent_function_id, call_id, span, call_code(필수)."""
+    parent_function_id: str
     call_id: str
     start_line: int
     end_line: int
     call_code: str  # slice로 생성, 라인번호 포함
 
 
+# 하위호환 alias
+ChunkBundleMethodCall = ChunkBundleFunctionCall
+
+
 @dataclass
 class ChunkBundleVariable:
-    """ChunkBundle 내 VARIABLE: parent_method_id, varName, varType, span, flags, initializer_code."""
-    parent_method_id: str
+    """ChunkBundle 내 VARIABLE: parent_function_id, varName, varType, span, flags, initializer_code."""
+    parent_function_id: str
     var_name: str
     var_type: Optional[str] = None
     start_line: int = 0
@@ -178,11 +182,11 @@ class ChunkBundleVariable:
 
 @dataclass
 class ChunkBundleField:
-    """ChunkBundle 내 FIELD: field_id, span, field_code(선택)."""
-    field_id: str
+    """ChunkBundle 내 FIELD: variable_id, span, variable_code(선택)."""
+    variable_id: str
     start_line: int
     end_line: int
-    field_code: Optional[str] = None
+    variable_code: Optional[str] = None
 
 
 @dataclass
@@ -190,7 +194,7 @@ class ChunkBundle:
     """파일 단위 ChunkBundle: 메타 + METHOD/METHOD_CALL/VARIABLE/FIELD 목록."""
     file_meta: ChunkBundleFile
     methods: List[ChunkBundleMethod] = field(default_factory=list)
-    method_calls: List[ChunkBundleMethodCall] = field(default_factory=list)
+    function_calls: List[ChunkBundleFunctionCall] = field(default_factory=list)
     variables: List[ChunkBundleVariable] = field(default_factory=list)
     fields: List[ChunkBundleField] = field(default_factory=list)
 
@@ -231,8 +235,8 @@ class ArtifactChunk:
     source_path: str = ""
     start_line: int = 0
     end_line: int = 0
-    # EJB XML에서 추출한 관련 클래스 FQN 목록 (ejb-class, home, remote 등)
-    related_class_fqns: Optional[List[str]] = None
+    # EJB XML에서 추출한 관련 모듈 FQN 목록 (ejb-class, home, remote 등)
+    related_module_fqns: Optional[List[str]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -260,19 +264,19 @@ class ColumnRef:
 
 
 @dataclass
-class MethodTableEdge:
-    """Method or Field → Table 직접 관계 (READS/WRITES, REFER_TO+reads_writes 유도)."""
-    method_id: str
+class FunctionTableEdge:
+    """Function or Variable → Table 직접 관계 (READS/WRITES, REFER_TO+reads_writes 유도)."""
+    function_id: str
     table_schema: str
     table_name: str
     relation: str  # "READS" | "WRITES"
-    field_id: Optional[str] = None  # when set, source is Field; else Method
+    variable_id: Optional[str] = None  # when set, source is Variable; else Function
 
 
 @dataclass
-class ClassTableEdge:
-    """자바 엔티티 Class → Table 출처 연결. (CLASS)-[:REFER_TO]->(TABLE). entity::FQN 전용."""
-    class_fqn: str
+class ModuleTableEdge:
+    """엔티티 Module → Table 출처 연결. (MODULE)-[:REFER_TO]->(TABLE). entity::FQN 전용."""
+    module_fqn: str
     table_schema: str
     table_name: str
 
@@ -296,13 +300,13 @@ class ReadsWritesEdge:
 
 @dataclass
 class ReferToEdge:
-    """(Method|Field)-[:REFER_TO]->(SqlStatement|ConfigSection|ArtifactChunk|Class) 통합 관계."""
-    method_id: str
+    """(Function|Variable)-[:REFER_TO]->(SqlStatement|ConfigSection|ArtifactChunk|Class) 통합 관계."""
+    function_id: str
     target_type: str   # "SqlStatement" | "ConfigSection" | "ArtifactChunk" | "Class"
     target_id: str     # sql_key | config_key_path | chunk_id | class fqn
     evidence: Dict[str, Any] = field(default_factory=dict)
     confidence: float = 1.0
-    field_id: Optional[str] = None  # when set, source is Field; else Method
+    variable_id: Optional[str] = None  # when set, source is Variable; else Function
 
 
 @dataclass
@@ -355,12 +359,12 @@ class DmlRelation(StrEnum):
 
 @dataclass
 class ReferenceCandidate:
-    """참조 후보 (Phase5-A 추출). kind별 value/receiver/method_name/className/path 등."""
+    """참조 후보 (Phase5-A 추출). kind별 value/receiver/function_name/moduleName/path 등."""
     kind: str  # SQL_LITERAL | SQL_KEY_LITERAL | CALL_REF | CONFIG_KEY_REF | NEW_INSTANCE_REF | DATA_PATH_REF | NAME_REF
     value: Optional[str] = None
     receiver: Optional[str] = None
-    method_name: Optional[str] = None
-    className: Optional[str] = None
+    function_name: Optional[str] = None
+    moduleName: Optional[str] = None
     path: Optional[str] = None
     line_range: Optional[tuple] = None  # (start_line, end_line)
     code_snippet: Optional[str] = None
@@ -368,32 +372,32 @@ class ReferenceCandidate:
 
 @dataclass
 class UnresolvedLink:
-    """해석 실패 참조 (키 없음, 다중 후보, 동적 키 등). 소스는 Method 또는 Field."""
-    method_id: str
+    """해석 실패 참조 (키 없음, 다중 후보, 동적 키 등). 소스는 Function 또는 Variable."""
+    function_id: str
     caller_fqn: str
     ref_candidates: List[Any]  # List[ReferenceCandidate] or list of dicts
     file: Optional[str] = None
     line_range: Optional[tuple] = None
-    field_id: Optional[str] = None  # when set, source is Field; else Method
+    variable_id: Optional[str] = None  # when set, source is Variable; else Function
 
 
 # ---------------------------------------------------------------------------
-# Step6 LLM → CALLS / USES (METHOD→METHOD, CLASS→CLASS)
+# Step6 LLM → CALLS / USES (METHOD→METHOD, MODULE→MODULE)
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class CallsEdge:
-    """(METHOD)-[:CALLS]->(METHOD) 관계. scope='internal'=프로젝트 내, 'external'=외부(미해상)."""
-    caller_method_id: str
-    callee_method_id: str
+    """(FUNCTION)-[:CALLS]->(FUNCTION) 관계. scope='internal'=프로젝트 내, 'external'=외부(미해상)."""
+    caller_function_id: str
+    callee_function_id: str
     call_code: str = ""  # "target.methodName" 등 (선택)
     scope: str = "internal"  # 'internal' | 'external' (framework/dbms와 동일)
 
 
 @dataclass
 class UsesEdge:
-    """(CLASS)-[:USES]->(CLASS) 관계. internal=분석 대상 내, external=외부 클래스(framework와 동일)."""
+    """(MODULE)-[:USES]->(MODULE) 관계. internal=분석 대상 내, external=외부 모듈(framework와 동일)."""
     from_fqn: str
     to_fqn: str
     scope: str = "internal"  # 'internal' | 'external'
@@ -408,13 +412,13 @@ class UsesEdge:
 class InMemoryGraph:
     """메모리 그래프. 노드/엣지 리스트 보관."""
 
-    methods: List[MethodFacts] = field(default_factory=list)
+    methods: List[FunctionFacts] = field(default_factory=list)
     sql_chunks: List[SqlStatementChunk] = field(default_factory=list)
     config_chunks: List[ConfigSectionChunk] = field(default_factory=list)
     refer_to_edges: List[ReferToEdge] = field(default_factory=list)
     reads_writes: List[ReadsWritesEdge] = field(default_factory=list)
     fk_edges: List[FkEdge] = field(default_factory=list)
-    summary_by_method: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    summary_by_function: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     calls_edges: List[CallsEdge] = field(default_factory=list)
     uses_edges: List[UsesEdge] = field(default_factory=list)
 
@@ -422,7 +426,7 @@ class InMemoryGraph:
         return {
             "methods": [
                 {
-                    "method_id": m.method_id,
+                    "function_id": m.function_id,
                     "fqn": m.fqn,
                     "start_line": m.start_line,
                     "end_line": m.end_line,
@@ -443,7 +447,7 @@ class InMemoryGraph:
                 for c in self.config_chunks
             ],
             "refer_to_edges": [
-                {"method_id": e.method_id, "target_type": e.target_type, "target_id": e.target_id}
+                {"function_id": e.function_id, "target_type": e.target_type, "target_id": e.target_id}
                 for e in self.refer_to_edges
             ],
             "reads_writes": [
@@ -462,9 +466,9 @@ class InMemoryGraph:
                 }
                 for e in self.fk_edges
             ],
-            "summaries": self.summary_by_method,
+            "summaries": self.summary_by_function,
             "calls_edges": [
-                {"caller_method_id": e.caller_method_id, "callee_method_id": e.callee_method_id}
+                {"caller_function_id": e.caller_function_id, "callee_function_id": e.callee_function_id}
                 for e in self.calls_edges
             ],
             "uses_edges": [
@@ -475,25 +479,25 @@ class InMemoryGraph:
 
 
 def build_in_memory_graph(
-    method_facts_list: List[MethodFacts],
+    function_facts_list: List[FunctionFacts],
     sql_chunks: List[SqlStatementChunk],
     config_chunks: List[ConfigSectionChunk],
     refer_to_edges: List[ReferToEdge],
     reads_writes: List[ReadsWritesEdge],
     fk_edges: List[FkEdge],
-    summary_by_method: Dict[str, Dict[str, Any]],
+    summary_by_function: Dict[str, Dict[str, Any]],
     calls_edges: Optional[List[CallsEdge]] = None,
     uses_edges: Optional[List[UsesEdge]] = None,
 ) -> InMemoryGraph:
     """Step 결과를 인메모리 그래프로 구성."""
     return InMemoryGraph(
-        methods=method_facts_list,
+        methods=function_facts_list,
         sql_chunks=sql_chunks,
         config_chunks=config_chunks,
         refer_to_edges=refer_to_edges,
         reads_writes=reads_writes,
         fk_edges=fk_edges,
-        summary_by_method=summary_by_method,
+        summary_by_function=summary_by_function,
         calls_edges=calls_edges or [],
         uses_edges=uses_edges or [],
     )

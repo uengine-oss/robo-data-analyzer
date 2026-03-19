@@ -1,15 +1,15 @@
-name: "class_summary"
-description: "클래스 요약 - 메서드/필드 요약 목록을 청크 단위로 받아 클래스 전체 요약 생성. prev_summary로 이전 청크 요약 전달."
+name: "module_summary"
+description: "모듈 요약 - 메서드/필드 요약 목록을 청크 단위로 받아 모듈 전체 요약 생성. prev_summary로 이전 청크 요약 전달."
 version: "1.0"
 
 input_schema:
   required:
-    - class_fqn
+    - module_fqn
     - items
     - locale
   optional:
-    - class_comment
-    - class_annotations
+    - module_comment
+    - module_annotations
     - prev_summary
     - kind
 
@@ -24,10 +24,10 @@ prompt: |
 
 
   [INPUT_DATA]
-  FQN: {{ class_fqn }}
+  FQN: {{ module_fqn }}
   {% if kind %}노드 종류: {{ kind }}{% endif %}
-  {% if class_comment %}주석: {{ class_comment }}{% endif %}
-  {% if class_annotations %}어노테이션: {{ class_annotations }}{% endif %}
+  {% if module_comment %}주석: {{ module_comment }}{% endif %}
+  {% if module_annotations %}어노테이션: {{ module_annotations }}{% endif %}
   {% if prev_summary %}이전에 요약된 내용 (참고만 하고, 현재 items만으로 이번 요약을 작성하세요):
   {{ prev_summary }}
   {% endif %}
@@ -38,13 +38,13 @@ prompt: |
   {% endfor %}
   
   
-  [TASK 1: 클래스 요약]
-  위 멤버들의 요약을 종합하여, 이 클래스가 전체적으로 어떤 책임을 가지는지 2~5문장으로 요약하세요.
-  - class_comment/class_annotations가 있으면 반영하세요.
-  - prev_summary가 있으면 이 클래스의 다른 멤버 요약이므로, 이번 items와 함께 일관된 클래스 요약으로 통합하세요.
-  - 클래스명, 메서드명 등 기술적 식별자는 의미로 풀어 설명하세요.
+  [TASK 1: 모듈 요약]
+  위 멤버들의 요약을 종합하여, 이 모듈이 전체적으로 어떤 책임을 가지는지 2~5문장으로 요약하세요.
+  - module_comment/module_annotations가 있으면 반영하세요.
+  - prev_summary가 있으면 이 모듈의 다른 멤버 요약이므로, 이번 items와 함께 일관된 모듈 요약으로 통합하세요.
+  - 모듈명, 메서드명 등 기술적 식별자는 의미로 풀어 설명하세요.
   - 단, 비즈니스 도메인 데이터를 나타내는 필드명(엔티티 속성명)은 그대로 유지하거나 "(속성 한글명)" 형태로 병기하세요.
-  - 메서드 요약에 나타난 구체적 수치, 비교연산자(<, >=, <= 등), 상태값은 반드시 클래스 요약에도 포함하세요.
+  - 메서드 요약에 나타난 구체적 수치, 비교연산자(<, >=, <= 등), 상태값은 반드시 모듈 요약에도 포함하세요.
   - 상태 전이 흐름이 있으면 "A → B → C" 형태로 명시하세요.
 
 
@@ -93,4 +93,4 @@ prompt: |
 
   [OUTPUT]
   다음 JSON만 출력 (코드블록 없이):
-  {"summary": "클래스 요약 문장", "classStereotype": "Service"}
+  {"summary": "모듈 요약 문장", "moduleStereotype": "Service"}

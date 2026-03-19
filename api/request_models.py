@@ -52,7 +52,7 @@ class SchemaTableInfo(BaseModel):
     table_schema: str  # Renamed from 'schema' to avoid BaseModel attribute conflict
     datasource: Optional[str] = ""  # 데이터소스 (예: robo_postgres, ontology)
     description: str
-    description_source: Optional[str] = ""  # 설명 출처: ddl, procedure, user
+    description_source: Optional[str] = ""  # 설명 출처: ddl, code, sample
     analyzed_description: Optional[str] = ""  # 프로시저 분석에서 도출된 설명
     column_count: int
 
@@ -64,7 +64,7 @@ class SchemaColumnInfo(BaseModel):
     dtype: str
     nullable: bool
     description: str
-    description_source: Optional[str] = ""  # 설명 출처: ddl, procedure, user
+    description_source: Optional[str] = ""  # 설명 출처: ddl, code, sample
     analyzed_description: Optional[str] = ""  # 프로시저 분석에서 도출된 설명
 
 
