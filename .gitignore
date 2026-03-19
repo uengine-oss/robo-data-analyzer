@@ -41,3 +41,6 @@ test/data/neo4j_exports/records.json
 
 # Note folder
 /note/
+
+# Claude Code
+.claude
