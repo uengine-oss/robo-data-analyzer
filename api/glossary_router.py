@@ -17,14 +17,16 @@ Neo4j 기반 비즈니스 용어집 관리 기능을 제공합니다.
 - (Term)-[:HAS_TAG]->(Tag)
 """
 
+import json
 import logging
-from typing import Optional, List
+from typing import Any, Optional, List
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from config.settings import settings
-from service import glossary_manage_service
+from service import glossary_bulk_service, glossary_manage_service
 
 
 router = APIRouter(prefix=f"{settings.api_prefix}/glossary")
@@ -99,6 +101,49 @@ class TagCreate(BaseModel):
     """태그 생성 요청"""
     name: str = Field(..., description="태그 이름")
     color: str = Field("#3498db", description="태그 색상")
+
+
+class BulkExtractRequest(BaseModel):
+    """일괄 추출 요청"""
+    session_id: str = Field(..., description="bulk-upload 세션 ID")
+    confirmed_mapping: dict[str, Any] = Field(default_factory=dict, description="확정된 칼럼 매핑")
+    confirmed_joins: List[dict[str, Any]] = Field(default_factory=list, description="확정된 조인 규칙")
+    value_transforms: dict[str, Any] = Field(default_factory=dict, description="값 변환 규칙")
+    use_ai_enrichment: bool = Field(False, description="AI 보강 사용 여부")
+
+
+class BulkImportTerm(BaseModel):
+    """일괄 가져오기용 용어"""
+    name: str = Field(..., description="용어 이름")
+    description: str = Field("", description="용어 설명")
+    status: str = Field("Draft", description="상태")
+    synonyms: List[str] = Field(default_factory=list, description="동의어 목록")
+    domains: List[str] = Field(default_factory=list, description="도메인 목록")
+    owners: List[str] = Field(default_factory=list, description="소유자 목록")
+    reviewers: List[str] = Field(default_factory=list, description="검토자 목록")
+    tags: List[str] = Field(default_factory=list, description="태그 목록")
+
+
+class BulkImportRequest(BaseModel):
+    """일괄 가져오기 요청"""
+    terms: List[BulkImportTerm] = Field(default_factory=list, description="가져올 용어 목록")
+    unmapped_columns_reminder: List[str] = Field(default_factory=list, description="매핑되지 않은 칼럼 안내")
+
+
+def _extract_optional_api_key(request: Request) -> str:
+    return (
+        request.headers.get("OpenAI-Api-Key")
+        or request.headers.get("Anthropic-Api-Key")
+        or settings.llm.api_key
+        or ""
+    )
+
+
+def _parse_stream_payload(payload: str) -> dict[str, Any]:
+    try:
+        return json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(400, f"stream payload 파싱 실패: {exc}") from exc
 
 
 # =============================================================================
@@ -199,6 +244,107 @@ async def list_terms(
     except Exception as e:
         logger.error("[API] 용어 목록 조회 실패 | error=%s", e)
         raise HTTPException(500, f"용어 목록 조회 실패: {e}")
+
+
+@router.post("/{glossary_id}/terms/bulk-upload")
+async def bulk_upload_terms(
+    glossary_id: str,
+    request: Request,
+    files: List[UploadFile] = File(...),
+):
+    """표준 용어 사전 파일 업로드 및 구조 분석"""
+    logger.info("[API] 용어 일괄 업로드 | glossary=%s | file_count=%d", glossary_id, len(files))
+    try:
+        return await glossary_bulk_service.parse_uploaded_files(
+            files=files,
+            api_key=_extract_optional_api_key(request),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("[API] 용어 일괄 업로드 실패 | error=%s", e)
+        raise HTTPException(500, f"용어 일괄 업로드 실패: {e}")
+
+
+@router.post("/{glossary_id}/terms/bulk-extract")
+async def bulk_extract_terms(
+    glossary_id: str,
+    request: Request,
+    body: BulkExtractRequest,
+):
+    """확정된 매핑으로 용어 후보 추출"""
+    logger.info(
+        "[API] 용어 일괄 추출 | glossary=%s | session=%s | ai=%s",
+        glossary_id,
+        body.session_id,
+        body.use_ai_enrichment,
+    )
+    try:
+        return await glossary_bulk_service.extract_term_candidates(
+            session_id=body.session_id,
+            confirmed_mapping=body.confirmed_mapping,
+            confirmed_joins=body.confirmed_joins,
+            value_transforms=body.value_transforms,
+            use_ai_enrichment=body.use_ai_enrichment,
+            api_key=_extract_optional_api_key(request),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("[API] 용어 일괄 추출 실패 | error=%s", e)
+        raise HTTPException(500, f"용어 일괄 추출 실패: {e}")
+
+
+@router.get("/{glossary_id}/terms/bulk-extract/stream")
+async def bulk_extract_stream(
+    glossary_id: str,
+    request: Request,
+    session_id: str,
+    payload: str,
+):
+    """AI 보강 추출 진행률 스트리밍"""
+    logger.info("[API] 용어 일괄 추출 스트리밍 | glossary=%s | session=%s", glossary_id, session_id)
+    stream_payload = _parse_stream_payload(payload)
+    return StreamingResponse(
+        glossary_bulk_service.extract_with_streaming(
+            session_id=session_id,
+            confirmed_mapping=stream_payload.get("confirmed_mapping") or {},
+            confirmed_joins=stream_payload.get("confirmed_joins") or [],
+            value_transforms=stream_payload.get("value_transforms") or {},
+            api_key=_extract_optional_api_key(request),
+        ),
+        media_type="text/event-stream",
+    )
+
+
+@router.post("/{glossary_id}/terms/bulk-import")
+async def bulk_import_terms(glossary_id: str, body: BulkImportRequest):
+    """추출된 용어 후보를 일괄 가져오기"""
+    logger.info("[API] 용어 일괄 가져오기 | glossary=%s | terms=%d", glossary_id, len(body.terms))
+    try:
+        return await glossary_bulk_service.bulk_create_terms(
+            glossary_id=glossary_id,
+            terms=[term.model_dump() for term in body.terms],
+            unmapped_columns_reminder=body.unmapped_columns_reminder,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("[API] 용어 일괄 가져오기 실패 | error=%s", e)
+        raise HTTPException(500, f"용어 일괄 가져오기 실패: {e}")
+
+
+@router.delete("/{glossary_id}/terms/bulk-rollback/{batch_id}")
+async def bulk_rollback(glossary_id: str, batch_id: str):
+    """특정 batch_id로 생성된 용어 일괄 롤백"""
+    logger.info("[API] 용어 일괄 롤백 | glossary=%s | batch=%s", glossary_id, batch_id)
+    try:
+        return await glossary_bulk_service.rollback_batch(glossary_id, batch_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("[API] 용어 일괄 롤백 실패 | error=%s", e)
+        raise HTTPException(500, f"용어 일괄 롤백 실패: {e}")
 
 
 @router.post("/{glossary_id}/terms")

@@ -444,6 +444,7 @@ async def create_new_term(glossary_id: str, term_data: dict) -> dict:
     description = term_data.get("description", "")
     status = term_data.get("status", "Draft")
     synonyms = _normalize_unique_names(term_data.get("synonyms"))
+    batch_id = term_data.get("batch_id")
     metadata_fragment, metadata_params = _build_term_metadata_sync_fragment("__cy_t__", {
         "domains": term_data.get("domains", []),
         "owners": term_data.get("owners", []),
@@ -460,6 +461,7 @@ async def create_new_term(glossary_id: str, term_data: dict) -> dict:
                 description: $description,
                 status: $status,
                 synonyms: $synonyms,
+                batch_id: $batch_id,
                 created_at: $timestamp,
                 updated_at: $timestamp
             }})
@@ -472,6 +474,7 @@ async def create_new_term(glossary_id: str, term_data: dict) -> dict:
             "description": description,
             "status": status,
             "synonyms": synonyms,
+            "batch_id": batch_id,
             "timestamp": timestamp,
             **metadata_params,
         }

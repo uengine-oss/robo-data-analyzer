@@ -38,6 +38,7 @@ pandas==2.2.3
 openpyxl==3.1.5
 xlrd==2.0.1
 rapidfuzz>=3.0.0
+charset-normalizer>=3.4.3
 
 # exp 실험 모듈 (PRD 파이프라인)
 langgraph>=0.2.0
