@@ -31,6 +31,13 @@ router = APIRouter(prefix=f"{settings.api_prefix}/glossary")
 logger = logging.getLogger(__name__)
 
 
+def _require_non_empty_name(name: str, field_label: str) -> str:
+    normalized = name.strip()
+    if not normalized:
+        raise HTTPException(400, f"{field_label} 이름을 입력해주세요.")
+    return normalized
+
+
 # =============================================================================
 # 요청/응답 모델
 # =============================================================================
@@ -204,8 +211,10 @@ async def create_term(glossary_id: str, body: TermCreate):
             "description": body.description,
             "status": body.status,
             "synonyms": body.synonyms,
+            "relatedTerms": body.relatedTerms,
             "domains": body.domains,
             "owners": body.owners,
+            "reviewers": body.reviewers,
             "tags": body.tags,
         }
         return await glossary_manage_service.create_new_term(glossary_id, term_data)
@@ -239,6 +248,12 @@ async def update_term(glossary_id: str, term_id: str, body: TermUpdate):
             "name": body.name,
             "description": body.description,
             "status": body.status,
+            "synonyms": body.synonyms,
+            "relatedTerms": body.relatedTerms,
+            "domains": body.domains,
+            "owners": body.owners,
+            "reviewers": body.reviewers,
+            "tags": body.tags,
         }
         result = await glossary_manage_service.update_term_info(glossary_id, term_id, term_data)
         if not result.get("updated"):
@@ -297,7 +312,10 @@ async def list_tags():
 async def create_domain(body: DomainCreate):
     """새 도메인 생성"""
     try:
-        return await glossary_manage_service.create_new_domain(body.name, body.description)
+        name = _require_non_empty_name(body.name, "도메인")
+        return await glossary_manage_service.create_new_domain(name, body.description)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(500, f"도메인 생성 실패: {e}")
 
@@ -306,7 +324,10 @@ async def create_domain(body: DomainCreate):
 async def create_owner(body: OwnerCreate):
     """새 소유자 생성"""
     try:
-        return await glossary_manage_service.create_new_owner(body.name, body.email, body.role)
+        name = _require_non_empty_name(body.name, "소유자")
+        return await glossary_manage_service.create_new_owner(name, body.email, body.role)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(500, f"소유자 생성 실패: {e}")
 
@@ -315,6 +336,9 @@ async def create_owner(body: OwnerCreate):
 async def create_tag(body: TagCreate):
     """새 태그 생성"""
     try:
-        return await glossary_manage_service.create_new_tag(body.name, body.color)
+        name = _require_non_empty_name(body.name, "태그")
+        return await glossary_manage_service.create_new_tag(name, body.color)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(500, f"태그 생성 실패: {e}")
