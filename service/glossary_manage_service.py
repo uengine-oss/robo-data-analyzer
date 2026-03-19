@@ -23,6 +23,145 @@ def get_current_timestamp() -> str:
     return datetime.utcnow().isoformat() + "Z"
 
 
+def _normalize_unique_names(values: Optional[List[str]]) -> List[str]:
+    """이름 목록을 정리하고 중복을 제거"""
+    if values is None or not isinstance(values, list):
+        return []
+
+    normalized: List[str] = []
+    seen: set[str] = set()
+
+    for value in values:
+        if not isinstance(value, str):
+            continue
+
+        cleaned = value.strip()
+        if not cleaned or cleaned in seen:
+            continue
+
+        seen.add(cleaned)
+        normalized.append(cleaned)
+
+    return normalized
+
+
+def _clean_collected_names(values: Optional[List[Optional[str]]]) -> List[str]:
+    """Cypher collect 결과에서 빈 값을 제거"""
+    if not values:
+        return []
+
+    cleaned: List[str] = []
+    seen: set[str] = set()
+
+    for value in values:
+        if not isinstance(value, str):
+            continue
+
+        normalized = value.strip()
+        if not normalized or normalized in seen:
+            continue
+
+        seen.add(normalized)
+        cleaned.append(normalized)
+
+    return cleaned
+
+
+def _clean_collected_tags(values: Optional[List[Optional[dict]]]) -> List[dict]:
+    """Cypher collect 결과에서 유효한 태그 객체만 반환"""
+    if not values:
+        return []
+
+    cleaned: List[dict] = []
+    seen: set[str] = set()
+
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+
+        raw_name = value.get("name")
+        if not isinstance(raw_name, str):
+            continue
+
+        name = raw_name.strip()
+        if not name or name in seen:
+            continue
+
+        seen.add(name)
+        cleaned.append({
+            "id": value.get("id") or name,
+            "name": name,
+            "color": value.get("color") or "#3498db",
+        })
+
+    return cleaned
+
+
+def _build_term_metadata_sync_fragment(term_var: str, term_data: dict) -> tuple[str, dict]:
+    """단일 Cypher 쿼리 안에서 메타데이터 관계를 동기화하는 fragment 생성"""
+    fragments: List[str] = []
+    params: dict = {}
+
+    relation_specs = [
+        {
+            "field_name": "domains",
+            "param_name": "domains",
+            "delete_alias": "__cy_domain_rel__",
+            "relation_type": "BELONGS_TO_DOMAIN",
+            "node_label": "Domain",
+            "node_alias": "__cy_domain__",
+            "on_create_set": "ON CREATE SET __cy_domain__.description = ''",
+        },
+        {
+            "field_name": "owners",
+            "param_name": "owners",
+            "delete_alias": "__cy_owner_rel__",
+            "relation_type": "OWNED_BY",
+            "node_label": "Owner",
+            "node_alias": "__cy_owner__",
+            "on_create_set": "ON CREATE SET __cy_owner__.email = '', __cy_owner__.role = 'Owner'",
+        },
+        {
+            "field_name": "reviewers",
+            "param_name": "reviewers",
+            "delete_alias": "__cy_reviewer_rel__",
+            "relation_type": "REVIEWED_BY",
+            "node_label": "Owner",
+            "node_alias": "__cy_reviewer__",
+            "on_create_set": "ON CREATE SET __cy_reviewer__.email = '', __cy_reviewer__.role = 'Reviewer'",
+        },
+        {
+            "field_name": "tags",
+            "param_name": "tags",
+            "delete_alias": "__cy_tag_rel__",
+            "relation_type": "HAS_TAG",
+            "node_label": "Tag",
+            "node_alias": "__cy_tag__",
+            "on_create_set": "ON CREATE SET __cy_tag__.color = '#3498db'",
+        },
+    ]
+
+    for spec in relation_specs:
+        raw_values = term_data.get(spec["field_name"])
+        if raw_values is None:
+            continue
+
+        params[spec["param_name"]] = _normalize_unique_names(raw_values)
+        fragments.extend([
+            f"WITH {term_var}",
+            f"OPTIONAL MATCH ({term_var})-[{spec['delete_alias']}:{spec['relation_type']}]->(:{spec['node_label']})",
+            f"DELETE {spec['delete_alias']}",
+            f"WITH {term_var}",
+            f"FOREACH (item_name IN ${spec['param_name']} |",
+            f"    MERGE ({spec['node_alias']}:{spec['node_label']} {{name: item_name}})",
+            f"    {spec['on_create_set']}",
+            f"    MERGE ({term_var})-[:{spec['relation_type']}]->({spec['node_alias']})",
+            ")",
+        ])
+
+    return ("\n".join(fragments), params)
+
+
 # =============================================================================
 # 용어집(Glossary) CRUD
 # =============================================================================
@@ -248,13 +387,25 @@ async def fetch_glossary_terms(
             WHERE {where_clause}
             OPTIONAL MATCH (__cy_t__)-[:BELONGS_TO_DOMAIN]->(__cy_d__:Domain)
             OPTIONAL MATCH (__cy_t__)-[:HAS_TAG]->(__cy_tag__:Tag)
+            OPTIONAL MATCH (__cy_t__)-[:OWNED_BY]->(__cy_o__:Owner)
+            OPTIONAL MATCH (__cy_t__)-[:REVIEWED_BY]->(__cy_r__:Owner)
             RETURN 
                 elementId(__cy_t__) as id,
                 __cy_t__.name as name,
                 __cy_t__.description as description,
                 __cy_t__.status as status,
+                __cy_t__.synonyms as synonyms,
                 collect(DISTINCT __cy_d__.name) as domains,
-                collect(DISTINCT __cy_tag__.name) as tags
+                collect(DISTINCT CASE
+                    WHEN __cy_tag__ IS NULL THEN NULL
+                    ELSE {{
+                        id: elementId(__cy_tag__),
+                        name: __cy_tag__.name,
+                        color: coalesce(__cy_tag__.color, '#3498db')
+                    }}
+                END) as tags,
+                collect(DISTINCT __cy_o__.name) as owners,
+                collect(DISTINCT __cy_r__.name) as reviewers
             ORDER BY __cy_t__.name
             LIMIT $limit
         """,
@@ -271,8 +422,11 @@ async def fetch_glossary_terms(
                 "name": record["name"],
                 "description": record.get("description", ""),
                 "status": record.get("status", "Draft"),
-                "domains": record.get("domains", []),
-                "tags": record.get("tags", []),
+                "synonyms": record.get("synonyms", []),
+                "domains": _clean_collected_names(record.get("domains")),
+                "tags": _clean_collected_tags(record.get("tags")),
+                "owners": _clean_collected_names(record.get("owners")),
+                "reviewers": _clean_collected_names(record.get("reviewers")),
             })
         return {"terms": terms}
     finally:
@@ -289,18 +443,29 @@ async def create_new_term(glossary_id: str, term_data: dict) -> dict:
     name = term_data.get("name", "")
     description = term_data.get("description", "")
     status = term_data.get("status", "Draft")
+    synonyms = _normalize_unique_names(term_data.get("synonyms"))
+    batch_id = term_data.get("batch_id")
+    metadata_fragment, metadata_params = _build_term_metadata_sync_fragment("__cy_t__", {
+        "domains": term_data.get("domains", []),
+        "owners": term_data.get("owners", []),
+        "reviewers": term_data.get("reviewers", []),
+        "tags": term_data.get("tags", []),
+    })
     
     query = {
-        "query": """
+        "query": f"""
             MATCH (__cy_g__:Glossary)
             WHERE elementId(__cy_g__) = $glossary_id
-            CREATE (__cy_g__)-[:HAS_TERM]->(__cy_t__:Term {
+            CREATE (__cy_g__)-[:HAS_TERM]->(__cy_t__:Term {{
                 name: $name,
                 description: $description,
                 status: $status,
+                synonyms: $synonyms,
+                batch_id: $batch_id,
                 created_at: $timestamp,
                 updated_at: $timestamp
-            })
+            }})
+            {metadata_fragment}
             RETURN elementId(__cy_t__) as id, __cy_t__.name as name
         """,
         "parameters": {
@@ -308,7 +473,10 @@ async def create_new_term(glossary_id: str, term_data: dict) -> dict:
             "name": name,
             "description": description,
             "status": status,
+            "synonyms": synonyms,
+            "batch_id": batch_id,
             "timestamp": timestamp,
+            **metadata_params,
         }
     }
     
@@ -341,6 +509,7 @@ async def fetch_term_by_id(glossary_id: str, term_id: str) -> dict:
             OPTIONAL MATCH (__cy_t__)-[:BELONGS_TO_DOMAIN]->(__cy_d__:Domain)
             OPTIONAL MATCH (__cy_t__)-[:HAS_TAG]->(__cy_tag__:Tag)
             OPTIONAL MATCH (__cy_t__)-[:OWNED_BY]->(__cy_o__:Owner)
+            OPTIONAL MATCH (__cy_t__)-[:REVIEWED_BY]->(__cy_r__:Owner)
             RETURN 
                 elementId(__cy_t__) as id,
                 __cy_t__.name as name,
@@ -348,8 +517,16 @@ async def fetch_term_by_id(glossary_id: str, term_id: str) -> dict:
                 __cy_t__.status as status,
                 __cy_t__.synonyms as synonyms,
                 collect(DISTINCT __cy_d__.name) as domains,
-                collect(DISTINCT __cy_tag__.name) as tags,
-                collect(DISTINCT __cy_o__.name) as owners
+                collect(DISTINCT CASE
+                    WHEN __cy_tag__ IS NULL THEN NULL
+                    ELSE {
+                        id: elementId(__cy_tag__),
+                        name: __cy_tag__.name,
+                        color: coalesce(__cy_tag__.color, '#3498db')
+                    }
+                END) as tags,
+                collect(DISTINCT __cy_o__.name) as owners,
+                collect(DISTINCT __cy_r__.name) as reviewers
         """,
         "parameters": {"glossary_id": glossary_id, "term_id": term_id}
     }
@@ -365,9 +542,10 @@ async def fetch_term_by_id(glossary_id: str, term_id: str) -> dict:
                 "description": record.get("description", ""),
                 "status": record.get("status", "Draft"),
                 "synonyms": record.get("synonyms", []),
-                "domains": record.get("domains", []),
-                "tags": record.get("tags", []),
-                "owners": record.get("owners", []),
+                "domains": _clean_collected_names(record.get("domains")),
+                "tags": _clean_collected_tags(record.get("tags")),
+                "owners": _clean_collected_names(record.get("owners")),
+                "reviewers": _clean_collected_names(record.get("reviewers")),
             }
         return None
     finally:
@@ -392,6 +570,11 @@ async def update_term_info(glossary_id: str, term_id: str, term_data: dict) -> d
     if term_data.get("status") is not None:
         set_clauses.append("__cy_t__.status = $status")
         params["status"] = term_data["status"]
+    if term_data.get("synonyms") is not None:
+        set_clauses.append("__cy_t__.synonyms = $synonyms")
+        params["synonyms"] = _normalize_unique_names(term_data["synonyms"])
+
+    metadata_fragment, metadata_params = _build_term_metadata_sync_fragment("__cy_t__", term_data)
     
     query = {
         "query": f"""
@@ -399,9 +582,13 @@ async def update_term_info(glossary_id: str, term_id: str, term_data: dict) -> d
             WHERE elementId(__cy_g__) = $glossary_id
               AND elementId(__cy_t__) = $term_id
             SET {', '.join(set_clauses)}
+            {metadata_fragment}
             RETURN elementId(__cy_t__) as id
         """,
-        "parameters": params
+        "parameters": {
+            **params,
+            **metadata_params,
+        }
     }
     
     client = Neo4jClient()
@@ -542,7 +729,7 @@ async def create_new_tag(name: str, color: str) -> dict:
     query = {
         "query": """
             CREATE (__cy_tag__:Tag {name: $name, color: $color})
-            RETURN elementId(__cy_tag__) as id, __cy_tag__.name as name
+            RETURN elementId(__cy_tag__) as id, __cy_tag__.name as name, __cy_tag__.color as color
         """,
         "parameters": {"name": name, "color": color}
     }
@@ -551,7 +738,12 @@ async def create_new_tag(name: str, color: str) -> dict:
     try:
         result = await client.execute_queries([query])
         if result and result[0]:
-            return {"id": result[0][0]["id"], "name": result[0][0]["name"], "message": "태그가 생성되었습니다."}
+            return {
+                "id": result[0][0]["id"],
+                "name": result[0][0]["name"],
+                "color": result[0][0].get("color", color),
+                "message": "태그가 생성되었습니다.",
+            }
         raise RuntimeError("태그 생성 실패")
     finally:
         await client.close()
