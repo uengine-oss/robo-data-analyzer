@@ -26,14 +26,35 @@ from typing import Any, Dict
 
 import yaml
 from jinja2 import Template, TemplateError
+import re as _re
+
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import PromptTemplate
-from langchain_core.runnables import RunnablePassthrough
+from langchain_core.runnables import RunnablePassthrough, RunnableLambda
 
 from util.artifact_logger import invoke_with_audit
 from client.llm_client import get_llm
 
 _MAX_RETRIES = 3
+# LLM 출력에서 JSON 파싱을 깨뜨리는 제어 문자 제거 (e.g. \0, \x01 등)
+_CONTROL_CHAR_RE = _re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f]')
+# JSON 표준에서 유효하지 않은 이스케이프 시퀀스 수리 (예: \0, \a 등)
+# 유효한 이스케이프: \", \\, \/, \b, \f, \n, \r, \t, \uXXXX
+_INVALID_ESCAPE_RE = _re.compile(r'\\(?!["\\/bfnrtu])')
+
+
+def _sanitize_llm_output(text) -> str:
+    """LLM 응답에서 제어 문자 및 잘못된 JSON 이스케이프를 수리하여 파싱 실패 방지."""
+    def _fix(s: str) -> str:
+        s = _CONTROL_CHAR_RE.sub('', s)
+        s = _INVALID_ESCAPE_RE.sub(r'\\\\', s)  # \0 → \\0, \a → \\a 등
+        return s
+    if hasattr(text, 'content'):
+        text.content = _fix(text.content)
+        return text
+    if isinstance(text, str):
+        return _fix(text)
+    return text
 _RETRY_BASE_DELAY = 2.0  # seconds
 
 logger = logging.getLogger(__name__)
@@ -153,6 +174,7 @@ class RuleLoader:
             RunnablePassthrough()
             | PromptTemplate.from_template("{prompt}")
             | llm
+            | RunnableLambda(_sanitize_llm_output)
             | JsonOutputParser()
         )
 

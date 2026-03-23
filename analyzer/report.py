@@ -26,27 +26,50 @@ logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════════════════════
 
 SCOPE_LABELS = {"INTERNAL", "EXTERNAL"}
-CLASS_LABELS = {"MODULE"}
-EXTERNAL_TYPE_LABELS = {"EXTERNAL"}
-METHOD_ROLE_LABELS = {"READMODEL", "COMMAND"}
+MODULE_LABELS = {"MODULE"}
+FUNCTION_ROLE_LABELS = {"READMODEL", "COMMAND"}
 DML_LABELS = {
     "SELECT", "INSERT", "UPDATE", "DELETE", "MERGE",
     "EXECUTE_IMMEDIATE", "FETCH", "CTE", "OPEN_CURSOR", "CREATE_TEMP_TABLE",
 }
-PROCEDURE_LABELS = {"PROCEDURE", "FUNCTION", "TRIGGER"}
 EXCLUDED_REL_TYPES = {"NEXT", "PARENT_OF"}
+
+# ── Framework 역할 기반 1차 레이블 ──
+PRIMARY_LABELS = {"MODULE", "VARIABLE", "CONSTANT"}
+
+# ── DBMS 고유 라벨 (역할 매핑 없이 직접 사용) ──
+DBMS_MODULE_LABELS = {"PROCEDURE", "FUNCTION", "TRIGGER"}
+
+# ontology_roles.yaml 기반 서브레이블 (모든 언어의 AST 타입)
+SUB_LABELS = {
+    # module 역할
+    "CLASS", "INTERFACE", "ENUM", "FILE", "STRUCT", "UNION",
+    # function 역할
+    "METHOD", "CONSTRUCTOR",
+    # variable 역할
+    "FIELD", "MEMBER", "GLOBAL_VARIABLE",
+    # constant 역할
+    "DEFINE",
+}
+
+# stereotypes 섹션 (common + oop)
+STEREOTYPE_LABELS = {
+    "Init", "Query", "Command", "Handler", "Validation", "BusinessLogic",
+    "Endpoint", "Getter", "Setter", "Lifecycle", "Scheduled", "Transactional",
+}
+
+# 노드 통계에서 제외할 보조 라벨
+_SKIP_COUNT_LABELS = SCOPE_LABELS | FUNCTION_ROLE_LABELS | {"EXTERNAL"}
 
 STRUCTURAL_REL_TYPES = {"CONTAINS", "HAS_FUNCTION", "HAS_VARIABLE", "BELONGS_TO_PACKAGE", "CONTAINS_PACKAGE", "HAS_COLUMN"}
 UML_REL_TYPES = {"EXTENDS", "IMPLEMENTS", "ASSOCIATION", "COMPOSITION", "AGGREGATION", "DEPENDENCY"}
-DEP_REL_TYPES = {"CALLS", "USES", "CALL"}
-DB_REL_TYPES = {"FROM", "READS", "WRITES", "REFERS_TO", "REFER_TO", "FK_TO_TABLE", "FK_TO"}
 ETL_REL_TYPES = {"ETL_READS", "ETL_WRITES", "DATA_FLOWS_TO"}
 
-# 엔티티 상세에서 구조 관계로 묶을 관계 타입 (UML + ETL)
+# 모듈 상세에서 구조 관계로 묶을 관계 타입 (UML + ETL)
 ENTITY_STRUCT_REL_TYPES = UML_REL_TYPES | ETL_REL_TYPES
-# 엔티티 상세에서 호출 관계로 묶을 관계 타입
+# 모듈 상세에서 호출 관계로 묶을 관계 타입
 ENTITY_CALL_REL_TYPES = {"CALLS", "USES", "CALL"}
-# 엔티티 상세에서 데이터 접근으로 묶을 관계 타입
+# 모듈 상세에서 데이터 접근으로 묶을 관계 타입
 ENTITY_DATA_REL_TYPES = {"FROM", "READS", "WRITES", "REFER_TO", "REFERS_TO"}
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -59,8 +82,8 @@ SCHEMA_STEREOTYPE = ["스테레오타입", "개수"]
 
 SCHEMA_PKG_MEMBERS = ["이름", "타입", "스테레오타입", "범위"]
 
-SCHEMA_MEMBER = ["이름", "시그니처", "반환타입", "수정자", "요약"]
-SCHEMA_FIELD_VAR = ["이름", "타입", "수정자", "요약"]
+SCHEMA_FUNCTION = ["이름", "시그니처", "반환타입", "수정자", "요약"]
+SCHEMA_VARIABLE = ["이름", "타입", "수정자", "요약"]
 SCHEMA_STRUCT_REL = ["방향", "관계", "대상", "속성"]
 SCHEMA_CALL_REL = ["방향", "대상", "호출코드"]
 SCHEMA_DATA_ACCESS = ["대상", "관계", "근거", "신뢰도"]
@@ -75,7 +98,7 @@ SCHEMA_NONTARGET_REF = ["블록", "테이블", "역할", "근거", "신뢰도"]
 SCHEMA_COLUMN = ["컬럼명", "타입", "Nullable", "PK", "설명"]
 SCHEMA_FK = ["관계", "대상", "FK타입", "신뢰도", "근거"]
 
-SCHEMA_ACCESS_MATRIX = ["테이블", "엔티티", "접근유형"]
+SCHEMA_ACCESS_MATRIX = ["테이블", "모듈", "접근유형"]
 SCHEMA_STRUCT_ALL = ["관계", "소스", "대상", "속성"]
 SCHEMA_ETL_FLOW = ["관계", "소스", "대상"]
 
@@ -88,13 +111,41 @@ class GraphNode:
 
     @property
     def primary_label(self) -> str:
+        """1차 레이블 반환.
+
+        Framework: 역할 라벨(MODULE/VARIABLE/CONSTANT) 우선
+        DBMS: 고유 라벨(PROCEDURE/FUNCTION/TRIGGER) 그대로
+        """
+        # 1) Framework 역할 라벨
         for lbl in self.labels:
-            if lbl in SCOPE_LABELS or lbl in METHOD_ROLE_LABELS:
-                continue
-            if lbl == "EXTERNAL":
+            if lbl in PRIMARY_LABELS:
+                return lbl
+        # 2) DBMS 고유 라벨
+        for lbl in self.labels:
+            if lbl in DBMS_MODULE_LABELS:
+                return lbl
+        # 3) 폴백 (Table, Column, DML 등)
+        for lbl in self.labels:
+            if lbl in _SKIP_COUNT_LABELS:
                 continue
             return lbl
         return self.labels[0] if self.labels else "UNKNOWN"
+
+    @property
+    def sub_label(self) -> str:
+        """서브레이블 반환 (STRUCT, METHOD, MEMBER, DEFINE 등)."""
+        for lbl in self.labels:
+            if lbl in SUB_LABELS:
+                return lbl
+        return ""
+
+    @property
+    def stereotype_label(self) -> str:
+        """스테레오타입 라벨 반환 (Init, Query, Command 등)."""
+        for lbl in self.labels:
+            if lbl in STEREOTYPE_LABELS:
+                return lbl
+        return ""
 
     @property
     def is_internal(self) -> bool:
@@ -106,14 +157,12 @@ class GraphNode:
 
     @property
     def scope_label(self) -> str:
-        if self.is_external:
-            return "EXTERNAL"
-        return "INTERNAL"
+        return "EXTERNAL" if self.is_external else "INTERNAL"
 
     @property
-    def method_role(self) -> str:
+    def function_role(self) -> str:
         for lbl in self.labels:
-            if lbl in METHOD_ROLE_LABELS:
+            if lbl in FUNCTION_ROLE_LABELS:
                 return lbl
         return ""
 
@@ -152,16 +201,15 @@ class GraphData:
     _outgoing: Dict[str, List[GraphRelationship]] = field(default_factory=lambda: defaultdict(list))
     _incoming: Dict[str, List[GraphRelationship]] = field(default_factory=lambda: defaultdict(list))
     _label_counts: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    _sub_label_counts: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    _stereotype_counts: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
 
-    classes: List[GraphNode] = field(default_factory=list)
-    methods: List[GraphNode] = field(default_factory=list)
-    fields: List[GraphNode] = field(default_factory=list)
+    modules: List[GraphNode] = field(default_factory=list)
+    variables: List[GraphNode] = field(default_factory=list)
     packages: List[GraphNode] = field(default_factory=list)
     tables: List[GraphNode] = field(default_factory=list)
     columns: List[GraphNode] = field(default_factory=list)
-    procedures: List[GraphNode] = field(default_factory=list)
     dml_nodes: List[GraphNode] = field(default_factory=list)
-    variables: List[GraphNode] = field(default_factory=list)
     nontarget_files: List[GraphNode] = field(default_factory=list)
     nontarget_blocks: List[GraphNode] = field(default_factory=list)
     schemas: List[GraphNode] = field(default_factory=list)
@@ -266,19 +314,21 @@ def _parse_nodes(nodes_list: list, graph: GraphData) -> None:
 
         node = GraphNode(node_id=node_id, labels=labels, properties=props)
         graph.nodes[node_id] = node
-        counted_primary = False
-        for lbl in labels:
-            if lbl in SCOPE_LABELS:
-                continue
-            if lbl in METHOD_ROLE_LABELS:
-                continue
-            if lbl == "EXTERNAL":
-                graph._label_counts["EXTERNAL"] += 1
-                continue
-            graph._label_counts[lbl] += 1
-            counted_primary = True
-        if not counted_primary and labels:
-            graph._label_counts[labels[0]] += 1
+
+        # 1차 레이블 카운트 (MODULE/FUNCTION/VARIABLE/CONSTANT 또는 DBMS 레이블)
+        graph._label_counts[node.primary_label] += 1
+        if node.is_external:
+            graph._label_counts["EXTERNAL"] += 1
+
+        # 서브레이블 카운트 (STRUCT, METHOD, MEMBER 등)
+        sl = node.sub_label
+        if sl:
+            graph._sub_label_counts[sl] += 1
+
+        # 스테레오타입 카운트 (Init, Query, Command 등)
+        st = node.stereotype_label
+        if st:
+            graph._stereotype_counts[st] += 1
 
 
 def _parse_relationships(rels_list: list, graph: GraphData) -> None:
@@ -335,14 +385,25 @@ def _parse_neo4j_export(records: list, graph: GraphData) -> None:
 
 
 def _index_nodes(graph: GraphData) -> None:
+    # Framework 자식 함수 노드 ID 수집 (HAS_FUNCTION 관계의 타겟)
+    child_function_ids = {
+        r.end_node_id
+        for rels in graph._incoming.values()
+        for r in rels
+        if r.rel_type == "HAS_FUNCTION"
+    }
+
     for node in graph.nodes.values():
         pl = node.primary_label
-        if pl in CLASS_LABELS:
-            graph.classes.append(node)
-        elif pl == "FUNCTION":
-            graph.methods.append(node)
-        elif pl == "VARIABLE":
-            graph.fields.append(node)
+        if pl in MODULE_LABELS:
+            # Framework: MODULE (역할 기반)
+            graph.modules.append(node)
+        elif pl in DBMS_MODULE_LABELS:
+            # DBMS: PROCEDURE/FUNCTION/TRIGGER (고유 라벨) → 최상위 모듈
+            # Framework 자식 함수는 제외 (HAS_FUNCTION으로 접근)
+            if node.node_id not in child_function_ids:
+                graph.modules.append(node)
+        elif pl in ("VARIABLE", "CONSTANT"):
             graph.variables.append(node)
         elif pl == "PACKAGE":
             graph.packages.append(node)
@@ -350,8 +411,6 @@ def _index_nodes(graph: GraphData) -> None:
             graph.tables.append(node)
         elif pl == "Column":
             graph.columns.append(node)
-        elif pl in PROCEDURE_LABELS:
-            graph.procedures.append(node)
         elif pl in DML_LABELS:
             graph.dml_nodes.append(node)
         elif pl == "NONTARGET_FILE":
@@ -433,25 +492,32 @@ def _format_rel_props(props: Dict[str, Any]) -> str:
     return ", ".join(parts) if parts else "-"
 
 
-def _infer_stereotype(graph: GraphData, cls: GraphNode) -> str:
-    stereo = cls.prop("stereotype", "")
-    if stereo:
-        return stereo
-    method_roles = set()
-    for method in graph.get_children(cls.node_id, "HAS_FUNCTION"):
-        r = method.method_role
+def _infer_stereotype(graph: GraphData, mod: GraphNode) -> str:
+    """모듈의 스테레오타입 추론 (라벨 → 속성 → 자식 함수 역할 순)."""
+    # 1) 라벨에서 직접 추출
+    st = mod.stereotype_label
+    if st:
+        return st
+    # 2) 속성에서 추출
+    st = mod.prop("stereotype", "")
+    if st:
+        return st
+    # 3) 자식 함수의 역할에서 추론
+    func_roles = set()
+    for func in graph.get_children(mod.node_id, "HAS_FUNCTION"):
+        r = func.function_role
         if r:
-            method_roles.add(r)
-    return "/".join(sorted(method_roles)) if method_roles else ""
+            func_roles.add(r)
+    return "/".join(sorted(func_roles)) if func_roles else ""
 
 
-def _get_entity_name(entity: GraphNode) -> str:
-    """엔티티의 표시 이름."""
+def _get_module_name(mod: GraphNode) -> str:
+    """모듈의 표시 이름."""
     for k in ("module_name", "procedure_name", "name"):
-        v = entity.prop(k)
+        v = mod.prop(k)
         if v:
             return str(v)
-    return entity.display_name
+    return mod.display_name
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -462,30 +528,38 @@ def _render_overview(graph: GraphData) -> str:
     """## 1. 시스템 개요"""
     parts = ["## 1. 시스템 개요\n"]
 
-    # 1.1 노드 통계
+    # 1.1 노드 통계 (1차 레이블 기준)
     parts.append("### 1.1. 노드 통계\n")
     node_rows = []
     for label, count in sorted(graph._label_counts.items(), key=lambda x: -x[1]):
-        if label in SCOPE_LABELS or label in METHOD_ROLE_LABELS:
-            continue
         node_rows.append([label, str(count)])
     parts.append(_md_table(SCHEMA_NODE_STATS, node_rows))
 
-    # 1.2 관계 통계
-    parts.append("\n### 1.2. 관계 통계\n")
+    # 1.2 서브레이블 분포 (AST 타입 상세)
+    parts.append("\n### 1.2. 서브레이블 분포\n")
+    sub_rows = []
+    for label, count in sorted(graph._sub_label_counts.items(), key=lambda x: -x[1]):
+        sub_rows.append([label, str(count)])
+    parts.append(_md_table(SCHEMA_NODE_STATS, sub_rows))
+
+    # 1.3 관계 통계
+    parts.append("\n### 1.3. 관계 통계\n")
     rel_counts = graph.rel_type_counts()
     rel_rows = [[rt, str(cnt)] for rt, cnt in rel_counts.items()]
     parts.append(_md_table(SCHEMA_REL_STATS, rel_rows))
 
-    # 1.3 스테레오타입 분포
-    parts.append("\n### 1.3. 스테레오타입 분포\n")
+    # 1.4 스테레오타입 분포
+    parts.append("\n### 1.4. 스테레오타입 분포\n")
     stereo_counts: Dict[str, int] = defaultdict(int)
-    for cls in graph.classes:
-        st = _infer_stereotype(graph, cls) or "미분류"
-        stereo_counts[st] += 1
-    for proc in graph.procedures:
-        st = proc.prop("stereotype", "") or "미분류"
-        stereo_counts[st] += 1
+    if graph._stereotype_counts:
+        # Neo4j 라벨 기반 스테레오타입 카운트 우선 사용
+        for st, cnt in graph._stereotype_counts.items():
+            stereo_counts[st] += cnt
+    else:
+        # 라벨에 스테레오타입이 없으면 속성에서 추론 (하위 호환)
+        for mod in graph.modules:
+            st = _infer_stereotype(graph, mod) or "미분류"
+            stereo_counts[st] += 1
     stereo_rows = [[s, str(c)] for s, c in sorted(stereo_counts.items(), key=lambda x: -x[1])]
     parts.append(_md_table(SCHEMA_STEREOTYPE, stereo_rows))
 
@@ -522,17 +596,12 @@ def _render_packages(graph: GraphData) -> str:
         else:
             root_pkgs.append(fqn)
 
-    # 패키지별 멤버 수집 (CLASS만 — artifact/nontarget은 전용 섹션에서)
+    # 패키지별 멤버 수집 (모듈만 — artifact/nontarget은 전용 섹션에서)
     pkg_members: Dict[str, List[GraphNode]] = defaultdict(list)
-    for cls in graph.classes:
-        pkg_name = cls.prop("package_name", "")
+    for mod in graph.modules:
+        pkg_name = mod.prop("package_name") or mod.prop("schema", "")
         if pkg_name:
-            pkg_members[pkg_name].append(cls)
-    # DBMS: 프로시저도 스키마(패키지)에 매핑
-    for proc in graph.procedures:
-        schema = proc.prop("schema", proc.prop("package_name", ""))
-        if schema:
-            pkg_members[schema].append(proc)
+            pkg_members[pkg_name].append(mod)
 
     def _has_members(fqn: str) -> bool:
         if pkg_members.get(fqn):
@@ -551,10 +620,11 @@ def _render_packages(graph: GraphData) -> str:
         members = pkg_members.get(fqn, [])
         rows = []
         for m in sorted(members, key=lambda x: x.display_name):
-            stereo = _infer_stereotype(graph, m) if m.primary_label in CLASS_LABELS else m.prop("stereotype", "")
+            stereo = _infer_stereotype(graph, m)
+            type_display = f"{m.primary_label}:{m.sub_label}" if m.sub_label else m.primary_label
             rows.append([
                 m.display_name,
-                m.primary_label,
+                type_display,
                 stereo or "-",
                 m.scope_label,
             ])
@@ -570,81 +640,82 @@ def _render_packages(graph: GraphData) -> str:
     return "\n".join(parts)
 
 
-def _render_entity_detail(graph: GraphData, entity: GraphNode) -> str:
-    """단일 엔티티 상세 — MODULE/PROCEDURE/FUNCTION/TRIGGER 모두 동일 포맷."""
-    name = _get_entity_name(entity)
+def _render_module_detail(graph: GraphData, mod: GraphNode) -> str:
+    """단일 모듈 상세 — MODULE/PROCEDURE/FUNCTION/TRIGGER 모두 동일 포맷."""
+    name = _get_module_name(mod)
     parts = [f"### {name}\n"]
 
     # ── 기본 정보 (범용 8행) ──
+    type_display = f"{mod.primary_label}:{mod.sub_label}" if mod.sub_label else mod.primary_label
     info_pairs = [
         ("이름", name),
-        ("타입", entity.primary_label),
-        ("FQN", _safe(entity.prop("fqn"))),
-        ("패키지", _safe(entity.prop("package_name") or entity.prop("schema"))),
-        ("스테레오타입", _safe(_infer_stereotype(graph, entity) if entity.primary_label in CLASS_LABELS else entity.prop("stereotype", ""))),
-        ("파일", _safe(entity.prop("file_name"))),
-        ("라인", f"{_safe(entity.prop('start_line'))}-{_safe(entity.prop('end_line'))}"),
-        ("토큰", _safe(entity.prop("token"))),
+        ("타입", type_display),
+        ("FQN", _safe(mod.prop("fqn"))),
+        ("패키지", _safe(mod.prop("package_name") or mod.prop("schema"))),
+        ("스테레오타입", _safe(_infer_stereotype(graph, mod))),
+        ("파일", _safe(mod.prop("file_name"))),
+        ("라인", f"{_safe(mod.prop('start_line'))}-{_safe(mod.prop('end_line'))}"),
+        ("토큰", _safe(mod.prop("token"))),
     ]
     parts.append("#### 기본 정보\n")
     parts.append(_prop_table(info_pairs))
 
     # ── 요약 ──
     parts.append("\n#### 요약\n")
-    parts.append(_blockquote(entity.prop("summary")))
+    parts.append(_blockquote(mod.prop("summary")))
 
-    # ── 메서드 (METHOD + DML 통합) ──
-    members = []
-    for m in sorted(graph.get_children(entity.node_id, "HAS_FUNCTION"),
-                    key=lambda x: x.prop("start_line", 0) or 0):
-        members.append([
-            _safe(m.prop("name")),
-            _safe(m.prop("signature")),
-            _safe(m.prop("return_type")),
-            _safe(m.prop("modifiers")),
-            _safe(m.prop("summary")),
+    # ── 함수 (FUNCTION + DML 통합) ──
+    func_rows = []
+    for func in sorted(graph.get_children(mod.node_id, "HAS_FUNCTION"),
+                       key=lambda x: x.prop("start_line", 0) or 0):
+        func_rows.append([
+            _safe(func.prop("name")),
+            _safe(func.prop("signature")),
+            _safe(func.prop("return_type")),
+            _safe(func.prop("modifiers")),
+            _safe(func.prop("summary")),
         ])
-    for d in sorted(graph.get_children(entity.node_id, "CONTAINS"),
+    for d in sorted(graph.get_children(mod.node_id, "CONTAINS"),
                     key=lambda x: x.prop("start_line", 0) or 0):
         if d.primary_label in DML_LABELS:
-            members.append([
+            func_rows.append([
                 d.primary_label,
                 _truncate(d.prop("node_code")),
                 "-",
                 f"Line {_safe(d.prop('start_line'))}",
                 "-",
             ])
-    parts.append("\n#### 메서드\n")
-    parts.append(_md_table(SCHEMA_MEMBER, members))
+    parts.append("\n#### 함수\n")
+    parts.append(_md_table(SCHEMA_FUNCTION, func_rows))
 
-    # ── 필드 (FIELD + Variable 통합) ──
-    fields = []
-    for f in sorted(graph.get_children(entity.node_id, "HAS_VARIABLE"),
+    # ── 변수 (VARIABLE + DECLARES 통합) ──
+    var_rows = []
+    for v in sorted(graph.get_children(mod.node_id, "HAS_VARIABLE"),
                     key=lambda x: x.prop("start_line", 0) or 0):
-        fields.append([
-            _safe(f.prop("name")),
-            _safe(f.prop("variable_type")),
-            _safe(f.prop("modifiers")),
-            _safe(f.prop("summary")),
+        var_rows.append([
+            _safe(v.prop("name")),
+            _safe(v.prop("variable_type")),
+            _safe(v.prop("modifiers")),
+            _safe(v.prop("summary")),
         ])
-    for v in graph.get_children(entity.node_id, "DECLARES"):
-        fields.append([
+    for v in graph.get_children(mod.node_id, "DECLARES"):
+        var_rows.append([
             _safe(v.prop("name")),
             _safe(v.prop("role")),
             "-",
             _safe(v.prop("summary")),
         ])
-    parts.append("\n#### 필드\n")
-    parts.append(_md_table(SCHEMA_FIELD_VAR, fields))
+    parts.append("\n#### 변수\n")
+    parts.append(_md_table(SCHEMA_VARIABLE, var_rows))
 
     # ── 구조 관계 (UML + ETL 통합) ──
     struct_rels = []
-    for r in graph.get_outgoing_rels(entity.node_id, ENTITY_STRUCT_REL_TYPES):
+    for r in graph.get_outgoing_rels(mod.node_id, ENTITY_STRUCT_REL_TYPES):
         struct_rels.append([
             "→", r.rel_type, graph.node_display(r.end_node_id),
             _format_rel_props(r.properties),
         ])
-    for r in graph.get_incoming_rels(entity.node_id, ENTITY_STRUCT_REL_TYPES):
+    for r in graph.get_incoming_rels(mod.node_id, ENTITY_STRUCT_REL_TYPES):
         struct_rels.append([
             "←", r.rel_type, graph.node_display(r.start_node_id),
             _format_rel_props(r.properties),
@@ -654,41 +725,41 @@ def _render_entity_detail(graph: GraphData, entity: GraphNode) -> str:
 
     # ── 호출 관계 (CALLS + CALL + USES 통합) ──
     call_rels = []
-    for r in graph.get_outgoing_rels(entity.node_id, ENTITY_CALL_REL_TYPES):
+    for r in graph.get_outgoing_rels(mod.node_id, ENTITY_CALL_REL_TYPES):
         call_rels.append(["→", graph.node_display(r.end_node_id), _safe(r.prop("call_code"))])
-    # 메서드 레벨 호출 수집 (CLASS인 경우)
-    for m in graph.get_children(entity.node_id, "HAS_FUNCTION"):
-        for r in graph.get_outgoing_rels(m.node_id, ENTITY_CALL_REL_TYPES):
+    # 자식 함수 레벨 호출 수집
+    for func in graph.get_children(mod.node_id, "HAS_FUNCTION"):
+        for r in graph.get_outgoing_rels(func.node_id, ENTITY_CALL_REL_TYPES):
             call_rels.append(["→", graph.node_display(r.end_node_id), _safe(r.prop("call_code"))])
-    for r in graph.get_incoming_rels(entity.node_id, ENTITY_CALL_REL_TYPES):
+    for r in graph.get_incoming_rels(mod.node_id, ENTITY_CALL_REL_TYPES):
         call_rels.append(["←", graph.node_display(r.start_node_id), _safe(r.prop("call_code"))])
     parts.append("\n#### 호출 관계\n")
     parts.append(_md_table(SCHEMA_CALL_REL, call_rels))
 
     # ── 데이터 접근 (FROM/READS/WRITES/REFER_TO 통합) ──
     data_access = []
-    for r in graph.get_outgoing_rels(entity.node_id, ENTITY_DATA_REL_TYPES):
+    for r in graph.get_outgoing_rels(mod.node_id, ENTITY_DATA_REL_TYPES):
         data_access.append([
             graph.node_display(r.end_node_id), r.rel_type,
             _safe(r.prop("evidence")), _safe(r.prop("confidence")),
         ])
-    # 메서드/DML 자식의 테이블 접근도 수집
-    for m in graph.get_children(entity.node_id, "HAS_FUNCTION"):
-        for r in graph.get_outgoing_rels(m.node_id, ENTITY_DATA_REL_TYPES):
+    # 자식 함수/DML의 테이블 접근도 수집
+    for func in graph.get_children(mod.node_id, "HAS_FUNCTION"):
+        for r in graph.get_outgoing_rels(func.node_id, ENTITY_DATA_REL_TYPES):
             data_access.append([
                 graph.node_display(r.end_node_id), r.rel_type,
                 _safe(r.prop("evidence")), _safe(r.prop("confidence")),
             ])
-    for d in graph.get_children(entity.node_id, "CONTAINS"):
+    for d in graph.get_children(mod.node_id, "CONTAINS"):
         if d.primary_label in DML_LABELS:
             for r in graph.get_outgoing_rels(d.node_id, ENTITY_DATA_REL_TYPES):
                 data_access.append([
                     graph.node_display(r.end_node_id), r.rel_type,
                     _safe(r.prop("evidence")), _safe(r.prop("confidence")),
                 ])
-    # 필드 레벨 접근도 수집
-    for f in graph.get_children(entity.node_id, "HAS_VARIABLE"):
-        for r in graph.get_outgoing_rels(f.node_id, ENTITY_DATA_REL_TYPES):
+    # 자식 변수 레벨 접근도 수집
+    for v in graph.get_children(mod.node_id, "HAS_VARIABLE"):
+        for r in graph.get_outgoing_rels(v.node_id, ENTITY_DATA_REL_TYPES):
             data_access.append([
                 graph.node_display(r.end_node_id), r.rel_type,
                 _safe(r.prop("evidence")), _safe(r.prop("confidence")),
@@ -698,25 +769,25 @@ def _render_entity_detail(graph: GraphData, entity: GraphNode) -> str:
 
     # ── 요약 코드 ──
     parts.append("\n#### 요약 코드\n")
-    parts.append(_code_block(entity.prop("summarized_code")))
+    parts.append(_code_block(mod.prop("summarized_code")))
 
     return "\n".join(parts)
 
 
-def _render_external(graph: GraphData, external_entities: List[GraphNode]) -> str:
+def _render_external(graph: GraphData, external_modules: List[GraphNode]) -> str:
     """## 4. 외부 의존성 (EXTERNAL) 내용."""
     rows = []
-    for ent in sorted(external_entities, key=lambda c: c.display_name):
+    for mod in sorted(external_modules, key=lambda m: m.display_name):
         referrers = set()
-        for rel in graph.get_incoming_rels(ent.node_id):
+        for rel in graph.get_incoming_rels(mod.node_id):
             if rel.rel_type in EXCLUDED_REL_TYPES:
                 continue
             src = graph.get_node(rel.start_node_id)
             if src and src.is_internal:
                 referrers.add(src.display_name)
         rows.append([
-            ent.display_name,
-            ent.primary_label,
+            mod.display_name,
+            mod.primary_label,
             ", ".join(sorted(referrers)) if referrers else "-",
         ])
     return _md_table(SCHEMA_EXTERNAL_DEP, rows)
@@ -733,7 +804,6 @@ def _render_artifact_chunks(graph: GraphData) -> str:
     for chunk in sorted(graph.artifact_chunks, key=lambda c: c.display_name):
         parts.append(f"### {chunk.display_name}\n")
 
-        # 기본 정보
         info_pairs = [
             ("이름", chunk.display_name),
             ("파일", _safe(chunk.prop("file_name", chunk.prop("file_path", "")))),
@@ -743,7 +813,6 @@ def _render_artifact_chunks(graph: GraphData) -> str:
         parts.append("#### 기본 정보\n")
         parts.append(_prop_table(info_pairs))
 
-        # 관계
         rel_rows = []
         for r in graph.get_outgoing_rels(chunk.node_id):
             if r.rel_type not in EXCLUDED_REL_TYPES:
@@ -770,7 +839,6 @@ def _render_nontarget(graph: GraphData) -> str:
         fname = ntf.prop("file_name", ntf.prop("file_path", ntf.display_name))
         parts.append(f"### {fname}\n")
 
-        # 파일 정보
         info_pairs = [
             ("파일 경로", _safe(ntf.prop("file_path"))),
             ("확장자", _safe(ntf.prop("ext"))),
@@ -779,7 +847,6 @@ def _render_nontarget(graph: GraphData) -> str:
         parts.append("#### 파일 정보\n")
         parts.append(_prop_table(info_pairs))
 
-        # 블록 목록
         blocks = graph.get_children(ntf.node_id, "CONTAINS")
         blocks = [b for b in blocks if b.primary_label == "NONTARGET_BLOCK"]
         block_rows = []
@@ -794,7 +861,6 @@ def _render_nontarget(graph: GraphData) -> str:
         parts.append("\n#### 블록 목록\n")
         parts.append(_md_table(SCHEMA_NONTARGET_BLOCK, block_rows))
 
-        # 테이블 참조 (모든 블록의 REFERS_TO 통합)
         ref_rows = []
         for blk in blocks:
             blk_name = blk.prop("name", blk.display_name)
@@ -825,7 +891,6 @@ def _render_db_schema(graph: GraphData) -> str:
         tname = table.prop("name", table.display_name)
         parts.append(f"### {tname}\n")
 
-        # 테이블 정보
         info_pairs = [
             ("이름", _safe(table.prop("name"))),
             ("스키마", _safe(table.prop("schema"))),
@@ -838,7 +903,6 @@ def _render_db_schema(graph: GraphData) -> str:
         parts.append("#### 테이블 정보\n")
         parts.append(_prop_table(info_pairs))
 
-        # 컬럼
         cols = graph.get_children(table.node_id, "HAS_COLUMN")
         col_rows = []
         for col in cols:
@@ -852,7 +916,6 @@ def _render_db_schema(graph: GraphData) -> str:
         parts.append("\n#### 컬럼\n")
         parts.append(_md_table(SCHEMA_COLUMN, col_rows))
 
-        # FK 관계
         fk_rels = graph.get_outgoing_rels(table.node_id, {"FK_TO_TABLE", "FK_TO"})
         for col in cols:
             fk_rels.extend(graph.get_outgoing_rels(col.node_id, {"FK_TO", "FK_TO_TABLE"}))
@@ -900,6 +963,7 @@ def _render_cross_cutting(graph: GraphData) -> str:
             tgt = graph.get_node(rel.end_node_id)
             if src and tgt and tgt.primary_label == "Table":
                 src_name = src.display_name
+                # 함수 노드면 부모 모듈 이름 사용
                 if src.primary_label == "FUNCTION":
                     parents = graph.get_parents(src.node_id, "HAS_FUNCTION")
                     if parents:
@@ -915,8 +979,8 @@ def _render_cross_cutting(graph: GraphData) -> str:
                 access_data[tgt_name][src_name].add(op)
     access_rows = []
     for tbl_name in sorted(access_data.keys()):
-        for entity_name, ops in sorted(access_data[tbl_name].items()):
-            access_rows.append([tbl_name, entity_name, ", ".join(sorted(ops))])
+        for mod_name, ops in sorted(access_data[tbl_name].items()):
+            access_rows.append([tbl_name, mod_name, ", ".join(sorted(ops))])
     parts.append(_md_table(SCHEMA_ACCESS_MATRIX, access_rows))
 
     # 9.2 호출 체인 (진입점)
@@ -932,6 +996,7 @@ def _render_cross_cutting(graph: GraphData) -> str:
             continue
         name = node.display_name
         ntype = node.primary_label
+        # 함수 노드면 부모 모듈 이름 사용
         if ntype == "FUNCTION":
             parents = graph.get_parents(node.node_id, "HAS_FUNCTION")
             if parents:
@@ -939,12 +1004,11 @@ def _render_cross_cutting(graph: GraphData) -> str:
                 ntype = parents[0].primary_label
         ep_rows.append([name, ntype])
     # 중복 제거
-    seen = set()
+    seen: set = set()
     unique_ep_rows = []
     for row in ep_rows:
-        key = row[0]
-        if key not in seen:
-            seen.add(key)
+        if row[0] not in seen:
+            seen.add(row[0])
             unique_ep_rows.append(row)
     parts.append(_md_table(["진입점", "타입"], unique_ep_rows))
 
@@ -982,10 +1046,8 @@ def _render_cross_cutting(graph: GraphData) -> str:
 
 def _build_report(graph: GraphData) -> str:
     """단일 통합 보고서 생성. 전략 무관, 데이터 유무 무관."""
-    # INTERNAL 엔티티 = MODULE + PROCEDURE + FUNCTION + TRIGGER 중 INTERNAL
-    internal_entities = [n for n in graph.classes + graph.procedures if n.is_internal]
-    # EXTERNAL 엔티티
-    external_entities = [n for n in graph.classes + graph.procedures if n.is_external]
+    internal_modules = [n for n in graph.modules if n.is_internal]
+    external_modules = [n for n in graph.modules if n.is_external]
 
     parts = ["# 레거시 시스템 분석 보고서\n"]
 
@@ -995,19 +1057,19 @@ def _build_report(graph: GraphData) -> str:
     # 2. 패키지 구조
     parts.append(_render_packages(graph))
 
-    # 3. 엔티티 상세 (INTERNAL)
-    entity_parts = ["## 3. 엔티티 상세 (INTERNAL)\n"]
-    if not internal_entities:
-        entity_parts.append("INTERNAL 엔티티 없음.\n")
+    # 3. 모듈 상세 (INTERNAL)
+    mod_parts = ["## 3. 모듈 상세 (INTERNAL)\n"]
+    if not internal_modules:
+        mod_parts.append("INTERNAL 모듈 없음.\n")
     else:
-        for entity in sorted(internal_entities, key=lambda n: n.prop("fqn", "") or n.display_name):
-            entity_parts.append(_render_entity_detail(graph, entity))
-            entity_parts.append("")
-    parts.append("\n".join(entity_parts))
+        for mod in sorted(internal_modules, key=lambda n: n.prop("fqn", "") or n.display_name):
+            mod_parts.append(_render_module_detail(graph, mod))
+            mod_parts.append("")
+    parts.append("\n".join(mod_parts))
 
     # 4. 외부 의존성 (EXTERNAL)
     ext_parts = ["## 4. 외부 의존성 (EXTERNAL)\n"]
-    ext_parts.append(_render_external(graph, external_entities))
+    ext_parts.append(_render_external(graph, external_modules))
     parts.append("\n".join(ext_parts))
 
     # 5. Artifact 청크
@@ -1056,23 +1118,12 @@ def generate_analysis_report_from_graph(graph_data: Dict[str, Any], strategy: st
     Args:
         graph_data: {"Nodes": [...], "Relationships": [...]} 형태의 dict
         strategy: 호환성 유지용 파라미터 (무시됨, 항상 단일 템플릿)
-
-    Returns:
-        마크다운 보고서 문자열
     """
     graph = _load_graph_from_dict(graph_data)
     return _generate_report(graph, strategy)
 
 
 def generate_analysis_report(json_path: str, strategy: str = "auto") -> str:
-    """Neo4j export JSON 파일 → 마크다운 분석 보고서.
-
-    Args:
-        json_path: Neo4j export JSON 파일 경로
-        strategy: 호환성 유지용 파라미터 (무시됨, 항상 단일 템플릿)
-
-    Returns:
-        마크다운 보고서 문자열
-    """
+    """JSON 파일 경로 → 마크다운 분석 보고서."""
     graph = _load_graph(json_path)
     return _generate_report(graph, strategy)

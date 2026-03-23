@@ -80,6 +80,8 @@ from analyzer.strategy.framework.graph.queries import (
     build_module_summary_queries,
     build_table_description_enrichment_query,
     build_table_description_update_queries,
+    build_fk_to_table_queries,
+    build_fk_to_column_queries,
 )
 from analyzer.strategy.framework.graph.writer import run_graph_queries
 from analyzer.strategy.framework.linking.deep_agent import run_deep_agent, run_deep_agent_entity_identification
@@ -579,14 +581,18 @@ async def run_phase_llm(
             "run_dir": str(entity_run_dir) if entity_run_dir else None,
             "span_index": st.get("span_index"),
             "chunk_index": st.get("chunk_index"),
+            "ddl_table_metadata": ddl_meta or None,
         }
-        entity_mt_edges = run_deep_agent_entity_identification(
+        entity_mt_edges, entity_fk_edges = run_deep_agent_entity_identification(
             st.get("module_index") or {},
             entity_state,
             api_key=entity_api_key,
             run_dir=entity_run_dir,
             ddl_table_metadata=ddl_meta or None,
         )
+        if entity_fk_edges:
+            fk_edges.extend(entity_fk_edges)
+            logger.info("[FW:PHASE2] DeepAgent 엔티티 식별 FK 엣지 | count=%d", len(entity_fk_edges))
         if entity_mt_edges:
             function_table_edges.extend(entity_mt_edges)
             logger.info("[FW:PHASE2] DeepAgent 엔티티 식별 완료 | Function→Table %d건", len(entity_mt_edges))
@@ -643,10 +649,12 @@ async def run_phase_llm(
             "run_dir": str(run_dir_path) if run_dir_path else None,
             "span_index": st.get("span_index"),
             "chunk_index": st.get("chunk_index"),
+            "ddl_table_metadata": ddl_meta or None,
         }
         da_refer_all: list = []
         da_mt_all: list = []
-        for item_refer, item_mt in run_deep_agent(
+        da_fk_all: list = []
+        for item_refer, item_mt, item_fk in run_deep_agent(
             unresolved,
             deep_state,
             api_key=api_key,
@@ -654,6 +662,7 @@ async def run_phase_llm(
         ):
             da_refer_all.extend(item_refer)
             da_mt_all.extend(item_mt)
+            da_fk_all.extend(item_fk)
             # 항목별 Neo4j 스트리밍
             try:
                 da_queries: list = []
@@ -673,6 +682,9 @@ async def run_phase_llm(
         if da_mt_all:
             function_table_edges.extend(da_mt_all)
             logger.info("[FW:PHASE2] DeepAgent Function→Table 직접 추가 | count=%d", len(da_mt_all))
+        if da_fk_all:
+            fk_edges.extend(da_fk_all)
+            logger.info("[FW:PHASE2] DeepAgent FK 엣지 추가 | count=%d", len(da_fk_all))
         # DeepAgent refer_to에서 Method→ArtifactChunk→Table 체인으로 Function→Table 자동 유도
         if da_refer_all and artifact_table_edges:
             from analyzer.strategy.framework.linking.orchestrator import derive_function_table_edges
@@ -692,6 +704,19 @@ async def run_phase_llm(
             st.setdefault("span_index", deep_state["span_index"])
             st.setdefault("chunk_index", deep_state["chunk_index"])
         yield tracker.end_step(f"REFER_TO {len(da_refer_all)}건, Function→Table {len(da_mt_all)}건 추가")
+
+    # FK 엣지 Neo4j 반영 (sql_extractor + deep agent 통합)
+    if fk_edges:
+        try:
+            fk_queries: list = []
+            fk_queries.extend(build_fk_to_table_queries(fk_edges))
+            fk_queries.extend(build_fk_to_column_queries(fk_edges))
+            if fk_queries:
+                logger.info("[FW:PHASE2] FK 엣지 Neo4j 반영 | fk_edges=%d queries=%d", len(fk_edges), len(fk_queries))
+                async for graph in run_graph_queries(client, fk_queries, label="PHASE2:FK_EDGES"):
+                    yield emit_data(graph=graph)
+        except Exception as e:
+            logger.warning("[FW:PHASE2] Neo4j FK 엣지 반영 실패: %s", e)
 
     stats.total_nodes += len(refer_to_edges) + len(all_calls)
     st.update({

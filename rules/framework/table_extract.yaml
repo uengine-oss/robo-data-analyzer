@@ -141,5 +141,10 @@ prompt: |
   - 이 조각에 테이블이 없고 prev_summary도 없으면 tables=[], columns=[], alias_map=[].
   - relation은 SELECT/INSERT/UPDATE/DELETE 중 하나.
   - **description**: tables와 columns의 description은 SQL/엔티티 정의에서 역할을 추론할 수 있으면 반드시 한 문장으로 채우세요. 비워두지 마세요.
+  - **fks**: SQL의 JOIN ON 조건이나 WHERE절에서 두 테이블의 컬럼이 = 조건으로 비교되면 FK 후보로 식별하세요.
+    - 예: `SELECT * FROM A JOIN B ON A.B_ID = B.ID` → `fks: [{"from_table": "A", "from_column": "B_ID", "to_table": "B", "to_column": "ID"}]`
+    - 방향: FK를 가진 쪽(many, 외래키 컬럼)이 from, PK를 가진 쪽(one, 기본키 컬럼)이 to.
+    - 자기 자신 조인(self-join)은 fks에 넣지 마세요.
+    - 확실하지 않으면 fks를 비워두세요.
   - JSON만 출력. 설명, 코드펜스, 주석, 트레일링 콤마 금지.
   - **최종 확인**: tables 안에 PN01, INV1, KR03, TR09, PK01, A, B, T1 같은 이름이 하나라도 있으면 잘못된 출력입니다. 해당 이름은 모두 제거하고 alias_map에만 넣으세요.

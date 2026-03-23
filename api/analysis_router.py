@@ -350,8 +350,8 @@ async def get_table_references(table_name: str, schema: Optional[str] = None, co
         raise HTTPException(400, "schema 파라미터가 필요합니다.")
     logger.info("[API] 테이블 참조 조회 | table=%s", table_name)
     try:
-        records = await schema_manage_service.fetch_table_references(table_name, schema, column_name)
-        return {"references": records}
+        result = await schema_manage_service.fetch_table_references(table_name, schema, column_name)
+        return result
     except Exception as e:
         logger.error("[API] 테이블 참조 조회 실패 | error=%s", e)
         raise HTTPException(500, build_error_body(e))
@@ -406,7 +406,7 @@ async def update_table_description(request: Request, table_name: str, body: Tabl
     try:
         return await schema_manage_service.update_table_description(
             table_name=table_name,
-            schema=body.schema,
+            schema=body.table_schema,
             description=body.description,
             api_key=api_key
         )
@@ -454,7 +454,7 @@ async def vectorize_schema(request: Request, body: VectorizeRequest):
     try:
         return await schema_manage_service.vectorize_schema_tables(
             db_name=body.db_name,
-            schema=body.schema,
+            schema=body.table_schema,
             include_tables=body.include_tables,
             include_columns=body.include_columns,
             reembed_existing=body.reembed_existing,

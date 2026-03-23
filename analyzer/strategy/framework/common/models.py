@@ -319,6 +319,7 @@ class FkEdge:
     to_table: str
     to_column: str
     candidate: bool = True
+    source: str = "code"  # "ddl" | "code"
 
 
 # ---------------------------------------------------------------------------

@@ -17,6 +17,7 @@ from analyzer.strategy.framework.models import (
     SqlStatementChunk,
     ConfigSectionChunk,
 )
+from analyzer.strategy.framework.common.models import FkEdge
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,9 @@ SYSTEM_PROMPT = """
 - artifact_lookup_tool(key): ArtifactChunk(entity_xml 등) 조회. key는 chunk_id 또는 hint_key.
 - graph_create_refer_to_tool(target_type, target_key, evidence, source_method_id): REFER_TO 엣지 생성. source_method_id 필수.
 - graph_create_table_access_tool(table_name, access, evidence, source_method_id): READS/WRITES 엣지 생성. source_method_id 필수.
+- table_search_tool(keyword): 키워드로 테이블 검색 (대소문자/언더스코어 무시). 존재하는 테이블만 반환.
+- table_columns_tool(table_name, table_schema): 테이블의 컬럼/PK 정보 조회.
+- graph_create_fk_tool(from_table, from_column, to_table, to_column, evidence, from_schema, to_schema): FK 관계 등록. 반드시 table_search_tool/table_columns_tool로 양쪽 테이블 존재를 확인한 후 호출.
 
 [종류별 추적 전략]
 입력의 category 필드를 보고 아래 전략을 적용하십시오.
@@ -77,6 +81,13 @@ SYSTEM_PROMPT = """
   1) 설정 키나 파일명으로 bundle_search → 해당 설정을 참조하는 코드 검색
   2) config_lookup_tool로 설정 값 확인, 관련 키워드로 추가 검색
   3) graph_create_refer_to_tool("ConfigSection", config_key, evidence, source_method_id)
+
+== FK 식별 ==
+코드에서 테이블 간 관계가 보이면 (JOIN 조건, 엔티티 관계 필드, 외래키 패턴 등):
+1) table_search_tool로 관련 테이블 존재 확인
+2) table_columns_tool로 컬럼/PK 확인
+3) 확신이 있을 때만 graph_create_fk_tool 호출
+예: subscriber.getPlanId() → table_search_tool("plan") → table_columns_tool("PLAN") → PK가 PLAN_ID → graph_create_fk_tool("SUBSCRIBER", "PLAN_ID", "PLAN", "PLAN_ID")
 
 [출력 지침]
 - source_method_id는 반드시 bundle_search/bundle_get_chunk에서 발견한 실제 메서드의 chunk_id를 사용하십시오.
@@ -131,11 +142,14 @@ def build_tools(
     function_id: str,
     refer_collector: List[ReferToEdge],
     table_collector: List[FunctionTableEdge],
+    fk_collector: Optional[List] = None,
     variable_id: Optional[str] = None,
 ) -> List[Any]:
     """LangChain/deepagents 호환 툴 목록 생성. ChunkBundle + 인덱스 + 그래프 조작만 노출."""
     from langchain_core.tools import tool
     from analyzer.strategy.framework.common.utils import sql_op_to_method_relation as _sql_op_to_method_relation
+    if fk_collector is None:
+        fk_collector = []
 
     sql_index: Dict[str, SqlStatementChunk] = state.get("sql_index") or {}
     config_index: Dict[str, ConfigSectionChunk] = state.get("config_index") or {}
@@ -246,6 +260,43 @@ def build_tools(
         )
         return "ok"
 
+    @tool
+    def table_search_tool(keyword: str) -> str:
+        """테이블명을 키워드로 검색. 대소문자/언더스코어 무시. 존재하는 테이블만 반환."""
+        ddl_meta = state.get("ddl_table_metadata") or {}
+        keyword_lower = keyword.lower().replace("_", "")
+        results = []
+        for (schema, name) in ddl_meta:
+            name_lower = name.lower().replace("_", "")
+            if keyword_lower in name_lower:
+                results.append({"schema": schema, "name": name})
+        if not results:
+            return "no matching tables found"
+        return json.dumps(results[:20], ensure_ascii=False)
+
+    @tool
+    def table_columns_tool(table_name: str, table_schema: str = "") -> str:
+        """테이블의 컬럼 목록과 PK 정보 조회. Neo4j 접근 없이 메모리에서 조회. table_schema는 선택."""
+        ddl_meta = state.get("ddl_table_metadata") or {}
+        for (s, n), info in ddl_meta.items():
+            if n.lower() == table_name.lower() and (not table_schema or s.lower() == table_schema.lower()):
+                columns = info.get("columns") or []
+                pks = info.get("primary_keys") or []
+                col_names = [c.get("name", "") if isinstance(c, dict) else str(c) for c in columns]
+                return json.dumps({"schema": s, "name": n, "primary_keys": pks, "columns": col_names}, ensure_ascii=False)
+        return f"table '{table_name}' not found"
+
+    @tool
+    def graph_create_fk_tool(from_table: str, from_column: str, to_table: str, to_column: str, evidence: str = "", from_schema: str = "", to_schema: str = "") -> str:
+        """테이블 간 FK(Foreign Key) 관계를 등록한다. 반드시 table_search_tool/table_columns_tool로 양쪽 테이블 존재를 확인한 후 호출하라."""
+        from analyzer.strategy.framework.common.models import FkEdge
+        fk_collector.append(FkEdge(
+            from_schema=from_schema, from_table=from_table, from_column=from_column,
+            to_schema=to_schema, to_table=to_table, to_column=to_column,
+            candidate=True,
+        ))
+        return "ok"
+
     return [
         sql_lookup_tool,
         config_lookup_tool,
@@ -254,6 +305,9 @@ def build_tools(
         bundle_get_chunk_tool,
         graph_create_refer_to_tool,
         graph_create_table_access_tool,
+        table_search_tool,
+        table_columns_tool,
+        graph_create_fk_tool,
     ]
 
 
@@ -327,8 +381,8 @@ def run_deep_agent(
     state: Dict[str, Any],
     api_key: Optional[str] = None,
     run_dir: Optional[Path] = None,
-) -> Generator[Tuple[List[ReferToEdge], List[FunctionTableEdge]], None, None]:
-    """unresolved 목록을 DeepAgent 로 처리. 항목별로 (refer_to, function_table) yield."""
+) -> Generator[Tuple[List[ReferToEdge], List[FunctionTableEdge], List[FkEdge]], None, None]:
+    """unresolved 목록을 DeepAgent 로 처리. 항목별로 (refer_to, function_table, fk_edges) yield."""
     logger.info("[FW:DEEPAGENT] 진입 | unresolved=%d api_key_set=%s run_dir=%s", len(unresolved_list), bool(api_key), run_dir)
     if not unresolved_list:
         logger.info("[FW:DEEPAGENT] unresolved 없음 → 즉시 종료")
@@ -351,7 +405,7 @@ def run_deep_agent(
     model = get_llm(api_key=api_key) if api_key else get_llm()
     max_workers = min(len(unresolved_list), settings.concurrency.max_concurrency)
 
-    def _process_one(idx: int, u: UnresolvedLink) -> Tuple[List[ReferToEdge], List[FunctionTableEdge]]:
+    def _process_one(idx: int, u: UnresolvedLink) -> Tuple[List[ReferToEdge], List[FunctionTableEdge], List[FkEdge]]:
         has_method = bool(u.function_id and u.function_id.strip())
         label = u.function_id if has_method else "(unmatched key)"
         logger.info("[FW:DEEPAGENT] LLM 처리 (%d/%d) %s", idx, total, label)
@@ -366,7 +420,8 @@ def run_deep_agent(
 
         refer_collector: List[ReferToEdge] = []
         table_collector: List[FunctionTableEdge] = []
-        tools = build_tools(state, u.function_id or "", refer_collector, table_collector, variable_id=u.variable_id)
+        fk_collector: List[FkEdge] = []
+        tools = build_tools(state, u.function_id or "", refer_collector, table_collector, variable_id=u.variable_id, fk_collector=fk_collector)
 
         agent = create_deep_agent(model=model, tools=tools, system_prompt=SYSTEM_PROMPT)
 
@@ -383,21 +438,23 @@ def run_deep_agent(
                 output_payload={
                     "refer_to": len(refer_collector),
                     "table_access": len(table_collector),
+                    "fk_edges": len(fk_collector),
                 },
                 metadata={"function_id": u.function_id or "", "idx": idx, "total": total},
             )
-            if verbose and (refer_collector or table_collector):
+            if verbose and (refer_collector or table_collector or fk_collector):
                 logger.info(
-                    "[FW:DEEPAGENT] 결과 | %s new_refer=%d new_mt=%d",
-                    label, len(refer_collector), len(table_collector),
+                    "[FW:DEEPAGENT] 결과 | %s new_refer=%d new_mt=%d new_fk=%d",
+                    label, len(refer_collector), len(table_collector), len(fk_collector),
                 )
         except Exception as ex:
             logger.warning("[FW:DEEPAGENT] invoke 실패 %s error=%s", label, ex)
-        return refer_collector, table_collector
+        return refer_collector, table_collector, fk_collector
 
     total = len(unresolved_list)
     total_refer = 0
     total_mt = 0
+    total_fk = 0
     logger.info("[FW:DEEPAGENT] 병렬 처리 시작 | items=%d workers=%d", total, max_workers)
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -408,15 +465,16 @@ def run_deep_agent(
         }
         for future in as_completed(futures):
             try:
-                refer_result, mt_result = future.result()
-                if refer_result or mt_result:
+                refer_result, mt_result, fk_result = future.result()
+                if refer_result or mt_result or fk_result:
                     total_refer += len(refer_result)
                     total_mt += len(mt_result)
-                    yield (refer_result, mt_result)
+                    total_fk += len(fk_result)
+                    yield (refer_result, mt_result, fk_result)
             except Exception as ex:
                 logger.warning("[FW:DEEPAGENT] 워커 예외: %s", ex)
 
-    logger.info("[FW:DEEPAGENT] 종료 | new_refer=%d new_mt=%d", total_refer, total_mt)
+    logger.info("[FW:DEEPAGENT] 종료 | new_refer=%d new_mt=%d new_fk=%d", total_refer, total_mt, total_fk)
 
 
 # ---------------------------------------------------------------------------
@@ -454,6 +512,10 @@ DTO/VO 시그널 (이것만 있으면 엔티티 아님):
 - bundle_get_chunk_tool(chunk_id): chunk_id로 코드/XML/SQL 조각 조회.
 - graph_create_table_access_tool(table_name, access, evidence, source_method_id):
   Function→Table 접근 관계 등록. access: "READS" 또는 "WRITES". source_method_id 필수.
+- table_search_tool(keyword): 키워드로 테이블 검색 (대소문자/언더스코어 무시).
+- table_columns_tool(table_name, table_schema): 테이블의 컬럼/PK 정보 조회.
+- graph_create_fk_tool(from_table, from_column, to_table, to_column, evidence, from_schema, to_schema):
+  FK 관계 등록. 반드시 table_search_tool/table_columns_tool로 양쪽 테이블 존재를 확인한 후 호출.
 
 [절차]
 1) 입력에 DB 테이블 목록이 있으면: 각 테이블명으로 bundle_search → 관련 코드/XML/SQL 추적
@@ -461,6 +523,10 @@ DTO/VO 시그널 (이것만 있으면 엔티티 아님):
 3) 엔티티→테이블 매핑과 사용 메서드를 파악하면:
    - graph_create_table_access_tool(table_name, "READS"/"WRITES", evidence, source_method_id)
 4) DTO/VO로 판단되면 아무것도 호출하지 않음
+5) 엔티티 간 관계가 보이면 (필드 타입이 다른 엔티티, @ManyToOne, JOIN 패턴 등):
+   - table_search_tool로 관련 테이블 존재 확인
+   - table_columns_tool로 컬럼/PK 확인
+   - graph_create_fk_tool로 FK 관계 등록
 
 [효율성]
 - 후보가 여러 개이면 먼저 bundle_search로 일괄 검색한 뒤,
@@ -523,7 +589,7 @@ def run_deep_agent_entity_identification(
     api_key: Optional[str] = None,
     run_dir: Optional[Path] = None,
     ddl_table_metadata: Optional[Dict] = None,
-) -> List[FunctionTableEdge]:
+) -> Tuple[List[FunctionTableEdge], List[FkEdge]]:
     """DeepAgent로 엔티티 식별 + Function→Table 연결.
 
     시나리오별 동작:
@@ -532,21 +598,21 @@ def run_deep_agent_entity_identification(
     - DDL + 후보: 테이블 컨텍스트 + 후보 목록 모두 전달
 
     Returns:
-        List[FunctionTableEdge]: 식별된 Function→Table 접근 엣지 목록.
+        Tuple[List[FunctionTableEdge], List[FkEdge]]: 식별된 Function→Table 접근 엣지 목록과 FK 엣지 목록.
     """
     has_ddl = bool(ddl_table_metadata)
     has_candidates = bool(module_index)
 
     if not has_ddl and not has_candidates:
         logger.info("[FW:DEEPAGENT:ENTITY] DDL도 후보도 없음 → 즉시 종료")
-        return []
+        return [], []
 
     try:
         from deepagents import create_deep_agent
         from client.llm_client import get_llm
     except Exception as e:
         logger.warning("[FW:DEEPAGENT:ENTITY] deepagents 미설치 또는 LLM 클라이언트 없음: %s", e)
-        return []
+        return [], []
 
     if run_dir:
         state.setdefault("run_dir", str(run_dir))
@@ -580,7 +646,7 @@ def run_deep_agent_entity_identification(
 
     if not candidates and not has_ddl:
         logger.info("[FW:DEEPAGENT:ENTITY] 후보 없음 + DDL 없음 → 즉시 종료")
-        return []
+        return [], []
 
     logger.info(
         "[FW:DEEPAGENT:ENTITY] 시작 | ddl_tables=%d candidates=%d",
@@ -589,7 +655,8 @@ def run_deep_agent_entity_identification(
 
     table_collector: List[FunctionTableEdge] = []
     refer_collector: List[ReferToEdge] = []
-    tools = build_tools(state, "", refer_collector, table_collector)
+    fk_collector: List[FkEdge] = []
+    tools = build_tools(state, "", refer_collector, table_collector, fk_collector=fk_collector)
 
     agent = create_deep_agent(
         model=model, tools=tools,
@@ -630,5 +697,5 @@ def run_deep_agent_entity_identification(
             except Exception as ex:
                 logger.warning("[FW:DEEPAGENT:ENTITY] invoke 실패 batch=%d: %s", i, ex)
 
-    logger.info("[FW:DEEPAGENT:ENTITY] 종료 | function_table_edges=%d", len(table_collector))
-    return table_collector
+    logger.info("[FW:DEEPAGENT:ENTITY] 종료 | function_table_edges=%d fk_edges=%d", len(table_collector), len(fk_collector))
+    return table_collector, fk_collector

@@ -580,12 +580,19 @@ def build_fk_to_table_queries(fk_edges: List[FkEdge]) -> List[Dict[str, Any]]:
             "MATCH (t1:Table {db: $db, schema: $from_schema, name: $from_table})\n"
             "MATCH (t2:Table {db: $db, schema: $to_schema, name: $to_table})\n"
             "MERGE (t1)-[r:FK_TO_TABLE]->(t2)\n"
-            "SET r.updated_at = timestamp()\n"
+            "SET r.updated_at = timestamp(),\n"
+            "    r.source = CASE WHEN r.source IS NULL THEN $source ELSE r.source END,\n"
+            "    r.sourceColumn = $from_column, r.targetColumn = $to_column\n"
             "RETURN r"
         )
         queries.append({
             "query": q,
-            "params": {"db": TABLE_DB_DEFAULT, "from_schema": from_schema, "from_table": from_table, "to_schema": to_schema, "to_table": to_table},
+            "params": {
+                "db": TABLE_DB_DEFAULT, "from_schema": from_schema, "from_table": from_table,
+                "to_schema": to_schema, "to_table": to_table,
+                "source": getattr(e, "source", "code"),
+                "from_column": e.from_column or "", "to_column": e.to_column or "",
+            },
         })
     return queries
 

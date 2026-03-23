@@ -90,6 +90,15 @@ class DDLParser:
             re.IGNORECASE
         )
 
+        # 컬럼 수준 인라인 REFERENCES 패턴 (CREATE TABLE 내부)
+        # 예: PLAN_ID NUMBER(10) REFERENCES PLAN(PLAN_ID)
+        # 예: SUBSCRIBER_ID NUMBER(15) NOT NULL REFERENCES SUBSCRIBER(SUBSCRIBER_ID)
+        # 한 줄 내에서만 매칭 (줄바꿈 제외: [^\n] 사용)
+        self.column_ref_pattern = re.compile(
+            r'(\w+)\s+[^\n]+?REFERENCES\s+([\w\.\"]+)\s*\(([^)]+)\)',
+            re.IGNORECASE
+        )
+
         # 인라인 PRIMARY KEY 패턴 (CREATE TABLE 내부)
         # PRIMARY KEY (col1, col2)
         self.inline_pk_pattern = re.compile(
@@ -147,6 +156,21 @@ class DDLParser:
                         "column": src_col,
                         "ref": f"{ref_schema}.{ref_name}.{ref_col}" if ref_schema else f"{ref_name}.{ref_col}",
                     })
+
+            # 컬럼 수준 인라인 REFERENCES 파싱 (CREATE TABLE 내부)
+            # 예: PLAN_ID NUMBER(10) REFERENCES PLAN(PLAN_ID)
+            existing_fk_cols = {fk["column"] for fk in inline_fks}
+            for col_ref_match in self.column_ref_pattern.finditer(columns_def):
+                src_col = self._strip_quotes(col_ref_match.group(1))
+                if src_col in existing_fk_cols:
+                    continue  # 이미 FOREIGN KEY 절로 추출된 경우 중복 방지
+                ref_table = col_ref_match.group(2)
+                ref_col = self._strip_quotes(col_ref_match.group(3).strip())
+                ref_schema, ref_name = self._parse_table_name(ref_table)
+                inline_fks.append({
+                    "column": src_col,
+                    "ref": f"{ref_schema}.{ref_name}.{ref_col}" if ref_schema else f"{ref_name}.{ref_col}",
+                })
 
             # 인라인 PK 파싱 (CREATE TABLE 내부)
             inline_pks = []

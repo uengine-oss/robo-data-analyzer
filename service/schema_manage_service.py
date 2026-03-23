@@ -350,15 +350,16 @@ async def fetch_table_references(
     table_name: str,
     schema: str = "",
     column_name: Optional[str] = None
-) -> list:
-    """테이블 또는 컬럼이 참조된 프로시저 목록 조회
-    
+) -> dict:
+    """테이블 또는 컬럼이 참조된 프로시저 + 프레임워크 목록 조회
+
     Returns:
-        프로시저 참조 정보 리스트
+        {"references": [...], "framework_references": [...]}
     """
     client = Neo4jClient()
     try:
-        query = {
+        # 1) 프로시저 전략 참조 (기존)
+        proc_query = {
             "query": """
                 MATCH (__cy_s__)-[:FROM|WRITES]->(__cy_t__:Table)
                 WHERE __cy_t__.name = $table_name OR __cy_t__.fqn ENDS WITH $table_name
@@ -376,9 +377,42 @@ async def fetch_table_references(
             """,
             "parameters": {"table_name": table_name}
         }
-        
-        results = await client.execute_queries([query])
-        return results[0] if results else []
+        # 2) 프레임워크 전략 참조 (신규): FUNCTION/VARIABLE → Table
+        fw_query = {
+            "query": """
+                MATCH (src)-[r:READS|WRITES]->(t:Table)
+                WHERE (t.name = $table_name OR t.fqn ENDS WITH $table_name)
+                  AND (src:FUNCTION OR src:VARIABLE)
+                OPTIONAL MATCH (m:MODULE)-[:CONTAINS*]->(src)
+                RETURN DISTINCT
+                    COALESCE(src.name, src.function_id) AS source_name,
+                    'FUNCTION' AS source_type,
+                    type(r) AS access_type,
+                    src.start_line AS start_line,
+                    src.file_name AS file_name,
+                    src.file_directory AS file_directory,
+                    m.name AS module_name
+                ORDER BY source_name
+                UNION ALL
+                MATCH (m:MODULE)-[r:REFER_TO]->(t:Table)
+                WHERE t.name = $table_name OR t.fqn ENDS WITH $table_name
+                RETURN DISTINCT
+                    m.name AS source_name,
+                    'MODULE' AS source_type,
+                    'REFER_TO' AS access_type,
+                    m.start_line AS start_line,
+                    m.file_name AS file_name,
+                    m.file_directory AS file_directory,
+                    m.name AS module_name
+                ORDER BY source_name
+            """,
+            "parameters": {"table_name": table_name}
+        }
+
+        results = await client.execute_queries([proc_query, fw_query])
+        proc_records = results[0] if len(results) > 0 else []
+        fw_records = results[1] if len(results) > 1 else []
+        return {"references": proc_records, "framework_references": fw_records}
     finally:
         await client.close()
 

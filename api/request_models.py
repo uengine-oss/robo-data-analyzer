@@ -4,7 +4,7 @@ router.py에서 사용하는 모든 Pydantic 모델을 정의합니다.
 """
 
 from typing import Optional, List
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 # =============================================================================
@@ -101,8 +101,10 @@ class SemanticSearchRequest(BaseModel):
 class SemanticSearchResult(BaseModel):
     """시멘틱 검색 결과"""
     name: str
-    schema: str
+    table_schema: str = Field(alias="schema", default="")
     description: str
+
+    model_config = {"populate_by_name": True}
 
 
 class ProcedureReferenceInfo(BaseModel):
@@ -115,6 +117,17 @@ class ProcedureReferenceInfo(BaseModel):
     statement_line: Optional[int] = None
     file_name: Optional[str] = None  # 파일명
     file_directory: Optional[str] = None  # 파일 경로
+
+
+class FrameworkReferenceInfo(BaseModel):
+    """프레임워크 테이블 참조 정보"""
+    source_name: str           # 함수명 또는 모듈(엔티티 클래스)명
+    source_type: str           # "FUNCTION" | "MODULE"
+    access_type: str           # "READS" | "WRITES" | "REFER_TO"
+    start_line: Optional[int] = None  # 함수/모듈 시작 라인
+    file_name: Optional[str] = None
+    file_directory: Optional[str] = None
+    module_name: Optional[str] = None  # 소속 모듈/클래스명
 
 
 class StatementSummaryInfo(BaseModel):
@@ -142,8 +155,10 @@ class PipelineControlRequest(BaseModel):
 class TableDescriptionUpdateRequest(BaseModel):
     """테이블 설명 업데이트 요청"""
     name: str
-    schema: str = "public"
+    table_schema: str = Field(alias="schema", default="public")
     description: Optional[str] = None
+
+    model_config = {"populate_by_name": True}
 
 
 class ColumnDescriptionUpdateRequest(BaseModel):
@@ -157,7 +172,9 @@ class ColumnDescriptionUpdateRequest(BaseModel):
 class VectorizeRequest(BaseModel):
     """벡터라이징 요청"""
     db_name: Optional[str] = "postgres"
-    schema: Optional[str] = None
+    table_schema: Optional[str] = Field(alias="schema", default=None)
+
+    model_config = {"populate_by_name": True}
     include_tables: bool = True
     include_columns: bool = True
     reembed_existing: bool = False
