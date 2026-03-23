@@ -9,7 +9,6 @@ from typing import Any, Dict, Generator, List, Optional, Tuple
 from config.settings import settings
 from util.artifact_logger import log_llm_interaction
 from analyzer.strategy.framework.models import (
-    FunctionFacts,
     FunctionTableEdge,
     ReferToEdge,
     UnresolvedLink,
@@ -22,6 +21,10 @@ from analyzer.strategy.framework.common.models import FkEdge
 logger = logging.getLogger(__name__)
 
 
+# ===========================================================================
+# System Prompts
+# ===========================================================================
+
 SYSTEM_PROMPT = """
 당신은 소스코드에서 미매칭된 인덱스 키를 추적해
 코드 내 실제 사용처를 찾아 그래프 관계를 생성하는 전문가 에이전트입니다.
@@ -33,16 +36,23 @@ SYSTEM_PROMPT = """
 - 확신이 없으면 엣지를 생성하지 마십시오.
 
 [도구]
-- bundle_search_tool(query, kind="symbol"|"text"): 코드 청크 검색. 결과에 chunk_id, filePath, moduleName 포함.
-- bundle_get_chunk_tool(chunk_id): chunk_id로 코드 조각 조회.
-- sql_lookup_tool(sql_key): SQL 문 조회.
-- config_lookup_tool(config_key): 설정 엔트리 조회.
-- artifact_lookup_tool(key): ArtifactChunk(entity_xml 등) 조회. key는 chunk_id 또는 hint_key.
-- graph_create_refer_to_tool(target_type, target_key, evidence, source_method_id): REFER_TO 엣지 생성. source_method_id 필수.
-- graph_create_table_access_tool(table_name, access, evidence, source_method_id): READS/WRITES 엣지 생성. source_method_id 필수.
-- table_search_tool(keyword): 키워드로 테이블 검색 (대소문자/언더스코어 무시). 존재하는 테이블만 반환.
-- table_columns_tool(table_name, table_schema): 테이블의 컬럼/PK 정보 조회.
-- graph_create_fk_tool(from_table, from_column, to_table, to_column, evidence, from_schema, to_schema): FK 관계 등록. 반드시 table_search_tool/table_columns_tool로 양쪽 테이블 존재를 확인한 후 호출.
+  인덱스 조회:
+  - sql_lookup_tool(sql_key): SQL 문 조회.
+  - config_lookup_tool(config_key): 설정 엔트리 조회.
+  - artifact_lookup_tool(key): ArtifactChunk(entity_xml 등) 조회. key는 chunk_id 또는 hint_key.
+
+  코드 검색:
+  - bundle_search_tool(query, kind="symbol"|"text"): 코드 청크 검색. 결과에 chunk_id, filePath, moduleName 포함.
+  - bundle_get_chunk_tool(chunk_id): chunk_id로 코드 조각 조회.
+
+  관계 등록:
+  - graph_create_refer_to_tool(target_type, target_key, evidence, source_method_id): REFER_TO 엣지 생성. source_method_id 필수.
+  - graph_create_table_access_tool(table_name, access, evidence, source_method_id): READS/WRITES 엣지 생성. source_method_id 필수.
+
+  FK 관련:
+  - table_search_tool(keyword): 키워드로 테이블 검색 (대소문자/언더스코어 무시). 존재하는 테이블만 반환.
+  - table_columns_tool(table_name, table_schema): 테이블의 컬럼/PK 정보 조회.
+  - graph_create_fk_tool(from_table, from_column, to_table, to_column, evidence, from_schema, to_schema): FK 관계 등록. 반드시 table_search_tool/table_columns_tool로 양쪽 테이블 존재를 확인한 후 호출.
 
 [종류별 추적 전략]
 입력의 category 필드를 보고 아래 전략을 적용하십시오.
@@ -87,7 +97,8 @@ SYSTEM_PROMPT = """
 1) table_search_tool로 관련 테이블 존재 확인
 2) table_columns_tool로 컬럼/PK 확인
 3) 확신이 있을 때만 graph_create_fk_tool 호출
-예: subscriber.getPlanId() → table_search_tool("plan") → table_columns_tool("PLAN") → PK가 PLAN_ID → graph_create_fk_tool("SUBSCRIBER", "PLAN_ID", "PLAN", "PLAN_ID")
+예: subscriber.getPlanId() → table_search_tool("plan") → table_columns_tool("PLAN")
+    → PK가 PLAN_ID → graph_create_fk_tool("SUBSCRIBER", "PLAN_ID", "PLAN", "PLAN_ID")
 
 [출력 지침]
 - source_method_id는 반드시 bundle_search/bundle_get_chunk에서 발견한 실제 메서드의 chunk_id를 사용하십시오.
@@ -95,6 +106,65 @@ SYSTEM_PROMPT = """
 - 확신이 있을 때만 엣지를 생성하고, 근거가 부족하면 생성하지 마십시오.
 """
 
+ENTITY_IDENTIFICATION_SYSTEM_PROMPT = """
+당신은 소스코드에서 데이터베이스 엔티티(테이블에 매핑되는 클래스/구조체)를
+식별하고, 각 메서드가 어떤 테이블을 읽거나 쓰는지 추적하는 전문가 에이전트입니다.
+
+[목표]
+입력으로 주어지는 정보(DDL 테이블 목록 또는 클래스/구조체 후보)를 기반으로
+코드에서 DB 접근 패턴을 추적하여 Function→Table 관계를 생성합니다.
+
+[판단 기준 — 엔티티 vs DTO/VO]
+엔티티 시그널 (하나 이상이면 엔티티):
+- DB 연결/쿼리 코드에서 직접 사용 (INSERT/UPDATE/DELETE/SELECT의 대상)
+- ORM/DB 함수의 인자로 전달 (save, persist, find, query, db_insert, db_select 등)
+- 필드가 DB 컬럼과 1:1 대응 (id, created_at, updated_at 등 persistence 관련 필드)
+- 생성 후 DB에 저장되는 패턴 (create → save/insert)
+
+DTO/VO 시그널 (이것만 있으면 엔티티 아님):
+- 요청/응답 변환용 (Request, Response, DTO, VO 접미사)
+- 직렬화/역직렬화만 수행, DB 접근 없이 데이터 전달만
+
+[절대 규칙]
+- 오직 제공된 도구만 사용하십시오.
+- 확신이 없으면 엣지를 생성하지 마십시오.
+- bundle_search는 소스코드뿐 아니라 XML 정의, SQL 매핑도 검색합니다. 활용하세요.
+- 테이블명 추론: 매핑 정보 있으면 해당 값, 없으면 CamelCase → UPPER_SNAKE_CASE 관례 적용
+- graph_create_table_access_tool 호출 시 evidence에 테이블의 비즈니스 목적을 한 문장으로 기술하세요.
+
+[도구]
+  코드 검색:
+  - bundle_search_tool(query, kind="symbol"|"text"): 코드·XML·SQL 통합 검색.
+  - bundle_get_chunk_tool(chunk_id): chunk_id로 코드/XML/SQL 조각 조회.
+
+  관계 등록:
+  - graph_create_table_access_tool(table_name, access, evidence, source_method_id): Function→Table 접근 관계 등록. access: "READS" 또는 "WRITES". source_method_id 필수.
+
+  FK 관련:
+  - table_search_tool(keyword): 키워드로 테이블 검색 (대소문자/언더스코어 무시).
+  - table_columns_tool(table_name, table_schema): 테이블의 컬럼/PK 정보 조회.
+  - graph_create_fk_tool(from_table, from_column, to_table, to_column, evidence, from_schema, to_schema): FK 관계 등록. 반드시 table_search_tool/table_columns_tool로 양쪽 테이블 존재를 확인한 후 호출.
+
+[절차]
+1) 입력에 DB 테이블 목록이 있으면: 각 테이블명으로 bundle_search → 관련 코드/XML/SQL 추적
+2) 입력에 클래스/구조체 후보가 있으면: 각 이름으로 bundle_search → DB 접근 패턴 확인
+3) 엔티티→테이블 매핑과 사용 메서드를 파악하면:
+   - graph_create_table_access_tool(table_name, "READS"/"WRITES", evidence, source_method_id)
+4) DTO/VO로 판단되면 아무것도 호출하지 않음
+5) 엔티티 간 관계가 보이면 (필드 타입이 다른 엔티티, @ManyToOne, JOIN 패턴 등):
+   - table_search_tool로 관련 테이블 존재 확인
+   - table_columns_tool로 컬럼/PK 확인
+   - graph_create_fk_tool로 FK 관계 등록
+
+[효율성]
+- 후보가 여러 개이면 먼저 bundle_search로 일괄 검색한 뒤,
+  유사한 사용 패턴을 가진 후보를 묶어서 처리하십시오.
+"""
+
+
+# ===========================================================================
+# Index Lookup Helpers
+# ===========================================================================
 
 def sql_lookup(sql_key: str, sql_index: Dict[str, SqlStatementChunk]) -> Optional[Dict[str, Any]]:
     stmt = sql_index.get(sql_key)
@@ -137,6 +207,10 @@ def build_artifact_lookup_index(artifact_index: Dict[str, ArtifactChunk]) -> Dic
     return idx
 
 
+# ===========================================================================
+# Tool Builder
+# ===========================================================================
+
 def build_tools(
     state: Dict[str, Any],
     function_id: str,
@@ -148,14 +222,25 @@ def build_tools(
     """LangChain/deepagents 호환 툴 목록 생성. ChunkBundle + 인덱스 + 그래프 조작만 노출."""
     from langchain_core.tools import tool
     from analyzer.strategy.framework.common.utils import sql_op_to_method_relation as _sql_op_to_method_relation
+
     if fk_collector is None:
         fk_collector = []
 
+    # ── 기존 FK 세트 (DDL 파싱 — 중복 생성 방지) ───────────
+    ddl_meta = state.get("ddl_table_metadata") or {}
+    existing_fk_set: set = set()
+    for (_s, _n), info in ddl_meta.items():
+        for fk in (info.get("foreign_keys") or info.get("foreignKeys") or []):
+            fk_col = (fk.get("column") or "").strip().upper()
+            fk_ref = (fk.get("ref") or "").strip().upper()
+            if fk_col and fk_ref:
+                existing_fk_set.add((_n.upper(), fk_col, fk_ref))
+
+    # ── state 인덱스 참조 ──────────────────────────────────
     sql_index: Dict[str, SqlStatementChunk] = state.get("sql_index") or {}
     config_index: Dict[str, ConfigSectionChunk] = state.get("config_index") or {}
     artifact_index: Dict[str, ArtifactChunk] = state.get("artifact_index") or {}
     artifact_key_index = build_artifact_lookup_index(artifact_index)
-
     span_index = state.get("span_index") or {}
     chunk_index = state.get("chunk_index") or {}
     data_dir = state.get("data_dir") or ""
@@ -165,21 +250,34 @@ def build_tools(
         bundle_get_chunk as _bundle_get_chunk,
     )
 
+    # ── 내부 헬퍼 ──────────────────────────────────────────
+
+    def _enrich_with_modulename(result: Dict[str, Any]) -> Dict[str, Any]:
+        """filePath에서 moduleName 추출하여 결과에 추가."""
+        fp = result.get("filePath", "")
+        if fp:
+            fname = fp.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+            name = fname.rsplit(".", 1)[0] if "." in fname else fname
+            result["moduleName"] = name
+        return result
+
+    # ===== 인덱스 조회 도구 ==========================================
+
     @tool
     def sql_lookup_tool(sql_key: str) -> str:
-        """sql_key 로 SQL 을 조회한다. 결과는 JSON 문자열이다."""
+        """sql_key로 SQL을 조회한다."""
         r = sql_lookup(sql_key, sql_index)
         return json.dumps(r, ensure_ascii=False) if r else ""
 
     @tool
     def config_lookup_tool(config_key: str) -> str:
-        """config_key 로 설정 엔트리를 조회한다. 결과는 JSON 문자열이다."""
+        """config_key로 설정 엔트리를 조회한다."""
         r = config_lookup(config_key, config_index)
         return json.dumps(r, ensure_ascii=False) if r else ""
 
     @tool
     def artifact_lookup_tool(key: str) -> str:
-        """chunk_id 또는 hint_key(ejb-name) 로 ArtifactChunk 를 조회한다. 결과는 JSON 문자열이다."""
+        """chunk_id 또는 hint_key(ejb-name)로 ArtifactChunk를 조회한다."""
         cid = artifact_key_index.get((key or "").strip())
         if not cid:
             return ""
@@ -197,33 +295,27 @@ def build_tools(
         }
         return json.dumps(data, ensure_ascii=False)
 
-    def _enrich_with_modulename(result: Dict[str, Any]) -> Dict[str, Any]:
-        """filePath에서 moduleName 추출하여 결과에 추가."""
-        fp = result.get("filePath", "")
-        if fp:
-            fname = fp.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-            name = fname.rsplit(".", 1)[0] if "." in fname else fname
-            result["moduleName"] = name
-        return result
+    # ===== 코드 검색 도구 ==========================================
 
     @tool
     def bundle_search_tool(query: str, kind: str = "symbol") -> str:
-        """ChunkBundle에서 심볼/텍스트를 검색. kind: symbol|text. 결과에 chunk_id, filePath, moduleName 포함."""
+        """ChunkBundle에서 심볼/텍스트 검색. kind: symbol|text."""
         results = _bundle_search(data_dir, query, kind, span_index=span_index, chunk_index=chunk_index)
         return json.dumps([_enrich_with_modulename(r) for r in results[:20]], ensure_ascii=False)
 
     @tool
     def bundle_get_chunk_tool(chunk_id: str) -> str:
-        """chunk_id로 코드 조각을 조회. 결과에 text, filePath, moduleName, span 포함."""
+        """chunk_id로 코드 조각 조회."""
         r = _bundle_get_chunk(chunk_id, chunk_index=chunk_index)
         if r:
             _enrich_with_modulename(r)
         return json.dumps(r, ensure_ascii=False) if r else ""
 
+    # ===== 관계 등록 도구 ==========================================
+
     @tool
     def graph_create_refer_to_tool(target_type: str, target_key: str, evidence: str = "", source_function_id: str = "") -> str:
-        """Method/Field → (SqlStatement|ConfigSection|ArtifactChunk|Class) REFER_TO 엣지를 생성한다.
-        source_function_id: 미매칭 인덱스 키 탐색 시 발견한 메서드 ID. 비워두면 기본 function_id 사용."""
+        """REFER_TO 엣지 생성. source_function_id 비워두면 기본 function_id 사용."""
         mid = source_function_id.strip() if source_function_id else function_id
         if not mid:
             return "error: source_function_id required (no default function_id)"
@@ -241,8 +333,7 @@ def build_tools(
 
     @tool
     def graph_create_table_access_tool(table_name: str, access: str, evidence: str = "", source_function_id: str = "") -> str:
-        """Method/Field → Table READS/WRITES 엣지를 생성한다.
-        source_function_id: 미매칭 인덱스 키 탐색 시 발견한 메서드 ID. 비워두면 기본 function_id 사용."""
+        """READS/WRITES 엣지 생성. source_function_id 비워두면 기본 function_id 사용."""
         mid = source_function_id.strip() if source_function_id else function_id
         if not mid:
             return "error: source_function_id required (no default function_id)"
@@ -260,10 +351,11 @@ def build_tools(
         )
         return "ok"
 
+    # ===== FK 관련 도구 ============================================
+
     @tool
     def table_search_tool(keyword: str) -> str:
-        """테이블명을 키워드로 검색. 대소문자/언더스코어 무시. 존재하는 테이블만 반환."""
-        ddl_meta = state.get("ddl_table_metadata") or {}
+        """테이블명을 키워드로 검색. 대소문자/언더스코어 무시."""
         keyword_lower = keyword.lower().replace("_", "")
         results = []
         for (schema, name) in ddl_meta:
@@ -276,8 +368,7 @@ def build_tools(
 
     @tool
     def table_columns_tool(table_name: str, table_schema: str = "") -> str:
-        """테이블의 컬럼 목록과 PK 정보 조회. Neo4j 접근 없이 메모리에서 조회. table_schema는 선택."""
-        ddl_meta = state.get("ddl_table_metadata") or {}
+        """테이블의 컬럼 목록과 PK 정보 조회."""
         for (s, n), info in ddl_meta.items():
             if n.lower() == table_name.lower() and (not table_schema or s.lower() == table_schema.lower()):
                 columns = info.get("columns") or []
@@ -288,8 +379,12 @@ def build_tools(
 
     @tool
     def graph_create_fk_tool(from_table: str, from_column: str, to_table: str, to_column: str, evidence: str = "", from_schema: str = "", to_schema: str = "") -> str:
-        """테이블 간 FK(Foreign Key) 관계를 등록한다. 반드시 table_search_tool/table_columns_tool로 양쪽 테이블 존재를 확인한 후 호출하라."""
-        from analyzer.strategy.framework.common.models import FkEdge
+        """FK 관계 등록. 반드시 table_search/table_columns로 양쪽 테이블 확인 후 호출."""
+        ref_key = f"{to_table}.{to_column}".upper()
+        check_key = (from_table.upper(), from_column.upper(), ref_key)
+        if check_key in existing_fk_set:
+            logger.debug("[FW:DEEPAGENT] FK 중복 스킵 (DDL) | %s.%s → %s", from_table, from_column, ref_key)
+            return "already exists (from DDL)"
         fk_collector.append(FkEdge(
             from_schema=from_schema, from_table=from_table, from_column=from_column,
             to_schema=to_schema, to_table=to_table, to_column=to_column,
@@ -298,18 +393,16 @@ def build_tools(
         return "ok"
 
     return [
-        sql_lookup_tool,
-        config_lookup_tool,
-        artifact_lookup_tool,
-        bundle_search_tool,
-        bundle_get_chunk_tool,
-        graph_create_refer_to_tool,
-        graph_create_table_access_tool,
-        table_search_tool,
-        table_columns_tool,
-        graph_create_fk_tool,
+        sql_lookup_tool, config_lookup_tool, artifact_lookup_tool,   # 인덱스 조회
+        bundle_search_tool, bundle_get_chunk_tool,                   # 코드 검색
+        graph_create_refer_to_tool, graph_create_table_access_tool,  # 관계 등록
+        table_search_tool, table_columns_tool, graph_create_fk_tool, # FK 관련
     ]
 
+
+# ===========================================================================
+# Bundle Index Helper
+# ===========================================================================
 
 def _ensure_bundle_indexes(state: Dict[str, Any]) -> None:
     """state 에 span_index / chunk_index 가 없으면 ChunkBundle 로부터 빌드하여 채운다."""
@@ -332,6 +425,10 @@ def _ensure_bundle_indexes(state: Dict[str, Any]) -> None:
     state["chunk_index"] = chunk_index
     logger.info("[FW:DEEPAGENT] bundle index 빌드 완료 | span=%d chunk=%d", len(span_index), len(chunk_index))
 
+
+# ===========================================================================
+# Unmatched Key User Message Builder
+# ===========================================================================
 
 def _build_unmatched_user_message(u: UnresolvedLink) -> str:
     """미매칭 인덱스 키에 대한 종류별 user message 생성."""
@@ -376,6 +473,10 @@ def _build_unmatched_user_message(u: UnresolvedLink) -> str:
     return header
 
 
+# ===========================================================================
+# run_deep_agent — 미매칭 인덱스 키 처리
+# ===========================================================================
+
 def run_deep_agent(
     unresolved_list: List[UnresolvedLink],
     state: Dict[str, Any],
@@ -397,18 +498,19 @@ def run_deep_agent(
         logger.warning("[FW:DEEPAGENT] deepagents 미설치 또는 LLM 클라이언트 없음: %s", e)
         return
 
-    # span_index / chunk_index 가 state 에 없으면 자동 빌드
     if run_dir:
         state.setdefault("run_dir", str(run_dir))
     _ensure_bundle_indexes(state)
 
     model = get_llm(api_key=api_key) if api_key else get_llm()
-    max_workers = min(len(unresolved_list), settings.concurrency.max_concurrency)
+    total = len(unresolved_list)
+    max_workers = min(total, settings.concurrency.max_concurrency)
 
     def _process_one(idx: int, u: UnresolvedLink) -> Tuple[List[ReferToEdge], List[FunctionTableEdge], List[FkEdge]]:
         has_method = bool(u.function_id and u.function_id.strip())
         label = u.function_id if has_method else "(unmatched key)"
         logger.info("[FW:DEEPAGENT] LLM 처리 (%d/%d) %s", idx, total, label)
+
         if verbose and u.ref_candidates:
             parts: List[str] = []
             for c in (u.ref_candidates or [])[:5]:
@@ -431,7 +533,7 @@ def run_deep_agent(
             user_content = _build_unmatched_user_message(u)
 
         try:
-            result = agent.invoke({"messages": [{"role": "user", "content": user_content}]})
+            agent.invoke({"messages": [{"role": "user", "content": user_content}]})
             log_llm_interaction(
                 prompt_name="framework/deep_agent",
                 input_payload=user_content,
@@ -449,9 +551,9 @@ def run_deep_agent(
                 )
         except Exception as ex:
             logger.warning("[FW:DEEPAGENT] invoke 실패 %s error=%s", label, ex)
+
         return refer_collector, table_collector, fk_collector
 
-    total = len(unresolved_list)
     total_refer = 0
     total_mt = 0
     total_fk = 0
@@ -477,64 +579,11 @@ def run_deep_agent(
     logger.info("[FW:DEEPAGENT] 종료 | new_refer=%d new_mt=%d new_fk=%d", total_refer, total_mt, total_fk)
 
 
-# ---------------------------------------------------------------------------
-# DeepAgent 엔티티 식별 — 시나리오별 Function→Table 연결
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# run_deep_agent_entity_identification — 엔티티 식별 + Function→Table 연결
+# ===========================================================================
 
-ENTITY_IDENTIFICATION_SYSTEM_PROMPT = """
-당신은 소스코드에서 데이터베이스 엔티티(테이블에 매핑되는 클래스/구조체)를
-식별하고, 각 메서드가 어떤 테이블을 읽거나 쓰는지 추적하는 전문가 에이전트입니다.
-
-[목표]
-입력으로 주어지는 정보(DDL 테이블 목록 또는 클래스/구조체 후보)를 기반으로
-코드에서 DB 접근 패턴을 추적하여 Function→Table 관계를 생성합니다.
-
-[판단 기준 — 엔티티 vs DTO/VO]
-엔티티 시그널 (하나 이상이면 엔티티):
-- DB 연결/쿼리 코드에서 직접 사용 (INSERT/UPDATE/DELETE/SELECT의 대상)
-- ORM/DB 함수의 인자로 전달 (save, persist, find, query, db_insert, db_select 등)
-- 필드가 DB 컬럼과 1:1 대응 (id, created_at, updated_at 등 persistence 관련 필드)
-- 생성 후 DB에 저장되는 패턴 (create → save/insert)
-
-DTO/VO 시그널 (이것만 있으면 엔티티 아님):
-- 요청/응답 변환용 (Request, Response, DTO, VO 접미사)
-- 직렬화/역직렬화만 수행, DB 접근 없이 데이터 전달만
-
-[절대 규칙]
-- 오직 제공된 도구만 사용하십시오.
-- 확신이 없으면 엣지를 생성하지 마십시오.
-- bundle_search는 소스코드뿐 아니라 XML 정의, SQL 매핑도 검색합니다. 활용하세요.
-- 테이블명 추론: 매핑 정보 있으면 해당 값, 없으면 CamelCase → UPPER_SNAKE_CASE 관례 적용
-- graph_create_table_access_tool 호출 시 evidence에 테이블의 비즈니스 목적을 한 문장으로 기술하세요.
-
-[도구]
-- bundle_search_tool(query, kind="symbol"|"text"): 코드·XML·SQL 통합 검색.
-- bundle_get_chunk_tool(chunk_id): chunk_id로 코드/XML/SQL 조각 조회.
-- graph_create_table_access_tool(table_name, access, evidence, source_method_id):
-  Function→Table 접근 관계 등록. access: "READS" 또는 "WRITES". source_method_id 필수.
-- table_search_tool(keyword): 키워드로 테이블 검색 (대소문자/언더스코어 무시).
-- table_columns_tool(table_name, table_schema): 테이블의 컬럼/PK 정보 조회.
-- graph_create_fk_tool(from_table, from_column, to_table, to_column, evidence, from_schema, to_schema):
-  FK 관계 등록. 반드시 table_search_tool/table_columns_tool로 양쪽 테이블 존재를 확인한 후 호출.
-
-[절차]
-1) 입력에 DB 테이블 목록이 있으면: 각 테이블명으로 bundle_search → 관련 코드/XML/SQL 추적
-2) 입력에 클래스/구조체 후보가 있으면: 각 이름으로 bundle_search → DB 접근 패턴 확인
-3) 엔티티→테이블 매핑과 사용 메서드를 파악하면:
-   - graph_create_table_access_tool(table_name, "READS"/"WRITES", evidence, source_method_id)
-4) DTO/VO로 판단되면 아무것도 호출하지 않음
-5) 엔티티 간 관계가 보이면 (필드 타입이 다른 엔티티, @ManyToOne, JOIN 패턴 등):
-   - table_search_tool로 관련 테이블 존재 확인
-   - table_columns_tool로 컬럼/PK 확인
-   - graph_create_fk_tool로 FK 관계 등록
-
-[효율성]
-- 후보가 여러 개이면 먼저 bundle_search로 일괄 검색한 뒤,
-  유사한 사용 패턴을 가진 후보를 묶어서 처리하십시오.
-"""
-
-
-# 디렉토리명 사전 체크용 상수
+# 디렉토리명 사전 분류용 상수
 _ENTITY_DIR_HINTS = frozenset({"entity", "entities", "model", "models", "domain", "schema"})
 _DTO_DIR_HINTS = frozenset({"dto", "vo", "request", "response", "view"})
 
@@ -553,32 +602,49 @@ def _build_entity_id_user_message(
     candidates: Optional[List[Dict[str, str]]] = None,
     ddl_table_metadata: Optional[Dict] = None,
 ) -> str:
-    """시나리오별 DeepAgent user message 구성."""
+    """시나리오별 DeepAgent user message 구성.
+
+    - DDL 있음: 테이블 이름 + FK 목록만 전달 (관계 추적용)
+    - DDL 없음: 구조체/클래스 후보 전달 (엔티티 판별 + 관계 추적)
+    """
     parts: List[str] = []
 
-    # DDL 테이블 컨텍스트
     if ddl_table_metadata:
-        table_lines: List[str] = []
+        # ── DDL 있음 → 테이블 이름 + 기존 FK 목록
+        fk_lines: List[str] = []
         for (_schema, _name), meta in ddl_table_metadata.items():
             orig = meta.get("original_name", _name)
-            desc = (meta.get("description") or "")[:80]
-            table_lines.append(f"- {orig}" + (f" ({desc})" if desc else ""))
-        if table_lines:
-            parts.append("[프로젝트 DB 테이블]\n" + "\n".join(table_lines[:200]))
-            parts.append(
-                "\n위 테이블 목록을 참고하여 코드에서 이 테이블들을 사용하는 메서드를 추적하고,\n"
-                "각 테이블과 매핑되는 엔티티/구조체가 있으면 함께 파악하세요.\n"
-            )
+            for fk in (meta.get("foreign_keys") or meta.get("foreignKeys") or []):
+                fk_col = fk.get("column", "")
+                fk_ref = fk.get("ref", "")
+                if fk_col and fk_ref:
+                    fk_lines.append(f"- {orig}.{fk_col} → {fk_ref}")
 
-    # 후보 목록
-    if candidates:
-        cand_lines = [
-            f"- {c['fqn']} (file: {c['file_path']})"
-            for c in candidates
-        ]
+        if fk_lines:
+            if len(fk_lines) <= 50:
+                parts.append("[이미 식별된 FK — 중복 생성하지 마세요]\n" + "\n".join(fk_lines))
+            else:
+                parts.append(f"이미 식별된 FK {len(fk_lines)}개 존재. 중복 생성하지 마세요.")
+
+        table_names = [meta.get("original_name", _name) for (_schema, _name), meta in ddl_table_metadata.items()]
+        if len(table_names) <= 100:
+            parts.append("[테이블 이름] " + ", ".join(table_names))
+        else:
+            parts.append(f"프로젝트에 테이블 {len(table_names)}개 존재. table_search_tool로 검색하세요.")
+
+        parts.append(
+            "위 테이블을 코드에서 사용하는 메서드를 추적하세요. 컬럼 상세는 table_columns_tool로 조회하세요.\n"
+            "이미 식별된 FK 이외의 새로운 FK 관계가 코드에서 발견되면 graph_create_fk_tool로 등록하세요."
+        )
+
+    elif candidates:
+        # ── DDL 없음 → 구조체/클래스 후보로 엔티티 판별 + 추적
+        cand_lines = [f"- {c['fqn']} (file: {c['file_path']})" for c in candidates]
         parts.append("[클래스/구조체 후보]\n" + "\n".join(cand_lines))
-        if not ddl_table_metadata:
-            parts.append("\n위 후보에서 DB 엔티티를 식별하고, 사용하는 메서드를 추적하세요.")
+        parts.append(
+            "\n위 후보에서 DB 엔티티를 식별하고, 사용하는 메서드를 추적하세요.\n"
+            "FK 관계가 발견되면 graph_create_fk_tool로 등록하세요."
+        )
 
     return "\n".join(parts)
 
@@ -598,7 +664,7 @@ def run_deep_agent_entity_identification(
     - DDL + 후보: 테이블 컨텍스트 + 후보 목록 모두 전달
 
     Returns:
-        Tuple[List[FunctionTableEdge], List[FkEdge]]: 식별된 Function→Table 접근 엣지 목록과 FK 엣지 목록.
+        (Function→Table 접근 엣지 목록, FK 엣지 목록)
     """
     has_ddl = bool(ddl_table_metadata)
     has_candidates = bool(module_index)
@@ -620,18 +686,18 @@ def run_deep_agent_entity_identification(
 
     model = get_llm(api_key=api_key) if api_key else get_llm()
 
-    # 후보 수집 + 디렉토리명 사전 체크
-    # FILE(C 소스파일 컨테이너)은 엔티티 후보에서 제외 — STRUCT/UNION만 대상
+    # ── 후보 수집 (CLASS/STRUCT/UNION만 엔티티 후보. dto 디렉토리 스킵) ──
+    _ENTITY_CANDIDATE_KINDS = frozenset({"CLASS", "STRUCT", "UNION"})
     candidates: List[Dict[str, str]] = []
     for fqn, info in (module_index or {}).items():
         if not isinstance(info, dict):
             continue
-        if info.get("kind") == "FILE":
-            continue  # 파일 컨테이너는 엔티티 후보 아님
+        if info.get("kind") not in _ENTITY_CANDIDATE_KINDS:
+            continue
         fp = info.get("file_path", "")
         path_class = _classify_by_path(fp)
         if path_class == "dto":
-            continue  # DTO 디렉토리에 있는 클래스는 제외
+            continue
         candidates.append({
             "fqn": fqn,
             "name": info.get("name", ""),
@@ -641,16 +707,16 @@ def run_deep_agent_entity_identification(
             "path_hint": path_class,
         })
 
-    # entity 디렉토리 힌트 있는 것을 앞으로 정렬
-    candidates.sort(key=lambda c: (0 if c.get("path_hint") == "entity" else 1))
+    candidates.sort(key=lambda c: (0 if c.get("path_hint") == "entity" else 1))  # entity 힌트 우선
 
     if not candidates and not has_ddl:
         logger.info("[FW:DEEPAGENT:ENTITY] 후보 없음 + DDL 없음 → 즉시 종료")
         return [], []
 
+    scenario = "ddl_tables" if has_ddl else "candidates"
     logger.info(
-        "[FW:DEEPAGENT:ENTITY] 시작 | ddl_tables=%d candidates=%d",
-        len(ddl_table_metadata or {}), len(candidates),
+        "[FW:DEEPAGENT:ENTITY] 시작 | scenario=%s ddl_tables=%d candidates=%d",
+        scenario, len(ddl_table_metadata or {}), len(candidates),
     )
 
     table_collector: List[FunctionTableEdge] = []
@@ -663,10 +729,11 @@ def run_deep_agent_entity_identification(
         system_prompt=ENTITY_IDENTIFICATION_SYSTEM_PROMPT,
     )
 
-    # 배치 처리
-    _BATCH_SIZE = 200
-    if has_ddl and not candidates:
-        # DDL만 있고 후보 없음 → 테이블명만 전달
+    _BATCH_SIZE = 20
+
+    if has_ddl:
+        # ── 시나리오 A: DDL 있음 → 테이블명 + FK 목록으로 코드 추적
+        logger.info("[FW:DEEPAGENT:ENTITY] scenario=ddl_tables | 테이블 %d개로 코드 추적", len(ddl_table_metadata or {}))
         user_msg = _build_entity_id_user_message(ddl_table_metadata=ddl_table_metadata)
         try:
             agent.invoke({"messages": [{"role": "user", "content": user_msg}]})
@@ -674,18 +741,16 @@ def run_deep_agent_entity_identification(
                 prompt_name="framework/deep_agent_entity_identification",
                 input_payload=user_msg,
                 output_payload={"table_access": len(table_collector)},
-                metadata={"scenario": "ddl_only"},
+                metadata={"scenario": "ddl_with_tables"},
             )
         except Exception as ex:
-            logger.warning("[FW:DEEPAGENT:ENTITY] invoke 실패 (ddl_only): %s", ex)
+            logger.warning("[FW:DEEPAGENT:ENTITY] invoke 실패 (ddl): %s", ex)
     else:
-        # 후보가 있음 → 배치로 처리 (DDL 테이블은 매 배치 컨텍스트로 포함)
+        # ── 시나리오 B: DDL 없음 → 후보 배치로 엔티티 식별
+        logger.info("[FW:DEEPAGENT:ENTITY] scenario=candidates | 후보 %d개에서 엔티티 식별", len(candidates))
         for i in range(0, max(len(candidates), 1), _BATCH_SIZE):
             batch = candidates[i:i + _BATCH_SIZE]
-            user_msg = _build_entity_id_user_message(
-                candidates=batch,
-                ddl_table_metadata=ddl_table_metadata,
-            )
+            user_msg = _build_entity_id_user_message(candidates=batch)
             try:
                 agent.invoke({"messages": [{"role": "user", "content": user_msg}]})
                 log_llm_interaction(

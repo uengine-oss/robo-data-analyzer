@@ -554,9 +554,9 @@ async def run_phase_llm(
             yield tracker.end_step(f"Function→Table {len(function_table_edges)}건, Module→Table {len(module_table_edges)}건, Artifact→Table {len(artifact_table_edges)}건, Artifact→Module {artifact_module_count}건")
 
     # DeepAgent 엔티티 식별 — 시나리오별 분기
-    # 시나리오 1 (DDL + 외부파일): 현행 결정론 매칭으로 충분 → 스킵
+    # 시나리오 1 (DDL + 외부파일): 자동 엔티티 식별(어노테이션) + DDL 테이블 사용 → DeepAgent 불필요
     # 시나리오 2 (DDL만): 테이블명 컨텍스트 + 코드 추적 → DeepAgent 실행
-    # 시나리오 3 (외부파일만): 현행 table_extract LLM으로 충분 → 스킵
+    # 시나리오 3 (외부파일만): 자동 엔티티 식별(어노테이션) + Table 노드 생성 → DeepAgent 불필요
     # 시나리오 4 (아무것도 없음): 후보 기반 엔티티 식별 → DeepAgent 실행
     ddl_meta = pipeline._pipeline_state.get("ddl_table_metadata") or {}
     _has_external_files = has_external_entity_info(
@@ -573,6 +573,7 @@ async def run_phase_llm(
         logger.info("[FW:PHASE2] DeepAgent 엔티티 식별 실행 (scenario=%s)", scenario)
         entity_api_key = settings.llm.api_key
         entity_run_dir = Path(st["run_dir"]) if st.get("run_dir") else None
+        # DeepAgent 엔티티 식별에 전달할 컨텍스트
         entity_state = {
             "sql_index": sql_index,
             "config_index": st.get("config_index") or {},
@@ -581,7 +582,7 @@ async def run_phase_llm(
             "run_dir": str(entity_run_dir) if entity_run_dir else None,
             "span_index": st.get("span_index"),
             "chunk_index": st.get("chunk_index"),
-            "ddl_table_metadata": ddl_meta or None,
+            "ddl_table_metadata": ddl_meta or None,  # DDL 테이블 메타 (시나리오 2 전용)
         }
         entity_mt_edges, entity_fk_edges = run_deep_agent_entity_identification(
             st.get("module_index") or {},
@@ -590,22 +591,30 @@ async def run_phase_llm(
             run_dir=entity_run_dir,
             ddl_table_metadata=ddl_meta or None,
         )
+        # --- FK 엣지 수집 (엔티티 식별 결과) ---
         if entity_fk_edges:
             fk_edges.extend(entity_fk_edges)
             logger.info("[FW:PHASE2] DeepAgent 엔티티 식별 FK 엣지 | count=%d", len(entity_fk_edges))
+
+        # --- Function→Table 엣지 수집 + Neo4j 반영 (엔티티 식별 결과) ---
         if entity_mt_edges:
             function_table_edges.extend(entity_mt_edges)
             logger.info("[FW:PHASE2] DeepAgent 엔티티 식별 완료 | Function→Table %d건", len(entity_mt_edges))
             try:
-                # DeepAgent가 반환한 테이블명으로 module_index에서 FQN 조회 → Table/Column 노드 먼저 생성
-                _entity_fqns = _collect_entity_fqns_from_edges(entity_mt_edges, st.get("module_index") or {})
-                if _entity_fqns:
-                    entity_tbl_queries = build_table_from_entity_classes(_entity_fqns, st.get("module_index") or {})
-                    if entity_tbl_queries:
-                        logger.info("[FW:PHASE2] 엔티티 Table/Column 생성 | classes=%d queries=%d", len(_entity_fqns), len(entity_tbl_queries))
-                        async for graph in run_graph_queries(client, entity_tbl_queries, label="PHASE2:ENTITY_TABLE"):
-                            yield emit_data(graph=graph)
-                # Function→Table 관계 연결 (Table 노드가 이제 존재하므로 성공)
+                # ── Table 노드 사전 생성 (시나리오 4 전용) ──
+                # DDL이 있으면 테이블 노드는 DDL 파서가 이미 생성 → 스킵
+                # DDL이 없으면 struct/class 이름으로 Table+Column 노드를 먼저 생성해야
+                # 아래 Function→Table 관계 MERGE가 성공한다.
+                if not ddl_meta:
+                    _entity_fqns = _collect_entity_fqns_from_edges(entity_mt_edges, st.get("module_index") or {})
+                    if _entity_fqns:
+                        entity_tbl_queries = build_table_from_entity_classes(_entity_fqns, st.get("module_index") or {})
+                        if entity_tbl_queries:
+                            logger.info("[FW:PHASE2] 엔티티 Table/Column 생성 (DDL 없음) | classes=%d queries=%d", len(_entity_fqns), len(entity_tbl_queries))
+                            async for graph in run_graph_queries(client, entity_tbl_queries, label="PHASE2:ENTITY_TABLE"):
+                                yield emit_data(graph=graph)
+
+                # ── Function→Table 관계 연결 ──
                 eid_queries = build_function_table_from_writes_queries(entity_mt_edges)
                 if eid_queries:
                     async for graph in run_graph_queries(client, eid_queries, label="PHASE2:ENTITY_ID"):
@@ -617,21 +626,26 @@ async def run_phase_llm(
             st.setdefault("span_index", entity_state["span_index"])
             st.setdefault("chunk_index", entity_state["chunk_index"])
     else:
-        # 시나리오 3: 외부 엔티티 정보(경로/어노테이션) 존재 → 자동 식별 후 Table/Column 생성
+        # 시나리오 1, 3: 외부 엔티티 정보(어노테이션/XML) 존재 → 자동 식별
+        # DDL이 있으면(시나리오 1) 테이블 노드는 DDL 파서가 이미 생성 → Table 생성 스킵
+        # DDL이 없으면(시나리오 3) 어노테이션 기반 엔티티에서 Table 노드 생성
         from analyzer.strategy.framework.linking.matcher import identify_entity_classes
         auto_entity_fqns = identify_entity_classes(st.get("module_index") or {})
         if auto_entity_fqns:
-            logger.info("[FW:PHASE2] 자동 엔티티 식별 (경로/어노테이션) | classes=%d", len(auto_entity_fqns))
-            try:
-                auto_tbl_queries = build_table_from_entity_classes(auto_entity_fqns, st.get("module_index") or {})
-                if auto_tbl_queries:
-                    async for graph in run_graph_queries(client, auto_tbl_queries, label="PHASE2:AUTO_ENTITY_TABLE"):
-                        yield emit_data(graph=graph)
-                    logger.info("[FW:PHASE2] 자동 엔티티 Table/Column 생성 완료 | queries=%d", len(auto_tbl_queries))
-            except Exception as e:
-                logger.warning("[FW:PHASE2] 자동 엔티티 Table/Column 생성 실패: %s", e)
+            logger.info("[FW:PHASE2] 자동 엔티티 식별 (어노테이션) | classes=%d", len(auto_entity_fqns))
+            if not ddl_meta:
+                try:
+                    auto_tbl_queries = build_table_from_entity_classes(auto_entity_fqns, st.get("module_index") or {})
+                    if auto_tbl_queries:
+                        async for graph in run_graph_queries(client, auto_tbl_queries, label="PHASE2:AUTO_ENTITY_TABLE"):
+                            yield emit_data(graph=graph)
+                        logger.info("[FW:PHASE2] 자동 엔티티 Table/Column 생성 (DDL 없음) | queries=%d", len(auto_tbl_queries))
+                except Exception as e:
+                    logger.warning("[FW:PHASE2] 자동 엔티티 Table/Column 생성 실패: %s", e)
+            else:
+                logger.info("[FW:PHASE2] DDL 존재 — 엔티티 기반 Table 생성 스킵 (DDL 테이블 사용)")
         else:
-            logger.info("[FW:PHASE2] 외부 엔티티 정보 충분 — DeepAgent 엔티티 식별 스킵")
+            logger.info("[FW:PHASE2] 엔티티 어노테이션 미발견 — DeepAgent 엔티티 식별 필요 없음")
 
     # DeepAgent: 항목별 점진적 스트리밍
     if not unresolved:
@@ -641,6 +655,7 @@ async def run_phase_llm(
         yield tracker.begin_step(3, len(unresolved))
         api_key = settings.llm.api_key
         run_dir_path = Path(st["run_dir"]) if st.get("run_dir") else None
+        # DeepAgent 미해결 참조 추적에 전달할 컨텍스트
         deep_state = {
             "sql_index": sql_index,
             "config_index": st.get("config_index") or {},
@@ -649,11 +664,13 @@ async def run_phase_llm(
             "run_dir": str(run_dir_path) if run_dir_path else None,
             "span_index": st.get("span_index"),
             "chunk_index": st.get("chunk_index"),
-            "ddl_table_metadata": ddl_meta or None,
+            "ddl_table_metadata": ddl_meta or None,  # DDL 테이블 메타 (FK 추론용)
         }
-        da_refer_all: list = []
-        da_mt_all: list = []
-        da_fk_all: list = []
+
+        # DeepAgent 결과 누적 버퍼
+        da_refer_all: list = []   # REFER_TO 엣지
+        da_mt_all: list = []      # Function→Table 엣지
+        da_fk_all: list = []      # FK 엣지
         for item_refer, item_mt, item_fk in run_deep_agent(
             unresolved,
             deep_state,
@@ -682,9 +699,11 @@ async def run_phase_llm(
         if da_mt_all:
             function_table_edges.extend(da_mt_all)
             logger.info("[FW:PHASE2] DeepAgent Function→Table 직접 추가 | count=%d", len(da_mt_all))
+        # --- FK 엣지 수집 (DeepAgent 미해결 추적 결과) ---
         if da_fk_all:
             fk_edges.extend(da_fk_all)
             logger.info("[FW:PHASE2] DeepAgent FK 엣지 추가 | count=%d", len(da_fk_all))
+
         # DeepAgent refer_to에서 Method→ArtifactChunk→Table 체인으로 Function→Table 자동 유도
         if da_refer_all and artifact_table_edges:
             from analyzer.strategy.framework.linking.orchestrator import derive_function_table_edges
@@ -705,7 +724,9 @@ async def run_phase_llm(
             st.setdefault("chunk_index", deep_state["chunk_index"])
         yield tracker.end_step(f"REFER_TO {len(da_refer_all)}건, Function→Table {len(da_mt_all)}건 추가")
 
-    # FK 엣지 Neo4j 반영 (sql_extractor + deep agent 통합)
+    # -----------------------------------------------------------------------
+    # FK 엣지 Neo4j 반영 (sql_extractor + 엔티티 식별 + DeepAgent 통합)
+    # -----------------------------------------------------------------------
     if fk_edges:
         try:
             fk_queries: list = []

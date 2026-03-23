@@ -36,26 +36,65 @@ from util.artifact_logger import invoke_with_audit
 from client.llm_client import get_llm
 
 _MAX_RETRIES = 3
-# LLM 출력에서 JSON 파싱을 깨뜨리는 제어 문자 제거 (e.g. \0, \x01 등)
+_RETRY_BASE_DELAY = 2.0  # seconds
+
+# ---------------------------------------------------------------------------
+# LLM 출력 정제 (JSON 파싱 전처리)
+# ---------------------------------------------------------------------------
+
+# JSON 파싱을 깨뜨리는 제어 문자 (null byte, SOH, STX 등) 매칭 패턴.
+# 줄바꿈(\n=0x0a), 캐리지리턴(\r=0x0d), 탭(\t=0x09)은 유효하므로 제외.
 _CONTROL_CHAR_RE = _re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f]')
-# JSON 표준에서 유효하지 않은 이스케이프 시퀀스 수리 (예: \0, \a 등)
-# 유효한 이스케이프: \", \\, \/, \b, \f, \n, \r, \t, \uXXXX
-_INVALID_ESCAPE_RE = _re.compile(r'\\(?!["\\/bfnrtu])')
+
+# JSON 표준 이스케이프 시퀀스에서 백슬래시 뒤에 올 수 있는 유효 문자
+_VALID_JSON_ESCAPE_CHARS = frozenset({'"', '\\', '/', 'b', 'f', 'n', 'r', 't'})
+
+
+def _fix_invalid_json_escapes(s: str) -> str:
+    r"""JSON 문자열 내부의 잘못된 이스케이프 시퀀스를 수리한다.
+
+    유효한 이스케이프(\" \\ \/ \b \f \n \r \t \uXXXX)는 그대로 보존하고,
+    그 외(\0, \a, \' 등)는 백슬래시만 제거하여 일반 문자로 변환한다.
+
+    예: ``"hello\\world"`` → ``"helloworld"`` (\\w 는 유효하지 않으므로 \\ 제거)
+    """
+    result = []
+    i = 0
+    while i < len(s):
+        if s[i] == '\\' and i + 1 < len(s):
+            next_ch = s[i + 1]
+            if next_ch in _VALID_JSON_ESCAPE_CHARS:
+                # 유효한 이스케이프 쌍 → 그대로 유지
+                result.append(s[i])
+                result.append(next_ch)
+                i += 2
+            elif next_ch == 'u' and i + 5 < len(s):
+                # \uXXXX 유니코드 이스케이프 → 그대로 유지
+                result.append(s[i:i + 6])
+                i += 6
+            else:
+                # 잘못된 이스케이프 → 백슬래시 제거, 다음 문자만 유지
+                result.append(next_ch)
+                i += 2
+        else:
+            result.append(s[i])
+            i += 1
+    return ''.join(result)
 
 
 def _sanitize_llm_output(text) -> str:
-    """LLM 응답에서 제어 문자 및 잘못된 JSON 이스케이프를 수리하여 파싱 실패 방지."""
-    def _fix(s: str) -> str:
-        s = _CONTROL_CHAR_RE.sub('', s)
-        s = _INVALID_ESCAPE_RE.sub(r'\\\\', s)  # \0 → \\0, \a → \\a 등
-        return s
+    """LLM 응답에서 제어 문자 및 잘못된 JSON 이스케이프를 수리하여 파싱 실패를 방지한다.
+
+    AIMessage(content=...) 객체와 순수 str 모두 처리한다.
+    """
     if hasattr(text, 'content'):
-        text.content = _fix(text.content)
+        text.content = _CONTROL_CHAR_RE.sub('', text.content)
+        text.content = _fix_invalid_json_escapes(text.content)
         return text
     if isinstance(text, str):
-        return _fix(text)
+        text = _CONTROL_CHAR_RE.sub('', text)
+        return _fix_invalid_json_escapes(text)
     return text
-_RETRY_BASE_DELAY = 2.0  # seconds
 
 logger = logging.getLogger(__name__)
 

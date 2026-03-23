@@ -1,13 +1,41 @@
 """ROBO Analyzer API 라우터
 
-엔드포인트:
-- POST /robo/analyze/      : 소스 파일 분석 → Neo4j 그래프 생성
-- GET /robo/check-data/    : Neo4j에 기존 데이터 존재 여부 확인
-- DELETE /robo/data/       : 사용자 데이터 전체 삭제
-- GET /robo/lineage/       : 데이터 리니지 그래프 조회
-- POST /robo/lineage/analyze/ : ETL 코드에서 리니지 추출
-- GET /robo/schema/tables  : 테이블 목록 조회 (Neo4j)
-- 기타 스키마/파이프라인/DW API
+엔드포인트 그룹:
+  [분석]       POST /analyze/                              소스 파일 분석 → Neo4j 그래프 생성
+  [그래프]     GET  /check-data/                           Neo4j 데이터 존재 여부 확인
+               GET  /graph/                                그래프 데이터 조회
+               GET  /graph/related-tables/{table_name}     관련 테이블 조회
+               DELETE /delete/                             사용자 데이터 삭제
+  [리니지]     GET  /lineage/                              리니지 그래프 조회
+               POST /lineage/analyze/                      ETL 코드 리니지 추출
+  [스키마]     GET  /schema/tables                         테이블 목록 조회
+               GET  /schema/tables/{name}/columns          컬럼 조회
+               GET  /schema/tables/{name}/references       프로시저 참조 조회
+               GET  /schema/relationships                  관계 목록 조회
+               POST /schema/relationships                  관계 추가
+               DELETE /schema/relationships                관계 삭제
+               GET  /schema/procedures/{name}/statements   프로시저 Statement 조회
+               POST /schema/semantic-search                시멘틱 검색
+  [스키마편집] PUT  /schema/tables/{name}/description       테이블 설명 수정
+               PUT  /schema/tables/{name}/columns/{col}/description  컬럼 설명 수정
+               POST /schema/vectorize                      스키마 벡터화
+  [DW]         POST /schema/dw-tables                      DW 스타스키마 등록
+               DELETE /schema/dw-tables/{cube_name}        DW 스타스키마 삭제
+  [파이프라인] GET  /pipeline/status                        파이프라인 상태
+               GET  /pipeline/phases                       파이프라인 단계 정보
+               POST /pipeline/control                      파이프라인 제어
+
+공통 패턴:
+  대부분의 엔드포인트는 아래 로깅/에러 처리 패턴을 따른다.
+    logger.info("[API] 작업 설명 | param=value")
+    try:
+        result = await service.method(...)
+        return result
+    except HTTPException:        # ← 서비스에서 던진 HTTPException은 그대로 전파
+        raise
+    except Exception as e:
+        logger.error("[API] 작업 실패 | error=%s", e)
+        raise HTTPException(500, build_error_body(e))
 """
 
 import logging
@@ -44,7 +72,6 @@ from service import (
 from util.request_helper import extract_api_key, extract_locale
 from util.ndjson_stream import build_error_body, stream_with_error_boundary
 
-
 router = APIRouter(prefix=settings.api_prefix)
 logger = logging.getLogger(__name__)
 
@@ -55,35 +82,34 @@ logger = logging.getLogger(__name__)
 
 @router.post("/analyze/")
 async def analyze_source_code(request: Request):
-    """소스 파일을 분석하여 Neo4j 그래프 데이터 생성"""
+    """소스 파일을 분석하여 Neo4j 그래프 데이터 생성 (NDJSON 스트리밍 응답)"""
     body = await request.json()
-    
     api_key = extract_api_key(request)
     locale = extract_locale(request)
-    
+
     # 필수 파라미터 검증
     strategy = body.get("strategy")
     if not strategy:
         raise HTTPException(400, "strategy 파라미터가 필요합니다. (framework 또는 dbms)")
     strategy = strategy.strip().lower()
-    
+
     target = body.get("target")
     if not target:
         raise HTTPException(400, "target 파라미터가 필요합니다. (java, oracle, postgres 등)")
     target = target.strip().lower()
-    
+
+    # 선택 파라미터
     name_case = (body.get("nameCase") or "original").strip().lower()
-    datasource_name = (body.get("datasourceName") or "").strip()  # 타겟 데이터 소스
-    infer_fk_relations = body.get("inferFkRelations", False)  # FK 관계 자동 추론 여부
-    
-    # API 키 검증
+    datasource_name = (body.get("datasourceName") or "").strip()
+    infer_fk_relations = body.get("inferFkRelations", False)
+
     await source_analyze_service.validate_llm_api_key(api_key)
-    
-    # 분석 대상 파일 탐색 (analysis/target JSON 기반)
+
+    # 분석 대상 파일 탐색
     dirs = source_analyze_service.get_analysis_directories(strategy)
     file_names = source_analyze_service.discover_analyzable_files(strategy, target, dirs)
     has_ddl = source_analyze_service.check_ddl_files_exist(dirs)
-    
+
     if not file_names and not has_ddl:
         raise HTTPException(400, "분석할 소스 파일 또는 DDL이 없습니다.")
 
@@ -132,7 +158,7 @@ async def get_graph_data():
         result = await graph_query_service.fetch_graph_data()
         logger.info(
             "[API] 그래프 데이터 조회 완료 | nodes=%d | relationships=%d",
-            len(result["Nodes"]), len(result["Relationships"])
+            len(result["Nodes"]), len(result["Relationships"]),
         )
         return result
     except Exception as e:
@@ -146,8 +172,10 @@ async def get_related_tables(table_name: str):
     logger.info("[API] 관련 테이블 조회 요청 | table=%s", table_name)
     try:
         result = await graph_query_service.fetch_related_tables(table_name)
-        logger.info("[API] 관련 테이블 조회 완료 | table=%s | tables=%d | rels=%d", 
-                    table_name, len(result["tables"]), len(result["relationships"]))
+        logger.info(
+            "[API] 관련 테이블 조회 완료 | table=%s | tables=%d | rels=%d",
+            table_name, len(result["tables"]), len(result["relationships"]),
+        )
         return result
     except Exception as e:
         logger.error("[API] 관련 테이블 조회 실패 | table=%s | error=%s", table_name, e)
@@ -203,33 +231,15 @@ async def analyze_lineage(body: LineageAnalyzeRequest):
 
 
 # =============================================================================
-# 스키마 API
+# 스키마 조회 API
 # =============================================================================
 
-@router.post("/schema/semantic-search")
-async def semantic_search_tables(request: Request, body: SemanticSearchRequest):
-    """시멘틱 검색: 테이블 설명의 의미적 유사도 기반 검색"""
-    api_key = request.headers.get("X-API-Key")
-    if not api_key:
-        raise HTTPException(400, "X-API-Key 헤더가 필요합니다.")
-    logger.info("[API] 시멘틱 검색 요청 | query=%s", body.query[:50])
-    try:
-        result = await schema_manage_service.search_tables_by_semantic(
-            query=body.query,
-            limit=body.limit,
-            api_key=api_key
-        )
-        logger.info("[API] 시멘틱 검색 완료 | results=%d", len(result))
-        return result
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("[API] 시멘틱 검색 실패 | error=%s", e)
-        raise HTTPException(500, build_error_body(e))
-
-
 @router.get("/schema/tables", response_model=List[SchemaTableInfo])
-async def list_schema_tables(search: Optional[str] = None, schema: Optional[str] = None, limit: int = 100):
+async def list_schema_tables(
+    search: Optional[str] = None,
+    schema: Optional[str] = None,
+    limit: int = 100,
+):
     """테이블 목록 조회"""
     logger.info("[API] 테이블 목록 조회")
     try:
@@ -242,7 +252,7 @@ async def list_schema_tables(search: Optional[str] = None, schema: Optional[str]
                 description=r["description"] or "",
                 description_source=r.get("description_source") or "",
                 analyzed_description=r.get("analyzed_description") or "",
-                column_count=r["column_count"] or 0
+                column_count=r["column_count"] or 0,
             )
             for r in records
         ]
@@ -269,13 +279,46 @@ async def get_table_columns(table_name: str, schema: Optional[str] = None):
                 nullable=r.get("nullable", True),
                 description=r.get("description") or "",
                 description_source=r.get("description_source") or "",
-                analyzed_description=r.get("analyzed_description") or ""
+                analyzed_description=r.get("analyzed_description") or "",
             )
             for r in records
         ]
         return columns
     except Exception as e:
         logger.error("[API] 컬럼 조회 실패 | error=%s", e)
+        raise HTTPException(500, build_error_body(e))
+
+
+@router.get("/schema/tables/{table_name}/references")
+async def get_table_references(
+    table_name: str,
+    schema: Optional[str] = None,
+    column_name: Optional[str] = None,
+):
+    """테이블 또는 컬럼이 참조된 프로시저 목록 조회
+
+    응답: { procedures: [...], statements: [...] }
+    """
+    if schema is None:
+        raise HTTPException(400, "schema 파라미터가 필요합니다.")
+    logger.info("[API] 테이블 참조 조회 | table=%s | schema=%s | column=%s",
+                table_name, schema, column_name)
+    try:
+        return await schema_manage_service.fetch_table_references(table_name, schema, column_name)
+    except Exception as e:
+        logger.error("[API] 테이블 참조 조회 실패 | error=%s", e)
+        raise HTTPException(500, build_error_body(e))
+
+
+@router.get("/schema/procedures/{procedure_name}/statements")
+async def get_procedure_statements(procedure_name: str, file_directory: Optional[str] = None):
+    """프로시저의 모든 Statement와 AI 설명 조회"""
+    logger.info("[API] Statement 조회 | procedure=%s", procedure_name)
+    try:
+        records = await schema_manage_service.fetch_procedure_statements(procedure_name, file_directory)
+        return {"statements": records}
+    except Exception as e:
+        logger.error("[API] Statement 조회 실패 | error=%s", e)
         raise HTTPException(500, build_error_body(e))
 
 
@@ -294,7 +337,7 @@ async def list_schema_relationships():
                 to_schema=r.get("to_schema") or "",
                 to_column=r.get("to_column") or "",
                 relationship_type=r.get("relationship_type") or "FK_TO_TABLE",
-                description=r.get("description") or ""
+                description=r.get("description") or "",
             )
             for r in records
         ]
@@ -316,7 +359,7 @@ async def add_schema_relationship(body: AddRelationshipRequest):
             to_schema=body.to_schema,
             to_column=body.to_column,
             relationship_type=body.relationship_type,
-            description=body.description
+            description=body.description,
         )
     except HTTPException:
         raise
@@ -330,7 +373,7 @@ async def remove_schema_relationship(
     from_table: str,
     from_column: str,
     to_table: str,
-    to_column: str
+    to_column: str,
 ):
     """테이블 관계 삭제"""
     logger.info("[API] 관계 삭제 | %s.%s -> %s.%s", from_table, from_column, to_table, to_column)
@@ -343,53 +386,24 @@ async def remove_schema_relationship(
         raise HTTPException(500, build_error_body(e))
 
 
-@router.get("/schema/tables/{table_name}/references")
-async def get_table_references(table_name: str, schema: Optional[str] = None, column_name: Optional[str] = None):
-    """테이블 또는 컬럼이 참조된 프로시저 목록 조회"""
-    if schema is None:
-        raise HTTPException(400, "schema 파라미터가 필요합니다.")
-    logger.info("[API] 테이블 참조 조회 | table=%s", table_name)
+@router.post("/schema/semantic-search")
+async def semantic_search_tables(request: Request, body: SemanticSearchRequest):
+    """시멘틱 검색: 테이블 설명의 의미적 유사도 기반 검색"""
+    api_key = request.headers.get("X-API-Key")
+    if not api_key:
+        raise HTTPException(400, "X-API-Key 헤더가 필요합니다.")
+    logger.info("[API] 시멘틱 검색 요청 | query=%s", body.query[:50])
     try:
-        result = await schema_manage_service.fetch_table_references(table_name, schema, column_name)
+        result = await schema_manage_service.search_tables_by_semantic(
+            query=body.query, limit=body.limit, api_key=api_key,
+        )
+        logger.info("[API] 시멘틱 검색 완료 | results=%d", len(result))
         return result
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error("[API] 테이블 참조 조회 실패 | error=%s", e)
+        logger.error("[API] 시멘틱 검색 실패 | error=%s", e)
         raise HTTPException(500, build_error_body(e))
-
-
-@router.get("/schema/procedures/{procedure_name}/statements")
-async def get_procedure_statements(procedure_name: str, file_directory: Optional[str] = None):
-    """프로시저의 모든 Statement와 AI 설명 조회"""
-    logger.info("[API] Statement 조회 | procedure=%s", procedure_name)
-    try:
-        records = await schema_manage_service.fetch_procedure_statements(procedure_name, file_directory)
-        return {"statements": records}
-    except Exception as e:
-        logger.error("[API] Statement 조회 실패 | error=%s", e)
-        raise HTTPException(500, build_error_body(e))
-
-
-# =============================================================================
-# 파이프라인 제어 API
-# =============================================================================
-
-@router.get("/pipeline/status")
-async def get_pipeline_status():
-    """파이프라인 상태 조회"""
-    return pipeline_control_service.get_pipeline_status()
-
-
-@router.get("/pipeline/phases")
-async def get_pipeline_phases():
-    """파이프라인 단계 정보 조회"""
-    return pipeline_control_service.get_pipeline_phases_info()
-
-
-@router.post("/pipeline/control")
-async def control_pipeline(body: PipelineControlRequest):
-    """파이프라인 제어 (pause/resume/stop)"""
-    logger.info("[API] 파이프라인 제어 | action=%s", body.action)
-    return await pipeline_control_service.control_pipeline_action(body.action)
 
 
 # =============================================================================
@@ -397,18 +411,20 @@ async def control_pipeline(body: PipelineControlRequest):
 # =============================================================================
 
 @router.put("/schema/tables/{table_name}/description")
-async def update_table_description(request: Request, table_name: str, body: TableDescriptionUpdateRequest):
+async def update_table_description(
+    request: Request, table_name: str, body: TableDescriptionUpdateRequest,
+):
     """테이블 설명 업데이트"""
     api_key = request.headers.get("X-API-Key")
     if not api_key:
         raise HTTPException(400, "X-API-Key 헤더가 필요합니다.")
-    logger.info("[API] 테이블 설명 업데이트 | table=%s", table_name)
+    logger.info("[API] 테이블 설명 업데이트 | table=%s | schema=%s", table_name, body.table_schema)
     try:
         return await schema_manage_service.update_table_description(
             table_name=table_name,
             schema=body.table_schema,
             description=body.description,
-            api_key=api_key
+            api_key=api_key,
         )
     except HTTPException:
         raise
@@ -422,7 +438,7 @@ async def update_column_description(
     request: Request,
     table_name: str,
     column_name: str,
-    body: ColumnDescriptionUpdateRequest
+    body: ColumnDescriptionUpdateRequest,
 ):
     """컬럼 설명 업데이트"""
     api_key = request.headers.get("X-API-Key")
@@ -435,7 +451,7 @@ async def update_column_description(
             table_schema=body.table_schema,
             column_name=column_name,
             description=body.description,
-            api_key=api_key
+            api_key=api_key,
         )
     except HTTPException:
         raise
@@ -459,7 +475,7 @@ async def vectorize_schema(request: Request, body: VectorizeRequest):
             include_columns=body.include_columns,
             reembed_existing=body.reembed_existing,
             batch_size=body.batch_size,
-            api_key=api_key
+            api_key=api_key,
         )
     except HTTPException:
         raise
@@ -487,7 +503,7 @@ async def register_dw_star_schema(request: Request, body: DWStarSchemaRequest):
             fact_table=body.fact_table.model_dump(),
             dimensions=[d.model_dump() for d in body.dimensions],
             create_embeddings=body.create_embeddings,
-            api_key=api_key
+            api_key=api_key,
         )
     except HTTPException:
         raise
@@ -497,7 +513,11 @@ async def register_dw_star_schema(request: Request, body: DWStarSchemaRequest):
 
 
 @router.delete("/schema/dw-tables/{cube_name}")
-async def delete_dw_star_schema(cube_name: str, schema: Optional[str] = None, db_name: Optional[str] = None):
+async def delete_dw_star_schema(
+    cube_name: str,
+    schema: Optional[str] = None,
+    db_name: Optional[str] = None,
+):
     """DW 스타스키마 삭제"""
     if schema is None:
         raise HTTPException(400, "schema 파라미터가 필요합니다.")
@@ -510,3 +530,25 @@ async def delete_dw_star_schema(cube_name: str, schema: Optional[str] = None, db
         logger.error("[API] DW 스타스키마 삭제 실패 | error=%s", e)
         raise HTTPException(500, build_error_body(e))
 
+
+# =============================================================================
+# 파이프라인 제어 API
+# =============================================================================
+
+@router.get("/pipeline/status")
+async def get_pipeline_status():
+    """파이프라인 상태 조회"""
+    return pipeline_control_service.get_pipeline_status()
+
+
+@router.get("/pipeline/phases")
+async def get_pipeline_phases():
+    """파이프라인 단계 정보 조회"""
+    return pipeline_control_service.get_pipeline_phases_info()
+
+
+@router.post("/pipeline/control")
+async def control_pipeline(body: PipelineControlRequest):
+    """파이프라인 제어 (pause/resume/stop)"""
+    logger.info("[API] 파이프라인 제어 | action=%s", body.action)
+    return await pipeline_control_service.control_pipeline_action(body.action)

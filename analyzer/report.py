@@ -22,86 +22,99 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════════════════
-# 데이터 모델
+# 라벨 상수 — Neo4j 노드 라벨 분류
 # ═══════════════════════════════════════════════════════════════════════
 
+# ── 범위(Scope) ──
 SCOPE_LABELS = {"INTERNAL", "EXTERNAL"}
+
+# ── 1차 라벨: 역할 기반 (Framework) ──
 MODULE_LABELS = {"MODULE"}
+PRIMARY_LABELS = {"MODULE", "VARIABLE", "CONSTANT"}
 FUNCTION_ROLE_LABELS = {"READMODEL", "COMMAND"}
+
+# ── 1차 라벨: DBMS 고유 (역할 매핑 없이 직접 사용) ──
+DBMS_MODULE_LABELS = {"PROCEDURE", "FUNCTION", "TRIGGER"}
+
+# ── DML 라벨 ──
 DML_LABELS = {
     "SELECT", "INSERT", "UPDATE", "DELETE", "MERGE",
     "EXECUTE_IMMEDIATE", "FETCH", "CTE", "OPEN_CURSOR", "CREATE_TEMP_TABLE",
 }
-EXCLUDED_REL_TYPES = {"NEXT", "PARENT_OF"}
 
-# ── Framework 역할 기반 1차 레이블 ──
-PRIMARY_LABELS = {"MODULE", "VARIABLE", "CONSTANT"}
-
-# ── DBMS 고유 라벨 (역할 매핑 없이 직접 사용) ──
-DBMS_MODULE_LABELS = {"PROCEDURE", "FUNCTION", "TRIGGER"}
-
-# ontology_roles.yaml 기반 서브레이블 (모든 언어의 AST 타입)
+# ── 서브레이블: ontology_roles.yaml AST 타입 ──
 SUB_LABELS = {
-    # module 역할
-    "CLASS", "INTERFACE", "ENUM", "FILE", "STRUCT", "UNION",
-    # function 역할
-    "METHOD", "CONSTRUCTOR",
-    # variable 역할
-    "FIELD", "MEMBER", "GLOBAL_VARIABLE",
-    # constant 역할
-    "DEFINE",
+    "CLASS", "INTERFACE", "ENUM", "FILE", "STRUCT", "UNION",       # module
+    "METHOD", "CONSTRUCTOR",                                        # function
+    "FIELD", "MEMBER", "GLOBAL_VARIABLE",                           # variable
+    "DEFINE",                                                       # constant
 }
 
-# stereotypes 섹션 (common + oop)
+# ── 스테레오타입 라벨 (common + oop) ──
 STEREOTYPE_LABELS = {
     "Init", "Query", "Command", "Handler", "Validation", "BusinessLogic",
     "Endpoint", "Getter", "Setter", "Lifecycle", "Scheduled", "Transactional",
 }
 
-# 노드 통계에서 제외할 보조 라벨
+# ── 통계 제외용 보조 라벨 ──
 _SKIP_COUNT_LABELS = SCOPE_LABELS | FUNCTION_ROLE_LABELS | {"EXTERNAL"}
+
+# ═══════════════════════════════════════════════════════════════════════
+# 관계 타입 상수 — 용도별 그룹
+# ═══════════════════════════════════════════════════════════════════════
+
+EXCLUDED_REL_TYPES = {"NEXT", "PARENT_OF"}
 
 STRUCTURAL_REL_TYPES = {"CONTAINS", "HAS_FUNCTION", "HAS_VARIABLE", "BELONGS_TO_PACKAGE", "CONTAINS_PACKAGE", "HAS_COLUMN"}
 UML_REL_TYPES = {"EXTENDS", "IMPLEMENTS", "ASSOCIATION", "COMPOSITION", "AGGREGATION", "DEPENDENCY"}
 ETL_REL_TYPES = {"ETL_READS", "ETL_WRITES", "DATA_FLOWS_TO"}
 
-# 모듈 상세에서 구조 관계로 묶을 관계 타입 (UML + ETL)
-ENTITY_STRUCT_REL_TYPES = UML_REL_TYPES | ETL_REL_TYPES
-# 모듈 상세에서 호출 관계로 묶을 관계 타입
-ENTITY_CALL_REL_TYPES = {"CALLS", "USES", "CALL"}
-# 모듈 상세에서 데이터 접근으로 묶을 관계 타입
-ENTITY_DATA_REL_TYPES = {"FROM", "READS", "WRITES", "REFER_TO", "REFERS_TO"}
+ENTITY_STRUCT_REL_TYPES = UML_REL_TYPES | ETL_REL_TYPES       # 모듈 상세: 구조 관계
+ENTITY_CALL_REL_TYPES = {"CALLS", "USES", "CALL"}              # 모듈 상세: 호출 관계
+ENTITY_DATA_REL_TYPES = {"FROM", "READS", "WRITES", "REFER_TO", "REFERS_TO"}  # 모듈 상세: 데이터 접근
 
 # ═══════════════════════════════════════════════════════════════════════
-# 통합 테이블 스키마 상수
+# 마크다운 테이블 스키마 상수 (헤더 컬럼 정의)
 # ═══════════════════════════════════════════════════════════════════════
 
+# -- 개요 섹션 --
 SCHEMA_NODE_STATS = ["노드 타입", "개수"]
 SCHEMA_REL_STATS = ["관계 타입", "개수"]
 SCHEMA_STEREOTYPE = ["스테레오타입", "개수"]
 
+# -- 패키지 섹션 --
 SCHEMA_PKG_MEMBERS = ["이름", "타입", "스테레오타입", "범위"]
 
+# -- 모듈 상세 섹션 --
 SCHEMA_FUNCTION = ["이름", "시그니처", "반환타입", "수정자", "요약"]
 SCHEMA_VARIABLE = ["이름", "타입", "수정자", "요약"]
 SCHEMA_STRUCT_REL = ["방향", "관계", "대상", "속성"]
 SCHEMA_CALL_REL = ["방향", "대상", "호출코드"]
 SCHEMA_DATA_ACCESS = ["대상", "관계", "근거", "신뢰도"]
 
+# -- 외부 의존성 섹션 --
 SCHEMA_EXTERNAL_DEP = ["외부 엔티티", "타입", "참조 INTERNAL"]
 
+# -- Artifact 섹션 --
 SCHEMA_ARTIFACT_REL = ["방향", "관계", "대상"]
 
+# -- 설정 파일(NONTARGET) 섹션 --
 SCHEMA_NONTARGET_BLOCK = ["이름", "종류", "키워드", "라인", "요약"]
 SCHEMA_NONTARGET_REF = ["블록", "테이블", "역할", "근거", "신뢰도"]
 
+# -- DB 스키마 섹션 --
 SCHEMA_COLUMN = ["컬럼명", "타입", "Nullable", "PK", "설명"]
 SCHEMA_FK = ["관계", "대상", "FK타입", "신뢰도", "근거"]
 
+# -- 횡단 분석 섹션 --
 SCHEMA_ACCESS_MATRIX = ["테이블", "모듈", "접근유형"]
 SCHEMA_STRUCT_ALL = ["관계", "소스", "대상", "속성"]
 SCHEMA_ETL_FLOW = ["관계", "소스", "대상"]
 
+
+# ═══════════════════════════════════════════════════════════════════════
+# 데이터 모델 — GraphNode, GraphRelationship, GraphData
+# ═══════════════════════════════════════════════════════════════════════
 
 @dataclass
 class GraphNode:
@@ -641,7 +654,10 @@ def _render_packages(graph: GraphData) -> str:
 
 
 def _render_module_detail(graph: GraphData, mod: GraphNode) -> str:
-    """단일 모듈 상세 — MODULE/PROCEDURE/FUNCTION/TRIGGER 모두 동일 포맷."""
+    """단일 모듈 상세 — MODULE/PROCEDURE/FUNCTION/TRIGGER 모두 동일 포맷.
+
+    하위 섹션: 기본 정보 → 요약 → 함수 → 변수 → 구조 관계 → 호출 관계 → 데이터 접근 → 요약 코드
+    """
     name = _get_module_name(mod)
     parts = [f"### {name}\n"]
 
@@ -688,8 +704,9 @@ def _render_module_detail(graph: GraphData, mod: GraphNode) -> str:
     parts.append("\n#### 함수\n")
     parts.append(_md_table(SCHEMA_FUNCTION, func_rows))
 
-    # ── 변수 (VARIABLE + DECLARES 통합) ──
+    # ── 변수 (HAS_VARIABLE + DECLARES 통합) ──
     var_rows = []
+    # HAS_VARIABLE: Framework 분석 결과
     for v in sorted(graph.get_children(mod.node_id, "HAS_VARIABLE"),
                     key=lambda x: x.prop("start_line", 0) or 0):
         var_rows.append([
@@ -698,6 +715,7 @@ def _render_module_detail(graph: GraphData, mod: GraphNode) -> str:
             _safe(v.prop("modifiers")),
             _safe(v.prop("summary")),
         ])
+    # DECLARES: DBMS 분석 결과
     for v in graph.get_children(mod.node_id, "DECLARES"):
         var_rows.append([
             _safe(v.prop("name")),
@@ -737,13 +755,13 @@ def _render_module_detail(graph: GraphData, mod: GraphNode) -> str:
     parts.append(_md_table(SCHEMA_CALL_REL, call_rels))
 
     # ── 데이터 접근 (FROM/READS/WRITES/REFER_TO 통합) ──
+    # 모듈 직접 → 자식 함수 → 자식 DML → 자식 변수 순으로 수집
     data_access = []
     for r in graph.get_outgoing_rels(mod.node_id, ENTITY_DATA_REL_TYPES):
         data_access.append([
             graph.node_display(r.end_node_id), r.rel_type,
             _safe(r.prop("evidence")), _safe(r.prop("confidence")),
         ])
-    # 자식 함수/DML의 테이블 접근도 수집
     for func in graph.get_children(mod.node_id, "HAS_FUNCTION"):
         for r in graph.get_outgoing_rels(func.node_id, ENTITY_DATA_REL_TYPES):
             data_access.append([
@@ -757,7 +775,6 @@ def _render_module_detail(graph: GraphData, mod: GraphNode) -> str:
                     graph.node_display(r.end_node_id), r.rel_type,
                     _safe(r.prop("evidence")), _safe(r.prop("confidence")),
                 ])
-    # 자식 변수 레벨 접근도 수집
     for v in graph.get_children(mod.node_id, "HAS_VARIABLE"):
         for r in graph.get_outgoing_rels(v.node_id, ENTITY_DATA_REL_TYPES):
             data_access.append([

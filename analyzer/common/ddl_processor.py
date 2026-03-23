@@ -362,6 +362,20 @@ async def process_ddl(
         for rel in result.get("Relationships", []):
             all_relationships[rel.get("Relationship ID")] = rel
 
+        # FK_TO_COLUMN: Column 간 FK 관계 (toLower 매칭으로 대소문자 무시)
+        fk_col_query = """
+        UNWIND $items AS item
+        MATCH (c1:Column) WHERE toLower(c1.fqn) = toLower(item.from_schema + '.' + item.from_table + '.' + item.from_column)
+        MATCH (c2:Column) WHERE toLower(c2.fqn) = toLower(item.to_schema + '.' + item.to_table + '.' + item.to_column)
+        MERGE (c1)-[r:FK_TO_COLUMN]->(c2)
+        ON CREATE SET r.source = 'ddl', r.updated_at = timestamp()
+        RETURN c1, r, c2
+        """
+        async with cypher_lock:
+            result = await client.run_batch_unwind(fk_col_query, fks_data)
+        for rel in result.get("Relationships", []):
+            all_relationships[rel.get("Relationship ID")] = rel
+
     if emit_progress:
         yield emit_message(f"   ✅ UNWIND 배치 저장 완료: {len(all_nodes)}개 노드, {len(all_relationships)}개 관계")
         yield emit_phase_event(

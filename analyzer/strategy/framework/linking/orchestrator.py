@@ -41,6 +41,11 @@ from analyzer.strategy.framework.linking.call_graph import run_call_batch_pipeli
 logger = logging.getLogger(__name__)
 
 
+# ===========================================================================
+# derive_function_table_edges: REFER_TO + reads_writes 체인으로 Function→Table 유도
+# ===========================================================================
+
+
 def derive_function_table_edges(
     refer_to_edges: List[ReferToEdge],
     reads_writes: List[ReadsWritesEdge],
@@ -54,51 +59,58 @@ def derive_function_table_edges(
     result: List[FunctionTableEdge] = []
     seen: set = set()
 
-    # 1) SQL 경로: SqlStatement → Table
+    # ── 경로 1) SQL: SqlStatement → Table ──
     sql_to_tables: Dict[str, List[Tuple[str, str, str]]] = {}
     for rw in reads_writes:
         if rw.sql_key not in sql_to_tables:
             sql_to_tables[rw.sql_key] = []
         sql_to_tables[rw.sql_key].append((rw.table_schema, rw.table_name, rw.relation))
+
     for edge in refer_to_edges:
         if edge.target_type != "SqlStatement":
             continue
         variable_id = getattr(edge, "variable_id", None)
         for schema, table, sql_rel in sql_to_tables.get(edge.target_id, []):
-            function_rel = _sql_op_to_function_relation(sql_rel)
-            dedup_key = (edge.function_id, variable_id or "", schema, table, function_rel)
+            fn_rel = _sql_op_to_function_relation(sql_rel)
+            dedup_key = (edge.function_id, variable_id or "", schema, table, fn_rel)
             if dedup_key in seen:
                 continue
             seen.add(dedup_key)
             result.append(FunctionTableEdge(
                 function_id=edge.function_id, table_schema=schema,
-                table_name=table, relation=function_rel, variable_id=variable_id,
+                table_name=table, relation=fn_rel, variable_id=variable_id,
             ))
 
-    # 2) Artifact 경로: ArtifactChunk → Table
+    # ── 경로 2) Artifact: ArtifactChunk → Table ──
     if artifact_table_edges:
         chunk_to_tables: Dict[str, List[Tuple[str, str]]] = {}
         for at in artifact_table_edges:
             cid = (at.chunk_id or "").strip()
             if cid:
                 chunk_to_tables.setdefault(cid, []).append((at.table_schema, at.table_name))
+
         for edge in refer_to_edges:
             if edge.target_type != "ArtifactChunk":
                 continue
             variable_id = getattr(edge, "variable_id", None)
             for schema, table in chunk_to_tables.get(edge.target_id, []):
                 # ArtifactChunk 경로는 기본 READS (CRUD 세분화는 deepagent confidence에 의존)
-                function_rel = "READS"
-                dedup_key = (edge.function_id, variable_id or "", schema, table, function_rel)
+                fn_rel = "READS"
+                dedup_key = (edge.function_id, variable_id or "", schema, table, fn_rel)
                 if dedup_key in seen:
                     continue
                 seen.add(dedup_key)
                 result.append(FunctionTableEdge(
                     function_id=edge.function_id, table_schema=schema,
-                    table_name=table, relation=function_rel, variable_id=variable_id,
+                    table_name=table, relation=fn_rel, variable_id=variable_id,
                 ))
 
     return result
+
+
+# ===========================================================================
+# run_step5: 링킹 오케스트레이션 (결정론 매칭 → 병렬 LLM → 후처리)
+# ===========================================================================
 
 
 def run_step5(
@@ -126,6 +138,11 @@ def run_step5(
         stage="call_llm": calls_edges, unresolved_calls
         stage="post": reads_writes(final), function_table_edges, module_table_edges, artifact_table_edges
     """
+
+    # ===================================================================
+    # 1) 결정론적 매칭 (키 in 코드, sql/config/class/artifact 인덱스)
+    # ===================================================================
+
     config_count = len(config_index) if config_index else 0
     logger.info(
         "[FW:STEP5] 링킹 진입  function_facts=%d sql_index=%d sql_chunks=%d config_index=%d variable_chunks=%s",
@@ -136,6 +153,7 @@ def run_step5(
         len(field_chunks) if field_chunks else 0,
     )
     logger.info("[FW:STEP5] [매칭] 결정론 매칭 (키 in 코드, sql/config/class/artifact 인덱스)")
+
     refer_to_edges, unresolved = link_chunks_to_indexes(
         function_facts_list,
         field_chunks=field_chunks,
@@ -151,17 +169,17 @@ def run_step5(
         len(unresolved),
     )
 
-    # ref_candidates_by_function 기반 결정론 해석 (CALL_REF / NEW_INSTANCE_REF)
+    # ── ref_candidates_by_function 기반 결정론 해석 (CALL_REF / NEW_INSTANCE_REF) ──
     if ref_candidates_by_function:
         function_index: Dict[str, FunctionFacts] = {m.function_id: m for m in function_facts_list}
         rc_matched = 0
         rc_unresolved = 0
-        for mid, cands in ref_candidates_by_function.items():
-            mf = function_index.get(mid)
-            caller_fqn = getattr(mf, "fqn", "") if mf else mid
+        for func_id, cands in ref_candidates_by_function.items():
+            mf = function_index.get(func_id)
+            caller_fqn = getattr(mf, "fqn", "") if mf else func_id
             code_ref = getattr(mf, "code_ref", None) if mf else None
             add_edges, add_unresolved = resolve_candidates(
-                mid,
+                func_id,
                 caller_fqn,
                 code_ref,
                 cands,
@@ -182,18 +200,21 @@ def run_step5(
             rc_matched, rc_unresolved,
         )
 
-    # ── 1단계 yield: 결정론적 결과 ──
+    # ── yield 1: 결정론적 결과 ──
     yield {
         "stage": "deterministic",
         "refer_to_edges": refer_to_edges,
         "unresolved": unresolved,
     }
 
-    api_key = settings.llm.api_key or os.environ.get("LLM_API_KEY", "")
+    # ===================================================================
+    # 2) 엔티티 청크 준비 (DDL / 외부 XML·어노테이션 / DeepAgent 분기)
+    # ===================================================================
 
+    api_key = settings.llm.api_key or os.environ.get("LLM_API_KEY", "")
     combined_table_chunks: List[SqlStatementChunk] = list(sql_chunks or [])
 
-    # 3단계 우선순위: DDL → 외부파일(XML/어노테이션) → DeepAgent(phases.py에서 처리)
+    # 우선순위: DDL → 외부파일(XML/어노테이션) → DeepAgent(phases.py에서 처리)
     _has_external = has_external_entity_info(
         artifact_index=artifact_index,
         module_index=module_index,
@@ -203,6 +224,8 @@ def run_step5(
     if _has_external and not ddl_table_metadata:
         # 외부파일(XML entity, 어노테이션) 존재 → entity 청크를 table LLM 입력에 합류
         entity_fqns = identify_entity_classes(module_index or {})
+
+        # 2-a) 어노테이션 기반 엔티티 → SqlStatementChunk 변환
         for fqn in entity_fqns:
             info = (module_index or {}).get(fqn)
             if not isinstance(info, dict):
@@ -226,6 +249,8 @@ def run_step5(
                     file_path="",
                 )
             )
+
+        # 2-b) XML(ejb-jar 등) 기반 엔티티 → SqlStatementChunk 변환
         for ac in (artifact_chunks or []):
             ct = getattr(ac, "chunk_type", "")
             if ct not in ("entity", "cmp_mapping"):
@@ -243,6 +268,7 @@ def run_step5(
                     file_path=getattr(ac, "source_path", ""),
                 )
             )
+
         entity_count = len(combined_table_chunks) - len(sql_chunks or [])
         if entity_count:
             logger.info(
@@ -258,9 +284,15 @@ def run_step5(
         elif not _has_external:
             logger.info("[FW:STEP5] 외부 엔티티 정보 없음 — DeepAgent 엔티티 식별 대상")
 
+    # ===================================================================
+    # 3) 병렬 LLM 실행 (Table LLM + Call LLM, queue 기반 점진 yield)
+    # ===================================================================
+
     logger.info(
         "[FW:STEP5] [3갈래] SQL→테이블 / Call LLM / UML 병렬 실행 (배치별 점진 전송)",
     )
+
+    # 결과 수집 버퍼
     reads_writes_list: List[ReadsWritesEdge] = []
     fk_edges_list: List[FkEdge] = []
     column_refs_list: List[ColumnRef] = []
@@ -268,10 +300,12 @@ def run_step5(
     calls_edges: List[CallsEdge] = []
     unresolved_calls: List[Any] = []
 
-    # queue 기반 병렬: 각 LLM 배치 완료 즉시 yield
+    # ── 스레드 정의 ──
+
     result_q: queue_mod.Queue = queue_mod.Queue()
 
     def _run_table_thread() -> None:
+        """Table LLM: SQL/엔티티 청크 → reads_writes, FK, 컬럼 추출."""
         try:
             from analyzer.strategy.framework.linking.sql_extractor import link_sql_to_tables
             link_sql_to_tables(
@@ -286,6 +320,7 @@ def run_step5(
         result_q.put(("table_done", None))
 
     def _run_call_thread() -> None:
+        """Call LLM: 함수 간 호출 관계 추론."""
         try:
             run_call_batch_pipeline(
                 data_dir or "",
@@ -304,6 +339,8 @@ def run_step5(
             logger.warning("[FW:STEP5] Call LLM 스레드 예외: %s", ex)
         result_q.put(("call_done", None))
 
+    # ── 스레드 시작 & 결과 수집 루프 ──
+
     t_table = threading.Thread(target=_run_table_thread, daemon=True)
     t_call = threading.Thread(target=_run_call_thread, daemon=True)
     t_table.start()
@@ -315,9 +352,11 @@ def run_step5(
             tag, data = result_q.get(timeout=1.0)
         except queue_mod.Empty:
             continue
+
         if tag.endswith("_done"):
             done_count += 1
             continue
+
         if tag == "table_batch":
             reads_writes_list.extend(data["edges"])
             fk_edges_list.extend(data["fk"])
@@ -326,6 +365,7 @@ def run_step5(
                 if d and (s, n) not in table_descriptions:
                     table_descriptions[(s, n)] = d
             yield {"stage": "table_batch", **data}
+
         elif tag == "call_batch":
             calls_edges.extend(data["edges"])
             unresolved_calls.extend(data["unresolved"])
@@ -334,13 +374,16 @@ def run_step5(
     t_table.join()
     t_call.join()
 
-    # ── 후처리: edge 유도 ──
+    # ===================================================================
+    # 4) 후처리: entity 키 기반 Module→Table / Artifact→Table 엣지 유도
+    # ===================================================================
+
     reads_writes = list(reads_writes_list)
     fk_edges = fk_edges_list
     column_refs = column_refs_list
 
-    # entity::FQN → (MODULE)-[:REFER_TO]->(TABLE)
-    seen_ct: Set[Tuple[str, str, str]] = set()
+    # ── entity::FQN → ModuleTableEdge ──
+    seen_mt: Set[Tuple[str, str, str]] = set()
     module_table_edges: List[ModuleTableEdge] = []
     for rw in reads_writes:
         sql_key = (getattr(rw, "sql_key", "") or "").strip()
@@ -354,12 +397,12 @@ def run_step5(
         if not name:
             continue
         key = (module_fqn, schema, name)
-        if key in seen_ct:
+        if key in seen_mt:
             continue
-        seen_ct.add(key)
+        seen_mt.add(key)
         module_table_edges.append(ModuleTableEdge(module_fqn=module_fqn, table_schema=schema, table_name=name))
 
-    # entity_xml::chunk_id → (ARTIFACT_CHUNK)-[:REFER_TO]->(TABLE)
+    # ── entity_xml::chunk_id → ArtifactTableEdge ──
     seen_at: Set[Tuple[str, str, str]] = set()
     artifact_table_edges: List[ArtifactTableEdge] = []
     for rw in reads_writes:
@@ -379,8 +422,8 @@ def run_step5(
         seen_at.add(key)
         artifact_table_edges.append(ArtifactTableEdge(chunk_id=chunk_id, table_schema=schema, table_name=name))
 
-    # Function→Table 자동 유도
-    logger.info("[FW:STEP5] [Function–Table] REFER_TO + READS/WRITES 엣지 유도")
+    # ── Function→Table 자동 유도 (REFER_TO + reads_writes 체인) ──
+    logger.info("[FW:STEP5] [Function-Table] REFER_TO + READS/WRITES 엣지 유도")
     function_table_edges = derive_function_table_edges(refer_to_edges, reads_writes, artifact_table_edges=artifact_table_edges)
 
     logger.info(
@@ -393,7 +436,7 @@ def run_step5(
         len(unresolved),
     )
 
-    # ── 4단계 yield: 후처리 결과 ──
+    # ── yield 4: 후처리 결과 ──
     yield {
         "stage": "post",
         "reads_writes": reads_writes,

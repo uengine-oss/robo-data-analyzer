@@ -1,10 +1,16 @@
-"""Framework 전략 데이터 모델. Edge 타입, FunctionFacts, InMemoryGraph 등."""
+"""Framework 전략 데이터 모델.
+
+Edge 타입, FunctionFacts, InMemoryGraph 등.
+build_in_memory_graph() 팩토리 함수도 이 파일에 위치 — InMemoryGraph와 결합도가 높아
+모델 정의와 함께 두는 것이 응집도 면에서 유리하기 때문.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Dict, List, Optional
+
 
 # ---------------------------------------------------------------------------
 # Ontology 상수 (Neo4j 미저장 내부 노드 타입)
@@ -60,7 +66,9 @@ class ProcessingPlan:
     config_jobs: List[str] = field(default_factory=list)       # 설정 파일 (yaml, properties, json, 일반 xml)
     docs_jobs: List[str] = field(default_factory=list)         # 비정형 문서
 
-    # 하위호환 alias (property)
+    # -- 레거시 호환 alias ------------------------------------------------
+    # 범용화 이전 언어별·포맷별 필드명으로 접근하는 코드 지원용.
+
     @property
     def java_ast_jobs(self) -> List[str]:
         return self.source_ast_jobs
@@ -84,6 +92,8 @@ class ProcessingPlan:
     @property
     def json_jobs(self) -> List[str]:
         return self.config_jobs
+
+    # -- end 레거시 호환 alias --------------------------------------------
 
     def iter_jobs(self):
         """모든 job 유형을 (category, paths) 쌍으로 순회."""
@@ -164,7 +174,7 @@ class ChunkBundleFunctionCall:
     call_code: str  # slice로 생성, 라인번호 포함
 
 
-# 하위호환 alias
+# 레거시 호환 alias — 범용화 이전 "MethodCall" 명칭 사용 코드 지원용
 ChunkBundleMethodCall = ChunkBundleFunctionCall
 
 
@@ -311,7 +321,12 @@ class ReferToEdge:
 
 @dataclass
 class FkEdge:
-    """FK 후보 (SQL join 기반이면 candidate)."""
+    """FK 후보 (SQL join 기반이면 candidate).
+
+    source: FK 정보의 출처.
+      - "ddl": DDL 스키마에서 추출한 확정 FK
+      - "code": 소스코드 SQL join 분석으로 추론한 후보 FK
+    """
     from_schema: str
     from_table: str
     from_column: str
@@ -319,7 +334,7 @@ class FkEdge:
     to_table: str
     to_column: str
     candidate: bool = True
-    source: str = "code"  # "ddl" | "code"
+    source: str = "code"
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +354,7 @@ class RefCandidateKind(StrEnum):
     NAME_REF = "NAME_REF"
 
 
-# 하위 호환용 별칭
+# 레거시 호환 alias — StrEnum 도입 이전 상수명으로 접근하는 코드 지원용
 REF_CANDIDATE_SQL_LITERAL = RefCandidateKind.SQL_LITERAL
 REF_CANDIDATE_SQL_KEY_LITERAL = RefCandidateKind.SQL_KEY_LITERAL
 REF_CANDIDATE_CALL_REF = RefCandidateKind.CALL_REF
@@ -477,6 +492,16 @@ class InMemoryGraph:
                 for e in self.uses_edges
             ],
         }
+
+
+# ---------------------------------------------------------------------------
+# InMemoryGraph 팩토리
+#
+# InMemoryGraph 생성자에 직접 전달해도 되지만, Step 결과물의 필드명과
+# InMemoryGraph 필드명이 다른 경우(예: function_facts_list→methods)를
+# 한 곳에서 매핑하기 위해 팩토리로 분리. 모델 파일에 둔 이유는
+# InMemoryGraph와 강하게 결합되어 있어 같은 파일이 응집도가 높기 때문.
+# ---------------------------------------------------------------------------
 
 
 def build_in_memory_graph(

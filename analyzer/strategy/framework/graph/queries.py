@@ -1,4 +1,15 @@
-"""Framework Neo4j Cypher 쿼리 빌더."""
+"""Framework Neo4j Cypher 쿼리 빌더.
+
+42개 쿼리 빌더 함수를 아래 섹션으로 구분한다:
+  1. Helpers           — FQN 파싱, 이름 추출 등 순수 유틸
+  2. Node MERGE        — 개별 노드 생성 (FUNCTION, MODULE, TABLE, Column 등)
+  3. Relationship MERGE — 구조·FK·호출·참조 관계 생성
+  4. Summary / Label   — summary·stereotype 속성 업데이트 및 라벨 추가
+  5. CALLS / USES      — 호출·의존 관계 (UNWIND 배치)
+  6. UML               — 상속·연관·의존·합성·집합 관계
+  7. UNWIND 배치       — 대량 노드용 벌크 MERGE
+  8. Table Description — 메서드 summary 기반 테이블 설명 보강
+"""
 
 from __future__ import annotations
 
@@ -36,16 +47,16 @@ from analyzer.strategy.framework.common.constants import (
     SQL_TEXT_MAX,
 )
 
-# Oracle 등 시스템/더미 테이블: TABLE 노드 및 reads_writes 관계 생성 제외
+# 모듈 레벨 상수 (시스템/더미 테이블 제외, 코드 길이 제한)
 _EXCLUDED_TABLE_NAMES = EXCLUDED_TABLE_NAMES
 _ARTIFACT_CODE_MAX = ARTIFACT_CODE_MAX
 _CHUNK_CODE_MAX = CODE_TEXT_MAX
 _SQL_TEXT_MAX = SQL_TEXT_MAX
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════
+# 1. Helpers — FQN 파싱, 이름 추출 등 순수 유틸
+# ═══════════════════════════════════════════════════════════════════════════
 
 def _extract_short_name(fqn: Optional[str]) -> str:
     """FQN에서 마지막 이름 추출 (예: 'com.abc.Foo' → 'Foo')."""
@@ -142,9 +153,11 @@ def _target_fqn_from_module_index(module_index: Dict[str, Any], target_name: str
     return None
 
 
-# ---------------------------------------------------------------------------
-# Node MERGE queries (using _merge_node_query)
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════
+# 2. Node MERGE — 개별 노드 생성
+# ═══════════════════════════════════════════════════════════════════════════
+
+# --- 2-1. 코드 엔티티 노드 (FUNCTION, MODULE, PACKAGE, VARIABLE) ---
 
 def build_function_queries(function_facts_list: List[FunctionFacts], node_kinds: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
     """Method 노드 MERGE. framework와 동일 속성: name(메서드명), module_name(모듈 짧은이름), module_fqn, type 등.
@@ -224,6 +237,8 @@ def build_variable_queries(variable_facts_list: List[VariableFacts], node_kinds:
         }, sub_label=kind))
     return queries
 
+
+# --- 2-2. 비코드 엔티티 노드 (ConfigSection, ArtifactChunk, SqlStatement) ---
 
 def build_config_section_queries(config_chunks: List[ConfigSectionChunk]) -> List[Dict[str, Any]]:
     """ConfigSection 노드 MERGE (config_key_path 기준). file_path·code_text 온톨로지 통일."""
@@ -310,7 +325,7 @@ def build_sql_statement_queries(sql_chunks: List[SqlStatementChunk]) -> List[Dic
     return queries
 
 
-# --- Node queries with composite keys / special logic (kept custom) ---
+# --- 2-3. DB 노드 (Table, Column) — 복합 키/특수 로직으로 커스텀 쿼리 ---
 
 def build_table_queries_from_reads_writes(
     reads_writes: List[ReadsWritesEdge],
@@ -447,9 +462,11 @@ def build_chunk_bundle_queries(bundles: List[ChunkBundle]) -> List[Dict[str, Any
     return queries
 
 
-# ---------------------------------------------------------------------------
-# Relationship queries (using _merge_rel_query)
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════
+# 3. Relationship MERGE — 구조·FK·참조 관계 생성
+# ═══════════════════════════════════════════════════════════════════════════
+
+# --- 3-1. 패키지·모듈 구조 관계 (BELONGS_TO_PACKAGE, HAS_FUNCTION, HAS_VARIABLE) ---
 
 def build_package_hierarchy_queries(package_fqns: List[str]) -> List[Dict[str, Any]]:
     """(자식 PACKAGE)-[:BELONGS_TO_PACKAGE]->(부모 PACKAGE) 관계."""
@@ -512,11 +529,14 @@ def build_has_variable_queries(
     return queries
 
 
+# --- 3-2. FK 관계 (FK_TO_COLUMN, FK_TO_TABLE) ---
+
 def build_fk_to_column_queries(fk_edges: List[FkEdge]) -> List[Dict[str, Any]]:
-    """(COLUMN)-[:FK_TO_COLUMN]->(COLUMN) 관계. DUAL 등 제외 테이블 참조는 스킵."""
+    """(COLUMN)-[:FK_TO_COLUMN]->(COLUMN) 관계. DUAL 등 제외. 대소문자 무시 매칭."""
     if not fk_edges:
         return []
     queries = []
+    seen: set = set()
     for e in fk_edges:
         if (e.from_table or "").strip().lower() in _EXCLUDED_TABLE_NAMES or (e.to_table or "").strip().lower() in _EXCLUDED_TABLE_NAMES:
             continue
@@ -524,15 +544,27 @@ def build_fk_to_column_queries(fk_edges: List[FkEdge]) -> List[Dict[str, Any]]:
         to_col = e.to_column or ""
         if not from_col or not to_col:
             continue
+        dedup_key = (e.from_table.lower(), from_col.lower(), e.to_table.lower(), to_col.lower())
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
         from_fqn = _build_column_fqn(e.from_schema or "", e.from_table or "", from_col)
         to_fqn = _build_column_fqn(e.to_schema or "", e.to_table or "", to_col)
         if not from_fqn or not to_fqn:
             continue
-        queries.append(_merge_rel_query("COLUMN", "fqn", from_fqn, "COLUMN", "fqn", to_fqn, "FK_TO_COLUMN"))
+        # toLower 매칭: Column.fqn 대소문자 불일치 대응
+        q = (
+            "MATCH (c1:Column) WHERE toLower(c1.fqn) = toLower($from_fqn)\n"
+            "MATCH (c2:Column) WHERE toLower(c2.fqn) = toLower($to_fqn)\n"
+            "MERGE (c1)-[r:FK_TO_COLUMN]->(c2)\n"
+            "SET r.updated_at = timestamp()\n"
+            "RETURN r"
+        )
+        queries.append({"query": q, "params": {"from_fqn": from_fqn, "to_fqn": to_fqn}})
     return queries
 
 
-# --- Relationship queries with composite keys / special logic (kept custom) ---
+# --- 3-3. DB 구조 관계 (HAS_COLUMN) — 복합 키 커스텀 쿼리 ---
 
 def build_has_column_queries(column_refs: List[ColumnRef]) -> List[Dict[str, Any]]:
     """(Table)-[:HAS_COLUMN]->(Column) 관계. DUAL 등 제외. db/schema 빈 값은 postgres/public."""
@@ -560,7 +592,11 @@ def build_has_column_queries(column_refs: List[ColumnRef]) -> List[Dict[str, Any
 
 
 def build_fk_to_table_queries(fk_edges: List[FkEdge]) -> List[Dict[str, Any]]:
-    """(TABLE)-[:FK_TO_TABLE]->(TABLE) 관계를 테이블쌍당 1개만 생성. schema 빈 값은 public."""
+    """(TABLE)-[:FK_TO_TABLE]->(TABLE) 관계를 테이블쌍당 1개만 생성.
+
+    schema 빈 값은 TABLE_SCHEMA_DEFAULT(public).
+    관계 속성: source(최초 생성 시만 기록), sourceColumn, targetColumn.
+    """
     if not fk_edges:
         return []
     seen: set = set()
@@ -572,13 +608,16 @@ def build_fk_to_table_queries(fk_edges: List[FkEdge]) -> List[Dict[str, Any]]:
         to_table = e.to_table or ""
         if (from_table or "").strip().lower() in _EXCLUDED_TABLE_NAMES or (to_table or "").strip().lower() in _EXCLUDED_TABLE_NAMES:
             continue
-        key = (from_schema, from_table, to_schema, to_table)
+        # 동일 테이블쌍 중복 방지 (대소문자 무시)
+        key = (from_schema.lower(), from_table.lower(), to_schema.lower(), to_table.lower())
         if key in seen:
             continue
         seen.add(key)
+        # source: 최초 생성 시에만 기록 (이미 값이 있으면 유지)
+        # sourceColumn, targetColumn: 항상 최신 값으로 갱신
         q = (
-            "MATCH (t1:Table {db: $db, schema: $from_schema, name: $from_table})\n"
-            "MATCH (t2:Table {db: $db, schema: $to_schema, name: $to_table})\n"
+            "MATCH (t1:Table {db: $db}) WHERE toLower(t1.schema) = toLower($from_schema) AND toLower(t1.name) = toLower($from_table)\n"
+            "MATCH (t2:Table {db: $db}) WHERE toLower(t2.schema) = toLower($to_schema) AND toLower(t2.name) = toLower($to_table)\n"
             "MERGE (t1)-[r:FK_TO_TABLE]->(t2)\n"
             "SET r.updated_at = timestamp(),\n"
             "    r.source = CASE WHEN r.source IS NULL THEN $source ELSE r.source END,\n"
@@ -596,6 +635,8 @@ def build_fk_to_table_queries(fk_edges: List[FkEdge]) -> List[Dict[str, Any]]:
         })
     return queries
 
+
+# --- 3-4. 데이터 접근 관계 (SELECT/INSERT/UPDATE/DELETE, READS/WRITES, REFER_TO) ---
 
 def build_reads_writes_queries(edges: List[ReadsWritesEdge]) -> List[Dict[str, Any]]:
     """(SqlStatement)-[:SELECT|INSERT|UPDATE|DELETE]->(Table) 관계. DUAL 등 제외. db/schema 빈 값은 postgres/public."""
@@ -621,7 +662,10 @@ def build_reads_writes_queries(edges: List[ReadsWritesEdge]) -> List[Dict[str, A
 
 def build_function_table_from_writes_queries(edges: List[FunctionTableEdge]) -> List[Dict[str, Any]]:
     """(Function|Field)-[:READS|WRITES]->(Table) 관계. DUAL 등 제외. db/schema 빈 값은 postgres/public.
-    Table 노드가 없으면 MERGE로 자동 생성 (DeepAgent 시나리오 4 대응)."""
+
+    테이블 매칭은 대소문자 무시(toLower). 기존 Table 노드가 있으면 MATCH로 찾아 연결하고,
+    없으면 MERGE로 새로 생성한다 (DeepAgent 시나리오 4 대응).
+    """
     queries = []
     for e in edges:
         schema = (e.table_schema or "").strip() or TABLE_SCHEMA_DEFAULT
@@ -633,13 +677,26 @@ def build_function_table_from_writes_queries(edges: List[FunctionTableEdge]) -> 
         source_match = "MATCH (f:VARIABLE {variable_id: $variable_id})\n" if use_field else "MATCH (m:FUNCTION {function_id: $function_id})\n"
         source_node = "f" if use_field else "m"
         table_id = f"{schema}.{name}" if schema else name
+        # 1) 대소문자 무시로 기존 테이블 찾기
+        # 2) 없으면 전달된 이름으로 MERGE 생성
+        # 3) 찾은(또는 생성된) 테이블에 관계 연결
         q = (
             source_match
-            + "MERGE (t:Table {db: $db, schema: $schema, name: $name})\n"
-            + "ON CREATE SET t.created_at = timestamp(), t.table_id = $table_id\n"
+            + "OPTIONAL MATCH (t_exist:Table {db: $db})\n"
+            + "  WHERE toLower(t_exist.name) = toLower($name)\n"
+            + "    AND toLower(t_exist.schema) = toLower($schema)\n"
+            + "WITH " + source_node + ", t_exist\n"
+            + "FOREACH (_ IN CASE WHEN t_exist IS NULL THEN [1] ELSE [] END |\n"
+            + "  MERGE (t_new:Table {db: $db, schema: $schema, name: $name})\n"
+            + "  ON CREATE SET t_new.created_at = timestamp(), t_new.table_id = $table_id\n"
+            + ")\n"
+            + "WITH " + source_node + "\n"
+            + "MATCH (t:Table {db: $db})\n"
+            + "  WHERE toLower(t.name) = toLower($name)\n"
+            + "    AND toLower(t.schema) = toLower($schema)\n"
             + f"MERGE ({source_node})-[r:{rel}]->(t)\n"
-            "SET r.updated_at = timestamp()\n"
-            "RETURN r"
+            + "SET r.updated_at = timestamp()\n"
+            + "RETURN r"
         )
         params: Dict[str, Any] = {"function_id": e.function_id, "db": TABLE_DB_DEFAULT, "schema": schema, "name": name, "table_id": table_id}
         if use_field:
@@ -763,6 +820,8 @@ def build_artifact_table_refer_to_queries(edges: List[ArtifactTableEdge]) -> Lis
     return queries
 
 
+# --- 3-5. 범용 참조 관계 (CALLS_SQL, USES_CONFIG, REFER_TO) ---
+
 def build_refer_to_queries(edges: List[ReferToEdge]) -> List[Dict[str, Any]]:
     """(Method|Field)-[:CALLS_SQL|USES_CONFIG|REFER_TO]->(SqlStatement|ConfigSection|ArtifactChunk|Class)."""
     queries = []
@@ -806,9 +865,9 @@ def build_refer_to_queries(edges: List[ReferToEdge]) -> List[Dict[str, Any]]:
     return queries
 
 
-# ---------------------------------------------------------------------------
-# Summary / label update queries
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════
+# 4. Summary / Label — summary·stereotype 속성 및 라벨 업데이트
+# ═══════════════════════════════════════════════════════════════════════════
 
 def build_function_summary_queries(summary_by_function: Dict[str, Dict[str, Any]], lang: str = "java") -> List[Dict[str, Any]]:
     """FUNCTION 노드에 summary·stereotype·methodStereotype 속성 및 언어별 스테레오타입 레이블 추가.
@@ -963,9 +1022,9 @@ def build_module_summary_queries(summary_by_module: Dict[str, Dict[str, Any]], l
     return queries
 
 
-# ---------------------------------------------------------------------------
-# CALLS / USES queries
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════
+# 5. CALLS / USES — 호출·의존 관계 (UNWIND 배치)
+# ═══════════════════════════════════════════════════════════════════════════
 
 def build_calls_queries(edges: List[CallsEdge]) -> List[Dict[str, Any]]:
     """(METHOD)-[:CALLS]->(METHOD). UNWIND 배치: internal/external 2개 쿼리."""
@@ -1095,9 +1154,9 @@ def build_uses_queries(edges: List[UsesEdge]) -> List[Dict[str, Any]]:
     return queries
 
 
-# ---------------------------------------------------------------------------
-# UML: 상속(EXTENDS/IMPLEMENTS), 연관(ASSOCIATION), 의존/합성/집합
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════
+# 6. UML — 상속(EXTENDS/IMPLEMENTS), 연관(ASSOCIATION), 의존/합성/집합
+# ═══════════════════════════════════════════════════════════════════════════
 
 def build_uml_inheritance_queries(module_index: Dict[str, Any]) -> List[Dict[str, Any]]:
     """module_index의 extends_type, implements_types로 EXTENDS/IMPLEMENTS 쿼리 생성."""
@@ -1308,9 +1367,9 @@ def build_uml_dependency_queries(
     return queries
 
 
-# ---------------------------------------------------------------------------
-# UNWIND 배치 (그때그때 저장용)
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════
+# 7. UNWIND 배치 — 대량 노드용 벌크 MERGE
+# ═══════════════════════════════════════════════════════════════════════════
 
 build_packages_unwind = _build_unwind_query(
     "PACKAGE", "fqn", "n.name = row.segment")
@@ -1366,9 +1425,9 @@ def build_chunk_bundle_chunks_unwind(rows: List[Dict[str, Any]]) -> Dict[str, An
     return {"query": q, "params": {"rows": rows}}
 
 
-# ---------------------------------------------------------------------------
-# Table Description 보강 (메서드 summary 기반)
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════
+# 8. Table Description 보강 — 메서드 summary 기반 테이블 설명 생성
+# ═══════════════════════════════════════════════════════════════════════════
 
 def build_table_description_enrichment_query() -> str:
     """READS/WRITES 관계로 연결된 메서드 summary + 컬럼 메타데이터를 수집하는 Neo4j 쿼리."""
