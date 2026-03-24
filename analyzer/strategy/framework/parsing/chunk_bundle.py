@@ -17,10 +17,10 @@ from util.text_utils import (
 from analyzer.strategy.framework.models import (
     ChunkBundle,
     ChunkBundleFile,
-    ChunkBundleField,
+    ChunkBundleMemberVar,
     ChunkBundleMethod,
     ChunkBundleFunctionCall,
-    ChunkBundleVariable,
+    ChunkBundleLocalVar,
 )
 
 logger = logging.getLogger(__name__)
@@ -119,7 +119,7 @@ def build_chunk_bundle_from_source(
             )
         )
 
-    bundle_vars: List[ChunkBundleVariable] = []
+    bundle_local_vars: List[ChunkBundleLocalVar] = []
     for v in variables:
         start_line = int(v.get("start_line", 0))
         end_line = int(v.get("end_line", 0))
@@ -127,8 +127,8 @@ def build_chunk_bundle_from_source(
         initializer_code = None
         if flags and flags.get("initializerContainsMethodCall") and end_line >= start_line:
             initializer_code = slice_by_line_range(text_with_lines, start_line, end_line)
-        bundle_vars.append(
-            ChunkBundleVariable(
+        bundle_local_vars.append(
+            ChunkBundleLocalVar(
                 parent_function_id=v["parent_function_id"],
                 var_name=v["var_name"],
                 var_type=v.get("var_type"),
@@ -139,13 +139,13 @@ def build_chunk_bundle_from_source(
             )
         )
 
-    bundle_fields: List[ChunkBundleField] = []
+    bundle_member_vars: List[ChunkBundleMemberVar] = []
     for f in fields or []:
         start_line = int(f.get("start_line", 0))
         end_line = int(f.get("end_line", 0))
         variable_code = slice_by_line_range(text_with_lines, start_line, end_line) if end_line >= start_line else None
-        bundle_fields.append(
-            ChunkBundleField(
+        bundle_member_vars.append(
+            ChunkBundleMemberVar(
                 variable_id=f["variable_id"],
                 start_line=start_line,
                 end_line=end_line,
@@ -157,16 +157,16 @@ def build_chunk_bundle_from_source(
         file_meta=file_meta,
         methods=bundle_methods,
         function_calls=bundle_calls,
-        variables=bundle_vars,
-        fields=bundle_fields,
+        local_vars=bundle_local_vars,
+        member_vars=bundle_member_vars,
     )
     logger.info(
-        "[FW:CHUNK] 번들 생성 완료 | file=%s methods=%d function_calls=%d variables=%d fields=%d",
+        "[FW:CHUNK] 번들 생성 완료 | file=%s methods=%d function_calls=%d local_vars=%d member_vars=%d",
         path.name,
         len(bundle_methods),
         len(bundle_calls),
-        len(bundle_vars),
-        len(bundle_fields),
+        len(bundle_local_vars),
+        len(bundle_member_vars),
     )
     return out
 
@@ -178,15 +178,15 @@ def _bundle_to_dict(bundle: ChunkBundle) -> Dict[str, Any]:
         "file_meta": asdict(bundle.file_meta),
         "methods": [asdict(m) for m in bundle.methods],
         "function_calls": [asdict(c) for c in bundle.function_calls],
-        "variables": [asdict(v) for v in bundle.variables],
-        "fields": [asdict(f) for f in getattr(bundle, "fields", [])],
+        "local_vars": [asdict(v) for v in bundle.local_vars],
+        "member_vars": [asdict(f) for f in bundle.member_vars],
     }
 
 
 def _dict_to_bundle(data: Dict[str, Any]) -> ChunkBundle:
     """dict에서 ChunkBundle 복원."""
-    def var_from_dict(v: Dict[str, Any]) -> ChunkBundleVariable:
-        return ChunkBundleVariable(
+    def local_var_from_dict(v: Dict[str, Any]) -> ChunkBundleLocalVar:
+        return ChunkBundleLocalVar(
             parent_function_id=v["parent_function_id"],
             var_name=v["var_name"],
             var_type=v.get("var_type"),
@@ -195,13 +195,13 @@ def _dict_to_bundle(data: Dict[str, Any]) -> ChunkBundle:
             flags=v.get("flags"),
             initializer_code=v.get("initializer_code"),
         )
-    fields_data = data.get("fields", [])
+    member_vars_data = data.get("member_vars") or data.get("fields") or []
     return ChunkBundle(
         file_meta=ChunkBundleFile(**data["file_meta"]),
         methods=[ChunkBundleMethod(**m) for m in data["methods"]],
         function_calls=[ChunkBundleFunctionCall(**c) for c in data.get("function_calls") or data.get("method_calls") or []],
-        variables=[var_from_dict(v) for v in data["variables"]],
-        fields=[ChunkBundleField(**f) for f in fields_data],
+        local_vars=[local_var_from_dict(v) for v in data.get("local_vars") or data.get("variables") or []],
+        member_vars=[ChunkBundleMemberVar(**f) for f in member_vars_data],
     )
 
 
@@ -311,7 +311,7 @@ def build_bundle_span_index(
                         cid = c.call_id
                         span_index[key] = {"chunk_id": cid, "text": c.call_code, "filePath": fp, "span": [c.start_line, c.end_line]}
                         chunk_index[cid] = {"filePath": fp, "span": [c.start_line, c.end_line], "text": c.call_code}
-                for v in bundle.variables:
+                for v in bundle.local_vars:
                     if v.initializer_code:
                         key = _span_index_key(fp, v.start_line, v.end_line)
                         cid = f"C:{v.start_line}:{v.end_line}:var"

@@ -139,7 +139,7 @@ def dump_phase1_artifacts(state: Dict[str, Any], run_dir: Path) -> None:
                         "file_path": getattr(bundle.file_meta, "file_path", ""),
                         "methods": len(bundle.methods),
                         "function_calls": len(bundle.function_calls),
-                        "variables": len(bundle.variables),
+                        "local_vars": len(bundle.local_vars),
                     })
                 except Exception as e:
                     manifest.append({"file": p.name, "path": str(p.relative_to(run_dir)), "error": str(e)})

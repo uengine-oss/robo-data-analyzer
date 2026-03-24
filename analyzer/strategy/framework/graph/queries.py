@@ -170,32 +170,35 @@ def build_function_queries(function_facts_list: List[FunctionFacts], node_kinds:
         module_fqn, function_name = _module_fqn_and_function_name(m.fqn)
         module_name_short = _extract_short_name(module_fqn)
         kind = (node_kinds or {}).get(m.function_id, "METHOD")
+        # code_ref에서 file_path 추출 (예: "src/core/db_engine.c:575-620" → "src/core/db_engine.c")
+        code_ref = m.code_ref or ""
+        file_path = code_ref.split(":")[0] if ":" in code_ref else code_ref
+        directory, file_name = _split_file_path(file_path)
         queries.append(_merge_node_query("FUNCTION", "function_id", m.function_id, {
             "signature": m.signature or "",
             "start_line": m.start_line, "end_line": m.end_line,
-            "code_ref": m.code_ref or "", "module_key": m.module_key or "",
+            "code_ref": code_ref, "module_key": m.module_key or "",
             "package_name": m.package_name or "",
             "module_name": module_name_short, "name": function_name,
             "code_text": (m.code or "")[:_CHUNK_CODE_MAX],
+            "file_path": file_path, "directory": directory, "file_name": file_name,
         }, sub_label=kind))
     return queries
 
 
 def build_module_queries(module_index: Dict[str, Any]) -> List[Dict[str, Any]]:
     """MODULE 노드 MERGE. framework와 동일 속성: module_name, name, type, package_name, fqn."""
-    seen = set()
     queries = []
     for info in module_index.values():
         if not isinstance(info, dict):
             continue
         fqn = info.get("fqn") or info.get("module_key")
-        if not fqn or fqn in seen:
+        if not fqn:
             continue
-        seen.add(fqn)
         name = info.get("name", "")
         if not name and fqn:
             name = _extract_short_name(fqn)
-        kind = info.get("kind", "CLASS")
+        kind = info.get("kind", "")
         queries.append(_merge_node_query("MODULE", "fqn", fqn, {
             "module_key": info.get("module_key", fqn), "name": name,
             "module_name": name, "type": kind,
@@ -215,7 +218,7 @@ def build_package_queries(package_fqns: List[str]) -> List[Dict[str, Any]]:
     return queries
 
 
-def build_variable_queries(variable_facts_list: List[VariableFacts], node_kinds: Optional[Dict[str, str]] = None, lang: str = "java") -> List[Dict[str, Any]]:
+def build_variable_queries(variable_facts_list: List[VariableFacts], lang: str, node_kinds: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
     """VARIABLE/CONSTANT 노드 MERGE. ontology 기반으로 primary 라벨 결정.
 
     Args:
@@ -450,7 +453,7 @@ def build_chunk_bundle_queries(bundles: List[ChunkBundle]) -> List[Dict[str, Any
                 "start_line": c.start_line, "end_line": c.end_line,
                 "code_text": (c.call_code or "")[:_CHUNK_CODE_MAX],
             }})
-        for v in bundle.variables:
+        for v in bundle.local_vars:
             cid = f"var:{v.parent_function_id}:{v.start_line}:{v.end_line}:{v.var_name}"
             queries.append({"query": _var_q, "params": {
                 "chunk_id": cid, "chunk_type": "variable",
@@ -482,16 +485,14 @@ def build_package_hierarchy_queries(package_fqns: List[str]) -> List[Dict[str, A
 
 def build_belongs_to_package_queries(module_index: Dict[str, Any]) -> List[Dict[str, Any]]:
     """(MODULE)-[:BELONGS_TO_PACKAGE]->(PACKAGE) 관계."""
-    seen = set()
     queries = []
     for info in module_index.values():
         if not isinstance(info, dict):
             continue
         fqn = info.get("fqn") or info.get("module_key")
         pkg = info.get("package_name")
-        if not fqn or not pkg or (fqn, pkg) in seen:
+        if not fqn or not pkg:
             continue
-        seen.add((fqn, pkg))
         queries.append(_merge_rel_query("MODULE", "fqn", fqn, "PACKAGE", "fqn", pkg, "BELONGS_TO_PACKAGE"))
     return queries
 
@@ -706,52 +707,58 @@ def build_function_table_from_writes_queries(edges: List[FunctionTableEdge]) -> 
 
 
 def build_table_from_entity_classes(
-    entity_fqns: set,
+    entity_map: Dict[str, str],
     module_index: Dict[str, Any],
+    variable_facts_list: Optional[List[VariableFacts]] = None,
     schema_default: str = "",
 ) -> List[Dict[str, Any]]:
-    """엔티티로 확정된 클래스/구조체의 VARIABLE로 Table + Column + HAS_COLUMN 노드/관계 생성.
+    """엔티티로 확정된 클래스/구조체의 멤버변수로 Column + HAS_COLUMN 노드/관계 생성.
 
-    테이블명 = 클래스/구조체명 그대로 사용 (이름 변환 없음).
-    컬럼명 = VARIABLE명 그대로 사용.
+    entity_map: {fqn: table_name} — 테이블명은 호출부에서 결정.
+    컬럼명 = 멤버변수명 그대로 사용.
     """
     column_refs: List[ColumnRef] = []
-    table_names: set = set()
 
-    for fqn in entity_fqns:
+    # module_key → VariableFacts 매핑 구축
+    vars_by_module: Dict[str, List[VariableFacts]] = {}
+    for v in (variable_facts_list or []):
+        if v.module_key:
+            vars_by_module.setdefault(v.module_key, []).append(v)
+
+    for fqn, table_name in entity_map.items():
         info = module_index.get(fqn)
         if not isinstance(info, dict):
             continue
-        module_name = info.get("name", "")
-        if not module_name:
+        module_key = info.get("module_key", "")
+        if not table_name:
             continue
-        table_name = module_name  # 이름 변환 없이 그대로 사용
         schema = schema_default or TABLE_SCHEMA_DEFAULT
-        table_names.add((schema, table_name))
 
-        # VARIABLE 목록에서 Column 정보 추출
-        fields = info.get("fields") or []
-        for field in fields:
-            if not isinstance(field, dict):
-                continue
-            col_name = field.get("name", "")
-            if not col_name:
+        # 멤버변수(VariableFacts)에서 Column 정보 추출
+        member_vars = vars_by_module.get(module_key, [])
+        for v in member_vars:
+            if not v.name:
                 continue
             column_refs.append(ColumnRef(
                 table_schema=schema,
                 table_name=table_name,
-                column_name=col_name,
-                dtype=field.get("variableType") or field.get("type") or "",
+                column_name=v.name,
+                dtype=v.variable_type or "",
                 description="",
                 nullable=True,
             ))
 
     # Table + Column + HAS_COLUMN 쿼리 생성
     queries: List[Dict[str, Any]] = []
+    table_names_seen: set = set()
 
     # Table 노드 MERGE
-    for schema, name in table_names:
-        table_id = f"{schema}.{name}" if schema else name
+    for fqn, table_name in entity_map.items():
+        if not table_name or table_name in table_names_seen:
+            continue
+        table_names_seen.add(table_name)
+        schema = schema_default or TABLE_SCHEMA_DEFAULT
+        table_id = f"{schema}.{table_name}" if schema else table_name
         q = (
             "MERGE (n:Table {db: $db, schema: $schema, name: $name})\n"
             "ON CREATE SET n.created_at = timestamp(), n.table_id = $table_id\n"
@@ -760,7 +767,7 @@ def build_table_from_entity_classes(
         )
         queries.append({
             "query": q,
-            "params": {"db": TABLE_DB_DEFAULT, "schema": schema, "name": name, "table_id": table_id},
+            "params": {"db": TABLE_DB_DEFAULT, "schema": schema, "name": table_name, "table_id": table_id},
         })
 
     # Column 노드 MERGE + HAS_COLUMN 관계
@@ -869,7 +876,7 @@ def build_refer_to_queries(edges: List[ReferToEdge]) -> List[Dict[str, Any]]:
 # 4. Summary / Label — summary·stereotype 속성 및 라벨 업데이트
 # ═══════════════════════════════════════════════════════════════════════════
 
-def build_function_summary_queries(summary_by_function: Dict[str, Dict[str, Any]], lang: str = "java") -> List[Dict[str, Any]]:
+def build_function_summary_queries(summary_by_function: Dict[str, Dict[str, Any]], lang: str) -> List[Dict[str, Any]]:
     """FUNCTION 노드에 summary·stereotype·methodStereotype 속성 및 언어별 스테레오타입 레이블 추가.
 
     lang에 따라 허용되는 스테레오타입만 Neo4j 라벨로 추가.
@@ -973,7 +980,7 @@ def build_variable_summary_queries(summary_by_variable: Dict[str, Dict[str, Any]
     }]
 
 
-def build_module_summary_queries(summary_by_module: Dict[str, Dict[str, Any]], lang: str = "java") -> List[Dict[str, Any]]:
+def build_module_summary_queries(summary_by_module: Dict[str, Dict[str, Any]], lang: str) -> List[Dict[str, Any]]:
     """MODULE 노드에 summary·moduleStereotype 속성 및 언어별 레이블 업데이트 (fqn 기준). UNWIND 배치."""
     from analyzer.strategy.framework.linking.summarizer import VALID_MODULE_STEREOTYPES
     from analyzer.strategy.framework.common.ontology import get_ontology
@@ -1161,7 +1168,6 @@ def build_uses_queries(edges: List[UsesEdge]) -> List[Dict[str, Any]]:
 def build_uml_inheritance_queries(module_index: Dict[str, Any]) -> List[Dict[str, Any]]:
     """module_index의 extends_type, implements_types로 EXTENDS/IMPLEMENTS 쿼리 생성."""
     queries: List[Dict[str, Any]] = []
-    seen_src = set()
     _internal_q = (
         "MERGE (src:MODULE {fqn: $source_fqn})\n"
         "ON CREATE SET src.created_at = timestamp()\n"
@@ -1186,9 +1192,8 @@ def build_uml_inheritance_queries(module_index: Dict[str, Any]) -> List[Dict[str
         if not isinstance(info, dict):
             continue
         source_fqn = info.get("fqn") or info.get("module_key")
-        if not source_fqn or source_fqn in seen_src:
+        if not source_fqn:
             continue
-        seen_src.add(source_fqn)
 
         extends_type = info.get("extends_type")
         if extends_type and str(extends_type).strip():

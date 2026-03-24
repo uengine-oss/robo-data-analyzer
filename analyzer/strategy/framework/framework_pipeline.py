@@ -62,12 +62,12 @@ class FrameworkPipeline(BaseStreamingAnalyzer):
 
     @property
     def strategy_emoji(self) -> str:
-        lang = self._pipeline_state.get("lang", "java")
+        lang = self._pipeline_state.get("lang", "")
         return _get_lang_emoji(lang)
 
     @property
     def file_type_description(self) -> str:
-        lang = self._pipeline_state.get("lang", "java")
+        lang = self._pipeline_state.get("lang", "")
         return f"{_get_lang_desc(lang)} 파일"
 
     def __init__(self):

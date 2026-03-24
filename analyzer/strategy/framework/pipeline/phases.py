@@ -128,18 +128,26 @@ def _build_column_description_update_queries(
 def _collect_entity_fqns_from_edges(
     edges: list,
     module_index: Dict[str, Any],
-) -> set:
+) -> Dict[str, str]:
     """DeepAgent FunctionTableEdge에서 table_name을 추출하고,
-    module_index에서 동일한 이름의 클래스/구조체 FQN을 반환."""
-    table_names = {e.table_name for e in edges if e.table_name}
-    entity_fqns: set = set()
+    module_index에서 동일한 이름의 클래스/구조체를 매칭.
+    대소문자/언더스코어 무시하여 매칭 (UPPER_SNAKE_CASE ↔ CamelCase).
+
+    Returns: {fqn: deep_agent_table_name} 매핑"""
+    # 테이블명 정규화: 대문자 + 언더스코어 제거 → 원래 테이블명
+    table_names_normalized = {
+        e.table_name.upper().replace("_", ""): e.table_name
+        for e in edges if e.table_name
+    }
+    entity_map: Dict[str, str] = {}
     for fqn, info in module_index.items():
         if not isinstance(info, dict):
             continue
         module_name = info.get("name", "")
-        if module_name in table_names:
-            entity_fqns.add(fqn)
-    return entity_fqns
+        normalized = module_name.upper().replace("_", "") if module_name else ""
+        if normalized in table_names_normalized:
+            entity_map[fqn] = table_names_normalized[normalized]
+    return entity_map
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +234,7 @@ async def run_phase_ast(
     yield emit_message("📂 프로젝트 스캔 시작")
 
     # --- Step 1: 스캔 ---
-    lang = getattr(orchestrator, "target", "java") or "java"
+    lang = getattr(orchestrator, "target", "")
 
     scan_roots = [(source_dir, "source"), (nontarget_dir, "analysis/nontarget")]
     catalog, plan = scan_project(scan_roots=scan_roots, lang=lang)
@@ -260,7 +268,7 @@ async def run_phase_ast(
     symbol_type_index: dict[str, dict[str, str]] = {}
     function_index: dict[str, str] = {}
     function_index_by_module: dict[str, dict[str, list[str]]] = {}
-    module_index_simple: dict[str, list[str]] = {}
+    module_name_to_fqn: dict[str, list[str]] = {}
     ref_candidates_by_function: dict[str, list[dict[str, Any]]] = {}
     node_kinds_all: dict[str, str] = {}  # function_id → 원래 노드타입 (FUNCTION, METHOD 등)
 
@@ -276,8 +284,8 @@ async def run_phase_ast(
         function_facts_list.extend(facts)
         module_index_ast.update(cidx)
         variable_facts_list.extend(fields)
-        for name, fqns in file_result["module_index_simple"].items():
-            module_index_simple.setdefault(name, []).extend(fqns)
+        for name, fqns in file_result["module_name_to_fqn"].items():
+            module_name_to_fqn.setdefault(name, []).extend(fqns)
         for mid, types in file_result["sym_idx"].items():
             symbol_type_index.setdefault(mid, {}).update(types)
         function_index.update(file_result["meth_idx"])
@@ -370,7 +378,7 @@ async def run_phase_ast(
 
     # --- Step 4: 인덱스 구축 ---
     sql_index, module_index, config_index, artifact_index = run_step4(
-        sql_chunks, function_facts_list, module_index_ast, config_chunks, artifact_chunks=artifact_chunks,
+        sql_chunks, module_index_ast, config_chunks, artifact_chunks=artifact_chunks,
     )
 
     # pipeline state에 저장
@@ -385,7 +393,7 @@ async def run_phase_ast(
         "symbol_type_index": symbol_type_index,
         "function_index": function_index,
         "function_index_by_module": function_index_by_module,
-        "module_index_simple": module_index_simple,
+        "module_name_to_fqn": module_name_to_fqn,
         "ref_candidates_by_function": ref_candidates_by_function,
         "sql_chunks": sql_chunks,
         "config_chunks": config_chunks,
@@ -605,16 +613,17 @@ async def run_phase_llm(
                 # DDL이 있으면 테이블 노드는 DDL 파서가 이미 생성 → 스킵
                 # DDL이 없으면 struct/class 이름으로 Table+Column 노드를 먼저 생성해야
                 # 아래 Function→Table 관계 MERGE가 성공한다.
+                # ── 1) Table + Column + HAS_COLUMN 생성 ──
                 if not ddl_meta:
-                    _entity_fqns = _collect_entity_fqns_from_edges(entity_mt_edges, st.get("module_index") or {})
-                    if _entity_fqns:
-                        entity_tbl_queries = build_table_from_entity_classes(_entity_fqns, st.get("module_index") or {})
+                    _entity_map = _collect_entity_fqns_from_edges(entity_mt_edges, st.get("module_index") or {})
+                    if _entity_map:
+                        entity_tbl_queries = build_table_from_entity_classes(_entity_map, st.get("module_index") or {}, variable_facts_list=st.get("variable_facts_list") or [])
                         if entity_tbl_queries:
-                            logger.info("[FW:PHASE2] 엔티티 Table/Column 생성 (DDL 없음) | classes=%d queries=%d", len(_entity_fqns), len(entity_tbl_queries))
+                            logger.info("[FW:PHASE2] 엔티티 Table/Column 생성 (DDL 없음) | classes=%d queries=%d", len(_entity_map), len(entity_tbl_queries))
                             async for graph in run_graph_queries(client, entity_tbl_queries, label="PHASE2:ENTITY_TABLE"):
                                 yield emit_data(graph=graph)
 
-                # ── Function→Table 관계 연결 ──
+                # ── 2) Function→Table 관계 연결 ──
                 eid_queries = build_function_table_from_writes_queries(entity_mt_edges)
                 if eid_queries:
                     async for graph in run_graph_queries(client, eid_queries, label="PHASE2:ENTITY_ID"):
@@ -635,7 +644,13 @@ async def run_phase_llm(
             logger.info("[FW:PHASE2] 자동 엔티티 식별 (어노테이션) | classes=%d", len(auto_entity_fqns))
             if not ddl_meta:
                 try:
-                    auto_tbl_queries = build_table_from_entity_classes(auto_entity_fqns, st.get("module_index") or {})
+                    # fqn set → {fqn: 구조체명} 매핑 변환
+                    _mi = st.get("module_index") or {}
+                    auto_entity_map = {
+                        fqn: _mi[fqn].get("name", "") for fqn in auto_entity_fqns
+                        if fqn in _mi and isinstance(_mi[fqn], dict)
+                    }
+                    auto_tbl_queries = build_table_from_entity_classes(auto_entity_map, _mi, variable_facts_list=st.get("variable_facts_list") or [])
                     if auto_tbl_queries:
                         async for graph in run_graph_queries(client, auto_tbl_queries, label="PHASE2:AUTO_ENTITY_TABLE"):
                             yield emit_data(graph=graph)
@@ -807,14 +822,14 @@ async def run_phase_post(
         config_index=st.get("config_index"),
         calls_edges=all_calls,
         variable_facts_list=variable_facts_list,
-        lang=st.get("lang", "java"),
+        lang=st["lang"],
     ):
         summary_by_function.update(summary_batch)
         yield tracker.tick_quiet()
         # --- Build queries in logical sections; each section has its own try/except
         #     so a failure in one does not silently suppress the others. ---
         queries: list[dict[str, Any]] = []
-        lang = st.get("lang", "java")
+        lang = st["lang"]
 
         # 1) Function summary queries
         try:
@@ -949,7 +964,7 @@ async def run_phase_post(
         summary_by_module.update(module_batch)
         yield tracker.tick_quiet(len(module_batch))
         try:
-            queries = build_module_summary_queries(module_batch, lang=st.get("lang", "java"))
+            queries = build_module_summary_queries(module_batch, lang=st["lang"])
             if queries:
                 async for graph in run_graph_queries(client, queries, label="PHASE3:MODULE_SUMMARY"):
                     yield emit_data(graph=graph)

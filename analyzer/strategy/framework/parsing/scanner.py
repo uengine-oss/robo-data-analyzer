@@ -62,7 +62,7 @@ def _read_signature(path: Path, max_bytes: int = 2048) -> bytes:
         return b""
 
 
-def _classify_file(path: Path, ext: str, signature: bytes, lang: str = "java") -> str:
+def _classify_file(path: Path, ext: str, signature: bytes, lang: str) -> str:
     ext_lower = ext.lower()
     sig_str = (signature.decode("utf-8", errors="ignore") if signature else "")[:2048]
     sig_lower = sig_str.lower()
@@ -107,7 +107,7 @@ def _process_one_file(
     path_str: str,
     catalog: List[FileCatalogEntry],
     plan: ProcessingPlan,
-    lang: str = "java",
+    lang: str,
 ) -> None:
     try:
         stat = path.stat()
@@ -141,10 +141,10 @@ def _process_one_file(
 
 
 def scan_project(
+    lang: str,
     project_root: Optional[str] = None,
     scan_roots: Optional[List[Tuple[str, str]]] = None,
     use_pathlib: bool = True,
-    lang: str = "java",
 ) -> Tuple[List[FileCatalogEntry], ProcessingPlan]:
     catalog: List[FileCatalogEntry] = []
     plan = ProcessingPlan()

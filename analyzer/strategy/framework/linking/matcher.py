@@ -87,10 +87,6 @@ def extract_quoted_strings(code: str) -> List[str]:
 
 
 
-def _key_in_code(code: str, key: str) -> bool:
-    """인덱스 키가 코드에 등장하는지 검사 (추출 없음). key 또는 'key' / \"key\" 형태."""
-    return key_in_code(code, key)
-
 
 def link_chunks_to_indexes(
     function_facts_list: List[FunctionFacts],
@@ -147,17 +143,17 @@ def link_chunks_to_indexes(
         evidence = {"file": m.code_ref, "line_range": [m.start_line, m.end_line]}
         if sql_index:
             for key in sql_index:
-                if _key_in_code(code, key):
+                if key_in_code(code, key):
                     add_edge(m.function_id, None, "SqlStatement", key, evidence)
                     matched_keys.add(("SqlStatement", key))
         if config_index:
             for key in config_index.keys():
-                if _key_in_code(code, key):
+                if key_in_code(code, key):
                     add_edge(m.function_id, None, "ConfigSection", key, evidence)
                     matched_keys.add(("ConfigSection", key))
         if artifact_key_index:
             for key, chunk_ids in artifact_key_index.items():
-                if not _key_in_code(code, key):
+                if not key_in_code(code, key):
                     continue
                 for cid in chunk_ids:
                     if cid:
@@ -173,17 +169,17 @@ def link_chunks_to_indexes(
             evidence = {"file": fc.get("code_ref"), "line_range": fc.get("line_range")}
             if sql_index:
                 for key in sql_index:
-                    if _key_in_code(code, key):
+                    if key_in_code(code, key):
                         add_edge("", variable_id, "SqlStatement", key, evidence)
                         matched_keys.add(("SqlStatement", key))
             if config_index:
                 for key in config_index.keys():
-                    if _key_in_code(code, key):
+                    if key_in_code(code, key):
                         add_edge("", variable_id, "ConfigSection", key, evidence)
                         matched_keys.add(("ConfigSection", key))
             if artifact_key_index:
                 for key, chunk_ids in artifact_key_index.items():
-                    if not _key_in_code(code, key):
+                    if not key_in_code(code, key):
                         continue
                     for cid in chunk_ids:
                         if cid:

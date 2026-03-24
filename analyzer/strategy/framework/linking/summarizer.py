@@ -208,6 +208,7 @@ def _build_module_fields_context(
 def _invoke_analysis_llm(
     m: FunctionFacts,
     api_key: str,
+    lang: str,
     locale: str = "ko",
     calls_outgoing: Optional[List[str]] = None,
     reads_writes_summary: Optional[str] = None,
@@ -216,7 +217,6 @@ def _invoke_analysis_llm(
     linked_architecture_context: Optional[str] = None,
     called_method_summaries: Optional[List[Dict[str, Any]]] = None,
     module_fields_context: Optional[str] = None,
-    lang: str = "java",
 ) -> Optional[Dict[str, Any]]:
     """메서드 1개에 대해 analysis 규칙 실행 → summary/calls/dependencies/stereotype.
 
@@ -403,6 +403,7 @@ def run_step6(
     function_facts_list: List[FunctionFacts],
     refer_to_edges: List[ReferToEdge],
     reads_writes: List[ReadsWritesEdge],
+    lang: str,
     use_llm: bool = False,
     api_key: Optional[str] = None,
     locale: str = "ko",
@@ -412,7 +413,6 @@ def run_step6(
     config_index: Optional[Dict[str, Any]] = None,
     calls_edges: Optional[List[CallsEdge]] = None,
     variable_facts_list: Optional[List[VariableFacts]] = None,
-    lang: str = "java",
 ) -> Generator[Dict[str, Dict[str, Any]], None, None]:
     """메서드별 stereotype, summary — 20개씩 배치로 yield.
 
@@ -924,7 +924,7 @@ def run_module_summary(
     key_to_kind: Dict[str, str] = {}
     for info in (module_index or {}).values():
         if isinstance(info, dict) and info.get("module_key"):
-            key_to_kind[info["module_key"]] = info.get("kind", "CLASS")
+            key_to_kind[info["module_key"]] = info.get("kind", "")
 
     by_class: Dict[str, List[Dict[str, Any]]] = {}
     for m in function_facts_list or []:

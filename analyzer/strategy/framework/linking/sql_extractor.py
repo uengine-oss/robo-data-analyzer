@@ -457,7 +457,7 @@ def _extract_tables_columns_fk_batch_via_llm(
         )
     except Exception as e:
         logger.warning("[FW:STEP5] LLM sql_table_extract 오류: %s", e)
-        return [([], [], [], []) for _ in batch]
+        return [([], [], [], [], {}) for _ in batch]
     out: List[Tuple[List[Tuple[str, str, str]], List[ColumnRef], List[FkEdge], List[Dict[str, str]], Dict[Tuple[str, str], str]]] = []
     results_list = result.get("results") or []
     for res in results_list:

@@ -67,7 +67,7 @@ def _visit_ast_for_indices(
     module_fqn: Optional[str],
     function_id: Optional[str],
     ctx: AstVisitorContext,
-    lang: str = "java",
+    lang: str,
 ) -> None:
     """Raw AST 순회: symbol_type_index, function_index, ChunkBundle용 리스트 수집 (범용)."""
     onto = get_ontology()
@@ -192,7 +192,7 @@ def _visit_ast_for_indices(
 
 def collect_ast_indices_and_chunk_data(
     ast_data: dict,
-    lang: str = "java",
+    lang: str,
 ) -> Tuple[
     Dict[str, Dict[str, str]],
     Dict[str, str],
@@ -228,8 +228,8 @@ def collect_ast_indices_and_chunk_data(
 def build_function_facts_and_module_index(
     ast_path: str,
     ast_data: dict,
+    lang: str,
     data_dir: Optional[str] = None,
-    lang: str = "java",
 ) -> Tuple[List[FunctionFacts], Dict[str, Any], List[VariableFacts], Dict[str, List[str]]]:
     """한 AST 파일에서 FunctionFacts, module_index, VariableFacts 리스트 생성."""
     onto = get_ontology()
@@ -245,12 +245,20 @@ def build_function_facts_and_module_index(
         directory = "/".join(dir_parts) if dir_parts else ""
     else:
         directory = "/".join(p.parts[:-1]) if len(p.parts) > 1 else ""
-    file_name = p.name
+    file_name = p.name  # AST JSON 파일명 (fallback)
 
     source_content = ""
     if data_dir:
         source_path = _source_path_for_ast(data_dir, ast_path, lang=lang)
         if source_path:
+            # 원본 소스 경로로 directory/file_name 덮어쓰기
+            sp = Path(source_path)
+            src_parts = sp.parts
+            if "source" in src_parts:
+                idx = src_parts.index("source") + 1
+                dir_parts = src_parts[idx:-1]
+                directory = "/".join(dir_parts) if dir_parts else ""
+            file_name = sp.name
             try:
                 source_content = read_text_with_fallback(source_path)
             except Exception:
@@ -313,8 +321,6 @@ def build_function_facts_and_module_index(
                 "extends_type": getattr(node, "extends_type", None),
                 "implements_types": getattr(node, "implements_types", None),
             }
-            if node.package_name:
-                module_index[node.unit_name] = module_index[fqn]
 
         if node.node_type in function_types and node.name:
             if node.package_name and node.unit_name:
@@ -345,14 +351,14 @@ def build_function_facts_and_module_index(
                 )
             )
 
-    module_index_simple: Dict[str, List[str]] = {}
+    module_name_to_fqn: Dict[str, List[str]] = {}
     for fqn, info in module_index.items():
         if isinstance(info, dict):
             name = info.get("name")
             if name:
-                module_index_simple.setdefault(name, []).append(fqn)
+                module_name_to_fqn.setdefault(name, []).append(fqn)
 
-    return function_facts_list, module_index, variable_facts_list, module_index_simple, node_kinds
+    return function_facts_list, module_index, variable_facts_list, module_name_to_fqn, node_kinds
 
 
 def _extract_package_fqns(module_index: Dict[str, Any]) -> List[str]:
@@ -369,7 +375,7 @@ def _extract_package_fqns(module_index: Dict[str, Any]) -> List[str]:
     return sorted(out)
 
 
-def _ast_json_path_for_source(data_dir: str, source_path: str, lang: str = "java") -> Optional[str]:
+def _ast_json_path_for_source(data_dir: str, source_path: str, lang: str) -> Optional[str]:
     """source 파일 경로에 대응하는 target AST JSON 경로 (같은 상대경로, 확장자만 .json)."""
     onto = get_ontology()
     source_exts = onto.source_extensions(lang)
@@ -386,11 +392,7 @@ def _ast_json_path_for_source(data_dir: str, source_path: str, lang: str = "java
     return str(target_path) if target_path.is_file() else None
 
 
-# 하위호환 alias
-_ast_json_path_for_java = _ast_json_path_for_source
-
-
-def _source_path_for_ast(data_dir: str, ast_path: str, lang: str = "java") -> Optional[str]:
+def _source_path_for_ast(data_dir: str, ast_path: str, lang: str) -> Optional[str]:
     """AST JSON 경로에 대응하는 원본 소스 파일 경로."""
     onto = get_ontology()
     source_exts = onto.source_extensions(lang)
@@ -418,14 +420,14 @@ def _source_path_for_ast(data_dir: str, ast_path: str, lang: str = "java") -> Op
 
 def run_step2(
     source_ast_jobs: List[str],
+    lang: str,
     data_dir: Optional[str] = None,
     run_dir: Optional[str] = None,
-    lang: str = "java",
 ) -> Generator[Dict[str, Any], None, None]:
     """파일별로 AST 결과를 yield. 호출자가 누적 및 Neo4j 반영.
 
     Yields:
-        Dict with keys: facts, cidx, fields, module_index_simple,
+        Dict with keys: facts, cidx, fields, module_name_to_fqn,
         sym_idx, meth_idx, meth_by_cls, ref_cands, file_name
     """
     onto = get_ontology()
@@ -463,7 +465,7 @@ def run_step2(
                 source_path_for_bundle = _source_path_for_ast(data_dir, path, lang=lang) if data_dir else None
 
             ast_data = load_ast_json(ast_path_val)
-            facts, cidx, fields, module_index_simple, variable_node_kinds = build_function_facts_and_module_index(
+            facts, cidx, fields, module_name_to_fqn, variable_node_kinds = build_function_facts_and_module_index(
                 ast_path_val, ast_data, data_dir=data_dir, lang=lang,
             )
 
@@ -518,7 +520,7 @@ def run_step2(
                             f.code = mid_to_code[f.function_id]
                     fid_to_code = {
                         fl.variable_id: (getattr(fl, "variable_code", None) or "")
-                        for fl in bundle.fields
+                        for fl in bundle.member_vars
                         if getattr(fl, "variable_code", None)
                     }
                     for fl in fields:
@@ -535,7 +537,7 @@ def run_step2(
                 "facts": facts,
                 "cidx": cidx,
                 "fields": fields,
-                "module_index_simple": module_index_simple,
+                "module_name_to_fqn": module_name_to_fqn,
                 "sym_idx": sym_idx,
                 "meth_idx": meth_idx,
                 "meth_by_cls": meth_by_cls,

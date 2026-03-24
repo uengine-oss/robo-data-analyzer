@@ -53,7 +53,7 @@ class FileCatalogEntry:
     ext: str
     size: int
     encoding: str
-    category: str  # java_ast | xml_sqlmap | yaml | properties | etc
+    category: str  # source_ast | sql | entity | config | etc
     hash_val: Optional[str] = None
 
 
@@ -66,34 +66,9 @@ class ProcessingPlan:
     config_jobs: List[str] = field(default_factory=list)       # 설정 파일 (yaml, properties, json, 일반 xml)
     docs_jobs: List[str] = field(default_factory=list)         # 비정형 문서
 
-    # -- 레거시 호환 alias ------------------------------------------------
-    # 범용화 이전 언어별·포맷별 필드명으로 접근하는 코드 지원용.
-
-    @property
-    def java_ast_jobs(self) -> List[str]:
-        return self.source_ast_jobs
-
-    @property
-    def xml_sqlmap_jobs(self) -> List[str]:
-        return self.sql_jobs
-
     @property
     def xml_artifact_jobs(self) -> List[str]:
         return self.entity_jobs
-
-    @property
-    def yaml_jobs(self) -> List[str]:
-        return self.config_jobs
-
-    @property
-    def properties_jobs(self) -> List[str]:
-        return self.config_jobs
-
-    @property
-    def json_jobs(self) -> List[str]:
-        return self.config_jobs
-
-    # -- end 레거시 호환 alias --------------------------------------------
 
     def iter_jobs(self):
         """모든 job 유형을 (category, paths) 쌍으로 순회."""
@@ -179,8 +154,8 @@ ChunkBundleMethodCall = ChunkBundleFunctionCall
 
 
 @dataclass
-class ChunkBundleVariable:
-    """ChunkBundle 내 VARIABLE: parent_function_id, varName, varType, span, flags, initializer_code."""
+class ChunkBundleLocalVar:
+    """ChunkBundle 내 지역변수 (노드 생성 안 됨, LLM 분석용)."""
     parent_function_id: str
     var_name: str
     var_type: Optional[str] = None
@@ -191,8 +166,8 @@ class ChunkBundleVariable:
 
 
 @dataclass
-class ChunkBundleField:
-    """ChunkBundle 내 FIELD: variable_id, span, variable_code(선택)."""
+class ChunkBundleMemberVar:
+    """ChunkBundle 내 멤버변수/필드 (Neo4j VARIABLE/CONSTANT 노드로 생성됨)."""
     variable_id: str
     start_line: int
     end_line: int
@@ -201,12 +176,12 @@ class ChunkBundleField:
 
 @dataclass
 class ChunkBundle:
-    """파일 단위 ChunkBundle: 메타 + METHOD/METHOD_CALL/VARIABLE/FIELD 목록."""
+    """파일 단위 ChunkBundle: 메타 + METHOD/METHOD_CALL/LOCAL_VAR/MEMBER_VAR 목록."""
     file_meta: ChunkBundleFile
     methods: List[ChunkBundleMethod] = field(default_factory=list)
     function_calls: List[ChunkBundleFunctionCall] = field(default_factory=list)
-    variables: List[ChunkBundleVariable] = field(default_factory=list)
-    fields: List[ChunkBundleField] = field(default_factory=list)
+    local_vars: List[ChunkBundleLocalVar] = field(default_factory=list)
+    member_vars: List[ChunkBundleMemberVar] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

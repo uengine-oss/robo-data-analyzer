@@ -45,7 +45,7 @@ class FrameworkPipelineState:
     symbol_type_index: Dict[str, Dict[str, str]] = field(default_factory=dict)
     function_index: Dict[str, str] = field(default_factory=dict)
     function_index_by_module: Dict[str, Dict[str, List[str]]] = field(default_factory=dict)
-    module_index_simple: Dict[str, List[str]] = field(default_factory=dict)
+    module_name_to_fqn: Dict[str, List[str]] = field(default_factory=dict)
     ref_candidates_by_function: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
 
     # Step 3: Artifacts

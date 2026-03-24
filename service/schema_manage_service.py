@@ -233,8 +233,8 @@ async def fetch_table_references(
         proc_query = {
             "query": """
                 MATCH (s)-[:FROM|WRITES]->(t:Table)
-                WHERE t.name = $table_name
-                   OR t.fqn ENDS WITH $table_name
+                WHERE (t.name = $table_name OR t.fqn ENDS WITH $table_name)
+                  AND NOT s:FUNCTION AND NOT s:VARIABLE
                 OPTIONAL MATCH (p)-[:PARENT_OF*]->(s)
                     WHERE p:PROCEDURE OR p:FUNCTION
                 RETURN DISTINCT
@@ -258,14 +258,15 @@ async def fetch_table_references(
                 MATCH (src)-[r:READS|WRITES]->(t:Table)
                 WHERE (t.name = $table_name OR t.fqn ENDS WITH $table_name)
                   AND (src:FUNCTION OR src:VARIABLE)
-                OPTIONAL MATCH (m:MODULE)-[:CONTAINS*]->(src)
+                OPTIONAL MATCH (m:MODULE)-[:HAS_FUNCTION|HAS_VARIABLE]->(src)
                 RETURN DISTINCT
                     COALESCE(src.name, src.function_id) AS source_name,
                     'FUNCTION'       AS source_type,
                     type(r)          AS access_type,
                     src.start_line   AS start_line,
                     src.file_name    AS file_name,
-                    src.file_directory AS file_directory,
+                    src.file_path    AS file_path,
+                    src.directory    AS file_directory,
                     m.name           AS module_name
                 ORDER BY source_name
 
@@ -280,6 +281,7 @@ async def fetch_table_references(
                     'REFER_TO'       AS access_type,
                     m.start_line     AS start_line,
                     m.file_name      AS file_name,
+                    m.file_path      AS file_path,
                     m.file_directory AS file_directory,
                     m.name           AS module_name
                 ORDER BY source_name

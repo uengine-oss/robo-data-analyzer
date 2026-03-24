@@ -46,8 +46,8 @@ SYSTEM_PROMPT = """
   - bundle_get_chunk_tool(chunk_id): chunk_id로 코드 조각 조회.
 
   관계 등록:
-  - graph_create_refer_to_tool(target_type, target_key, evidence, source_method_id): REFER_TO 엣지 생성. source_method_id 필수.
-  - graph_create_table_access_tool(table_name, access, evidence, source_method_id): READS/WRITES 엣지 생성. source_method_id 필수.
+  - graph_create_refer_to_tool(target_type, target_key, evidence, source_function_id): REFER_TO 엣지 생성. source_function_id 필수.
+  - graph_create_table_access_tool(table_name, access, evidence, source_function_id): READS/WRITES 엣지 생성. source_function_id 필수.
 
   FK 관련:
   - table_search_tool(keyword): 키워드로 테이블 검색 (대소문자/언더스코어 무시). 존재하는 테이블만 반환.
@@ -74,8 +74,8 @@ SYSTEM_PROMPT = """
      - 서비스/빈인 경우: 호출 관계 파악
      - 설정인 경우: 참조 관계 파악
   4) 관계 생성:
-     - graph_create_refer_to_tool("ArtifactChunk", chunk_id, evidence, source_method_id)
-     - 테이블 접근이 확인되면: graph_create_table_access_tool(테이블명, "READS"/"WRITES", evidence, source_method_id)
+     - graph_create_refer_to_tool("ArtifactChunk", chunk_id, evidence, source_function_id)
+     - 테이블 접근이 확인되면: graph_create_table_access_tool(테이블명, "READS"/"WRITES", evidence, source_function_id)
   주의: 하나의 청크를 여러 메서드가 사용할 수 있습니다. 발견된 모든 메서드에 대해 관계를 생성하십시오.
 
 == category: "sql" (SQL 문 관련) ==
@@ -83,32 +83,35 @@ SYSTEM_PROMPT = """
 절차:
   1) sql_key나 파일명으로 bundle_search → 해당 SQL ID를 참조하는 코드 검색
   2) context에 related_modules가 있으면 해당 모듈명으로도 검색 (중복 메서드명 구분)
-  3) graph_create_refer_to_tool("SqlStatement", sql_key, evidence, source_method_id)
+  3) graph_create_refer_to_tool("SqlStatement", sql_key, evidence, source_function_id)
 
 == category: "config" (설정 관련) ==
 목표: 이 설정을 읽는 메서드를 찾아 Method→ConfigSection 관계 생성.
 절차:
   1) 설정 키나 파일명으로 bundle_search → 해당 설정을 참조하는 코드 검색
   2) config_lookup_tool로 설정 값 확인, 관련 키워드로 추가 검색
-  3) graph_create_refer_to_tool("ConfigSection", config_key, evidence, source_method_id)
+  3) graph_create_refer_to_tool("ConfigSection", config_key, evidence, source_function_id)
 
-== FK 식별 ==
-코드에서 테이블 간 관계가 보이면 (JOIN 조건, 엔티티 관계 필드, 외래키 패턴 등):
-1) table_search_tool로 관련 테이블 존재 확인
-2) table_columns_tool로 컬럼/PK 확인
-3) 확신이 있을 때만 graph_create_fk_tool 호출
-예: subscriber.getPlanId() → table_search_tool("plan") → table_columns_tool("PLAN")
-    → PK가 PLAN_ID → graph_create_fk_tool("SUBSCRIBER", "PLAN_ID", "PLAN", "PLAN_ID")
+== FK 식별 (범용) ==
+위 추적 과정에서 테이블 간 참조 관계가 보이면 FK도 함께 등록하십시오.
+다음 중 하나라도 해당하면 FK 후보입니다:
+- 순차 조회: 한 테이블 조회 결과의 필드로 다른 테이블을 조회
+- SQL JOIN/서브쿼리: 두 테이블이 조인 조건으로 연결
+- 필드 참조: 필드명이 "다른테이블_PK" 형태이거나 관계 어노테이션 존재
+- 파라미터 전달: 한 테이블의 컬럼 값이 다른 테이블 접근 함수의 인자로 사용
+
+→ table_search_tool, table_columns_tool로 양쪽 테이블·컬럼 검증 후 graph_create_fk_tool 호출
 
 [출력 지침]
-- source_method_id는 반드시 bundle_search/bundle_get_chunk에서 발견한 실제 메서드의 chunk_id를 사용하십시오.
-- 하나의 인덱스 키에 대해 여러 메서드가 사용할 수 있으며, 각각에 대해 관계를 생성하십시오.
+- source_function_id는 반드시 bundle_search/bundle_get_chunk에서 발견한 실제 함수의 chunk_id를 사용하십시오.
+- 하나의 인덱스 키에 대해 여러 함수가 사용할 수 있으며, 각각에 대해 관계를 생성하십시오.
 - 확신이 있을 때만 엣지를 생성하고, 근거가 부족하면 생성하지 마십시오.
 """
 
-ENTITY_IDENTIFICATION_SYSTEM_PROMPT = """
-당신은 소스코드에서 데이터베이스 엔티티(테이블에 매핑되는 클래스/구조체)를
-식별하고, 각 메서드가 어떤 테이블을 읽거나 쓰는지 추적하는 전문가 에이전트입니다.
+def _build_entity_identification_system_prompt(has_ddl: bool) -> str:
+    """시나리오(DDL 유무)에 따라 엔티티 식별 시스템 프롬프트를 동적 생성."""
+    base = """당신은 소스코드에서 데이터베이스 엔티티(테이블에 매핑되는 클래스/구조체)를
+식별하고, 각 함수가 어떤 테이블을 읽거나 쓰는지 추적하는 전문가 에이전트입니다.
 
 [목표]
 입력으로 주어지는 정보(DDL 테이블 목록 또는 클래스/구조체 후보)를 기반으로
@@ -129,8 +132,9 @@ DTO/VO 시그널 (이것만 있으면 엔티티 아님):
 - 오직 제공된 도구만 사용하십시오.
 - 확신이 없으면 엣지를 생성하지 마십시오.
 - bundle_search는 소스코드뿐 아니라 XML 정의, SQL 매핑도 검색합니다. 활용하세요.
-- 테이블명 추론: 매핑 정보 있으면 해당 값, 없으면 CamelCase → UPPER_SNAKE_CASE 관례 적용
+- 테이블명: 코드에서 발견한 클래스/구조체 이름을 그대로 사용하십시오. 이름 변환(UPPER_SNAKE_CASE 등) 하지 마십시오.
 - graph_create_table_access_tool 호출 시 evidence에 테이블의 비즈니스 목적을 한 문장으로 기술하세요.
+- 자기 자신 테이블로의 FK(예: Bill.bill_id → Bill.bill_id)는 등록하지 마십시오.
 
 [도구]
   코드 검색:
@@ -138,28 +142,52 @@ DTO/VO 시그널 (이것만 있으면 엔티티 아님):
   - bundle_get_chunk_tool(chunk_id): chunk_id로 코드/XML/SQL 조각 조회.
 
   관계 등록:
-  - graph_create_table_access_tool(table_name, access, evidence, source_method_id): Function→Table 접근 관계 등록. access: "READS" 또는 "WRITES". source_method_id 필수.
+  - graph_create_table_access_tool(table_name, access, evidence, source_function_id): Function→Table 접근 관계 등록. access: "READS" 또는 "WRITES". source_function_id 필수.
+  - graph_create_fk_tool(from_table, from_column, to_table, to_column, evidence): 테이블 간 FK 관계 등록. 코드에서 데이터 흐름을 근거로 판단."""
 
-  FK 관련:
+    fk_ddl_section = """
+
+  FK 검증 (DDL 있을 때):
   - table_search_tool(keyword): 키워드로 테이블 검색 (대소문자/언더스코어 무시).
-  - table_columns_tool(table_name, table_schema): 테이블의 컬럼/PK 정보 조회.
-  - graph_create_fk_tool(from_table, from_column, to_table, to_column, evidence, from_schema, to_schema): FK 관계 등록. 반드시 table_search_tool/table_columns_tool로 양쪽 테이블 존재를 확인한 후 호출.
+  - table_columns_tool(table_name, table_schema): 테이블의 컬럼/PK 정보 조회."""
+
+    procedure_ddl = """
 
 [절차]
-1) 입력에 DB 테이블 목록이 있으면: 각 테이블명으로 bundle_search → 관련 코드/XML/SQL 추적
-2) 입력에 클래스/구조체 후보가 있으면: 각 이름으로 bundle_search → DB 접근 패턴 확인
-3) 엔티티→테이블 매핑과 사용 메서드를 파악하면:
-   - graph_create_table_access_tool(table_name, "READS"/"WRITES", evidence, source_method_id)
-4) DTO/VO로 판단되면 아무것도 호출하지 않음
-5) 엔티티 간 관계가 보이면 (필드 타입이 다른 엔티티, @ManyToOne, JOIN 패턴 등):
-   - table_search_tool로 관련 테이블 존재 확인
-   - table_columns_tool로 컬럼/PK 확인
-   - graph_create_fk_tool로 FK 관계 등록
+1) 각 테이블명으로 bundle_search → 관련 코드/XML/SQL 추적
+2) 엔티티→테이블 매핑과 사용 함수를 파악하면:
+   - graph_create_table_access_tool(table_name, "READS"/"WRITES", evidence, source_function_id)
+3) 위 추적 과정에서 테이블 간 FK 관계가 보이면 함께 등록:
+   - 순차 조회, SQL JOIN, 필드 참조("다른테이블_PK" 형태), 파라미터 전달 등
+   → table_search_tool, table_columns_tool로 검증 후 graph_create_fk_tool 호출"""
+
+    procedure_candidates = """
+
+[절차]
+1) 각 클래스/구조체 이름으로 bundle_search → DB 접근 패턴 확인
+2) 엔티티→테이블 매핑과 사용 함수를 파악하면:
+   - graph_create_table_access_tool(table_name, "READS"/"WRITES", evidence, source_function_id)
+3) DTO/VO로 판단되면 아무것도 호출하지 않음
+4) 코드에서 테이블 간 데이터 흐름이 보이면 FK를 등록:
+   - 한 테이블 조회 결과를 다른 테이블 조회/삽입에 사용하는 패턴
+   - 구조체 필드가 다른 테이블의 PK를 참조하는 패턴
+   - 함수가 여러 테이블을 순차 접근하며 데이터를 전달하는 패턴
+   → graph_create_fk_tool(from_table, from_column, to_table, to_column, evidence) 호출"""
+
+    efficiency = """
 
 [효율성]
 - 후보가 여러 개이면 먼저 bundle_search로 일괄 검색한 뒤,
-  유사한 사용 패턴을 가진 후보를 묶어서 처리하십시오.
-"""
+  유사한 사용 패턴을 가진 후보를 묶어서 처리하십시오."""
+
+    parts = [base]
+    if has_ddl:
+        parts.append(fk_ddl_section)
+        parts.append(procedure_ddl)
+    else:
+        parts.append(procedure_candidates)
+    parts.append(efficiency)
+    return "\n".join(parts)
 
 
 # ===========================================================================
@@ -266,23 +294,30 @@ def build_tools(
     @tool
     def sql_lookup_tool(sql_key: str) -> str:
         """sql_key로 SQL을 조회한다."""
+        logger.info("[FW:DEEPAGENT:TOOL] sql_lookup | key=%s", sql_key)
         r = sql_lookup(sql_key, sql_index)
+        logger.info("[FW:DEEPAGENT:TOOL] sql_lookup | found=%s", bool(r))
         return json.dumps(r, ensure_ascii=False) if r else ""
 
     @tool
     def config_lookup_tool(config_key: str) -> str:
         """config_key로 설정 엔트리를 조회한다."""
+        logger.info("[FW:DEEPAGENT:TOOL] config_lookup | key=%s", config_key)
         r = config_lookup(config_key, config_index)
+        logger.info("[FW:DEEPAGENT:TOOL] config_lookup | found=%s", bool(r))
         return json.dumps(r, ensure_ascii=False) if r else ""
 
     @tool
     def artifact_lookup_tool(key: str) -> str:
         """chunk_id 또는 hint_key(ejb-name)로 ArtifactChunk를 조회한다."""
+        logger.info("[FW:DEEPAGENT:TOOL] artifact_lookup | key=%s", key)
         cid = artifact_key_index.get((key or "").strip())
         if not cid:
+            logger.info("[FW:DEEPAGENT:TOOL] artifact_lookup | found=False")
             return ""
         ac = artifact_index.get(cid)
         if not ac:
+            logger.info("[FW:DEEPAGENT:TOOL] artifact_lookup | found=False")
             return ""
         data = {
             "chunk_id": cid,
@@ -293,6 +328,7 @@ def build_tools(
             "end_line": getattr(ac, "end_line", 0),
             "text": getattr(ac, "text", "")[:2000],
         }
+        logger.info("[FW:DEEPAGENT:TOOL] artifact_lookup | found=True chunk_id=%s", cid)
         return json.dumps(data, ensure_ascii=False)
 
     # ===== 코드 검색 도구 ==========================================
@@ -300,15 +336,20 @@ def build_tools(
     @tool
     def bundle_search_tool(query: str, kind: str = "symbol") -> str:
         """ChunkBundle에서 심볼/텍스트 검색. kind: symbol|text."""
+        logger.info("[FW:DEEPAGENT:TOOL] bundle_search | query=%s kind=%s", query, kind)
         results = _bundle_search(data_dir, query, kind, span_index=span_index, chunk_index=chunk_index)
-        return json.dumps([_enrich_with_modulename(r) for r in results[:20]], ensure_ascii=False)
+        enriched = [_enrich_with_modulename(r) for r in results[:20]]
+        logger.info("[FW:DEEPAGENT:TOOL] bundle_search | results=%d", len(enriched))
+        return json.dumps(enriched, ensure_ascii=False)
 
     @tool
     def bundle_get_chunk_tool(chunk_id: str) -> str:
         """chunk_id로 코드 조각 조회."""
+        logger.info("[FW:DEEPAGENT:TOOL] bundle_get_chunk | chunk_id=%s", chunk_id)
         r = _bundle_get_chunk(chunk_id, chunk_index=chunk_index)
         if r:
             _enrich_with_modulename(r)
+        logger.info("[FW:DEEPAGENT:TOOL] bundle_get_chunk | found=%s", bool(r))
         return json.dumps(r, ensure_ascii=False) if r else ""
 
     # ===== 관계 등록 도구 ==========================================
@@ -317,6 +358,7 @@ def build_tools(
     def graph_create_refer_to_tool(target_type: str, target_key: str, evidence: str = "", source_function_id: str = "") -> str:
         """REFER_TO 엣지 생성. source_function_id 비워두면 기본 function_id 사용."""
         mid = source_function_id.strip() if source_function_id else function_id
+        logger.info("[FW:DEEPAGENT:TOOL] create_refer_to | target_type=%s target_key=%s source=%s", target_type, target_key, mid)
         if not mid:
             return "error: source_function_id required (no default function_id)"
         refer_collector.append(
@@ -335,11 +377,12 @@ def build_tools(
     def graph_create_table_access_tool(table_name: str, access: str, evidence: str = "", source_function_id: str = "") -> str:
         """READS/WRITES 엣지 생성. source_function_id 비워두면 기본 function_id 사용."""
         mid = source_function_id.strip() if source_function_id else function_id
-        if not mid:
-            return "error: source_function_id required (no default function_id)"
         rel = access.upper() if access else "READS"
         if rel not in ("READS", "WRITES"):
             rel = "READS"
+        logger.info("[FW:DEEPAGENT:TOOL] create_table_access | table=%s access=%s source=%s", table_name, rel, mid)
+        if not mid:
+            return "error: source_function_id required (no default function_id)"
         table_collector.append(
             FunctionTableEdge(
                 function_id=mid,
@@ -356,12 +399,14 @@ def build_tools(
     @tool
     def table_search_tool(keyword: str) -> str:
         """테이블명을 키워드로 검색. 대소문자/언더스코어 무시."""
+        logger.info("[FW:DEEPAGENT:TOOL] table_search | keyword=%s", keyword)
         keyword_lower = keyword.lower().replace("_", "")
         results = []
         for (schema, name) in ddl_meta:
             name_lower = name.lower().replace("_", "")
             if keyword_lower in name_lower:
                 results.append({"schema": schema, "name": name})
+        logger.info("[FW:DEEPAGENT:TOOL] table_search | results=%d", len(results))
         if not results:
             return "no matching tables found"
         return json.dumps(results[:20], ensure_ascii=False)
@@ -369,35 +414,47 @@ def build_tools(
     @tool
     def table_columns_tool(table_name: str, table_schema: str = "") -> str:
         """테이블의 컬럼 목록과 PK 정보 조회."""
+        logger.info("[FW:DEEPAGENT:TOOL] table_columns | table=%s schema=%s", table_name, table_schema)
         for (s, n), info in ddl_meta.items():
             if n.lower() == table_name.lower() and (not table_schema or s.lower() == table_schema.lower()):
                 columns = info.get("columns") or []
                 pks = info.get("primary_keys") or []
                 col_names = [c.get("name", "") if isinstance(c, dict) else str(c) for c in columns]
+                logger.info("[FW:DEEPAGENT:TOOL] table_columns | found=True columns=%d", len(col_names))
                 return json.dumps({"schema": s, "name": n, "primary_keys": pks, "columns": col_names}, ensure_ascii=False)
+        logger.info("[FW:DEEPAGENT:TOOL] table_columns | found=False")
         return f"table '{table_name}' not found"
 
     @tool
     def graph_create_fk_tool(from_table: str, from_column: str, to_table: str, to_column: str, evidence: str = "", from_schema: str = "", to_schema: str = "") -> str:
         """FK 관계 등록. 반드시 table_search/table_columns로 양쪽 테이블 확인 후 호출."""
+        logger.info("[FW:DEEPAGENT:TOOL] create_fk | %s.%s → %s.%s", from_table, from_column, to_table, to_column)
+        if from_table.upper() == to_table.upper():
+            logger.info("[FW:DEEPAGENT:TOOL] create_fk | result=self_reference_skipped")
+            return "error: self-referencing FK not allowed"
         ref_key = f"{to_table}.{to_column}".upper()
         check_key = (from_table.upper(), from_column.upper(), ref_key)
         if check_key in existing_fk_set:
-            logger.debug("[FW:DEEPAGENT] FK 중복 스킵 (DDL) | %s.%s → %s", from_table, from_column, ref_key)
+            logger.info("[FW:DEEPAGENT:TOOL] create_fk | result=duplicate_skipped")
             return "already exists (from DDL)"
         fk_collector.append(FkEdge(
             from_schema=from_schema, from_table=from_table, from_column=from_column,
             to_schema=to_schema, to_table=to_table, to_column=to_column,
             candidate=True,
         ))
+        logger.info("[FW:DEEPAGENT:TOOL] create_fk | result=ok")
         return "ok"
 
-    return [
+    # ── 도구 목록 구성 ──
+    tools = [
         sql_lookup_tool, config_lookup_tool, artifact_lookup_tool,   # 인덱스 조회
         bundle_search_tool, bundle_get_chunk_tool,                   # 코드 검색
         graph_create_refer_to_tool, graph_create_table_access_tool,  # 관계 등록
-        table_search_tool, table_columns_tool, graph_create_fk_tool, # FK 관련
+        graph_create_fk_tool,                                        # FK 등록
     ]
+    if ddl_meta:
+        tools.extend([table_search_tool, table_columns_tool])        # DDL 있을 때만 테이블 검증 도구
+    return tools
 
 
 # ===========================================================================
@@ -449,7 +506,7 @@ def _build_unmatched_user_message(u: UnresolvedLink) -> str:
             f"이 청크를 사용하는 메서드를 찾으십시오.\n"
             f"1) 원문에 등장하는 식별자로 bundle_search → 소스코드 사용처 추적\n"
             f"2) 발견된 각 메서드의 사용 패턴 판별 (CRUD, 호출, 참조 등)\n"
-            f"3) graph_create_refer_to_tool 생성 (source_method_id 필수)\n"
+            f"3) graph_create_refer_to_tool 생성 (source_function_id 필수)\n"
             f"4) 테이블 접근이 확인되면 graph_create_table_access_tool도 생성\n"
         )
     elif category == "sql":
@@ -458,14 +515,14 @@ def _build_unmatched_user_message(u: UnresolvedLink) -> str:
             f"file_path: {info.get('file_path', '')}\n\n"
             f"이 SQL을 실행하는 메서드를 찾으십시오.\n"
             f"1) sql_key '{key}' 또는 파일명/네임스페이스로 bundle_search\n"
-            f"2) 발견된 메서드에 대해 graph_create_refer_to_tool 생성 (source_method_id 필수)\n"
+            f"2) 발견된 메서드에 대해 graph_create_refer_to_tool 생성 (source_function_id 필수)\n"
         )
     elif category == "config":
         header += (
             f"file_path: {info.get('file_path', '')}\n\n"
             f"이 설정을 참조하는 메서드를 찾으십시오.\n"
             f"1) 설정 키 '{key}' 또는 파일명으로 bundle_search\n"
-            f"2) 발견된 메서드에 대해 graph_create_refer_to_tool 생성 (source_method_id 필수)\n"
+            f"2) 발견된 메서드에 대해 graph_create_refer_to_tool 생성 (source_function_id 필수)\n"
         )
     else:
         header += f"\ninfo: {json.dumps(info, ensure_ascii=False, default=str)}\n"
@@ -639,11 +696,17 @@ def _build_entity_id_user_message(
 
     elif candidates:
         # ── DDL 없음 → 구조체/클래스 후보로 엔티티 판별 + 추적
-        cand_lines = [f"- {c['fqn']} (file: {c['file_path']})" for c in candidates]
+        cand_lines = []
+        for c in candidates:
+            line = f"- {c['fqn']} (file: {c['file_path']})"
+            if c.get("annotations"):
+                line += f" [annotations: {c['annotations']}]"
+            if c.get("comment"):
+                line += f" [comment: {c['comment']}]"
+            cand_lines.append(line)
         parts.append("[클래스/구조체 후보]\n" + "\n".join(cand_lines))
         parts.append(
-            "\n위 후보에서 DB 엔티티를 식별하고, 사용하는 메서드를 추적하세요.\n"
-            "FK 관계가 발견되면 graph_create_fk_tool로 등록하세요."
+            "\n위 후보에서 DB 엔티티를 식별하고, 사용하는 함수를 추적하세요."
         )
 
     return "\n".join(parts)
@@ -694,13 +757,14 @@ def run_deep_agent_entity_identification(
             continue
         if info.get("kind") not in _ENTITY_CANDIDATE_KINDS:
             continue
+        name = info.get("name", "")
         fp = info.get("file_path", "")
         path_class = _classify_by_path(fp)
         if path_class == "dto":
             continue
         candidates.append({
             "fqn": fqn,
-            "name": info.get("name", ""),
+            "name": name,
             "file_path": fp,
             "annotations": (info.get("annotations") or "")[:100],
             "comment": (info.get("comment") or "")[:100],
@@ -726,7 +790,7 @@ def run_deep_agent_entity_identification(
 
     agent = create_deep_agent(
         model=model, tools=tools,
-        system_prompt=ENTITY_IDENTIFICATION_SYSTEM_PROMPT,
+        system_prompt=_build_entity_identification_system_prompt(has_ddl),
     )
 
     _BATCH_SIZE = 20

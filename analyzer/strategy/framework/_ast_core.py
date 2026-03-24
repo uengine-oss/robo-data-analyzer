@@ -220,21 +220,17 @@ def _log_process(_ctx: str, _stage: str, message: str, **kwargs: Any) -> None:
     logger.debug("[%s][%s] %s", _ctx, _stage, message)
 
 
-# Module-level node type constants — loaded from ontology with "java" as default.
-# These Java defaults exist for backward compatibility: older callers that import
-# MODULE_TYPES etc. directly (without specifying a language) still get valid sets.
-# At runtime, StatementCollector loads the correct types dynamically via its
-# `lang` parameter, so these constants are only used as a fallback when no
-# language context is available.
+# Module-level node type constants — 전 언어 합집합. 특정 언어 필터링은 런타임에서 lang 파라미터로 처리.
 from .common.ontology import get_ontology as _get_ontology
 
 _onto = _get_ontology()
-MODULE_TYPES = _onto.module_types("java")
-FUNCTION_TYPES = _onto.function_types("java")
-VARIABLE_TYPES = _onto.variable_types("java")
-CONSTANT_TYPES = _onto.constant_types("java")
+_ALL_LANGS = _onto.supported_languages()
+MODULE_TYPES: frozenset = frozenset().union(*(_onto.module_types(l) for l in _ALL_LANGS))
+FUNCTION_TYPES: frozenset = frozenset().union(*(_onto.function_types(l) for l in _ALL_LANGS))
+VARIABLE_TYPES: frozenset = frozenset().union(*(_onto.variable_types(l) for l in _ALL_LANGS))
+CONSTANT_TYPES: frozenset = frozenset().union(*(_onto.constant_types(l) for l in _ALL_LANGS))
 ANALYZABLE_NODE_TYPES = FUNCTION_TYPES | VARIABLE_TYPES | CONSTANT_TYPES
-SILENT_NODE_TYPES = _onto.silent_types("java")
+SILENT_NODE_TYPES: frozenset = frozenset().union(*(_onto.silent_types(l) for l in _ALL_LANGS))
 GRAPH_NODE_TYPES = MODULE_TYPES | FUNCTION_TYPES | VARIABLE_TYPES | CONSTANT_TYPES
 
 
@@ -277,7 +273,7 @@ class ModuleInfo:
 class StatementCollector:
     """AST를 후위순회하여 StatementNode와 클래스 정보를 수집."""
 
-    def __init__(self, antlr_data: Dict[str, Any], directory: str, file_name: str, source_content: str = "", lang: str = "java"):
+    def __init__(self, antlr_data: Dict[str, Any], directory: str, file_name: str, lang: str, source_content: str = ""):
         self.antlr_data = antlr_data
         self.directory = directory
         self.file_name = file_name
@@ -477,8 +473,8 @@ class FrameworkAstProcessor(BaseAstProcessor):
         directory: str,
         file_name: str,
         last_line: int,
+        lang: str,
         source_content: str = "",
-        lang: str = "java",
     ):
         super().__init__(
             antlr_data=antlr_data,

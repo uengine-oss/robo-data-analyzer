@@ -62,7 +62,7 @@ def parse_yaml_config(path: str) -> List[ConfigSectionChunk]:
         )
         return []
 
-    def walk(node, prefix: str = "", lc_getter=None):
+    def walk(node, prefix: str = ""):
         if hasattr(node, "lc") and hasattr(node.lc, "line"):
             line = node.lc.line
         else:
@@ -70,7 +70,7 @@ def parse_yaml_config(path: str) -> List[ConfigSectionChunk]:
         if isinstance(node, dict):
             for k, v in node.items():
                 key_path = f"{prefix}.{k}" if prefix else str(k)
-                walk(v, key_path, getattr(v, "lc", None))
+                walk(v, key_path)
                 if not isinstance(v, (dict, list)) or (isinstance(v, (dict, list)) and not v):
                     chunks_yaml.append(
                         ConfigSectionChunk(
@@ -83,7 +83,7 @@ def parse_yaml_config(path: str) -> List[ConfigSectionChunk]:
                     )
         elif isinstance(node, list):
             for i, v in enumerate(node):
-                walk(v, f"{prefix}[{i}]", getattr(v, "lc", None))
+                walk(v, f"{prefix}[{i}]")
 
     if isinstance(data, dict):
         walk(data)

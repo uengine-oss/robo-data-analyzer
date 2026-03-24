@@ -176,7 +176,7 @@ class PhaseTracker:
     def tick(self, count: int = 1) -> tuple[bytes, bytes]:
         """아이템 완료 — (message, phase_event) 튜플 반환. 메인 스레드에서만 호출."""
         step = self._steps[self._current_step_idx]
-        step["done"] += count
+        step["done"] = min(step["done"] + count, step["total"])
         progress = self._calc_progress()
         msg = emit_message(
             f"  ├─ [{step['done']}/{step['total']}] {step['name']} 처리 중..."
@@ -190,7 +190,7 @@ class PhaseTracker:
     def tick_quiet(self, count: int = 1) -> bytes:
         """아이템 완료 — phase_event만 반환 (메시지 없이 진행률만 업데이트)."""
         step = self._steps[self._current_step_idx]
-        step["done"] += count
+        step["done"] = min(step["done"] + count, step["total"])
         progress = self._calc_progress()
         return emit_phase_event(
             self.phase_num, self.phase_name, "in_progress", progress,

@@ -10,7 +10,7 @@ from .matcher import (  # noqa: F401
     has_external_entity_info,
 )
 from .call_graph import (  # noqa: F401
-    resolve_calls_and_uses, run_call_batch_pipeline,
+    run_call_batch_pipeline,
     derive_uses_from_calls,
     load_call_records_from_chunk_bundles,
 )

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -14,13 +13,7 @@ from config.settings import settings
 from analyzer.strategy.framework.models import (
     CallsEdge,
     UsesEdge,
-    FunctionFacts,
     ChunkBundle,
-    ChunkBundleFile,
-    ChunkBundleField,
-    ChunkBundleMethod,
-    ChunkBundleFunctionCall,
-    ChunkBundleVariable,
 )
 from analyzer.strategy.framework.linking.type_resolver import (
     TypeMap3Layer,
@@ -31,163 +24,12 @@ from analyzer.strategy.framework.linking.type_resolver import (
 )
 from util.text_utils import (
     calculate_code_token as estimate_tokens,
-    parse_java_params,  # backward compat alias; new code should use parse_params
-    parse_params,
 )
 from util.prompt_executor import get_rule_loader
 
 logger = logging.getLogger(__name__)
 
 
-def build_param_type_map_from_params(params: str, param_style: str = "type_name") -> Dict[str, str]:
-    """parameters 문자열에서 paramName → paramType 매핑 (범용)."""
-    return parse_params(params, param_style)
-
-
-def build_variable_map_for_module(
-    variable_facts_list: List[Any],
-    module_key: str,
-) -> Dict[str, str]:
-    """해당 모듈 변수명 → 타입 매핑."""
-    out: Dict[str, str] = {}
-    for f in variable_facts_list:
-        if getattr(f, "module_key", None) != module_key:
-            continue
-        name = getattr(f, "name", None)
-        ft = getattr(f, "variable_type", None)
-        if name and ft:
-            out[name] = ft
-    return out
-
-
-def _resolve_target_fqn(module_index: Dict[str, Any], target_module: str) -> str | None:
-    """target_module(단순명 또는 fqn) → module fqn. module_index에 fqn·단순명 둘 다 키로 있음."""
-    info = module_index.get(target_module)
-    if info and isinstance(info, dict):
-        return info.get("fqn") or info.get("module_key")
-    return None
-
-
-def _find_callee_function_id(
-    function_facts_list: List[FunctionFacts],
-    module_index: Dict[str, Any],
-    target_module: str,
-    function_name: str,
-) -> str | None:
-    """대상 module fqn + 함수명 → callee function_id. 첫 번째 매칭 반환."""
-    target_fqn = _resolve_target_fqn(module_index, target_module)
-    if not target_fqn or not function_name:
-        return None
-    for m in function_facts_list:
-        if not m.fqn:
-            continue
-        parts = m.fqn.rsplit(".", 1)
-        module_part = parts[0]
-        name_part = parts[-1]
-        if module_part == target_fqn and name_part == function_name:
-            return m.function_id
-    return None
-
-
-def resolve_calls_and_uses(
-    summary_by_function: Dict[str, Dict[str, Any]],
-    function_facts_list: List[FunctionFacts],
-    module_index: Dict[str, Any],
-    variable_facts_list: List[Any],
-) -> Tuple[List[CallsEdge], List[UsesEdge]]:
-    """Step6 LLM 결과에서 calls/dependencies 수집 → module_index·function_facts_list로 해상도 후 CallsEdge, UsesEdge 리스트 반환."""
-    logger.info("[FW:CALL_RESOLVE] 진입 | summary_methods=%d", len(summary_by_function))
-    calls_edges: List[CallsEdge] = []
-    uses_edges: List[UsesEdge] = []
-    function_by_id: Dict[str, FunctionFacts] = {m.function_id: m for m in function_facts_list}
-
-    for function_id, data in summary_by_function.items():
-        calls = data.get("calls") or []
-        dependencies = data.get("dependencies") or []
-        caller = function_by_id.get(function_id)
-        if not caller:
-            logger.info("[FW:CALL_RESOLVE] 스킵 | reason=caller_not_found function_id=%s", function_id)
-            continue
-        caller_module_fqn = function_id.rsplit(".", 1)[0] if "." in function_id else ""
-        param_type_map = build_param_type_map_from_params(caller.params or "")
-        variable_map = build_variable_map_for_module(variable_facts_list, caller.module_key or "")
-
-        # dependencies에서 local_type_map 구축 (LLM이 추출한 로컬 변수/파라미터 타입 정보)
-        local_type_map: Dict[str, str] = {}
-        for dep in dependencies:
-            if not isinstance(dep, dict):
-                continue
-            usage = (dep.get("usage") or "").strip()
-            target_mod = (dep.get("targetModule") or "").strip()
-            src_member = (dep.get("sourceMember") or "").strip()
-            if not target_mod:
-                continue
-            # local_new/local_var: sourceMember가 메서드명이므로 직접 매핑 안 됨
-            # 대신 targetModule 자체를 소문자 첫글자로 변환해서 추정
-            # ex) LoanApplication → loanApplication
-            if usage in ("local_new", "local_var") and target_mod[0].isupper():
-                inferred_var = target_mod[0].lower() + target_mod[1:]
-                local_type_map[inferred_var] = target_mod
-            # variable_call: sourceMember가 함수명, targetModule이 변수 타입
-            # variable_map에서 이미 처리됨
-
-        for call_expr in calls:
-            if not isinstance(call_expr, str) or "." not in call_expr:
-                continue
-            parts = call_expr.split(".", 1)
-            object_name = parts[0].strip()
-            function_name = (parts[1].strip() if len(parts) > 1 else "") or ""
-            if not object_name or not function_name:
-                continue
-            target_module = (
-                local_type_map.get(object_name)
-                or param_type_map.get(object_name)
-                or variable_map.get(object_name)
-            )
-            if not target_module and object_name and object_name[0].isupper():
-                target_module = object_name
-            if not target_module:
-                logger.debug("[FW:CALL_RESOLVE] 스킵 | reason=obj_type_unknown obj=%s call=%s", object_name, call_expr)
-                continue
-            callee_function_id = _find_callee_function_id(function_facts_list, module_index, target_module, function_name)
-            if callee_function_id:
-                calls_edges.append(CallsEdge(caller_function_id=function_id, callee_function_id=callee_function_id, call_code=call_expr))
-            else:
-                # 프로젝트 내 못 찾음 → external CALLS 생성
-                target_fqn_ext = _resolve_target_fqn(module_index, target_module)
-                if target_fqn_ext:
-                    # module_index에 있는데 메서드가 없음 (인터페이스 등) → internal unresolved, 스킵
-                    logger.debug("[FW:CALL_RESOLVE] 스킵 | reason=function_not_found_in_internal module=%s function=%s", target_module, function_name)
-                elif not _is_stdlib_module(target_module):
-                    # 표준 라이브러리가 아닌 외부 모듈 → external CALLS
-                    ext_callee_id = f"external:{target_module}#{function_name}"
-                    calls_edges.append(CallsEdge(
-                        caller_function_id=function_id, callee_function_id=ext_callee_id,
-                        call_code=call_expr, scope="external",
-                    ))
-            target_fqn = _resolve_target_fqn(module_index, target_module)
-            if target_fqn and caller_module_fqn and caller_module_fqn != target_fqn:
-                uses_edges.append(UsesEdge(from_fqn=caller_module_fqn, to_fqn=target_fqn))
-
-        for dep in dependencies:
-            target_module = dep.get("targetModule") if isinstance(dep, dict) else None
-            if not target_module or not caller_module_fqn:
-                continue
-            target_fqn = _resolve_target_fqn(module_index, target_module)
-            if target_fqn and caller_module_fqn != target_fqn:
-                uses_edges.append(UsesEdge(from_fqn=caller_module_fqn, to_fqn=target_fqn))
-
-    # 중복 제거 (같은 (from, to) 여러 번 나올 수 있음)
-    seen_uses: set[Tuple[str, str]] = set()
-    unique_uses: List[UsesEdge] = []
-    for e in uses_edges:
-        k = (e.from_fqn, e.to_fqn)
-        if k not in seen_uses:
-            seen_uses.add(k)
-            unique_uses.append(e)
-
-    logger.info("[FW:CALL_RESOLVE] 완료 | calls_edges=%d uses_edges=%d unique_uses=%d", len(calls_edges), len(uses_edges), len(unique_uses))
-    return calls_edges, unique_uses
 
 
 # call_code에서 receiver.functionName( 휴리스틱 추출
@@ -195,33 +37,18 @@ OBJ_METHOD_PATTERN = re.compile(r"(\w+)\s*\.\s*(\w+)\s*\(")
 # 객체 없이 functionName( 만 있는 경우 (같은 모듈 내부 호출)
 BARE_METHOD_PATTERN = re.compile(r"(?:^|=\s*)(\w+)\s*\(")
 
-def _load_java_stdlib() -> frozenset:
-    """java_stdlib.json에서 Java 표준 라이브러리 모듈명 로드."""
-    data_path = Path(__file__).resolve().parent.parent / "internal" / "java_stdlib.json"
-    try:
-        with open(data_path, encoding="utf-8") as f:
-            return frozenset(json.load(f))
-    except Exception as e:
-        logger.warning("[FW:CALL_BATCH] java_stdlib.json 로드 실패, 빈 set 사용: %s", e)
-        return frozenset()
-
-JAVA_STDLIB_CLASSES = _load_java_stdlib()  # backward compat
-
-
 def _load_stdlib(lang: str) -> frozenset:
     """lang_profile.yaml 기반 범용 stdlib 로드."""
     from analyzer.strategy.framework.common.lang_profile import get_lang_profile
     try:
         return get_lang_profile().stdlib_classes(lang)
     except Exception:
-        if lang == "java":
-            return JAVA_STDLIB_CLASSES
         return frozenset()
 
 
 # 현재 파이프라인 실행 중 사용할 stdlib 및 언어 (lang 파라미터로 동적 설정)
-_ACTIVE_STDLIB: frozenset = JAVA_STDLIB_CLASSES
-_ACTIVE_LANG: str = "java"
+_ACTIVE_STDLIB: frozenset = frozenset()
+_ACTIVE_LANG: str = ""
 
 
 def set_active_stdlib(lang: str) -> None:
@@ -254,7 +81,7 @@ def load_call_records_from_chunk_bundles(
                     "call_id": c.call_id,
                     "call_code": c.call_code,
                 })
-            for v in bundle.variables:
+            for v in bundle.local_vars:
                 if not v.flags or not v.flags.get("initializerContainsMethodCall"):
                     continue
                 function_id = v.parent_function_id
