@@ -497,6 +497,42 @@ def build_belongs_to_package_queries(module_index: Dict[str, Any]) -> List[Dict[
     return queries
 
 
+def build_root_package_queries(
+    package_fqns: List[str],
+    module_index: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """root PACKAGE 노드 생성 + 최상위 패키지/고아 MODULE 연결.
+
+    - root PACKAGE 노드 (fqn="root", name="root") 생성
+    - 부모가 없는 최상위 패키지 → BELONGS_TO_PACKAGE → root
+    - package_name이 없는 MODULE → BELONGS_TO_PACKAGE → root
+    """
+    queries: List[Dict[str, Any]] = []
+    # 1. root PACKAGE 노드 생성
+    queries.append(_merge_node_query("PACKAGE", "fqn", "root", {"name": "root"}))
+
+    # 2. 최상위 패키지 (fqn에 .이 없는) → root 연결
+    expanded = set(_expand_package_fqns(package_fqns))
+    for fqn in expanded:
+        if fqn and "." not in fqn:
+            queries.append(_merge_rel_query(
+                "PACKAGE", "fqn", fqn, "PACKAGE", "fqn", "root", "BELONGS_TO_PACKAGE",
+            ))
+
+    # 3. package_name이 없는 고아 MODULE → root 연결
+    for info in module_index.values():
+        if not isinstance(info, dict):
+            continue
+        fqn = info.get("fqn") or info.get("module_key")
+        pkg = info.get("package_name")
+        if fqn and not pkg:
+            queries.append(_merge_rel_query(
+                "MODULE", "fqn", fqn, "PACKAGE", "fqn", "root", "BELONGS_TO_PACKAGE",
+            ))
+
+    return queries
+
+
 def build_has_function_queries(
     function_facts_list: List[FunctionFacts],
     module_index: Dict[str, Any],

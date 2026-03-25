@@ -129,6 +129,7 @@ def run_step5(
     artifact_index: Optional[Dict[str, ArtifactChunk]] = None,
     artifact_chunks: Optional[List[ArtifactChunk]] = None,
     ddl_table_metadata: Optional[Dict[str, Any]] = None,
+    lang: str = "",
 ) -> Generator[Dict[str, Any], None, None]:
     """Step 5: 링킹 — 단계별로 결과를 yield.
 
@@ -334,6 +335,7 @@ def run_step5(
                 on_batch=lambda edges, unresolved: result_q.put(
                     ("call_batch", {"edges": edges, "unresolved": unresolved})
                 ),
+                lang=lang,
             )
         except Exception as ex:
             logger.warning("[FW:STEP5] Call LLM 스레드 예외: %s", ex)

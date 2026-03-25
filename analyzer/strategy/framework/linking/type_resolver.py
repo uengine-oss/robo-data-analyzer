@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from util.text_utils import parse_java_params
+from util.text_utils import parse_params
 
 
 @dataclass
@@ -74,19 +74,28 @@ def resolve_obj_to_type(
     return None
 
 
+_LANG_PARAM_STYLE = {
+    "python": "name_colon_type",
+    "kotlin": "name_colon_type",
+    "go": "name_type",
+}
+
+
 def build_type_map_3layer(
     symbol_type_index: Dict[str, Dict[str, str]],  # function_id -> {varName: type}
     variable_facts_list: List[Any],  # VariableFacts with module_key, name, variable_type
     function_facts_list: List[Any],  # FunctionFacts with function_id, module_key, params
     runtime_hint_by_function: Optional[Dict[str, Dict[str, str]]] = None,  # function_id -> {varName: implType}
+    lang: str = "",  # 언어 코드 (python, java, c, go 등)
 ) -> TypeMap3Layer:
     """symbol_type_index, VARIABLE, FUNCTION params로 3층 맵 구성. JSON 직렬화 가능."""
+    param_style = _LANG_PARAM_STYLE.get(lang, "type_name")
     type_map = TypeMap3Layer()
     # method_scope: symbol_type_index를 local로 사용
     for function_id, var_types in symbol_type_index.items():
         ms = MethodScopeMap(local=dict(var_types))
         type_map.method_scope[function_id] = ms
-    # params from function_facts (간단 파싱: "Type name, Type2 name2" -> param name -> type 휴리스틱)
+    # params from function_facts (언어별 파싱 스타일 적용)
     for m in function_facts_list:
         function_id = getattr(m, "function_id", None)
         if not function_id:
@@ -95,7 +104,7 @@ def build_type_map_3layer(
         if function_id not in type_map.method_scope:
             type_map.method_scope[function_id] = MethodScopeMap()
         ms = type_map.method_scope[function_id]
-        ms.param.update(parse_java_params(params_str))
+        ms.param.update(parse_params(params_str, param_style))
     # module_scope: variable_facts
     for f in variable_facts_list:
         module_key = getattr(f, "module_key", None)

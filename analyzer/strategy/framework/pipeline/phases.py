@@ -55,6 +55,7 @@ from analyzer.strategy.framework.graph.queries import (
     build_function_queries,
     build_variable_queries,
     build_belongs_to_package_queries,
+    build_root_package_queries,
     build_has_function_queries,
     build_has_variable_queries,
     _expand_package_fqns,
@@ -341,6 +342,15 @@ async def run_phase_ast(
         except Exception as e:
             logger.warning("[FW:PHASE1] Neo4j MODULE→PACKAGE 관계 반영 실패: %s", e)
 
+    # root PACKAGE 노드 + 최상위 패키지/고아 MODULE 연결
+    try:
+        root_queries = build_root_package_queries(package_fqns, module_index_ast)
+        if root_queries:
+            async for graph in run_graph_queries(client, root_queries, label="PHASE1:ROOT_PACKAGE"):
+                yield emit_data(graph=graph)
+    except Exception as e:
+        logger.warning("[FW:PHASE1] Neo4j root 패키지 반영 실패: %s", e)
+
     stats.total_nodes += len(function_facts_list) + len(variable_facts_list)
     yield emit_message(f"  └─ AST 완료 | 메서드 {len(function_facts_list)}개, 클래스 {len(module_index_ast)}개, 필드 {len(variable_facts_list)}개")
 
@@ -470,6 +480,7 @@ async def run_phase_llm(
         artifact_index=st.get("artifact_index"),
         artifact_chunks=st.get("artifact_chunks"),
         ddl_table_metadata=pipeline._pipeline_state.get("ddl_table_metadata"),
+        lang=st.get("lang", ""),
     ):
         stage = step_result["stage"]
 

@@ -2,7 +2,7 @@ roles:
   module:           # MODULE 역할 (Neo4j 라벨: MODULE) — 파일/클래스/구조체 등 컨테이너
     java:    [CLASS, INTERFACE, ENUM]
     c:       [FILE, STRUCT, UNION, ENUM]
-    python:  [CLASS]
+    python:  [CLASS, FILE]
     go:      [STRUCT, INTERFACE]
 
   function:         # FUNCTION 역할 (Neo4j 라벨: FUNCTION) — 메서드/함수/생성자

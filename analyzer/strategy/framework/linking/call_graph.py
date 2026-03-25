@@ -387,6 +387,7 @@ def run_call_batch_pipeline(
     api_key: Optional[str] = None,
     run_dir: Optional[str] = None,
     on_batch: Optional[Any] = None,
+    lang: str = "",
 ) -> Tuple[List[CallsEdge], List[Dict[str, Any]]]:
     """CallBatch 로드 → objName/functionName 추출(LLM 필수 시 RuleLoader, 없으면 휴리스틱) → Deterministic Link.
     on_batch 콜백: 각 LLM 배치 완료 시 (edges, unresolved) 전달.
@@ -407,7 +408,7 @@ def run_call_batch_pipeline(
         use_llm,
         bool(api_key),
     )
-    type_map = build_type_map_3layer(symbol_type_index, variable_facts_list, function_facts_list)
+    type_map = build_type_map_3layer(symbol_type_index, variable_facts_list, function_facts_list, lang=lang)
     m2c = method_to_module_map(function_facts_list)
     internal_module_fqns = set(function_index_by_module.keys())
     is_domain_module = lambda cn: bool(
