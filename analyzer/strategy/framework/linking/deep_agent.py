@@ -128,12 +128,24 @@ DTO/VO 시그널 (이것만 있으면 엔티티 아님):
 - 요청/응답 변환용 (Request, Response, DTO, VO 접미사)
 - 직렬화/역직렬화만 수행, DB 접근 없이 데이터 전달만
 
+[범위 제한 — 최우선 규칙]
+- 오직 이번에 주어진 후보 목록(또는 DDL 테이블 목록)에 포함된 항목만 분석하십시오.
+- 주어진 목록에 없는 클래스/테이블은 절대 분석하거나 엣지를 생성하지 마십시오.
+- 다른 항목은 별도 배치에서 처리됩니다. 범위를 절대 넘지 마십시오.
+
+[테이블명 규칙 — 중요]
+- DDL 테이블 목록이 주어진 경우: DDL에 정의된 테이블명을 그대로 사용하십시오.
+- DDL이 없는 경우: 엔티티로 식별한 클래스/구조체 이름 자체가 테이블명입니다.
+  예: Book 클래스 → table_name="Book", Member 클래스 → table_name="Member"
+  SQL문에서 발견한 DB 테이블명(books, members 등)은 무시하십시오.
+- 이름 변환(UPPER_SNAKE_CASE, 복수형 등)은 절대 하지 마십시오.
+
 [절대 규칙]
 - 오직 제공된 도구만 사용하십시오.
 - 확신이 없으면 엣지를 생성하지 마십시오.
 - bundle_search는 소스코드뿐 아니라 XML 정의, SQL 매핑도 검색합니다. 활용하세요.
-- 테이블명: DDL 테이블 목록이 주어지면 그 이름을 사용하고, DDL이 없으면 엔티티로 식별한 클래스/구조체 이름을 테이블명으로 사용하십시오. SQL문에서 발견한 실제 DB 테이블명(books, members 등)이 아니라 클래스명(Book, Member 등)을 사용하십시오.
 - graph_create_table_access_tool 호출 시 evidence에 테이블의 비즈니스 목적을 한 문장으로 기술하세요.
+- source_function_id는 주어진 후보 클래스의 메서드만 사용하십시오.
 - 자기 자신 테이블로의 FK(예: Bill.bill_id → Bill.bill_id)는 등록하지 마십시오.
 
 [도구]
@@ -164,26 +176,23 @@ DTO/VO 시그널 (이것만 있으면 엔티티 아님):
     procedure_candidates = """
 
 [절차]
-1) 각 클래스/구조체 이름으로 bundle_search → DB 접근 패턴 확인
-2) 엔티티→테이블 매핑과 사용 함수를 파악하면:
-   - graph_create_table_access_tool(table_name, "READS"/"WRITES", evidence, source_function_id)
+1) 주어진 후보 목록의 각 클래스/구조체에 대해서만 bundle_search → DB 접근 패턴 확인
+2) 엔티티로 판단되면 해당 클래스명을 table_name으로 사용하여 관계 등록:
+   - graph_create_table_access_tool(클래스명, "READS"/"WRITES", evidence, source_function_id)
+   - table_name은 반드시 주어진 후보의 클래스명 (예: Book, Member). SQL 테이블명(books, members) 사용 금지.
+   - source_function_id는 해당 테이블에 접근하는 함수의 FQN
 3) DTO/VO로 판단되면 아무것도 호출하지 않음
-4) 코드에서 테이블 간 데이터 흐름이 보이면 FK를 등록:
+4) 주어진 후보 간에 데이터 흐름이 보이면 FK를 등록:
    - 한 테이블 조회 결과를 다른 테이블 조회/삽입에 사용하는 패턴
    - 구조체 필드가 다른 테이블의 PK를 참조하는 패턴
-   - 함수가 여러 테이블을 순차 접근하며 데이터를 전달하는 패턴
-   → graph_create_fk_tool(from_table, from_column, to_table, to_column, evidence) 호출"""
+   → graph_create_fk_tool(from_table, from_column, to_table, to_column, evidence) 호출
+5) 주어진 목록 외의 클래스는 분석하지 마십시오"""
 
     efficiency = """
 
 [효율성]
 - 후보가 여러 개이면 먼저 bundle_search로 일괄 검색한 뒤,
-  유사한 사용 패턴을 가진 후보를 묶어서 처리하십시오.
-
-[범위 제한 — 중요]
-- 오직 이번에 주어진 후보 목록에 포함된 클래스/구조체만 분석하십시오.
-- 후보 목록에 없는 클래스는 절대 분석하거나 엣지를 생성하지 마십시오.
-- 다른 배치에서 별도로 처리됩니다. 범위를 넘지 마십시오."""
+  유사한 사용 패턴을 가진 후보를 묶어서 처리하십시오."""
 
     parts = [base]
     if has_ddl:
