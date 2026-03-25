@@ -182,11 +182,12 @@ DTO/VO 시그널 (이것만 있으면 엔티티 아님):
    - table_name은 반드시 주어진 후보의 클래스명 (예: Book, Member). SQL 테이블명(books, members) 사용 금지.
    - source_function_id는 해당 테이블에 접근하는 함수의 FQN
 3) DTO/VO로 판단되면 아무것도 호출하지 않음
-4) 주어진 후보 간에 데이터 흐름이 보이면 FK를 등록:
+4) 코드에서 테이블 간 데이터 흐름이 보이면 FK를 등록:
+   - FK는 주어진 후보 외의 테이블과도 연결 가능 (FK는 범위 제한 예외)
    - 한 테이블 조회 결과를 다른 테이블 조회/삽입에 사용하는 패턴
-   - 구조체 필드가 다른 테이블의 PK를 참조하는 패턴
+   - 구조체 필드가 다른 테이블의 PK를 참조하는 패턴 (예: member_id → Member.id)
    → graph_create_fk_tool(from_table, from_column, to_table, to_column, evidence) 호출
-5) 주어진 목록 외의 클래스는 분석하지 마십시오"""
+5) 엔티티 식별과 READS/WRITES 등록은 주어진 목록 내에서만, FK는 예외"""
 
     efficiency = """
 
