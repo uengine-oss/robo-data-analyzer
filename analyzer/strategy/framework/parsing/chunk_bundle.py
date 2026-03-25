@@ -375,7 +375,8 @@ def bundle_search(
         if not text:
             continue
         if kind == "symbol":
-            if query_lower in text.lower() or (query or "").strip() in text:
+            # chunk_id(FQN)에서도 검색 + 코드 텍스트에서도 검색
+            if query_lower in cid.lower() or query_lower in text.lower() or (query or "").strip() in text:
                 results.append({
                     "chunk_id": cid,
                     "filePath": info.get("filePath", ""),

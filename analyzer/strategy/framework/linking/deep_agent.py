@@ -793,7 +793,7 @@ def run_deep_agent_entity_identification(
         system_prompt=_build_entity_identification_system_prompt(has_ddl),
     )
 
-    _BATCH_SIZE = 20
+    _BATCH_SIZE = 5
 
     if has_ddl:
         # ── 시나리오 A: DDL 있음 → 테이블명 + FK 목록으로 코드 추적
