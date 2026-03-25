@@ -182,10 +182,14 @@ DTO/VO 시그널 (이것만 있으면 엔티티 아님):
    - table_name은 반드시 주어진 후보의 클래스명 (예: Book, Member). SQL 테이블명(books, members) 사용 금지.
    - source_function_id는 해당 테이블에 접근하는 함수의 FQN
 3) DTO/VO로 판단되면 아무것도 호출하지 않음
-4) 주어진 후보 간에 데이터 흐름이 보이면 FK를 등록:
-   - FK의 양쪽 테이블 모두 이번에 주어진 후보여야 함
-   - 한 테이블 조회 결과를 다른 테이블 조회/삽입에 사용하는 패턴
-   - 구조체 필드가 다른 테이블의 PK를 참조하는 패턴 (예: member_id → Member.id)
+4) 코드에서 FK 관계가 보이면 등록:
+   - FK의 양쪽 중 최소 한쪽은 이번에 주어진 후보여야 함
+   - 양쪽 모두 후보에 없는 FK는 등록하지 마십시오
+   - 예: 후보=[Order, Product]일 때
+     ✅ Order.product_id → Product.id (양쪽 다 후보)
+     ✅ Order.customer_id → Customer.id (Order가 후보)
+     ❌ Customer.grade_id → Grade.id (양쪽 다 후보 아님)
+   - 패턴: 조회 결과를 다른 테이블에 전달, 필드가 다른 테이블 PK 참조
    → graph_create_fk_tool(from_table, from_column, to_table, to_column, evidence) 호출"""
 
     efficiency = """
