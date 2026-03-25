@@ -810,21 +810,35 @@ def run_deep_agent_entity_identification(
         except Exception as ex:
             logger.warning("[FW:DEEPAGENT:ENTITY] invoke 실패 (ddl): %s", ex)
     else:
-        # ── 시나리오 B: DDL 없음 → 후보 배치로 엔티티 식별
-        logger.info("[FW:DEEPAGENT:ENTITY] scenario=candidates | 후보 %d개에서 엔티티 식별", len(candidates))
-        for i in range(0, max(len(candidates), 1), _BATCH_SIZE):
-            batch = candidates[i:i + _BATCH_SIZE]
+        # ── 시나리오 B: DDL 없음 → 후보 배치 병렬 엔티티 식별
+        batches = [candidates[i:i + _BATCH_SIZE] for i in range(0, max(len(candidates), 1), _BATCH_SIZE)]
+        logger.info("[FW:DEEPAGENT:ENTITY] scenario=candidates | 후보 %d개 → %d배치 병렬 식별", len(candidates), len(batches))
+
+        def _process_batch(batch_idx: int, batch: list) -> None:
+            batch_agent = create_deep_agent(
+                model=model, tools=tools,
+                system_prompt=_build_entity_identification_system_prompt(has_ddl),
+            )
             user_msg = _build_entity_id_user_message(candidates=batch)
             try:
-                agent.invoke({"messages": [{"role": "user", "content": user_msg}]})
+                batch_agent.invoke({"messages": [{"role": "user", "content": user_msg}]})
                 log_llm_interaction(
                     prompt_name="framework/deep_agent_entity_identification",
                     input_payload=user_msg,
                     output_payload={"table_access": len(table_collector)},
-                    metadata={"batch_start": i, "batch_size": len(batch)},
+                    metadata={"batch_start": batch_idx * _BATCH_SIZE, "batch_size": len(batch)},
                 )
             except Exception as ex:
-                logger.warning("[FW:DEEPAGENT:ENTITY] invoke 실패 batch=%d: %s", i, ex)
+                logger.warning("[FW:DEEPAGENT:ENTITY] invoke 실패 batch=%d: %s", batch_idx, ex)
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=min(len(batches), 4)) as executor:
+            futures = {executor.submit(_process_batch, idx, b): idx for idx, b in enumerate(batches)}
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as ex:
+                    logger.warning("[FW:DEEPAGENT:ENTITY] 배치 스레드 예외: %s", ex)
 
     logger.info("[FW:DEEPAGENT:ENTITY] 종료 | function_table_edges=%d fk_edges=%d", len(table_collector), len(fk_collector))
     return table_collector, fk_collector
