@@ -176,21 +176,26 @@ DTO/VO 시그널 (이것만 있으면 엔티티 아님):
     procedure_candidates = """
 
 [절차]
-1) 주어진 후보 목록의 각 클래스/구조체에 대해서만 bundle_search → DB 접근 패턴 확인
-2) 엔티티로 판단되면 해당 클래스명을 table_name으로 사용하여 관계 등록:
-   - graph_create_table_access_tool(클래스명, "READS"/"WRITES", evidence, source_function_id)
-   - table_name은 반드시 주어진 후보의 클래스명 (예: Book, Member). SQL 테이블명(books, members) 사용 금지.
-   - source_function_id는 해당 테이블에 접근하는 함수의 FQN
-3) DTO/VO로 판단되면 아무것도 호출하지 않음
-4) 코드에서 FK 관계가 보이면 등록:
+각 후보에 대해 아래를 순서대로, 빠짐없이 수행하십시오.
+
+1) 엔티티 판단: 후보 클래스의 코드를 bundle_search/bundle_get_chunk로 조회하여 DB 접근 패턴 확인
+   - 엔티티가 아니면(DTO/VO) 아무것도 하지 않고 다음 후보로 이동
+
+2) 엔티티로 확정되면 해당 테이블에 접근하는 모든 함수를 끝까지 추적:
+   a) 해당 클래스명(또는 관련 SQL 테이블명)으로 bundle_search → 이 테이블을 SELECT/INSERT/UPDATE/DELETE하는 함수를 모두 찾기
+   b) 찾은 각 함수의 코드를 bundle_get_chunk로 확인하여 READS인지 WRITES인지 판별
+   c) 함수 하나하나에 대해 graph_create_table_access_tool 호출 — 하나도 빠뜨리지 말 것
+   - table_name: 반드시 클래스명 (예: Book, Member). SQL 테이블명(books, members) 사용 금지
+   - source_function_id: 해당 함수의 FQN
+
+3) FK 관계 등록:
    - FK의 양쪽 중 최소 한쪽은 이번에 주어진 후보여야 함
    - 양쪽 모두 후보에 없는 FK는 등록하지 마십시오
    - 예: 후보=[Order, Product]일 때
      ✅ Order.product_id → Product.id (양쪽 다 후보)
      ✅ Order.customer_id → Customer.id (Order가 후보)
      ❌ Customer.grade_id → Grade.id (양쪽 다 후보 아님)
-   - 패턴: 조회 결과를 다른 테이블에 전달, 필드가 다른 테이블 PK 참조
-   → graph_create_fk_tool(from_table, from_column, to_table, to_column, evidence) 호출"""
+   → graph_create_fk_tool 호출"""
 
     efficiency = """
 
