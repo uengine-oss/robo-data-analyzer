@@ -114,10 +114,12 @@ def _build_entity_identification_system_prompt(has_ddl: bool) -> str:
 각 함수가 어떤 테이블을 읽거나 쓰는지 추적하는 전문가 에이전트입니다.
 
 [목표]
-주어진 클래스/구조체 후보(또는 DDL 테이블 목록)를 분석하여:
-1) 엔티티(DB 테이블에 매핑되는 클래스)를 식별
+주어진 후보를 분석하여:
+1) 엔티티(DB 테이블에 매핑되는 클래스/구조체)를 식별
 2) 해당 테이블에 접근하는 모든 함수를 찾아 READS/WRITES 관계 등록
 3) 테이블 간 FK 관계 등록
+
+주어진 후보 중 엔티티가 하나도 발견되지 않으면 아무것도 등록하지 말고 즉시 종료하십시오.
 
 [엔티티 판단 기준]
 코드를 확인하여 DB 테이블에 매핑되는 클래스/구조체인지 판단하십시오.
@@ -136,9 +138,8 @@ def _build_entity_identification_system_prompt(has_ddl: bool) -> str:
 - graph_create_fk_tool(from_table, from_column, to_table, to_column, evidence): FK 등록
 
 [규칙]
-- 엔티티 식별과 READS/WRITES 등록은 주어진 후보에 대해서만 수행
-- 후보에 없는 클래스를 새로 엔티티로 식별하거나 READS/WRITES를 등록하지 말 것
-- FK는 양쪽 중 최소 한쪽이 주어진 후보이면 등록 가능
+- 엔티티 식별과 READS/WRITES는 주어진 후보에 대해서만 수행. 후보에 없는 클래스를 새로 식별하지 말 것
+- FK는 양쪽 중 최소 한쪽이 주어진 후보이면 등록 가능. 양쪽 다 후보 밖이면 금지
 - 확신이 없으면 등록하지 말 것
 - 자기 자신 FK(예: A.id → A.id) 금지"""
 
@@ -149,10 +150,10 @@ def _build_entity_identification_system_prompt(has_ddl: bool) -> str:
     procedure_ddl = """
 
 [절차 — DDL 있음]
-테이블 목록이 주어집니다. 각 테이블에 대해:
+DDL 테이블 목록이 주어집니다. 각 테이블에 대해:
 1) 테이블명으로 bundle_search → 이 테이블을 사용하는 함수를 모두 찾기
 2) 각 함수의 코드를 bundle_get_chunk로 확인 → READS/WRITES 판별
-3) 빠짐없이 graph_create_table_access_tool 호출
+3) 빠짐없이 graph_create_table_access_tool 호출 (table_name은 DDL에 정의된 이름 그대로)
 4) 테이블 간 FK가 보이면 table_columns_tool로 검증 후 graph_create_fk_tool 호출"""
 
     procedure_candidates = """
@@ -167,17 +168,23 @@ def _build_entity_identification_system_prompt(has_ddl: bool) -> str:
 2) 엔티티 확정 → 해당 테이블을 사용하는 모든 함수를 끝까지 추적
    a) 해당 클래스명으로 bundle_search → 이 테이블을 사용하는 함수를 전수 탐색
    b) 각 함수의 코드를 bundle_get_chunk로 확인 → READS인지 WRITES인지 판별
-   c) 함수 하나하나에 대해 graph_create_table_access_tool 호출 (빠뜨리지 말 것)
-   - table_name: 클래스명 그대로 사용 (Book, Member 등). SQL 테이블명(books, members) 사용 금지
+   c) 직접 SQL뿐 아니라 간접 접근도 추적:
+      - 함수 A → 함수 B → 테이블 T 순서로 호출 체인이 이어지면, A와 B 모두 T에 대한 READS/WRITES로 등록
+      - 호출 체인을 끝까지 따라가서 최종적으로 테이블에 닿는 모든 함수를 빠짐없이 등록
+      - 예: A()가 B()를 호출, B()가 SELECT → A도 READS, B도 READS
+   d) 함수 하나하나에 대해 graph_create_table_access_tool 호출 (빠뜨리지 말 것)
+   - table_name: 클래스명 그대로 사용 (예: Book, Member). SQL 테이블명(books, members) 사용 금지. 이름 변환 금지.
    - source_function_id: 해당 함수의 FQN (후보 클래스의 메서드뿐 아니라 서비스 등 외부 함수도 포함)
 
 3) FK 등록
+   - 방향: from_table은 FK 컬럼을 가진 쪽, to_table은 참조되는 PK 쪽 (단방향만 등록, 역방향 금지)
    - 양쪽 중 최소 한쪽이 주어진 후보이면 등록
    - 양쪽 다 후보 밖이면 등록 금지
    - 예: 후보=[Order, Product]
-     ✅ Order.product_id → Product.id
-     ✅ Order.customer_id → Customer.id (Order가 후보)
-     ❌ Customer.grade_id → Grade.id (양쪽 다 후보 아님)"""
+     ✅ Order.product_id → Product.id (Order가 FK 보유)
+     ❌ Product.id → Order.product_id (역방향 — 등록 금지)
+
+모든 후보를 처리했으면 종료하십시오."""
 
     efficiency = ""
 
@@ -794,7 +801,7 @@ def run_deep_agent_entity_identification(
         system_prompt=_build_entity_identification_system_prompt(has_ddl),
     )
 
-    _BATCH_SIZE = 5
+    _BATCH_SIZE = 10
 
     if has_ddl:
         # ── 시나리오 A: DDL 있음 → 테이블명 + FK 목록으로 코드 추적
@@ -816,6 +823,9 @@ def run_deep_agent_entity_identification(
         logger.info("[FW:DEEPAGENT:ENTITY] scenario=candidates | 후보 %d개 → %d배치 병렬 식별", len(candidates), len(batches))
 
         def _process_batch(batch_idx: int, batch: list) -> None:
+            batch_names = [c.get("name", "?") for c in batch]
+            logger.info("[FW:DEEPAGENT:ENTITY] 배치 %d 시작 | 후보=%s", batch_idx, batch_names)
+            before_count = len(table_collector)
             batch_agent = create_deep_agent(
                 model=model, tools=tools,
                 system_prompt=_build_entity_identification_system_prompt(has_ddl),
@@ -831,6 +841,11 @@ def run_deep_agent_entity_identification(
                 )
             except Exception as ex:
                 logger.warning("[FW:DEEPAGENT:ENTITY] invoke 실패 batch=%d: %s", batch_idx, ex)
+            added = len(table_collector) - before_count
+            if added > 0:
+                logger.info("[FW:DEEPAGENT:ENTITY] 배치 %d 완료 | READS/WRITES +%d건", batch_idx, added)
+            else:
+                logger.info("[FW:DEEPAGENT:ENTITY] 배치 %d 완료 | 엔티티 식별 안 됨 (후보: %s)", batch_idx, batch_names)
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
         with ThreadPoolExecutor(max_workers=min(len(batches), 4)) as executor:
@@ -841,5 +856,14 @@ def run_deep_agent_entity_identification(
                 except Exception as ex:
                     logger.warning("[FW:DEEPAGENT:ENTITY] 배치 스레드 예외: %s", ex)
 
-    logger.info("[FW:DEEPAGENT:ENTITY] 종료 | function_table_edges=%d fk_edges=%d", len(table_collector), len(fk_collector))
+    # 결과 요약 로그
+    identified_tables = {e.table_name for e in table_collector if e.table_name}
+    if identified_tables:
+        logger.info(
+            "[FW:DEEPAGENT:ENTITY] 완료 | 식별된 엔티티=%d (%s) | READS/WRITES=%d FK=%d",
+            len(identified_tables), ", ".join(sorted(identified_tables)),
+            len(table_collector), len(fk_collector),
+        )
+    else:
+        logger.info("[FW:DEEPAGENT:ENTITY] 완료 | 엔티티 식별 안 됨 — 후보 %d개 중 엔티티 0개", len(candidates))
     return table_collector, fk_collector
