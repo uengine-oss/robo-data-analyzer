@@ -88,7 +88,6 @@ class StatementNode:
     context: Optional[str] = None  # 부모 컨텍스트 (자식 분석 시 전달됨)
     sibling_context: Optional[str] = None  # 이전 형제 컨텍스트
     ok: bool = True  # LLM 분석 성공 여부 (자식 실패 시 부모도 False)
-    external_refs: Optional[List[dict]] = None  # [{ "kind": str, "target": str }] - MyBatis/JPA/config 등 외부 참조
 
     # 비동기 이벤트
     completion_event: asyncio.Event = field(init=False, repr=False)

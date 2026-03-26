@@ -66,7 +66,6 @@ class StatementNode:
     context: Optional[str] = None
     sibling_context: Optional[str] = None
     ok: bool = True
-    external_refs: Optional[List[dict]] = None
     completion_event: asyncio.Event = field(init=False, repr=False)
     context_ready_event: asyncio.Event = field(init=False, repr=False)
 

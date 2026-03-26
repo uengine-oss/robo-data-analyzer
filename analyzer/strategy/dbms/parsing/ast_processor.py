@@ -503,14 +503,6 @@ class BaseAstProcessor(ABC):
             if not analysis:
                 return
             node.summary = analysis.get("summary") or ""
-            raw_refs = analysis.get("externalRefs")
-            if isinstance(raw_refs, list):
-                node.external_refs = [
-                    {"kind": str(r.get("kind", "")), "target": str(r.get("target", ""))}
-                    for r in raw_refs if isinstance(r, dict) and r.get("kind") and r.get("target")
-                ]
-            else:
-                node.external_refs = []
 
         # 일반적인 경우: llm_result가 dict이고 analysis 배열이 있음
         if isinstance(llm_result, dict):

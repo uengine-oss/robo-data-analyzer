@@ -52,7 +52,7 @@ prompt: |
   - 각 범위는 독립적으로 분석되어야 하며, 누락 또는 초과된 분석 결과는 허용되지 않음
   - 강제 검증 규칙:
      - analysis 각 요소는 startLine/endLine을 반드시 포함할 것 (정수)
-     - 값이 없으면 해당 필드는 다음 기본값을 사용: dependencies=[], calls=[], externalRefs=[]
+     - 값이 없으면 해당 필드는 다음 기본값을 사용: dependencies=[], calls=[]
      - null 사용 절대 금지. 빈값은 빈 배열([]) 또는 빈 객체({})로만 표현
      - 출력에 코드펜스(```), JSON 주석(//, /* */), 트레일링 콤마 포함 금지. 순수 JSON만 출력
      - **⚠️ CRITICAL: 트레일링 콤마(trailing comma) 절대 금지** - 배열이나 객체의 마지막 요소 뒤에 콤마(,)를 붙이지 마세요. 예: `"calls": []` (O), `"calls": [],` (X)
@@ -236,37 +236,6 @@ prompt: |
   ⚠️ 같은 범위 내에서 동일 호출이 여러 번 있으면 한 번만 포함
   
   
-  [SECTION_4_EXTERNAL_REFS]
-  ★ 외부 리소스 참조 추출 (externalRefs):
-  
-  코드에서 참조하는 외부 리소스(SQL 매핑, 설정 키, 엔티티 등)를 kind와 target으로 추출합니다.
-  클래스명/풀네임/패키지는 이미 주어지는 정보이므로 여기서 추론하지 마세요.
-
-  추출 형식: { "kind": string, "target": string }
-  - kind: 참조 종류 (아래 표준 kind만 사용)
-  - target: 해당 리소스의 식별자 문자열
-
-  kind별 추출 규칙:
-  - **sql_mapped**: SQL 매핑 프레임워크 호출에서 SQL 식별자 추출 (어떤 프레임워크든)
-    - MyBatis/iBatis: selectOne("..."), insert("...") 등의 문자열 인자
-    - Hibernate: createQuery("..."), createNativeQuery("...") 등
-    - target 예: "UserMapper.selectUser", "OrderMapper.insertOrder" (네임스페이스.문장ID)
-  - **inline_sql**: 코드 내 SQL 문자열에서 테이블명 추출 (언어 무관)
-    - 문자열 리터럴 안의 SQL 문(SELECT/INSERT/UPDATE/DELETE/CREATE 등)에서 테이블명을 추출
-    - Java JDBC: PreparedStatement, Statement.execute 등의 SQL 인자
-    - Python: cursor.execute(), sqlalchemy text() 등의 SQL 인자
-    - C: mysql_query(), sqlite3_exec(), PQexec() 등의 SQL 인자
-    - Go: db.Query(), db.Exec() 등의 SQL 인자
-    - target에는 "operation:TABLE_NAME" 형태로 작성 (operation = SELECT/INSERT/UPDATE/DELETE)
-    - target 예: "SELECT:users", "INSERT:orders", "UPDATE:products", "DELETE:sessions"
-    - 하나의 SQL에 여러 테이블이 있으면 각각 별도 항목으로 추출
-  - **config_key**: 설정 파일 키 참조
-    - @Value("${...}"), properties/yaml 키, Environment.getProperty("...") 등
-    - target 예: "app.datasource.url", "server.port"
-  
-  주의: calls 배열은 기존대로 다른 비즈니스 클래스 메서드 호출만 포함. externalRefs와 혼동하지 말 것.
-  해당하는 참조가 없으면 externalRefs는 빈 배열 [] 로 두세요.
-
 
   [SECTION_4B_VARIABLE_REFS]
   ★ 전역 변수/상수 참조 추출 (variableRefs):
@@ -345,7 +314,6 @@ prompt: |
           {"targetModule": "타겟모듈명", "sourceMember": "메서드명", "usage": "field_call|local_new|parameter|return|cast|generic|local_var", "relationType": "DEPENDENCY|COMPOSITION|AGGREGATION|ASSOCIATION"}
         ],{% else %}"dependencies": [],{% endif %}
         "calls": ["target.functionName", "target2.functionName2"],
-        "externalRefs": [{"kind": "sql_mapped|inline_sql|config_key", "target": "식별자문자열"}],
         "variableRefs": ["전역변수명", "상수명", "구조체필드명"],
         "tableInsights": [
           {"tableName": "테이블명", "description": "이 메서드 분석으로 파악된 테이블의 비즈니스 역할 (1~2문장)", "columns": [{"name": "컬럼명", "description": "이 메서드에서 파악된 컬럼 용도 (1문장)"}]}
@@ -370,9 +338,8 @@ prompt: |
   - "dependencies" 배열 요소는 객체 타입 (targetModule, sourceMember, usage, relationType 필드)
   - "calls" 배열 요소는 "target.functionName" 형태의 문자열
   - calls에는 오직 다른 비즈니스 클래스의 메서드 호출만 포함 (Java 표준 라이브러리 제외)
-  - "externalRefs" 배열 요소는 객체 타입 (kind, target 필드). 없거나 해당 없으면 []
   - analysis[i]에는 startLine, endLine, stereotype이 필수
-  - 값이 없으면 해당 필드는 dependencies=[], calls=[], externalRefs=[], variableRefs=[], tableInsights=[] 사용
+  - 값이 없으면 해당 필드는 dependencies=[], calls=[], variableRefs=[], tableInsights=[] 사용
   - "variableRefs" 배열 요소는 문자열 (전역변수/상수/필드 식별자명). 없으면 []
   - "tableInsights"는 컨텍스트에 테이블 접근(reads_writes, 연결된 SQL)이 있을 때만 내용을 채움. 없으면 반드시 []
   - 빈 배열도 허용되며 null 값은 사용 금지
