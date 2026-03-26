@@ -117,23 +117,6 @@ class PathConfig:
 
 
 @dataclass(frozen=True)
-class MetadataEnrichmentConfig:
-    """메타데이터 보강 설정 (Text2SQL 기반)"""
-    # Text2SQL API 설정
-    text2sql_api_url: str = field(default_factory=lambda: os.getenv("TEXT2SQL_API_URL", ""))
-    
-    # FK 추론 설정
-    fk_inference_enabled: bool = field(default_factory=lambda: os.getenv("FK_INFERENCE_ENABLED", "true").lower() == "true")
-    fk_sample_size: int = field(default_factory=lambda: int(os.getenv("FK_SAMPLE_SIZE", "25")))
-    fk_similarity_threshold: float = field(default_factory=lambda: float(os.getenv("FK_SIMILARITY_THRESHOLD", "0.8")))
-    fk_match_ratio_threshold: float = field(default_factory=lambda: float(os.getenv("FK_MATCH_RATIO_THRESHOLD", "0.8")))
-    fk_concurrency: int = field(default_factory=lambda: int(os.getenv("FK_CONCURRENCY", "5")))
-    # HTTP 타임아웃
-    timeout_connect: int = field(default_factory=lambda: int(os.getenv("METADATA_TIMEOUT_CONNECT", "5")))
-    timeout_request: int = field(default_factory=lambda: int(os.getenv("METADATA_TIMEOUT_REQUEST", "30")))
-
-
-@dataclass(frozen=True)
 class PipelineFeatureConfig:
     """파이프라인 기능 토글"""
     # 스테레오타입 분류 Phase (Phase 2.5) 활성화 여부
@@ -148,7 +131,6 @@ class AnalyzerConfig:
     concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
     batch: BatchConfig = field(default_factory=BatchConfig)
     path: PathConfig = field(default_factory=PathConfig)
-    metadata_enrichment: MetadataEnrichmentConfig = field(default_factory=MetadataEnrichmentConfig)
     feature: PipelineFeatureConfig = field(default_factory=PipelineFeatureConfig)
     
     # 버전

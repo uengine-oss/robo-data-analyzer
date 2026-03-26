@@ -1,3 +1,4 @@
+# NOTE: MetadataEnrichmentService는 robo-data-catalog으로 이동. 이 테스트는 catalog 환경에서 실행해야 함.
 """메타데이터 보강 테스트 스크립트
 
 Text2SQL API를 통해 샘플 데이터를 조회하고,
@@ -111,7 +112,7 @@ async def main():
         print("❌ 오류: LLM_API_KEY 또는 OPENAI_API_KEY 환경변수가 설정되지 않았습니다.")
         return
     
-    text2sql_url = settings.metadata_enrichment.text2sql_api_url
+    text2sql_url = os.getenv("TEXT2SQL_API_URL", "")
     if not text2sql_url:
         print("❌ 오류: TEXT2SQL_API_URL 환경변수가 설정되지 않았습니다.")
         print("   .env 파일에 TEXT2SQL_API_URL=http://localhost:8000 을 추가하세요.")
@@ -360,7 +361,7 @@ async def main():
         if not fk_inference_messages:
             print("  ⚠️ FK 관계 추론 관련 메시지가 없습니다.")
             print(f"     - orchestrator.infer_fk_relations: {getattr(orchestrator, 'infer_fk_relations', '없음')}")
-            print(f"     - settings.fk_inference_enabled: {settings.metadata_enrichment.fk_inference_enabled}")
+            print(f"     - settings.fk_inference_enabled: {os.getenv("FK_INFERENCE_ENABLED", "true").lower() == "true"}")
     except Exception as e:
         print(f"❌ 메타데이터 보강 실패: {e}")
         import traceback

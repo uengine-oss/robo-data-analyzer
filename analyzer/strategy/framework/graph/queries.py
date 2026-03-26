@@ -96,17 +96,6 @@ def _module_fqn_and_function_name(fqn: Optional[str]) -> tuple[str, str]:
     return parts[0], parts[1]
 
 
-def _module_key_to_fqn(module_index: Dict[str, Any]) -> Dict[str, str]:
-    """module_key -> fqn 매핑."""
-    out = {}
-    for info in module_index.values():
-        if not isinstance(info, dict):
-            continue
-        key = info.get("module_key")
-        fqn = info.get("fqn")
-        if key and fqn:
-            out[key] = fqn
-    return out
 
 
 def _expand_package_fqns(package_fqns: List[str]) -> List[str]:
@@ -160,7 +149,7 @@ def _target_fqn_from_module_index(module_index: Dict[str, Any], target_name: str
 # --- 2-1. 코드 엔티티 노드 (FUNCTION, MODULE, PACKAGE, VARIABLE) ---
 
 def build_function_queries(function_facts_list: List[FunctionFacts], node_kinds: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
-    """Method 노드 MERGE. framework와 동일 속성: name(메서드명), module_name(모듈 짧은이름), module_fqn, type 등.
+    """Method 노드 MERGE. 속성: name(메서드명), module_name(소속 모듈 짧은이름), module_key(소속 모듈 fqn) 등.
 
     Args:
         node_kinds: function_id → 원래 노드타입 (FUNCTION, METHOD 등) 매핑. kind 속성에 저장.
@@ -187,7 +176,7 @@ def build_function_queries(function_facts_list: List[FunctionFacts], node_kinds:
 
 
 def build_module_queries(module_index: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """MODULE 노드 MERGE. framework와 동일 속성: module_name, name, type, package_name, fqn."""
+    """MODULE 노드 MERGE. 속성: fqn, name, type, package_name."""
     queries = []
     for info in module_index.values():
         if not isinstance(info, dict):
@@ -200,8 +189,7 @@ def build_module_queries(module_index: Dict[str, Any]) -> List[Dict[str, Any]]:
             name = _extract_short_name(fqn)
         kind = info.get("kind", "")
         queries.append(_merge_node_query("MODULE", "fqn", fqn, {
-            "module_key": info.get("module_key", fqn), "name": name,
-            "module_name": name, "type": kind,
+            "name": name, "type": kind,
             "package_name": info.get("package_name") or "",
         }, sub_label=kind))
     return queries
@@ -538,10 +526,9 @@ def build_has_function_queries(
     module_index: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
     """(MODULE)-[:HAS_FUNCTION]->(FUNCTION) 또는 (PACKAGE)-[:BELONGS_TO_PACKAGE]->(FUNCTION) 관계."""
-    key_to_fqn = _module_key_to_fqn(module_index)
     queries = []
     for m in function_facts_list:
-        module_fqn = key_to_fqn.get(m.module_key) if m.module_key else None
+        module_fqn = m.module_key if m.module_key else None
         if module_fqn:
             # 컨테이너 있음: MODULE → FUNCTION
             queries.append(_merge_rel_query("MODULE", "fqn", module_fqn, "FUNCTION", "function_id", m.function_id, "HAS_FUNCTION"))
@@ -556,10 +543,9 @@ def build_has_variable_queries(
     module_index: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
     """(MODULE)-[:HAS_VARIABLE]->(VARIABLE) 관계."""
-    key_to_fqn = _module_key_to_fqn(module_index)
     queries = []
     for f in variable_facts_list:
-        module_fqn = key_to_fqn.get(f.module_key)
+        module_fqn = f.module_key
         if not module_fqn:
             continue
         queries.append(_merge_rel_query("MODULE", "fqn", module_fqn, "VARIABLE", "variable_id", f.variable_id, "HAS_VARIABLE"))
@@ -1124,8 +1110,8 @@ def build_calls_queries(edges: List[CallsEdge]) -> List[Dict[str, Any]]:
                 "UNWIND $rows AS row\n"
                 "MATCH (a:FUNCTION)\n"
                 "WHERE a.module_name = row.caller_module_name AND a.name = row.caller_function_name\n"
-                "MERGE (ec:MODULE:CLASS:EXTERNAL {module_name: row.callee_module_name})\n"
-                "ON CREATE SET ec.name = row.callee_module_name, ec.created_at = timestamp()\n"
+                "MERGE (ec:MODULE:CLASS:EXTERNAL {name: row.callee_module_name})\n"
+                "ON CREATE SET ec.created_at = timestamp()\n"
                 "ON MATCH SET ec.updated_at = timestamp()\n"
                 "MERGE (b:FUNCTION:METHOD:EXTERNAL {function_id: row.callee_function_id})\n"
                 "ON CREATE SET b.created_at = timestamp(), b.module_name = row.callee_module_name, b.name = row.callee_function_name\n"
@@ -1165,9 +1151,9 @@ def build_uses_queries(edges: List[UsesEdge]) -> List[Dict[str, Any]]:
             "query": (
                 "UNWIND $rows AS row\n"
                 "MATCH (a:MODULE)\n"
-                "WHERE a.module_name = row.from_module_name\n"
+                "WHERE a.name = row.from_module_name\n"
                 "MATCH (b:MODULE)\n"
-                "WHERE b.module_name = row.to_module_name\n"
+                "WHERE b.name = row.to_module_name\n"
                 "With a, b\n"
                 "WHERE a <> b\n"
                 "MERGE (a)-[r:USES]->(b)\n"
@@ -1182,9 +1168,9 @@ def build_uses_queries(edges: List[UsesEdge]) -> List[Dict[str, Any]]:
             "query": (
                 "UNWIND $rows AS row\n"
                 "MATCH (a:MODULE)\n"
-                "WHERE a.module_name = row.from_module_name\n"
-                "MERGE (b:MODULE:CLASS:EXTERNAL {module_name: row.to_module_name})\n"
-                "ON CREATE SET b.name = row.to_module_name\n"
+                "WHERE a.name = row.from_module_name\n"
+                "MERGE (b:MODULE:CLASS:EXTERNAL {name: row.to_module_name})\n"
+                "ON CREATE SET b.created_at = timestamp()\n"
                 "With a, b\n"
                 "WHERE a <> b\n"
                 "MERGE (a)-[r:USES]->(b)\n"
@@ -1218,8 +1204,8 @@ def build_uml_inheritance_queries(module_index: Dict[str, Any]) -> List[Dict[str
         "ON CREATE SET src.created_at = timestamp()\n"
         "ON MATCH SET src.updated_at = timestamp()\n"
         "WITH src\n"
-        "MERGE (t:MODULE:CLASS:EXTERNAL {module_name: $target_module_name})\n"
-        "ON CREATE SET t.name = $target_module_name, t.created_at = timestamp()\n"
+        "MERGE (t:MODULE:CLASS:EXTERNAL {name: $target_module_name})\n"
+        "ON CREATE SET t.created_at = timestamp()\n"
         "ON MATCH SET t.updated_at = timestamp()\n"
         "MERGE (src)-[:{}]->(t)\n"
         "RETURN 1"
@@ -1260,11 +1246,8 @@ def build_uml_association_queries(
 ) -> List[Dict[str, Any]]:
     """모듈별 fieldRelations(LLM association 결과)로 (MODULE)-[:ASSOCIATION]->(MODULE) 쿼리 생성."""
     queries: List[Dict[str, Any]] = []
-    key_to_fqn = _module_key_to_fqn(module_index)
     for module_key_or_fqn, member_relations in (variable_relations_by_module or {}).items():
-        source_fqn = key_to_fqn.get(module_key_or_fqn) or (
-            module_index.get(module_key_or_fqn, {}).get("fqn") if isinstance(module_index.get(module_key_or_fqn), dict) else module_key_or_fqn
-        )
+        source_fqn = module_key_or_fqn
         if not source_fqn:
             continue
         for rel in member_relations or []:
@@ -1288,8 +1271,8 @@ def build_uml_association_queries(
             else:
                 q = (
                     "MATCH (src:MODULE {fqn: $source_fqn})\n"
-                    "MERGE (t:MODULE:CLASS:EXTERNAL {module_name: $target_module_name})\n"
-                    "ON CREATE SET t.name = $target_module_name, t.created_at = timestamp()\n"
+                    "MERGE (t:MODULE:CLASS:EXTERNAL {name: $target_module_name})\n"
+                    "ON CREATE SET t.created_at = timestamp()\n"
                     "ON MATCH SET t.updated_at = timestamp()\n"
                     "MERGE (src)-[r:ASSOCIATION {member: $member_name, multiplicity: $multiplicity}]->(t)\n"
                     "RETURN r"
@@ -1310,13 +1293,12 @@ def build_uml_dependency_queries(
 
     UNWIND 배치: (rel_type, internal/external) 조합별로 그룹화하여 최소 쿼리 수로 실행.
     """
-    key_to_fqn = _module_key_to_fqn(module_index)
     method_id_to_module_fqn: Dict[str, str] = {}
     for m in function_facts_list or []:
         mid = getattr(m, "function_id", None)
         if not mid:
             continue
-        module_fqn = key_to_fqn.get(getattr(m, "module_key", ""))
+        module_fqn = getattr(m, "module_key", "")
         if module_fqn:
             method_id_to_module_fqn[mid] = module_fqn
 
@@ -1384,8 +1366,8 @@ def build_uml_dependency_queries(
                 q = (
                     "UNWIND $rows AS row\n"
                     "MATCH (src:MODULE {fqn: row.source_fqn})\n"
-                    "MERGE (t:MODULE:CLASS:EXTERNAL {module_name: row.target_module_name})\n"
-                    "ON CREATE SET t.name = row.target_module_name, t.created_at = timestamp()\n"
+                    "MERGE (t:MODULE:CLASS:EXTERNAL {name: row.target_module_name})\n"
+                    "ON CREATE SET t.created_at = timestamp()\n"
                     "ON MATCH SET t.updated_at = timestamp()\n"
                     "MERGE (src)-[r:DEPENDENCY {source_member: row.source_member, usage: row.usage}]->(t)\n"
                     "ON CREATE SET r.created_at = timestamp()\n"
@@ -1396,8 +1378,8 @@ def build_uml_dependency_queries(
                 q = (
                     "UNWIND $rows AS row\n"
                     "MATCH (src:MODULE {fqn: row.source_fqn})\n"
-                    "MERGE (t:MODULE:CLASS:EXTERNAL {module_name: row.target_module_name})\n"
-                    "ON CREATE SET t.name = row.target_module_name, t.created_at = timestamp()\n"
+                    "MERGE (t:MODULE:CLASS:EXTERNAL {name: row.target_module_name})\n"
+                    "ON CREATE SET t.created_at = timestamp()\n"
                     "ON MATCH SET t.updated_at = timestamp()\n"
                     f"MERGE (src)-[r:{rel_type} {{source_member: row.source_member}}]->(t)\n"
                     "ON CREATE SET r.created_at = timestamp()\n"

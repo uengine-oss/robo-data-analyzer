@@ -23,7 +23,7 @@ def get_pipeline_status() -> dict:
     return pipeline_controller.get_status()
 
 
-def get_pipeline_phases_info() -> dict:
+def get_pipeline_phases_info() -> list:
     """파이프라인 단계 정보 조회
     
     Returns:

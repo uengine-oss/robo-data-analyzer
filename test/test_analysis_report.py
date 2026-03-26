@@ -28,19 +28,18 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from client.neo4j_client import Neo4jClient
 from config.settings import settings
-from service.graph_query_service import (
-    _discover_vector_property_keys,
-    _build_null_projection_suffix,
-    _sanitize_graph_properties,
-)
 from analyzer.report import generate_analysis_report_from_graph
+
+
+def _filter_props(props: dict) -> dict:
+    return {k: v for k, v in (props or {}).items()
+            if not (isinstance(v, list) and len(v) > 64)}
 
 
 async def run_report_test():
     """Neo4j에서 그래프를 조회하고 분석 보고서를 생성합니다."""
     client = Neo4jClient()
     try:
-        # 1. 노드 존재 여부 확인
         count_result = await client.execute_queries([
             "MATCH (__cy_n__) RETURN count(__cy_n__) AS cnt"
         ])
@@ -53,25 +52,19 @@ async def run_report_test():
             print("  ❌ Neo4j에 데이터가 없습니다. 파이프라인을 먼저 실행하세요.")
             return
 
-        # 2. 벡터 속성 키 조회 (제외용)
-        vector_keys = await _discover_vector_property_keys(client)
-        null_suffix = _build_null_projection_suffix(vector_keys)
-        print(f"  벡터 속성 키: {vector_keys or '없음'}")
-
-        # 3. 전체 노드 조회
-        node_query = f"""
+        node_query = """
             MATCH (__cy_n__)
             RETURN elementId(__cy_n__) AS nodeId,
                    labels(__cy_n__) AS labels,
-                   __cy_n__{{.*{null_suffix}}} AS props
+                   properties(__cy_n__) AS props
         """
-        rel_query = f"""
+        rel_query = """
             MATCH (__cy_a__)-[__cy_r__]->(__cy_b__)
             RETURN elementId(__cy_r__) AS relId,
                    elementId(__cy_a__) AS startId,
                    elementId(__cy_b__) AS endId,
                    type(__cy_r__) AS relType,
-                   __cy_r__{{.*{null_suffix}}} AS props
+                   properties(__cy_r__) AS props
         """
 
         print("  Neo4j 그래프 조회 중...")
@@ -82,22 +75,20 @@ async def run_report_test():
         # 4. dict 변환
         nodes = []
         for rec in node_result:
-            props = _sanitize_graph_properties(rec.get("props") or {})
             nodes.append({
                 "Node ID": rec["nodeId"],
                 "Labels": rec["labels"],
-                "Properties": props,
+                "Properties": _filter_props(rec.get("props")),
             })
 
         relationships = []
         for rec in rel_result:
-            props = _sanitize_graph_properties(rec.get("props") or {})
             relationships.append({
                 "Relationship ID": rec["relId"],
                 "Start Node ID": rec["startId"],
                 "End Node ID": rec["endId"],
                 "Type": rec["relType"],
-                "Properties": props,
+                "Properties": _filter_props(rec.get("props")),
             })
 
         graph_data = {"Nodes": nodes, "Relationships": relationships}

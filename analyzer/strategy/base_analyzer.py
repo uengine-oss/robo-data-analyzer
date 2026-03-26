@@ -238,28 +238,19 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
 
         전략(Framework/DBMS)은 그래프 내용에서 자동 감지합니다.
         """
-        from service.graph_query_service import (
-            _discover_vector_property_keys,
-            _build_null_projection_suffix,
-            _sanitize_graph_properties,
-        )
-
-        vector_keys = await _discover_vector_property_keys(client)
-        null_suffix = _build_null_projection_suffix(vector_keys)
-
-        node_query = f"""
+        node_query = """
             MATCH (__cy_n__)
             RETURN elementId(__cy_n__) AS nodeId,
                    labels(__cy_n__) AS labels,
-                   __cy_n__{{.*{null_suffix}}} AS props
+                   properties(__cy_n__) AS props
         """
-        rel_query = f"""
+        rel_query = """
             MATCH (__cy_a__)-[__cy_r__]->(__cy_b__)
             RETURN elementId(__cy_r__) AS relId,
                    elementId(__cy_a__) AS startId,
                    elementId(__cy_b__) AS endId,
                    type(__cy_r__) AS relType,
-                   __cy_r__{{.*{null_suffix}}} AS props
+                   properties(__cy_r__) AS props
         """
 
         results = await client.execute_queries([node_query, rel_query])
@@ -269,24 +260,26 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
         if not node_result:
             return None
 
+        def _filter_props(props: dict) -> dict:
+            return {k: v for k, v in (props or {}).items()
+                    if not (isinstance(v, list) and len(v) > 64)}
+
         nodes = []
         for rec in node_result:
-            props = _sanitize_graph_properties(rec.get("props") or {})
             nodes.append({
                 "Node ID": rec["nodeId"],
                 "Labels": rec["labels"],
-                "Properties": props,
+                "Properties": _filter_props(rec.get("props")),
             })
 
         relationships = []
         for rec in rel_result:
-            props = _sanitize_graph_properties(rec.get("props") or {})
             relationships.append({
                 "Relationship ID": rec["relId"],
                 "Start Node ID": rec["startId"],
                 "End Node ID": rec["endId"],
                 "Type": rec["relType"],
-                "Properties": props,
+                "Properties": _filter_props(rec.get("props")),
             })
 
         graph_data = {"Nodes": nodes, "Relationships": relationships}

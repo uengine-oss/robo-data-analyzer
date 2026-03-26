@@ -5,7 +5,6 @@ API 요청에서 헤더 정보를 추출하는 유틸리티 함수들입니다.
 
 from fastapi import HTTPException, Request
 
-from config.settings import settings
 
 
 def extract_api_key(request: Request, missing_status: int = 401) -> str:

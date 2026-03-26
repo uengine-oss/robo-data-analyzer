@@ -852,17 +852,6 @@ def run_variable_summary(
     logger.info("[FW:STEP6] Variable 요약 완료 | summary_count=%d", total_yielded)
 
 
-def _module_key_to_fqn(module_index: Dict[str, Any]) -> Dict[str, str]:
-    """module_index에서 module_key -> fqn 매핑."""
-    out: Dict[str, str] = {}
-    for info in module_index.values() if module_index else []:
-        if not isinstance(info, dict):
-            continue
-        key = info.get("module_key")
-        fqn = info.get("fqn")
-        if key and fqn:
-            out[key] = fqn
-    return out
 
 
 def _invoke_module_summary_llm(
@@ -918,8 +907,6 @@ def run_module_summary(
     """모듈별 요약 — 모듈 완료 즉시 yield."""
     api_key = api_key or settings.llm.api_key or os.getenv("LLM_API_KEY", "")
     module_key_index = _build_module_key_index(module_index or {})
-    key_to_fqn = _module_key_to_fqn(module_index)
-
     # module_key → kind 매핑 (FILE, STRUCT, CLASS 등)
     key_to_kind: Dict[str, str] = {}
     for info in (module_index or {}).values():
@@ -949,7 +936,7 @@ def run_module_summary(
 
     def _summarize_one_module(module_key: str, items: List[Dict[str, Any]]) -> Tuple[str, str, str]:
         """단일 모듈 요약 — 스레드 안전. (module_fqn, summary, moduleStereotype) 반환."""
-        module_fqn = key_to_fqn.get(module_key) or module_key
+        module_fqn = module_key
         if not items:
             return module_fqn, "", ""
         module_comment, module_annotations = _get_module_context(module_key_index, module_key)
@@ -1006,7 +993,7 @@ def run_module_summary(
                     module_fqn, summary, module_stereotype = future.result()
                 except Exception as e:
                     ck = futures[future]
-                    module_fqn = key_to_fqn.get(ck) or ck
+                    module_fqn = ck
                     summary = ""
                     module_stereotype = ""
                     logger.warning("[FW:STEP6] Module 요약 예외 module=%s: %s", module_fqn, e)
