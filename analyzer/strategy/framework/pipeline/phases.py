@@ -1092,3 +1092,19 @@ async def run_phase_post(
         f"필드요약 {len(summary_by_variable)}개, 클래스요약 {len(summary_by_module)}개, "
         f"테이블보강 {enriched_table_count}개"
     )
+
+    # --- catalog 서비스에 메타데이터 보강 트리거 (fire-and-forget) ---
+    datasource_name = getattr(orchestrator, "datasource_name", "")
+    if datasource_name:
+        try:
+            import aiohttp
+            catalog_url = os.environ.get("CATALOG_SERVICE_URL", "http://localhost:5503")
+            async with aiohttp.ClientSession() as _session:
+                await _session.post(
+                    f"{catalog_url}/robo/schema/enrich-metadata",
+                    json={"datasource_name": datasource_name},
+                    timeout=aiohttp.ClientTimeout(total=5),
+                )
+            logger.info("[FW:PHASE3] catalog 메타데이터 보강 트리거 전송 완료")
+        except Exception as e:
+            logger.warning("[FW:PHASE3] catalog 보강 트리거 실패 (무시): %s", e)

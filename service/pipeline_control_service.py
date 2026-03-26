@@ -10,7 +10,7 @@
 
 from fastapi import HTTPException
 
-from analyzer.pipeline_control import pipeline_controller, PipelineAction
+from analyzer.pipeline_control import pipeline_controller
 
 
 def get_pipeline_status() -> dict:
