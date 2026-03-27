@@ -88,7 +88,7 @@ from analyzer.strategy.framework.graph.queries import (
     build_fk_to_table_queries,
     build_fk_to_column_queries,
 )
-from analyzer.strategy.framework.graph.writer import run_graph_queries
+from analyzer.common.graph_writer import run_graph_queries
 from analyzer.strategy.framework.linking.deep_agent import run_deep_agent, run_deep_agent_entity_identification
 from analyzer.strategy.framework.linking.matcher import has_external_entity_info
 

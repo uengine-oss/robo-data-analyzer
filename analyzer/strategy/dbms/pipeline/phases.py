@@ -28,6 +28,7 @@ from util.ndjson_stream import (
     emit_phase_event,
 )
 from util.logger import log_process
+from analyzer.common.graph_writer import run_graph_queries_collect
 
 
 # ========== Phase 0: DDL ==========
@@ -141,15 +142,7 @@ async def run_phase_ast(
                 queries = processor.build_static_graph_queries()
 
                 if queries:
-                    all_nodes = {}
-                    all_relationships = {}
-                    async with pipeline._cypher_lock:
-                        async for batch_result in client.run_graph_query(queries):
-                            for node in batch_result.get("Nodes", []):
-                                all_nodes[node["Node ID"]] = node
-                            for rel in batch_result.get("Relationships", []):
-                                all_relationships[rel["Relationship ID"]] = rel
-                    graph = {"Nodes": list(all_nodes.values()), "Relationships": list(all_relationships.values())}
+                    graph = await run_graph_queries_collect(client, queries, cypher_lock=pipeline._cypher_lock)
                     node_count = len(graph.get("Nodes", []))
                     rel_count = len(graph.get("Relationships", []))
                     ctx.status = FileStatus.PH1_OK
@@ -267,22 +260,19 @@ async def run_phase_llm(
                 async def on_queries_ready(queries, batch_id, total_batches):
                     if not queries:
                         return
-                    async with pipeline._cypher_lock:
-                        async for batch_result in client.run_graph_query(queries):
-                            for node in batch_result.get("Nodes", []):
-                                all_nodes[node["Node ID"]] = node
-                            for rel in batch_result.get("Relationships", []):
-                                all_relationships[rel["Relationship ID"]] = rel
-                            await results_queue.put({
-                                "type": "batch_progress",
-                                "file": ctx.file_name,
-                                "batch_id": batch_id,
-                                "total_batches": total_batches,
-                                "graph": {
-                                    "Nodes": batch_result.get("Nodes", []),
-                                    "Relationships": batch_result.get("Relationships", []),
-                                },
-                            })
+                    from analyzer.common.graph_writer import run_graph_queries
+                    async for batch in run_graph_queries(client, queries, cypher_lock=pipeline._cypher_lock):
+                        for node in batch.get("Nodes", []):
+                            all_nodes[node["Node ID"]] = node
+                        for rel in batch.get("Relationships", []):
+                            all_relationships[rel["Relationship ID"]] = rel
+                        await results_queue.put({
+                            "type": "batch_progress",
+                            "file": ctx.file_name,
+                            "batch_id": batch_id,
+                            "total_batches": total_batches,
+                            "graph": batch,
+                        })
 
                 analysis_queries, failed_batch_count, failed_details, unit_summary_store = await ctx.processor.run_llm_analysis(
                     on_queries_ready=on_queries_ready,

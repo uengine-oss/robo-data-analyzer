@@ -16,6 +16,7 @@ from util.prompt_executor import RuleLoader
 from util.ndjson_stream import emit_data, emit_message, emit_phase_event
 from util.logger import log_process
 from util.text_utils import calculate_code_token
+from analyzer.common.graph_writer import run_graph_queries
 
 
 # ========== RuleLoader 헬퍼 (phase_post 전용) ==========
@@ -166,9 +167,8 @@ async def _run_procedure_summary(
                     params = {"procedure_name": info.procedure_name, "directory": processor.full_directory, "file_name": processor.file_name, "summary": str(final_summary)}
                 queries = [{"query": cypher, "params": params}]
                 if queries:
-                    async with pipeline._cypher_lock:
-                        async for br in client.run_graph_query(queries):
-                            await results_queue.put({"type": "graph", "graph": {"Nodes": br.get("Nodes", []), "Relationships": br.get("Relationships", [])}})
+                    async for batch in run_graph_queries(client, queries, cypher_lock=pipeline._cypher_lock):
+                        await results_queue.put({"type": "graph", "graph": batch})
                 if not hasattr(ctx, 'procedure_summaries'):
                     ctx.procedure_summaries = {}
                 ctx.procedure_summaries[proc_key] = {"final_summary": final_summary, "procedure_info": info}
@@ -291,9 +291,8 @@ async def _run_table_summary(
             yield emit_message(f"   ✓ [{completed}/{len(tasks)}] 테이블 요약 완료")
         yield emit_phase_event(2, "AI 분석", "in_progress", 85 + int(completed / len(tasks) * 15), {"step": "테이블/컬럼 설명 요약", "done": completed, "total": len(tasks)})
     if all_queries:
-        async with pipeline._cypher_lock:
-            async for br in client.run_graph_query(all_queries):
-                yield emit_data(graph={"Nodes": br.get("Nodes", []), "Relationships": br.get("Relationships", [])})
+        async for batch in run_graph_queries(client, all_queries, cypher_lock=pipeline._cypher_lock):
+            yield emit_data(graph=batch)
     for ctx in contexts:
         if ctx.processor and hasattr(ctx.processor, '_table_summary_store'):
             ctx.processor._table_summary_store.clear()
