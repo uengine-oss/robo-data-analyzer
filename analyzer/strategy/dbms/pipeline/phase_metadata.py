@@ -10,6 +10,7 @@ from typing import Any, AsyncGenerator
 
 import aiohttp
 
+from config.settings import settings
 from analyzer.strategy.base_analyzer import AnalysisStats
 from util.ndjson_stream import emit_message, emit_phase_event
 from util.logger import log_process
@@ -37,7 +38,7 @@ async def run_phase_metadata(
     )
 
     datasource_name = getattr(orchestrator, "datasource_name", "")
-    api_key = getattr(orchestrator, "api_key", "") or ""
+    api_key = settings.openai_api_key or getattr(orchestrator, "api_key", "") or ""
 
     if not datasource_name:
         yield emit_message("   ⏭️ datasource 미설정, 메타데이터 보강 생략")

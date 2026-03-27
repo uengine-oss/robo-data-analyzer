@@ -394,7 +394,7 @@ async def run_phase_vector(
     from openai import AsyncOpenAI
 
     # OpenAI 클라이언트 초기화
-    api_key = orchestrator.api_key or settings.openai_api_key
+    api_key = settings.openai_api_key or orchestrator.api_key
     if not api_key:
         yield emit_message("   ⚠️ OpenAI API 키가 없어 벡터라이징을 건너뜁니다")
         return
