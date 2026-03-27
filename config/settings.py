@@ -8,11 +8,14 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 
-# .env 파일 로드
+# .env 파일 로드 (프로젝트 내부 → 상위 디렉토리 순으로 탐색)
 project_root = Path(__file__).resolve().parents[1]
-load_dotenv(dotenv_path=project_root / ".env")
+_env_path = project_root / ".env"
+if not _env_path.exists():
+    _env_path = find_dotenv(usecwd=True)
+load_dotenv(dotenv_path=_env_path)
 
 # deepagents용 OPENAI_API_KEY 동기화 (LLM_API_KEY와 동일하게)
 _llm_api_key = os.getenv("LLM_API_KEY", "")
