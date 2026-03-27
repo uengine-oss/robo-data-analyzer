@@ -106,8 +106,8 @@ def dump_phase1_artifacts(state: Dict[str, Any], run_dir: Path) -> None:
     _write_pipeline_flow_md(base)
 
     # Step1
-    catalog = state.get("catalog")
-    plan = state.get("plan")
+    catalog = getattr(state, "catalog", None)
+    plan = getattr(state, "plan", None)
     if catalog is not None:
         _write_json(base / "step1_catalog.json", _to_serializable(catalog), ensure_ascii=False)
     if plan is not None:
@@ -115,9 +115,9 @@ def dump_phase1_artifacts(state: Dict[str, Any], run_dir: Path) -> None:
         _write_json(base / "step1_plan.json", _to_serializable(plan_dict), ensure_ascii=False)
 
     # Step2
-    function_facts_list = state.get("function_facts_list") or []
-    module_index_ast = state.get("module_index_ast") or {}
-    ref_candidates = state.get("ref_candidates_by_function") or {}
+    function_facts_list = getattr(state, "function_facts_list", None) or []
+    module_index_ast = getattr(state, "module_index_ast", None) or {}
+    ref_candidates = getattr(state, "ref_candidates_by_function", None) or {}
     if function_facts_list:
         _write_json(base / "step2_function_facts.json", _to_serializable(function_facts_list), ensure_ascii=False)
     if module_index_ast:
@@ -155,7 +155,7 @@ def dump_phase1_artifacts(state: Dict[str, Any], run_dir: Path) -> None:
         ("step3_config_chunks.json", "config_chunks"),
         ("step3_artifact_chunks.json", "artifact_chunks"),
     ]:
-        val = state.get(key)
+        val = getattr(state, key, None)
         if val is not None:
             sorted_val = _sort_by_start_line(val) if isinstance(val, list) else val
             _write_json(base / name, _to_serializable(sorted_val), ensure_ascii=False)
@@ -167,7 +167,7 @@ def dump_phase1_artifacts(state: Dict[str, Any], run_dir: Path) -> None:
         ("step4_config_index.json", "config_index"),
         ("step4_artifact_index.json", "artifact_index"),
     ]:
-        val = state.get(key)
+        val = getattr(state, key, None)
         if val is not None and isinstance(val, dict):
             _write_json(base / name, _to_serializable(val), ensure_ascii=False)
 
@@ -193,14 +193,14 @@ def dump_phase2_artifacts(state: Dict[str, Any], run_dir: Path) -> None:
         ("step5_uses_edges.json", "uses_edges"),
         ("step5_unresolved_calls.json", "unresolved_calls"),
     ]:
-        val = state.get(key)
+        val = getattr(state, key, None)
         if val is not None:
             _write_json(base / name, _to_serializable(val), ensure_ascii=False)
 
-    summary_by_function = state.get("summary_by_function") or {}
+    summary_by_function = getattr(state, "summary_by_function", None) or {}
     if summary_by_function:
         _write_json(base / "step6_summary_by_function.json", _to_serializable(summary_by_function), ensure_ascii=False)
-    unresolved_calls = state.get("unresolved_calls")
+    unresolved_calls = getattr(state, "unresolved_calls", None)
     if unresolved_calls is not None:
         _write_json(base / "step6_unresolved_calls.json", _to_serializable(unresolved_calls), ensure_ascii=False)
 
@@ -213,10 +213,10 @@ def dump_phase3_artifacts(state: Dict[str, Any], run_dir: Path) -> None:
     base = run_dir / "artifacts"
     base.mkdir(parents=True, exist_ok=True)
 
-    summary_by_variable = state.get("summary_by_variable") or {}
+    summary_by_variable = getattr(state, "summary_by_variable", None) or {}
     if summary_by_variable:
         _write_json(base / "step6_summary_by_variable.json", _to_serializable(summary_by_variable), ensure_ascii=False)
-    summary_by_module = state.get("summary_by_module") or {}
+    summary_by_module = getattr(state, "summary_by_module", None) or {}
     if summary_by_module:
         _write_json(base / "step6_summary_by_module.json", _to_serializable(summary_by_module), ensure_ascii=False)
 

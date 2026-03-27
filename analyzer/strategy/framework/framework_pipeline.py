@@ -29,10 +29,14 @@ logger = logging.getLogger(__name__)
 
 
 def _get_lang_emoji(lang: str) -> str:
+    if not lang:
+        return "📄"
     return get_lang_profile().emoji(lang)
 
 
 def _get_lang_desc(lang: str) -> str:
+    if not lang:
+        return "소스코드"
     return get_lang_profile().display_name(lang)
 
 
