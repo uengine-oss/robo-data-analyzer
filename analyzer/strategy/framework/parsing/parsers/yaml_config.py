@@ -5,8 +5,8 @@ import logging
 from pathlib import Path
 from typing import List
 
-from analyzer.strategy.framework.models import ConfigSectionChunk
-from util.text_utils import read_text_with_fallback
+from analyzer.strategy.framework.common.models import ConfigSectionChunk
+from util.encoding_utils import read_text_with_fallback_sync as read_text_with_fallback
 
 logger = logging.getLogger(__name__)
 

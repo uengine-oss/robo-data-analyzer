@@ -14,14 +14,14 @@ from analyzer.strategy.framework._ast_core import (
     FUNCTION_TYPES,
 )
 from analyzer.strategy.framework.common.ontology import get_ontology
-from analyzer.strategy.framework.models import (
+from analyzer.strategy.framework.common.models import (
     VariableFacts,
     FunctionFacts,
     NODE_VARIABLE,
     NODE_METHOD_CALL,
     NODE_NEW_INSTANCE,
 )
-from util.text_utils import read_text_with_fallback, read_json_with_fallback
+from util.encoding_utils import read_text_with_fallback_sync as read_text_with_fallback, read_json_with_fallback
 from .chunk_bundle import (
     build_chunk_bundle_from_source,
     save_chunk_bundle,
@@ -71,7 +71,7 @@ def _visit_ast_for_indices(
 ) -> None:
     """Raw AST 순회: symbol_type_index, function_index, ChunkBundle용 리스트 수집 (범용)."""
     onto = get_ontology()
-    container_types = onto.container_types(lang)
+    module_types = onto.module_types(lang)
     function_types = onto.function_types(lang)
     call_types = onto.call_types(lang)
 
@@ -88,7 +88,7 @@ def _visit_ast_for_indices(
             package_name = pkg
 
         # C 언어: FILE이 container일 때 파일명을 module_fqn으로 등록
-        if node_type in container_types:
+        if node_type in module_types:
             file_path = node.get("filePath", "")
             file_basename = file_path.replace("\\", "/").rsplit("/", 1)[-1] if file_path else ""
             file_stem = file_basename.rsplit(".", 1)[0] if "." in file_basename else file_basename
@@ -96,7 +96,7 @@ def _visit_ast_for_indices(
                 module_name = file_stem
                 module_fqn = f"{package_name}.{file_stem}" if package_name else file_stem
 
-    if node_type in container_types and node_type != "FILE":
+    if node_type in module_types and node_type != "FILE":
         module_name = node.get("name") or module_name
         if package_name and module_name:
             module_fqn = f"{package_name}.{module_name}"
@@ -233,7 +233,7 @@ def build_function_facts_and_module_index(
 ) -> Tuple[List[FunctionFacts], Dict[str, Any], List[VariableFacts], Dict[str, List[str]]]:
     """한 AST 파일에서 FunctionFacts, module_index, VariableFacts 리스트 생성."""
     onto = get_ontology()
-    container_types = onto.container_types(lang)
+    module_types = onto.module_types(lang)
     function_types = onto.function_types(lang)
     variable_types = onto.variable_types(lang)
 
@@ -304,7 +304,7 @@ def build_function_facts_and_module_index(
             )
             # variable_id → 원래 AST 노드 타입 저장 (서브레이블용)
             node_kinds[variable_id] = node.node_type
-        if node.node_type in container_types and node.unit_name:
+        if node.node_type in module_types and node.unit_name:
             # FILE 노드: unit_kind를 통해 kind를 "FILE"로 저장
             kind = node.unit_kind if node.unit_kind else node.node_type
             fqn = f"{node.package_name}.{node.unit_name}" if node.package_name else node.unit_name

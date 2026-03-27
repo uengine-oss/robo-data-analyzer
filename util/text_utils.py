@@ -3,25 +3,12 @@
 핵심 유틸리티 함수:
 - 토큰 계산
 - 문자열 처리 (라인 번호, 슬라이스)
-- 인코딩 fallback 읽기
-- Java 파라미터 파싱
-- User Story 문서 생성
+- 파라미터 파싱
 """
 
 import json
 import tiktoken
 from typing import Dict, List, Union
-
-# ---------------------------------------------------------------------------
-# 하위호환 re-export (실제 구현은 각 모듈로 이동됨)
-# ---------------------------------------------------------------------------
-
-# log_process → util/logger.py
-from util.logger import log_process  # noqa: F401, E402
-
-# 인코딩 fallback → util/encoding_utils.py
-from util.encoding_utils import read_text_with_fallback_sync as read_text_with_fallback  # noqa: F401, E402
-from util.encoding_utils import read_json_with_fallback  # noqa: F401, E402
 
 
 # tiktoken 인코더 초기화
@@ -215,6 +202,3 @@ def parse_params(params_str: str, style: str = "type_name") -> Dict[str, str]:
     return parser(params_str)
 
 
-def parse_java_params(params_str: str) -> Dict[str, str]:
-    """하위호환 alias."""
-    return parse_params(params_str, "type_name")

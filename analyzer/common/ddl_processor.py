@@ -13,8 +13,8 @@ from util.ndjson_stream import (
     emit_message,
     emit_phase_event,
 )
+from util.logger import log_process
 from util.text_utils import (
-    log_process,
     parse_table_identifier,
     calculate_code_token,
 )

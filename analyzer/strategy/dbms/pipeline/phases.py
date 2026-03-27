@@ -19,7 +19,7 @@ from analyzer.strategy.dbms.parsing.ast_processor import DbmsAstProcessor
 from analyzer.strategy.dbms.common.utils import resolve_default_schema
 from analyzer.common.ddl_utils import list_ddl_files
 from analyzer.common.ddl_processor import process_ddl
-from analyzer.strategy.dbms.linking.lineage_analyzer import LineageAnalyzer, LineageInfo
+import aiohttp
 from client.embedding_client import EmbeddingClient
 from config.settings import settings
 from util.ndjson_stream import (
@@ -27,7 +27,7 @@ from util.ndjson_stream import (
     emit_message,
     emit_phase_event,
 )
-from util.text_utils import log_process
+from util.logger import log_process
 
 
 # ========== Phase 0: DDL ==========
@@ -660,17 +660,10 @@ async def run_phase_lineage(
     stats: AnalysisStats,
     phase_num: int = 5,
 ) -> AsyncGenerator[bytes, None]:
-    """ETL 패턴 감지 및 데이터 리니지 관계 생성
+    """데이터 리니지 분석 — catalog 서비스에 위임
 
-    Stored Procedure가 ETL 역할을 하는지 분석하고,
-    Source 테이블 → ETL → Target 테이블 간 데이터 흐름 관계를 생성합니다.
-
-    Args:
-        pipeline: DbmsPipeline 인스턴스 (총괄 파이프라인)
-        client: Neo4j 클라이언트
-        orchestrator: 오케스트레이터
-        stats: 분석 통계
-        phase_num: 프론트엔드에 전달할 phase 번호 (기본 5)
+    SP 파일을 읽어서 catalog의 /lineage/analyze/ API에 전송합니다.
+    실제 ETL 패턴 분석과 Neo4j 저장은 catalog에서 처리합니다.
     """
     source_dir = orchestrator.dirs.get("source", "")
 
@@ -678,7 +671,6 @@ async def run_phase_lineage(
         yield emit_message("   ℹ️ SP 파일 없음 → 리니지 분석 건너뜀")
         return
 
-    # SP 파일 목록 가져오기
     sql_files: List[str] = []
     for root, _, files in os.walk(source_dir):
         for f in files:
@@ -691,144 +683,102 @@ async def run_phase_lineage(
 
     total_files = len(sql_files)
     log_process("LINEAGE", "START", f"리니지 분석 시작: {total_files}개 SP 파일", logging.INFO)
-    yield emit_message(f"   🔍 [Phase {phase_num}] {total_files}개 SP 파일에서 ETL 패턴 분석 시작...")
+    yield emit_message(f"   🔍 [Phase {phase_num}] {total_files}개 SP 파일 → catalog 리니지 분석 위임...")
     yield emit_phase_event(
         phase_num=phase_num,
         phase_name="리니지 분석",
         status="in_progress",
         progress=0,
-        details={"total_files": total_files}
+        details={"total_files": total_files},
     )
 
-    # 리니지 분석기 생성 (orchestrator.target 사용, 기본값: oracle)
+    catalog_url = os.environ.get("CATALOG_SERVICE_URL", "http://localhost:5503")
     dbms = getattr(orchestrator, "target", "oracle") or "oracle"
-    lineage_analyzer = LineageAnalyzer(dbms=dbms)
-    all_lineages: List[LineageInfo] = []
+    name_case = getattr(orchestrator, "name_case", "original")
+
+    total_etl = 0
+    total_reads = 0
+    total_writes = 0
+    total_flows = 0
     files_with_etl = 0
 
-    # 각 SP 파일 분석
-    for idx, sql_file in enumerate(sql_files, 1):
-        file_name = os.path.basename(sql_file)
-        progress = int((idx / total_files) * 80)  # 0-80% 범위 (저장은 80-100%)
+    async with aiohttp.ClientSession() as session:
+        for idx, sql_file in enumerate(sql_files, 1):
+            file_name = os.path.basename(sql_file)
+            progress = int((idx / total_files) * 100)
 
-        log_process("LINEAGE", "ANALYZE", f"[{idx}/{total_files}] {file_name} 분석 중", logging.INFO)
+            try:
+                async with aiofiles.open(sql_file, "r", encoding="utf-8", errors="ignore") as f:
+                    sql_content = await f.read()
 
-        try:
-            async with aiofiles.open(sql_file, "r", encoding="utf-8", errors="ignore") as f:
-                sql_content = await f.read()
-
-            # 리니지 분석
-            lineages = lineage_analyzer.analyze_sql_content(sql_content, file_name)
-
-            # ETL 패턴이 감지된 경우만 저장
-            etl_lineages = [l for l in lineages if l.is_etl]
-            if etl_lineages:
-                files_with_etl += 1
-                for l in etl_lineages:
-                    l.file_name = file_name
-                all_lineages.extend(etl_lineages)
-
-                # 상세 정보 로깅: 소스/타겟 테이블 표시
-                source_tables = set()
-                target_tables = set()
-                for l in etl_lineages:
-                    source_tables.update(l.source_tables or [])
-                    target_tables.update(l.target_tables or [])
-
-                log_process("LINEAGE", "ETL_FOUND",
-                    f"{file_name}: ETL {len(etl_lineages)}개 (소스: {len(source_tables)}개, 타겟: {len(target_tables)}개)",
-                    logging.INFO)
-                yield emit_message(
-                    f"      ✅ [{idx}/{total_files}] {file_name}: ETL {len(etl_lineages)}개 감지"
+                resp = await session.post(
+                    f"{catalog_url}/robo/lineage/analyze/",
+                    json={
+                        "sqlContent": sql_content,
+                        "fileName": file_name,
+                        "dbms": dbms,
+                        "nameCaseOption": name_case,
+                    },
+                    timeout=aiohttp.ClientTimeout(total=120),
                 )
-            else:
-                yield emit_message(f"      ⏭️ [{idx}/{total_files}] {file_name}: ETL 패턴 없음")
+                result = await resp.json()
 
-            yield emit_phase_event(
-                phase_num=phase_num,
-                phase_name="리니지 분석",
-                status="in_progress",
-                progress=progress,
-                details={"current_file": file_name, "done": idx, "total": total_files, "etl_found": len(all_lineages)}
-            )
+                lineages = result.get("lineages", [])
+                file_stats = result.get("stats", {})
 
-        except Exception as e:
-            error_msg = f"{file_name} 리니지 분석 실패: {e}"
-            log_process("LINEAGE", "ERROR", error_msg, logging.ERROR, e)
-            raise RuntimeError(error_msg) from e
+                if lineages:
+                    files_with_etl += 1
+                    total_etl += file_stats.get("etl_nodes", 0)
+                    total_reads += file_stats.get("etl_reads", 0)
+                    total_writes += file_stats.get("etl_writes", 0)
+                    total_flows += file_stats.get("data_flows", 0)
 
-    log_process("LINEAGE", "SCAN_DONE", f"파일 스캔 완료: {files_with_etl}/{total_files}개 파일에서 ETL 패턴 발견", logging.INFO)
+                    yield emit_message(
+                        f"      ✅ [{idx}/{total_files}] {file_name}: ETL {len(lineages)}개 감지"
+                    )
+                else:
+                    yield emit_message(f"      ⏭️ [{idx}/{total_files}] {file_name}: ETL 패턴 없음")
 
-    # ETL 패턴이 감지된 경우 Neo4j에 저장
-    if all_lineages:
-        log_process("LINEAGE", "SAVE_START", f"Neo4j 저장 시작: {len(all_lineages)}개 ETL 패턴", logging.INFO)
-        yield emit_message(f"\n   💾 총 {len(all_lineages)}개 ETL 패턴 → Neo4j 저장 중...")
-        yield emit_phase_event(
-            phase_num=phase_num,
-            phase_name="리니지 분석",
-            status="in_progress",
-            progress=85,
-            details={"step": "Neo4j 저장", "total": len(all_lineages)}
-        )
+                yield emit_phase_event(
+                    phase_num=phase_num,
+                    phase_name="리니지 분석",
+                    status="in_progress",
+                    progress=progress,
+                    details={"current_file": file_name, "done": idx, "total": total_files, "etl_found": total_etl},
+                )
 
-        try:
-            # name_case 옵션 가져오기
-            name_case = getattr(orchestrator, "name_case", "original")
+            except Exception as e:
+                error_msg = f"{file_name} 리니지 분석 실패: {e}"
+                log_process("LINEAGE", "ERROR", error_msg, logging.ERROR, e)
+                raise RuntimeError(error_msg) from e
 
-            result = await lineage_analyzer.save_lineage_to_neo4j(
-                client=client,
-                lineage_list=all_lineages,
-                file_name="",
-                name_case=name_case,
-            )
+    if not hasattr(stats, "etl_count"):
+        stats.etl_count = 0
+    if not hasattr(stats, "data_flows"):
+        stats.data_flows = 0
+    stats.etl_count = total_etl
+    stats.data_flows = total_flows
 
-            # 통계 업데이트
-            if not hasattr(stats, 'etl_count'):
-                stats.etl_count = 0
-            if not hasattr(stats, 'data_flows'):
-                stats.data_flows = 0
-
-            stats.etl_count = result.get("etl_nodes", 0)
-            stats.data_flows = result.get("data_flows", 0)
-
-            log_process("LINEAGE", "COMPLETE",
-                f"리니지 저장 완료: ETL {result.get('etl_nodes', 0)}개, "
-                f"READS {result.get('etl_reads', 0)}개, WRITES {result.get('etl_writes', 0)}개, "
-                f"DATA_FLOWS {result.get('data_flows', 0)}개",
-                logging.INFO)
-
-            yield emit_message(
-                f"   ✅ 리니지 저장 완료: "
-                f"ETL 프로시저 {result.get('etl_nodes', 0)}개, "
-                f"ETL_READS {result.get('etl_reads', 0)}개, "
-                f"ETL_WRITES {result.get('etl_writes', 0)}개, "
-                f"DATA_FLOWS_TO {result.get('data_flows', 0)}개"
-            )
-            yield emit_phase_event(
-                phase_num=phase_num,
-                phase_name="리니지 분석",
-                status="completed",
-                progress=100,
-                details={
-                    "etl_nodes": result.get('etl_nodes', 0),
-                    "etl_reads": result.get('etl_reads', 0),
-                    "etl_writes": result.get('etl_writes', 0),
-                    "data_flows": result.get('data_flows', 0)
-                }
-            )
-
-        except Exception as e:
-            error_msg = f"리니지 저장 실패: {str(e)}"
-            yield emit_message(f"   ❌ {error_msg}")
-            log_process("LINEAGE", "ERROR", error_msg, logging.ERROR, e)
-            raise RuntimeError(error_msg) from e
-    else:
-        log_process("LINEAGE", "SKIP", "ETL 패턴 없음 - 리니지 관계 미생성", logging.INFO)
-        yield emit_message("   ℹ️ ETL 패턴 없음 → 리니지 관계 미생성")
-        yield emit_phase_event(
-            phase_num=phase_num,
-            phase_name="리니지 분석",
-            status="completed",
-            progress=100,
-            details={"etl_nodes": 0, "message": "no_etl_patterns"}
-        )
+    log_process(
+        "LINEAGE", "COMPLETE",
+        f"리니지 완료: ETL {total_etl}개, READS {total_reads}개, "
+        f"WRITES {total_writes}개, DATA_FLOWS {total_flows}개",
+        logging.INFO,
+    )
+    yield emit_message(
+        f"   ✅ 리니지 분석 완료: "
+        f"ETL {total_etl}개, ETL_READS {total_reads}개, "
+        f"ETL_WRITES {total_writes}개, DATA_FLOWS_TO {total_flows}개"
+    )
+    yield emit_phase_event(
+        phase_num=phase_num,
+        phase_name="리니지 분석",
+        status="completed",
+        progress=100,
+        details={
+            "etl_nodes": total_etl,
+            "etl_reads": total_reads,
+            "etl_writes": total_writes,
+            "data_flows": total_flows,
+        },
+    )

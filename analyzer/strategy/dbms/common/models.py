@@ -15,7 +15,8 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple, Set
 
 from config.settings import settings
-from util.text_utils import calculate_code_token, log_process
+from util.logger import log_process
+from util.text_utils import calculate_code_token
 
 # 설정에서 가져오는 상수
 MAX_CONTEXT_TOKEN = settings.batch.max_context_token

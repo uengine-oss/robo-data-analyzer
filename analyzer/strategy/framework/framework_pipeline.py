@@ -22,29 +22,18 @@ from config.settings import settings
 from util.ndjson_stream import emit_message, emit_phase_event
 
 from analyzer.strategy.framework.pipeline.phases import run_phase_ddl, run_phase_ast, run_phase_llm, run_phase_post
+from analyzer.strategy.framework.pipeline.state import FrameworkPipelineState
+from analyzer.strategy.framework.common.lang_profile import get_lang_profile
 
 logger = logging.getLogger(__name__)
 
 
-# backward compat — LangProfile이 없을 때 fallback
-_LANG_EMOJI = {"java": "☕", "c": "⚙️", "python": "🐍", "go": "🔵", "kotlin": "☕", "scala": "☕", "rust": "🦀"}
-_LANG_DESC = {"java": "Java/Kotlin", "c": "C/C++", "python": "Python", "go": "Go", "kotlin": "Kotlin", "scala": "Scala", "rust": "Rust"}
-
-
 def _get_lang_emoji(lang: str) -> str:
-    try:
-        from analyzer.strategy.framework.common.lang_profile import get_lang_profile
-        return get_lang_profile().emoji(lang)
-    except Exception:
-        return _LANG_EMOJI.get(lang, "☕")
+    return get_lang_profile().emoji(lang)
 
 
 def _get_lang_desc(lang: str) -> str:
-    try:
-        from analyzer.strategy.framework.common.lang_profile import get_lang_profile
-        return get_lang_profile().display_name(lang)
-    except Exception:
-        return _LANG_DESC.get(lang, lang)
+    return get_lang_profile().display_name(lang)
 
 
 class FrameworkPipeline(BaseStreamingAnalyzer):
@@ -62,18 +51,16 @@ class FrameworkPipeline(BaseStreamingAnalyzer):
 
     @property
     def strategy_emoji(self) -> str:
-        lang = self._pipeline_state.get("lang", "")
-        return _get_lang_emoji(lang)
+        return _get_lang_emoji(self._pipeline_state.lang)
 
     @property
     def file_type_description(self) -> str:
-        lang = self._pipeline_state.get("lang", "")
-        return f"{_get_lang_desc(lang)} 파일"
+        return f"{_get_lang_desc(self._pipeline_state.lang)} 파일"
 
     def __init__(self):
         self._cypher_lock = asyncio.Lock()
         self._file_semaphore: Optional[asyncio.Semaphore] = None
-        self._pipeline_state: Dict[str, Any] = {}
+        self._pipeline_state = FrameworkPipelineState()
 
     async def run_pipeline(
         self,
@@ -93,7 +80,7 @@ class FrameworkPipeline(BaseStreamingAnalyzer):
                 import shutil
                 shutil.rmtree(run_path)
             run_path.mkdir(parents=True, exist_ok=True)
-        self._pipeline_state["run_dir"] = run_dir
+        self._pipeline_state.run_dir = run_dir
 
         yield emit_message(f"☕ Framework 분석 시작 | 파일 {len(file_names)}개")
 

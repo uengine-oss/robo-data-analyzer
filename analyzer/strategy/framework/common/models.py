@@ -66,10 +66,6 @@ class ProcessingPlan:
     config_jobs: List[str] = field(default_factory=list)       # 설정 파일 (yaml, properties, json, 일반 xml)
     docs_jobs: List[str] = field(default_factory=list)         # 비정형 문서
 
-    @property
-    def xml_artifact_jobs(self) -> List[str]:
-        return self.entity_jobs
-
     def iter_jobs(self):
         """모든 job 유형을 (category, paths) 쌍으로 순회."""
         yield "source_ast", self.source_ast_jobs
@@ -148,9 +144,6 @@ class ChunkBundleFunctionCall:
     end_line: int
     call_code: str  # slice로 생성, 라인번호 포함
 
-
-# 레거시 호환 alias — 범용화 이전 "MethodCall" 명칭 사용 코드 지원용
-ChunkBundleMethodCall = ChunkBundleFunctionCall
 
 
 @dataclass
@@ -328,15 +321,6 @@ class RefCandidateKind(StrEnum):
     DATA_PATH_REF = "DATA_PATH_REF"
     NAME_REF = "NAME_REF"
 
-
-# 레거시 호환 alias — StrEnum 도입 이전 상수명으로 접근하는 코드 지원용
-REF_CANDIDATE_SQL_LITERAL = RefCandidateKind.SQL_LITERAL
-REF_CANDIDATE_SQL_KEY_LITERAL = RefCandidateKind.SQL_KEY_LITERAL
-REF_CANDIDATE_CALL_REF = RefCandidateKind.CALL_REF
-REF_CANDIDATE_CONFIG_KEY_REF = RefCandidateKind.CONFIG_KEY_REF
-REF_CANDIDATE_NEW_INSTANCE_REF = RefCandidateKind.NEW_INSTANCE_REF
-REF_CANDIDATE_DATA_PATH_REF = RefCandidateKind.DATA_PATH_REF
-REF_CANDIDATE_NAME_REF = RefCandidateKind.NAME_REF
 
 
 class DmlRelation(StrEnum):

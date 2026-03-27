@@ -5,8 +5,8 @@ import logging
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from analyzer.strategy.framework.models import SqlStatementChunk, ConfigSectionChunk, ArtifactChunk
-from util.text_utils import read_text_with_fallback
+from analyzer.strategy.framework.common.models import SqlStatementChunk, ConfigSectionChunk, ArtifactChunk
+from util.encoding_utils import read_text_with_fallback_sync as read_text_with_fallback
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +41,8 @@ def _parse_xml_safe(path: str, parser_fn):
 def run_step3(
     sql_jobs: List[str],
     config_jobs: List[str],
-    _unused: Optional[List[str]] = None,
     *,
-    xml_artifact_jobs: Optional[List[str]] = None,
     entity_jobs: Optional[List[str]] = None,
-    xml_cmp_mapping_jobs: Optional[List[str]] = None,
 ) -> Tuple[List[SqlStatementChunk], List[ConfigSectionChunk], List[ArtifactChunk]]:
     """Step 3 전체: SqlStatement + ConfigSection + Artifact 청크 생성.
 
@@ -56,10 +53,8 @@ def run_step3(
     from .properties import parse_properties
     from .xml_universal import parse_xml_universal
 
-    # entity_jobs와 xml_artifact_jobs 통합 (backward compat)
-    all_entity_jobs = list(entity_jobs or []) + list(xml_artifact_jobs or [])
-    # 모든 XML을 한 곳에서 처리
-    all_xml_jobs = list(sql_jobs) + list(all_entity_jobs)
+    all_entity_jobs = list(entity_jobs or [])
+    all_xml_jobs = list(sql_jobs) + all_entity_jobs
 
     logger.info(
         "[FW:STEP3] 아티팩트 진입 | xml=%d config=%d (sql=%d entity=%d)",
@@ -89,28 +84,6 @@ def run_step3(
             config_chunks.extend(parse_yaml_config(p))
         elif ext == ".properties":
             config_chunks.extend(parse_properties(p))
-
-    # CMP 매핑 (하위호환)
-    if xml_cmp_mapping_jobs:
-        logger.info("[FW:STEP3] [섹션] CMP 매핑 XML | 파일 %d개", len(xml_cmp_mapping_jobs))
-    for p in xml_cmp_mapping_jobs or []:
-        try:
-            text = read_text_with_fallback(p)
-        except Exception as e:
-            logger.info("[FW:STEP3] 스킵 | parser=cmp_mapping file=%s error=%s", Path(p).name, e)
-            continue
-        snippet = text.strip()[:2000]
-        sl = 1
-        el = max(1, snippet.count("\n") + 1)
-        artifact_chunks.append(ArtifactChunk(
-            chunk_id=f"{p}:cmp_mapping",
-            chunk_type="cmp_mapping",
-            hint_key=None,
-            text=snippet,
-            source_path=p,
-            start_line=sl,
-            end_line=el,
-        ))
 
     logger.info(
         "[FW:STEP3] 아티팩트 완료 | sql_chunks=%d config_chunks=%d artifact_chunks=%d",

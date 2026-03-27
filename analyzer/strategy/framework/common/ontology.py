@@ -55,16 +55,6 @@ class OntologyRoles:
     def constant_types(self, lang: str) -> FrozenSet[str]:
         return self._get_role("constant", lang)
 
-    # --- 하위호환 별칭 ---
-    def container_types(self, lang: str) -> FrozenSet[str]:
-        return self.module_types(lang)
-
-    def method_types(self, lang: str) -> FrozenSet[str]:
-        return self.function_types(lang)
-
-    def field_types(self, lang: str) -> FrozenSet[str]:
-        return self.variable_types(lang) | self.constant_types(lang)
-
     # --- 기존 메서드 ---
     def silent_types(self, lang: str) -> FrozenSet[str]:
         return self._get_role("silent", lang)

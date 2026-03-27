@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 from typing import Any, List
 
-from util.text_utils import log_process
+from util.logger import log_process
 
 
 def apply_name_case(name: str, name_case: str) -> str:

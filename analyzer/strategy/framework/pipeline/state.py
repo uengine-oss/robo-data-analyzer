@@ -32,6 +32,11 @@ class FrameworkPipelineState:
 
     run_dir: str = ""
     data_dir: str = ""
+    lang: str = ""
+
+    # DDL
+    ddl_schemas: Any = field(default_factory=set)
+    ddl_table_metadata: Dict[str, Any] = field(default_factory=dict)
 
     # Step 1: Scan
     catalog: List[FileCatalogEntry] = field(default_factory=list)
@@ -84,37 +89,3 @@ class FrameworkPipelineState:
     span_index: Optional[Dict[str, Any]] = None
     chunk_index: Optional[Dict[str, Any]] = None
 
-    def to_dict(self) -> Dict[str, Any]:
-        """하위호환: Dict[str, Any] 형태로 변환."""
-        from dataclasses import fields as dc_fields
-        return {f.name: getattr(self, f.name) for f in dc_fields(self)}
-
-    def update(self, d: Dict[str, Any]) -> None:
-        """하위호환: dict.update() 스타일."""
-        for k, v in d.items():
-            if hasattr(self, k):
-                setattr(self, k, v)
-
-    def get(self, key: str, default: Any = None) -> Any:
-        """하위호환: dict.get() 스타일."""
-        return getattr(self, key, default)
-
-    def setdefault(self, key: str, default: Any = None) -> Any:
-        """하위호환: dict.setdefault() 스타일."""
-        val = getattr(self, key, None)
-        if val is None:
-            setattr(self, key, default)
-            return default
-        return val
-
-    def __getitem__(self, key: str) -> Any:
-        """하위호환: dict[key] 스타일."""
-        return getattr(self, key)
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        """하위호환: dict[key] = value 스타일."""
-        setattr(self, key, value)
-
-    def __contains__(self, key: str) -> bool:
-        """하위호환: key in state 스타일."""
-        return hasattr(self, key)

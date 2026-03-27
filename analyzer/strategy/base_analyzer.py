@@ -32,7 +32,7 @@ from util.ndjson_stream import (
     emit_complete,
     emit_data,
 )
-from util.text_utils import log_process
+from util.logger import log_process
 
 
 class AnalyzerStrategy(ABC):

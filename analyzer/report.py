@@ -569,7 +569,7 @@ def _render_overview(graph: GraphData) -> str:
         for st, cnt in graph._stereotype_counts.items():
             stereo_counts[st] += cnt
     else:
-        # 라벨에 스테레오타입이 없으면 속성에서 추론 (하위 호환)
+        # 라벨에 스테레오타입이 없으면 속성에서 추론
         for mod in graph.modules:
             st = _infer_stereotype(graph, mod) or "미분류"
             stereo_counts[st] += 1
@@ -1120,8 +1120,8 @@ def _load_graph_from_dict(data: Dict[str, Any]) -> GraphData:
     return graph
 
 
-def _generate_report(graph: GraphData, strategy: str = "auto") -> str:  # noqa: ARG001
-    """GraphData → 마크다운 보고서. strategy는 호환성 유지용 (무시됨)."""
+def _generate_report(graph: GraphData) -> str:
+    """GraphData → 마크다운 보고서."""
     logger.info(
         "[REPORT] 보고서 생성 | 노드=%d, 관계=%d",
         len(graph.nodes), len(graph.relationships),
@@ -1129,18 +1129,17 @@ def _generate_report(graph: GraphData, strategy: str = "auto") -> str:  # noqa: 
     return _build_report(graph)
 
 
-def generate_analysis_report_from_graph(graph_data: Dict[str, Any], strategy: str = "auto") -> str:
+def generate_analysis_report_from_graph(graph_data: Dict[str, Any]) -> str:
     """Neo4j 조회 결과 dict → 마크다운 분석 보고서.
 
     Args:
         graph_data: {"Nodes": [...], "Relationships": [...]} 형태의 dict
-        strategy: 호환성 유지용 파라미터 (무시됨, 항상 단일 템플릿)
     """
     graph = _load_graph_from_dict(graph_data)
-    return _generate_report(graph, strategy)
+    return _generate_report(graph)
 
 
-def generate_analysis_report(json_path: str, strategy: str = "auto") -> str:
+def generate_analysis_report(json_path: str) -> str:
     """JSON 파일 경로 → 마크다운 분석 보고서."""
     graph = _load_graph(json_path)
-    return _generate_report(graph, strategy)
+    return _generate_report(graph)

@@ -279,7 +279,7 @@ class StatementCollector:
         self.source_content = source_content or ""
         self.lang = lang
         onto = _get_ontology()
-        self._container_types = onto.container_types(lang)
+        self._module_types = onto.module_types(lang)
         self._function_types = onto.function_types(lang)
         self._variable_types = onto.variable_types(lang)
         self._analyzable_types = onto.analyzable_types(lang)
@@ -362,7 +362,7 @@ class StatementCollector:
             _log_process("ANALYZE", "COLLECT", f"패키지 발견: {package_name}")
 
             # C 언어: FILE 노드를 container(Class)로 등록 — 함수의 소속 컨테이너 역할
-            if node_type in self._container_types:
+            if node_type in self._module_types:
                 file_stem = self._stem_from_filename(self.file_name)
                 module_key = self._make_module_key(package_name, file_stem, start_line)
                 module_name = file_stem
@@ -381,7 +381,7 @@ class StatementCollector:
                     f"파일 컨테이너 등록: {package_name}.{file_stem} (FILE)",
                 )
 
-        if node_type in self._container_types and node_type != "FILE":
+        if node_type in self._module_types and node_type != "FILE":
             extracted_name = node.get("name")
             module_key = self._make_module_key(package_name, extracted_name, start_line)
             module_name = extracted_name
@@ -444,7 +444,7 @@ class StatementCollector:
             c.parent = st
         st.children.extend(child_nodes)
 
-        if not analyzable and node_type not in self._container_types:
+        if not analyzable and node_type not in self._module_types:
             st.summary = st.get_raw_code()
             st.completion_event.set()
         elif analyzable and module_key and module_key in self.classes:

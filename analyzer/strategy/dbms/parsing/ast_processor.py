@@ -27,7 +27,8 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple, Set, Union
 
 from config.settings import settings
-from util.text_utils import calculate_code_token, parse_table_identifier, log_process, resolve_node_code
+from util.logger import log_process
+from util.text_utils import calculate_code_token, parse_table_identifier, resolve_node_code
 from analyzer.pipeline_control import pipeline_controller
 
 from analyzer.strategy.dbms.common.models import StatementNode, AnalysisBatch, BatchPlanner, ProcedureInfo

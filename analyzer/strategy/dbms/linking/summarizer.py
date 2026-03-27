@@ -14,7 +14,8 @@ from analyzer.strategy.dbms.common.models import FileStatus, FileAnalysisContext
 from config.settings import settings
 from util.prompt_executor import RuleLoader
 from util.ndjson_stream import emit_data, emit_message, emit_phase_event
-from util.text_utils import calculate_code_token, log_process
+from util.logger import log_process
+from util.text_utils import calculate_code_token
 
 
 # ========== RuleLoader 헬퍼 (phase_post 전용) ==========

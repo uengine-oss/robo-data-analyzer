@@ -7,7 +7,8 @@ import re
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from util.text_utils import calculate_code_token, log_process, resolve_node_code
+from util.logger import log_process
+from util.text_utils import calculate_code_token, resolve_node_code
 from analyzer.strategy.dbms.common.constants import (
     PROCEDURE_TYPES, NON_ANALYSIS_TYPES, DML_STATEMENT_TYPES,
 )

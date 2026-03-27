@@ -21,23 +21,27 @@ from client.neo4j_client import Neo4jClient
 from analyzer.strategy.base_analyzer import AnalysisStats
 from config.settings import settings
 from util.ndjson_stream import emit_message, emit_data, emit_phase_event, PhaseTracker
-from util.text_utils import read_text_with_fallback, read_json_with_fallback
-from analyzer.strategy.framework.internal import (
+from util.encoding_utils import read_text_with_fallback_sync as read_text_with_fallback, read_json_with_fallback
+from analyzer.strategy.framework._ast_core import (
     FrameworkAstProcessor,
     MODULE_TYPES,
     VARIABLE_TYPES,
     FUNCTION_TYPES,
+)
+from analyzer.strategy.framework.parsing.chunk_bundle import (
     build_chunk_bundle_from_source,
     save_chunk_bundle,
     _get_chunk_bundle_dir_from_run_dir,
-    run_step5,
-    run_step6,
-    derive_uses_from_calls,
     load_field_chunks_from_bundles,
+)
+from analyzer.strategy.framework.linking.orchestrator import run_step5
+from analyzer.strategy.framework.linking.summarizer import (
+    run_step6,
     run_variable_summary,
     run_module_summary,
 )
-from analyzer.strategy.framework.models import (
+from analyzer.strategy.framework.linking.call_graph import derive_uses_from_calls
+from analyzer.strategy.framework.common.models import (
     FileCatalogEntry,
     ProcessingPlan,
     VariableFacts,
@@ -208,8 +212,8 @@ async def run_phase_ddl(
             logger.warning("[FW:DDL] DDL 파일 처리 실패: %s — %s", fname, e)
             yield emit_message(f"  ⚠️ DDL 처리 실패: {fname} ({str(e)[:60]})")
 
-    pipeline._pipeline_state["ddl_schemas"] = ddl_schemas
-    pipeline._pipeline_state["ddl_table_metadata"] = ddl_table_metadata
+    pipeline._pipeline_state.ddl_schemas = ddl_schemas
+    pipeline._pipeline_state.ddl_table_metadata = ddl_table_metadata
     yield emit_message(f"✅ DDL 처리 완료: 스키마 {len(ddl_schemas)}개, 테이블 메타데이터 {len(ddl_table_metadata)}개")
 
 
@@ -246,7 +250,7 @@ async def run_phase_ast(
     base = Path(data_dir).resolve()
     source_ast_paths = [str(base / p) if not Path(p).is_absolute() else p for p in plan.source_ast_jobs]
 
-    run_dir = pipeline._pipeline_state.get("run_dir")
+    run_dir = pipeline._pipeline_state.run_dir
     if not run_dir:
         run_dir = str(Path(settings.path.audit_dir) / "analysis.run")
         run_path = Path(run_dir)
@@ -254,9 +258,9 @@ async def run_phase_ast(
             import shutil
             shutil.rmtree(run_path)
         run_path.mkdir(parents=True, exist_ok=True)
-        pipeline._pipeline_state["run_dir"] = run_dir
+        pipeline._pipeline_state.run_dir = run_dir
         logger.info("[FW:PHASE1] run_dir 미설정 → 생성 | run_dir=%s (chunk_bundles는 data가 아닌 여기 저장)", run_dir)
-    pipeline._pipeline_state["lang"] = lang
+    pipeline._pipeline_state.lang = lang
 
     # 해당 언어의 stdlib로 전환
     from analyzer.strategy.framework.linking.call_graph import set_active_stdlib
@@ -361,8 +365,8 @@ async def run_phase_ast(
 
     yield emit_message(f"📄 아티팩트 파싱 | SQL {len(sql_xml_paths)}개, Entity {len(entity_xml_paths)}개, Config {len(config_paths)}개")
     sql_chunks, config_chunks, artifact_chunks = run_step3(
-        sql_xml_paths, config_paths, [],
-        xml_artifact_jobs=entity_xml_paths,
+        sql_xml_paths, config_paths,
+        entity_jobs=entity_xml_paths,
     )
 
     # Artifact breakdown 로그
@@ -392,27 +396,26 @@ async def run_phase_ast(
     )
 
     # pipeline state에 저장
-    pipeline._pipeline_state.update({
-        "data_dir": data_dir,
-        "catalog": catalog,
-        "plan": plan,
-        "function_facts_list": function_facts_list,
-        "module_index_ast": module_index_ast,
-        "package_fqns": package_fqns,
-        "variable_facts_list": variable_facts_list,
-        "symbol_type_index": symbol_type_index,
-        "function_index": function_index,
-        "function_index_by_module": function_index_by_module,
-        "module_name_to_fqn": module_name_to_fqn,
-        "ref_candidates_by_function": ref_candidates_by_function,
-        "sql_chunks": sql_chunks,
-        "config_chunks": config_chunks,
-        "artifact_chunks": artifact_chunks,
-        "sql_index": sql_index,
-        "module_index": module_index,
-        "config_index": config_index,
-        "artifact_index": artifact_index,
-    })
+    st = pipeline._pipeline_state
+    st.data_dir = data_dir
+    st.catalog = catalog
+    st.plan = plan
+    st.function_facts_list = function_facts_list
+    st.module_index_ast = module_index_ast
+    st.package_fqns = package_fqns
+    st.variable_facts_list = variable_facts_list
+    st.symbol_type_index = symbol_type_index
+    st.function_index = function_index
+    st.function_index_by_module = function_index_by_module
+    st.module_name_to_fqn = module_name_to_fqn
+    st.ref_candidates_by_function = ref_candidates_by_function
+    st.sql_chunks = sql_chunks
+    st.config_chunks = config_chunks
+    st.artifact_chunks = artifact_chunks
+    st.sql_index = sql_index
+    st.module_index = module_index
+    st.config_index = config_index
+    st.artifact_index = artifact_index
 
     yield emit_message(f"✅ Phase 1 완료 | SQL {len(sql_chunks)}개, 설정 {len(config_chunks)}개, 아티팩트 {len(artifact_chunks)}개")
 
@@ -429,9 +432,9 @@ async def run_phase_llm(
 ) -> AsyncGenerator[bytes, None]:
     """Phase 2: 링킹 (SQL→Table LLM, Call batch, UML, analysis LLM)."""
     st = pipeline._pipeline_state
-    function_facts_list = st["function_facts_list"]
-    sql_index = st["sql_index"]
-    sql_chunks = st["sql_chunks"]
+    function_facts_list = st.function_facts_list
+    sql_index = st.sql_index
+    sql_chunks = st.sql_chunks
 
     yield emit_message("🔗 링킹 시작 (참조 해석 → SQL→Table → Call → DeepAgent)")
 
@@ -444,7 +447,7 @@ async def run_phase_llm(
         ("DeepAgent 의미 추적", 25), # step 3
     ])
 
-    data_dir = st.get("data_dir") or settings.path.data_dir
+    data_dir = st.data_dir or settings.path.data_dir
     field_chunks = load_field_chunks_from_bundles(data_dir)
 
     # Step 5: 단계별 점진적 스트리밍
@@ -468,19 +471,19 @@ async def run_phase_llm(
         function_facts_list,
         sql_index,
         sql_chunks,
-        config_index=st.get("config_index"),
-        ref_candidates_by_function=st.get("ref_candidates_by_function"),
-        symbol_type_index=st.get("symbol_type_index"),
-        module_index=st.get("module_index"),
+        config_index=st.config_index,
+        ref_candidates_by_function=st.ref_candidates_by_function,
+        symbol_type_index=st.symbol_type_index,
+        module_index=st.module_index,
         field_chunks=field_chunks,
         data_dir=data_dir,
-        variable_facts_list=st.get("variable_facts_list"),
-        function_index_by_module=st.get("function_index_by_module"),
-        run_dir=st.get("run_dir"),
-        artifact_index=st.get("artifact_index"),
-        artifact_chunks=st.get("artifact_chunks"),
-        ddl_table_metadata=pipeline._pipeline_state.get("ddl_table_metadata"),
-        lang=st.get("lang", ""),
+        variable_facts_list=st.variable_facts_list,
+        function_index_by_module=st.function_index_by_module,
+        run_dir=st.run_dir,
+        artifact_index=st.artifact_index,
+        artifact_chunks=st.artifact_chunks,
+        ddl_table_metadata=st.ddl_table_metadata,
+        lang=st.lang,
     ):
         stage = step_result["stage"]
 
@@ -559,8 +562,8 @@ async def run_phase_llm(
                 queries.extend(build_module_table_refer_to_queries(module_table_edges))
                 queries.extend(build_artifact_table_refer_to_queries(artifact_table_edges))
                 # ARTIFACT_CHUNK → MODULE 연결 (EJB XML의 ejb-class/home/remote FQN 기반)
-                artifact_chunks_from_state = st.get("artifact_chunks") or []
-                module_index_from_state = st.get("module_index") or {}
+                artifact_chunks_from_state = st.artifact_chunks or []
+                module_index_from_state = st.module_index or {}
                 artifact_module_rels = build_artifact_module_refer_to_queries(artifact_chunks_from_state, module_index_from_state)
                 queries.extend(artifact_module_rels)
                 if queries:
@@ -577,10 +580,10 @@ async def run_phase_llm(
     # 시나리오 2 (DDL만): 테이블명 컨텍스트 + 코드 추적 → DeepAgent 실행
     # 시나리오 3 (외부파일만): 자동 엔티티 식별(어노테이션) + Table 노드 생성 → DeepAgent 불필요
     # 시나리오 4 (아무것도 없음): 후보 기반 엔티티 식별 → DeepAgent 실행
-    ddl_meta = pipeline._pipeline_state.get("ddl_table_metadata") or {}
+    ddl_meta = st.ddl_table_metadata or {}
     _has_external_files = has_external_entity_info(
-        artifact_index=st.get("artifact_index"),
-        module_index=st.get("module_index"),
+        artifact_index=st.artifact_index,
+        module_index=st.module_index,
     )
     _needs_deep_entity = (
         (bool(ddl_meta) and not _has_external_files)  # 시나리오 2: DDL만
@@ -591,20 +594,20 @@ async def run_phase_llm(
         scenario = "ddl_only" if ddl_meta else "no_external"
         logger.info("[FW:PHASE2] DeepAgent 엔티티 식별 실행 (scenario=%s)", scenario)
         entity_api_key = settings.llm.api_key
-        entity_run_dir = Path(st["run_dir"]) if st.get("run_dir") else None
+        entity_run_dir = Path(st.run_dir) if st.run_dir else None
         # DeepAgent 엔티티 식별에 전달할 컨텍스트
         entity_state = {
             "sql_index": sql_index,
-            "config_index": st.get("config_index") or {},
-            "artifact_index": st.get("artifact_index") or {},
+            "config_index": st.config_index or {},
+            "artifact_index": st.artifact_index or {},
             "data_dir": data_dir,
             "run_dir": str(entity_run_dir) if entity_run_dir else None,
-            "span_index": st.get("span_index"),
-            "chunk_index": st.get("chunk_index"),
+            "span_index": st.span_index,
+            "chunk_index": st.chunk_index,
             "ddl_table_metadata": ddl_meta or None,  # DDL 테이블 메타 (시나리오 2 전용)
         }
         entity_mt_edges, entity_fk_edges = run_deep_agent_entity_identification(
-            st.get("module_index") or {},
+            st.module_index or {},
             entity_state,
             api_key=entity_api_key,
             run_dir=entity_run_dir,
@@ -626,9 +629,9 @@ async def run_phase_llm(
                 # 아래 Function→Table 관계 MERGE가 성공한다.
                 # ── 1) Table + Column + HAS_COLUMN 생성 ──
                 if not ddl_meta:
-                    _entity_map = _collect_entity_fqns_from_edges(entity_mt_edges, st.get("module_index") or {})
+                    _entity_map = _collect_entity_fqns_from_edges(entity_mt_edges, st.module_index or {})
                     if _entity_map:
-                        entity_tbl_queries = build_table_from_entity_classes(_entity_map, st.get("module_index") or {}, variable_facts_list=st.get("variable_facts_list") or [])
+                        entity_tbl_queries = build_table_from_entity_classes(_entity_map, st.module_index or {}, variable_facts_list=st.variable_facts_list or [])
                         if entity_tbl_queries:
                             logger.info("[FW:PHASE2] 엔티티 Table/Column 생성 (DDL 없음) | classes=%d queries=%d", len(_entity_map), len(entity_tbl_queries))
                             async for graph in run_graph_queries(client, entity_tbl_queries, label="PHASE2:ENTITY_TABLE"):
@@ -643,25 +646,27 @@ async def run_phase_llm(
                 logger.warning("[FW:PHASE2] Neo4j 엔티티 식별 반영 실패: %s", e)
         # bundle index를 state에 보존 (후속 DeepAgent 재사용)
         if entity_state.get("span_index"):
-            st.setdefault("span_index", entity_state["span_index"])
-            st.setdefault("chunk_index", entity_state["chunk_index"])
+            if st.span_index is None:
+                st.span_index = entity_state["span_index"]
+            if st.chunk_index is None:
+                st.chunk_index = entity_state["chunk_index"]
     else:
         # 시나리오 1, 3: 외부 엔티티 정보(어노테이션/XML) 존재 → 자동 식별
         # DDL이 있으면(시나리오 1) 테이블 노드는 DDL 파서가 이미 생성 → Table 생성 스킵
         # DDL이 없으면(시나리오 3) 어노테이션 기반 엔티티에서 Table 노드 생성
         from analyzer.strategy.framework.linking.matcher import identify_entity_classes
-        auto_entity_fqns = identify_entity_classes(st.get("module_index") or {})
+        auto_entity_fqns = identify_entity_classes(st.module_index or {})
         if auto_entity_fqns:
             logger.info("[FW:PHASE2] 자동 엔티티 식별 (어노테이션) | classes=%d", len(auto_entity_fqns))
             if not ddl_meta:
                 try:
                     # fqn set → {fqn: 구조체명} 매핑 변환
-                    _mi = st.get("module_index") or {}
+                    _mi = st.module_index or {}
                     auto_entity_map = {
                         fqn: _mi[fqn].get("name", "") for fqn in auto_entity_fqns
                         if fqn in _mi and isinstance(_mi[fqn], dict)
                     }
-                    auto_tbl_queries = build_table_from_entity_classes(auto_entity_map, _mi, variable_facts_list=st.get("variable_facts_list") or [])
+                    auto_tbl_queries = build_table_from_entity_classes(auto_entity_map, _mi, variable_facts_list=st.variable_facts_list or [])
                     if auto_tbl_queries:
                         async for graph in run_graph_queries(client, auto_tbl_queries, label="PHASE2:AUTO_ENTITY_TABLE"):
                             yield emit_data(graph=graph)
@@ -680,16 +685,16 @@ async def run_phase_llm(
     else:
         yield tracker.begin_step(3, len(unresolved))
         api_key = settings.llm.api_key
-        run_dir_path = Path(st["run_dir"]) if st.get("run_dir") else None
+        run_dir_path = Path(st.run_dir) if st.run_dir else None
         # DeepAgent 미해결 참조 추적에 전달할 컨텍스트
         deep_state = {
             "sql_index": sql_index,
-            "config_index": st.get("config_index") or {},
-            "artifact_index": st.get("artifact_index") or {},
+            "config_index": st.config_index or {},
+            "artifact_index": st.artifact_index or {},
             "data_dir": data_dir,
             "run_dir": str(run_dir_path) if run_dir_path else None,
-            "span_index": st.get("span_index"),
-            "chunk_index": st.get("chunk_index"),
+            "span_index": st.span_index,
+            "chunk_index": st.chunk_index,
             "ddl_table_metadata": ddl_meta or None,  # DDL 테이블 메타 (FK 추론용)
         }
 
@@ -746,8 +751,10 @@ async def run_phase_llm(
                     logger.warning("[FW:PHASE2] Neo4j DeepAgent 유도 반영 실패: %s", e)
         # deepagent 가 빌드한 index 를 pipeline state 에 보존
         if deep_state.get("span_index"):
-            st.setdefault("span_index", deep_state["span_index"])
-            st.setdefault("chunk_index", deep_state["chunk_index"])
+            if st.span_index is None:
+                st.span_index = deep_state["span_index"]
+            if st.chunk_index is None:
+                st.chunk_index = deep_state["chunk_index"]
         yield tracker.end_step(f"REFER_TO {len(da_refer_all)}건, Function→Table {len(da_mt_all)}건 추가")
 
     # -----------------------------------------------------------------------
@@ -766,20 +773,18 @@ async def run_phase_llm(
             logger.warning("[FW:PHASE2] Neo4j FK 엣지 반영 실패: %s", e)
 
     stats.total_nodes += len(refer_to_edges) + len(all_calls)
-    st.update({
-        "refer_to_edges": refer_to_edges,
-        "reads_writes": reads_writes,
-        "fk_edges": fk_edges,
-        "column_refs": column_refs,
-        "function_table_edges": function_table_edges,
-        "module_table_edges": module_table_edges,
-        "unresolved": unresolved,
-        "calls_edges_from_batch": calls_edges_from_batch,
-        "unresolved_calls": unresolved_calls,
-        "calls_edges": all_calls,
-        "uses_edges": uses_edges,
-        "table_descriptions": table_descriptions,
-    })
+    st.refer_to_edges = refer_to_edges
+    st.reads_writes = reads_writes
+    st.fk_edges = fk_edges
+    st.column_refs = column_refs
+    st.function_table_edges = function_table_edges
+    st.module_table_edges = module_table_edges
+    st.unresolved = unresolved
+    st.calls_edges_from_batch = calls_edges_from_batch
+    st.unresolved_calls = unresolved_calls
+    st.calls_edges = all_calls
+    st.uses_edges = uses_edges
+    st.table_descriptions = table_descriptions
 
     yield emit_message(f"✅ Phase 2 완료 | 참조 {len(refer_to_edges)}건, CALLS {len(all_calls)}건, Table배치 {table_batch_count}건, Call배치 {call_batch_count}건")
 
@@ -796,13 +801,13 @@ async def run_phase_post(
 ) -> AsyncGenerator[bytes, None]:
     """Phase 3: 메서드 요약, Field/Module 요약, Table Description 보강."""
     st = pipeline._pipeline_state
-    function_facts_list = st.get("function_facts_list") or []
-    variable_facts_list = st.get("variable_facts_list") or []
-    module_index = st.get("module_index") or {}
-    refer_to_edges = st.get("refer_to_edges") or []
-    reads_writes = st.get("reads_writes") or []
-    all_calls = st.get("calls_edges") or []
-    sql_index = st.get("sql_index") or {}
+    function_facts_list = st.function_facts_list or []
+    variable_facts_list = st.variable_facts_list or []
+    module_index = st.module_index or {}
+    refer_to_edges = st.refer_to_edges or []
+    reads_writes = st.reads_writes or []
+    all_calls = st.calls_edges or []
+    sql_index = st.sql_index or {}
     api_key = settings.llm.api_key
     locale = settings.locale
 
@@ -830,17 +835,17 @@ async def run_phase_post(
         parallel=True,
         module_index=module_index,
         sql_index=sql_index,
-        config_index=st.get("config_index"),
+        config_index=st.config_index,
         calls_edges=all_calls,
         variable_facts_list=variable_facts_list,
-        lang=st["lang"],
+        lang=st.lang,
     ):
         summary_by_function.update(summary_batch)
         yield tracker.tick_quiet()
         # --- Build queries in logical sections; each section has its own try/except
         #     so a failure in one does not silently suppress the others. ---
         queries: list[dict[str, Any]] = []
-        lang = st["lang"]
+        lang = st.lang
 
         # 1) Function summary queries
         try:
@@ -938,7 +943,7 @@ async def run_phase_post(
         except Exception as e:
             logger.warning("[FW:PHASE3] Neo4j summary 배치 반영 실패: %s", e)
 
-    st["summary_by_function"] = summary_by_function
+    st.summary_by_function = summary_by_function
     yield tracker.end_step(f"메서드 {len(summary_by_function)}개 요약 완료")
 
     # --- Field 요약 (완료 즉시 스트리밍) ---
@@ -947,8 +952,8 @@ async def run_phase_post(
     summary_by_variable: Dict[str, Any] = {}
     for field_batch in run_variable_summary(
         variable_facts_list, module_index,
-        data_dir=st.get("data_dir", ""),
-        run_dir=st.get("run_dir"),
+        data_dir=st.data_dir,
+        run_dir=st.run_dir,
         api_key=api_key, locale=locale,
     ):
         summary_by_variable.update(field_batch)
@@ -975,7 +980,7 @@ async def run_phase_post(
         summary_by_module.update(module_batch)
         yield tracker.tick_quiet(len(module_batch))
         try:
-            queries = build_module_summary_queries(module_batch, lang=st["lang"])
+            queries = build_module_summary_queries(module_batch, lang=st.lang)
             if queries:
                 async for graph in run_graph_queries(client, queries, label="PHASE3:MODULE_SUMMARY"):
                     yield emit_data(graph=graph)
@@ -1082,10 +1087,8 @@ async def run_phase_post(
 
     yield tracker.end_step(f"테이블 {enriched_table_count}개 설명 보강")
 
-    st.update({
-        "summary_by_variable": summary_by_variable,
-        "summary_by_module": summary_by_module,
-    })
+    st.summary_by_variable = summary_by_variable
+    st.summary_by_module = summary_by_module
 
     yield emit_message(
         f"✅ Phase 3 완료 | 메서드요약 {len(summary_by_function)}개, "
