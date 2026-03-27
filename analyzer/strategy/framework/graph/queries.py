@@ -908,23 +908,32 @@ def build_function_summary_queries(summary_by_function: Dict[str, Dict[str, Any]
 
     commands = []
     readmodels = []
+    gwt_rows = []
     for function_id, data in summary_by_function.items():
         stereotype = (data.get("stereotype") or "").strip()
         if stereotype not in VALID_STEREOTYPES:
             stereotype = "BusinessLogic"
         cqrs = compute_cqrs_type(stereotype)
         summary = (data.get("summary") or "").strip()
-        scenarios = data.get("scenarios") or []
-        gwt = json.dumps(scenarios, ensure_ascii=False) if scenarios else ""
-        row = {"function_id": function_id, "stereotype": stereotype, "summary": summary, "gwt": gwt}
+        row = {"function_id": function_id, "stereotype": stereotype, "summary": summary}
         if cqrs == "command":
             commands.append(row)
         else:
             readmodels.append(row)
+        # GWT 시나리오 수집
+        for sc in (data.get("scenarios") or []):
+            if isinstance(sc, dict) and sc.get("title"):
+                gwt_rows.append({
+                    "function_id": function_id,
+                    "title": sc.get("title", ""),
+                    "given": sc.get("given", ""),
+                    "when": sc.get("when", ""),
+                    "then": sc.get("then", ""),
+                })
 
     queries = []
     # CQRS 라벨 (OOP 언어만)
-    set_clause = "SET n.updated_at = timestamp(), n.stereotype = row.stereotype, n.summary = row.summary, n.gwt = CASE WHEN row.gwt <> '' THEN row.gwt ELSE n.gwt END"
+    set_clause = "SET n.updated_at = timestamp(), n.stereotype = row.stereotype, n.summary = row.summary"
     if onto.is_oop(lang):
         if commands:
             queries.append({
@@ -955,6 +964,20 @@ def build_function_summary_queries(summary_by_function: Dict[str, Dict[str, Any]
         queries.append({
             "query": f"UNWIND $ids AS mid\nMATCH (n:FUNCTION {{function_id: mid}})\nSET n:{label}\nRETURN n",
             "params": {"ids": function_ids},
+        })
+
+    # GWT 노드 생성 + FUNCTION→GWT 관계
+    if gwt_rows:
+        queries.append({
+            "query": (
+                "UNWIND $rows AS row\n"
+                "MATCH (f:FUNCTION {function_id: row.function_id})\n"
+                "MERGE (g:GWT {function_id: row.function_id, title: row.title})\n"
+                "SET g.given = row.given, g.when = row.when, g.then = row.then, g.updated_at = timestamp()\n"
+                "MERGE (f)-[:HAS_GWT]->(g)\n"
+                "RETURN f, g"
+            ),
+            "params": {"rows": gwt_rows},
         })
 
     return queries
