@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, Generator, List, Optional, Set, Tuple
 
 from config.settings import settings
-from analyzer.strategy.framework.models import (
+from analyzer.strategy.framework.common.models import (
     CallsEdge,
     FunctionFacts,
     VariableFacts,

@@ -1,16 +1,11 @@
-"""DBMS 전략 공통 유틸리티 함수
-
-phase_ddl.py + _ast_core.py에서 추출한 순수 유틸 함수.
-DDL 관련 공통 함수는 analyzer.common.ddl_utils로 이동, 여기서 re-export.
-"""
+"""DBMS 전략 공통 유틸리티 함수"""
 
 from __future__ import annotations
 
 import re
 from typing import Optional, Set, Tuple
 
-# DDL 공통 함수 re-export (하위호환)
-from analyzer.common.ddl_utils import apply_name_case, list_ddl_files  # noqa: F401
+from analyzer.common.ddl_utils import apply_name_case
 
 
 def resolve_default_schema(

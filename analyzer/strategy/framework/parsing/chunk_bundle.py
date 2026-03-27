@@ -14,7 +14,7 @@ from util.text_utils import (
     add_line_numbers,
     slice_by_line_range,
 )
-from analyzer.strategy.framework.models import (
+from analyzer.strategy.framework.common.models import (
     ChunkBundle,
     ChunkBundleFile,
     ChunkBundleMemberVar,

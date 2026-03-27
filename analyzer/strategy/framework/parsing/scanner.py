@@ -18,7 +18,7 @@ from analyzer.strategy.framework.common.constants import (
     CATEGORY_DOCS,
 )
 from analyzer.strategy.framework.common.ontology import get_ontology
-from analyzer.strategy.framework.models import (
+from analyzer.strategy.framework.common.models import (
     FileCatalogEntry,
     ProcessingPlan,
 )

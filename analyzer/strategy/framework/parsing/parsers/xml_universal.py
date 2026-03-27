@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from analyzer.strategy.framework.models import SqlStatementChunk, ArtifactChunk
+from analyzer.strategy.framework.common.models import SqlStatementChunk, ArtifactChunk
 from .base import _local_tag, _parse_xml_safe
 
 logger = logging.getLogger(__name__)

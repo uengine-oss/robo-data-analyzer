@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from analyzer.strategy.framework.models import (
+from analyzer.strategy.framework.common.models import (
     SqlStatementChunk,
     ConfigSectionChunk,
     ArtifactChunk,

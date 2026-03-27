@@ -8,7 +8,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from analyzer.strategy.framework.models import (
+from analyzer.strategy.framework.common.models import (
     FunctionFacts,
     SqlStatementChunk,
     ConfigSectionChunk,

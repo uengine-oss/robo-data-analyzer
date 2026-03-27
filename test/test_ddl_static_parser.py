@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from analyzer.strategy.dbms.parsing.ddl_parser import parse_ddl
+from analyzer.common.ddl_parser import parse_ddl
 from config.settings import settings
 
 # ==================== 프로젝트 경로 설정 ====================
