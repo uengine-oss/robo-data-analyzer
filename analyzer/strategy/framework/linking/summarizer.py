@@ -28,11 +28,13 @@ from util.prompt_executor import get_rule_loader
 logger = logging.getLogger(__name__)
 
 
-VALID_METHOD_STEREOTYPES = frozenset({
+VALID_STEREOTYPES = frozenset({
     "Endpoint", "Query", "Command", "Getter", "Setter",
     "Lifecycle", "Scheduled", "EventHandler", "Init",
     "Transactional", "Validation", "BusinessLogic",
 })
+
+READMODEL_STEREOTYPES = frozenset({"Query", "Getter"})
 
 VALID_MODULE_STEREOTYPES = frozenset({
     "Controller", "Service", "Repository", "Entity", "DTO",
@@ -41,6 +43,11 @@ VALID_MODULE_STEREOTYPES = frozenset({
     "Gateway", "Facade", "Factory", "Scheduler", "Client", "Enum",
     "Module", "DataStructure",
 })
+
+
+def compute_cqrs_type(stereotype: str) -> str:
+    """stereotype 값에서 CQRS 타입(command/readmodel)을 자동 유추."""
+    return "readmodel" if stereotype in READMODEL_STEREOTYPES else "command"
 
 
 def compute_stereotype(
@@ -205,6 +212,28 @@ def _build_module_fields_context(
     return result
 
 
+def _collect_field_initial_values(
+    module_key: Optional[str],
+    variable_facts_list: Optional[List[VariableFacts]],
+    max_len: int = 1500,
+) -> str:
+    """같은 모듈 내 필드 변수의 초기값 정보를 수집."""
+    if not module_key or not variable_facts_list:
+        return ""
+    fields = [f for f in variable_facts_list if f.module_key == module_key and f.code]
+    if not fields:
+        return ""
+    parts = []
+    for f in fields:
+        code_line = " ".join((f.code or "").strip().split())
+        if code_line and "=" in code_line:
+            parts.append(code_line)
+    result = " | ".join(parts)
+    if len(result) > max_len:
+        result = result[:max_len - 15] + " ... [truncated]"
+    return result
+
+
 def _invoke_analysis_llm(
     m: FunctionFacts,
     api_key: str,
@@ -217,6 +246,8 @@ def _invoke_analysis_llm(
     linked_architecture_context: Optional[str] = None,
     called_method_summaries: Optional[List[Dict[str, Any]]] = None,
     module_fields_context: Optional[str] = None,
+    field_initial_values: Optional[str] = None,
+    table_sample_data: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """메서드 1개에 대해 analysis 규칙 실행 → summary/calls/dependencies/stereotype.
 
@@ -291,6 +322,10 @@ def _invoke_analysis_llm(
     context = "; ".join(context_parts)
     if context.strip():
         inputs["context"] = context
+    if field_initial_values and field_initial_values.strip():
+        inputs["field_initial_values"] = field_initial_values.strip()
+    if table_sample_data and table_sample_data.strip():
+        inputs["table_sample_data"] = table_sample_data.strip()
     try:
         loader = get_rule_loader("framework")
         result = loader.execute("function_summary", inputs, api_key=api_key)
@@ -331,8 +366,8 @@ def _process_one_method_for_analysis(
     호출 그래프 하위 → 상위 순으로 돌면서, 하위 summary를 context에 포함해 한 번의 LLM 호출로
     가능한 한 완성도 높은 summary를 생성하는 데 사용한다.
     """
-    fallback_stereotype = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
-    summary = f"{m.fqn} ({fallback_stereotype}); lines {m.start_line}-{m.end_line}"
+    cqrs_fallback = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
+    summary = f"{m.fqn} ({cqrs_fallback}); lines {m.start_line}-{m.end_line}"
     method_edges = [e for e in refer_to_edges if e.function_id == m.function_id]
     calls_outgoing = [f"{e.target_type}:{e.target_id}" for e in method_edges]
     sql_keys_for_m = {e.target_id for e in method_edges if e.target_type == "SqlStatement"}
@@ -355,8 +390,11 @@ def _process_one_method_for_analysis(
     dependencies: List[Dict[str, Any]] = []
     variable_refs: List[str] = []
     table_insights: List[Dict[str, Any]] = []
-    stereotype = fallback_stereotype
-    method_stereotype = ""
+    scenarios: List[Dict[str, Any]] = []
+    stereotype = ""
+    # 필드 초기값 수집 (같은 모듈 내 변수의 선언 코드)
+    field_init_values = _collect_field_initial_values(m.module_key, variable_facts_list)
+
     if api_key:
         analysis = _invoke_analysis_llm(
             m,
@@ -369,6 +407,7 @@ def _process_one_method_for_analysis(
             linked_architecture_context=linked_architecture_context or None,
             called_method_summaries=called_summaries,
             module_fields_context=fields_ctx or None,
+            field_initial_values=field_init_values or None,
         )
         if analysis:
             summary = analysis.get("summary") or summary
@@ -376,22 +415,24 @@ def _process_one_method_for_analysis(
             dependencies = list(analysis.get("dependencies") or [])
             variable_refs = list(analysis.get("variableRefs") or [])
             table_insights = list(analysis.get("tableInsights") or [])
-            raw_stereotype = (analysis.get("stereotype") or "").strip().lower()
-            if raw_stereotype in ("command", "readmodel"):
+            scenarios = list(analysis.get("scenarios") or [])
+            raw_stereotype = (analysis.get("stereotype") or "").strip()
+            if raw_stereotype in VALID_STEREOTYPES:
                 stereotype = raw_stereotype
-            raw_method_st = (analysis.get("methodStereotype") or "").strip()
-            if raw_method_st in VALID_METHOD_STEREOTYPES:
-                method_stereotype = raw_method_st
+
+    # stereotype이 없으면 CQRS fallback에서 유추
+    if not stereotype:
+        stereotype = "Command" if cqrs_fallback == "command" else "Query"
 
     data = {
         "stereotype": stereotype,
-        "methodStereotype": method_stereotype,
         "summary": summary,
         "fqn": m.fqn,
         "calls": calls,
         "dependencies": dependencies,
         "variableRefs": variable_refs,
         "tableInsights": table_insights,
+        "scenarios": scenarios,
     }
     return m.function_id, data
 

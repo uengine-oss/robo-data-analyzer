@@ -899,86 +899,61 @@ def build_refer_to_queries(edges: List[ReferToEdge]) -> List[Dict[str, Any]]:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def build_function_summary_queries(summary_by_function: Dict[str, Dict[str, Any]], lang: str) -> List[Dict[str, Any]]:
-    """FUNCTION 노드에 summary·stereotype·methodStereotype 속성 및 언어별 스테레오타입 레이블 추가.
-
-    lang에 따라 허용되는 스테레오타입만 Neo4j 라벨로 추가.
-    """
-    from analyzer.strategy.framework.linking.summarizer import VALID_METHOD_STEREOTYPES
+    """FUNCTION 노드에 summary·stereotype·gwt 속성 및 CQRS/stereotype 라벨 추가."""
+    import json
+    from analyzer.strategy.framework.linking.summarizer import VALID_STEREOTYPES, compute_cqrs_type
     from analyzer.strategy.framework.common.ontology import get_ontology
     onto = get_ontology()
     valid_for_lang = onto.valid_stereotypes(lang)
 
-    # CQRS stereotype별 그룹핑 (OOP만 라벨 추가, 비OOP는 속성만)
     commands = []
     readmodels = []
     for function_id, data in summary_by_function.items():
-        ster = _normalize_stereotype(data.get("stereotype"))
+        stereotype = (data.get("stereotype") or "").strip()
+        if stereotype not in VALID_STEREOTYPES:
+            stereotype = "BusinessLogic"
+        cqrs = compute_cqrs_type(stereotype)
         summary = (data.get("summary") or "").strip()
-        method_st = (data.get("methodStereotype") or "").strip()
-        if method_st not in VALID_METHOD_STEREOTYPES:
-            method_st = ""
-        row = {"function_id": function_id, "stereotype": ster, "summary": summary, "methodStereotype": method_st}
-        if ster == "command":
+        scenarios = data.get("scenarios") or []
+        gwt = json.dumps(scenarios, ensure_ascii=False) if scenarios else ""
+        row = {"function_id": function_id, "stereotype": stereotype, "summary": summary, "gwt": gwt}
+        if cqrs == "command":
             commands.append(row)
         else:
             readmodels.append(row)
 
     queries = []
-    # CQRS stereotype 라벨 (OOP 언어만)
+    # CQRS 라벨 (OOP 언어만)
+    set_clause = "SET n.updated_at = timestamp(), n.stereotype = row.stereotype, n.summary = row.summary, n.gwt = CASE WHEN row.gwt <> '' THEN row.gwt ELSE n.gwt END"
     if onto.is_oop(lang):
         if commands:
             queries.append({
-                "query": (
-                    "UNWIND $rows AS row\n"
-                    "MATCH (n:FUNCTION {function_id: row.function_id})\n"
-                    "SET n.updated_at = timestamp(), n.stereotype = row.stereotype, n.summary = row.summary, n.methodStereotype = row.methodStereotype\n"
-                    "REMOVE n:COMMAND, n:READMODEL\n"
-                    "SET n:COMMAND\n"
-                    "RETURN n"
-                ),
+                "query": f"UNWIND $rows AS row\nMATCH (n:FUNCTION {{function_id: row.function_id}})\n{set_clause}\nREMOVE n:COMMAND, n:READMODEL\nSET n:COMMAND\nRETURN n",
                 "params": {"rows": commands},
             })
         if readmodels:
             queries.append({
-                "query": (
-                    "UNWIND $rows AS row\n"
-                    "MATCH (n:FUNCTION {function_id: row.function_id})\n"
-                    "SET n.updated_at = timestamp(), n.stereotype = row.stereotype, n.summary = row.summary, n.methodStereotype = row.methodStereotype\n"
-                    "REMOVE n:COMMAND, n:READMODEL\n"
-                    "SET n:READMODEL\n"
-                    "RETURN n"
-                ),
+                "query": f"UNWIND $rows AS row\nMATCH (n:FUNCTION {{function_id: row.function_id}})\n{set_clause}\nREMOVE n:COMMAND, n:READMODEL\nSET n:READMODEL\nRETURN n",
                 "params": {"rows": readmodels},
             })
     else:
-        # 비OOP: 속성만 저장, CQRS 라벨 없음
         all_rows = commands + readmodels
         if all_rows:
             queries.append({
-                "query": (
-                    "UNWIND $rows AS row\n"
-                    "MATCH (n:FUNCTION {function_id: row.function_id})\n"
-                    "SET n.updated_at = timestamp(), n.stereotype = row.stereotype, n.summary = row.summary, n.methodStereotype = row.methodStereotype\n"
-                    "RETURN n"
-                ),
+                "query": f"UNWIND $rows AS row\nMATCH (n:FUNCTION {{function_id: row.function_id}})\n{set_clause}\nRETURN n",
                 "params": {"rows": all_rows},
             })
 
-    # methodStereotype 라벨 (언어에 맞는 것만)
-    method_st_groups: Dict[str, List[str]] = {}
+    # stereotype 라벨 (언어에 맞는 것만)
+    st_groups: Dict[str, List[str]] = {}
     for function_id, data in summary_by_function.items():
-        method_st = (data.get("methodStereotype") or "").strip()
-        if method_st in VALID_METHOD_STEREOTYPES and method_st in valid_for_lang:
-            method_st_groups.setdefault(method_st, []).append(function_id)
+        stereotype = (data.get("stereotype") or "").strip()
+        if stereotype in VALID_STEREOTYPES and stereotype in valid_for_lang:
+            st_groups.setdefault(stereotype, []).append(function_id)
 
-    for label, function_ids in method_st_groups.items():
+    for label, function_ids in st_groups.items():
         queries.append({
-            "query": (
-                "UNWIND $ids AS mid\n"
-                f"MATCH (n:FUNCTION {{function_id: mid}})\n"
-                f"SET n:{label}\n"
-                "RETURN n"
-            ),
+            "query": f"UNWIND $ids AS mid\nMATCH (n:FUNCTION {{function_id: mid}})\nSET n:{label}\nRETURN n",
             "params": {"ids": function_ids},
         })
 

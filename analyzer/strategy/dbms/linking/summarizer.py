@@ -29,12 +29,34 @@ def _rule_loader() -> RuleLoader:
     return _rule_loader_cache
 
 
-def _analyze_summary_only(summaries: dict, api_key: str, locale: str, previous_summary: str = "") -> Dict[str, Any]:
-    return _rule_loader().execute(
-        "procedure_summary",
-        {"summaries": summaries, "locale": locale, "previous_summary": previous_summary},
-        api_key,
-    )
+def _collect_variable_declarations(processor: Any, proc_key: str, var_types: frozenset, max_len: int = 1500) -> str:
+    """프로시저 내 DECLARE 블록의 변수 선언/초기값을 수집."""
+    parts = []
+    for node in (processor._nodes or []):
+        if node.unit_key == proc_key and node.node_type in var_types and node.code:
+            code_line = " ".join(node.code.strip().split())
+            if code_line:
+                parts.append(code_line)
+    result = " | ".join(parts)
+    if len(result) > max_len:
+        result = result[:max_len - 15] + " ... [truncated]"
+    return result
+
+
+def _analyze_summary_only(
+    summaries: dict,
+    api_key: str,
+    locale: str,
+    previous_summary: str = "",
+    variable_declarations: str = "",
+    table_sample_data: str = "",
+) -> Dict[str, Any]:
+    inputs: Dict[str, Any] = {"summaries": summaries, "locale": locale, "previous_summary": previous_summary}
+    if variable_declarations:
+        inputs["variable_declarations"] = variable_declarations
+    if table_sample_data:
+        inputs["table_sample_data"] = table_sample_data
+    return _rule_loader().execute("procedure_summary", inputs, api_key)
 
 
 def _summarize_table_metadata(
@@ -133,7 +155,13 @@ async def _run_procedure_summary(
     async def process_procedure(ctx, processor, proc_key, info, summaries):
         async with semaphore:
             try:
+                import json as _json
+                from analyzer.strategy.dbms.common.constants import VARIABLE_DECLARATION_TYPES
                 proc_root = next((n for n in (processor._nodes or []) if n.unit_key == proc_key and n.node_type == info.procedure_type), None)
+
+                # 변수 선언/초기값 수집
+                var_decls = _collect_variable_declarations(processor, proc_key, VARIABLE_DECLARATION_TYPES)
+
                 chunks = _split_summaries_by_token(summaries, MAX_SUMMARY_CHUNK_TOKEN)
                 if not chunks and proc_root:
                     body = proc_root.get_placeholder_code()
@@ -141,30 +169,52 @@ async def _run_procedure_summary(
                         chunks = [{"PROCEDURE_BODY": body.strip()[:15000]}]
                 if not chunks:
                     final_summary = ""
+                    final_scenarios = []
                 else:
                     chunk_semaphore = asyncio.Semaphore(settings.concurrency.max_concurrency)
                     async def process_chunk(chunk):
                         async with chunk_semaphore:
-                            r = await asyncio.to_thread(_analyze_summary_only, chunk, orchestrator.api_key, orchestrator.locale, "")
-                            return r.get('summary', '') if isinstance(r, dict) else ""
-                    chunk_results = [r for r in await asyncio.gather(*[process_chunk(c) for c in chunks]) if r]
-                    if not chunk_results:
+                            r = await asyncio.to_thread(
+                                _analyze_summary_only, chunk, orchestrator.api_key, orchestrator.locale, "",
+                                variable_declarations=var_decls,
+                            )
+                            return r if isinstance(r, dict) else {}
+                    chunk_results_raw = await asyncio.gather(*[process_chunk(c) for c in chunks])
+                    chunk_summaries = [r.get('summary', '') for r in chunk_results_raw if r.get('summary')]
+                    # 최종 chunk에서만 scenarios 수집
+                    final_scenarios = []
+                    for r in chunk_results_raw:
+                        if r.get('scenarios'):
+                            final_scenarios = r['scenarios']
+
+                    if not chunk_summaries:
                         final_summary = ""
-                    elif len(chunk_results) == 1:
-                        final_summary = chunk_results[0]
+                    elif len(chunk_summaries) == 1:
+                        final_summary = chunk_summaries[0]
                     else:
-                        combined = {f"CHUNK_{i+1}": s for i, s in enumerate(chunk_results)}
-                        r = await asyncio.to_thread(_analyze_summary_only, combined, orchestrator.api_key, orchestrator.locale, "")
-                        final_summary = r.get('summary') or "\n\n".join(chunk_results) if isinstance(r, dict) else "\n\n".join(chunk_results)
+                        combined = {f"CHUNK_{i+1}": s for i, s in enumerate(chunk_summaries)}
+                        r = await asyncio.to_thread(
+                            _analyze_summary_only, combined, orchestrator.api_key, orchestrator.locale, "",
+                            variable_declarations=var_decls,
+                        )
+                        if isinstance(r, dict):
+                            final_summary = r.get('summary') or "\n\n".join(chunk_summaries)
+                            if r.get('scenarios'):
+                                final_scenarios = r['scenarios']
+                        else:
+                            final_summary = "\n\n".join(chunk_summaries)
+
                 if not final_summary:
                     await results_queue.put({"type": "success", "procedure": info.procedure_name, "file": ctx.file_name})
                     return
+
+                gwt_json = _json.dumps(final_scenarios, ensure_ascii=False) if final_scenarios else ""
                 if info.schema_name:
-                    cypher = f"MATCH (__cy_n__:{info.procedure_type} {{schema_name: $schema_name, procedure_name: $procedure_name, directory: $directory, file_name: $file_name}}) SET __cy_n__.summary = $summary RETURN __cy_n__"
-                    params = {"schema_name": info.schema_name, "procedure_name": info.procedure_name, "directory": processor.full_directory, "file_name": processor.file_name, "summary": str(final_summary)}
+                    cypher = f"MATCH (__cy_n__:{info.procedure_type} {{schema_name: $schema_name, procedure_name: $procedure_name, directory: $directory, file_name: $file_name}}) SET __cy_n__.summary = $summary, __cy_n__.gwt = CASE WHEN $gwt <> '' THEN $gwt ELSE __cy_n__.gwt END RETURN __cy_n__"
+                    params = {"schema_name": info.schema_name, "procedure_name": info.procedure_name, "directory": processor.full_directory, "file_name": processor.file_name, "summary": str(final_summary), "gwt": gwt_json}
                 else:
-                    cypher = f"MATCH (__cy_n__:{info.procedure_type} {{procedure_name: $procedure_name, directory: $directory, file_name: $file_name}}) SET __cy_n__.summary = $summary RETURN __cy_n__"
-                    params = {"procedure_name": info.procedure_name, "directory": processor.full_directory, "file_name": processor.file_name, "summary": str(final_summary)}
+                    cypher = f"MATCH (__cy_n__:{info.procedure_type} {{procedure_name: $procedure_name, directory: $directory, file_name: $file_name}}) SET __cy_n__.summary = $summary, __cy_n__.gwt = CASE WHEN $gwt <> '' THEN $gwt ELSE __cy_n__.gwt END RETURN __cy_n__"
+                    params = {"procedure_name": info.procedure_name, "directory": processor.full_directory, "file_name": processor.file_name, "summary": str(final_summary), "gwt": gwt_json}
                 queries = [{"query": cypher, "params": params}]
                 if queries:
                     async for batch in run_graph_queries(client, queries, cypher_lock=pipeline._cypher_lock):
