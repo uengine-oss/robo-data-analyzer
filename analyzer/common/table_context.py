@@ -19,24 +19,31 @@ from client.neo4j_client import Neo4jClient
 
 logger = logging.getLogger(__name__)
 
-# fixture 캐시 (파일 1회만 로드)
-_fixture_cache: Optional[Dict[str, Any]] = None
+# fixture 캐시 (경로별 1회만 로드)
+_fixture_cache: Dict[str, Any] = {}
+_fixture_loaded_path: Optional[str] = None
 
 
 def _load_fixture() -> Dict[str, Any]:
     """TEST_SAMPLE_DATA_PATH 환경변수에 지정된 JSON fixture 로드."""
-    global _fixture_cache
-    if _fixture_cache is not None:
-        return _fixture_cache
+    global _fixture_cache, _fixture_loaded_path
 
     path = os.environ.get("TEST_SAMPLE_DATA_PATH", "")
-    if not path or not os.path.isfile(path):
-        _fixture_cache = {}
+    if not path:
+        return {}
+
+    # 같은 경로면 캐시 반환
+    if path == _fixture_loaded_path:
         return _fixture_cache
+
+    if not os.path.isfile(path):
+        logger.warning("[TABLE_CTX] fixture 파일 없음 | path=%s", path)
+        return {}
 
     try:
         with open(path, "r", encoding="utf-8") as f:
             _fixture_cache = json.load(f)
+        _fixture_loaded_path = path
         logger.info("[TABLE_CTX] fixture 로드 | path=%s tables=%d", path, len(_fixture_cache))
     except Exception as e:
         logger.warning("[TABLE_CTX] fixture 로드 실패 (%s): %s", path, e)
@@ -96,6 +103,8 @@ async def fetch_table_context(
             section = _build_section_from_fixture(table_name, fixture)
             if section:
                 parts.append(section)
+        if parts:
+            logger.info("[TABLE_CTX] fixture 기반 컨텍스트 생성 | tables=%s len=%d", unique_tables, len("\n\n".join(parts)))
         return "\n\n".join(parts)
 
     # 2. Neo4j 컬럼 메타 + 선택적 datasource 샘플

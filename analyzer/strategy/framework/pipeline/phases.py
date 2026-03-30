@@ -820,6 +820,27 @@ async def run_phase_post(
         ("Table Description 보강", 25),  # step 3
     ])
 
+    # --- 테이블 샘플 데이터 수집 (GWT용) ---
+    # reads_writes 리스트 또는 Neo4j에서 직접 테이블명 조회
+    table_sample_data_str = ""
+    try:
+        from analyzer.common.table_context import fetch_table_context
+        table_names: list[str] = []
+        if reads_writes:
+            table_names = list({rw.table_name for rw in reads_writes if rw.table_name})
+        if not table_names:
+            # Neo4j에서 직접 테이블명 조회 (Phase 2에서 Neo4j에만 저장된 경우)
+            table_results = await client.execute_queries([
+                "MATCH (t:Table) RETURN DISTINCT t.name AS name"
+            ])
+            table_names = [r["name"] for r in (table_results[0] if table_results and table_results[0] else []) if r.get("name")]
+        if table_names:
+            datasource_name = getattr(orchestrator, "datasource_name", "")
+            table_sample_data_str = await fetch_table_context(client, table_names, datasource_name)
+            logger.info("[FW:PHASE3] 테이블 샘플 수집 | tables=%s data_len=%d", table_names, len(table_sample_data_str))
+    except Exception as e:
+        logger.warning("[FW:PHASE3] 테이블 샘플 수집 실패: %s", e)
+
     # --- 메서드 요약 (Step 6: analysis LLM — 20개씩 배치 점진적 스트리밍) ---
     total_summary_batches = max(1, (len(function_facts_list) + 19) // 20)
     yield tracker.begin_step(0, total_summary_batches)
@@ -839,6 +860,7 @@ async def run_phase_post(
         calls_edges=all_calls,
         variable_facts_list=variable_facts_list,
         lang=st.lang,
+        table_sample_data=table_sample_data_str or None,
     ):
         summary_by_function.update(summary_batch)
         yield tracker.tick_quiet()

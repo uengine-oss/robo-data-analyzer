@@ -34,8 +34,6 @@ VALID_STEREOTYPES = frozenset({
     "Transactional", "Validation", "BusinessLogic",
 })
 
-READMODEL_STEREOTYPES = frozenset({"Query", "Getter"})
-
 VALID_MODULE_STEREOTYPES = frozenset({
     "Controller", "Service", "Repository", "Entity", "DTO",
     "Config", "Component", "Aspect", "Filter", "Listener",
@@ -43,11 +41,6 @@ VALID_MODULE_STEREOTYPES = frozenset({
     "Gateway", "Facade", "Factory", "Scheduler", "Client", "Enum",
     "Module", "DataStructure",
 })
-
-
-def compute_cqrs_type(stereotype: str) -> str:
-    """stereotype 값에서 CQRS 타입(command/readmodel)을 자동 유추."""
-    return "readmodel" if stereotype in READMODEL_STEREOTYPES else "command"
 
 
 def compute_stereotype(
@@ -359,13 +352,9 @@ def _process_one_method_for_analysis(
     module_key_index: Optional[Dict[str, Tuple[Optional[str], Optional[str]]]] = None,
     called_summaries: Optional[List[Dict[str, Any]]] = None,
     variable_facts_list: Optional[List[VariableFacts]] = None,
+    table_sample_data: Optional[str] = None,
 ) -> Tuple[str, Dict[str, Any]]:
-    """단일 메서드에 대해 stereotype + (summary, calls, dependencies) 계산.
-
-    called_summaries: 호출된 하위 메서드들의 summary 리스트.
-    호출 그래프 하위 → 상위 순으로 돌면서, 하위 summary를 context에 포함해 한 번의 LLM 호출로
-    가능한 한 완성도 높은 summary를 생성하는 데 사용한다.
-    """
+    """단일 메서드에 대해 stereotype + (summary, calls, dependencies) 계산."""
     cqrs_fallback = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
     summary = f"{m.fqn} ({cqrs_fallback}); lines {m.start_line}-{m.end_line}"
     method_edges = [e for e in refer_to_edges if e.function_id == m.function_id]
@@ -408,6 +397,7 @@ def _process_one_method_for_analysis(
             called_method_summaries=called_summaries,
             module_fields_context=fields_ctx or None,
             field_initial_values=field_init_values or None,
+            table_sample_data=table_sample_data or None,
         )
         if analysis:
             summary = analysis.get("summary") or summary
@@ -454,6 +444,7 @@ def run_step6(
     config_index: Optional[Dict[str, Any]] = None,
     calls_edges: Optional[List[CallsEdge]] = None,
     variable_facts_list: Optional[List[VariableFacts]] = None,
+    table_sample_data: Optional[str] = None,
 ) -> Generator[Dict[str, Dict[str, Any]], None, None]:
     """메서드별 stereotype, summary — 20개씩 배치로 yield.
 
@@ -506,6 +497,7 @@ def run_step6(
                         module_key_index,
                         None,
                         variable_facts_list,
+                        table_sample_data,
                     ): m
                     for m in function_facts_list
                 }
@@ -553,6 +545,7 @@ def run_step6(
                         module_key_index,
                         None,
                         variable_facts_list,
+                        table_sample_data,
                     )
                     batch[function_id] = data
                 except Exception as e:
@@ -629,6 +622,7 @@ def run_step6(
             module_key_index,
             called_list or None,
             variable_facts_list,
+            table_sample_data,
         )
         return node_id, data
 
