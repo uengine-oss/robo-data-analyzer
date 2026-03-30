@@ -1,10 +1,16 @@
 """테이블 컨텍스트 수집 — GWT 생성용
 
 DBMS/Framework 양쪽에서 사용하는 테이블 컬럼 메타 + 선택적 샘플 데이터 수집.
+
+데이터 소스 우선순위:
+1. TEST_SAMPLE_DATA_PATH 환경변수 → JSON fixture 파일에서 로드 (테스트용)
+2. datasource_name 지정 → text2sql API로 샘플 조회 (실서비스)
+3. 둘 다 없으면 → Neo4j 컬럼 메타만 반환
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Any, Dict, List, Optional
@@ -12,6 +18,59 @@ from typing import Any, Dict, List, Optional
 from client.neo4j_client import Neo4jClient
 
 logger = logging.getLogger(__name__)
+
+# fixture 캐시 (파일 1회만 로드)
+_fixture_cache: Optional[Dict[str, Any]] = None
+
+
+def _load_fixture() -> Dict[str, Any]:
+    """TEST_SAMPLE_DATA_PATH 환경변수에 지정된 JSON fixture 로드."""
+    global _fixture_cache
+    if _fixture_cache is not None:
+        return _fixture_cache
+
+    path = os.environ.get("TEST_SAMPLE_DATA_PATH", "")
+    if not path or not os.path.isfile(path):
+        _fixture_cache = {}
+        return _fixture_cache
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            _fixture_cache = json.load(f)
+        logger.info("[TABLE_CTX] fixture 로드 | path=%s tables=%d", path, len(_fixture_cache))
+    except Exception as e:
+        logger.warning("[TABLE_CTX] fixture 로드 실패 (%s): %s", path, e)
+        _fixture_cache = {}
+
+    return _fixture_cache
+
+
+def _build_section_from_fixture(table_name: str, fixture: Dict[str, Any]) -> Optional[str]:
+    """fixture 데이터에서 테이블 컨텍스트 문자열 생성."""
+    table_data = fixture.get(table_name)
+    if not table_data:
+        return None
+
+    columns = table_data.get("columns", [])
+    col_strs = []
+    for c in columns:
+        flags = []
+        if c.get("is_primary_key"):
+            flags.append("PK")
+        if c.get("nullable") is False:
+            flags.append("NOT NULL")
+        dtype = c.get("dtype", "")
+        flag_str = f", {', '.join(flags)}" if flags else ""
+        col_strs.append(f"{c['name']}({dtype}{flag_str})")
+
+    section = f"[{table_name} 테이블]\n컬럼: {', '.join(col_strs)}"
+
+    sample_rows = table_data.get("sample_rows", [])
+    if sample_rows:
+        sample_strs = [str(row) for row in sample_rows[:5]]
+        section += f"\n샘플: {' | '.join(sample_strs)}"
+
+    return section
 
 
 async def fetch_table_context(
@@ -21,19 +80,25 @@ async def fetch_table_context(
 ) -> str:
     """테이블의 컬럼 메타 + 선택적 샘플 데이터를 문자열로 반환.
 
-    1. Neo4j에서 컬럼 메타 조회 (항상)
-    2. datasource가 있으면 text2sql API로 샘플 5행 조회 (선택적)
-
     Returns:
         LLM 프롬프트에 삽입할 수 있는 테이블 컨텍스트 문자열
     """
     if not table_names:
         return ""
 
-    unique_tables = list(dict.fromkeys(table_names))[:10]  # 최대 10개
+    unique_tables = list(dict.fromkeys(table_names))[:10]
     parts: List[str] = []
 
-    # 1. Neo4j에서 컬럼 메타 조회
+    # 1. fixture 파일이 있으면 우선 사용 (테스트용)
+    fixture = _load_fixture()
+    if fixture:
+        for table_name in unique_tables:
+            section = _build_section_from_fixture(table_name, fixture)
+            if section:
+                parts.append(section)
+        return "\n\n".join(parts)
+
+    # 2. Neo4j 컬럼 메타 + 선택적 datasource 샘플
     for table_name in unique_tables:
         columns = await _fetch_column_meta(client, table_name)
         if not columns:
@@ -53,7 +118,6 @@ async def fetch_table_context(
 
         section = f"[{table_name} 테이블]\n컬럼: {', '.join(col_strs)}"
 
-        # 2. 샘플 데이터 (datasource 있을 때만)
         if datasource_name:
             samples = await _fetch_sample_rows(table_name, datasource_name)
             if samples:

@@ -1,0 +1,62 @@
+{
+  "Book": {
+    "schema": "public",
+    "columns": [
+      {"name": "id", "dtype": "INTEGER", "is_primary_key": true, "nullable": false},
+      {"name": "isbn", "dtype": "VARCHAR", "is_primary_key": false, "nullable": false},
+      {"name": "title", "dtype": "VARCHAR", "is_primary_key": false, "nullable": false},
+      {"name": "author", "dtype": "VARCHAR", "is_primary_key": false, "nullable": false},
+      {"name": "publisher", "dtype": "VARCHAR", "is_primary_key": false, "nullable": true},
+      {"name": "year", "dtype": "INTEGER", "is_primary_key": false, "nullable": true},
+      {"name": "category", "dtype": "VARCHAR", "is_primary_key": false, "nullable": true},
+      {"name": "status", "dtype": "VARCHAR", "is_primary_key": false, "nullable": false},
+      {"name": "created_at", "dtype": "DATETIME", "is_primary_key": false, "nullable": true}
+    ],
+    "sample_rows": [
+      {"id": 1, "isbn": "978-89-123-0001", "title": "클린 코드", "author": "로버트 마틴", "publisher": "인사이트", "year": 2013, "category": "프로그래밍", "status": "AVAILABLE", "created_at": "2025-01-15"},
+      {"id": 2, "isbn": "978-89-123-0002", "title": "리팩터링", "author": "마틴 파울러", "publisher": "한빛미디어", "year": 2020, "category": "프로그래밍", "status": "LOANED", "created_at": "2025-01-15"},
+      {"id": 3, "isbn": "978-89-123-0003", "title": "도메인 주도 설계", "author": "에릭 에반스", "publisher": "위키북스", "year": 2011, "category": "소프트웨어", "status": "AVAILABLE", "created_at": "2025-02-01"},
+      {"id": 4, "isbn": "978-89-123-0004", "title": "자바 ORM 표준 JPA", "author": "김영한", "publisher": "에이콘", "year": 2015, "category": "프로그래밍", "status": "LOANED", "created_at": "2025-02-10"},
+      {"id": 5, "isbn": "978-89-123-0005", "title": "이펙티브 자바", "author": "조슈아 블로크", "publisher": "인사이트", "year": 2018, "category": "프로그래밍", "status": "AVAILABLE", "created_at": "2025-03-01"}
+    ]
+  },
+  "Member": {
+    "schema": "public",
+    "columns": [
+      {"name": "id", "dtype": "INTEGER", "is_primary_key": true, "nullable": false},
+      {"name": "name", "dtype": "VARCHAR", "is_primary_key": false, "nullable": false},
+      {"name": "phone", "dtype": "VARCHAR", "is_primary_key": false, "nullable": false},
+      {"name": "email", "dtype": "VARCHAR", "is_primary_key": false, "nullable": true},
+      {"name": "grade", "dtype": "VARCHAR", "is_primary_key": false, "nullable": false},
+      {"name": "join_date", "dtype": "DATE", "is_primary_key": false, "nullable": true},
+      {"name": "is_active", "dtype": "BOOLEAN", "is_primary_key": false, "nullable": false}
+    ],
+    "sample_rows": [
+      {"id": 101, "name": "김철수", "phone": "010-1234-5678", "email": "kim@example.com", "grade": "GOLD", "join_date": "2024-06-01", "is_active": 1},
+      {"id": 102, "name": "이영희", "phone": "010-2345-6789", "email": "lee@example.com", "grade": "SILVER", "join_date": "2024-08-15", "is_active": 1},
+      {"id": 103, "name": "박민수", "phone": "010-3456-7890", "email": null, "grade": "NORMAL", "join_date": "2025-01-10", "is_active": 1},
+      {"id": 104, "name": "정하나", "phone": "010-4567-8901", "email": "jung@example.com", "grade": "GOLD", "join_date": "2024-03-20", "is_active": 0},
+      {"id": 105, "name": "최우진", "phone": "010-5678-9012", "email": "choi@example.com", "grade": "SILVER", "join_date": "2025-02-28", "is_active": 1}
+    ]
+  },
+  "Loan": {
+    "schema": "public",
+    "columns": [
+      {"name": "id", "dtype": "INTEGER", "is_primary_key": true, "nullable": false},
+      {"name": "book_id", "dtype": "INTEGER", "is_primary_key": false, "nullable": false},
+      {"name": "member_id", "dtype": "INTEGER", "is_primary_key": false, "nullable": false},
+      {"name": "loan_date", "dtype": "DATE", "is_primary_key": false, "nullable": false},
+      {"name": "due_date", "dtype": "DATE", "is_primary_key": false, "nullable": false},
+      {"name": "return_date", "dtype": "DATE", "is_primary_key": false, "nullable": true},
+      {"name": "status", "dtype": "VARCHAR", "is_primary_key": false, "nullable": false},
+      {"name": "fine", "dtype": "INTEGER", "is_primary_key": false, "nullable": true}
+    ],
+    "sample_rows": [
+      {"id": 1001, "book_id": 2, "member_id": 101, "loan_date": "2025-03-01", "due_date": "2025-03-15", "return_date": null, "status": "ACTIVE", "fine": 0},
+      {"id": 1002, "book_id": 4, "member_id": 102, "loan_date": "2025-03-05", "due_date": "2025-03-19", "return_date": null, "status": "ACTIVE", "fine": 0},
+      {"id": 1003, "book_id": 1, "member_id": 101, "loan_date": "2025-02-01", "due_date": "2025-02-15", "return_date": "2025-02-14", "status": "RETURNED", "fine": 0},
+      {"id": 1004, "book_id": 3, "member_id": 103, "loan_date": "2025-02-10", "due_date": "2025-02-24", "return_date": "2025-03-01", "status": "RETURNED", "fine": 5000},
+      {"id": 1005, "book_id": 5, "member_id": 105, "loan_date": "2025-03-10", "due_date": "2025-03-24", "return_date": null, "status": "ACTIVE", "fine": 0}
+    ]
+  }
+}
