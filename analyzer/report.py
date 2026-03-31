@@ -80,12 +80,17 @@ SCHEMA_NODE_STATS = ["노드 타입", "개수"]
 SCHEMA_REL_STATS = ["관계 타입", "개수"]
 SCHEMA_STEREOTYPE = ["스테레오타입", "개수"]
 
+# -- 데이터베이스 섹션 --
+SCHEMA_COLUMN = ["컬럼명", "타입", "Nullable", "PK", "기본값", "설명"]
+SCHEMA_FK = ["관계", "대상", "FK타입", "신뢰도", "근거"]
+
 # -- 패키지 섹션 --
 SCHEMA_PKG_MEMBERS = ["이름", "타입", "스테레오타입", "범위"]
 
 # -- 모듈 상세 섹션 --
 SCHEMA_FUNCTION = ["이름", "시그니처", "반환타입", "수정자", "요약"]
 SCHEMA_VARIABLE = ["이름", "타입", "수정자", "요약"]
+SCHEMA_GWT = ["함수", "시나리오", "Given", "When", "Then"]
 SCHEMA_STRUCT_REL = ["방향", "관계", "대상", "속성"]
 SCHEMA_CALL_REL = ["방향", "대상", "호출코드"]
 SCHEMA_DATA_ACCESS = ["대상", "관계", "근거", "신뢰도"]
@@ -93,20 +98,14 @@ SCHEMA_DATA_ACCESS = ["대상", "관계", "근거", "신뢰도"]
 # -- 외부 의존성 섹션 --
 SCHEMA_EXTERNAL_DEP = ["외부 엔티티", "타입", "참조 INTERNAL"]
 
-# -- Artifact 섹션 --
+# -- 비코드 파일 섹션 --
 SCHEMA_ARTIFACT_REL = ["방향", "관계", "대상"]
-
-# -- 설정 파일(NONTARGET) 섹션 --
 SCHEMA_NONTARGET_BLOCK = ["이름", "종류", "키워드", "라인", "요약"]
 SCHEMA_NONTARGET_REF = ["블록", "테이블", "역할", "근거", "신뢰도"]
-
-# -- DB 스키마 섹션 --
-SCHEMA_COLUMN = ["컬럼명", "타입", "Nullable", "PK", "설명"]
-SCHEMA_FK = ["관계", "대상", "FK타입", "신뢰도", "근거"]
+SCHEMA_CONFIG_SECTION = ["키 경로", "파일", "라인"]
 
 # -- 횡단 분석 섹션 --
 SCHEMA_ACCESS_MATRIX = ["테이블", "모듈", "접근유형"]
-SCHEMA_STRUCT_ALL = ["관계", "소스", "대상", "속성"]
 SCHEMA_ETL_FLOW = ["관계", "소스", "대상"]
 
 
@@ -230,6 +229,7 @@ class GraphData:
     schemas: List[GraphNode] = field(default_factory=list)
     dblinks: List[GraphNode] = field(default_factory=list)
     artifact_chunks: List[GraphNode] = field(default_factory=list)
+    config_sections: List[GraphNode] = field(default_factory=list)
 
     def get_node(self, node_id: str) -> Optional[GraphNode]:
         return self.nodes.get(node_id)
@@ -438,6 +438,8 @@ def _index_nodes(graph: GraphData) -> None:
             graph.dblinks.append(node)
         elif pl == "ARTIFACT_CHUNK":
             graph.artifact_chunks.append(node)
+        elif pl == "CONFIG_SECTION":
+            graph.config_sections.append(node)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -550,21 +552,14 @@ def _render_overview(graph: GraphData) -> str:
         node_rows.append([label, str(count)])
     parts.append(_md_table(SCHEMA_NODE_STATS, node_rows))
 
-    # 1.2 서브레이블 분포 (AST 타입 상세)
-    parts.append("\n### 1.2. 서브레이블 분포\n")
-    sub_rows = []
-    for label, count in sorted(graph._sub_label_counts.items(), key=lambda x: -x[1]):
-        sub_rows.append([label, str(count)])
-    parts.append(_md_table(SCHEMA_NODE_STATS, sub_rows))
-
-    # 1.3 관계 통계
-    parts.append("\n### 1.3. 관계 통계\n")
+    # 1.2 관계 통계
+    parts.append("\n### 1.2. 관계 통계\n")
     rel_counts = graph.rel_type_counts()
     rel_rows = [[rt, str(cnt)] for rt, cnt in rel_counts.items()]
     parts.append(_md_table(SCHEMA_REL_STATS, rel_rows))
 
-    # 1.4 스테레오타입 분포
-    parts.append("\n### 1.4. 스테레오타입 분포\n")
+    # 1.3 스테레오타입 분포
+    parts.append("\n### 1.3. 스테레오타입 분포\n")
     stereo_counts: Dict[str, int] = defaultdict(int)
     if graph._stereotype_counts:
         # Neo4j 라벨 기반 스테레오타입 카운트 우선 사용
@@ -582,8 +577,8 @@ def _render_overview(graph: GraphData) -> str:
 
 
 def _render_packages(graph: GraphData) -> str:
-    """## 2. 패키지 구조"""
-    parts = ["## 2. 패키지 구조\n"]
+    """## 3. 패키지 구조"""
+    parts = ["## 3. 패키지 구조\n"]
 
     if not graph.packages:
         parts.append("패키지 없음.\n")
@@ -658,7 +653,7 @@ def _render_packages(graph: GraphData) -> str:
 def _render_module_detail(graph: GraphData, mod: GraphNode) -> str:
     """단일 모듈 상세 — MODULE/PROCEDURE/FUNCTION/TRIGGER 모두 동일 포맷.
 
-    하위 섹션: 기본 정보 → 요약 → 함수 → 변수 → 구조 관계 → 호출 관계 → 데이터 접근 → 요약 코드
+    하위 섹션: 기본 정보 → 요약 → 함수 → 변수 → GWT 시나리오 → 구조 관계 → 호출 관계 → 데이터 접근 → 요약 코드
     """
     name = _get_module_name(mod)
     parts = [f"### {name}\n"]
@@ -728,6 +723,28 @@ def _render_module_detail(graph: GraphData, mod: GraphNode) -> str:
     parts.append("\n#### 변수\n")
     parts.append(_md_table(SCHEMA_VARIABLE, var_rows))
 
+    # ── GWT 시나리오 (Framework: 자식 FUNCTION 경유, DBMS: 직접) ──
+    gwt_rows = []
+    for gwt in graph.get_children(mod.node_id, "HAS_GWT"):
+        gwt_rows.append([
+            name,
+            _safe(gwt.prop("title")),
+            _safe(gwt.prop("given")),
+            _safe(gwt.prop("when")),
+            _safe(gwt.prop("then")),
+        ])
+    for func in graph.get_children(mod.node_id, "HAS_FUNCTION"):
+        for gwt in graph.get_children(func.node_id, "HAS_GWT"):
+            gwt_rows.append([
+                _safe(func.prop("name")),
+                _safe(gwt.prop("title")),
+                _safe(gwt.prop("given")),
+                _safe(gwt.prop("when")),
+                _safe(gwt.prop("then")),
+            ])
+    parts.append("\n#### GWT 시나리오\n")
+    parts.append(_md_table(SCHEMA_GWT, gwt_rows))
+
     # ── 구조 관계 (UML + ETL 통합) ──
     struct_rels = []
     for r in graph.get_outgoing_rels(mod.node_id, ENTITY_STRUCT_REL_TYPES):
@@ -794,7 +811,7 @@ def _render_module_detail(graph: GraphData, mod: GraphNode) -> str:
 
 
 def _render_external(graph: GraphData, external_modules: List[GraphNode]) -> str:
-    """## 4. 외부 의존성 (EXTERNAL) 내용."""
+    """## 5. 외부 의존성 (EXTERNAL) 내용."""
     rows = []
     for mod in sorted(external_modules, key=lambda m: m.display_name):
         referrers = set()
@@ -812,14 +829,19 @@ def _render_external(graph: GraphData, external_modules: List[GraphNode]) -> str
     return _md_table(SCHEMA_EXTERNAL_DEP, rows)
 
 
-def _render_artifact_chunks(graph: GraphData) -> str:
-    """## 5. Artifact 청크"""
-    parts = ["## 5. Artifact 청크\n"]
+def _render_noncode_files(graph: GraphData) -> str:
+    """## 6. 비코드 파일 — Artifact 청크 + 설정 파일(NONTARGET) + CONFIG_SECTION 통합."""
+    parts = ["## 6. 비코드 파일\n"]
 
-    if not graph.artifact_chunks:
-        parts.append("Artifact 청크 없음.\n")
+    has_content = bool(
+        graph.artifact_chunks or graph.nontarget_files
+        or graph.nontarget_blocks or graph.config_sections
+    )
+    if not has_content:
+        parts.append("비코드 파일 없음.\n")
         return "\n".join(parts)
 
+    # ── Artifact 청크 (EJB/Hibernate XML 등) ──
     for chunk in sorted(graph.artifact_chunks, key=lambda c: c.display_name):
         parts.append(f"### {chunk.display_name}\n")
 
@@ -843,17 +865,7 @@ def _render_artifact_chunks(graph: GraphData) -> str:
         parts.append(_md_table(SCHEMA_ARTIFACT_REL, rel_rows))
         parts.append("")
 
-    return "\n".join(parts)
-
-
-def _render_nontarget(graph: GraphData) -> str:
-    """## 6. 설정 파일 (NONTARGET)"""
-    parts = ["## 6. 설정 파일 (NONTARGET)\n"]
-
-    if not graph.nontarget_files and not graph.nontarget_blocks:
-        parts.append("설정 파일 없음.\n")
-        return "\n".join(parts)
-
+    # ── 설정 파일 (NONTARGET) ──
     for ntf in sorted(graph.nontarget_files, key=lambda f: f.prop("file_path", "")):
         fname = ntf.prop("file_name", ntf.prop("file_path", ntf.display_name))
         parts.append(f"### {fname}\n")
@@ -895,15 +907,27 @@ def _render_nontarget(graph: GraphData) -> str:
         parts.append(_md_table(SCHEMA_NONTARGET_REF, ref_rows))
         parts.append("")
 
+    # ── CONFIG_SECTION (YAML/Properties 설정 섹션) ──
+    if graph.config_sections:
+        cs_rows = []
+        for cs in sorted(graph.config_sections, key=lambda c: c.prop("config_key_path", "")):
+            cs_rows.append([
+                _safe(cs.prop("config_key_path")),
+                _safe(cs.prop("file_path")),
+                f"{_safe(cs.prop('start_line'))}-{_safe(cs.prop('end_line'))}",
+            ])
+        parts.append("### 설정 섹션\n")
+        parts.append(_md_table(SCHEMA_CONFIG_SECTION, cs_rows))
+
     return "\n".join(parts)
 
 
-def _render_db_schema(graph: GraphData) -> str:
-    """## 7. 데이터베이스 스키마"""
-    parts = ["## 7. 데이터베이스 스키마\n"]
+def _render_database(graph: GraphData) -> str:
+    """## 2. 데이터베이스 — 테이블 + DB Link 통합."""
+    parts = ["## 2. 데이터베이스\n"]
 
-    if not graph.tables:
-        parts.append("데이터베이스 테이블 없음.\n")
+    if not graph.tables and not graph.dblinks:
+        parts.append("데이터베이스 정보 없음.\n")
         return "\n".join(parts)
 
     for table in sorted(graph.tables, key=lambda t: t.prop("name", "")):
@@ -930,6 +954,7 @@ def _render_db_schema(graph: GraphData) -> str:
                 _safe(col.prop("dtype")),
                 _safe(col.prop("nullable")),
                 _safe(col.prop("pk_constraint")),
+                _safe(col.prop("default_value")),
                 _safe(col.prop("description")),
             ])
         parts.append("\n#### 컬럼\n")
@@ -951,30 +976,25 @@ def _render_db_schema(graph: GraphData) -> str:
         parts.append(_md_table(SCHEMA_FK, fk_rows))
         parts.append("")
 
-    return "\n".join(parts)
-
-
-def _render_dblinks(graph: GraphData) -> str:
-    """## 8. DB Link"""
-    parts = ["## 8. DB Link\n"]
-
+    # DB Link
+    parts.append("### DB Link\n")
     if not graph.dblinks:
         parts.append(_md_table(["DB Link 이름"], []))
-        return "\n".join(parts)
+    else:
+        rows = []
+        for dbl in graph.dblinks:
+            rows.append([_safe(dbl.prop("name", dbl.display_name))])
+        parts.append(_md_table(["DB Link 이름"], rows))
 
-    rows = []
-    for dbl in graph.dblinks:
-        rows.append([_safe(dbl.prop("name", dbl.display_name))])
-    parts.append(_md_table(["DB Link 이름"], rows))
     return "\n".join(parts)
 
 
 def _render_cross_cutting(graph: GraphData) -> str:
-    """## 9. 횡단 분석"""
-    parts = ["## 9. 횡단 분석\n"]
+    """## 7. 횡단 분석"""
+    parts = ["## 7. 횡단 분석\n"]
 
-    # 9.1 테이블 접근 매트릭스
-    parts.append("### 9.1. 테이블 접근 매트릭스\n")
+    # 7.1 테이블 접근 매트릭스
+    parts.append("### 7.1. 테이블 접근 매트릭스\n")
     access_data: Dict[str, Dict[str, Set[str]]] = defaultdict(lambda: defaultdict(set))
     for rel in graph.relationships:
         if rel.rel_type in ("FROM", "READS", "WRITES", "REFER_TO", "REFERS_TO"):
@@ -982,7 +1002,6 @@ def _render_cross_cutting(graph: GraphData) -> str:
             tgt = graph.get_node(rel.end_node_id)
             if src and tgt and tgt.primary_label == "Table":
                 src_name = src.display_name
-                # 함수 노드면 부모 모듈 이름 사용
                 if src.primary_label == "FUNCTION":
                     parents = graph.get_parents(src.node_id, "HAS_FUNCTION")
                     if parents:
@@ -1002,8 +1021,8 @@ def _render_cross_cutting(graph: GraphData) -> str:
             access_rows.append([tbl_name, mod_name, ", ".join(sorted(ops))])
     parts.append(_md_table(SCHEMA_ACCESS_MATRIX, access_rows))
 
-    # 9.2 호출 체인 (진입점)
-    parts.append("\n### 9.2. 호출 체인\n")
+    # 7.2 진입점 목록
+    parts.append("\n### 7.2. 진입점 목록\n")
     call_rels = [r for r in graph.relationships if r.rel_type in ENTITY_CALL_REL_TYPES]
     callers = {r.start_node_id for r in call_rels}
     callees = {r.end_node_id for r in call_rels}
@@ -1015,14 +1034,12 @@ def _render_cross_cutting(graph: GraphData) -> str:
             continue
         name = node.display_name
         ntype = node.primary_label
-        # 함수 노드면 부모 모듈 이름 사용
         if ntype == "FUNCTION":
             parents = graph.get_parents(node.node_id, "HAS_FUNCTION")
             if parents:
                 name = parents[0].display_name
                 ntype = parents[0].primary_label
         ep_rows.append([name, ntype])
-    # 중복 제거
     seen: set = set()
     unique_ep_rows = []
     for row in ep_rows:
@@ -1031,21 +1048,8 @@ def _render_cross_cutting(graph: GraphData) -> str:
             unique_ep_rows.append(row)
     parts.append(_md_table(["진입점", "타입"], unique_ep_rows))
 
-    # 9.3 구조 관계 전체 목록
-    parts.append("\n### 9.3. 구조 관계 전체 목록\n")
-    struct_rows = []
-    for r in graph.relationships:
-        if r.rel_type in ENTITY_STRUCT_REL_TYPES:
-            struct_rows.append([
-                r.rel_type,
-                graph.node_display(r.start_node_id),
-                graph.node_display(r.end_node_id),
-                _format_rel_props(r.properties),
-            ])
-    parts.append(_md_table(SCHEMA_STRUCT_ALL, struct_rows))
-
-    # 9.4 ETL 데이터 흐름
-    parts.append("\n### 9.4. ETL 데이터 흐름\n")
+    # 7.3 ETL 데이터 흐름
+    parts.append("\n### 7.3. ETL 데이터 흐름\n")
     etl_rows = []
     for r in graph.relationships:
         if r.rel_type in ETL_REL_TYPES:
@@ -1064,7 +1068,10 @@ def _render_cross_cutting(graph: GraphData) -> str:
 # ═══════════════════════════════════════════════════════════════════════
 
 def _build_report(graph: GraphData) -> str:
-    """단일 통합 보고서 생성. 전략 무관, 데이터 유무 무관."""
+    """단일 통합 보고서 생성. 전략 무관, 데이터 유무 무관.
+
+    섹션 순서: 개요 → 데이터베이스 → 패키지 → 모듈 상세 → 외부 의존성 → 비코드 파일 → 횡단 분석
+    """
     internal_modules = [n for n in graph.modules if n.is_internal]
     external_modules = [n for n in graph.modules if n.is_external]
 
@@ -1073,11 +1080,14 @@ def _build_report(graph: GraphData) -> str:
     # 1. 시스템 개요
     parts.append(_render_overview(graph))
 
-    # 2. 패키지 구조
+    # 2. 데이터베이스 (테이블 + DB Link)
+    parts.append(_render_database(graph))
+
+    # 3. 패키지 구조
     parts.append(_render_packages(graph))
 
-    # 3. 모듈 상세 (INTERNAL)
-    mod_parts = ["## 3. 모듈 상세 (INTERNAL)\n"]
+    # 4. 모듈 상세
+    mod_parts = ["## 4. 모듈 상세\n"]
     if not internal_modules:
         mod_parts.append("INTERNAL 모듈 없음.\n")
     else:
@@ -1086,24 +1096,15 @@ def _build_report(graph: GraphData) -> str:
             mod_parts.append("")
     parts.append("\n".join(mod_parts))
 
-    # 4. 외부 의존성 (EXTERNAL)
-    ext_parts = ["## 4. 외부 의존성 (EXTERNAL)\n"]
+    # 5. 외부 의존성 (EXTERNAL)
+    ext_parts = ["## 5. 외부 의존성\n"]
     ext_parts.append(_render_external(graph, external_modules))
     parts.append("\n".join(ext_parts))
 
-    # 5. Artifact 청크
-    parts.append(_render_artifact_chunks(graph))
+    # 6. 비코드 파일 (Artifact + NONTARGET + CONFIG_SECTION)
+    parts.append(_render_noncode_files(graph))
 
-    # 6. 설정 파일 (NONTARGET)
-    parts.append(_render_nontarget(graph))
-
-    # 7. 데이터베이스 스키마
-    parts.append(_render_db_schema(graph))
-
-    # 8. DB Link
-    parts.append(_render_dblinks(graph))
-
-    # 9. 횡단 분석
+    # 7. 횡단 분석
     parts.append(_render_cross_cutting(graph))
 
     return "\n\n".join(parts)

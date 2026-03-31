@@ -127,6 +127,23 @@ class PipelineFeatureConfig:
 
 
 @dataclass(frozen=True)
+class DeepAgentConfig:
+    """DeepAgent 전용 설정 (엔티티 배치, 변수 참조 배치, 신뢰도 등)"""
+    entity_batch_size: int = field(
+        default_factory=lambda: int(os.getenv("DA_ENTITY_BATCH_SIZE", "10"))
+    )
+    varref_batch_size: int = field(
+        default_factory=lambda: int(os.getenv("DA_VARREF_BATCH_SIZE", "20"))
+    )
+    entity_max_workers: int = field(
+        default_factory=lambda: int(os.getenv("DA_ENTITY_MAX_WORKERS", "4"))
+    )
+    default_confidence: float = field(
+        default_factory=lambda: float(os.getenv("DA_DEFAULT_CONFIDENCE", "0.9"))
+    )
+
+
+@dataclass(frozen=True)
 class AnalyzerConfig:
     """ROBO Analyzer 통합 설정"""
     neo4j: Neo4jConfig = field(default_factory=Neo4jConfig)
@@ -135,6 +152,7 @@ class AnalyzerConfig:
     batch: BatchConfig = field(default_factory=BatchConfig)
     path: PathConfig = field(default_factory=PathConfig)
     feature: PipelineFeatureConfig = field(default_factory=PipelineFeatureConfig)
+    deep_agent: DeepAgentConfig = field(default_factory=DeepAgentConfig)
     
     # 버전
     version: str = "2.0.0"
