@@ -12,6 +12,7 @@ input_schema:
     - context
     - field_initial_values
     - table_sample_data
+    - constants_context
 
 prompt: |
   [ROLE]
@@ -50,6 +51,11 @@ prompt: |
   이 메서드가 접근하는 테이블의 컬럼 정보와 샘플 데이터:
   {{ table_sample_data }}
 
+  {% endif %}
+  {% if constants_context %}
+  {{ constants_context }}
+
+  위 상수 목록은 프로젝트 전역에서 사용되는 불변 값입니다. 이 메서드가 코드에서 위 상수를 참조하는 경우, summary와 GWT의 Given/Then에 변수명이 아닌 실제 값(숫자/문자열)으로 기술하세요.
   {% endif %}
   분석 대상 {{ language | default("Java") }} 코드:
   {{ code }}
@@ -333,17 +339,22 @@ prompt: |
   이 메서드의 동작을 레거시 코드 전환 후 검증할 수 있는 GWT(Given-When-Then) 시나리오를 작성하세요.
   코드의 주요 분기마다 시나리오를 생성하되, 1~5개로 제한합니다.
 
-  - Given: 초기 상태 (테이블 데이터 상태, 필드 초기값, 입력 파라미터 조건)
-    {% if field_initial_values %}→ [필드 초기값]의 정보를 활용하여 구체적으로 작성{% endif %}
-    {% if table_sample_data %}→ [테이블 샘플 데이터]의 컬럼 정보와 샘플 값을 활용하여 구체적으로 작성{% endif %}
+  - Given: 초기 상태 (테이블 데이터 상태, 필드/상수 초기값, 입력 파라미터 조건)
+    {% if field_initial_values %}→ [필드 초기값]에 제공된 실제 숫자/문자열 값을 그대로 사용하세요. 변수명(config.max_loans_per_member)이 아닌 실제 값(5)으로 기술하세요.{% endif %}
+    {% if table_sample_data %}→ [테이블 샘플 데이터]의 실제 행(id, 상태값 등)을 Given 조건에 직접 활용하세요.{% endif %}
   - When: 실행 동작 (어떤 파라미터로 이 메서드를 호출하는지)
   - Then: 기대 결과 (테이블 변경 내용, 반환값, 상태 전이)
 
-  ⚠️ GWT 생성 조건:
+  ⚠️ GWT 필수 규칙:
   - 비즈니스 로직이 존재하고 테이블 접근이 있는 메서드에서만 scenarios를 생성하세요.
   - 단순 getter/setter, 초기화, 유틸리티 메서드는 scenarios를 빈 배열 []로 반환하세요.
-  - 코드의 실제 동작(조회, 변경, 검증 등)을 기반으로 시나리오를 작성하세요.
-  - 각 시나리오의 given/when/then에 코드에 등장하는 실제 상태값, 조건값, 테이블명, 컬럼명을 포함하세요.
+
+  ⚠️ GWT 품질 규칙 (반드시 준수):
+  - **실제 값 사용 필수**: [필드 초기값]에 max_loans_per_member=5, overdue_fine_per_day=500 등이 제공되면, GWT에서 "config.max_loans_per_member 이상"이 아닌 **"5건 이상"**으로 기술하세요.
+  - **샘플 데이터 활용 필수**: [테이블 샘플 데이터]에 실제 행이 제공되면, Given에서 그 행의 id, 상태값을 직접 사용하세요. 예: "loans 테이블에 id=1001, status='ACTIVE', due_date='2025-03-15'인 행이 존재"
+  - **계산 결과 명시**: 연체일수 × 벌금단가 = 총벌금 같은 계산이 있으면, 실제 숫자로 계산 결과를 기술하세요. 예: "연체 2일 × 500원 = 1000원"
+  - **상태 전이 명시**: 변경 전 값 → 변경 후 값을 명확히 기술하세요. 예: "books.status가 'AVAILABLE'에서 'LOANED'로 변경"
+  - **실제 값 우선, 불가 시 의미 기술**: [필드 초기값]이나 [CLASS_CONSTANTS_AND_FIELDS]에서 실제 값을 알 수 있으면 반드시 숫자로 기술하세요. 실제 값을 알 수 없는 경우(외부 주입 설정 등)에는 "설정된 최대 대출 권수", "설정된 1일 연체료 단가"처럼 의미를 기술하되, self._config.max_loans_per_member 같은 코드 식별자는 사용하지 마세요.
 
 
   [SECTION_7_TABLE_INSIGHTS]

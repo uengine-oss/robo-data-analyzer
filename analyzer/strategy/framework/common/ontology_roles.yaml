@@ -18,9 +18,9 @@ roles:
     go:      [FIELD]
 
   constant:         # CONSTANT 역할 (Neo4j 라벨: CONSTANT) — 값이 고정된 데이터
-    java:    []
-    c:       [DEFINE]
-    python:  []
+    java:    [CONSTANT_FIELD]
+    c:       [DEFINE, CONSTANT_FIELD]
+    python:  [CONSTANT_FIELD]
     go:      []
 
   silent:           # 수집되지만 로그 안 남기는 노드

@@ -820,6 +820,10 @@ async def run_phase_post(
         ("Table Description 보강", 25),  # step 3
     ])
 
+    # --- 상수 컨텍스트 수집 ---
+    from analyzer.common.constant_context import fetch_constants_context
+    constants_context = await fetch_constants_context(client)
+
     # --- 테이블 샘플 데이터 수집 (GWT용) ---
     # reads_writes 리스트 또는 Neo4j에서 직접 테이블명 조회
     table_sample_data_str = ""
@@ -861,6 +865,7 @@ async def run_phase_post(
         variable_facts_list=variable_facts_list,
         lang=st.lang,
         table_sample_data=table_sample_data_str or None,
+        constants_context=constants_context or None,
     ):
         summary_by_function.update(summary_batch)
         yield tracker.tick_quiet()

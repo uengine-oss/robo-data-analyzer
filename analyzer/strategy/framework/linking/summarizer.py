@@ -241,6 +241,7 @@ def _invoke_analysis_llm(
     module_fields_context: Optional[str] = None,
     field_initial_values: Optional[str] = None,
     table_sample_data: Optional[str] = None,
+    constants_context: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """메서드 1개에 대해 analysis 규칙 실행 → summary/calls/dependencies/stereotype.
 
@@ -319,6 +320,8 @@ def _invoke_analysis_llm(
         inputs["field_initial_values"] = field_initial_values.strip()
     if table_sample_data and table_sample_data.strip():
         inputs["table_sample_data"] = table_sample_data.strip()
+    if constants_context and constants_context.strip():
+        inputs["constants_context"] = constants_context.strip()
     try:
         loader = get_rule_loader("framework")
         result = loader.execute("function_summary", inputs, api_key=api_key)
@@ -353,6 +356,7 @@ def _process_one_method_for_analysis(
     called_summaries: Optional[List[Dict[str, Any]]] = None,
     variable_facts_list: Optional[List[VariableFacts]] = None,
     table_sample_data: Optional[str] = None,
+    constants_context: Optional[str] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """단일 메서드에 대해 stereotype + (summary, calls, dependencies) 계산."""
     cqrs_fallback = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
@@ -398,6 +402,7 @@ def _process_one_method_for_analysis(
             module_fields_context=fields_ctx or None,
             field_initial_values=field_init_values or None,
             table_sample_data=table_sample_data or None,
+            constants_context=constants_context or None,
         )
         if analysis:
             summary = analysis.get("summary") or summary
@@ -445,6 +450,7 @@ def run_step6(
     calls_edges: Optional[List[CallsEdge]] = None,
     variable_facts_list: Optional[List[VariableFacts]] = None,
     table_sample_data: Optional[str] = None,
+    constants_context: Optional[str] = None,
 ) -> Generator[Dict[str, Dict[str, Any]], None, None]:
     """메서드별 stereotype, summary — 20개씩 배치로 yield.
 
@@ -498,6 +504,7 @@ def run_step6(
                         None,
                         variable_facts_list,
                         table_sample_data,
+                        constants_context,
                     ): m
                     for m in function_facts_list
                 }
@@ -546,6 +553,7 @@ def run_step6(
                         None,
                         variable_facts_list,
                         table_sample_data,
+                        constants_context,
                     )
                     batch[function_id] = data
                 except Exception as e:
@@ -623,6 +631,7 @@ def run_step6(
             called_list or None,
             variable_facts_list,
             table_sample_data,
+            constants_context,
         )
         return node_id, data
 
