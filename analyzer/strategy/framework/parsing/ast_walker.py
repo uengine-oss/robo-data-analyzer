@@ -235,7 +235,7 @@ def build_function_facts_and_module_index(
     onto = get_ontology()
     module_types = onto.module_types(lang)
     function_types = onto.function_types(lang)
-    variable_types = onto.variable_types(lang)
+    variable_types = onto.variable_types(lang) | onto.constant_types(lang)
 
     p = Path(ast_path)
     parts = p.parts
