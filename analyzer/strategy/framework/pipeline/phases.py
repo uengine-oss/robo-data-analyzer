@@ -778,11 +778,13 @@ async def run_phase_llm(
     try:
         from analyzer.strategy.framework.linking.deep_agent import run_deep_agent_variable_references
         var_api_key = settings.llm.api_key
-        if var_api_key and function_facts_list and variable_facts_list:
+        _vf_list = st.function_facts_list or []
+        _vv_list = st.variable_facts_list or []
+        if var_api_key and _vf_list and _vv_list:
             import asyncio
             var_refs = await asyncio.to_thread(
                 run_deep_agent_variable_references,
-                function_facts_list, variable_facts_list, var_api_key,
+                _vf_list, _vv_list, var_api_key,
             )
             if var_refs:
                 var_queries = [{
