@@ -772,6 +772,35 @@ async def run_phase_llm(
         except Exception as e:
             logger.warning("[FW:PHASE2] Neo4j FK 엣지 반영 실패: %s", e)
 
+    # -----------------------------------------------------------------------
+    # 변수 참조 탐색 (DeepAgent 병렬)
+    # -----------------------------------------------------------------------
+    try:
+        from analyzer.strategy.framework.linking.deep_agent import run_deep_agent_variable_references
+        var_api_key = settings.llm.api_key
+        if var_api_key and function_facts_list and variable_facts_list:
+            import asyncio
+            var_refs = await asyncio.to_thread(
+                run_deep_agent_variable_references,
+                function_facts_list, variable_facts_list, var_api_key,
+            )
+            if var_refs:
+                var_queries = [{
+                    "query": (
+                        "MATCH (f:FUNCTION {function_id: $fid}) "
+                        "MATCH (v {variable_id: $vid}) "
+                        "MERGE (f)-[:REFERENCES]->(v) "
+                        "RETURN f, v"
+                    ),
+                    "params": {"fid": fid, "vid": vid},
+                } for fid, vid in var_refs]
+                if var_queries:
+                    async for graph in run_graph_queries(client, var_queries, label="PHASE2:VAR_REFS"):
+                        yield emit_data(graph=graph)
+                logger.info("[FW:PHASE2] 변수 참조 관계 생성 | refs=%d", len(var_refs))
+    except Exception as e:
+        logger.warning("[FW:PHASE2] 변수 참조 탐색 실패: %s", e)
+
     stats.total_nodes += len(refer_to_edges) + len(all_calls)
     st.refer_to_edges = refer_to_edges
     st.reads_writes = reads_writes
@@ -824,6 +853,24 @@ async def run_phase_post(
     from analyzer.common.constant_context import fetch_constants_context
     constants_context = await fetch_constants_context(client)
 
+    # --- 참조 변수 컨텍스트 수집 (Phase 2에서 REFERENCES로 연결된 변수/상수) ---
+    referenced_vars_by_function: dict = {}
+    try:
+        ref_results = await client.execute_queries([
+            "MATCH (f:FUNCTION)-[:REFERENCES]->(v) "
+            "RETURN f.function_id AS fid, v.name AS name, v.code_text AS code, labels(v) AS labels"
+        ])
+        if ref_results and ref_results[0]:
+            for row in ref_results[0]:
+                fid = row.get("fid", "")
+                code = (row.get("code") or "").strip()
+                if fid and code:
+                    referenced_vars_by_function.setdefault(fid, []).append(code)
+        if referenced_vars_by_function:
+            logger.info("[FW:PHASE3] 참조 변수 컨텍스트 수집 | functions=%d", len(referenced_vars_by_function))
+    except Exception as e:
+        logger.warning("[FW:PHASE3] 참조 변수 컨텍스트 수집 실패: %s", e)
+
     # --- 테이블 샘플 데이터 수집 (GWT용) ---
     # reads_writes 리스트 또는 Neo4j에서 직접 테이블명 조회
     table_sample_data_str = ""
@@ -866,6 +913,7 @@ async def run_phase_post(
         lang=st.lang,
         table_sample_data=table_sample_data_str or None,
         constants_context=constants_context or None,
+        referenced_vars_by_function=referenced_vars_by_function or None,
     ):
         summary_by_function.update(summary_batch)
         yield tracker.tick_quiet()
@@ -894,30 +942,7 @@ async def run_phase_post(
         except Exception as e:
             logger.warning("[FW:PHASE3] UML dependency 쿼리 빌드 실패: %s", e)
 
-        # 3) variableRefs: FUNCTION→VARIABLE/CONSTANT REFERENCES 관계
-        try:
-            for _mid, analysis in summary_batch.items():
-                var_refs = analysis.get("variableRefs") or []
-                if var_refs and _mid:
-                    for var_name in var_refs:
-                        var_name = (var_name or "").strip()
-                        if not var_name:
-                            continue
-                        queries.append({
-                            "query": (
-                                "MATCH (m:FUNCTION {function_id: $function_id})\n"
-                                "MATCH (v) WHERE (v:VARIABLE OR v:CONSTANT) AND v.name = $var_name\n"
-                                "MERGE (m)-[r:REFERENCES]->(v)\n"
-                                "ON CREATE SET r.created_at = timestamp()\n"
-                                "ON MATCH SET r.updated_at = timestamp()\n"
-                                "RETURN r"
-                            ),
-                            "params": {"function_id": _mid, "var_name": var_name},
-                        })
-        except Exception as e:
-            logger.warning("[FW:PHASE3] variableRefs 쿼리 빌드 실패: %s", e)
-
-        # 4) tableInsights: Table/Column description 점진적 보강
+        # 3) tableInsights: Table/Column description 점진적 보강
         try:
             for _mid, analysis in summary_batch.items():
                 for insight in (analysis.get("tableInsights") or []):

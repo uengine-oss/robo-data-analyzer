@@ -899,27 +899,21 @@ def build_refer_to_queries(edges: List[ReferToEdge]) -> List[Dict[str, Any]]:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def build_function_summary_queries(summary_by_function: Dict[str, Dict[str, Any]], lang: str) -> List[Dict[str, Any]]:
-    """FUNCTION 노드에 summary·stereotype·gwt 속성 및 CQRS/stereotype 라벨 추가."""
+    """FUNCTION 노드에 summary·stereotype 속성 및 스테레오타입 라벨 추가."""
     import json
-    from analyzer.strategy.framework.linking.summarizer import VALID_STEREOTYPES, compute_cqrs_type
+    from analyzer.strategy.framework.linking.summarizer import VALID_STEREOTYPES
     from analyzer.strategy.framework.common.ontology import get_ontology
     onto = get_ontology()
     valid_for_lang = onto.valid_stereotypes(lang)
 
-    commands = []
-    readmodels = []
+    rows = []
     gwt_rows = []
     for function_id, data in summary_by_function.items():
         stereotype = (data.get("stereotype") or "").strip()
         if stereotype not in VALID_STEREOTYPES:
             stereotype = "BusinessLogic"
-        cqrs = compute_cqrs_type(stereotype)
         summary = (data.get("summary") or "").strip()
-        row = {"function_id": function_id, "stereotype": stereotype, "summary": summary}
-        if cqrs == "command":
-            commands.append(row)
-        else:
-            readmodels.append(row)
+        rows.append({"function_id": function_id, "stereotype": stereotype, "summary": summary})
         # GWT 시나리오 수집
         for sc in (data.get("scenarios") or []):
             if isinstance(sc, dict) and sc.get("title"):
@@ -932,26 +926,13 @@ def build_function_summary_queries(summary_by_function: Dict[str, Dict[str, Any]
                 })
 
     queries = []
-    # CQRS 라벨 (OOP 언어만)
+    # summary·stereotype 속성 설정 + 기존 CQRS 라벨 정리
     set_clause = "SET n.updated_at = timestamp(), n.stereotype = row.stereotype, n.summary = row.summary"
-    if onto.is_oop(lang):
-        if commands:
-            queries.append({
-                "query": f"UNWIND $rows AS row\nMATCH (n:FUNCTION {{function_id: row.function_id}})\n{set_clause}\nREMOVE n:COMMAND, n:READMODEL\nSET n:COMMAND\nRETURN n",
-                "params": {"rows": commands},
-            })
-        if readmodels:
-            queries.append({
-                "query": f"UNWIND $rows AS row\nMATCH (n:FUNCTION {{function_id: row.function_id}})\n{set_clause}\nREMOVE n:COMMAND, n:READMODEL\nSET n:READMODEL\nRETURN n",
-                "params": {"rows": readmodels},
-            })
-    else:
-        all_rows = commands + readmodels
-        if all_rows:
-            queries.append({
-                "query": f"UNWIND $rows AS row\nMATCH (n:FUNCTION {{function_id: row.function_id}})\n{set_clause}\nRETURN n",
-                "params": {"rows": all_rows},
-            })
+    if rows:
+        queries.append({
+            "query": f"UNWIND $rows AS row\nMATCH (n:FUNCTION {{function_id: row.function_id}})\n{set_clause}\nREMOVE n:COMMAND, n:READMODEL\nRETURN n",
+            "params": {"rows": rows},
+        })
 
     # stereotype 라벨 (언어에 맞는 것만)
     st_groups: Dict[str, List[str]] = {}

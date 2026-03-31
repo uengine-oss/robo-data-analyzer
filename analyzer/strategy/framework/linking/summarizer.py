@@ -357,6 +357,7 @@ def _process_one_method_for_analysis(
     variable_facts_list: Optional[List[VariableFacts]] = None,
     table_sample_data: Optional[str] = None,
     constants_context: Optional[str] = None,
+    referenced_vars_by_function: Optional[Dict[str, List[str]]] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """단일 메서드에 대해 stereotype + (summary, calls, dependencies) 계산."""
     cqrs_fallback = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
@@ -385,8 +386,6 @@ def _process_one_method_for_analysis(
     table_insights: List[Dict[str, Any]] = []
     scenarios: List[Dict[str, Any]] = []
     stereotype = ""
-    # 필드 초기값 수집 (같은 모듈 내 변수의 선언 코드)
-    field_init_values = _collect_field_initial_values(m.module_key, variable_facts_list)
 
     if api_key:
         analysis = _invoke_analysis_llm(
@@ -400,7 +399,7 @@ def _process_one_method_for_analysis(
             linked_architecture_context=linked_architecture_context or None,
             called_method_summaries=called_summaries,
             module_fields_context=fields_ctx or None,
-            field_initial_values=field_init_values or None,
+            field_initial_values="\n".join(referenced_vars_by_function.get(m.function_id, [])) if referenced_vars_by_function else None,
             table_sample_data=table_sample_data or None,
             constants_context=constants_context or None,
         )
@@ -451,6 +450,7 @@ def run_step6(
     variable_facts_list: Optional[List[VariableFacts]] = None,
     table_sample_data: Optional[str] = None,
     constants_context: Optional[str] = None,
+    referenced_vars_by_function: Optional[Dict[str, List[str]]] = None,
 ) -> Generator[Dict[str, Dict[str, Any]], None, None]:
     """메서드별 stereotype, summary — 20개씩 배치로 yield.
 
@@ -505,6 +505,7 @@ def run_step6(
                         variable_facts_list,
                         table_sample_data,
                         constants_context,
+                        referenced_vars_by_function,
                     ): m
                     for m in function_facts_list
                 }
@@ -554,6 +555,7 @@ def run_step6(
                         variable_facts_list,
                         table_sample_data,
                         constants_context,
+                        referenced_vars_by_function,
                     )
                     batch[function_id] = data
                 except Exception as e:
@@ -632,6 +634,7 @@ def run_step6(
             variable_facts_list,
             table_sample_data,
             constants_context,
+            referenced_vars_by_function,
         )
         return node_id, data
 

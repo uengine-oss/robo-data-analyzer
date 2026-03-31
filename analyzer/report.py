@@ -31,8 +31,6 @@ SCOPE_LABELS = {"INTERNAL", "EXTERNAL"}
 # ── 1차 라벨: 역할 기반 (Framework) ──
 MODULE_LABELS = {"MODULE"}
 PRIMARY_LABELS = {"MODULE", "VARIABLE", "CONSTANT"}
-FUNCTION_ROLE_LABELS = {"READMODEL", "COMMAND"}
-
 # ── 1차 라벨: DBMS 고유 (역할 매핑 없이 직접 사용) ──
 DBMS_MODULE_LABELS = {"PROCEDURE", "FUNCTION", "TRIGGER"}
 
@@ -57,7 +55,7 @@ STEREOTYPE_LABELS = {
 }
 
 # ── 통계 제외용 보조 라벨 ──
-_SKIP_COUNT_LABELS = SCOPE_LABELS | FUNCTION_ROLE_LABELS | {"EXTERNAL"}
+_SKIP_COUNT_LABELS = SCOPE_LABELS | {"EXTERNAL"}
 
 # ═══════════════════════════════════════════════════════════════════════
 # 관계 타입 상수 — 용도별 그룹
@@ -65,7 +63,7 @@ _SKIP_COUNT_LABELS = SCOPE_LABELS | FUNCTION_ROLE_LABELS | {"EXTERNAL"}
 
 EXCLUDED_REL_TYPES = {"NEXT", "PARENT_OF"}
 
-STRUCTURAL_REL_TYPES = {"CONTAINS", "HAS_FUNCTION", "HAS_VARIABLE", "BELONGS_TO_PACKAGE", "CONTAINS_PACKAGE", "HAS_COLUMN"}
+STRUCTURAL_REL_TYPES = {"CONTAINS", "HAS_FUNCTION", "HAS_VARIABLE", "BELONGS_TO_PACKAGE", "CONTAINS_PACKAGE", "HAS_COLUMN", "HAS_GWT"}
 UML_REL_TYPES = {"EXTENDS", "IMPLEMENTS", "ASSOCIATION", "COMPOSITION", "AGGREGATION", "DEPENDENCY"}
 ETL_REL_TYPES = {"ETL_READS", "ETL_WRITES", "DATA_FLOWS_TO"}
 
@@ -174,9 +172,13 @@ class GraphNode:
 
     @property
     def function_role(self) -> str:
+        """CQRS 역할 반환 — 스테레오타입 라벨에서 유도."""
+        _READMODEL_STEREOTYPES = {"Query", "Getter"}
         for lbl in self.labels:
-            if lbl in FUNCTION_ROLE_LABELS:
-                return lbl
+            if lbl in _READMODEL_STEREOTYPES:
+                return "READMODEL"
+            if lbl in STEREOTYPE_LABELS:
+                return "COMMAND"
         return ""
 
     def prop(self, key: str, default: Any = "") -> Any:
