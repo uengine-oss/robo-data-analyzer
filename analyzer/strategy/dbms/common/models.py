@@ -155,6 +155,44 @@ class StatementNode:
 
         return '\n'.join(result_lines)
 
+    def get_deep_compact_code(self) -> str:
+        """리프 노드만 summary로 대체하고, 중간 노드는 스켈레톤을 유지하는 재귀 compact code.
+
+        get_compact_code()는 직계 자식만 처리하지만,
+        이 메서드는 모든 depth의 리프 노드까지 재귀적으로 summary를 적용합니다.
+        중간 노드(IF/LOOP/BEGIN)는 원문 스켈레톤이 유지되어 제어 흐름이 보존됩니다.
+        """
+        filtered_children = [c for c in self.children if c.node_type != "VARIABLE"]
+        if not filtered_children:
+            # 리프 노드: summary가 있으면 summary, 없으면 원문
+            if self.summary:
+                return f"{self.start_line}~{self.end_line}: {self.summary.strip()}"
+            return self.get_raw_code()
+
+        result_lines: List[str] = []
+        line_index = 0
+        total_lines = len(self.lines)
+        sorted_children = sorted(filtered_children, key=lambda child: child.start_line)
+
+        for child in sorted_children:
+            while line_index < total_lines and self.lines[line_index][0] < child.start_line:
+                line_no, text = self.lines[line_index]
+                result_lines.append(f"{line_no}: {text}")
+                line_index += 1
+
+            # 자식도 재귀적으로 deep_compact_code 적용
+            result_lines.append(child.get_deep_compact_code())
+
+            while line_index < total_lines and self.lines[line_index][0] <= child.end_line:
+                line_index += 1
+
+        while line_index < total_lines:
+            line_no, text = self.lines[line_index]
+            result_lines.append(f"{line_no}: {text}")
+            line_index += 1
+
+        return '\n'.join(result_lines)
+
     def get_placeholder_code(self, preserve_types: Optional[Set[str]] = None, include_assigns: bool = False) -> str:
         """자식 구간을 placeholder로 치환한 코드를 반환합니다.
 
@@ -587,7 +625,7 @@ class FileAnalysisContext:
 
 class ProcedureInfo:
     """프로시저/함수 정보"""
-    __slots__ = ('key', 'procedure_type', 'procedure_name', 'schema_name', 'start_line', 'end_line', 'pending_nodes')
+    __slots__ = ('key', 'procedure_type', 'procedure_name', 'schema_name', 'start_line', 'end_line')
 
     def __init__(
         self,
@@ -597,7 +635,6 @@ class ProcedureInfo:
         schema_name: Optional[str],
         start_line: int,
         end_line: int,
-        pending_nodes: int = 0,
     ):
         self.key = key
         self.procedure_type = procedure_type
@@ -605,7 +642,6 @@ class ProcedureInfo:
         self.schema_name = schema_name
         self.start_line = start_line
         self.end_line = end_line
-        self.pending_nodes = pending_nodes
 
 
 __all__ = [

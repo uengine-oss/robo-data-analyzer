@@ -401,12 +401,23 @@ class DDLParser:
             if not line:
                 continue
 
-            # 제약조건 정의 줄 스킵
+            # 제약조건 정의 줄 처리
             upper_line = line.upper()
+
+            # 테이블 레벨 UNIQUE 제약조건에서 컬럼명 추출 (예: UNIQUE(isbn))
+            if upper_line.startswith("UNIQUE"):
+                unique_cols_match = re.search(r'UNIQUE\s*\(([^)]+)\)', line, re.IGNORECASE)
+                if unique_cols_match:
+                    for uc in unique_cols_match.group(1).split(","):
+                        uc = uc.strip().strip('"').strip("'")
+                        for col in columns:
+                            if col["name"].upper() == uc.upper():
+                                col["unique"] = True
+                continue
+
             if (upper_line.startswith("CONSTRAINT") or
                 upper_line.startswith("PRIMARY") or
                 upper_line.startswith("FOREIGN") or
-                upper_line.startswith("UNIQUE") or
                 upper_line.startswith("CHECK")):
                 continue
 
@@ -438,16 +449,30 @@ class DDLParser:
                 col_type = col_match.group(2).strip()
                 constraints = col_match.group(3).upper() if col_match.group(3) else ""
 
+                raw_constraints = col_match.group(3).strip() if col_match.group(3) else ""
                 nullable = "NOT NULL" not in constraints
                 is_primary = "PRIMARY KEY" in constraints or "PRIMARY" in constraints
+                is_unique = "UNIQUE" in constraints
 
-                columns.append({
+                # DEFAULT 값 추출
+                default_value = None
+                default_match = re.search(r"DEFAULT\s+('(?:[^']*)'|[^\s,]+)", raw_constraints, re.IGNORECASE)
+                if default_match:
+                    default_value = default_match.group(1).strip()
+
+                col_data = {
                     "name": col_name,
                     "dtype": col_type,
                     "nullable": nullable,
                     "comment": comment,
                     "primary_key": is_primary,
-                })
+                }
+                if is_unique:
+                    col_data["unique"] = True
+                if default_value is not None:
+                    col_data["default_value"] = default_value
+
+                columns.append(col_data)
 
         return columns
 

@@ -118,14 +118,23 @@ async def fetch_table_context(
             flags = []
             if c.get("is_primary_key"):
                 flags.append("PK")
+            if c.get("is_unique"):
+                flags.append("UNIQUE")
             if c.get("nullable") is False:
                 flags.append("NOT NULL")
+            if c.get("default_value"):
+                flags.append(f"DEFAULT={c['default_value']}")
             dtype = c.get("dtype", "")
             flag_str = f", {', '.join(flags)}" if flags else ""
             desc = f" — {c['description']}" if c.get("description") else ""
             col_strs.append(f"{c['name']}({dtype}{flag_str}){desc}")
 
         section = f"[{table_name} 테이블]\n컬럼: {', '.join(col_strs)}"
+
+        # FK 관계 조회
+        fk_strs = await _fetch_fk_relations(client, table_name)
+        if fk_strs:
+            section += f"\nFK: {', '.join(fk_strs)}"
 
         if datasource_name:
             samples = await _fetch_sample_rows(table_name, datasource_name)
@@ -147,7 +156,8 @@ async def _fetch_column_meta(
         "MATCH (t:Table)-[:HAS_COLUMN]->(c:Column)\n"
         "WHERE t.name = $name OR t.fqn ENDS WITH $name\n"
         "RETURN c.name AS name, c.dtype AS dtype, c.nullable AS nullable, "
-        "c.is_primary_key AS is_primary_key, c.description AS description\n"
+        "c.is_primary_key AS is_primary_key, c.is_unique AS is_unique, "
+        "c.default_value AS default_value, c.description AS description\n"
         "ORDER BY c.name"
     )
     try:
@@ -155,6 +165,26 @@ async def _fetch_column_meta(
         return results[0] if results and results[0] else []
     except Exception as e:
         logger.debug("[TABLE_CTX] 컬럼 메타 조회 실패 (%s): %s", table_name, e)
+        return []
+
+
+async def _fetch_fk_relations(
+    client: Neo4jClient,
+    table_name: str,
+) -> List[str]:
+    """Neo4j에서 테이블의 FK 관계를 조회하여 문자열 리스트로 반환."""
+    query = (
+        "MATCH (t:Table)-[:HAS_COLUMN]->(c:Column)-[:FK_TO_COLUMN]->(tc:Column)<-[:HAS_COLUMN]-(tt:Table)\n"
+        "WHERE t.name = $name OR t.fqn ENDS WITH $name\n"
+        "RETURN c.name AS from_col, tt.name AS to_table, tc.name AS to_col\n"
+        "ORDER BY c.name"
+    )
+    try:
+        results = await client.execute_queries([query], {"name": table_name})
+        if results and results[0]:
+            return [f"{r['from_col']}→{r['to_table']}.{r['to_col']}" for r in results[0]]
+        return []
+    except Exception:
         return []
 
 

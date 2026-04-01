@@ -9,8 +9,9 @@ import logging
 from typing import Any, AsyncGenerator, Dict, List, Tuple
 
 from client.neo4j_client import Neo4jClient
-from analyzer.strategy.base_analyzer import AnalysisStats
 from analyzer.strategy.dbms.common.models import FileStatus, FileAnalysisContext
+from analyzer.common.constant_context import fetch_constants_context
+from analyzer.common.table_context import fetch_table_context
 from config.settings import settings
 from util.prompt_executor import RuleLoader
 from util.ndjson_stream import emit_data, emit_message, emit_phase_event
@@ -47,15 +48,20 @@ def _analyze_summary_only(
     summaries: dict,
     api_key: str,
     locale: str,
-    previous_summary: str = "",
     variable_declarations: str = "",
     table_sample_data: str = "",
+    constants_context: str = "",
+    called_procedure_summaries: str = "",
 ) -> Dict[str, Any]:
-    inputs: Dict[str, Any] = {"summaries": summaries, "locale": locale, "previous_summary": previous_summary}
+    inputs: Dict[str, Any] = {"summaries": summaries, "locale": locale}
     if variable_declarations:
         inputs["variable_declarations"] = variable_declarations
     if table_sample_data:
         inputs["table_sample_data"] = table_sample_data
+    if constants_context:
+        inputs["constants_context"] = constants_context
+    if called_procedure_summaries:
+        inputs["called_procedure_summaries"] = called_procedure_summaries
     return _rule_loader().execute("procedure_summary", inputs, api_key)
 
 
@@ -81,25 +87,6 @@ def _summarize_table_metadata(
 
 
 # ========== 1. 프로시저 Summary ==========
-def _collect_summaries_from_nodes(proc_root: Any) -> Dict[str, str]:
-    """프로시저 루트의 자식 노드들에서 summary를 수집 (unit_summary_store 키 불일치 대비)"""
-    result: Dict[str, str] = {}
-    seen: set = set()
-
-    def collect(node: Any) -> None:
-        if id(node) in seen:
-            return
-        seen.add(id(node))
-        if getattr(node, 'summary', None) and str(node.summary).strip():
-            key = f"{node.node_type}_{node.start_line}_{node.end_line}"
-            result[key] = str(node.summary).strip()
-        for child in getattr(node, 'children', []) or []:
-            collect(child)
-
-    collect(proc_root)
-    return result
-
-
 def _split_summaries_by_token(summaries: dict, max_token: int) -> List[dict]:
     if not summaries:
         return []
@@ -152,6 +139,56 @@ async def _run_procedure_summary(
     results_queue: asyncio.Queue = asyncio.Queue()
     semaphore = asyncio.Semaphore(settings.concurrency.max_concurrency)
 
+    constants_context = ""
+    try:
+        constants_context = await fetch_constants_context(client)
+    except Exception as e:
+        log_process("ANALYZE", "WARN", f"상수 컨텍스트 수집 실패: {e}")
+
+    async def _collect_table_names(proc_name: str, directory: str, file_name: str) -> list[str]:
+        """프로시저가 접근하는 테이블명 목록을 수집."""
+        try:
+            query = (
+                "MATCH (p {procedure_name: $proc_name, directory: $directory, file_name: $file_name})"
+                "-[:PARENT_OF*]->(dml)-[:READS_FROM|WRITES_TO]->(t:Table) "
+                "RETURN DISTINCT t.name AS table_name"
+            )
+            params = {"proc_name": proc_name, "directory": directory, "file_name": file_name}
+            results = await client.execute_queries([query], params)
+            rows = results[0] if results and results[0] else []
+            return [r.get("table_name") for r in rows if r.get("table_name")]
+        except Exception as e:
+            log_process("ANALYZE", "WARN", f"테이블명 수집 실패 ({proc_name}): {e}")
+            return []
+
+    async def _collect_called_procedure_summaries(proc_name: str, directory: str, file_name: str, max_items: int = 20) -> str:
+        """CALLS 관계로 연결된 프로시저들의 summary를 수집."""
+        try:
+            query = (
+                "MATCH (p {procedure_name: $proc_name, directory: $directory, file_name: $file_name})"
+                "-[:PARENT_OF*]->(node)-[:CALLS]->(callee) "
+                "WHERE callee.summary IS NOT NULL AND callee.summary <> '' "
+                "RETURN DISTINCT callee.procedure_name AS name, callee.summary AS summary "
+                "ORDER BY name"
+            )
+            params = {"proc_name": proc_name, "directory": directory, "file_name": file_name}
+            results = await client.execute_queries([query], params)
+            rows = results[0] if results and results[0] else []
+            parts: list[str] = []
+            for r in rows[:max_items]:
+                name = (r.get("name") or "").strip()
+                summ = (r.get("summary") or "").strip()
+                if not summ:
+                    continue
+                summ_trimmed = summ[:500]
+                parts.append(f"- {name}: {summ_trimmed}" if name else f"- {summ_trimmed}")
+            if not parts:
+                return ""
+            return "\n".join(parts)
+        except Exception as e:
+            log_process("ANALYZE", "WARN", f"호출 프로시저 요약 수집 실패 ({proc_name}): {e}")
+            return ""
+
     async def process_procedure(ctx, processor, proc_key, info, summaries):
         async with semaphore:
             try:
@@ -161,11 +198,28 @@ async def _run_procedure_summary(
                 # 변수 선언/초기값 수집
                 var_decls = _collect_variable_declarations(processor, proc_key, VARIABLE_DECLARATION_TYPES)
 
-                chunks = _split_summaries_by_token(summaries, MAX_SUMMARY_CHUNK_TOKEN)
-                if not chunks and proc_root:
-                    body = proc_root.get_placeholder_code()
-                    if body and body.strip():
-                        chunks = [{"PROCEDURE_BODY": body.strip()[:15000]}]
+                # 테이블 스키마 정보 수집
+                table_names = await _collect_table_names(info.procedure_name, processor.full_directory, processor.file_name)
+                datasource_name = getattr(orchestrator, "datasource_name", "")
+                table_data = await fetch_table_context(client, table_names, datasource_name) if table_names else ""
+
+                # 호출된 프로시저 요약 수집 (CALL 관계)
+                called_procedure_summaries = await _collect_called_procedure_summaries(
+                    info.procedure_name, processor.full_directory, processor.file_name
+                )
+
+                # 스켈레톤+리프 방식: 중간 노드는 원문, 리프만 summary로 대체
+                # → 중복 없음, 제어 흐름 보존, 요약의 요약 방지
+                if proc_root:
+                    deep_compact = proc_root.get_deep_compact_code()
+                    if deep_compact and deep_compact.strip():
+                        chunks = _split_summaries_by_token(
+                            {"PROCEDURE_COMPACT": deep_compact.strip()}, MAX_SUMMARY_CHUNK_TOKEN
+                        )
+                    else:
+                        chunks = _split_summaries_by_token(summaries, MAX_SUMMARY_CHUNK_TOKEN)
+                else:
+                    chunks = _split_summaries_by_token(summaries, MAX_SUMMARY_CHUNK_TOKEN)
                 if not chunks:
                     final_summary = ""
                     final_scenarios = []
@@ -174,8 +228,11 @@ async def _run_procedure_summary(
                     async def process_chunk(chunk):
                         async with chunk_semaphore:
                             r = await asyncio.to_thread(
-                                _analyze_summary_only, chunk, orchestrator.api_key, orchestrator.locale, "",
+                                _analyze_summary_only, chunk, orchestrator.api_key, orchestrator.locale,
                                 variable_declarations=var_decls,
+                                table_sample_data=table_data,
+                                constants_context=constants_context,
+                                called_procedure_summaries=called_procedure_summaries,
                             )
                             return r if isinstance(r, dict) else {}
                     chunk_results_raw = await asyncio.gather(*[process_chunk(c) for c in chunks])
@@ -193,8 +250,11 @@ async def _run_procedure_summary(
                     else:
                         combined = {f"CHUNK_{i+1}": s for i, s in enumerate(chunk_summaries)}
                         r = await asyncio.to_thread(
-                            _analyze_summary_only, combined, orchestrator.api_key, orchestrator.locale, "",
+                            _analyze_summary_only, combined, orchestrator.api_key, orchestrator.locale,
                             variable_declarations=var_decls,
+                            table_sample_data=table_data,
+                            constants_context=constants_context,
+                            called_procedure_summaries=called_procedure_summaries,
                         )
                         if isinstance(r, dict):
                             final_summary = r.get('summary') or "\n\n".join(chunk_summaries)
@@ -230,9 +290,6 @@ async def _run_procedure_summary(
                 if queries:
                     async for batch in run_graph_queries(client, queries, cypher_lock=pipeline._cypher_lock):
                         await results_queue.put({"type": "graph", "graph": batch})
-                if not hasattr(ctx, 'procedure_summaries'):
-                    ctx.procedure_summaries = {}
-                ctx.procedure_summaries[proc_key] = {"final_summary": final_summary, "procedure_info": info}
                 await results_queue.put({"type": "success", "procedure": info.procedure_name, "file": ctx.file_name})
             except Exception as e:
                 log_process("ANALYZE", "ERROR", f"프로시저 Summary 오류 ({ctx.file_name}/{info.procedure_name}): {e}", logging.ERROR, e)
@@ -366,7 +423,6 @@ async def run_phase_post(
     contexts: List[FileAnalysisContext],
     client: Neo4jClient,
     orchestrator: Any,
-    stats: AnalysisStats,
 ) -> AsyncGenerator[bytes, None]:
     """Phase 3: 후처리 - 프로시저 요약 → 테이블 요약"""
     async for chunk in _run_procedure_summary(pipeline, contexts, client, orchestrator):

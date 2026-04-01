@@ -164,8 +164,25 @@ prompt: |
   
   나쁜 예시 (너무 추상적이고 비즈니스 맥락이 없는 경우):
   "주문을 처리하고 결제를 진행합니다." (구체적인 값, 조건, 비즈니스 의미가 없음)
-  
-  
+
+  ★★ 테이블 조작(INSERT/UPDATE/DELETE) 시 필수 포함 사항 ★★
+  [테이블 스키마 정보]가 제공된 경우, 반드시 아래 정보를 summary에 포함하세요:
+
+  INSERT 시:
+  - 삽입되는 모든 컬럼명과 각 값의 출처(파라미터/기본값/계산값) 명시
+  - DEFAULT 값이 있는 컬럼이면 기본값을 명시 (예: "status는 기본값 'AVAILABLE'로 설정된다")
+  - UNIQUE 제약 컬럼이면 중복 시 동작을 명시 (예: "isbn은 UNIQUE 제약으로 중복 시 오류 발생")
+  - AUTO_INCREMENT/SEQUENCE가 있으면 명시
+
+  UPDATE 시:
+  - 변경 전 → 변경 후 상태를 반드시 명시 (예: "status를 'AVAILABLE'에서 'LOANED'로 변경")
+  - WHERE 조건에 사용되는 컬럼과 값 명시
+
+  DELETE 시:
+  - WHERE 조건 명시
+  - FK 제약이 있는 테이블이면 참조 무결성 영향 명시
+
+
   {% if is_oop | default(true) %}
   [SECTION_2_DEPENDENCIES]
   ★ 클래스 간 관계 추출 (UML 관계 판별):
@@ -257,28 +274,6 @@ prompt: |
   
   
 
-  [SECTION_4B_VARIABLE_REFS]
-  ★ 전역 변수/상수 참조 추출 (variableRefs):
-
-  코드에서 참조하는 **전역 변수, 상수, #define 매크로, 구조체 멤버** 등의 식별자 이름을 추출합니다.
-  로컬 변수(함수 내부에서 선언된 변수)는 제외하고, **함수 외부에서 정의된 식별자만** 추출합니다.
-
-  추출 대상:
-  - 전역 변수 참조 (예: `worker_count++`, `g_shutdown = 1`)
-  - #define 상수 참조 (예: `if (rc != TPOK)`, `buf[SWING_MAX_SQL_LEN]`)
-  - enum 상수 참조 (예: `status = STATUS_ACTIVE`)
-  - 구조체 필드 접근의 필드명 (예: `entry->call_count` → "call_count")
-  - 클래스 필드 접근 (예: `this.orderStatus` → "orderStatus")
-
-  제외 대상:
-  - 함수 내부에서 선언된 로컬 변수 (int rc, char buf[] 등)
-  - 함수 파라미터
-  - 표준 라이브러리 상수 (NULL, EOF, TRUE, FALSE, EXIT_SUCCESS 등)
-  - 타입명 (int, char, struct 등)
-
-  출력: 식별자 이름 문자열의 배열 (중복 제거)
-  예: ["TPOK", "worker_count", "g_shutdown", "SWING_MAX_SQL_LEN"]
-  참조가 없으면 빈 배열 [] 로 두세요.
 
 
   [SECTION_5_STEREOTYPE]
@@ -322,7 +317,6 @@ prompt: |
           {"targetModule": "타겟모듈명", "sourceMember": "메서드명", "usage": "field_call|local_new|parameter|return|cast|generic|local_var", "relationType": "DEPENDENCY|COMPOSITION|AGGREGATION|ASSOCIATION"}
         ],{% else %}"dependencies": [],{% endif %}
         "calls": ["target.functionName", "target2.functionName2"],
-        "variableRefs": ["전역변수명", "상수명", "구조체필드명"],
         "tableInsights": [
           {"tableName": "테이블명", "description": "이 메서드 분석으로 파악된 테이블의 비즈니스 역할 (1~2문장)", "columns": [{"name": "컬럼명", "description": "이 메서드에서 파악된 컬럼 용도 (1문장)"}]}
         ],
@@ -348,6 +342,10 @@ prompt: |
   ⚠️ GWT 필수 규칙:
   - 비즈니스 로직이 존재하고 테이블 접근이 있는 메서드에서만 scenarios를 생성하세요.
   - 단순 getter/setter, 초기화, 유틸리티 메서드는 scenarios를 빈 배열 []로 반환하세요.
+  - **단순 CRUD(INSERT/UPDATE/DELETE만 하는 메서드)에도 최소 2개 시나리오 필수:**
+    - INSERT: (1) 정상 삽입 + DB 기본값 반영 결과, (2) 제약조건 위반 (UNIQUE 중복 등)
+    - UPDATE: (1) 정상 변경 + 상태 전이, (2) 대상 미존재 시 에러
+    - DELETE: (1) 정상 삭제, (2) FK 참조 존재 시 동작 또는 대상 미존재 시 에러
 
   ⚠️ GWT 품질 규칙 (반드시 준수):
   - **실제 값 사용 필수**: [필드 초기값]에 max_loans_per_member=5, overdue_fine_per_day=500 등이 제공되면, GWT에서 "config.max_loans_per_member 이상"이 아닌 **"5건 이상"**으로 기술하세요.
@@ -355,6 +353,33 @@ prompt: |
   - **계산 결과 명시**: 연체일수 × 벌금단가 = 총벌금 같은 계산이 있으면, 실제 숫자로 계산 결과를 기술하세요. 예: "연체 2일 × 500원 = 1000원"
   - **상태 전이 명시**: 변경 전 값 → 변경 후 값을 명확히 기술하세요. 예: "books.status가 'AVAILABLE'에서 'LOANED'로 변경"
   - **실제 값 우선, 불가 시 의미 기술**: [필드 초기값]이나 [CLASS_CONSTANTS_AND_FIELDS]에서 실제 값을 알 수 있으면 반드시 숫자로 기술하세요. 실제 값을 알 수 없는 경우(외부 주입 설정 등)에는 "설정된 최대 대출 권수", "설정된 1일 연체료 단가"처럼 의미를 기술하되, self._config.max_loans_per_member 같은 코드 식별자는 사용하지 마세요.
+
+  ★★★ GWT 구체성 필수 규칙 (모든 시나리오에 적용) ★★★
+
+  Given 필수 요소:
+  - 관련 테이블의 현재 상태를 테이블명.컬럼명=값 형태로 명시
+    좋은 예: "books 테이블에 id=1, isbn='978-89-1234', status='AVAILABLE'인 행이 존재"
+    나쁜 예: "DB 연결이 설정되어 있고 books 테이블이 존재한다"
+  - 집계 조건이 있으면 현재 건수 명시
+    좋은 예: "loans에서 member_id=100이고 status='ACTIVE'인 행이 3건 존재"
+
+  When 필수 요소:
+  - 호출 파라미터를 실제 예시값으로 명시
+    좋은 예: "isbn='978-89-1234', title='테스트 도서', category='일반'으로 등록 요청"
+    나쁜 예: "도서 등록을 실행한다"
+
+  Then 필수 요소:
+  - 변경되는 테이블명, 컬럼명, 값을 명시
+    좋은 예: "books에 isbn='978-89-1234', status='AVAILABLE'(기본값), id=auto_increment 행이 INSERT"
+    나쁜 예: "books 테이블에 신규 행이 INSERT되고 커밋된다"
+  - 상태 전이: 변경 전 → 변경 후 값을 명시
+  - DB 기본값(DEFAULT)이 적용되는 컬럼은 그 값을 명시
+  - 에러/예외 시나리오: 어떤 예외가 발생하는지, 테이블 변경이 없음을 명시
+
+  ★ 금지 표현 (이 표현이 나오면 품질 미달):
+  - "DB 연결이 설정되어 있고" → Given에서 인프라 상태는 의미 없으므로 삭제
+  - "테이블이 존재한다" → 당연한 전제이므로 삭제
+  - "INSERT되고 커밋된다" → 어떤 컬럼에 어떤 값이 들어가는지 구체적으로 명시
 
 
   [SECTION_7_TABLE_INSIGHTS]
@@ -373,8 +398,7 @@ prompt: |
   - "calls" 배열 요소는 "target.functionName" 형태의 문자열
   - calls에는 오직 다른 비즈니스 클래스의 메서드 호출만 포함 (Java 표준 라이브러리 제외)
   - analysis[i]에는 startLine, endLine, stereotype이 필수
-  - 값이 없으면 해당 필드는 dependencies=[], calls=[], variableRefs=[], tableInsights=[], scenarios=[] 사용
-  - "variableRefs" 배열 요소는 문자열 (전역변수/상수/필드 식별자명). 없으면 []
+  - 값이 없으면 해당 필드는 dependencies=[], calls=[], tableInsights=[], scenarios=[] 사용
   - "tableInsights"는 컨텍스트에 테이블 접근(reads_writes, 연결된 SQL)이 있을 때만 내용을 채움. 없으면 반드시 []
   - "scenarios"는 비즈니스 로직이 존재하고 테이블 접근이 있는 메서드에서만 생성. 없으면 []
   - 빈 배열도 허용되며 null 값은 사용 금지

@@ -160,11 +160,16 @@ async def process_ddl(
                 continue
             col_name = apply_name_case(col_name_raw, name_case)
             col_comment = (col.get("comment") or "").strip()
-            column_metadata[col_name] = {
+            col_meta = {
                 "description": col_comment,
                 "dtype": (col.get("dtype") or col.get("type") or "").strip(),
                 "nullable": col.get("nullable", True),
             }
+            if col.get("unique"):
+                col_meta["unique"] = True
+            if col.get("default_value") is not None:
+                col_meta["default_value"] = col["default_value"]
+            column_metadata[col_name] = col_meta
         cache_key = (schema.lower(), parsed_name.lower())
         ddl_table_metadata[cache_key] = {
             "description": comment,
@@ -183,6 +188,8 @@ async def process_ddl(
             col_comment = (col.get("comment") or "").strip()
             fqn = ".".join(filter(None, [datasource_name, schema, parsed_name, col_name])).lower()
             is_primary_key = col.get("primary_key", False) or (col_name_raw.upper() in primary_keys)
+            is_unique = col.get("unique", False)
+            default_value = col.get("default_value")
             col_data = {
                 "fqn": fqn,
                 "name": col_name,
@@ -191,6 +198,7 @@ async def process_ddl(
                 "description_source": "ddl" if col_comment else "",
                 "nullable": col_nullable,
                 "is_primary_key": is_primary_key,
+                "is_unique": is_unique,
                 "table_db": db_name,
                 "table_schema": schema,
                 "table_name": parsed_name,
@@ -198,6 +206,8 @@ async def process_ddl(
             }
             if is_primary_key:
                 col_data["pk_constraint"] = f"{parsed_name}_pkey"
+            if default_value is not None:
+                col_data["default_value"] = default_value
             columns_data.append(col_data)
             ddl_stats["columns"] += 1
 

@@ -382,7 +382,6 @@ def _process_one_method_for_analysis(
     fields_ctx = _build_module_fields_context(m.module_key, variable_facts_list)
     calls: List[str] = []
     dependencies: List[Dict[str, Any]] = []
-    variable_refs: List[str] = []
     table_insights: List[Dict[str, Any]] = []
     scenarios: List[Dict[str, Any]] = []
     stereotype = ""
@@ -407,7 +406,6 @@ def _process_one_method_for_analysis(
             summary = analysis.get("summary") or summary
             calls = list(analysis.get("calls") or [])
             dependencies = list(analysis.get("dependencies") or [])
-            variable_refs = list(analysis.get("variableRefs") or [])
             table_insights = list(analysis.get("tableInsights") or [])
             scenarios = list(analysis.get("scenarios") or [])
             raw_stereotype = (analysis.get("stereotype") or "").strip()
@@ -424,7 +422,6 @@ def _process_one_method_for_analysis(
         "fqn": m.fqn,
         "calls": calls,
         "dependencies": dependencies,
-        "variableRefs": variable_refs,
         "tableInsights": table_insights,
         "scenarios": scenarios,
     }

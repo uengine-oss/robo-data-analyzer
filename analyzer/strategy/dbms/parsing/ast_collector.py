@@ -174,8 +174,6 @@ class StatementCollector:
         if not analyzable:
             statement_node.summary = statement_node.get_raw_code()
             statement_node.completion_event.set()
-        elif procedure_key and procedure_key in self.procedures:
-            self.procedures[procedure_key].pending_nodes += 1
 
         self.nodes.append(statement_node)
         log_process("ANALYZE", "COLLECT", f"✅ {node_type} 노드 수집 완료: 라인 {start_line}~{end_line}, 토큰 {token}, 자식 {len(child_nodes)}개")

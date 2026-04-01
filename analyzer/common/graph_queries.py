@@ -47,6 +47,8 @@ SET __cy_c__.name = item.name,
     __cy_c__.description_source = item.description_source,
     __cy_c__.nullable = item.nullable,
     __cy_c__.is_primary_key = item.is_primary_key,
+    __cy_c__.is_unique = CASE WHEN item.is_unique IS NOT NULL THEN item.is_unique ELSE __cy_c__.is_unique END,
+    __cy_c__.default_value = CASE WHEN item.default_value IS NOT NULL THEN item.default_value ELSE __cy_c__.default_value END,
     __cy_c__.pk_constraint = CASE WHEN item.pk_constraint IS NOT NULL THEN item.pk_constraint ELSE __cy_c__.pk_constraint END,
     __cy_c__.datasource = CASE WHEN item.datasource <> '' THEN item.datasource ELSE __cy_c__.datasource END
 RETURN __cy_c__

@@ -63,12 +63,12 @@ _SKIP_COUNT_LABELS = SCOPE_LABELS | {"EXTERNAL"}
 
 EXCLUDED_REL_TYPES = {"NEXT", "PARENT_OF"}
 
-STRUCTURAL_REL_TYPES = {"CONTAINS", "HAS_FUNCTION", "HAS_VARIABLE", "BELONGS_TO_PACKAGE", "CONTAINS_PACKAGE", "HAS_COLUMN", "HAS_GWT"}
+STRUCTURAL_REL_TYPES = {"HAS_PROCEDURE", "LINKS_TO", "HAS_FUNCTION", "HAS_VARIABLE", "BELONGS_TO_PACKAGE", "CONTAINS_PACKAGE", "HAS_COLUMN", "HAS_GWT"}
 UML_REL_TYPES = {"EXTENDS", "IMPLEMENTS", "ASSOCIATION", "COMPOSITION", "AGGREGATION", "DEPENDENCY"}
 ETL_REL_TYPES = {"ETL_READS", "ETL_WRITES", "DATA_FLOWS_TO"}
 
 ENTITY_STRUCT_REL_TYPES = UML_REL_TYPES | ETL_REL_TYPES       # 모듈 상세: 구조 관계
-ENTITY_CALL_REL_TYPES = {"CALLS", "USES", "CALL"}              # 모듈 상세: 호출 관계
+ENTITY_CALL_REL_TYPES = {"CALLS", "USES"}                       # 모듈 상세: 호출 관계
 ENTITY_DATA_REL_TYPES = {"FROM", "READS", "WRITES", "REFER_TO", "REFERS_TO"}  # 모듈 상세: 데이터 접근
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -688,7 +688,7 @@ def _render_module_detail(graph: GraphData, mod: GraphNode) -> str:
             _safe(func.prop("modifiers")),
             _safe(func.prop("summary")),
         ])
-    for d in sorted(graph.get_children(mod.node_id, "CONTAINS"),
+    for d in sorted(graph.get_children(mod.node_id, "HAS_PROCEDURE"),
                     key=lambda x: x.prop("start_line", 0) or 0):
         if d.primary_label in DML_LABELS:
             func_rows.append([
@@ -787,7 +787,7 @@ def _render_module_detail(graph: GraphData, mod: GraphNode) -> str:
                 graph.node_display(r.end_node_id), r.rel_type,
                 _safe(r.prop("evidence")), _safe(r.prop("confidence")),
             ])
-    for d in graph.get_children(mod.node_id, "CONTAINS"):
+    for d in graph.get_children(mod.node_id, "HAS_PROCEDURE"):
         if d.primary_label in DML_LABELS:
             for r in graph.get_outgoing_rels(d.node_id, ENTITY_DATA_REL_TYPES):
                 data_access.append([
@@ -960,9 +960,9 @@ def _render_database(graph: GraphData) -> str:
         parts.append("\n#### 컬럼\n")
         parts.append(_md_table(SCHEMA_COLUMN, col_rows))
 
-        fk_rels = graph.get_outgoing_rels(table.node_id, {"FK_TO_TABLE", "FK_TO"})
+        fk_rels = graph.get_outgoing_rels(table.node_id, {"FK_TO_TABLE", "FK_TO_COLUMN"})
         for col in cols:
-            fk_rels.extend(graph.get_outgoing_rels(col.node_id, {"FK_TO", "FK_TO_TABLE"}))
+            fk_rels.extend(graph.get_outgoing_rels(col.node_id, {"FK_TO_COLUMN", "FK_TO_TABLE"}))
         fk_rows = []
         for fk in fk_rels:
             fk_rows.append([
@@ -1007,7 +1007,7 @@ def _render_cross_cutting(graph: GraphData) -> str:
                     if parents:
                         src_name = parents[0].display_name
                 elif src.primary_label in DML_LABELS:
-                    parents = graph.get_parents(src.node_id, "CONTAINS")
+                    parents = graph.get_parents(src.node_id, "HAS_PROCEDURE")
                     if parents:
                         src_name = parents[0].display_name
                 tgt_name = tgt.display_name

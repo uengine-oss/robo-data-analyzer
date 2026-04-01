@@ -365,7 +365,7 @@ async def run_phase_llm(
     await asyncio.gather(*tasks, return_exceptions=True)
 
     from analyzer.strategy.dbms.linking.summarizer import run_phase_post
-    async for chunk in run_phase_post(pipeline, contexts, client, orchestrator, stats):
+    async for chunk in run_phase_post(pipeline, contexts, client, orchestrator):
         yield chunk
 
     yield emit_phase_event(2, "AI 분석", "completed", 100, {"batches": stats.llm_batches_executed})
@@ -738,9 +738,12 @@ async def run_phase_lineage(
                 )
 
             except Exception as e:
-                error_msg = f"{file_name} 리니지 분석 실패: {e}"
-                log_process("LINEAGE", "ERROR", error_msg, logging.ERROR, e)
-                raise RuntimeError(error_msg) from e
+                # catalog 서비스는 선택 의존성: 연결 실패/일시 오류로 전체 분석을 실패시키지 않음
+                error_msg = f"{file_name} 리니지 분석 실패(스킵): {e}"
+                log_process("LINEAGE", "WARN", error_msg, logging.WARNING, e)
+                yield emit_message(f"      ⚠️ [{idx}/{total_files}] {file_name}: 리니지 분석 실패 → 스킵 ({str(e)[:80]})")
+                # 다음 파일로 계속 진행
+                continue
 
     if not hasattr(stats, "etl_count"):
         stats.etl_count = 0

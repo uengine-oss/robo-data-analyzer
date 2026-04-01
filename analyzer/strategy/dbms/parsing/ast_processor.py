@@ -20,29 +20,26 @@ DbmsAstProcessor: DBMS 전용 AST 처리 및 LLM 분석
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import re
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple, Set, Union
 
-from config.settings import settings
 from util.logger import log_process
-from util.text_utils import calculate_code_token, parse_table_identifier, resolve_node_code
+from util.text_utils import parse_table_identifier
 from analyzer.pipeline_control import pipeline_controller
 
 from analyzer.strategy.dbms.common.models import StatementNode, AnalysisBatch, BatchPlanner, ProcedureInfo
 from analyzer.strategy.dbms.common.constants import (
-    PROCEDURE_TYPES, NON_ANALYSIS_TYPES, DML_STATEMENT_TYPES,
-    VARIABLE_DECLARATION_TYPES, TABLE_RELATIONSHIP_MAP, VARIABLE_ROLE_MAP,
-    VARIABLE_CONCURRENCY, MAX_BATCH_TOKEN, MAX_CONCURRENCY,
-    MAX_SUMMARY_CHUNK_TOKEN, MAX_CONTEXT_TOKEN, PARENT_EXPAND_THRESHOLD,
+    PROCEDURE_TYPES,
+    TABLE_RELATIONSHIP_MAP,
+    MAX_CONCURRENCY,
+    MAX_CONTEXT_TOKEN,
     DBMS_SYSTEM_PACKAGES,
 )
-from analyzer.strategy.dbms.common.utils import get_procedure_name_from_code, build_statement_name
+from analyzer.strategy.dbms.common.utils import build_statement_name
 from analyzer.strategy.dbms.linking.llm_rules import (
-    analyze_code, analyze_dml_tables, analyze_variables,
-    extract_node_context, analyze_variable_summary,
+    analyze_code, analyze_dml_tables,
+    extract_node_context,
 )
 from analyzer.strategy.dbms.parsing.ast_collector import StatementCollector
 
@@ -226,8 +223,11 @@ class BaseAstProcessor(ABC):
             log_process("ANALYZE", "PHASE1", f"⚠️ {self.full_directory}: 분석 대상 노드 없음")
             return []
 
-        # 정적 노드 쿼리 생성 (파라미터화된 Dict 쿼리도 포함)
+        # Package 노드 생성 + FILE → Package 관계
         queries: List[Union[str, Dict[str, Any]]] = []
+        queries.extend(self._build_package_queries())
+
+        # 정적 노드 쿼리 생성 (파라미터화된 Dict 쿼리도 포함)
         for node in self._nodes:
             queries.extend(self._build_static_node_queries(node))
 
@@ -557,43 +557,55 @@ class BaseAstProcessor(ABC):
         batch_info = f"배치#{batch_id} " if batch_id else ""
         raise RuntimeError(f"{batch_info}{context} 결과가 dict가 아님: {type(result).__name__}")
 
-    def _split_summaries_by_token(self, summaries: dict, max_token: int) -> List[dict]:
-        """토큰 기준으로 summaries를 청크로 분할합니다."""
-        if not summaries:
-            return []
+    # =========================================================================
+    # Package 노드 및 관계 쿼리
+    # =========================================================================
 
-        chunks = []
-        current_chunk = {}
-        current_tokens = 0
+    def _build_package_queries(self) -> List[Dict[str, Any]]:
+        """Package 노드 생성 + FILE -[BELONGS_TO_PACKAGE]-> Package 관계"""
+        queries: List[Dict[str, Any]] = []
+        package_name = self.directory  # 폴더명 (예: RWIS)
 
-        for key, value in summaries.items():
-            item_text = f"{key}: {value}"
-            item_tokens = calculate_code_token(item_text)
+        if not package_name:
+            return queries
 
-            if current_tokens + item_tokens > max_token and current_chunk:
-                chunks.append(current_chunk)
-                current_chunk = {}
-                current_tokens = 0
+        # Package 노드 MERGE
+        queries.append({
+            "query": (
+                "MERGE (__cy_pkg__:PACKAGE {name: $package_name})\n"
+                "RETURN __cy_pkg__"
+            ),
+            "params": {"package_name": package_name}
+        })
 
-            current_chunk[key] = value
-            current_tokens += item_tokens
+        # FILE -[BELONGS_TO_PACKAGE]-> Package
+        queries.append({
+            "query": (
+                "MATCH (__cy_f__:FILE {directory: $directory, file_name: $file_name})\n"
+                "MATCH (__cy_pkg__:PACKAGE {name: $package_name})\n"
+                "MERGE (__cy_f__)-[__cy_r__:BELONGS_TO_PACKAGE]->(__cy_pkg__)\n"
+                "RETURN __cy_f__, __cy_pkg__, __cy_r__"
+            ),
+            "params": {
+                "directory": self.full_directory,
+                "file_name": self.file_name,
+                "package_name": package_name,
+            }
+        })
 
-        if current_chunk:
-            chunks.append(current_chunk)
-
-        return chunks
+        return queries
 
     # =========================================================================
     # 공통 관계 쿼리 빌더 (파라미터화)
     # =========================================================================
 
-    def _build_contains_query(self, parent: "StatementNode", child: "StatementNode") -> Dict[str, Any]:
-        """CONTAINS 관계 쿼리 (파라미터화)"""
+    def _build_has_procedure_query(self, parent: "StatementNode", child: "StatementNode") -> Dict[str, Any]:
+        """HAS_PROCEDURE 관계 쿼리 (FILE → PROCEDURE/FUNCTION)"""
         return {
             "query": (
                 f"MATCH (__cy_p__:{parent.node_type} {{startLine: $parent_line, directory: $directory, file_name: $file_name}})\n"
                 f"MATCH (__cy_c__:{child.node_type} {{startLine: $child_line, directory: $directory, file_name: $file_name}})\n"
-            f"MERGE (__cy_p__)-[__cy_r__:CONTAINS]->(__cy_c__)\n"
+            f"MERGE (__cy_p__)-[__cy_r__:HAS_PROCEDURE]->(__cy_c__)\n"
             f"RETURN __cy_r__"
             ),
             "params": {
@@ -834,13 +846,13 @@ class DbmsAstProcessor(BaseAstProcessor):
         return queries
 
     def _build_relationship_queries(self) -> List[Union[str, Dict[str, Any]]]:
-        """정적 관계 쿼리 생성 (CONTAINS, PARENT_OF, NEXT)"""
+        """정적 관계 쿼리 생성 (HAS_PROCEDURE, PARENT_OF, NEXT)"""
         queries: List[Union[str, Dict[str, Any]]] = []
 
         for node in self._nodes or []:
             for child in node.children:
                 if node.node_type == "FILE" and child.node_type in PROCEDURE_TYPES:
-                    queries.append(self._build_contains_query(node, child))
+                    queries.append(self._build_has_procedure_query(node, child))
                 else:
                     queries.append(self._build_parent_of_query(node, child))
 
@@ -868,10 +880,6 @@ class DbmsAstProcessor(BaseAstProcessor):
                 "file_name": self.file_name,
             }
         }
-
-    async def _run_preprocessing(self) -> List[str]:
-        """변수 선행 처리"""
-        return await self._analyze_variable_nodes()
 
     async def _invoke_llm(self, batch: AnalysisBatch) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
         """LLM 호출 (일반 분석 + DML 분석)"""
@@ -962,9 +970,13 @@ class DbmsAstProcessor(BaseAstProcessor):
                         }
                     })
 
+                    # unit_summary_store에는 리프 노드(자식이 없는 노드)만 저장
+                    # → 부모 노드 summary는 자식 내용을 이미 포함하므로 중복 제거
+                    # → procedure_summary 생성 시 스켈레톤+리프 방식으로 전달
                     if unit_summary_store is not None and node.unit_key and node.unit_key in unit_summary_store:
-                        key = f"{node.node_type}_{node.start_line}_{node.end_line}"
-                        unit_summary_store[node.unit_key][key] = summary
+                        if not node.has_children:
+                            key = f"{node.node_type}_{node.start_line}_{node.end_line}"
+                            unit_summary_store[node.unit_key][key] = summary
 
                 # --- CALL 관계 생성 ---
                 for call_name in analysis.get('calls', []) or []:
@@ -977,7 +989,7 @@ class DbmsAstProcessor(BaseAstProcessor):
                             "query": (
                                 f"MATCH (__cy_c__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
                                 f"MERGE (__cy_target__:PROCEDURE {{directory: $package_name, procedure_name: $proc_name}})\n"
-                                f"MERGE (__cy_c__)-[__cy_r__:CALL {{scope: 'external'}}]->(__cy_target__)\n"
+                                f"MERGE (__cy_c__)-[__cy_r__:CALLS {{scope: 'external'}}]->(__cy_target__)\n"
                                 f"RETURN __cy_c__, __cy_target__, __cy_r__"
                             ),
                             "params": {
@@ -989,13 +1001,21 @@ class DbmsAstProcessor(BaseAstProcessor):
                             }
                         })
                     else:
+                        # 분석 범위 내 노드가 있으면 internal, 없으면 EXTERNAL placeholder 생성
                         queries.append({
                             "query": (
                                 f"MATCH (__cy_c__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
-                                f"MATCH (__cy_p__ {{procedure_name: $call_name}})\n"
-                                f"WHERE __cy_p__:PROCEDURE OR __cy_p__:FUNCTION\n"
-                                f"MERGE (__cy_c__)-[__cy_r__:CALL {{scope: 'internal'}}]->(__cy_p__)\n"
-                                f"RETURN __cy_c__, __cy_p__, __cy_r__"
+                                f"OPTIONAL MATCH (__cy_existing__ {{procedure_name: $call_name}})\n"
+                                f"WHERE (__cy_existing__:PROCEDURE OR __cy_existing__:FUNCTION) AND NOT __cy_existing__:EXTERNAL\n"
+                                f"WITH __cy_c__, __cy_existing__\n"
+                                f"FOREACH (_ IN CASE WHEN __cy_existing__ IS NOT NULL THEN [1] ELSE [] END |\n"
+                                f"  MERGE (__cy_c__)-[:CALLS {{scope: 'internal'}}]->(__cy_existing__)\n"
+                                f")\n"
+                                f"FOREACH (_ IN CASE WHEN __cy_existing__ IS NULL THEN [1] ELSE [] END |\n"
+                                f"  MERGE (__cy_ext__:PROCEDURE:EXTERNAL {{procedure_name: $call_name}})\n"
+                                f"  MERGE (__cy_c__)-[:CALLS {{scope: 'external'}}]->(__cy_ext__)\n"
+                                f")\n"
+                                f"RETURN __cy_c__"
                             ),
                             "params": {
                                 "start_line": node.start_line,
@@ -1019,100 +1039,9 @@ class DbmsAstProcessor(BaseAstProcessor):
 
         return queries
 
-
-    async def _summarize_unit_variables(self, unit_key: str) -> List[Union[str, Dict[str, Any]]]:
-        """변수 역할 요약하여 Neo4j 쿼리 생성 (역할 2개 이상은 LLM 요약, 1개는 그대로 저장)"""
-        unit_vars = self._variable_roles.get(unit_key, {})
-        if not unit_vars:
-            return []
-
-        vars_to_summarize = [
-            {"name": var_name, "roles": roles}
-            for var_name, roles in unit_vars.items()
-            if len(roles) >= 2
-        ]
-        single_role_vars = [
-            (var_name, roles[0])
-            for var_name, roles in unit_vars.items()
-            if len(roles) == 1
-        ]
-
-        queries: List[Union[str, Dict[str, Any]]] = []
-
-        if vars_to_summarize:
-            try:
-                result = await asyncio.to_thread(
-                    analyze_variable_summary, vars_to_summarize, self.api_key, self.locale
-                )
-                validated = self.validate_dict_result(result, "변수 역할 요약", allow_none=True)
-
-                if validated:
-                    queries.extend([
-                        {
-                            "query": (
-                                f"MATCH (__cy_v__:Variable {{name: $var_name, directory: $directory, file_name: $file_name}})\n"
-                                f"SET __cy_v__.role = $role\n"
-                                f"RETURN __cy_v__"
-                            ),
-                            "params": {
-                                "var_name": var_sum.get("name", ""),
-                                "directory": self.full_directory,
-                                "file_name": self.file_name,
-                                "role": var_sum.get("summary", ""),
-                            }
-                        }
-                        for var_sum in validated.get("summaries", []) or []
-                        if var_sum.get("name") and var_sum.get("summary")
-                    ])
-
-                log_process("ANALYZE", "VARIABLE", f"✅ 변수 역할 요약 완료: {len(vars_to_summarize)}개 변수")
-            except Exception as e:
-                log_process("ANALYZE", "VARIABLE", f"⚠️ 변수 역할 요약 실패: {e}")
-
-        queries.extend([
-            {
-                "query": (
-                    f"MATCH (__cy_v__:Variable {{name: $var_name, directory: $directory, file_name: $file_name}})\n"
-                    f"SET __cy_v__.role = $role\n"
-                    f"RETURN __cy_v__"
-                ),
-                "params": {
-                    "var_name": var_name,
-                    "directory": self.full_directory,
-                    "file_name": self.file_name,
-                    "role": role,
-                }
-            }
-            for var_name, role in single_role_vars
-        ])
-
-        return queries
-
     # =========================================================================
     # DBMS 전용 메서드
     # =========================================================================
-
-    async def _analyze_variable_nodes(self) -> List[Union[str, Dict[str, Any]]]:
-        """변수 선언 노드 분석 및 쿼리 생성"""
-        variable_nodes = [n for n in (self._nodes or []) if n.node_type in VARIABLE_DECLARATION_TYPES]
-        if not variable_nodes:
-            return []
-
-        semaphore = asyncio.Semaphore(VARIABLE_CONCURRENCY)
-
-        async def analyze_one(node: StatementNode) -> List[Union[str, Dict[str, Any]]]:
-            async with semaphore:
-                result = await asyncio.to_thread(
-                    analyze_variables, node.code, self.api_key, self.locale
-                )
-                return self._build_variable_queries(node, result)
-
-        results = await asyncio.gather(*[analyze_one(n) for n in variable_nodes])
-        queries: List[Union[str, Dict[str, Any]]] = []
-        for r in results:
-            queries.extend(r)
-
-        return queries
 
     def _process_variable_usage(self, node: StatementNode, variables: List[Any]) -> List[Union[str, Dict[str, Any]]]:
         """변수 사용 마킹 및 역할 누적 처리"""
@@ -1150,47 +1079,6 @@ class DbmsAstProcessor(BaseAstProcessor):
                     self._variable_roles[node.unit_key][var_name] = []
                 if var_role not in self._variable_roles[node.unit_key][var_name]:
                     self._variable_roles[node.unit_key][var_name].append(var_role)
-
-        return queries
-
-    def _build_variable_queries(self, node: StatementNode, result: Dict[str, Any]) -> List[Union[str, Dict[str, Any]]]:
-        """변수 분석 결과를 쿼리로 변환"""
-        if not isinstance(result, dict):
-            raise RuntimeError(f"변수 분석 결과가 dict가 아님 (node={node.start_line}): {type(result).__name__}")
-
-        variables = result.get("variables") or []
-        if not variables:
-            return []
-
-        queries: List[Union[str, Dict[str, Any]]] = []
-
-        for var in variables:
-            var_name = var.get("name", "")
-            var_type = var.get("type", "")
-            var_role = var.get("role", "")
-            var_desc = var.get("description", "")
-
-            if not var_name:
-                continue
-
-            queries.append({
-                "query": (
-                    f"MATCH (__cy_n__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
-                    f"MERGE (__cy_v__:Variable {{name: $var_name, directory: $directory, file_name: $file_name}})\n"
-                    f"SET __cy_v__.type = $var_type, __cy_v__.role = $var_role, __cy_v__.description = $var_desc\n"
-                f"MERGE (__cy_n__)-[:DECLARES]->(__cy_v__)\n"
-                f"RETURN __cy_v__"
-                ),
-                "params": {
-                    "start_line": node.start_line,
-                    "directory": self.full_directory,
-                    "file_name": self.file_name,
-                    "var_name": var_name,
-                    "var_type": var_type,
-                    "var_role": VARIABLE_ROLE_MAP.get(var_role, var_role),
-                    "var_desc": var_desc,
-                }
-            })
 
         return queries
 
@@ -1418,7 +1306,7 @@ class DbmsAstProcessor(BaseAstProcessor):
                 f"SET __cy_t__.db_link = $link_name\n"
                 f"WITH __cy_t__\n"
                 f"MERGE (__cy_l__:DBLink {{name: $link_name}})\n"
-                f"MERGE (__cy_l__)-[__cy_r1__:CONTAINS]->(__cy_t__)\n"
+                f"MERGE (__cy_l__)-[__cy_r1__:LINKS_TO]->(__cy_t__)\n"
                 f"WITH __cy_t__, __cy_l__\n"
                 f"MATCH (__cy_n__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
                 f"MERGE (__cy_n__)-[__cy_r2__:DB_LINK {{mode: $mode}}]->(__cy_t__)\n"
@@ -1492,7 +1380,7 @@ class DbmsAstProcessor(BaseAstProcessor):
                     "query": (
                         f"MATCH (__cy_sc__:Column {{fqn: $src_fqn}})\n"
                         f"MATCH (__cy_dc__:Column {{fqn: $tgt_fqn}})\n"
-                        f"MERGE (__cy_sc__)-[__cy_r__:FK_TO]->(__cy_dc__)\n"
+                        f"MERGE (__cy_sc__)-[__cy_r__:FK_TO_COLUMN]->(__cy_dc__)\n"
                         f"ON CREATE SET __cy_r__.source = 'procedure'\n"
                         f"RETURN __cy_sc__, __cy_dc__, __cy_r__"
                     ),
@@ -1582,148 +1470,3 @@ class DbmsAstProcessor(BaseAstProcessor):
                     s = str(v).strip()
                     if s:
                         entry["examples"].add(s)
-
-    # =========================================================================
-    # Phase 2.4: 테이블/컬럼 설명 요약 (제거됨)
-    # =========================================================================
-
-    # NOTE: _finalize_table_summaries와 _summarize_table은 table_summary.py로 이동되었습니다.
-
-    async def _finalize_table_summaries(self) -> List[str]:
-        """테이블/컬럼 설명 요약"""
-        from analyzer.strategy.dbms.linking.llm_rules import summarize_table_metadata
-
-        log_process("ANALYZE", "TABLE_SUMMARY", f"📊 테이블 요약 시작: {len(self._table_summary_store)}개 테이블")
-        if not self._table_summary_store:
-            log_process("ANALYZE", "TABLE_SUMMARY", "⚠️ 테이블 요약 대상 없음 (store 비어있음)")
-            return []
-
-        tasks = [
-            self._summarize_table(table_key, data)
-            for table_key, data in list(self._table_summary_store.items())
-        ]
-        if not tasks:
-            return []
-
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        all_queries: List[Union[str, Dict[str, Any]]] = []
-        for result in results:
-            if isinstance(result, Exception):
-                log_process("ANALYZE", "TABLE_SUMMARY", f"❌ 테이블 요약 오류: {result}", logging.ERROR)
-            elif result:
-                all_queries.extend(result)
-
-        self._table_summary_store.clear()
-        return all_queries
-
-    async def _summarize_table(self, table_key: Tuple[str, str], data: Dict[str, Any]) -> List[str]:
-        """테이블 요약 처리"""
-        from analyzer.strategy.dbms.linking.llm_rules import summarize_table_metadata
-
-        schema_key, name_key = table_key
-
-        # --- 메타데이터 수집 ---
-        ddl_key = (schema_key.lower(), name_key.lower())
-        ddl_meta = self._ddl_table_metadata.get(ddl_key, {})
-        ddl_description = (ddl_meta.get('description') or '').strip()
-        ddl_columns = ddl_meta.get('columns') or {}
-
-        summaries = list(data.get('summaries') or [])
-        columns_map = data.get('columns') or {}
-        column_sentences = {
-            entry['name']: list(entry['summaries'])
-            for entry in columns_map.values()
-            if entry.get('summaries')
-        }
-
-        if ddl_description:
-            summaries.insert(0, f"[DDL 메타데이터] {ddl_description}")
-
-        for col_name, ddl_col in ddl_columns.items():
-            ddl_col_desc = (ddl_col.get('description') or '').strip()
-            if ddl_col_desc and col_name not in column_sentences:
-                column_sentences[col_name] = [f"[DDL 메타데이터] {ddl_col_desc}"]
-            elif ddl_col_desc and col_name in column_sentences:
-                column_sentences[col_name].insert(0, f"[DDL 메타데이터] {ddl_col_desc}")
-
-        if not summaries and not column_sentences:
-            return []
-
-        table_display = f"{schema_key}.{name_key}" if schema_key else name_key
-        column_metadata = {}
-        for entry in columns_map.values():
-            col_name = entry['name']
-            ddl_col = ddl_columns.get(col_name, {})
-            column_metadata[col_name] = {
-                "dtype": entry.get("dtype") or ddl_col.get("dtype") or "",
-                "nullable": bool(entry.get("nullable", True)) if entry.get("nullable") is not None else ddl_col.get("nullable", True),
-                "examples": sorted(list(entry.get("examples") or []))[:5],
-            }
-
-        for col_name, ddl_col in ddl_columns.items():
-            if col_name not in column_metadata:
-                column_metadata[col_name] = {
-                    "dtype": ddl_col.get("dtype") or "",
-                    "nullable": ddl_col.get("nullable", True),
-                    "examples": [],
-                }
-
-        # --- LLM 호출 ---
-        result = await asyncio.to_thread(
-            summarize_table_metadata,
-            table_display,
-            summaries,
-            column_sentences,
-            column_metadata,
-            self.api_key,
-            self.locale,
-        )
-
-        if not isinstance(result, dict):
-            raise RuntimeError(f"테이블 요약 결과가 dict가 아님 ({schema_key}.{name_key}): {type(result).__name__}")
-
-        # --- 쿼리 생성 ---
-        queries: List[Union[str, Dict[str, Any]]] = []
-        llm_table_desc = (result.get('tableDescription') or '').strip()
-
-        if llm_table_desc:
-            queries.append({
-                "query": (
-                    f"MATCH (__cy_t__:Table {{schema: $schema, name: $name, db: $db}})\n"
-                    f"SET __cy_t__.analyzed_description = $llm_desc\n"
-                    f"WITH __cy_t__\n"
-                    f"WHERE __cy_t__.description IS NULL OR __cy_t__.description = ''\n"
-                    f"SET __cy_t__.description = $llm_desc, __cy_t__.description_source = 'code'\n"
-                    f"RETURN __cy_t__"
-                ),
-                "params": {
-                    "schema": schema_key,
-                    "name": name_key,
-                    "db": self.dbms,
-                    "llm_desc": llm_table_desc,
-                }
-            })
-
-        for column_info in result.get('columns', []) or []:
-            column_name = (column_info.get('name') or '').strip()
-            llm_column_desc = (column_info.get('description') or '').strip()
-            if not column_name or not llm_column_desc:
-                continue
-
-            fqn = '.'.join(filter(None, [schema_key, name_key, column_name])).lower()
-            queries.append({
-                "query": (
-                    f"MATCH (__cy_c__:Column {{fqn: $fqn}})\n"
-                    f"SET __cy_c__.analyzed_description = $llm_desc\n"
-                    f"WITH __cy_c__\n"
-                    f"WHERE __cy_c__.description IS NULL OR __cy_c__.description = ''\n"
-                    f"SET __cy_c__.description = $llm_desc, __cy_c__.description_source = 'code'\n"
-                    f"RETURN __cy_c__"
-                ),
-                "params": {
-                    "fqn": fqn,
-                    "llm_desc": llm_column_desc,
-                }
-            })
-
-        return queries

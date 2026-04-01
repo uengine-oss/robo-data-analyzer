@@ -26,6 +26,7 @@ from config.settings import settings
 
 # 실행 로그 파일명 (logs/ 디렉터리 아래에 기록)
 ANALYZER_LOG_FILENAME = "analyzer.log"
+ERROR_LOG_FILENAME = "error.log"
 from util.ndjson_stream import (
     emit_message,
     emit_error,
@@ -302,11 +303,26 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
             import shutil
             shutil.rmtree(run_dir, ignore_errors=True)
         run_dir.mkdir(parents=True, exist_ok=True)
+
+        fmt = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+
+        # 전체 로그 핸들러
         log_path = run_dir / ANALYZER_LOG_FILENAME
         handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
-        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s"))
+        handler.setFormatter(fmt)
         logging.getLogger().addHandler(handler)
-        logging.getLogger(__name__).info("[ANALYZER] run_dir=%s  로그=%s (모든 산출물·로그 여기 기록)", run_dir, log_path.name)
+
+        # error.log 전용 핸들러 (WARNING 이상만 기록)
+        error_log_path = run_dir / ERROR_LOG_FILENAME
+        error_handler = logging.FileHandler(error_log_path, mode="a", encoding="utf-8")
+        error_handler.setLevel(logging.WARNING)
+        error_handler.setFormatter(fmt)
+        logging.getLogger().addHandler(error_handler)
+        self._error_log_handler = error_handler
+
+        logging.getLogger(__name__).info(
+            "[ANALYZER] run_dir=%s  로그=%s, 에러=%s", run_dir, log_path.name, error_log_path.name
+        )
         return handler, run_dir
 
     def _detach_run_log_file_handler(self, handler: Optional[logging.FileHandler]) -> None:
@@ -318,6 +334,14 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
             handler.close()
         except Exception:
             pass
+        # error.log 핸들러도 정리
+        error_handler = getattr(self, '_error_log_handler', None)
+        if error_handler:
+            try:
+                logging.getLogger().removeHandler(error_handler)
+                error_handler.close()
+            except Exception:
+                pass
 
     async def analyze(
         self,

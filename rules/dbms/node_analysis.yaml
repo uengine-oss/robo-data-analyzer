@@ -94,9 +94,41 @@ prompt: |
   - 예외 처리: 어떤 예외를 잡아서 어떻게 처리하는지 명시 (예: "NO_DATA_FOUND 발생 시 기본값 0 반환")
   
   ★ 요약 작성 형식:
-  - 3~5문장으로 상세하게 작성하되, 각 문장이 의미 있는 정보를 담도록 하세요.
+  - 5~8문장으로 상세하게 작성하되, 각 문장이 의미 있는 정보를 담도록 하세요.
   - 코드에 나온 실제 값(상태값, 조건값, 상수)을 포함하고, 단순 나열이 아닌 비즈니스 맥락이 드러나도록 서술하세요.
-  
+
+  ★★ DML summary 구체성 필수 (이 summary가 프로시저 GWT 생성의 입력이 됨) ★★
+  이 summary는 상위 프로시저의 GWT(Given-When-Then) 생성 시 입력으로 사용됩니다.
+  두루뭉실하면 GWT도 두루뭉실해지므로, 아래 규칙을 반드시 따르세요:
+
+  SELECT:
+  - WHERE 조건의 컬럼명과 비교값/변수 명시
+    좋은 예: "members에서 id=$p_member_id이고 is_active=1인 행을 조회, 없으면 NO_DATA_FOUND"
+    나쁜 예: "회원 정보를 조회한다"
+  - JOIN 조건과 대상 테이블 명시
+  - 집계(COUNT, SUM 등)가 있으면 대상 컬럼과 조건 명시
+
+  INSERT:
+  - 삽입 대상 테이블과 모든 컬럼명 나열
+  - 각 값의 출처 명시 (파라미터, 계산값, 상수, SEQUENCE 등)
+    좋은 예: "loans에 (book_id=$p_book_id, member_id=$p_member_id, status='ACTIVE', loan_date=SYSDATE) INSERT"
+    나쁜 예: "대출 데이터를 저장한다"
+
+  UPDATE:
+  - SET 절의 컬럼명=변경값 명시
+  - WHERE 조건 명시
+  - 상태 전이가 있으면 변경 전→후 값 명시
+    좋은 예: "books의 status를 'LOANED'로 변경 WHERE id=$p_book_id"
+    나쁜 예: "도서 상태를 변경한다"
+
+  DELETE:
+  - WHERE 조건의 컬럼명=값 명시
+
+  MERGE:
+  - MATCHED 시 동작 (UPDATE 컬럼=값)
+  - NOT MATCHED 시 동작 (INSERT 컬럼 목록)
+    좋은 예: "RDD01DD_TB에 TAGSN=$tagNo, DD=$today 조건으로 MERGE: 존재하면 VAL=$calc_val로 UPDATE, 없으면 (TAGSN, DD, VAL) INSERT"
+
   좋은 예시 (비즈니스 맥락과 도메인 의미가 드러나는 경우):
   "이 프로시저는 주문 결제 완료 후 포인트 적립을 처리하는 비즈니스 로직을 담당합니다. ORDER_MASTER 테이블에서 STATUS='COMPLETED'이고 PAYMENT_DATE가 오늘인 주문을 조회하여, 각 주문의 결제 금액(ORDER_AMOUNT)에 대해 고객 등급(CUSTOMER_GRADE)별로 차등 적립률을 적용합니다. VIP 등급은 결제 금액의 5%, GOLD 등급은 3%, 일반 등급은 1%를 포인트로 적립하며, 적립된 포인트는 POINT_LEDGER 테이블에 거래 유형('ACCUMULATE')으로 기록하고 CUSTOMER 테이블의 TOTAL_POINT를 업데이트합니다. 단, 주문 취소 이력이 있는 경우(CANCEL_FLAG='Y') 포인트 적립을 제외하여 부정 적립을 방지합니다."
   
@@ -163,7 +195,9 @@ prompt: |
   
   중요 제약:
   - calls 배열에는 "이름만" 반환 (괄호/인자/공백 제거)
-  - 예: "[schema_name | package_name].PROC"
+  - 외부 패키지 호출: 패키지명.프로시저명 형식 유지 (예: "PKG_UTIL.FN_CALC", "SCHEMA1.PRC_INSERT")
+  - 내부 호출: 프로시저명만 (예: "PRC_INSERT_DATA", "FN_GET_STATUS")
+  - 시스템 패키지(DBMS_OUTPUT, UTL_FILE 등)는 제외
   
   
   [OUTPUT_FORMAT]
