@@ -284,19 +284,38 @@ prompt: |
 
   허용 목록: {{ valid_stereotypes | default(["Init", "Query", "Command", "Handler", "Validation", "BusinessLogic"]) }}
 
+  ★★ 판단 최우선 원칙: 이름 패턴보다 실제 동작(테이블 접근, 상태 변경)이 우선 ★★
+
   각 스테레오타입 판단 기준:
+
+  - **Command**: 다음 중 하나라도 해당하면 Command:
+    (1) 테이블에 INSERT/UPDATE/DELETE를 수행
+    (2) 상태값을 변경 (status, is_active 등의 컬럼을 UPDATE)
+    (3) 트랜잭션을 커밋 (commit)
+    (4) 외부 시스템에 쓰기 요청
+    ★ 메서드 이름이 get/find/search여도, 테이블에 쓰면 Command
+    ★ 이름 패턴 참고: create, save, update, delete, process, execute
+
+  - **Query**: 다음 모두 해당할 때만 Query:
+    (1) SELECT만 수행 (INSERT/UPDATE/DELETE 없음)
+    (2) 데이터를 변경하지 않음
+    (3) 결과를 반환만 함
+    ★ 메서드 이름이 process/execute여도, 읽기만 하면 Query
+    ★ 이름 패턴 참고: findBy, getBy, select, search, list, fetch
+
   - **Init**: 초기화 함수 (main, init_, setup, @PostConstruct, __init__)
-  - **Query**: 조회/읽기 위주 (findBy, getBy, select, search, list, fetch). SQL이 SELECT 위주인 경우.
-  - **Command**: 변경/쓰기 위주 (create, save, update, delete, process, execute). SQL에 INSERT/UPDATE/DELETE가 있고 상태 변경 의도가 명확한 경우.
   - **Handler**: 이벤트/신호/콜백 처리 (signal handler, ISR, @EventListener, onXxx, callback)
-  - **Validation**: 검증 (validate, check, verify)
-  - **BusinessLogic**: 위 어느 것에도 해당하지 않는 비즈니스 로직 (기본값)
+  - **Validation**: 검증 (validate, check, verify). 단, 검증 후 테이블에 쓰면 Command.
+  - **BusinessLogic**: Command도 Query도 아닌 순수 계산/변환 로직.
+    ★ 테이블에 쓰면 BusinessLogic이 아니라 Command
+    ★ 테이블을 읽으면 BusinessLogic이 아니라 Query
+    ★ 테이블 접근이 전혀 없는 순수 로직만 BusinessLogic
   {% if is_oop | default(true) %}- **Endpoint**: REST API 엔드포인트 (@GetMapping, @PostMapping, @app.route)
-  - **Getter**: 단순 getter (getXxx, isXxx, @property)
-  - **Setter**: 단순 setter (setXxx)
+  - **Getter**: 단순 getter (getXxx, isXxx, @property). 단순 필드 반환만.
+  - **Setter**: 단순 setter (setXxx). 단순 필드 설정만.
   - **Lifecycle**: 라이프사이클 (@PreDestroy, __del__)
   - **Scheduled**: 스케줄 메서드 (@Scheduled, cron, @celery.task)
-  - **Transactional**: 트랜잭션 관리 메서드 (@Transactional)
+  - **Transactional**: 트랜잭션 관리 메서드 (@Transactional). 단, 비즈니스 로직이 있으면 Command 우선.
   {% endif %}
   
   
