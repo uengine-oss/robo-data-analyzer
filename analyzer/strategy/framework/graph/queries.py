@@ -171,6 +171,7 @@ def build_function_queries(function_facts_list: List[FunctionFacts], node_kinds:
             "module_name": module_name_short, "name": function_name,
             "code_text": (m.code or "")[:_CHUNK_CODE_MAX],
             "file_path": file_path, "directory": directory, "file_name": file_name,
+            "annotations": m.annotations or "", "comment": m.comment or "",
         }, sub_label=kind))
     return queries
 
@@ -191,6 +192,7 @@ def build_module_queries(module_index: Dict[str, Any]) -> List[Dict[str, Any]]:
         queries.append(_merge_node_query("MODULE", "fqn", fqn, {
             "name": name, "type": kind,
             "package_name": info.get("package_name") or "",
+            "annotations": info.get("annotations") or "", "comment": info.get("comment") or "",
         }, sub_label=kind))
     return queries
 
@@ -225,6 +227,7 @@ def build_variable_queries(variable_facts_list: List[VariableFacts], lang: str, 
             "start_line": f.start_line, "end_line": f.end_line,
             "variable_type": f.variable_type or "", "code_ref": f.code_ref or "",
             "code_text": (f.code or "")[:_CHUNK_CODE_MAX],
+            "annotations": f.annotations or "", "comment": f.comment or "",
         }, sub_label=kind))
     return queries
 

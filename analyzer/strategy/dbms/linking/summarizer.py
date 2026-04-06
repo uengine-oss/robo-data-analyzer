@@ -275,18 +275,18 @@ async def _run_procedure_summary(
                     cypher = f"MATCH (__cy_n__:{info.procedure_type} {{procedure_name: $procedure_name, directory: $directory, file_name: $file_name}}) SET __cy_n__.summary = $summary RETURN __cy_n__"
                     params = {"procedure_name": info.procedure_name, "directory": processor.full_directory, "file_name": processor.file_name, "summary": str(final_summary)}
                 queries = [{"query": cypher, "params": params}]
-                # GWT 노드 생성
+                # BusinessLogic 노드 생성
                 if final_scenarios:
                     proc_id = f"{processor.full_directory}/{processor.file_name}:{info.procedure_name}"
                     for sc in final_scenarios:
                         if isinstance(sc, dict) and sc.get("title"):
                             if info.schema_name:
-                                gwt_cypher = f"MATCH (p:{info.procedure_type} {{schema_name: $schema_name, procedure_name: $procedure_name, directory: $directory, file_name: $file_name}}) MERGE (g:GWT {{procedure_id: $proc_id, title: $title}}) SET g.given = $given, g.when = $when, g.then = $then, g.updated_at = timestamp() MERGE (p)-[:HAS_GWT]->(g) RETURN p, g"
-                                gwt_params = {"schema_name": info.schema_name, "procedure_name": info.procedure_name, "directory": processor.full_directory, "file_name": processor.file_name, "proc_id": proc_id, "title": sc.get("title", ""), "given": sc.get("given", ""), "when": sc.get("when", ""), "then": sc.get("then", "")}
+                                bl_cypher = f"MATCH (p:{info.procedure_type} {{schema_name: $schema_name, procedure_name: $procedure_name, directory: $directory, file_name: $file_name}}) MERGE (g:BusinessLogic {{procedure_id: $proc_id, title: $title}}) SET g.given = $given, g.when = $when, g.then = $then, g.updated_at = timestamp() MERGE (p)-[:HAS_BUSINESS_LOGIC]->(g) RETURN p, g"
+                                bl_params = {"schema_name": info.schema_name, "procedure_name": info.procedure_name, "directory": processor.full_directory, "file_name": processor.file_name, "proc_id": proc_id, "title": sc.get("title", ""), "given": sc.get("given", ""), "when": sc.get("when", ""), "then": sc.get("then", "")}
                             else:
-                                gwt_cypher = f"MATCH (p:{info.procedure_type} {{procedure_name: $procedure_name, directory: $directory, file_name: $file_name}}) MERGE (g:GWT {{procedure_id: $proc_id, title: $title}}) SET g.given = $given, g.when = $when, g.then = $then, g.updated_at = timestamp() MERGE (p)-[:HAS_GWT]->(g) RETURN p, g"
-                                gwt_params = {"procedure_name": info.procedure_name, "directory": processor.full_directory, "file_name": processor.file_name, "proc_id": proc_id, "title": sc.get("title", ""), "given": sc.get("given", ""), "when": sc.get("when", ""), "then": sc.get("then", "")}
-                            queries.append({"query": gwt_cypher, "params": gwt_params})
+                                bl_cypher = f"MATCH (p:{info.procedure_type} {{procedure_name: $procedure_name, directory: $directory, file_name: $file_name}}) MERGE (g:BusinessLogic {{procedure_id: $proc_id, title: $title}}) SET g.given = $given, g.when = $when, g.then = $then, g.updated_at = timestamp() MERGE (p)-[:HAS_BUSINESS_LOGIC]->(g) RETURN p, g"
+                                bl_params = {"procedure_name": info.procedure_name, "directory": processor.full_directory, "file_name": processor.file_name, "proc_id": proc_id, "title": sc.get("title", ""), "given": sc.get("given", ""), "when": sc.get("when", ""), "then": sc.get("then", "")}
+                            queries.append({"query": bl_cypher, "params": bl_params})
                 if queries:
                     async for batch in run_graph_queries(client, queries, cypher_lock=pipeline._cypher_lock):
                         await results_queue.put({"type": "graph", "graph": batch})

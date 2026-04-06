@@ -49,7 +49,7 @@ paradigm:           # 언어별 패러다임 분류 (UML 관계 추출 분기용
   mixed:      [go]
 
 stereotypes:        # 언어별 허용 스테레오타입 (Neo4j 라벨로 추가)
-  common:     [Init, Query, Command, Handler, Validation, BusinessLogic]
+  common:     [Init, Query, Command, Handler, Validation]
   oop:        [Endpoint, Getter, Setter, Lifecycle, Scheduled, Transactional]
   # common + oop 언어는 common + oop, procedural 언어는 common만
 
