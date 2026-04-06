@@ -919,10 +919,11 @@ def build_function_summary_queries(summary_by_function: Dict[str, Dict[str, Any]
         actor = (data.get("actor") or "").strip() or None
         rows.append({"function_id": function_id, "stereotype": stereotype, "summary": summary, "actor": actor})
         # BusinessLogic 시나리오 수집
-        for sc in (data.get("scenarios") or []):
+        for idx, sc in enumerate(data.get("scenarios") or []):
             if isinstance(sc, dict) and sc.get("title"):
                 gwt_rows.append({
                     "function_id": function_id,
+                    "sequence": sc.get("sequence", idx + 1),
                     "title": sc.get("title", ""),
                     "given": sc.get("given", ""),
                     "when": sc.get("when", ""),
@@ -974,7 +975,7 @@ def build_function_summary_queries(summary_by_function: Dict[str, Dict[str, Any]
                 "UNWIND $rows AS row\n"
                 "MATCH (f:FUNCTION {function_id: row.function_id})\n"
                 "MERGE (g:BusinessLogic {function_id: row.function_id, title: row.title})\n"
-                "SET g.given = row.given, g.when = row.when, g.then = row.then, g.updated_at = timestamp()\n"
+                "SET g.sequence = row.sequence, g.given = row.given, g.when = row.when, g.then = row.then, g.updated_at = timestamp()\n"
                 "MERGE (f)-[:HAS_BUSINESS_LOGIC]->(g)\n"
                 "RETURN f, g"
             ),

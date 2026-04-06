@@ -93,5 +93,5 @@ prompt: |
 
 
   [OUTPUT]
-  다음 JSON만 출력 (코드블록 없이):
+  다음 JSON만 출력 (코드블록 없이, 백틱(`) 사용 금지):
   {"summary": "모듈 요약 문장", "moduleStereotype": "Service"}

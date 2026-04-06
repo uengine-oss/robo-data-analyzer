@@ -82,8 +82,24 @@ def _fix_invalid_json_escapes(s: str) -> str:
     return ''.join(result)
 
 
+def _strip_code_fences(s: str) -> str:
+    """코드펜스(```json ... ```) 래핑과 JSON 값 내부 백틱을 제거한다."""
+    stripped = s.strip()
+    # 코드펜스 래핑 제거: ```json\n...\n``` or ```\n...\n```
+    if stripped.startswith("```"):
+        first_nl = stripped.find("\n")
+        if first_nl != -1:
+            stripped = stripped[first_nl + 1:]
+        if stripped.endswith("```"):
+            stripped = stripped[:-3]
+        stripped = stripped.strip()
+    # JSON 값 내부 백틱 제거 (JSON 키/구조에는 백틱이 없음)
+    stripped = stripped.replace("`", "")
+    return stripped
+
+
 def _sanitize_llm_output(text) -> str:
-    """LLM 응답에서 제어 문자 및 잘못된 JSON 이스케이프를 수리하여 파싱 실패를 방지한다.
+    """LLM 응답에서 제어 문자, 코드펜스, 백틱, 잘못된 JSON 이스케이프를 수리하여 파싱 실패를 방지한다.
 
     AIMessage(content=...) 객체와 순수 str 모두 처리한다.
     Responses API는 content를 list[dict]로 반환할 수 있으므로 이를 string으로 변환한다.
@@ -96,10 +112,12 @@ def _sanitize_llm_output(text) -> str:
                 for block in text.content
             )
         text.content = _CONTROL_CHAR_RE.sub('', text.content)
+        text.content = _strip_code_fences(text.content)
         text.content = _fix_invalid_json_escapes(text.content)
         return text
     if isinstance(text, str):
         text = _CONTROL_CHAR_RE.sub('', text)
+        text = _strip_code_fences(text)
         return _fix_invalid_json_escapes(text)
     return text
 
