@@ -13,6 +13,7 @@ input_schema:
     - field_initial_values
     - table_sample_data
     - constants_context
+    - existing_actors
 
 prompt: |
   [ROLE]
@@ -20,6 +21,9 @@ prompt: |
   주어진 {{ language | default("Java") }} 코드를 체계적으로 분석하여 클래스 다이어그램 생성에 필요한 구조화된 정보를 추출해야 합니다.
 
   ★★★ 절대 규칙 — 디테일 유지 (CRITICAL) ★★★
+
+  목표: **이 summary와 비즈니스 로직 시나리오만 읽고 원본 코드를 다시 작성할 수 있어야 합니다.**
+  원본 코드를 보지 않은 개발자가 이 summary만으로 동일한 로직을 구현할 수 있을 정도로 구체적이어야 합니다.
 
   요약(summary)에서 절대로 아래 정보를 생략하거나 두루뭉실하게 바꾸지 마세요:
   1. 계산 공식: 구체적 조건과 값 (나쁜 예: "값을 계산한다" → 좋은 예: "price * quantity - discount로 계산")
@@ -65,7 +69,7 @@ prompt: |
   {% if constants_context %}
   {{ constants_context }}
 
-  위 상수 목록은 프로젝트 전역에서 사용되는 불변 값입니다. 이 메서드가 코드에서 위 상수를 참조하는 경우, summary와 GWT의 Given/Then에 변수명이 아닌 실제 값(숫자/문자열)으로 기술하세요.
+  위 상수 목록은 프로젝트 전역에서 사용되는 불변 값입니다. 이 메서드가 코드에서 위 상수를 참조하는 경우, summary와 비즈니스 로직의 Given/Then에 변수명이 아닌 실제 값(숫자/문자열)으로 기술하세요.
   {% endif %}
   분석 대상 {{ language | default("Java") }} 코드:
   {{ code }}
@@ -286,6 +290,30 @@ prompt: |
 
 
 
+  [SECTION_ACTOR]
+  ★ 액터(actor) 식별:
+  이 코드를 실행하는 주체를 주어진 코드와 주석의 의미를 보고 판단하세요.
+
+  - 시스템이 자동으로 실행하는 코드면 → "system"
+  - 사용자가 직접 조작하는 코드면 → "user"
+  - 관리자가 수행하는 코드면 → "admin"
+  - 그 외에도 코드/주석에서 주체가 분명히 드러나면 → 의미에 맞는 명칭
+
+  위는 예시일 뿐이며, 정해진 패턴이 아닙니다.
+  코드와 주석이 제공하는 정보 안에서 "이걸 누가 실행하는가"를 의미적으로 판단하세요.
+  확신이 없으면 빈 문자열 "" (억지로 추측하지 마세요)
+
+  {% if existing_actors %}
+  기존에 식별된 actor 목록:
+  {{ existing_actors }}
+
+  ⚠️ 동의어 방지 규칙 (반드시 준수):
+  - 위 목록에 의미가 같은 actor가 이미 있으면 **반드시** 기존 명칭을 그대로 사용하세요
+  - 동의어 예시: 사용자/유저/user, 관리자/admin/운영자, 시스템/system/자동 — 이런 것들은 같은 actor입니다
+  - 기존 목록에 없는 **완전히 새로운 독립적 역할**일 때만 새 이름을 생성하세요
+  {% endif %}
+
+
   [SECTION_5_STEREOTYPE]
   ★ 스테레오타입 판단 (stereotype 필수):
 
@@ -340,8 +368,9 @@ prompt: |
       {
         "startLine": 범위_시작_라인_번호,
         "endLine": 범위_종료_라인_번호,
-        "stereotype": "허용 목록 중 하나 (필수. {{ valid_stereotypes | default(['Init','Query','Command','Handler','Validation','BusinessLogic']) }} 에서 선택)",
+        "stereotype": "허용 목록 중 하나 (필수. {{ valid_stereotypes | default(['Init','Query','Command','Handler','Validation']) }} 에서 선택)",
         "summary": "3~5문장. 비즈니스 맥락과 도메인 의미를 드러내는 상세한 코드 동작 요약",
+        "actor": "이 코드를 실행하는 주체. 코드/주석의 의미에서 주체가 분명할 때만 채움. 확신 없으면 빈 문자열",
         {% if is_oop | default(true) %}"dependencies": [
           {"targetModule": "타겟모듈명", "sourceMember": "메서드명", "usage": "field_call|local_new|parameter|return|cast|generic|local_var", "relationType": "DEPENDENCY|COMPOSITION|AGGREGATION|ASSOCIATION"}
         ],{% else %}"dependencies": [],{% endif %}
@@ -356,11 +385,12 @@ prompt: |
     ]
   }
 
-  [SECTION_6_GWT_SCENARIOS]
+  [SECTION_6_비즈니스 로직_SCENARIOS]
   ★ Given-When-Then 검증 시나리오 생성:
 
-  이 메서드의 동작을 레거시 코드 전환 후 검증할 수 있는 GWT(Given-When-Then) 시나리오를 작성하세요.
-  코드의 주요 분기마다 시나리오를 생성하되, 1~5개로 제한합니다.
+  이 메서드의 동작을 레거시 코드 전환 후 검증할 수 있는 비즈니스 로직(Given-When-Then) 시나리오를 작성하세요.
+  코드에서 비즈니스 로직이 식별되면 해당 분기마다 시나리오를 생성하세요. 개수 제한 없음.
+  식별된 비즈니스 로직은 빠짐없이 시나리오로 만드세요.
 
   - Given: 초기 상태 (테이블 데이터 상태, 필드/상수 초기값, 입력 파라미터 조건)
     {% if field_initial_values %}→ [필드 초기값]에 제공된 실제 숫자/문자열 값을 그대로 사용하세요. 변수명(config.max_loans_per_member)이 아닌 실제 값(5)으로 기술하세요.{% endif %}
@@ -368,22 +398,20 @@ prompt: |
   - When: 실행 동작 (어떤 파라미터로 이 메서드를 호출하는지)
   - Then: 기대 결과 (테이블 변경 내용, 반환값, 상태 전이)
 
-  ⚠️ GWT 필수 규칙:
-  - 비즈니스 로직이 존재하고 테이블 접근이 있는 메서드에서만 scenarios를 생성하세요.
-  - 단순 getter/setter, 초기화, 유틸리티 메서드는 scenarios를 빈 배열 []로 반환하세요.
-  - **단순 CRUD(INSERT/UPDATE/DELETE만 하는 메서드)에도 최소 2개 시나리오 필수:**
-    - INSERT: (1) 정상 삽입 + DB 기본값 반영 결과, (2) 제약조건 위반 (UNIQUE 중복 등)
-    - UPDATE: (1) 정상 변경 + 상태 전이, (2) 대상 미존재 시 에러
-    - DELETE: (1) 정상 삭제, (2) FK 참조 존재 시 동작 또는 대상 미존재 시 에러
+  ⚠️ 비즈니스 로직 필수 규칙:
+  - 비즈니스 로직이 식별되는 메서드에서 scenarios를 생성하세요.
+    코드의 의미를 보고 유연하게 판단하세요. 특정 패턴에 국한하지 마세요.
+  - 단순 getter/setter, 초기화, 로깅, 잠금 등 인프라 코드는 scenarios를 빈 배열 []로 반환하세요.
+  - 코드에서 비즈니스 규칙이 식별되면, 각 분기 경로마다 시나리오를 만드세요.
+    이 시나리오들만으로 원본 코드의 모든 비즈니스 분기를 재현할 수 있어야 합니다.
 
-  ⚠️ GWT 품질 규칙 (반드시 준수):
-  - **실제 값 사용 필수**: [필드 초기값]에 max_loans_per_member=5, overdue_fine_per_day=500 등이 제공되면, GWT에서 "config.max_loans_per_member 이상"이 아닌 **"5건 이상"**으로 기술하세요.
-  - **샘플 데이터 활용 필수**: [테이블 샘플 데이터]에 실제 행이 제공되면, Given에서 그 행의 id, 상태값을 직접 사용하세요. 예: "loans 테이블에 id=1001, status='ACTIVE', due_date='2025-03-15'인 행이 존재"
-  - **계산 결과 명시**: 연체일수 × 벌금단가 = 총벌금 같은 계산이 있으면, 실제 숫자로 계산 결과를 기술하세요. 예: "연체 2일 × 500원 = 1000원"
-  - **상태 전이 명시**: 변경 전 값 → 변경 후 값을 명확히 기술하세요. 예: "books.status가 'AVAILABLE'에서 'LOANED'로 변경"
-  - **실제 값 우선, 불가 시 의미 기술**: [필드 초기값]이나 [CLASS_CONSTANTS_AND_FIELDS]에서 실제 값을 알 수 있으면 반드시 숫자로 기술하세요. 실제 값을 알 수 없는 경우(외부 주입 설정 등)에는 "설정된 최대 대출 권수", "설정된 1일 연체료 단가"처럼 의미를 기술하되, self._config.max_loans_per_member 같은 코드 식별자는 사용하지 마세요.
+  ⚠️ 비즈니스 로직 품질 규칙 (반드시 준수):
+  - **실제 값 사용 필수**: 변수명이 아닌 실제 숫자/문자열 값으로 기술하세요.
+  - **계산 결과 명시**: 계산이 있으면 실제 숫자로 과정과 결과를 기술하세요.
+  - **상태 전이 명시**: 변경 전 값 → 변경 후 값을 명확히 기술하세요.
+  - **코드 식별자 금지**: 변수명, 함수명, 설정 키 등 코드 식별자를 사용하지 말고, 의미와 값으로 기술하세요.
 
-  ★★★ GWT 구체성 필수 규칙 (모든 시나리오에 적용) ★★★
+  ★★★ 비즈니스 로직 구체성 필수 규칙 (모든 시나리오에 적용) ★★★
 
   Given 필수 요소:
   - 관련 테이블의 현재 상태를 테이블명.컬럼명=값 형태로 명시

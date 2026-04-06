@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 VALID_STEREOTYPES = frozenset({
     "Endpoint", "Query", "Command", "Getter", "Setter",
     "Lifecycle", "Scheduled", "EventHandler", "Init",
-    "Transactional", "Validation", "BusinessLogic",
+    "Transactional", "Validation",
 })
 
 VALID_MODULE_STEREOTYPES = frozenset({
@@ -208,7 +208,6 @@ def _build_module_fields_context(
 def _collect_field_initial_values(
     module_key: Optional[str],
     variable_facts_list: Optional[List[VariableFacts]],
-    max_len: int = 1500,
 ) -> str:
     """같은 모듈 내 필드 변수의 초기값 정보를 수집."""
     if not module_key or not variable_facts_list:
@@ -221,10 +220,7 @@ def _collect_field_initial_values(
         code_line = " ".join((f.code or "").strip().split())
         if code_line and "=" in code_line:
             parts.append(code_line)
-    result = " | ".join(parts)
-    if len(result) > max_len:
-        result = result[:max_len - 15] + " ... [truncated]"
-    return result
+    return " | ".join(parts)
 
 
 def _invoke_analysis_llm(
@@ -242,6 +238,7 @@ def _invoke_analysis_llm(
     field_initial_values: Optional[str] = None,
     table_sample_data: Optional[str] = None,
     constants_context: Optional[str] = None,
+    existing_actors: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """메서드 1개에 대해 analysis 규칙 실행 → summary/calls/dependencies/stereotype.
 
@@ -280,12 +277,12 @@ def _invoke_analysis_llm(
     if module_comment:
         context_parts.append(
             "module_comment: "
-            + (module_comment[:500] if len(module_comment or "") > 500 else (module_comment or ""))
+            + (module_comment or "")
         )
     if module_annotations:
         context_parts.append(
             "module_annotations: "
-            + (module_annotations[:300] if len(module_annotations or "") > 300 else (module_annotations or ""))
+            + (module_annotations or "")
         )
     if calls_outgoing:
         context_parts.append("calls_outgoing: " + ", ".join(calls_outgoing[:20]))
@@ -306,9 +303,7 @@ def _invoke_analysis_llm(
                 if not summ:
                     continue
                 id_part = f"{cls}.{name}" if cls and name else (name or cls or "")
-                # 너무 길어지는 것을 방지하기 위해 summary는 일부만 사용
-                summ_trimmed = summ[:300]
-                called_snippets.append(f"{id_part}: {summ_trimmed}" if id_part else summ_trimmed)
+                called_snippets.append(f"{id_part}: {summ}" if id_part else summ)
             except Exception:
                 continue
         if called_snippets:
@@ -322,6 +317,8 @@ def _invoke_analysis_llm(
         inputs["table_sample_data"] = table_sample_data.strip()
     if constants_context and constants_context.strip():
         inputs["constants_context"] = constants_context.strip()
+    if existing_actors and existing_actors.strip():
+        inputs["existing_actors"] = existing_actors.strip()
     try:
         loader = get_rule_loader("framework")
         result = loader.execute("function_summary", inputs, api_key=api_key)
@@ -358,6 +355,7 @@ def _process_one_method_for_analysis(
     table_sample_data: Optional[str] = None,
     constants_context: Optional[str] = None,
     referenced_vars_by_function: Optional[Dict[str, List[str]]] = None,
+    existing_actors: Optional[str] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """단일 메서드에 대해 stereotype + (summary, calls, dependencies) 계산."""
     cqrs_fallback = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
@@ -385,6 +383,7 @@ def _process_one_method_for_analysis(
     table_insights: List[Dict[str, Any]] = []
     scenarios: List[Dict[str, Any]] = []
     stereotype = ""
+    actor = ""
 
     if api_key:
         analysis = _invoke_analysis_llm(
@@ -401,9 +400,11 @@ def _process_one_method_for_analysis(
             field_initial_values="\n".join(referenced_vars_by_function.get(m.function_id, [])) if referenced_vars_by_function else None,
             table_sample_data=table_sample_data or None,
             constants_context=constants_context or None,
+            existing_actors=existing_actors or None,
         )
         if analysis:
             summary = analysis.get("summary") or summary
+            actor = analysis.get("actor") or ""
             calls = list(analysis.get("calls") or [])
             dependencies = list(analysis.get("dependencies") or [])
             table_insights = list(analysis.get("tableInsights") or [])
@@ -419,6 +420,7 @@ def _process_one_method_for_analysis(
     data = {
         "stereotype": stereotype,
         "summary": summary,
+        "actor": actor,
         "fqn": m.fqn,
         "calls": calls,
         "dependencies": dependencies,
@@ -448,6 +450,7 @@ def run_step6(
     table_sample_data: Optional[str] = None,
     constants_context: Optional[str] = None,
     referenced_vars_by_function: Optional[Dict[str, List[str]]] = None,
+    existing_actors: Optional[str] = None,
 ) -> Generator[Dict[str, Dict[str, Any]], None, None]:
     """메서드별 stereotype, summary — 20개씩 배치로 yield.
 
@@ -503,6 +506,7 @@ def run_step6(
                         table_sample_data,
                         constants_context,
                         referenced_vars_by_function,
+                        existing_actors,
                     ): m
                     for m in function_facts_list
                 }
@@ -553,6 +557,7 @@ def run_step6(
                         table_sample_data,
                         constants_context,
                         referenced_vars_by_function,
+                        existing_actors,
                     )
                     batch[function_id] = data
                 except Exception as e:
@@ -632,6 +637,7 @@ def run_step6(
             table_sample_data,
             constants_context,
             referenced_vars_by_function,
+            existing_actors,
         )
         return node_id, data
 
@@ -722,6 +728,10 @@ def run_step6(
                     module_key_index,
                     None,
                     variable_facts_list,
+                    table_sample_data,
+                    constants_context,
+                    referenced_vars_by_function,
+                    existing_actors,
                 )
                 batch[mid] = data
             except Exception as e:
@@ -800,11 +810,9 @@ def _invoke_variable_summary_llm(
         "variable_annotations": getattr(field, "annotations", None),
     }
     if module_comment:
-        inputs["module_comment"] = module_comment[:500] if len(module_comment) > 500 else module_comment
+        inputs["module_comment"] = module_comment
     if module_annotations:
-        inputs["module_annotations"] = (
-            module_annotations[:300] if len(module_annotations) > 300 else module_annotations
-        )
+        inputs["module_annotations"] = module_annotations
     try:
         loader = get_rule_loader("framework")
         result = loader.execute("variable_summary", inputs, api_key=api_key)
@@ -919,13 +927,11 @@ def _invoke_module_summary_llm(
     if kind:
         inputs["kind"] = kind
     if module_comment:
-        inputs["module_comment"] = module_comment[:500] if len(module_comment) > 500 else module_comment
+        inputs["module_comment"] = module_comment
     if module_annotations:
-        inputs["module_annotations"] = (
-            module_annotations[:300] if len(module_annotations) > 300 else module_annotations
-        )
+        inputs["module_annotations"] = module_annotations
     if prev_summary:
-        inputs["prev_summary"] = prev_summary[:800] if len(prev_summary) > 800 else prev_summary
+        inputs["prev_summary"] = prev_summary
     try:
         loader = get_rule_loader("framework")
         result = loader.execute("module_summary", inputs, api_key=api_key)
@@ -1019,7 +1025,7 @@ def run_module_summary(
             else:
                 prev_summary = "; ".join(
                     f"{x.get('name', '')}: {x.get('summary', '')}" for x in chunk
-                )[:500]
+                )
         return module_fqn, prev_summary or "", module_stereotype
 
     _CLASS_BATCH_SIZE = 5

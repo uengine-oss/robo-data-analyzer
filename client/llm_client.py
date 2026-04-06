@@ -81,7 +81,13 @@ class CustomLLMClient(BaseChatModel):
                 role = "assistant"
             else:
                 role = "user"
-            out.append({"role": role, "content": m.content})
+            content = m.content
+            if isinstance(content, list):
+                content = "".join(
+                    block.get("text", "") if isinstance(block, dict) else str(block)
+                    for block in content
+                )
+            out.append({"role": role, "content": content})
         return out
 
     def _generate(
@@ -162,7 +168,13 @@ class CustomLLMClient(BaseChatModel):
         ]
 
         result = self._generate(messages, stop=config.get("stop") if config else None)
-        return result.generations[0].message.content
+        content = result.generations[0].message.content
+        if isinstance(content, list):
+            content = "".join(
+                block.get("text", "") if isinstance(block, dict) else str(block)
+                for block in content
+            )
+        return content
 
     def __call__(self, prompt_value: Any, **config: Any) -> str:
         return self.invoke(prompt_value, config)
@@ -221,7 +233,7 @@ def get_llm(
     company_name: Optional[str] = None,
 ):
     """LLM 클라이언트 생성
-    
+
     Args:
         api_key: API 키 (기본: 환경변수)
         base_url: API 기본 URL (기본: 환경변수)
@@ -229,7 +241,7 @@ def get_llm(
         max_tokens: 최대 토큰 (기본: 환경변수)
         is_custom_llm: 커스텀 LLM 사용 여부 (기본: 환경변수)
         company_name: 커스텀 LLM 회사명 (기본: 환경변수)
-    
+
     Returns:
         ChatOpenAI 또는 CustomLLMClient 인스턴스
     """
@@ -266,10 +278,11 @@ def get_llm(
         "max_retries": 5,
     }
 
-    # 추론 모델 특수 처리
+    # 추론 모델 특수 처리 (Responses API 사용 — gpt-5.4+ reasoning+tools 호환)
     if _is_reasoning_model(model):
         kwargs["reasoning_effort"] = config.reasoning_effort
-        logging.debug("추론 모델 사용: model=%s, effort=%s", model, kwargs["reasoning_effort"])
+        kwargs["use_responses_api"] = True
+        logging.debug("추론 모델 사용: model=%s, effort=%s (Responses API)", model, kwargs["reasoning_effort"])
 
     return ChatOpenAI(**kwargs)
 

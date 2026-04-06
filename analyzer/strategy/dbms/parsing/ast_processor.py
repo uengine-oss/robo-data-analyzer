@@ -886,6 +886,7 @@ class DbmsAstProcessor(BaseAstProcessor):
         general_task = None
         if batch.ranges:
             code, context = batch.build_payload()
+            existing_actors_str = ", ".join(getattr(self, "_accumulated_actors", []))
             general_task = asyncio.to_thread(
                 analyze_code,
                 code,
@@ -894,6 +895,7 @@ class DbmsAstProcessor(BaseAstProcessor):
                 len(batch.ranges),
                 self.api_key,
                 self.locale,
+                existing_actors=existing_actors_str,
             )
 
         table_task = None
@@ -945,6 +947,13 @@ class DbmsAstProcessor(BaseAstProcessor):
                     continue
 
                 summary = analysis.get("summary") or ""
+                actor = analysis.get("actor") or ""
+                # actor 누적 (동의어 방지)
+                if actor:
+                    if not hasattr(self, "_accumulated_actors"):
+                        self._accumulated_actors = []
+                    if actor not in self._accumulated_actors:
+                        self._accumulated_actors.append(actor)
                 if summary:
                     node_name = build_statement_name(node.node_type, node.start_line)
                     queries.append({
@@ -969,6 +978,25 @@ class DbmsAstProcessor(BaseAstProcessor):
                             "has_children": node.has_children,
                         }
                     })
+
+                    # Actor 노드 생성 + ROLE 관계
+                    if actor:
+                        queries.append({
+                            "query": (
+                                f"MATCH (__cy_n__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
+                                f"MERGE (a:Actor {{name: $actor}})\n"
+                                f"ON CREATE SET a.created_at = timestamp()\n"
+                                f"MERGE (a)-[r:ROLE]->(__cy_n__)\n"
+                                f"ON CREATE SET r.created_at = timestamp()\n"
+                                f"RETURN a"
+                            ),
+                            "params": {
+                                "start_line": node.start_line,
+                                "directory": self.full_directory,
+                                "file_name": self.file_name,
+                                "actor": actor,
+                            }
+                        })
 
                     # unit_summary_store에는 리프 노드(자식이 없는 노드)만 저장
                     # → 부모 노드 summary는 자식 내용을 이미 포함하므로 중복 제거

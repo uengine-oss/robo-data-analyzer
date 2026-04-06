@@ -30,7 +30,7 @@ def _rule_loader() -> RuleLoader:
     return _rule_loader_cache
 
 
-def _collect_variable_declarations(processor: Any, proc_key: str, var_types: frozenset, max_len: int = 1500) -> str:
+def _collect_variable_declarations(processor: Any, proc_key: str, var_types: frozenset) -> str:
     """프로시저 내 DECLARE 블록의 변수 선언/초기값을 수집."""
     parts = []
     for node in (processor._nodes or []):
@@ -38,10 +38,7 @@ def _collect_variable_declarations(processor: Any, proc_key: str, var_types: fro
             code_line = " ".join(node.code.strip().split())
             if code_line:
                 parts.append(code_line)
-    result = " | ".join(parts)
-    if len(result) > max_len:
-        result = result[:max_len - 15] + " ... [truncated]"
-    return result
+    return " | ".join(parts)
 
 
 def _analyze_summary_only(
@@ -52,7 +49,6 @@ def _analyze_summary_only(
     table_sample_data: str = "",
     constants_context: str = "",
     called_procedure_summaries: str = "",
-    existing_actors: str = "",
 ) -> Dict[str, Any]:
     inputs: Dict[str, Any] = {"summaries": summaries, "locale": locale}
     if variable_declarations:
@@ -63,8 +59,6 @@ def _analyze_summary_only(
         inputs["constants_context"] = constants_context
     if called_procedure_summaries:
         inputs["called_procedure_summaries"] = called_procedure_summaries
-    if existing_actors:
-        inputs["existing_actors"] = existing_actors
     return _rule_loader().execute("procedure_summary", inputs, api_key)
 
 
@@ -148,8 +142,6 @@ async def _run_procedure_summary(
     except Exception as e:
         log_process("ANALYZE", "WARN", f"상수 컨텍스트 수집 실패: {e}")
 
-    # Actor 누적 목록 (동의어 방지)
-    _accumulated_actors: list[str] = []
 
     async def _collect_table_names(proc_name: str, directory: str, file_name: str) -> list[str]:
         """프로시저가 접근하는 테이블명 목록을 수집."""
@@ -186,8 +178,7 @@ async def _run_procedure_summary(
                 summ = (r.get("summary") or "").strip()
                 if not summ:
                     continue
-                summ_trimmed = summ[:500]
-                parts.append(f"- {name}: {summ_trimmed}" if name else f"- {summ_trimmed}")
+                parts.append(f"- {name}: {summ}" if name else f"- {summ}")
             if not parts:
                 return ""
             return "\n".join(parts)
@@ -229,10 +220,8 @@ async def _run_procedure_summary(
                 if not chunks:
                     final_summary = ""
                     final_scenarios = []
-                    final_actor = None
                 else:
                     chunk_semaphore = asyncio.Semaphore(settings.concurrency.max_concurrency)
-                    actors_ctx = ", ".join(_accumulated_actors) if _accumulated_actors else ""
                     async def process_chunk(chunk):
                         async with chunk_semaphore:
                             r = await asyncio.to_thread(
@@ -241,19 +230,15 @@ async def _run_procedure_summary(
                                 table_sample_data=table_data,
                                 constants_context=constants_context,
                                 called_procedure_summaries=called_procedure_summaries,
-                                existing_actors=actors_ctx,
                             )
                             return r if isinstance(r, dict) else {}
                     chunk_results_raw = await asyncio.gather(*[process_chunk(c) for c in chunks])
                     chunk_summaries = [r.get('summary', '') for r in chunk_results_raw if r.get('summary')]
-                    # 최종 chunk에서만 scenarios + actor 수집
+                    # 최종 chunk에서만 scenarios 수집
                     final_scenarios = []
-                    final_actor = None
                     for r in chunk_results_raw:
                         if r.get('scenarios'):
                             final_scenarios = r['scenarios']
-                        if r.get('actor'):
-                            final_actor = r['actor']
 
                     if not chunk_summaries:
                         final_summary = ""
@@ -267,14 +252,11 @@ async def _run_procedure_summary(
                             table_sample_data=table_data,
                             constants_context=constants_context,
                             called_procedure_summaries=called_procedure_summaries,
-                            existing_actors=actors_ctx,
                         )
                         if isinstance(r, dict):
                             final_summary = r.get('summary') or "\n\n".join(chunk_summaries)
                             if r.get('scenarios'):
                                 final_scenarios = r['scenarios']
-                            if r.get('actor'):
-                                final_actor = r['actor']
                         else:
                             final_summary = "\n\n".join(chunk_summaries)
 
@@ -282,20 +264,13 @@ async def _run_procedure_summary(
                     await results_queue.put({"type": "success", "procedure": info.procedure_name, "file": ctx.file_name})
                     return
 
-                # Actor 누적 (동의어 방지)
-                if final_actor and final_actor not in _accumulated_actors:
-                    _accumulated_actors.append(final_actor)
-
-                # Summary + Actor 저장
-                actor_set = ", __cy_n__.actor = $actor" if final_actor else ""
+                # Summary 저장
                 if info.schema_name:
-                    cypher = f"MATCH (__cy_n__:{info.procedure_type} {{schema_name: $schema_name, procedure_name: $procedure_name, directory: $directory, file_name: $file_name}}) SET __cy_n__.summary = $summary{actor_set} RETURN __cy_n__"
+                    cypher = f"MATCH (__cy_n__:{info.procedure_type} {{schema_name: $schema_name, procedure_name: $procedure_name, directory: $directory, file_name: $file_name}}) SET __cy_n__.summary = $summary RETURN __cy_n__"
                     params = {"schema_name": info.schema_name, "procedure_name": info.procedure_name, "directory": processor.full_directory, "file_name": processor.file_name, "summary": str(final_summary)}
                 else:
-                    cypher = f"MATCH (__cy_n__:{info.procedure_type} {{procedure_name: $procedure_name, directory: $directory, file_name: $file_name}}) SET __cy_n__.summary = $summary{actor_set} RETURN __cy_n__"
+                    cypher = f"MATCH (__cy_n__:{info.procedure_type} {{procedure_name: $procedure_name, directory: $directory, file_name: $file_name}}) SET __cy_n__.summary = $summary RETURN __cy_n__"
                     params = {"procedure_name": info.procedure_name, "directory": processor.full_directory, "file_name": processor.file_name, "summary": str(final_summary)}
-                if final_actor:
-                    params["actor"] = final_actor
                 queries = [{"query": cypher, "params": params}]
                 # BusinessLogic 노드 생성
                 if final_scenarios:

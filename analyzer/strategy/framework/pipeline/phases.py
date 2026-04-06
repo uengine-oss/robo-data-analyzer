@@ -873,7 +873,7 @@ async def run_phase_post(
     except Exception as e:
         logger.warning("[FW:PHASE3] 참조 변수 컨텍스트 수집 실패: %s", e)
 
-    # --- 테이블 샘플 데이터 수집 (GWT용) ---
+    # --- 테이블 샘플 데이터 수집 (비즈니스 로직 시나리오용) ---
     # reads_writes 리스트 또는 Neo4j에서 직접 테이블명 조회
     table_sample_data_str = ""
     try:
@@ -916,6 +916,7 @@ async def run_phase_post(
         table_sample_data=table_sample_data_str or None,
         constants_context=constants_context or None,
         referenced_vars_by_function=referenced_vars_by_function or None,
+        existing_actors=None,
     ):
         summary_by_function.update(summary_batch)
         yield tracker.tick_quiet()

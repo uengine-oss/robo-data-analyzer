@@ -63,7 +63,7 @@ _SKIP_COUNT_LABELS = SCOPE_LABELS | {"EXTERNAL"}
 
 EXCLUDED_REL_TYPES = {"NEXT", "PARENT_OF"}
 
-STRUCTURAL_REL_TYPES = {"HAS_PROCEDURE", "LINKS_TO", "HAS_FUNCTION", "HAS_VARIABLE", "BELONGS_TO_PACKAGE", "CONTAINS_PACKAGE", "HAS_COLUMN", "HAS_GWT"}
+STRUCTURAL_REL_TYPES = {"HAS_PROCEDURE", "LINKS_TO", "HAS_FUNCTION", "HAS_VARIABLE", "BELONGS_TO_PACKAGE", "CONTAINS_PACKAGE", "HAS_COLUMN", "HAS_BUSINESS_LOGIC"}
 UML_REL_TYPES = {"EXTENDS", "IMPLEMENTS", "ASSOCIATION", "COMPOSITION", "AGGREGATION", "DEPENDENCY"}
 ETL_REL_TYPES = {"ETL_READS", "ETL_WRITES", "DATA_FLOWS_TO"}
 
@@ -90,7 +90,7 @@ SCHEMA_PKG_MEMBERS = ["이름", "타입", "스테레오타입", "범위"]
 # -- 모듈 상세 섹션 --
 SCHEMA_FUNCTION = ["이름", "시그니처", "반환타입", "수정자", "요약"]
 SCHEMA_VARIABLE = ["이름", "타입", "수정자", "요약"]
-SCHEMA_GWT = ["함수", "시나리오", "Given", "When", "Then"]
+SCHEMA_BUSINESS_LOGIC = ["함수", "시나리오", "Given", "When", "Then"]
 SCHEMA_STRUCT_REL = ["방향", "관계", "대상", "속성"]
 SCHEMA_CALL_REL = ["방향", "대상", "호출코드"]
 SCHEMA_DATA_ACCESS = ["대상", "관계", "근거", "신뢰도"]
@@ -653,7 +653,7 @@ def _render_packages(graph: GraphData) -> str:
 def _render_module_detail(graph: GraphData, mod: GraphNode) -> str:
     """단일 모듈 상세 — MODULE/PROCEDURE/FUNCTION/TRIGGER 모두 동일 포맷.
 
-    하위 섹션: 기본 정보 → 요약 → 함수 → 변수 → GWT 시나리오 → 구조 관계 → 호출 관계 → 데이터 접근 → 요약 코드
+    하위 섹션: 기본 정보 → 요약 → 함수 → 변수 → 비즈니스 로직 시나리오 → 구조 관계 → 호출 관계 → 데이터 접근 → 요약 코드
     """
     name = _get_module_name(mod)
     parts = [f"### {name}\n"]
@@ -723,9 +723,9 @@ def _render_module_detail(graph: GraphData, mod: GraphNode) -> str:
     parts.append("\n#### 변수\n")
     parts.append(_md_table(SCHEMA_VARIABLE, var_rows))
 
-    # ── GWT 시나리오 (Framework: 자식 FUNCTION 경유, DBMS: 직접) ──
+    # ── 비즈니스 로직 시나리오 (Framework: 자식 FUNCTION 경유, DBMS: 직접) ──
     gwt_rows = []
-    for gwt in graph.get_children(mod.node_id, "HAS_GWT"):
+    for gwt in graph.get_children(mod.node_id, "HAS_BUSINESS_LOGIC"):
         gwt_rows.append([
             name,
             _safe(gwt.prop("title")),
@@ -734,7 +734,7 @@ def _render_module_detail(graph: GraphData, mod: GraphNode) -> str:
             _safe(gwt.prop("then")),
         ])
     for func in graph.get_children(mod.node_id, "HAS_FUNCTION"):
-        for gwt in graph.get_children(func.node_id, "HAS_GWT"):
+        for gwt in graph.get_children(func.node_id, "HAS_BUSINESS_LOGIC"):
             gwt_rows.append([
                 _safe(func.prop("name")),
                 _safe(gwt.prop("title")),
@@ -742,8 +742,8 @@ def _render_module_detail(graph: GraphData, mod: GraphNode) -> str:
                 _safe(gwt.prop("when")),
                 _safe(gwt.prop("then")),
             ])
-    parts.append("\n#### GWT 시나리오\n")
-    parts.append(_md_table(SCHEMA_GWT, gwt_rows))
+    parts.append("\n#### 비즈니스 로직 시나리오\n")
+    parts.append(_md_table(SCHEMA_BUSINESS_LOGIC, gwt_rows))
 
     # ── 구조 관계 (UML + ETL 통합) ──
     struct_rels = []

@@ -914,10 +914,11 @@ def build_function_summary_queries(summary_by_function: Dict[str, Dict[str, Any]
     for function_id, data in summary_by_function.items():
         stereotype = (data.get("stereotype") or "").strip()
         if stereotype not in VALID_STEREOTYPES:
-            stereotype = "BusinessLogic"
+            stereotype = ""
         summary = (data.get("summary") or "").strip()
-        rows.append({"function_id": function_id, "stereotype": stereotype, "summary": summary})
-        # GWT 시나리오 수집
+        actor = (data.get("actor") or "").strip() or None
+        rows.append({"function_id": function_id, "stereotype": stereotype, "summary": summary, "actor": actor})
+        # BusinessLogic 시나리오 수집
         for sc in (data.get("scenarios") or []):
             if isinstance(sc, dict) and sc.get("title"):
                 gwt_rows.append({
@@ -937,6 +938,22 @@ def build_function_summary_queries(summary_by_function: Dict[str, Dict[str, Any]
             "params": {"rows": rows},
         })
 
+    # Actor 노드 생성 + ROLE 관계
+    actor_rows = [r for r in rows if r.get("actor")]
+    if actor_rows:
+        queries.append({
+            "query": (
+                "UNWIND $rows AS row\n"
+                "MATCH (f:FUNCTION {function_id: row.function_id})\n"
+                "MERGE (a:Actor {name: row.actor})\n"
+                "ON CREATE SET a.created_at = timestamp()\n"
+                "MERGE (a)-[r:ROLE]->(f)\n"
+                "ON CREATE SET r.created_at = timestamp()\n"
+                "RETURN a, f"
+            ),
+            "params": {"rows": actor_rows},
+        })
+
     # stereotype 라벨 (언어에 맞는 것만)
     st_groups: Dict[str, List[str]] = {}
     for function_id, data in summary_by_function.items():
@@ -950,15 +967,15 @@ def build_function_summary_queries(summary_by_function: Dict[str, Dict[str, Any]
             "params": {"ids": function_ids},
         })
 
-    # GWT 노드 생성 + FUNCTION→GWT 관계
+    # BusinessLogic 노드 생성 + FUNCTION→BusinessLogic 관계
     if gwt_rows:
         queries.append({
             "query": (
                 "UNWIND $rows AS row\n"
                 "MATCH (f:FUNCTION {function_id: row.function_id})\n"
-                "MERGE (g:GWT {function_id: row.function_id, title: row.title})\n"
+                "MERGE (g:BusinessLogic {function_id: row.function_id, title: row.title})\n"
                 "SET g.given = row.given, g.when = row.when, g.then = row.then, g.updated_at = timestamp()\n"
-                "MERGE (f)-[:HAS_GWT]->(g)\n"
+                "MERGE (f)-[:HAS_BUSINESS_LOGIC]->(g)\n"
                 "RETURN f, g"
             ),
             "params": {"rows": gwt_rows},

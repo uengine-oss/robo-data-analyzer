@@ -86,8 +86,15 @@ def _sanitize_llm_output(text) -> str:
     """LLM 응답에서 제어 문자 및 잘못된 JSON 이스케이프를 수리하여 파싱 실패를 방지한다.
 
     AIMessage(content=...) 객체와 순수 str 모두 처리한다.
+    Responses API는 content를 list[dict]로 반환할 수 있으므로 이를 string으로 변환한다.
     """
     if hasattr(text, 'content'):
+        # Responses API: content가 list인 경우 text 블록들을 합침
+        if isinstance(text.content, list):
+            text.content = "".join(
+                block.get("text", "") if isinstance(block, dict) else str(block)
+                for block in text.content
+            )
         text.content = _CONTROL_CHAR_RE.sub('', text.content)
         text.content = _fix_invalid_json_escapes(text.content)
         return text
