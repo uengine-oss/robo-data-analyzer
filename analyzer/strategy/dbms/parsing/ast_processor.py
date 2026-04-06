@@ -1071,6 +1071,21 @@ class DbmsAstProcessor(BaseAstProcessor):
                     "file_name": self.file_name,
                 }
             })
+            # 자식 노드 → 변수 REFERENCES 관계 생성
+            queries.append({
+                "query": (
+                    f"MATCH (__cy_n__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
+                    f"MATCH (__cy_v__:Variable {{name: $var_name, directory: $directory, file_name: $file_name}})\n"
+                    f"MERGE (__cy_n__)-[:REFERENCES]->(__cy_v__)\n"
+                    f"RETURN __cy_n__, __cy_v__"
+                ),
+                "params": {
+                    "start_line": node.start_line,
+                    "var_name": var_name,
+                    "directory": self.full_directory,
+                    "file_name": self.file_name,
+                }
+            })
 
             if var_role and node.unit_key:
                 if node.unit_key not in self._variable_roles:
