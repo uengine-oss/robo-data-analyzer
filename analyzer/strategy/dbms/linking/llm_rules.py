@@ -21,13 +21,11 @@ def _rule_loader() -> RuleLoader:
     return _rule_loader_cache
 
 
-def analyze_code(code: str, context: str, ranges: list, count: int, api_key: str, locale: str, existing_actors: str = "") -> Dict[str, Any]:
+def analyze_code(code: str, context: str, ranges: list, count: int, api_key: str, locale: str) -> Dict[str, Any]:
     """코드 분석"""
     inputs = {"code": code, "ranges": ranges, "count": count, "locale": locale}
     if context.strip():
         inputs["context"] = context
-    if existing_actors:
-        inputs["existing_actors"] = existing_actors
     return _rule_loader().execute("node_analysis", inputs, api_key)
 
 

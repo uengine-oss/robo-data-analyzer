@@ -916,7 +916,6 @@ async def run_phase_post(
         table_sample_data=table_sample_data_str or None,
         constants_context=constants_context or None,
         referenced_vars_by_function=referenced_vars_by_function or None,
-        existing_actors=None,
     ):
         summary_by_function.update(summary_batch)
         yield tracker.tick_quiet()

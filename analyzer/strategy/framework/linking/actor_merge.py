@@ -10,12 +10,8 @@ Actor 노드는 2차 통합 완료 후 한 번에 생성합니다.
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 from typing import Any, Dict, List
-
-from langchain_core.messages import HumanMessage, SystemMessage
 
 logger = logging.getLogger(__name__)
 
@@ -96,41 +92,34 @@ async def merge_cross_module_actors(
     if len(all_actors) <= 1:
         return {}
 
-    # LLM 프롬프트 구성
-    prompt = (
-        "다음은 각 모듈의 Actor와 모듈 요약입니다.\n"
-        "같은 역할을 의미하는 Actor를 통합하세요.\n"
-        "판단 기준: 같은 사람/시스템이 수행하는 행위이면 동의어입니다.\n\n"
-    )
+    # actor_module_list 텍스트 구성 — 모듈 요약 + 각 Actor가 사용된 함수 summary
+    lines = []
     for mk, ma in module_actors.items():
         module_name = mk.split(".")[-1] if "." in mk else mk
+        module_summary = (ma["summary"] or "")[:150]
         for actor in sorted(ma["actors"]):
-            summary_text = (ma["summary"] or "")[:100]
-            prompt += f"[{actor}] {module_name}: {summary_text}\n"
-    prompt += '\n출력 형식 (JSON만): {"대표명": ["동의어1", "동의어2"], ...}\n'
-    prompt += "동의어가 없으면 {} 출력"
+            # 이 Actor가 사용된 함수들의 summary를 수집
+            func_summaries = []
+            for fid, data in summary_by_function.items():
+                if (data.get("actor") or "").strip() == actor:
+                    func_name = fid.rsplit(".", 1)[-1] if "." in fid else fid
+                    func_summary = (data.get("summary") or "")[:80]
+                    func_summaries.append(f"    - {func_name}: {func_summary}")
+            line = f"[{actor}] {module_name}: {module_summary}"
+            if func_summaries:
+                line += "\n" + "\n".join(func_summaries[:5])  # 최대 5개 함수
+            lines.append(line)
+    actor_module_list = "\n\n".join(lines)
 
+    # yaml 프롬프트로 LLM 호출
     try:
-        from langchain_openai import ChatOpenAI
-        llm = ChatOpenAI(
-            model=os.getenv("LLM_MODEL", "gpt-4o-mini"),
-            api_key=api_key,
-            temperature=0,
-        )
-        response = llm.invoke([
-            SystemMessage(content="Actor 동의어를 통합하는 전문가입니다. JSON만 출력하세요."),
-            HumanMessage(content=prompt),
-        ])
-        text = response.content if hasattr(response, "content") else str(response)
-        text = text.strip()
-        if text.startswith("```"):
-            first_nl = text.find("\n")
-            if first_nl != -1:
-                text = text[first_nl + 1:]
-            if text.endswith("```"):
-                text = text[:-3]
-            text = text.strip()
-        groups = json.loads(text)
+        from util.prompt_executor import get_rule_loader
+        loader = get_rule_loader("framework")
+        result = loader.execute("actor_synonym_merge", {
+            "actor_module_list": actor_module_list,
+            "locale": locale,
+        }, api_key=api_key)
+        groups = result if isinstance(result, dict) else {}
     except Exception as e:
         logger.warning("[ACTOR_MERGE] LLM 호출/파싱 실패: %s", e)
         return {}

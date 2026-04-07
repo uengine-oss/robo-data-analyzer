@@ -886,7 +886,6 @@ class DbmsAstProcessor(BaseAstProcessor):
         general_task = None
         if batch.ranges:
             code, context = batch.build_payload()
-            existing_actors_str = ", ".join(getattr(self, "_accumulated_actors", []))
             general_task = asyncio.to_thread(
                 analyze_code,
                 code,
@@ -895,7 +894,6 @@ class DbmsAstProcessor(BaseAstProcessor):
                 len(batch.ranges),
                 self.api_key,
                 self.locale,
-                existing_actors=existing_actors_str,
             )
 
         table_task = None
@@ -948,12 +946,6 @@ class DbmsAstProcessor(BaseAstProcessor):
 
                 summary = analysis.get("summary") or ""
                 actor = analysis.get("actor") or ""
-                # actor 누적 (동의어 방지)
-                if actor:
-                    if not hasattr(self, "_accumulated_actors"):
-                        self._accumulated_actors = []
-                    if actor not in self._accumulated_actors:
-                        self._accumulated_actors.append(actor)
                 if summary:
                     node_name = build_statement_name(node.node_type, node.start_line)
                     queries.append({

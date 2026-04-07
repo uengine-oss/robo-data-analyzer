@@ -13,7 +13,6 @@ input_schema:
     - field_initial_values
     - table_sample_data
     - constants_context
-    - existing_actors
 
 prompt: |
   [ROLE]
@@ -79,18 +78,9 @@ prompt: |
   
   
   [CONSTRAINTS]
-  필수 준수 사항:
-  - 분석 범위 총 개수: {{ count }}개
-  - 출력 'analysis' 배열 요소 개수: 정확히 {{ count }}개
-  - 큰 범위가 작은 범위를 포함하더라도 의도된 것으로 생략 없이, 범위 개수와 결과 개수는 동일해야 함
-  - 각 범위는 독립적으로 분석되어야 하며, 누락 또는 초과된 분석 결과는 허용되지 않음
-  - 강제 검증 규칙:
-     - analysis 각 요소는 startLine/endLine을 반드시 포함할 것 (정수)
-     - 값이 없으면 해당 필드는 다음 기본값을 사용: dependencies=[]
-     - null 사용 절대 금지. 빈값은 빈 배열([]) 또는 빈 객체({})로만 표현
-     - 출력에 코드펜스(```), 백틱(`), JSON 주석(//, /* */), 트레일링 콤마 포함 금지. 순수 JSON만 출력
-     - **⚠️ CRITICAL: 트레일링 콤마(trailing comma) 절대 금지** - 배열이나 객체의 마지막 요소 뒤에 콤마(,)를 붙이지 마세요
-  
+  - 분석 범위 총 개수: {{ count }}개 → 출력 analysis 배열도 정확히 {{ count }}개
+  - 각 범위는 독립적으로 분석. 누락/초과 금지
+
   
   [ANALYSIS_REQUIREMENTS]
   각 지정된 코드 범위에 대해 다음 정보를 정확히 추출하세요:
@@ -295,20 +285,11 @@ prompt: |
   - "이 함수가 비즈니스 행위를 수행하는가?"가 핵심 질문입니다.
     비즈니스 행위를 수행하면 Actor가 있고, 기술적 구현이면 Actor가 없습니다.
 
-  {% if existing_actors %}
-  기존에 식별된 actor 목록:
-  {{ existing_actors }}
-
-  ⚠️ 동의어 방지 규칙 (반드시 준수):
-  - 위 목록에 의미가 같은 actor가 이미 있으면 **반드시** 기존 명칭을 그대로 사용하세요
-  - 판단 기준: "이 두 역할이 결국 같은 사람/시스템이 수행하는 행위인가?"
-    → YES면 기존 명칭 사용. 새로 만들지 마세요.
-    예: "가입 개통 요청자"와 "운영자"가 같은 인터페이스에서 같은 종류의 작업을 하면 → 기존 명칭 사용
-    예: "고객"과 "가입자"와 "이용자"가 같은 사람이면 → 기존 명칭 사용
-    예: "시스템"과 "배치"와 "자동 처리"가 같은 자동화 주체면 → 기존 명칭 사용
-  - 새 명칭은 기존 목록의 **어떤 역할과도 겹치지 않는 완전히 다른 주체**일 때만 생성
-  - 의심스러우면 기존 명칭을 사용하세요. 새 명칭 생성보다 기존 재사용이 항상 안전합니다.
-  {% endif %}
+  ★★ Actor 명칭 선택:
+  - 코드/주석에 역할이 명시적으로 드러나면 그 명칭을 사용하세요.
+  - 명시적이지 않으면, 코드의 비즈니스 맥락에서 가장 적절한 역할명을 추론하세요.
+  - 같은 모듈의 다른 함수와 일관된 명칭을 사용하세요.
+  - 동의어 통합은 이후 단계에서 자동 처리되므로, 여기서는 코드에 충실하게 판단하세요.
 
 
   [SECTION_5_STEREOTYPE]
@@ -354,33 +335,6 @@ prompt: |
   {% endif %}
   
   
-  [OUTPUT_FORMAT]
-  출력 형식 및 구조:
-  
-  **필수: 각 analysis 요소마다 "stereotype" 필드를 반드시 포함하세요.**
-
-  JSON 스키마:
-  {
-    "analysis": [
-      {
-        "startLine": 범위_시작_라인_번호,
-        "endLine": 범위_종료_라인_번호,
-        "stereotype": "허용 목록 중 하나 (필수. {{ valid_stereotypes | default(['Init','Query','Command','Handler','Validation']) }} 에서 선택)",
-        "summary": "3~5문장. 비즈니스 맥락과 도메인 의미를 드러내는 상세한 코드 동작 요약",
-        "actor": "이 코드를 실행하는 주체. 코드/주석의 의미에서 주체가 분명할 때만 채움. 확신 없으면 빈 문자열",
-        {% if is_oop | default(true) %}"dependencies": [
-          {"targetModule": "타겟모듈명", "sourceMember": "메서드명", "usage": "field_call|local_new|parameter|return|cast|generic|local_var", "relationType": "DEPENDENCY|COMPOSITION|AGGREGATION|ASSOCIATION"}
-        ],{% else %}"dependencies": [],{% endif %}
-        "tableInsights": [
-          {"tableName": "테이블명", "description": "이 메서드 분석으로 파악된 테이블의 비즈니스 역할 (1~2문장)", "columns": [{"name": "컬럼명", "description": "이 메서드에서 파악된 컬럼 용도 (1문장)"}]}
-        ],
-        "scenarios": [
-          {"sequence": 1, "parent_sequence": null, "title": "시나리오 제목", "given": "초기 상태 (테이블 데이터 상태, 필드값, 입력 조건)", "when": "실행 동작", "then": "기대 결과 (테이블 변경, 반환값, 상태 전이)"}
-        ]
-      }
-    ]
-  }
-
   [SECTION_6_비즈니스 로직_SCENARIOS]
   ★ Given-When-Then 비즈니스 로직 시나리오 생성:
 
@@ -457,83 +411,31 @@ prompt: |
   병렬이 아닌 경우 반드시 서로 다른 sequence를 부여하세요.
 
   ★ 비즈니스 로직 중첩 관계 (parent_sequence):
-  코드에서 분기(if/switch) 안에 또 다른 비즈니스 분기가 있으면 중첩 관계입니다.
-  하위 규칙의 parent_sequence에 상위 규칙의 sequence를 기입하세요.
-  최상위 규칙은 parent_sequence를 null로 두세요.
 
-  판단 원칙: 코드의 실제 중첩 구조를 그대로 반영하세요.
-  - 같은 if 블록 안에 있는 순차 규칙들 → 같은 parent
-  - if 안에 또 다른 if가 있고 그것이 별도의 비즈니스 분기라면 → parent-child 관계
-  - 중첩이 없는 순차 흐름 → 전부 parent_sequence: null
+  ★★ 핵심 정의: parent_sequence는 코드의 if 중첩이 아닙니다. ★★
+  "하나의 비즈니스 규칙 안에 다른 비즈니스 규칙이 의미적으로 포함"되어 있을 때 사용합니다.
 
-  예시:
-    코드 구조:
-      if 거래유형 == 신규:           ← BL[1] (parent: null)
-        검증()                       ← BL[2] (parent: 1)
-        if 연령 < 10:               ← BL[3] (parent: 1)
-          보호자 검증()              ← BL[4] (parent: 3)
-        등록()                       ← BL[5] (parent: 1)
-      elif 거래유형 == 재가입:       ← BL[6] (parent: null)
-        재가입 처리()                ← BL[7] (parent: 6)
+  판단 질문: "이 규칙은 상위 규칙이 성립할 때만 의미가 있는가?"
+  → YES: parent_sequence에 상위 규칙의 sequence를 기입
+  → NO: parent_sequence를 null로 두세요
 
-    출력:
-      {"sequence":1, "parent_sequence":null, "title":"거래유형이 신규인 경우"}
-      {"sequence":2, "parent_sequence":1,    "title":"입력 데이터 검증"}
-      {"sequence":3, "parent_sequence":1,    "title":"연령 10세 미만 판단"}
-      {"sequence":4, "parent_sequence":3,    "title":"보호자 검증 수행"}
-      {"sequence":5, "parent_sequence":1,    "title":"신규 가입 등록"}
-      {"sequence":6, "parent_sequence":null, "title":"거래유형이 재가입인 경우"}
-      {"sequence":7, "parent_sequence":6,    "title":"재가입 절차 수행"}
+  ● parent_sequence를 사용하는 경우 (비즈니스 의미 포함):
+    - 하나의 비즈니스 처리 안에 다른 도메인의 규칙이 포함된 경우
+      예: 가입 처리(BL[1]) 안에 결제 검증(BL[2], parent:1)이 직접 포함
+    - 하나의 의사결정이 여러 세부 규칙을 포함하는 경우
+      예: 할인 정책(BL[3]) 안에 등급별 할인율(BL[4], parent:3)이 포함
 
-  중첩이 없는 순차 흐름 예시:
-    코드 구조:
-      입력 검증()                    ← BL[1] (parent: null)
-      중복 확인()                    ← BL[2] (parent: null)
-      등록()                        ← BL[3] (parent: null)
-      결과 반환()                    ← BL[4] (parent: null)
+  ● parent_sequence를 사용하지 않는 경우 (null):
+    - 같은 함수 안의 순차적 비즈니스 단계들
+      예: 입력검증 → 중복확인 → 등록 → 결과반환 (각각 독립적인 단계)
+    - if/else, switch/case의 각 분기 (같은 레벨의 대등한 분기)
+      예: 유형A 처리, 유형B 처리, 유형C 처리 (병렬적 선택지)
+    - 같은 도메인의 조건 분기
+      예: 24개월 초과 10% 할인 / 12개월 초과 5% 할인 (같은 할인 정책의 분기)
 
-    출력:
-      {"sequence":1, "parent_sequence":null, "title":"입력 검증"}
-      {"sequence":2, "parent_sequence":null, "title":"중복 확인"}
-      {"sequence":3, "parent_sequence":null, "title":"등록 처리"}
-      {"sequence":4, "parent_sequence":null, "title":"결과 반환"}
-    → if 중첩이 없으면 전부 parent_sequence: null. 억지로 만들지 마세요.
-
-  if/else 분기 예시:
-    코드 구조:
-      if 금액 > 10000:              ← BL[1] (parent: null) — 분기 조건
-        할인 적용()                   ← BL[2] (parent: 1) — 분기 내부 처리
-      else:
-        정상가 적용()                 ← BL[3] (parent: null) — 다른 분기 (같은 레벨)
-      저장()                         ← BL[4] (parent: null) — 분기 이후 공통 처리
-
-    출력:
-      {"sequence":1, "parent_sequence":null, "title":"금액이 10000 초과인 경우"}
-      {"sequence":2, "parent_sequence":1,    "title":"할인 적용"}
-      {"sequence":3, "parent_sequence":null, "title":"금액이 10000 이하인 경우 정상가 적용"}
-      {"sequence":4, "parent_sequence":null, "title":"결과 저장"}
-    → if와 else는 같은 레벨(parent: null), if 안의 세부 처리만 child
-
-  switch/case 대규모 분기 예시:
-    코드 구조:
-      switch (거래유형):
-        case 'A': 처리A()            ← BL[1] (parent: null)
-        case 'B': 처리B()            ← BL[2] (parent: null)
-        case 'C':                    ← BL[3] (parent: null)
-          if 조건X:                  ← BL[4] (parent: 3)
-            세부처리()               ← BL[5] (parent: 4)
-        case 'D': 처리D()            ← BL[6] (parent: null)
-
-    → 각 case는 같은 레벨 (parent: null)
-    → case 안에 추가 분기가 있을 때만 parent-child
-    → case가 10개, 20개여도 규칙은 동일합니다
-
-  주의:
-  - 중첩이 없으면 전부 parent_sequence: null — 억지로 만들지 마세요
-  - 코드에 실제로 존재하는 중첩만 반영하세요
-  - if와 else, switch의 각 case는 같은 레벨입니다
-  - 분기 안에 있는 세부 처리만 child입니다
-  - 분기가 많아도 (10개, 20개) 각각 독립적인 BL로 생성하세요
+  ● 대부분의 코드에서 parent_sequence는 null입니다.
+    레거시 코드에서 다른 도메인의 로직이 한 함수에 섞여있는 경우에만 사용됩니다.
+    억지로 만들지 마세요. 확실한 경우에만 사용하세요.
 
   ★ 정보 누락 금지:
   비즈니스 로직으로 판단된 모든 분기/조건/계산이 어딘가의 시나리오에 반드시 반영되어야 합니다.
@@ -595,18 +497,33 @@ prompt: |
   - 컬럼 description: 코드에서 직접 참조/사용된 컬럼**만** 포함. 해당 컬럼이 어떤 비즈니스 값을 담고 있는지, 어떤 조건/연산에 사용되는지 설명.
   - 코드에서 확인할 수 없는 내용은 절대 추측하지 마세요.
   
-  출력 제약사항:
-  - JSON 형식 외의 부가 설명 금지 (출력에 JSON 주석 포함 금지)
-  - "stereotype"은 각 analysis 요소에 필수. 허용 목록({{ valid_stereotypes | default(['Init','Query','Command','Handler','Validation','BusinessLogic']) }})에서 하나만 사용
-  - "dependencies" 배열 요소는 객체 타입 (targetModule, sourceMember, usage, relationType 필드)
-  - analysis[i]에는 startLine, endLine, stereotype이 필수
-  - 값이 없으면 해당 필드는 dependencies=[], tableInsights=[], scenarios=[] 사용
-  - "tableInsights"는 컨텍스트에 테이블 접근(reads_writes, 연결된 SQL)이 있을 때만 내용을 채움. 없으면 반드시 []
-  - "scenarios"는 비즈니스 수준의 로직이 존재하는 메서드에서만 생성. 기술적 구현 함수(DB CRUD, 유틸리티, 인프라)는 반드시 []. 테이블 접근 유무와 무관.
-  - 빈 배열도 허용되며 null 값은 사용 금지
-  - 코드펜스(```json ... ``` 등) 포함 금지
-  - **트레일링 콤마 절대 금지**: 마지막 요소 뒤에 콤마(,)를 붙이지 말 것
-  - **유효한 JSON만 출력**: 반드시 json.loads()로 파싱 가능한 형식이어야 함
-  - **stereotype 필수**: analysis 배열의 모든 요소에 "stereotype" 키를 넣고, 허용 목록에서 하나만 사용할 것. 누락 시 오류로 간주함.
+  [OUTPUT_FORMAT]
+  아래 JSON 스키마에 맞는 순수 JSON만 출력하세요:
+  {
+    "analysis": [
+      {
+        "startLine": 범위_시작_라인_번호,
+        "endLine": 범위_종료_라인_번호,
+        "stereotype": "허용 목록에서 하나 선택",
+        "summary": "3~5문장 상세 요약",
+        "actor": "비즈니스 행위 주체. 내부 구현 함수는 빈 문자열",
+        {% if is_oop | default(true) %}"dependencies": [
+          {"targetModule": "타겟모듈명", "sourceMember": "메서드명", "usage": "field_call|local_new|parameter|return|cast|generic|local_var", "relationType": "DEPENDENCY|COMPOSITION|AGGREGATION|ASSOCIATION"}
+        ],{% else %}"dependencies": [],{% endif %}
+        "tableInsights": [
+          {"tableName": "테이블명", "description": "비즈니스 역할", "columns": [{"name": "컬럼명", "description": "용도"}]}
+        ],
+        "scenarios": [
+          {"sequence": 1, "parent_sequence": null, "title": "시나리오 제목", "given": "초기 상태", "when": "실행 동작", "then": "기대 결과"}
+        ]
+      }
+    ]
+  }
 
-  위 조건을 모두 만족하는 순수 JSON만 출력하세요. 각 analysis 객체에는 반드시 startLine, endLine, stereotype, summary가 포함되어야 합니다.
+  출력 규칙:
+  - 순수 JSON만 출력. 코드펜스, 백틱, JSON 주석, 부가 설명 금지
+  - 트레일링 콤마 절대 금지
+  - null 사용 금지 (parent_sequence만 예외). 빈값은 빈 배열 [] 또는 빈 문자열 ""
+  - 값이 없는 배열 필드는 [] 사용
+  - tableInsights: 테이블 접근 정보 있을 때만. 없으면 []
+  - scenarios: 비즈니스 수준 로직 있을 때만. 기술적 구현 함수는 []

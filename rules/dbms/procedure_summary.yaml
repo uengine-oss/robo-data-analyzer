@@ -173,51 +173,26 @@ prompt: |
   병렬이 아닌 경우 반드시 서로 다른 sequence를 부여하세요.
 
   ★ 비즈니스 로직 중첩 관계 (parent_sequence):
-  코드에서 분기(if/switch) 안에 또 다른 비즈니스 분기가 있으면 중첩 관계입니다.
-  하위 규칙의 parent_sequence에 상위 규칙의 sequence를 기입하세요.
-  최상위 규칙은 parent_sequence를 null로 두세요.
 
-  판단 원칙: 코드의 실제 중첩 구조를 그대로 반영하세요.
-  - 같은 if 블록 안에 있는 순차 규칙들 → 같은 parent
-  - if 안에 또 다른 if가 있고 그것이 별도의 비즈니스 분기라면 → parent-child 관계
-  - 중첩이 없는 순차 흐름 → 전부 parent_sequence: null
+  ★★ 핵심 정의: parent_sequence는 코드의 if 중첩이 아닙니다. ★★
+  "하나의 비즈니스 규칙 안에 다른 비즈니스 규칙이 의미적으로 포함"되어 있을 때 사용합니다.
 
-  예시:
-    코드 구조:
-      IF v_type = 'NEW' THEN          ← BL[1] (parent: null)
-        validate_input();              ← BL[2] (parent: 1)
-        IF v_age < 10 THEN            ← BL[3] (parent: 1)
-          check_guardian();            ← BL[4] (parent: 3)
-        END IF;
-        do_register();                 ← BL[5] (parent: 1)
-      ELSIF v_type = 'RENEW' THEN    ← BL[6] (parent: null)
-        do_renew();                    ← BL[7] (parent: 6)
-      END IF;
+  판단 질문: "이 규칙은 상위 규칙이 성립할 때만 의미가 있는가?"
+  → YES: parent_sequence에 상위 규칙의 sequence를 기입
+  → NO: parent_sequence를 null로 두세요
 
-    출력:
-      {"sequence":1, "parent_sequence":null, "title":"거래유형이 신규인 경우"}
-      {"sequence":2, "parent_sequence":1,    "title":"입력 데이터 검증"}
-      {"sequence":3, "parent_sequence":1,    "title":"연령 10세 미만 판단"}
-      {"sequence":4, "parent_sequence":3,    "title":"보호자 검증 수행"}
-      {"sequence":5, "parent_sequence":1,    "title":"신규 등록"}
-      {"sequence":6, "parent_sequence":null, "title":"거래유형이 재가입인 경우"}
-      {"sequence":7, "parent_sequence":6,    "title":"재가입 절차 수행"}
+  ● parent_sequence를 사용하는 경우 (비즈니스 의미 포함):
+    - 하나의 비즈니스 처리 안에 다른 도메인의 규칙이 포함된 경우
+    - 하나의 의사결정이 여러 세부 규칙을 포함하는 경우
 
-  중첩이 없는 순차 흐름 예시:
-    코드 구조:
-      validate_input();              ← BL[1] (parent: null)
-      check_duplicate();             ← BL[2] (parent: null)
-      do_insert();                   ← BL[3] (parent: null)
+  ● parent_sequence를 사용하지 않는 경우 (null):
+    - 같은 함수 안의 순차적 비즈니스 단계들
+    - if/else, switch/case의 각 분기 (같은 레벨의 대등한 분기)
+    - 같은 도메인의 조건 분기
 
-    출력:
-      {"sequence":1, "parent_sequence":null, "title":"입력 검증"}
-      {"sequence":2, "parent_sequence":null, "title":"중복 확인"}
-      {"sequence":3, "parent_sequence":null, "title":"등록 처리"}
-    → if 중첩이 없으면 전부 parent_sequence: null. 억지로 만들지 마세요.
-
-  주의:
-  - 중첩이 없으면 전부 parent_sequence: null — 억지로 만들지 마세요
-  - 코드에 실제로 존재하는 중첩만 반영하세요
+  ● 대부분의 코드에서 parent_sequence는 null입니다.
+    레거시 코드에서 다른 도메인의 로직이 한 프로시저에 섞여있는 경우에만 사용됩니다.
+    억지로 만들지 마세요. 확실한 경우에만 사용하세요.
 
   ★ 정보 누락 금지:
   비즈니스 로직으로 판단된 모든 분기/조건/계산이 어딘가의 시나리오에 반드시 반영되어야 합니다.

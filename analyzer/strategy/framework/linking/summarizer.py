@@ -238,7 +238,6 @@ def _invoke_analysis_llm(
     field_initial_values: Optional[str] = None,
     table_sample_data: Optional[str] = None,
     constants_context: Optional[str] = None,
-    existing_actors: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """메서드 1개에 대해 analysis 규칙 실행 → summary/dependencies/stereotype.
 
@@ -317,8 +316,6 @@ def _invoke_analysis_llm(
         inputs["table_sample_data"] = table_sample_data.strip()
     if constants_context and constants_context.strip():
         inputs["constants_context"] = constants_context.strip()
-    if existing_actors and existing_actors.strip():
-        inputs["existing_actors"] = existing_actors.strip()
     try:
         loader = get_rule_loader("framework")
         result = loader.execute("function_summary", inputs, api_key=api_key)
@@ -354,7 +351,6 @@ def _process_one_method_for_analysis(
     table_sample_data: Optional[str] = None,
     constants_context: Optional[str] = None,
     referenced_vars_by_function: Optional[Dict[str, List[str]]] = None,
-    existing_actors: Optional[str] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """단일 메서드에 대해 stereotype + (summary, dependencies) 계산."""
     cqrs_fallback = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
@@ -398,7 +394,6 @@ def _process_one_method_for_analysis(
             field_initial_values="\n".join(referenced_vars_by_function.get(m.function_id, [])) if referenced_vars_by_function else None,
             table_sample_data=table_sample_data or None,
             constants_context=constants_context or None,
-            existing_actors=existing_actors or None,
         )
         if analysis:
             summary = analysis.get("summary") or summary
@@ -447,7 +442,6 @@ def run_step6(
     table_sample_data: Optional[str] = None,
     constants_context: Optional[str] = None,
     referenced_vars_by_function: Optional[Dict[str, List[str]]] = None,
-    existing_actors: Optional[str] = None,
 ) -> Generator[Dict[str, Dict[str, Any]], None, None]:
     """메서드별 stereotype, summary — 20개씩 배치로 yield.
 
@@ -503,7 +497,6 @@ def run_step6(
                         table_sample_data,
                         constants_context,
                         referenced_vars_by_function,
-                        existing_actors,
                     ): m
                     for m in function_facts_list
                 }
@@ -554,7 +547,6 @@ def run_step6(
                         table_sample_data,
                         constants_context,
                         referenced_vars_by_function,
-                        existing_actors,
                     )
                     batch[function_id] = data
                 except Exception as e:
@@ -634,7 +626,6 @@ def run_step6(
             table_sample_data,
             constants_context,
             referenced_vars_by_function,
-            existing_actors,
         )
         return node_id, data
 
@@ -728,7 +719,6 @@ def run_step6(
                     table_sample_data,
                     constants_context,
                     referenced_vars_by_function,
-                    existing_actors,
                 )
                 batch[mid] = data
             except Exception as e:
