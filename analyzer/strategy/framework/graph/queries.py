@@ -921,9 +921,13 @@ def build_function_summary_queries(summary_by_function: Dict[str, Dict[str, Any]
         # BusinessLogic 시나리오 수집
         for idx, sc in enumerate(data.get("scenarios") or []):
             if isinstance(sc, dict) and sc.get("title"):
+                parent_seq = sc.get("parent_sequence")
+                if parent_seq is not None and parent_seq == 0:
+                    parent_seq = None
                 gwt_rows.append({
                     "function_id": function_id,
                     "sequence": sc.get("sequence", idx + 1),
+                    "parent_sequence": parent_seq,
                     "title": sc.get("title", ""),
                     "given": sc.get("given", ""),
                     "when": sc.get("when", ""),
@@ -939,21 +943,7 @@ def build_function_summary_queries(summary_by_function: Dict[str, Dict[str, Any]
             "params": {"rows": rows},
         })
 
-    # Actor 노드 생성 + ROLE 관계
-    actor_rows = [r for r in rows if r.get("actor")]
-    if actor_rows:
-        queries.append({
-            "query": (
-                "UNWIND $rows AS row\n"
-                "MATCH (f:FUNCTION {function_id: row.function_id})\n"
-                "MERGE (a:Actor {name: row.actor})\n"
-                "ON CREATE SET a.created_at = timestamp()\n"
-                "MERGE (a)-[r:ROLE]->(f)\n"
-                "ON CREATE SET r.created_at = timestamp()\n"
-                "RETURN a, f"
-            ),
-            "params": {"rows": actor_rows},
-        })
+    # Actor 노드 생성은 동의어 통합 후 build_actor_queries()에서 한 번에 처리
 
     # stereotype 라벨 (언어에 맞는 것만)
     st_groups: Dict[str, List[str]] = {}
@@ -975,7 +965,7 @@ def build_function_summary_queries(summary_by_function: Dict[str, Dict[str, Any]
                 "UNWIND $rows AS row\n"
                 "MATCH (f:FUNCTION {function_id: row.function_id})\n"
                 "MERGE (g:BusinessLogic {function_id: row.function_id, title: row.title})\n"
-                "SET g.sequence = row.sequence, g.given = row.given, g.when = row.when, g.then = row.then, g.updated_at = timestamp()\n"
+                "SET g.sequence = row.sequence, g.parent_sequence = row.parent_sequence, g.given = row.given, g.when = row.when, g.then = row.then, g.updated_at = timestamp()\n"
                 "MERGE (f)-[:HAS_BUSINESS_LOGIC]->(g)\n"
                 "RETURN f, g"
             ),
@@ -983,6 +973,29 @@ def build_function_summary_queries(summary_by_function: Dict[str, Dict[str, Any]
         })
 
     return queries
+
+
+def build_actor_queries(summary_by_function: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Actor 노드 + ROLE 관계 생성 쿼리. 동의어 통합 후 호출."""
+    actor_rows = []
+    for function_id, data in summary_by_function.items():
+        actor = (data.get("actor") or "").strip()
+        if actor:
+            actor_rows.append({"function_id": function_id, "actor": actor})
+    if not actor_rows:
+        return []
+    return [{
+        "query": (
+            "UNWIND $rows AS row\n"
+            "MATCH (f:FUNCTION {function_id: row.function_id})\n"
+            "MERGE (a:Actor {name: row.actor})\n"
+            "ON CREATE SET a.created_at = timestamp()\n"
+            "MERGE (a)-[r:ROLE]->(f)\n"
+            "ON CREATE SET r.created_at = timestamp()\n"
+            "RETURN a, f"
+        ),
+        "params": {"rows": actor_rows},
+    }]
 
 
 def build_variable_summary_queries(summary_by_variable: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:

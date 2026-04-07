@@ -240,7 +240,7 @@ def _invoke_analysis_llm(
     constants_context: Optional[str] = None,
     existing_actors: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    """메서드 1개에 대해 analysis 규칙 실행 → summary/calls/dependencies/stereotype.
+    """메서드 1개에 대해 analysis 규칙 실행 → summary/dependencies/stereotype.
 
     called_method_summaries: 하위 메서드들의 summary 리스트.
     호출 그래프 하위 노드부터 summary를 만든 뒤, 상위 노드에서는 이 정보를 context에 포함해
@@ -328,10 +328,9 @@ def _invoke_analysis_llm(
             return None
         out = analysis_list[0]
         logger.info(
-            "[FW:STEP6] LLM 분석 완료 | function_id=%s has_summary=%s calls=%d dependencies=%d",
+            "[FW:STEP6] LLM 분석 완료 | function_id=%s has_summary=%s dependencies=%d",
             m.function_id,
             bool(out.get("summary")),
-            len(out.get("calls") or []),
             len(out.get("dependencies") or []),
         )
         return out
@@ -357,7 +356,7 @@ def _process_one_method_for_analysis(
     referenced_vars_by_function: Optional[Dict[str, List[str]]] = None,
     existing_actors: Optional[str] = None,
 ) -> Tuple[str, Dict[str, Any]]:
-    """단일 메서드에 대해 stereotype + (summary, calls, dependencies) 계산."""
+    """단일 메서드에 대해 stereotype + (summary, dependencies) 계산."""
     cqrs_fallback = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
     summary = f"{m.fqn} ({cqrs_fallback}); lines {m.start_line}-{m.end_line}"
     method_edges = [e for e in refer_to_edges if e.function_id == m.function_id]
@@ -378,7 +377,6 @@ def _process_one_method_for_analysis(
     )
     module_comment, module_annotations = _get_module_context(module_key_index or {}, m.module_key)
     fields_ctx = _build_module_fields_context(m.module_key, variable_facts_list)
-    calls: List[str] = []
     dependencies: List[Dict[str, Any]] = []
     table_insights: List[Dict[str, Any]] = []
     scenarios: List[Dict[str, Any]] = []
@@ -405,7 +403,6 @@ def _process_one_method_for_analysis(
         if analysis:
             summary = analysis.get("summary") or summary
             actor = analysis.get("actor") or ""
-            calls = list(analysis.get("calls") or [])
             dependencies = list(analysis.get("dependencies") or [])
             table_insights = list(analysis.get("tableInsights") or [])
             scenarios = list(analysis.get("scenarios") or [])
@@ -422,7 +419,7 @@ def _process_one_method_for_analysis(
         "summary": summary,
         "actor": actor,
         "fqn": m.fqn,
-        "calls": calls,
+        "calls": [],
         "dependencies": dependencies,
         "tableInsights": table_insights,
         "scenarios": scenarios,
@@ -915,10 +912,10 @@ def _invoke_module_summary_llm(
     api_key: str,
     locale: str = "ko",
     kind: Optional[str] = None,
-) -> Tuple[Optional[str], str]:
-    """module_summary_batch 규칙 실행 → (모듈 요약, moduleStereotype) 반환."""
+) -> Tuple[Optional[str], str, Dict[str, List[str]]]:
+    """module_summary_batch 규칙 실행 → (모듈 요약, moduleStereotype, unified_actors) 반환."""
     if not api_key or not items:
-        return None, ""
+        return None, "", {}
     inputs: Dict[str, Any] = {
         "module_fqn": module_fqn,
         "items": items,
@@ -939,10 +936,11 @@ def _invoke_module_summary_llm(
             summary = result.get("summary") or None
             raw_module_st = (result.get("moduleStereotype") or "").strip()
             module_stereotype = raw_module_st if raw_module_st in VALID_MODULE_STEREOTYPES else ""
-            return summary, module_stereotype
+            unified_actors = result.get("unified_actors") or {}
+            return summary, module_stereotype, unified_actors
     except Exception as e:
         logger.warning("[FW:STEP6] module_summary_batch LLM 실패 module_fqn=%s: %s", module_fqn, e)
-    return None, ""
+    return None, "", {}
 
 
 def run_module_summary(
@@ -973,7 +971,11 @@ def run_module_summary(
         summary = data.get("summary", "") if isinstance(data, dict) else ""
         if not summary:
             summary = f"{name}; method"
-        by_class.setdefault(ck, []).append({"name": name, "summary": summary})
+        actor = data.get("actor", "") if isinstance(data, dict) else ""
+        item = {"name": name, "summary": summary}
+        if actor:
+            item["actor"] = actor
+        by_class.setdefault(ck, []).append(item)
     for f in variable_facts_list or []:
         ck = getattr(f, "module_key", None)
         if not ck:
@@ -984,11 +986,11 @@ def run_module_summary(
             summary = f"{f.name}; field"
         by_class.setdefault(ck, []).append({"name": f.name, "summary": summary})
 
-    def _summarize_one_module(module_key: str, items: List[Dict[str, Any]]) -> Tuple[str, str, str]:
-        """단일 모듈 요약 — 스레드 안전. (module_fqn, summary, moduleStereotype) 반환."""
+    def _summarize_one_module(module_key: str, items: List[Dict[str, Any]]) -> Tuple[str, str, str, Dict[str, List[str]]]:
+        """단일 모듈 요약 — 스레드 안전. (module_fqn, summary, moduleStereotype, unified_actors) 반환."""
         module_fqn = module_key
         if not items:
-            return module_fqn, "", ""
+            return module_fqn, "", "", {}
         module_comment, module_annotations = _get_module_context(module_key_index, module_key)
         module_kind = key_to_kind.get(module_key)
         chunks: List[List[Dict[str, Any]]] = []
@@ -1007,9 +1009,10 @@ def run_module_summary(
             chunks.append(current)
         prev_summary: Optional[str] = None
         module_stereotype = ""
+        all_unified_actors: Dict[str, List[str]] = {}
         for chunk in chunks:
             if api_key:
-                result_summary, result_stereotype = _invoke_module_summary_llm(
+                result_summary, result_stereotype, chunk_unified = _invoke_module_summary_llm(
                     module_fqn,
                     chunk,
                     module_comment,
@@ -1022,11 +1025,14 @@ def run_module_summary(
                 prev_summary = result_summary or prev_summary
                 if result_stereotype:
                     module_stereotype = result_stereotype
+                if chunk_unified:
+                    for rep, syns in chunk_unified.items():
+                        all_unified_actors.setdefault(rep, []).extend(syns)
             else:
                 prev_summary = "; ".join(
                     f"{x.get('name', '')}: {x.get('summary', '')}" for x in chunk
                 )
-        return module_fqn, prev_summary or "", module_stereotype
+        return module_fqn, prev_summary or "", module_stereotype, all_unified_actors
 
     _CLASS_BATCH_SIZE = 5
     total_yielded = 0
@@ -1040,23 +1046,24 @@ def run_module_summary(
             }
             for future in as_completed(futures):
                 try:
-                    module_fqn, summary, module_stereotype = future.result()
+                    module_fqn, summary, module_stereotype, unified = future.result()
                 except Exception as e:
                     ck = futures[future]
                     module_fqn = ck
                     summary = ""
                     module_stereotype = ""
+                    unified = {}
                     logger.warning("[FW:STEP6] Module 요약 예외 module=%s: %s", module_fqn, e)
                 total_yielded += 1
-                batch[module_fqn] = {"summary": summary, "moduleStereotype": module_stereotype}
+                batch[module_fqn] = {"summary": summary, "moduleStereotype": module_stereotype, "unified_actors": unified}
                 if len(batch) >= _CLASS_BATCH_SIZE:
                     yield batch
                     batch = {}
     else:
         for module_key, items in by_class.items():
-            module_fqn, summary, module_stereotype = _summarize_one_module(module_key, items)
+            module_fqn, summary, module_stereotype, unified = _summarize_one_module(module_key, items)
             total_yielded += 1
-            batch[module_fqn] = {"summary": summary, "moduleStereotype": module_stereotype}
+            batch[module_fqn] = {"summary": summary, "moduleStereotype": module_stereotype, "unified_actors": unified}
             if len(batch) >= _CLASS_BATCH_SIZE:
                 yield batch
                 batch = {}

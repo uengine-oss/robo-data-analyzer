@@ -140,8 +140,30 @@ prompt: |
   [TASK: 비즈니스 로직 시나리오 (GIVEN-WHEN-THEN)]
   ===============================================
 
-  이 프로시저의 동작을 레거시 코드 전환 후 검증할 수 있는 비즈니스 로직(Given-When-Then) 시나리오를 작성하세요.
-  **비즈니스 규칙마다 별도 시나리오**를 생성하세요 (규칙1 정상/실패, 규칙2 정상/실패, ...). 개수 제한 없음. 식별된 비즈니스 로직은 빠짐없이 시나리오로 만드세요.
+  ★★★ 핵심 판단 기준: "비즈니스 수준"의 로직인가? ★★★
+
+  시나리오를 생성할지 말지의 핵심 질문:
+  "이 프로시저의 이 분기/조건이 비즈니스 의사결정인가, 아니면 기술적 구현 세부사항인가?"
+
+  ● 비즈니스 로직 = 시나리오 생성 대상:
+    - 비즈니스 규칙에 의한 분기 (조건별 처리 분기, 유형별 차등 적용, 상태별 허용/거부)
+    - 비즈니스 계산 (금액 산정, 집계, 보정, 공식 기반 연산)
+    - 비즈니스 검증 (자격 확인, 중복 방지, 한도 초과, 유효성 검증)
+    - 비즈니스 상태 전이 (상태값 변경, 이력 생성)
+    - 비즈니스 기본값/보정 (NULL→대체값, 음수→0, 미입력→기본값)
+
+  ● 기술적 구현 = 시나리오 생성하지 않음 (빈 배열 []):
+    - 단순 CRUD 래퍼 (SELECT/INSERT/UPDATE/DELETE만 실행하는 저수준 프로시저)
+    - 기술적 에러 핸들링 (NO_DATA_FOUND, TOO_MANY_ROWS, SQLCODE 처리)
+    - 커서 관리 (OPEN/FETCH/CLOSE)
+    - 로깅, 디버그 출력, 임시 테이블 관리
+
+  ● 판단이 애매한 경우의 원칙:
+    "이 로직이 없으면 비즈니스 결과가 달라지는가?"
+    → YES: 비즈니스 로직 → 시나리오 생성
+    → NO: 기술적 구현 → 시나리오 생성 안 함
+
+  **비즈니스 규칙마다 별도 시나리오**를 생성하세요. 개수 제한 없음. 식별된 비즈니스 로직은 빠짐없이 시나리오로 만드세요.
 
   ★ 비즈니스 프로세스 흐름 순서:
   각 시나리오에 sequence를 부여하세요. 1부터 시작하며 반드시 순차적 (1,2,3,4...).
@@ -150,8 +172,55 @@ prompt: |
   같은 시점에서 분기되는 병렬 경로(if/else, switch/case)만 같은 sequence를 허용합니다.
   병렬이 아닌 경우 반드시 서로 다른 sequence를 부여하세요.
 
+  ★ 비즈니스 로직 중첩 관계 (parent_sequence):
+  코드에서 분기(if/switch) 안에 또 다른 비즈니스 분기가 있으면 중첩 관계입니다.
+  하위 규칙의 parent_sequence에 상위 규칙의 sequence를 기입하세요.
+  최상위 규칙은 parent_sequence를 null로 두세요.
+
+  판단 원칙: 코드의 실제 중첩 구조를 그대로 반영하세요.
+  - 같은 if 블록 안에 있는 순차 규칙들 → 같은 parent
+  - if 안에 또 다른 if가 있고 그것이 별도의 비즈니스 분기라면 → parent-child 관계
+  - 중첩이 없는 순차 흐름 → 전부 parent_sequence: null
+
+  예시:
+    코드 구조:
+      IF v_type = 'NEW' THEN          ← BL[1] (parent: null)
+        validate_input();              ← BL[2] (parent: 1)
+        IF v_age < 10 THEN            ← BL[3] (parent: 1)
+          check_guardian();            ← BL[4] (parent: 3)
+        END IF;
+        do_register();                 ← BL[5] (parent: 1)
+      ELSIF v_type = 'RENEW' THEN    ← BL[6] (parent: null)
+        do_renew();                    ← BL[7] (parent: 6)
+      END IF;
+
+    출력:
+      {"sequence":1, "parent_sequence":null, "title":"거래유형이 신규인 경우"}
+      {"sequence":2, "parent_sequence":1,    "title":"입력 데이터 검증"}
+      {"sequence":3, "parent_sequence":1,    "title":"연령 10세 미만 판단"}
+      {"sequence":4, "parent_sequence":3,    "title":"보호자 검증 수행"}
+      {"sequence":5, "parent_sequence":1,    "title":"신규 등록"}
+      {"sequence":6, "parent_sequence":null, "title":"거래유형이 재가입인 경우"}
+      {"sequence":7, "parent_sequence":6,    "title":"재가입 절차 수행"}
+
+  중첩이 없는 순차 흐름 예시:
+    코드 구조:
+      validate_input();              ← BL[1] (parent: null)
+      check_duplicate();             ← BL[2] (parent: null)
+      do_insert();                   ← BL[3] (parent: null)
+
+    출력:
+      {"sequence":1, "parent_sequence":null, "title":"입력 검증"}
+      {"sequence":2, "parent_sequence":null, "title":"중복 확인"}
+      {"sequence":3, "parent_sequence":null, "title":"등록 처리"}
+    → if 중첩이 없으면 전부 parent_sequence: null. 억지로 만들지 마세요.
+
+  주의:
+  - 중첩이 없으면 전부 parent_sequence: null — 억지로 만들지 마세요
+  - 코드에 실제로 존재하는 중첩만 반영하세요
+
   ★ 정보 누락 금지:
-  코드에 있는 모든 의미 있는 처리가 어딘가의 시나리오에 반드시 반영되어야 합니다.
+  비즈니스 로직으로 판단된 모든 분기/조건/계산이 어딘가의 시나리오에 반드시 반영되어야 합니다.
   비즈니스 로직으로 독립시키지 않은 중요 정보(기본값 보정, 조건 분기 등)는
   반드시 관련 시나리오의 Given/When/Then에 포함하세요.
 
@@ -161,11 +230,10 @@ prompt: |
   - When: 실행 동작 (어떤 파라미터로 이 프로시저를 호출하는지)
   - Then: 기대 결과 (테이블 변경 내용, OUT 파라미터 값, 상태 전이)
 
-  ⚠️ 비즈니스 로직 필수 규칙:
-  - 비즈니스 로직이 식별되는 프로시저에서 scenarios를 생성하세요.
-    코드의 의미를 보고 유연하게 판단하세요. 특정 패턴에 국한하지 마세요.
-  - 비즈니스 로직이 없는 프로시저는 scenarios를 빈 배열 []로 반환하세요.
-  - 코드에서 비즈니스 규칙이 식별되면, 각 분기 경로마다 시나리오를 만드세요.
+  ⚠️ 비즈니스 로직 시나리오 품질 규칙:
+  - 비즈니스 수준의 로직이 식별되는 프로시저에서만 scenarios를 생성하세요.
+  - 기술적 구현 프로시저(단순 CRUD, 유틸리티)는 scenarios를 빈 배열 []로 반환하세요.
+  - 비즈니스 로직이 식별되면, 각 분기 경로마다 시나리오를 만드세요.
     이 시나리오들만으로 원본 코드의 모든 비즈니스 분기를 재현할 수 있어야 합니다.
 
   ⚠️ 비즈니스 로직 품질 규칙 (반드시 준수):
@@ -208,6 +276,7 @@ prompt: |
     "scenarios": [
       {
         "sequence": 1,
+        "parent_sequence": null,
         "title": "시나리오 제목",
         "given": "초기 상태 (테이블 데이터 상태, 변수값, 입력 조건)",
         "when": "실행 동작 (어떤 입력으로 프로시저를 호출)",

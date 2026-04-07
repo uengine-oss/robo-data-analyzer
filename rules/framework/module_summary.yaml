@@ -32,9 +32,9 @@ prompt: |
   {{ prev_summary }}
   {% endif %}
   
-  현재 청크의 멤버 요약 목록 (name: summary):
+  현재 청크의 멤버 요약 목록 (name: summary [Actor]):
   {% for item in items %}
-  - {{ item.name }}: {{ item.summary }}
+  - {{ item.name }}: {{ item.summary }}{% if item.actor %} [Actor: {{ item.actor }}]{% endif %}
   {% endfor %}
   
   
@@ -92,6 +92,19 @@ prompt: |
   {% endif %}
 
 
+  [TASK 3: Actor 동의어 통합]
+  위 멤버 목록에서 [Actor: ...] 가 표시된 멤버들을 확인하세요.
+  같은 역할을 의미하는 Actor가 여러 이름으로 존재하면 하나의 대표명으로 통합하세요.
+
+  판단 기준: "이 두 Actor가 결국 같은 사람/시스템이 수행하는 행위인가?"
+  → YES면 하나로 통합. 대표명은 가장 명확하고 일반적인 이름을 선택.
+  예: "운영자"와 "billing operator"가 같은 모듈에서 같은 종류의 작업 → "운영자"로 통합
+  예: "고객"과 "가입자"가 같은 사람 → 하나로 통합
+
+  통합할 동의어가 있으면 unified_actors에 기록하세요.
+  Actor가 없거나 동의어가 없으면 빈 객체 {}.
+
+
   [OUTPUT]
   다음 JSON만 출력 (코드블록 없이, 백틱(`) 사용 금지):
-  {"summary": "모듈 요약 문장", "moduleStereotype": "Service"}
+  {"summary": "모듈 요약 문장", "moduleStereotype": "Service", "unified_actors": {}}

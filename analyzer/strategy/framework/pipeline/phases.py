@@ -1044,6 +1044,39 @@ async def run_phase_post(
 
     yield tracker.end_step(f"클래스 {len(summary_by_module)}개 요약 완료")
 
+    # --- Actor 동의어 통합 + Actor 노드 생성 ---
+    try:
+        from analyzer.strategy.framework.linking.actor_merge import (
+            apply_module_unified_actors,
+            merge_cross_module_actors,
+        )
+        from analyzer.strategy.framework.graph.queries import build_actor_queries
+
+        # 1차: module_summary의 unified_actors 적용 (모듈 내 동의어)
+        replaced_count = apply_module_unified_actors(
+            summary_by_function, summary_by_module, function_facts_list,
+        )
+        if replaced_count:
+            logger.info("[FW:PHASE3] Actor 1차 통합 (모듈 내): %d개 교체", replaced_count)
+
+        # 2차: 모듈 간 동의어 통합 (LLM 1회)
+        if api_key:
+            merge_map = await merge_cross_module_actors(
+                summary_by_function, summary_by_module, api_key, locale,
+            )
+            if merge_map:
+                logger.info("[FW:PHASE3] Actor 2차 통합 (모듈 간): %s", merge_map)
+
+        # Actor 노드 + ROLE 관계 한 번에 생성
+        actor_queries = build_actor_queries(summary_by_function)
+        if actor_queries:
+            async for graph in run_graph_queries(client, actor_queries, label="PHASE3:ACTORS"):
+                yield emit_data(graph=graph)
+            actor_count = len({d.get("actor") for d in summary_by_function.values() if d.get("actor")})
+            logger.info("[FW:PHASE3] Actor 노드 생성 완료: %d개", actor_count)
+    except Exception as e:
+        logger.warning("[FW:PHASE3] Actor 처리 실패 (무시): %s", e)
+
     # --- Table Description 보강 (메서드 summary 기반) ---
     yield tracker.begin_step(3, 1)
     enriched_table_count = 0

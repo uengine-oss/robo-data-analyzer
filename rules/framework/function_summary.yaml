@@ -86,10 +86,10 @@ prompt: |
   - 각 범위는 독립적으로 분석되어야 하며, 누락 또는 초과된 분석 결과는 허용되지 않음
   - 강제 검증 규칙:
      - analysis 각 요소는 startLine/endLine을 반드시 포함할 것 (정수)
-     - 값이 없으면 해당 필드는 다음 기본값을 사용: dependencies=[], calls=[]
+     - 값이 없으면 해당 필드는 다음 기본값을 사용: dependencies=[]
      - null 사용 절대 금지. 빈값은 빈 배열([]) 또는 빈 객체({})로만 표현
      - 출력에 코드펜스(```), 백틱(`), JSON 주석(//, /* */), 트레일링 콤마 포함 금지. 순수 JSON만 출력
-     - **⚠️ CRITICAL: 트레일링 콤마(trailing comma) 절대 금지** - 배열이나 객체의 마지막 요소 뒤에 콤마(,)를 붙이지 마세요. 예: `"calls": []` (O), `"calls": [],` (X)
+     - **⚠️ CRITICAL: 트레일링 콤마(trailing comma) 절대 금지** - 배열이나 객체의 마지막 요소 뒤에 콤마(,)를 붙이지 마세요
   
   
   [ANALYSIS_REQUIREMENTS]
@@ -246,62 +246,51 @@ prompt: |
   {% endif %}
 
 
-  [SECTION_3_METHOD_CALLS]
-  ★ 메서드 호출 추출 (CALLS 관계용):
-  
-  각 코드 범위에서 **분석 범위 내 다른 클래스**의 메서드를 호출하는 부분만 추출합니다.
-  
-  ⚠️ 핵심 원칙: **오직 다른 비즈니스 클래스의 메서드 호출만 추출**
-  - 같은 클래스 내부 메서드 호출은 제외
-  - Java 표준 라이브러리 호출은 모두 제외
-  
-  추출 형식:
-  - "target.functionName" 형태로 추출
-  - target: 호출 대상 (변수명 또는 모듈명)
-  - functionName: 호출되는 함수/메서드명
-  
-  추출 예시:
-  - this.repository.save(entity) → "repository.save"
-  - orderService.findAll() → "orderService.findAll"
-  - UserService.getInstance() → "UserService.getInstance"
-  
-  제외 대상 (calls에 포함하지 않음):
-  - Java 표준 라이브러리 전체:
-    - Stream API: stream(), filter(), map(), flatMap(), collect(), forEach() 등
-    - Optional API: orElse(), orElseThrow(), isPresent(), ifPresent() 등
-    - Object 메서드: toString(), hashCode(), equals(), getClass() 등
-    - 컬렉션 내장 메서드: list.add(), map.get(), set.contains(), size() 등
-    - String 메서드: substring(), trim(), toLowerCase() 등
-  - System 호출: System.out.println() 등
-  - 로깅: log.info(), logger.debug() 등
-  - 같은 클래스 내부 메서드: this.method(), method() 등
-  - 기본 타입/래퍼 메서드: Integer.parseInt(), Long.valueOf() 등
-  
-  ⚠️ 체이닝 처리:
-  - 체이닝 전체가 Java 표준 라이브러리인 경우 모두 제외
-    - items.stream().filter().map() → 모두 제외 (stream()도 Java 표준 라이브러리)
-    - optional.orElseThrow() → 제외
-  - 체이닝 중 비즈니스 클래스 메서드만 추출
-    - userRepository.findById(id).orElseThrow() → "userRepository.findById"만 추출
-  
-  ⚠️ 같은 범위 내에서 동일 호출이 여러 번 있으면 한 번만 포함
-  
+
+
   
 
 
 
   [SECTION_ACTOR]
   ★ 액터(actor) 식별:
-  이 코드를 실행하는 주체를 주어진 코드와 주석의 의미를 보고 판단하세요.
 
-  - 시스템이 자동으로 실행하는 코드면 → "system"
-  - 사용자가 직접 조작하는 코드면 → "user"
-  - 관리자가 수행하는 코드면 → "admin"
-  - 그 외에도 코드/주석에서 주체가 분명히 드러나면 → 의미에 맞는 명칭
+  "이 함수의 비즈니스 행위를 최종적으로 트리거하는 주체(역할)는 누구인가?"를 판단하세요.
 
-  위는 예시일 뿐이며, 정해진 패턴이 아닙니다.
-  코드와 주석이 제공하는 정보 안에서 "이걸 누가 실행하는가"를 의미적으로 판단하세요.
-  확신이 없으면 빈 문자열 "" (억지로 추측하지 마세요)
+  ★★ 판단 원칙:
+
+  1. 비즈니스 행위를 수행하는 함수 → 반드시 Actor를 부여하세요
+     이 함수가 "누군가의 요청을 받아 의미 있는 비즈니스 처리를 수행"한다면 Actor가 있습니다.
+     Actor 명칭은 코드와 주석의 의미에서 판단하세요.
+     특정 명칭에 국한하지 말고, 코드의 비즈니스 맥락에서 적합한 역할명을 사용하세요.
+     예: user, admin, system, customer, operator, scheduler 등 어떤 명칭이든 가능합니다.
+
+  2. 내부 구현 함수 → Actor를 비워두세요 ""
+     다른 함수에 의해 호출되는 구현 세부사항에는 독립적인 Actor가 없습니다.
+
+  ★★ Actor 판단 예시:
+
+  [Actor가 있는 경우 — 비즈니스 행위 수행]
+  - 외부 요청을 받아 검증/처리/저장하는 서비스 함수 → Actor 있음
+  - 사용자 인터페이스에서 입력을 받아 서비스를 호출하는 함수 → Actor 있음
+  - 배치/스케줄러가 자동으로 실행하는 비즈니스 처리 → Actor 있음 (system 또는 scheduler)
+
+  [Actor가 없는 경우 — 내부 구현]
+  - DB INSERT/SELECT/UPDATE/DELETE를 실행하는 저수준 함수 → Actor 없음
+  - 메모리 할당/해제, 로깅, 설정 로드 → Actor 없음
+  - 데이터 변환, 직렬화, 큐 관리, 스레드 관리 → Actor 없음
+  - 다른 비즈니스 함수에서 호출되는 유틸리티/헬퍼 → Actor 없음
+
+  [판단이 애매한 경우]
+  - "이 함수를 직접 호출하는 외부 주체가 있는가?" → YES면 Actor 있음
+  - "이 함수는 다른 함수의 내부 구현인가?" → YES면 Actor 없음
+  - 애매하면 상위 호출자의 Actor를 따르거나, 비워두세요
+
+  ★★ 일관성 원칙 (매우 중요):
+  - 같은 계층/모듈의 함수들은 일관된 판단을 하세요.
+    동일 서비스의 생성/조회/수정/삭제가 있으면, 일부만 Actor를 주고 나머지를 빈 문자열로 두지 마세요.
+  - "이 함수가 비즈니스 행위를 수행하는가?"가 핵심 질문입니다.
+    비즈니스 행위를 수행하면 Actor가 있고, 기술적 구현이면 Actor가 없습니다.
 
   {% if existing_actors %}
   기존에 식별된 actor 목록:
@@ -309,8 +298,13 @@ prompt: |
 
   ⚠️ 동의어 방지 규칙 (반드시 준수):
   - 위 목록에 의미가 같은 actor가 이미 있으면 **반드시** 기존 명칭을 그대로 사용하세요
-  - 동의어 예시: 사용자/유저/user, 관리자/admin/운영자, 시스템/system/자동 — 이런 것들은 같은 actor입니다
-  - 기존 목록에 없는 **완전히 새로운 독립적 역할**일 때만 새 이름을 생성하세요
+  - 판단 기준: "이 두 역할이 결국 같은 사람/시스템이 수행하는 행위인가?"
+    → YES면 기존 명칭 사용. 새로 만들지 마세요.
+    예: "가입 개통 요청자"와 "운영자"가 같은 인터페이스에서 같은 종류의 작업을 하면 → 기존 명칭 사용
+    예: "고객"과 "가입자"와 "이용자"가 같은 사람이면 → 기존 명칭 사용
+    예: "시스템"과 "배치"와 "자동 처리"가 같은 자동화 주체면 → 기존 명칭 사용
+  - 새 명칭은 기존 목록의 **어떤 역할과도 겹치지 않는 완전히 다른 주체**일 때만 생성
+  - 의심스러우면 기존 명칭을 사용하세요. 새 명칭 생성보다 기존 재사용이 항상 안전합니다.
   {% endif %}
 
 
@@ -374,23 +368,83 @@ prompt: |
         {% if is_oop | default(true) %}"dependencies": [
           {"targetModule": "타겟모듈명", "sourceMember": "메서드명", "usage": "field_call|local_new|parameter|return|cast|generic|local_var", "relationType": "DEPENDENCY|COMPOSITION|AGGREGATION|ASSOCIATION"}
         ],{% else %}"dependencies": [],{% endif %}
-        "calls": ["target.functionName", "target2.functionName2"],
         "tableInsights": [
           {"tableName": "테이블명", "description": "이 메서드 분석으로 파악된 테이블의 비즈니스 역할 (1~2문장)", "columns": [{"name": "컬럼명", "description": "이 메서드에서 파악된 컬럼 용도 (1문장)"}]}
         ],
         "scenarios": [
-          {"sequence": 1, "title": "시나리오 제목", "given": "초기 상태 (테이블 데이터 상태, 필드값, 입력 조건)", "when": "실행 동작", "then": "기대 결과 (테이블 변경, 반환값, 상태 전이)"}
+          {"sequence": 1, "parent_sequence": null, "title": "시나리오 제목", "given": "초기 상태 (테이블 데이터 상태, 필드값, 입력 조건)", "when": "실행 동작", "then": "기대 결과 (테이블 변경, 반환값, 상태 전이)"}
         ]
       }
     ]
   }
 
   [SECTION_6_비즈니스 로직_SCENARIOS]
-  ★ Given-When-Then 검증 시나리오 생성:
+  ★ Given-When-Then 비즈니스 로직 시나리오 생성:
 
-  이 메서드의 동작을 레거시 코드 전환 후 검증할 수 있는 비즈니스 로직(Given-When-Then) 시나리오를 작성하세요.
-  코드에서 비즈니스 로직이 식별되면 해당 분기마다 시나리오를 생성하세요. 개수 제한 없음.
-  식별된 비즈니스 로직은 빠짐없이 시나리오로 만드세요.
+  ★★★ 핵심 판단 기준: "비즈니스 수준"의 로직인가? ★★★
+
+  시나리오를 생성할지 말지의 핵심 질문:
+  "이 함수의 이 분기/조건이 비즈니스 의사결정인가, 아니면 기술적 구현 세부사항인가?"
+
+  ● 비즈니스 로직 = 시나리오 생성 대상:
+    - 비즈니스 규칙에 의한 분기 (조건별 처리 분기, 유형별 차등 적용, 상태별 허용/거부)
+    - 비즈니스 계산 (금액 산정, 비율/할인 적용, 집계, 공식 기반 연산)
+    - 비즈니스 검증 (자격 확인, 중복 방지, 한도 초과 확인, 유효성 검증)
+    - 비즈니스 상태 전이 (대기→승인, 미처리→완료, 활성→해지 등)
+    - 비즈니스 기본값/보정 (미입력 시 대체값 적용, 음수→0 보정, NULL→기본값)
+
+  ● 기술적 구현 = 시나리오 생성하지 않음 (빈 배열 []):
+    - DB CRUD 래퍼 (INSERT/SELECT/UPDATE/DELETE를 실행하는 저수준 함수)
+    - 기술적 에러 핸들링 (테이블 full, 레코드 not found, 중복 키, SQL 에러코드)
+    - 메모리/자원 관리 (할당, 해제, 초기화, 잠금/해제)
+    - 데이터 직렬화/역직렬화 (버퍼 읽기/쓰기, 포맷 변환)
+    - 통신/큐/스레드 관리 (메시지 큐, 서비스 등록, 워커)
+    - 설정 로드, 로깅, 시그널/이벤트 핸들러, 단순 getter/setter
+
+  ● 판단이 애매한 경우의 원칙:
+    "이 로직이 없으면 비즈니스 결과가 달라지는가?"
+    → YES: 비즈니스 로직 → 시나리오 생성
+    → NO: 기술적 구현 → 시나리오 생성 안 함
+
+  ● 예시로 이해하기 (언어/도메인 무관 — 원칙에 집중):
+
+    [비즈니스 로직 ✅ — 시나리오를 생성해야 하는 것]
+    - "필수 입력이 비어있으면 요청 거부" → 비즈니스 검증 ✅
+    - "동일 식별자로 활성 레코드가 이미 있으면 중복 거부" → 비즈니스 규칙 ✅
+    - "조건에 따라 다른 계산 방식 적용 (유형 A면 X, B면 Y)" → 비즈니스 분기 ✅
+    - "처리 후 상태를 ACTIVE로, 초기값을 0으로 설정" → 비즈니스 상태 설정 ✅
+    - "합계가 음수이면 0으로 보정" → 비즈니스 보정 ✅
+    - "가입 기간이 12개월 초과이면 5% 할인, 24개월 초과이면 10% 할인" → 비즈니스 규칙 ✅
+    - "미입력 시 현재 연월로 자동 보정" → 비즈니스 기본값 ✅
+
+    [기술적 구현 ❌ — 시나리오를 생성하지 않는 것]
+    - "저장 공간이 가득 차면 에러코드 반환" → 기술적 제약 ❌
+    - "데이터 삽입 후 에러코드 확인" → 기술적 에러 핸들링 ❌
+    - "배열에 레코드 추가하고 카운트 증가" → 기술적 구현 ❌
+    - "커넥션을 열고 SQL을 실행하고 커넥션을 닫는다" → 기술적 인프라 ❌
+    - "NULL 체크 후 메모리 할당" → 기술적 방어 코드 ❌
+
+    [경계가 모호한 경우 — 핵심 질문으로 판단]
+    - "입력값이 NULL이면 기본값 100으로 대체"
+      → 이 기본값이 비즈니스 규칙인가? (할인율, 한도, 기간 등) → ✅
+      → 이 기본값이 기술적 방어인가? (NULL 방지용 0) → ❌
+    - "레코드가 없으면 에러 반환"
+      → 서비스 함수에서 "해당 가입자가 없으면 처리 중단" → ✅ (비즈니스 검증)
+      → DB 함수에서 "SELECT 결과가 0건" → ❌ (기술적 결과)
+    - "상태값을 변경한다"
+      → "가입 상태를 ACTIVE에서 TERMINATED로 변경" → ✅ (비즈니스 상태 전이)
+      → "플래그 변수를 0에서 1로 설정" → ❌ (기술적 제어 흐름)
+
+    [같은 규칙이 두 계층에 있을 때]
+    서비스 함수에서 "중복 전화번호 가입 거부" → ✅ 여기서만 시나리오 생성
+    DB 함수에서 "UNIQUE 제약 위반 시 에러코드 반환" → ❌ 생성 안 함
+    → 같은 비즈니스 규칙이라도, 비즈니스 의사결정을 하는 계층에서만 캡처하세요.
+
+    [하나의 함수에 다른 도메인의 로직이 섞여 있을 때]
+    가입 처리 함수 안에 결제 검증 로직이 직접 포함되어 있는 경우:
+    → 가입 관련 BL과 결제 관련 BL을 모두 시나리오로 생성하세요
+    → 각 시나리오는 해당 비즈니스 규칙을 정확히 반영합니다
+    → 도메인 분리는 이후 단계에서 처리되므로, 여기서는 있는 그대로 캡처하세요
 
   ★ 비즈니스 프로세스 흐름 순서:
   각 시나리오에 sequence를 부여하세요. 1부터 시작하며 반드시 순차적 (1,2,3,4...).
@@ -399,8 +453,55 @@ prompt: |
   같은 시점에서 분기되는 병렬 경로(if/else, switch/case)만 같은 sequence를 허용합니다.
   병렬이 아닌 경우 반드시 서로 다른 sequence를 부여하세요.
 
+  ★ 비즈니스 로직 중첩 관계 (parent_sequence):
+  코드에서 분기(if/switch) 안에 또 다른 비즈니스 분기가 있으면 중첩 관계입니다.
+  하위 규칙의 parent_sequence에 상위 규칙의 sequence를 기입하세요.
+  최상위 규칙은 parent_sequence를 null로 두세요.
+
+  판단 원칙: 코드의 실제 중첩 구조를 그대로 반영하세요.
+  - 같은 if 블록 안에 있는 순차 규칙들 → 같은 parent
+  - if 안에 또 다른 if가 있고 그것이 별도의 비즈니스 분기라면 → parent-child 관계
+  - 중첩이 없는 순차 흐름 → 전부 parent_sequence: null
+
+  예시:
+    코드 구조:
+      if 거래유형 == 신규:           ← BL[1] (parent: null)
+        검증()                       ← BL[2] (parent: 1)
+        if 연령 < 10:               ← BL[3] (parent: 1)
+          보호자 검증()              ← BL[4] (parent: 3)
+        등록()                       ← BL[5] (parent: 1)
+      elif 거래유형 == 재가입:       ← BL[6] (parent: null)
+        재가입 처리()                ← BL[7] (parent: 6)
+
+    출력:
+      {"sequence":1, "parent_sequence":null, "title":"거래유형이 신규인 경우"}
+      {"sequence":2, "parent_sequence":1,    "title":"입력 데이터 검증"}
+      {"sequence":3, "parent_sequence":1,    "title":"연령 10세 미만 판단"}
+      {"sequence":4, "parent_sequence":3,    "title":"보호자 검증 수행"}
+      {"sequence":5, "parent_sequence":1,    "title":"신규 가입 등록"}
+      {"sequence":6, "parent_sequence":null, "title":"거래유형이 재가입인 경우"}
+      {"sequence":7, "parent_sequence":6,    "title":"재가입 절차 수행"}
+
+  중첩이 없는 순차 흐름 예시:
+    코드 구조:
+      입력 검증()                    ← BL[1] (parent: null)
+      중복 확인()                    ← BL[2] (parent: null)
+      등록()                        ← BL[3] (parent: null)
+      결과 반환()                    ← BL[4] (parent: null)
+
+    출력:
+      {"sequence":1, "parent_sequence":null, "title":"입력 검증"}
+      {"sequence":2, "parent_sequence":null, "title":"중복 확인"}
+      {"sequence":3, "parent_sequence":null, "title":"등록 처리"}
+      {"sequence":4, "parent_sequence":null, "title":"결과 반환"}
+    → if 중첩이 없으면 전부 parent_sequence: null. 억지로 만들지 마세요.
+
+  주의:
+  - 중첩이 없으면 전부 parent_sequence: null — 억지로 만들지 마세요
+  - 코드에 실제로 존재하는 중첩만 반영하세요
+
   ★ 정보 누락 금지:
-  코드에 있는 모든 의미 있는 처리가 어딘가의 시나리오에 반드시 반영되어야 합니다.
+  비즈니스 로직으로 판단된 모든 분기/조건/계산이 어딘가의 시나리오에 반드시 반영되어야 합니다.
   비즈니스 로직으로 독립시키지 않은 중요 정보(기본값 보정, 조건 분기 등)는
   반드시 관련 시나리오의 Given/When/Then에 포함하세요.
 
@@ -410,11 +511,10 @@ prompt: |
   - When: 실행 동작 (어떤 파라미터로 이 메서드를 호출하는지)
   - Then: 기대 결과 (테이블 변경 내용, 반환값, 상태 전이)
 
-  ⚠️ 비즈니스 로직 필수 규칙:
-  - 비즈니스 로직이 식별되는 메서드에서 scenarios를 생성하세요.
-    코드의 의미를 보고 유연하게 판단하세요. 특정 패턴에 국한하지 마세요.
-  - 단순 getter/setter, 초기화, 로깅, 잠금 등 인프라 코드는 scenarios를 빈 배열 []로 반환하세요.
-  - 코드에서 비즈니스 규칙이 식별되면, 각 분기 경로마다 시나리오를 만드세요.
+  ⚠️ 비즈니스 로직 시나리오 품질 규칙:
+  - 비즈니스 로직이 식별되는 메서드에서만 scenarios를 생성하세요.
+  - 기술적 구현 함수(DB CRUD, 유틸리티, 인프라)는 scenarios를 빈 배열 []로 반환하세요.
+  - 비즈니스 로직이 식별되면, 각 분기 경로마다 시나리오를 만드세요.
     이 시나리오들만으로 원본 코드의 모든 비즈니스 분기를 재현할 수 있어야 합니다.
 
   ⚠️ 비즈니스 로직 품질 규칙 (반드시 준수):
@@ -464,12 +564,10 @@ prompt: |
   - JSON 형식 외의 부가 설명 금지 (출력에 JSON 주석 포함 금지)
   - "stereotype"은 각 analysis 요소에 필수. 허용 목록({{ valid_stereotypes | default(['Init','Query','Command','Handler','Validation','BusinessLogic']) }})에서 하나만 사용
   - "dependencies" 배열 요소는 객체 타입 (targetModule, sourceMember, usage, relationType 필드)
-  - "calls" 배열 요소는 "target.functionName" 형태의 문자열
-  - calls에는 오직 다른 비즈니스 클래스의 메서드 호출만 포함 (Java 표준 라이브러리 제외)
   - analysis[i]에는 startLine, endLine, stereotype이 필수
-  - 값이 없으면 해당 필드는 dependencies=[], calls=[], tableInsights=[], scenarios=[] 사용
+  - 값이 없으면 해당 필드는 dependencies=[], tableInsights=[], scenarios=[] 사용
   - "tableInsights"는 컨텍스트에 테이블 접근(reads_writes, 연결된 SQL)이 있을 때만 내용을 채움. 없으면 반드시 []
-  - "scenarios"는 비즈니스 로직이 존재하고 테이블 접근이 있는 메서드에서만 생성. 없으면 []
+  - "scenarios"는 비즈니스 수준의 로직이 존재하는 메서드에서만 생성. 기술적 구현 함수(DB CRUD, 유틸리티, 인프라)는 반드시 []. 테이블 접근 유무와 무관.
   - 빈 배열도 허용되며 null 값은 사용 금지
   - 코드펜스(```json ... ``` 등) 포함 금지
   - **트레일링 콤마 절대 금지**: 마지막 요소 뒤에 콤마(,)를 붙이지 말 것
