@@ -12,7 +12,7 @@ input_schema:
 
 prompt: |
   [ROLE]
-  당신은 PL/SQL 프로시저/함수의 동작을 분석하고 요약하는 전문가입니다.
+  당신은 저장 프로시저/함수의 동작을 분석하고 요약하는 전문가입니다.
   하위 코드 블록의 요약들을 종합하여 전체 기능을 상세하게 설명하고,
   레거시 코드 전환 검증을 위한 비즈니스 로직(Given-When-Then) 시나리오를 작성하세요.
 
@@ -145,18 +145,19 @@ prompt: |
   시나리오를 생성할지 말지의 핵심 질문:
   "이 프로시저의 이 분기/조건이 비즈니스 의사결정인가, 아니면 기술적 구현 세부사항인가?"
 
-  ● 비즈니스 로직 = 시나리오 생성 대상:
-    - 비즈니스 규칙에 의한 분기 (조건별 처리 분기, 유형별 차등 적용, 상태별 허용/거부)
-    - 비즈니스 계산 (금액 산정, 집계, 보정, 공식 기반 연산)
-    - 비즈니스 검증 (자격 확인, 중복 방지, 한도 초과, 유효성 검증)
-    - 비즈니스 상태 전이 (상태값 변경, 이력 생성)
-    - 비즈니스 기본값/보정 (NULL→대체값, 음수→0, 미입력→기본값)
+  ● 비즈니스 로직 (Business Logic / Business Rule) = 시나리오 생성 대상:
+    - 비즈니스 규칙(Decision Rule) — 조건별 처리 분기, 유형별 차등, 상태별 허용/거부
+    - 비즈니스 계산(Calculation) — 금액 산정, 집계, 보정, 공식 기반 연산
+    - 비즈니스 검증(Validation) — 자격 확인, 중복 방지, 한도 초과, 유효성 검증
+    - 비즈니스 상태 전이(State Transition) — 상태값 변경, 이력 생성
+    - 비즈니스 기본값/보정(Default/Correction) — NULL→대체값, 음수→0, 미입력→기본값
+    - 권한/접근 제어(Authorization) — 역할별 허용/거부
 
-  ● 기술적 구현 = 시나리오 생성하지 않음 (빈 배열 []):
-    - 단순 CRUD 래퍼 (SELECT/INSERT/UPDATE/DELETE만 실행하는 저수준 프로시저)
-    - 기술적 에러 핸들링 (NO_DATA_FOUND, TOO_MANY_ROWS, SQLCODE 처리)
-    - 커서 관리 (OPEN/FETCH/CLOSE)
-    - 로깅, 디버그 출력, 임시 테이블 관리
+  ● 기술적 구현 (Infrastructure / Technical Implementation) = 시나리오 생성하지 않음 (빈 배열 []):
+    - 데이터 접근 계층(Data Access Layer) — SELECT/INSERT/UPDATE/DELETE만 실행하는 저수준 프로시저
+    - 기술적 에러 핸들링(Error Handling) — NO_DATA_FOUND, TOO_MANY_ROWS, SQLCODE 처리
+    - 커서 관리(Cursor Management) — OPEN/FETCH/CLOSE
+    - 횡단 관심사(Cross-Cutting Concerns) — 로깅, 디버그 출력, 임시 테이블 관리
 
   ● 판단이 애매한 경우의 원칙:
     "이 로직이 없으면 비즈니스 결과가 달라지는가?"
@@ -181,17 +182,17 @@ prompt: |
   → YES: parent_sequence에 상위 규칙의 sequence를 기입
   → NO: parent_sequence를 null로 두세요
 
-  ● parent_sequence를 사용하는 경우 (비즈니스 의미 포함):
-    - 하나의 비즈니스 처리 안에 다른 도메인의 규칙이 포함된 경우
-    - 하나의 의사결정이 여러 세부 규칙을 포함하는 경우
+  ● parent_sequence를 사용하는 경우 — 도메인 커플링(Cross-Domain Coupling) 또는 규칙 포함(Rule Composition):
+    - 하나의 비즈니스 처리 안에 다른 Bounded Context의 규칙이 직접 포함된 경우
+    - 하나의 의사결정(Decision)이 여러 세부 규칙(Sub-Rule)을 포함하는 경우
 
-  ● parent_sequence를 사용하지 않는 경우 (null):
-    - 같은 함수 안의 순차적 비즈니스 단계들
-    - if/else, switch/case의 각 분기 (같은 레벨의 대등한 분기)
-    - 같은 도메인의 조건 분기
+  ● parent_sequence를 사용하지 않는 경우 (null) — 순차 흐름(Sequential Flow) 또는 대등 분기(Parallel Branch):
+    - 같은 프로시저 안의 순차적 비즈니스 단계(Pipeline)
+    - if/else, switch/case의 각 분기 — 같은 레벨의 대등한 분기(Branching)
+    - 같은 도메인의 조건 분기(Decision Table)
 
   ● 대부분의 코드에서 parent_sequence는 null입니다.
-    레거시 코드에서 다른 도메인의 로직이 한 프로시저에 섞여있는 경우에만 사용됩니다.
+    레거시 코드에서 관심사 분리(Separation of Concerns)가 안 된 커플링 코드에서만 사용됩니다.
     억지로 만들지 마세요. 확실한 경우에만 사용하세요.
 
   ★ 정보 누락 금지:
@@ -262,7 +263,7 @@ prompt: |
 
   출력 제약사항:
   - JSON 형식 외의 부가 설명 금지 (출력에 JSON 주석 포함 금지)
-  - null 값 사용 금지 (단, actor 필드만 예외: 식별 불가 시 빈 문자열 "" 사용)
+  - null 값 사용 금지 (단, parent_sequence만 예외). 빈값은 빈 배열 [] 또는 빈 문자열 ""
   - scenarios가 없으면 빈 배열 [] 사용
   - 코드펜스(```json ... ```) 포함 금지
   - **⚠️ CRITICAL: 트레일링 콤마(trailing comma) 절대 금지** - 배열이나 객체의 마지막 요소 뒤에 콤마(,)를 붙이지 마세요.

@@ -31,9 +31,11 @@ prompt: |
   ────────────────────────────────────────
   아래 패턴 중 하나라도 코드에서 발견되면 해당 variable_id를 "참조"로 선택하십시오.
 
-  패턴 A) self.필드명 — 인스턴스 필드 직접 접근
-     - self.id, self.title, self._db, self._config 등
-     - 코드에 self.XXX가 있고, 변수 목록에 같은 클래스의 XXX 필드가 있으면 선택
+  패턴 A) self.필드명 / this.필드명 / 구조체->필드명 — 인스턴스 필드 직접 접근
+     - Python: self.id, self.title, self._db, self._config 등
+     - Java/C#: this.id, this.name, 또는 필드 직접 접근
+     - C: struct_ptr->field, obj.field 등
+     - 코드에 self.XXX / this.XXX / ptr->XXX가 있고, 변수 목록에 같은 클래스/구조체의 필드가 있으면 선택
 
   패턴 B) 클래스명.멤버 — 클래스 레벨 접근 (Enum 값, 상수 포함)
      - BookStatus.AVAILABLE, LoanStatus.ACTIVE, MemberGrade.VIP 등

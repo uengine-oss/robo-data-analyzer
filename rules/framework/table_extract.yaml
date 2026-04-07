@@ -85,7 +85,7 @@ prompt: |
 
   [중요 — 한 번 더]
   - tables에는 **FROM/JOIN 절에서 "스키마.테이블명" 또는 "테이블명"으로 직접 등장한 식별자만** 넣으세요.
-  - **Oracle DUAL**은 시스템 더미 테이블(실제 데이터 테이블 아님)이므로 **tables에 넣지 마세요.** (SELECT 1 FROM DUAL 등에서 DUAL 제외)
+  - **시스템/더미 테이블**은 실제 데이터 테이블이 아니므로 **tables에 넣지 마세요.** (Oracle DUAL, PostgreSQL pg_catalog, SQL Server sys.*, MySQL information_schema 등)
   - SELECT·WHERE·ON·ORDER BY·GROUP BY 등에서 **"별칭.컬럼"** 형태로만 등장한 앞쪽 식별자(INV1, KR15, PN01, TR09, PK01, A, B, T1 등)는 **별칭**이므로 tables에 넣지 말고 alias_map에만 넣으세요.
   - **짧은 식별자**(영문+숫자 2~6자)는 대부분 별칭입니다. FROM/JOIN에 "테이블명 AS 별칭" 또는 "테이블명 별칭"처럼 **직접 등장하지 않으면** tables에 넣지 말고 alias_map에만 넣으세요.
   - prev_summary에 나열된 이름이라도, **이 조각의 FROM/JOIN에 테이블명으로 직접 등장하지 않은 이름**은 tables에 넣지 마세요.
