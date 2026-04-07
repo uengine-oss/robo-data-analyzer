@@ -972,19 +972,19 @@ def build_function_summary_queries(summary_by_function: Dict[str, Dict[str, Any]
             "params": {"rows": gwt_rows},
         })
 
-        # BL 간 순서 흐름: FOLLOWED_BY (같은 함수 내에서 sequence 순)
+        # BL 간 순서 흐름: NEXT_STEP (같은 함수 내에서 sequence 순)
         queries.append({
             "query": (
                 "UNWIND $rows AS row\n"
                 "MATCH (prev:BusinessLogic {function_id: row.function_id, sequence: row.sequence})\n"
                 "MATCH (next:BusinessLogic {function_id: row.function_id, sequence: row.sequence + 1})\n"
-                "MERGE (prev)-[:FOLLOWED_BY]->(next)\n"
+                "MERGE (prev)-[:NEXT_STEP]->(next)\n"
                 "RETURN prev.sequence, next.sequence"
             ),
             "params": {"rows": gwt_rows},
         })
 
-        # BL 간 중첩 관계: CONTAINS (parent_sequence가 있는 경우)
+        # BL 간 중첩 관계: HAS_DETAIL (parent_sequence가 있는 경우)
         parent_rows = [r for r in gwt_rows if r.get("parent_sequence")]
         if parent_rows:
             queries.append({
@@ -992,7 +992,7 @@ def build_function_summary_queries(summary_by_function: Dict[str, Dict[str, Any]
                     "UNWIND $rows AS row\n"
                     "MATCH (parent:BusinessLogic {function_id: row.function_id, sequence: row.parent_sequence})\n"
                     "MATCH (child:BusinessLogic {function_id: row.function_id, sequence: row.sequence})\n"
-                    "MERGE (parent)-[:CONTAINS]->(child)\n"
+                    "MERGE (parent)-[:HAS_DETAIL]->(child)\n"
                     "RETURN parent.sequence, child.sequence"
                 ),
                 "params": {"rows": parent_rows},

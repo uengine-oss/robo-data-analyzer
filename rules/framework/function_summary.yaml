@@ -496,9 +496,26 @@ prompt: |
       {"sequence":4, "parent_sequence":null, "title":"결과 반환"}
     → if 중첩이 없으면 전부 parent_sequence: null. 억지로 만들지 마세요.
 
+  if/else 분기 예시:
+    코드 구조:
+      if 금액 > 10000:              ← BL[1] (parent: null) — 분기 조건
+        할인 적용()                   ← BL[2] (parent: 1) — 분기 내부 처리
+      else:
+        정상가 적용()                 ← BL[3] (parent: null) — 다른 분기 (같은 레벨)
+      저장()                         ← BL[4] (parent: null) — 분기 이후 공통 처리
+
+    출력:
+      {"sequence":1, "parent_sequence":null, "title":"금액이 10000 초과인 경우"}
+      {"sequence":2, "parent_sequence":1,    "title":"할인 적용"}
+      {"sequence":3, "parent_sequence":null, "title":"금액이 10000 이하인 경우 정상가 적용"}
+      {"sequence":4, "parent_sequence":null, "title":"결과 저장"}
+    → if와 else는 같은 레벨(parent: null), if 안의 세부 처리만 child
+
   주의:
   - 중첩이 없으면 전부 parent_sequence: null — 억지로 만들지 마세요
   - 코드에 실제로 존재하는 중첩만 반영하세요
+  - if와 else는 같은 레벨입니다 (둘 다 parent: null 또는 둘 다 같은 parent)
+  - if 안에 있는 세부 처리만 child입니다
 
   ★ 정보 누락 금지:
   비즈니스 로직으로 판단된 모든 분기/조건/계산이 어딘가의 시나리오에 반드시 반영되어야 합니다.
