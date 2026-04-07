@@ -173,27 +173,26 @@ prompt: |
   같은 시점에서 분기되는 병렬 경로(if/else, switch/case)만 같은 sequence를 허용합니다.
   병렬이 아닌 경우 반드시 서로 다른 sequence를 부여하세요.
 
-  ★ 비즈니스 로직 중첩 관계 (parent_sequence):
+  ★ 도메인 커플링 감지 (coupled_domain):
+  하나의 프로시저가 자기 도메인이 아닌 **다른 도메인의 테이블에 직접 접근**하거나
+  **다른 도메인의 비즈니스 규칙을 직접 구현**하는 경우가 있습니다.
 
-  ★★ 핵심 정의: parent_sequence는 코드의 if 중첩이 아닙니다. ★★
-  "하나의 비즈니스 규칙 안에 다른 비즈니스 규칙이 의미적으로 포함"되어 있을 때 사용합니다.
+  각 시나리오가 이 프로시저의 본래 도메인에 속하지 않는 다른 도메인의 로직이면,
+  coupled_domain 필드에 해당 도메인명을 기입하세요.
+  자기 도메인의 로직이면 coupled_domain을 null로 두세요.
 
-  판단 질문: "이 규칙은 상위 규칙이 성립할 때만 의미가 있는가?"
-  → YES: parent_sequence에 상위 규칙의 sequence를 기입
-  → NO: parent_sequence를 null로 두세요
+  ★★ 판단 기준:
+  - 이 프로시저의 주 테이블이 아닌 다른 도메인의 테이블에 직접 INSERT/UPDATE/DELETE → 커플링
+  - 이 프로시저의 책임이 아닌 다른 영역의 비즈니스 규칙을 직접 구현 → 커플링
+  - 같은 도메인 안에서의 분기/계산/검증 → 커플링 아님 (null)
 
-  ● parent_sequence를 사용하는 경우 — 도메인 커플링(Cross-Domain Coupling) 또는 규칙 포함(Rule Composition):
-    - 하나의 비즈니스 처리 안에 다른 Bounded Context의 규칙이 직접 포함된 경우
-    - 하나의 의사결정(Decision)이 여러 세부 규칙(Sub-Rule)을 포함하는 경우
+  예시:
+    프로시저가 "주문 처리"를 담당하는데, 내부에서 다른 도메인 테이블에 직접 접근하는 경우:
+      BL[1]: 주문 유효성 검증 → coupled_domain: null (자기 도메인)
+      BL[2]: 재고 차감 처리 → coupled_domain: "inventory" (재고 도메인 — 커플링!)
+      BL[3]: 주문 상태 확정 → coupled_domain: null (자기 도메인)
 
-  ● parent_sequence를 사용하지 않는 경우 (null) — 순차 흐름(Sequential Flow) 또는 대등 분기(Parallel Branch):
-    - 같은 프로시저 안의 순차적 비즈니스 단계(Pipeline)
-    - if/else, switch/case의 각 분기 — 같은 레벨의 대등한 분기(Branching)
-    - 같은 도메인의 조건 분기(Decision Table)
-
-  ● 대부분의 코드에서 parent_sequence는 null입니다.
-    레거시 코드에서 관심사 분리(Separation of Concerns)가 안 된 커플링 코드에서만 사용됩니다.
-    억지로 만들지 마세요. 확실한 경우에만 사용하세요.
+  대부분의 BL에서 coupled_domain은 null입니다. 확실한 경우에만 사용하세요.
 
   ★ 정보 누락 금지:
   비즈니스 로직으로 판단된 모든 분기/조건/계산이 어딘가의 시나리오에 반드시 반영되어야 합니다.
@@ -252,7 +251,7 @@ prompt: |
     "scenarios": [
       {
         "sequence": 1,
-        "parent_sequence": null,
+        "coupled_domain": null,
         "title": "시나리오 제목",
         "given": "초기 상태 (테이블 데이터 상태, 변수값, 입력 조건)",
         "when": "실행 동작 (어떤 입력으로 프로시저를 호출)",
@@ -263,7 +262,7 @@ prompt: |
 
   출력 제약사항:
   - JSON 형식 외의 부가 설명 금지 (출력에 JSON 주석 포함 금지)
-  - null 값 사용 금지 (단, parent_sequence만 예외). 빈값은 빈 배열 [] 또는 빈 문자열 ""
+  - null 값 사용 금지 (단, coupled_domain만 예외 — 커플링 없으면 null). 빈값은 빈 배열 [] 또는 빈 문자열 ""
   - scenarios가 없으면 빈 배열 [] 사용
   - 코드펜스(```json ... ```) 포함 금지
   - **⚠️ CRITICAL: 트레일링 콤마(trailing comma) 절대 금지** - 배열이나 객체의 마지막 요소 뒤에 콤마(,)를 붙이지 마세요.

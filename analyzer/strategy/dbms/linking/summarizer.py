@@ -278,15 +278,13 @@ async def _run_procedure_summary(
                     for idx, sc in enumerate(final_scenarios):
                         if isinstance(sc, dict) and sc.get("title"):
                             seq = sc.get("sequence", idx + 1)
-                            parent_seq = sc.get("parent_sequence")
-                            if parent_seq is not None and parent_seq == 0:
-                                parent_seq = None
+                            coupled_domain = sc.get("coupled_domain")
                             if info.schema_name:
-                                bl_cypher = f"MATCH (p:{info.procedure_type} {{schema_name: $schema_name, procedure_name: $procedure_name, directory: $directory, file_name: $file_name}}) MERGE (g:BusinessLogic {{procedure_id: $proc_id, title: $title}}) SET g.sequence = $sequence, g.parent_sequence = $parent_sequence, g.given = $given, g.when = $when, g.then = $then, g.updated_at = timestamp() MERGE (p)-[:HAS_BUSINESS_LOGIC]->(g) RETURN p, g"
-                                bl_params = {"schema_name": info.schema_name, "procedure_name": info.procedure_name, "directory": processor.full_directory, "file_name": processor.file_name, "proc_id": proc_id, "sequence": seq, "parent_sequence": parent_seq, "title": sc.get("title", ""), "given": sc.get("given", ""), "when": sc.get("when", ""), "then": sc.get("then", "")}
+                                bl_cypher = f"MATCH (p:{info.procedure_type} {{schema_name: $schema_name, procedure_name: $procedure_name, directory: $directory, file_name: $file_name}}) MERGE (g:BusinessLogic {{procedure_id: $proc_id, title: $title}}) SET g.sequence = $sequence, g.coupled_domain = $coupled_domain, g.given = $given, g.when = $when, g.then = $then, g.updated_at = timestamp() MERGE (p)-[:HAS_BUSINESS_LOGIC]->(g) RETURN p, g"
+                                bl_params = {"schema_name": info.schema_name, "procedure_name": info.procedure_name, "directory": processor.full_directory, "file_name": processor.file_name, "proc_id": proc_id, "sequence": seq, "coupled_domain": coupled_domain, "title": sc.get("title", ""), "given": sc.get("given", ""), "when": sc.get("when", ""), "then": sc.get("then", "")}
                             else:
-                                bl_cypher = f"MATCH (p:{info.procedure_type} {{procedure_name: $procedure_name, directory: $directory, file_name: $file_name}}) MERGE (g:BusinessLogic {{procedure_id: $proc_id, title: $title}}) SET g.sequence = $sequence, g.parent_sequence = $parent_sequence, g.given = $given, g.when = $when, g.then = $then, g.updated_at = timestamp() MERGE (p)-[:HAS_BUSINESS_LOGIC]->(g) RETURN p, g"
-                                bl_params = {"procedure_name": info.procedure_name, "directory": processor.full_directory, "file_name": processor.file_name, "proc_id": proc_id, "sequence": seq, "parent_sequence": parent_seq, "title": sc.get("title", ""), "given": sc.get("given", ""), "when": sc.get("when", ""), "then": sc.get("then", "")}
+                                bl_cypher = f"MATCH (p:{info.procedure_type} {{procedure_name: $procedure_name, directory: $directory, file_name: $file_name}}) MERGE (g:BusinessLogic {{procedure_id: $proc_id, title: $title}}) SET g.sequence = $sequence, g.coupled_domain = $coupled_domain, g.given = $given, g.when = $when, g.then = $then, g.updated_at = timestamp() MERGE (p)-[:HAS_BUSINESS_LOGIC]->(g) RETURN p, g"
+                                bl_params = {"procedure_name": info.procedure_name, "directory": processor.full_directory, "file_name": processor.file_name, "proc_id": proc_id, "sequence": seq, "coupled_domain": coupled_domain, "title": sc.get("title", ""), "given": sc.get("given", ""), "when": sc.get("when", ""), "then": sc.get("then", "")}
                             queries.append({"query": bl_cypher, "params": bl_params})
                 if queries:
                     async for batch in run_graph_queries(client, queries, cypher_lock=pipeline._cypher_lock):

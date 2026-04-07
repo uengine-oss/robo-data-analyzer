@@ -114,6 +114,12 @@ prompt: |
   ● 애매하면 통합하세요. 세분화보다 통합이 안전합니다.
   ● 대표명은 가장 많은 함수에서 사용된 이름을 선택하세요.
 
+  예시:
+    입력에 [Actor: admin] 등록 함수, [Actor: operator] 수정 함수, [Actor: system] 배치 함수 가 있을 때:
+    - "admin"과 "operator"가 같은 모듈에서 같은 대상을 CRUD → 통합 → {"operator": ["admin"]}
+    - "system"은 자동 처리라 별개 → 통합 안 함
+    → unified_actors: {"operator": ["admin"]}
+
   unified_actors 출력 형식: {"대표명": ["동의어1", "동의어2"]}
   Actor가 없거나 동의어가 없으면 빈 객체 {}
 

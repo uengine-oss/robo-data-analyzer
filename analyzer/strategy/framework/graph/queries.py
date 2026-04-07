@@ -921,13 +921,11 @@ def build_function_summary_queries(summary_by_function: Dict[str, Dict[str, Any]
         # BusinessLogic 시나리오 수집
         for idx, sc in enumerate(data.get("scenarios") or []):
             if isinstance(sc, dict) and sc.get("title"):
-                parent_seq = sc.get("parent_sequence")
-                if parent_seq is not None and parent_seq == 0:
-                    parent_seq = None
+                coupled_domain = sc.get("coupled_domain")
                 gwt_rows.append({
                     "function_id": function_id,
                     "sequence": sc.get("sequence", idx + 1),
-                    "parent_sequence": parent_seq,
+                    "coupled_domain": coupled_domain,
                     "title": sc.get("title", ""),
                     "given": sc.get("given", ""),
                     "when": sc.get("when", ""),
@@ -965,7 +963,7 @@ def build_function_summary_queries(summary_by_function: Dict[str, Dict[str, Any]
                 "UNWIND $rows AS row\n"
                 "MATCH (f:FUNCTION {function_id: row.function_id})\n"
                 "MERGE (g:BusinessLogic {function_id: row.function_id, title: row.title})\n"
-                "SET g.sequence = row.sequence, g.parent_sequence = row.parent_sequence, g.given = row.given, g.when = row.when, g.then = row.then, g.updated_at = timestamp()\n"
+                "SET g.sequence = row.sequence, g.coupled_domain = row.coupled_domain, g.given = row.given, g.when = row.when, g.then = row.then, g.updated_at = timestamp()\n"
                 "MERGE (f)-[:HAS_BUSINESS_LOGIC]->(g)\n"
                 "RETURN f, g"
             ),
@@ -983,20 +981,6 @@ def build_function_summary_queries(summary_by_function: Dict[str, Dict[str, Any]
             ),
             "params": {"rows": gwt_rows},
         })
-
-        # BL 간 중첩 관계: HAS_DETAIL (parent_sequence가 있는 경우)
-        parent_rows = [r for r in gwt_rows if r.get("parent_sequence")]
-        if parent_rows:
-            queries.append({
-                "query": (
-                    "UNWIND $rows AS row\n"
-                    "MATCH (parent:BusinessLogic {function_id: row.function_id, sequence: row.parent_sequence})\n"
-                    "MATCH (child:BusinessLogic {function_id: row.function_id, sequence: row.sequence})\n"
-                    "MERGE (parent)-[:HAS_DETAIL]->(child)\n"
-                    "RETURN parent.sequence, child.sequence"
-                ),
-                "params": {"rows": parent_rows},
-            })
 
     return queries
 
