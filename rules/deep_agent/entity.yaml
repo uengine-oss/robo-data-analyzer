@@ -118,6 +118,10 @@ prompt: |
      d) 직접 SQL뿐 아니라 간접 접근도 추적:
         - 함수 A → 함수 B → 테이블 T 순서이면, A와 B 모두 등록
         - 호출 체인을 끝까지 따라가서 테이블에 닿는 모든 함수를 빠짐없이 등록
+        ★ 주의: 반드시 코드에서 실제 호출이 확인된 체인만 추적하세요.
+          추측으로 "이 함수가 이 테이블에 접근할 것 같다"고 판단하지 마세요.
+          bundle_get_chunk로 실제 코드를 읽고, 해당 테이블명이나 DB 함수 호출이
+          코드에 직접 존재하는 경우에만 READS/WRITES를 등록하세요.
      e) 함수 하나하나에 대해 graph_create_table_access_tool 호출 (빠뜨리지 말 것)
         - table_name: 클래스명 그대로 사용 (예: Book, Member). SQL 테이블명(books, members) 사용 금지.
         - source_function_id: 해당 함수의 FQN
