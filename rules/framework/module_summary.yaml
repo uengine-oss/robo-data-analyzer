@@ -1,6 +1,6 @@
 name: "module_summary"
 description: "모듈 요약 - 메서드/필드 요약 목록을 청크 단위로 받아 모듈 전체 요약 생성. prev_summary로 이전 청크 요약 전달."
-version: "1.0"
+version: "2.0"
 
 input_schema:
   required:
@@ -31,13 +31,13 @@ prompt: |
   {% if prev_summary %}이전에 요약된 내용 (참고만 하고, 현재 items만으로 이번 요약을 작성하세요):
   {{ prev_summary }}
   {% endif %}
-  
+
   현재 청크의 멤버 요약 목록 (name: summary [Actor]):
   {% for item in items %}
   - {{ item.name }}: {{ item.summary }}{% if item.actor %} [Actor: {{ item.actor }}]{% endif %}
   {% endfor %}
-  
-  
+
+
   [TASK 1: 모듈 요약]
   ★★★ 절대 규칙: 멤버 요약의 구체적 계산식, 분기 조건, 하드코딩 값, NULL 처리를 절대 생략하지 마세요. 길어져도 괜찮습니다. ★★★
   위 멤버들의 요약을 종합하여, 이 모듈이 전체적으로 어떤 책임을 가지는지 2~5문장으로 요약하세요.
@@ -70,24 +70,24 @@ prompt: |
   - **Enum**: 열거형
   {% else %}
   어노테이션, 클래스명 패턴, 멤버 요약을 종합하여 아래 목록 중 **하나만** 선택하세요:
-  - **Controller**: REST/MVC 컨트롤러 (@RestController, @Controller)
-  - **Service**: 비즈니스 서비스 (@Service)
-  - **Repository**: 데이터 액세스 (@Repository, JpaRepository 상속)
-  - **Entity**: JPA 엔티티 (@Entity, @Table)
-  - **DTO**: 데이터 전송 객체 (Request/Response/DTO 이름 패턴)
-  - **Config**: 설정 클래스 (@Configuration)
-  - **Component**: 범용 컴포넌트 (@Component)
-  - **Aspect**: AOP 관점 (@Aspect)
+  - **Controller**: REST/MVC 컨트롤러
+  - **Service**: 비즈니스 서비스
+  - **Repository**: 데이터 액세스
+  - **Entity**: DB 엔티티
+  - **DTO**: 데이터 전송 객체
+  - **Config**: 설정 클래스
+  - **Component**: 범용 컴포넌트
+  - **Aspect**: AOP 관점
   - **Filter**: 필터/인터셉터
   - **Listener**: 이벤트 리스너
   - **Mapper**: 객체 매핑
   - **Util**: 유틸리티/헬퍼
-  - **ExceptionHandler**: 예외 처리 (@ControllerAdvice)
+  - **ExceptionHandler**: 예외 처리
   - **Enum**: 열거형
   - **Gateway**: 외부 시스템 연동 게이트웨이
   - **Facade**: 퍼사드 패턴
   - **Factory**: 팩토리 패턴
-  - **Scheduler**: 스케줄러 (@Scheduled 포함 클래스)
+  - **Scheduler**: 스케줄러
   - **Client**: 외부 API 클라이언트
   {% endif %}
 
@@ -104,8 +104,8 @@ prompt: |
 
   ● 통합하는 경우:
   - 같은 모듈의 CRUD 함수에 다른 Actor가 붙어있고, 역할 구분 근거가 없을 때
-  - 한국어/영어 표기 차이
-  - 유사한 의미의 다른 표현
+  - 한국어/영어 표기 차이 (같은 의미의 다른 언어 표현)
+  - 유사한 의미의 다른 표현 (같은 역할을 다르게 부르는 것)
 
   ● 통합하지 않는 경우:
   - 자동 처리 주체(system/scheduler/batch)와 사람이 직접 조작하는 역할은 근본적으로 다름
@@ -114,16 +114,10 @@ prompt: |
   ● 애매하면 통합하세요. 세분화보다 통합이 안전합니다.
   ● 대표명은 가장 많은 함수에서 사용된 이름을 선택하세요.
 
-  예시:
-    입력에 [Actor: admin] 등록 함수, [Actor: operator] 수정 함수, [Actor: system] 배치 함수 가 있을 때:
-    - "admin"과 "operator"가 같은 모듈에서 같은 대상을 CRUD → 통합 → {"operator": ["admin"]}
-    - "system"은 자동 처리라 별개 → 통합 안 함
-    → unified_actors: {"operator": ["admin"]}
-
   unified_actors 출력 형식: {"대표명": ["동의어1", "동의어2"]}
   Actor가 없거나 동의어가 없으면 빈 객체 {}
 
 
   [OUTPUT]
   다음 JSON만 출력 (코드블록 없이, 백틱(`) 사용 금지):
-  {"summary": "모듈 요약 문장", "moduleStereotype": "Service", "unified_actors": {}}
+  {"summary": "모듈 요약 문장", "moduleStereotype": "선택한 스테레오타입", "unified_actors": {}}

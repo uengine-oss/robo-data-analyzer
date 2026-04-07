@@ -264,7 +264,16 @@ prompt: |
   ★★ Actor를 비워두는 경우 (""):
   - 코드에 호출자 역할을 구분하는 어떤 근거도 없는 경우
   - 누가 호출하든 동일하게 동작하는 함수
-  - DB CRUD, 유틸리티, 헬퍼, 인프라 함수
+  - DB CRUD 함수 (INSERT/SELECT/UPDATE/DELETE 실행하는 저수준 데이터 접근 함수)
+  - 유틸리티/헬퍼 함수 (범용 변환, 포맷팅, 파싱 등)
+  - 인프라 함수:
+    · 프로그램 진입점 (main, WinMain, entry point)
+    · 네트워크/소켓 처리 (accept, connect, recv, send, handle_client, listen 등)
+    · 시그널/이벤트 핸들러 (signal_handler, SIGTERM/SIGINT 처리 등)
+    · 초기화/정리 (init, setup, cleanup, teardown 등)
+    · 이벤트 루프/디스패처 (event_loop, message_pump, dispatch 등)
+    · 프로세스/스레드 관리 (fork, spawn, thread_create 등)
+  - 이 함수들은 비즈니스 행위 주체가 아니라 기술적 실행 환경이므로 Actor를 부여하지 마세요
 
   ★★ 절대 금지:
   - "생성 함수니까 admin", "조회 함수니까 user" 같은 일반적 추측 금지
@@ -409,29 +418,47 @@ prompt: |
 
   ★★ 판단 방법:
   1. 이 함수가 속한 모듈/서비스의 **주 도메인**을 파악하세요
-     (함수명, 모듈명, 주로 접근하는 테이블 등에서 판단)
+     - 함수명에서 판단: svc_billing_xxx → billing, process_order → order
+     - 모듈/파일명에서 판단: billing_service.c → billing, order_handler.py → order
+     - 주로 WRITES하는 테이블에서 판단: Bill 테이블에 INSERT → billing 도메인
+     - ★ 가장 확실한 기준: 이 함수가 최종적으로 **생성/변경하는 주 테이블**이 주 도메인입니다
   2. 각 BL이 다루는 테이블/로직이 주 도메인과 **다른 영역**이면 → coupled_domain에 해당 도메인명
   3. 같은 도메인이면 → null
 
   ★★ 커플링 판단 기준:
-  - 이 함수의 주 테이블이 아닌 **다른 도메인의 테이블에 직접 INSERT/UPDATE/DELETE**하면 → 커플링
-  - 이 함수의 책임이 아닌 **다른 영역의 비즈니스 규칙을 직접 구현**하면 → 커플링
+  - 다른 도메인의 테이블에 **WRITES** (INSERT/UPDATE/DELETE) → 강한 커플링
+  - 다른 도메인의 테이블에서 **READS** (SELECT/조회)하여 비즈니스 판단에 사용 → 커플링
+    (예: 청구 함수에서 가입자 테이블을 읽어서 자격 확인 → 가입자 도메인 커플링)
+  - 다른 도메인의 비즈니스 규칙을 직접 구현 → 커플링
   - 같은 도메인 안에서의 분기/계산/검증 → 커플링 아님 (null)
 
+  ★★ 주의: READS도 커플링입니다!
+  레거시 코드에서는 한 함수가 여러 도메인의 테이블을 직접 읽어서 비즈니스 로직을 수행하는 경우가 많습니다.
+  이 경우 해당 BL에서 다른 도메인의 데이터를 조회하는 단계도 커플링으로 표시해야 합니다.
+  (DDD에서는 이런 조회를 별도 서비스 호출이나 이벤트로 분리해야 하는 대상입니다)
+
   ● coupled_domain이 null이 아닌 경우:
-    - 이 BL은 다른 Bounded Context의 로직이 현재 함수에 직접 포함된 것
+    - 이 BL은 다른 Bounded Context의 데이터/로직이 현재 함수에 직접 포함된 것
     - 이후 DDD 전환 단계에서 별도 서비스/Aggregate로 분리해야 할 대상
 
   ★★ 예시 (범용):
 
-    예시 1 — 커플링 있음:
-    함수가 "주문 처리"를 담당하는데, 코드 안에서 "결제" 테이블에 직접 INSERT하는 경우:
+    예시 1 — WRITES 커플링:
+    "주문 처리" 함수가 코드 안에서 재고·결제 테이블에 직접 접근:
       BL[1]: 주문 검증 → coupled_domain: null (주문 도메인)
-      BL[2]: 재고 차감 → coupled_domain: "inventory" (재고 도메인 — 커플링!)
-      BL[3]: 결제 승인 요청 → coupled_domain: "payment" (결제 도메인 — 커플링!)
+      BL[2]: 재고 차감 → coupled_domain: "inventory" (재고 테이블에 UPDATE — 커플링!)
+      BL[3]: 결제 승인 요청 → coupled_domain: "payment" (결제 테이블에 INSERT — 커플링!)
       BL[4]: 주문 확정 → coupled_domain: null (주문 도메인)
 
-    예시 2 — 커플링 없음 (깔끔한 코드):
+    예시 2 — READS 커플링:
+    "청구서 생성" 함수가 가입자·요금제·사용량 테이블을 읽어서 청구 금액을 계산:
+      BL[1]: 가입자 정보 조회 → coupled_domain: "subscriber" (가입자 테이블 READS — 커플링!)
+      BL[2]: 요금제 정보 조회 → coupled_domain: "plan" (요금제 테이블 READS — 커플링!)
+      BL[3]: 사용량 집계 → coupled_domain: "usage" (사용량 테이블 READS — 커플링!)
+      BL[4]: 할인 적용 및 금액 계산 → coupled_domain: null (청구 도메인)
+      BL[5]: 청구서 저장 → coupled_domain: null (청구 도메인)
+
+    예시 3 — 커플링 없음 (깔끔한 코드):
     함수가 자기 도메인의 테이블만 접근:
       BL[1]: 입력 검증 → coupled_domain: null
       BL[2]: 중복 확인 → coupled_domain: null
