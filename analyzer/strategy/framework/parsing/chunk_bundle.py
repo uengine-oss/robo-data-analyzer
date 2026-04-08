@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from config.settings import settings
+from util.encoding_utils import read_text_with_fallback_sync
 from util.text_utils import (
     add_line_numbers,
     slice_by_line_range,
@@ -76,8 +77,7 @@ def build_chunk_bundle_from_source(
         return None
 
     try:
-        enc = encoding or "utf-8"
-        raw = path.read_text(encoding=enc)
+        raw = read_text_with_fallback_sync(path)
         text_with_lines = add_line_numbers(raw)
     except Exception as e:
         logger.warning("ChunkBundle 소스 읽기 실패 %s: %s", path, e)

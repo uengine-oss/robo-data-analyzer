@@ -70,9 +70,32 @@ prompt: |
 
   위 상수 목록은 프로젝트 전역에서 사용되는 불변 값입니다. 이 메서드가 코드에서 위 상수를 참조하는 경우, summary와 비즈니스 로직의 Given/Then에 변수명이 아닌 실제 값(숫자/문자열)으로 기술하세요.
   {% endif %}
+  {% if language == "C" %}
+  ★ ProFrame/DBIO 패턴 인식 (C 레거시):
+  - mpfmdbio() 호출은 DB 접근입니다. 첫 번째 인자 문자열에서 테이블명과 연산을 판별하세요:
+    * _s + 숫자: SELECT (조회)  예: mpfmdbio("zpay_ap_req_spc_s0004", ...) → zpay_ap_req_spc 테이블 조회
+    * _i + 숫자: INSERT (등록)  예: mpfmdbio("zpay_ap_req_spc_i0010", ...) → zpay_ap_req_spc 테이블 삽입
+    * _u + 숫자: UPDATE (수정)  예: mpfmdbio("zpay_ap_req_spc_u0010", ...) → zpay_ap_req_spc 테이블 수정
+    * _d + 숫자: DELETE (삭제)  예: mpfmdbio("zpay_ap_req_spc_d0001", ...) → zpay_ap_req_spc 테이블 삭제
+    * 테이블명 = 첫 번째 인자에서 마지막 _[siud]NNNN 부분을 제거한 것
+  - PFM_TRY(func(args)) 매크로는 예외 처리입니다. 실패 시 PFM_CATCH로 분기합니다.
+  - RC_NRM=정상(0), RC_ERR=오류, RC_NFD=미발견(데이터 없음) 반환코드입니다.
+  - switch(atoi(itf->in.op_cl)) 패턴은 업무 구분 코드별 비즈니스 디스패치입니다.
+    각 case별 분기를 비즈니스 시나리오로 식별하세요.
+  - 서비스 진입점: long zapXXXXX(zapXXXXX_io_t *itf) 형태
+  - PFM_ERRC(), PFM_MSGE()는 에러 로깅 매크로입니다. 기술적 구현이므로 BL로 뽑지 마세요.
+  - itf->in은 입력 전문, itf->out은 출력 전문입니다. summary에 "입력 전문에서 X를 읽고" "출력 전문에 Y를 기록"으로 설명하세요.
+  - mpfmdbio 호출 후 switch(rc) 결과 처리 패턴:
+    * RC_NRM(정상)인데 에러로 처리하는 경우 = "데이터가 이미 존재하면 처리 불가" 비즈니스 규칙 ✅
+    * RC_NFD(미발견)이면 정상 진행 = "해당 데이터가 없으면 통과" 비즈니스 검증 ✅
+    * default = DB 시스템 오류 → 기술적 에러 핸들링 ❌
+  - result_cd 출력: itf->out.result_cd에 "00"(정상), "10", "11" 등 업무 응답 코드를 기록하는 것은 비즈니스 결과입니다.
+  - op_cl 분기 시 주석에 각 case 값의 비즈니스 의미가 설명되어 있으면 반드시 summary에 반영하세요.
+  {% endif %}
+
   분석 대상 {{ language | default("Java") }} 코드:
   {{ code }}
-  
+
   분석할 코드 범위 목록:
   {{ ranges }}
   
@@ -320,6 +343,7 @@ prompt: |
   - **Handler**: 이벤트/신호/요청/콜백 처리.
     ★ 함수명에 handler/handle이 포함되거나, 시그널/이벤트/요청을 받아 처리하면 Handler.
     예: signal_handler, handle_client, handle_request, on_message, ISR, @EventListener, callback
+    ★ ProFrame 서비스 진입점(long zapXXXXX 패턴) + op_cl 디스패치 → Handler
     ★ Handler 안에서 데이터를 읽거나 써도 Handler. Query/Command보다 Handler가 우선.
   - **Validation**: 검증 (validate, check, verify). 단, 검증 후 테이블에 쓰면 Command.
   - **BusinessLogic**: Command도 Query도 아닌 순수 계산/변환 로직.
@@ -397,6 +421,12 @@ prompt: |
     - "상태값을 변경한다"
       → "가입 상태를 ACTIVE에서 TERMINATED로 변경" → ✅ (비즈니스 상태 전이)
       → "플래그 변수를 0에서 1로 설정" → ❌ (기술적 제어 흐름)
+
+    [ProFrame/DBIO 패턴 — C 레거시]
+    - "op_cl 코드가 '00'이면 조회, '11'이면 등록 처리" → 비즈니스 분기 ✅
+    - "mpfmdbio 조회 후 RC_NFD이면 미등록 오류 반환" → 비즈니스 검증 ✅
+    - "mpfmdbio로 테이블에 INSERT 후 RC_NRM이 아니면 등록 실패 처리" → 비즈니스 상태 전이 ✅
+    - "PFM_ERRC/PFM_MSGE로 에러 로깅" → 기술적 에러 핸들링 ❌
 
     [같은 규칙이 두 계층(Layer)에 있을 때 — 관심사 분리 원칙(SoC)]
     서비스 계층(Service Layer)에서 "중복 가입 거부" → ✅ 여기서만 시나리오 생성 (비즈니스 의사결정)
@@ -546,11 +576,82 @@ prompt: |
 
   [SECTION_7_TABLE_INSIGHTS]
   tableInsights 작성 규칙:
-  ★ 핵심: 컨텍스트의 reads_writes 또는 연결된 SQL에 테이블 접근 정보가 있을 때**만** 작성합니다.
-  ★ 테이블 접근 정보가 전혀 없으면 반드시 빈 배열 []로 두세요.
-  - 코드 흐름에서 이 메서드가 해당 테이블을 **왜, 어떻게** 사용하는지를 구체적으로 설명합니다.
-  - 테이블 description: 이 메서드 분석으로 새로 파악된 테이블의 비즈니스 역할/목적. 이미 알려진 내용을 반복하지 말고, 이 메서드에서 **새로 알게 된 인사이트**만 작성.
-  - 컬럼 description: 코드에서 직접 참조/사용된 컬럼**만** 포함. 해당 컬럼이 어떤 비즈니스 값을 담고 있는지, 어떤 조건/연산에 사용되는지 설명.
+
+  ★ 이 함수가 DB 테이블에 접근하는 경우, 각 테이블에 대해 다음 정보를 추출하세요:
+    - tableName: 테이블명
+    - access: "READS" (조회) 또는 "WRITES" (등록/수정/삭제)
+    - description: 이 함수에서 이 테이블을 **왜, 어떻게** 사용하는지 구체적으로 설명
+    - columns: 코드에서 직접 참조/사용된 컬럼만 포함 (name + description)
+
+  ★ 테이블 접근 정보가 컨텍스트(reads_writes)에 이미 있으면:
+    해당 테이블의 비즈니스 역할과 컬럼 용도를 설명하세요.
+    access는 컨텍스트에 있는 READS/WRITES 정보를 그대로 사용하세요.
+
+  ★ 테이블 접근 정보가 컨텍스트에 없더라도, 코드에서 아래 패턴이 보이면 직접 식별하세요:
+
+  {% if language == "C" %}
+  ★ DB 접근 식별 패턴:
+    이 코드에서 DB 접근은 반드시 다음 패턴으로만 발생합니다:
+      rc = mpfmdbio("식별자", &input_struct, &output_struct_or_NULL);
+    이 패턴이 보일 때만 tableInsights에 추가하세요. 이 패턴이 없으면 DB 접근이 아닙니다.
+
+  ★ 테이블명 추출 규칙:
+    mpfmdbio의 첫 번째 인자(문자열)에서 **마지막 _[siud] + 숫자(4자리)를 제거**하면 테이블명입니다.
+    예: "zpay_ap_req_spc_s0004" → 테이블명: "zpay_ap_req_spc"
+    예: "zord_acnt_u0035"       → 테이블명: "zord_acnt"
+    예: "zngm_comm_cd_dtl_s0316" → 테이블명: "zngm_comm_cd_dtl"
+
+  ★ access 판별 규칙:
+    접미사의 첫 글자로 판별합니다:
+    - _s + 숫자 → access: "READS"  (SELECT)
+    - _i + 숫자 → access: "WRITES" (INSERT)
+    - _u + 숫자 → access: "WRITES" (UPDATE)
+    - _d + 숫자 → access: "WRITES" (DELETE)
+
+  ★ 컬럼 추출:
+    mpfmdbio 호출 전후에서 구조체 필드 접근 패턴을 찾으세요:
+    - _out.필드명 (출력 = 조회 결과 컬럼)
+    - _in.필드명 (입력 = 조건/입력 컬럼)
+
+  ★ 출력 예시:
+    코드:
+      zpay_ap_req_spc_s0004_in.acnt_num = itf->in.acnt_num;
+      rc = mpfmdbio("zpay_ap_req_spc_s0004", &zpay_ap_req_spc_s0004_in, &zpay_ap_req_spc_s0004_out);
+      itf->out.req_dt = zpay_ap_req_spc_s0004_out.req_dt;
+      itf->out.payer_num_cl_cd = zpay_ap_req_spc_s0004_out.payer_num_cl_cd;
+
+    출력:
+      "tableInsights": [
+        {
+          "tableName": "zpay_ap_req_spc",
+          "access": "READS",
+          "description": "계정번호 기준으로 자동이체 요청명세를 조회하여 요청일자, 납부자구분코드 등을 반환",
+          "columns": [
+            {"name": "acnt_num", "description": "조회 조건으로 사용되는 계정번호"},
+            {"name": "req_dt", "description": "요청일자"},
+            {"name": "payer_num_cl_cd", "description": "납부자번호구분코드"}
+          ]
+        }
+      ]
+
+    코드:
+      rc = mpfmdbio("zpay_ap_req_spc_i0010", &zpay_ap_req_spc_i0010_in, NULL);
+
+    출력:
+      "tableInsights": [
+        {
+          "tableName": "zpay_ap_req_spc",
+          "access": "WRITES",
+          "description": "자동이체 요청명세를 신규 등록",
+          "columns": []
+        }
+      ]
+  {% else %}
+  ★ DB 접근 식별:
+    SQL문, ORM 호출, Repository 메서드 등 코드에서 DB 접근 패턴이 보이면 식별하세요.
+  {% endif %}
+
+  ★ 테이블 접근 흔적이 전혀 없으면 반드시 빈 배열 []로 두세요.
   - 코드에서 확인할 수 없는 내용은 절대 추측하지 마세요.
   
   [OUTPUT_FORMAT]
@@ -567,7 +668,7 @@ prompt: |
           {"targetModule": "타겟모듈명", "sourceMember": "메서드명", "usage": "field_call|local_new|parameter|return|cast|generic|local_var", "relationType": "DEPENDENCY|COMPOSITION|AGGREGATION|ASSOCIATION"}
         ],{% else %}"dependencies": [],{% endif %}
         "tableInsights": [
-          {"tableName": "테이블명", "description": "비즈니스 역할", "columns": [{"name": "컬럼명", "description": "용도"}]}
+          {"tableName": "테이블명", "access": "READS 또는 WRITES", "description": "비즈니스 역할", "columns": [{"name": "컬럼명", "description": "용도"}]}
         ],
         "scenarios": [
           {"sequence": 1, "coupled_domain": null, "title": "시나리오 제목", "given": "초기 상태", "when": "실행 동작", "then": "기대 결과"}

@@ -575,118 +575,87 @@ async def run_phase_llm(
             artifact_module_count = len(artifact_module_rels) if 'artifact_module_rels' in dir() else 0
             yield tracker.end_step(f"Function→Table {len(function_table_edges)}건, Module→Table {len(module_table_edges)}건, Artifact→Table {len(artifact_table_edges)}건, Artifact→Module {artifact_module_count}건")
 
-    # DeepAgent 엔티티 식별 — 시나리오별 분기
-    # 시나리오 1 (DDL + 외부파일): 자동 엔티티 식별(어노테이션) + DDL 테이블 사용 → DeepAgent 불필요
-    # 시나리오 2 (DDL만): 테이블명 컨텍스트 + 코드 추적 → DeepAgent 실행
-    # 시나리오 3 (외부파일만): 자동 엔티티 식별(어노테이션) + Table 노드 생성 → DeepAgent 불필요
-    # 시나리오 4 (아무것도 없음): 후보 기반 엔티티 식별 → DeepAgent 실행
+    # -----------------------------------------------------------------------
+    # DeepAgent 3종 병렬 실행 (엔티티 식별 + 변수 참조 + 미해결 참조 추적)
+    # asyncio.Queue로 스레드에서 실시간 결과 전달 → 메인에서 즉시 Neo4j 반영
+    # -----------------------------------------------------------------------
+    import asyncio
+
     ddl_meta = st.ddl_table_metadata or {}
     _has_external_files = has_external_entity_info(
         artifact_index=st.artifact_index,
         module_index=st.module_index,
     )
     _needs_deep_entity = (
-        (bool(ddl_meta) and not _has_external_files)  # 시나리오 2: DDL만
-        or (not ddl_meta and not _has_external_files)  # 시나리오 4: 아무것도 없음
+        (bool(ddl_meta) and not _has_external_files)
+        or (not ddl_meta and not _has_external_files)
     )
 
-    if _needs_deep_entity:
+    _SENTINEL = object()  # Queue 종료 마커
+    result_queue: asyncio.Queue = asyncio.Queue()
+
+    # --- 병렬 작업 정의 (각 작업이 Queue에 결과를 넣음) ---
+
+    def _run_entity_identification():
+        """엔티티 식별."""
+        if not _needs_deep_entity:
+            # 시나리오 1, 3: 어노테이션 기반 자동 식별
+            from analyzer.strategy.framework.linking.matcher import identify_entity_classes
+            auto_fqns = identify_entity_classes(st.module_index or {})
+            if auto_fqns:
+                result_queue.put_nowait(("auto_entity", auto_fqns))
+            return
+
         scenario = "ddl_only" if ddl_meta else "no_external"
-        logger.info("[FW:PHASE2] DeepAgent 엔티티 식별 실행 (scenario=%s)", scenario)
-        entity_api_key = settings.llm.api_key
-        entity_run_dir = Path(st.run_dir) if st.run_dir else None
-        # DeepAgent 엔티티 식별에 전달할 컨텍스트
+        logger.info("[FW:PHASE2] DeepAgent 엔티티 식별 시작 (scenario=%s)", scenario)
         entity_state = {
             "sql_index": sql_index,
             "config_index": st.config_index or {},
             "artifact_index": st.artifact_index or {},
             "data_dir": data_dir,
-            "run_dir": str(entity_run_dir) if entity_run_dir else None,
+            "run_dir": str(Path(st.run_dir)) if st.run_dir else None,
             "span_index": st.span_index,
             "chunk_index": st.chunk_index,
-            "ddl_table_metadata": ddl_meta or None,  # DDL 테이블 메타 (시나리오 2 전용)
+            "ddl_table_metadata": ddl_meta or None,
         }
-        entity_mt_edges, entity_fk_edges = run_deep_agent_entity_identification(
-            st.module_index or {},
-            entity_state,
-            api_key=entity_api_key,
-            run_dir=entity_run_dir,
+        mt_edges, fk_e = run_deep_agent_entity_identification(
+            st.module_index or {}, entity_state,
+            api_key=settings.llm.api_key,
+            run_dir=Path(st.run_dir) if st.run_dir else None,
             ddl_table_metadata=ddl_meta or None,
         )
-        # --- FK 엣지 수집 (엔티티 식별 결과) ---
-        if entity_fk_edges:
-            fk_edges.extend(entity_fk_edges)
-            logger.info("[FW:PHASE2] DeepAgent 엔티티 식별 FK 엣지 | count=%d", len(entity_fk_edges))
+        logger.info("[FW:PHASE2] DeepAgent 엔티티 식별 완료 | Function→Table %d건, FK %d건", len(mt_edges), len(fk_e))
+        result_queue.put_nowait(("entity", entity_state, mt_edges, fk_e))
 
-        # --- Function→Table 엣지 수집 + Neo4j 반영 (엔티티 식별 결과) ---
-        if entity_mt_edges:
-            function_table_edges.extend(entity_mt_edges)
-            logger.info("[FW:PHASE2] DeepAgent 엔티티 식별 완료 | Function→Table %d건", len(entity_mt_edges))
-            try:
-                # ── Table 노드 사전 생성 (시나리오 4 전용) ──
-                # DDL이 있으면 테이블 노드는 DDL 파서가 이미 생성 → 스킵
-                # DDL이 없으면 struct/class 이름으로 Table+Column 노드를 먼저 생성해야
-                # 아래 Function→Table 관계 MERGE가 성공한다.
-                # ── 1) Table + Column + HAS_COLUMN 생성 ──
-                if not ddl_meta:
-                    _entity_map = _collect_entity_fqns_from_edges(entity_mt_edges, st.module_index or {})
-                    if _entity_map:
-                        entity_tbl_queries = build_table_from_entity_classes(_entity_map, st.module_index or {}, variable_facts_list=st.variable_facts_list or [])
-                        if entity_tbl_queries:
-                            logger.info("[FW:PHASE2] 엔티티 Table/Column 생성 (DDL 없음) | classes=%d queries=%d", len(_entity_map), len(entity_tbl_queries))
-                            async for graph in run_graph_queries(client, entity_tbl_queries, label="PHASE2:ENTITY_TABLE"):
-                                yield emit_data(graph=graph)
+    def _run_variable_refs():
+        """변수 참조 탐색."""
+        from analyzer.strategy.framework.linking.deep_agent_varref import run_deep_agent_variable_references
+        _vf = st.function_facts_list or []
+        _vv = st.variable_facts_list or []
+        if not settings.llm.api_key or not _vf or not _vv:
+            return
+        logger.info("[FW:PHASE2] 변수 참조 탐색 시작 | functions=%d variables=%d", len(_vf), len(_vv))
+        varref_state = {
+            "sql_index": sql_index,
+            "config_index": st.config_index or {},
+            "artifact_index": st.artifact_index or {},
+            "data_dir": data_dir,
+            "run_dir": str(Path(st.run_dir)) if st.run_dir else None,
+            "span_index": st.span_index,
+            "chunk_index": st.chunk_index,
+        }
+        refs = run_deep_agent_variable_references(_vf, _vv, settings.llm.api_key, state=varref_state)
+        logger.info("[FW:PHASE2] 변수 참조 탐색 완료 | refs=%d", len(refs))
+        if refs:
+            result_queue.put_nowait(("var_refs", refs))
 
-                # ── 2) Function→Table 관계 연결 ──
-                eid_queries = build_function_table_from_writes_queries(entity_mt_edges)
-                if eid_queries:
-                    async for graph in run_graph_queries(client, eid_queries, label="PHASE2:ENTITY_ID"):
-                        yield emit_data(graph=graph)
-            except Exception as e:
-                logger.warning("[FW:PHASE2] Neo4j 엔티티 식별 반영 실패: %s", e)
-        # bundle index를 state에 보존 (후속 DeepAgent 재사용)
-        if entity_state.get("span_index"):
-            if st.span_index is None:
-                st.span_index = entity_state["span_index"]
-            if st.chunk_index is None:
-                st.chunk_index = entity_state["chunk_index"]
-    else:
-        # 시나리오 1, 3: 외부 엔티티 정보(어노테이션/XML) 존재 → 자동 식별
-        # DDL이 있으면(시나리오 1) 테이블 노드는 DDL 파서가 이미 생성 → Table 생성 스킵
-        # DDL이 없으면(시나리오 3) 어노테이션 기반 엔티티에서 Table 노드 생성
-        from analyzer.strategy.framework.linking.matcher import identify_entity_classes
-        auto_entity_fqns = identify_entity_classes(st.module_index or {})
-        if auto_entity_fqns:
-            logger.info("[FW:PHASE2] 자동 엔티티 식별 (어노테이션) | classes=%d", len(auto_entity_fqns))
-            if not ddl_meta:
-                try:
-                    # fqn set → {fqn: 구조체명} 매핑 변환
-                    _mi = st.module_index or {}
-                    auto_entity_map = {
-                        fqn: _mi[fqn].get("name", "") for fqn in auto_entity_fqns
-                        if fqn in _mi and isinstance(_mi[fqn], dict)
-                    }
-                    auto_tbl_queries = build_table_from_entity_classes(auto_entity_map, _mi, variable_facts_list=st.variable_facts_list or [])
-                    if auto_tbl_queries:
-                        async for graph in run_graph_queries(client, auto_tbl_queries, label="PHASE2:AUTO_ENTITY_TABLE"):
-                            yield emit_data(graph=graph)
-                        logger.info("[FW:PHASE2] 자동 엔티티 Table/Column 생성 (DDL 없음) | queries=%d", len(auto_tbl_queries))
-                except Exception as e:
-                    logger.warning("[FW:PHASE2] 자동 엔티티 Table/Column 생성 실패: %s", e)
-            else:
-                logger.info("[FW:PHASE2] DDL 존재 — 엔티티 기반 Table 생성 스킵 (DDL 테이블 사용)")
-        else:
-            logger.info("[FW:PHASE2] 엔티티 어노테이션 미발견 — DeepAgent 엔티티 식별 필요 없음")
-
-    # DeepAgent: 항목별 점진적 스트리밍
-    if not unresolved:
-        yield tracker.begin_step(3, 1)
-        yield tracker.end_step("미해결 0건 (건너뜀)")
-    else:
-        yield tracker.begin_step(3, len(unresolved))
+    def _run_unresolved_tracking():
+        """미해결 참조 추적 (제너레이터 → Queue)."""
+        if not unresolved:
+            return
+        logger.info("[FW:PHASE2] DeepAgent 미해결 참조 추적 시작 | items=%d", len(unresolved))
         api_key = settings.llm.api_key
         run_dir_path = Path(st.run_dir) if st.run_dir else None
-        # DeepAgent 미해결 참조 추적에 전달할 컨텍스트
         deep_state = {
             "sql_index": sql_index,
             "config_index": st.config_index or {},
@@ -695,71 +664,149 @@ async def run_phase_llm(
             "run_dir": str(run_dir_path) if run_dir_path else None,
             "span_index": st.span_index,
             "chunk_index": st.chunk_index,
-            "ddl_table_metadata": ddl_meta or None,  # DDL 테이블 메타 (FK 추론용)
+            "ddl_table_metadata": ddl_meta or None,
         }
-
-        # DeepAgent 결과 누적 버퍼
-        da_refer_all: list = []   # REFER_TO 엣지
-        da_mt_all: list = []      # Function→Table 엣지
-        da_fk_all: list = []      # FK 엣지
         for item_refer, item_mt, item_fk in run_deep_agent(
-            unresolved,
-            deep_state,
-            api_key=api_key,
-            run_dir=run_dir_path,
+            unresolved, deep_state, api_key=api_key, run_dir=run_dir_path,
         ):
+            result_queue.put_nowait(("da_item", item_refer, item_mt, item_fk))
+        # deep_state의 index 보존
+        result_queue.put_nowait(("da_state", deep_state))
+        logger.info("[FW:PHASE2] DeepAgent 미해결 참조 추적 완료")
+
+    # --- 3개 작업 병렬 실행 + 종료 시 sentinel 전송 ---
+
+    async def _run_all_parallel():
+        await asyncio.gather(
+            asyncio.to_thread(_run_entity_identification),
+            asyncio.to_thread(_run_variable_refs),
+            asyncio.to_thread(_run_unresolved_tracking),
+        )
+        await result_queue.put(_SENTINEL)
+
+    parallel_task = asyncio.ensure_future(_run_all_parallel())
+
+    # --- Queue에서 실시간으로 결과를 읽으며 즉시 Neo4j 반영 ---
+    yield tracker.begin_step(3, max(1, len(unresolved)))
+    da_refer_all: list = []
+    da_mt_all: list = []
+    da_fk_all: list = []
+
+    while True:
+        item = await result_queue.get()
+        if item is _SENTINEL:
+            break
+
+        kind = item[0]
+
+        if kind == "entity":
+            _, entity_state, entity_mt_edges, entity_fk_edges = item
+            if entity_fk_edges:
+                fk_edges.extend(entity_fk_edges)
+            if entity_mt_edges:
+                function_table_edges.extend(entity_mt_edges)
+                try:
+                    if not ddl_meta:
+                        _entity_map = _collect_entity_fqns_from_edges(entity_mt_edges, st.module_index or {})
+                        if _entity_map:
+                            eq = build_table_from_entity_classes(_entity_map, st.module_index or {}, variable_facts_list=st.variable_facts_list or [])
+                            if eq:
+                                async for graph in run_graph_queries(client, eq, label="PHASE2:ENTITY_TABLE"):
+                                    yield emit_data(graph=graph)
+                    eq2 = build_function_table_from_writes_queries(entity_mt_edges)
+                    if eq2:
+                        async for graph in run_graph_queries(client, eq2, label="PHASE2:ENTITY_ID"):
+                            yield emit_data(graph=graph)
+                except Exception as e:
+                    logger.warning("[FW:PHASE2] Neo4j 엔티티 식별 반영 실패: %s", e)
+            if entity_state and entity_state.get("span_index"):
+                if st.span_index is None:
+                    st.span_index = entity_state["span_index"]
+                if st.chunk_index is None:
+                    st.chunk_index = entity_state["chunk_index"]
+
+        elif kind == "auto_entity":
+            auto_entity_fqns = item[1]
+            logger.info("[FW:PHASE2] 자동 엔티티 식별 (어노테이션) | classes=%d", len(auto_entity_fqns))
+            if not ddl_meta:
+                try:
+                    _mi = st.module_index or {}
+                    auto_map = {fqn: _mi[fqn].get("name", "") for fqn in auto_entity_fqns if fqn in _mi and isinstance(_mi[fqn], dict)}
+                    aq = build_table_from_entity_classes(auto_map, _mi, variable_facts_list=st.variable_facts_list or [])
+                    if aq:
+                        async for graph in run_graph_queries(client, aq, label="PHASE2:AUTO_ENTITY_TABLE"):
+                            yield emit_data(graph=graph)
+                except Exception as e:
+                    logger.warning("[FW:PHASE2] 자동 엔티티 Table/Column 생성 실패: %s", e)
+
+        elif kind == "var_refs":
+            refs = item[1]
+            try:
+                vq = [{
+                    "query": "MATCH (f:FUNCTION {function_id: $fid}) MATCH (v {variable_id: $vid}) MERGE (f)-[:REFERENCES]->(v) RETURN f, v",
+                    "params": {"fid": fid, "vid": vid},
+                } for fid, vid in refs]
+                if vq:
+                    async for graph in run_graph_queries(client, vq, label="PHASE2:VAR_REFS"):
+                        yield emit_data(graph=graph)
+                logger.info("[FW:PHASE2] 변수 참조 관계 생성 | refs=%d", len(refs))
+            except Exception as e:
+                logger.warning("[FW:PHASE2] 변수 참조 Neo4j 반영 실패: %s", e)
+
+        elif kind == "da_item":
+            _, item_refer, item_mt, item_fk = item
             da_refer_all.extend(item_refer)
             da_mt_all.extend(item_mt)
             da_fk_all.extend(item_fk)
-            # 항목별 Neo4j 스트리밍
             try:
-                da_queries: list = []
+                dq: list = []
                 if item_refer:
-                    da_queries.extend(build_refer_to_queries(item_refer))
+                    dq.extend(build_refer_to_queries(item_refer))
                 if item_mt:
-                    da_queries.extend(build_function_table_from_writes_queries(item_mt))
-                if da_queries:
-                    async for graph in run_graph_queries(client, da_queries, label="PHASE2:DEEPAGENT"):
+                    dq.extend(build_function_table_from_writes_queries(item_mt))
+                if dq:
+                    async for graph in run_graph_queries(client, dq, label="PHASE2:DEEPAGENT"):
                         yield emit_data(graph=graph)
             except Exception as e:
                 logger.warning("[FW:PHASE2] Neo4j DeepAgent 항목 반영 실패: %s", e)
 
-        if da_refer_all:
-            refer_to_edges.extend(da_refer_all)
-            logger.info("[FW:PHASE2] DeepAgent REFER_TO 추가 | count=%d", len(da_refer_all))
-        if da_mt_all:
-            function_table_edges.extend(da_mt_all)
-            logger.info("[FW:PHASE2] DeepAgent Function→Table 직접 추가 | count=%d", len(da_mt_all))
-        # --- FK 엣지 수집 (DeepAgent 미해결 추적 결과) ---
-        if da_fk_all:
-            fk_edges.extend(da_fk_all)
-            logger.info("[FW:PHASE2] DeepAgent FK 엣지 추가 | count=%d", len(da_fk_all))
+        elif kind == "da_state":
+            deep_state = item[1]
+            if deep_state.get("span_index"):
+                if st.span_index is None:
+                    st.span_index = deep_state["span_index"]
+                if st.chunk_index is None:
+                    st.chunk_index = deep_state["chunk_index"]
 
-        # DeepAgent refer_to에서 Method→ArtifactChunk→Table 체인으로 Function→Table 자동 유도
-        if da_refer_all and artifact_table_edges:
-            from analyzer.strategy.framework.linking.orchestrator import derive_function_table_edges
-            da_derived_mt = derive_function_table_edges(da_refer_all, reads_writes, artifact_table_edges=artifact_table_edges)
-            if da_derived_mt:
-                function_table_edges.extend(da_derived_mt)
-                logger.info("[FW:PHASE2] DeepAgent Function→Table 유도 | count=%d", len(da_derived_mt))
-                try:
-                    derived_queries = build_function_table_from_writes_queries(da_derived_mt)
-                    if derived_queries:
-                        async for graph in run_graph_queries(client, derived_queries, label="PHASE2:DEEPAGENT_DERIVED"):
-                            yield emit_data(graph=graph)
-                except Exception as e:
-                    logger.warning("[FW:PHASE2] Neo4j DeepAgent 유도 반영 실패: %s", e)
-        # deepagent 가 빌드한 index 를 pipeline state 에 보존
-        if deep_state.get("span_index"):
-            if st.span_index is None:
-                st.span_index = deep_state["span_index"]
-            if st.chunk_index is None:
-                st.chunk_index = deep_state["chunk_index"]
-        yield tracker.end_step(f"REFER_TO {len(da_refer_all)}건, Function→Table {len(da_mt_all)}건 추가")
+    await parallel_task  # 예외 전파
 
-    # -----------------------------------------------------------------------
-    # FK 엣지 Neo4j 반영 (sql_extractor + 엔티티 식별 + DeepAgent 통합)
-    # -----------------------------------------------------------------------
+    # --- 미해결 추적 후처리 ---
+    if da_refer_all:
+        refer_to_edges.extend(da_refer_all)
+    if da_mt_all:
+        function_table_edges.extend(da_mt_all)
+    if da_fk_all:
+        fk_edges.extend(da_fk_all)
+    if da_refer_all and artifact_table_edges:
+        from analyzer.strategy.framework.linking.orchestrator import derive_function_table_edges
+        da_derived_mt = derive_function_table_edges(da_refer_all, reads_writes, artifact_table_edges=artifact_table_edges)
+        if da_derived_mt:
+            function_table_edges.extend(da_derived_mt)
+            try:
+                dq2 = build_function_table_from_writes_queries(da_derived_mt)
+                if dq2:
+                    async for graph in run_graph_queries(client, dq2, label="PHASE2:DEEPAGENT_DERIVED"):
+                        yield emit_data(graph=graph)
+            except Exception as e:
+                logger.warning("[FW:PHASE2] Neo4j DeepAgent 유도 반영 실패: %s", e)
+
+    yield tracker.end_step(
+        f"엔티티 {len(entity_mt_edges if 'entity_mt_edges' in dir() else [])}건, "
+        f"변수참조 완료, "
+        f"미해결 REFER_TO {len(da_refer_all)}건"
+    )
+
+    # --- FK 엣지 Neo4j 반영 ---
     if fk_edges:
         try:
             fk_queries: list = []
@@ -771,37 +818,6 @@ async def run_phase_llm(
                     yield emit_data(graph=graph)
         except Exception as e:
             logger.warning("[FW:PHASE2] Neo4j FK 엣지 반영 실패: %s", e)
-
-    # -----------------------------------------------------------------------
-    # 변수 참조 탐색 (DeepAgent 병렬)
-    # -----------------------------------------------------------------------
-    try:
-        from analyzer.strategy.framework.linking.deep_agent import run_deep_agent_variable_references
-        var_api_key = settings.llm.api_key
-        _vf_list = st.function_facts_list or []
-        _vv_list = st.variable_facts_list or []
-        if var_api_key and _vf_list and _vv_list:
-            import asyncio
-            var_refs = await asyncio.to_thread(
-                run_deep_agent_variable_references,
-                _vf_list, _vv_list, var_api_key,
-            )
-            if var_refs:
-                var_queries = [{
-                    "query": (
-                        "MATCH (f:FUNCTION {function_id: $fid}) "
-                        "MATCH (v {variable_id: $vid}) "
-                        "MERGE (f)-[:REFERENCES]->(v) "
-                        "RETURN f, v"
-                    ),
-                    "params": {"fid": fid, "vid": vid},
-                } for fid, vid in var_refs]
-                if var_queries:
-                    async for graph in run_graph_queries(client, var_queries, label="PHASE2:VAR_REFS"):
-                        yield emit_data(graph=graph)
-                logger.info("[FW:PHASE2] 변수 참조 관계 생성 | refs=%d", len(var_refs))
-    except Exception as e:
-        logger.warning("[FW:PHASE2] 변수 참조 탐색 실패: %s", e)
 
     stats.total_nodes += len(refer_to_edges) + len(all_calls)
     st.refer_to_edges = refer_to_edges
@@ -899,6 +915,10 @@ async def run_phase_post(
     yield tracker.begin_step(0, total_summary_batches)
 
     summary_by_function: dict = {}
+    # 테이블 정보 축적 map (function_summary에서 수집, module_summary 때 종합)
+    # {table_name: {"descriptions": [...], "access": set(), "columns": {col_name: {"descriptions": [...]}}, "source_functions": [...]}}
+    table_map: dict[str, dict] = {}
+
     for summary_batch in run_step6(
         function_facts_list,
         refer_to_edges,
@@ -944,50 +964,78 @@ async def run_phase_post(
         except Exception as e:
             logger.warning("[FW:PHASE3] UML dependency 쿼리 빌드 실패: %s", e)
 
-        # 3) tableInsights: Table/Column description 점진적 보강
+        # 3) tableInsights → table_map 축적 + 즉시 Neo4j 반영 (MERGE로 업데이트)
         try:
-            for _mid, analysis in summary_batch.items():
+            is_estimated = not bool(reads_writes)
+            for _fid, analysis in summary_batch.items():
                 for insight in (analysis.get("tableInsights") or []):
                     tbl_name = (insight.get("tableName") or "").strip()
                     tbl_desc = (insight.get("description") or "").strip()
-                    if tbl_name and tbl_desc:
+                    tbl_access = (insight.get("access") or "").strip().upper()
+                    if not tbl_name:
+                        continue
+                    # table_map 축적 (description 종합용)
+                    if tbl_name not in table_map:
+                        table_map[tbl_name] = {
+                            "descriptions": [],
+                            "access": set(),
+                            "columns": {},
+                            "source_functions": [],
+                        }
+                    if tbl_desc:
+                        table_map[tbl_name]["descriptions"].append(tbl_desc)
+                    if tbl_access in ("READS", "WRITES"):
+                        table_map[tbl_name]["access"].add(tbl_access)
+                    if _fid:
+                        table_map[tbl_name]["source_functions"].append(_fid)
+
+                    # 즉시 Table 노드 MERGE (이름만, description은 후처리에서 종합)
+                    queries.append({
+                        "query": (
+                            "MERGE (t:Table {name: $name})\n"
+                            "ON CREATE SET t.created_at = timestamp(), t.is_estimated = $is_estimated\n"
+                            "RETURN t"
+                        ),
+                        "params": {"name": tbl_name, "is_estimated": is_estimated},
+                    })
+
+                    # 즉시 Function→Table READS/WRITES 관계
+                    if _fid and tbl_access in ("READS", "WRITES"):
                         queries.append({
                             "query": (
-                                "MATCH (t:Table)\n"
-                                "WHERE t.name = $name OR t.fqn ENDS WITH $name\n"
-                                "SET t.description = CASE\n"
-                                "      WHEN t.description IS NULL OR trim(toString(t.description)) = ''\n"
-                                "      THEN $desc\n"
-                                "      ELSE t.description + ' | ' + $desc\n"
-                                "    END,\n"
-                                "    t.description_source = COALESCE(t.description_source, '') + CASE WHEN t.description_source IS NULL OR t.description_source = '' THEN 'code' ELSE '' END,\n"
-                                "    t.updated_at = timestamp()\n"
-                                "RETURN t"
+                                f"MATCH (f:FUNCTION {{function_id: $fid}})\n"
+                                f"MATCH (t:Table {{name: $tbl_name}})\n"
+                                f"MERGE (f)-[:{tbl_access}]->(t)\n"
+                                f"RETURN f, t"
                             ),
-                            "params": {"name": tbl_name, "desc": tbl_desc},
+                            "params": {"fid": _fid, "tbl_name": tbl_name},
                         })
+
+                    # 즉시 Column 노드 MERGE (이름 + 타입, description은 후처리)
                     for col in (insight.get("columns") or []):
                         col_name = (col.get("name") or "").strip()
                         col_desc = (col.get("description") or "").strip()
-                        if tbl_name and col_name and col_desc:
+                        col_type = (col.get("type") or col.get("dtype") or "").strip()
+                        if col_name:
+                            if col_name not in table_map[tbl_name]["columns"]:
+                                table_map[tbl_name]["columns"][col_name] = {"descriptions": []}
+                            if col_desc:
+                                table_map[tbl_name]["columns"][col_name]["descriptions"].append(col_desc)
                             queries.append({
                                 "query": (
-                                    "MATCH (t:Table)-[:HAS_COLUMN]->(c:Column)\n"
-                                    "WHERE (t.name = $tbl_name OR t.fqn ENDS WITH $tbl_name)\n"
-                                    "  AND toUpper(c.name) = toUpper($col_name)\n"
-                                    "SET c.description = CASE\n"
-                                    "      WHEN c.description IS NULL OR trim(toString(c.description)) = ''\n"
-                                    "      THEN $col_desc\n"
-                                    "      ELSE c.description + ' | ' + $col_desc\n"
-                                    "    END,\n"
-                                    "    c.description_source = COALESCE(c.description_source, '') + CASE WHEN c.description_source IS NULL OR c.description_source = '' THEN 'code' ELSE '' END,\n"
-                                    "    c.updated_at = timestamp()\n"
+                                    "MATCH (t:Table {name: $tbl_name})\n"
+                                    "MERGE (c:Column {name: $col_name})<-[:HAS_COLUMN]-(t)\n"
+                                    "ON CREATE SET c.created_at = timestamp(), c.dtype = $dtype\n"
+                                    "ON MATCH SET c.dtype = CASE\n"
+                                    "    WHEN c.dtype IS NULL OR c.dtype = '' THEN $dtype\n"
+                                    "    ELSE c.dtype\n"
+                                    "  END\n"
                                     "RETURN c"
                                 ),
-                                "params": {"tbl_name": tbl_name, "col_name": col_name, "col_desc": col_desc},
+                                "params": {"tbl_name": tbl_name, "col_name": col_name, "dtype": col_type},
                             })
         except Exception as e:
-            logger.warning("[FW:PHASE3] tableInsights 쿼리 빌드 실패: %s", e)
+            logger.warning("[FW:PHASE3] tableInsights 처리 실패: %s", e)
 
         # 5) Execute all accumulated queries against Neo4j
         try:
@@ -1042,6 +1090,10 @@ async def run_phase_post(
             logger.warning("[FW:PHASE3] Neo4j module summary 반영 실패: %s", e)
 
     yield tracker.end_step(f"클래스 {len(summary_by_module)}개 요약 완료")
+
+    if table_map:
+        logger.info("[FW:PHASE3] tableInsights 즉시 반영 완료 | tables=%d columns=%d",
+                    len(table_map), sum(len(t.get("columns", {})) for t in table_map.values()))
 
     # --- Actor 동의어 통합 + Actor 노드 생성 ---
     try:

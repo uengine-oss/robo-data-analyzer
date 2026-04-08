@@ -111,6 +111,7 @@ prompt: |
   2) 엔티티 확정 → 해당 테이블에 접근하는 함수를 찾아 등록
      a) 해당 클래스명으로 bundle_search(kind="symbol") → 사용처 탐색
      b) SQL 테이블명(복수형 등)으로 bundle_search(kind="text") → 추가 탐색
+     c) mpfmdbio 첫 번째 인자에 포함된 테이블명(예: "zpay_ap_req_spc")으로 bundle_search(kind="text") → DBIO 탐색
      c) 각 함수의 코드를 bundle_get_chunk로 **반드시 직접 읽고** 확인
 
      ★★★ READS/WRITES 등록의 절대 규칙 (가장 중요) ★★★
@@ -137,6 +138,16 @@ prompt: |
        예: orderRepository.save(order)                → Order WRITES
        예: session.query(User).filter_by(name=n)      → User READS
        예: em.persist(product)                         → Product WRITES
+
+     [유형 4] DBIO 프레임워크 호출 — mpfmdbio() 함수로 DB 접근
+       첫 번째 인자 문자열에서 테이블명과 연산을 판별:
+       예: mpfmdbio("zpay_ap_req_spc_s0004", &in, &out)  → zpay_ap_req_spc READS
+       예: mpfmdbio("zpay_ap_req_spc_i0010", &in, NULL)  → zpay_ap_req_spc WRITES
+       예: mpfmdbio("zpay_ap_req_spc_u0010", &in, NULL)  → zpay_ap_req_spc WRITES
+       예: mpfmdbio("zpay_ap_req_spc_d0001", &in, NULL)  → zpay_ap_req_spc WRITES
+       접미사: _s=SELECT(READS), _i=INSERT(WRITES), _u=UPDATE(WRITES), _d=DELETE(WRITES)
+       테이블명 = 첫 번째 인자에서 마지막 _[siud]NNNN 부분을 제거
+       ★ mpfmdbio 호출이 코드에 있으면 READS/WRITES 등록 근거 충분
 
      ⚠️ 조건문/분기 안에 있어도 코드 텍스트에 존재하면 등록 가능합니다.
        예: if (is_prepaid) { db_payment_insert(&pay); } → Payment WRITES ✅
@@ -165,7 +176,8 @@ prompt: |
      → evidence에 그 구체적 코드를 반드시 기재하세요
 
      d) 등록 시:
-        - table_name: 엔티티 클래스명 그대로 사용 (예: Order, Product). SQL 테이블명(orders, products) 사용 금지
+        - table_name: 엔티티 클래스명 그대로 사용 (예: Order, Product). SQL 테이블명(orders, products) 사용 금지.
+          DBIO의 경우 mpfmdbio 첫 번째 인자에서 추출한 테이블명(예: zpay_ap_req_spc) 그대로 사용.
         - source_function_id: 해당 함수의 FQN
         - evidence: 코드에서 확인한 **구체적인 호출문** — 함수명 또는 SQL문을 반드시 포함
           ✅ 좋은 예:

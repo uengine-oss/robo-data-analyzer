@@ -18,6 +18,7 @@ from analyzer.strategy.framework.common.models import (
     ReferToEdge,
     ReadsWritesEdge,
 )
+from util.encoding_utils import read_text_with_fallback_sync
 from util.text_utils import (
     add_line_numbers,
     calculate_code_token as estimate_tokens,
@@ -770,7 +771,7 @@ def _get_variable_code_from_ref(
     if not path.is_file():
         return ""
     try:
-        raw = path.read_text(encoding="utf-8", errors="replace")
+        raw = read_text_with_fallback_sync(path)
         text_with_lines = add_line_numbers(raw)
         return slice_by_line_range(text_with_lines, start_line, end_line)
     except Exception:
@@ -1027,7 +1028,7 @@ def run_module_summary(
     _CLASS_BATCH_SIZE = 5
     total_yielded = 0
     batch: Dict[str, Dict[str, Any]] = {}
-    workers = min(settings.concurrency.max_concurrency, 4)
+    workers = settings.concurrency.max_concurrency
     if workers > 1:
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {

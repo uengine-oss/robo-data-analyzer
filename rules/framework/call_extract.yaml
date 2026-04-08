@@ -40,6 +40,12 @@ prompt: |
   - find_service(name) → obj_name="", function_name="find_service"
   - svc->handler(req, reply) → obj_name="", function_name="handler"
 
+  PFM_TRY() 매크로 내부의 함수 호출을 추출하세요:
+  - PFM_TRY( a000_input_validation(itf) ) → obj_name="", function_name="a000_input_validation"
+  - PFM_TRY( c100_select_zpay(itf) ) → obj_name="", function_name="c100_select_zpay"
+  - PFM_TRYNJ( b100_check_data(itf, 0) ) → obj_name="", function_name="b100_check_data"
+  ★ PFM_TRY/PFM_TRYNJ는 에러 처리 매크로입니다. 내부의 실제 함수만 추출하세요.
+
   제외 대상 (이 경우 obj_name, function_name을 빈 문자열 "" 로 출력):
   - C 표준 라이브러리: printf, fprintf, sprintf, snprintf, scanf, sscanf
   - 메모리: malloc, calloc, realloc, free, memcpy, memmove, memset, memcmp
@@ -50,6 +56,8 @@ prompt: |
   - 수학: sin, cos, tan, sqrt, pow, exp, log, ceil, floor, fabs
   - 기타: exit, abort, assert, qsort, bsearch, rand, srand
   - 로깅 매크로: LOG_I, LOG_D, LOG_W, LOG_E, LOG_F (대문자 LOG_ 접두사)
+  - ProFrame 매크로: PFM_TRY, PFM_TRYNJ, PFM_CATCH, PFM_ERRC, PFM_MSGE, PFM_DBG, PRINT_*
+  - ProFrame 유틸: mpfm_trim, mpfm_isnull, mpfm_isspnull, mpfm_substr
   - Windows API: EnterCriticalSection, LeaveCriticalSection, InitializeCriticalSection, DeleteCriticalSection, CreateThread, WaitForSingleObject, CloseHandle, SetEvent, QueryPerformanceCounter, QueryPerformanceFrequency, Sleep
   - POSIX: pthread_mutex_lock, pthread_mutex_unlock, pthread_create, pthread_join
 

@@ -1,147 +1,30 @@
 name: "variable_reference"
-description: "함수 코드에서 실제 참조하는 변수/필드/상수를 식별"
-version: "2.1"
+description: "변수/필드/상수 참조 추적 — 변수명으로 코드를 검색하여 사용하는 함수와 연결"
+version: "3.1"
 
 input_schema:
-  required:
-    - code
-    - function_name
-    - variables
+  required: []
   optional: []
 
 prompt: |
-  [ROLE]
-  당신은 소스코드에서 변수/필드/상수 참조를 식별하는 전문가입니다.
-  함수 코드를 한 줄씩 분석하여, 변수 목록에 있는 항목이 실제로 사용되는지 판단합니다.
+  당신은 소스코드에서 변수/필드/상수의 사용처를 찾아 함수와 연결하는 에이전트입니다.
 
-  [TASK]
-  아래 함수 코드에서 실제로 참조(읽기 또는 쓰기)하는 변수/필드/상수를 식별하세요.
-  변수 목록에 있는 것만 선택하세요. 코드에 등장하지 않는 변수는 절대 선택하지 마세요.
+  [도구]
+  - bundle_search_tool(query, kind="text"): 코드에서 문자열 검색. 결과에 chunk_id(=함수 식별자) 포함.
+  - graph_create_variable_ref_tool(function_id, variable_id, evidence): REFERENCES 관계 등록.
 
-  [함수]
-  이름: {{ function_name }}
-  코드:
-  {{ code }}
+  [절차]
+  주어진 변수 목록의 각 변수에 대해:
 
-  [변수 목록]
-  {{ variables }}
+  1) bundle_search(변수명, kind="text")로 검색
+  2) 검색 결과의 각 chunk_id가 함수를 가리킴 → 바로 graph_create_variable_ref_tool 호출
+     - function_id = chunk_id (검색 결과에서 확인)
+     - variable_id = 변수 목록에서 전달된 variable_id
+  3) 다음 변수로 이동
 
-  ────────────────────────────────────────
-  [참조 판단 기준]
-  ────────────────────────────────────────
-  아래 패턴 중 하나라도 코드에서 발견되면 해당 variable_id를 "참조"로 선택하십시오.
-
-  패턴 A) self.필드명 / this.필드명 / 구조체->필드명 — 인스턴스 필드 직접 접근
-     - Python: self.id, self.title, self._db, self._config 등
-     - Java/C#: this.id, this.name, 또는 필드 직접 접근
-     - C: struct_ptr->field, obj.field 등
-     - 코드에 self.XXX / this.XXX / ptr->XXX가 있고, 변수 목록에 같은 클래스/구조체의 필드가 있으면 선택
-
-  패턴 B) 클래스명.멤버 — 클래스 레벨 접근 (Enum 값, 상수 포함)
-     - BookStatus.AVAILABLE, LoanStatus.ACTIVE, MemberGrade.VIP 등
-     - Config.db_path, Database._CREATE_TABLES 등
-     - 코드에 ClassName.MEMBER가 있고, 변수 목록에 해당 항목이 있으면 선택
-
-  패턴 C) 인스턴스.필드명 — 지역 변수를 통한 간접 접근
-     - book.id, loan.status, loan.fine, loan.book_id, member.name 등
-     - 지역 변수가 엔티티/모델 인스턴스이고, 그 필드에 접근하는 경우
-     - 함수 내에서 생성되거나 반환받은 객체의 필드 접근도 포함
-       예: book = Book.from_row(row) → 이후 book.title 접근 시 Book.title 참조
-       예: loan = Loan.from_row(row) → 이후 loan.fine 접근 시 Loan.fine 참조
-     - 단, 딕셔너리 접근(book["id"], row["status"])은 변수 참조가 아니므로 제외
-
-  [참조가 아닌 것 — 선택하지 마세요]
-  - import문에 등장하는 이름
-  - 타입 힌트에만 등장하는 이름 (예: def func(x: Book))
-  - SQL 문자열 안의 컬럼명 (예: "SELECT id, title FROM books"의 id, title)
-  - 함수 파라미터명이 변수 목록의 name과 우연히 같은 경우
-
-  ────────────────────────────────────────
-  [분석 절차]
-  ────────────────────────────────────────
-  1) 코드의 각 줄을 읽으며 위 패턴 A/B/C에 해당하는 접근을 찾으십시오
-  2) 발견된 각 접근에 대해 변수 목록에서 variable_id를 매칭하십시오
-     - 변수 목록 형식: "variable_id | name | code_snippet"
-     - name 필드가 코드에서 발견한 필드명과 일치하면 매칭
-     - variable_id의 모듈 경로(src.models.Book 등)가 접근 대상 클래스와 일치하는지 확인
-  3) 매칭된 variable_id를 모두 수집하십시오
-  4) 하나라도 놓치지 마십시오 — 코드에 실제로 등장하는 모든 변수/필드/상수를 빠짐없이 포함
-
-  ────────────────────────────────────────
-  [OUTPUT FORMAT]
-  ────────────────────────────────────────
-  실제 참조하는 변수의 variable_id만 배열로 반환하세요:
-  {
-    "referenced": ["variable_id_1", "variable_id_2"]
-  }
-
-  주의:
-  - JSON만 출력, 코드펜스/백틱/주석 금지
-  - 빈 배열보다는 놓치는 것이 더 나쁩니다. 의심되면 포함하세요.
-
-  ────────────────────────────────────────
-  [예시]
-  ────────────────────────────────────────
-
-  [예시 1] 서비스 메서드 — self._db 참조
-  함수: BookService.register
-  코드: self._db.execute("INSERT INTO books ..."); self._db.commit()
-  변수 목록:
-  src.services.BookService._db | _db | self._db = db
-
-  출력:
-  {"referenced": ["src.services.BookService._db"]}
-  → self._db가 코드에서 사용되므로 선택
-
-  [예시 2] 모델 메서드 — self.필드 다수 참조
-  함수: Book.display
-  코드: return f"[{self.id}] {self.title} / {self.author} ({self.publisher}, {self.year}) [{self.category}] - {status_kr.get(self.status, '알수없음')}"
-  변수 목록:
-  src.models.Book.id | id | id: int
-  src.models.Book.title | title | title: str
-  src.models.Book.author | author | author: str
-  src.models.Book.publisher | publisher | publisher: str = ""
-  src.models.Book.year | year | year: int = 0
-  src.models.Book.category | category | category: str = "일반"
-  src.models.Book.status | status | status: BookStatus = BookStatus.AVAILABLE
-
-  출력:
-  {"referenced": ["src.models.Book.id", "src.models.Book.title", "src.models.Book.author", "src.models.Book.publisher", "src.models.Book.year", "src.models.Book.category", "src.models.Book.status"]}
-  → self.id ~ self.status가 모두 코드에서 사용되므로 전부 선택
-
-  [예시 3] Enum 값 참조 — 클래스명.멤버
-  함수: LoanService.borrow
-  코드: if book["status"] != BookStatus.AVAILABLE.value: ...
-  변수 목록:
-  src.models.BookStatus.AVAILABLE | AVAILABLE | AVAILABLE = "AVAILABLE"
-  src.models.BookStatus.LOANED | LOANED | LOANED = "LOANED"
-
-  출력:
-  {"referenced": ["src.models.BookStatus.AVAILABLE"]}
-  → BookStatus.AVAILABLE만 코드에서 사용. LOANED는 이 코드에 없으므로 미포함
-
-  [예시 4] 인스턴스 간접 접근 — 지역 변수를 통한 필드 접근
-  함수: LoanService.return_book
-  코드:
-    loan = Loan.from_row(row)
-    if loan.status != LoanStatus.ACTIVE: ...
-    due = date.fromisoformat(loan.due_date)
-    fine = overdue_days * self._config.overdue_fine_per_day
-    self._db.execute("UPDATE loans SET status = ?, return_date = ?, fine = ? WHERE id = ?",
-        (LoanStatus.RETURNED.value, today.isoformat(), fine, loan_id))
-    self._db.execute("UPDATE books SET status = ? WHERE id = ?",
-        (BookStatus.AVAILABLE.value, loan.book_id))
-  변수 목록:
-  src.models.Loan.status | status | status: LoanStatus
-  src.models.Loan.due_date | due_date | due_date: str
-  src.models.Loan.book_id | book_id | book_id: int
-  src.models.LoanStatus.ACTIVE | ACTIVE | ACTIVE = "ACTIVE"
-  src.models.LoanStatus.RETURNED | RETURNED | RETURNED = "RETURNED"
-  src.models.BookStatus.AVAILABLE | AVAILABLE | AVAILABLE = "AVAILABLE"
-  src.services.LoanService._config | _config | self._config = config
-  src.services.LoanService._db | _db | self._db = db
-  src.core.Config.overdue_fine_per_day | overdue_fine_per_day | overdue_fine_per_day: int = 500
-
-  출력:
-  {"referenced": ["src.models.Loan.status", "src.models.Loan.due_date", "src.models.Loan.book_id", "src.models.LoanStatus.ACTIVE", "src.models.LoanStatus.RETURNED", "src.models.BookStatus.AVAILABLE", "src.services.LoanService._config", "src.services.LoanService._db", "src.core.Config.overdue_fine_per_day"]}
-  → loan.status(패턴C), loan.due_date(패턴C), loan.book_id(패턴C), LoanStatus.ACTIVE(패턴B), LoanStatus.RETURNED(패턴B), BookStatus.AVAILABLE(패턴B), self._config(패턴A), self._db(패턴A), self._config.overdue_fine_per_day(패턴A+B 체인)
+  ★ 검색 결과의 chunk_id가 함수를 가리키면 바로 graph_create_variable_ref_tool을 호출하세요.
+    bundle_get_chunk로 코드를 읽어서 확인하는 것은 불필요합니다.
+    검색 결과에 해당 변수명이 포함된 chunk = 해당 함수가 변수를 사용한다는 증거입니다.
+  ★ 검색 결과가 0건이면 그냥 넘어가세요. 재시도하지 마세요.
+  ★ 빠르게 처리하세요. 변수 하나당 bundle_search 1회면 충분합니다.
+  ★ 모든 변수를 처리했으면 즉시 종료하세요.

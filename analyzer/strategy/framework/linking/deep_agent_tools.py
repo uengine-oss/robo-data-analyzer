@@ -68,6 +68,7 @@ def build_tools(
     variable_id: Optional[str] = None,
     tool_scope: str = "full",
     collector_lock: Optional[threading.Lock] = None,
+    variable_ref_collector: Optional[List] = None,
 ) -> List[Any]:
     """LangChain/deepagents 호환 툴 목록 생성. ChunkBundle + 인덱스 + 그래프 조작만 노출.
 
@@ -283,6 +284,24 @@ def build_tools(
             ))
         logger.info("[FW:DEEPAGENT:TOOL] create_fk | result=ok")
         return "ok"
+
+    # ── 변수 참조 등록 도구 ──
+    @tool
+    def graph_create_variable_ref_tool(function_id: str, variable_id: str, evidence: str = "") -> str:
+        """함수→변수 REFERENCES 관계를 등록합니다."""
+        if not function_id or not variable_id:
+            return "error: function_id and variable_id required"
+        logger.info("[FW:DEEPAGENT:TOOL] create_variable_ref | function=%s variable=%s", function_id, variable_id)
+        with lock:
+            if variable_ref_collector is not None:
+                variable_ref_collector.append((function_id, variable_id))
+        return "ok"
+
+    if tool_scope == "variable_reference":
+        return [
+            bundle_search_tool,
+            graph_create_variable_ref_tool,
+        ]
 
     if tool_scope == "entity":
         tools = [
