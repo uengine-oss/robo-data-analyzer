@@ -200,10 +200,14 @@ prompt: |
   - 이미 발견한 함수 코드에서 JOIN ... ON a.col = b.col 패턴이 보이면 FK 후보
     예: "JOIN orders o ON c.id = o.customer_id" → Order.customer_id → Customer.id
 
-  [소스 ③] 필드명 관례
-  - 엔티티 클래스의 필드 중 xxx_id 패턴이 있으면 FK 후보
-    예: order.product_id → Product, employee.dept_id → Department
-  - 해당 xxx에 대응하는 엔티티가 후보에 포함되어 있으면 등록
+  [소스 ③] 필드명 관례 (모든 엔티티 필수 점검)
+  - ★ 2단계에서 식별된 **모든 엔티티**에 대해, 해당 구조체/클래스의 필드 목록을 확인하세요
+  - bundle_get_chunk로 각 엔티티의 정의를 읽고, xxx_id 패턴 필드를 전부 찾으세요
+  - 각 xxx_id에 대응하는 엔티티가 후보에 있으면 FK 등록
+    예: Invoice 구조체에 customer_id 필드 → Customer가 후보에 있음 → FK 등록
+    예: OrderItem에 order_id, product_id 둘 다 있음 → 각각 FK 등록
+  - ⚠️ 소스①②에서 이미 등록한 FK와 중복되지 않도록 확인
+  - ⚠️ 하나의 엔티티에 여러 xxx_id가 있을 수 있음 — 전부 개별 확인
 
   [FK 등록 규칙]
   - from_table과 to_table 모두 반드시 엔티티(테이블)일 것. 서비스/Enum/Config는 FK 대상 불가.
