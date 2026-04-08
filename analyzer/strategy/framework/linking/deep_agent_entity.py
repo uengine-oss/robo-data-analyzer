@@ -209,13 +209,17 @@ def run_deep_agent_entity_identification(
                 logger.info("[FW:DEEPAGENT:ENTITY] 배치 %d 완료 | 엔티티 식별 안 됨 (후보: %s)", batch_idx, batch_names)
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
+        BATCH_TIMEOUT = 300  # 배치당 최대 5분
         with ThreadPoolExecutor(max_workers=min(len(batches), max_entity_workers)) as executor:
             futures = {executor.submit(_process_batch, idx, b): idx for idx, b in enumerate(batches)}
             for future in as_completed(futures):
+                batch_idx = futures[future]
                 try:
-                    future.result()
+                    future.result(timeout=BATCH_TIMEOUT)
+                except TimeoutError:
+                    logger.warning("[FW:DEEPAGENT:ENTITY] 배치 %d 타임아웃 (%ds) — 스킵", batch_idx, BATCH_TIMEOUT)
                 except Exception as ex:
-                    logger.warning("[FW:DEEPAGENT:ENTITY] 배치 스레드 예외: %s", ex)
+                    logger.warning("[FW:DEEPAGENT:ENTITY] 배치 %d 스레드 예외: %s", batch_idx, ex)
 
     identified_tables = {e.table_name for e in table_collector if e.table_name}
     if identified_tables:

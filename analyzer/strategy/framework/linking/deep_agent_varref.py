@@ -103,7 +103,9 @@ def run_deep_agent_variable_references(
         total, len(batches), batch_size, max_workers,
     )
 
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
+
+    BATCH_TIMEOUT = 300  # 배치당 최대 5분
 
     def _process_batch(batch_idx: int, batch: List[Dict]) -> int:
         batch_names = [v["name"] for v in batch[:5]]
@@ -128,10 +130,13 @@ def run_deep_agent_variable_references(
             for idx, batch in enumerate(batches)
         }
         for future in as_completed(futures):
+            batch_idx = futures[future]
             try:
-                future.result()
+                future.result(timeout=BATCH_TIMEOUT)
+            except TimeoutError:
+                logger.warning("[DEEPAGENT:VAR] 배치 %d 타임아웃 (%ds) — 스킵", batch_idx, BATCH_TIMEOUT)
             except Exception as e:
-                logger.warning("[DEEPAGENT:VAR] 배치 처리 실패: %s", e)
+                logger.warning("[DEEPAGENT:VAR] 배치 %d 처리 실패: %s", batch_idx, e)
 
     logger.info("[DEEPAGENT:VAR] 완료 | refs=%d", len(ref_collector))
     return ref_collector
