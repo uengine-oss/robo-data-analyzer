@@ -43,12 +43,18 @@ class Neo4jClient:
 
     __slots__ = ("_driver", "_lock", "_config", "_database")
 
-    # 유니크 제약조건 쿼리
+    # 제약조건 + 인덱스 (MERGE 성능의 핵심)
     _CONSTRAINT_QUERIES = [
-        "CREATE CONSTRAINT table_unique IF NOT EXISTS FOR (__cy_t__:Table) "
-        "REQUIRE (__cy_t__.db, __cy_t__.schema, __cy_t__.name) IS UNIQUE",
-        "CREATE CONSTRAINT column_unique IF NOT EXISTS FOR (__cy_c__:Column) "
-        "REQUIRE (__cy_c__.fqn) IS UNIQUE",
+        # 유니크 제약조건 (자동으로 인덱스도 생성됨)
+        "CREATE CONSTRAINT table_unique IF NOT EXISTS FOR (n:Table) REQUIRE (n.db, n.schema, n.name) IS UNIQUE",
+        "CREATE CONSTRAINT column_unique IF NOT EXISTS FOR (n:Column) REQUIRE (n.fqn) IS UNIQUE",
+        # 인덱스 — MATCH/MERGE 시 전체 스캔 방지
+        "CREATE INDEX func_id IF NOT EXISTS FOR (n:FUNCTION) ON (n.function_id)",
+        "CREATE INDEX var_id IF NOT EXISTS FOR (n:VARIABLE) ON (n.variable_id)",
+        "CREATE INDEX const_id IF NOT EXISTS FOR (n:CONSTANT) ON (n.variable_id)",
+        "CREATE INDEX module_fqn IF NOT EXISTS FOR (n:MODULE) ON (n.fqn)",
+        "CREATE INDEX package_fqn IF NOT EXISTS FOR (n:PACKAGE) ON (n.fqn)",
+        "CREATE INDEX table_name IF NOT EXISTS FOR (n:Table) ON (n.name)",
     ]
 
     def __init__(self, database: Optional[str] = None):

@@ -231,6 +231,11 @@ def _process_table_insights(
 
     is_estimated 플래그 없음. 컨텍스트에 없는 테이블은 추가하지 않음.
     """
+    # 데이터 수집 (table_map + UNWIND용 row 리스트)
+    table_rows = []  # MERGE Table용
+    access_rows = []  # Function→Table 관계용
+    column_rows = []  # Column MERGE용
+
     for _fid, analysis in analysis_batch.items():
         for insight in (analysis.get("tableInsights") or []):
             tbl_name = (insight.get("tableName") or "").strip()
@@ -241,12 +246,7 @@ def _process_table_insights(
 
             # table_map 축적 (description 종합용)
             if tbl_name not in table_map:
-                table_map[tbl_name] = {
-                    "descriptions": [],
-                    "access": set(),
-                    "columns": {},
-                    "source_functions": [],
-                }
+                table_map[tbl_name] = {"descriptions": [], "access": set(), "columns": {}, "source_functions": []}
             if tbl_desc:
                 table_map[tbl_name]["descriptions"].append(tbl_desc)
             if tbl_access in ("READS", "WRITES"):
@@ -254,29 +254,11 @@ def _process_table_insights(
             if _fid:
                 table_map[tbl_name]["source_functions"].append(_fid)
 
-            # Table 노드 MERGE (is_estimated 없음)
-            queries.append({
-                "query": (
-                    "MERGE (t:Table {name: $name})\n"
-                    "ON CREATE SET t.created_at = timestamp()\n"
-                    "RETURN t"
-                ),
-                "params": {"name": tbl_name},
-            })
+            table_rows.append({"name": tbl_name})
 
-            # Function→Table 관계
             if _fid and tbl_access in ("READS", "WRITES"):
-                queries.append({
-                    "query": (
-                        f"MATCH (f:FUNCTION {{function_id: $fid}})\n"
-                        f"MATCH (t:Table {{name: $tbl_name}})\n"
-                        f"MERGE (f)-[:{tbl_access}]->(t)\n"
-                        f"RETURN f, t"
-                    ),
-                    "params": {"fid": _fid, "tbl_name": tbl_name},
-                })
+                access_rows.append({"fid": _fid, "tbl_name": tbl_name, "access": tbl_access})
 
-            # Column 노드 (COALESCE로 기존 값 보존)
             for col in (insight.get("columns") or []):
                 col_name = (col.get("name") or "").strip()
                 col_desc = (col.get("description") or "").strip()
@@ -286,19 +268,39 @@ def _process_table_insights(
                         table_map[tbl_name]["columns"][col_name] = {"descriptions": []}
                     if col_desc:
                         table_map[tbl_name]["columns"][col_name]["descriptions"].append(col_desc)
-                    queries.append({
-                        "query": (
-                            "MATCH (t:Table {name: $tbl_name})\n"
-                            "MERGE (c:Column {name: $col_name})<-[:HAS_COLUMN]-(t)\n"
-                            "ON CREATE SET c.created_at = timestamp(), c.dtype = $dtype\n"
-                            "ON MATCH SET c.dtype = CASE\n"
-                            "    WHEN c.dtype IS NULL OR c.dtype = '' THEN $dtype\n"
-                            "    ELSE c.dtype\n"
-                            "  END\n"
-                            "RETURN c"
-                        ),
-                        "params": {"tbl_name": tbl_name, "col_name": col_name, "dtype": col_type},
-                    })
+                    column_rows.append({"tbl_name": tbl_name, "col_name": col_name, "dtype": col_type})
+
+    # UNWIND 배치 쿼리 (개별 쿼리 대신 최소 쿼리로)
+    if table_rows:
+        queries.append({
+            "query": "UNWIND $rows AS row MERGE (t:Table {name: row.name}) ON CREATE SET t.created_at = timestamp()",
+            "params": {"rows": table_rows},
+        })
+    if access_rows:
+        # READS/WRITES를 각각 분리 (MERGE 관계 타입이 동적이므로)
+        for acc_type in ("READS", "WRITES"):
+            typed_rows = [r for r in access_rows if r["access"] == acc_type]
+            if typed_rows:
+                queries.append({
+                    "query": (
+                        f"UNWIND $rows AS row "
+                        f"MATCH (f:FUNCTION {{function_id: row.fid}}) "
+                        f"MATCH (t:Table {{name: row.tbl_name}}) "
+                        f"MERGE (f)-[:{acc_type}]->(t)"
+                    ),
+                    "params": {"rows": typed_rows},
+                })
+    if column_rows:
+        queries.append({
+            "query": (
+                "UNWIND $rows AS row "
+                "MATCH (t:Table {name: row.tbl_name}) "
+                "MERGE (c:Column {name: row.col_name})<-[:HAS_COLUMN]-(t) "
+                "ON CREATE SET c.created_at = timestamp(), c.dtype = row.dtype "
+                "ON MATCH SET c.dtype = CASE WHEN c.dtype IS NULL OR c.dtype = '' THEN row.dtype ELSE c.dtype END"
+            ),
+            "params": {"rows": column_rows},
+        })
 
 
 # ═══════════════════════════════════════════════════════════════════════

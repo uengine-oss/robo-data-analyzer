@@ -490,11 +490,16 @@ async def _handle_auto_entity_result(ctx, item, ddl_meta):
 async def _handle_varref_result(ctx, item):
     refs = item[1]
     try:
-        vq = [{
-            "query": "MATCH (f:FUNCTION {function_id: $fid}) MATCH (v {variable_id: $vid}) MERGE (f)-[:REFERENCES]->(v) RETURN f, v",
-            "params": {"fid": fid, "vid": vid},
-        } for fid, vid in refs]
-        if vq:
+        if refs:
+            vq = [{
+                "query": (
+                    "UNWIND $rows AS row "
+                    "MATCH (f:FUNCTION {function_id: row.fid}) "
+                    "MATCH (v:VARIABLE {variable_id: row.vid}) "
+                    "MERGE (f)-[:REFERENCES]->(v)"
+                ),
+                "params": {"rows": [{"fid": fid, "vid": vid} for fid, vid in refs]},
+            }]
             async for chunk in write_to_graph(ctx.client, vq, "PHASE2:VAR_REFS"):
                 yield chunk
         logger.info("[PHASE:2:DEEP_AGENT:VARREF] 변수 참조 생성 | refs=%d", len(refs))
