@@ -94,11 +94,39 @@ def load_call_records_from_chunk_bundles(
                 })
         except Exception as e:
             logger.debug("ChunkBundle 로드 스킵 %s: %s", path, e)
+    # stdlib/인프라 호출 필터 + 중복 제거 (LLM 토큰 절감)
+    _INFRA_PREFIXES = ("memset", "memcpy", "strncpy", "strcpy", "strlen", "strcmp", "strncmp",
+                       "sizeof", "sprintf", "snprintf", "printf", "fprintf",
+                       "malloc", "free", "calloc", "realloc",
+                       "PFM_DBG", "PFM_DSP", "PFM_ERRC", "PFM_ERRS", "PFM_MSGE", "PRINT_", "pfm_")
+    filtered_total = 0
+    removed_total = 0
+    for fid in list(call_records_by_function.keys()):
+        recs = call_records_by_function[fid]
+        seen_codes: set = set()
+        filtered: list = []
+        for r in recs:
+            cc = (r.get("call_code") or "").strip()
+            # 중복 제거
+            if cc in seen_codes:
+                removed_total += 1
+                continue
+            seen_codes.add(cc)
+            # 인프라 호출 제거
+            func_name = cc.split("(")[0].strip().split()[-1] if "(" in cc else ""
+            if any(func_name.startswith(p) for p in _INFRA_PREFIXES):
+                removed_total += 1
+                continue
+            filtered.append(r)
+        call_records_by_function[fid] = filtered
+        filtered_total += len(filtered)
+
     total_records = sum(len(recs) for recs in call_records_by_function.values())
     logger.info(
-        "[PHASE:2:CALL_LLM] ChunkBundle 로드 완료 | methods_with_calls=%d total_records=%d",
+        "[PHASE:2:CALL_LLM] ChunkBundle 로드 완료 | methods_with_calls=%d total_records=%d (removed=%d infra/dup)",
         len(call_records_by_function),
         total_records,
+        removed_total,
     )
     return call_records_by_function
 

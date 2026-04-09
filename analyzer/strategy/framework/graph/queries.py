@@ -924,7 +924,7 @@ def build_analysis_result_queries(analysis_by_function: Dict[str, Dict[str, Any]
                 coupled_domain = sc.get("coupled_domain")
                 gwt_rows.append({
                     "function_id": function_id,
-                    "sequence": sc.get("sequence", idx + 1),
+                    "sequence": str(sc.get("sequence", idx + 1)),
                     "coupled_domain": coupled_domain,
                     "title": sc.get("title", ""),
                     "given": sc.get("given", ""),
@@ -970,17 +970,28 @@ def build_analysis_result_queries(analysis_by_function: Dict[str, Dict[str, Any]
             "params": {"rows": gwt_rows},
         })
 
-        # BL 간 순서 흐름: NEXT_STEP (같은 함수 내에서 sequence 순)
-        queries.append({
-            "query": (
-                "UNWIND $rows AS row\n"
-                "MATCH (prev:BusinessLogic {function_id: row.function_id, sequence: row.sequence})\n"
-                "MATCH (next:BusinessLogic {function_id: row.function_id, sequence: row.sequence + 1})\n"
-                "MERGE (prev)-[:NEXT_STEP]->(next)\n"
-                "RETURN prev.sequence, next.sequence"
-            ),
-            "params": {"rows": gwt_rows},
-        })
+        # BL 간 순서 흐름: NEXT_STEP (같은 함수 내에서 sequence 기반)
+        # 계층 sequence 지원: "1"→"2", "1-1"→"1-2", "1"→"1-1" (부모→자식)
+        next_step_pairs = []
+        by_func: Dict[str, list] = {}
+        for r in gwt_rows:
+            by_func.setdefault(r["function_id"], []).append(r)
+        for fid, func_rows in by_func.items():
+            seqs = sorted(func_rows, key=lambda r: str(r.get("sequence", "")))
+            for i in range(len(seqs) - 1):
+                prev_seq = str(seqs[i].get("sequence", ""))
+                next_seq = str(seqs[i + 1].get("sequence", ""))
+                next_step_pairs.append({"function_id": fid, "prev_seq": prev_seq, "next_seq": next_seq})
+        if next_step_pairs:
+            queries.append({
+                "query": (
+                    "UNWIND $pairs AS pair\n"
+                    "MATCH (prev:BusinessLogic {function_id: pair.function_id, sequence: pair.prev_seq})\n"
+                    "MATCH (next:BusinessLogic {function_id: pair.function_id, sequence: pair.next_seq})\n"
+                    "MERGE (prev)-[:NEXT_STEP]->(next)"
+                ),
+                "params": {"pairs": next_step_pairs},
+            })
 
     return queries
 

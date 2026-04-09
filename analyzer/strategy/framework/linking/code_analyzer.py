@@ -272,6 +272,7 @@ def _invoke_analysis_llm(
         "language": language,
         "is_oop": is_oop,
         "valid_stereotypes": valid_stereotypes,
+        "has_table_context": bool(reads_writes_summary),
     }
     context_parts: List[str] = []
     if module_comment:
@@ -289,7 +290,10 @@ def _invoke_analysis_llm(
     if reads_writes_summary:
         context_parts.append("reads_writes: " + reads_writes_summary)
     if module_fields_context and module_fields_context.strip():
-        context_parts.append("[CLASS_CONSTANTS_AND_FIELDS] " + module_fields_context.strip())
+        # 함수 코드에 실제 등장하는 필드만 필터링
+        filtered_fields = [part for part in module_fields_context.strip().split(" | ") if any(w in code for w in part.split() if len(w) > 3)]
+        if filtered_fields:
+            context_parts.append("[CLASS_CONSTANTS_AND_FIELDS] " + " | ".join(filtered_fields))
     if linked_architecture_context and linked_architecture_context.strip():
         context_parts.append(linked_architecture_context.strip())
     if called_method_summaries:
@@ -317,7 +321,18 @@ def _invoke_analysis_llm(
     if table_sample_data and table_sample_data.strip():
         inputs["table_sample_data"] = table_sample_data.strip()
     if constants_context and constants_context.strip():
-        inputs["constants_context"] = constants_context.strip()
+        # 함수 코드에 실제 등장하는 상수만 필터링 (미사용 상수 토큰 절감)
+        filtered_lines = []
+        for line in constants_context.strip().split("\n"):
+            line_stripped = line.strip()
+            if not line_stripped:
+                continue
+            # 상수명 추출 (첫 줄은 헤더일 수 있으므로 코드에 단어가 포함되는지 확인)
+            words = line_stripped.replace("#define", "").split()
+            if any(w in code for w in words if len(w) > 3):
+                filtered_lines.append(line_stripped)
+        if filtered_lines:
+            inputs["constants_context"] = "\n".join(filtered_lines)
     try:
         from util.prompt_registry import prompts
         result = prompts.execute_raw("framework", "code_analysis", inputs, api_key)
