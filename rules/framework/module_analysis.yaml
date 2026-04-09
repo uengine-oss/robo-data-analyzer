@@ -1,6 +1,6 @@
-name: "module_summary"
-description: "모듈 요약 - 메서드/필드 요약 목록을 청크 단위로 받아 모듈 전체 요약 생성. prev_summary로 이전 청크 요약 전달."
-version: "2.0"
+name: "module_analysis"
+description: "모듈 요약 — 멤버 요약 목록을 바탕으로 모듈 전체 요약 + 스테레오타입 + Actor 동의어 통합"
+version: "3.0"
 
 input_schema:
   required:
@@ -16,108 +16,58 @@ input_schema:
 prompt: |
   [ROLE]
   당신은 클래스/모듈/구조체의 역할과 책임을 요약하는 전문가입니다.
-  FQN, 주석·어노테이션, 그리고 이 단위에 속한 멤버(메서드/필드)의 요약 목록을 바탕으로, 전체가 무엇을 하는지 요약하세요.
-
-
-  [LANGUAGE_SETTING]
   응답 언어: {{ locale }}
 
 
-  [INPUT_DATA]
+  [INPUT]
   FQN: {{ module_fqn }}
   {% if kind %}노드 종류: {{ kind }}{% endif %}
   {% if module_comment %}주석: {{ module_comment }}{% endif %}
   {% if module_annotations %}어노테이션: {{ module_annotations }}{% endif %}
-  {% if prev_summary %}이전에 요약된 내용 (참고만 하고, 현재 items만으로 이번 요약을 작성하세요):
+  {% if prev_summary %}이전 청크 요약 (참고만, 현재 items로 이번 요약 작성):
   {{ prev_summary }}
   {% endif %}
 
-  현재 청크의 멤버 요약 목록 (name: summary [Actor]):
+  현재 멤버 요약 목록:
   {% for item in items %}
   - {{ item.name }}: {{ item.summary }}{% if item.actor %} [Actor: {{ item.actor }}]{% endif %}
   {% endfor %}
 
 
-  [TASK 1: 모듈 요약]
-  ★★★ 절대 규칙: 멤버 요약의 구체적 계산식, 분기 조건, 하드코딩 값, NULL 처리를 절대 생략하지 마세요. 길어져도 괜찮습니다. ★★★
-  위 멤버들의 요약을 종합하여, 이 모듈이 전체적으로 어떤 책임을 가지는지 2~5문장으로 요약하세요.
-  - module_comment/module_annotations가 있으면 반영하세요.
-  - prev_summary가 있으면 이 모듈의 다른 멤버 요약이므로, 이번 items와 함께 일관된 모듈 요약으로 통합하세요.
-  - 모듈명, 메서드명 등 기술적 식별자는 의미로 풀어 설명하세요.
-  - 단, 비즈니스 도메인 데이터를 나타내는 필드명(엔티티 속성명)은 그대로 유지하거나 "(속성 한글명)" 형태로 병기하세요.
-  - 메서드 요약에 나타난 구체적 수치, 비교연산자(<, >=, <= 등), 상태값은 반드시 모듈 요약에도 포함하세요.
-  - 상태 전이 흐름이 있으면 "A → B → C" 형태로 명시하세요.
+  [RULES]
 
+  ★ 1. 모듈 요약 (summary):
+  - 멤버들의 요약을 종합하여 2~5문장으로 이 모듈의 전체 책임을 요약
+  - 구체적 계산식, 분기 조건, 하드코딩 값, 상태 전이를 절대 생략하지 마세요
+  - 기술적 식별자(모듈명, 메서드명)는 의미로 풀어 설명
+  - 비즈니스 도메인 필드명(엔티티 속성명)은 그대로 유지
+  - prev_summary가 있으면 이번 items와 통합하여 일관된 요약 작성
 
-  [TASK 2: 스테레오타입 분류]
+  ★ 2. 스테레오타입 (moduleStereotype):
   {% if kind == "FILE" %}
-  이 단위는 C 소스파일(모듈)입니다. 아래 목록 중 **하나만** 선택하세요:
-  - **Module**: 소스파일 단위 함수 모음 (기본값)
-  - **Service**: 비즈니스 로직 처리 (서비스 진입점 함수와 하위 처리 함수 포함)
-  - **Repository**: 데이터 액세스 (DB CRUD)
-  - **Controller**: 요청 처리/라우팅
-  - **Util**: 유틸리티/헬퍼 함수
-  - **Config**: 설정/초기화
-  - **Scheduler**: 스케줄러/배치
-  - **Client**: 외부 시스템 연동
-  - **Gateway**: 외부 시스템 게이트웨이
+  C 소스파일: Module(기본), Service, Repository, Controller, Util, Config, Scheduler, Client, Gateway 중 하나
   {% elif kind == "STRUCT" or kind == "UNION" %}
-  이 단위는 C 구조체/공용체(데이터 정의)입니다. 아래 목록 중 **하나만** 선택하세요:
-  - **Entity**: DB 테이블에 매핑되는 데이터 구조체
-  - **DTO**: 데이터 전송/변환용 구조체
-  - **DataStructure**: 범용 데이터 구조 (기본값)
-  - **Config**: 설정 데이터 구조체
-  - **Enum**: 열거형
+  C 구조체: Entity, DTO, DataStructure(기본), Config, Enum 중 하나
   {% else %}
-  어노테이션, 클래스명 패턴, 멤버 요약을 종합하여 아래 목록 중 **하나만** 선택하세요:
-  - **Controller**: REST/MVC 컨트롤러
-  - **Service**: 비즈니스 서비스
-  - **Repository**: 데이터 액세스
-  - **Entity**: DB 엔티티
-  - **DTO**: 데이터 전송 객체
-  - **Config**: 설정 클래스
-  - **Component**: 범용 컴포넌트
-  - **Aspect**: AOP 관점
-  - **Filter**: 필터/인터셉터
-  - **Listener**: 이벤트 리스너
-  - **Mapper**: 객체 매핑
-  - **Util**: 유틸리티/헬퍼
-  - **ExceptionHandler**: 예외 처리
-  - **Enum**: 열거형
-  - **Gateway**: 외부 시스템 연동 게이트웨이
-  - **Facade**: 퍼사드 패턴
-  - **Factory**: 팩토리 패턴
-  - **Scheduler**: 스케줄러
-  - **Client**: 외부 API 클라이언트
+  OOP 클래스: Controller, Service, Repository, Entity, DTO, Config, Component, Aspect, Filter, Listener, Mapper, Util, ExceptionHandler, Enum, Gateway, Facade, Factory, Scheduler, Client 중 하나
   {% endif %}
 
+  ★ 3. Actor 동의어 통합 (unified_actors):
+  - 같은 역할인데 이름만 다른 Actor를 하나로 통합
+  - 통합: 같은 모듈 CRUD 함수에 다른 Actor, 한국어/영어 표기 차이, 유사 의미
+  - 비통합: system/scheduler와 사람 역할, 명확한 권한 구분이 드러나는 경우
+  - 애매하면 통합. 대표명은 가장 많이 사용된 이름.
 
-  [TASK 3: Actor 동의어 통합 (모듈 내)]
-  위 멤버 목록에서 [Actor: ...] 가 표시된 멤버들을 확인하세요.
-  이 모듈 안에서 같은 역할을 의미하는 Actor가 여러 이름으로 존재하면 하나로 통합하세요.
+  [EXAMPLE]
+  ── summary ──
+  ✅ "이 모듈은 자동납부 실시간 인증 1건에 대해 입력검증 → 카드·은행사 식별 → 인증결과반영여부 산정 → 인증이력 적재 → 오류메시지 조립까지 수행하며, co_cl_cd·pay_mthd_cd·auth_cl_cd·op_cl 조합으로 분기한다."
+  ❌ "이 모듈은 인증 처리를 담당한다." → 분기 조건, 처리 단계, 구체적 필드명 전부 누락
 
-  ★ 판단 방법:
-  1. 각 Actor가 어떤 멤버(함수)에 붙어있는지 확인하세요.
-  2. 그 함수들의 summary를 읽고, 같은 종류의 작업(같은 대상의 CRUD 등)을 하는지 확인하세요.
-  3. 같은 모듈에서 같은 대상을 다루는 함수들에 서로 다른 Actor가 붙어있으면,
-     함수 summary에서 역할 구분 근거(인증, 권한, 별도 인터페이스)가 보이지 않는 한 같은 역할입니다.
-
-  ● 통합하는 경우:
-  - 같은 모듈의 CRUD 함수에 다른 Actor가 붙어있고, 역할 구분 근거가 없을 때
-  - 한국어/영어 표기 차이 (같은 의미의 다른 언어 표현)
-  - 유사한 의미의 다른 표현 (같은 역할을 다르게 부르는 것)
-
-  ● 통합하지 않는 경우:
-  - 자동 처리 주체(system/scheduler/batch)와 사람이 직접 조작하는 역할은 근본적으로 다름
-  - 함수 summary에서 명확한 역할 구분(인증, 권한, 별도 인터페이스)이 드러나는 경우
-
-  ● 애매하면 통합하세요. 세분화보다 통합이 안전합니다.
-  ● 대표명은 가장 많은 함수에서 사용된 이름을 선택하세요.
-
-  unified_actors 출력 형식: {"대표명": ["동의어1", "동의어2"]}
-  Actor가 없거나 동의어가 없으면 빈 객체 {}
+  ── unified_actors ──
+  ✅ {"관리자": ["admin", "운영자"]} → 같은 역할의 다른 표현 통합
+  ❌ {"관리자": ["system"]} → system은 자동 처리 주체이므로 사람 역할과 통합 금지
 
 
   [OUTPUT]
-  다음 JSON만 출력 (코드블록 없이, 백틱(`) 사용 금지):
-  {"summary": "모듈 요약 문장", "moduleStereotype": "선택한 스테레오타입", "unified_actors": {}}
+  JSON만 출력 (코드펜스, 백틱 금지):
+  {"summary": "모듈 요약", "moduleStereotype": "스테레오타입", "unified_actors": {}}

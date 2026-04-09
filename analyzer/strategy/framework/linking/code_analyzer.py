@@ -24,8 +24,6 @@ from util.text_utils import (
     calculate_code_token as estimate_tokens,
     slice_by_line_range,
 )
-from util.prompt_executor import get_rule_loader
-
 logger = logging.getLogger(__name__)
 
 
@@ -223,24 +221,6 @@ def _build_module_fields_context(
     return result
 
 
-def _collect_field_initial_values(
-    module_key: Optional[str],
-    variable_facts_list: Optional[List[VariableFacts]],
-) -> str:
-    """같은 모듈 내 필드 변수의 초기값 정보를 수집."""
-    if not module_key or not variable_facts_list:
-        return ""
-    fields = [f for f in variable_facts_list if f.module_key == module_key and f.code]
-    if not fields:
-        return ""
-    parts = []
-    for f in fields:
-        code_line = " ".join((f.code or "").strip().split())
-        if code_line and "=" in code_line:
-            parts.append(code_line)
-    return " | ".join(parts)
-
-
 def _invoke_analysis_llm(
     m: FunctionFacts,
     api_key: str,
@@ -256,6 +236,8 @@ def _invoke_analysis_llm(
     field_initial_values: Optional[str] = None,
     table_sample_data: Optional[str] = None,
     constants_context: Optional[str] = None,
+    custom_instructions: Optional[List[str]] = None,
+    allow_table_discovery: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """메서드 1개에 대해 analysis 규칙 실행 → summary/dependencies/stereotype.
 
@@ -268,12 +250,12 @@ def _invoke_analysis_llm(
         logger.info("[PHASE:3:CODE_ANALYSIS] LLM 스킵 | function_id=%s reason=%s", m.function_id, reason)
         return None
     code = m.code.strip()
-    ranges = [{"startLine": m.start_line, "endLine": m.end_line}]
     # lang → display_name (Java, C, Python 등)
     try:
         from analyzer.strategy.framework.common.lang_profile import get_lang_profile
         language = get_lang_profile().display_name(lang)
-    except Exception:
+    except Exception as e:
+        logger.warning("lang_profile 로드 실패, capitalize 사용 | lang=%s error=%s", lang, e)
         language = lang.capitalize()
 
     from analyzer.strategy.framework.common.ontology import get_ontology
@@ -283,8 +265,8 @@ def _invoke_analysis_llm(
 
     inputs: Dict[str, Any] = {
         "code": code,
-        "ranges": ranges,
-        "count": 1,
+        "startLine": m.start_line,
+        "endLine": m.end_line,
         "locale": locale,
         "language": language,
         "is_oop": is_oop,
@@ -324,7 +306,8 @@ def _invoke_analysis_llm(
                     continue
                 id_part = f"{cls}.{name}" if cls and name else (name or cls or "")
                 called_snippets.append(f"{id_part}: {summ}" if id_part else summ)
-            except Exception:
+            except Exception as e:
+                logger.warning("called_method_summary 파싱 실패 | error=%s", e)
                 continue
         if called_snippets:
             called_snippets.sort()  # 정렬하여 병렬 처리 순서와 무관하게 캐시 키 일관성 보장
@@ -340,6 +323,10 @@ def _invoke_analysis_llm(
         filtered = _filter_by_code_reference(constants_context.strip().split("\n"), code)
         if filtered:
             inputs["constants_context"] = "\n".join(filtered)
+    if custom_instructions:
+        inputs["custom_instructions"] = custom_instructions
+    if allow_table_discovery:
+        inputs["allow_table_discovery"] = True
     try:
         from util.prompt_registry import prompts
         result = prompts.execute_raw("framework", "code_analysis", inputs, api_key)
@@ -376,6 +363,8 @@ def _analyze_code_node(
     table_sample_data: Optional[str] = None,
     constants_context: Optional[str] = None,
     referenced_vars_by_function: Optional[Dict[str, List[str]]] = None,
+    custom_instructions: Optional[List[str]] = None,
+    allow_table_discovery: bool = False,
 ) -> Tuple[str, Dict[str, Any]]:
     """단일 메서드에 대해 stereotype + (summary, dependencies) 계산."""
     cqrs_fallback = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
@@ -420,6 +409,8 @@ def _analyze_code_node(
             field_initial_values="\n".join(referenced_vars_by_function.get(m.function_id, [])) if referenced_vars_by_function else None,
             table_sample_data=table_sample_data or None,
             constants_context=constants_context or None,
+            custom_instructions=custom_instructions or None,
+            allow_table_discovery=allow_table_discovery,
         )
         if analysis:
             summary = analysis.get("summary") or summary
@@ -468,6 +459,8 @@ def analyze_and_enrich(
     table_sample_data: Optional[str] = None,
     constants_context: Optional[str] = None,
     referenced_vars_by_function: Optional[Dict[str, List[str]]] = None,
+    custom_instructions: Optional[List[str]] = None,
+    allow_table_discovery: bool = False,
 ) -> Generator[Dict[str, Dict[str, Any]], None, None]:
     """메서드별 stereotype, summary — 20개씩 배치로 yield.
 
@@ -524,6 +517,8 @@ def analyze_and_enrich(
                         table_sample_data,
                         constants_context,
                         referenced_vars_by_function,
+                        custom_instructions,
+                        allow_table_discovery,
                     ): m
                     for m in function_facts_list
                 }
@@ -575,6 +570,8 @@ def analyze_and_enrich(
                         table_sample_data,
                         constants_context,
                         referenced_vars_by_function,
+                        custom_instructions,
+                        allow_table_discovery,
                     )
                     batch[function_id] = data
                 except Exception as e:
@@ -655,6 +652,8 @@ def analyze_and_enrich(
             table_sample_data,
             constants_context,
             referenced_vars_by_function,
+            custom_instructions,
+            allow_table_discovery,
         )
         return node_id, data
 
@@ -749,6 +748,8 @@ def analyze_and_enrich(
                     table_sample_data,
                     constants_context,
                     referenced_vars_by_function,
+                    custom_instructions,
+                    allow_table_discovery,
                 )
                 batch[mid] = data
             except Exception as e:
@@ -803,7 +804,8 @@ def _get_variable_code_from_ref(
         raw = read_text_with_fallback_sync(path)
         text_with_lines = add_line_numbers(raw)
         return slice_by_line_range(text_with_lines, start_line, end_line)
-    except Exception:
+    except Exception as e:
+        logger.warning("소스 파일 읽기 실패 | path=%s error=%s", path, e)
         return ""
 
 

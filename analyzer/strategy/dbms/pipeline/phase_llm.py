@@ -157,7 +157,7 @@ async def run_phase_llm(
     await asyncio.gather(*tasks, return_exceptions=True)
 
     # 후처리 (프로시저 요약, 테이블 요약, 변수 요약)
-    from analyzer.strategy.dbms.linking.summarizer import run_phase_post
+    from analyzer.strategy.dbms.linking.phase_post import run_phase_post
     async for chunk in run_phase_post(pipeline, contexts, client, orchestrator):
         yield chunk
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import logging
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -25,8 +24,6 @@ from analyzer.strategy.framework.linking.deterministic import (
 from util.text_utils import (
     calculate_code_token as estimate_tokens,
 )
-from util.prompt_executor import get_rule_loader
-
 logger = logging.getLogger(__name__)
 
 
@@ -42,7 +39,8 @@ def _load_stdlib(lang: str) -> frozenset:
     from analyzer.strategy.framework.common.lang_profile import get_lang_profile
     try:
         return get_lang_profile().stdlib_classes(lang)
-    except Exception:
+    except Exception as e:
+        logger.warning("stdlib 로드 실패 | lang=%s error=%s", lang, e)
         return frozenset()
 
 
@@ -398,117 +396,6 @@ def _flatten_one_batch(
                 "functionName": function_name,
             })
     return flat
-
-
-def run_call_batch_pipeline(
-    data_dir: str,
-    function_facts_list: List[Any],
-    variable_facts_list: List[Any],
-    symbol_type_index: Dict[str, Dict[str, str]],
-    function_index_by_module: Dict[str, Dict[str, List[str]]],
-    use_llm: bool = True,
-    api_key: Optional[str] = None,
-    run_dir: Optional[str] = None,
-    on_batch: Optional[Any] = None,
-    lang: str = "",
-) -> Tuple[List[CallsEdge], List[Dict[str, Any]]]:
-    """CallBatch 로드 → objName/functionName 추출(LLM 필수 시 RuleLoader, 없으면 휴리스틱) → Deterministic Link.
-    on_batch 콜백: 각 LLM 배치 완료 시 (edges, unresolved) 전달.
-    run_dir 있으면 해당 run_dir/chunk_bundles에서 ChunkBundle을 로드."""
-    from analyzer.strategy.framework.parsing.chunk_bundle import _get_chunk_bundle_dir_from_run_dir
-    chunk_dir = _get_chunk_bundle_dir_from_run_dir(run_dir) if run_dir else None
-    call_records_by_function = load_call_records_from_chunk_bundles(
-        data_dir=data_dir,
-        chunk_bundle_dir=chunk_dir,
-    )
-    if not call_records_by_function:
-        logger.info("[PHASE:2:CALL_LLM] 파이프라인 스킵 | reason=no_call_records chunk_dir=%s", chunk_dir or data_dir)
-        return [], []
-
-    logger.info(
-        "[PHASE:2:CALL_LLM] 파이프라인 진입 | methods_with_calls=%d use_llm=%s api_key_set=%s",
-        len(call_records_by_function),
-        use_llm,
-        bool(api_key),
-    )
-    type_map = build_type_map_3layer(symbol_type_index, variable_facts_list, function_facts_list, lang=lang)
-    m2c = fact_to_module_map(function_facts_list)
-    internal_module_fqns = set(function_index_by_module.keys())
-    is_domain_module = lambda cn: bool(
-        cn and str(cn).strip() and str(cn).strip()[0].isupper() and not _is_stdlib_module(str(cn).strip())
-    )
-    module_map = build_module_map_with_scope(type_map, m2c, internal_module_fqns, is_domain_module)
-
-    all_edges: List[CallsEdge] = []
-    all_unresolved: List[Dict[str, Any]] = []
-    key = api_key or ""
-
-    if use_llm and key:
-        max_tokens = settings.batch.max_batch_token * 2
-        batches = _build_call_batches(call_records_by_function, max_tokens)
-        logger.info(
-            "[PHASE:2:CALL_LLM] 청크 배치 | methods=%d → 배치=%d (max_tokens=%d)",
-            len(call_records_by_function),
-            len(batches),
-            max_tokens,
-        )
-        workers = settings.concurrency.max_concurrency
-
-        def _process_and_resolve(batch: List[Tuple[str, List[Dict[str, Any]]]]) -> Tuple[List[CallsEdge], List[Dict[str, Any]]]:
-            """한 배치: LLM 추출 → flatten → resolve → external edges."""
-            llm_out = _extract_calls_batch_via_llm(batch, key)
-            batch_flat = _flatten_one_batch(batch, llm_out, call_records_by_function)
-            batch_edges, batch_unresolved = resolve_calls_deterministic(batch_flat, type_map, function_index_by_module, m2c)
-            batch_external = build_external_calls_edges(batch_unresolved, module_map)
-            return batch_edges + batch_external, batch_unresolved
-
-        if workers <= 1:
-            for batch in batches:
-                batch_edges, batch_unresolved = _process_and_resolve(batch)
-                all_edges.extend(batch_edges)
-                all_unresolved.extend(batch_unresolved)
-                if on_batch and batch_edges:
-                    on_batch(batch_edges, batch_unresolved)
-        else:
-            with ThreadPoolExecutor(max_workers=workers) as executor:
-                futures = {executor.submit(_process_and_resolve, batch): batch for batch in batches}
-                for future in as_completed(futures):
-                    try:
-                        batch_edges, batch_unresolved = future.result()
-                        all_edges.extend(batch_edges)
-                        all_unresolved.extend(batch_unresolved)
-                        if on_batch and batch_edges:
-                            on_batch(batch_edges, batch_unresolved)
-                    except Exception as ex:
-                        logger.error("[PHASE:CALL_BATCH] 배치 LLM 처리 예외: %s", ex)
-    else:
-        flat: List[Dict[str, Any]] = []
-        for function_id, recs in call_records_by_function.items():
-            for r in recs:
-                call_code = r.get("call_code", "")
-                obj_name, function_name = extract_obj_method_from_call_code(call_code)
-                if obj_name and _is_stdlib_module(obj_name):
-                    obj_name, function_name = None, None
-                flat.append({
-                    "parent_function_id": function_id,
-                    "call_id": r.get("call_id", ""),
-                    "call_code": call_code,
-                    "objName": obj_name,
-                    "functionName": function_name,
-                })
-        edges, unresolved = resolve_calls_deterministic(flat, type_map, function_index_by_module, m2c)
-        external_edges = build_external_calls_edges(unresolved, module_map)
-        all_edges = edges + external_edges
-        all_unresolved = unresolved
-        if on_batch and all_edges:
-            on_batch(all_edges, all_unresolved)
-
-    logger.info(
-        "[PHASE:2:CALL_LLM] 파이프라인 완료 | edges=%d unresolved=%d",
-        len(all_edges),
-        len(all_unresolved),
-    )
-    return all_edges, all_unresolved
 
 
 async def run_call_batch_pipeline_async(

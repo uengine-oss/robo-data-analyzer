@@ -7,7 +7,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import re
 from typing import Any, AsyncGenerator, Dict, List, Optional, Set, Tuple
 
 from config.settings import settings
@@ -286,7 +285,7 @@ async def resolve_references(
     # ===================================================================
 
     logger.info(
-        "[PHASE:2:LINKING] [3갈래] SQL→테이블 / Call LLM / UML 병렬 실행 (배치별 점진 전송)",
+        "[PHASE:2:LINKING] [2갈래] SQL→테이블 / Call LLM 병렬 실행 (배치별 점진 전송)",
     )
 
     # 결과 수집 버퍼

@@ -11,8 +11,6 @@ from typing import Any, Dict, Generator, List, Optional, Tuple
 
 from config.settings import settings
 from util.artifact_logger import log_llm_interaction
-from util.prompt_executor import get_rule_loader
-
 from analyzer.strategy.framework.common.models import (
     FunctionTableEdge,
     ReferToEdge,

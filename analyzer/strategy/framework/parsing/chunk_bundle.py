@@ -261,23 +261,6 @@ def load_field_chunks_from_bundles(
     return out
 
 
-def chunk_bundle_path_for_ast_path(data_dir: str, ast_path: str) -> str:
-    """AST JSON 경로에서 대응하는 ChunkBundle 파일 경로 유도.
-
-    예: data/analysis/target/com/example/Foo.json -> chunk_bundles/com_example_Foo.json
-    """
-    p = Path(ast_path)
-    parts = p.parts
-    if "analysis" in parts and "target" in parts:
-        idx = parts.index("target") + 1
-        rel = parts[idx:]
-    else:
-        rel = p.parts
-    # .json -> 동일 base로 chunk bundle
-    stem = "_".join(rel[:-1] + (p.stem,)) if len(rel) > 1 else p.stem
-    return str(Path(_get_chunk_bundle_dir(data_dir)) / f"{stem}.json")
-
-
 def build_bundle_span_index(
     data_dir: Optional[str] = None,
     chunk_bundle_dir: Optional[str] = None,
@@ -392,33 +375,6 @@ def bundle_search(
                     "score": 0.85,
                 })
     return results[:50]
-
-
-def bundle_get_span(
-    file_path: str,
-    start_line: int,
-    end_line: int,
-    data_dir: Optional[str] = None,
-    span_index: Optional[Dict[str, Dict[str, Any]]] = None,
-    chunk_index: Optional[Dict[str, Dict[str, Any]]] = None,
-) -> Optional[Dict[str, Any]]:
-    """(file_path, start_line, end_line)에 해당하는 번들 snippet 반환. 파일 읽기 없음."""
-    if span_index is None or chunk_index is None:
-        if data_dir is None:
-            return None
-        span_index, chunk_index = build_bundle_span_index(data_dir)
-    key = _span_index_key(file_path, start_line, end_line)
-    hit = span_index.get(key)
-    if hit:
-        return {"text": hit.get("text", ""), "filePath": file_path, "span": [start_line, end_line]}
-    for k, hit in span_index.items():
-        parsed = _span_index_key_parse(k)
-        if not parsed:
-            continue
-        fp, s, e = parsed
-        if fp == file_path and s <= start_line and e >= end_line:
-            return {"text": hit.get("text", ""), "filePath": fp, "span": [s, e]}
-    return None
 
 
 def bundle_get_chunk(

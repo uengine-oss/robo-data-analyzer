@@ -18,14 +18,6 @@ ARTIFACT_CODE_MAX = 8000
 EXTERNAL_PREFIX = "external:"
 EXTERNAL_SEP = "#"
 
-# Log prefixes
-LOG_SCAN = "[PHASE:1:SCAN]"
-LOG_AST = "[PHASE:1:AST]"
-LOG_LINK = "[PHASE:2:LINKING]"
-LOG_ANALYSIS = "[PHASE:3:CODE_ANALYSIS]"
-LOG_SUMMARY = "[PHASE:3:CODE_ANALYSIS]"
-LOG_GRAPH = "[GRAPH]"
-
 # Scan skip directories
 SKIP_DIRS = frozenset({"ddl", ".git", "node_modules", "__pycache__", ".venv", "venv", "target", "build"})
 

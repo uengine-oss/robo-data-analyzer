@@ -42,6 +42,7 @@ async def analyze_source_code(request: Request):
     name_case = (body.get("nameCase") or "original").strip().lower()
     datasource_name = (body.get("datasourceName") or "").strip()
     infer_fk_relations = body.get("inferFkRelations", False)
+    custom_instructions = body.get("customInstructions") or []
 
     await source_analyze_service.validate_llm_api_key(api_key)
 
@@ -68,6 +69,7 @@ async def analyze_source_code(request: Request):
                 name_case=name_case,
                 datasource_name=datasource_name,
                 infer_fk_relations=infer_fk_relations,
+                custom_instructions=custom_instructions,
             )
         ),
         media_type="application/x-ndjson",

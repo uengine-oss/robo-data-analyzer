@@ -25,7 +25,6 @@ from analyzer.strategy.framework.common.models import (
     ArtifactChunk,
     ArtifactTableEdge,
     CallsEdge,
-    ChunkBundle,
     ModuleTableEdge,
     ConfigSectionChunk,
     ReferToEdge,
@@ -80,12 +79,6 @@ def _build_column_fqn(schema: str, table: str, column: str) -> str:
     """Column FQN 생성 (schema.table.column)."""
     s = (schema or "").strip() or TABLE_SCHEMA_DEFAULT
     return f"{s}.{table}.{column}"
-
-
-def _normalize_stereotype(value: Any) -> str:
-    """command/readmodel만 허용, 그 외는 readmodel."""
-    s = (value or "").strip().lower()
-    return s if s in ("command", "readmodel") else "readmodel"
 
 
 def _module_fqn_and_function_name(fqn: Optional[str]) -> tuple[str, str]:
@@ -396,63 +389,6 @@ def build_column_queries(column_refs: List[ColumnRef]) -> List[Dict[str, Any]]:
                 "nullable": getattr(c, "nullable", True),
             },
         })
-    return queries
-
-
-def build_chunk_bundle_queries(bundles: List[ChunkBundle]) -> List[Dict[str, Any]]:
-    """ChunkBundle 목록 → ChunkBundleChunk 노드 + (Method)-[:HAS_CHUNK]-> 쿼리."""
-    queries = []
-    _chunk_q = (
-        "MERGE (c:ChunkBundleChunk {chunk_id: $chunk_id})\n"
-        "ON CREATE SET c.created_at = timestamp()\n"
-        "SET c.chunk_type = $chunk_type, c.parent_function_id = $parent_function_id,\n"
-        "c.file_path = $file_path, c.start_line = $start_line, c.end_line = $end_line,\n"
-        "c.code_text = $code_text, c.updated_at = timestamp()\n"
-        "WITH c\n"
-        "MERGE (m:FUNCTION {function_id: $parent_function_id})\n"
-        "MERGE (m)-[:HAS_CHUNK]->(c)\n"
-        "RETURN c"
-    )
-    _var_q = (
-        "MERGE (c:ChunkBundleChunk {chunk_id: $chunk_id})\n"
-        "ON CREATE SET c.created_at = timestamp()\n"
-        "SET c.chunk_type = $chunk_type, c.parent_function_id = $parent_function_id,\n"
-        "c.file_path = $file_path, c.start_line = $start_line, c.end_line = $end_line,\n"
-        "c.code_text = $code_text, c.var_name = $var_name, c.var_type = $var_type, c.updated_at = timestamp()\n"
-        "With c\n"
-        "MERGE (m:FUNCTION {function_id: $parent_function_id})\n"
-        "MERGE (m)-[:HAS_CHUNK]->(c)\n"
-        "RETURN c"
-    )
-    for bundle in bundles:
-        fp = bundle.file_meta.file_path or ""
-        for m in bundle.methods:
-            if not m.function_id:
-                continue
-            queries.append({"query": _chunk_q, "params": {
-                "chunk_id": m.function_id, "chunk_type": "function_code",
-                "parent_function_id": m.function_id, "file_path": fp,
-                "start_line": m.start_line, "end_line": m.end_line,
-                "code_text": (m.function_code or "")[:_CHUNK_CODE_MAX],
-            }})
-        for c in bundle.function_calls:
-            if not c.call_id:
-                continue
-            queries.append({"query": _chunk_q, "params": {
-                "chunk_id": c.call_id, "chunk_type": "function_call",
-                "parent_function_id": c.parent_function_id, "file_path": fp,
-                "start_line": c.start_line, "end_line": c.end_line,
-                "code_text": (c.call_code or "")[:_CHUNK_CODE_MAX],
-            }})
-        for v in bundle.local_vars:
-            cid = f"var:{v.parent_function_id}:{v.start_line}:{v.end_line}:{v.var_name}"
-            queries.append({"query": _var_q, "params": {
-                "chunk_id": cid, "chunk_type": "variable",
-                "parent_function_id": v.parent_function_id, "file_path": fp,
-                "start_line": v.start_line, "end_line": v.end_line,
-                "code_text": (v.initializer_code or "")[:_CHUNK_CODE_MAX],
-                "var_name": v.var_name or "", "var_type": v.var_type or "",
-            }})
     return queries
 
 
@@ -970,27 +906,45 @@ def build_analysis_result_queries(analysis_by_function: Dict[str, Dict[str, Any]
             "params": {"rows": gwt_rows},
         })
 
-        # BL 간 순서 흐름: NEXT_STEP (같은 함수 내에서 sequence 기반)
-        # 계층 sequence 지원: "1"→"2", "1-1"→"1-2", "1"→"1-1" (부모→자식)
+        # BL 간 순서 흐름: NEXT(메인 흐름 순차) + BRANCH(부모→분기 자식)
+        # "1"→"2"→"3" = NEXT (메인 흐름)
+        # "1"→"1-1", "1"→"1-2" = BRANCH (분기)
         next_step_pairs = []
+        branch_pairs = []
         by_func: Dict[str, list] = {}
         for r in gwt_rows:
             by_func.setdefault(r["function_id"], []).append(r)
         for fid, func_rows in by_func.items():
-            seqs = sorted(func_rows, key=lambda r: str(r.get("sequence", "")))
-            for i in range(len(seqs) - 1):
-                prev_seq = str(seqs[i].get("sequence", ""))
-                next_seq = str(seqs[i + 1].get("sequence", ""))
-                next_step_pairs.append({"function_id": fid, "prev_seq": prev_seq, "next_seq": next_seq})
+            seq_set = {str(r.get("sequence", "")) for r in func_rows}
+            # 메인 흐름: 하이픈 없는 시퀀스끼리 순차 연결 (1→2→3)
+            main_seqs = sorted([s for s in seq_set if "-" not in s])
+            for i in range(len(main_seqs) - 1):
+                next_step_pairs.append({"function_id": fid, "prev_seq": main_seqs[i], "next_seq": main_seqs[i + 1]})
+            # 분기: 부모→자식 (1→1-1, 1→1-2, 2-1→2-1-1)
+            for s in seq_set:
+                if "-" in s:
+                    parent = s.rsplit("-", 1)[0]
+                    if parent in seq_set:
+                        branch_pairs.append({"function_id": fid, "parent_seq": parent, "child_seq": s})
         if next_step_pairs:
             queries.append({
                 "query": (
                     "UNWIND $pairs AS pair\n"
                     "MATCH (prev:BusinessLogic {function_id: pair.function_id, sequence: pair.prev_seq})\n"
                     "MATCH (next:BusinessLogic {function_id: pair.function_id, sequence: pair.next_seq})\n"
-                    "MERGE (prev)-[:NEXT_STEP]->(next)"
+                    "MERGE (prev)-[:NEXT]->(next)"
                 ),
                 "params": {"pairs": next_step_pairs},
+            })
+        if branch_pairs:
+            queries.append({
+                "query": (
+                    "UNWIND $pairs AS pair\n"
+                    "MATCH (parent:BusinessLogic {function_id: pair.function_id, sequence: pair.parent_seq})\n"
+                    "MATCH (child:BusinessLogic {function_id: pair.function_id, sequence: pair.child_seq})\n"
+                    "MERGE (parent)-[:BRANCH]->(child)"
+                ),
+                "params": {"pairs": branch_pairs},
             })
 
     return queries
@@ -1221,103 +1175,6 @@ def build_uses_queries(edges: List[UsesEdge]) -> List[Dict[str, Any]]:
 # 6. UML — 상속(EXTENDS/IMPLEMENTS), 연관(ASSOCIATION), 의존/합성/집합
 # ═══════════════════════════════════════════════════════════════════════════
 
-def build_uml_inheritance_queries(module_index: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """module_index의 extends_type, implements_types로 EXTENDS/IMPLEMENTS 쿼리 생성."""
-    queries: List[Dict[str, Any]] = []
-    _internal_q = (
-        "MERGE (src:MODULE {fqn: $source_fqn})\n"
-        "ON CREATE SET src.created_at = timestamp()\n"
-        "ON MATCH SET src.updated_at = timestamp()\n"
-        "WITH src\n"
-        "MATCH (t:MODULE {fqn: $target_fqn})\n"
-        "MERGE (src)-[:{}]->(t)\n"
-        "RETURN 1"
-    )
-    _external_q = (
-        "MERGE (src:MODULE {fqn: $source_fqn})\n"
-        "ON CREATE SET src.created_at = timestamp()\n"
-        "ON MATCH SET src.updated_at = timestamp()\n"
-        "WITH src\n"
-        "MERGE (t:MODULE:CLASS:EXTERNAL {name: $target_module_name})\n"
-        "ON CREATE SET t.created_at = timestamp()\n"
-        "ON MATCH SET t.updated_at = timestamp()\n"
-        "MERGE (src)-[:{}]->(t)\n"
-        "RETURN 1"
-    )
-    for info in module_index.values():
-        if not isinstance(info, dict):
-            continue
-        source_fqn = info.get("fqn") or info.get("module_key")
-        if not source_fqn:
-            continue
-
-        extends_type = info.get("extends_type")
-        if extends_type and str(extends_type).strip():
-            target_name = str(extends_type).strip()
-            target_fqn = _target_fqn_from_module_index(module_index, target_name)
-            if target_fqn:
-                queries.append({"query": _internal_q.format("EXTENDS"), "params": {"source_fqn": source_fqn, "target_fqn": target_fqn}})
-            else:
-                queries.append({"query": _external_q.format("EXTENDS"), "params": {"source_fqn": source_fqn, "target_module_name": target_name}})
-
-        implements_types = info.get("implements_types")
-        if implements_types and str(implements_types).strip():
-            for part in str(implements_types).split(","):
-                target_name = part.strip()
-                if not target_name:
-                    continue
-                target_fqn = _target_fqn_from_module_index(module_index, target_name)
-                if target_fqn:
-                    queries.append({"query": _internal_q.format("IMPLEMENTS"), "params": {"source_fqn": source_fqn, "target_fqn": target_fqn}})
-                else:
-                    queries.append({"query": _external_q.format("IMPLEMENTS"), "params": {"source_fqn": source_fqn, "target_module_name": target_name}})
-    return queries
-
-
-def build_uml_association_queries(
-    module_index: Dict[str, Any],
-    variable_relations_by_module: Dict[str, List[Dict[str, Any]]],
-) -> List[Dict[str, Any]]:
-    """모듈별 fieldRelations(LLM association 결과)로 (MODULE)-[:ASSOCIATION]->(MODULE) 쿼리 생성."""
-    queries: List[Dict[str, Any]] = []
-    for module_key_or_fqn, member_relations in (variable_relations_by_module or {}).items():
-        source_fqn = module_key_or_fqn
-        if not source_fqn:
-            continue
-        for rel in member_relations or []:
-            target_module = (rel.get("targetModule") or "").strip()
-            if not target_module:
-                continue
-            multiplicity = rel.get("multiplicity", "1")
-            member_name = rel.get("member", "")
-            target_fqn = _target_fqn_from_module_index(module_index, target_module)
-            if target_fqn:
-                q = (
-                    "MATCH (src:MODULE {fqn: $source_fqn})\n"
-                    "MATCH (t:MODULE {fqn: $target_fqn})\n"
-                    "MERGE (src)-[r:ASSOCIATION {member: $member_name, multiplicity: $multiplicity}]->(t)\n"
-                    "RETURN r"
-                )
-                queries.append({"query": q, "params": {
-                    "source_fqn": source_fqn, "target_fqn": target_fqn,
-                    "member_name": member_name, "multiplicity": multiplicity,
-                }})
-            else:
-                q = (
-                    "MATCH (src:MODULE {fqn: $source_fqn})\n"
-                    "MERGE (t:MODULE:CLASS:EXTERNAL {name: $target_module_name})\n"
-                    "ON CREATE SET t.created_at = timestamp()\n"
-                    "ON MATCH SET t.updated_at = timestamp()\n"
-                    "MERGE (src)-[r:ASSOCIATION {member: $member_name, multiplicity: $multiplicity}]->(t)\n"
-                    "RETURN r"
-                )
-                queries.append({"query": q, "params": {
-                    "source_fqn": source_fqn, "target_module_name": target_module,
-                    "member_name": member_name, "multiplicity": multiplicity,
-                }})
-    return queries
-
-
 def build_uml_dependency_queries(
     analysis_by_function: Dict[str, Dict[str, Any]],
     function_facts_list: List[Any],
@@ -1459,27 +1316,6 @@ build_artifact_chunks_unwind = _build_unwind_query(
     "n.chunk_type = row.chunk_type, n.hint_key = row.hint_key, n.code_text = row.code_text, "
     "n.file_path = row.file_path, n.directory = row.directory, n.file_name = row.file_name, "
     "n.start_line = row.start_line, n.end_line = row.end_line")
-
-
-def build_chunk_bundle_chunks_unwind(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """UNWIND $rows → ChunkBundleChunk 노드 + (Method)-[:HAS_CHUNK]-> 배치. code_text 최대 8000."""
-    if not rows:
-        return {"query": "", "params": {"rows": []}}
-    for r in rows:
-        if "code_text" in r and r["code_text"]:
-            r["code_text"] = (r["code_text"] or "")[:_CHUNK_CODE_MAX]
-    q = (
-        "UNWIND $rows AS row\n"
-        "MERGE (c:ChunkBundleChunk {chunk_id: row.chunk_id})\n"
-        "ON CREATE SET c.created_at = timestamp()\n"
-        "SET c.chunk_type = row.chunk_type, c.parent_function_id = row.parent_function_id,\n"
-        "c.file_path = row.file_path, c.start_line = row.start_line, c.end_line = row.end_line,\n"
-        "c.code_text = row.code_text, c.var_name = row.var_name, c.var_type = row.var_type, c.updated_at = timestamp()\n"
-        "WITH c, row\n"
-        "MERGE (m:FUNCTION {function_id: row.parent_function_id})\n"
-        "MERGE (m)-[:HAS_CHUNK]->(c)"
-    )
-    return {"query": q, "params": {"rows": rows}}
 
 
 # ═══════════════════════════════════════════════════════════════════════════

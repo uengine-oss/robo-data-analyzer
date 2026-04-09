@@ -261,8 +261,8 @@ def build_function_facts_and_module_index(
             file_name = sp.name
             try:
                 source_content = read_text_with_fallback(source_path)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("[PHASE:1:AST] 소스 파일 읽기 실패 | path=%s error=%s", source_path, e)
 
     last_line = _last_line_from_ast(ast_data)
     processor = FrameworkAstProcessor(

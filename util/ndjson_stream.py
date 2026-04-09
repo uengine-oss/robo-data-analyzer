@@ -56,44 +56,6 @@ def emit_data(**fields) -> bytes:
     return emit_bytes(payload)
 
 
-def emit_node_event(
-    action: str,
-    node_type: str,
-    node_name: str,
-    details: Optional[dict[str, Any]] = None,
-) -> bytes:
-    """노드 생성/수정 이벤트 전송"""
-    payload = {
-        "type": "node_event",
-        "action": action,
-        "nodeType": node_type,
-        "nodeName": node_name,
-    }
-    if details:
-        payload["details"] = details
-    return emit_bytes(payload)
-
-
-def emit_relationship_event(
-    action: str,
-    rel_type: str,
-    source: str,
-    target: str,
-    details: Optional[dict[str, Any]] = None,
-) -> bytes:
-    """관계 생성/수정 이벤트 전송"""
-    payload = {
-        "type": "relationship_event",
-        "action": action,
-        "relType": rel_type,
-        "source": source,
-        "target": target,
-    }
-    if details:
-        payload["details"] = details
-    return emit_bytes(payload)
-
-
 def emit_complete(summary: Optional[str] = None) -> bytes:
     """완료 이벤트 전송"""
     payload = {"type": "complete"}
@@ -225,19 +187,6 @@ class PhaseTracker:
             elif i == self._current_step_idx and step["total"] > 0:
                 total_progress += int(step["done"] / step["total"] * step["weight"])
         return min(total_progress, 100)
-
-
-def build_error_body(
-    exc: Exception,
-    trace_id: Optional[str] = None,
-    message: Optional[str] = None,
-) -> dict:
-    """비스트리밍 500 응답용 표준 에러 바디 생성"""
-    return {
-        "errorType": exc.__class__.__name__,
-        "message": message or str(exc),
-        "traceId": trace_id or f"req-{uuid.uuid4()}",
-    }
 
 
 async def stream_with_error_boundary(

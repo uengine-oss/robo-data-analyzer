@@ -86,8 +86,6 @@ class ConcurrencyConfig:
     # 청크/배치 단위 병렬 처리 (DBMS/Framework 공통)
     max_concurrency: int = field(default_factory=lambda: int(os.getenv("MAX_CONCURRENCY", "20")))
     
-    # DBMS 분석 전용
-    variable_concurrency: int = field(default_factory=lambda: int(os.getenv("VARIABLE_CONCURRENCY", "5")))
 
 
 

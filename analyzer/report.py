@@ -63,7 +63,6 @@ _SKIP_COUNT_LABELS = SCOPE_LABELS | {"EXTERNAL"}
 
 EXCLUDED_REL_TYPES = {"NEXT", "PARENT_OF"}
 
-STRUCTURAL_REL_TYPES = {"HAS_PROCEDURE", "LINKS_TO", "HAS_FUNCTION", "HAS_VARIABLE", "BELONGS_TO_PACKAGE", "CONTAINS_PACKAGE", "HAS_COLUMN", "HAS_BUSINESS_LOGIC"}
 UML_REL_TYPES = {"EXTENDS", "IMPLEMENTS", "ASSOCIATION", "COMPOSITION", "AGGREGATION", "DEPENDENCY"}
 ETL_REL_TYPES = {"ETL_READS", "ETL_WRITES", "DATA_FLOWS_TO"}
 
@@ -1142,7 +1141,3 @@ def generate_analysis_report_from_graph(graph_data: Dict[str, Any]) -> str:
     return _generate_report(graph)
 
 
-def generate_analysis_report(json_path: str) -> str:
-    """JSON 파일 경로 → 마크다운 분석 보고서."""
-    graph = _load_graph(json_path)
-    return _generate_report(graph)

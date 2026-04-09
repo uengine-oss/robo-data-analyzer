@@ -13,7 +13,6 @@ from analyzer.strategy.dbms.common.models import FileStatus, FileAnalysisContext
 from analyzer.common.constant_context import fetch_constants_context
 from analyzer.common.table_context import fetch_table_context
 from config.settings import settings
-from util.prompt_executor import RuleLoader
 from util.ndjson_stream import emit_data, emit_message, emit_phase_event
 from util.logger import log_process
 from util.text_utils import calculate_code_token

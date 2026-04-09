@@ -10,7 +10,6 @@ import os
 import queue
 import re
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -22,8 +21,6 @@ from analyzer.strategy.framework.common.models import (
     SqlStatementChunk,
 )
 from util.text_utils import calculate_code_token as estimate_tokens
-from util.prompt_executor import get_rule_loader
-
 # LLM 배치 결과 한 건: (tables, columns, fks, alias_map, table_descriptions). 문자열 주석으로 지연 평가해 스레드 첫 import 시 NameError 방지.
 SqlChunkRawResult = Tuple[
     List[Tuple[str, str, str]],
@@ -48,84 +45,6 @@ _SQL_TABLE_KEYWORDS = re.compile(
     r"\b(FROM|JOIN|INTO|UPDATE|DELETE)\b",
     re.IGNORECASE,
 )
-
-
-def _paren_depth_at(text: str, pos: int) -> int:
-    """text[0:pos] 구간에서 괄호 깊이. '(' +1, ')' -1. 따옴표 안의 괄호는 무시."""
-    depth = 0
-    i = 0
-    while i < pos and i < len(text):
-        c = text[i]
-        if c in ("'", '"'):
-            quote = c
-            i += 1
-            while i < pos and i < len(text):
-                if text[i] == "\\":
-                    i += 2
-                    continue
-                if text[i] == quote:
-                    i += 1
-                    break
-                i += 1
-            continue
-        if c == "(":
-            depth += 1
-        elif c == ")":
-            depth -= 1
-        i += 1
-    return depth
-
-
-def _find_safe_break(text: str, start: int, ideal_end: int) -> int:
-    """ideal_end 이전에서 끊기: 괄호·따옴표 밖(depth 0)인 쉼표·줄바꿈 뒤에서만 끊음."""
-    if ideal_end >= len(text):
-        return len(text)
-    last_safe = ideal_end
-    depth = 0
-    i = start
-    in_single = False
-    in_double = False
-    while i < ideal_end and i < len(text):
-        c = text[i]
-        if in_single:
-            if c == "\\":
-                i += 2
-                continue
-            if c == "'":
-                in_single = False
-            i += 1
-            continue
-        if in_double:
-            if c == "\\":
-                i += 2
-                continue
-            if c == '"':
-                in_double = False
-            i += 1
-            continue
-        if c == "'":
-            in_single = True
-            i += 1
-            continue
-        if c == '"':
-            in_double = True
-            i += 1
-            continue
-        if c == "(":
-            depth += 1
-            i += 1
-            continue
-        if c == ")":
-            depth -= 1
-            i += 1
-            continue
-        if depth == 0:
-            if c == ",":
-                last_safe = i + 1
-            elif c == "\n":
-                last_safe = i + 1
-        i += 1
-    return last_safe if last_safe > start else ideal_end
 
 
 def _find_safe_break_at_keywords(text: str, start: int, ideal_end: int) -> int:
@@ -452,40 +371,6 @@ def _extract_tables_columns_fk_batch_via_llm(
     while len(out) < len(batch):
         out.append(([], [], [], [], {}))
     return out
-
-
-def _process_one_sql_chunk(
-    chunk: SqlStatementChunk,
-    api_key: str,
-) -> Tuple[List[ReadsWritesEdge], List[FkEdge], List[ColumnRef]]:
-    """단일 SQL 청크에 대해 LLM 테이블/컬럼/FK 추출. 병렬 호출용."""
-    sql_key = getattr(chunk, "sql_key", "")
-    sql_text = (getattr(chunk, "sql_text", "") or "").strip()
-    edges: List[ReadsWritesEdge] = []
-    fk_edges: List[FkEdge] = []
-    column_refs: List[ColumnRef] = []
-    if not sql_text:
-        return edges, fk_edges, column_refs
-    seen: set = set()
-    tables, cols, fks = _extract_tables_columns_fk_from_sql(sql_text, sql_key, api_key=api_key)
-    for schema, table, rel in tables:
-        key = (sql_key, schema, table, rel)
-        if key in seen:
-            continue
-        seen.add(key)
-        edges.append(
-            ReadsWritesEdge(
-                sql_key=sql_key,
-                table_schema=schema,
-                table_name=table,
-                relation=rel,
-            )
-        )
-    for col in cols:
-        column_refs.append(col)
-    for fk in fks:
-        fk_edges.append(fk)
-    return edges, fk_edges, column_refs
 
 
 def _build_sql_batches(

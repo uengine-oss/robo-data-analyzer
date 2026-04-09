@@ -495,7 +495,7 @@ async def _handle_varref_result(ctx, item):
                 "query": (
                     "UNWIND $rows AS row "
                     "MATCH (f:FUNCTION {function_id: row.fid}) "
-                    "MATCH (v:VARIABLE {variable_id: row.vid}) "
+                    "MATCH (v {variable_id: row.vid}) WHERE v:VARIABLE OR v:CONSTANT "
                     "MERGE (f)-[:REFERENCES]->(v)"
                 ),
                 "params": {"rows": [{"fid": fid, "vid": vid} for fid, vid in refs]},

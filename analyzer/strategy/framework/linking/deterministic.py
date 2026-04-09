@@ -242,19 +242,6 @@ def has_external_entity_info(
     return False
 
 
-QUOTED_STRING_PATTERN = re.compile(r'["\']([^"\']+)["\']')
-
-
-def extract_quoted_strings(code: str) -> List[str]:
-    """코드에서 따옴표로 감싼 모든 문자열 추출 (중복 제거, 순서 유지)."""
-    seen: set = set()
-    out: List[str] = []
-    for m in QUOTED_STRING_PATTERN.finditer(code):
-        s = m.group(1).strip()
-        if s and s not in seen:
-            seen.add(s)
-            out.append(s)
-    return out
 
 
 

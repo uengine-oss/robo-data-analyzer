@@ -17,6 +17,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 from client.neo4j_client import Neo4jClient
 from analyzer.strategy.base_analyzer import AnalysisStats
 from config.settings import settings
+from analyzer.strategy.framework.common.constants import TABLE_DB_DEFAULT, TABLE_SCHEMA_DEFAULT
 from util.ndjson_stream import emit_message, emit_data, PhaseTracker
 from analyzer.strategy.framework.linking.code_analyzer import (
     analyze_and_enrich,
@@ -59,7 +60,9 @@ async def run_phase_enrichment(
     summary_ctx = await _collect_analysis_context(st, client, orchestrator)
 
     # Step 2: 메서드 분석
-    async for chunk in _run_code_analysis(st, client, tracker, summary_ctx):
+    custom_instructions = getattr(orchestrator, "custom_instructions", []) or []
+    allow_table_discovery = not (bool(st.function_table_edges) or bool(st.reads_writes))
+    async for chunk in _run_code_analysis(st, client, tracker, summary_ctx, custom_instructions, allow_table_discovery):
         yield chunk
 
     # Step 3: Field + Module 분석
@@ -147,7 +150,11 @@ async def _collect_analysis_context(st, client, orchestrator) -> dict:
 # Step 2: 메서드 분석 (코드 분석 LLM 배치)
 # ═══════════════════════════════════════════════════════════════════════
 
-async def _run_code_analysis(st, client, tracker, summary_ctx) -> AsyncGenerator[bytes, None]:
+async def _run_code_analysis(
+    st, client, tracker, summary_ctx,
+    custom_instructions: list[str] | None = None,
+    allow_table_discovery: bool = False,
+) -> AsyncGenerator[bytes, None]:
     """메서드별 코드 분석 (summary + stereotype + dependency + calls + variables + tableInsights)."""
     function_facts_list = st.function_facts_list or []
     reads_writes = st.reads_writes or []
@@ -177,6 +184,8 @@ async def _run_code_analysis(st, client, tracker, summary_ctx) -> AsyncGenerator
         table_sample_data=summary_ctx.get("table_sample_data") or None,
         constants_context=summary_ctx.get("constants_context") or None,
         referenced_vars_by_function=summary_ctx.get("referenced_vars_by_function") or None,
+        custom_instructions=custom_instructions or None,
+        allow_table_discovery=allow_table_discovery,
     ):
         analysis_by_function.update(analysis_batch)
         yield tracker.tick_quiet()
@@ -238,7 +247,7 @@ def _process_table_insights(
 
     for _fid, analysis in analysis_batch.items():
         for insight in (analysis.get("tableInsights") or []):
-            tbl_name = (insight.get("tableName") or "").strip()
+            tbl_name = (insight.get("tableName") or "").strip().lower()
             tbl_desc = (insight.get("description") or "").strip()
             tbl_access = (insight.get("access") or "").strip().upper()
             if not tbl_name:
@@ -254,15 +263,23 @@ def _process_table_insights(
             if _fid:
                 table_map[tbl_name]["source_functions"].append(_fid)
 
-            table_rows.append({"name": tbl_name})
+            schema = TABLE_SCHEMA_DEFAULT
+            table_id = f"{schema}.{tbl_name}"
+            table_rows.append({
+                "db": TABLE_DB_DEFAULT,
+                "schema": schema,
+                "name": tbl_name,
+                "table_id": table_id,
+                "desc": tbl_desc,
+            })
 
             if _fid and tbl_access in ("READS", "WRITES"):
-                access_rows.append({"fid": _fid, "tbl_name": tbl_name, "access": tbl_access})
+                access_rows.append({"fid": _fid, "db": TABLE_DB_DEFAULT, "schema": schema, "tbl_name": tbl_name, "access": tbl_access})
 
             for col in (insight.get("columns") or []):
                 col_name = (col.get("name") or "").strip()
                 col_desc = (col.get("description") or "").strip()
-                col_type = (col.get("type") or col.get("dtype") or "").strip()
+                col_type = ""  # dtype은 DDL/실제 소스에서만. LLM 추정 금지
                 if col_name:
                     if col_name not in table_map[tbl_name]["columns"]:
                         table_map[tbl_name]["columns"][col_name] = {"descriptions": []}
@@ -273,7 +290,15 @@ def _process_table_insights(
     # UNWIND 배치 쿼리 (개별 쿼리 대신 최소 쿼리로)
     if table_rows:
         queries.append({
-            "query": "UNWIND $rows AS row MERGE (t:Table {name: row.name}) ON CREATE SET t.created_at = timestamp()",
+            "query": (
+                "UNWIND $rows AS row "
+                "MERGE (n:Table {db: row.db, schema: row.schema, name: row.name}) "
+                "ON CREATE SET n.created_at = timestamp(), n.table_id = row.table_id "
+                "ON MATCH SET n.updated_at = timestamp() "
+                "SET n.description = CASE "
+                "WHEN row.desc IS NOT NULL AND row.desc <> '' AND (n.description IS NULL OR n.description = '') "
+                "THEN row.desc ELSE n.description END"
+            ),
             "params": {"rows": table_rows},
         })
     if access_rows:
@@ -285,7 +310,7 @@ def _process_table_insights(
                     "query": (
                         f"UNWIND $rows AS row "
                         f"MATCH (f:FUNCTION {{function_id: row.fid}}) "
-                        f"MATCH (t:Table {{name: row.tbl_name}}) "
+                        f"MATCH (t:Table {{db: row.db, schema: row.schema, name: row.tbl_name}}) "
                         f"MERGE (f)-[:{acc_type}]->(t)"
                     ),
                     "params": {"rows": typed_rows},

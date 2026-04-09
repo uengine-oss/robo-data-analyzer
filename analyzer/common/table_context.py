@@ -184,7 +184,8 @@ async def _fetch_fk_relations(
         if results and results[0]:
             return [f"{r['from_col']}→{r['to_table']}.{r['to_col']}" for r in results[0]]
         return []
-    except Exception:
+    except Exception as e:
+        logger.warning("FK 관계 조회 실패 | table=%s error=%s", table_name, e)
         return []
 
 

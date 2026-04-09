@@ -36,14 +36,7 @@ DBMS_SYSTEM_PACKAGES = frozenset([
 
 # 관계 매핑
 TABLE_RELATIONSHIP_MAP = {"r": "FROM", "w": "WRITES"}
-VARIABLE_ROLE_MAP = {
-    "PACKAGE_VARIABLE": "패키지 전역 변수",
-    "DECLARE": "변수 선언및 초기화",
-    "SPEC": "함수 및 프로시저 입력 매개변수",
-}
-
 # 설정에서 가져오는 상수
-VARIABLE_CONCURRENCY = settings.concurrency.variable_concurrency
 MAX_BATCH_TOKEN = settings.batch.max_batch_token
 MAX_CONCURRENCY = settings.concurrency.max_concurrency
 MAX_SUMMARY_CHUNK_TOKEN = settings.batch.max_summary_chunk_token

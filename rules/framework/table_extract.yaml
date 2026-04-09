@@ -1,6 +1,6 @@
 name: "table_extract"
-description: "SQL 청크(단일/배치)에서 테이블·컬럼·FK 추출. 입력은 항상 sql_items 배열."
-version: "1.0"
+description: "SQL/엔티티 청크에서 테이블·컬럼·FK 추출"
+version: "2.0"
 
 input_schema:
   required:
@@ -9,94 +9,71 @@ input_schema:
 
 prompt: |
   [ROLE]
-  당신은 SQL 및 데이터베이스 스키마 분석 전문가입니다. 아래 SQL/엔티티 정의 청크(들)가 번호 순서대로 나열되어 있습니다. 각 청크마다 **해당 조각 본문에 실제로 등장한** 테이블·컬럼·FK만 추출하세요. **가장 중요한 규칙: 물리 테이블과 별칭(alias)을 절대 혼동하지 마세요. 별칭은 절대 tables 배열에 넣지 않고, 반드시 alias_map에만 넣습니다.**
+  당신은 SQL 및 데이터베이스 스키마 분석 전문가입니다.
+  각 SQL/엔티티 청크에서 테이블·컬럼·FK를 추출합니다.
 
-  [입력 타입]
-  입력은 세 종류가 섞여 있을 수 있습니다:
-  1) SQL 문자열 (SELECT/INSERT/UPDATE/DELETE) - 기존과 동일하게 FROM/JOIN에서 테이블, 컬럼 추출
-  2) 엔티티 정의 (XML 또는 텍스트)
-     - 엔티티명/스키마명 → 테이블명 (관례: CamelCase → SCREAMING_SNAKE_CASE, 예: LoanApplication → LOAN_APPLICATION)
-     - 필드명 → 컬럼명 (관례: camelCase → SCREAMING_SNAKE_CASE, 예: applicationId → APPLICATION_ID)
-     - PK 필드 → PK 컬럼
-     - 필드가 없는 엔티티도 entity-name으로 테이블을 반드시 추출하세요. 컬럼이 없으면 columns=[]로 출력하되 tables는 반드시 생성합니다.
-  3) 엔티티 클래스 필드 목록 (어떤 언어든)
-     - 테이블 매핑 어노테이션/속성이 있으면 해당 값 사용
-     - 없으면 필드명에서 컬럼명 추론 (camelCase → SCREAMING_SNAKE_CASE 관례)
-     - 엔티티 마커(어노테이션, 상속 등)가 있으면 해당 클래스가 DB 엔티티임
-  어떤 형식이든 동일한 출력 포맷(tables, columns, fks)으로 추출하세요.
 
-  [핵심 원칙: 물리 테이블 vs 별칭(alias)]
-  - **tables.name**: FROM/JOIN 절에서 직접 등장한 물리 테이블명만.
-  - **alias_map**: "테이블명 [AS] 별칭" 패턴에서 별칭. 별칭은 절대 tables에 넣지 않음.
-  - **짧은 식별자**(2~6자 영문+숫자: A, B, T1, PN01, INV1, KR03, TR09 등)가 "식별자.컬럼"으로만 쓰이면 100% 별칭.
-  - SELECT/WHERE/ON/ORDER BY에서 "식별자.컬럼" 형태의 앞쪽 식별자는 대부분 별칭.
-  - 시스템 테이블(DUAL, pg_catalog, sys.*, information_schema)은 tables에 넣지 않음.
-
-  [SCOPE]
-  - **이 조각 본문에 등장한** 테이블·컬럼만 추출.
-  - prev_summary의 alias_map은 누적 유지하고, 새 별칭 추가.
-  - columns[].table_name에는 물리 테이블명만 (별칭이면 alias_map으로 치환).
-
-  [예시]
-  SQL: `SELECT PN01.코드, INV1.부점 FROM INST1.TSKEETR09 TR09, INST1.TSKEEPK01 PK01 WHERE TR09.키 = PK01.키`
-  → tables: [TSKEETR09, TSKEEPK01]
-  → alias_map: [{alias:"TR09", physical_table:"TSKEETR09"}, {alias:"PK01", physical_table:"TSKEEPK01"}, {alias:"PN01", physical_table:"??"}]
-  PN01, INV1은 FROM/JOIN에 없으므로 tables에 넣지 않음.
-
-  [출력 전 체크]
-  1. tables의 모든 이름이 FROM/JOIN에 직접 등장했는가?
-  2. "식별자.컬럼" 형태의 식별자를 tables에 넣지 않았는가?
-  3. 2~6자 짧은 식별자를 tables에 넣지 않았는가?
-  4. columns[].table_name에 물리 테이블명만 넣었는가?
-
-  [INPUT] (순서대로 처리하세요)
+  [INPUT]
   {% for item in sql_items %}
-  --- SQL idx {{ loop.index }} (sql_key: {{ item.sql_key }}) ---
+  --- SQL {{ loop.index }} (sql_key: {{ item.sql_key }}) ---
   {% if item.get('prev_summary') %}{{ item.prev_summary }}
 
   {% endif %}{{ item.sql_text }}
   {% endfor %}
 
-  [OUTPUT_FORMAT]
-  아래 JSON 구조 하나만 출력하세요. **results 배열의 순서와 개수는 입력 sql_items와 동일**해야 합니다.
-  - **tables[].description**: 해당 테이블의 역할·의미를 한 문장으로 (예: 대출 신청 마스터, 고객 정보).
-  - **columns[].description**: 해당 컬럼의 의미·용도를 한 문장으로 (예: PK, 신청일자, 상태 코드). 추론 가능하면 반드시 채우세요.
 
+  [RULES]
+
+  ★ 1. 물리 테이블 vs 별칭 (최우선 규칙):
+  - tables.name: FROM/JOIN에 직접 등장한 물리 테이블명만
+  - alias_map: "테이블 AS 별칭" 패턴. 별칭은 절대 tables에 넣지 않음
+  - 짧은 식별자(2~6자: A, B, T1, TR09 등)가 "식별자.컬럼"으로만 쓰이면 100% 별칭
+  - 의심되면 별칭으로 간주. FROM/JOIN에 직접 없으면 tables에 넣지 않음
+  - 시스템 테이블(DUAL, pg_catalog, sys.*, information_schema) 제외
+
+  ★ 2. 입력 타입별 처리:
+  - SQL문: FROM/JOIN에서 테이블, SELECT/WHERE에서 컬럼 추출
+  - 엔티티 정의(XML/텍스트): 엔티티명→테이블명 (CamelCase→SCREAMING_SNAKE_CASE), 필드명→컬럼명
+  - 엔티티 클래스: 테이블 매핑 어노테이션 있으면 해당 값, 없으면 필드명에서 추론
+  - 필드 없는 엔티티도 tables는 반드시 생성 (columns=[] 허용)
+
+  ★ 3. 컬럼 규칙:
+  - columns[].table_name은 물리 테이블명만. 별칭이면 alias_map으로 치환
+  - description: 역할 추론 가능하면 한 문장으로 반드시 채움
+
+  ★ 4. FK 규칙:
+  - JOIN ON/WHERE에서 두 테이블 컬럼이 = 비교 → FK 후보
+  - 방향: FK 가진 쪽(many)이 from, PK 가진 쪽(one)이 to
+  - 자기 자신 조인은 fks에 넣지 않음. 불확실하면 비워둠
+
+  ★ 5. prev_summary:
+  - alias_map 누적 유지 + 새 별칭 추가
+
+  [EXAMPLE]
+  ── 올바른 추출 ──
+  SQL: SELECT TR09.코드, PK01.부점 FROM INST1.TSKEETR09 TR09, INST1.TSKEEPK01 PK01 WHERE TR09.키 = PK01.키
+  ✅ tables: [{"name": "TSKEETR09", "relation": "SELECT"}, {"name": "TSKEEPK01", "relation": "SELECT"}]
+  ✅ alias_map: [{"alias": "TR09", "physical_table": "TSKEETR09"}, {"alias": "PK01", "physical_table": "TSKEEPK01"}]
+  ✅ fks: [{"from_table": "TSKEETR09", "from_column": "키", "to_table": "TSKEEPK01", "to_column": "키"}]
+
+  ── 잘못된 추출 ──
+  ❌ tables: [{"name": "TR09"}] → TR09는 별칭. 물리 테이블명 TSKEETR09를 써야 함
+  ❌ tables: [{"name": "INST1"}] → INST1은 스키마명. 테이블이 아님
+
+
+  [OUTPUT]
   {
     "results": [
       {
-        "sql_key": "입력과 동일한 sql_key",
-        "tables": [
-          {"schema": "", "name": "물리테이블명만(별칭금지)", "relation": "SELECT 또는 INSERT 또는 UPDATE 또는 DELETE", "description": "테이블 설명 한 문장"}
-        ],
-        "alias_map": [
-          {"alias": "SQL별칭", "physical_table": "물리테이블명"}
-        ],
-        "columns": [
-          {"table_schema": "", "table_name": "물리테이블명", "column_name": "컬럼명", "description": "컬럼 설명 한 문장"}
-        ],
-        "fks": [
-          {"from_schema": "", "from_table": "", "from_column": "", "to_schema": "", "to_table": "", "to_column": ""}
-        ]
+        "sql_key": "입력과 동일",
+        "tables": [{"schema": "", "name": "물리테이블명", "relation": "SELECT|INSERT|UPDATE|DELETE", "description": "테이블 설명"}],
+        "alias_map": [{"alias": "별칭", "physical_table": "물리테이블명"}],
+        "columns": [{"table_schema": "", "table_name": "물리테이블명", "column_name": "컬럼명", "description": "컬럼 설명"}],
+        "fks": [{"from_schema": "", "from_table": "", "from_column": "", "to_schema": "", "to_table": "", "to_column": ""}]
       }
     ]
   }
 
-  [RULES]
-  - results[i]는 입력의 i번째 SQL 청크에 대한 결과. prev_summary가 있으면 그 내용을 포함·누적하여 출력하세요.
-  - **tables.name = 물리 테이블명만.** [별칭 구문 패턴], [별칭 식별 사례], [별칭으로 자주 쓰이는 식별자 목록]에 해당하는 모든 식별자는 **절대** tables에 넣지 말고, **오직 alias_map에만** 넣으세요.
-  - PN01, INV1, KR03, TR09, KR15, PK01, A, B, T1, INST1 등 **짧은 식별자**(2~6자)가 "식별자.컬럼" 형태로만 등장하면 **100% 별칭**으로 간주하고 tables에 넣지 말 것. 반드시 alias_map에만 넣을 것.
-  - **의심되면 별칭으로 간주**: FROM/JOIN에 "테이블명" 또는 "스키마.테이블명"으로 **직접 등장하지 않은** 식별자는 tables에 넣지 말고 alias_map에만 넣으세요.
-  - alias_map: prev_summary에 있던 별칭→물리테이블을 유지하고, 이 조각에서 새로 등장한 별칭을 추가한 **누적 목록**으로 출력하세요. (별칭은 테이블로 생성하지 않음)
-  - prev_summary에 "물리테이블 ... INV1 ..."처럼 적힌 이름도, 이 조각의 FROM/JOIN에 테이블명으로 직접 등장하지 않으면 tables에 포함하지 마세요. (INV1 등은 별칭이므로 alias_map에만 유지)
-  - columns[].table_name에는 **물리 테이블명**만 사용. 별칭이 보이면 alias_map에서 physical_table로 치환하여 넣으세요.
-  - 이 조각에 테이블이 없고 prev_summary도 없으면 tables=[], columns=[], alias_map=[].
-  - relation은 SELECT/INSERT/UPDATE/DELETE 중 하나.
-  - **description**: tables와 columns의 description은 SQL/엔티티 정의에서 역할을 추론할 수 있으면 반드시 한 문장으로 채우세요. 비워두지 마세요.
-  - **fks**: SQL의 JOIN ON 조건이나 WHERE절에서 두 테이블의 컬럼이 = 조건으로 비교되면 FK 후보로 식별하세요.
-    - 예: `SELECT * FROM A JOIN B ON A.B_ID = B.ID` → `fks: [{"from_table": "A", "from_column": "B_ID", "to_table": "B", "to_column": "ID"}]`
-    - 방향: FK를 가진 쪽(many, 외래키 컬럼)이 from, PK를 가진 쪽(one, 기본키 컬럼)이 to.
-    - 자기 자신 조인(self-join)은 fks에 넣지 마세요.
-    - 확실하지 않으면 fks를 비워두세요.
-  - JSON만 출력. 설명, 코드펜스, 주석, 트레일링 콤마 금지.
-  - **최종 확인**: tables 안에 PN01, INV1, KR03, TR09, PK01, A, B, T1 같은 이름이 하나라도 있으면 잘못된 출력입니다. 해당 이름은 모두 제거하고 alias_map에만 넣으세요.
+  - results 순서·개수는 입력 sql_items와 동일
+  - description은 반드시 한 문장으로 채움
+  - JSON만 출력. 코드펜스, 주석, 트레일링 콤마 금지

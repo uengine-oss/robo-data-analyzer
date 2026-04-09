@@ -28,13 +28,6 @@ class PipelinePhase(Enum):
     CANCELLED = "cancelled"
 
 
-class PipelineAction(Enum):
-    """파이프라인 제어 액션"""
-    PAUSE = "pause"
-    RESUME = "resume"
-    STOP = "stop"
-
-
 @dataclass
 class PhaseInfo:
     """단계 정보"""

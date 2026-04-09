@@ -8,7 +8,6 @@ build_in_memory_graph() 팩토리 함수도 이 파일에 위치 — InMemoryGra
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import StrEnum
 from typing import Any, Dict, List, Optional
 
 
@@ -27,18 +26,8 @@ ONTOLOGY_INTERNAL_NODE_TYPES = frozenset({
 })
 
 NODE_VARIABLE = "VARIABLE"
-NODE_GLOBAL_VARIABLE = "GLOBAL_VARIABLE"
 NODE_METHOD_CALL = "METHOD_CALL"
-NODE_FUNCTION_CALL = "FUNCTION_CALL"
 NODE_NEW_INSTANCE = "NEW_INSTANCE"
-NODE_IMPORT = "IMPORT"
-NODE_INCLUDE = "INCLUDE"
-NODE_FILE = "FILE"
-
-
-def is_internal_only(node_type: str) -> bool:
-    """Neo4j에 저장하지 않는 내부 전용 노드 타입이면 True."""
-    return node_type in ONTOLOGY_INTERNAL_NODE_TYPES
 
 
 # ---------------------------------------------------------------------------
@@ -223,14 +212,6 @@ class ArtifactChunk:
 
 
 @dataclass
-class TableRef:
-    """SQL에서 참조된 테이블."""
-    schema: str
-    table: str
-    alias: str = ""
-
-
-@dataclass
 class ColumnRef:
     """SQL에서 참조된 컬럼 (Table-HAS_COLUMN용). DBMS와 동일: fqn, name, dtype, description, nullable."""
     table_schema: str
@@ -308,28 +289,6 @@ class FkEdge:
 # ---------------------------------------------------------------------------
 # Phase5 참조 후보 및 Unresolved
 # ---------------------------------------------------------------------------
-
-
-class RefCandidateKind(StrEnum):
-    """참조 후보 종류."""
-
-    SQL_LITERAL = "SQL_LITERAL"
-    SQL_KEY_LITERAL = "SQL_KEY_LITERAL"
-    CALL_REF = "CALL_REF"
-    CONFIG_KEY_REF = "CONFIG_KEY_REF"
-    NEW_INSTANCE_REF = "NEW_INSTANCE_REF"
-    DATA_PATH_REF = "DATA_PATH_REF"
-    NAME_REF = "NAME_REF"
-
-
-
-class DmlRelation(StrEnum):
-    """DML 관계 (ReadsWritesEdge 등)."""
-
-    SELECT = "SELECT"
-    INSERT = "INSERT"
-    UPDATE = "UPDATE"
-    DELETE = "DELETE"
 
 
 @dataclass

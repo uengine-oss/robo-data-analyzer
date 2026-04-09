@@ -9,8 +9,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from config.settings import settings
 from util.artifact_logger import log_llm_interaction
-from util.prompt_executor import get_rule_loader
-
 from analyzer.strategy.framework.common.models import FkEdge, FunctionTableEdge, ReferToEdge
 
 from analyzer.strategy.framework.linking.agent.common import _init_deep_agent_env
