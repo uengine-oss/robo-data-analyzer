@@ -46,13 +46,13 @@ def build_artifact_index(artifact_chunks: List[ArtifactChunk]) -> Dict[str, Arti
         result[c.chunk_id] = c
     if len(result) < len(artifact_chunks):
         logger.info(
-            "[FW:STEP4] artifact_index 중복 제거 | 원본=%d → 고유=%d",
+            "[PHASE:1:INDEX] artifact_index 중복 제거 | 원본=%d → 고유=%d",
             len(artifact_chunks), len(result),
         )
     return result
 
 
-def run_step4(
+def build_search_indexes(
     sql_chunks: List[SqlStatementChunk],
     module_index_from_ast: Dict[str, Any],
     config_chunks: List[ConfigSectionChunk],
@@ -65,18 +65,18 @@ def run_step4(
 ]:
     """인덱스 4종 생성 (sql, class, config, artifact)."""
     logger.info(
-        "[FW:STEP4] 인덱스 빌드 진입 | sql_chunks=%d config_chunks=%d artifact_chunks=%d",
+        "[PHASE:1:INDEX] 인덱스 빌드 진입 | sql_chunks=%d config_chunks=%d artifact_chunks=%d",
         len(sql_chunks),
         len(config_chunks),
         len(artifact_chunks or []),
     )
-    logger.info("[FW:STEP4] [섹션] sql_index / module_index / config_index / artifact_index 빌드")
+    logger.info("[PHASE:1:INDEX] [섹션] sql_index / module_index / config_index / artifact_index 빌드")
     sql_index = build_sql_index(sql_chunks)
     module_index = build_module_index(module_index_from_ast)
     config_index = build_config_index(config_chunks)
     artifact_index = build_artifact_index(artifact_chunks or [])
     logger.info(
-        "[FW:STEP4] 인덱스 완료 | sql_index=%d module_index=%d config_index=%d artifact_index=%d",
+        "[PHASE:1:INDEX] 인덱스 완료 | sql_index=%d module_index=%d config_index=%d artifact_index=%d",
         len(sql_index),
         len(module_index),
         len(config_index),

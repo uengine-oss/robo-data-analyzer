@@ -72,7 +72,7 @@ def build_chunk_bundle_from_source(
     """
     path = Path(source_path)
     if not path.is_file():
-        logger.info("[FW:CHUNK] 번들 스킵 | reason=not_file file=%s", path.name)
+        logger.info("[PHASE:1:CHUNK] 번들 스킵 | reason=not_file file=%s", path.name)
         logger.debug("ChunkBundle 스킵 (소스 없음): %s", path.name)
         return None
 
@@ -80,7 +80,7 @@ def build_chunk_bundle_from_source(
         raw = read_text_with_fallback_sync(path)
         text_with_lines = add_line_numbers(raw)
     except Exception as e:
-        logger.warning("ChunkBundle 소스 읽기 실패 %s: %s", path, e)
+        logger.error("[PHASE:1:CHUNK] 소스 읽기 실패 | path=%s error=%s", path, e, exc_info=True)
         return None
 
     file_hash_val = _file_hash(path, encoding or "utf-8")
@@ -161,7 +161,7 @@ def build_chunk_bundle_from_source(
         member_vars=bundle_member_vars,
     )
     logger.info(
-        "[FW:CHUNK] 번들 생성 완료 | file=%s methods=%d function_calls=%d local_vars=%d member_vars=%d",
+        "[PHASE:1:CHUNK] 번들 생성 완료 | file=%s methods=%d function_calls=%d local_vars=%d member_vars=%d",
         path.name,
         len(bundle_methods),
         len(bundle_calls),
@@ -293,7 +293,7 @@ def build_bundle_span_index(
     span_index: Dict[str, Dict[str, Any]] = {}
     chunk_index: Dict[str, Dict[str, Any]] = {}
     if not base.is_dir():
-        logger.info("[FW:CHUNK] span_index 스킵 | reason=dir_not_found dir=%s", base.name)
+        logger.info("[PHASE:1:CHUNK] span_index 스킵 | reason=dir_not_found dir=%s", base.name)
     else:
         for path in base.glob("*.json"):
             try:
@@ -350,7 +350,7 @@ def build_bundle_span_index(
         sql_count += 1
 
     logger.info(
-        "[FW:CHUNK] span_index 완료 | span_count=%d chunk_count=%d (artifact=%d sql=%d)",
+        "[PHASE:1:CHUNK] span_index 완료 | span_count=%d chunk_count=%d (artifact=%d sql=%d)",
         len(span_index), len(chunk_index), art_count, sql_count,
     )
     return span_index, chunk_index

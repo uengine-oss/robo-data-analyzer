@@ -1,4 +1,4 @@
-"""DeepAgent: 미매칭 인덱스 키 추적 및 하위 모듈 re-export."""
+"""DeepAgent: 미매칭 인덱스 키 추적 + 엔티티 식별 통합."""
 
 from __future__ import annotations
 
@@ -20,22 +20,23 @@ from analyzer.strategy.framework.common.models import (
 )
 from analyzer.strategy.framework.common.models import FkEdge
 
-from analyzer.strategy.framework.linking.deep_agent_common import _init_deep_agent_env
-from analyzer.strategy.framework.linking.deep_agent_tools import (
+from analyzer.strategy.framework.linking.agent.common import _init_deep_agent_env
+from analyzer.strategy.framework.linking.agent.tools import (
     build_artifact_lookup_index,
     build_tools,
     config_lookup,
     sql_lookup,
 )
 
-from analyzer.strategy.framework.linking.deep_agent_entity import run_deep_agent_entity_identification
-from analyzer.strategy.framework.linking.deep_agent_varref import run_deep_agent_variable_references
+from analyzer.strategy.framework.linking.agent.entity import run_deep_agent_entity_identification
+from analyzer.strategy.framework.linking.agent.varref import run_deep_agent_variable_references
 
 logger = logging.getLogger(__name__)
 
 
 def _system_prompt_text() -> str:
-    return get_rule_loader("deep_agent").render_prompt("system", {})
+    from util.prompt_registry import prompts
+    return prompts.deep_agent_system_prompt()
 
 
 def _build_unmatched_user_message(u: UnresolvedLink) -> str:
@@ -88,9 +89,9 @@ def run_deep_agent(
     run_dir: Optional[Path] = None,
 ) -> Generator[Tuple[List[ReferToEdge], List[FunctionTableEdge], List[FkEdge]], None, None]:
     """unresolved 목록을 DeepAgent 로 처리. 항목별로 (refer_to, function_table, fk_edges) yield."""
-    logger.info("[FW:DEEPAGENT] 진입 | unresolved=%d api_key_set=%s run_dir=%s", len(unresolved_list), bool(api_key), run_dir)
+    logger.info("[PHASE:2:DEEP_AGENT] 진입 | unresolved=%d api_key_set=%s run_dir=%s", len(unresolved_list), bool(api_key), run_dir)
     if not unresolved_list:
-        logger.info("[FW:DEEPAGENT] unresolved 없음 → 즉시 종료")
+        logger.info("[PHASE:2:DEEP_AGENT] unresolved 없음 → 즉시 종료")
         return
 
     verbose = os.environ.get("FW_DEEPAGENT_VERBOSE", "true").strip().lower() == "true"
@@ -98,7 +99,7 @@ def run_deep_agent(
     try:
         create_deep_agent, model = _init_deep_agent_env(state, api_key=api_key, run_dir=run_dir)
     except Exception as e:
-        logger.warning("[FW:DEEPAGENT] deepagents 미설치 또는 LLM 클라이언트 없음: %s", e)
+        logger.error("[PHASE:2:DEEP_AGENT] deepagents 미설치 또는 LLM 클라이언트 없음: %s", e)
         return
 
     system_prompt = _system_prompt_text()
@@ -108,7 +109,7 @@ def run_deep_agent(
     def _process_one(idx: int, u: UnresolvedLink) -> Tuple[List[ReferToEdge], List[FunctionTableEdge], List[FkEdge]]:
         has_method = bool(u.function_id and u.function_id.strip())
         label = u.function_id if has_method else "(unmatched key)"
-        logger.info("[FW:DEEPAGENT] LLM 처리 (%d/%d) %s", idx, total, label)
+        logger.info("[PHASE:2:DEEP_AGENT] LLM 처리 (%d/%d) %s", idx, total, label)
 
         if verbose and u.ref_candidates:
             parts: List[str] = []
@@ -117,7 +118,7 @@ def run_deep_agent(
                     parts.append(f"{c.get('target_type', c.get('kind', '?'))}={c.get('key', c.get('value', ''))}")
                 else:
                     parts.append(f"{getattr(c, 'kind', '?')}={getattr(c, 'value', '')}")
-            logger.info("[FW:DEEPAGENT] 후보 요약 | %s candidates=%s", label, "; ".join(parts))
+            logger.info("[PHASE:2:DEEP_AGENT] 후보 요약 | %s candidates=%s", label, "; ".join(parts))
 
         refer_collector: List[ReferToEdge] = []
         table_collector: List[FunctionTableEdge] = []
@@ -151,18 +152,18 @@ def run_deep_agent(
             )
             if verbose and (refer_collector or table_collector or fk_collector):
                 logger.info(
-                    "[FW:DEEPAGENT] 결과 | %s new_refer=%d new_mt=%d new_fk=%d",
+                    "[PHASE:2:DEEP_AGENT] 결과 | %s new_refer=%d new_mt=%d new_fk=%d",
                     label, len(refer_collector), len(table_collector), len(fk_collector),
                 )
         except Exception as ex:
-            logger.warning("[FW:DEEPAGENT] invoke 실패 %s error=%s", label, ex)
+            logger.error("[PHASE:2:DEEP_AGENT] invoke 실패 %s error=%s", label, ex)
 
         return refer_collector, table_collector, fk_collector
 
     total_refer = 0
     total_mt = 0
     total_fk = 0
-    logger.info("[FW:DEEPAGENT] 병렬 처리 시작 | items=%d workers=%d", total, max_workers)
+    logger.info("[PHASE:2:DEEP_AGENT] 병렬 처리 시작 | items=%d workers=%d", total, max_workers)
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -179,9 +180,9 @@ def run_deep_agent(
                     total_fk += len(fk_result)
                     yield (refer_result, mt_result, fk_result)
             except Exception as ex:
-                logger.warning("[FW:DEEPAGENT] 워커 예외: %s", ex)
+                logger.error("[PHASE:2:DEEP_AGENT] 워커 예외: %s", ex)
 
-    logger.info("[FW:DEEPAGENT] 종료 | new_refer=%d new_mt=%d new_fk=%d", total_refer, total_mt, total_fk)
+    logger.info("[PHASE:2:DEEP_AGENT] 종료 | new_refer=%d new_mt=%d new_fk=%d", total_refer, total_mt, total_fk)
 
 
 __all__ = [

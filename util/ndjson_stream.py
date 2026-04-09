@@ -211,6 +211,11 @@ class PhaseTracker:
             )
         )
 
+    def update_step_total(self, total_items: int) -> None:
+        """현재 스텝의 total_items를 실제 값으로 업데이트. 추정값과 실제값이 다를 때 사용."""
+        step = self._steps[self._current_step_idx]
+        step["total"] = max(total_items, step["done"])
+
     def _calc_progress(self) -> int:
         """전체 가중치 기반 진행률 계산 (0~100)"""
         total_progress = 0
@@ -251,3 +256,39 @@ async def stream_with_error_boundary(
         error_msg = f"{e.__class__.__name__}: {str(e)}"
         logging.error(f"[{trace_id}] 스트림 에러: {error_msg}", exc_info=True)
         yield emit_error(error_msg, error_type=e.__class__.__name__, trace_id=trace_id)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# UI 메시지 헬퍼 — pipeline 인스턴스 없이 사용 가능한 독립 함수
+# BaseStreamingAnalyzer.emit_* 메서드와 동일한 기능
+# ═══════════════════════════════════════════════════════════════════════
+
+def emit_phase_header(phase_num, title: str, detail: str = "") -> bytes:
+    """단계 헤더. 예: [1단계] AST 구조 생성 (10개 파일)"""
+    phase_title = f"[{phase_num}단계] " if phase_num else ""
+    return emit_message(f"{phase_title}{title}" + (f" ({detail})" if detail else ""))
+
+
+def emit_separator() -> bytes:
+    """구분선."""
+    return emit_message("━" * 50)
+
+
+def emit_file_start(file_idx: int, total: int, file_name: str) -> bytes:
+    """파일 처리 시작. 예: 📄 [1/10] OrderService.java"""
+    return emit_message(f"📄 [{file_idx}/{total}] {file_name}")
+
+
+def emit_phase_complete(phase_num, summary: str) -> bytes:
+    """단계 완료. 예: ✅ 1단계 완료: 구조 노드 25개"""
+    return emit_message(f"   ✅ {phase_num}단계 완료: {summary}")
+
+
+def emit_skip(reason: str) -> bytes:
+    """건너뛰기. 예: ℹ️ DDL 없음"""
+    return emit_message(f"ℹ️ {reason}")
+
+
+def emit_file_error(file_name: str, error: str) -> bytes:
+    """파일 오류. 예: ❌ 오류 발생 (file.sql): timeout"""
+    return emit_message(f"   ❌ 오류 발생 ({file_name}): {error}")

@@ -58,7 +58,8 @@ async def run_graph_queries(
             async for result in _execute():
                 yield result
     except Exception as e:
-        logger.warning("[GRAPH] Neo4j 반영 실패 | %s error=%s", label, e, exc_info=True)
+        logger.error("[GRAPH] Neo4j 반영 실패 | label=%s error=%s", label, e, exc_info=True)
+        raise
 
 
 async def run_graph_queries_collect(

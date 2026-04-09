@@ -58,14 +58,16 @@ def read_text_with_fallback_sync(
     path: str | Path,
     encodings: tuple[str, ...] = DEFAULT_ENCODING_CANDIDATES,
 ) -> str:
-    """여러 인코딩을 순서대로 시도하여 텍스트 파일을 읽는다. 모두 실패하면 replace 모드."""
+    """여러 인코딩을 순서대로 시도하여 텍스트 파일을 읽는다. 모두 실패하면 RuntimeError."""
     p = Path(path)
+    last_err: Exception | None = None
     for enc in encodings:
         try:
             return p.read_text(encoding=enc)
-        except Exception:
+        except Exception as e:
+            last_err = e
             continue
-    return p.read_bytes().decode("utf-8", errors="replace")
+    raise RuntimeError(f"모든 인코딩 시도 실패: {path} (후보: {encodings})") from last_err
 
 
 def read_json_with_fallback(

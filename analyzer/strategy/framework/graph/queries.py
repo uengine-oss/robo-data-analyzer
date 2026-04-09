@@ -686,7 +686,7 @@ def build_reads_writes_queries(edges: List[ReadsWritesEdge]) -> List[Dict[str, A
     return queries
 
 
-def build_function_table_from_writes_queries(edges: List[FunctionTableEdge]) -> List[Dict[str, Any]]:
+def build_node_table_queries(edges: List[FunctionTableEdge]) -> List[Dict[str, Any]]:
     """(Function|Field)-[:READS|WRITES]->(Table) 관계. DUAL 등 제외. db/schema 빈 값은 postgres/public.
 
     테이블 매칭은 대소문자 무시(toLower). 기존 Table 노드가 있으면 MATCH로 찾아 연결하고,
@@ -901,17 +901,17 @@ def build_refer_to_queries(edges: List[ReferToEdge]) -> List[Dict[str, Any]]:
 # 4. Summary / Label — summary·stereotype 속성 및 라벨 업데이트
 # ═══════════════════════════════════════════════════════════════════════════
 
-def build_function_summary_queries(summary_by_function: Dict[str, Dict[str, Any]], lang: str) -> List[Dict[str, Any]]:
+def build_analysis_result_queries(analysis_by_function: Dict[str, Dict[str, Any]], lang: str) -> List[Dict[str, Any]]:
     """FUNCTION 노드에 summary·stereotype 속성 및 스테레오타입 라벨 추가."""
     import json
-    from analyzer.strategy.framework.linking.summarizer import VALID_STEREOTYPES
+    from analyzer.strategy.framework.linking.code_analyzer import VALID_STEREOTYPES
     from analyzer.strategy.framework.common.ontology import get_ontology
     onto = get_ontology()
     valid_for_lang = onto.valid_stereotypes(lang)
 
     rows = []
     gwt_rows = []
-    for function_id, data in summary_by_function.items():
+    for function_id, data in analysis_by_function.items():
         stereotype = (data.get("stereotype") or "").strip()
         if stereotype not in VALID_STEREOTYPES:
             stereotype = ""
@@ -945,7 +945,7 @@ def build_function_summary_queries(summary_by_function: Dict[str, Dict[str, Any]
 
     # stereotype 라벨 (언어에 맞는 것만)
     st_groups: Dict[str, List[str]] = {}
-    for function_id, data in summary_by_function.items():
+    for function_id, data in analysis_by_function.items():
         stereotype = (data.get("stereotype") or "").strip()
         if stereotype in VALID_STEREOTYPES and stereotype in valid_for_lang:
             st_groups.setdefault(stereotype, []).append(function_id)
@@ -985,10 +985,10 @@ def build_function_summary_queries(summary_by_function: Dict[str, Dict[str, Any]
     return queries
 
 
-def build_actor_queries(summary_by_function: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+def build_actor_queries(analysis_by_function: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Actor 노드 + ROLE 관계 생성 쿼리. 동의어 통합 후 호출."""
     actor_rows = []
-    for function_id, data in summary_by_function.items():
+    for function_id, data in analysis_by_function.items():
         actor = (data.get("actor") or "").strip()
         if actor:
             actor_rows.append({"function_id": function_id, "actor": actor})
@@ -1027,7 +1027,7 @@ def build_variable_summary_queries(summary_by_variable: Dict[str, Dict[str, Any]
 
 def build_module_summary_queries(summary_by_module: Dict[str, Dict[str, Any]], lang: str) -> List[Dict[str, Any]]:
     """MODULE 노드에 summary·moduleStereotype 속성 및 언어별 레이블 업데이트 (fqn 기준). UNWIND 배치."""
-    from analyzer.strategy.framework.linking.summarizer import VALID_MODULE_STEREOTYPES
+    from analyzer.strategy.framework.linking.code_analyzer import VALID_MODULE_STEREOTYPES
     from analyzer.strategy.framework.common.ontology import get_ontology
     onto = get_ontology()
 
@@ -1308,11 +1308,11 @@ def build_uml_association_queries(
 
 
 def build_uml_dependency_queries(
-    summary_by_function: Dict[str, Dict[str, Any]],
+    analysis_by_function: Dict[str, Dict[str, Any]],
     function_facts_list: List[Any],
     module_index: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    """Step6 summary_by_function의 dependencies로 DEPENDENCY/COMPOSITION/AGGREGATION 쿼리 생성.
+    """Step6 analysis_by_function의 dependencies로 DEPENDENCY/COMPOSITION/AGGREGATION 쿼리 생성.
 
     UNWIND 배치: (rel_type, internal/external) 조합별로 그룹화하여 최소 쿼리 수로 실행.
     """
@@ -1328,7 +1328,7 @@ def build_uml_dependency_queries(
     # (rel_type, is_internal) → rows
     groups: Dict[tuple, list] = {}
     seen: set = set()
-    for function_id, data in (summary_by_function or {}).items():
+    for function_id, data in (analysis_by_function or {}).items():
         if not isinstance(data, dict):
             continue
         source_fqn = method_id_to_module_fqn.get(function_id)

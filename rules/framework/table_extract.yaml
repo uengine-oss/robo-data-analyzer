@@ -25,77 +25,29 @@ prompt: |
      - 엔티티 마커(어노테이션, 상속 등)가 있으면 해당 클래스가 DB 엔티티임
   어떤 형식이든 동일한 출력 포맷(tables, columns, fks)으로 추출하세요.
 
-  [핵심 원칙 — 반복하여 준수]
-  - **tables.name**에는 오직 **FROM 절 또는 JOIN 절에서 "테이블명" 또는 "스키마.테이블명"으로 직접 등장한 식별자**만 넣습니다.
-  - **SELECT, WHERE, ON, ORDER BY, GROUP BY** 등에서 **"식별자.컬럼명"** 형태로 등장하는 **앞쪽 식별자**는 대부분 **별칭(alias)**입니다. 이 별칭은 **절대 tables에 넣지 않고**, 반드시 **alias_map**에만 { "alias": "해당식별자", "physical_table": "실제물리테이블명" } 형태로 넣습니다.
-  - **짧은 식별자**(영문 대문자+숫자 조합, 보통 2~6자: PN01, INV1, KR03, TR09, KR15, PK01, INST1, T1, A, B 등)가 **"식별자.컬럼"** 형태로만 쓰이면 **100% 별칭**으로 간주하고 tables에 넣지 마세요.
+  [핵심 원칙: 물리 테이블 vs 별칭(alias)]
+  - **tables.name**: FROM/JOIN 절에서 직접 등장한 물리 테이블명만.
+  - **alias_map**: "테이블명 [AS] 별칭" 패턴에서 별칭. 별칭은 절대 tables에 넣지 않음.
+  - **짧은 식별자**(2~6자 영문+숫자: A, B, T1, PN01, INV1, KR03, TR09 등)가 "식별자.컬럼"으로만 쓰이면 100% 별칭.
+  - SELECT/WHERE/ON/ORDER BY에서 "식별자.컬럼" 형태의 앞쪽 식별자는 대부분 별칭.
+  - 시스템 테이블(DUAL, pg_catalog, sys.*, information_schema)은 tables에 넣지 않음.
 
   [SCOPE]
-  - **이 조각에 등장한 테이블·컬럼만** 추출하세요. 이전 컨텍스트(prev_summary)에만 있고 현재 조각 본문에 없는 테이블에는 컬럼을 붙이지 마세요.
-  - 컬럼은 반드시 **이 조각의 tables 목록에 있는 테이블(물리 테이블명)**에만 매핑하세요. columns[].table_name에는 **물리 테이블명**만 넣고, 별칭을 넣지 마세요(별칭이면 alias_map으로 물리 테이블명으로 치환).
-  - **prev_summary는 이전 조각들에서 누적된 요약**입니다. prev_summary를 보고 그 내용을 참고한 뒤, **해당 내용을 포함하여** 이번 조각의 결과를 만드세요. alias_map에는 **prev_summary에 있던 별칭→물리테이블**을 유지하고, 이 조각에서 **새로 등장한** 별칭을 추가하여 **누적된 alias_map**을 출력하세요. tables도 이전에 나온 물리 테이블과 이 조각의 물리 테이블을 합쳐서 출력해도 됩니다(중복 제거).
-  - **tables.name에는 물리 테이블명만** 넣으세요. 아래 [별칭 구문 패턴]과 [별칭 식별 사례]에 해당하는 모든 식별자는 **절대 tables에 넣지 말고** alias_map에만 넣으세요.
+  - **이 조각 본문에 등장한** 테이블·컬럼만 추출.
+  - prev_summary의 alias_map은 누적 유지하고, 새 별칭 추가.
+  - columns[].table_name에는 물리 테이블명만 (별칭이면 alias_map으로 치환).
 
-  [별칭 구문 패턴] (다음과 같이 등장한 이름은 별칭이므로 tables.name에 넣지 말고 alias_map에만 넣으세요)
-  - FROM 스키마.테이블명 [AS] 별칭  → tables에는 테이블명만, alias_map에 { alias: "별칭", physical_table: "테이블명" }
-  - FROM 테이블명 [AS] 별칭         → 동일
-  - , 스키마.테이블명 [AS] 별칭    (쉼표로 나열된 경우)
-  - JOIN 스키마.테이블명 [AS] 별칭
-  - JOIN 테이블명 [AS] 별칭
-  - ( 서브쿼리 ) [AS] 별칭         → 별칭만 alias_map에, physical_table은 서브쿼리 대표 또는 빈 문자열
-  - WITH 서브쿼리 AS 별칭          → 별칭은 alias_map에만 (CTE 별칭)
-  위 패턴에서 **공백 또는 AS 뒤에 오는 식별자**가 별칭입니다. 별칭은 **테이블로 생성하지 마세요.**
+  [예시]
+  SQL: `SELECT PN01.코드, INV1.부점 FROM INST1.TSKEETR09 TR09, INST1.TSKEEPK01 PK01 WHERE TR09.키 = PK01.키`
+  → tables: [TSKEETR09, TSKEEPK01]
+  → alias_map: [{alias:"TR09", physical_table:"TSKEETR09"}, {alias:"PK01", physical_table:"TSKEEPK01"}, {alias:"PN01", physical_table:"??"}]
+  PN01, INV1은 FROM/JOIN에 없으므로 tables에 넣지 않음.
 
-  [별칭으로 자주 쓰이는 식별자 목록 — 이들은 "식별자.컬럼" 형태로 나오면 무조건 별칭]
-  다음 식별자들이 SELECT/WHERE/ON/ORDER BY 등에서 **앞에 붙어서** (예: PN01.컬럼, INV1.코드) 등장하면 **전부 별칭**입니다. tables 배열에 **절대** 넣지 마세요: PN01, PN02, INV1, INV2, KR01, KR02, KR03, KR15, TR09, PK01, PK02, INST1, T1, T2, A, B, C, D, E, TMP, ALIAS, SRC, DST, L, R, M, X, Y, Z 및 이와 유사한 2~6자 영문+숫자 조합.
-
-  [별칭 식별 사례 — 반드시 별칭으로만 처리할 식별자 예시]
-  아래와 같은 SQL에서 **tables에는 물리 테이블명만** 넣고, **별칭은 alias_map에만** 넣으세요.
-  - FROM INST1.TSKEETR09 TR09  → tables: [TSKEETR09], alias_map: [{ alias: "TR09", physical_table: "TSKEETR09" }]. TR09는 별칭이므로 tables에 넣지 않음.
-  - , INST1.TSKEEPK01 PK01     → tables에 TSKEEPK01 추가, alias_map에 { alias: "PK01", physical_table: "TSKEEPK01" } 추가. PK01는 별칭.
-  - SELECT PN01.컬럼명, INV1.회계부점코드 WHERE KR03.그룹코드 = ...  → PN01, INV1, KR03는 "별칭.컬럼" 형태의 앞쪽 식별자이므로 **전부 별칭**. tables에 PN01/INV1/KR03 넣지 말고, FROM/JOIN에 실제로 등장한 물리 테이블만 tables에 넣고 해당 별칭→물리테이블은 alias_map에만 넣기.
-  - 짧은 식별자(2~5자 영문+숫자)가 SELECT/WHERE/ON에서 "식별자.컬럼"으로만 쓰이면 별칭: PN01, INV1, KR03, TR09, KR15, PK01 등.
-  - FROM 테이블명 AS PN01 / FROM 테이블명 PN01  → PN01은 별칭. tables에는 테이블명만.
-  - JOIN 스키마.테이블명 alias_name  → alias_name은 별칭. tables에는 스키마.테이블명의 테이블명 부분만(또는 스키마.테이블명 전체를 하나의 물리 테이블로 볼 경우 그대로), alias_map에 alias_name 등록.
-
-  [전체 SQL 예시 — 올바른 추출]
-  예시 SQL:
-    SELECT PN01.회계단위코드, INV1.부점코드, KR03.그룹코드
-    FROM INST1.TSKEETR09 TR09, INST1.TSKEEPK01 PK01
-    WHERE TR09.키 = PK01.키 AND PN01.상태 = 'Y'
-  올바른 결과:
-    tables: [ {"name": "TSKEETR09", "schema": "", "relation": "SELECT"}, {"name": "TSKEEPK01", "schema": "", "relation": "SELECT"} ]
-    alias_map: [ {"alias": "TR09", "physical_table": "TSKEETR09"}, {"alias": "PK01", "physical_table": "TSKEEPK01"}, {"alias": "PN01", "physical_table": "??"} ]
-    (PN01, INV1, KR03는 이 조각의 FROM/JOIN에 테이블로 등장하지 않았으므로 tables에 넣지 않음. prev_summary에 PN01→실제테이블 매핑이 있으면 alias_map에 반영.)
-  잘못된 결과(절대 하지 말 것):
-    tables에 "PN01", "INV1", "KR03", "TR09", "PK01"를 넣는 경우 — 이들은 모두 별칭이므로 tables에 넣으면 안 됨.
-
-  [또 다른 예시 — JOIN만 있는 경우]
-  예시 SQL:
-    SELECT A.컬럼1, B.컬럼2 FROM SCHEMA.TABLE_X A JOIN SCHEMA.TABLE_Y B ON A.id = B.id
-  올바른 결과:
-    tables: [ {"name": "TABLE_X", ...}, {"name": "TABLE_Y", ...} ]
-    alias_map: [ {"alias": "A", "physical_table": "TABLE_X"}, {"alias": "B", "physical_table": "TABLE_Y"} ]
-  A, B는 별칭이므로 tables에 넣지 않음.
-
-  [절대 금지 — 잘못된 출력 예]
-  - **tables에 별칭을 넣는 것**: PN01, INV1, KR03, TR09, PK01, KR15, A, B, T1, INST1 등이 SELECT/WHERE/ON에서 "식별자.컬럼"으로만 등장했는데 tables의 name에 이들을 넣으면 **심각한 오류**입니다. 이들은 전부 alias_map에만 넣으세요.
-  - **prev_summary에만 나온 이름을 tables에 넣는 것**: prev_summary에 "물리테이블: TSKEETR09, INV1, ..."처럼 적혀 있어도, INV1은 별칭입니다. 이 조각의 FROM/JOIN에 "테이블명"으로 직접 등장하지 않은 이름은 tables에 넣지 마세요.
-  - **짧은 식별자를 물리 테이블로 추측하는 것**: 2~6자 영문+숫자(예: PN01, INV1)는 실무에서 거의 항상 별칭으로 쓰입니다. **절대** tables에 넣지 말고 alias_map에만 넣으세요.
-
-  [중요 — 한 번 더]
-  - tables에는 **FROM/JOIN 절에서 "스키마.테이블명" 또는 "테이블명"으로 직접 등장한 식별자만** 넣으세요.
-  - **시스템/더미 테이블**은 실제 데이터 테이블이 아니므로 **tables에 넣지 마세요.** (Oracle DUAL, PostgreSQL pg_catalog, SQL Server sys.*, MySQL information_schema 등)
-  - SELECT·WHERE·ON·ORDER BY·GROUP BY 등에서 **"별칭.컬럼"** 형태로만 등장한 앞쪽 식별자(INV1, KR15, PN01, TR09, PK01, A, B, T1 등)는 **별칭**이므로 tables에 넣지 말고 alias_map에만 넣으세요.
-  - **짧은 식별자**(영문+숫자 2~6자)는 대부분 별칭입니다. FROM/JOIN에 "테이블명 AS 별칭" 또는 "테이블명 별칭"처럼 **직접 등장하지 않으면** tables에 넣지 말고 alias_map에만 넣으세요.
-  - prev_summary에 나열된 이름이라도, **이 조각의 FROM/JOIN에 테이블명으로 직접 등장하지 않은 이름**은 tables에 넣지 마세요.
-
-  [출력 전 체크리스트]
-  각 청크 결과를 낼 때 다음을 확인하세요.
-  1. tables의 name에 넣은 모든 이름이 **이 조각의 FROM 또는 JOIN 절에 "테이블명" 또는 "스키마.테이블명"으로 실제로 등장**했는가?
-  2. "식별자.컬럼" 형태로만 등장한 식별자(PN01, INV1, KR03 등)를 tables에 넣지 않았는가? → 넣었다면 제거하고 alias_map에만 넣었는가?
-  3. 2~6자 짧은 식별자를 tables에 넣지 않았는가? (넣었다면 대부분 오류이므로 alias_map으로 옮기세요.)
-  4. columns[].table_name에는 **물리 테이블명**만 넣었는가? (별칭이면 alias_map에서 물리 테이블명으로 바꿔서 넣었는가?)
+  [출력 전 체크]
+  1. tables의 모든 이름이 FROM/JOIN에 직접 등장했는가?
+  2. "식별자.컬럼" 형태의 식별자를 tables에 넣지 않았는가?
+  3. 2~6자 짧은 식별자를 tables에 넣지 않았는가?
+  4. columns[].table_name에 물리 테이블명만 넣었는가?
 
   [INPUT] (순서대로 처리하세요)
   {% for item in sql_items %}

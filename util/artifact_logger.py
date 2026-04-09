@@ -31,6 +31,10 @@ _PROMPT_LOG_DIR = settings.path.prompt_log_dir
 _FILE_LOCK = threading.Lock()
 _CLEARED_PROMPTS: set[str] = set()
 
+# 실행 ID — 각 프로세스 시작 시 고유값. 캐시 검증 시 1차/2차 실행 구분용.
+import datetime as _dt
+_RUN_ID = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+
 
 def _sanitize_prompt_name(prompt_name: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", prompt_name)
@@ -106,6 +110,7 @@ def log_llm_interaction(
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "prompt": prompt_name,
+        "run_id": _RUN_ID,
         "input": _safe_serialize(input_payload),
         "output": _safe_serialize(output_payload),
     }
@@ -117,16 +122,13 @@ def log_llm_interaction(
         entry["sortKey"] = sort_key
 
     with _FILE_LOCK:
-        if prompt_name not in _CLEARED_PROMPTS:
-            path = _prompt_log_path(prompt_name)
-            if os.path.exists(path):
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
-            _CLEARED_PROMPTS.add(prompt_name)
-
+        # run_id 기반 누적 (이전 실행 로그 보존 — 캐시 히트 검증용)
+        # 같은 run_id 내에서는 첫 호출 시 해당 run_id 엔트리만 초기화
         records = _load_prompt_log(prompt_name)
+        if prompt_name not in _CLEARED_PROMPTS:
+            # 이번 실행(run_id)의 기존 엔트리만 제거 (이전 실행 보존)
+            records = [r for r in records if r.get("run_id") != _RUN_ID]
+            _CLEARED_PROMPTS.add(prompt_name)
         records.append(entry)
         records.sort(key=_entry_sort_key)
         _write_prompt_log(prompt_name, records)
@@ -144,6 +146,32 @@ def invoke_with_audit(
 ):
     with get_openai_callback() as callback:
         result = chain.invoke(payload, config=config)
+    token_usage = _extract_token_usage(callback)
+    log_llm_interaction(
+        prompt_name,
+        input_payload if input_payload is not None else payload,
+        result,
+        token_usage=token_usage,
+        metadata=metadata,
+        sort_key=sort_key,
+    )
+    return result
+
+
+async def ainvoke_with_audit(
+    chain,
+    payload: dict[str, Any],
+    prompt_name: str,
+    *,
+    input_payload: Optional[Any] = None,
+    metadata: Optional[dict[str, Any]] = None,
+    sort_key: Optional[Any] = None,
+    config: Optional[Any] = None
+):
+    """비동기 버전 invoke_with_audit. chain.ainvoke() 사용."""
+    from langchain_community.callbacks import get_openai_callback
+    with get_openai_callback() as callback:
+        result = await chain.ainvoke(payload, config=config)
     token_usage = _extract_token_usage(callback)
     log_llm_interaction(
         prompt_name,

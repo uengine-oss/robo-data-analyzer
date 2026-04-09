@@ -357,20 +357,16 @@ def _extract_tables_columns_fk_via_llm(
     if not (sql_text or "").strip():
         return [], [], []
     if not api_key:
-        logger.warning("[FW:STEP5] LLM_API_KEY 없음, sql_table_extract 스킵 | sql_key=%s", sql_key)
+        logger.error("[PHASE:2:TABLE_LLM] LLM_API_KEY 없음, sql_table_extract 스킵 | sql_key=%s", sql_key)
         return [], [], []
     text = (sql_text.strip() or "")[:SQL_LLM_CHUNK_MAX]
     try:
-        loader = get_rule_loader("framework")
-        result = loader.execute(
-            "table_extract",
-            {"sql_items": [{"sql_key": sql_key or "", "sql_text": text, "prev_summary": ""}]},
-            api_key=api_key,
-        )
+        from util.prompt_registry import prompts
+        result = prompts.table_extract([{"sql_key": sql_key or "", "sql_text": text, "prev_summary": ""}], api_key)
         res_list = result.get("results") or []
         result_item = res_list[0] if res_list and isinstance(res_list[0], dict) else {}
     except Exception as e:
-        logger.warning("[FW:STEP5] LLM sql_table_extract 오류 | sql_key=%s error=%s", sql_key, e)
+        logger.error("[PHASE:2:TABLE_LLM] LLM sql_table_extract 오류 | sql_key=%s error=%s", sql_key, e)
         return [], [], []
     tables, columns, fks, _, _ = _parse_sql_extract_result(result_item)
     return tables, columns, fks
@@ -386,7 +382,7 @@ def _extract_tables_columns_fk_from_sql(
         return [], [], []
     pieces = _split_sql_for_llm(sql_text)
     if len(pieces) > 1:
-        logger.debug("[FW:STEP5] 긴 SQL 분할 | sql_key=%s pieces=%d", sql_key, len(pieces))
+        logger.debug("[PHASE:2:TABLE_LLM] 긴 SQL 분할 | sql_key=%s pieces=%d", sql_key, len(pieces))
     all_tables: List[Tuple[str, str, str]] = []
     all_columns: List[ColumnRef] = []
     all_fks: List[FkEdge] = []
@@ -434,7 +430,7 @@ def _extract_tables_columns_fk_batch_via_llm(
     """여러 SQL 청크를 한 번에 LLM에 보내 테이블/컬럼/FK/table_descriptions 추출."""
     if not batch or not api_key:
         return []
-    loader = get_rule_loader("framework")
+    from util.prompt_registry import prompts
     sql_items = []
     for i, c in enumerate(batch):
         sql_key = getattr(c, "sql_key", "")
@@ -442,21 +438,11 @@ def _extract_tables_columns_fk_batch_via_llm(
         prev = ""
         if prev_summaries and i < len(prev_summaries):
             prev = (prev_summaries[i] or "").strip()
-        sql_items.append(
-            {
-                "sql_key": sql_key,
-                "sql_text": sql_text,
-                "prev_summary": prev,
-            }
-        )
+        sql_items.append({"sql_key": sql_key, "sql_text": sql_text, "prev_summary": prev})
     try:
-        result = loader.execute(
-            "table_extract",
-            {"sql_items": sql_items},
-            api_key=api_key,
-        )
+        result = prompts.table_extract(sql_items, api_key)
     except Exception as e:
-        logger.warning("[FW:STEP5] LLM sql_table_extract 오류: %s", e)
+        logger.error("[PHASE:2:TABLE_LLM] LLM sql_table_extract 오류 | error=%s", e, exc_info=True)
         return [([], [], [], [], {}) for _ in batch]
     out: List[Tuple[List[Tuple[str, str, str]], List[ColumnRef], List[FkEdge], List[Dict[str, str]], Dict[Tuple[str, str], str]]] = []
     results_list = result.get("results") or []
@@ -649,7 +635,7 @@ def _link_sql_to_tables_per_key_pipeline(
             try:
                 e, fk, col, batch_desc, raw = _process_one_sql_batch([chunk], api_key, [prev])
             except Exception as ex:
-                logger.warning("[FW:STEP5] SQL 키 단위 LLM 예외: %s", ex)
+                logger.error("[PHASE:2:TABLE_LLM] SQL 키 단위 LLM 예외: %s", ex)
                 e, fk, col, batch_desc, raw = [], [], [], {}, [([], [], [], [], {})]
             with lock:
                 if raw and len(raw) > 0:
@@ -671,7 +657,7 @@ def _link_sql_to_tables_per_key_pipeline(
                 completed_count[0] += 1
                 n, t = completed_count[0], total_pieces
                 if n % 10 == 0 or n == t:
-                    logger.info("[FW:STEP5] SQL→테이블(키 단위 파이프라인) 완료 %d/%d", n, t)
+                    logger.info("[PHASE:2:TABLE_LLM] SQL→테이블(키 단위 파이프라인) 완료 %d/%d", n, t)
             # 배치 완료 즉시 콜백 (lock 밖에서)
             if on_batch and (e or fk or col):
                 on_batch(e, fk, col, batch_desc or {})
@@ -682,7 +668,7 @@ def _link_sql_to_tables_per_key_pipeline(
                     work_queue.put((key, piece_i + 1, chunk_next, prev_next))
 
     logger.info(
-        "[FW:STEP5] SQL→테이블 키 단위 파이프라인 시작 | 키=%d 조각=%d 워커=%d",
+        "[PHASE:2:TABLE_LLM] SQL→테이블 키 단위 파이프라인 시작 | 키=%d 조각=%d 워커=%d",
         len(by_key),
         total_pieces,
         workers,
@@ -693,16 +679,11 @@ def _link_sql_to_tables_per_key_pipeline(
     ]
     for t in threads:
         t.start()
-    while True:
-        with lock:
-            n = completed_count[0]
-        if n >= total_pieces:
-            break
-        time.sleep(0.05)
+    # 종료 신호 전송 후 모든 스레드 join (busy-wait 제거)
     for _ in threads:
         work_queue.put((None, 0, None, ""))
     for t in threads:
-        t.join()
+        t.join(timeout=600)
     return edges, fk_edges, column_refs, table_descriptions
 
 
@@ -730,12 +711,12 @@ def link_sql_to_tables(
         if (getattr(c, "sql_text", "") or "").strip()
     ]
     if not chunks_to_process:
-        logger.info("[FW:STEP5] link_sql_to_tables  처리할 SQL 청크 없음")
+        logger.info("[PHASE:2:TABLE_LLM] link_sql_to_tables  처리할 SQL 청크 없음")
         return edges, fk_edges, column_refs, table_descriptions
 
     expanded = _expand_chunks_with_sql_split(chunks_to_process)
     logger.info(
-        "[FW:STEP5] SQL 분할 확장 | 원본 청크=%d → 확장 후=%d",
+        "[PHASE:2:TABLE_LLM] SQL 분할 확장 | 원본 청크=%d → 확장 후=%d",
         len(chunks_to_process),
         len(expanded),
     )
@@ -773,7 +754,7 @@ def link_sql_to_tables(
             index_in_round = {id(c): i for i, (_, c, _) in enumerate(round_data)}
             batches = _build_sql_batches(round_chunks, max_tokens)
             logger.info(
-                "[FW:STEP5] SQL→테이블 라운드 %d/%d 시작 | 이번 라운드 청크=%d 배치=%d",
+                "[PHASE:2:TABLE_LLM] SQL→테이블 라운드 %d/%d 시작 | 이번 라운드 청크=%d 배치=%d",
                 round_i + 1,
                 max_pieces,
                 len(round_chunks),
@@ -781,7 +762,7 @@ def link_sql_to_tables(
             )
             if round_i == 0:
                 logger.info(
-                    "[FW:STEP5] link_sql_to_tables | 청크=%d → 배치=%d (max_tokens=%d)",
+                    "[PHASE:2:TABLE_LLM] link_sql_to_tables | 청크=%d → 배치=%d (max_tokens=%d)",
                     len(round_chunks),
                     len(batches),
                     max_tokens,
@@ -852,26 +833,135 @@ def link_sql_to_tables(
                             if on_batch and (e or fk or col):
                                 on_batch(e, fk, col, batch_desc or {})
                         except Exception as ex:
-                            logger.warning("[FW:STEP5] SQL 배치 LLM 처리 예외: %s", ex)
+                            logger.error("[PHASE:2:TABLE_LLM] SQL 배치 LLM 처리 예외: %s", ex)
                         completed += 1
                         if completed == total_batches:
                             logger.info(
-                                "[FW:STEP5] SQL→테이블 LLM 완료  배치=%d/%d",
+                                "[PHASE:2:TABLE_LLM] SQL→테이블 LLM 완료  배치=%d/%d",
                                 completed,
                                 total_batches,
                             )
                         else:
                             logger.debug(
-                                "[FW:STEP5] SQL→테이블 LLM 진행  배치=%d/%d",
+                                "[PHASE:2:TABLE_LLM] SQL→테이블 LLM 진행  배치=%d/%d",
                                 completed,
                                 total_batches,
                             )
 
     logger.info(
-        "[FW:STEP5] link_sql_to_tables 완료  reads_writes=%d  fk_edges=%d  column_refs=%d  table_descriptions=%d",
+        "[PHASE:2:TABLE_LLM] link_sql_to_tables 완료  reads_writes=%d  fk_edges=%d  column_refs=%d  table_descriptions=%d",
         len(edges),
         len(fk_edges),
         len(column_refs),
         len(table_descriptions),
+    )
+    return edges, fk_edges, column_refs, table_descriptions
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Async 버전 — AsyncBatchExecutor + LLMRateLimiter 기반
+# ═══════════════════════════════════════════════════════════════════════
+
+async def link_sql_to_tables_async(
+    sql_chunks: List[SqlStatementChunk],
+    api_key: Optional[str] = None,
+    on_batch: Optional[Any] = None,
+) -> Tuple[List[ReadsWritesEdge], List[FkEdge], List[ColumnRef], Dict[Tuple[str, str], str]]:
+    """SqlStatement → Table (async 버전). AsyncBatchExecutor + LLMRateLimiter 사용.
+
+    동기 link_sql_to_tables()와 동일한 결과를 반환하되,
+    LLM 호출을 asyncio.to_thread로 래핑하여 이벤트 루프를 차단하지 않고
+    LLMRateLimiter로 전역 동시성을 제어합니다.
+    """
+    import asyncio
+    from util.async_executor import get_rate_limiter
+
+    edges: List[ReadsWritesEdge] = []
+    fk_edges: List[FkEdge] = []
+    column_refs: List[ColumnRef] = []
+    table_descriptions: Dict[Tuple[str, str], str] = {}
+    seen_edge: set = set()
+    seen_col: set = set()
+    _api_key = api_key or settings.llm.api_key or os.environ.get("LLM_API_KEY", "")
+
+    chunks_to_process = [c for c in sql_chunks if (getattr(c, "sql_text", "") or "").strip()]
+    if not chunks_to_process:
+        return edges, fk_edges, column_refs, table_descriptions
+
+    expanded = _expand_chunks_with_sql_split(chunks_to_process)
+    by_key: Dict[str, List[SqlStatementChunk]] = {}
+    for c in expanded:
+        by_key.setdefault(getattr(c, "sql_key", ""), []).append(c)
+    max_pieces = max(len(v) for v in by_key.values()) if by_key else 0
+    results_by_key: Dict[str, List[SqlChunkRawResult]] = {k: [] for k in by_key}
+    max_tokens = settings.batch.max_batch_token
+    limiter = get_rate_limiter()
+
+    def _collect_results(e, fk, col, batch_desc, raw, batch):
+        """배치 결과를 공용 리스트에 수집 (thread-safe 불필요 — await 기반)."""
+        for (s, n), d in (batch_desc or {}).items():
+            if d and (s, n) not in table_descriptions:
+                table_descriptions[(s, n)] = d
+        for j, chunk in enumerate(batch):
+            if j < len(raw):
+                results_by_key.setdefault(getattr(chunk, "sql_key", ""), []).append(raw[j])
+        for x in e:
+            key_edge = (x.sql_key, x.table_schema, x.table_name, x.relation)
+            if key_edge not in seen_edge:
+                seen_edge.add(key_edge)
+                edges.append(x)
+        fk_edges.extend(fk)
+        for c_item in col:
+            ckey = (c_item.table_schema, c_item.table_name, c_item.column_name)
+            if ckey not in seen_col:
+                seen_col.add(ckey)
+                column_refs.append(c_item)
+        if on_batch and (e or fk or col):
+            on_batch(e, fk, col, batch_desc or {})
+
+    for round_i in range(max_pieces):
+        round_data = []
+        for k in sorted(by_key.keys()):
+            if round_i >= len(by_key[k]):
+                continue
+            chunk = by_key[k][round_i]
+            prev = _format_prev_summary(results_by_key.get(k, [])[:round_i])
+            round_data.append((k, chunk, prev))
+        if not round_data:
+            continue
+        round_chunks = [c for _, c, _ in round_data]
+        round_prevs = [p for _, _, p in round_data]
+        index_in_round = {id(c): i for i, (_, c, _) in enumerate(round_data)}
+        batches = _build_sql_batches(round_chunks, max_tokens)
+
+        logger.info("[PHASE:2:TABLE_LLM] async 라운드 %d/%d | 청크=%d 배치=%d", round_i + 1, max_pieces, len(round_chunks), len(batches))
+
+        from util.async_executor import get_executor
+        executor = get_executor()
+
+        # 각 배치에 prev_summaries를 바인딩
+        batch_with_prev = [(batch, [round_prevs[index_in_round[id(c)]] for c in batch]) for batch in batches]
+
+        async def _process_one(item):
+            batch, prev_summaries = item
+            result = await asyncio.to_thread(_process_one_sql_batch, batch, _api_key, prev_summaries)
+            return result, batch
+
+        def _on_result(result):
+            if result is None:
+                return
+            (e, fk, col, batch_desc, raw), batch = result
+            _collect_results(e, fk, col, batch_desc, raw, batch)
+
+        await executor.run_batch(
+            items=batch_with_prev,
+            processor=_process_one,
+            on_result=_on_result,
+            label="TABLE_LLM",
+        )
+
+    logger.info(
+        "[PHASE:2:TABLE_LLM] async 완료 | reads_writes=%d fk=%d columns=%d",
+        len(edges), len(fk_edges), len(column_refs),
     )
     return edges, fk_edges, column_refs, table_descriptions

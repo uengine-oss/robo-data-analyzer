@@ -17,11 +17,11 @@ logger = logging.getLogger(__name__)
 
 
 def apply_module_unified_actors(
-    summary_by_function: Dict[str, Dict[str, Any]],
+    analysis_by_function: Dict[str, Dict[str, Any]],
     summary_by_module: Dict[str, Dict[str, Any]],
     function_facts_list: list,
 ) -> int:
-    """1차 통합 결과(module_summary의 unified_actors)를 summary_by_function에 적용.
+    """1차 통합 결과(module_summary의 unified_actors)를 analysis_by_function에 적용.
 
     Returns: 교체된 actor 수
     """
@@ -45,7 +45,7 @@ def apply_module_unified_actors(
 
         fids = module_to_functions.get(mk, [])
         for fid in fids:
-            data = summary_by_function.get(fid)
+            data = analysis_by_function.get(fid)
             if not data:
                 continue
             actor = (data.get("actor") or "").strip()
@@ -57,7 +57,7 @@ def apply_module_unified_actors(
 
 
 async def merge_cross_module_actors(
-    summary_by_function: Dict[str, Dict[str, Any]],
+    analysis_by_function: Dict[str, Dict[str, Any]],
     summary_by_module: Dict[str, Dict[str, Any]],
     api_key: str,
     locale: str,
@@ -70,7 +70,7 @@ async def merge_cross_module_actors(
     """
     # 모듈별 actor 수집
     module_actors: Dict[str, Dict[str, Any]] = {}
-    for fid, data in summary_by_function.items():
+    for fid, data in analysis_by_function.items():
         actor = (data.get("actor") or "").strip()
         if not actor:
             continue
@@ -100,7 +100,7 @@ async def merge_cross_module_actors(
         for actor in sorted(ma["actors"]):
             # 이 Actor가 사용된 함수들의 summary를 수집
             func_summaries = []
-            for fid, data in summary_by_function.items():
+            for fid, data in analysis_by_function.items():
                 if (data.get("actor") or "").strip() == actor:
                     func_name = fid.rsplit(".", 1)[-1] if "." in fid else fid
                     func_summary = (data.get("summary") or "")[:80]
@@ -113,15 +113,11 @@ async def merge_cross_module_actors(
 
     # yaml 프롬프트로 LLM 호출
     try:
-        from util.prompt_executor import get_rule_loader
-        loader = get_rule_loader("framework")
-        result = loader.execute("actor_synonym_merge", {
-            "actor_module_list": actor_module_list,
-            "locale": locale,
-        }, api_key=api_key)
+        from util.prompt_registry import prompts
+        result = prompts.actor_synonym_merge(actor_module_list, locale, api_key)
         groups = result if isinstance(result, dict) else {}
     except Exception as e:
-        logger.warning("[ACTOR_MERGE] LLM 호출/파싱 실패: %s", e)
+        logger.error("[PHASE:3:ACTOR_MERGE] LLM 호출 실패 | error=%s", e, exc_info=True)
         return {}
 
     # {대표명: [동의어들]} → {동의어: 대표명} 역매핑
@@ -135,8 +131,8 @@ async def merge_cross_module_actors(
 
     if merge_map:
         logger.info("[ACTOR_MERGE] 모듈 간 동의어 통합: %s", merge_map)
-        # summary_by_function의 actor 교체
-        for fid, data in summary_by_function.items():
+        # analysis_by_function의 actor 교체
+        for fid, data in analysis_by_function.items():
             actor = (data.get("actor") or "").strip()
             if actor in merge_map:
                 data["actor"] = merge_map[actor]

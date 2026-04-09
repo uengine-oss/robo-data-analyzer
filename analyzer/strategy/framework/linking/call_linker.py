@@ -15,11 +15,11 @@ from analyzer.strategy.framework.common.models import (
     UsesEdge,
     ChunkBundle,
 )
-from analyzer.strategy.framework.linking.type_resolver import (
+from analyzer.strategy.framework.linking.deterministic import (
     TypeMap3Layer,
     resolve_obj_to_type,
     build_type_map_3layer,
-    method_to_module_map,
+    fact_to_module_map,
     build_module_map_with_scope,
 )
 from util.text_utils import (
@@ -70,7 +70,7 @@ def load_call_records_from_chunk_bundles(
     )
     base = Path(chunk_bundle_dir) if chunk_bundle_dir else Path(_get_chunk_bundle_dir(data_dir or ""))
     if not base.is_dir():
-        logger.info("[FW:CALL_BATCH] ChunkBundle 로드 스킵 | reason=chunk_bundle_dir_not_found path=%s", base)
+        logger.info("[PHASE:2:CALL_LLM] ChunkBundle 로드 스킵 | reason=chunk_bundle_dir_not_found path=%s", base)
         return {}
     call_records_by_function: Dict[str, List[Dict[str, Any]]] = {}
     for path in base.glob("*.json"):
@@ -96,7 +96,7 @@ def load_call_records_from_chunk_bundles(
             logger.debug("ChunkBundle 로드 스킵 %s: %s", path, e)
     total_records = sum(len(recs) for recs in call_records_by_function.values())
     logger.info(
-        "[FW:CALL_BATCH] ChunkBundle 로드 완료 | methods_with_calls=%d total_records=%d",
+        "[PHASE:2:CALL_LLM] ChunkBundle 로드 완료 | methods_with_calls=%d total_records=%d",
         len(call_records_by_function),
         total_records,
     )
@@ -104,7 +104,7 @@ def load_call_records_from_chunk_bundles(
 
 
 def extract_obj_method_from_call_code(call_code: str) -> Tuple[Optional[str], Optional[str]]:
-    """call_code에서 objName, functionName 휴리스틱 추출. LLM 없을 때 fallback."""
+    """call_code에서 objName, functionName 정적 추출 (정적 분석 모드 전용)."""
     if not call_code:
         return None, None
     m = OBJ_METHOD_PATTERN.search(call_code)
@@ -163,10 +163,10 @@ def _extract_calls_batch_via_llm(
     lang_display = {"c": "C", "java": "Java", "python": "Python", "go": "Go", "kotlin": "Kotlin"}.get(_ACTIVE_LANG, _ACTIVE_LANG)
     items = [{"function_id": mid, "calls": calls} for mid, calls in batch]
     try:
-        loader = get_rule_loader("framework")
-        result = loader.execute("call_extract", {"items": items, "language": lang_display}, api_key=api_key)
+        from util.prompt_registry import prompts
+        result = prompts.call_extract(items, lang_display, api_key)
     except Exception as e:
-        logger.warning("[FW:CALL_BATCH] LLM call_extract 오류: %s", e)
+        logger.error("[PHASE:2:CALL_LLM] LLM call_extract 오류 | error=%s", e, exc_info=True)
         return {mid: [] for mid, _ in batch}
     out: Dict[str, List[Dict[str, Any]]] = {}
     results_list = result.get("results") or []
@@ -180,7 +180,7 @@ def _extract_calls_batch_via_llm(
         if mid not in out:
             out[mid] = []
     logger.info(
-        "[FW:CALL_BATCH] LLM call_extract 완료 | 배치 함수 수=%d",
+        "[PHASE:2:CALL_LLM] LLM call_extract 완료 | 배치 함수 수=%d",
         len(batch),
     )
     return out
@@ -227,7 +227,7 @@ def resolve_calls_deterministic(
         obj_name = r.get("objName")
         function_name = r.get("functionName")
         if not caller_id or not function_name:
-            logger.debug("[FW:CALL_BATCH] resolve 스킵 | reason=missing_caller_or_function call_id=%s", r.get("call_id"))
+            logger.debug("[PHASE:2:CALL_LLM] resolve 스킵 | reason=missing_caller_or_function call_id=%s", r.get("call_id"))
             continue
         if obj_name and obj_name != "this":
             moduleName = resolve_obj_to_type(caller_id, obj_name, type_map, method_to_module)
@@ -235,7 +235,7 @@ def resolve_calls_deterministic(
             moduleName = method_to_module.get(caller_id)  # this 호출로 간주
         if not moduleName:
             unresolved.append(dict(r, moduleName=None))  # external 시 obj_name으로 표시
-            logger.debug("[FW:CALL_BATCH] resolve 스킵 | reason=obj_not_resolved obj_name=%s caller_id=%s", obj_name, caller_id)
+            logger.debug("[PHASE:2:CALL_LLM] resolve 스킵 | reason=obj_not_resolved obj_name=%s caller_id=%s", obj_name, caller_id)
             continue
         candidates = _candidates_for_module_and_method(function_index_by_module, moduleName, function_name)
         # C 언어 등: obj_name이 없거나 "this"이면 같은 파일에서 먼저 찾고,
@@ -252,12 +252,12 @@ def resolve_calls_deterministic(
             r_with_module["moduleName"] = moduleName  # external 표시용
             unresolved.append(r_with_module)
             logger.debug(
-                "[FW:CALL_BATCH] resolve 스킵 | reason=ambiguous_or_none candidates=%d moduleName=%s function_name=%s",
+                "[PHASE:2:CALL_LLM] resolve 스킵 | reason=ambiguous_or_none candidates=%d moduleName=%s function_name=%s",
                 len(candidates),
                 moduleName,
                 function_name,
             )
-    logger.info("[FW:CALL_BATCH] deterministic 완료 | edges=%d unresolved=%d", len(edges), len(unresolved))
+    logger.info("[PHASE:2:CALL_LLM] deterministic 완료 | edges=%d unresolved=%d", len(edges), len(unresolved))
     return edges, unresolved
 
 
@@ -291,7 +291,7 @@ def build_external_calls_edges(
             scope="external",
         ))
     if external:
-        logger.info("[FW:CALL_BATCH] external CALLS 엣지 생성 | count=%d", len(external))
+        logger.info("[PHASE:2:CALL_LLM] external CALLS 엣지 생성 | count=%d", len(external))
     return external
 
 
@@ -343,7 +343,7 @@ def derive_uses_from_calls(
             continue
         seen.add(key)
         out.append(UsesEdge(from_fqn=caller_cfqn, to_fqn=callee_cfqn, scope=scope))
-    logger.info("[FW:CALL_BATCH] derive_uses_from_calls | calls=%d -> uses=%d", len(calls_edges or []), len(out))
+    logger.info("[PHASE:2:CALL_LLM] derive_uses_from_calls | calls=%d -> uses=%d", len(calls_edges or []), len(out))
     return out
 
 
@@ -399,17 +399,17 @@ def run_call_batch_pipeline(
         chunk_bundle_dir=chunk_dir,
     )
     if not call_records_by_function:
-        logger.info("[FW:CALL_BATCH] 파이프라인 스킵 | reason=no_call_records chunk_dir=%s", chunk_dir or data_dir)
+        logger.info("[PHASE:2:CALL_LLM] 파이프라인 스킵 | reason=no_call_records chunk_dir=%s", chunk_dir or data_dir)
         return [], []
 
     logger.info(
-        "[FW:CALL_BATCH] 파이프라인 진입 | methods_with_calls=%d use_llm=%s api_key_set=%s",
+        "[PHASE:2:CALL_LLM] 파이프라인 진입 | methods_with_calls=%d use_llm=%s api_key_set=%s",
         len(call_records_by_function),
         use_llm,
         bool(api_key),
     )
     type_map = build_type_map_3layer(symbol_type_index, variable_facts_list, function_facts_list, lang=lang)
-    m2c = method_to_module_map(function_facts_list)
+    m2c = fact_to_module_map(function_facts_list)
     internal_module_fqns = set(function_index_by_module.keys())
     is_domain_module = lambda cn: bool(
         cn and str(cn).strip() and str(cn).strip()[0].isupper() and not _is_stdlib_module(str(cn).strip())
@@ -424,7 +424,7 @@ def run_call_batch_pipeline(
         max_tokens = settings.batch.max_batch_token * 2
         batches = _build_call_batches(call_records_by_function, max_tokens)
         logger.info(
-            "[FW:CALL_BATCH] 청크 배치 | methods=%d → 배치=%d (max_tokens=%d)",
+            "[PHASE:2:CALL_LLM] 청크 배치 | methods=%d → 배치=%d (max_tokens=%d)",
             len(call_records_by_function),
             len(batches),
             max_tokens,
@@ -457,7 +457,7 @@ def run_call_batch_pipeline(
                         if on_batch and batch_edges:
                             on_batch(batch_edges, batch_unresolved)
                     except Exception as ex:
-                        logger.warning("[FW:CALL_BATCH] 배치 LLM 처리 예외: %s", ex)
+                        logger.error("[PHASE:CALL_BATCH] 배치 LLM 처리 예외: %s", ex)
     else:
         flat: List[Dict[str, Any]] = []
         for function_id, recs in call_records_by_function.items():
@@ -481,8 +481,91 @@ def run_call_batch_pipeline(
             on_batch(all_edges, all_unresolved)
 
     logger.info(
-        "[FW:CALL_BATCH] 파이프라인 완료 | edges=%d unresolved=%d",
+        "[PHASE:2:CALL_LLM] 파이프라인 완료 | edges=%d unresolved=%d",
         len(all_edges),
         len(all_unresolved),
     )
+    return all_edges, all_unresolved
+
+
+async def run_call_batch_pipeline_async(
+    data_dir: str,
+    function_facts_list: List[Any],
+    variable_facts_list: List[Any],
+    symbol_type_index: Dict[str, Dict[str, str]],
+    function_index_by_module: Dict[str, Dict[str, List[str]]],
+    use_llm: bool = True,
+    api_key: Optional[str] = None,
+    run_dir: Optional[str] = None,
+    on_batch: Optional[Any] = None,
+    lang: str = "",
+) -> Tuple[List[CallsEdge], List[Dict[str, Any]]]:
+    """Call 관계 추출 (async 버전). LLMRateLimiter로 전역 동시성 제어."""
+    import asyncio
+    from util.async_executor import get_rate_limiter
+    from analyzer.strategy.framework.parsing.chunk_bundle import _get_chunk_bundle_dir_from_run_dir
+
+    chunk_dir = _get_chunk_bundle_dir_from_run_dir(run_dir) if run_dir else None
+    call_records_by_function = load_call_records_from_chunk_bundles(data_dir=data_dir, chunk_bundle_dir=chunk_dir)
+    if not call_records_by_function:
+        return [], []
+
+    type_map = build_type_map_3layer(symbol_type_index, variable_facts_list, function_facts_list, lang=lang)
+    m2c = fact_to_module_map(function_facts_list)
+    internal_module_fqns = set(function_index_by_module.keys())
+    is_domain_module = lambda cn: bool(cn and str(cn).strip() and str(cn).strip()[0].isupper() and not _is_stdlib_module(str(cn).strip()))
+    module_map = build_module_map_with_scope(type_map, m2c, internal_module_fqns, is_domain_module)
+
+    all_edges: List[CallsEdge] = []
+    all_unresolved: List[Dict[str, Any]] = []
+    key = api_key or ""
+
+    if use_llm and key:
+        max_tokens = settings.batch.max_batch_token * 2
+        batches = _build_call_batches(call_records_by_function, max_tokens)
+        limiter = get_rate_limiter()
+
+        from util.async_executor import get_executor
+        executor = get_executor()
+
+        async def _process_one(batch):
+            llm_out = await asyncio.to_thread(_extract_calls_batch_via_llm, batch, key)
+            batch_flat = _flatten_one_batch(batch, llm_out, call_records_by_function)
+            batch_edges, batch_unresolved = resolve_calls_deterministic(batch_flat, type_map, function_index_by_module, m2c)
+            batch_external = build_external_calls_edges(batch_unresolved, module_map)
+            return batch_edges + batch_external, batch_unresolved
+
+        def _on_result(result):
+            if result is None:
+                return
+            batch_edges, batch_unresolved = result
+            all_edges.extend(batch_edges)
+            all_unresolved.extend(batch_unresolved)
+            if on_batch and batch_edges:
+                on_batch(batch_edges, batch_unresolved)
+
+        await executor.run_batch(
+            items=batches,
+            processor=_process_one,
+            on_result=_on_result,
+            label="CALL_LLM",
+        )
+    else:
+        # 정적 분석 모드 (LLM 없음)
+        flat = []
+        for function_id, recs in call_records_by_function.items():
+            for r in recs:
+                call_code = r.get("call_code", "")
+                obj_name, function_name = extract_obj_method_from_call_code(call_code)
+                if obj_name and _is_stdlib_module(obj_name):
+                    obj_name, function_name = None, None
+                flat.append({"parent_function_id": function_id, "call_id": r.get("call_id", ""), "call_code": call_code, "objName": obj_name, "functionName": function_name})
+        edges, unresolved = resolve_calls_deterministic(flat, type_map, function_index_by_module, m2c)
+        external_edges = build_external_calls_edges(unresolved, module_map)
+        all_edges = edges + external_edges
+        all_unresolved = unresolved
+        if on_batch and all_edges:
+            on_batch(all_edges, all_unresolved)
+
+    logger.info("[PHASE:2:CALL_LLM] async 완료 | edges=%d unresolved=%d", len(all_edges), len(all_unresolved))
     return all_edges, all_unresolved

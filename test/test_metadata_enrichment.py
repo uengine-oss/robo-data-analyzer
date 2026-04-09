@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from client.neo4j_client import Neo4jClient
 from analyzer.strategy.base_analyzer import AnalysisStats
 from analyzer.strategy.dbms.pipeline.phase_metadata import run_phase_metadata
-from analyzer.strategy.dbms.pipeline.phases import run_phase_ddl
+from analyzer.strategy.dbms.pipeline.phase_ddl import run_phase_ddl
 from config.settings import settings
 from service.source_analyze_service import get_analysis_directories
 

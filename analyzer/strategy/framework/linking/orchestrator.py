@@ -4,13 +4,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
-import queue as queue_mod
 import re
-import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Dict, Generator, List, Optional, Set, Tuple
+from typing import Any, AsyncGenerator, Dict, List, Optional, Set, Tuple
 
 from config.settings import settings
 from analyzer.strategy.framework.common.models import (
@@ -30,14 +28,12 @@ from analyzer.strategy.framework.common.models import (
     UnresolvedLink,
 )
 from analyzer.strategy.framework.common.utils import sql_op_to_method_relation as _sql_op_to_function_relation
-from analyzer.strategy.framework.linking.matcher import (
+from analyzer.strategy.framework.linking.deterministic import (
     link_chunks_to_indexes,
     resolve_candidates,
     identify_entity_classes,
     has_external_entity_info,
 )
-from analyzer.strategy.framework.linking.call_graph import run_call_batch_pipeline
-
 logger = logging.getLogger(__name__)
 
 
@@ -113,7 +109,7 @@ def derive_function_table_edges(
 # ===========================================================================
 
 
-def run_step5(
+async def resolve_references(
     function_facts_list: List[FunctionFacts],
     sql_index: Dict[str, SqlStatementChunk],
     sql_chunks: List[SqlStatementChunk],
@@ -130,13 +126,13 @@ def run_step5(
     artifact_chunks: Optional[List[ArtifactChunk]] = None,
     ddl_table_metadata: Optional[Dict[str, Any]] = None,
     lang: str = "",
-) -> Generator[Dict[str, Any], None, None]:
-    """Step 5: 링킹 — 단계별로 결과를 yield.
+) -> AsyncGenerator[Dict[str, Any], None]:
+    """참조 해석 — 단계별로 결과를 async yield.
 
     Yields:
         stage="deterministic": refer_to_edges, unresolved
-        stage="table_llm": reads_writes, fk_edges, column_refs, table_descriptions
-        stage="call_llm": calls_edges, unresolved_calls
+        stage="table_batch": edges, fk, col, desc (배치별)
+        stage="call_batch": edges, unresolved (배치별)
         stage="post": reads_writes(final), function_table_edges, module_table_edges, artifact_table_edges
     """
 
@@ -146,14 +142,14 @@ def run_step5(
 
     config_count = len(config_index) if config_index else 0
     logger.info(
-        "[FW:STEP5] 링킹 진입  function_facts=%d sql_index=%d sql_chunks=%d config_index=%d variable_chunks=%s",
+        "[PHASE:2:LINKING] 링킹 진입  function_facts=%d sql_index=%d sql_chunks=%d config_index=%d variable_chunks=%s",
         len(function_facts_list),
         len(sql_index),
         len(sql_chunks),
         config_count,
         len(field_chunks) if field_chunks else 0,
     )
-    logger.info("[FW:STEP5] [매칭] 결정론 매칭 (키 in 코드, sql/config/class/artifact 인덱스)")
+    logger.info("[PHASE:2:LINKING] [매칭] 결정론 매칭 (키 in 코드, sql/config/class/artifact 인덱스)")
 
     refer_to_edges, unresolved = link_chunks_to_indexes(
         function_facts_list,
@@ -165,7 +161,7 @@ def run_step5(
     )
     det_matched = len(refer_to_edges)
     logger.info(
-        "[FW:STEP5] link_chunks_to_indexes 완료  refer_to=%d  미연결=%d",
+        "[PHASE:2:LINKING] link_chunks_to_indexes 완료  refer_to=%d  미연결=%d",
         det_matched,
         len(unresolved),
     )
@@ -197,7 +193,7 @@ def run_step5(
                 unresolved.extend(add_unresolved)
                 rc_unresolved += len(add_unresolved)
         logger.info(
-            "[FW:STEP5] resolve_candidates 완료  매칭=%d  미해결=%d",
+            "[PHASE:2:LINKING] resolve_candidates 완료  매칭=%d  미해결=%d",
             rc_matched, rc_unresolved,
         )
 
@@ -273,7 +269,7 @@ def run_step5(
         entity_count = len(combined_table_chunks) - len(sql_chunks or [])
         if entity_count:
             logger.info(
-                "[FW:STEP5] 엔티티 청크 %d개를 table LLM 입력에 합류 (sql=%d + entity=%d)",
+                "[PHASE:2:LINKING] 엔티티 청크 %d개를 table LLM 입력에 합류 (sql=%d + entity=%d)",
                 entity_count,
                 len(sql_chunks or []),
                 entity_count,
@@ -281,16 +277,16 @@ def run_step5(
     else:
         entity_fqns = set()
         if ddl_table_metadata:
-            logger.info("[FW:STEP5] DDL 테이블 메타데이터 존재 — 엔티티 청크 생성 스킵")
+            logger.info("[PHASE:2:LINKING] DDL 테이블 메타데이터 존재 — 엔티티 청크 생성 스킵")
         elif not _has_external:
-            logger.info("[FW:STEP5] 외부 엔티티 정보 없음 — DeepAgent 엔티티 식별 대상")
+            logger.info("[PHASE:2:LINKING] 외부 엔티티 정보 없음 — DeepAgent 엔티티 식별 대상")
 
     # ===================================================================
     # 3) 병렬 LLM 실행 (Table LLM + Call LLM, queue 기반 점진 yield)
     # ===================================================================
 
     logger.info(
-        "[FW:STEP5] [3갈래] SQL→테이블 / Call LLM / UML 병렬 실행 (배치별 점진 전송)",
+        "[PHASE:2:LINKING] [3갈래] SQL→테이블 / Call LLM / UML 병렬 실행 (배치별 점진 전송)",
     )
 
     # 결과 수집 버퍼
@@ -301,29 +297,32 @@ def run_step5(
     calls_edges: List[CallsEdge] = []
     unresolved_calls: List[Any] = []
 
-    # ── 스레드 정의 ──
+    # ── asyncio.Queue 기반 병렬 실행 ──
 
-    result_q: queue_mod.Queue = queue_mod.Queue()
+    result_q: asyncio.Queue = asyncio.Queue()
 
-    def _run_table_thread() -> None:
-        """Table LLM: SQL/엔티티 청크 → reads_writes, FK, 컬럼 추출."""
+    async def _run_table_llm() -> None:
+        """Table LLM: SQL/엔티티 청크 → reads_writes, FK, 컬럼 추출 (async)."""
         try:
-            from analyzer.strategy.framework.linking.sql_extractor import link_sql_to_tables
-            link_sql_to_tables(
+            from analyzer.strategy.framework.linking.table_linker import link_sql_to_tables_async
+            await link_sql_to_tables_async(
                 combined_table_chunks,
                 api_key=api_key,
-                on_batch=lambda e, fk, col, desc: result_q.put(
+                on_batch=lambda e, fk, col, desc: result_q.put_nowait(
                     ("table_batch", {"edges": e, "fk": fk, "col": col, "desc": desc})
                 ),
             )
         except Exception as ex:
-            logger.warning("[FW:STEP5] Table LLM 스레드 예외: %s", ex)
-        result_q.put(("table_done", None))
+            logger.error("[PHASE:2:TABLE_LLM] 예외 | error=%s", ex, exc_info=True)
+            await result_q.put(("error", ex))
+            return
+        await result_q.put(("table_done", None))
 
-    def _run_call_thread() -> None:
-        """Call LLM: 함수 간 호출 관계 추론."""
+    async def _run_call_llm() -> None:
+        """Call LLM: 함수 간 호출 관계 추론 (async)."""
         try:
-            run_call_batch_pipeline(
+            from analyzer.strategy.framework.linking.call_linker import run_call_batch_pipeline_async
+            await run_call_batch_pipeline_async(
                 data_dir or "",
                 function_facts_list,
                 variable_facts_list or [],
@@ -332,28 +331,30 @@ def run_step5(
                 use_llm=True,
                 api_key=api_key,
                 run_dir=run_dir,
-                on_batch=lambda edges, unresolved: result_q.put(
+                on_batch=lambda edges, unresolved: result_q.put_nowait(
                     ("call_batch", {"edges": edges, "unresolved": unresolved})
                 ),
                 lang=lang,
             )
         except Exception as ex:
-            logger.warning("[FW:STEP5] Call LLM 스레드 예외: %s", ex)
-        result_q.put(("call_done", None))
+            logger.error("[PHASE:2:CALL_LLM] 예외 | error=%s", ex, exc_info=True)
+            await result_q.put(("error", ex))
+            return
+        await result_q.put(("call_done", None))
 
-    # ── 스레드 시작 & 결과 수집 루프 ──
+    # ── 병렬 시작 + Queue 소비 ──
 
-    t_table = threading.Thread(target=_run_table_thread, daemon=True)
-    t_call = threading.Thread(target=_run_call_thread, daemon=True)
-    t_table.start()
-    t_call.start()
+    table_task = asyncio.create_task(_run_table_llm())
+    call_task = asyncio.create_task(_run_call_llm())
 
     done_count = 0
     while done_count < 2:
-        try:
-            tag, data = result_q.get(timeout=1.0)
-        except queue_mod.Empty:
-            continue
+        tag, data = await result_q.get()
+
+        if tag == "error":
+            table_task.cancel()
+            call_task.cancel()
+            raise RuntimeError(f"LLM 처리 실패: {data}") from (data if isinstance(data, Exception) else None)
 
         if tag.endswith("_done"):
             done_count += 1
@@ -373,8 +374,7 @@ def run_step5(
             unresolved_calls.extend(data["unresolved"])
             yield {"stage": "call_batch", **data}
 
-    t_table.join()
-    t_call.join()
+    await asyncio.gather(table_task, call_task)
 
     # ===================================================================
     # 4) 후처리: entity 키 기반 Module→Table / Artifact→Table 엣지 유도
@@ -425,11 +425,11 @@ def run_step5(
         artifact_table_edges.append(ArtifactTableEdge(chunk_id=chunk_id, table_schema=schema, table_name=name))
 
     # ── Function→Table 자동 유도 (REFER_TO + reads_writes 체인) ──
-    logger.info("[FW:STEP5] [Function-Table] REFER_TO + READS/WRITES 엣지 유도")
+    logger.info("[PHASE:2:LINKING] [Function-Table] REFER_TO + READS/WRITES 엣지 유도")
     function_table_edges = derive_function_table_edges(refer_to_edges, reads_writes, artifact_table_edges=artifact_table_edges)
 
     logger.info(
-        "[FW:STEP5] 링킹 완료  REFER_TO=%d  reads_writes=%d  Function→Table=%d  Module→Table=%d  Artifact→Table=%d  미연결=%d",
+        "[PHASE:2:LINKING] 링킹 완료  REFER_TO=%d  reads_writes=%d  Function→Table=%d  Module→Table=%d  Artifact→Table=%d  미연결=%d",
         len(refer_to_edges),
         len(reads_writes),
         len(function_table_edges),

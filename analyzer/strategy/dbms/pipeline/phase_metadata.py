@@ -21,10 +21,7 @@ PHASE_NAME = "메타데이터 보강"
 
 
 async def run_phase_metadata(
-    pipeline: Any,
-    client: Any,
-    orchestrator: Any,
-    stats: AnalysisStats,
+    ctx: Any,  # DbmsPhaseContext
     phase_num: int = 3,
 ) -> AsyncGenerator[bytes, None]:
     """메타데이터 보강 — catalog 서비스에 위임"""
@@ -37,8 +34,8 @@ async def run_phase_metadata(
         details={"step": "init"},
     )
 
-    datasource_name = getattr(orchestrator, "datasource_name", "")
-    api_key = settings.openai_api_key or getattr(orchestrator, "api_key", "") or ""
+    datasource_name = ctx.datasource_name
+    api_key = settings.openai_api_key or ctx.api_key
 
     if not datasource_name:
         yield emit_message("   ⏭️ datasource 미설정, 메타데이터 보강 생략")
@@ -58,9 +55,9 @@ async def run_phase_metadata(
             enriched = result.get("enriched", 0)
             msg = result.get("message", "")
             yield emit_message(f"   ✅ 메타데이터 보강 완료: {msg}")
-            log_process("METADATA", "COMPLETE", f"enriched={enriched}", logging.INFO)
+            log_process("PHASE:3", "COMPLETE", f"enriched={enriched}", logging.INFO)
     except Exception as e:
-        log_process("METADATA", "ERROR", f"catalog 보강 실패: {e}", logging.WARNING)
+        log_process("PHASE:3", "ERROR", f"catalog 보강 실패: {e}", logging.WARNING)
         yield emit_message(f"   ⚠️ 메타데이터 보강 실패 (무시): {str(e)[:80]}")
 
     yield emit_phase_event(phase_num=phase_num, phase_name=PHASE_NAME, status="completed", progress=100)

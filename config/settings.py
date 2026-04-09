@@ -133,10 +133,10 @@ class DeepAgentConfig:
         default_factory=lambda: int(os.getenv("DA_ENTITY_BATCH_SIZE", "10"))
     )
     varref_batch_size: int = field(
-        default_factory=lambda: int(os.getenv("DA_VARREF_BATCH_SIZE", "20"))
+        default_factory=lambda: int(os.getenv("DA_VARREF_BATCH_SIZE", "50"))
     )
     entity_max_workers: int = field(
-        default_factory=lambda: int(os.getenv("DA_ENTITY_MAX_WORKERS", "4"))
+        default_factory=lambda: int(os.getenv("DA_ENTITY_MAX_WORKERS", "8"))
     )
     default_confidence: float = field(
         default_factory=lambda: float(os.getenv("DA_DEFAULT_CONFIDENCE", "0.9"))

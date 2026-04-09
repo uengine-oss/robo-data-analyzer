@@ -1,9 +1,17 @@
-"""Framework 파이프라인 상태 컨테이너. Dict[str, Any] 대체."""
+"""Framework 파이프라인 상태 + Phase 컨텍스트.
+
+FrameworkPipelineState: 파이프라인 전체 상태 (Phase 간 데이터 전달)
+PhaseContext: 각 Phase 함수에 전달되는 공용 컨텍스트
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+
+from client.neo4j_client import Neo4jClient
+from analyzer.strategy.base_analyzer import AnalysisStats
+from config.settings import settings
 
 from analyzer.strategy.framework.common.models import (
     ArtifactChunk,
@@ -80,7 +88,7 @@ class FrameworkPipelineState:
     table_descriptions: Dict[Any, str] = field(default_factory=dict)
 
     # Step 6: Summary
-    summary_by_function: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    analysis_by_function: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     summary_by_variable: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     summary_by_module: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     user_stories: List[Dict[str, Any]] = field(default_factory=list)
@@ -88,4 +96,47 @@ class FrameworkPipelineState:
     # DeepAgent
     span_index: Optional[Dict[str, Any]] = None
     chunk_index: Optional[Dict[str, Any]] = None
+
+    def clear_phase_data(self, phase_num: int) -> None:
+        """Phase 완료 후 해당 Phase의 중간 데이터를 해제하여 메모리 절약."""
+        if phase_num == 1:
+            # Phase 1(AST) 완료 후: ref_candidates는 Phase 2에서만 사용
+            self.ref_candidates_by_function.clear()
+        elif phase_num == 2:
+            # Phase 2(Linking) 완료 후: unresolved, calls_from_batch는 Phase 3에서 불필요
+            self.unresolved.clear()
+            self.calls_edges_from_batch.clear()
+            self.unresolved_calls.clear()
+
+
+@dataclass
+class PhaseContext:
+    """Phase 함수에 전달되는 공용 컨텍스트.
+
+    각 Phase 함수는 이 객체를 통해 pipeline 상태, Neo4j 클라이언트,
+    통계, API 키 등에 접근한다.
+    """
+    client: Neo4jClient
+    state: FrameworkPipelineState
+    stats: AnalysisStats
+    api_key: str = ""
+    locale: str = "ko"
+    lang: str = ""
+    data_dir: str = ""
+    run_dir: Optional[str] = None
+
+    @classmethod
+    def from_pipeline(cls, pipeline: Any, client: Neo4jClient, stats: AnalysisStats, orchestrator: Any = None) -> "PhaseContext":
+        """pipeline 인스턴스에서 PhaseContext 생성."""
+        st = pipeline._pipeline_state
+        return cls(
+            client=client,
+            state=st,
+            stats=stats,
+            api_key=settings.llm.api_key or "",
+            locale=settings.locale,
+            lang=st.lang,
+            data_dir=st.data_dir or settings.path.data_dir,
+            run_dir=st.run_dir,
+        )
 

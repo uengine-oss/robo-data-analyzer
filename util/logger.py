@@ -166,6 +166,7 @@ def log_process(
     else:
         real_exc_info = None
 
+    # [CONTEXT:STAGE] 형식 출력 (Framework: [PHASE:N:STEP], DBMS: [ANALYZE:STAGE])
     logging.log(level, f"[{ctx}:{stage_text}] {message}", exc_info=real_exc_info)
 
 

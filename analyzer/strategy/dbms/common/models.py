@@ -135,7 +135,7 @@ class StatementNode:
                 child_summary = child.summary.strip()
                 summary_line = f"{child.start_line}~{child.end_line}: {child_summary}"
             else:
-                log_process("ANALYZE", "COLLECT", f"⚠️ 부모 {self.start_line}~{self.end_line}의 자식 {child.start_line}~{child.end_line} (type={child.node_type}, analyzable={child.analyzable}) 요약 없음 - 원문 보관")
+                log_process("PHASE:1", "COLLECT", f"⚠️ 부모 {self.start_line}~{self.end_line}의 자식 {child.start_line}~{child.end_line} (type={child.node_type}, analyzable={child.analyzable}) 요약 없음 - 원문 보관")
                 summary_line = '\n'.join(
                     f"{line_no}: {text}"
                     for line_no, text in child.lines
@@ -521,20 +521,20 @@ class BatchPlanner:
             if node.has_children:
                 # 현재까지 누적된 리프 배치를 먼저 확정합니다.
                 if current_nodes:
-                    log_process("ANALYZE", "BATCH", f"📦 배치 #{batch_id} 확정: 리프 노드 {len(current_nodes)}개 (토큰 {current_tokens}/{self.token_limit})")
+                    log_process("PHASE:2", "BATCH", f"📦 배치 #{batch_id} 확정: 리프 노드 {len(current_nodes)}개 (토큰 {current_tokens}/{self.token_limit})")
                     batches.append(self._create_batch(batch_id, current_nodes, include_dml_ranges))
                     batch_id += 1
                     current_nodes = []
                     current_tokens = 0
 
-                log_process("ANALYZE", "BATCH", f"📦 배치 #{batch_id} 확정: 부모 노드 단독 실행 (라인 {node.start_line}~{node.end_line}, 토큰 {node.token})")
+                log_process("PHASE:2", "BATCH", f"📦 배치 #{batch_id} 확정: 부모 노드 단독 실행 (라인 {node.start_line}~{node.end_line}, 토큰 {node.token})")
                 batches.append(self._create_batch(batch_id, [node], include_dml_ranges))
                 batch_id += 1
                 continue
 
             # 현재 배치가 토큰 한도를 초과한다면 쌓인 리프 노드들을 먼저 실행합니다.
             if current_nodes and current_tokens + node.token > self.token_limit:
-                log_process("ANALYZE", "BATCH", f"📦 배치 #{batch_id} 확정: 토큰 한도 도달로 선 실행 (누적 {current_tokens}/{self.token_limit})")
+                log_process("PHASE:2", "BATCH", f"📦 배치 #{batch_id} 확정: 토큰 한도 도달로 선 실행 (누적 {current_tokens}/{self.token_limit})")
                 batches.append(self._create_batch(batch_id, current_nodes, include_dml_ranges))
                 batch_id += 1
                 current_nodes = []
@@ -544,7 +544,7 @@ class BatchPlanner:
             current_tokens += node.token
 
         if current_nodes:
-            log_process("ANALYZE", "BATCH", f"📦 배치 #{batch_id} 확정: 마지막 리프 노드 {len(current_nodes)}개 (토큰 {current_tokens}/{self.token_limit})")
+            log_process("PHASE:2", "BATCH", f"📦 배치 #{batch_id} 확정: 마지막 리프 노드 {len(current_nodes)}개 (토큰 {current_tokens}/{self.token_limit})")
             batches.append(self._create_batch(batch_id, current_nodes, include_dml_ranges))
 
         return batches

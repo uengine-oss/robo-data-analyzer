@@ -393,7 +393,7 @@ class InMemoryGraph:
     refer_to_edges: List[ReferToEdge] = field(default_factory=list)
     reads_writes: List[ReadsWritesEdge] = field(default_factory=list)
     fk_edges: List[FkEdge] = field(default_factory=list)
-    summary_by_function: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    analysis_by_function: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     calls_edges: List[CallsEdge] = field(default_factory=list)
     uses_edges: List[UsesEdge] = field(default_factory=list)
 
@@ -441,7 +441,7 @@ class InMemoryGraph:
                 }
                 for e in self.fk_edges
             ],
-            "summaries": self.summary_by_function,
+            "summaries": self.analysis_by_function,
             "calls_edges": [
                 {"caller_function_id": e.caller_function_id, "callee_function_id": e.callee_function_id}
                 for e in self.calls_edges
@@ -470,7 +470,7 @@ def build_in_memory_graph(
     refer_to_edges: List[ReferToEdge],
     reads_writes: List[ReadsWritesEdge],
     fk_edges: List[FkEdge],
-    summary_by_function: Dict[str, Dict[str, Any]],
+    analysis_by_function: Dict[str, Dict[str, Any]],
     calls_edges: Optional[List[CallsEdge]] = None,
     uses_edges: Optional[List[UsesEdge]] = None,
 ) -> InMemoryGraph:
@@ -482,7 +482,7 @@ def build_in_memory_graph(
         refer_to_edges=refer_to_edges,
         reads_writes=reads_writes,
         fk_edges=fk_edges,
-        summary_by_function=summary_by_function,
+        analysis_by_function=analysis_by_function,
         calls_edges=calls_edges or [],
         uses_edges=uses_edges or [],
     )

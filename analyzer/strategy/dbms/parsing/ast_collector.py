@@ -128,7 +128,7 @@ class StatementCollector:
                     start_line=start_line,
                     end_line=end_line,
                 )
-                log_process("ANALYZE", "COLLECT", f"📋 프로시저 선언 발견: {proc_name} (라인 {start_line}~{end_line})")
+                log_process("PHASE:1", "COLLECT", f"📋 프로시저 선언 발견: {proc_name} (라인 {start_line}~{end_line})")
 
         # --- 자식 순회 ---
         child_nodes: List[StatementNode] = []
@@ -176,5 +176,5 @@ class StatementCollector:
             statement_node.completion_event.set()
 
         self.nodes.append(statement_node)
-        log_process("ANALYZE", "COLLECT", f"✅ {node_type} 노드 수집 완료: 라인 {start_line}~{end_line}, 토큰 {token}, 자식 {len(child_nodes)}개")
+        log_process("PHASE:1", "COLLECT", f"✅ {node_type} 노드 수집 완료: 라인 {start_line}~{end_line}, 토큰 {token}, 자식 {len(child_nodes)}개")
         return statement_node

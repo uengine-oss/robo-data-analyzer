@@ -214,13 +214,13 @@ class BaseAstProcessor(ABC):
         Returns:
             정적 노드 및 관계 생성 쿼리 리스트 (문자열 또는 파라미터화된 Dict)
         """
-        log_process("ANALYZE", "PHASE1", f"🏗️ {self.full_directory} 정적 그래프 생성")
+        log_process("PHASE:1", "AST", f"🏗️ {self.full_directory} 정적 그래프 생성")
 
         # AST 수집
         self._nodes, self._unit_info = self._collect_nodes()
 
         if not self._nodes:
-            log_process("ANALYZE", "PHASE1", f"⚠️ {self.full_directory}: 분석 대상 노드 없음")
+            log_process("PHASE:1", "AST", f"⚠️ {self.full_directory}: 분석 대상 노드 없음")
             return []
 
         # Package 노드 생성 + FILE → Package 관계
@@ -234,7 +234,7 @@ class BaseAstProcessor(ABC):
         # 관계 쿼리 생성
         queries.extend(self._build_relationship_queries())
 
-        log_process("ANALYZE", "PHASE1", f"✅ {self.full_directory}: {len(queries)}개 쿼리 생성")
+        log_process("PHASE:1", "AST", f"✅ {self.full_directory}: {len(queries)}개 쿼리 생성")
         return queries
 
     # =========================================================================
@@ -262,7 +262,7 @@ class BaseAstProcessor(ABC):
         ]
 
         if not parent_nodes:
-            log_process("ANALYZE", "CONTEXT", "⏭️ 컨텍스트 생성이 필요한 부모 노드 없음")
+            log_process("PHASE:1", "CONTEXT", "⏭️ 컨텍스트 생성이 필요한 부모 노드 없음")
             # 모든 노드의 context_ready_event 설정
             for node in self._nodes:
                 node.context_ready_event.set()
@@ -280,7 +280,7 @@ class BaseAstProcessor(ABC):
         # 깊이 순으로 정렬 (얕은 것 먼저 → Top-down 보장)
         parent_nodes.sort(key=get_depth)
 
-        log_process("ANALYZE", "CONTEXT", f"🔄 노드 컨텍스트 생성 시작: {len(parent_nodes)}개 노드")
+        log_process("PHASE:1", "CONTEXT", f"🔄 노드 컨텍스트 생성 시작: {len(parent_nodes)}개 노드")
 
         # 순차적으로 처리 (깊이 순서 보장)
         # 같은 깊이의 노드들은 병렬 처리 가능
@@ -314,9 +314,9 @@ class BaseAstProcessor(ABC):
 
                         node.context = parent_ctx
                         node.sibling_context = sibling_ctx
-                        log_process("ANALYZE", "CONTEXT", f"✅ 컨텍스트 생성 완료: {node.node_type}[{node.start_line}~{node.end_line}]")
+                        log_process("PHASE:1", "CONTEXT", f"✅ 컨텍스트 생성 완료: {node.node_type}[{node.start_line}~{node.end_line}]")
                     except Exception as e:
-                        log_process("ANALYZE", "CONTEXT", f"❌ 컨텍스트 생성 실패 (치명적): {node.node_type}[{node.start_line}]: {e}", logging.ERROR)
+                        log_process("PHASE:1", "CONTEXT", f"❌ 컨텍스트 생성 실패 (치명적): {node.node_type}[{node.start_line}]: {e}", logging.ERROR)
                         # 컨텍스트 없이 분석하면 별칭 해석 오류 등으로 결과가 엉망이 됨
                         # 예외를 다시 발생시켜서 실패를 명확히 표시
                         raise
@@ -346,7 +346,7 @@ class BaseAstProcessor(ABC):
             if not node.context_ready_event.is_set():
                 node.context_ready_event.set()
 
-        log_process("ANALYZE", "CONTEXT", f"✅ 노드 컨텍스트 생성 완료: {len(parent_nodes)}개")
+        log_process("PHASE:1", "CONTEXT", f"✅ 노드 컨텍스트 생성 완료: {len(parent_nodes)}개")
 
     # =========================================================================
     # Phase 2: LLM 분석
@@ -459,7 +459,7 @@ class BaseAstProcessor(ABC):
                     node_ranges = ", ".join(f"L{n.start_line}-{n.end_line}" for n in batch.nodes) if batch else "unknown"
                     error_msg = str(result)[:100]  # 최대 100자
 
-                    log_process("ANALYZE", "ERROR", f"[{level_name}] 배치 #{batch_id} 실패 ({node_ranges}): {error_msg}", logging.ERROR)
+                    log_process("PHASE:2", "ERROR", f"[{level_name}] 배치 #{batch_id} 실패 ({node_ranges}): {error_msg}", logging.ERROR)
                     fail_count += 1
                     failed_details.append({
                         "batch_id": batch_id,

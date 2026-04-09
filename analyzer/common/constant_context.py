@@ -40,5 +40,5 @@ async def fetch_constants_context(client: Neo4jClient) -> str:
         logger.info("[CONST_CTX] 상수 컨텍스트 생성 | count=%d len=%d", len(parts), len(context))
         return context
     except Exception as e:
-        logger.warning("[CONST_CTX] 상수 조회 실패: %s", e)
+        logger.error("[CONST_CTX] 상수 조회 실패 | error=%s", e, exc_info=True)
         return ""

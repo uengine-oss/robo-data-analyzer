@@ -13,8 +13,8 @@ from util.prompt_executor import get_rule_loader
 
 from analyzer.strategy.framework.common.models import FkEdge, FunctionTableEdge, ReferToEdge
 
-from analyzer.strategy.framework.linking.deep_agent_common import _init_deep_agent_env
-from analyzer.strategy.framework.linking.deep_agent_tools import build_tools
+from analyzer.strategy.framework.linking.agent.common import _init_deep_agent_env
+from analyzer.strategy.framework.linking.agent.tools import build_tools
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +88,8 @@ def _build_entity_id_user_message(
 
 
 def _entity_system_prompt(has_ddl: bool) -> str:
-    return get_rule_loader("deep_agent").render_prompt("entity", {"has_ddl": has_ddl})
+    from util.prompt_registry import prompts
+    return prompts.deep_agent_entity_prompt(has_ddl=has_ddl)
 
 
 def run_deep_agent_entity_identification(
@@ -103,13 +104,13 @@ def run_deep_agent_entity_identification(
     has_candidates = bool(module_index)
 
     if not has_ddl and not has_candidates:
-        logger.info("[FW:DEEPAGENT:ENTITY] DDL도 후보도 없음 → 즉시 종료")
+        logger.info("[PHASE:2:DEEP_AGENT:ENTITY] DDL도 후보도 없음 → 즉시 종료")
         return [], []
 
     try:
         create_deep_agent, model = _init_deep_agent_env(state, api_key=api_key, run_dir=run_dir)
     except Exception as e:
-        logger.warning("[FW:DEEPAGENT:ENTITY] deepagents 미설치 또는 LLM 클라이언트 없음: %s", e)
+        logger.error("[PHASE:2:DEEP_AGENT:ENTITY] deepagents 미설치 또는 LLM 클라이언트 없음: %s", e)
         return [], []
 
     _ENTITY_CANDIDATE_KINDS = frozenset({"CLASS", "STRUCT", "UNION"})
@@ -136,12 +137,12 @@ def run_deep_agent_entity_identification(
     candidates.sort(key=lambda c: (0 if c.get("path_hint") == "entity" else 1))
 
     if not candidates and not has_ddl:
-        logger.info("[FW:DEEPAGENT:ENTITY] 후보 없음 + DDL 없음 → 즉시 종료")
+        logger.info("[PHASE:2:DEEP_AGENT:ENTITY] 후보 없음 + DDL 없음 → 즉시 종료")
         return [], []
 
     scenario = "ddl_tables" if has_ddl else "candidates"
     logger.info(
-        "[FW:DEEPAGENT:ENTITY] 시작 | scenario=%s ddl_tables=%d candidates=%d",
+        "[PHASE:2:DEEP_AGENT:ENTITY] 시작 | scenario=%s ddl_tables=%d candidates=%d",
         scenario, len(ddl_table_metadata or {}), len(candidates),
     )
 
@@ -167,7 +168,7 @@ def run_deep_agent_entity_identification(
     max_entity_workers = da_cfg.entity_max_workers
 
     if has_ddl:
-        logger.info("[FW:DEEPAGENT:ENTITY] scenario=ddl_tables | 테이블 %d개로 코드 추적", len(ddl_table_metadata or {}))
+        logger.info("[PHASE:2:DEEP_AGENT:ENTITY] scenario=ddl_tables | 테이블 %d개로 코드 추적", len(ddl_table_metadata or {}))
         user_msg = _build_entity_id_user_message(ddl_table_metadata=ddl_table_metadata)
         try:
             agent.invoke({"messages": [{"role": "user", "content": user_msg}]})
@@ -178,14 +179,14 @@ def run_deep_agent_entity_identification(
                 metadata={"scenario": "ddl_with_tables"},
             )
         except Exception as ex:
-            logger.warning("[FW:DEEPAGENT:ENTITY] invoke 실패 (ddl): %s", ex)
+            logger.error("[PHASE:2:DEEP_AGENT:ENTITY] invoke 실패 (ddl): %s", ex)
     else:
         batches = [candidates[i:i + batch_size] for i in range(0, max(len(candidates), 1), batch_size)]
-        logger.info("[FW:DEEPAGENT:ENTITY] scenario=candidates | 후보 %d개 → %d배치 병렬 식별", len(candidates), len(batches))
+        logger.info("[PHASE:2:DEEP_AGENT:ENTITY] scenario=candidates | 후보 %d개 → %d배치 병렬 식별", len(candidates), len(batches))
 
         def _process_batch(batch_idx: int, batch: list) -> None:
             batch_names = [c.get("name", "?") for c in batch]
-            logger.info("[FW:DEEPAGENT:ENTITY] 배치 %d 시작 | 후보=%s", batch_idx, batch_names)
+            logger.info("[PHASE:2:DEEP_AGENT:ENTITY] 배치 %d 시작 | 후보=%s", batch_idx, batch_names)
             before_count = len(table_collector)
             batch_agent = create_deep_agent(
                 model=model, tools=tools,
@@ -201,12 +202,12 @@ def run_deep_agent_entity_identification(
                     metadata={"batch_start": batch_idx * batch_size, "batch_size": len(batch)},
                 )
             except Exception as ex:
-                logger.warning("[FW:DEEPAGENT:ENTITY] invoke 실패 batch=%d: %s", batch_idx, ex)
+                logger.error("[PHASE:2:DEEP_AGENT:ENTITY] invoke 실패 batch=%d: %s", batch_idx, ex)
             added = len(table_collector) - before_count
             if added > 0:
-                logger.info("[FW:DEEPAGENT:ENTITY] 배치 %d 완료 | READS/WRITES +%d건", batch_idx, added)
+                logger.info("[PHASE:2:DEEP_AGENT:ENTITY] 배치 %d 완료 | READS/WRITES +%d건", batch_idx, added)
             else:
-                logger.info("[FW:DEEPAGENT:ENTITY] 배치 %d 완료 | 엔티티 식별 안 됨 (후보: %s)", batch_idx, batch_names)
+                logger.info("[PHASE:2:DEEP_AGENT:ENTITY] 배치 %d 완료 | 엔티티 식별 안 됨 (후보: %s)", batch_idx, batch_names)
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
         BATCH_TIMEOUT = 300  # 배치당 최대 5분
@@ -217,17 +218,17 @@ def run_deep_agent_entity_identification(
                 try:
                     future.result(timeout=BATCH_TIMEOUT)
                 except TimeoutError:
-                    logger.warning("[FW:DEEPAGENT:ENTITY] 배치 %d 타임아웃 (%ds) — 스킵", batch_idx, BATCH_TIMEOUT)
+                    logger.error("[PHASE:2:DEEP_AGENT:ENTITY] 배치 %d 타임아웃 (%ds) — 스킵", batch_idx, BATCH_TIMEOUT)
                 except Exception as ex:
-                    logger.warning("[FW:DEEPAGENT:ENTITY] 배치 %d 스레드 예외: %s", batch_idx, ex)
+                    logger.error("[PHASE:2:DEEP_AGENT:ENTITY] 배치 %d 스레드 예외: %s", batch_idx, ex)
 
     identified_tables = {e.table_name for e in table_collector if e.table_name}
     if identified_tables:
         logger.info(
-            "[FW:DEEPAGENT:ENTITY] 완료 | 식별된 엔티티=%d (%s) | READS/WRITES=%d FK=%d",
+            "[PHASE:2:DEEP_AGENT:ENTITY] 완료 | 식별된 엔티티=%d (%s) | READS/WRITES=%d FK=%d",
             len(identified_tables), ", ".join(sorted(identified_tables)),
             len(table_collector), len(fk_collector),
         )
     else:
-        logger.info("[FW:DEEPAGENT:ENTITY] 완료 | 엔티티 식별 안 됨 — 후보 %d개 중 엔티티 0개", len(candidates))
+        logger.info("[PHASE:2:DEEP_AGENT:ENTITY] 완료 | 엔티티 식별 안 됨 — 후보 %d개 중 엔티티 0개", len(candidates))
     return table_collector, fk_collector

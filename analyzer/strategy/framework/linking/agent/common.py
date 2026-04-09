@@ -28,7 +28,7 @@ def _ensure_bundle_indexes(state: Dict[str, Any]) -> None:
     )
     state["span_index"] = span_index
     state["chunk_index"] = chunk_index
-    logger.info("[FW:DEEPAGENT] bundle index 빌드 완료 | span=%d chunk=%d", len(span_index), len(chunk_index))
+    logger.info("[PHASE:2:DEEP_AGENT] bundle index 빌드 완료 | span=%d chunk=%d", len(span_index), len(chunk_index))
 
 
 def _init_deep_agent_env(

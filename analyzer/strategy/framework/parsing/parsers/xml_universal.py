@@ -1,53 +1,76 @@
-"""범용 XML 파서 — SQL 태그와 Entity 태그를 프레임워크 무관하게 추출."""
+"""범용 XML 파서 — 모든 식별자 속성값 + SQL 패턴 기반 추출.
+
+하드코딩된 태그명(SQL_TAGS, ENTITY_TAGS) 없이:
+1. 텍스트에 SQL 패턴이 있으면 SqlStatementChunk
+2. id/name 등 식별자 속성이 있으면 ArtifactChunk
+→ 링킹 단계에서 key_in_code로 소스코드 참조 여부 자동 판별
+"""
 from __future__ import annotations
 
 import logging
 import re
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 from analyzer.strategy.framework.common.models import SqlStatementChunk, ArtifactChunk
 from .base import _local_tag, _parse_xml_safe
 
 logger = logging.getLogger(__name__)
 
-# 용도 기반 태그 분류 — 프레임워크 이름 없이 태그명만
-SQL_TAGS = frozenset({"select", "insert", "update", "delete"})
-ENTITY_TAGS = frozenset({"entity", "class", "entity-mapping", "hibernate-mapping"})
+# SQL 패턴 감지 (텍스트 내용이 SQL 구문인지)
+_SQL_PATTERN = re.compile(
+    r"\b(SELECT|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|MERGE\s+INTO)\b",
+    re.IGNORECASE,
+)
 
-# FQN 패턴: com.example.ModuleName 형태 (entity 블록에서 관련 모듈 추출용)
+# 식별자 속성 — 소스코드에서 참조될 수 있는 속성명
+_IDENTIFIER_ATTRS = ("id", "name", "class", "ref", "bean", "entity-name", "ejb-name", "resource", "type", "resultType", "parameterType", "resultMap")
+
+# 구조적 속성 — 소스코드에서 참조되지 않는 속성 (제외)
+_STRUCTURAL_ATTRS = frozenset({"xmlns", "version", "encoding", "schemaLocation", "xsi", "dtd", "targetNamespace"})
+
+# FQN 패턴: com.example.ModuleName 형태
 _FQN_PATTERN = re.compile(r"\b([a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*\.[A-Z]\w*)\b")
+
+# 식별자 패턴: 최소 2자 이상, 알파벳/숫자/점/언더스코어
+_IDENTIFIER_VALUE_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.]*$")
 
 
 def _extract_fqns_from_text(text: str) -> List[str]:
-    """텍스트에서 패키지 FQN 패턴을 추출. 예: com.banking.loan.entity.LoanBean"""
+    """텍스트에서 패키지 FQN 패턴을 추출."""
     if not text:
         return []
-    fqns = []
-    for m in _FQN_PATTERN.finditer(text):
-        fqn = m.group(1)
-        # 최소 2단계 패키지 (com.xxx.Yyy)
-        if fqn.count(".") >= 2:
-            fqns.append(fqn)
-    return fqns
+    return [m.group(1) for m in _FQN_PATTERN.finditer(text) if m.group(1).count(".") >= 2]
+
+
+def _is_identifier_value(value: str) -> bool:
+    """속성값이 식별자 패턴인지 확인. URL, 순수 숫자, 1자 값 등 제외."""
+    if not value or len(value) < 2:
+        return False
+    if value.startswith("http") or value.startswith("/"):
+        return False
+    return bool(_IDENTIFIER_VALUE_PATTERN.match(value))
+
+
+def _get_element_text(elem) -> str:
+    """요소의 전체 텍스트 (자식 포함)."""
+    from lxml import etree  # type: ignore[import]
+    return (elem.text or "") + "".join(etree.tostring(c, encoding="unicode") for c in elem)
 
 
 def parse_xml_universal(path: str) -> Tuple[List[SqlStatementChunk], List[ArtifactChunk]]:
-    """XML 파일에서 SQL 청크와 Entity 청크를 범용 추출.
+    """XML 파일에서 SQL 청크와 Artifact 청크를 범용 추출.
 
-    - SQL 태그 (select, insert, update, delete) → SqlStatementChunk
-    - Entity 태그 (entity, class 등) → ArtifactChunk (블록 텍스트 통째로)
-    - 나머지 → 무시
-
-    Returns:
-        (sql_chunks, entity_chunks)
+    1. 텍스트에 SQL 패턴 + id 속성 → SqlStatementChunk
+    2. 식별자 속성값이 있는 요소 → ArtifactChunk
     """
 
     def _parse(root, file_path):
         from lxml import etree  # type: ignore[import]
 
         sql_chunks: List[SqlStatementChunk] = []
-        entity_chunks: List[ArtifactChunk] = []
+        artifact_chunks: List[ArtifactChunk] = []
+        seen_keys: set = set()  # 중복 방지
 
         # namespace 추출 (SQL 매핑 XML용)
         namespace = root.get("namespace", "").strip()
@@ -60,80 +83,83 @@ def parse_xml_universal(path: str) -> Tuple[List[SqlStatementChunk], List[Artifa
                     break
 
         for elem in root.iter():
-            tag = _local_tag(elem).lower()
+            if not isinstance(elem.tag, str):
+                continue
 
-            # --- SQL 태그 ---
-            if tag in SQL_TAGS:
-                st_id = elem.get("id", "").strip()
-                if not st_id:
-                    continue
+            start_line = getattr(elem, "sourceline", None) or 0
+            elem_text = _get_element_text(elem)
+
+            # ── SQL 패턴 감지 (텍스트 내용 기반) ──
+            st_id = elem.get("id", "").strip()
+            if st_id and elem_text.strip() and _SQL_PATTERN.search(elem_text):
                 sql_key = f"{namespace}.{st_id}" if namespace else st_id
-                start_line = getattr(elem, "sourceline", None) or 0
-                sql_text = (elem.text or "") + "".join(
-                    etree.tostring(c, encoding="unicode") for c in elem
-                )
-                end_line = start_line + max(0, sql_text.count("\n"))
-                sql_chunks.append(
-                    SqlStatementChunk(
-                        sql_key=sql_key,
-                        sql_type=tag,
-                        start_line=start_line,
-                        end_line=end_line,
-                        sql_text=sql_text.strip(),
-                        file_path=file_path,
+                if sql_key not in seen_keys:
+                    seen_keys.add(sql_key)
+                    tag = _local_tag(elem).lower()
+                    end_line = start_line + max(0, elem_text.count("\n"))
+                    sql_chunks.append(
+                        SqlStatementChunk(
+                            sql_key=sql_key,
+                            sql_type=tag,
+                            start_line=start_line,
+                            end_line=end_line,
+                            sql_text=elem_text.strip(),
+                            file_path=file_path,
+                        )
                     )
-                )
+                    continue  # SQL로 처리된 요소는 Artifact로 중복 등록하지 않음
 
-            # --- Entity 태그 ---
-            elif tag in ENTITY_TAGS:
-                # 블록 텍스트 통째로 저장 (속성명 하드코딩 없음)
-                block_text = etree.tostring(elem, encoding="unicode")
-                start_line = getattr(elem, "sourceline", None) or 0
+            # ── 식별자 속성값 기반 Artifact 추출 ──
+            hint = ""
+            for attr_name in _IDENTIFIER_ATTRS:
+                val = elem.get(attr_name, "").strip()
+                if val and _is_identifier_value(val):
+                    hint = val
+                    break
 
-                # hint_key: 아무 name/id 속성이든 첫 번째로 발견된 것
-                hint = ""
-                for attr in ("name", "entity-name", "ejb-name", "id"):
-                    val = elem.get(attr, "").strip()
-                    if val:
-                        hint = val
+            # 하위 태그에서 name 관련 요소 찾기 (hint 없을 때)
+            if not hint:
+                for child in elem:
+                    lt = _local_tag(child).lower()
+                    if "name" in lt and child.text and _is_identifier_value(child.text.strip()):
+                        hint = child.text.strip()
                         break
-                if not hint:
-                    # 하위 태그에서 name 관련 요소 찾기
-                    for name_tag in elem:
-                        lt = _local_tag(name_tag).lower()
-                        if "name" in lt and name_tag.text:
-                            hint = name_tag.text.strip()
-                            break
 
-                chunk_id = f"{file_path}:{hint}:{start_line}" if hint else f"{file_path}:entity:{start_line}"
+            if not hint:
+                continue
 
-                # entity 블록 텍스트(query 포함)는 통째로 ArtifactChunk에 저장.
-                # TABLE/COLUMN은 sql_table_extract LLM이 처리.
-                # query↔메서드 매칭은 hint_key + 원문을 deepagent가 처리.
+            chunk_id = f"{file_path}:{hint}:{start_line}"
+            if chunk_id in seen_keys:
+                continue
+            seen_keys.add(chunk_id)
 
-                # FQN 추출 — 블록 텍스트에서 패키지.클래스명 패턴 추출
-                related_fqns = _extract_fqns_from_text(block_text)
+            # entity 여부 판단 (태그명 기반 — 참고 정보로만 사용)
+            tag_lower = _local_tag(elem).lower()
+            chunk_type = "entity" if tag_lower in ("entity", "class", "entity-mapping", "hibernate-mapping") else "config"
 
-                entity_chunks.append(
-                    ArtifactChunk(
-                        chunk_id=chunk_id,
-                        chunk_type="entity",
-                        hint_key=hint or None,
-                        text=block_text.strip()[:3000],
-                        source_path=file_path,
-                        start_line=start_line,
-                        end_line=start_line + max(0, block_text.count("\n")),
-                        related_module_fqns=related_fqns or None,
-                    )
+            block_text = etree.tostring(elem, encoding="unicode")
+            related_fqns = _extract_fqns_from_text(block_text)
+
+            artifact_chunks.append(
+                ArtifactChunk(
+                    chunk_id=chunk_id,
+                    chunk_type=chunk_type,
+                    hint_key=hint,
+                    text=block_text.strip()[:3000],
+                    source_path=file_path,
+                    start_line=start_line,
+                    end_line=start_line + max(0, block_text.count("\n")),
+                    related_module_fqns=related_fqns or None,
                 )
+            )
 
         logger.info(
-            "[FW:STEP3] XML 파싱 완료 | file=%s sql=%d entity=%d",
+            "[PHASE:1:ARTIFACT] XML 파싱 완료 | file=%s sql=%d artifact=%d",
             Path(file_path).name,
             len(sql_chunks),
-            len(entity_chunks),
+            len(artifact_chunks),
         )
-        return sql_chunks, entity_chunks
+        return sql_chunks, artifact_chunks
 
     result = _parse_xml_safe(path, _parse)
     if not result:

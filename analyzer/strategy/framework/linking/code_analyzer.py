@@ -248,7 +248,7 @@ def _invoke_analysis_llm(
     """
     if not api_key or not (m.code or "").strip():
         reason = "no_api_key" if not api_key else "no_code"
-        logger.info("[FW:STEP6] LLM 스킵 | function_id=%s reason=%s", m.function_id, reason)
+        logger.info("[PHASE:3:CODE_ANALYSIS] LLM 스킵 | function_id=%s reason=%s", m.function_id, reason)
         return None
     code = m.code.strip()
     ranges = [{"startLine": m.start_line, "endLine": m.end_line}]
@@ -285,7 +285,7 @@ def _invoke_analysis_llm(
             + (module_annotations or "")
         )
     if calls_outgoing:
-        context_parts.append("calls_outgoing: " + ", ".join(calls_outgoing[:20]))
+        context_parts.append("calls_outgoing: " + ", ".join(sorted(calls_outgoing[:20])))
     if reads_writes_summary:
         context_parts.append("reads_writes: " + reads_writes_summary)
     if module_fields_context and module_fields_context.strip():
@@ -293,7 +293,7 @@ def _invoke_analysis_llm(
     if linked_architecture_context and linked_architecture_context.strip():
         context_parts.append(linked_architecture_context.strip())
     if called_method_summaries:
-        # 호출된 메서드들의 summary를 context에 녹여 상위 메서드 summary를 한 번에 생성
+        # 호출된 메서드들의 summary를 context에 포함 (정렬하여 캐시 키 안정성 보장)
         called_snippets: List[str] = []
         for cs in called_method_summaries[:20]:
             try:
@@ -307,6 +307,7 @@ def _invoke_analysis_llm(
             except Exception:
                 continue
         if called_snippets:
+            called_snippets.sort()  # 정렬하여 병렬 처리 순서와 무관하게 캐시 키 일관성 보장
             context_parts.append("called_method_summaries: " + " || ".join(called_snippets))
     context = "; ".join(context_parts)
     if context.strip():
@@ -318,26 +319,26 @@ def _invoke_analysis_llm(
     if constants_context and constants_context.strip():
         inputs["constants_context"] = constants_context.strip()
     try:
-        loader = get_rule_loader("framework")
-        result = loader.execute("function_summary", inputs, api_key=api_key)
+        from util.prompt_registry import prompts
+        result = prompts.execute_raw("framework", "code_analysis", inputs, api_key)
         analysis_list = result.get("analysis") if isinstance(result, dict) else None
         if not analysis_list:
-            logger.info("[FW:STEP6] LLM 스킵 | function_id=%s reason=empty_analysis_result", m.function_id)
+            logger.info("[PHASE:3:CODE_ANALYSIS] LLM 스킵 | function_id=%s reason=empty_analysis_result", m.function_id)
             return None
         out = analysis_list[0]
         logger.info(
-            "[FW:STEP6] LLM 분석 완료 | function_id=%s has_summary=%s dependencies=%d",
+            "[PHASE:3:CODE_ANALYSIS] LLM 분석 완료 | function_id=%s has_summary=%s dependencies=%d",
             m.function_id,
             bool(out.get("summary")),
             len(out.get("dependencies") or []),
         )
         return out
     except Exception as e:
-        logger.warning("[FW:STEP6] LLM 분석 실패 function_id=%s error=%s", m.function_id, e)
+        logger.error("[PHASE:STEP6] LLM 분석 실패 function_id=%s error=%s", m.function_id, e)
         return None
 
 
-def _process_one_method_for_analysis(
+def _analyze_code_node(
     m: FunctionFacts,
     refer_to_edges: List[ReferToEdge],
     reads_writes: List[ReadsWritesEdge],
@@ -428,7 +429,7 @@ def _process_one_method_for_analysis(
 _STEP6_BATCH_SIZE = 20
 
 
-def run_step6(
+def analyze_and_enrich(
     function_facts_list: List[FunctionFacts],
     refer_to_edges: List[ReferToEdge],
     reads_writes: List[ReadsWritesEdge],
@@ -454,7 +455,7 @@ def run_step6(
     api_key = api_key or settings.llm.api_key or os.getenv("LLM_API_KEY", "")
     module_key_index = _build_module_key_index(module_index or {})
     logger.info(
-        "[FW:STEP6] 요약 진입 | function_facts=%d use_llm=%s api_key_set=%s parallel=%s calls_edges=%d",
+        "[PHASE:3:CODE_ANALYSIS] 요약 진입 | function_facts=%d use_llm=%s api_key_set=%s parallel=%s calls_edges=%d",
         len(function_facts_list),
         use_llm,
         bool(api_key),
@@ -475,7 +476,7 @@ def run_step6(
             total = len(function_facts_list)
             workers_actual = max(1, min(workers, total))
             logger.info(
-                "[FW:STEP6] 요약 LLM 병렬 시작 (그래프 미사용) | 메서드=%d 워커=%d (동시에 %d개까지 처리)",
+                "[PHASE:3:CODE_ANALYSIS] 요약 LLM 병렬 시작 (그래프 미사용) | 메서드=%d 워커=%d (동시에 %d개까지 처리)",
                 total,
                 workers,
                 workers_actual,
@@ -485,7 +486,7 @@ def run_step6(
             with ThreadPoolExecutor(max_workers=workers_actual) as executor:
                 futures = {
                     executor.submit(
-                        _process_one_method_for_analysis,
+                        _analyze_code_node,
                         m,
                         refer_to_edges,
                         reads_writes,
@@ -510,7 +511,7 @@ def run_step6(
                         batch[function_id] = data
                     except Exception as e:
                         m = futures[future]
-                        logger.warning("[FW:STEP6] 병렬 분석 예외 function_id=%s: %s", m.function_id, e)
+                        logger.error("[PHASE:STEP6] 병렬 분석 예외 function_id=%s: %s", m.function_id, e)
                         stereotype = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
                         batch[m.function_id] = {
                             "stereotype": stereotype,
@@ -522,13 +523,13 @@ def run_step6(
                     completed += 1
                     if len(batch) >= _STEP6_BATCH_SIZE:
                         total_yielded += len(batch)
-                        logger.debug("[FW:STEP6] 배치 yield  %d/%d", total_yielded, total)
+                        logger.debug("[PHASE:3:CODE_ANALYSIS] 배치 yield  %d/%d", total_yielded, total)
                         yield _flush_batch(batch)
                         batch.clear()
                     if completed == total:
-                        logger.info("[FW:STEP6] analysis LLM 완료  %d/%d", completed, total)
+                        logger.info("[PHASE:3:CODE_ANALYSIS] analysis LLM 완료  %d/%d", completed, total)
                     else:
-                        logger.debug("[FW:STEP6] analysis LLM 진행  %d/%d", completed, total)
+                        logger.debug("[PHASE:3:CODE_ANALYSIS] analysis LLM 진행  %d/%d", completed, total)
             if batch:
                 total_yielded += len(batch)
                 yield _flush_batch(batch)
@@ -536,7 +537,7 @@ def run_step6(
             batch = {}
             for m in function_facts_list:
                 try:
-                    function_id, data = _process_one_method_for_analysis(
+                    function_id, data = _analyze_code_node(
                         m,
                         refer_to_edges,
                         reads_writes,
@@ -555,7 +556,7 @@ def run_step6(
                     )
                     batch[function_id] = data
                 except Exception as e:
-                    logger.warning("[FW:STEP6] 순차 분석 예외 function_id=%s: %s", m.function_id, e)
+                    logger.error("[PHASE:STEP6] 순차 분석 예외 function_id=%s: %s", m.function_id, e)
                     stereotype = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
                     batch[m.function_id] = {
                         "stereotype": stereotype,
@@ -571,12 +572,12 @@ def run_step6(
             if batch:
                 total_yielded += len(batch)
                 yield _flush_batch(batch)
-        logger.info("[FW:STEP6] 요약 완료 | summary_count=%d", total_yielded)
+        logger.info("[PHASE:3:CODE_ANALYSIS] 요약 완료 | summary_count=%d", total_yielded)
         return
 
     # -------- 호출 그래프 기반 bottom-up 요약 (단일 LLM 호출 경로) --------
-    method_by_id: Dict[str, FunctionFacts] = {m.function_id: m for m in function_facts_list}
-    node_ids = set(method_by_id.keys())
+    fact_by_id: Dict[str, FunctionFacts] = {m.function_id: m for m in function_facts_list}
+    node_ids = set(fact_by_id.keys())
     children: Dict[str, List[str]] = {}
     parents: Dict[str, List[str]] = {}
     for e in calls_edges or []:
@@ -597,12 +598,12 @@ def run_step6(
     workers = settings.concurrency.max_concurrency
 
     def summarize_one(node_id: str) -> Tuple[str, Dict[str, Any]]:
-        m = method_by_id[node_id]
+        m = fact_by_id[node_id]
         called_list: List[Dict[str, Any]] = []
         for callee_id in children.get(node_id, []):
             if callee_id not in summary_cache:
                 continue
-            callee_m = method_by_id.get(callee_id)
+            callee_m = fact_by_id.get(callee_id)
             if not callee_m:
                 continue
             fqn = getattr(callee_m, "fqn", "")
@@ -616,7 +617,7 @@ def run_step6(
                     "summary": summary_cache[callee_id],
                 }
             )
-        _, data = _process_one_method_for_analysis(
+        _, data = _analyze_code_node(
             m,
             refer_to_edges,
             reads_writes,
@@ -640,7 +641,7 @@ def run_step6(
     max_workers = max(1, workers)
 
     logger.info(
-        "[FW:STEP6] 호출 그래프 기반 요약 시작 (즉시 실행 모드) | leaf=%d 전체=%d 워커=%d",
+        "[PHASE:3:CODE_ANALYSIS] 호출 그래프 기반 요약 시작 (즉시 실행 모드) | leaf=%d 전체=%d 워커=%d",
         len(leaf_ids),
         len(node_ids),
         max_workers,
@@ -663,8 +664,8 @@ def run_step6(
                     batch[node_id] = data
                     processed_id = node_id
                 except Exception as e:
-                    logger.warning("[FW:STEP6] 호출 그래프 요약 예외 function_id=%s: %s", nid, e)
-                    m = method_by_id[nid]
+                    logger.error("[PHASE:STEP6] 호출 그래프 요약 예외 function_id=%s: %s", nid, e)
+                    m = fact_by_id[nid]
                     stereotype = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
                     fallback = {
                         "stereotype": stereotype,
@@ -689,7 +690,7 @@ def run_step6(
                 # 20개 모이면 yield
                 if len(batch) >= _STEP6_BATCH_SIZE:
                     total_yielded += len(batch)
-                    logger.debug("[FW:STEP6] 배치 yield  %d개", len(batch))
+                    logger.debug("[PHASE:3:CODE_ANALYSIS] 배치 yield  %d개", len(batch))
                     yield _flush_batch(batch)
                     batch.clear()
 
@@ -700,17 +701,17 @@ def run_step6(
         total_yielded += len(batch)
         yield _flush_batch(batch)
 
-    # 사이클 등으로 처리 안 된 노드 fallback
+    # 사이클로 인해 정상 순서에서 누락된 노드 — 독립 처리
     remaining = node_ids - processed
     if remaining:
-        logger.warning(
-            "[FW:STEP6] 호출 그래프 요약에서 처리되지 않은 노드 존재 | remaining=%d", len(remaining)
+        logger.error(
+            "[PHASE:3:CODE_ANALYSIS] 호출 그래프 사이클로 누락된 노드 | remaining=%d", len(remaining)
         )
         batch = {}
         for mid in remaining:
-            m = method_by_id[mid]
+            m = fact_by_id[mid]
             try:
-                _, data = _process_one_method_for_analysis(
+                _, data = _analyze_code_node(
                     m,
                     refer_to_edges,
                     reads_writes,
@@ -729,7 +730,7 @@ def run_step6(
                 )
                 batch[mid] = data
             except Exception as e:
-                logger.warning("[FW:STEP6] remaining 노드 개별 처리 예외 function_id=%s: %s", mid, e)
+                logger.error("[PHASE:STEP6] remaining 노드 개별 처리 예외 function_id=%s: %s", mid, e)
                 stereotype = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
                 batch[mid] = {
                     "stereotype": stereotype,
@@ -746,7 +747,7 @@ def run_step6(
             total_yielded += len(batch)
             yield _flush_batch(batch)
 
-    logger.info("[FW:STEP6] 호출 그래프 기반 요약 완료 | summary_count=%d", total_yielded)
+    logger.info("[PHASE:3:CODE_ANALYSIS] 호출 그래프 기반 요약 완료 | summary_count=%d", total_yielded)
 
 
 def _build_variable_code_map(
@@ -808,12 +809,12 @@ def _invoke_variable_summary_llm(
     if module_annotations:
         inputs["module_annotations"] = module_annotations
     try:
-        loader = get_rule_loader("framework")
-        result = loader.execute("variable_summary", inputs, api_key=api_key)
+        from util.prompt_registry import prompts
+        result = prompts.execute_raw("framework", "variable_summary", inputs, api_key)
         if isinstance(result, Dict) and result.get("summary"):
             return result["summary"]
     except Exception as e:
-        logger.warning("[FW:STEP6] variable_summary LLM 실패 variable_id=%s: %s", field.variable_id, e)
+        logger.error("[PHASE:STEP6] variable_summary LLM 실패 variable_id=%s: %s", field.variable_id, e)
     return None
 
 
@@ -828,12 +829,12 @@ def run_variable_summary(
     """필드별 요약 — 완료 즉시 yield."""
     api_key = api_key or settings.llm.api_key or os.getenv("LLM_API_KEY", "")
     if not variable_facts_list:
-        logger.info("[FW:STEP6] Variable 요약 스킵 | variable_facts=0")
+        logger.info("[PHASE:3:CODE_ANALYSIS] Variable 요약 스킵 | variable_facts=0")
         return
     module_key_index = _build_module_key_index(module_index or {})
     variable_code_map = _build_variable_code_map(data_dir, run_dir)
     logger.info(
-        "[FW:STEP6] Variable 요약 진입 | variables=%d api_key_set=%s variable_code_from_bundles=%d",
+        "[PHASE:3:CODE_ANALYSIS] Variable 요약 진입 | variables=%d api_key_set=%s variable_code_from_bundles=%d",
         len(variable_facts_list),
         bool(api_key),
         len(variable_code_map),
@@ -875,7 +876,7 @@ def run_variable_summary(
                     batch[variable_id] = data
                 except Exception as e:
                     f = futures[future]
-                    logger.warning("[FW:STEP6] Variable 요약 예외 variable_id=%s: %s", f.variable_id, e)
+                    logger.error("[PHASE:STEP6] Variable 요약 예외 variable_id=%s: %s", f.variable_id, e)
                     total_yielded += 1
                     batch[f.variable_id] = {
                         "summary": f"{f.name}; lines {f.start_line}-{f.end_line}",
@@ -895,7 +896,7 @@ def run_variable_summary(
                 batch = {}
     if batch:
         yield batch
-    logger.info("[FW:STEP6] Variable 요약 완료 | summary_count=%d", total_yielded)
+    logger.info("[PHASE:3:CODE_ANALYSIS] Variable 요약 완료 | summary_count=%d", total_yielded)
 
 
 
@@ -927,8 +928,8 @@ def _invoke_module_summary_llm(
     if prev_summary:
         inputs["prev_summary"] = prev_summary
     try:
-        loader = get_rule_loader("framework")
-        result = loader.execute("module_summary", inputs, api_key=api_key)
+        from util.prompt_registry import prompts
+        result = prompts.execute_raw("framework", "module_analysis", inputs, api_key)
         if isinstance(result, Dict):
             summary = result.get("summary") or None
             raw_module_st = (result.get("moduleStereotype") or "").strip()
@@ -936,13 +937,13 @@ def _invoke_module_summary_llm(
             unified_actors = result.get("unified_actors") or {}
             return summary, module_stereotype, unified_actors
     except Exception as e:
-        logger.warning("[FW:STEP6] module_summary_batch LLM 실패 module_fqn=%s: %s", module_fqn, e)
+        logger.error("[PHASE:STEP6] module_summary_batch LLM 실패 module_fqn=%s: %s", module_fqn, e)
     return None, "", {}
 
 
 def run_module_summary(
     module_index: Dict[str, Any],
-    summary_by_function: Dict[str, Dict[str, Any]],
+    analysis_by_function: Dict[str, Dict[str, Any]],
     summary_by_variable: Dict[str, Dict[str, Any]],
     function_facts_list: List[FunctionFacts],
     variable_facts_list: List[VariableFacts],
@@ -964,7 +965,7 @@ def run_module_summary(
         if not ck:
             continue
         name = (m.fqn or "").rsplit(".", 1)[-1] if m.fqn else m.function_id or ""
-        data = summary_by_function.get(m.function_id) or {}
+        data = analysis_by_function.get(m.function_id) or {}
         summary = data.get("summary", "") if isinstance(data, dict) else ""
         if not summary:
             summary = f"{name}; method"
@@ -1050,7 +1051,7 @@ def run_module_summary(
                     summary = ""
                     module_stereotype = ""
                     unified = {}
-                    logger.warning("[FW:STEP6] Module 요약 예외 module=%s: %s", module_fqn, e)
+                    logger.error("[PHASE:STEP6] Module 요약 예외 module=%s: %s", module_fqn, e)
                 total_yielded += 1
                 batch[module_fqn] = {"summary": summary, "moduleStereotype": module_stereotype, "unified_actors": unified}
                 if len(batch) >= _CLASS_BATCH_SIZE:
@@ -1066,4 +1067,4 @@ def run_module_summary(
                 batch = {}
     if batch:
         yield batch
-    logger.info("[FW:STEP6] Module 요약 완료 | module_count=%d", total_yielded)
+    logger.info("[PHASE:3:CODE_ANALYSIS] Module 요약 완료 | module_count=%d", total_yielded)

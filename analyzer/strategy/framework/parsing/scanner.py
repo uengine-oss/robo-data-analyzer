@@ -154,7 +154,7 @@ def scan_project(
         for root_dir, path_prefix in scan_roots:
             root = Path(root_dir).resolve()
             if not root.is_dir():
-                logger.debug("[FW:STEP1] 스캔 스킵 (디렉터리 없음) | root=%s prefix=%s", root, path_prefix)
+                logger.debug("[PHASE:1:SCAN] 스캔 스킵 (디렉터리 없음) | root=%s prefix=%s", root, path_prefix)
                 continue
             if use_pathlib:
                 for p in root.rglob("*"):
@@ -171,7 +171,7 @@ def scan_project(
                     for name in filenames:
                         p = Path(dirpath) / name
                         files_with_prefix.append((p, path_prefix, root))
-        logger.debug("[FW:STEP1] 스캔 진입 | scan_roots=%d use_pathlib=%s", len(scan_roots), use_pathlib)
+        logger.debug("[PHASE:1:SCAN] 스캔 진입 | scan_roots=%d use_pathlib=%s", len(scan_roots), use_pathlib)
         for path, path_prefix, root in files_with_prefix:
             try:
                 rel = path.resolve().relative_to(root)
@@ -181,10 +181,10 @@ def scan_project(
                 logger.debug("스캔 스킵 %s: %s", path, e)
     else:
         base_dir = Path(project_root or (Path(settings.path.data_dir) / "source"))
-        logger.debug("[FW:STEP1] 스캔 진입 | project_root=%s use_pathlib=%s", base_dir, use_pathlib)
+        logger.debug("[PHASE:1:SCAN] 스캔 진입 | project_root=%s use_pathlib=%s", base_dir, use_pathlib)
         if not base_dir.is_dir():
-            logger.warning("data 디렉터리가 없음: %s", base_dir)
-            logger.info("[FW:STEP1] 스킵 | reason=root_not_dir path=%s", base_dir)
+            logger.error("[PHASE:1:SCAN] data 디렉터리 없음 | path=%s", base_dir)
+            logger.info("[PHASE:1:SCAN] 스킵 | reason=root_not_dir path=%s", base_dir)
             return [], ProcessingPlan()
 
         if use_pathlib:
@@ -213,7 +213,7 @@ def scan_project(
                 logger.debug("스캔 스킵 %s: %s", path, e)
 
     logger.debug(
-        "[FW:STEP1] 스캔 완료 | catalog=%d source_ast=%d sql=%d entity=%d config=%d lang=%s",
+        "[PHASE:1:SCAN] 스캔 완료 | catalog=%d source_ast=%d sql=%d entity=%d config=%d lang=%s",
         len(catalog),
         len(plan.source_ast_jobs),
         len(plan.sql_jobs),

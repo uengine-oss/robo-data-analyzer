@@ -21,7 +21,10 @@ from analyzer.pipeline_control import pipeline_controller, PipelinePhase
 from config.settings import settings
 from util.ndjson_stream import emit_message, emit_phase_event
 
-from analyzer.strategy.framework.pipeline.phases import run_phase_ddl, run_phase_ast, run_phase_llm, run_phase_post
+from analyzer.strategy.framework.pipeline.phase_ddl import run_phase_ddl
+from analyzer.strategy.framework.pipeline.phase_ast import run_phase_ast
+from analyzer.strategy.framework.pipeline.phase_linking import run_phase_linking
+from analyzer.strategy.framework.pipeline.phase_enrichment import run_phase_enrichment
 from analyzer.strategy.framework.pipeline.state import FrameworkPipelineState
 from analyzer.strategy.framework.common.lang_profile import get_lang_profile
 
@@ -108,7 +111,8 @@ class FrameworkPipeline(BaseStreamingAnalyzer):
                 from analyzer.strategy.framework.artifact_dump import dump_phase1_artifacts
                 dump_phase1_artifacts(self._pipeline_state, Path(run_dir))
             except Exception as e:
-                logger.warning("[FW:ARTIFACT] Phase1 산출물 덤프 실패: %s", e)
+                logger.error("[PHASE:ARTIFACT] Phase1 산출물 덤프 실패: %s", e)
+        self._pipeline_state.clear_phase_data(1)  # Phase 1 중간 데이터 해제
         if not await ps.wait_if_paused():
             yield emit_message("⏹️ 파이프라인 중단")
             return
@@ -116,7 +120,7 @@ class FrameworkPipeline(BaseStreamingAnalyzer):
         # ========== Phase 2: LLM 링킹 ==========
         ps.set_phase(PipelinePhase.LLM_ANALYSIS, "LLM 링킹 분석 중", 0)
         yield emit_phase_event(2, "LLM 링킹", "started", 0, {"canPause": True})
-        async for chunk in run_phase_llm(self, client, orchestrator, stats):
+        async for chunk in run_phase_linking(self, client, orchestrator, stats):
             yield chunk
         yield emit_phase_event(2, "LLM 링킹", "completed", 100)
         if run_dir:
@@ -124,15 +128,16 @@ class FrameworkPipeline(BaseStreamingAnalyzer):
                 from analyzer.strategy.framework.artifact_dump import dump_phase2_artifacts
                 dump_phase2_artifacts(self._pipeline_state, Path(run_dir))
             except Exception as e:
-                logger.warning("[FW:ARTIFACT] Phase2 산출물 덤프 실패: %s", e)
+                logger.error("[PHASE:ARTIFACT] Phase2 산출물 덤프 실패: %s", e)
+        self._pipeline_state.clear_phase_data(2)  # Phase 2 중간 데이터 해제
         if not await ps.wait_if_paused():
             yield emit_message("⏹️ 파이프라인 중단")
             return
 
-        # ========== Phase 3: 후처리 ==========
-        ps.set_phase(PipelinePhase.REPORT_GENERATION, "후처리 중", 0)
-        yield emit_phase_event(3, "후처리", "started", 0, {"canPause": True})
-        async for chunk in run_phase_post(self, client, orchestrator, stats):
+        # ========== Phase 3: 코드 분석 + 보강 ==========
+        ps.set_phase(PipelinePhase.CODE_ENRICHMENT, "코드 분석 + 보강 중", 0)
+        yield emit_phase_event(3, "코드 분석 + 보강", "started", 0, {"canPause": True})
+        async for chunk in run_phase_enrichment(self, client, orchestrator, stats):
             yield chunk
         yield emit_phase_event(3, "후처리", "completed", 100)
         if run_dir:
@@ -140,5 +145,5 @@ class FrameworkPipeline(BaseStreamingAnalyzer):
                 from analyzer.strategy.framework.artifact_dump import dump_phase3_artifacts
                 dump_phase3_artifacts(self._pipeline_state, Path(run_dir))
             except Exception as e:
-                logger.warning("[FW:ARTIFACT] Phase3 산출물 덤프 실패: %s", e)
+                logger.error("[PHASE:ARTIFACT] Phase3 산출물 덤프 실패: %s", e)
 

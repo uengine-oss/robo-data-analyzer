@@ -41,10 +41,10 @@ PIPELINE_FLOW_MD = """# Framework 파이프라인 흐름
 
 ## Step5 링킹
 - **처리**: REFER_TO 매칭, SQL→Table(LLM), Call batch, analysis LLM
-- **산출물**: refer_to_edges, reads_writes, function_table_edges, module_table_edges, summary_by_function, calls, uses
+- **산출물**: refer_to_edges, reads_writes, function_table_edges, module_table_edges, analysis_by_function, calls, uses
 
 ## Step6 요약·후처리
-- **산출물**: summary_by_function(보강), summary_by_variable, summary_by_module, user_stories
+- **산출물**: analysis_by_function(보강), summary_by_variable, summary_by_module, user_stories
 """
 
 
@@ -95,7 +95,7 @@ def _sort_by_start_line(items: List[Any]) -> List[Any]:
 def _write_pipeline_flow_md(out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "00_pipeline_flow.md").write_text(PIPELINE_FLOW_MD.strip(), encoding="utf-8")
-    logger.info("[FW:ARTIFACT] 00_pipeline_flow.md 저장 | path=%s", out_dir / "00_pipeline_flow.md")
+    logger.info("[PHASE:ARTIFACT] 00_pipeline_flow.md 저장 | path=%s", out_dir / "00_pipeline_flow.md")
 
 
 def dump_phase1_artifacts(state: Dict[str, Any], run_dir: Path) -> None:
@@ -171,7 +171,7 @@ def dump_phase1_artifacts(state: Dict[str, Any], run_dir: Path) -> None:
         if val is not None and isinstance(val, dict):
             _write_json(base / name, _to_serializable(val), ensure_ascii=False)
 
-    logger.info("[FW:ARTIFACT] Phase1 산출물 저장 | dir=%s", base)
+    logger.info("[PHASE:ARTIFACT] Phase1 산출물 저장 | dir=%s", base)
 
 
 def dump_phase2_artifacts(state: Dict[str, Any], run_dir: Path) -> None:
@@ -188,7 +188,7 @@ def dump_phase2_artifacts(state: Dict[str, Any], run_dir: Path) -> None:
         ("step5_column_refs.json", "column_refs"),
         ("step5_function_table_edges.json", "function_table_edges"),
         ("step5_module_table_edges.json", "module_table_edges"),
-        ("step5_summary_by_function.json", "summary_by_function"),
+        ("step5_summary_by_function.json", "analysis_by_function"),
         ("step5_calls_edges_method.json", "calls_edges"),
         ("step5_uses_edges.json", "uses_edges"),
         ("step5_unresolved_calls.json", "unresolved_calls"),
@@ -197,14 +197,14 @@ def dump_phase2_artifacts(state: Dict[str, Any], run_dir: Path) -> None:
         if val is not None:
             _write_json(base / name, _to_serializable(val), ensure_ascii=False)
 
-    summary_by_function = getattr(state, "summary_by_function", None) or {}
-    if summary_by_function:
-        _write_json(base / "step6_summary_by_function.json", _to_serializable(summary_by_function), ensure_ascii=False)
+    analysis_by_function = getattr(state, "analysis_by_function", None) or {}
+    if analysis_by_function:
+        _write_json(base / "step6_summary_by_function.json", _to_serializable(analysis_by_function), ensure_ascii=False)
     unresolved_calls = getattr(state, "unresolved_calls", None)
     if unresolved_calls is not None:
         _write_json(base / "step6_unresolved_calls.json", _to_serializable(unresolved_calls), ensure_ascii=False)
 
-    logger.info("[FW:ARTIFACT] Phase2 산출물 저장 | dir=%s", base)
+    logger.info("[PHASE:ARTIFACT] Phase2 산출물 저장 | dir=%s", base)
 
 
 def dump_phase3_artifacts(state: Dict[str, Any], run_dir: Path) -> None:
@@ -220,4 +220,4 @@ def dump_phase3_artifacts(state: Dict[str, Any], run_dir: Path) -> None:
     if summary_by_module:
         _write_json(base / "step6_summary_by_module.json", _to_serializable(summary_by_module), ensure_ascii=False)
 
-    logger.info("[FW:ARTIFACT] Phase3 산출물 저장 | dir=%s", base)
+    logger.info("[PHASE:ARTIFACT] Phase3 산출물 저장 | dir=%s", base)

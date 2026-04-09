@@ -19,12 +19,12 @@ EXTERNAL_PREFIX = "external:"
 EXTERNAL_SEP = "#"
 
 # Log prefixes
-LOG_SCAN = "[FW:SCAN]"
-LOG_AST = "[FW:AST]"
-LOG_LINK = "[FW:LINK]"
-LOG_ANALYSIS = "[FW:ANALYSIS]"
-LOG_SUMMARY = "[FW:SUMMARY]"
-LOG_GRAPH = "[FW:GRAPH]"
+LOG_SCAN = "[PHASE:1:SCAN]"
+LOG_AST = "[PHASE:1:AST]"
+LOG_LINK = "[PHASE:2:LINKING]"
+LOG_ANALYSIS = "[PHASE:3:CODE_ANALYSIS]"
+LOG_SUMMARY = "[PHASE:3:CODE_ANALYSIS]"
+LOG_GRAPH = "[GRAPH]"
 
 # Scan skip directories
 SKIP_DIRS = frozenset({"ddl", ".git", "node_modules", "__pycache__", ".venv", "venv", "target", "build"})

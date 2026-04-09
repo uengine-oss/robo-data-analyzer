@@ -20,14 +20,8 @@ from util.text_utils import calculate_code_token
 from analyzer.common.graph_writer import run_graph_queries
 
 
-# ========== RuleLoader 헬퍼 (phase_post 전용) ==========
-_rule_loader_cache: Any = None
-
-def _rule_loader() -> RuleLoader:
-    global _rule_loader_cache
-    if _rule_loader_cache is None:
-        _rule_loader_cache = RuleLoader(target_lang="dbms")
-    return _rule_loader_cache
+# ========== PromptRegistry 기반 LLM 호출 ==========
+from util.prompt_registry import prompts
 
 
 def _collect_variable_declarations(processor: Any, proc_key: str, var_types: frozenset) -> str:
@@ -59,7 +53,7 @@ def _analyze_summary_only(
         inputs["constants_context"] = constants_context
     if called_procedure_summaries:
         inputs["called_procedure_summaries"] = called_procedure_summaries
-    return _rule_loader().execute("procedure_summary", inputs, api_key)
+    return prompts.execute_raw("dbms", "unit_analysis", inputs, api_key)
 
 
 def _summarize_table_metadata(
@@ -70,8 +64,8 @@ def _summarize_table_metadata(
     api_key: str,
     locale: str,
 ) -> Dict[str, Any]:
-    return _rule_loader().execute(
-        "table_summary",
+    return prompts.execute_raw(
+        "dbms", "table_summary",
         {
             "table_name": table_name,
             "table_sentences": table_sentences,
@@ -104,7 +98,7 @@ def _split_summaries_by_token(summaries: dict, max_token: int) -> List[dict]:
     return chunks
 
 
-async def _run_procedure_summary(
+async def _run_unit_analysis(
     pipeline: Any,
     contexts: List[FileAnalysisContext],
     client: Neo4jClient,
@@ -140,7 +134,7 @@ async def _run_procedure_summary(
     try:
         constants_context = await fetch_constants_context(client)
     except Exception as e:
-        log_process("ANALYZE", "WARN", f"상수 컨텍스트 수집 실패: {e}")
+        log_process("PHASE:2", "ERROR", f"상수 컨텍스트 수집 실패: {e}")
 
 
     async def _collect_table_names(proc_name: str, directory: str, file_name: str) -> list[str]:
@@ -156,7 +150,7 @@ async def _run_procedure_summary(
             rows = results[0] if results and results[0] else []
             return [r.get("table_name") for r in rows if r.get("table_name")]
         except Exception as e:
-            log_process("ANALYZE", "WARN", f"테이블명 수집 실패 ({proc_name}): {e}")
+            log_process("PHASE:2", "ERROR", f"테이블명 수집 실패 ({proc_name}): {e}")
             return []
 
     async def _collect_called_procedure_summaries(proc_name: str, directory: str, file_name: str, max_items: int = 20) -> str:
@@ -183,7 +177,7 @@ async def _run_procedure_summary(
                 return ""
             return "\n".join(parts)
         except Exception as e:
-            log_process("ANALYZE", "WARN", f"호출 프로시저 요약 수집 실패 ({proc_name}): {e}")
+            log_process("PHASE:2", "ERROR", f"호출 프로시저 요약 수집 실패 ({proc_name}): {e}")
             return ""
 
     async def process_procedure(ctx, processor, proc_key, info, summaries):
@@ -291,7 +285,7 @@ async def _run_procedure_summary(
                         await results_queue.put({"type": "graph", "graph": batch})
                 await results_queue.put({"type": "success", "procedure": info.procedure_name, "file": ctx.file_name})
             except Exception as e:
-                log_process("ANALYZE", "ERROR", f"프로시저 Summary 오류 ({ctx.file_name}/{info.procedure_name}): {e}", logging.ERROR, e)
+                log_process("PHASE:2", "ERROR", f"프로시저 Summary 오류 ({ctx.file_name}/{info.procedure_name}): {e}", logging.ERROR, e)
                 await results_queue.put({"type": "error", "procedure": info.procedure_name, "file": ctx.file_name, "message": str(e)})
                 raise
 
@@ -424,7 +418,7 @@ async def run_phase_post(
     orchestrator: Any,
 ) -> AsyncGenerator[bytes, None]:
     """Phase 3: 후처리 - 프로시저 요약 → 테이블 요약"""
-    async for chunk in _run_procedure_summary(pipeline, contexts, client, orchestrator):
+    async for chunk in _run_unit_analysis(pipeline, contexts, client, orchestrator):
         yield chunk
     async for chunk in _run_table_summary(pipeline, contexts, client, orchestrator):
         yield chunk

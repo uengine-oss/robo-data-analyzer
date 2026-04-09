@@ -418,7 +418,7 @@ def _source_path_for_ast(data_dir: str, ast_path: str, lang: str) -> Optional[st
     return None
 
 
-def run_step2(
+def extract_code_structure(
     source_ast_jobs: List[str],
     lang: str,
     data_dir: Optional[str] = None,
@@ -434,14 +434,14 @@ def run_step2(
     source_exts = set(onto.source_extensions(lang))
 
     logger.info(
-        "[FW:STEP2] AST 진입 | lang=%s paths=%d data_dir=%s run_dir=%s",
+        "[PHASE:1:AST] AST 진입 | lang=%s paths=%d data_dir=%s run_dir=%s",
         lang,
         len(source_ast_jobs),
         data_dir or "",
         run_dir or "",
     )
     logger.info(
-        "[FW:STEP2] [섹션] 파일별 처리: AST 파싱 → FunctionFacts, ChunkBundle 생성·저장 | 파일 %d개",
+        "[PHASE:1:AST] [섹션] 파일별 처리: AST 파싱 → FunctionFacts, ChunkBundle 생성·저장 | 파일 %d개",
         len(source_ast_jobs),
     )
 
@@ -457,7 +457,7 @@ def run_step2(
             if path_ext in source_exts and data_dir:
                 ast_path_val = _ast_json_path_for_source(data_dir, path, lang=lang)
                 if not ast_path_val:
-                    logger.warning("AST JSON 없음, 스킵 | path=%s", path)
+                    logger.error("[PHASE:1:AST] AST JSON 없음, 스킵 | path=%s", path)
                     continue
                 source_path_for_bundle = path
             else:
@@ -528,7 +528,7 @@ def run_step2(
                             fl.code = fid_to_code[fl.variable_id]
 
             logger.info(
-                "[FW:STEP2] 파일 처리 완료 | file=%s methods=%d classes=%d",
+                "[PHASE:1:AST] 파일 처리 완료 | file=%s methods=%d classes=%d",
                 Path(path).name,
                 len(facts),
                 len(cidx),
@@ -546,4 +546,4 @@ def run_step2(
                 "file_name": Path(path).name,
             }
         except Exception as e:
-            logger.warning("AST 처리 스킵 %s: %s", Path(path).name, e)
+            logger.error("[PHASE:1:AST] 처리 실패 | file=%s error=%s", Path(path).name, e, exc_info=True)

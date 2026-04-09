@@ -60,7 +60,7 @@ class LangProfile:
             logger.debug("[LangProfile] %s 없음 — 빈 set 사용", path)
             result = frozenset()
         except Exception as e:
-            logger.warning("[LangProfile] %s 로드 실패: %s", path, e)
+            logger.error("[LangProfile] 로드 실패 | path=%s error=%s", path, e, exc_info=True)
             result = frozenset()
 
         self._stdlib_cache[lang] = result

@@ -27,18 +27,18 @@ def _parse_xml_safe(path: str, parser_fn):
     try:
         from lxml import etree  # type: ignore[import]
     except ImportError:
-        logger.info("[FW:STEP3] 스킵 | file=%s reason=lxml_not_available", Path(path).name)
+        logger.info("[PHASE:1:ARTIFACT] 스킵 | file=%s reason=lxml_not_available", Path(path).name)
         return []
     text = read_text_with_fallback(path)
     try:
         root = etree.fromstring(text.encode("utf-8"))
     except Exception as e:
-        logger.info("[FW:STEP3] 스킵 | file=%s reason=xml_parse_error error=%s", Path(path).name, e)
+        logger.info("[PHASE:1:ARTIFACT] 스킵 | file=%s reason=xml_parse_error error=%s", Path(path).name, e)
         return []
     return parser_fn(root, path)
 
 
-def run_step3(
+def parse_config_and_artifacts(
     sql_jobs: List[str],
     config_jobs: List[str],
     *,
@@ -57,7 +57,7 @@ def run_step3(
     all_xml_jobs = list(sql_jobs) + all_entity_jobs
 
     logger.info(
-        "[FW:STEP3] 아티팩트 진입 | xml=%d config=%d (sql=%d entity=%d)",
+        "[PHASE:1:ARTIFACT] 아티팩트 진입 | xml=%d config=%d (sql=%d entity=%d)",
         len(all_xml_jobs),
         len(config_jobs),
         len(sql_jobs),
@@ -69,7 +69,7 @@ def run_step3(
 
     # XML 파싱 — 범용 파서로 통합 (sql/entity 구분은 파서가 태그로 판단)
     if all_xml_jobs:
-        logger.info("[FW:STEP3] [섹션] XML 범용 파싱 | 파일 %d개", len(all_xml_jobs))
+        logger.info("[PHASE:1:ARTIFACT] [섹션] XML 범용 파싱 | 파일 %d개", len(all_xml_jobs))
     for path in all_xml_jobs:
         xml_sql, xml_entities = parse_xml_universal(path)
         sql_chunks.extend(xml_sql)
@@ -77,7 +77,7 @@ def run_step3(
 
     # 설정 파일 파싱 (yaml, properties)
     if config_jobs:
-        logger.info("[FW:STEP3] [섹션] Config 파싱 | 파일 %d개", len(config_jobs))
+        logger.info("[PHASE:1:ARTIFACT] [섹션] Config 파싱 | 파일 %d개", len(config_jobs))
     for p in config_jobs:
         ext = Path(p).suffix.lower()
         if ext in (".yaml", ".yml"):
@@ -86,7 +86,7 @@ def run_step3(
             config_chunks.extend(parse_properties(p))
 
     logger.info(
-        "[FW:STEP3] 아티팩트 완료 | sql_chunks=%d config_chunks=%d artifact_chunks=%d",
+        "[PHASE:1:ARTIFACT] 아티팩트 완료 | sql_chunks=%d config_chunks=%d artifact_chunks=%d",
         len(sql_chunks),
         len(config_chunks),
         len(artifact_chunks),

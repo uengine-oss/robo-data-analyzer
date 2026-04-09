@@ -229,7 +229,6 @@ class RuleLoader:
         """프롬프트 실행 (LLM 호출, 429 Rate Limit 자동 재시도)"""
         _ = self._load_rule(rule_name)
         prompt_text = self.render_prompt(rule_name, inputs)
-        # 제어 문자 제거 (null byte, BOM 등 → API 400 에러 방지)
         prompt_text = prompt_text.replace("\x00", "").replace("\ufeff", "")
         rule_path = os.path.join(self.rule_dir, f"{rule_name}.yaml")
 
@@ -269,8 +268,8 @@ class RuleLoader:
 
                 if (is_rate_limit or is_bad_request) and attempt < _MAX_RETRIES:
                     delay = _RETRY_BASE_DELAY * (2 ** attempt)
-                    logger.warning(
-                        "[RULE] 429 Rate Limit | rule=%s | attempt=%d/%d | %.1fs 후 재시도",
+                    logger.info(
+                        "[RULE] Rate Limit 재시도 | rule=%s | attempt=%d/%d | %.1fs 후",
                         rule_name, attempt + 1, _MAX_RETRIES, delay,
                     )
                     time.sleep(delay)
@@ -279,6 +278,63 @@ class RuleLoader:
                 logger.error("[RULE] 프롬프트 실행 실패 | rule=%s | error=%s", rule_name, e)
                 raise RuntimeError(f"{rule_name} 프롬프트 실행 중 오류: {e}")
 
+        raise RuntimeError(f"{rule_name} 프롬프트 실행 중 오류: {last_error}")
+
+    async def async_execute(
+        self,
+        rule_name: str,
+        inputs: Dict[str, Any],
+        api_key: str,
+        model: str | None = None,
+    ) -> Dict[str, Any]:
+        """프롬프트 비동기 실행 (LLMRateLimiter + asyncio.sleep 재시도)."""
+        import asyncio
+        from util.async_executor import get_rate_limiter
+
+        _ = self._load_rule(rule_name)
+        prompt_text = self.render_prompt(rule_name, inputs)
+        prompt_text = prompt_text.replace("\x00", "").replace("\ufeff", "")
+        rule_path = os.path.join(self.rule_dir, f"{rule_name}.yaml")
+
+        llm = get_llm(api_key=api_key, model=model)
+        chain = (
+            RunnablePassthrough()
+            | PromptTemplate.from_template("{prompt}")
+            | llm
+            | RunnableLambda(_sanitize_llm_output)
+            | JsonOutputParser()
+        )
+
+        from util.artifact_logger import ainvoke_with_audit
+
+        limiter = get_rate_limiter()
+        last_error: Exception | None = None
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                async with limiter:
+                    result = await ainvoke_with_audit(
+                        chain,
+                        {"prompt": prompt_text},
+                        prompt_name=f"rules/{self.target_lang}/{rule_name}",
+                        input_payload={"inputs": _safe_copy(inputs), "renderedPrompt": prompt_text},
+                        metadata={"rule": rule_name, "targetLang": self.target_lang, "rulePath": rule_path},
+                    )
+                return result
+            except Exception as e:
+                last_error = e
+                err_str = str(e)
+                is_rate_limit = "429" in err_str or "rate" in err_str.lower() or "quota" in err_str.lower()
+                is_bad_request = "400" in err_str and "parse" in err_str.lower()
+                if (is_rate_limit or is_bad_request) and attempt < _MAX_RETRIES:
+                    delay = _RETRY_BASE_DELAY * (2 ** attempt)
+                    logger.info(
+                        "[RULE] Rate Limit 재시도 | rule=%s | attempt=%d/%d | %.1fs 후",
+                        rule_name, attempt + 1, _MAX_RETRIES, delay,
+                    )
+                    await asyncio.sleep(delay)  # 논블로킹 대기
+                    continue
+                logger.error("[RULE] 프롬프트 실행 실패 | rule=%s | error=%s", rule_name, e)
+                raise RuntimeError(f"{rule_name} 프롬프트 실행 중 오류: {e}")
         raise RuntimeError(f"{rule_name} 프롬프트 실행 중 오류: {last_error}")
 
     def clear_cache(self):

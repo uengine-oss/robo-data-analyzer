@@ -14,8 +14,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from config.settings import settings
 from util.prompt_executor import get_rule_loader
 
-from analyzer.strategy.framework.linking.deep_agent_common import _init_deep_agent_env
-from analyzer.strategy.framework.linking.deep_agent_tools import build_tools
+from analyzer.strategy.framework.linking.agent.common import _init_deep_agent_env
+from analyzer.strategy.framework.linking.agent.tools import build_tools
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +89,8 @@ def run_deep_agent_variable_references(
         variable_ref_collector=ref_collector,
     )
 
-    system_prompt = get_rule_loader("deep_agent").render_prompt("variable_reference", {})
+    from util.prompt_registry import prompts
+    system_prompt = prompts.deep_agent_varref_prompt()
 
     # 배치 처리
     da_cfg = settings.deep_agent
@@ -119,7 +120,7 @@ def run_deep_agent_variable_references(
         try:
             batch_agent.invoke({"messages": [{"role": "user", "content": user_msg}]})
         except Exception as ex:
-            logger.warning("[DEEPAGENT:VAR] invoke 실패 batch=%d: %s", batch_idx, ex)
+            logger.error("[PHASE:2:DEEP_AGENT:VARREF] invoke 실패 batch=%d: %s", batch_idx, ex)
         added = len(ref_collector) - before_count
         logger.info("[DEEPAGENT:VAR] 배치 %d 완료 | REFERENCES +%d건", batch_idx, added)
         return added
@@ -134,9 +135,9 @@ def run_deep_agent_variable_references(
             try:
                 future.result(timeout=BATCH_TIMEOUT)
             except TimeoutError:
-                logger.warning("[DEEPAGENT:VAR] 배치 %d 타임아웃 (%ds) — 스킵", batch_idx, BATCH_TIMEOUT)
+                logger.error("[PHASE:2:DEEP_AGENT:VARREF] 배치 %d 타임아웃 (%ds) — 스킵", batch_idx, BATCH_TIMEOUT)
             except Exception as e:
-                logger.warning("[DEEPAGENT:VAR] 배치 %d 처리 실패: %s", batch_idx, e)
+                logger.error("[PHASE:2:DEEP_AGENT:VARREF] 배치 %d 처리 실패: %s", batch_idx, e)
 
     logger.info("[DEEPAGENT:VAR] 완료 | refs=%d", len(ref_collector))
     return ref_collector

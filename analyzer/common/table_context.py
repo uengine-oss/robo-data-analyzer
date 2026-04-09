@@ -37,7 +37,7 @@ def _load_fixture() -> Dict[str, Any]:
         return _fixture_cache
 
     if not os.path.isfile(path):
-        logger.warning("[TABLE_CTX] fixture 파일 없음 | path=%s", path)
+        logger.error("[TABLE_CTX] fixture 파일 없음 | path=%s", path)
         return {}
 
     try:
@@ -46,7 +46,7 @@ def _load_fixture() -> Dict[str, Any]:
         _fixture_loaded_path = path
         logger.info("[TABLE_CTX] fixture 로드 | path=%s tables=%d", path, len(_fixture_cache))
     except Exception as e:
-        logger.warning("[TABLE_CTX] fixture 로드 실패 (%s): %s", path, e)
+        logger.error("[TABLE_CTX] fixture 로드 실패 (%s): %s", path, e)
         _fixture_cache = {}
 
     return _fixture_cache

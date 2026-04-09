@@ -19,9 +19,9 @@ def parse_yaml_config(path: str) -> List[ConfigSectionChunk]:
         try:
             import yaml  # type: ignore[import]
         except ImportError:
-            logger.warning("ruamel.yaml / PyYAML 미설치: YAML 스킵")
+            logger.error("[PHASE:1:ARTIFACT] ruamel.yaml / PyYAML 미설치 — YAML 스킵")
             logger.info(
-                "[FW:STEP3] 스킵 | parser=yaml file=%s reason=no_yaml_lib",
+                "[PHASE:1:ARTIFACT] 스킵 | parser=yaml file=%s reason=no_yaml_lib",
                 Path(path).name,
             )
             return []
@@ -56,7 +56,7 @@ def parse_yaml_config(path: str) -> List[ConfigSectionChunk]:
             data = yaml_loader.load(f)
     except Exception as e:
         logger.info(
-            "[FW:STEP3] 스킵 | parser=yaml file=%s reason=load_error error=%s",
+            "[PHASE:1:ARTIFACT] 스킵 | parser=yaml file=%s reason=load_error error=%s",
             Path(path).name,
             e,
         )

@@ -31,12 +31,20 @@ def is_valid_table(schema: str, name: str) -> bool:
 
 
 def key_in_code(code: str, key: str) -> bool:
-    """인덱스 키가 코드에 등장하는지 검사. key 또는 'key' / "key" 형태."""
+    """인덱스 키가 코드에 등장하는지 검사.
+
+    따옴표 감싼 형태("key", 'key')를 우선 체크하고,
+    따옴표 없는 경우 단어 경계(\b)를 확인하여 부분 매칭 방지.
+    예: key="name" → "userName"에 매칭되지 않음.
+    """
     if not code or not key:
         return False
-    if key in code:
-        return True
+    # 1) 따옴표 감싼 형태 (가장 정확)
     if ('"' + key + '"') in code or ("'" + key + "'") in code:
+        return True
+    # 2) 단어 경계 체크 (짧은 키의 부분 매칭 방지)
+    import re
+    if re.search(r'\b' + re.escape(key) + r'\b', code):
         return True
     return False
 
