@@ -171,6 +171,23 @@ def _build_linked_architecture_context(
     return out
 
 
+def _filter_by_code_reference(items: List[str], code: str) -> List[str]:
+    """items 중 code에 실제 등장하는 식별자가 있는 항목만 반환.
+
+    각 item의 단어(4자 이상)가 code에 포함되어 있으면 유지.
+    4자 미만은 'int', 'for' 같은 키워드와 오매칭을 방지하기 위해 제외.
+    """
+    result = []
+    for item in items:
+        item = item.strip()
+        if not item:
+            continue
+        words = item.replace("#define", "").split()
+        if any(w in code for w in words if len(w) > 3):
+            result.append(item)
+    return result
+
+
 def _build_module_fields_context(
     module_key: Optional[str],
     variable_facts_list: Optional[List[VariableFacts]],
@@ -290,10 +307,9 @@ def _invoke_analysis_llm(
     if reads_writes_summary:
         context_parts.append("reads_writes: " + reads_writes_summary)
     if module_fields_context and module_fields_context.strip():
-        # 함수 코드에 실제 등장하는 필드만 필터링
-        filtered_fields = [part for part in module_fields_context.strip().split(" | ") if any(w in code for w in part.split() if len(w) > 3)]
-        if filtered_fields:
-            context_parts.append("[CLASS_CONSTANTS_AND_FIELDS] " + " | ".join(filtered_fields))
+        filtered = _filter_by_code_reference(module_fields_context.strip().split(" | "), code)
+        if filtered:
+            context_parts.append("[CLASS_CONSTANTS_AND_FIELDS] " + " | ".join(filtered))
     if linked_architecture_context and linked_architecture_context.strip():
         context_parts.append(linked_architecture_context.strip())
     if called_method_summaries:
@@ -321,18 +337,9 @@ def _invoke_analysis_llm(
     if table_sample_data and table_sample_data.strip():
         inputs["table_sample_data"] = table_sample_data.strip()
     if constants_context and constants_context.strip():
-        # 함수 코드에 실제 등장하는 상수만 필터링 (미사용 상수 토큰 절감)
-        filtered_lines = []
-        for line in constants_context.strip().split("\n"):
-            line_stripped = line.strip()
-            if not line_stripped:
-                continue
-            # 상수명 추출 (첫 줄은 헤더일 수 있으므로 코드에 단어가 포함되는지 확인)
-            words = line_stripped.replace("#define", "").split()
-            if any(w in code for w in words if len(w) > 3):
-                filtered_lines.append(line_stripped)
-        if filtered_lines:
-            inputs["constants_context"] = "\n".join(filtered_lines)
+        filtered = _filter_by_code_reference(constants_context.strip().split("\n"), code)
+        if filtered:
+            inputs["constants_context"] = "\n".join(filtered)
     try:
         from util.prompt_registry import prompts
         result = prompts.execute_raw("framework", "code_analysis", inputs, api_key)
