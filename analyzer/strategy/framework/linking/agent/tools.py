@@ -1,24 +1,89 @@
+"""DeepAgent 도구 팩토리 (Tool Factory).
+
+LangChain @tool 데코레이터로 DeepAgent가 사용할 도구들을 생성한다.
+각 도구는 호출 즉시 collector에 결과를 누적하며, phase_linking에서
+Neo4j에 즉시 반영한다.
+
+[도구 분류]
+  1. 인덱스 조회 — SQL/Config/Artifact 메타데이터 검색
+  2. 코드 검색   — ChunkBundle 기반 심볼/텍스트 검색
+  3. 관계 등록   — REFER_TO, READS/WRITES, FK 엣지 생성
+  4. DDL 조회    — 테이블/컬럼 메타데이터 검색
+
+[Skill별 도구 세트]
+  - entity-analysis:  코드 검색 + 관계 등록(table_access, fk) + DDL 조회(있을 때)
+  - table-tracking:   코드 검색 + 관계 등록(table_access, fk) + DDL 조회
+  - sql-tracking:     인덱스 조회(sql) + 코드 검색 + 관계 등록(refer_to, table_access, fk) + DDL 조회(있을 때)
+  - config-tracking:  인덱스 조회(config) + 코드 검색 + 관계 등록(refer_to)
+"""
+
 from __future__ import annotations
 
 import json
 import logging
 import threading
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Optional
 
 from config.settings import settings
 from analyzer.strategy.framework.common.models import (
+    ArtifactChunk,
+    ConfigSectionChunk,
+    FkEdge,
     FunctionTableEdge,
     ReferToEdge,
-    ArtifactChunk,
     SqlStatementChunk,
-    ConfigSectionChunk,
 )
-from analyzer.strategy.framework.common.models import FkEdge
 
 logger = logging.getLogger(__name__)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# 1. 결과 수집기 (Collector)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@dataclass
+class ToolResultCollector:
+    """도구 호출 결과를 스레드-세이프하게 수집한다.
+
+    각 도구는 이 collector에 결과를 추가하고, phase_linking에서
+    배치 단위로 꺼내어 Neo4j에 반영한다.
+    """
+    refer_to: List[ReferToEdge] = field(default_factory=list)
+    table_access: List[FunctionTableEdge] = field(default_factory=list)
+    fk: List[FkEdge] = field(default_factory=list)
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def snapshot_and_clear(self) -> Dict[str, list]:
+        """현재까지 수집된 결과를 반환하고 내부 리스트를 비운다.
+
+        Neo4j 즉시 반영 시 호출: 결과를 꺼내고 → Neo4j에 쓰고 → 다음 배치.
+        """
+        with self.lock:
+            result = {
+                "refer_to": list(self.refer_to),
+                "table_access": list(self.table_access),
+                "fk": list(self.fk),
+            }
+            self.refer_to.clear()
+            self.table_access.clear()
+            self.fk.clear()
+        return result
+
+    @property
+    def total_count(self) -> int:
+        """수집된 전체 엣지 수."""
+        return len(self.refer_to) + len(self.table_access) + len(self.fk)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 2. 인덱스 조회 헬퍼 (순수 함수)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
 def sql_lookup(sql_key: str, sql_index: Dict[str, SqlStatementChunk]) -> Optional[Dict[str, Any]]:
+    """sql_key로 SQL 문장을 조회한다."""
     stmt = sql_index.get(sql_key)
     if not stmt:
         return None
@@ -33,6 +98,7 @@ def sql_lookup(sql_key: str, sql_index: Dict[str, SqlStatementChunk]) -> Optiona
 
 
 def config_lookup(config_key: str, config_index: Dict[str, ConfigSectionChunk]) -> Optional[Dict[str, Any]]:
+    """config_key로 설정 엔트리를 조회한다."""
     cfg = config_index.get(config_key)
     if not cfg:
         return None
@@ -46,7 +112,7 @@ def config_lookup(config_key: str, config_index: Dict[str, ConfigSectionChunk]) 
 
 
 def build_artifact_lookup_index(artifact_index: Dict[str, ArtifactChunk]) -> Dict[str, str]:
-    """hint_key 또는 chunk_id 로 ArtifactChunk 를 찾기 위한 역인덱스."""
+    """hint_key 또는 chunk_id로 ArtifactChunk를 찾기 위한 역인덱스를 생성한다."""
     idx: Dict[str, str] = {}
     for cid, ac in (artifact_index or {}).items():
         cid_norm = (cid or "").strip()
@@ -59,36 +125,52 @@ def build_artifact_lookup_index(artifact_index: Dict[str, ArtifactChunk]) -> Dic
     return idx
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# 3. 도구 팩토리 (메인 진입점)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
 def build_tools(
     state: Dict[str, Any],
-    function_id: str,
-    refer_collector: List[ReferToEdge],
-    table_collector: List[FunctionTableEdge],
-    fk_collector: Optional[List] = None,
+    collector: ToolResultCollector,
+    function_id: str = "",
     variable_id: Optional[str] = None,
-    tool_scope: str = "full",
-    collector_lock: Optional[threading.Lock] = None,
-    variable_ref_collector: Optional[List] = None,
+    skill_name: str = "",
 ) -> List[Any]:
-    """LangChain/deepagents 호환 툴 목록 생성. ChunkBundle + 인덱스 + 그래프 조작만 노출.
+    """Skill에 맞는 LangChain 호환 도구 목록을 생성한다.
 
-    tool_scope:
-      - "full": 모든 도구 (미매칭 키 추적 등)
-      - "entity": bundle 검색 + 테이블 접근 + FK (엔티티 식별 전용)
+    Args:
+        state: pipeline state (인덱스, DDL 메타 등 포함).
+        collector: 도구 결과 수집기 (스레드-세이프).
+        function_id: 기본 소스 함수 ID (미매칭 키 추적 시 사용).
+        variable_id: 기본 소스 변수 ID (변수 기반 참조 시 사용).
+        skill_name: 활성화할 Skill 이름. 이에 따라 노출할 도구가 결정됨.
+            - "entity-analysis": 코드 검색 + table_access + fk
+            - "table-tracking":  코드 검색 + table_access + fk + DDL 조회
+            - "sql-tracking":    SQL 조회 + 코드 검색 + refer_to + table_access + fk
+            - "config-tracking": Config 조회 + 코드 검색 + refer_to
+            - "" (빈 문자열): 모든 도구 (폴백)
+
+    Returns:
+        LangChain @tool 데코레이터가 적용된 도구 함수 리스트.
     """
-    from langchain_core.tools import tool
-    from analyzer.strategy.framework.common.utils import sql_op_to_method_relation as _sql_op_to_method_relation
+    from langchain_core.tools import tool as lc_tool
+    from analyzer.strategy.framework.common.utils import sql_op_to_method_relation
 
-    if fk_collector is None:
-        fk_collector = []
-
-    lock = collector_lock if collector_lock is not None else threading.Lock()
     default_confidence = settings.deep_agent.default_confidence
-    if tool_scope == "unmatched":
-        tool_scope = "full"
+    lock = collector.lock
 
-    # ── 기존 FK 세트 (DDL 파싱 — 중복 생성 방지) ───────────
+    # ── state에서 인덱스 참조 ──
+    sql_index: Dict[str, SqlStatementChunk] = state.get("sql_index") or {}
+    config_index: Dict[str, ConfigSectionChunk] = state.get("config_index") or {}
+    artifact_index: Dict[str, ArtifactChunk] = state.get("artifact_index") or {}
+    artifact_key_index = build_artifact_lookup_index(artifact_index)
     ddl_meta = state.get("ddl_table_metadata") or {}
+    span_index = state.get("span_index") or {}
+    chunk_index = state.get("chunk_index") or {}
+    data_dir = state.get("data_dir") or ""
+
+    # ── 기존 FK 세트 (중복 생성 방지) ──
     existing_fk_set: set = set()
     for (_s, _n), info in ddl_meta.items():
         for fk in (info.get("foreign_keys") or info.get("foreignKeys") or []):
@@ -97,229 +179,266 @@ def build_tools(
             if fk_col and fk_ref:
                 existing_fk_set.add((_n.upper(), fk_col, fk_ref))
 
-    # ── state 인덱스 참조 ──────────────────────────────────
-    sql_index: Dict[str, SqlStatementChunk] = state.get("sql_index") or {}
-    config_index: Dict[str, ConfigSectionChunk] = state.get("config_index") or {}
-    artifact_index: Dict[str, ArtifactChunk] = state.get("artifact_index") or {}
-    artifact_key_index = build_artifact_lookup_index(artifact_index)
-    span_index = state.get("span_index") or {}
-    chunk_index = state.get("chunk_index") or {}
-    data_dir = state.get("data_dir") or ""
-
     from analyzer.strategy.framework.parsing.chunk_bundle import (
         bundle_search as _bundle_search,
         bundle_get_chunk as _bundle_get_chunk,
     )
 
+    # ── 유틸: filePath → moduleName 추출 ──
     def _enrich_with_modulename(result: Dict[str, Any]) -> Dict[str, Any]:
-        """filePath에서 moduleName 추출하여 결과에 추가."""
         fp = result.get("filePath", "")
         if fp:
             fname = fp.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-            name = fname.rsplit(".", 1)[0] if "." in fname else fname
-            result["moduleName"] = name
+            result["moduleName"] = fname.rsplit(".", 1)[0] if "." in fname else fname
         return result
 
-    # ===== 인덱스 조회 도구 ==========================================
+    # ─────────────────────────────────────────────────────────────
+    # 도구 정의 (각 도구는 @lc_tool 데코레이터 적용)
+    # ─────────────────────────────────────────────────────────────
 
-    @tool
+    # ── 인덱스 조회 도구 ──
+
+    @lc_tool
     def sql_lookup_tool(sql_key: str) -> str:
-        """sql_key로 SQL을 조회한다."""
-        logger.info("[PHASE:2:DEEP_AGENT:TOOL] sql_lookup | key=%s", sql_key)
+        """sql_key로 SQL 문장을 조회한다."""
         r = sql_lookup(sql_key, sql_index)
-        logger.info("[PHASE:2:DEEP_AGENT:TOOL] sql_lookup | found=%s", bool(r))
+        logger.info("[TOOL] sql_lookup | key=%s found=%s", sql_key, bool(r))
         return json.dumps(r, ensure_ascii=False) if r else ""
 
-    @tool
+    @lc_tool
     def config_lookup_tool(config_key: str) -> str:
         """config_key로 설정 엔트리를 조회한다."""
-        logger.info("[PHASE:2:DEEP_AGENT:TOOL] config_lookup | key=%s", config_key)
         r = config_lookup(config_key, config_index)
-        logger.info("[PHASE:2:DEEP_AGENT:TOOL] config_lookup | found=%s", bool(r))
+        logger.info("[TOOL] config_lookup | key=%s found=%s", config_key, bool(r))
         return json.dumps(r, ensure_ascii=False) if r else ""
 
-    @tool
+    @lc_tool
     def artifact_lookup_tool(key: str) -> str:
         """chunk_id 또는 hint_key(ejb-name)로 ArtifactChunk를 조회한다."""
-        logger.info("[PHASE:2:DEEP_AGENT:TOOL] artifact_lookup | key=%s", key)
         cid = artifact_key_index.get((key or "").strip())
         if not cid:
-            logger.info("[PHASE:2:DEEP_AGENT:TOOL] artifact_lookup | found=False")
             return ""
         ac = artifact_index.get(cid)
         if not ac:
-            logger.info("[PHASE:2:DEEP_AGENT:TOOL] artifact_lookup | found=False")
             return ""
         data = {
             "chunk_id": cid,
             "chunk_type": getattr(ac, "chunk_type", ""),
             "hint_key": getattr(ac, "hint_key", ""),
             "file_path": getattr(ac, "source_path", ""),
-            "start_line": getattr(ac, "start_line", 0),
-            "end_line": getattr(ac, "end_line", 0),
             "text": getattr(ac, "text", "")[:2000],
         }
-        logger.info("[PHASE:2:DEEP_AGENT:TOOL] artifact_lookup | found=True chunk_id=%s", cid)
+        logger.info("[TOOL] artifact_lookup | key=%s chunk_id=%s", key, cid)
         return json.dumps(data, ensure_ascii=False)
 
-    # ===== 코드 검색 도구 ==========================================
+    # ── 코드 검색 도구 ──
 
-    @tool
+    @lc_tool
     def bundle_search_tool(query: str, kind: str = "symbol") -> str:
-        """ChunkBundle에서 심볼/텍스트 검색. kind: symbol|text."""
-        logger.info("[PHASE:2:DEEP_AGENT:TOOL] bundle_search | query=%s kind=%s", query, kind)
+        """ChunkBundle에서 심볼/텍스트 검색한다. kind: symbol|text."""
         results = _bundle_search(data_dir, query, kind, span_index=span_index, chunk_index=chunk_index)
         enriched = [_enrich_with_modulename(r) for r in results[:20]]
-        logger.info("[PHASE:2:DEEP_AGENT:TOOL] bundle_search | results=%d", len(enriched))
+        logger.info("[TOOL] bundle_search | query=%s kind=%s results=%d", query, kind, len(enriched))
         return json.dumps(enriched, ensure_ascii=False)
 
-    @tool
+    @lc_tool
     def bundle_get_chunk_tool(chunk_id: str) -> str:
-        """chunk_id로 코드 조각 조회."""
-        logger.info("[PHASE:2:DEEP_AGENT:TOOL] bundle_get_chunk | chunk_id=%s", chunk_id)
+        """chunk_id로 코드 조각을 조회한다."""
         r = _bundle_get_chunk(chunk_id, chunk_index=chunk_index)
         if r:
             _enrich_with_modulename(r)
-        logger.info("[PHASE:2:DEEP_AGENT:TOOL] bundle_get_chunk | found=%s", bool(r))
+        logger.info("[TOOL] bundle_get_chunk | chunk_id=%s found=%s", chunk_id, bool(r))
         return json.dumps(r, ensure_ascii=False) if r else ""
 
-    # ===== 관계 등록 도구 ==========================================
+    # ── 관계 등록 도구 ──
 
-    @tool
-    def graph_create_refer_to_tool(target_type: str, target_key: str, evidence: str = "", source_function_id: str = "") -> str:
-        """REFER_TO 엣지 생성. source_function_id 비워두면 기본 function_id 사용."""
+    @lc_tool
+    def graph_create_refer_to_tool(
+        target_type: str, target_key: str,
+        evidence: str = "", source_function_id: str = "",
+    ) -> str:
+        """REFER_TO/CALLS_SQL/USES_CONFIG 엣지를 생성한다. source_function_id 필수."""
         mid = source_function_id.strip() if source_function_id else function_id
-        logger.info("[PHASE:2:DEEP_AGENT:TOOL] create_refer_to | target_type=%s target_key=%s source=%s", target_type, target_key, mid)
         if not mid:
-            return "error: source_function_id required (no default function_id)"
+            return "error: source_function_id required"
         with lock:
-            refer_collector.append(
-                ReferToEdge(
-                    function_id=mid,
-                    target_type=target_type,
-                    target_id=target_key,
-                    evidence={"note": evidence} if evidence else {},
-                    confidence=default_confidence,
-                    variable_id=variable_id,
-                )
-            )
+            collector.refer_to.append(ReferToEdge(
+                function_id=mid,
+                target_type=target_type,
+                target_id=target_key,
+                evidence={"note": evidence} if evidence else {},
+                confidence=default_confidence,
+                variable_id=variable_id,
+            ))
+        logger.info("[TOOL] refer_to | %s → %s:%s", mid, target_type, target_key)
         return "ok"
 
-    @tool
-    def graph_create_table_access_tool(table_name: str, access: str, evidence: str = "", source_function_id: str = "") -> str:
-        """READS/WRITES 엣지 생성. source_function_id 비워두면 기본 function_id 사용."""
+    @lc_tool
+    def graph_create_table_access_tool(
+        table_name: str, access: str,
+        evidence: str = "", source_function_id: str = "",
+    ) -> str:
+        """READS/WRITES 엣지를 생성한다. access: READS|WRITES. source_function_id 필수."""
         mid = source_function_id.strip() if source_function_id else function_id
         rel = access.upper() if access else "READS"
         if rel not in ("READS", "WRITES"):
             rel = "READS"
-        logger.info("[PHASE:2:DEEP_AGENT:TOOL] create_table_access | table=%s access=%s source=%s", table_name, rel, mid)
         if not mid:
-            return "error: source_function_id required (no default function_id)"
+            return "error: source_function_id required"
         with lock:
-            table_collector.append(
-                FunctionTableEdge(
-                    function_id=mid,
-                    table_schema="",
-                    table_name=table_name,
-                    relation=_sql_op_to_method_relation("INSERT" if rel == "WRITES" else "SELECT"),
-                    variable_id=variable_id,
-                )
-            )
+            collector.table_access.append(FunctionTableEdge(
+                function_id=mid,
+                table_schema="",
+                table_name=table_name,
+                relation=sql_op_to_method_relation("INSERT" if rel == "WRITES" else "SELECT"),
+                variable_id=variable_id,
+            ))
+        logger.info("[TOOL] table_access | %s → %s %s", mid, rel, table_name)
         return "ok"
 
-    # ===== FK 관련 도구 ============================================
+    @lc_tool
+    def graph_create_fk_tool(
+        from_table: str, from_column: str,
+        to_table: str, to_column: str,
+        evidence: str = "", from_schema: str = "", to_schema: str = "",
+    ) -> str:
+        """FK 관계를 등록한다. from_table=FK쪽(자식), to_table=PK쪽(부모)."""
+        # 자기 참조 방지
+        if from_table.upper() == to_table.upper():
+            return "error: self-referencing FK not allowed"
+        # DDL 테이블 목록 기반 검증
+        if ddl_meta:
+            known_tables = {n.upper() for (_, n) in ddl_meta.keys()}
+            for tbl in (from_table, to_table):
+                if tbl.upper() not in known_tables:
+                    return f"error: '{tbl}' not found in DDL table list"
+        # 중복 검사
+        ref_key = f"{to_table}.{to_column}".upper()
+        check_key = (from_table.upper(), from_column.upper(), ref_key)
+        if check_key in existing_fk_set:
+            return "already exists (from DDL)"
+        existing_fk_set.add(check_key)
+        with lock:
+            collector.fk.append(FkEdge(
+                from_schema=from_schema, from_table=from_table, from_column=from_column,
+                to_schema=to_schema, to_table=to_table, to_column=to_column,
+                candidate=True,
+            ))
+        logger.info("[TOOL] fk | %s.%s → %s.%s", from_table, from_column, to_table, to_column)
+        return "ok"
 
-    @tool
+    # ── DDL 조회 도구 ──
+
+    @lc_tool
     def table_search_tool(keyword: str) -> str:
-        """테이블명을 키워드로 검색. 대소문자/언더스코어 무시."""
-        logger.info("[PHASE:2:DEEP_AGENT:TOOL] table_search | keyword=%s", keyword)
-        keyword_lower = keyword.lower().replace("_", "")
-        results = []
-        for (schema, name) in ddl_meta:
-            name_lower = name.lower().replace("_", "")
-            if keyword_lower in name_lower:
-                results.append({"schema": schema, "name": name})
-        logger.info("[PHASE:2:DEEP_AGENT:TOOL] table_search | results=%d", len(results))
-        if not results:
-            return "no matching tables found"
-        return json.dumps(results[:20], ensure_ascii=False)
+        """키워드로 DDL 테이블을 검색한다. 대소문자/언더스코어 무시."""
+        keyword_norm = keyword.lower().replace("_", "")
+        results = [
+            {"schema": s, "name": n}
+            for (s, n) in ddl_meta
+            if keyword_norm in n.lower().replace("_", "")
+        ]
+        logger.info("[TOOL] table_search | keyword=%s results=%d", keyword, len(results))
+        return json.dumps(results[:20], ensure_ascii=False) if results else "no matching tables found"
 
-    @tool
+    @lc_tool
     def table_columns_tool(table_name: str, table_schema: str = "") -> str:
-        """테이블의 컬럼 목록과 PK 정보 조회."""
-        logger.info("[PHASE:2:DEEP_AGENT:TOOL] table_columns | table=%s schema=%s", table_name, table_schema)
+        """테이블의 컬럼 목록과 PK 정보를 조회한다."""
         for (s, n), info in ddl_meta.items():
             if n.lower() == table_name.lower() and (not table_schema or s.lower() == table_schema.lower()):
                 columns = info.get("columns") or []
                 pks = info.get("primary_keys") or []
                 col_names = [c.get("name", "") if isinstance(c, dict) else str(c) for c in columns]
-                logger.info("[PHASE:2:DEEP_AGENT:TOOL] table_columns | found=True columns=%d", len(col_names))
+                logger.info("[TOOL] table_columns | table=%s columns=%d", table_name, len(col_names))
                 return json.dumps({"schema": s, "name": n, "primary_keys": pks, "columns": col_names}, ensure_ascii=False)
-        logger.info("[PHASE:2:DEEP_AGENT:TOOL] table_columns | found=False")
         return f"table '{table_name}' not found"
 
-    @tool
-    def graph_create_fk_tool(from_table: str, from_column: str, to_table: str, to_column: str, evidence: str = "", from_schema: str = "", to_schema: str = "") -> str:
-        """FK 관계 등록. CREATE TABLE의 REFERENCES 절, SQL JOIN 패턴, 또는 필드명 관례(xxx_id)에서 FK를 발견하면 호출. from_table은 FK 컬럼을 가진 쪽, to_table은 참조되는 PK 쪽."""
-        logger.info("[PHASE:2:DEEP_AGENT:TOOL] create_fk | %s.%s → %s.%s", from_table, from_column, to_table, to_column)
-        if from_table.upper() == to_table.upper():
-            logger.info("[PHASE:2:DEEP_AGENT:TOOL] create_fk | result=self_reference_skipped")
-            return "error: self-referencing FK not allowed"
-        # DDL 테이블 목록 기반 검증 (하드코딩 제거)
-        if ddl_meta:
-            known_tables = {n.upper() for (_, n) in ddl_meta.keys()}
-            for tbl in (from_table, to_table):
-                if tbl.upper() not in known_tables:
-                    logger.info("[PHASE:2:DEEP_AGENT:TOOL] create_fk | result=not_in_ddl (%s)", tbl)
-                    return f"error: '{tbl}' not found in DDL table list. FK must connect known tables."
-        ref_key = f"{to_table}.{to_column}".upper()
-        check_key = (from_table.upper(), from_column.upper(), ref_key)
-        if check_key in existing_fk_set:
-            logger.info("[PHASE:2:DEEP_AGENT:TOOL] create_fk | result=duplicate_skipped")
-            return "already exists (from DDL)"
-        existing_fk_set.add(check_key)
-        with lock:
-            fk_collector.append(FkEdge(
-                from_schema=from_schema, from_table=from_table, from_column=from_column,
-                to_schema=to_schema, to_table=to_table, to_column=to_column,
-                candidate=True,
-            ))
-        logger.info("[PHASE:2:DEEP_AGENT:TOOL] create_fk | result=ok")
-        return "ok"
+    # ─────────────────────────────────────────────────────────────
+    # Skill별 도구 조합
+    # ─────────────────────────────────────────────────────────────
 
-    # ── 변수 참조 등록 도구 ──
-    @tool
-    def graph_create_variable_ref_tool(function_id: str, variable_id: str, evidence: str = "") -> str:
-        """함수→변수 REFERENCES 관계를 등록합니다."""
-        if not function_id or not variable_id:
-            return "error: function_id and variable_id required"
-        logger.info("[PHASE:2:DEEP_AGENT:TOOL] create_variable_ref | function=%s variable=%s", function_id, variable_id)
-        with lock:
-            if variable_ref_collector is not None:
-                variable_ref_collector.append((function_id, variable_id))
-        return "ok"
+    return _assemble_tools_for_skill(
+        skill_name=skill_name,
+        has_ddl=bool(ddl_meta),
+        tools_map={
+            # 인덱스 조회
+            "sql_lookup": sql_lookup_tool,
+            "config_lookup": config_lookup_tool,
+            "artifact_lookup": artifact_lookup_tool,
+            # 코드 검색
+            "bundle_search": bundle_search_tool,
+            "bundle_get_chunk": bundle_get_chunk_tool,
+            # 관계 등록
+            "refer_to": graph_create_refer_to_tool,
+            "table_access": graph_create_table_access_tool,
+            "fk": graph_create_fk_tool,
+            # DDL 조회
+            "table_search": table_search_tool,
+            "table_columns": table_columns_tool,
+        },
+    )
 
-    if tool_scope == "variable_reference":
-        return [
-            bundle_search_tool,
-            graph_create_variable_ref_tool,
-        ]
 
-    if tool_scope == "entity":
-        tools = [
-            bundle_search_tool, bundle_get_chunk_tool,
-            graph_create_table_access_tool, graph_create_fk_tool,
-        ]
-        if ddl_meta:
-            tools.extend([table_search_tool, table_columns_tool])
-        return tools
+# ═══════════════════════════════════════════════════════════════════════════
+# 4. Skill별 도구 조합 로직
+# ═══════════════════════════════════════════════════════════════════════════
 
-    tools = [
-        sql_lookup_tool, config_lookup_tool, artifact_lookup_tool,
-        bundle_search_tool, bundle_get_chunk_tool,
-        graph_create_refer_to_tool, graph_create_table_access_tool,
-        graph_create_fk_tool,
-    ]
-    if ddl_meta:
-        tools.extend([table_search_tool, table_columns_tool])
-    return tools
+# Skill별 필요한 도구 키 목록
+_SKILL_TOOL_SETS: Dict[str, List[str]] = {
+    "entity-analysis": [
+        "bundle_search", "bundle_get_chunk",
+        "table_access", "fk",
+        # DDL 도구는 has_ddl 시 자동 추가
+    ],
+    "table-tracking": [
+        "bundle_search", "bundle_get_chunk",
+        "table_access", "fk",
+        "table_search", "table_columns",
+    ],
+    "sql-tracking": [
+        "sql_lookup", "artifact_lookup",
+        "bundle_search", "bundle_get_chunk",
+        "refer_to", "table_access", "fk",
+        # DDL 도구는 has_ddl 시 자동 추가
+    ],
+    "config-tracking": [
+        "config_lookup",
+        "bundle_search", "bundle_get_chunk",
+        "refer_to",
+    ],
+}
+
+# DDL 조회 도구 키
+_DDL_TOOL_KEYS = ["table_search", "table_columns"]
+
+
+def _assemble_tools_for_skill(
+    skill_name: str,
+    has_ddl: bool,
+    tools_map: Dict[str, Any],
+) -> List[Any]:
+    """Skill 이름에 맞는 도구 목록을 조합한다.
+
+    Args:
+        skill_name: 활성화된 Skill 이름.
+        has_ddl: DDL 메타데이터 존재 여부.
+        tools_map: 도구 키 → @tool 함수 매핑.
+
+    Returns:
+        해당 Skill에 필요한 도구 함수 리스트.
+    """
+    # Skill 이름으로 필요 도구 키 목록 조회
+    tool_keys = _SKILL_TOOL_SETS.get(skill_name)
+
+    if tool_keys is None:
+        # 미등록 Skill 또는 빈 문자열 → 전체 도구 (폴백)
+        tool_keys = list(tools_map.keys())
+
+    # DDL 도구 자동 추가 (DDL 있고 + 아직 포함 안 된 경우)
+    if has_ddl:
+        for key in _DDL_TOOL_KEYS:
+            if key not in tool_keys:
+                tool_keys.append(key)
+
+    # 키 → 도구 함수 변환 (존재하는 것만)
+    return [tools_map[k] for k in tool_keys if k in tools_map]

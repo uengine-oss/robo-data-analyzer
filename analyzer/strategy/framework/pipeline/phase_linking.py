@@ -44,7 +44,11 @@ from analyzer.strategy.framework.graph.queries import (
 )
 from analyzer.common.graph_writer import run_graph_queries
 from analyzer.strategy.framework.pipeline.progress import write_to_graph
-from analyzer.strategy.framework.linking.agent import run_deep_agent, run_deep_agent_entity_identification
+from analyzer.strategy.framework.linking.agent import (
+    run_deep_agent,
+    run_deep_agent_entity_identification,
+    run_variable_references,
+)
 from analyzer.strategy.framework.linking.deterministic import has_external_entity_info
 
 logger = logging.getLogger(__name__)
@@ -326,12 +330,11 @@ async def _run_deep_agent_parallel(ctx: _LinkingContext) -> AsyncGenerator[bytes
         result_queue.put_nowait(("entity", entity_state, mt_edges, fk_e))
 
     def _run_variable_refs():
-        from analyzer.strategy.framework.linking.agent import run_deep_agent_variable_references
-        _vf = st.function_facts_list or []
+        """변수 참조 + INIT_BY를 결정론적으로 매칭한다 (LLM 미사용)."""
         _vv = st.variable_facts_list or []
-        if not settings.llm.api_key or not _vf or not _vv:
+        if not _vv:
             return
-        logger.info("[PHASE:2:DEEP_AGENT:VARREF] 시작 | functions=%d variables=%d", len(_vf), len(_vv))
+        logger.info("[PHASE:2:VARREF] 결정론적 매칭 시작 | variables=%d", len(_vv))
         varref_state = {
             "sql_index": st.sql_index,
             "config_index": st.config_index or {},
@@ -341,10 +344,16 @@ async def _run_deep_agent_parallel(ctx: _LinkingContext) -> AsyncGenerator[bytes
             "span_index": st.span_index,
             "chunk_index": st.chunk_index,
         }
-        refs = run_deep_agent_variable_references(_vf, _vv, settings.llm.api_key, state=varref_state)
-        logger.info("[PHASE:2:DEEP_AGENT:VARREF] 완료 | refs=%d", len(refs))
+        # REFERENCES 매칭
+        refs = run_variable_references(_vv, state=varref_state)
+        logger.info("[PHASE:2:VARREF] REFERENCES 매칭 완료 | refs=%d", len(refs))
         if refs:
             result_queue.put_nowait(("var_refs", refs))
+        # INIT_BY 매칭
+        from analyzer.strategy.framework.linking.init_by import build_init_by_edges
+        init_by_edges = build_init_by_edges(_vv)
+        if init_by_edges:
+            result_queue.put_nowait(("init_by", init_by_edges))
 
     def _run_unresolved_tracking():
         if not ctx.unresolved:
@@ -402,6 +411,10 @@ async def _run_deep_agent_parallel(ctx: _LinkingContext) -> AsyncGenerator[bytes
 
         elif kind == "var_refs":
             async for chunk in _handle_varref_result(ctx, item):
+                yield chunk
+
+        elif kind == "init_by":
+            async for chunk in _handle_init_by_result(ctx, item):
                 yield chunk
 
         elif kind == "da_item":
@@ -505,6 +518,20 @@ async def _handle_varref_result(ctx, item):
         logger.info("[PHASE:2:DEEP_AGENT:VARREF] 변수 참조 생성 | refs=%d", len(refs))
     except Exception as e:
         logger.error("[PHASE:2:DEEP_AGENT:VARREF] Neo4j 반영 실패 | error=%s", e, exc_info=True)
+
+
+async def _handle_init_by_result(ctx, item):
+    """INIT_BY 관계를 Neo4j에 반영한다."""
+    init_by_edges = item[1]
+    try:
+        from analyzer.strategy.framework.graph.queries import build_init_by_queries
+        iq = build_init_by_queries(init_by_edges)
+        if iq:
+            async for chunk in write_to_graph(ctx.client, iq, "PHASE2:INIT_BY"):
+                yield chunk
+        logger.info("[PHASE:2:INIT_BY] 초기화 관계 생성 | edges=%d", len(init_by_edges))
+    except Exception as e:
+        logger.error("[PHASE:2:INIT_BY] Neo4j 반영 실패 | error=%s", e, exc_info=True)
 
 
 async def _handle_da_item_result(ctx, item_refer, item_mt):

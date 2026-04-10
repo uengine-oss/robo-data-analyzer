@@ -27,6 +27,7 @@ from analyzer.strategy.framework.common.models import (
     CallsEdge,
     ModuleTableEdge,
     ConfigSectionChunk,
+    InitByEdge,
     ReferToEdge,
     ColumnRef,
     FkEdge,
@@ -223,6 +224,28 @@ def build_variable_queries(variable_facts_list: List[VariableFacts], lang: str, 
             "annotations": f.annotations or "", "comment": f.comment or "",
         }, sub_label=kind))
     return queries
+
+
+# --- 2-1b. INIT_BY 관계 (Variable → Variable|Constant 초기화 출처) ---
+
+def build_init_by_queries(edges: List[InitByEdge]) -> List[Dict[str, Any]]:
+    """(VARIABLE)-[:INIT_BY]->(VARIABLE|CONSTANT) 초기화 관계를 생성한다.
+
+    변수가 다른 변수/상수 값으로 초기화될 때의 출처 관계.
+    UNWIND 배치로 한 번에 처리한다.
+    """
+    if not edges:
+        return []
+    rows = [{"vid": e.variable_id, "sid": e.init_source_id} for e in edges]
+    return [{
+        "query": (
+            "UNWIND $rows AS row "
+            "MATCH (v {variable_id: row.vid}) WHERE v:VARIABLE OR v:CONSTANT "
+            "MATCH (s {variable_id: row.sid}) WHERE s:VARIABLE OR s:CONSTANT "
+            "MERGE (v)-[:INIT_BY]->(s)"
+        ),
+        "params": {"rows": rows},
+    }]
 
 
 # --- 2-2. 비코드 엔티티 노드 (ConfigSection, ArtifactChunk, SqlStatement) ---

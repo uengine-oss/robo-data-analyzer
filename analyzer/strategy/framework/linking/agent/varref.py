@@ -1,143 +1,187 @@
-"""DeepAgent 변수 참조 추적 — 변수 후보를 코드에서 탐색하여 함수와 연결.
+"""변수 참조 결정론적 매칭 (Variable Reference Deterministic Matcher).
 
-엔티티 식별(deep_agent_entity.py)과 동일한 구조:
-  변수 후보 배치 → DeepAgent(tool 기반) → bundle_search/get_chunk로 탐색 → REFERENCES 등록
+변수/필드/상수의 사용처를 LLM 없이 결정론적으로 추적한다.
+각 변수명을 ChunkBundle에서 텍스트 검색하여 해당 변수를 사용하는
+함수를 찾고 (FUNCTION)-[:REFERENCES]->(VARIABLE|CONSTANT) 관계를 생성한다.
+
+[설계 근거]
+기존 DeepAgent(LLM) 방식은 변수 하나당 bundle_search 1회 → 결과 있으면 등록이
+전부였다. LLM이 판단할 여지가 없는 순수 문자열 매칭이므로 Python 직접 처리로 전환.
+50개 변수 × LLM 배치 5분 → Python 직접 매칭 2초 이내.
+
+[chunk_id 규칙]
+- 함수: "package.Module.functionName" (# 없음, C: 접두사 없음)
+- 변수: "package.Module#varName_123" (# 포함)
+- 콜:  "C:startLine:endLine:seq" (C: 접두사)
+→ 함수 chunk만 필터링하여 REFERENCES 대상으로 사용.
 """
 
 from __future__ import annotations
 
 import logging
-import threading
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
-from config.settings import settings
-
-from analyzer.strategy.framework.linking.agent.common import _init_deep_agent_env
-from analyzer.strategy.framework.linking.agent.tools import build_tools
+from analyzer.strategy.framework.parsing.chunk_bundle import (
+    bundle_search as _bundle_search,
+    build_bundle_span_index,
+)
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# 상수
+# ---------------------------------------------------------------------------
 
-def _build_varref_user_message(variables: List[Dict[str, str]]) -> str:
-    """변수 후보 목록을 DeepAgent user message로 변환."""
-    lines = ["[변수/필드/상수 후보]"]
-    for v in variables:
-        line = f"- {v['variable_id']} | {v['name']}"
-        if v.get("code"):
-            line += f" | {v['code']}"
-        if v.get("module"):
-            line += f" (module: {v['module']})"
-        lines.append(line)
-    lines.append("\n위 변수들이 코드에서 실제로 사용되는 함수를 찾아 REFERENCES 관계를 등록하세요.")
-    return "\n".join(lines)
+# 너무 짧은 변수명은 오탐이 많으므로 최소 길이 제한
+_MIN_VAR_NAME_LENGTH = 2
 
 
-def run_deep_agent_variable_references(
-    function_facts_list: list,
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+def run_variable_references(
     variable_facts_list: list,
-    api_key: str = "",
-    state: Optional[Dict[str, Any]] = None,
+    state: Dict[str, Any],
 ) -> List[Tuple[str, str]]:
-    """DeepAgent로 변수→함수 참조 관계를 추적.
+    """변수→함수 REFERENCES 관계를 결정론적으로 매칭한다.
+
+    처리 흐름:
+      1. ChunkBundle 인덱스 확보 (state에 없으면 빌드)
+      2. chunk_index에서 함수 chunk_id 집합 추출
+      3. 각 변수명으로 bundle_search(kind="text") 실행
+      4. 검색 결과 중 함수 chunk만 필터링하여 (function_id, variable_id) 수집
+      5. 중복 제거 후 반환
 
     Args:
-        state: pipeline state (span_index, chunk_index 등). 없으면 폴백.
+        variable_facts_list: VariableFacts 리스트 (Phase 1 AST 결과).
+        state: pipeline state. 필수 키:
+            - data_dir: 데이터 디렉토리 경로
+            - span_index / chunk_index: ChunkBundle 인덱스 (없으면 자동 빌드)
 
     Returns:
-        [(function_id, variable_id), ...]
+        [(function_id, variable_id), ...] — Neo4j REFERENCES 관계 생성용.
     """
-    if not api_key or not function_facts_list or not variable_facts_list:
+    if not variable_facts_list:
         return []
 
-    # 변수 후보 구성
-    var_candidates: List[Dict[str, str]] = []
-    for v in variable_facts_list:
-        code = (getattr(v, "code", "") or "").strip()
-        if code and ":" in code.split("\n")[0]:
-            parts = code.split("\n")
-            code = "\n".join(line.split(":", 1)[1].strip() if ":" in line else line for line in parts)
-        var_candidates.append({
-            "variable_id": v.variable_id,
-            "name": v.name,
-            "code": code,
-            "module": getattr(v, "module_key", "") or "",
-        })
-
-    if not var_candidates:
+    # ── 1. ChunkBundle 인덱스 확보 ──
+    chunk_index = _ensure_chunk_index(state)
+    if not chunk_index:
+        logger.warning("[VARREF] chunk_index 비어있음 → 매칭 불가")
         return []
 
-    if state is None:
-        state = {}
+    # ── 2. 함수 chunk_id 집합 추출 ──
+    function_chunk_ids = _extract_function_chunk_ids(chunk_index)
 
-    try:
-        create_deep_agent, model = _init_deep_agent_env(state, api_key=api_key)
-    except Exception as e:
-        logger.error("[DEEPAGENT:VAR] 초기화 실패: %s", e)
-        return []
-
-    # REFERENCES 수집기
-    ref_collector: List[Tuple[str, str]] = []
-    collector_lock = threading.Lock()
-
-    # 변수 참조용 tool 빌드 (graph_create_variable_ref_tool 포함)
-    tools = build_tools(
-        state, "", [], [],
-        tool_scope="variable_reference",
-        collector_lock=collector_lock,
-        variable_ref_collector=ref_collector,
-    )
-
-    from util.prompt_registry import prompts
-    system_prompt = prompts.deep_agent_varref_prompt()
-
-    # 배치 처리
-    da_cfg = settings.deep_agent
-    batch_size = da_cfg.varref_batch_size
-    max_workers = da_cfg.entity_max_workers  # 엔티티와 동일한 워커 설정 사용
-    total = len(var_candidates)
-
-    batches = [var_candidates[i:i + batch_size] for i in range(0, max(total, 1), batch_size)]
+    total = len(variable_facts_list)
     logger.info(
-        "[DEEPAGENT:VAR] 시작 | variables=%d batches=%d batch_size=%d workers=%d",
-        total, len(batches), batch_size, max_workers,
+        "[VARREF] 결정론적 매칭 시작 | variables=%d function_chunks=%d",
+        total, len(function_chunk_ids),
     )
 
-    from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
+    # ── 3~4. 변수별 검색 + 함수 필터링 ──
+    refs = _match_variables_to_functions(
+        variable_facts_list, function_chunk_ids,
+        state.get("data_dir") or "",
+        state.get("span_index"),
+        chunk_index,
+    )
 
-    BATCH_TIMEOUT = 300  # 배치당 최대 5분
+    logger.info("[VARREF] 결정론적 매칭 완료 | refs=%d (variables=%d)", len(refs), total)
+    return refs
 
-    def _process_batch(batch_idx: int, batch: List[Dict]) -> int:
-        batch_names = [v["name"] for v in batch[:5]]
-        logger.info("[DEEPAGENT:VAR] 배치 %d 시작 | variables=%d (%s...)", batch_idx, len(batch), batch_names)
-        before_count = len(ref_collector)
-        batch_agent = create_deep_agent(
-            model=model, tools=tools,
-            system_prompt=system_prompt,
+
+# ---------------------------------------------------------------------------
+# 내부 함수
+# ---------------------------------------------------------------------------
+
+
+def _ensure_chunk_index(state: Dict[str, Any]) -> Dict[str, Any]:
+    """state에서 chunk_index를 가져오거나, 없으면 빌드하여 state에 저장한다."""
+    if state.get("span_index") and state.get("chunk_index"):
+        return state["chunk_index"]
+
+    data_dir = state.get("data_dir") or ""
+    run_dir = state.get("run_dir")
+
+    from analyzer.strategy.framework.parsing.chunk_bundle import (
+        _get_chunk_bundle_dir_from_run_dir,
+    )
+    chunk_dir = _get_chunk_bundle_dir_from_run_dir(run_dir) if run_dir else None
+    span_index, chunk_index = build_bundle_span_index(
+        data_dir,
+        chunk_bundle_dir=chunk_dir,
+        artifact_index=state.get("artifact_index"),
+        sql_index=state.get("sql_index"),
+    )
+    state["span_index"] = span_index
+    state["chunk_index"] = chunk_index
+    logger.info(
+        "[VARREF] ChunkBundle 인덱스 빌드 | span=%d chunk=%d",
+        len(span_index), len(chunk_index),
+    )
+    return chunk_index
+
+
+def _extract_function_chunk_ids(chunk_index: Dict[str, Any]) -> frozenset:
+    """chunk_index에서 함수 chunk_id만 추출한다.
+
+    chunk_id 규칙:
+      - 함수: "pkg.Module.func" → '#' 없음, 'C:' 접두사 없음
+      - 변수: "pkg.Module#var_123" → '#' 포함
+      - 콜:  "C:10:20:0" → 'C:' 접두사
+    """
+    return frozenset(
+        cid for cid in chunk_index
+        if "#" not in cid and not cid.startswith("C:")
+    )
+
+
+def _match_variables_to_functions(
+    variable_facts_list: list,
+    function_chunk_ids: frozenset,
+    data_dir: str,
+    span_index: Any,
+    chunk_index: Dict[str, Any],
+) -> List[Tuple[str, str]]:
+    """각 변수명으로 bundle_search를 실행하고 함수 chunk와 매칭한다.
+
+    Returns:
+        중복 제거된 (function_id, variable_id) 리스트.
+    """
+    refs: List[Tuple[str, str]] = []
+    seen: set = set()
+
+    for v in variable_facts_list:
+        name = getattr(v, "name", "") or ""
+        variable_id = getattr(v, "variable_id", "") or ""
+
+        # 유효성 검사: 이름과 ID가 모두 있어야 하고, 너무 짧은 이름은 오탐 방지
+        if not name or not variable_id or len(name) < _MIN_VAR_NAME_LENGTH:
+            continue
+
+        # 변수명이 코드 본문에 등장하는 청크 검색
+        search_results = _bundle_search(
+            data_dir, name, kind="text",
+            span_index=span_index, chunk_index=chunk_index,
         )
-        user_msg = _build_varref_user_message(batch)
-        try:
-            batch_agent.invoke({"messages": [{"role": "user", "content": user_msg}]})
-        except Exception as ex:
-            logger.error("[PHASE:2:DEEP_AGENT:VARREF] invoke 실패 batch=%d: %s", batch_idx, ex)
-        added = len(ref_collector) - before_count
-        logger.info("[DEEPAGENT:VAR] 배치 %d 완료 | REFERENCES +%d건", batch_idx, added)
-        return added
 
-    with ThreadPoolExecutor(max_workers=min(len(batches), max_workers)) as executor:
-        futures = {
-            executor.submit(_process_batch, idx, batch): idx
-            for idx, batch in enumerate(batches)
-        }
-        for future in as_completed(futures):
-            batch_idx = futures[future]
-            try:
-                future.result(timeout=BATCH_TIMEOUT)
-            except TimeoutError:
-                logger.error("[PHASE:2:DEEP_AGENT:VARREF] 배치 %d 타임아웃 (%ds) — 스킵", batch_idx, BATCH_TIMEOUT)
-            except Exception as e:
-                logger.error("[PHASE:2:DEEP_AGENT:VARREF] 배치 %d 처리 실패: %s", batch_idx, e)
+        for result in search_results:
+            chunk_id = result.get("chunk_id", "")
+            if not chunk_id:
+                continue
 
-    logger.info("[DEEPAGENT:VAR] 완료 | refs=%d", len(ref_collector))
-    return ref_collector
+            # 함수 청크만 대상 (변수/상수/콜 청크 제외)
+            if chunk_id not in function_chunk_ids:
+                continue
 
+            # 중복 방지
+            pair = (chunk_id, variable_id)
+            if pair in seen:
+                continue
+            seen.add(pair)
+            refs.append(pair)
 
+    return refs

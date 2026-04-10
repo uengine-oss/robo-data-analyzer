@@ -85,6 +85,20 @@ class VariableFacts:
 
 
 @dataclass
+class InitByEdge:
+    """(VARIABLE)-[:INIT_BY]->(VARIABLE|CONSTANT) 초기화 관계.
+
+    변수가 다른 변수 또는 상수의 값으로 초기화될 때 생성한다.
+    예: int limit = MAX_LOANS; → (VARIABLE:limit)-[:INIT_BY]->(CONSTANT:MAX_LOANS)
+
+    컨텍스트 역추적 시 REFERENCES + INIT_BY를 쌍으로 조회하여
+    함수가 참조하는 변수의 초기화 출처를 추적한다.
+    """
+    variable_id: str      # 초기화되는 변수 (좌변)
+    init_source_id: str   # 초기화 출처 변수/상수 (우변)
+
+
+@dataclass
 class FunctionFacts:
     """함수 단위 팩트 (AST에서 추출)."""
     function_id: str

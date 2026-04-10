@@ -155,23 +155,16 @@ class PromptRegistry:
 
     # ═══════════════════════════════════════════════════════════════
     # DeepAgent Rules (render만 — execute는 agent가 직접 수행)
+    # Skill 기반 전환 후, entity 폴백용으로만 유지.
     # ═══════════════════════════════════════════════════════════════
 
     @staticmethod
-    def deep_agent_system_prompt(**kwargs) -> str:
-        """DeepAgent 시스템 프롬프트. → rules/deep_agent/system.yaml"""
-        return get_rule_loader("deep_agent").render_prompt("system", kwargs)
-
-    @staticmethod
     def deep_agent_entity_prompt(**kwargs) -> str:
-        """DeepAgent 엔티티 식별 프롬프트. → rules/deep_agent/entity.yaml"""
+        """DeepAgent 엔티티 식별 폴백 프롬프트. → rules/deep_agent/entity.yaml
+
+        SKILL.md가 없을 때만 사용. 정상 경로에서는 Skill 로더가 프롬프트를 제공.
+        """
         return get_rule_loader("deep_agent").render_prompt("entity", kwargs)
-
-    @staticmethod
-    def deep_agent_varref_prompt(**kwargs) -> str:
-        """DeepAgent 변수 참조 프롬프트. → rules/deep_agent/variable_reference.yaml"""
-        return get_rule_loader("deep_agent").render_prompt("variable_reference", kwargs)
-
 
     # ═══════════════════════════════════════════════════════════════
     # Raw execute (inputs dict를 직접 전달)
