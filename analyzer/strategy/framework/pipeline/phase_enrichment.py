@@ -345,9 +345,11 @@ async def _run_field_and_module_analysis(st, client, tracker) -> AsyncGenerator[
     field_total = max(1, len(variable_facts_list))
     yield tracker.begin_step(1, field_total)
     summary_by_variable: Dict[str, Any] = {}
+    if not st.run_dir:
+        raise RuntimeError("run_dir 이 초기화되지 않음 - Phase 1 이후에 호출되어야 함")
     for field_batch in run_variable_summary(
         variable_facts_list, module_index,
-        data_dir=st.data_dir, run_dir=st.run_dir,
+        run_dir=st.run_dir, data_dir=st.data_dir,
         api_key=api_key, locale=locale,
     ):
         summary_by_variable.update(field_batch)

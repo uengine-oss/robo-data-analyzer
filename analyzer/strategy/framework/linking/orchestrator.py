@@ -120,7 +120,7 @@ async def resolve_references(
     data_dir: Optional[str] = None,
     variable_facts_list: Optional[List[VariableFacts]] = None,
     function_index_by_module: Optional[Dict[str, Dict[str, List[str]]]] = None,
-    run_dir: Optional[str] = None,
+    run_dir: str = "",
     artifact_index: Optional[Dict[str, ArtifactChunk]] = None,
     artifact_chunks: Optional[List[ArtifactChunk]] = None,
     ddl_table_metadata: Optional[Dict[str, Any]] = None,
@@ -134,6 +134,8 @@ async def resolve_references(
         stage="call_batch": edges, unresolved (배치별)
         stage="post": reads_writes(final), function_table_edges, module_table_edges, artifact_table_edges
     """
+    if not run_dir:
+        raise ValueError("run_dir 필수 - Phase 1 에서 초기화된 run_dir 을 전달해야 함")
 
     # ===================================================================
     # 1) 결정론적 매칭 (키 in 코드, sql/config/class/artifact 인덱스)

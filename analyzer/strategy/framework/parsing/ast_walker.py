@@ -421,8 +421,8 @@ def _source_path_for_ast(data_dir: str, ast_path: str, lang: str) -> Optional[st
 def extract_code_structure(
     source_ast_jobs: List[str],
     lang: str,
+    run_dir: str,
     data_dir: Optional[str] = None,
-    run_dir: Optional[str] = None,
 ) -> Generator[Dict[str, Any], None, None]:
     """파일별로 AST 결과를 yield. 호출자가 누적 및 Neo4j 반영.
 
@@ -507,8 +507,8 @@ def extract_code_structure(
                             rel_key = p_for_key.stem
                     else:
                         rel_key = p_for_key.stem
-                    chunk_out = _get_chunk_bundle_dir_from_run_dir(run_dir) if run_dir else None
-                    save_chunk_bundle(data_dir, bundle, rel_key, chunk_bundle_out_dir=chunk_out)
+                    chunk_out = _get_chunk_bundle_dir_from_run_dir(run_dir)
+                    save_chunk_bundle(bundle, rel_key, chunk_bundle_out_dir=chunk_out)
                     logger.debug("ChunkBundle 저장: %s", rel_key)
                     mid_to_code = {
                         m.function_id: (getattr(m, "function_code", None) or "")

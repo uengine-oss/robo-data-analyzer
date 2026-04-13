@@ -1,0 +1,12 @@
+{
+  "negative_matcher": {
+    "score_min": 2,
+    "proprietary_score": 5,
+    "proprietary_file_count": 3,
+    "max_results": 15
+  },
+  "scoring": {
+    "sigmoid_k": 1.5,
+    "min_confidence_to_report": 0.25
+  }
+}

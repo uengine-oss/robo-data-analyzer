@@ -35,11 +35,9 @@ def _ensure_bundle_indexes(state: Dict[str, Any]) -> None:
     )
 
     run_dir = state.get("run_dir")
-    data_dir = state.get("data_dir") or ""
-    chunk_dir = _get_chunk_bundle_dir_from_run_dir(run_dir) if run_dir else None
+    chunk_dir = _get_chunk_bundle_dir_from_run_dir(run_dir)
 
     span_index, chunk_index = build_bundle_span_index(
-        data_dir,
         chunk_bundle_dir=chunk_dir,
         artifact_index=state.get("artifact_index"),
         sql_index=state.get("sql_index"),

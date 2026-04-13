@@ -18,7 +18,10 @@ from client.neo4j_client import Neo4jClient
 from analyzer.strategy.base_analyzer import AnalysisStats
 from config.settings import settings
 from util.ndjson_stream import emit_message, emit_data, PhaseTracker
-from analyzer.strategy.framework.parsing.chunk_bundle import load_field_chunks_from_bundles
+from analyzer.strategy.framework.parsing.chunk_bundle import (
+    load_field_chunks_from_bundles,
+    _get_chunk_bundle_dir_from_run_dir,
+)
 from analyzer.strategy.framework.linking.orchestrator import resolve_references
 from analyzer.strategy.framework.linking.call_linker import derive_uses_from_calls
 from analyzer.strategy.framework.common.models import (
@@ -167,7 +170,9 @@ class _LinkingContext:
 async def _run_deterministic_and_llm_batch(ctx: _LinkingContext) -> AsyncGenerator[bytes, None]:
     """결정론적 매칭 → Table/Call LLM 배치 병렬 → 후처리 엣지 유도."""
     st = ctx.st
-    field_chunks = load_field_chunks_from_bundles(ctx.data_dir)
+    field_chunks = load_field_chunks_from_bundles(
+        chunk_bundle_dir=_get_chunk_bundle_dir_from_run_dir(st.run_dir)
+    )
     sql_index = st.sql_index
     sql_chunks = st.sql_chunks
 

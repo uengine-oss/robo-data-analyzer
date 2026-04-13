@@ -1,0 +1,505 @@
+{
+  "target": "ProFrame-C",
+  "started": "20260413_170644",
+  "ended": "20260413_170801",
+  "summary": {
+    "target": "ProFrame-C",
+    "naive_tokens": 3875,
+    "naive_elapsed": 0.8047659000003478,
+    "deep_tokens": 108128,
+    "deep_elapsed": 75.54412639999646,
+    "deep_tool_calls": 22
+  },
+  "records": [
+    {
+      "time": "17:06:44.540",
+      "category": "INFO",
+      "message": "타겟 시작: ProFrame-C (경로=c:\\uEngine\\robo\\data\\source\\apascrt00010t02_20260406)"
+    },
+    {
+      "time": "17:06:44.541",
+      "category": "INFO",
+      "message": "기대 정답 (ground truth)",
+      "data": {
+        "primary_language": "C",
+        "frameworks": [
+          "ProFrame"
+        ],
+        "orms": [
+          "ProFrame DBIO"
+        ],
+        "databases": [
+          "Oracle"
+        ],
+        "proprietary": [
+          "pfm",
+          "pdb"
+        ]
+      }
+    },
+    {
+      "time": "17:06:44.541",
+      "category": "PHASE",
+      "message": "NAIVE: 방법 A 시작 (sample_count=10)"
+    },
+    {
+      "time": "17:06:44.542",
+      "category": "NAIVE",
+      "message": "샘플된 파일 1개",
+      "data": [
+        "zapamcom10060.c"
+      ]
+    },
+    {
+      "time": "17:06:44.542",
+      "category": "NAIVE",
+      "message": "전체 파일 수: 1, bundle 바이트: 9363"
+    },
+    {
+      "time": "17:06:44.542",
+      "category": "NAIVE",
+      "message": "LLM 단일 호출 시작..."
+    },
+    {
+      "time": "17:06:45.346",
+      "category": "NAIVE",
+      "message": "LLM 응답 수신 (tokens=3875)"
+    },
+    {
+      "time": "17:06:45.346",
+      "category": "NAIVE",
+      "message": "raw JSON 파싱 결과",
+      "data": {
+        "primary_language": "C",
+        "frameworks": [],
+        "orms": [],
+        "databases": [],
+        "proprietary_frameworks": [
+          "ProFrame",
+          "DBIO"
+        ]
+      }
+    },
+    {
+      "time": "17:06:45.347",
+      "category": "RESULT",
+      "message": "NAIVE 최종 결과",
+      "data": {
+        "primary_language": "C",
+        "frameworks": [],
+        "orms": [],
+        "databases": [],
+        "proprietary_frameworks": [
+          "ProFrame",
+          "DBIO"
+        ],
+        "raw_answer": "{\n  \"primary_language\": \"C\",\n  \"frameworks\": [],\n  \"orms\": [],\n  \"databases\": [],\n  \"proprietary_frameworks\": [\"ProFrame\", \"DBIO\"]\n}",
+        "total_tokens": 3875,
+        "prompt_tokens": 3485,
+        "completion_tokens": 390,
+        "elapsed_sec": 0.8047659000003478,
+        "sampled_files": [
+          "zapamcom10060.c"
+        ],
+        "error": null
+      }
+    },
+    {
+      "time": "17:06:45.910",
+      "category": "PHASE",
+      "message": "DEEP: 방법 B 시작 (DeepAgent + 9 tools + 4-Phase)"
+    },
+    {
+      "time": "17:06:45.980",
+      "category": "DEEP",
+      "message": "초기화 완료: 13 언어 매핑, 310 표준 prefix"
+    },
+    {
+      "time": "17:08:01.447",
+      "category": "DEEP",
+      "message": "DeepAgent 종료 (tokens=108128, tool_calls=22)"
+    },
+    {
+      "time": "17:08:01.448",
+      "category": "TOOL_CALL",
+      "message": "# 1 count_file_extensions({})",
+      "data": {
+        "args_full": "{}",
+        "result_preview": "{\".c\": 1}"
+      }
+    },
+    {
+      "time": "17:08:01.448",
+      "category": "TOOL_CALL",
+      "message": "# 2 find_marker_files_tool({})",
+      "data": {
+        "args_full": "{}",
+        "result_preview": "[]"
+      }
+    },
+    {
+      "time": "17:08:01.448",
+      "category": "TOOL_CALL",
+      "message": "# 3 load_skill({\"language\": \"C\"})",
+      "data": {
+        "args_full": "{\"language\": \"C\"}",
+        "result_preview": "{\"skill_name\": \"detect_c_legacy\", \"language_names\": [\"C\", \"Pro*C\", \"ProFrame-C\", \"COBOL\"], \"source_extensions\": [\".c\", \".h\", \".ec\", \".pc\", \".cbl\", \".c"
+      }
+    },
+    {
+      "time": "17:08:01.449",
+      "category": "TOOL_CALL",
+      "message": "# 4 ls({\"path\": \"/mnt/c/uEngine/robo/data/source/apascrt00010t02_20260406\"})",
+      "data": {
+        "args_full": "{\"path\": \"/mnt/c/uEngine/robo/data/source/apascrt00010t02_20260406\"}",
+        "result_preview": "[]"
+      }
+    },
+    {
+      "time": "17:08:01.449",
+      "category": "TOOL_CALL",
+      "message": "# 5 ls({\"path\": \"/mnt/c/uEngine/robo/data/source\"})",
+      "data": {
+        "args_full": "{\"path\": \"/mnt/c/uEngine/robo/data/source\"}",
+        "result_preview": "[]"
+      }
+    },
+    {
+      "time": "17:08:01.449",
+      "category": "TOOL_CALL",
+      "message": "# 6 ls({\"path\": \"/\"})",
+      "data": {
+        "args_full": "{\"path\": \"/\"}",
+        "result_preview": "[]"
+      }
+    },
+    {
+      "time": "17:08:01.450",
+      "category": "TOOL_CALL",
+      "message": "# 7 glob({\"pattern\": \"**/*.c\", \"path\": \"/\"})",
+      "data": {
+        "args_full": "{\"pattern\": \"**/*.c\", \"path\": \"/\"}",
+        "result_preview": "[]"
+      }
+    },
+    {
+      "time": "17:08:01.450",
+      "category": "TOOL_CALL",
+      "message": "# 8 glob({\"pattern\": \"*\", \"path\": \"/\"})",
+      "data": {
+        "args_full": "{\"pattern\": \"*\", \"path\": \"/\"}",
+        "result_preview": "[]"
+      }
+    },
+    {
+      "time": "17:08:01.450",
+      "category": "TOOL_CALL",
+      "message": "# 9 glob({\"pattern\": \"**/*\", \"path\": \"/\"})",
+      "data": {
+        "args_full": "{\"pattern\": \"**/*\", \"path\": \"/\"}",
+        "result_preview": "[]"
+      }
+    },
+    {
+      "time": "17:08:01.451",
+      "category": "TOOL_CALL",
+      "message": "#10 grep_imports({\"extensions\": \".c,.h,.ec,.pc\"})",
+      "data": {
+        "args_full": "{\"extensions\": \".c,.h,.ec,.pc\"}",
+        "result_preview": "{\"pfmcom.h\": 1, \"pfmutil.h\": 1, \"pfmerr.h\": 1, \"pfmdbio.h\": 1, \"zapamcom10060.h\": 1, \"zapamcom10040.h\": 1, \"pdb_zngm_comm_cd_dtl_s0024.h\": 1, \"pdb_zpa"
+      }
+    },
+    {
+      "time": "17:08:01.451",
+      "category": "TOOL_CALL",
+      "message": "#11 detect_proprietary({\"import_frequency_json\": \"{\\\"pfmcom.h\\\": 1, \\\"pfmutil.h\\\": 1, \\\"pfmerr.h\\\": 1, )",
+      "data": {
+        "args_full": "{\"import_frequency_json\": \"{\\\"pfmcom.h\\\": 1, \\\"pfmutil.h\\\": 1, \\\"pfmerr.h\\\": 1, \\\"pfmdbio.h\\\": 1, \\\"zapamcom10060.h\\\": 1, \\\"zapamcom10040.h\\\": 1, \\\"pdb_zngm_comm_cd_dtl_s0024.h\\\": 1, \\\"pdb_zpay_ap_rlt",
+        "result_preview": "[]"
+      }
+    },
+    {
+      "time": "17:08:01.451",
+      "category": "TOOL_CALL",
+      "message": "#12 grep_pattern_tool({\"pattern\": \"mpfmdbio\\\\s*\\\\(\", \"extensions\": \".c,.h,.ec,.pc\", \"max_hits\": 20})",
+      "data": {
+        "args_full": "{\"pattern\": \"mpfmdbio\\\\s*\\\\(\", \"extensions\": \".c,.h,.ec,.pc\", \"max_hits\": 20}",
+        "result_preview": "[{\"file\": \"zapamcom10060.c\", \"line\": 104, \"text\": \"static long a000_input_validation          \\t\\t(zapamcom10060_io_t *itf);\"}, {\"file\": \"zapamcom1006"
+      }
+    },
+    {
+      "time": "17:08:01.451",
+      "category": "TOOL_CALL",
+      "message": "#13 grep_pattern_tool({\"pattern\": \"EXEC\\\\s+SQL\", \"extensions\": \".c,.h,.ec,.pc\", \"max_hits\": 20})",
+      "data": {
+        "args_full": "{\"pattern\": \"EXEC\\\\s+SQL\", \"extensions\": \".c,.h,.ec,.pc\", \"max_hits\": 20}",
+        "result_preview": "[]"
+      }
+    },
+    {
+      "time": "17:08:01.452",
+      "category": "TOOL_CALL",
+      "message": "#14 grep_pattern_tool({\"pattern\": \"\\\\b[ab]\\\\d{3}_\\\\w+\", \"extensions\": \".c,.h,.ec,.pc\", \"max_hits\": 20})",
+      "data": {
+        "args_full": "{\"pattern\": \"\\\\b[ab]\\\\d{3}_\\\\w+\", \"extensions\": \".c,.h,.ec,.pc\", \"max_hits\": 20}",
+        "result_preview": "[{\"file\": \"zapamcom10060.c\", \"line\": 719, \"text\": \"rc = mpfmdbio(\\\"zngm_comm_cd_dtl_s0024\\\", &zngm_comm_cd_dtl_s0024_in, &zngm_comm_cd_dtl_s0024_out);"
+      }
+    },
+    {
+      "time": "17:08:01.452",
+      "category": "TOOL_CALL",
+      "message": "#15 grep({\"pattern\": \"ORACLE_HOME\", \"path\": null, \"glob\": null, \"output_mode\": \"content\"})",
+      "data": {
+        "args_full": "{\"pattern\": \"ORACLE_HOME\", \"path\": null, \"glob\": null, \"output_mode\": \"content\"}",
+        "result_preview": "No matches found"
+      }
+    },
+    {
+      "time": "17:08:01.452",
+      "category": "TOOL_CALL",
+      "message": "#16 grep({\"pattern\": \"clntsh\", \"path\": null, \"glob\": null, \"output_mode\": \"content\"})",
+      "data": {
+        "args_full": "{\"pattern\": \"clntsh\", \"path\": null, \"glob\": null, \"output_mode\": \"content\"}",
+        "result_preview": "No matches found"
+      }
+    },
+    {
+      "time": "17:08:01.452",
+      "category": "TOOL_CALL",
+      "message": "#17 grep({\"pattern\": \"oracle\", \"path\": null, \"glob\": null, \"output_mode\": \"content\"})",
+      "data": {
+        "args_full": "{\"pattern\": \"oracle\", \"path\": null, \"glob\": null, \"output_mode\": \"content\"}",
+        "result_preview": "No matches found"
+      }
+    },
+    {
+      "time": "17:08:01.453",
+      "category": "TOOL_CALL",
+      "message": "#18 read_file({\"file_path\": \"/zapamcom10060.c\", \"offset\": 0, \"limit\": 120})",
+      "data": {
+        "args_full": "{\"file_path\": \"/zapamcom10060.c\", \"offset\": 0, \"limit\": 120}",
+        "result_preview": "Error: File '/zapamcom10060.c' not found"
+      }
+    },
+    {
+      "time": "17:08:01.453",
+      "category": "TOOL_CALL",
+      "message": "#19 grep_pattern_tool({\"pattern\": \"sqlca\\\\.sqlcode\", \"extensions\": \".c,.h,.ec,.pc\", \"max_hits\": 20})",
+      "data": {
+        "args_full": "{\"pattern\": \"sqlca\\\\.sqlcode\", \"extensions\": \".c,.h,.ec,.pc\", \"max_hits\": 20}",
+        "result_preview": "[]"
+      }
+    },
+    {
+      "time": "17:08:01.453",
+      "category": "TOOL_CALL",
+      "message": "#20 grep_pattern_tool({\"pattern\": \"OCI\\\\w+\\\\s*\\\\(\", \"extensions\": \".c,.h,.ec,.pc\", \"max_hits\": 20})",
+      "data": {
+        "args_full": "{\"pattern\": \"OCI\\\\w+\\\\s*\\\\(\", \"extensions\": \".c,.h,.ec,.pc\", \"max_hits\": 20}",
+        "result_preview": "[]"
+      }
+    },
+    {
+      "time": "17:08:01.453",
+      "category": "TOOL_CALL",
+      "message": "#21 grep_pattern_tool({\"pattern\": \"ORACLE_HOME|tnsnames|TNS_ADMIN\", \"extensions\": \".c,.h,.ec,.pc\", \"ma)",
+      "data": {
+        "args_full": "{\"pattern\": \"ORACLE_HOME|tnsnames|TNS_ADMIN\", \"extensions\": \".c,.h,.ec,.pc\", \"max_hits\": 20}",
+        "result_preview": "[]"
+      }
+    },
+    {
+      "time": "17:08:01.453",
+      "category": "TOOL_CALL",
+      "message": "#22 submit_detection({\"result_json\": \"{\\\"primary_language\\\":\\\"C\\\",\\\"frameworks\\\":[{\\\"name\\\":\\\"ProFram)",
+      "data": {
+        "args_full": "{\"result_json\": \"{\\\"primary_language\\\":\\\"C\\\",\\\"frameworks\\\":[{\\\"name\\\":\\\"ProFrame\\\",\\\"confidence\\\":0.85,\\\"evidence\\\":\\\"#include pfmcom.h/pfmutil.h/pfmerr.h/pfmdbio.h and characteristic ProFrame patter",
+        "result_preview": "제출 완료: 1 frameworks, 3 proprietary"
+      }
+    },
+    {
+      "time": "17:08:01.454",
+      "category": "RESULT",
+      "message": "DEEP 최종 결과",
+      "data": {
+        "primary_language": "C",
+        "languages": {},
+        "build_systems": [],
+        "frameworks": [
+          {
+            "name": "ProFrame",
+            "confidence": 0.85,
+            "evidence": "#include pfmcom.h/pfmutil.h/pfmerr.h/pfmdbio.h and characteristic ProFrame patterns PFM_TRY(...) plus repeated mpfmdbio(...) calls in zapamcom10060.c"
+          }
+        ],
+        "orms": [
+          {
+            "name": "ProFrame DBIO",
+            "confidence": 0.85,
+            "evidence": "Repeated mpfmdbio(\"...\") calls and multiple generated pdb_*.h DBIO interface headers (e.g. pdb_zngm_comm_cd_dtl_s0024.h, pdb_zpay_ap_rltm_auth_hst_u0001.h)"
+          }
+        ],
+        "databases": [
+          {
+            "name": "Oracle",
+            "confidence": 0.6,
+            "evidence": "DB access is mediated through ProFrame DBIO/pdb generated interfaces, a stack commonly backed by Oracle in this ecosystem; however no direct EXEC SQL/OCI/-lclntsh string is present in-repo"
+          }
+        ],
+        "proprietary_frameworks": [
+          {
+            "prefix": "pfm",
+            "reason": "Proprietary ProFrame headers pfmcom.h/pfmutil.h/pfmerr.h/pfmdbio.h and macros such as PFM_TRY appear in the only C source"
+          },
+          {
+            "prefix": "pdb",
+            "reason": "Multiple proprietary/generated DBIO headers with pdb_ prefix are included and invoked via mpfmdbio(...)"
+          },
+          {
+            "prefix": "zap",
+            "reason": "Application-specific service/module naming appears in zapamcom10060.c and zapamcom10040.h, suggesting local proprietary module conventions"
+          }
+        ],
+        "top_imports": {
+          "pfmcom.h": 1,
+          "pfmutil.h": 1,
+          "pfmerr.h": 1,
+          "pfmdbio.h": 1,
+          "zapamcom10060.h": 1,
+          "zapamcom10040.h": 1,
+          "pdb_zngm_comm_cd_dtl_s0024.h": 1,
+          "pdb_zpay_ap_rltm_auth_hst_i0002.h": 1,
+          "pdb_zpay_ap_rltm_auth_hst_u0001.h": 1,
+          "pdb_zpay_ap_rltm_auth_hst_u0003.h": 1,
+          "pdb_zpay_ap_rltm_auth_hst_u0004.h": 1,
+          "pdb_zpay_ap_rltm_auth_hst_u0005.h": 1,
+          "pdb_zngm_comm_cd_dtl_s0058.h": 1,
+          "pdb_zngm_comm_cd_dtl_s1015.h": 1,
+          "pdb_zngm_comm_cd_dtl_s0293.h": 1,
+          "pdb_zngm_comm_cd_dtl_s1017.h": 1,
+          "pdb_zngm_comm_cd_dtl_s0415.h": 1
+        },
+        "skills_loaded": [
+          "detect_c_legacy"
+        ],
+        "tool_calls": [
+          {
+            "tool_name": "count_file_extensions",
+            "args": "{}",
+            "result_preview": "{\".c\": 1}"
+          },
+          {
+            "tool_name": "find_marker_files_tool",
+            "args": "{}",
+            "result_preview": "[]"
+          },
+          {
+            "tool_name": "load_skill",
+            "args": "{\"language\": \"C\"}",
+            "result_preview": "{\"skill_name\": \"detect_c_legacy\", \"language_names\": [\"C\", \"Pro*C\", \"ProFrame-C\", \"COBOL\"], \"source_extensions\": [\".c\", \".h\", \".ec\", \".pc\", \".cbl\", \".c"
+          },
+          {
+            "tool_name": "ls",
+            "args": "{\"path\": \"/mnt/c/uEngine/robo/data/source/apascrt00010t02_20260406\"}",
+            "result_preview": "[]"
+          },
+          {
+            "tool_name": "ls",
+            "args": "{\"path\": \"/mnt/c/uEngine/robo/data/source\"}",
+            "result_preview": "[]"
+          },
+          {
+            "tool_name": "ls",
+            "args": "{\"path\": \"/\"}",
+            "result_preview": "[]"
+          },
+          {
+            "tool_name": "glob",
+            "args": "{\"pattern\": \"**/*.c\", \"path\": \"/\"}",
+            "result_preview": "[]"
+          },
+          {
+            "tool_name": "glob",
+            "args": "{\"pattern\": \"*\", \"path\": \"/\"}",
+            "result_preview": "[]"
+          },
+          {
+            "tool_name": "glob",
+            "args": "{\"pattern\": \"**/*\", \"path\": \"/\"}",
+            "result_preview": "[]"
+          },
+          {
+            "tool_name": "grep_imports",
+            "args": "{\"extensions\": \".c,.h,.ec,.pc\"}",
+            "result_preview": "{\"pfmcom.h\": 1, \"pfmutil.h\": 1, \"pfmerr.h\": 1, \"pfmdbio.h\": 1, \"zapamcom10060.h\": 1, \"zapamcom10040.h\": 1, \"pdb_zngm_comm_cd_dtl_s0024.h\": 1, \"pdb_zpa"
+          },
+          {
+            "tool_name": "detect_proprietary",
+            "args": "{\"import_frequency_json\": \"{\\\"pfmcom.h\\\": 1, \\\"pfmutil.h\\\": 1, \\\"pfmerr.h\\\": 1, \\\"pfmdbio.h\\\": 1, \\\"zapamcom10060.h\\\": 1, \\\"zapamcom10040.h\\\": 1, \\\"pdb_zngm_comm_cd_dtl_s0024.h\\\": 1, \\\"pdb_zpay_ap_rlt",
+            "result_preview": "[]"
+          },
+          {
+            "tool_name": "grep_pattern_tool",
+            "args": "{\"pattern\": \"mpfmdbio\\\\s*\\\\(\", \"extensions\": \".c,.h,.ec,.pc\", \"max_hits\": 20}",
+            "result_preview": "[{\"file\": \"zapamcom10060.c\", \"line\": 104, \"text\": \"static long a000_input_validation          \\t\\t(zapamcom10060_io_t *itf);\"}, {\"file\": \"zapamcom1006"
+          },
+          {
+            "tool_name": "grep_pattern_tool",
+            "args": "{\"pattern\": \"EXEC\\\\s+SQL\", \"extensions\": \".c,.h,.ec,.pc\", \"max_hits\": 20}",
+            "result_preview": "[]"
+          },
+          {
+            "tool_name": "grep_pattern_tool",
+            "args": "{\"pattern\": \"\\\\b[ab]\\\\d{3}_\\\\w+\", \"extensions\": \".c,.h,.ec,.pc\", \"max_hits\": 20}",
+            "result_preview": "[{\"file\": \"zapamcom10060.c\", \"line\": 719, \"text\": \"rc = mpfmdbio(\\\"zngm_comm_cd_dtl_s0024\\\", &zngm_comm_cd_dtl_s0024_in, &zngm_comm_cd_dtl_s0024_out);"
+          },
+          {
+            "tool_name": "grep",
+            "args": "{\"pattern\": \"ORACLE_HOME\", \"path\": null, \"glob\": null, \"output_mode\": \"content\"}",
+            "result_preview": "No matches found"
+          },
+          {
+            "tool_name": "grep",
+            "args": "{\"pattern\": \"clntsh\", \"path\": null, \"glob\": null, \"output_mode\": \"content\"}",
+            "result_preview": "No matches found"
+          },
+          {
+            "tool_name": "grep",
+            "args": "{\"pattern\": \"oracle\", \"path\": null, \"glob\": null, \"output_mode\": \"content\"}",
+            "result_preview": "No matches found"
+          },
+          {
+            "tool_name": "read_file",
+            "args": "{\"file_path\": \"/zapamcom10060.c\", \"offset\": 0, \"limit\": 120}",
+            "result_preview": "Error: File '/zapamcom10060.c' not found"
+          },
+          {
+            "tool_name": "grep_pattern_tool",
+            "args": "{\"pattern\": \"sqlca\\\\.sqlcode\", \"extensions\": \".c,.h,.ec,.pc\", \"max_hits\": 20}",
+            "result_preview": "[]"
+          },
+          {
+            "tool_name": "grep_pattern_tool",
+            "args": "{\"pattern\": \"OCI\\\\w+\\\\s*\\\\(\", \"extensions\": \".c,.h,.ec,.pc\", \"max_hits\": 20}",
+            "result_preview": "[]"
+          },
+          {
+            "tool_name": "grep_pattern_tool",
+            "args": "{\"pattern\": \"ORACLE_HOME|tnsnames|TNS_ADMIN\", \"extensions\": \".c,.h,.ec,.pc\", \"max_hits\": 20}",
+            "result_preview": "[]"
+          },
+          {
+            "tool_name": "submit_detection",
+            "args": "{\"result_json\": \"{\\\"primary_language\\\":\\\"C\\\",\\\"frameworks\\\":[{\\\"name\\\":\\\"ProFrame\\\",\\\"confidence\\\":0.85,\\\"evidence\\\":\\\"#include pfmcom.h/pfmutil.h/pfmerr.h/pfmdbio.h and characteristic ProFrame patter",
+            "result_preview": "제출 완료: 1 frameworks, 3 proprietary"
+          }
+        ],
+        "total_tokens": 108128,
+        "prompt_tokens": 103865,
+        "completion_tokens": 4263,
+        "elapsed_sec": 75.54412639999646,
+        "error": null
+      }
+    }
+  ]
+}

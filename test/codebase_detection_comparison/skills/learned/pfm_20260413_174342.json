@@ -1,0 +1,88 @@
+{
+  "$schema": "../../schemas/framework_rule.schema.json",
+  "name": "ProFrame",
+  "category": "framework",
+  "subtype": "learned-dynamic",
+  "applicable_languages": [
+    "C"
+  ],
+  "evidence": {
+    "imports": [
+      {
+        "prefix": "pfm",
+        "weight": 0.9,
+        "description": "동적 발견된 접두어"
+      }
+    ],
+    "patterns": [
+      {
+        "regex": "PFM_TRY",
+        "weight": 0.7,
+        "description": "발견된 매크로 (count=1)"
+      },
+      {
+        "regex": "PFM_MSGE",
+        "weight": 0.7,
+        "description": "발견된 매크로 (count=1)"
+      },
+      {
+        "regex": "PFM_ERRC",
+        "weight": 0.7,
+        "description": "발견된 매크로 (count=1)"
+      },
+      {
+        "regex": "PFM_TRYNJ",
+        "weight": 0.7,
+        "description": "발견된 매크로 (count=1)"
+      },
+      {
+        "regex": "PFM_DBG",
+        "weight": 0.7,
+        "description": "발견된 매크로 (count=1)"
+      }
+    ]
+  },
+  "confidence_weights": {
+    "import_match": 0.85,
+    "pattern_match": 0.7
+  },
+  "related": {
+    "region": "Korea financial sector"
+  },
+  "metadata": {
+    "added_on": "2026-04-13",
+    "added_by": "dynamic_discovery",
+    "evidence_used": [
+      "header_comment",
+      "includes",
+      "typedefs",
+      "naming_convention",
+      "macros",
+      "api_functions",
+      "error_keywords",
+      "utility_prefixes",
+      "domain_terms",
+      "language"
+    ],
+    "samples": [
+      "zapamcom10060.c"
+    ],
+    "llm_confidence": 0.83,
+    "llm_reasoning": "pfmcom.h, pfmutil.h, pfmerr.h, pfmdbio.h 같은 공통 헤더와 PFM_TRY/PFM_CATCH 계열 매크로 조합은 pfm이 단순 라이브러리보다 업무 모듈 실행용 프레임워크에 가깝다는 신호다. pdb_* 헤더와 bxxx_dbio_* 함수명은 SQL/DB 접근이 수작업 ORM이 아니라 생성형 DBIO 래퍼를 통해 이뤄짐을 시사한다. 헤더 주석의 proframe 표기와 pfm 접두어는 공식 명칭이 ProFrame일 가능성을 높이며, 한국어 주석과 계좌/카드/실시간인증/VAN 용어는 한국 금융권 업무 시스템 맥락과 잘 맞는다.",
+    "library_role": "C 기반의 기업형 업무처리 공통 프레임워크로, 업무 모듈 실행, 공통 유틸리티, 에러 처리, DBIO 연계를 제공하는 TP/업무 서비스 프레임워크로 보인다.",
+    "architecture_clues": {
+      "layers": {
+        "a0xx": "입력값 검증/사전 점검",
+        "b0xx": "메인 업무 흐름 제어",
+        "b1xx": "공통코드 조회 등 DB 조회성 처리",
+        "b2xx": "이력/업무 데이터 INSERT 처리",
+        "b3xx": "타 업무 모듈 호출",
+        "b4xx": "이력/상태 UPDATE 처리",
+        "b5xx": "에러 메시지 조합/가공",
+        "b7xx": "대외/업무 규칙 체크"
+      },
+      "pattern": "절차적 서비스 모듈 + 생성형 DBIO를 사용하는 계층형 TP 아키텍처"
+    },
+    "db_access_style": "DBIO 코드 생성 방식"
+  }
+}

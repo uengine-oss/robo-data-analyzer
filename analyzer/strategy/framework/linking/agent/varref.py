@@ -103,15 +103,13 @@ def _ensure_chunk_index(state: Dict[str, Any]) -> Dict[str, Any]:
     if state.get("span_index") and state.get("chunk_index"):
         return state["chunk_index"]
 
-    data_dir = state.get("data_dir") or ""
     run_dir = state.get("run_dir")
 
     from analyzer.strategy.framework.parsing.chunk_bundle import (
         _get_chunk_bundle_dir_from_run_dir,
     )
-    chunk_dir = _get_chunk_bundle_dir_from_run_dir(run_dir) if run_dir else None
+    chunk_dir = _get_chunk_bundle_dir_from_run_dir(run_dir)
     span_index, chunk_index = build_bundle_span_index(
-        data_dir,
         chunk_bundle_dir=chunk_dir,
         artifact_index=state.get("artifact_index"),
         sql_index=state.get("sql_index"),

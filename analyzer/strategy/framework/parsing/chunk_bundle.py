@@ -42,11 +42,10 @@ def _span_index_key_parse(key: str) -> Optional[Tuple[str, int, int]]:
         pass
     return None
 
-def _get_chunk_bundle_dir(data_dir=None):
-    base = data_dir or settings.path.data_dir
-    return str(Path(base) / "chunk_bundles")
-
-def _get_chunk_bundle_dir_from_run_dir(run_dir):
+def _get_chunk_bundle_dir_from_run_dir(run_dir: str) -> str:
+    """ChunkBundle 디렉터리는 항상 `{run_dir}/chunk_bundles` 하위에 위치한다."""
+    if not run_dir:
+        raise ValueError("run_dir 이 비어있음 - ChunkBundle 경로를 결정할 수 없음")
     return str(Path(run_dir) / "chunk_bundles")
 
 
@@ -206,17 +205,17 @@ def _dict_to_bundle(data: Dict[str, Any]) -> ChunkBundle:
 
 
 def save_chunk_bundle(
-    data_dir: str,
     bundle: ChunkBundle,
     relative_key: str,
-    chunk_bundle_out_dir: Optional[str] = None,
+    chunk_bundle_out_dir: str,
 ) -> str:
-    """ChunkBundle을 저장. chunk_bundle_out_dir 있으면 그 경로(run_dir/chunk_bundles), 없으면 data_dir/chunk_bundles.
+    """ChunkBundle 을 `{run_dir}/chunk_bundles/{relative_key}.json` 으로 저장.
 
-    relative_key는 경로 구분자를 _로 치환한 식별자 (예: com_example_Foo).
-    Returns: 저장된 파일 경로.
+    relative_key 는 경로 구분자를 `_` 로 치환한 식별자 (예: com_example_Foo).
     """
-    out_dir = Path(chunk_bundle_out_dir) if chunk_bundle_out_dir else Path(_get_chunk_bundle_dir(data_dir))
+    if not chunk_bundle_out_dir:
+        raise ValueError("chunk_bundle_out_dir 필수 - run_dir 기반 경로를 전달해야 함")
+    out_dir = Path(chunk_bundle_out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     safe_key = relative_key.replace("/", "_").replace("\\", "_").strip("_")
     if not safe_key.endswith(".json"):
@@ -236,11 +235,12 @@ def load_chunk_bundle(path: str | Path) -> ChunkBundle:
 
 
 def load_field_chunks_from_bundles(
-    data_dir: str = "",
-    chunk_bundle_dir: Optional[str] = None,
+    chunk_bundle_dir: str,
 ) -> List[Dict[str, Any]]:
     """모든 ChunkBundle에서 VARIABLE 청크 수집. link_chunks_to_indexes용 {variable_id, code, code_ref, line_range} 리스트."""
-    base = Path(chunk_bundle_dir) if chunk_bundle_dir else Path(_get_chunk_bundle_dir(data_dir))
+    if not chunk_bundle_dir:
+        raise ValueError("chunk_bundle_dir 필수")
+    base = Path(chunk_bundle_dir)
     out: List[Dict[str, Any]] = []
     if not base.is_dir():
         return out
@@ -262,8 +262,7 @@ def load_field_chunks_from_bundles(
 
 
 def build_bundle_span_index(
-    data_dir: Optional[str] = None,
-    chunk_bundle_dir: Optional[str] = None,
+    chunk_bundle_dir: str,
     artifact_index: Optional[Dict[str, Any]] = None,
     sql_index: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
@@ -272,7 +271,9 @@ def build_bundle_span_index(
     artifact_index, sql_index가 전달되면 해당 청크도 chunk_index에 통합하여
     bundle_search()로 소스코드·XML·SQL 통합 검색이 가능하도록 한다.
     """
-    base = Path(chunk_bundle_dir) if chunk_bundle_dir else Path(_get_chunk_bundle_dir(data_dir or ""))
+    if not chunk_bundle_dir:
+        raise ValueError("chunk_bundle_dir 필수")
+    base = Path(chunk_bundle_dir)
     span_index: Dict[str, Dict[str, Any]] = {}
     chunk_index: Dict[str, Dict[str, Any]] = {}
     if not base.is_dir():
@@ -379,14 +380,9 @@ def bundle_search(
 
 def bundle_get_chunk(
     chunk_id: str,
-    data_dir: Optional[str] = None,
-    chunk_index: Optional[Dict[str, Dict[str, Any]]] = None,
+    chunk_index: Dict[str, Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
-    """chunk_id로 번들 청크 조회. 반환: {text, filePath, span}."""
-    if chunk_index is None:
-        if data_dir is None:
-            return None
-        _, chunk_index = build_bundle_span_index(data_dir)
+    """chunk_id로 번들 청크 조회. chunk_index는 미리 build_bundle_span_index 로 구성되어 있어야 한다."""
     info = chunk_index.get(chunk_id)
     if not info:
         return None

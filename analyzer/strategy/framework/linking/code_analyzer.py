@@ -774,16 +774,15 @@ def analyze_and_enrich(
 
 
 def _build_variable_code_map(
-    data_dir: str,
-    run_dir: Optional[str],
+    run_dir: str,
 ) -> Dict[str, str]:
-    """ChunkBundle에서 variable_id -> code 맵 구성. run_dir 있으면 해당 chunk_bundles 사용."""
+    """ChunkBundle에서 variable_id -> code 맵 구성 (`{run_dir}/chunk_bundles` 기준)."""
     from analyzer.strategy.framework.parsing.chunk_bundle import (
         _get_chunk_bundle_dir_from_run_dir,
         load_field_chunks_from_bundles,
     )
-    chunk_dir = _get_chunk_bundle_dir_from_run_dir(run_dir) if run_dir else None
-    chunks = load_field_chunks_from_bundles(data_dir or "", chunk_dir)
+    chunk_dir = _get_chunk_bundle_dir_from_run_dir(run_dir)
+    chunks = load_field_chunks_from_bundles(chunk_bundle_dir=chunk_dir)
     return {c["variable_id"]: (c.get("code") or "") for c in chunks if c.get("variable_id") and c.get("code")}
 
 
@@ -845,8 +844,8 @@ def _invoke_variable_summary_llm(
 def run_variable_summary(
     variable_facts_list: List[VariableFacts],
     module_index: Dict[str, Any],
+    run_dir: str,
     data_dir: str = "",
-    run_dir: Optional[str] = None,
     api_key: Optional[str] = None,
     locale: str = "ko",
 ) -> Generator[Dict[str, Dict[str, Any]], None, None]:
@@ -856,7 +855,7 @@ def run_variable_summary(
         logger.info("[PHASE:3:CODE_ANALYSIS] Variable 요약 스킵 | variable_facts=0")
         return
     module_key_index = _build_module_key_index(module_index or {})
-    variable_code_map = _build_variable_code_map(data_dir, run_dir)
+    variable_code_map = _build_variable_code_map(run_dir)
     logger.info(
         "[PHASE:3:CODE_ANALYSIS] Variable 요약 진입 | variables=%d api_key_set=%s variable_code_from_bundles=%d",
         len(variable_facts_list),

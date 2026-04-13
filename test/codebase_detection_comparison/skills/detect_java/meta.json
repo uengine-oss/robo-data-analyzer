@@ -1,0 +1,24 @@
+{
+  "$schema": "../../schemas/skill_meta.schema.json",
+  "language_names": ["Java", "Kotlin", "Groovy", "Scala"],
+  "source_extensions": [".java", ".kt", ".groovy", ".scala"],
+  "config_patterns": [
+    "**/pom.xml",
+    "**/build.gradle",
+    "**/build.gradle.kts",
+    "**/settings.gradle",
+    "**/application.yml",
+    "**/application.yaml",
+    "**/application.properties",
+    "**/application-*.yml",
+    "**/application-*.properties",
+    "**/bootstrap.yml",
+    "**/.env",
+    "**/docker-compose.yml"
+  ],
+  "import_regex": "^\\s*import\\s+([\\w.]+);?",
+  "vendor_info": {
+    "typical_deployment": "container",
+    "typical_regions": ["global"]
+  }
+}

@@ -1,0 +1,108 @@
+{
+  "target": "ProFrame-C",
+  "started": "20260413_165656",
+  "ended": "20260413_165657",
+  "summary": {
+    "target": "ProFrame-C",
+    "naive_tokens": 3875,
+    "naive_elapsed": 0.695258499996271,
+    "deep_tokens": null,
+    "deep_elapsed": null,
+    "deep_tool_calls": null
+  },
+  "records": [
+    {
+      "time": "16:56:56.878",
+      "category": "INFO",
+      "message": "타겟 시작: ProFrame-C (경로=c:\\uEngine\\robo\\data\\source\\apascrt00010t02_20260406)"
+    },
+    {
+      "time": "16:56:56.878",
+      "category": "INFO",
+      "message": "기대 정답 (ground truth)",
+      "data": {
+        "primary_language": "C",
+        "frameworks": [
+          "ProFrame"
+        ],
+        "orms": [
+          "ProFrame DBIO"
+        ],
+        "databases": [
+          "Oracle"
+        ],
+        "proprietary": [
+          "pfm",
+          "pdb"
+        ]
+      }
+    },
+    {
+      "time": "16:56:56.879",
+      "category": "PHASE",
+      "message": "NAIVE: 방법 A 시작 (sample_count=10)"
+    },
+    {
+      "time": "16:56:56.880",
+      "category": "NAIVE",
+      "message": "샘플된 파일 1개",
+      "data": [
+        "zapamcom10060.c"
+      ]
+    },
+    {
+      "time": "16:56:56.880",
+      "category": "NAIVE",
+      "message": "전체 파일 수: 1, bundle 바이트: 9363"
+    },
+    {
+      "time": "16:56:56.880",
+      "category": "NAIVE",
+      "message": "LLM 단일 호출 시작..."
+    },
+    {
+      "time": "16:56:57.573",
+      "category": "NAIVE",
+      "message": "LLM 응답 수신 (tokens=3875)"
+    },
+    {
+      "time": "16:56:57.574",
+      "category": "NAIVE",
+      "message": "raw JSON 파싱 결과",
+      "data": {
+        "primary_language": "C",
+        "frameworks": [],
+        "orms": [],
+        "databases": [],
+        "proprietary_frameworks": [
+          "ProFrame",
+          "DBIO"
+        ]
+      }
+    },
+    {
+      "time": "16:56:57.574",
+      "category": "RESULT",
+      "message": "NAIVE 최종 결과",
+      "data": {
+        "primary_language": "C",
+        "frameworks": [],
+        "orms": [],
+        "databases": [],
+        "proprietary_frameworks": [
+          "ProFrame",
+          "DBIO"
+        ],
+        "raw_answer": "{\n  \"primary_language\": \"C\",\n  \"frameworks\": [],\n  \"orms\": [],\n  \"databases\": [],\n  \"proprietary_frameworks\": [\"ProFrame\", \"DBIO\"]\n}",
+        "total_tokens": 3875,
+        "prompt_tokens": 3485,
+        "completion_tokens": 390,
+        "elapsed_sec": 0.695258499996271,
+        "sampled_files": [
+          "zapamcom10060.c"
+        ],
+        "error": null
+      }
+    }
+  ]
+}

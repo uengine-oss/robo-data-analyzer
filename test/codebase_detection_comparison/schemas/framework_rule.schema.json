@@ -1,0 +1,118 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "FrameworkRule",
+  "description": "특정 프레임워크를 탐지하기 위한 증거 규칙 정의. 한 기술 = 한 파일 원칙.",
+  "type": "object",
+  "required": ["name", "category", "applicable_languages", "evidence"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {"type": "string"},
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "사람이 읽는 기술 이름. 예: 'FastAPI', 'Spring Boot'."
+    },
+    "category": {
+      "type": "string",
+      "enum": ["framework", "orm", "database", "middleware", "build-tool"],
+      "description": "분류."
+    },
+    "subtype": {
+      "type": "string",
+      "description": "세부 분류. 예: 'web-api', 'legacy-enterprise'."
+    },
+    "stereotype": {
+      "type": "string",
+      "description": "아키텍처 역할. 예: 'API_SERVER', 'MAINFRAME_TP'."
+    },
+    "applicable_languages": {
+      "type": "array",
+      "items": {"type": "string"},
+      "minItems": 1,
+      "description": "이 규칙이 적용되는 언어 목록. shared/ 의 경우 복수."
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "manifest_deps": {"type": "array", "items": {"$ref": "#/definitions/WeightedRegex"}},
+        "imports": {"type": "array", "items": {"$ref": "#/definitions/WeightedPrefix"}},
+        "patterns": {"type": "array", "items": {"$ref": "#/definitions/WeightedRegex"}},
+        "anti_patterns": {"type": "array", "items": {"$ref": "#/definitions/WeightedRegex"}},
+        "file_naming_patterns": {"type": "array", "items": {"$ref": "#/definitions/WeightedRegex"}},
+        "config_markers": {"type": "array", "items": {"$ref": "#/definitions/ConfigMarker"}}
+      }
+    },
+    "confidence_weights": {
+      "type": "object",
+      "description": "카테고리별 최대 confidence 가중치. 스코어 정규화에 사용.",
+      "additionalProperties": {"type": "number", "minimum": -1.0, "maximum": 1.0}
+    },
+    "version_detection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "manifest_regex": {"type": "string"},
+        "source_regex": {"type": "string"}
+      }
+    },
+    "related": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "often_paired_with": {"type": "array", "items": {"type": "string"}},
+        "alternatives": {"type": "array", "items": {"type": "string"}},
+        "implies_stereotype": {"type": "string"},
+        "implies_databases": {"type": "array", "items": {"type": "string"}},
+        "vendor": {"type": "string"},
+        "region": {"type": "string"}
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "added_on": {"type": "string"},
+        "added_by": {"type": "string"},
+        "verified_on": {"type": "array", "items": {"type": "string"}},
+        "deprecated": {"type": "boolean"},
+        "is_proprietary": {"type": "boolean"},
+        "is_domestic": {"type": "boolean"},
+        "documentation_url": {"type": "string"}
+      }
+    }
+  },
+  "definitions": {
+    "WeightedRegex": {
+      "type": "object",
+      "required": ["regex", "weight"],
+      "additionalProperties": false,
+      "properties": {
+        "regex": {"type": "string", "minLength": 1},
+        "weight": {"type": "number", "minimum": -1.0, "maximum": 1.0},
+        "description": {"type": "string"},
+        "source": {"type": "string", "description": "어떤 종류의 파일에서 검색할지 힌트. 예: 'requirements.txt|pyproject.toml'."}
+      }
+    },
+    "WeightedPrefix": {
+      "type": "object",
+      "required": ["prefix", "weight"],
+      "additionalProperties": false,
+      "properties": {
+        "prefix": {"type": "string", "minLength": 1},
+        "weight": {"type": "number", "minimum": -1.0, "maximum": 1.0},
+        "description": {"type": "string"}
+      }
+    },
+    "ConfigMarker": {
+      "type": "object",
+      "required": ["marker", "weight"],
+      "additionalProperties": false,
+      "properties": {
+        "marker": {"type": "string", "minLength": 1, "description": "리터럴 문자열"},
+        "weight": {"type": "number", "minimum": -1.0, "maximum": 1.0},
+        "description": {"type": "string"}
+      }
+    }
+  }
+}

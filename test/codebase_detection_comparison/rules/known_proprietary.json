@@ -1,0 +1,15 @@
+{
+  "tmax": "Tmax TP Monitor 미들웨어",
+  "atmi": "Oracle Tuxedo ATMI 인터페이스",
+  "tux": "Oracle Tuxedo TP 모니터",
+  "cics": "IBM CICS 트랜잭션 서버",
+  "ims": "IBM IMS (Information Management System)",
+  "sap": "SAP ABAP 프레임워크",
+  "abap": "SAP ABAP 코드",
+  "bapi": "SAP BAPI (Business API)",
+  "rfc": "SAP RFC 호출",
+  "ebcdic": "EBCDIC 메인프레임 데이터 처리",
+  "cobol": "COBOL 레거시 연동",
+  "jeus": "JEUS (TmaxSoft WAS)",
+  "webtob": "WebtoB (TmaxSoft 웹서버)"
+}

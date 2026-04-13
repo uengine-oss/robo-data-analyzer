@@ -57,16 +57,13 @@ def set_active_stdlib(lang: str) -> None:
 
 
 def load_call_records_from_chunk_bundles(
-    data_dir: Optional[str] = None,
-    chunk_bundle_dir: Optional[str] = None,
+    chunk_bundle_dir: str,
 ) -> Dict[str, List[Dict[str, Any]]]:
-    """ChunkBundle에서 function_id별 call_records [{call_id, call_code}] 로드.
-    chunk_bundle_dir 있으면 해당 디렉터리의 chunk_bundles 사용, 없으면 data_dir/chunk_bundles."""
-    from analyzer.strategy.framework.parsing.chunk_bundle import (
-        _get_chunk_bundle_dir,
-        load_chunk_bundle,
-    )
-    base = Path(chunk_bundle_dir) if chunk_bundle_dir else Path(_get_chunk_bundle_dir(data_dir or ""))
+    """ChunkBundle에서 function_id별 call_records [{call_id, call_code}] 로드."""
+    from analyzer.strategy.framework.parsing.chunk_bundle import load_chunk_bundle
+    if not chunk_bundle_dir:
+        raise ValueError("chunk_bundle_dir 필수")
+    base = Path(chunk_bundle_dir)
     if not base.is_dir():
         logger.info("[PHASE:2:CALL_LLM] ChunkBundle 로드 스킵 | reason=chunk_bundle_dir_not_found path=%s", base)
         return {}
@@ -404,9 +401,9 @@ async def run_call_batch_pipeline_async(
     variable_facts_list: List[Any],
     symbol_type_index: Dict[str, Dict[str, str]],
     function_index_by_module: Dict[str, Dict[str, List[str]]],
+    run_dir: str,
     use_llm: bool = True,
     api_key: Optional[str] = None,
-    run_dir: Optional[str] = None,
     on_batch: Optional[Any] = None,
     lang: str = "",
 ) -> Tuple[List[CallsEdge], List[Dict[str, Any]]]:
@@ -415,8 +412,8 @@ async def run_call_batch_pipeline_async(
     from util.async_executor import get_rate_limiter
     from analyzer.strategy.framework.parsing.chunk_bundle import _get_chunk_bundle_dir_from_run_dir
 
-    chunk_dir = _get_chunk_bundle_dir_from_run_dir(run_dir) if run_dir else None
-    call_records_by_function = load_call_records_from_chunk_bundles(data_dir=data_dir, chunk_bundle_dir=chunk_dir)
+    chunk_dir = _get_chunk_bundle_dir_from_run_dir(run_dir)
+    call_records_by_function = load_call_records_from_chunk_bundles(chunk_bundle_dir=chunk_dir)
     if not call_records_by_function:
         return [], []
 

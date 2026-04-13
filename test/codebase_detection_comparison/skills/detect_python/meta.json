@@ -1,0 +1,25 @@
+{
+  "$schema": "../../schemas/skill_meta.schema.json",
+  "language_names": ["Python"],
+  "source_extensions": [".py", ".pyi"],
+  "config_patterns": [
+    "**/requirements.txt",
+    "**/requirements-*.txt",
+    "**/pyproject.toml",
+    "**/Pipfile",
+    "**/Pipfile.lock",
+    "**/setup.py",
+    "**/setup.cfg",
+    "**/.env",
+    "**/.env.*",
+    "**/settings.py",
+    "**/config.py",
+    "**/docker-compose.yml",
+    "**/docker-compose.yaml"
+  ],
+  "import_regex": "^\\s*(?:from\\s+([\\w.]+)|import\\s+([\\w.]+))",
+  "vendor_info": {
+    "typical_deployment": "container",
+    "typical_regions": ["global"]
+  }
+}
