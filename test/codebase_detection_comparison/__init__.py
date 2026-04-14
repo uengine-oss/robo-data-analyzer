@@ -1,1 +1,4 @@
-"""미지의 코드베이스 기술스택 탐지 — Naive LLM vs Deep Agent 비교 테스트 모듈."""
+"""코드베이스 탐지 v4 — 항상 Deep Agent + 패턴 기반 조기 종료."""
+from .analyze import analyze
+
+__all__ = ["analyze"]
