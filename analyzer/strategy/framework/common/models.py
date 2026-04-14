@@ -82,6 +82,8 @@ class VariableFacts:
     comment: Optional[str] = None
     annotations: Optional[str] = None
     code: str = ""
+    # 선언부(배열크기·초기화식 등)에서 참조한 식별자 이름 목록 — AST에서 직접 수집
+    references: List[str] = field(default_factory=list)
 
 
 @dataclass

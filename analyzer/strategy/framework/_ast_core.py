@@ -59,6 +59,8 @@ class StatementNode:
     variable_type: Optional[str] = None
     annotations: Optional[str] = None
     comment: Optional[str] = None
+    # 변수 선언부(배열크기·초기화식 등)에서 참조한 식별자 이름 목록 — ANTLR AST에서 직접 수집
+    references: List[str] = field(default_factory=list)
     lines: List[Tuple[int, str]] = field(default_factory=list)
     parent: Optional["StatementNode"] = None
     children: List["StatementNode"] = field(default_factory=list)
@@ -438,6 +440,7 @@ class StatementCollector:
             variable_type=node.get("variableType"),
             annotations=annotations,
             comment=node.get("comment"),
+            references=list(node.get("references") or []),
             lines=line_entries,
         )
         for c in child_nodes:

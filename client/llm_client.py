@@ -223,6 +223,38 @@ def _is_reasoning_model(model: str) -> bool:
     return any(rm in model_lower for rm in settings.llm.reasoning_models)
 
 
+# 모델별 completion token 상한 (OpenAI 공식 또는 일반적 상한값).
+# 초과 시 400: "max_tokens is too large" 에러. None = 호출자 요청 그대로.
+_MODEL_COMPLETION_CAPS: tuple[tuple[str, int], ...] = (
+    ("gpt-4.1", 32768),
+    ("gpt-4o-mini", 16384),
+    ("gpt-4o", 16384),
+    ("gpt-4-turbo", 4096),
+    ("gpt-4", 8192),
+    ("gpt-3.5", 4096),
+    ("o1-mini", 65536),
+    ("o1-preview", 32768),
+    ("o1", 100000),
+    ("o3-mini", 100000),
+    ("o3", 100000),
+    ("gpt-5", 128000),
+)
+
+
+def _safe_completion_max_tokens(model: str, requested: int) -> int:
+    """모델별 허용 가능한 최대 completion 토큰으로 clamp.
+
+    알려지지 않은 모델은 보수적으로 requested 그대로 반환 (서비스 측 검증에 위임).
+    """
+    if not model or not requested:
+        return requested
+    mlow = model.lower()
+    for prefix, cap in _MODEL_COMPLETION_CAPS:
+        if mlow.startswith(prefix):
+            return min(requested, cap)
+    return requested
+
+
 def get_llm(
     *,
     api_key: Optional[str] = None,
@@ -255,6 +287,7 @@ def get_llm(
     api_key = api_key or config.api_key
     model = model or config.model
     max_tokens = max_tokens or config.max_tokens
+    max_tokens = _safe_completion_max_tokens(model, max_tokens)
     is_custom_llm = is_custom_llm if is_custom_llm is not None else config.is_custom
     company_name = company_name if company_name is not None else config.company_name
 

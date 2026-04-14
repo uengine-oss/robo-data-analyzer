@@ -289,6 +289,7 @@ def build_function_facts_and_module_index(
             container_key = node.unit_key or f"{directory}/{file_name}"
             variable_id = f"{container_key}#{node.name}_{node.start_line}"
             code_ref = f"{directory}/{file_name}:{node.start_line}-{node.end_line}"
+            references = getattr(node, "references", None) or []
             variable_facts_list.append(
                 VariableFacts(
                     variable_id=variable_id,
@@ -300,6 +301,7 @@ def build_function_facts_and_module_index(
                     code_ref=code_ref,
                     comment=getattr(node, "comment", None),
                     annotations=getattr(node, "annotations", None),
+                    references=list(references),
                 )
             )
             # variable_id → 원래 AST 노드 타입 저장 (서브레이블용)

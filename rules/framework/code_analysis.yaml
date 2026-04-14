@@ -24,36 +24,69 @@ prompt: |
 
 
   [INPUT]
-  {% if context %}
-  부모 컨텍스트 (클래스 주석/어노테이션, 참조 아키텍처 노드):
-  {{ context }}
+  아래 섹션들이 분석 재료로 주어집니다. 각 섹션의 의미와 활용 방법은 다음과 같습니다.
+  필수 입력은 [분석 대상 코드]와 startLine/endLine/locale뿐이며, 나머지는 주어질 때만 표시됩니다.
+  주어진 모든 섹션은 summary/stereotype/scenarios/tableInsights 작성의 근거로 반드시 활용하고,
+  주어지지 않은 섹션의 내용은 절대 추측하지 마세요.
 
-  - [연결된 SQL]: SQL 문 일부 + 테이블·연산(SELECT/INSERT/UPDATE/DELETE)
-  - [연결된 Config]: 설정 키와 내용
-  - [연결된 Class]: 다른 클래스의 식별자, 설명, 필드 목록
-  - 이 정보를 stereotype 판단과 summary 작성에 활용하세요.
+  {% if context %}
+  ── [부모 컨텍스트] ──
+  분석 대상 함수가 속한 클래스의 주석/어노테이션, 그리고 이 함수와 연결된 아키텍처 노드 정보입니다.
+  활용: 함수의 역할과 호출 맥락을 파악하여 stereotype 판단과 summary 맥락화에 사용.
+    - [연결된 SQL]: 함수가 호출하는 SQL 문 일부와 대상 테이블·연산(SELECT/INSERT/UPDATE/DELETE).
+      → 테이블 접근이 있으면 Query/Command 판별, tableInsights 작성의 근거.
+    - [연결된 Config]: 함수가 참조하는 설정 키와 값.
+      → 하드코딩처럼 보이는 리터럴의 실제 출처(설정 값)를 파악.
+    - [연결된 Class]: 이 함수가 사용하는 다른 클래스의 식별자, 설명, 필드 목록.
+      → dependencies 관계 판별과 파라미터/반환 타입의 의미 해석.
+
+  {{ context }}
   {% endif %}
   {% if field_initial_values %}
-  [필드 초기값]
+  ── [필드 초기값] ──
+  분석 대상 함수가 속한 클래스의 인스턴스/정적 필드의 선언 시 초기값입니다.
+  활용: 함수 내에서 필드를 참조할 때 그 값의 출발점을 파악.
+    - 필드가 null로 초기화되는지, 특정 리터럴/컬렉션으로 초기화되는지 확인.
+    - summary에서 필드 상태 변경을 기술할 때 "null → 값X"처럼 전/후 상태를 명확히 표현.
+    - 필드가 DI 주입(AGGREGATION/ASSOCIATION)인지 new 생성(COMPOSITION)인지 dependencies 판단 근거.
+
   {{ field_initial_values }}
   {% endif %}
   {% if table_sample_data %}
-  [테이블 샘플 데이터]
+  ── [테이블 샘플 데이터] ──
+  함수가 접근하는 테이블의 실제 샘플 행(row) 데이터입니다.
+  활용: 컬럼의 실제 값 도메인과 코드값(예: status='A'/'P'/'C') 의미를 파악.
+    - scenarios의 Given/Then에 구체적 값을 넣을 때 현실적인 샘플 값을 사용.
+    - INSERT/UPDATE 시 어떤 컬럼이 어떤 값 패턴으로 쓰이는지 tableInsights의 columns 설명에 반영.
+    - 분기 조건의 리터럴("type='A'")이 실제 데이터상 어떤 의미를 갖는지 summary에 녹여넣기.
+
   {{ table_sample_data }}
   {% endif %}
   {% if constants_context %}
+  ── [상수 컨텍스트] ──
+  프로젝트 전역에서 참조 가능한 불변 상수 목록 (이름과 실제 값).
+  활용: 코드가 상수를 참조하면 summary/scenarios에서 반드시 실제 값으로 치환.
+    - ❌ "상태를 STATUS_COMPLETED로 변경" → ✅ "상태를 'C'로 변경"
+    - 상수 네이밍 규칙이 보여도 변수명이 아닌 값으로만 기술.
+
   {{ constants_context }}
-  위 상수 목록은 프로젝트 전역 불변 값입니다. 코드에서 참조하는 경우, summary에 변수명이 아닌 실제 값으로 기술하세요.
   {% endif %}
   {% if custom_instructions %}
-  [PROJECT_SPECIFIC_INSTRUCTIONS]
-  이 프로젝트의 고유 패턴 (분석 시 반드시 참고하세요):
+  ── [PROJECT_SPECIFIC_INSTRUCTIONS] ──
+  ★★★★★★ 이 프로젝트의 고유 패턴 ★★★★★★
+  모든 지침 중 최우선. 아래 항목과 충돌하는 일반 규칙이 있으면 아래 항목을 따르세요.
+  활용: 테이블 식별 규칙, 네이밍 관례, 프레임워크별 동작 등 프로젝트 특이 사항을 분석 전반에 반영.
+
   {% for inst in custom_instructions %}
   - {{ inst }}
   {% endfor %}
   {% endif %}
 
-  분석 대상 {{ language | default("Java") }} 코드 (L{{ startLine }}-{{ endLine }}):
+  ── [분석 대상 코드] ──
+  아래가 이번 분석의 주 대상입니다. L{{ startLine }}-{{ endLine }} 범위의 {{ language | default("Java") }} 코드이며,
+  이 범위에 대해 summary/stereotype/actor/scenarios/tableInsights/dependencies를 모두 산출해야 합니다.
+  위의 모든 컨텍스트 섹션은 이 코드를 더 정확히 해석하기 위한 보조 자료입니다.
+
   {{ code }}
 
 

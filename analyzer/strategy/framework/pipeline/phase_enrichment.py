@@ -107,22 +107,36 @@ async def _collect_analysis_context(st, client, orchestrator) -> dict:
     from analyzer.common.constant_context import fetch_constants_context
     ctx["constants_context"] = await fetch_constants_context(client)
 
-    # 참조 변수 컨텍스트
+    # 참조 변수 + INIT_BY 초기화 출처 컨텍스트
+    # 함수가 참조하는 변수와, 그 변수가 어떤 상수/변수로 초기화되었는지를 쌍으로 수집한다.
     try:
         ref_results = await client.execute_queries([
             "MATCH (f:FUNCTION)-[:REFERENCES]->(v) "
-            "RETURN f.function_id AS fid, v.name AS name, v.code_text AS code, labels(v) AS labels"
+            "OPTIONAL MATCH (v)-[:INIT_BY]->(src) "
+            "RETURN f.function_id AS fid, v.code_text AS code, "
+            "       src.name AS src_name, src.code_text AS src_code"
         ])
+        init_by_count = 0
         if ref_results and ref_results[0]:
             for row in ref_results[0]:
                 fid = row.get("fid", "")
                 code = (row.get("code") or "").strip()
-                if fid and code:
-                    ctx["referenced_vars_by_function"].setdefault(fid, []).append(code)
+                if not (fid and code):
+                    continue
+                src_code = (row.get("src_code") or "").strip()
+                if src_code:
+                    entry = f"{code}\n  \u21b3 \ucd08\uae30\ud654 \ucd9c\ucc98: {src_code}"
+                    init_by_count += 1
+                else:
+                    entry = code
+                ctx["referenced_vars_by_function"].setdefault(fid, []).append(entry)
         if ctx["referenced_vars_by_function"]:
-            logger.info("[PHASE:3:CONTEXT] 참조 변수 수집 | functions=%d", len(ctx["referenced_vars_by_function"]))
+            logger.info(
+                "[PHASE:3:CONTEXT] \ucc38\uc870 \ubcc0\uc218 \uc218\uc9d1 | functions=%d init_by_pairs=%d",
+                len(ctx["referenced_vars_by_function"]), init_by_count,
+            )
     except Exception as e:
-        logger.error("[PHASE:3:CONTEXT] 참조 변수 수집 실패 | error=%s", e, exc_info=True)
+        logger.error("[PHASE:3:CONTEXT] \ucc38\uc870 \ubcc0\uc218 \uc218\uc9d1 \uc2e4\ud328 | error=%s", e, exc_info=True)
 
     # 테이블 샘플 데이터
     reads_writes = st.reads_writes or []
@@ -341,28 +355,12 @@ async def _run_field_and_module_analysis(st, client, tracker) -> AsyncGenerator[
     function_facts_list = st.function_facts_list or []
     analysis_by_function = st.analysis_by_function or {}
 
-    # ── Field 분석 ──
-    field_total = max(1, len(variable_facts_list))
-    yield tracker.begin_step(1, field_total)
+    # ── Field 분석 (비활성화) ──
+    # 변수는 Navigator 에 노출하지 않는 정보이고, 현재 입력이 변수 자기 선언 한 줄뿐이라
+    # 요약할 가치가 없음. 재개가 필요해지면 code_analysis 에서 참조 관계(REFERENCES)와
+    # 사용 맥락을 함께 뱉어주도록 보강해야 한다.
     summary_by_variable: Dict[str, Any] = {}
-    if not st.run_dir:
-        raise RuntimeError("run_dir 이 초기화되지 않음 - Phase 1 이후에 호출되어야 함")
-    for field_batch in run_variable_summary(
-        variable_facts_list, module_index,
-        run_dir=st.run_dir, data_dir=st.data_dir,
-        api_key=api_key, locale=locale,
-    ):
-        summary_by_variable.update(field_batch)
-        yield tracker.tick_quiet(len(field_batch))
-        try:
-            queries = build_variable_summary_queries(field_batch)
-            if queries:
-                async for chunk in write_to_graph(client, queries, "PHASE3:FIELD_ANALYSIS"):
-                    yield chunk
-        except Exception as e:
-            logger.error("[PHASE:3:FIELD_ANALYSIS] Neo4j 반영 실패 | error=%s", e, exc_info=True)
-
-    yield tracker.end_step(f"필드 {len(summary_by_variable)}개 분석 완료")
+    yield tracker.end_step("필드 분석 비활성화")
 
     # ── Module 분석 ──
     module_total = max(1, len(module_index))

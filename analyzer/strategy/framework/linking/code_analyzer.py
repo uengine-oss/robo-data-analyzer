@@ -1008,12 +1008,19 @@ def run_module_summary(
         by_class.setdefault(ck, []).append({"name": f.name, "summary": summary})
 
     def _summarize_one_module(module_key: str, items: List[Dict[str, Any]]) -> Tuple[str, str, str, Dict[str, List[str]]]:
-        """단일 모듈 요약 — 스레드 안전. (module_fqn, summary, moduleStereotype, unified_actors) 반환."""
+        """단일 모듈 요약 — Map-Reduce 패턴.
+
+        1) 모듈 항목을 max_batch_token 단위 청크로 분할
+        2) Map: 각 청크를 병렬로 LLM 부분 요약 (서로 의존성 없음)
+        3) Reduce: 부분 요약이 여러 개면 한 번 더 LLM으로 통합 요약
+        """
         module_fqn = module_key
         if not items:
             return module_fqn, "", "", {}
         module_comment, module_annotations = _get_module_context(module_key_index, module_key)
         module_kind = key_to_kind.get(module_key)
+
+        # 토큰 기반 청크 분할
         chunks: List[List[Dict[str, Any]]] = []
         current: List[Dict[str, Any]] = []
         current_tokens = 0
@@ -1028,32 +1035,56 @@ def run_module_summary(
             current_tokens += t
         if current:
             chunks.append(current)
-        prev_summary: Optional[str] = None
-        module_stereotype = ""
+
+        # api_key 없으면 LLM 미사용 — 단순 결합
+        if not api_key:
+            return (
+                module_fqn,
+                "; ".join(f"{x.get('name', '')}: {x.get('summary', '')}" for c in chunks for x in c),
+                "",
+                {},
+            )
+
+        # Map: 각 청크 독립 LLM 부분 요약 병렬 실행
+        def _summarize_chunk(chunk: List[Dict[str, Any]]):
+            return _invoke_module_summary_llm(
+                module_fqn, chunk, module_comment, module_annotations,
+                prev_summary=None, api_key=api_key, locale=locale, kind=module_kind,
+            )
+
+        if len(chunks) == 1:
+            partial_results = [_summarize_chunk(chunks[0])]
+        else:
+            with ThreadPoolExecutor(max_workers=min(len(chunks), settings.concurrency.max_concurrency)) as inner:
+                partial_results = list(inner.map(_summarize_chunk, chunks))
+
+        # Reduce: 부분 요약 통합
+        partial_summaries = [s for s, _, _ in partial_results if s]
+        module_stereotype = next((st for _, st, _ in partial_results if st), "")
         all_unified_actors: Dict[str, List[str]] = {}
-        for chunk in chunks:
-            if api_key:
-                result_summary, result_stereotype, chunk_unified = _invoke_module_summary_llm(
-                    module_fqn,
-                    chunk,
-                    module_comment,
-                    module_annotations,
-                    prev_summary,
-                    api_key,
-                    locale,
-                    kind=module_kind,
-                )
-                prev_summary = result_summary or prev_summary
-                if result_stereotype:
-                    module_stereotype = result_stereotype
-                if chunk_unified:
-                    for rep, syns in chunk_unified.items():
-                        all_unified_actors.setdefault(rep, []).extend(syns)
-            else:
-                prev_summary = "; ".join(
-                    f"{x.get('name', '')}: {x.get('summary', '')}" for x in chunk
-                )
-        return module_fqn, prev_summary or "", module_stereotype, all_unified_actors
+        for _, _, chunk_unified in partial_results:
+            for rep, syns in (chunk_unified or {}).items():
+                all_unified_actors.setdefault(rep, []).extend(syns)
+
+        if len(partial_summaries) <= 1:
+            final_summary = partial_summaries[0] if partial_summaries else ""
+        else:
+            # 부분 요약들을 items 형태로 묶어 1회 통합 호출
+            merge_items = [
+                {"name": f"part_{i + 1}", "summary": s}
+                for i, s in enumerate(partial_summaries)
+            ]
+            final_summary, merged_st, merged_unified = _invoke_module_summary_llm(
+                module_fqn, merge_items, module_comment, module_annotations,
+                prev_summary=None, api_key=api_key, locale=locale, kind=module_kind,
+            )
+            final_summary = final_summary or partial_summaries[-1]
+            if merged_st:
+                module_stereotype = merged_st
+            for rep, syns in (merged_unified or {}).items():
+                all_unified_actors.setdefault(rep, []).extend(syns)
+
+        return module_fqn, final_summary, module_stereotype, all_unified_actors
 
     _CLASS_BATCH_SIZE = 5
     total_yielded = 0

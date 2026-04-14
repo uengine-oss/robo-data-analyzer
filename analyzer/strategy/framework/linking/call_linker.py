@@ -21,9 +21,6 @@ from analyzer.strategy.framework.linking.deterministic import (
     fact_to_module_map,
     build_module_map_with_scope,
 )
-from util.text_utils import (
-    calculate_code_token as estimate_tokens,
-)
 logger = logging.getLogger(__name__)
 
 
@@ -138,33 +135,33 @@ def extract_obj_method_from_call_code(call_code: str) -> Tuple[Optional[str], Op
     return None, None
 
 
-def _call_item_tokens(function_id: str, calls: List[Dict[str, Any]]) -> int:
-    """한 (function_id, calls) 항목의 토큰 수 근사 (배치 묶기용)."""
-    t = estimate_tokens(function_id or "")
-    for c in calls or []:
-        t += estimate_tokens(str(c.get("call_code") or ""))
-    return max(1, t)
-
-
 def _build_call_batches(
     call_records_by_function: Dict[str, List[Dict[str, Any]]],
-    max_tokens: int,
+    max_records_per_batch: int,
 ) -> List[List[Tuple[str, List[Dict[str, Any]]]]]:
-    """function_id별 call 목록을 max_tokens 이하로 묶어 배치 리스트 반환. 각 배치는 [(function_id, calls), ...]."""
+    """function_id별 call 목록을 호출 개수 기준으로 묶어 배치 리스트 반환.
+
+    LLM 응답 시간은 출력 항목 수에 비례한다(reasoning 모델일수록 더 강함).
+    따라서 호출 토큰량이 아닌 호출 개수로 균등 분할한다.
+
+    한 함수의 호출이 max_records_per_batch를 초과하면 여러 배치로 분할한다
+    (한 함수가 배치를 독차지해 응답이 길어지는 것을 방지).
+    """
     batches: List[List[Tuple[str, List[Dict[str, Any]]]]] = []
     current: List[Tuple[str, List[Dict[str, Any]]]] = []
-    current_tokens = 0
+    current_records = 0
     for function_id, recs in call_records_by_function.items():
         calls_input = [{"call_id": r.get("call_id", ""), "call_code": r.get("call_code", "")} for r in recs]
-        t = _call_item_tokens(function_id, calls_input)
-        if t > max_tokens:
-            t = max_tokens
-        if current and current_tokens + t > max_tokens:
-            batches.append(current)
-            current = []
-            current_tokens = 0
-        current.append((function_id, calls_input))
-        current_tokens += t
+        # 한 함수의 호출이 너무 많으면 max 단위로 슬라이스
+        for offset in range(0, len(calls_input), max_records_per_batch):
+            slice_calls = calls_input[offset : offset + max_records_per_batch]
+            n = len(slice_calls)
+            if current and current_records + n > max_records_per_batch:
+                batches.append(current)
+                current = []
+                current_records = 0
+            current.append((function_id, slice_calls))
+            current_records += n
     if current:
         batches.append(current)
     return batches
@@ -428,8 +425,10 @@ async def run_call_batch_pipeline_async(
     key = api_key or ""
 
     if use_llm and key:
-        max_tokens = settings.batch.max_batch_token * 2
-        batches = _build_call_batches(call_records_by_function, max_tokens)
+        batches = _build_call_batches(
+            call_records_by_function,
+            settings.batch.max_call_records_per_batch,
+        )
         limiter = get_rate_limiter()
 
         from util.async_executor import get_executor
