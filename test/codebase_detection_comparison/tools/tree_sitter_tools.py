@@ -203,6 +203,120 @@ def extract_skeleton(path: Path, max_items: int = 80) -> str:
     return "\n".join(line for _, line in kept)
 
 
+_FUNCTION_NODE_TYPES = frozenset({
+    "function_definition", "function_declaration", "method_definition",
+    "method_declaration",
+})
+
+
+def extract_function_signatures(path: Path, max_sigs: int = 30) -> list[str]:
+    """파일에서 함수·메서드 정의의 시그니처(첫 줄~3 줄) 목록 반환.
+
+    LLM 이 (파일, 함수) 매핑에서 정확히 골라낼 수 있도록 사용된다.
+    """
+    if not _BACKEND_OK:
+        return []
+    lang = _ALIAS_EXT_TO_LANG.get(path.suffix.lower())
+    if not lang:
+        return []
+    try:
+        data = path.read_bytes()
+        if len(data) > 5_000_000:
+            return []
+        parser = get_parser(lang)
+        tree = parser.parse(data)
+    except Exception:
+        return []
+    text = data.decode("utf-8", errors="ignore").splitlines()
+    sigs: list[str] = []
+    seen_starts: set[int] = set()
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if any(t == node.type for t in _FUNCTION_NODE_TYPES):
+            start = node.start_point[0]
+            end = node.end_point[0]
+            if start in seen_starts or end - start < 3:
+                stack.extend(node.children)
+                continue
+            seen_starts.add(start)
+            window = "\n".join(text[start:min(start + 3, end + 1)])
+            window = " ".join(window.split())[:160]
+            if window:
+                sigs.append(window)
+                if len(sigs) >= max_sigs:
+                    break
+        stack.extend(node.children)
+    return sigs
+
+
+def extract_function_body(
+    path: Path,
+    function_name: str,
+    max_tokens: int = 1500,
+) -> tuple[str, int, bool]:
+    """파일에서 ``function_name`` 이라는 이름의 함수 본문을 잘라 반환.
+
+    tree-sitter 로 모든 function/method 노드를 훑어 시그니처(첫 줄)에
+    해당 이름이 들어있는 첫 매치를 가져온다. tiktoken 으로 토큰을 세
+    ``max_tokens`` 초과 시 앞부분만 잘라 돌려준다.
+
+    Returns: (body_text, token_count, truncated)
+    """
+    if not _BACKEND_OK:
+        return ("", 0, False)
+    lang = _ALIAS_EXT_TO_LANG.get(path.suffix.lower())
+    if not lang:
+        return ("", 0, False)
+    try:
+        data = path.read_bytes()
+        if len(data) > 5_000_000:
+            return ("", 0, False)
+        parser = get_parser(lang)
+        tree = parser.parse(data)
+    except Exception:
+        return ("", 0, False)
+
+    text = data.decode("utf-8", errors="ignore")
+    lines = text.splitlines()
+
+    target = function_name.strip()
+    if not target:
+        return ("", 0, False)
+
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if any(t == node.type for t in _FUNCTION_NODE_TYPES):
+            start = node.start_point[0]
+            end = node.end_point[0]
+            # 함수 시그니처는 첫 1~5 줄에 걸칠 수 있음 (C 의 'static long\nname(...)' 등)
+            header_window = "\n".join(
+                lines[start:min(start + 5, end + 1)]
+            ) if 0 <= start < len(lines) else ""
+            if target in header_window:
+                body = "\n".join(lines[start:end + 1])
+                try:
+                    import tiktoken
+                    enc = tiktoken.get_encoding("cl100k_base")
+                    tokens = enc.encode(body)
+                    n_tokens = len(tokens)
+                    if n_tokens > max_tokens:
+                        truncated_tokens = tokens[:max_tokens]
+                        body = enc.decode(truncated_tokens)
+                        return (body, max_tokens, True)
+                    return (body, n_tokens, False)
+                except Exception:
+                    # tiktoken 실패시 라인 기준 fallback (대략 4 토큰 = 1 라인)
+                    fallback_lines = max_tokens // 4
+                    if (end - start + 1) > fallback_lines:
+                        body = "\n".join(lines[start:start + fallback_lines])
+                        return (body, len(body) // 4, True)
+                    return (body, len(body) // 4, False)
+        stack.extend(node.children)
+    return ("", 0, False)
+
+
 def _fallback_head(path: Path, n: int) -> str:
     try:
         text = path.read_text(encoding="utf-8", errors="replace")

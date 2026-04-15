@@ -1,154 +1,160 @@
-"""Deep Agent 구성 — cache_lookup / quick_collect / submit_report + file-tracker.
+"""Deep Agent 구성 — 도구 3 개 (grep / read_file / read_function).
 
-모든 분석 과정이 이 에이전트 루프 안에서만 일어난다.
-직접 LLM 호출 경로 없음. "즉시 submit" 은 에이전트의 LLM 이 turn 2 에서
-submit_report 도구를 고르는 것일 뿐, 여전히 Deep Agent 내부.
+최종 요약은 LLM 이 tool_call 없는 마지막 텍스트 메시지로 출력. 별도 submit 도구 없음.
 """
 from __future__ import annotations
 
-import json
 import logging
-from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from deepagents import create_deep_agent
-from deepagents.backends.filesystem import FilesystemBackend
 from langchain_core.tools import tool
 
 from client.llm_client import get_llm
 from config.settings import settings
 
-from .collector import CodebaseInfo, collect, render_analysis_context
-from .tools.cache import cache_key_from_info, read_cache, write_cache
+from .tools.tree_sitter_tools import SKIP_DIRS, extract_function_body
 
 logger = logging.getLogger(__name__)
 
-MODULE_ROOT = Path(__file__).resolve().parent
-PROMPTS_DIR = MODULE_ROOT / "prompts"
-SKILLS_DIR = MODULE_ROOT / "skills"
-
-
 SYSTEM_PROMPT = """너는 코드베이스 분석 전문가다.
 
+## 응답 규칙 (무한 hang 방지)
+- 탐색 중: 반드시 **tool_call (도구 호출 API)** 로만. 도구명·인자를 텍스트로 적지 말 것.
+- 최종 결과만 tool_call 없는 **텍스트 메시지** 로 출력.
+
+## 도구
+- `grep(pattern, path_glob=None)` — 전체 코드베이스 검색. 반환: `file:line  매치라인`.
+- `read_file(path, max_lines=200)` — XML/SQL/설정/소스 등 아무 파일이나 앞쪽 읽기.
+- `read_function(file_path, function_name)` — 소스 파일의 함수 1 개 본문 (tree-sitter).
+
 ## 임무
-주어진 프로젝트가 어떤 프레임워크를 쓰고 DB 에 어떻게 접근하는지 자연어 1~2문단으로 설명.
+수집 컨텍스트 + 도구로 **프레임워크 패턴**과 **DB 접근 패턴(호출 방식·식별 방식)** 만 확정.
+테이블 전수 수집이 목적 아님 — 패턴 확증되면 즉시 종료.
 
-## 1 단계 — 수집
-`quick_collect()` 를 반드시 먼저 호출. 확장자/매니페스트/설정/import 빈도/대표 파일 뼈대 (import + 함수 시그니처) 를 한 번에 받는다.
-응답이 "CACHE_HIT" 로 시작하면 포함된 summary 를 그대로 `submit_report` 에 전달하고 종료.
+## 원칙
+- **관찰한 것만 쓴다.** 못 본 것 지어내기 금지. 접근 불가 (외부 헤더 등) 만 "확인 불가".
+- **확정 조건**: 호출 방식 1~2 개 실제 코드 라인 + 테이블/엔티티 식별 방식 관찰.
+  이 둘 나오면 **즉시 stop**. 추가 grep/read 금지.
+- 테이블 목록은 이미 본 범위에서 자연스럽게 나오는 것만 언급. 일부러 더 찾지 말 것.
+- 같은 파일·함수 두 번 읽기 금지. **도구 호출 총 5 회 이내 권장**.
 
-## 2 단계 — 판단
-quick_collect 결과로 프레임워크/DB 접근 패턴이 **명확**하면 즉시 `submit_report(summary=...)` 호출.
-명확 기준: 매니페스트에 프레임워크 의존성 명시, 또는 뼈대에서 결정적 API/어노테이션/매크로 관찰.
+## 최종 출력 (tool_call 없는 텍스트, 2 블록)
 
-## 3 단계 — 필요할 때만 추가 탐색
-모호하면 아래 도구로 **튀어나온 단어만** 추적:
-- `read_file(path)` — 관심 파일 본문 직접 읽기 (뼈대에서 본 함수/헤더의 정체 확인용)
-- `grep(pattern)` — 특정 단어 쓰이는 위치 찾기
-- `ls(path)`, `glob(pattern)` — 폴더 구조
-- `task("file-tracker", description=...)` — 복잡한 위임이 필요할 때만
+프레임워크 패턴
+- 한두 문장. 식별된 이름 + 관찰 근거 원문 1~2 개 인용.
 
-**절대 규칙**:
-- 수집 결과에서 **새로 튀어나온 단어/접두어** 가 있을 때만 추가 도구 호출.
-- 같은 파일 두 번 읽지 마라.
-- 총 도구 호출 **5 회 이내**.
-- 2 번 연속 새 단서를 못 찾으면 바로 submit_report (현재 증거로 결론).
-
-## 답변 (summary 인자)
-자연어 1~2문단. JSON/마크다운 헤더/리스트 금지. 줄글.
-반드시 포함: 주 언어, 프레임워크 이름, DB 접근 방식, 테이블명 규칙(있으면), DB 종류(있으면).
-모르는 프레임워크도 증거 기반 추정 + "추정" 명시. "알 수 없음" 회피.
+DB 접근 패턴
+- 호출 방식: 실제 코드 라인 원문 1~2 개.
+- 식별 방식: 문자열 리터럴 / XML 매퍼 id / JPA 어노테이션 / 헤더 파일명 등 — 관찰 근거 1 개.
+- 명명 규칙: 관찰된 패턴이 있으면 한 줄 (예: `z*_*_s0000`). 없으면 생략.
+- 관찰된 테이블 예시: 이미 본 범위에서 3~5 개 나열. 더 안 찾음.
 """
 
 
-def _read_prompt(name: str) -> str:
-    return (PROMPTS_DIR / name).read_text(encoding="utf-8")
-
-
-def _info_to_meta(info: CodebaseInfo) -> dict[str, Any]:
-    d = asdict(info)
-    # 긴 텍스트는 메타에 저장하지 않음
-    for k in ("manifest_content", "config_content", "representative_skeleton"):
-        d.pop(k, None)
-    return d
-
-
-def create_agent(root_path: Path, api_key: str = "", use_cache: bool = True):
-    """Deep Agent + holder 반환. holder 로 결과 수거.
-
-    use_cache=False 이면 캐시 조회/저장을 모두 건너뛴다 (순수 로직 검증용).
-    """
-
-    holder: dict[str, Any] = {
-        "info": None,
-        "summary": None,
-        "cache_key": None,
-        "cache_hit": False,
-        "use_cache": use_cache,
-    }
-
-    context_template = _read_prompt("analysis_context.txt")
-    tracker_prompt = _read_prompt("file_tracker_system.txt")
+def create_agent(root_path: Path, api_key: str = ""):
+    """Deep Agent 반환. 도구 3 개만 노출."""
 
     @tool
-    def quick_collect() -> str:
-        """5 가지 결정론 정보 수집 + 캐시 조회. 캐시 히트 시 이전 summary 를 그대로 반환하니
-        그대로 submit_report 에 전달하라. 미스 시 렌더링된 컨텍스트 문자열 반환."""
-        info = collect(str(root_path))
-        holder["info"] = info
-        key = cache_key_from_info(info)
-        holder["cache_key"] = key
-        if use_cache:
-            cached = read_cache(key)
-            if cached and cached.get("summary"):
-                holder["cache_hit"] = True
-                return (
-                    "CACHE_HIT — 이 summary 를 그대로 submit_report 에 전달하라.\n\n"
-                    f"{cached['summary']}"
-                )
-        return render_analysis_context(info, context_template)
+    def grep(pattern: str, path_glob: str = "") -> str:
+        """코드베이스 전체에서 정규식 매치. 반환: `file:line  라인` 목록 (최대 80 줄)."""
+        import re
 
-    @tool
-    def submit_report(summary: str) -> str:
-        """최종 자연어 요약 제출. 1~2문단 줄글만 전달. 캐시 저장은 자동으로 처리됨."""
-        holder["summary"] = summary
-        key = holder.get("cache_key") or ""
-        if use_cache and key and holder.get("info") and not holder.get("cache_hit"):
+        try:
+            regex = re.compile(pattern)
+        except re.error as exc:
+            return f"INVALID_REGEX: {exc}"
+
+        results: list[str] = []
+        glob_pat = path_glob or "*"
+        for p in root_path.rglob(glob_pat):
+            if not p.is_file():
+                continue
+            if any(part in SKIP_DIRS for part in p.parts):
+                continue
             try:
-                meta = _info_to_meta(holder["info"])
-                write_cache(key, summary, meta=meta)
-            except Exception as e:
-                logger.warning("캐시 저장 실패: %s", e)
-        return "submitted"
+                with p.open("r", encoding="utf-8", errors="replace") as fh:
+                    for i, line in enumerate(fh, 1):
+                        if regex.search(line):
+                            rel = p.relative_to(root_path).as_posix()
+                            results.append(f"{rel}:{i}  {line.rstrip()[:200]}")
+                            if len(results) >= 80:
+                                break
+            except OSError:
+                continue
+            if len(results) >= 80:
+                break
+        if not results:
+            return "(매치 없음)"
+        return "\n".join(results)
 
-    file_tracker = {
-        "name": "file-tracker",
-        "description": (
-            "특정 접두어/네임스페이스에 대해 실제 소스 파일을 열어 심층 조사한다. "
-            "파일 최대 2 개 + grep 1~2 회. JSON 요약만 반환."
-        ),
-        "system_prompt": tracker_prompt,
-        "model": settings.llm.cheap_model,
-    }
+    @tool
+    def read_file(path: str, max_lines: int = 200) -> str:
+        """파일 앞쪽 max_lines 줄을 반환. 상대 경로는 프로젝트 루트 기준."""
+        raw = (path or "").strip().replace("\\", "/")
+        if len(raw) >= 3 and raw.startswith("/") and raw[2] == ":":
+            raw = raw[1:]
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = root_path / raw
+        if not candidate.exists() or not candidate.is_file():
+            return f"FILE_NOT_FOUND: '{path}'"
+        try:
+            with candidate.open("r", encoding="utf-8", errors="replace") as fh:
+                lines = [next(fh, None) for _ in range(max_lines)]
+        except OSError as exc:
+            return f"READ_ERROR: {exc}"
+        text = "".join(ln for ln in lines if ln is not None)
+        return text or "(빈 파일)"
+
+    @tool
+    def read_function(file_path: str, function_name: str) -> str:
+        """소스 파일에서 함수 1 개 본문 추출 (tree-sitter). 큰 함수는 앞부분만."""
+        raw = (file_path or "").strip().replace("\\", "/")
+        if len(raw) >= 3 and raw.startswith("/") and raw[2] == ":":
+            raw = raw[1:]
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = root_path / raw
+        if not candidate.exists():
+            return f"FILE_NOT_FOUND: '{file_path}'"
+        body, n_tokens, truncated = extract_function_body(
+            candidate, function_name, max_tokens=2000
+        )
+        if not body:
+            return f"FUNCTION_NOT_FOUND: '{function_name}' in '{candidate}'"
+        suffix = f"\n[잘림: 첫 ~{n_tokens} tokens]" if truncated else ""
+        return body + suffix
 
     llm = get_llm(api_key=api_key or settings.llm.api_key, model=settings.llm.model)
-    backend = FilesystemBackend(root_dir=str(root_path))
-
     agent = create_deep_agent(
         model=llm,
-        tools=[quick_collect, submit_report],
-        subagents=[file_tracker],
-        skills=[str(SKILLS_DIR)],
-        backend=backend,
+        tools=[grep, read_file, read_function],
         system_prompt=SYSTEM_PROMPT,
     )
-    return agent, holder
+    return agent
 
 
 def count_tool_calls(result: dict[str, Any]) -> int:
-    count = 0
-    for msg in result.get("messages", []):
-        tc = getattr(msg, "tool_calls", None) or []
-        count += len(tc)
-    return count
+    return sum(
+        len(getattr(msg, "tool_calls", None) or [])
+        for msg in result.get("messages", [])
+    )
+
+
+def extract_final_text(result: dict[str, Any]) -> str:
+    """마지막 AI 메시지의 text content 를 최종 요약으로 반환."""
+    for msg in reversed(result.get("messages", [])):
+        if getattr(msg, "type", "") != "ai":
+            continue
+        if getattr(msg, "tool_calls", None):
+            continue
+        content = getattr(msg, "content", "")
+        if isinstance(content, list):
+            # content blocks (Anthropic-style)
+            parts = [b.get("text", "") for b in content if isinstance(b, dict)]
+            content = "\n".join(p for p in parts if p)
+        if content and content.strip():
+            return content.strip()
+    return ""
