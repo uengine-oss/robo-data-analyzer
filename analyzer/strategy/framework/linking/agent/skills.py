@@ -203,13 +203,3 @@ def build_system_prompt_with_skill(skill: SkillInfo) -> str:
     return common_rules + skill.body
 
 
-def build_skill_discovery_prompt(skills: Dict[str, SkillInfo]) -> str:
-    """모든 Skill의 이름+설명 요약을 생성한다 (토큰 절약용 디스커버리).
-
-    에이전트 시스템 프롬프트에 삽입하여 어떤 Skill이 사용 가능한지 알려주는 용도.
-    실제로는 Python 코드가 카테고리 기반으로 Skill을 선택하므로, 참조용.
-    """
-    lines = ["[사용 가능한 Skill]"]
-    for name, info in skills.items():
-        lines.append(f"- {name}: {info.description}")
-    return "\n".join(lines)

@@ -181,20 +181,6 @@ class RuleLoader:
 
         return validated
 
-    def render_template(self, rule_name: str, inputs: Dict[str, Any]) -> str:
-        """템플릿 렌더링 (LLM 미호출)"""
-        rule = self._load_rule(rule_name)
-        validated = self.validate_inputs(rule, inputs)
-
-        template_content = rule.get("template", "")
-        if not template_content:
-            raise ValueError(f"템플릿이 정의되지 않았습니다: {rule_name}")
-
-        try:
-            return Template(template_content).render(**validated)
-        except TemplateError as e:
-            raise ValueError(f"템플릿 렌더링 오류 ({rule_name}): {e}")
-
     def render_prompt(self, rule_name: str, inputs: Dict[str, Any]) -> str:
         """프롬프트 렌더링 (LLM 미호출)"""
         rule = self._load_rule(rule_name)
@@ -204,20 +190,6 @@ class RuleLoader:
             return Template(rule["prompt"]).render(**validated)
         except TemplateError as e:
             raise ValueError(f"프롬프트 렌더링 오류 ({rule_name}): {e}")
-
-    def render_task(self, rule_name: str, inputs: Dict[str, Any]) -> str:
-        """task 필드 렌더링 (user_input으로 사용)"""
-        rule = self._load_rule(rule_name)
-        validated = self.validate_inputs(rule, inputs)
-
-        task_template = rule.get("task", "")
-        if not task_template:
-            return "위 입력 데이터를 분석하여 결과를 JSON 형식으로 출력하세요."
-
-        try:
-            return Template(task_template).render(**validated)
-        except TemplateError as e:
-            raise ValueError(f"task 렌더링 오류 ({rule_name}): {e}")
 
     def execute(
         self,
@@ -336,11 +308,6 @@ class RuleLoader:
                 logger.error("[RULE] 프롬프트 실행 실패 | rule=%s | error=%s", rule_name, e)
                 raise RuntimeError(f"{rule_name} 프롬프트 실행 중 오류: {e}")
         raise RuntimeError(f"{rule_name} 프롬프트 실행 중 오류: {last_error}")
-
-    def clear_cache(self):
-        """캐시 초기화"""
-        self._load_rule.cache_clear()
-
 
 # ---------------------------------------------------------------------------
 # 싱글톤 팩토리

@@ -148,12 +148,6 @@ class PipelineState:
         self.phase_progress = progress
         logger.info(f"단계: {phase.value} - {message}")
 
-    def update_progress(self, progress: int, message: str = ""):
-        """진행률 업데이트"""
-        self.phase_progress = min(100, max(0, progress))
-        if message:
-            self.phase_message = message
-
 
 class PipelineController:
     """파이프라인 제어 싱글톤 (단일 세션)"""

@@ -175,11 +175,6 @@ class PromptRegistry:
         """inputs dict를 직접 전달하여 동기 실행."""
         return get_rule_loader(target_lang).execute(rule_name, inputs, api_key=api_key, model=model)
 
-    @staticmethod
-    async def async_execute_raw(target_lang: str, rule_name: str, inputs: dict, api_key: str, model: str = None) -> dict:
-        """inputs dict를 직접 전달하여 비동기 실행 (LLMRateLimiter + ainvoke)."""
-        return await get_rule_loader(target_lang).async_execute(rule_name, inputs, api_key=api_key, model=model)
-
 
 # 전역 싱글톤
 prompts = PromptRegistry()

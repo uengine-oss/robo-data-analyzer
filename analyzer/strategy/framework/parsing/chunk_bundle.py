@@ -32,16 +32,6 @@ def _span_index_key(file_path: str, start_line: int, end_line: int) -> str:
     return repr((file_path, start_line, end_line))
 
 
-def _span_index_key_parse(key: str) -> Optional[Tuple[str, int, int]]:
-    """문자열 키를 (file_path, start, end)로 복원."""
-    try:
-        t = ast.literal_eval(key)
-        if isinstance(t, (list, tuple)) and len(t) == 3:
-            return (str(t[0]), int(t[1]), int(t[2]))
-    except (ValueError, SyntaxError, TypeError):
-        pass
-    return None
-
 def _get_chunk_bundle_dir_from_run_dir(run_dir: str) -> str:
     """ChunkBundle 디렉터리는 항상 `{run_dir}/chunk_bundles` 하위에 위치한다."""
     if not run_dir:

@@ -279,23 +279,6 @@ class GraphData:
 # JSON 파싱
 # ═══════════════════════════════════════════════════════════════════════
 
-def _load_graph(json_path: str) -> GraphData:
-    path = Path(json_path)
-    raw = path.read_text(encoding="utf-8").lstrip("\ufeff")
-    data = json.loads(raw)
-
-    graph = GraphData()
-
-    if isinstance(data, dict):
-        _parse_nodes(data.get("Nodes", []), graph)
-        _parse_relationships(data.get("Relationships", []), graph)
-    elif isinstance(data, list):
-        _parse_neo4j_export(data, graph)
-
-    _index_nodes(graph)
-    return graph
-
-
 _NODE_ID_KEYS = ("identity", "elementId", "Node ID", "node_id", "id")
 _NODE_META_KEYS = frozenset(("identity", "elementId", "Node ID", "node_id", "id",
                               "labels", "Labels", "properties", "Properties"))

@@ -42,16 +42,6 @@ TEST_LOCALE = os.getenv("TEST_LOCALE", "ko").strip() or "ko"
 TEST_ANALYSIS_STRATEGY = os.getenv("TEST_ANALYSIS_STRATEGY", "dbms").strip().lower() or "dbms"
 TEST_TARGET = os.getenv("TEST_TARGET", "").strip()
 
-# 프로젝트 고유 지침 (JSON 배열 또는 빈값)
-_raw_instructions = os.getenv("TEST_CUSTOM_INSTRUCTIONS", "").strip()
-TEST_CUSTOM_INSTRUCTIONS: list[str] = []
-if _raw_instructions:
-    import json as _json
-    try:
-        TEST_CUSTOM_INSTRUCTIONS = _json.loads(_raw_instructions)
-    except Exception:
-        TEST_CUSTOM_INSTRUCTIONS = []
-
 # target 기본값 설정 (strategy에 따라)
 if not TEST_TARGET:
     if TEST_ANALYSIS_STRATEGY == "dbms":
@@ -125,7 +115,6 @@ async def test_full_analysis_pipeline(real_neo4j: Neo4jClient):
         locale=TEST_LOCALE,
         strategy=TEST_ANALYSIS_STRATEGY,
         target=TEST_TARGET,
-        custom_instructions=TEST_CUSTOM_INSTRUCTIONS or None,
     ):
         event_count += 1
     

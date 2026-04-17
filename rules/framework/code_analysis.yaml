@@ -13,8 +13,6 @@ input_schema:
     - field_initial_values
     - table_sample_data
     - constants_context
-    - custom_instructions
-    - allow_table_discovery
 
 prompt: |
   [ROLE]
@@ -70,16 +68,6 @@ prompt: |
     - 상수 네이밍 규칙이 보여도 변수명이 아닌 값으로만 기술.
 
   {{ constants_context }}
-  {% endif %}
-  {% if custom_instructions %}
-  ── [PROJECT_SPECIFIC_INSTRUCTIONS] ──
-  ★★★★★★ 이 프로젝트의 고유 패턴 ★★★★★★
-  모든 지침 중 최우선. 아래 항목과 충돌하는 일반 규칙이 있으면 아래 항목을 따르세요.
-  활용: 테이블 식별 규칙, 네이밍 관례, 프레임워크별 동작 등 프로젝트 특이 사항을 분석 전반에 반영.
-
-  {% for inst in custom_instructions %}
-  - {{ inst }}
-  {% endfor %}
   {% endif %}
 
   ── [분석 대상 코드] ──
@@ -201,22 +189,12 @@ prompt: |
 
 
   {% if has_table_context | default(false) %}
-  ★★★ 6. TABLE_INSIGHTS — 컨텍스트 테이블만 ★★★
-  컨텍스트(reads_writes)에 주어진 테이블에 대해서만 작성:
-  - tableName: 테이블명
-  - access: 컨텍스트의 READS/WRITES 그대로
+  ★★★ 6. TABLE_INSIGHTS — 컨텍스트에 주어진 테이블만 ★★★
+  컨텍스트(reads_writes)에 이미 식별된 테이블에 대해서만 작성:
+  - tableName: 컨텍스트에 적힌 테이블명 그대로
   - description: 이 함수에서 이 테이블을 왜, 어떻게 사용하는지
   - columns: 코드에서 실제 사용된 컬럼만 (name + description)
-  컨텍스트에 없는 테이블 추가 금지. columns의 dtype은 실제 타입 선언만. 모르면 빈 문자열.
-  {% elif allow_table_discovery | default(false) %}
-  ★★★ 6. TABLE_INSIGHTS — 코드에서 DB 접근 식별 ★★★
-  DDL/엔티티 정보 없음. 코드에서 DB 접근 패턴을 찾아 테이블 식별.
-  [PROJECT_SPECIFIC_INSTRUCTIONS] 반드시 참고.
-  - tableName: 소문자, 실제 테이블명만 (쿼리ID/한글 추상명 금지)
-  - access: 코드에서 판단 가능하면 READS/WRITES 기재. 불가하면 빈 문자열
-  - description: 이 함수에서 이 테이블을 왜, 어떻게 사용하는지
-  - columns: 코드에서 실제 사용된 컬럼만 (name + description)
-  같은 테이블의 서로 다른 SQL ID/쿼리 ID는 하나로 통합. dtype은 실제 타입 선언만. 모르면 빈 문자열.
+  컨텍스트에 없는 테이블은 절대 추가하지 않는다. 새 테이블 발견/추정 금지.
   {% endif %}
 
 
@@ -279,10 +257,10 @@ prompt: |
     → 함수명(processPayment), DAO명(paymentHistoryDao) 사용. "주문이 존재한다"는 구체적 값 없음. "INSERT되고 커밋된다"는 어떤 컬럼에 어떤 값인지 불명.
 
   ── tableInsights ──
-  ✅ {"tableName": "payment_history", "access": "WRITES", "description": "주문 결제 완료 후 결제이력을 신규 등록한다.", "columns": [{"name": "order_id", "description": "결제 대상 주문 식별자"}, {"name": "amount", "description": "할인 적용 후 최종 결제금액"}, {"name": "pay_method", "description": "결제수단 코드"}, {"name": "status", "description": "결제 상태"}]}
-  ❌ {"tableName": "결제이력", "access": "", "description": "데이터를 저장한다."}
-     → 한글 추상명 금지(실제 테이블명 사용). access 빈값(INSERT가 보이면 WRITES). description 추상적.
-  ❌ {"tableName": "paymentHistoryDao", "access": "WRITES"}
+  ✅ {"tableName": "payment_history", "description": "주문 결제 완료 후 결제이력을 신규 등록한다.", "columns": [{"name": "order_id", "description": "결제 대상 주문 식별자"}, {"name": "amount", "description": "할인 적용 후 최종 결제금액"}, {"name": "pay_method", "description": "결제수단 코드"}, {"name": "status", "description": "결제 상태"}]}
+  ❌ {"tableName": "결제이력", "description": "데이터를 저장한다."}
+     → 한글 추상명 금지(실제 테이블명 사용). description 이 추상적.
+  ❌ {"tableName": "paymentHistoryDao"}
      → DAO 클래스명을 테이블명으로 넣으면 안 됨. 실제 DB 테이블명을 사용.
 
 
@@ -299,8 +277,8 @@ prompt: |
         {% if is_oop | default(true) %}"dependencies": [
           {"targetModule": "모듈명", "sourceMember": "메서드명", "usage": "용도", "relationType": "관계타입"}
         ],{% else %}"dependencies": [],{% endif %}
-        {% if has_table_context | default(false) or allow_table_discovery | default(false) %}"tableInsights": [
-          {"tableName": "테이블명", "access": "READS|WRITES|빈문자열", "description": "역할", "columns": [{"name": "컬럼명", "description": "용도"}]}
+        {% if has_table_context | default(false) %}"tableInsights": [
+          {"tableName": "테이블명", "description": "역할", "columns": [{"name": "컬럼명", "description": "용도"}]}
         ],{% else %}"tableInsights": [],{% endif %}
         "scenarios": [
           {"sequence": "1", "coupled_domain": null, "title": "제목", "given": "초기 상태", "when": "실행 동작", "then": "기대 결과"}
@@ -313,5 +291,5 @@ prompt: |
   - 순수 JSON만. 코드펜스, 백틱, 주석, 부가 설명 금지
   - 트레일링 콤마 금지
   - null은 coupled_domain만 허용. 그 외 빈값은 [] 또는 ""
-  - {% if has_table_context | default(false) %}tableInsights: 컨텍스트 테이블만. 추정 금지{% elif allow_table_discovery | default(false) %}tableInsights: 코드에서 식별한 DB 접근 테이블만. 한글 추상명/쿼리ID 금지{% else %}tableInsights: 항상 빈 배열 []{% endif %}
+  - {% if has_table_context | default(false) %}tableInsights: 컨텍스트에 주어진 테이블만. 새 테이블 추정/발견 금지{% else %}tableInsights: 항상 빈 배열 []{% endif %}
   - scenarios: 비즈니스 로직 있을 때만. 기술적 구현 함수는 []

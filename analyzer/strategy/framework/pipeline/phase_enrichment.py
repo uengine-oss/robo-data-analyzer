@@ -17,17 +17,14 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 from client.neo4j_client import Neo4jClient
 from analyzer.strategy.base_analyzer import AnalysisStats
 from config.settings import settings
-from analyzer.strategy.framework.common.constants import TABLE_DB_DEFAULT, TABLE_SCHEMA_DEFAULT
 from util.ndjson_stream import emit_message, emit_data, PhaseTracker
 from analyzer.strategy.framework.linking.code_analyzer import (
     analyze_and_enrich,
-    run_variable_summary,
     run_module_summary,
 )
 from analyzer.strategy.framework.graph.queries import (
     build_analysis_result_queries,
     build_uml_dependency_queries,
-    build_variable_summary_queries,
     build_module_summary_queries,
     build_table_description_enrichment_query,
     build_table_description_update_queries,
@@ -60,9 +57,7 @@ async def run_phase_enrichment(
     summary_ctx = await _collect_analysis_context(st, client, orchestrator)
 
     # Step 2: 메서드 분석
-    custom_instructions = getattr(orchestrator, "custom_instructions", []) or []
-    allow_table_discovery = not (bool(st.function_table_edges) or bool(st.reads_writes))
-    async for chunk in _run_code_analysis(st, client, tracker, summary_ctx, custom_instructions, allow_table_discovery):
+    async for chunk in _run_code_analysis(st, client, tracker, summary_ctx):
         yield chunk
 
     # Step 3: Field + Module 분석
@@ -136,7 +131,11 @@ async def _collect_analysis_context(st, client, orchestrator) -> dict:
                 len(ctx["referenced_vars_by_function"]), init_by_count,
             )
     except Exception as e:
-        logger.error("[PHASE:3:CONTEXT] \ucc38\uc870 \ubcc0\uc218 \uc218\uc9d1 \uc2e4\ud328 | error=%s", e, exc_info=True)
+        logger.error(
+            "[PHASE:3:CONTEXT] \ucc38\uc870 \ubcc0\uc218 \uc218\uc9d1 \uc2e4\ud328 (Fail-Fast) | error=%s",
+            e, exc_info=True,
+        )
+        raise
 
     # 테이블 샘플 데이터
     reads_writes = st.reads_writes or []
@@ -166,8 +165,6 @@ async def _collect_analysis_context(st, client, orchestrator) -> dict:
 
 async def _run_code_analysis(
     st, client, tracker, summary_ctx,
-    custom_instructions: list[str] | None = None,
-    allow_table_discovery: bool = False,
 ) -> AsyncGenerator[bytes, None]:
     """메서드별 코드 분석 (summary + stereotype + dependency + calls + variables + tableInsights)."""
     function_facts_list = st.function_facts_list or []
@@ -180,6 +177,9 @@ async def _run_code_analysis(
 
     analysis_by_function: dict = {}
     table_map: dict[str, dict] = {}
+    # 컨텍스트 테이블 = Phase 2 에서 이미 식별된 테이블 (소문자). Phase 3 는 여기 있는 것만 설명 보강.
+    allowed_tables = {(rw.table_name or "").strip().lower() for rw in reads_writes if rw.table_name}
+    allowed_tables |= {(e.table_name or "").strip().lower() for e in (st.function_table_edges or []) if e.table_name}
 
     for analysis_batch in analyze_and_enrich(
         function_facts_list,
@@ -198,8 +198,6 @@ async def _run_code_analysis(
         table_sample_data=summary_ctx.get("table_sample_data") or None,
         constants_context=summary_ctx.get("constants_context") or None,
         referenced_vars_by_function=summary_ctx.get("referenced_vars_by_function") or None,
-        custom_instructions=custom_instructions or None,
-        allow_table_discovery=allow_table_discovery,
     ):
         analysis_by_function.update(analysis_batch)
         yield tracker.tick_quiet()
@@ -222,13 +220,12 @@ async def _run_code_analysis(
         except Exception as e:
             logger.error("[PHASE:3:UML] 쿼리 빌드 실패 | error=%s", e, exc_info=True)
 
-        # 3) tableInsights → 컨텍스트에 주어진 테이블/컬럼만 description 생성
+        # 3) tableInsights 는 table_map 에 누적 (배치 후 일괄 반영, 컨텍스트 테이블만)
         try:
-            _process_table_insights(analysis_batch, reads_writes, table_map, queries)
+            _accumulate_table_insights(analysis_batch, table_map, allowed_tables)
         except Exception as e:
-            logger.error("[PHASE:3:TABLE_INSIGHTS] 처리 실패 | error=%s", e, exc_info=True)
+            logger.error("[PHASE:3:TABLE_INSIGHTS] 누적 실패 | error=%s", e, exc_info=True)
 
-        # Neo4j 반영
         try:
             if queries:
                 async for chunk in write_to_graph(client, queries, "PHASE3:ANALYSIS"):
@@ -237,109 +234,57 @@ async def _run_code_analysis(
             logger.error("[PHASE:3:CODE_ANALYSIS] Neo4j 반영 실패 | error=%s", e, exc_info=True)
 
     st.analysis_by_function = analysis_by_function
+    st.table_insights_map = table_map
     yield tracker.end_step(f"메서드 {len(analysis_by_function)}개 분석 완료")
-
     if table_map:
-        logger.info("[PHASE:3:TABLE_INSIGHTS] 반영 완료 | tables=%d columns=%d",
-                    len(table_map), sum(len(t.get("columns", {})) for t in table_map.values()))
+        logger.info(
+            "[PHASE:3:TABLE_INSIGHTS] 누적 완료 | tables=%d columns=%d "
+            "(Table Description 보강에서 일괄 요약 후 MATCH 반영)",
+            len(table_map), sum(len(t.get("columns", {})) for t in table_map.values()),
+        )
 
 
-def _process_table_insights(
+def _accumulate_table_insights(
     analysis_batch: dict,
-    reads_writes: list,
     table_map: dict,
-    queries: list,
+    allowed_tables: set[str],
 ) -> None:
-    """tableInsights 처리: 컨텍스트에 주어진 테이블/컬럼에 대해서만 description 생성.
+    """tableInsights 를 table_map 에 누적. **컨텍스트 테이블만 허용**.
 
-    is_estimated 플래그 없음. 컨텍스트에 없는 테이블은 추가하지 않음.
+    ``allowed_tables`` 는 Phase 2 에서 이미 식별되어 Neo4j 에 있는 테이블명 (소문자).
+    LLM 이 그 외 테이블을 만들어내면 설계 원칙 ("컨텍스트 테이블만") 위반이므로 드롭하고 경고.
     """
-    # 데이터 수집 (table_map + UNWIND용 row 리스트)
-    table_rows = []  # MERGE Table용
-    access_rows = []  # Function→Table 관계용
-    column_rows = []  # Column MERGE용
-
     for _fid, analysis in analysis_batch.items():
         for insight in (analysis.get("tableInsights") or []):
             tbl_name = (insight.get("tableName") or "").strip().lower()
-            tbl_desc = (insight.get("description") or "").strip()
-            tbl_access = (insight.get("access") or "").strip().upper()
             if not tbl_name:
                 continue
+            if tbl_name not in allowed_tables:
+                logger.warning(
+                    "[PHASE:3:TABLE_INSIGHTS] 컨텍스트 외 테이블 드롭 | function_id=%s table=%s",
+                    _fid, tbl_name,
+                )
+                continue
 
-            # table_map 축적 (description 종합용)
-            if tbl_name not in table_map:
-                table_map[tbl_name] = {"descriptions": [], "access": set(), "columns": {}, "source_functions": []}
+            tbl_desc = (insight.get("description") or "").strip()
+            slot = table_map.setdefault(
+                tbl_name,
+                {"descriptions": [], "columns": {}, "source_functions": []},
+            )
             if tbl_desc:
-                table_map[tbl_name]["descriptions"].append(tbl_desc)
-            if tbl_access in ("READS", "WRITES"):
-                table_map[tbl_name]["access"].add(tbl_access)
+                slot["descriptions"].append(tbl_desc)
             if _fid:
-                table_map[tbl_name]["source_functions"].append(_fid)
-
-            schema = TABLE_SCHEMA_DEFAULT
-            table_id = f"{schema}.{tbl_name}"
-            table_rows.append({
-                "db": TABLE_DB_DEFAULT,
-                "schema": schema,
-                "name": tbl_name,
-                "table_id": table_id,
-                "desc": tbl_desc,
-            })
-
-            if _fid and tbl_access in ("READS", "WRITES"):
-                access_rows.append({"fid": _fid, "db": TABLE_DB_DEFAULT, "schema": schema, "tbl_name": tbl_name, "access": tbl_access})
-
+                slot["source_functions"].append(_fid)
             for col in (insight.get("columns") or []):
                 col_name = (col.get("name") or "").strip()
                 col_desc = (col.get("description") or "").strip()
-                col_type = ""  # dtype은 DDL/실제 소스에서만. LLM 추정 금지
-                if col_name:
-                    if col_name not in table_map[tbl_name]["columns"]:
-                        table_map[tbl_name]["columns"][col_name] = {"descriptions": []}
-                    if col_desc:
-                        table_map[tbl_name]["columns"][col_name]["descriptions"].append(col_desc)
-                    column_rows.append({"tbl_name": tbl_name, "col_name": col_name, "dtype": col_type})
+                if not col_name:
+                    continue
+                col_slot = slot["columns"].setdefault(col_name, {"descriptions": []})
+                if col_desc:
+                    col_slot["descriptions"].append(col_desc)
 
-    # UNWIND 배치 쿼리 (개별 쿼리 대신 최소 쿼리로)
-    if table_rows:
-        queries.append({
-            "query": (
-                "UNWIND $rows AS row "
-                "MERGE (n:Table {db: row.db, schema: row.schema, name: row.name}) "
-                "ON CREATE SET n.created_at = timestamp(), n.table_id = row.table_id "
-                "ON MATCH SET n.updated_at = timestamp() "
-                "SET n.description = CASE "
-                "WHEN row.desc IS NOT NULL AND row.desc <> '' AND (n.description IS NULL OR n.description = '') "
-                "THEN row.desc ELSE n.description END"
-            ),
-            "params": {"rows": table_rows},
-        })
-    if access_rows:
-        # READS/WRITES를 각각 분리 (MERGE 관계 타입이 동적이므로)
-        for acc_type in ("READS", "WRITES"):
-            typed_rows = [r for r in access_rows if r["access"] == acc_type]
-            if typed_rows:
-                queries.append({
-                    "query": (
-                        f"UNWIND $rows AS row "
-                        f"MATCH (f:FUNCTION {{function_id: row.fid}}) "
-                        f"MATCH (t:Table {{db: row.db, schema: row.schema, name: row.tbl_name}}) "
-                        f"MERGE (f)-[:{acc_type}]->(t)"
-                    ),
-                    "params": {"rows": typed_rows},
-                })
-    if column_rows:
-        queries.append({
-            "query": (
-                "UNWIND $rows AS row "
-                "MATCH (t:Table {name: row.tbl_name}) "
-                "MERGE (c:Column {name: row.col_name})<-[:HAS_COLUMN]-(t) "
-                "ON CREATE SET c.created_at = timestamp(), c.dtype = row.dtype "
-                "ON MATCH SET c.dtype = CASE WHEN c.dtype IS NULL OR c.dtype = '' THEN row.dtype ELSE c.dtype END"
-            ),
-            "params": {"rows": column_rows},
-        })
+
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -441,6 +386,8 @@ async def _run_actor_and_table_enrichment(st, client, tracker, orchestrator) -> 
                 yield emit_message(f"  ├─ {len(tables_with_summaries)}개 테이블 LLM 설명 보강 중...")
                 from util.prompt_registry import prompts
 
+                insights_map = st.table_insights_map or {}
+
                 def _enrich_one_table(table_info: dict) -> Optional[Dict[str, Any]]:
                     name = table_info.get("name", "")
                     schema = table_info.get("schema", "")
@@ -451,7 +398,13 @@ async def _run_actor_and_table_enrichment(st, client, tracker, orchestrator) -> 
                     sentences = [f"[메서드 요약] {s}" for s in method_summaries[:20]]
                     if current_desc:
                         sentences.insert(0, f"[기존 설명] {current_desc}")
+                    # Phase 3 Step 2 에서 누적된 tableInsights 의 description 도 신호로 추가
+                    insight_slot = insights_map.get(name.lower()) or insights_map.get(name) or {}
+                    for desc in (insight_slot.get("descriptions") or [])[:10]:
+                        if desc:
+                            sentences.append(f"[함수별 테이블 역할] {desc}")
                     col_metadata = {}
+                    col_sentences: dict[str, list[str]] = {}
                     for col in columns_meta:
                         col_name = col.get("name", "")
                         if col_name:
@@ -461,10 +414,15 @@ async def _run_actor_and_table_enrichment(st, client, tracker, orchestrator) -> 
                                 "is_primary_key": col.get("is_primary_key"),
                                 "description": col.get("description", ""),
                             }
+                    # tableInsights 로 모인 컬럼 설명을 column_sentences 로 전달
+                    for col_name, col_slot in (insight_slot.get("columns") or {}).items():
+                        descs = [d for d in (col_slot.get("descriptions") or []) if d]
+                        if descs:
+                            col_sentences[col_name] = descs[:10]
                     result = prompts.table_summary(
                         table_name=table_display,
                         table_sentences=sentences,
-                        column_sentences={},
+                        column_sentences=col_sentences,
                         column_metadata=col_metadata,
                         locale=locale,
                         api_key=api_key,

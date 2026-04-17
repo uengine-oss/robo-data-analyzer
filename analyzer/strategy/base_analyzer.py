@@ -66,21 +66,6 @@ class AnalyzerStrategy(ABC):
         """
         raise NotImplementedError
 
-    @staticmethod
-    def calc_progress(current_line: int, total_lines: int) -> int:
-        """현재 진행률 계산 (0-99%)
-        
-        Args:
-            current_line: 현재 처리 중인 라인
-            total_lines: 전체 라인 수
-            
-        Returns:
-            진행률 (0-99)
-        """
-        if total_lines <= 0:
-            return 0
-        return min(int((current_line / total_lines) * 100), 99)
-
 
 @dataclass
 class AnalysisStats:
@@ -142,15 +127,6 @@ class AnalysisStats:
         else:
             self.llm_nodes_updated += node_count
             self.llm_rels_created += rel_count
-    
-    def add_ddl_result(self, tables: int, columns: int, fks: int) -> None:
-        """DDL 처리 결과 누적"""
-        self.ddl_tables += tables
-        self.ddl_columns += columns
-        self.ddl_fks += fks
-        # DDL도 정적 그래프에 포함
-        self.total_nodes += tables + columns
-        self.total_rels += fks
     
     def mark_file_failed(self, file_name: str, reason: str) -> None:
         """파일 실패 기록 (토큰 절감을 위해 추적)
@@ -534,23 +510,6 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
         return emit_message(f"📄 [{file_idx}/{total}] {file_name}")
 
     @staticmethod
-    def emit_node_created(node_type: str, node_name: str, line: Optional[int] = None) -> bytes:
-        """노드 생성 메시지
-        
-        예:  → CLASS 노드: OrderService (Line 15)
-        """
-        line_info = f" (Line {line})" if line else ""
-        return emit_message(f"   → {node_type} 노드: {node_name}{line_info}")
-
-    @staticmethod
-    def emit_relationship_created(rel_type: str, source: str, target: str) -> bytes:
-        """관계 생성 메시지
-        
-        예:  → CALLS 관계: OrderService → OrderRepository
-        """
-        return emit_message(f"   → {rel_type} 관계: {source} → {target}")
-
-    @staticmethod
     def emit_phase_complete(phase_num, summary: str) -> bytes:
         """단계 완료 메시지
         
@@ -569,20 +528,7 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
         return emit_message(f"ℹ️ {reason}")
 
     @staticmethod
-    def emit_warning(message: str) -> bytes:
-        """경고 메시지"""
-        return emit_message(f"⚠️ {message}")
-
-    @staticmethod
     def emit_file_error(file_name: str, error: str) -> bytes:
         """파일 오류 메시지"""
         return emit_message(f"   ❌ 오류 발생 ({file_name}): {error}")
-
-    @staticmethod
-    def emit_unknown_event(event_type: str) -> bytes:
-        """알 수 없는 이벤트 타입 경고 메시지
-        
-        조용히 지나가는 흐름을 방지하기 위해 반드시 출력.
-        """
-        return emit_message(f"   ⚠️ 알 수 없는 이벤트 타입 수신: {event_type}")
 

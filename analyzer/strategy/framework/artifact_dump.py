@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 PIPELINE_FLOW_MD = """# Framework 파이프라인 흐름
 
 ## Step1 스캔
-- **입력**: data_dir (source, analysis/nontarget)
+- **입력**: data_dir (source)
 - **산출물**: catalog (FileCatalogEntry), plan (ProcessingPlan)
 
 ## Step2 AST

@@ -48,7 +48,6 @@ lxml>=5.0.0
 chardet>=5.0.0
 ruamel.yaml>=0.18.0
 
-# codebase_detection_comparison (미지 코드베이스 탐지)
+# scanning/ (Phase 1 Step 0 코드베이스 프로파일)
 tree-sitter>=0.24.0
 tree-sitter-language-pack>=1.5.0
-# fallback 용 (Windows 빌드 실패시): tree-sitter-languages

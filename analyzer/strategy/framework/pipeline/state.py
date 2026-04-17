@@ -32,6 +32,7 @@ from analyzer.strategy.framework.common.models import (
     UnresolvedLink,
     UsesEdge,
 )
+from analyzer.strategy.framework.scanning.models import CodebaseProfile
 
 
 @dataclass
@@ -45,6 +46,9 @@ class FrameworkPipelineState:
     # DDL
     ddl_schemas: Any = field(default_factory=set)
     ddl_table_metadata: Dict[str, Any] = field(default_factory=dict)
+
+    # Step 0: Codebase Profile (Phase 1 서브스텝 — 프레임워크/DB 패턴 요약 + 리소스 분류)
+    codebase_profile: Optional[CodebaseProfile] = None
 
     # Step 1: Scan
     catalog: List[FileCatalogEntry] = field(default_factory=list)
@@ -91,7 +95,7 @@ class FrameworkPipelineState:
     analysis_by_function: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     summary_by_variable: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     summary_by_module: Dict[str, Dict[str, Any]] = field(default_factory=dict)
-    user_stories: List[Dict[str, Any]] = field(default_factory=list)
+    table_insights_map: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     # DeepAgent
     span_index: Optional[Dict[str, Any]] = None
@@ -124,19 +128,4 @@ class PhaseContext:
     lang: str = ""
     data_dir: str = ""
     run_dir: Optional[str] = None
-
-    @classmethod
-    def from_pipeline(cls, pipeline: Any, client: Neo4jClient, stats: AnalysisStats, orchestrator: Any = None) -> "PhaseContext":
-        """pipeline 인스턴스에서 PhaseContext 생성."""
-        st = pipeline._pipeline_state
-        return cls(
-            client=client,
-            state=st,
-            stats=stats,
-            api_key=settings.llm.api_key or "",
-            locale=settings.locale,
-            lang=st.lang,
-            data_dir=st.data_dir or settings.path.data_dir,
-            run_dir=st.run_dir,
-        )
 

@@ -6,6 +6,52 @@
 
 ---
 
+## 새 개발자라면 여기부터
+
+처음 합류하셨다면 **이 순서** 로 읽으세요:
+
+1. **[파이프라인_순서도.md](파이프라인_순서도.md)** — 파이프라인 전체가 어떻게 흐르는지 그림·예시로 설명. 코드 몰라도 읽힘. **10 분이면 전체 그림 잡힘**.
+2. **이 README 의 "분석 흐름" 섹션** — Phase 0/1/2/3 한눈에
+3. **[docs/TECHNICAL_ISSUES.md](docs/TECHNICAL_ISSUES.md)** — 실제 부딪힌 문제·해결 기록
+4. **[작업보고_2026-04-16.md](작업보고_2026-04-16.md)** — 최근 대규모 리팩토링 배경·방법
+
+### 자주 찾는 위치 빠른 참조
+
+| 무엇이 궁금한가 | 파일 |
+|---|---|
+| 파이프라인 진입점 | [service/source_analyze_service.py](service/source_analyze_service.py) |
+| Phase 1 (재료 준비) 본체 | [analyzer/strategy/framework/pipeline/phase_ast.py](analyzer/strategy/framework/pipeline/phase_ast.py) |
+| Phase 1 프로파일 (프레임워크/DB 패턴 요약) | [analyzer/strategy/framework/scanning/](analyzer/strategy/framework/scanning/) |
+| Phase 2 (링킹) 본체 | [analyzer/strategy/framework/pipeline/phase_linking.py](analyzer/strategy/framework/pipeline/phase_linking.py) |
+| Phase 2 엔티티 식별 DeepAgent | [analyzer/strategy/framework/linking/agent/entity.py](analyzer/strategy/framework/linking/agent/entity.py) |
+| Phase 3 (설명) 본체 | [analyzer/strategy/framework/pipeline/phase_enrichment.py](analyzer/strategy/framework/pipeline/phase_enrichment.py) |
+| 메서드 분석 프롬프트 | [rules/framework/code_analysis.yaml](rules/framework/code_analysis.yaml) |
+| 파일 스캐너 (결정론 분류) | [analyzer/strategy/framework/parsing/scanner.py](analyzer/strategy/framework/parsing/scanner.py) |
+| XML 파서 (SQL/Entity 추출) | [analyzer/strategy/framework/parsing/parsers/xml_universal.py](analyzer/strategy/framework/parsing/parsers/xml_universal.py) |
+| Neo4j 쿼리 빌더 | [analyzer/strategy/framework/graph/queries.py](analyzer/strategy/framework/graph/queries.py) |
+| 설정 / 환경변수 | [config/settings.py](config/settings.py) + `.env` |
+
+### 5 분 안에 돌려보기
+
+```bash
+# 1. 의존성 설치
+pip install -r requirements.txt
+
+# 2. .env 편집 (API 키 + Neo4j 접속)
+cp .env.example .env   # 없으면 README "환경변수 설정" 참고
+
+# 3. 테스트 프로젝트를 data/source/ 에 넣기
+
+# 4. 단일 분석 실행
+python -m test.test_analyzer
+
+# 5. 결과 확인
+#    Neo4j Browser (http://localhost:7474) 에서
+#    MATCH (n) RETURN n LIMIT 100
+```
+
+---
+
 ## 📋 목차
 
 1. [개요](#개요)
@@ -36,23 +82,29 @@ ROBO Analyzer는 소스 코드를 분석하여 Neo4j 그래프 데이터베이�
 
 ### 핵심 설계 원칙
 
-**"모든 파일에 대해 AST를 먼저 뽑는다"**
-
-이 원칙은 모든 설계의 핵심입니다:
+**"결정론 먼저, LLM 은 꼭 필요한 곳만, 모든 재료는 관계 짓기 전에 준비"**
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  모든 파일 → AST 구조 먼저 생성 (Phase 1)                │
-│  ↓                                                       │
-│  모든 파일 → LLM 분석 (Phase 2)                         │
-└─────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│  Phase 1 — 재료 준비 (결정론 + 프로파일 Deep Agent 1회)      │
+│    파일 스캔 + AST 파싱 + XML/설정 파싱 + 인덱스 구축        │
+│  ↓                                                           │
+│  Phase 2 — 연결 짓기 (결정론 → LLM 배치 → DeepAgent 3종)    │
+│    SQL→테이블, 함수 호출, 엔티티 식별, 미해결 참조 해결      │
+│  ↓                                                           │
+│  Phase 3 — 설명 붙이기 (LLM 배치)                           │
+│    메서드·클래스·테이블 요약                                 │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-**이렇게 설계한 이유:**
+**왜 이 순서인가**: Phase 3 에서 함수를 정확히 설명하려면 "이 함수가 어떤 테이블을 읽고 쓰는지, 어떤 함수를 부르는지" 를 미리 알아야 합니다. 그래서 Phase 2 관계 → Phase 1 재료 순으로 **앞에서 뒤가 필요로 하는 것을 만든다**.
 
-1. **메서드 호출 처리 단순화**: AST 구조가 있으면 `target.methodName`을 파싱해서 기존 클래스/메서드 노드를 바로 찾을 수 있음
-2. **병렬 처리 효율성**: 모든 파일의 AST가 먼저 있으면, LLM 분석 단계에서 각 파일을 독립적으로 병렬 처리 가능
-3. **관계 연결 단순화**: `MATCH`로 기존 노드를 바로 조회하여 관계 생성
+**왜 이렇게 분리했나**:
+
+1. **결정론 먼저** — 이름이 완벽 매치되는 건 LLM 없이 0.1 초 만에 처리. 비용·시간 절약
+2. **LLM 배치로 묶기** — 애매한 것만 20 개씩 묶어 LLM 호출 → 수백 번 → 수십 번으로 감소
+3. **DeepAgent 최후 수단** — 배치로도 못 풀 복잡한 의미 추적만 에이전트에게 위임
+4. **프로파일로 레거시 대응** — 엔티티 XML 없는 프로젝트도 `profile.summary` 수색 지침을 DeepAgent 에 주입해 테이블 추출 가능
 
 ---
 
@@ -230,94 +282,97 @@ summary = validated.get('summary', '')
 
 ## 분석 흐름
 
+> **전체 흐름을 자연어로 풀어쓴 문서**: [파이프라인_순서도.md](파이프라인_순서도.md)
+> 코드 몰라도 읽히는 단계별 설명 + 순서도 그림 포함.
+
 ### 🔄 전체 분석 단계 (한눈에 보기)
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           전체 분석 파이프라인                                │
-└─────────────────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ Phase 0: DDL 처리 (DBMS만)                                                   │
-│   • DDL 파일 파싱 (CREATE TABLE 문)                                          │
-│   • Table, Column 노드 생성                                                  │
-│   • FK_TO_TABLE 관계 생성                                                    │
-│                                                                              │
-│   로그 예시:                                                                 │
-│   INFO: [DDL_PARSER] 정규식 파싱 완료: 387개 테이블                          │
-│   INFO: [ANALYZE:DDL] DDL 처리 완료 (T:387, C:3379, FK:0)                   │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                     ↓
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ Phase 1: AST 구조 그래프 생성                                                │
-│   • 모든 파일 AST 파싱 (JSON 로드)                                           │
-│   • 노드 수집 (PROCEDURE, FUNCTION, SELECT, IF 등)                           │
-│   • 정적 그래프 생성 → Neo4j 저장                                            │
-│   • ⚡ 파일 단위 병렬 처리 (최대 5개)                                         │
-│                                                                              │
-│   로그 예시:                                                                 │
-│   INFO: [ANALYZE:PHASE1] 🏗️ RWIS/FN_CALC.sql 정적 그래프 생성               │
-│   INFO: [ANALYZE:COLLECT] ✅ FUNCTION 노드 수집 완료: 라인 1~55              │
-│   INFO: [ANALYZE:COLLECT] ✅ SELECT 노드 수집 완료: 라인 10~15               │
-│   INFO: [ANALYZE:PHASE1] ✅ RWIS/FN_CALC.sql: 30개 쿼리 생성                 │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                     ↓
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ Phase 1.5: 부모 컨텍스트 생성 (DBMS만)                                       │
-│   • Top-down 방식으로 부모 노드 컨텍스트 생성                                 │
-│   • 별칭 매핑, DML 유형, 조인 조건 추출                                      │
-│   • 스켈레톤 코드 생성 (토큰 최적화)                                         │
-│   • 이 컨텍스트를 Phase 2에서 활용하여 별칭 오인 방지                        │
-│                                                                              │
-│   로그 예시:                                                                 │
-│   INFO: [ANALYZE:CONTEXT] 🔄 부모 컨텍스트 생성 시작: 6개 노드               │
-│   INFO: [ANALYZE:CONTEXT] ✅ 컨텍스트 생성 완료: MERGE[106~144]              │
-│   INFO: [ANALYZE:CONTEXT] ✅ 컨텍스트 생성 완료: TRY[50~146]                 │
-│   INFO: [ANALYZE:CONTEXT] ✅ 부모 컨텍스트 생성 완료: 6개                    │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                     ↓
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ Phase 2: LLM 분석                                                            │
-│                                                                              │
-│   2-1. 배치 계획                                                             │
-│        • 토큰 제한 기반 배치 분할                                             │
-│        • 자식→부모 의존성 순서 결정                                           │
-│                                                                              │
-│        로그 예시:                                                            │
-│        INFO: [ANALYZE:BATCH] 📦 배치 #1 확정: 리프 노드 4개 (토큰 359/1000)  │
-│        INFO: [ANALYZE:BATCH] 📦 배치 #2 확정: 부모 노드 단독 (토큰 223)      │
-│        INFO: [ANALYZE:PHASE2] 📊 배치 12개 (의존성 보장)                     │
-│                                                                              │
-│   2-2. LLM 호출 (배치별 병렬)                                                │
-│        • 리프 노드 먼저 → 부모 노드 순서                                      │
-│        • summary, table 매칭, 관계 추출                                      │
-│        • ⚡ 배치 단위 병렬 처리                                               │
-│                                                                              │
-│        로그 예시:                                                            │
-│        INFO: [ANALYZE:LLM] 배치 #1 처리 중 (4개 노드)                        │
-│        INFO: [ANALYZE:LLM] 배치 #3 처리 중 (1개 노드)                        │
-│        INFO: HTTP Request: POST https://api.openai.com/v1/...                │
-│                                                                              │
-│   2-3. 결과 저장                                                             │
-│        • summary, FROM, WRITES, CALL 관계 업데이트                           │
-│        • Neo4j 저장                                                          │
-│                                                                              │
-│        로그 예시:                                                            │
-│        INFO: [ANALYZE:SUMMARY] ✅ FN_EDIT_YN: summary 통합 완료              │
-│        INFO: [ANALYZE:PHASE2] ✅ RWIS/FN_EDIT_YN.sql: 220개 업데이트 쿼리    │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                     ↓
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ Phase 3: User Story 생성                                                     │
-│   • 분석된 summary에서 User Story 추출                                       │
-│   • Acceptance Criteria 생성                                                 │
-│   • 마크다운 문서 생성                                                       │
-│                                                                              │
-│   로그 예시:                                                                 │
-│   INFO: [ANALYZE:SUMMARY] ✅ FN_EDIT_YN: User Story 2개 생성                 │
-│   INFO: [ANALYZE:TABLE_SUMMARY] 📊 테이블 요약 시작: 4개 테이블              │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                     입력: 프로젝트 폴더                           │
+│             (소스 코드 + XML + YAML + SQL + DDL)                  │
+└──────────────────────────────┬───────────────────────────────────┘
+                               │
+                               ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ Phase 0 — DDL 처리 (DBMS 전략만 실행)                             │
+│   CREATE TABLE 문 파싱 → Table/Column/FK 노드 선행 생성           │
+└──────────────────────────────┬───────────────────────────────────┘
+                               │
+                               ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ Phase 1 — 재료 준비 (결정론 + Deep Agent 1회)                     │
+│                                                                   │
+│   Step 1. 프로파일 ← 새로 추가됨                                   │
+│     • 파일 스캔 (scanner.scan_project) → catalog + plan           │
+│     • 결정론 메타 수집 (확장자/매니페스트/imports/대표 파일 뼈대)  │
+│     • Deep Agent 1회 호출 → 프로젝트의 프레임워크/DB 접근 패턴     │
+│       자연어 요약 (profile.summary) 생성                          │
+│     • 결과: pipeline_state.codebase_profile                       │
+│                                                                   │
+│   Step 2. AST 파싱                                                 │
+│     • 소스 파일(plan.source_ast_jobs) → 함수/클래스/변수 노드      │
+│     • 파일별 Neo4j 스트리밍                                        │
+│     • ⚡ 병렬 처리                                                 │
+│                                                                   │
+│   Step 3. 아티팩트 파싱                                            │
+│     • SQL/Entity XML/Config YAML → SqlStatement/Artifact/Config   │
+│       chunk 생성                                                   │
+│                                                                   │
+│   Step 4. 인덱스 구축 (메모리)                                     │
+│     • sql_index / module_index / config_index / artifact_index    │
+│     • Phase 2 의 O(1) 조회용                                       │
+└──────────────────────────────┬───────────────────────────────────┘
+                               │
+                               ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ Phase 2 — 연결 짓기 (결정론 → LLM 배치 → DeepAgent)               │
+│                                                                   │
+│   Step 1. 결정론 매칭                                              │
+│     • 이름 완벽 매치 (SELECT FROM users ↔ users 테이블)            │
+│                                                                   │
+│   Step 2. LLM 배치 (병렬)                                          │
+│     • Table LLM : SQL 쿼리 → 테이블·컬럼 추출                      │
+│     • Call  LLM : 함수 호출 판정                                   │
+│                                                                   │
+│   Step 3. DeepAgent 병렬 (3종)                                     │
+│     • 엔티티 식별 DeepAgent ← codebase_profile.summary 가          │
+│                                system_prompt 에 "수색 지침" 주입  │
+│     • 변수 참조 추적 (결정론만, LLM 미사용)                        │
+│     • 미해결 참조 DeepAgent                                        │
+│                                                                   │
+│   Step 4. FK 반영 + 후처리                                         │
+│     • READS/WRITES/CALLS/REFERS_TO/FK 관계 Neo4j 저장              │
+└──────────────────────────────┬───────────────────────────────────┘
+                               │
+                               ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ Phase 3 — 설명 붙이기 (LLM 배치)                                   │
+│                                                                   │
+│   Step 1. 컨텍스트 수집 (상수/참조변수/테이블 샘플)                │
+│                                                                   │
+│   Step 2. 메서드 요약 (20개씩 배치 LLM)                            │
+│     • summary / stereotype / actor / dependencies / tableInsights │
+│     • tableInsights 는 기존 테이블에만 역할·컬럼 설명 추가         │
+│       (새 노드 생성 금지, pipeline_state.table_insights_map 누적) │
+│                                                                   │
+│   Step 3. Field 비활성화 + Module (클래스) 요약                    │
+│                                                                   │
+│   Step 4. Actor 병합 + Table Description 보강                      │
+│     • 메서드 summary + table_insights_map 을 LLM 에 투입           │
+│     • 테이블별 최종 description 생성                               │
+│     • 기존 Table/Column 노드에 MATCH + SET (생성 금지)             │
+└──────────────────────────────┬───────────────────────────────────┘
+                               │
+                               ▼
+┌──────────────────────────────────────────────────────────────────┐
+│         결과: Neo4j 그래프 (노드 + 관계 + 자연어 설명)             │
+└──────────────────────────────────────────────────────────────────┘
 ```
+
+### 왜 프로파일이 Phase 1 에 들어가는가
+
+엔티티/매퍼 XML 이 전혀 없는 레거시 (ProFrame · Pro\*C 시뮬 등) 는 Phase 2 의 결정론·LLM 배치가 테이블을 못 뽑음. 이때 **Phase 1 Step 1 프로파일이 뽑아둔 `codebase_profile.summary`** 가 Phase 2 엔티티 식별 DeepAgent 의 system_prompt 에 "수색 지침" 으로 주입되어, `mpfmdbio("zord_acnt_s0023")` 같은 **프로젝트 특이 패턴** 을 근거로 실제 코드에서 테이블을 추출하도록 유도한다.
 
 ### 📊 병렬 처리 구조
 

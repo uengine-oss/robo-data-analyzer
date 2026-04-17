@@ -35,7 +35,7 @@ from analyzer.strategy.framework.common.models import (
     ReferToEdge,
     UnresolvedLink,
 )
-from analyzer.strategy.framework.linking.agent.common import _init_deep_agent_env
+from analyzer.strategy.framework.linking.agent.common import _init_agent_env
 from analyzer.strategy.framework.linking.agent.tools import (
     ToolResultCollector,
     build_tools,
@@ -95,12 +95,8 @@ def run_deep_agent(
         logger.info("[DEEP_AGENT] unresolved 없음 → 즉시 종료")
         return
 
-    # ── 1. 초기화 ──
-    try:
-        create_deep_agent, model = _init_deep_agent_env(state, api_key=api_key, run_dir=run_dir)
-    except Exception as e:
-        logger.error("[DEEP_AGENT] 초기화 실패: %s", e)
-        return
+    # ── 1. 초기화 (Fail-Fast: 조용한 손실 방지) ──
+    create_agent, model = _init_agent_env(state, api_key=api_key, run_dir=run_dir)
 
     skills = load_all_skills()
     if not skills:
@@ -131,11 +127,12 @@ def run_deep_agent(
         # 에이전트 생성 (카테고리당 1회)
         collector = ToolResultCollector()
         tools = build_tools(state, collector, skill_name=skill_name)
-        agent = create_deep_agent(model=model, tools=tools, system_prompt=system_prompt)
+        agent = create_agent(tools=tools, system_prompt=system_prompt)
 
         # 배치별 실행
         for batch_idx, batch in enumerate(batches):
             user_message = _build_batch_user_message(batch)
+            invoke_ok = False
             try:
                 agent.invoke({"messages": [{"role": "user", "content": user_message}]})
                 log_llm_interaction(
@@ -144,11 +141,20 @@ def run_deep_agent(
                     output_payload={"total": collector.total_count},
                     metadata={"category": category, "batch": batch_idx, "items": len(batch)},
                 )
+                invoke_ok = True
             except Exception as ex:
                 logger.error("[DEEP_AGENT] invoke 실패 | category=%s batch=%d error=%s", category, batch_idx, ex)
 
-            # 배치 결과 yield (→ Neo4j 즉시 반영)
+            # 배치 결과 처리: invoke 성공 시만 yield, 실패 시 부분 결과 폐기 (부분결과 혼입 방지)
             result = collector.snapshot_and_clear()
+            if not invoke_ok:
+                dropped = len(result["refer_to"]) + len(result["table_access"]) + len(result["fk"])
+                if dropped:
+                    logger.warning(
+                        "[DEEP_AGENT] 실패 배치 부분결과 폐기 | category=%s batch=%d dropped=%d",
+                        category, batch_idx, dropped,
+                    )
+                continue
             if result["refer_to"] or result["table_access"] or result["fk"]:
                 logger.info(
                     "[DEEP_AGENT] 배치 완료 | category=%s batch=%d refer=%d table=%d fk=%d",

@@ -1,8 +1,8 @@
-"""DeepAgent 공통 초기화.
+"""Agent 공통 초기화.
 
-DeepAgent 실행에 필요한 초기화 로직:
-  1. deepagents 라이브러리 import 검증
-  2. LLM 모델 인스턴스 생성
+LLM Agent 실행에 필요한 초기화 로직:
+  1. LLM 모델 인스턴스 생성
+  2. create_agent + 최소 미들웨어로 에이전트 팩토리 구성
   3. ChunkBundle 인덱스 보장 (state에 없으면 빌드)
 """
 
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -56,18 +56,66 @@ def _ensure_bundle_indexes(state: Dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _init_deep_agent_env(
+def _build_agent_factory(model: Any) -> Callable:
+    """create_agent + 최소 미들웨어를 바인딩한 에이전트 팩토리를 반환한다.
+
+    FilesystemMiddleware 제거 → 내장 도구(write_file/edit_file/execute 등) 비활성화.
+    MemoryMiddleware / AnthropicPromptCachingMiddleware 제거 (불필요).
+
+    미들웨어 (순서: 가벼운 방어 → 무거운 작업 → 최종 상한):
+      1. TodoListMiddleware: 계획 관리
+      2. ContextEditingMiddleware + ClearToolUsesEdit: 오래된 tool 결과 pruning (70K trigger)
+      3. SummarizationMiddleware: context overflow 안전망 (85K trigger)
+      4. ToolCallLimitMiddleware: run당 총 tool 호출 상한
+      5. ModelCallLimitMiddleware: LLM 호출 상한 (무한루프·비용 방어)
+      6. PatchToolCallsMiddleware: tool call 보정
+    """
+    from langchain.agents import create_agent
+    from langchain.agents.middleware import (
+        ContextEditingMiddleware,
+        ClearToolUsesEdit,
+        ModelCallLimitMiddleware,
+        SummarizationMiddleware,
+        TodoListMiddleware,
+        ToolCallLimitMiddleware,
+    )
+    from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
+
+    middleware = [
+        TodoListMiddleware(),
+        ContextEditingMiddleware(edits=[
+            ClearToolUsesEdit(trigger=70_000, keep=3),
+        ]),
+        SummarizationMiddleware(model=model, trigger=("tokens", 85_000)),
+        ToolCallLimitMiddleware(run_limit=50),
+        ModelCallLimitMiddleware(run_limit=25, thread_limit=200),
+        PatchToolCallsMiddleware(),
+    ]
+
+    def factory(*, tools: list, system_prompt: str, **kwargs: Any) -> Any:
+        return create_agent(
+            model=model,
+            tools=tools,
+            system_prompt=system_prompt,
+            middleware=middleware,
+            **kwargs,
+        )
+
+    return factory
+
+
+def _init_agent_env(
     state: Dict[str, Any],
     api_key: Optional[str] = None,
     run_dir: Optional[Path] = None,
-) -> Tuple[Any, Any]:
-    """DeepAgent 실행 환경을 초기화한다.
+) -> Tuple[Callable, Any]:
+    """Agent 실행 환경을 초기화한다.
 
     수행 작업:
-      1. deepagents 라이브러리 import (미설치 시 ImportError)
-      2. run_dir을 state에 설정
-      3. ChunkBundle 인덱스 보장
-      4. LLM 모델 인스턴스 생성
+      1. run_dir을 state에 설정
+      2. ChunkBundle 인덱스 보장
+      3. LLM 모델 인스턴스 생성
+      4. create_agent 기반 팩토리 구성 (최소 미들웨어)
 
     Args:
         state: pipeline state. span_index/chunk_index가 없으면 자동 빌드.
@@ -75,12 +123,8 @@ def _init_deep_agent_env(
         run_dir: 실행 디렉토리.
 
     Returns:
-        (create_deep_agent, model) — 에이전트 생성 함수와 LLM 모델.
-
-    Raises:
-        ImportError: deepagents 미설치 시.
+        (agent_factory, model) — 에이전트 생성 팩토리와 LLM 모델.
     """
-    from deepagents import create_deep_agent
     from client.llm_client import get_llm
 
     if run_dir:
@@ -89,4 +133,4 @@ def _init_deep_agent_env(
     _ensure_bundle_indexes(state)
 
     model = get_llm(api_key=api_key) if api_key else get_llm()
-    return create_deep_agent, model
+    return _build_agent_factory(model), model

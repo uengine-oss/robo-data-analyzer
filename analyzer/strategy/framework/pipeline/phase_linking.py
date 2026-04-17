@@ -324,15 +324,21 @@ async def _run_deep_agent_parallel(ctx: _LinkingContext) -> AsyncGenerator[bytes
             "span_index": st.span_index,
             "chunk_index": st.chunk_index,
             "ddl_table_metadata": ddl_meta or None,
+            "codebase_profile_summary": (
+                st.codebase_profile.summary if st.codebase_profile else ""
+            ),
         }
-        mt_edges, fk_e = run_deep_agent_entity_identification(
+        mt_edges, fk_e, col_refs = run_deep_agent_entity_identification(
             st.module_index or {}, entity_state,
             api_key=settings.llm.api_key,
             run_dir=Path(st.run_dir) if st.run_dir else None,
             ddl_table_metadata=ddl_meta or None,
         )
-        logger.info("[PHASE:2:DEEP_AGENT:ENTITY] 완료 | tables=%d fk=%d", len(mt_edges), len(fk_e))
-        result_queue.put_nowait(("entity", entity_state, mt_edges, fk_e))
+        logger.info(
+            "[PHASE:2:DEEP_AGENT:ENTITY] 완료 | tables=%d fk=%d columns=%d",
+            len(mt_edges), len(fk_e), len(col_refs),
+        )
+        result_queue.put_nowait(("entity", entity_state, mt_edges, fk_e, col_refs))
 
     def _run_variable_refs():
         """변수 참조 + INIT_BY를 결정론적으로 매칭한다 (LLM 미사용)."""
@@ -465,9 +471,11 @@ async def _run_deep_agent_parallel(ctx: _LinkingContext) -> AsyncGenerator[bytes
 # ── DeepAgent 결과 핸들러 (각각 독립 함수) ──
 
 async def _handle_entity_result(ctx, item, ddl_meta):
-    _, entity_state, entity_mt_edges, entity_fk_edges = item
+    _, entity_state, entity_mt_edges, entity_fk_edges, entity_columns = item
     if entity_fk_edges:
         ctx.fk_edges.extend(entity_fk_edges)
+    if entity_columns:
+        ctx.column_refs.extend(entity_columns)
     if entity_mt_edges:
         ctx.function_table_edges.extend(entity_mt_edges)
         try:
@@ -484,6 +492,15 @@ async def _handle_entity_result(ctx, item, ddl_meta):
                     yield chunk
         except Exception as e:
             logger.error("[PHASE:2:DEEP_AGENT:ENTITY] Neo4j 반영 실패 | error=%s", e, exc_info=True)
+    if entity_columns:
+        try:
+            cq = build_column_queries(entity_columns)
+            cq.extend(build_has_column_queries(entity_columns))
+            if cq:
+                async for chunk in write_to_graph(ctx.client, cq, "PHASE2:ENTITY_COLUMN"):
+                    yield chunk
+        except Exception as e:
+            logger.error("[PHASE:2:DEEP_AGENT:ENTITY] Column Neo4j 반영 실패 | error=%s", e, exc_info=True)
     if entity_state and entity_state.get("span_index") and ctx.st.span_index is None:
         ctx.st.span_index = entity_state["span_index"]
     if entity_state and entity_state.get("chunk_index") and ctx.st.chunk_index is None:

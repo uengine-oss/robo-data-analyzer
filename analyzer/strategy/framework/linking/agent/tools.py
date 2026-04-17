@@ -28,6 +28,7 @@ from typing import Any, Callable, Dict, List, Optional
 from config.settings import settings
 from analyzer.strategy.framework.common.models import (
     ArtifactChunk,
+    ColumnRef,
     ConfigSectionChunk,
     FkEdge,
     FunctionTableEdge,
@@ -53,6 +54,7 @@ class ToolResultCollector:
     refer_to: List[ReferToEdge] = field(default_factory=list)
     table_access: List[FunctionTableEdge] = field(default_factory=list)
     fk: List[FkEdge] = field(default_factory=list)
+    columns: List[ColumnRef] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def snapshot_and_clear(self) -> Dict[str, list]:
@@ -65,16 +67,18 @@ class ToolResultCollector:
                 "refer_to": list(self.refer_to),
                 "table_access": list(self.table_access),
                 "fk": list(self.fk),
+                "columns": list(self.columns),
             }
             self.refer_to.clear()
             self.table_access.clear()
             self.fk.clear()
+            self.columns.clear()
         return result
 
     @property
     def total_count(self) -> int:
         """수집된 전체 엣지 수."""
-        return len(self.refer_to) + len(self.table_access) + len(self.fk)
+        return len(self.refer_to) + len(self.table_access) + len(self.fk) + len(self.columns)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -297,6 +301,32 @@ def build_tools(
         return "ok"
 
     @lc_tool
+    def graph_create_column_tool(
+        table_name: str, column_name: str,
+        dtype: str = "", description: str = "",
+    ) -> str:
+        """Table 의 Column 을 등록한다. (Table)-[:HAS_COLUMN]->(Column).
+
+        코드/구조체/DTO 정의에서 실제 관찰된 필드만 등록. 추측 금지.
+        description 은 해당 함수에서 이 컬럼을 왜/어떻게 쓰는지 1~2 문장. 모르면 빈 문자열.
+        dtype 도 관찰된 경우만 (C struct 필드 타입 / DTO 필드 타입). 모르면 빈 문자열.
+        """
+        tbl = (table_name or "").strip()
+        col = (column_name or "").strip()
+        if not tbl or not col:
+            return "error: table_name and column_name required"
+        with lock:
+            collector.columns.append(ColumnRef(
+                table_schema="",
+                table_name=tbl,
+                column_name=col,
+                dtype=(dtype or "").strip() or None,
+                description=(description or "").strip() or None,
+            ))
+        logger.info("[TOOL] column | %s.%s%s", tbl, col, f" ({dtype})" if dtype else "")
+        return "ok"
+
+    @lc_tool
     def graph_create_fk_tool(
         from_table: str, from_column: str,
         to_table: str, to_column: str,
@@ -371,6 +401,7 @@ def build_tools(
             # 관계 등록
             "refer_to": graph_create_refer_to_tool,
             "table_access": graph_create_table_access_tool,
+            "column": graph_create_column_tool,
             "fk": graph_create_fk_tool,
             # DDL 조회
             "table_search": table_search_tool,
@@ -387,18 +418,18 @@ def build_tools(
 _SKILL_TOOL_SETS: Dict[str, List[str]] = {
     "entity-analysis": [
         "bundle_search", "bundle_get_chunk",
-        "table_access", "fk",
+        "table_access", "column", "fk",
         # DDL 도구는 has_ddl 시 자동 추가
     ],
     "table-tracking": [
         "bundle_search", "bundle_get_chunk",
-        "table_access", "fk",
+        "table_access", "column", "fk",
         "table_search", "table_columns",
     ],
     "sql-tracking": [
         "sql_lookup", "artifact_lookup",
         "bundle_search", "bundle_get_chunk",
-        "refer_to", "table_access", "fk",
+        "refer_to", "table_access", "column", "fk",
         # DDL 도구는 has_ddl 시 자동 추가
     ],
     "config-tracking": [

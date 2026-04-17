@@ -173,11 +173,6 @@ class PhaseTracker:
             )
         )
 
-    def update_step_total(self, total_items: int) -> None:
-        """현재 스텝의 total_items를 실제 값으로 업데이트. 추정값과 실제값이 다를 때 사용."""
-        step = self._steps[self._current_step_idx]
-        step["total"] = max(total_items, step["done"])
-
     def _calc_progress(self) -> int:
         """전체 가중치 기반 진행률 계산 (0~100)"""
         total_progress = 0
@@ -238,6 +233,3 @@ def emit_skip(reason: str) -> bytes:
     return emit_message(f"ℹ️ {reason}")
 
 
-def emit_file_error(file_name: str, error: str) -> bytes:
-    """파일 오류. 예: ❌ 오류 발생 (file.sql): timeout"""
-    return emit_message(f"   ❌ 오류 발생 ({file_name}): {error}")

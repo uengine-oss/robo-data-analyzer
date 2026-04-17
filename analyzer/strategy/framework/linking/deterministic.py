@@ -221,6 +221,27 @@ def identify_entity_classes(module_index: Dict[str, Any]) -> set:
     return entity_fqns
 
 
+def extract_entity_fqns_from_artifacts(
+    artifact_index: Optional[Dict[str, Any]],
+    module_index: Optional[Dict[str, Any]],
+) -> set:
+    """XML 엔티티 청크(EJB `<entity>`, hibernate-mapping 등)의 related_module_fqns 에서 FQN 추출.
+
+    artifact 의 related_module_fqns 중 module_index 에 실제 존재하는 FQN 만 반환.
+    """
+    if not artifact_index or not module_index:
+        return set()
+    entity_fqns: set = set()
+    for ac in artifact_index.values():
+        if getattr(ac, "chunk_type", "") not in ("entity", "cmp_mapping"):
+            continue
+        related = getattr(ac, "related_module_fqns", None) or []
+        for fqn in related:
+            if fqn in module_index:
+                entity_fqns.add(fqn)
+    return entity_fqns
+
+
 def has_external_entity_info(
     artifact_index: Optional[Dict[str, Any]] = None,
     module_index: Optional[Dict[str, Any]] = None,

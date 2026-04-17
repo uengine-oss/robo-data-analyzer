@@ -54,10 +54,10 @@ from analyzer.strategy.framework.graph.queries import (
 )
 from analyzer.common.graph_writer import run_graph_queries
 from analyzer.strategy.framework.pipeline.progress import write_to_graph
-from analyzer.strategy.framework.parsing.scanner import scan_project
 from analyzer.strategy.framework.parsing.ast_walker import extract_code_structure, _extract_package_fqns
 from analyzer.strategy.framework.parsing.parsers.base import parse_config_and_artifacts
 from analyzer.strategy.framework.parsing.indexer import build_search_indexes
+from analyzer.strategy.framework.scanning import profile as build_codebase_profile
 
 logger = logging.getLogger(__name__)
 
@@ -72,19 +72,22 @@ async def run_phase_ast(
     """Phase 1: 스캔 → AST 파싱 → 아티팩트 → 인덱스 구축."""
     data_dir = settings.path.data_dir
     source_dir = str(Path(data_dir) / "source")
-    nontarget_dir = str(Path(data_dir) / "analysis" / "nontarget")
 
-    yield emit_message("📂 프로젝트 스캔 시작")
+    yield emit_message("📂 코드베이스 프로파일 + 스캔 시작")
 
-    # ── Step 1: 스캔 ──
+    # ── Step 1: 프로파일 (스캔 + 결정론 수집 + 프레임워크/DB 패턴 Agent 요약) ──
+    # 모든 파일이 source/ 에 통합되어 있으므로 scan_roots 는 source 하나만.
     lang = getattr(orchestrator, "target", "")
-    scan_roots = [(source_dir, "source"), (nontarget_dir, "analysis/nontarget")]
-    catalog, plan = scan_project(scan_roots=scan_roots, lang=lang)
-    logger.info(
-        "[PHASE:1:SCAN] 스캔 완료 | catalog=%d source_ast=%d sql=%d entity=%d config=%d lang=%s",
-        len(catalog), len(plan.source_ast_jobs), len(plan.sql_jobs),
-        len(plan.entity_jobs), len(plan.config_jobs), lang,
+    scan_roots = [(source_dir, "source")]
+    codebase_profile = build_codebase_profile(
+        Path(source_dir),
+        lang=lang,
+        scan_roots=scan_roots,
+        api_key=settings.llm.api_key or "",
     )
+    pipeline._pipeline_state.codebase_profile = codebase_profile
+    catalog = codebase_profile.catalog
+    plan = codebase_profile.plan
 
     # ── Step 2: AST 파싱 (파일별 점진적 스트리밍) ──
     yield emit_message(f"🔍 AST 파싱 ({len(plan.source_ast_jobs)}개 파일, lang={lang})")

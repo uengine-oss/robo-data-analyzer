@@ -62,10 +62,7 @@ class LLMConfig:
     api_base: str = field(default_factory=lambda: os.getenv("LLM_API_BASE", "https://api.openai.com/v1"))
     api_key: str = field(default_factory=lambda: os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY", ""))
     model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "gpt-4.1"))
-    cheap_model: str = field(default_factory=lambda: os.getenv("LLM_CHEAP_MODEL", "gpt-4o-mini"))
     max_tokens: int = field(default_factory=lambda: int(os.getenv("LLM_MAX_TOKENS", "32768")))
-    # 분석 작업에 주입할 사용자/프로젝트 도메인 힌트 (codebase_detection 등에서 SYSTEM_PROMPT 에 첨부)
-    custom_instructions: str = field(default_factory=lambda: os.getenv("ANALYSIS_CUSTOM_INSTRUCTIONS", ""))
     reasoning_effort: str = field(default_factory=lambda: os.getenv("LLM_REASONING_EFFORT", "medium"))
     is_custom: bool = field(default_factory=lambda: os.getenv("IS_CUSTOM_LLM", "").lower() == "true")
     company_name: Optional[str] = field(default_factory=lambda: os.getenv("COMPANY_NAME"))
@@ -94,16 +91,15 @@ class ConcurrencyConfig:
 
 @dataclass(frozen=True)
 class BatchConfig:
-    """배치 처리 설정 (DBMS/Framework 공통)"""
-    max_batch_token: int = field(default_factory=lambda: int(os.getenv("MAX_BATCH_TOKEN", "4000")))
-    max_summary_chunk_token: int = field(default_factory=lambda: int(os.getenv("MAX_SUMMARY_CHUNK_TOKEN", "5000")))
-    static_query_batch_size: int = field(default_factory=lambda: int(os.getenv("STATIC_QUERY_BATCH_SIZE", "40")))
+    """배치 처리 설정 (DBMS/Framework 공통). 기본값은 .env 의 실제 값과 일치."""
+    max_batch_token: int = field(default_factory=lambda: int(os.getenv("MAX_BATCH_TOKEN", "2000")))
+    max_summary_chunk_token: int = field(default_factory=lambda: int(os.getenv("MAX_SUMMARY_CHUNK_TOKEN", "8000")))
     # call_extract LLM 배치당 최대 호출 항목 수 — 응답 길이를 균등하게 유지해 reasoning 모델 지연을 줄인다.
     max_call_records_per_batch: int = field(default_factory=lambda: int(os.getenv("MAX_CALL_RECORDS_PER_BATCH", "80")))
     # Neo4j 쿼리 배치 사이즈 (스트리밍 단위)
     neo4j_query_batch_size: int = field(default_factory=lambda: int(os.getenv("NEO4J_QUERY_BATCH_SIZE", "30")))
     # 부모 컨텍스트 관련 설정
-    max_context_token: int = field(default_factory=lambda: int(os.getenv("MAX_CONTEXT_TOKEN", "300")))
+    max_context_token: int = field(default_factory=lambda: int(os.getenv("MAX_CONTEXT_TOKEN", "500")))
     parent_expand_threshold: int = field(default_factory=lambda: int(os.getenv("PARENT_EXPAND_THRESHOLD", "1000")))
 
 
@@ -123,23 +119,10 @@ class PathConfig:
 
 
 @dataclass(frozen=True)
-class PipelineFeatureConfig:
-    """파이프라인 기능 토글"""
-    # 스테레오타입 분류 Phase (Phase 2.5) 활성화 여부
-    stereotype_enabled: bool = field(default_factory=lambda: os.getenv("STEREOTYPE_ENABLED", "false").lower() == "true")
-
-
-@dataclass(frozen=True)
 class DeepAgentConfig:
-    """DeepAgent 전용 설정 (엔티티 배치, 변수 참조 배치, 신뢰도 등)"""
+    """DeepAgent 전용 설정. 기본값은 .env 의 실제 값과 일치."""
     entity_batch_size: int = field(
-        default_factory=lambda: int(os.getenv("DA_ENTITY_BATCH_SIZE", "10"))
-    )
-    varref_batch_size: int = field(
-        default_factory=lambda: int(os.getenv("DA_VARREF_BATCH_SIZE", "50"))
-    )
-    entity_max_workers: int = field(
-        default_factory=lambda: int(os.getenv("DA_ENTITY_MAX_WORKERS", "8"))
+        default_factory=lambda: int(os.getenv("DA_ENTITY_BATCH_SIZE", "15"))
     )
     default_confidence: float = field(
         default_factory=lambda: float(os.getenv("DA_DEFAULT_CONFIDENCE", "0.9"))
@@ -154,7 +137,6 @@ class AnalyzerConfig:
     concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
     batch: BatchConfig = field(default_factory=BatchConfig)
     path: PathConfig = field(default_factory=PathConfig)
-    feature: PipelineFeatureConfig = field(default_factory=PipelineFeatureConfig)
     deep_agent: DeepAgentConfig = field(default_factory=DeepAgentConfig)
     
     # 버전

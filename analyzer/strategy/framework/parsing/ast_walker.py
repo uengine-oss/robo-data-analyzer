@@ -18,7 +18,6 @@ from analyzer.strategy.framework.common.models import (
     VariableFacts,
     FunctionFacts,
     NODE_VARIABLE,
-    NODE_METHOD_CALL,
     NODE_NEW_INSTANCE,
 )
 from util.encoding_utils import read_text_with_fallback_sync as read_text_with_fallback, read_json_with_fallback

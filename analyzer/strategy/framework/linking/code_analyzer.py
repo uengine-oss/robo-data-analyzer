@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# Step 6: 역할 판단 + 요약 - 기존 step6_summary 통합
+# 메서드별 코드 분석 (Phase 3 에서 배치 호출됨)
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -106,7 +106,7 @@ def _build_linked_sql_context(
     return "[연결된 SQL] " + " || ".join(parts)
 
 
-LINKED_ARCHITECTURE_CONTEXT_MAX = int(os.environ.get("EXP_STEP6_CONTEXT_MAX", "8000"))
+LINKED_ARCHITECTURE_CONTEXT_MAX = int(os.environ.get("ANALYSIS_CONTEXT_MAX", "8000"))
 
 
 def _build_linked_architecture_context(
@@ -236,8 +236,6 @@ def _invoke_analysis_llm(
     field_initial_values: Optional[str] = None,
     table_sample_data: Optional[str] = None,
     constants_context: Optional[str] = None,
-    custom_instructions: Optional[List[str]] = None,
-    allow_table_discovery: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """메서드 1개에 대해 analysis 규칙 실행 → summary/dependencies/stereotype.
 
@@ -323,10 +321,6 @@ def _invoke_analysis_llm(
         filtered = _filter_by_code_reference(constants_context.strip().split("\n"), code)
         if filtered:
             inputs["constants_context"] = "\n".join(filtered)
-    if custom_instructions:
-        inputs["custom_instructions"] = custom_instructions
-    if allow_table_discovery:
-        inputs["allow_table_discovery"] = True
     try:
         from util.prompt_registry import prompts
         result = prompts.execute_raw("framework", "code_analysis", inputs, api_key)
@@ -343,7 +337,7 @@ def _invoke_analysis_llm(
         )
         return out
     except Exception as e:
-        logger.error("[PHASE:STEP6] LLM 분석 실패 function_id=%s error=%s", m.function_id, e)
+        logger.error("[PHASE:3:CODE_ANALYSIS] LLM 분석 실패 function_id=%s error=%s", m.function_id, e)
         return None
 
 
@@ -363,8 +357,6 @@ def _analyze_code_node(
     table_sample_data: Optional[str] = None,
     constants_context: Optional[str] = None,
     referenced_vars_by_function: Optional[Dict[str, List[str]]] = None,
-    custom_instructions: Optional[List[str]] = None,
-    allow_table_discovery: bool = False,
 ) -> Tuple[str, Dict[str, Any]]:
     """단일 메서드에 대해 stereotype + (summary, dependencies) 계산."""
     cqrs_fallback = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
@@ -409,8 +401,6 @@ def _analyze_code_node(
             field_initial_values="\n".join(referenced_vars_by_function.get(m.function_id, [])) if referenced_vars_by_function else None,
             table_sample_data=table_sample_data or None,
             constants_context=constants_context or None,
-            custom_instructions=custom_instructions or None,
-            allow_table_discovery=allow_table_discovery,
         )
         if analysis:
             summary = analysis.get("summary") or summary
@@ -439,7 +429,7 @@ def _analyze_code_node(
     return m.function_id, data
 
 
-_STEP6_BATCH_SIZE = 20
+_ANALYSIS_BATCH_SIZE = 20
 
 
 def analyze_and_enrich(
@@ -459,15 +449,13 @@ def analyze_and_enrich(
     table_sample_data: Optional[str] = None,
     constants_context: Optional[str] = None,
     referenced_vars_by_function: Optional[Dict[str, List[str]]] = None,
-    custom_instructions: Optional[List[str]] = None,
-    allow_table_discovery: bool = False,
 ) -> Generator[Dict[str, Dict[str, Any]], None, None]:
     """메서드별 stereotype, summary — 20개씩 배치로 yield.
 
     - LLM 사용(O) + calls_edges 있음  → 호출 그래프 하위 → 상위 순으로 레벨별 병렬, 20개씩 yield.
     - 그 외(LLM 미사용 / calls_edges 없음) → 기존 방식대로 메서드 단위 개별 처리, 20개씩 yield.
     """
-    api_key = api_key or settings.llm.api_key or os.getenv("LLM_API_KEY", "")
+    api_key = api_key or settings.llm.api_key or ""
     module_key_index = _build_module_key_index(module_index or {})
     logger.info(
         "[PHASE:3:CODE_ANALYSIS] 요약 진입 | function_facts=%d use_llm=%s api_key_set=%s parallel=%s calls_edges=%d",
@@ -517,8 +505,6 @@ def analyze_and_enrich(
                         table_sample_data,
                         constants_context,
                         referenced_vars_by_function,
-                        custom_instructions,
-                        allow_table_discovery,
                     ): m
                     for m in function_facts_list
                 }
@@ -528,7 +514,7 @@ def analyze_and_enrich(
                         batch[function_id] = data
                     except Exception as e:
                         m = futures[future]
-                        logger.error("[PHASE:STEP6] 병렬 분석 예외 function_id=%s: %s", m.function_id, e)
+                        logger.error("[PHASE:3:CODE_ANALYSIS] 병렬 분석 예외 function_id=%s: %s", m.function_id, e)
                         stereotype = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
                         batch[m.function_id] = {
                             "stereotype": stereotype,
@@ -538,7 +524,7 @@ def analyze_and_enrich(
                             "dependencies": [],
                         }
                     completed += 1
-                    if len(batch) >= _STEP6_BATCH_SIZE:
+                    if len(batch) >= _ANALYSIS_BATCH_SIZE:
                         total_yielded += len(batch)
                         logger.debug("[PHASE:3:CODE_ANALYSIS] 배치 yield  %d/%d", total_yielded, total)
                         yield _flush_batch(batch)
@@ -570,12 +556,10 @@ def analyze_and_enrich(
                         table_sample_data,
                         constants_context,
                         referenced_vars_by_function,
-                        custom_instructions,
-                        allow_table_discovery,
                     )
                     batch[function_id] = data
                 except Exception as e:
-                    logger.error("[PHASE:STEP6] 순차 분석 예외 function_id=%s: %s", m.function_id, e)
+                    logger.error("[PHASE:3:CODE_ANALYSIS] 순차 분석 예외 function_id=%s: %s", m.function_id, e)
                     stereotype = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
                     batch[m.function_id] = {
                         "stereotype": stereotype,
@@ -584,7 +568,7 @@ def analyze_and_enrich(
                         "calls": [],
                         "dependencies": [],
                     }
-                if len(batch) >= _STEP6_BATCH_SIZE:
+                if len(batch) >= _ANALYSIS_BATCH_SIZE:
                     total_yielded += len(batch)
                     yield _flush_batch(batch)
                     batch.clear()
@@ -652,8 +636,6 @@ def analyze_and_enrich(
             table_sample_data,
             constants_context,
             referenced_vars_by_function,
-            custom_instructions,
-            allow_table_discovery,
         )
         return node_id, data
 
@@ -685,7 +667,7 @@ def analyze_and_enrich(
                     batch[node_id] = data
                     processed_id = node_id
                 except Exception as e:
-                    logger.error("[PHASE:STEP6] 호출 그래프 요약 예외 function_id=%s: %s", nid, e)
+                    logger.error("[PHASE:3:CODE_ANALYSIS] 호출 그래프 요약 예외 function_id=%s: %s", nid, e)
                     m = fact_by_id[nid]
                     stereotype = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
                     fallback = {
@@ -709,7 +691,7 @@ def analyze_and_enrich(
                             futures[executor.submit(summarize_one, p)] = p
 
                 # 20개 모이면 yield
-                if len(batch) >= _STEP6_BATCH_SIZE:
+                if len(batch) >= _ANALYSIS_BATCH_SIZE:
                     total_yielded += len(batch)
                     logger.debug("[PHASE:3:CODE_ANALYSIS] 배치 yield  %d개", len(batch))
                     yield _flush_batch(batch)
@@ -748,12 +730,10 @@ def analyze_and_enrich(
                     table_sample_data,
                     constants_context,
                     referenced_vars_by_function,
-                    custom_instructions,
-                    allow_table_discovery,
                 )
                 batch[mid] = data
             except Exception as e:
-                logger.error("[PHASE:STEP6] remaining 노드 개별 처리 예외 function_id=%s: %s", mid, e)
+                logger.error("[PHASE:3:CODE_ANALYSIS] remaining 노드 개별 처리 예외 function_id=%s: %s", mid, e)
                 stereotype = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
                 batch[mid] = {
                     "stereotype": stereotype,
@@ -762,7 +742,7 @@ def analyze_and_enrich(
                     "calls": [],
                     "dependencies": [],
                 }
-            if len(batch) >= _STEP6_BATCH_SIZE:
+            if len(batch) >= _ANALYSIS_BATCH_SIZE:
                 total_yielded += len(batch)
                 yield _flush_batch(batch)
                 batch.clear()
@@ -771,155 +751,6 @@ def analyze_and_enrich(
             yield _flush_batch(batch)
 
     logger.info("[PHASE:3:CODE_ANALYSIS] 호출 그래프 기반 요약 완료 | summary_count=%d", total_yielded)
-
-
-def _build_variable_code_map(
-    run_dir: str,
-) -> Dict[str, str]:
-    """ChunkBundle에서 variable_id -> code 맵 구성 (`{run_dir}/chunk_bundles` 기준)."""
-    from analyzer.strategy.framework.parsing.chunk_bundle import (
-        _get_chunk_bundle_dir_from_run_dir,
-        load_field_chunks_from_bundles,
-    )
-    chunk_dir = _get_chunk_bundle_dir_from_run_dir(run_dir)
-    chunks = load_field_chunks_from_bundles(chunk_bundle_dir=chunk_dir)
-    return {c["variable_id"]: (c.get("code") or "") for c in chunks if c.get("variable_id") and c.get("code")}
-
-
-def _get_variable_code_from_ref(
-    code_ref: Optional[str],
-    start_line: int,
-    end_line: int,
-    data_dir: str,
-) -> str:
-    """code_ref(path:start-end)와 라인 범위로 소스에서 필드 코드 추출."""
-    if not code_ref or ":" not in code_ref:
-        return ""
-    path_part = code_ref[: code_ref.index(":")]
-    path = Path(data_dir) / path_part if data_dir else Path(path_part)
-    if not path.is_file():
-        return ""
-    try:
-        raw = read_text_with_fallback_sync(path)
-        text_with_lines = add_line_numbers(raw)
-        return slice_by_line_range(text_with_lines, start_line, end_line)
-    except Exception as e:
-        logger.warning("소스 파일 읽기 실패 | path=%s error=%s", path, e)
-        return ""
-
-
-def _invoke_variable_summary_llm(
-    field: VariableFacts,
-    code: str,
-    module_comment: Optional[str],
-    module_annotations: Optional[str],
-    api_key: str,
-    locale: str = "ko",
-) -> Optional[str]:
-    """필드 1개에 대해 variable_summary 규칙 실행 → summary 반환."""
-    if not api_key or not (code or "").strip():
-        return None
-    inputs: Dict[str, Any] = {
-        "code": (code or "").strip(),
-        "locale": locale,
-        "variable_name": field.name,
-        "variable_type": getattr(field, "variable_type", None),
-        "variable_comment": getattr(field, "comment", None),
-        "variable_annotations": getattr(field, "annotations", None),
-    }
-    if module_comment:
-        inputs["module_comment"] = module_comment
-    if module_annotations:
-        inputs["module_annotations"] = module_annotations
-    try:
-        from util.prompt_registry import prompts
-        result = prompts.execute_raw("framework", "variable_summary", inputs, api_key)
-        if isinstance(result, Dict) and result.get("summary"):
-            return result["summary"]
-    except Exception as e:
-        logger.error("[PHASE:STEP6] variable_summary LLM 실패 variable_id=%s: %s", field.variable_id, e)
-    return None
-
-
-def run_variable_summary(
-    variable_facts_list: List[VariableFacts],
-    module_index: Dict[str, Any],
-    run_dir: str,
-    data_dir: str = "",
-    api_key: Optional[str] = None,
-    locale: str = "ko",
-) -> Generator[Dict[str, Dict[str, Any]], None, None]:
-    """필드별 요약 — 완료 즉시 yield."""
-    api_key = api_key or settings.llm.api_key or os.getenv("LLM_API_KEY", "")
-    if not variable_facts_list:
-        logger.info("[PHASE:3:CODE_ANALYSIS] Variable 요약 스킵 | variable_facts=0")
-        return
-    module_key_index = _build_module_key_index(module_index or {})
-    variable_code_map = _build_variable_code_map(run_dir)
-    logger.info(
-        "[PHASE:3:CODE_ANALYSIS] Variable 요약 진입 | variables=%d api_key_set=%s variable_code_from_bundles=%d",
-        len(variable_facts_list),
-        bool(api_key),
-        len(variable_code_map),
-    )
-
-    def process_one(f: VariableFacts) -> Tuple[str, Dict[str, Any]]:
-        code = variable_code_map.get(f.variable_id) or _get_variable_code_from_ref(
-            f.code_ref,
-            f.start_line,
-            f.end_line,
-            data_dir,
-        )
-        module_comment, module_annotations = _get_module_context(module_key_index, f.module_key)
-        summary = ""
-        if code.strip() and api_key:
-            summary = _invoke_variable_summary_llm(f, code, module_comment, module_annotations, api_key, locale) or ""
-        if not summary:
-            if code.strip():
-                summary = f"{f.name} ({getattr(f, 'variable_type', '') or '?'}); lines {f.start_line}-{f.end_line}"
-            else:
-                summary = f"{f.name}; lines {f.start_line}-{f.end_line}"
-        return f.variable_id, {
-            "summary": summary,
-            "name": f.name,
-            "variable_type": getattr(f, "variable_type", None),
-        }
-
-    _FIELD_BATCH_SIZE = 20
-    total_yielded = 0
-    batch: Dict[str, Dict[str, Any]] = {}
-    workers = settings.concurrency.max_concurrency
-    if workers > 1:
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {executor.submit(process_one, f): f for f in variable_facts_list}
-            for future in as_completed(futures):
-                try:
-                    variable_id, data = future.result()
-                    total_yielded += 1
-                    batch[variable_id] = data
-                except Exception as e:
-                    f = futures[future]
-                    logger.error("[PHASE:STEP6] Variable 요약 예외 variable_id=%s: %s", f.variable_id, e)
-                    total_yielded += 1
-                    batch[f.variable_id] = {
-                        "summary": f"{f.name}; lines {f.start_line}-{f.end_line}",
-                        "name": f.name,
-                        "variable_type": getattr(f, "variable_type", None),
-                    }
-                if len(batch) >= _FIELD_BATCH_SIZE:
-                    yield batch
-                    batch = {}
-    else:
-        for f in variable_facts_list:
-            variable_id, data = process_one(f)
-            total_yielded += 1
-            batch[variable_id] = data
-            if len(batch) >= _FIELD_BATCH_SIZE:
-                yield batch
-                batch = {}
-    if batch:
-        yield batch
-    logger.info("[PHASE:3:CODE_ANALYSIS] Variable 요약 완료 | summary_count=%d", total_yielded)
 
 
 
@@ -960,7 +791,7 @@ def _invoke_module_summary_llm(
             unified_actors = result.get("unified_actors") or {}
             return summary, module_stereotype, unified_actors
     except Exception as e:
-        logger.error("[PHASE:STEP6] module_summary_batch LLM 실패 module_fqn=%s: %s", module_fqn, e)
+        logger.error("[PHASE:3:CODE_ANALYSIS] module_summary_batch LLM 실패 module_fqn=%s: %s", module_fqn, e)
     return None, "", {}
 
 
@@ -974,7 +805,7 @@ def run_module_summary(
     locale: str = "ko",
 ) -> Generator[Dict[str, Dict[str, Any]], None, None]:
     """모듈별 요약 — 모듈 완료 즉시 yield."""
-    api_key = api_key or settings.llm.api_key or os.getenv("LLM_API_KEY", "")
+    api_key = api_key or settings.llm.api_key or ""
     module_key_index = _build_module_key_index(module_index or {})
     # module_key → kind 매핑 (FILE, STRUCT, CLASS 등)
     key_to_kind: Dict[str, str] = {}
@@ -1105,7 +936,7 @@ def run_module_summary(
                     summary = ""
                     module_stereotype = ""
                     unified = {}
-                    logger.error("[PHASE:STEP6] Module 요약 예외 module=%s: %s", module_fqn, e)
+                    logger.error("[PHASE:3:CODE_ANALYSIS] Module 요약 예외 module=%s: %s", module_fqn, e)
                 total_yielded += 1
                 batch[module_fqn] = {"summary": summary, "moduleStereotype": module_stereotype, "unified_actors": unified}
                 if len(batch) >= _CLASS_BATCH_SIZE:

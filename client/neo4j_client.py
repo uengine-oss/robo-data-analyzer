@@ -259,34 +259,6 @@ class Neo4jClient:
         except Exception as e:
             logging.warning(f"제약조건 보장 중 경고: {e}")
 
-    async def execute_with_params(
-        self,
-        query: str,
-        params: dict[str, Any],
-    ) -> list[Any]:
-        """UNWIND 배치용 - 파라미터와 함께 단일 쿼리 실행
-        
-        DDL 처리, 벡터라이징 등 대량 데이터 처리에 사용.
-        
-        예시:
-            query = "UNWIND $items AS item MERGE (__cy_t__:Table {name: item.name})"
-            params = {"items": [{"name": "users"}, {"name": "orders"}]}
-            → 1번 Neo4j 호출로 2개 테이블 생성
-        
-        Args:
-            query: UNWIND $items AS item 형태의 Cypher 쿼리
-            params: {"items": [...]} 형태의 파라미터
-            
-        Returns:
-            쿼리 결과 데이터 리스트
-        """
-        try:
-            async with self._driver.session(database=self._database) as session:
-                result = await session.run(query, params)
-                return await result.data()
-        except Exception as e:
-            raise RuntimeError(f"파라미터 쿼리 실행 중 오류 발생: {e}") from e
-
     async def run_batch_unwind(
         self,
         query: str,

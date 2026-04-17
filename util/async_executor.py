@@ -122,23 +122,6 @@ class AsyncBatchExecutor:
 
         return list(results)
 
-    async def run_parallel(self, *coroutines: Awaitable[Any], label: str = "") -> List[Any]:
-        """여러 코루틴을 병렬 실행. 개별 실패는 예외 객체로 반환.
-
-        Args:
-            *coroutines: 병렬 실행할 코루틴들
-            label: 로깅용 라벨
-
-        Returns:
-            결과 리스트 (실패한 것은 Exception 객체)
-        """
-        results = await asyncio.gather(*coroutines, return_exceptions=True)
-        for i, r in enumerate(results):
-            if isinstance(r, Exception):
-                logger.error("[PARALLEL:%s] 코루틴 %d 실패 | error=%s", label, i, r, exc_info=r)
-        return list(results)
-
-
 # ── 전역 인스턴스 (settings에서 설정값 로드) ──
 
 _global_limiter: Optional[LLMRateLimiter] = None

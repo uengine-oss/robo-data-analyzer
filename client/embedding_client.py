@@ -41,22 +41,4 @@ class EmbeddingClient:
             encoding_format="float"
         )
         return [item.embedding for item in response.data]
-    
-    @staticmethod
-    def format_table_text(table_name: str, description: str = "", columns: List[str] = None) -> str:
-        """Format table metadata for embedding"""
-        parts = [f"Table: {table_name}"]
-        if description:
-            parts.append(f"Description: {description}")
-        if columns:
-            parts.append(f"Columns: {', '.join(columns)}")
-        return " | ".join(parts)
-    
-    @staticmethod
-    def format_column_text(column_name: str, table_name: str, dtype: str, description: str = "") -> str:
-        """Format column metadata for embedding"""
-        parts = [f"Column: {table_name}.{column_name}", f"Type: {dtype}"]
-        if description:
-            parts.append(f"Description: {description}")
-        return " | ".join(parts)
 

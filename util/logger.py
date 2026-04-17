@@ -111,31 +111,6 @@ def get_logger(name: str) -> logging.Logger:
     return logging.getLogger(name)
 
 
-class log_context:
-    """로그 컨텍스트 매니저
-    
-    with 블록 내에서 모든 로그에 컨텍스트 정보 추가.
-    
-    사용법:
-        with log_context(file="test.java", phase="LLM"):
-            logger.info("작업 수행")  # file=test.java, phase=LLM 자동 추가
-    """
-    
-    def __init__(self, **kwargs):
-        self.new_context = kwargs
-        self.token = None
-    
-    def __enter__(self):
-        current = _log_context.get()
-        merged = {**current, **self.new_context}
-        self.token = _log_context.set(merged)
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.token:
-            _log_context.reset(self.token)
-
-
 def log_process(
     context: str,
     stage: str,
