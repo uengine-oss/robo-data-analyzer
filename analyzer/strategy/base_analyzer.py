@@ -27,7 +27,7 @@ from config.settings import settings
 # 실행 로그 파일명 (logs/ 디렉터리 아래에 기록)
 ANALYZER_LOG_FILENAME = "analyzer.log"
 ERROR_LOG_FILENAME = "error.log"
-from util.ndjson_stream import (
+from util.stream_emitter import (
     emit_message,
     emit_error,
     emit_complete,
@@ -261,7 +261,7 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
 
         graph_data = {"Nodes": nodes, "Relationships": relationships}
 
-        from analyzer.report import generate_analysis_report_from_graph
+        from analyzer.common.report import generate_analysis_report_from_graph
         return generate_analysis_report_from_graph(graph_data)
 
     # =========================================================================

@@ -13,7 +13,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Iterable, Optional
 
-from analyzer.strategy.framework.common.constants import SKIP_DIRS
+from analyzer.strategy.framework.common.analysis_constants import SKIP_DIRS
 
 try:
     from tree_sitter_language_pack import get_parser

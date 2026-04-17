@@ -1,0 +1,348 @@
+"""ChunkBundle I/O: 생성, 직렬화, 로드, 검색."""
+
+from __future__ import annotations
+
+import ast
+import hashlib
+import json
+import logging
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from config.settings import settings
+from util.encoding_reader import read_text_with_fallback_sync
+from util.code_text_utils import (
+    add_line_numbers,
+    slice_by_line_range,
+)
+from analyzer.strategy.framework.common.node_models import (
+    ChunkBundle,
+    ChunkBundleFile,
+    ChunkBundleMemberVar,
+    ChunkBundleMethod,
+    ChunkBundleFunctionCall,
+    ChunkBundleLocalVar,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def _span_index_key(file_path: str, start_line: int, end_line: int) -> str:
+    """LangSmith 직렬화용: tuple 대신 문자열 키 사용."""
+    return repr((file_path, start_line, end_line))
+
+
+def _get_chunk_bundle_dir_from_run_dir(run_dir: str) -> str:
+    """ChunkBundle 디렉터리는 항상 `{run_dir}/chunk_bundles` 하위에 위치한다."""
+    if not run_dir:
+        raise ValueError("run_dir 이 비어있음 - ChunkBundle 경로를 결정할 수 없음")
+    return str(Path(run_dir) / "chunk_bundles")
+
+
+def _file_hash(path: Path, encoding: str = "utf-8") -> Optional[str]:
+    try:
+        raw = path.read_bytes()
+        return hashlib.sha256(raw).hexdigest()[:16]
+    except Exception:
+        return None
+
+
+def build_chunk_bundle_from_source(
+    source_path: str | Path,
+    encoding: Optional[str],
+    methods: List[Dict[str, Any]],  # function_id, start_line, end_line
+    function_calls: List[Dict[str, Any]],  # parent_function_id, call_id, start_line, end_line
+    variables: List[Dict[str, Any]],  # parent_function_id, var_name, var_type, start_line, end_line, flags
+    fields: Optional[List[Dict[str, Any]]] = None,  # variable_id, start_line, end_line
+) -> Optional[ChunkBundle]:
+    """원본 소스를 slice하여 function_code/call_code를 채운 ChunkBundle 생성.
+
+    analysis JSON이 있는 파일에 대해서만 호출. source_path에 해당 파일이 없으면 None.
+    """
+    path = Path(source_path)
+    if not path.is_file():
+        logger.info("[PHASE:1:CHUNK] 번들 스킵 | reason=not_file file=%s", path.name)
+        logger.debug("ChunkBundle 스킵 (소스 없음): %s", path.name)
+        return None
+
+    try:
+        raw = read_text_with_fallback_sync(path)
+        text_with_lines = add_line_numbers(raw)
+    except Exception as e:
+        logger.error("[PHASE:1:CHUNK] 소스 읽기 실패 | path=%s error=%s", path, e, exc_info=True)
+        return None
+
+    file_hash_val = _file_hash(path, encoding or "utf-8")
+    file_meta = ChunkBundleFile(
+        file_path=str(path),
+        file_hash=file_hash_val,
+        encoding=encoding,
+    )
+
+    bundle_methods: List[ChunkBundleMethod] = []
+    for m in methods:
+        start_line = int(m.get("start_line", 0))
+        end_line = int(m.get("end_line", 0))
+        function_code = slice_by_line_range(text_with_lines, start_line, end_line) if end_line >= start_line else None
+        bundle_methods.append(
+            ChunkBundleMethod(
+                function_id=m["function_id"],
+                start_line=start_line,
+                end_line=end_line,
+                function_code=function_code,
+            )
+        )
+
+    bundle_calls: List[ChunkBundleFunctionCall] = []
+    for c in function_calls:
+        start_line = int(c.get("start_line", 0))
+        end_line = int(c.get("end_line", 0))
+        call_code = slice_by_line_range(text_with_lines, start_line, end_line) if end_line >= start_line else ""
+        bundle_calls.append(
+            ChunkBundleFunctionCall(
+                parent_function_id=c["parent_function_id"],
+                call_id=c["call_id"],
+                start_line=start_line,
+                end_line=end_line,
+                call_code=call_code,
+            )
+        )
+
+    bundle_local_vars: List[ChunkBundleLocalVar] = []
+    for v in variables:
+        start_line = int(v.get("start_line", 0))
+        end_line = int(v.get("end_line", 0))
+        flags = v.get("flags")
+        initializer_code = None
+        if flags and flags.get("initializerContainsMethodCall") and end_line >= start_line:
+            initializer_code = slice_by_line_range(text_with_lines, start_line, end_line)
+        bundle_local_vars.append(
+            ChunkBundleLocalVar(
+                parent_function_id=v["parent_function_id"],
+                var_name=v["var_name"],
+                var_type=v.get("var_type"),
+                start_line=start_line,
+                end_line=end_line,
+                flags=flags,
+                initializer_code=initializer_code,
+            )
+        )
+
+    bundle_member_vars: List[ChunkBundleMemberVar] = []
+    for f in fields or []:
+        start_line = int(f.get("start_line", 0))
+        end_line = int(f.get("end_line", 0))
+        variable_code = slice_by_line_range(text_with_lines, start_line, end_line) if end_line >= start_line else None
+        bundle_member_vars.append(
+            ChunkBundleMemberVar(
+                variable_id=f["variable_id"],
+                start_line=start_line,
+                end_line=end_line,
+                variable_code=variable_code,
+            )
+        )
+
+    out = ChunkBundle(
+        file_meta=file_meta,
+        methods=bundle_methods,
+        function_calls=bundle_calls,
+        local_vars=bundle_local_vars,
+        member_vars=bundle_member_vars,
+    )
+    logger.info(
+        "[PHASE:1:CHUNK] 번들 생성 완료 | file=%s methods=%d function_calls=%d local_vars=%d member_vars=%d",
+        path.name,
+        len(bundle_methods),
+        len(bundle_calls),
+        len(bundle_local_vars),
+        len(bundle_member_vars),
+    )
+    return out
+
+
+def _bundle_to_dict(bundle: ChunkBundle) -> Dict[str, Any]:
+    """ChunkBundle을 JSON 직렬화 가능한 dict로."""
+    from dataclasses import asdict
+    return {
+        "file_meta": asdict(bundle.file_meta),
+        "methods": [asdict(m) for m in bundle.methods],
+        "function_calls": [asdict(c) for c in bundle.function_calls],
+        "local_vars": [asdict(v) for v in bundle.local_vars],
+        "member_vars": [asdict(f) for f in bundle.member_vars],
+    }
+
+
+def _dict_to_bundle(data: Dict[str, Any]) -> ChunkBundle:
+    """dict에서 ChunkBundle 복원."""
+    def local_var_from_dict(v: Dict[str, Any]) -> ChunkBundleLocalVar:
+        return ChunkBundleLocalVar(
+            parent_function_id=v["parent_function_id"],
+            var_name=v["var_name"],
+            var_type=v.get("var_type"),
+            start_line=int(v.get("start_line", 0)),
+            end_line=int(v.get("end_line", 0)),
+            flags=v.get("flags"),
+            initializer_code=v.get("initializer_code"),
+        )
+    member_vars_data = data.get("member_vars") or data.get("fields") or []
+    return ChunkBundle(
+        file_meta=ChunkBundleFile(**data["file_meta"]),
+        methods=[ChunkBundleMethod(**m) for m in data["methods"]],
+        function_calls=[ChunkBundleFunctionCall(**c) for c in data.get("function_calls") or data.get("method_calls") or []],
+        local_vars=[local_var_from_dict(v) for v in data.get("local_vars") or data.get("variables") or []],
+        member_vars=[ChunkBundleMemberVar(**f) for f in member_vars_data],
+    )
+
+
+def save_chunk_bundle(
+    bundle: ChunkBundle,
+    relative_key: str,
+    chunk_bundle_out_dir: str,
+) -> str:
+    """ChunkBundle 을 `{run_dir}/chunk_bundles/{relative_key}.json` 으로 저장.
+
+    relative_key 는 경로 구분자를 `_` 로 치환한 식별자 (예: com_example_Foo).
+    """
+    if not chunk_bundle_out_dir:
+        raise ValueError("chunk_bundle_out_dir 필수 - run_dir 기반 경로를 전달해야 함")
+    out_dir = Path(chunk_bundle_out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    safe_key = relative_key.replace("/", "_").replace("\\", "_").strip("_")
+    if not safe_key.endswith(".json"):
+        safe_key = f"{safe_key}.json"
+    out_path = out_dir / safe_key
+    out_path.write_text(
+        json.dumps(_bundle_to_dict(bundle), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return str(out_path)
+
+
+def load_chunk_bundle(path: str | Path) -> ChunkBundle:
+    """ChunkBundle JSON 파일에서 로드."""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    return _dict_to_bundle(data)
+
+
+
+def build_bundle_span_index(
+    chunk_bundle_dir: str,
+    artifact_index: Optional[Dict[str, Any]] = None,
+    sql_index: Optional[Dict[str, Any]] = None,
+) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
+    """ChunkBundle 전체 로드 후 span_index(문자열 키), chunk_index 반환.
+
+    artifact_index, sql_index가 전달되면 해당 청크도 chunk_index에 통합하여
+    bundle_search()로 소스코드·XML·SQL 통합 검색이 가능하도록 한다.
+    """
+    if not chunk_bundle_dir:
+        raise ValueError("chunk_bundle_dir 필수")
+    base = Path(chunk_bundle_dir)
+    span_index: Dict[str, Dict[str, Any]] = {}
+    chunk_index: Dict[str, Dict[str, Any]] = {}
+    if not base.is_dir():
+        logger.info("[PHASE:1:CHUNK] span_index 스킵 | reason=dir_not_found dir=%s", base.name)
+    else:
+        for path in base.glob("*.json"):
+            try:
+                bundle = load_chunk_bundle(path)
+                fp = bundle.file_meta.file_path
+                for m in bundle.methods:
+                    if m.function_code:
+                        key = _span_index_key(fp, m.start_line, m.end_line)
+                        cid = m.function_id
+                        span_index[key] = {"chunk_id": cid, "text": m.function_code, "filePath": fp, "span": [m.start_line, m.end_line]}
+                        chunk_index[cid] = {"filePath": fp, "span": [m.start_line, m.end_line], "text": m.function_code}
+                for c in bundle.function_calls:
+                    if c.call_code:
+                        key = _span_index_key(fp, c.start_line, c.end_line)
+                        cid = c.call_id
+                        span_index[key] = {"chunk_id": cid, "text": c.call_code, "filePath": fp, "span": [c.start_line, c.end_line]}
+                        chunk_index[cid] = {"filePath": fp, "span": [c.start_line, c.end_line], "text": c.call_code}
+                for v in bundle.local_vars:
+                    if v.initializer_code:
+                        key = _span_index_key(fp, v.start_line, v.end_line)
+                        cid = f"C:{v.start_line}:{v.end_line}:var"
+                        span_index[key] = {"chunk_id": cid, "text": v.initializer_code, "filePath": fp, "span": [v.start_line, v.end_line]}
+                        chunk_index[cid] = {"filePath": fp, "span": [v.start_line, v.end_line], "text": v.initializer_code}
+            except Exception as e:
+                logger.debug("ChunkBundle 인덱스 스킵 %s: %s", path.name, e)
+
+    # artifact 청크 (XML entity 정의, EJB 매핑 등) 통합
+    art_count = 0
+    for cid, ac in (artifact_index or {}).items():
+        text = (getattr(ac, "text", "") or "").strip()
+        if not text:
+            continue
+        fp = getattr(ac, "source_path", "")
+        sl = getattr(ac, "start_line", 0)
+        el = getattr(ac, "end_line", 0)
+        chunk_index[cid] = {"filePath": fp, "span": [sl, el], "text": text, "chunk_type": "artifact"}
+        art_count += 1
+
+    # SQL 청크 (SQL 매핑 XML의 SQL문) 통합
+    sql_count = 0
+    for sql_key, stmt in (sql_index or {}).items():
+        text = (getattr(stmt, "sql_text", "") or "").strip()
+        if not text:
+            continue
+        fp = getattr(stmt, "file_path", "")
+        sl = getattr(stmt, "start_line", 0)
+        el = getattr(stmt, "end_line", 0)
+        chunk_index[sql_key] = {"filePath": fp, "span": [sl, el], "text": text, "chunk_type": "sql"}
+        sql_count += 1
+
+    logger.info(
+        "[PHASE:1:CHUNK] span_index 완료 | span_count=%d chunk_count=%d (artifact=%d sql=%d)",
+        len(span_index), len(chunk_index), art_count, sql_count,
+    )
+    return span_index, chunk_index
+
+
+def bundle_search(
+    data_dir: str,
+    query: str,
+    kind: str = "text",
+    span_index: Optional[Dict[str, Dict[str, Any]]] = None,
+    chunk_index: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """번들에서 query 검색. kind: symbol|text. 반환: [{chunk_id, filePath, span, score}]."""
+    if span_index is None or chunk_index is None:
+        span_index, chunk_index = build_bundle_span_index(data_dir)
+    results: List[Dict[str, Any]] = []
+    query_lower = (query or "").strip().lower()
+    if not query_lower:
+        return results
+    for cid, info in chunk_index.items():
+        text = (info.get("text") or "")
+        if not text:
+            continue
+        if kind == "symbol":
+            # chunk_id(FQN)에서도 검색 + 코드 텍스트에서도 검색
+            if query_lower in cid.lower() or query_lower in text.lower() or (query or "").strip() in text:
+                results.append({
+                    "chunk_id": cid,
+                    "filePath": info.get("filePath", ""),
+                    "span": info.get("span", [0, 0]),
+                    "score": 0.9,
+                })
+        else:
+            if query_lower in text.lower():
+                results.append({
+                    "chunk_id": cid,
+                    "filePath": info.get("filePath", ""),
+                    "span": info.get("span", [0, 0]),
+                    "score": 0.85,
+                })
+    return results[:50]
+
+
+def bundle_get_chunk(
+    chunk_id: str,
+    chunk_index: Dict[str, Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """chunk_id로 번들 청크 조회. chunk_index는 미리 build_bundle_span_index 로 구성되어 있어야 한다."""
+    info = chunk_index.get(chunk_id)
+    if not info:
+        return None
+    return {"text": info.get("text", ""), "filePath": info.get("filePath", ""), "span": info.get("span", [0, 0])}

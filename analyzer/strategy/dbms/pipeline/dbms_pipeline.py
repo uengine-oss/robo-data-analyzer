@@ -12,11 +12,11 @@ from typing import Any, AsyncGenerator, Optional, List, Dict, Tuple
 
 from client.neo4j_client import Neo4jClient
 from analyzer.strategy.base_analyzer import BaseStreamingAnalyzer, AnalysisStats
-from analyzer.strategy.dbms.common.models import FileStatus, FileAnalysisContext
-from analyzer.pipeline_control import pipeline_controller, PipelinePhase
+from analyzer.strategy.dbms.common.node_models import FileStatus, FileAnalysisContext
+from analyzer.common.pipeline_control import pipeline_controller, PipelinePhase
 from config.settings import settings
-from util.encoding_utils import read_text_with_fallback
-from util.ndjson_stream import (
+from util.encoding_reader import read_text_with_fallback
+from util.stream_emitter import (
     emit_message,
     emit_phase_event,
     emit_separator,
@@ -28,7 +28,7 @@ from util.ndjson_stream import (
 
 from analyzer.strategy.dbms.pipeline.phase_ddl import run_phase_ddl
 from analyzer.strategy.dbms.pipeline.phase_ast import run_phase_ast
-from analyzer.strategy.dbms.pipeline.phase_llm import run_phase_llm
+from analyzer.strategy.dbms.pipeline.phase_analysis import run_phase_llm
 from analyzer.strategy.dbms.pipeline.phase_metadata import run_phase_metadata
 from analyzer.strategy.dbms.pipeline.phase_vector import run_phase_vector
 from analyzer.strategy.dbms.pipeline.phase_lineage import run_phase_lineage
@@ -98,7 +98,7 @@ class DbmsPipeline(BaseStreamingAnalyzer):
             yield emit_message(f"⚡ 병렬 처리: 파일 {settings.concurrency.file_concurrency}개 동시")
 
         # PhaseContext 생성
-        from analyzer.strategy.dbms.pipeline.state import DbmsPhaseContext
+        from analyzer.strategy.dbms.pipeline.pipeline_state import DbmsPhaseContext
         ctx = DbmsPhaseContext.create(self, client, orchestrator, stats)
 
         # ========== Phase 0: DDL 처리 ==========

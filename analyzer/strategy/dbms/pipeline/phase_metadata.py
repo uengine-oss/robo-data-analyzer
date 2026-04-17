@@ -12,7 +12,7 @@ import aiohttp
 
 from config.settings import settings
 from analyzer.strategy.base_analyzer import AnalysisStats
-from util.ndjson_stream import emit_message, emit_phase_event
+from util.stream_emitter import emit_message, emit_phase_event
 from util.logger import log_process
 
 logger = logging.getLogger(__name__)

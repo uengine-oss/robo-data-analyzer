@@ -34,7 +34,7 @@ class AnalyzerFactory:
     @classmethod
     def _load_strategies(cls) -> None:
         from .dbms.pipeline.dbms_pipeline import DbmsPipeline
-        from .framework.framework_pipeline import FrameworkPipeline
+        from .framework.pipeline.framework_pipeline import FrameworkPipeline
         cls._strategies = {
             "framework": FrameworkPipeline,
             "dbms": DbmsPipeline,

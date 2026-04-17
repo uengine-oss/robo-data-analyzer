@@ -5,7 +5,7 @@
 결과는 `pipeline_state.codebase_profile` 에 저장되어 후속 단계에서 hint 로 쓰인다.
 """
 
-from analyzer.strategy.framework.scanning.models import CodebaseInfo, CodebaseProfile
-from analyzer.strategy.framework.scanning.profile import profile
+from analyzer.strategy.framework.scanning.profile_models import CodebaseInfo, CodebaseProfile
+from analyzer.strategy.framework.scanning.codebase_profiler import profile
 
 __all__ = ["profile", "CodebaseProfile", "CodebaseInfo"]

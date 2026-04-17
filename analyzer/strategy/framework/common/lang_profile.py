@@ -16,7 +16,7 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-_INTERNAL_DIR = Path(__file__).resolve().parent.parent / "internal"
+_INTERNAL_DIR = Path(__file__).resolve().parent.parent / "data" / "stdlib"
 
 
 class LangProfile:

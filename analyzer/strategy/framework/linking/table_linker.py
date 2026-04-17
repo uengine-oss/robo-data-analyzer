@@ -14,13 +14,21 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
 
 from config.settings import settings
-from analyzer.strategy.framework.common.models import (
+from analyzer.strategy.framework.common.node_models import (
     ColumnRef,
     FkEdge,
     ReadsWritesEdge,
     SqlStatementChunk,
 )
-from util.text_utils import calculate_code_token as estimate_tokens
+from util.code_text_utils import calculate_code_token as estimate_tokens
+
+
+def sql_op_to_method_relation(sql_relation: str) -> str:
+    """SqlStatement->Table 연산(SELECT/INSERT/UPDATE/DELETE)을 Method->Table 관계(READS/WRITES)로 변환."""
+    r = (sql_relation or "").strip().upper()
+    if r in ("INSERT", "UPDATE", "DELETE"):
+        return "WRITES"
+    return "READS"
 # LLM 배치 결과 한 건: (tables, columns, fks, alias_map, table_descriptions). 문자열 주석으로 지연 평가해 스레드 첫 import 시 NameError 방지.
 SqlChunkRawResult = Tuple[
     List[Tuple[str, str, str]],
@@ -280,7 +288,7 @@ def _extract_tables_columns_fk_via_llm(
         return [], [], []
     text = (sql_text.strip() or "")[:SQL_LLM_CHUNK_MAX]
     try:
-        from util.prompt_registry import prompts
+        from util.llm_prompt_handler import prompts
         result = prompts.table_extract([{"sql_key": sql_key or "", "sql_text": text, "prev_summary": ""}], api_key)
         res_list = result.get("results") or []
         result_item = res_list[0] if res_list and isinstance(res_list[0], dict) else {}
@@ -299,7 +307,7 @@ def _extract_tables_columns_fk_batch_via_llm(
     """여러 SQL 청크를 한 번에 LLM에 보내 테이블/컬럼/FK/table_descriptions 추출."""
     if not batch or not api_key:
         return []
-    from util.prompt_registry import prompts
+    from util.llm_prompt_handler import prompts
     sql_items = []
     for i, c in enumerate(batch):
         sql_key = getattr(c, "sql_key", "")
@@ -541,7 +549,7 @@ async def link_sql_to_tables_async(
     LLMRateLimiter로 전역 동시성을 제어합니다.
     """
     import asyncio
-    from util.async_executor import get_rate_limiter
+    from util.llm_rate_limiter import get_rate_limiter
 
     edges: List[ReadsWritesEdge] = []
     fk_edges: List[FkEdge] = []
@@ -603,7 +611,7 @@ async def link_sql_to_tables_async(
 
         logger.info("[PHASE:2:TABLE_LLM] async 라운드 %d/%d | 청크=%d 배치=%d", round_i + 1, max_pieces, len(round_chunks), len(batches))
 
-        from util.async_executor import get_executor
+        from util.llm_rate_limiter import get_executor
         executor = get_executor()
 
         # 각 배치에 prev_summaries를 바인딩

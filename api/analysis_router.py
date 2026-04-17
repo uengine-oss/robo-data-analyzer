@@ -11,15 +11,39 @@ import logging
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
-from api.request_models import PipelineControlRequest
+from analyzer.common.pipeline_control import pipeline_controller
 from config.settings import settings
-from service import source_analyze_service, pipeline_control_service
-from util.request_helper import extract_api_key, extract_locale
-from util.ndjson_stream import stream_with_error_boundary
+from service import source_analyze_service
+from util.stream_emitter import stream_with_error_boundary
 
 router = APIRouter(prefix=settings.api_prefix)
 logger = logging.getLogger(__name__)
+
+
+def extract_api_key(request: Request, missing_status: int = 401) -> str:
+    """API 키 추출 (헤더에서만 추출, 환경변수 폴백 없음)"""
+    api_key = (
+        request.headers.get("OpenAI-Api-Key") or
+        request.headers.get("Anthropic-Api-Key")
+    )
+    if not api_key:
+        raise HTTPException(
+            missing_status,
+            "요청 헤더 누락: OpenAI-Api-Key 또는 Anthropic-Api-Key 헤더가 필요합니다."
+        )
+    return api_key
+
+
+def extract_locale(request: Request) -> str:
+    """Accept-Language 헤더에서 로케일 추출"""
+    return request.headers.get("Accept-Language", "ko")
+
+
+class PipelineControlRequest(BaseModel):
+    """파이프라인 제어 요청"""
+    action: str  # "pause" | "resume" | "stop"
 
 
 @router.post("/analyze/")
@@ -77,17 +101,29 @@ async def analyze_source_code(request: Request):
 @router.get("/pipeline/status")
 async def get_pipeline_status():
     """파이프라인 상태 조회"""
-    return pipeline_control_service.get_pipeline_status()
+    return pipeline_controller.get_status()
 
 
 @router.get("/pipeline/phases")
 async def get_pipeline_phases():
     """파이프라인 단계 정보 조회"""
-    return pipeline_control_service.get_pipeline_phases_info()
+    return pipeline_controller.get_phases_info()
 
 
 @router.post("/pipeline/control")
 async def control_pipeline(body: PipelineControlRequest):
     """파이프라인 제어 (pause/resume/stop)"""
     logger.info("[API] 파이프라인 제어 | action=%s", body.action)
-    return await pipeline_control_service.control_pipeline_action(body.action)
+    action_lower = body.action.lower()
+
+    if action_lower == "pause":
+        pipeline_controller.pause()
+        return {"message": "분석 일시정지됨"}
+    elif action_lower == "resume":
+        pipeline_controller.resume()
+        return {"message": "분석 재개됨"}
+    elif action_lower == "stop":
+        pipeline_controller.stop()
+        return {"message": "분석 중단됨"}
+    else:
+        raise HTTPException(400, f"지원하지 않는 액션: {body.action}")

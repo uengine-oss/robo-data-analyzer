@@ -14,21 +14,20 @@ from typing import Any, AsyncGenerator, Dict, List
 from client.neo4j_client import Neo4jClient
 from analyzer.strategy.base_analyzer import AnalysisStats
 from config.settings import settings
-from util.ndjson_stream import emit_message, emit_data, emit_phase_event
-from util.encoding_utils import read_text_with_fallback_sync as read_text_with_fallback, read_json_with_fallback
-from analyzer.strategy.framework._ast_core import (
+from util.stream_emitter import emit_message, emit_data, emit_phase_event
+from util.encoding_reader import read_text_with_fallback_sync as read_text_with_fallback, read_json_with_fallback
+from analyzer.strategy.framework.analysis.ast_collector import (
     FrameworkAstProcessor,
     MODULE_TYPES,
     VARIABLE_TYPES,
     FUNCTION_TYPES,
 )
-from analyzer.strategy.framework.parsing.chunk_bundle import (
+from analyzer.strategy.framework.analysis.chunk_bundle import (
     build_chunk_bundle_from_source,
     save_chunk_bundle,
     _get_chunk_bundle_dir_from_run_dir,
-    load_field_chunks_from_bundles,
 )
-from analyzer.strategy.framework.common.models import (
+from analyzer.strategy.framework.common.node_models import (
     FileCatalogEntry,
     ProcessingPlan,
     VariableFacts,
@@ -37,7 +36,7 @@ from analyzer.strategy.framework.common.models import (
     ConfigSectionChunk,
     ArtifactChunk,
 )
-from analyzer.strategy.framework.graph.queries import (
+from analyzer.strategy.framework.common.graph_queries import (
     build_package_queries,
     build_module_queries,
     build_function_queries,
@@ -52,11 +51,10 @@ from analyzer.strategy.framework.graph.queries import (
     build_config_section_queries,
     build_artifact_chunk_queries,
 )
-from analyzer.common.graph_writer import run_graph_queries
-from analyzer.strategy.framework.pipeline.progress import write_to_graph
-from analyzer.strategy.framework.parsing.ast_walker import extract_code_structure, _extract_package_fqns
-from analyzer.strategy.framework.parsing.parsers.base import parse_config_and_artifacts
-from analyzer.strategy.framework.parsing.indexer import build_search_indexes
+from analyzer.common.graph_writer import run_graph_queries, write_to_graph
+from analyzer.strategy.framework.analysis.ast_collector import extract_code_structure, _extract_package_fqns
+from analyzer.strategy.framework.analysis.parsers.base import parse_config_and_artifacts
+from analyzer.strategy.framework.analysis.lookup_builder import build_search_indexes
 from analyzer.strategy.framework.scanning import profile as build_codebase_profile
 
 logger = logging.getLogger(__name__)

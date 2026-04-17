@@ -6,6 +6,6 @@
 """
 
 from analyzer.strategy.dbms.pipeline.dbms_pipeline import DbmsPipeline
-from analyzer.strategy.dbms.parsing.ast_processor import DbmsAstProcessor
+from analyzer.strategy.dbms.analysis.ast_analyzer import DbmsAstProcessor
 
 __all__ = ["DbmsPipeline", "DbmsAstProcessor"]

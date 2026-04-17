@@ -8,7 +8,7 @@ from typing import Any, AsyncGenerator
 from client.neo4j_client import Neo4jClient
 from analyzer.strategy.base_analyzer import AnalysisStats
 from config.settings import settings
-from util.ndjson_stream import emit_message, emit_phase_event
+from util.stream_emitter import emit_message, emit_phase_event
 
 logger = logging.getLogger(__name__)
 

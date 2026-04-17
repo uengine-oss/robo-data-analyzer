@@ -8,11 +8,11 @@ from typing import Any, AsyncGenerator, List
 
 from client.neo4j_client import Neo4jClient
 from analyzer.strategy.base_analyzer import AnalysisStats
-from analyzer.strategy.dbms.common.models import FileStatus, FileAnalysisContext
-from analyzer.strategy.dbms.parsing.ast_processor import DbmsAstProcessor
-from analyzer.strategy.dbms.common.utils import resolve_default_schema
+from analyzer.strategy.dbms.common.node_models import FileStatus, FileAnalysisContext
+from analyzer.strategy.dbms.analysis.ast_analyzer import DbmsAstProcessor
+from analyzer.strategy.dbms.common.naming_helpers import resolve_default_schema
 from analyzer.common.graph_writer import run_graph_queries_collect
-from util.ndjson_stream import emit_data, emit_message, emit_phase_event
+from util.stream_emitter import emit_data, emit_message, emit_phase_event
 from util.logger import log_process
 
 logger = logging.getLogger(__name__)

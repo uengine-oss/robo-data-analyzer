@@ -18,7 +18,7 @@ from neo4j import AsyncGraphDatabase
 
 from config.settings import settings
 # Exceptions: 모든 커스텀 예외는 RuntimeError로 대체됨
-from analyzer.pipeline_control import pipeline_controller
+from analyzer.common.pipeline_control import pipeline_controller
 
 # Neo4j notification warnings 무시
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="neo4j")
