@@ -47,15 +47,13 @@ def compute_stereotype(
     refer_to_edges: List[ReferToEdge],
     reads_writes: List[ReadsWritesEdge],
 ) -> str:
-    """쓰기(WRITES/INSERT/UPDATE/DELETE) 존재 → command, 조회만(상태 변화 없음) → readmodel."""
+    """테이블 접근 기반 stereotype fallback. 쓰기 있으면 Command, 아니면 Query."""
     sql_keys = {e.target_id for e in refer_to_edges if e.function_id == function_id and e.target_type == "SqlStatement"}
     writes = any(
         rw.sql_key in sql_keys and rw.relation in ("WRITES", "INSERT", "UPDATE", "DELETE")
         for rw in reads_writes
     )
-    if writes:
-        return "command"
-    return "readmodel"
+    return "Command" if writes else "Query"
 
 
 def _build_module_key_index(module_index: Dict[str, Any]) -> Dict[str, Tuple[Optional[str], Optional[str]]]:
@@ -321,24 +319,23 @@ def _invoke_analysis_llm(
         filtered = _filter_by_code_reference(constants_context.strip().split("\n"), code)
         if filtered:
             inputs["constants_context"] = "\n".join(filtered)
-    try:
-        from util.llm_prompt_handler import prompts
-        result = prompts.execute_raw("framework", "code_analysis", inputs, api_key)
-        analysis_list = result.get("analysis") if isinstance(result, dict) else None
-        if not analysis_list:
-            logger.info("[PHASE:3:CODE_ANALYSIS] LLM 스킵 | function_id=%s reason=empty_analysis_result", m.function_id)
-            return None
-        out = analysis_list[0]
-        logger.info(
-            "[PHASE:3:CODE_ANALYSIS] LLM 분석 완료 | function_id=%s has_summary=%s dependencies=%d",
-            m.function_id,
-            bool(out.get("summary")),
-            len(out.get("dependencies") or []),
-        )
-        return out
-    except Exception as e:
-        logger.error("[PHASE:3:CODE_ANALYSIS] LLM 분석 실패 function_id=%s error=%s", m.function_id, e)
+    # Fail-Fast: LLM 예외는 그대로 상위로 전파.
+    # dict·summary 없는 "빈 응답" 만 None 리턴 (LLM 이 의도적으로 분석 불가 판정한 경우).
+    from util.llm_prompt_handler import prompts
+    result = prompts.execute_raw("framework", "code_analysis", inputs, api_key)
+    if not isinstance(result, dict) or not result.get("summary"):
+        logger.info("[PHASE:3:CODE_ANALYSIS] LLM 스킵 | function_id=%s reason=empty_result", m.function_id)
         return None
+    logger.info(
+        "[PHASE:3:CODE_ANALYSIS] LLM 분석 완료 | function_id=%s has_summary=%s deps=%d rules=%d examples=%d questions=%d",
+        m.function_id,
+        bool(result.get("summary")),
+        len(result.get("dependencies") or []),
+        len(result.get("rules") or []),
+        len(result.get("examples") or []),
+        len(result.get("questions") or []),
+    )
+    return result
 
 
 def _analyze_code_node(
@@ -359,8 +356,8 @@ def _analyze_code_node(
     referenced_vars_by_function: Optional[Dict[str, List[str]]] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """단일 메서드에 대해 stereotype + (summary, dependencies) 계산."""
-    cqrs_fallback = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
-    summary = f"{m.fqn} ({cqrs_fallback}); lines {m.start_line}-{m.end_line}"
+    stereotype_fallback = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
+    summary = f"{m.fqn} ({stereotype_fallback}); lines {m.start_line}-{m.end_line}"
     method_edges = [e for e in refer_to_edges if e.function_id == m.function_id]
     calls_outgoing = [f"{e.target_type}:{e.target_id}" for e in method_edges]
     sql_keys_for_m = {e.target_id for e in method_edges if e.target_type == "SqlStatement"}
@@ -381,7 +378,9 @@ def _analyze_code_node(
     fields_ctx = _build_module_fields_context(m.module_key, variable_facts_list)
     dependencies: List[Dict[str, Any]] = []
     table_insights: List[Dict[str, Any]] = []
-    scenarios: List[Dict[str, Any]] = []
+    rules: List[Dict[str, Any]] = []
+    examples: List[Dict[str, Any]] = []
+    questions: List[Dict[str, Any]] = []
     stereotype = ""
     actor = ""
 
@@ -407,24 +406,27 @@ def _analyze_code_node(
             actor = analysis.get("actor") or ""
             dependencies = list(analysis.get("dependencies") or [])
             table_insights = list(analysis.get("tableInsights") or [])
-            scenarios = list(analysis.get("scenarios") or [])
+            rules = list(analysis.get("rules") or [])
+            examples = list(analysis.get("examples") or [])
+            questions = list(analysis.get("questions") or [])
             raw_stereotype = (analysis.get("stereotype") or "").strip()
             if raw_stereotype in VALID_STEREOTYPES:
                 stereotype = raw_stereotype
 
-    # stereotype이 없으면 CQRS fallback에서 유추
+    # LLM 이 stereotype 을 못 정하면 테이블 접근 기반 fallback
     if not stereotype:
-        stereotype = "Command" if cqrs_fallback == "command" else "Query"
+        stereotype = stereotype_fallback
 
     data = {
         "stereotype": stereotype,
         "summary": summary,
         "actor": actor,
         "fqn": m.fqn,
-        "calls": [],
         "dependencies": dependencies,
         "tableInsights": table_insights,
-        "scenarios": scenarios,
+        "rules": rules,
+        "examples": examples,
+        "questions": questions,
     }
     return m.function_id, data
 
@@ -509,20 +511,8 @@ def analyze_and_enrich(
                     for m in function_facts_list
                 }
                 for future in as_completed(futures):
-                    try:
-                        function_id, data = future.result()
-                        batch[function_id] = data
-                    except Exception as e:
-                        m = futures[future]
-                        logger.error("[PHASE:3:CODE_ANALYSIS] 병렬 분석 예외 function_id=%s: %s", m.function_id, e)
-                        stereotype = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
-                        batch[m.function_id] = {
-                            "stereotype": stereotype,
-                            "summary": f"{m.fqn} ({stereotype}); lines {m.start_line}-{m.end_line}",
-                            "fqn": m.fqn,
-                            "calls": [],
-                            "dependencies": [],
-                        }
+                    function_id, data = future.result()  # 실패 시 Fail-Fast: 상위로 전파
+                    batch[function_id] = data
                     completed += 1
                     if len(batch) >= _ANALYSIS_BATCH_SIZE:
                         total_yielded += len(batch)
@@ -539,35 +529,25 @@ def analyze_and_enrich(
         else:
             batch = {}
             for m in function_facts_list:
-                try:
-                    function_id, data = _analyze_code_node(
-                        m,
-                        refer_to_edges,
-                        reads_writes,
-                        effective_api_key,
-                        lang,
-                        locale,
-                        module_index,
-                        sql_index,
-                        config_index,
-                        module_key_index,
-                        None,
-                        variable_facts_list,
-                        table_sample_data,
-                        constants_context,
-                        referenced_vars_by_function,
-                    )
-                    batch[function_id] = data
-                except Exception as e:
-                    logger.error("[PHASE:3:CODE_ANALYSIS] 순차 분석 예외 function_id=%s: %s", m.function_id, e)
-                    stereotype = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
-                    batch[m.function_id] = {
-                        "stereotype": stereotype,
-                        "summary": f"{m.fqn} ({stereotype}); lines {m.start_line}-{m.end_line}",
-                        "fqn": m.fqn,
-                        "calls": [],
-                        "dependencies": [],
-                    }
+                # 실패 시 Fail-Fast: 상위로 전파
+                function_id, data = _analyze_code_node(
+                    m,
+                    refer_to_edges,
+                    reads_writes,
+                    effective_api_key,
+                    lang,
+                    locale,
+                    module_index,
+                    sql_index,
+                    config_index,
+                    module_key_index,
+                    None,
+                    variable_facts_list,
+                    table_sample_data,
+                    constants_context,
+                    referenced_vars_by_function,
+                )
+                batch[function_id] = data
                 if len(batch) >= _ANALYSIS_BATCH_SIZE:
                     total_yielded += len(batch)
                     yield _flush_batch(batch)
@@ -662,36 +642,18 @@ def analyze_and_enrich(
         futures = {executor.submit(summarize_one, nid): nid for nid in leaf_ids}
 
         while futures:
-            # 완료된 future 하나씩 처리
+            # 완료된 future 하나씩 처리 (실패 시 Fail-Fast: 상위로 전파)
             done_iter = as_completed(futures)
             for future in done_iter:
                 nid = futures.pop(future)
-                try:
-                    node_id, data = future.result()
-                    result[node_id] = data
-                    summary_cache[node_id] = data.get("summary", "")
-                    processed.add(node_id)
-                    batch[node_id] = data
-                    processed_id = node_id
-                except Exception as e:
-                    logger.error("[PHASE:3:CODE_ANALYSIS] 호출 그래프 요약 예외 function_id=%s: %s", nid, e)
-                    m = fact_by_id[nid]
-                    stereotype = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
-                    fallback = {
-                        "stereotype": stereotype,
-                        "summary": f"{m.fqn} ({stereotype}); lines {m.start_line}-{m.end_line}",
-                        "fqn": m.fqn,
-                        "calls": [],
-                        "dependencies": [],
-                    }
-                    result[nid] = fallback
-                    summary_cache[nid] = fallback["summary"]
-                    processed.add(nid)
-                    batch[nid] = fallback
-                    processed_id = nid
+                node_id, data = future.result()
+                result[node_id] = data
+                summary_cache[node_id] = data.get("summary", "")
+                processed.add(node_id)
+                batch[node_id] = data
 
                 # 부모 노드가 ready되면 즉시 submit
-                for p in parents.get(processed_id, []):
+                for p in parents.get(node_id, []):
                     if p in remaining_children:
                         remaining_children[p] -= 1
                         if remaining_children[p] == 0:
@@ -720,35 +682,25 @@ def analyze_and_enrich(
         batch = {}
         for mid in remaining:
             m = fact_by_id[mid]
-            try:
-                _, data = _analyze_code_node(
-                    m,
-                    refer_to_edges,
-                    reads_writes,
-                    effective_api_key,
-                    lang,
-                    locale,
-                    module_index,
-                    sql_index,
-                    config_index,
-                    module_key_index,
-                    None,
-                    variable_facts_list,
-                    table_sample_data,
-                    constants_context,
-                    referenced_vars_by_function,
-                )
-                batch[mid] = data
-            except Exception as e:
-                logger.error("[PHASE:3:CODE_ANALYSIS] remaining 노드 개별 처리 예외 function_id=%s: %s", mid, e)
-                stereotype = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
-                batch[mid] = {
-                    "stereotype": stereotype,
-                    "summary": f"{m.fqn} ({stereotype}); lines {m.start_line}-{m.end_line}",
-                    "fqn": m.fqn,
-                    "calls": [],
-                    "dependencies": [],
-                }
+            # 실패 시 Fail-Fast: 상위로 전파
+            _, data = _analyze_code_node(
+                m,
+                refer_to_edges,
+                reads_writes,
+                effective_api_key,
+                lang,
+                locale,
+                module_index,
+                sql_index,
+                config_index,
+                module_key_index,
+                None,
+                variable_facts_list,
+                table_sample_data,
+                constants_context,
+                referenced_vars_by_function,
+            )
+            batch[mid] = data
             if len(batch) >= _ANALYSIS_BATCH_SIZE:
                 total_yielded += len(batch)
                 yield _flush_batch(batch)
@@ -788,18 +740,17 @@ def _invoke_module_summary_llm(
         inputs["module_annotations"] = module_annotations
     if prev_summary:
         inputs["prev_summary"] = prev_summary
-    try:
-        from util.llm_prompt_handler import prompts
-        result = prompts.execute_raw("framework", "module_analysis", inputs, api_key)
-        if isinstance(result, Dict):
-            summary = result.get("summary") or None
-            raw_module_st = (result.get("moduleStereotype") or "").strip()
-            module_stereotype = raw_module_st if raw_module_st in VALID_MODULE_STEREOTYPES else ""
-            unified_actors = result.get("unified_actors") or {}
-            return summary, module_stereotype, unified_actors
-    except Exception as e:
-        logger.error("[PHASE:3:CODE_ANALYSIS] module_summary_batch LLM 실패 module_fqn=%s: %s", module_fqn, e)
-    return None, "", {}
+
+    # Fail-Fast: LLM 예외는 상위로 전파. 빈 응답(None) 만 허용.
+    from util.llm_prompt_handler import prompts
+    result = prompts.execute_raw("framework", "module_analysis", inputs, api_key)
+    if not isinstance(result, Dict):
+        return None, "", {}
+    summary = result.get("summary") or None
+    raw_module_st = (result.get("moduleStereotype") or "").strip()
+    module_stereotype = raw_module_st if raw_module_st in VALID_MODULE_STEREOTYPES else ""
+    unified_actors = result.get("unified_actors") or {}
+    return summary, module_stereotype, unified_actors
 
 
 def run_module_summary(
@@ -935,15 +886,8 @@ def run_module_summary(
                 for ck, items in by_class.items()
             }
             for future in as_completed(futures):
-                try:
-                    module_fqn, summary, module_stereotype, unified = future.result()
-                except Exception as e:
-                    ck = futures[future]
-                    module_fqn = ck
-                    summary = ""
-                    module_stereotype = ""
-                    unified = {}
-                    logger.error("[PHASE:3:CODE_ANALYSIS] Module 요약 예외 module=%s: %s", module_fqn, e)
+                # Fail-Fast: 실패 시 상위로 전파 (module summary 중 하나라도 실패하면 분석 중단)
+                module_fqn, summary, module_stereotype, unified = future.result()
                 total_yielded += 1
                 batch[module_fqn] = {"summary": summary, "moduleStereotype": module_stereotype, "unified_actors": unified}
                 if len(batch) >= _CLASS_BATCH_SIZE:

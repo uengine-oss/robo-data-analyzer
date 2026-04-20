@@ -20,11 +20,8 @@ from util.code_text_utils import resolve_node_code
 
 logger = logging.getLogger(__name__)
 
-try:
-    from config.settings import settings
-    MAX_CONTEXT_TOKEN = settings.batch.max_context_token
-except Exception:
-    MAX_CONTEXT_TOKEN = 300
+from config.settings import settings
+MAX_CONTEXT_TOKEN = settings.batch.max_context_token
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +213,7 @@ def _token_count(code: str) -> int:
     return max(1, len(code) // 4)
 
 
-def _log_process(_ctx: str, _stage: str, message: str, **kwargs: Any) -> None:
+def _log_process(_ctx: str, _stage: str, message: str) -> None:
     """Framework AST 디버그 로그 (필요 시 DEBUG)."""
     logger.debug("[%s][%s] %s", _ctx, _stage, message)
 

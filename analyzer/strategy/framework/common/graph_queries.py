@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from analyzer.common.example_collector import collect_example_rows
+
 from analyzer.strategy.framework.common.node_models import (
     ArtifactChunk,
     ArtifactTableEdge,
@@ -939,114 +941,229 @@ def build_refer_to_queries(edges: List[ReferToEdge]) -> List[Dict[str, Any]]:
 # 2-4. Summary / Label — summary·stereotype 속성 및 라벨 업데이트
 # ═══════════════════════════════════════════════════════════════════════════
 
-def build_analysis_result_queries(analysis_by_function: Dict[str, Dict[str, Any]], lang: str) -> List[Dict[str, Any]]:
-    """FUNCTION 노드에 summary·stereotype 속성 및 스테레오타입 라벨 추가."""
-    import json
+def _rule_hash(statement: str) -> str:
+    """Rule 정규화 해시 — 같은 의미 문장은 같은 해시 (함수 간 Rule 공유용)."""
+    import hashlib
+    import re
+    normalized = re.sub(r'\s+', ' ', (statement or "").lower().strip())
+    return hashlib.md5(normalized.encode("utf-8")).hexdigest()[:12]
+
+
+def build_analysis_result_queries(
+    analysis_by_function: Dict[str, Dict[str, Any]],
+    lang: str,
+) -> List[Dict[str, Any]]:
+    """FUNCTION 요약/라벨 업데이트 + Example Mapping 3요소(Rule/Example/Question) 생성.
+
+    흐름:
+      (a) 함수별 데이터를 수집해 rows/edges 로 평탄화
+      (b) UNWIND Cypher 쿼리로 조립
+    """
     from analyzer.strategy.framework.analysis.ast_analyzer import VALID_STEREOTYPES
     from analyzer.strategy.framework.common.ontology import get_ontology
-    onto = get_ontology()
-    valid_for_lang = onto.valid_stereotypes(lang)
+    valid_for_lang = get_ontology().valid_stereotypes(lang)
 
-    rows = []
-    gwt_rows = []
-    for function_id, data in analysis_by_function.items():
+    # ─────────────────────────────────────────────────────────────
+    # (a) 수집 — 함수별로 rows 를 평탄화
+    # ─────────────────────────────────────────────────────────────
+    function_rows: List[Dict[str, Any]] = []
+    rule_rows: List[Dict[str, Any]] = []
+    example_rows: List[Dict[str, Any]] = []
+    example_write_edges: List[Dict[str, Any]] = []
+    question_rows: List[Dict[str, Any]] = []
+    next_edges: List[Dict[str, Any]] = []
+    branch_edges: List[Dict[str, Any]] = []
+    stereotype_groups: Dict[str, List[str]] = {}
+
+    for fid, data in analysis_by_function.items():
+        # FUNCTION 속성
         stereotype = (data.get("stereotype") or "").strip()
         if stereotype not in VALID_STEREOTYPES:
             stereotype = ""
-        summary = (data.get("summary") or "").strip()
-        actor = (data.get("actor") or "").strip() or None
-        rows.append({"function_id": function_id, "stereotype": stereotype, "summary": summary, "actor": actor})
-        # BusinessLogic 시나리오 수집
-        for idx, sc in enumerate(data.get("scenarios") or []):
-            if isinstance(sc, dict) and sc.get("title"):
-                coupled_domain = sc.get("coupled_domain")
-                gwt_rows.append({
-                    "function_id": function_id,
-                    "sequence": str(sc.get("sequence", idx + 1)),
-                    "coupled_domain": coupled_domain,
-                    "title": sc.get("title", ""),
-                    "given": sc.get("given", ""),
-                    "when": sc.get("when", ""),
-                    "then": sc.get("then", ""),
+        function_rows.append({
+            "function_id": fid,
+            "stereotype": stereotype,
+            "summary": (data.get("summary") or "").strip(),
+            "actor": (data.get("actor") or "").strip() or None,
+        })
+        if stereotype and stereotype in valid_for_lang:
+            stereotype_groups.setdefault(stereotype, []).append(fid)
+
+        # Rule 수집 (같은 함수 내 rule_id 로 Example·flow 를 다시 참조)
+        flow_by_rid: Dict[str, str] = {}
+        branch_by_rid: Dict[str, Optional[str]] = {}
+        for r in (data.get("rules") or []):
+            if not isinstance(r, dict):
+                continue
+            rid = str(r.get("rule_id", "")).strip()
+            statement = (r.get("statement") or "").strip()
+            if not rid or not statement:
+                continue
+            flow_id = str(r.get("flow_id", "")).strip() or rid
+            branch_from = r.get("branch_from") or None
+            flow_by_rid[rid] = flow_id
+            branch_by_rid[rid] = branch_from
+            rule_rows.append({
+                "function_id": fid,
+                "rule_id": rid,
+                "rule_hash": _rule_hash(statement),
+                "statement": statement,
+                "flow_id": flow_id,
+                "guard_rule_id": r.get("guard_rule_id") or None,
+                "branch_from": branch_from,
+                "coupled_domains": [str(d).strip() for d in (r.get("coupled_domains") or []) if str(d).strip()],
+            })
+
+        # Example 수집 (given/then dict→JSON, then.writes[]→AFFECTS_TABLE 엣지)
+        rows, writes = collect_example_rows(
+            data.get("examples") or [],
+            valid_rule_ids=flow_by_rid.keys(),
+            example_id_factory=lambda rid, idx: f"{fid}::{rid}::{idx}",
+        )
+        for r in rows:
+            r["function_id"] = fid
+            example_rows.append(r)
+        example_write_edges.extend(writes)
+
+        # Question 수집
+        for idx, q in enumerate(data.get("questions") or [], start=1):
+            if not isinstance(q, dict):
+                continue
+            text = (q.get("text") or "").strip()
+            if not text:
+                continue
+            question_rows.append({
+                "function_id": fid,
+                "question_id": f"{fid}::Q{idx}",
+                "text": text,
+                "reason": (q.get("reason") or "").strip(),
+            })
+
+        # Rule 간 흐름 계산 (메인 NEXT + 분기 BRANCH)
+        main_rids = sorted(
+            (rid for rid, flow in flow_by_rid.items() if "-" not in flow),
+            key=lambda rid: flow_by_rid[rid],
+        )
+        for i in range(len(main_rids) - 1):
+            next_edges.append({
+                "function_id": fid,
+                "from_rule_id": main_rids[i],
+                "to_rule_id": main_rids[i + 1],
+            })
+        flow_to_rid = {flow: rid for rid, flow in flow_by_rid.items()}
+        for rid, flow in flow_by_rid.items():
+            if "-" not in flow:
+                continue
+            parent_rid = branch_by_rid.get(rid) or flow_to_rid.get(flow.rsplit("-", 1)[0])
+            if parent_rid and parent_rid in flow_by_rid:
+                branch_edges.append({
+                    "function_id": fid,
+                    "from_rule_id": parent_rid,
+                    "to_rule_id": rid,
                 })
 
-    queries = []
-    # summary·stereotype 속성 설정 + 기존 CQRS 라벨 정리
-    set_clause = "SET n.updated_at = timestamp(), n.stereotype = row.stereotype, n.summary = row.summary"
-    if rows:
+    # ─────────────────────────────────────────────────────────────
+    # (b) 쿼리 조립
+    # ─────────────────────────────────────────────────────────────
+    queries: List[Dict[str, Any]] = []
+
+    # FUNCTION 요약·stereotype 속성
+    if function_rows:
         queries.append({
-            "query": f"UNWIND $rows AS row\nMATCH (n:FUNCTION {{function_id: row.function_id}})\n{set_clause}\nREMOVE n:COMMAND, n:READMODEL\nRETURN n",
-            "params": {"rows": rows},
+            "query": (
+                "UNWIND $rows AS row\n"
+                "MATCH (n:FUNCTION {function_id: row.function_id})\n"
+                "SET n.updated_at = timestamp(), n.stereotype = row.stereotype, n.summary = row.summary\n"
+                "RETURN n"
+            ),
+            "params": {"rows": function_rows},
         })
 
-    # Actor 노드 생성은 동의어 통합 후 build_actor_queries()에서 한 번에 처리
-
-    # stereotype 라벨 (언어에 맞는 것만)
-    st_groups: Dict[str, List[str]] = {}
-    for function_id, data in analysis_by_function.items():
-        stereotype = (data.get("stereotype") or "").strip()
-        if stereotype in VALID_STEREOTYPES and stereotype in valid_for_lang:
-            st_groups.setdefault(stereotype, []).append(function_id)
-
-    for label, function_ids in st_groups.items():
+    # stereotype 라벨 (언어별 허용 범위만)
+    for label, ids in stereotype_groups.items():
         queries.append({
             "query": f"UNWIND $ids AS mid\nMATCH (n:FUNCTION {{function_id: mid}})\nSET n:{label}\nRETURN n",
-            "params": {"ids": function_ids},
+            "params": {"ids": ids},
         })
 
-    # BusinessLogic 노드 생성 + FUNCTION→BusinessLogic 관계
-    if gwt_rows:
+    # Rule 노드 (rule_hash 로 함수 간 공유) + HAS_RULE 관계 속성
+    if rule_rows:
+        queries.append({
+            "query": (
+                "UNWIND $rows AS row\n"
+                "MERGE (r:Rule {rule_hash: row.rule_hash})\n"
+                "  ON CREATE SET r.statement = row.statement, r.created_at = timestamp()\n"
+                "WITH r, row\n"
+                "MATCH (f:FUNCTION {function_id: row.function_id})\n"
+                "MERGE (f)-[rel:HAS_RULE {local_id: row.rule_id}]->(r)\n"
+                "SET rel.flow_id = row.flow_id,\n"
+                "    rel.guard_rule_id = row.guard_rule_id,\n"
+                "    rel.branch_from = row.branch_from,\n"
+                "    rel.coupled_domains = row.coupled_domains,\n"
+                "    rel.updated_at = timestamp()\n"
+                "RETURN f, rel, r"
+            ),
+            "params": {"rows": rule_rows},
+        })
+
+    # Example 노드 + HAS_EXAMPLE 관계
+    # given/then 은 하이브리드 JSON 직렬화 문자열 (apoc.convert.fromJsonMap 으로 역직렬화).
+    if example_rows:
+        queries.append({
+            "query": (
+                "UNWIND $rows AS row\n"
+                "MATCH (f:FUNCTION {function_id: row.function_id})-[:HAS_RULE {local_id: row.rule_id}]->(r:Rule)\n"
+                "MERGE (e:Example {example_id: row.example_id})\n"
+                "SET e.description = row.description,\n"
+                "    e.given = row.given, e.when_ = row.when_, e.then_ = row.then_,\n"
+                "    e.is_boundary = row.is_boundary, e.updated_at = timestamp()\n"
+                "MERGE (r)-[:HAS_EXAMPLE]->(e)\n"
+                "RETURN r, e"
+            ),
+            "params": {"rows": example_rows},
+        })
+
+    # Example → Table AFFECTS_TABLE 엣지 (then.writes[] 로부터)
+    if example_write_edges:
+        queries.append({
+            "query": (
+                "UNWIND $rows AS row\n"
+                "MATCH (e:Example {example_id: row.example_id})\n"
+                "MATCH (t:Table) WHERE toLower(t.name) = toLower(row.table_name)\n"
+                "MERGE (e)-[rel:AFFECTS_TABLE {op: row.op}]->(t)\n"
+                "SET rel.updated_at = timestamp()\n"
+                "RETURN e, rel, t"
+            ),
+            "params": {"rows": example_write_edges},
+        })
+
+    # Question 노드 + HAS_QUESTION 관계
+    if question_rows:
         queries.append({
             "query": (
                 "UNWIND $rows AS row\n"
                 "MATCH (f:FUNCTION {function_id: row.function_id})\n"
-                "MERGE (g:BusinessLogic {function_id: row.function_id, title: row.title})\n"
-                "SET g.sequence = row.sequence, g.coupled_domain = row.coupled_domain, g.given = row.given, g.when = row.when, g.then = row.then, g.updated_at = timestamp()\n"
-                "MERGE (f)-[:HAS_BUSINESS_LOGIC]->(g)\n"
-                "RETURN f, g"
+                "MERGE (q:Question {question_id: row.question_id})\n"
+                "  ON CREATE SET q.text = row.text, q.reason = row.reason, q.created_at = timestamp()\n"
+                "  ON MATCH  SET q.text = row.text, q.reason = row.reason, q.updated_at = timestamp()\n"
+                "MERGE (f)-[:HAS_QUESTION]->(q)\n"
+                "RETURN f, q"
             ),
-            "params": {"rows": gwt_rows},
+            "params": {"rows": question_rows},
         })
 
-        # BL 간 순서 흐름: NEXT(메인 흐름 순차) + BRANCH(부모→분기 자식)
-        # "1"→"2"→"3" = NEXT (메인 흐름)
-        # "1"→"1-1", "1"→"1-2" = BRANCH (분기)
-        next_step_pairs = []
-        branch_pairs = []
-        by_func: Dict[str, list] = {}
-        for r in gwt_rows:
-            by_func.setdefault(r["function_id"], []).append(r)
-        for fid, func_rows in by_func.items():
-            seq_set = {str(r.get("sequence", "")) for r in func_rows}
-            # 메인 흐름: 하이픈 없는 시퀀스끼리 순차 연결 (1→2→3)
-            main_seqs = sorted([s for s in seq_set if "-" not in s])
-            for i in range(len(main_seqs) - 1):
-                next_step_pairs.append({"function_id": fid, "prev_seq": main_seqs[i], "next_seq": main_seqs[i + 1]})
-            # 분기: 부모→자식 (1→1-1, 1→1-2, 2-1→2-1-1)
-            for s in seq_set:
-                if "-" in s:
-                    parent = s.rsplit("-", 1)[0]
-                    if parent in seq_set:
-                        branch_pairs.append({"function_id": fid, "parent_seq": parent, "child_seq": s})
-        if next_step_pairs:
+    # Rule 간 NEXT(메인 흐름) / BRANCH(분기) 관계
+    for rel_type, edges in (("NEXT", next_edges), ("BRANCH", branch_edges)):
+        if edges:
             queries.append({
                 "query": (
-                    "UNWIND $pairs AS pair\n"
-                    "MATCH (prev:BusinessLogic {function_id: pair.function_id, sequence: pair.prev_seq})\n"
-                    "MATCH (next:BusinessLogic {function_id: pair.function_id, sequence: pair.next_seq})\n"
-                    "MERGE (prev)-[:NEXT]->(next)"
+                    f"UNWIND $rows AS row\n"
+                    f"MATCH (f:FUNCTION {{function_id: row.function_id}})\n"
+                    f"MATCH (f)-[:HAS_RULE {{local_id: row.from_rule_id}}]->(a:Rule)\n"
+                    f"MATCH (f)-[:HAS_RULE {{local_id: row.to_rule_id}}]->(b:Rule)\n"
+                    f"MERGE (a)-[:{rel_type} {{function_id: row.function_id}}]->(b)"
                 ),
-                "params": {"pairs": next_step_pairs},
-            })
-        if branch_pairs:
-            queries.append({
-                "query": (
-                    "UNWIND $pairs AS pair\n"
-                    "MATCH (parent:BusinessLogic {function_id: pair.function_id, sequence: pair.parent_seq})\n"
-                    "MATCH (child:BusinessLogic {function_id: pair.function_id, sequence: pair.child_seq})\n"
-                    "MERGE (parent)-[:BRANCH]->(child)"
-                ),
-                "params": {"pairs": branch_pairs},
+                "params": {"rows": edges},
             })
 
     return queries

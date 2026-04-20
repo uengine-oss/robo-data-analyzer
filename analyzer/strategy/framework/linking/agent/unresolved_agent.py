@@ -98,7 +98,10 @@ def run_deep_agent(
 
     skills = load_all_skills()
     if not skills:
-        logger.warning("[DEEP_AGENT] SKILL.md 없음 → 폴백 프롬프트 사용")
+        raise RuntimeError(
+            "DeepAgent SKILL.md를 로드할 수 없습니다. "
+            "rules/deep_agent/skills/ 디렉토리와 각 SKILL.md 파일 존재를 확인하세요."
+        )
 
     # ── 2. 카테고리별 그룹핑 ──
     groups = _group_by_category(unresolved_list)
@@ -110,10 +113,10 @@ def run_deep_agent(
 
     # ── 3. 카테고리별 처리 ──
     for category, items in groups.items():
-        # Skill 선택
+        # Skill 선택 (미매핑 카테고리 또는 SKILL 누락 시 fail-fast)
         skill = select_skill_for_category(category, skills)
-        skill_name = skill.name if skill else ""
-        system_prompt = build_system_prompt_with_skill(skill) if skill else _fallback_system_prompt()
+        skill_name = skill.name
+        system_prompt = build_system_prompt_with_skill(skill)
 
         # 배치 분할
         batches = [items[i:i + _UNRESOLVED_BATCH_SIZE] for i in range(0, len(items), _UNRESOLVED_BATCH_SIZE)]
@@ -134,7 +137,7 @@ def run_deep_agent(
             try:
                 agent.invoke({"messages": [{"role": "user", "content": user_message}]})
                 log_llm_interaction(
-                    prompt_name=f"framework/deep_agent/{skill_name or 'fallback'}",
+                    prompt_name=f"framework/deep_agent/{skill_name}",
                     input_payload=user_message[:500],
                     output_payload={"total": collector.total_count},
                     metadata={"category": category, "batch": batch_idx, "items": len(batch)},
@@ -254,14 +257,3 @@ def _build_single_item_message(u: UnresolvedLink) -> str:
     return header
 
 
-def _fallback_system_prompt() -> str:
-    """SKILL.md가 없을 때의 폴백 시스템 프롬프트."""
-    return (
-        "당신은 소스코드 분석 전문가 에이전트입니다.\n\n"
-        "[절대 규칙]\n"
-        "- 오직 제공된 도구만 사용하십시오.\n"
-        "- 확신이 없으면 관계를 생성하지 마십시오.\n"
-        "- 하나를 찾았다고 멈추지 말고 모든 사용처를 빠짐없이 찾으십시오.\n"
-        "- 검색 결과가 0건이면 검색어를 바꿔 최소 2~3회 재시도하십시오.\n"
-        "- source_function_id는 반드시 bundle_search에서 발견한 실제 함수의 chunk_id를 사용하십시오.\n"
-    )

@@ -35,7 +35,7 @@ async def run_phase_metadata(
     )
 
     datasource_name = ctx.datasource_name
-    api_key = settings.openai_api_key or ctx.api_key
+    api_key = ctx.api_key
 
     if not datasource_name:
         yield emit_message("   ⏭️ datasource 미설정, 메타데이터 보강 생략")

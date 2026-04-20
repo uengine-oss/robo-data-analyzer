@@ -17,7 +17,7 @@ from fastapi import HTTPException
 
 from analyzer.strategy import AnalyzerFactory
 from client.llm_client import get_llm
-from config.settings import settings
+from config.settings import set_openai_api_key, settings
 
 
 # =============================================================================
@@ -203,6 +203,9 @@ async def validate_llm_api_key(api_key: str) -> None:
         logging.error("API 키 검증 실패: %s", e)
         raise HTTPException(401, f"API 키 검증 실패: {type(e).__name__}: {e}")
 
+    # 검증 통과 → DeepAgents 라이브러리용 OPENAI_API_KEY 환경변수 설정
+    set_openai_api_key(api_key)
+
 
 # =============================================================================
 # 분석 실행
@@ -216,7 +219,6 @@ async def run_source_analysis(
     target: str = "java",
     name_case: str = "original",
     datasource_name: str = "",
-    infer_fk_relations: bool = False,
 ) -> AsyncGenerator[bytes, None]:
     """소스 파일 분석 → Neo4j 그래프 이벤트 스트리밍
 
@@ -228,7 +230,6 @@ async def run_source_analysis(
         target: 타겟 언어 (java, oracle 등)
         name_case: 메타데이터 대소문자 변환 옵션
         datasource_name: 타겟 데이터 소스 이름 (Neo4j에서 연결할 DataSource 노드명)
-        infer_fk_relations: FK 관계 자동 추론 여부 (기본: False)
 
     Yields:
         NDJSON 스트리밍 이벤트
@@ -240,9 +241,8 @@ async def run_source_analysis(
         target=target,
         name_case=name_case,
         datasource_name=datasource_name,
-        infer_fk_relations=infer_fk_relations,
     )
-    
+
     analyzer = AnalyzerFactory.create(strategy)
     async for chunk in analyzer.analyze(file_names=file_names, orchestrator=context):
         yield chunk
@@ -250,11 +250,11 @@ async def run_source_analysis(
 
 class AnalysisContext:
     """분석 실행을 위한 컨텍스트 객체
-    
+
     BaseAnalyzer에서 사용하는 orchestrator 인터페이스를 구현합니다.
     """
-    
-    __slots__ = ("api_key", "locale", "strategy", "target", "name_case", "datasource_name", "infer_fk_relations", "dirs")
+
+    __slots__ = ("api_key", "locale", "strategy", "target", "name_case", "datasource_name", "dirs")
 
     def __init__(
         self,
@@ -264,7 +264,6 @@ class AnalysisContext:
         target: str = "java",
         name_case: str = "original",
         datasource_name: str = "",
-        infer_fk_relations: bool = False,
     ):
         self.api_key = api_key
         self.locale = locale
@@ -272,7 +271,6 @@ class AnalysisContext:
         self.target = (target or "java").lower()
         self.name_case = (name_case or "original").lower()
         self.datasource_name = (datasource_name or "").strip()
-        self.infer_fk_relations = infer_fk_relations
         self.dirs = get_analysis_directories(strategy)
     
     def get_directory_dirs(self, directory: str) -> dict[str, str]:

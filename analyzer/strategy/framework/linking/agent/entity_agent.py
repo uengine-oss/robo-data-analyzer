@@ -22,6 +22,7 @@ from analyzer.strategy.framework.common.node_models import ColumnRef, FkEdge, Fu
 from analyzer.strategy.framework.linking.agent.agent_setup import (
     _init_agent_env,
     ToolResultCollector,
+    SkillInfo,
     build_tools,
     build_system_prompt_with_skill,
     load_all_skills,
@@ -73,9 +74,13 @@ def run_entity_identification(
     batches = _build_batches(startpoints, scenario)
     logger.info("[ENTITY] scenario=%s batches=%d", scenario, len(batches))
 
-    # 배치별 실행
+    # 배치별 실행 (실패 배치는 부분결과 폐기)
     collector = ToolResultCollector()
-    skill_name = skill.name if skill else ""
+    skill_name = skill.name
+    all_table: List[FunctionTableEdge] = []
+    all_fk: List[FkEdge] = []
+    all_columns: List[ColumnRef] = []
+    failed_batches = 0
 
     for batch_idx, batch in enumerate(batches):
         batch_tools = build_tools(
@@ -87,26 +92,38 @@ def run_entity_identification(
 
         logger.info("[ENTITY] 배치 %d/%d 시작 | scenario=%s items=%d",
                     batch_idx + 1, len(batches), scenario, len(batch.items))
+        invoke_ok = False
         try:
             agent.invoke({"messages": [{"role": "user", "content": user_msg}]})
             log_llm_interaction(
-                prompt_name=f"framework/entity/{skill_name or 'fallback'}",
+                prompt_name=f"framework/entity/{skill_name}",
                 input_payload=user_msg[:500],
                 output_payload={"total": collector.total_count},
                 metadata={"scenario": scenario, "batch": batch_idx, "items": len(batch.items)},
             )
+            invoke_ok = True
         except Exception as ex:
             logger.error("[ENTITY] 배치 %d invoke 실패: %s", batch_idx, ex)
 
-    # 결과 반환
-    result = collector.snapshot_and_clear()
-    all_table = result["table_access"]
-    all_fk = result["fk"]
-    all_columns = result.get("columns", [])
+        # 배치 결과 처리: invoke 성공 시만 누적, 실패 시 부분 결과 폐기
+        result = collector.snapshot_and_clear()
+        if not invoke_ok:
+            failed_batches += 1
+            dropped = len(result["table_access"]) + len(result["fk"]) + len(result.get("columns", []))
+            if dropped:
+                logger.warning(
+                    "[ENTITY] 실패 배치 부분결과 폐기 | batch=%d dropped=%d",
+                    batch_idx, dropped,
+                )
+            continue
+        all_table.extend(result["table_access"])
+        all_fk.extend(result["fk"])
+        all_columns.extend(result.get("columns", []))
 
     logger.info(
-        "[ENTITY] 완료 | tables=%d READS/WRITES=%d FK=%d columns=%d",
+        "[ENTITY] 완료 | tables=%d READS/WRITES=%d FK=%d columns=%d failed_batches=%d",
         len({e.table_name for e in all_table}), len(all_table), len(all_fk), len(all_columns),
+        failed_batches,
     )
     return all_table, all_fk, all_columns
 
@@ -171,8 +188,8 @@ def _build_batches(sp: EntityStartpoints, scenario: str) -> List[_Batch]:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def _build_system_prompt(skill: Any, profile_summary: str) -> str:
-    prompt = build_system_prompt_with_skill(skill) if skill else _default_prompt()
+def _build_system_prompt(skill: SkillInfo, profile_summary: str) -> str:
+    prompt = build_system_prompt_with_skill(skill)
     if profile_summary:
         prompt += (
             "\n\n---\n"
@@ -180,14 +197,6 @@ def _build_system_prompt(skill: Any, profile_summary: str) -> str:
             f"{profile_summary}\n"
         )
     return prompt
-
-
-def _default_prompt() -> str:
-    try:
-        from util.llm_prompt_handler import prompts
-        return prompts.deep_agent_entity_prompt()
-    except Exception:
-        return "소스코드에서 DB 엔티티를 식별하고 각 함수의 테이블 접근을 추적하는 전문가 에이전트입니다."
 
 
 # ═══════════════════════════════════════════════════════════════════════

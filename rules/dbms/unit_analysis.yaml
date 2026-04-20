@@ -1,6 +1,6 @@
 name: "procedure_summary"
-description: "프로시저/함수 전체 요약 + 비즈니스 로직 시나리오 생성"
-version: "2.0"
+description: "프로시저/함수 전체 요약 + Example Mapping(Rule/Example/Question)"
+version: "3.1"
 
 input_schema:
   required: []
@@ -12,257 +12,262 @@ input_schema:
 
 prompt: |
   [ROLE]
-  당신은 저장 프로시저/함수의 동작을 분석하고 요약하는 전문가입니다.
-  하위 코드 블록의 요약들을 종합하여 전체 기능을 상세하게 설명하고,
-  레거시 코드 전환 검증을 위한 비즈니스 로직(Given-When-Then) 시나리오를 작성하세요.
-
-  ★★★ 절대 규칙 — 디테일 유지 (CRITICAL) ★★★
-
-  목표: **이 summary와 비즈니스 로직 시나리오만 읽고 원본 코드를 다시 작성할 수 있어야 합니다.**
-  원본 코드를 보지 않은 개발자가 이 summary만으로 동일한 로직을 구현할 수 있을 정도로 구체적이어야 합니다.
-
-  요약할 때 절대로 아래 정보를 생략하거나 두루뭉실하게 바꾸지 마세요:
-
-  1. 계산 공식: DECODE, TRUNC, NVL, CASE WHEN 등의 구체적 조건과 값
-     나쁜 예: "적산차를 계산한다"
-     좋은 예: "DECODE(TODAY_VAL24, 0, TODAY_VAL23, NULL, TODAY_VAL23, TODAY_VAL24)로 24시값을 보정한 후 TRUNC(금일종료값 - 전일종료값)으로 적산차를 계산한다"
-
-  2. 분기 조건: IF/CASE의 비교 값과 결과
-     나쁜 예: "데이터 유형에 따라 집계한다"
-     좋은 예: "DATA_PROCESS='Q'이면 AVG(VAL), 'S'/'D'/'F'이면 SUM(VAL), 'P'이면 TRUNC(AVG(VAL),4)로 집계한다"
-
-  3. 하드코딩 값: 태그번호, 코드값, 임계값 등 모든 리터럴
-     나쁜 예: "광역 합계를 구한다"
-     좋은 예: "한강=10060(BNB_CODE=330), 금강=10070(701), 영섬=12858(702), 낙동강=10592(801)로 광역 합계를 구한다"
-
-  4. NULL/0 처리: fallback 조건
-     나쁜 예: "값을 보정한다"
-     좋은 예: "24시값이 0 또는 NULL이면 23시값으로 대체한다"
-
-  5. 음수/예외 처리: 대체 로직
-     나쁜 예: "음수 보정을 적용한다"
-     좋은 예: "적산차가 음수이면 해당일 01시~24시 VAL 합계로 대체한다"
-
-  원본 코드의 모든 조건식, 계산식, 리터럴 값을 그대로 유지하세요.
-  여러 청크를 합칠 때도 각 청크의 구체적 내용을 생략 없이 모두 포함하세요.
-  요약의 길이가 길어져도 괜찮습니다. 디테일을 줄이는 것은 절대 허용되지 않습니다.
-
-
-  [LANGUAGE_SETTING]
+  저장 프로시저/함수(PL/SQL 등) 분석·요약 전문가.
+  하위 블록 요약을 종합해 전체 기능을 기술하고, 비즈니스 로직을 Rule + Example + Question 으로 분해.
   응답 언어: {{ locale }}
-  모든 분석 결과와 설명은 지정된 언어로 생성해야 합니다.
 
 
-  [INPUT_DATA]
+  [INPUT]
   하위 블록 요약:
   {{ summaries }}
-
   {% if variable_declarations %}
-  [변수 선언 및 초기값]
-  이 프로시저에 선언된 변수와 초기값:
+  ── [변수 선언·초기값] ── Rule 판정·Example given 의 근거
   {{ variable_declarations }}
-
   {% endif %}
   {% if table_sample_data %}
-  [테이블 샘플 데이터]
-  이 프로시저가 접근하는 테이블의 컬럼 정보와 샘플 데이터:
+  ── [테이블 정보] ── 이 프로시저가 접근하는 테이블의 제약조건·컬럼·샘플
   {{ table_sample_data }}
-
   {% endif %}
-
   {% if constants_context %}
-  [전역 상수]
-  시스템/패키지 전역 상수(코드값, 상태값, 임계값 등):
+  ── [전역 상수] ── 상수명 → 실제 값(반드시 치환)
   {{ constants_context }}
-
   {% endif %}
-
   {% if called_procedure_summaries %}
-  [호출된 프로시저 요약]
-  이 프로시저가 호출하는 다른 프로시저들의 요약:
+  ── [호출된 프로시저 요약] ── 참고만 (본문 SQL 에 직접 있는 것만 Rule)
   {{ called_procedure_summaries }}
-
   {% endif %}
 
-  ===============================================
-  [TASK: 상세 요약 (DETAILED_SUMMARY)]
-  ===============================================
 
-  하위 요약들을 종합하여 프로시저 전체 동작을 의미적으로 풍부하게 설명하세요. 단순히 하위 요약을 나열하는 것이 아니라, 프로시저가 전체적으로 어떤 비즈니스 문제를 해결하는지, 하위 블록들이 어떻게 협력하여 그 문제를 해결하는지를 설명하는 것이 핵심입니다.
+  ─────────────────────────────
+  [1] SUMMARY — 디테일 유지
+  ─────────────────────────────
+  원본 PL/SQL 을 재작성할 수 있을 정도로 구체적. 최소 10문장. 다음을 절대 생략 금지:
+  - 계산식 (DECODE/TRUNC/NVL/CASE): 구체 조건·값
+  - 분기 조건 (IF/CASE): 비교 값·결과
+  - 하드코딩 값 (태그번호·코드값·임계값·상수)
+  - NULL/0/음수 처리 · fallback
+  - 반복 처리 (CURSOR/FOR LOOP) 대상·목적
+  - EXCEPTION 블록 · OUT result_code
+  - COMMIT/ROLLBACK 시점
 
-  ★ 주석 최우선 활용 원칙:
-  프로시저 코드와 하위 블록 요약에는 개발자가 직접 작성한 주석(-- 또는 /* */)이 포함되어 있을 수 있습니다. 주석은 프로시저의 목적, 비즈니스 규칙, 처리 흐름에 대한 가장 신뢰할 수 있는 정보원이므로, 주석이 존재하면 반드시 최우선으로 활용하여 summary에 반영하세요. 주석에 프로시저의 목적과 동작 방식이 설명되어 있다면 그 내용을 중심으로 요약을 구성하고, 하위 블록 분석으로 보완하세요. 주석이 없거나 불충분한 경우에만 하위 요약과 코드 흐름을 분석하여 의미를 추론하세요. 주석을 절대 무시하거나 생략하지 마세요.
-
-  ★ 의미적 설명 중심 원칙:
-  하위 요약을 단순히 나열하거나 "블록 A는 X를 하고, 블록 B는 Y를 한다"는 식의 기계적 설명을 피하세요. 대신 비즈니스 맥락과 도메인 의미를 드러내도록 작성하세요. 프로시저가 어떤 도메인 문제를 해결하는지, 하위 블록들이 어떻게 협력하여 그 문제를 해결하는지를 설명하세요. 추상적 표현을 피하고 실제 코드에 등장하는 상태값, 코드값, 상수, 조건값을 그대로 포함하세요. "무엇을 하는지"뿐만 아니라 "왜 그렇게 하는지"의 맥락도 함께 설명하세요.
-
-  ★ 반드시 포함해야 할 핵심 내용:
-
-  1. 핵심 기능 및 목적: 이 프로시저/함수가 무엇을 하는지 명확하게 설명하고, 입력 파라미터와 출력(반환값/OUT 파라미터)의 의미, 시스템에서 담당하는 역할을 명시하세요. 예: "이 프로시저는 주문 결제 처리를 담당합니다. 입력으로 주문번호(p_order_id)와 결제방식(p_payment_type)을 받고, 처리 결과를 o_result_code와 o_result_msg로 반환합니다."
-
-  2. 주요 분기 조건과 비즈니스 규칙: 모든 IF, CASE, WHEN 문의 조건값과 각 분기별 처리 내용을 구체적으로 명시하세요. 조건에 사용되는 실제 값(상수, 상태값, 코드값)을 그대로 포함하세요.
-
-  3. 데이터 값 및 상수: 상태값, 코드값, 플래그값 등 모든 리터럴 값과 임계값, 한도, 설정값 등의 숫자 상수를 그대로 명시하세요.
-
-  4. 테이블 및 데이터 흐름: 조회(SELECT)하는 테이블과 조회 조건, 입력(INSERT), 수정(UPDATE), 삭제(DELETE)하는 테이블, 테이블 간 조인 관계와 비즈니스 의미를 명시하세요.
-
-  5. 반복 처리 내용: CURSOR, FOR LOOP, WHILE의 반복 대상과 목적, 각 반복에서 수행하는 작업을 명시하세요.
-
-  6. 예외 처리 및 에러 핸들링: 처리하는 예외 유형과 처리 방식, 에러 발생 시 반환되는 코드/메시지를 명시하세요.
-
-  ★ 요약 작성 형식:
-  - 최소 10문장 이상으로 상세하게 작성하며, 하위 요약에 있는 모든 중요 정보를 누락 없이 포함하세요.
-  - 추상적 표현을 피하고 구체적인 값과 조건을 명시하며, 비즈니스 맥락이 명확하게 드러나도록 서술하세요.
-
-  ★★ 비즈니스 규칙 분리 식별 (필수) ★★
-  프로시저 안의 각 비즈니스 규칙을 독립적으로 식별하고 [규칙N] 형태로 번호를 매겨 구분하세요.
-  각 규칙마다 다음 4가지를 반드시 포함:
-  (1) 조건 — IF/CASE/WHEN의 조건식과 비교값 (상수는 실제 숫자로)
-  (2) 동작 — 어떤 테이블에 어떤 연산(SELECT/INSERT/UPDATE/DELETE/MERGE)
-  (3) 상태 전이 — 변경 전→후 값
-  (4) 임계값/한도 — 수치 리터럴 그대로 (예: ±20%, 5건, 500원)
-
-  좋은 예:
-  "[규칙1] 태그 유효성: TAG_CNT >= 1이고 IN_LOG_TIME < TODAY_DD일 때만 집계 수행.
-   [규칙2] 음수 보정: 집계값 VAL이 0 미만이면 0으로 치환, REMARKS에 'NEGATIVE_CORRECTED' 기록.
-   [규칙3] 변동 제한: 전일 대비 ±20% 초과 변동 시 전일 값으로 치환.
-   [규칙4] 집계 저장: RDD01DD_TB에 TAGSN+DD 기준 MERGE — 존재 시 VAL/SUPPLY UPDATE, 없으면 INSERT."
-
-  나쁜 예:
-  "태그를 집계하고 음수를 보정하며 변동이 크면 치환하고 결과를 저장한다."
-
-  추가 포함 사항:
-  - 에러 처리: EXCEPTION 블록에서 어떤 예외를 어떻게 처리하는지
-  - 커밋 시점: COMMIT이 어디서 발생하는지
+  식별자 규칙:
+  - 제거: 변수명·파라미터명 → 의미로 설명
+  - 보존: 테이블명·컬럼명·상태값·코드값·상수값
+  - [전역 상수] 는 실제 값으로 치환
+  - "이상"≠"초과", "이하"≠"미만"
 
 
-  ===============================================
-  [TASK: 비즈니스 로직 시나리오 (GIVEN-WHEN-THEN)]
-  ===============================================
+  ─────────────────────────────
+  [2] RULES / EXAMPLES / QUESTIONS — Example Mapping
+  ─────────────────────────────
+  비즈니스 로직을 Rule + Example + Question 으로 분해. 기술 관심사 제외.
 
-  ★★★ 핵심 판단 기준: "비즈니스 수준"의 로직인가? ★★★
+  [Rule 후보 (하나라도 맞으면 O)]
+  □ 도메인 임계값·값 (±20%·5건·₩500·신용등급 5)
+  □ 상태/유형별 차등 (DATA_PROCESS='Q'면 AVG, 'S'면 SUM 등)
+  □ 테이블·컬럼 값 분기 (ORDER.STATUS='PAID'이면…)
+  □ 도메인 계산식 (적산차=TRUNC(금일-전일))
+  □ 정책 상수·OUT result_code 비즈니스 예외
 
-  시나리오를 생성할지 말지의 핵심 질문:
-  "이 프로시저의 이 분기/조건이 비즈니스 의사결정인가, 아니면 기술적 구현 세부사항인가?"
+  [Rule 제외 (하나라도 맞으면 X)]
+  □ 순수 CRUD 실행 자체 · 커서 OPEN/FETCH/CLOSE · FOR LOOP 기계적 반복
+  □ NO_DATA_FOUND/TOO_MANY_ROWS/SQLCODE 같은 기술 예외
+  □ 임시테이블·로그·DBMS_OUTPUT · COMMIT/ROLLBACK 자체
+  □ SQL 바인딩·동적 SQL · 일반 NULL 방어(도메인 정책 아님)
 
-  ● 비즈니스 로직 (Business Logic / Business Rule) = 시나리오 생성 대상:
-    - 비즈니스 규칙(Decision Rule) — 조건별 처리 분기, 유형별 차등, 상태별 허용/거부
-    - 비즈니스 계산(Calculation) — 금액 산정, 집계, 보정, 공식 기반 연산
-    - 비즈니스 검증(Validation) — 자격 확인, 중복 방지, 한도 초과, 유효성 검증
-    - 비즈니스 상태 전이(State Transition) — 상태값 변경, 이력 생성
-    - 비즈니스 기본값/보정(Default/Correction) — NULL→대체값, 음수→0, 미입력→기본값
-    - 권한/접근 제어(Authorization) — 역할별 허용/거부
+  [애매하면 결정 질문]
+  "이 조건을 제거하면 사용자(정산/감사/고객) 결과가 달라지는가?" YES→Rule / NO→제외
 
-  ● 기술적 구현 (Infrastructure / Technical Implementation) = 시나리오 생성하지 않음 (빈 배열 []):
-    - 데이터 접근 계층(Data Access Layer) — SELECT/INSERT/UPDATE/DELETE만 실행하는 저수준 프로시저
-    - 기술적 에러 핸들링(Error Handling) — NO_DATA_FOUND, TOO_MANY_ROWS, SQLCODE 처리
-    - 커서 관리(Cursor Management) — OPEN/FETCH/CLOSE
-    - 횡단 관심사(Cross-Cutting Concerns) — 로깅, 디버그 출력, 임시 테이블 관리
+  [Rule 필드]
+  - statement: "<조건>이면 <결과>" 10~30자. 테이블·컬럼·상태·상수값 OK, 변수명·프로시저명 금지.
+  - rule_id: "R1"…"R8" (최소 2, 최대 8)
+  - flow_id: "1"(메인)·"1-1"(분기)·"2-1-1"(중첩)
+  - guard_rule_id: 선행 Rule 통과 전제이면 해당 id, 없으면 null
+  - branch_from: if/case 갈래면 분기 원 Rule id, 없으면 null
+  - coupled_domains: [] 기본. 타 도메인 테이블 WRITE·값 분기·규칙 직접 구현 시 도메인명 추가.
+    (타 도메인 SELECT 만·타 프로시저 호출 = 커플링 아님)
+  정책 예외(OUT result_code) = 독립 Rule. 본문 SQL 에 직접 있는 것만 Rule.
 
-  ● 판단이 애매한 경우의 원칙:
-    "이 로직이 없으면 비즈니스 결과가 달라지는가?"
-    → YES: 비즈니스 로직 → 시나리오 생성
-    → NO: 기술적 구현 → 시나리오 생성 안 함
+  [Example 구조 — 하이브리드(자연어 + JSON)]
+  GWT 시맨틱: given=초기상태 / when=행위 / then=결과
 
-  **비즈니스 규칙마다 별도 시나리오**를 생성하세요. 개수 제한 없음. 식별된 비즈니스 로직은 빠짐없이 시나리오로 만드세요.
+  rule_id      : 참조 Rule id
+  description  : 사람용 한 줄 요약
+  given        : JSON {
+                   "narrative": "초기 상태 1~2문장 요약",
+                   "inputs": { 입력 파라미터 key:value },
+                   "preconditions": {
+                     "tables": [{"table":"…","rows":[{컬럼=값,…}]}],  // 필요한 선행 행
+                     "globals": {...}, "stubs": {...}
+                   }
+                 }
+  when         : 자연어 한 줄. 비즈니스 행위명만. 프로시저명·변수명 금지.
+  then         : JSON {
+                   "narrative": "결과 1~2문장 요약",
+                   "return": 반환값 또는 null,
+                   "out_params": { "O_RESULT_CODE":"...", "o_*":"..." },
+                   "exception": null 또는 {"type":"...","code":"...","message":"..."},
+                   "writes": [{"table":"…","op":"INSERT|UPDATE|DELETE|MERGE","where":{},"values":{}}],
+                   "commit": true|false
+                 }
+  is_boundary  : true/false
 
-  ★ 비즈니스 프로세스 흐름 순서:
-  각 시나리오에 sequence를 부여하세요. 1부터 시작하며 반드시 순차적 (1,2,3,4...).
-  건너뜀 절대 금지 — 1 다음은 반드시 2, 2 다음은 반드시 3.
-  코드의 실행 순서가 곧 비즈니스 프로세스의 흐름입니다.
-  같은 시점에서 분기되는 병렬 경로(if/else, switch/case)만 같은 sequence를 허용합니다.
-  병렬이 아닌 경우 반드시 서로 다른 sequence를 부여하세요.
+  원칙:
+  - given = 이 Rule 까지 도달 가능한 전체 입력(선행 가드 통과값·필요한 테이블 행 포함)
+  - then = 관찰 가능한 모든 변화(반환·OUT·예외·테이블·COMMIT) 빠짐없이
+  - INSERT 는 values 에 모든 컬럼=값, UPDATE/MERGE 는 where + values (SYSDATE/SEQ.NEXTVAL/DEFAULT 도 명시)
+  - 변경 없으면 {} / []
+  - 값은 실제 리터럴(변수명·프로시저명 금지)
+  - JSON 유효 형식(주석·트레일링 콤마 금지)
 
-  ★ 도메인 커플링 감지 (coupled_domain):
-  하나의 프로시저가 자기 도메인이 아닌 **다른 도메인의 테이블에 직접 접근**하거나
-  **다른 도메인의 비즈니스 규칙을 직접 구현**하는 경우가 있습니다.
+  [Example 필수 규칙]
+  - Rule 당 최소 2개 (일반값 1 + 경계값 1)
+  - "X 이상/이하/초과/미만" 조건 → X / X±1 중 2개 is_boundary=true
+  - 정책 예외 Rule → 발생 Example + 성공 Example
 
-  각 시나리오가 이 프로시저의 본래 도메인에 속하지 않는 다른 도메인의 로직이면,
-  coupled_domain 필드에 해당 도메인명을 기입하세요.
-  자기 도메인의 로직이면 coupled_domain을 null로 두세요.
-
-  ★★ 판단 기준:
-  - 이 프로시저의 주 테이블이 아닌 다른 도메인의 테이블에 직접 INSERT/UPDATE/DELETE → 커플링
-  - 이 프로시저의 책임이 아닌 다른 영역의 비즈니스 규칙을 직접 구현 → 커플링
-  - 같은 도메인 안에서의 분기/계산/검증 → 커플링 아님 (null)
-
-  예시:
-    프로시저가 "주문 처리"를 담당하는데, 내부에서 다른 도메인 테이블에 직접 접근하는 경우:
-      BL[1]: 주문 유효성 검증 → coupled_domain: null (자기 도메인)
-      BL[2]: 재고 차감 처리 → coupled_domain: "inventory" (재고 도메인 — 커플링!)
-      BL[3]: 주문 상태 확정 → coupled_domain: null (자기 도메인)
-
-  대부분의 BL에서 coupled_domain은 null입니다. 확실한 경우에만 사용하세요.
-
-  ★ 정보 누락 금지:
-  비즈니스 로직으로 판단된 모든 분기/조건/계산이 어딘가의 시나리오에 반드시 반영되어야 합니다.
-  비즈니스 로직으로 독립시키지 않은 중요 정보(기본값 보정, 조건 분기 등)는
-  반드시 관련 시나리오의 Given/When/Then에 포함하세요.
-
-  - Given: 초기 상태 (테이블 데이터 상태, 변수/상수 초기값, 입력 파라미터 조건)
-    {% if variable_declarations %}→ [변수 선언 및 초기값]에 제공된 실제 숫자/문자열 값을 그대로 사용하세요. 변수명이 아닌 실제 값으로 기술하세요.{% endif %}
-    {% if table_sample_data %}→ [테이블 샘플 데이터]의 실제 행(id, 상태값 등)을 Given 조건에 직접 활용하세요.{% endif %}
-  - When: 실행 동작 (어떤 파라미터로 이 프로시저를 호출하는지)
-  - Then: 기대 결과 (테이블 변경 내용, OUT 파라미터 값, 상태 전이)
-
-  ⚠️ 비즈니스 로직 시나리오 품질 규칙:
-  - 비즈니스 수준의 로직이 식별되는 프로시저에서만 scenarios를 생성하세요.
-  - 기술적 구현 프로시저(단순 CRUD, 유틸리티)는 scenarios를 빈 배열 []로 반환하세요.
-  - 비즈니스 로직이 식별되면, 각 분기 경로마다 시나리오를 만드세요.
-    이 시나리오들만으로 원본 코드의 모든 비즈니스 분기를 재현할 수 있어야 합니다.
-
-  ⚠️ 비즈니스 로직 품질 규칙 (반드시 준수):
-  - **실제 값 사용 필수**: 변수명이 아닌 실제 숫자/문자열 값으로 기술하세요.
-  - **계산 결과 명시**: 계산이 있으면 실제 숫자로 과정과 결과를 기술하세요.
-  - **상태 전이 명시**: 변경 전 값 → 변경 후 값을 명확히 기술하세요.
-  - **코드 식별자 금지**: 변수명, 함수명, 설정 키 등 코드 식별자를 사용하지 말고, 의미와 값으로 기술하세요.
-
-  ★★★ 비즈니스 로직 구체성 필수 규칙 ★★★
-
-  Given 필수 요소:
-  - 테이블명.컬럼명=값 형태로 현재 상태 명시
-    좋은 예: "RDD01DD_TB에 TAGSN='TAG001', DD='20260401' 행이 존재"
-    나쁜 예: "테이블에 데이터가 있다"
-
-  When 필수 요소:
-  - 프로시저 호출 파라미터를 실제 값으로 명시
-    좋은 예: "SP_CALC_DAILY(IN_TAGSN='TAG001', TODAY_DD='20260401') 호출"
-    나쁜 예: "프로시저를 실행한다"
-
-  Then 필수 요소:
-  - MERGE/INSERT/UPDATE/DELETE 결과를 테이블명.컬럼명=값으로 명시
-    좋은 예: "RDD01DD_TB에 TAGSN='TAG001' 행이 MERGE, VAL=123.45로 갱신"
-    나쁜 예: "데이터가 저장된다"
-
-  ★ 금지 표현:
-  - "테이블에 데이터가 있다" → 어떤 테이블에 어떤 컬럼이 어떤 값인지 명시
-  - "프로시저를 실행한다" → 어떤 파라미터로 호출하는지 명시
-  - "데이터가 저장된다" → 어떤 테이블에 어떤 컬럼이 어떤 값으로 변경되는지 명시
+  [Question 구조]
+  - text: 코드만으로 답할 수 없는 모호함
+  - reason: 코드 근거가 없는 이유
+  원칙: 추측 대신 Question. 0~3개.
 
 
-  ===============================================
-  [OUTPUT_FORMAT]
-  ===============================================
+  ─────────────────────────────
+  [FEW-SHOT]  일일 집계 프로시저
+  ─────────────────────────────
+  ✅ summary (일부): "이 프로시저는 입력 태그번호(IN_TAGSN)와 집계일자(TODAY_DD)로 일간 적산값을 계산해 RDD01DD_TB 에 MERGE 한다. TAG_CNT>=1 이고 IN_LOG_TIME<TODAY_DD 일 때만 집계한다. 24시값이 0 또는 NULL 이면 23시값으로 보정 후 TRUNC(금일종료-전일종료) 로 적산차를 계산한다. 적산차가 0 미만이면 0 으로 치환하고 REMARKS='NEGATIVE_CORRECTED' 기록. 전일 대비 ±20% 초과 변동이면 전일 값으로 치환. 저장은 TAGSN+DD 기준 MERGE. 예외 시 OUT O_RESULT_CODE='E001' 반환."
 
-  다음 JSON 형식으로만 결과를 반환하세요:
+  ```json
+  "rules": [
+    {"rule_id":"R1","flow_id":"1","guard_rule_id":null,"branch_from":null,
+     "statement":"TAG_CNT>=1 이고 IN_LOG_TIME<TODAY_DD 일 때만 집계","coupled_domains":[]},
+    {"rule_id":"R2","flow_id":"2","guard_rule_id":"R1","branch_from":null,
+     "statement":"24시값이 0 또는 NULL 이면 23시값으로 보정","coupled_domains":[]},
+    {"rule_id":"R3","flow_id":"3","guard_rule_id":"R2","branch_from":null,
+     "statement":"적산차 0 미만이면 0 치환 + REMARKS='NEGATIVE_CORRECTED'","coupled_domains":[]},
+    {"rule_id":"R4","flow_id":"4","guard_rule_id":"R3","branch_from":null,
+     "statement":"전일 대비 ±20% 초과면 전일 값으로 치환","coupled_domains":[]},
+    {"rule_id":"R5","flow_id":"5","guard_rule_id":"R4","branch_from":null,
+     "statement":"RDD01DD_TB 에 TAGSN+DD 기준 MERGE","coupled_domains":[]}
+  ],
+  "examples": [
+    {
+      "rule_id":"R1","is_boundary":true,
+      "description":"TAG_CNT=1 — 경계값, 집계 수행",
+      "given":{
+        "narrative":"최소 카운트 + 전일 이전 로그",
+        "inputs":{"IN_TAGSN":"TAG001","TODAY_DD":"20260401"},
+        "preconditions":{"globals":{"TAG_CNT":1,"IN_LOG_TIME":"20260331"},"tables":[],"stubs":{}}
+      },
+      "when":"일간 집계 수행",
+      "then":{
+        "narrative":"집계 진행, R2 로 이동",
+        "return":null,"out_params":{"O_RESULT_CODE":null},"exception":null,
+        "writes":[],"commit":false
+      }
+    },
+    {
+      "rule_id":"R1","is_boundary":true,
+      "description":"TAG_CNT=0 — 경계값 아래, 집계 스킵",
+      "given":{"narrative":"카운트 0","inputs":{"IN_TAGSN":"TAG001","TODAY_DD":"20260401"},"preconditions":{"globals":{"TAG_CNT":0},"tables":[],"stubs":{}}},
+      "when":"일간 집계 수행",
+      "then":{"narrative":"스킵, 변경 없음","return":null,"out_params":{},"exception":null,"writes":[],"commit":false}
+    },
+    { "rule_id":"R2","is_boundary":true,"description":"24시값=0 — 경계값, 23시값으로 보정",
+      "given":{"...":"TODAY_VAL24=0, TODAY_VAL23=100.0"},
+      "when":"집계 보정",
+      "then":{"...":"보정값=100.0 (23시값)"}
+    },
+    { "rule_id":"R2","is_boundary":false,"description":"24시값 정상 — 그대로 사용",
+      "given":{"...":"TODAY_VAL24=50.0, TODAY_VAL23=100.0"},
+      "when":"집계 보정","then":{"...":"보정값=50.0"}
+    },
+    { "rule_id":"R3","is_boundary":false,"description":"음수 적산차 보정",
+      "given":{"...":"금일=100, 전일=120 → 적산차=-20"},
+      "when":"음수 보정",
+      "then":{"...":"VAL=0, REMARKS='NEGATIVE_CORRECTED'"}
+    },
+    { "rule_id":"R4","is_boundary":true,"description":"변동률 정확히 20% — 유지",
+      "given":{"...":"VAL=120, 전일VAL=100"},
+      "when":"변동 제한 검사","then":{"...":"VAL=120 유지 (경계)"}
+    },
+    { "rule_id":"R4","is_boundary":false,"description":"변동률 50% — 전일 값으로 치환",
+      "given":{"...":"VAL=150, 전일VAL=100"},
+      "when":"변동 제한 검사","then":{"...":"VAL=100 으로 치환"}
+    },
+    {
+      "rule_id":"R5","is_boundary":false,
+      "description":"대상 행 존재 → UPDATE",
+      "given":{
+        "narrative":"RDD01DD_TB 에 동일 키 행이 이미 존재",
+        "inputs":{"IN_TAGSN":"TAG001","TODAY_DD":"20260401"},
+        "preconditions":{
+          "globals":{"VAL":123.45,"SUPPLY":500},
+          "tables":[{"table":"RDD01DD_TB","rows":[{"TAGSN":"TAG001","DD":"20260401","VAL":100}]}],
+          "stubs":{}
+        }
+      },
+      "when":"MERGE 저장",
+      "then":{
+        "narrative":"UPDATE 수행, 집계 커밋",
+        "return":null,"out_params":{"O_RESULT_CODE":"NORMAL"},"exception":null,
+        "writes":[
+          {"table":"RDD01DD_TB","op":"UPDATE",
+           "where":{"TAGSN":"TAG001","DD":"20260401"},
+           "values":{"VAL":123.45,"SUPPLY":500}}
+        ],
+        "commit":true
+      }
+    },
+    { "rule_id":"R5","is_boundary":false,"description":"대상 행 없음 → INSERT",
+      "given":{"...":"RDD01DD_TB 에 해당 키 행 없음"},
+      "when":"MERGE 저장",
+      "then":{"writes":[{"table":"RDD01DD_TB","op":"INSERT","where":{},"values":{"TAGSN":"TAG001","DD":"20260401","VAL":123.45,"SUPPLY":500}}],"...":"..."}
+    }
+  ],
+  "questions": [
+    {"text":"변동 제한 임계값 20% 는 정책 상수인가 설정값인가?","reason":"상수 컨텍스트에 정의 없음. 하드코딩 리터럴"},
+    {"text":"TAG_CNT 가 음수일 수 있는가?","reason":"코드에 '>=1' 만 체크"}
+  ]
+  ```
+
+  ❌ 잘못된 Rule: "RDD01DD_TB 를 MERGE 한다"(기술 동작) / "커서 OPEN"(커서 관리) / "예외 시 ROLLBACK"(기술 에러) / "SP_CALC_DAILY 호출되면…"(프로시저명)
+
+
+  ─────────────────────────────
+  [SELF-CHECK]  출력 전 반드시. 하나라도 NO 면 수정.
+  ─────────────────────────────
+  1. Rule.statement 에 변수명·프로시저명 없음? (테이블/컬럼/상태값은 OK)
+  2. Rule 이 비즈니스 신호 중 하나에 해당?
+  3. Rule 당 Example ≥2, 경계값 1 이상?
+  4. "이상/이하/초과/미만" 조건 → X / X±1?
+  5. 정책 예외(OUT result_code) = 독립 Rule?
+  6. given 이 이 Rule 까지 도달 가능(선행 가드·필요 행 포함)?
+  7. then 이 관찰 가능한 모든 변화(반환·OUT·writes·exception·commit)?
+  8. 값이 실제 리터럴(변수명·프로시저명 아닌)?
+  9. coupled_domains 채웠다면 해당 도메인 테이블 흔적 있음?
+  10. flow_id/guard/branch_from 이 실행 순서와 일치?
+  11. 본문 SQL 에 직접 있는 것만 Rule (called_procedure_summaries 재생성 금지)?
+  12. 모호함은 추측 대신 Question?
+
+
+  ─────────────────────────────
+  [OUTPUT]  단일 JSON 객체만. 코드펜스·주석·부가설명 금지. 트레일링 콤마 금지.
+  ─────────────────────────────
+  null 허용: guard_rule_id, branch_from, then.return, then.exception. 그 외 빈값 = [] / {} / "".
 
   {
-    "summary": "최소 10문장 이상의 매우 상세한 프로시저 요약. 모든 분기 조건, 데이터 값, 비즈니스 규칙, 테이블 흐름, 예외 처리를 포함",
-    "scenarios": [
-      {
-        "sequence": 1,
-        "coupled_domain": null,
-        "title": "시나리오 제목",
-        "given": "초기 상태 (테이블 데이터 상태, 변수값, 입력 조건)",
-        "when": "실행 동작 (어떤 입력으로 프로시저를 호출)",
-        "then": "기대 결과 (테이블 변경, 출력값, 상태 전이)"
-      }
+    "summary": "최소 10문장 상세 요약",
+    "rules": [
+      {"rule_id":"R1","flow_id":"1","guard_rule_id":null,"branch_from":null,
+       "statement":"…","coupled_domains":[]}
+    ],
+    "examples": [
+      {"rule_id":"R1","is_boundary":false,"description":"…",
+       "given":{"narrative":"…","inputs":{},"preconditions":{"globals":{},"tables":[],"stubs":{}}},
+       "when":"…",
+       "then":{"narrative":"…","return":null,"out_params":{},"exception":null,"writes":[],"commit":false}}
+    ],
+    "questions": [
+      {"text":"…","reason":"…"}
     ]
   }
-
-  출력 제약사항:
-  - JSON 형식 외의 부가 설명 금지 (출력에 JSON 주석 포함 금지)
-  - null 값 사용 금지 (단, coupled_domain만 예외 — 커플링 없으면 null). 빈값은 빈 배열 [] 또는 빈 문자열 ""
-  - scenarios가 없으면 빈 배열 [] 사용
-  - 코드펜스(```json ... ```) 포함 금지
-  - **⚠️ CRITICAL: 트레일링 콤마(trailing comma) 절대 금지** - 배열이나 객체의 마지막 요소 뒤에 콤마(,)를 붙이지 마세요.

@@ -50,7 +50,7 @@ SUB_LABELS = {
 
 # ── 스테레오타입 라벨 (common + oop) ──
 STEREOTYPE_LABELS = {
-    "Init", "Query", "Command", "Handler", "Validation", "BusinessLogic",
+    "Init", "Query", "Command", "Handler", "Validation",
     "Endpoint", "Getter", "Setter", "Lifecycle", "Scheduled", "Transactional",
 }
 
@@ -89,7 +89,9 @@ SCHEMA_PKG_MEMBERS = ["이름", "타입", "스테레오타입", "범위"]
 # -- 모듈 상세 섹션 --
 SCHEMA_FUNCTION = ["이름", "시그니처", "반환타입", "수정자", "요약"]
 SCHEMA_VARIABLE = ["이름", "타입", "수정자", "요약"]
-SCHEMA_BUSINESS_LOGIC = ["함수", "시나리오", "Given", "When", "Then"]
+SCHEMA_RULE = ["함수", "Rule", "Flow", "Guard", "커플링"]
+SCHEMA_EXAMPLE = ["함수", "Rule", "설명", "Given", "When", "Then", "경계값"]
+SCHEMA_QUESTION = ["함수", "질문", "근거부재 이유"]
 SCHEMA_STRUCT_REL = ["방향", "관계", "대상", "속성"]
 SCHEMA_CALL_REL = ["방향", "대상", "호출코드"]
 SCHEMA_DATA_ACCESS = ["대상", "관계", "근거", "신뢰도"]
@@ -705,27 +707,63 @@ def _render_module_detail(graph: GraphData, mod: GraphNode) -> str:
     parts.append("\n#### 변수\n")
     parts.append(_md_table(SCHEMA_VARIABLE, var_rows))
 
-    # ── 비즈니스 로직 시나리오 (Framework: 자식 FUNCTION 경유, DBMS: 직접) ──
-    gwt_rows = []
-    for gwt in graph.get_children(mod.node_id, "HAS_BUSINESS_LOGIC"):
-        gwt_rows.append([
-            name,
-            _safe(gwt.prop("title")),
-            _safe(gwt.prop("given")),
-            _safe(gwt.prop("when")),
-            _safe(gwt.prop("then")),
-        ])
-    for func in graph.get_children(mod.node_id, "HAS_FUNCTION"):
-        for gwt in graph.get_children(func.node_id, "HAS_BUSINESS_LOGIC"):
-            gwt_rows.append([
-                _safe(func.prop("name")),
-                _safe(gwt.prop("title")),
-                _safe(gwt.prop("given")),
-                _safe(gwt.prop("when")),
-                _safe(gwt.prop("then")),
+    # ── Example Mapping (Rule / Example / Question) ──
+    # Framework: FUNCTION 자식 경유, DBMS: 프로시저 노드 직접
+    rule_rows: list = []
+    example_rows: list = []
+    question_rows: list = []
+
+    def _narrative(raw: Any) -> str:
+        """Example given/then 이 JSON 문자열이면 narrative 만 추출, 아니면 원문."""
+        if not raw:
+            return ""
+        s = str(raw).strip()
+        if s.startswith("{"):
+            try:
+                obj = json.loads(s)
+                return str(obj.get("narrative") or "").strip() or s[:80]
+            except (json.JSONDecodeError, ValueError):
+                return s[:80]
+        return s
+
+    def _collect_em(anchor_node, anchor_name: str) -> None:
+        """anchor_node 에 연결된 Rule/Example/Question 을 각 행 리스트에 누적."""
+        for rel in graph.get_outgoing_rels(anchor_node.node_id, ["HAS_RULE"]):
+            rule = graph.get_node(rel.end_node_id)
+            if not rule:
+                continue
+            local_id = _safe(rel.prop("local_id"))
+            coupled = rel.prop("coupled_domains") or []
+            rule_rows.append([
+                anchor_name,
+                f"{local_id}: {_safe(rule.prop('statement'))}",
+                _safe(rel.prop("flow_id")),
+                _safe(rel.prop("guard_rule_id")),
+                ", ".join(coupled) if isinstance(coupled, list) else _safe(coupled),
             ])
-    parts.append("\n#### 비즈니스 로직 시나리오\n")
-    parts.append(_md_table(SCHEMA_BUSINESS_LOGIC, gwt_rows))
+            for ex in graph.get_children(rule.node_id, "HAS_EXAMPLE"):
+                example_rows.append([
+                    anchor_name, local_id,
+                    _safe(ex.prop("description")),
+                    _narrative(ex.prop("given")),
+                    _safe(ex.prop("when_")),
+                    _narrative(ex.prop("then_")),
+                    "✓" if ex.prop("is_boundary") else "",
+                ])
+        for q in graph.get_children(anchor_node.node_id, "HAS_QUESTION"):
+            question_rows.append([anchor_name, _safe(q.prop("text")), _safe(q.prop("reason"))])
+
+    _collect_em(mod, name)
+    for func in graph.get_children(mod.node_id, "HAS_FUNCTION"):
+        _collect_em(func, _safe(func.prop("name")))
+
+    parts.append("\n#### 비즈니스 규칙 (Rule)\n")
+    parts.append(_md_table(SCHEMA_RULE, rule_rows))
+    parts.append("\n#### 예시 (Example)\n")
+    parts.append(_md_table(SCHEMA_EXAMPLE, example_rows))
+    if question_rows:
+        parts.append("\n#### 미해결 질문 (Question)\n")
+        parts.append(_md_table(SCHEMA_QUESTION, question_rows))
 
     # ── 구조 관계 (UML + ETL 통합) ──
     struct_rels = []

@@ -284,43 +284,44 @@ class BaseAstProcessor(ABC):
         current_depth = -1
         current_batch: List[StatementNode] = []
 
+        async def process_one(node: StatementNode) -> None:
+            """한 노드의 컨텍스트를 생성 (부모 + 형제 요약 LLM).
+
+            부모 context_ready_event 를 기다려 상위 컨텍스트를 확보한 후 LLM 호출.
+            실패 시 예외 전파 (Fail-Fast) + context_ready_event 는 무조건 set 해 데드락 방지.
+            """
+            try:
+                if node.parent and node.parent.needs_context_generation(excluded_types):
+                    await node.parent.context_ready_event.wait()
+
+                skeleton = node.get_skeleton_code()
+                ancestor_ctx = node.get_ancestor_context(MAX_CONTEXT_TOKEN)
+                sibling_code = node.get_sibling_code()
+                parent_ctx, sibling_ctx = await self._extract_node_context(
+                    skeleton, ancestor_ctx, sibling_code,
+                )
+
+                node.context = parent_ctx
+                node.sibling_context = sibling_ctx
+                log_process("PHASE:1", "CONTEXT", f"✅ 컨텍스트 생성 완료: {node.node_type}[{node.start_line}~{node.end_line}]")
+            except Exception as e:
+                log_process("PHASE:1", "CONTEXT", f"❌ 컨텍스트 생성 실패 (치명적): {node.node_type}[{node.start_line}]: {e}", logging.ERROR)
+                raise
+            finally:
+                node.context_ready_event.set()
+
         async def process_context_batch(batch: List[StatementNode]) -> None:
-            """같은 깊이의 노드들을 병렬로 처리"""
-            semaphore = asyncio.Semaphore(min(self.max_workers, len(batch)))
+            """같은 깊이의 노드를 AsyncBatchExecutor 로 continuous 병렬 처리.
 
-            async def process_one(node: StatementNode) -> None:
-                async with semaphore:
-                    try:
-                        # 부모의 context_ready_event 대기 (있으면)
-                        if node.parent and node.parent.needs_context_generation(excluded_types):
-                            await node.parent.context_ready_event.wait()
-
-                        # 스켈레톤 코드 생성 (부모 틀)
-                        skeleton = node.get_skeleton_code()
-
-                        # 조상 컨텍스트 수집
-                        ancestor_ctx = node.get_ancestor_context(MAX_CONTEXT_TOKEN)
-
-                        # 이전 형제 원문 코드
-                        sibling_code = node.get_sibling_code()
-
-                        # LLM 호출하여 컨텍스트 추출 (부모 + 형제)
-                        parent_ctx, sibling_ctx = await self._extract_node_context(
-                            skeleton, ancestor_ctx, sibling_code
-                        )
-
-                        node.context = parent_ctx
-                        node.sibling_context = sibling_ctx
-                        log_process("PHASE:1", "CONTEXT", f"✅ 컨텍스트 생성 완료: {node.node_type}[{node.start_line}~{node.end_line}]")
-                    except Exception as e:
-                        log_process("PHASE:1", "CONTEXT", f"❌ 컨텍스트 생성 실패 (치명적): {node.node_type}[{node.start_line}]: {e}", logging.ERROR)
-                        # 컨텍스트 없이 분석하면 별칭 해석 오류 등으로 결과가 엉망이 됨
-                        # 예외를 다시 발생시켜서 실패를 명확히 표시
-                        raise
-                    finally:
-                        node.context_ready_event.set()
-
-            await asyncio.gather(*[process_one(n) for n in batch])
+            깊이 간 순서는 외부 루프가 순차로 호출 (부모 깊이 context_ready_event
+            가 모두 set 된 후에야 자식 깊이가 시작됨).
+            """
+            from util.llm_rate_limiter import get_executor
+            await get_executor().run_batch(
+                items=batch,
+                processor=process_one,
+                label="DBMS_NODE_CONTEXT",
+            )
 
         # 깊이별로 배치 처리
         for node in parent_nodes:
@@ -393,92 +394,66 @@ class BaseAstProcessor(ABC):
             key: {} for key in (self._unit_info or {})
         }
 
-        async def process_batch(batch: AnalysisBatch, semaphore: asyncio.Semaphore) -> Tuple[List[str], Dict[str, Any]]:
-            """배치 처리 후 쿼리와 분석 결과 반환. 노드에 summary도 설정.
+        async def process_batch(batch: AnalysisBatch) -> List[str]:
+            """배치 처리 후 쿼리 반환. 노드 summary 설정 + Neo4j 스트림.
 
-            핵심: 부모 노드는 자식 completion_event를 기다린 후 실행됨
-            → 깊이 계산 없이 자연스럽게 leaf → parent 순서 보장
-
-            중요:
-            - try/finally로 completion_event.set()을 보장하여 데드락 방지
-            - 자식 중 ok=False가 있으면 부모도 ok=False (불완전 요약 전파)
+            핵심: 부모 노드는 자식 completion_event 를 기다린 후 실행됨
+            → 깊이 계산 없이 자연스럽게 leaf → parent 순서 보장.
+            실패 시 노드 ok=False 마킹 + completion_event.set() 로 데드락 방지.
+            rate limit / 동시성은 AsyncBatchExecutor + get_rate_limiter() 가 관리.
             """
-            async with semaphore:
-                # 배치 시작 전 일시정지/중단 체크
-                if not await pipeline_controller.check_continue():
-                    raise RuntimeError("파이프라인 중단됨")
+            if not await pipeline_controller.check_continue():
+                raise RuntimeError("파이프라인 중단됨")
+            try:
+                # 1. 배치 내 모든 노드의 자식 완료 + 부모 컨텍스트 대기
+                for node in batch.nodes:
+                    if node.parent:
+                        await node.parent.context_ready_event.wait()
+                    if node.has_children:
+                        for child in node.children:
+                            await child.completion_event.wait()
+                            if not child.ok:
+                                node.ok = False
 
-                try:
-                    # 1. 배치 내 모든 노드의 자식 완료 및 부모 컨텍스트 준비를 기다림
-                    for node in batch.nodes:
-                        # 부모 컨텍스트가 준비될 때까지 대기
-                        if node.parent:
-                            await node.parent.context_ready_event.wait()
+                log_process("ANALYZE", "LLM", f"배치 #{batch.batch_id} 처리 중 ({len(batch.nodes)}개 노드)")
+                llm_result = await self._invoke_llm(batch)
+                self._apply_summary_to_nodes(batch, llm_result)
+                queries = self._build_analysis_queries(batch, llm_result, unit_summary_store)
+                if on_queries_ready and queries:
+                    await on_queries_ready(queries, batch.batch_id, len(batches))
+                return queries
+            except Exception:
+                for node in batch.nodes:
+                    node.ok = False
+                raise
+            finally:
+                for node in batch.nodes:
+                    node.completion_event.set()
 
-                        if node.has_children:
-                            for child in node.children:
-                                await child.completion_event.wait()
-                                # 자식 중 하나라도 실패하면 부모도 불완전
-                                if not child.ok:
-                                    node.ok = False
-
-                    log_process("ANALYZE", "LLM", f"배치 #{batch.batch_id} 처리 중 ({len(batch.nodes)}개 노드)")
-                    llm_result = await self._invoke_llm(batch)
-
-                    # 2. 노드에 summary 설정 (전략별 결과 형식에 따라)
-                    self._apply_summary_to_nodes(batch, llm_result)
-
-                    queries = self._build_analysis_queries(batch, llm_result, unit_summary_store)
-                    # 배치 완료 즉시 Neo4j 저장 + 스트리밍
-                    if on_queries_ready and queries:
-                        await on_queries_ready(queries, batch.batch_id, len(batches))
-                    return queries, {"batch": batch, "result": llm_result}
-                except Exception:
-                    # 배치 실패 시 모든 노드를 ok=False로 마킹
-                    for node in batch.nodes:
-                        node.ok = False
-                    raise
-                finally:
-                    # 3. 무조건 completion_event 설정 (실패해도 부모가 대기하지 않도록)
-                    for node in batch.nodes:
-                        node.completion_event.set()
-
-        def collect_results(batch_results: list, batches_list: List[AnalysisBatch], level_name: str) -> Tuple[int, List[Dict[str, Any]]]:
-            """배치 결과를 수집하고 (실패 수, 실패 상세 정보) 반환."""
-            nonlocal all_queries
-            fail_count = 0
-            failed_details: List[Dict[str, Any]] = []
-
-            for i, result in enumerate(batch_results):
-                if isinstance(result, Exception):
-                    batch = batches_list[i] if i < len(batches_list) else None
-                    batch_id = batch.batch_id if batch else i
-                    node_ranges = ", ".join(f"L{n.start_line}-{n.end_line}" for n in batch.nodes) if batch else "unknown"
-                    error_msg = str(result)[:100]  # 최대 100자
-
-                    log_process("PHASE:2", "ERROR", f"[{level_name}] 배치 #{batch_id} 실패 ({node_ranges}): {error_msg}", logging.ERROR)
-                    fail_count += 1
-                    failed_details.append({
-                        "batch_id": batch_id,
-                        "node_ranges": node_ranges,
-                        "error": error_msg
-                    })
-                else:
-                    queries, _ = result
-                    all_queries.extend(queries)
-            return fail_count, failed_details
-
-        # 모든 배치 병렬 실행 (completion_event가 순서 보장)
-        semaphore = asyncio.Semaphore(min(self.max_workers, len(batches)))
-        batch_results = await asyncio.gather(
-            *[process_batch(b, semaphore) for b in batches],
-            return_exceptions=True
+        # 모든 배치를 AsyncBatchExecutor 로 continuous 병렬 실행
+        # (completion_event 로 부모-자식 순서 보장, rate limiter 싱글톤으로 동시성 제어)
+        from util.llm_rate_limiter import get_executor
+        batch_results = await get_executor().run_batch(
+            items=batches,
+            processor=process_batch,
+            label=f"DBMS_AST_BATCH:{self.full_directory}",
         )
-        fail_count, failed_details = collect_results(batch_results, batches, "LLM")
-        failed_batch_count += fail_count
-        all_failed_details.extend(failed_details)
 
-        # 배치 실패 시 즉시 중단 - 부분 실패 허용 안함
+        # 결과 병합: 성공한 배치의 쿼리 수집, 실패 배치는 상세 수집
+        for i, queries in enumerate(batch_results):
+            if queries is None:
+                # AsyncBatchExecutor 는 항목 실패 시 None 반환 + 에러 로그
+                batch = batches[i]
+                all_failed_details.append({
+                    "batch_id": batch.batch_id,
+                    "node_ranges": ", ".join(f"L{n.start_line}-{n.end_line}" for n in batch.nodes),
+                    "error": "배치 처리 실패 (상세는 BATCH 로그 참조)",
+                })
+                failed_batch_count += 1
+            else:
+                all_queries.extend(queries)
+
+        # 배치 실패 시 즉시 중단 — 부분 실패 허용 안 함
         if failed_batch_count > 0:
             raise RuntimeError(f"{self.full_directory}: {failed_batch_count}개 배치 실패 (상세: {all_failed_details})")
 

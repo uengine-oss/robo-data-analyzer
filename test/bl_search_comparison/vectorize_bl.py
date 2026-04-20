@@ -1,6 +1,11 @@
-"""BL 노드 임베딩 생성 + Neo4j 벡터 인덱스 생성 (1회 실행)"""
+"""Rule 노드 임베딩 생성 + Neo4j 벡터 인덱스 생성 (1회 실행).
+
+임베딩 단위는 Rule(규칙 문장). 각 Rule 에 달린 Example 의 description + narrative
+(given/then 자연어 요약) 를 함께 포함해 검색 품질을 높인다.
+"""
 
 import asyncio
+import json
 import time
 
 from openai import AsyncOpenAI
@@ -9,34 +14,49 @@ from client.embedding_client import EmbeddingClient
 from client.neo4j_client import Neo4jClient
 from config.settings import settings
 
-VECTOR_INDEX_NAME = "bl_embedding_index"
+VECTOR_INDEX_NAME = "rule_embedding_index"
 EMBEDDING_DIM = 1536
 BATCH_SIZE = 50
 
 
-def compose_bl_text(bl: dict) -> str:
-    parts = []
-    if bl.get("title"):
-        parts.append(f"제목: {bl['title']}")
-    if bl.get("given"):
-        parts.append(f"사전조건: {bl['given']}")
-    if bl.get("bwhen"):
-        parts.append(f"조건: {bl['bwhen']}")
-    if bl.get("bthen"):
-        parts.append(f"결과: {bl['bthen']}")
+def _narrative(raw) -> str:
+    """Example given/then 이 JSON 문자열이면 narrative 만 추출, 아니면 원문."""
+    if not raw:
+        return ""
+    s = str(raw).strip()
+    if s.startswith("{"):
+        try:
+            return str(json.loads(s).get("narrative") or "").strip()
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return s
+
+
+def compose_rule_text(rule: dict) -> str:
+    """Rule statement + 예시 description + Given/When/Then 요약을 결합해 임베딩 텍스트 생성."""
+    parts = [f"규칙: {rule['statement']}"]
+    for ex in (rule.get("examples") or [])[:3]:  # 대표 Example 3개
+        desc = (ex.get("description") or "").strip()
+        g = _narrative(ex.get("given"))
+        w = (ex.get("when_") or "").strip()
+        t = _narrative(ex.get("then_"))
+        if desc or g or w or t:
+            head = f"예시({desc})" if desc else "예시"
+            parts.append(f"{head}: Given={g} / When={w} / Then={t}")
     return "\n".join(parts)
 
 
-async def fetch_bl_nodes(client: Neo4jClient) -> list[dict]:
+async def fetch_rules(client: Neo4jClient) -> list[dict]:
     results = await client.execute_queries([{
         "query": """
-            MATCH (bl:BusinessLogic)
-            WHERE bl.bl_embedding IS NULL
-            RETURN bl.function_id AS function_id,
-                   bl.title AS title,
-                   bl.given AS given,
-                   bl.when AS bwhen,
-                   bl.then AS bthen
+            MATCH (r:Rule)
+            WHERE r.rule_embedding IS NULL
+            OPTIONAL MATCH (r)-[:HAS_EXAMPLE]->(e:Example)
+            WITH r, collect({description: e.description, given: e.given,
+                             when_: e.when_, then_: e.then_}) AS examples
+            RETURN r.rule_hash AS rule_hash,
+                   r.statement AS statement,
+                   examples
         """,
         "params": {},
     }])
@@ -44,19 +64,13 @@ async def fetch_bl_nodes(client: Neo4jClient) -> list[dict]:
 
 
 async def store_embeddings(client: Neo4jClient, rows: list[dict], embeddings: list[list[float]]):
-    queries = []
-    for row, emb in zip(rows, embeddings):
-        queries.append({
-            "query": """
-                MATCH (bl:BusinessLogic {function_id: $fid, title: $title})
-                SET bl.bl_embedding = $embedding
-            """,
-            "params": {
-                "fid": row["function_id"],
-                "title": row["title"],
-                "embedding": emb,
-            },
-        })
+    queries = [{
+        "query": """
+            MATCH (r:Rule {rule_hash: $rule_hash})
+            SET r.rule_embedding = $embedding
+        """,
+        "params": {"rule_hash": row["rule_hash"], "embedding": emb},
+    } for row, emb in zip(rows, embeddings)]
     await client.execute_queries(queries)
 
 
@@ -64,7 +78,7 @@ async def create_vector_index(client: Neo4jClient):
     await client.execute_queries([{
         "query": f"""
             CREATE VECTOR INDEX {VECTOR_INDEX_NAME} IF NOT EXISTS
-            FOR (bl:BusinessLogic) ON (bl.bl_embedding)
+            FOR (r:Rule) ON (r.rule_embedding)
             OPTIONS {{indexConfig: {{
                 `vector.dimensions`: {EMBEDDING_DIM},
                 `vector.similarity_function`: 'cosine'
@@ -95,33 +109,28 @@ async def run_vectorize():
     emb_client = EmbeddingClient(openai_client)
 
     try:
-        # 1. Fetch BL nodes without embeddings
-        rows = await fetch_bl_nodes(neo4j)
+        rows = await fetch_rules(neo4j)
         if not rows:
-            print("All BL nodes already have embeddings. Skipping.")
+            print("All Rule nodes already have embeddings. Skipping.")
         else:
-            print(f"Found {len(rows)} BL nodes to vectorize")
-
-            # 2. Generate embeddings in batches
+            print(f"Found {len(rows)} Rule nodes to vectorize")
             for i in range(0, len(rows), BATCH_SIZE):
                 batch = rows[i:i + BATCH_SIZE]
-                texts = [compose_bl_text(r) for r in batch]
+                texts = [compose_rule_text(r) for r in batch]
                 embeddings = await emb_client.embed_batch(texts)
                 await store_embeddings(neo4j, batch, embeddings)
                 print(f"  Stored embeddings for batch {i // BATCH_SIZE + 1} ({len(batch)} nodes)")
 
-        # 3. Create vector index
         print("Creating vector index...")
         await create_vector_index(neo4j)
         await wait_for_index(neo4j)
 
-        # 4. Verify
         results = await neo4j.execute_queries([{
-            "query": "MATCH (bl:BusinessLogic) WHERE bl.bl_embedding IS NOT NULL RETURN count(bl) AS cnt",
+            "query": "MATCH (r:Rule) WHERE r.rule_embedding IS NOT NULL RETURN count(r) AS cnt",
             "params": {},
         }])
         cnt = results[0][0]["cnt"] if results and results[0] else 0
-        print(f"Verification: {cnt} BL nodes with embeddings")
+        print(f"Verification: {cnt} Rule nodes with embeddings")
 
     finally:
         await neo4j.close()

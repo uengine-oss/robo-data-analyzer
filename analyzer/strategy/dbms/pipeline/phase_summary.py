@@ -11,6 +11,7 @@ from typing import Any, AsyncGenerator, Dict, List, Tuple
 from client.neo4j_client import Neo4jClient
 from analyzer.strategy.dbms.common.node_models import FileStatus, FileAnalysisContext
 from analyzer.common.analysis_context import fetch_constants_context, fetch_table_context
+from analyzer.common.example_collector import collect_example_rows
 from config.settings import settings
 from util.stream_emitter import emit_data, emit_message, emit_phase_event
 from util.logger import log_process
@@ -20,6 +21,219 @@ from analyzer.common.graph_writer import run_graph_queries
 
 # ========== PromptRegistry 기반 LLM 호출 ==========
 from util.llm_prompt_handler import prompts
+from util.llm_rate_limiter import get_executor
+from analyzer.strategy.framework.common.graph_queries import _rule_hash
+
+
+async def _run_chunks_continuous(chunks: List[Any], processor_fn, label: str) -> List[Any]:
+    """chunk 처리를 AsyncBatchExecutor 로 실행 — 워커 풀 continuous, 결과는 완료순 수집.
+
+    순수 LLM 병렬 사이트의 표준 통일 패턴.
+    """
+    executor = get_executor()
+    results: List[Any] = []
+    def _on(r):
+        if r is not None:
+            results.append(r)
+    await executor.run_batch(items=chunks, processor=processor_fn, on_result=_on, label=label)
+    return results
+
+
+# ── 프로시저 요약 쿼리 빌더 ─────────────────────────────────────────────
+#
+# PROCEDURE/FUNCTION/TRIGGER 노드에 summary 저장 + Example Mapping 3요소
+# (Rule/Example/Question) 및 Rule 간 NEXT/BRANCH 관계 생성.
+# Framework 의 build_analysis_result_queries 와 동일한 스키마·해시·관계 구조를
+# DBMS 프로시저 앵커(composite key) 에 맞게 구성.
+
+def _proc_match_clause(info: Any) -> Tuple[str, Dict[str, Any]]:
+    """PROCEDURE/FUNCTION/TRIGGER 노드 composite-key MATCH 절 + 파라미터."""
+    if info.schema_name:
+        match = (
+            f"MATCH (p:{info.procedure_type} "
+            f"{{schema_name: $schema_name, procedure_name: $procedure_name, "
+            f"directory: $directory, file_name: $file_name}})"
+        )
+        params = {"schema_name": info.schema_name, "procedure_name": info.procedure_name}
+    else:
+        match = (
+            f"MATCH (p:{info.procedure_type} "
+            f"{{procedure_name: $procedure_name, directory: $directory, file_name: $file_name}})"
+        )
+        params = {"procedure_name": info.procedure_name}
+    return match, params
+
+
+def _build_procedure_summary_queries(
+    processor: Any,
+    info: Any,
+    summary: str,
+    analysis: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """프로시저 1개에 대한 Summary + EM 쿼리 리스트 반환.
+
+    흐름:
+      1) PROCEDURE.summary SET
+      2) Rule 노드 (rule_hash 공유) + HAS_RULE 관계
+      3) Example 노드 + HAS_EXAMPLE
+      4) Question 노드 + HAS_QUESTION
+      5) Rule 간 NEXT / BRANCH
+    """
+    proc_match, proc_key_params = _proc_match_clause(info)
+    base_params = {
+        **proc_key_params,
+        "directory": processor.full_directory,
+        "file_name": processor.file_name,
+    }
+    proc_id = f"{processor.full_directory}/{processor.file_name}:{info.procedure_name}"
+    queries: List[Dict[str, Any]] = [{
+        "query": f"{proc_match} SET p.summary = $summary RETURN p",
+        "params": {**base_params, "summary": str(summary)},
+    }]
+
+    # 수집: Rule / Example / Question / Flow
+    rule_rows: List[Dict[str, Any]] = []
+    question_rows: List[Dict[str, Any]] = []
+    flow_by_rid: Dict[str, str] = {}
+    branch_by_rid: Dict[str, Any] = {}
+
+    for r in (analysis.get("rules") or []):
+        if not isinstance(r, dict):
+            continue
+        rid = str(r.get("rule_id", "")).strip()
+        statement = (r.get("statement") or "").strip()
+        if not rid or not statement:
+            continue
+        flow_id = str(r.get("flow_id", "")).strip() or rid
+        branch_from = r.get("branch_from") or None
+        flow_by_rid[rid] = flow_id
+        branch_by_rid[rid] = branch_from
+        rule_rows.append({
+            "rule_id": rid,
+            "rule_hash": _rule_hash(statement),
+            "statement": statement,
+            "flow_id": flow_id,
+            "guard_rule_id": r.get("guard_rule_id") or None,
+            "branch_from": branch_from,
+            "coupled_domains": [str(d).strip() for d in (r.get("coupled_domains") or []) if str(d).strip()],
+        })
+
+    # Example 수집 (given/then dict→JSON, then.writes[]→AFFECTS_TABLE 엣지)
+    example_rows, example_write_edges = collect_example_rows(
+        analysis.get("examples") or [],
+        valid_rule_ids=flow_by_rid.keys(),
+        example_id_factory=lambda rid, idx: f"{proc_id}::{rid}::{idx}",
+    )
+
+    for idx, q in enumerate(analysis.get("questions") or [], start=1):
+        if not isinstance(q, dict):
+            continue
+        text = (q.get("text") or "").strip()
+        if not text:
+            continue
+        question_rows.append({
+            "question_id": f"{proc_id}::Q{idx}",
+            "text": text,
+            "reason": (q.get("reason") or "").strip(),
+        })
+
+    # Rule
+    if rule_rows:
+        queries.append({
+            "query": (
+                f"{proc_match}\n"
+                "UNWIND $rows AS row\n"
+                "MERGE (r:Rule {rule_hash: row.rule_hash})\n"
+                "  ON CREATE SET r.statement = row.statement, r.created_at = timestamp()\n"
+                "MERGE (p)-[rel:HAS_RULE {local_id: row.rule_id}]->(r)\n"
+                "SET rel.flow_id = row.flow_id,\n"
+                "    rel.guard_rule_id = row.guard_rule_id,\n"
+                "    rel.branch_from = row.branch_from,\n"
+                "    rel.coupled_domains = row.coupled_domains,\n"
+                "    rel.updated_at = timestamp()\n"
+                "RETURN p, rel, r"
+            ),
+            "params": {**base_params, "rows": rule_rows},
+        })
+
+    # Example (given/then 은 하이브리드 JSON 직렬화 문자열)
+    if example_rows:
+        queries.append({
+            "query": (
+                f"{proc_match}\n"
+                "UNWIND $rows AS row\n"
+                "MATCH (p)-[:HAS_RULE {local_id: row.rule_id}]->(r:Rule)\n"
+                "MERGE (e:Example {example_id: row.example_id})\n"
+                "SET e.description = row.description,\n"
+                "    e.given = row.given, e.when_ = row.when_, e.then_ = row.then_,\n"
+                "    e.is_boundary = row.is_boundary, e.updated_at = timestamp()\n"
+                "MERGE (r)-[:HAS_EXAMPLE]->(e)\n"
+                "RETURN r, e"
+            ),
+            "params": {**base_params, "rows": example_rows},
+        })
+
+    # Example → Table AFFECTS_TABLE 엣지
+    if example_write_edges:
+        queries.append({
+            "query": (
+                "UNWIND $rows AS row\n"
+                "MATCH (e:Example {example_id: row.example_id})\n"
+                "MATCH (t:Table) WHERE toLower(t.name) = toLower(row.table_name)\n"
+                "MERGE (e)-[rel:AFFECTS_TABLE {op: row.op}]->(t)\n"
+                "SET rel.updated_at = timestamp()\n"
+                "RETURN e, rel, t"
+            ),
+            "params": {"rows": example_write_edges},
+        })
+
+    # Question
+    if question_rows:
+        queries.append({
+            "query": (
+                f"{proc_match}\n"
+                "UNWIND $rows AS row\n"
+                "MERGE (q:Question {question_id: row.question_id})\n"
+                "  ON CREATE SET q.text = row.text, q.reason = row.reason, q.created_at = timestamp()\n"
+                "  ON MATCH  SET q.text = row.text, q.reason = row.reason, q.updated_at = timestamp()\n"
+                "MERGE (p)-[:HAS_QUESTION]->(q)\n"
+                "RETURN p, q"
+            ),
+            "params": {**base_params, "rows": question_rows},
+        })
+
+    # Rule 간 흐름(NEXT/BRANCH) 관계
+    main_rids = sorted(
+        (rid for rid, flow in flow_by_rid.items() if "-" not in flow),
+        key=lambda rid: flow_by_rid[rid],
+    )
+    next_edges = [
+        {"from_rule_id": main_rids[i], "to_rule_id": main_rids[i + 1]}
+        for i in range(len(main_rids) - 1)
+    ]
+    flow_to_rid = {flow: rid for rid, flow in flow_by_rid.items()}
+    branch_edges = []
+    for rid, flow in flow_by_rid.items():
+        if "-" not in flow:
+            continue
+        parent_rid = branch_by_rid.get(rid) or flow_to_rid.get(flow.rsplit("-", 1)[0])
+        if parent_rid and parent_rid in flow_by_rid:
+            branch_edges.append({"from_rule_id": parent_rid, "to_rule_id": rid})
+
+    for rel_type, edges in (("NEXT", next_edges), ("BRANCH", branch_edges)):
+        if edges:
+            queries.append({
+                "query": (
+                    f"{proc_match}\n"
+                    "UNWIND $rows AS row\n"
+                    "MATCH (p)-[:HAS_RULE {local_id: row.from_rule_id}]->(a:Rule)\n"
+                    "MATCH (p)-[:HAS_RULE {local_id: row.to_rule_id}]->(b:Rule)\n"
+                    f"MERGE (a)-[:{rel_type} {{procedure_id: $proc_id}}]->(b)"
+                ),
+                "params": {**base_params, "proc_id": proc_id, "rows": edges},
+            })
+
+    return queries
 
 
 def _collect_variable_declarations(processor: Any, proc_key: str, var_types: frozenset) -> str:
@@ -211,26 +425,25 @@ async def _run_unit_analysis(
                     chunks = _split_summaries_by_token(summaries, MAX_SUMMARY_CHUNK_TOKEN)
                 if not chunks:
                     final_summary = ""
-                    final_scenarios = []
+                    final_analysis: Dict[str, Any] = {}
                 else:
-                    chunk_semaphore = asyncio.Semaphore(settings.concurrency.max_concurrency)
                     async def process_chunk(chunk):
-                        async with chunk_semaphore:
-                            r = await asyncio.to_thread(
-                                _analyze_summary_only, chunk, orchestrator.api_key, orchestrator.locale,
-                                variable_declarations=var_decls,
-                                table_sample_data=table_data,
-                                constants_context=constants_context,
-                                called_procedure_summaries=called_procedure_summaries,
-                            )
-                            return r if isinstance(r, dict) else {}
-                    chunk_results_raw = await asyncio.gather(*[process_chunk(c) for c in chunks])
-                    chunk_summaries = [r.get('summary', '') for r in chunk_results_raw if r.get('summary')]
-                    # 최종 chunk에서만 scenarios 수집
-                    final_scenarios = []
-                    for r in chunk_results_raw:
-                        if r.get('scenarios'):
-                            final_scenarios = r['scenarios']
+                        r = await asyncio.to_thread(
+                            _analyze_summary_only, chunk, orchestrator.api_key, orchestrator.locale,
+                            variable_declarations=var_decls,
+                            table_sample_data=table_data,
+                            constants_context=constants_context,
+                            called_procedure_summaries=called_procedure_summaries,
+                        )
+                        return r if isinstance(r, dict) else {}
+
+                    chunk_results_raw = await _run_chunks_continuous(chunks, process_chunk, label="DBMS_UNIT_SUMMARY")
+                    chunk_summaries = [r.get('summary', '') for r in chunk_results_raw if r and r.get('summary')]
+                    # 마지막 유효 chunk 의 분석 결과(Rule/Example/Question)를 우선 채택
+                    final_analysis = next(
+                        (r for r in reversed(chunk_results_raw) if r and (r.get('rules') or r.get('examples') or r.get('questions'))),
+                        {},
+                    )
 
                     if not chunk_summaries:
                         final_summary = ""
@@ -247,8 +460,8 @@ async def _run_unit_analysis(
                         )
                         if isinstance(r, dict):
                             final_summary = r.get('summary') or "\n\n".join(chunk_summaries)
-                            if r.get('scenarios'):
-                                final_scenarios = r['scenarios']
+                            if r.get('rules') or r.get('examples') or r.get('questions'):
+                                final_analysis = r
                         else:
                             final_summary = "\n\n".join(chunk_summaries)
 
@@ -256,28 +469,8 @@ async def _run_unit_analysis(
                     await results_queue.put({"type": "success", "procedure": info.procedure_name, "file": ctx.file_name})
                     return
 
-                # Summary 저장
-                if info.schema_name:
-                    cypher = f"MATCH (__cy_n__:{info.procedure_type} {{schema_name: $schema_name, procedure_name: $procedure_name, directory: $directory, file_name: $file_name}}) SET __cy_n__.summary = $summary RETURN __cy_n__"
-                    params = {"schema_name": info.schema_name, "procedure_name": info.procedure_name, "directory": processor.full_directory, "file_name": processor.file_name, "summary": str(final_summary)}
-                else:
-                    cypher = f"MATCH (__cy_n__:{info.procedure_type} {{procedure_name: $procedure_name, directory: $directory, file_name: $file_name}}) SET __cy_n__.summary = $summary RETURN __cy_n__"
-                    params = {"procedure_name": info.procedure_name, "directory": processor.full_directory, "file_name": processor.file_name, "summary": str(final_summary)}
-                queries = [{"query": cypher, "params": params}]
-                # BusinessLogic 노드 생성
-                if final_scenarios:
-                    proc_id = f"{processor.full_directory}/{processor.file_name}:{info.procedure_name}"
-                    for idx, sc in enumerate(final_scenarios):
-                        if isinstance(sc, dict) and sc.get("title"):
-                            seq = sc.get("sequence", idx + 1)
-                            coupled_domain = sc.get("coupled_domain")
-                            if info.schema_name:
-                                bl_cypher = f"MATCH (p:{info.procedure_type} {{schema_name: $schema_name, procedure_name: $procedure_name, directory: $directory, file_name: $file_name}}) MERGE (g:BusinessLogic {{procedure_id: $proc_id, title: $title}}) SET g.sequence = $sequence, g.coupled_domain = $coupled_domain, g.given = $given, g.when = $when, g.then = $then, g.updated_at = timestamp() MERGE (p)-[:HAS_BUSINESS_LOGIC]->(g) RETURN p, g"
-                                bl_params = {"schema_name": info.schema_name, "procedure_name": info.procedure_name, "directory": processor.full_directory, "file_name": processor.file_name, "proc_id": proc_id, "sequence": seq, "coupled_domain": coupled_domain, "title": sc.get("title", ""), "given": sc.get("given", ""), "when": sc.get("when", ""), "then": sc.get("then", "")}
-                            else:
-                                bl_cypher = f"MATCH (p:{info.procedure_type} {{procedure_name: $procedure_name, directory: $directory, file_name: $file_name}}) MERGE (g:BusinessLogic {{procedure_id: $proc_id, title: $title}}) SET g.sequence = $sequence, g.coupled_domain = $coupled_domain, g.given = $given, g.when = $when, g.then = $then, g.updated_at = timestamp() MERGE (p)-[:HAS_BUSINESS_LOGIC]->(g) RETURN p, g"
-                                bl_params = {"procedure_name": info.procedure_name, "directory": processor.full_directory, "file_name": processor.file_name, "proc_id": proc_id, "sequence": seq, "coupled_domain": coupled_domain, "title": sc.get("title", ""), "given": sc.get("given", ""), "when": sc.get("when", ""), "then": sc.get("then", "")}
-                            queries.append({"query": bl_cypher, "params": bl_params})
+                # Summary + Example Mapping 쿼리 조립
+                queries = _build_procedure_summary_queries(processor, info, final_summary, final_analysis)
                 if queries:
                     async for batch in run_graph_queries(client, queries, cypher_lock=pipeline._cypher_lock):
                         await results_queue.put({"type": "graph", "graph": batch})
@@ -386,26 +579,37 @@ async def _run_table_summary(
     if not all_table_stores:
         yield emit_phase_event(2, "AI 분석", "in_progress", 100, {"step": "테이블 요약 완료", "tables": 0})
         return
-    yield emit_phase_event(2, "AI 분석", "in_progress", 85, {"step": "테이블/컬럼 설명 요약", "total": len(all_table_stores)})
-    tasks = [_summarize_table(table_key, {"summaries": list(data["summaries"]), "columns": data["columns"]}, all_ddl_metadata, dbms_name or "", orchestrator.api_key, orchestrator.locale) for table_key, data in all_table_stores.items()]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    all_queries = []
+    total = len(all_table_stores)
+    yield emit_phase_event(2, "AI 분석", "in_progress", 85, {"step": "테이블/컬럼 설명 요약", "total": total})
+
+    # 테이블별 요약을 asyncio.as_completed 로 continuous 처리
+    # (완료되는 순서대로 Neo4j 반영 + 진행률 yield)
+    tasks = [
+        asyncio.create_task(_summarize_table(
+            table_key,
+            {"summaries": list(data["summaries"]), "columns": data["columns"]},
+            all_ddl_metadata, dbms_name or "", orchestrator.api_key, orchestrator.locale,
+        ))
+        for table_key, data in all_table_stores.items()
+    ]
+
     completed = 0
-    for r in results:
+    total_queries = 0
+    # Fail-Fast: 테이블 요약 실패는 상위로 전파
+    for coro in asyncio.as_completed(tasks):
         completed += 1
-        if isinstance(r, Exception):
-            yield emit_message(f"   ❌ [{completed}/{len(tasks)}] 테이블 요약 오류: {str(r)[:50]}")
-        elif r:
-            all_queries.extend(r)
-            yield emit_message(f"   ✓ [{completed}/{len(tasks)}] 테이블 요약 완료")
-        yield emit_phase_event(2, "AI 분석", "in_progress", 85 + int(completed / len(tasks) * 15), {"step": "테이블/컬럼 설명 요약", "done": completed, "total": len(tasks)})
-    if all_queries:
-        async for batch in run_graph_queries(client, all_queries, cypher_lock=pipeline._cypher_lock):
-            yield emit_data(graph=batch)
+        queries = await coro
+        if queries:
+            total_queries += len(queries)
+            yield emit_message(f"   ✓ [{completed}/{total}] 테이블 요약 완료")
+            async for batch in run_graph_queries(client, queries, cypher_lock=pipeline._cypher_lock):
+                yield emit_data(graph=batch)
+        yield emit_phase_event(2, "AI 분석", "in_progress", 85 + int(completed / total * 15), {"step": "테이블/컬럼 설명 요약", "done": completed, "total": total})
+
     for ctx in contexts:
         if ctx.processor and hasattr(ctx.processor, '_table_summary_store'):
             ctx.processor._table_summary_store.clear()
-    yield emit_phase_event(2, "AI 분석", "in_progress", 100, {"step": "테이블/컬럼 설명 요약 완료", "tables": len(tasks), "queries": len(all_queries)})
+    yield emit_phase_event(2, "AI 분석", "in_progress", 100, {"step": "테이블/컬럼 설명 요약 완료", "tables": total, "queries": total_queries})
 
 
 # ========== Phase 3 통합 진입점 ==========

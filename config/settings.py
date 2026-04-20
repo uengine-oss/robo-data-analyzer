@@ -17,11 +17,6 @@ if not _env_path.exists():
     _env_path = find_dotenv(usecwd=True)
 load_dotenv(dotenv_path=_env_path)
 
-# deepagents용 OPENAI_API_KEY 동기화 (LLM_API_KEY와 동일하게)
-_llm_api_key = os.getenv("LLM_API_KEY", "")
-if _llm_api_key:
-    os.environ["OPENAI_API_KEY"] = _llm_api_key
-
 
 def _get_base_dir() -> str:
     """프로젝트 루트 디렉토리 경로 반환
@@ -151,11 +146,6 @@ class AnalyzerConfig:
     # 서버 설정
     host: str = field(default_factory=lambda: os.getenv("HOST", "0.0.0.0"))
     port: int = field(default_factory=lambda: int(os.getenv("PORT", "5502")))
-    
-    # 편의 속성: OpenAI API Key (LLM 설정에서 가져옴)
-    @property
-    def openai_api_key(self) -> str:
-        return self.llm.api_key
 
 
 @lru_cache(maxsize=1)
@@ -173,37 +163,13 @@ settings = get_settings()
 # ============================================================================
 
 def set_openai_api_key(api_key: str) -> None:
-    """OPENAI_API_KEY 환경변수 설정
-    
-    DeepAgents 라이브러리가 내부적으로 OPENAI_API_KEY 환경변수를 사용하므로,
-    이 함수를 통해 API 키를 설정합니다.
-    
-    사용 시점:
-    - Router에서 사용자 API 키 유효성 검증 후 호출
-    - 테스트 시작 시 환경변수 LLM_API_KEY에서 가져와서 호출
-    
+    """OPENAI_API_KEY 환경변수 설정.
+
+    DeepAgents 라이브러리가 내부적으로 OPENAI_API_KEY 환경변수를 참조하므로,
+    DeepAgent 호출 이전 시점(라우터의 API 키 검증 직후)에 1회 설정한다.
+
     Args:
         api_key: OpenAI API 키
     """
     os.environ["OPENAI_API_KEY"] = api_key
-
-
-def init_openai_api_key_from_env() -> None:
-    """환경변수 LLM_API_KEY에서 OPENAI_API_KEY 초기화
-    
-    테스트 환경에서 사용합니다.
-    서비스 시작 시 또는 테스트 setup 시 호출하세요.
-    """
-    llm_api_key = os.getenv("LLM_API_KEY", "")
-    if llm_api_key:
-        os.environ["OPENAI_API_KEY"] = llm_api_key
-
-
-def get_current_openai_api_key() -> str:
-    """현재 설정된 OPENAI_API_KEY 반환
-    
-    Returns:
-        현재 OPENAI_API_KEY 환경변수 값
-    """
-    return os.getenv("OPENAI_API_KEY", "")
 

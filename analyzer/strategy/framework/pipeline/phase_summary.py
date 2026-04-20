@@ -54,13 +54,11 @@ async def run_field_and_module_analysis(st, client, tracker) -> AsyncGenerator[b
     ):
         summary_by_module.update(module_batch)
         yield tracker.tick_quiet(len(module_batch))
-        try:
-            queries = build_module_summary_queries(module_batch, lang=st.lang)
-            if queries:
-                async for chunk in write_to_graph(client, queries, "PHASE3:MODULE_ANALYSIS"):
-                    yield chunk
-        except Exception as e:
-            logger.error("[PHASE:3:MODULE_ANALYSIS] Neo4j 반영 실패 | error=%s", e, exc_info=True)
+        # Fail-Fast: 쿼리 생성·Neo4j 반영 실패는 그대로 전파
+        queries = build_module_summary_queries(module_batch, lang=st.lang)
+        if queries:
+            async for chunk in write_to_graph(client, queries, "PHASE3:MODULE_ANALYSIS"):
+                yield chunk
 
     yield tracker.end_step(f"클래스 {len(summary_by_module)}개 분석 완료")
 
@@ -80,130 +78,112 @@ async def run_actor_and_table_enrichment(st, client, tracker, orchestrator) -> A
     summary_by_module = st.summary_by_module or {}
     function_facts_list = st.function_facts_list or []
 
-    # ── Actor 통합 ──
-    try:
-        replaced_count = _apply_module_unified_actors(
-            analysis_by_function, summary_by_module, function_facts_list,
+    # ── Actor 통합 (Fail-Fast: 실패 시 상위 전파) ──
+    replaced_count = _apply_module_unified_actors(
+        analysis_by_function, summary_by_module, function_facts_list,
+    )
+    if replaced_count:
+        logger.info("[PHASE:3:ACTOR_MERGE] 1차 통합 (모듈 내) | replaced=%d", replaced_count)
+
+    if api_key:
+        merge_map = await _merge_cross_module_actors(
+            analysis_by_function, summary_by_module, api_key, locale,
         )
-        if replaced_count:
-            logger.info("[PHASE:3:ACTOR_MERGE] 1차 통합 (모듈 내) | replaced=%d", replaced_count)
+        if merge_map:
+            logger.info("[PHASE:3:ACTOR_MERGE] 2차 통합 (모듈 간) | merge_map=%s", merge_map)
 
-        if api_key:
-            merge_map = await _merge_cross_module_actors(
-                analysis_by_function, summary_by_module, api_key, locale,
-            )
-            if merge_map:
-                logger.info("[PHASE:3:ACTOR_MERGE] 2차 통합 (모듈 간) | merge_map=%s", merge_map)
-
-        actor_queries = build_actor_queries(analysis_by_function)
-        if actor_queries:
-            async for chunk in write_to_graph(client, actor_queries, "PHASE3:ACTORS"):
-                yield chunk
-            actor_count = len({d.get("actor") for d in analysis_by_function.values() if d.get("actor")})
-            logger.info("[PHASE:3:ACTOR_MERGE] Actor 노드 생성 | actors=%d", actor_count)
-    except Exception as e:
-        logger.error("[PHASE:3:ACTOR_MERGE] Actor 처리 실패 | error=%s", e, exc_info=True)
+    actor_queries = build_actor_queries(analysis_by_function)
+    if actor_queries:
+        async for chunk in write_to_graph(client, actor_queries, "PHASE3:ACTORS"):
+            yield chunk
+        actor_count = len({d.get("actor") for d in analysis_by_function.values() if d.get("actor")})
+        logger.info("[PHASE:3:ACTOR_MERGE] Actor 노드 생성 | actors=%d", actor_count)
 
     # ── Table Description 보강 ──
     yield tracker.begin_step(3, 1)
     enriched_table_count = 0
     if api_key and analysis_by_function:
-        try:
-            enrichment_query = build_table_description_enrichment_query()
-            table_results = await client.execute_queries([enrichment_query])
-            tables_with_summaries = table_results[0] if table_results and table_results[0] else []
+        enrichment_query = build_table_description_enrichment_query()
+        table_results = await client.execute_queries([enrichment_query])
+        tables_with_summaries = table_results[0] if table_results and table_results[0] else []
 
-            if tables_with_summaries:
-                from util.stream_emitter import emit_message
-                yield emit_message(f"  ├─ {len(tables_with_summaries)}개 테이블 LLM 설명 보강 중...")
-                from util.llm_prompt_handler import prompts
+        if tables_with_summaries:
+            from util.stream_emitter import emit_message
+            yield emit_message(f"  ├─ {len(tables_with_summaries)}개 테이블 LLM 설명 보강 중...")
+            from util.llm_prompt_handler import prompts
 
-                insights_map = st.table_insights_map or {}
+            insights_map = st.table_insights_map or {}
 
-                def _enrich_one_table(table_info: dict) -> Optional[Dict[str, Any]]:
-                    name = table_info.get("name", "")
-                    schema = table_info.get("schema", "")
-                    current_desc = table_info.get("current_description") or ""
-                    method_summaries = table_info.get("method_summaries") or []
-                    columns_meta = table_info.get("columns") or []
-                    table_display = f"{schema}.{name}" if schema else name
-                    sentences = [f"[메서드 요약] {s}" for s in method_summaries[:20]]
-                    if current_desc:
-                        sentences.insert(0, f"[기존 설명] {current_desc}")
-                    # Phase 3 Step 2 에서 누적된 tableInsights 의 description 도 신호로 추가
-                    insight_slot = insights_map.get(name.lower()) or insights_map.get(name) or {}
-                    for desc in (insight_slot.get("descriptions") or [])[:10]:
-                        if desc:
-                            sentences.append(f"[함수별 테이블 역할] {desc}")
-                    col_metadata = {}
-                    col_sentences: dict[str, list[str]] = {}
-                    for col in columns_meta:
-                        col_name = col.get("name", "")
-                        if col_name:
-                            col_metadata[col_name] = {
-                                "dtype": col.get("dtype", ""),
-                                "nullable": col.get("nullable"),
-                                "is_primary_key": col.get("is_primary_key"),
-                                "description": col.get("description", ""),
-                            }
-                    # tableInsights 로 모인 컬럼 설명을 column_sentences 로 전달
-                    for col_name, col_slot in (insight_slot.get("columns") or {}).items():
-                        descs = [d for d in (col_slot.get("descriptions") or []) if d]
-                        if descs:
-                            col_sentences[col_name] = descs[:10]
-                    result = prompts.table_summary(
-                        table_name=table_display,
-                        table_sentences=sentences,
-                        column_sentences=col_sentences,
-                        column_metadata=col_metadata,
-                        locale=locale,
-                        api_key=api_key,
-                    )
-                    if isinstance(result, dict) and result.get("tableDescription"):
-                        return {
-                            "db": table_info.get("db", ""),
-                            "schema": schema,
-                            "name": name,
-                            "enriched_description": result["tableDescription"],
-                            "columns": result.get("columns") or [],
+            def _enrich_one_table(table_info: dict) -> Optional[Dict[str, Any]]:
+                name = table_info.get("name", "")
+                schema = table_info.get("schema", "")
+                current_desc = table_info.get("current_description") or ""
+                method_summaries = table_info.get("method_summaries") or []
+                columns_meta = table_info.get("columns") or []
+                table_display = f"{schema}.{name}" if schema else name
+                sentences = [f"[메서드 요약] {s}" for s in method_summaries[:20]]
+                if current_desc:
+                    sentences.insert(0, f"[기존 설명] {current_desc}")
+                # Phase 3 Step 2 에서 누적된 tableInsights 의 description 도 신호로 추가
+                insight_slot = insights_map.get(name.lower()) or insights_map.get(name) or {}
+                for desc in (insight_slot.get("descriptions") or [])[:10]:
+                    if desc:
+                        sentences.append(f"[함수별 테이블 역할] {desc}")
+                col_metadata = {}
+                col_sentences: dict[str, list[str]] = {}
+                for col in columns_meta:
+                    col_name = col.get("name", "")
+                    if col_name:
+                        col_metadata[col_name] = {
+                            "dtype": col.get("dtype", ""),
+                            "nullable": col.get("nullable"),
+                            "is_primary_key": col.get("is_primary_key"),
+                            "description": col.get("description", ""),
                         }
-                    return None
+                # tableInsights 로 모인 컬럼 설명을 column_sentences 로 전달
+                for col_name, col_slot in (insight_slot.get("columns") or {}).items():
+                    descs = [d for d in (col_slot.get("descriptions") or []) if d]
+                    if descs:
+                        col_sentences[col_name] = descs[:10]
+                result = prompts.table_summary(
+                    table_name=table_display,
+                    table_sentences=sentences,
+                    column_sentences=col_sentences,
+                    column_metadata=col_metadata,
+                    locale=locale,
+                    api_key=api_key,
+                )
+                if isinstance(result, dict) and result.get("tableDescription"):
+                    return {
+                        "db": table_info.get("db", ""),
+                        "schema": schema,
+                        "name": name,
+                        "enriched_description": result["tableDescription"],
+                        "columns": result.get("columns") or [],
+                    }
+                return None
 
-                workers = max(1, settings.concurrency.max_concurrency)
-                enrichments: List[Dict[str, Any]] = []
-                with ThreadPoolExecutor(max_workers=workers) as executor:
-                    futures = {executor.submit(_enrich_one_table, t): t for t in tables_with_summaries}
-                    for future in as_completed(futures):
-                        try:
-                            result = future.result()
-                            if result:
-                                enrichments.append(result)
-                        except Exception as e:
-                            t = futures[future]
-                            logger.error("[PHASE:3:TABLE_ENRICH] 보강 실패 | table=%s error=%s", t.get("name", ""), e)
-
-                if enrichments:
-                    enriched_table_count = len(enrichments)
-                    try:
-                        queries = build_table_description_update_queries(enrichments)
-                        for item in enrichments:
-                            columns = item.get("columns") or []
-                            if columns:
-                                queries.extend(
-                                    _build_column_description_update_queries(
-                                        item.get("db", ""),
-                                        item.get("schema", ""),
-                                        item.get("name", ""),
-                                        columns,
-                                    )
-                                )
-                        if queries:
-                            async for chunk in write_to_graph(client, queries, "PHASE3:TABLE_ENRICHMENT"):
-                                yield chunk
-                    except Exception as e:
-                        logger.error("[PHASE:3:TABLE_ENRICH] Neo4j 반영 실패 | error=%s", e, exc_info=True)
-        except Exception as e:
-            logger.error("[PHASE:3:TABLE_ENRICH] Table 보강 스킵 | error=%s", e, exc_info=True)
+            # 테이블 단위 continuous 처리 — 완료되는 즉시 Neo4j 반영
+            # (Fail-Fast: 실패 시 상위 전파, 부분 성공 묵살 금지)
+            workers = max(1, settings.concurrency.max_concurrency)
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = {executor.submit(_enrich_one_table, t): t for t in tables_with_summaries}
+                for future in as_completed(futures):
+                    item = future.result()
+                    if not item:
+                        continue
+                    enriched_table_count += 1
+                    queries = build_table_description_update_queries([item])
+                    if item.get("columns"):
+                        queries.extend(_build_column_description_update_queries(
+                            item.get("db", ""),
+                            item.get("schema", ""),
+                            item.get("name", ""),
+                            item["columns"],
+                        ))
+                    if queries:
+                        async for chunk in write_to_graph(client, queries, "PHASE3:TABLE_ENRICHMENT"):
+                            yield chunk
 
     yield tracker.end_step(f"테이블 {enriched_table_count}개 설명 보강")
 
@@ -320,13 +300,10 @@ async def _merge_cross_module_actors(
             lines.append(line)
     actor_module_list = "\n\n".join(lines)
 
-    try:
-        from util.llm_prompt_handler import prompts
-        result = prompts.actor_synonym_merge(actor_module_list, locale, api_key)
-        groups = result if isinstance(result, dict) else {}
-    except Exception as e:
-        logger.error("[PHASE:3:ACTOR_MERGE] LLM 호출 실패 | error=%s", e, exc_info=True)
-        return {}
+    # Fail-Fast: LLM 예외는 상위로 전파
+    from util.llm_prompt_handler import prompts
+    result = prompts.actor_synonym_merge(actor_module_list, locale, api_key)
+    groups = result if isinstance(result, dict) else {}
 
     merge_map: Dict[str, str] = {}
     if isinstance(groups, dict):

@@ -165,11 +165,13 @@ def _init_agent_env(
 _SKILLS_DIR = Path(__file__).resolve().parents[5] / "rules" / "deep_agent" / "skills"
 
 # 입력 카테고리 → Skill 이름 매핑
+# 모든 카테고리는 명시적으로 매핑되어야 한다. 미매칭 시 KeyError로 fail-fast.
 _CATEGORY_TO_SKILL: Dict[str, str] = {
     # 엔티티 관련 (DDL 없을 때)
     "entity": "entity-analysis",
     "bean": "entity-analysis",
     "cmp_mapping": "entity-analysis",
+    "artifact": "entity-analysis",  # XML/YAML 일반 아티팩트는 엔티티 정의일 가능성
     # SQL 관련
     "sql": "sql-tracking",
     # 설정 관련
@@ -177,9 +179,6 @@ _CATEGORY_TO_SKILL: Dict[str, str] = {
     # DDL 테이블 추적 (별도 호출)
     "ddl_tables": "table-tracking",
 }
-
-# 카테고리 미매칭 시 기본 Skill
-_DEFAULT_SKILL = "sql-tracking"
 
 
 # ---------------------------------------------------------------------------
@@ -294,7 +293,7 @@ def load_all_skills(skills_dir: Optional[Path] = None) -> Dict[str, SkillInfo]:
 # ---------------------------------------------------------------------------
 
 
-def select_skill_for_category(category: str, skills: Dict[str, SkillInfo]) -> Optional[SkillInfo]:
+def select_skill_for_category(category: str, skills: Dict[str, SkillInfo]) -> SkillInfo:
     """입력 카테고리에 맞는 Skill을 선택한다.
 
     Args:
@@ -302,18 +301,24 @@ def select_skill_for_category(category: str, skills: Dict[str, SkillInfo]) -> Op
         skills: load_all_skills()로 로드된 Skill 딕셔너리.
 
     Returns:
-        매칭된 SkillInfo. 매칭 실패 시 기본 Skill 반환. Skill 자체가 없으면 None.
+        매칭된 SkillInfo.
+
+    Raises:
+        KeyError: 카테고리가 _CATEGORY_TO_SKILL에 없을 때.
+        RuntimeError: 매핑된 Skill이 skills 딕셔너리에 없을 때.
     """
-    skill_name = _CATEGORY_TO_SKILL.get(category, _DEFAULT_SKILL)
+    if category not in _CATEGORY_TO_SKILL:
+        raise KeyError(
+            f"미매핑 카테고리: '{category}'. "
+            f"agent_setup.py의 _CATEGORY_TO_SKILL에 명시적으로 추가하세요."
+        )
+    skill_name = _CATEGORY_TO_SKILL[category]
     skill = skills.get(skill_name)
-
     if not skill:
-        logger.warning("[SKILL] 카테고리 '%s' → Skill '%s' 없음", category, skill_name)
-        # 폴백: 아무 Skill이라도 반환
-        if skills:
-            return next(iter(skills.values()))
-        return None
-
+        raise RuntimeError(
+            f"SKILL '{skill_name}' 미존재 (category='{category}'). "
+            f"rules/deep_agent/skills/{skill_name}/SKILL.md 파일을 확인하세요."
+        )
     return skill
 
 

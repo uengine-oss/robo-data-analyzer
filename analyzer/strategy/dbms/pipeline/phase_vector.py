@@ -7,7 +7,6 @@ from typing import Any, AsyncGenerator
 
 from client.neo4j_client import Neo4jClient
 from analyzer.strategy.base_analyzer import AnalysisStats
-from config.settings import settings
 from util.stream_emitter import emit_message, emit_phase_event
 
 logger = logging.getLogger(__name__)
@@ -22,7 +21,7 @@ async def run_phase_vector(
     from client.embedding_client import EmbeddingClient
     client = ctx.client
 
-    api_key = settings.openai_api_key or ctx.api_key
+    api_key = ctx.api_key
     if not api_key:
         yield emit_message("   ⚠️ OpenAI API 키가 없어 벡터라이징을 건너뜁니다")
         return
@@ -50,20 +49,17 @@ async def run_phase_vector(
                 desc = t.get("analyzed_description") or t.get("description") or t.get("name", "")
                 texts.append(desc)
 
-            try:
-                embeddings = await embedding_client.create_embeddings(texts)
-                update_queries = []
-                for j, t in enumerate(batch):
-                    if j < len(embeddings) and embeddings[j]:
-                        update_queries.append({
-                            "query": "MATCH (t:Table {name: $name}) SET t.embedding = $embedding",
-                            "params": {"name": t["name"], "embedding": embeddings[j]},
-                        })
-                if update_queries:
-                    await client.execute_queries([q["query"] for q in update_queries],
-                                                  [q["params"] for q in update_queries])
-            except Exception as e:
-                logger.error("[PHASE:4:VECTOR] 테이블 벡터라이징 실패 | batch=%d error=%s", i // batch_size, e)
+            embeddings = await embedding_client.embed_batch(texts)
+            update_queries = []
+            for j, t in enumerate(batch):
+                if j < len(embeddings) and embeddings[j]:
+                    update_queries.append({
+                        "query": "MATCH (t:Table {name: $name}) SET t.embedding = $embedding",
+                        "params": {"name": t["name"], "embedding": embeddings[j]},
+                    })
+            if update_queries:
+                await client.execute_queries([q["query"] for q in update_queries],
+                                              [q["params"] for q in update_queries])
 
             batch_progress = 25 + int((i + len(batch)) / len(tables) * 75)
             yield emit_phase_event(phase_num, "벡터라이징", "in_progress", min(batch_progress, 100))
@@ -91,23 +87,20 @@ async def run_phase_vector(
                 else:
                     texts.append(f"{c.get('table_name', '')}.{c.get('col_name', '')}")
 
-            try:
-                embeddings = await embedding_client.create_embeddings(texts)
-                update_queries = []
-                for j, c in enumerate(batch):
-                    if j < len(embeddings) and embeddings[j]:
-                        update_queries.append({
-                            "query": (
-                                "MATCH (t:Table {name: $table_name})-[:HAS_COLUMN]->(c:Column {name: $col_name}) "
-                                "SET c.embedding = $embedding"
-                            ),
-                            "params": {"table_name": c["table_name"], "col_name": c["col_name"], "embedding": embeddings[j]},
-                        })
-                if update_queries:
-                    await client.execute_queries([q["query"] for q in update_queries],
-                                                  [q["params"] for q in update_queries])
-            except Exception as e:
-                logger.error("[PHASE:4:VECTOR] 컬럼 벡터라이징 실패 | batch=%d error=%s", i // batch_size, e)
+            embeddings = await embedding_client.embed_batch(texts)
+            update_queries = []
+            for j, c in enumerate(batch):
+                if j < len(embeddings) and embeddings[j]:
+                    update_queries.append({
+                        "query": (
+                            "MATCH (t:Table {name: $table_name})-[:HAS_COLUMN]->(c:Column {name: $col_name}) "
+                            "SET c.embedding = $embedding"
+                        ),
+                        "params": {"table_name": c["table_name"], "col_name": c["col_name"], "embedding": embeddings[j]},
+                    })
+            if update_queries:
+                await client.execute_queries([q["query"] for q in update_queries],
+                                              [q["params"] for q in update_queries])
 
     total_vectorized = len(tables) + len(columns)
     yield emit_message(f"   ✅ 벡터라이징 완료: 테이블 {len(tables)}개, 컬럼 {len(columns)}개")

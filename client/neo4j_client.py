@@ -48,6 +48,10 @@ class Neo4jClient:
         # 유니크 제약조건 (자동으로 인덱스도 생성됨)
         "CREATE CONSTRAINT table_unique IF NOT EXISTS FOR (n:Table) REQUIRE (n.db, n.schema, n.name) IS UNIQUE",
         "CREATE CONSTRAINT column_unique IF NOT EXISTS FOR (n:Column) REQUIRE (n.fqn) IS UNIQUE",
+        # Example Mapping: Rule 공유 노드, Example/Question 개별 노드
+        "CREATE CONSTRAINT rule_hash_unique IF NOT EXISTS FOR (n:Rule) REQUIRE (n.rule_hash) IS UNIQUE",
+        "CREATE CONSTRAINT example_id_unique IF NOT EXISTS FOR (n:Example) REQUIRE (n.example_id) IS UNIQUE",
+        "CREATE CONSTRAINT question_id_unique IF NOT EXISTS FOR (n:Question) REQUIRE (n.question_id) IS UNIQUE",
         # 인덱스 — MATCH/MERGE 시 전체 스캔 방지
         "CREATE INDEX func_id IF NOT EXISTS FOR (n:FUNCTION) ON (n.function_id)",
         "CREATE INDEX var_id IF NOT EXISTS FOR (n:VARIABLE) ON (n.variable_id)",
@@ -125,7 +129,7 @@ class Neo4jClient:
         """
         if not queries:
             return []
-        
+
         try:
             async with self._driver.session(database=self._database) as session:
                 results: list[list[dict[str, Any]]] = []
@@ -147,7 +151,7 @@ class Neo4jClient:
                     results.append(await query_result.data())
 
                 return results
-                
+
         except Exception as e:
             raise RuntimeError(f"Cypher 쿼리 실행 중 오류 발생 (query_count={len(queries)}): {e}") from e
 
@@ -186,14 +190,14 @@ class Neo4jClient:
                     # 배치 시작 전 일시정지/중단 체크
                     if not await pipeline_controller.check_continue():
                         return
-                    
+
                     start = batch_idx * batch_size
                     end = min(start + batch_size, len(queries))
                     batch_queries = queries[start:end]
-                    
+
                     nodes: dict[str, dict] = {}
                     relationships: dict[str, dict] = {}
-                    
+
                     for query in batch_queries:
                         # 자동 커밋 모드: 각 쿼리가 즉시 커밋됨
                         # 쿼리가 딕셔너리인 경우 (쿼리+파라미터 바인딩)
@@ -218,14 +222,14 @@ class Neo4jClient:
                             }
                             self._collect_node(rel.start_node, nodes)
                             self._collect_node(rel.end_node, nodes)
-                    
+
                     yield {
                         "Nodes": list(nodes.values()),
                         "Relationships": list(relationships.values()),
                         "batch": batch_idx + 1,
                         "total_batches": total_batches,
                     }
-                    
+
         except Exception as e:
             raise RuntimeError(f"그래프 쿼리 실행 중 오류 발생 (query_count={len(queries)}): {e}") from e
 
@@ -287,15 +291,15 @@ class Neo4jClient:
         try:
             nodes: dict[str, dict] = {}
             relationships: dict[str, dict] = {}
-            
+
             async with self._driver.session(database=self._database) as session:
                 for i in range(0, len(items), batch_size):
                     batch = items[i:i + batch_size]
                     graph = await (await session.run(query, {"items": batch})).graph()
-                    
+
                     for node in graph.nodes:
                         self._collect_node(node, nodes)
-                    
+
                     for rel in graph.relationships:
                         relationships[rel.element_id] = {
                             "Relationship ID": rel.element_id,
@@ -306,7 +310,7 @@ class Neo4jClient:
                         }
                         self._collect_node(rel.start_node, nodes)
                         self._collect_node(rel.end_node, nodes)
-            
+
             return {
                 "Nodes": list(nodes.values()),
                 "Relationships": list(relationships.values()),

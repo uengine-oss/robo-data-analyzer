@@ -65,7 +65,6 @@ async def analyze_source_code(request: Request):
 
     name_case = (body.get("nameCase") or "original").strip().lower()
     datasource_name = (body.get("datasourceName") or "").strip()
-    infer_fk_relations = body.get("inferFkRelations", False)
 
     await source_analyze_service.validate_llm_api_key(api_key)
 
@@ -77,8 +76,8 @@ async def analyze_source_code(request: Request):
         raise HTTPException(400, "분석할 소스 파일 또는 DDL이 없습니다.")
 
     logger.info(
-        "[API] 분석 시작 | strategy=%s | files=%d | has_ddl=%s | datasource=%s | infer_fk=%s",
-        strategy, len(file_names), has_ddl, datasource_name or "(none)", infer_fk_relations,
+        "[API] 분석 시작 | strategy=%s | files=%d | has_ddl=%s | datasource=%s",
+        strategy, len(file_names), has_ddl, datasource_name or "(none)",
     )
 
     return StreamingResponse(
@@ -91,7 +90,6 @@ async def analyze_source_code(request: Request):
                 target=target,
                 name_case=name_case,
                 datasource_name=datasource_name,
-                infer_fk_relations=infer_fk_relations,
             )
         ),
         media_type="application/x-ndjson",

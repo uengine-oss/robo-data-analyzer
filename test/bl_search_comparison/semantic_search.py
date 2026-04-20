@@ -22,7 +22,7 @@ from openai import OpenAI
 from client.llm_client import get_llm
 from config.settings import settings
 
-VECTOR_INDEX_NAME = "bl_embedding_index"
+VECTOR_INDEX_NAME = "rule_embedding_index"
 
 
 @dataclass
@@ -69,109 +69,102 @@ def build_bl_search_tools(
     lock: threading.Lock,
 ):
     @tool
-    def bl_vector_search(query: str, top_k: int = 15) -> str:
-        """벡터 유사도로 BL을 검색합니다. 제목과 GWT 미리보기를 반환합니다.
+    def rule_vector_search(query: str, top_k: int = 15) -> str:
+        """벡터 유사도로 Rule 을 검색합니다. 규칙 문장과 대표 Example 미리보기를 반환합니다.
         원본 질의, HyDE 가설, step-back 질의 등 다양한 텍스트로 호출 가능합니다."""
         embedding = _embed_sync(sync_openai, query)
         rows = _neo4j_query(driver, f"""
             CALL db.index.vector.queryNodes('{VECTOR_INDEX_NAME}', $top_k, $embedding)
-            YIELD node, score
-            RETURN node.function_id AS function_id,
-                   node.title AS title,
-                   node.sequence AS sequence,
+            YIELD node AS r, score
+            OPTIONAL MATCH (f:FUNCTION)-[rel:HAS_RULE]->(r)
+            OPTIONAL MATCH (r)-[:HAS_EXAMPLE]->(e:Example)
+            WITH r, score, collect(DISTINCT f.function_id)[0] AS function_id,
+                 collect(DISTINCT rel.local_id)[0] AS local_id,
+                 collect(DISTINCT e)[..2] AS examples
+            RETURN r.rule_hash AS rule_hash,
+                   function_id,
+                   local_id,
+                   r.statement AS statement,
                    score,
-                   substring(coalesce(node.given, ''), 0, 100) AS given_preview,
-                   substring(coalesce(node.when, ''), 0, 100) AS when_preview,
-                   substring(coalesce(node.then, ''), 0, 100) AS then_preview
+                   [e IN examples | substring(coalesce(e.given, ''), 0, 80)] AS given_previews,
+                   [e IN examples | substring(coalesce(e.then_, ''), 0, 80)] AS then_previews
             ORDER BY score DESC
         """, {"top_k": top_k, "embedding": embedding})
         return json.dumps(rows, ensure_ascii=False)
 
     @tool
-    def bl_keyword_search(keyword: str) -> str:
-        """BL의 GWT 텍스트에서 정확한 문자열을 검색합니다.
-        코드값('A002'), 테이블명('zpay_ap_rltm_auth_hst'), 코드군ID('ZPAY_C_RARNC') 등에 사용하세요."""
+    def rule_keyword_search(keyword: str) -> str:
+        """Rule statement 또는 Example given/when/then 텍스트에서 정확한 문자열을 검색합니다.
+        코드값('A002'), 테이블명('zpay_ap_rltm_auth_hst'), 코드군ID 등에 사용하세요."""
         rows = _neo4j_query(driver, """
-            MATCH (bl:BusinessLogic)
-            WHERE bl.given CONTAINS $keyword
-               OR bl.when CONTAINS $keyword
-               OR bl.then CONTAINS $keyword
-               OR bl.title CONTAINS $keyword
-            RETURN bl.function_id AS function_id,
-                   bl.title AS title,
-                   bl.sequence AS sequence,
-                   CASE WHEN bl.title CONTAINS $keyword THEN 'title'
-                        WHEN bl.given CONTAINS $keyword THEN 'given'
-                        WHEN bl.when CONTAINS $keyword THEN 'when'
-                        ELSE 'then' END AS matched_field,
-                   CASE WHEN bl.title CONTAINS $keyword THEN substring(bl.title, 0, 150)
-                        WHEN bl.given CONTAINS $keyword THEN substring(bl.given, 0, 150)
-                        WHEN bl.when CONTAINS $keyword THEN substring(bl.when, 0, 150)
-                        ELSE substring(bl.then, 0, 150) END AS snippet
+            MATCH (r:Rule)
+            OPTIONAL MATCH (r)-[:HAS_EXAMPLE]->(e:Example)
+            WITH r, collect(e) AS examples
+            WHERE r.statement CONTAINS $keyword
+               OR any(e IN examples WHERE e.given CONTAINS $keyword OR e.when_ CONTAINS $keyword OR e.then_ CONTAINS $keyword)
+            OPTIONAL MATCH (f:FUNCTION)-[rel:HAS_RULE]->(r)
+            RETURN r.rule_hash AS rule_hash,
+                   collect(DISTINCT f.function_id)[0] AS function_id,
+                   collect(DISTINCT rel.local_id)[0] AS local_id,
+                   r.statement AS statement,
+                   CASE WHEN r.statement CONTAINS $keyword THEN 'statement'
+                        ELSE 'example' END AS matched_field,
+                   substring(r.statement, 0, 150) AS snippet
         """, {"keyword": keyword})
         return json.dumps(rows, ensure_ascii=False)
 
     @tool
-    def get_bl_detail(function_id: str, title: str) -> str:
-        """특정 BL의 GWT 전문과 소속 함수명을 반환합니다.
-        유력 후보의 3요소 매칭 판단을 위해 반드시 전문을 읽으세요."""
+    def get_rule_detail(rule_hash: str) -> str:
+        """특정 Rule 의 statement + 모든 Example(description/Given/When/Then) + 연결 함수들을 반환합니다.
+
+        Example 의 given/then 은 JSON 문자열 (하이브리드 구조: narrative + inputs/preconditions/writes 등).
+        """
         rows = _neo4j_query(driver, """
-            MATCH (bl:BusinessLogic {function_id: $fid, title: $title})
-            OPTIONAL MATCH (f:FUNCTION {function_id: $fid})
-            RETURN bl.function_id AS function_id,
-                   bl.title AS title,
-                   bl.given AS given,
-                   bl.when AS when_text,
-                   bl.then AS then_text,
-                   f.name AS function_name
-        """, {"fid": function_id, "title": title})
+            MATCH (r:Rule {rule_hash: $rule_hash})
+            OPTIONAL MATCH (r)-[:HAS_EXAMPLE]->(e:Example)
+            WITH r, collect({description: e.description, given: e.given, when_: e.when_,
+                             then_: e.then_, is_boundary: e.is_boundary}) AS examples
+            OPTIONAL MATCH (f:FUNCTION)-[rel:HAS_RULE]->(r)
+            RETURN r.statement AS statement,
+                   examples,
+                   collect({function_id: f.function_id, local_id: rel.local_id, flow_id: rel.flow_id,
+                            coupled_domains: rel.coupled_domains}) AS bindings
+        """, {"rule_hash": rule_hash})
         return json.dumps(rows[0] if rows else {}, ensure_ascii=False)
 
     @tool
     def get_function_context(function_id: str) -> str:
-        """BL이 속한 함수의 전체 맥락을 반환합니다.
-        summary, 호출관계(CALLS/CALLED_BY), 테이블 접근(READS/WRITES), 같은 함수의 BL 목록."""
-        # 함수 기본 정보
+        """함수의 전체 맥락을 반환합니다.
+        summary, 호출관계(CALLS/CALLED_BY), 테이블 접근(READS/WRITES), 같은 함수의 Rule 목록."""
         func_rows = _neo4j_query(driver, """
             MATCH (f:FUNCTION {function_id: $fid})
             RETURN f.name AS name, f.summary AS summary, f.stereotype AS stereotype
         """, {"fid": function_id})
         func_info = func_rows[0] if func_rows else {}
 
-        # 호출 관계
-        call_rows = _neo4j_query(driver, """
-            OPTIONAL MATCH (f:FUNCTION {function_id: $fid})-[:CALLS]->(callee:FUNCTION)
-            WITH collect(callee.name) AS calls_list
-            OPTIONAL MATCH (caller:FUNCTION)-[:CALLS]->(f2:FUNCTION {function_id: $fid})
-            RETURN calls_list AS calls, collect(caller.name) AS called_by
-        """, {"fid": function_id})
-        calls = call_rows[0] if call_rows else {"calls": [], "called_by": []}
-
-        # 테이블 접근
         table_rows = _neo4j_query(driver, """
             MATCH (f:FUNCTION {function_id: $fid})-[r:READS|WRITES]->(t:Table)
             RETURN t.name AS table_name, type(r) AS access
         """, {"fid": function_id})
 
-        # 같은 함수의 BL 목록
-        bl_rows = _neo4j_query(driver, """
-            MATCH (f:FUNCTION {function_id: $fid})-[:HAS_BUSINESS_LOGIC]->(bl:BusinessLogic)
-            RETURN bl.title AS title, bl.sequence AS sequence
-            ORDER BY bl.sequence
+        rule_rows = _neo4j_query(driver, """
+            MATCH (f:FUNCTION {function_id: $fid})-[rel:HAS_RULE]->(r:Rule)
+            RETURN rel.local_id AS local_id, rel.flow_id AS flow_id, r.statement AS statement
+            ORDER BY rel.flow_id
         """, {"fid": function_id})
 
         result = {
             "name": func_info.get("name", ""),
             "summary": func_info.get("summary", ""),
             "tables": [f"{r['table_name']}({r['access']})" for r in table_rows],
-            "bl_list": [r["title"] for r in bl_rows],
+            "rules": [f"{r['local_id']}({r['flow_id']}): {r['statement']}" for r in rule_rows],
         }
         return json.dumps(result, ensure_ascii=False)
 
     @tool
-    def select_relevant_bls(results_json: str) -> str:
+    def select_relevant_rules(results_json: str) -> str:
         """최종 결과를 제출합니다. 반드시 이 도구를 호출하여 검색을 종료하세요.
-        results_json: '[{"function_id":"...","title":"...","confidence":"EXACT","reason":"..."}]'
+        results_json: '[{"rule_hash":"...","function_id":"...","local_id":"R1","confidence":"EXACT","reason":"..."}]'
         빈 배열 '[]'도 유효합니다."""
         try:
             items = json.loads(results_json)
@@ -179,9 +172,9 @@ def build_bl_search_tools(
             return "JSON 파싱 오류. 올바른 JSON 배열을 전달하세요."
         with lock:
             collector.extend(items)
-        return f"제출 완료: {len(items)}개 BL"
+        return f"제출 완료: {len(items)}개 Rule"
 
-    return [bl_vector_search, bl_keyword_search, get_bl_detail, get_function_context, select_relevant_bls]
+    return [rule_vector_search, rule_keyword_search, get_rule_detail, get_function_context, select_relevant_rules]
 
 
 async def semantic_search(query: str, api_key: str = "") -> SemanticSearchResult:
