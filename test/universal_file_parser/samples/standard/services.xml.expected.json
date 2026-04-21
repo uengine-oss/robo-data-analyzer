@@ -1,0 +1,333 @@
+{
+  "root": "services",
+  "anchors": [
+    {
+      "kind": "service",
+      "name": "createOrder",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderServices",
+      "invoke": "createOrder",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "changeOrderStatus",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderServices",
+      "invoke": "setOrderStatus",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "setOrderStatus",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderServices",
+      "invoke": "setOrderStatus",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "changeOrderItemStatus",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderServices",
+      "invoke": "setItemStatus",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "setItemStatus",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderServices",
+      "invoke": "setItemStatus",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "cancelOrderItem",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderServices",
+      "invoke": "cancelOrderItem",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "resetGrandTotal",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderServices",
+      "invoke": "resetGrandTotal",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "setEmptyGrandTotals",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderServices",
+      "invoke": "setEmptyGrandTotals",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "recalcOrderTax",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderServices",
+      "invoke": "recalcOrderTax",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "recalcOrderShipping",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderServices",
+      "invoke": "recalcOrderShipping",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "checkItemStatus",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderServices",
+      "invoke": "checkItemStatus",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "addItemToOrder",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderServices",
+      "invoke": "addItemToOrder",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "createOrderNote",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderServices",
+      "invoke": "createOrderNote",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "addRoleType",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderServices",
+      "invoke": "addRoleType",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "removeRoleType",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderServices",
+      "invoke": "removeRoleType",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "deleteOrderItemShipGroupAssoc",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderServices",
+      "invoke": "deleteOrderItemShipGroupAssoc",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "createOrderItemChange",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderServices",
+      "invoke": "createOrderItemChange",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "cancelOrderItemInvResQty",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderServices",
+      "invoke": "cancelOrderItemInvResQty",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "cancelOrderInventoryReservation",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderServices",
+      "invoke": "cancelOrderInventoryReservation",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "releaseOrderPayments",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderServices",
+      "invoke": "releaseOrderPayments",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "createPaymentFromPreference",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderServices",
+      "invoke": "createPaymentFromPreference",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "createInvoiceForOrder",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderServices",
+      "invoke": "createInvoiceForOrder",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "sendOrderConfirmNotification",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderServices",
+      "invoke": "sendOrderConfirmNotification",
+      "auth": "false"
+    },
+    {
+      "kind": "service",
+      "name": "sendOrderCompleteNotification",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderServices",
+      "invoke": "sendOrderCompleteNotification",
+      "auth": "false"
+    },
+    {
+      "kind": "service",
+      "name": "sendOrderChangeNotification",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderServices",
+      "invoke": "sendOrderChangeNotification",
+      "auth": "false"
+    },
+    {
+      "kind": "service",
+      "name": "sendOrderBackorderNotification",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderServices",
+      "invoke": "sendOrderBackorderNotification",
+      "auth": "false"
+    },
+    {
+      "kind": "service",
+      "name": "getOrderHeaderInformation",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderServices",
+      "invoke": "getOrderHeaderInformation",
+      "auth": "false"
+    },
+    {
+      "kind": "service",
+      "name": "massChangeApproved",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderServices",
+      "invoke": "massChangeApproved",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "massCancelOrders",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderServices",
+      "invoke": "massCancelOrders",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "massRejectOrders",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderServices",
+      "invoke": "massRejectOrders",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "massHoldOrders",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderServices",
+      "invoke": "massHoldOrders",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "createReturnHeader",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderReturnServices",
+      "invoke": "createReturnHeader",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "createReturnItem",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderReturnServices",
+      "invoke": "createReturnItem",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "acceptReturn",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderReturnServices",
+      "invoke": "acceptReturn",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "receiveReturnedItems",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderReturnServices",
+      "invoke": "receiveReturnedItems",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "completeReturn",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderReturnServices",
+      "invoke": "completeReturn",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "cancelReturn",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderReturnServices",
+      "invoke": "cancelReturn",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "processReturnRefund",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderReturnServices",
+      "invoke": "processReturnRefund",
+      "auth": "true"
+    },
+    {
+      "kind": "service",
+      "name": "getReturnSummary",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderReturnServices",
+      "invoke": "getReturnSummary",
+      "auth": "false"
+    },
+    {
+      "kind": "service",
+      "name": "findReturnsForOrder",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderReturnServices",
+      "invoke": "findReturnsForOrder",
+      "auth": "false"
+    },
+    {
+      "kind": "service",
+      "name": "updateReturnItem",
+      "engine": "java",
+      "location": "org.apache.ofbiz.order.order.OrderReturnServices",
+      "invoke": "updateReturnItem",
+      "auth": "true"
+    }
+  ]
+}

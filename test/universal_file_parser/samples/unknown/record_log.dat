@@ -1,0 +1,23 @@
+RECORD 0001
+timestamp: 2026-04-20T10:15:32Z
+source: payment_service
+event: transaction_approved
+amount: 50000
+currency: KRW
+END
+
+RECORD 0002
+timestamp: 2026-04-20T10:15:45Z
+source: order_service
+event: order_created
+order_id: ORD-9001
+customer_id: CUST-5001
+END
+
+RECORD 0003
+timestamp: 2026-04-20T10:16:02Z
+source: payment_service
+event: transaction_failed
+error_code: INSUFFICIENT_FUNDS
+amount: 120000
+END

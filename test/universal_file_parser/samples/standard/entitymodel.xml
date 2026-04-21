@@ -1,0 +1,304 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Subset of OFBiz applications/order/entitydef/entitymodel.xml.
+     Only the fields/relations the standalone slice actually reads are kept. -->
+<entitymodel>
+
+    <entity entity-name="OrderHeader" package-name="org.apache.ofbiz.order.order">
+        <field name="orderId"           type="id"/>
+        <field name="orderTypeId"       type="id"/>
+        <field name="orderName"         type="name"/>
+        <field name="webSiteId"         type="id"/>
+        <field name="productStoreId"    type="id"/>
+        <field name="statusId"          type="id"/>
+        <field name="currencyUom"       type="id"/>
+        <field name="grandTotal"        type="currency-amount"/>
+        <field name="remainingSubTotal" type="currency-amount"/>
+        <field name="orderDate"         type="date-time"/>
+        <field name="entryDate"         type="date-time"/>
+        <field name="lastUpdatedStamp"  type="date-time"/>
+        <field name="needsInventoryIssuance" type="indicator"/>
+        <field name="createdBy"         type="id"/>
+        <prim-key field="orderId"/>
+        <relation type="many" rel-entity-name="OrderItem"><key-map field-name="orderId"/></relation>
+        <relation type="many" rel-entity-name="OrderAdjustment"><key-map field-name="orderId"/></relation>
+        <relation type="many" rel-entity-name="OrderRole"><key-map field-name="orderId"/></relation>
+        <relation type="many" rel-entity-name="OrderStatus"><key-map field-name="orderId"/></relation>
+        <relation type="many" rel-entity-name="OrderPaymentPreference"><key-map field-name="orderId"/></relation>
+        <relation type="many" rel-entity-name="OrderItemShipGroup"><key-map field-name="orderId"/></relation>
+        <relation type="many" rel-entity-name="OrderContactMech"><key-map field-name="orderId"/></relation>
+        <relation type="many" rel-entity-name="OrderTerm"><key-map field-name="orderId"/></relation>
+        <relation type="many" rel-entity-name="ReturnItem"><key-map field-name="orderId"/></relation>
+    </entity>
+
+    <entity entity-name="OrderItem" package-name="org.apache.ofbiz.order.order">
+        <field name="orderId"           type="id"/>
+        <field name="orderItemSeqId"    type="id"/>
+        <field name="orderItemTypeId"   type="id"/>
+        <field name="productId"         type="id"/>
+        <field name="quantity"          type="quantity"/>
+        <field name="cancelQuantity"    type="quantity"/>
+        <field name="unitPrice"         type="currency-amount"/>
+        <field name="statusId"          type="id"/>
+        <field name="isPromo"           type="indicator"/>
+        <field name="shipBeforeDate"    type="date-time"/>
+        <prim-key field="orderId"/>
+        <prim-key field="orderItemSeqId"/>
+        <relation type="one" rel-entity-name="OrderHeader"><key-map field-name="orderId"/></relation>
+        <relation type="many" rel-entity-name="OrderItemPriceInfo">
+            <key-map field-name="orderId"/><key-map field-name="orderItemSeqId"/>
+        </relation>
+    </entity>
+
+    <entity entity-name="OrderAdjustment" package-name="org.apache.ofbiz.order.order">
+        <field name="orderAdjustmentId"     type="id"/>
+        <field name="orderAdjustmentTypeId" type="id"/>
+        <field name="orderId"               type="id"/>
+        <field name="orderItemSeqId"        type="id"/>
+        <field name="shipGroupSeqId"        type="id"/>
+        <field name="amount"                type="currency-amount"/>
+        <field name="sourcePercentage"      type="floating-point"/>
+        <field name="amountPerQuantity"     type="currency-amount"/>
+        <field name="taxAuthGeoId"          type="id"/>
+        <field name="taxAuthPartyId"        type="id"/>
+        <field name="description"           type="description"/>
+        <prim-key field="orderAdjustmentId"/>
+    </entity>
+
+    <entity entity-name="OrderRole" package-name="org.apache.ofbiz.order.order">
+        <field name="orderId"    type="id"/>
+        <field name="partyId"    type="id"/>
+        <field name="roleTypeId" type="id"/>
+        <prim-key field="orderId"/>
+        <prim-key field="partyId"/>
+        <prim-key field="roleTypeId"/>
+        <relation type="one" rel-entity-name="Party"><key-map field-name="partyId"/></relation>
+    </entity>
+
+    <entity entity-name="OrderStatus" package-name="org.apache.ofbiz.order.order">
+        <field name="orderStatusId"   type="id"/>
+        <field name="orderId"         type="id"/>
+        <field name="orderItemSeqId"  type="id"/>
+        <field name="statusId"        type="id"/>
+        <field name="statusDatetime"  type="date-time"/>
+        <field name="statusUserLogin" type="id"/>
+        <field name="changeReason"    type="description"/>
+        <prim-key field="orderStatusId"/>
+    </entity>
+
+    <entity entity-name="OrderPaymentPreference" package-name="org.apache.ofbiz.order.order">
+        <field name="orderPaymentPreferenceId" type="id"/>
+        <field name="orderId"                  type="id"/>
+        <field name="paymentMethodTypeId"      type="id"/>
+        <field name="maxAmount"                type="currency-amount"/>
+        <field name="statusId"                 type="id"/>
+        <prim-key field="orderPaymentPreferenceId"/>
+        <relation type="many" rel-entity-name="PaymentGatewayResponse">
+            <key-map field-name="orderPaymentPreferenceId"/>
+        </relation>
+        <relation type="many" rel-entity-name="Payment">
+            <key-map field-name="orderPaymentPreferenceId" rel-field-name="paymentPreferenceId"/>
+        </relation>
+    </entity>
+
+    <entity entity-name="PaymentGatewayResponse" package-name="org.apache.ofbiz.accounting.payment">
+        <field name="paymentGatewayResponseId" type="id"/>
+        <field name="orderPaymentPreferenceId" type="id"/>
+        <field name="transCodeEnumId"          type="id"/>
+        <field name="amount"                   type="currency-amount"/>
+        <prim-key field="paymentGatewayResponseId"/>
+    </entity>
+
+    <entity entity-name="Payment" package-name="org.apache.ofbiz.accounting.payment">
+        <field name="paymentId"            type="id"/>
+        <field name="paymentTypeId"        type="id"/>
+        <field name="paymentMethodTypeId"  type="id"/>
+        <field name="paymentPreferenceId"  type="id"/>
+        <field name="partyIdFrom"          type="id"/>
+        <field name="amount"               type="currency-amount"/>
+        <field name="paymentRefNum"        type="value"/>
+        <field name="effectiveDate"        type="date-time"/>
+        <prim-key field="paymentId"/>
+    </entity>
+
+    <entity entity-name="OrderItemShipGroup" package-name="org.apache.ofbiz.order.order">
+        <field name="orderId"              type="id"/>
+        <field name="shipGroupSeqId"       type="id"/>
+        <field name="shipmentMethodTypeId" type="id"/>
+        <field name="carrierPartyId"       type="id"/>
+        <prim-key field="orderId"/>
+        <prim-key field="shipGroupSeqId"/>
+    </entity>
+
+    <entity entity-name="OrderItemShipGroupAssoc" package-name="org.apache.ofbiz.order.order">
+        <field name="orderId"        type="id"/>
+        <field name="orderItemSeqId" type="id"/>
+        <field name="shipGroupSeqId" type="id"/>
+        <field name="quantity"       type="quantity"/>
+        <field name="cancelQuantity" type="quantity"/>
+        <prim-key field="orderId"/>
+        <prim-key field="orderItemSeqId"/>
+        <prim-key field="shipGroupSeqId"/>
+        <relation type="one" rel-entity-name="OrderItem">
+            <key-map field-name="orderId"/><key-map field-name="orderItemSeqId"/>
+        </relation>
+    </entity>
+
+    <entity entity-name="OrderContactMech" package-name="org.apache.ofbiz.order.order">
+        <field name="orderId"                  type="id"/>
+        <field name="contactMechId"            type="id"/>
+        <field name="contactMechPurposeTypeId" type="id"/>
+        <field name="infoString"               type="value"/>
+        <prim-key field="orderId"/>
+        <prim-key field="contactMechId"/>
+        <prim-key field="contactMechPurposeTypeId"/>
+    </entity>
+
+    <entity entity-name="OrderTerm" package-name="org.apache.ofbiz.order.order">
+        <field name="orderId"     type="id"/>
+        <field name="termTypeId"  type="id"/>
+        <field name="termValue"   type="value"/>
+        <field name="termDays"    type="numeric"/>
+        <prim-key field="orderId"/>
+        <prim-key field="termTypeId"/>
+    </entity>
+
+    <entity entity-name="OrderItemPriceInfo" package-name="org.apache.ofbiz.order.order">
+        <field name="orderItemPriceInfoId" type="id"/>
+        <field name="orderId"              type="id"/>
+        <field name="orderItemSeqId"       type="id"/>
+        <field name="modifyAmount"         type="currency-amount"/>
+        <field name="description"          type="description"/>
+        <prim-key field="orderItemPriceInfoId"/>
+    </entity>
+
+    <entity entity-name="OrderItemChange" package-name="org.apache.ofbiz.order.order">
+        <field name="orderItemChangeId" type="id"/>
+        <field name="orderId"           type="id"/>
+        <field name="orderItemSeqId"    type="id"/>
+        <field name="changeTypeEnumId"  type="id"/>
+        <field name="reasonEnumId"      type="id"/>
+        <field name="changeComments"    type="comment"/>
+        <field name="cancelQuantity"    type="quantity"/>
+        <field name="changeDatetime"    type="date-time"/>
+        <field name="changeUserLogin"   type="id"/>
+        <prim-key field="orderItemChangeId"/>
+    </entity>
+
+    <entity entity-name="OrderHeaderNote" package-name="org.apache.ofbiz.order.order">
+        <field name="orderId"      type="id"/>
+        <field name="noteId"       type="id"/>
+        <field name="internalNote" type="indicator"/>
+        <prim-key field="orderId"/>
+        <prim-key field="noteId"/>
+    </entity>
+
+    <entity entity-name="NoteData" package-name="org.apache.ofbiz.common.note">
+        <field name="noteId"       type="id"/>
+        <field name="noteName"     type="name"/>
+        <field name="noteInfo"     type="comment"/>
+        <field name="noteParty"    type="id"/>
+        <field name="noteDateTime" type="date-time"/>
+        <prim-key field="noteId"/>
+    </entity>
+
+    <entity entity-name="ReturnHeader" package-name="org.apache.ofbiz.order.order">
+        <field name="returnId"             type="id"/>
+        <field name="returnHeaderTypeId"   type="id"/>
+        <field name="statusId"             type="id"/>
+        <field name="fromPartyId"          type="id"/>
+        <field name="toPartyId"            type="id"/>
+        <field name="primaryOrderId"       type="id"/>
+        <field name="entryDate"            type="date-time"/>
+        <field name="createdBy"            type="id"/>
+        <prim-key field="returnId"/>
+        <relation type="many" rel-entity-name="ReturnItem"><key-map field-name="returnId"/></relation>
+    </entity>
+
+    <entity entity-name="ReturnItem" package-name="org.apache.ofbiz.order.order">
+        <field name="returnId"        type="id"/>
+        <field name="returnItemSeqId" type="id"/>
+        <field name="orderId"         type="id"/>
+        <field name="orderItemSeqId"  type="id"/>
+        <field name="returnReasonId"  type="id"/>
+        <field name="returnTypeId"    type="id"/>
+        <field name="returnQuantity"  type="quantity"/>
+        <field name="returnPrice"     type="currency-amount"/>
+        <field name="statusId"        type="id"/>
+        <prim-key field="returnId"/>
+        <prim-key field="returnItemSeqId"/>
+    </entity>
+
+    <entity entity-name="ReturnStatus" package-name="org.apache.ofbiz.order.order">
+        <field name="returnStatusId"  type="id"/>
+        <field name="returnId"        type="id"/>
+        <field name="statusId"        type="id"/>
+        <field name="statusDatetime"  type="date-time"/>
+        <field name="statusUserLogin" type="id"/>
+        <prim-key field="returnStatusId"/>
+    </entity>
+
+    <entity entity-name="ProductStore" package-name="org.apache.ofbiz.product.store">
+        <field name="productStoreId"             type="id"/>
+        <field name="storeName"                  type="name"/>
+        <field name="headerApprovedStatus"       type="id"/>
+        <field name="itemApprovedStatus"         type="id"/>
+        <field name="digitalItemApprovedStatus"  type="id"/>
+        <field name="headerDeclinedStatus"       type="id"/>
+        <field name="itemDeclinedStatus"         type="id"/>
+        <field name="headerCancelStatus"         type="id"/>
+        <field name="itemCancelStatus"           type="id"/>
+        <prim-key field="productStoreId"/>
+    </entity>
+
+    <entity entity-name="Product" package-name="org.apache.ofbiz.product.product">
+        <field name="productId"     type="id"/>
+        <field name="productTypeId" type="id"/>
+        <field name="productName"   type="name"/>
+        <prim-key field="productId"/>
+        <relation type="one" rel-entity-name="ProductType"><key-map field-name="productTypeId"/></relation>
+    </entity>
+
+    <entity entity-name="ProductType" package-name="org.apache.ofbiz.product.product">
+        <field name="productTypeId" type="id"/>
+        <field name="isDigital"     type="indicator"/>
+        <prim-key field="productTypeId"/>
+    </entity>
+
+    <entity entity-name="Party" package-name="org.apache.ofbiz.party.party">
+        <field name="partyId"     type="id"/>
+        <field name="partyTypeId" type="id"/>
+        <prim-key field="partyId"/>
+    </entity>
+
+    <entity entity-name="UserLogin" package-name="org.apache.ofbiz.security.login">
+        <field name="userLoginId" type="id"/>
+        <field name="partyId"     type="id"/>
+        <prim-key field="userLoginId"/>
+    </entity>
+
+    <entity entity-name="ShipmentReceipt" package-name="org.apache.ofbiz.shipment.shipment">
+        <field name="receiptId"          type="id"/>
+        <field name="orderId"            type="id"/>
+        <field name="orderItemSeqId"     type="id"/>
+        <field name="quantityAccepted"   type="quantity"/>
+        <field name="quantityRejected"   type="quantity"/>
+        <prim-key field="receiptId"/>
+    </entity>
+
+    <entity entity-name="ItemIssuance" package-name="org.apache.ofbiz.shipment.shipment">
+        <field name="itemIssuanceId" type="id"/>
+        <field name="orderId"        type="id"/>
+        <field name="orderItemSeqId" type="id"/>
+        <field name="quantity"       type="quantity"/>
+        <prim-key field="itemIssuanceId"/>
+    </entity>
+
+    <entity entity-name="PicklistItem" package-name="org.apache.ofbiz.shipment.picklist">
+        <field name="picklistItemId" type="id"/>
+        <field name="orderId"        type="id"/>
+        <field name="orderItemSeqId" type="id"/>
+        <field name="quantity"       type="quantity"/>
+        <prim-key field="picklistItemId"/>
+    </entity>
+
+</entitymodel>

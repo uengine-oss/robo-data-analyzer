@@ -1,0 +1,746 @@
+{
+  "root": "sqlMap",
+  "namespace": "ReferenceInformationDC_IDCReferenceInformation",
+  "anchors": [
+    {
+      "kind": "typeAlias",
+      "alias": "cmbsDeskDTO",
+      "type": "com.kbstar.kee.dc.referenceinformationdc.dto.CmbsDeskDDTO"
+    },
+    {
+      "kind": "typeAlias",
+      "alias": "cmbsBookDTO",
+      "type": "com.kbstar.kee.dc.referenceinformationdc.dto.CmbsBookDDTO"
+    },
+    {
+      "kind": "typeAlias",
+      "alias": "cmbsTraderDTO",
+      "type": "com.kbstar.kee.dc.referenceinformationdc.dto.CmbsTraderDDTO"
+    },
+    {
+      "kind": "typeAlias",
+      "alias": "cmbsProfitUnitDTO",
+      "type": "com.kbstar.kee.dc.referenceinformationdc.dto.CmbsProfitUnitDDTO"
+    },
+    {
+      "kind": "typeAlias",
+      "alias": "cmbsTraderBookLnkDTO",
+      "type": "com.kbstar.kee.dc.referenceinformationdc.dto.CmbsTraderBookLnkDDTO"
+    },
+    {
+      "kind": "typeAlias",
+      "alias": "cmbsBicDTO",
+      "type": "com.kbstar.kee.dc.referenceinformationdc.dto.CmbsBicDDTO"
+    },
+    {
+      "kind": "typeAlias",
+      "alias": "lgenGroupDTO",
+      "type": "com.kbstar.kee.dc.referenceinformationdc.dto.LgenGroupDDTO"
+    },
+    {
+      "kind": "typeAlias",
+      "alias": "currencyPairDTO",
+      "type": "com.kbstar.kee.dc.referenceinformationdc.dto.CurrencyPairDDTO"
+    },
+    {
+      "kind": "typeAlias",
+      "alias": "imgBasicDTO",
+      "type": "com.kbstar.kee.dc.referenceinformationdc.dto.ImgBasicDDTO"
+    },
+    {
+      "kind": "typeAlias",
+      "alias": "salesHmrsMgtDDTO",
+      "type": "com.kbstar.kee.dc.referenceinformationdc.dto.SalesHmrsMgtDDTO"
+    },
+    {
+      "kind": "typeAlias",
+      "alias": "salesHmrsMgtPDTO",
+      "type": "com.kbstar.kee.pc.referenceinformationpc.dto.SalesHmrsMgtPDTO"
+    },
+    {
+      "kind": "typeAlias",
+      "alias": "clbrContributionDegreeDDTO",
+      "type": "com.kbstar.kee.dc.referenceinformationdc.dto.ClbrContributionDegreeDDTO"
+    },
+    {
+      "kind": "typeAlias",
+      "alias": "drvtKFBInquryInfoDDTO",
+      "type": "com.kbstar.kee.dc.referenceinformationdc.dto.DrvtKFBInquryInfoDDTO"
+    },
+    {
+      "kind": "typeAlias",
+      "alias": "inquiryConditionsDDTO",
+      "type": "com.kbstar.kee.dc.instrumentbasicdc.dto.InquiryConditionsDDTO"
+    },
+    {
+      "kind": "typeAlias",
+      "alias": "drvtPrdctFndsSupplDDTO",
+      "type": "com.kbstar.kee.dc.referenceinformationdc.dto.DrvtPrdctFndsSupplDDTO"
+    },
+    {
+      "kind": "typeAlias",
+      "alias": "drvtPrdctClbrEmpDDTO",
+      "type": "com.kbstar.kee.dc.referenceinformationdc.dto.DrvtPrdctClbrEmpDDTO"
+    },
+    {
+      "kind": "typeAlias",
+      "alias": "drvtPrdctClbrEmpPDTO",
+      "type": "com.kbstar.kee.dc.referenceinformationdc.dto.DrvtPrdctClbrEmpPDTO"
+    },
+    {
+      "kind": "typeAlias",
+      "alias": "fxDrvtExpirExtenAdedInfoDDTO",
+      "type": "com.kbstar.kee.dc.referenceinformationdc.dto.FxDrvtExpirExtenAdedInfoDDTO"
+    },
+    {
+      "kind": "typeAlias",
+      "alias": "drvtPrdctFndsSupplAgreInfoPDTO",
+      "type": "com.kbstar.kee.pc.referenceinformationpc.dto.DrvtPrdctFndsSupplAgreInfoPDTO"
+    },
+    {
+      "kind": "insert",
+      "id": "createCmbsDesk",
+      "parameterClass": "cmbsDeskDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getNextCmbsDeskNo",
+      "resultClass": "String"
+    },
+    {
+      "kind": "select",
+      "id": "getNextCmbsDeskHistSerno",
+      "parameterClass": "String",
+      "resultClass": "Integer"
+    },
+    {
+      "kind": "update",
+      "id": "updateStatusCmbsDesk",
+      "parameterClass": "cmbsDeskDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getListCmbsDesk",
+      "resultClass": "cmbsDeskDTO"
+    },
+    {
+      "kind": "insert",
+      "id": "createCmbsBook",
+      "parameterClass": "cmbsBookDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getNextCmbsBookHistSerno",
+      "parameterClass": "String",
+      "resultClass": "Integer"
+    },
+    {
+      "kind": "update",
+      "id": "updateStatusCmbsBook",
+      "parameterClass": "cmbsBookDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getListCmbsBook",
+      "resultClass": "cmbsBookDTO"
+    },
+    {
+      "kind": "insert",
+      "id": "createCmbsTrader",
+      "parameterClass": "cmbsTraderDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getNextCmbsTraderNo",
+      "resultClass": "String"
+    },
+    {
+      "kind": "select",
+      "id": "getNextCmbsTraderHistSerno",
+      "parameterClass": "String",
+      "resultClass": "Integer"
+    },
+    {
+      "kind": "update",
+      "id": "updateStatusCmbsTrader",
+      "parameterClass": "cmbsTraderDTO"
+    },
+    {
+      "kind": "update",
+      "id": "updateAthRsrctCmbsTrader",
+      "parameterClass": "cmbsTraderDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getListCmbsTraderByBrncd",
+      "resultClass": "cmbsTraderDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getListFixCmbsTraderByBrncd",
+      "parameterClass": "java.util.HashMap",
+      "resultClass": "cmbsTraderDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getListCmbsTrader",
+      "resultClass": "cmbsTraderDTO"
+    },
+    {
+      "kind": "insert",
+      "id": "createCmbsOutcomUnit",
+      "parameterClass": "cmbsProfitUnitDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getNextCmbsOutcomUnitHistSerno",
+      "parameterClass": "String",
+      "resultClass": "Integer"
+    },
+    {
+      "kind": "update",
+      "id": "updateStatusCmbsOutcomUnit",
+      "parameterClass": "cmbsProfitUnitDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getListCmbsOutcomUnit",
+      "resultClass": "cmbsProfitUnitDTO"
+    },
+    {
+      "kind": "insert",
+      "id": "createTraderBookLnk",
+      "parameterClass": "cmbsTraderBookLnkDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getNextTraderBookLnkSerno",
+      "parameterClass": "cmbsTraderBookLnkDTO",
+      "resultClass": "Integer"
+    },
+    {
+      "kind": "update",
+      "id": "updateStatusTraderBookLnk",
+      "parameterClass": "cmbsTraderBookLnkDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getListTraderBookLnk",
+      "resultClass": "cmbsTraderBookLnkDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getListFixTraderBookLnk",
+      "parameterClass": "java.util.HashMap",
+      "resultClass": "cmbsTraderBookLnkDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getCmbsDesk",
+      "parameterClass": "cmbsDeskDTO",
+      "resultClass": "cmbsDeskDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getCmbsBook",
+      "parameterClass": "cmbsBookDTO",
+      "resultClass": "cmbsBookDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getListAllocableCmbsBook",
+      "resultClass": "cmbsBookDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getCmbsTrader",
+      "parameterClass": "cmbsTraderDTO",
+      "resultClass": "cmbsTraderDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getCmbsTraderWithBrncd",
+      "parameterClass": "cmbsTraderDTO",
+      "resultClass": "cmbsTraderDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getAthRsrctCmbsTrader",
+      "parameterClass": "cmbsTraderDTO",
+      "resultClass": "cmbsTraderDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getCmbsTraderMaxHistSerno",
+      "parameterClass": "cmbsTraderDTO",
+      "resultClass": "cmbsTraderDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getOmsCmbsTrader",
+      "parameterClass": "cmbsTraderDTO",
+      "resultClass": "cmbsTraderDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getCmbsProfitUnit",
+      "parameterClass": "cmbsProfitUnitDTO",
+      "resultClass": "cmbsProfitUnitDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getTraderBookLnk",
+      "resultClass": "cmbsTraderBookLnkDTO"
+    },
+    {
+      "kind": "insert",
+      "id": "createLgenGroup",
+      "parameterClass": "lgenGroupDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getNextLgenGroupNo",
+      "resultClass": "String"
+    },
+    {
+      "kind": "update",
+      "id": "updateLgenGroup",
+      "parameterClass": "lgenGroupDTO"
+    },
+    {
+      "kind": "update",
+      "id": "updateStatusLgenGroup",
+      "parameterClass": "lgenGroupDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getListLgenGroup",
+      "resultClass": "lgenGroupDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getListChkLgenGroup",
+      "resultClass": "lgenGroupDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getLgenGroup",
+      "resultClass": "lgenGroupDTO"
+    },
+    {
+      "kind": "insert",
+      "id": "createCurrencyPair",
+      "parameterClass": "currencyPairDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getCurrencyPair",
+      "resultClass": "currencyPairDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getListCurrencyPair",
+      "resultClass": "currencyPairDTO"
+    },
+    {
+      "kind": "update",
+      "id": "updateCurrencyPair",
+      "parameterClass": "currencyPairDTO"
+    },
+    {
+      "kind": "update",
+      "id": "deleteCurrencyPair",
+      "parameterClass": "currencyPairDTO"
+    },
+    {
+      "kind": "select",
+      "id": "countListBic",
+      "parameterClass": "cmbsBicDTO",
+      "resultClass": "Integer"
+    },
+    {
+      "kind": "select",
+      "id": "getListBic",
+      "parameterClass": "cmbsBicDTO",
+      "resultClass": "cmbsBicDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getBic",
+      "parameterClass": "cmbsBicDTO",
+      "resultClass": "cmbsBicDTO"
+    },
+    {
+      "kind": "insert",
+      "id": "createBic",
+      "parameterClass": "cmbsBicDTO"
+    },
+    {
+      "kind": "update",
+      "id": "updateBic",
+      "parameterClass": "cmbsBicDTO"
+    },
+    {
+      "kind": "update",
+      "id": "deleteBic",
+      "parameterClass": "cmbsBicDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getListImgNo",
+      "resultClass": "imgBasicDTO"
+    },
+    {
+      "kind": "insert",
+      "id": "createImgNo",
+      "parameterClass": "imgBasicDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getListSalesHmrsMgt",
+      "parameterClass": "java.util.Map",
+      "resultClass": "SalesHmrsMgtDDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getListCmbsSalesHmrsMgt",
+      "parameterClass": "salesHmrsMgtDDTO",
+      "resultClass": "salesHmrsMgtDDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getCountSalesHmrsMgtByEmp",
+      "parameterClass": "SalesHmrsMgtDDTO",
+      "resultClass": "Integer"
+    },
+    {
+      "kind": "select",
+      "id": "getListValdnSalesHmrsMgt",
+      "parameterClass": "salesHmrsMgtDDTO",
+      "resultClass": "salesHmrsMgtDDTO"
+    },
+    {
+      "kind": "select",
+      "id": "selectTradeBasic",
+      "parameterClass": "java.util.HashMap",
+      "resultClass": "java.util.LinkedHashMap"
+    },
+    {
+      "kind": "update",
+      "id": "updateTradeBasic",
+      "parameterClass": "java.util.HashMap"
+    },
+    {
+      "kind": "select",
+      "id": "selectBranchDerivativeBasic",
+      "parameterClass": "java.util.HashMap",
+      "resultClass": "java.util.LinkedHashMap"
+    },
+    {
+      "kind": "update",
+      "id": "updateBranchDerivativeBasic",
+      "parameterClass": "java.util.HashMap"
+    },
+    {
+      "kind": "update",
+      "id": "updateQlcrRegiNoCtnt",
+      "parameterClass": "java.util.HashMap"
+    },
+    {
+      "kind": "select",
+      "id": "getListClbrCndgMgt",
+      "parameterClass": "ClbrContributionDegreeDDTO",
+      "resultClass": "ClbrContributionDegreeDDTO"
+    },
+    {
+      "kind": "insert",
+      "id": "createClbrCndgMgt",
+      "parameterClass": "clbrContributionDegreeDDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getListClbrCndgMgthist",
+      "parameterClass": "ClbrContributionDegreeDDTO",
+      "resultClass": "ClbrContributionDegreeDDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getListClbrCndgRegi",
+      "parameterClass": "ClbrContributionDegreeDDTO",
+      "resultClass": "ClbrContributionDegreeDDTO"
+    },
+    {
+      "kind": "insert",
+      "id": "createClbrCndgRegi",
+      "parameterClass": "clbrContributionDegreeDDTO"
+    },
+    {
+      "kind": "update",
+      "id": "updateClbrCndgRegiSm01",
+      "parameterClass": "clbrContributionDegreeDDTO"
+    },
+    {
+      "kind": "update",
+      "id": "updateClbrCndgRegiTp34",
+      "parameterClass": "clbrContributionDegreeDDTO"
+    },
+    {
+      "kind": "update",
+      "id": "updateClbrCndgRegiSm74",
+      "parameterClass": "clbrContributionDegreeDDTO"
+    },
+    {
+      "kind": "update",
+      "id": "updateClbrCndgRegiSm7d",
+      "parameterClass": "clbrContributionDegreeDDTO"
+    },
+    {
+      "kind": "update",
+      "id": "updateClbrCndgRegiSm7a",
+      "parameterClass": "clbrContributionDegreeDDTO"
+    },
+    {
+      "kind": "insert",
+      "id": "createDrvtKFBInquryInfo",
+      "parameterClass": "DrvtKFBInquryInfoDDTO"
+    },
+    {
+      "kind": "insert",
+      "id": "createDrvtKFBInquryInfo59",
+      "parameterClass": "DrvtKFBInquryInfoDDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getListDrvtTranNew",
+      "parameterClass": "DrvtKFBInquryInfoDDTO",
+      "resultClass": "DrvtKFBInquryInfoDDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getListDrvtTranNewAmtDtals",
+      "parameterClass": "DrvtKFBInquryInfoDDTO",
+      "resultClass": "DrvtKFBInquryInfoDDTO"
+    },
+    {
+      "kind": "update",
+      "id": "updateDrvtTranNewAmtDtalsDefins",
+      "parameterClass": "DrvtKFBInquryInfoDDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getDrvtTranRegiInfoOnKFB",
+      "parameterClass": "HashMap",
+      "resultClass": "String"
+    },
+    {
+      "kind": "select",
+      "id": "getListDrvtTranNewAmtFrtimTran",
+      "parameterClass": "DrvtKFBInquryInfoDDTO",
+      "resultClass": "DrvtKFBInquryInfoDDTO"
+    },
+    {
+      "kind": "insert",
+      "id": "registerMaktRiskCaptlCst",
+      "parameterClass": "DrvtKFBInquryInfoDDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getListCmbsTraderBookLnk",
+      "resultClass": "cmbsTraderBookLnkDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getListCmbsTraderMgt",
+      "resultClass": "cmbsTraderDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getCodeNm",
+      "parameterClass": "inquiryConditionsDDTO",
+      "resultClass": "String"
+    },
+    {
+      "kind": "insert",
+      "id": "createSalesHmrsMgt",
+      "parameterClass": "java.util.HashMap"
+    },
+    {
+      "kind": "update",
+      "id": "updateSalesHmrsMgt",
+      "parameterClass": "java.util.HashMap"
+    },
+    {
+      "kind": "select",
+      "id": "countSalesHmrsMgt",
+      "parameterClass": "SalesHmrsMgtDDTO",
+      "resultClass": "Integer"
+    },
+    {
+      "kind": "insert",
+      "id": "createSalesHmrsMgt1",
+      "parameterClass": "SalesHmrsMgtDDTO"
+    },
+    {
+      "kind": "update",
+      "id": "updateSalesHmrsMgt1",
+      "parameterClass": "SalesHmrsMgtDDTO"
+    },
+    {
+      "kind": "delete",
+      "id": "deleteSalesHmrsMgt1",
+      "parameterClass": "SalesHmrsMgtDDTO"
+    },
+    {
+      "kind": "select",
+      "id": "countCmbsSalesHmrsMgt",
+      "parameterClass": "SalesHmrsMgtDDTO",
+      "resultClass": "Integer"
+    },
+    {
+      "kind": "insert",
+      "id": "createCmbsSalesHmrsMgt",
+      "parameterClass": "SalesHmrsMgtDDTO"
+    },
+    {
+      "kind": "update",
+      "id": "updateCmbsSalesHmrsMgt",
+      "parameterClass": "SalesHmrsMgtDDTO"
+    },
+    {
+      "kind": "select",
+      "id": "countCmbsEduMgt",
+      "parameterClass": "SalesHmrsMgtDDTO",
+      "resultClass": "Integer"
+    },
+    {
+      "kind": "update",
+      "id": "updateCmbsEduMgt",
+      "parameterClass": "SalesHmrsMgtDDTO"
+    },
+    {
+      "kind": "select",
+      "id": "countHiDfclDigrmPrdctAprvalAbil",
+      "parameterClass": "SalesHmrsMgtDDTO",
+      "resultClass": "Integer"
+    },
+    {
+      "kind": "update",
+      "id": "updateHiDfclDigrmPrdctAprvalAbil",
+      "parameterClass": "SalesHmrsMgtDDTO"
+    },
+    {
+      "kind": "insert",
+      "id": "regiDrvtPrdctFndsSupplAgre",
+      "parameterClass": "DrvtPrdctFndsSupplDDTO"
+    },
+    {
+      "kind": "insert",
+      "id": "insertDrvtPrdctFndsSupplAgre",
+      "parameterClass": "drvtPrdctFndsSupplDDTO"
+    },
+    {
+      "kind": "update",
+      "id": "updateDrvtPrdctFndsSupplAgre",
+      "parameterClass": "DrvtPrdctFndsSupplDDTO"
+    },
+    {
+      "kind": "delete",
+      "id": "deleteBackUpDrvtPrdctFndsSupplAgre",
+      "parameterClass": "drvtPrdctFndsSupplDDTO"
+    },
+    {
+      "kind": "update",
+      "id": "updateBackUpDrvtPrdctFndsSupplAgre",
+      "parameterClass": "drvtPrdctFndsSupplDDTO"
+    },
+    {
+      "kind": "update",
+      "id": "upDrvtPrdctFndsSupplAgre",
+      "parameterClass": "DrvtPrdctFndsSupplDDTO"
+    },
+    {
+      "kind": "select",
+      "id": "inquryDrvtPrdctFndsSupplAgre",
+      "parameterClass": "DrvtPrdctFndsSupplDDTO",
+      "resultClass": "DrvtPrdctFndsSupplDDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getListDrvtPrdctFndsSupplAgre",
+      "parameterClass": "drvtPrdctFndsSupplAgreInfoPDTO",
+      "resultClass": "drvtPrdctFndsSupplAgreInfoPDTO"
+    },
+    {
+      "kind": "update",
+      "id": "updateDrvtPrdctClbrEmp",
+      "parameterClass": "drvtPrdctClbrEmpDDTO"
+    },
+    {
+      "kind": "update",
+      "id": "cancelDrvtPrdctClbrEmp",
+      "parameterClass": "drvtPrdctClbrEmpDDTO"
+    },
+    {
+      "kind": "insert",
+      "id": "createDrvtPrdctClbrEmp",
+      "parameterClass": "drvtPrdctClbrEmpDDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getListDrvtPrdctClbrEmp",
+      "parameterClass": "drvtPrdctClbrEmpDDTO",
+      "resultClass": "drvtPrdctClbrEmpDDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getListPerbrnDrvtPrdctClbrEmp",
+      "parameterClass": "drvtPrdctClbrEmpPDTO",
+      "resultClass": "drvtPrdctClbrEmpPDTO"
+    },
+    {
+      "kind": "insert",
+      "id": "createFxDrvtExpirExtenAdedInfo",
+      "parameterClass": "fxDrvtExpirExtenAdedInfoDDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getFxDrvtExpirExtenAdedInfo",
+      "parameterClass": "fxDrvtExpirExtenAdedInfoDDTO",
+      "resultClass": "fxDrvtExpirExtenAdedInfoDDTO"
+    },
+    {
+      "kind": "update",
+      "id": "updateFxDrvtExpirExtenAdedInfo",
+      "parameterClass": "fxDrvtExpirExtenAdedInfoDDTO"
+    },
+    {
+      "kind": "delete",
+      "id": "deleteFxDrvtExpirExtenAdedInfo",
+      "parameterClass": "fxDrvtExpirExtenAdedInfoDDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getListCmbsBookChangeInfo",
+      "parameterClass": "cmbsBookDTO",
+      "resultClass": "cmbsBookDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getListCmbsTraderChangeInfo",
+      "parameterClass": "cmbsTraderDTO",
+      "resultClass": "cmbsTraderDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getListCmbsOutcomUnitChangeInfo",
+      "parameterClass": "cmbsProfitUnitDTO",
+      "resultClass": "cmbsProfitUnitDTO"
+    },
+    {
+      "kind": "select",
+      "id": "getCmbsTraderForupdate",
+      "parameterClass": "cmbsTraderDTO",
+      "resultClass": "cmbsTraderDTO"
+    }
+  ]
+}

@@ -1,0 +1,254 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Subset of OFBiz applications/order/servicedef/services.xml. Each
+     <service/> declares the canonical service name + Java entry point that
+     OrderApplicationMain registers with the LocalDispatcher. -->
+<services>
+
+    <service name="createOrder"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderServices"
+             invoke="createOrder"
+             auth="true"/>
+
+    <service name="changeOrderStatus"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderServices"
+             invoke="setOrderStatus"
+             auth="true"/>
+
+    <service name="setOrderStatus"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderServices"
+             invoke="setOrderStatus"
+             auth="true"/>
+
+    <service name="changeOrderItemStatus"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderServices"
+             invoke="setItemStatus"
+             auth="true"/>
+
+    <service name="setItemStatus"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderServices"
+             invoke="setItemStatus"
+             auth="true"/>
+
+    <service name="cancelOrderItem"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderServices"
+             invoke="cancelOrderItem"
+             auth="true"/>
+
+    <service name="resetGrandTotal"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderServices"
+             invoke="resetGrandTotal"
+             auth="true"/>
+
+    <service name="setEmptyGrandTotals"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderServices"
+             invoke="setEmptyGrandTotals"
+             auth="true"/>
+
+    <service name="recalcOrderTax"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderServices"
+             invoke="recalcOrderTax"
+             auth="true"/>
+
+    <service name="recalcOrderShipping"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderServices"
+             invoke="recalcOrderShipping"
+             auth="true"/>
+
+    <service name="checkItemStatus"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderServices"
+             invoke="checkItemStatus"
+             auth="true"/>
+
+    <service name="addItemToOrder"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderServices"
+             invoke="addItemToOrder"
+             auth="true"/>
+
+    <service name="createOrderNote"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderServices"
+             invoke="createOrderNote"
+             auth="true"/>
+
+    <service name="addRoleType"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderServices"
+             invoke="addRoleType"
+             auth="true"/>
+
+    <service name="removeRoleType"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderServices"
+             invoke="removeRoleType"
+             auth="true"/>
+
+    <service name="deleteOrderItemShipGroupAssoc"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderServices"
+             invoke="deleteOrderItemShipGroupAssoc"
+             auth="true"/>
+
+    <service name="createOrderItemChange"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderServices"
+             invoke="createOrderItemChange"
+             auth="true"/>
+
+    <service name="cancelOrderItemInvResQty"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderServices"
+             invoke="cancelOrderItemInvResQty"
+             auth="true"/>
+
+    <service name="cancelOrderInventoryReservation"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderServices"
+             invoke="cancelOrderInventoryReservation"
+             auth="true"/>
+
+    <service name="releaseOrderPayments"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderServices"
+             invoke="releaseOrderPayments"
+             auth="true"/>
+
+    <service name="createPaymentFromPreference"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderServices"
+             invoke="createPaymentFromPreference"
+             auth="true"/>
+
+    <service name="createInvoiceForOrder"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderServices"
+             invoke="createInvoiceForOrder"
+             auth="true"/>
+
+    <service name="sendOrderConfirmNotification"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderServices"
+             invoke="sendOrderConfirmNotification"
+             auth="false"/>
+
+    <service name="sendOrderCompleteNotification"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderServices"
+             invoke="sendOrderCompleteNotification"
+             auth="false"/>
+
+    <service name="sendOrderChangeNotification"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderServices"
+             invoke="sendOrderChangeNotification"
+             auth="false"/>
+
+    <service name="sendOrderBackorderNotification"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderServices"
+             invoke="sendOrderBackorderNotification"
+             auth="false"/>
+
+    <service name="getOrderHeaderInformation"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderServices"
+             invoke="getOrderHeaderInformation"
+             auth="false"/>
+
+    <service name="massChangeApproved"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderServices"
+             invoke="massChangeApproved"
+             auth="true"/>
+
+    <service name="massCancelOrders"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderServices"
+             invoke="massCancelOrders"
+             auth="true"/>
+
+    <service name="massRejectOrders"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderServices"
+             invoke="massRejectOrders"
+             auth="true"/>
+
+    <service name="massHoldOrders"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderServices"
+             invoke="massHoldOrders"
+             auth="true"/>
+
+    <!-- Returns -->
+    <service name="createReturnHeader"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderReturnServices"
+             invoke="createReturnHeader"
+             auth="true"/>
+
+    <service name="createReturnItem"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderReturnServices"
+             invoke="createReturnItem"
+             auth="true"/>
+
+    <service name="acceptReturn"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderReturnServices"
+             invoke="acceptReturn"
+             auth="true"/>
+
+    <service name="receiveReturnedItems"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderReturnServices"
+             invoke="receiveReturnedItems"
+             auth="true"/>
+
+    <service name="completeReturn"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderReturnServices"
+             invoke="completeReturn"
+             auth="true"/>
+
+    <service name="cancelReturn"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderReturnServices"
+             invoke="cancelReturn"
+             auth="true"/>
+
+    <service name="processReturnRefund"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderReturnServices"
+             invoke="processReturnRefund"
+             auth="true"/>
+
+    <service name="getReturnSummary"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderReturnServices"
+             invoke="getReturnSummary"
+             auth="false"/>
+
+    <service name="findReturnsForOrder"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderReturnServices"
+             invoke="findReturnsForOrder"
+             auth="false"/>
+
+    <service name="updateReturnItem"
+             engine="java"
+             location="org.apache.ofbiz.order.order.OrderReturnServices"
+             invoke="updateReturnItem"
+             auth="true"/>
+
+</services>

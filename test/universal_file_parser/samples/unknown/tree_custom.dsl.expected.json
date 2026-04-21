@@ -1,0 +1,15 @@
+{
+  "order_service": {
+    "endpoints": [
+      {"path": "/api/orders", "method": "GET", "auth": "required", "rate_limit": "100"},
+      {"path": "/api/orders/{id}", "method": "GET", "auth": "required", "rate_limit": "200"},
+      {"path": "/api/orders", "method": "POST", "auth": "required", "rate_limit": "50"}
+    ]
+  },
+  "user_service": {
+    "endpoints": [
+      {"path": "/api/users", "method": "GET", "auth": "optional", "rate_limit": "500"},
+      {"path": "/api/users/{id}", "method": "PUT", "auth": "required", "rate_limit": "20"}
+    ]
+  }
+}

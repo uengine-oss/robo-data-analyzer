@@ -1,0 +1,23 @@
+service order_service
+  endpoint /api/orders
+    method GET
+    auth required
+    rate_limit 100
+  endpoint /api/orders/{id}
+    method GET
+    auth required
+    rate_limit 200
+  endpoint /api/orders
+    method POST
+    auth required
+    rate_limit 50
+
+service user_service
+  endpoint /api/users
+    method GET
+    auth optional
+    rate_limit 500
+  endpoint /api/users/{id}
+    method PUT
+    auth required
+    rate_limit 20

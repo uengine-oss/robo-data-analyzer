@@ -1,0 +1,140 @@
+{
+  "root": "entitymodel",
+  "anchors": [
+    {
+      "kind": "entity",
+      "entity-name": "OrderHeader",
+      "package-name": "org.apache.ofbiz.order.order"
+    },
+    {
+      "kind": "entity",
+      "entity-name": "OrderItem",
+      "package-name": "org.apache.ofbiz.order.order"
+    },
+    {
+      "kind": "entity",
+      "entity-name": "OrderAdjustment",
+      "package-name": "org.apache.ofbiz.order.order"
+    },
+    {
+      "kind": "entity",
+      "entity-name": "OrderRole",
+      "package-name": "org.apache.ofbiz.order.order"
+    },
+    {
+      "kind": "entity",
+      "entity-name": "OrderStatus",
+      "package-name": "org.apache.ofbiz.order.order"
+    },
+    {
+      "kind": "entity",
+      "entity-name": "OrderPaymentPreference",
+      "package-name": "org.apache.ofbiz.order.order"
+    },
+    {
+      "kind": "entity",
+      "entity-name": "PaymentGatewayResponse",
+      "package-name": "org.apache.ofbiz.accounting.payment"
+    },
+    {
+      "kind": "entity",
+      "entity-name": "Payment",
+      "package-name": "org.apache.ofbiz.accounting.payment"
+    },
+    {
+      "kind": "entity",
+      "entity-name": "OrderItemShipGroup",
+      "package-name": "org.apache.ofbiz.order.order"
+    },
+    {
+      "kind": "entity",
+      "entity-name": "OrderItemShipGroupAssoc",
+      "package-name": "org.apache.ofbiz.order.order"
+    },
+    {
+      "kind": "entity",
+      "entity-name": "OrderContactMech",
+      "package-name": "org.apache.ofbiz.order.order"
+    },
+    {
+      "kind": "entity",
+      "entity-name": "OrderTerm",
+      "package-name": "org.apache.ofbiz.order.order"
+    },
+    {
+      "kind": "entity",
+      "entity-name": "OrderItemPriceInfo",
+      "package-name": "org.apache.ofbiz.order.order"
+    },
+    {
+      "kind": "entity",
+      "entity-name": "OrderItemChange",
+      "package-name": "org.apache.ofbiz.order.order"
+    },
+    {
+      "kind": "entity",
+      "entity-name": "OrderHeaderNote",
+      "package-name": "org.apache.ofbiz.order.order"
+    },
+    {
+      "kind": "entity",
+      "entity-name": "NoteData",
+      "package-name": "org.apache.ofbiz.common.note"
+    },
+    {
+      "kind": "entity",
+      "entity-name": "ReturnHeader",
+      "package-name": "org.apache.ofbiz.order.order"
+    },
+    {
+      "kind": "entity",
+      "entity-name": "ReturnItem",
+      "package-name": "org.apache.ofbiz.order.order"
+    },
+    {
+      "kind": "entity",
+      "entity-name": "ReturnStatus",
+      "package-name": "org.apache.ofbiz.order.order"
+    },
+    {
+      "kind": "entity",
+      "entity-name": "ProductStore",
+      "package-name": "org.apache.ofbiz.product.store"
+    },
+    {
+      "kind": "entity",
+      "entity-name": "Product",
+      "package-name": "org.apache.ofbiz.product.product"
+    },
+    {
+      "kind": "entity",
+      "entity-name": "ProductType",
+      "package-name": "org.apache.ofbiz.product.product"
+    },
+    {
+      "kind": "entity",
+      "entity-name": "Party",
+      "package-name": "org.apache.ofbiz.party.party"
+    },
+    {
+      "kind": "entity",
+      "entity-name": "UserLogin",
+      "package-name": "org.apache.ofbiz.security.login"
+    },
+    {
+      "kind": "entity",
+      "entity-name": "ShipmentReceipt",
+      "package-name": "org.apache.ofbiz.shipment.shipment"
+    },
+    {
+      "kind": "entity",
+      "entity-name": "ItemIssuance",
+      "package-name": "org.apache.ofbiz.shipment.shipment"
+    },
+    {
+      "kind": "entity",
+      "entity-name": "PicklistItem",
+      "package-name": "org.apache.ofbiz.shipment.picklist"
+    }
+  ]
+}
