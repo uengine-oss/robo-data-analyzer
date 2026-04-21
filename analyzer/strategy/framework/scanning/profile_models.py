@@ -38,7 +38,7 @@ class CodebaseProfile:
     """Phase 1 준비 단계의 최종 산출물.
 
     scanner 결과 (catalog + plan) + 결정론 수집 메타 (info) +
-    Deep Agent 가 만든 프레임워크/DB 접근 패턴 자연어 요약을 한 덩어리로 묶는다.
+    Deep Agent 가 관찰한 3블록 (프레임워크/데이터접근/반복 이디엄) 자연어 요약.
     """
 
     catalog: List[FileCatalogEntry]
@@ -46,6 +46,9 @@ class CodebaseProfile:
     info: CodebaseInfo
     summary: str
     resources: dict[str, list[str]]
+    # Block 별 자연어 섹션 — 파싱 성공 시 {"framework", "data_access", "idioms"}.
+    # 파싱 실패 시 빈 dict 으로 두고 summary 전체만 쓰는 폴백 허용.
+    summary_sections: dict[str, str] = field(default_factory=dict)
     tool_calls: int = 0
     elapsed_sec: float = 0.0
 

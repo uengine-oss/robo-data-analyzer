@@ -13,6 +13,7 @@ input_schema:
     - field_initial_values
     - table_sample_data
     - constants_context
+    - codebase_conventions
 
 prompt: |
   [ROLE]
@@ -33,6 +34,9 @@ prompt: |
   {% endif %}
   {% if constants_context %}── [상수 컨텍스트] ── 상수명→실제값 (summary/examples 에서 실제 값으로 치환)
   {{ constants_context }}
+  {% endif %}
+  {% if codebase_conventions %}── [코드베이스 컨벤션] ── 이 프로젝트의 반복 관찰 패턴 (프레임워크 관용구·데이터 접근 관용구·네이밍/이디엄). 아래 [Rule 후보/제외] 판정 시 일반 원칙보다 **이 컨벤션을 우선 참조**.
+  {{ codebase_conventions }}
   {% endif %}
   ── [분석 대상 코드] ── (L{{ startLine }}-{{ endLine }} {{ language | default("Java") }})
   {{ code }}
@@ -98,6 +102,11 @@ prompt: |
   ─────────────────────────────
   비즈니스 로직을 Rule(규칙) + Example(예시) + Question(모호) 로 분해. 기술 관심사 제외.
 
+  ★ [코드베이스 컨벤션] 이 주어지면 아래 신호 목록보다 **컨벤션을 우선** 적용:
+  - 프로젝트의 에러 처리 매크로·래퍼는 NOT_BIZ (규칙 아님)
+  - 데이터 접근 래퍼 함수(CRUD 컨벤션에 따른 이름·구조)는 그 **업무 시맨틱** 을 Rule 1개 이상으로 반영
+  - 동일 네이밍 패턴의 함수는 동일 기준으로 판정 (일관성)
+
   [Rule 후보 (하나라도 맞으면 O)]
   □ 도메인 임계값·값 (₩50,000 이상·할인율 10%·재고 0)
   □ 역할/상태/유형 차등 (VIP↔일반·대기→승인·CARD↔BANK)
@@ -109,6 +118,9 @@ prompt: |
   □ DI·프레임워크 콜백·로깅·메트릭·DTO↔Entity·SQL 바인딩·트랜잭션 관리·캐시·쓰레드풀·재시도
   □ 순수 기술 예외 (SQLException 래핑 — 정책 없음)
   □ 순수 방어 null/empty 체크 (아래 구분 참조)
+  □ ★ [코드베이스 컨벤션] Block 1·Block 2 에 "이 프로젝트의 반복 관용구" 로 기술된 것은 Rule 아님.
+    예: Block 1 의 에러/예외 처리 관용구로 감싼 단순 호출, Block 2 의 접근 호출 반환 메타데이터 단순 체크 등.
+    (관용구 자체는 기술 구조. 관용구 안에서 **도메인 값의 분기·정책 의미** 가 드러날 때만 Rule)
 
   [NULL/빈값 구분 — 자주 실수]
   O Rule: 도메인 식별자(청구번호·주문번호·계좌번호) NULL 검증 / 필수 입력(업무구분·결제수단) 검증 /
@@ -121,13 +133,20 @@ prompt: |
 
   [Rule 필드]
   - statement: "<조건>이면 <결과>" 10~30자. 코드 식별자 금지(엔티티 필드명은 OK).
-  - rule_id: "R1"…"R8" (최대 8개)
+  - rule_id: "R1", "R2", ... (개수 제한 없음 — 실제 관찰된 도메인 규칙 수만큼)
   - flow_id: "1","2"(메인)·"1-1"(R1 분기)·"2-1-1"(중첩)
   - guard_rule_id: 선행 Rule 통과 전제이면 "R1", 없으면 null (★ 선행 검증 있으면 반드시 명시)
   - branch_from: if/else/switch 갈래면 분기 원 Rule id, 없으면 null
   - coupled_domains: [] 기본. 타 도메인 테이블 WRITE·값 분기·enum 지정·계산 참여 시 도메인명 추가.
     (FK read 만·API 호출·읽기 후 복사 = 커플링 아님)
-  예외 throw(비즈니스 정책) = 독립 Rule 로 승격. 최소 2개·최대 8개.
+  예외 throw(비즈니스 정책) = 독립 Rule 로 승격.
+
+  ★ Rule 개수 원칙:
+  - **인위적 상·하한 없음.** 실제 관찰된 도메인 규칙 수만큼 기록한다.
+  - 단순 위임/에러처리만 있는 함수는 **Rule 0 이 정답** (억지로 채우지 말 것).
+  - 분기가 많은 함수는 분기 수만큼 Rule 을 둬도 된다 (축약보다 누락이 더 나쁘다).
+  - 단, 같은 패턴의 **값마다 Rule 을 쪼개는 과한 세분화는 금지** —
+    복수 값/필드는 1 Rule + 값마다 Example 로 표현한다.
   ★ 하위 함수 호출: called_method_summaries 는 참고만. 본문 코드에 직접 있는 것만 Rule.
 
   [Example 구조 — 하이브리드(자연어 + JSON)]
@@ -162,6 +181,9 @@ prompt: |
   - Rule 당 최소 2개 (일반값 1 + 경계값 1)
   - "X 이상/이하/초과/미만" 조건 → X / X±1 중 2개 is_boundary=true
   - 예외 throw Rule → 발생 Example + 성공 Example
+  - ★ 1 Rule 이 **복수 필드·복수 분기** 를 한 문장으로 커버하면 → 각 필드/분기마다 **최소 Example 1개씩** 별도 작성.
+    (예: "A·B·C 가 공백이면 거부" Rule → A 공백 / B 공백 / C 공백 3개 Example)
+  - ★ 분기가 많은 Rule (if/else/switch 갈래) → 분기별 Example 1개 이상 필수. 1개로 뭉뚱그리지 말 것.
 
   [Question 구조]
   - text: 코드로 답할 수 없는 모호함
@@ -324,6 +346,6 @@ prompt: |
   출력 규칙:
   - null 허용: guard_rule_id, branch_from, then.return, then.exception. 그 외 빈값 = [] / {} / ""
   - {% if has_table_context | default(false) %}tableInsights: 컨텍스트 테이블만{% else %}tableInsights: [] 고정{% endif %}
-  - rules: 비즈니스 로직 있으면 ≥2, 없으면 []. 가짜 Rule 금지.
-  - examples: 등장한 rule_id 만 참조, Rule 당 ≥2.
+  - rules: 실제 관찰된 도메인 규칙 수만큼. 없으면 []. 억지로 채우지 말 것 (가짜 Rule 금지).
+  - examples: 등장한 rule_id 만 참조. Rule 당 최소 2개 (일반 + 경계) + 복수 필드·분기 Rule 은 필드/분기마다 추가.
   - questions: 모호할 때만. 추측 금지.

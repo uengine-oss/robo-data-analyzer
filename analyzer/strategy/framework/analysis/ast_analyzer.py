@@ -234,6 +234,7 @@ def _invoke_analysis_llm(
     field_initial_values: Optional[str] = None,
     table_sample_data: Optional[str] = None,
     constants_context: Optional[str] = None,
+    codebase_conventions: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """메서드 1개에 대해 analysis 규칙 실행 → summary/dependencies/stereotype.
 
@@ -319,6 +320,8 @@ def _invoke_analysis_llm(
         filtered = _filter_by_code_reference(constants_context.strip().split("\n"), code)
         if filtered:
             inputs["constants_context"] = "\n".join(filtered)
+    if codebase_conventions and codebase_conventions.strip():
+        inputs["codebase_conventions"] = codebase_conventions.strip()
     # Fail-Fast: LLM 예외는 그대로 상위로 전파.
     # dict·summary 없는 "빈 응답" 만 None 리턴 (LLM 이 의도적으로 분석 불가 판정한 경우).
     from util.llm_prompt_handler import prompts
@@ -352,18 +355,32 @@ def _analyze_code_node(
     called_summaries: Optional[List[Dict[str, Any]]] = None,
     variable_facts_list: Optional[List[VariableFacts]] = None,
     table_sample_data: Optional[str] = None,
+    table_sample_data_by_function: Optional[Dict[str, str]] = None,
     constants_context: Optional[str] = None,
     referenced_vars_by_function: Optional[Dict[str, List[str]]] = None,
+    codebase_conventions: Optional[str] = None,
+    reads_writes_by_function: Optional[Dict[str, List[Tuple[str, str]]]] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """단일 메서드에 대해 stereotype + (summary, dependencies) 계산."""
     stereotype_fallback = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
     summary = f"{m.fqn} ({stereotype_fallback}); lines {m.start_line}-{m.end_line}"
     method_edges = [e for e in refer_to_edges if e.function_id == m.function_id]
     calls_outgoing = [f"{e.target_type}:{e.target_id}" for e in method_edges]
-    sql_keys_for_m = {e.target_id for e in method_edges if e.target_type == "SqlStatement"}
-    rw_summary = ", ".join(
-        f"{rw.table_name}({rw.relation})" for rw in reads_writes if rw.sql_key in sql_keys_for_m
-    )[:200]
+    # rw_summary: 1차 Table 엣지 기반, 2차 SqlStatement 경로 fallback.
+    # (SqlStatement 가 없는 프로젝트에서도 함수별 R/W 신호를 LLM 에 전달.)
+    rw_parts: List[str] = []
+    for tbl, rel in (reads_writes_by_function or {}).get(m.function_id, []):
+        rw_parts.append(f"{tbl}({rel})")
+    if not rw_parts:
+        sql_keys_for_m = {e.target_id for e in method_edges if e.target_type == "SqlStatement"}
+        seen = set()
+        for rw in reads_writes:
+            if rw.sql_key in sql_keys_for_m:
+                key = f"{rw.table_name}({rw.relation})"
+                if key not in seen:
+                    seen.add(key)
+                    rw_parts.append(key)
+    rw_summary = ", ".join(rw_parts)[:200]
     linked_architecture_context = _build_linked_architecture_context(
         m.function_id,
         refer_to_edges,
@@ -398,8 +415,13 @@ def _analyze_code_node(
             called_method_summaries=called_summaries,
             module_fields_context=fields_ctx or None,
             field_initial_values="\n".join(referenced_vars_by_function.get(m.function_id, [])) if referenced_vars_by_function else None,
-            table_sample_data=table_sample_data or None,
+            table_sample_data=(
+                (table_sample_data_by_function or {}).get(m.function_id)
+                or table_sample_data
+                or None
+            ),
             constants_context=constants_context or None,
+            codebase_conventions=codebase_conventions or None,
         )
         if analysis:
             summary = analysis.get("summary") or summary
@@ -449,8 +471,11 @@ def analyze_and_enrich(
     calls_edges: Optional[List[CallsEdge]] = None,
     variable_facts_list: Optional[List[VariableFacts]] = None,
     table_sample_data: Optional[str] = None,
+    table_sample_data_by_function: Optional[Dict[str, str]] = None,
     constants_context: Optional[str] = None,
     referenced_vars_by_function: Optional[Dict[str, List[str]]] = None,
+    codebase_conventions: Optional[str] = None,
+    reads_writes_by_function: Optional[Dict[str, List[Tuple[str, str]]]] = None,
 ) -> Generator[Dict[str, Dict[str, Any]], None, None]:
     """메서드별 stereotype, summary — 20개씩 배치로 yield.
 
@@ -505,8 +530,11 @@ def analyze_and_enrich(
                         None,
                         variable_facts_list,
                         table_sample_data,
+                        table_sample_data_by_function,
                         constants_context,
                         referenced_vars_by_function,
+                        codebase_conventions,
+                        reads_writes_by_function,
                     ): m
                     for m in function_facts_list
                 }
@@ -544,8 +572,11 @@ def analyze_and_enrich(
                     None,
                     variable_facts_list,
                     table_sample_data,
+                    table_sample_data_by_function,
                     constants_context,
                     referenced_vars_by_function,
+                    codebase_conventions,
+                    reads_writes_by_function,
                 )
                 batch[function_id] = data
                 if len(batch) >= _ANALYSIS_BATCH_SIZE:
@@ -621,8 +652,11 @@ def analyze_and_enrich(
             called_list or None,
             variable_facts_list,
             table_sample_data,
+            table_sample_data_by_function,
             constants_context,
             referenced_vars_by_function,
+            codebase_conventions,
+            reads_writes_by_function,
         )
         return node_id, data
 
@@ -697,8 +731,11 @@ def analyze_and_enrich(
                 None,
                 variable_facts_list,
                 table_sample_data,
+                table_sample_data_by_function,
                 constants_context,
                 referenced_vars_by_function,
+                codebase_conventions,
+                reads_writes_by_function,
             )
             batch[mid] = data
             if len(batch) >= _ANALYSIS_BATCH_SIZE:

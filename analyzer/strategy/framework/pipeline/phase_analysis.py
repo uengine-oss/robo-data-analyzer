@@ -28,8 +28,52 @@ logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════════════════════
 
 async def collect_analysis_context(st, client, orchestrator) -> dict:
-    """상수, 참조변수, 테이블 샘플 컨텍스트 수집."""
-    ctx: dict = {"constants_context": "", "referenced_vars_by_function": {}, "table_sample_data": ""}
+    """상수, 참조변수, 테이블 샘플, 코드베이스 컨벤션(codebase profile), 함수별 R/W 맵 수집."""
+    ctx: dict = {
+        "constants_context": "",
+        "referenced_vars_by_function": {},
+        "table_sample_data": "",
+        "codebase_conventions": "",
+        "reads_writes_by_function": {},
+    }
+
+    # 함수별 READS/WRITES 테이블 맵 (function_table_edges 기반)
+    # 기존 reads_writes_summary 가 SqlStatement 경로만 보던 한계 보완.
+    rw_by_fn: dict[str, list[tuple[str, str]]] = {}
+    for e in (st.function_table_edges or []):
+        fid = getattr(e, "function_id", "") or ""
+        tbl = (getattr(e, "table_name", "") or "").strip()
+        rel = (getattr(e, "relation", "") or "").strip().upper()
+        if not (fid and tbl and rel):
+            continue
+        pair = (tbl, rel)
+        bucket = rw_by_fn.setdefault(fid, [])
+        if pair not in bucket:
+            bucket.append(pair)
+    ctx["reads_writes_by_function"] = rw_by_fn
+    if rw_by_fn:
+        logger.info(
+            "[PHASE:3:CONTEXT] 함수별 R/W 맵 수집 | functions=%d edges=%d",
+            len(rw_by_fn), sum(len(v) for v in rw_by_fn.values()),
+        )
+
+    # 코드베이스 컨벤션 (Phase 1 codebase_profile.summary_sections 3블록)
+    cp = getattr(st, "codebase_profile", None)
+    if cp and getattr(cp, "summary_sections", None):
+        sections = cp.summary_sections
+        blocks: list[str] = []
+        if sections.get("framework"):
+            blocks.append(sections["framework"])
+        if sections.get("data_access"):
+            blocks.append(sections["data_access"])
+        if sections.get("idioms"):
+            blocks.append(sections["idioms"])
+        if blocks:
+            ctx["codebase_conventions"] = "\n\n".join(blocks)
+            logger.info(
+                "[PHASE:3:CONTEXT] 코드베이스 컨벤션 주입 | sections=%s len=%d",
+                ",".join(sorted(sections.keys())), len(ctx["codebase_conventions"]),
+            )
 
     # 상수 컨텍스트
     from analyzer.common.analysis_context import fetch_constants_context
@@ -69,10 +113,11 @@ async def collect_analysis_context(st, client, orchestrator) -> dict:
         )
         raise
 
-    # 테이블 샘플 데이터
+    # 테이블 샘플 데이터 — 함수별 caller 기준 필터링 + 호출 체인 전이적 R/W 포함
     reads_writes = st.reads_writes or []
     try:
         from analyzer.common.analysis_context import fetch_table_context
+        # 프로젝트 전체 테이블 집합 (fallback 용)
         table_names: list[str] = []
         if reads_writes:
             table_names = list({rw.table_name for rw in reads_writes if rw.table_name})
@@ -81,10 +126,54 @@ async def collect_analysis_context(st, client, orchestrator) -> dict:
                 "MATCH (t:Table) RETURN DISTINCT t.name AS name"
             ])
             table_names = [r["name"] for r in (table_results[0] if table_results and table_results[0] else []) if r.get("name")]
+
         if table_names:
             datasource_name = getattr(orchestrator, "datasource_name", "")
-            ctx["table_sample_data"] = await fetch_table_context(client, table_names, datasource_name)
-            logger.info("[PHASE:3:CONTEXT] 테이블 샘플 수집 | tables=%d data_len=%d", len(table_names), len(ctx["table_sample_data"]))
+            # 각 테이블별 섹션을 한 번만 생성하여 캐시
+            table_to_section: dict[str, str] = {}
+            for tname in table_names:
+                section = await fetch_table_context(client, [tname], datasource_name)
+                if section:
+                    table_to_section[tname] = section
+            # 전체 fallback (직접·간접 R/W 없는 함수용)
+            ctx["table_sample_data"] = "\n\n".join(table_to_section.values())
+
+            # 함수별 직접 R/W 테이블 집합
+            direct: dict[str, set[str]] = {
+                fid: {t for t, _op in pairs} for fid, pairs in rw_by_fn.items()
+            }
+            # 호출 그래프로 전이적 확장 (상위 함수가 하위 호출 경유 접근하는 테이블 포함)
+            callees: dict[str, set[str]] = {}
+            for ce in (st.calls_edges or []):
+                c = getattr(ce, "caller_function_id", "") or ""
+                cal = getattr(ce, "callee_function_id", "") or ""
+                if c and cal:
+                    callees.setdefault(c, set()).add(cal)
+
+            def transitive(fid: str, seen: set[str]) -> set[str]:
+                if fid in seen:
+                    return set()
+                seen.add(fid)
+                acc = set(direct.get(fid, set()))
+                for cal in callees.get(fid, ()):
+                    acc |= transitive(cal, seen)
+                return acc
+
+            all_fids = {m.function_id for m in (st.function_facts_list or [])}
+            ts_by_fn: dict[str, str] = {}
+            for fid in all_fids:
+                trans_tables = transitive(fid, set())
+                if not trans_tables:
+                    continue
+                sections = [table_to_section[t] for t in sorted(trans_tables) if t in table_to_section]
+                if sections:
+                    ts_by_fn[fid] = "\n\n".join(sections)
+            ctx["table_sample_data_by_function"] = ts_by_fn
+
+            logger.info(
+                "[PHASE:3:CONTEXT] 테이블 샘플 수집 | 전체 tables=%d 전체 data_len=%d 함수별 맞춤=%d",
+                len(table_names), len(ctx["table_sample_data"]), len(ts_by_fn),
+            )
     except Exception as e:
         logger.error("[PHASE:3:CONTEXT] 테이블 샘플 수집 실패 | error=%s", e, exc_info=True)
 
@@ -128,8 +217,11 @@ async def run_code_analysis(
         variable_facts_list=st.variable_facts_list or [],
         lang=st.lang,
         table_sample_data=summary_ctx.get("table_sample_data") or None,
+        table_sample_data_by_function=summary_ctx.get("table_sample_data_by_function") or None,
         constants_context=summary_ctx.get("constants_context") or None,
         referenced_vars_by_function=summary_ctx.get("referenced_vars_by_function") or None,
+        codebase_conventions=summary_ctx.get("codebase_conventions") or None,
+        reads_writes_by_function=summary_ctx.get("reads_writes_by_function") or None,
     ):
         analysis_by_function.update(analysis_batch)
         yield tracker.tick_quiet()

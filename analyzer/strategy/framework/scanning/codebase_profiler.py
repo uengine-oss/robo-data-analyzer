@@ -54,7 +54,7 @@ def profile(
         "OTHER": [],
     }
 
-    summary, tool_calls = run_profile_agent(
+    summary, summary_sections, tool_calls = run_profile_agent(
         root=root_path,
         info=info,
         resources=resources,
@@ -63,8 +63,9 @@ def profile(
 
     elapsed = time.time() - started
     logger.info(
-        "[PHASE:1:PROFILE] 완료 | tool_calls=%d elapsed=%.1fs summary_preview=%s",
+        "[PHASE:1:PROFILE] 완료 | tool_calls=%d elapsed=%.1fs sections=%s summary_preview=%s",
         tool_calls, elapsed,
+        ",".join(sorted(summary_sections.keys())) or "(폴백)",
         (summary or "")[:160].replace("\n", " "),
     )
 
@@ -73,6 +74,7 @@ def profile(
         plan=plan,
         info=info,
         summary=summary,
+        summary_sections=summary_sections,
         resources=resources,
         tool_calls=tool_calls,
         elapsed_sec=elapsed,

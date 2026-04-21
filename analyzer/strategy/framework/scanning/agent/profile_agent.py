@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -175,7 +176,182 @@ def _build_tools(root: Path):
     return [grep, read_file, read_function, glob_search, ls]
 
 
-def _render_prompt(info: CodebaseInfo, resources: dict[str, list[str]]) -> str:
+# ─────────────────────────────────────────────────────────────────────
+# Block 3 (반복 네이밍/이디엄) 근거용 언어 중립 시그널 수집 헬퍼
+# 모두 정규식 기반 — 특정 언어/프레임워크에 의존하지 않음.
+# ─────────────────────────────────────────────────────────────────────
+
+_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# 카멜케이스·스네이크케이스 모두 분리: "processOrder" / "process_order" / "APIToken" 등.
+_TOKEN_SPLIT_RE = re.compile(r"[_\s]+|(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
+# 함수 정의 라인 휴리스틱: 들여쓰기 허용, `(` 가 있고 `;` 로 끝나지 않음 (선언만은 제외).
+_FUNC_DEF_RE = re.compile(r"^\s*(?:[A-Za-z_][\w\s*&:<>,]*?\s+)?([A-Za-z_]\w*)\s*\([^;]*$")
+# 호출 토큰: IDENT 뒤에 `(` 가 붙은 것.
+_CALL_RE = re.compile(r"\b([A-Za-z_]\w*)\s*\(")
+# C/Java/Python 공통 키워드·빌트인 (호출처럼 보이는 제어 흐름 제거용).
+_STOP_KEYWORDS = frozenset({
+    "if", "for", "while", "switch", "do", "return", "sizeof", "case", "else",
+    "def", "class", "lambda", "await", "yield", "new", "try", "catch", "throw",
+    "static", "long", "int", "char", "void", "short", "double", "float", "bool",
+    "struct", "union", "enum", "typedef", "const", "unsigned", "signed",
+})
+
+
+def _extract_func_name(signature: str) -> str:
+    """시그니처 문자열에서 함수명만 추출 (언어 중립: `(` 앞 마지막 IDENT)."""
+    head = signature.split("(", 1)[0]
+    toks = _IDENT_RE.findall(head)
+    return toks[-1] if toks else ""
+
+
+def _compute_name_ngrams(function_index: list[tuple[str, list[str]]]) -> str:
+    """함수 시그니처에서 함수명만 뽑아 토큰 1-gram / 2-gram 빈도 집계."""
+    names: list[str] = []
+    for _path, sigs in function_index:
+        for sig in sigs:
+            name = _extract_func_name(sig)
+            if name:
+                names.append(name)
+    if not names:
+        return "(표본 부족)"
+    unigrams: Counter[str] = Counter()
+    bigrams: Counter[tuple[str, str]] = Counter()
+    for name in names:
+        tokens = [t for t in _TOKEN_SPLIT_RE.split(name) if t]
+        tokens_lc = [t.lower() for t in tokens]
+        unigrams.update(tokens_lc)
+        for i in range(len(tokens_lc) - 1):
+            bigrams[(tokens_lc[i], tokens_lc[i + 1])] += 1
+    lines = [f"(함수 {len(names)}개 기준)", "[1-gram 상위]"]
+    for tok, n in unigrams.most_common(15):
+        if n < 2:  # 노이즈 차단 — 2회 미만은 이디엄 아님
+            break
+        lines.append(f"  {tok}: {n}")
+    lines.append("[2-gram 상위]")
+    had_bi = False
+    for (a, b), n in bigrams.most_common(15):
+        if n < 2:
+            break
+        lines.append(f"  {a}_{b}: {n}")
+        had_bi = True
+    if not had_bi:
+        lines.append("  (빈출 없음)")
+    return "\n".join(lines)
+
+
+def _read_representative_source(root: Path, representative_file: str) -> list[str] | None:
+    if not representative_file:
+        return None
+    candidate = root / representative_file
+    if not candidate.exists() or not candidate.is_file():
+        return None
+    try:
+        src = candidate.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    return src.splitlines()
+
+
+def _is_func_definition(lines: list[str], i: int) -> bool:
+    """정의인지 호출인지 언어 중립 휴리스틱으로 판별.
+
+    정의로 간주 조건:
+      - 같은 줄 또는 다음 줄에 본문 시작 `{` 존재 (C/C++/Java/JS/Go/Rust/C#)
+      - 또는 줄 끝이 `:` (Python/Ruby)
+    """
+    cur = lines[i]
+    if '{' in cur:
+        return True
+    if cur.rstrip().endswith(':'):
+        return True
+    j = i + 1
+    while j < len(lines) and j < i + 3:
+        stripped = lines[j].lstrip()
+        if not stripped:
+            j += 1
+            continue
+        return stripped.startswith('{')
+    return False
+
+
+def _compute_call_sequences(lines: list[str]) -> str:
+    """대표 파일 각 함수의 첫 3개 호출 심볼 시퀀스 추출."""
+    results: list[str] = []
+    i = 0
+    while i < len(lines) and len(results) < 20:
+        m = _FUNC_DEF_RE.match(lines[i])
+        if m:
+            name = m.group(1)
+            stripped = lines[i].lstrip()
+            first_word = stripped.split('(', 1)[0].split()[-1] if stripped else ""
+            if (
+                name
+                and name not in _STOP_KEYWORDS
+                and first_word not in _STOP_KEYWORDS
+                and _is_func_definition(lines, i)
+            ):
+                body = "\n".join(lines[i + 1:i + 120])
+                calls: list[str] = []
+                for cm in _CALL_RE.finditer(body):
+                    sym = cm.group(1)
+                    if sym != name and sym not in _STOP_KEYWORDS:
+                        calls.append(sym)
+                        if len(calls) >= 3:
+                            break
+                if calls:
+                    results.append(f"  {name}: {' → '.join(calls)}")
+        i += 1
+    return "\n".join(results) if results else "(표본 부족)"
+
+
+def _compute_function_length_stats(lines: list[str]) -> str:
+    """괄호 매칭 기반 함수 본문 길이 분포 (언어 중립 휴리스틱)."""
+    lengths: list[int] = []
+    i = 0
+    while i < len(lines):
+        if _FUNC_DEF_RE.match(lines[i]):
+            start = i
+            depth = 0
+            started = False
+            end = i
+            for j in range(i, min(i + 500, len(lines))):
+                for ch in lines[j]:
+                    if ch == '{':
+                        depth += 1
+                        started = True
+                    elif ch == '}':
+                        depth -= 1
+                        if started and depth == 0:
+                            end = j
+                            break
+                if started and depth == 0:
+                    break
+            if started:
+                lengths.append(end - start + 1)
+                i = end
+        i += 1
+    if not lengths:
+        return "(표본 부족)"
+    lengths.sort()
+    n = len(lengths)
+    avg = sum(lengths) // n
+    med = lengths[n // 2]
+    return f"함수 {n}개 / 평균 {avg} 라인 / 중앙 {med} / 최대 {lengths[-1]}"
+
+
+def _compute_import_cooccurrence(import_frequency: dict[str, int]) -> str:
+    """파일별 import 원본이 없으면 전체 빈도 상위만 표시. 진짜 조합 분석은 후속."""
+    if not import_frequency:
+        return "(표본 부족)"
+    items = sorted(import_frequency.items(), key=lambda kv: -kv[1])[:10]
+    return ", ".join(f"{k}({v})" for k, v in items)
+
+
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _render_prompt(root: Path, info: CodebaseInfo, resources: dict[str, list[str]]) -> str:
     lines: list[str] = []
     for cat in ("SQL", "ENTITY", "CONFIG", "DOCS"):
         paths = resources.get(cat) or []
@@ -195,6 +371,17 @@ def _render_prompt(info: CodebaseInfo, resources: dict[str, list[str]]) -> str:
     else:
         function_index_block = "(없음)"
 
+    # Block 3 근거 시그널
+    ngrams_block = _compute_name_ngrams(info.function_index)
+    rep_lines = _read_representative_source(root, info.representative_file)
+    if rep_lines is not None:
+        call_seq_block = _compute_call_sequences(rep_lines)
+        length_stats_block = _compute_function_length_stats(rep_lines)
+    else:
+        call_seq_block = "(대표 파일 접근 불가)"
+        length_stats_block = "(대표 파일 접근 불가)"
+    cooccurrence_block = _compute_import_cooccurrence(info.import_frequency)
+
     return _USER_TEMPLATE.format(
         extensions=info.extensions or "(비어있음)",
         manifest_name=info.manifest_name or "(없음)",
@@ -202,10 +389,14 @@ def _render_prompt(info: CodebaseInfo, resources: dict[str, list[str]]) -> str:
         config_name=info.config_name or "(없음)",
         config_content=info.config_content or "(없음)",
         import_frequency=info.import_frequency or "(비어있음)",
+        import_cooccurrence=cooccurrence_block,
         sample_file_count=info.sample_file_count,
         representative_file=info.representative_file or "(없음)",
         representative_skeleton=info.representative_skeleton or "(없음)",
         function_index=function_index_block,
+        function_name_ngrams=ngrams_block,
+        call_sequences=call_seq_block,
+        function_length_stats=length_stats_block,
         resources_summary=resources_summary,
     )
 
@@ -232,13 +423,67 @@ def _count_tool_calls(result: dict[str, Any]) -> int:
     )
 
 
+# 2블록 포맷: '## 프레임워크 패턴' / '## DB 접근 패턴' (번호 없음).
+# 기존 'Block 1/2/3' 포맷 호환 유지.
+_SECTION_HEADER_RE = re.compile(
+    r"""^\s*
+        (?:\#{1,3}\s*|\*\*\s*)?
+        (?:
+            (?:block\s*)?([123])[\.\:\-\s]   # Block 1/2/3 (구 포맷)
+          | (프레임워크\s*패턴)               # 프레임워크 패턴
+          | (DB\s*접근\s*패턴)                # DB 접근 패턴
+        )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _split_sections(text: str) -> dict[str, str]:
+    """LLM 텍스트에서 섹션 분리. 실패 시 빈 dict (호출부가 전체 summary 폴백).
+
+    키: 'framework' / 'data_access' / 'idioms'.
+    2블록 포맷('프레임워크 패턴'/'DB 접근 패턴') 과 구 3블록 Block 1/2/3 모두 처리.
+    """
+    if not text:
+        return {}
+    num_key = {"1": "framework", "2": "data_access", "3": "idioms"}
+    lines = text.splitlines()
+    positions: list[tuple[int, str]] = []
+    for i, ln in enumerate(lines):
+        m = _SECTION_HEADER_RE.match(ln)
+        if not m:
+            continue
+        if m.group(1):
+            key = num_key.get(m.group(1))
+        elif m.group(2):
+            key = "framework"
+        elif m.group(3):
+            key = "data_access"
+        else:
+            key = None
+        if key:
+            positions.append((i, key))
+    if not positions:
+        return {}
+    sections: dict[str, str] = {}
+    for idx, (start, key) in enumerate(positions):
+        end = positions[idx + 1][0] if idx + 1 < len(positions) else len(lines)
+        body = "\n".join(lines[start:end]).strip()
+        if body:
+            sections[key] = body
+    return sections
+
+
 def run_profile_agent(
     root: Path,
     info: CodebaseInfo,
     resources: dict[str, list[str]],
     api_key: str = "",
-) -> tuple[str, int]:
-    """Profile Agent 실행. (final_text, tool_calls_count) 반환."""
+) -> tuple[str, dict[str, str], int]:
+    """Profile Agent 실행. (final_text, summary_sections, tool_calls_count) 반환.
+
+    summary_sections 는 Block 1/2/3 파싱 결과. 파싱 실패 시 빈 dict (폴백).
+    """
     llm = get_llm(api_key=api_key or settings.llm.api_key, model=settings.llm.model)
     tools = _build_tools(root)
 
@@ -259,11 +504,15 @@ def run_profile_agent(
         middleware=middleware,
     )
 
-    user_msg = _render_prompt(info, resources)
+    user_msg = _render_prompt(root, info, resources)
     logger.info("[PHASE:1:PROFILE] Agent 시작")
     result = agent.invoke({"messages": [{"role": "user", "content": user_msg}]})
 
     final_text = _extract_final_text(result)
+    sections = _split_sections(final_text)
     tool_calls = _count_tool_calls(result)
-    logger.info("[PHASE:1:PROFILE] Agent 완료 | tool_calls=%d", tool_calls)
-    return final_text, tool_calls
+    logger.info(
+        "[PHASE:1:PROFILE] Agent 완료 | tool_calls=%d sections=%d",
+        tool_calls, len(sections),
+    )
+    return final_text, sections, tool_calls
