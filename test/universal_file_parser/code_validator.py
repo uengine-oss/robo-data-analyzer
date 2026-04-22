@@ -77,27 +77,18 @@ def validate_parser_code(code: str) -> tuple[bool, str]:
                 if node.attr not in ('__name__', '__class__', '__dict__', '__init__'):
                     return False, f"forbidden_dunder: {node.attr}"
 
-    # parse + serialize 두 함수 모두 필수 (round-trip 용)
+    # parse 함수 존재 확인
     parse_func = None
-    serialize_func = None
     for n in ast.walk(tree):
-        if isinstance(n, ast.FunctionDef):
-            if n.name == 'parse':
-                parse_func = n
-            elif n.name == 'serialize':
-                serialize_func = n
+        if isinstance(n, ast.FunctionDef) and n.name == 'parse':
+            parse_func = n
+            break
 
     if parse_func is None:
         return False, "missing_parse_function"
-    if serialize_func is None:
-        return False, "missing_serialize_function: round-trip 검증을 위해 serialize() 도 필요"
 
-    # parse(raw: bytes) 시그니처 체크
+    # parse 시그니처 체크
     if len(parse_func.args.args) < 1:
         return False, "wrong_parse_signature: parse() needs at least 1 argument"
-
-    # serialize(data: ...) 시그니처 체크
-    if len(serialize_func.args.args) < 1:
-        return False, "wrong_serialize_signature: serialize() needs at least 1 argument"
 
     return True, "ok"

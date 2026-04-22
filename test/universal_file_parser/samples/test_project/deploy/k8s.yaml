@@ -1,0 +1,24 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mini-project
+  labels:
+    app: mini-project
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: mini-project
+  template:
+    metadata:
+      labels:
+        app: mini-project
+    spec:
+      containers:
+      - name: mini-project
+        image: mini-project:1.0.0
+        ports:
+        - containerPort: 8080
+        env:
+        - name: APP_ENV
+          value: production

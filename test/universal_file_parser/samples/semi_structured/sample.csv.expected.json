@@ -1,6 +1,0 @@
-[
-  {"order_id": "ORD-001", "customer_id": "CUST-100", "amount": "15000", "status": "PAID", "created_at": "2026-04-01"},
-  {"order_id": "ORD-002", "customer_id": "CUST-101", "amount": "42000", "status": "PENDING", "created_at": "2026-04-02"},
-  {"order_id": "ORD-003", "customer_id": "CUST-100", "amount": "7500", "status": "PAID", "created_at": "2026-04-03"},
-  {"order_id": "ORD-004", "customer_id": "CUST-102", "amount": "98000", "status": "CANCELLED", "created_at": "2026-04-04"}
-]

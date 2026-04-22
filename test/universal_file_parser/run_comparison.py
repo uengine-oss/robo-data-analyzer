@@ -16,19 +16,19 @@ import os
 import sys
 from pathlib import Path
 
-from .cache import init_cache, reset_cache
+from .log_setup import setup_logging
 from .naive_llm_parse import naive_llm_parse
-from .three_stage_parse import three_stage_parse
+from .parse import parse
 
 
 DEFAULT_SCAN_DIR = r"c:/uEngine/robo/테스트데이터"
 DEFAULT_FILE_LIMIT = 20
 
 # 데모에서 처리할 파일 후보. 라이브러리 지원/미지원 구분은
-# detect.py + stage1_library.LIBRARY_HANDLERS 가 런타임에 결정 (라우팅은 여기서 안 함).
-# 라이브러리가 지원하는 포맷만 요약:
-#   json, yaml/yml, xml, toml, ini, dotenv, csv, dockerfile, properties, gitignore
-# 그 외 (.md, .txt, .cfg, .dsl 등) 는 자동으로 stage2_codegen (LLM DeepAgent) 로 승격.
+# detect.py + library_parse.LIBRARY_FORMATS 가 런타임에 결정.
+# 라이브러리가 지원하는 포맷 요약:
+#   json, yaml/yml, xml, toml, ini, dotenv, csv, dockerfile, properties
+# 그 외 (.md, .txt, .cfg 등) 는 자동으로 DeepAgent 로 승격.
 TARGET_EXTENSIONS = {
     '.xml', '.yml', '.yaml', '.json', '.toml', '.ini',
     '.properties', '.cfg', '.csv',
@@ -104,6 +104,9 @@ def _count_leaves(obj) -> int:
 
 
 def main():
+    log_path = setup_logging()
+    print(f"로그: {log_path}")
+
     scan_dir = os.environ.get("UFP_SCAN_DIR", DEFAULT_SCAN_DIR)
     limit = int(os.environ.get("UFP_FILE_LIMIT", DEFAULT_FILE_LIMIT))
 
@@ -120,9 +123,6 @@ def main():
         size = os.path.getsize(f)
         print(f"  [{size:>8,} B] {f}")
     print()
-
-    reset_cache()
-    init_cache()
 
     summary = {"naive": [], "three_stage": []}
 
@@ -149,7 +149,7 @@ def main():
         # ✅ 좋은 방법
         print("\n[좋은 방법 — 라이브러리 (익숙한 포맷) / DeepAgent (미지 포맷)]")
         try:
-            good = three_stage_parse(path)
+            good = parse(path)
             print(f"  전략:    {good['strategy']}  (포맷: {good['format']})")
             print(f"  시간:    {good['elapsed_sec']}s  /  {good['tokens']:,} tokens")
             print(f"  검증:    ok={good['validation']['ok']}  reason={good['validation']['reason']}")

@@ -42,11 +42,11 @@ EXTENSION_MAP = {
     '.htm':      'xml',
     '.toml':     'toml',
     '.ini':      'ini',
-    '.cfg':      'ini_like',      # cfg 는 ini 비슷하지만 미지로 보내서 3단계로
+    '.cfg':      'ini',           # .cfg 는 대부분 INI 호환 — configparser 로 처리. 실패 시 자연히 DeepAgent 로 fallback.
     '.csv':      'csv',
     '.tsv':      'csv',
     '.env':      'dotenv',
-    '.properties': 'properties',
+    '.properties': 'unknown',   # Java properties — 표준 Python 라이브러리 없음 → DeepAgent
     '.dsl':      'unknown',
     '.dat':      'unknown',
     '.log':      'unknown',
@@ -128,8 +128,7 @@ def _heuristic_guess(text: str) -> str:
     # INI (section headers)
     lines = [l.strip() for l in text.split('\n') if l.strip() and not l.strip().startswith((';', '#'))]
     if lines and any(l.startswith('[') and l.endswith(']') for l in lines[:5]):
-        # ini_like → 미지로 보내서 LLM 이 처리 (ini 구조 유사 but 세부 다를 수 있음)
-        return 'ini_like'
+        return 'ini'
 
     return 'unknown'
 
@@ -143,7 +142,7 @@ def detect(path: str, data: bytes) -> tuple[str, str]:
         format_name:
           'json' | 'yaml' | 'xml' | 'toml' | 'ini' | 'dotenv' | 'csv' |
           'dockerfile' | 'properties' | 'gitignore' | 'makefile' |
-          'shebang' | 'ini_like' | 'binary' | 'unknown'
+          'shebang' | 'binary' | 'unknown'
     """
     encoding = detect_encoding(data)
 
