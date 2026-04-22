@@ -27,12 +27,6 @@ from util.code_text_utils import (
 logger = logging.getLogger(__name__)
 
 
-VALID_STEREOTYPES = frozenset({
-    "Endpoint", "Query", "Command", "Getter", "Setter",
-    "Lifecycle", "Scheduled", "EventHandler", "Init",
-    "Transactional", "Validation",
-})
-
 VALID_MODULE_STEREOTYPES = frozenset({
     "Controller", "Service", "Repository", "Entity", "DTO",
     "Config", "Component", "Aspect", "Filter", "Listener",
@@ -431,8 +425,9 @@ def _analyze_code_node(
             rules = list(analysis.get("rules") or [])
             examples = list(analysis.get("examples") or [])
             questions = list(analysis.get("questions") or [])
+            from analyzer.strategy.framework.common.ontology import get_ontology
             raw_stereotype = (analysis.get("stereotype") or "").strip()
-            if raw_stereotype in VALID_STEREOTYPES:
+            if get_ontology().is_valid_stereotype(raw_stereotype, lang):
                 stereotype = raw_stereotype
 
     # LLM 이 stereotype 을 못 정하면 테이블 접근 기반 fallback

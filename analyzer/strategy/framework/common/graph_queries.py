@@ -959,7 +959,6 @@ def build_analysis_result_queries(
       (a) 함수별 데이터를 수집해 rows/edges 로 평탄화
       (b) UNWIND Cypher 쿼리로 조립
     """
-    from analyzer.strategy.framework.analysis.ast_analyzer import VALID_STEREOTYPES
     from analyzer.strategy.framework.common.ontology import get_ontology
     valid_for_lang = get_ontology().valid_stereotypes(lang)
 
@@ -978,7 +977,7 @@ def build_analysis_result_queries(
     for fid, data in analysis_by_function.items():
         # FUNCTION 속성
         stereotype = (data.get("stereotype") or "").strip()
-        if stereotype not in VALID_STEREOTYPES:
+        if stereotype not in valid_for_lang:
             stereotype = ""
         function_rows.append({
             "function_id": fid,
@@ -986,7 +985,7 @@ def build_analysis_result_queries(
             "summary": (data.get("summary") or "").strip(),
             "actor": (data.get("actor") or "").strip() or None,
         })
-        if stereotype and stereotype in valid_for_lang:
+        if stereotype:
             stereotype_groups.setdefault(stereotype, []).append(fid)
 
         # Rule 수집 (같은 함수 내 rule_id 로 Example·flow 를 다시 참조)
