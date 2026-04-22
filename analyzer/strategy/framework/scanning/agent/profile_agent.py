@@ -1,9 +1,10 @@
 """Profile Agent — 프레임워크/DB 접근 패턴 요약 생성.
 
-도구 3 개 (grep / read_file / read_function) 만 사용.
+파일 탐색 도구 (grep / read_file / read_function / glob_search / ls) +
+스킬 로더 도구 (list_skills / read_skill) 제공.
 리소스 파일 분류는 scanner 가 이미 끝냈으므로 여기서는 자연어 요약만 담당한다.
 
-create_agent + 최소 미들웨어 사용 (FilesystemMiddleware 제거 → 내장 도구 비활성화).
+build_common_middleware 로 scanning/linking 공용 미들웨어 세트 사용.
 """
 
 from __future__ import annotations
@@ -14,19 +15,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-import yaml
 from langchain.agents import create_agent
-from langchain.agents.middleware import (
-    ContextEditingMiddleware,
-    ClearToolUsesEdit,
-    ModelCallLimitMiddleware,
-    SummarizationMiddleware,
-    TodoListMiddleware,
-    ToolCallLimitMiddleware,
-)
 from langchain_core.tools import tool
-
-from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 
 from client.llm_client import get_llm
 from config.settings import settings
@@ -34,22 +24,17 @@ from config.settings import settings
 from analyzer.strategy.framework.common.analysis_constants import SKIP_DIRS
 from analyzer.strategy.framework.scanning.profile_models import CodebaseInfo
 from analyzer.strategy.framework.scanning.tree_sitter_tools import extract_function_body
+from analyzer.strategy.framework.linking.agent.agent_setup import (
+    build_common_middleware,
+    load_system_prompt,
+    load_user_template,
+    make_skill_tools,
+)
 
 logger = logging.getLogger(__name__)
 
-# 프롬프트는 프로젝트 최상위 rules/ 아래에서 로드 (다른 Deep Agent 프롬프트들과 같은 위치)
-_RULES_PATH = (
-    Path(__file__).resolve().parents[5]
-    / "rules" / "deep_agent" / "profile.yaml"
-)
-
-
-def _load_rules() -> tuple[str, str]:
-    data = yaml.safe_load(_RULES_PATH.read_text(encoding="utf-8"))
-    return data["system_prompt"], data["user_template"]
-
-
-SYSTEM_PROMPT, _USER_TEMPLATE = _load_rules()
+SYSTEM_PROMPT = load_system_prompt("scanning")
+_USER_TEMPLATE = load_user_template("scanning")
 
 
 def _build_tools(root: Path):
@@ -482,26 +467,17 @@ def run_profile_agent(
 ) -> tuple[str, dict[str, str], int]:
     """Profile Agent 실행. (final_text, summary_sections, tool_calls_count) 반환.
 
-    summary_sections 는 Block 1/2/3 파싱 결과. 파싱 실패 시 빈 dict (폴백).
+    summary_sections 키: 'framework' / 'data_access' (현 2블록 포맷) +
+    구 포맷(Block 1/2/3 → framework/data_access/idioms) 하위호환. 파싱 실패 시 빈 dict.
     """
     llm = get_llm(api_key=api_key or settings.llm.api_key, model=settings.llm.model)
-    tools = _build_tools(root)
+    tools = _build_tools(root) + make_skill_tools("scanning")
 
-    middleware = [
-        TodoListMiddleware(),
-        ContextEditingMiddleware(edits=[
-            ClearToolUsesEdit(trigger=70_000, keep=3),
-        ]),
-        SummarizationMiddleware(model=llm, trigger=("tokens", 85_000)),
-        # ToolCallLimitMiddleware(run_limit=50),  # 제한 해제
-        # ModelCallLimitMiddleware(run_limit=25, thread_limit=200),  # 제한 해제
-        PatchToolCallsMiddleware(),
-    ]
     agent = create_agent(
         model=llm,
         tools=tools,
         system_prompt=SYSTEM_PROMPT,
-        middleware=middleware,
+        middleware=build_common_middleware(llm),
     )
 
     user_msg = _render_prompt(root, info, resources)

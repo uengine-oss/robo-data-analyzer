@@ -87,3 +87,5 @@ def _strip_prefix(path: str) -> str:
     if p.startswith("source/"):
         return p[len("source/"):]
     return p
+
+

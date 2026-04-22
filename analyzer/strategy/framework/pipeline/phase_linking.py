@@ -795,8 +795,10 @@ async def _run_deep_agent_parallel(ctx: _LinkingContext) -> AsyncGenerator[bytes
             "chunk_index": st.chunk_index,
             "ddl_table_metadata": ddl_meta or None,
         }
+        profile_summary = st.codebase_profile.summary if st.codebase_profile else ""
         for item_refer, item_mt, item_fk in run_deep_agent(
             ctx.unresolved, deep_state, api_key=settings.llm.api_key, run_dir=run_dir_path,
+            profile_summary=profile_summary,
         ):
             result_queue.put_nowait(("da_item", item_refer, item_mt, item_fk))
         result_queue.put_nowait(("da_state", deep_state))

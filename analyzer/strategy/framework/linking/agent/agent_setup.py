@@ -1,8 +1,8 @@
-"""Agent 인프라 — 초기화 + Skill 로더 + 도구 팩토리.
+"""Agent 인프라 — 초기화 + Prompt/Skill 로더 + 도구 팩토리.
 
 Section 1: Agent environment initialization (LLM, ChunkBundle, agent factory)
-Section 2: Skill loading (SKILL.md discovery, match, prompt build)
-Section 3: Tool factory (LangChain @tool 도구 생성, Skill별 조합)
+Section 2: Prompt / Skill loading (prompts/{agent}/*.md, skills/{scope}/*/SKILL.md)
+Section 3: Tool factory (LangChain @tool 도구 생성)
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import logging
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 from config.settings import settings
 from analyzer.strategy.framework.common.node_models import (
@@ -33,17 +33,8 @@ logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-# ---------------------------------------------------------------------------
-# ChunkBundle 인덱스 보장
-# ---------------------------------------------------------------------------
-
-
 def _ensure_bundle_indexes(state: Dict[str, Any]) -> None:
-    """state에 span_index / chunk_index가 없으면 ChunkBundle로부터 빌드한다.
-
-    이미 존재하면 아무것도 하지 않는다.
-    빌드 결과는 state에 직접 저장하여 이후 호출에서 재사용한다.
-    """
+    """state에 span_index / chunk_index가 없으면 ChunkBundle로부터 빌드한다."""
     if state.get("span_index") and state.get("chunk_index"):
         return
 
@@ -69,37 +60,21 @@ def _ensure_bundle_indexes(state: Dict[str, Any]) -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# DeepAgent 환경 초기화
-# ---------------------------------------------------------------------------
+def build_common_middleware(model: Any) -> list:
+    """scanning/linking 공용 미들웨어 세트.
 
-
-def _build_agent_factory(model: Any) -> Callable:
-    """create_agent + 최소 미들웨어를 바인딩한 에이전트 팩토리를 반환한다.
-
-    FilesystemMiddleware 제거 → 내장 도구(write_file/edit_file/execute 등) 비활성화.
-    MemoryMiddleware / AnthropicPromptCachingMiddleware 제거 (불필요).
-
-    미들웨어 (순서: 가벼운 방어 → 무거운 작업 → 최종 상한):
-      1. TodoListMiddleware: 계획 관리
-      2. ContextEditingMiddleware + ClearToolUsesEdit: 오래된 tool 결과 pruning (70K trigger)
-      3. SummarizationMiddleware: context overflow 안전망 (85K trigger)
-      4. ToolCallLimitMiddleware: run당 총 tool 호출 상한
-      5. ModelCallLimitMiddleware: LLM 호출 상한 (무한루프·비용 방어)
-      6. PatchToolCallsMiddleware: tool call 보정
+    Progressive Disclosure 기반 설계: 시스템 프롬프트는 공통 지침만 담고,
+    상황별 지침은 `read_skill` tool 결과로 로드된다.
     """
-    from langchain.agents import create_agent
     from langchain.agents.middleware import (
         ContextEditingMiddleware,
         ClearToolUsesEdit,
-        ModelCallLimitMiddleware,
         SummarizationMiddleware,
         TodoListMiddleware,
-        ToolCallLimitMiddleware,
     )
     from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 
-    middleware = [
+    return [
         TodoListMiddleware(),
         ContextEditingMiddleware(edits=[
             ClearToolUsesEdit(trigger=70_000, keep=3),
@@ -107,6 +82,13 @@ def _build_agent_factory(model: Any) -> Callable:
         SummarizationMiddleware(model=model, trigger=("tokens", 85_000)),
         PatchToolCallsMiddleware(),
     ]
+
+
+def _build_agent_factory(model: Any) -> Callable:
+    """create_agent + 공용 미들웨어를 바인딩한 에이전트 팩토리."""
+    from langchain.agents import create_agent
+
+    middleware = build_common_middleware(model)
 
     def factory(*, tools: list, system_prompt: str, **kwargs: Any) -> Any:
         return create_agent(
@@ -127,17 +109,6 @@ def _init_agent_env(
 ) -> Tuple[Callable, Any]:
     """Agent 실행 환경을 초기화한다.
 
-    수행 작업:
-      1. run_dir을 state에 설정
-      2. ChunkBundle 인덱스 보장
-      3. LLM 모델 인스턴스 생성
-      4. create_agent 기반 팩토리 구성 (최소 미들웨어)
-
-    Args:
-        state: pipeline state. span_index/chunk_index가 없으면 자동 빌드.
-        api_key: LLM API 키 (없으면 기본값 사용).
-        run_dir: 실행 디렉토리.
-
     Returns:
         (agent_factory, model) — 에이전트 생성 팩토리와 LLM 모델.
     """
@@ -153,58 +124,34 @@ def _init_agent_env(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Section 2: Skill loading
+# Section 2: Prompt / Skill loading
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-# ---------------------------------------------------------------------------
-# 상수
-# ---------------------------------------------------------------------------
+# 프로젝트 루트 기준 rules/deep_agent 경로
+_BASE = Path(__file__).resolve().parents[5] / "rules" / "deep_agent"
+_PROMPTS_DIR = _BASE / "prompts"
+_SKILLS_DIR = _BASE / "skills"
 
-# Skill 디렉토리 기본 경로 (프로젝트 루트 기준)
-_SKILLS_DIR = Path(__file__).resolve().parents[5] / "rules" / "deep_agent" / "skills"
-
-# 입력 카테고리 → Skill 이름 매핑
-# 모든 카테고리는 명시적으로 매핑되어야 한다. 미매칭 시 KeyError로 fail-fast.
-_CATEGORY_TO_SKILL: Dict[str, str] = {
-    # 엔티티 관련 (DDL 없을 때)
-    "entity": "entity-analysis",
-    "bean": "entity-analysis",
-    "cmp_mapping": "entity-analysis",
-    "artifact": "entity-analysis",  # XML/YAML 일반 아티팩트는 엔티티 정의일 가능성
-    # SQL 관련
-    "sql": "sql-tracking",
-    # 설정 관련
-    "config": "config-tracking",
-    # DDL 테이블 추적 (별도 호출)
-    "ddl_tables": "table-tracking",
-}
-
-
-# ---------------------------------------------------------------------------
-# 데이터 모델
-# ---------------------------------------------------------------------------
+AgentScope = Literal["scanning", "linking"]
 
 
 @dataclass(frozen=True)
 class SkillInfo:
-    """SKILL.md에서 로드된 Skill 정보."""
+    """SKILL.md에서 로드된 Skill 정보.
+
+    Progressive Disclosure 기반: LLM이 필요 시 `read_skill(name)` 으로 body를 로드한다.
+    """
     name: str
     description: str
-    allowed_tools: List[str]
     body: str  # 마크다운 본문 (프론트매터 제외)
-
-
-# ---------------------------------------------------------------------------
-# 로더
-# ---------------------------------------------------------------------------
 
 
 def _parse_skill_md(path: Path) -> Optional[SkillInfo]:
     """SKILL.md 파일을 파싱하여 SkillInfo로 반환한다.
 
-    YAML 프론트매터(--- ... ---) + 마크다운 본문 구조를 파싱.
-    프론트매터가 없으면 None 반환.
+    YAML 프론트매터(--- ... ---) + 마크다운 본문 구조.
+    프론트매터에서 `name` · `description` 두 필드만 사용.
     """
     try:
         text = path.read_text(encoding="utf-8")
@@ -212,7 +159,6 @@ def _parse_skill_md(path: Path) -> Optional[SkillInfo]:
         logger.warning("[SKILL] 파일 읽기 실패 | path=%s error=%s", path, e)
         return None
 
-    # YAML 프론트매터 파싱 (--- ... --- 구간)
     if not text.startswith("---"):
         logger.warning("[SKILL] 프론트매터 없음 | path=%s", path)
         return None
@@ -225,7 +171,7 @@ def _parse_skill_md(path: Path) -> Optional[SkillInfo]:
     frontmatter_text = parts[1].strip()
     body = parts[2].strip()
 
-    # 간단한 YAML 파싱 (외부 의존성 없이)
+    # 간단한 YAML 파싱 (name, description 만 수집)
     fm: Dict[str, str] = {}
     current_key = ""
     current_value_lines: List[str] = []
@@ -235,44 +181,30 @@ def _parse_skill_md(path: Path) -> Optional[SkillInfo]:
         if not stripped:
             continue
         if ":" in stripped and not stripped.startswith("-") and not stripped.startswith(" "):
-            # 이전 키 저장
             if current_key:
                 fm[current_key] = " ".join(current_value_lines).strip()
             key, _, val = stripped.partition(":")
             current_key = key.strip()
             val = val.strip()
-            # YAML > 표시자 제거
             if val == ">":
                 val = ""
             current_value_lines = [val] if val else []
         else:
-            # 멀티라인 값 이어가기
             current_value_lines.append(stripped)
     if current_key:
         fm[current_key] = " ".join(current_value_lines).strip()
 
     name = fm.get("name", path.parent.name)
     description = fm.get("description", "")
-    allowed_tools_str = fm.get("allowed-tools", "")
-    allowed_tools = [t.strip() for t in allowed_tools_str.split(",") if t.strip()]
 
-    return SkillInfo(
-        name=name,
-        description=description,
-        allowed_tools=allowed_tools,
-        body=body,
-    )
+    return SkillInfo(name=name, description=description, body=body)
 
 
-def load_all_skills(skills_dir: Optional[Path] = None) -> Dict[str, SkillInfo]:
-    """skills 디렉토리에서 모든 SKILL.md를 로드하여 {name: SkillInfo} 딕셔너리로 반환한다."""
-    base = skills_dir or _SKILLS_DIR
+def _load_skills_from_dir(base: Path) -> Dict[str, SkillInfo]:
+    """지정 디렉토리 아래의 모든 SKILL.md 를 로드."""
     skills: Dict[str, SkillInfo] = {}
-
     if not base.exists():
-        logger.warning("[SKILL] skills 디렉토리 없음 | path=%s", base)
         return skills
-
     for skill_dir in sorted(base.iterdir()):
         if not skill_dir.is_dir():
             continue
@@ -282,61 +214,108 @@ def load_all_skills(skills_dir: Optional[Path] = None) -> Dict[str, SkillInfo]:
         info = _parse_skill_md(skill_md)
         if info:
             skills[info.name] = info
-            logger.debug("[SKILL] 로드 완료 | name=%s tools=%s", info.name, info.allowed_tools)
-
-    logger.info("[SKILL] 전체 로드 완료 | skills=%d (%s)", len(skills), list(skills.keys()))
     return skills
 
 
-# ---------------------------------------------------------------------------
-# Skill 선택
-# ---------------------------------------------------------------------------
+_SKILL_CACHE: Dict[str, Dict[str, SkillInfo]] = {}
 
 
-def select_skill_for_category(category: str, skills: Dict[str, SkillInfo]) -> SkillInfo:
-    """입력 카테고리에 맞는 Skill을 선택한다.
+def load_skills_for_agent(agent: AgentScope) -> Dict[str, SkillInfo]:
+    """지정 에이전트가 접근 가능한 스킬만 로드한다 (자기 전용 + shared).
 
-    Args:
-        category: UnresolvedLink의 카테고리 (entity, sql, config 등).
-        skills: load_all_skills()로 로드된 Skill 딕셔너리.
+    - scanning → skills/scanning/* + skills/shared/*
+    - linking  → skills/linking/*  + skills/shared/*
 
-    Returns:
-        매칭된 SkillInfo.
-
-    Raises:
-        KeyError: 카테고리가 _CATEGORY_TO_SKILL에 없을 때.
-        RuntimeError: 매핑된 Skill이 skills 딕셔너리에 없을 때.
+    동일 프로세스 내 중복 로드는 모듈-레벨 캐시로 회피.
     """
-    if category not in _CATEGORY_TO_SKILL:
-        raise KeyError(
-            f"미매핑 카테고리: '{category}'. "
-            f"agent_setup.py의 _CATEGORY_TO_SKILL에 명시적으로 추가하세요."
-        )
-    skill_name = _CATEGORY_TO_SKILL[category]
-    skill = skills.get(skill_name)
-    if not skill:
-        raise RuntimeError(
-            f"SKILL '{skill_name}' 미존재 (category='{category}'). "
-            f"rules/deep_agent/skills/{skill_name}/SKILL.md 파일을 확인하세요."
-        )
-    return skill
+    if agent in _SKILL_CACHE:
+        return _SKILL_CACHE[agent]
 
+    agent_dir = _SKILLS_DIR / agent
+    shared_dir = _SKILLS_DIR / "shared"
 
-def build_system_prompt_with_skill(skill: SkillInfo) -> str:
-    """Skill 본문을 시스템 프롬프트로 변환한다.
+    skills = _load_skills_from_dir(agent_dir)
+    for name, info in _load_skills_from_dir(shared_dir).items():
+        skills.setdefault(name, info)  # agent 전용이 shared 보다 우선
 
-    공통 절대 규칙 + Skill 본문을 결합하여 최종 시스템 프롬프트를 구성한다.
-    """
-    common_rules = (
-        "당신은 소스코드 분석 전문가 에이전트입니다.\n\n"
-        "[절대 규칙]\n"
-        "- 오직 제공된 도구만 사용하십시오.\n"
-        "- 확신이 없으면 관계를 생성하지 마십시오.\n"
-        "- 하나를 찾았다고 멈추지 말고 모든 사용처를 빠짐없이 찾으십시오.\n"
-        "- 검색 결과가 0건이면 검색어를 바꿔 최소 2~3회 재시도하십시오.\n"
-        "- source_function_id는 반드시 bundle_search에서 발견한 실제 함수의 chunk_id를 사용하십시오.\n\n"
+    logger.info(
+        "[SKILL:%s] scope 로드 완료 | skills=%d (%s)",
+        agent, len(skills), list(skills.keys()),
     )
-    return common_rules + skill.body
+    _SKILL_CACHE[agent] = skills
+    return skills
+
+
+def load_system_prompt(agent: AgentScope) -> str:
+    """prompts/{agent}/system.md 본문을 반환.
+
+    프론트매터가 있으면 제거하고 본문만 반환.
+    """
+    path = _PROMPTS_DIR / agent / "system.md"
+    text = path.read_text(encoding="utf-8")
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) >= 3:
+            return parts[2].strip()
+    return text.strip()
+
+
+def load_user_template(agent: AgentScope) -> str:
+    """prompts/{agent}/user_template.md 본문을 반환."""
+    path = _PROMPTS_DIR / agent / "user_template.md"
+    text = path.read_text(encoding="utf-8")
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) >= 3:
+            return parts[2].strip()
+    return text.strip()
+
+
+def make_skill_tools(agent: AgentScope) -> list:
+    """list_skills() / read_skill(name) 두 도구를 반환한다.
+
+    Progressive Disclosure 패턴:
+      - list_skills: 스킬 메타데이터(name, description) 목록 JSON.
+      - read_skill:  지정 스킬의 본문을 반환.
+
+    지정 에이전트 스코프에 해당하는 스킬만 노출 (교차 격리).
+    각 호출마다 에이전트의 스킬 선택 내역을 INFO 로그로 남겨 추적 가능.
+    """
+    from langchain_core.tools import tool as lc_tool
+
+    @lc_tool
+    def list_skills() -> str:
+        """사용 가능한 스킬 목록(JSON) 을 반환. 각 항목 = {name, description}.
+
+        작업 중 특정 패턴/프레임워크 지식이 필요하다고 판단되면 먼저 이 도구로 후보를 확인한 뒤
+        `read_skill(name)` 으로 본문을 로드하세요.
+        """
+        skills = load_skills_for_agent(agent)
+        entries = [
+            {"name": s.name, "description": s.description}
+            for s in skills.values()
+        ]
+        logger.info(
+            "[SKILL:%s] list_skills 호출 | 후보=%s",
+            agent, [s["name"] for s in entries],
+        )
+        return json.dumps(entries, ensure_ascii=False)
+
+    @lc_tool
+    def read_skill(name: str) -> str:
+        """지정 스킬의 본문(마크다운) 을 로드한다. 이름은 list_skills 의 결과에서 고르세요."""
+        skills = load_skills_for_agent(agent)
+        skill = skills.get(name)
+        if not skill:
+            logger.warning("[SKILL:%s] read_skill 실패 | name=%s (미존재)", agent, name)
+            return f"SKILL_NOT_FOUND: '{name}'"
+        logger.info(
+            "[SKILL:%s] read_skill 채택 | name=%s body_chars=%d",
+            agent, name, len(skill.body),
+        )
+        return skill.body
+
+    return [list_skills, read_skill]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -344,18 +323,14 @@ def build_system_prompt_with_skill(skill: SkillInfo) -> str:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ---------------------------------------------------------------------------
 # 3-1. 결과 수집기 (Collector)
-# ═══════════════════════════════════════════════════════════════════════════
+# ---------------------------------------------------------------------------
 
 
 @dataclass
 class ToolResultCollector:
-    """도구 호출 결과를 스레드-세이프하게 수집한다.
-
-    각 도구는 이 collector에 결과를 추가하고, phase_linking에서
-    배치 단위로 꺼내어 Neo4j에 반영한다.
-    """
+    """도구 호출 결과를 스레드-세이프하게 수집한다."""
     refer_to: List[ReferToEdge] = field(default_factory=list)
     table_access: List[FunctionTableEdge] = field(default_factory=list)
     fk: List[FkEdge] = field(default_factory=list)
@@ -363,10 +338,6 @@ class ToolResultCollector:
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def snapshot_and_clear(self) -> Dict[str, list]:
-        """현재까지 수집된 결과를 반환하고 내부 리스트를 비운다.
-
-        Neo4j 즉시 반영 시 호출: 결과를 꺼내고 → Neo4j에 쓰고 → 다음 배치.
-        """
         with self.lock:
             result = {
                 "refer_to": list(self.refer_to),
@@ -382,17 +353,15 @@ class ToolResultCollector:
 
     @property
     def total_count(self) -> int:
-        """수집된 전체 엣지 수."""
         return len(self.refer_to) + len(self.table_access) + len(self.fk) + len(self.columns)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ---------------------------------------------------------------------------
 # 3-2. 인덱스 조회 헬퍼 (순수 함수)
-# ═══════════════════════════════════════════════════════════════════════════
+# ---------------------------------------------------------------------------
 
 
 def sql_lookup(sql_key: str, sql_index: Dict[str, SqlStatementChunk]) -> Optional[Dict[str, Any]]:
-    """sql_key로 SQL 문장을 조회한다."""
     stmt = sql_index.get(sql_key)
     if not stmt:
         return None
@@ -407,7 +376,6 @@ def sql_lookup(sql_key: str, sql_index: Dict[str, SqlStatementChunk]) -> Optiona
 
 
 def config_lookup(config_key: str, config_index: Dict[str, ConfigSectionChunk]) -> Optional[Dict[str, Any]]:
-    """config_key로 설정 엔트리를 조회한다."""
     cfg = config_index.get(config_key)
     if not cfg:
         return None
@@ -421,7 +389,6 @@ def config_lookup(config_key: str, config_index: Dict[str, ConfigSectionChunk]) 
 
 
 def build_artifact_lookup_index(artifact_index: Dict[str, ArtifactChunk]) -> Dict[str, str]:
-    """hint_key 또는 chunk_id로 ArtifactChunk를 찾기 위한 역인덱스를 생성한다."""
     idx: Dict[str, str] = {}
     for cid, ac in (artifact_index or {}).items():
         cid_norm = (cid or "").strip()
@@ -434,9 +401,9 @@ def build_artifact_lookup_index(artifact_index: Dict[str, ArtifactChunk]) -> Dic
     return idx
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ---------------------------------------------------------------------------
 # 3-3. 도구 팩토리 (메인 진입점)
-# ═══════════════════════════════════════════════════════════════════════════
+# ---------------------------------------------------------------------------
 
 
 def build_tools(
@@ -444,25 +411,12 @@ def build_tools(
     collector: ToolResultCollector,
     function_id: str = "",
     variable_id: Optional[str] = None,
-    skill_name: str = "",
     batch_startpoint_tables: Optional[set] = None,
 ) -> List[Any]:
-    """Skill에 맞는 LangChain 호환 도구 목록을 생성한다.
+    """linking 에이전트용 도구 전체 세트를 반환한다.
 
-    Args:
-        state: pipeline state (인덱스, DDL 메타 등 포함).
-        collector: 도구 결과 수집기 (스레드-세이프).
-        function_id: 기본 소스 함수 ID (미매칭 키 추적 시 사용).
-        variable_id: 기본 소스 변수 ID (변수 기반 참조 시 사용).
-        skill_name: 활성화할 Skill 이름. 이에 따라 노출할 도구가 결정됨.
-            - "entity-analysis": 코드 검색 + table_access + fk
-            - "table-tracking":  코드 검색 + table_access + fk + DDL 조회
-            - "sql-tracking":    SQL 조회 + 코드 검색 + refer_to + table_access + fk
-            - "config-tracking": Config 조회 + 코드 검색 + refer_to
-            - "" (빈 문자열): 모든 도구 (폴백)
-
-    Returns:
-        LangChain @tool 데코레이터가 적용된 도구 함수 리스트.
+    모든 링킹 에이전트는 동일 도구 세트를 사용. 상황에 맞는 도구 선택은
+    SKILL.md 본문의 지침에 따라 LLM 이 판단한다.
     """
     from langchain_core.tools import tool as lc_tool
     from analyzer.strategy.framework.linking.table_linker import sql_op_to_method_relation
@@ -470,7 +424,6 @@ def build_tools(
     default_confidence = settings.deep_agent.default_confidence
     lock = collector.lock
 
-    # ── state에서 인덱스 참조 ──
     sql_index: Dict[str, SqlStatementChunk] = state.get("sql_index") or {}
     config_index: Dict[str, ConfigSectionChunk] = state.get("config_index") or {}
     artifact_index: Dict[str, ArtifactChunk] = state.get("artifact_index") or {}
@@ -480,7 +433,7 @@ def build_tools(
     chunk_index = state.get("chunk_index") or {}
     data_dir = state.get("data_dir") or ""
 
-    # ── 기존 FK 세트 (중복 생성 방지) ──
+    # 기존 FK 세트 (중복 생성 방지)
     existing_fk_set: set = set()
     for (_s, _n), info in ddl_meta.items():
         for fk in (info.get("foreign_keys") or info.get("foreignKeys") or []):
@@ -494,17 +447,12 @@ def build_tools(
         bundle_get_chunk as _bundle_get_chunk,
     )
 
-    # ── 유틸: filePath → moduleName 추출 ──
     def _enrich_with_modulename(result: Dict[str, Any]) -> Dict[str, Any]:
         fp = result.get("filePath", "")
         if fp:
             fname = fp.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
             result["moduleName"] = fname.rsplit(".", 1)[0] if "." in fname else fname
         return result
-
-    # ─────────────────────────────────────────────────────────────
-    # 도구 정의 (각 도구는 @lc_tool 데코레이터 적용)
-    # ─────────────────────────────────────────────────────────────
 
     # ── 인덱스 조회 도구 ──
 
@@ -639,20 +587,16 @@ def build_tools(
         evidence: str = "", from_schema: str = "", to_schema: str = "",
     ) -> str:
         """FK 관계를 등록한다. from_table=FK쪽(자식), to_table=PK쪽(부모)."""
-        # 자기 참조 방지
         if from_table.upper() == to_table.upper():
             return "error: self-referencing FK not allowed"
-        # 배치별 방향 필터: from_table이 이 배치의 startpoint여야 함
         if batch_startpoint_tables:
             if from_table.upper() not in {t.upper() for t in batch_startpoint_tables}:
                 return "skipped: from_table not in this batch's startpoints"
-        # DDL 테이블 목록 기반 검증
         if ddl_meta:
             known_tables = {n.upper() for (_, n) in ddl_meta.keys()}
             for tbl in (from_table, to_table):
                 if tbl.upper() not in known_tables:
                     return f"error: '{tbl}' not found in DDL table list"
-        # 중복 검사
         ref_key = f"{to_table}.{to_column}".upper()
         check_key = (from_table.upper(), from_column.upper(), ref_key)
         if check_key in existing_fk_set:
@@ -693,93 +637,10 @@ def build_tools(
                 return json.dumps({"schema": s, "name": n, "primary_keys": pks, "columns": col_names}, ensure_ascii=False)
         return f"table '{table_name}' not found"
 
-    # ─────────────────────────────────────────────────────────────
-    # Skill별 도구 조합
-    # ─────────────────────────────────────────────────────────────
-
-    return _assemble_tools_for_skill(
-        skill_name=skill_name,
-        has_ddl=bool(ddl_meta),
-        tools_map={
-            # 인덱스 조회
-            "sql_lookup": sql_lookup_tool,
-            "config_lookup": config_lookup_tool,
-            "artifact_lookup": artifact_lookup_tool,
-            # 코드 검색
-            "bundle_search": bundle_search_tool,
-            "bundle_get_chunk": bundle_get_chunk_tool,
-            # 관계 등록
-            "refer_to": graph_create_refer_to_tool,
-            "table_access": graph_create_table_access_tool,
-            "column": graph_create_column_tool,
-            "fk": graph_create_fk_tool,
-            # DDL 조회
-            "table_search": table_search_tool,
-            "table_columns": table_columns_tool,
-        },
-    )
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# 3-4. Skill별 도구 조합 로직
-# ═══════════════════════════════════════════════════════════════════════════
-
-# Skill별 필요한 도구 키 목록
-_SKILL_TOOL_SETS: Dict[str, List[str]] = {
-    "entity-analysis": [
-        "bundle_search", "bundle_get_chunk",
-        "table_access", "column", "fk",
-        # DDL 도구는 has_ddl 시 자동 추가
-    ],
-    "table-tracking": [
-        "bundle_search", "bundle_get_chunk",
-        "table_access", "column", "fk",
-        "table_search", "table_columns",
-    ],
-    "sql-tracking": [
-        "sql_lookup", "artifact_lookup",
-        "bundle_search", "bundle_get_chunk",
-        "refer_to", "table_access", "column", "fk",
-        # DDL 도구는 has_ddl 시 자동 추가
-    ],
-    "config-tracking": [
-        "config_lookup",
-        "bundle_search", "bundle_get_chunk",
-        "refer_to",
-    ],
-}
-
-# DDL 조회 도구 키
-_DDL_TOOL_KEYS = ["table_search", "table_columns"]
-
-
-def _assemble_tools_for_skill(
-    skill_name: str,
-    has_ddl: bool,
-    tools_map: Dict[str, Any],
-) -> List[Any]:
-    """Skill 이름에 맞는 도구 목록을 조합한다.
-
-    Args:
-        skill_name: 활성화된 Skill 이름.
-        has_ddl: DDL 메타데이터 존재 여부.
-        tools_map: 도구 키 → @tool 함수 매핑.
-
-    Returns:
-        해당 Skill에 필요한 도구 함수 리스트.
-    """
-    # Skill 이름으로 필요 도구 키 목록 조회
-    tool_keys = _SKILL_TOOL_SETS.get(skill_name)
-
-    if tool_keys is None:
-        # 미등록 Skill 또는 빈 문자열 → 전체 도구 (폴백)
-        tool_keys = list(tools_map.keys())
-
-    # DDL 도구 자동 추가 (DDL 있고 + 아직 포함 안 된 경우)
-    if has_ddl:
-        for key in _DDL_TOOL_KEYS:
-            if key not in tool_keys:
-                tool_keys.append(key)
-
-    # 키 → 도구 함수 변환 (존재하는 것만)
-    return [tools_map[k] for k in tool_keys if k in tools_map]
+    return [
+        sql_lookup_tool, config_lookup_tool, artifact_lookup_tool,
+        bundle_search_tool, bundle_get_chunk_tool,
+        graph_create_refer_to_tool, graph_create_table_access_tool,
+        graph_create_column_tool, graph_create_fk_tool,
+        table_search_tool, table_columns_tool,
+    ]

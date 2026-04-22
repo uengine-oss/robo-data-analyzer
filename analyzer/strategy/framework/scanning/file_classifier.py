@@ -25,6 +25,15 @@ from analyzer.strategy.framework.common.node_models import (
 
 logger = logging.getLogger(__name__)
 
+# category → ProcessingPlan 속성명 매핑 (라우팅 테이블)
+_CATEGORY_JOB_ATTR = {
+    CATEGORY_SOURCE_AST: "source_ast_jobs",
+    CATEGORY_SQL: "sql_jobs",
+    CATEGORY_ENTITY: "entity_jobs",
+    CATEGORY_CONFIG: "config_jobs",
+    CATEGORY_DOCS: "docs_jobs",
+}
+
 
 def _detect_encoding_bom(path: Path) -> Optional[str]:
     try:
@@ -124,18 +133,8 @@ def _process_one_file(
             hash_val=_file_hash(path),
         )
         catalog.append(entry)
-        if category == CATEGORY_SOURCE_AST:
-            plan.source_ast_jobs.append(path_str)
-        elif category == CATEGORY_SQL:
-            plan.sql_jobs.append(path_str)
-        elif category == CATEGORY_ENTITY:
-            plan.entity_jobs.append(path_str)
-        elif category == CATEGORY_CONFIG:
-            plan.config_jobs.append(path_str)
-        elif category == CATEGORY_DOCS:
-            plan.docs_jobs.append(path_str)
-        else:
-            plan.docs_jobs.append(path_str)
+        # category → plan job list 라우팅 (미매칭 카테고리는 docs_jobs 로 폴백)
+        getattr(plan, _CATEGORY_JOB_ATTR.get(category, "docs_jobs")).append(path_str)
     except Exception as e:
         logger.debug("스캔 스킵 %s: %s", path, e)
 
