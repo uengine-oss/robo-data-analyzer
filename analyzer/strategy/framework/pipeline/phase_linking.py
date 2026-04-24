@@ -741,6 +741,7 @@ async def _run_deep_agent_parallel(ctx: _LinkingContext) -> AsyncGenerator[bytes
             "codebase_profile_summary": (
                 st.codebase_profile.summary if st.codebase_profile else ""
             ),
+            "function_count": len(st.function_facts_list or []),
         }
         mt_edges, fk_e, col_refs = run_entity_identification(
             startpoints=startpoints,

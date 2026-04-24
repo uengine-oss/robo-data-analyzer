@@ -364,6 +364,19 @@ def _is_stdlib_module(name: Optional[str]) -> bool:
     return n in _ACTIVE_STDLIB or n.split(".")[-1] in _ACTIVE_STDLIB
 
 
+_ALL_CAPS_MACRO_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+
+
+def _is_allcaps_macro(name: Optional[str]) -> bool:
+    """전부 대문자 (+숫자/언더스코어) 함수명이면 매크로 관용구로 간주. 길이 2 이상만."""
+    if not name or not isinstance(name, str):
+        return False
+    n = name.strip()
+    if len(n) < 2:
+        return False
+    return bool(_ALL_CAPS_MACRO_RE.match(n))
+
+
 def _candidates_for_module_and_method(
     function_index_by_module: Dict[str, Dict[str, List[str]]],
     module_name: str,
@@ -519,29 +532,58 @@ def _flatten_one_batch(
     batch: List[Tuple[str, List[Dict[str, Any]]]],
     llm_results: Dict[str, List[Dict[str, Any]]],
     call_records_by_function: Dict[str, List[Dict[str, Any]]],
+    function_index_by_module: Optional[Dict[str, Dict[str, List[str]]]] = None,
 ) -> List[Dict[str, Any]]:
-    """한 배치의 LLM 결과를 flat 레코드로 변환."""
+    """한 배치의 LLM 결과를 flat 레코드로 변환.
+
+    LLM 이 같은 call_id 로 여러 번 응답하는 경우 (예: 매크로 래퍼 `PFM_TRY(actual())` 에서
+    `PFM_TRY` 와 `actual` 둘 다 추출) 모두 보존. 2 번째부터 `_1`, `_2` 접미사로 구분.
+    매크로(대문자+언더스코어) 는 방어 필터로 `function_name=""` 처리 → edge 생성 차단.
+
+    call_id 는 LLM 매칭용 상관관계 토큰일 뿐 edge 생성엔 안 쓰이므로 접미사 안전.
+    `function_index_by_module` 은 현재 미사용 (과거 선호 로직용, 접미사 방식으로 대체됨).
+    """
+    _ = function_index_by_module  # 호환: 시그니처 유지
+
     flat: List[Dict[str, Any]] = []
     for function_id, _calls_input in batch:
-        by_call_id = {
-            r.get("call_id"): r
-            for r in (llm_results.get(function_id) or [])
-            if r.get("call_id")
-        }
+        # call_id 당 LLM 응답을 리스트로 수집 (중복 가능)
+        candidates_by_cid: Dict[str, List[Dict[str, Any]]] = {}
+        for r in (llm_results.get(function_id) or []):
+            cid = r.get("call_id")
+            if not cid:
+                continue
+            candidates_by_cid.setdefault(cid, []).append(r)
+
         for r in call_records_by_function.get(function_id, []):
             cid = r.get("call_id", "")
-            info = by_call_id.get(cid, {})
-            obj_name = info.get("obj_name") or None
-            function_name = info.get("function_name") or None
-            if obj_name and _is_stdlib_module(obj_name):
-                obj_name, function_name = "", ""
-            flat.append({
-                "parent_function_id": function_id,
-                "call_id": cid,
-                "call_code": r.get("call_code", ""),
-                "objName": obj_name,
-                "functionName": function_name,
-            })
+            call_code = r.get("call_code", "")
+            cands = candidates_by_cid.get(cid, [])
+            if not cands:
+                flat.append({
+                    "parent_function_id": function_id,
+                    "call_id": cid,
+                    "call_code": call_code,
+                    "objName": None,
+                    "functionName": None,
+                })
+                continue
+            for i, cand in enumerate(cands):
+                use_cid = cid if i == 0 else f"{cid}_{i}"
+                obj_name = cand.get("obj_name") or None
+                function_name = cand.get("function_name") or None
+                if obj_name and _is_stdlib_module(obj_name):
+                    obj_name, function_name = "", ""
+                # 방어: 대문자+언더스코어는 매크로 관용구 → 함수 호출 아님
+                if _is_allcaps_macro(function_name):
+                    obj_name, function_name = "", ""
+                flat.append({
+                    "parent_function_id": function_id,
+                    "call_id": use_cid,
+                    "call_code": call_code,
+                    "objName": obj_name,
+                    "functionName": function_name,
+                })
     return flat
 
 
@@ -589,7 +631,7 @@ async def run_call_batch_pipeline_async(
 
         async def _process_one(batch):
             llm_out = await asyncio.to_thread(_extract_calls_batch_via_llm, batch, key)
-            batch_flat = _flatten_one_batch(batch, llm_out, call_records_by_function)
+            batch_flat = _flatten_one_batch(batch, llm_out, call_records_by_function, function_index_by_module)
             batch_edges, batch_unresolved = resolve_calls_deterministic(batch_flat, type_map, function_index_by_module, m2c)
             batch_external = build_external_calls_edges(batch_unresolved, module_map)
             return batch_edges + batch_external, batch_unresolved

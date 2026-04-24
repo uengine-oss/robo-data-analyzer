@@ -42,12 +42,16 @@ prompt: |
 
   {% endif %}
 
+  ── 🔑 매크로 래퍼 중첩 처리 ──
+  매크로 함수 패턴이 **실제 함수 호출을 감싸고 있으면**, 매크로는 무시하고 **안쪽 실제 함수만** 추출.
+  안쪽이 리터럴·상수뿐이면 전체 제외.
+
   제외 대상 (obj_name="", function_name=""로 출력):
   - 로깅: log.info, logger.debug, System.out.println, printf, fprintf, PFM_DBG, PRINT_*
   - 언어 내장: toString, hashCode, equals, stream, filter, map, collect, orElse, orElseThrow
   - 컬렉션/문자열 내장: list.add, list.get, list.size, map.put, map.get, set.contains, substring, trim, toLowerCase
   - 기본 타입 변환: Integer.parseInt, Long.valueOf, String.valueOf, atoi, atol
-  - 위 목록에 해당하지 않는 모든 함수는 사용자 정의 함수로 간주하여 반드시 추출하세요
+  - 위 제외 대상·래퍼 외 **모든 함수는 반드시 추출** (진짜 비즈니스 로직만 뽑는 것이 목표)
   - 동일 범위 내 중복 호출은 한 번만
 
   [EXAMPLE]

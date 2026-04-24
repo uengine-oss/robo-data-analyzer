@@ -71,15 +71,56 @@ def build_common_middleware(model: Any) -> list:
         ClearToolUsesEdit,
         SummarizationMiddleware,
         TodoListMiddleware,
+        wrap_model_call,
     )
     from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 
+    @wrap_model_call
+    def _log_ctx(request, handler):
+        msgs = request.messages
+        n = len(msgs)
+        chars = sum(len(str(m.content or "")) for m in msgs)
+        n_tool = sum(1 for m in msgs if getattr(m, "type", "") == "tool")
+        logger.info("[CTX] msgs=%d tool_msgs=%d chars=%d", n, n_tool, chars)
+        return handler(request)
+
+    # gpt-oss(frentis) 32k context + tiktoken underestimates real tokens → aggressive triggers.
+    # Summary 가 발동해도 작업 지속에 필요한 정보(등록된 관계 · 남은 후보 · 다음 추적 키워드) 를
+    # 보존하도록 summary_prompt 커스터마이즈.
+    # ⚠ The agent is in the MIDDLE of tracing. The summary is a state-handoff, not a "done" report.
+    task_aware_summary_prompt = (
+        "⚠ IMPORTANT — the agent is NOT done. It is paused mid-analysis because context filled up. "
+        "This summary REPLACES old messages so the agent can CONTINUE tracing patterns and "
+        "registering relationships via tools. Work is NOT finished until every pattern, "
+        "every candidate, every trail has been exhausted.\n\n"
+        "Compact state dump (markdown, no prose):\n"
+        "```\n"
+        "## Registered so far\n"
+        "- <edge_type> <table/key>  (source_function_id, access)\n"
+        "## Candidates still pending (from last bundle_search, NOT yet registered)\n"
+        "- <chunk_id>  — <brief reason it looks relevant>\n"
+        "## Visited chunks (skip re-reading)\n"
+        "- <chunk_id>\n"
+        "## Keywords to search next\n"
+        "- <pattern>  (why)\n"
+        "## Immediate next action\n"
+        "- <one sentence: the single next tool call the agent must make>\n"
+        "```\n"
+        "Then end with: **⏭ CONTINUE. Do NOT stop until all candidates are processed and "
+        "no new keywords emerge.**"
+    )
     return [
+        _log_ctx,
         TodoListMiddleware(),
         ContextEditingMiddleware(edits=[
-            ClearToolUsesEdit(trigger=70_000, keep=3),
+            ClearToolUsesEdit(trigger=10_000, keep=5),
         ]),
-        SummarizationMiddleware(model=model, trigger=("tokens", 85_000)),
+        SummarizationMiddleware(
+            model=model,
+            trigger=("tokens", 15_000),
+            keep=("messages", 6),
+            summary_prompt=task_aware_summary_prompt,
+        ),
         PatchToolCallsMiddleware(),
     ]
 
@@ -501,10 +542,14 @@ def build_tools(
 
     @lc_tool
     def bundle_get_chunk_tool(chunk_id: str) -> str:
-        """chunk_id로 코드 조각을 조회한다."""
+        """chunk_id로 코드 조각을 조회한다. 3000자 초과시 truncate (context 보호)."""
         r = _bundle_get_chunk(chunk_id, chunk_index=chunk_index)
         if r:
             _enrich_with_modulename(r)
+            text = r.get("text") or ""
+            if len(text) > 3000:
+                r["text"] = text[:3000] + f"\n...[truncated, full length={len(text)} chars]"
+                r["truncated"] = True
         logger.info("[TOOL] bundle_get_chunk | chunk_id=%s found=%s", chunk_id, bool(r))
         return json.dumps(r, ensure_ascii=False) if r else ""
 

@@ -67,13 +67,14 @@ def run_entity_identification(
     all_columns: List[ColumnRef] = []
     failed_batches = 0
 
+    function_count = int(state.get("function_count") or 0)
     for batch_idx, batch in enumerate(batches):
         batch_tools = build_tools(
             state, collector,
             batch_startpoint_tables=batch.table_names,
         ) + make_skill_tools("linking")
         agent = create_agent(tools=batch_tools, system_prompt=system_prompt)
-        user_msg = _render_user_message(batch, startpoints, user_template)
+        user_msg = _render_user_message(batch, startpoints, user_template, function_count)
 
         logger.info("[ENTITY] 배치 %d/%d 시작 | scenario=%s items=%d",
                     batch_idx + 1, len(batches), scenario, len(batch.items))
@@ -197,7 +198,7 @@ def _extract_existing_fks(ddl_tables: list) -> list:
     ][:50]
 
 
-def _render_user_message(batch: _Batch, sp: EntityStartpoints, user_template: str) -> str:
+def _render_user_message(batch: _Batch, sp: EntityStartpoints, user_template: str, function_count: int = 0) -> str:
     """시나리오 힌트(category) + 원본 데이터(data) + 프로파일 지침(profile_hint) 을 채운다.
 
     - `data`: JSON — 아이템 + 시나리오별 보조 맥락(existing_fks, xml_entity_hints).
@@ -216,9 +217,10 @@ def _render_user_message(batch: _Batch, sp: EntityStartpoints, user_template: st
     if sp.profile_summary:
         profile_hint = (
             "\n---\n"
-            "[프로젝트 프레임워크·DB 접근 패턴 분석 — 수색 지침]\n\n"
+            "[Project Framework · DB Access Pattern Analysis — Search Map]\n\n"
             f"{sp.profile_summary}\n"
         )
+
     return user_template.format(
         category=batch.scenario,
         data=json.dumps(data, ensure_ascii=False, default=str),

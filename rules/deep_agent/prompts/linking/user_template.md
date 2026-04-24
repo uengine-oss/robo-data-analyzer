@@ -1,23 +1,26 @@
-## 작업 요청
+## Task
 
-아래 `카테고리:` 와 `데이터:` 를 보고, 코드에서 실제 사용처를 추적해 그래프 관계를 등록하십시오.
+Trace usage in code and register graph relationships via tools.
 
-**반드시 이 순서로**:
-1. **먼저** `list_skills()` 로 사용 가능한 스킬 목록을 확인.
-2. 아래 **카테고리** 에 맞는 스킬을 `read_skill(name)` 으로 로드 (반드시 호출).
-3. 로드된 스킬의 "카테고리별 처리" 섹션에 기술된 절차를 **그대로** 따라 실행.
-4. `데이터:` 의 **모든 아이템** 을 순서대로 처리한 뒤 종료.
+**Order (strict)**:
+
+1. Call `list_skills()`.
+2. Call `read_skill(name)` for the category below. Never skip.
+3. Follow that skill's "category handling" exactly.
+4. Process every item in `data:` — then exit.
 
 ---
 
-카테고리: {category}
+category: {category}
 
-데이터:
+data:
 {data}
 {profile_hint}
 ---
 
-**주의사항**:
-- `데이터` 의 items 가 `[null]` 이거나 빈 경우에도 중단하지 말 것 — `profile_only` 같은 시나리오는 **프로파일 힌트**(위 `[프로젝트 프레임워크·DB 접근 패턴 분석]` 섹션) 를 단서로 코드에서 테이블·함수를 수색하는 것이 정상 작업입니다.
-- `context.existing_fks`, `context.xml_entity_hints` 에 값이 있으면 스킬 지침에 따라 참조/제외 판단.
-- 모든 도구 호출의 `source_function_id` 는 `bundle_search` 로 발견한 실제 함수의 chunk_id.
+**Notes**:
+
+- Even if `items` is `[null]` or empty, do NOT exit. Use the profile hint as the starting map (especially for `profile_only`).
+- If `context.existing_fks` / `context.xml_entity_hints` present, follow skill guidance.
+- Every tool call's `source_function_id` MUST be a real chunk_id from a `bundle_search` result.
+- **Register each relationship immediately as you find it — never batch.**
