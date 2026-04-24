@@ -58,7 +58,7 @@ async def run_phase_ast(
                 queries = processor.build_static_graph_queries()
 
                 if queries:
-                    graph = await run_graph_queries_collect(client, queries, cypher_lock=ctx.cypher_lock)
+                    graph = await run_graph_queries_collect(client, queries)
                     node_count = len(graph.get("Nodes", []))
                     rel_count = len(graph.get("Relationships", []))
                     file_ctx.status = FileStatus.PH1_OK

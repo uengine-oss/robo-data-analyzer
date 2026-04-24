@@ -7,9 +7,19 @@ from config.settings import settings
 
 # 노드 타입 분류
 PROCEDURE_TYPES = frozenset(["PROCEDURE", "FUNCTION", "CREATE_PROCEDURE_BODY", "TRIGGER", "BEGIN"])
-NON_ANALYSIS_TYPES = frozenset(["CREATE_PROCEDURE_BODY", "FILE", "PROCEDURE", "FUNCTION", "DECLARE", "TRIGGER", "SPEC"])
+NON_ANALYSIS_TYPES = frozenset(["CREATE_PROCEDURE_BODY", "FILE", "PROCEDURE", "FUNCTION", "DECLARE", "TRIGGER", "SPEC", "VARIABLE", "PACKAGE_VARIABLE", "CONSTANT_FIELD"])
 DML_STATEMENT_TYPES = frozenset(["SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "EXECUTE_IMMEDIATE", "FETCH", "CREATE_TEMP_TABLE", "CTE", "OPEN_CURSOR", "CURSOR_VARIABLE"])
 VARIABLE_DECLARATION_TYPES = frozenset(["PACKAGE_VARIABLE", "DECLARE", "SPEC"])
+
+# Bottom-up Rule 누적에서 제외되는 구조 래퍼 — 자식 rules 를 그대로 통과
+# 나머지 모든 노드는 rule_target (의미 부모 or 리프) 로 간주됨
+STRUCTURAL_NODE_TYPES = frozenset([
+    "PROCEDURE", "FUNCTION", "TRIGGER",
+    "CREATE_PROCEDURE_BODY",
+    "PACKAGE_BODY", "SPEC",
+    "BEGIN",
+    "FILE",
+])
 
 # DBMS 시스템 패키지 (CALL 관계 생성 제외 대상)
 # Oracle/PostgreSQL 내장 패키지 — 프로시저 호출 시 이 패키지는 무시

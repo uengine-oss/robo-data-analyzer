@@ -1,334 +1,175 @@
 name: "dml_extract"
-description: "DML 범위별 테이블/컬럼/관계 추출"
-version: "1.0"
+description: "DML 범위별 테이블·컬럼·참조관계·DB링크 추출"
+version: "2.0"
 
 input_schema:
-  required: []
-  optional: {}
+  required:
+    - code
+    - ranges
+    - locale
+  optional:
+    - context
 
 prompt: |
   [ROLE]
-  당신은 저장 프로시저 내 DML 코드를 분석하여 테이블, 컬럼, 관계 메타데이터를 정확하게 추출하는 전문가입니다.
-  주어진 DML 구문을 체계적으로 분석하여 구조화된 메타데이터를 생성해야 합니다.
-  
-  
-  [LANGUAGE_SETTING]
+  SQL DML 구문을 분석해 테이블·컬럼·참조 관계·DB 링크 메타데이터를 추출합니다.
+
+
+  [LANGUAGE]
   응답 언어: {{ locale }}
-  모든 분석 결과와 설명은 지정된 언어로 생성해야 합니다.
-  
-  
-  [INPUT_DATA]
+
+
+  [INPUT]
   {% if context %}
-  부모 컨텍스트 (상위 코드 구조에서 추출한 핵심 정보):
+  ── [부모 컨텍스트] 역할: 현재 DML 이 속한 상위 구조 + 별칭 매핑 확인용 (참고만)
   {{ context }}
-  
-  ⚠️ 이 컨텍스트는 현재 분석 대상 DML 코드의 부모 노드에서 추출한 핵심 정보입니다.
-  자식 DML 코드는 부모의 맥락에서 실행되므로, 문맥이 끊기지 않도록 반드시 참고하세요.
-  
-  컨텍스트 활용 방법:
-  - DML 유형 및 FROM/INTO 테이블: 부모가 어떤 쿼리 유형(SELECT, MERGE, INSERT 등)을 수행하는지 파악
-  - 별칭 매핑: 코드에서 사용된 별칭(A, B, X, Y 등)의 실제 테이블/서브쿼리 매핑 확인
-    → ⚠️ 별칭 자체를 테이블로 추출하지 말고, 컨텍스트의 매핑을 참고하여 실제 테이블명 추출
-  - 조인/매칭 조건: 부모의 조인 조건을 이해하여 자식 DML의 역할 파악
-  - 핵심 변수/파라미터: 부모에서 사용되는 변수명을 자식 DML 분석에 활용
-  - 별칭을 테이블로 오인하지 않도록 컨텍스트의 별칭 매핑을 반드시 확인
-  
+
   {% endif %}
-  분석 대상 DML 코드:
+  ── [분석 대상 DML 코드] 역할: 각 범위별 독립 분석
   {{ code }}
-  
-  
-  분석할 코드 범위 목록:
+
+  ── [분석 범위 목록] 역할: 각 range 는 startLine~endLine 내에서만 독립 식별
   {{ ranges }}
-  
-  
-  [CRITICAL_RANGE_INDEPENDENCE_RULE]
-  ⚠️ 가장 중요한 원칙: 각 범위(range)는 완전히 독립적으로 분석되어야 합니다.
-  
-  === 범위 독립성 필수 규칙 ===
-  - 각 범위는 해당 범위의 startLine~endLine 라인 번호 내에서만 분석합니다.
-  - 다른 범위의 정보를 절대 참고하거나 포함하지 않습니다.
-  - 하위 범위(예: 221~223, 224~226)에 상위 범위(예: 211~226)의 정보를 포함하면 안 됩니다.
-  - 각 범위의 결과에는 해당 범위 내에서만 식별된 테이블, 컬럼, 외래키, DB 링크만 포함됩니다.
-  - 범위 간 정보 혼합, 누적, 참조는 절대 금지합니다.
-  
-  === 범위 독립성 예시 ===
-  입력 범위: [{"startLine": 221, "endLine": 223}, {"startLine": 224, "endLine": 226}, {"startLine": 211, "endLine": 226}]
-  - 221~223 범위: 221~223 라인 내에서만 식별된 테이블/컬럼/관계만 포함
-  - 224~226 범위: 224~226 라인 내에서만 식별된 테이블/컬럼/관계만 포함
-  - 211~226 범위: 211~226 라인 내에서만 식별된 테이블/컬럼/관계만 포함 (221~223, 224~226의 정보를 참고하지 않음)
-  
-  === 분석 절차 ===
-  1. 각 범위를 순서대로 하나씩 독립적으로 분석
-  2. 해당 범위의 startLine~endLine 라인만 확인
-  3. 해당 라인 범위 내에서만 테이블, 컬럼, 외래키, DB 링크 식별
-  4. 다른 범위의 결과를 보지 않고 순수하게 해당 범위만 분석
-  
-  
-  ★ 주석 최우선 활용 원칙:
-  분석 대상 DML 코드에는 개발자가 직접 작성한 주석(-- 또는 /* */)이 포함되어 있을 수 있습니다. 주석은 개발자가 DML의 목적, 대상 테이블의 역할, 비즈니스 맥락을 직접적으로 표현한 가장 신뢰할 수 있는 정보원입니다. 주석이 존재하면 반드시 최우선으로 활용하여 tableDescription, 컬럼 description에 반영하세요. 주석을 절대 무시하거나 생략하지 마세요.
-  
-  
-  [ANALYSIS_OBJECTIVES]
-  각 DML 구문(SELECT, INSERT, UPDATE, DELETE, MERGE, EXECUTE IMMEDIATE, CTE 등)에 대해 다음 정보를 추출합니다:
-  1. 테이블 메타데이터: 테이블명, accessMode(r/w), 테이블 역할 설명
-  2. 컬럼 메타데이터: 컬럼명, 데이터 타입, NULL 가능 여부, 컬럼 역할 설명
-  3. 참조 관계: sourceTable, sourceColumn, targetTable, targetColumn
-  4. DB 링크 정보: name, mode
-  
-  ⚠️ 주의: 위 정보는 반드시 해당 범위의 startLine~endLine 내에서만 식별되어야 합니다.
-  
-  
-  [SECTION_1_TABLE_AND_COLUMN_IDENTIFICATION]
-  테이블 및 컬럼 식별:
-  
-  ⚠️ 범위 독립성: 이 섹션의 모든 식별 작업은 해당 범위의 startLine~endLine 라인 내에서만 수행합니다.
-  다른 범위의 테이블이나 컬럼을 참고하거나 포함하지 않습니다.
 
-  ★ 단, 해당 범위 내에서 대상 테이블을 식별할 수 없는 경우 (예: WHEN MATCHED THEN UPDATE, WHEN NOT MATCHED THEN INSERT 등 부모 구문의 일부인 경우), 부모 컨텍스트에 대상 테이블 정보가 있으면 그것을 사용합니다.
-  - 컨텍스트에 "MERGE INTO TABLE_X" 또는 "대상 테이블: TABLE_X" 등이 명시되어 있으면, 현재 범위의 DML 대상 테이블로 TABLE_X를 사용
-  - 빈 테이블명("")으로 출력하지 말고, 컨텍스트에서 부모의 대상 테이블을 찾아서 채울 것
-  
-  === 테이블 식별 대상 SQL 절 ===
-  - INSERT INTO 절의 대상 테이블
-  - UPDATE 절의 대상 테이블
-  - DELETE FROM 절의 대상 테이블
-  - SELECT ... FROM 절의 원본 테이블/뷰
-  - MERGE INTO 절의 대상 테이블
-  - JOIN 절의 참조 테이블/뷰 (INNER JOIN, LEFT JOIN, RIGHT JOIN, FULL JOIN 등)
-  - EXECUTE IMMEDIATE 절의 대상 테이블
-  - 변수에 저장된 SQL 문자열 내의 테이블
-  - 프로시저 및 함수 호출 인자로 전달되는 SQL 관련 문자열의 테이블
-  - CTE(Common Table Expression) 내부의 실제 테이블 (WITH 절 정의 자체는 제외)
-  
-  
-  === 테이블명 추출 규칙 ===
-  - 해당 범위의 startLine~endLine 라인 내에서만 테이블을 식별합니다.
-  - 다른 범위에 있는 테이블은 절대 포함하지 않습니다.
-  - ⚠️ 스키마 추출 필수: 코드에 스키마가 명시되어 있으면 반드시 "SCHEMA.TABLE_NAME" 형식으로 추출
-    - 스키마 있는 경우: `SCHEMA.TABLE` → `"table": "SCHEMA.TABLE"`
-    - 따옴표 포함: `"SCHEMA"."TABLE"` → `"table": "SCHEMA.TABLE"` (따옴표 제거)
-    - 스키마 없는 경우: `TABLE` → `"table": "TABLE"` (테이블명만 추출)
-  - 별칭(alias)을 제거하고 실제 테이블명만 추출
-  - 테이블 접두사 (TPJ_, TBL_, MST_, TB_ 등)는 원문 그대로 유지
-  - 해당 범위 내 서브쿼리의 테이블만 포함 (다른 범위의 서브쿼리는 제외)
-  - 해당 범위 내 JOIN 절의 모든 테이블을 빠짐없이 포함
-  - 대소문자는 코드에 명시된 원문 그대로 유지
-  - DB 링크 표기('@')가 포함된 테이블은 table 필드에 넣지 않고 dbLinks 배열에만 기록
-  
-  === accessMode(r/w) 분류 규칙 ===
-  - 'w': INSERT, UPDATE, DELETE, MERGE 등으로 해당 테이블에 데이터가 직접 쓰이거나 삭제되는 경우
-  - 'r': SELECT, JOIN, WHERE, 서브쿼리 등 읽기 전용으로 사용되는 경우
-  - 동일 범위에서 읽기와 쓰기가 모두 발생하면 'w'를 우선 적용
-  - 하나의 DML 범위에 여러 테이블이 포함될 수 있으므로 각 테이블을 독립적으로 판단
-  
-  === 테이블 제외 대상 ===
-  - CTE(Common Table Expression)의 별칭 자체
-  - WITH 절에서 정의된 임시 결과 집합의 이름
-  - DUAL 테이블 (Oracle 시스템 테이블)
-  - 시퀀스 객체
-  - 시스템 카탈로그 테이블 (pg_catalog, information_schema 등)
-  
-  === 컬럼 식별 대상 ===
-  ⚠️ 범위 독립성: 해당 범위의 startLine~endLine 라인 내에서만 컬럼을 식별합니다.
-  - 해당 범위 내 SELECT 절에 명시된 컬럼 (*, 집계 함수 제외)
-  - 해당 범위 내 INSERT INTO 절의 컬럼 목록
-  - 해당 범위 내 UPDATE SET 절의 대상 컬럼
-  - 해당 범위 내 WHERE 절에 사용된 조건 컬럼
-  - 해당 범위 내 JOIN 조건에 사용된 컬럼
-  - 해당 범위 내 ORDER BY, GROUP BY 절의 컬럼
-  - 해당 범위 내 RETURNING 절의 컬럼
-  - 다른 범위의 컬럼은 절대 포함하지 않습니다.
-  
-  === 컬럼 메타데이터 추출 규칙 ===
-  - 컬럼명(name): 코드에 명시된 원문 그대로 추출 (대소문자 유지)
-  - 데이터 타입(dtype): 코드에서 추론 가능한 경우 해당 타입 기록, 불명확하면 "VARCHAR"로 기본 설정 (절대 빈 문자열 금지)
-  - NULL 가능 여부(nullable): 추론 가능하면 true/false, 불명확하면 true로 기본 설정
-  - 컬럼 설명(description): 해당 컬럼이 DML 구문에서 수행하는 역할을 자연어로 간결하게 작성
-    - 예: "주문 번호를 저장", "고객 ID로 조회 조건 설정", "총 금액을 업데이트"
-    - 중복 표현 금지, 핵심만 서술
-  
-  === 테이블 설명(tableDescription) 작성 규칙 ===
-  - 해당 범위에서 테이블이 수행하는 핵심 역할을 1~2문장으로 요약
-  - DML 종류와 주요 목적을 명시
-  - 예시 1: "주문 마스터 테이블에서 주문 정보를 조회하여 검증합니다."
-  - 예시 2: "고객 상세 테이블에 신규 고객 데이터를 삽입합니다."
-  - 예시 3: "주문 상세와 상품 마스터를 조인하여 주문 내역을 조회합니다."
-  
-  
-  [SECTION_2_REFERENCE_RELATIONS]
-  참조 관계(FK 포함) 식별 및 표기:
-  
-  ⚠️ 범위 독립성: 이 섹션의 모든 관계 식별은 해당 범위의 startLine~endLine 라인 내에서만 수행합니다.
-  다른 범위의 외래키 관계를 참고하거나 포함하지 않습니다.
-  
-  === 수집 기준 ===
-  - JOIN 조건(A.COL = B.COL), WHERE 절의 테이블 간 비교에서 테이블 간 참조 구조가 보이면 기록합니다.
-  - PK/UK 여부를 확정할 수 없더라도, 코드에서 테이블 간 참조 패턴이 합리적으로 드러나면 기록합니다.
-  - 다중 컬럼 비교가 존재하면 동일한 소스/타겟 테이블을 기준으로 컬럼 쌍을 순서에 맞게 배열로 묶어 하나의 객체로 기록합니다.
 
-  === FK로 기록하면 안 되는 것 (제외 규칙) ===
-  - ★ 자기조인(self-join): 같은 테이블끼리 JOIN한 조건 (FROM TABLE_A A, TABLE_A B WHERE A.COL = B.COL)은 FK가 아님
-  - ★ INSERT...SELECT 값 복사: INSERT INTO X (...) SELECT ... FROM Y에서 단순히 값을 복사하는 컬럼 매핑은 FK가 아님. 식별자 컬럼(ID, CODE 등)만 FK 후보
-  - ★ 측정값/데이터값 컬럼: VAL, AMOUNT, QUANTITY, COUNT 같은 데이터 값 컬럼은 FK가 아님. 값을 다른 테이블에 복사/백업하는 것은 참조 관계가 아님
-  - ★ 양방향 기록 금지: A.COL = B.COL 조건이 있을 때, 한 방향(FK를 가진 쪽 → 참조 대상)만 기록. 양쪽 다 기록하지 않음
-  - ★ IN 서브쿼리 필터: WHERE COL IN (SELECT COL FROM OTHER_TABLE)는 필터링 패턴. FK로 기록하려면 실제 참조 무결성이 성립하는 경우만
-  - ★ MERGE ON 조건의 자기 자신 매칭(X.COL = Y.COL에서 X, Y가 같은 테이블)은 FK가 아님
+  [GOAL]
+  각 범위마다 tables·fkRelations·dbLinks 를 추출해 JSON(`ranges`)으로 반환.
 
-  === FK 방향 결정 규칙 ===
-  - sourceTable: FK를 가진 테이블 (자식/상세 테이블, 참조하는 쪽)
-  - targetTable: 참조 대상 테이블 (부모/마스터 테이블, 참조되는 쪽)
-  - 판단 기준: 어느 쪽이 마스터/코드 테이블이고 어느 쪽이 트랜잭션/상세 테이블인지 고려
-  
-  === 식별 예시 ===
-  - 조인 조건에서 FK→PK 구조가 드러나는 경우: `FROM DETAIL d JOIN MASTER m ON d.MASTER_ID = m.ID`
-  - INSERT/UPDATE 구문에서 참조 무결성을 전제로 하는 경우: `INSERT INTO DETAIL (MASTER_ID, ...)`
-  - 서브쿼리나 동적 SQL에서도 참조 구조가 확실히 나타나면 동일하게 기록합니다.
-  - 다중 조건: `JOIN ORDER_ITEM oi ON oi.ORDER_ID = om.ID AND oi.PRODUCT_ID = pm.ID` → sourceColumns=["ORDER_ID","PRODUCT_ID"], targetColumns=["ID","ID"]와 같이 순서를 맞춰 기록
-  
-  === 표기 형식 ===
-  - 각 관계는 다음 필드를 모두 포함해야 합니다.
-    - sourceTable: FK를 가진 테이블 (스키마 포함)
-    - sourceColumns: FK 컬럼명을 순서대로 나열한 배열
-    - targetTable: 참조 대상 테이블 (스키마 포함)
-    - targetColumns: 참조 대상 컬럼명을 순서대로 나열한 배열 (PK 또는 UK)
-  - sourceColumns와 targetColumns는 동일한 길이를 유지하며, 비교식 순서를 그대로 따릅니다.
-  - 모든 문자열은 코드에 나타난 원문 케이스를 유지합니다.
-  - 최종 출력에서는 각 범위(range)의 fkRelations 배열에 기록합니다.
-  
-  
-  [SECTION_3_DB_LINK_IDENTIFICATION]
-  DB 링크 식별 및 범위 규칙:
-  
-  ⚠️ 범위 독립성: 이 섹션의 모든 DB 링크 식별은 해당 범위의 startLine~endLine 라인 내에서만 수행합니다.
-  다른 범위의 DB 링크를 참고하거나 포함하지 않습니다.
-  
-  === DB 링크 식별 기준 ===
-  - 직접 DB 링크 접근 여부, 실제 DB 읽기/쓰기 여부와 무관하게 DB 링크 패턴 및 표기가 발견되면 dbLinks에 포함
-  - 프로시저 인자로 전달되는 문자열, 변수에 할당된 문자열이라도 DB 링크 패턴이 있으면 포함
-  - 식별 범위: 코드 전반에서 다음 패턴을 탐색
-    - 문자열 리터럴
-    - 변수 값
-    - 프로시저/함수 인자
-    - 테이블/뷰 식별자
-    - 동적 SQL 문자열
-    - '스키마.테이블@링크' 또는 '테이블@링크' 패턴
+
+  [RULES]
+
+  ★★★ 범위 독립성 (최우선)
+  각 range 는 해당 startLine~endLine 라인 내에서만 식별한다. 다른 범위의 결과 혼합·누적·참조 절대 금지.
+  예: 입력 [{221~223}, {224~226}, {211~226}] 이면
+  - 221~223 결과: 221~223 내에서만 식별
+  - 211~226 결과: 211~226 내에서만 (221~223 결과 참조 안 함)
+
+  {% if context %}
+  ★★★ 부모 컨텍스트는 참고만 — 단, 대상 테이블 해석 예외
+  부모 DML 의 내부 절(WHEN MATCHED THEN UPDATE 등)이 현재 범위일 때:
+  - 범위 내에서 대상 테이블을 식별 불가하면 부모 context 에서 "MERGE INTO TABLE_X" 같은 정보를 찾아 대상 테이블로 사용
+  - 빈 테이블명("")으로 출력하지 않음
+  부모 context 에 있는 테이블·호출·변수는 현재 범위 결과에 **중복 포함 금지** (실제 범위에 등장한 것만).
+  {% endif %}
+
+  ★★★ 주석 활용
+  DML 코드의 주석(`--`, `/* */`)에 대상 테이블의 역할·비즈니스 맥락이 있으면 tableDescription·컬럼 description 에 최우선 반영.
+
+  ★★ 테이블 식별
+
+  대상 SQL 절:
+  - INSERT INTO · UPDATE · DELETE FROM · SELECT FROM · MERGE INTO · JOIN · EXECUTE IMMEDIATE 의 대상
+  - 변수에 저장된 SQL 문자열, 프로시저 호출 인자의 SQL 문자열
+  - CTE 내부의 실제 테이블 (WITH 정의 자체는 제외)
+
+  추출 규칙:
+  - 스키마 있으면 "SCHEMA.TABLE", 없으면 "TABLE"
+  - 따옴표 `"SCHEMA"."TABLE"` → `"SCHEMA.TABLE"` (따옴표 제거)
+  - 별칭(alias) 제거, 실제 테이블명만
+  - 테이블 접두사(TPJ_, TBL_ 등) 원문 유지
+  - 대소문자 원문 그대로
+  - DB 링크('@' 포함)는 `table` 필드 넣지 않고 `dbLinks` 만 기록
+
+  제외 대상: CTE 별칭 자체, WITH 절 임시 결과 이름, DUAL(Oracle), 시퀀스, 시스템 카탈로그(pg_catalog/information_schema)
+
+  ★★ accessMode (r/w)
+  - `w`: INSERT/UPDATE/DELETE/MERGE 로 데이터 쓰기
+  - `r`: SELECT/JOIN/WHERE/서브쿼리로 읽기
+  - 한 범위에서 읽기+쓰기 모두면 `w` 우선
+  - 여러 테이블은 각 테이블 독립 판정
+
+  ★★ 컬럼 추출 (해당 범위 내)
+  - SELECT 절 명시 컬럼 (* 와 집계는 제외), INSERT 컬럼 목록, UPDATE SET 대상, WHERE 조건 컬럼, JOIN 조건 컬럼, ORDER BY/GROUP BY, RETURNING
+  - name: 원문 그대로
+  - dtype: 코드에서 추론 가능하면 기록, 불명확하면 "VARCHAR"
+  - nullable: 불명확 시 true
+  - description: 해당 컬럼이 이 DML 에서 하는 역할 한 문장 (중복 표현 금지)
+
+  ★★ tableDescription
+  - 해당 범위에서 테이블 역할 1~2문장
+  - 좋은 예: "주문 마스터에서 검증용 주문 정보를 조회합니다"
+  - 나쁜 예: "데이터를 조회합니다" (무의미)
+
+  ★★ fkRelations (참조 관계)
+
+  수집 기준:
+  - JOIN 조건(A.COL = B.COL) · WHERE 의 테이블 간 비교에서 참조 구조 식별
+  - 다중 컬럼 비교는 sourceColumns·targetColumns 배열로 순서 맞춰 묶음
+
+  제외 규칙 (하나라도 맞으면 FK 아님):
+  - 자기조인 (FROM TABLE_A A, TABLE_A B)
+  - INSERT...SELECT 의 단순 값 복사
+  - 측정값·데이터값 컬럼(VAL·AMOUNT·QUANTITY·COUNT)
+  - 양방향 중복 기록 (한 방향만)
+  - IN 서브쿼리 단순 필터
+  - MERGE ON 의 자기 자신 매칭
+
+  방향 결정:
+  - sourceTable = FK 가진 쪽 (자식·상세)
+  - targetTable = 참조 대상 (부모·마스터)
+  - 다중 컬럼 길이 일치 필수
+
+  ★★ dbLinks (`@` 패턴)
+  - 식별 기준: 해당 범위 내 'Table@DBLINK' 또는 'Schema.Table@DBLINK' 패턴 존재 여부만 (실행 여부·의미 무관)
+  - 탐색 위치: 문자열 리터럴·변수 값·프로시저 인자·동적 SQL
   - 주석 내 표기는 제외
-  
-  === DB 링크 표기 규칙 ===
-  - name 필드에는 반드시 '@' 문자가 포함되어야 함
-  - 원문 표기를 그대로 사용 (대소문자, 스키마명, 링크명 모두 보존)
-  - 예시: "TPJ.ORDER_MASTER@DBLINK01", "CUSTOMER@REMOTE_DB", "SCHEMA.TABLE@LINK"
-  - 모든 외부 대상은 dbLinks 배열에만 기록
-  - 동일 대상이 여러 번 등장하면 중복 없이 한 번만 기록
-  - 각 dbLinks 항목에는 name과 mode만 포함합니다.
-  - 최종 출력에서는 각 범위(range)의 dbLinks 배열에 값을 채웁니다.
-  
-  === DB 링크 범위 판별 규칙 ===
-  - 실제 DB 링크 식별은 의미 해석이 아닌 'Table@DBLINK' 패턴 표기 자체의 존재 여부로 판단
-  - 해당 범위의 startLine~endLine 라인 내에서만 'Table@DBLINK' 패턴을 탐색합니다
-  - 해당 범위 내에 패턴 표기가 존재하는 경우에만 dbLinks에 포함
-  - 해당 범위 내에 패턴 표기가 존재하지 않으면 dbLinks를 빈 배열([])로 반환
-  - 다른 범위의 DB 링크 패턴은 절대 포함하지 않습니다
-  - DB 링크를 실행하거나 변수에 담겨 있다는 의미로 판단하지 말 것
-  - 해당 범위(startLine~endLine)에 표기가 실제로 존재하는지만 판단
-  
-  === DB 링크 읽기/쓰기 구분 규칙 ===
-  - 실제 DB 읽기/쓰기가 없거나 단순히 문자열 리터럴인 경우: mode='r' (읽기 모드)
-  - 실행 여부가 모호한 경우: mode='r'로 기본 분류
-  - 동적 SQL 또는 DML 문맥(SELECT/INSERT/UPDATE/DELETE/MERGE/EXECUTE IMMEDIATE)로 외부 대상에 실제 접근이 명확한 경우 r/w를 판별
-  
-  - 읽기(r): 외부 DB로부터 데이터를 조회만 하는 경우
-    - 예: SELECT ... FROM 스키마.테이블@링크
-    - 예: SELECT ... JOIN 스키마.테이블@링크
-    - 예: WHERE EXISTS (SELECT ... FROM 테이블@링크)
-  
-  - 쓰기(w): 외부 DB의 테이블에 직접 쓰기/갱신/삭제하는 경우
-    - 예: INSERT INTO 스키마.테이블@링크
-    - 예: UPDATE 스키마.테이블@링크 SET ...
-    - 예: DELETE FROM 스키마.테이블@링크
-    - 예: MERGE INTO 스키마.테이블@링크
-  
-  - 추가 원칙:
-    - 외부 DB에서 읽어와 내 DB에 쓰는 경우는 'r'로 분류
-    - 외부 DB에 직접 쓰는 경우에만 'w'로 분류
-    - EXECUTE IMMEDIATE 등 동적 SQL인 경우에도 위 규칙을 기준으로 실제 수행 의도를 분석하여 r/w 판별
-    - 동일 범위 내에 여러 DB 링크 테이블이 있을 수 있으며 각 테이블별로 개별적으로 r/w를 판별
-  
-  
-  [CONSTRAINTS]
-  필수 준수 사항:
-  - ranges 배열 순서대로 결과를 작성하고 startLine/endLine을 정확히 포함
-  - ⚠️ 각 범위는 완전히 독립적으로 분석되어야 합니다. 다른 범위의 정보를 절대 참고하거나 포함하지 않습니다.
-  - 각 범위의 결과에는 해당 범위의 startLine~endLine 라인 내에서만 식별된 정보만 포함됩니다.
-  - 하위 범위에 상위 범위의 정보를 포함하면 안 됩니다. 예: 221~223 범위에 211~226 범위의 정보 포함 금지
-  - null 사용 절대 금지. 빈 값은 빈 배열([]) 또는 빈 문자열("")로만 표현
-  - 출력에 코드펜스(```), JSON 주석(//, /* */), 트레일링 콤마 포함 금지. 순수 JSON만 출력
-  - **⚠️ CRITICAL: 트레일링 콤마(trailing comma) 절대 금지** - 배열이나 객체의 마지막 요소 뒤에 콤마(,)를 붙이지 마세요. 예: `"columns": []` (O), `"columns": [],` (X)
-  - 테이블/컬럼명은 입력 코드에 나온 원문 케이스 그대로 유지
-  - 테이블 설명과 컬럼 설명은 자연어 문장으로 작성하며 중복 표현 금지
-  - DDL 형태로 추측하지 말고 코드에서 식별 가능한 정보만 제공
-  - 동일 테이블이 해당 범위 내에서 여러 번 등장해도 한 엔트리로 통합하되, 컬럼과 관계는 해당 범위 내에서만 누적
-  - **JSON 문법 체크 필수**: 출력 전에 반드시 자체 검증을 수행하여 `json.loads`로 파싱 가능한지 확인하고, 배열 마지막 요소 뒤에 쉼표를 절대 두지 마세요.
-  - 예: `"columns": []` 는 허용, `"columns": [],` 는 금지. 동일 규칙을 모든 배열(tables, fkRelations, dbLinks 등)에 적용합니다.
-  
-  
-  [OUTPUT_FORMAT]
-  출력 JSON 스키마:
-  ```json
+  - name 에 반드시 '@' 포함. 원문 케이스 유지. 중복 없이 한 번만.
+
+  dbLinks r/w 구분:
+  - `r`: 외부 DB 에서 SELECT·JOIN·EXISTS 로 읽기
+  - `w`: 외부 DB 에 INSERT/UPDATE/DELETE/MERGE 로 쓰기
+  - 외부에서 읽어 내 DB 에 쓰는 경우는 `r`
+  - 단순 문자열 리터럴·실행 모호 시 기본 `r`
+
+
+  [SELF-CHECK]
+  - ranges 배열 길이·순서가 입력과 동일한가?
+  - 각 range 결과가 startLine~endLine 내에서만 식별됐는가? (다른 범위 혼입 없음)
+  - 별칭을 실제 테이블로 오인하지 않았는가?
+  {% if context %}
+  - 부모 context 에 있던 테이블을 내 범위 결과에 중복 포함하지 않았는가?
+  {% endif %}
+  - FK 가 아닌 것(자기조인·값복사·측정값)을 fkRelations 에 넣지 않았는가?
+  - DB 링크는 실제 '@' 패턴이 범위 내에 존재할 때만 기록했는가?
+
+
+  [OUTPUT]
+  JSON 만 출력. 코드펜스·주석·설명 금지. 트레일링 콤마 금지.
+
   {
     "ranges": [
       {
-        "startLine": 범위_시작_라인_번호,
-        "endLine": 범위_종료_라인_번호,
+        "startLine": 시작_라인,
+        "endLine": 끝_라인,
         "tables": [
           {
             "table": "SCHEMA.TABLE_NAME",
             "accessMode": "r|w",
-            "tableDescription": "테이블 역할 요약 (1~2문장)",
+            "tableDescription": "1~2문장 역할 설명",
             "columns": [
-              {
-                "name": "컬럼명",
-                "dtype": "데이터타입",
-                "nullable": true,
-                "description": "컬럼 역할 설명"
-              }
+              {"name": "컬럼명", "dtype": "VARCHAR", "nullable": true, "description": "컬럼 역할"}
             ]
           }
         ],
         "fkRelations": [
           {
-            "sourceTable": "스키마.테이블명",
-            "sourceColumns": ["컬럼명1", "컬럼명2"],
-            "targetTable": "스키마.참조테이블명",
-            "targetColumns": ["참조컬럼명1", "참조컬럼명2"]
+            "sourceTable": "SCHEMA.CHILD",
+            "sourceColumns": ["COL1"],
+            "targetTable": "SCHEMA.PARENT",
+            "targetColumns": ["ID"]
           }
         ],
         "dbLinks": [
-          {
-            "name": "스키마.테이블명@DB_링크명",
-            "mode": "r"
-          }
+          {"name": "SCHEMA.TABLE@DBLINK", "mode": "r"}
         ]
       }
     ]
   }
-  ```
-  
-  출력 제약사항:
-  - JSON 형식 외의 부가 설명 금지 (출력에 JSON 주석 포함 금지)
-  - "ranges" 배열의 길이는 입력 ranges와 동일해야 함
-  - 각 range 항목의 startLine/endLine은 입력과 동일하게 유지
-  - ⚠️ 각 range 항목의 tables, fkRelations, dbLinks는 해당 범위의 startLine~endLine 라인 내에서만 식별된 정보만 포함해야 합니다
-  - 다른 범위의 정보를 포함하면 안 됩니다 (예: 221~223 범위에 211~226 범위의 정보 포함 금지)
-  - tables 배열 안의 객체들은 위 스키마를 정확히 따름
-  - ranges 배열의 순서는 입력 ranges 순서를 그대로 따라야 함
-  - 각 range 항목에는 최소한 빈 배열이라도 tables, fkRelations, dbLinks 필드를 포함해야 함
-  - accessMode는 반드시 'r' 또는 'w'
-  - columns, fkRelations, dbLinks 배열은 빈 배열 가능
-  - fkRelations 객체의 sourceColumns와 targetColumns는 최소 1개의 컬럼을 포함하며, 다중 비교 시 모든 컬럼을 빠짐없이 기록
-  - 빈 값은 null 대신 빈 배열([]) 또는 빈 문자열("") 사용
-  - 코드펜스(```json ... ``` 등) 포함 금지
-  - 트레일링 콤마 금지
-  - dbLinks.name은 반드시 '@' 포함, 해당 범위(startLine~endLine) 내에 패턴이 없으면 dbLinks는 []
 
+  제약:
+  - ranges 길이·순서 = 입력 ranges 와 동일
+  - 각 range 에 tables·fkRelations·dbLinks 필드 필수 (빈 배열 허용)
+  - accessMode 는 'r' 또는 'w' 만
+  - fkRelations 의 sourceColumns·targetColumns 는 길이 동일 필수
+  - dbLinks.name 에 '@' 필수, 범위 내 패턴 없으면 `[]`
+  - null 금지. 빈값은 [] 또는 ""

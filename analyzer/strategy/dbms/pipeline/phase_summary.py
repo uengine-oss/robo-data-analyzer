@@ -8,9 +8,8 @@ import asyncio
 import logging
 from typing import Any, AsyncGenerator, Dict, List, Tuple
 
-from client.neo4j_client import Neo4jClient
 from analyzer.strategy.dbms.common.node_models import FileStatus, FileAnalysisContext
-from analyzer.common.analysis_context import fetch_constants_context, fetch_table_context
+from analyzer.common.analysis_context import fetch_constants_context
 from analyzer.common.example_collector import collect_example_rows
 from config.settings import settings
 from util.stream_emitter import emit_data, emit_message, emit_phase_event
@@ -252,20 +251,70 @@ def _analyze_summary_only(
     api_key: str,
     locale: str,
     variable_declarations: str = "",
-    table_sample_data: str = "",
     constants_context: str = "",
     called_procedure_summaries: str = "",
 ) -> Dict[str, Any]:
+    """unit_analysis 호출 — procedure 전체 summary 한 편만 생성."""
     inputs: Dict[str, Any] = {"summaries": summaries, "locale": locale}
     if variable_declarations:
         inputs["variable_declarations"] = variable_declarations
-    if table_sample_data:
-        inputs["table_sample_data"] = table_sample_data
     if constants_context:
         inputs["constants_context"] = constants_context
     if called_procedure_summaries:
         inputs["called_procedure_summaries"] = called_procedure_summaries
     return prompts.execute_raw("dbms", "unit_analysis", inputs, api_key)
+
+
+def _build_final_analysis(proc_root: Any) -> Dict[str, Any]:
+    """proc_root.analysis_map (Bottom-up 결과) → phase_summary 가 쓰는 analysis dict.
+
+    Python 결정론 후처리:
+    - rule_id 순번 부여 (R1, R2, ...)
+    - statement 조립 (condition + ' 이면 ' + result, condition 없으면 result 만)
+    - Rule 안 nested examples 를 flat examples 리스트로 분리 (rule_id 연결)
+    - flow_id 는 기본 순번, guard/branch/coupled_domains 는 기본값 (필요 시 확장)
+    """
+    if not proc_root or not getattr(proc_root, "analysis_map", None):
+        return {"rules": [], "examples": [], "questions": []}
+
+    raw_rules = proc_root.analysis_map.get("rules") or []
+    raw_questions = proc_root.analysis_map.get("questions") or []
+
+    final_rules: List[Dict[str, Any]] = []
+    final_examples: List[Dict[str, Any]] = []
+
+    for idx, r in enumerate(raw_rules, start=1):
+        if not isinstance(r, dict):
+            continue
+        rule_id = f"R{idx}"
+        cond = (r.get("condition") or "").strip()
+        result = (r.get("result") or "").strip()
+        if not result:
+            continue
+        statement = f"{cond} 이면 {result}" if cond else result
+
+        final_rules.append({
+            "rule_id": rule_id,
+            "flow_id": str(idx),
+            "guard_rule_id": None,
+            "branch_from": None,
+            "statement": statement,
+            "coupled_domains": [],
+        })
+
+        # Rule 안 nested examples → flat 리스트로 분리, rule_id 연결
+        for ex in (r.get("examples") or []):
+            if not isinstance(ex, dict):
+                continue
+            ex_copy = dict(ex)
+            ex_copy["rule_id"] = rule_id
+            final_examples.append(ex_copy)
+
+    return {
+        "rules": final_rules,
+        "examples": final_examples,
+        "questions": raw_questions,
+    }
 
 
 def _summarize_table_metadata(
@@ -311,11 +360,11 @@ def _split_summaries_by_token(summaries: dict, max_token: int) -> List[dict]:
 
 
 async def _run_unit_analysis(
-    pipeline: Any,
+    ctx: Any,
     contexts: List[FileAnalysisContext],
-    client: Neo4jClient,
-    orchestrator: Any,
 ) -> AsyncGenerator[bytes, None]:
+    client = ctx.client
+    orchestrator = ctx.orchestrator
     MAX_SUMMARY_CHUNK_TOKEN = settings.batch.max_summary_chunk_token
     success_contexts = [ctx for ctx in contexts
                        if ctx.status == FileStatus.PH2_OK
@@ -342,28 +391,10 @@ async def _run_unit_analysis(
     results_queue: asyncio.Queue = asyncio.Queue()
     semaphore = asyncio.Semaphore(settings.concurrency.max_concurrency)
 
-    constants_context = ""
-    try:
-        constants_context = await fetch_constants_context(client)
-    except Exception as e:
-        log_process("PHASE:2", "ERROR", f"상수 컨텍스트 수집 실패: {e}")
+    # 상수 컨텍스트는 Neo4j CONSTANT 노드 기반 — catalog와 무관. 없으면 빈 문자열 반환.
+    # 테이블 샘플은 catalog 미연결 환경이라 이 경로에서는 수집하지 않고 Jinja 조건부 렌더링으로 섹션 생략.
+    constants_context = await fetch_constants_context(client)
 
-
-    async def _collect_table_names(proc_name: str, directory: str, file_name: str) -> list[str]:
-        """프로시저가 접근하는 테이블명 목록을 수집."""
-        try:
-            query = (
-                "MATCH (p {procedure_name: $proc_name, directory: $directory, file_name: $file_name})"
-                "-[:PARENT_OF*]->(dml)-[:READS_FROM|WRITES_TO]->(t:Table) "
-                "RETURN DISTINCT t.name AS table_name"
-            )
-            params = {"proc_name": proc_name, "directory": directory, "file_name": file_name}
-            results = await client.execute_queries([query], params)
-            rows = results[0] if results and results[0] else []
-            return [r.get("table_name") for r in rows if r.get("table_name")]
-        except Exception as e:
-            log_process("PHASE:2", "ERROR", f"테이블명 수집 실패 ({proc_name}): {e}")
-            return []
 
     async def _collect_called_procedure_summaries(proc_name: str, directory: str, file_name: str, max_items: int = 20) -> str:
         """CALLS 관계로 연결된 프로시저들의 summary를 수집."""
@@ -401,18 +432,15 @@ async def _run_unit_analysis(
                 # 변수 선언/초기값 수집
                 var_decls = _collect_variable_declarations(processor, proc_key, VARIABLE_DECLARATION_TYPES)
 
-                # 테이블 스키마 정보 수집
-                table_names = await _collect_table_names(info.procedure_name, processor.full_directory, processor.file_name)
-                datasource_name = getattr(orchestrator, "datasource_name", "")
-                table_data = await fetch_table_context(client, table_names, datasource_name) if table_names else ""
+                # catalog 미연결: 테이블 sample 데이터 없이 진행
+                table_data = ""
 
                 # 호출된 프로시저 요약 수집 (CALL 관계)
                 called_procedure_summaries = await _collect_called_procedure_summaries(
                     info.procedure_name, processor.full_directory, processor.file_name
                 )
 
-                # 스켈레톤+리프 방식: 중간 노드는 원문, 리프만 summary로 대체
-                # → 중복 없음, 제어 흐름 보존, 요약의 요약 방지
+                # unit_analysis LLM 은 summary 만 생성. Rule/Example/Question 은 proc_root.analysis_map 사용.
                 if proc_root:
                     deep_compact = proc_root.get_deep_compact_code()
                     if deep_compact and deep_compact.strip():
@@ -423,15 +451,14 @@ async def _run_unit_analysis(
                         chunks = _split_summaries_by_token(summaries, MAX_SUMMARY_CHUNK_TOKEN)
                 else:
                     chunks = _split_summaries_by_token(summaries, MAX_SUMMARY_CHUNK_TOKEN)
+
                 if not chunks:
                     final_summary = ""
-                    final_analysis: Dict[str, Any] = {}
                 else:
                     async def process_chunk(chunk):
                         r = await asyncio.to_thread(
                             _analyze_summary_only, chunk, orchestrator.api_key, orchestrator.locale,
                             variable_declarations=var_decls,
-                            table_sample_data=table_data,
                             constants_context=constants_context,
                             called_procedure_summaries=called_procedure_summaries,
                         )
@@ -439,11 +466,6 @@ async def _run_unit_analysis(
 
                     chunk_results_raw = await _run_chunks_continuous(chunks, process_chunk, label="DBMS_UNIT_SUMMARY")
                     chunk_summaries = [r.get('summary', '') for r in chunk_results_raw if r and r.get('summary')]
-                    # 마지막 유효 chunk 의 분석 결과(Rule/Example/Question)를 우선 채택
-                    final_analysis = next(
-                        (r for r in reversed(chunk_results_raw) if r and (r.get('rules') or r.get('examples') or r.get('questions'))),
-                        {},
-                    )
 
                     if not chunk_summaries:
                         final_summary = ""
@@ -454,25 +476,23 @@ async def _run_unit_analysis(
                         r = await asyncio.to_thread(
                             _analyze_summary_only, combined, orchestrator.api_key, orchestrator.locale,
                             variable_declarations=var_decls,
-                            table_sample_data=table_data,
                             constants_context=constants_context,
                             called_procedure_summaries=called_procedure_summaries,
                         )
-                        if isinstance(r, dict):
-                            final_summary = r.get('summary') or "\n\n".join(chunk_summaries)
-                            if r.get('rules') or r.get('examples') or r.get('questions'):
-                                final_analysis = r
-                        else:
-                            final_summary = "\n\n".join(chunk_summaries)
+                        final_summary = r.get('summary') if isinstance(r, dict) else "\n\n".join(chunk_summaries)
+                        final_summary = final_summary or "\n\n".join(chunk_summaries)
 
                 if not final_summary:
                     await results_queue.put({"type": "success", "procedure": info.procedure_name, "file": ctx.file_name})
                     return
 
+                # proc_root.analysis_map (Bottom-up 결과) → Python 후처리로 rule_id/statement 부여 + examples 분리
+                final_analysis = _build_final_analysis(proc_root)
+
                 # Summary + Example Mapping 쿼리 조립
                 queries = _build_procedure_summary_queries(processor, info, final_summary, final_analysis)
                 if queries:
-                    async for batch in run_graph_queries(client, queries, cypher_lock=pipeline._cypher_lock):
+                    async for batch in run_graph_queries(client, queries):
                         await results_queue.put({"type": "graph", "graph": batch})
                 await results_queue.put({"type": "success", "procedure": info.procedure_name, "file": ctx.file_name})
             except Exception as e:
@@ -551,11 +571,11 @@ async def _summarize_table(
 
 
 async def _run_table_summary(
-    pipeline: Any,
+    ctx: Any,
     contexts: List[FileAnalysisContext],
-    client: Neo4jClient,
-    orchestrator: Any,
 ) -> AsyncGenerator[bytes, None]:
+    client = ctx.client
+    orchestrator = ctx.orchestrator
     all_table_stores = {}
     all_ddl_metadata = {}
     dbms_name = None
@@ -602,7 +622,7 @@ async def _run_table_summary(
         if queries:
             total_queries += len(queries)
             yield emit_message(f"   ✓ [{completed}/{total}] 테이블 요약 완료")
-            async for batch in run_graph_queries(client, queries, cypher_lock=pipeline._cypher_lock):
+            async for batch in run_graph_queries(client, queries):
                 yield emit_data(graph=batch)
         yield emit_phase_event(2, "AI 분석", "in_progress", 85 + int(completed / total * 15), {"step": "테이블/컬럼 설명 요약", "done": completed, "total": total})
 
@@ -614,13 +634,11 @@ async def _run_table_summary(
 
 # ========== Phase 3 통합 진입점 ==========
 async def run_phase_post(
-    pipeline: Any,
+    ctx: Any,
     contexts: List[FileAnalysisContext],
-    client: Neo4jClient,
-    orchestrator: Any,
 ) -> AsyncGenerator[bytes, None]:
     """Phase 3: 후처리 - 프로시저 요약 → 테이블 요약"""
-    async for chunk in _run_unit_analysis(pipeline, contexts, client, orchestrator):
+    async for chunk in _run_unit_analysis(ctx, contexts):
         yield chunk
-    async for chunk in _run_table_summary(pipeline, contexts, client, orchestrator):
+    async for chunk in _run_table_summary(ctx, contexts):
         yield chunk

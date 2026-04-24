@@ -65,6 +65,11 @@ async def analyze_source_code(request: Request):
 
     name_case = (body.get("nameCase") or "original").strip().lower()
     datasource_name = (body.get("datasourceName") or "").strip()
+    if not datasource_name:
+        raise HTTPException(
+            400,
+            "datasourceName 필수 — catalog API 호출 시 MindsDB datasource 이름 지정 필요",
+        )
 
     await source_analyze_service.validate_llm_api_key(api_key)
 

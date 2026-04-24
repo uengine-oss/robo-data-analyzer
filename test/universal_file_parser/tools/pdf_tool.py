@@ -8,26 +8,19 @@ from langchain_core.tools import tool
 def make_pdf_extract(state):
     @tool
     def pdf_extract(pages: str = "1-5") -> dict:
-        """PDF 에서 텍스트와 표를 페이지별로 추출.
+        """PDF 에서 지정된 페이지들의 텍스트와 표를 추출.
 
         Args:
-            pages: 페이지 지정. "1-5" (범위), "all" (전체), "1,3,5" (복수 선택)
+            pages: "1-5" (범위), "all" (전체), "1,3,5" (복수), "6-10" 등.
+                   큰 PDF 는 페이지 구간 나눠서 여러 번 호출 권장.
 
         Returns:
-            {
-                "total_pages": int,
-                "pages": [
-                    {"page": 1, "text": "...", "tables": [[...]]},
-                    ...
-                ]
-            }
-
-        반환된 dict 를 보고 구조를 파악한 뒤, parse(extracted: dict) -> list 함수를 작성하세요.
+            {"total_pages": int, "pages": [{"page": N, "text": "...", "tables": [[...]]}, ...]}
         """
         try:
             import pdfplumber
         except ImportError:
-            return {"error": "pdfplumber 미설치. `pip install pdfplumber` 필요."}
+            return {"error": "pdfplumber 미설치."}
 
         page_indices = _parse_page_spec(pages)
         result = {"total_pages": 0, "pages": []}
@@ -41,13 +34,10 @@ def make_pdf_extract(state):
                     if idx >= total:
                         continue
                     page = pdf.pages[idx]
-                    text = page.extract_text() or ""
-                    tables = page.extract_tables() or []
-
                     result["pages"].append({
                         "page": idx + 1,
-                        "text": text[:3000],
-                        "tables": tables[:5],
+                        "text": page.extract_text() or "",
+                        "tables": page.extract_tables() or [],
                     })
         except Exception as e:
             return {"error": f"PDF 읽기 실패: {type(e).__name__}: {e}"}
@@ -58,10 +48,10 @@ def make_pdf_extract(state):
 
 
 def _parse_page_spec(spec: str) -> list[int]:
-    """'1-5' → [0,1,2,3,4], 'all' → [0..999], '1,3,5' → [0,2,4]."""
-    spec = spec.strip()
+    """'1-5' → [0..4], 'all' → [0..], '1,3,5' → [0,2,4]."""
+    spec = spec.strip().lower()
     if spec == "all":
-        return list(range(1000))
+        return list(range(10000))
     if "-" in spec:
         start, end = spec.split("-", 1)
         return list(range(int(start) - 1, int(end)))

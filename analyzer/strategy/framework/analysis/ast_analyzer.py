@@ -303,6 +303,7 @@ def _invoke_analysis_llm(
         if called_snippets:
             called_snippets.sort()  # 정렬하여 병렬 처리 순서와 무관하게 캐시 키 일관성 보장
             context_parts.append("called_method_summaries: " + " || ".join(called_snippets))
+            inputs["has_called_methods"] = True
     context = "; ".join(context_parts)
     if context.strip():
         inputs["context"] = context
@@ -409,11 +410,7 @@ def _analyze_code_node(
             called_method_summaries=called_summaries,
             module_fields_context=fields_ctx or None,
             field_initial_values="\n".join(referenced_vars_by_function.get(m.function_id, [])) if referenced_vars_by_function else None,
-            table_sample_data=(
-                (table_sample_data_by_function or {}).get(m.function_id)
-                or table_sample_data
-                or None
-            ),
+            table_sample_data=(table_sample_data_by_function or {}).get(m.function_id),
             constants_context=constants_context or None,
             codebase_conventions=codebase_conventions or None,
         )

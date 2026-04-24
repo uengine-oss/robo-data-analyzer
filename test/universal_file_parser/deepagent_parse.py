@@ -20,6 +20,7 @@ Execute-Verify Loop:
 
 import hashlib
 import logging
+import time
 from pathlib import Path
 
 import yaml
@@ -30,7 +31,7 @@ from config.settings import settings
 
 from .code_validator import validate_parser_code
 from .error_log import AttemptRecord, write_error_log
-from .tools.common_tools import build_common_tools, BINARY_FORMATS
+from .tools.common_tools import build_common_tools
 from .tools.text_tool import make_read_sample
 from .tools.pdf_tool import make_pdf_extract
 from .tools.pptx_tool import make_pptx_extract
@@ -40,8 +41,11 @@ from .tools.docx_tool import make_docx_extract
 logger = logging.getLogger(__name__)
 
 
-MAX_ATTEMPTS = 5
-REPEATED_ERROR_LIMIT = 2
+# 정지 조건 (3중) — 한 파일이 무한정 토큰을 태우지 못하게.
+REPEATED_ERROR_LIMIT = 3            # 같은 에러 signature 연속 N 회
+DEFAULT_MAX_ATTEMPTS = 12           # run_parser 호출 총 횟수 상한
+DEFAULT_WALL_CLOCK_SEC = 60.0       # 에이전트 루프 벽시계 상한
+SIBLING_MAX_BYTES = 1 * 1024 * 1024  # 형제 1개당 로딩 상한 (1MB)
 
 
 # =============================================================================
@@ -100,10 +104,16 @@ def _safe_builtins() -> dict:
 class AgentState:
     """DeepAgent 실행 중 공유 상태 + 시도 이력."""
 
-    def __init__(self, path: str, data: bytes, fmt: str):
+    def __init__(self, path: str, data: bytes, fmt: str,
+                 siblings: list[tuple[str, bytes]] | None = None,
+                 max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+                 wall_clock_sec: float = DEFAULT_WALL_CLOCK_SEC):
         self.path = path
         self.data = data
         self.fmt = fmt                                # 'text_unknown' | 'pdf' | 'pptx' | 'xlsx' | 'docx' | ...
+
+        # 같은 확장자 형제 파일 (그룹 처리 시 제공). 파서 범용성 확인용.
+        self.siblings: list[tuple[str, bytes]] = siblings or []
 
         self.last_code: str | None = None
         self.last_result = None
@@ -116,8 +126,23 @@ class AgentState:
         self.error_signatures: list[str] = []          # 연속 판정용 — 성공 시 리셋
         self.termination_reason: str | None = None
 
+        # 정지 조건
+        self.max_attempts = max_attempts
+        self.wall_clock_sec = wall_clock_sec
+        self.started_at = time.monotonic()
+
     def next_version(self) -> int:
         return len(self.attempts) + 1
+
+    def stop_reason(self) -> str | None:
+        """지금 멈춰야 하면 그 이유, 아니면 None."""
+        if len(self.attempts) >= self.max_attempts:
+            return f"max_attempts({self.max_attempts}) reached"
+        if time.monotonic() - self.started_at > self.wall_clock_sec:
+            return f"wall_clock({self.wall_clock_sec}s) exceeded"
+        if self.is_repeated_error():
+            return f"repeated_error x{REPEATED_ERROR_LIMIT}"
+        return None
 
     def record_attempt(self, phase: str, status: str, *,
                        error_type: str | None = None,
@@ -151,9 +176,13 @@ class AgentState:
 # 도구 조립 — 파일 종류별 extract 도구 + 공통 4개
 # =============================================================================
 
-def build_tools(state: AgentState) -> list[BaseTool]:
-    """파일 종류(state.fmt)에 맞는 extract 도구 + 공통 도구 4개 반환."""
-    common = build_common_tools(state, execute_parser, error_signature)
+def build_tools(state: AgentState, llm=None) -> list[BaseTool]:
+    """파일 종류(state.fmt)에 맞는 extract 도구 + 공통 도구 반환.
+
+    Args:
+        llm: categorize_chunks 에 넘길 LLM 인스턴스 (Phase 2 분류 용)
+    """
+    common = build_common_tools(state, execute_parser, error_signature, llm=llm)
 
     fmt = state.fmt
     if fmt == 'pdf':
@@ -185,9 +214,20 @@ def _load_system_prompt() -> str:
 # 메인 진입점
 # =============================================================================
 
-def generate_parser_with_llm(path: str, data: bytes, fmt_hint: str = "") \
+def generate_parser_with_llm(path: str, data: bytes, fmt_hint: str = "",
+                              siblings: list[tuple[str, bytes]] | None = None,
+                              max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+                              wall_clock_sec: float = DEFAULT_WALL_CLOCK_SEC) \
         -> tuple[object, str | None, int]:
     """DeepAgent 로 parse 코드 생성 + 실행해서 결과 반환.
+
+    Args:
+        path, data: 대표 파일 (파서를 이 파일 기준으로 작성).
+        fmt_hint: 감지된 포맷 (unknown/pdf/xlsx/...).
+        siblings: 같은 확장자 형제 파일 [(path, data), ...]. 있으면 scan_siblings /
+                  test_on_corpus 도구로 에이전트가 범용성 검증 가능.
+        max_attempts: run_parser 호출 총 상한.
+        wall_clock_sec: 에이전트 루프 벽시계 상한.
 
     Returns:
         (parsed_result, parser_code, total_tokens)
@@ -206,11 +246,23 @@ def generate_parser_with_llm(path: str, data: bytes, fmt_hint: str = "") \
         logger.error("langchain create_agent import 실패: %s", e)
         return None, None, 0
 
-    state = AgentState(path=path, data=data, fmt=fmt_hint or 'unknown')
-    tools = build_tools(state)
+    # 형제 파일 크기 상한 (1MB) — 메모리 안전 + 토큰 폭주 방지
+    bounded_siblings = [
+        (p, d) for p, d in (siblings or []) if len(d) <= SIBLING_MAX_BYTES
+    ]
+
+    state = AgentState(
+        path=path, data=data, fmt=fmt_hint or 'unknown',
+        siblings=bounded_siblings,
+        max_attempts=max_attempts,
+        wall_clock_sec=wall_clock_sec,
+    )
     system_prompt = _load_system_prompt()
 
     llm = get_llm(api_key=settings.llm.api_key, model=settings.llm.model)
+
+    # llm 을 categorize_chunks 도구에 전달 (Phase 2 일괄 분류용)
+    tools = build_tools(state, llm=llm)
 
     middleware = [
         TodoListMiddleware(),
@@ -226,41 +278,61 @@ def generate_parser_with_llm(path: str, data: bytes, fmt_hint: str = "") \
     )
 
     extract_tool_name = _extract_tool_name_for(fmt_hint)
+    sibling_note = (
+        f"형제 파일 {len(bounded_siblings)}개 제공됨 — scan_siblings / test_on_corpus "
+        f"도구로 파서를 그 파일들에도 돌려보고 submit 하세요.\n"
+        if bounded_siblings else
+        "형제 파일 없음 — 이 파일 단독 기준.\n"
+    )
     user_msg = (
         f"파일 경로: {path}\n"
         f"파일 크기: {len(data)} bytes\n"
         f"파일 종류: {fmt_hint or 'unknown'}\n"
-        f"최대 시도: {MAX_ATTEMPTS}\n\n"
-        f"작업 순서:\n"
-        f"  1. {extract_tool_name} 으로 재료 확인\n"
-        f"  2. parse() 작성 (serialize 불필요)\n"
-        f"  3. run_parser 로 실행 — 짧은 요약만 받음\n"
-        f"  4. inspect_result 로 청크 샘플 + 카테고리 분포 확인 (필수)\n"
-        f"  5. 내용이 이상하면 (카테고리 틀림 / 섹션 섞임 / 필드 누락 등)\n"
-        f"     사유와 함께 수정 후 3번으로 복귀\n"
-        f"  6. 깨끗하면 submit_parser 로 제출\n\n"
-        f"같은 에러 연속 {REPEATED_ERROR_LIMIT}회 시 포기."
+        f"{sibling_note}\n"
+        f"작업: {extract_tool_name} → parse() 작성 → run_parser → inspect_result → "
+        f"(형제 있으면) test_on_corpus → submit_parser\n\n"
+        f"정지 조건 (아무거나 먼저 걸리면 즉시 제출 or 포기):\n"
+        f"  - 같은 에러 signature 연속 {REPEATED_ERROR_LIMIT}회\n"
+        f"  - run_parser 총 {max_attempts}회\n"
+        f"  - 벽시계 {wall_clock_sec:.0f}초"
     )
 
     total_tokens = 0
     try:
-        result = agent.invoke({"messages": [{"role": "user", "content": user_msg}]})
+        # recursion_limit 사실상 제한 없음 (LangGraph 내부 안전치)
+        result = agent.invoke(
+            {"messages": [{"role": "user", "content": user_msg}]},
+            config={"recursion_limit": 1000},
+        )
         total_tokens = _extract_token_usage(result)
     except Exception as e:
         logger.warning("agent.invoke 실패: %s", e)
         state.termination_reason = f"agent_error: {type(e).__name__}: {str(e)[:100]}"
         write_error_log(path, len(data), state, fmt_hint)
+        # agent 실행 중단됐더라도 exec 성공한 결과가 있으면 그거라도 사용
+        if state.last_result is not None:
+            logger.info("agent 중단 but exec 성공 결과 있음 → 그 결과 사용")
+            return state.last_result, state.last_code, total_tokens
         return None, None, total_tokens
 
     if state.submitted_code:
         state.termination_reason = "submitted"
         return state.last_result, state.submitted_code, total_tokens
 
-    # 미제출 종료
+    # submit 없이 종료됐지만 **exec 성공한 결과가 남아있으면** 그 결과를 사용.
+    # AI 완벽주의로 submit 못하고 끝난 경우를 구제. 에러는 아니지만 "미제출" 기록.
+    if state.last_result is not None:
+        logger.warning(
+            "submit 없이 agent 종료 — but last_result 있음 (v%d). 그 결과 사용.",
+            state.next_version() - 1,
+        )
+        state.termination_reason = "used_last_result_without_submit"
+        write_error_log(path, len(data), state, fmt_hint)  # 기록은 남김
+        return state.last_result, state.last_code, total_tokens
+
+    # 진짜 실패 — 결과 자체가 없음
     if state.is_repeated_error():
         state.termination_reason = "repeated_error"
-    elif len(state.attempts) >= MAX_ATTEMPTS:
-        state.termination_reason = "max_attempts_exceeded"
     else:
         state.termination_reason = "agent_stopped_without_submit"
 

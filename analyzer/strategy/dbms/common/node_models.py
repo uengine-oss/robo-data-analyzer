@@ -90,6 +90,17 @@ class StatementNode:
     sibling_context: Optional[str] = None  # 이전 형제 컨텍스트
     ok: bool = True  # LLM 분석 성공 여부 (자식 실패 시 부모도 False)
 
+    # Bottom-up 누적 결과 — 노드별 Rule/Example/Question 등을 담는 map
+    # 예: {"rules": [...], "questions": [...]}
+    # 구조 래퍼: 자식 것 그대로 통과
+    # 의미 부모: 자식 것 받아 자기 조건 합침
+    # 리프: 자기 business 가 있으면 생성, 없으면 빈 배열/없음
+    analysis_map: Dict[str, Any] = field(default_factory=dict)
+
+    # antlr-parser 의 initializerContainsMethodCall 플래그 매핑
+    # ASSIGNMENT/IF/ELSIF/RETURN 등의 표현식에 함수 호출 존재 여부
+    initializer_contains_method_call: bool = False
+
     # 비동기 이벤트
     completion_event: asyncio.Event = field(init=False, repr=False)
     context_ready_event: asyncio.Event = field(init=False, repr=False)
@@ -101,6 +112,15 @@ class StatementNode:
     def get_raw_code(self) -> str:
         """라인 번호를 포함하여 노드의 원문 코드를 반환합니다."""
         return '\n'.join(f"{line_no}: {text}" for line_no, text in self.lines)
+
+    def is_structural(self) -> bool:
+        """Bottom-up Rule 처리에서 구조 래퍼 (자식 rules 통과) 인지 판정.
+
+        구조 래퍼: PROCEDURE/FUNCTION/TRIGGER/BEGIN/FILE 등 — 조건 없는 껍데기.
+        나머지는 전부 rule_target (의미 부모 or 리프) 로 취급됨.
+        """
+        from analyzer.strategy.dbms.common.analysis_constants import STRUCTURAL_NODE_TYPES
+        return self.node_type in STRUCTURAL_NODE_TYPES
 
     def get_compact_code(self) -> str:
         """자식 요약을 포함한 부모 코드(LLM 입력용)를 생성합니다.
@@ -458,6 +478,37 @@ class AnalysisBatch:
             code_parts.append('\n'.join(code_lines))
 
         return '\n\n'.join(code_parts), '\n\n'.join(context_parts)
+
+    def build_node_metadata(self) -> List[Dict[str, Any]]:
+        """배치 내 각 노드의 Bottom-up 관련 메타데이터.
+
+        node_analysis 프롬프트가 i번째 코드 ↔ i번째 메타 매핑해 분기 렌더링.
+
+        Returns:
+            [{"node_category": "meaningful|leaf",
+              "child_rules": [...], "child_questions": [...]}, ...]
+            (structural 은 LLM 호출 스킵되므로 여기에 포함 안 됨)
+        """
+        metadata: List[Dict[str, Any]] = []
+        for node in self.nodes:
+            category = "meaningful" if node.has_children else "leaf"
+
+            child_rules: List[dict] = []
+            child_questions: List[dict] = []
+            if node.has_children:
+                for child in node.children:
+                    cmap = child.analysis_map or {}
+                    if cmap.get("rules"):
+                        child_rules.extend(cmap["rules"])
+                    if cmap.get("questions"):
+                        child_questions.extend(cmap["questions"])
+
+            metadata.append({
+                "node_category": category,
+                "child_rules": child_rules,
+                "child_questions": child_questions,
+            })
+        return metadata
 
     def build_dml_payload(self) -> Optional[Tuple[str, str]]:
         """DML 노드만 추린 코드와 컨텍스트를 분리하여 반환합니다.

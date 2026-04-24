@@ -271,6 +271,11 @@ class AnalysisContext:
         self.target = (target or "java").lower()
         self.name_case = (name_case or "original").lower()
         self.datasource_name = (datasource_name or "").strip()
+        if not self.datasource_name:
+            raise ValueError(
+                "datasource_name is required — "
+                "catalog API 호출 시 어느 MindsDB datasource를 쓸지 지정 필수"
+            )
         self.dirs = get_analysis_directories(strategy)
     
     def get_directory_dirs(self, directory: str) -> dict[str, str]:

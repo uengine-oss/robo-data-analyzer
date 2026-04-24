@@ -49,7 +49,7 @@ async def run_phase_llm(
                 async def on_queries_ready(queries, batch_id, total_batches):
                     if not queries:
                         return
-                    async for batch in run_graph_queries(client, queries, cypher_lock=ctx.cypher_lock):
+                    async for batch in run_graph_queries(client, queries):
                         for node in batch.get("Nodes", []):
                             all_nodes[node["Node ID"]] = node
                         for rel in batch.get("Relationships", []):
@@ -156,9 +156,9 @@ async def run_phase_llm(
 
     await asyncio.gather(*tasks, return_exceptions=True)
 
-    # 후처리 (프로시저 요약, 테이블 요약, 변수 요약)
+    # 후처리 (프로시저 요약, 테이블 요약)
     from analyzer.strategy.dbms.pipeline.phase_summary import run_phase_post
-    async for chunk in run_phase_post(pipeline, contexts, client, orchestrator):
+    async for chunk in run_phase_post(ctx, contexts):
         yield chunk
 
     yield emit_phase_event(2, "AI 분석", "completed", 100, {"batches": stats.llm_batches_executed})

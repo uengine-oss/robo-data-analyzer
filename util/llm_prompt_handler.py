@@ -17,9 +17,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from functools import lru_cache
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import yaml
 from jinja2 import Template, TemplateError
@@ -31,94 +32,41 @@ from langchain_core.runnables import RunnablePassthrough, RunnableLambda
 
 from util.llm_audit_logger import invoke_with_audit
 from client.llm_client import get_llm
+from config.settings import settings
 
-_MAX_RETRIES = 3
-_RETRY_BASE_DELAY = 2.0  # seconds
+# 공용 가드레일 (sanitize · retry 분류 · 피드백 빌더) — 모든 LLM 호출 경로에서 동일 동작 보장
+from util.llm_guardrails import (
+    sanitize_llm_output as _sanitize_llm_output,
+    build_retry_feedback as _build_retry_feedback,
+    is_parse_failure,
+    is_rate_limit,
+    is_bad_request_parse,
+)
 
-# ---------------------------------------------------------------------------
-# LLM 출력 정제 (JSON 파싱 전처리)
-# ---------------------------------------------------------------------------
+# 재시도/증액 설정은 settings.llm 에서 읽음 (env 로 조정 가능)
+#   LLM_MAX_RETRIES           — rate/400 계열 기본 상한 (default 3)
+#   LLM_MAX_PARSE_RETRIES     — parse 실패 상한 (default 5)
+#   LLM_RETRY_BASE_DELAY      — exponential backoff 기본값
+#   LLM_PARSE_RETRY_TOKEN_BUMP — parse 실패 시 max_tokens 증액 배수 (default 1.5)
+#   LLM_MAX_TOKEN_CEILING     — 모델 context 상한 (default 32768)
 
-# JSON 파싱을 깨뜨리는 제어 문자 (null byte, SOH, STX 등) 매칭 패턴.
-# 줄바꿈(\n=0x0a), 캐리지리턴(\r=0x0d), 탭(\t=0x09)은 유효하므로 제외.
-_CONTROL_CHAR_RE = _re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f]')
+# OutputParserException 메시지에서 실패한 응답 본문만 추출
+_INVALID_JSON_TAIL_RE = re.compile(
+    r'Invalid json output:\s*(.*?)(?:For troubleshooting|$)',
+    re.DOTALL,
+)
 
-# JSON 표준 이스케이프 시퀀스에서 백슬래시 뒤에 올 수 있는 유효 문자
-_VALID_JSON_ESCAPE_CHARS = frozenset({'"', '\\', '/', 'b', 'f', 'n', 'r', 't'})
-
-
-def _fix_invalid_json_escapes(s: str) -> str:
-    r"""JSON 문자열 내부의 잘못된 이스케이프 시퀀스를 수리한다.
-
-    유효한 이스케이프(\" \\ \/ \b \f \n \r \t \uXXXX)는 그대로 보존하고,
-    그 외(\0, \a, \' 등)는 백슬래시만 제거하여 일반 문자로 변환한다.
-
-    예: ``"hello\\world"`` -> ``"helloworld"`` (\\w 는 유효하지 않으므로 \\ 제거)
-    """
-    result = []
-    i = 0
-    while i < len(s):
-        if s[i] == '\\' and i + 1 < len(s):
-            next_ch = s[i + 1]
-            if next_ch in _VALID_JSON_ESCAPE_CHARS:
-                # 유효한 이스케이프 쌍 -> 그대로 유지
-                result.append(s[i])
-                result.append(next_ch)
-                i += 2
-            elif next_ch == 'u' and i + 5 < len(s):
-                # \uXXXX 유니코드 이스케이프 -> 그대로 유지
-                result.append(s[i:i + 6])
-                i += 6
-            else:
-                # 잘못된 이스케이프 -> 백슬래시 제거, 다음 문자만 유지
-                result.append(next_ch)
-                i += 2
-        else:
-            result.append(s[i])
-            i += 1
-    return ''.join(result)
-
-
-def _strip_code_fences(s: str) -> str:
-    """코드펜스(```json ... ```) 래핑과 JSON 값 내부 백틱을 제거한다."""
-    stripped = s.strip()
-    # 코드펜스 래핑 제거: ```json\n...\n``` or ```\n...\n```
-    if stripped.startswith("```"):
-        first_nl = stripped.find("\n")
-        if first_nl != -1:
-            stripped = stripped[first_nl + 1:]
-        if stripped.endswith("```"):
-            stripped = stripped[:-3]
-        stripped = stripped.strip()
-    # JSON 값 내부 백틱 제거 (JSON 키/구조에는 백틱이 없음)
-    stripped = stripped.replace("`", "")
-    return stripped
-
-
-def _sanitize_llm_output(text) -> str:
-    """LLM 응답에서 제어 문자, 코드펜스, 백틱, 잘못된 JSON 이스케이프를 수리하여 파싱 실패를 방지한다.
-
-    AIMessage(content=...) 객체와 순수 str 모두 처리한다.
-    Responses API는 content를 list[dict]로 반환할 수 있으므로 이를 string으로 변환한다.
-    """
-    if hasattr(text, 'content'):
-        # Responses API: content가 list인 경우 text 블록들을 합침
-        if isinstance(text.content, list):
-            text.content = "".join(
-                block.get("text", "") if isinstance(block, dict) else str(block)
-                for block in text.content
-            )
-        text.content = _CONTROL_CHAR_RE.sub('', text.content)
-        text.content = _strip_code_fences(text.content)
-        text.content = _fix_invalid_json_escapes(text.content)
-        return text
-    if isinstance(text, str):
-        text = _CONTROL_CHAR_RE.sub('', text)
-        text = _strip_code_fences(text)
-        return _fix_invalid_json_escapes(text)
-    return text
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_response_tail(error: Exception, limit: int = 600) -> str:
+    """파싱 실패 예외에서 실제 응답 본문(꼬리)만 추출."""
+    m = _INVALID_JSON_TAIL_RE.search(str(error))
+    if not m:
+        return ""
+    body = m.group(1).strip()
+    return body[-limit:] if len(body) > limit else body
 
 
 def _safe_copy(value: Any) -> Any:
@@ -127,6 +75,30 @@ def _safe_copy(value: Any) -> Any:
         return json.loads(json.dumps(value, ensure_ascii=False))
     except (TypeError, ValueError):
         return value
+
+
+def _log_finish_reason(rule_name: str):
+    """LLM 응답의 finish_reason 을 로깅하는 RunnableLambda 팩토리.
+
+    `length` 면 max_tokens 잘림 (JSON invalid 주원인). `content_filter`, `tool_calls` 등도 기록.
+    정상 `stop` 은 로그하지 않음.
+    """
+    def _inner(msg):
+        try:
+            reason = getattr(msg, "response_metadata", None) or {}
+            if isinstance(reason, dict):
+                fr = reason.get("finish_reason")
+                if fr and fr != "stop":
+                    logger.warning(
+                        "[RULE:FINISH] rule=%s finish_reason=%s "
+                        "(%s)", rule_name, fr,
+                        "max_tokens 초과로 응답 잘림 — JSON invalid 원인 가능" if fr == "length"
+                        else "비정상 종료 — JSON parse 실패 가능",
+                    )
+        except Exception:
+            pass
+        return msg
+    return _inner
 
 
 class RuleLoader:
@@ -202,49 +174,83 @@ class RuleLoader:
         rule_path = os.path.join(self.rule_dir, f"{rule_name}.yaml")
 
         llm = get_llm(api_key=api_key, model=model)
-        chain = (
-            RunnablePassthrough()
-            | PromptTemplate.from_template("{prompt}")
-            | llm
-            | RunnableLambda(_sanitize_llm_output)
-            | JsonOutputParser()
-        )
+        current_max_tokens = int(getattr(llm, "max_tokens", None) or 0)
 
+        def _build_chain(llm_inst):
+            return (
+                RunnablePassthrough()
+                | PromptTemplate.from_template("{prompt}")
+                | llm_inst
+                | RunnableLambda(_log_finish_reason(rule_name))
+                | RunnableLambda(_sanitize_llm_output)
+                | JsonOutputParser()
+            )
+
+        cfg = settings.llm
+        chain = _build_chain(llm)
         last_error: Exception | None = None
-        for attempt in range(_MAX_RETRIES + 1):
+        response_tail: str = ""
+        # parse 실패는 max_parse_retries, rate/400 은 max_retries. 둘 중 큰 값으로 루프 돌고 내부 조건으로 분기.
+        loop_max = max(cfg.max_retries, cfg.max_parse_retries)
+        for attempt in range(loop_max + 1):
+            # 재시도 시 이전 오류 원인 + 실패 응답 꼬리를 프롬프트에 덧붙여 모델에 수정 요청
+            current_prompt = prompt_text
+            if attempt > 0 and last_error is not None:
+                current_prompt = prompt_text + "\n\n" + _build_retry_feedback(
+                    last_error, attempt, response_tail=response_tail,
+                )
             try:
                 result = invoke_with_audit(
                     chain,
-                    {"prompt": prompt_text},
+                    {"prompt": current_prompt},
                     prompt_name=f"rules/{self.target_lang}/{rule_name}",
                     input_payload={
                         "inputs": _safe_copy(inputs),
-                        "renderedPrompt": prompt_text,
+                        "renderedPrompt": current_prompt,
                     },
                     metadata={
                         "rule": rule_name,
                         "targetLang": self.target_lang,
                         "rulePath": rule_path,
+                        "retryAttempt": attempt,
                     },
                 )
                 return result
 
             except Exception as e:
                 last_error = e
-                err_str = str(e)
-                is_rate_limit = "429" in err_str or "rate" in err_str.lower() or "quota" in err_str.lower()
-                is_bad_request = "400" in err_str and "parse" in err_str.lower()
+                _is_rate = is_rate_limit(e)
+                _is_bad = is_bad_request_parse(e)
+                _is_parse = is_parse_failure(e)
 
-                if (is_rate_limit or is_bad_request) and attempt < _MAX_RETRIES:
-                    delay = _RETRY_BASE_DELAY * (2 ** attempt)
-                    logger.info(
-                        "[RULE] Rate Limit 재시도 | rule=%s | attempt=%d/%d | %.1fs 후",
-                        rule_name, attempt + 1, _MAX_RETRIES, delay,
+                # 오류 유형별로 허용 재시도 횟수 분기
+                effective_max = cfg.max_parse_retries if _is_parse else cfg.max_retries
+
+                if (_is_rate or _is_bad or _is_parse) and attempt < effective_max:
+                    delay = cfg.retry_base_delay * (2 ** attempt) if (_is_rate or _is_bad) else 0.5
+                    reason = "parse 실패" if _is_parse else ("rate" if _is_rate else "400")
+
+                    if _is_parse:
+                        # parse 실패 → 실패 응답 꼬리 저장 + max_tokens 증액
+                        response_tail = _extract_response_tail(e)
+                        if current_max_tokens:
+                            new_max = min(int(current_max_tokens * cfg.parse_retry_token_bump), cfg.max_token_ceiling)
+                            if new_max > current_max_tokens:
+                                logger.info(
+                                    "[RULE] max_tokens 증액 | rule=%s | %d → %d (parse 실패 대응)",
+                                    rule_name, current_max_tokens, new_max,
+                                )
+                                current_max_tokens = new_max
+                                chain = _build_chain(llm.bind(max_tokens=new_max))
+
+                    logger.warning(
+                        "[RULE] 재시도 | rule=%s | attempt=%d/%d | 원인=%s | %.1fs 후",
+                        rule_name, attempt + 1, effective_max, reason, delay,
                     )
                     time.sleep(delay)
                     continue
 
-                logger.error("[RULE] 프롬프트 실행 실패 | rule=%s | error=%s", rule_name, e)
+                logger.error("[RULE] 프롬프트 실행 실패 | rule=%s | error=%s", rule_name, e, exc_info=True)
                 raise RuntimeError(f"{rule_name} 프롬프트 실행 중 오류: {e}")
 
         raise RuntimeError(f"{rule_name} 프롬프트 실행 중 오류: {last_error}")
@@ -266,43 +272,72 @@ class RuleLoader:
         rule_path = os.path.join(self.rule_dir, f"{rule_name}.yaml")
 
         llm = get_llm(api_key=api_key, model=model)
-        chain = (
-            RunnablePassthrough()
-            | PromptTemplate.from_template("{prompt}")
-            | llm
-            | RunnableLambda(_sanitize_llm_output)
-            | JsonOutputParser()
-        )
+        current_max_tokens = int(getattr(llm, "max_tokens", None) or 0)
+
+        def _build_chain(llm_inst):
+            return (
+                RunnablePassthrough()
+                | PromptTemplate.from_template("{prompt}")
+                | llm_inst
+                | RunnableLambda(_log_finish_reason(rule_name))
+                | RunnableLambda(_sanitize_llm_output)
+                | JsonOutputParser()
+            )
 
         from util.llm_audit_logger import ainvoke_with_audit
 
+        cfg = settings.llm
         limiter = get_rate_limiter()
+        chain = _build_chain(llm)
         last_error: Exception | None = None
-        for attempt in range(_MAX_RETRIES + 1):
+        response_tail: str = ""
+        loop_max = max(cfg.max_retries, cfg.max_parse_retries)
+        for attempt in range(loop_max + 1):
+            current_prompt = prompt_text
+            if attempt > 0 and last_error is not None:
+                current_prompt = prompt_text + "\n\n" + _build_retry_feedback(
+                    last_error, attempt, response_tail=response_tail,
+                )
             try:
                 async with limiter:
                     result = await ainvoke_with_audit(
                         chain,
-                        {"prompt": prompt_text},
+                        {"prompt": current_prompt},
                         prompt_name=f"rules/{self.target_lang}/{rule_name}",
-                        input_payload={"inputs": _safe_copy(inputs), "renderedPrompt": prompt_text},
-                        metadata={"rule": rule_name, "targetLang": self.target_lang, "rulePath": rule_path},
+                        input_payload={"inputs": _safe_copy(inputs), "renderedPrompt": current_prompt},
+                        metadata={"rule": rule_name, "targetLang": self.target_lang, "rulePath": rule_path, "retryAttempt": attempt},
                     )
                 return result
             except Exception as e:
                 last_error = e
-                err_str = str(e)
-                is_rate_limit = "429" in err_str or "rate" in err_str.lower() or "quota" in err_str.lower()
-                is_bad_request = "400" in err_str and "parse" in err_str.lower()
-                if (is_rate_limit or is_bad_request) and attempt < _MAX_RETRIES:
-                    delay = _RETRY_BASE_DELAY * (2 ** attempt)
-                    logger.info(
-                        "[RULE] Rate Limit 재시도 | rule=%s | attempt=%d/%d | %.1fs 후",
-                        rule_name, attempt + 1, _MAX_RETRIES, delay,
+                _is_rate = is_rate_limit(e)
+                _is_bad = is_bad_request_parse(e)
+                _is_parse = is_parse_failure(e)
+                effective_max = cfg.max_parse_retries if _is_parse else cfg.max_retries
+
+                if (_is_rate or _is_bad or _is_parse) and attempt < effective_max:
+                    delay = cfg.retry_base_delay * (2 ** attempt) if (_is_rate or _is_bad) else 0.5
+                    reason = "parse 실패" if _is_parse else ("rate" if _is_rate else "400")
+
+                    if _is_parse:
+                        response_tail = _extract_response_tail(e)
+                        if current_max_tokens:
+                            new_max = min(int(current_max_tokens * cfg.parse_retry_token_bump), cfg.max_token_ceiling)
+                            if new_max > current_max_tokens:
+                                logger.info(
+                                    "[RULE] max_tokens 증액 | rule=%s | %d → %d (parse 실패 대응)",
+                                    rule_name, current_max_tokens, new_max,
+                                )
+                                current_max_tokens = new_max
+                                chain = _build_chain(llm.bind(max_tokens=new_max))
+
+                    logger.warning(
+                        "[RULE] 재시도 | rule=%s | attempt=%d/%d | 원인=%s | %.1fs 후",
+                        rule_name, attempt + 1, effective_max, reason, delay,
                     )
-                    await asyncio.sleep(delay)  # 논블로킹 대기
+                    await asyncio.sleep(delay)
                     continue
-                logger.error("[RULE] 프롬프트 실행 실패 | rule=%s | error=%s", rule_name, e)
+                logger.error("[RULE] 프롬프트 실행 실패 | rule=%s | error=%s", rule_name, e, exc_info=True)
                 raise RuntimeError(f"{rule_name} 프롬프트 실행 중 오류: {e}")
         raise RuntimeError(f"{rule_name} 프롬프트 실행 중 오류: {last_error}")
 
@@ -337,10 +372,19 @@ class PromptRegistry:
     # ═══════════════════════════════════════════════════════════════
 
     @staticmethod
-    def call_extract(items: List[Dict], language: str, api_key: str) -> Dict[str, Any]:
-        """함수 호출 관계 추출. -> rules/framework/call_extract.yaml"""
+    def call_extract(
+        items: List[Dict], language: str, api_key: str,
+        codebase_conventions: str = "",
+    ) -> Dict[str, Any]:
+        """함수 호출 관계 추출. -> rules/framework/call_extract.yaml
+
+        codebase_conventions: Profile Agent 가 정리한 반복 패턴 + "심볼 역할 분류" 표.
+        LLM 에 래퍼 매크로 언래핑·로깅 제외 지침을 전달하는 용도.
+        """
         return get_rule_loader("framework").execute(
-            "call_extract", {"items": items, "language": language}, api_key=api_key,
+            "call_extract",
+            {"items": items, "language": language, "codebase_conventions": codebase_conventions},
+            api_key=api_key,
         )
 
     @staticmethod

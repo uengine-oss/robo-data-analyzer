@@ -70,6 +70,14 @@ class LLMConfig:
     # LLM 캐싱 설정
     cache_enabled: bool = field(default_factory=lambda: os.getenv("LLM_CACHE_ENABLED", "true").lower() == "true")
     cache_db_path: str = field(default_factory=lambda: os.getenv("LLM_CACHE_DB", ".llm_cache.db"))
+    # 재시도 설정 — 공용 가드레일에서 참조
+    max_retries: int = field(default_factory=lambda: int(os.getenv("LLM_MAX_RETRIES", "3")))
+    max_parse_retries: int = field(default_factory=lambda: int(os.getenv("LLM_MAX_PARSE_RETRIES", "5")))
+    retry_base_delay: float = field(default_factory=lambda: float(os.getenv("LLM_RETRY_BASE_DELAY", "2.0")))
+    # parse 실패 시 max_tokens 증액 배수 (직전 값 × N, 모델 한도까지 clamp)
+    parse_retry_token_bump: float = field(default_factory=lambda: float(os.getenv("LLM_PARSE_RETRY_TOKEN_BUMP", "1.5")))
+    # 모델 context 상한 (증액 clamp 용). frentis/gpt-4.1 = 32768.
+    max_token_ceiling: int = field(default_factory=lambda: int(os.getenv("LLM_MAX_TOKEN_CEILING", "32768")))
 
 
 @dataclass(frozen=True)

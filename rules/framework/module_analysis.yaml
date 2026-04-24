@@ -41,7 +41,9 @@ prompt: |
   - 구체적 계산식, 분기 조건, 하드코딩 값, 상태 전이를 절대 생략하지 마세요
   - 기술적 식별자(모듈명, 메서드명)는 의미로 풀어 설명
   - 비즈니스 도메인 필드명(엔티티 속성명)은 그대로 유지
-  - prev_summary가 있으면 이번 items와 통합하여 일관된 요약 작성
+  {% if prev_summary %}
+  - prev_summary 를 이번 items 와 통합하여 일관된 요약 작성
+  {% endif %}
 
   ★ 2. 스테레오타입 (moduleStereotype):
   {% if kind == "FILE" %}

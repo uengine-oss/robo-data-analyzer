@@ -146,7 +146,13 @@ def detect(path: str, data: bytes) -> tuple[str, str]:
     """
     encoding = detect_encoding(data)
 
-    # 바이너리 차단 (null byte 포함 시)
+    # 0. 문서 바이너리 매직바이트 먼저 확인 (PDF/PPTX/XLSX/DOCX)
+    # null byte 차단보다 선행 — Office 파일은 zip 컨테이너라 내부에 null 존재.
+    doc_fmt = _detect_document_binary(path, data)
+    if doc_fmt:
+        return (doc_fmt, encoding)
+
+    # 바이너리 차단 (일반 이진 파일)
     if b'\x00' in data[:8192]:
         return ('binary', encoding)
 
@@ -184,3 +190,34 @@ def detect(path: str, data: bytes) -> tuple[str, str]:
 
     # 5. 최종 미지
     return ('unknown', encoding)
+
+
+# =============================================================================
+# 문서 바이너리 감지 (PDF / Office 계열)
+# =============================================================================
+
+def _detect_document_binary(path: str, data: bytes) -> str | None:
+    """PDF/PPTX/XLSX/DOCX 여부 판정. 아니면 None.
+
+    Office 파일은 전부 PK (zip) 로 시작하므로 내부 식별을 위해 확장자 병행.
+    """
+    head = data[:16]
+
+    if head.startswith(b'%PDF'):
+        return 'pdf'
+
+    if head.startswith(b'PK'):
+        ext = Path(path).suffix.lower()
+        if ext == '.pptx':
+            return 'pptx'
+        if ext == '.xlsx':
+            return 'xlsx'
+        if ext == '.docx':
+            return 'docx'
+        # zip 이지만 Office 확장자 아니면 일반 zip → 바이너리 차단
+        return 'binary'
+
+    if head[:15] == b'HWP Document Fi':
+        return 'hwp'     # 현재 스코프 외지만 감지는 함
+
+    return None

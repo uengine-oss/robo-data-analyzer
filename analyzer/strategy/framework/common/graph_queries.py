@@ -542,10 +542,10 @@ def build_root_package_queries(
     # 1. root PACKAGE 노드 생성
     queries.append(_merge_node_query("PACKAGE", "fqn", "root", {"name": "root"}))
 
-    # 2. 최상위 패키지 (fqn에 .이 없는) → root 연결
+    # 2. 최상위 패키지 (fqn에 .이 없는) → root 연결 (root 자신은 제외)
     expanded = set(_expand_package_fqns(package_fqns))
     for fqn in expanded:
-        if fqn and "." not in fqn:
+        if fqn and fqn != "root" and "." not in fqn:
             queries.append(_merge_rel_query(
                 "PACKAGE", "fqn", fqn, "PACKAGE", "fqn", "root", "BELONGS_TO_PACKAGE",
             ))

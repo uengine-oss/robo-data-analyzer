@@ -1,272 +1,184 @@
 name: "node_analysis"
-description: "저장 프로시저/함수 코드 범위별 분석"
-version: "3.0"
+description: "SQL 프로시저 코드 범위별 분석 — summary·actor + Bottom-up Rule/Example/Question 생성"
+version: "6.0"
 
 input_schema:
-  required: []
-  optional: []
+  required:
+    - code
+    - ranges
+    - count
+    - locale
+  optional:
+    - context
+    - has_dml
+    - is_unit_root
+    - node_metadata      # [{"node_category": "meaningful|leaf", "child_rules": [...], "child_questions": [...]}, ...]
 
 prompt: |
   [ROLE]
-  당신은 저장 프로시저/함수 코드 분석 전문가입니다. 
-  주어진 저장 프로시저/함수 코드를 체계적이고 정확하게 분석하여 구조화된 정보를 추출해야 합니다.
-  
-  
-  [LANGUAGE_SETTING]
+  SQL 저장 프로시저·함수 코드의 각 범위를 분석해:
+  - summary (조건+상태변화 쌍)
+  - actor (실행 주체)
+  - rules (Bottom-up Rule — 각 Rule 안에 examples nested)
+  - questions (모호점)
+  를 산출합니다.
+
+  Bottom-up 원칙: 리프는 자기 결과만, 부모(의미 노드)는 자식 것 받아 자기 조건 합침.
+
+
+  [LANGUAGE]
   응답 언어: {{ locale }}
-  모든 분석 결과와 설명은 지정된 언어로 생성해야 합니다.
-  
-  
-  [INPUT_DATA]
+
+
+  [INPUT]
   {% if context %}
-  부모 컨텍스트 (상위 코드 구조에서 추출한 핵심 정보):
+  ── [부모·형제 컨텍스트] 역할: 실행 흐름 이해 + 참고용
   {{ context }}
-  
-  ⚠️ 이 컨텍스트는 현재 분석 대상 코드의 부모 노드에서 추출한 핵심 정보입니다.
-  자식 코드는 부모의 맥락에서 실행되므로, 문맥이 끊기지 않도록 반드시 참고하세요.
-  
-  컨텍스트 활용 방법:
-  - DML 유형 및 FROM/INTO 테이블: 부모가 어떤 쿼리를 수행하는지 파악
-  - 별칭 매핑: 코드에서 사용된 별칭(A, B, X, Y 등)의 실제 테이블/서브쿼리 매핑 확인
-  - 조인/매칭 조건: 부모의 조인 조건을 이해하여 자식 코드의 역할 파악
-  - 핵심 변수/파라미터: 부모에서 사용되는 변수명을 자식 코드 분석에 활용
-  - 구조 유형 및 목적: 부모가 무엇을 하려고 하는지 이해하여 자식 코드의 목적 파악
-  
-  summary 작성 시:
-  - 컨텍스트의 DML 유형, 테이블, 별칭 정보를 반영하여 정확한 명칭 사용
-  - 부모의 목적과 연계하여 자식 코드의 역할을 설명
-  - 별칭을 테이블명으로 오인하지 않도록 주의
-  
+
   {% endif %}
-  분석 대상 저장 프로시저 코드:
+  ── [분석 대상 코드] 역할: 각 범위별 산출 대상
   {{ code }}
-  
-  
-  분석할 코드 범위 목록:
+
+  ── [분석 범위 목록] 각 범위 독립 분석. 개수 정확히 {{ count }}개
   {{ ranges }}
-  
-  
-  [CONSTRAINTS]
-  필수 준수 사항:
-  - 분석 범위 총 개수: {{ count }}개
-  - 출력 'analysis' 배열 요소 개수: 정확히 {{ count }}개
-  - 큰 범위가 작은 범위를 포함하더라도 의도된 것으로 생략 없이, 범위 개수와 결과 개수는 동일해야 함.
-  - 각 범위는 독립적으로 분석되어야 하며, 누락 또는 초과된 분석 결과는 허용되지 않음
-  - 강제 검증 규칙:
-     - analysis 각 요소는 startLine/endLine을 반드시 포함할 것 (정수)
-     - 값이 없으면 해당 필드는 다음 기본값을 사용: calls=[], variables=[]
-     - null 사용 절대 금지. 빈값은 빈 배열([]) 또는 빈 객체({})로만 표현
-     - 출력에 코드펜스(```), 백틱(`), JSON 주석(//, /* */), 트레일링 콤마 포함 금지. 순수 JSON만 출력
-     - **⚠️ CRITICAL: 트레일링 콤마(trailing comma) 절대 금지** - 배열이나 객체의 마지막 요소 뒤에 콤마(,)를 붙이지 마세요. 예: `"calls": []` (O), `"calls": [],` (X)
-  
-  
-  [ANALYSIS_REQUIREMENTS]
-  각 지정된 코드 범위에 대해 다음 섹션의 정보를 정확히 추출하세요:
-  
-  
-  [SECTION_1_CODE_SUMMARY]
-  코드 동작 분석 및 상세 요약:
-  
-  각 지정된 코드 범위에 대해 의미적으로 풍부한 요약을 작성하세요. 코드를 단순히 나열하는 것이 아니라, 개발자의 의도와 비즈니스 맥락을 파악하여 "무엇을 하는지", "왜 하는지"를 설명하는 것이 핵심입니다.
-  
-  ★ 주석 최우선 활용 원칙:
-  분석 대상 코드에는 개발자가 직접 작성한 주석(-- 또는 /* */)이 포함되어 있습니다. 주석은 개발자가 코드에 부여한 의도, 목적, 비즈니스 맥락을 직접적으로 표현한 가장 신뢰할 수 있는 정보원입니다. 주석이 존재하면 반드시 최우선으로 활용하여 summary에 반영하세요. 주석에 코드의 목적, 비즈니스 규칙, 처리 흐름이 설명되어 있다면 그 내용을 중심으로 요약하고, 코드 분석을 통해 보완하세요. 주석이 없거나 불충분한 경우에만 코드 흐름, 변수명, 테이블명, 조건값 등을 분석하여 의미를 추론하세요. 주석을 절대 무시하거나 생략하지 마세요.
-  
-  ★ 의미적 설명 중심 원칙:
-  코드의 구문을 나열하거나 단순히 "변수 X를 할당하고 테이블 Y를 조회한다"는 식의 기계적 설명을 피하세요. 대신 비즈니스 맥락과 도메인 의미를 드러내도록 작성하세요. 예를 들어, "주문 상태가 'PENDING'이면 결제 대기 처리하고, 'CONFIRMED'면 배송 준비를 시작한다"와 같이 구체적인 값과 조건을 명시하면서 "왜 그렇게 하는지"의 맥락도 함께 설명하세요. 추상적 표현을 피하고 실제 코드에 등장하는 상태값, 코드값, 상수, 조건값을 그대로 포함하세요.
-  
-  ★ 부모 컨텍스트 활용:
-  부모 컨텍스트(context)에는 상위 코드 구조에서 추출한 핵심 정보가 포함되어 있습니다. DML 유형, FROM/INTO 테이블, 별칭 매핑, 조인/매칭 조건, 핵심 변수/파라미터 정보를 활용하여 현재 코드 범위의 역할을 정확히 파악하세요. summary 작성 시 컨텍스트의 DML 유형, 테이블, 별칭 정보를 반영하여 정확한 명칭을 사용하고, 부모의 목적과 연계하여 자식 코드의 역할을 설명하세요. 별칭을 테이블명으로 오인하지 않도록 주의하세요.
-  
-  ★ 분석해야 할 핵심 요소:
-  - 변수 할당 및 초기화: 각 변수의 목적과 설정 의미
-  - 조건 분기 로직: IF, CASE, WHEN 문의 판단 기준과 각 분기에서 수행하는 작업의 목적
-  - 반복 처리 로직: FOR, WHILE, LOOP, CURSOR의 반복 대상과 각 반복에서 수행하는 작업
-  - 데이터베이스 작업: DML 관련(SELECT, INSERT, UPDATE, DELETE, MERGE, EXECUTE_IMMEDIATE, FETCH) 작업의 대상 테이블/컬럼과 목적
-  - 예외 처리: EXCEPTION 블록에서 잡는 예외의 종류와 처리 방식
-  - 트랜잭션 제어: COMMIT, ROLLBACK 등의 사용 목적과 시점
-  
-  ★ 반드시 포함해야 할 구체적 정보:
-  - 분기 조건과 비즈니스 규칙: IF, CASE, WHEN 문의 조건값과 각 분기별 처리 내용을 구체적으로 명시 (예: "주문 상태가 'PENDING'이면 결제 대기 처리, 'CONFIRMED'면 배송 준비 처리", "고객 등급이 'VIP'이면 할인율 15% 적용, 'GOLD'면 10% 적용")
-  - 데이터 값과 상수: 코드에 등장하는 상태값, 코드값, 상수를 그대로 명시 (예: "상태값 'Y'/'N'으로 활성화 여부 판단", "최대 재시도 횟수 3회, 타임아웃 30초")
-  - 반복 처리 대상과 목적: FOR, WHILE, CURSOR의 반복 대상과 각 반복에서 수행하는 작업을 명시 (예: "미결제 주문 목록을 순회하며 각 주문의 결제 기한을 검사")
-  - 데이터베이스 작업 상세: 조회/입력/수정/삭제되는 테이블과 컬럼, 조인 조건, WHERE 조건의 비즈니스 의미를 명시 (예: "ORDER_MASTER.STATUS = 'COMPLETED'인 주문을 SALES_HISTORY에 기록")
-  - 예외 처리: 어떤 예외를 잡아서 어떻게 처리하는지 명시 (예: "NO_DATA_FOUND 발생 시 기본값 0 반환")
-  
-  ★ 요약 작성 형식:
-  - 5~8문장으로 상세하게 작성하되, 각 문장이 의미 있는 정보를 담도록 하세요.
-  - 코드에 나온 실제 값(상태값, 조건값, 상수)을 포함하고, 단순 나열이 아닌 비즈니스 맥락이 드러나도록 서술하세요.
 
-  ★★ 별칭과 실제 테이블 구분 (필수) ★★
-  이 summary는 상위 노드의 분석 입력으로 재사용됩니다.
-  별칭을 테이블처럼 쓰면 상위에서 잘못된 테이블이 식별되므로, 반드시 구분하세요.
-
-  - 서브쿼리, 인라인뷰, 임시 결과 집합에 붙은 이름은 반드시 "(별칭 ...)"으로 표기
-    좋은 예: "서브쿼리(별칭 X)의 결과를 메인 쿼리에서 참조한다"
-    나쁜 예: "X에서 결과를 조회한다" ← X가 실제 테이블로 오인됨
-  - CTE(WITH 절)에서 정의한 이름도 "(CTE 별칭 ...)"으로 표기
-    좋은 예: "CTE(별칭 monthly_agg)의 집계 결과를 최종 SELECT에서 사용한다"
-  - 실제 테이블은 별칭 표기 없이 테이블명만 사용
-    좋은 예: "ORDER_MASTER 테이블에서 STATUS='ACTIVE'인 행을 조회"
-  - 테이블에 별칭이 붙은 경우 실제 테이블명을 우선 표기
-    좋은 예: "ORDER_MASTER(별칭 O)와 CUSTOMER(별칭 C)를 JOIN"
-    나쁜 예: "O와 C를 JOIN" ← 실제 테이블명이 드러나지 않음
-
-  ★★ DML summary 구체성 필수 ★★
-  목표: **이 summary만 읽고 원본 코드를 다시 작성할 수 있어야 합니다.**
-  이 summary는 상위 프로시저의 비즈니스 로직 시나리오 생성의 입력이 됩니다.
-  두루뭉실하면 시나리오도 두루뭉실해지므로, 아래 규칙을 반드시 따르세요:
-
-  SELECT:
-  - WHERE 조건의 컬럼명과 비교값/변수 명시
-    좋은 예: "members에서 id=$p_member_id이고 is_active=1인 행을 조회, 없으면 NO_DATA_FOUND"
-    나쁜 예: "회원 정보를 조회한다"
-  - JOIN 조건과 대상 테이블 명시
-  - 집계(COUNT, SUM 등)가 있으면 대상 컬럼과 조건 명시
-
-  INSERT:
-  - 삽입 대상 테이블과 모든 컬럼명 나열
-  - 각 값의 출처 명시 (파라미터, 계산값, 상수, SEQUENCE 등)
-    좋은 예: "loans에 (book_id=$p_book_id, member_id=$p_member_id, status='ACTIVE', loan_date=SYSDATE) INSERT"
-    나쁜 예: "대출 데이터를 저장한다"
-
-  UPDATE:
-  - SET 절의 컬럼명=변경값 명시
-  - WHERE 조건 명시
-  - 상태 전이가 있으면 변경 전→후 값 명시
-    좋은 예: "books의 status를 'LOANED'로 변경 WHERE id=$p_book_id"
-    나쁜 예: "도서 상태를 변경한다"
-
-  DELETE:
-  - WHERE 조건의 컬럼명=값 명시
-
-  MERGE:
-  - MATCHED 시 동작 (UPDATE 컬럼=값)
-  - NOT MATCHED 시 동작 (INSERT 컬럼 목록)
-    좋은 예: "RDD01DD_TB에 TAGSN=$tagNo, DD=$today 조건으로 MERGE: 존재하면 VAL=$calc_val로 UPDATE, 없으면 (TAGSN, DD, VAL) INSERT"
-
-  좋은 예시 (비즈니스 맥락과 도메인 의미가 드러나는 경우):
-  "이 프로시저는 주문 결제 완료 후 포인트 적립을 처리하는 비즈니스 로직을 담당합니다. ORDER_MASTER 테이블에서 STATUS='COMPLETED'이고 PAYMENT_DATE가 오늘인 주문을 조회하여, 각 주문의 결제 금액(ORDER_AMOUNT)에 대해 고객 등급(CUSTOMER_GRADE)별로 차등 적립률을 적용합니다. VIP 등급은 결제 금액의 5%, GOLD 등급은 3%, 일반 등급은 1%를 포인트로 적립하며, 적립된 포인트는 POINT_LEDGER 테이블에 거래 유형('ACCUMULATE')으로 기록하고 CUSTOMER 테이블의 TOTAL_POINT를 업데이트합니다. 단, 주문 취소 이력이 있는 경우(CANCEL_FLAG='Y') 포인트 적립을 제외하여 부정 적립을 방지합니다."
-  
-  나쁜 예시 (너무 추상적이고 비즈니스 맥락이 없는 경우):
-  "주문을 조회하고 조건에 따라 할인을 적용합니다." (구체적인 값, 조건, 비즈니스 의미가 없음)
-  "ORDER_MASTER 테이블에서 데이터를 조회하고 POINT_LEDGER에 INSERT합니다." (비즈니스 목적과 맥락이 드러나지 않음)
-  
-  
-  [SECTION_2_VARIABLE_IDENTIFICATION]
-  변수 식별 및 역할 분석:
-  
-  식별 규칙:
-  - 각 범위 내에서 실제로 사용되거나 참조된 변수만 포함
-  - 범위 중첩 시 해당 범위에서 직접 사용된 변수만 독립적으로 식별
-  
-  식별 대상 변수 유형:
-  - 로컬 변수: v_, l_, temp_ 등의 접두사를 가진 변수
-  - 매개변수: p_, param_, in_, out_, inout_ 등의 접두사를 가진 변수
-  - 시스템 변수: i_, o_ 등의 입출력 변수
-  - 레코드 타입: %ROWTYPE으로 선언된 변수
-  - 컬럼 타입: %TYPE으로 선언된 변수
-  - 커서 변수: CURSOR로 선언된 변수
-  - 예외 변수: EXCEPTION으로 선언된 변수
-  
-  역할 분석:
-  - 각 변수가 해당 코드 범위에서 어떤 목적으로 사용되는지 분석
-  - 예시:
-    - v_total_amount: "주문 총 금액 누적 계산"
-    - p_order_id: "처리할 주문 식별자"
-    - v_status: "주문 상태 임시 저장"
-    - cur_orders: "미처리 주문 목록 순회"
-  
-  역할 작성 규칙:
-  - 한 문장 이내로 간결하게 작성
-  - 해당 범위에서의 구체적인 용도 명시
-  - 변수명만 보고 유추 가능한 내용이 아닌, 코드에서 실제 사용되는 맥락 반영
-  
-  
-  [SECTION_3_PROCEDURE_CALLS]
-  프로시저/함수 호출 식별:
-  
-  호출 형식 분류:
-  - 외부 패키지 호출: PACKAGE_NAME 및 SCHEMA_NAME.PROCEDURE_NAME 형식
-  - 현재 패키지 내부 호출: PROCEDURE_NAME만 명시된 형식
-  - 사용자 정의 함수: 사용자가 생성한 함수
-  
-  제외 대상:
-  - 시퀀스 객체의 NEXTVAL, CURRVAL 호출
-  - 내장 함수 호출: 시스템 제공 함수 (SUBSTR, TO_DATE 등)
-  
-  식별 방법:
-  - 프로시저/함수명(인자1, 인자2, ...) 형태로 호출되는 경우
-  - call 라는 키워드가 있는 경우
-  - EXECUTE_IMMEDIATE 문 내의 동적 호출도 포함
-  
-  식별 패턴 예시:
-  CALL [schema_name.][package_name.]proc_name(args)
-  [schema_name.][package_name.]proc_name(args)
-  SELECT [schema_name.][package_name.]func_name(args)
-  EXECUTE IMMEDIATE 'CALL [schema_name.][package_name.]proc_name(args)'
-  대괄호 [ ] : 생략 가능(옵션)
-  파이프 | : 둘 중 하나 가능
-  점 . : 이름공간 구분자(schema 또는 package 구분)
-  
-  중요 제약:
-  - calls 배열에는 "이름만" 반환 (괄호/인자/공백 제거)
-  - 외부 패키지 호출: 패키지명.프로시저명 형식 유지 (예: "PKG_UTIL.FN_CALC", "SCHEMA1.PRC_INSERT")
-  - 내부 호출: 프로시저명만 (예: "PRC_INSERT_DATA", "FN_GET_STATUS")
-  - 시스템 패키지(DBMS_OUTPUT, UTL_FILE 등)는 제외
-  
-  
-  [SECTION_ACTOR]
-  ★ 액터(actor) 식별:
-
-  ★★★ 핵심 원칙: 코드에 근거가 있을 때만 Actor를 부여하세요. 추측하지 마세요. ★★★
-
-  ★★ Actor를 부여하는 경우 — 코드에서 근거를 찾을 수 있을 때:
-  - 권한/역할 체크 로직이 있는 경우
-  - 주석/문서에 호출 주체가 명시된 경우
-  - 함수명/서비스명에 역할이 포함된 경우
-  - 자동 실행(배치/스케줄러/타이머)이 코드에서 명확한 경우 → "system"
-
-  ★★ Actor를 비워두는 경우 (""):
-  - 코드에 호출자 역할을 구분하는 어떤 근거도 없는 경우
-  - 누가 호출하든 동일하게 동작하는 함수
-  - DB CRUD, 유틸리티, 헬퍼, 인프라 코드
-
-  ★★ 절대 금지:
-  - 코드에 근거 없이 도메인 지식으로 역할을 추론하지 마세요
-  - 코드에 역할 구분이 없는데 억지로 Actor를 만들지 마세요
-
-  ★★ Actor 명칭 선택:
-  - 코드에서 사용하는 역할 명칭을 그대로 사용하세요
-  - 같은 모듈의 다른 코드와 일관된 명칭을 사용하세요
-  - 동의어 통합은 이후 단계에서 자동 처리됩니다
+  {% if node_metadata %}
+  ── [노드별 메타] i 번째 범위 = i 번째 메타 (node_category / child_rules / child_questions)
+  {{ node_metadata }}
+  {% endif %}
 
 
-  [OUTPUT_FORMAT]
-  출력 형식 및 구조:
-  
-  JSON 스키마:
+  [GOAL]
+  각 범위마다:
+  {
+    "startLine": ...,
+    "endLine": ...,
+    "summary": "...",
+    "actor": "...",
+    "rules": [
+      {
+        "condition": "조건 또는 null(리프)",
+        "result": "결과 원문",
+        "result_kind": "write|assign|return|exception",
+        "examples": [
+          {"description":"...", "given":{...}, "when":"...", "then":{...}, "is_boundary": true|false}
+        ]
+      }
+    ],
+    "questions": [
+      {"text":"...", "reason":"..."}
+    ]
+  }
+
+
+  [RULES — 공통]
+
+  ★★★ summary 작성
+  - 조건 → 상태변화 쌍 명시. 뭉뚱그림 금지("상황에 따라", "적절히").
+  - 실제 값(테이블·컬럼·상태값·리터럴) 원문 그대로. 변수명은 의미로 풀어 설명.
+
+  ★★★ 주석 활용
+  코드 주석에 목적·비즈니스 규칙이 있으면 summary 와 Rule 에 반영.
+
+  {% if context %}
+  ★★★ context 중복 금지
+  [부모·형제 컨텍스트] 에 이미 나온 것은 summary 상태변화에 중복 포함 금지.
+  {% endif %}
+
+
+  [RULES — rules + examples (Bottom-up)]
+
+  각 범위 i 에 대해 node_metadata[i].node_category 로 분기:
+
+  ────────────────────────────────────────────────────
+  ■ node_category == "meaningful" (의미 부모: IF/CASE/LOOP/EXCEPTION/CURSOR 등)
+    - child_rules 의 각 Rule 의 **condition** 에 자기 분기 조건만 AND 로 합침.
+    - child_rules 의 각 Rule 의 **examples.given.preconditions** 에 자기 조건 만족값 추가.
+    - result, result_kind 는 수정 X.
+    - 자기 자체로 새 Rule 생성 금지.
+    - child_questions 그대로 전달 + 자기 범위 모호점 있으면 추가.
+
+    예시:
+      자기 IF 조건: "V_TODAY > TODAY_DD"
+      child_rules: [{"condition":"TAG_CNT>=1", "result":"T INSERT", "result_kind":"write",
+                     "examples":[{"given":{"preconditions":{"globals":{"TAG_CNT":1}}},...}]}]
+      출력 rules: [{"condition":"TAG_CNT>=1 AND V_TODAY>TODAY_DD", "result":"T INSERT", "result_kind":"write",
+                    "examples":[{"given":{"preconditions":{"globals":{"TAG_CNT":1,"V_TODAY":"20260401"}}},...}]}]
+
+  ────────────────────────────────────────────────────
+  ■ node_category == "leaf" (DML / ASSIGN / RETURN / EXCEPTION 실행 등)
+    - 자기 원문이 **실제 business 결과** (DML 쓰기·상태 변화·RETURN·OUT·예외) 일 때만:
+        rules = [{"condition": null, "result": "자기 결과", "result_kind": "...",
+                  "examples": [경계값 1~2개]}]
+    - 단순 기술 동작 (CURSOR OPEN/CLOSE, FOR LOOP 제어, DBMS_OUTPUT, 기술 예외) → rules = []
+    - 억지로 채우지 말 것. 없으면 없는 대로.
+    - condition 은 null (조상이 합쳐 줌)
+    - 자기 범위 모호점 있으면 questions 에, 없으면 []
+
+    result_kind 값: "write" | "assign" | "return" | "exception"
+  ────────────────────────────────────────────────────
+
+  ★ Rule / Example / Question 공통 원칙
+  - 억지로 채우지 않기. 없으면 빈 배열.
+  - 원문 값 그대로 보존 (의역·요약 금지).
+  - PROCEDURE/FUNCTION/BEGIN 같은 구조 래퍼 언급 금지.
+
+  ★ Example (rule 안 nested) 원칙
+  - 리프에서 Rule 생성 시, 그 Rule 에 대한 example 1~2개 (경계값 위주).
+  - given = {narrative, inputs, preconditions: {tables, globals, stubs}}
+  - when = 자연어 한 줄 (비즈니스 행위)
+  - then = {narrative, return, out_params, exception, writes, commit}
+  - 값은 실제 리터럴 (변수명·프로시저명 금지)
+
+  ★ Question 원칙
+  - 코드만으로 답 안 되는 모호점만
+  - PL/SQL 문법 관용구는 Question 아님
+  - 0개 OK
+
+
+  {% if is_unit_root %}
+  [RULES — actor (실행 주체) — 코드 근거 있을 때만]
+  - 부여: 권한·역할 체크 / 주석 명시 / 자동 실행(배치·스케줄러) → "system"
+  - 비움(""): 근거 없음
+  {% endif %}
+
+
+  {% if has_dml %}
+  [RULES — DML summary 구체성]
+  - SELECT: WHERE 컬럼·비교값 + JOIN + 집계 명시
+  - INSERT: 대상 테이블 + 모든 컬럼 + 값 출처
+  - UPDATE: SET 컬럼=값 + WHERE + 상태 전이
+  - DELETE: WHERE 컬럼=값
+  - MERGE: MATCHED/NOT MATCHED 각각 컬럼=값
+  - 별칭은 "(별칭 X)" 표기, 실제 테이블명 우선
+  {% endif %}
+
+
+  [SELF-CHECK]
+  - analysis 배열 길이 = {{ count }}
+  - 각 요소 startLine/endLine 정수
+  - summary 에 조건+상태변화 쌍
+  - meaningful: rules 개수 ≤ child_rules 개수 (개수 증가 금지)
+  - leaf: rules 개수 0 또는 1
+  - rules 에 PROCEDURE/BEGIN 언급 0건
+  - 억지로 채우지 않음 (없으면 빈 배열)
+
+
+  [OUTPUT]
+  JSON 만. 코드펜스·주석 금지. 트레일링 콤마 금지.
+
   {
     "analysis": [
       {
-        "startLine": 범위_시작_라인_번호,
-        "endLine": 범위_종료_라인_번호,
-        "summary": "3~5문장의 상세한 코드 동작 요약 (분기조건, 데이터값 포함)",
-        "actor": "이 코드를 실행하는 주체. 코드/주석의 의미에서 주체가 분명할 때만 채움. 확신 없으면 빈 문자열",
-        "calls": ["호출된 프로시저/함수명칭1", "호출된 프로시저/함수명칭2"],
-        "variables": [
-          {"name": "변수명1", "role": "해당 범위에서의 역할"},
-          {"name": "변수명2", "role": "해당 범위에서의 역할"}
-        ]
+        "startLine": 범위_시작,
+        "endLine": 범위_끝,
+        "summary": "5~8문장",
+        "actor": "" 또는 "system",
+        "rules": [
+          {"condition": "... 또는 null", "result": "...", "result_kind": "...",
+           "examples": [{"description":"...","given":{...},"when":"...","then":{...},"is_boundary":false}]}
+        ],
+        "questions": [{"text":"...","reason":"..."}]
       }
     ]
   }
-  
-  출력 제약사항:
-  - JSON 형식 외의 부가 설명 금지 (출력에 JSON 주석 포함 금지)
-  - "calls" 배열 요소는 문자열 타입
-  - "variables" 배열 요소는 객체 타입 (name, role 필드)
-  - analysis[i]에는 startLine/endLine이 필수
-  - 빈 배열도 허용되며 null 값은 사용 금지
-  - summary는 지정된 언어로 작성하며, 위의 상세 규칙을 준수
-  - 코드펜스(```json ... ``` 등) 포함 금지, 트레일링 콤마 금지

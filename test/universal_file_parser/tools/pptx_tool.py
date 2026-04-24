@@ -8,24 +8,18 @@ from langchain_core.tools import tool
 def make_pptx_extract(state):
     @tool
     def pptx_extract(slide_range: str = "all") -> dict:
-        """PPTX 에서 슬라이드별 제목/본문 텍스트/표를 추출.
+        """PPTX 에서 지정된 슬라이드의 제목/본문 텍스트/표 추출.
 
         Args:
-            slide_range: "all" | "1-5" | "1,3,5"
+            slide_range: "all" | "1-10" | "1,3,5". 큰 덱은 구간 나누어 호출 권장.
 
         Returns:
-            {
-                "total_slides": int,
-                "slides": [
-                    {"slide": 1, "title": "...", "texts": [...], "tables": [[...]]},
-                    ...
-                ]
-            }
+            {"total_slides": int, "slides": [{"slide": N, "title": "...", "texts": [...], "tables": [[...]]}, ...]}
         """
         try:
             from pptx import Presentation
         except ImportError:
-            return {"error": "python-pptx 미설치. `pip install python-pptx` 필요."}
+            return {"error": "python-pptx 미설치."}
 
         try:
             prs = Presentation(io.BytesIO(state.data))
@@ -73,9 +67,9 @@ def make_pptx_extract(state):
 
 
 def _parse_range(spec: str) -> list[int]:
-    spec = spec.strip()
+    spec = spec.strip().lower()
     if spec == "all":
-        return list(range(1000))
+        return list(range(10000))
     if "-" in spec:
         start, end = spec.split("-", 1)
         return list(range(int(start) - 1, int(end)))

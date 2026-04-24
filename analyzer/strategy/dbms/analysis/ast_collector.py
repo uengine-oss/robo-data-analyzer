@@ -165,6 +165,7 @@ class StatementCollector:
             parameters=node.get('parameters'),
             comment=comment,
             lines=line_entries,
+            initializer_contains_method_call=bool(node.get('initializerContainsMethodCall')),
         )
         for child_node in child_nodes:
             child_node.parent = statement_node

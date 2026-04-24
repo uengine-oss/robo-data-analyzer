@@ -28,6 +28,7 @@ from util.stream_emitter import (
 
 from analyzer.strategy.dbms.pipeline.phase_ddl import run_phase_ddl
 from analyzer.strategy.dbms.pipeline.phase_ast import run_phase_ast
+from analyzer.strategy.dbms.pipeline.phase_linking import run_phase_linking
 from analyzer.strategy.dbms.pipeline.phase_analysis import run_phase_llm
 from analyzer.strategy.dbms.pipeline.phase_metadata import run_phase_metadata
 from analyzer.strategy.dbms.pipeline.phase_vector import run_phase_vector
@@ -167,6 +168,10 @@ class DbmsPipeline(BaseStreamingAnalyzer):
             yield emit_message("⏹️ 파이프라인이 중단되었습니다")
             pipeline_state.set_phase(PipelinePhase.CANCELLED)
             return
+
+        # ========== Phase 1.5: 결정론 링킹 (AST 기반 CALLS + REFERENCES) ==========
+        async for chunk in run_phase_linking(ctx, contexts):
+            yield chunk
 
         # ========== Phase 2: LLM 배치 분석 ==========
         ph2_targets = [c for c in contexts if c.status == FileStatus.PH1_OK]

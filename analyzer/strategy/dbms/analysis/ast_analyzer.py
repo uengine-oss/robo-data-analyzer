@@ -34,7 +34,6 @@ from analyzer.strategy.dbms.common.analysis_constants import (
     TABLE_RELATIONSHIP_MAP,
     MAX_CONCURRENCY,
     MAX_CONTEXT_TOKEN,
-    DBMS_SYSTEM_PACKAGES,
 )
 from analyzer.strategy.dbms.common.naming_helpers import build_statement_name
 from util.llm_prompt_handler import prompts
@@ -100,6 +99,12 @@ class BaseAstProcessor(ABC):
         # AST 수집 결과 캐시 (Phase 1에서 수집, Phase 2에서 사용)
         self._nodes: Optional[List[StatementNode]] = None
         self._unit_info: Optional[Dict[str, Any]] = None  # 프로시저/클래스 정보
+
+        # 파일별 독립 Executor (파일끼리 완전 병렬, 파일 안은 continuous)
+        from util.llm_rate_limiter import LLMRateLimiter, AsyncBatchExecutor
+        self._batch_executor = AsyncBatchExecutor(
+            LLMRateLimiter(max_concurrent=MAX_CONCURRENCY, spacing_ms=0)
+        )
 
     # =========================================================================
     # 추상 메서드 - 전략별 구현 필요
@@ -311,16 +316,15 @@ class BaseAstProcessor(ABC):
                 node.context_ready_event.set()
 
         async def process_context_batch(batch: List[StatementNode]) -> None:
-            """같은 깊이의 노드를 AsyncBatchExecutor 로 continuous 병렬 처리.
+            """같은 깊이의 노드를 파일 전용 Executor 로 continuous 병렬 처리.
 
             깊이 간 순서는 외부 루프가 순차로 호출 (부모 깊이 context_ready_event
             가 모두 set 된 후에야 자식 깊이가 시작됨).
             """
-            from util.llm_rate_limiter import get_executor
-            await get_executor().run_batch(
+            await self._batch_executor.run_batch(
                 items=batch,
                 processor=process_one,
-                label="DBMS_NODE_CONTEXT",
+                label=f"DBMS_NODE_CONTEXT:{self.full_directory}",
             )
 
         # 깊이별로 배치 처리
@@ -415,6 +419,19 @@ class BaseAstProcessor(ABC):
                             if not child.ok:
                                 node.ok = False
 
+                # 2. 구조 래퍼 (PROCEDURE/BEGIN/FILE 등) 는 LLM 호출 없이 자식 analysis_map 자동 합침
+                if all(n.is_structural() for n in batch.nodes):
+                    for node in batch.nodes:
+                        merged: Dict[str, list] = {"rules": [], "questions": []}
+                        for child in node.children:
+                            cmap = child.analysis_map or {}
+                            for key in ("rules", "questions"):
+                                if cmap.get(key):
+                                    merged[key].extend(cmap[key])
+                        node.analysis_map = merged
+                    log_process("ANALYZE", "STRUCT", f"배치 #{batch.batch_id} 구조 래퍼 — LLM 스킵, 자식 analysis_map 자동 합침")
+                    return []
+
                 log_process("ANALYZE", "LLM", f"배치 #{batch.batch_id} 처리 중 ({len(batch.nodes)}개 노드)")
                 llm_result = await self._invoke_llm(batch)
                 self._apply_summary_to_nodes(batch, llm_result)
@@ -430,10 +447,9 @@ class BaseAstProcessor(ABC):
                 for node in batch.nodes:
                     node.completion_event.set()
 
-        # 모든 배치를 AsyncBatchExecutor 로 continuous 병렬 실행
-        # (completion_event 로 부모-자식 순서 보장, rate limiter 싱글톤으로 동시성 제어)
-        from util.llm_rate_limiter import get_executor
-        batch_results = await get_executor().run_batch(
+        # 모든 배치를 파일 전용 Executor 로 continuous 병렬 실행
+        # (completion_event 로 부모-자식 순서 보장, 파일별 독립 Semaphore 로 병렬)
+        batch_results = await self._batch_executor.run_batch(
             items=batches,
             processor=process_batch,
             label=f"DBMS_AST_BATCH:{self.full_directory}",
@@ -476,6 +492,12 @@ class BaseAstProcessor(ABC):
             if not analysis:
                 return
             node.summary = analysis.get("summary") or ""
+            # Bottom-up 누적 — rules + questions 를 map 으로 보관
+            # 자식 batch 완료 전에 반드시 저장되어야 부모 batch 가 참조 가능
+            node.analysis_map = {
+                "rules": list(analysis.get("rules") or []),
+                "questions": list(analysis.get("questions") or []),
+            }
 
         # 일반적인 경우: llm_result가 dict이고 analysis 배열이 있음
         if isinstance(llm_result, dict):
@@ -643,7 +665,6 @@ class DbmsAstProcessor(BaseAstProcessor):
         self.name_case = (name_case or 'original').lower()
 
         self._table_summary_store: Dict[Tuple[str, str], Dict[str, Any]] = {}
-        self._variable_roles: Dict[str, Dict[str, List[str]]] = {}
 
     def _apply_name_case(self, name: str) -> str:
         """대소문자 변환 적용"""
@@ -749,6 +770,9 @@ class DbmsAstProcessor(BaseAstProcessor):
             node_name = self.file_name
         elif label in PROCEDURE_TYPES and node.unit_name:
             node_name = node.unit_name
+        elif label in ("VARIABLE", "PACKAGE_VARIABLE", "CONSTANT_FIELD") and node.name:
+            # 변수 노드는 variable_matcher 가 name 으로 MATCH 하므로 실제 변수명으로
+            node_name = node.name
         else:
             node_name = f"{label}[{node.start_line}]"
 
@@ -862,13 +886,29 @@ class DbmsAstProcessor(BaseAstProcessor):
 
     async def _invoke_llm(self, batch: AnalysisBatch) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
         """LLM 호출 (일반 분석 + DML 분석)"""
+        # 조건부 플래그 계산 — 프롬프트의 {% if %} 블록과 매핑 (docs/prompt-contract.md 참조)
+        has_dml = bool(batch.dml_ranges)
+        is_unit_root = any(n.node_type in ("PROCEDURE", "FUNCTION", "TRIGGER") for n in batch.nodes)
+
         general_task = None
         if batch.ranges:
             code, context = batch.build_payload()
+            # Bottom-up Rule 처리용 노드별 메타데이터
+            node_metadata = batch.build_node_metadata()
             def _call_analyze_code():
-                inputs = {"code": code, "ranges": batch.ranges, "count": len(batch.ranges), "locale": self.locale}
+                inputs = {
+                    "code": code,
+                    "ranges": batch.ranges,
+                    "count": len(batch.ranges),
+                    "locale": self.locale,
+                    "node_metadata": node_metadata,
+                }
                 if context.strip():
                     inputs["context"] = context
+                if has_dml:
+                    inputs["has_dml"] = True
+                if is_unit_root:
+                    inputs["is_unit_root"] = True
                 return prompts.execute_raw("dbms", "node_analysis", inputs, self.api_key)
             general_task = asyncio.to_thread(_call_analyze_code)
 
@@ -972,57 +1012,6 @@ class DbmsAstProcessor(BaseAstProcessor):
                             key = f"{node.node_type}_{node.start_line}_{node.end_line}"
                             unit_summary_store[node.unit_key][key] = summary
 
-                # --- CALL 관계 생성 ---
-                for call_name in analysis.get('calls', []) or []:
-                    if '.' in call_name:
-                        package_raw, proc_raw = call_name.split('.', 1)
-                        # 시스템 패키지 호출은 무시 (DBMS_OUTPUT, UTL_FILE 등)
-                        if package_raw.strip().upper() in DBMS_SYSTEM_PACKAGES:
-                            continue
-                        queries.append({
-                            "query": (
-                                f"MATCH (__cy_c__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
-                                f"MERGE (__cy_target__:PROCEDURE {{directory: $package_name, procedure_name: $proc_name}})\n"
-                                f"MERGE (__cy_c__)-[__cy_r__:CALLS {{scope: 'external'}}]->(__cy_target__)\n"
-                                f"RETURN __cy_c__, __cy_target__, __cy_r__"
-                            ),
-                            "params": {
-                                "start_line": node.start_line,
-                                "directory": self.full_directory,
-                                "file_name": self.file_name,
-                                "package_name": package_raw.strip(),
-                                "proc_name": proc_raw.strip(),
-                            }
-                        })
-                    else:
-                        # 분석 범위 내 노드가 있으면 internal, 없으면 EXTERNAL placeholder 생성
-                        queries.append({
-                            "query": (
-                                f"MATCH (__cy_c__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
-                                f"OPTIONAL MATCH (__cy_existing__ {{procedure_name: $call_name}})\n"
-                                f"WHERE (__cy_existing__:PROCEDURE OR __cy_existing__:FUNCTION) AND NOT __cy_existing__:EXTERNAL\n"
-                                f"WITH __cy_c__, __cy_existing__\n"
-                                f"FOREACH (_ IN CASE WHEN __cy_existing__ IS NOT NULL THEN [1] ELSE [] END |\n"
-                                f"  MERGE (__cy_c__)-[:CALLS {{scope: 'internal'}}]->(__cy_existing__)\n"
-                                f")\n"
-                                f"FOREACH (_ IN CASE WHEN __cy_existing__ IS NULL THEN [1] ELSE [] END |\n"
-                                f"  MERGE (__cy_ext__:PROCEDURE:EXTERNAL {{procedure_name: $call_name}})\n"
-                                f"  MERGE (__cy_c__)-[:CALLS {{scope: 'external'}}]->(__cy_ext__)\n"
-                                f")\n"
-                                f"RETURN __cy_c__"
-                            ),
-                            "params": {
-                                "start_line": node.start_line,
-                                "directory": self.full_directory,
-                                "file_name": self.file_name,
-                                "call_name": call_name,
-                            }
-                        })
-
-                # --- 변수 처리 ---
-                var_queries = self._process_variable_usage(node, analysis.get('variables', []) or [])
-                queries.extend(var_queries)
-
         # --- 테이블 처리 ---
         table_result = self.validate_dict_result(
             table_result, "table_result", batch.batch_id, allow_none=True
@@ -1036,60 +1025,6 @@ class DbmsAstProcessor(BaseAstProcessor):
     # =========================================================================
     # DBMS 전용 메서드
     # =========================================================================
-
-    def _process_variable_usage(self, node: StatementNode, variables: List[Any]) -> List[Union[str, Dict[str, Any]]]:
-        """변수 사용 마킹 및 역할 누적 처리"""
-        queries: List[Union[str, Dict[str, Any]]] = []
-
-        for var_info in variables:
-            if isinstance(var_info, dict):
-                var_name = var_info.get("name", "")
-                var_role = var_info.get("role", "")
-            else:
-                var_name = str(var_info)
-                var_role = ""
-
-            if not var_name:
-                continue
-
-            usage_key = f"{node.start_line}_{node.end_line}"
-            queries.append({
-                "query": (
-                    f"MATCH (__cy_v__:Variable {{name: $var_name, directory: $directory, file_name: $file_name}})\n"
-                    f"SET __cy_v__.`{usage_key}` = 'Used'\n"
-                    f"RETURN __cy_v__"
-                ),
-                "params": {
-                    "var_name": var_name,
-                    "directory": self.full_directory,
-                    "file_name": self.file_name,
-                }
-            })
-            # 자식 노드 → 변수 REFERENCES 관계 생성
-            queries.append({
-                "query": (
-                    f"MATCH (__cy_n__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
-                    f"MATCH (__cy_v__:Variable {{name: $var_name, directory: $directory, file_name: $file_name}})\n"
-                    f"MERGE (__cy_n__)-[:REFERENCES]->(__cy_v__)\n"
-                    f"RETURN __cy_n__, __cy_v__"
-                ),
-                "params": {
-                    "start_line": node.start_line,
-                    "var_name": var_name,
-                    "directory": self.full_directory,
-                    "file_name": self.file_name,
-                }
-            })
-
-            if var_role and node.unit_key:
-                if node.unit_key not in self._variable_roles:
-                    self._variable_roles[node.unit_key] = {}
-                if var_name not in self._variable_roles[node.unit_key]:
-                    self._variable_roles[node.unit_key][var_name] = []
-                if var_role not in self._variable_roles[node.unit_key][var_name]:
-                    self._variable_roles[node.unit_key][var_name].append(var_role)
-
-        return queries
 
     def _build_table_queries(
         self,

@@ -113,69 +113,86 @@ async def collect_analysis_context(st, client, orchestrator) -> dict:
         )
         raise
 
-    # 테이블 샘플 데이터 — 함수별 caller 기준 필터링 + 호출 체인 전이적 R/W 포함
+    # 테이블 샘플 데이터 — catalog 서비스 1회 호출로 batch 수집 + 함수별 전이적 매핑.
+    # catalog 미기동 / datasource 미설정 시 조용히 skip (downstream 은 빈 컨텍스트로 진행).
     reads_writes = st.reads_writes or []
     try:
-        from analyzer.common.analysis_context import fetch_table_context
-        # 프로젝트 전체 테이블 집합 (fallback 용)
-        table_names: list[str] = []
-        if reads_writes:
-            table_names = list({rw.table_name for rw in reads_writes if rw.table_name})
-        if not table_names:
-            table_results = await client.execute_queries([
+        from analyzer.common.analysis_context import format_table_context
+        from client.catalog_client import CatalogClient
+
+        datasource_name = getattr(orchestrator, "datasource_name", "")
+        if not datasource_name:
+            logger.info("[PHASE:3:TABLE_CTX] datasource 미설정 — 테이블 샘플 수집 skip")
+            return ctx
+
+        # 1) 링킹이 식별한 테이블 이름 수집 (없으면 Neo4j Table 노드 전체)
+        identified: set[str] = {rw.table_name for rw in reads_writes if rw.table_name}
+        if not identified:
+            tbl_results = await client.execute_queries([
                 "MATCH (t:Table) RETURN DISTINCT t.name AS name"
             ])
-            table_names = [r["name"] for r in (table_results[0] if table_results and table_results[0] else []) if r.get("name")]
+            identified = {r["name"] for r in (tbl_results[0] or []) if r.get("name")}
 
-        if table_names:
-            datasource_name = getattr(orchestrator, "datasource_name", "")
-            # 각 테이블별 섹션을 한 번만 생성하여 캐시
-            table_to_section: dict[str, str] = {}
-            for tname in table_names:
-                section = await fetch_table_context(client, [tname], datasource_name)
-                if section:
-                    table_to_section[tname] = section
-            # 전체 fallback (직접·간접 R/W 없는 함수용)
-            ctx["table_sample_data"] = "\n\n".join(table_to_section.values())
+        if not identified:
+            logger.info("[PHASE:3:TABLE_CTX] 식별 테이블 0개 — catalog 호출 생략")
+            return ctx
 
-            # 함수별 직접 R/W 테이블 집합
-            direct: dict[str, set[str]] = {
-                fid: {t for t, _op in pairs} for fid, pairs in rw_by_fn.items()
-            }
-            # 호출 그래프로 전이적 확장 (상위 함수가 하위 호출 경유 접근하는 테이블 포함)
-            callees: dict[str, set[str]] = {}
-            for ce in (st.calls_edges or []):
-                c = getattr(ce, "caller_function_id", "") or ""
-                cal = getattr(ce, "callee_function_id", "") or ""
-                if c and cal:
-                    callees.setdefault(c, set()).add(cal)
+        # 2) catalog 1회 batch 호출 (세션 내 유일 네트워크 호출)
+        logger.info(
+            "[PHASE:3:CATALOG_CALL] catalog 요청 | datasource=%s tables=%d",
+            datasource_name, len(identified),
+        )
+        sample_map = await CatalogClient().sample_context(
+            datasource=datasource_name,
+            table_names=sorted(identified),
+        )
+        matched = sum(1 for v in sample_map.values() if v is not None)
+        logger.info(
+            "[PHASE:3:CATALOG_CALL] catalog 응답 | 매칭=%d/%d", matched, len(sample_map),
+        )
 
-            def transitive(fid: str, seen: set[str]) -> set[str]:
-                if fid in seen:
-                    return set()
-                seen.add(fid)
-                acc = set(direct.get(fid, set()))
-                for cal in callees.get(fid, ()):
-                    acc |= transitive(cal, seen)
-                return acc
+        # 3) 전체 fallback 텍스트 (직접·간접 R/W 없는 함수용)
+        all_sorted = sorted(identified)
+        ctx["table_sample_data"] = format_table_context(sample_map, all_sorted)
 
-            all_fids = {m.function_id for m in (st.function_facts_list or [])}
-            ts_by_fn: dict[str, str] = {}
-            for fid in all_fids:
-                trans_tables = transitive(fid, set())
-                if not trans_tables:
-                    continue
-                sections = [table_to_section[t] for t in sorted(trans_tables) if t in table_to_section]
-                if sections:
-                    ts_by_fn[fid] = "\n\n".join(sections)
-            ctx["table_sample_data_by_function"] = ts_by_fn
+        # 4) 호출 그래프로 전이적 확장 (상위 함수가 하위 호출 경유 접근하는 테이블 포함)
+        direct: dict[str, set[str]] = {
+            fid: {t for t, _op in pairs} for fid, pairs in rw_by_fn.items()
+        }
+        callees: dict[str, set[str]] = {}
+        for ce in (st.calls_edges or []):
+            caller = getattr(ce, "caller_function_id", "") or ""
+            callee = getattr(ce, "callee_function_id", "") or ""
+            if caller and callee:
+                callees.setdefault(caller, set()).add(callee)
 
-            logger.info(
-                "[PHASE:3:CONTEXT] 테이블 샘플 수집 | 전체 tables=%d 전체 data_len=%d 함수별 맞춤=%d",
-                len(table_names), len(ctx["table_sample_data"]), len(ts_by_fn),
-            )
+        def transitive(fid: str, seen: set[str]) -> set[str]:
+            if fid in seen:
+                return set()
+            seen.add(fid)
+            acc = set(direct.get(fid, set()))
+            for cal in callees.get(fid, ()):
+                acc |= transitive(cal, seen)
+            return acc
+
+        # 5) 함수별 context — 메모리 조회만 (네트워크 없음)
+        all_fids = {m.function_id for m in (st.function_facts_list or [])}
+        ts_by_fn: dict[str, str] = {}
+        for fid in all_fids:
+            tables_used = transitive(fid, set())
+            if not tables_used:
+                continue
+            section = format_table_context(sample_map, sorted(tables_used))
+            if section:
+                ts_by_fn[fid] = section
+        ctx["table_sample_data_by_function"] = ts_by_fn
+
+        logger.info(
+            "[PHASE:3:TABLE_CTX] 함수별 컨텍스트 구성 | 함수 매핑=%d/%d 전체 data_len=%d",
+            len(ts_by_fn), len(all_fids), len(ctx["table_sample_data"]),
+        )
     except Exception as e:
-        logger.error("[PHASE:3:CONTEXT] 테이블 샘플 수집 실패 | error=%s", e, exc_info=True)
+        logger.warning("[PHASE:3:TABLE_CTX] 테이블 샘플 수집 skip (catalog 미기동 가능성) | error=%s", e)
 
     return ctx
 
