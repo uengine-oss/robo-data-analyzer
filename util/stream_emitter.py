@@ -194,9 +194,9 @@ async def stream_with_error_boundary(
         async for chunk in async_gen:
             yield chunk
         yield emit_complete()
-    except GeneratorExit:
+    except GeneratorExit:  # noqa: SILENT_FAIL — 클라이언트 정상 종료 시그널, raise 하면 stream 정리 깨짐
         logging.info(f"[{trace_id}] 클라이언트 연결 종료")
-    except Exception as e:
+    except Exception as e:  # noqa: SILENT_FAIL — 스트림 경계 안전망. error 를 NDJSON 으로 emit 하므로 클라이언트가 결과 인지 가능
         error_msg = f"{e.__class__.__name__}: {str(e)}"
         logging.error(f"[{trace_id}] 스트림 에러: {error_msg}", exc_info=True)
         yield emit_error(error_msg, error_type=e.__class__.__name__, trace_id=trace_id)

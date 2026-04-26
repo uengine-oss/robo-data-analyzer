@@ -8,10 +8,10 @@ from typing import Any, AsyncGenerator, List
 
 from client.neo4j_client import Neo4jClient
 from analyzer.strategy.base_analyzer import AnalysisStats
-from analyzer.strategy.dbms.common.node_models import FileStatus, FileAnalysisContext
+from analyzer.strategy.dbms.common.models.node_models import FileStatus, FileAnalysisContext
 from analyzer.strategy.dbms.analysis.ast_analyzer import DbmsAstProcessor
-from analyzer.strategy.dbms.common.naming_helpers import resolve_default_schema
-from analyzer.common.graph_writer import run_graph_queries_collect
+from analyzer.strategy.dbms.common.domain.naming_helpers import resolve_default_schema
+from analyzer.common.cypher.graph_writer import run_graph_queries_collect
 from util.stream_emitter import emit_data, emit_message, emit_phase_event
 from util.logger import log_process
 
@@ -53,6 +53,7 @@ async def run_phase_ast(
                     ddl_table_metadata=ctx.ddl_table_metadata,
                     name_case=ctx.name_case,
                     source_content=file_ctx.source_content,
+                    datasource_name=ctx.datasource_name,
                 )
                 file_ctx.processor = processor
                 queries = processor.build_static_graph_queries()

@@ -5,7 +5,6 @@
 
 import os
 from dataclasses import dataclass, field
-from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 from dotenv import load_dotenv, find_dotenv
@@ -19,26 +18,22 @@ load_dotenv(dotenv_path=_env_path)
 
 
 def _get_base_dir() -> str:
-    """프로젝트 루트 디렉토리 경로 반환
-    
-    DOCKER_COMPOSE_CONTEXT가 설정되지 않은 경우,
-    robo_analyzer_core와 같은 레벨에 있는 data 폴더를 찾기 위해
-    robo_analyzer_core의 부모 디렉토리를 반환합니다.
+    """data 폴더 부모 디렉토리 경로 반환.
+
+    DOCKER_COMPOSE_CONTEXT 가 설정되어 있으면 그 값을 그대로 사용.
+    아니면 robo-data-analyzer 와 같은 레벨에 위치한 data 폴더에 접근하기 위해
+    robo-data-analyzer 의 부모 디렉토리를 반환한다.
     """
     if os.getenv("DOCKER_COMPOSE_CONTEXT"):
         return os.getenv("DOCKER_COMPOSE_CONTEXT")
-    
-    # config/settings.py -> config -> robo_analyzer_core -> Legacy-modernizer (부모)
-    # robo_analyzer_core와 같은 레벨에 있는 data 폴더를 찾기 위해 부모 디렉토리 반환
+
+    # config/settings.py -> config -> robo-data-analyzer -> 부모 디렉토리
     return str(Path(__file__).resolve().parents[2])
 
 
 def _get_project_root() -> str:
-    """프로젝트 루트 디렉토리 경로 반환 (logs 폴더용)
-    
-    프로젝트 내부에 logs 폴더를 생성하기 위해 사용합니다.
-    """
-    # config/settings.py -> config -> robo_analyzer_core (프로젝트 루트)
+    """robo-data-analyzer 프로젝트 루트 경로 반환 (내부 logs 폴더용)."""
+    # config/settings.py -> config -> robo-data-analyzer
     return str(Path(__file__).resolve().parents[1])
 
 
@@ -55,7 +50,7 @@ class Neo4jConfig:
 class LLMConfig:
     """LLM API 설정"""
     api_base: str = field(default_factory=lambda: os.getenv("LLM_API_BASE", "https://api.openai.com/v1"))
-    api_key: str = field(default_factory=lambda: os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY", ""))
+    api_key: str = field(default_factory=lambda: os.getenv("LLM_API_KEY", ""))
     model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "gpt-4.1"))
     max_tokens: int = field(default_factory=lambda: int(os.getenv("LLM_MAX_TOKENS", "32768")))
     reasoning_effort: str = field(default_factory=lambda: os.getenv("LLM_REASONING_EFFORT", "medium"))
@@ -122,6 +117,12 @@ class PathConfig:
 
 
 @dataclass(frozen=True)
+class CatalogConfig:
+    """robo-data-catalog 서비스 연동 설정."""
+    service_url: str = field(default_factory=lambda: os.getenv("CATALOG_SERVICE_URL", "http://localhost:5503"))
+
+
+@dataclass(frozen=True)
 class DeepAgentConfig:
     """DeepAgent 전용 설정. 기본값은 .env 의 실제 값과 일치."""
     entity_batch_size: int = field(
@@ -140,6 +141,7 @@ class AnalyzerConfig:
     concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
     batch: BatchConfig = field(default_factory=BatchConfig)
     path: PathConfig = field(default_factory=PathConfig)
+    catalog: CatalogConfig = field(default_factory=CatalogConfig)
     deep_agent: DeepAgentConfig = field(default_factory=DeepAgentConfig)
     
     # 버전
@@ -156,14 +158,8 @@ class AnalyzerConfig:
     port: int = field(default_factory=lambda: int(os.getenv("PORT", "5502")))
 
 
-@lru_cache(maxsize=1)
-def get_settings() -> AnalyzerConfig:
-    """싱글톤 설정 인스턴스 반환 (캐싱)"""
-    return AnalyzerConfig()
-
-
-# 전역 설정 인스턴스
-settings = get_settings()
+# 전역 설정 인스턴스 (모듈 로딩 시 1회 인스턴스화)
+settings = AnalyzerConfig()
 
 
 # ============================================================================

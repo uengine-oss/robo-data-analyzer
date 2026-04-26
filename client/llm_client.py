@@ -132,7 +132,10 @@ class CustomLLMClient(BaseChatModel):
                 error_data = resp.json()
             except ValueError:
                 error_data = resp.text
-            print(f"[ERROR] API 호출 실패: status={resp.status_code}, body={error_data}")
+            logging.error(
+                "[CUSTOM_LLM] API 호출 실패 | status=%d body=%r",
+                resp.status_code, error_data,
+            )
             resp.raise_for_status()
 
         content_type = resp.headers.get("Content-Type", "").lower()
@@ -207,7 +210,14 @@ def _init_llm_cache():
                 set_llm_cache(SQLiteCache(database_path=cache_path))
                 logging.info("LLM 캐싱 활성화: %s", cache_path)
             except Exception as e:
-                logging.warning("LLM 캐싱 초기화 실패: %s", e)
+                logging.error(
+                    "LLM 캐싱 초기화 실패 — cache_path=%s | %s: %s",
+                    cache_path, type(e).__name__, e,
+                    exc_info=True,
+                )
+                raise RuntimeError(
+                    f"LLM 캐싱 초기화 실패 (cache_path={cache_path}): {type(e).__name__}: {e}"
+                ) from e
         else:
             logging.debug("LLM 캐싱 비활성화됨")
         _cache_initialized = True
@@ -281,8 +291,9 @@ def get_llm(
     _init_llm_cache()
     
     config = settings.llm
-    
-    # 매개변수 기본값 설정
+
+    # 매개변수 기본값 설정 — settings 의 기본값으로만 폴백 (env 통해 단일 출처).
+    # 호출자가 명시 인자를 넘기면 그것을 우선, 안 넘기면 settings 사용.
     base_url = base_url or config.api_base
     api_key = api_key or config.api_key
     model = model or config.model

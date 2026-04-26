@@ -12,10 +12,42 @@ import re
 from pathlib import Path
 from typing import List, Tuple
 
-from analyzer.strategy.framework.common.node_models import SqlStatementChunk, ArtifactChunk
-from .base import _local_tag, _parse_xml_safe
+from lxml import etree  # type: ignore[import]
+
+from analyzer.strategy.framework.common.models.node_models import SqlStatementChunk, ArtifactChunk
+from util.encoding_reader import read_text_with_fallback_sync as read_text_with_fallback
 
 logger = logging.getLogger(__name__)
+
+
+def _local_tag(elem) -> str:
+    """XML 요소의 네임스페이스를 제거한 로컬 태그명.
+
+    Comment·ProcessingInstruction 등 tag가 문자열이 아닌 노드는 빈 문자열을 반환한다.
+    """
+    tag = elem.tag
+    if not isinstance(tag, str):
+        return ""
+    return tag.split("}")[-1] if "}" in tag else tag
+
+
+def _parse_xml_safe(path: str, parser_fn):
+    """공통 XML 로드 + 파서 호출. 파싱 실패는 fail-fast.
+
+    lxml 은 requirements.txt 의 필수 의존성이므로 ImportError 폴백 없음.
+    """
+    text = read_text_with_fallback(path)
+    try:
+        root = etree.fromstring(text.encode("utf-8"))
+    except Exception as e:
+        logger.error(
+            "[PHASE:1:ARTIFACT] XML 파싱 실패 | file=%s | %s: %s",
+            Path(path).name, type(e).__name__, e, exc_info=True,
+        )
+        raise RuntimeError(
+            f"XML 파싱 실패: {path} ({type(e).__name__}: {e})"
+        ) from e
+    return parser_fn(root, path)
 
 # SQL 패턴 감지 (텍스트 내용이 SQL 구문인지)
 _SQL_PATTERN = re.compile(
@@ -54,7 +86,6 @@ def _is_identifier_value(value: str) -> bool:
 
 def _get_element_text(elem) -> str:
     """요소의 전체 텍스트 (자식 포함)."""
-    from lxml import etree  # type: ignore[import]
     return (elem.text or "") + "".join(etree.tostring(c, encoding="unicode") for c in elem)
 
 
@@ -66,8 +97,6 @@ def parse_xml_universal(path: str) -> Tuple[List[SqlStatementChunk], List[Artifa
     """
 
     def _parse(root, file_path):
-        from lxml import etree  # type: ignore[import]
-
         sql_chunks: List[SqlStatementChunk] = []
         artifact_chunks: List[ArtifactChunk] = []
         seen_keys: set = set()  # 중복 방지

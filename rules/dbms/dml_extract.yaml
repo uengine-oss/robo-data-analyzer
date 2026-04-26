@@ -80,6 +80,11 @@ prompt: |
 
   ★★ 컬럼 추출 (해당 범위 내)
   - SELECT 절 명시 컬럼 (* 와 집계는 제외), INSERT 컬럼 목록, UPDATE SET 대상, WHERE 조건 컬럼, JOIN 조건 컬럼, ORDER BY/GROUP BY, RETURNING
+  - **Positional INSERT (컬럼 리스트 없음)**: `INSERT INTO T VALUES(...)` 형식이면 VALUES 안의 식별자에서 컬럼명을 유도한다.
+    - `:NEW.X` / `:OLD.X` → 컬럼 `X` (트리거 행 컬럼이 같은 이름의 타겟 컬럼에 매핑됨이 통상)
+    - `<src>.<COL>` 형태의 alias 참조 → 컬럼 `COL`
+    - 시퀀스 `SEQ.NEXTVAL`, 함수 호출(`SYSDATE`, `TO_CHAR(...)`), 리터럴은 컬럼명 추출 불가 → 생략
+    - 예: `INSERT INTO TBL VALUES(:NEW.A, :NEW.B, SEQ.NEXTVAL)` → 컬럼 [A, B] 만 추출
   - name: 원문 그대로
   - dtype: 코드에서 추론 가능하면 기록, 불명확하면 "VARCHAR"
   - nullable: 불명확 시 true

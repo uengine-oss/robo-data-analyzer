@@ -7,23 +7,21 @@ from __future__ import annotations
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional, Set, Tuple
 
-from config.settings import settings
-from analyzer.strategy.framework.common.node_models import (
+from analyzer.strategy.framework.common.domain.lang_profile import get_lang_profile
+from analyzer.strategy.framework.common.models.node_models import (
     CallsEdge,
     FunctionFacts,
-    VariableFacts,
-    ReferToEdge,
     ReadsWritesEdge,
+    ReferToEdge,
+    VariableFacts,
 )
-from util.encoding_reader import read_text_with_fallback_sync
-from util.code_text_utils import (
-    add_line_numbers,
-    calculate_code_token as estimate_tokens,
-    slice_by_line_range,
-)
+from analyzer.strategy.framework.common.domain.ontology import get_ontology
+from config.settings import settings
+from util.code_text_utils import calculate_code_token as estimate_tokens
+from util.llm_rule_runner import prompts
+
 logger = logging.getLogger(__name__)
 
 
@@ -197,7 +195,7 @@ def _build_module_fields_context(
     constants = [f for f in fields if f.code and ("static" in f.code.lower() and "final" in f.code.lower())]
     others = [f for f in fields if f not in constants]
     for f in constants + others:
-        code_line = (f.code or "").strip()
+        code_line = f.code.strip()
         if code_line:
             # 한 줄로 압축
             code_line = " ".join(code_line.split())
@@ -236,20 +234,20 @@ def _invoke_analysis_llm(
     호출 그래프 하위 노드부터 summary를 만든 뒤, 상위 노드에서는 이 정보를 context에 포함해
     한 번의 LLM 호출로 최대한 풍부한 summary를 생성하기 위한 용도.
     """
-    if not api_key or not (m.code or "").strip():
-        reason = "no_api_key" if not api_key else "no_code"
-        logger.info("[PHASE:3:CODE_ANALYSIS] LLM 스킵 | function_id=%s reason=%s", m.function_id, reason)
+    if not api_key:
+        raise RuntimeError(
+            f"_analyze_code_node: api_key 누락 — service 진입점에서 검증되어야 함 (function_id={m.function_id})"
+        )
+    if not m.code.strip():
+        logger.info(
+            "[PHASE:3:CODE_ANALYSIS] LLM 스킵 (코드 비어있음) | function_id=%s",
+            m.function_id,
+        )
         return None
     code = m.code.strip()
     # lang → display_name (Java, C, Python 등)
-    try:
-        from analyzer.strategy.framework.common.lang_profile import get_lang_profile
-        language = get_lang_profile().display_name(lang)
-    except Exception as e:
-        logger.warning("lang_profile 로드 실패, capitalize 사용 | lang=%s error=%s", lang, e)
-        language = lang.capitalize()
+    language = get_lang_profile().display_name(lang)
 
-    from analyzer.strategy.framework.common.ontology import get_ontology
     onto = get_ontology()
     is_oop = onto.is_oop(lang)
     valid_stereotypes = sorted(onto.valid_stereotypes(lang))
@@ -293,13 +291,18 @@ def _invoke_analysis_llm(
                 cls = str(cs.get("module_name") or "")
                 name = str(cs.get("function_name") or "")
                 summ = str(cs.get("summary") or "")
-                if not summ:
-                    continue
-                id_part = f"{cls}.{name}" if cls and name else (name or cls or "")
-                called_snippets.append(f"{id_part}: {summ}" if id_part else summ)
             except Exception as e:
-                logger.warning("called_method_summary 파싱 실패 | error=%s", e)
+                logger.error(
+                    "[CALLED_METHOD_SUMMARY] 파싱 실패 | item=%r | %s: %s",
+                    cs, type(e).__name__, e, exc_info=True,
+                )
+                raise RuntimeError(
+                    f"called_method_summary 파싱 실패: {type(e).__name__}: {e}"
+                ) from e
+            if not summ:
                 continue
+            id_part = f"{cls}.{name}" if cls and name else (name or cls or "")
+            called_snippets.append(f"{id_part}: {summ}" if id_part else summ)
         if called_snippets:
             called_snippets.sort()  # 정렬하여 병렬 처리 순서와 무관하게 캐시 키 일관성 보장
             context_parts.append("called_method_summaries: " + " || ".join(called_snippets))
@@ -318,12 +321,15 @@ def _invoke_analysis_llm(
     if codebase_conventions and codebase_conventions.strip():
         inputs["codebase_conventions"] = codebase_conventions.strip()
     # Fail-Fast: LLM 예외는 그대로 상위로 전파.
-    # dict·summary 없는 "빈 응답" 만 None 리턴 (LLM 이 의도적으로 분석 불가 판정한 경우).
-    from util.llm_prompt_handler import prompts
+    # 빈 응답(dict 가 아니거나 summary 비어있음) 은 LLM 의 명시적 "분석 불가" 판정으로 해석.
+    # 호출 그래프 사이클로 누락된 노드는 호출자가 None 체크 후 그 함수만 분석 결과 없이 진행.
     result = prompts.execute_raw("framework", "code_analysis", inputs, api_key)
     if not isinstance(result, dict) or not result.get("summary"):
-        logger.info("[PHASE:3:CODE_ANALYSIS] LLM 스킵 | function_id=%s reason=empty_result", m.function_id)
-        return None
+        logger.error(
+            "[PHASE:3:CODE_ANALYSIS] LLM 빈 응답 — 분석 불가 판정 | function_id=%s result_type=%s",
+            m.function_id, type(result).__name__,
+        )
+        return None  # noqa: SILENT_FAIL — LLM 이 분석 불가 판정한 함수는 skip (callers 그래프 처리 시 호출자가 처리)
     logger.info(
         "[PHASE:3:CODE_ANALYSIS] LLM 분석 완료 | function_id=%s has_summary=%s deps=%d rules=%d examples=%d questions=%d",
         m.function_id,
@@ -357,8 +363,8 @@ def _analyze_code_node(
     reads_writes_by_function: Optional[Dict[str, List[Tuple[str, str]]]] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """단일 메서드에 대해 stereotype + (summary, dependencies) 계산."""
-    stereotype_fallback = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
-    summary = f"{m.fqn} ({stereotype_fallback}); lines {m.start_line}-{m.end_line}"
+    default_stereotype = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
+    summary = f"{m.fqn} ({default_stereotype}); lines {m.start_line}-{m.end_line}"
     method_edges = [e for e in refer_to_edges if e.function_id == m.function_id]
     calls_outgoing = [f"{e.target_type}:{e.target_id}" for e in method_edges]
     # rw_summary: 1차 Table 엣지 기반, 2차 SqlStatement 경로 fallback.
@@ -422,14 +428,13 @@ def _analyze_code_node(
             rules = list(analysis.get("rules") or [])
             examples = list(analysis.get("examples") or [])
             questions = list(analysis.get("questions") or [])
-            from analyzer.strategy.framework.common.ontology import get_ontology
             raw_stereotype = (analysis.get("stereotype") or "").strip()
             if get_ontology().is_valid_stereotype(raw_stereotype, lang):
                 stereotype = raw_stereotype
 
     # LLM 이 stereotype 을 못 정하면 테이블 접근 기반 fallback
     if not stereotype:
-        stereotype = stereotype_fallback
+        stereotype = default_stereotype
 
     data = {
         "stereotype": stereotype,
@@ -474,7 +479,11 @@ def analyze_and_enrich(
     - LLM 사용(O) + calls_edges 있음  → 호출 그래프 하위 → 상위 순으로 레벨별 병렬, 20개씩 yield.
     - 그 외(LLM 미사용 / calls_edges 없음) → 기존 방식대로 메서드 단위 개별 처리, 20개씩 yield.
     """
-    api_key = api_key or settings.llm.api_key or ""
+    if use_llm and not api_key:
+        raise RuntimeError(
+            "[CODE_ANALYSIS] use_llm=True 인데 api_key 가 비어있음 — "
+            "service 진입점에서 settings.llm.api_key 검증 필요"
+        )
     module_key_index = _build_module_key_index(module_index or {})
     logger.info(
         "[PHASE:3:CODE_ANALYSIS] 요약 진입 | function_facts=%d use_llm=%s api_key_set=%s parallel=%s calls_edges=%d",
@@ -753,8 +762,15 @@ def _invoke_module_summary_llm(
     locale: str = "ko",
     kind: Optional[str] = None,
 ) -> Tuple[Optional[str], str, Dict[str, List[str]]]:
-    """module_summary_batch 규칙 실행 → (모듈 요약, moduleStereotype, unified_actors) 반환."""
-    if not api_key or not items:
+    """module_summary_batch 규칙 실행 → (모듈 요약, moduleStereotype, unified_actors) 반환.
+
+    api_key 누락은 service 진입점 검증 누락이라 raise. items 비어있으면 빈 결과 반환.
+    """
+    if not api_key:
+        raise RuntimeError(
+            f"_invoke_module_summary_llm: api_key 누락 (module_fqn={module_fqn})"
+        )
+    if not items:
         return None, "", {}
     inputs: Dict[str, Any] = {
         "module_fqn": module_fqn,
@@ -770,11 +786,16 @@ def _invoke_module_summary_llm(
     if prev_summary:
         inputs["prev_summary"] = prev_summary
 
-    # Fail-Fast: LLM 예외는 상위로 전파. 빈 응답(None) 만 허용.
-    from util.llm_prompt_handler import prompts
+    # Fail-Fast: LLM 예외는 상위로 전파.
     result = prompts.execute_raw("framework", "module_analysis", inputs, api_key)
     if not isinstance(result, Dict):
-        return None, "", {}
+        logger.error(
+            "[MODULE_SUMMARY] LLM 결과가 dict 아님 | module_fqn=%s type=%s",
+            module_fqn, type(result).__name__,
+        )
+        raise RuntimeError(
+            f"module_analysis LLM 결과가 dict 가 아님: {type(result).__name__} (module_fqn={module_fqn})"
+        )
     summary = result.get("summary") or None
     raw_module_st = (result.get("moduleStereotype") or "").strip()
     module_stereotype = raw_module_st if raw_module_st in VALID_MODULE_STEREOTYPES else ""
@@ -791,8 +812,16 @@ def run_module_summary(
     api_key: Optional[str] = None,
     locale: str = "ko",
 ) -> Generator[Dict[str, Dict[str, Any]], None, None]:
-    """모듈별 요약 — 모듈 완료 즉시 yield."""
-    api_key = api_key or settings.llm.api_key or ""
+    """모듈별 요약 — 모듈 완료 즉시 yield.
+
+    api_key 가 명시되지 않으면 settings.llm.api_key 사용 (service 진입점 검증 후 단일 출처 폴백).
+    """
+    if not api_key:
+        api_key = settings.llm.api_key
+    if not api_key:
+        raise RuntimeError(
+            "run_module_summary: api_key 누락 — service 진입점에서 검증되어야 함"
+        )
     module_key_index = _build_module_key_index(module_index or {})
     # module_key → kind 매핑 (FILE, STRUCT, CLASS 등)
     key_to_kind: Dict[str, str] = {}
@@ -805,7 +834,7 @@ def run_module_summary(
         ck = getattr(m, "module_key", None)
         if not ck:
             continue
-        name = (m.fqn or "").rsplit(".", 1)[-1] if m.fqn else m.function_id or ""
+        name = m.fqn.rsplit(".", 1)[-1] if m.fqn else m.function_id
         data = analysis_by_function.get(m.function_id) or {}
         summary = data.get("summary", "") if isinstance(data, dict) else ""
         if not summary:
@@ -854,14 +883,7 @@ def run_module_summary(
         if current:
             chunks.append(current)
 
-        # api_key 없으면 LLM 미사용 — 단순 결합
-        if not api_key:
-            return (
-                module_fqn,
-                "; ".join(f"{x.get('name', '')}: {x.get('summary', '')}" for c in chunks for x in c),
-                "",
-                {},
-            )
+        # api_key 부재는 위 진입점에서 raise — 여기서는 LLM 호출 보장됨.
 
         # Map: 각 청크 독립 LLM 부분 요약 병렬 실행
         def _summarize_chunk(chunk: List[Dict[str, Any]]):
@@ -896,7 +918,14 @@ def run_module_summary(
                 module_fqn, merge_items, module_comment, module_annotations,
                 prev_summary=None, api_key=api_key, locale=locale, kind=module_kind,
             )
-            final_summary = final_summary or partial_summaries[-1]
+            if not final_summary:
+                logger.error(
+                    "[MODULE_SUMMARY] 통합 요약 실패 — 통합 LLM 이 빈 summary 반환 | module_fqn=%s partial_count=%d",
+                    module_fqn, len(partial_summaries),
+                )
+                raise RuntimeError(
+                    f"module_analysis 통합 요약 실패 (module_fqn={module_fqn}): 통합 LLM 이 빈 summary 반환"
+                )
             if merged_st:
                 module_stereotype = merged_st
             for rep, syns in (merged_unified or {}).items():

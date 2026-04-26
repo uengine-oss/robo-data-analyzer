@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any, AsyncGenerator
 
-from analyzer.common.ddl_handler import run_ddl_processing
+from analyzer.common.cypher.ddl_handler import run_ddl_processing
 from util.stream_emitter import (
     emit_message, emit_separator, emit_phase_header, emit_file_start,
 )

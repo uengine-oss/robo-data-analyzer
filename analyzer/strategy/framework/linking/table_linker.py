@@ -1,63 +1,55 @@
 """SQL → Table/Column/FK 추출.
 
-기존 실험용 파이프라인의 SQL→Table 추출 로직을 framework 전략용으로 통합한 모듈.
+framework 전략의 SQL→Table 추출 모듈 (단일 처리 흐름):
+  1. SQL 분할 — 긴 SQL 을 LLM 토큰 한도에 맞춰 키워드 경계에서 분할
+  2. SQL → Table LLM 호출
+  3. 결과 평탄화 (ReadsWritesEdge / FkEdge / ColumnRef)
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import queue
 import re
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
 
-from config.settings import settings
-from analyzer.strategy.framework.common.node_models import (
+from analyzer.strategy.framework.common.models.node_models import (
     ColumnRef,
     FkEdge,
     ReadsWritesEdge,
     SqlStatementChunk,
 )
+from config.settings import settings
 from util.code_text_utils import calculate_code_token as estimate_tokens
+from util.llm_rule_runner import prompts
+from util.llm_call_safety import get_executor
 
 
-def sql_op_to_method_relation(sql_relation: str) -> str:
-    """SqlStatement->Table 연산(SELECT/INSERT/UPDATE/DELETE)을 Method->Table 관계(READS/WRITES)로 변환."""
-    r = (sql_relation or "").strip().upper()
-    if r in ("INSERT", "UPDATE", "DELETE"):
-        return "WRITES"
-    return "READS"
-# LLM 배치 결과 한 건: (tables, columns, fks, alias_map, table_descriptions). 문자열 주석으로 지연 평가해 스레드 첫 import 시 NameError 방지.
-SqlChunkRawResult = Tuple[
-    List[Tuple[str, str, str]],
-    List[ColumnRef],
-    List[FkEdge],
-    List[Dict[str, str]],
-    Dict[Tuple[str, str], str],
-]
-
-logger = logging.getLogger(__name__)
+# ═══════════════════════════════════════════════════════════
+# Section 1: SQL 분할 (긴 SQL → LLM 토큰 한도 키워드 경계 분할)
+# ═══════════════════════════════════════════════════════════
 
 
-# ---------------------------------------------------------------------------
-# SQL 분할 상수
-# ---------------------------------------------------------------------------
+SQL_LLM_CHUNK_MAX: int = 7000
+SQL_SPLIT_THRESHOLD: int = 8000
+SQL_MAX_CHUNKS: int = 20
 
-SQL_LLM_CHUNK_MAX = 7000
-SQL_SPLIT_THRESHOLD = 8000
-SQL_MAX_CHUNKS = 20
-
-_SQL_TABLE_KEYWORDS = re.compile(
+_TABLE_KEYWORDS = re.compile(
     r"\b(FROM|JOIN|INTO|UPDATE|DELETE)\b",
     re.IGNORECASE,
 )
 
 
 def _find_safe_break_at_keywords(text: str, start: int, ideal_end: int) -> int:
-    """ideal_end 이전에서 끊기: depth 0에서 FROM/JOIN/INTO/UPDATE/DELETE가 한 번이라도 나온 뒤에만
-    last_safe를 갱신. 끊기는 depth 0인 쉼표·줄바꿈 또는 다음 키워드 직전."""
+    """``ideal_end`` 이전에서 안전하게 끊을 위치를 찾는다.
+
+    - depth 0 (괄호 밖) 에서 첫 FROM/JOIN/INTO/UPDATE/DELETE 가 보인 후에만 끊는다.
+    - 끊는 지점: depth 0 의 콤마·줄바꿈, 또는 다음 키워드 바로 앞.
+    - 따옴표 안의 문자는 무시.
+    """
     if ideal_end >= len(text):
         return len(text)
     last_safe = start
@@ -101,12 +93,12 @@ def _find_safe_break_at_keywords(text: str, start: int, ideal_end: int) -> int:
             i += 1
             continue
         if depth == 0:
-            if not seen_table_keyword and _SQL_TABLE_KEYWORDS.match(text[i:]):
+            if not seen_table_keyword and _TABLE_KEYWORDS.match(text[i:]):
                 seen_table_keyword = True
             if seen_table_keyword:
                 if c == "," or c == "\n":
                     last_safe = i + 1
-                next_kw = _SQL_TABLE_KEYWORDS.search(text[i + 1 : ideal_end])
+                next_kw = _TABLE_KEYWORDS.search(text[i + 1: ideal_end])
                 if next_kw and next_kw.start() > 0:
                     candidate = i + 1 + next_kw.start()
                     if start < candidate < ideal_end:
@@ -117,8 +109,8 @@ def _find_safe_break_at_keywords(text: str, start: int, ideal_end: int) -> int:
     return min(last_safe, ideal_end)
 
 
-def _split_sql_at_keyword_boundaries(sql_text: str) -> List[str]:
-    """긴 SQL을 키워드 경계(FROM/JOIN/INTO/UPDATE/DELETE)에서만 분할. 각 조각은 최소 하나의 테이블 문맥 포함."""
+def _split_at_keyword_boundaries(sql_text: str) -> List[str]:
+    """긴 SQL 을 키워드 경계(FROM/JOIN/INTO/UPDATE/DELETE)에서만 분할."""
     text = (sql_text or "").strip()
     if not text or len(text) <= SQL_SPLIT_THRESHOLD:
         return [text] if text else []
@@ -144,7 +136,12 @@ def _split_sql_at_keyword_boundaries(sql_text: str) -> List[str]:
 
 
 def _split_sql_for_llm(sql_text: str) -> List[str]:
-    """긴 SQL을 키워드 경계에서 분할. 괄호 depth 0인 FROM/JOIN/INTO/UPDATE/DELETE 근처에서만 자름."""
+    """긴 SQL 을 LLM 토큰 한도에 맞게 분할.
+
+    1. 길이가 ``SQL_SPLIT_THRESHOLD`` 이하면 통째로 반환.
+    2. 세미콜론으로 5개 이하의 statement 로 나뉘고 각각 200자 이상이면 ``;`` 기준 분할.
+    3. 그 외엔 ``_split_at_keyword_boundaries`` 로 키워드 경계 분할.
+    """
     text = (sql_text or "").strip()
     if not text or len(text) <= SQL_SPLIT_THRESHOLD:
         return [text] if text else []
@@ -161,42 +158,61 @@ def _split_sql_for_llm(sql_text: str) -> List[str]:
         if len(part) <= SQL_LLM_CHUNK_MAX:
             out.append(part)
             continue
-        pieces = _split_sql_at_keyword_boundaries(part)
-        out.extend(pieces)
+        out.extend(_split_at_keyword_boundaries(part))
     return out if out else [text]
+
+
+# ═══════════════════════════════════════════════════════════
+# Section 2: SQL → Table 추출 (LLM 호출 + 결과 평탄화)
+# ═══════════════════════════════════════════════════════════
+
+
+def sql_op_to_method_relation(sql_relation: str) -> str:
+    """SqlStatement->Table 연산(SELECT/INSERT/UPDATE/DELETE)을 Method->Table 관계(READS/WRITES)로 변환."""
+    r = (sql_relation or "").strip().upper()
+    if r in ("INSERT", "UPDATE", "DELETE"):
+        return "WRITES"
+    return "READS"
+
+
+# LLM 배치 결과 한 건: (tables, columns, fks, alias_map, table_descriptions).
+SqlChunkRawResult = Tuple[
+    List[Tuple[str, str, str]],
+    List[ColumnRef],
+    List[FkEdge],
+    List[Dict[str, str]],
+    Dict[Tuple[str, str], str],
+]
+
+logger = logging.getLogger(__name__)
 
 
 def _expand_chunks_with_sql_split(chunks: List[SqlStatementChunk]) -> List[SqlStatementChunk]:
     """긴 SQL 청크를 키워드 경계에서 분할해 여러 청크로 확장. 같은 sql_key 유지, 조각 순서 유지."""
     out: List[SqlStatementChunk] = []
     for c in chunks:
-        if getattr(c, "sql_type", "") == "entity_definition":
+        if c.sql_type == "entity_definition":
             out.append(c)
             continue
-        sql_text = (getattr(c, "sql_text", "") or "").strip()
+        sql_text = (c.sql_text or "").strip()
         if not sql_text or len(sql_text) <= SQL_SPLIT_THRESHOLD:
             out.append(c)
             continue
-        pieces = _split_sql_at_keyword_boundaries(sql_text)
+        pieces = _split_at_keyword_boundaries(sql_text)
         if len(pieces) <= 1:
             out.append(c)
             continue
-        sql_key = getattr(c, "sql_key", "")
-        sql_type = getattr(c, "sql_type", "")
-        start_line = getattr(c, "start_line", 0) or 0
-        end_line = getattr(c, "end_line", 0) or 0
-        file_path = getattr(c, "file_path", "")
         for piece in pieces:
             if not piece.strip():
                 continue
             out.append(
                 SqlStatementChunk(
-                    sql_key=sql_key,
-                    sql_type=sql_type,
-                    start_line=start_line,
-                    end_line=end_line,
+                    sql_key=c.sql_key,
+                    sql_type=c.sql_type,
+                    start_line=c.start_line,
+                    end_line=c.end_line,
                     sql_text=piece,
-                    file_path=file_path,
+                    file_path=c.file_path,
                 )
             )
     return out
@@ -231,9 +247,20 @@ def _parse_sql_extract_result(
         if name in aliases_set:
             continue
         schema = str(row.get("schema") or "").strip()
-        rel = str(row.get("relation") or "SELECT").strip().upper()
+        rel_raw = row.get("relation")
+        if not rel_raw:
+            logger.error(
+                "[TABLE_EXTRACT] LLM 결과에 relation 누락 — 항목 drop | name=%s row=%r",
+                name, row,
+            )
+            continue  # noqa: SILENT_FAIL — LLM 환각 항목은 전체 batch 를 막지 않도록 항목 drop
+        rel = str(rel_raw).strip().upper()
         if rel not in ("SELECT", "INSERT", "UPDATE", "DELETE"):
-            rel = "SELECT"
+            logger.error(
+                "[TABLE_EXTRACT] LLM 결과의 relation 미허용 — 항목 drop | name=%s relation=%r",
+                name, rel_raw,
+            )
+            continue  # noqa: SILENT_FAIL — LLM 환각 항목 drop (SELECT/INSERT/UPDATE/DELETE 만 허용)
         tables.append((schema, name, rel))
         desc = str(row.get("description") or "").strip()
         if desc:
@@ -280,19 +307,19 @@ def _extract_tables_columns_fk_via_llm(
     api_key: Optional[str] = None,
 ) -> Tuple[List[Tuple[str, str, str]], List[ColumnRef], List[FkEdge]]:
     """LLM으로 한 조각에서 테이블·컬럼·FK 추출."""
-    api_key = api_key or settings.llm.api_key or os.environ.get("LLM_API_KEY", "")
     if not (sql_text or "").strip():
         return [], [], []
     if not api_key:
-        logger.error("[PHASE:2:TABLE_LLM] LLM_API_KEY 없음, sql_table_extract 스킵 | sql_key=%s", sql_key)
-        return [], [], []
+        raise RuntimeError(
+            f"[PHASE:2:TABLE_LLM] api_key 가 비어있음 | sql_key={sql_key} — "
+            "service 진입점에서 settings.llm.api_key 검증 필요"
+        )
     text = (sql_text.strip() or "")[:SQL_LLM_CHUNK_MAX]
     try:
-        from util.llm_prompt_handler import prompts
         result = prompts.table_extract([{"sql_key": sql_key or "", "sql_text": text, "prev_summary": ""}], api_key)
         res_list = result.get("results") or []
         result_item = res_list[0] if res_list and isinstance(res_list[0], dict) else {}
-    except Exception as e:
+    except Exception as e:  # noqa: SILENT_FAIL — 한 SQL 청크 추출 실패가 다른 SQL 처리를 막지 않도록 errlog 후 빈 결과 반환 (해당 SQL 만 누락)
         logger.error("[PHASE:2:TABLE_LLM] LLM sql_table_extract 오류 | sql_key=%s error=%s", sql_key, e)
         return [], [], []
     tables, columns, fks, _, _ = _parse_sql_extract_result(result_item)
@@ -307,18 +334,17 @@ def _extract_tables_columns_fk_batch_via_llm(
     """여러 SQL 청크를 한 번에 LLM에 보내 테이블/컬럼/FK/table_descriptions 추출."""
     if not batch or not api_key:
         return []
-    from util.llm_prompt_handler import prompts
     sql_items = []
     for i, c in enumerate(batch):
-        sql_key = getattr(c, "sql_key", "")
-        sql_text = (getattr(c, "sql_text", "") or "").strip()
+        sql_key = c.sql_key
+        sql_text = (c.sql_text or "").strip()
         prev = ""
         if prev_summaries and i < len(prev_summaries):
             prev = (prev_summaries[i] or "").strip()
         sql_items.append({"sql_key": sql_key, "sql_text": sql_text, "prev_summary": prev})
     try:
         result = prompts.table_extract(sql_items, api_key)
-    except Exception as e:
+    except Exception as e:  # noqa: SILENT_FAIL — 한 batch LLM 실패가 다른 batch 진행을 막지 않도록 errlog 후 빈 결과 (해당 batch SQL 들만 누락)
         logger.error("[PHASE:2:TABLE_LLM] LLM sql_table_extract 오류 | error=%s", e, exc_info=True)
         return [([], [], [], [], {}) for _ in batch]
     out: List[Tuple[List[Tuple[str, str, str]], List[ColumnRef], List[FkEdge], List[Dict[str, str]], Dict[Tuple[str, str], str]]] = []
@@ -340,8 +366,8 @@ def _build_sql_batches(
     current: List[SqlStatementChunk] = []
     current_tokens = 0
     for c in chunks:
-        sql_key = getattr(c, "sql_key", "")
-        sql_text = (getattr(c, "sql_text", "") or "").strip()
+        sql_key = c.sql_key
+        sql_text = (c.sql_text or "").strip()
         t = estimate_tokens(sql_key) + estimate_tokens(sql_text)
         if t > max_tokens:
             t = max_tokens
@@ -419,7 +445,7 @@ def _process_one_sql_batch(
         for (s, n), d in (desc_map or {}).items():
             if d and (s, n) not in table_descriptions:
                 table_descriptions[(s, n)] = d
-        sql_key = getattr(chunk, "sql_key", "")
+        sql_key = chunk.sql_key
         tables_set = {(s or "", t or "") for s, t, _ in tables}
         seen: set = set()
         for schema, table, rel in tables:
@@ -436,7 +462,7 @@ def _process_one_sql_batch(
                 )
             )
         for col in cols:
-            if (col.table_schema or "", col.table_name or "") in tables_set:
+            if (col.table_schema, col.table_name) in tables_set:
                 column_refs.append(col)
         for fk in fks:
             fk_edges.append(fk)
@@ -477,7 +503,7 @@ def _link_sql_to_tables_per_key_pipeline(
                 break
             try:
                 e, fk, col, batch_desc, raw = _process_one_sql_batch([chunk], api_key, [prev])
-            except Exception as ex:
+            except Exception as ex:  # noqa: SILENT_FAIL — 한 SQL 키 처리 실패가 다른 SQL 키 처리를 막지 않도록 errlog 후 빈 결과 진행
                 logger.error("[PHASE:2:TABLE_LLM] SQL 키 단위 LLM 예외: %s", ex)
                 e, fk, col, batch_desc, raw = [], [], [], {}, [([], [], [], [], {})]
             with lock:
@@ -548,29 +574,30 @@ async def link_sql_to_tables_async(
     LLM 호출을 asyncio.to_thread로 래핑하여 이벤트 루프를 차단하지 않고
     LLMRateLimiter로 전역 동시성을 제어합니다.
     """
-    import asyncio
-    from util.llm_rate_limiter import get_rate_limiter
-
     edges: List[ReadsWritesEdge] = []
     fk_edges: List[FkEdge] = []
     column_refs: List[ColumnRef] = []
     table_descriptions: Dict[Tuple[str, str], str] = {}
     seen_edge: set = set()
     seen_col: set = set()
-    _api_key = api_key or settings.llm.api_key or os.environ.get("LLM_API_KEY", "")
+    if not api_key:
+        raise RuntimeError(
+            "[PHASE:2:TABLE_LLM:async] api_key 가 비어있음 — "
+            "service 진입점에서 settings.llm.api_key 검증 필요"
+        )
+    _api_key = api_key
 
-    chunks_to_process = [c for c in sql_chunks if (getattr(c, "sql_text", "") or "").strip()]
+    chunks_to_process = [c for c in sql_chunks if (c.sql_text or "").strip()]
     if not chunks_to_process:
         return edges, fk_edges, column_refs, table_descriptions
 
     expanded = _expand_chunks_with_sql_split(chunks_to_process)
     by_key: Dict[str, List[SqlStatementChunk]] = {}
     for c in expanded:
-        by_key.setdefault(getattr(c, "sql_key", ""), []).append(c)
+        by_key.setdefault(c.sql_key, []).append(c)
     max_pieces = max(len(v) for v in by_key.values()) if by_key else 0
     results_by_key: Dict[str, List[SqlChunkRawResult]] = {k: [] for k in by_key}
     max_tokens = settings.batch.max_batch_token
-    limiter = get_rate_limiter()
 
     def _collect_results(e, fk, col, batch_desc, raw, batch):
         """배치 결과를 공용 리스트에 수집 (thread-safe 불필요 — await 기반)."""
@@ -579,7 +606,7 @@ async def link_sql_to_tables_async(
                 table_descriptions[(s, n)] = d
         for j, chunk in enumerate(batch):
             if j < len(raw):
-                results_by_key.setdefault(getattr(chunk, "sql_key", ""), []).append(raw[j])
+                results_by_key.setdefault(chunk.sql_key, []).append(raw[j])
         for x in e:
             key_edge = (x.sql_key, x.table_schema, x.table_name, x.relation)
             if key_edge not in seen_edge:
@@ -611,7 +638,6 @@ async def link_sql_to_tables_async(
 
         logger.info("[PHASE:2:TABLE_LLM] async 라운드 %d/%d | 청크=%d 배치=%d", round_i + 1, max_pieces, len(round_chunks), len(batches))
 
-        from util.llm_rate_limiter import get_executor
         executor = get_executor()
 
         # 각 배치에 prev_summaries를 바인딩

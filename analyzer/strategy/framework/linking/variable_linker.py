@@ -9,11 +9,12 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Tuple
 
-from analyzer.strategy.framework.common.node_models import InitByEdge, VariableFacts
 from analyzer.strategy.framework.analysis.chunk_bundle import (
+    _get_chunk_bundle_dir_from_run_dir,
     bundle_search as _bundle_search,
     build_bundle_span_index,
 )
+from analyzer.strategy.framework.common.models.node_models import InitByEdge, VariableFacts
 
 logger = logging.getLogger(__name__)
 
@@ -85,9 +86,6 @@ def _ensure_chunk_index(state: Dict[str, Any]) -> Dict[str, Any]:
 
     run_dir = state.get("run_dir")
 
-    from analyzer.strategy.framework.analysis.chunk_bundle import (
-        _get_chunk_bundle_dir_from_run_dir,
-    )
     chunk_dir = _get_chunk_bundle_dir_from_run_dir(run_dir)
     span_index, chunk_index = build_bundle_span_index(
         chunk_bundle_dir=chunk_dir,
@@ -133,8 +131,8 @@ def _match_variables_to_functions(
     seen: set = set()
 
     for v in variable_facts_list:
-        name = getattr(v, "name", "") or ""
-        variable_id = getattr(v, "variable_id", "") or ""
+        name = v.name or ""
+        variable_id = v.variable_id or ""
 
         # 유효성 검사: 이름과 ID가 모두 있어야 하고, 너무 짧은 이름은 오탐 방지
         if not name or not variable_id or len(name) < _MIN_VAR_NAME_LENGTH:

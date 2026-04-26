@@ -26,18 +26,41 @@ from typing import Any, Dict, List, Optional, Tuple, Set, Union
 
 from util.logger import log_process
 from util.code_text_utils import parse_table_identifier
-from analyzer.common.pipeline_control import pipeline_controller
+from analyzer.common.pipeline.pipeline_control import pipeline_controller
 
-from analyzer.strategy.dbms.common.node_models import StatementNode, AnalysisBatch, BatchPlanner, ProcedureInfo
-from analyzer.strategy.dbms.common.analysis_constants import (
-    PROCEDURE_TYPES,
-    TABLE_RELATIONSHIP_MAP,
+from analyzer.strategy.dbms.analysis.ast_collector import StatementCollector
+from analyzer.strategy.dbms.common.domain.analysis_constants import (
     MAX_CONCURRENCY,
     MAX_CONTEXT_TOKEN,
+    PROCEDURE_TYPES,
+    TABLE_RELATIONSHIP_MAP,
 )
-from analyzer.strategy.dbms.common.naming_helpers import build_statement_name
-from util.llm_prompt_handler import prompts
-from analyzer.strategy.dbms.analysis.ast_collector import StatementCollector
+from analyzer.strategy.dbms.common.cypher.graph_queries import (
+    build_actor_role_query,
+    build_column_query,
+    build_create_temp_table_query,
+    build_dblink_query,
+    build_dml_table_relation_query,
+    build_fk_to_column_query,
+    build_fk_to_table_query,
+    build_has_procedure_query,
+    build_next_query,
+    build_node_to_table_rel_merge_str,
+    build_package_queries,
+    build_parent_of_query,
+    build_static_node_query,
+    build_summary_update_query,
+    build_table_merge,
+)
+from analyzer.strategy.dbms.common.domain.naming_helpers import build_statement_name
+from analyzer.strategy.dbms.common.models.node_models import (
+    AnalysisBatch,
+    BatchPlanner,
+    ProcedureInfo,
+    StatementNode,
+)
+from util.llm_rule_runner import prompts
+from util.llm_call_safety import AsyncBatchExecutor, LLMRateLimiter
 
 
 # =========================================================================
@@ -76,8 +99,8 @@ class BaseAstProcessor(ABC):
     ):
         """공통 초기화
 
-        source_content: 원본 소스 파일 내용. AST JSON에 code 속성이 없을 때
-        startLine/endLine으로 코드를 추출하는 fallback으로 사용.
+        source_content: 원본 소스 파일 내용. AST JSON 에 code 속성이 없을 때
+        startLine/endLine 으로 코드를 슬라이스해 보강하는 데이터 출처.
         """
         self.antlr_data = antlr_data
         self.last_line = last_line
@@ -101,7 +124,6 @@ class BaseAstProcessor(ABC):
         self._unit_info: Optional[Dict[str, Any]] = None  # 프로시저/클래스 정보
 
         # 파일별 독립 Executor (파일끼리 완전 병렬, 파일 안은 continuous)
-        from util.llm_rate_limiter import LLMRateLimiter, AsyncBatchExecutor
         self._batch_executor = AsyncBatchExecutor(
             LLMRateLimiter(max_concurrent=MAX_CONCURRENCY, spacing_ms=0)
         )
@@ -225,15 +247,18 @@ class BaseAstProcessor(ABC):
             log_process("PHASE:1", "AST", f"⚠️ {self.full_directory}: 분석 대상 노드 없음")
             return []
 
-        # Package 노드 생성 + FILE → Package 관계
         queries: List[Union[str, Dict[str, Any]]] = []
-        queries.extend(self._build_package_queries())
 
-        # 정적 노드 쿼리 생성 (파라미터화된 Dict 쿼리도 포함)
+        # 1) 정적 노드 (FILE/TRIGGER/PROCEDURE/...) — FILE 노드 먼저 MERGE 되어야 BELONGS_TO_PACKAGE 가능
         for node in self._nodes:
             queries.extend(self._build_static_node_queries(node))
 
-        # 관계 쿼리 생성
+        # 2) PACKAGE 노드 + FILE→PACKAGE BELONGS_TO_PACKAGE 관계
+        #    (반드시 FILE 노드 MERGE 후 호출 — graph_queries.build_package_queries 의
+        #     두 번째 쿼리 MATCH (:FILE) 가 실제로 노드를 찾을 수 있어야 함)
+        queries.extend(self._build_package_queries())
+
+        # 3) AST 트리 관계 (PARENT_OF/NEXT/HAS_PROCEDURE)
         queries.extend(self._build_relationship_queries())
 
         log_process("PHASE:1", "AST", f"✅ {self.full_directory}: {len(queries)}개 쿼리 생성")
@@ -419,18 +444,10 @@ class BaseAstProcessor(ABC):
                             if not child.ok:
                                 node.ok = False
 
-                # 2. 구조 래퍼 (PROCEDURE/BEGIN/FILE 등) 는 LLM 호출 없이 자식 analysis_map 자동 합침
-                if all(n.is_structural() for n in batch.nodes):
-                    for node in batch.nodes:
-                        merged: Dict[str, list] = {"rules": [], "questions": []}
-                        for child in node.children:
-                            cmap = child.analysis_map or {}
-                            for key in ("rules", "questions"):
-                                if cmap.get(key):
-                                    merged[key].extend(cmap[key])
-                        node.analysis_map = merged
-                    log_process("ANALYZE", "STRUCT", f"배치 #{batch.batch_id} 구조 래퍼 — LLM 스킵, 자식 analysis_map 자동 합침")
-                    return []
+                # NB: 구조 래퍼(TRIGGER/PROCEDURE/FUNCTION/BEGIN/FILE) 는 NON_ANALYSIS_TYPES 라
+                # BatchPlanner 가 스킵 → 이 분기 결코 실행 안 됨.
+                # 구조 래퍼의 analysis_map 채움은 모든 배치 종료 후
+                # _propagate_analysis_map_to_structural_wrappers() 에서 일괄 처리.
 
                 log_process("ANALYZE", "LLM", f"배치 #{batch.batch_id} 처리 중 ({len(batch.nodes)}개 노드)")
                 llm_result = await self._invoke_llm(batch)
@@ -473,8 +490,43 @@ class BaseAstProcessor(ABC):
         if failed_batch_count > 0:
             raise RuntimeError(f"{self.full_directory}: {failed_batch_count}개 배치 실패 (상세: {all_failed_details})")
 
+        # 배치 후 propagation: 구조 래퍼(TRIGGER/PROCEDURE/FUNCTION/BEGIN/FILE)의 analysis_map 채움.
+        # NON_ANALYSIS 라 BatchPlanner 가 스킵한 노드들은 스스로 LLM 분석을 받지 않으므로,
+        # 분석된 자식들의 analysis_map 을 합집합으로 누적해 proc_root 가 phase_summary 에서 비어있지 않도록 보장.
+        self._propagate_analysis_map_to_structural_wrappers()
+
         log_process("ANALYZE", "PHASE2", f"✅ {self.full_directory}: {len(all_queries)}개 업데이트 쿼리")
         return all_queries, failed_batch_count, all_failed_details, unit_summary_store
+
+    def _propagate_analysis_map_to_structural_wrappers(self) -> None:
+        """LLM 분석에서 제외된 구조 래퍼 노드의 analysis_map 을 자식 누적값으로 채운다.
+
+        흐름:
+        1. 분석된 노드(node_analysis 거친 analyzable=True 노드) 는 LLM 결과로 analysis_map 가 이미 설정됨
+        2. 구조 래퍼(NON_ANALYSIS_TYPES — TRIGGER/PROCEDURE/FUNCTION/BEGIN/FILE 등) 는 batches 에서 스킵돼 analysis_map = {}
+        3. 이 메서드가 모든 batches 완료 후 트리를 bottom-up 순회해 빈 analysis_map 에 자식 합집합을 채움
+
+        결과: proc_root.analysis_map 은 항상 그 프로시저 하위에서 누적된 모든 rules/questions 를 보유.
+        """
+        def walk(node: Any) -> None:
+            for child in getattr(node, "children", None) or []:
+                walk(child)
+            existing = getattr(node, "analysis_map", None) or {}
+            has_own_data = bool(existing.get("rules")) or bool(existing.get("questions"))
+            if has_own_data:
+                return  # LLM 이 직접 채운 노드 — 그대로 유지
+            # 구조 래퍼 (또는 분석 결과가 비어 있던 노드) → 자식 누적
+            merged_rules: List[Any] = []
+            merged_questions: List[Any] = []
+            for child in getattr(node, "children", None) or []:
+                cmap = getattr(child, "analysis_map", None) or {}
+                merged_rules.extend(cmap.get("rules") or [])
+                merged_questions.extend(cmap.get("questions") or [])
+            if merged_rules or merged_questions:
+                node.analysis_map = {"rules": merged_rules, "questions": merged_questions}
+
+        for root in (n for n in (self._nodes or []) if getattr(n, "parent", None) is None):
+            walk(root)
 
     def _apply_summary_to_nodes(self, batch: AnalysisBatch, llm_result: Any) -> None:
         """LLM 결과에서 summary를 추출하여 노드에 적용합니다.
@@ -556,76 +608,32 @@ class BaseAstProcessor(ABC):
     # =========================================================================
 
     def _build_package_queries(self) -> List[Dict[str, Any]]:
-        """Package 노드 생성 + FILE -[BELONGS_TO_PACKAGE]-> Package 관계"""
-        queries: List[Dict[str, Any]] = []
-        package_name = self.directory  # 폴더명 (예: RWIS)
-
-        if not package_name:
-            return queries
-
-        # Package 노드 MERGE
-        queries.append({
-            "query": (
-                "MERGE (__cy_pkg__:PACKAGE {name: $package_name})\n"
-                "RETURN __cy_pkg__"
-            ),
-            "params": {"package_name": package_name}
-        })
-
-        # FILE -[BELONGS_TO_PACKAGE]-> Package
-        queries.append({
-            "query": (
-                "MATCH (__cy_f__:FILE {directory: $directory, file_name: $file_name})\n"
-                "MATCH (__cy_pkg__:PACKAGE {name: $package_name})\n"
-                "MERGE (__cy_f__)-[__cy_r__:BELONGS_TO_PACKAGE]->(__cy_pkg__)\n"
-                "RETURN __cy_f__, __cy_pkg__, __cy_r__"
-            ),
-            "params": {
-                "directory": self.full_directory,
-                "file_name": self.file_name,
-                "package_name": package_name,
-            }
-        })
-
-        return queries
+        """Package 노드 생성 + FILE -[BELONGS_TO_PACKAGE]-> Package 관계 (graph_queries 위임)."""
+        return build_package_queries(
+            directory=self.directory,
+            full_directory=self.full_directory,
+            file_name=self.file_name,
+        )
 
     # =========================================================================
-    # 공통 관계 쿼리 빌더 (파라미터화)
+    # 공통 관계 쿼리 빌더 (graph_queries 위임)
     # =========================================================================
 
     def _build_has_procedure_query(self, parent: "StatementNode", child: "StatementNode") -> Dict[str, Any]:
-        """HAS_PROCEDURE 관계 쿼리 (FILE → PROCEDURE/FUNCTION)"""
-        return {
-            "query": (
-                f"MATCH (__cy_p__:{parent.node_type} {{startLine: $parent_line, directory: $directory, file_name: $file_name}})\n"
-                f"MATCH (__cy_c__:{child.node_type} {{startLine: $child_line, directory: $directory, file_name: $file_name}})\n"
-            f"MERGE (__cy_p__)-[__cy_r__:HAS_PROCEDURE]->(__cy_c__)\n"
-            f"RETURN __cy_r__"
-            ),
-            "params": {
-                "parent_line": parent.start_line,
-                "child_line": child.start_line,
-                "directory": self.full_directory,
-                "file_name": self.file_name,
-            }
-        }
+        """HAS_PROCEDURE 관계 쿼리 (FILE → PROCEDURE/FUNCTION)."""
+        return build_has_procedure_query(
+            parent_type=parent.node_type, parent_line=parent.start_line,
+            child_type=child.node_type, child_line=child.start_line,
+            full_directory=self.full_directory, file_name=self.file_name,
+        )
 
     def _build_parent_of_query(self, parent: "StatementNode", child: "StatementNode") -> Dict[str, Any]:
-        """PARENT_OF 관계 쿼리 (파라미터화)"""
-        return {
-            "query": (
-                f"MATCH (__cy_p__:{parent.node_type} {{startLine: $parent_line, directory: $directory, file_name: $file_name}})\n"
-                f"MATCH (__cy_c__:{child.node_type} {{startLine: $child_line, directory: $directory, file_name: $file_name}})\n"
-            f"MERGE (__cy_p__)-[__cy_r__:PARENT_OF]->(__cy_c__)\n"
-            f"RETURN __cy_r__"
-            ),
-            "params": {
-                "parent_line": parent.start_line,
-                "child_line": child.start_line,
-                "directory": self.full_directory,
-                "file_name": self.file_name,
-            }
-        }
+        """PARENT_OF 관계 쿼리."""
+        return build_parent_of_query(
+            parent_type=parent.node_type, parent_line=parent.start_line,
+            child_type=child.node_type, child_line=child.start_line,
+            full_directory=self.full_directory, file_name=self.file_name,
+        )
 
 
 # =========================================================================
@@ -644,10 +652,11 @@ class DbmsAstProcessor(BaseAstProcessor):
         locale: str,
         dbms: str,
         last_line: int,
-        default_schema: str = "public",
+        default_schema: str,
+        name_case: str,
         ddl_table_metadata: Optional[Dict[Tuple[str, str], Dict[str, Any]]] = None,
-        name_case: str = "original",
         source_content: str = "",
+        datasource_name: str = "",
     ):
         super().__init__(
             antlr_data=antlr_data,
@@ -659,10 +668,17 @@ class DbmsAstProcessor(BaseAstProcessor):
             source_content=source_content,
         )
 
-        self.dbms = (dbms or 'postgres').lower()
+        if not dbms:
+            raise ValueError("dbms 필수 — 호출자(phase_ast)가 ctx.target 으로 전달")
+        if not default_schema:
+            raise ValueError("default_schema 필수 — 호출자(phase_ast)가 resolve_default_schema 결과로 전달")
+        if not name_case:
+            raise ValueError("name_case 필수 — service 진입점에서 검증된 값 전달")
+        self.dbms = dbms.lower()
         self.default_schema = default_schema
         self._ddl_table_metadata = ddl_table_metadata or {}
-        self.name_case = (name_case or 'original').lower()
+        self.name_case = name_case.lower()
+        self.datasource_name = (datasource_name or "").strip()
 
         self._table_summary_store: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
@@ -677,8 +693,8 @@ class DbmsAstProcessor(BaseAstProcessor):
         return name
 
     def _get_effective_schema(self, schema: Optional[str]) -> str:
-        """스키마가 없으면 default_schema 사용"""
-        return schema if schema else (self.default_schema if self.default_schema else 'public')
+        """스키마가 없으면 default_schema 사용. default_schema 는 __init__ 에서 검증됨."""
+        return schema if schema else self.default_schema
 
     def _get_ddl_metadata(self, schema: Optional[str], table_name: str) -> Tuple[Dict[str, Any], bool]:
         """DDL 메타데이터 조회 및 대소문자 변환 여부 결정"""
@@ -771,7 +787,7 @@ class DbmsAstProcessor(BaseAstProcessor):
         elif label in PROCEDURE_TYPES and node.unit_name:
             node_name = node.unit_name
         elif label in ("VARIABLE", "PACKAGE_VARIABLE", "CONSTANT_FIELD") and node.name:
-            # 변수 노드는 variable_matcher 가 name 으로 MATCH 하므로 실제 변수명으로
+            # 변수 노드는 variable_linker 가 name 으로 MATCH 하므로 실제 변수명으로
             node_name = node.name
         else:
             node_name = f"{label}[{node.start_line}]"
@@ -824,28 +840,14 @@ class DbmsAstProcessor(BaseAstProcessor):
 
         set_clause = ", ".join(set_parts)
 
-        # --- 쿼리 생성 ---
-        if label in PROCEDURE_TYPES and node.unit_name:
-            if node.schema_name:
-                query = (
-                    f"MERGE (__cy_n__:{label} {{schema_name: $schema_name, procedure_name: $procedure_name, directory: $directory, file_name: $file_name}})\n"
-                    f"SET __cy_n__.startLine = $start_line, {set_clause}\n"
-                    f"RETURN __cy_n__"
-                )
-            else:
-                query = (
-                    f"MERGE (__cy_n__:{label} {{procedure_name: $procedure_name, directory: $directory, file_name: $file_name}})\n"
-                    f"SET __cy_n__.startLine = $start_line, {set_clause}\n"
-                    f"RETURN __cy_n__"
-                )
-            queries.append({"query": query, "params": params})
-        else:
-            query = (
-                f"MERGE (__cy_n__:{label} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
-                f"SET {set_clause}\n"
-                f"RETURN __cy_n__"
-            )
-            queries.append({"query": query, "params": params})
+        is_procedure_with_name = label in PROCEDURE_TYPES and bool(node.unit_name)
+        queries.append(build_static_node_query(
+            label=label,
+            params=params,
+            set_clause=set_clause,
+            is_procedure_with_name=is_procedure_with_name,
+            has_schema=bool(node.schema_name) if is_procedure_with_name else False,
+        ))
         return queries
 
     def _build_relationship_queries(self) -> List[Union[str, Dict[str, Any]]]:
@@ -868,21 +870,12 @@ class DbmsAstProcessor(BaseAstProcessor):
         return queries
 
     def _build_next_query(self, prev: StatementNode, current: StatementNode) -> Dict[str, Any]:
-        """NEXT 관계 쿼리 생성"""
-        return {
-            "query": (
-                f"MATCH (__cy_prev__:{prev.node_type} {{startLine: $prev_line, directory: $directory, file_name: $file_name}})\n"
-                f"MATCH (__cy_curr__:{current.node_type} {{startLine: $curr_line, directory: $directory, file_name: $file_name}})\n"
-            f"MERGE (__cy_prev__)-[__cy_r__:NEXT]->(__cy_curr__)\n"
-            f"RETURN __cy_r__"
-            ),
-            "params": {
-                "prev_line": prev.start_line,
-                "curr_line": current.start_line,
-                "directory": self.full_directory,
-                "file_name": self.file_name,
-            }
-        }
+        """NEXT 관계 쿼리 (graph_queries 위임)."""
+        return build_next_query(
+            prev_type=prev.node_type, prev_line=prev.start_line,
+            curr_type=current.node_type, curr_line=current.start_line,
+            full_directory=self.full_directory, file_name=self.file_name,
+        )
 
     async def _invoke_llm(self, batch: AnalysisBatch) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
         """LLM 호출 (일반 분석 + DML 분석)"""
@@ -962,16 +955,9 @@ class DbmsAstProcessor(BaseAstProcessor):
                 actor = analysis.get("actor") or ""
                 if summary:
                     node_name = build_statement_name(node.node_type, node.start_line)
-                    queries.append({
-                        "query": (
-                            f"MATCH (__cy_n__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
-                            f"SET __cy_n__.endLine = $end_line, __cy_n__.name = $node_name, "
-                            f"__cy_n__.summary = $summary, __cy_n__.node_code = $node_code, "
-                            f"__cy_n__.token = $token, __cy_n__.procedure_name = $procedure_name, "
-                            f"__cy_n__.has_children = $has_children\n"
-                            f"RETURN __cy_n__"
-                        ),
-                        "params": {
+                    queries.append(build_summary_update_query(
+                        node_type=node.node_type,
+                        params={
                             "start_line": node.start_line,
                             "end_line": node.end_line,
                             "directory": self.full_directory,
@@ -982,27 +968,20 @@ class DbmsAstProcessor(BaseAstProcessor):
                             "token": node.token,
                             "procedure_name": node.unit_name or "",
                             "has_children": node.has_children,
-                        }
-                    })
+                        },
+                    ))
 
                     # Actor 노드 생성 + ROLE 관계
                     if actor:
-                        queries.append({
-                            "query": (
-                                f"MATCH (__cy_n__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
-                                f"MERGE (a:Actor {{name: $actor}})\n"
-                                f"ON CREATE SET a.created_at = timestamp()\n"
-                                f"MERGE (a)-[r:ROLE]->(__cy_n__)\n"
-                                f"ON CREATE SET r.created_at = timestamp()\n"
-                                f"RETURN a"
-                            ),
-                            "params": {
+                        queries.append(build_actor_role_query(
+                            node_type=node.node_type,
+                            params={
                                 "start_line": node.start_line,
                                 "directory": self.full_directory,
                                 "file_name": self.file_name,
                                 "actor": actor,
-                            }
-                        })
+                            },
+                        ))
 
                     # unit_summary_store에는 리프 노드(자식이 없는 노드)만 저장
                     # → 부모 노드 summary는 자식 내용을 이미 포함하므로 중복 제거
@@ -1083,19 +1062,15 @@ class DbmsAstProcessor(BaseAstProcessor):
             schema_part = self._apply_name_case(schema_part_raw or self.default_schema)
             name_part = self._apply_name_case(name_part_raw)
 
-            queries.append({
-                "query": (
-                    f"MATCH (__cy_n__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
-                    f"SET __cy_n__:Table, __cy_n__.name = $name, __cy_n__.schema = $schema, __cy_n__.db = $db\n"
-                    f"RETURN __cy_n__"
-                ),
-                "params": {
+            queries.append(build_create_temp_table_query(
+                node_type=node.node_type,
+                params={
                     **node_match_params,
                     "name": name_part,
                     "schema": schema_part,
                     "db": self.dbms,
-                }
-            })
+                },
+            ))
 
         return queries
 
@@ -1126,31 +1101,31 @@ class DbmsAstProcessor(BaseAstProcessor):
             table_merge_result = table_merge_cache[cache_key]
 
             # --- 관계 생성 ---
-            access_mode = (entry.get('accessMode') or entry.get('mode') or 'r').lower()
+            access_mode_raw = entry.get('accessMode') or entry.get('mode')
+            if not access_mode_raw:
+                raise RuntimeError(
+                    f"LLM dml_extract 결과에 accessMode/mode 누락 | table={table_name} entry={entry}"
+                )
+            access_mode = access_mode_raw.lower()
             rel_types = [TABLE_RELATIONSHIP_MAP.get(mode, mode.upper()) for mode in ['r', 'w'] if mode in access_mode]
 
             table_desc_raw = entry.get('tableDescription') or entry.get('description') or ''
             bucket_key = self._record_table_summary(schema_part, name_part, table_desc_raw, skip_case_conversion=skip_case_conversion)
 
-            rel_merge_parts = [f"MERGE (__cy_n__)-[__cy_r{i}__:{rel_type}]->(__cy_t__)" for i, rel_type in enumerate(rel_types)]
-            db_link_set = f"\nSET __cy_t__.db_link = COALESCE(__cy_t__.db_link, $db_link)" if db_link_value else ""
-            rel_merge_str = "\n".join(rel_merge_parts)
-
-            table_query = (
-                f"MATCH (__cy_n__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
-                f"WITH __cy_n__\n"
-                f"{table_merge_result['query']}\n"
-                f"SET __cy_t__.db = coalesce(__cy_t__.db, $db)"
-                f"{db_link_set}"
-                f"\n{rel_merge_str}" if rel_merge_str else ""
-                f"\nRETURN __cy_n__, __cy_t__"
-            )
+            rel_merge_str = build_node_to_table_rel_merge_str(rel_types)
+            db_link_set = "\nSET __cy_t__.db_link = COALESCE(__cy_t__.db_link, $db_link)" if db_link_value else ""
 
             params = {**node_match_params, **table_merge_result["params"]}
             if db_link_value:
                 params["db_link"] = db_link_value
 
-            queries.append({"query": table_query, "params": params})
+            queries.append(build_dml_table_relation_query(
+                node_type=node.node_type,
+                table_merge_query=table_merge_result["query"],
+                rel_merge_str=rel_merge_str,
+                db_link_set=db_link_set,
+                params=params,
+            ))
 
             # --- 컬럼 처리 ---
             column_queries = self._process_table_columns(
@@ -1200,28 +1175,20 @@ class DbmsAstProcessor(BaseAstProcessor):
 
             converted_name_part = table_merge_result["converted_table_name"]
             converted_schema_part = table_merge_result["effective_schema"]
-            fqn = '.'.join(filter(None, [converted_schema_part, converted_name_part, column_name])).lower()
+            # DDL 과 fqn 형식 일치: datasource.schema.table.column (DDL handler 와 동일 규칙)
+            fqn = '.'.join(filter(None, [self.datasource_name, converted_schema_part, converted_name_part, column_name])).lower()
 
-            col_query = (
-                f"{table_merge_result['query']}\nWITH __cy_t__\n"
-                f"MERGE (__cy_c__:Column {{fqn: $fqn}})\n"
-                f"SET __cy_c__.name = $col_name, __cy_c__.dtype = $col_type, "
-                f"__cy_c__.description = $col_desc, __cy_c__.description_source = 'code', __cy_c__.nullable = $nullable\n"
-                f"MERGE (__cy_t__)-[__cy_r__:HAS_COLUMN]->(__cy_c__)\n"
-                f"RETURN __cy_t__, __cy_c__, __cy_r__"
-            )
-
-            queries.append({
-                "query": col_query,
-                "params": {
+            queries.append(build_column_query(
+                table_merge_query=table_merge_result["query"],
+                params={
                     **table_merge_result["params"],
                     "fqn": fqn,
                     "col_name": column_name,
                     "col_type": raw_dtype,
                     "col_desc": raw_column_desc,
                     "nullable": column.get('nullable', True),
-                }
-            })
+                },
+            ))
 
         return queries
 
@@ -1231,7 +1198,7 @@ class DbmsAstProcessor(BaseAstProcessor):
         db_links: List[Dict[str, Any]],
         node_match_params: Dict[str, Any]
     ) -> List[Union[str, Dict[str, Any]]]:
-        """DBLink 처리"""
+        """DBLink 처리. mode 누락 시 fail-fast (LLM 응답 검증)."""
         queries: List[Union[str, Dict[str, Any]]] = []
 
         for link_item in db_links:
@@ -1239,33 +1206,27 @@ class DbmsAstProcessor(BaseAstProcessor):
             if not link_name_raw:
                 continue
 
-            mode = (link_item.get('mode') or 'r').lower()
+            mode_raw = link_item.get('mode')
+            if not mode_raw:
+                raise RuntimeError(
+                    f"LLM dml_extract 결과에 dbLink mode 누락 | link={link_name_raw} item={link_item}"
+                )
+            mode = mode_raw.lower()
             schema_link_raw, name_link_raw, link_name = parse_table_identifier(link_name_raw)
             schema_link = self._apply_name_case(schema_link_raw or self.default_schema)
             name_link = self._apply_name_case(name_link_raw)
             remote_merge_result = self._build_table_merge(name_link, schema_link)
 
-            dblink_query = (
-                f"{remote_merge_result['query']}\n"
-                f"SET __cy_t__.db_link = $link_name\n"
-                f"WITH __cy_t__\n"
-                f"MERGE (__cy_l__:DBLink {{name: $link_name}})\n"
-                f"MERGE (__cy_l__)-[__cy_r1__:LINKS_TO]->(__cy_t__)\n"
-                f"WITH __cy_t__, __cy_l__\n"
-                f"MATCH (__cy_n__:{node.node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
-                f"MERGE (__cy_n__)-[__cy_r2__:DB_LINK {{mode: $mode}}]->(__cy_t__)\n"
-                f"RETURN __cy_l__, __cy_t__, __cy_n__"
-            )
-
-            queries.append({
-                "query": dblink_query,
-                "params": {
+            queries.append(build_dblink_query(
+                node_type=node.node_type,
+                remote_table_merge_query=remote_merge_result["query"],
+                params={
                     **remote_merge_result["params"],
                     **node_match_params,
                     "link_name": link_name,
                     "mode": mode,
-                }
-            })
+                },
+            ))
 
         return queries
 
@@ -1298,74 +1259,40 @@ class DbmsAstProcessor(BaseAstProcessor):
                 converted_src_col = self._apply_name_case(src_col)
                 converted_tgt_col = self._apply_name_case(tgt_col)
 
-                queries.append({
-                    "query": (
-                        f"MATCH (__cy_st__:Table {{schema: $src_schema, name: $src_name, db: $db}})\n"
-                        f"MATCH (__cy_tt__:Table {{schema: $tgt_schema, name: $tgt_name, db: $db}})\n"
-                        f"MERGE (__cy_st__)-[__cy_r__:FK_TO_TABLE {{sourceColumn: $src_col, targetColumn: $tgt_col}}]->(__cy_tt__)\n"
-                        f"ON CREATE SET __cy_r__.type = 'many_to_one', __cy_r__.source = 'procedure'\n"
-                        f"RETURN __cy_st__, __cy_tt__, __cy_r__"
-                    ),
-                    "params": {
-                        "src_schema": effective_src_schema,
-                        "src_name": src_name,
-                        "tgt_schema": effective_tgt_schema,
-                        "tgt_name": tgt_name,
-                        "db": self.dbms,
-                        "src_col": converted_src_col,
-                        "tgt_col": converted_tgt_col,
-                    }
-                })
+                queries.append(build_fk_to_table_query(params={
+                    "src_schema": effective_src_schema,
+                    "src_name": src_name,
+                    "tgt_schema": effective_tgt_schema,
+                    "tgt_name": tgt_name,
+                    "db": self.dbms,
+                    "src_col": converted_src_col,
+                    "tgt_col": converted_tgt_col,
+                }))
 
                 src_fqn = '.'.join(filter(None, [effective_src_schema, src_name, converted_src_col])).lower()
                 tgt_fqn = '.'.join(filter(None, [effective_tgt_schema, tgt_name, converted_tgt_col])).lower()
 
-                queries.append({
-                    "query": (
-                        f"MATCH (__cy_sc__:Column {{fqn: $src_fqn}})\n"
-                        f"MATCH (__cy_dc__:Column {{fqn: $tgt_fqn}})\n"
-                        f"MERGE (__cy_sc__)-[__cy_r__:FK_TO_COLUMN]->(__cy_dc__)\n"
-                        f"ON CREATE SET __cy_r__.source = 'procedure'\n"
-                        f"RETURN __cy_sc__, __cy_dc__, __cy_r__"
-                    ),
-                    "params": {
-                        "src_fqn": src_fqn,
-                        "tgt_fqn": tgt_fqn,
-                    }
-                })
+                queries.append(build_fk_to_column_query(params={
+                    "src_fqn": src_fqn,
+                    "tgt_fqn": tgt_fqn,
+                }))
 
         return queries
 
     def _build_table_merge(self, table_name: str, schema: Optional[str], preserve_vars: Optional[List[str]] = None, skip_case_conversion: bool = False) -> Dict[str, Any]:
-        """테이블 MERGE 쿼리 생성 (Schema 노드 및 BELONGS_TO 관계 포함)"""
+        """테이블 MERGE 쿼리 (graph_queries 위임). name_case 변환은 self 의존이라 여기서 수행."""
         effective_schema = self._get_effective_schema(schema)
-
         if not skip_case_conversion:
             effective_schema = self._apply_name_case(effective_schema)
             converted_table_name = self._apply_name_case(table_name)
         else:
             converted_table_name = table_name
-
-        if preserve_vars:
-            with_vars = ", ".join(preserve_vars + ["__cy_s__"])
-        else:
-            with_vars = "__cy_s__"
-
-        return {
-            "query": (
-                f"MERGE (__cy_s__:Schema {{db: $db, name: $schema_name}})\n"
-            f"WITH {with_vars}\n"
-                f"MERGE (__cy_t__:Table {{name: $table_name, schema: $schema_name, db: $db}})\n"
-            f"MERGE (__cy_t__)-[:BELONGS_TO]->(__cy_s__)"
-            ),
-            "params": {
-                "db": self.dbms,
-                "schema_name": effective_schema,
-                "table_name": converted_table_name,
-            },
-            "effective_schema": effective_schema,
-            "converted_table_name": converted_table_name,
-        }
+        return build_table_merge(
+            table_name=converted_table_name,
+            effective_schema=effective_schema,
+            db=self.dbms,
+            preserve_vars=preserve_vars,
+        )
 
     def _record_table_summary(self, schema: Optional[str], name: str, description: Optional[str], skip_case_conversion: bool = False) -> Tuple[str, str]:
         """테이블 설명 누적"""

@@ -18,6 +18,8 @@ import json
 import logging
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
+
+from analyzer.strategy.framework.analysis.chunk_bundle import load_chunk_bundle
 from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
@@ -129,7 +131,6 @@ def dump_phase1_artifacts(state: Dict[str, Any], run_dir: Path) -> None:
     if chunk_bundle_dir.is_dir():
         manifest = []
         try:
-            from analyzer.strategy.framework.analysis.chunk_bundle import load_chunk_bundle
             for p in sorted(chunk_bundle_dir.glob("*.json")):
                 try:
                     bundle = load_chunk_bundle(str(p))
@@ -141,9 +142,13 @@ def dump_phase1_artifacts(state: Dict[str, Any], run_dir: Path) -> None:
                         "function_calls": len(bundle.function_calls),
                         "local_vars": len(bundle.local_vars),
                     })
-                except Exception as e:
+                except Exception as e:  # noqa: SILENT_FAIL — manifest 행 단위 fallback. 분석 결과는 chunk_bundle 자체에 보존됨
+                    logger.debug("[ARTIFACT:MANIFEST] chunk_bundle 로드 실패 — error 기록 후 진행 | file=%s %s: %s",
+                                 p.name, type(e).__name__, e)
                     manifest.append({"file": p.name, "path": str(p.relative_to(run_dir)), "error": str(e)})
-        except Exception:
+        except Exception as e:  # noqa: SILENT_FAIL — debug 산출물용. iglob 자체 실패 시 파일명만이라도 manifest 기록
+            logger.error("[ARTIFACT:MANIFEST] chunk_bundles 디렉토리 순회 실패 — 파일명만 manifest 에 기록 | %s: %s",
+                         type(e).__name__, e)
             for p in sorted(chunk_bundle_dir.glob("*.json")):
                 manifest.append({"file": p.name, "path": str(p.relative_to(run_dir))})
         if manifest:

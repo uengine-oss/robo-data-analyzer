@@ -18,7 +18,7 @@ from neo4j import AsyncGraphDatabase
 
 from config.settings import settings
 # Exceptions: 모든 커스텀 예외는 RuntimeError로 대체됨
-from analyzer.common.pipeline_control import pipeline_controller
+from analyzer.common.pipeline.pipeline_control import pipeline_controller
 
 # Neo4j notification warnings 무시
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="neo4j")
@@ -117,8 +117,8 @@ class Neo4jClient:
         
         Args:
             queries: 실행할 Cypher 쿼리 리스트
-                - 문자열: 기존 방식 (쿼리 문자열)
-                - 딕셔너리: {"query": "...", "parameters": {...}} 또는 {"query": "...", "params": {...}}
+                - 문자열: 쿼리 문자열만
+                - 딕셔너리: {"query": "...", "params": {...}}  ('params' 단일 키)
             params: 공통 쿼리 파라미터 (선택사항, 모든 쿼리에 기본 적용)
             
         Returns:
@@ -134,15 +134,13 @@ class Neo4jClient:
             async with self._driver.session(database=self._database) as session:
                 results: list[list[dict[str, Any]]] = []
                 for query in queries:
-                    # 딕셔너리 쿼리: {"query": "...", "parameters": {...}} 또는 {"query": "...", "params": {...}} 형태
+                    # 딕셔너리 쿼리: {"query": "...", "params": {...}} 형태 — 단일 키('params')만 지원
                     if isinstance(query, dict):
                         query_str = str(query.get("query") or "").strip()
                         if not query_str:
                             raise RuntimeError("execute_queries dict item requires non-empty 'query'")
-                        item_params = query.get("parameters")
-                        if item_params is None:
-                            item_params = query.get("params")
-                        merged_params = {**(params or {}), **(item_params or {})}
+                        item_params = query.get("params") or {}
+                        merged_params = {**(params or {}), **item_params}
                         query_result = await session.run(query_str, merged_params)
                     else:
                         # 문자열 쿼리: 기존 방식
@@ -252,16 +250,23 @@ class Neo4jClient:
     # =========================================================================
 
     async def ensure_constraints(self) -> None:
-        """MERGE 시 중복/충돌 방지를 위한 유니크 제약조건 생성"""
-        try:
-            async with self._driver.session(database=self._database) as session:
-                for query in self._CONSTRAINT_QUERIES:
-                    try:
-                        await session.run(query)
-                    except Exception:
-                        logging.debug(f"제약조건 생성 스킵 (이미 존재): {query[:50]}...")
-        except Exception as e:
-            logging.warning(f"제약조건 보장 중 경고: {e}")
+        """MERGE 시 중복/충돌 방지를 위한 유니크 제약조건 생성.
+
+        모든 _CONSTRAINT_QUERIES 는 `CREATE CONSTRAINT ... IF NOT EXISTS` 형식이므로
+        이미 존재해도 정상 통과. 그 외 예외(권한 부족·문법·연결 문제 등)는 fail-fast 한다.
+        """
+        async with self._driver.session(database=self._database) as session:
+            for query in self._CONSTRAINT_QUERIES:
+                try:
+                    await session.run(query)
+                except Exception as e:
+                    logging.error(
+                        "[NEO4J:CONSTRAINT] 제약조건 생성 실패 — query=%s | %s: %s",
+                        query[:80], type(e).__name__, e, exc_info=True,
+                    )
+                    raise RuntimeError(
+                        f"Neo4j 제약조건 생성 실패: {type(e).__name__}: {e} (query={query[:80]})"
+                    ) from e
 
     async def run_batch_unwind(
         self,

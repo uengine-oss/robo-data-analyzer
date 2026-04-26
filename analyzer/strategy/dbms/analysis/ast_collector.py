@@ -9,11 +9,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from util.logger import log_process
 from util.code_text_utils import calculate_code_token, resolve_node_code
-from analyzer.strategy.dbms.common.analysis_constants import (
+from analyzer.strategy.dbms.common.domain.analysis_constants import (
     PROCEDURE_TYPES, NON_ANALYSIS_TYPES, DML_STATEMENT_TYPES,
 )
-from analyzer.strategy.dbms.common.node_models import StatementNode, ProcedureInfo
-from analyzer.strategy.dbms.common.naming_helpers import get_procedure_name_from_code
+from analyzer.strategy.dbms.common.models.node_models import StatementNode, ProcedureInfo
+from analyzer.strategy.dbms.common.domain.naming_helpers import get_procedure_name_from_code
 
 
 class StatementCollector:

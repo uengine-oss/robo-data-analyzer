@@ -1,38 +1,37 @@
-"""Framework 파이프라인 상태 + Phase 컨텍스트.
+"""Framework 파이프라인 상태 + Phase 컨텍스트 (DBMS DbmsPhaseContext 와 동일 형태로 통일)
 
-FrameworkPipelineState: 파이프라인 전체 상태 (Phase 간 데이터 전달)
-PhaseContext: 각 Phase 함수에 전달되는 공용 컨텍스트
+FrameworkPipelineState: 파이프라인 전체 상태 (Phase 간 데이터 전달 + 동시성 제어 객체)
+FrameworkPhaseContext: 각 Phase 함수에 전달되는 공용 컨텍스트
 """
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from client.neo4j_client import Neo4jClient
 from analyzer.strategy.base_analyzer import AnalysisStats
-from config.settings import settings
-
-from analyzer.strategy.framework.common.node_models import (
+from analyzer.strategy.framework.common.models.node_models import (
     ArtifactChunk,
     ArtifactTableEdge,
     CallsEdge,
-    ModuleTableEdge,
     ColumnRef,
     ConfigSectionChunk,
-    VariableFacts,
+    FileCatalogEntry,
     FkEdge,
     FunctionFacts,
     FunctionTableEdge,
+    ModuleTableEdge,
     ProcessingPlan,
-    FileCatalogEntry,
-    ReferToEdge,
     ReadsWritesEdge,
+    ReferToEdge,
     SqlStatementChunk,
     UnresolvedLink,
     UsesEdge,
+    VariableFacts,
 )
-from analyzer.strategy.framework.scanning.profile_models import CodebaseProfile
+from analyzer.strategy.framework.scanning.codebase_profiler import CodebaseProfile
+from client.neo4j_client import Neo4jClient
 
 
 @dataclass
@@ -43,9 +42,13 @@ class FrameworkPipelineState:
     data_dir: str = ""
     lang: str = ""
 
+    # 동시성 제어 — FrameworkPipeline.run_pipeline 진입 시 채워짐
+    cypher_lock: Optional[asyncio.Lock] = None
+    file_semaphore: Optional[asyncio.Semaphore] = None
+
     # DDL
     ddl_schemas: Any = field(default_factory=set)
-    ddl_table_metadata: Dict[str, Any] = field(default_factory=dict)
+    ddl_table_metadata: Dict[Any, Any] = field(default_factory=dict)
 
     # Step 0: Codebase Profile (Phase 1 서브스텝 — 프레임워크/DB 패턴 요약 + 리소스 분류)
     codebase_profile: Optional[CodebaseProfile] = None
@@ -114,18 +117,57 @@ class FrameworkPipelineState:
 
 
 @dataclass
-class PhaseContext:
+class FrameworkPhaseContext:
     """Phase 함수에 전달되는 공용 컨텍스트.
 
-    각 Phase 함수는 이 객체를 통해 pipeline 상태, Neo4j 클라이언트,
-    통계, API 키 등에 접근한다.
+    state 단일 출처 — 동시성 제어/누적 상태 모두 state 안에 두고 직접 참조.
+    DBMS DbmsPhaseContext 와 동일한 모양.
     """
     client: Neo4jClient
+    orchestrator: Any
     state: FrameworkPipelineState
     stats: AnalysisStats
-    api_key: str = ""
-    locale: str = "ko"
-    lang: str = ""
-    data_dir: str = ""
-    run_dir: Optional[str] = None
 
+    # state 패스스루 — phase 코드의 시인성 향상
+    @property
+    def cypher_lock(self) -> asyncio.Lock:
+        return self.state.cypher_lock
+
+    @property
+    def file_semaphore(self) -> asyncio.Semaphore:
+        return self.state.file_semaphore
+
+    @property
+    def run_dir(self) -> str:
+        return self.state.run_dir
+
+    @property
+    def lang(self) -> str:
+        return self.state.lang
+
+    # AnalysisContext (orchestrator) 패스스루
+    @property
+    def api_key(self) -> str:
+        return self.orchestrator.api_key
+
+    @property
+    def locale(self) -> str:
+        return self.orchestrator.locale
+
+    @property
+    def data_dir(self) -> str:
+        return self.state.data_dir
+
+    @classmethod
+    def create(
+        cls,
+        client: Neo4jClient,
+        orchestrator: Any,
+        state: FrameworkPipelineState,
+        stats: AnalysisStats,
+        cypher_lock: asyncio.Lock,
+        file_semaphore: asyncio.Semaphore,
+    ) -> "FrameworkPhaseContext":
+        state.cypher_lock = cypher_lock
+        state.file_semaphore = file_semaphore
+        return cls(client=client, orchestrator=orchestrator, state=state, stats=stats)

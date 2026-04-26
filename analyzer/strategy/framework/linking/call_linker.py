@@ -1,33 +1,51 @@
-# 함수→함수 호출 관계(CALLS) 추출 + 타입 추론.
-# Phase 2 Step 2: CallBatch(ChunkBundle)→Call LLM Extract→Deterministic Link.
+"""함수→함수 호출 관계(CALLS) 추출.
+
+Phase 2 Step 2: CallBatch(ChunkBundle)→Call LLM Extract→Deterministic Link.
+
+본 모듈은 함수 호출 도메인 전체를 담는다 (단일 처리 흐름):
+  1. 변수명 → 타입 해석 (4-layer 스코프 맵: local/param/call_result/module/runtime_hint)
+  2. CallBatch 빌드 (ChunkBundle 청크 → LLM 입력)
+  3. Call LLM Extract (LLM 호출 + 결과 파싱)
+  4. 결정론적 링킹 (CallsEdge 생성)
+"""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from config.settings import settings
-from analyzer.strategy.framework.common.node_models import (
-    CallsEdge,
-    UsesEdge,
-    ChunkBundle,
+from analyzer.strategy.framework.analysis.chunk_bundle import (
+    _get_chunk_bundle_dir_from_run_dir,
+    load_chunk_bundle,
 )
+from analyzer.strategy.framework.common.domain.lang_profile import get_lang_profile
+from analyzer.strategy.framework.common.models.node_models import (
+    CallsEdge,
+    ChunkBundle,
+    UsesEdge,
+)
+from config.settings import settings
 from util.code_text_utils import parse_params
+from util.llm_rule_runner import prompts
+from util.llm_call_safety import get_executor
 
 logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════
-# Section 1: 타입 추론 — 변수명 → 타입 해석 (← type_inference.py)
+# Section 1: 변수명 → 타입 해석 (4-layer 스코프 맵)
+# 우선순위: this > runtime_hint > local > param > call_result > module variable
+# 언어별 param 스타일: python/kotlin = "name: type", go = "name type", default = "type name"
 # ═══════════════════════════════════════════════════════════
 
 
 @dataclass
 class MethodScopeMap:
-    """메서드 스코프: local var -> type, param -> type, initializerContainsMethodCall 결과 타입."""
+    """메서드 스코프: local var → type, param → type, call result → type."""
     local: Dict[str, str] = field(default_factory=dict)
     param: Dict[str, str] = field(default_factory=dict)
     call_result_type: Dict[str, str] = field(default_factory=dict)
@@ -35,22 +53,82 @@ class MethodScopeMap:
 
 @dataclass
 class ModuleScopeMap:
-    """모듈 스코프: variable -> type (MODULE/VARIABLE 노드 기반)."""
+    """모듈 스코프: member variable → type (MODULE/VARIABLE 노드 기반)."""
     variable: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
 class RuntimeHintMap:
-    """NEW_INSTANCE 기반 var -> 구현체 타입 (인터페이스->구현체 확정)."""
+    """NEW_INSTANCE 기반 var → 구현체 타입 (인터페이스 → 구현체 확정)."""
     var_to_impl: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
 class TypeMap3Layer:
-    """메서드별 3층 맵. function_id -> (method_scope, module_scope, runtime_hint)."""
+    """함수 ID 별 3층 맵 + module 스코프 + runtime hint."""
     method_scope: Dict[str, MethodScopeMap] = field(default_factory=dict)
     module_scope: Dict[str, ModuleScopeMap] = field(default_factory=dict)
     runtime_hint: Dict[str, RuntimeHintMap] = field(default_factory=dict)
+
+
+_LANG_PARAM_STYLE = {
+    "python": "name_colon_type",
+    "kotlin": "name_colon_type",
+    "go": "name_type",
+}
+
+
+def build_type_map_3layer(
+    symbol_type_index: Dict[str, Dict[str, str]],
+    variable_facts_list: List[Any],
+    function_facts_list: List[Any],
+    runtime_hint_by_function: Optional[Dict[str, Dict[str, str]]] = None,
+    lang: str = "",
+) -> TypeMap3Layer:
+    """symbol_type_index, VARIABLE, FUNCTION params 로 3층 맵 구성."""
+    param_style = _LANG_PARAM_STYLE.get(lang, "type_name")
+    type_map = TypeMap3Layer()
+
+    # 1) local var (symbol_type_index)
+    for function_id, var_types in symbol_type_index.items():
+        type_map.method_scope[function_id] = MethodScopeMap(local=dict(var_types))
+
+    # 2) function params
+    for m in function_facts_list:
+        function_id = getattr(m, "function_id", None)
+        if not function_id:
+            continue
+        params_str = m.params
+        if function_id not in type_map.method_scope:
+            type_map.method_scope[function_id] = MethodScopeMap()
+        type_map.method_scope[function_id].param.update(parse_params(params_str, param_style))
+
+    # 3) module member variables
+    for f in variable_facts_list:
+        module_key = f.module_key
+        variable_name = f.name
+        variable_type = f.variable_type
+        if not module_key or not variable_name:
+            continue
+        if module_key not in type_map.module_scope:
+            type_map.module_scope[module_key] = ModuleScopeMap()
+        type_map.module_scope[module_key].variable[variable_name] = variable_type
+
+    # 4) runtime hints
+    if runtime_hint_by_function:
+        for function_id, var_impl in runtime_hint_by_function.items():
+            type_map.runtime_hint[function_id] = RuntimeHintMap(var_to_impl=dict(var_impl))
+
+    return type_map
+
+
+def fact_to_module_map(function_facts_list: List[Any]) -> Dict[str, str]:
+    """function_id → module_key 매핑."""
+    return {
+        m.function_id: m.module_key
+        for m in function_facts_list
+        if m.function_id
+    }
 
 
 def resolve_obj_to_type(
@@ -59,7 +137,10 @@ def resolve_obj_to_type(
     type_map: TypeMap3Layer,
     method_to_module: Dict[str, str],
 ) -> Optional[str]:
-    """objName -> moduleName/FQN 결정. 우선순위: this -> runtime_hint -> local -> param -> variable."""
+    """obj_name → moduleName/FQN 결정.
+
+    우선순위: ``this`` > runtime_hint > local > param > call_result > module variable.
+    """
     if not obj_name:
         return None
     if obj_name.strip() == "this" and function_id:
@@ -82,65 +163,17 @@ def resolve_obj_to_type(
     return None
 
 
-_LANG_PARAM_STYLE = {
-    "python": "name_colon_type",
-    "kotlin": "name_colon_type",
-    "go": "name_type",
-}
-
-
-def build_type_map_3layer(
-    symbol_type_index: Dict[str, Dict[str, str]],
-    variable_facts_list: List[Any],
-    function_facts_list: List[Any],
-    runtime_hint_by_function: Optional[Dict[str, Dict[str, str]]] = None,
-    lang: str = "",
-) -> TypeMap3Layer:
-    """symbol_type_index, VARIABLE, FUNCTION params로 3층 맵 구성."""
-    param_style = _LANG_PARAM_STYLE.get(lang, "type_name")
-    type_map = TypeMap3Layer()
-    for function_id, var_types in symbol_type_index.items():
-        ms = MethodScopeMap(local=dict(var_types))
-        type_map.method_scope[function_id] = ms
-    for m in function_facts_list:
-        function_id = getattr(m, "function_id", None)
-        if not function_id:
-            continue
-        params_str = getattr(m, "params", None) or ""
-        if function_id not in type_map.method_scope:
-            type_map.method_scope[function_id] = MethodScopeMap()
-        ms = type_map.method_scope[function_id]
-        ms.param.update(parse_params(params_str, param_style))
-    for f in variable_facts_list:
-        module_key = getattr(f, "module_key", None)
-        variable_name = getattr(f, "name", None)
-        variable_type = getattr(f, "variable_type", None)
-        if not module_key or not variable_name:
-            continue
-        if module_key not in type_map.module_scope:
-            type_map.module_scope[module_key] = ModuleScopeMap()
-        type_map.module_scope[module_key].variable[variable_name] = variable_type or ""
-    if runtime_hint_by_function:
-        for function_id, var_impl in runtime_hint_by_function.items():
-            type_map.runtime_hint[function_id] = RuntimeHintMap(var_to_impl=dict(var_impl))
-    return type_map
-
-
-def fact_to_module_map(function_facts_list: List[Any]) -> Dict[str, str]:
-    """function_id -> module_key."""
-    return {getattr(m, "function_id", ""): getattr(m, "module_key", "") for m in function_facts_list if getattr(m, "function_id", None)}
-
-
 def build_module_map_with_scope(
     type_map: TypeMap3Layer,
     method_to_module: Dict[str, str],
     internal_module_fqns: Any,
     is_domain_module: Any,
-) -> Dict[tuple, tuple]:
-    """(function_id, obj_name) -> (module_name, scope). scope = 'internal' | 'external'."""
-    out: Dict[tuple, tuple] = {}
+) -> Dict[Tuple[str, str], Tuple[str, str]]:
+    """(function_id, obj_name) → (module_name, scope). scope = 'internal' | 'external'."""
+    out: Dict[Tuple[str, str], Tuple[str, str]] = {}
     if not isinstance(internal_module_fqns, set):
         internal_module_fqns = set(internal_module_fqns or [])
+
     for function_id, ms in type_map.method_scope.items():
         module_key = method_to_module.get(function_id)
         for obj_name, type_name in list(ms.local.items()) + list(ms.param.items()):
@@ -149,7 +182,11 @@ def build_module_map_with_scope(
             scope = "internal" if _module_in_set(type_name, internal_module_fqns) else "external"
             out[(function_id, obj_name)] = (type_name, scope)
         if module_key and function_id:
-            out[(function_id, "this")] = (module_key, "internal" if module_key in internal_module_fqns else "external")
+            out[(function_id, "this")] = (
+                module_key,
+                "internal" if module_key in internal_module_fqns else "external",
+            )
+
     for module_key, cs in type_map.module_scope.items():
         for variable_name, variable_type in cs.variable.items():
             if not variable_type or not is_domain_module(variable_type):
@@ -159,11 +196,12 @@ def build_module_map_with_scope(
                 if m_module == module_key:
                     out[(function_id, variable_name)] = (variable_type, scope)
                     break
+
     return out
 
 
 def _module_in_set(module_name: str, internal_module_fqns: set) -> bool:
-    """Check if module_name is in internal set (FQN or short name match)."""
+    """module_name 이 internal set 에 있는지 (FQN 일치 또는 short-name 일치)."""
     if not module_name:
         return False
     if module_name in internal_module_fqns:
@@ -186,12 +224,16 @@ BARE_METHOD_PATTERN = re.compile(r"(?:^|=\s*)(\w+)\s*\(")
 
 def _load_stdlib(lang: str) -> frozenset:
     """lang_profile.yaml 기반 범용 stdlib 로드."""
-    from analyzer.strategy.framework.common.lang_profile import get_lang_profile
     try:
         return get_lang_profile().stdlib_classes(lang)
     except Exception as e:
-        logger.warning("stdlib 로드 실패 | lang=%s error=%s", lang, e)
-        return frozenset()
+        logger.error(
+            "[CALL_LINKER:STDLIB] stdlib 로드 실패 | lang=%s | %s: %s",
+            lang, type(e).__name__, e, exc_info=True,
+        )
+        raise RuntimeError(
+            f"stdlib 로드 실패 (lang={lang}): {type(e).__name__}: {e}"
+        ) from e
 
 
 # 현재 파이프라인 실행 중 사용할 stdlib 및 언어 (lang 파라미터로 동적 설정)
@@ -210,7 +252,6 @@ def load_call_records_from_chunk_bundles(
     chunk_bundle_dir: str,
 ) -> Dict[str, List[Dict[str, Any]]]:
     """ChunkBundle에서 function_id별 call_records [{call_id, call_code}] 로드."""
-    from analyzer.strategy.framework.analysis.chunk_bundle import load_chunk_bundle
     if not chunk_bundle_dir:
         raise ValueError("chunk_bundle_dir 필수")
     base = Path(chunk_bundle_dir)
@@ -235,10 +276,16 @@ def load_call_records_from_chunk_bundles(
                 call_id = f"C:{v.start_line}:{v.end_line}:{seq}"
                 recs.append({
                     "call_id": call_id,
-                    "call_code": (v.initializer_code or "").strip(),
+                    "call_code": v.initializer_code.strip(),
                 })
         except Exception as e:
-            logger.debug("ChunkBundle 로드 스킵 %s: %s", path, e)
+            logger.error(
+                "[CHUNK_BUNDLE:LOAD] ChunkBundle 로드 실패 | path=%s | %s: %s",
+                path, type(e).__name__, e, exc_info=True,
+            )
+            raise RuntimeError(
+                f"ChunkBundle 로드 실패: {path} ({type(e).__name__}: {e})"
+            ) from e
     # stdlib/인프라 호출 필터 + 중복 제거 (LLM 토큰 절감)
     # _ACTIVE_STDLIB (lang_profile.yaml + c_stdlib.json 등) 기반 — 하드코딩 없음
     removed_total = 0
@@ -331,9 +378,8 @@ def _extract_calls_batch_via_llm(
     lang_display = {"c": "C", "java": "Java", "python": "Python", "go": "Go", "kotlin": "Kotlin"}.get(_ACTIVE_LANG, _ACTIVE_LANG)
     items = [{"function_id": mid, "calls": calls} for mid, calls in batch]
     try:
-        from util.llm_prompt_handler import prompts
         result = prompts.call_extract(items, lang_display, api_key)
-    except Exception as e:
+    except Exception as e:  # noqa: SILENT_FAIL — 한 배치 LLM 호출 실패가 다른 배치를 막지 않도록 errlog 후 빈 결과 반환 (해당 배치 함수들만 CALLS 누락)
         logger.error("[PHASE:2:CALL_LLM] LLM call_extract 오류 | error=%s", e, exc_info=True)
         return {mid: [] for mid, _ in batch}
     out: Dict[str, List[Dict[str, Any]]] = {}
@@ -508,7 +554,7 @@ def derive_uses_from_calls(
         )
         if not caller_cfqn:
             continue
-        is_external = getattr(e, "scope", "internal") == "external" or getattr(e, "callee_function_id", "").startswith("external:")
+        is_external = e.scope == "external" or e.callee_function_id.startswith("external:")
         if is_external:
             callee_cfqn = _external_callee_module(e.callee_function_id)
             scope = "external"
@@ -600,9 +646,6 @@ async def run_call_batch_pipeline_async(
     lang: str = "",
 ) -> Tuple[List[CallsEdge], List[Dict[str, Any]]]:
     """Call 관계 추출 (async 버전). LLMRateLimiter로 전역 동시성 제어."""
-    import asyncio
-    from util.llm_rate_limiter import get_rate_limiter
-    from analyzer.strategy.framework.analysis.chunk_bundle import _get_chunk_bundle_dir_from_run_dir
 
     chunk_dir = _get_chunk_bundle_dir_from_run_dir(run_dir)
     call_records_by_function = load_call_records_from_chunk_bundles(chunk_bundle_dir=chunk_dir)
@@ -624,9 +667,6 @@ async def run_call_batch_pipeline_async(
             call_records_by_function,
             settings.batch.max_call_records_per_batch,
         )
-        limiter = get_rate_limiter()
-
-        from util.llm_rate_limiter import get_executor
         executor = get_executor()
 
         async def _process_one(batch):

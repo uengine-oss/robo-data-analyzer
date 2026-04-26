@@ -68,13 +68,18 @@ def setup_logging(level: int = logging.INFO) -> None:
     Args:
         level: 로그 레벨 (기본: INFO)
     """
-    # UTF-8 인코딩 설정
+    # UTF-8 인코딩 설정.
+    # 실패 케이스(특정 Windows 콘솔/buffer 미지원 등)에서는 raise 가 부적절하므로
+    # logger 셋업 이전 시점인 만큼 stderr 에 의무 기록만 하고 진행한다.
     if hasattr(sys.stdout, "reconfigure"):
         try:
             sys.stdout.reconfigure(encoding="utf-8")
             sys.stderr.reconfigure(encoding="utf-8")
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 — logger 셋업 이전이라 print 사용
+            print(
+                f"[LOG_SETUP:ERROR] stdout/stderr UTF-8 reconfigure 실패: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
     
     # 루트 로거 설정
     root_logger = logging.getLogger()
@@ -128,8 +133,8 @@ def log_process(
     - exc: 예외 객체 전달 시 스택 트레이스까지 출력
     - exc_info: 기존 코드 호환용 플래그 (True면 스택 트레이스 출력)
     """
-    ctx = (context or "APP").upper()
-    stage_text = (stage or "STAGE").upper()
+    ctx = (context or "APP").upper()  # noqa: FALLBACK_DEFAULT — 로그 컨텍스트 utility default
+    stage_text = (stage or "STAGE").upper()  # noqa: FALLBACK_DEFAULT — 로그 stage utility default
 
     if isinstance(level, str):
         level = getattr(logging, level.upper(), logging.INFO)

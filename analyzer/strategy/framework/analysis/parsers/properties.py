@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from typing import List
 
-from analyzer.strategy.framework.common.node_models import ConfigSectionChunk
+from analyzer.strategy.framework.common.models.node_models import ConfigSectionChunk
 from util.encoding_reader import read_text_with_fallback_sync as read_text_with_fallback
 
 logger = logging.getLogger(__name__)

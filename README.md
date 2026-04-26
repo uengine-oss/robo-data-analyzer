@@ -631,7 +631,7 @@ Client                    API Router          Orchestrator         Analyzer     
 ## 프로젝트 구조
 
 ```
-robo_analyzer_core/
+robo-data-analyzer/
 ├── main.py                      # FastAPI 애플리케이션 진입점
 │
 ├── api/                         # REST API 레이어
@@ -778,7 +778,7 @@ robo_analyzer_core/
 ```bash
 # 1. 저장소 클론
 git clone <repository-url>
-cd robo_analyzer_core
+cd robo-data-analyzer
 
 # 2. 의존성 설치
 pip install -r requirements.txt

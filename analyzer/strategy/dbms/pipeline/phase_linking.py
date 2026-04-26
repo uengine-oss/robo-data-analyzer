@@ -4,7 +4,7 @@ AST 기반 CALLS + REFERENCES 관계를 Neo4j 에 사전 구축.
 LLM 호출 전에 수행되므로, node_analysis 단계에서 이 정보를 활용 가능.
 
 - call_linker: CALL 노드 + initializer_contains_method_call 플래그 → CALLS
-- variable_matcher: VARIABLE (DECLARE 안) + PACKAGE_VARIABLE → REFERENCES
+- variable_linker: VARIABLE (DECLARE 안) + PACKAGE_VARIABLE → REFERENCES
 """
 
 from __future__ import annotations
@@ -12,11 +12,11 @@ from __future__ import annotations
 import logging
 from typing import Any, AsyncGenerator, List
 
-from analyzer.strategy.dbms.common.node_models import FileAnalysisContext, FileStatus
+from analyzer.strategy.dbms.common.models.node_models import FileAnalysisContext, FileStatus
 from analyzer.strategy.dbms.linking.call_linker import build_calls_queries
-from analyzer.strategy.dbms.linking.variable_matcher import build_references_queries
-from analyzer.common.graph_writer import run_graph_queries
-from util.stream_emitter import emit_data, emit_message
+from analyzer.strategy.dbms.linking.variable_linker import build_references_queries
+from analyzer.common.cypher.graph_writer import write_to_graph
+from util.stream_emitter import emit_message
 from util.logger import log_process
 
 logger = logging.getLogger(__name__)
@@ -46,9 +46,9 @@ async def run_phase_linking(
             continue
 
         try:
-            async for batch in run_graph_queries(client, linking_queries):
-                yield emit_data(graph=batch)
-        except Exception as e:
+            async for chunk in write_to_graph(client, linking_queries, f"DBMS_PHASE2:LINKING:{file_ctx.file_name}"):
+                yield chunk
+        except Exception as e:  # noqa: SILENT_FAIL — 한 파일 링킹 실패가 다른 파일 진행을 막지 않도록 errlog 후 계속
             log_process("PHASE:LINK", "ERROR", f"링킹 반영 실패 ({file_ctx.file_name}): {e}", logging.ERROR, e)
             continue
 

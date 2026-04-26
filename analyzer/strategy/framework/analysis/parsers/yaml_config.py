@@ -1,78 +1,48 @@
-"""YAML 설정 파서."""
+"""YAML 설정 파서.
+
+ruamel.yaml 로 key-path 추출 (라인 정보 보존).
+ruamel.yaml 은 requirements.txt 의 필수 의존성이므로 ImportError 폴백 없음.
+"""
 from __future__ import annotations
 
 import logging
 from pathlib import Path
 from typing import List
 
-from analyzer.strategy.framework.common.node_models import ConfigSectionChunk
-from util.encoding_reader import read_text_with_fallback_sync as read_text_with_fallback
+from ruamel.yaml import YAML
+
+from analyzer.strategy.framework.common.models.node_models import ConfigSectionChunk
 
 logger = logging.getLogger(__name__)
 
 
 def parse_yaml_config(path: str) -> List[ConfigSectionChunk]:
-    """ruamel.yaml로 key-path 추출 (라인 유지)."""
-    try:
-        from ruamel.yaml import YAML  # type: ignore[import]
-    except ImportError:
-        try:
-            import yaml  # type: ignore[import]
-        except ImportError:
-            logger.error("[PHASE:1:ARTIFACT] ruamel.yaml / PyYAML 미설치 — YAML 스킵")
-            logger.info(
-                "[PHASE:1:ARTIFACT] 스킵 | parser=yaml file=%s reason=no_yaml_lib",
-                Path(path).name,
-            )
-            return []
-        text = read_text_with_fallback(path)
-        data = yaml.safe_load(text)
-        chunks: List[ConfigSectionChunk] = []
+    """YAML 파일을 평탄화하여 ConfigSectionChunk 리스트 반환.
 
-        def flatten(d: dict, prefix: str = "") -> None:
-            for k, v in d.items():
-                key_path = f"{prefix}.{k}" if prefix else k
-                if isinstance(v, dict) and v:
-                    flatten(v, key_path)
-                else:
-                    chunks.append(
-                        ConfigSectionChunk(
-                            config_key_path=key_path,
-                            start_line=0,
-                            end_line=0,
-                            raw_snippet=str(v)[:200],
-                            file_path=path,
-                        )
-                    )
-
-        if isinstance(data, dict):
-            flatten(data)
-        return chunks
-
-    chunks_yaml: List[ConfigSectionChunk] = []
+    잘못된 YAML 입력은 fail-fast — 호출자(parse_config_and_artifacts)가 잡거나 전파.
+    """
+    chunks: List[ConfigSectionChunk] = []
     yaml_loader = YAML()
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = yaml_loader.load(f)
     except Exception as e:
-        logger.info(
-            "[PHASE:1:ARTIFACT] 스킵 | parser=yaml file=%s reason=load_error error=%s",
-            Path(path).name,
-            e,
+        logger.error(
+            "[PHASE:1:ARTIFACT] YAML 로드 실패 | path=%s | %s: %s",
+            Path(path).name, type(e).__name__, e, exc_info=True,
         )
-        return []
+        raise RuntimeError(
+            f"YAML 로드 실패: {path} ({type(e).__name__}: {e})"
+        ) from e
 
-    def walk(node, prefix: str = ""):
-        if hasattr(node, "lc") and hasattr(node.lc, "line"):
-            line = node.lc.line
-        else:
-            line = 0
+    def walk(node, prefix: str = "") -> None:
+        line = node.lc.line if hasattr(node, "lc") and hasattr(node.lc, "line") else 0
         if isinstance(node, dict):
             for k, v in node.items():
                 key_path = f"{prefix}.{k}" if prefix else str(k)
                 walk(v, key_path)
                 if not isinstance(v, (dict, list)) or (isinstance(v, (dict, list)) and not v):
-                    chunks_yaml.append(
+                    chunks.append(
                         ConfigSectionChunk(
                             config_key_path=key_path,
                             start_line=line,
@@ -87,4 +57,4 @@ def parse_yaml_config(path: str) -> List[ConfigSectionChunk]:
 
     if isinstance(data, dict):
         walk(data)
-    return chunks_yaml
+    return chunks

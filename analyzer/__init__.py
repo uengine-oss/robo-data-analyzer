@@ -1,31 +1,16 @@
-"""ROBO Analyzer 분석 모듈
+"""ROBO Analyzer 분석 모듈.
 
-소스 코드를 분석하여 Neo4j 그래프로 변환하는 핵심 모듈입니다.
+소스 코드를 분석하여 Neo4j 그래프로 변환하는 핵심 모듈.
 
 주요 구성:
 - strategy: 분석 전략 패턴 (Framework, DBMS)
 
-Neo4jClient는 client 모듈에서 import하세요:
+호출자는 서브모듈에서 직접 import:
+    from analyzer.strategy import AnalyzerFactory, AnalyzerStrategy
     from client.neo4j_client import Neo4jClient
+
+본 패키지 __init__ 는 빈 namespace 로 둔다 — 진짜 순환 import 차단:
+client.neo4j_client → analyzer.common.pipeline.pipeline_control 경로로
+analyzer 패키지가 트리거될 때, __init__ 가 strategy 를 미리 import 하면
+strategy → base_analyzer → client.neo4j_client 로 순환 발생.
 """
-
-__all__ = [
-    "AnalyzerFactory",
-    "AnalyzerStrategy",
-]
-
-
-def __getattr__(name: str):
-    """Lazy import로 순환 참조 방지
-
-    pipeline_control은 core/로 이동됨.
-    여전히 Lazy import를 유지하여 순환 참조 위험을 방지.
-    """
-    if name == "AnalyzerFactory":
-        from .strategy import AnalyzerFactory
-        return AnalyzerFactory
-    elif name == "AnalyzerStrategy":
-        from .strategy import AnalyzerStrategy
-        return AnalyzerStrategy
-    raise AttributeError(f"module 'analyzer' has no attribute '{name}'")
-

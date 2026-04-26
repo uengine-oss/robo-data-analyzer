@@ -14,14 +14,11 @@ import logging
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, Generator, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, Generator, List, Optional, Tuple, Union
 
 from util.code_text_utils import resolve_node_code
 
 logger = logging.getLogger(__name__)
-
-from config.settings import settings
-MAX_CONTEXT_TOKEN = settings.batch.max_context_token
 
 
 # ---------------------------------------------------------------------------
@@ -30,7 +27,12 @@ MAX_CONTEXT_TOKEN = settings.batch.max_context_token
 
 @dataclass(slots=True)
 class StatementNode:
-    """평탄화된 AST 노드 (framework 분석용)."""
+    """평탄화된 AST 노드 (framework 분석용).
+
+    DBMS 의 StatementNode (dbms/common/node_models.py) 와는 독립.
+    Framework 는 노드 트리를 단순 데이터로 한 번 훑어 FunctionFacts/VariableFacts/module_index
+    로 변환할 뿐이라, DBMS 의 Bottom-up LLM 컨텍스트 누적 인프라는 보유하지 않는다.
+    """
     node_id: int
     start_line: int
     end_line: int
@@ -42,15 +44,11 @@ class StatementNode:
     unit_key: Optional[str] = None
     unit_name: Optional[str] = None
     unit_kind: Optional[str] = None
-    schema_name: Optional[str] = None
-    dml: bool = False
     package_name: Optional[str] = None
     name: Optional[str] = None
     signature: Optional[str] = None
-    modifiers: Optional[str] = None
     return_type: Optional[str] = None
     parameters: Optional[str] = None
-    generic_type: Optional[str] = None
     extends_type: Optional[str] = None
     implements_types: Optional[str] = None
     variable_type: Optional[str] = None
@@ -62,108 +60,13 @@ class StatementNode:
     parent: Optional["StatementNode"] = None
     children: List["StatementNode"] = field(default_factory=list)
     summary: Optional[str] = None
-    context: Optional[str] = None
-    sibling_context: Optional[str] = None
-    ok: bool = True
     completion_event: asyncio.Event = field(init=False, repr=False)
-    context_ready_event: asyncio.Event = field(init=False, repr=False)
 
     def __post_init__(self):
         object.__setattr__(self, "completion_event", asyncio.Event())
-        object.__setattr__(self, "context_ready_event", asyncio.Event())
 
     def get_raw_code(self) -> str:
         return "\n".join(f"{line_no}: {text}" for line_no, text in self.lines)
-
-    def get_placeholder_code(
-        self, preserve_types: Optional[Set[str]] = None, include_assigns: bool = False
-    ) -> str:
-        if not self.children:
-            return self.get_raw_code()
-        preserve_types = preserve_types or set()
-        assign_node_set: Set[Tuple[int, int]] = set()
-        if include_assigns:
-            ASSIGN_TYPES = {"ASSIGNMENT", "NEW_INSTANCE"}
-
-            def find_assign_nodes_recursive(node: StatementNode) -> List[StatementNode]:
-                results = []
-                for child in node.children:
-                    if child.node_type in ASSIGN_TYPES:
-                        results.append(child)
-                    results.extend(find_assign_nodes_recursive(child))
-                return results
-
-            assign_nodes = find_assign_nodes_recursive(self)
-            assign_node_set = {(n.start_line, n.end_line) for n in assign_nodes}
-        filtered_children = [c for c in self.children if c.node_type != "VARIABLE"]
-        if not filtered_children:
-            return self.get_raw_code()
-        result_lines: List[str] = []
-        line_index = 0
-        total_lines = len(self.lines)
-        sorted_children = sorted(filtered_children, key=lambda c: c.start_line)
-        for child in sorted_children:
-            while line_index < total_lines and self.lines[line_index][0] < child.start_line:
-                line_no, text = self.lines[line_index]
-                result_lines.append(f"{line_no}: {text}")
-                line_index += 1
-            child_span = (child.start_line, child.end_line)
-            should_preserve = (
-                child.node_type in preserve_types
-                or (include_assigns and child_span in assign_node_set)
-            )
-            if should_preserve:
-                while line_index < total_lines and self.lines[line_index][0] <= child.end_line:
-                    line_no, text = self.lines[line_index]
-                    result_lines.append(f"{line_no}: {text}")
-                    line_index += 1
-            else:
-                result_lines.append(f"{child.start_line}: ...code...")
-                while line_index < total_lines and self.lines[line_index][0] <= child.end_line:
-                    line_index += 1
-        while line_index < total_lines:
-            line_no, text = self.lines[line_index]
-            result_lines.append(f"{line_no}: {text}")
-            line_index += 1
-        return "\n".join(result_lines)
-
-    def get_skeleton_code(self) -> str:
-        if not self.children:
-            return self.get_raw_code()
-        filtered_children = [c for c in self.children if c.node_type != "VARIABLE"]
-        if not filtered_children:
-            return self.get_raw_code()
-        result_lines: List[str] = []
-        sorted_children = sorted(filtered_children, key=lambda c: c.start_line)
-        in_child_block = False
-        for line_no, text in self.lines:
-            is_child_line = any(
-                c.start_line <= line_no <= c.end_line for c in sorted_children
-            )
-            if is_child_line:
-                if not in_child_block:
-                    result_lines.append("    ....")
-                    in_child_block = True
-            else:
-                in_child_block = False
-                result_lines.append(f"{line_no}: {text}")
-        return "\n".join(result_lines)
-
-    def get_previous_sibling(self) -> Optional[StatementNode]:
-        if not self.parent:
-            return None
-        siblings = self.parent.children
-        if not siblings or len(siblings) < 2:
-            return None
-        sorted_siblings = sorted(siblings, key=lambda n: n.start_line)
-        current_idx = -1
-        for i, sib in enumerate(sorted_siblings):
-            if sib.node_id == self.node_id:
-                current_idx = i
-                break
-        if current_idx <= 0:
-            return None
-        return sorted_siblings[current_idx - 1]
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +122,7 @@ def _log_process(_ctx: str, _stage: str, message: str) -> None:
 
 
 # Module-level node type constants — 전 언어 합집합. 특정 언어 필터링은 런타임에서 lang 파라미터로 처리.
-from ..common.ontology import get_ontology as _get_ontology
+from ..common.domain.ontology import get_ontology as _get_ontology
 
 get_ontology = _get_ontology  # alias for merged ast_walker code
 _onto = _get_ontology()
@@ -429,10 +332,8 @@ class StatementCollector:
             package_name=package_name,
             name=node.get("name"),
             signature=node.get("signature"),
-            modifiers=node.get("modifiers"),
             return_type=node.get("returnType"),
             parameters=node.get("parameters"),
-            generic_type=node.get("genericType"),
             extends_type=extends_type,
             implements_types=implements_types,
             variable_type=node.get("variableType"),
@@ -501,7 +402,7 @@ class FrameworkAstProcessor(BaseAstProcessor):
 
 from pathlib import Path
 
-from analyzer.strategy.framework.common.node_models import (
+from analyzer.strategy.framework.common.models.node_models import (
     VariableFacts,
     FunctionFacts,
     NODE_VARIABLE,
@@ -745,8 +646,8 @@ def build_function_facts_and_module_index(
             file_name = sp.name
             try:
                 source_content = read_text_with_fallback(source_path)
-            except Exception as e:
-                logger.warning("[PHASE:1:AST] 소스 파일 읽기 실패 | path=%s error=%s", source_path, e)
+            except Exception as e:  # noqa: SILENT_FAIL — 소스 파일 읽기 실패는 AST JSON 의 code 필드로 진행 (보강 데이터 부재만)
+                logger.error("[PHASE:1:AST] 소스 파일 읽기 실패 | path=%s | %s: %s", source_path, type(e).__name__, e)
 
     last_line = _last_line_from_ast(ast_data)
     processor = FrameworkAstProcessor(
@@ -773,7 +674,6 @@ def build_function_facts_and_module_index(
             container_key = node.unit_key or f"{directory}/{file_name}"
             variable_id = f"{container_key}#{node.name}_{node.start_line}"
             code_ref = f"{directory}/{file_name}:{node.start_line}-{node.end_line}"
-            references = getattr(node, "references", None) or []
             variable_facts_list.append(
                 VariableFacts(
                     variable_id=variable_id,
@@ -781,11 +681,11 @@ def build_function_facts_and_module_index(
                     name=node.name,
                     start_line=node.start_line,
                     end_line=node.end_line,
-                    variable_type=getattr(node, "variable_type", None),
+                    variable_type=node.variable_type,
                     code_ref=code_ref,
-                    comment=getattr(node, "comment", None),
-                    annotations=getattr(node, "annotations", None),
-                    references=list(references),
+                    comment=node.comment,
+                    annotations=node.annotations,
+                    references=list(node.references),
                 )
             )
             # variable_id → 원래 AST 노드 타입 저장 (서브레이블용)
@@ -802,10 +702,10 @@ def build_function_facts_and_module_index(
                 "kind": kind,
                 "start_line": node.start_line,
                 "end_line": node.end_line,
-                "comment": getattr(node, "comment", None),
-                "annotations": getattr(node, "annotations", None),
-                "extends_type": getattr(node, "extends_type", None),
-                "implements_types": getattr(node, "implements_types", None),
+                "comment": node.comment,
+                "annotations": node.annotations,
+                "extends_type": node.extends_type,
+                "implements_types": node.implements_types,
             }
 
         if node.node_type in function_types and node.name:
@@ -826,8 +726,8 @@ def build_function_facts_and_module_index(
                     signature=node.signature or "",
                     start_line=node.start_line,
                     end_line=node.end_line,
-                    annotations=getattr(node, "annotations", None),
-                    comment=getattr(node, "comment", None),
+                    annotations=node.annotations,
+                    comment=node.comment,
                     return_type=node.return_type,
                     params=node.parameters,
                     code_ref=code_ref,
@@ -995,7 +895,7 @@ def extract_code_structure(
                         rel_key = p_for_key.stem
                     chunk_out = _get_chunk_bundle_dir_from_run_dir(run_dir)
                     save_chunk_bundle(bundle, rel_key, chunk_bundle_out_dir=chunk_out)
-                    logger.debug("ChunkBundle 저장: %s", rel_key)
+                    logger.debug("[CHUNK_BUNDLE:SAVE] rel_key=%s", rel_key)
                     mid_to_code = {
                         m.function_id: (getattr(m, "function_code", None) or "")
                         for m in bundle.methods
@@ -1031,7 +931,7 @@ def extract_code_structure(
                 "node_kinds": node_kinds,
                 "file_name": Path(path).name,
             }
-        except Exception as e:
+        except Exception as e:  # noqa: SILENT_FAIL — 한 파일 AST 처리 실패가 다른 파일 진행을 막지 않도록 errlog 후 generator 종료 (해당 파일만 skip)
             logger.error("[PHASE:1:AST] 처리 실패 | file=%s error=%s", Path(path).name, e, exc_info=True)
 
 
@@ -1048,7 +948,6 @@ __all__ = [
     "ANALYZABLE_NODE_TYPES",
     "SILENT_NODE_TYPES",
     "GRAPH_NODE_TYPES",
-    "MAX_CONTEXT_TOKEN",
     # ast_walker exports
     "AstVisitorContext",
     "load_ast_json",

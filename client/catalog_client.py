@@ -6,21 +6,21 @@ catalog 가 매칭·샘플 조회한 결과 map 을 받는다.
 호출 경로:
   analysis_context.build_table_sample_map
     → CatalogClient.sample_context
-    → POST {CATALOG_API_URL}/robo/tables/sample-context
+    → POST {settings.catalog.service_url}/robo/tables/sample-context
 """
 
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Dict, Optional, Sequence
 
 import aiohttp
 
+from config.settings import settings
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 30.0
-_DEFAULT_BASE_URL = os.environ.get("CATALOG_API_URL", "http://localhost:5503")
 
 
 class CatalogClient:
@@ -31,7 +31,7 @@ class CatalogClient:
         base_url: Optional[str] = None,
         timeout: float = _DEFAULT_TIMEOUT,
     ):
-        self._base_url = (base_url or _DEFAULT_BASE_URL).rstrip("/")
+        self._base_url = (base_url or settings.catalog.service_url).rstrip("/")
         self._timeout = timeout
 
     async def sample_context(

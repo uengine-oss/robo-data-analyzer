@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
-import ast
 import hashlib
 import json
 import logging
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from config.settings import settings
 from util.encoding_reader import read_text_with_fallback_sync
 from util.code_text_utils import (
     add_line_numbers,
     slice_by_line_range,
 )
-from analyzer.strategy.framework.common.node_models import (
+from analyzer.strategy.framework.common.models.node_models import (
     ChunkBundle,
     ChunkBundleFile,
     ChunkBundleMemberVar,
@@ -39,12 +38,19 @@ def _get_chunk_bundle_dir_from_run_dir(run_dir: str) -> str:
     return str(Path(run_dir) / "chunk_bundles")
 
 
-def _file_hash(path: Path, encoding: str = "utf-8") -> Optional[str]:
+def _file_hash(path: Path, encoding: str = "utf-8") -> str:
+    """파일 SHA256 해시(앞 16자) 반환. 읽기 실패는 fail-fast."""
     try:
         raw = path.read_bytes()
-        return hashlib.sha256(raw).hexdigest()[:16]
-    except Exception:
-        return None
+    except Exception as exc:
+        logger.error(
+            "[CHUNK_BUNDLE] 파일 해시 계산 실패 — read_bytes 오류 | path=%s | %s: %s",
+            path, type(exc).__name__, exc, exc_info=True,
+        )
+        raise RuntimeError(
+            f"ChunkBundle 파일 해시 계산 실패: {path} ({type(exc).__name__}: {exc})"
+        ) from exc
+    return hashlib.sha256(raw).hexdigest()[:16]
 
 
 def build_chunk_bundle_from_source(
@@ -62,15 +68,16 @@ def build_chunk_bundle_from_source(
     path = Path(source_path)
     if not path.is_file():
         logger.info("[PHASE:1:CHUNK] 번들 스킵 | reason=not_file file=%s", path.name)
-        logger.debug("ChunkBundle 스킵 (소스 없음): %s", path.name)
         return None
 
     try:
         raw = read_text_with_fallback_sync(path)
-        text_with_lines = add_line_numbers(raw)
     except Exception as e:
-        logger.error("[PHASE:1:CHUNK] 소스 읽기 실패 | path=%s error=%s", path, e, exc_info=True)
-        return None
+        logger.error("[PHASE:1:CHUNK] 소스 읽기 실패 (Fail-Fast) | path=%s | %s: %s", path, type(e).__name__, e, exc_info=True)
+        raise RuntimeError(
+            f"ChunkBundle 소스 읽기 실패: {path} ({type(e).__name__}: {e})"
+        ) from e
+    text_with_lines = add_line_numbers(raw)
 
     file_hash_val = _file_hash(path, encoding or "utf-8")
     file_meta = ChunkBundleFile(
@@ -162,7 +169,6 @@ def build_chunk_bundle_from_source(
 
 def _bundle_to_dict(bundle: ChunkBundle) -> Dict[str, Any]:
     """ChunkBundle을 JSON 직렬화 가능한 dict로."""
-    from dataclasses import asdict
     return {
         "file_meta": asdict(bundle.file_meta),
         "methods": [asdict(m) for m in bundle.methods],
@@ -266,29 +272,35 @@ def build_bundle_span_index(
                         span_index[key] = {"chunk_id": cid, "text": v.initializer_code, "filePath": fp, "span": [v.start_line, v.end_line]}
                         chunk_index[cid] = {"filePath": fp, "span": [v.start_line, v.end_line], "text": v.initializer_code}
             except Exception as e:
-                logger.debug("ChunkBundle 인덱스 스킵 %s: %s", path.name, e)
+                logger.error(
+                    "[CHUNK_BUNDLE:INDEX] 인덱스 빌드 실패 | path=%s | %s: %s",
+                    path.name, type(e).__name__, e, exc_info=True,
+                )
+                raise RuntimeError(
+                    f"ChunkBundle 인덱스 빌드 실패: {path} ({type(e).__name__}: {e})"
+                ) from e
 
     # artifact 청크 (XML entity 정의, EJB 매핑 등) 통합
     art_count = 0
     for cid, ac in (artifact_index or {}).items():
-        text = (getattr(ac, "text", "") or "").strip()
+        text = (ac.text or "").strip()
         if not text:
             continue
-        fp = getattr(ac, "source_path", "")
-        sl = getattr(ac, "start_line", 0)
-        el = getattr(ac, "end_line", 0)
+        fp = ac.source_path
+        sl = ac.start_line
+        el = ac.end_line
         chunk_index[cid] = {"filePath": fp, "span": [sl, el], "text": text, "chunk_type": "artifact"}
         art_count += 1
 
     # SQL 청크 (SQL 매핑 XML의 SQL문) 통합
     sql_count = 0
     for sql_key, stmt in (sql_index or {}).items():
-        text = (getattr(stmt, "sql_text", "") or "").strip()
+        text = (stmt.sql_text or "").strip()
         if not text:
             continue
-        fp = getattr(stmt, "file_path", "")
-        sl = getattr(stmt, "start_line", 0)
-        el = getattr(stmt, "end_line", 0)
+        fp = stmt.file_path
+        sl = stmt.start_line
+        el = stmt.end_line
         chunk_index[sql_key] = {"filePath": fp, "span": [sl, el], "text": text, "chunk_type": "sql"}
         sql_count += 1
 

@@ -37,31 +37,60 @@ description: >
 
 ### ▶ category = profile_only (no startpoints; profile map only)
 
-Even if `items=[null]`, **there is work to do**. The target is the `[Project Framework · DB Access Pattern Analysis — Search Map]` block in the user message. That block is not a table list — it is the **map of how to find them**.
+Even if `items=[null]`, **there is work to do**. The target is the `[Project Framework · DB Access Pattern Analysis — Search Map]` block. That block is the **map of how to find all DB accesses**.
 
-⚠ **Never exit with `tool_calls=0` or after only `list_skills`/`read_skill`.** At least 3 `bundle_search` calls from different angles before "no result" is acceptable.
+#### Strict procedure
 
-**Step 1 — read the map**: from the profile's `## DB Access Pattern` 4 subsections and `### Symbol Role Classification` table, identify:
+Follow exactly. Do NOT skip steps. Do NOT re-narrow already-searched keywords.
 
-1. **Access mechanism** — which function/macro/method performs DB access
-2. **Identifier rule** — where / in what form a table identifier is embedded (literal / constant / XML / annotation)
-3. **Naming rule** — prefix/suffix pattern distinguishing CRUD
-4. **DB-access symbols** — any symbol marked "DB access" in the role table
+**Step 1 — read the map** → identify:
 
-**Step 2 — choose ≥3 search angles** (combine any of these):
+- Access mechanism (function/macro/method names)
+- Identifier rule (where/how table id is embedded + how to strip it out)
+- Naming rule (prefix/suffix → READS/WRITES)
+- Column Source (where column fields appear, e.g., struct/DTO/annotation)
+- Initial search keywords (primary access function name is almost always required; plus any prefix pattern)
 
-- **(A) Reverse from access mechanism** — `bundle_search` the DB-access function name → extract table identifier from each call site
-- **(B) Reverse from naming rule** — `bundle_search` prefix/suffix pattern → read body → extract table
-- **(C) Search identifier directly** — if identifiers are string literals / SQL / annotation, search those strings
-- **(D) Each "DB access" role-symbol** — search each one
+**Step 2 — one broad search per keyword**:
 
-(A) is almost always required when the mechanism is known.
+- Call `bundle_search(query=<keyword>, kind="text")` (prefer `text` over `symbol` to match body content)
+- Store the FULL returned chunk_id list mentally as "the work queue"
 
-**Step 3 — loop**: for each search result, run the **core loop** above (read chunk → register → follow-up keywords → next search).
+**Step 3 — iterate the queue one by one — register AS YOU FIND**:
 
-**Step 4 — self-check**: ≥3 search angles used? Every table's access functions found? 0-hit keywords retried ≥3 times? Column registration done? If any "no", continue.
+For **each chunk_id** in the queue (first to last, do not cherry-pick):
 
-> The steps are an example skeleton — go deeper with more angles / more loops as the project requires.
+1. `bundle_get_chunk(chunk_id)` — read the body.
+2. Apply the map:
+   - If the body shows a real DB access (per the Identifier Rule) → **immediately** call `graph_create_table_access_tool` with: the **stripped** table name (apply Identifier Rule — remove the `_<crud>####` suffix or equivalent), READS/WRITES per Naming Rule, evidence = quoted code line, source_function_id = this chunk_id.
+   - In the same turn, inspect struct/DTO/entity fields visible in the body. For each field that maps to a column of this table → `graph_create_column_tool(table, column, dtype, description)`. Do this BEFORE moving to next chunk_id.
+   - If the chunk is a false match (comment, declaration only, unrelated mention) → skip with a one-line reason.
+3. While reading, collect **follow-up keywords** for the next round (other table literals, constants, variables pointing to identifiers).
+4. Move to the next chunk_id. Do NOT issue a new `bundle_search` until every chunk_id in the current queue is processed.
+
+**Step 4 — reverse-trace each registered table**:
+
+For each distinct table you registered in Step 3 → `bundle_search(query=<table_name>, kind="text")`. Apply Step 3 to the returned queue. This catches access points that used the table indirectly.
+
+**Step 5 — exhaust follow-up keywords**:
+
+Consume the follow-up keyword list (Step 3 collected these). Each becomes a fresh Step 2 + Step 3 pass.
+
+**Step 6 — self-check before exit**:
+
+- Did you iterate the FULL chunk_id list from each `bundle_search` (not just 2~3)?
+- For each registered table, did you reverse-search?
+- Did you register columns together with every table edge?
+- Are all follow-up keywords consumed?
+
+Only when all YES, exit. A typical business module yields 10~20+ edges. If fewer than 5, you almost certainly skipped candidates — go back to Step 3.
+
+#### Anti-patterns to avoid
+
+- **Do NOT** pick 2~3 "representative" candidates and stop.
+- **Do NOT** re-narrow with a specific function name right after a broad search — just `bundle_get_chunk` the specific chunk_id directly.
+- **Do NOT** defer column registration to a later pass — fields are only visible in the body you just read.
+- **Do NOT** exit because "pattern looks confirmed" — the goal is exhaustive coverage, not pattern proof.
 
 ---
 

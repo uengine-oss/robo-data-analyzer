@@ -1,42 +1,25 @@
 """Phase 1: AST 정적 그래프.
 
 스캔 → AST 파싱 → 아티팩트 파싱 → 인덱스 구축 → Neo4j 반영.
-결과는 pipeline._pipeline_state에 저장되어 후속 Phase에서 사용.
+결과는 ctx.state(FrameworkPipelineState)에 저장되어 후속 Phase에서 사용.
 """
 
 from __future__ import annotations
 
 import logging
+import shutil
 from collections import Counter
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List
+from typing import Any, AsyncGenerator
 
-from client.neo4j_client import Neo4jClient
-from analyzer.strategy.base_analyzer import AnalysisStats
 from config.settings import settings
-from util.stream_emitter import emit_message, emit_data, emit_phase_event
-from util.encoding_reader import read_text_with_fallback_sync as read_text_with_fallback, read_json_with_fallback
-from analyzer.strategy.framework.analysis.ast_collector import (
-    FrameworkAstProcessor,
-    MODULE_TYPES,
-    VARIABLE_TYPES,
-    FUNCTION_TYPES,
-)
-from analyzer.strategy.framework.analysis.chunk_bundle import (
-    build_chunk_bundle_from_source,
-    save_chunk_bundle,
-    _get_chunk_bundle_dir_from_run_dir,
-)
-from analyzer.strategy.framework.common.node_models import (
-    FileCatalogEntry,
-    ProcessingPlan,
+from util.stream_emitter import emit_message, emit_phase_event
+from analyzer.strategy.framework.linking.call_linker import set_active_stdlib
+from analyzer.strategy.framework.common.models.node_models import (
     VariableFacts,
     FunctionFacts,
-    SqlStatementChunk,
-    ConfigSectionChunk,
-    ArtifactChunk,
 )
-from analyzer.strategy.framework.common.graph_queries import (
+from analyzer.strategy.framework.common.cypher.graph_queries import (
     build_package_queries,
     build_module_queries,
     build_function_queries,
@@ -51,23 +34,23 @@ from analyzer.strategy.framework.common.graph_queries import (
     build_config_section_queries,
     build_artifact_chunk_queries,
 )
-from analyzer.common.graph_writer import run_graph_queries, write_to_graph
+from analyzer.common.cypher.graph_writer import write_to_graph
 from analyzer.strategy.framework.analysis.ast_collector import extract_code_structure, _extract_package_fqns
 from analyzer.strategy.framework.analysis.parsers.base import parse_config_and_artifacts
-from analyzer.strategy.framework.analysis.lookup_builder import build_search_indexes
+from analyzer.strategy.framework.analysis.index_builder import build_search_indexes
 from analyzer.strategy.framework.scanning import profile as build_codebase_profile
 
 logger = logging.getLogger(__name__)
 
 
 async def run_phase_ast(
-    pipeline: Any,
+    ctx: Any,  # FrameworkPhaseContext
     file_names: list[tuple[str, str]],
-    client: Neo4jClient,
-    orchestrator: Any,
-    stats: AnalysisStats,
 ) -> AsyncGenerator[bytes, None]:
     """Phase 1: 스캔 → AST 파싱 → 아티팩트 → 인덱스 구축."""
+    client = ctx.client
+    stats = ctx.stats
+    st = ctx.state
     data_dir = settings.path.data_dir
     source_dir = str(Path(data_dir) / "source")
 
@@ -75,7 +58,7 @@ async def run_phase_ast(
 
     # ── Step 1: 프로파일 (스캔 + 결정론 수집 + 프레임워크/DB 패턴 Agent 요약) ──
     # 모든 파일이 source/ 에 통합되어 있으므로 scan_roots 는 source 하나만.
-    lang = getattr(orchestrator, "target", "")
+    lang = ctx.orchestrator.target
     scan_roots = [(source_dir, "source")]
     codebase_profile = build_codebase_profile(
         Path(source_dir),
@@ -83,7 +66,7 @@ async def run_phase_ast(
         scan_roots=scan_roots,
         api_key=settings.llm.api_key or "",
     )
-    pipeline._pipeline_state.codebase_profile = codebase_profile
+    st.codebase_profile = codebase_profile
     catalog = codebase_profile.catalog
     plan = codebase_profile.plan
 
@@ -92,20 +75,18 @@ async def run_phase_ast(
     base = Path(data_dir).resolve()
     source_ast_paths = [str(base / p) if not Path(p).is_absolute() else p for p in plan.source_ast_jobs]
 
-    run_dir = pipeline._pipeline_state.run_dir
+    run_dir = st.run_dir
     if not run_dir:
         run_dir = str(Path(settings.path.audit_dir) / "analysis.run")
         run_path = Path(run_dir)
         if run_path.is_dir():
-            import shutil
             shutil.rmtree(run_path)
         run_path.mkdir(parents=True, exist_ok=True)
-        pipeline._pipeline_state.run_dir = run_dir
+        st.run_dir = run_dir
         logger.info("[PHASE:1:AST] run_dir 생성 | run_dir=%s", run_dir)
-    pipeline._pipeline_state.lang = lang
+    st.lang = lang
 
     # 해당 언어의 stdlib로 전환
-    from analyzer.strategy.framework.linking.call_linker import set_active_stdlib
     set_active_stdlib(lang)
 
     # 파일별 누적 변수
@@ -156,7 +137,7 @@ async def run_phase_ast(
                 if queries:
                     async for chunk in write_to_graph(client, queries, f"PHASE1:AST:{file_result['file_name']}"):
                         yield chunk
-            except Exception as e:
+            except Exception as e:  # noqa: SILENT_FAIL — 한 파일 Neo4j 반영 실패가 다른 파일 진행을 막지 않도록 errlog 후 계속
                 logger.error("[PHASE:1:AST] Neo4j 반영 실패 | file=%s error=%s", file_result["file_name"], e, exc_info=True)
 
         ast_progress = int((ast_done / ast_total) * 70) if ast_total else 70
@@ -174,7 +155,7 @@ async def run_phase_ast(
             if pkg_queries:
                 async for chunk in write_to_graph(client, pkg_queries, "PHASE1:PACKAGE"):
                     yield chunk
-        except Exception as e:
+        except Exception as e:  # noqa: SILENT_FAIL — 패키지 노드 반영 실패가 메서드/필드 처리를 막지 않도록 errlog 후 계속
             logger.error("[PHASE:1:PACKAGE] Neo4j 패키지 반영 실패 | error=%s", e, exc_info=True)
 
     # MODULE → PACKAGE 관계
@@ -184,7 +165,7 @@ async def run_phase_ast(
             if btp_queries:
                 async for chunk in write_to_graph(client, btp_queries, "PHASE1:BELONGS_TO_PACKAGE"):
                     yield chunk
-        except Exception as e:
+        except Exception as e:  # noqa: SILENT_FAIL — MODULE→PACKAGE 관계 반영 실패가 다른 phase 1 진행을 막지 않도록 errlog 후 계속
             logger.error("[PHASE:1:PACKAGE] Neo4j MODULE→PACKAGE 관계 반영 실패 | error=%s", e, exc_info=True)
 
     # root PACKAGE 노드
@@ -193,7 +174,7 @@ async def run_phase_ast(
         if root_queries:
             async for chunk in write_to_graph(client, root_queries, "PHASE1:ROOT_PACKAGE"):
                 yield chunk
-    except Exception as e:
+    except Exception as e:  # noqa: SILENT_FAIL — root PACKAGE 반영 실패가 다른 phase 1 진행을 막지 않도록 errlog 후 계속
         logger.error("[PHASE:1:PACKAGE] Neo4j root 패키지 반영 실패 | error=%s", e, exc_info=True)
 
     stats.total_nodes += len(function_facts_list) + len(variable_facts_list)
@@ -225,7 +206,7 @@ async def run_phase_ast(
             if queries:
                 async for chunk in write_to_graph(client, queries, "PHASE1:ARTIFACT"):
                     yield chunk
-        except Exception as e:
+        except Exception as e:  # noqa: SILENT_FAIL — 아티팩트 노드 반영 실패가 인덱스 빌드를 막지 않도록 errlog 후 계속
             logger.error("[PHASE:1:ARTIFACT] Neo4j 아티팩트 반영 실패 | error=%s", e, exc_info=True)
 
     # ── Step 4: 인덱스 구축 ──
@@ -233,8 +214,7 @@ async def run_phase_ast(
         sql_chunks, module_index_ast, config_chunks, artifact_chunks=artifact_chunks,
     )
 
-    # pipeline state에 저장
-    st = pipeline._pipeline_state
+    # ctx.state 에 저장 (이미 ctx.state 참조 — alias 'st' 사용)
     st.data_dir = data_dir
     st.catalog = catalog
     st.plan = plan

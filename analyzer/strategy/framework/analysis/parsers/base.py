@@ -1,41 +1,25 @@
-"""비타겟 파일 파서 공통 + run_step3 오케스트레이터."""
+"""파서 오케스트레이터 — Step 3 (Sql/Config/Artifact 청크 통합 생성).
+
+각 파일 형식별 파서 (xml_universal / yaml_config / properties) 호출만 담당.
+XML 헬퍼 (_local_tag, _parse_xml_safe) 는 xml_universal 자체에 포함 (단일 도메인).
+"""
 from __future__ import annotations
 
 import logging
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from analyzer.strategy.framework.common.node_models import SqlStatementChunk, ConfigSectionChunk, ArtifactChunk
-from util.encoding_reader import read_text_with_fallback_sync as read_text_with_fallback
+from analyzer.strategy.framework.common.models.node_models import (
+    ArtifactChunk,
+    ConfigSectionChunk,
+    SqlStatementChunk,
+)
+
+from .properties import parse_properties
+from .xml_universal import parse_xml_universal
+from .yaml_config import parse_yaml_config
 
 logger = logging.getLogger(__name__)
-
-
-def _local_tag(elem) -> str:
-    """XML 요소의 네임스페이스를 제거한 로컬 태그명.
-
-    Comment·ProcessingInstruction 등 tag가 문자열이 아닌 노드는 빈 문자열을 반환한다.
-    """
-    tag = elem.tag
-    if not isinstance(tag, str):
-        return ""
-    return tag.split("}")[-1] if "}" in tag else tag
-
-
-def _parse_xml_safe(path: str, parser_fn):
-    """공통 XML 로드 + lxml import + 에러 핸들링."""
-    try:
-        from lxml import etree  # type: ignore[import]
-    except ImportError:
-        logger.info("[PHASE:1:ARTIFACT] 스킵 | file=%s reason=lxml_not_available", Path(path).name)
-        return []
-    text = read_text_with_fallback(path)
-    try:
-        root = etree.fromstring(text.encode("utf-8"))
-    except Exception as e:
-        logger.info("[PHASE:1:ARTIFACT] 스킵 | file=%s reason=xml_parse_error error=%s", Path(path).name, e)
-        return []
-    return parser_fn(root, path)
 
 
 def parse_config_and_artifacts(
@@ -49,10 +33,6 @@ def parse_config_and_artifacts(
     범용 — sql/entity/config 3종 분류. 프레임워크 구분 없음.
     모든 XML은 parse_xml_universal()로 통합 처리.
     """
-    from .yaml_config import parse_yaml_config
-    from .properties import parse_properties
-    from .xml_universal import parse_xml_universal
-
     all_entity_jobs = list(entity_jobs or [])
     all_xml_jobs = list(sql_jobs) + all_entity_jobs
 

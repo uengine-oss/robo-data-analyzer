@@ -6,6 +6,7 @@ FastAPI 기반 소스 코드 분석 서버.
     uvicorn main:app --host 0.0.0.0 --port 5502 --reload
 """
 
+import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -90,7 +91,6 @@ async def health():
 # =============================================================================
 
 if __name__ == "__main__":
-    import uvicorn
     
     logger.info("ROBO Analyzer starting on %s:%d", settings.host, settings.port)
     uvicorn.run(

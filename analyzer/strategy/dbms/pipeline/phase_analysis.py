@@ -6,12 +6,12 @@ import asyncio
 import logging
 from typing import Any, AsyncGenerator, List
 
-from client.neo4j_client import Neo4jClient
-from analyzer.strategy.base_analyzer import AnalysisStats
-from analyzer.strategy.dbms.common.node_models import FileStatus, FileAnalysisContext
-from analyzer.common.graph_writer import run_graph_queries
-from util.stream_emitter import emit_data, emit_message, emit_phase_event
+from analyzer.common.cypher.graph_writer import run_graph_queries
+from analyzer.strategy.dbms.common.models.node_models import FileAnalysisContext, FileStatus
+from analyzer.strategy.dbms.pipeline.phase_summary import run_phase_post
+from config.settings import settings
 from util.logger import log_process
+from util.stream_emitter import emit_data, emit_message, emit_phase_event
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ async def run_phase_llm(
     completed = 0
     total = len(contexts)
     results_queue: asyncio.Queue = asyncio.Queue()
-    max_workers = ctx.file_semaphore._value if hasattr(ctx.file_semaphore, '_value') else 5
+    max_workers = settings.concurrency.file_concurrency
 
     yield emit_message("")
     yield emit_message(f"┌─────────────────────────────────────────────────────────┐")
@@ -157,8 +157,7 @@ async def run_phase_llm(
     await asyncio.gather(*tasks, return_exceptions=True)
 
     # 후처리 (프로시저 요약, 테이블 요약)
-    from analyzer.strategy.dbms.pipeline.phase_summary import run_phase_post
     async for chunk in run_phase_post(ctx, contexts):
         yield chunk
 
-    yield emit_phase_event(2, "AI 분석", "completed", 100, {"batches": stats.llm_batches_executed})
+    # `completed` 는 호출자(dbms_pipeline) 가 wrapping emit (Framework 패턴 통일).

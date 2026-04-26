@@ -53,8 +53,9 @@ prompt: |
   - 나쁜 예: "상황에 따라 V_FLAG 를 갱신한다"
 
   ★★ parent_context 에 담을 것
-  - 주석에 명시된 처리 목적 (있으면 최우선)
-  - DML 유형 및 타겟 (SELECT/INSERT/UPDATE/DELETE/MERGE, FROM·INTO 테이블)
+  - **자연어 헤더 주석**(처리 목적·요약 설명) 만 활용. **SQL 문법이 포함된 주석은 죽은 코드로 간주해 무시**
+    (예: `-- VALUES(...)`, `-- SELECT ...`, `-- INSERT INTO ...`, `-- IF ...` 같은 주석은 보지 않는다)
+  - DML 유형 및 타겟 (SELECT/INSERT/UPDATE/DELETE/MERGE, FROM·INTO 테이블) — **실제 활성 코드 기반**
   - 별칭 매핑 (별칭 → 실제 테이블·서브쿼리)
   - 조인·매칭 조건
   - 이 부모가 만드는 상태 변화 (변수 대입·테이블 쓰기·OUT·트랜잭션 경계)
@@ -62,13 +63,19 @@ prompt: |
 
   {% if sibling_code %}
   ★★ sibling_context 에 담을 것
-  - 직전 형제 주석에 명시된 목적 (있으면 최우선)
-  - 직전 형제가 만든 상태 (변수 값·테이블 쓰기·OUT 파라미터·트랜잭션 상태)
+  - 직전 형제의 **자연어 헤더 주석** 만 활용 (SQL 문법 주석은 죽은 코드, 무시)
+  - 직전 형제가 만든 상태 (변수 값·테이블 쓰기·OUT 파라미터·트랜잭션 상태) — 활성 코드 기반
   - 현재 노드가 실행되는 시점의 "초기 상태" 를 재구성할 수 있도록
   {% endif %}
 
   ★ 추측 금지
   부모 스켈레톤의 "..." 안의 내용은 절대 추측해서 쓰지 않는다.
+
+  ★ 죽은 코드 주석 식별
+  주석 라인에 다음 키워드가 포함되면 **죽은 코드** 로 간주하고 parent_context/sibling_context 에 절대 반영하지 않는다:
+  `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `VALUES`, `FROM`, `INTO`, `WHERE`, `JOIN`,
+  `IF ... THEN`, `BEGIN`, `END;`, `EXEC ...`, `:NEW.`, `:OLD.`.
+  반영 가능한 주석: 자연어로만 쓰인 처리 의도·헤더 (예: "주문 마스터 검증").
 
 
   [SELF-CHECK]

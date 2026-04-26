@@ -13,13 +13,10 @@ from collections import Counter
 from pathlib import Path
 from typing import Iterable, Optional
 
-from analyzer.strategy.framework.common.analysis_constants import SKIP_DIRS
+import tiktoken  # type: ignore[import]
+from tree_sitter_language_pack import get_parser  # type: ignore[import]
 
-try:
-    from tree_sitter_language_pack import get_parser
-    _BACKEND_OK = True
-except ImportError:
-    _BACKEND_OK = False
+from analyzer.strategy.framework.common.domain.analysis_constants import SKIP_DIRS
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +110,8 @@ def _fallback_head(path: Path, n: int) -> str:
 def _extract_imports_from_tree(source: bytes, parser) -> list[str]:
     try:
         tree = parser.parse(source)
-    except Exception:
+    except Exception as e:  # noqa: SILENT_FAIL — best-effort import 빈도 수집, 파싱 실패해도 다른 파일은 계속
+        logger.debug("[TS:IMPORTS] tree-sitter 파싱 실패 — skip | %s: %s", type(e).__name__, e)
         return []
     results: list[str] = []
     stack = [tree.root_node]
@@ -132,10 +130,8 @@ def extract_skeleton(path: Path, max_items: int = 80) -> str:
     """파일에서 뼈대만 뽑아 문자열로 반환.
 
     포함: 앞쪽 주석 블록, 모든 import/include, 함수/클래스/구조체/타입 선언의 첫 줄,
-    매크로 정의, 데코레이터. 파서 없으면 raw 앞 N 줄 fallback.
+    매크로 정의, 데코레이터. 언어 미지원이면 raw 앞 N 줄 fallback.
     """
-    if not _BACKEND_OK:
-        return _fallback_head(path, 80)
     lang = _ALIAS_EXT_TO_LANG.get(path.suffix.lower())
     if not lang:
         return _fallback_head(path, 80)
@@ -144,7 +140,9 @@ def extract_skeleton(path: Path, max_items: int = 80) -> str:
         data = path.read_bytes()
         parser = get_parser(lang)
         tree = parser.parse(data)
-    except Exception:
+    except Exception as e:  # noqa: SILENT_FAIL — skeleton 추출은 best-effort, fallback 으로 raw head 80줄 반환
+        logger.debug("[TS:SKELETON] tree-sitter 파싱 실패 — raw head fallback | path=%s %s: %s",
+                     path, type(e).__name__, e)
         return _fallback_head(path, 80)
 
     lines = data.decode("utf-8", errors="ignore").splitlines()
@@ -202,8 +200,6 @@ def extract_skeleton(path: Path, max_items: int = 80) -> str:
 
 def extract_function_signatures(path: Path, max_sigs: int = 30) -> list[str]:
     """파일의 함수·메서드 시그니처 (첫 3 줄 요약) 리스트."""
-    if not _BACKEND_OK:
-        return []
     lang = _ALIAS_EXT_TO_LANG.get(path.suffix.lower())
     if not lang:
         return []
@@ -213,7 +209,9 @@ def extract_function_signatures(path: Path, max_sigs: int = 30) -> list[str]:
             return []
         parser = get_parser(lang)
         tree = parser.parse(data)
-    except Exception:
+    except Exception as e:  # noqa: SILENT_FAIL — 함수 시그니처 추출은 best-effort, 파싱 실패 시 빈 리스트
+        logger.debug("[TS:SIGS] tree-sitter 파싱 실패 — skip | path=%s %s: %s",
+                     path, type(e).__name__, e)
         return []
     text = data.decode("utf-8", errors="ignore").splitlines()
     sigs: list[str] = []
@@ -250,8 +248,6 @@ def extract_function_body(
 
     Returns: (body_text, token_count, truncated)
     """
-    if not _BACKEND_OK:
-        return ("", 0, False)
     lang = _ALIAS_EXT_TO_LANG.get(path.suffix.lower())
     if not lang:
         return ("", 0, False)
@@ -261,7 +257,9 @@ def extract_function_body(
             return ("", 0, False)
         parser = get_parser(lang)
         tree = parser.parse(data)
-    except Exception:
+    except Exception as e:  # noqa: SILENT_FAIL — 함수 본문 추출은 best-effort, 파싱 실패 시 빈 결과
+        logger.debug("[TS:BODY] tree-sitter 파싱 실패 — skip | path=%s function=%s %s: %s",
+                     path, function_name, type(e).__name__, e)
         return ("", 0, False)
 
     lines = data.decode("utf-8", errors="ignore").splitlines()
@@ -281,20 +279,13 @@ def extract_function_body(
             )
             if target in header_window:
                 body = "\n".join(lines[start:end + 1])
-                try:
-                    import tiktoken
-                    enc = tiktoken.get_encoding("cl100k_base")
-                    tokens = enc.encode(body)
-                    n_tokens = len(tokens)
-                    if n_tokens > max_tokens:
-                        truncated = enc.decode(tokens[:max_tokens])
-                        return (truncated, max_tokens, True)
-                    return (body, n_tokens, False)
-                except Exception:
-                    fallback = max_tokens // 4
-                    if (end - start + 1) > fallback:
-                        return ("\n".join(lines[start:start + fallback]), fallback, True)
-                    return (body, len(body) // 4, False)
+                enc = tiktoken.get_encoding("cl100k_base")
+                tokens = enc.encode(body)
+                n_tokens = len(tokens)
+                if n_tokens > max_tokens:
+                    truncated = enc.decode(tokens[:max_tokens])
+                    return (truncated, max_tokens, True)
+                return (body, n_tokens, False)
         stack.extend(node.children)
     return ("", 0, False)
 
@@ -309,8 +300,6 @@ def extract_imports_sample(
 
     Returns: (frequency_dict, sampled_file_count, primary_language)
     """
-    if not _BACKEND_OK:
-        return {}, 0, None
     lang = detect_primary_language(root)
     if not lang:
         return {}, 0, None
@@ -324,7 +313,9 @@ def extract_imports_sample(
 
     try:
         parser = get_parser(lang)
-    except Exception:
+    except Exception as e:  # noqa: SILENT_FAIL — parser 생성 실패 시 sample 분석 자체 skip (코드 분석 본 흐름엔 영향 없음)
+        logger.debug("[TS:IMPORT_SAMPLE] parser 생성 실패 — skip | lang=%s %s: %s",
+                     lang, type(e).__name__, e)
         return {}, 0, lang
 
     counter: Counter = Counter()

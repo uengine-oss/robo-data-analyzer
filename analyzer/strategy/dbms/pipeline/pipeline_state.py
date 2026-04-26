@@ -1,82 +1,98 @@
-"""DBMS 파이프라인 상태 (Framework state.py 미러링)
+"""DBMS 파이프라인 상태 + Phase 컨텍스트 (Framework PhaseContext 와 동일 형태로 통일)
 
-DbmsPipeline에서 사용하는 파이프라인 상태를 관리합니다.
+DbmsPipelineState: 파이프라인 전체 상태 (Phase 간 데이터 전달 + 동시성 제어 객체)
+DbmsPhaseContext: 각 Phase 함수에 전달되는 공용 컨텍스트
 """
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from analyzer.strategy.dbms.common.node_models import FileAnalysisContext
+from analyzer.strategy.base_analyzer import AnalysisStats
+from analyzer.strategy.dbms.common.models.node_models import FileAnalysisContext
 
 
 @dataclass
 class DbmsPipelineState:
-    """DBMS 파이프라인 상태 (모든 필드 명시적)."""
+    """DBMS 파이프라인 상태 (모든 필드 명시적).
+
+    Phase 간 데이터 전달 + 동시성 제어 객체(파이프라인 시작 시점에 초기화).
+    """
     ddl_schemas: Set[str] = field(default_factory=set)
     ddl_table_metadata: Dict[Tuple[str, str], Dict[str, Any]] = field(default_factory=dict)
     contexts: List[FileAnalysisContext] = field(default_factory=list)
+
+    # 동시성 제어 — DbmsPipeline.run_pipeline 진입 시 채워짐
+    cypher_lock: Optional[asyncio.Lock] = None
+    file_semaphore: Optional[asyncio.Semaphore] = None
 
 
 @dataclass
 class DbmsPhaseContext:
     """DBMS Phase 함수에 전달되는 공용 컨텍스트.
 
-    pipeline 인스턴스를 포함하여 emit_* 메서드 접근 가능.
+    state 단일 출처 — 동시성 제어/누적 상태 모두 state 안에 두고 직접 참조.
     """
-    pipeline: Any = None  # DbmsPipeline
     client: Any = None  # Neo4jClient
     orchestrator: Any = None
     state: Optional[DbmsPipelineState] = None
     stats: Any = None  # AnalysisStats
 
-    # pipeline에서 추출한 편의 속성
+    # state 패스스루 — phase 코드의 시인성 향상
     @property
-    def cypher_lock(self):
-        return self.pipeline._cypher_lock if self.pipeline else None
+    def cypher_lock(self) -> asyncio.Lock:
+        return self.state.cypher_lock
 
     @property
-    def file_semaphore(self):
-        return self.pipeline._file_semaphore if self.pipeline else None
+    def file_semaphore(self) -> asyncio.Semaphore:
+        return self.state.file_semaphore
 
     @property
-    def ddl_schemas(self) -> set:
-        return self.pipeline._ddl_schemas if self.pipeline else set()
+    def ddl_schemas(self) -> Set[str]:
+        return self.state.ddl_schemas
 
     @property
-    def ddl_table_metadata(self) -> dict:
-        return self.pipeline._ddl_table_metadata if self.pipeline else {}
+    def ddl_table_metadata(self) -> Dict[Tuple[str, str], Dict[str, Any]]:
+        return self.state.ddl_table_metadata
 
+    # AnalysisContext (orchestrator) 의 필드는 service 진입점에서 검증되어 항상 존재.
     @property
     def api_key(self) -> str:
-        return getattr(self.orchestrator, 'api_key', '')
+        return self.orchestrator.api_key
 
     @property
     def locale(self) -> str:
-        return getattr(self.orchestrator, 'locale', 'ko')
+        return self.orchestrator.locale
 
     @property
     def target(self) -> str:
-        return getattr(self.orchestrator, 'target', '')
+        return self.orchestrator.target
 
     @property
     def name_case(self) -> str:
-        return getattr(self.orchestrator, 'name_case', 'original')
+        return self.orchestrator.name_case
 
     @property
     def datasource_name(self) -> str:
-        return getattr(self.orchestrator, 'datasource_name', '')
+        return self.orchestrator.datasource_name
 
     @classmethod
-    def create(cls, pipeline, client, orchestrator, stats) -> "DbmsPhaseContext":
+    def create(
+        cls,
+        client: Any,
+        orchestrator: Any,
+        stats: AnalysisStats,
+        cypher_lock: asyncio.Lock,
+        file_semaphore: asyncio.Semaphore,
+    ) -> "DbmsPhaseContext":
         return cls(
-            pipeline=pipeline,
             client=client,
             orchestrator=orchestrator,
             state=DbmsPipelineState(
-                ddl_schemas=pipeline._ddl_schemas,
-                ddl_table_metadata=pipeline._ddl_table_metadata,
+                cypher_lock=cypher_lock,
+                file_semaphore=file_semaphore,
             ),
             stats=stats,
         )

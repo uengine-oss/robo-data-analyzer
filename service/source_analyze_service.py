@@ -24,14 +24,8 @@ from config.settings import set_openai_api_key, settings
 # 상수
 # =============================================================================
 
-# 전략별 소스 파일 확장자 (우선순위 순서)
-STRATEGY_EXTENSIONS = {
-    "framework": [".java", ".kt", ".scala", ".py", ".c", ".h", ".go", ".rs"],
-    "dbms": [".sql", ".pls", ".pck", ".pkb", ".pks", ".trg", ".fnc", ".prc"],
-}
-DEFAULT_EXTENSIONS = [".java", ".sql"]
-
-# target → 확장자 매핑
+# target → 소스 파일 확장자 매핑 (지원 target 의 단일 진실 출처)
+# 새 target 추가 시 여기에만 등록하면 discover_analyzable_files 에서 자동 인식.
 TARGET_TO_EXTENSION = {
     "java": ".java",
     "kotlin": ".kt",
@@ -146,16 +140,15 @@ def discover_analyzable_files(
     if not os.path.isdir(target_analysis_dir):
         logging.info("analysis/target 디렉토리가 없습니다: %s", target_analysis_dir)
         return []
-    
-    # target에 맞는 확장자 사용 (없으면 strategy의 첫 번째 확장자 사용)
-    target_lower = (target or "java").lower()
-    target_ext = TARGET_TO_EXTENSION.get(target_lower)
-    
+
+    # target → 확장자 (target 은 호출 전 검증되어 lower-cased 전달됨)
+    target_ext = TARGET_TO_EXTENSION.get(target)
     if not target_ext:
-        # target 매핑에 없으면 strategy의 첫 번째 확장자 사용
-        extensions = STRATEGY_EXTENSIONS.get(strategy, DEFAULT_EXTENSIONS)
-        target_ext = extensions[0] if extensions else ".sql"
-    
+        raise ValueError(
+            f"지원하지 않는 target='{target}' — TARGET_TO_EXTENSION 등록값: "
+            f"{sorted(TARGET_TO_EXTENSION.keys())}"
+        )
+
     result = []
     
     # analysis/target 디렉토리를 직접 순회하여 JSON 파일 탐색
@@ -259,23 +252,36 @@ class AnalysisContext:
     def __init__(
         self,
         api_key: str,
-        locale: str = "ko",
-        strategy: str = "framework",
-        target: str = "java",
-        name_case: str = "original",
-        datasource_name: str = "",
+        locale: str,
+        strategy: str,
+        target: str,
+        name_case: str,
+        datasource_name: str,
     ):
-        self.api_key = api_key
-        self.locale = locale
-        self.strategy = (strategy or "framework").lower()
-        self.target = (target or "java").lower()
-        self.name_case = (name_case or "original").lower()
-        self.datasource_name = (datasource_name or "").strip()
-        if not self.datasource_name:
+        # service 진입점 — 모든 필수 파라미터를 라우터(api/analysis_router)가 강제 검증.
+        # 빈 값 폴백 금지 (정책 정렬: 호출자가 valid 값만 전달).
+        if not api_key:
+            raise ValueError("api_key is required")
+        if not locale:
+            raise ValueError("locale is required")
+        if not strategy:
+            raise ValueError("strategy is required")
+        if not target:
+            raise ValueError("target is required")
+        if not name_case:
+            raise ValueError("name_case is required")
+        datasource_name = datasource_name.strip()
+        if not datasource_name:
             raise ValueError(
                 "datasource_name is required — "
                 "catalog API 호출 시 어느 MindsDB datasource를 쓸지 지정 필수"
             )
+        self.api_key = api_key
+        self.locale = locale
+        self.strategy = strategy.lower()
+        self.target = target.lower()
+        self.name_case = name_case.lower()
+        self.datasource_name = datasource_name
         self.dirs = get_analysis_directories(strategy)
     
     def get_directory_dirs(self, directory: str) -> dict[str, str]:

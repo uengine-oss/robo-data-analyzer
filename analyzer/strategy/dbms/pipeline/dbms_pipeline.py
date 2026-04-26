@@ -8,12 +8,12 @@ import asyncio
 import json
 import logging
 import os
-from typing import Any, AsyncGenerator, Optional, List, Dict, Tuple
+from typing import Any, AsyncGenerator, Optional, List
 
 from client.neo4j_client import Neo4jClient
 from analyzer.strategy.base_analyzer import BaseStreamingAnalyzer, AnalysisStats
-from analyzer.strategy.dbms.common.node_models import FileStatus, FileAnalysisContext
-from analyzer.common.pipeline_control import pipeline_controller, PipelinePhase
+from analyzer.strategy.dbms.common.models.node_models import FileStatus, FileAnalysisContext
+from analyzer.common.pipeline.pipeline_control import pipeline_controller, PipelinePhase
 from config.settings import settings
 from util.encoding_reader import read_text_with_fallback
 from util.stream_emitter import (
@@ -26,13 +26,14 @@ from util.stream_emitter import (
     emit_file_start,
 )
 
-from analyzer.strategy.dbms.pipeline.phase_ddl import run_phase_ddl
-from analyzer.strategy.dbms.pipeline.phase_ast import run_phase_ast
-from analyzer.strategy.dbms.pipeline.phase_linking import run_phase_linking
 from analyzer.strategy.dbms.pipeline.phase_analysis import run_phase_llm
+from analyzer.strategy.dbms.pipeline.phase_ast import run_phase_ast
+from analyzer.strategy.dbms.pipeline.phase_ddl import run_phase_ddl
+from analyzer.strategy.dbms.pipeline.phase_lineage import run_phase_lineage
+from analyzer.strategy.dbms.pipeline.phase_linking import run_phase_linking
 from analyzer.strategy.dbms.pipeline.phase_metadata import run_phase_metadata
 from analyzer.strategy.dbms.pipeline.phase_vector import run_phase_vector
-from analyzer.strategy.dbms.pipeline.phase_lineage import run_phase_lineage
+from analyzer.strategy.dbms.pipeline.pipeline_state import DbmsPhaseContext
 
 
 class DbmsPipeline(BaseStreamingAnalyzer):
@@ -65,10 +66,9 @@ class DbmsPipeline(BaseStreamingAnalyzer):
         return "SQL 파일"
 
     def __init__(self):
-        self._cypher_lock = asyncio.Lock()
-        self._file_semaphore: Optional[asyncio.Semaphore] = None
-        self._ddl_schemas: set[str] = set()
-        self._ddl_table_metadata: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        # 동시성 제어 + DDL 누적 상태는 state 단일 출처(DbmsPipelineState)로 보관.
+        # run_pipeline 진입 시 PhaseContext.create() 가 state 초기화 후 phase 들에 전달.
+        pass
 
     async def run_pipeline(
         self,
@@ -80,7 +80,8 @@ class DbmsPipeline(BaseStreamingAnalyzer):
     ) -> AsyncGenerator[bytes, None]:
         """DBMS 분석 파이프라인 실행 - Phase 0~5 순차 실행. run_dir은 Framework 전용(산출물 저장), DBMS에서는 미사용."""
         total_files = len(file_names)
-        self._file_semaphore = asyncio.Semaphore(settings.concurrency.file_concurrency)
+        cypher_lock = asyncio.Lock()
+        file_semaphore = asyncio.Semaphore(settings.concurrency.file_concurrency)
         pipeline_controller.reset()
         pipeline_state = pipeline_controller.get_state()
 
@@ -98,9 +99,8 @@ class DbmsPipeline(BaseStreamingAnalyzer):
         if total_files > 0:
             yield emit_message(f"⚡ 병렬 처리: 파일 {settings.concurrency.file_concurrency}개 동시")
 
-        # PhaseContext 생성
-        from analyzer.strategy.dbms.pipeline.pipeline_state import DbmsPhaseContext
-        ctx = DbmsPhaseContext.create(self, client, orchestrator, stats)
+        # PhaseContext 생성 (state 단일 출처 — pipeline 인스턴스 참조 없음)
+        ctx = DbmsPhaseContext.create(client, orchestrator, stats, cypher_lock, file_semaphore)
 
         # ========== Phase 0: DDL 처리 ==========
         # totalPhases: DDL-only=3(Phase 0~2), 전체=6(Phase 0~5)
@@ -238,7 +238,16 @@ class DbmsPipeline(BaseStreamingAnalyzer):
             yield chunk
         yield emit_message("")
         yield emit_phase_complete(5, "리니지 분석 완료")
-        yield emit_phase_event(5, "리니지 분석", "completed", 100, {"etl_count": getattr(stats, 'etl_count', 0), "data_flows": getattr(stats, 'data_flows', 0)})
+        yield emit_phase_event(
+            5, "리니지 분석", "completed", 100,
+            {
+                "etl_count": stats.lineage_etl_count,
+                "etl_reads": stats.lineage_etl_reads,
+                "etl_writes": stats.lineage_etl_writes,
+                "data_flows": stats.lineage_data_flows,
+                "files_failed": stats.lineage_files_failed,
+            },
+        )
         if not await pipeline_state.wait_if_paused():
             yield emit_message("⏹️ 파이프라인이 중단되었습니다")
             pipeline_state.set_phase(PipelinePhase.CANCELLED)
@@ -253,13 +262,14 @@ class DbmsPipeline(BaseStreamingAnalyzer):
             if encoding_used != "utf-8":
                 logging.info("[FILE_ENCODING] AST JSON fallback decoding: %s (encoding=%s)", ast_path, encoding_used)
             source_content = ""
-            source_dir = orchestrator.dirs.get("source", orchestrator.dirs["analysis"])
+            # source_dir 미존재는 정상 시나리오 (DBMS analysis 만 있는 경우) — analysis 디렉토리에서 직접 슬라이스 시도
+            source_dir = orchestrator.dirs.get("source") or orchestrator.dirs["analysis"]
             source_path = os.path.join(source_dir, directory, file_name)
             if os.path.isfile(source_path):
                 try:
                     source_content, _ = await read_text_with_fallback(source_path, preferred_encodings=("utf-8", "utf-8-sig", "cp949", "euc-kr"))
-                except Exception as e:
-                    logging.warning("[DBMS] 원본 소스 읽기 실패 (source_content 비움): %s - %s", source_path, e)
+                except Exception as e:  # noqa: SILENT_FAIL — 소스 보강은 옵셔널 (AST JSON 의 code 가 우선), 읽기 실패는 errlog 후 진행
+                    logging.error("[DBMS] 원본 소스 읽기 실패 (source_content 비움): %s | %s: %s", source_path, type(e).__name__, e)
             return FileAnalysisContext(directory=directory, file_name=file_name, ast_data=json.loads(ast_content), source_content=source_content)
         return await asyncio.gather(*[load_single(d, f) for d, f in file_names])
 

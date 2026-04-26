@@ -20,11 +20,16 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from analyzer.strategy.dbms.common.analysis_constants import (
+from analyzer.strategy.dbms.common.domain.analysis_constants import (
     DBMS_SYSTEM_PACKAGES,
     PROCEDURE_TYPES,
 )
-from analyzer.strategy.dbms.common.node_models import StatementNode
+from analyzer.strategy.dbms.common.cypher.graph_queries import (
+    build_calls_external_pkg_query,
+    build_calls_external_placeholder_query,
+    build_calls_internal_query,
+)
+from analyzer.strategy.dbms.common.models.node_models import StatementNode
 
 logger = logging.getLogger(__name__)
 
@@ -152,56 +157,25 @@ def _build_calls_query(
     full_directory: str,
     file_name: str,
 ) -> Dict[str, Any]:
-    """단일 CALLS 쿼리 생성.
+    """단일 CALLS 쿼리 생성. graph_queries 빌더에 위임.
 
     PKG.FUNC 형식은 항상 external (외부 패키지).
     bare FUNC 는 internal_names 에 있으면 internal, 없으면 external placeholder.
     """
-    base_params = {
-        "src_line": src_node.start_line,
-        "directory": full_directory,
-        "file_name": file_name,
-    }
-
     if pkg is not None:
-        # PKG.FUNC — 외부 패키지 (internal 판정 대상 아님)
-        return {
-            "query": (
-                f"MATCH (src:{src_node.node_type} {{startLine: $src_line, directory: $directory, file_name: $file_name}})\n"
-                "MERGE (tgt:PROCEDURE {directory: $pkg_dir, procedure_name: $proc_name})\n"
-                "MERGE (src)-[r:CALLS {scope: 'external'}]->(tgt)\n"
-                "RETURN src, tgt, r"
-            ),
-            "params": {
-                **base_params,
-                "pkg_dir": pkg,
-                "proc_name": name,
-            },
-        }
-
+        return build_calls_external_pkg_query(
+            src_node_type=src_node.node_type, src_line=src_node.start_line,
+            pkg=pkg, proc_name=name,
+            full_directory=full_directory, file_name=file_name,
+        )
     if name in internal_names:
-        # 같은 파일 내 PROC/FUNC — internal
-        return {
-            "query": (
-                f"MATCH (src:{src_node.node_type} {{startLine: $src_line, directory: $directory, file_name: $file_name}})\n"
-                "OPTIONAL MATCH (tgt {procedure_name: $proc_name, directory: $directory, file_name: $file_name})\n"
-                "WHERE tgt:PROCEDURE OR tgt:FUNCTION\n"
-                "WITH src, tgt\n"
-                "FOREACH (_ IN CASE WHEN tgt IS NOT NULL THEN [1] ELSE [] END |\n"
-                "  MERGE (src)-[:CALLS {scope: 'internal'}]->(tgt)\n"
-                ")\n"
-                "RETURN src"
-            ),
-            "params": {**base_params, "proc_name": name},
-        }
-
-    # 외부 — EXTERNAL placeholder 생성 + CALLS
-    return {
-        "query": (
-            f"MATCH (src:{src_node.node_type} {{startLine: $src_line, directory: $directory, file_name: $file_name}})\n"
-            "MERGE (tgt:PROCEDURE:EXTERNAL {procedure_name: $proc_name})\n"
-            "MERGE (src)-[r:CALLS {scope: 'external'}]->(tgt)\n"
-            "RETURN src, tgt, r"
-        ),
-        "params": {**base_params, "proc_name": name},
-    }
+        return build_calls_internal_query(
+            src_node_type=src_node.node_type, src_line=src_node.start_line,
+            proc_name=name,
+            full_directory=full_directory, file_name=file_name,
+        )
+    return build_calls_external_placeholder_query(
+        src_node_type=src_node.node_type, src_line=src_node.start_line,
+        proc_name=name,
+        full_directory=full_directory, file_name=file_name,
+    )

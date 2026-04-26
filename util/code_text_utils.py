@@ -7,6 +7,7 @@
 """
 
 import json
+import logging
 import tiktoken
 from typing import Dict, List, Union
 
@@ -113,7 +114,6 @@ def parse_table_identifier(qualified_table_name: str) -> tuple[str, str, str | N
 
 def calculate_code_token(code: Union[str, Dict, List]) -> int:
     """코드 토큰 길이 계산"""
-    import logging
     try:
         if isinstance(code, str):
             text = code

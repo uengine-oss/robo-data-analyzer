@@ -1,210 +1,47 @@
-"""Phase 3a: 컨텍스트 수집 + 코드 분석 LLM 배치.
+"""Phase 3a: 컨텍스트 수집 + 코드 분석 LLM 배치 — thin orchestrator.
 
-2단계:
-1. 컨텍스트 수집 (상수, 참조변수, 테이블 샘플)
-2. 메서드 분석 (LLM 배치: summary + stereotype + dependency + calls + variables + tableInsights)
+비즈니스 로직 분리 (Stage 5):
+  - 컨텍스트 수집     → `framework/analysis/pre_analysis.py`
+  - tableInsights 누적 → `framework/enrichment/table_description_enrichment.py`
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, AsyncGenerator, Dict, List
+from typing import Any, AsyncGenerator
 
-from client.neo4j_client import Neo4jClient
-from config.settings import settings
-from util.stream_emitter import PhaseTracker
+from analyzer.common.cypher.graph_writer import write_to_graph
 from analyzer.strategy.framework.analysis.ast_analyzer import analyze_and_enrich
-from analyzer.strategy.framework.common.graph_queries import (
+from analyzer.strategy.framework.analysis.pre_analysis import (
+    collect_analysis_context as _collect_context,
+)
+from analyzer.strategy.framework.common.cypher.graph_queries import (
     build_analysis_result_queries,
     build_uml_dependency_queries,
 )
-from analyzer.common.graph_writer import write_to_graph
+from analyzer.strategy.framework.common.domain.ontology import get_ontology
+from analyzer.strategy.framework.enrichment.table_description_enrichment import (
+    accumulate_table_insights,
+)
+from config.settings import settings
+from util.stream_emitter import PhaseTracker
 
 logger = logging.getLogger(__name__)
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# Step 1: 컨텍스트 수집
-# ═══════════════════════════════════════════════════════════════════════
+async def collect_analysis_context(ctx: Any) -> dict:
+    """phase 진입점에서 호출 — pre_analysis 모듈 wrapper (FrameworkPhaseContext 패턴)."""
+    return await _collect_context(ctx.state, ctx.client, ctx.orchestrator)
 
-async def collect_analysis_context(st, client, orchestrator) -> dict:
-    """상수, 참조변수, 테이블 샘플, 코드베이스 컨벤션(codebase profile), 함수별 R/W 맵 수집."""
-    ctx: dict = {
-        "constants_context": "",
-        "referenced_vars_by_function": {},
-        "table_sample_data": "",
-        "codebase_conventions": "",
-        "reads_writes_by_function": {},
-    }
-
-    # 함수별 READS/WRITES 테이블 맵 (function_table_edges 기반)
-    # 기존 reads_writes_summary 가 SqlStatement 경로만 보던 한계 보완.
-    rw_by_fn: dict[str, list[tuple[str, str]]] = {}
-    for e in (st.function_table_edges or []):
-        fid = getattr(e, "function_id", "") or ""
-        tbl = (getattr(e, "table_name", "") or "").strip()
-        rel = (getattr(e, "relation", "") or "").strip().upper()
-        if not (fid and tbl and rel):
-            continue
-        pair = (tbl, rel)
-        bucket = rw_by_fn.setdefault(fid, [])
-        if pair not in bucket:
-            bucket.append(pair)
-    ctx["reads_writes_by_function"] = rw_by_fn
-    if rw_by_fn:
-        logger.info(
-            "[PHASE:3:CONTEXT] 함수별 R/W 맵 수집 | functions=%d edges=%d",
-            len(rw_by_fn), sum(len(v) for v in rw_by_fn.values()),
-        )
-
-    # 코드베이스 컨벤션 (Phase 1 codebase_profile.summary_sections 3블록)
-    cp = getattr(st, "codebase_profile", None)
-    if cp and getattr(cp, "summary_sections", None):
-        sections = cp.summary_sections
-        blocks: list[str] = []
-        if sections.get("framework"):
-            blocks.append(sections["framework"])
-        if sections.get("data_access"):
-            blocks.append(sections["data_access"])
-        if sections.get("idioms"):
-            blocks.append(sections["idioms"])
-        if blocks:
-            ctx["codebase_conventions"] = "\n\n".join(blocks)
-            logger.info(
-                "[PHASE:3:CONTEXT] 코드베이스 컨벤션 주입 | sections=%s len=%d",
-                ",".join(sorted(sections.keys())), len(ctx["codebase_conventions"]),
-            )
-
-    # 상수 컨텍스트
-    from analyzer.common.analysis_context import fetch_constants_context
-    ctx["constants_context"] = await fetch_constants_context(client)
-
-    # 참조 변수 + INIT_BY 초기화 출처 컨텍스트
-    try:
-        ref_results = await client.execute_queries([
-            "MATCH (f:FUNCTION)-[:REFERENCES]->(v) "
-            "OPTIONAL MATCH (v)-[:INIT_BY]->(src) "
-            "RETURN f.function_id AS fid, v.code_text AS code, "
-            "       src.name AS src_name, src.code_text AS src_code"
-        ])
-        init_by_count = 0
-        if ref_results and ref_results[0]:
-            for row in ref_results[0]:
-                fid = row.get("fid", "")
-                code = (row.get("code") or "").strip()
-                if not (fid and code):
-                    continue
-                src_code = (row.get("src_code") or "").strip()
-                if src_code:
-                    entry = f"{code}\n  \u21b3 \ucd08\uae30\ud654 \ucd9c\ucc98: {src_code}"
-                    init_by_count += 1
-                else:
-                    entry = code
-                ctx["referenced_vars_by_function"].setdefault(fid, []).append(entry)
-        if ctx["referenced_vars_by_function"]:
-            logger.info(
-                "[PHASE:3:CONTEXT] \ucc38\uc870 \ubcc0\uc218 \uc218\uc9d1 | functions=%d init_by_pairs=%d",
-                len(ctx["referenced_vars_by_function"]), init_by_count,
-            )
-    except Exception as e:
-        logger.error(
-            "[PHASE:3:CONTEXT] \ucc38\uc870 \ubcc0\uc218 \uc218\uc9d1 \uc2e4\ud328 (Fail-Fast) | error=%s",
-            e, exc_info=True,
-        )
-        raise
-
-    # 테이블 샘플 데이터 — catalog 서비스 1회 호출로 batch 수집 + 함수별 전이적 매핑.
-    # catalog 미기동 / datasource 미설정 시 조용히 skip (downstream 은 빈 컨텍스트로 진행).
-    reads_writes = st.reads_writes or []
-    try:
-        from analyzer.common.analysis_context import format_table_context
-        from client.catalog_client import CatalogClient
-
-        datasource_name = getattr(orchestrator, "datasource_name", "")
-        if not datasource_name:
-            logger.info("[PHASE:3:TABLE_CTX] datasource 미설정 — 테이블 샘플 수집 skip")
-            return ctx
-
-        # 1) 링킹이 식별한 테이블 이름 수집 (없으면 Neo4j Table 노드 전체)
-        identified: set[str] = {rw.table_name for rw in reads_writes if rw.table_name}
-        if not identified:
-            tbl_results = await client.execute_queries([
-                "MATCH (t:Table) RETURN DISTINCT t.name AS name"
-            ])
-            identified = {r["name"] for r in (tbl_results[0] or []) if r.get("name")}
-
-        if not identified:
-            logger.info("[PHASE:3:TABLE_CTX] 식별 테이블 0개 — catalog 호출 생략")
-            return ctx
-
-        # 2) catalog 1회 batch 호출 (세션 내 유일 네트워크 호출)
-        logger.info(
-            "[PHASE:3:CATALOG_CALL] catalog 요청 | datasource=%s tables=%d",
-            datasource_name, len(identified),
-        )
-        sample_map = await CatalogClient().sample_context(
-            datasource=datasource_name,
-            table_names=sorted(identified),
-        )
-        matched = sum(1 for v in sample_map.values() if v is not None)
-        logger.info(
-            "[PHASE:3:CATALOG_CALL] catalog 응답 | 매칭=%d/%d", matched, len(sample_map),
-        )
-
-        # 3) 전체 fallback 텍스트 (직접·간접 R/W 없는 함수용)
-        all_sorted = sorted(identified)
-        ctx["table_sample_data"] = format_table_context(sample_map, all_sorted)
-
-        # 4) 호출 그래프로 전이적 확장 (상위 함수가 하위 호출 경유 접근하는 테이블 포함)
-        direct: dict[str, set[str]] = {
-            fid: {t for t, _op in pairs} for fid, pairs in rw_by_fn.items()
-        }
-        callees: dict[str, set[str]] = {}
-        for ce in (st.calls_edges or []):
-            caller = getattr(ce, "caller_function_id", "") or ""
-            callee = getattr(ce, "callee_function_id", "") or ""
-            if caller and callee:
-                callees.setdefault(caller, set()).add(callee)
-
-        def transitive(fid: str, seen: set[str]) -> set[str]:
-            if fid in seen:
-                return set()
-            seen.add(fid)
-            acc = set(direct.get(fid, set()))
-            for cal in callees.get(fid, ()):
-                acc |= transitive(cal, seen)
-            return acc
-
-        # 5) 함수별 context — 메모리 조회만 (네트워크 없음)
-        all_fids = {m.function_id for m in (st.function_facts_list or [])}
-        ts_by_fn: dict[str, str] = {}
-        for fid in all_fids:
-            tables_used = transitive(fid, set())
-            if not tables_used:
-                continue
-            section = format_table_context(sample_map, sorted(tables_used))
-            if section:
-                ts_by_fn[fid] = section
-        ctx["table_sample_data_by_function"] = ts_by_fn
-
-        logger.info(
-            "[PHASE:3:TABLE_CTX] 함수별 컨텍스트 구성 | 함수 매핑=%d/%d 전체 data_len=%d",
-            len(ts_by_fn), len(all_fids), len(ctx["table_sample_data"]),
-        )
-    except Exception as e:
-        logger.warning("[PHASE:3:TABLE_CTX] 테이블 샘플 수집 skip (catalog 미기동 가능성) | error=%s", e)
-
-    return ctx
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# Step 2: 메서드 분석 (코드 분석 LLM 배치)
-# ═══════════════════════════════════════════════════════════════════════
 
 async def run_code_analysis(
-    st, client, tracker, summary_ctx,
+    ctx: Any,  # FrameworkPhaseContext
+    tracker: PhaseTracker,
+    summary_ctx: dict,
 ) -> AsyncGenerator[bytes, None]:
     """메서드별 코드 분석 (summary + stereotype + dependency + calls + variables + tableInsights)."""
+    st = ctx.state
+    client = ctx.client
     function_facts_list = st.function_facts_list or []
     reads_writes = st.reads_writes or []
     api_key = settings.llm.api_key
@@ -215,9 +52,13 @@ async def run_code_analysis(
 
     analysis_by_function: dict = {}
     table_map: dict[str, dict] = {}
-    # 컨텍스트 테이블 = Phase 2 에서 이미 식별된 테이블 (소문자). Phase 3 는 여기 있는 것만 설명 보강.
-    allowed_tables = {(rw.table_name or "").strip().lower() for rw in reads_writes if rw.table_name}
-    allowed_tables |= {(e.table_name or "").strip().lower() for e in (st.function_table_edges or []) if e.table_name}
+    # 컨텍스트 테이블 = Phase 2 에서 식별된 테이블 (소문자). 그 외는 LLM 환각으로 간주하여 드롭.
+    allowed_tables = {rw.table_name.strip().lower() for rw in reads_writes if rw.table_name}
+    allowed_tables |= {
+        e.table_name.strip().lower()
+        for e in (st.function_table_edges or [])
+        if e.table_name
+    }
 
     for analysis_batch in analyze_and_enrich(
         function_facts_list,
@@ -243,36 +84,18 @@ async def run_code_analysis(
         analysis_by_function.update(analysis_batch)
         yield tracker.tick_quiet()
 
-        queries: list[dict[str, Any]] = []
+        queries = list(build_analysis_result_queries(analysis_batch, lang=st.lang))
 
-        # 1) 분석 결과 쿼리 (summary, stereotype, dependency 등)
-        try:
-            queries.extend(build_analysis_result_queries(analysis_batch, lang=st.lang))
-        except Exception as e:
-            logger.error("[PHASE:3:CODE_ANALYSIS] 쿼리 빌드 실패 | error=%s", e, exc_info=True)
+        if get_ontology().is_oop(st.lang):
+            queries.extend(build_uml_dependency_queries(
+                analysis_batch, function_facts_list, st.module_index or {},
+            ))
 
-        # 2) UML dependency (OOP only)
-        try:
-            from analyzer.strategy.framework.common.ontology import get_ontology
-            if get_ontology().is_oop(st.lang):
-                queries.extend(build_uml_dependency_queries(
-                    analysis_batch, function_facts_list, st.module_index or {},
-                ))
-        except Exception as e:
-            logger.error("[PHASE:3:UML] 쿼리 빌드 실패 | error=%s", e, exc_info=True)
+        accumulate_table_insights(analysis_batch, table_map, allowed_tables)
 
-        # 3) tableInsights 는 table_map 에 누적 (배치 후 일괄 반영, 컨텍스트 테이블만)
-        try:
-            _accumulate_table_insights(analysis_batch, table_map, allowed_tables)
-        except Exception as e:
-            logger.error("[PHASE:3:TABLE_INSIGHTS] 누적 실패 | error=%s", e, exc_info=True)
-
-        try:
-            if queries:
-                async for chunk in write_to_graph(client, queries, "PHASE3:ANALYSIS"):
-                    yield chunk
-        except Exception as e:
-            logger.error("[PHASE:3:CODE_ANALYSIS] Neo4j 반영 실패 | error=%s", e, exc_info=True)
+        if queries:
+            async for chunk in write_to_graph(client, queries, "PHASE3:ANALYSIS"):
+                yield chunk
 
     st.analysis_by_function = analysis_by_function
     st.table_insights_map = table_map
@@ -283,44 +106,3 @@ async def run_code_analysis(
             "(Table Description 보강에서 일괄 요약 후 MATCH 반영)",
             len(table_map), sum(len(t.get("columns", {})) for t in table_map.values()),
         )
-
-
-def _accumulate_table_insights(
-    analysis_batch: dict,
-    table_map: dict,
-    allowed_tables: set[str],
-) -> None:
-    """tableInsights 를 table_map 에 누적. **컨텍스트 테이블만 허용**.
-
-    ``allowed_tables`` 는 Phase 2 에서 이미 식별되어 Neo4j 에 있는 테이블명 (소문자).
-    LLM 이 그 외 테이블을 만들어내면 설계 원칙 ("컨텍스트 테이블만") 위반이므로 드롭하고 경고.
-    """
-    for _fid, analysis in analysis_batch.items():
-        for insight in (analysis.get("tableInsights") or []):
-            tbl_name = (insight.get("tableName") or "").strip().lower()
-            if not tbl_name:
-                continue
-            if tbl_name not in allowed_tables:
-                logger.warning(
-                    "[PHASE:3:TABLE_INSIGHTS] 컨텍스트 외 테이블 드롭 | function_id=%s table=%s",
-                    _fid, tbl_name,
-                )
-                continue
-
-            tbl_desc = (insight.get("description") or "").strip()
-            slot = table_map.setdefault(
-                tbl_name,
-                {"descriptions": [], "columns": {}, "source_functions": []},
-            )
-            if tbl_desc:
-                slot["descriptions"].append(tbl_desc)
-            if _fid:
-                slot["source_functions"].append(_fid)
-            for col in (insight.get("columns") or []):
-                col_name = (col.get("name") or "").strip()
-                col_desc = (col.get("description") or "").strip()
-                if not col_name:
-                    continue
-                col_slot = slot["columns"].setdefault(col_name, {"descriptions": []})
-                if col_desc:
-                    col_slot["descriptions"].append(col_desc)

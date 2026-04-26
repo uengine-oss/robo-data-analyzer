@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from analyzer.common.pipeline_control import pipeline_controller
+from analyzer.common.pipeline.pipeline_control import pipeline_controller
 from config.settings import settings
 from service import source_analyze_service
 from util.stream_emitter import stream_with_error_boundary
@@ -22,7 +22,7 @@ router = APIRouter(prefix=settings.api_prefix)
 logger = logging.getLogger(__name__)
 
 
-def extract_api_key(request: Request, missing_status: int = 401) -> str:
+def extract_api_key(request: Request) -> str:
     """API 키 추출 (헤더에서만 추출, 환경변수 폴백 없음)"""
     api_key = (
         request.headers.get("OpenAI-Api-Key") or
@@ -30,7 +30,7 @@ def extract_api_key(request: Request, missing_status: int = 401) -> str:
     )
     if not api_key:
         raise HTTPException(
-            missing_status,
+            401,
             "요청 헤더 누락: OpenAI-Api-Key 또는 Anthropic-Api-Key 헤더가 필요합니다."
         )
     return api_key
@@ -63,7 +63,9 @@ async def analyze_source_code(request: Request):
         raise HTTPException(400, "target 파라미터가 필요합니다. (java, oracle, postgres 등)")
     target = target.strip().lower()
 
-    name_case = (body.get("nameCase") or "original").strip().lower()
+    # nameCase 는 HTTP body 옵셔널 — 미지정 시 'original' 사용 (테이블명 변환 안 함).
+    # 단일 진입점에서만 default 결정, 이후 모든 layer 는 명시 값을 받음.
+    name_case = (body.get("nameCase") or "original").strip().lower()  # noqa: FALLBACK_DEFAULT — HTTP 진입점 단일 출처
     datasource_name = (body.get("datasourceName") or "").strip()
     if not datasource_name:
         raise HTTPException(

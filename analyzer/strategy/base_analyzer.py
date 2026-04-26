@@ -14,26 +14,30 @@
 - 분석 보고서 생성은 service/analysis_report.py에서 처리
 """
 
+import logging
+import shutil
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-
 from pathlib import Path
-from typing import Any, AsyncGenerator, Optional, List
-import logging
+from typing import Any, AsyncGenerator, List, Optional
 
+from analyzer.common.pipeline.report import generate_analysis_report_from_graph
 from client.neo4j_client import Neo4jClient
 from config.settings import settings
+from util.logger import log_process
+from util.stream_emitter import (
+    emit_complete,
+    emit_data,
+    emit_error,
+    emit_message,
+    emit_phase_header,
+    emit_separator,
+    emit_skip,
+)
 
 # 실행 로그 파일명 (logs/ 디렉터리 아래에 기록)
 ANALYZER_LOG_FILENAME = "analyzer.log"
 ERROR_LOG_FILENAME = "error.log"
-from util.stream_emitter import (
-    emit_message,
-    emit_error,
-    emit_complete,
-    emit_data,
-)
-from util.logger import log_process
 
 
 class AnalyzerStrategy(ABC):
@@ -103,7 +107,14 @@ class AnalysisStats:
     # 벡터라이징 결과
     tables_vectorized: int = 0
     columns_vectorized: int = 0
-    
+
+    # 리니지 분석 결과 (DBMS Phase 5 전용 — catalog 호출 누적)
+    lineage_etl_count: int = 0
+    lineage_etl_reads: int = 0
+    lineage_etl_writes: int = 0
+    lineage_data_flows: int = 0
+    lineage_files_failed: int = 0
+
     # 전체 합계 (자동 계산용)
     total_nodes: int = 0
     total_rels: int = 0
@@ -260,8 +271,6 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
             })
 
         graph_data = {"Nodes": nodes, "Relationships": relationships}
-
-        from analyzer.common.report import generate_analysis_report_from_graph
         return generate_analysis_report_from_graph(graph_data)
 
     # =========================================================================
@@ -276,7 +285,6 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
         run_dir = Path(settings.path.audit_dir) / "analysis.run" / "latest"
         # 이전 실행 결과를 덮어씀
         if run_dir.exists():
-            import shutil
             shutil.rmtree(run_dir, ignore_errors=True)
         run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -302,22 +310,30 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
         return handler, run_dir
 
     def _detach_run_log_file_handler(self, handler: Optional[logging.FileHandler]) -> None:
-        """_attach_run_log_file_handler로 추가한 핸들러를 제거하고 닫음."""
+        """_attach_run_log_file_handler로 추가한 핸들러를 제거하고 닫음.
+
+        teardown 안전망 — 핸들러 close 실패해도 분석 결과는 이미 끝났으므로
+        errlog 만 남기고 진행 (raise 시 finally 체인이 깨져 client.close() 가 막힘).
+        """
         if not handler:
             return
         try:
             logging.getLogger().removeHandler(handler)
             handler.close()
-        except Exception:
-            pass
+        except Exception as e:  # noqa: SILENT_FAIL — teardown 정리 단계, 분석은 이미 종료됨
+            logging.getLogger(__name__).error(
+                "[ANALYZER] log handler 닫기 실패 (teardown) | %s: %s", type(e).__name__, e,
+            )
         # error.log 핸들러도 정리
         error_handler = getattr(self, '_error_log_handler', None)
         if error_handler:
             try:
                 logging.getLogger().removeHandler(error_handler)
                 error_handler.close()
-            except Exception:
-                pass
+            except Exception as e:  # noqa: SILENT_FAIL — teardown 정리 단계
+                logging.getLogger(__name__).error(
+                    "[ANALYZER] error log handler 닫기 실패 (teardown) | %s: %s", type(e).__name__, e,
+                )
 
     async def analyze(
         self,
@@ -392,9 +408,9 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
     ) -> AsyncGenerator[bytes, None]:
         """분석 보고서 생성 단계 (공통)"""
         yield emit_message("")
-        yield self.emit_separator()
-        yield self.emit_phase_header(0, "📝 분석 보고서 생성")
-        yield self.emit_separator()
+        yield emit_separator()
+        yield emit_phase_header(0, "📝 분석 보고서 생성")
+        yield emit_separator()
 
         try:
             report = await self.build_analysis_report(client, orchestrator)
@@ -405,8 +421,11 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
                         report_path = Path(run_dir) / "analysis_report.md"
                         report_path.write_text(report, encoding="utf-8")
                         logging.getLogger(__name__).info("[REPORT] 보고서 저장: %s", report_path)
-                    except Exception as e:
-                        logging.getLogger(__name__).warning("[REPORT] 보고서 저장 실패: %s", e)
+                    except Exception as e:  # noqa: SILENT_FAIL — 보고서는 디스크 저장 실패해도 stream 으로는 emit_data 됨
+                        logging.getLogger(__name__).error(
+                            "[REPORT] 보고서 디스크 저장 실패 — 분석 결과는 stream 으로 전달됨 | %s: %s",
+                            type(e).__name__, e, exc_info=True,
+                        )
 
                 yield emit_data(
                     graph={"Nodes": [], "Relationships": []},
@@ -417,7 +436,7 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
                 )
                 yield emit_message("   ✓ 분석 보고서 생성 완료")
             else:
-                yield self.emit_skip("보고서 생성 대상 없음")
+                yield emit_skip("보고서 생성 대상 없음")
 
         except RuntimeError as e:
             log_process("ANALYZE", "REPORT", f"보고서 생성 실패: {e}", logging.ERROR)
@@ -478,57 +497,19 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
             yield emit_message(f"   🏗️ 정적 그래프: 노드 {stats.static_nodes_created}개, 관계 {stats.static_rels_created}개")
         if stats.llm_batches_executed > 0:
             yield emit_message(f"   🤖 AI 분석: {stats.llm_batches_executed}개 배치, 관계 {stats.llm_rels_created}개")
-        
+        if stats.tables_vectorized > 0 or stats.columns_vectorized > 0:
+            yield emit_message(f"   🔢 벡터라이징: 테이블 {stats.tables_vectorized}개, 컬럼 {stats.columns_vectorized}개")
+        if stats.lineage_etl_count > 0:
+            yield emit_message(
+                f"   🔗 리니지: ETL {stats.lineage_etl_count}개, "
+                f"READS {stats.lineage_etl_reads}개, WRITES {stats.lineage_etl_writes}개, "
+                f"FLOWS {stats.lineage_data_flows}개"
+            )
+
         yield emit_message("━" * 50)
 
     # =========================================================================
-    # 공통 유틸리티 메서드
+    # emit_* 유틸리티: util/stream_emitter 모듈 함수 import 해서 직접 사용
+    # (구 staticmethod 6종 제거 — 중복 제거)
     # =========================================================================
-
-    @staticmethod
-    def emit_phase_header(phase_num, title: str, detail: str = "") -> bytes:
-        """단계 헤더 메시지 생성
-        
-        예: 🏗️ [1단계] AST 구조 그래프 생성 (10개 파일)
-        Args:
-            phase_num: 단계 번호 (int, float, str 모두 가능. 예: 1, 2.5, "2.5")
-        """
-        phase_title = f"[{phase_num}단계] " if phase_num else ""
-        return emit_message(f"{phase_title}{title}" + (f" ({detail})" if detail else ""))
-
-    @staticmethod
-    def emit_separator() -> bytes:
-        """구분선 메시지"""
-        return emit_message("━" * 50)
-
-    @staticmethod
-    def emit_file_start(file_idx: int, total: int, file_name: str) -> bytes:
-        """파일 처리 시작 메시지
-        
-        예: 📄 [1/10] OrderService.java
-        """
-        return emit_message(f"📄 [{file_idx}/{total}] {file_name}")
-
-    @staticmethod
-    def emit_phase_complete(phase_num, summary: str) -> bytes:
-        """단계 완료 메시지
-        
-        예: ✅ 1단계 완료: 구조 노드 25개 생성
-        Args:
-            phase_num: 단계 번호 (int, float, str 모두 가능. 예: 1, 2.5, "2.5")
-        """
-        return emit_message(f"   ✅ {phase_num}단계 완료: {summary}")
-
-    @staticmethod
-    def emit_skip(reason: str) -> bytes:
-        """건너뛰기 메시지
-        
-        예: ℹ️ DDL 파일 없음 → 스키마 처리 건너뜀
-        """
-        return emit_message(f"ℹ️ {reason}")
-
-    @staticmethod
-    def emit_file_error(file_name: str, error: str) -> bytes:
-        """파일 오류 메시지"""
-        return emit_message(f"   ❌ 오류 발생 ({file_name}): {error}")
 
