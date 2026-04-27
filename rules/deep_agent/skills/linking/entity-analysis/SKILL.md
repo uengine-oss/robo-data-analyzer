@@ -1,172 +1,299 @@
 ---
 name: entity-analysis
 description: >
-  **When**: category = entity, bean, cmp_mapping, artifact, entity_fqn, candidates, profile_only.
-  **Task**: starting from startpoints / profile map, use `bundle_search` to find real DB-access
-  functions, then register READS/WRITES · FK · COLUMN edges.
-  **Do NOT**: use for `ddl` / `ddl_tables` (use `table-tracking`), unmatched SQL keys (`sql-tracking`),
-  or config keys (`config-tracking`).
+  **언제**: 카테고리 = entity, bean, cmp_mapping, artifact, entity_fqn, candidates, profile_only.
+  특히 `profile_only` (시작점 없이 profile_summary 만 주어진 경우) 도 이 스킬 담당.
+  **작업**: 엔티티 / 빈 / 클래스 후보 / 프로파일 힌트를 시작점으로 코드에서 실제 DB 접근 함수를
+  `bundle_search` 로 찾아 READS/WRITES · FK · 컬럼 엣지를 등록.
+  **트리거 키워드**: 엔티티 추적, entity_fqn, class candidates, profile-summary 기반 수색,
+  JPA Entity, XML 엔티티 매핑, DAO/Repository 분석.
+  **사용 금지**: DDL 메타 있을 때 (`ddl`/`ddl_tables`) → `table-tracking`. SQL 키 → `sql-tracking`,
+  설정 키 → `config-tracking`.
 ---
 
 # Entity Analysis Skill
 
-## Common Principles (all categories)
+엔티티 / 클래스 후보 / 프로파일 힌트에서 코드의 실제 DB 접근 함수를 찾아 그래프 관계 생성.
 
-- **No early exit**. Business modules typically have 10~20+ table accesses. Do not stop on "looks like nothing more".
-- **0 hits → retry ≥3 times** with variants (case, underscore, partial, plural).
-- When you find a table, re-search by its name (`bundle_search(table, kind="text")`) to catch **all** access functions.
-- For each READS/WRITES edge, inspect the function's struct/DTO fields — if they map to columns, call `graph_create_column_tool`.
+## ⚠ 핵심 원칙
 
-## Core Loop (strict — applies to every category)
-
-**Search → Read → Register → Follow-up search → repeat**.
-
-1. `bundle_search(pattern, kind)` → candidate list (chunk_id + file + span).
-2. For **each** candidate:
-   - `bundle_get_chunk(chunk_id)` → read actual body.
-   - Verify it's a real access (not a comment, declaration, or false match).
-   - Register **immediately** via `graph_create_table_access_tool` with evidence from the body.
-   - Extract follow-up keywords: table literal, constant, variable name, header include — anything that points to more usages.
-3. Run next `bundle_search` with those keywords → loop until no new candidates.
-
-**Register as you find — never batch. No evidence → no edge.**
+- **조기 종료 X**. 발견되는 만큼 빠짐없이 등록.
+- 검색 0건 → 변형으로 재시도 (대소문자 / 부분 / 복수형 / 변환 suffix 유무). 한 번 만에 포기 X.
+- 한 테이블 발견 후 그 테이블 사용하는 **모든 함수**를 `bundle_search(<table>, kind="text")` 로 reverse-search 필수.
+- READS/WRITES 등록 후 본문의 struct/DTO/entity 필드를 같은 turn 에 `graph_create_column_tool` 등록.
 
 ---
 
-## Category handling
+## 카테고리 입력 처리
 
-### ▶ category = profile_only (no startpoints; profile map only)
+### ▶ category = profile_only
 
-Even if `items=[null]`, **there is work to do**. The target is the `[Project Framework · DB Access Pattern Analysis — Search Map]` block. That block is the **map of how to find all DB accesses**.
+`data.items` 가 `[null]` 이어도 작업 있음. user 메시지의 `[Project Framework · DB Access Pattern Analysis — Search Map]` 섹션이 작업 source.
 
-#### Strict procedure
+**Step 0 — profile 파싱**: profile_summary 에서 추출
+- **접근 메커니즘** (예: `mpfmdbio(id, &in, &out)`)
+- **Identifier Rule** (예: trailing `_<crud>####` strip)
+- **Naming Rule** (예: `_s` → READS, `_i/_u/_d` → WRITES)
+- **ALL_CAPS 식별자** → 테이블명 후보
+- **함수/매크로명 패턴** → 검색 키워드 후보
 
-Follow exactly. Do NOT skip steps. Do NOT re-narrow already-searched keywords.
-
-**Step 1 — read the map** → identify:
-
-- Access mechanism (function/macro/method names)
-- Identifier rule (where/how table id is embedded + how to strip it out)
-- Naming rule (prefix/suffix → READS/WRITES)
-- Column Source (where column fields appear, e.g., struct/DTO/annotation)
-- Initial search keywords (primary access function name is almost always required; plus any prefix pattern)
-
-**Step 2 — one broad search per keyword**:
-
-- Call `bundle_search(query=<keyword>, kind="text")` (prefer `text` over `symbol` to match body content)
-- Store the FULL returned chunk_id list mentally as "the work queue"
-
-**Step 3 — iterate the queue one by one — register AS YOU FIND**:
-
-For **each chunk_id** in the queue (first to last, do not cherry-pick):
-
-1. `bundle_get_chunk(chunk_id)` — read the body.
-2. Apply the map:
-   - If the body shows a real DB access (per the Identifier Rule) → **immediately** call `graph_create_table_access_tool` with: the **stripped** table name (apply Identifier Rule — remove the `_<crud>####` suffix or equivalent), READS/WRITES per Naming Rule, evidence = quoted code line, source_function_id = this chunk_id.
-   - In the same turn, inspect struct/DTO/entity fields visible in the body. For each field that maps to a column of this table → `graph_create_column_tool(table, column, dtype, description)`. Do this BEFORE moving to next chunk_id.
-   - If the chunk is a false match (comment, declaration only, unrelated mention) → skip with a one-line reason.
-3. While reading, collect **follow-up keywords** for the next round (other table literals, constants, variables pointing to identifiers).
-4. Move to the next chunk_id. Do NOT issue a new `bundle_search` until every chunk_id in the current queue is processed.
-
-**Step 4 — reverse-trace each registered table**:
-
-For each distinct table you registered in Step 3 → `bundle_search(query=<table_name>, kind="text")`. Apply Step 3 to the returned queue. This catches access points that used the table indirectly.
-
-**Step 5 — exhaust follow-up keywords**:
-
-Consume the follow-up keyword list (Step 3 collected these). Each becomes a fresh Step 2 + Step 3 pass.
-
-**Step 6 — self-check before exit**:
-
-- Did you iterate the FULL chunk_id list from each `bundle_search` (not just 2~3)?
-- For each registered table, did you reverse-search?
-- Did you register columns together with every table edge?
-- Are all follow-up keywords consumed?
-
-Only when all YES, exit. A typical business module yields 10~20+ edges. If fewer than 5, you almost certainly skipped candidates — go back to Step 3.
-
-#### Anti-patterns to avoid
-
-- **Do NOT** pick 2~3 "representative" candidates and stop.
-- **Do NOT** re-narrow with a specific function name right after a broad search — just `bundle_get_chunk` the specific chunk_id directly.
-- **Do NOT** defer column registration to a later pass — fields are only visible in the body you just read.
-- **Do NOT** exit because "pattern looks confirmed" — the goal is exhaustive coverage, not pattern proof.
-
----
+이후 아래 **탐색 시나리오** 진행.
 
 ### ▶ category = entity · bean · cmp_mapping · artifact
 
-Each item: `{key, target_type, chunk_type, file_path, text_snippet}`.
+각 아이템: `{key, target_type, chunk_type, file_path, text_snippet}`. `text_snippet` 에서 클래스명 / 엔티티명 / 테이블명 추출 → 아래 시나리오 진행.
 
-1. Extract class / entity / table identifiers from `text_snippet`.
-2. `bundle_search(id, kind="text")` + `bundle_search(id, kind="symbol")` (0 hits → retry ≥3 with partial/short forms).
-3. For each candidate, read body → determine CRUD → `graph_create_table_access_tool`.
-4. If FK is visible in original text or code, `graph_create_fk_tool`.
-5. DTO fields of confirmed function → `graph_create_column_tool`.
+### ▶ category = entity_fqn (`com.acme.User`)
 
-### ▶ category = entity_fqn (Java FQN strings like `com.acme.User`)
-
-1. `bundle_search` the last segment (class name) first.
-2. 0 hits → try full FQN, then partial path, then short name.
-3. Track entity users (Repository/DAO/Service) → real CRUD functions → edges + columns.
+마지막 segment (클래스명) → 0건 시 전체 FQN → 부분 경로 → 짧은 이름 순으로 변형 재시도. ORM 의 Identifier Rule (`User` → `users` pluralization 등) 적용 → 아래 시나리오 진행.
 
 ### ▶ category = candidates
 
-Each item: `{fqn, file_path, annotations, comment}`.
-
-**Entity decision first**:
-
-- ✅ Used as SQL/ORM argument, has 1:1 DB column fields (id, created_at...), data-class annotation, DB-mapping methods
-- ❌ Enum / exception / config / Service / Manager / Controller / Repository / Handler / abstract / interface → skip
-
-If entity confirmed, `bundle_search` by class/FQN → real access functions → edges + columns.
+엔티티 판정 (✅ SQL/ORM 인자 / 1:1 컬럼 필드 / 데이터 클래스 어노테이션 / DB 매핑 메서드 — ❌ Enum/예외/설정/Service/Manager/Controller/Repository/Handler/abstract/interface skip). 엔티티 확정 → 클래스/FQN seed 로 시나리오 진행.
 
 ---
 
-## Chain-trace patterns (all categories)
+## 탐색 시나리오 (4가지 trail — 모두 독립 처리, 충돌 X)
 
-Depending on how the startpoint appears in code:
+테이블이 직접만 접근되는 경우 드뭄. **4가지 trail 각각 독립 시나리오**로 처리. 한 시나리오 발견했다고 다른 시나리오 skip X — 동시에 여러 trail 로 도달.
 
-1. **Direct** — startpoint appears in the function body → edge on that function.
-2. **Via variable** — stored in a variable/constant → search the variable → edge on referencing function.
-3. **Via helper** — helper receives the startpoint → edge on helper's **caller** (not the helper itself).
-4. **Via mapper/repo** — goes through a mapper definition or Repository method → edge on the **caller**.
+각 시나리오 공통:
+- 등록 시 `table_name` 은 **Identifier Rule 적용 후 정규화된 이름**.
+- 등록 시 같은 turn 에 본문 필드를 컬럼으로 함께 등록.
+- 등록 후 follow-up 키워드 수집 (다른 리터럴 / 상수 / 변수 / include).
 
-### STOP condition (per trail)
+**모든 시나리오 placeholder 표기**:
+- `<ACCESS_FN>` — 프로파일이 정의한 DB 접근 함수/매크로/메서드 이름.
+- `<TABLE>` — 정규화된 테이블명.
+- `<RAW_LIT>` — 코드에 등장하는 raw 리터럴 (Identifier Rule 적용 전).
+- `<funcA>` / `<funcB>` — 코드의 함수 chunk_id.
+- `<KEY>` — 변수/상수 이름.
+- `<HELPER>` — 헬퍼/래퍼 함수 이름.
+- `<MAPPER>` — mapper / Repository / DAO 인터페이스/메서드 이름.
 
-One table may have multiple usage trails. For each trail:
+### 시나리오 1: 직접 접근
 
-- (a) reach the CRUD-executing function body, OR (b) reach its call site
+**상황**: 테이블 리터럴이 함수 본문에 직접 등장.
 
-→ register edge → terminate **this trail only**. No infinite recursion up. **If other trails exist, start fresh.**
+**예시 흐름**:
 
-## Registration rules
+```text
+[Step 1] 접근 메커니즘으로 reverse-search
+  bundle_search(query="<ACCESS_FN>", kind="text")
+  → 결과: N 개 chunk_id (호출처 목록)
+
+[Step 2] 각 chunk_id 마다 본문 확인
+  bundle_get_chunk(chunk_id="<funcA>")
+  → 본문 일부:
+    ... <ACCESS_FN>("<RAW_LIT>", ...) ...
+
+[Step 3] Identifier Rule 적용
+  raw 리터럴: "<RAW_LIT>"
+  Rule: profile 이 명시한 변환 (예: "trailing _<crud>#### strip", "@Table(name=...) 읽기")
+  → 정규화: "<TABLE>"
+
+[Step 4] Naming Rule 적용
+  profile 의 CRUD 결정 규칙 (예: suffix "_s" → READS, "_i/_u/_d" → WRITES)
+  → READS 또는 WRITES
+
+[Step 5] 즉시 등록 (같은 turn)
+  graph_create_table_access_tool(
+    table_name="<TABLE>",
+    access="<READS|WRITES>",
+    evidence='<ACCESS_FN>("<RAW_LIT>", ...);',
+    source_function_id="<funcA>"
+  )
+
+[Step 6] 본문 필드 → 컬럼 등록 (같은 turn)
+  본문에 보이는 모든 struct/DTO/entity 필드:
+  → graph_create_column_tool(table="<TABLE>", column="<field_name>", dtype="<type>", ...)
+  → ... (필드 모두)
+
+[Step 7] 다음 chunk_id 로
+```
+
+### 시나리오 2: 변수 / 상수 경유
+
+**상황**: 리터럴이 변수 / 상수 / `#define` / `static const` / config 값에 담겨 있고, 다른 함수가 그 변수명으로 DB 호출.
+
+**예시 흐름**:
+
+```text
+[Step 1] 시나리오 1 진행 중 본 본문에서 변수 참조 발견
+  본문 일부:
+    <const_decl> <KEY> = "<RAW_LIT>";
+    <funcType> <funcA>(...) {
+      ...
+      <ACCESS_FN>(<KEY>, ...);   ← 변수로 호출 (리터럴 직접 X)
+      ...
+    }
+
+[Step 2] 변수/상수명으로 reverse-search
+  bundle_search(query="<KEY>", kind="text")
+  → 결과: M 개 chunk_id (변수 정의 + 변수 사용 함수들)
+
+[Step 3] 각 결과 본문 확인
+  bundle_get_chunk(chunk_id="<funcB>")
+  → 본문에서 <KEY> 가 <ACCESS_FN> 호출에 쓰이는지 확인.
+
+[Step 4] Identifier Rule 적용
+  변수의 정의 라인 (Step 1) 에서 본 리터럴: "<RAW_LIT>"
+  → 정규화: "<TABLE>"
+
+[Step 5] 등록 — 변수 사용해 DB 호출하는 함수에 (변수 정의 함수 X)
+  graph_create_table_access_tool(
+    table_name="<TABLE>",
+    access="<READS|WRITES>",
+    evidence='<ACCESS_FN>(<KEY>, ...);  // <KEY> = "<RAW_LIT>"',
+    source_function_id="<funcB>"   ← 사용자!
+  )
+```
+
+### 시나리오 3: 헬퍼 / 래퍼 경유
+
+**상황**: 일반 헬퍼 함수가 테이블 리터럴을 **인자로 받아** 실제 접근. 여러 caller 가 자기 테이블 인자로 호출.
+
+**예시 흐름**:
+
+```text
+[Step 1] 시나리오 1 진행 중 본 본문에 헬퍼 호출 패턴 발견
+  본문 일부 (<funcA>):
+    <ACCESS_FN_alt>("<RAW_LIT>", ...);   ← 다른 함수가 ACCESS_FN 을 한 번 더 감쌈
+
+[Step 2] 헬퍼 함수명으로 reverse-search
+  bundle_search(query="<HELPER>", kind="text")
+  → 결과: K 개 chunk_id
+    - <HELPER> (정의 자체)
+    - <funcA>, <funcB>, <funcC>, ... (호출 caller 들)
+
+[Step 3] 헬퍼 정의 본문 확인 (헬퍼 자체에는 등록 X)
+  bundle_get_chunk(chunk_id="<HELPER>")
+  → 본문: <returnType> <HELPER>(<param_table>, ...) { <ACCESS_FN>(<param_table>, ...); }
+  → 일반 plumbing, 의미 의도 X. 등록 X.
+
+[Step 4] 각 caller 본문 확인 → caller 가 어떤 테이블 인자로 호출하는지 추출
+  bundle_get_chunk(chunk_id="<funcB>")
+  → 본문: <HELPER>("<RAW_LIT>", ...);
+  → 인자 리터럴: "<RAW_LIT>"
+  → Identifier Rule 적용 → "<TABLE>"
+
+[Step 5] caller 함수에 등록 (헬퍼 자체 X)
+  graph_create_table_access_tool(
+    table_name="<TABLE>",
+    access="<READS|WRITES>",
+    evidence='<HELPER>("<RAW_LIT>", ...);',
+    source_function_id="<funcB>"   ← caller!
+  )
+
+  → 다른 caller (<funcC>, <funcD>, ...) 들도 같은 방식
+```
+
+### 시나리오 4: mapper / repository / DAO 경유
+
+**상황**: mapper 정의 / Repository 메서드 / DAO 가 접근 추상화. service / use-case / controller 가 호출.
+
+**예시 흐름**:
+
+```text
+[Step 1] mapper / Repository 정의 발견
+  bundle_search(query="<MAPPER>", kind="symbol")
+  → 결과: 1+ chunk_id (인터페이스 정의)
+  bundle_get_chunk(chunk_id="<MAPPER>")
+  → 본문: 메서드 목록 (예: findById, save, update, delete)
+
+[Step 2] 각 메서드 호출처 reverse-search
+  bundle_search(query="<mapperInstance>.<methodName>", kind="text")
+    or bundle_search(query="<methodName>", kind="symbol")
+  → 결과: P 개 chunk_id (caller 들 — service, use-case, controller)
+
+[Step 3] Identifier Rule 적용 (ORM 의 경우)
+  엔티티명: <Entity>
+  Rule: profile 이 명시한 변환 (예: "@Table(name=...) 읽기", "pluralize snake_case")
+  → 정규화: "<TABLE>"
+
+[Step 4] Naming Rule 적용
+  메서드명: <methodName>
+  Rule: profile 이 명시한 매핑 (예: "find*/get*/select*" → READS, "save*/update*/delete*" → WRITES)
+  → READS 또는 WRITES
+
+[Step 5] 각 caller 에 등록 (mapper 자체 X)
+  graph_create_table_access_tool(
+    table_name="<TABLE>",
+    access="<READS|WRITES>",
+    evidence="<mapperInstance>.<methodName>(...);",
+    source_function_id="<callerFunc>"   ← caller!
+  )
+  → 다른 caller 동일 처리. 다른 메서드 (save, update, delete 등) 도 동일 흐름.
+```
+
+---
+
+## 다대다 강제 — 등록 테이블마다 reverse-search
+
+각 distinct 정규화 테이블명마다:
+
+```text
+bundle_search(<정규화_테이블명>, kind="text")
+→ 결과의 모든 새 chunk_id 본문 확인
+→ 각 chunk_id 마다 위 4가지 시나리오 중 해당하는 것 적용
+```
+
+🚨 **이 단계 빼면 다대다 실패 확정**. 시나리오 1 (직접) 만으로는 일부 함수만 잡힘 — 시나리오 2/3/4 가 간접 접근 함수를 잡음.
+
+검색 결과의 chunk_id 만 보고 "다 커버됨" 결론 X — 본문 열어서 판정.
+
+---
+
+## Trail 별 STOP 조건
+
+각 시나리오 trail 마다:
+- (a) CRUD 실행 함수 본문 도달, 또는 (b) 그 함수 호출 지점 도달
+→ 엣지 등록 → **이 trail 만** 종료. 호출 체인 무한 역추적 X. 다른 trail 있으면 새로 시작.
+
+---
+
+## 등록 규칙
 
 ### READS / WRITES
 
-- `table_name`: real table name (keep casing as declared)
-- `source_function_id`: **must** be a real `chunk_id` from `bundle_search`
-- `evidence`: direct quote of the code line
-- `access`: READS (SELECT / read) / WRITES (INSERT/UPDATE/DELETE)
-- **Self-check before register**: "which code line is the evidence?" If you cannot answer immediately → do NOT register.
+- `table_name`: **정규화** (Identifier Rule 적용 후). raw 리터럴 그대로 X.
+- `source_function_id`: `bundle_search` 결과 실제 chunk_id.
+- `evidence`: 접근 코드 라인 정확한 인용.
+- `access`: READS (SELECT) / WRITES (INSERT/UPDATE/DELETE).
 
-### Columns (do not omit)
+### 컬럼 (필수, 빠짐없이)
 
-- Inspect struct/DTO fields used in the function.
-- If a field maps to a table column, call `graph_create_column_tool(table, column, dtype, description)`.
-- No evidence → do not register. If evidence exists → **must** register.
+- 모든 등록 함수의 본문 필드 검토 → 컬럼 매핑되면 모두 등록.
+- 본문 12개 필드 → 12개 등록. "중요한" 필드만 X.
+- 같은 컬럼 중복 등록 무해 (Cypher MERGE dedup). **빠뜨리는 게 실패**.
 
 ### FK
 
-- `from_table` = FK column side (child), `to_table` = PK side (parent).
-- No self-references, no duplicates, no speculation.
+- `from_table` = FK 컬럼 쪽 (자식), `to_table` = PK 쪽 (부모). 둘 다 정규화.
+- 자기 참조 X. 중복 X. 추측 X.
 
-## Completion checklist
+---
 
-- [ ] Every candidate from profile/startpoints checked
-- [ ] For each table, every access function searched (not just 1~2)
-- [ ] 0-hit keywords retried ≥3 times
-- [ ] Every READS/WRITES function reviewed for columns
-- [ ] No edges without solid evidence
+## 안티패턴 (절대 X)
 
-All yes → done. Any no → keep going.
+- 🚫 Identifier Rule 적용 안 한 raw 리터럴 그대로 `table_name` 등록.
+- 🚫 같은 테이블로 정규화되는 여러 리터럴을 별개 테이블로 등록.
+- 🚫 다수 함수가 만지는 테이블에 1 함수만 등록 (다대다 미달).
+- 🚫 reverse-search 단계 skip — 가장 흔한 불완전 커버 원인.
+- 🚫 같은 chunk_id 재호출 (응답 동일).
+- 🚫 컬럼 다음 phase 로 미루기 — 본문은 지금만 보임.
+- 🚫 시나리오 1 (직접) 됐다고 시나리오 2/3/4 skip.
+
+---
+
+## 완료 체크리스트
+
+- [ ] profile / 시작점의 모든 후보 처리.
+- [ ] 4가지 시나리오 모두 시도 (직접 / 변수경유 / helper경유 / mapper경유).
+- [ ] **등록한 모든 테이블 reverse-search** (다대다 강제).
+- [ ] 모든 R/W 함수 본문 필드 컬럼 등록.
+- [ ] 0-hit 키워드 변형 재시도 완료.
+- [ ] 모든 `table_name` 정규화 (raw `_<crud>####` 등 X).
+- [ ] 등록 엣지 수 0 이 아님 (시작점 / 프로파일 단서가 있는데 0 건이면 빠뜨림 의심).
+
+전부 YES → 완료. 하나라도 NO → 계속.

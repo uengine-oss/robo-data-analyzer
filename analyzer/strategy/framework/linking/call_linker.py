@@ -393,9 +393,10 @@ def _extract_calls_batch_via_llm(
     for mid, _ in batch:
         if mid not in out:
             out[mid] = []
+    records_in_batch = sum(len(calls) for _, calls in batch)
     logger.info(
-        "[PHASE:2:CALL_LLM] LLM call_extract 완료 | 배치 함수 수=%d",
-        len(batch),
+        "[PHASE:2:CALL_LLM] LLM call_extract 완료 | 배치 records=%d (함수=%d)",
+        records_in_batch, len(batch),
     )
     return out
 

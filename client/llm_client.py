@@ -328,13 +328,5 @@ def get_llm(
         kwargs["use_responses_api"] = True
         logging.debug("추론 모델 사용: model=%s, effort=%s (Responses API)", model, kwargs["reasoning_effort"])
 
-    # gpt-oss / frentis 계열: analysis 채널이 토큰 폭발 주범.
-    # reasoning_effort=low 로 5~10 배 축소 → JSON 잘림(truncation) 방지.
-    model_lower = (model or "").lower()
-    if any(tag in model_lower for tag in ("gpt-oss", "oss", "frentis")):
-        kwargs.setdefault("model_kwargs", {})
-        kwargs["model_kwargs"]["reasoning_effort"] = "low"
-        logging.info("gpt-oss 계열 감지 (model=%s) — reasoning_effort=low 적용 (analysis 토큰 절감)", model)
-
     return ChatOpenAI(**kwargs)
 

@@ -61,7 +61,7 @@ class EntityStartpoints:
     xml_entity_fqns: set
     annotated_fqns: set
     class_candidates: List[Dict[str, str]]
-    profile_summary: str
+    profile_pattern: str
 
 
 def identify_entity_classes(module_index: Dict[str, Any]) -> set:
@@ -98,7 +98,7 @@ def collect_entity_startpoints(
     module_index: Dict[str, Any],
     artifact_index: Optional[Dict[str, Any]],
     ddl_table_metadata: Optional[Dict],
-    profile_summary: str,
+    profile_pattern: str,
 ) -> EntityStartpoints:
     """결정론적으로 수집 가능한 모든 엔티티 시작점을 모은다."""
     ddl_tables = [
@@ -114,7 +114,7 @@ def collect_entity_startpoints(
         xml_entity_fqns=xml_fqns,
         annotated_fqns=annotated,
         class_candidates=candidates,
-        profile_summary=profile_summary,
+        profile_pattern=profile_pattern,
     )
 
 
@@ -257,8 +257,8 @@ _SCENARIOS: List[Tuple[str, Callable[[EntityStartpoints], bool],
     ),
     (
         "profile_only",
-        lambda sp: bool(sp.profile_summary),
-        lambda _sp: [None],   # 빈 아이템 하나 — profile_summary 만으로 수색
+        lambda sp: bool(sp.profile_pattern),
+        lambda _sp: [None],   # 빈 아이템 하나 — profile_pattern 만으로 수색
         lambda _chunk: set(),
     ),
 ]
@@ -316,7 +316,7 @@ def _render_user_message(batch: _Batch, sp: EntityStartpoints, user_template: st
     """시나리오 힌트(category) + 원본 데이터(data) + 프로파일 지침(profile_hint) 을 채운다.
 
     - `data`: JSON — 아이템 + 시나리오별 보조 맥락(existing_fks, xml_entity_hints).
-    - `profile_hint`: 평문 — profile_summary 가 있으면 prose 섹션으로 렌더.
+    - `profile_hint`: 평문 — profile_pattern 가 있으면 prose 섹션으로 렌더.
       LLM 이 JSON 파싱 없이 바로 읽을 수 있도록 평문으로 분리 (profile_only 시나리오 특히 중요).
     """
     data = {
@@ -328,11 +328,11 @@ def _render_user_message(batch: _Batch, sp: EntityStartpoints, user_template: st
         },
     }
     profile_hint = ""
-    if sp.profile_summary:
+    if sp.profile_pattern:
         profile_hint = (
             "\n---\n"
             "[Project Framework · DB Access Pattern Analysis — Search Map]\n\n"
-            f"{sp.profile_summary}\n"
+            f"{sp.profile_pattern}\n"
         )
 
     return user_template.format(

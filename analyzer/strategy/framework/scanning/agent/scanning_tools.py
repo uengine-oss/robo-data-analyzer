@@ -12,7 +12,10 @@ from pathlib import Path
 from langchain_core.tools import tool
 
 from analyzer.strategy.framework.common.domain.analysis_constants import SKIP_DIRS
-from analyzer.strategy.framework.scanning.tree_sitter_tools import extract_function_body
+from analyzer.strategy.framework.scanning.tree_sitter_tools import (
+    extract_function_body,
+    extract_function_signatures,
+)
 
 
 def build_tools(root: Path) -> list:
@@ -75,6 +78,22 @@ def build_tools(root: Path) -> list:
             return f"READ_ERROR: {exc}"
         text = "".join(ln for ln in lines if ln is not None)
         return text or "(빈 파일)"
+
+    @tool
+    def list_functions(file_path: str) -> str:
+        """소스 파일 내 모든 함수·메서드 시그니처 목록 (tree-sitter). 토큰 절약형 — read_file 보다 5~10배 효율."""
+        raw = (file_path or "").strip().replace("\\", "/")
+        if len(raw) >= 3 and raw.startswith("/") and raw[2] == ":":
+            raw = raw[1:]
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = root / raw
+        if not candidate.exists() or not candidate.is_file():
+            return f"FILE_NOT_FOUND: '{file_path}'"
+        sigs = extract_function_signatures(candidate, max_sigs=50)
+        if not sigs:
+            return "(함수 없음 또는 파싱 실패)"
+        return "\n".join(f"- {s}" for s in sigs)
 
     @tool
     def read_function(file_path: str, function_name: str) -> str:
@@ -140,4 +159,4 @@ def build_tools(root: Path) -> list:
             return f"READ_ERROR: {exc}"
         return "\n".join(entries[:200]) if entries else "(빈 디렉토리)"
 
-    return [grep, read_file, read_function, glob_search, ls]
+    return [ls, glob_search, grep, read_file, list_functions, read_function]

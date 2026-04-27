@@ -433,13 +433,13 @@ async def run_deep_agent_parallel(ctx: LinkingContext) -> AsyncGenerator[bytes, 
             module_index=st.module_index or {},
             artifact_index=st.artifact_index or {},
             ddl_table_metadata=ddl_meta or None,
-            profile_summary=(st.codebase_profile.summary if st.codebase_profile else ""),
+            profile_pattern=(st.codebase_profile.pattern if st.codebase_profile else ""),
         )
         logger.info(
             "[PHASE:2:ENTITY] startpoints | ddl=%d xml=%d annotated=%d candidates=%d profile=%s",
             len(startpoints.ddl_tables), len(startpoints.xml_entity_fqns),
             len(startpoints.annotated_fqns), len(startpoints.class_candidates),
-            bool(startpoints.profile_summary),
+            bool(startpoints.profile_pattern),
         )
         entity_state = {
             "sql_index": st.sql_index,
@@ -450,7 +450,7 @@ async def run_deep_agent_parallel(ctx: LinkingContext) -> AsyncGenerator[bytes, 
             "span_index": st.span_index,
             "chunk_index": st.chunk_index,
             "ddl_table_metadata": ddl_meta or None,
-            "codebase_profile_summary": (st.codebase_profile.summary if st.codebase_profile else ""),
+            "codebase_profile_pattern": (st.codebase_profile.pattern if st.codebase_profile else ""),
             "function_count": len(st.function_facts_list or []),
         }
         mt_edges, fk_e, col_refs = run_entity_identification(
@@ -502,10 +502,10 @@ async def run_deep_agent_parallel(ctx: LinkingContext) -> AsyncGenerator[bytes, 
             "chunk_index": st.chunk_index,
             "ddl_table_metadata": ddl_meta or None,
         }
-        profile_summary = st.codebase_profile.summary if st.codebase_profile else ""
+        profile_pattern = st.codebase_profile.pattern if st.codebase_profile else ""
         for item_refer, item_mt, item_fk in run_unresolved_linking(
             ctx.unresolved, deep_state, api_key=settings.llm.api_key,
-            run_dir=run_dir_path, profile_summary=profile_summary,
+            run_dir=run_dir_path, profile_pattern=profile_pattern,
         ):
             result_queue.put_nowait(("da_item", item_refer, item_mt, item_fk))
         result_queue.put_nowait(("da_state", deep_state))

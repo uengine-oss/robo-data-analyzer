@@ -71,7 +71,7 @@ class LLMConfig:
     retry_base_delay: float = field(default_factory=lambda: float(os.getenv("LLM_RETRY_BASE_DELAY", "2.0")))
     # parse 실패 시 max_tokens 증액 배수 (직전 값 × N, 모델 한도까지 clamp)
     parse_retry_token_bump: float = field(default_factory=lambda: float(os.getenv("LLM_PARSE_RETRY_TOKEN_BUMP", "1.5")))
-    # 모델 context 상한 (증액 clamp 용). frentis/gpt-4.1 = 32768.
+    # 모델 context 상한 (증액 clamp 용). 모델별 native context 에 맞춰 .env 에서 지정.
     max_token_ceiling: int = field(default_factory=lambda: int(os.getenv("LLM_MAX_TOKEN_CEILING", "32768")))
 
 
@@ -118,8 +118,20 @@ class PathConfig:
 
 @dataclass(frozen=True)
 class CatalogConfig:
-    """robo-data-catalog 서비스 연동 설정."""
-    service_url: str = field(default_factory=lambda: os.getenv("CATALOG_SERVICE_URL", "http://localhost:5503"))
+    """robo-data-catalog 서비스 연동 설정.
+
+    `service_url` 이 빈 문자열이면 catalog 연동 비활성 — Phase 3 의 테이블 샘플 보강이
+    건너뛰어진다. 분석 자체는 영향 없음 (LLM 컨텍스트 보강용 옵셔널 기능).
+
+    켤 때는 `.env` 또는 환경변수에 `CATALOG_SERVICE_URL=http://host:port` 로 명시.
+    켜진 상태에서 connection refused 면 fail-fast (사용자가 활성화했으면 떠있어야 함).
+    """
+    service_url: str = field(default_factory=lambda: os.getenv("CATALOG_SERVICE_URL", ""))
+
+    @property
+    def enabled(self) -> bool:
+        """URL 이 비어있지 않으면 catalog 연동 활성."""
+        return bool(self.service_url.strip())
 
 
 @dataclass(frozen=True)

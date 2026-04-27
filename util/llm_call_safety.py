@@ -11,7 +11,7 @@
   4. 동시성 제어 (LLMRateLimiter) — Semaphore + spacing 으로 throttling 방지
   5. 비동기 배치 실행기 (AsyncBatchExecutor) — items 병렬 처리
 
-Harmony 등 모델별 특수 처리는 모델·경로별 위치에 두고, 여기는 언어·모델 무관 공통 로직만.
+모델별 특수 처리는 모델·경로별 위치에 두고, 여기는 언어·모델 무관 공통 로직만.
 """
 
 from __future__ import annotations
@@ -36,7 +36,8 @@ _VALID_JSON_ESCAPE_CHARS = frozenset('"\\/bfnrt')
 # 제어 문자 (\x00~\x1f 중 tab/newline 제외)
 _CONTROL_CHAR_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f]')
 
-# OpenAI Harmony / ChatML 특수 토큰 — 서버 변환 실패 시 content 에 raw leak 되는 경우 방어
+# ChatML/OpenAI 계열 특수 토큰 — 서버 변환 실패 시 content 에 raw leak 되는 경우 방어.
+# 일반적인 `<|name|>` 형태를 모두 제거 (모델 무관 — 정상 응답에는 안 나타남).
 _CONTROL_TOKEN_RE = re.compile(r'<\|[a-zA-Z_]+\|>')
 
 # JSON 주석 — 문자열 리터럴 내부 `//` 는 보존 (alternation 으로 string literal 먼저 매칭)
@@ -85,7 +86,7 @@ def strip_code_fences(s: str) -> str:
 
 
 def strip_control_tokens(s: str) -> str:
-    """Harmony/ChatML 제어 토큰(`<|start|>`, `<|channel|>` 등) 제거."""
+    """ChatML 계열 제어 토큰(`<|start|>`, `<|end|>`, `<|message|>` 등) 제거."""
     return _CONTROL_TOKEN_RE.sub('', s)
 
 
@@ -99,7 +100,7 @@ def strip_json_comments(s: str) -> str:
 def sanitize_llm_output(text):
     """LLM 응답 공용 sanitize. AIMessage 객체 / 순수 str 모두 지원.
 
-    순서: 제어문자 → 제어토큰(Harmony) → 코드펜스 → JSON 주석 → escape 수리.
+    순서: 제어문자 → 제어토큰 → 코드펜스 → JSON 주석 → escape 수리.
     """
     if hasattr(text, 'content'):
         if isinstance(text.content, list):
@@ -155,29 +156,7 @@ def should_retry(error: Exception) -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Section 3: Harmony tool call 카운트 (관찰성 전용 — 실패 판정에 사용 X)
-# ═══════════════════════════════════════════════════════════════════════════
-
-# Harmony 응답에서 tool 호출 표지자 — channel 이 commentary/analysis 어느 쪽이든 "to=functions.xxx" 는
-# 모델이 도구 호출을 의도한다는 확정적 신호.
-_HARMONY_TOOL_CALL_RE = re.compile(r'to=functions\.[A-Za-z_]\w*')
-
-
-def count_tool_calls_from_harmony(text: str) -> int:
-    """Harmony raw 텍스트에서 tool 호출 횟수 추출 — 로깅/관찰성 전용.
-
-    서버가 Harmony → OpenAI JSON 변환에 실패해 content 에 raw 가 leak 된 경우에도
-    실제 도구 호출 횟수를 확인하기 위한 보조 카운터.
-    **실패 판정에 쓰지 말 것** (0 이 나와도 서버 변환 성공 후 standard tool_calls 필드에
-    정상 기록된 경우가 있음).
-    """
-    if not text:
-        return 0
-    return len(_HARMONY_TOOL_CALL_RE.findall(text))
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Section 4: 재시도 피드백 — 이전 오류를 LLM 에게 알려 수정 유도
+# Section 3: 재시도 피드백 — 이전 오류를 LLM 에게 알려 수정 유도
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -211,13 +190,12 @@ def build_retry_feedback(
         "- 순수 JSON 객체만 출력. 앞뒤 설명·코드펜스·부가 텍스트 금지.\n"
         "- `//` 또는 `/* */` 주석 금지. 불확실한 값은 생략하거나 description 필드에 자연어로.\n"
         "- 트레일링 콤마 금지.\n"
-        "- 특수 제어 토큰(`<|start|>`, `<|channel|>`, `<|message|>`, `<|call|>`, `<|return|>`, `<|end|>`) 금지.\n"
         "- 문자열 내부 double quote 는 `\\\"`, backslash 는 `\\\\` 로 escape.\n"
     )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Section 5: Rate Limiter — 동시성 제어 + 요청 간격 보장
+# Section 4: Rate Limiter — 동시성 제어 + 요청 간격 보장
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -359,8 +337,6 @@ __all__ = [
     "is_rate_limit",
     "is_bad_request_parse",
     "should_retry",
-    # Harmony observability
-    "count_tool_calls_from_harmony",
     # Retry feedback
     "build_retry_feedback",
     # Rate limiter

@@ -116,7 +116,7 @@ def _strip_frontmatter(text: str) -> str:
 
 
 def load_system_prompt(scope: AgentScope) -> str:
-    """prompts/{scope}/system.md 본문을 반환."""
+    """prompts/{scope}/system.md 본문을 반환. skill 안내는 system.md 안에 통합되어 있음."""
     path = _PROMPTS_DIR / scope / "system.md"
     return _strip_frontmatter(path.read_text(encoding="utf-8"))
 
@@ -215,23 +215,14 @@ _SKILL_CACHE: Dict[str, Dict[str, SkillInfo]] = {}
 
 
 def load_skills_for_scope(scope: AgentScope) -> Dict[str, SkillInfo]:
-    """지정 scope 가 접근 가능한 스킬만 로드 (자기 전용 + shared).
-
-    - scanning → skills/scanning/* + skills/shared/*
-    - linking  → skills/linking/*  + skills/shared/*
+    """지정 scope 의 스킬만 로드 (skills/{scope}/* — 교차 격리).
 
     동일 프로세스 내 중복 로드는 모듈-레벨 캐시로 회피.
     """
     if scope in _SKILL_CACHE:
         return _SKILL_CACHE[scope]
 
-    scope_dir = _SKILLS_DIR / scope
-    shared_dir = _SKILLS_DIR / "shared"
-
-    skills = _load_skills_from_dir(scope_dir)
-    for name, info in _load_skills_from_dir(shared_dir).items():
-        skills.setdefault(name, info)  # scope 전용이 shared 보다 우선
-
+    skills = _load_skills_from_dir(_SKILLS_DIR / scope)
     logger.info(
         "[SKILL:%s] scope 로드 완료 | skills=%d (%s)",
         scope, len(skills), list(skills.keys()),

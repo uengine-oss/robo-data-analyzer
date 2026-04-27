@@ -16,7 +16,9 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-_INTERNAL_DIR = Path(__file__).resolve().parent.parent / "data" / "stdlib"
+# lang_profile.py 위치: framework/common/domain/ → 3 레벨 위가 framework/
+# stdlib 데이터는 framework/data/stdlib/ 에 위치 (common 하위 아님)
+_INTERNAL_DIR = Path(__file__).resolve().parents[2] / "data" / "stdlib"
 
 
 class LangProfile:

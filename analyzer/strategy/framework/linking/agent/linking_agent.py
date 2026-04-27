@@ -11,8 +11,8 @@ import logging
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
-from analyzer.strategy.framework.agent.agent_setup import build_agent_factory
 from analyzer.strategy.framework.agent.agent_setup import (
+    build_agent_factory,
     load_system_prompt,
     load_user_template,
     make_skill_tools,
@@ -37,9 +37,9 @@ def init_linking_env(
         build_agent_fn(collector, **tool_kwargs) → 에이전트 객체
     """
     factory, _model = build_agent_factory(state, api_key=api_key, run_dir=run_dir)
+    skill_tools = make_skill_tools("linking")
     system_prompt = load_system_prompt("linking")
     user_template = load_user_template("linking")
-    skill_tools = make_skill_tools("linking")
 
     def build_agent_fn(collector: ToolResultCollector, **tool_kwargs: Any) -> Any:
         """수집기·도구 옵션을 넣어 linking 에이전트 인스턴스를 빌드."""

@@ -7,13 +7,14 @@
 수집 대상:
   - constants_context (CONSTANT 노드 → 텍스트)
   - referenced_vars_by_function (REFERENCES + INIT_BY 출처)
-  - codebase_conventions (Phase 1 codebase_profile.summary_sections)
+  - codebase_conventions (Phase 1 codebase_profile.pattern 그대로)
   - reads_writes_by_function (function_table_edges 기반)
   - table_sample_data + table_sample_data_by_function (catalog 1회 호출 + 호출그래프 전이)
 
 정책 정렬:
   - 참조 변수 Neo4j 조회 실패 → fail-fast (이전과 동일)
-  - catalog 호출 실패는 정당화된 silent fallback (catalog 미기동도 정상). errlog 강화.
+  - catalog 비활성 (`CATALOG_SERVICE_URL` 미설정) → INFO + skip (정상 시나리오)
+  - catalog 활성 + 호출 실패 → fail-fast (사용자가 활성화했으면 떠있어야 함)
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from analyzer.common.pipeline.analysis_context import (
 )
 from client.catalog_client import CatalogClient
 from client.neo4j_client import Neo4jClient
+from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -86,28 +88,19 @@ def _collect_reads_writes_by_function(st: Any) -> Dict[str, list]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 코드베이스 컨벤션 (Phase 1 codebase_profile.summary_sections)
+# 코드베이스 컨벤션 (Phase 1 codebase_profile.pattern 그대로 주입)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 def _build_codebase_conventions(st: Any) -> str:
     cp = getattr(st, "codebase_profile", None)
-    if not (cp and getattr(cp, "summary_sections", None)):
+    pattern = getattr(cp, "pattern", "") if cp else ""
+    if not pattern:
         return ""
-    sections = cp.summary_sections
-    blocks: list[str] = []
-    for key in ("framework", "data_access", "idioms"):
-        block = sections.get(key)
-        if block:
-            blocks.append(block)
-    if not blocks:
-        return ""
-    text = "\n\n".join(blocks)
     logger.info(
-        "[PHASE:3:CONTEXT] 코드베이스 컨벤션 주입 | sections=%s len=%d",
-        ",".join(sorted(sections.keys())), len(text),
+        "[PHASE:3:CONTEXT] 코드베이스 패턴 주입 | len=%d", len(pattern),
     )
-    return text
+    return pattern
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -174,49 +167,51 @@ async def _attach_table_samples(
 ) -> None:
     """catalog 1회 batch 호출로 sample_map 받고 ctx 에 table_sample_data 부착.
 
-    실패 시 errlog 후 빈 컨텍스트로 return — catalog 미기동도 정상 시나리오라 raise 하지 않음.
+    catalog 비활성(`CATALOG_SERVICE_URL` 미설정) 이면 호출 자체를 안 함 → INFO 1줄.
+    catalog 활성인데 connection refused 면 fail-fast (raise) — 사용자가 활성화했는데
+    안 떠있는 건 진짜 에러.
     """
+    if not settings.catalog.enabled:
+        logger.info(
+            "[PHASE:3:TABLE_CTX] catalog 비활성 (CATALOG_SERVICE_URL 미설정) — 샘플 수집 skip"
+        )
+        return
+
     datasource_name = orchestrator.datasource_name
     if not datasource_name:
         logger.info("[PHASE:3:TABLE_CTX] datasource 미설정 — 테이블 샘플 수집 skip")
         return
 
     reads_writes = st.reads_writes or []
-    try:
-        identified = _gather_identified_tables(reads_writes, await _fetch_all_table_names(client))
-        if not identified:
-            logger.info("[PHASE:3:TABLE_CTX] 식별 테이블 0개 — catalog 호출 생략")
-            return
+    identified = _gather_identified_tables(reads_writes, await _fetch_all_table_names(client))
+    if not identified:
+        logger.info("[PHASE:3:TABLE_CTX] 식별 테이블 0개 — catalog 호출 생략")
+        return
 
-        logger.info(
-            "[PHASE:3:CATALOG_CALL] catalog 요청 | datasource=%s tables=%d",
-            datasource_name, len(identified),
-        )
-        sample_map = await CatalogClient().sample_context(
-            datasource=datasource_name,
-            table_names=sorted(identified),
-        )
-        matched = sum(1 for v in sample_map.values() if v is not None)
-        logger.info(
-            "[PHASE:3:CATALOG_CALL] catalog 응답 | 매칭=%d/%d", matched, len(sample_map),
-        )
+    logger.info(
+        "[PHASE:3:CATALOG_CALL] catalog 요청 | datasource=%s tables=%d url=%s",
+        datasource_name, len(identified), settings.catalog.service_url,
+    )
+    sample_map = await CatalogClient().sample_context(
+        datasource=datasource_name,
+        table_names=sorted(identified),
+    )
+    matched = sum(1 for v in sample_map.values() if v is not None)
+    logger.info(
+        "[PHASE:3:CATALOG_CALL] catalog 응답 | 매칭=%d/%d", matched, len(sample_map),
+    )
 
-        ctx["table_sample_data"] = format_table_context(sample_map, sorted(identified))
+    ctx["table_sample_data"] = format_table_context(sample_map, sorted(identified))
 
-        # 호출 그래프 전이로 함수별 컨텍스트 구성
-        ts_by_fn = _build_table_samples_by_function(st, sample_map, rw_by_fn)
-        ctx["table_sample_data_by_function"] = ts_by_fn
+    # 호출 그래프 전이로 함수별 컨텍스트 구성
+    ts_by_fn = _build_table_samples_by_function(st, sample_map, rw_by_fn)
+    ctx["table_sample_data_by_function"] = ts_by_fn
 
-        all_fids_count = len(st.function_facts_list or [])
-        logger.info(
-            "[PHASE:3:TABLE_CTX] 함수별 컨텍스트 구성 | 함수 매핑=%d/%d 전체 data_len=%d",
-            len(ts_by_fn), all_fids_count, len(ctx["table_sample_data"]),
-        )
-    except Exception as e:  # noqa: SILENT_FAIL — catalog 미기동도 정상 시나리오 (LLM 컨텍스트 보강은 옵셔널)
-        logger.error(
-            "[PHASE:3:TABLE_CTX] 테이블 샘플 수집 skip (catalog 미기동 가능성) | %s: %s",
-            type(e).__name__, e, exc_info=True,
-        )
+    all_fids_count = len(st.function_facts_list or [])
+    logger.info(
+        "[PHASE:3:TABLE_CTX] 함수별 컨텍스트 구성 | 함수 매핑=%d/%d 전체 data_len=%d",
+        len(ts_by_fn), all_fids_count, len(ctx["table_sample_data"]),
+    )
 
 
 async def _fetch_all_table_names(client: Neo4jClient) -> set[str]:

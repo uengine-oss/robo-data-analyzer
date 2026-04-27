@@ -336,7 +336,7 @@ summary = validated.get('summary', '')
 │     • Call  LLM : 함수 호출 판정                                   │
 │                                                                   │
 │   Step 3. DeepAgent 병렬 (3종)                                     │
-│     • 엔티티 식별 DeepAgent ← codebase_profile.summary 가          │
+│     • 엔티티 식별 DeepAgent ← codebase_profile.pattern 이          │
 │                                system_prompt 에 "수색 지침" 주입  │
 │     • 변수 참조 추적 (결정론만, LLM 미사용)                        │
 │     • 미해결 참조 DeepAgent                                        │
@@ -372,7 +372,7 @@ summary = validated.get('summary', '')
 
 ### 왜 프로파일이 Phase 1 에 들어가는가
 
-엔티티/매퍼 XML 이 전혀 없는 레거시 (ProFrame · Pro\*C 시뮬 등) 는 Phase 2 의 결정론·LLM 배치가 테이블을 못 뽑음. 이때 **Phase 1 Step 1 프로파일이 뽑아둔 `codebase_profile.summary`** 가 Phase 2 엔티티 식별 DeepAgent 의 system_prompt 에 "수색 지침" 으로 주입되어, `mpfmdbio("zord_acnt_s0023")` 같은 **프로젝트 특이 패턴** 을 근거로 실제 코드에서 테이블을 추출하도록 유도한다.
+엔티티/매퍼 XML 이 전혀 없는 레거시 (ProFrame · Pro\*C 시뮬 등) 는 Phase 2 의 결정론·LLM 배치가 테이블을 못 뽑음. 이때 **Phase 1 Step 1 프로파일이 뽑아둔 `codebase_profile.pattern`** 이 Phase 2 엔티티 식별 DeepAgent 의 user message 에 "수색 지침" 으로 주입되어, `mpfmdbio("zord_acnt_s0023")` 같은 **프로젝트 특이 패턴** 을 근거로 실제 코드에서 테이블을 추출하도록 유도한다.
 
 ### 📊 병렬 처리 구조
 

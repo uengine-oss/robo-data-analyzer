@@ -218,15 +218,14 @@ def build_tools(
 
     @lc_tool
     def bundle_get_chunk_tool(chunk_id: str) -> str:
-        """chunk_id로 코드 조각을 조회한다. 3000자 초과시 truncate (context 보호)."""
+        """chunk_id 로 코드 조각 본문을 그대로 반환 (truncate 없음)."""
         r = _bundle_get_chunk(chunk_id, chunk_index=chunk_index)
         if r:
             _enrich_with_modulename(r)
-            text = r.get("text") or ""
-            if len(text) > 3000:
-                r["text"] = text[:3000] + f"\n...[truncated, full length={len(text)} chars]"
-                r["truncated"] = True
-        logger.info("[TOOL] bundle_get_chunk | chunk_id=%s found=%s", chunk_id, bool(r))
+        logger.info(
+            "[TOOL] bundle_get_chunk | chunk_id=%s found=%s text_len=%d",
+            chunk_id, bool(r), len((r or {}).get("text") or ""),
+        )
         return json.dumps(r, ensure_ascii=False) if r else ""
 
     # ─────────────────────────────────────────────────────────────────
