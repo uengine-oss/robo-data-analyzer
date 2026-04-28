@@ -1,6 +1,6 @@
 name: "node_analysis"
-description: "SQL 프로시저 코드 범위별 분석 — summary·actor + Bottom-up Rule/Example/Question 생성"
-version: "6.0"
+description: "SQL 코드 범위별 summary·actor + Bottom-up Rule/Example/Question 생성"
+version: "8.0"
 
 input_schema:
   required:
@@ -9,191 +9,278 @@ input_schema:
     - count
     - locale
   optional:
-    - context
-    - has_dml
-    - is_unit_root
-    - node_metadata      # [{"node_category": "meaningful|leaf", "child_rules": [...], "child_questions": [...]}, ...]
+    - context             # 부모·형제 컨텍스트 (node_context 산출물)
+    - ddl_context         # 결정론 매칭된 테이블·컬럼 메타 (Phase 0 인덱스 기반)
+    - has_dml             # DML 포함 여부 (summary DML 가이드 활성)
+    - is_unit_root        # unit 최상위 (TRIGGER/PROCEDURE/FUNCTION) 여부 — actor 활성
+    - node_metadata       # [{node_category, child_rules, child_questions}, ...] (range 별)
 
 prompt: |
   [ROLE]
-  SQL 저장 프로시저·함수 코드의 각 범위를 분석해:
-  - summary (조건+상태변화 쌍)
-  - actor (실행 주체)
-  - rules (Bottom-up Rule — 각 Rule 안에 examples nested)
-  - questions (모호점)
-  를 산출합니다.
-
-  Bottom-up 원칙: 리프는 자기 결과만, 부모(의미 노드)는 자식 것 받아 자기 조건 합침.
-
+  SQL 저장 프로시저·트리거·함수의 각 코드 범위(range)를 분석해 summary·actor·rules·examples·questions 를 산출.
 
   [LANGUAGE]
   응답 언어: {{ locale }}
 
-
   [INPUT]
-  {% if context %}
-  ── [부모·형제 컨텍스트] 역할: 실행 흐름 이해 + 참고용
-  {{ context }}
-
-  {% endif %}
-  ── [분석 대상 코드] 역할: 각 범위별 산출 대상
+  ── [분석 대상 코드]
   {{ code }}
 
-  ── [분석 범위 목록] 각 범위 독립 분석. 개수 정확히 {{ count }}개
+  ── [분석 범위 목록] 정확히 {{ count }} 개 — 각 range 독립 분석
   {{ ranges }}
-
   {% if node_metadata %}
-  ── [노드별 메타] i 번째 범위 = i 번째 메타 (node_category / child_rules / child_questions)
+
+  ── [노드별 메타] i 번째 range = i 번째 메타 (node_category·child_rules·child_questions)
   {{ node_metadata }}
   {% endif %}
+  {% if context %}
 
+  ── [부모·형제 컨텍스트] 실행 흐름·상태 변화 (참고만, summary 에 중복 X)
+  {{ context }}
+  {% endif %}
+  {% if ddl_context %}
+
+  ── [DDL 컨텍스트] 코드에 등장하는 테이블·컬럼 정의 (이미 결정론 매칭됨, 식별 작업 X)
+  {{ ddl_context }}
+  {% endif %}
 
   [GOAL]
-  각 범위마다:
-  {
-    "startLine": ...,
-    "endLine": ...,
-    "summary": "...",
-    "actor": "...",
-    "rules": [
-      {
-        "condition": "조건 또는 null(리프)",
-        "result": "결과 원문",
-        "result_kind": "write|assign|return|exception",
-        "examples": [
-          {"description":"...", "given":{...}, "when":"...", "then":{...}, "is_boundary": true|false}
-        ]
-      }
-    ],
-    "questions": [
-      {"text":"...", "reason":"..."}
-    ]
-  }
+  각 range 별 산출:
+  - summary  : 흐름·상태 변화 (5~8 문장)
+  - actor    : 실행 주체 (unit_root 일 때만)
+  - rules    : 비즈니스 룰 (Bottom-up — 각 Rule 안에 examples nested)
+  - questions: 코드만으로 답 안 되는 모호점
 
+  ════════════════════════════════════════════════════════════
+  [섹션 A. 처리 흐름 (per range)]
+  ════════════════════════════════════════════════════════════
 
-  [RULES — 공통]
-
-  ★★★ summary 작성
-  - 조건 → 상태변화 쌍 명시. 뭉뚱그림 금지("상황에 따라", "적절히").
-  - 실제 값(테이블·컬럼·상태값·리터럴) 원문 그대로. 변수명은 의미로 풀어 설명.
-
-  ★★★ 주석 활용
-  코드 주석에 목적·비즈니스 규칙이 있으면 summary 와 Rule 에 반영.
-
-  {% if context %}
-  ★★★ context 중복 금지
-  [부모·형제 컨텍스트] 에 이미 나온 것은 summary 상태변화에 중복 포함 금지.
-  {% endif %}
-
-
-  [RULES — rules + examples (Bottom-up)]
-
-  각 범위 i 에 대해 node_metadata[i].node_category 로 분기:
-
-  ────────────────────────────────────────────────────
-  ■ node_category == "meaningful" (의미 부모: IF/CASE/LOOP/EXCEPTION/CURSOR 등)
-    - child_rules 의 각 Rule 의 **condition** 에 자기 분기 조건만 AND 로 합침.
-    - child_rules 의 각 Rule 의 **examples.given.preconditions** 에 자기 조건 만족값 추가.
-    - result, result_kind 는 수정 X.
-    - 자기 자체로 새 Rule 생성 금지.
-    - child_questions 그대로 전달 + 자기 범위 모호점 있으면 추가.
-
-    예시:
-      자기 IF 조건: "V_TODAY > TODAY_DD"
-      child_rules: [{"condition":"TAG_CNT>=1", "result":"T INSERT", "result_kind":"write",
-                     "examples":[{"given":{"preconditions":{"globals":{"TAG_CNT":1}}},...}]}]
-      출력 rules: [{"condition":"TAG_CNT>=1 AND V_TODAY>TODAY_DD", "result":"T INSERT", "result_kind":"write",
-                    "examples":[{"given":{"preconditions":{"globals":{"TAG_CNT":1,"V_TODAY":"20260401"}}},...}]}]
-
-  ────────────────────────────────────────────────────
-  ■ node_category == "leaf" (DML / ASSIGN / RETURN / EXCEPTION 실행 등)
-    - 자기 원문이 **실제 business 결과** (DML 쓰기·상태 변화·RETURN·OUT·예외) 일 때만:
-        rules = [{"condition": null, "result": "자기 결과", "result_kind": "...",
-                  "examples": [경계값 1~2개]}]
-    - 단순 기술 동작 (CURSOR OPEN/CLOSE, FOR LOOP 제어, DBMS_OUTPUT, 기술 예외) → rules = []
-    - 억지로 채우지 말 것. 없으면 없는 대로.
-    - condition 은 null (조상이 합쳐 줌)
-    - 자기 범위 모호점 있으면 questions 에, 없으면 []
-
-    result_kind 값: "write" | "assign" | "return" | "exception"
-  ────────────────────────────────────────────────────
-
-  ★ Rule / Example / Question 공통 원칙
-  - 억지로 채우지 않기. 없으면 빈 배열.
-  - 원문 값 그대로 보존 (의역·요약 금지).
-  - PROCEDURE/FUNCTION/BEGIN 같은 구조 래퍼 언급 금지.
-
-  ★ Example (rule 안 nested) 원칙
-  - 리프에서 Rule 생성 시, 그 Rule 에 대한 example 1~2개 (경계값 위주).
-  - given = {narrative, inputs, preconditions: {tables, globals, stubs}}
-  - when = 자연어 한 줄 (비즈니스 행위)
-  - then = {narrative, return, out_params, exception, writes, commit}
-  - 값은 실제 리터럴 (변수명·프로시저명 금지)
-
-  ★ Question 원칙
-  - 코드만으로 답 안 되는 모호점만
-  - PL/SQL 문법 관용구는 Question 아님
-  - 0개 OK
-
-  ★ 죽은 코드 주석 무시
-  code 입력에 `주석: <line>: --...` 형태로 SQL 문법(`SELECT`/`INSERT`/`UPDATE`/`DELETE`/`MERGE`/
-  `VALUES`/`FROM`/`INTO`/`WHERE`/`:NEW.`/`:OLD.`)을 포함한 주석 줄이 prepend 돼 있을 수 있음.
-  이런 줄은 **죽은 코드** 로 간주, summary·rules·examples·questions 에 절대 반영 금지.
-  실제 활성 코드 (`<line>: ...` 형태로 주석 없이 시작) 만 분석 대상.
-
-  ★ Hallucination 절대 금지 (식별자 원문 보존)
-  - 원문에 없는 **테이블명·컬럼명·시퀀스명·변수명·프로시저명**을 만들어내거나 추측·축약·일반화 금지
-  - 모든 식별자는 prefix·suffix·대소문자까지 원문 그대로 (예: `SEQ_X` 를 `X` 로 줄이지 말 것)
-  - 시퀀스 / 함수 호출에서 호출 이름은 도트(`.`) 앞 토큰을 그대로
-  - Positional INSERT (컬럼 리스트 없음) 에서 어느 컬럼에 어떤 값이 들어가는지 모름 → 추측 금지.
-    컬럼명 명시 안 됐으면 해당 위치 값(시퀀스/리터럴) 만 언급, 컬럼명 만들지 말 것
-  - 원문에 없는 명사를 일반화·유추로 만들지 말 것 — 모르면 "위치 n번째 값", "이름 미지정 컬럼" 처럼
-    위치·메타 표현으로 대체
-
-
+  1. range 의 코드 라인 추출 (★ 공통 2 — 죽은 코드 주석 무시)
+  2. summary 작성 → ★ 섹션 B
+  3. node_metadata[i].node_category 분기:
+     · meaningful → ★ 섹션 C
+     · leaf       → ★ 섹션 D
+  4. examples 작성 → ★ 섹션 E
+  5. questions 작성 → ★ 섹션 F
   {% if is_unit_root %}
-  [RULES — actor (실행 주체) — 코드 근거 있을 때만]
-  - 부여: 권한·역할 체크 / 주석 명시 / 자동 실행(배치·스케줄러) → "system"
-  - 비움(""): 근거 없음
+  6. actor 부여 → 권한·역할 체크·자동 실행 근거 있으면 "system", 없으면 ""
   {% endif %}
 
+  ════════════════════════════════════════════════════════════
+  [섹션 B. summary 작성]
+  ════════════════════════════════════════════════════════════
 
+  - 5~8 문장. 흐름 순서대로 "조건 → 상태 변화" 쌍.
+  - 실제 값 (테이블·컬럼·상태값·리터럴) 원문 그대로.
+  - 변수명은 의미로 풀어 설명 (변수명 직노출 X).
+  - 뭉뚱그림 ("상황에 따라"·"적절히") 금지.
   {% if has_dml %}
-  [RULES — DML summary 구체성]
-  - SELECT: WHERE 컬럼·비교값 + JOIN + 집계 명시
-  - INSERT: 대상 테이블 + 모든 컬럼 + 값 출처
-  - UPDATE: SET 컬럼=값 + WHERE + 상태 전이
-  - DELETE: WHERE 컬럼=값
-  - MERGE: MATCHED/NOT MATCHED 각각 컬럼=값
-  - 별칭은 "(별칭 X)" 표기, 실제 테이블명 우선
+  - DML 별 표현 가이드:
+    · SELECT: WHERE 컬럼·비교값 + JOIN + 집계
+    · INSERT: 대상 테이블 + 컬럼 + 값 출처
+    · UPDATE: SET 컬럼=값 + WHERE + 상태 전이
+    · DELETE: WHERE 컬럼=값
+    · MERGE : MATCHED/NOT MATCHED 각각 컬럼=값
   {% endif %}
 
+  ════════════════════════════════════════════════════════════
+  [섹션 C. rules — meaningful 부모 (IF/CASE/LOOP/EXCEPTION/CURSOR)]
+  ════════════════════════════════════════════════════════════
 
+  [기본 동작 — 자식 룰 prefix 합치기]
+  - child_rules 각 Rule 의 statement 앞에 자기 분기 조건 prefix
+    예: 자식 statement = "X 에 INSERT" / 부모 IF = "A=1" → "A=1 이면 X 에 INSERT"
+  - child_rules 각 Rule 의 examples.given.preconditions 에 자기 조건 만족값 추가
+  - child_questions 그대로 전달 (자기 모호점 있으면 추가)
+
+  [추가 동작 — 자기 자체에 비즈니스 의미 있을 때만 새 룰 생성 (보수적)]
+  자식엔 없는 의미 있는 흐름이 있을 때만:
+  - ELSE 분기 fallback 처리 (자식 룰엔 없는 별도 처리)
+  - EXCEPTION 의 비즈니스 메시지 (예: RAISE_APPLICATION_ERROR(-20001, '재고부족'))
+  - LOOP/CURSOR 자체의 반복·일괄 처리 의미 (자식 룰에 흡수 안 되는 경우)
+
+  [statement 다듬기]
+  - 자식 룰의 statement 가 자기 분기 안에서 더 자연스러운 표현 가능 시 다듬기
+  - 의미 보존 우선. 단순 rephrase 만 위해 변경 X.
+
+  [규칙]
+  - 새 룰 생성은 명확한 비즈니스 의미가 있을 때만
+  - 의미 모호하면 새 룰 만들지 X (보수적)
+  - rules 개수 ≤ child_rules 개수 + (의미 있는 새 룰 수)
+
+  ════════════════════════════════════════════════════════════
+  [섹션 D. rules — leaf (DML/ASSIGN/RETURN/EXCEPTION 실행)]
+  ════════════════════════════════════════════════════════════
+
+  자기 원문이 비즈니스 룰일 때만 rules 생성. 비즈니스 룰 아니면 rules = [].
+
+  [✓ 비즈니스 룰 — rules 생성]
+  - 조건부 DML (부모 IF/CASE 안의 처리)
+  - 의미 있는 리터럴/플래그 설정 (예: PROCESS_YN='N', is_active=true)
+  - 변환·집계 (SUM, COUNT, CASE WHEN, 컬럼 계산식)
+  - 외부 시스템 통신 (외부 PRC 호출, 메시지 발송, DB 링크 호출)
+  - RETURN 값 (function 의 비즈니스 결과)
+  - OUT 파라미터 설정 (호출자에게 결과 전달)
+  - 의미 있는 예외 발생 (예: RAISE_APPLICATION_ERROR(-20001, '재고부족'))
+
+  [✗ 비즈니스 룰 아님 — rules = []]
+  - 단순 백업/스테이징 INSERT: TMP_/STG_/BACKUP_/HIST_ 접두 **AND** 모든 컬럼 source 1:1 (변환·분기·리터럴 추가 X)
+  - 단순 로깅: LOG_/AUDIT_ 접두 + SYSDATE/USER 같은 시스템 값 위주
+  - 커서 제어: OPEN/FETCH/CLOSE
+  - 트랜잭션 제어 단독: COMMIT/ROLLBACK/SAVEPOINT
+  - 디버그 출력: DBMS_OUTPUT.PUT_LINE
+  - 임시 변수 ASSIGN (계산 중간값)
+  - 기술 예외 처리: WHEN OTHERS THEN NULL
+
+  [모호 케이스 가드레일 — false negative 방지]
+  TMP_/STG_/LOG_ 접두라도 다음 중 하나라도 해당하면 비즈니스 룰로 처리 + questions 등록:
+  - 시퀀스 채번 (SEQ.NEXTVAL) 사용
+  - 일부 컬럼만 INSERT (전체 1:1 복제 X)
+  - 리터럴/상수값 추가 (예: 'N', 'PENDING')
+  - 분기 조건 안에서 실행 (부모 IF/CASE)
+  - 변환/계산 (CASE WHEN, SUM, 컬럼 계산)
+  - 외부 호출 인자로 전달
+
+  [statement 형식]
+  "<자기 결과 한 문장>" — 조건은 부모가 prefix 합침.
+
+  ════════════════════════════════════════════════════════════
+  [섹션 E. examples 작성]
+  ════════════════════════════════════════════════════════════
+
+  [개수 — 강제 X. 분기 형태에 따라 필요한 만큼만]
+  의미 있는 example 만 작성. 강제 최소·최대 숫자 X.
+  분기 형태별 보통 분포 (강제 X — 가이드만):
+  - 무조건 실행 (분기 없음): 일반값 1
+  - 단일 비교 (X='D'): 일반값 1 + boundary 1
+  - AND 분기 (A=x AND B=y): 일반값 1 + boundary (한쪽만 만족 케이스마다 1)
+  - OR 분기 (A=x OR B=y): 일반값 (둘 중 하나만 만족) + boundary (둘 다 안 만족)
+  - 부등호 (X >= 10): 일반값 1 + boundary (정확 경계 + 경계 ±1)
+  - dtype edge case (선택): nullable 컬럼 NULL 1개
+
+  [boundary 정의 — 분기 결과가 일반값과 달라야]
+  - ✓ "한쪽만 만족" 또는 "조건 자체의 경계"
+  - ✗ "둘 다 안 만족" 은 boundary 아님 (그냥 무관 케이스)
+
+  예시 — `KN_CODE='Q' AND DATA_PROCESS='A'` 분기:
+  - ✓ 일반값  : {KN_CODE: 'Q', DATA_PROCESS: 'A'} (분기 실행)
+  - ✓ boundary: {KN_CODE: 'Q', DATA_PROCESS: 'B'} (한쪽만 — 분기 안 탐)
+  - ✗ NOT bnd : {KN_CODE: 'X', DATA_PROCESS: 'B'} (둘 다 안 맞음 — 무관)
+
+  [Example 형식]
+  - given = {narrative, inputs, preconditions: {tables, globals, stubs}}
+  - when  = 자연어 한 줄 (비즈니스 행위)
+  - then  = {narrative, return, out_params, exception, writes, commit}
+  - is_boundary = true|false
+
+  [then.writes 형식 — 반드시 dict 배열]
+  `[{"table": "<테이블>", "op": "INSERT|UPDATE|DELETE", "columns": {<컬럼>: <값>, ...}}, ...]`
+  - table 필수
+  - op 필수 (INSERT/UPDATE/DELETE 셋 중 하나)
+  - columns 선택 (가능하면 채움)
+  - 영향 X 면 writes = []
+  - 단순 문자열 배열 X (예: `["X"]` 형태 X)
+  {% if ddl_context %}
+
+  [dtype 정합 (ddl_context 활용)]
+  - inputs 리터럴은 ddl_context 의 컬럼 dtype 에 맞게:
+    NUMBER → 숫자 (예: 12345), VARCHAR2/CHAR → 문자열 (예: "Q"), DATE → "YYYY-MM-DD HH:MI:SS"
+  - NOT NULL 컬럼은 inputs 에서 NULL/빈 문자열 X (Oracle 에선 `""` = NULL)
+  - nullable 컬럼만 NULL 경계값 허용
+  {% endif %}
+
+  ════════════════════════════════════════════════════════════
+  [섹션 F. questions 작성]
+  ════════════════════════════════════════════════════════════
+
+  코드만으로 답 안 되는 모호점만. 없으면 questions = [].
+
+  [등록 대상]
+  - 외부 PRC 의 의미 / 외부 객체의 동작 모호
+  - 비즈니스 의도 불명 (변수명·코드값의 의미 추측 어려움)
+  - 모호 케이스 가드레일에서 등록한 항목 (스테이징 의심 등)
+
+  [형식]
+  `{"text": "<모호점>", "reason": "<근거 부재 사유>"}`
+
+  ════════════════════════════════════════════════════════════
+  [공통 원칙]
+  ════════════════════════════════════════════════════════════
+
+  [1. 식별자 원문 보존 / 환각 금지]
+  - 원문에 없는 테이블·컬럼·시퀀스·변수·프로시저명 만들어내거나 추측·축약·일반화 X
+  - 모든 식별자는 prefix·suffix·대소문자까지 원문 그대로 (예: SEQ_X 를 X 로 축약 X)
+  - Positional INSERT (컬럼 명시 X) 에서 컬럼명 만들지 X — "위치 n번째 값"
+
+  [2. 죽은 코드 주석 무시]
+  코드의 `<line>: --...` 또는 `/* */` 주석 줄 중 SQL 키워드
+  (SELECT/INSERT/UPDATE/DELETE/MERGE/VALUES/FROM/INTO/WHERE/:NEW./:OLD.) 포함 줄 = 죽은 코드.
+  summary·rules·examples·questions 에 0건 반영.
+  반영 가능: 자연어 처리 의도·헤더 (예: "신규 태그 백업").
+
+  [3. 구조 래퍼 언급 금지]
+  PROCEDURE/FUNCTION/BEGIN/END 같은 구조 래퍼는 statement·summary 에 언급 X.
+
+  [4. 억지로 채우지 X]
+  rules / examples / questions / writes 모두 없으면 빈 배열. 의미 없는 항목 채우지 X.
+  {% if context %}
+
+  [5. context 중복 금지]
+  [부모·형제 컨텍스트] 에 이미 나온 상태 변화는 summary 에 중복 포함 X.
+  {% endif %}
+
+  ════════════════════════════════════════════════════════════
   [SELF-CHECK]
-  - analysis 배열 길이 = {{ count }}
-  - 각 요소 startLine/endLine 정수
-  - summary 에 조건+상태변화 쌍
-  - meaningful: rules 개수 ≤ child_rules 개수 (개수 증가 금지)
-  - leaf: rules 개수 0 또는 1
-  - rules 에 PROCEDURE/BEGIN 언급 0건
-  - 억지로 채우지 않음 (없으면 빈 배열)
+  ════════════════════════════════════════════════════════════
 
+  - analysis 배열 길이 = {{ count }} ?
+  - 각 요소 startLine/endLine 정수?
+  - summary 5~8 문장 + 조건+상태변화 쌍?
+  - meaningful: 자식 룰 prefix + 명확한 새 룰만 (보수적)?
+  - leaf: 비즈니스 룰 판정 기준 따름?
+  - examples: 분기 형태에 맞는 개수, 의미 없는 boundary 0?
+  - then.writes: dict 배열, table+op 채워짐?
+  - 식별자 원문 보존, 환각 0?
+  - 죽은 코드 주석 반영 0?
+  - 구조 래퍼 (PROCEDURE/FUNCTION/BEGIN) 언급 0?
 
+  ════════════════════════════════════════════════════════════
   [OUTPUT]
-  JSON 만. 코드펜스·주석 금지. 트레일링 콤마 금지.
+  ════════════════════════════════════════════════════════════
+
+  JSON 만. 코드펜스·주석·트레일링 콤마 금지.
 
   {
     "analysis": [
       {
-        "startLine": 범위_시작,
-        "endLine": 범위_끝,
+        "startLine": 정수,
+        "endLine": 정수,
         "summary": "5~8문장",
-        "actor": "" 또는 "system",
+        "actor": "system 또는 \"\"",
         "rules": [
-          {"condition": "... 또는 null", "result": "...", "result_kind": "...",
-           "examples": [{"description":"...","given":{...},"when":"...","then":{...},"is_boundary":false}]}
+          {
+            "statement": "<조건>이면 <결과> 또는 <결과>",
+            "examples": [
+              {
+                "description": "...",
+                "given": {"narrative": "...", "inputs": {}, "preconditions": {"tables": {}, "globals": {}, "stubs": {}}},
+                "when": "자연어 한 줄",
+                "then": {
+                  "narrative": "...",
+                  "return": null,
+                  "out_params": {},
+                  "exception": null,
+                  "writes": [{"table": "<테이블>", "op": "INSERT|UPDATE|DELETE", "columns": {}}],
+                  "commit": false
+                },
+                "is_boundary": true
+              }
+            ]
+          }
         ],
-        "questions": [{"text":"...","reason":"..."}]
+        "questions": [
+          {"text": "<모호점>", "reason": "<근거 부재 사유>"}
+        ]
       }
     ]
   }

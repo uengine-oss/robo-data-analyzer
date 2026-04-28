@@ -22,6 +22,12 @@ class DbmsPipelineState:
     """
     ddl_schemas: Set[str] = field(default_factory=set)
     ddl_table_metadata: Dict[Tuple[str, str], Dict[str, Any]] = field(default_factory=dict)
+    # DDL 적재 후 빌드되어 Phase 2B 의 dml_extract LLM 프롬프트 ddl_context 슬롯 주입에 사용.
+    # key = 테이블명 (대문자 정규화), value = {schema, description, columns: [{name, dtype, description, nullable}]}
+    ddl_table_index: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    # ddl_table_index 의 테이블명들로 컴파일된 단일 정규식 패턴 (alternation, \b, IGNORECASE).
+    # ddl_table_matcher.match_in_code 가 range 별 단어 매칭에 사용. 비어있으면 None.
+    ddl_pattern: Optional[Any] = None
     contexts: List[FileAnalysisContext] = field(default_factory=list)
 
     # 동시성 제어 — DbmsPipeline.run_pipeline 진입 시 채워짐
@@ -56,6 +62,14 @@ class DbmsPhaseContext:
     @property
     def ddl_table_metadata(self) -> Dict[Tuple[str, str], Dict[str, Any]]:
         return self.state.ddl_table_metadata
+
+    @property
+    def ddl_table_index(self) -> Dict[str, Dict[str, Any]]:
+        return self.state.ddl_table_index
+
+    @property
+    def ddl_pattern(self) -> Optional[Any]:
+        return self.state.ddl_pattern
 
     # AnalysisContext (orchestrator) 의 필드는 service 진입점에서 검증되어 항상 존재.
     @property

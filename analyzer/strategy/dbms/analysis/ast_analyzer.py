@@ -29,6 +29,7 @@ from util.code_text_utils import parse_table_identifier
 from analyzer.common.pipeline.pipeline_control import pipeline_controller
 
 from analyzer.strategy.dbms.analysis.ast_collector import StatementCollector
+from analyzer.strategy.dbms.linking import ddl_table_matcher
 from analyzer.strategy.dbms.common.domain.analysis_constants import (
     MAX_CONCURRENCY,
     MAX_CONTEXT_TOKEN,
@@ -655,6 +656,8 @@ class DbmsAstProcessor(BaseAstProcessor):
         default_schema: str,
         name_case: str,
         ddl_table_metadata: Optional[Dict[Tuple[str, str], Dict[str, Any]]] = None,
+        ddl_table_index: Optional[Dict[str, Dict[str, Any]]] = None,
+        ddl_pattern: Optional[Any] = None,  # re.Pattern
         source_content: str = "",
         datasource_name: str = "",
     ):
@@ -677,6 +680,9 @@ class DbmsAstProcessor(BaseAstProcessor):
         self.dbms = dbms.lower()
         self.default_schema = default_schema
         self._ddl_table_metadata = ddl_table_metadata or {}
+        # Phase 0 에서 빌드된 ddl_table_index + ddl_pattern (Phase 2B dml_extract 의 ddl_context 주입에 사용)
+        self._ddl_table_index = ddl_table_index or {}
+        self._ddl_pattern = ddl_pattern
         self.name_case = name_case.lower()
         self.datasource_name = (datasource_name or "").strip()
 
@@ -884,13 +890,29 @@ class DbmsAstProcessor(BaseAstProcessor):
         is_unit_root = any(n.node_type in ("PROCEDURE", "FUNCTION", "TRIGGER") for n in batch.nodes)
 
         general_task = None
+        general_code = ""
         if batch.ranges:
-            code, context = batch.build_payload()
+            general_code, context = batch.build_payload()
             # Bottom-up Rule 처리용 노드별 메타데이터
             node_metadata = batch.build_node_metadata()
+
+        table_task = None
+        dml_payload = batch.build_dml_payload()
+        dml_code = dml_payload[0] if dml_payload and batch.dml_ranges else ""
+
+        # DDL 결정론 매칭은 batch 의 합집합 코드 1회만 수행 (general_code ⊇ dml_code).
+        # 매칭 결과 + 인덱스로 빌드한 ddl_context 를 두 LLM 호출에 공통 주입.
+        # → node_analysis: example.inputs 의 dtype 정확도, 환각 차단
+        # → dml_extract: 식별 작업 skip + 사용 의미·R/W 판단만
+        ddl_context = ""
+        if self._ddl_pattern and (general_code or dml_code):
+            matched = ddl_table_matcher.match_in_code(general_code or dml_code, self._ddl_pattern)
+            ddl_context = ddl_table_matcher.build_context(matched, self._ddl_table_index)
+
+        if batch.ranges:
             def _call_analyze_code():
                 inputs = {
-                    "code": code,
+                    "code": general_code,
                     "ranges": batch.ranges,
                     "count": len(batch.ranges),
                     "locale": self.locale,
@@ -898,6 +920,8 @@ class DbmsAstProcessor(BaseAstProcessor):
                 }
                 if context.strip():
                     inputs["context"] = context
+                if ddl_context:
+                    inputs["ddl_context"] = ddl_context
                 if has_dml:
                     inputs["has_dml"] = True
                 if is_unit_root:
@@ -905,14 +929,14 @@ class DbmsAstProcessor(BaseAstProcessor):
                 return prompts.execute_raw("dbms", "node_analysis", inputs, self.api_key)
             general_task = asyncio.to_thread(_call_analyze_code)
 
-        table_task = None
-        dml_payload = batch.build_dml_payload()
         if dml_payload and batch.dml_ranges:
-            code, context = dml_payload
+            _dml_code, dml_context = dml_payload
             def _call_analyze_dml():
-                inputs = {"code": code, "ranges": batch.dml_ranges, "locale": self.locale}
-                if context.strip():
-                    inputs["context"] = context
+                inputs = {"code": _dml_code, "ranges": batch.dml_ranges, "locale": self.locale}
+                if dml_context.strip():
+                    inputs["context"] = dml_context
+                if ddl_context:
+                    inputs["ddl_context"] = ddl_context
                 return prompts.execute_raw("dbms", "dml_extract", inputs, self.api_key)
             table_task = asyncio.to_thread(_call_analyze_dml)
 

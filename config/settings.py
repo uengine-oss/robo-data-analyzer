@@ -73,6 +73,22 @@ class LLMConfig:
     parse_retry_token_bump: float = field(default_factory=lambda: float(os.getenv("LLM_PARSE_RETRY_TOKEN_BUMP", "1.5")))
     # 모델 context 상한 (증액 clamp 용). 모델별 native context 에 맞춰 .env 에서 지정.
     max_token_ceiling: int = field(default_factory=lambda: int(os.getenv("LLM_MAX_TOKEN_CEILING", "32768")))
+    # OpenRouter provider 선택 — base_url 이 OpenRouter 일 때만 적용.
+    # 우선순위: sort 가 설정되면 sort, 아니면 order 사용.
+    #
+    # 방법 1 (권장): sort="throughput" — OpenRouter 가 실시간 throughput 으로 자동 최고속 provider 선택.
+    #   slug 외울 필요 X, provider 추가/순위 변경 자동 반영. 다운 시 자동 fallback.
+    # 방법 2: order=[...] — 명시적 순서 + slug 정확해야 (틀리면 silent skip).
+    openrouter_provider_sort: str = field(default_factory=lambda: os.getenv("OPENROUTER_PROVIDER_SORT", "").strip())
+    openrouter_provider_order: tuple = field(default_factory=lambda: tuple(
+        p.strip() for p in os.getenv("OPENROUTER_PROVIDER_ORDER", "").split(",") if p.strip()
+    ))
+    openrouter_allow_fallbacks: bool = field(default_factory=lambda: os.getenv("OPENROUTER_ALLOW_FALLBACKS", "true").lower() == "true")
+
+    # OpenRouter reasoning 모드 토글 — 일부 모델 (Gemma 4 31B 등) 이 reasoning 토큰을 추가 출력.
+    # 분석 task 가 reasoning 을 안 쓰면 끄는 게 응답 시간 ↓ (reasoning 토큰 통째로 빠짐).
+    # default true (안전 — 정확도 우선). false 로 두면 추가 속도 향상.
+    openrouter_reasoning_enabled: bool = field(default_factory=lambda: os.getenv("OPENROUTER_REASONING_ENABLED", "true").lower() == "true")
 
 
 @dataclass(frozen=True)

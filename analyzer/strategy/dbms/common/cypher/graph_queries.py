@@ -536,12 +536,24 @@ def build_column_query(
     table_merge_query: str,
     params: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """:Column 노드 MERGE + (Table)-[:HAS_COLUMN]->(Column) 관계."""
+    """:Column 노드 MERGE + (Table)-[:HAS_COLUMN]->(Column) 관계.
+
+    DDL 보존 가드: description / description_source 가 비어있을 때만 LLM 결과로 채움.
+    name / dtype / nullable 도 비어있을 때만 SET (LLM dtype 환각으로 DDL 정확도 손실 방지).
+    Framework 의 build_column_queries (graph_queries.py:355-360) 가드 패턴과 정합.
+    """
     query = (
         f"{table_merge_query}\nWITH __cy_t__\n"
         "MERGE (__cy_c__:Column {fqn: $fqn})\n"
-        "SET __cy_c__.name = $col_name, __cy_c__.dtype = $col_type, "
-        "__cy_c__.description = $col_desc, __cy_c__.description_source = 'code', __cy_c__.nullable = $nullable\n"
+        "SET __cy_c__.description = CASE\n"
+        "      WHEN __cy_c__.description IS NULL OR trim(toString(__cy_c__.description)) = ''\n"
+        "      THEN $col_desc ELSE __cy_c__.description END,\n"
+        "    __cy_c__.description_source = CASE\n"
+        "      WHEN __cy_c__.description IS NULL OR trim(toString(__cy_c__.description)) = ''\n"
+        "      THEN 'code' ELSE __cy_c__.description_source END,\n"
+        "    __cy_c__.name = COALESCE(__cy_c__.name, $col_name),\n"
+        "    __cy_c__.dtype = COALESCE(__cy_c__.dtype, $col_type),\n"
+        "    __cy_c__.nullable = COALESCE(__cy_c__.nullable, $nullable)\n"
         "MERGE (__cy_t__)-[__cy_r__:HAS_COLUMN]->(__cy_c__)\n"
         "RETURN __cy_t__, __cy_c__, __cy_r__"
     )

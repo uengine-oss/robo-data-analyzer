@@ -1,6 +1,6 @@
 name: "dml_extract"
-description: "DML 범위별 테이블·컬럼·참조관계·DB링크 추출"
-version: "2.0"
+description: "DML range 별 테이블·R/W·컬럼·FK·DB링크 추출. ddl_context 유무로 흐름 분기"
+version: "4.0"
 
 input_schema:
   required:
@@ -8,151 +8,175 @@ input_schema:
     - ranges
     - locale
   optional:
-    - context
+    - context             # 부모 컨텍스트 (참고만)
+    - ddl_context         # 결정론 매칭된 테이블·컬럼 메타 (있으면 식별 skip)
 
 prompt: |
   [ROLE]
-  SQL DML 구문을 분석해 테이블·컬럼·참조 관계·DB 링크 메타데이터를 추출합니다.
-
+  SQL DML 코드를 분석해 각 range 의 테이블 사용·accessMode·컬럼·FK·DB링크 메타를 산출.
 
   [LANGUAGE]
   응답 언어: {{ locale }}
 
-
   [INPUT]
-  {% if context %}
-  ── [부모 컨텍스트] 역할: 현재 DML 이 속한 상위 구조 + 별칭 매핑 확인용 (참고만)
-  {{ context }}
-
-  {% endif %}
-  ── [분석 대상 DML 코드] 역할: 각 범위별 독립 분석
+  ── [분석 대상 DML 코드]
   {{ code }}
 
-  ── [분석 범위 목록] 역할: 각 range 는 startLine~endLine 내에서만 독립 식별
+  ── [분석 범위 목록] 각 range 는 startLine~endLine 안에서만 독립 분석
   {{ ranges }}
+  {% if context %}
 
+  ── [부모 컨텍스트] 상위 구조·별칭 매핑 참고용 (현재 range 결과에 중복 X)
+  {{ context }}
+  {% endif %}
+  {% if ddl_context %}
+
+  ── [DDL 컨텍스트] 코드에 사용되는 테이블·컬럼 — 이미 식별 완료 (식별 작업 X)
+  {{ ddl_context }}
+  {% endif %}
 
   [GOAL]
-  각 범위마다 tables·fkRelations·dbLinks 를 추출해 JSON(`ranges`)으로 반환.
+  각 range 별 산출:
+  - tables       : 사용 테이블 + accessMode + 컬럼별 역할
+  - fkRelations  : JOIN/WHERE 의 테이블 간 컬럼 비교
+  - dbLinks      : '@' 패턴 외부 링크
 
+  ════════════════════════════════════════════════════════════
+  [섹션 A. 처리 흐름 (per range)]
+  ════════════════════════════════════════════════════════════
 
-  [RULES]
+  1. range 의 코드 라인 추출 (startLine~endLine 안만)
+  2. accessMode 판정 → ★ 섹션 B
+  3. tables 의 columns 채움 → ★ 섹션 C (ddl_context 유무로 분기)
+  4. fkRelations 추출 → ★ 섹션 D
+  5. dbLinks 추출 → ★ 섹션 E
 
-  ★★★ 범위 독립성 (최우선)
-  각 range 는 해당 startLine~endLine 라인 내에서만 식별한다. 다른 범위의 결과 혼합·누적·참조 절대 금지.
-  예: 입력 [{221~223}, {224~226}, {211~226}] 이면
-  - 221~223 결과: 221~223 내에서만 식별
-  - 211~226 결과: 211~226 내에서만 (221~223 결과 참조 안 함)
+  ════════════════════════════════════════════════════════════
+  [섹션 B. accessMode 판정 (r/w)]
+  ════════════════════════════════════════════════════════════
 
-  {% if context %}
-  ★★★ 부모 컨텍스트는 참고만 — 단, 대상 테이블 해석 예외
-  부모 DML 의 내부 절(WHEN MATCHED THEN UPDATE 등)이 현재 범위일 때:
-  - 범위 내에서 대상 테이블을 식별 불가하면 부모 context 에서 "MERGE INTO TABLE_X" 같은 정보를 찾아 대상 테이블로 사용
-  - 빈 테이블명("")으로 출력하지 않음
-  부모 context 에 있는 테이블·호출·변수는 현재 범위 결과에 **중복 포함 금지** (실제 범위에 등장한 것만).
+  - INSERT INTO / UPDATE / DELETE FROM / MERGE INTO 의 대상 → `w`
+  - SELECT FROM / JOIN / WHERE 서브쿼리 source → `r`
+  - 한 range 에 r·w 모두면 `w` 우선 (대표 모드)
+  - 여러 테이블은 각자 독립 판정
+
+  ════════════════════════════════════════════════════════════
+  [섹션 C. tables 추출 (ddl_context 분기)]
+  ════════════════════════════════════════════════════════════
+  {% if ddl_context %}
+
+  [ddl_context 있음 — 사용 의미 + R/W 만, 식별 X]
+  - tables 결과는 이 range 에 실제 등장하는 항목만
+  - tableDescription: 이 SP 에서 해당 테이블이 어떻게 쓰이는지 1~2 문장
+  - columns 배열: 이 range 에서 실제 사용된 컬럼 + 역할이 명확한 것만 (모호 컬럼 생략)
+  - columns[].description: 이 DML 에서 컬럼이 하는 역할 한 문장
+  - ddl_context 목록에 없는 테이블/컬럼명 만들지 X (환각 금지)
+  {% else %}
+
+  [ddl_context 없음 — 식별 + 사용 의미]
+  - 식별 대상: INSERT INTO / UPDATE / DELETE FROM / SELECT FROM / MERGE INTO / JOIN / EXECUTE IMMEDIATE 의 대상, 변수에 저장된 SQL, 동적 SQL, CTE 내부 실제 테이블
+  - 형식: 스키마 있으면 `"SCHEMA.TABLE"`, 없으면 `"TABLE"`. 따옴표 제거. 별칭 제거. 대소문자 원문
+  - 제외: CTE 별칭, WITH 임시 결과명, DUAL, 시퀀스, 시스템 카탈로그 (pg_catalog · information_schema)
+  - columns 추출: SELECT 명시 컬럼 (* · 집계 제외), INSERT 컬럼 목록, UPDATE SET, WHERE/JOIN 조건, GROUP BY/ORDER BY, RETURNING
+  - Positional INSERT (컬럼 리스트 없는 `INSERT INTO T VALUES(...)`):
+    · `:NEW.X` / `:OLD.X` → 컬럼 `X`
+    · `<src>.<COL>` alias 참조 → 컬럼 `COL`
+    · 시퀀스 (`SEQ.NEXTVAL`) · 함수 호출 · 리터럴은 컬럼 추출 불가 → 생략
+  - columns[].description: 역할 명확한 것만, 모호하면 columns 에서 생략
   {% endif %}
 
-  ★★★ 주석 활용
-  DML 코드의 주석(`--`, `/* */`)에 대상 테이블의 역할·비즈니스 맥락이 있으면 tableDescription·컬럼 description 에 최우선 반영.
+  [컬럼 출력 공통]
+  - dtype, nullable 필드 출력 X (메타는 DDL 이 정답)
+  - 역할 모호한 컬럼은 columns 에서 생략 (추측 X)
 
-  ★★ 테이블 식별
+  ════════════════════════════════════════════════════════════
+  [섹션 D. fkRelations 추출]
+  ════════════════════════════════════════════════════════════
 
-  대상 SQL 절:
-  - INSERT INTO · UPDATE · DELETE FROM · SELECT FROM · MERGE INTO · JOIN · EXECUTE IMMEDIATE 의 대상
-  - 변수에 저장된 SQL 문자열, 프로시저 호출 인자의 SQL 문자열
-  - CTE 내부의 실제 테이블 (WITH 정의 자체는 제외)
+  [수집 대상]
+  - JOIN 조건 / WHERE 의 테이블 간 컬럼 비교
+  - 다중 컬럼은 sourceColumns·targetColumns 배열 (순서 맞춰)
 
-  추출 규칙:
-  - 스키마 있으면 "SCHEMA.TABLE", 없으면 "TABLE"
-  - 따옴표 `"SCHEMA"."TABLE"` → `"SCHEMA.TABLE"` (따옴표 제거)
-  - 별칭(alias) 제거, 실제 테이블명만
-  - 테이블 접두사(TPJ_, TBL_ 등) 원문 유지
-  - 대소문자 원문 그대로
-  - DB 링크('@' 포함)는 `table` 필드 넣지 않고 `dbLinks` 만 기록
-
-  제외 대상: CTE 별칭 자체, WITH 절 임시 결과 이름, DUAL(Oracle), 시퀀스, 시스템 카탈로그(pg_catalog/information_schema)
-
-  ★★ accessMode (r/w)
-  - `w`: INSERT/UPDATE/DELETE/MERGE 로 데이터 쓰기
-  - `r`: SELECT/JOIN/WHERE/서브쿼리로 읽기
-  - 한 범위에서 읽기+쓰기 모두면 `w` 우선
-  - 여러 테이블은 각 테이블 독립 판정
-
-  ★★ 컬럼 추출 (해당 범위 내)
-  - SELECT 절 명시 컬럼 (* 와 집계는 제외), INSERT 컬럼 목록, UPDATE SET 대상, WHERE 조건 컬럼, JOIN 조건 컬럼, ORDER BY/GROUP BY, RETURNING
-  - **Positional INSERT (컬럼 리스트 없음)**: `INSERT INTO T VALUES(...)` 형식이면 VALUES 안의 식별자에서 컬럼명을 유도한다.
-    - `:NEW.X` / `:OLD.X` → 컬럼 `X` (트리거 행 컬럼이 같은 이름의 타겟 컬럼에 매핑됨이 통상)
-    - `<src>.<COL>` 형태의 alias 참조 → 컬럼 `COL`
-    - 시퀀스 `SEQ.NEXTVAL`, 함수 호출(`SYSDATE`, `TO_CHAR(...)`), 리터럴은 컬럼명 추출 불가 → 생략
-    - 예: `INSERT INTO TBL VALUES(:NEW.A, :NEW.B, SEQ.NEXTVAL)` → 컬럼 [A, B] 만 추출
-  - name: 원문 그대로
-  - dtype: 코드에서 추론 가능하면 기록, 불명확하면 "VARCHAR"
-  - nullable: 불명확 시 true
-  - description: 해당 컬럼이 이 DML 에서 하는 역할 한 문장 (중복 표현 금지)
-
-  ★★ tableDescription
-  - 해당 범위에서 테이블 역할 1~2문장
-  - 좋은 예: "주문 마스터에서 검증용 주문 정보를 조회합니다"
-  - 나쁜 예: "데이터를 조회합니다" (무의미)
-
-  ★★ fkRelations (참조 관계)
-
-  수집 기준:
-  - JOIN 조건(A.COL = B.COL) · WHERE 의 테이블 간 비교에서 참조 구조 식별
-  - 다중 컬럼 비교는 sourceColumns·targetColumns 배열로 순서 맞춰 묶음
-
-  제외 규칙 (하나라도 맞으면 FK 아님):
-  - 자기조인 (FROM TABLE_A A, TABLE_A B)
+  [제외 — 하나라도 맞으면 FK 아님]
+  - 자기조인
   - INSERT...SELECT 의 단순 값 복사
-  - 측정값·데이터값 컬럼(VAL·AMOUNT·QUANTITY·COUNT)
-  - 양방향 중복 기록 (한 방향만)
-  - IN 서브쿼리 단순 필터
-  - MERGE ON 의 자기 자신 매칭
+  - 측정값 컬럼 (VAL · AMOUNT · QUANTITY · COUNT)
+  - 양방향 중복
+  - IN 서브쿼리의 단순 필터
+  - MERGE ON 의 자기 매칭
 
-  방향 결정:
-  - sourceTable = FK 가진 쪽 (자식·상세)
-  - targetTable = 참조 대상 (부모·마스터)
-  - 다중 컬럼 길이 일치 필수
+  [방향]
+  - sourceTable = FK 보유 (자식)
+  - targetTable = 참조 대상 (부모)
+  - sourceColumns·targetColumns 길이 동일 필수
 
-  ★★ dbLinks (`@` 패턴)
-  - 식별 기준: 해당 범위 내 'Table@DBLINK' 또는 'Schema.Table@DBLINK' 패턴 존재 여부만 (실행 여부·의미 무관)
-  - 탐색 위치: 문자열 리터럴·변수 값·프로시저 인자·동적 SQL
-  - 주석 내 표기는 제외
-  - name 에 반드시 '@' 포함. 원문 케이스 유지. 중복 없이 한 번만.
+  ════════════════════════════════════════════════════════════
+  [섹션 E. dbLinks 추출]
+  ════════════════════════════════════════════════════════════
 
-  dbLinks r/w 구분:
-  - `r`: 외부 DB 에서 SELECT·JOIN·EXISTS 로 읽기
-  - `w`: 외부 DB 에 INSERT/UPDATE/DELETE/MERGE 로 쓰기
-  - 외부에서 읽어 내 DB 에 쓰는 경우는 `r`
-  - 단순 문자열 리터럴·실행 모호 시 기본 `r`
+  - 패턴: `@` 등장 (Table@DBLINK 또는 Schema.Table@DBLINK)
+  - 위치: 문자열 리터럴·변수 값·프로시저 인자·동적 SQL
+  - 제외: 주석 내 등장
+  - r/w 판정:
+    · 외부 SELECT/JOIN/EXISTS = `r`
+    · 외부 INSERT/UPDATE/DELETE/MERGE = `w`
+    · 외부 read → 내부 write 케이스 = `r`
+    · 모호하면 `r`
+  - name 에 `@` 필수, 원문 케이스 유지, range 내 한 번만
 
+  ════════════════════════════════════════════════════════════
+  [공통 원칙]
+  ════════════════════════════════════════════════════════════
 
-  [SELF-CHECK]
-  - ranges 배열 길이·순서가 입력과 동일한가?
-  - 각 range 결과가 startLine~endLine 내에서만 식별됐는가? (다른 범위 혼입 없음)
-  - 별칭을 실제 테이블로 오인하지 않았는가?
+  [1. 범위 독립성]
+  각 range 는 startLine~endLine 안에서만 식별. 다른 range 결과 혼합·누적·참조 0.
+
+  [2. 죽은 코드 주석 무시]
+  주석 (`--`, `/* */`) 에 SQL 문법 키워드 포함 줄은 죽은 코드. 결과에 반영 X.
+  반영 가능: 자연어 처리 의도·헤더 (description 보강용 최우선).
   {% if context %}
-  - 부모 context 에 있던 테이블을 내 범위 결과에 중복 포함하지 않았는가?
+
+  [3. 부모 컨텍스트 활용 (대상 테이블 해석 예외만)]
+  부모 DML 의 내부 절 (WHEN MATCHED THEN UPDATE 등) 이 현재 range 일 때, range 내 대상 테이블 식별 불가하면 부모 context 의 "MERGE INTO TABLE_X" 같은 정보로 보강. 빈 테이블명 출력 X.
+  부모 context 의 테이블·호출·변수는 현재 range 결과에 **중복 포함 X** (실제 range 등장한 것만).
   {% endif %}
-  - FK 가 아닌 것(자기조인·값복사·측정값)을 fkRelations 에 넣지 않았는가?
-  - DB 링크는 실제 '@' 패턴이 범위 내에 존재할 때만 기록했는가?
 
+  ════════════════════════════════════════════════════════════
+  [SELF-CHECK]
+  ════════════════════════════════════════════════════════════
 
+  - ranges 길이·순서가 입력과 동일?
+  - 각 range 결과가 startLine~endLine 안에서만? (다른 range 혼입 0)
+  - 별칭을 실제 테이블명으로 오인 0?
+  - FK 제외 규칙 위반 0?
+  - dbLinks `@` 패턴이 실제 range 내 등장?
+  - columns 에 dtype/nullable 출력 0?
+  - 역할 모호한 컬럼이 columns 에 들어가지 않았는지?
+  {% if context %}
+  - 부모 context 의 테이블·컬럼이 현재 range 결과에 중복 0?
+  {% endif %}
+  {% if ddl_context %}
+  - ddl_context 목록에 없는 테이블/컬럼명 만들지 0?
+  {% endif %}
+
+  ════════════════════════════════════════════════════════════
   [OUTPUT]
-  JSON 만 출력. 코드펜스·주석·설명 금지. 트레일링 콤마 금지.
+  ════════════════════════════════════════════════════════════
+
+  JSON 만. 코드펜스·주석·트레일링 콤마 금지. null 금지 (빈 값은 `[]` 또는 `""`).
 
   {
     "ranges": [
       {
-        "startLine": 시작_라인,
-        "endLine": 끝_라인,
+        "startLine": 정수,
+        "endLine": 정수,
         "tables": [
           {
             "table": "SCHEMA.TABLE_NAME",
             "accessMode": "r|w",
-            "tableDescription": "1~2문장 역할 설명",
+            "tableDescription": "이 SP 에서의 사용 역할 1~2 문장",
             "columns": [
-              {"name": "컬럼명", "dtype": "VARCHAR", "nullable": true, "description": "컬럼 역할"}
+              {"name": "컬럼명", "description": "이 DML 에서 컬럼이 하는 역할"}
             ]
           }
         ],
@@ -170,11 +194,3 @@ prompt: |
       }
     ]
   }
-
-  제약:
-  - ranges 길이·순서 = 입력 ranges 와 동일
-  - 각 range 에 tables·fkRelations·dbLinks 필드 필수 (빈 배열 허용)
-  - accessMode 는 'r' 또는 'w' 만
-  - fkRelations 의 sourceColumns·targetColumns 는 길이 동일 필수
-  - dbLinks.name 에 '@' 필수, 범위 내 패턴 없으면 `[]`
-  - null 금지. 빈값은 [] 또는 ""

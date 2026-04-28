@@ -26,6 +26,7 @@ from typing import AsyncGenerator, List
 import aiohttp
 
 from analyzer.strategy.base_analyzer import AnalysisStats
+from config.settings import settings
 from util.encoding_reader import read_text_with_fallback
 from util.logger import log_process
 from util.stream_emitter import emit_message, emit_phase_event
@@ -86,6 +87,12 @@ async def run_data_lineage(
     Yields:
         emit_message / emit_phase_event(in_progress) 바이트.
     """
+    # Framework 의 pre_analysis 와 동일 패턴 — catalog 비활성 시 graceful skip
+    if not settings.catalog.enabled:
+        yield emit_message("   ⏭️ catalog 비활성 (CATALOG_SERVICE_URL 미설정) — 리니지 분석 skip")
+        log_process("PHASE:5", "SKIP", "catalog 비활성 — 리니지 분석 skip", logging.INFO)
+        return
+
     sql_files = _list_sql_files(source_dir)
     if not sql_files:
         yield emit_message("   ℹ️ SP 파일 없음 → 리니지 분석 건너뜀")

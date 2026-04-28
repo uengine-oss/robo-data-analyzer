@@ -51,6 +51,8 @@ async def run_phase_ast(
                     last_line=last_line,
                     default_schema=default_schema,
                     ddl_table_metadata=ctx.ddl_table_metadata,
+                    ddl_table_index=ctx.ddl_table_index,
+                    ddl_pattern=ctx.ddl_pattern,
                     name_case=ctx.name_case,
                     source_content=file_ctx.source_content,
                     datasource_name=ctx.datasource_name,

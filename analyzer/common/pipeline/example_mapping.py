@@ -30,6 +30,28 @@ from typing import Any, Dict, Iterable, List, Tuple
 
 logger = logging.getLogger(__name__)
 
+# then.writes 의 op 가 누락됐거나 single-string 형식일 때의 generic op.
+# 정확한 op (INSERT/UPDATE/DELETE) 가 필요하면 LLM 출력의 then.writes[].op 또는 부모 노드 라벨로 추적.
+DEFAULT_WRITE_OP = "WRITE"
+
+
+def _parse_write_entry(w: Any) -> Tuple[str, str]:
+    """LLM 출력의 then.writes[] 한 항목 → (table_name, op).
+
+    허용 형식:
+      - dict (정식): ``{"table": "X", "op": "INSERT", "columns": {...}}`` — op 누락 시 generic
+      - string (간이): ``"X"`` — op generic
+      - 그 외: 무시 (("", "") 반환 → 호출자가 skip)
+    """
+    if isinstance(w, dict):
+        return (
+            str(w.get("table") or "").strip(),
+            str(w.get("op") or "").strip().upper() or DEFAULT_WRITE_OP,
+        )
+    if isinstance(w, str):
+        return w.strip(), DEFAULT_WRITE_OP
+    return "", ""
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # LLM 응답 평탄화 — examples / questions → Cypher UNWIND row
@@ -91,18 +113,12 @@ def collect_example_rows(
             "is_boundary": bool(e.get("is_boundary")),
         })
 
+        # then.writes[] → AFFECTS_TABLE 엣지. LLM 형식 다양성 흡수 (dict / string / op 누락 dict 모두).
         if isinstance(then_raw, dict):
             for w in (then_raw.get("writes") or []):
-                if not isinstance(w, dict):
-                    continue
-                tname = str(w.get("table") or "").strip()
-                op = str(w.get("op") or "").strip().upper()
-                if tname and op:
-                    write_edges.append({
-                        "example_id": example_id,
-                        "table_name": tname,
-                        "op": op,
-                    })
+                tname, op = _parse_write_entry(w)
+                if tname:
+                    write_edges.append({"example_id": example_id, "table_name": tname, "op": op})
 
     return example_rows, write_edges
 

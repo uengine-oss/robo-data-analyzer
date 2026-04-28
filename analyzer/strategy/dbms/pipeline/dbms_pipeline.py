@@ -34,6 +34,7 @@ from analyzer.strategy.dbms.pipeline.phase_linking import run_phase_linking
 from analyzer.strategy.dbms.pipeline.phase_metadata import run_phase_metadata
 from analyzer.strategy.dbms.pipeline.phase_vector import run_phase_vector
 from analyzer.strategy.dbms.pipeline.pipeline_state import DbmsPhaseContext
+from analyzer.strategy.dbms.pipeline.stream_merge import merge_streams
 
 
 class DbmsPipeline(BaseStreamingAnalyzer):
@@ -210,33 +211,26 @@ class DbmsPipeline(BaseStreamingAnalyzer):
             pipeline_state.set_phase(PipelinePhase.CANCELLED)
             return
 
-        # ========== Phase 4: 벡터라이징 ==========
-        pipeline_state.set_phase(PipelinePhase.VECTORIZING, "테이블/컬럼 벡터라이징 중", 0)
+        # ========== Phase 4 + Phase 5: 벡터라이징 + 리니지 분석 (병렬) ==========
+        # 의존성 분석:
+        #   - Phase 4 (vector) : Table/Column.description 입력 → Phase 2 후처리 결과 의존
+        #   - Phase 5 (lineage): source 디렉토리 .sql 만 입력 (Neo4j 데이터 의존 X)
+        #   - 두 phase 가 서로 의존성 없으므로 동시 실행으로 catalog/embedding API latency 누적 회피
+        pipeline_state.set_phase(PipelinePhase.VECTORIZING, "벡터라이징 + 리니지 분석 중", 0)
         yield emit_phase_event(4, "벡터라이징", "started", 0, {"canPause": True})
+        yield emit_phase_event(5, "리니지 분석", "started", 0, {"canPause": True})
         yield emit_message("")
         yield emit_separator()
-        yield emit_phase_header(4, "🔢 벡터라이징", "임베딩 생성")
+        yield emit_phase_header(4, "🔢 벡터라이징 + 🔗 리니지 분석", "병렬 실행")
         yield emit_separator()
-        async for chunk in run_phase_vector(ctx):
+        async for chunk in merge_streams(
+            ("vectorize", run_phase_vector(ctx)),
+            ("lineage", run_phase_lineage(ctx)),
+        ):
             yield chunk
         yield emit_message("")
         yield emit_phase_complete(4, "벡터라이징 완료")
         yield emit_phase_event(4, "벡터라이징", "completed", 100, {"tables_vectorized": stats.tables_vectorized, "columns_vectorized": stats.columns_vectorized})
-        if not await pipeline_state.wait_if_paused():
-            yield emit_message("⏹️ 파이프라인이 중단되었습니다")
-            pipeline_state.set_phase(PipelinePhase.CANCELLED)
-            return
-
-        # ========== Phase 5: 리니지 분석 ==========
-        pipeline_state.set_phase(PipelinePhase.LINEAGE_ANALYSIS, "데이터 리니지 분석 중", 0)
-        yield emit_phase_event(5, "리니지 분석", "started", 0, {"canPause": True})
-        yield emit_message("")
-        yield emit_separator()
-        yield emit_phase_header(5, "🔗 데이터 리니지 분석", "ETL 패턴 감지")
-        yield emit_separator()
-        async for chunk in run_phase_lineage(ctx):
-            yield chunk
-        yield emit_message("")
         yield emit_phase_complete(5, "리니지 분석 완료")
         yield emit_phase_event(
             5, "리니지 분석", "completed", 100,

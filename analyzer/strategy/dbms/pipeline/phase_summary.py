@@ -29,6 +29,7 @@ from analyzer.strategy.dbms.common.models.node_models import FileAnalysisContext
 from analyzer.strategy.dbms.enrichment.table_description_enrichment import (
     run_table_description_enrichment,
 )
+from analyzer.strategy.dbms.pipeline.stream_merge import merge_streams
 from config.settings import settings
 from util.logger import log_process
 from util.stream_emitter import emit_message, emit_phase_event
@@ -191,13 +192,18 @@ async def run_phase_post(
     ctx: Any,
     contexts: List[FileAnalysisContext],
 ) -> AsyncGenerator[bytes, None]:
-    """Phase 3 후처리 — 프로시저 요약 → 테이블 요약 (순서 보장)."""
-    async for chunk in _run_unit_analysis(ctx, contexts):
-        yield chunk
-    async for chunk in run_table_description_enrichment(
-        client=ctx.client,
-        contexts=contexts,
-        api_key=ctx.orchestrator.api_key,
-        locale=ctx.orchestrator.locale,
+    """Phase 2 후처리 — 프로시저 요약 + 테이블 요약 **병렬** 실행.
+
+    두 단계가 서로 의존성 없으므로 동시 실행으로 LLM API latency 누적 회피.
+    Neo4j 쓰기는 cypher_lock 으로 직렬화되므로 write contention 안전.
+    """
+    async for chunk in merge_streams(
+        ("unit_summary", _run_unit_analysis(ctx, contexts)),
+        ("table_summary", run_table_description_enrichment(
+            client=ctx.client,
+            contexts=contexts,
+            api_key=ctx.orchestrator.api_key,
+            locale=ctx.orchestrator.locale,
+        )),
     ):
         yield chunk

@@ -294,11 +294,10 @@ def assemble_final_analysis(proc_root: Any) -> Dict[str, Any]:
         if not isinstance(r, dict):
             continue
         rule_id = f"R{idx}"
-        cond = (r.get("condition") or "").strip()
-        result = (r.get("result") or "").strip()
-        if not result:
+        # LLM 출력 = {statement, examples} (Framework 패턴 일치). statement 그대로 사용.
+        statement = (r.get("statement") or "").strip()
+        if not statement:
             continue
-        statement = f"{cond} 이면 {result}" if cond else result
 
         final_rules.append({
             "rule_id": rule_id,

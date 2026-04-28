@@ -322,6 +322,28 @@ def get_llm(
         "max_retries": 5,
     }
 
+    # OpenRouter 최적화 — base_url 이 OpenRouter 일 때만 적용.
+    # provider 선택 우선순위: sort > order. sort 가 더 깔끔 (slug 무관, 자동 적응).
+    # reasoning OFF 는 reasoning 안 쓰는 task 에서 추가 속도 향상.
+    if "openrouter.ai" in (base_url or "").lower():
+        provider_block: Dict[str, Any] = {}
+        if config.openrouter_provider_sort:
+            provider_block["sort"] = config.openrouter_provider_sort
+        elif config.openrouter_provider_order:
+            provider_block["order"] = list(config.openrouter_provider_order)
+        if provider_block:
+            provider_block["allow_fallbacks"] = config.openrouter_allow_fallbacks
+
+        extra_body: Dict[str, Any] = {}
+        if provider_block:
+            extra_body["provider"] = provider_block
+        if not config.openrouter_reasoning_enabled:
+            extra_body["reasoning"] = {"enabled": False}
+
+        if extra_body:
+            kwargs["extra_body"] = extra_body
+            logging.info("[LLM] OpenRouter extra_body: %s", extra_body)
+
     # 추론 모델 특수 처리 (Responses API 사용 — gpt-5.4+ reasoning+tools 호환)
     if _is_reasoning_model(model):
         kwargs["reasoning_effort"] = config.reasoning_effort
