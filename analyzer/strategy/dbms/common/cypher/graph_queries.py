@@ -115,7 +115,7 @@ def build_procedure_summary_queries(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Table / Column description 보강 쿼리 — 기존 phase_summary 의 _summarize_table 결과 적용용
+# Table / Column description 보강 쿼리 — phase_summary 의 LLM 결과 적용용
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -149,13 +149,14 @@ def build_table_description_query(
 
 
 def build_column_description_query(
-    *, schema: str, table_name: str, column_name: str, llm_desc: str
+    *, datasource: str, schema: str, table_name: str, column_name: str, llm_desc: str
 ) -> Dict[str, Any]:
     """:Column 노드의 설명(description/analyzed_description) 보강 쿼리.
 
-    fqn 은 lower case 의 ``schema.table.column`` 형식 (DDL handler 와 동일 규칙).
+    fqn 은 lower case 의 ``datasource.schema.table.column`` 4-part 형식
+    (DDL handler 와 동일 규칙 — datasource 빠지면 MATCH 실패).
     """
-    fqn = ".".join(filter(None, [schema, table_name, column_name])).lower()
+    fqn = ".".join(filter(None, [datasource, schema, table_name, column_name])).lower()
     return {
         "query": COLUMN_DESCRIPTION_UPDATE_QUERY,
         "params": {"fqn": fqn, "llm_desc": llm_desc},
@@ -395,6 +396,35 @@ def build_references_query(
         "params": {
             "n_line": src_line,
             "var_name": var_name,
+            "directory": full_directory,
+            "file_name": file_name,
+        },
+    }
+
+
+def build_init_by_query(
+    *,
+    src_name: str, src_line: int,
+    target_name: str,
+    full_directory: str, file_name: str,
+) -> Dict[str, Any]:
+    """초기화식 식별자 매칭 → (:VARIABLE)-[:INIT_BY]->(:VARIABLE | :PACKAGE_VARIABLE | :CONSTANT_FIELD).
+
+    src 는 init_value 가 단순 식별자인 VARIABLE.
+    target 은 같은 파일 내 동일 이름 variable-like 노드.
+    """
+    return {
+        "query": (
+            "MATCH (s:VARIABLE {name: $src_name, startLine: $src_line, directory: $directory, file_name: $file_name})\n"
+            "MATCH (t {name: $target_name, directory: $directory, file_name: $file_name})\n"
+            "WHERE t:VARIABLE OR t:PACKAGE_VARIABLE OR t:CONSTANT_FIELD\n"
+            "MERGE (s)-[:INIT_BY]->(t)\n"
+            "RETURN s, t"
+        ),
+        "params": {
+            "src_name": src_name,
+            "src_line": src_line,
+            "target_name": target_name,
             "directory": full_directory,
             "file_name": file_name,
         },

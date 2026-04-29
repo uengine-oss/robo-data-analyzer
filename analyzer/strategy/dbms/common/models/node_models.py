@@ -64,6 +64,10 @@ class StatementNode:
     parameters: str = ""
     comment: str = ""
 
+    # ANTLR Node properties — VARIABLE 의 데이터 타입 + := 우변 텍스트 (init_by_linker / LLM 컨텍스트 입력)
+    variable_type: str = ""
+    init_value: str = ""
+
     # 라인 정보
     lines: List[Tuple[int, str]] = field(default_factory=list)
 

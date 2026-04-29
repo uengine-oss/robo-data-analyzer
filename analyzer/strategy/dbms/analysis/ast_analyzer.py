@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple, Set, Union
 
@@ -62,6 +63,70 @@ from analyzer.strategy.dbms.common.models.node_models import (
 )
 from util.llm_rule_runner import prompts
 from util.llm_call_safety import AsyncBatchExecutor, LLMRateLimiter
+
+
+def _extract_enclosing_parameters(batch_nodes: List[StatementNode]) -> str:
+    """batch 의 enclosing PROCEDURE/FUNCTION 의 parameters 텍스트.
+
+    같은 unit 의 batch 라면 첫 노드의 enclosing 만 확인하면 충분.
+    parameters 가 비어있으면 빈 문자열 반환.
+    """
+    for node in batch_nodes:
+        cur: Optional[StatementNode] = node
+        while cur is not None:
+            if cur.node_type in PROCEDURE_TYPES and cur.parameters:
+                return cur.parameters
+            cur = cur.parent
+    return ""
+
+
+def _find_enclosing_proc(node: StatementNode) -> Optional[StatementNode]:
+    cur: Optional[StatementNode] = node
+    while cur is not None:
+        if cur.node_type in PROCEDURE_TYPES:
+            return cur
+        cur = cur.parent
+    return None
+
+
+def _extract_referenced_variables(batch_nodes: List[StatementNode]) -> str:
+    """batch 의 코드에서 참조되는 enclosing 프로시저 안 변수들을 LLM 컨텍스트 형식으로 반환.
+
+    형식:  ``<name> (<type>) := <init_value>`` 한 줄씩.
+    init_value 가 없으면 ``<name> (<type>)`` 만.
+    참조된 변수가 없으면 빈 문자열.
+
+    INIT_BY 엣지 유무와 무관하게 모든 변수 정보 (이름·타입·초기값 텍스트) 를 LLM 에 전달.
+    """
+    if not batch_nodes:
+        return ""
+    proc = _find_enclosing_proc(batch_nodes[0])
+    if proc is None:
+        return ""
+
+    proc_vars: List[StatementNode] = []
+    def _collect(n: StatementNode) -> None:
+        if n.node_type == "VARIABLE" and n.name:
+            proc_vars.append(n)
+        for c in n.children:
+            _collect(c)
+    _collect(proc)
+    if not proc_vars:
+        return ""
+
+    full_code = "\n".join(n.code or "" for n in batch_nodes)
+    lines: List[str] = []
+    seen: Set[str] = set()
+    for v in proc_vars:
+        if v.name in seen:
+            continue
+        if not re.search(rf"\b{re.escape(v.name)}\b", full_code):
+            continue
+        seen.add(v.name)
+        type_part = f" ({v.variable_type})" if v.variable_type else ""
+        init_part = f" := {v.init_value}" if v.init_value else ""
+        lines.append(f"{v.name}{type_part}{init_part}")
+    return "\n".join(lines)
 
 
 # =========================================================================
@@ -824,6 +889,12 @@ class DbmsAstProcessor(BaseAstProcessor):
         if node.parameters:
             set_parts.append("__cy_n__.parameters = $parameters")
             params["parameters"] = node.parameters
+        if node.variable_type:
+            set_parts.append("__cy_n__.variable_type = $variable_type")
+            params["variable_type"] = node.variable_type
+        if node.init_value:
+            set_parts.append("__cy_n__.init_value = $init_value")
+            params["init_value"] = node.init_value
 
         if label in PROCEDURE_TYPES and node.unit_name:
             set_parts.append("__cy_n__.procedure_name = $procedure_name")
@@ -909,6 +980,11 @@ class DbmsAstProcessor(BaseAstProcessor):
             matched = ddl_table_matcher.match_in_code(general_code or dml_code, self._ddl_pattern)
             ddl_context = ddl_table_matcher.build_context(matched, self._ddl_table_index)
 
+        # enclosing PROCEDURE/FUNCTION 의 parameters 텍스트 — LLM 의미 풀이용
+        function_parameters = _extract_enclosing_parameters(batch.nodes)
+        # 참조된 enclosing 변수들의 (name, type, init_value) — REFERENCES + initValue 컨텍스트
+        referenced_variables = _extract_referenced_variables(batch.nodes)
+
         if batch.ranges:
             def _call_analyze_code():
                 inputs = {
@@ -922,6 +998,10 @@ class DbmsAstProcessor(BaseAstProcessor):
                     inputs["context"] = context
                 if ddl_context:
                     inputs["ddl_context"] = ddl_context
+                if function_parameters:
+                    inputs["function_parameters"] = function_parameters
+                if referenced_variables:
+                    inputs["referenced_variables"] = referenced_variables
                 if has_dml:
                     inputs["has_dml"] = True
                 if is_unit_root:

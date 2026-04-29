@@ -73,6 +73,9 @@ prompt: |
   - EXCEPTION 블록 / OUT result_code 값의 의미
   - COMMIT/ROLLBACK 시점
   - 테이블 조작: INSERT 컬럼·값 / UPDATE·MERGE WHERE·전→후 / DELETE WHERE
+  - **사용 테이블 모두 보존**: 자식 summary 들에 등장한 모든 테이블명을 누락 없이 나열.
+    중첩 서브쿼리·JOIN·UNION·CTE 안쪽 테이블도 빠짐없이 — 자식 요약에 N 개 테이블이 등장했다면 unit summary 도 N 개 모두 언급.
+    "주요 테이블만" / "관련 테이블들" 식의 묶음 표현 X — 실제 이름 모두 명시.
 
   ════════════════════════════════════════════════════════════
   [섹션 C. 식별자 규칙]

@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, Dict, Set
 
 from analyzer.common.cypher.graph_writer import write_to_graph
 from analyzer.strategy.framework.analysis.ast_analyzer import analyze_and_enrich
@@ -20,13 +20,52 @@ from analyzer.strategy.framework.common.cypher.graph_queries import (
     build_uml_dependency_queries,
 )
 from analyzer.strategy.framework.common.domain.ontology import get_ontology
-from analyzer.strategy.framework.enrichment.table_description_enrichment import (
-    accumulate_table_insights,
-)
 from config.settings import settings
 from util.stream_emitter import PhaseTracker
 
 logger = logging.getLogger(__name__)
+
+
+def accumulate_table_insights(
+    analysis_batch: Dict[str, Any],
+    table_map: Dict[str, Dict[str, Any]],
+    allowed_tables: Set[str],
+) -> None:
+    """tableInsights 를 ``table_map`` 에 누적 (in-place).
+
+    Args:
+        analysis_batch: ``{function_id: analysis_dict}`` (LLM code_analysis 배치 결과)
+        table_map:      누적 대상 dict — ``{table_name_lower: {descriptions, columns, source_functions}}``
+        allowed_tables: Phase 2 에서 식별된 컨텍스트 테이블명 (소문자). 그 외는 errlog 후 드롭.
+    """
+    for function_id, analysis in analysis_batch.items():
+        for insight in (analysis.get("tableInsights") or []):
+            tbl_name = (insight.get("tableName") or "").strip().lower()
+            if not tbl_name:
+                continue
+            if tbl_name not in allowed_tables:
+                logger.warning(
+                    "[TABLE_INSIGHTS] 컨텍스트 외 테이블 드롭 | function_id=%s table=%s",
+                    function_id, tbl_name,
+                )
+                continue
+            tbl_desc = (insight.get("description") or "").strip()
+            slot = table_map.setdefault(
+                tbl_name,
+                {"descriptions": [], "columns": {}, "source_functions": []},
+            )
+            if tbl_desc:
+                slot["descriptions"].append(tbl_desc)
+            if function_id:
+                slot["source_functions"].append(function_id)
+            for col in (insight.get("columns") or []):
+                col_name = (col.get("name") or "").strip()
+                col_desc = (col.get("description") or "").strip()
+                if not col_name:
+                    continue
+                col_slot = slot["columns"].setdefault(col_name, {"descriptions": []})
+                if col_desc:
+                    col_slot["descriptions"].append(col_desc)
 
 
 async def collect_analysis_context(ctx: Any) -> dict:

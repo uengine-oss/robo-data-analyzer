@@ -75,8 +75,8 @@ class VariableFacts:
     comment: str = ""
     annotations: str = ""
     code: str = ""
-    # 선언부(배열크기·초기화식 등)에서 참조한 식별자 이름 목록 — AST에서 직접 수집
-    references: List[str] = field(default_factory=list)
+    # 선언부 초기화식 텍스트 (ANTLR 의 node.initValue) — Analyzer 가 식별자 추출하여 INIT_BY 매칭
+    init_value: str = ""
 
 
 @dataclass

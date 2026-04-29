@@ -35,10 +35,18 @@ logger = logging.getLogger(__name__)
 
 
 # ── callee 추출 regex (Framework call_linker 와 동일 패턴) ─────────────────
+# PL/SQL identifier 는 ASCII 영문/숫자/_/$/# 만 — re.ASCII 로 \b/\w 한글 매칭 차단.
+# (한글 주석에 "단어(" 패턴이 있어도 callee 로 오인하지 않음 — call_linker 가
+#  한국어 키워드를 EXTERNAL placeholder PROCEDURE 로 환각하던 결함 수정)
 # PKG.FUNC( — 스키마/패키지 접두사 있는 호출
-_OBJ_METHOD_PATTERN = re.compile(r"\b(\w+)\s*\.\s*(\w+)\s*\(")
+_OBJ_METHOD_PATTERN = re.compile(r"\b([A-Za-z_$#][A-Za-z0-9_$#]*)\s*\.\s*([A-Za-z_$#][A-Za-z0-9_$#]*)\s*\(", re.ASCII)
 # := FUNC( 또는 일반 FUNC( — 단독 호출
-_BARE_METHOD_PATTERN = re.compile(r"(?:^|:=|[\s(,])(\w+)\s*\(")
+_BARE_METHOD_PATTERN = re.compile(r"(?:^|:=|[\s(,])([A-Za-z_$#][A-Za-z0-9_$#]*)\s*\(", re.ASCII)
+
+# 코드에서 주석 (-- ..., /* ... */) 제거용 — 한글/영어 주석 안의 함수형 패턴이
+# CALLS 환각으로 이어지지 않도록 LLM 호출 전 필터.
+_LINE_COMMENT_PATTERN = re.compile(r"--[^\n]*")
+_BLOCK_COMMENT_PATTERN = re.compile(r"/\*.*?\*/", re.DOTALL)
 
 # regex 로 잡히지만 호출이 아닌 PL/SQL 예약어
 _PLSQL_KEYWORDS: Set[str] = {
@@ -111,6 +119,10 @@ def _extract_callees(code: str) -> List[Tuple[Optional[str], str]]:
     """
     if not code:
         return []
+    # 주석 제거 — 주석 안의 "단어(" 패턴이 callee 로 오인되지 않도록.
+    # ANTLR collector 가 prepend 한 `<line>: ` prefix 도 같은 방식으로 처리됨 (한 줄 단위).
+    code = _BLOCK_COMMENT_PATTERN.sub("", code)
+    code = _LINE_COMMENT_PATTERN.sub("", code)
     found: Set[Tuple[Optional[str], str]] = set()
     # PKG.FUNC 패턴 먼저
     for m in _OBJ_METHOD_PATTERN.finditer(code):

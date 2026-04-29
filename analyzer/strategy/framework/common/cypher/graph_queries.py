@@ -308,6 +308,7 @@ def build_variable_queries(variable_facts_list: List[VariableFacts], lang: str, 
             "variable_type": f.variable_type, "code_ref": f.code_ref,
             "code_text": f.code[:_CHUNK_CODE_MAX],
             "annotations": f.annotations, "comment": f.comment,
+            "init_value": f.init_value,
         }, sub_label=kind))
     return queries
 
@@ -340,7 +341,7 @@ def build_column_description_update_queries(
     """LLM table_summary 가 반환한 컬럼별 description 을 :Column 노드에 merge.
 
     기존 description 이 있으면 ``" | "`` 구분자로 append. 없으면 새 description SET.
-    호출자는 ``framework/enrichment/table_description_enrichment.py``.
+    호출자는 ``framework/pipeline/phase_summary.py`` 의 _build_queries 콜백.
     """
     queries: List[Dict[str, Any]] = []
     for col in columns:

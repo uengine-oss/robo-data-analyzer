@@ -1,25 +1,144 @@
 """Phase 2: 분석 전 Linking (결정론)
 
-AST 기반 CALLS + REFERENCES 관계를 Neo4j 에 사전 구축.
+AST 기반 CALLS + REFERENCES + INIT_BY 관계를 Neo4j 에 사전 구축.
 LLM 호출 전에 수행되므로, node_analysis 단계에서 이 정보를 활용 가능.
 
-- call_linker: CALL 노드 + initializer_contains_method_call 플래그 → CALLS
-- variable_linker: VARIABLE (DECLARE 안) + PACKAGE_VARIABLE → REFERENCES
+- call_linker (DBMS 전용 정규식): CALLS 엣지
+- common.variable_linker: REFERENCES 엣지 (StatementNode → canonical dict 변환)
+- common.init_by_linker: INIT_BY 엣지 (DECLARE := 만, 단순 식별자 source)
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, AsyncGenerator, List
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
-from analyzer.strategy.dbms.common.models.node_models import FileAnalysisContext, FileStatus
-from analyzer.strategy.dbms.linking.call_linker import build_calls_queries
-from analyzer.strategy.dbms.linking.variable_linker import build_references_queries
 from analyzer.common.cypher.graph_writer import write_to_graph
-from util.stream_emitter import emit_message
+from analyzer.common.pipeline.init_by_linker import find_init_by_sources
+from analyzer.common.pipeline.variable_linker import WILDCARD_SCOPE, find_variable_references
+from analyzer.strategy.dbms.common.cypher.graph_queries import (
+    build_init_by_query,
+    build_references_query,
+)
+from analyzer.strategy.dbms.common.domain.analysis_constants import PROCEDURE_TYPES
+from analyzer.strategy.dbms.common.models.node_models import FileAnalysisContext, FileStatus, StatementNode
+from analyzer.strategy.dbms.linking.call_linker import build_calls_queries
 from util.logger import log_process
+from util.stream_emitter import emit_message
 
 logger = logging.getLogger(__name__)
+
+_PACKAGE_VAR_TYPES = {"PACKAGE_VARIABLE", "CONSTANT_FIELD"}
+_VAR_LIKE_TYPES = {"VARIABLE", "PACKAGE_VARIABLE", "CONSTANT_FIELD"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# StatementNode → canonical dict 변환
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _enclosing_proc(node: StatementNode) -> Optional[StatementNode]:
+    """가장 가까운 PROCEDURE/FUNCTION/TRIGGER 조상 반환."""
+    current = node.parent
+    while current is not None:
+        if current.node_type in PROCEDURE_TYPES:
+            return current
+        current = current.parent
+    return None
+
+
+def _scope_id(node: StatementNode) -> Any:
+    """node 의 enclosing 프로시저 식별자. 없으면 WILDCARD."""
+    proc = _enclosing_proc(node)
+    return id(proc) if proc is not None else WILDCARD_SCOPE
+
+
+def _build_reference_targets_sources(nodes: List[StatementNode]):
+    targets: List[Dict[str, Any]] = []
+    sources: List[Dict[str, Any]] = []
+    for n in nodes:
+        if not n.node_type:
+            continue
+        name = (n.name or "").strip()
+        if n.node_type == "VARIABLE" and name:
+            targets.append({
+                "id": id(n), "name": name,
+                "scope_id": _scope_id(n),
+                "node": n,
+            })
+        elif n.node_type in _PACKAGE_VAR_TYPES and name:
+            targets.append({
+                "id": id(n), "name": name,
+                "scope_id": WILDCARD_SCOPE,
+                "node": n,
+            })
+        if n.analyzable and n.code:
+            sources.append({
+                "id": id(n),
+                "scope_id": _scope_id(n),
+                "code": n.code,
+                "node": n,
+            })
+    return targets, sources
+
+
+def _build_init_by_inputs(nodes: List[StatementNode]):
+    """VARIABLE 중 init_value 가진 노드 + name_index 구성."""
+    variables: List[Dict[str, Any]] = []
+    name_index: Dict[str, List[Dict[str, Any]]] = {}
+    for n in nodes:
+        if n.node_type not in _VAR_LIKE_TYPES:
+            continue
+        name = (n.name or "").strip()
+        if not name:
+            continue
+        entry = {"id": id(n), "name": name, "node": n}
+        name_index.setdefault(name.lower(), []).append(entry)
+        if n.node_type == "VARIABLE" and n.init_value:
+            variables.append({
+                "id": id(n), "name": name,
+                "init_value": n.init_value,
+                "node": n,
+            })
+    return variables, name_index
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 파일별 링킹 쿼리 빌드
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _build_reference_queries(nodes, full_directory, file_name) -> List[Dict[str, Any]]:
+    targets, sources = _build_reference_targets_sources(nodes)
+    pairs = find_variable_references(targets=targets, sources=sources)
+    queries: List[Dict[str, Any]] = []
+    for t, s in pairs:
+        sn: StatementNode = s["node"]
+        queries.append(build_references_query(
+            src_node_type=sn.node_type, src_line=sn.start_line,
+            var_name=t["name"],
+            full_directory=full_directory, file_name=file_name,
+        ))
+    return queries
+
+
+def _build_init_by_queries(nodes, full_directory, file_name) -> List[Dict[str, Any]]:
+    variables, name_index = _build_init_by_inputs(nodes)
+    pairs = find_init_by_sources(variables=variables, name_index=name_index)
+    queries: List[Dict[str, Any]] = []
+    for v, src in pairs:
+        sn: StatementNode = v["node"]
+        queries.append(build_init_by_query(
+            src_name=v["name"], src_line=sn.start_line,
+            target_name=src["name"],
+            full_directory=full_directory, file_name=file_name,
+        ))
+    return queries
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 메인 진입점
+# ═══════════════════════════════════════════════════════════════════════════
 
 
 async def run_phase_linking(
@@ -34,13 +153,17 @@ async def run_phase_linking(
     client = ctx.client
     total_call_edges = 0
     total_ref_edges = 0
+    total_init_by_edges = 0
 
     for file_ctx in targets:
         proc = file_ctx.processor
         nodes = proc._nodes or []
+        ref_queries = _build_reference_queries(nodes, proc.full_directory, proc.file_name)
+        init_by_queries = _build_init_by_queries(nodes, proc.full_directory, proc.file_name)
         linking_queries = (
             build_calls_queries(nodes, proc.full_directory, proc.file_name)
-            + build_references_queries(nodes, proc.full_directory, proc.file_name)
+            + ref_queries
+            + init_by_queries
         )
         if not linking_queries:
             continue
@@ -54,9 +177,14 @@ async def run_phase_linking(
 
         # 통계 (대략)
         calls_cnt = sum(1 for q in linking_queries if "CALLS" in q.get("query", ""))
-        refs_cnt = sum(1 for q in linking_queries if "REFERENCES" in q.get("query", ""))
         total_call_edges += calls_cnt
-        total_ref_edges += refs_cnt
+        total_ref_edges += len(ref_queries)
+        total_init_by_edges += len(init_by_queries)
 
-    yield emit_message(f"   ✓ 결정론 링킹 완료: CALLS {total_call_edges}건, REFERENCES {total_ref_edges}건")
-    log_process("PHASE:LINK", "DONE", f"CALLS={total_call_edges} REFERENCES={total_ref_edges}")
+    yield emit_message(
+        f"   ✓ 결정론 링킹 완료: CALLS {total_call_edges}건, REFERENCES {total_ref_edges}건, INIT_BY {total_init_by_edges}건"
+    )
+    log_process(
+        "PHASE:LINK", "DONE",
+        f"CALLS={total_call_edges} REFERENCES={total_ref_edges} INIT_BY={total_init_by_edges}",
+    )

@@ -71,6 +71,7 @@ prompt: |
   - columns 배열: 이 range 에서 실제 사용된 컬럼 + 역할이 명확한 것만 (모호 컬럼 생략)
   - columns[].description: 이 DML 에서 컬럼이 하는 역할 한 문장
   - ddl_context 목록에 없는 테이블/컬럼명 만들지 X (환각 금지)
+  - 제외: DUAL, 시퀀스, 시스템 카탈로그 (pg_catalog · information_schema), CTE 별칭, WITH 임시 결과명 — ddl_context 에 있어도 tables 결과에 포함 X
   {% else %}
 
   [ddl_context 없음 — 식별 + 사용 의미]

@@ -10,7 +10,7 @@
   - linking/entity_linker.py: collect_entity_startpoints, run_entity_identification,
     collect_entity_fqns_from_edges
   - linking/unresolved_linker.py: run_unresolved_linking
-  - linking/variable_linker.py: build_init_by_edges, run_variable_references
+  - common.pipeline.variable_linker / init_by_linker: 결정론 변수 매칭 (이전 linking/variable_linker.py 흡수)
 
 오케스트레이션 4 단계:
   1. run_deterministic_and_llm_batch — 결정론 매칭 + Table/Call LLM 배치 + 후처리
@@ -28,7 +28,16 @@ from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from analyzer.common.cypher.graph_writer import write_to_graph
+from analyzer.common.pipeline.init_by_linker import find_init_by_sources
+from analyzer.common.pipeline.variable_linker import (
+    WILDCARD_SCOPE as COMMON_WILDCARD_SCOPE,
+    find_variable_references,
+)
 from analyzer.strategy.base_analyzer import AnalysisStats
+from analyzer.strategy.framework.analysis.chunk_bundle import (
+    _get_chunk_bundle_dir_from_run_dir,
+    build_bundle_span_index,
+)
 from analyzer.strategy.framework.common.cypher.graph_queries import (
     build_artifact_module_refer_to_queries,
     build_artifact_table_refer_to_queries,
@@ -54,6 +63,7 @@ from analyzer.strategy.framework.common.models.node_models import (
     ConfigSectionChunk,
     FkEdge,
     FunctionFacts,
+    InitByEdge,
     ReadsWritesEdge,
     ReferToEdge,
     SqlStatementChunk,
@@ -78,15 +88,27 @@ from analyzer.strategy.framework.linking.reference_linker import (
 )
 from analyzer.strategy.framework.linking.table_linker import link_sql_to_tables_async
 from analyzer.strategy.framework.linking.unresolved_linker import run_unresolved_linking
-from analyzer.strategy.framework.linking.variable_linker import (
-    build_init_by_edges,
-    run_variable_references,
-)
 from client.neo4j_client import Neo4jClient
 from config.settings import settings
 from util.stream_emitter import PhaseTracker, emit_message
 
 logger = logging.getLogger(__name__)
+
+
+def _ensure_chunk_index_in_state(st: Any, data_dir: str) -> Dict[str, Any]:
+    """span/chunk index 가 state 에 없으면 빌드. (이전: variable_linker._ensure_chunk_index)"""
+    if getattr(st, "span_index", None) and getattr(st, "chunk_index", None):
+        return st.chunk_index
+    run_dir = getattr(st, "run_dir", None)
+    chunk_dir = _get_chunk_bundle_dir_from_run_dir(run_dir)
+    span_index, chunk_index = build_bundle_span_index(
+        chunk_bundle_dir=chunk_dir,
+        artifact_index=getattr(st, "artifact_index", None),
+        sql_index=getattr(st, "sql_index", None),
+    )
+    st.span_index = span_index
+    st.chunk_index = chunk_index
+    return chunk_index
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -465,25 +487,47 @@ async def run_deep_agent_parallel(ctx: LinkingContext) -> AsyncGenerator[bytes, 
         result_queue.put_nowait(("entity", entity_state, mt_edges, fk_e, col_refs))
 
     def _run_variable_refs():
-        """변수 참조 + INIT_BY 결정론적 매칭 (LLM 미사용)."""
+        """변수 참조 + INIT_BY 결정론적 매칭 (LLM 미사용). common.pipeline 호출."""
         variables = st.variable_facts_list or []
         if not variables:
             return
         logger.info("[PHASE:2:VARREF] 결정론적 매칭 시작 | variables=%d", len(variables))
-        varref_state = {
-            "sql_index": st.sql_index,
-            "config_index": st.config_index or {},
-            "artifact_index": st.artifact_index or {},
-            "data_dir": ctx.data_dir,
-            "run_dir": str(Path(st.run_dir)) if st.run_dir else None,
-            "span_index": st.span_index,
-            "chunk_index": st.chunk_index,
-        }
-        refs = run_variable_references(variables, state=varref_state)
+
+        # ── REFERENCES: variable_facts + function chunks → (function_id, variable_id) 페어 ──
+        chunk_index = _ensure_chunk_index_in_state(st, ctx.data_dir)
+        function_chunk_ids = frozenset(
+            cid for cid in (chunk_index or {})
+            if "#" not in cid and not cid.startswith("C:")
+        )
+        targets = [
+            {"id": v.variable_id, "name": v.name, "scope_id": COMMON_WILDCARD_SCOPE}
+            for v in variables if v.variable_id and v.name
+        ]
+        sources = [
+            {"id": cid, "scope_id": COMMON_WILDCARD_SCOPE, "code": (info.get("text") or "")}
+            for cid, info in (chunk_index or {}).items() if cid in function_chunk_ids
+        ]
+        ref_pairs = find_variable_references(targets=targets, sources=sources)
+        refs = [(s["id"], t["id"]) for t, s in ref_pairs]
         logger.info("[PHASE:2:VARREF] REFERENCES 매칭 완료 | refs=%d", len(refs))
         if refs:
             result_queue.put_nowait(("var_refs", refs))
-        init_by = build_init_by_edges(variables)
+
+        # ── INIT_BY: VariableFacts.init_value 텍스트 → 식별자 추출 (common 모듈) → InitByEdge ──
+        init_variables: List[Dict[str, Any]] = [
+            {"id": v.variable_id, "name": v.name, "init_value": v.init_value}
+            for v in variables
+            if v.variable_id and v.name and v.init_value
+        ]
+        name_index: Dict[str, List[Dict[str, Any]]] = {}
+        for v in variables:
+            if v.variable_id and v.name:
+                name_index.setdefault(v.name.lower(), []).append({"id": v.variable_id, "name": v.name})
+        init_pairs = find_init_by_sources(variables=init_variables, name_index=name_index)
+        init_by = [
+            InitByEdge(variable_id=var["id"], init_source_id=src["id"])
+            for var, src in init_pairs
+        ]
         if init_by:
             result_queue.put_nowait(("init_by", init_by))
 

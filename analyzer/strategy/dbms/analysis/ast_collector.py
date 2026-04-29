@@ -161,11 +161,15 @@ class StatementCollector:
             unit_kind=procedure_type,
             schema_name=schema_name,
             dml=dml,
-            signature=node.get('signature'),
-            parameters=node.get('parameters'),
+            name=node.get('name') or "",
+            signature=node.get('signature') or "",
+            parameters=node.get('parameters') or "",
+            return_type=node.get('returnType') or "",
             comment=comment,
             lines=line_entries,
             initializer_contains_method_call=bool(node.get('initializerContainsMethodCall')),
+            variable_type=node.get('variableType') or "",
+            init_value=node.get('initValue') or "",
         )
         for child_node in child_nodes:
             child_node.parent = statement_node

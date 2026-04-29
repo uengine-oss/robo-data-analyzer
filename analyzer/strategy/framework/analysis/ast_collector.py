@@ -54,8 +54,8 @@ class StatementNode:
     variable_type: Optional[str] = None
     annotations: Optional[str] = None
     comment: Optional[str] = None
-    # 변수 선언부(배열크기·초기화식 등)에서 참조한 식별자 이름 목록 — ANTLR AST에서 직접 수집
-    references: List[str] = field(default_factory=list)
+    # 변수 선언부 초기화식 텍스트 (ANTLR 의 node.initValue) — Analyzer 가 식별자 추출
+    init_value: Optional[str] = None
     lines: List[Tuple[int, str]] = field(default_factory=list)
     parent: Optional["StatementNode"] = None
     children: List["StatementNode"] = field(default_factory=list)
@@ -339,7 +339,7 @@ class StatementCollector:
             variable_type=node.get("variableType"),
             annotations=annotations,
             comment=node.get("comment"),
-            references=list(node.get("references") or []),
+            init_value=node.get("initValue"),
             lines=line_entries,
         )
         for c in child_nodes:
@@ -685,7 +685,7 @@ def build_function_facts_and_module_index(
                     code_ref=code_ref,
                     comment=node.comment,
                     annotations=node.annotations,
-                    references=list(node.references),
+                    init_value=(node.init_value or ""),
                 )
             )
             # variable_id → 원래 AST 노드 타입 저장 (서브레이블용)
