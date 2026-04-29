@@ -278,14 +278,13 @@ def build_tools(
 
     @lc_tool
     def graph_create_column_tool(
-        table_name: str, column_name: str,
-        dtype: str = "", description: str = "",
+        table_name: str, column_name: str, dtype: str = "",
     ) -> str:
         """Table 의 Column 을 등록한다. (Table)-[:HAS_COLUMN]->(Column).
 
         코드/구조체/DTO 정의에서 실제 관찰된 필드만 등록. 추측 금지.
-        description 은 해당 함수에서 이 컬럼을 왜/어떻게 쓰는지 1~2 문장. 모르면 빈 문자열.
-        dtype 도 관찰된 경우만 (C struct 필드 타입 / DTO 필드 타입). 모르면 빈 문자열.
+        dtype 은 관찰된 경우만 (멤버 변수 타입 / DTO 필드 타입). 모르면 빈 문자열.
+        description 은 작성하지 않는다 — Phase 3 analysis (tableInsights) 가 단일 책임.
         """
         tbl = (table_name or "").strip()
         col = (column_name or "").strip()
@@ -297,7 +296,6 @@ def build_tools(
                 table_name=tbl,
                 column_name=col,
                 dtype=(dtype or "").strip() or None,
-                description=(description or "").strip() or None,
             ))
         logger.info("[TOOL] column | %s.%s%s", tbl, col, f" ({dtype})" if dtype else "")
         return "ok"

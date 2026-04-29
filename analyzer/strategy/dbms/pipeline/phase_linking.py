@@ -28,8 +28,11 @@ from util.stream_emitter import emit_message
 
 logger = logging.getLogger(__name__)
 
+# 파일 전체 scope (wildcard) 로 매칭되는 변수성 노드
 _PACKAGE_VAR_TYPES = {"PACKAGE_VARIABLE", "CONSTANT_FIELD"}
-_VAR_LIKE_TYPES = {"VARIABLE", "PACKAGE_VARIABLE", "CONSTANT_FIELD"}
+# REFERENCES / INIT_BY name_index 등록 대상 — 모든 변수성 식별자.
+# PARAMETER 도 자식 식별자라 `tagNo := tagsn` 같은 변수↔파라미터 INIT_BY 매칭에 필요.
+_VAR_LIKE_TYPES = {"VARIABLE", "PACKAGE_VARIABLE", "CONSTANT_FIELD", "PARAMETER"}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -54,19 +57,30 @@ def _scope_id(node: StatementNode) -> Any:
 
 
 def _build_reference_targets_sources(nodes: List[StatementNode]):
+    """REFERENCES 매칭의 target/source 후보 분류.
+
+    target 분류:
+      - VARIABLE / PARAMETER → enclosing PROCEDURE/FUNCTION 의 scope (지역)
+      - PACKAGE_VARIABLE / CONSTANT_FIELD → 파일 전체 (wildcard scope)
+    source: 분석 가능한 모든 노드 (코드 본문에서 변수명 토큰 등장 여부 매칭).
+    """
     targets: List[Dict[str, Any]] = []
     sources: List[Dict[str, Any]] = []
     for n in nodes:
         if not n.node_type:
             continue
         name = (n.name or "").strip()
-        if n.node_type == "VARIABLE" and name:
+        if not name:
+            pass  # 식별자 없는 노드는 target 대상 아님
+        elif n.node_type in ("VARIABLE", "PARAMETER"):
+            # 지역 scope — 자기 함수 본문 안에서만 매칭
             targets.append({
                 "id": id(n), "name": name,
                 "scope_id": _scope_id(n),
                 "node": n,
             })
-        elif n.node_type in _PACKAGE_VAR_TYPES and name:
+        elif n.node_type in _PACKAGE_VAR_TYPES:
+            # 파일 전체 scope — 어느 함수에서 참조하든 매칭
             targets.append({
                 "id": id(n), "name": name,
                 "scope_id": WILDCARD_SCOPE,

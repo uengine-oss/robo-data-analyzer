@@ -65,13 +65,13 @@ from analyzer.strategy.framework.common.models.node_models import (
     FunctionFacts,
     InitByEdge,
     ReadsWritesEdge,
-    ReferToEdge,
     SqlStatementChunk,
     VariableFacts,
 )
 from analyzer.strategy.framework.linking.call_linker import (
     derive_uses_from_calls,
     run_call_batch_pipeline_async,
+    set_active_codebase_pattern,
 )
 from analyzer.strategy.framework.linking.entity_linker import (
     collect_entity_fqns_from_edges,
@@ -451,17 +451,18 @@ async def run_deep_agent_parallel(ctx: LinkingContext) -> AsyncGenerator[bytes, 
     result_queue: asyncio.Queue = asyncio.Queue()
 
     def _run_entity_identification():
+        codebase_pattern = (st.codebase_profile.pattern if st.codebase_profile else "")
         startpoints = collect_entity_startpoints(
             module_index=st.module_index or {},
             artifact_index=st.artifact_index or {},
             ddl_table_metadata=ddl_meta or None,
-            profile_pattern=(st.codebase_profile.pattern if st.codebase_profile else ""),
+            codebase_pattern=codebase_pattern,
         )
         logger.info(
             "[PHASE:2:ENTITY] startpoints | ddl=%d xml=%d annotated=%d candidates=%d profile=%s",
             len(startpoints.ddl_tables), len(startpoints.xml_entity_fqns),
             len(startpoints.annotated_fqns), len(startpoints.class_candidates),
-            bool(startpoints.profile_pattern),
+            bool(startpoints.codebase_pattern),
         )
         entity_state = {
             "sql_index": st.sql_index,
@@ -472,7 +473,7 @@ async def run_deep_agent_parallel(ctx: LinkingContext) -> AsyncGenerator[bytes, 
             "span_index": st.span_index,
             "chunk_index": st.chunk_index,
             "ddl_table_metadata": ddl_meta or None,
-            "codebase_profile_pattern": (st.codebase_profile.pattern if st.codebase_profile else ""),
+            "codebase_pattern": codebase_pattern,
             "function_count": len(st.function_facts_list or []),
         }
         mt_edges, fk_e, col_refs = run_entity_identification(
@@ -494,17 +495,27 @@ async def run_deep_agent_parallel(ctx: LinkingContext) -> AsyncGenerator[bytes, 
         logger.info("[PHASE:2:VARREF] 결정론적 매칭 시작 | variables=%d", len(variables))
 
         # ── REFERENCES: variable_facts + function chunks → (function_id, variable_id) 페어 ──
+        # scope_id 정책 (find_variable_references 가 매칭에 사용):
+        #   - VARIABLE / PARAMETER (함수 스코프) → scope_id = v.module_key (function_id).
+        #     자기 함수 chunk 와만 매칭됨 — 외부 함수의 동명 PARAMETER/VARIABLE false-positive 차단.
+        #   - GLOBAL_VARIABLE / DEFINE / CONSTANT_FIELD (모듈/전역 스코프) → 와일드카드.
+        #     모든 함수에서 reference 가능.
+        # source.scope_id = chunk_id (= function_id) — function chunk 가 자기 함수의 코드.
+        _SCOPE_WILDCARD_KINDS = ("GLOBAL_VARIABLE", "DEFINE", "CONSTANT_FIELD")
         chunk_index = _ensure_chunk_index_in_state(st, ctx.data_dir)
         function_chunk_ids = frozenset(
             cid for cid in (chunk_index or {})
             if "#" not in cid and not cid.startswith("C:")
         )
         targets = [
-            {"id": v.variable_id, "name": v.name, "scope_id": COMMON_WILDCARD_SCOPE}
+            {
+                "id": v.variable_id, "name": v.name,
+                "scope_id": COMMON_WILDCARD_SCOPE if v.kind in _SCOPE_WILDCARD_KINDS else v.module_key,
+            }
             for v in variables if v.variable_id and v.name
         ]
         sources = [
-            {"id": cid, "scope_id": COMMON_WILDCARD_SCOPE, "code": (info.get("text") or "")}
+            {"id": cid, "scope_id": cid, "code": (info.get("text") or "")}
             for cid, info in (chunk_index or {}).items() if cid in function_chunk_ids
         ]
         ref_pairs = find_variable_references(targets=targets, sources=sources)
@@ -546,10 +557,10 @@ async def run_deep_agent_parallel(ctx: LinkingContext) -> AsyncGenerator[bytes, 
             "chunk_index": st.chunk_index,
             "ddl_table_metadata": ddl_meta or None,
         }
-        profile_pattern = st.codebase_profile.pattern if st.codebase_profile else ""
+        codebase_pattern = st.codebase_profile.pattern if st.codebase_profile else ""
         for item_refer, item_mt, item_fk in run_unresolved_linking(
             ctx.unresolved, deep_state, api_key=settings.llm.api_key,
-            run_dir=run_dir_path, profile_pattern=profile_pattern,
+            run_dir=run_dir_path, codebase_pattern=codebase_pattern,
         ):
             result_queue.put_nowait(("da_item", item_refer, item_mt, item_fk))
         result_queue.put_nowait(("da_state", deep_state))
@@ -746,6 +757,10 @@ async def run_phase_linking(
     stats = ctx.stats
 
     yield emit_message("🔗 링킹 시작 (참조 해석 → SQL→Table → Call → DeepAgent)")
+
+    # call_extract LLM 호출에 주입할 codebase_pattern 캐시 — Phase 2 진입 시점 1회 설정.
+    # _ACTIVE_LANG/_ACTIVE_STDLIB 와 동일한 글로벌 캐시 패턴.
+    set_active_codebase_pattern(st.codebase_profile.pattern if st.codebase_profile else "")
 
     tracker = PhaseTracker(1, "LLM 링킹", total_phases=3)
     tracker.define_steps([

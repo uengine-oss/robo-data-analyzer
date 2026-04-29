@@ -38,7 +38,6 @@ from analyzer.strategy.dbms.common.domain.analysis_constants import (
     TABLE_RELATIONSHIP_MAP,
 )
 from analyzer.strategy.dbms.common.cypher.graph_queries import (
-    build_actor_role_query,
     build_column_query,
     build_create_temp_table_query,
     build_dblink_query,
@@ -90,13 +89,12 @@ def _find_enclosing_proc(node: StatementNode) -> Optional[StatementNode]:
 
 
 def _extract_referenced_variables(batch_nodes: List[StatementNode]) -> str:
-    """batch 의 코드에서 참조되는 enclosing 프로시저 안 변수들을 LLM 컨텍스트 형식으로 반환.
+    """batch 코드에서 참조되는 enclosing 프로시저 변수 + 사용 라인 매핑.
 
-    형식:  ``<name> (<type>) := <init_value>`` 한 줄씩.
-    init_value 가 없으면 ``<name> (<type>)`` 만.
-    참조된 변수가 없으면 빈 문자열.
-
-    INIT_BY 엣지 유무와 무관하게 모든 변수 정보 (이름·타입·초기값 텍스트) 를 LLM 에 전달.
+    형식: ``<name> (<type>) := <init_value> → 사용 라인: 12, 15-17``
+    init_value 가 없으면 ``:= <init_value>`` 부분 생략.
+    사용 라인 매핑은 batch 안 노드들의 code (``"<line>: <text>"`` 형식) 에서 수집.
+    참조 변수가 없으면 빈 문자열.
     """
     if not batch_nodes:
         return ""
@@ -114,19 +112,35 @@ def _extract_referenced_variables(batch_nodes: List[StatementNode]) -> str:
     if not proc_vars:
         return ""
 
-    full_code = "\n".join(n.code or "" for n in batch_nodes)
-    lines: List[str] = []
+    # batch 코드 라인별로 분리해 변수명 매칭 → 사용 라인 수집
+    line_re = re.compile(r"^(\d+):\s?(.*)$")
+    code_lines_by_no: List[Tuple[int, str]] = []
+    for n in batch_nodes:
+        for raw_line in (n.code or "").split("\n"):
+            m = line_re.match(raw_line)
+            if m:
+                code_lines_by_no.append((int(m.group(1)), m.group(2)))
+    if not code_lines_by_no:
+        return ""
+
+    output: List[str] = []
     seen: Set[str] = set()
     for v in proc_vars:
         if v.name in seen:
             continue
-        if not re.search(rf"\b{re.escape(v.name)}\b", full_code):
+        var_pattern = re.compile(rf"\b{re.escape(v.name)}\b")
+        usage_lines: Set[int] = set()
+        for line_no, text in code_lines_by_no:
+            if var_pattern.search(text):
+                usage_lines.add(line_no)
+        if not usage_lines:
             continue
         seen.add(v.name)
         type_part = f" ({v.variable_type})" if v.variable_type else ""
         init_part = f" := {v.init_value}" if v.init_value else ""
-        lines.append(f"{v.name}{type_part}{init_part}")
-    return "\n".join(lines)
+        line_str = ddl_table_matcher.format_line_ranges(sorted(usage_lines))
+        output.append(f"{v.name}{type_part}{init_part} → 사용 라인: {line_str}")
+    return "\n".join(output)
 
 
 # =========================================================================
@@ -252,18 +266,23 @@ class BaseAstProcessor(ABC):
     async def _extract_node_context(
         self,
         skeleton_code: str,
-        ancestor_context: str,
-        sibling_code: str,
+        ancestor_tree: str,
+        sibling_brief: str,
+        node_label: str,
     ) -> Tuple[str, str]:
-        """부모 스켈레톤 + 이전 형제 코드에서 컨텍스트를 추출합니다.
+        """자기 한 줄 디렉토리 항목 + 직전 형제 한 줄 추출.
+
+        v5.0 — 디렉토리 트리 형식. 자기 출력은 ``<TYPE>[s-e]: <한 줄>`` 강제.
+        자식이 받아 ancestor_tree 위에 들여쓰기로 쌓아 트리 자동 완성.
 
         Args:
-            skeleton_code: 자식 구간이 .... 로 압축된 부모 코드
-            ancestor_context: 조상 노드들의 누적 컨텍스트
-            sibling_code: 이전 형제 노드의 원문 코드 (없으면 빈 문자열)
+            skeleton_code: 자기 코드 스켈레톤 (자식 구간 .... 압축)
+            ancestor_tree: 조상 트리 (디렉토리 형식, ★ 현재 위치 마커 포함)
+            sibling_brief: 직전 형제 한 줄 (``<TYPE>[s-e]: ...``) 또는 ""
+            node_label: 자기 식별자 (``<TYPE>[s-e]``)
 
         Returns:
-            (parent_context, sibling_context) 튜플
+            (parent_context, sibling_context) — 둘 다 한 줄 (또는 sibling_context 는 "")
         """
         raise NotImplementedError
 
@@ -391,10 +410,12 @@ class BaseAstProcessor(ABC):
                     await node.parent.context_ready_event.wait()
 
                 skeleton = node.get_skeleton_code()
-                ancestor_ctx = node.get_ancestor_context(MAX_CONTEXT_TOKEN)
-                sibling_code = node.get_sibling_code()
+                # v5.0 — 디렉토리 트리 형식 (★ 현재 위치 마커 포함)
+                ancestor_tree = node.get_ancestor_tree(max_tokens=MAX_CONTEXT_TOKEN, marker="★ 현재")
+                sibling_brief = node.get_previous_sibling_brief()
+                node_label = node.get_node_label()
                 parent_ctx, sibling_ctx = await self._extract_node_context(
-                    skeleton, ancestor_ctx, sibling_code,
+                    skeleton, ancestor_tree, sibling_brief, node_label,
                 )
 
                 node.context = parent_ctx
@@ -610,6 +631,7 @@ class BaseAstProcessor(ABC):
             if not analysis:
                 return
             node.summary = analysis.get("summary") or ""
+            node.actor = analysis.get("actor") or ""  # phase_summary 가 unit-root 에 부착
             # Bottom-up 누적 — rules + questions 를 map 으로 보관
             # 자식 batch 완료 전에 반드시 저장되어야 부모 batch 가 참조 가능
             node.analysis_map = {
@@ -686,20 +708,34 @@ class BaseAstProcessor(ABC):
     # =========================================================================
 
     def _build_has_procedure_query(self, parent: "StatementNode", child: "StatementNode") -> Dict[str, Any]:
-        """HAS_PROCEDURE 관계 쿼리 (FILE → PROCEDURE/FUNCTION)."""
+        """HAS_PROCEDURE 관계 쿼리 (FILE → PROCEDURE/FUNCTION).
+
+        MATCH 키 = `_node_match_name(node)` — MERGE 키와 동일 정책 (DbmsAstProcessor 가 override).
+        """
         return build_has_procedure_query(
-            parent_type=parent.node_type, parent_line=parent.start_line,
-            child_type=child.node_type, child_line=child.start_line,
+            parent_type=parent.node_type, parent_name=self._node_match_name(parent),
+            child_type=child.node_type, child_name=self._node_match_name(child),
             full_directory=self.full_directory, file_name=self.file_name,
         )
 
     def _build_parent_of_query(self, parent: "StatementNode", child: "StatementNode") -> Dict[str, Any]:
-        """PARENT_OF 관계 쿼리."""
+        """PARENT_OF 관계 쿼리.
+
+        MATCH 키 = `_node_match_name(node)` — MERGE 키와 동일 정책.
+        """
         return build_parent_of_query(
-            parent_type=parent.node_type, parent_line=parent.start_line,
-            child_type=child.node_type, child_line=child.start_line,
+            parent_type=parent.node_type, parent_name=self._node_match_name(parent),
+            child_type=child.node_type, child_name=self._node_match_name(child),
             full_directory=self.full_directory, file_name=self.file_name,
         )
+
+    def _node_match_name(self, node: "StatementNode") -> str:
+        """기본 구현 — DbmsAstProcessor 에서 override (DBMS 의 라벨별 name 정책).
+
+        BaseAstProcessor 단위에서는 단순 `node.name` 또는 fallback. Framework strategy
+        는 자체 ast processor 가 별도 구현.
+        """
+        return node.name or f"{node.node_type}[{node.start_line}]"
 
 
 # =========================================================================
@@ -827,41 +863,59 @@ class DbmsAstProcessor(BaseAstProcessor):
     async def _extract_node_context(
         self,
         skeleton_code: str,
-        ancestor_context: str,
-        sibling_code: str,
+        ancestor_tree: str,
+        sibling_brief: str,
+        node_label: str,
     ) -> Tuple[str, str]:
-        """부모 + 이전 형제 컨텍스트 추출 → rules/dbms/node_context.yaml"""
+        """v5.0 — 디렉토리 형식 한 줄 → rules/dbms/node_context.yaml"""
         def _call():
-            result = prompts.execute_raw(
-                "dbms", "node_context",
-                {"skeleton_code": skeleton_code, "ancestor_context": ancestor_context,
-                 "sibling_code": sibling_code, "locale": self.locale},
-                self.api_key,
-            )
+            inputs = {
+                "node_label": node_label,
+                "skeleton_code": skeleton_code,
+                "locale": self.locale,
+            }
+            if ancestor_tree:
+                inputs["ancestor_tree"] = ancestor_tree
+            if sibling_brief:
+                inputs["sibling_brief"] = sibling_brief
+            result = prompts.execute_raw("dbms", "node_context", inputs, self.api_key)
             if not isinstance(result, dict):
                 raise ValueError(f"node_context 규칙이 dict가 아닌 값을 반환: {type(result)}")
-            parent_ctx = result.get("parent_context", "").strip()
-            sibling_ctx = result.get("sibling_context", "").strip()
+            parent_ctx = (result.get("parent_context") or "").strip()
+            sibling_ctx = (result.get("sibling_context") or "").strip()
             if not parent_ctx:
                 raise ValueError("node_context 규칙이 빈 parent_context를 반환")
             return parent_ctx, sibling_ctx
         return await asyncio.to_thread(_call)
 
+    def _node_match_name(self, node: StatementNode) -> str:
+        """노드의 canonical match name — MERGE 키와 MATCH 키 양쪽에서 공유.
+
+        이 함수가 단일 source of truth: `_build_static_node_queries` 가 MERGE 시
+        `name` 으로 SET 하고, 관계 빌더 (`_build_has_procedure_query` /
+        `_build_parent_of_query` / `_build_next_query`) 가 같은 이름으로 MATCH.
+        같은 라인 같은 라벨 형제 노드 (예: 함수 파라미터 ``f(a, b)``) 도 name 차이로
+        정확히 1:1 매치 → 카테시안 곱 방지.
+
+        - FILE → 파일명
+        - PROCEDURE/FUNCTION/TRIGGER → unit_name (실제 이름)
+        - VARIABLE/PACKAGE_VARIABLE/CONSTANT_FIELD/PARAMETER → 실제 이름
+        - 기타 (SELECT, BEGIN, RETURN 등) → ``build_statement_name`` 으로 ``<TYPE>[<startLine>]``
+        """
+        label = node.node_type
+        if label == "FILE":
+            return self.file_name
+        if label in PROCEDURE_TYPES and node.unit_name:
+            return node.unit_name
+        if label in ("VARIABLE", "PACKAGE_VARIABLE", "CONSTANT_FIELD", "PARAMETER") and node.name:
+            return node.name
+        return build_statement_name(label, node.start_line)
+
     def _build_static_node_queries(self, node: StatementNode) -> List[Union[str, Dict[str, Any]]]:
         """정적 노드 생성 쿼리 생성"""
         queries: List[Union[str, Dict[str, Any]]] = []
         label = node.node_type
-
-        # --- 이름 결정 ---
-        if label == "FILE":
-            node_name = self.file_name
-        elif label in PROCEDURE_TYPES and node.unit_name:
-            node_name = node.unit_name
-        elif label in ("VARIABLE", "PACKAGE_VARIABLE", "CONSTANT_FIELD") and node.name:
-            # 변수 노드는 variable_linker 가 name 으로 MATCH 하므로 실제 변수명으로
-            node_name = node.name
-        else:
-            node_name = f"{label}[{node.start_line}]"
+        node_name = self._node_match_name(node)
 
         # --- 파라미터 구성 ---
         params: Dict[str, Any] = {
@@ -895,6 +949,9 @@ class DbmsAstProcessor(BaseAstProcessor):
         if node.init_value:
             set_parts.append("__cy_n__.init_value = $init_value")
             params["init_value"] = node.init_value
+        if node.modifiers:
+            set_parts.append("__cy_n__.modifiers = $modifiers")
+            params["modifiers"] = node.modifiers
 
         if label in PROCEDURE_TYPES and node.unit_name:
             set_parts.append("__cy_n__.procedure_name = $procedure_name")
@@ -917,14 +974,8 @@ class DbmsAstProcessor(BaseAstProcessor):
 
         set_clause = ", ".join(set_parts)
 
-        is_procedure_with_name = label in PROCEDURE_TYPES and bool(node.unit_name)
-        queries.append(build_static_node_query(
-            label=label,
-            params=params,
-            set_clause=set_clause,
-            is_procedure_with_name=is_procedure_with_name,
-            has_schema=bool(node.schema_name) if is_procedure_with_name else False,
-        ))
+        # MERGE 키는 (label, name, directory, file_name) 단일 정책 — node_name 이 모든 노드의 unique 식별자.
+        queries.append(build_static_node_query(label=label, params=params, set_clause=set_clause))
         return queries
 
     def _build_relationship_queries(self) -> List[Union[str, Dict[str, Any]]]:
@@ -947,10 +998,10 @@ class DbmsAstProcessor(BaseAstProcessor):
         return queries
 
     def _build_next_query(self, prev: StatementNode, current: StatementNode) -> Dict[str, Any]:
-        """NEXT 관계 쿼리 (graph_queries 위임)."""
+        """NEXT 관계 쿼리 — MATCH 키 = `_node_match_name(node)` (MERGE 정책 일관)."""
         return build_next_query(
-            prev_type=prev.node_type, prev_line=prev.start_line,
-            curr_type=current.node_type, curr_line=current.start_line,
+            prev_type=prev.node_type, prev_name=self._node_match_name(prev),
+            curr_type=current.node_type, curr_name=self._node_match_name(current),
             full_directory=self.full_directory, file_name=self.file_name,
         )
 
@@ -971,14 +1022,16 @@ class DbmsAstProcessor(BaseAstProcessor):
         dml_payload = batch.build_dml_payload()
         dml_code = dml_payload[0] if dml_payload and batch.dml_ranges else ""
 
-        # DDL 결정론 매칭은 batch 의 합집합 코드 1회만 수행 (general_code ⊇ dml_code).
-        # 매칭 결과 + 인덱스로 빌드한 ddl_context 를 두 LLM 호출에 공통 주입.
-        # → node_analysis: example.inputs 의 dtype 정확도, 환각 차단
+        # DDL 결정론 매칭 (라인 매핑 포함) — batch 의 합집합 코드에서 1회 매칭.
+        # 사용 라인 매핑이 ddl_context 에 포함되어 LLM 이 자기 range 의 테이블을 자동 식별.
+        # → node_analysis: 자기 range 외 테이블은 LLM 이 스스로 무시 + dtype 정확도
         # → dml_extract: 식별 작업 skip + 사용 의미·R/W 판단만
         ddl_context = ""
         if self._ddl_pattern and (general_code or dml_code):
-            matched = ddl_table_matcher.match_in_code(general_code or dml_code, self._ddl_pattern)
-            ddl_context = ddl_table_matcher.build_context(matched, self._ddl_table_index)
+            matched_with_lines = ddl_table_matcher.match_in_code_with_lines(
+                general_code or dml_code, self._ddl_pattern,
+            )
+            ddl_context = ddl_table_matcher.build_context(matched_with_lines, self._ddl_table_index)
 
         # enclosing PROCEDURE/FUNCTION 의 parameters 텍스트 — LLM 의미 풀이용
         function_parameters = _extract_enclosing_parameters(batch.nodes)
@@ -1056,9 +1109,12 @@ class DbmsAstProcessor(BaseAstProcessor):
                     continue
 
                 summary = analysis.get("summary") or ""
-                actor = analysis.get("actor") or ""
                 if summary:
-                    node_name = build_statement_name(node.node_type, node.start_line)
+                    # actor 는 _apply_summary_to_nodes 에서 node.actor 로 저장됨 →
+                    # phase_summary 가 unit-root (FUNCTION/PROCEDURE/TRIGGER) 에 일괄 부착.
+                    # 자식 statement 별 ROLE 생성은 노이즈라 제거 (D4 fix).
+                    # node_name 은 _node_match_name 단일 정책 사용 (MERGE 키와 일관).
+                    node_name = self._node_match_name(node)
                     queries.append(build_summary_update_query(
                         node_type=node.node_type,
                         params={
@@ -1074,18 +1130,6 @@ class DbmsAstProcessor(BaseAstProcessor):
                             "has_children": node.has_children,
                         },
                     ))
-
-                    # Actor 노드 생성 + ROLE 관계
-                    if actor:
-                        queries.append(build_actor_role_query(
-                            node_type=node.node_type,
-                            params={
-                                "start_line": node.start_line,
-                                "directory": self.full_directory,
-                                "file_name": self.file_name,
-                                "actor": actor,
-                            },
-                        ))
 
                     # unit_summary_store에는 리프 노드(자식이 없는 노드)만 저장
                     # → 부모 노드 summary는 자식 내용을 이미 포함하므로 중복 제거
@@ -1373,8 +1417,8 @@ class DbmsAstProcessor(BaseAstProcessor):
                     "tgt_col": converted_tgt_col,
                 }))
 
-                src_fqn = '.'.join(filter(None, [effective_src_schema, src_name, converted_src_col])).lower()
-                tgt_fqn = '.'.join(filter(None, [effective_tgt_schema, tgt_name, converted_tgt_col])).lower()
+                src_fqn = '.'.join(filter(None, [self.datasource_name, effective_src_schema, src_name, converted_src_col])).lower()
+                tgt_fqn = '.'.join(filter(None, [self.datasource_name, effective_tgt_schema, tgt_name, converted_tgt_col])).lower()
 
                 queries.append(build_fk_to_column_query(params={
                     "src_fqn": src_fqn,

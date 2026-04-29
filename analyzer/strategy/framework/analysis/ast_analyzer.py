@@ -224,9 +224,9 @@ def _invoke_analysis_llm(
     called_method_summaries: Optional[List[Dict[str, Any]]] = None,
     module_fields_context: Optional[str] = None,
     field_initial_values: Optional[str] = None,
-    table_sample_data: Optional[str] = None,
+    ddl_context: Optional[str] = None,
     constants_context: Optional[str] = None,
-    codebase_conventions: Optional[str] = None,
+    codebase_pattern: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """메서드 1개에 대해 analysis 규칙 실행 → summary/dependencies/stereotype.
 
@@ -262,17 +262,13 @@ def _invoke_analysis_llm(
         "valid_stereotypes": valid_stereotypes,
         "has_table_context": bool(reads_writes_summary),
     }
+    # module_comment / module_annotations 는 정적 (모듈 단위 동일) — 별도 inputs 키로 분리.
+    # context 안에 합치지 않음 → yaml 에서 명시적 라벨 박스로 렌더 + prompt cache prefix 정렬에 유리.
+    if module_comment and module_comment.strip():
+        inputs["module_comment"] = module_comment.strip()
+    if module_annotations and module_annotations.strip():
+        inputs["module_annotations"] = module_annotations.strip()
     context_parts: List[str] = []
-    if module_comment:
-        context_parts.append(
-            "module_comment: "
-            + (module_comment or "")
-        )
-    if module_annotations:
-        context_parts.append(
-            "module_annotations: "
-            + (module_annotations or "")
-        )
     if calls_outgoing:
         context_parts.append("calls_outgoing: " + ", ".join(sorted(calls_outgoing[:20])))
     if reads_writes_summary:
@@ -312,14 +308,14 @@ def _invoke_analysis_llm(
         inputs["context"] = context
     if field_initial_values and field_initial_values.strip():
         inputs["field_initial_values"] = field_initial_values.strip()
-    if table_sample_data and table_sample_data.strip():
-        inputs["table_sample_data"] = table_sample_data.strip()
+    if ddl_context and ddl_context.strip():
+        inputs["ddl_context"] = ddl_context.strip()
     if constants_context and constants_context.strip():
         filtered = _filter_by_code_reference(constants_context.strip().split("\n"), code)
         if filtered:
             inputs["constants_context"] = "\n".join(filtered)
-    if codebase_conventions and codebase_conventions.strip():
-        inputs["codebase_conventions"] = codebase_conventions.strip()
+    if codebase_pattern and codebase_pattern.strip():
+        inputs["codebase_pattern"] = codebase_pattern.strip()
     # Fail-Fast: LLM 예외는 그대로 상위로 전파.
     # 빈 응답(dict 가 아니거나 summary 비어있음) 은 LLM 의 명시적 "분석 불가" 판정으로 해석.
     # 호출 그래프 사이클로 누락된 노드는 호출자가 None 체크 후 그 함수만 분석 결과 없이 진행.
@@ -355,11 +351,10 @@ def _analyze_code_node(
     module_key_index: Optional[Dict[str, Tuple[Optional[str], Optional[str]]]] = None,
     called_summaries: Optional[List[Dict[str, Any]]] = None,
     variable_facts_list: Optional[List[VariableFacts]] = None,
-    table_sample_data: Optional[str] = None,
-    table_sample_data_by_function: Optional[Dict[str, str]] = None,
+    ddl_context_by_function: Optional[Dict[str, str]] = None,
     constants_context: Optional[str] = None,
     referenced_vars_by_function: Optional[Dict[str, List[str]]] = None,
-    codebase_conventions: Optional[str] = None,
+    codebase_pattern: Optional[str] = None,
     reads_writes_by_function: Optional[Dict[str, List[Tuple[str, str]]]] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """단일 메서드에 대해 stereotype + (summary, dependencies) 계산."""
@@ -416,9 +411,9 @@ def _analyze_code_node(
             called_method_summaries=called_summaries,
             module_fields_context=fields_ctx or None,
             field_initial_values="\n".join(referenced_vars_by_function.get(m.function_id, [])) if referenced_vars_by_function else None,
-            table_sample_data=(table_sample_data_by_function or {}).get(m.function_id),
+            ddl_context=(ddl_context_by_function or {}).get(m.function_id),
             constants_context=constants_context or None,
-            codebase_conventions=codebase_conventions or None,
+            codebase_pattern=codebase_pattern or None,
         )
         if analysis:
             summary = analysis.get("summary") or summary
@@ -467,11 +462,10 @@ def analyze_and_enrich(
     config_index: Optional[Dict[str, Any]] = None,
     calls_edges: Optional[List[CallsEdge]] = None,
     variable_facts_list: Optional[List[VariableFacts]] = None,
-    table_sample_data: Optional[str] = None,
-    table_sample_data_by_function: Optional[Dict[str, str]] = None,
+    ddl_context_by_function: Optional[Dict[str, str]] = None,
     constants_context: Optional[str] = None,
     referenced_vars_by_function: Optional[Dict[str, List[str]]] = None,
-    codebase_conventions: Optional[str] = None,
+    codebase_pattern: Optional[str] = None,
     reads_writes_by_function: Optional[Dict[str, List[Tuple[str, str]]]] = None,
 ) -> Generator[Dict[str, Dict[str, Any]], None, None]:
     """메서드별 stereotype, summary — 20개씩 배치로 yield.
@@ -530,11 +524,10 @@ def analyze_and_enrich(
                         module_key_index,
                         None,
                         variable_facts_list,
-                        table_sample_data,
-                        table_sample_data_by_function,
+                        ddl_context_by_function,
                         constants_context,
                         referenced_vars_by_function,
-                        codebase_conventions,
+                        codebase_pattern,
                         reads_writes_by_function,
                     ): m
                     for m in function_facts_list
@@ -572,11 +565,10 @@ def analyze_and_enrich(
                     module_key_index,
                     None,
                     variable_facts_list,
-                    table_sample_data,
-                    table_sample_data_by_function,
+                    ddl_context_by_function,
                     constants_context,
                     referenced_vars_by_function,
-                    codebase_conventions,
+                    codebase_pattern,
                     reads_writes_by_function,
                 )
                 batch[function_id] = data
@@ -652,11 +644,10 @@ def analyze_and_enrich(
             module_key_index,
             called_list or None,
             variable_facts_list,
-            table_sample_data,
-            table_sample_data_by_function,
+            ddl_context_by_function,
             constants_context,
             referenced_vars_by_function,
-            codebase_conventions,
+            codebase_pattern,
             reads_writes_by_function,
         )
         return node_id, data
@@ -731,11 +722,10 @@ def analyze_and_enrich(
                 module_key_index,
                 None,
                 variable_facts_list,
-                table_sample_data,
-                table_sample_data_by_function,
+                ddl_context_by_function,
                 constants_context,
                 referenced_vars_by_function,
-                codebase_conventions,
+                codebase_pattern,
                 reads_writes_by_function,
             )
             batch[mid] = data

@@ -1,26 +1,24 @@
 """Framework Phase 3 코드 분석에 주입할 컨텍스트 수집기.
 
-원본 위치 (이전):
-  - `analyzer/strategy/framework/pipeline/phase_analysis.py::collect_analysis_context`
-    (~165줄)
-
 수집 대상:
   - constants_context (CONSTANT 노드 → 텍스트)
   - referenced_vars_by_function (REFERENCES + INIT_BY 출처)
-  - codebase_conventions (Phase 1 codebase_profile.pattern 그대로)
+  - codebase_pattern (Phase 1 codebase_profile.pattern 그대로)
   - reads_writes_by_function (function_table_edges 기반)
-  - table_sample_data + table_sample_data_by_function (catalog 1회 호출 + 호출그래프 전이)
+  - ddl_context_by_function (단일 컨텍스트):
+      schema = 그래프 Table/Column 노드 (catalog 무관, 항상 생성)
+      sample = catalog sample_rows (catalog 활성 시 schema 위에 부착)
 
 정책 정렬:
   - 참조 변수 Neo4j 조회 실패 → fail-fast (이전과 동일)
-  - catalog 비활성 (`CATALOG_SERVICE_URL` 미설정) → INFO + skip (정상 시나리오)
+  - catalog 비활성 (`CATALOG_SERVICE_URL` 미설정) → schema 만 사용, sample 부착 skip
   - catalog 활성 + 호출 실패 → fail-fast (사용자가 활성화했으면 떠있어야 함)
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from analyzer.common.pipeline.analysis_context import (
     fetch_constants_context,
@@ -37,27 +35,26 @@ async def collect_analysis_context(st: Any, client: Neo4jClient, orchestrator: A
     """LLM 분석 prompt 에 주입할 컨텍스트 dict 반환.
 
     Returns:
-        ``{constants_context, referenced_vars_by_function, table_sample_data,
-           codebase_conventions, reads_writes_by_function,
-           table_sample_data_by_function}`` (마지막 키는 catalog 성공 시에만)
+        ``{constants_context, referenced_vars_by_function, codebase_pattern,
+           reads_writes_by_function, ddl_context_by_function}``
     """
     ctx: Dict[str, Any] = {
         "constants_context": "",
         "referenced_vars_by_function": {},
-        "table_sample_data": "",
-        "codebase_conventions": "",
+        "codebase_pattern": "",
         "reads_writes_by_function": {},
+        "ddl_context_by_function": {},
     }
 
     rw_by_fn = _collect_reads_writes_by_function(st)
     ctx["reads_writes_by_function"] = rw_by_fn
 
-    ctx["codebase_conventions"] = _build_codebase_conventions(st)
+    ctx["codebase_pattern"] = _build_codebase_pattern(st)
     ctx["constants_context"] = await fetch_constants_context(client)
     ctx["referenced_vars_by_function"] = await _collect_referenced_vars(client)
 
-    # catalog 표본 — catalog 미기동/datasource 미설정 시 errlog 후 빈 컨텍스트로 진행 (정당화 fallback)
-    await _attach_table_samples(ctx, st, client, orchestrator, rw_by_fn)
+    # ddl_context: schema 는 그래프에서 항상 생성, sample 은 catalog 활성 시만 부착.
+    await _attach_table_context(ctx, st, client, orchestrator, rw_by_fn)
 
     return ctx
 
@@ -92,7 +89,7 @@ def _collect_reads_writes_by_function(st: Any) -> Dict[str, list]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _build_codebase_conventions(st: Any) -> str:
+def _build_codebase_pattern(st: Any) -> str:
     cp = getattr(st, "codebase_profile", None)
     pattern = getattr(cp, "pattern", "") if cp else ""
     if not pattern:
@@ -108,16 +105,27 @@ def _build_codebase_conventions(st: Any) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+# 화이트리스트: 함수가 직접 사용한 식별자 중 "함수 외부에 정의된 것" 만 매칭.
+# - FUNCTION 제외: 형제 함수 시그니처 누수 방지 (CALLS 와 의미 중복).
+# - PARAMETER 제외: 자기 함수 시그니처에 이미 들어있어 fiv 에 또 넣을 필요 X.
+#   또한 link 단계가 동명 PARAMETER 노드를 자기 함수 외에도 연결하는 경우가 있어 노이즈 유발.
 _REFERENCED_VARS_QUERY = (
     "MATCH (f:FUNCTION)-[:REFERENCES]->(v) "
+    "WHERE v:VARIABLE OR v:GLOBAL_VARIABLE OR v:CONSTANT OR v:DEFINE "
     "OPTIONAL MATCH (v)-[:INIT_BY]->(src) "
-    "RETURN f.function_id AS fid, v.code_text AS code, "
-    "       src.name AS src_name, src.code_text AS src_code"
+    "RETURN f.function_id AS fid, "
+    "       v.name AS name, v.variable_type AS vtype, "
+    "       v.start_line AS line, v.code_text AS code, "
+    "       src.code_text AS src_code"
 )
 
 
 async def _collect_referenced_vars(client: Neo4jClient) -> Dict[str, list]:
-    """REFERENCES + INIT_BY → function_id 별 변수 코드 컨텍스트.
+    """REFERENCES + INIT_BY → function_id 별 변수/상수/매크로 컨텍스트.
+
+    텍스트 포맷은 DBMS ``referenced_variables`` 와 동일:
+        ``<name> (<vtype>) → 사용 라인: <line>``
+        ``  ↳ 초기화 출처: <src_code>``  (INIT_BY 가 있을 때만)
 
     Neo4j 조회 실패는 fail-fast (이전 정책과 동일).
     """
@@ -135,15 +143,20 @@ async def _collect_referenced_vars(client: Neo4jClient) -> Dict[str, list]:
     if results and results[0]:
         for row in results[0]:
             fid = row.get("fid", "")
-            code = (row.get("code") or "").strip()
-            if not (fid and code):
+            name = (row.get("name") or "").strip()
+            if not (fid and name):
                 continue
+            vtype = (row.get("vtype") or "").strip()
+            line = row.get("line")
+            head = f"{name} ({vtype})" if vtype else name
+            if line:
+                head += f" → 사용 라인: {line}"
             src_code = (row.get("src_code") or "").strip()
             if src_code:
-                entry = f"{code}\n  ↳ 초기화 출처: {src_code}"
+                entry = f"{head}\n  ↳ 초기화 출처: {src_code}"
                 init_by_count += 1
             else:
-                entry = code
+                entry = head
             out.setdefault(fid, []).append(entry)
     if out:
         logger.info(
@@ -154,90 +167,120 @@ async def _collect_referenced_vars(client: Neo4jClient) -> Dict[str, list]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# catalog 호출로 테이블 샘플 + 함수별 전이적 매핑 부착
+# 테이블 컨텍스트 (ddl_context) — schema 는 항상, sample 은 catalog 활성 시만
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-async def _attach_table_samples(
+_TABLE_SCHEMA_QUERY = (
+    "MATCH (t:Table) "
+    "OPTIONAL MATCH (t)-[:HAS_COLUMN]->(c:Column) "
+    "WITH t, collect({name: c.name, dtype: c.dtype, "
+    "                 nullable: c.nullable, "
+    "                 description: c.description}) AS cols "
+    "RETURN t.name AS name, t.description AS description, cols"
+)
+
+
+async def _attach_table_context(
     ctx: Dict[str, Any],
     st: Any,
     client: Neo4jClient,
     orchestrator: Any,
     rw_by_fn: Dict[str, list],
 ) -> None:
-    """catalog 1회 batch 호출로 sample_map 받고 ctx 에 table_sample_data 부착.
+    """함수별 ddl_context (schema + 가능 시 sample) 단일 통합 빌더.
 
-    catalog 비활성(`CATALOG_SERVICE_URL` 미설정) 이면 호출 자체를 안 함 → INFO 1줄.
-    catalog 활성인데 connection refused 면 fail-fast (raise) — 사용자가 활성화했는데
-    안 떠있는 건 진짜 에러.
+    1) 그래프 Table/Column 노드 → schema_map (catalog 무관, 항상 생성).
+       sample_map 호환 형식으로 만들어 ``format_table_context`` 재사용.
+    2) catalog 활성 시 sample_rows 부착 (schema_map 위 sample_map 머지).
+    3) 함수별 전이 호출 그래프로 ``ddl_context_by_function`` 채움.
+
+    catalog 비활성 / datasource 미설정 → schema 만으로 진행 (skip 아님).
+    catalog 활성 + 네트워크 실패 → fail-fast (raise).
     """
-    if not settings.catalog.enabled:
+    schema_map = await _fetch_schema_map(client)
+    if not schema_map:
+        logger.info("[PHASE:3:TABLE_CTX] Table 노드 0개 — ddl_context 생략")
+        return
+
+    if settings.catalog.enabled and orchestrator.datasource_name:
         logger.info(
-            "[PHASE:3:TABLE_CTX] catalog 비활성 (CATALOG_SERVICE_URL 미설정) — 샘플 수집 skip"
+            "[PHASE:3:CATALOG_CALL] catalog 요청 | datasource=%s tables=%d url=%s",
+            orchestrator.datasource_name, len(schema_map), settings.catalog.service_url,
         )
-        return
+        sample_map = await CatalogClient().sample_context(
+            datasource=orchestrator.datasource_name,
+            table_names=sorted(schema_map.keys()),
+        )
+        matched = sum(1 for v in sample_map.values() if v is not None)
+        logger.info("[PHASE:3:CATALOG_CALL] catalog 응답 | 매칭=%d/%d", matched, len(sample_map))
+        schema_map = _merge_samples_into_schema(schema_map, sample_map)
+    else:
+        logger.info(
+            "[PHASE:3:TABLE_CTX] catalog 비활성 또는 datasource 미설정 — schema 만으로 진행 (sample 미부착)"
+        )
 
-    datasource_name = orchestrator.datasource_name
-    if not datasource_name:
-        logger.info("[PHASE:3:TABLE_CTX] datasource 미설정 — 테이블 샘플 수집 skip")
-        return
-
-    reads_writes = st.reads_writes or []
-    identified = _gather_identified_tables(reads_writes, await _fetch_all_table_names(client))
-    if not identified:
-        logger.info("[PHASE:3:TABLE_CTX] 식별 테이블 0개 — catalog 호출 생략")
-        return
-
-    logger.info(
-        "[PHASE:3:CATALOG_CALL] catalog 요청 | datasource=%s tables=%d url=%s",
-        datasource_name, len(identified), settings.catalog.service_url,
-    )
-    sample_map = await CatalogClient().sample_context(
-        datasource=datasource_name,
-        table_names=sorted(identified),
-    )
-    matched = sum(1 for v in sample_map.values() if v is not None)
-    logger.info(
-        "[PHASE:3:CATALOG_CALL] catalog 응답 | 매칭=%d/%d", matched, len(sample_map),
-    )
-
-    ctx["table_sample_data"] = format_table_context(sample_map, sorted(identified))
-
-    # 호출 그래프 전이로 함수별 컨텍스트 구성
-    ts_by_fn = _build_table_samples_by_function(st, sample_map, rw_by_fn)
-    ctx["table_sample_data_by_function"] = ts_by_fn
+    ddl_by_fn = _build_ddl_context_by_function(st, schema_map, rw_by_fn)
+    ctx["ddl_context_by_function"] = ddl_by_fn
 
     all_fids_count = len(st.function_facts_list or [])
     logger.info(
-        "[PHASE:3:TABLE_CTX] 함수별 컨텍스트 구성 | 함수 매핑=%d/%d 전체 data_len=%d",
-        len(ts_by_fn), all_fids_count, len(ctx["table_sample_data"]),
+        "[PHASE:3:TABLE_CTX] 함수별 ddl_context 구성 | 함수 매핑=%d/%d tables=%d",
+        len(ddl_by_fn), all_fids_count, len(schema_map),
     )
 
 
-async def _fetch_all_table_names(client: Neo4jClient) -> set[str]:
-    results = await client.execute_queries([
-        "MATCH (t:Table) RETURN DISTINCT t.name AS name"
-    ])
-    return {r["name"] for r in (results[0] or []) if r.get("name")}
+async def _fetch_schema_map(client: Neo4jClient) -> Dict[str, Dict[str, Any]]:
+    """그래프 Table/Column 노드에서 catalog sample_map 호환 dict 생성.
 
-
-def _gather_identified_tables(reads_writes: list, all_tables: set[str]) -> set[str]:
-    """링킹이 식별한 테이블 이름.
-
-    0개이면 Neo4j Table 노드 전체로 폴백 — LLM 컨텍스트 보강용으로,
-    링킹이 식별 못 한 시나리오(예: SQL 분석 누락)에서도 catalog 샘플을 부착하기 위함.
-    분석 정확도 자체에는 영향 없음 (보강 컨텍스트 제공 범위만 결정).
+    형식: ``{table_name: {resolved, columns:[{name,dtype,nullable,description}], sample_rows:[]}}``
+    sample_rows 는 빈 리스트 (catalog 부착 단계에서 채워짐).
     """
-    identified = {rw.table_name for rw in reads_writes if rw.table_name}
-    if not identified:
-        identified = all_tables
-    return identified
+    try:
+        results = await client.execute_queries([_TABLE_SCHEMA_QUERY])
+    except Exception as e:
+        logger.error("[PHASE:3:TABLE_CTX] schema 조회 실패 (Fail-Fast) | %s: %s",
+                     type(e).__name__, e, exc_info=True)
+        raise
+
+    schema_map: Dict[str, Dict[str, Any]] = {}
+    rows = results[0] if results and results[0] else []
+    for row in rows:
+        name = (row.get("name") or "").strip()
+        if not name:
+            continue
+        cols = [c for c in (row.get("cols") or []) if c.get("name")]
+        schema_map[name] = {
+            "resolved": name,
+            "description": (row.get("description") or "").strip(),
+            "columns": cols,
+            "sample_rows": [],
+        }
+    return schema_map
 
 
-def _build_table_samples_by_function(
-    st: Any, sample_map: Dict[str, Any], rw_by_fn: Dict[str, list],
+def _merge_samples_into_schema(
+    schema_map: Dict[str, Dict[str, Any]],
+    sample_map: Dict[str, Optional[Dict[str, Any]]],
+) -> Dict[str, Dict[str, Any]]:
+    """catalog 응답의 sample_rows·resolved name 을 schema_map 에 부착."""
+    for tname, sample in sample_map.items():
+        if not sample or tname not in schema_map:
+            continue
+        schema_map[tname]["sample_rows"] = sample.get("sample_rows") or []
+        resolved = sample.get("resolved")
+        if resolved:
+            schema_map[tname]["resolved"] = resolved
+    return schema_map
+
+
+def _build_ddl_context_by_function(
+    st: Any, schema_map: Dict[str, Dict[str, Any]], rw_by_fn: Dict[str, list],
 ) -> Dict[str, str]:
-    """호출 그래프 전이로 상위 함수가 하위 호출 경유 접근하는 테이블도 포함."""
+    """호출 그래프 전이로 상위 함수가 하위 호출 경유 접근하는 테이블도 포함.
+
+    각 테이블은 ``format_table_context`` (DBMS·framework 공용) 로 포맷.
+    """
     direct: Dict[str, set[str]] = {
         fid: {t for t, _op in pairs} for fid, pairs in rw_by_fn.items()
     }
@@ -258,15 +301,15 @@ def _build_table_samples_by_function(
         return acc
 
     all_fids = {m.function_id for m in (st.function_facts_list or [])}
-    ts_by_fn: Dict[str, str] = {}
+    ddl_by_fn: Dict[str, str] = {}
     for fid in all_fids:
         tables_used = transitive(fid, set())
         if not tables_used:
             continue
-        section = format_table_context(sample_map, sorted(tables_used))
+        section = format_table_context(schema_map, sorted(tables_used))
         if section:
-            ts_by_fn[fid] = section
-    return ts_by_fn
+            ddl_by_fn[fid] = section
+    return ddl_by_fn
 
 
 __all__ = ["collect_analysis_context"]

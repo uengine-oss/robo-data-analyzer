@@ -11,9 +11,11 @@ input_schema:
   optional:
     - context
     - field_initial_values
-    - table_sample_data
+    - ddl_context
     - constants_context
-    - codebase_conventions
+    - codebase_pattern
+    - module_comment
+    - module_annotations
 
 prompt: |
   [ROLE]
@@ -21,31 +23,10 @@ prompt: |
   응답 언어: {{ locale }}
 
 
-  [INPUT]  주어진 섹션만 활용. 없는 내용은 추측 금지.
-
-  {% if context %}── [부모 컨텍스트] ── 연결된 SQL/Config/Class + called_method_summaries(참고용)
-  {{ context }}
-  {% endif %}
-  {% if field_initial_values %}── [필드 초기값] ── 선언 시 초기값
-  {{ field_initial_values }}
-  {% endif %}
-  {% if table_sample_data %}── [테이블 정보] ── 이 함수가 접근하는 테이블의 제약조건·컬럼·샘플
-  {{ table_sample_data }}
-  {% endif %}
-  {% if constants_context %}── [상수 컨텍스트] ── 상수명→실제값 (summary/examples 에서 실제 값으로 치환)
-  {{ constants_context }}
-  {% endif %}
-  {% if codebase_conventions %}── [코드베이스 컨벤션] ── 이 프로젝트의 반복 관찰 패턴 (프레임워크 관용구·데이터 접근 관용구·네이밍/이디엄). 아래 [Rule 후보/제외] 판정 시 일반 원칙보다 **이 컨벤션을 우선 참조**.
-  {{ codebase_conventions }}
-  {% endif %}
-  ── [분석 대상 코드] ── (L{{ startLine }}-{{ endLine }} {{ language | default("Java") }})
-  {{ code }}
-
-
   ─────────────────────────────
   [1] SUMMARY — 있는 것만, 있는 만큼
   ─────────────────────────────
-  함수 본문에 **실제 존재하는 요소만** 원본 코드를 재작성할 수 있을 정도로 구체적으로 기술. 분량은 내용에 비례(짧은 함수는 1~2문장도 가능, 복잡하면 5문장 이상도 가능).
+  함수 본문에 **실제 존재하는 요소만** 원본 코드를 재작성할 수 있을 정도로 구체적으로 기술. 분량은 내용에 비례 — 단순한 함수는 짧게, 분기·DML 많은 함수는 그만큼 상세하게.
 
   포함 대상(있을 때만): 계산식·분기 조건과 결과·하드코딩 값·상수·NULL/예외 처리·호출 순서·테이블 조작.
   ※ 해당 요소가 없으면 **그 항목 자체를 언급하지 말 것**. "~는 없다/수행하지 않는다" 식 부재 보고 금지.
@@ -57,7 +38,7 @@ prompt: |
   - [상수 컨텍스트] 상수는 실제 값으로 치환
   - "이상"≠"초과", "이하"≠"미만" 정확히
   - 아키텍처 레이어명(Controller/Service/Repository) 금지
-  {% if table_sample_data or has_table_context | default(false) %}
+  {% if ddl_context or has_table_context | default(false) %}
   테이블 조작 포함: INSERT=삽입 컬럼·값 출처·DEFAULT·UNIQUE / UPDATE=변경 전→후·WHERE / DELETE=WHERE·FK영향
   {% endif %}
 
@@ -107,7 +88,7 @@ prompt: |
 
   ★ [코드베이스 컨벤션] 이 주어지면 아래 신호 목록보다 **컨벤션을 우선** 적용:
   - 프로젝트의 에러 처리 매크로·래퍼는 NOT_BIZ (규칙 아님)
-  - 데이터 접근 래퍼 함수(CRUD 컨벤션에 따른 이름·구조)는 그 **업무 시맨틱** 을 Rule 1개 이상으로 반영
+  - 데이터 접근 래퍼 함수(CRUD 컨벤션에 따른 이름·구조)는 그 **업무 시맨틱** 을 Rule 로 반영 (분기·정책 의미 있을 때)
   - 동일 네이밍 패턴의 함수는 동일 기준으로 판정 (일관성)
 
   [Rule 후보 (하나라도 맞으면 O)]
@@ -158,13 +139,13 @@ prompt: |
   rule_id      : 참조 Rule id
   description  : 사람용 한 줄 요약
   given        : JSON 객체 {
-                   "narrative": "초기 상태 1~2문장 요약",
+                   "narrative": "초기 상태 요약 (분량은 시나리오에 비례)",
                    "inputs": { 파라미터 key:value },
                    "preconditions": { "globals": {...}, "stubs": {외부호출 반환값} }
                  }
   when         : 자연어 한 줄 ("결제 요청"·"출금 요청"). 메서드명·클래스명 금지.
   then         : JSON 객체 {
-                   "narrative": "결과 1~2문장 요약",
+                   "narrative": "결과 요약 (분량은 시나리오에 비례)",
                    "return": 반환값(없으면 null),
                    "exception": null 또는 {"type":"...","code":"...","message":"..."},
                    "writes": [{"table":"...","op":"INSERT|UPDATE|DELETE","where":{},"values":{}}],
@@ -181,17 +162,20 @@ prompt: |
   - JSON 유효 형식(주석·트레일링 콤마 금지)
 
   [Example 필수 규칙]
-  - Rule 당 최소 2개 (일반값 1 + 경계값 1)
-  - "X 이상/이하/초과/미만" 조건 → X / X±1 중 2개 is_boundary=true
-  - 예외 throw Rule → 발생 Example + 성공 Example
-  - ★ 1 Rule 이 **복수 필드·복수 분기** 를 한 문장으로 커버하면 → 각 필드/분기마다 **최소 Example 1개씩** 별도 작성.
-    (예: "A·B·C 가 공백이면 거부" Rule → A 공백 / B 공백 / C 공백 3개 Example)
-  - ★ 분기가 많은 Rule (if/else/switch 갈래) → 분기별 Example 1개 이상 필수. 1개로 뭉뚱그리지 말 것.
+  - Rule 의 happy path 와 경계 케이스를 모두 커버해야 함 (정상값과 경계 모두 보이도록 examples 작성).
+  - "X 이상/이하/초과/미만" 조건 → 경계값 시점 (X / X±1) 을 is_boundary=true 로 표현.
+  - 예외 throw Rule → 예외 발생 시나리오와 성공 시나리오 둘 다.
+  - ★ 1 Rule 이 **복수 필드·복수 분기** 를 한 문장으로 커버하면 → 각 필드/분기마다 examples 별도 작성. 한 example 로 뭉뚱그리지 말 것.
+  - ★ 분기가 많은 Rule (if/else/switch 갈래) → 분기별로 시나리오 분리.
 
   [Question 구조]
-  - text: 코드로 답할 수 없는 모호함
-  - reason: 코드 근거가 없는 이유
-  원칙: 추측 대신 Question. 0개도 OK, 최대 3개.
+  - text: 코드로 답할 수 없는 모호함을 명확하게 한 줄로 제시
+  - reason: 코드 근거가 없는 이유 (어떤 라인·식별자에 단서가 없는지 구체적으로)
+
+  원칙:
+  - 추측해서 Rule/Example 만들기 전에 **모호함이면 Question 으로**.
+  - 코드 단서가 분명한 사실은 절대 Question 으로 만들지 말 것 (환각·과잉 의문 방지).
+  - Question 0 개도 정상. 억지로 채우지 말 것.
 
   {% if has_table_context | default(false) %}
   ─────────────────────────────
@@ -281,7 +265,7 @@ prompt: |
       "when":"결제 완료 처리",
       "then":{
         "narrative":"payment_history INSERT + order.status 'PAID'",
-        "return":"RC_NRM","exception":null,
+        "return":"OK","exception":null,
         "writes":[
           {"table":"payment_history","op":"INSERT","where":{},
            "values":{"order_id":"ORD-007","amount":72000,"pay_method":"CARD","status":"COMPLETED"}},
@@ -306,7 +290,7 @@ prompt: |
   ─────────────────────────────
   1. Rule.statement 에 코드 식별자 없음?
   2. Rule 이 비즈니스 신호(임계값·분기·계산·정책예외) 중 하나에 해당?
-  3. Rule 당 Example ≥2, 경계값 1개 이상?
+  3. Rule 의 happy path 와 경계 케이스가 examples 에 모두 보이는가?
   4. "이상/이하/초과/미만" 조건 → X / X±1 두 개?
   5. 비즈니스 정책 예외 = 독립 Rule?
   6. Example.given 이 이 Rule 까지 도달 가능한 완전한 입력(선행 가드 통과값 포함)?
@@ -318,11 +302,40 @@ prompt: |
   12. 코드로 답 못하는 모호함 → Rule/Example 추측 대신 Question?
 
 
+  [INPUT]  주어진 섹션만 활용. 없는 내용은 추측 금지.
+
+  {% if codebase_pattern %}── [코드베이스 패턴 — 프레임워크 관용구·DB 접근 패턴]
+  아래 [Rule 후보/제외] 판정 시 일반 원칙보다 **이 패턴을 우선 참조**.
+  {{ codebase_pattern }}
+  {% endif %}
+  {% if module_comment %}── [모듈/클래스 헤더 주석 — 원본 그대로, 참고용]
+  {{ module_comment }}
+  {% endif %}
+  {% if module_annotations %}── [모듈 어노테이션]
+  {{ module_annotations }}
+  {% endif %}
+  {% if context %}── [부모 컨텍스트] ── 연결된 SQL/Config/Class + called_method_summaries(참고용)
+  {{ context }}
+  {% endif %}
+  {% if field_initial_values %}── [참조 변수 — 사용 라인 매핑 포함]
+  자기 함수가 직접 reference 한 변수/상수/매크로/파라미터만. 사용 라인이 자기 range 와 겹쳐야.
+  {{ field_initial_values }}
+  {% endif %}
+  {% if ddl_context %}── [DDL 컨텍스트 — 그래프 기반 테이블·컬럼 정의]
+  {{ ddl_context }}
+  {% endif %}
+  {% if constants_context %}── [상수 컨텍스트] ── 상수명→실제값 (summary/examples 에서 실제 값으로 치환)
+  {{ constants_context }}
+  {% endif %}
+  ── [분석 대상 코드] ── (L{{ startLine }}-{{ endLine }} {{ language | default("Java") }})
+  {{ code }}
+
+
   ─────────────────────────────
   [OUTPUT]  단일 JSON 객체만. 코드펜스·주석·부가설명 금지. 트레일링 콤마 금지.
   ─────────────────────────────
   {
-    "summary": "3~5문장 상세 요약",
+    "summary": "함수 동작 요약 (분량은 내용에 비례)",
     "stereotype": "허용 목록에서 하나",
     "actor": "행위 주체 또는 빈 문자열",
     {% if is_oop | default(true) %}"dependencies": [
@@ -350,5 +363,5 @@ prompt: |
   - null 허용: guard_rule_id, branch_from, then.return, then.exception. 그 외 빈값 = [] / {} / ""
   - {% if has_table_context | default(false) %}tableInsights: 컨텍스트 테이블만{% else %}tableInsights: [] 고정{% endif %}
   - rules: 실제 관찰된 도메인 규칙 수만큼. 없으면 []. 억지로 채우지 말 것 (가짜 Rule 금지).
-  - examples: 등장한 rule_id 만 참조. Rule 당 최소 2개 (일반 + 경계) + 복수 필드·분기 Rule 은 필드/분기마다 추가.
+  - examples: 등장한 rule_id 만 참조. happy path + 경계 모두 커버. 복수 필드·분기 Rule 은 필드/분기마다 시나리오 분리.
   - questions: 모호할 때만. 추측 금지.

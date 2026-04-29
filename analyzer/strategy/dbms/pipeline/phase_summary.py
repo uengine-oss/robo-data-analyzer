@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import Counter
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from analyzer.common.cypher.graph_writer import write_to_graph
@@ -43,6 +44,31 @@ logger = logging.getLogger(__name__)
 # ───────────────────────────────────────────────────────────────────────────
 # 1. 프로시저 요약 — 파일별 PH2_OK 프로시저들에 대해 병렬 LLM 호출
 # ───────────────────────────────────────────────────────────────────────────
+
+
+def _collect_representative_actor(proc_root: Any) -> str:
+    """proc_root 하위 모든 노드의 actor 빈도 집계 → 대표 actor 1개 반환.
+
+    LLM 이 자식 노드별로 actor 응답을 줘도, 그것은 결국 unit-root 의 호출자/실행자.
+    노이즈 회피 위해 자식 statement 별 ROLE 부착은 제거 (D4 fix), 가장 빈번한
+    actor 를 unit-root 에 한 번 부착. 모든 자식이 actor 비어있으면 빈 문자열 반환
+    → build_procedure_summary_queries 가 ROLE Cypher 자체를 생략.
+    """
+    if proc_root is None:
+        return ""
+    counter: Counter = Counter()
+
+    def walk(node: Any) -> None:
+        actor = getattr(node, "actor", "") or ""
+        if actor:
+            counter[actor] += 1
+        for child in getattr(node, "children", None) or []:
+            walk(child)
+
+    walk(proc_root)
+    if not counter:
+        return ""
+    return counter.most_common(1)[0][0]
 
 
 def _collect_summary_targets(
@@ -110,6 +136,7 @@ async def _process_one_procedure(
                 return
 
             final_analysis = assemble_final_analysis(proc_root)
+            representative_actor = _collect_representative_actor(proc_root)
             queries = build_procedure_summary_queries(
                 procedure_type=info.procedure_type,
                 procedure_name=info.procedure_name,
@@ -118,6 +145,7 @@ async def _process_one_procedure(
                 file_name=processor.file_name,
                 summary=final_summary,
                 analysis=final_analysis,
+                actor=representative_actor,
             )
             if queries:
                 async for chunk in write_to_graph(

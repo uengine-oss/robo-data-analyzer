@@ -1,5 +1,4 @@
-"""
-분석 파이프라인 통합 테스트
+"""분석 파이프라인 통합 테스트.
 
 전체 분석 파이프라인을 단일 통합 테스트로 실행합니다:
 - Phase 1: AST 그래프 생성 (모든 파일)
@@ -13,6 +12,47 @@ Neo4j, LLM API 등의 외부 의존성이 필요합니다.
 지원 전략:
 - dbms: SQL 파일 기반 프로시저/함수 분석
 - framework: Java 파일 기반 클래스 다이어그램 분석
+
+────────────────────────────────────────────────────────────────────
+실행 방법
+────────────────────────────────────────────────────────────────────
+
+[A] 단일 분석 (메인 슬롯, 기본)
+  cd robo-data-analyzer
+  pytest test/test_analyzer.py::test_full_analysis_pipeline -v -s
+
+  → .env 의 기본값 사용. 데이터는 robo/data/, Neo4j DB 는 NEO4J_DATABASE.
+
+[B] 병렬 분석 (슬롯 격리 — 여러 분석기 동시 실행)
+  슬롯별 환경변수로 격리:
+    DATA_DIR        = c:/uEngine/robo/data-slots/<slot>   # 데이터 폴더 직접 지정
+    NEO4J_DATABASE  = analyzer | architect | analyzer_<slot>  # Neo4j DB 격리
+    LLM_CACHE_DB    = .llm_cache_<slot>.db               # LLM 캐시 격리 (선택)
+    LLM_AUDIT_DIR   = logs_<slot>                         # logs/llm_prompts 격리 (선택)
+    TEST_DATASOURCE = rwis_<slot>                         # catalog 격리 (선택)
+
+  예시 — 두 SP 동시 분석 (다른 터미널 각각):
+    DATA_DIR=c:/uEngine/robo/data-slots/fn_edit_yn \\
+    NEO4J_DATABASE=architect \\
+      pytest test/test_analyzer.py
+
+    DATA_DIR=c:/uEngine/robo/data-slots/fn_calc \\
+    NEO4J_DATABASE=analyzer \\
+      pytest test/test_analyzer.py
+
+  슬롯 폴더 구조 (DATA_DIR 가 가리키는 폴더 안):
+    <slot>/
+      source/<directory>/<file>.sql   # 분석 대상
+      analysis/target/<directory>/    # ANTLR AST JSON 출력 위치
+      ddl/                             # DDL 파일
+
+[C] 사전 준비 — 새 Neo4j DB 사용 시 1회
+  Neo4j Browser:
+    :use system
+    CREATE DATABASE analyzer_<slot> IF NOT EXISTS;
+
+가이드 상세: docs/가이드/병렬분석-슬롯-가이드.md
+슬롯 명명 컨벤션: data-slots/README.md
 """
 
 from __future__ import annotations

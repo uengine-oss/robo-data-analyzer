@@ -7,9 +7,14 @@ from config.settings import settings
 
 # 노드 타입 분류
 PROCEDURE_TYPES = frozenset(["PROCEDURE", "FUNCTION", "CREATE_PROCEDURE_BODY", "TRIGGER", "BEGIN"])
-NON_ANALYSIS_TYPES = frozenset(["CREATE_PROCEDURE_BODY", "FILE", "PROCEDURE", "FUNCTION", "DECLARE", "TRIGGER", "SPEC", "VARIABLE", "PACKAGE_VARIABLE", "CONSTANT_FIELD"])
+# LLM 분석 X — 구조 래퍼 / 단순 declaration. PARAMETER 는 함수 파라미터 (자식 노드, declaration 성격)
+NON_ANALYSIS_TYPES = frozenset([
+    "CREATE_PROCEDURE_BODY", "FILE", "PROCEDURE", "FUNCTION", "DECLARE", "TRIGGER", "SPEC",
+    "VARIABLE", "PACKAGE_VARIABLE", "CONSTANT_FIELD", "PARAMETER",
+])
 DML_STATEMENT_TYPES = frozenset(["SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "EXECUTE_IMMEDIATE", "FETCH", "CREATE_TEMP_TABLE", "CTE", "OPEN_CURSOR", "CURSOR_VARIABLE"])
-VARIABLE_DECLARATION_TYPES = frozenset(["PACKAGE_VARIABLE", "DECLARE", "SPEC"])
+# 변수성 declaration — REFERENCES / INIT_BY 매칭의 target 후보. PARAMETER 도 포함 (함수 파라미터 = 변수성 식별자)
+VARIABLE_DECLARATION_TYPES = frozenset(["PACKAGE_VARIABLE", "DECLARE", "SPEC", "PARAMETER"])
 
 # Bottom-up Rule 누적에서 제외되는 구조 래퍼 — 자식 rules 를 그대로 통과
 # 나머지 모든 노드는 rule_target (의미 부모 or 리프) 로 간주됨

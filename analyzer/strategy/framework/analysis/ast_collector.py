@@ -237,7 +237,7 @@ class StatementCollector:
 
     @staticmethod
     def _stem_from_filename(file_name: str) -> str:
-        """파일명에서 확장자 제거. 예: 'svc_plan.c' → 'svc_plan'"""
+        """파일명에서 확장자 제거."""
         if "." in file_name:
             return file_name.rsplit(".", 1)[0]
         return file_name
@@ -686,9 +686,10 @@ def build_function_facts_and_module_index(
                     comment=node.comment,
                     annotations=node.annotations,
                     init_value=(node.init_value or ""),
+                    kind=node.node_type,
                 )
             )
-            # variable_id → 원래 AST 노드 타입 저장 (서브레이블용)
+            # variable_id → 원래 AST 노드 타입 (서브레이블용 + variable_linker scope 결정용)
             node_kinds[variable_id] = node.node_type
         if node.node_type in module_types and node.unit_name:
             # FILE 노드: unit_kind를 통해 kind를 "FILE"로 저장

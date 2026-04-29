@@ -19,25 +19,10 @@ prompt: |
   응답 언어: {{ locale }}
 
 
-  [INPUT]
-  FQN: {{ module_fqn }}
-  {% if kind %}노드 종류: {{ kind }}{% endif %}
-  {% if module_comment %}주석: {{ module_comment }}{% endif %}
-  {% if module_annotations %}어노테이션: {{ module_annotations }}{% endif %}
-  {% if prev_summary %}이전 청크 요약 (참고만, 현재 items로 이번 요약 작성):
-  {{ prev_summary }}
-  {% endif %}
-
-  현재 멤버 요약 목록:
-  {% for item in items %}
-  - {{ item.name }}: {{ item.summary }}{% if item.actor %} [Actor: {{ item.actor }}]{% endif %}
-  {% endfor %}
-
-
   [RULES]
 
   ★ 1. 모듈 요약 (summary):
-  - 멤버들의 요약을 종합하여 2~5문장으로 이 모듈의 전체 책임을 요약
+  - 멤버들의 요약을 종합하여 이 모듈의 전체 책임을 요약 (분량은 모듈 복잡도에 비례)
   - 구체적 계산식, 분기 조건, 하드코딩 값, 상태 전이를 절대 생략하지 마세요
   - 기술적 식별자(모듈명, 메서드명)는 의미로 풀어 설명
   - 비즈니스 도메인 필드명(엔티티 속성명)은 그대로 유지
@@ -62,12 +47,32 @@ prompt: |
 
   [EXAMPLE]
   ── summary ──
-  ✅ "이 모듈은 자동납부 실시간 인증 1건에 대해 입력검증 → 카드·은행사 식별 → 인증결과반영여부 산정 → 인증이력 적재 → 오류메시지 조립까지 수행하며, co_cl_cd·pay_mthd_cd·auth_cl_cd·op_cl 조합으로 분기한다."
+  ✅ "이 모듈은 (도메인 처리 단위) 한 건에 대해 입력검증 → (분류·식별) → (산정) → (적재) → (응답 조립) 까지 수행하며, 핵심 분기 컬럼 조합으로 분기한다." (각 단계와 분기 조건은 코드에서 관찰된 실제 식별자로 채움)
   ❌ "이 모듈은 인증 처리를 담당한다." → 분기 조건, 처리 단계, 구체적 필드명 전부 누락
 
   ── unified_actors ──
   ✅ {"관리자": ["admin", "운영자"]} → 같은 역할의 다른 표현 통합
   ❌ {"관리자": ["system"]} → system은 자동 처리 주체이므로 사람 역할과 통합 금지
+
+
+  [INPUT]
+
+  FQN: {{ module_fqn }}
+  {% if kind %}노드 종류: {{ kind }}{% endif %}
+  {% if module_comment %}── [모듈/클래스 헤더 주석 — 원본 그대로, 참고용]
+  {{ module_comment }}
+  {% endif %}
+  {% if module_annotations %}── [모듈 어노테이션]
+  {{ module_annotations }}
+  {% endif %}
+  {% if prev_summary %}이전 청크 요약 (참고만, 현재 items로 이번 요약 작성):
+  {{ prev_summary }}
+  {% endif %}
+
+  현재 멤버 요약 목록:
+  {% for item in items %}
+  - {{ item.name }}: {{ item.summary }}{% if item.actor %} [Actor: {{ item.actor }}]{% endif %}
+  {% endfor %}
 
 
   [OUTPUT]

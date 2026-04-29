@@ -4,7 +4,6 @@ AST를 후위순회하여 StatementNode와 프로시저 정보를 수집합니�
 """
 
 import re
-import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from util.logger import log_process
@@ -170,6 +169,7 @@ class StatementCollector:
             initializer_contains_method_call=bool(node.get('initializerContainsMethodCall')),
             variable_type=node.get('variableType') or "",
             init_value=node.get('initValue') or "",
+            modifiers=node.get('modifiers') or "",
         )
         for child_node in child_nodes:
             child_node.parent = statement_node

@@ -77,6 +77,9 @@ class VariableFacts:
     code: str = ""
     # 선언부 초기화식 텍스트 (ANTLR 의 node.initValue) — Analyzer 가 식별자 추출하여 INIT_BY 매칭
     init_value: str = ""
+    # AST 의 원래 노드 타입 (VARIABLE / GLOBAL_VARIABLE / PARAMETER / DEFINE / FIELD 등).
+    # variable_linker 의 scope 결정 (함수 스코프 vs 와일드카드) 에 사용.
+    kind: str = ""
 
 
 @dataclass

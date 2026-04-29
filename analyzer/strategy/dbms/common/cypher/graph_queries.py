@@ -11,7 +11,7 @@ DBMS anchor 형태로 wrapping 해서 호출.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from analyzer.common.pipeline.example_mapping import EmBatch, build_em_queries
 
@@ -54,19 +54,22 @@ def build_procedure_summary_queries(
     file_name: str,
     summary: str,
     analysis: Dict[str, Any],
+    actor: str = "",
 ) -> List[Dict[str, Any]]:
-    """프로시저 1개 단위의 Summary + Example Mapping Cypher 쿼리 리스트.
+    """프로시저 1개 단위의 Summary + Example Mapping + Actor ROLE Cypher 쿼리 리스트.
 
     흐름:
       1. PROCEDURE.summary SET
       2. EM (Rule/Example/Question) Cypher — `analyzer/common/cypher/example_mapping`
          의 공용 빌더 호출
+      3. Actor 노드 + (Actor)-[:ROLE]->(PROCEDURE) — actor 인자 있을 때만
 
     Args:
         procedure_type: PROCEDURE | FUNCTION | TRIGGER
         procedure_name, schema_name, directory, file_name: anchor composite key
         summary: 프로시저 요약 텍스트
         analysis: ``{"rules": [...], "examples": [...], "questions": [...]}``
+        actor: 자식 노드들의 LLM actor 응답을 phase_summary 가 집계해 넘김. 빈 문자열이면 ROLE 생성 X.
     """
     has_schema = bool(schema_name)
     anchor_match = _proc_anchor_match(procedure_type, has_schema)
@@ -110,6 +113,21 @@ def build_procedure_summary_queries(
             flow_rel_id_field="procedure_id",
         )
     )
+
+    # 3) Actor 노드 + ROLE 관계 — unit-root 에 부착
+    if actor:
+        queries.append({
+            "query": (
+                "UNWIND $rows AS row\n"
+                f"{anchor_match}\n"
+                "MERGE (act:Actor {name: row.actor})\n"
+                "ON CREATE SET act.created_at = timestamp()\n"
+                "MERGE (act)-[r:ROLE]->(a)\n"
+                "ON CREATE SET r.created_at = timestamp()\n"
+                "RETURN act, r"
+            ),
+            "params": {"rows": [{**anchor_keys, "actor": str(actor)}]},
+        })
 
     return queries
 
@@ -202,20 +220,24 @@ def build_package_queries(*, directory: str, full_directory: str, file_name: str
 
 def build_has_procedure_query(
     *,
-    parent_type: str, parent_line: int,
-    child_type: str, child_line: int,
+    parent_type: str, parent_name: str,
+    child_type: str, child_name: str,
     full_directory: str, file_name: str,
 ) -> Dict[str, Any]:
-    """(FILE)-[:HAS_PROCEDURE]->(PROCEDURE/FUNCTION) 관계 쿼리."""
+    """(FILE)-[:HAS_PROCEDURE]->(PROCEDURE/FUNCTION) 관계 쿼리.
+
+    MATCH 키 = (label, name, directory, file_name) — `build_static_node_query` 의
+    MERGE 키와 동일 정책. 같은 라인 같은 라벨 노드 여럿 있어도 카테시안 방지.
+    """
     return {
         "query": (
-            f"MATCH (__cy_p__:{parent_type} {{startLine: $parent_line, directory: $directory, file_name: $file_name}})\n"
-            f"MATCH (__cy_c__:{child_type} {{startLine: $child_line, directory: $directory, file_name: $file_name}})\n"
+            f"MATCH (__cy_p__:{parent_type} {{name: $parent_name, directory: $directory, file_name: $file_name}})\n"
+            f"MATCH (__cy_c__:{child_type} {{name: $child_name, directory: $directory, file_name: $file_name}})\n"
             "MERGE (__cy_p__)-[__cy_r__:HAS_PROCEDURE]->(__cy_c__)\n"
             "RETURN __cy_r__"
         ),
         "params": {
-            "parent_line": parent_line, "child_line": child_line,
+            "parent_name": parent_name, "child_name": child_name,
             "directory": full_directory, "file_name": file_name,
         },
     }
@@ -223,20 +245,23 @@ def build_has_procedure_query(
 
 def build_parent_of_query(
     *,
-    parent_type: str, parent_line: int,
-    child_type: str, child_line: int,
+    parent_type: str, parent_name: str,
+    child_type: str, child_name: str,
     full_directory: str, file_name: str,
 ) -> Dict[str, Any]:
-    """(parent)-[:PARENT_OF]->(child) 관계 쿼리."""
+    """(parent)-[:PARENT_OF]->(child) 관계 쿼리.
+
+    MATCH 키 = (label, name, directory, file_name) — MERGE 키와 동일 정책.
+    """
     return {
         "query": (
-            f"MATCH (__cy_p__:{parent_type} {{startLine: $parent_line, directory: $directory, file_name: $file_name}})\n"
-            f"MATCH (__cy_c__:{child_type} {{startLine: $child_line, directory: $directory, file_name: $file_name}})\n"
+            f"MATCH (__cy_p__:{parent_type} {{name: $parent_name, directory: $directory, file_name: $file_name}})\n"
+            f"MATCH (__cy_c__:{child_type} {{name: $child_name, directory: $directory, file_name: $file_name}})\n"
             "MERGE (__cy_p__)-[__cy_r__:PARENT_OF]->(__cy_c__)\n"
             "RETURN __cy_r__"
         ),
         "params": {
-            "parent_line": parent_line, "child_line": child_line,
+            "parent_name": parent_name, "child_name": child_name,
             "directory": full_directory, "file_name": file_name,
         },
     }
@@ -244,20 +269,25 @@ def build_parent_of_query(
 
 def build_next_query(
     *,
-    prev_type: str, prev_line: int,
-    curr_type: str, curr_line: int,
+    prev_type: str, prev_name: str,
+    curr_type: str, curr_name: str,
     full_directory: str, file_name: str,
 ) -> Dict[str, Any]:
-    """(prev)-[:NEXT]->(curr) 관계 쿼리 (형제 노드 순서)."""
+    """(prev)-[:NEXT]->(curr) 관계 쿼리 (형제 노드 순서).
+
+    MATCH 키 = (label, name, directory, file_name) — MERGE 키와 동일 정책.
+    같은 라인 같은 라벨 형제 (예: 함수 파라미터 ``f(a, b)``) 가 있어도
+    name 으로 정확히 1:1 매치 → 카테시안 곱 방지.
+    """
     return {
         "query": (
-            f"MATCH (__cy_prev__:{prev_type} {{startLine: $prev_line, directory: $directory, file_name: $file_name}})\n"
-            f"MATCH (__cy_curr__:{curr_type} {{startLine: $curr_line, directory: $directory, file_name: $file_name}})\n"
+            f"MATCH (__cy_prev__:{prev_type} {{name: $prev_name, directory: $directory, file_name: $file_name}})\n"
+            f"MATCH (__cy_curr__:{curr_type} {{name: $curr_name, directory: $directory, file_name: $file_name}})\n"
             "MERGE (__cy_prev__)-[__cy_r__:NEXT]->(__cy_curr__)\n"
             "RETURN __cy_r__"
         ),
         "params": {
-            "prev_line": prev_line, "curr_line": curr_line,
+            "prev_name": prev_name, "curr_name": curr_name,
             "directory": full_directory, "file_name": file_name,
         },
     }
@@ -389,7 +419,7 @@ def build_references_query(
         "query": (
             f"MATCH (n:{src_node_type} {{startLine: $n_line, directory: $directory, file_name: $file_name}})\n"
             "MATCH (v {name: $var_name, directory: $directory, file_name: $file_name})\n"
-            "WHERE v:VARIABLE OR v:PACKAGE_VARIABLE OR v:CONSTANT_FIELD\n"
+            "WHERE v:VARIABLE OR v:PACKAGE_VARIABLE OR v:CONSTANT_FIELD OR v:PARAMETER\n"
             "MERGE (n)-[:REFERENCES]->(v)\n"
             "RETURN n, v"
         ),
@@ -417,7 +447,7 @@ def build_init_by_query(
         "query": (
             "MATCH (s:VARIABLE {name: $src_name, startLine: $src_line, directory: $directory, file_name: $file_name})\n"
             "MATCH (t {name: $target_name, directory: $directory, file_name: $file_name})\n"
-            "WHERE t:VARIABLE OR t:PACKAGE_VARIABLE OR t:CONSTANT_FIELD\n"
+            "WHERE t:VARIABLE OR t:PACKAGE_VARIABLE OR t:CONSTANT_FIELD OR t:PARAMETER\n"
             "MERGE (s)-[:INIT_BY]->(t)\n"
             "RETURN s, t"
         ),
@@ -442,35 +472,22 @@ def build_static_node_query(
     label: str,
     params: Dict[str, Any],
     set_clause: str,
-    is_procedure_with_name: bool,
-    has_schema: bool,
 ) -> Dict[str, Any]:
     """정적 노드 MERGE 쿼리.
 
-    PROCEDURE/FUNCTION/TRIGGER + procedure_name 있는 경우는 composite key (schema 유무 따라 분기).
-    그 외에는 startLine + directory + file_name 으로 key.
+    MERGE 키 = (label, name, directory, file_name).
+    모든 노드는 ``params["node_name"]`` 을 보유 — 식별자가 있으면 실제 이름,
+    없으면 ``<TYPE>[<startLine>]`` 형식 placeholder. 같은 파일 안에서 (label, name) 충돌 0.
+
+    startLine / procedure_name / schema_name 등은 ``set_clause`` 로 SET 만 하고 키에서 제외.
+    같은 라인에 여러 변수성 노드 (예: 함수 파라미터 ``f(a, b)`` — a, b 둘 다 라인 1) 도
+    name 차이로 정확히 두 노드 생성됨.
     """
-    if is_procedure_with_name:
-        if has_schema:
-            query = (
-                f"MERGE (__cy_n__:{label} {{schema_name: $schema_name, procedure_name: $procedure_name, "
-                f"directory: $directory, file_name: $file_name}})\n"
-                f"SET __cy_n__.startLine = $start_line, {set_clause}\n"
-                "RETURN __cy_n__"
-            )
-        else:
-            query = (
-                f"MERGE (__cy_n__:{label} {{procedure_name: $procedure_name, directory: $directory, "
-                f"file_name: $file_name}})\n"
-                f"SET __cy_n__.startLine = $start_line, {set_clause}\n"
-                "RETURN __cy_n__"
-            )
-    else:
-        query = (
-            f"MERGE (__cy_n__:{label} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
-            f"SET {set_clause}\n"
-            "RETURN __cy_n__"
-        )
+    query = (
+        f"MERGE (__cy_n__:{label} {{name: $node_name, directory: $directory, file_name: $file_name}})\n"
+        f"SET __cy_n__.startLine = $start_line, {set_clause}\n"
+        "RETURN __cy_n__"
+    )
     return {"query": query, "params": params}
 
 
@@ -487,23 +504,6 @@ def build_summary_update_query(
         "__cy_n__.token = $token, __cy_n__.procedure_name = $procedure_name, "
         "__cy_n__.has_children = $has_children\n"
         "RETURN __cy_n__"
-    )
-    return {"query": query, "params": params}
-
-
-def build_actor_role_query(
-    *,
-    node_type: str,
-    params: Dict[str, Any],
-) -> Dict[str, Any]:
-    """:Actor 노드 + (Actor)-[:ROLE]->(node) 관계 쿼리."""
-    query = (
-        f"MATCH (__cy_n__:{node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
-        "MERGE (a:Actor {name: $actor})\n"
-        "ON CREATE SET a.created_at = timestamp()\n"
-        "MERGE (a)-[r:ROLE]->(__cy_n__)\n"
-        "ON CREATE SET r.created_at = timestamp()\n"
-        "RETURN a"
     )
     return {"query": query, "params": params}
 
@@ -570,7 +570,6 @@ def build_column_query(
 
     DDL 보존 가드: description / description_source 가 비어있을 때만 LLM 결과로 채움.
     name / dtype / nullable 도 비어있을 때만 SET (LLM dtype 환각으로 DDL 정확도 손실 방지).
-    Framework 의 build_column_queries (graph_queries.py:355-360) 가드 패턴과 정합.
     """
     query = (
         f"{table_merge_query}\nWITH __cy_t__\n"
@@ -656,7 +655,6 @@ __all__ = [
     "build_references_query",
     "build_static_node_query",
     "build_summary_update_query",
-    "build_actor_role_query",
     "build_create_temp_table_query",
     "build_node_to_table_rel_merge_str",
     "build_dml_table_relation_query",

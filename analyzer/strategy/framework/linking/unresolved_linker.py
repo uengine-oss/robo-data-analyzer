@@ -53,7 +53,7 @@ def run_unresolved_linking(
     state: Dict[str, Any],
     api_key: Optional[str] = None,
     run_dir: Optional[Path] = None,
-    profile_pattern: str = "",
+    codebase_pattern: str = "",
 ) -> Generator[_YieldType, None, None]:
     """미해결 참조 목록을 linking 에이전트로 처리한다.
 
@@ -64,7 +64,7 @@ def run_unresolved_linking(
       4. 배치 완료마다 결과 yield (→ phase_linking 에서 Neo4j 즉시 반영)
 
     Args:
-        profile_pattern: scanning agent 가 뽑은 프레임워크·DB 접근 패턴 요약.
+        codebase_pattern: scanning agent 가 뽑은 프레임워크·DB 접근 패턴 요약.
             user message 에 prose 섹션으로 주입되어 LLM 탐색의 길잡이로 쓰인다.
 
     Yields:
@@ -100,7 +100,7 @@ def run_unresolved_linking(
         )
 
         for batch_idx, batch in enumerate(batches):
-            user_message = _build_batch_user_message(batch, category, user_template, profile_pattern)
+            user_message = _build_batch_user_message(batch, category, user_template, codebase_pattern)
             invoke_ok = False
             try:
                 agent.invoke({"messages": [{"role": "user", "content": user_message}]})
@@ -147,16 +147,16 @@ def _build_batch_user_message(
     batch: List[UnresolvedLink],
     category: str,
     user_template: str,
-    profile_pattern: str = "",
+    codebase_pattern: str = "",
 ) -> str:
     """배치를 카테고리 힌트 + 프로파일 지침과 함께 user_template 에 채워 user message 를 생성."""
     data = [_serialize_unresolved(u) for u in batch]
     profile_hint = ""
-    if profile_pattern:
+    if codebase_pattern:
         profile_hint = (
             "\n---\n"
             "[프로젝트 프레임워크·DB 접근 패턴 분석 — 수색 지침]\n\n"
-            f"{profile_pattern}\n"
+            f"{codebase_pattern}\n"
         )
     return user_template.format(
         category=category,

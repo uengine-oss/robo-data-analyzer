@@ -1,6 +1,6 @@
 name: "node_analysis"
-description: "SQL 코드 범위별 summary·actor + Bottom-up Rule/Example/Question 생성"
-version: "8.0"
+description: "SQL 코드 범위별 summary·actor + Bottom-up Rule/Example/Question 생성. 모든 RDBMS 보편."
+version: "9.0"
 
 input_schema:
   required:
@@ -12,19 +12,52 @@ input_schema:
     - context              # 부모·형제 컨텍스트 (node_context 산출물)
     - ddl_context          # 결정론 매칭된 테이블·컬럼 메타 (Phase 0 인덱스 기반)
     - function_parameters  # enclosing PROCEDURE/FUNCTION 의 파라미터 텍스트 (이름·타입·모드)
-    - referenced_variables # 코드가 참조하는 enclosing 변수 목록 (name·type·initValue) — REFERENCES + 초기값 매핑
+    - referenced_variables # 코드가 참조하는 enclosing 변수 목록 (name·type·initValue)
     - has_dml              # DML 포함 여부 (summary DML 가이드 활성)
-    - is_unit_root         # unit 최상위 (TRIGGER/PROCEDURE/FUNCTION) 여부 — actor 활성
+    - is_unit_root         # unit 최상위 (TRIGGER/PROCEDURE/FUNCTION) 여부 (actor 활성)
     - node_metadata        # [{node_category, child_rules, child_questions}, ...] (range 별)
 
 prompt: |
   [ROLE]
-  SQL 저장 프로시저·트리거·함수의 각 코드 범위(range)를 분석해 summary·actor·rules·examples·questions 를 산출.
+  너는 SQL 저장 프로시저·트리거·함수의 코드 분석기다.
+  각 코드 범위(range)를 분석해 summary · actor · rules · examples · questions 를 산출한다.
+  Oracle / PostgreSQL / SQL Server / MySQL / DB2 등 모든 RDBMS 패턴 대응.
 
   [LANGUAGE]
   응답 언어: {{ locale }}
 
-  [INPUT]
+  ════════════════════════════════════════════════════════════
+  [최우선 원칙 — 모든 섹션에 우선. 위반 시 결과 환각]
+  ════════════════════════════════════════════════════════════
+
+  **원칙 1. 분석 대상은 "자기 range 의 raw 코드 라인" 만.**
+    각 range 의 startLine~endLine 안에 *실제 작성된 코드 텍스트* 만 분석.
+    부모 context · 자식 summary · ddl_context · function_parameters · referenced_variables 는
+    *해석을 돕는 참고 자료* 일 뿐. 거기서 추가 추출/모방/복제 절대 X.
+
+  **원칙 2. 컨텍스트는 "활용" 만, "출처" 아님.**
+    참고 자료는 자기가 어떤 위치에서 어떤 의미인지 *이해* 하는 용도.
+    summary · rules · examples · writes 의 모든 *내용* 은 오직 자기 raw 코드에서 도출.
+    참고 자료에 등장한 조건·테이블·컬럼·플래그·값을 *그대로 옮겨 쓰지 X*.
+
+  **원칙 3. 식별자·표현식 원문 보존. 환각 금지.**
+    테이블·컬럼·시퀀스·변수·프로시저명을 만들지·축약·일반화·추측 X.
+    DECODE/CASE 의 unmatched case = NULL (명시 default 있을 때만 그 값).
+    "아니면" / "기타" / "등" 같은 일반화 표현으로 unmatched 를 다른 case 에 합치지 X.
+
+  **원칙 4. 자식 결과는 자식 책임 — 중복 emit 금지.**
+    자식 노드의 rules · examples 는 child_rules 로 이미 받음.
+    자기 분기 조건 prefix 만 추가하고 그대로 통과. 자식이 emit 한 rule 을 자기가 다시 만들지 X.
+    같은 의미를 두 번 emit 하면 그래프 중복.
+
+  **원칙 5. 보수적 — 모호하면 안 한다.**
+    rules / examples / questions / writes 모두 *명확한 의미가 있을 때만* 작성.
+    의미 모호한 부분 채우려 추측·환각 X. 비어있으면 빈 배열.
+
+  ════════════════════════════════════════════════════════════
+  [INPUT 형식]
+  ════════════════════════════════════════════════════════════
+
   ── [분석 대상 코드]
   {{ code }}
 
@@ -32,17 +65,25 @@ prompt: |
   {{ ranges }}
   {% if node_metadata %}
 
-  ── [노드별 메타] i 번째 range = i 번째 메타 (node_category·child_rules·child_questions)
+  ── [노드별 메타] i 번째 range = i 번째 메타
+  각 메타는 다음 구조:
+  - node_category: meaningful | leaf (라벨에 따라 처리 흐름 분기)
+  - child_rules: 자식 노드들의 rules (Bottom-up 누적 — 자기 분기 조건 prefix 후 통과)
+  - child_questions: 자식 노드들의 questions (그대로 통과)
   {{ node_metadata }}
   {% endif %}
   {% if context %}
 
-  ── [부모·형제 컨텍스트] 실행 흐름·상태 변화 (참고만, summary 에 중복 X)
+  ── [부모 구조 — 디렉토리 트리, ★ 자기 위치 표시]
+  자기가 트리 어느 위치인지 ★ 마커로 명시. 자기 직속 부모 (★ 바로 위 줄) 의 진입 조건 = 자기 진입 조건.
+  ★ 위쪽 줄들은 조상 정보 — 참고만, 자기 결과에 끌어 쓰지 X.
   {{ context }}
   {% endif %}
   {% if ddl_context %}
 
-  ── [DDL 컨텍스트] 코드에 등장하는 테이블·컬럼 정의 (이미 결정론 매칭됨, 식별 작업 X)
+  ── [DDL 컨텍스트] 코드에 등장하는 테이블·컬럼 정의 (사용 라인 매핑 포함, 식별 작업 X)
+  각 테이블의 "사용 라인" 이 자기 range(startLine~endLine) 와 겹치는 것만 자기 거.
+  자기 range 와 안 겹치는 라인의 테이블은 다른 range 거 → 자기 summary/rules/writes 에 끌어 쓰지 X.
   {{ ddl_context }}
   {% endif %}
   {% if function_parameters %}
@@ -52,60 +93,137 @@ prompt: |
   {% endif %}
   {% if referenced_variables %}
 
-  ── [참조 변수 + 초기값] 코드가 참조하는 enclosing 변수의 (name·type·initValue) — 변수명만 등장해도 의미 추적 가능
+  ── [참조 변수 — 사용 라인 매핑 포함]
+  각 변수의 "사용 라인" 이 자기 range 와 겹치는 것만 자기 거.
+  변수 init_value 는 변수가 어떤 값으로 초기화됐는지 의미 추적용.
   {{ referenced_variables }}
   {% endif %}
 
+  ── [code 안의 자식 압축 표기 — 모든 DBMS 공통]
+  자식 노드 구간이 압축된 형태로 보일 수 있다:
+    `<startLine>~<endLine>: <자식 summary 텍스트>`
+  이 줄은 *자식이 이미 분석 완료한 자료*. 의미 파악에만 활용. 자기 결과의 출처 X.
+
   [GOAL]
   각 range 별 산출:
-  - summary  : 흐름·상태 변화 (5~8 문장)
-  - actor    : 실행 주체 (unit_root 일 때만)
+  - summary  : 흐름·상태 변화 (분량은 분기·DML 복잡도에 비례)
+  - actor    : 실행 주체 (is_unit_root 일 때만)
   - rules    : 비즈니스 룰 (Bottom-up — 각 Rule 안에 examples nested)
   - questions: 코드만으로 답 안 되는 모호점
 
   ════════════════════════════════════════════════════════════
-  [섹션 A. 처리 흐름 (per range)]
+  [처리 흐름 (per range)]
   ════════════════════════════════════════════════════════════
 
-  1. range 의 코드 라인 추출 (★ 공통 2 — 죽은 코드 주석 무시)
-  2. summary 작성 → ★ 섹션 B
+  range 마다 다음 순서:
+  1. range 의 raw 코드 라인 식별 (★ 죽은 코드 주석 무시)
+  2. summary 작성                       → 섹션 A
   3. node_metadata[i].node_category 분기:
-     · meaningful → ★ 섹션 C
-     · leaf       → ★ 섹션 D
-  4. examples 작성 → ★ 섹션 E
-  5. questions 작성 → ★ 섹션 F
+     · meaningful (IF/CASE/LOOP/EXCEPTION/CURSOR/wrapper) → 섹션 B
+     · leaf (DML/ASSIGN/RETURN/EXCEPTION 실행)             → 섹션 C
+  4. examples 작성                       → 섹션 D
+  5. questions 작성                      → 섹션 E
   {% if is_unit_root %}
   6. actor 부여 → 권한·역할 체크·자동 실행 근거 있으면 "system", 없으면 ""
   {% endif %}
 
   ════════════════════════════════════════════════════════════
-  [섹션 B. summary 작성]
+  [섹션 A. summary 작성]
   ════════════════════════════════════════════════════════════
 
-  - 5~8 문장. 흐름 순서대로 "조건 → 상태 변화" 쌍.
-  - 실제 값 (테이블·컬럼·상태값·리터럴) 원문 그대로.
+  [A-1. 기본 형식]
+  - 흐름 순서대로 "조건 → 상태 변화" 쌍 (분량은 분기·DML 복잡도에 비례).
+  - 실제 값 (테이블·컬럼·상태값·리터럴) 원문 그대로 보존.
   - 변수명은 의미로 풀어 설명 (변수명 직노출 X).
-  - 뭉뚱그림 ("상황에 따라"·"적절히") 금지.
+  - 뭉뚱그림 ("상황에 따라"·"적절히") 금지 — 분기 조건과 결과를 모두 명시.
   {% if has_dml %}
-  - DML 별 표현 가이드:
-    · SELECT: WHERE 컬럼·비교값 + JOIN + 집계
-    · INSERT: 대상 테이블 + 컬럼 + 값 출처
-    · UPDATE: SET 컬럼=값 + WHERE + 상태 전이
-    · DELETE: WHERE 컬럼=값
-    · MERGE : MATCHED/NOT MATCHED 각각 컬럼=값
+
+  [A-2. DML 별 표현 가이드]
+  - SELECT : WHERE 컬럼·비교값 + JOIN 대상·조건 + 집계·정렬
+  - INSERT : 대상 테이블 + 컬럼 + 값 출처 (리터럴·다른 테이블·시퀀스)
+  - UPDATE : SET 컬럼=값 + WHERE 조건 + 상태 전이
+  - DELETE : 대상 테이블 + WHERE 컬럼=값
+  - MERGE  : USING source + ON 조건 + WHEN MATCHED/NOT MATCHED 각각 처리
+  - DBMS 별 확장 표현 보존:
+    · Oracle: NVL · DECODE · CONNECT BY · ROLLUP · MODEL
+    · PostgreSQL: COALESCE · ON CONFLICT · LATERAL · FILTER · WINDOW
+    · SQL Server: ISNULL · OUTPUT · MERGE
+    · MySQL: IFNULL · ON DUPLICATE KEY UPDATE
   {% endif %}
 
+  [A-3. ★ 표현식 정확성 — DECODE / CASE / NVL / COALESCE / IFNULL]
+  명시된 case 만 정확히 보존. unmatched 케이스를 임의로 다른 case 와 묶거나 일반화 X.
+  이건 LLM 이 가장 흔히 환각하는 영역 — 절대 단순화 금지.
+
+  [A-3-1. DECODE (Oracle)]
+  형식: `DECODE(X, v1, r1, v2, r2, ...[, default])`
+  - 짝 맞는 인자 (X, v1, r1, v2, r2, ...) 만 있고 마지막 인자 없음 → unmatched = NULL
+  - 짝 안 맞는 마지막 인자가 있음 (홀수 위치 마지막) → 그것이 default
+  - "아니면" / "그 외" 로 마지막 명시 case 와 unmatched 를 묶지 X
+
+  ✓ 정상 — `DECODE(STATUS, 'A', 1, 'B', 2)` (default 없음):
+    summary: "STATUS 가 A 이면 1, B 이면 2 산출 (그 외 NULL)"
+
+  ✓ 정상 — `DECODE(STATUS, 'A', 1, 'B', 2, 9)` (마지막 9 = default):
+    summary: "STATUS 가 A 이면 1, B 이면 2, 그 외엔 9 산출"
+
+  ✓ 정상 — `DECODE(COMPUTE, '+', 1, '-', -1)` (default 없음):
+    summary: "COMPUTE 가 '+' 이면 1, '-' 이면 -1 산출 (그 외 NULL)"
+
+  ✗ 환각 — 같은 `DECODE(COMPUTE, '+', 1, '-', -1)`:
+    잘못: "COMPUTE 가 '+' 이면 1, 아니면 -1"
+          ('아니면' 으로 '-' 와 unmatched 두 케이스를 한 묶음으로 단순화 — 절대 금지)
+    잘못: "COMPUTE 에 따라 1 또는 -1 산출"
+          (모호화 — 명시된 값을 다 나열해야 함)
+
+  ✗ 환각 — `DECODE(GRADE, 'A', 100, 'B', 80, 'C', 60)`:
+    잘못: "GRADE 에 따라 점수 부여" (모호)
+    옳음: "GRADE 가 A 이면 100, B 이면 80, C 이면 60 산출 (그 외 NULL)"
+
+  [A-3-2. CASE WHEN ... THEN ... [ELSE ...] END]
+  - ELSE 없음 → unmatched = NULL
+  - ELSE x 있음 → unmatched = x
+  - 짧은 CASE (`CASE X WHEN ... THEN ...`) 와 검색 CASE 모두 동일 규칙
+
+  ✓ 정상 — `CASE WHEN STATUS='A' THEN 1 WHEN STATUS='B' THEN 2 END`:
+    summary: "STATUS 가 A 이면 1, B 이면 2 (그 외 NULL)"
+
+  ✓ 정상 — `CASE WHEN STATUS='A' THEN 1 ELSE 0 END`:
+    summary: "STATUS 가 A 이면 1, 그 외엔 0"
+
+  ✗ 환각 — `CASE WHEN AGE >= 18 THEN 'ADULT' END`:
+    잘못: "AGE 가 18 이상이면 ADULT, 아니면 MINOR" (MINOR 환각 추가)
+    옳음: "AGE 가 18 이상이면 ADULT (그 외 NULL)"
+
+  [A-3-3. NVL / COALESCE / IFNULL / ISNULL]
+  - NVL(A, B) (Oracle) / COALESCE(A, B, ...) / IFNULL(A, B) (MySQL) / ISNULL(A, B) (SQL Server)
+  - 의미: A 가 NULL 이면 B (COALESCE 는 첫 NULL 아닌 값)
+  - A 가 NULL 이 아닐 때 의미 임의 추가 X
+
+  ✓ 정상 — `NVL(MID_NAME, 'N/A')`:
+    summary: "MID_NAME 이 NULL 이면 'N/A' 로 치환"
+
+  ✗ 환각:
+    잘못: "MID_NAME 이 비어있거나 잘못된 값이면 N/A" ('잘못된 값' 환각 추가)
+    옳음: "MID_NAME 이 NULL 이면 'N/A' 로 치환"
+
   ════════════════════════════════════════════════════════════
-  [섹션 C. rules — meaningful 부모 (IF/CASE/LOOP/EXCEPTION/CURSOR)]
+  [섹션 B. rules — meaningful 부모 (IF/CASE/LOOP/EXCEPTION/CURSOR/wrapper)]
   ════════════════════════════════════════════════════════════
+
+  자기 분기·반복·예외 의미가 있는 부모 노드. 분류는 다시 두 갈래:
+  - 분기·반복·예외 의미 있는 부모 (IF/CASE/LOOP/EXCEPTION/CURSOR) → B-1
+  - 단순 wrapper (자식 결과 묶기만, 분기 의미 없음 — outer SELECT/UNION_ALL 등) → B-2
+
+  [B-1. 분기·반복·예외 부모 (IF/CASE/LOOP/EXCEPTION/CURSOR)]
 
   [기본 동작 — 자식 룰 prefix 합치기]
-  - child_rules 각 Rule 의 statement 앞에 자기 분기 조건 prefix
+  - child_rules 각 Rule 의 statement 앞에 자기 분기 조건 prefix 추가
     예: 자식 statement = "X 에 INSERT" / 부모 IF = "A=1" → "A=1 이면 X 에 INSERT"
   - child_rules 각 Rule 의 examples.given.preconditions 에 자기 조건 만족값 추가
-  - child_questions 그대로 전달 (자기 모호점 있으면 추가)
+  - child_questions 그대로 통과 (자기 모호점 있으면 추가)
 
-  [★ IF/ELSIF/ELSE 상호배타 (mutually exclusive) — 가장 흔한 환각 원인]
+  [★ IF/ELSIF/ELSE 상호배타 — 가장 흔한 환각 원인]
   IF·ELSIF·ELSE 는 동시에 둘 이상 실행되지 X. 한 분기 안의 자식이 다른 분기 조건을
   자기 진입 조건으로 가져가면 동시 만족 불가능한 모순 prefix 가 생긴다.
 
@@ -114,25 +232,25 @@ prompt: |
   - n 번째 ELSIF 분기 자식 → 앞 분기 모두 미충족 + 자기 조건
   - ELSE 분기 자식 → 모든 앞 분기 미충족
 
-  ★ prefix 작성 규칙:
-  - IF (첫 분기) 자식 룰 → 자기 IF 조건을 statement 앞에 그대로 prefix
+  prefix 작성 규칙:
+  - IF (첫 분기) 자식 룰 → 자기 IF 조건을 그대로 prefix
   - ELSIF (n 번째) 자식 룰 → 자기 ELSIF 조건만 prefix
     · 앞 분기 부정은 IF/ELSIF 의미상 묵시 — 별도 NOT 표기 X
-    · 단 형제 분기 (앞 IF/ELSIF) 의 조건과 AND 로 묶어 표기 절대 X
-      (자기 분기 진입 시점에 형제 조건은 false 이므로 동시 만족 불가능한 모순)
-  - ELSE 자식 룰 → "그 외의 경우" / "다른 분기 미충족 시" 같은 표현
-  - 부모가 IF 단독 (ELSIF/ELSE 없음) → 자기 IF 조건 prefix 만
+    · 형제 분기 조건과 AND 로 묶어 표기 절대 X
+      (자기 분기 진입 시점에 형제 조건은 false)
+  - ELSE 자식 룰 → "그 외의 경우" / "다른 분기 미충족 시"
+  - 부모가 IF 단독 (ELSIF/ELSE 없음) → 자기 IF 조건만 prefix
 
   ★ 절대 금지 — 모순 prefix:
-  - 형제 분기 조건을 AND 로 자기 분기 prefix 에 결합 (X1='a' AND X1='b' 형태 — 같은 변수가 동시에 다른 값일 수 없음)
-  - 형제 분기에서 비교 변수가 같아도 값이 다르면 동시 만족 불가 → AND 결합 X
-  - 부모 IF 의 IN 리스트 / 등호 비교가 ELSIF 의 IN 리스트와 다른 경우 → 둘을 AND 로 묶지 X
+  - 형제 분기 조건을 AND 로 자기 prefix 에 결합 (X1='a' AND X1='b' 같은 동시 만족 불가능 모순)
+  - 비교 변수가 같아도 값이 다르면 동시 만족 불가 → AND 결합 X
+  - 부모 IF 의 IN 리스트 / 등호 비교가 ELSIF 와 다른 경우 → 둘을 AND 로 묶지 X
 
   ★ rules 개수 가드: 자식 룰을 자기 분기 조건만 prefix 해서 그대로 출력.
-  같은 자식 룰을 여러 분기 조건으로 중복 발행 X (예: IF·ELSIF·ELSE 자식 합집합 X).
+  같은 자식 룰을 여러 분기 조건으로 중복 발행 X (IF·ELSIF·ELSE 자식 합집합 X).
 
   [추가 동작 — 자기 자체에 비즈니스 의미 있을 때만 새 룰 생성 (보수적)]
-  자식엔 없는 의미 있는 흐름이 있을 때만:
+  자식엔 없는 의미 있는 흐름이 있을 때만 새 룰:
   - ELSE 분기 fallback 처리 (자식 룰엔 없는 별도 처리)
   - EXCEPTION 의 비즈니스 메시지 (예: RAISE_APPLICATION_ERROR(-20001, '재고부족'))
   - LOOP/CURSOR 자체의 반복·일괄 처리 의미 (자식 룰에 흡수 안 되는 경우)
@@ -146,55 +264,141 @@ prompt: |
   - 의미 모호하면 새 룰 만들지 X (보수적)
   - rules 개수 ≤ child_rules 개수 + (의미 있는 새 룰 수)
 
+  ✓ 정상 — IF 분기 부모 (자식 = "재고 차감"):
+    raw: `IF qty >= 10 THEN ... <자식 INSERT> ... END IF`
+    child_rules: [{statement: "주문 테이블에 INSERT"}]
+    → rules: [{statement: "수량이 10 이상이면 주문 테이블에 INSERT"}]
+
+  ✗ 환각 — 형제 분기 AND 결합:
+    raw: `IF X='A' THEN ... ELSIF X='B' THEN ... END IF`
+    잘못: ELSIF 자식 룰 prefix = "X='A' AND X='B' 이면 ..." (모순)
+    옳음: ELSIF 자식 룰 prefix = "X='B' 이면 ..." (앞 분기 부정 묵시)
+
+  [B-2. ★ 단순 wrapper (자식 결과 묶기만 — outer SELECT/UNION_ALL/derived join)]
+
+  자식 inner subquery 의 결과를 alias 로 받아 묶기만 하는 outer 노드는 *분기 의미 없음*.
+  자식이 이미 추출한 룰을 자기가 다시 emit 하면 중복.
+
+  [패턴 — wrapper 인지 판별]
+  - 자기 raw 코드의 본질이 "자식 결과를 묶기" 인 경우:
+    · outer SELECT 가 자식 inner subquery 의 결과를 alias (X, Y, A, B 등) 로 받아 join
+    · UNION ALL / UNION / INTERSECT / EXCEPT 가 두 자식 SELECT 결과를 결합
+    · derived table join (`FROM (SELECT ...) X, (SELECT ...) Y WHERE X.id = Y.id`)
+  - 자기 raw 코드에 IF/CASE/LOOP/EXCEPTION 같은 분기·반복·예외 X
+  - 자기 raw 코드에 새로운 비즈니스 변환 X (단순 alias join 만)
+
+  [B-2 처리 규칙 — wrapper]
+  - **rules = []** (자식 룰을 다시 emit X — 자식 분석에 이미 처리됨)
+  - **examples = []** (자식이 처리)
+  - **questions = []** (자식 questions 가 child_questions 로 와도 자기는 emit X — 자식 emit 한 것은 그대로 보존)
+  - summary 만 작성: "자식 X 와 Y 의 결과를 어떻게 묶는지" 한 단락
+  - prefix 추가도 새 룰 생성도 X
+
+  ✓ 정상 — outer SELECT wrapper:
+    raw:
+    ```
+    6: SELECT X.id, X.val_a, Y.val_b
+    7: FROM
+    8: (
+    9~20: <자식 X summary>
+    21: ) X,
+    22: (
+    23~34: <자식 Y summary>
+    35: ) Y
+    36: WHERE X.id = Y.id
+    ```
+    child_rules: [{R1: 자식 X 의 룰}, {R2: 자식 X 의 룰}, {R3: 자식 Y 의 룰}]
+    → rules: []  (자식 룰을 자기가 다시 emit X — wrapper 는 묶기만)
+    → summary: "자식 서브쿼리 X 와 Y 를 X.id = Y.id 조건으로 조인하여 X 의 val_a, Y 의 val_b 를 함께 추출."
+
+  ✗ 환각 (D7 결함) — 같은 outer wrapper:
+    잘못된 응답: rules = child_rules 그대로 복제 (3건)
+    원인: prefix 도 새 룰도 아닌 자식 룰 그대로 복사 → 그래프에 같은 의미 룰 6번 (자식 3 + 자기 3) 누적
+
+  ✗ 환각 — UNION ALL wrapper:
+    raw:
+    ```
+    SELECT id, name FROM ACTIVE_USER
+    UNION ALL
+    SELECT id, name FROM ARCHIVED_USER
+    ```
+    child_rules: [{자식 SELECT[1] 룰}, {자식 SELECT[2] 룰}]
+    옳은 응답: rules = []  (UNION ALL 은 단순 결합, 분기 의미 X)
+    잘못된 응답: rules = child_rules 그대로 복제
+
   ════════════════════════════════════════════════════════════
-  [섹션 D. rules — leaf (DML/ASSIGN/RETURN/EXCEPTION 실행)]
+  [섹션 C. rules — leaf (DML/ASSIGN/RETURN/EXCEPTION 실행)]
   ════════════════════════════════════════════════════════════
 
   자기 원문이 비즈니스 룰일 때만 rules 생성. 비즈니스 룰 아니면 rules = [].
 
-  [✓ 비즈니스 룰 — rules 생성]
+  [C-1. ✓ 비즈니스 룰 — rules 생성]
   - 조건부 DML (부모 IF/CASE 안의 처리)
-  - 의미 있는 리터럴/플래그 설정 (예: PROCESS_YN='N', is_active=true)
+  - 의미 있는 리터럴/플래그 설정 (상태 플래그·boolean·코드값 등)
   - 변환·집계 (SUM, COUNT, CASE WHEN, 컬럼 계산식)
   - 외부 시스템 통신 (외부 PRC 호출, 메시지 발송, DB 링크 호출)
   - RETURN 값 (function 의 비즈니스 결과)
   - OUT 파라미터 설정 (호출자에게 결과 전달)
   - 의미 있는 예외 발생 (예: RAISE_APPLICATION_ERROR(-20001, '재고부족'))
 
-  [✗ 비즈니스 룰 아님 — rules = []]
-  - 단순 백업/스테이징 INSERT: TMP_/STG_/BACKUP_/HIST_ 접두 **AND** 모든 컬럼 source 1:1 (변환·분기·리터럴 추가 X)
-  - 단순 로깅: LOG_/AUDIT_ 접두 + SYSDATE/USER 같은 시스템 값 위주
-  - 커서 제어: OPEN/FETCH/CLOSE
-  - 트랜잭션 제어 단독: COMMIT/ROLLBACK/SAVEPOINT
-  - 디버그 출력: DBMS_OUTPUT.PUT_LINE
-  - 임시 변수 ASSIGN (계산 중간값)
-  - 기술 예외 처리: WHEN OTHERS THEN NULL
+  [C-2. ✗ 비즈니스 룰 아님 — rules = []]
+  - **단순 백업/스테이징 INSERT**: TMP_/STG_/BACKUP_/HIST_ 접두 *AND* 모든 컬럼 source 1:1 (변환·분기·리터럴 추가 X)
+  - **단순 로깅**: LOG_/AUDIT_ 접두 + SYSDATE/USER 같은 시스템 값 위주
+  - **커서 제어**: OPEN/FETCH/CLOSE
+  - **트랜잭션 제어 단독**: COMMIT/ROLLBACK/SAVEPOINT
+  - **디버그 출력**: DBMS_OUTPUT.PUT_LINE / RAISE NOTICE / PRINT
+  - **임시 변수 ASSIGN** (계산 중간값)
+  - **기술 예외 처리**: WHEN OTHERS THEN NULL / 빈 catch
 
-  [모호 케이스 가드레일 — false negative 방지]
+  [C-3. 모호 케이스 가드레일 — false negative 방지]
   TMP_/STG_/LOG_ 접두라도 다음 중 하나라도 해당하면 비즈니스 룰로 처리 + questions 등록:
-  - 시퀀스 채번 (SEQ.NEXTVAL) 사용
+  - 시퀀스 채번 (SEQ.NEXTVAL · serial · auto_increment) 사용
   - 일부 컬럼만 INSERT (전체 1:1 복제 X)
-  - 리터럴/상수값 추가 (예: 'N', 'PENDING')
+  - 리터럴/상수값 추가 (예: 'N', 'PENDING', NOW(), CURRENT_DATE)
   - 분기 조건 안에서 실행 (부모 IF/CASE)
   - 변환/계산 (CASE WHEN, SUM, 컬럼 계산)
   - 외부 호출 인자로 전달
 
-  [statement 형식]
+  [C-4. statement 형식]
   "<자기 결과 한 문장>" — 조건은 부모가 prefix 합침.
 
-  [★ leaf summary 의 분기 조건 작성 — 환각 차단]
-  leaf 노드가 IF/ELSIF/ELSE 분기 안에 있을 때 "어느 조건에서 실행되는지" 를 기술할 때:
+  [C-5. ★ leaf summary 의 분기 조건 작성 — 환각 차단]
+  leaf 노드가 IF/ELSIF/ELSE 분기 안에 있을 때 "어느 조건에서 실행되는지" 기술 시:
   - 자기가 직접 속한 분기 조건만 진입 조건으로 명시 (parent_context 가 자기 분기를 알려줌).
   - 형제 분기 (앞 IF/ELSIF) 의 조건은 자기 진입 시점에 false — 자기 summary 에 절대 prefix·AND 결합 X.
   - 부모 코드 스켈레톤에 형제 분기 조건이 같이 보여도 그건 다른 분기의 진입 조건일 뿐, 자기 분기와 동시에 만족될 수 없음.
   - "조건 → 상태 변화" 형식으로 쓰되 조건은 자기 진입 조건만 (앞 분기 부정은 묵시).
 
+  [C-6. 정상/환각 예시]
+
+  ✓ 정상 — 의미 있는 리터럴 INSERT:
+    raw: `INSERT INTO ORDER (id, status, created_at) VALUES (?, 'PENDING', SYSDATE)`
+    rules: [{statement: "신규 주문을 PENDING 상태로 ORDER 테이블에 등록"}]
+
+  ✗ 단순 백업 (rules = []):
+    raw: `INSERT INTO TMP_USER SELECT * FROM USER`
+    rules: []   (전체 1:1 복제, 비즈니스 의미 X)
+
+  ✓ 모호 케이스 (가드레일 — 룰 + question):
+    raw: `INSERT INTO TMP_AUDIT (id, action) VALUES (SEQ_AUDIT.NEXTVAL, 'CREATE')`
+    rules: [{statement: "감사 로그를 CREATE 액션으로 TMP_AUDIT 에 등록"}]
+    questions: [{text: "TMP_ 접두인데 시퀀스+리터럴 — 영구 감사 테이블인지 임시 스테이징인지 불분명"}]
+
+  ✓ 정상 — function RETURN 값:
+    raw: `RETURN total_amount`
+    rules: [{statement: "최종 합계 금액을 호출자에게 반환"}]
+
+  ✗ 환각 — 단순 ASSIGN 을 룰로:
+    raw: `tmp_count := count + 1;`
+    잘못: rules = [{statement: "카운트 증가"}]
+    옳음: rules = []   (임시 변수, 비즈니스 의미 X)
+
   ════════════════════════════════════════════════════════════
-  [섹션 E. examples 작성]
+  [섹션 D. examples 작성]
   ════════════════════════════════════════════════════════════
 
-  [개수 — 강제 X. 분기 형태에 따라 필요한 만큼만]
-  의미 있는 example 만 작성. 강제 최소·최대 숫자 X.
+  [D-1. 개수 — 강제 X. 분기 형태에 따라 필요한 만큼만]
+  의미 있는 example 만 작성. 강제 최소·최대 X.
   분기 형태별 보통 분포 (강제 X — 가이드만):
   - 무조건 실행 (분기 없음): 일반값 1
   - 단일 비교 (X='D'): 일반값 1 + boundary 1
@@ -203,22 +407,22 @@ prompt: |
   - 부등호 (X >= 10): 일반값 1 + boundary (정확 경계 + 경계 ±1)
   - dtype edge case (선택): nullable 컬럼 NULL 1개
 
-  [boundary 정의 — 분기 결과가 일반값과 달라야]
+  [D-2. boundary 정의 — 분기 결과가 일반값과 달라야]
   - ✓ "한쪽만 만족" 또는 "조건 자체의 경계"
   - ✗ "둘 다 안 만족" 은 boundary 아님 (그냥 무관 케이스)
 
-  예시 — `KN_CODE='Q' AND DATA_PROCESS='A'` 분기:
-  - ✓ 일반값  : {KN_CODE: 'Q', DATA_PROCESS: 'A'} (분기 실행)
-  - ✓ boundary: {KN_CODE: 'Q', DATA_PROCESS: 'B'} (한쪽만 — 분기 안 탐)
-  - ✗ NOT bnd : {KN_CODE: 'X', DATA_PROCESS: 'B'} (둘 다 안 맞음 — 무관)
+  예시 — `STATUS='A' AND TYPE='X'` 분기:
+  - ✓ 일반값  : {STATUS: 'A', TYPE: 'X'} (분기 실행)
+  - ✓ boundary: {STATUS: 'A', TYPE: 'Y'} (한쪽만 — 분기 안 탐)
+  - ✗ NOT bnd : {STATUS: 'B', TYPE: 'Y'} (둘 다 안 맞음 — 무관)
 
-  [Example 형식]
+  [D-3. Example 형식]
   - given = {narrative, inputs, preconditions: {tables, globals, stubs}}
   - when  = 자연어 한 줄 (비즈니스 행위)
   - then  = {narrative, return, out_params, exception, writes, commit}
   - is_boundary = true|false
 
-  [then.writes 형식 — 반드시 dict 배열]
+  [D-4. then.writes 형식 — 반드시 dict 배열]
   `[{"table": "<테이블>", "op": "INSERT|UPDATE|DELETE", "columns": {<컬럼>: <값>, ...}}, ...]`
   - table 필수
   - op 필수 (INSERT/UPDATE/DELETE 셋 중 하나)
@@ -227,26 +431,35 @@ prompt: |
   - 단순 문자열 배열 X (예: `["X"]` 형태 X)
   {% if ddl_context %}
 
-  [dtype 정합 (ddl_context 활용)]
+  [D-5. dtype 정합 (ddl_context 활용)]
   - inputs 리터럴은 ddl_context 의 컬럼 dtype 에 맞게:
-    NUMBER → 숫자 (예: 12345), VARCHAR2/CHAR → 문자열 (예: "Q"), DATE → "YYYY-MM-DD HH:MI:SS"
+    NUMBER/INTEGER → 숫자 (예: 12345)
+    VARCHAR2/VARCHAR/TEXT → 문자열 (예: "Q")
+    DATE/TIMESTAMP → "YYYY-MM-DD HH:MI:SS" 또는 ISO 8601
+    BOOLEAN → true/false
   - NOT NULL 컬럼은 inputs 에서 NULL/빈 문자열 X (Oracle 에선 `""` = NULL)
   - nullable 컬럼만 NULL 경계값 허용
   {% endif %}
 
   ════════════════════════════════════════════════════════════
-  [섹션 F. questions 작성]
+  [섹션 E. questions 작성]
   ════════════════════════════════════════════════════════════
 
   코드만으로 답 안 되는 모호점만. 없으면 questions = [].
 
-  [등록 대상]
+  [E-1. 등록 대상]
   - 외부 PRC 의 의미 / 외부 객체의 동작 모호
   - 비즈니스 의도 불명 (변수명·코드값의 의미 추측 어려움)
   - 모호 케이스 가드레일에서 등록한 항목 (스테이징 의심 등)
+  - 매직 넘버·매직 스트링의 의미 불명 (예: `WHERE flag = 7` 의 7 의미)
+  - 비즈니스 규칙이 코드 외부 (시스템 설정·외부 문서) 에 있음을 시사하는 호출
 
-  [형식]
+  [E-2. 형식]
   `{"text": "<모호점>", "reason": "<근거 부재 사유>"}`
+
+  [E-3. 예시]
+  ✓ `WHERE STATUS = 9` → questions: [{text: "STATUS=9 의 비즈니스 의미", reason: "코드값 매핑 정의 외부"}]
+  ✗ 그냥 추측해서 channel/state 같은 일반 명칭 채우기 — 환각
 
   ════════════════════════════════════════════════════════════
   [공통 원칙]
@@ -259,12 +472,12 @@ prompt: |
 
   [2. 죽은 코드 주석 무시]
   코드의 `<line>: --...` 또는 `/* */` 주석 줄 중 SQL 키워드
-  (SELECT/INSERT/UPDATE/DELETE/MERGE/VALUES/FROM/INTO/WHERE/:NEW./:OLD.) 포함 줄 = 죽은 코드.
+  (SELECT/INSERT/UPDATE/DELETE/MERGE/VALUES/FROM/INTO/WHERE/:NEW./:OLD./RAISE/RETURN) 포함 줄 = 죽은 코드.
   summary·rules·examples·questions 에 0건 반영.
   반영 가능: 자연어 처리 의도·헤더 (예: "신규 태그 백업").
 
   [3. 구조 래퍼 언급 금지]
-  PROCEDURE/FUNCTION/BEGIN/END 같은 구조 래퍼는 statement·summary 에 언급 X.
+  PROCEDURE/FUNCTION/TRIGGER/BEGIN/END/DECLARE 같은 구조 래퍼는 statement·summary 에 언급 X.
 
   [4. 억지로 채우지 X]
   rules / examples / questions / writes 모두 없으면 빈 배열. 의미 없는 항목 채우지 X.
@@ -287,24 +500,42 @@ prompt: |
   중복 포함도 당연히 X (이미 context 에 있는 상태 변화는 자기 summary 에 다시 쓰지 X).
   {% endif %}
 
+  [6. 자식 결과 중복 emit 절대 금지 — 가장 중요]
+  child_rules 는 이미 자식이 처리한 결과. 자기는 prefix 만 추가 (B-1 부모) 또는 통과 (B-2 wrapper).
+  같은 의미 룰을 자기가 다시 만들지 X.
+  같은 의미 example 을 자기가 다시 만들지 X.
+  중복 emit 시 그래프에 같은 데이터 N 번 누적 → 노이즈.
+
   ════════════════════════════════════════════════════════════
-  [SELF-CHECK]
+  [SELF-CHECK — 출력 전 자체 점검]
   ════════════════════════════════════════════════════════════
 
-  - analysis 배열 길이 = {{ count }} ?
-  - 각 요소 startLine/endLine 정수?
-  - summary 5~8 문장 + 조건+상태변화 쌍?
-  - meaningful: 자식 룰 prefix + 명확한 새 룰만 (보수적)?
-  - IF/ELSIF/ELSE 자식 룰 prefix 에 형제 분기 조건이 AND 로 결합되어 동시 만족 불가능한 모순 0?
-  - ELSIF/ELSE 자식 룰의 statement 에 형제 IF 의 조건이 자기 진입 조건처럼 잘못 prefix 되어 있지 X?
-  - leaf: 비즈니스 룰 판정 기준 따름?
-  - leaf summary 가 형제 분기 조건을 자기 진입 조건으로 잘못 표기하지 X (자기 분기 진입 시점에 형제 조건은 false)?
-  - context 줄에 등장한 다른 노드의 결과 (조건·테이블·컬럼·플래그 값) 를 자기 summary/rules/writes 에 그대로 옮겨 쓰지 X (context 는 참고만, 자기 결과는 자기 code 원문에서만)?
-  - examples: 분기 형태에 맞는 개수, 의미 없는 boundary 0?
-  - then.writes: dict 배열, table+op 채워짐?
-  - 식별자 원문 보존, 환각 0?
-  - 죽은 코드 주석 반영 0?
-  - 구조 래퍼 (PROCEDURE/FUNCTION/BEGIN) 언급 0?
+  답하기 전에 모두 점검:
+
+  1. analysis 배열 길이 = {{ count }} ?
+  2. 각 요소 startLine/endLine 정수?
+  3. summary 가 분기·DML 복잡도에 비례한 분량 + 조건+상태변화 쌍?
+  4. DECODE/CASE 의 unmatched=NULL 규칙 적용 (마지막 명시 case 와 묶지 X)?
+  5. NVL/COALESCE/IFNULL/ISNULL 의 의미 임의 추가 X?
+  6. node_category=meaningful 이면서 분기·반복·예외 의미 있는 부모 (B-1) 인가?
+     · 그렇다면 자식 룰 prefix + 새 룰 (의미 있을 때만, 보수적)?
+     · IF/ELSIF/ELSE 자식 룰 prefix 에 형제 분기 조건이 AND 로 결합되어 동시 만족 불가능한 모순 0?
+     · ELSIF/ELSE 자식 룰의 statement 에 형제 IF 의 조건이 자기 진입 조건처럼 잘못 prefix 되어 있지 X?
+  7. node_category=meaningful 이면서 단순 wrapper (B-2 — outer SELECT/UNION ALL/derived join) 인가?
+     · 그렇다면 rules = [], examples = [], questions = []?
+     · 자식 룰을 자기가 다시 emit 하지 X?
+  8. leaf: 비즈니스 룰 판정 기준 (C-1 ✓ vs C-2 ✗) 따름?
+  9. leaf summary 가 형제 분기 조건을 자기 진입 조건으로 잘못 표기하지 X (자기 분기 진입 시점에 형제 조건은 false)?
+  10. context 줄에 등장한 다른 노드의 결과 (조건·테이블·컬럼·플래그 값) 를 자기 summary/rules/writes 에 그대로 옮기지 X (context 는 참고만)?
+  11. DDL 컨텍스트의 (사용 라인) 이 자기 range 와 겹치지 않는 테이블을 자기 결과에 끌어 쓰지 X?
+  12. 참조 변수의 (사용 라인) 이 자기 range 와 겹치지 않는 변수를 자기 결과에 끌어 쓰지 X?
+  13. 부모 구조 트리의 ★ 자기 위치 위쪽 (조상) 줄들의 정보를 자기 결과에 그대로 옮기지 X (자기 직속 부모 진입 조건만 자기 진입 조건)?
+  14. examples: 분기 형태에 맞는 개수, 의미 없는 boundary 0?
+  15. then.writes: dict 배열, table+op 채워짐?
+  16. 식별자 원문 보존, 환각 0?
+  17. 죽은 코드 주석 반영 0?
+  18. 구조 래퍼 (PROCEDURE/FUNCTION/TRIGGER/BEGIN/END) 언급 0?
+  19. ★ 자식 결과 중복 emit 0? (child_rules 와 같은 의미 룰을 자기가 또 만들지 X)
 
   ════════════════════════════════════════════════════════════
   [OUTPUT]
@@ -317,7 +548,7 @@ prompt: |
       {
         "startLine": 정수,
         "endLine": 정수,
-        "summary": "5~8문장",
+        "summary": "분기·DML 복잡도에 비례한 분량",
         "actor": "system 또는 \"\"",
         "rules": [
           {

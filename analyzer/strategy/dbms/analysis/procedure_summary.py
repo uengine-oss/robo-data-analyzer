@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any, Dict, List
 
 from client.neo4j_client import Neo4jClient
@@ -266,13 +267,30 @@ async def summarize_procedure(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+_RULE_NORMALIZE_PUNCT = " .,。、，·:;\t"
+
+
+def _normalize_rule_statement(statement: str) -> str:
+    """rule statement 정규화 — dedupe 키 계산용.
+
+    소문자화 + 공백 압축 + 양끝 구두점 제거. 같은 의미를 다른 표현으로 적은
+    경우는 잡지 못하지만 (그 경우는 unit-summary LLM 영역), 완전 동일 텍스트
+    중복 (자식 batch 가 같은 rule 을 중복 emit 한 경우) 은 즉시 잡힘.
+    """
+    norm = re.sub(r"\s+", " ", statement.lower()).strip(_RULE_NORMALIZE_PUNCT)
+    return norm
+
+
 def assemble_final_analysis(proc_root: Any) -> Dict[str, Any]:
     """``proc_root.analysis_map`` (Bottom-up 결과) → EM Cypher 빌더 입력 dict.
 
     ast_analyzer 가 노드 트리에 채워준 raw rules + questions 를 phase_summary 가
     EM Cypher 빌더에 넘길 형태로 변환. rule_id 순번 부여 (R1, R2, ...) +
-    statement 조립 (condition + " 이면 " + result). Rule 안 nested examples 를
-    flat 리스트로 분리하면서 rule_id 연결.
+    statement 조립. Rule 안 nested examples 를 flat 리스트로 분리하면서 rule_id 연결.
+
+    **결정론 dedupe**: statement 정규화 (소문자·공백압축·구두점) 후 동일하면 첫 rule
+    유지하고 그 examples 에 후속 중복 rule 의 examples 를 병합. 자식 batch 가 같은
+    inner subquery 를 따로 분석해 같은 rule 을 두 번 emit 한 경우 자연스럽게 1건으로.
 
     proc_root.analysis_map 이 빈 dict 면 그 프로시저에 룰이 없는 것으로 해석 (폴백 없음).
 
@@ -289,29 +307,41 @@ def assemble_final_analysis(proc_root: Any) -> Dict[str, Any]:
 
     final_rules: List[Dict[str, Any]] = []
     final_examples: List[Dict[str, Any]] = []
+    seen_rule_keys: Dict[str, str] = {}  # normalized → rule_id (병합 대상 식별)
 
-    for idx, r in enumerate(raw_rules, start=1):
+    next_idx = 1
+    for r in raw_rules:
         if not isinstance(r, dict):
             continue
-        rule_id = f"R{idx}"
-        # LLM 출력 = {statement, examples} (Framework 패턴 일치). statement 그대로 사용.
         statement = (r.get("statement") or "").strip()
         if not statement:
             continue
+        norm = _normalize_rule_statement(statement)
+        rule_examples = [ex for ex in (r.get("examples") or []) if isinstance(ex, dict)]
+
+        if norm in seen_rule_keys:
+            # 중복 — 기존 rule 의 examples 에 병합만, rule 자체 추가 X
+            existing_rule_id = seen_rule_keys[norm]
+            for ex in rule_examples:
+                ex_copy = dict(ex)
+                ex_copy["rule_id"] = existing_rule_id
+                final_examples.append(ex_copy)
+            continue
+
+        rule_id = f"R{next_idx}"
+        next_idx += 1
+        seen_rule_keys[norm] = rule_id
 
         final_rules.append({
             "rule_id": rule_id,
-            "flow_id": str(idx),
+            "flow_id": str(next_idx - 1),
             "guard_rule_id": None,
             "branch_from": None,
             "statement": statement,
             "coupled_domains": [],
         })
 
-        # Rule 안 nested examples → flat 리스트로 분리, rule_id 연결
-        for ex in (r.get("examples") or []):
-            if not isinstance(ex, dict):
-                continue
+        for ex in rule_examples:
             ex_copy = dict(ex)
             ex_copy["rule_id"] = rule_id
             final_examples.append(ex_copy)

@@ -67,6 +67,7 @@ class StatementNode:
     # ANTLR Node properties — VARIABLE 의 데이터 타입 + := 우변 텍스트 (init_by_linker / LLM 컨텍스트 입력)
     variable_type: str = ""
     init_value: str = ""
+    modifiers: str = ""  # PARAMETER 의 IN/OUT/IN OUT, 그 외 가시성 modifier
 
     # 라인 정보
     lines: List[Tuple[int, str]] = field(default_factory=list)
@@ -77,6 +78,7 @@ class StatementNode:
 
     # LLM 분석 결과
     summary: str = ""
+    actor: str = ""             # LLM 응답 actor — phase_summary 가 unit-root 에 부착
     context: str = ""           # 부모 컨텍스트
     sibling_context: str = ""   # 이전 형제 컨텍스트
     ok: bool = True
@@ -296,44 +298,67 @@ class StatementNode:
 
         return '\n'.join(result_lines)
 
-    def get_ancestor_context(self, max_tokens: int) -> str:
-        """조상 노드들의 컨텍스트를 결합하여 반환합니다.
+    def get_node_label(self) -> str:
+        """노드 식별자: ``<TYPE>[<startLine>-<endLine>]`` 형식.
 
-        부모 컨텍스트와 형제 컨텍스트를 모두 포함합니다.
-        가장 가까운 조상부터 토큰 상한까지 누적합니다.
+        node_context.yaml 의 node_label / parent_context 한 줄 prefix 로 사용.
+        """
+        return f"{self.node_type}[{self.start_line}-{self.end_line}]"
+
+    def get_ancestor_tree(self, max_tokens: int = 0, marker: str = "★ 현재") -> str:
+        """조상 노드들의 parent_context 한 줄을 디렉토리 트리로 누적.
+
+        각 조상의 parent_context 는 이미 ``<TYPE>[s-e]: <한 줄>`` 형식이라 가정.
+        깊이별 들여쓰기 후 마지막에 ``★ 현재 (라인 s-e)`` 마커를 붙여 자기 위치 표시.
 
         Args:
-            max_tokens: 최대 토큰 수
+            max_tokens: 0 이면 무제한, 양수면 토큰 상한 (가까운 조상 우선 보존)
+            marker: 자기 위치 마커 텍스트 (기본 "★ 현재")
         """
         if not self.parent:
-            return ""
+            return f"{marker} ({self.get_node_label()})"
 
-        context_parts: List[str] = []
-        remaining = max_tokens
+        # root 부터 직속 부모 순으로 chain 수집 (자기 한 줄을 가진 조상만)
+        chain: List[str] = []
         current = self.parent
-
-        while current and remaining > 0:
-            # 부모의 context가 있으면 사용 (LLM이 생성한 핵심 컨텍스트)
-            if current.context:
-                ctx_tokens = calculate_code_token(current.context)
-                if ctx_tokens <= remaining:
-                    context_parts.insert(0, f"[부모] {current.context}")
-                    remaining -= ctx_tokens
-                else:
-                    # 토큰 초과 시 중단
-                    break
-            # 형제 컨텍스트도 포함
-            if current.sibling_context:
-                sib_tokens = calculate_code_token(current.sibling_context)
-                if sib_tokens <= remaining:
-                    context_parts.insert(0, f"[형제] {current.sibling_context}")
-                    remaining -= sib_tokens
+        while current is not None:
+            ctx_line = (getattr(current, "context", "") or "").strip()
+            if ctx_line:
+                chain.append(ctx_line)
             current = current.parent
+        chain.reverse()  # root 가 첫 번째
 
-        if not context_parts:
+        # 토큰 상한 (옵션) — 가까운 조상부터 보존, root 부터 잘라냄
+        if max_tokens > 0 and chain:
+            kept_reversed: List[str] = []
+            remaining = max_tokens
+            for ctx_line in reversed(chain):  # 가까운 조상 → root
+                tk = calculate_code_token(ctx_line)
+                if tk > remaining and kept_reversed:
+                    break
+                kept_reversed.append(ctx_line)
+                remaining -= tk
+            chain = list(reversed(kept_reversed))
+
+        lines: List[str] = []
+        for i, ctx_line in enumerate(chain):
+            lines.append(("  " * i) + ctx_line)
+        lines.append(("  " * len(chain)) + f"{marker} ({self.get_node_label()})")
+        return "\n".join(lines)
+
+    def get_previous_sibling_brief(self) -> str:
+        """직전 형제의 parent_context (한 줄 디렉토리 항목) 반환.
+
+        직전 형제가 없거나 parent_context 가 비어 있으면 "" 반환.
+        """
+        prev = self.get_previous_sibling()
+        if prev is None:
             return ""
+        return (getattr(prev, "context", "") or "").strip()
 
-        return "[CONTEXT]\n" + "\n---\n".join(context_parts) + "\n[/CONTEXT]\n"
+    def get_ancestor_context(self, max_tokens: int) -> str:
+        """[하위호환] 조상 트리를 디렉토리 형식으로 반환 (node_analysis context 슬롯용)."""
+        return self.get_ancestor_tree(max_tokens=max_tokens, marker="★ 자기")
 
     def needs_context_generation(self, excluded_types: Set[str]) -> bool:
         """이 노드가 컨텍스트 생성이 필요한 부모 노드인지 확인합니다.

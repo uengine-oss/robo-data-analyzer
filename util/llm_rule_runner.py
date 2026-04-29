@@ -285,16 +285,16 @@ class PromptRegistry:
     @staticmethod
     def call_extract(
         items: List[Dict], language: str, api_key: str,
-        codebase_conventions: str = "",
+        codebase_pattern: str = "",
     ) -> Dict[str, Any]:
         """함수 호출 관계 추출. -> rules/framework/call_extract.yaml
 
-        codebase_conventions: Profile Agent 가 정리한 반복 패턴 + "심볼 역할 분류" 표.
+        codebase_pattern: Profile Agent 가 정리한 반복 패턴 + "심볼 역할 분류" 표.
         LLM 에 래퍼 매크로 언래핑·로깅 제외 지침을 전달하는 용도.
         """
         return get_rule_loader("framework").execute(
             "call_extract",
-            {"items": items, "language": language, "codebase_conventions": codebase_conventions},
+            {"items": items, "language": language, "codebase_pattern": codebase_pattern},
             api_key=api_key,
         )
 

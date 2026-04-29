@@ -1,17 +1,17 @@
-"""DDL 처리 — 파일 목록 + 정규식 파싱 + Neo4j 반영 + 처리 루프.
-
-원본 위치 (이전, Stage 7-B 분리 파일들 통합):
-  - `ddl_file_lister.py` (Section 1): apply_name_case + list_ddl_files
-  - `ddl_regex_parser.py` (Section 2): DDLParser + get_ddl_parser + parse_ddl
-  - `ddl_handler.py` (Section 3+4): process_ddl + run_ddl_processing
+"""DDL 처리 — 파일 목록 + sqlglot AST 파싱 + Neo4j 반영 + 처리 루프.
 
 책임 (한 도메인 = 한 파일 — DDL 처리 흐름):
-  1. DDL 디렉토리 스캔 + 이름 케이스 변환
-  2. CREATE TABLE / ALTER TABLE / COMMENT ON 정규식 파싱
-  3. 파싱 결과 → Neo4j UNWIND 배치 저장
-  4. 파일별 처리 루프 + 진행률 emit
+  1. DDL 디렉토리 스캔 + 이름 케이스 변환  (Section 1)
+  2. CREATE TABLE / ALTER TABLE / COMMENT ON 다중 방언 AST 파싱  (Section 2)
+  3. 파싱 결과 → Neo4j UNWIND 배치 저장  (Section 3)
+  4. 파일별 처리 루프 + 진행률 emit  (Section 4)
 
 호출자 (framework/dbms phase_ddl) 가 본 모듈의 `run_ddl_processing` 만 호출.
+
+파서 (Section 2):
+  - sqlglot 기반. Oracle / PostgreSQL / MySQL / TSQL / Snowflake 등 다중 방언 지원.
+  - Oracle SQL*Plus 슬래시(`/`) 종결자, TABLESPACE/STORAGE/LOB 등 저장 옵션,
+    한 줄 다중 컬럼, 따옴표 식별자, ALTER TABLE 제약, COMMENT ON 모두 자동 처리.
 """
 
 from __future__ import annotations
@@ -21,6 +21,11 @@ import logging
 import os
 import re
 from typing import Any, AsyncGenerator, Dict, List, Optional, Set, Tuple
+
+import sqlglot
+
+from config.settings import settings
+from sqlglot import exp
 
 from client.neo4j_client import Neo4jClient
 from util.encoding_reader import read_text_with_fallback
@@ -94,391 +99,514 @@ def list_ddl_files(orchestrator: Any) -> List[str]:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Section 2: 정규식 기반 DDL 파서
+# Section 2: DDL 파서 — sqlglot AST + COMMENT regex hybrid
 # ═══════════════════════════════════════════════════════════════════════
+#
+# 설계 원칙
+#   - CREATE / ALTER TABLE     → sqlglot AST (다중 방언, 정밀 추출)
+#   - COMMENT ON TABLE/COLUMN  → 결정론 정규식 (형식 표준 + 한글·특수문자 robust)
+#   - 입력 정규화는 sqlglot이 모르는 Oracle export 절·길이 단위·잡문 제거에만 사용
+#
+# 단계
+#   parse(content, dialect=None)
+#     ├ Stage 1: _split_statements   — 종결자/주석/따옴표 인지 statement 분리
+#     ├ Stage 2: _normalize_chunk    — SQL 시작 trim + 옵션 절 제거 + 길이 단위 표준화
+#     ├ Stage 3: _dispatch_statement — CREATE / ALTER 라우팅 (sqlglot AST)
+#     ├ Stage 4: _extract_*          — AST → dict 변환 (테이블/컬럼/PK/FK)
+#     └ Stage 5: _apply_comments     — 원문에서 COMMENT ON 직접 매칭 → 적용
+#
+# 출력 형식 (호환성 유지)
+#   {"analysis": [
+#       {"table":      {"schema", "name", "comment", "table_type"},
+#        "columns":    [{"name", "dtype", "nullable", "comment", "primary_key", ...}],
+#        "foreignKeys":[{"column", "ref": "schema.table.col"}],
+#        "primaryKeys":["col1", ...]}
+#   ]}
 
 
 class DDLParser:
-    """정규식 기반 DDL 파서.
+    """다중 방언 DDL 파서. 모든 정규식·유틸이 클래스 내부에 캡슐화됨."""
 
-    Usage:
-        parser = DDLParser()
-        result = parser.parse(ddl_content)
-    """
+    DEFAULT_DIALECT = "oracle"
 
-    def __init__(self):
-        # CREATE TABLE 패턴 (여러 줄에 걸친 정의 지원)
-        self.create_table_pattern = re.compile(
-            r'CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?'
-            r'([\w\."]+)\s*\('
-            r'(.*?)'
-            r'\)\s*;',
-            re.IGNORECASE | re.DOTALL
-        )
+    # ── 정규식 (단일 책임별로 1개씩) ─────────────────────────
 
-        # 테이블 코멘트 패턴 (이스케이프된 따옴표 처리)
-        self.table_comment_pattern = re.compile(
-            r"COMMENT\s+ON\s+TABLE\s+([\w\.\"]+)\s+IS\s+'((?:[^']|'')*?)'\s*;",
-            re.IGNORECASE | re.DOTALL
-        )
+    # 자동 방언 감지 — 가장 특징적인 마커만
+    _DIALECT_MARKERS: Tuple[Tuple[str, "re.Pattern[str]"], ...] = (
+        ("oracle",   re.compile(r"\bTABLESPACE\b|\bPCTFREE\b|\bSTORAGE\s*\(|\bNVARCHAR2\b|\bVARCHAR2\b|\(\d+\s+BYTE\)", re.IGNORECASE)),
+        ("postgres", re.compile(r"\bSERIAL\b|\bBIGSERIAL\b|\bJSONB\b|::\w+", re.IGNORECASE)),
+        ("mysql",    re.compile(r"\bENGINE\s*=|\bAUTO_INCREMENT\b|\bUNSIGNED\b", re.IGNORECASE)),
+        ("tsql",     re.compile(r"\bIDENTITY\s*\(|\bNVARCHAR\s*\(\s*MAX\b|\[[^\]]+\]", re.IGNORECASE)),
+    )
 
-        # 컬럼 코멘트 패턴
-        self.column_comment_pattern = re.compile(
-            r"COMMENT\s+ON\s+COLUMN\s+([\w\.\"]+)\.([\w\"]+)\s+IS\s+'((?:[^']|'')*?)'\s*;",
-            re.IGNORECASE | re.DOTALL
-        )
+    # SQL 첫 키워드 — chunk 앞의 비-SQL 잡문 trim 용
+    _SQL_START_RE = re.compile(
+        r"\b(CREATE|ALTER|DROP|TRUNCATE|COMMENT|INSERT|UPDATE|DELETE|"
+        r"GRANT|REVOKE|MERGE|RENAME|ANALYZE)\b",
+        re.IGNORECASE,
+    )
 
-        # PRIMARY KEY 패턴
-        self.pk_pattern = re.compile(
-            r'ALTER\s+TABLE\s+([\w\.\"]+)\s+ADD\s+(?:CONSTRAINT\s+[\w\"]+\s+)?PRIMARY\s+KEY\s*\(([^)]+)\)\s*;',
-            re.IGNORECASE
-        )
+    # Oracle/DBA 저장 옵션 (CREATE TABLE 본문 ) 다음 ~ statement 끝)
+    # 분석에 무가치한 물리 메타이며 sqlglot이 미지원하여 fallback Command가 되므로 제거.
+    _STORAGE_OPTIONS_RE = re.compile(
+        r"(\)\s*)"
+        r"(?:TABLESPACE|PCTFREE|PCTUSED|INITRANS|MAXTRANS|STORAGE\s*\(|"
+        r"LOGGING|NOLOGGING|COMPRESS|NOCOMPRESS|PARALLEL|NOPARALLEL|"
+        r"MONITORING|NOMONITORING|CACHE|NOCACHE|RESULT_CACHE|FLASHBACK|"
+        r"INMEMORY|NO\s+INMEMORY|ROW\s+(?:STORE|MOVEMENT)|"
+        r"SEGMENT\s+CREATION|ORGANIZATION\s+(?:HEAP|INDEX)|ENABLE|DISABLE|"
+        r"LOB\s*\()"
+        r".*?\Z",
+        re.IGNORECASE | re.DOTALL,
+    )
 
-        # FOREIGN KEY 패턴 (ALTER TABLE)
-        self.fk_pattern = re.compile(
-            r'ALTER\s+TABLE\s+([\w\.\"]+)\s+ADD\s+(?:CONSTRAINT\s+[\w\"]+\s+)?'
-            r'FOREIGN\s+KEY\s*\(([^)]+)\)\s+'
-            r'REFERENCES\s+([\w\.\"]+)\s*\(([^)]+)\)',
-            re.IGNORECASE
-        )
+    # Oracle 길이 단위: VARCHAR(20 BYTE) → VARCHAR(20) (sqlglot 미지원)
+    _BYTE_CHAR_LEN_RE = re.compile(r"\(\s*(\d+)\s+(?:BYTE|CHAR)\s*\)", re.IGNORECASE)
 
-        # ALTER TABLE 블록 패턴 (DROP/ADD 액션 혼합 지원)
-        self.alter_table_pattern = re.compile(
-            r'ALTER\s+TABLE\s+([\w\.\"]+)\s+(.*?);',
-            re.IGNORECASE | re.DOTALL
-        )
+    # 블록 주석 (라인 인덱스 보존 위해 동일 길이 공백 치환)
+    _BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
 
-        # ALTER TABLE 액션 내 ADD PRIMARY KEY / ADD FOREIGN KEY 패턴
-        self.alter_action_pk_pattern = re.compile(
-            r'ADD\s+(?:CONSTRAINT\s+[\w\"]+\s+)?PRIMARY\s+KEY\s*\(([^)]+)\)',
-            re.IGNORECASE
-        )
-        self.alter_action_fk_pattern = re.compile(
-            r'ADD\s+(?:CONSTRAINT\s+[\w\"]+\s+)?FOREIGN\s+KEY\s*\(([^)]+)\)\s+'
-            r'REFERENCES\s+([\w\.\"]+)\s*\(([^)]+)\)',
-            re.IGNORECASE
-        )
+    # COMMENT ON TABLE/COLUMN — 표준 형식, 한글·특수문자 robust
+    _COMMENT_ON_TABLE_RE = re.compile(
+        r"COMMENT\s+ON\s+TABLE\s+"
+        r'(?:"(?P<schema>[^"]+)"\.)?"(?P<name>[^"]+)"\s+'
+        r"IS\s+'(?P<body>(?:[^']|'')*)'",
+        re.IGNORECASE | re.DOTALL,
+    )
+    _COMMENT_ON_COLUMN_RE = re.compile(
+        r"COMMENT\s+ON\s+COLUMN\s+"
+        r'(?:"(?P<schema>[^"]+)"\.)?"(?P<table>[^"]+)"\."(?P<col>[^"]+)"\s+'
+        r"IS\s+'(?P<body>(?:[^']|'')*)'",
+        re.IGNORECASE | re.DOTALL,
+    )
 
-        # 인라인 FOREIGN KEY 패턴 (CREATE TABLE 내부)
-        self.inline_fk_pattern = re.compile(
-            r'FOREIGN\s+KEY\s*\(([^)]+)\)\s+REFERENCES\s+([\w\.\"]+)\s*\(([^)]+)\)',
-            re.IGNORECASE
-        )
+    # ════ Public API ════════════════════════════════════════════
 
-        # 컬럼 수준 인라인 REFERENCES 패턴 (CREATE TABLE 내부)
-        # 예: PLAN_ID NUMBER(10) REFERENCES PLAN(PLAN_ID)
-        self.column_ref_pattern = re.compile(
-            r'(\w+)\s+[^\n]+?REFERENCES\s+([\w\.\"]+)\s*\(([^)]+)\)',
-            re.IGNORECASE
-        )
+    def parse(self, ddl_content: str, dialect: Optional[str] = None) -> Dict[str, Any]:
+        """DDL 텍스트 → 테이블/컬럼/PK/FK/comment 구조."""
+        dialect = dialect or self._detect_dialect(ddl_content)
+        tables: Dict[str, Dict[str, Any]] = {}
 
-        # 인라인 PRIMARY KEY 패턴 (CREATE TABLE 내부)
-        self.inline_pk_pattern = re.compile(
-            r'PRIMARY\s+KEY\s*\(([^)]+)\)',
-            re.IGNORECASE
-        )
+        # Stage 1~4: CREATE/ALTER TABLE → AST → dict
+        for chunk in self._split_statements(ddl_content):
+            normalized = self._normalize_chunk(chunk)
+            for stmt in self._parse_chunk(normalized, dialect):
+                self._dispatch_statement(stmt, tables, dialect)
 
-        # 컬럼 정의 패턴 (CREATE TABLE 내부)
-        self.column_def_pattern = re.compile(
-            r'^\s*"?(\w+)"?\s+'  # 컬럼명
-            r'([A-Za-z_]+(?:\s*\([^)]*\))?)'  # 데이터 타입
-            r'(\s+NOT\s+NULL)?'  # NOT NULL
-            r'(\s+DEFAULT\s+[^,]+)?'  # DEFAULT
-            r'\s*,?\s*$',
-            re.IGNORECASE | re.MULTILINE
-        )
+        # Stage 5: COMMENT ON 적용 (sqlglot보다 regex가 한글·특수문자에 robust)
+        self._apply_comments(ddl_content, tables)
 
-    def parse(self, ddl_content: str) -> Dict[str, Any]:
-        """DDL 전체 파싱."""
-        tables: Dict[str, Dict] = {}
+        logger.info(f"[DDL_PARSER] 파싱 완료: {len(tables)}개 테이블 (dialect={dialect})")
+        return {"analysis": list(tables.values())}
 
-        # 1. CREATE TABLE 파싱
-        for match in self.create_table_pattern.finditer(ddl_content):
-            full_name = match.group(1)
-            columns_def = match.group(2)
-            create_table_start = match.start()
+    # ════ Stage 1: statement 분리 ═══════════════════════════════
 
-            schema, table_name = self._parse_table_name(full_name)
-            table_key = f"{schema}.{table_name}".lower()
+    @classmethod
+    def _split_statements(cls, ddl: str) -> List[str]:
+        """DDL → statement 리스트.
 
-            columns = self._parse_columns(columns_def)
-
-            # CREATE TABLE 위의 주석 추출
-            table_comment = self._extract_table_comment(ddl_content, create_table_start)
-
-            # 인라인 FK 파싱 (CREATE TABLE 내부)
-            inline_fks = []
-            for fk_match in self.inline_fk_pattern.finditer(columns_def):
-                src_columns = [self._strip_quotes(c.strip()) for c in fk_match.group(1).split(",")]
-                ref_table = fk_match.group(2)
-                ref_columns = [self._strip_quotes(c.strip()) for c in fk_match.group(3).split(",")]
-
-                ref_schema, ref_name = self._parse_table_name(ref_table)
-
-                for src_col, ref_col in zip(src_columns, ref_columns):
-                    inline_fks.append({
-                        "column": src_col,
-                        "ref": f"{ref_schema}.{ref_name}.{ref_col}" if ref_schema else f"{ref_name}.{ref_col}",
-                    })
-
-            # 컬럼 수준 인라인 REFERENCES 파싱
-            existing_fk_cols = {fk["column"] for fk in inline_fks}
-            for col_ref_match in self.column_ref_pattern.finditer(columns_def):
-                src_col = self._strip_quotes(col_ref_match.group(1))
-                if src_col in existing_fk_cols:
-                    continue
-                ref_table = col_ref_match.group(2)
-                ref_col = self._strip_quotes(col_ref_match.group(3).strip())
-                ref_schema, ref_name = self._parse_table_name(ref_table)
-                inline_fks.append({
-                    "column": src_col,
-                    "ref": f"{ref_schema}.{ref_name}.{ref_col}" if ref_schema else f"{ref_name}.{ref_col}",
-                })
-
-            # 인라인 PK 파싱
-            inline_pks = []
-            for pk_match in self.inline_pk_pattern.finditer(columns_def):
-                pk_columns = [self._strip_quotes(c.strip()) for c in pk_match.group(1).split(",")]
-                inline_pks.extend(pk_columns)
-
-            tables[table_key] = {
-                "table": {
-                    "schema": schema,
-                    "name": table_name,
-                    "comment": table_comment,
-                    "table_type": "BASE TABLE",
-                },
-                "columns": columns,
-                "foreignKeys": inline_fks,
-                "primaryKeys": inline_pks,
-            }
-
-            logger.debug(f"[DDL_PARSER] 테이블 {table_key}: 컬럼 {len(columns)}개, 인라인 FK {len(inline_fks)}개, 인라인 PK {len(inline_pks)}개")
-
-        # 2. 테이블 코멘트 파싱
-        for match in self.table_comment_pattern.finditer(ddl_content):
-            full_name = match.group(1)
-            comment = match.group(2).replace("''", "'")
-            schema, table_name = self._parse_table_name(full_name)
-            table_key = f"{schema}.{table_name}".lower()
-            if table_key in tables:
-                tables[table_key]["table"]["comment"] = comment
-
-        # 3. 컬럼 코멘트 파싱
-        for match in self.column_comment_pattern.finditer(ddl_content):
-            full_table = match.group(1)
-            col_name = self._strip_quotes(match.group(2))
-            comment = match.group(3).replace("''", "'")
-            schema, table_name = self._parse_table_name(full_table)
-            table_key = f"{schema}.{table_name}".lower()
-            if table_key in tables:
-                for col in tables[table_key]["columns"]:
-                    if col["name"].lower() == col_name.lower():
-                        col["comment"] = comment
-                        break
-
-        # 4~5. ALTER TABLE 액션 기반 PRIMARY KEY / FOREIGN KEY 파싱
-        for match in self.alter_table_pattern.finditer(ddl_content):
-            full_name = match.group(1)
-            alter_actions = match.group(2)
-            schema, table_name = self._parse_table_name(full_name)
-            table_key = f"{schema}.{table_name}".lower()
-            if table_key not in tables:
-                continue
-
-            for action in self._split_alter_actions(alter_actions):
-                pk_match = self.alter_action_pk_pattern.search(action)
-                if pk_match:
-                    pk_columns = [self._strip_quotes(c.strip()) for c in pk_match.group(1).split(",")]
-                    tables[table_key]["primaryKeys"] = pk_columns
-                    continue
-
-                fk_match = self.alter_action_fk_pattern.search(action)
-                if fk_match:
-                    src_columns = [self._strip_quotes(c.strip()) for c in fk_match.group(1).split(",")]
-                    ref_table = fk_match.group(2)
-                    ref_columns = [self._strip_quotes(c.strip()) for c in fk_match.group(3).split(",")]
-                    ref_schema, ref_name = self._parse_table_name(ref_table)
-                    for src_col, ref_col in zip(src_columns, ref_columns):
-                        tables[table_key]["foreignKeys"].append({
-                            "column": src_col,
-                            "ref": f"{ref_schema}.{ref_name}.{ref_col}" if ref_schema else f"{ref_name}.{ref_col}",
-                        })
-
-        result = {"analysis": list(tables.values())}
-        logger.info(f"[DDL_PARSER] 정규식 파싱 완료: {len(tables)}개 테이블")
-        return result
-
-    def _parse_table_name(self, full_name: str) -> tuple[str, str]:
-        """스키마.테이블명 파싱."""
-        parts = full_name.split(".")
-        if len(parts) >= 2:
-            schema = self._strip_quotes(parts[0])
-            table_name = self._strip_quotes(parts[1])
-        else:
-            schema = ""
-            table_name = self._strip_quotes(parts[0])
-        return schema, table_name
-
-    def _strip_quotes(self, s: str) -> str:
-        """따옴표 제거."""
-        s = s.strip()
-        if len(s) >= 2:
-            if (s[0] == '"' and s[-1] == '"') or (s[0] == "'" and s[-1] == "'"):
-                return s[1:-1]
-        return s
-
-    def _extract_table_comment(self, ddl_content: str, create_table_start: int) -> str:
-        """CREATE TABLE 위의 주석 추출."""
-        if create_table_start == 0:
-            return ""
-        before_text = ddl_content[:create_table_start]
-        lines = before_text.split('\n')
-        comment_lines = []
-        for line in reversed(lines):
-            stripped = line.strip()
-            if not stripped:
-                if comment_lines:
-                    break
-                continue
-            if stripped.startswith('--'):
-                comment_text = stripped[2:].strip()
-                if comment_text:
-                    comment_lines.insert(0, comment_text)
-            else:
-                break
-        if not comment_lines:
-            return ""
-        return comment_lines[0] if len(comment_lines) == 1 else '\n'.join(comment_lines)
-
-    def _split_alter_actions(self, actions: str) -> List[str]:
-        """ALTER TABLE 액션 문자열을 최상위 콤마 기준으로 분리.
-
-        괄호 내부의 콤마는 무시하고, 인용부호(따옴표) 이스케이프도 처리.
+        종결자: 표준 SQL `;` + Oracle SQL*Plus 자체 라인 단독 `/`
+        인지: `'...'` (escape `''` 포함), `"..."`, `--` 라인 주석, `/* ... */` 블록 주석
         """
-        result: List[str] = []
-        current: List[str] = []
-        paren_depth = 0
-        in_single_quote = False
-        in_double_quote = False
-
+        out: List[str] = []
+        buf: List[str] = []
+        in_sq = in_dq = False
+        in_line_comment = in_block_comment = False
+        n = len(ddl)
         i = 0
-        while i < len(actions):
-            ch = actions[i]
-            if not in_double_quote and ch == "'":
-                if in_single_quote and i + 1 < len(actions) and actions[i + 1] == "'":
-                    current.append(ch)
-                    current.append(actions[i + 1])
+
+        def flush() -> None:
+            stmt = "".join(buf).strip()
+            if stmt:
+                out.append(stmt)
+            buf.clear()
+
+        while i < n:
+            ch = ddl[i]
+            nxt = ddl[i + 1] if i + 1 < n else ""
+
+            if in_line_comment:
+                buf.append(ch)
+                if ch == "\n":
+                    in_line_comment = False
+                i += 1
+                continue
+            if in_block_comment:
+                buf.append(ch)
+                if ch == "*" and nxt == "/":
+                    buf.append(nxt)
+                    in_block_comment = False
                     i += 2
                     continue
-                in_single_quote = not in_single_quote
-                current.append(ch)
                 i += 1
                 continue
-            if not in_single_quote and ch == '"':
-                in_double_quote = not in_double_quote
-                current.append(ch)
-                i += 1
-                continue
-            if not in_single_quote and not in_double_quote:
-                if ch == '(':
-                    paren_depth += 1
-                elif ch == ')' and paren_depth > 0:
-                    paren_depth -= 1
-                elif ch == ',' and paren_depth == 0:
-                    action = ''.join(current).strip()
-                    if action:
-                        result.append(action)
-                    current = []
+
+            if not in_sq and not in_dq:
+                if ch == "-" and nxt == "-":
+                    in_line_comment = True
+                    buf.append(ch)
                     i += 1
                     continue
-            current.append(ch)
+                if ch == "/" and nxt == "*":
+                    in_block_comment = True
+                    buf.append(ch)
+                    i += 1
+                    continue
+
+            # SQL escape '...''...'
+            if in_sq and ch == "'" and nxt == "'":
+                buf.append(ch)
+                buf.append(nxt)
+                i += 2
+                continue
+            if not in_dq and ch == "'":
+                in_sq = not in_sq
+                buf.append(ch)
+                i += 1
+                continue
+            if not in_sq and ch == '"':
+                in_dq = not in_dq
+                buf.append(ch)
+                i += 1
+                continue
+
+            if not in_sq and not in_dq:
+                if ch == ";":
+                    flush()
+                    i += 1
+                    continue
+                # Oracle SQL*Plus: 자체 라인 단독 / (CRLF/LF 모두)
+                if ch == "/" and (i == 0 or ddl[i - 1] in "\n\r"):
+                    j = i + 1
+                    while j < n and ddl[j] in " \t":
+                        j += 1
+                    if j == n or ddl[j] in "\n\r":
+                        flush()
+                        if j + 1 < n and ddl[j] == "\r" and ddl[j + 1] == "\n":
+                            i = j + 2
+                        elif j < n:
+                            i = j + 1
+                        else:
+                            i = j
+                        continue
+
+            buf.append(ch)
             i += 1
-        tail = ''.join(current).strip()
-        if tail:
-            result.append(tail)
-        return result
 
-    def _parse_columns(self, columns_def: str) -> List[Dict[str, Any]]:
-        """컬럼 정의 파싱."""
-        columns = []
-        for line in columns_def.split("\n"):
-            line = line.strip()
-            if not line:
+        flush()
+        return out
+
+    # ════ Stage 2: chunk 정규화 ═════════════════════════════════
+
+    @classmethod
+    def _normalize_chunk(cls, chunk: str) -> str:
+        """sqlglot이 파싱 가능한 형태로 변환.
+
+          1) 첫 SQL 키워드를 가진 라인부터 시작 (라인/블록 주석 안 키워드는 무시)
+          2) Oracle 저장 옵션 절 제거
+          3) Oracle BYTE/CHAR 길이 단위 표준화
+        """
+        out = cls._trim_to_sql_start(chunk)
+        out = cls._STORAGE_OPTIONS_RE.sub(r"\1", out)
+        out = cls._BYTE_CHAR_LEN_RE.sub(r"(\1)", out)
+        return out
+
+    @classmethod
+    def _trim_to_sql_start(cls, chunk: str) -> str:
+        """라인/블록 주석을 제외한 코드 영역에서 첫 SQL 키워드 라인부터 반환."""
+        # 블록 주석을 동일 길이 공백으로 치환 (라인 인덱스 보존)
+        cleaned = cls._BLOCK_COMMENT_RE.sub(
+            lambda m: " " * (m.end() - m.start()), chunk
+        )
+        lines_orig = chunk.split("\n")
+        lines_clean = cleaned.split("\n")
+        for i, line in enumerate(lines_clean):
+            idx = line.find("--")
+            code = line[:idx] if idx != -1 else line
+            if cls._SQL_START_RE.search(code):
+                return "\n".join(lines_orig[i:])
+        return chunk
+
+    # ════ Stage 3: 디스패처 ═════════════════════════════════════
+
+    def _dispatch_statement(self, stmt: exp.Expression, tables: Dict[str, Dict], dialect: str) -> None:
+        """sqlglot expression → 핸들러 라우팅. (COMMENT 는 _apply_comments 에서 처리)"""
+        if isinstance(stmt, exp.Create) and (stmt.kind or "").upper() == "TABLE":
+            self._handle_create_table(stmt, tables, dialect)
+        elif isinstance(stmt, exp.Alter) and (stmt.kind or "").upper() == "TABLE":
+            self._handle_alter_table(stmt, tables)
+
+    @staticmethod
+    def _parse_chunk(chunk: str, dialect: str):
+        """단일 chunk → sqlglot expression(s). 실패 시 silent skip."""
+        try:
+            for s in sqlglot.parse(chunk, dialect=dialect, error_level=sqlglot.ErrorLevel.IGNORE):
+                if s is not None:
+                    yield s
+        except Exception as e:
+            logger.debug(f"[DDL_PARSER] statement skip: {e}")
+
+    @classmethod
+    def _detect_dialect(cls, ddl: str) -> str:
+        """첫 매칭 마커로 자동 감지. 미감지 시 default."""
+        for name, pattern in cls._DIALECT_MARKERS:
+            if pattern.search(ddl):
+                return name
+        return cls.DEFAULT_DIALECT
+
+    # ════ Stage 4: AST → dict 변환 (CREATE TABLE) ═══════════════
+
+    def _handle_create_table(self, stmt: exp.Create, tables: Dict[str, Dict], dialect: str) -> None:
+        schema_node = stmt.this  # exp.Schema(table, [ColumnDef|Constraint, ...]) 또는 exp.Table
+        if isinstance(schema_node, exp.Schema):
+            table_node = schema_node.this
+            defs = schema_node.expressions or []
+        elif isinstance(schema_node, exp.Table):
+            table_node, defs = schema_node, []
+        else:
+            return
+        if not isinstance(table_node, exp.Table):
+            return
+
+        schema, name = self._qualified(table_node)
+        if not name:
+            return
+
+        key = self._key(schema, name)
+        columns: List[Dict[str, Any]] = []
+        primary_keys: List[str] = []
+        foreign_keys: List[Dict[str, str]] = []
+
+        for d in defs:
+            if isinstance(d, exp.ColumnDef):
+                col, is_pk, fk = self._extract_column(d, dialect)
+                columns.append(col)
+                if is_pk:
+                    primary_keys.append(col["name"])
+                if fk:
+                    foreign_keys.append(fk)
+            elif isinstance(d, exp.PrimaryKey):
+                primary_keys.extend(self._extract_pk_columns(d))
+            elif isinstance(d, exp.ForeignKey):
+                foreign_keys.extend(self._extract_fk_records(d))
+            elif isinstance(d, exp.Constraint):
+                # CONSTRAINT name PRIMARY KEY/FOREIGN KEY (...)
+                for inner in (d.expressions or []):
+                    if isinstance(inner, exp.PrimaryKey):
+                        primary_keys.extend(self._extract_pk_columns(inner))
+                    elif isinstance(inner, exp.ForeignKey):
+                        foreign_keys.extend(self._extract_fk_records(inner))
+
+        tables[key] = {
+            "table": {
+                "schema": schema,
+                "name": name,
+                "comment": self._extract_inline_table_comment(stmt),
+                "table_type": "BASE TABLE",
+            },
+            "columns": columns,
+            "foreignKeys": foreign_keys,
+            "primaryKeys": primary_keys,
+        }
+
+    def _handle_alter_table(self, stmt: exp.Alter, tables: Dict[str, Dict]) -> None:
+        target = stmt.this
+        if not isinstance(target, exp.Table):
+            return
+        key = self._key(*self._qualified(target))
+        if key not in tables:
+            return
+        for action in (stmt.args.get("actions") or []):
+            self._apply_alter_action(action, tables[key])
+
+    def _apply_alter_action(self, action: exp.Expression, table_dict: Dict[str, Any]) -> None:
+        if isinstance(action, exp.PrimaryKey):
+            table_dict["primaryKeys"] = self._extract_pk_columns(action)
+        elif isinstance(action, exp.ForeignKey):
+            table_dict["foreignKeys"].extend(self._extract_fk_records(action))
+        elif isinstance(action, (exp.AddConstraint, exp.Constraint)):
+            for inner in (action.expressions or []):
+                self._apply_alter_action(inner, table_dict)
+
+    def _extract_column(
+        self, col_def: exp.ColumnDef, dialect: str
+    ) -> Tuple[Dict[str, Any], bool, Optional[Dict[str, str]]]:
+        col_name = col_def.name
+        dtype = self._format_dtype(col_def.args.get("kind"), dialect)
+
+        nullable = True
+        is_primary = False
+        is_unique = False
+        default_value: Optional[str] = None
+        comment_text = ""
+        fk: Optional[Dict[str, str]] = None
+
+        for cons in (col_def.args.get("constraints") or []):
+            inner = cons.args.get("kind") if isinstance(cons, exp.ColumnConstraint) else cons
+            if isinstance(inner, exp.NotNullColumnConstraint):
+                nullable = False
+            elif isinstance(inner, exp.PrimaryKeyColumnConstraint):
+                is_primary = True
+                nullable = False
+            elif isinstance(inner, exp.UniqueColumnConstraint):
+                is_unique = True
+            elif isinstance(inner, exp.DefaultColumnConstraint):
+                default_value = self._format_default(inner.this)
+            elif isinstance(inner, exp.CommentColumnConstraint):
+                tgt = inner.this
+                comment_text = tgt.name if isinstance(tgt, exp.Literal) else (tgt.sql() if tgt else "")
+            elif isinstance(inner, exp.Reference):
+                fk = self._extract_inline_fk(col_name, inner)
+
+        col: Dict[str, Any] = {
+            "name": col_name,
+            "dtype": dtype,
+            "nullable": nullable,
+            "comment": comment_text,
+            "primary_key": is_primary,
+        }
+        if is_unique:
+            col["unique"] = True
+        if default_value is not None:
+            col["default_value"] = default_value
+        return col, is_primary, fk
+
+    @staticmethod
+    def _extract_pk_columns(pk: exp.PrimaryKey) -> List[str]:
+        return [DDLParser._identifier_name(e) for e in (pk.expressions or []) if e]
+
+    @classmethod
+    def _extract_fk_records(cls, fk: exp.ForeignKey) -> List[Dict[str, str]]:
+        ref = fk.args.get("reference")
+        if not isinstance(ref, exp.Reference):
+            return []
+        src_cols = [cls._identifier_name(e) for e in (fk.expressions or [])]
+        return cls._build_fk_records(src_cols, ref)
+
+    @classmethod
+    def _extract_inline_fk(cls, col_name: str, ref: exp.Reference) -> Optional[Dict[str, str]]:
+        records = cls._build_fk_records([col_name], ref)
+        return records[0] if records else None
+
+    @classmethod
+    def _build_fk_records(cls, src_cols: List[str], ref: exp.Reference) -> List[Dict[str, str]]:
+        ref_target = ref.this
+        if isinstance(ref_target, exp.Schema):
+            ref_table = ref_target.this
+            ref_cols = [cls._identifier_name(e) for e in (ref_target.expressions or [])]
+        elif isinstance(ref_target, exp.Table):
+            ref_table, ref_cols = ref_target, []
+        else:
+            return []
+        if not isinstance(ref_table, exp.Table):
+            return []
+
+        ref_schema, ref_name = cls._qualified(ref_table)
+        prefix = f"{ref_schema}.{ref_name}" if ref_schema else ref_name
+        if not ref_cols:
+            ref_cols = [""] * len(src_cols)
+        return [{"column": s, "ref": f"{prefix}.{r}"} for s, r in zip(src_cols, ref_cols) if s]
+
+    @staticmethod
+    def _extract_inline_table_comment(stmt: exp.Create) -> str:
+        """CREATE TABLE ... COMMENT='...' (MySQL/PG 인라인). Oracle은 Stage 5에서 처리."""
+        props = stmt.args.get("properties")
+        if not isinstance(props, exp.Properties):
+            return ""
+        for p in (props.expressions or []):
+            if isinstance(p, exp.SchemaCommentProperty):
+                v = p.this
+                if isinstance(v, exp.Literal):
+                    return v.name
+                return v.sql() if v else ""
+        return ""
+
+    # ════ Stage 5: COMMENT ON 적용 (regex hybrid) ════════════════
+
+    @classmethod
+    def _apply_comments(cls, ddl: str, tables: Dict[str, Dict]) -> None:
+        """원문 전체에서 COMMENT ON TABLE/COLUMN을 직접 매칭해 적용.
+
+        sqlglot의 COMMENT 파싱은 한글·괄호·콤마 등 특수문자가 포함된 IS '...'
+        리터럴에서 종종 깨지므로, 형식이 표준화된 COMMENT ON 만은 정규식으로
+        결정론 매칭하는 것이 더 robust하고 단순함.
+        """
+        for m in cls._COMMENT_ON_TABLE_RE.finditer(ddl):
+            schema = m.group("schema") or ""
+            name = m.group("name")
+            body = m.group("body").replace("''", "'")
+            key = cls._key(schema, name)
+            if key in tables:
+                tables[key]["table"]["comment"] = body
+
+        for m in cls._COMMENT_ON_COLUMN_RE.finditer(ddl):
+            schema = m.group("schema") or ""
+            table = m.group("table")
+            col = m.group("col")
+            body = m.group("body").replace("''", "'")
+            key = cls._key(schema, table)
+            if key not in tables:
                 continue
-            upper_line = line.upper()
-            # 테이블 레벨 UNIQUE 제약조건에서 컬럼명 추출
-            if upper_line.startswith("UNIQUE"):
-                unique_cols_match = re.search(r'UNIQUE\s*\(([^)]+)\)', line, re.IGNORECASE)
-                if unique_cols_match:
-                    for uc in unique_cols_match.group(1).split(","):
-                        uc = uc.strip().strip('"').strip("'")
-                        for col in columns:
-                            if col["name"].upper() == uc.upper():
-                                col["unique"] = True
-                continue
-            if (upper_line.startswith("CONSTRAINT") or
-                upper_line.startswith("PRIMARY") or
-                upper_line.startswith("FOREIGN") or
-                upper_line.startswith("CHECK")):
-                continue
-            comment = ""
-            comment_match = re.search(r'--\s*(.+)$', line)
-            if comment_match:
-                comment = comment_match.group(1).strip()
-                line = line[:comment_match.start()].strip()
-            line = line.rstrip(",").strip()
-            if not line:
-                continue
-            col_match = re.match(
-                r'"?(\w+)"?\s+'
-                r'([A-Za-z_]+(?:\s*\([^)]*\))?)'
-                r'(.*?)$',
-                line,
-                re.IGNORECASE
-            )
-            if col_match:
-                col_name = col_match.group(1)
-                col_type = col_match.group(2).strip()
-                constraints = col_match.group(3).upper() if col_match.group(3) else ""
-                raw_constraints = col_match.group(3).strip() if col_match.group(3) else ""
-                nullable = "NOT NULL" not in constraints
-                is_primary = "PRIMARY KEY" in constraints or "PRIMARY" in constraints
-                is_unique = "UNIQUE" in constraints
-                default_value = None
-                default_match = re.search(r"DEFAULT\s+('(?:[^']*)'|[^\s,]+)", raw_constraints, re.IGNORECASE)
-                if default_match:
-                    default_value = default_match.group(1).strip()
-                col_data = {
-                    "name": col_name,
-                    "dtype": col_type,
-                    "nullable": nullable,
-                    "comment": comment,
-                    "primary_key": is_primary,
-                }
-                if is_unique:
-                    col_data["unique"] = True
-                if default_value is not None:
-                    col_data["default_value"] = default_value
-                columns.append(col_data)
-        return columns
+            for c in tables[key]["columns"]:
+                if c["name"].lower() == col.lower():
+                    c["comment"] = body
+                    break
+
+    # ════ 유틸 ═══════════════════════════════════════════════════
+
+    @staticmethod
+    def _qualified(t: exp.Table) -> Tuple[str, str]:
+        """Table 식 → (schema, name). catalog 무시."""
+        return (t.db or "", t.name or "")
+
+    @staticmethod
+    def _key(schema: str, name: str) -> str:
+        """(schema, name) → 정규화된 lookup 키 (소문자)."""
+        return f"{(schema or '').lower()}.{(name or '').lower()}"
+
+    @staticmethod
+    def _identifier_name(node: exp.Expression) -> str:
+        if hasattr(node, "name") and node.name:
+            return node.name
+        return node.sql().strip('"').strip("'") if node else ""
+
+    @staticmethod
+    def _format_dtype(kind: Optional[exp.DataType], dialect: str) -> str:
+        if kind is None:
+            return ""
+        try:
+            return kind.sql(dialect=dialect).upper().strip()
+        except Exception:
+            return kind.sql().upper().strip()
+
+    @staticmethod
+    def _format_default(value: Optional[exp.Expression]) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, exp.Literal):
+            return f"'{value.name}'" if value.is_string else str(value.name)
+        try:
+            return value.sql()
+        except Exception:
+            return str(value)
 
 
-# 싱글톤 인스턴스
+# ── 모듈 레벨 편의 API (호환성 유지) ───────────────────────────
+
 _parser_instance: Optional[DDLParser] = None
 
 
 def get_ddl_parser() -> DDLParser:
-    """DDL 파서 싱글톤 인스턴스 반환."""
+    """싱글톤 인스턴스."""
     global _parser_instance
     if _parser_instance is None:
         _parser_instance = DDLParser()
     return _parser_instance
 
 
-def parse_ddl(ddl_content: str) -> Dict[str, Any]:
-    """DDL 파싱 (편의 함수)."""
-    return get_ddl_parser().parse(ddl_content)
+def parse_ddl(ddl_content: str, dialect: Optional[str] = None) -> Dict[str, Any]:
+    """편의 함수. dialect 미지정 시 자동 감지."""
+    return get_ddl_parser().parse(ddl_content, dialect=dialect)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -516,13 +644,13 @@ async def process_ddl(
     total_tokens = calculate_code_token(ddl_content)
 
     if emit_progress:
-        yield emit_message(f"   ⚡ 정규식 파서 사용 (정적 파싱)")
+        yield emit_message(f"   ⚡ sqlglot AST 파서 사용 (다중 방언 자동 감지)")
         yield emit_phase_event(
             phase_num=0,
             phase_name="DDL 처리",
             status="in_progress",
             progress=file_base_progress + int(file_range * 0.1),
-            details={"mode": "regex", "tokens": total_tokens}
+            details={"mode": "sqlglot", "tokens": total_tokens}
         )
 
     try:
@@ -540,12 +668,12 @@ async def process_ddl(
                 phase_name="DDL 처리",
                 status="in_progress",
                 progress=parsing_end,
-                details={"tables_parsed": table_count, "mode": "regex"}
+                details={"tables_parsed": table_count, "mode": "sqlglot"}
             )
     except Exception as e:
         if emit_progress:
-            yield emit_message(f"   ❌ 정규식 파싱 실패: {str(e)[:80]}")
-        raise RuntimeError(f"DDL 정규식 파싱 실패: {e}")
+            yield emit_message(f"   ❌ DDL 파싱 실패: {str(e)[:80]}")
+        raise RuntimeError(f"DDL 파싱 실패: {e}")
 
     parsed = {"analysis": all_parsed_results}
     # target이 프로그래밍 언어(c, java 등)일 때는 DB 기본값(postgres) 사용
@@ -556,7 +684,12 @@ async def process_ddl(
         )
     _LANG_TARGETS = {"c", "java", "python", "go", "kotlin", "scala", "rust"}
     _raw_target = orchestrator.target.lower()
-    db_name = "postgres" if _raw_target in _LANG_TARGETS else _raw_target
+    # 코드 언어 (C/Java 등) 는 DDL dialect 정보가 없으므로 settings.defaults.db_dialect 우선,
+    # 없으면 빈 문자열 (unknown). postgres 같은 임의 값 박지 않음 (Oracle/DB2 등에서 mismatch 방지).
+    db_name = (
+        settings.defaults.db_dialect if _raw_target in _LANG_TARGETS and settings.defaults.db_dialect
+        else (_raw_target if _raw_target not in _LANG_TARGETS else "")
+    )
     name_case = orchestrator.name_case
 
     schemas_data = []
@@ -582,7 +715,8 @@ async def process_ddl(
         table_type = (table.get("table_type") or "BASE TABLE").strip().upper()
         qualified = f"{schema_raw}.{table_name_raw}" if schema_raw else table_name_raw
         parsed_schema, parsed_name, _ = parse_table_identifier(qualified)
-        schema = apply_name_case(parsed_schema if parsed_schema else "public", name_case)
+        # parsed_schema 없으면 settings.defaults.db_schema (env), 없으면 빈 (public 강제 X).
+        schema = apply_name_case(parsed_schema or settings.defaults.db_schema, name_case)
         parsed_name = apply_name_case(parsed_name, name_case)
 
         if schema and schema.lower() != 'public':

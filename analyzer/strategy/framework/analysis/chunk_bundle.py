@@ -120,8 +120,11 @@ def build_chunk_bundle_from_source(
         start_line = int(v.get("start_line", 0))
         end_line = int(v.get("end_line", 0))
         flags = v.get("flags")
+        # 모든 초기화 저장 (단순 상수 / 변수 / 함수 호출 다 포함).
+        # INIT_BY 관계 생성에 필수 — 단순 상수·식별자 초기화도 우변의 식별자 추출 대상이므로
+        # 초기화식 텍스트가 chunk 에 들어와야 함.
         initializer_code = None
-        if flags and flags.get("initializerContainsMethodCall") and end_line >= start_line:
+        if end_line >= start_line:
             initializer_code = slice_by_line_range(text_with_lines, start_line, end_line)
         bundle_local_vars.append(
             ChunkBundleLocalVar(

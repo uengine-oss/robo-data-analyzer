@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from typing import Any, Awaitable, Callable, List, Optional, TypeVar
+from typing import Awaitable, Callable, List, Optional, TypeVar
 
 from config.settings import settings
 

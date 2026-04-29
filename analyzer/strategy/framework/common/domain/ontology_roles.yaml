@@ -12,10 +12,15 @@ roles:
     go:      [FUNCTION, METHOD]
 
   variable:         # VARIABLE 역할 (Neo4j 라벨: VARIABLE) — 값이 변할 수 있는 데이터
-    java:    [FIELD]
-    c:       [FIELD, MEMBER, GLOBAL_VARIABLE]
-    python:  [FIELD]
-    go:      [FIELD]
+    # VARIABLE: 함수 내 로컬 변수도 그래프 저장 대상.
+    #   상수·식별자로 초기화되는 경우 INIT_BY (VARIABLE → CONSTANT/VARIABLE) 관계 형성에 필수.
+    #   internal 로 두면 source 노드 부재로 INIT_BY 빌더가 작동 불가능 (dead 기능 됨).
+    # PARAMETER: 함수/메서드 파라미터. variable_linker 의 name_index 에 자동 등록되어
+    #   변수↔파라미터 INIT_BY 매칭이 작동.
+    java:    [VARIABLE, FIELD, PARAMETER]
+    c:       [VARIABLE, FIELD, MEMBER, GLOBAL_VARIABLE, PARAMETER]
+    python:  [VARIABLE, FIELD, PARAMETER]
+    go:      [VARIABLE, FIELD, PARAMETER]
 
   constant:         # CONSTANT 역할 (Neo4j 라벨: CONSTANT) — 값이 고정된 데이터
     java:    [CONSTANT_FIELD]
@@ -23,15 +28,15 @@ roles:
     python:  [CONSTANT_FIELD]
     go:      []
 
-  silent:           # 수집되지만 로그 안 남기는 노드
-    java:    [VARIABLE]
-    c:       [VARIABLE, ENUM_CONSTANT, TYPEDEF]
-    python:  [VARIABLE]
+  silent:           # 수집되지만 로그 안 남기는 노드 (variable 역할로 옮긴 후 미사용)
+    java:    []
+    c:       [ENUM_CONSTANT, TYPEDEF]
+    python:  []
 
   internal:         # Neo4j 미저장, 분석 중에만 사용
-    java:    [VARIABLE, METHOD_CALL, NEW_INSTANCE, IMPORT, FILE, ASSIGNMENT]
-    c:       [VARIABLE, FUNCTION_CALL, INCLUDE, TYPEDEF, ENUM_CONSTANT]
-    python:  [VARIABLE, IMPORT, FILE, ASSIGNMENT]
+    java:    [METHOD_CALL, NEW_INSTANCE, IMPORT, FILE, ASSIGNMENT]
+    c:       [FUNCTION_CALL, INCLUDE, TYPEDEF, ENUM_CONSTANT]
+    python:  [IMPORT, FILE, ASSIGNMENT]
 
   call:             # 호출 참조 노드 (ref_candidates 수집 대상)
     java:    [METHOD_CALL, NEW_INSTANCE]

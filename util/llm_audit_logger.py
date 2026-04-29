@@ -83,11 +83,18 @@ def _extract_token_usage(callback) -> Optional[dict[str, int]]:
     prompt_tokens = getattr(callback, "prompt_tokens", 0)
     completion_tokens = getattr(callback, "completion_tokens", 0)
     total_tokens = getattr(callback, "total_tokens", 0)
+    # OpenAI prompt cache 적중 토큰 — langchain 버전마다 attribute 명 다름.
+    # 두 후보 모두 시도, 없으면 0 (gpt-5 계열 prompt cache 자동 측정용).
+    cached_tokens = (
+        getattr(callback, "prompt_tokens_cached", 0)
+        or getattr(callback, "cached_tokens", 0)
+    )
     if any(value for value in (prompt_tokens, completion_tokens, total_tokens)):
         return {
             "prompt": int(prompt_tokens or 0),
             "completion": int(completion_tokens or 0),
             "total": int(total_tokens or 0),
+            "cached": int(cached_tokens or 0),
         }
     return None
 

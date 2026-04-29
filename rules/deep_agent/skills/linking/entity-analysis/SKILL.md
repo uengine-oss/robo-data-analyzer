@@ -31,9 +31,9 @@ description: >
 `data.items` 가 `[null]` 이어도 작업 있음. user 메시지의 `[Project Framework · DB Access Pattern Analysis — Search Map]` 섹션이 작업 source.
 
 **Step 0 — profile 파싱**: profile_summary 에서 추출
-- **접근 메커니즘** (예: `mpfmdbio(id, &in, &out)`)
-- **Identifier Rule** (예: trailing `_<crud>####` strip)
-- **Naming Rule** (예: `_s` → READS, `_i/_u/_d` → WRITES)
+- **접근 메커니즘**
+- **Identifier Rule**
+- **Naming Rule** (CRUD 결정 규칙)
 - **ALL_CAPS 식별자** → 테이블명 후보
 - **함수/매크로명 패턴** → 검색 키워드 후보
 
@@ -89,11 +89,11 @@ description: >
 
 [Step 3] Identifier Rule 적용
   raw 리터럴: "<RAW_LIT>"
-  Rule: profile 이 명시한 변환 (예: "trailing _<crud>#### strip", "@Table(name=...) 읽기")
+  Rule: profile 이 명시한 정규화 규칙
   → 정규화: "<TABLE>"
 
 [Step 4] Naming Rule 적용
-  profile 의 CRUD 결정 규칙 (예: suffix "_s" → READS, "_i/_u/_d" → WRITES)
+  profile 의 CRUD 결정 규칙
   → READS 또는 WRITES
 
 [Step 5] 즉시 등록 (같은 turn)
@@ -208,12 +208,12 @@ description: >
 
 [Step 3] Identifier Rule 적용 (ORM 의 경우)
   엔티티명: <Entity>
-  Rule: profile 이 명시한 변환 (예: "@Table(name=...) 읽기", "pluralize snake_case")
+  Rule: profile 이 명시한 정규화 규칙
   → 정규화: "<TABLE>"
 
 [Step 4] Naming Rule 적용
   메서드명: <methodName>
-  Rule: profile 이 명시한 매핑 (예: "find*/get*/select*" → READS, "save*/update*/delete*" → WRITES)
+  Rule: profile 이 명시한 CRUD 매핑
   → READS 또는 WRITES
 
 [Step 5] 각 caller 에 등록 (mapper 자체 X)
@@ -261,11 +261,33 @@ bundle_search(<정규화_테이블명>, kind="text")
 - `evidence`: 접근 코드 라인 정확한 인용.
 - `access`: READS (SELECT) / WRITES (INSERT/UPDATE/DELETE).
 
-### 컬럼 (필수, 빠짐없이)
+### 컬럼
 
-- 모든 등록 함수의 본문 필드 검토 → 컬럼 매핑되면 모두 등록.
-- 본문 12개 필드 → 12개 등록. "중요한" 필드만 X.
-- 같은 컬럼 중복 등록 무해 (Cypher MERGE dedup). **빠뜨리는 게 실패**.
+**원칙**: **최대한 많이 찾도록 노력**. "중요한 것만" / "일부만" / "대표 몇 개만" 같은 자체 판단 누락 X. 같은 컬럼 중복 등록 무해 — 빠뜨리는 게 실패.
+
+찾을 곳:
+- struct/DTO 멤버 접근 (`obj.field`, `obj->field`).
+- ORM annotation 매핑 (`@Column(name=...)`, `@Field`, 매핑 어노테이션 필드).
+- mapper/repository 메서드의 파라미터·결과 매핑 컬럼.
+- SQL 리터럴 내부 컬럼 (SELECT 절, WHERE 절, INSERT VALUES, UPDATE SET).
+- 변수/구조체 타입 정의 추적 — 함수가 그 타입을 사용 중이면 그 타입의 멤버도 등록 대상.
+
+**의심되면 추가 조사**:
+- 컬럼명 추정만으로 끝내지 말 것. `bundle_search("<column_name>", kind="text")` / `bundle_search("<table_name>", kind="text")` 로 사용처·정의 본문 직접 확인.
+- 매크로·define 으로 감싸진 컬럼 (`MACRO(in, X)` 같은 비정규 패턴) 도 매크로 정의를 열어 멤버 추출.
+- 본문 내 변수의 타입을 모르면 `bundle_search(query="<typeName>", kind="symbol")` 로 정의 본문 확보 후 멤버 등록.
+
+등록은 `graph_create_column_tool(table_name, column_name, dtype)`. column_name 은 case 통일만 (Identifier Rule 의 정규화 적용 후).
+
+#### dtype
+
+코드 단서 우선순위:
+1. **DDL 메타 (있으면 최우선)** — `table_columns` 도구 결과 그대로.
+2. **선언/정의 타입** — 멤버 변수 타입, 필드 어노테이션, DTO 속성, type hint.
+3. **길이/제약 단서** — sizeof, 길이 매크로/인자, NOT NULL 검증.
+4. **사용 패턴** — 변환 함수 (parse/convert 류), 비교 리터럴.
+
+코드 단서 0 이면 빈 문자열 (추측 X). description 은 작성 X (Phase 3 analysis 가 단일 책임).
 
 ### FK
 
@@ -293,7 +315,7 @@ bundle_search(<정규화_테이블명>, kind="text")
 - [ ] **등록한 모든 테이블 reverse-search** (다대다 강제).
 - [ ] 모든 R/W 함수 본문 필드 컬럼 등록.
 - [ ] 0-hit 키워드 변형 재시도 완료.
-- [ ] 모든 `table_name` 정규화 (raw `_<crud>####` 등 X).
+- [ ] 모든 `table_name` 정규화 (raw 리터럴 그대로 X).
 - [ ] 등록 엣지 수 0 이 아님 (시작점 / 프로파일 단서가 있는데 0 건이면 빠뜨림 의심).
 
 전부 YES → 완료. 하나라도 NO → 계속.

@@ -242,7 +242,7 @@ async def _run_framework_table_enrichment(
             "db": extra.get("db", ""),
             "schema": extra.get("schema", ""),
             "name": extra.get("name", ""),
-            "enriched_description": result["tableDescription"],
+            "analyzed_description": result["tableDescription"],
             "columns": result.get("columns") or [],
         }
         queries = build_table_description_update_queries([item])

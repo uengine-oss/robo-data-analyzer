@@ -25,7 +25,6 @@ from analyzer.strategy.framework.analysis.chunk_bundle import (
 from analyzer.strategy.framework.common.domain.lang_profile import get_lang_profile
 from analyzer.strategy.framework.common.models.node_models import (
     CallsEdge,
-    ChunkBundle,
     UsesEdge,
 )
 from config.settings import settings
@@ -236,9 +235,11 @@ def _load_stdlib(lang: str) -> frozenset:
         ) from e
 
 
-# 현재 파이프라인 실행 중 사용할 stdlib 및 언어 (lang 파라미터로 동적 설정)
+# 현재 파이프라인 실행 중 사용할 stdlib·언어·코드베이스 패턴 (호출당 동일하므로 글로벌 캐시).
+# _ACTIVE_LANG 과 동일한 패턴 — set_* 함수로 진입 시점 1회 설정 → call_extract LLM 호출에서 참조.
 _ACTIVE_STDLIB: frozenset = frozenset()
 _ACTIVE_LANG: str = ""
+_ACTIVE_CODEBASE_PATTERN: str = ""
 
 
 def set_active_stdlib(lang: str) -> None:
@@ -246,6 +247,15 @@ def set_active_stdlib(lang: str) -> None:
     global _ACTIVE_STDLIB, _ACTIVE_LANG
     _ACTIVE_STDLIB = _load_stdlib(lang)
     _ACTIVE_LANG = lang
+
+
+def set_active_codebase_pattern(pattern: str) -> None:
+    """Phase 2 진입 시 호출하여 call_extract LLM 호출에 주입할 패턴을 설정.
+
+    매크로/함수 구분, CRUD suffix 매핑 등 LLM 추론 정확도 향상에 필요. 빈 문자열이면 미주입.
+    """
+    global _ACTIVE_CODEBASE_PATTERN
+    _ACTIVE_CODEBASE_PATTERN = pattern or ""
 
 
 def load_call_records_from_chunk_bundles(
@@ -378,7 +388,10 @@ def _extract_calls_batch_via_llm(
     lang_display = {"c": "C", "java": "Java", "python": "Python", "go": "Go", "kotlin": "Kotlin"}.get(_ACTIVE_LANG, _ACTIVE_LANG)
     items = [{"function_id": mid, "calls": calls} for mid, calls in batch]
     try:
-        result = prompts.call_extract(items, lang_display, api_key)
+        result = prompts.call_extract(
+            items, lang_display, api_key,
+            codebase_pattern=_ACTIVE_CODEBASE_PATTERN,
+        )
     except Exception as e:  # noqa: SILENT_FAIL — 한 배치 LLM 호출 실패가 다른 배치를 막지 않도록 errlog 후 빈 결과 반환 (해당 배치 함수들만 CALLS 누락)
         logger.error("[PHASE:2:CALL_LLM] LLM call_extract 오류 | error=%s", e, exc_info=True)
         return {mid: [] for mid, _ in batch}
@@ -583,8 +596,8 @@ def _flatten_one_batch(
 ) -> List[Dict[str, Any]]:
     """한 배치의 LLM 결과를 flat 레코드로 변환.
 
-    LLM 이 같은 call_id 로 여러 번 응답하는 경우 (예: 매크로 래퍼 `PFM_TRY(actual())` 에서
-    `PFM_TRY` 와 `actual` 둘 다 추출) 모두 보존. 2 번째부터 `_1`, `_2` 접미사로 구분.
+    LLM 이 같은 call_id 로 여러 번 응답하는 경우 (매크로 래퍼와 그 내부 호출이 둘 다
+    추출되는 경우 등) 모두 보존. 2 번째부터 `_1`, `_2` 접미사로 구분.
     매크로(대문자+언더스코어) 는 방어 필터로 `function_name=""` 처리 → edge 생성 차단.
 
     call_id 는 LLM 매칭용 상관관계 토큰일 뿐 edge 생성엔 안 쓰이므로 접미사 안전.

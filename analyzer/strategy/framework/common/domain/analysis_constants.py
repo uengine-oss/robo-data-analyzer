@@ -1,8 +1,10 @@
 """Framework 공통 상수."""
 
-# Table defaults (DBMS pipeline 호환)
-TABLE_DB_DEFAULT = "postgres"
-TABLE_SCHEMA_DEFAULT = "public"
+# Table.db / Table.schema 의 임의 default 는 박지 않는다.
+# 사용처는 settings.defaults.db_dialect / settings.defaults.db_schema 를 직접 참조.
+# env (DEFAULT_DB_DIALECT / DEFAULT_DB_SCHEMA) 또는 호출자가 명시하지 않으면 빈 문자열 ("").
+# "postgres"/"public" 같은 임의값을 박으면 Oracle/DB2 등 다른 dialect 시스템에서 mismatch 가
+# 발생하므로 모르면 빈 채로 두는 정책.
 
 # Excluded tables (Oracle dual 등)
 EXCLUDED_TABLE_NAMES = frozenset({"dual", "sysibm.sysdummy1"})

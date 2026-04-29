@@ -119,14 +119,26 @@ class BatchConfig:
 
 @dataclass(frozen=True)
 class PathConfig:
-    """경로 설정"""
+    """경로 설정.
+
+    슬롯별 격리 (병렬 분석) 를 위한 환경변수:
+      - ``DATA_DIR``: 데이터 폴더 (source/analysis/ddl 의 부모) 직접 지정.
+        예: ``DATA_DIR=c:/uEngine/robo/data-slots/fn_calc`` →
+        그 폴더 안에 ``source/``, ``analysis/``, ``ddl/`` 직접.
+        미지정 시 ``base_dir/data`` (메인 슬롯).
+      - ``LLM_AUDIT_DIR``: logs/llm_prompts 부모. 슬롯별 분리 시 ``logs_<slot>``.
+      - ``LLM_CACHE_DB`` (LLMConfig): 슬롯별 캐시 분리 시 ``.llm_cache_<slot>.db``.
+      - ``NEO4J_DATABASE`` (Neo4jConfig): 슬롯별 DB.
+    """
     base_dir: str = field(default_factory=_get_base_dir)
     audit_dir: str = field(default_factory=lambda: os.getenv("LLM_AUDIT_DIR") or os.path.join(_get_project_root(), "logs"))
-    
+
     @property
     def data_dir(self) -> str:
-        return os.path.join(self.base_dir, "data")
-    
+        # DATA_DIR 환경변수가 있으면 그 경로를 그대로 사용 (슬롯별 격리).
+        # 없으면 기존 base_dir/data (메인 슬롯, 기본 동작 유지).
+        return os.getenv("DATA_DIR") or os.path.join(self.base_dir, "data")
+
     @property
     def prompt_log_dir(self) -> str:
         return os.path.join(self.audit_dir, "llm_prompts")
@@ -162,6 +174,17 @@ class DeepAgentConfig:
 
 
 @dataclass(frozen=True)
+class DefaultsConfig:
+    """DDL/카탈로그 미존재 시 Table 노드의 db/schema 기본값.
+
+    환경변수 우선 → fallback "" (unknown). postgres/public 같은 임의 값을
+    박지 않아 다른 dialect 시스템(Oracle/DB2 등)에서의 mismatch 방지.
+    """
+    db_dialect: str = field(default_factory=lambda: os.getenv("DEFAULT_DB_DIALECT", "").strip())
+    db_schema: str = field(default_factory=lambda: os.getenv("DEFAULT_DB_SCHEMA", "").strip())
+
+
+@dataclass(frozen=True)
 class AnalyzerConfig:
     """ROBO Analyzer 통합 설정"""
     neo4j: Neo4jConfig = field(default_factory=Neo4jConfig)
@@ -171,6 +194,7 @@ class AnalyzerConfig:
     path: PathConfig = field(default_factory=PathConfig)
     catalog: CatalogConfig = field(default_factory=CatalogConfig)
     deep_agent: DeepAgentConfig = field(default_factory=DeepAgentConfig)
+    defaults: DefaultsConfig = field(default_factory=DefaultsConfig)
     
     # 버전
     version: str = "2.0.0"

@@ -18,6 +18,24 @@ from analyzer.strategy.framework.scanning.tree_sitter_tools import (
 )
 
 
+def _normalize_relative_glob(pattern: str) -> str:
+    """LLM 이 절대경로 패턴 (`/path` / `C:\\path` / `C:/path`) 을 줘도 상대 패턴으로 정규화.
+
+    Python 3.12+ 의 ``Path.rglob`` 은 절대경로 패턴을 ``NotImplementedError`` 로 거부하므로
+    LLM 의 도구 호출이 깨지는 걸 방지.
+    """
+    p = (pattern or "*").strip().replace("\\", "/")
+    # Windows drive letter (C:, D: 등) 제거.
+    if len(p) >= 2 and p[1] == ":":
+        p = p[2:]
+    return p.lstrip("/")
+
+
+def _normalize_relative_path(path: str) -> str:
+    """LLM 이 준 path 인자를 root 기준 상대 경로로 정규화."""
+    return _normalize_relative_glob(path)
+
+
 def build_tools(root: Path) -> list:
     """scanning 에이전트용 도구 세트.
 
@@ -32,10 +50,10 @@ def build_tools(root: Path) -> list:
         except re.error as exc:
             return f"INVALID_REGEX: {exc}"
         results: list[str] = []
-        # 상대 패턴만 허용. 선행 '/' 나 프로젝트 루트 경로 제거.
-        glob_pat = (path_glob or "*").lstrip("/\\")
+        glob_pat = _normalize_relative_glob(path_glob or "*")
+        # rglob 의 NotImplementedError 는 iteration 시 발생 — list() 로 즉시 평가해 한 번에 잡는다.
         try:
-            candidates = root.rglob(glob_pat)
+            candidates = list(root.rglob(glob_pat))
         except (NotImplementedError, ValueError) as exc:
             return f"INVALID_GLOB: '{path_glob}' ({exc})"
         for p in candidates:
@@ -117,25 +135,26 @@ def build_tools(root: Path) -> list:
     @tool
     def glob_search(pattern: str, path: str = "") -> str:
         """glob 패턴으로 파일 검색. 예: '**/*.xml', 'src/**/*.java'. 상대 경로는 프로젝트 루트 기준."""
-        base = root / path.strip().replace("\\", "/").lstrip("/") if path.strip() else root
+        base = root / _normalize_relative_path(path) if path.strip() else root
         if not base.exists() or not base.is_dir():
             return f"DIR_NOT_FOUND: '{path}'"
-        glob_pat = pattern.strip().lstrip("/\\")
+        glob_pat = _normalize_relative_glob(pattern)
         results: list[str] = []
         try:
-            for p in base.rglob(glob_pat):
-                if not p.is_file():
-                    continue
-                if any(part in SKIP_DIRS for part in p.parts):
-                    continue
-                try:
-                    results.append(p.relative_to(root).as_posix())
-                except ValueError:
-                    results.append(str(p))
-                if len(results) >= 200:
-                    break
+            candidates = list(base.rglob(glob_pat))
         except (NotImplementedError, ValueError) as exc:
             return f"INVALID_GLOB: '{pattern}' ({exc})"
+        for p in candidates:
+            if not p.is_file():
+                continue
+            if any(part in SKIP_DIRS for part in p.parts):
+                continue
+            try:
+                results.append(p.relative_to(root).as_posix())
+            except ValueError:
+                results.append(str(p))
+            if len(results) >= 200:
+                break
         return "\n".join(results) if results else "(매치 없음)"
 
     @tool

@@ -1,6 +1,6 @@
 name: "dml_extract"
-description: "DML range 별 테이블·R/W·컬럼·FK·DB링크 추출. ddl_context 유무로 흐름 분기"
-version: "4.0"
+description: "각 range 별 tables (R/W) · columns · fkRelations · dbLinks 추출. 자기 range 의 raw 코드만 추출 대상."
+version: "5.0"
 
 input_schema:
   required:
@@ -8,163 +8,385 @@ input_schema:
     - ranges
     - locale
   optional:
-    - context             # 부모 컨텍스트 (참고만)
+    - context             # 부모 컨텍스트 (참고만, 추출 대상 X)
     - ddl_context         # 결정론 매칭된 테이블·컬럼 메타 (있으면 식별 skip)
 
 prompt: |
   [ROLE]
-  SQL DML 코드를 분석해 각 range 의 테이블 사용·accessMode·컬럼·FK·DB링크 메타를 산출.
+  너는 SQL DML 메타데이터 추출기다. 각 range 의 *raw 코드 라인* 만 분석해
+  tables (R/W) · columns · fkRelations · dbLinks 를 추출한다.
+  Oracle / PostgreSQL / SQL Server / MySQL / DB2 등 모든 RDBMS 패턴 대응.
 
   [LANGUAGE]
   응답 언어: {{ locale }}
 
-  [INPUT]
+  ════════════════════════════════════════════════════════════
+  [최우선 원칙 — 모든 섹션에 우선. 위반 시 결과 환각]
+  ════════════════════════════════════════════════════════════
+
+  **원칙 1. 추출 대상은 "자기 range 의 raw 코드 라인" 만.**
+    각 range 의 startLine~endLine 안에 *실제 작성된 SQL 코드 텍스트* 만 분석 대상.
+    자식 summary · 부모 context · ddl_context 는 *해석을 돕는 참고 자료* 일 뿐
+    거기서 추가 추출 절대 X.
+
+  **원칙 2. 컨텍스트는 "활용" 만, "추출 대상" 아님.**
+    code 필드 안에 자식 노드의 summary 가 압축돼 들어올 수 있다 (예: `9~20: <자식 summary>`).
+    이건 자기 range 가 어떤 의미인지 *이해*하기 위한 참고. 자식 summary 안에 join 정보·테이블·
+    컬럼이 보여도 자기 range 의 raw 코드에 *직접 작성*돼 있지 않으면 결과에 emit X.
+    자식의 분석은 자식 호출에서 이미 처리됨 — 내가 다시 emit 하면 중복/환각.
+
+  **원칙 3. 한 range 의 결과는 다른 range 결과를 침범 X.**
+    각 range 는 독립 분석. 다른 range 의 코드·테이블·컬럼·FK 가 자기 range 결과에
+    누적·혼합되면 환각.
+
+  **원칙 4. 결정론적 매칭만. 추측 금지.**
+    역할이 명확하지 않은 컬럼·테이블·FK 는 emit X.
+    "있을 법한" / "그럴 것 같은" / "관행상" 만들지 X.
+    출력은 항상 raw 코드 텍스트의 결정론적 매칭으로만.
+
+  **원칙 5. 환각 차단 가드.**
+    같은 정보를 두 번 emit X (양방향 FK · 중복 컬럼 · 동일 테이블 두 번).
+    스키마 추측 X. 컬럼 추측 X. join 의도 추측 X.
+
+  ════════════════════════════════════════════════════════════
+  [INPUT 형식]
+  ════════════════════════════════════════════════════════════
+
   ── [분석 대상 DML 코드]
   {{ code }}
 
-  ── [분석 범위 목록] 각 range 는 startLine~endLine 안에서만 독립 분석
+  ── [분석 범위 목록] startLine~endLine 안 raw 코드만 독립 분석
   {{ ranges }}
   {% if context %}
 
-  ── [부모 컨텍스트] 상위 구조·별칭 매핑 참고용 (현재 range 결과에 중복 X)
+  ── [부모 컨텍스트] 상위 구조·별칭 매핑 참고 (자기 range 결과에 중복 emit X)
   {{ context }}
   {% endif %}
   {% if ddl_context %}
 
-  ── [DDL 컨텍스트] 코드에 사용되는 테이블·컬럼 — 이미 식별 완료 (식별 작업 X)
+  ── [DDL 컨텍스트] 코드에 등장하는 테이블·컬럼 메타 (식별 작업 skip 용)
   {{ ddl_context }}
   {% endif %}
 
-  [GOAL]
-  각 range 별 산출:
-  - tables       : 사용 테이블 + accessMode + 컬럼별 역할
-  - fkRelations  : JOIN/WHERE 의 테이블 간 컬럼 비교
-  - dbLinks      : '@' 패턴 외부 링크
+  ── [code 안의 자식 summary 표기 — 모든 DBMS 공통]
+  자식 노드 구간이 압축된 형태로 보일 수 있다:
+    `<startLine>~<endLine>: <자식 summary 텍스트>`
+  이 줄은 *자식이 이미 분석 완료한 자료*. 의미 파악에만 활용. 추출 대상 X.
 
   ════════════════════════════════════════════════════════════
-  [섹션 A. 처리 흐름 (per range)]
+  [처리 흐름 (per range)]
   ════════════════════════════════════════════════════════════
 
-  1. range 의 코드 라인 추출 (startLine~endLine 안만)
-  2. accessMode 판정 → ★ 섹션 B
-  3. tables 의 columns 채움 → ★ 섹션 C (ddl_context 유무로 분기)
-  4. fkRelations 추출 → ★ 섹션 D
-  5. dbLinks 추출 → ★ 섹션 E
+  range 마다 다음 순서로 분석:
+  1. range 의 startLine~endLine 안 raw 코드 라인 식별
+  2. accessMode 판정              → 섹션 A
+  3. tables (+ columns) 추출       → 섹션 B
+  4. fkRelations 추출              → 섹션 C
+  5. dbLinks 추출                  → 섹션 D
 
   ════════════════════════════════════════════════════════════
-  [섹션 B. accessMode 판정 (r/w)]
+  [섹션 A. accessMode 판정 (r/w)]
   ════════════════════════════════════════════════════════════
 
-  - INSERT INTO / UPDATE / DELETE FROM / MERGE INTO 의 대상 → `w`
-  - SELECT FROM / JOIN / WHERE 서브쿼리 source → `r`
-  - 한 range 에 r·w 모두면 `w` 우선 (대표 모드)
+  [A-1. 규칙]
+  - INSERT INTO / UPDATE / DELETE FROM / MERGE INTO / TRUNCATE / REPLACE INTO 의 대상 → `w`
+  - SELECT FROM / JOIN / WHERE 서브쿼리 source / EXISTS source / FROM (...) derived / CTE 본체 source → `r`
+  - INSERT INTO ... SELECT FROM: INSERT 대상 = `w`, SELECT source = `r`
+  - MERGE INTO ... USING: MERGE 대상 = `w`, USING source = `r`
+  - 한 range 에 r·w 둘 다면 `w` 우선 (대표 모드)
   - 여러 테이블은 각자 독립 판정
+  - SQL Server `OUTPUT INTO`, PostgreSQL `RETURNING INTO`, Oracle `RETURNING INTO` 의 대상 → `w`
+
+  [A-2. DBMS 별 표현 패턴]
+  - Oracle: MERGE INTO ... USING ... WHEN MATCHED THEN UPDATE / INSERT
+  - PostgreSQL: INSERT ... ON CONFLICT (...) DO UPDATE/NOTHING
+  - MySQL: INSERT ... ON DUPLICATE KEY UPDATE / REPLACE INTO
+  - SQL Server: MERGE ... USING / OUTPUT INTO
+
+  [A-3. 예시]
+  ✓ `SELECT * FROM CUSTOMER WHERE STATUS = 'A'` → CUSTOMER: `r`
+  ✓ `UPDATE ORDER SET STATUS='X' WHERE ID = 1` → ORDER: `w`
+  ✓ `INSERT INTO AUDIT_LOG SELECT * FROM TRANSACTION` → AUDIT_LOG: `w`, TRANSACTION: `r`
+  ✓ `MERGE INTO TARGET USING SOURCE ON ...` → TARGET: `w`, SOURCE: `r`
+  ✓ `DELETE FROM SESSION WHERE EXPIRY < NOW()` → SESSION: `w`
+  ✓ `INSERT ... ON CONFLICT (id) DO UPDATE SET ...` (PG) → 대상 테이블: `w`
+  ✓ `WITH X AS (SELECT * FROM A) SELECT * FROM X JOIN B` → A: `r`, B: `r` (X 는 CTE alias 제외)
 
   ════════════════════════════════════════════════════════════
-  [섹션 C. tables 추출 (ddl_context 분기)]
+  [섹션 B. tables 추출]
   ════════════════════════════════════════════════════════════
+
+  [B-1. 추출 대상 — 자기 range 의 raw 코드에 직접 등장하는 테이블만]
+  - FROM · JOIN · INSERT INTO · UPDATE · DELETE FROM · MERGE INTO · USING · TRUNCATE · EXECUTE IMMEDIATE 의 대상
+  - 형식: 스키마 있으면 `"SCHEMA.TABLE"`, 없으면 `"TABLE"`. 따옴표 제거. 별칭 제거. 대소문자 원문.
   {% if ddl_context %}
-
-  [ddl_context 있음 — 사용 의미 + R/W 만, 식별 X]
-  - tables 결과는 이 range 에 실제 등장하는 항목만
-  - tableDescription: 이 SP 에서 해당 테이블이 어떻게 쓰이는지 1~2 문장
-  - columns 배열: 이 range 에서 실제 사용된 컬럼 + 역할이 명확한 것만 (모호 컬럼 생략)
-  - columns[].description: 이 DML 에서 컬럼이 하는 역할 한 문장
-  - ddl_context 목록에 없는 테이블/컬럼명 만들지 X (환각 금지)
-  - 제외: DUAL, 시퀀스, 시스템 카탈로그 (pg_catalog · information_schema), CTE 별칭, WITH 임시 결과명 — ddl_context 에 있어도 tables 결과에 포함 X
-  {% else %}
-
-  [ddl_context 없음 — 식별 + 사용 의미]
-  - 식별 대상: INSERT INTO / UPDATE / DELETE FROM / SELECT FROM / MERGE INTO / JOIN / EXECUTE IMMEDIATE 의 대상, 변수에 저장된 SQL, 동적 SQL, CTE 내부 실제 테이블
-  - 형식: 스키마 있으면 `"SCHEMA.TABLE"`, 없으면 `"TABLE"`. 따옴표 제거. 별칭 제거. 대소문자 원문
-  - 제외: CTE 별칭, WITH 임시 결과명, DUAL, 시퀀스, 시스템 카탈로그 (pg_catalog · information_schema)
-  - columns 추출: SELECT 명시 컬럼 (* · 집계 제외), INSERT 컬럼 목록, UPDATE SET, WHERE/JOIN 조건, GROUP BY/ORDER BY, RETURNING
-  - Positional INSERT (컬럼 리스트 없는 `INSERT INTO T VALUES(...)`):
-    · `:NEW.X` / `:OLD.X` → 컬럼 `X`
-    · `<src>.<COL>` alias 참조 → 컬럼 `COL`
-    · 시퀀스 (`SEQ.NEXTVAL`) · 함수 호출 · 리터럴은 컬럼 추출 불가 → 생략
-  - columns[].description: 역할 명확한 것만, 모호하면 columns 에서 생략
+  - ddl_context 에 이미 식별된 테이블만 사용. 목록에 없는 이름 만들지 X.
   {% endif %}
 
-  [컬럼 출력 공통]
-  - dtype, nullable 필드 출력 X (메타는 DDL 이 정답)
+  [B-2. 제외 — 다음은 테이블이 아니거나 그래프에 적재 X]
+  - **DUAL** (Oracle) · **시퀀스** (`SEQ.NEXTVAL`, `SEQ.CURRVAL`)
+  - **시스템 카탈로그**: pg_catalog · information_schema · sys.* · ALL_TABLES · USER_TABLES · DBA_*
+  - **CTE 별칭** (WITH X AS (...) 의 X) · **WITH 임시 결과명** · **derived table alias** (FROM (...) X 의 X)
+  - **subquery alias** (인라인뷰 결과 별명, 예: `(SELECT ...) X` 의 X)
+  - **죽은 코드 주석 안 등장** (`--` 또는 `/* */`)
+  - **FILE 외부 데이터** (외부 CSV·JSON 등 PostgreSQL FDW 로컬 임시)
+  {% if context %}
+
+  [B-3. 부모 context 활용 — 식별 보강 한정]
+  부모 DML 의 내부 절 (예: WHEN MATCHED THEN UPDATE) 이 자기 range 일 때, range 안에
+  대상 테이블이 raw 로 안 보이면 부모 context 의 "MERGE INTO TABLE_X" 정보로 *식별만* 보강.
+  자기 range 결과에 빈 테이블명을 안 적기 위한 안전장치. 평소엔 무시.
+  부모 context 의 테이블·컬럼·호출이 자기 range 결과에 *중복 emit* 절대 X.
+  {% endif %}
+
+  [B-4. ★ 자식 summary 압축에 등장한 테이블 처리]
+  자기 range 의 코드 안에 `<line>~<line>: <자식 summary>` 형태 자식 압축이 들어올 때:
+  - 압축 줄 자체는 raw 코드 X — 거기서 테이블 추출 X
+  - 자식 summary 안에 테이블 이름이 *문자로* 보여도 그것을 자기 결과에 emit X
+  - 단, 그 압축 구간이 가리키는 *원래 line 의 raw 코드* 가 자기 range 의 일부로서 어떤
+    테이블을 직접 참조한다면, 자기 range 의 outermost SELECT 의 FROM 으로서 emit (자식 압축 라인이 아닌 외측 raw 라인 기준)
+  - 판단 기준: 자식 압축 줄 *자체* 의 텍스트가 아니라, 자기 range 의 *raw 외측 코드* 가 그 테이블을 참조하는지
+
+  [B-5. 컬럼 추출]
+  - 추출 대상:
+    · SELECT 명시 컬럼 (`*` 와 단순 집계 함수만 인 경우 제외)
+    · INSERT (col1, col2, ...) 컬럼 목록
+    · UPDATE SET col=val 의 col
+    · WHERE / JOIN ON 의 컬럼 비교
+    · GROUP BY · ORDER BY · HAVING · PARTITION BY · OVER 의 컬럼
+    · RETURNING / OUTPUT 절의 컬럼
+  - Positional INSERT (컬럼 리스트 없는 `INSERT INTO T VALUES(...)`):
+    · `:NEW.X` / `:OLD.X` (Oracle 트리거) → 컬럼 `X`
+    · `<src_alias>.<COL>` 형태 → 컬럼 `COL`
+    · 시퀀스 / 함수 호출 / 리터럴 / NULL → 컬럼 추출 불가 → 생략
+  - 출력 시 `dtype` · `nullable` 필드 X (메타는 DDL 이 정답)
   - 역할 모호한 컬럼은 columns 에서 생략 (추측 X)
+  - tableDescription: 이 SP 에서 해당 테이블의 사용 역할
+  - columns[].description: 이 DML 에서 컬럼이 하는 역할
+
+  [B-6. 정상/환각 예시]
+
+  ✓ 정상 — INSERT...SELECT (Oracle/PG/MySQL 공통):
+    raw:
+    ```
+    INSERT INTO ORDER_AUDIT (order_id, status, audit_time)
+    SELECT id, status, SYSDATE FROM ORDER WHERE status IN ('S', 'F')
+    ```
+    → tables: [ORDER_AUDIT (w, columns: order_id, status, audit_time),
+              ORDER (r, columns: id, status)]
+
+  ✓ 정상 — MERGE (Oracle):
+    raw:
+    ```
+    MERGE INTO TARGET_T t USING SOURCE_T s ON (t.id = s.id)
+    WHEN MATCHED THEN UPDATE SET t.val = s.val
+    WHEN NOT MATCHED THEN INSERT (id, val) VALUES (s.id, s.val)
+    ```
+    → tables: [TARGET_T (w, columns: id, val), SOURCE_T (r, columns: id, val)]
+
+  ✓ 정상 — inner subquery 와 외측 join (자식 압축이 들어와도):
+    range raw:
+    ```
+    9: SELECT NVL(...), SUM(B.AMOUNT)
+    10~15: <자식 summary — TBL_INNER 에서 필터링>
+    16:   , TBL_OUTER B
+    18: WHERE A.fk = B.id
+    ```
+    → tables: 자기 range raw 16번에 `TBL_OUTER` 직접 등장 → emit ✅
+              자식 압축 (10~15) 이 가리키는 inner 의 외측은 자식 책임이지만
+              자기 range 의 from 절 안에 inner 가 위치 — 압축 전 원본이 직접 참조하므로 emit ✅
+              결과: [TBL_INNER, TBL_OUTER]
+
+  ✗ 환각 — outer SELECT 가 자식 결과를 alias 묶기만:
+    raw:
+    ```
+    6: SELECT X.id, X.val_a, Y.val_b
+    7: FROM
+    8: (
+    9~20: <자식 X summary — 테이블 A·B 사용>
+    21: ) X,
+    22: (
+    23~34: <자식 Y summary — 테이블 C·D 사용>
+    35: ) Y
+    36: WHERE X.id = Y.id
+    ```
+    → 자기 range raw 에 직접 등장한 테이블 0 (X, Y 는 derived alias)
+       자식 summary 의 테이블 보여도 *outer 자기 range raw 코드* 는 alias 만 다룸
+       outer 가 단순 wrapping 이면 tables: []
+       (단, outer 가 outermost SELECT 로서 의미상 자식 inner 의 from 을 통합 표현하는 게
+        디자인 의도라면, 자기 raw 의 *압축 전 원본 코드* 가 직접 참조하는 테이블만 emit.
+        의도가 모호하면 보수적으로 빈 배열.)
+
+  ✗ 환각 — 모호 컬럼 추측:
+    raw: `SELECT id, name FROM CUSTOMER WHERE region IN (...)`
+    옳음: columns = [id, name, region]
+    잘못된 응답: columns = [id, name, region, status, created_at]   ← 등장 안 한 컬럼 추가 X
+
+  ✗ 환각 — DUAL · 시스템 카탈로그 · alias emit:
+    raw: `SELECT SYSDATE FROM DUAL`
+    잘못된 응답: tables = [DUAL]
+    옳은 응답: tables = []   (DUAL 은 가상 테이블, 적재 대상 X)
+
+    raw: `WITH ranked AS (SELECT * FROM EMP) SELECT * FROM ranked`
+    잘못된 응답: tables = [ranked, EMP]
+    옳은 응답: tables = [EMP]   (ranked 는 CTE alias)
 
   ════════════════════════════════════════════════════════════
-  [섹션 D. fkRelations 추출]
+  [섹션 C. fkRelations 추출]
   ════════════════════════════════════════════════════════════
 
-  [수집 대상]
-  - JOIN 조건 / WHERE 의 테이블 간 컬럼 비교
-  - 다중 컬럼은 sourceColumns·targetColumns 배열 (순서 맞춰)
+  [C-1. 추출 대상 — 자기 range 의 raw 코드에서 *테이블 간 컬럼 비교*]
+  - JOIN ... ON A.X = B.Y
+  - WHERE A.X = B.Y (테이블 alias 가 다른 컬럼 비교)
+  - 다중 컬럼: sourceColumns·targetColumns 배열, 순서 1:1, 길이 동일
+  - 복합 FK 패턴 (A.X1 = B.Y1 AND A.X2 = B.Y2) → 한 FK 의 다중 컬럼
 
-  [제외 — 하나라도 맞으면 FK 아님]
-  - 자기조인
-  - INSERT...SELECT 의 단순 값 복사
-  - 측정값 컬럼 (VAL · AMOUNT · QUANTITY · COUNT)
-  - 양방향 중복
-  - IN 서브쿼리의 단순 필터
-  - MERGE ON 의 자기 매칭
+  [C-2. 제외 — 하나라도 맞으면 FK 아님]
+  - **자기조인** (같은 테이블 alias 다른 이름끼리 비교): `EMP a JOIN EMP b ON a.mgr=b.id`
+  - **INSERT...SELECT 의 단순 값 복사** (insert 의 source→target 매핑은 FK 아님)
+  - **측정값 컬럼** (VAL · AMOUNT · QUANTITY · COUNT · PRICE · STOCK 등 누적/합산 대상)
+  - **IN 서브쿼리 단순 필터**: `WHERE A.x IN (SELECT y FROM B)` 의 단순 존재 체크
+  - **MERGE ON 의 자기 매칭** (same row identity, key 비교만)
+  - **양방향 중복** (이미 emit 한 FK 의 source/target 뒤집어 다시 emit X)
+  - **자식 summary 안에 등장하는 join** (자식이 이미 처리)
+  - **subquery alias 간 비교** (`X.id = Y.id` 에서 X, Y 가 자식 결과 alias)
+  - **상수·리터럴 비교** (`A.status = 'ACTIVE'`)
+  - **NULL · IS NULL · IS NOT NULL** (값 체크, 컬럼 비교 아님)
+  - **표현식 비교** (`A.x = B.y + 1` 의 +1 처럼 변형 있는 경우는 FK 후보 약함 — 명확하면 emit, 모호하면 제외)
 
-  [방향]
-  - sourceTable = FK 보유 (자식)
-  - targetTable = 참조 대상 (부모)
+  [C-3. 방향]
+  - sourceTable = FK 보유 (자식, many)
+  - targetTable = 참조 대상 (부모, one)
   - sourceColumns·targetColumns 길이 동일 필수
+  - 같은 join 의 양방향 emit 절대 X — 한 방향만
+  - 방향 모호하면 보수적: many 측 (반복 발생할 가능성 있는 쪽) 을 source 로
+
+  [C-4. ★ outer/wrapper SELECT 는 fkRelations = []]
+  자식 inner subquery 의 결과를 alias 로 받아 묶기만 하는 outer SELECT 는
+  raw join condition 이 없음. 자식 summary 의 join 정보를 가져와 emit X.
+  자기 range 의 raw 코드에 *직접 작성된 테이블 컬럼끼리의 비교* 가 없으면 fkRelations = [].
+
+  [C-5. 정상/환각 예시 (DBMS 보편)]
+
+  ✓ 정상 — 단순 JOIN ON:
+    raw: `SELECT ... FROM ORDER o JOIN CUSTOMER c ON o.customer_id = c.id`
+    → fkRelations: [{source: ORDER, sourceColumns: [customer_id],
+                    target: CUSTOMER, targetColumns: [id]}]
+
+  ✓ 정상 — 복합 키 FK:
+    raw: `... ON a.tenant_id = b.tenant_id AND a.user_id = b.user_id`
+    → fkRelations: [{source: A, sourceColumns: [tenant_id, user_id],
+                    target: B, targetColumns: [tenant_id, user_id]}]    (한 FK)
+
+  ✓ 정상 — WHERE join (Oracle 구식):
+    raw: `SELECT ... FROM EMP e, DEPT d WHERE e.dept_id = d.id`
+    → fkRelations: [{source: EMP, sourceColumns: [dept_id],
+                    target: DEPT, targetColumns: [id]}]
+
+  ✗ 자기조인 (FK 아님):
+    raw: `SELECT ... FROM EMP a JOIN EMP b ON a.manager_id = b.id`
+    → fkRelations: []   (같은 테이블 self-reference, FK 메타로 부적합)
+
+  ✗ 측정값 비교 (FK 아님):
+    raw: `WHERE INV.quantity = ORDER.requested_qty`
+    → fkRelations: []   (수량 비교, 식별자 join 아님)
+
+  ✗ 양방향 emit (절대 금지):
+    raw: `JOIN ON A.fk = B.id`
+    잘못된 응답: [{A→B (fk→id)}, {B→A (id→fk)}]
+    옳은 응답: [{A→B}] 한 방향만
+
+  ✗ 환각 — outer SELECT 가 자식 결과 묶기 (D6 패턴):
+    raw:
+    ```
+    6: SELECT X.id, X.val, Y.val
+    9~20: <자식 X summary — TBL_A·TBL_B join 정보 포함>
+    23~34: <자식 Y summary — TBL_A·TBL_C join 정보 포함>
+    36: WHERE X.id = Y.id
+    ```
+    → 자기 range raw join: X.id = Y.id (X, Y 는 derived alias, 테이블 X)
+    → fkRelations: []
+    잘못된 응답:
+      [{source: TBL_B, target: TBL_A}, {source: TBL_C, target: TBL_A},
+       {source: TBL_A, target: TBL_B}, ...]
+      ← 자식 summary 의 join 을 가져와 emit + 양방향 + 환각 컬럼 (절대 금지)
+
+  ✗ IN 서브쿼리 단순 필터 (FK 아님):
+    raw: `WHERE order_id IN (SELECT id FROM ORDER WHERE status='ACTIVE')`
+    → fkRelations: []   (단순 존재 체크, FK 메타로 부적합)
+    예외: 같은 join 의도가 명시적이고 중요한 경우 (예: 교차 테이블 매칭) — 보수적 emit OK
+          단 모호하면 제외
 
   ════════════════════════════════════════════════════════════
-  [섹션 E. dbLinks 추출]
+  [섹션 D. dbLinks 추출]
   ════════════════════════════════════════════════════════════
 
-  - 패턴: `@` 등장 (Table@DBLINK 또는 Schema.Table@DBLINK)
-  - 위치: 문자열 리터럴·변수 값·프로시저 인자·동적 SQL
-  - 제외: 주석 내 등장
+  [D-1. 패턴 — DBMS 별]
+  - **Oracle DBLink**: `Table@DBLINK` 또는 `Schema.Table@DBLINK`
+  - **PostgreSQL FDW**: 보통 외부 서버명을 별도 DDL 로 등록 — `@` 패턴 X
+    (FDW 는 일반 테이블처럼 보여 dbLinks 추출 어려움 — 보통 패턴 매칭 불가)
+  - **SQL Server Linked Server**: `[Server].[DB].[Schema].[Table]` 4-part 또는 `OPENQUERY(LinkedSrv, '...')`
+  - **DB2**: `Schema.Table@Database` (Oracle 유사)
+
+  [D-2. 추출 규칙]
+  - 위치: SELECT/JOIN/FROM 의 테이블 위치, INSERT INTO 의 대상, 문자열 리터럴 안 동적 SQL,
+    프로시저 인자, 변수 값
+  - 제외: 주석 안 등장, 빌드 시점 변수 치환 (`#param#` 등)
   - r/w 판정:
     · 외부 SELECT/JOIN/EXISTS = `r`
     · 외부 INSERT/UPDATE/DELETE/MERGE = `w`
-    · 외부 read → 내부 write 케이스 = `r`
+    · 외부 read → 내부 write 케이스 = `r` (외부 자체 동작 기준)
     · 모호하면 `r`
-  - name 에 `@` 필수, 원문 케이스 유지, range 내 한 번만
+  - name: `@` (Oracle/DB2) 또는 4-part 표기 (SQL Server) 그대로. 원문 케이스 유지.
+  - 같은 dbLink 가 한 range 안 여러 번 등장해도 emit 한 번만
+
+  [D-3. 예시]
+  ✓ Oracle: `SELECT * FROM EMP@PROD_DB` → name: `EMP@PROD_DB`, mode: `r`
+  ✓ Oracle: `INSERT INTO LOG@AUDIT_DB VALUES (...)` → name: `LOG@AUDIT_DB`, mode: `w`
+  ✓ Oracle: `INSERT INTO local_t SELECT * FROM REMOTE_T@DB1`
+    → dbLinks: [{name: REMOTE_T@DB1, mode: r}] (외부는 read 만)
+  ✓ SQL Server: `SELECT * FROM [LinkedSrv].[DB].[dbo].[T]`
+    → name: `[LinkedSrv].[DB].[dbo].[T]`, mode: `r`
+  ✗ 주석 안 `-- SELECT * FROM EMP@DB` → emit X (죽은 코드)
 
   ════════════════════════════════════════════════════════════
-  [공통 원칙]
+  [죽은 코드 주석 무시 — 모든 섹션 공통]
   ════════════════════════════════════════════════════════════
 
-  [1. 범위 독립성]
-  각 range 는 startLine~endLine 안에서만 식별. 다른 range 결과 혼합·누적·참조 0.
+  주석 (`--`, `/* */`) 안에 SQL 키워드 (SELECT/INSERT/UPDATE/DELETE/MERGE/FROM/INTO/WHERE 등) 가 있어도
+  죽은 코드. 결과에 0 반영.
+  자연어 처리 의도 주석 (예: `-- 태그 수정`, `-- 일자 필터`) 은 description 보강용 활용 가능.
 
-  [2. 죽은 코드 주석 무시]
-  주석 (`--`, `/* */`) 에 SQL 문법 키워드 포함 줄은 죽은 코드. 결과에 반영 X.
-  반영 가능: 자연어 처리 의도·헤더 (description 보강용 최우선).
+  ════════════════════════════════════════════════════════════
+  [SELF-CHECK — 출력 전 자체 점검]
+  ════════════════════════════════════════════════════════════
+
+  답하기 전에 모두 점검:
+
+  1. ranges 길이·순서가 입력과 동일?
+  2. 각 range 결과가 startLine~endLine 안 raw 코드에서만? (다른 range 혼입 0)
+  3. 자식 summary 압축 줄 (`<line>~<line>: ...`) 에서 추가 추출한 게 있는지? → 있으면 제거
+  4. 별칭 (X, Y, A, B 등 derived alias / CTE alias) 을 실제 테이블명으로 오인 0?
+  5. FK 양방향 동시 emit 0?
+  6. FK 가 자기 range raw 코드의 *테이블 간 컬럼 비교* 로부터만 추출됐나?
+  7. outer/wrapper SELECT (자식 결과 alias 묶기만) 의 fkRelations 가 빈 배열?
+  8. 자기조인·측정값 비교·IN 단순 필터·자기매칭 제외 규칙 적용?
+  9. dbLinks 가 자기 range raw 에 실제 등장 (주석 제외)?
+  10. columns 에 dtype/nullable 필드 0?
+  11. 역할 모호한 컬럼이 columns 에 들어가지 않았는지?
+  12. DUAL · 시스템 카탈로그 · CTE alias · derived alias 가 tables 에 들어가지 않았는지?
   {% if context %}
-
-  [3. 부모 컨텍스트 활용 (대상 테이블 해석 예외만)]
-  부모 DML 의 내부 절 (WHEN MATCHED THEN UPDATE 등) 이 현재 range 일 때, range 내 대상 테이블 식별 불가하면 부모 context 의 "MERGE INTO TABLE_X" 같은 정보로 보강. 빈 테이블명 출력 X.
-  부모 context 의 테이블·호출·변수는 현재 range 결과에 **중복 포함 X** (실제 range 등장한 것만).
-  {% endif %}
-
-  ════════════════════════════════════════════════════════════
-  [SELF-CHECK]
-  ════════════════════════════════════════════════════════════
-
-  - ranges 길이·순서가 입력과 동일?
-  - 각 range 결과가 startLine~endLine 안에서만? (다른 range 혼입 0)
-  - 별칭을 실제 테이블명으로 오인 0?
-  - FK 제외 규칙 위반 0?
-  - dbLinks `@` 패턴이 실제 range 내 등장?
-  - columns 에 dtype/nullable 출력 0?
-  - 역할 모호한 컬럼이 columns 에 들어가지 않았는지?
-  {% if context %}
-  - 부모 context 의 테이블·컬럼이 현재 range 결과에 중복 0?
+  13. 부모 context 의 테이블·컬럼이 자기 range 결과에 중복 emit 0?
   {% endif %}
   {% if ddl_context %}
-  - ddl_context 목록에 없는 테이블/컬럼명 만들지 0?
+  14. ddl_context 목록에 없는 테이블/컬럼명 만들지 0?
   {% endif %}
 
   ════════════════════════════════════════════════════════════
   [OUTPUT]
   ════════════════════════════════════════════════════════════
 
-  JSON 만. 코드펜스·주석·트레일링 콤마 금지. null 금지 (빈 값은 `[]` 또는 `""`).
+  JSON 만 출력. 코드펜스·주석·트레일링 콤마·null 금지. 빈 값은 `[]` 또는 `""`.
 
   {
     "ranges": [
@@ -175,7 +397,7 @@ prompt: |
           {
             "table": "SCHEMA.TABLE_NAME",
             "accessMode": "r|w",
-            "tableDescription": "이 SP 에서의 사용 역할 1~2 문장",
+            "tableDescription": "이 SP 에서의 사용 역할",
             "columns": [
               {"name": "컬럼명", "description": "이 DML 에서 컬럼이 하는 역할"}
             ]

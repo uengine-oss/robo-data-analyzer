@@ -42,14 +42,13 @@ from analyzer.strategy.framework.common.models.node_models import (
     UsesEdge,
 )
 from analyzer.strategy.framework.common.domain.analysis_constants import (
-    TABLE_DB_DEFAULT,
-    TABLE_SCHEMA_DEFAULT,
     EXCLUDED_TABLE_NAMES,
     ARTIFACT_CODE_MAX,
     CODE_TEXT_MAX,
     SQL_TEXT_MAX,
 )
 from analyzer.strategy.framework.analysis.ast_analyzer import VALID_MODULE_STEREOTYPES
+from config.settings import settings
 from analyzer.strategy.framework.common.domain.ontology import get_ontology
 
 
@@ -165,7 +164,7 @@ def _split_file_path(path: str) -> tuple[str, str]:
 
 def _build_column_fqn(schema: str, table: str, column: str) -> str:
     """Column FQN 생성 (schema.table.column)."""
-    s = (schema or "").strip() or TABLE_SCHEMA_DEFAULT
+    s = (schema or "").strip() or settings.defaults.db_schema
     return f"{s}.{table}.{column}"
 
 
@@ -338,9 +337,11 @@ def build_init_by_queries(edges: List[InitByEdge]) -> List[Dict[str, Any]]:
 def build_column_description_update_queries(
     db: str, schema: str, table_name: str, columns: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """LLM table_summary 가 반환한 컬럼별 description 을 :Column 노드에 merge.
+    """LLM table_summary 가 반환한 컬럼별 description 을 :Column 노드에 merge (DBMS 와 동일 schema).
 
-    기존 description 이 있으면 ``" | "`` 구분자로 append. 없으면 새 description SET.
+    analyzed_description = phase_summary 가 모든 함수 사용 종합한 LLM 결과. " | " 누적.
+    Column.description 은 본 쿼리에서 손대지 않음 (DDL / table_linker SQL 추출 등 기존 1차 채우기 보존).
+
     호출자는 ``framework/pipeline/phase_summary.py`` 의 _build_queries 콜백.
     """
     queries: List[Dict[str, Any]] = []
@@ -354,10 +355,10 @@ def build_column_description_update_queries(
                 "MATCH (t:Table)-[:HAS_COLUMN]->(c:Column)\n"
                 "WHERE (t.name = $table_name OR t.fqn ENDS WITH $table_name)\n"
                 "  AND toUpper(c.name) = toUpper($col_name)\n"
-                "SET c.description = CASE\n"
-                "      WHEN c.description IS NULL OR trim(toString(c.description)) = ''\n"
+                "SET c.analyzed_description = CASE\n"
+                "      WHEN c.analyzed_description IS NULL OR trim(toString(c.analyzed_description)) = ''\n"
                 "      THEN $col_desc\n"
-                "      ELSE c.description + ' | ' + $col_desc\n"
+                "      ELSE c.analyzed_description + ' | ' + $col_desc\n"
                 "    END,\n"
                 "    c.updated_at = timestamp()\n"
                 "RETURN c"
@@ -479,7 +480,7 @@ def build_table_queries_from_reads_writes(
     reads_writes: List[ReadsWritesEdge],
     table_descriptions: Optional[Dict[Tuple[str, str], str]] = None,
 ) -> List[Dict[str, Any]]:
-    """Reads_writes에서 등장하는 테이블로 Table 노드 MERGE. DUAL 등 제외. db/schema 빈 값은 postgres/public. description은 table_descriptions에서 적용.
+    """Reads_writes에서 등장하는 테이블로 Table 노드 MERGE. DUAL 등 제외. db/schema 빈 값은 settings.defaults.db_dialect/db_schema. description은 table_descriptions에서 적용.
 
     주의: DBMS 전략에서 사용하는 라벨 이름은 `Table`(대소문자 포함)이므로,
     여기서도 동일한 라벨을 사용해야 아티팩트/메서드/SQL과 DB 테이블이 하나의 노드로 합쳐진다.
@@ -488,14 +489,14 @@ def build_table_queries_from_reads_writes(
     queries = []
     desc_map = table_descriptions or {}
     for rw in reads_writes:
-        key = (rw.table_schema or TABLE_SCHEMA_DEFAULT, rw.table_name)
+        key = (rw.table_schema or settings.defaults.db_schema, rw.table_name)
         if key in seen:
             continue
         name_lower = rw.table_name.strip().lower()
         if name_lower in _EXCLUDED_TABLE_NAMES:
             continue
         seen.add(key)
-        schema = rw.table_schema.strip() or TABLE_SCHEMA_DEFAULT
+        schema = rw.table_schema.strip() or settings.defaults.db_schema
         name = rw.table_name
         table_id = f"{schema}.{name}" if schema else name
         # LLM이 schema 없이 반환한 경우 ("", name) 키로도 조회
@@ -513,7 +514,7 @@ def build_table_queries_from_reads_writes(
         )
         queries.append({
             "query": q,
-            "params": {"db": TABLE_DB_DEFAULT, "schema": schema, "name": name, "table_id": table_id, "description": description or None},
+            "params": {"db": settings.defaults.db_dialect, "schema": schema, "name": name, "table_id": table_id, "description": description or None},
         })
     return queries
 
@@ -525,7 +526,7 @@ def build_column_queries(column_refs: List[ColumnRef]) -> List[Dict[str, Any]]:
     for c in column_refs:
         if c.table_name.strip().lower() in _EXCLUDED_TABLE_NAMES:
             continue
-        _schema = c.table_schema.strip() or TABLE_SCHEMA_DEFAULT
+        _schema = c.table_schema.strip() or settings.defaults.db_schema
         fqn = _build_column_fqn(_schema, c.table_name, c.column_name)
         if fqn in seen:
             continue
@@ -545,8 +546,8 @@ def build_column_queries(column_refs: List[ColumnRef]) -> List[Dict[str, Any]]:
             "query": q,
             "params": {
                 "fqn": fqn, "name": c.column_name,
-                "dtype": getattr(c, "dtype", None) or "",
-                "description": getattr(c, "description", None) or "",
+                "dtype": (getattr(c, "dtype", None) or "").strip() or None,
+                "description": (getattr(c, "description", None) or "").strip() or None,
                 "nullable": getattr(c, "nullable", True),
             },
         })
@@ -690,13 +691,13 @@ def build_fk_to_column_queries(fk_edges: List[FkEdge]) -> List[Dict[str, Any]]:
 # --- 3-3. DB 구조 관계 (HAS_COLUMN) — 복합 키 커스텀 쿼리 ---
 
 def build_has_column_queries(column_refs: List[ColumnRef]) -> List[Dict[str, Any]]:
-    """(Table)-[:HAS_COLUMN]->(Column) 관계. DUAL 등 제외. db/schema 빈 값은 postgres/public."""
+    """(Table)-[:HAS_COLUMN]->(Column) 관계. DUAL 등 제외. db/schema 빈 값은 settings.defaults.db_dialect/db_schema."""
     seen = set()
     queries = []
     for c in column_refs:
         if c.table_name.strip().lower() in _EXCLUDED_TABLE_NAMES:
             continue
-        schema = c.table_schema.strip() or TABLE_SCHEMA_DEFAULT
+        schema = c.table_schema.strip() or settings.defaults.db_schema
         name = c.table_name
         fqn = _build_column_fqn(schema, name, c.column_name)
         key = (schema, name, fqn)
@@ -710,14 +711,14 @@ def build_has_column_queries(column_refs: List[ColumnRef]) -> List[Dict[str, Any
             "SET r.updated_at = timestamp()\n"
             "RETURN r"
         )
-        queries.append({"query": q, "params": {"db": TABLE_DB_DEFAULT, "schema": schema, "name": name, "fqn": fqn}})
+        queries.append({"query": q, "params": {"db": settings.defaults.db_dialect, "schema": schema, "name": name, "fqn": fqn}})
     return queries
 
 
 def build_fk_to_table_queries(fk_edges: List[FkEdge]) -> List[Dict[str, Any]]:
     """(TABLE)-[:FK_TO_TABLE]->(TABLE) 관계를 테이블쌍당 1개만 생성.
 
-    schema 빈 값은 TABLE_SCHEMA_DEFAULT(public).
+    schema 빈 값은 settings.defaults.db_schema(public).
     관계 속성: source(최초 생성 시만 기록), sourceColumn, targetColumn.
     """
     if not fk_edges:
@@ -725,9 +726,9 @@ def build_fk_to_table_queries(fk_edges: List[FkEdge]) -> List[Dict[str, Any]]:
     seen: set = set()
     queries = []
     for e in fk_edges:
-        from_schema = e.from_schema.strip() or TABLE_SCHEMA_DEFAULT
+        from_schema = e.from_schema.strip() or settings.defaults.db_schema
         from_table = e.from_table
-        to_schema = e.to_schema.strip() or TABLE_SCHEMA_DEFAULT
+        to_schema = e.to_schema.strip() or settings.defaults.db_schema
         to_table = e.to_table
         if (from_table or "").strip().lower() in _EXCLUDED_TABLE_NAMES or (to_table or "").strip().lower() in _EXCLUDED_TABLE_NAMES:
             continue
@@ -750,7 +751,7 @@ def build_fk_to_table_queries(fk_edges: List[FkEdge]) -> List[Dict[str, Any]]:
         queries.append({
             "query": q,
             "params": {
-                "db": TABLE_DB_DEFAULT, "from_schema": from_schema, "from_table": from_table,
+                "db": settings.defaults.db_dialect, "from_schema": from_schema, "from_table": from_table,
                 "to_schema": to_schema, "to_table": to_table,
                 "source": getattr(e, "source", "code"),
                 "from_column": e.from_column, "to_column": e.to_column,
@@ -762,10 +763,10 @@ def build_fk_to_table_queries(fk_edges: List[FkEdge]) -> List[Dict[str, Any]]:
 # --- 3-4. 데이터 접근 관계 (SELECT/INSERT/UPDATE/DELETE, READS/WRITES, REFER_TO) ---
 
 def build_reads_writes_queries(edges: List[ReadsWritesEdge]) -> List[Dict[str, Any]]:
-    """(SqlStatement)-[:SELECT|INSERT|UPDATE|DELETE]->(Table) 관계. DUAL 등 제외. db/schema 빈 값은 postgres/public."""
+    """(SqlStatement)-[:SELECT|INSERT|UPDATE|DELETE]->(Table) 관계. DUAL 등 제외. db/schema 빈 값은 settings.defaults.db_dialect/db_schema."""
     queries = []
     for e in edges:
-        schema = e.table_schema.strip() or TABLE_SCHEMA_DEFAULT
+        schema = e.table_schema.strip() or settings.defaults.db_schema
         name = e.table_name
         if (name or "").strip().lower() in _EXCLUDED_TABLE_NAMES:
             continue
@@ -785,19 +786,19 @@ def build_reads_writes_queries(edges: List[ReadsWritesEdge]) -> List[Dict[str, A
             "SET r.updated_at = timestamp()\n"
             "RETURN r"
         )
-        queries.append({"query": q, "params": {"sql_key": e.sql_key, "db": TABLE_DB_DEFAULT, "schema": schema, "name": name}})
+        queries.append({"query": q, "params": {"sql_key": e.sql_key, "db": settings.defaults.db_dialect, "schema": schema, "name": name}})
     return queries
 
 
 def build_node_table_queries(edges: List[FunctionTableEdge]) -> List[Dict[str, Any]]:
-    """(Function|Field)-[:READS|WRITES]->(Table) 관계. DUAL 등 제외. db/schema 빈 값은 postgres/public.
+    """(Function|Field)-[:READS|WRITES]->(Table) 관계. DUAL 등 제외. db/schema 빈 값은 settings.defaults.db_dialect/db_schema.
 
     테이블 매칭은 대소문자 무시(toLower). 기존 Table 노드가 있으면 MATCH로 찾아 연결하고,
     없으면 MERGE로 새로 생성한다 (DeepAgent 시나리오 4 대응).
     """
     queries = []
     for e in edges:
-        schema = e.table_schema.strip() or TABLE_SCHEMA_DEFAULT
+        schema = e.table_schema.strip() or settings.defaults.db_schema
         name = e.table_name
         if (name or "").strip().lower() in _EXCLUDED_TABLE_NAMES:
             continue
@@ -831,7 +832,7 @@ def build_node_table_queries(edges: List[FunctionTableEdge]) -> List[Dict[str, A
             + "SET r.updated_at = timestamp()\n"
             + "RETURN r"
         )
-        params: Dict[str, Any] = {"function_id": e.function_id, "db": TABLE_DB_DEFAULT, "schema": schema, "name": name, "table_id": table_id}
+        params: Dict[str, Any] = {"function_id": e.function_id, "db": settings.defaults.db_dialect, "schema": schema, "name": name, "table_id": table_id}
         if use_field:
             params["variable_id"] = e.variable_id
         queries.append({"query": q, "params": params})
@@ -864,7 +865,7 @@ def build_table_from_entity_classes(
         module_key = info.get("module_key", "")
         if not table_name:
             continue
-        schema = schema_default or TABLE_SCHEMA_DEFAULT
+        schema = schema_default or settings.defaults.db_schema
 
         # 멤버변수(VariableFacts)에서 Column 정보 추출
         member_vars = vars_by_module.get(module_key, [])
@@ -889,7 +890,7 @@ def build_table_from_entity_classes(
         if not table_name or table_name in table_names_seen:
             continue
         table_names_seen.add(table_name)
-        schema = schema_default or TABLE_SCHEMA_DEFAULT
+        schema = schema_default or settings.defaults.db_schema
         table_id = f"{schema}.{table_name}" if schema else table_name
         q = (
             "MERGE (n:Table {db: $db, schema: $schema, name: $name})\n"
@@ -899,7 +900,7 @@ def build_table_from_entity_classes(
         )
         queries.append({
             "query": q,
-            "params": {"db": TABLE_DB_DEFAULT, "schema": schema, "name": table_name, "table_id": table_id},
+            "params": {"db": settings.defaults.db_dialect, "schema": schema, "name": table_name, "table_id": table_id},
         })
 
     # Column 노드 MERGE + HAS_COLUMN 관계
@@ -913,7 +914,7 @@ def build_module_table_refer_to_queries(edges: List[ModuleTableEdge]) -> List[Di
     """엔티티 (MODULE)-[:REFER_TO]->(TABLE) 출처 연결. DUAL 등 제외."""
     queries = []
     for e in edges:
-        schema = e.table_schema.strip() or TABLE_SCHEMA_DEFAULT
+        schema = e.table_schema.strip() or settings.defaults.db_schema
         name = e.table_name.strip()
         if (name or "").lower() in _EXCLUDED_TABLE_NAMES:
             continue
@@ -929,7 +930,7 @@ def build_module_table_refer_to_queries(edges: List[ModuleTableEdge]) -> List[Di
         )
         queries.append({
             "query": q,
-            "params": {"module_fqn": fqn, "db": TABLE_DB_DEFAULT, "schema": schema, "name": name},
+            "params": {"module_fqn": fqn, "db": settings.defaults.db_dialect, "schema": schema, "name": name},
         })
     return queries
 
@@ -938,7 +939,7 @@ def build_artifact_table_refer_to_queries(edges: List[ArtifactTableEdge]) -> Lis
     """EJB XML (ARTIFACT_CHUNK)-[:REFER_TO]->(TABLE). entity_xml:: 전용."""
     queries = []
     for e in edges:
-        schema = e.table_schema.strip() or TABLE_SCHEMA_DEFAULT
+        schema = e.table_schema.strip() or settings.defaults.db_schema
         name = e.table_name.strip()
         if (name or "").lower() in _EXCLUDED_TABLE_NAMES:
             continue
@@ -954,7 +955,7 @@ def build_artifact_table_refer_to_queries(edges: List[ArtifactTableEdge]) -> Lis
         )
         queries.append({
             "query": q,
-            "params": {"chunk_id": chunk_id, "db": TABLE_DB_DEFAULT, "schema": schema, "name": name},
+            "params": {"chunk_id": chunk_id, "db": settings.defaults.db_dialect, "schema": schema, "name": name},
         })
     return queries
 
@@ -1638,18 +1639,21 @@ def build_table_description_enrichment_query() -> str:
 def build_table_description_update_queries(
     enrichments: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """테이블 description 보강 쿼리 빌드.
+    """테이블 description 보강 쿼리 빌드 (DBMS strategy 와 동일 schema).
 
-    enrichments: [{db, schema, name, enriched_description}, ...]
+    description = DDL 코멘트 / table_linker SQL 추출 결과. 비어있을 때만 강화 결과로 채움 (fallback).
+    analyzed_description = phase_summary 가 모든 함수 사용 패턴 종합한 LLM 결과. 항상 SET.
+
+    enrichments: [{db, schema, name, analyzed_description}, ...]
     """
     queries = []
     for item in enrichments:
         q = (
             "MATCH (t:Table {db: $db, schema: $schema, name: $name})\n"
-            "SET t.enriched_description = $enriched_description,\n"
+            "SET t.analyzed_description = $analyzed_description,\n"
             "    t.description = CASE\n"
             "      WHEN t.description IS NULL OR trim(toString(t.description)) = ''\n"
-            "      THEN $enriched_description\n"
+            "      THEN $analyzed_description\n"
             "      ELSE t.description\n"
             "    END,\n"
             "    t.description_source = COALESCE(t.description_source, '') + CASE WHEN t.description_source IS NULL OR t.description_source = '' THEN 'code' ELSE '' END,\n"
@@ -1662,7 +1666,7 @@ def build_table_description_update_queries(
                 "db": item.get("db", ""),
                 "schema": item.get("schema", ""),
                 "name": item.get("name", ""),
-                "enriched_description": item.get("enriched_description", ""),
+                "analyzed_description": item.get("analyzed_description", ""),
             },
         })
     return queries

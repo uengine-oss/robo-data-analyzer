@@ -6,8 +6,6 @@ import asyncio
 import logging
 from typing import Any, AsyncGenerator, List
 
-from client.neo4j_client import Neo4jClient
-from analyzer.strategy.base_analyzer import AnalysisStats
 from analyzer.strategy.dbms.common.models.node_models import FileStatus, FileAnalysisContext
 from analyzer.strategy.dbms.analysis.ast_analyzer import DbmsAstProcessor
 from analyzer.strategy.dbms.common.domain.naming_helpers import resolve_default_schema
