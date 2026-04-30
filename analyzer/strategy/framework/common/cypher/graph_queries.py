@@ -337,10 +337,12 @@ def build_init_by_queries(edges: List[InitByEdge]) -> List[Dict[str, Any]]:
 def build_column_description_update_queries(
     db: str, schema: str, table_name: str, columns: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """LLM table_summary 가 반환한 컬럼별 description 을 :Column 노드에 merge (DBMS 와 동일 schema).
+    """LLM table_summary 가 반환한 컬럼별 description 을 :Column 노드에 merge.
 
-    analyzed_description = phase_summary 가 모든 함수 사용 종합한 LLM 결과. " | " 누적.
-    Column.description 은 본 쿼리에서 손대지 않음 (DDL / table_linker SQL 추출 등 기존 1차 채우기 보존).
+    Table description 보강 (build_table_description_enrichment_queries) 과 동일 정책:
+    - analyzed_description: 항상 SET (누적 " | ")
+    - description: 빈 값일 때만 analyzed_description 으로 채움 (DDL/table_linker 의 1차 결과 보존)
+    - description_source: description 비어있다 채워진 경우만 'code' 마킹
 
     호출자는 ``framework/pipeline/phase_summary.py`` 의 _build_queries 콜백.
     """
@@ -359,6 +361,16 @@ def build_column_description_update_queries(
                 "      WHEN c.analyzed_description IS NULL OR trim(toString(c.analyzed_description)) = ''\n"
                 "      THEN $col_desc\n"
                 "      ELSE c.analyzed_description + ' | ' + $col_desc\n"
+                "    END,\n"
+                "    c.description = CASE\n"
+                "      WHEN c.description IS NULL OR trim(toString(c.description)) = ''\n"
+                "      THEN $col_desc\n"
+                "      ELSE c.description\n"
+                "    END,\n"
+                "    c.description_source = CASE\n"
+                "      WHEN c.description_source IS NULL OR c.description_source = ''\n"
+                "      THEN 'code'\n"
+                "      ELSE c.description_source\n"
                 "    END,\n"
                 "    c.updated_at = timestamp()\n"
                 "RETURN c"

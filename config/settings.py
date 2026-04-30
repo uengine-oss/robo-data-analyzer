@@ -175,13 +175,16 @@ class DeepAgentConfig:
 
 @dataclass(frozen=True)
 class DefaultsConfig:
-    """DDL/카탈로그 미존재 시 Table 노드의 db/schema 기본값.
+    """Table.db / Table.schema 의 default — DDL/코드 본문에서 schema 추출 못 했을 때 사용.
 
-    환경변수 우선 → fallback "" (unknown). postgres/public 같은 임의 값을
-    박지 않아 다른 dialect 시스템(Oracle/DB2 등)에서의 mismatch 방지.
+    !!! 임시 정책 (TODO: 추후 변경 필요) !!!
+    DDL 의 `CREATE TABLE schema.X` prefix 가 있으면 그 값을 우선 사용 (graph_queries 측
+    `c.table_schema or settings.defaults.db_schema` 패턴). 없으면 이 default (postgres/public).
+    ENV 변수로 override 가능. 추후 datasource 인프라 (실제 DB connection / catalog schemas
+    메타) 갖춰지면 datasource 메타에서 자동 fetch 으로 갈아엎고 이 default + ENV 모두 deprecate.
     """
-    db_dialect: str = field(default_factory=lambda: os.getenv("DEFAULT_DB_DIALECT", "").strip())
-    db_schema: str = field(default_factory=lambda: os.getenv("DEFAULT_DB_SCHEMA", "").strip())
+    db_dialect: str = field(default_factory=lambda: os.getenv("DEFAULT_DB_DIALECT", "").strip() or "postgres")
+    db_schema: str = field(default_factory=lambda: os.getenv("DEFAULT_DB_SCHEMA", "").strip() or "public")
 
 
 @dataclass(frozen=True)

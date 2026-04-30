@@ -915,6 +915,10 @@ class DbmsAstProcessor(BaseAstProcessor):
         """정적 노드 생성 쿼리 생성"""
         queries: List[Union[str, Dict[str, Any]]] = []
         label = node.node_type
+        # FILE 노드는 framework 의 MODULE 격 — frontend Navigator 가 PACKAGE 트리에서
+        # 인식하려면 :MODULE 라벨이 필요. Cypher 의 멀티라벨로 양쪽 의미 보존.
+        if label == "FILE":
+            label = "MODULE:FILE"
         node_name = self._node_match_name(node)
 
         # --- 파라미터 구성 ---

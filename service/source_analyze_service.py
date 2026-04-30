@@ -270,12 +270,9 @@ class AnalysisContext:
             raise ValueError("target is required")
         if not name_case:
             raise ValueError("name_case is required")
-        datasource_name = datasource_name.strip()
-        if not datasource_name:
-            raise ValueError(
-                "datasource_name is required — "
-                "catalog API 호출 시 어느 MindsDB datasource를 쓸지 지정 필수"
-            )
+        # datasource_name 옵셔널 — 빈 값이면 catalog 의존 단계 (메타데이터 보강 / 리니지) 가
+        # 다운스트림에서 graceful skip. AST·링킹·요약 등 분석 자체는 정상 진행.
+        datasource_name = (datasource_name or "").strip()
         self.api_key = api_key
         self.locale = locale
         self.strategy = strategy.lower()

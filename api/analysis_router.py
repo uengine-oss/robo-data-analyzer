@@ -66,12 +66,11 @@ async def analyze_source_code(request: Request):
     # nameCase 는 HTTP body 옵셔널 — 미지정 시 'original' 사용 (테이블명 변환 안 함).
     # 단일 진입점에서만 default 결정, 이후 모든 layer 는 명시 값을 받음.
     name_case = (body.get("nameCase") or "original").strip().lower()  # noqa: FALLBACK_DEFAULT — HTTP 진입점 단일 출처
+    # datasourceName 옵셔널 — 빈 값이면 catalog 의존 단계 (메타데이터 보강 / 리니지) 가
+    # 다운스트림에서 graceful skip. AST·링킹·요약 등 분석 자체는 정상 진행.
+    # schema/dialect 는 DDL prefix → settings.defaults.db_schema/db_dialect (postgres/public)
+    # fallback 으로 결정되므로 datasource 와 무관.
     datasource_name = (body.get("datasourceName") or "").strip()
-    if not datasource_name:
-        raise HTTPException(
-            400,
-            "datasourceName 필수 — catalog API 호출 시 MindsDB datasource 이름 지정 필요",
-        )
 
     await source_analyze_service.validate_llm_api_key(api_key)
 
