@@ -5,9 +5,8 @@ DBMS, Framework 양쪽에서 사용하는 공통 Cypher 쿼리 템플릿과 실�
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List
 
 from client.neo4j_client import Neo4jClient
 from util.stream_emitter import emit_data
@@ -131,15 +130,16 @@ async def run_graph_queries(
     queries: List[Dict[str, Any]],
     *,
     label: str = "",
-    cypher_lock: Optional[asyncio.Lock] = None,
 ) -> AsyncGenerator[Dict[str, list], None]:
     """쿼리 리스트를 Neo4j에 배치 단위로 실행하고, 배치마다 그래프 결과를 yield.
+
+    동시 쓰기 충돌 (Deadlock / Constraint) 은 `client.run_graph_query` 의
+    managed transaction 이 자동 재시도 → 호출처 락 불필요.
 
     Args:
         client: Neo4j 클라이언트
         queries: 실행할 쿼리 리스트
         label: 로깅용 라벨
-        cypher_lock: 동시성 제어용 락 (None이면 락 없이 실행)
 
     Yields:
         {"Nodes": [...], "Relationships": [...]}  (배치 단위)
@@ -147,8 +147,8 @@ async def run_graph_queries(
     if not queries:
         return
 
-    async def _execute():
-        total_yielded = 0
+    total_yielded = 0
+    try:
         async for batch_result in client.run_graph_query(queries):
             nodes = batch_result.get("Nodes", [])
             rels = batch_result.get("Relationships", [])
@@ -160,15 +160,6 @@ async def run_graph_queries(
                 "[GRAPH] Neo4j 반영 완료 | %s queries=%d items=%d",
                 label, len(queries), total_yielded,
             )
-
-    try:
-        if cypher_lock:
-            async with cypher_lock:
-                async for result in _execute():
-                    yield result
-        else:
-            async for result in _execute():
-                yield result
     except Exception as e:
         logger.error("[GRAPH] Neo4j 반영 실패 | label=%s error=%s", label, e, exc_info=True)
         raise
@@ -177,8 +168,6 @@ async def run_graph_queries(
 async def run_graph_queries_collect(
     client: Neo4jClient,
     queries: List[Dict[str, Any]],
-    *,
-    cypher_lock: Optional[asyncio.Lock] = None,
 ) -> Dict[str, list]:
     """쿼리를 실행하고 결과를 합산하여 반환 (DBMS 패턴).
 
@@ -188,7 +177,7 @@ async def run_graph_queries_collect(
     all_nodes: dict = {}
     all_rels: dict = {}
 
-    async for batch in run_graph_queries(client, queries, cypher_lock=cypher_lock):
+    async for batch in run_graph_queries(client, queries):
         for node in batch.get("Nodes", []):
             all_nodes[node["Node ID"]] = node
         for rel in batch.get("Relationships", []):

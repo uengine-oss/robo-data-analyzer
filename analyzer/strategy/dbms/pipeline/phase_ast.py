@@ -10,7 +10,8 @@ from analyzer.strategy.dbms.common.models.node_models import FileStatus, FileAna
 from analyzer.strategy.dbms.analysis.ast_analyzer import DbmsAstProcessor
 from analyzer.strategy.dbms.common.domain.naming_helpers import resolve_default_schema
 from analyzer.common.cypher.graph_writer import run_graph_queries_collect
-from util.stream_emitter import emit_data, emit_message, emit_phase_event
+from analyzer.common.cypher.schema_resolver import extract_own_schema_from_ast
+from util.stream_emitter import emit_data, emit_user_message, emit_phase_event
 from util.logger import log_process
 
 logger = logging.getLogger(__name__)
@@ -30,9 +31,14 @@ async def run_phase_ast(
     async def process_file(file_ctx: FileAnalysisContext):
         async with ctx.file_semaphore:
             try:
-                default_schema = resolve_default_schema(
-                    file_ctx.directory, ctx.ddl_schemas, ctx.name_case,
-                )
+                # own_schema 우선순위: AST 의 PROCEDURE schema → 폴더 기반 (DDL 매칭 / 폴더명).
+                # AST 도 폴더도 못 잡으면 빈값 — schema_resolver 가 위계 다음 단계 (DDL 매칭) 로 떨어뜨림.
+                own_schema = extract_own_schema_from_ast(file_ctx.ast_data)
+                if not own_schema:
+                    own_schema = resolve_default_schema(
+                        file_ctx.directory, ctx.ddl_schemas, ctx.name_case,
+                    )
+                file_ctx.own_schema = own_schema
                 last_line = 0
                 for child in file_ctx.ast_data.get('children', []):
                     end = child.get('endLine', 0)
@@ -47,7 +53,8 @@ async def run_phase_ast(
                     locale=ctx.locale,
                     dbms=ctx.target,
                     last_line=last_line,
-                    default_schema=default_schema,
+                    own_schema=own_schema,
+                    name_to_schema=ctx.name_to_schema,
                     ddl_table_metadata=ctx.ddl_table_metadata,
                     ddl_table_index=ctx.ddl_table_index,
                     ddl_pattern=ctx.ddl_pattern,
@@ -91,7 +98,7 @@ async def run_phase_ast(
         phase1_progress = int(completed / total * 50)
 
         if result_type == "error":
-            yield emit_message(f"   ❌ [{completed}/{total}] {result['file']}: {result['message'][:50]}")
+            yield emit_user_message(f"   ❌ [{completed}/{total}] {result['file']}: {result['message'][:50]}")
             stats.mark_file_failed(result['file'], "Phase1 실패")
             yield emit_phase_event(1, "AST 구조 분석", "in_progress", phase1_progress,
                                    {"file": result['file'], "status": "failed", "completed": completed, "total": total})
@@ -105,7 +112,7 @@ async def run_phase_ast(
                 for label in node.get("Labels", []):
                     node_types[label] = node_types.get(label, 0) + 1
 
-            yield emit_message(f"   ✓ [{completed}/{total}] {result['file']}")
+            yield emit_user_message(f"   ✓ [{completed}/{total}] {result['file']}")
             if node_types:
                 proc_count = node_types.get("PROCEDURE", 0) + node_types.get("FUNCTION", 0)
                 stmt_count = sum(v for k, v in node_types.items() if k in ["SELECT", "INSERT", "UPDATE", "DELETE", "MERGE"])
@@ -118,9 +125,9 @@ async def run_phase_ast(
                 if table_refs:
                     detail_parts.append(f"테이블 참조 {table_refs}개")
                 if detail_parts:
-                    yield emit_message(f"      → {', '.join(detail_parts)}")
+                    yield emit_user_message(f"      → {', '.join(detail_parts)}")
                 if rel_count > 0:
-                    yield emit_message(f"      → 관계 {rel_count}개 생성 (FROM, WRITES, CALLS 등)")
+                    yield emit_user_message(f"      → 관계 {rel_count}개 생성 (FROM, WRITES, CALLS 등)")
 
             yield emit_phase_event(1, "AST 구조 분석", "in_progress", phase1_progress,
                                    {"file": result['file'], "nodes": node_count, "relationships": rel_count,

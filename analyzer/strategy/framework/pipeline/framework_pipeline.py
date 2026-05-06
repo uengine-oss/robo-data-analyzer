@@ -29,11 +29,17 @@ from analyzer.strategy.framework.pipeline.phase_analysis import collect_analysis
 from analyzer.strategy.framework.pipeline.phase_ast import run_phase_ast
 from analyzer.strategy.framework.pipeline.phase_ddl import run_phase_ddl
 from analyzer.strategy.framework.pipeline.phase_linking import run_phase_linking
-from analyzer.strategy.framework.pipeline.phase_summary import run_actor_and_table_enrichment, run_field_and_module_analysis
+from analyzer.strategy.framework.pipeline.phase_summary import (
+    run_cross_module_actor_step,
+    run_module_step,
+    run_table_description_step,
+)
+from analyzer.strategy.framework.pipeline.phase_vector import run_phase_vector
+from analyzer.common.pipeline.stream_merge import merge_streams
 from analyzer.strategy.framework.pipeline.pipeline_state import FrameworkPhaseContext, FrameworkPipelineState
 from client.neo4j_client import Neo4jClient
 from config.settings import settings
-from util.stream_emitter import PhaseTracker, emit_message, emit_phase_event
+from util.stream_emitter import PhaseTracker, emit_user_message, emit_phase_event
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +93,6 @@ class FrameworkPipeline(BaseStreamingAnalyzer):
         stats: AnalysisStats,
         run_dir: Optional[str] = None,
     ) -> AsyncGenerator[bytes, None]:
-        cypher_lock = asyncio.Lock()
         file_semaphore = asyncio.Semaphore(settings.concurrency.file_concurrency)
         pipeline_controller.reset()
         ps = pipeline_controller.get_state()
@@ -105,11 +110,10 @@ class FrameworkPipeline(BaseStreamingAnalyzer):
             orchestrator=orchestrator,
             state=self._pipeline_state,
             stats=stats,
-            cypher_lock=cypher_lock,
             file_semaphore=file_semaphore,
         )
 
-        yield emit_message(f"☕ Framework 분석 시작 | 파일 {len(file_names)}개")
+        yield emit_user_message(f"☕ Framework 분석 시작 | 파일 {len(file_names)}개")
 
         # ========== Phase 0 (선택적): DDL ==========
         ddl_files = list_ddl_files(orchestrator)
@@ -132,7 +136,7 @@ class FrameworkPipeline(BaseStreamingAnalyzer):
                 logger.error("[PHASE:ARTIFACT] Phase1 산출물 덤프 실패: %s", e)
         self._pipeline_state.clear_phase_data(1)  # Phase 1 중간 데이터 해제
         if not await ps.wait_if_paused():
-            yield emit_message("⏹️ 파이프라인 중단")
+            yield emit_user_message("⏹️ 파이프라인 중단")
             return
 
         # ========== Phase 2: LLM 링킹 ==========
@@ -148,7 +152,7 @@ class FrameworkPipeline(BaseStreamingAnalyzer):
                 logger.error("[PHASE:ARTIFACT] Phase2 산출물 덤프 실패: %s", e)
         self._pipeline_state.clear_phase_data(2)  # Phase 2 중간 데이터 해제
         if not await ps.wait_if_paused():
-            yield emit_message("⏹️ 파이프라인 중단")
+            yield emit_user_message("⏹️ 파이프라인 중단")
             return
 
         # ========== Phase 3-1: 코드 분석 (LLM) ==========
@@ -168,16 +172,23 @@ class FrameworkPipeline(BaseStreamingAnalyzer):
             yield chunk
         yield emit_phase_event(3, "코드 분석", "completed", 50)
 
-        # ========== Phase 3-2: 모듈 요약 + 테이블 설명 보강 ==========
-        yield emit_phase_event(4, "요약 + 보강", "started", 50, {"canPause": True})
-        async for chunk in run_field_and_module_analysis(ctx, tracker):
+        # ========== Phase 3-2: Module + Table description 병렬 → Cross-module actor merge ==========
+        # 의존성:
+        #   - Module summary + Table description : Phase 3-1 method summary 만 의존 (서로 독립)
+        #   - Cross-module actor merge : Module summary 끝나야 (모듈 간 비교 + Actor 노드)
+        # 동시 실행은 단일 phase_event num + 통합 name (frontend 1 step 으로 인식).
+        yield emit_phase_event(4, "Module + Table description + Actor", "started", 50, {"canPause": True})
+        async for chunk in merge_streams(
+            ("module",            run_module_step(ctx, tracker)),
+            ("table_description", run_table_description_step(ctx)),
+        ):
             yield chunk
-        async for chunk in run_actor_and_table_enrichment(ctx, tracker):
+        async for chunk in run_cross_module_actor_step(ctx):
             yield chunk
-        yield emit_phase_event(4, "요약 + 보강", "completed", 100)
+        yield emit_phase_event(4, "Module + Table description + Actor", "completed", 100)
 
         st = self._pipeline_state
-        yield emit_message(
+        yield emit_user_message(
             f"✅ Phase 3 완료 | 메서드분석 {len(st.analysis_by_function)}개, "
             f"필드분석 {len(st.summary_by_variable)}개, 클래스분석 {len(st.summary_by_module)}개"
         )
@@ -195,6 +206,18 @@ class FrameworkPipeline(BaseStreamingAnalyzer):
                 logger.info("[PHASE:3:CATALOG] 메타데이터 보강 트리거 전송 완료")
             except Exception as e:  # noqa: SILENT_FAIL — fire-and-forget 트리거, 분석 결과는 이미 끝남
                 logger.error("[PHASE:3:CATALOG] 보강 트리거 실패 | error=%s", e)
+
+        # ========== Phase 5: 벡터라이징 (Table.description 사용 → 보강 끝난 후) ==========
+        # DBMS 와 동일 공통 모듈 (analyzer.common.pipeline.embedding) 호출.
+        # Table + Column 벡터라이징은 phase_vector 안에서 merge_streams 로 병렬.
+        ps.set_phase(PipelinePhase.VECTORIZING, "벡터라이징 중", 0)
+        yield emit_phase_event(5, "벡터라이징", "started", 0, {"canPause": True})
+        async for chunk in run_phase_vector(ctx, phase_num=5):
+            yield chunk
+        yield emit_phase_event(
+            5, "벡터라이징", "completed", 100,
+            {"tables_vectorized": stats.tables_vectorized, "columns_vectorized": stats.columns_vectorized},
+        )
 
         if run_dir:
             try:

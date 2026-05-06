@@ -68,8 +68,8 @@ async def analyze_source_code(request: Request):
     name_case = (body.get("nameCase") or "original").strip().lower()  # noqa: FALLBACK_DEFAULT — HTTP 진입점 단일 출처
     # datasourceName 옵셔널 — 빈 값이면 catalog 의존 단계 (메타데이터 보강 / 리니지) 가
     # 다운스트림에서 graceful skip. AST·링킹·요약 등 분석 자체는 정상 진행.
-    # schema/dialect 는 DDL prefix → settings.defaults.db_schema/db_dialect (postgres/public)
-    # fallback 으로 결정되므로 datasource 와 무관.
+    # schema 는 schema_resolver 위계 (LLM 명시 → DDL 매칭 → own_schema → 빈값) 으로 결정.
+    # dialect 는 DDL prefix 우선, 없으면 settings.defaults.db_dialect ('postgres') fallback.
     datasource_name = (body.get("datasourceName") or "").strip()
 
     await source_analyze_service.validate_llm_api_key(api_key)

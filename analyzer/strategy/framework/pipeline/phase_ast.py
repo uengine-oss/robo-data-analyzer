@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, AsyncGenerator
 
 from config.settings import settings
-from util.stream_emitter import emit_message, emit_phase_event
+from util.stream_emitter import emit_user_message, emit_phase_event
 from analyzer.strategy.framework.linking.call_linker import set_active_stdlib
 from analyzer.strategy.framework.common.models.node_models import (
     VariableFacts,
@@ -54,7 +54,7 @@ async def run_phase_ast(
     data_dir = settings.path.data_dir
     source_dir = str(Path(data_dir) / "source")
 
-    yield emit_message("📂 코드베이스 프로파일 + 스캔 시작")
+    yield emit_user_message("📂 코드베이스 프로파일 + 스캔 시작")
 
     # ── Step 1: 프로파일 (스캔 + 결정론 수집 + 프레임워크/DB 패턴 Agent 요약) ──
     # 모든 파일이 source/ 에 통합되어 있으므로 scan_roots 는 source 하나만.
@@ -71,7 +71,7 @@ async def run_phase_ast(
     plan = codebase_profile.plan
 
     # ── Step 2: AST 파싱 (파일별 점진적 스트리밍) ──
-    yield emit_message(f"🔍 AST 파싱 ({len(plan.source_ast_jobs)}개 파일, lang={lang})")
+    yield emit_user_message(f"🔍 AST 파싱 ({len(plan.source_ast_jobs)}개 파일, lang={lang})")
     base = Path(data_dir).resolve()
     source_ast_paths = [str(base / p) if not Path(p).is_absolute() else p for p in plan.source_ast_jobs]
 
@@ -178,14 +178,14 @@ async def run_phase_ast(
         logger.error("[PHASE:1:PACKAGE] Neo4j root 패키지 반영 실패 | error=%s", e, exc_info=True)
 
     stats.total_nodes += len(function_facts_list) + len(variable_facts_list)
-    yield emit_message(f"  └─ AST 완료 | 메서드 {len(function_facts_list)}개, 클래스 {len(module_index_ast)}개, 필드 {len(variable_facts_list)}개")
+    yield emit_user_message(f"  └─ AST 완료 | 메서드 {len(function_facts_list)}개, 클래스 {len(module_index_ast)}개, 필드 {len(variable_facts_list)}개")
 
     # ── Step 3: 아티팩트 파싱 ──
     sql_xml_paths = [str(base / p) if not Path(p).is_absolute() else p for p in plan.sql_jobs]
     entity_xml_paths = [str(base / p) if not Path(p).is_absolute() else p for p in plan.entity_jobs]
     config_paths = [str(base / p) if not Path(p).is_absolute() else p for p in plan.config_jobs]
 
-    yield emit_message(f"📄 아티팩트 파싱 | SQL {len(sql_xml_paths)}개, Entity {len(entity_xml_paths)}개, Config {len(config_paths)}개")
+    yield emit_user_message(f"📄 아티팩트 파싱 | SQL {len(sql_xml_paths)}개, Entity {len(entity_xml_paths)}개, Config {len(config_paths)}개")
     sql_chunks, config_chunks, artifact_chunks = parse_config_and_artifacts(
         sql_xml_paths, config_paths, entity_jobs=entity_xml_paths,
     )
@@ -235,4 +235,4 @@ async def run_phase_ast(
     st.config_index = config_index
     st.artifact_index = artifact_index
 
-    yield emit_message(f"✅ Phase 1 완료 | SQL {len(sql_chunks)}개, 설정 {len(config_chunks)}개, 아티팩트 {len(artifact_chunks)}개")
+    yield emit_user_message(f"✅ Phase 1 완료 | SQL {len(sql_chunks)}개, 설정 {len(config_chunks)}개, 아티팩트 {len(artifact_chunks)}개")

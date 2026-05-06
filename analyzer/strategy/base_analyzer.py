@@ -29,7 +29,7 @@ from util.stream_emitter import (
     emit_complete,
     emit_data,
     emit_error,
-    emit_message,
+    emit_user_message,
     emit_phase_header,
     emit_separator,
     emit_skip,
@@ -363,7 +363,7 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
 
             # ========== 2. Neo4j 초기화 ==========
             await client.ensure_constraints()
-            yield emit_message("🔌 Neo4j 데이터베이스 연결 완료")
+            yield emit_user_message("🔌 Neo4j 데이터베이스 연결 완료")
 
             # ========== 3. 증분/신규 모드 판단 ==========
             async for chunk in self._emit_analysis_mode(client, orchestrator, file_names):
@@ -407,7 +407,7 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
         run_dir: Optional[Path] = None,
     ) -> AsyncGenerator[bytes, None]:
         """분석 보고서 생성 단계 (공통)"""
-        yield emit_message("")
+        yield emit_user_message("")
         yield emit_separator()
         yield emit_phase_header(0, "📝 분석 보고서 생성")
         yield emit_separator()
@@ -434,7 +434,7 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
                     current_file="analysis_report.md",
                     event_type="analysis_report",
                 )
-                yield emit_message("   ✓ 분석 보고서 생성 완료")
+                yield emit_user_message("   ✓ 분석 보고서 생성 완료")
             else:
                 yield emit_skip("보고서 생성 대상 없음")
 
@@ -452,8 +452,8 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
         total_files: int,
     ) -> AsyncGenerator[bytes, None]:
         """분석 시작 메시지 출력"""
-        yield emit_message(f"{self.strategy_emoji} {self.strategy_name} 코드 분석을 시작합니다")
-        yield emit_message(f"📊 분석 대상: {total_files}개 {self.file_type_description}")
+        yield emit_user_message(f"{self.strategy_emoji} {self.strategy_name} 코드 분석을 시작합니다")
+        yield emit_user_message(f"📊 분석 대상: {total_files}개 {self.file_type_description}")
 
     async def _emit_analysis_mode(
         self,
@@ -463,50 +463,50 @@ class BaseStreamingAnalyzer(AnalyzerStrategy):
     ) -> AsyncGenerator[bytes, None]:
         """증분/신규 분석 모드 메시지 출력"""
         if await client.check_nodes_exist(file_names):
-            yield emit_message("🔄 이전 분석 결과 발견 → 증분 업데이트 모드")
+            yield emit_user_message("🔄 이전 분석 결과 발견 → 증분 업데이트 모드")
         else:
-            yield emit_message("🆕 새로운 분석 시작")
+            yield emit_user_message("🆕 새로운 분석 시작")
 
     async def _emit_analysis_complete(
         self,
         stats: AnalysisStats,
     ) -> AsyncGenerator[bytes, None]:
         """분석 완료 메시지 출력"""
-        yield emit_message("")
-        yield emit_message("━" * 50)
-        yield emit_message("✅ 모든 분석이 완료되었습니다!")
-        yield emit_message(f"   📊 총 노드: {stats.total_nodes}개")
-        yield emit_message(f"   🔗 총 관계: {stats.total_rels}개")
+        yield emit_user_message("")
+        yield emit_user_message("━" * 50)
+        yield emit_user_message("✅ 모든 분석이 완료되었습니다!")
+        yield emit_user_message(f"   📊 총 노드: {stats.total_nodes}개")
+        yield emit_user_message(f"   🔗 총 관계: {stats.total_rels}개")
         
         # 파일 처리 현황
         if stats.files_total > 0:
-            yield emit_message(f"   📁 파일: {stats.files_completed}/{stats.files_total}개 성공")
+            yield emit_user_message(f"   📁 파일: {stats.files_completed}/{stats.files_total}개 성공")
         
         # 실패 파일 목록 (토큰 낭비 방지를 위해 명시)
         if stats.files_failed > 0:
-            yield emit_message(f"   ❌ 실패: {stats.files_failed}개 파일")
+            yield emit_user_message(f"   ❌ 실패: {stats.files_failed}개 파일")
             for failed in stats.failed_files[:5]:  # 최대 5개만 표시
-                yield emit_message(f"      • {failed}")
+                yield emit_user_message(f"      • {failed}")
             if len(stats.failed_files) > 5:
-                yield emit_message(f"      • ... 외 {len(stats.failed_files) - 5}개")
+                yield emit_user_message(f"      • ... 외 {len(stats.failed_files) - 5}개")
         
         # 상세 통계 (0이 아닌 경우만)
         if stats.ddl_tables > 0:
-            yield emit_message(f"   🗂️ DDL: 테이블 {stats.ddl_tables}개, 컬럼 {stats.ddl_columns}개, FK {stats.ddl_fks}개")
+            yield emit_user_message(f"   🗂️ DDL: 테이블 {stats.ddl_tables}개, 컬럼 {stats.ddl_columns}개, FK {stats.ddl_fks}개")
         if stats.static_nodes_created > 0:
-            yield emit_message(f"   🏗️ 정적 그래프: 노드 {stats.static_nodes_created}개, 관계 {stats.static_rels_created}개")
+            yield emit_user_message(f"   🏗️ 정적 그래프: 노드 {stats.static_nodes_created}개, 관계 {stats.static_rels_created}개")
         if stats.llm_batches_executed > 0:
-            yield emit_message(f"   🤖 AI 분석: {stats.llm_batches_executed}개 배치, 관계 {stats.llm_rels_created}개")
+            yield emit_user_message(f"   🤖 AI 분석: {stats.llm_batches_executed}개 배치, 관계 {stats.llm_rels_created}개")
         if stats.tables_vectorized > 0 or stats.columns_vectorized > 0:
-            yield emit_message(f"   🔢 벡터라이징: 테이블 {stats.tables_vectorized}개, 컬럼 {stats.columns_vectorized}개")
+            yield emit_user_message(f"   🔢 벡터라이징: 테이블 {stats.tables_vectorized}개, 컬럼 {stats.columns_vectorized}개")
         if stats.lineage_etl_count > 0:
-            yield emit_message(
+            yield emit_user_message(
                 f"   🔗 리니지: ETL {stats.lineage_etl_count}개, "
                 f"READS {stats.lineage_etl_reads}개, WRITES {stats.lineage_etl_writes}개, "
                 f"FLOWS {stats.lineage_data_flows}개"
             )
 
-        yield emit_message("━" * 50)
+        yield emit_user_message("━" * 50)
 
     # =========================================================================
     # emit_* 유틸리티: util/stream_emitter 모듈 함수 import 해서 직접 사용

@@ -112,41 +112,45 @@ class Neo4jClient:
         params: Optional[dict] = None,
     ) -> list[Any]:
         """Cypher 쿼리 실행 및 결과 반환 (조회/CRUD용)
-        
-        모든 쿼리를 순차 실행하고 각 쿼리의 결과를 반환합니다.
-        
+
+        각 쿼리를 managed transaction 으로 실행 → TransientError(Deadlock 등) 자동 재시도.
+
         Args:
             queries: 실행할 Cypher 쿼리 리스트
                 - 문자열: 쿼리 문자열만
                 - 딕셔너리: {"query": "...", "params": {...}}  ('params' 단일 키)
             params: 공통 쿼리 파라미터 (선택사항, 모든 쿼리에 기본 적용)
-            
+
         Returns:
             각 쿼리의 결과 데이터 리스트 [[쿼리1결과], [쿼리2결과], ...]
-            
+
         Raises:
-            RuntimeError: 쿼리 실행 실패 시
+            RuntimeError: 쿼리 실행 실패 시 (재시도 후에도 실패)
         """
         if not queries:
             return []
+
+        async def _normalize(query: str | dict[str, Any]) -> tuple[str, dict[str, Any]]:
+            if isinstance(query, dict):
+                query_str = str(query.get("query") or "").strip()
+                if not query_str:
+                    raise RuntimeError("execute_queries dict item requires non-empty 'query'")
+                merged = {**(params or {}), **(query.get("params") or {})}
+                return query_str, merged
+            return query, params or {}
 
         try:
             async with self._driver.session(database=self._database) as session:
                 results: list[list[dict[str, Any]]] = []
                 for query in queries:
-                    # 딕셔너리 쿼리: {"query": "...", "params": {...}} 형태 — 단일 키('params')만 지원
-                    if isinstance(query, dict):
-                        query_str = str(query.get("query") or "").strip()
-                        if not query_str:
-                            raise RuntimeError("execute_queries dict item requires non-empty 'query'")
-                        item_params = query.get("params") or {}
-                        merged_params = {**(params or {}), **item_params}
-                        query_result = await session.run(query_str, merged_params)
-                    else:
-                        # 문자열 쿼리: 기존 방식
-                        query_result = await session.run(query, params or {})
+                    query_str, merged_params = await _normalize(query)
 
-                    results.append(await query_result.data())
+                    async def _tx_work(tx, q=query_str, p=merged_params):
+                        result = await tx.run(q, p)
+                        return await result.data()
+
+                    data = await session.execute_write(_tx_work)
+                    results.append(data)
 
                 return results
 
@@ -197,29 +201,47 @@ class Neo4jClient:
                     relationships: dict[str, dict] = {}
 
                     for query in batch_queries:
-                        # 자동 커밋 모드: 각 쿼리가 즉시 커밋됨
-                        # 쿼리가 딕셔너리인 경우 (쿼리+파라미터 바인딩)
-                        if isinstance(query, dict):
-                            query_str = query['query']
-                            params = query.get('params', {})
-                            graph = await (await session.run(query_str, params)).graph()
-                        else:
-                            # 기존 방식 (문자열만)
-                            graph = await (await session.run(query)).graph()
-
-                        for node in graph.nodes:
-                            self._collect_node(node, nodes)
-
-                        for rel in graph.relationships:
-                            relationships[rel.element_id] = {
-                                "Relationship ID": rel.element_id,
-                                "Type": rel.type,
-                                "Properties": dict(rel),
-                                "Start Node ID": rel.start_node.element_id,
-                                "End Node ID": rel.end_node.element_id,
+                        # managed transaction — TransientError(Deadlock 등) 자동 재시도.
+                        # tx.run().graph() 결과는 트랜잭션 종료 후 사용 불가 → 클로저 안에서
+                        # 필요한 데이터(노드/관계 식별자/라벨/속성)를 미리 추출해 반환.
+                        async def _tx_work(tx, q=query):
+                            if isinstance(q, dict):
+                                result = await tx.run(q['query'], q.get('params') or {})
+                            else:
+                                result = await tx.run(q)
+                            graph = await result.graph()
+                            return {
+                                "nodes": [
+                                    (n.element_id, list(n.labels), dict(n))
+                                    for n in graph.nodes
+                                ],
+                                "rels": [
+                                    (
+                                        r.element_id, r.type, dict(r),
+                                        r.start_node.element_id,
+                                        list(r.start_node.labels), dict(r.start_node),
+                                        r.end_node.element_id,
+                                        list(r.end_node.labels), dict(r.end_node),
+                                    )
+                                    for r in graph.relationships
+                                ],
                             }
-                            self._collect_node(rel.start_node, nodes)
-                            self._collect_node(rel.end_node, nodes)
+
+                        snapshot = await session.execute_write(_tx_work)
+
+                        for node_id, labels, props in snapshot["nodes"]:
+                            self._collect_node_data(node_id, labels, props, nodes)
+
+                        for r_id, r_type, r_props, s_id, s_labels, s_props, e_id, e_labels, e_props in snapshot["rels"]:
+                            relationships[r_id] = {
+                                "Relationship ID": r_id,
+                                "Type": r_type,
+                                "Properties": r_props,
+                                "Start Node ID": s_id,
+                                "End Node ID": e_id,
+                            }
+                            self._collect_node_data(s_id, s_labels, s_props, nodes)
+                            self._collect_node_data(e_id, e_labels, e_props, nodes)
 
                     yield {
                         "Nodes": list(nodes.values()),
@@ -232,15 +254,18 @@ class Neo4jClient:
             raise RuntimeError(f"그래프 쿼리 실행 중 오류 발생 (query_count={len(queries)}): {e}") from e
 
     @staticmethod
-    def _collect_node(node, nodes_dict: dict) -> None:
-        """노드를 결과 딕셔너리에 추가 (중복/빈 노드 제외)"""
-        if node.element_id in nodes_dict:
+    def _collect_node_data(node_id: str, labels: list[str], props: dict, nodes_dict: dict) -> None:
+        """노드 스냅샷을 결과 딕셔너리에 추가 (중복/빈 노드 제외).
+
+        managed transaction 클로저에서 미리 추출한 (id, labels, props) 튜플을 받음.
+        트랜잭션 종료 후에도 안전하게 사용 가능 (driver 객체 참조 X).
+        """
+        if node_id in nodes_dict:
             return
-        labels, props = list(node.labels), dict(node)
         if not labels and not props:
             return
-        nodes_dict[node.element_id] = {
-            "Node ID": node.element_id,
+        nodes_dict[node_id] = {
+            "Node ID": node_id,
             "Labels": labels,
             "Properties": props,
         }
@@ -252,13 +277,18 @@ class Neo4jClient:
     async def ensure_constraints(self) -> None:
         """MERGE 시 중복/충돌 방지를 위한 유니크 제약조건 생성.
 
-        모든 _CONSTRAINT_QUERIES 는 `CREATE CONSTRAINT ... IF NOT EXISTS` 형식이므로
-        이미 존재해도 정상 통과. 그 외 예외(권한 부족·문법·연결 문제 등)는 fail-fast 한다.
+        모든 _CONSTRAINT_QUERIES 는 `CREATE CONSTRAINT ... IF NOT EXISTS` 형식이라
+        이미 존재해도 정상 통과. 그 외 예외(권한 부족·문법·연결 문제 등)는 fail-fast.
+
+        managed transaction (`session.execute_write`) → TransientError 자동 재시도.
         """
+        async def _tx_work(tx, q=None):
+            await tx.run(q)
+
         async with self._driver.session(database=self._database) as session:
             for query in self._CONSTRAINT_QUERIES:
                 try:
-                    await session.run(query)
+                    await session.execute_write(_tx_work, q=query)
                 except Exception as e:
                     logging.error(
                         "[NEO4J:CONSTRAINT] 제약조건 생성 실패 — query=%s | %s: %s",
@@ -275,24 +305,41 @@ class Neo4jClient:
         batch_size: int = 500,
     ) -> dict[str, list]:
         """UNWIND 배치 + 그래프 결과 반환 (DDL 처리용)
-        
-        DDL 처리 시 스키마/테이블/컬럼/FK를 대량 생성하고
-        생성된 노드/관계 정보를 반환합니다.
-        
-        예시:
-            - 500개 테이블 → 1번 Neo4j 호출 (기존 500번)
-        
+
+        DDL 처리 시 스키마/테이블/컬럼/FK를 대량 생성하고 생성된 노드/관계 정보를 반환.
+        managed transaction → TransientError(Deadlock 등) 자동 재시도.
+
         Args:
-            query: UNWIND $items AS item 형태의 Cypher 쿼리
+            query: ``UNWIND $items AS item`` 형태의 Cypher 쿼리
             items: 처리할 데이터 리스트
             batch_size: 한 번에 처리할 항목 수 (기본 500)
-            
+
         Returns:
-            {"Nodes": [...], "Relationships": [...]} - 생성된 그래프 데이터
+            {"Nodes": [...], "Relationships": [...]} — 생성된 그래프 데이터
         """
         if not items:
             return {"Nodes": [], "Relationships": []}
-        
+
+        async def _tx_work(tx, batch):
+            result = await tx.run(query, {"items": batch})
+            graph = await result.graph()
+            return {
+                "nodes": [
+                    (n.element_id, list(n.labels), dict(n))
+                    for n in graph.nodes
+                ],
+                "rels": [
+                    (
+                        r.element_id, r.type, dict(r),
+                        r.start_node.element_id,
+                        list(r.start_node.labels), dict(r.start_node),
+                        r.end_node.element_id,
+                        list(r.end_node.labels), dict(r.end_node),
+                    )
+                    for r in graph.relationships
+                ],
+            }
+
         try:
             nodes: dict[str, dict] = {}
             relationships: dict[str, dict] = {}
@@ -300,21 +347,21 @@ class Neo4jClient:
             async with self._driver.session(database=self._database) as session:
                 for i in range(0, len(items), batch_size):
                     batch = items[i:i + batch_size]
-                    graph = await (await session.run(query, {"items": batch})).graph()
+                    snapshot = await session.execute_write(_tx_work, batch)
 
-                    for node in graph.nodes:
-                        self._collect_node(node, nodes)
+                    for node_id, labels, props in snapshot["nodes"]:
+                        self._collect_node_data(node_id, labels, props, nodes)
 
-                    for rel in graph.relationships:
-                        relationships[rel.element_id] = {
-                            "Relationship ID": rel.element_id,
-                            "Type": rel.type,
-                            "Properties": dict(rel),
-                            "Start Node ID": rel.start_node.element_id,
-                            "End Node ID": rel.end_node.element_id,
+                    for r_id, r_type, r_props, s_id, s_labels, s_props, e_id, e_labels, e_props in snapshot["rels"]:
+                        relationships[r_id] = {
+                            "Relationship ID": r_id,
+                            "Type": r_type,
+                            "Properties": r_props,
+                            "Start Node ID": s_id,
+                            "End Node ID": e_id,
                         }
-                        self._collect_node(rel.start_node, nodes)
-                        self._collect_node(rel.end_node, nodes)
+                        self._collect_node_data(s_id, s_labels, s_props, nodes)
+                        self._collect_node_data(e_id, e_labels, e_props, nodes)
 
             return {
                 "Nodes": list(nodes.values()),
@@ -327,33 +374,35 @@ class Neo4jClient:
         self,
         file_names: list[tuple[str, str]],
     ) -> bool:
-        """지정된 파일에 해당하는 노드 존재 여부 확인
-        
+        """지정된 파일에 해당하는 노드 존재 여부 확인.
+
+        managed transaction (`session.execute_read`) → TransientError 자동 재시도.
+
         Args:
             file_names: [(directory, file_name), ...] 튜플 리스트
-            
+
         Returns:
             하나라도 존재하면 True
         """
         if not file_names:
             return False
-        
-        query = """
-            UNWIND $pairs as target
-            MATCH (__cy_n__)
-            WHERE __cy_n__.directory = target.directory
-              AND __cy_n__.file_name = target.file_name
-            RETURN COUNT(__cy_n__) > 0 AS exists
-        """
-        
-        try:
-            pairs = [{"directory": d, "file_name": f} for d, f in file_names]
-            params = {"pairs": pairs}
 
+        query = (
+            "UNWIND $pairs as target\n"
+            "MATCH (n)\n"
+            "WHERE n.directory = target.directory AND n.file_name = target.file_name\n"
+            "RETURN COUNT(n) > 0 AS exists"
+        )
+        pairs = [{"directory": d, "file_name": f} for d, f in file_names]
+
+        async def _tx_work(tx):
+            result = await tx.run(query, {"pairs": pairs})
+            record = await result.single()
+            return bool(record["exists"]) if record else False
+
+        try:
             async with self._driver.session(database=self._database) as session:
-                result = await session.run(query, params)
-                record = await result.single()
-                return record["exists"] if record else False
+                return await session.execute_read(_tx_work)
         except Exception as e:
             raise RuntimeError(f"노드 존재 여부 확인 중 오류: {e}") from e
 

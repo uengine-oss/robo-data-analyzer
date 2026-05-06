@@ -17,14 +17,14 @@ from analyzer.common.cypher.graph_writer import write_to_graph
 from analyzer.common.pipeline.init_by_linker import find_init_by_sources
 from analyzer.common.pipeline.variable_linker import WILDCARD_SCOPE, find_variable_references
 from analyzer.strategy.dbms.common.cypher.graph_queries import (
-    build_init_by_query,
-    build_references_query,
+    build_init_by_queries,
+    build_references_queries,
 )
 from analyzer.strategy.dbms.common.domain.analysis_constants import PROCEDURE_TYPES
 from analyzer.strategy.dbms.common.models.node_models import FileAnalysisContext, FileStatus, StatementNode
 from analyzer.strategy.dbms.linking.call_linker import build_calls_queries
 from util.logger import log_process
-from util.stream_emitter import emit_message
+from util.stream_emitter import emit_user_message
 
 logger = logging.getLogger(__name__)
 
@@ -123,31 +123,37 @@ def _build_init_by_inputs(nodes: List[StatementNode]):
 
 
 def _build_reference_queries(nodes, full_directory, file_name) -> List[Dict[str, Any]]:
+    """REFERENCES 결정론 매칭 → UNWIND (src label 별 그룹)."""
     targets, sources = _build_reference_targets_sources(nodes)
     pairs = find_variable_references(targets=targets, sources=sources)
-    queries: List[Dict[str, Any]] = []
+    items: List[Dict[str, Any]] = []
     for t, s in pairs:
         sn: StatementNode = s["node"]
-        queries.append(build_references_query(
-            src_node_type=sn.node_type, src_line=sn.start_line,
-            var_name=t["name"],
-            full_directory=full_directory, file_name=file_name,
-        ))
-    return queries
+        items.append({
+            "src_node_type": sn.node_type,
+            "src_line":      sn.start_line,
+            "var_name":      t["name"],
+            "directory":     full_directory,
+            "file_name":     file_name,
+        })
+    return build_references_queries(items)
 
 
 def _build_init_by_queries(nodes, full_directory, file_name) -> List[Dict[str, Any]]:
+    """INIT_BY 결정론 매칭 → UNWIND 단일 쿼리."""
     variables, name_index = _build_init_by_inputs(nodes)
     pairs = find_init_by_sources(variables=variables, name_index=name_index)
-    queries: List[Dict[str, Any]] = []
+    items: List[Dict[str, Any]] = []
     for v, src in pairs:
         sn: StatementNode = v["node"]
-        queries.append(build_init_by_query(
-            src_name=v["name"], src_line=sn.start_line,
-            target_name=src["name"],
-            full_directory=full_directory, file_name=file_name,
-        ))
-    return queries
+        items.append({
+            "src_name":    v["name"],
+            "src_line":    sn.start_line,
+            "target_name": src["name"],
+            "directory":   full_directory,
+            "file_name":   file_name,
+        })
+    return build_init_by_queries(items)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -195,7 +201,7 @@ async def run_phase_linking(
         total_ref_edges += len(ref_queries)
         total_init_by_edges += len(init_by_queries)
 
-    yield emit_message(
+    yield emit_user_message(
         f"   ✓ 결정론 링킹 완료: CALLS {total_call_edges}건, REFERENCES {total_ref_edges}건, INIT_BY {total_init_by_edges}건"
     )
     log_process(

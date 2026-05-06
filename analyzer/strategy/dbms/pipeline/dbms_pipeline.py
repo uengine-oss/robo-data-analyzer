@@ -17,7 +17,7 @@ from analyzer.common.pipeline.pipeline_control import pipeline_controller, Pipel
 from config.settings import settings
 from util.encoding_reader import read_text_with_fallback
 from util.stream_emitter import (
-    emit_message,
+    emit_user_message,
     emit_phase_event,
     emit_separator,
     emit_phase_header,
@@ -32,7 +32,7 @@ from analyzer.strategy.dbms.pipeline.phase_linking import run_phase_linking
 from analyzer.strategy.dbms.pipeline.phase_metadata import run_phase_metadata
 from analyzer.strategy.dbms.pipeline.phase_vector import run_phase_vector
 from analyzer.strategy.dbms.pipeline.pipeline_state import DbmsPhaseContext
-from analyzer.strategy.dbms.pipeline.stream_merge import merge_streams
+from analyzer.common.pipeline.stream_merge import merge_streams
 
 
 class DbmsPipeline(BaseStreamingAnalyzer):
@@ -79,7 +79,6 @@ class DbmsPipeline(BaseStreamingAnalyzer):
     ) -> AsyncGenerator[bytes, None]:
         """DBMS 분석 파이프라인 실행 - Phase 0~5 순차 실행. run_dir은 Framework 전용(산출물 저장), DBMS에서는 미사용."""
         total_files = len(file_names)
-        cypher_lock = asyncio.Lock()
         file_semaphore = asyncio.Semaphore(settings.concurrency.file_concurrency)
         pipeline_controller.reset()
         pipeline_state = pipeline_controller.get_state()
@@ -91,55 +90,56 @@ class DbmsPipeline(BaseStreamingAnalyzer):
             cache_exists = os.path.exists(cache_path)
             cache_size = os.path.getsize(cache_path) if cache_exists else 0
             cache_size_str = f"{cache_size / 1024:.1f}KB" if cache_size < 1024*1024 else f"{cache_size / (1024*1024):.1f}MB"
-            yield emit_message(f"🗄️ LLM 캐시: 활성화 ({cache_size_str if cache_exists else '신규'})")
+            yield emit_user_message(f"🗄️ LLM 캐시: 활성화 ({cache_size_str if cache_exists else '신규'})")
         else:
-            yield emit_message("🔄 LLM 캐시: 비활성화 (매번 새로운 LLM 호출)")
+            yield emit_user_message("🔄 LLM 캐시: 비활성화 (매번 새로운 LLM 호출)")
 
         if total_files > 0:
-            yield emit_message(f"⚡ 병렬 처리: 파일 {settings.concurrency.file_concurrency}개 동시")
+            yield emit_user_message(f"⚡ 병렬 처리: 파일 {settings.concurrency.file_concurrency}개 동시")
 
         # PhaseContext 생성 (state 단일 출처 — pipeline 인스턴스 참조 없음)
-        ctx = DbmsPhaseContext.create(client, orchestrator, stats, cypher_lock, file_semaphore)
+        ctx = DbmsPhaseContext.create(client, orchestrator, stats, file_semaphore)
 
         # ========== Phase 0: DDL 처리 ==========
-        # totalPhases: DDL-only=3(Phase 0~2), 전체=6(Phase 0~5)
-        total_phases = 3 if total_files == 0 else 6
+        # totalPhases: DDL-only=3(Phase 0~2), 전체=5(Phase 0~4)
+        # — Phase 3 = 메타 보강 + 리니지 (병렬, 단일 num), Phase 4 = 벡터라이징
+        total_phases = 3 if total_files == 0 else 5
         pipeline_state.set_phase(PipelinePhase.DDL_PROCESSING, "DDL 파일 처리 중", 0)
         yield emit_phase_event(0, "DDL 처리", "started", 0, {"canPause": True, "totalPhases": total_phases})
         async for chunk in run_phase_ddl(ctx):
             yield chunk
         yield emit_phase_event(0, "DDL 처리", "completed", 100)
         if not await pipeline_state.wait_if_paused():
-            yield emit_message("⏹️ 파이프라인이 중단되었습니다")
+            yield emit_user_message("⏹️ 파이프라인이 중단되었습니다")
             pipeline_state.set_phase(PipelinePhase.CANCELLED)
             return
 
         # DDL만 있는 경우 (Phase 0→1→2)
         if total_files == 0:
-            yield emit_message("")
-            yield emit_message("📋 DDL 파일만 처리되었습니다 (소스 파일 없음)")
-            yield emit_message("   ➡️ Phase 1: 메타데이터 보강으로 진행합니다...")
+            yield emit_user_message("")
+            yield emit_user_message("📋 DDL 파일만 처리되었습니다 (소스 파일 없음)")
+            yield emit_user_message("   ➡️ Phase 1: 메타데이터 보강으로 진행합니다...")
             pipeline_state.set_phase(PipelinePhase.CODE_ENRICHMENT, "메타데이터 보강 중", 0)
             yield emit_phase_event(1, "메타데이터 보강", "started", 0, {"canPause": True})
-            yield emit_message("")
+            yield emit_user_message("")
             yield emit_separator()
             yield emit_phase_header(1, "📋 메타데이터 보강", "샘플 데이터 기반 설명 생성")
             yield emit_separator()
             async for chunk in run_phase_metadata(ctx, phase_num=1):
                 yield chunk
-            yield emit_message("")
+            yield emit_user_message("")
             yield emit_phase_complete(1, "메타데이터 보강 완료")
             yield emit_phase_event(1, "메타데이터 보강", "completed", 100)
-            yield emit_message("   ➡️ Phase 2: 벡터라이징으로 진행합니다...")
+            yield emit_user_message("   ➡️ Phase 2: 벡터라이징으로 진행합니다...")
             pipeline_state.set_phase(PipelinePhase.VECTORIZING, "테이블/컬럼 벡터라이징 중", 0)
             yield emit_phase_event(2, "벡터라이징", "started", 0, {"canPause": True})
-            yield emit_message("")
+            yield emit_user_message("")
             yield emit_separator()
             yield emit_phase_header(2, "🔢 벡터라이징", "임베딩 생성")
             yield emit_separator()
             async for chunk in run_phase_vector(ctx, phase_num=2):
                 yield chunk
-            yield emit_message("")
+            yield emit_user_message("")
             yield emit_phase_complete(2, "벡터라이징 완료")
             yield emit_phase_event(2, "벡터라이징", "completed", 100, {"tables_vectorized": stats.tables_vectorized, "columns_vectorized": stats.columns_vectorized})
             pipeline_state.set_phase(PipelinePhase.COMPLETED)
@@ -148,23 +148,23 @@ class DbmsPipeline(BaseStreamingAnalyzer):
         # ========== Phase 1: AST 정적 그래프 ==========
         pipeline_state.set_phase(PipelinePhase.AST_GENERATION, "AST 구조 그래프 생성 중", 0)
         yield emit_phase_event(1, "AST 구조 생성", "started", 0, {"canPause": True})
-        yield emit_message("")
+        yield emit_user_message("")
         yield emit_separator()
         yield emit_phase_header(1, "🏗️ AST 구조 그래프 생성", f"{total_files}개 파일 병렬")
         yield emit_separator()
         contexts = await self._load_all_files(file_names, orchestrator)
-        yield emit_message(f"   ✓ {len(contexts)}개 파일 로드 완료")
+        yield emit_user_message(f"   ✓ {len(contexts)}개 파일 로드 완료")
         async for chunk in run_phase_ast(ctx, contexts):
             yield chunk
         ph1_ok_count = sum(1 for c in contexts if c.status == FileStatus.PH1_OK)
         ph1_fail_count = sum(1 for c in contexts if c.status == FileStatus.PH1_FAIL)
-        yield emit_message("")
+        yield emit_user_message("")
         yield emit_phase_complete(1, f"{stats.static_nodes_created}개 노드 생성")
         yield emit_phase_event(1, "AST 구조 생성", "completed", 100, {"nodes": stats.static_nodes_created})
         if ph1_fail_count > 0:
-            yield emit_message("⚠️ " + f"Phase 1 실패: {ph1_fail_count}개 파일 → Phase 2 스킵 (토큰 절감)")
+            yield emit_user_message("⚠️ " + f"Phase 1 실패: {ph1_fail_count}개 파일 → Phase 2 스킵 (토큰 절감)")
         if not await pipeline_state.wait_if_paused():
-            yield emit_message("⏹️ 파이프라인이 중단되었습니다")
+            yield emit_user_message("⏹️ 파이프라인이 중단되었습니다")
             pipeline_state.set_phase(PipelinePhase.CANCELLED)
             return
 
@@ -176,62 +176,43 @@ class DbmsPipeline(BaseStreamingAnalyzer):
         ph2_targets = [c for c in contexts if c.status == FileStatus.PH1_OK]
         pipeline_state.set_phase(PipelinePhase.LLM_ANALYSIS, "AI 분석 중", 0)
         yield emit_phase_event(2, "AI 분석", "started", 0, {"canPause": True, "files": len(ph2_targets)})
-        yield emit_message("")
+        yield emit_user_message("")
         yield emit_separator()
         yield emit_phase_header(2, "🤖 AI 분석", f"{len(ph2_targets)}개 파일 병렬")
         yield emit_separator()
         if ph1_fail_count > 0:
-            yield emit_message(f"   ℹ️ {ph1_fail_count}개 파일은 Phase 1 실패로 스킵됨 (토큰 절감)")
+            yield emit_user_message(f"   ℹ️ {ph1_fail_count}개 파일은 Phase 1 실패로 스킵됨 (토큰 절감)")
         async for chunk in run_phase_llm(ctx, ph2_targets):
             yield chunk
-        yield emit_message("")
+        yield emit_user_message("")
         yield emit_phase_complete(2, f"{stats.llm_batches_executed}개 분석 완료")
         yield emit_phase_event(2, "AI 분석", "completed", 100, {"batches": stats.llm_batches_executed})
         if not await pipeline_state.wait_if_paused():
-            yield emit_message("⏹️ 파이프라인이 중단되었습니다")
+            yield emit_user_message("⏹️ 파이프라인이 중단되었습니다")
             pipeline_state.set_phase(PipelinePhase.CANCELLED)
             return
 
-        # ========== Phase 3: 메타데이터 보강 (Text2SQL) ==========
-        pipeline_state.set_phase(PipelinePhase.CODE_ENRICHMENT, "메타데이터 보강 중", 0)
-        yield emit_phase_event(3, "메타데이터 보강", "started", 0, {"canPause": True})
-        yield emit_message("")
-        yield emit_separator()
-        yield emit_phase_header(3, "📋 메타데이터 보강", "Text2SQL 기반 설명 생성")
-        yield emit_separator()
-        async for chunk in run_phase_metadata(ctx, phase_num=3):
-            yield chunk
-        yield emit_message("")
-        yield emit_phase_complete(3, "메타데이터 보강 완료")
-        yield emit_phase_event(3, "메타데이터 보강", "completed", 100)
-        if not await pipeline_state.wait_if_paused():
-            yield emit_message("⏹️ 파이프라인이 중단되었습니다")
-            pipeline_state.set_phase(PipelinePhase.CANCELLED)
-            return
-
-        # ========== Phase 4 + Phase 5: 벡터라이징 + 리니지 분석 (병렬) ==========
+        # ========== Phase 3: 메타 보강 + 리니지 (병렬) ==========
         # 의존성 분석:
-        #   - Phase 4 (vector) : Table/Column.description 입력 → Phase 2 후처리 결과 의존
-        #   - Phase 5 (lineage): source 디렉토리 .sql 만 입력 (Neo4j 데이터 의존 X)
-        #   - 두 phase 가 서로 의존성 없으므로 동시 실행으로 catalog/embedding API latency 누적 회피
-        pipeline_state.set_phase(PipelinePhase.VECTORIZING, "벡터라이징 + 리니지 분석 중", 0)
-        yield emit_phase_event(4, "벡터라이징", "started", 0, {"canPause": True})
-        yield emit_phase_event(5, "리니지 분석", "started", 0, {"canPause": True})
-        yield emit_message("")
+        #   - Phase 3 (metadata) : Phase 2 의 Neo4j Table 노드를 catalog 샘플 + LLM 으로 보강
+        #   - Phase 5 (lineage)  : source 디렉토리 .sql 만 catalog 에 보냄 (Neo4j 의존 0)
+        #   - 둘 다 catalog 호출 — 서로 의존성 X → 동시 실행으로 catalog/network IO 누적 회피
+        # 동시 실행 단계는 단일 phase_event num + 통합 name 으로 emit (frontend 1 step 으로 인식).
+        pipeline_state.set_phase(PipelinePhase.CODE_ENRICHMENT, "메타 보강 + 리니지 분석 중", 0)
+        yield emit_phase_event(3, "메타 보강 + 리니지", "started", 0, {"canPause": True})
+        yield emit_user_message("")
         yield emit_separator()
-        yield emit_phase_header(4, "🔢 벡터라이징 + 🔗 리니지 분석", "병렬 실행")
+        yield emit_phase_header(3, "📋 메타 보강 + 🔗 리니지 분석", "catalog 동시 호출")
         yield emit_separator()
         async for chunk in merge_streams(
-            ("vectorize", run_phase_vector(ctx)),
-            ("lineage", run_phase_lineage(ctx)),
+            ("metadata", run_phase_metadata(ctx, phase_num=3)),
+            ("lineage",  run_phase_lineage(ctx)),
         ):
             yield chunk
-        yield emit_message("")
-        yield emit_phase_complete(4, "벡터라이징 완료")
-        yield emit_phase_event(4, "벡터라이징", "completed", 100, {"tables_vectorized": stats.tables_vectorized, "columns_vectorized": stats.columns_vectorized})
-        yield emit_phase_complete(5, "리니지 분석 완료")
+        yield emit_user_message("")
+        yield emit_phase_complete(3, "메타 보강 + 리니지 완료")
         yield emit_phase_event(
-            5, "리니지 분석", "completed", 100,
+            3, "메타 보강 + 리니지", "completed", 100,
             {
                 "etl_count": stats.lineage_etl_count,
                 "etl_reads": stats.lineage_etl_reads,
@@ -241,7 +222,27 @@ class DbmsPipeline(BaseStreamingAnalyzer):
             },
         )
         if not await pipeline_state.wait_if_paused():
-            yield emit_message("⏹️ 파이프라인이 중단되었습니다")
+            yield emit_user_message("⏹️ 파이프라인이 중단되었습니다")
+            pipeline_state.set_phase(PipelinePhase.CANCELLED)
+            return
+
+        # ========== Phase 4: 벡터라이징 (Phase 3 결과 = Table.analyzed_description 사용) ==========
+        pipeline_state.set_phase(PipelinePhase.VECTORIZING, "벡터라이징 중", 0)
+        yield emit_phase_event(4, "벡터라이징", "started", 0, {"canPause": True})
+        yield emit_user_message("")
+        yield emit_separator()
+        yield emit_phase_header(4, "🔢 벡터라이징", "Table + Column 임베딩")
+        yield emit_separator()
+        async for chunk in run_phase_vector(ctx):
+            yield chunk
+        yield emit_user_message("")
+        yield emit_phase_complete(4, "벡터라이징 완료")
+        yield emit_phase_event(
+            4, "벡터라이징", "completed", 100,
+            {"tables_vectorized": stats.tables_vectorized, "columns_vectorized": stats.columns_vectorized},
+        )
+        if not await pipeline_state.wait_if_paused():
+            yield emit_user_message("⏹️ 파이프라인이 중단되었습니다")
             pipeline_state.set_phase(PipelinePhase.CANCELLED)
             return
 

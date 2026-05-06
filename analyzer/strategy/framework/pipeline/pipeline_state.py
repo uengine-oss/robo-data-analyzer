@@ -42,13 +42,16 @@ class FrameworkPipelineState:
     data_dir: str = ""
     lang: str = ""
 
-    # 동시성 제어 — FrameworkPipeline.run_pipeline 진입 시 채워짐
-    cypher_lock: Optional[asyncio.Lock] = None
+    # 파일별 동시 처리 제한 — FrameworkPipeline.run_pipeline 진입 시 채워짐.
+    # Neo4j 쓰기 충돌은 client.run_graph_query 의 managed transaction 이 자동 재시도 → 락 X.
     file_semaphore: Optional[asyncio.Semaphore] = None
 
     # DDL
     ddl_schemas: Any = field(default_factory=set)
     ddl_table_metadata: Dict[Any, Any] = field(default_factory=dict)
+    # name → schema 역인덱스. `analyzer.common.cypher.schema_resolver.resolve_schema` 가
+    # LLM 결과 schema 빈값일 때 lookup. 동명 여러 schema 매칭은 모호 → 항목 제외.
+    name_to_schema: Dict[str, str] = field(default_factory=dict)
 
     # Step 0: Codebase Profile (Phase 1 서브스텝 — 프레임워크/DB 패턴 요약 + 리소스 분류)
     codebase_profile: Optional[CodebaseProfile] = None
@@ -130,10 +133,6 @@ class FrameworkPhaseContext:
 
     # state 패스스루 — phase 코드의 시인성 향상
     @property
-    def cypher_lock(self) -> asyncio.Lock:
-        return self.state.cypher_lock
-
-    @property
     def file_semaphore(self) -> asyncio.Semaphore:
         return self.state.file_semaphore
 
@@ -165,9 +164,7 @@ class FrameworkPhaseContext:
         orchestrator: Any,
         state: FrameworkPipelineState,
         stats: AnalysisStats,
-        cypher_lock: asyncio.Lock,
         file_semaphore: asyncio.Semaphore,
     ) -> "FrameworkPhaseContext":
-        state.cypher_lock = cypher_lock
         state.file_semaphore = file_semaphore
         return cls(client=client, orchestrator=orchestrator, state=state, stats=stats)

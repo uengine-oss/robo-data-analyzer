@@ -1,8 +1,9 @@
 ---
 name: proframe-c-pfm-dbio
 description: >
-  ProFrame C 코드 (`.c`) + `pfmdbio.h` include + `mpfmdbio()` 호출 + 함수명 `b###_dbio_*_<crud>####`
-  형태일 때 사용. 이 스킬 본문을 그대로 final answer 로 반환하면 됨.
+  ProFrame C 코드 (`.c`) + `pfmdbio.h` include + `mpfmdbio()` 호출 패턴일 때 사용.
+  함수명 prefix 는 `b###_dbio_*` 외에도 `b###_check_*` 같이 다양한 패턴이 공존 가능
+  — 단일 prefix 단정 금지. 이 스킬 본문을 그대로 final answer 로 반환하면 됨.
 ---
 
 # ProFrame C — PFM 프레임워크 + mpfmdbio 패턴
@@ -58,8 +59,14 @@ description: >
 `RC_NRM` (또는 `RC_OK`) = 성공. `RC_NFD` = 데이터 없음. 그 외 = 에러
 (`mpfmdbio_errno()` / `mpfmdbio_errstr()` 로 상세).
 
+## 함수 명명 패턴 (참고용)
+
+DB 래퍼 함수의 이름 prefix 가 다양함 — `b###_dbio_*`, `b###_check_*` 등 같은 코드베이스에 공존 가능. **단일 prefix 단정 금지**. 다운스트림 검색은 함수 이름 패턴이 아니라 `mpfmdbio` 호출 본문 기준.
+
 ## 다운스트림 linker 권장 검색
 
-1. `bundle_search("mpfmdbio", kind="text")` — 호출처 모두 수집
-2. 각 호출 본문에서 1번째 인자 리터럴 추출 → suffix strip → access 결정 → edge 등록 + 컬럼 동시
-3. 등록한 정규화 테이블명으로 **reverse-search** — 간접 접근(변수경유/helper경유) 함수 추가 발견
+1. `bundle_search("mpfmdbio", kind="text")` — 호출처 **모두** 수집. 함수 이름 prefix 와 무관하게 호출 본문이 있는 모든 chunk 검토.
+2. 각 호출 본문에서 1번째 인자 리터럴 추출 → suffix strip → access 결정 → edge 등록 + 컬럼 동시.
+3. 등록한 정규화 테이블명으로 **reverse-search** — 간접 접근(변수경유/helper경유) 함수 추가 발견.
+
+🚫 `bundle_search("dbio_", kind="symbol")` 처럼 함수 이름 prefix 만 검색해서 R/W 등록 종료 — `b###_check_*` 같은 다른 prefix 함수 누락 위험.

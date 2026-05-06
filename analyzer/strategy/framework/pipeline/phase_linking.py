@@ -90,7 +90,7 @@ from analyzer.strategy.framework.linking.table_linker import link_sql_to_tables_
 from analyzer.strategy.framework.linking.unresolved_linker import run_unresolved_linking
 from client.neo4j_client import Neo4jClient
 from config.settings import settings
-from util.stream_emitter import PhaseTracker, emit_message
+from util.stream_emitter import PhaseTracker, emit_user_message
 
 logger = logging.getLogger(__name__)
 
@@ -379,18 +379,22 @@ async def run_deterministic_and_llm_batch(ctx: LinkingContext) -> AsyncGenerator
             ctx.column_refs.extend(step_result["col"])
             ctx.table_descriptions.update(step_result["desc"] or {})
             ctx.table_batch_count += 1
+            n2s = ctx.st.name_to_schema
             queries: list = []
-            queries.extend(build_reads_writes_queries(step_result["edges"]))
+            queries.extend(build_reads_writes_queries(step_result["edges"], name_to_schema=n2s))
             queries.extend(build_table_queries_from_reads_writes(
                 step_result["edges"], table_descriptions=step_result["desc"] or {},
+                name_to_schema=n2s,
             ))
             if step_result["col"]:
-                queries.extend(build_column_queries(step_result["col"]))
-                queries.extend(build_has_column_queries(step_result["col"]))
+                queries.extend(build_column_queries(step_result["col"], name_to_schema=n2s))
+                queries.extend(build_has_column_queries(step_result["col"], name_to_schema=n2s))
             if queries:
                 async for chunk in write_to_graph(ctx.client, queries, "PHASE2:TABLE_BATCH"):
                     yield chunk
-            yield ctx.tracker.tick_quiet()
+            msg, evt = ctx.tracker.tick()
+            yield msg
+            yield evt
 
         elif stage == "call_batch":
             batch_call_edges = step_result["edges"]
@@ -407,7 +411,9 @@ async def run_deterministic_and_llm_batch(ctx: LinkingContext) -> AsyncGenerator
             if queries:
                 async for chunk in write_to_graph(ctx.client, queries, "PHASE2:CALL_BATCH"):
                     yield chunk
-            yield ctx.tracker.tick_quiet()
+            msg, evt = ctx.tracker.tick()
+            yield msg
+            yield evt
 
         elif stage == "post":
             yield ctx.tracker.end_step(
@@ -419,10 +425,11 @@ async def run_deterministic_and_llm_batch(ctx: LinkingContext) -> AsyncGenerator
             ctx.function_table_edges = step_result["function_table_edges"]
             ctx.module_table_edges = step_result["module_table_edges"]
             ctx.artifact_table_edges = step_result["artifact_table_edges"]
+            n2s = ctx.st.name_to_schema
             queries = []
-            queries.extend(build_node_table_queries(ctx.function_table_edges))
-            queries.extend(build_module_table_refer_to_queries(ctx.module_table_edges))
-            queries.extend(build_artifact_table_refer_to_queries(ctx.artifact_table_edges))
+            queries.extend(build_node_table_queries(ctx.function_table_edges, name_to_schema=n2s))
+            queries.extend(build_module_table_refer_to_queries(ctx.module_table_edges, name_to_schema=n2s))
+            queries.extend(build_artifact_table_refer_to_queries(ctx.artifact_table_edges, name_to_schema=n2s))
             queries.extend(build_artifact_module_refer_to_queries(
                 st.artifact_chunks or [], st.module_index or {},
             ))
@@ -626,7 +633,7 @@ async def run_deep_agent_parallel(ctx: LinkingContext) -> AsyncGenerator[bytes, 
         )
         if da_derived:
             ctx.function_table_edges.extend(da_derived)
-            dq = build_node_table_queries(da_derived)
+            dq = build_node_table_queries(da_derived, name_to_schema=ctx.st.name_to_schema)
             if dq:
                 async for chunk in write_to_graph(ctx.client, dq, "PHASE2:DEEPAGENT_DERIVED"):
                     yield chunk
@@ -647,23 +654,26 @@ async def _handle_entity_result(ctx: LinkingContext, item: tuple, ddl_meta: dict
         ctx.column_refs.extend(entity_columns)
     if entity_mt_edges:
         ctx.function_table_edges.extend(entity_mt_edges)
+        n2s = ctx.st.name_to_schema
         if not ddl_meta:
             entity_map = collect_entity_fqns_from_edges(entity_mt_edges, ctx.st.module_index or {})
             if entity_map:
                 eq = build_table_from_entity_classes(
                     entity_map, ctx.st.module_index or {},
                     variable_facts_list=ctx.st.variable_facts_list or [],
+                    name_to_schema=n2s,
                 )
                 if eq:
                     async for chunk in write_to_graph(ctx.client, eq, "PHASE2:ENTITY_TABLE"):
                         yield chunk
-        eq2 = build_node_table_queries(entity_mt_edges)
+        eq2 = build_node_table_queries(entity_mt_edges, name_to_schema=n2s)
         if eq2:
             async for chunk in write_to_graph(ctx.client, eq2, "PHASE2:ENTITY_ID"):
                 yield chunk
     if entity_columns:
-        cq = build_column_queries(entity_columns)
-        cq.extend(build_has_column_queries(entity_columns))
+        n2s = ctx.st.name_to_schema
+        cq = build_column_queries(entity_columns, name_to_schema=n2s)
+        cq.extend(build_has_column_queries(entity_columns, name_to_schema=n2s))
         if cq:
             async for chunk in write_to_graph(ctx.client, cq, "PHASE2:ENTITY_COLUMN"):
                 yield chunk
@@ -696,11 +706,14 @@ async def _handle_init_by_result(ctx: LinkingContext, item: tuple) -> AsyncGener
 async def _handle_da_item_result(
     ctx: LinkingContext, item_refer: list, item_mt: list,
 ) -> AsyncGenerator[bytes, None]:
+    yield emit_user_message(
+        f"  ├─ DeepAgent 미해결 추적 결과 ({len(item_refer)}개 참조, {len(item_mt)}개 테이블 접근)"
+    )
     dq: list = []
     if item_refer:
         dq.extend(build_refer_to_queries(item_refer))
     if item_mt:
-        dq.extend(build_node_table_queries(item_mt))
+        dq.extend(build_node_table_queries(item_mt, name_to_schema=ctx.st.name_to_schema))
     if dq:
         async for chunk in write_to_graph(ctx.client, dq, "PHASE2:DEEPAGENT"):
             yield chunk
@@ -717,7 +730,7 @@ async def run_post_linking(ctx: LinkingContext, stats: AnalysisStats) -> AsyncGe
 
     if ctx.fk_edges:
         fk_queries: list = []
-        fk_queries.extend(build_fk_to_table_queries(ctx.fk_edges))
+        fk_queries.extend(build_fk_to_table_queries(ctx.fk_edges, name_to_schema=ctx.st.name_to_schema))
         fk_queries.extend(build_fk_to_column_queries(ctx.fk_edges))
         if fk_queries:
             logger.info(
@@ -756,7 +769,7 @@ async def run_phase_linking(
     client = ctx.client
     stats = ctx.stats
 
-    yield emit_message("🔗 링킹 시작 (참조 해석 → SQL→Table → Call → DeepAgent)")
+    yield emit_user_message("🔗 링킹 시작 (참조 해석 → SQL→Table → Call → DeepAgent)")
 
     # call_extract LLM 호출에 주입할 codebase_pattern 캐시 — Phase 2 진입 시점 1회 설정.
     # _ACTIVE_LANG/_ACTIVE_STDLIB 와 동일한 글로벌 캐시 패턴.
@@ -784,7 +797,7 @@ async def run_phase_linking(
     async for chunk in run_post_linking(link_ctx, stats):
         yield chunk
 
-    yield emit_message(
+    yield emit_user_message(
         f"✅ Phase 2 완료 | 참조 {len(link_ctx.refer_to_edges)}건, "
         f"CALLS {len(link_ctx.all_calls)}건, "
         f"Table배치 {link_ctx.table_batch_count}건, Call배치 {link_ctx.call_batch_count}건"

@@ -11,7 +11,7 @@ from analyzer.strategy.dbms.common.models.node_models import FileAnalysisContext
 from analyzer.strategy.dbms.pipeline.phase_summary import run_phase_post
 from config.settings import settings
 from util.logger import log_process
-from util.stream_emitter import emit_data, emit_message, emit_phase_event
+from util.stream_emitter import emit_data, emit_user_message, emit_phase_event
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ async def run_phase_llm(
     client = ctx.client
     stats = ctx.stats
     if not contexts:
-        yield emit_message("   ℹ️ 분석 대상 파일 없음")
+        yield emit_user_message("   ℹ️ 분석 대상 파일 없음")
         return
 
     completed = 0
@@ -32,11 +32,11 @@ async def run_phase_llm(
     results_queue: asyncio.Queue = asyncio.Queue()
     max_workers = settings.concurrency.file_concurrency
 
-    yield emit_message("")
-    yield emit_message(f"┌─────────────────────────────────────────────────────────┐")
-    yield emit_message(f"│  📊 Phase 2: AI 분석 시작                                │")
-    yield emit_message(f"│     총 {total}개 파일, 동시 처리: {max_workers}개                         │")
-    yield emit_message(f"└─────────────────────────────────────────────────────────┘")
+    yield emit_user_message("")
+    yield emit_user_message(f"┌─────────────────────────────────────────────────────────┐")
+    yield emit_user_message(f"│  📊 Phase 2: AI 분석 시작                                │")
+    yield emit_user_message(f"│     총 {total}개 파일, 동시 처리: {max_workers}개                         │")
+    yield emit_user_message(f"└─────────────────────────────────────────────────────────┘")
 
     async def analyze_file(file_ctx: FileAnalysisContext):
         async with ctx.file_semaphore:
@@ -92,7 +92,7 @@ async def run_phase_llm(
         result_type = result.get("type", "")
 
         if result_type == "warning":
-            yield emit_message(f"   ⚠️ {result['file']}: {result['message']}")
+            yield emit_user_message(f"   ⚠️ {result['file']}: {result['message']}")
             continue
 
         if result_type == "batch_progress":
@@ -102,7 +102,7 @@ async def run_phase_llm(
             node_count = len(graph.get("Nodes", [])) if graph else 0
             batch_label = f"#{batch_id}/{total_batches}" if total_batches > 0 else f"#{batch_id}"
             log_process("PHASE:2", "STREAM", f"{result.get('file')}: 스트림 전송 완료 (배치 {batch_label}, 노드 {node_count}개)")
-            yield emit_message(f"│     📦 배치 {batch_label} 저장 완료 (노드 {node_count}개)")
+            yield emit_user_message(f"│     📦 배치 {batch_label} 저장 완료 (노드 {node_count}개)")
             if graph:
                 yield emit_data(graph=graph, current_file=result.get("file"))
             continue
@@ -112,9 +112,9 @@ async def run_phase_llm(
         phase2_progress = int(completed / total * 100)
 
         if result_type == "error":
-            yield emit_message(f"├─ ❌ [{completed}/{total}] {result['file']}")
-            yield emit_message(f"│     오류: {result['message'][:80]}")
-            yield emit_message(f"│     남은 파일: {remaining}개")
+            yield emit_user_message(f"├─ ❌ [{completed}/{total}] {result['file']}")
+            yield emit_user_message(f"│     오류: {result['message'][:80]}")
+            yield emit_user_message(f"│     남은 파일: {remaining}개")
             stats.mark_file_failed(result['file'], "Phase2 실패")
             yield emit_phase_event(2, "AI 분석", "in_progress", phase2_progress,
                                    {"file": result['file'], "status": "failed", "completed": completed, "total": total})
@@ -128,10 +128,10 @@ async def run_phase_llm(
             rel_count = len(graph.get("Relationships", []))
             status_icon = "✅" if failed_batches == 0 else "⚠️"
 
-            yield emit_message(f"├─ {status_icon} [{completed}/{total}] {result['file']}")
-            yield emit_message(f"│     쿼리: {result['query_count']}개, 노드: {node_count}개, 관계: {rel_count}개")
+            yield emit_user_message(f"├─ {status_icon} [{completed}/{total}] {result['file']}")
+            yield emit_user_message(f"│     쿼리: {result['query_count']}개, 노드: {node_count}개, 관계: {rel_count}개")
             if remaining > 0:
-                yield emit_message(f"│     남은 파일: {remaining}개")
+                yield emit_user_message(f"│     남은 파일: {remaining}개")
 
             summary_added = sum(1 for n in graph.get("Nodes", []) if n.get("Properties", {}).get("summary"))
             table_desc_added = sum(1 for n in graph.get("Nodes", []) if "Table" in (n.get("Labels") or []) and n.get("Properties", {}).get("analyzed_description"))
@@ -141,12 +141,12 @@ async def run_phase_llm(
                     detail_parts.append(f"요약 {summary_added}개")
                 if table_desc_added:
                     detail_parts.append(f"테이블 설명 {table_desc_added}개")
-                yield emit_message(f"│     생성: {', '.join(detail_parts)}")
+                yield emit_user_message(f"│     생성: {', '.join(detail_parts)}")
 
             if failed_details:
                 stats.llm_batches_failed += len(failed_details)
                 for detail in failed_details[:3]:
-                    yield emit_message(f"│     ⚠️ 배치 #{detail['batch_id']}: {detail['error'][:50]}")
+                    yield emit_user_message(f"│     ⚠️ 배치 #{detail['batch_id']}: {detail['error'][:50]}")
 
             yield emit_phase_event(2, "AI 분석", "in_progress", phase2_progress,
                                    {"file": result['file'], "queries": result['query_count'],

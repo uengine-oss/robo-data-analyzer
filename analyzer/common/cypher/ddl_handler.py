@@ -32,7 +32,7 @@ from util.encoding_reader import read_text_with_fallback
 from util.logger import log_process
 from util.stream_emitter import (
     emit_data,
-    emit_message,
+    emit_user_message,
     emit_phase_event,
 )
 from util.code_text_utils import (
@@ -576,7 +576,7 @@ class DDLParser:
             return ""
         try:
             return kind.sql(dialect=dialect).upper().strip()
-        except Exception:
+        except Exception:  # noqa: SILENT_FAIL — sqlglot dialect 미지원 fallback (재호출, debug 만 충분)
             return kind.sql().upper().strip()
 
     @staticmethod
@@ -587,7 +587,7 @@ class DDLParser:
             return f"'{value.name}'" if value.is_string else str(value.name)
         try:
             return value.sql()
-        except Exception:
+        except Exception:  # noqa: SILENT_FAIL — sqlglot expression.sql() fallback (str 변환, debug 만 충분)
             return str(value)
 
 
@@ -619,7 +619,6 @@ async def process_ddl(
     client: Neo4jClient,
     file_name: str,
     orchestrator: Any,
-    cypher_lock: asyncio.Lock,
     ddl_schemas: Set[str],
     ddl_table_metadata: Dict[Tuple[str, str], Dict[str, Any]],
     emit_progress: bool = True,
@@ -644,7 +643,7 @@ async def process_ddl(
     total_tokens = calculate_code_token(ddl_content)
 
     if emit_progress:
-        yield emit_message(f"   ⚡ sqlglot AST 파서 사용 (다중 방언 자동 감지)")
+        yield emit_user_message(f"   ⚡ sqlglot AST 파서 사용 (다중 방언 자동 감지)")
         yield emit_phase_event(
             phase_num=0,
             phase_name="DDL 처리",
@@ -662,7 +661,7 @@ async def process_ddl(
             preview = ", ".join(table_names)
             if table_count > 5:
                 preview += f" 외 {table_count - 5}개"
-            yield emit_message(f"   ✅ 파싱 완료: {table_count}개 테이블 ({preview})")
+            yield emit_user_message(f"   ✅ 파싱 완료: {table_count}개 테이블 ({preview})")
             yield emit_phase_event(
                 phase_num=0,
                 phase_name="DDL 처리",
@@ -672,7 +671,7 @@ async def process_ddl(
             )
     except Exception as e:
         if emit_progress:
-            yield emit_message(f"   ❌ DDL 파싱 실패: {str(e)[:80]}")
+            yield emit_user_message(f"   ❌ DDL 파싱 실패: {str(e)[:80]}")
         raise RuntimeError(f"DDL 파싱 실패: {e}")
 
     parsed = {"analysis": all_parsed_results}
@@ -715,11 +714,12 @@ async def process_ddl(
         table_type = (table.get("table_type") or "BASE TABLE").strip().upper()
         qualified = f"{schema_raw}.{table_name_raw}" if schema_raw else table_name_raw
         parsed_schema, parsed_name, _ = parse_table_identifier(qualified)
-        # parsed_schema 없으면 settings.defaults.db_schema (env), 없으면 빈 (public 강제 X).
-        schema = apply_name_case(parsed_schema or settings.defaults.db_schema, name_case)
+        # parsed_schema 없으면 빈값 그대로 둠 — 강제 'public' 박지 X (정확도 우선).
+        # 이후 코드가 LLM/own_schema/DDL lookup 위계 (resolve_schema) 로 채움.
+        schema = apply_name_case(parsed_schema, name_case) if parsed_schema else ""
         parsed_name = apply_name_case(parsed_name, name_case)
 
-        if schema and schema.lower() != 'public':
+        if schema:
             ddl_schemas.add(schema)
 
         schema_key = (db_name, schema)
@@ -827,7 +827,7 @@ async def process_ddl(
             ddl_stats["fks"] += 1
 
     if emit_progress:
-        yield emit_message(f"   💾 UNWIND 배치 저장 시작: {ddl_stats['tables']}개 테이블, {ddl_stats['columns']}개 컬럼, {ddl_stats['fks']}개 FK")
+        yield emit_user_message(f"   💾 UNWIND 배치 저장 시작: {ddl_stats['tables']}개 테이블, {ddl_stats['columns']}개 컬럼, {ddl_stats['fks']}개 FK")
         yield emit_phase_event(
             phase_num=0,
             phase_name="DDL 처리",
@@ -841,19 +841,16 @@ async def process_ddl(
 
     if schemas_data:
         if emit_progress:
-            yield emit_message(f"      📦 [1/7] 스키마 {len(schemas_data)}개 생성 중...")
-        async with cypher_lock:
-            result = await client.run_batch_unwind(SCHEMA_MERGE_QUERY, schemas_data)
+            yield emit_user_message(f"      📦 [1/7] 스키마 {len(schemas_data)}개 생성 중...")
+        result = await client.run_batch_unwind(SCHEMA_MERGE_QUERY, schemas_data)
         for node in result.get("Nodes", []):
             all_nodes[node.get("Node ID")] = node
 
     if schemas_data and datasource_name:
         if emit_progress:
-            yield emit_message(f"      🔗 DataSource({datasource_name}) 노드 생성 및 스키마 연결 중...")
-        async with cypher_lock:
-            await client.execute_queries([DATASOURCE_CREATE_QUERY], {"datasource_name": datasource_name})
-        async with cypher_lock:
-            result = await client.run_batch_unwind(DATASOURCE_SCHEMA_QUERY, schemas_data)
+            yield emit_user_message(f"      🔗 DataSource({datasource_name}) 노드 생성 및 스키마 연결 중...")
+        await client.execute_queries([DATASOURCE_CREATE_QUERY], {"datasource_name": datasource_name})
+        result = await client.run_batch_unwind(DATASOURCE_SCHEMA_QUERY, schemas_data)
         for node in result.get("Nodes", []):
             all_nodes[node.get("Node ID")] = node
         for rel in result.get("Relationships", []):
@@ -861,17 +858,15 @@ async def process_ddl(
 
     if tables_data:
         if emit_progress:
-            yield emit_message(f"      📦 [2/7] 테이블 {len(tables_data)}개 생성 중...")
-        async with cypher_lock:
-            result = await client.run_batch_unwind(TABLE_MERGE_QUERY, tables_data)
+            yield emit_user_message(f"      📦 [2/7] 테이블 {len(tables_data)}개 생성 중...")
+        result = await client.run_batch_unwind(TABLE_MERGE_QUERY, tables_data)
         for node in result.get("Nodes", []):
             all_nodes[node.get("Node ID")] = node
 
     if tables_data:
         if emit_progress:
-            yield emit_message(f"      📦 [3/7] 테이블-스키마 관계 {len(tables_data)}개 생성 중...")
-        async with cypher_lock:
-            result = await client.run_batch_unwind(BELONGS_TO_QUERY, tables_data)
+            yield emit_user_message(f"      📦 [3/7] 테이블-스키마 관계 {len(tables_data)}개 생성 중...")
+        result = await client.run_batch_unwind(BELONGS_TO_QUERY, tables_data)
         for node in result.get("Nodes", []):
             all_nodes[node.get("Node ID")] = node
         for rel in result.get("Relationships", []):
@@ -879,17 +874,15 @@ async def process_ddl(
 
     if columns_data:
         if emit_progress:
-            yield emit_message(f"      📦 [4/7] 컬럼 {len(columns_data)}개 생성 중...")
-        async with cypher_lock:
-            result = await client.run_batch_unwind(COLUMN_MERGE_QUERY, columns_data)
+            yield emit_user_message(f"      📦 [4/7] 컬럼 {len(columns_data)}개 생성 중...")
+        result = await client.run_batch_unwind(COLUMN_MERGE_QUERY, columns_data)
         for node in result.get("Nodes", []):
             all_nodes[node.get("Node ID")] = node
 
     if columns_data:
         if emit_progress:
-            yield emit_message(f"      📦 [5/7] 테이블-컬럼 관계 {len(columns_data)}개 생성 중...")
-        async with cypher_lock:
-            result = await client.run_batch_unwind(HAS_COLUMN_QUERY, columns_data)
+            yield emit_user_message(f"      📦 [5/7] 테이블-컬럼 관계 {len(columns_data)}개 생성 중...")
+        result = await client.run_batch_unwind(HAS_COLUMN_QUERY, columns_data)
         for node in result.get("Nodes", []):
             all_nodes[node.get("Node ID")] = node
         for rel in result.get("Relationships", []):
@@ -897,25 +890,22 @@ async def process_ddl(
 
     if fks_data:
         if emit_progress:
-            yield emit_message(f"      📦 [6/7] FK 관계 {len(fks_data)}개 생성 중...")
-        async with cypher_lock:
-            result = await client.run_batch_unwind(FK_REF_TABLE_QUERY, fks_data)
+            yield emit_user_message(f"      📦 [6/7] FK 관계 {len(fks_data)}개 생성 중...")
+        result = await client.run_batch_unwind(FK_REF_TABLE_QUERY, fks_data)
         for node in result.get("Nodes", []):
             all_nodes[node.get("Node ID")] = node
-        async with cypher_lock:
-            result = await client.run_batch_unwind(FK_TO_TABLE_QUERY, fks_data)
+        result = await client.run_batch_unwind(FK_TO_TABLE_QUERY, fks_data)
         for node in result.get("Nodes", []):
             all_nodes[node.get("Node ID")] = node
         for rel in result.get("Relationships", []):
             all_relationships[rel.get("Relationship ID")] = rel
 
-        async with cypher_lock:
-            result = await client.run_batch_unwind(FK_TO_COLUMN_QUERY, fks_data)
+        result = await client.run_batch_unwind(FK_TO_COLUMN_QUERY, fks_data)
         for rel in result.get("Relationships", []):
             all_relationships[rel.get("Relationship ID")] = rel
 
     if emit_progress:
-        yield emit_message(f"   ✅ UNWIND 배치 저장 완료: {len(all_nodes)}개 노드, {len(all_relationships)}개 관계")
+        yield emit_user_message(f"   ✅ UNWIND 배치 저장 완료: {len(all_nodes)}개 노드, {len(all_relationships)}개 관계")
         yield emit_phase_event(
             phase_num=0,
             phase_name="DDL 처리",
@@ -926,7 +916,7 @@ async def process_ddl(
 
     graph = {"Nodes": list(all_nodes.values()), "Relationships": list(all_relationships.values())}
     if emit_progress:
-        yield emit_message(f"   ✅ Neo4j 저장 완료: {len(graph['Nodes'])}개 노드, {len(graph['Relationships'])}개 관계 생성")
+        yield emit_user_message(f"   ✅ Neo4j 저장 완료: {len(graph['Nodes'])}개 노드, {len(graph['Relationships'])}개 관계 생성")
         yield emit_phase_event(
             phase_num=0,
             phase_name="DDL 처리",
@@ -950,7 +940,6 @@ async def run_ddl_processing(
     *,
     orchestrator: Any,
     client: Any,
-    cypher_lock: Any,
     ddl_schemas: set,
     ddl_table_metadata: dict,
     datasource_name: str = "",
@@ -959,10 +948,11 @@ async def run_ddl_processing(
 ) -> AsyncGenerator[bytes, None]:
     """DDL 파일 처리 공통 루프.
 
+    동시 쓰기 충돌은 ``client.run_batch_unwind`` 의 managed transaction 이 자동 재시도 처리.
+
     Args:
         orchestrator: 오케스트레이터 (dirs, datasource_name 등)
         client: Neo4j 클라이언트
-        cypher_lock: asyncio.Lock
         ddl_schemas: DDL에서 발견된 스키마 이름 set (in-place 수정)
         ddl_table_metadata: DDL 테이블 메타데이터 dict (in-place 수정)
         datasource_name: 데이터소스 이름
@@ -974,14 +964,14 @@ async def run_ddl_processing(
     """
     ddl_files = list_ddl_files(orchestrator)
     if not ddl_files:
-        yield emit_message(skip_message)
+        yield emit_user_message(skip_message)
         return
 
     ddl_dir = orchestrator.dirs.get("ddl", "")
     total_files = len(ddl_files)
     ds_name = datasource_name or orchestrator.datasource_name or ""
 
-    yield emit_message(f"📋 DDL 파일 {total_files}개 처리 시작")
+    yield emit_user_message(f"📋 DDL 파일 {total_files}개 처리 시작")
 
     for idx, fname in enumerate(ddl_files):
         ddl_path = os.path.join(ddl_dir, fname)
@@ -991,7 +981,7 @@ async def run_ddl_processing(
         if on_file_start:
             yield on_file_start(idx + 1, total_files, fname)
         else:
-            yield emit_message(f"  📄 [{idx + 1}/{total_files}] {fname}")
+            yield emit_user_message(f"  📄 [{idx + 1}/{total_files}] {fname}")
 
         try:
             async for chunk in process_ddl(
@@ -999,7 +989,6 @@ async def run_ddl_processing(
                 client=client,
                 file_name=fname,
                 orchestrator=orchestrator,
-                cypher_lock=cypher_lock,
                 ddl_schemas=ddl_schemas,
                 ddl_table_metadata=ddl_table_metadata,
                 emit_progress=True,
@@ -1011,11 +1000,11 @@ async def run_ddl_processing(
                     yield chunk
         except Exception as e:  # noqa: SILENT_FAIL — 한 DDL 파일 실패가 다른 파일 처리를 막지 않도록 errlog 후 다음 파일 진행
             logger.error("[PHASE:0:DDL] DDL 처리 실패 | file=%s error=%s", fname, e, exc_info=True)
-            yield emit_message(f"  ⚠️ DDL 처리 실패: {fname} ({str(e)[:60]})")
+            yield emit_user_message(f"  ⚠️ DDL 처리 실패: {fname} ({str(e)[:60]})")
 
         yield emit_phase_event(0, "DDL 처리", "running", file_end)
 
-    yield emit_message(f"✅ DDL 처리 완료 | schemas={len(ddl_schemas)} tables={len(ddl_table_metadata)}")
+    yield emit_user_message(f"✅ DDL 처리 완료 | schemas={len(ddl_schemas)} tables={len(ddl_table_metadata)}")
 
 
 __all__ = [

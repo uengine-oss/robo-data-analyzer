@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple, Set, Union
 
 from util.logger import log_process
 from util.code_text_utils import parse_table_identifier
+from analyzer.common.cypher.schema_resolver import resolve_schema
 from analyzer.common.pipeline.pipeline_control import pipeline_controller
 
 from analyzer.strategy.dbms.analysis.ast_collector import StatementCollector
@@ -38,20 +39,18 @@ from analyzer.strategy.dbms.common.domain.analysis_constants import (
     TABLE_RELATIONSHIP_MAP,
 )
 from analyzer.strategy.dbms.common.cypher.graph_queries import (
-    build_column_query,
-    build_create_temp_table_query,
-    build_dblink_query,
-    build_dml_table_relation_query,
-    build_fk_to_column_query,
-    build_fk_to_table_query,
-    build_has_procedure_query,
-    build_next_query,
-    build_node_to_table_rel_merge_str,
+    build_column_queries,
+    build_create_temp_table_queries,
+    build_dblink_queries,
+    build_dml_table_relation_queries,
+    build_fk_to_column_queries,
+    build_fk_to_table_queries,
+    build_has_procedure_queries,
+    build_next_queries,
     build_package_queries,
-    build_parent_of_query,
-    build_static_node_query,
-    build_summary_update_query,
-    build_table_merge,
+    build_parent_of_queries,
+    build_static_node_queries,
+    build_summary_update_queries,
 )
 from analyzer.strategy.dbms.common.domain.naming_helpers import build_statement_name
 from analyzer.strategy.dbms.common.models.node_models import (
@@ -157,7 +156,7 @@ class BaseAstProcessor(ABC):
 
     전략별로 오버라이드해야 하는 메서드:
     - _collect_nodes(): AST 수집
-    - _build_static_node_queries(): 정적 노드 쿼리 생성
+    - _static_node_item(): 정적 노드 1건의 UNWIND 입력 dict
     - _build_relationship_queries(): 관계 쿼리 생성
     - _invoke_llm(): LLM 호출
     - _build_analysis_queries(): 분석 결과 쿼리 변환
@@ -224,8 +223,11 @@ class BaseAstProcessor(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def _build_static_node_queries(self, node: StatementNode) -> List[Union[str, Dict[str, Any]]]:
-        """정적 노드 생성 쿼리 리스트를 반환합니다 (파라미터화된 Dict 포함)."""
+    def _static_node_item(self, node: StatementNode) -> Dict[str, Any]:
+        """정적 노드 1건의 UNWIND 입력 dict.
+
+        ``build_static_node_queries`` 가 label 별 그룹화 → label 별 1 UNWIND 쿼리 생성.
+        """
         raise NotImplementedError
 
     @abstractmethod
@@ -334,9 +336,10 @@ class BaseAstProcessor(ABC):
 
         queries: List[Union[str, Dict[str, Any]]] = []
 
-        # 1) 정적 노드 (FILE/TRIGGER/PROCEDURE/...) — FILE 노드 먼저 MERGE 되어야 BELONGS_TO_PACKAGE 가능
-        for node in self._nodes:
-            queries.extend(self._build_static_node_queries(node))
+        # 1) 정적 노드 (FILE/TRIGGER/PROCEDURE/...) — UNWIND, label 별 그룹화.
+        #    FILE 노드가 PACKAGE 관계 전에 MERGE 되어야 BELONGS_TO_PACKAGE 가능.
+        static_items = [self._static_node_item(node) for node in self._nodes]
+        queries.extend(build_static_node_queries(static_items))
 
         # 2) PACKAGE 노드 + FILE→PACKAGE BELONGS_TO_PACKAGE 관계
         #    (반드시 FILE 노드 MERGE 후 호출 — graph_queries.build_package_queries 의
@@ -704,30 +707,33 @@ class BaseAstProcessor(ABC):
         )
 
     # =========================================================================
-    # 공통 관계 쿼리 빌더 (graph_queries 위임)
+    # 공통 관계 빌더 — UNWIND row item 으로 누적용 (호출자가 list 모음 후 build_X_queries 1회)
     # =========================================================================
 
-    def _build_has_procedure_query(self, parent: "StatementNode", child: "StatementNode") -> Dict[str, Any]:
-        """HAS_PROCEDURE 관계 쿼리 (FILE → PROCEDURE/FUNCTION).
+    def _has_procedure_item(self, parent: "StatementNode", child: "StatementNode") -> Dict[str, Any]:
+        """HAS_PROCEDURE 관계용 row item (FILE → PROCEDURE/FUNCTION).
 
         MATCH 키 = `_node_match_name(node)` — MERGE 키와 동일 정책 (DbmsAstProcessor 가 override).
         """
-        return build_has_procedure_query(
-            parent_type=parent.node_type, parent_name=self._node_match_name(parent),
-            child_type=child.node_type, child_name=self._node_match_name(child),
-            full_directory=self.full_directory, file_name=self.file_name,
-        )
+        return {
+            "parent_type": parent.node_type,
+            "parent_name": self._node_match_name(parent),
+            "child_type":  child.node_type,
+            "child_name":  self._node_match_name(child),
+            "directory":   self.full_directory,
+            "file_name":   self.file_name,
+        }
 
-    def _build_parent_of_query(self, parent: "StatementNode", child: "StatementNode") -> Dict[str, Any]:
-        """PARENT_OF 관계 쿼리.
-
-        MATCH 키 = `_node_match_name(node)` — MERGE 키와 동일 정책.
-        """
-        return build_parent_of_query(
-            parent_type=parent.node_type, parent_name=self._node_match_name(parent),
-            child_type=child.node_type, child_name=self._node_match_name(child),
-            full_directory=self.full_directory, file_name=self.file_name,
-        )
+    def _parent_of_item(self, parent: "StatementNode", child: "StatementNode") -> Dict[str, Any]:
+        """PARENT_OF 관계용 row item."""
+        return {
+            "parent_type": parent.node_type,
+            "parent_name": self._node_match_name(parent),
+            "child_type":  child.node_type,
+            "child_name":  self._node_match_name(child),
+            "directory":   self.full_directory,
+            "file_name":   self.file_name,
+        }
 
     def _node_match_name(self, node: "StatementNode") -> str:
         """기본 구현 — DbmsAstProcessor 에서 override (DBMS 의 라벨별 name 정책).
@@ -754,8 +760,9 @@ class DbmsAstProcessor(BaseAstProcessor):
         locale: str,
         dbms: str,
         last_line: int,
-        default_schema: str,
+        own_schema: str,
         name_case: str,
+        name_to_schema: Dict[str, str],
         ddl_table_metadata: Optional[Dict[Tuple[str, str], Dict[str, Any]]] = None,
         ddl_table_index: Optional[Dict[str, Dict[str, Any]]] = None,
         ddl_pattern: Optional[Any] = None,  # re.Pattern
@@ -774,12 +781,12 @@ class DbmsAstProcessor(BaseAstProcessor):
 
         if not dbms:
             raise ValueError("dbms 필수 — 호출자(phase_ast)가 ctx.target 으로 전달")
-        if not default_schema:
-            raise ValueError("default_schema 필수 — 호출자(phase_ast)가 resolve_default_schema 결과로 전달")
         if not name_case:
             raise ValueError("name_case 필수 — service 진입점에서 검증된 값 전달")
+        # own_schema 는 빈값 허용 — schema_resolver 위계로 다음 fallback 단계 (DDL 매칭) 로 떨어짐.
         self.dbms = dbms.lower()
-        self.default_schema = default_schema
+        self.own_schema = (own_schema or "").strip()
+        self._name_to_schema = name_to_schema
         self._ddl_table_metadata = ddl_table_metadata or {}
         # Phase 0 에서 빌드된 ddl_table_index + ddl_pattern (Phase 2B dml_extract 의 ddl_context 주입에 사용)
         self._ddl_table_index = ddl_table_index or {}
@@ -799,17 +806,27 @@ class DbmsAstProcessor(BaseAstProcessor):
             return name.lower()
         return name
 
-    def _get_effective_schema(self, schema: Optional[str]) -> str:
-        """스키마가 없으면 default_schema 사용. default_schema 는 __init__ 에서 검증됨."""
-        return schema if schema else self.default_schema
+    def _get_effective_schema(self, schema: Optional[str], table_name: str = "") -> str:
+        """schema 결정 위계 (모든 전략 공통).
+
+        1) explicit schema (LLM 명시) → 그거
+        2) name_to_schema lookup (DDL 단일 매칭) → 그거
+        3) own_schema (PROCEDURE 자기 schema) → 그거
+        4) "" (빈값 — 강제 'public' X)
+        """
+        return resolve_schema(
+            explicit_schema=schema or "",
+            table_name=table_name,
+            name_to_schema=self._name_to_schema,
+            own_schema=self.own_schema,
+        )
 
     def _get_ddl_metadata(self, schema: Optional[str], table_name: str) -> Tuple[Dict[str, Any], bool]:
         """DDL 메타데이터 조회 및 대소문자 변환 여부 결정"""
-        effective_schema = self._get_effective_schema(schema)
-        ddl_lookup_key = (
-            (effective_schema.lower() if effective_schema else 'public'),
-            table_name.lower()
-        )
+        effective_schema = self._get_effective_schema(schema, table_name)
+        if not effective_schema or not table_name:
+            return {}, False
+        ddl_lookup_key = (effective_schema.lower(), table_name.lower())
         ddl_meta = self._ddl_table_metadata.get(ddl_lookup_key, {})
         skip_case_conversion = bool(ddl_meta and ddl_meta.get('original_name'))
         return ddl_meta, skip_case_conversion
@@ -817,13 +834,13 @@ class DbmsAstProcessor(BaseAstProcessor):
     def _resolve_table_name_with_ddl(self, schema_raw: Optional[str], name_raw: str) -> Tuple[str, str, bool]:
         """DDL 캐시를 고려하여 테이블명 정규화"""
         ddl_meta, skip_case_conversion = self._get_ddl_metadata(schema_raw, name_raw)
+        effective_schema = self._get_effective_schema(schema_raw, name_raw)
 
         if skip_case_conversion:
-            effective_schema = self._get_effective_schema(schema_raw)
             schema_part = ddl_meta.get('original_schema', self._apply_name_case(effective_schema))
             name_part = ddl_meta.get('original_name')
         else:
-            schema_part = self._apply_name_case(schema_raw) if schema_raw else self._apply_name_case(self.default_schema)
+            schema_part = self._apply_name_case(effective_schema)
             name_part = self._apply_name_case(name_raw)
 
         return schema_part, name_part, skip_case_conversion
@@ -891,7 +908,7 @@ class DbmsAstProcessor(BaseAstProcessor):
     def _node_match_name(self, node: StatementNode) -> str:
         """노드의 canonical match name — MERGE 키와 MATCH 키 양쪽에서 공유.
 
-        이 함수가 단일 source of truth: `_build_static_node_queries` 가 MERGE 시
+        이 함수가 단일 source of truth: `_static_node_item` 이 MERGE 시
         `name` 으로 SET 하고, 관계 빌더 (`_build_has_procedure_query` /
         `_build_parent_of_query` / `_build_next_query`) 가 같은 이름으로 MATCH.
         같은 라인 같은 라벨 형제 노드 (예: 함수 파라미터 ``f(a, b)``) 도 name 차이로
@@ -911,103 +928,98 @@ class DbmsAstProcessor(BaseAstProcessor):
             return node.name
         return build_statement_name(label, node.start_line)
 
-    def _build_static_node_queries(self, node: StatementNode) -> List[Union[str, Dict[str, Any]]]:
-        """정적 노드 생성 쿼리 생성"""
-        queries: List[Union[str, Dict[str, Any]]] = []
+    def _static_node_item(self, node: StatementNode) -> Dict[str, Any]:
+        """정적 노드 1건의 UNWIND 입력 dict.
+
+        ``build_static_node_queries`` 가 label 별 그룹 → ``MERGE (n:{label} {name, directory, file_name})``
+        + ``SET n.startLine = row.start_line, n += row.props`` 로 일괄 처리.
+
+        MERGE 키는 (label, name, directory, file_name) 단일 정책 — node_name 이 모든 노드의 unique 식별자.
+        """
         label = node.node_type
         # FILE 노드는 framework 의 MODULE 격 — frontend Navigator 가 PACKAGE 트리에서
         # 인식하려면 :MODULE 라벨이 필요. Cypher 의 멀티라벨로 양쪽 의미 보존.
         if label == "FILE":
             label = "MODULE:FILE"
-        node_name = self._node_match_name(node)
 
-        # --- 파라미터 구성 ---
-        params: Dict[str, Any] = {
-            "start_line": node.start_line,
-            "end_line": node.end_line,
-            "directory": self.full_directory,
-            "file_name": self.file_name,
-            "node_name": node_name,
-            "node_code": node.code,
-            "token": node.token,
+        props: Dict[str, Any] = {
+            "endLine":      node.end_line,
+            "node_code":    node.code,
+            "token":        node.token,
             "has_children": node.has_children,
         }
-
-        set_parts = [
-            "__cy_n__.endLine = $end_line",
-            "__cy_n__.name = $node_name",
-            "__cy_n__.node_code = $node_code",
-            "__cy_n__.token = $token",
-            "__cy_n__.has_children = $has_children",
-        ]
-
         if node.signature:
-            set_parts.append("__cy_n__.signature = $signature")
-            params["signature"] = node.signature
+            props["signature"] = node.signature
         if node.parameters:
-            set_parts.append("__cy_n__.parameters = $parameters")
-            params["parameters"] = node.parameters
+            props["parameters"] = node.parameters
         if node.variable_type:
-            set_parts.append("__cy_n__.variable_type = $variable_type")
-            params["variable_type"] = node.variable_type
+            props["variable_type"] = node.variable_type
         if node.init_value:
-            set_parts.append("__cy_n__.init_value = $init_value")
-            params["init_value"] = node.init_value
+            props["init_value"] = node.init_value
         if node.modifiers:
-            set_parts.append("__cy_n__.modifiers = $modifiers")
-            params["modifiers"] = node.modifiers
+            props["modifiers"] = node.modifiers
 
-        if label in PROCEDURE_TYPES and node.unit_name:
-            set_parts.append("__cy_n__.procedure_name = $procedure_name")
-            set_parts.append("__cy_n__.procedure_type = $procedure_type")
-            params["procedure_name"] = node.unit_name
-            params["procedure_type"] = label
+        if node.node_type in PROCEDURE_TYPES and node.unit_name:
+            props["procedure_name"] = node.unit_name
+            props["procedure_type"] = node.node_type
             if node.schema_name:
-                set_parts.append("__cy_n__.schema_name = $schema_name")
-                params["schema_name"] = node.schema_name
+                props["schema_name"] = node.schema_name
         elif node.unit_name:
-            set_parts.append("__cy_n__.procedure_name = $procedure_name")
-            params["procedure_name"] = node.unit_name
+            props["procedure_name"] = node.unit_name
             if node.schema_name:
-                set_parts.append("__cy_n__.schema_name = $schema_name")
-                params["schema_name"] = node.schema_name
+                props["schema_name"] = node.schema_name
 
         if node.has_children:
-            set_parts.append("__cy_n__.summarized_code = $summarized_code")
-            params["summarized_code"] = node.get_placeholder_code()
+            props["summarized_code"] = node.get_placeholder_code()
 
-        set_clause = ", ".join(set_parts)
-
-        # MERGE 키는 (label, name, directory, file_name) 단일 정책 — node_name 이 모든 노드의 unique 식별자.
-        queries.append(build_static_node_query(label=label, params=params, set_clause=set_clause))
-        return queries
+        return {
+            "label":      label,
+            "node_name":  self._node_match_name(node),
+            "directory":  self.full_directory,
+            "file_name":  self.file_name,
+            "start_line": node.start_line,
+            "props":      props,
+        }
 
     def _build_relationship_queries(self) -> List[Union[str, Dict[str, Any]]]:
-        """정적 관계 쿼리 생성 (HAS_PROCEDURE, PARENT_OF, NEXT)"""
-        queries: List[Union[str, Dict[str, Any]]] = []
+        """정적 관계 쿼리 생성 (HAS_PROCEDURE / PARENT_OF / NEXT) — UNWIND 통합.
+
+        items 누적 → 종류별 `build_X_queries` 1회 호출 → label 쌍별 1 UNWIND.
+        라운드트립: ~3N → ~ (label 쌍 수) 단위 (수십배 절감).
+        """
+        has_procedure_items: List[Dict[str, Any]] = []
+        parent_of_items: List[Dict[str, Any]] = []
+        next_items: List[Dict[str, Any]] = []
 
         for node in self._nodes or []:
             for child in node.children:
                 if node.node_type == "FILE" and child.node_type in PROCEDURE_TYPES:
-                    queries.append(self._build_has_procedure_query(node, child))
+                    has_procedure_items.append(self._has_procedure_item(node, child))
                 else:
-                    queries.append(self._build_parent_of_query(node, child))
+                    parent_of_items.append(self._parent_of_item(node, child))
 
             prev = None
             for child in node.children:
                 if prev:
-                    queries.append(self._build_next_query(prev, child))
+                    next_items.append(self._next_item(prev, child))
                 prev = child
 
+        queries: List[Union[str, Dict[str, Any]]] = []
+        queries.extend(build_has_procedure_queries(has_procedure_items))
+        queries.extend(build_parent_of_queries(parent_of_items))
+        queries.extend(build_next_queries(next_items))
         return queries
 
-    def _build_next_query(self, prev: StatementNode, current: StatementNode) -> Dict[str, Any]:
-        """NEXT 관계 쿼리 — MATCH 키 = `_node_match_name(node)` (MERGE 정책 일관)."""
-        return build_next_query(
-            prev_type=prev.node_type, prev_name=self._node_match_name(prev),
-            curr_type=current.node_type, curr_name=self._node_match_name(current),
-            full_directory=self.full_directory, file_name=self.file_name,
-        )
+    def _next_item(self, prev: "StatementNode", current: "StatementNode") -> Dict[str, Any]:
+        """NEXT 관계용 row item — MATCH 키 = `_node_match_name(node)` (MERGE 정책 일관)."""
+        return {
+            "prev_type": prev.node_type,
+            "prev_name": self._node_match_name(prev),
+            "curr_type": current.node_type,
+            "curr_name": self._node_match_name(current),
+            "directory": self.full_directory,
+            "file_name": self.file_name,
+        }
 
     async def _invoke_llm(self, batch: AnalysisBatch) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
         """LLM 호출 (일반 분석 + DML 분석)"""
@@ -1093,7 +1105,7 @@ class DbmsAstProcessor(BaseAstProcessor):
         llm_result: Any,
         unit_summary_store: Optional[Dict[str, Dict[str, str]]],
     ) -> List[Union[str, Dict[str, Any]]]:
-        """LLM 분석 결과를 쿼리로 변환"""
+        """LLM 분석 결과를 쿼리로 변환 — summary/table/column/dblink/fk 모두 UNWIND."""
         queries: List[Union[str, Dict[str, Any]]] = []
 
         # --- 결과 검증 ---
@@ -1102,54 +1114,51 @@ class DbmsAstProcessor(BaseAstProcessor):
 
         general_result, table_result = llm_result
 
-        # --- Summary 처리 ---
+        # --- Summary 처리 — items 누적 후 UNWIND 1회 ---
         general_result = self.validate_dict_result(
             general_result, "general_result", batch.batch_id, allow_none=True
         )
         if general_result:
             analysis_list = general_result.get("analysis") or []
+            summary_items: List[Dict[str, Any]] = []
             for node, analysis in zip(batch.nodes, analysis_list):
                 if not analysis:
                     continue
 
                 summary = analysis.get("summary") or ""
-                if summary:
-                    # actor 는 _apply_summary_to_nodes 에서 node.actor 로 저장됨 →
-                    # phase_summary 가 unit-root (FUNCTION/PROCEDURE/TRIGGER) 에 일괄 부착.
-                    # 자식 statement 별 ROLE 생성은 노이즈라 제거 (D4 fix).
-                    # node_name 은 _node_match_name 단일 정책 사용 (MERGE 키와 일관).
-                    node_name = self._node_match_name(node)
-                    queries.append(build_summary_update_query(
-                        node_type=node.node_type,
-                        params={
-                            "start_line": node.start_line,
-                            "end_line": node.end_line,
-                            "directory": self.full_directory,
-                            "file_name": self.file_name,
-                            "node_name": node_name,
-                            "summary": str(summary),
-                            "node_code": node.code,
-                            "token": node.token,
-                            "procedure_name": node.unit_name or "",
-                            "has_children": node.has_children,
-                        },
-                    ))
+                if not summary:
+                    continue
+                # actor 는 _apply_summary_to_nodes 에서 node.actor 로 저장됨 →
+                # phase_summary 가 unit-root (FUNCTION/PROCEDURE/TRIGGER) 에 일괄 부착.
+                # node_name 은 _node_match_name 단일 정책 사용 (MERGE 키와 일관).
+                summary_items.append({
+                    "node_type":      node.node_type,
+                    "start_line":     node.start_line,
+                    "end_line":       node.end_line,
+                    "directory":      self.full_directory,
+                    "file_name":      self.file_name,
+                    "node_name":      self._node_match_name(node),
+                    "summary":        str(summary),
+                    "node_code":      node.code,
+                    "token":          node.token,
+                    "procedure_name": node.unit_name or "",
+                    "has_children":   node.has_children,
+                })
 
-                    # unit_summary_store에는 리프 노드(자식이 없는 노드)만 저장
-                    # → 부모 노드 summary는 자식 내용을 이미 포함하므로 중복 제거
-                    # → procedure_summary 생성 시 스켈레톤+리프 방식으로 전달
-                    if unit_summary_store is not None and node.unit_key and node.unit_key in unit_summary_store:
-                        if not node.has_children:
-                            key = f"{node.node_type}_{node.start_line}_{node.end_line}"
-                            unit_summary_store[node.unit_key][key] = summary
+                # unit_summary_store 에는 리프 노드만 저장 (부모 summary 는 자식 포함이라 중복 제거)
+                if unit_summary_store is not None and node.unit_key and node.unit_key in unit_summary_store:
+                    if not node.has_children:
+                        key = f"{node.node_type}_{node.start_line}_{node.end_line}"
+                        unit_summary_store[node.unit_key][key] = summary
+
+            queries.extend(build_summary_update_queries(summary_items))
 
         # --- 테이블 처리 ---
         table_result = self.validate_dict_result(
             table_result, "table_result", batch.batch_id, allow_none=True
         )
         if table_result:
-            table_queries = self._build_table_queries(batch, table_result)
-            queries.extend(table_queries)
+            queries.extend(self._build_table_queries(batch, table_result))
 
         return queries
 
@@ -1162,12 +1171,26 @@ class DbmsAstProcessor(BaseAstProcessor):
         batch: AnalysisBatch,
         table_result: Dict[str, Any]
     ) -> List[Union[str, Dict[str, Any]]]:
-        """DML 테이블 분석 결과를 쿼리로 변환"""
-        queries: List[Union[str, Dict[str, Any]]] = []
+        """DML 테이블 분석 결과를 UNWIND 쿼리로 변환 — items 누적 후 종류별 1쿼리.
+
+        종류:
+          - CREATE_TEMP_TABLE → temp_items
+          - DML 노드 → :Table 관계 → dml_items (read/write 그룹)
+          - 컬럼 → column_items
+          - DBLink → dblink_items
+          - FK → fk_items (별도 함수에서 누적)
+        """
         node_map: Dict[Tuple[int, int], StatementNode] = {
             (node.start_line, node.end_line): node for node in batch.nodes
         }
         ranges = table_result.get('ranges', []) or []
+
+        temp_items: List[Dict[str, Any]] = []
+        dml_items: List[Dict[str, Any]] = []
+        column_items: List[Dict[str, Any]] = []
+        dblink_items: List[Dict[str, Any]] = []
+        fk_table_items: List[Dict[str, Any]] = []
+        fk_column_items: List[Dict[str, Any]] = []
 
         for range_entry in ranges:
             try:
@@ -1180,79 +1203,69 @@ class DbmsAstProcessor(BaseAstProcessor):
             if not node:
                 continue
 
-            node_match_params = {
-                "start_line": node.start_line,
-                "directory": self.full_directory,
-                "file_name": self.file_name,
-            }
+            tables = range_entry.get('tables', []) or []
 
             if node.node_type == 'CREATE_TEMP_TABLE':
-                queries.extend(self._process_create_temp_table(node, range_entry.get('tables', []), node_match_params))
+                self._collect_create_temp_table_items(node, tables, temp_items)
                 continue
 
-            queries.extend(self._process_dml_tables(node, range_entry.get('tables', []), node_match_params))
-            queries.extend(self._process_dblinks(node, range_entry.get('dbLinks', []), node_match_params))
-            queries.extend(self._process_fk_relations(range_entry.get('fkRelations', [])))
+            self._collect_dml_table_items(node, tables, dml_items, column_items)
+            self._collect_dblink_items(node, range_entry.get('dbLinks', []) or [], dblink_items)
+            self._collect_fk_items(range_entry.get('fkRelations', []) or [], fk_table_items, fk_column_items)
 
+        queries: List[Union[str, Dict[str, Any]]] = []
+        queries.extend(build_create_temp_table_queries(temp_items))
+        queries.extend(build_dml_table_relation_queries(dml_items))
+        queries.extend(build_column_queries(column_items))
+        queries.extend(build_dblink_queries(dblink_items))
+        queries.extend(build_fk_to_table_queries(fk_table_items))
+        queries.extend(build_fk_to_column_queries(fk_column_items))
         return queries
 
-    def _process_create_temp_table(
+    def _collect_create_temp_table_items(
         self,
         node: StatementNode,
         tables: List[Dict[str, Any]],
-        node_match_params: Dict[str, Any]
-    ) -> List[Union[str, Dict[str, Any]]]:
-        """CREATE_TEMP_TABLE 처리"""
-        queries: List[Union[str, Dict[str, Any]]] = []
-
+        out: List[Dict[str, Any]],
+    ) -> None:
         for entry in tables:
             table_name = (entry.get('table') or '').strip()
             if not table_name:
                 continue
-
             schema_part_raw, name_part_raw, _ = parse_table_identifier(table_name)
-            schema_part = self._apply_name_case(schema_part_raw or self.default_schema)
+            schema_part = self._apply_name_case(self._get_effective_schema(schema_part_raw, name_part_raw))
             name_part = self._apply_name_case(name_part_raw)
+            out.append({
+                "node_type":  node.node_type,
+                "start_line": node.start_line,
+                "directory":  self.full_directory,
+                "file_name":  self.file_name,
+                "name":       name_part,
+                "schema":     schema_part,
+                "db":         self.dbms,
+            })
 
-            queries.append(build_create_temp_table_query(
-                node_type=node.node_type,
-                params={
-                    **node_match_params,
-                    "name": name_part,
-                    "schema": schema_part,
-                    "db": self.dbms,
-                },
-            ))
-
-        return queries
-
-    def _process_dml_tables(
+    def _collect_dml_table_items(
         self,
         node: StatementNode,
         tables: List[Dict[str, Any]],
-        node_match_params: Dict[str, Any]
-    ) -> List[Union[str, Dict[str, Any]]]:
-        """일반 DML 테이블 처리"""
-        queries: List[Union[str, Dict[str, Any]]] = []
-        table_merge_cache: Dict[Tuple[str, str, bool], Dict[str, Any]] = {}
-
+        dml_out: List[Dict[str, Any]],
+        column_out: List[Dict[str, Any]],
+    ) -> None:
         for entry in tables:
             table_name = (entry.get('table') or '').strip()
             if not table_name:
                 continue
 
-            # --- 테이블 정규화 ---
             schema_part_raw, name_part_raw, db_link_value = parse_table_identifier(table_name)
             schema_part, name_part, skip_case_conversion = self._resolve_table_name_with_ddl(schema_part_raw, name_part_raw)
+            effective_schema = self._get_effective_schema(schema_part, name_part)
+            if not skip_case_conversion:
+                effective_schema = self._apply_name_case(effective_schema)
+                converted_name = self._apply_name_case(name_part)
+            else:
+                converted_name = name_part
 
-            cache_key = (name_part, schema_part, skip_case_conversion)
-            if cache_key not in table_merge_cache:
-                table_merge_cache[cache_key] = self._build_table_merge(
-                    name_part, schema_part, preserve_vars=['__cy_n__'], skip_case_conversion=skip_case_conversion
-                )
-            table_merge_result = table_merge_cache[cache_key]
-
-            # --- 관계 생성 ---
             access_mode_raw = entry.get('accessMode') or entry.get('mode')
             if not access_mode_raw:
                 raise RuntimeError(
@@ -1264,100 +1277,80 @@ class DbmsAstProcessor(BaseAstProcessor):
             table_desc_raw = entry.get('tableDescription') or entry.get('description') or ''
             bucket_key = self._record_table_summary(schema_part, name_part, table_desc_raw, skip_case_conversion=skip_case_conversion)
 
-            rel_merge_str = build_node_to_table_rel_merge_str(rel_types)
-            db_link_set = "\nSET __cy_t__.db_link = COALESCE(__cy_t__.db_link, $db_link)" if db_link_value else ""
+            dml_out.append({
+                "node_type":   node.node_type,
+                "start_line":  node.start_line,
+                "directory":   self.full_directory,
+                "file_name":   self.file_name,
+                "db":          self.dbms,
+                "schema_name": effective_schema,
+                "table_name":  converted_name,
+                "rel_types":   rel_types,
+                "db_link":     db_link_value or None,
+            })
 
-            params = {**node_match_params, **table_merge_result["params"]}
-            if db_link_value:
-                params["db_link"] = db_link_value
-
-            queries.append(build_dml_table_relation_query(
-                node_type=node.node_type,
-                table_merge_query=table_merge_result["query"],
-                rel_merge_str=rel_merge_str,
-                db_link_set=db_link_set,
-                params=params,
-            ))
-
-            # --- 컬럼 처리 ---
-            column_queries = self._process_table_columns(
-                entry.get('columns', []),
-                name_part,
-                schema_part,
+            self._collect_column_items(
+                entry.get('columns', []) or [],
+                converted_name,
+                effective_schema,
                 bucket_key,
-                skip_case_conversion
+                column_out,
             )
-            queries.extend(column_queries)
 
-        return queries
-
-    def _process_table_columns(
+    def _collect_column_items(
         self,
         columns: List[Dict[str, Any]],
-        table_name: str,
-        schema: str,
+        converted_table_name: str,
+        effective_schema: str,
         bucket_key: Tuple[str, str],
-        skip_case_conversion: bool
-    ) -> List[Union[str, Dict[str, Any]]]:
-        """컬럼 처리"""
-        queries: List[Union[str, Dict[str, Any]]] = []
-
-        table_merge_result = self._build_table_merge(table_name, schema, preserve_vars=None, skip_case_conversion=skip_case_conversion)
-        ddl_meta, _ = self._get_ddl_metadata(schema, table_name)
+        out: List[Dict[str, Any]],
+    ) -> None:
+        ddl_meta, _ = self._get_ddl_metadata(effective_schema, converted_table_name)
         ddl_columns = ddl_meta.get('columns', {}) if ddl_meta else {}
 
         for column in columns:
             column_name_raw = (column.get('name') or '').strip()
             if not column_name_raw:
                 continue
-
             column_name = self._resolve_column_name_with_ddl(column_name_raw, ddl_columns)
-
             raw_dtype = column.get('dtype') or ''
             raw_column_desc = (column.get('description') or column.get('comment') or '').strip()
+            nullable = column.get('nullable', True)
 
             self._record_column_summary(
                 bucket_key,
                 column_name,
                 raw_column_desc,
                 dtype=raw_dtype,
-                nullable=column.get('nullable', True),
+                nullable=nullable,
                 examples=column.get('examples') or [],
             )
 
-            converted_name_part = table_merge_result["converted_table_name"]
-            converted_schema_part = table_merge_result["effective_schema"]
             # DDL 과 fqn 형식 일치: datasource.schema.table.column (DDL handler 와 동일 규칙)
-            fqn = '.'.join(filter(None, [self.datasource_name, converted_schema_part, converted_name_part, column_name])).lower()
+            fqn = '.'.join(filter(None, [self.datasource_name, effective_schema, converted_table_name, column_name])).lower()
 
-            queries.append(build_column_query(
-                table_merge_query=table_merge_result["query"],
-                params={
-                    **table_merge_result["params"],
-                    "fqn": fqn,
-                    "col_name": column_name,
-                    "col_type": raw_dtype,
-                    "col_desc": raw_column_desc,
-                    "nullable": column.get('nullable', True),
-                },
-            ))
+            out.append({
+                "db":          self.dbms,
+                "schema_name": effective_schema,
+                "table_name":  converted_table_name,
+                "fqn":         fqn,
+                "col_name":    column_name,
+                "col_type":    raw_dtype,
+                "col_desc":    raw_column_desc,
+                "nullable":    nullable,
+            })
 
-        return queries
-
-    def _process_dblinks(
+    def _collect_dblink_items(
         self,
         node: StatementNode,
         db_links: List[Dict[str, Any]],
-        node_match_params: Dict[str, Any]
-    ) -> List[Union[str, Dict[str, Any]]]:
+        out: List[Dict[str, Any]],
+    ) -> None:
         """DBLink 처리. mode 누락 시 fail-fast (LLM 응답 검증)."""
-        queries: List[Union[str, Dict[str, Any]]] = []
-
         for link_item in db_links:
             link_name_raw = (link_item.get('name') or '').strip()
             if not link_name_raw:
                 continue
-
             mode_raw = link_item.get('mode')
             if not mode_raw:
                 raise RuntimeError(
@@ -1365,30 +1358,27 @@ class DbmsAstProcessor(BaseAstProcessor):
                 )
             mode = mode_raw.lower()
             schema_link_raw, name_link_raw, link_name = parse_table_identifier(link_name_raw)
-            schema_link = self._apply_name_case(schema_link_raw or self.default_schema)
+            schema_link = self._apply_name_case(self._get_effective_schema(schema_link_raw, name_link_raw))
             name_link = self._apply_name_case(name_link_raw)
-            remote_merge_result = self._build_table_merge(name_link, schema_link)
+            out.append({
+                "node_type":   node.node_type,
+                "start_line":  node.start_line,
+                "directory":   self.full_directory,
+                "file_name":   self.file_name,
+                "db":          self.dbms,
+                "schema_name": schema_link,
+                "table_name":  name_link,
+                "link_name":   link_name,
+                "mode":        mode,
+            })
 
-            queries.append(build_dblink_query(
-                node_type=node.node_type,
-                remote_table_merge_query=remote_merge_result["query"],
-                params={
-                    **remote_merge_result["params"],
-                    **node_match_params,
-                    "link_name": link_name,
-                    "mode": mode,
-                },
-            ))
-
-        return queries
-
-    def _process_fk_relations(
+    def _collect_fk_items(
         self,
-        fk_relations: List[Dict[str, Any]]
-    ) -> List[Union[str, Dict[str, Any]]]:
-        """FK 관계 처리 (FK_TO_TABLE과 FK_TO를 한 번의 루프에서 생성)"""
-        queries: List[Union[str, Dict[str, Any]]] = []
-
+        fk_relations: List[Dict[str, Any]],
+        fk_table_out: List[Dict[str, Any]],
+        fk_column_out: List[Dict[str, Any]],
+    ) -> None:
+        """FK 관계 → FK_TO_TABLE / FK_TO_COLUMN items 누적."""
         for relation in fk_relations:
             src_table = (relation.get('sourceTable') or '').strip()
             tgt_table = (relation.get('targetTable') or '').strip()
@@ -1404,51 +1394,35 @@ class DbmsAstProcessor(BaseAstProcessor):
             src_schema, src_name, _ = self._resolve_table_name_with_ddl(src_schema_raw, src_name_raw)
             tgt_schema, tgt_name, _ = self._resolve_table_name_with_ddl(tgt_schema_raw, tgt_name_raw)
 
-            effective_src_schema = src_schema or self._apply_name_case(self.default_schema)
-            effective_tgt_schema = tgt_schema or self._apply_name_case(self.default_schema)
+            effective_src_schema = src_schema or self._apply_name_case(
+                self._get_effective_schema("", src_name)
+            )
+            effective_tgt_schema = tgt_schema or self._apply_name_case(
+                self._get_effective_schema("", tgt_name)
+            )
 
             for src_col, tgt_col in zip(src_columns, tgt_columns):
                 converted_src_col = self._apply_name_case(src_col)
                 converted_tgt_col = self._apply_name_case(tgt_col)
 
-                queries.append(build_fk_to_table_query(params={
+                fk_table_out.append({
                     "src_schema": effective_src_schema,
-                    "src_name": src_name,
+                    "src_name":   src_name,
                     "tgt_schema": effective_tgt_schema,
-                    "tgt_name": tgt_name,
-                    "db": self.dbms,
-                    "src_col": converted_src_col,
-                    "tgt_col": converted_tgt_col,
-                }))
+                    "tgt_name":   tgt_name,
+                    "db":         self.dbms,
+                    "src_col":    converted_src_col,
+                    "tgt_col":    converted_tgt_col,
+                })
 
                 src_fqn = '.'.join(filter(None, [self.datasource_name, effective_src_schema, src_name, converted_src_col])).lower()
                 tgt_fqn = '.'.join(filter(None, [self.datasource_name, effective_tgt_schema, tgt_name, converted_tgt_col])).lower()
 
-                queries.append(build_fk_to_column_query(params={
-                    "src_fqn": src_fqn,
-                    "tgt_fqn": tgt_fqn,
-                }))
-
-        return queries
-
-    def _build_table_merge(self, table_name: str, schema: Optional[str], preserve_vars: Optional[List[str]] = None, skip_case_conversion: bool = False) -> Dict[str, Any]:
-        """테이블 MERGE 쿼리 (graph_queries 위임). name_case 변환은 self 의존이라 여기서 수행."""
-        effective_schema = self._get_effective_schema(schema)
-        if not skip_case_conversion:
-            effective_schema = self._apply_name_case(effective_schema)
-            converted_table_name = self._apply_name_case(table_name)
-        else:
-            converted_table_name = table_name
-        return build_table_merge(
-            table_name=converted_table_name,
-            effective_schema=effective_schema,
-            db=self.dbms,
-            preserve_vars=preserve_vars,
-        )
+                fk_column_out.append({"src_fqn": src_fqn, "tgt_fqn": tgt_fqn})
 
     def _record_table_summary(self, schema: Optional[str], name: str, description: Optional[str], skip_case_conversion: bool = False) -> Tuple[str, str]:
         """테이블 설명 누적"""
-        effective_schema = self._get_effective_schema(schema)
+        effective_schema = self._get_effective_schema(schema, name)
 
         if skip_case_conversion:
             schema_key = effective_schema

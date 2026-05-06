@@ -25,9 +25,9 @@ from analyzer.strategy.dbms.common.domain.analysis_constants import (
     PROCEDURE_TYPES,
 )
 from analyzer.strategy.dbms.common.cypher.graph_queries import (
-    build_calls_external_pkg_query,
-    build_calls_external_placeholder_query,
-    build_calls_internal_query,
+    build_calls_external_pkg_queries,
+    build_calls_external_placeholder_queries,
+    build_calls_internal_queries,
 )
 from analyzer.strategy.dbms.common.models.node_models import StatementNode
 
@@ -65,15 +65,9 @@ def build_calls_queries(
     full_directory: str,
     file_name: str,
 ) -> List[Dict[str, Any]]:
-    """CALLS 관계 쿼리 리스트 생성.
+    """CALLS 관계 쿼리 리스트 생성 — UNWIND 통합 (3 종류 × src label 별 그룹).
 
-    Args:
-        nodes: Phase 1 에서 수집된 StatementNode 리스트
-        full_directory: 파일 full path (디렉토리/파일명)
-        file_name: 파일명
-
-    Returns:
-        Neo4j 쿼리 dict 리스트
+    종류별로 items 누적 후 1번씩 build_calls_*_queries 호출.
     """
     if not nodes:
         return []
@@ -81,8 +75,12 @@ def build_calls_queries(
     # 같은 파일 내 PROCEDURE/FUNCTION 이름 수집 (internal 판정용)
     internal_names = _collect_internal_names(nodes)
 
-    queries: List[Dict[str, Any]] = []
+    pkg_items: List[Dict[str, Any]] = []
+    internal_items: List[Dict[str, Any]] = []
+    placeholder_items: List[Dict[str, Any]] = []
+
     total_callers = 0
+    edge_count = 0
     for node in nodes:
         if not _is_call_candidate(node):
             continue
@@ -93,13 +91,28 @@ def build_calls_queries(
         for pkg, name in callees:
             if pkg and pkg.upper() in DBMS_SYSTEM_PACKAGES:
                 continue
-            queries.append(
-                _build_calls_query(node, pkg, name, internal_names, full_directory, file_name)
-            )
+            edge_count += 1
+            base = {
+                "src_node_type": node.node_type,
+                "src_line":      node.start_line,
+                "directory":     full_directory,
+                "file_name":     file_name,
+            }
+            if pkg is not None:
+                pkg_items.append({**base, "pkg": pkg, "proc_name": name})
+            elif name in internal_names:
+                internal_items.append({**base, "proc_name": name})
+            else:
+                placeholder_items.append({**base, "proc_name": name})
+
+    queries: List[Dict[str, Any]] = []
+    queries.extend(build_calls_external_pkg_queries(pkg_items))
+    queries.extend(build_calls_internal_queries(internal_items))
+    queries.extend(build_calls_external_placeholder_queries(placeholder_items))
 
     logger.info(
-        "[CALL_LINKER] AST 결정론 CALLS 쿼리 생성 | callers=%d edges=%d",
-        total_callers, len(queries),
+        "[CALL_LINKER] AST 결정론 CALLS 쿼리 생성 | callers=%d edges=%d unwind_queries=%d",
+        total_callers, edge_count, len(queries),
     )
     return queries
 
@@ -161,33 +174,3 @@ def _collect_internal_names(nodes: List[StatementNode]) -> Set[str]:
     return names
 
 
-def _build_calls_query(
-    src_node: StatementNode,
-    pkg: Optional[str],
-    name: str,
-    internal_names: Set[str],
-    full_directory: str,
-    file_name: str,
-) -> Dict[str, Any]:
-    """단일 CALLS 쿼리 생성. graph_queries 빌더에 위임.
-
-    PKG.FUNC 형식은 항상 external (외부 패키지).
-    bare FUNC 는 internal_names 에 있으면 internal, 없으면 external placeholder.
-    """
-    if pkg is not None:
-        return build_calls_external_pkg_query(
-            src_node_type=src_node.node_type, src_line=src_node.start_line,
-            pkg=pkg, proc_name=name,
-            full_directory=full_directory, file_name=file_name,
-        )
-    if name in internal_names:
-        return build_calls_internal_query(
-            src_node_type=src_node.node_type, src_line=src_node.start_line,
-            proc_name=name,
-            full_directory=full_directory, file_name=file_name,
-        )
-    return build_calls_external_placeholder_query(
-        src_node_type=src_node.node_type, src_line=src_node.start_line,
-        proc_name=name,
-        full_directory=full_directory, file_name=file_name,
-    )

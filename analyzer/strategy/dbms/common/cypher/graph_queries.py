@@ -11,7 +11,7 @@ DBMS anchor 형태로 wrapping 해서 호출.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from analyzer.common.pipeline.example_mapping import EmBatch, build_em_queries
 
@@ -137,48 +137,56 @@ def build_procedure_summary_queries(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-TABLE_DESCRIPTION_UPDATE_QUERY = (
-    "MATCH (__cy_t__:Table {schema: $schema, name: $name, db: $db}) "
-    "SET __cy_t__.analyzed_description = $llm_desc "
-    "WITH __cy_t__ "
-    "WHERE __cy_t__.description IS NULL OR __cy_t__.description = '' "
-    "SET __cy_t__.description = $llm_desc, __cy_t__.description_source = 'code' "
-    "RETURN __cy_t__"
-)
-
-COLUMN_DESCRIPTION_UPDATE_QUERY = (
-    "MATCH (__cy_c__:Column {fqn: $fqn}) "
-    "SET __cy_c__.analyzed_description = $llm_desc "
-    "WITH __cy_c__ "
-    "WHERE __cy_c__.description IS NULL OR __cy_c__.description = '' "
-    "SET __cy_c__.description = $llm_desc, __cy_c__.description_source = 'code' "
-    "RETURN __cy_c__"
+_TABLE_DESCRIPTION_UNWIND = (
+    "UNWIND $items AS row\n"
+    "MATCH (__cy_t__:Table {schema: row.schema, name: row.name, db: row.db})\n"
+    "SET __cy_t__.analyzed_description = row.llm_desc\n"
+    "WITH __cy_t__, row\n"
+    "WHERE __cy_t__.description IS NULL OR __cy_t__.description = ''\n"
+    "SET __cy_t__.description = row.llm_desc, __cy_t__.description_source = 'code'"
 )
 
 
-def build_table_description_query(
-    *, schema: str, name: str, db: str, llm_desc: str
-) -> Dict[str, Any]:
-    """:Table 노드의 설명(description/analyzed_description) 보강 쿼리."""
-    return {
-        "query": TABLE_DESCRIPTION_UPDATE_QUERY,
-        "params": {"schema": schema, "name": name, "db": db, "llm_desc": llm_desc},
-    }
+_COLUMN_DESCRIPTION_UNWIND = (
+    "UNWIND $items AS row\n"
+    "MATCH (__cy_c__:Column {fqn: row.fqn})\n"
+    "SET __cy_c__.analyzed_description = row.llm_desc\n"
+    "WITH __cy_c__, row\n"
+    "WHERE __cy_c__.description IS NULL OR __cy_c__.description = ''\n"
+    "SET __cy_c__.description = row.llm_desc, __cy_c__.description_source = 'code'"
+)
 
 
-def build_column_description_query(
-    *, datasource: str, schema: str, table_name: str, column_name: str, llm_desc: str
-) -> Dict[str, Any]:
-    """:Column 노드의 설명(description/analyzed_description) 보강 쿼리.
+def build_table_description_queries(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """:Table 노드의 설명 보강 (UNWIND 단일 쿼리).
 
+    items: 각 dict 에 ``{"schema", "name", "db", "llm_desc"}``.
+    """
+    if not items:
+        return []
+    return [{"query": _TABLE_DESCRIPTION_UNWIND, "params": {"items": items}}]
+
+
+def build_column_description_queries(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """:Column 노드의 설명 보강 (UNWIND 단일 쿼리).
+
+    items: 각 dict 에 ``{"datasource", "schema", "table_name", "column_name", "llm_desc"}``.
     fqn 은 lower case 의 ``datasource.schema.table.column`` 4-part 형식
     (DDL handler 와 동일 규칙 — datasource 빠지면 MATCH 실패).
     """
-    fqn = ".".join(filter(None, [datasource, schema, table_name, column_name])).lower()
-    return {
-        "query": COLUMN_DESCRIPTION_UPDATE_QUERY,
-        "params": {"fqn": fqn, "llm_desc": llm_desc},
-    }
+    if not items:
+        return []
+    rows = [
+        {
+            "fqn": ".".join(filter(None, [
+                it.get("datasource", ""), it.get("schema", ""),
+                it.get("table_name", ""), it.get("column_name", ""),
+            ])).lower(),
+            "llm_desc": it.get("llm_desc", ""),
+        }
+        for it in items
+    ]
+    return [{"query": _COLUMN_DESCRIPTION_UNWIND, "params": {"items": rows}}]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -218,115 +226,85 @@ def build_package_queries(*, directory: str, full_directory: str, file_name: str
     ]
 
 
-def build_has_procedure_query(
-    *,
-    parent_type: str, parent_name: str,
-    child_type: str, child_name: str,
-    full_directory: str, file_name: str,
-) -> Dict[str, Any]:
-    """(FILE)-[:HAS_PROCEDURE]->(PROCEDURE/FUNCTION) 관계 쿼리.
+def _build_label_pair_rel_unwind(rel_type: str, src_var: str, dst_var: str, src_name_field: str, dst_name_field: str) -> str:
+    """관계 MERGE UNWIND 쿼리 생성 (label 동적 — `(parent_label, child_label)` 별 그룹).
 
-    MATCH 키 = (label, name, directory, file_name) — `build_static_node_query` 의
-    MERGE 키와 동일 정책. 같은 라인 같은 라벨 노드 여럿 있어도 카테시안 방지.
+    label 은 Cypher 변수로 못 쓰므로 호출자가 그룹 단위로 같은 label pair 의 items 를 모음.
+    src_name_field, dst_name_field: row 안의 src/dst 이름 필드명 (예: parent_name, child_name).
     """
-    return {
-        "query": (
-            f"MATCH (__cy_p__:{parent_type} {{name: $parent_name, directory: $directory, file_name: $file_name}})\n"
-            f"MATCH (__cy_c__:{child_type} {{name: $child_name, directory: $directory, file_name: $file_name}})\n"
-            "MERGE (__cy_p__)-[__cy_r__:HAS_PROCEDURE]->(__cy_c__)\n"
-            "RETURN __cy_r__"
-        ),
-        "params": {
-            "parent_name": parent_name, "child_name": child_name,
-            "directory": full_directory, "file_name": file_name,
-        },
-    }
+    return (
+        f"UNWIND $rows AS row\n"
+        f"MATCH ({src_var} {{name: row.{src_name_field}, directory: row.directory, file_name: row.file_name}})\n"
+        f"MATCH ({dst_var} {{name: row.{dst_name_field}, directory: row.directory, file_name: row.file_name}})\n"
+        f"MERGE ({src_var})-[:{rel_type}]->({dst_var})"
+    )
 
 
-def build_parent_of_query(
+def _emit_label_pair_rel_queries(
+    items: List[Dict[str, Any]],
     *,
-    parent_type: str, parent_name: str,
-    child_type: str, child_name: str,
-    full_directory: str, file_name: str,
-) -> Dict[str, Any]:
-    """(parent)-[:PARENT_OF]->(child) 관계 쿼리.
+    src_label_field: str, dst_label_field: str,
+    src_name_field: str, dst_name_field: str,
+    rel_type: str,
+) -> List[Dict[str, Any]]:
+    """(src_label, dst_label) 별로 UNWIND 그룹화. 라벨 쌍별 1쿼리.
 
-    MATCH 키 = (label, name, directory, file_name) — MERGE 키와 동일 정책.
+    items: 각 dict 에 src/dst label/name + directory + file_name.
     """
-    return {
-        "query": (
-            f"MATCH (__cy_p__:{parent_type} {{name: $parent_name, directory: $directory, file_name: $file_name}})\n"
-            f"MATCH (__cy_c__:{child_type} {{name: $child_name, directory: $directory, file_name: $file_name}})\n"
-            "MERGE (__cy_p__)-[__cy_r__:PARENT_OF]->(__cy_c__)\n"
-            "RETURN __cy_r__"
-        ),
-        "params": {
-            "parent_name": parent_name, "child_name": child_name,
-            "directory": full_directory, "file_name": file_name,
-        },
-    }
+    if not items:
+        return []
+    groups: Dict[tuple, List[Dict[str, Any]]] = {}
+    for it in items:
+        key = (it[src_label_field], it[dst_label_field])
+        groups.setdefault(key, []).append({
+            src_name_field: it[src_name_field],
+            dst_name_field: it[dst_name_field],
+            "directory": it["directory"],
+            "file_name": it["file_name"],
+        })
+    queries: List[Dict[str, Any]] = []
+    for (src_label, dst_label), rows in groups.items():
+        src_var = f"a:{src_label}"
+        dst_var = f"b:{dst_label}"
+        query = _build_label_pair_rel_unwind(rel_type, src_var, dst_var, src_name_field, dst_name_field)
+        queries.append({"query": query, "params": {"rows": rows}})
+    return queries
 
 
-def build_next_query(
-    *,
-    prev_type: str, prev_name: str,
-    curr_type: str, curr_name: str,
-    full_directory: str, file_name: str,
-) -> Dict[str, Any]:
-    """(prev)-[:NEXT]->(curr) 관계 쿼리 (형제 노드 순서).
+def build_has_procedure_queries(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """(FILE)-[:HAS_PROCEDURE]->(PROCEDURE/FUNCTION) 관계 — UNWIND, label 쌍별 그룹.
 
-    MATCH 키 = (label, name, directory, file_name) — MERGE 키와 동일 정책.
-    같은 라인 같은 라벨 형제 (예: 함수 파라미터 ``f(a, b)``) 가 있어도
-    name 으로 정확히 1:1 매치 → 카테시안 곱 방지.
+    items: 각 dict 에 ``{parent_type, parent_name, child_type, child_name, directory, file_name}``.
     """
-    return {
-        "query": (
-            f"MATCH (__cy_prev__:{prev_type} {{name: $prev_name, directory: $directory, file_name: $file_name}})\n"
-            f"MATCH (__cy_curr__:{curr_type} {{name: $curr_name, directory: $directory, file_name: $file_name}})\n"
-            "MERGE (__cy_prev__)-[__cy_r__:NEXT]->(__cy_curr__)\n"
-            "RETURN __cy_r__"
-        ),
-        "params": {
-            "prev_name": prev_name, "curr_name": curr_name,
-            "directory": full_directory, "file_name": file_name,
-        },
-    }
+    return _emit_label_pair_rel_queries(
+        items,
+        src_label_field="parent_type", dst_label_field="child_type",
+        src_name_field="parent_name", dst_name_field="child_name",
+        rel_type="HAS_PROCEDURE",
+    )
 
 
-def build_table_merge(
-    *,
-    table_name: str,           # name_case 변환 후
-    effective_schema: str,     # name_case 변환 후
-    db: str,
-    preserve_vars: Optional[List[str]] = None,
-) -> Dict[str, Any]:
-    """:Table + :Schema 노드 MERGE + BELONGS_TO 관계.
+def build_parent_of_queries(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """(parent)-[:PARENT_OF]->(child) 관계 — UNWIND, label 쌍별 그룹."""
+    return _emit_label_pair_rel_queries(
+        items,
+        src_label_field="parent_type", dst_label_field="child_type",
+        src_name_field="parent_name", dst_name_field="child_name",
+        rel_type="PARENT_OF",
+    )
 
-    Returns dict 에 ``effective_schema`` / ``converted_table_name`` 키도 포함 — 호출자가
-    후속 쿼리에서 같은 키 값을 재사용하기 편하도록.
 
-    Args:
-        preserve_vars: WITH 절에 같이 끌고갈 변수 이름들 (예: ``["__cy_n__"]``).
+def build_next_queries(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """(prev)-[:NEXT]->(curr) 관계 — UNWIND, label 쌍별 그룹.
+
+    items: 각 dict 에 ``{prev_type, prev_name, curr_type, curr_name, directory, file_name}``.
     """
-    if preserve_vars:
-        with_vars = ", ".join(list(preserve_vars) + ["__cy_s__"])
-    else:
-        with_vars = "__cy_s__"
-    return {
-        "query": (
-            "MERGE (__cy_s__:Schema {db: $db, name: $schema_name})\n"
-            f"WITH {with_vars}\n"
-            "MERGE (__cy_t__:Table {name: $table_name, schema: $schema_name, db: $db})\n"
-            "MERGE (__cy_t__)-[:BELONGS_TO]->(__cy_s__)"
-        ),
-        "params": {
-            "db": db,
-            "schema_name": effective_schema,
-            "table_name": table_name,
-        },
-        "effective_schema": effective_schema,
-        "converted_table_name": table_name,
-    }
+    return _emit_label_pair_rel_queries(
+        items,
+        src_label_field="prev_type", dst_label_field="curr_type",
+        src_name_field="prev_name", dst_name_field="curr_name",
+        rel_type="NEXT",
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -334,131 +312,161 @@ def build_table_merge(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def build_calls_external_pkg_query(
-    *,
-    src_node_type: str, src_line: int,
-    pkg: str, proc_name: str,
-    full_directory: str, file_name: str,
-) -> Dict[str, Any]:
-    """``PKG.FUNC()`` 형태의 외부 패키지 호출 → CALLS {scope: 'external'}."""
-    return {
-        "query": (
-            f"MATCH (src:{src_node_type} {{startLine: $src_line, directory: $directory, file_name: $file_name}})\n"
-            "MERGE (tgt:PROCEDURE {directory: $pkg_dir, procedure_name: $proc_name})\n"
-            "MERGE (src)-[r:CALLS {scope: 'external'}]->(tgt)\n"
-            "RETURN src, tgt, r"
-        ),
-        "params": {
-            "src_line": src_line,
-            "directory": full_directory,
-            "file_name": file_name,
-            "pkg_dir": pkg,
-            "proc_name": proc_name,
-        },
-    }
-
-
-def build_calls_internal_query(
-    *,
-    src_node_type: str, src_line: int,
-    proc_name: str,
-    full_directory: str, file_name: str,
-) -> Dict[str, Any]:
-    """같은 파일 내 PROCEDURE/FUNCTION 호출 → CALLS {scope: 'internal'}."""
-    return {
-        "query": (
-            f"MATCH (src:{src_node_type} {{startLine: $src_line, directory: $directory, file_name: $file_name}})\n"
-            "OPTIONAL MATCH (tgt {procedure_name: $proc_name, directory: $directory, file_name: $file_name})\n"
-            "WHERE tgt:PROCEDURE OR tgt:FUNCTION\n"
-            "WITH src, tgt\n"
+def _calls_unwind(src_label: str, tgt_clause: str, scope: str, optional_match: bool = False) -> str:
+    """CALLS 관계 UNWIND 쿼리 생성. tgt_clause = MERGE/MATCH 절 (다양한 패턴)."""
+    base = (
+        "UNWIND $rows AS row\n"
+        f"MATCH (src:{src_label} {{startLine: row.src_line, directory: row.directory, file_name: row.file_name}})\n"
+    )
+    if optional_match:
+        return (
+            base
+            + tgt_clause
+            + "\nWITH src, tgt\n"
             "FOREACH (_ IN CASE WHEN tgt IS NOT NULL THEN [1] ELSE [] END |\n"
-            "  MERGE (src)-[:CALLS {scope: 'internal'}]->(tgt)\n"
-            ")\n"
-            "RETURN src"
-        ),
-        "params": {
-            "src_line": src_line,
-            "directory": full_directory,
-            "file_name": file_name,
-            "proc_name": proc_name,
-        },
-    }
+            f"  MERGE (src)-[:CALLS {{scope: '{scope}'}}]->(tgt)\n"
+            ")"
+        )
+    return (
+        base
+        + tgt_clause
+        + f"\nMERGE (src)-[r:CALLS {{scope: '{scope}'}}]->(tgt)"
+    )
 
 
-def build_calls_external_placeholder_query(
-    *,
-    src_node_type: str, src_line: int,
-    proc_name: str,
-    full_directory: str, file_name: str,
-) -> Dict[str, Any]:
-    """파일 외 미해상 호출 → EXTERNAL placeholder + CALLS."""
-    return {
-        "query": (
-            f"MATCH (src:{src_node_type} {{startLine: $src_line, directory: $directory, file_name: $file_name}})\n"
-            "MERGE (tgt:PROCEDURE:EXTERNAL {procedure_name: $proc_name})\n"
-            "MERGE (src)-[r:CALLS {scope: 'external'}]->(tgt)\n"
-            "RETURN src, tgt, r"
-        ),
-        "params": {
-            "src_line": src_line,
-            "directory": full_directory,
-            "file_name": file_name,
-            "proc_name": proc_name,
-        },
-    }
+def build_calls_external_pkg_queries(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """``PKG.FUNC()`` 외부 패키지 호출 → CALLS {scope: 'external'}. UNWIND, src label 별 그룹.
 
-
-def build_references_query(
-    *,
-    src_node_type: str, src_line: int,
-    var_name: str,
-    full_directory: str, file_name: str,
-) -> Dict[str, Any]:
-    """변수명 토큰 매칭 → (node)-[:REFERENCES]->(:VARIABLE | :PACKAGE_VARIABLE | :CONSTANT_FIELD)."""
-    return {
-        "query": (
-            f"MATCH (n:{src_node_type} {{startLine: $n_line, directory: $directory, file_name: $file_name}})\n"
-            "MATCH (v {name: $var_name, directory: $directory, file_name: $file_name})\n"
-            "WHERE v:VARIABLE OR v:PACKAGE_VARIABLE OR v:CONSTANT_FIELD OR v:PARAMETER\n"
-            "MERGE (n)-[:REFERENCES]->(v)\n"
-            "RETURN n, v"
-        ),
-        "params": {
-            "n_line": src_line,
-            "var_name": var_name,
-            "directory": full_directory,
-            "file_name": file_name,
-        },
-    }
-
-
-def build_init_by_query(
-    *,
-    src_name: str, src_line: int,
-    target_name: str,
-    full_directory: str, file_name: str,
-) -> Dict[str, Any]:
-    """초기화식 식별자 매칭 → (:VARIABLE)-[:INIT_BY]->(:VARIABLE | :PACKAGE_VARIABLE | :CONSTANT_FIELD).
-
-    src 는 init_value 가 단순 식별자인 VARIABLE.
-    target 은 같은 파일 내 동일 이름 variable-like 노드.
+    items: ``{src_node_type, src_line, pkg, proc_name, directory, file_name}``.
     """
-    return {
-        "query": (
-            "MATCH (s:VARIABLE {name: $src_name, startLine: $src_line, directory: $directory, file_name: $file_name})\n"
-            "MATCH (t {name: $target_name, directory: $directory, file_name: $file_name})\n"
-            "WHERE t:VARIABLE OR t:PACKAGE_VARIABLE OR t:CONSTANT_FIELD OR t:PARAMETER\n"
-            "MERGE (s)-[:INIT_BY]->(t)\n"
-            "RETURN s, t"
-        ),
-        "params": {
-            "src_name": src_name,
-            "src_line": src_line,
-            "target_name": target_name,
-            "directory": full_directory,
-            "file_name": file_name,
-        },
-    }
+    if not items:
+        return []
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for it in items:
+        groups.setdefault(it["src_node_type"], []).append({
+            "src_line":  it["src_line"],
+            "directory": it["directory"],
+            "file_name": it["file_name"],
+            "pkg_dir":   it["pkg"],
+            "proc_name": it["proc_name"],
+        })
+    queries: List[Dict[str, Any]] = []
+    for src_label, rows in groups.items():
+        tgt = "MERGE (tgt:PROCEDURE {directory: row.pkg_dir, procedure_name: row.proc_name})"
+        queries.append({
+            "query": _calls_unwind(src_label, tgt, "external", optional_match=False),
+            "params": {"rows": rows},
+        })
+    return queries
+
+
+def build_calls_internal_queries(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """같은 파일 내 PROCEDURE/FUNCTION 호출 → CALLS {scope: 'internal'}. UNWIND, src label 별 그룹.
+
+    items: ``{src_node_type, src_line, proc_name, directory, file_name}``.
+    """
+    if not items:
+        return []
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for it in items:
+        groups.setdefault(it["src_node_type"], []).append({
+            "src_line":  it["src_line"],
+            "directory": it["directory"],
+            "file_name": it["file_name"],
+            "proc_name": it["proc_name"],
+        })
+    queries: List[Dict[str, Any]] = []
+    for src_label, rows in groups.items():
+        tgt = (
+            "OPTIONAL MATCH (tgt {procedure_name: row.proc_name, directory: row.directory, file_name: row.file_name})\n"
+            "WHERE tgt:PROCEDURE OR tgt:FUNCTION"
+        )
+        queries.append({
+            "query": _calls_unwind(src_label, tgt, "internal", optional_match=True),
+            "params": {"rows": rows},
+        })
+    return queries
+
+
+def build_calls_external_placeholder_queries(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """파일 외 미해상 호출 → EXTERNAL placeholder + CALLS. UNWIND, src label 별 그룹.
+
+    items: ``{src_node_type, src_line, proc_name, directory, file_name}``.
+    """
+    if not items:
+        return []
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for it in items:
+        groups.setdefault(it["src_node_type"], []).append({
+            "src_line":  it["src_line"],
+            "directory": it["directory"],
+            "file_name": it["file_name"],
+            "proc_name": it["proc_name"],
+        })
+    queries: List[Dict[str, Any]] = []
+    for src_label, rows in groups.items():
+        tgt = "MERGE (tgt:PROCEDURE:EXTERNAL {procedure_name: row.proc_name})"
+        queries.append({
+            "query": _calls_unwind(src_label, tgt, "external", optional_match=False),
+            "params": {"rows": rows},
+        })
+    return queries
+
+
+def build_references_queries(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """변수명 토큰 매칭 → (node)-[:REFERENCES]->(VARIABLE-like). UNWIND, src label 별 그룹.
+
+    items: 각 dict 에 ``{src_node_type, src_line, var_name, directory, file_name}``.
+    """
+    if not items:
+        return []
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for it in items:
+        groups.setdefault(it["src_node_type"], []).append({
+            "n_line":    it["src_line"],
+            "var_name":  it["var_name"],
+            "directory": it["directory"],
+            "file_name": it["file_name"],
+        })
+    queries: List[Dict[str, Any]] = []
+    for src_label, rows in groups.items():
+        query = (
+            "UNWIND $rows AS row\n"
+            f"MATCH (n:{src_label} {{startLine: row.n_line, directory: row.directory, file_name: row.file_name}})\n"
+            "MATCH (v {name: row.var_name, directory: row.directory, file_name: row.file_name})\n"
+            "WHERE v:VARIABLE OR v:PACKAGE_VARIABLE OR v:CONSTANT_FIELD OR v:PARAMETER\n"
+            "MERGE (n)-[:REFERENCES]->(v)"
+        )
+        queries.append({"query": query, "params": {"rows": rows}})
+    return queries
+
+
+def build_init_by_queries(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """초기화식 식별자 매칭 → (:VARIABLE)-[:INIT_BY]->(:VARIABLE-like). UNWIND 단일 쿼리.
+
+    src 는 항상 VARIABLE. target 은 같은 파일 내 동일 이름 variable-like 노드.
+    items: 각 dict 에 ``{src_name, src_line, target_name, directory, file_name}``.
+    """
+    if not items:
+        return []
+    rows = [
+        {
+            "src_name":    it["src_name"],
+            "src_line":    it["src_line"],
+            "target_name": it["target_name"],
+            "directory":   it["directory"],
+            "file_name":   it["file_name"],
+        }
+        for it in items
+    ]
+    query = (
+        "UNWIND $rows AS row\n"
+        "MATCH (s:VARIABLE {name: row.src_name, startLine: row.src_line, directory: row.directory, file_name: row.file_name})\n"
+        "MATCH (t {name: row.target_name, directory: row.directory, file_name: row.file_name})\n"
+        "WHERE t:VARIABLE OR t:PACKAGE_VARIABLE OR t:CONSTANT_FIELD OR t:PARAMETER\n"
+        "MERGE (s)-[:INIT_BY]->(t)"
+    )
+    return [{"query": query, "params": {"rows": rows}}]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -467,201 +475,257 @@ def build_init_by_query(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def build_static_node_query(
-    *,
-    label: str,
-    params: Dict[str, Any],
-    set_clause: str,
-) -> Dict[str, Any]:
-    """정적 노드 MERGE 쿼리.
+def build_static_node_queries(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """정적 노드 MERGE — UNWIND, label 별 그룹화.
 
-    MERGE 키 = (label, name, directory, file_name).
-    모든 노드는 ``params["node_name"]`` 을 보유 — 식별자가 있으면 실제 이름,
-    없으면 ``<TYPE>[<startLine>]`` 형식 placeholder. 같은 파일 안에서 (label, name) 충돌 0.
+    items: 각 dict 에 ``{"label", "node_name", "directory", "file_name", "start_line", "props"}``.
+    ``props`` 는 추가 속성 dict (각 노드별 다른 속성 — n += row.props 로 SET).
 
-    startLine / procedure_name / schema_name 등은 ``set_clause`` 로 SET 만 하고 키에서 제외.
-    같은 라인에 여러 변수성 노드 (예: 함수 파라미터 ``f(a, b)`` — a, b 둘 다 라인 1) 도
-    name 차이로 정확히 두 노드 생성됨.
+    MERGE 키 = (label, name, directory, file_name). 같은 파일 안에서 (label, name) 충돌 0.
     """
-    query = (
-        f"MERGE (__cy_n__:{label} {{name: $node_name, directory: $directory, file_name: $file_name}})\n"
-        f"SET __cy_n__.startLine = $start_line, {set_clause}\n"
-        "RETURN __cy_n__"
-    )
-    return {"query": query, "params": params}
+    if not items:
+        return []
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for it in items:
+        groups.setdefault(it["label"], []).append({
+            "node_name":  it["node_name"],
+            "directory":  it["directory"],
+            "file_name":  it["file_name"],
+            "start_line": it["start_line"],
+            "props":      it.get("props") or {},
+        })
+    queries: List[Dict[str, Any]] = []
+    for label, rows in groups.items():
+        query = (
+            "UNWIND $rows AS row\n"
+            f"MERGE (n:{label} {{name: row.node_name, directory: row.directory, file_name: row.file_name}})\n"
+            "SET n.startLine = row.start_line, n += row.props"
+        )
+        queries.append({"query": query, "params": {"rows": rows}})
+    return queries
 
 
-def build_summary_update_query(
-    *,
-    node_type: str,
-    params: Dict[str, Any],
-) -> Dict[str, Any]:
-    """LLM 분석 결과의 summary/name/code 등을 노드에 SET 하는 쿼리."""
-    query = (
-        f"MATCH (__cy_n__:{node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
-        "SET __cy_n__.endLine = $end_line, __cy_n__.name = $node_name, "
-        "__cy_n__.summary = $summary, __cy_n__.node_code = $node_code, "
-        "__cy_n__.token = $token, __cy_n__.procedure_name = $procedure_name, "
-        "__cy_n__.has_children = $has_children\n"
-        "RETURN __cy_n__"
-    )
-    return {"query": query, "params": params}
+def build_summary_update_queries(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """LLM 분석 결과의 summary/name/code 등 SET — UNWIND, node_type 별 그룹.
 
-
-def build_create_temp_table_query(
-    *,
-    node_type: str,
-    params: Dict[str, Any],
-) -> Dict[str, Any]:
-    """CREATE_TEMP_TABLE 노드에 :Table 라벨 추가 + name/schema/db SET."""
-    query = (
-        f"MATCH (__cy_n__:{node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
-        "SET __cy_n__:Table, __cy_n__.name = $name, __cy_n__.schema = $schema, __cy_n__.db = $db\n"
-        "RETURN __cy_n__"
-    )
-    return {"query": query, "params": params}
-
-
-def build_node_to_table_rel_merge_str(rel_types: List[str]) -> str:
-    """노드→Table 관계 MERGE 절 문자열 누적 ('MERGE (__cy_n__)-[:FROM]->(__cy_t__)\\n...').
-
-    rel_types: ``['FROM', 'WRITES']`` 등.
-    빈 리스트면 빈 문자열 반환.
+    items: 각 dict 에 ``{"node_type", "start_line", "directory", "file_name", + 갱신할 속성들}``.
     """
-    parts = [f"MERGE (__cy_n__)-[__cy_r{i}__:{rel_type}]->(__cy_t__)" for i, rel_type in enumerate(rel_types)]
-    return "\n".join(parts)
+    if not items:
+        return []
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for it in items:
+        node_type = it["node_type"]
+        row = {k: v for k, v in it.items() if k != "node_type"}
+        groups.setdefault(node_type, []).append(row)
+    queries: List[Dict[str, Any]] = []
+    for node_type, rows in groups.items():
+        query = (
+            "UNWIND $rows AS row\n"
+            f"MATCH (n:{node_type} {{startLine: row.start_line, directory: row.directory, file_name: row.file_name}})\n"
+            "SET n.endLine = row.end_line, n.name = row.node_name, n.summary = row.summary, "
+            "n.node_code = row.node_code, n.token = row.token, n.procedure_name = row.procedure_name, "
+            "n.has_children = row.has_children"
+        )
+        queries.append({"query": query, "params": {"rows": rows}})
+    return queries
 
 
-def build_dml_table_relation_query(
-    *,
-    node_type: str,
-    table_merge_query: str,
-    rel_merge_str: str,
-    db_link_set: str,
-    params: Dict[str, Any],
-) -> Dict[str, Any]:
-    """DML 노드 → :Table 관계 쿼리.
+def build_create_temp_table_queries(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """CREATE_TEMP_TABLE 노드에 :Table 라벨 추가 + name/schema/db SET — UNWIND, node_type 별.
 
-    Args:
-        table_merge_query: build_table_merge 결과의 query (Table MERGE 절)
-        rel_merge_str: ``MERGE (__cy_n__)-[:FROM/WRITES]->(__cy_t__)`` 누적 (빈 문자열 가능)
-        db_link_set: ``SET __cy_t__.db_link = COALESCE(...)`` 절 (db_link 없으면 빈 문자열)
+    items: 각 dict 에 ``{"node_type", "start_line", "directory", "file_name", "name", "schema", "db"}``.
     """
-    base = (
-        f"MATCH (__cy_n__:{node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
-        "WITH __cy_n__\n"
-        f"{table_merge_query}\n"
-        "SET __cy_t__.db = coalesce(__cy_t__.db, $db)"
-        f"{db_link_set}"
-    )
-    if rel_merge_str:
-        query = base + f"\n{rel_merge_str}\nRETURN __cy_n__, __cy_t__"
-    else:
-        query = base + "\nRETURN __cy_n__, __cy_t__"
-    return {"query": query, "params": params}
+    if not items:
+        return []
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for it in items:
+        groups.setdefault(it["node_type"], []).append({
+            "start_line": it["start_line"],
+            "directory":  it["directory"],
+            "file_name":  it["file_name"],
+            "name":       it["name"],
+            "schema":     it["schema"],
+            "db":         it["db"],
+        })
+    queries: List[Dict[str, Any]] = []
+    for node_type, rows in groups.items():
+        query = (
+            "UNWIND $rows AS row\n"
+            f"MATCH (n:{node_type} {{startLine: row.start_line, directory: row.directory, file_name: row.file_name}})\n"
+            "SET n:Table, n.name = row.name, n.schema = row.schema, n.db = row.db"
+        )
+        queries.append({"query": query, "params": {"rows": rows}})
+    return queries
 
 
-def build_column_query(
-    *,
-    table_merge_query: str,
-    params: Dict[str, Any],
-) -> Dict[str, Any]:
-    """:Column 노드 MERGE + (Table)-[:HAS_COLUMN]->(Column) 관계.
+def build_dml_table_relation_queries(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """DML 노드 → :Table 관계 — UNWIND, (node_type, rel_types, has_db_link) 그룹.
 
-    DDL 보존 가드: description / description_source 가 비어있을 때만 LLM 결과로 채움.
-    name / dtype / nullable 도 비어있을 때만 SET (LLM dtype 환각으로 DDL 정확도 손실 방지).
+    items: 각 dict 에 ``{node_type, start_line, directory, file_name,
+    db, schema_name, table_name, rel_types: List[str], db_link: Optional[str]}``.
+
+    rel_types 는 ``['FROM']`` / ``['WRITES']`` / ``['FROM','WRITES']`` 등. 빈 리스트면
+    관계 생성 X (Table MERGE 만). label 동적 (rel_type) 이라 그룹 단위로 묶음.
     """
+    if not items:
+        return []
+    groups: Dict[tuple, List[Dict[str, Any]]] = {}
+    for it in items:
+        rel_key = tuple(it.get("rel_types") or [])
+        has_db_link = it.get("db_link") is not None
+        groups.setdefault((it["node_type"], rel_key, has_db_link), []).append({
+            "start_line":  it["start_line"],
+            "directory":   it["directory"],
+            "file_name":   it["file_name"],
+            "db":          it["db"],
+            "schema_name": it["schema_name"],
+            "table_name":  it["table_name"],
+            "db_link":     it.get("db_link"),
+        })
+    queries: List[Dict[str, Any]] = []
+    for (node_type, rel_types, has_db_link), rows in groups.items():
+        rel_merges = "\n".join(
+            f"MERGE (n)-[:{rt}]->(t)" for rt in rel_types
+        )
+        db_link_set = "\nSET t.db_link = COALESCE(t.db_link, row.db_link)" if has_db_link else ""
+        query = (
+            "UNWIND $rows AS row\n"
+            f"MATCH (n:{node_type} {{startLine: row.start_line, directory: row.directory, file_name: row.file_name}})\n"
+            "MERGE (s:Schema {db: row.db, name: row.schema_name})\n"
+            "MERGE (t:Table {name: row.table_name, schema: row.schema_name, db: row.db})\n"
+            "MERGE (t)-[:BELONGS_TO]->(s)\n"
+            "SET t.db = coalesce(t.db, row.db)"
+            f"{db_link_set}"
+        )
+        if rel_merges:
+            query += "\n" + rel_merges
+        queries.append({"query": query, "params": {"rows": rows}})
+    return queries
+
+
+def build_column_queries(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """:Column 노드 MERGE + (Table)-[:HAS_COLUMN]->(Column) — UNWIND 단일 쿼리.
+
+    items: 각 dict 에 ``{db, schema_name, table_name, fqn, col_name, col_type,
+    col_desc, nullable}``.
+
+    DDL 보존 가드: description / description_source / name / dtype / nullable 모두
+    비어있을 때만 LLM 결과로 채움 (LLM dtype 환각으로 DDL 정확도 손실 방지).
+    """
+    if not items:
+        return []
     query = (
-        f"{table_merge_query}\nWITH __cy_t__\n"
-        "MERGE (__cy_c__:Column {fqn: $fqn})\n"
-        "SET __cy_c__.description = CASE\n"
-        "      WHEN __cy_c__.description IS NULL OR trim(toString(__cy_c__.description)) = ''\n"
-        "      THEN $col_desc ELSE __cy_c__.description END,\n"
-        "    __cy_c__.description_source = CASE\n"
-        "      WHEN __cy_c__.description IS NULL OR trim(toString(__cy_c__.description)) = ''\n"
-        "      THEN 'code' ELSE __cy_c__.description_source END,\n"
-        "    __cy_c__.name = COALESCE(__cy_c__.name, $col_name),\n"
-        "    __cy_c__.dtype = COALESCE(__cy_c__.dtype, $col_type),\n"
-        "    __cy_c__.nullable = COALESCE(__cy_c__.nullable, $nullable)\n"
-        "MERGE (__cy_t__)-[__cy_r__:HAS_COLUMN]->(__cy_c__)\n"
-        "RETURN __cy_t__, __cy_c__, __cy_r__"
+        "UNWIND $rows AS row\n"
+        "MERGE (s:Schema {db: row.db, name: row.schema_name})\n"
+        "MERGE (t:Table {name: row.table_name, schema: row.schema_name, db: row.db})\n"
+        "MERGE (t)-[:BELONGS_TO]->(s)\n"
+        "WITH t, row\n"
+        "MERGE (c:Column {fqn: row.fqn})\n"
+        "SET c.description = CASE\n"
+        "      WHEN c.description IS NULL OR trim(toString(c.description)) = ''\n"
+        "      THEN row.col_desc ELSE c.description END,\n"
+        "    c.description_source = CASE\n"
+        "      WHEN c.description IS NULL OR trim(toString(c.description)) = ''\n"
+        "      THEN 'code' ELSE c.description_source END,\n"
+        "    c.name = COALESCE(c.name, row.col_name),\n"
+        "    c.dtype = COALESCE(c.dtype, row.col_type),\n"
+        "    c.nullable = COALESCE(c.nullable, row.nullable)\n"
+        "MERGE (t)-[:HAS_COLUMN]->(c)"
     )
-    return {"query": query, "params": params}
+    return [{"query": query, "params": {"rows": items}}]
 
 
-def build_dblink_query(
-    *,
-    node_type: str,
-    remote_table_merge_query: str,
-    params: Dict[str, Any],
-) -> Dict[str, Any]:
-    """:DBLink 노드 + :Table → DBLink LINKS_TO + node → Table DB_LINK 관계."""
+def build_dblink_queries(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """:DBLink 노드 + :Table → DBLink LINKS_TO + node → Table DB_LINK — UNWIND, node_type 그룹.
+
+    items: 각 dict 에 ``{node_type, start_line, directory, file_name,
+    db, schema_name, table_name, link_name, mode}``.
+    """
+    if not items:
+        return []
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for it in items:
+        groups.setdefault(it["node_type"], []).append({
+            "start_line":  it["start_line"],
+            "directory":   it["directory"],
+            "file_name":   it["file_name"],
+            "db":          it["db"],
+            "schema_name": it["schema_name"],
+            "table_name":  it["table_name"],
+            "link_name":   it["link_name"],
+            "mode":        it["mode"],
+        })
+    queries: List[Dict[str, Any]] = []
+    for node_type, rows in groups.items():
+        query = (
+            "UNWIND $rows AS row\n"
+            f"MATCH (n:{node_type} {{startLine: row.start_line, directory: row.directory, file_name: row.file_name}})\n"
+            "MERGE (s:Schema {db: row.db, name: row.schema_name})\n"
+            "MERGE (t:Table {name: row.table_name, schema: row.schema_name, db: row.db})\n"
+            "MERGE (t)-[:BELONGS_TO]->(s)\n"
+            "SET t.db_link = row.link_name\n"
+            "WITH n, t, row\n"
+            "MERGE (l:DBLink {name: row.link_name})\n"
+            "MERGE (l)-[:LINKS_TO]->(t)\n"
+            "MERGE (n)-[:DB_LINK {mode: row.mode}]->(t)"
+        )
+        queries.append({"query": query, "params": {"rows": rows}})
+    return queries
+
+
+def build_fk_to_table_queries(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """(Table)-[:FK_TO_TABLE]->(Table) 관계 — UNWIND 단일 쿼리.
+
+    items: ``{db, src_schema, src_name, tgt_schema, tgt_name, src_col, tgt_col}``.
+    """
+    if not items:
+        return []
     query = (
-        f"{remote_table_merge_query}\n"
-        "SET __cy_t__.db_link = $link_name\n"
-        "WITH __cy_t__\n"
-        "MERGE (__cy_l__:DBLink {name: $link_name})\n"
-        "MERGE (__cy_l__)-[__cy_r1__:LINKS_TO]->(__cy_t__)\n"
-        "WITH __cy_t__, __cy_l__\n"
-        f"MATCH (__cy_n__:{node_type} {{startLine: $start_line, directory: $directory, file_name: $file_name}})\n"
-        "MERGE (__cy_n__)-[__cy_r2__:DB_LINK {mode: $mode}]->(__cy_t__)\n"
-        "RETURN __cy_l__, __cy_t__, __cy_n__"
+        "UNWIND $rows AS row\n"
+        "MATCH (st:Table {schema: row.src_schema, name: row.src_name, db: row.db})\n"
+        "MATCH (tt:Table {schema: row.tgt_schema, name: row.tgt_name, db: row.db})\n"
+        "MERGE (st)-[r:FK_TO_TABLE {sourceColumn: row.src_col, targetColumn: row.tgt_col}]->(tt)\n"
+        "ON CREATE SET r.type = 'many_to_one', r.source = 'procedure'"
     )
-    return {"query": query, "params": params}
+    return [{"query": query, "params": {"rows": items}}]
 
 
-def build_fk_to_table_query(
-    *,
-    params: Dict[str, Any],
-) -> Dict[str, Any]:
-    """(Table)-[:FK_TO_TABLE]->(Table) 관계 쿼리."""
+def build_fk_to_column_queries(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """(Column)-[:FK_TO_COLUMN]->(Column) 관계 — UNWIND 단일 쿼리.
+
+    items: ``{src_fqn, tgt_fqn}``.
+    """
+    if not items:
+        return []
     query = (
-        "MATCH (__cy_st__:Table {schema: $src_schema, name: $src_name, db: $db})\n"
-        "MATCH (__cy_tt__:Table {schema: $tgt_schema, name: $tgt_name, db: $db})\n"
-        "MERGE (__cy_st__)-[__cy_r__:FK_TO_TABLE {sourceColumn: $src_col, targetColumn: $tgt_col}]->(__cy_tt__)\n"
-        "ON CREATE SET __cy_r__.type = 'many_to_one', __cy_r__.source = 'procedure'\n"
-        "RETURN __cy_st__, __cy_tt__, __cy_r__"
+        "UNWIND $rows AS row\n"
+        "MATCH (sc:Column {fqn: row.src_fqn})\n"
+        "MATCH (dc:Column {fqn: row.tgt_fqn})\n"
+        "MERGE (sc)-[r:FK_TO_COLUMN]->(dc)\n"
+        "ON CREATE SET r.source = 'procedure'"
     )
-    return {"query": query, "params": params}
-
-
-def build_fk_to_column_query(
-    *,
-    params: Dict[str, Any],
-) -> Dict[str, Any]:
-    """(Column)-[:FK_TO_COLUMN]->(Column) 관계 쿼리."""
-    query = (
-        "MATCH (__cy_sc__:Column {fqn: $src_fqn})\n"
-        "MATCH (__cy_dc__:Column {fqn: $tgt_fqn})\n"
-        "MERGE (__cy_sc__)-[__cy_r__:FK_TO_COLUMN]->(__cy_dc__)\n"
-        "ON CREATE SET __cy_r__.source = 'procedure'\n"
-        "RETURN __cy_sc__, __cy_dc__, __cy_r__"
-    )
-    return {"query": query, "params": params}
+    return [{"query": query, "params": {"rows": items}}]
 
 
 __all__ = [
     "build_procedure_summary_queries",
-    "build_table_description_query",
-    "build_column_description_query",
+    "build_table_description_queries",
+    "build_column_description_queries",
     "build_package_queries",
-    "build_has_procedure_query",
-    "build_parent_of_query",
-    "build_next_query",
-    "build_table_merge",
-    "build_calls_external_pkg_query",
-    "build_calls_internal_query",
-    "build_calls_external_placeholder_query",
-    "build_references_query",
-    "build_static_node_query",
-    "build_summary_update_query",
-    "build_create_temp_table_query",
-    "build_node_to_table_rel_merge_str",
-    "build_dml_table_relation_query",
-    "build_column_query",
-    "build_dblink_query",
-    "build_fk_to_table_query",
-    "build_fk_to_column_query",
-    "TABLE_DESCRIPTION_UPDATE_QUERY",
-    "COLUMN_DESCRIPTION_UPDATE_QUERY",
+    "build_has_procedure_queries",
+    "build_parent_of_queries",
+    "build_next_queries",
+    "build_calls_external_pkg_queries",
+    "build_calls_internal_queries",
+    "build_calls_external_placeholder_queries",
+    "build_references_queries",
+    "build_init_by_queries",
+    "build_static_node_queries",
+    "build_summary_update_queries",
+    "build_create_temp_table_queries",
+    "build_dml_table_relation_queries",
+    "build_column_queries",
+    "build_dblink_queries",
+    "build_fk_to_table_queries",
+    "build_fk_to_column_queries",
 ]

@@ -120,7 +120,9 @@ async def run_code_analysis(
         reads_writes_by_function=summary_ctx.get("reads_writes_by_function") or None,
     ):
         analysis_by_function.update(analysis_batch)
-        yield tracker.tick_quiet()
+        msg, evt = tracker.tick()
+        yield msg
+        yield evt
 
         queries = list(build_analysis_result_queries(analysis_batch, lang=st.lang))
 

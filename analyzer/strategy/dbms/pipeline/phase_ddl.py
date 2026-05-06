@@ -9,9 +9,10 @@ from __future__ import annotations
 from typing import Any, AsyncGenerator
 
 from analyzer.common.cypher.ddl_handler import run_ddl_processing
+from analyzer.common.cypher.schema_resolver import build_name_to_schema
 from analyzer.strategy.dbms.linking import ddl_table_matcher
 from util.stream_emitter import (
-    emit_message, emit_separator, emit_phase_header, emit_file_start,
+    emit_user_message, emit_separator, emit_phase_header, emit_file_start,
 )
 
 
@@ -24,7 +25,7 @@ async def run_phase_ddl(
     2. ddl_table_metadata → ddl_table_index 변환 (테이블명 키 + 컬럼 list)
     3. ddl_pattern 컴파일 (Phase 2B per range 매칭용)
     """
-    yield emit_message("")
+    yield emit_user_message("")
     yield emit_separator()
     yield emit_phase_header(0, "📋 DDL 스키마 수집")
     yield emit_separator()
@@ -32,7 +33,6 @@ async def run_phase_ddl(
     async for chunk in run_ddl_processing(
         orchestrator=ctx.orchestrator,
         client=ctx.client,
-        cypher_lock=ctx.cypher_lock,
         ddl_schemas=ctx.ddl_schemas,
         ddl_table_metadata=ctx.ddl_table_metadata,
         on_file_start=lambda idx, total, fname: emit_file_start(idx, total, fname),
@@ -60,10 +60,11 @@ async def run_phase_ddl(
         }
     ctx.state.ddl_table_index = ddl_table_index
     ctx.state.ddl_pattern = ddl_table_matcher.build_pattern(list(ddl_table_index.keys()))
+    ctx.state.name_to_schema = build_name_to_schema(ctx.ddl_table_metadata)
 
-    yield emit_message("")
-    yield emit_message("📊 DDL 처리 완료:")
-    yield emit_message(f"   • 테이블: {ctx.stats.ddl_tables}개")
-    yield emit_message(f"   • 컬럼: {ctx.stats.ddl_columns}개")
-    yield emit_message(f"   • FK: {ctx.stats.ddl_fks}개")
-    yield emit_message(f"   • ddl_table_index: {len(ddl_table_index)}개 테이블, 단어 매칭 패턴 {'활성' if ctx.state.ddl_pattern else '비활성'}")
+    yield emit_user_message("")
+    yield emit_user_message("📊 DDL 처리 완료:")
+    yield emit_user_message(f"   • 테이블: {ctx.stats.ddl_tables}개")
+    yield emit_user_message(f"   • 컬럼: {ctx.stats.ddl_columns}개")
+    yield emit_user_message(f"   • FK: {ctx.stats.ddl_fks}개")
+    yield emit_user_message(f"   • ddl_table_index: {len(ddl_table_index)}개 테이블, 단어 매칭 패턴 {'활성' if ctx.state.ddl_pattern else '비활성'}")

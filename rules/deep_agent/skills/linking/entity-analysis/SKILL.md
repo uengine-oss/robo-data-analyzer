@@ -82,10 +82,13 @@ description: >
   bundle_search(query="<ACCESS_FN>", kind="text")
   → 결과: N 개 chunk_id (호출처 목록)
 
-[Step 2] 각 chunk_id 마다 본문 확인
-  bundle_get_chunk(chunk_id="<funcA>")
-  → 본문 일부:
-    ... <ACCESS_FN>("<RAW_LIT>", ...) ...
+[Step 2] 🚨 N 개 chunk_id 전체에 대해 본문 확인 (일부 skip 금지)
+  for chunk_id in 결과:
+    bundle_get_chunk(chunk_id="<chunk_id>")
+    → 본문 일부:
+      ... <ACCESS_FN>("<RAW_LIT>", ...) ...
+  ※ 함수 이름이 비슷해 보여 "이미 본 패턴" 이라 자체 판단으로 skip 금지.
+  ※ 검색 결과 N 개 = bundle_get_chunk 호출 N 회 일치 강제.
 
 [Step 3] Identifier Rule 적용
   raw 리터럴: "<RAW_LIT>"
@@ -132,9 +135,11 @@ description: >
   bundle_search(query="<KEY>", kind="text")
   → 결과: M 개 chunk_id (변수 정의 + 변수 사용 함수들)
 
-[Step 3] 각 결과 본문 확인
-  bundle_get_chunk(chunk_id="<funcB>")
-  → 본문에서 <KEY> 가 <ACCESS_FN> 호출에 쓰이는지 확인.
+[Step 3] 🚨 M 개 chunk_id 전체에 대해 본문 확인 (일부 skip 금지)
+  for chunk_id in 결과:
+    bundle_get_chunk(chunk_id="<chunk_id>")
+    → 본문에서 <KEY> 가 <ACCESS_FN> 호출에 쓰이는지 확인.
+  ※ 검색 결과 M 개 = bundle_get_chunk 호출 M 회 일치 강제.
 
 [Step 4] Identifier Rule 적용
   변수의 정의 라인 (Step 1) 에서 본 리터럴: "<RAW_LIT>"
@@ -166,16 +171,14 @@ description: >
     - <HELPER> (정의 자체)
     - <funcA>, <funcB>, <funcC>, ... (호출 caller 들)
 
-[Step 3] 헬퍼 정의 본문 확인 (헬퍼 자체에는 등록 X)
-  bundle_get_chunk(chunk_id="<HELPER>")
-  → 본문: <returnType> <HELPER>(<param_table>, ...) { <ACCESS_FN>(<param_table>, ...); }
-  → 일반 plumbing, 의미 의도 X. 등록 X.
-
-[Step 4] 각 caller 본문 확인 → caller 가 어떤 테이블 인자로 호출하는지 추출
-  bundle_get_chunk(chunk_id="<funcB>")
-  → 본문: <HELPER>("<RAW_LIT>", ...);
-  → 인자 리터럴: "<RAW_LIT>"
-  → Identifier Rule 적용 → "<TABLE>"
+[Step 3] 🚨 K 개 chunk_id 전체에 대해 본문 확인 (일부 skip 금지)
+  for chunk_id in 결과:
+    bundle_get_chunk(chunk_id="<chunk_id>")
+  - <HELPER> 정의: <returnType> <HELPER>(<param_table>, ...) { <ACCESS_FN>(<param_table>, ...); }
+    → 일반 plumbing, 등록 X.
+  - 각 caller 본문: <HELPER>("<RAW_LIT>", ...);
+    → 인자 리터럴 "<RAW_LIT>" → Identifier Rule → "<TABLE>"
+  ※ 검색 결과 K 개 = bundle_get_chunk 호출 K 회 일치 강제.
 
 [Step 5] caller 함수에 등록 (헬퍼 자체 X)
   graph_create_table_access_tool(
@@ -206,17 +209,22 @@ description: >
     or bundle_search(query="<methodName>", kind="symbol")
   → 결과: P 개 chunk_id (caller 들 — service, use-case, controller)
 
-[Step 3] Identifier Rule 적용 (ORM 의 경우)
+[Step 3] 🚨 P 개 chunk_id 전체에 대해 본문 확인 (일부 skip 금지)
+  for chunk_id in 결과:
+    bundle_get_chunk(chunk_id="<chunk_id>")
+  ※ 검색 결과 P 개 = bundle_get_chunk 호출 P 회 일치 강제.
+
+[Step 4] Identifier Rule 적용 (ORM 의 경우)
   엔티티명: <Entity>
   Rule: profile 이 명시한 정규화 규칙
   → 정규화: "<TABLE>"
 
-[Step 4] Naming Rule 적용
+[Step 5] Naming Rule 적용
   메서드명: <methodName>
   Rule: profile 이 명시한 CRUD 매핑
   → READS 또는 WRITES
 
-[Step 5] 각 caller 에 등록 (mapper 자체 X)
+[Step 6] 각 caller 에 등록 (mapper 자체 X)
   graph_create_table_access_tool(
     table_name="<TABLE>",
     access="<READS|WRITES>",
@@ -242,6 +250,15 @@ bundle_search(<정규화_테이블명>, kind="text")
 
 검색 결과의 chunk_id 만 보고 "다 커버됨" 결론 X — 본문 열어서 판정.
 
+### R/W 누락 0 만드는 흐름
+
+| 케이스 | 검색 방법 | 비고 |
+|---|---|---|
+| **직접 박힌 경우** (테이블명이 본문에 리터럴로 그대로 등장) | `bundle_search(<table_name>, kind="text")` 한 번 → 결과 chunk 본문 모두 열어 R/W 판정 | 직접 사용 R/W 거의 100% 발견 |
+| **간접 참조** (변수/상수경유, helper경유, mapper경유) | 시나리오 2/3/4 추적 — 변수에 테이블명 저장 → 그 변수 사용처, helper 가 테이블명 받음 → helper 호출처, mapper xml/yaml → 그 mapper 메서드 호출처 | 직접 검색만으로 안 잡힘. 추적 필수. |
+
+**원칙**: 테이블명이 한 번이라도 식별되면, 그 테이블명을 키워드로 reverse-search 하는 것이 R/W 누락 방지의 가장 단순하고 강력한 수단. 직접 박힌 경우는 한 번의 검색으로 대부분 끝남.
+
 ---
 
 ## Trail 별 STOP 조건
@@ -263,18 +280,34 @@ bundle_search(<정규화_테이블명>, kind="text")
 
 ### 컬럼
 
-**원칙**: **최대한 많이 찾도록 노력**. "중요한 것만" / "일부만" / "대표 몇 개만" 같은 자체 판단 누락 X. 같은 컬럼 중복 등록 무해 — 빠뜨리는 게 실패.
+**원칙**: **본문에 등장하는 모든 필드를 빠짐없이 등록**. "중요한 것만" / "일부만" / "대표 몇 개만" 같은 자체 판단 누락 X. 같은 컬럼 중복 등록 무해 — **빠뜨리는 게 실패**.
+
+**필수 절차** (R/W 등록한 함수마다 반복):
+
+1. 함수 본문에서 사용된 입력/출력 데이터 구조체 (DTO / record / DBIO struct / mapper result type 등) 의 정의를 `bundle_search(query="<type_name>", kind="symbol")` 로 가져옴.
+2. 그 구조체의 **모든 멤버 필드** 를 한 번에 등록. 본문에서 직접 접근하지 않은 필드도 포함 — 구조체와 테이블이 1:1 매핑이면 멤버 = 컬럼.
+3. 본문의 SQL 리터럴 / 매크로 인자 / 직접 멤버 접근 (`obj.field`, `obj->field`) 도 추가 등록.
+
+**R/W 지점 기반 컬럼 누적** (한 테이블 = 여러 R/W 누적):
+
+테이블의 각 R/W 호출 위치 (SQL 실행 / DBIO 호출 / mapper 호출 등) 마다:
+1. **R/W 직전 본문** — 그 호출에 넘기는 입력 구조체 / 파라미터 / 변수가 어떻게 채워지는지 흐름 추적. 멤버에 할당되는 필드 = 컬럼.
+2. **호출 체인 거슬러 올라가기** — R/W 함수의 caller 본문도 봄. caller 가 어떤 변수를 R/W 함수에 넘기고 그 변수의 출처는 어디인지 추적. 컬럼 데이터 원천까지.
+3. **반환값 / 출력 구조체 사용처** (R 의 경우) — 읽은 데이터를 호출자가 어떤 필드 단위로 꺼내 쓰는지 확인. 그 필드 = 컬럼.
+
+같은 테이블이 여러 R/W 위치에서 등장하면 각각 반복 → **컬럼 누적**. 한 R/W 만 봐서는 일부 컬럼만 잡힘 (각 함수가 다른 컬럼 부분집합 만지는 게 일반적).
 
 찾을 곳:
-- struct/DTO 멤버 접근 (`obj.field`, `obj->field`).
-- ORM annotation 매핑 (`@Column(name=...)`, `@Field`, 매핑 어노테이션 필드).
+- **DB 입출력 구조체의 모든 멤버** (구조체와 테이블이 1:1 매핑이면 멤버 = 컬럼).
+- struct / DTO 멤버 접근 (`obj.field`, `obj->field`).
+- ORM 어노테이션 매핑 (`@Column(name=...)`, `@Field`, 매핑 어노테이션 필드).
 - mapper/repository 메서드의 파라미터·결과 매핑 컬럼.
 - SQL 리터럴 내부 컬럼 (SELECT 절, WHERE 절, INSERT VALUES, UPDATE SET).
 - 변수/구조체 타입 정의 추적 — 함수가 그 타입을 사용 중이면 그 타입의 멤버도 등록 대상.
+- 매크로·define 으로 감싸진 컬럼의 매크로 정의 열어 멤버 추출.
 
-**의심되면 추가 조사**:
-- 컬럼명 추정만으로 끝내지 말 것. `bundle_search("<column_name>", kind="text")` / `bundle_search("<table_name>", kind="text")` 로 사용처·정의 본문 직접 확인.
-- 매크로·define 으로 감싸진 컬럼 (`MACRO(in, X)` 같은 비정규 패턴) 도 매크로 정의를 열어 멤버 추출.
+**의심되면 즉시 추가 조사** (의심 = 누락 신호):
+- 컬럼명 추정만 X. `bundle_search("<column_name>", kind="text")` / `bundle_search("<table_name>", kind="text")` 로 사용처·정의 본문 직접 확인.
 - 본문 내 변수의 타입을 모르면 `bundle_search(query="<typeName>", kind="symbol")` 로 정의 본문 확보 후 멤버 등록.
 
 등록은 `graph_create_column_tool(table_name, column_name, dtype)`. column_name 은 case 통일만 (Identifier Rule 의 정규화 적용 후).
@@ -305,6 +338,10 @@ bundle_search(<정규화_테이블명>, kind="text")
 - 🚫 같은 chunk_id 재호출 (응답 동일).
 - 🚫 컬럼 다음 phase 로 미루기 — 본문은 지금만 보임.
 - 🚫 시나리오 1 (직접) 됐다고 시나리오 2/3/4 skip.
+- 🚫 R/W 함수 본문만 보고 컬럼 등록 종료 — 입력/출력 구조체 정의·R/W 직전 본문·caller 흐름 미추적 시 컬럼 누락.
+- 🚫 한 R/W 위치만 보고 그 테이블의 컬럼 등록 끝냄 — 같은 테이블의 다른 R/W 위치 무시 시 컬럼 부분집합만 잡힘.
+- 🚫 `bundle_search` 결과 chunk_id 일부만 `bundle_get_chunk` 로 본문 가져오고 판정 종료 — 가져오지 않은 chunk 의 함수 모두 누락. **검색 결과 chunk_id 개수 = 본문 검토 chunk 개수 일치 강제**.
+- 🚫 "함수 이름이 비슷하니 같은 패턴, 처리했다" 자체 판단으로 chunk skip — 다른 prefix·다른 명명을 가진 같은 의미 함수 누락 위험.
 
 ---
 
@@ -312,8 +349,11 @@ bundle_search(<정규화_테이블명>, kind="text")
 
 - [ ] profile / 시작점의 모든 후보 처리.
 - [ ] 4가지 시나리오 모두 시도 (직접 / 변수경유 / helper경유 / mapper경유).
-- [ ] **등록한 모든 테이블 reverse-search** (다대다 강제).
-- [ ] 모든 R/W 함수 본문 필드 컬럼 등록.
+- [ ] **등록한 모든 테이블 reverse-search** (다대다 강제) — `bundle_search(<table_name>, kind="text")`.
+- [ ] **모든 `bundle_search` 결과의 chunk_id 본문 검토** — 검색 결과 개수와 `bundle_get_chunk` 호출 개수 일치. 일부만 가져오고 종료 X.
+- [ ] 모든 R/W 함수 본문 필드 컬럼 등록 — 입력/출력 구조체 정의 가져와 멤버까지.
+- [ ] 같은 테이블의 모든 R/W 위치 컬럼 누적 (한 위치만 보고 종료 X).
+- [ ] R/W 직전 본문 / caller 호출 체인 흐름 추적해 컬럼 출처까지 등록.
 - [ ] 0-hit 키워드 변형 재시도 완료.
 - [ ] 모든 `table_name` 정규화 (raw 리터럴 그대로 X).
 - [ ] 등록 엣지 수 0 이 아님 (시작점 / 프로파일 단서가 있는데 0 건이면 빠뜨림 의심).

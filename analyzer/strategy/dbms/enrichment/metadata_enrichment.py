@@ -24,7 +24,7 @@ import aiohttp
 
 from config.settings import settings
 from util.logger import log_process
-from util.stream_emitter import emit_message, emit_phase_event
+from util.stream_emitter import emit_user_message, emit_phase_event
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +104,7 @@ async def run_metadata_enrichment(
     catalog 응답: NDJSON. 한 줄당 한 이벤트.
     호출 실패는 errlog + raise. 정책상 silent skip 금지.
     """
-    yield emit_message(f"   🚀 [Phase {phase_num}] {PHASE_NAME} 시작...")
+    yield emit_user_message(f"   🚀 [Phase {phase_num}] {PHASE_NAME} 시작...")
     yield emit_phase_event(
         phase_num=phase_num,
         phase_name=PHASE_NAME,
@@ -115,12 +115,12 @@ async def run_metadata_enrichment(
 
     # Framework 의 pre_analysis 와 동일 패턴 — catalog 비활성 시 graceful skip
     if not settings.catalog.enabled:
-        yield emit_message("   ⏭️ catalog 비활성 (CATALOG_SERVICE_URL 미설정) — 메타데이터 보강 skip")
+        yield emit_user_message("   ⏭️ catalog 비활성 (CATALOG_SERVICE_URL 미설정) — 메타데이터 보강 skip")
         log_process("PHASE:3", "SKIP", "catalog 비활성 — 메타데이터 보강 skip", logging.INFO)
         return
 
     if not datasource_name:
-        yield emit_message("   ⏭️ datasource 미설정, 메타데이터 보강 생략")
+        yield emit_user_message("   ⏭️ datasource 미설정, 메타데이터 보강 생략")
         return
 
     description_count = 0
@@ -154,7 +154,7 @@ async def run_metadata_enrichment(
                         description_count = int(evt.get("description_enriched", 0))
                         fk_count = int(evt.get("fk_persisted", 0))
 
-                    yield emit_message(_format_event(evt))
+                    yield emit_user_message(_format_event(evt))
 
         log_process(
             "PHASE:3",

@@ -1,13 +1,17 @@
-"""Phase 3b: Module 요약 + Actor 통합 + Table Description 보강 — thin orchestrator.
+"""Phase 3b: Module 요약 + Actor 통합 + Table Description 보강 — 3 step 분할.
 
-비즈니스 로직 분리 (Stage 5):
-  - Actor 통합 (1차 모듈 내 + 2차 모듈 간 LLM)
-        → `framework/analysis/actor_unifier.py`
-  - Table description LLM 보강
-        → `analyzer/common/pipeline/table_description_enrichment.py` (오케스트레이션)
-        → 데이터 변환은 본 phase 내 _build_framework_table_inputs 등 헬퍼
+각 step 의 의존성:
+  - run_module_step              : Phase 3-1 method summary  (Module summary LLM + 즉시 1차 actor 흡수)
+  - run_table_description_step   : Phase 3-1 method summary  (Module / Actor 무관 — 완전 별도)
+  - run_cross_module_actor_step  : 모든 Module summary 끝나야 (모듈 간 비교 + Actor 노드)
 
-본 phase 는 순서 제어 + tracker step emit + 다른 모듈 호출만 수행.
+호출자 (`framework_pipeline.py`) 에서:
+
+  [병렬] run_module_step + run_table_description_step  (의존성 0 — merge_streams)
+                          ↓ (모든 모듈 끝나야)
+   run_cross_module_actor_step
+
+본 모듈은 step 함수만 노출. tracker step emit 도 호출자에서.
 """
 
 from __future__ import annotations
@@ -33,21 +37,28 @@ from analyzer.strategy.framework.common.cypher.graph_queries import (
 from client.neo4j_client import Neo4jClient
 from config.settings import settings
 from util.llm_rule_runner import prompts
-from util.stream_emitter import PhaseTracker, emit_message
+from util.stream_emitter import PhaseTracker, emit_user_message
 
 logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Step 3: Module 분석 (Field 분석은 비활성화 상태)
+# Step: Module 처리 (LLM summary + 즉시 1차 actor 적용 — per-module 자연 흡수)
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-async def run_field_and_module_analysis(
+async def run_module_step(
     ctx: Any,  # FrameworkPhaseContext
     tracker: PhaseTracker,
 ) -> AsyncGenerator[bytes, None]:
-    """Field 분석 (비활성화) + Module 분석."""
+    """Module summary LLM + 1차 actor 적용 (per-module).
+
+    `run_module_summary` 가 모듈마다 yield → 그 즉시 unified_actors 를
+    `apply_module_unified_actors` 로 적용 + Neo4j 쓰기. 모든 모듈 끝나면
+    누적된 `summary_by_module` 을 state 에 보관 (cross-module actor merge 단계용).
+
+    Field 분석은 비활성 (호출자가 tracker step 정렬).
+    """
     st = ctx.state
     client = ctx.client
     api_key = settings.llm.api_key
@@ -69,7 +80,18 @@ async def run_field_and_module_analysis(
         api_key=api_key, locale=locale,
     ):
         summary_by_module.update(module_batch)
-        yield tracker.tick_quiet(len(module_batch))
+
+        # 1차 actor 적용 (per-module 즉시) — module_batch 의 unified_actors 만 처리.
+        replaced = apply_module_unified_actors(
+            analysis_by_function, module_batch, function_facts_list,
+        )
+        if replaced:
+            logger.info("[PHASE:3:ACTOR] 1차 모듈 내 통합 | batch_modules=%d replaced=%d",
+                        len(module_batch), replaced)
+
+        msg, evt = tracker.tick(len(module_batch))
+        yield msg
+        yield evt
         queries = build_module_summary_queries(module_batch, lang=st.lang)
         if queries:
             async for chunk in write_to_graph(client, queries, "PHASE3:MODULE_ANALYSIS"):
@@ -82,33 +104,62 @@ async def run_field_and_module_analysis(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Step 4: Actor 통합 + Table Description 보강
+# Step: Table description 보강 (method summary 만 의존 — Module/Actor 와 별도 흐름)
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-async def run_actor_and_table_enrichment(
+async def run_table_description_step(
     ctx: Any,  # FrameworkPhaseContext
-    tracker: PhaseTracker,
 ) -> AsyncGenerator[bytes, None]:
-    """Actor 동의어 통합 + Table Description LLM 보강."""
+    """Table description LLM 보강 — method summary 만 사용 (Module/Actor 무관).
+
+    Module step 과 병렬 실행되므로 PhaseTracker 사용 X (step_idx race 방지).
+    진행 메시지는 자체 emit_user_message 로.
+    """
+    st = ctx.state
+    client = ctx.client
+    api_key = settings.llm.api_key
+    locale = settings.locale
+    analysis_by_function = st.analysis_by_function or {}
+
+    if not (api_key and analysis_by_function):
+        return
+
+    yield emit_user_message("  ├─ 테이블 설명 보강 (LLM) 시작")
+    async for chunk in _run_framework_table_enrichment(
+        client=client,
+        insights_map=st.table_insights_map or {},
+        api_key=api_key,
+        locale=locale,
+    ):
+        yield chunk
+    yield emit_user_message("  └─ 테이블 설명 보강 완료")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Step: Cross-module actor merge + Actor 노드 그래프 작성
+# (Module summary 모두 끝난 후 — 모듈 간 비교 필요)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def run_cross_module_actor_step(
+    ctx: Any,  # FrameworkPhaseContext
+) -> AsyncGenerator[bytes, None]:
+    """모듈 간 actor 동의어 통합 (LLM 1회) + Actor 노드 그래프 작성."""
     st = ctx.state
     client = ctx.client
     api_key = settings.llm.api_key
     locale = settings.locale
     analysis_by_function = st.analysis_by_function or {}
     summary_by_module = st.summary_by_module or {}
-    function_facts_list = st.function_facts_list or []
 
-    # Actor 통합 — 1차 (모듈 내 결정론) + 2차 (모듈 간 LLM)
-    replaced_count = apply_module_unified_actors(
-        analysis_by_function, summary_by_module, function_facts_list,
-    )
-    if replaced_count:
-        logger.info("[PHASE:3:ACTOR_MERGE] 1차 통합 (모듈 내) | replaced=%d", replaced_count)
-
-    if api_key:
+    if api_key and summary_by_module:
+        yield emit_user_message("  ├─ Actor 동의어 통합 (모듈 간) 분석 중...")
         merge_map = await merge_cross_module_actors(
             analysis_by_function, summary_by_module, api_key, locale,
+        )
+        yield emit_user_message(
+            f"  ├─ Actor 동의어 통합 완료 ({len(merge_map)}건 매핑)"
         )
         if merge_map:
             logger.info("[PHASE:3:ACTOR_MERGE] 2차 통합 (모듈 간) | merge_map=%s", merge_map)
@@ -119,19 +170,7 @@ async def run_actor_and_table_enrichment(
         async for chunk in write_to_graph(client, actor_queries, "PHASE3:ACTORS"):
             yield chunk
         actor_count = len({d.get("actor") for d in analysis_by_function.values() if d.get("actor")})
-        logger.info("[PHASE:3:ACTOR_MERGE] Actor 노드 생성 | actors=%d", actor_count)
-
-    # Table description LLM 보강
-    yield tracker.begin_step(3, 1)
-    if api_key and analysis_by_function:
-        async for chunk in _run_framework_table_enrichment(
-            client=client,
-            insights_map=st.table_insights_map or {},
-            api_key=api_key,
-            locale=locale,
-        ):
-            yield chunk
-    yield tracker.end_step("테이블 설명 보강 완료")
+        logger.info("[PHASE:3:ACTOR] Actor 노드 생성 | actors=%d", actor_count)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -205,7 +244,7 @@ async def _run_framework_table_enrichment(
     if not tables_with_summaries:
         return
 
-    yield emit_message(f"  ├─ {len(tables_with_summaries)}개 테이블 LLM 설명 보강 중...")
+    yield emit_user_message(f"  ├─ {len(tables_with_summaries)}개 테이블 LLM 설명 보강 중...")
 
     # canonical TableInput 으로 변환
     table_inputs: List[Dict[str, Any]] = []

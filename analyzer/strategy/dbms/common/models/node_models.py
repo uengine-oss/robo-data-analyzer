@@ -667,6 +667,10 @@ class FileAnalysisContext:
     processor: Optional[Any] = None  # DbmsAstProcessor | FrameworkAstProcessor
     status: FileStatus = field(default=FileStatus.PENDING)
     error_message: str = ""
+    # ANTLR 의 PROCEDURE/FUNCTION 노드 schema 필드 (예: 'AMS_MIG'). schema 명시 없으면 "".
+    # `analyzer.common.cypher.schema_resolver.resolve_schema` 의 위계 3번 (own_schema)
+    # — 자기 schema 안의 schema-less 테이블 참조 fallback.
+    own_schema: str = ""
 
 
 # ==================== ProcedureInfo ====================

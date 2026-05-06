@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, AsyncGenerator
 
-from analyzer.strategy.dbms.enrichment.data_lineage import run_data_lineage
+from analyzer.common.pipeline.data_lineage import run_data_lineage
 from config.settings import settings
 
 

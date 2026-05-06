@@ -26,17 +26,17 @@ from analyzer.strategy.dbms.analysis.procedure_summary import (
     summarize_procedure,
 )
 from analyzer.strategy.dbms.common.cypher.graph_queries import (
-    build_column_description_query,
+    build_column_description_queries,
     build_procedure_summary_queries,
-    build_table_description_query,
+    build_table_description_queries,
 )
 from analyzer.strategy.dbms.common.domain.analysis_constants import VARIABLE_DECLARATION_TYPES
 from analyzer.strategy.dbms.common.models.node_models import FileAnalysisContext, FileStatus
-from analyzer.strategy.dbms.pipeline.stream_merge import merge_streams
+from analyzer.common.pipeline.stream_merge import merge_streams
 from config.settings import settings
 from util.llm_rule_runner import prompts
 from util.logger import log_process
-from util.stream_emitter import emit_message, emit_phase_event
+from util.stream_emitter import emit_user_message, emit_phase_event
 
 logger = logging.getLogger(__name__)
 
@@ -175,7 +175,7 @@ async def _run_unit_analysis(
     """프로시저별 LLM summary + EM Cypher 반영을 병렬 실행."""
     targets = _collect_summary_targets(contexts)
     if not targets:
-        yield emit_message("   ℹ️ 프로시저 Summary: 처리할 프로시저 없음")
+        yield emit_user_message("   ℹ️ 프로시저 Summary: 처리할 프로시저 없음")
         return
 
     total = len(targets)
@@ -203,9 +203,9 @@ async def _run_unit_analysis(
             continue
         completed += 1
         if result.get("type") == "error":
-            yield emit_message(f"   ❌ [{completed}/{total}] {result['file']}/{result['procedure']}: {result.get('message', '')[:50]}")
+            yield emit_user_message(f"   ❌ [{completed}/{total}] {result['file']}/{result['procedure']}: {result.get('message', '')[:50]}")
         else:
-            yield emit_message(f"   ✓ [{completed}/{total}] {result['file']}/{result['procedure']}: summary 생성")
+            yield emit_user_message(f"   ✓ [{completed}/{total}] {result['file']}/{result['procedure']}: summary 생성")
         yield emit_phase_event(
             2, "AI 분석", "in_progress", 60 + int(completed / total * 15),
             {"step": "프로시저 Summary", "done": completed, "total": total},
@@ -350,24 +350,37 @@ async def _invoke_dbms_table_summary(payload: Dict[str, Any], api_key: str) -> O
 
 
 def _build_dbms_table_queries(extra: Dict[str, Any], result: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """LLM 결과 → :Table / :Column SET 쿼리 리스트."""
+    """LLM 결과 → :Table / :Column SET 쿼리 리스트 (UNWIND 통합).
+
+    한 테이블 단위 호출 — 테이블 1개 + 컬럼 N개 → 최대 2 UNWIND 쿼리 (table 1, column 1).
+    상위 호출자 (`run_table_enrichment`) 가 테이블별 호출 후 결과 누적.
+    """
     queries: List[Dict[str, Any]] = []
+
     table_desc = (result.get("tableDescription") or "").strip()
     if table_desc:
-        queries.append(build_table_description_query(
-            schema=extra.get("schema", ""), name=extra["name"],
-            db=extra.get("dbms", ""), llm_desc=table_desc,
-        ))
+        queries.extend(build_table_description_queries([{
+            "schema": extra.get("schema", ""),
+            "name":   extra["name"],
+            "db":     extra.get("dbms", ""),
+            "llm_desc": table_desc,
+        }]))
+
+    column_items: List[Dict[str, Any]] = []
     for column_info in result.get("columns") or []:
         column_name = (column_info.get("name") or "").strip()
         llm_column_desc = (column_info.get("description") or "").strip()
         if not column_name or not llm_column_desc:
             continue
-        queries.append(build_column_description_query(
-            datasource=extra.get("datasource", ""),
-            schema=extra.get("schema", ""), table_name=extra["name"],
-            column_name=column_name, llm_desc=llm_column_desc,
-        ))
+        column_items.append({
+            "datasource":  extra.get("datasource", ""),
+            "schema":      extra.get("schema", ""),
+            "table_name":  extra["name"],
+            "column_name": column_name,
+            "llm_desc":    llm_column_desc,
+        })
+    queries.extend(build_column_description_queries(column_items))
+
     return queries
 
 
@@ -414,7 +427,8 @@ async def run_phase_post(
     """Phase 2 후처리 — 프로시저 요약 + 테이블 요약 **병렬** 실행.
 
     두 단계가 서로 의존성 없으므로 동시 실행으로 LLM API latency 누적 회피.
-    Neo4j 쓰기는 cypher_lock 으로 직렬화되므로 write contention 안전.
+    Neo4j 쓰기 충돌 (Deadlock 등) 은 client.run_graph_query 의 managed transaction
+    이 자동 재시도 → 별도 락 X.
     """
     async for chunk in merge_streams(
         ("unit_summary", _run_unit_analysis(ctx, contexts)),

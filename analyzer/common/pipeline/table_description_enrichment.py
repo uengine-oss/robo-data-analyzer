@@ -22,7 +22,7 @@ from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Optiona
 
 from analyzer.common.cypher.graph_writer import write_to_graph
 from client.neo4j_client import Neo4jClient
-from util.stream_emitter import emit_message, emit_phase_event
+from util.stream_emitter import emit_user_message, emit_phase_event
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ async def run_table_enrichment(
         queries = build_queries(entry.get("extra"), result) if result else []
         if queries:
             total_q += len(queries)
-            yield emit_message(f"   ✓ [{completed}/{total}] 테이블 요약 완료")
+            yield emit_user_message(f"   ✓ [{completed}/{total}] 테이블 요약 완료")
             async for chunk in write_to_graph(client, queries, log_tag):
                 yield chunk
         progress = progress_start + int(completed / total * (progress_end - progress_start))

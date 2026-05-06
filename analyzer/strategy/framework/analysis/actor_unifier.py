@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Dict, List, Set
 
@@ -94,7 +95,9 @@ async def merge_cross_module_actors(
         return {}
 
     actor_module_list = _render_actor_module_list(module_actors, analysis_by_function)
-    result = prompts.actor_synonym_merge(actor_module_list, locale, api_key)
+    result = await asyncio.to_thread(
+        prompts.actor_synonym_merge, actor_module_list, locale, api_key,
+    )
     if not isinstance(result, dict):
         logger.error(
             "[ACTOR_MERGE] LLM 결과가 dict 아님 | type=%s",

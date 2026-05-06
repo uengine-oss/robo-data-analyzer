@@ -17,7 +17,7 @@ Section 2 세부 구분:
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from analyzer.common.pipeline.example_mapping import rule_hash
 from analyzer.common.pipeline.example_mapping import collect_example_rows
@@ -48,8 +48,23 @@ from analyzer.strategy.framework.common.domain.analysis_constants import (
     SQL_TEXT_MAX,
 )
 from analyzer.strategy.framework.analysis.ast_analyzer import VALID_MODULE_STEREOTYPES
+from analyzer.common.cypher.schema_resolver import resolve_schema
 from config.settings import settings
 from analyzer.strategy.framework.common.domain.ontology import get_ontology
+
+
+def _resolve_schema(schema: str, table_name: str, name_to_schema: Dict[str, str]) -> str:
+    """Framework schema 결정 — `analyzer.common.cypher.schema_resolver.resolve_schema` 위계 적용.
+
+    Framework 는 own_schema 개념 X (코드 안에 PROCEDURE 정의 없음).
+    위계: 1) explicit → 2) DDL name 매칭 → 3) "" (강제 'public' X).
+    """
+    return resolve_schema(
+        explicit_schema=schema or "",
+        table_name=table_name or "",
+        name_to_schema=name_to_schema or {},
+        own_schema="",
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -57,76 +72,58 @@ from analyzer.strategy.framework.common.domain.ontology import get_ontology
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def _merge_node_query(label: str, key_field: str, key_val, props: dict, sub_label: str | None = None) -> dict:
-    """Generic MERGE (n:Label:SubLabel {key: $key}) ON CREATE SET ... ON MATCH SET ... builder.
+def _label_str(primary: str, sub_label: Optional[str]) -> str:
+    """primary 와 sub_label 결합 — 같으면 sub 생략 (Neo4j 동일 라벨 중복 불가)."""
+    if sub_label and sub_label != primary:
+        return f"{primary}:{sub_label}"
+    return primary
 
-    label: primary 역할 라벨 (MODULE, FUNCTION, VARIABLE, CONSTANT 등)
-    sub_label: 실제 AST 타입 서브레이블 (CLASS, METHOD, DEFINE 등). None이면 생략.
+
+def _unwind_node_merge(label_str: str, key_field: str, prop_keys: List[str]) -> str:
+    """UNWIND 기반 MERGE — CASE WHEN 가드로 빈/NULL 값일 때 기존 prop 보존.
+
+    label_str: ``"FUNCTION"`` 또는 ``"FUNCTION:METHOD"`` (caller 가 sub_label 결정).
+    prop_keys: row.<key> 로 SET 할 속성 이름들. 각 prop 마다
+    ``n.X = CASE WHEN row.X IS NOT NULL AND trim(toString(row.X)) <> '' THEN row.X ELSE n.X END``.
     """
-    # kind 속성은 더 이상 저장하지 않음 — 서브레이블로 대체
-    filtered_props = {k: v for k, v in props.items() if k != "kind"}
-
-    set_parts = [f"n.{key_field} = ${key_field}"]
-    params = {key_field: key_val}
-    for prop, val in filtered_props.items():
-        set_parts.append(
-            f"n.{prop} = CASE WHEN ${prop} IS NOT NULL AND trim(toString(${prop})) <> '' "
-            f"THEN ${prop} ELSE n.{prop} END"
-        )
-        params[prop] = val
+    set_parts = [
+        f"n.{p} = CASE WHEN row.{p} IS NOT NULL AND trim(toString(row.{p})) <> '' "
+        f"THEN row.{p} ELSE n.{p} END"
+        for p in prop_keys
+    ]
     set_clause = ", ".join(set_parts)
-
-    # primary와 sub_label이 동일하면 서브레이블 생략 (Neo4j는 동일 라벨 중복 불가)
-    # 예: C FUNCTION → primary=FUNCTION, sub=FUNCTION → 그냥 :FUNCTION
-    if sub_label and sub_label != label:
-        label_str = f"{label}:{sub_label}"
-    else:
-        label_str = label
-    q = (
-        f"MERGE (n:{label_str} {{{key_field}: ${key_field}}})\n"
-        f"ON CREATE SET {set_clause}, n.created_at = timestamp()\n"
-        f"ON MATCH SET {set_clause}, n.updated_at = timestamp()\n"
-        "RETURN n"
+    head = (
+        f"UNWIND $rows AS row\n"
+        f"MERGE (n:{label_str} {{{key_field}: row.{key_field}}})\n"
     )
-    return {"query": q, "params": params}
-
-
-def _merge_rel_query(
-    src_label: str, src_key: str, src_val,
-    dst_label: str, dst_key: str, dst_val,
-    rel_type: str, props: dict | None = None,
-) -> dict:
-    """Generic MERGE (a)-[r:REL]->(b) builder."""
-    src_param = f"src_{src_key}"
-    dst_param = f"dst_{dst_key}"
-    q = (
-        f"MATCH (a:{src_label} {{{src_key}: ${src_param}}})\n"
-        f"MATCH (b:{dst_label} {{{dst_key}: ${dst_param}}})\n"
-        f"MERGE (a)-[r:{rel_type}]->(b)\n"
-        "SET r.updated_at = timestamp()\n"
-        "RETURN r"
-    )
-    params: dict = {src_param: src_val, dst_param: dst_val}
-    if props:
-        params.update(props)
-    return {"query": q, "params": params}
-
-
-def _build_unwind_query(label: str, merge_key: str, set_clause: str) -> Callable:
-    """Returns a function that takes rows and returns {query, params}."""
-    q = (
-        "UNWIND $rows AS row\n"
-        f"MERGE (n:{label} {{{merge_key}: row.{merge_key}}})\n"
-        "ON CREATE SET n.created_at = timestamp()\n"
-        f"SET {set_clause}, n.updated_at = timestamp()"
+    if set_clause:
+        return (
+            head
+            + f"ON CREATE SET {set_clause}, n.created_at = timestamp()\n"
+            + f"ON MATCH SET {set_clause}, n.updated_at = timestamp()"
+        )
+    return (
+        head
+        + "ON CREATE SET n.created_at = timestamp()\n"
+        + "ON MATCH SET n.updated_at = timestamp()"
     )
 
-    def _fn(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+
+def _emit_node_merges(
+    grouped: Dict[str, List[Dict[str, Any]]],
+    key_field: str,
+    prop_keys: List[str],
+) -> List[Dict[str, Any]]:
+    """label_str 별 그룹 → UNWIND 쿼리 1개씩 emit."""
+    queries: List[Dict[str, Any]] = []
+    for label_str, rows in grouped.items():
         if not rows:
-            return {"query": "", "params": {"rows": []}}
-        return {"query": q, "params": {"rows": rows}}
-
-    return _fn
+            continue
+        queries.append({
+            "query":  _unwind_node_merge(label_str, key_field, prop_keys),
+            "params": {"rows": rows},
+        })
+    return queries
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -163,9 +160,9 @@ def _split_file_path(path: str) -> tuple[str, str]:
 
 
 def _build_column_fqn(schema: str, table: str, column: str) -> str:
-    """Column FQN 생성 (schema.table.column)."""
-    s = (schema or "").strip() or settings.defaults.db_schema
-    return f"{s}.{table}.{column}"
+    """Column FQN 생성. schema 빈값이면 ``table.column`` (강제 'public' 박지 X)."""
+    s = (schema or "").strip()
+    return f"{s}.{table}.{column}" if s else f"{table}.{column}"
 
 
 def _module_fqn_and_function_name(fqn: Optional[str]) -> tuple[str, str]:
@@ -228,37 +225,49 @@ def _target_fqn_from_module_index(module_index: Dict[str, Any], target_name: str
 
 # --- 2-2a. 코드 엔티티 노드 (FUNCTION, MODULE, PACKAGE, VARIABLE) ---
 
+_FUNCTION_PROP_KEYS = [
+    "signature", "start_line", "end_line", "code_ref", "module_key", "package_name",
+    "module_name", "name", "code_text", "file_path", "directory", "file_name",
+    "annotations", "comment",
+]
+
+
 def build_function_queries(function_facts_list: List[FunctionFacts], node_kinds: Dict[str, str]) -> List[Dict[str, Any]]:
-    """Method 노드 MERGE. 속성: name(메서드명), module_name(소속 모듈 짧은이름), module_key(소속 모듈 fqn) 등.
+    """FUNCTION 노드 MERGE — UNWIND, sub_label 그룹 (FUNCTION:METHOD / FUNCTION:DEFINE / 등).
 
     Args:
-        node_kinds: function_id → 원래 노드타입 (FUNCTION, METHOD 등) 매핑. kind 속성에 저장. 빈 dict 가능.
+        node_kinds: function_id → AST 타입 (METHOD/DEFINE/...) 매핑. label 의 sub-label.
     """
-    queries = []
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
     for m in function_facts_list:
         module_fqn, function_name = _module_fqn_and_function_name(m.fqn)
         module_name_short = _extract_short_name(module_fqn)
         kind = node_kinds.get(m.function_id, "METHOD")
-        # code_ref에서 file_path 추출 (예: "src/core/db_engine.c:575-620" → "src/core/db_engine.c")
+        # code_ref 에서 file_path 추출 (예: "src/core/db_engine.c:575-620" → "src/core/db_engine.c")
         code_ref = m.code_ref
         file_path = code_ref.split(":")[0] if ":" in code_ref else code_ref
         directory, file_name = _split_file_path(file_path)
-        queries.append(_merge_node_query("FUNCTION", "function_id", m.function_id, {
-            "signature": m.signature,
-            "start_line": m.start_line, "end_line": m.end_line,
-            "code_ref": code_ref, "module_key": m.module_key,
+        label_str = _label_str("FUNCTION", kind)
+        grouped.setdefault(label_str, []).append({
+            "function_id":  m.function_id,
+            "signature":    m.signature,
+            "start_line":   m.start_line, "end_line": m.end_line,
+            "code_ref":     code_ref, "module_key": m.module_key,
             "package_name": m.package_name,
-            "module_name": module_name_short, "name": function_name,
-            "code_text": m.code[:_CHUNK_CODE_MAX],
-            "file_path": file_path, "directory": directory, "file_name": file_name,
-            "annotations": m.annotations, "comment": m.comment,
-        }, sub_label=kind))
-    return queries
+            "module_name":  module_name_short, "name": function_name,
+            "code_text":    m.code[:_CHUNK_CODE_MAX],
+            "file_path":    file_path, "directory": directory, "file_name": file_name,
+            "annotations":  m.annotations, "comment": m.comment,
+        })
+    return _emit_node_merges(grouped, "function_id", _FUNCTION_PROP_KEYS)
+
+
+_MODULE_PROP_KEYS = ["name", "type", "package_name", "annotations", "comment"]
 
 
 def build_module_queries(module_index: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """MODULE 노드 MERGE. 속성: fqn, name, type, package_name."""
-    queries = []
+    """MODULE 노드 MERGE — UNWIND, sub_label (kind) 그룹."""
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
     for info in module_index.values():
         if not isinstance(info, dict):
             continue
@@ -269,47 +278,59 @@ def build_module_queries(module_index: Dict[str, Any]) -> List[Dict[str, Any]]:
         if not name and fqn:
             name = _extract_short_name(fqn)
         kind = info.get("kind", "")
-        queries.append(_merge_node_query("MODULE", "fqn", fqn, {
-            "name": name, "type": kind,
+        label_str = _label_str("MODULE", kind)
+        grouped.setdefault(label_str, []).append({
+            "fqn":          fqn,
+            "name":         name,
+            "type":         kind,
             "package_name": info.get("package_name") or "",
-            "annotations": info.get("annotations") or "", "comment": info.get("comment") or "",
-        }, sub_label=kind))
-    return queries
+            "annotations":  info.get("annotations") or "",
+            "comment":      info.get("comment") or "",
+        })
+    return _emit_node_merges(grouped, "fqn", _MODULE_PROP_KEYS)
 
 
 def build_package_queries(package_fqns: List[str]) -> List[Dict[str, Any]]:
-    """PACKAGE 노드 MERGE (fqn 기준). 계층용 prefix도 포함하려면 _expand_package_fqns로 넣어줄 것."""
-    queries = []
-    for fqn in package_fqns:
-        if not fqn:
-            continue
-        segment = _extract_short_name(fqn)
-        queries.append(_merge_node_query("PACKAGE", "fqn", fqn, {"name": segment}))
-    return queries
+    """PACKAGE 노드 MERGE — UNWIND 단일 쿼리."""
+    rows = [{"fqn": fqn, "name": _extract_short_name(fqn)} for fqn in package_fqns if fqn]
+    if not rows:
+        return []
+    return [{
+        "query":  _unwind_node_merge("PACKAGE", "fqn", ["name"]),
+        "params": {"rows": rows},
+    }]
+
+
+_VARIABLE_PROP_KEYS = [
+    "name", "module_name", "start_line", "end_line", "variable_type", "code_ref",
+    "code_text", "annotations", "comment", "init_value",
+]
 
 
 def build_variable_queries(variable_facts_list: List[VariableFacts], lang: str, node_kinds: Dict[str, str]) -> List[Dict[str, Any]]:
-    """VARIABLE/CONSTANT 노드 MERGE. ontology 기반으로 primary 라벨 결정.
+    """VARIABLE/CONSTANT 노드 MERGE — UNWIND, (primary, sub_label) 그룹.
 
     Args:
-        node_kinds: variable_id → 원래 노드타입 (FIELD, DEFINE 등) 매핑. sub_label로 저장. 빈 dict 가능.
-        lang: 언어 코드. ontology에서 primary 라벨(VARIABLE/CONSTANT) 결정에 사용.
+        node_kinds: variable_id → AST 타입 (FIELD/DEFINE/...) → sub_label.
+        lang: 언어 코드. ontology 가 primary 라벨(VARIABLE/CONSTANT) 결정.
     """
     onto = get_ontology()
-    queries = []
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
     for f in variable_facts_list:
         module_name = _extract_short_name(f.module_key).split(":")[0]
         kind = node_kinds.get(f.variable_id, "FIELD")
         primary = onto.primary_label_for(kind, lang)
-        queries.append(_merge_node_query(primary, "variable_id", f.variable_id, {
-            "name": f.name, "module_name": module_name,
-            "start_line": f.start_line, "end_line": f.end_line,
+        label_str = _label_str(primary, kind)
+        grouped.setdefault(label_str, []).append({
+            "variable_id":   f.variable_id,
+            "name":          f.name, "module_name": module_name,
+            "start_line":    f.start_line, "end_line": f.end_line,
             "variable_type": f.variable_type, "code_ref": f.code_ref,
-            "code_text": f.code[:_CHUNK_CODE_MAX],
-            "annotations": f.annotations, "comment": f.comment,
-            "init_value": f.init_value,
-        }, sub_label=kind))
-    return queries
+            "code_text":     f.code[:_CHUNK_CODE_MAX],
+            "annotations":   f.annotations, "comment": f.comment,
+            "init_value":    f.init_value,
+        })
+    return _emit_node_merges(grouped, "variable_id", _VARIABLE_PROP_KEYS)
 
 
 # --- 2-2b. INIT_BY 관계 (Variable → Variable|Constant 초기화 출처) ---
@@ -401,32 +422,55 @@ def build_var_refs_queries(refs: List[tuple]) -> List[Dict[str, Any]]:
 
 # --- 2-2c. 비코드 엔티티 노드 (ConfigSection, ArtifactChunk, SqlStatement) ---
 
+_CONFIG_SECTION_PROP_KEYS = ["file_path", "start_line", "end_line", "code_text"]
+
+
 def build_config_section_queries(config_chunks: List[ConfigSectionChunk]) -> List[Dict[str, Any]]:
-    """ConfigSection 노드 MERGE (config_key_path 기준). file_path·code_text 온톨로지 통일."""
-    queries = []
-    for c in config_chunks:
-        queries.append(_merge_node_query("CONFIG_SECTION", "config_key_path", c.config_key_path, {
-            "file_path": c.file_path, "start_line": c.start_line,
-            "end_line": c.end_line, "code_text": c.raw_snippet[:_ARTIFACT_CODE_MAX],
-        }))
-    return queries
+    """ConfigSection 노드 MERGE — UNWIND 단일 쿼리."""
+    rows = [{
+        "config_key_path": c.config_key_path,
+        "file_path":       c.file_path,
+        "start_line":      c.start_line,
+        "end_line":        c.end_line,
+        "code_text":       c.raw_snippet[:_ARTIFACT_CODE_MAX],
+    } for c in config_chunks]
+    if not rows:
+        return []
+    return [{
+        "query":  _unwind_node_merge("CONFIG_SECTION", "config_key_path", _CONFIG_SECTION_PROP_KEYS),
+        "params": {"rows": rows},
+    }]
+
+
+_ARTIFACT_CHUNK_PROP_KEYS = [
+    "chunk_type", "hint_key", "code_text", "file_path", "directory", "file_name",
+    "start_line", "end_line",
+]
 
 
 def build_artifact_chunk_queries(artifact_chunks: List[ArtifactChunk]) -> List[Dict[str, Any]]:
-    """ArtifactChunk 노드 MERGE (chunk_id 기준). file_path·code_text 온톨로지 통일(코드 청크와 동일)."""
-    queries = []
+    """ArtifactChunk 노드 MERGE — UNWIND 단일 쿼리."""
+    rows: List[Dict[str, Any]] = []
     for c in artifact_chunks:
         src = c.source_path
         directory, file_name = _split_file_path(src)
-        queries.append(_merge_node_query("ARTIFACT_CHUNK", "chunk_id", c.chunk_id, {
-            "chunk_type": c.chunk_type, "hint_key": c.hint_key,
-            "code_text": c.text[:_ARTIFACT_CODE_MAX],
-            "file_path": src,
-            "directory": directory,
-            "file_name": file_name,
-            "start_line": c.start_line, "end_line": c.end_line,
-        }))
-    return queries
+        rows.append({
+            "chunk_id":   c.chunk_id,
+            "chunk_type": c.chunk_type,
+            "hint_key":   c.hint_key,
+            "code_text":  c.text[:_ARTIFACT_CODE_MAX],
+            "file_path":  src,
+            "directory":  directory,
+            "file_name":  file_name,
+            "start_line": c.start_line,
+            "end_line":   c.end_line,
+        })
+    if not rows:
+        return []
+    return [{
+        "query":  _unwind_node_merge("ARTIFACT_CHUNK", "chunk_id", _ARTIFACT_CHUNK_PROP_KEYS),
+        "params": {"rows": rows},
+    }]
 
 
 def build_artifact_module_refer_to_queries(
@@ -474,16 +518,29 @@ def build_artifact_module_refer_to_queries(
     return queries
 
 
+_SQL_STATEMENT_PROP_KEYS = ["sql_type", "start_line", "end_line", "file_path", "sql_text", "code_text"]
+
+
 def build_sql_statement_queries(sql_chunks: List[SqlStatementChunk]) -> List[Dict[str, Any]]:
-    """SqlStatement 노드 MERGE (sql_key 기준). sql_text·code_text(온톨로지 통일)·file_path 포함."""
-    queries = []
+    """SqlStatement 노드 MERGE — UNWIND 단일 쿼리."""
+    rows: List[Dict[str, Any]] = []
     for s in sql_chunks:
         sql_text = s.sql_text[:_SQL_TEXT_MAX]
-        queries.append(_merge_node_query("SQL_STATEMENT", "sql_key", s.sql_key, {
-            "sql_type": s.sql_type, "start_line": s.start_line, "end_line": s.end_line,
-            "file_path": s.file_path, "sql_text": sql_text, "code_text": sql_text,
-        }))
-    return queries
+        rows.append({
+            "sql_key":    s.sql_key,
+            "sql_type":   s.sql_type,
+            "start_line": s.start_line,
+            "end_line":   s.end_line,
+            "file_path":  s.file_path,
+            "sql_text":   sql_text,
+            "code_text":  sql_text,
+        })
+    if not rows:
+        return []
+    return [{
+        "query":  _unwind_node_merge("SQL_STATEMENT", "sql_key", _SQL_STATEMENT_PROP_KEYS),
+        "params": {"rows": rows},
+    }]
 
 
 # --- 2-2d. DB 노드 (Table, Column) — 복합 키/특수 로직으로 커스텀 쿼리 ---
@@ -491,8 +548,13 @@ def build_sql_statement_queries(sql_chunks: List[SqlStatementChunk]) -> List[Dic
 def build_table_queries_from_reads_writes(
     reads_writes: List[ReadsWritesEdge],
     table_descriptions: Optional[Dict[Tuple[str, str], str]] = None,
+    *,
+    name_to_schema: Dict[str, str],
 ) -> List[Dict[str, Any]]:
-    """Reads_writes에서 등장하는 테이블로 Table 노드 MERGE. DUAL 등 제외. db/schema 빈 값은 settings.defaults.db_dialect/db_schema. description은 table_descriptions에서 적용.
+    """Reads_writes에서 등장하는 테이블로 Table 노드 MERGE. DUAL 등 제외.
+
+    schema 결정은 `_resolve_schema` 위계 (LLM 명시 → DDL 매칭 → 빈값).
+    description 은 table_descriptions 에서 적용.
 
     주의: DBMS 전략에서 사용하는 라벨 이름은 `Table`(대소문자 포함)이므로,
     여기서도 동일한 라벨을 사용해야 아티팩트/메서드/SQL과 DB 테이블이 하나의 노드로 합쳐진다.
@@ -501,15 +563,15 @@ def build_table_queries_from_reads_writes(
     queries = []
     desc_map = table_descriptions or {}
     for rw in reads_writes:
-        key = (rw.table_schema or settings.defaults.db_schema, rw.table_name)
-        if key in seen:
-            continue
-        name_lower = rw.table_name.strip().lower()
+        name = rw.table_name
+        name_lower = name.strip().lower()
         if name_lower in _EXCLUDED_TABLE_NAMES:
             continue
+        schema = _resolve_schema(rw.table_schema, name, name_to_schema)
+        key = (schema, name)
+        if key in seen:
+            continue
         seen.add(key)
-        schema = rw.table_schema.strip() or settings.defaults.db_schema
-        name = rw.table_name
         table_id = f"{schema}.{name}" if schema else name
         # LLM이 schema 없이 반환한 경우 ("", name) 키로도 조회
         description = desc_map.get((schema, name)) or desc_map.get(("", name)) or ""
@@ -531,14 +593,21 @@ def build_table_queries_from_reads_writes(
     return queries
 
 
-def build_column_queries(column_refs: List[ColumnRef]) -> List[Dict[str, Any]]:
-    """Column 노드 MERGE (fqn 기준). DUAL 등 제외."""
+def build_column_queries(
+    column_refs: List[ColumnRef],
+    *,
+    name_to_schema: Dict[str, str],
+) -> List[Dict[str, Any]]:
+    """Column 노드 MERGE (fqn 기준). DUAL 등 제외.
+
+    schema 결정은 `_resolve_schema` 위계 (LLM 명시 → DDL 매칭 → 빈값).
+    """
     seen = set()
     queries = []
     for c in column_refs:
         if c.table_name.strip().lower() in _EXCLUDED_TABLE_NAMES:
             continue
-        _schema = c.table_schema.strip() or settings.defaults.db_schema
+        _schema = _resolve_schema(c.table_schema, c.table_name, name_to_schema)
         fqn = _build_column_fqn(_schema, c.table_name, c.column_name)
         if fqn in seen:
             continue
@@ -573,63 +642,99 @@ def build_column_queries(column_refs: List[ColumnRef]) -> List[Dict[str, Any]]:
 # --- 3-1. 패키지·모듈 구조 관계 (BELONGS_TO_PACKAGE, HAS_FUNCTION, HAS_VARIABLE) ---
 
 def build_package_hierarchy_queries(package_fqns: List[str]) -> List[Dict[str, Any]]:
-    """(자식 PACKAGE)-[:BELONGS_TO_PACKAGE]->(부모 PACKAGE) 관계."""
+    """(자식 PACKAGE)-[:BELONGS_TO_PACKAGE]->(부모 PACKAGE) — UNWIND 단일 쿼리."""
     expanded = _expand_package_fqns(package_fqns)
-    queries = []
-    for fqn in expanded:
-        if "." not in fqn:
-            continue
-        parent = fqn.rsplit(".", 1)[0]
-        queries.append(_merge_rel_query("PACKAGE", "fqn", fqn, "PACKAGE", "fqn", parent, "BELONGS_TO_PACKAGE"))
-    return queries
+    rows = [
+        {"fqn": fqn, "parent_fqn": fqn.rsplit(".", 1)[0]}
+        for fqn in expanded if "." in fqn
+    ]
+    if not rows:
+        return []
+    query = (
+        "UNWIND $rows AS row\n"
+        "MATCH (a:PACKAGE {fqn: row.fqn})\n"
+        "MATCH (b:PACKAGE {fqn: row.parent_fqn})\n"
+        "MERGE (a)-[r:BELONGS_TO_PACKAGE]->(b)\n"
+        "SET r.updated_at = timestamp()"
+    )
+    return [{"query": query, "params": {"rows": rows}}]
 
 
 def build_belongs_to_package_queries(module_index: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """(MODULE)-[:BELONGS_TO_PACKAGE]->(PACKAGE) 관계."""
-    queries = []
+    """(MODULE)-[:BELONGS_TO_PACKAGE]->(PACKAGE) — UNWIND 단일 쿼리."""
+    rows: List[Dict[str, Any]] = []
     for info in module_index.values():
         if not isinstance(info, dict):
             continue
         fqn = info.get("fqn") or info.get("module_key")
         pkg = info.get("package_name")
-        if not fqn or not pkg:
-            continue
-        queries.append(_merge_rel_query("MODULE", "fqn", fqn, "PACKAGE", "fqn", pkg, "BELONGS_TO_PACKAGE"))
-    return queries
+        if fqn and pkg:
+            rows.append({"module_fqn": fqn, "pkg_fqn": pkg})
+    if not rows:
+        return []
+    query = (
+        "UNWIND $rows AS row\n"
+        "MATCH (a:MODULE {fqn: row.module_fqn})\n"
+        "MATCH (b:PACKAGE {fqn: row.pkg_fqn})\n"
+        "MERGE (a)-[r:BELONGS_TO_PACKAGE]->(b)\n"
+        "SET r.updated_at = timestamp()"
+    )
+    return [{"query": query, "params": {"rows": rows}}]
 
 
 def build_root_package_queries(
     package_fqns: List[str],
     module_index: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    """root PACKAGE 노드 생성 + 최상위 패키지/고아 MODULE 연결.
+    """root PACKAGE 노드 + 최상위 패키지/고아 MODULE 연결 — UNWIND 통합.
 
     - root PACKAGE 노드 (fqn="root", name="root") 생성
     - 부모가 없는 최상위 패키지 → BELONGS_TO_PACKAGE → root
-    - package_name이 없는 MODULE → BELONGS_TO_PACKAGE → root
+    - package_name 이 없는 MODULE → BELONGS_TO_PACKAGE → root
     """
     queries: List[Dict[str, Any]] = []
-    # 1. root PACKAGE 노드 생성
-    queries.append(_merge_node_query("PACKAGE", "fqn", "root", {"name": "root"}))
 
-    # 2. 최상위 패키지 (fqn에 .이 없는) → root 연결 (root 자신은 제외)
+    # 1. root PACKAGE 노드 (1행 UNWIND)
+    queries.append({
+        "query":  _unwind_node_merge("PACKAGE", "fqn", ["name"]),
+        "params": {"rows": [{"fqn": "root", "name": "root"}]},
+    })
+
+    # 2. 최상위 패키지 → root
     expanded = set(_expand_package_fqns(package_fqns))
-    for fqn in expanded:
-        if fqn and fqn != "root" and "." not in fqn:
-            queries.append(_merge_rel_query(
-                "PACKAGE", "fqn", fqn, "PACKAGE", "fqn", "root", "BELONGS_TO_PACKAGE",
-            ))
+    pkg_rows = [{"fqn": fqn} for fqn in expanded if fqn and fqn != "root" and "." not in fqn]
+    if pkg_rows:
+        queries.append({
+            "query": (
+                "UNWIND $rows AS row\n"
+                "MATCH (a:PACKAGE {fqn: row.fqn})\n"
+                "MATCH (b:PACKAGE {fqn: 'root'})\n"
+                "MERGE (a)-[r:BELONGS_TO_PACKAGE]->(b)\n"
+                "SET r.updated_at = timestamp()"
+            ),
+            "params": {"rows": pkg_rows},
+        })
 
-    # 3. package_name이 없는 고아 MODULE → root 연결
+    # 3. 고아 MODULE → root
+    mod_rows: List[Dict[str, Any]] = []
     for info in module_index.values():
         if not isinstance(info, dict):
             continue
         fqn = info.get("fqn") or info.get("module_key")
         pkg = info.get("package_name")
         if fqn and not pkg:
-            queries.append(_merge_rel_query(
-                "MODULE", "fqn", fqn, "PACKAGE", "fqn", "root", "BELONGS_TO_PACKAGE",
-            ))
+            mod_rows.append({"fqn": fqn})
+    if mod_rows:
+        queries.append({
+            "query": (
+                "UNWIND $rows AS row\n"
+                "MATCH (a:MODULE {fqn: row.fqn})\n"
+                "MATCH (b:PACKAGE {fqn: 'root'})\n"
+                "MERGE (a)-[r:BELONGS_TO_PACKAGE]->(b)\n"
+                "SET r.updated_at = timestamp()"
+            ),
+            "params": {"rows": mod_rows},
+        })
 
     return queries
 
@@ -638,16 +743,41 @@ def build_has_function_queries(
     function_facts_list: List[FunctionFacts],
     module_index: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    """(MODULE)-[:HAS_FUNCTION]->(FUNCTION) 또는 (PACKAGE)-[:BELONGS_TO_PACKAGE]->(FUNCTION) 관계."""
-    queries = []
+    """(MODULE)-[:HAS_FUNCTION]->(FUNCTION) + (PACKAGE)-[:BELONGS_TO_PACKAGE]->(FUNCTION).
+
+    UNWIND 두 그룹 (컨테이너 있음 vs 없음).
+    """
+    has_func_rows: List[Dict[str, Any]] = []
+    pkg_belongs_rows: List[Dict[str, Any]] = []
     for m in function_facts_list:
-        module_fqn = m.module_key if m.module_key else None
-        if module_fqn:
-            # 컨테이너 있음: MODULE → FUNCTION
-            queries.append(_merge_rel_query("MODULE", "fqn", module_fqn, "FUNCTION", "function_id", m.function_id, "HAS_FUNCTION"))
+        if m.module_key:
+            has_func_rows.append({"module_fqn": m.module_key, "function_id": m.function_id})
         elif m.package_name:
-            # 컨테이너 없음 (C FUNCTION 등): PACKAGE → FUNCTION
-            queries.append(_merge_rel_query("PACKAGE", "fqn", m.package_name, "FUNCTION", "function_id", m.function_id, "BELONGS_TO_PACKAGE"))
+            pkg_belongs_rows.append({"pkg_fqn": m.package_name, "function_id": m.function_id})
+
+    queries: List[Dict[str, Any]] = []
+    if has_func_rows:
+        queries.append({
+            "query": (
+                "UNWIND $rows AS row\n"
+                "MATCH (a:MODULE {fqn: row.module_fqn})\n"
+                "MATCH (b:FUNCTION {function_id: row.function_id})\n"
+                "MERGE (a)-[r:HAS_FUNCTION]->(b)\n"
+                "SET r.updated_at = timestamp()"
+            ),
+            "params": {"rows": has_func_rows},
+        })
+    if pkg_belongs_rows:
+        queries.append({
+            "query": (
+                "UNWIND $rows AS row\n"
+                "MATCH (a:PACKAGE {fqn: row.pkg_fqn})\n"
+                "MATCH (b:FUNCTION {function_id: row.function_id})\n"
+                "MERGE (a)-[r:BELONGS_TO_PACKAGE]->(b)\n"
+                "SET r.updated_at = timestamp()"
+            ),
+            "params": {"rows": pkg_belongs_rows},
+        })
     return queries
 
 
@@ -655,14 +785,21 @@ def build_has_variable_queries(
     variable_facts_list: List[VariableFacts],
     module_index: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    """(MODULE)-[:HAS_VARIABLE]->(VARIABLE) 관계."""
-    queries = []
-    for f in variable_facts_list:
-        module_fqn = f.module_key
-        if not module_fqn:
-            continue
-        queries.append(_merge_rel_query("MODULE", "fqn", module_fqn, "VARIABLE", "variable_id", f.variable_id, "HAS_VARIABLE"))
-    return queries
+    """(MODULE)-[:HAS_VARIABLE]->(VARIABLE) — UNWIND 단일 쿼리."""
+    rows = [
+        {"module_fqn": f.module_key, "variable_id": f.variable_id}
+        for f in variable_facts_list if f.module_key
+    ]
+    if not rows:
+        return []
+    query = (
+        "UNWIND $rows AS row\n"
+        "MATCH (a:MODULE {fqn: row.module_fqn})\n"
+        "MATCH (b:VARIABLE {variable_id: row.variable_id})\n"
+        "MERGE (a)-[r:HAS_VARIABLE]->(b)\n"
+        "SET r.updated_at = timestamp()"
+    )
+    return [{"query": query, "params": {"rows": rows}}]
 
 
 # --- 3-2. FK 관계 (FK_TO_COLUMN, FK_TO_TABLE) ---
@@ -702,14 +839,18 @@ def build_fk_to_column_queries(fk_edges: List[FkEdge]) -> List[Dict[str, Any]]:
 
 # --- 3-3. DB 구조 관계 (HAS_COLUMN) — 복합 키 커스텀 쿼리 ---
 
-def build_has_column_queries(column_refs: List[ColumnRef]) -> List[Dict[str, Any]]:
-    """(Table)-[:HAS_COLUMN]->(Column) 관계. DUAL 등 제외. db/schema 빈 값은 settings.defaults.db_dialect/db_schema."""
+def build_has_column_queries(
+    column_refs: List[ColumnRef],
+    *,
+    name_to_schema: Dict[str, str],
+) -> List[Dict[str, Any]]:
+    """(Table)-[:HAS_COLUMN]->(Column) 관계. DUAL 등 제외. schema 위계 적용."""
     seen = set()
     queries = []
     for c in column_refs:
         if c.table_name.strip().lower() in _EXCLUDED_TABLE_NAMES:
             continue
-        schema = c.table_schema.strip() or settings.defaults.db_schema
+        schema = _resolve_schema(c.table_schema, c.table_name, name_to_schema)
         name = c.table_name
         fqn = _build_column_fqn(schema, name, c.column_name)
         key = (schema, name, fqn)
@@ -727,10 +868,14 @@ def build_has_column_queries(column_refs: List[ColumnRef]) -> List[Dict[str, Any
     return queries
 
 
-def build_fk_to_table_queries(fk_edges: List[FkEdge]) -> List[Dict[str, Any]]:
+def build_fk_to_table_queries(
+    fk_edges: List[FkEdge],
+    *,
+    name_to_schema: Dict[str, str],
+) -> List[Dict[str, Any]]:
     """(TABLE)-[:FK_TO_TABLE]->(TABLE) 관계를 테이블쌍당 1개만 생성.
 
-    schema 빈 값은 settings.defaults.db_schema(public).
+    schema 위계 적용 (LLM 명시 → DDL 매칭 → 빈값).
     관계 속성: source(최초 생성 시만 기록), sourceColumn, targetColumn.
     """
     if not fk_edges:
@@ -738,10 +883,10 @@ def build_fk_to_table_queries(fk_edges: List[FkEdge]) -> List[Dict[str, Any]]:
     seen: set = set()
     queries = []
     for e in fk_edges:
-        from_schema = e.from_schema.strip() or settings.defaults.db_schema
         from_table = e.from_table
-        to_schema = e.to_schema.strip() or settings.defaults.db_schema
         to_table = e.to_table
+        from_schema = _resolve_schema(e.from_schema, from_table, name_to_schema)
+        to_schema = _resolve_schema(e.to_schema, to_table, name_to_schema)
         if (from_table or "").strip().lower() in _EXCLUDED_TABLE_NAMES or (to_table or "").strip().lower() in _EXCLUDED_TABLE_NAMES:
             continue
         # 동일 테이블쌍 중복 방지 (대소문자 무시)
@@ -774,12 +919,16 @@ def build_fk_to_table_queries(fk_edges: List[FkEdge]) -> List[Dict[str, Any]]:
 
 # --- 3-4. 데이터 접근 관계 (SELECT/INSERT/UPDATE/DELETE, READS/WRITES, REFER_TO) ---
 
-def build_reads_writes_queries(edges: List[ReadsWritesEdge]) -> List[Dict[str, Any]]:
-    """(SqlStatement)-[:SELECT|INSERT|UPDATE|DELETE]->(Table) 관계. DUAL 등 제외. db/schema 빈 값은 settings.defaults.db_dialect/db_schema."""
+def build_reads_writes_queries(
+    edges: List[ReadsWritesEdge],
+    *,
+    name_to_schema: Dict[str, str],
+) -> List[Dict[str, Any]]:
+    """(SqlStatement)-[:SELECT|INSERT|UPDATE|DELETE]->(Table) 관계. DUAL 등 제외. schema 위계 적용."""
     queries = []
     for e in edges:
-        schema = e.table_schema.strip() or settings.defaults.db_schema
         name = e.table_name
+        schema = _resolve_schema(e.table_schema, name, name_to_schema)
         if (name or "").strip().lower() in _EXCLUDED_TABLE_NAMES:
             continue
         if not e.relation or not e.relation.strip():
@@ -802,16 +951,20 @@ def build_reads_writes_queries(edges: List[ReadsWritesEdge]) -> List[Dict[str, A
     return queries
 
 
-def build_node_table_queries(edges: List[FunctionTableEdge]) -> List[Dict[str, Any]]:
-    """(Function|Field)-[:READS|WRITES]->(Table) 관계. DUAL 등 제외. db/schema 빈 값은 settings.defaults.db_dialect/db_schema.
+def build_node_table_queries(
+    edges: List[FunctionTableEdge],
+    *,
+    name_to_schema: Dict[str, str],
+) -> List[Dict[str, Any]]:
+    """(Function|Field)-[:READS|WRITES]->(Table) 관계. DUAL 등 제외. schema 위계 적용.
 
     테이블 매칭은 대소문자 무시(toLower). 기존 Table 노드가 있으면 MATCH로 찾아 연결하고,
     없으면 MERGE로 새로 생성한다 (DeepAgent 시나리오 4 대응).
     """
     queries = []
     for e in edges:
-        schema = e.table_schema.strip() or settings.defaults.db_schema
         name = e.table_name
+        schema = _resolve_schema(e.table_schema, name, name_to_schema)
         if (name or "").strip().lower() in _EXCLUDED_TABLE_NAMES:
             continue
         if not e.relation or not e.relation.strip():
@@ -856,8 +1009,12 @@ def build_table_from_entity_classes(
     module_index: Dict[str, Any],
     variable_facts_list: Optional[List[VariableFacts]] = None,
     schema_default: str = "",
+    *,
+    name_to_schema: Dict[str, str],
 ) -> List[Dict[str, Any]]:
     """엔티티로 확정된 클래스/구조체의 멤버변수로 Column + HAS_COLUMN 노드/관계 생성.
+
+    schema 결정: schema_default (호출자 명시) > name_to_schema (DDL 매칭) > "".
 
     entity_map: {fqn: table_name} — 테이블명은 호출부에서 결정.
     컬럼명 = 멤버변수명 그대로 사용.
@@ -877,7 +1034,7 @@ def build_table_from_entity_classes(
         module_key = info.get("module_key", "")
         if not table_name:
             continue
-        schema = schema_default or settings.defaults.db_schema
+        schema = _resolve_schema(schema_default, table_name, name_to_schema)
 
         # 멤버변수(VariableFacts)에서 Column 정보 추출
         member_vars = vars_by_module.get(module_key, [])
@@ -902,7 +1059,7 @@ def build_table_from_entity_classes(
         if not table_name or table_name in table_names_seen:
             continue
         table_names_seen.add(table_name)
-        schema = schema_default or settings.defaults.db_schema
+        schema = _resolve_schema(schema_default, table_name, name_to_schema)
         table_id = f"{schema}.{table_name}" if schema else table_name
         q = (
             "MERGE (n:Table {db: $db, schema: $schema, name: $name})\n"
@@ -916,18 +1073,22 @@ def build_table_from_entity_classes(
         })
 
     # Column 노드 MERGE + HAS_COLUMN 관계
-    queries.extend(build_column_queries(column_refs))
-    queries.extend(build_has_column_queries(column_refs))
+    queries.extend(build_column_queries(column_refs, name_to_schema=name_to_schema))
+    queries.extend(build_has_column_queries(column_refs, name_to_schema=name_to_schema))
 
     return queries
 
 
-def build_module_table_refer_to_queries(edges: List[ModuleTableEdge]) -> List[Dict[str, Any]]:
+def build_module_table_refer_to_queries(
+    edges: List[ModuleTableEdge],
+    *,
+    name_to_schema: Dict[str, str],
+) -> List[Dict[str, Any]]:
     """엔티티 (MODULE)-[:REFER_TO]->(TABLE) 출처 연결. DUAL 등 제외."""
     queries = []
     for e in edges:
-        schema = e.table_schema.strip() or settings.defaults.db_schema
         name = e.table_name.strip()
+        schema = _resolve_schema(e.table_schema, name, name_to_schema)
         if (name or "").lower() in _EXCLUDED_TABLE_NAMES:
             continue
         fqn = e.module_fqn.strip()
@@ -947,12 +1108,16 @@ def build_module_table_refer_to_queries(edges: List[ModuleTableEdge]) -> List[Di
     return queries
 
 
-def build_artifact_table_refer_to_queries(edges: List[ArtifactTableEdge]) -> List[Dict[str, Any]]:
+def build_artifact_table_refer_to_queries(
+    edges: List[ArtifactTableEdge],
+    *,
+    name_to_schema: Dict[str, str],
+) -> List[Dict[str, Any]]:
     """EJB XML (ARTIFACT_CHUNK)-[:REFER_TO]->(TABLE). entity_xml:: 전용."""
     queries = []
     for e in edges:
-        schema = e.table_schema.strip() or settings.defaults.db_schema
         name = e.table_name.strip()
+        schema = _resolve_schema(e.table_schema, name, name_to_schema)
         if (name or "").lower() in _EXCLUDED_TABLE_NAMES:
             continue
         chunk_id = e.chunk_id.strip()
@@ -1272,9 +1437,8 @@ def build_actor_queries(analysis_by_function: Dict[str, Dict[str, Any]]) -> List
 def build_variable_summary_queries(summary_by_variable: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
     """VARIABLE 노드에 summary 속성 업데이트. UNWIND 배치.
 
-    NOTE: 현재 호출 안 됨 — Field 분석은 `phase_summary.run_field_and_module_analysis`
-    에서 비활성 상태(`summary_by_variable: dict = {}` + `tracker.end_step("필드 분석 비활성화")`).
-    활성화 시 본 함수가 사용됨 — 잔재 코드 아니므로 보존.
+    NOTE: 현재 호출 안 됨 — Field 분석은 `phase_summary.run_module_step` 안에서
+    비활성 상태(`summary_by_variable: dict = {}` + tracker step end). 활성화 시 본 함수가 사용됨.
     """
     if not summary_by_variable:
         return []
@@ -1588,44 +1752,7 @@ def build_uml_dependency_queries(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 2-7. UNWIND 배치 — 대량 노드용 벌크 MERGE
-# ═══════════════════════════════════════════════════════════════════════════
-
-build_packages_unwind = _build_unwind_query(
-    "PACKAGE", "fqn", "n.name = row.segment")
-
-build_modules_unwind = _build_unwind_query(
-    "MODULE", "fqn",
-    "n.module_key = row.module_key, n.name = row.name, n.package_name = row.package_name")
-
-build_functions_unwind = _build_unwind_query(
-    "FUNCTION", "function_id",
-    "n.signature = row.signature, n.start_line = row.start_line, n.end_line = row.end_line, "
-    "n.code_ref = row.code_ref, n.module_key = row.module_key, n.package_name = row.package_name, "
-    "n.code_text = row.code_text")
-
-build_variables_unwind = _build_unwind_query(
-    "VARIABLE", "variable_id",
-    "n.name = row.name, n.start_line = row.start_line, n.end_line = row.end_line, "
-    "n.variable_type = row.variable_type, n.code_ref = row.code_ref, n.code_text = row.code_text")
-
-build_sql_statements_unwind = _build_unwind_query(
-    "SQL_STATEMENT", "sql_key",
-    "n.sql_type = row.sql_type, n.start_line = row.start_line, n.end_line = row.end_line, n.file_path = row.file_path")
-
-build_config_sections_unwind = _build_unwind_query(
-    "CONFIG_SECTION", "config_key_path",
-    "n.start_line = row.start_line, n.end_line = row.end_line, n.code_text = row.code_text, n.file_path = row.file_path")
-
-build_artifact_chunks_unwind = _build_unwind_query(
-    "ARTIFACT_CHUNK", "chunk_id",
-    "n.chunk_type = row.chunk_type, n.hint_key = row.hint_key, n.code_text = row.code_text, "
-    "n.file_path = row.file_path, n.directory = row.directory, n.file_name = row.file_name, "
-    "n.start_line = row.start_line, n.end_line = row.end_line")
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# 2-8. Table Description 보강 — 메서드 summary 기반 테이블 설명 생성
+# 2-7. Table Description 보강 — 메서드 summary 기반 테이블 설명 생성
 # ═══════════════════════════════════════════════════════════════════════════
 
 def build_table_description_enrichment_query() -> str:

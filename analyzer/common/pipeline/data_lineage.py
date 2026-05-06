@@ -1,20 +1,19 @@
-"""DBMS lineage 분석 — robo-data-catalog 서비스에 위임.
+"""데이터 리니지 분석 — robo-data-catalog 서비스에 위임 (전략 공통).
 
-원본 위치 (이전):
-  - `analyzer/strategy/dbms/pipeline/phase_lineage.py::run_phase_lineage`
-    (115줄, catalog HTTP 호출 + SQL 파일 순회 + 통계 수집)
+DBMS / Framework 양쪽에서 호출. source 디렉토리의 .sql 파일 전수를 catalog 의
+`/robo/lineage/analyze/` 에 보내 ETL/READ/WRITE/data_flow 통계 누적.
 
 책임:
   - source 디렉토리의 .sql 파일 전수 → catalog `/robo/lineage/analyze/` POST
   - 각 파일 응답에서 ETL/READ/WRITE/data_flow 통계 누적 — `AnalysisStats` 정식 필드에 직접 갱신
-  - phase_lineage.py 는 이 모듈을 호출만.
+  - 호출자 (`{dbms,framework}/pipeline/phase_lineage.py`) 는 본 모듈을 호출만.
 
 정책 정렬:
   - 호출 실패는 errlog 후 다음 파일 진행 (한 파일 fatal 아님 — catalog 가
     그 파일을 처리 못 해도 다른 파일은 처리 가능). 단 실패한 파일 자체는 errlog 의무.
   - source 디렉토리/SP 파일 부재는 정상 시나리오 (전부 DDL only 분석 가능).
-  - emit_phase_event 는 `in_progress` 만 yield. `started`/`completed` 는 호출자(dbms_pipeline) 가
-    감싸 emit (Framework 패턴 통일).
+  - emit_phase_event 는 `in_progress` 만 yield. `started`/`completed` 는 호출자가
+    감싸 emit (전략 공통 패턴).
 """
 
 from __future__ import annotations
@@ -29,7 +28,7 @@ from analyzer.strategy.base_analyzer import AnalysisStats
 from config.settings import settings
 from util.encoding_reader import read_text_with_fallback
 from util.logger import log_process
-from util.stream_emitter import emit_message, emit_phase_event
+from util.stream_emitter import emit_user_message, emit_phase_event
 
 logger = logging.getLogger(__name__)
 
@@ -85,23 +84,23 @@ async def run_data_lineage(
             에 stats 의 lineage_* 값을 그대로 전달.
 
     Yields:
-        emit_message / emit_phase_event(in_progress) 바이트.
+        emit_user_message / emit_phase_event(in_progress) 바이트.
     """
     # Framework 의 pre_analysis 와 동일 패턴 — catalog 비활성 시 graceful skip
     if not settings.catalog.enabled:
-        yield emit_message("   ⏭️ catalog 비활성 (CATALOG_SERVICE_URL 미설정) — 리니지 분석 skip")
+        yield emit_user_message("   ⏭️ catalog 비활성 (CATALOG_SERVICE_URL 미설정) — 리니지 분석 skip")
         log_process("PHASE:5", "SKIP", "catalog 비활성 — 리니지 분석 skip", logging.INFO)
         return
 
     sql_files = _list_sql_files(source_dir)
     if not sql_files:
-        yield emit_message("   ℹ️ SP 파일 없음 → 리니지 분석 건너뜀")
+        yield emit_user_message("   ℹ️ SP 파일 없음 → 리니지 분석 건너뜀")
         return
 
     total_files = len(sql_files)
     files_with_etl = 0
     log_process("PHASE:5", "START", f"리니지 분석 시작: {total_files}개 SP 파일", logging.INFO)
-    yield emit_message(f"   🔍 [Phase {phase_num}] {total_files}개 SP 파일 → catalog 리니지 분석 위임...")
+    yield emit_user_message(f"   🔍 [Phase {phase_num}] {total_files}개 SP 파일 → catalog 리니지 분석 위임...")
     yield emit_phase_event(
         phase_num, "리니지 분석", "in_progress", 0,
         {"total_files": total_files},
@@ -129,9 +128,9 @@ async def run_data_lineage(
                     stats.lineage_etl_reads += int(file_stats.get("etl_reads", 0))
                     stats.lineage_etl_writes += int(file_stats.get("etl_writes", 0))
                     stats.lineage_data_flows += int(file_stats.get("data_flows", 0))
-                    yield emit_message(f"      ✅ [{idx}/{total_files}] {file_name}: ETL {len(lineages)}개 감지")
+                    yield emit_user_message(f"      ✅ [{idx}/{total_files}] {file_name}: ETL {len(lineages)}개 감지")
                 else:
-                    yield emit_message(f"      ⏭️ [{idx}/{total_files}] {file_name}: ETL 패턴 없음")
+                    yield emit_user_message(f"      ⏭️ [{idx}/{total_files}] {file_name}: ETL 패턴 없음")
                 yield emit_phase_event(
                     phase_num, "리니지 분석", "in_progress", progress,
                     {
@@ -145,7 +144,7 @@ async def run_data_lineage(
                     "[PHASE:5:LINEAGE] catalog 호출 실패 — 다른 파일 계속 진행 | file=%s | %s: %s",
                     file_name, type(e).__name__, e, exc_info=True,
                 )
-                yield emit_message(
+                yield emit_user_message(
                     f"      ⚠️ [{idx}/{total_files}] {file_name}: 리니지 분석 실패 → 스킵 ({str(e)[:80]})"
                 )
                 continue
@@ -159,7 +158,7 @@ async def run_data_lineage(
         ),
         logging.INFO,
     )
-    yield emit_message(
+    yield emit_user_message(
         f"   ✅ 리니지 분석 완료: ETL {stats.lineage_etl_count}개, ETL_READS {stats.lineage_etl_reads}개, "
         f"ETL_WRITES {stats.lineage_etl_writes}개, DATA_FLOWS_TO {stats.lineage_data_flows}개"
     )

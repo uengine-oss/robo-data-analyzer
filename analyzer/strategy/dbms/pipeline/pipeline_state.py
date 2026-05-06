@@ -22,6 +22,10 @@ class DbmsPipelineState:
     """
     ddl_schemas: Set[str] = field(default_factory=set)
     ddl_table_metadata: Dict[Tuple[str, str], Dict[str, Any]] = field(default_factory=dict)
+    # name → schema 역인덱스 (DDL 처리 끝에 1회 빌드).
+    # `analyzer.common.cypher.schema_resolver.resolve_schema` 가 LLM 결과 schema 빈값일 때 lookup.
+    # 동명 여러 schema 매칭은 모호 → 항목 제외 (resolve_schema 가 위계 다음 단계로 떨어뜨림).
+    name_to_schema: Dict[str, str] = field(default_factory=dict)
     # DDL 적재 후 빌드되어 Phase 2B 의 dml_extract LLM 프롬프트 ddl_context 슬롯 주입에 사용.
     # key = 테이블명 (대문자 정규화), value = {schema, description, columns: [{name, dtype, description, nullable}]}
     ddl_table_index: Dict[str, Dict[str, Any]] = field(default_factory=dict)
@@ -30,8 +34,8 @@ class DbmsPipelineState:
     ddl_pattern: Optional[Any] = None
     contexts: List[FileAnalysisContext] = field(default_factory=list)
 
-    # 동시성 제어 — DbmsPipeline.run_pipeline 진입 시 채워짐
-    cypher_lock: Optional[asyncio.Lock] = None
+    # 파일별 동시 처리 제한 — DbmsPipeline.run_pipeline 진입 시 채워짐.
+    # Neo4j 쓰기 충돌은 client.run_graph_query 의 managed transaction 이 자동 재시도 → 락 X.
     file_semaphore: Optional[asyncio.Semaphore] = None
 
 
@@ -39,7 +43,7 @@ class DbmsPipelineState:
 class DbmsPhaseContext:
     """DBMS Phase 함수에 전달되는 공용 컨텍스트.
 
-    state 단일 출처 — 동시성 제어/누적 상태 모두 state 안에 두고 직접 참조.
+    state 단일 출처 — 누적 상태 / 동시성 제어 모두 state 안에 두고 직접 참조.
     """
     client: Any = None  # Neo4jClient
     orchestrator: Any = None
@@ -47,10 +51,6 @@ class DbmsPhaseContext:
     stats: Any = None  # AnalysisStats
 
     # state 패스스루 — phase 코드의 시인성 향상
-    @property
-    def cypher_lock(self) -> asyncio.Lock:
-        return self.state.cypher_lock
-
     @property
     def file_semaphore(self) -> asyncio.Semaphore:
         return self.state.file_semaphore
@@ -62,6 +62,10 @@ class DbmsPhaseContext:
     @property
     def ddl_table_metadata(self) -> Dict[Tuple[str, str], Dict[str, Any]]:
         return self.state.ddl_table_metadata
+
+    @property
+    def name_to_schema(self) -> Dict[str, str]:
+        return self.state.name_to_schema
 
     @property
     def ddl_table_index(self) -> Dict[str, Dict[str, Any]]:
@@ -98,15 +102,11 @@ class DbmsPhaseContext:
         client: Any,
         orchestrator: Any,
         stats: AnalysisStats,
-        cypher_lock: asyncio.Lock,
         file_semaphore: asyncio.Semaphore,
     ) -> "DbmsPhaseContext":
         return cls(
             client=client,
             orchestrator=orchestrator,
-            state=DbmsPipelineState(
-                cypher_lock=cypher_lock,
-                file_semaphore=file_semaphore,
-            ),
+            state=DbmsPipelineState(file_semaphore=file_semaphore),
             stats=stats,
         )

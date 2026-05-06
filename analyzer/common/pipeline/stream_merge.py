@@ -1,11 +1,4 @@
-"""여러 async generator 의 출력을 병렬 stream merge.
-
-DBMS 파이프라인의 phase 간/phase 안 병렬화 공통 헬퍼.
-
-사용 케이스:
-  - phase_summary.run_phase_post: unit_summary + table_summary 동시 실행
-  - dbms_pipeline.run_pipeline: Phase 4 (vector) + Phase 5 (lineage) 동시 실행
-  - 기타 의존성 없는 phase 들의 동시 실행
+"""여러 async generator 의 출력을 병렬 stream merge — DBMS / Framework 공통 헬퍼.
 
 각 generator 를 Task 로 발사하고 출력 chunk 를 단일 queue 로 모아 stream 으로 yield.
 모든 generator 종료 시 gather 로 정리.

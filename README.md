@@ -710,12 +710,13 @@ robo-data-analyzer/
 │   │   ├── LLMCallError        # LLM 호출 오류
 │   │   └── QueryExecutionError # Neo4j 쿼리 오류
 │   │
-│   ├── stream_utils.py         # NDJSON 스트리밍 유틸리티
-│   │   ├── emit_message()      # 메시지 이벤트
+│   ├── stream_emitter.py       # NDJSON 스트리밍 유틸리티
+│   │   ├── emit_user_message() # 사용자 콘솔용 자연어
+│   │   ├── emit_system_log()   # 디버그/서버 로그
 │   │   ├── emit_data()         # 데이터 이벤트
 │   │   ├── emit_error()        # 에러 이벤트
 │   │   ├── emit_complete()     # 완료 이벤트
-│   │   └── format_graph_result() # 그래프 결과 포맷팅
+│   │   └── stream_llm_call()   # LLM 호출 직전·직후 emit 표준
 │   │
 │   ├── logger.py               # 구조화된 로깅
 │   │   └── setup_logging()     # 로깅 초기화

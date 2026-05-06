@@ -1,28 +1,27 @@
 """NDJSON 스트리밍 유틸리티
 
 NDJSON 스트리밍 이벤트 생성 및 처리 함수들.
-기존 stream_event.py를 리네이밍.
 
-이벤트 타입:
-- message: 사용자 메시지
+이벤트 타입 (frontend 가 이 type 으로 분기):
+- user_message: 사용자 콘솔용 자연어 메시지 (ProgressModal 콘솔 표시)
+- system_log: 디버그/서버 로그용 (frontend 무시 — server log 만)
 - data: 그래프 데이터
 - error: 오류
-- node_event: 노드 생성/수정 이벤트
-- relationship_event: 관계 생성/수정 이벤트
-- phase_event: 단계 진행 이벤트
+- node_event / relationship_event: 그래프 변경 이벤트
+- phase_event: 단계 진행 이벤트 (dynamicSteps 누적용)
 - complete: 완료
 
-메시지 설계 원칙 (pdb.md):
-- 이 메시지는 개발자 로그가 아니라, 사용자에게 보여지는 진행 설명이다
-- 조건 분기 결과가 명확히 드러날 것
-- 실패/스킵/대체 상황이 숨겨지지 않을 것
-- "무슨 일이 일어났는지"를 자연어로 설명할 것
+채널 분리 정책:
+- 사용자 친화 자연어 메시지 (예: "테이블 보강 중...") → emit_user_message
+- 시스템 라벨 (예: "[PHASE:3:ACTOR_MERGE] queries=N") → emit_system_log
+- 발화 시점에 채널 결정 (변환 layer X)
 """
 
+import asyncio
 import json
 import uuid
 import logging
-from typing import Any, Optional, AsyncGenerator
+from typing import Any, Callable, Optional, AsyncGenerator
 
 
 def emit_bytes(payload: dict) -> bytes:
@@ -30,9 +29,23 @@ def emit_bytes(payload: dict) -> bytes:
     return json.dumps(payload, default=str, ensure_ascii=False).encode("utf-8") + b"\n"
 
 
-def emit_message(content: str) -> bytes:
-    """메시지 이벤트 전송"""
+def emit_user_message(content: str) -> bytes:
+    """사용자 콘솔용 자연어 메시지 — ProgressModal 콘솔에 표시.
+
+    NDJSON type 은 `"message"` (frontend 호환 유지). 함수 이름이
+    `emit_user_message` 인 이유는 backend 코드 레벨에서 `emit_system_log` 와
+    구분하기 위함 — 발화 시점에 어느 채널인지 명확히 결정.
+    """
     return emit_bytes({"type": "message", "content": content})
+
+
+def emit_system_log(level: str, content: str) -> bytes:
+    """디버그/서버 로그용 — frontend 무시 (server log 만).
+
+    사용처: 시스템 라벨 (`[PHASE:N:...]`), 메트릭 (`queries=N items=M`),
+    내부 진단. 사용자 콘솔에 노출 X.
+    """
+    return emit_bytes({"type": "system_log", "level": level, "content": content})
 
 
 def emit_error(
@@ -128,7 +141,7 @@ class PhaseTracker:
         step_label = f"[{self.phase_num + 1}/{self.total_phases}단계] {step['name']}"
         msg = f"{step_label} ({total_items}건)"
         return (
-            emit_message(msg)
+            emit_user_message(msg)
             + emit_phase_event(
                 self.phase_num, self.phase_name, "in_progress", progress,
                 {"step": step["name"], "total": total_items},
@@ -136,11 +149,17 @@ class PhaseTracker:
         )
 
     def tick(self, count: int = 1) -> tuple[bytes, bytes]:
-        """아이템 완료 — (message, phase_event) 튜플 반환. 메인 스레드에서만 호출."""
+        """아이템 완료 — (message, phase_event) 튜플 반환. 단위마다 사용자 메시지 자동.
+
+        호출자 패턴:
+            msg, evt = tracker.tick(count)
+            yield msg
+            yield evt
+        """
         step = self._steps[self._current_step_idx]
         step["done"] = min(step["done"] + count, step["total"])
         progress = self._calc_progress()
-        msg = emit_message(
+        msg = emit_user_message(
             f"  ├─ [{step['done']}/{step['total']}] {step['name']} 처리 중..."
         )
         evt = emit_phase_event(
@@ -149,16 +168,6 @@ class PhaseTracker:
         )
         return (msg, evt)
 
-    def tick_quiet(self, count: int = 1) -> bytes:
-        """아이템 완료 — phase_event만 반환 (메시지 없이 진행률만 업데이트)."""
-        step = self._steps[self._current_step_idx]
-        step["done"] = min(step["done"] + count, step["total"])
-        progress = self._calc_progress()
-        return emit_phase_event(
-            self.phase_num, self.phase_name, "in_progress", progress,
-            {"step": step["name"], "done": step["done"], "total": step["total"]},
-        )
-
     def end_step(self, metrics: str = "") -> bytes:
         """서브스텝 완료 요약 + phase_event 진행률 갱신"""
         step = self._steps[self._current_step_idx]
@@ -166,7 +175,7 @@ class PhaseTracker:
         progress = self._calc_progress()
         suffix = f" | {metrics}" if metrics else ""
         return (
-            emit_message(f"  └─ {step['name']} 완료{suffix}")
+            emit_user_message(f"  └─ {step['name']} 완료{suffix}")
             + emit_phase_event(
                 self.phase_num, self.phase_name, "in_progress", progress,
                 {"step": step["name"], "done": step["total"], "total": step["total"]},
@@ -203,33 +212,60 @@ async def stream_with_error_boundary(
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# UI 메시지 헬퍼 — pipeline 인스턴스 없이 사용 가능한 독립 함수
-# BaseStreamingAnalyzer.emit_* 메서드와 동일한 기능
+# UI 메시지 헬퍼 — 사용자 콘솔용 자연어
 # ═══════════════════════════════════════════════════════════════════════
 
 def emit_phase_header(phase_num, title: str, detail: str = "") -> bytes:
     """단계 헤더. 예: [1단계] AST 구조 생성 (10개 파일)"""
     phase_title = f"[{phase_num}단계] " if phase_num else ""
-    return emit_message(f"{phase_title}{title}" + (f" ({detail})" if detail else ""))
+    return emit_user_message(f"{phase_title}{title}" + (f" ({detail})" if detail else ""))
 
 
 def emit_separator() -> bytes:
     """구분선."""
-    return emit_message("━" * 50)
+    return emit_user_message("━" * 50)
 
 
 def emit_file_start(file_idx: int, total: int, file_name: str) -> bytes:
     """파일 처리 시작. 예: 📄 [1/10] OrderService.java"""
-    return emit_message(f"📄 [{file_idx}/{total}] {file_name}")
+    return emit_user_message(f"📄 [{file_idx}/{total}] {file_name}")
 
 
 def emit_phase_complete(phase_num, summary: str) -> bytes:
     """단계 완료. 예: ✅ 1단계 완료: 구조 노드 25개"""
-    return emit_message(f"   ✅ {phase_num}단계 완료: {summary}")
+    return emit_user_message(f"   ✅ {phase_num}단계 완료: {summary}")
 
 
 def emit_skip(reason: str) -> bytes:
     """건너뛰기. 예: ℹ️ DDL 없음"""
-    return emit_message(f"ℹ️ {reason}")
+    return emit_user_message(f"ℹ️ {reason}")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# LLM 호출 표준 — 직전·직후 emit 자연 yield (어댑터 X, 표준 인터페이스)
+# ═══════════════════════════════════════════════════════════════════════
+
+async def stream_llm_call(
+    operation_name: str,
+    fn: Callable,
+    *args,
+    **kwargs,
+) -> AsyncGenerator[bytes, None]:
+    """LLM 호출 표준 — 동기 함수를 별도 스레드 실행 + 직전·직후 사용자 메시지.
+
+    호출자 패턴 (분석기 흐름에 자연 흡수):
+        result = None
+        async for evt in stream_llm_call("테이블 보강", prompts.table_summary, ...):
+            if isinstance(evt, bytes):
+                yield evt
+            else:
+                result = evt
+
+    마지막 yield 가 result (bytes 가 아닌 LLM 응답 객체).
+    """
+    yield emit_user_message(f"  ├─ {operation_name} 분석 중...")
+    result = await asyncio.to_thread(fn, *args, **kwargs)
+    yield emit_user_message(f"  ├─ {operation_name} 완료")
+    yield result  # 마지막에 결과 객체 (호출자가 isinstance 로 분기)
 
 
