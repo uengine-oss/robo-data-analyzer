@@ -54,7 +54,6 @@ async def run_phase_ast(
                     dbms=ctx.target,
                     last_line=last_line,
                     own_schema=own_schema,
-                    name_to_schema=ctx.name_to_schema,
                     ddl_table_metadata=ctx.ddl_table_metadata,
                     ddl_table_index=ctx.ddl_table_index,
                     ddl_pattern=ctx.ddl_pattern,

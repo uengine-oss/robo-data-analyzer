@@ -762,7 +762,6 @@ class DbmsAstProcessor(BaseAstProcessor):
         last_line: int,
         own_schema: str,
         name_case: str,
-        name_to_schema: Dict[str, str],
         ddl_table_metadata: Optional[Dict[Tuple[str, str], Dict[str, Any]]] = None,
         ddl_table_index: Optional[Dict[str, Dict[str, Any]]] = None,
         ddl_pattern: Optional[Any] = None,  # re.Pattern
@@ -783,10 +782,9 @@ class DbmsAstProcessor(BaseAstProcessor):
             raise ValueError("dbms 필수 — 호출자(phase_ast)가 ctx.target 으로 전달")
         if not name_case:
             raise ValueError("name_case 필수 — service 진입점에서 검증된 값 전달")
-        # own_schema 는 빈값 허용 — schema_resolver 위계로 다음 fallback 단계 (DDL 매칭) 로 떨어짐.
+        # own_schema 는 빈값 허용 — schema_resolver 위계가 빈값 (모름) 으로 떨어뜨림.
         self.dbms = dbms.lower()
         self.own_schema = (own_schema or "").strip()
-        self._name_to_schema = name_to_schema
         self._ddl_table_metadata = ddl_table_metadata or {}
         # Phase 0 에서 빌드된 ddl_table_index + ddl_pattern (Phase 2B dml_extract 의 ddl_context 주입에 사용)
         self._ddl_table_index = ddl_table_index or {}
@@ -806,24 +804,24 @@ class DbmsAstProcessor(BaseAstProcessor):
             return name.lower()
         return name
 
-    def _get_effective_schema(self, schema: Optional[str], table_name: str = "") -> str:
+    def _get_effective_schema(self, schema: Optional[str]) -> str:
         """schema 결정 위계 (모든 전략 공통).
 
         1) explicit schema (LLM 명시) → 그거
-        2) name_to_schema lookup (DDL 단일 매칭) → 그거
-        3) own_schema (PROCEDURE 자기 schema) → 그거
-        4) "" (빈값 — 강제 'public' X)
+        2) own_schema (PROCEDURE 자기 schema) → 그거
+        3) "" (빈값 — 강제 'public' X)
+
+        DDL 매칭 단계 없음 — Oracle/SQL Server/DB2/PG 모두 unprefixed 테이블은
+        자기 schema 로 해석된다. DDL 카탈로그는 인벤토리지 name resolution 규칙 X.
         """
         return resolve_schema(
             explicit_schema=schema or "",
-            table_name=table_name,
-            name_to_schema=self._name_to_schema,
             own_schema=self.own_schema,
         )
 
     def _get_ddl_metadata(self, schema: Optional[str], table_name: str) -> Tuple[Dict[str, Any], bool]:
         """DDL 메타데이터 조회 및 대소문자 변환 여부 결정"""
-        effective_schema = self._get_effective_schema(schema, table_name)
+        effective_schema = self._get_effective_schema(schema)
         if not effective_schema or not table_name:
             return {}, False
         ddl_lookup_key = (effective_schema.lower(), table_name.lower())
@@ -834,7 +832,7 @@ class DbmsAstProcessor(BaseAstProcessor):
     def _resolve_table_name_with_ddl(self, schema_raw: Optional[str], name_raw: str) -> Tuple[str, str, bool]:
         """DDL 캐시를 고려하여 테이블명 정규화"""
         ddl_meta, skip_case_conversion = self._get_ddl_metadata(schema_raw, name_raw)
-        effective_schema = self._get_effective_schema(schema_raw, name_raw)
+        effective_schema = self._get_effective_schema(schema_raw)
 
         if skip_case_conversion:
             schema_part = ddl_meta.get('original_schema', self._apply_name_case(effective_schema))
@@ -1233,7 +1231,7 @@ class DbmsAstProcessor(BaseAstProcessor):
             if not table_name:
                 continue
             schema_part_raw, name_part_raw, _ = parse_table_identifier(table_name)
-            schema_part = self._apply_name_case(self._get_effective_schema(schema_part_raw, name_part_raw))
+            schema_part = self._apply_name_case(self._get_effective_schema(schema_part_raw))
             name_part = self._apply_name_case(name_part_raw)
             out.append({
                 "node_type":  node.node_type,
@@ -1259,7 +1257,7 @@ class DbmsAstProcessor(BaseAstProcessor):
 
             schema_part_raw, name_part_raw, db_link_value = parse_table_identifier(table_name)
             schema_part, name_part, skip_case_conversion = self._resolve_table_name_with_ddl(schema_part_raw, name_part_raw)
-            effective_schema = self._get_effective_schema(schema_part, name_part)
+            effective_schema = self._get_effective_schema(schema_part)
             if not skip_case_conversion:
                 effective_schema = self._apply_name_case(effective_schema)
                 converted_name = self._apply_name_case(name_part)
@@ -1358,7 +1356,7 @@ class DbmsAstProcessor(BaseAstProcessor):
                 )
             mode = mode_raw.lower()
             schema_link_raw, name_link_raw, link_name = parse_table_identifier(link_name_raw)
-            schema_link = self._apply_name_case(self._get_effective_schema(schema_link_raw, name_link_raw))
+            schema_link = self._apply_name_case(self._get_effective_schema(schema_link_raw))
             name_link = self._apply_name_case(name_link_raw)
             out.append({
                 "node_type":   node.node_type,
@@ -1395,10 +1393,10 @@ class DbmsAstProcessor(BaseAstProcessor):
             tgt_schema, tgt_name, _ = self._resolve_table_name_with_ddl(tgt_schema_raw, tgt_name_raw)
 
             effective_src_schema = src_schema or self._apply_name_case(
-                self._get_effective_schema("", src_name)
+                self._get_effective_schema("")
             )
             effective_tgt_schema = tgt_schema or self._apply_name_case(
-                self._get_effective_schema("", tgt_name)
+                self._get_effective_schema("")
             )
 
             for src_col, tgt_col in zip(src_columns, tgt_columns):
@@ -1422,7 +1420,7 @@ class DbmsAstProcessor(BaseAstProcessor):
 
     def _record_table_summary(self, schema: Optional[str], name: str, description: Optional[str], skip_case_conversion: bool = False) -> Tuple[str, str]:
         """테이블 설명 누적"""
-        effective_schema = self._get_effective_schema(schema, name)
+        effective_schema = self._get_effective_schema(schema)
 
         if skip_case_conversion:
             schema_key = effective_schema

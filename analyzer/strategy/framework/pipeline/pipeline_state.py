@@ -49,9 +49,6 @@ class FrameworkPipelineState:
     # DDL
     ddl_schemas: Any = field(default_factory=set)
     ddl_table_metadata: Dict[Any, Any] = field(default_factory=dict)
-    # name → schema 역인덱스. `analyzer.common.cypher.schema_resolver.resolve_schema` 가
-    # LLM 결과 schema 빈값일 때 lookup. 동명 여러 schema 매칭은 모호 → 항목 제외.
-    name_to_schema: Dict[str, str] = field(default_factory=dict)
 
     # Step 0: Codebase Profile (Phase 1 서브스텝 — 프레임워크/DB 패턴 요약 + 리소스 분류)
     codebase_profile: Optional[CodebaseProfile] = None

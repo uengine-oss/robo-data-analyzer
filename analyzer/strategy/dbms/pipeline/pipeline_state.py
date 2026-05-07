@@ -22,10 +22,6 @@ class DbmsPipelineState:
     """
     ddl_schemas: Set[str] = field(default_factory=set)
     ddl_table_metadata: Dict[Tuple[str, str], Dict[str, Any]] = field(default_factory=dict)
-    # name → schema 역인덱스 (DDL 처리 끝에 1회 빌드).
-    # `analyzer.common.cypher.schema_resolver.resolve_schema` 가 LLM 결과 schema 빈값일 때 lookup.
-    # 동명 여러 schema 매칭은 모호 → 항목 제외 (resolve_schema 가 위계 다음 단계로 떨어뜨림).
-    name_to_schema: Dict[str, str] = field(default_factory=dict)
     # DDL 적재 후 빌드되어 Phase 2B 의 dml_extract LLM 프롬프트 ddl_context 슬롯 주입에 사용.
     # key = 테이블명 (대문자 정규화), value = {schema, description, columns: [{name, dtype, description, nullable}]}
     ddl_table_index: Dict[str, Dict[str, Any]] = field(default_factory=dict)
@@ -62,10 +58,6 @@ class DbmsPhaseContext:
     @property
     def ddl_table_metadata(self) -> Dict[Tuple[str, str], Dict[str, Any]]:
         return self.state.ddl_table_metadata
-
-    @property
-    def name_to_schema(self) -> Dict[str, str]:
-        return self.state.name_to_schema
 
     @property
     def ddl_table_index(self) -> Dict[str, Dict[str, Any]]:

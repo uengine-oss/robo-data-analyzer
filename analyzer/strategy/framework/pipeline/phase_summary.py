@@ -191,18 +191,22 @@ def _build_framework_payload(
     columns_meta = table_info.get("columns") or []
     table_display = f"{schema}.{name}" if schema else name
 
-    sentences = [f"[메서드 요약] {s}" for s in method_summaries[:20]]
+    # LLM 캐시 키 안정화 — Neo4j collect() 가 비결정론 순서라 정렬 후 prefix 부착.
+    # 의미 순서 ([기존 설명] → [메서드 요약] → [함수별 테이블 역할]) 는 prefix 카테고리로 유지.
+    sentences: List[str] = []
     if current_desc:
-        sentences.insert(0, f"[기존 설명] {current_desc}")
+        sentences.append(f"[기존 설명] {current_desc}")
+    sentences.extend(f"[메서드 요약] {s}" for s in sorted(method_summaries)[:20])
 
     insight_slot = insights_map.get(name.lower()) or insights_map.get(name) or {}
-    for desc in (insight_slot.get("descriptions") or [])[:10]:
+    for desc in sorted(insight_slot.get("descriptions") or [])[:10]:
         if desc:
             sentences.append(f"[함수별 테이블 역할] {desc}")
 
     col_metadata: Dict[str, Dict[str, Any]] = {}
     col_sentences: Dict[str, List[str]] = {}
-    for col in columns_meta:
+    sorted_cols = sorted(columns_meta, key=lambda c: c.get("name", ""))
+    for col in sorted_cols:
         col_name = col.get("name", "")
         if not col_name:
             continue
@@ -212,8 +216,9 @@ def _build_framework_payload(
             "is_primary_key": col.get("is_primary_key"),
             "description": col.get("description", ""),
         }
-    for col_name, col_slot in (insight_slot.get("columns") or {}).items():
-        descs = [d for d in (col_slot.get("descriptions") or []) if d]
+    for col_name in sorted((insight_slot.get("columns") or {}).keys()):
+        col_slot = insight_slot["columns"][col_name]
+        descs = sorted({d for d in (col_slot.get("descriptions") or []) if d})
         if descs:
             col_sentences[col_name] = descs[:10]
 

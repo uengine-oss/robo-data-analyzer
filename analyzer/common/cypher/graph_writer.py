@@ -103,24 +103,6 @@ ON CREATE SET __cy_r__.source = 'ddl'
 RETURN c1, __cy_r__, c2
 """
 
-# ---------------------------------------------------------------------------
-# DataSource
-# ---------------------------------------------------------------------------
-DATASOURCE_CREATE_QUERY = """
-MERGE (ds:DataSource {name: $datasource_name})
-ON CREATE SET ds.created_at = datetime(), ds.source = 'ddl_ingestion'
-RETURN ds
-"""
-
-DATASOURCE_SCHEMA_QUERY = """
-UNWIND $items AS item
-MATCH (ds:DataSource {name: item.datasource})
-MATCH (__cy_s__:Schema {db: item.db, name: item.name})
-MERGE (ds)-[__cy_r__:HAS_SCHEMA]->(__cy_s__)
-RETURN ds, __cy_r__, __cy_s__
-"""
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # Section 2: batch execution
 # ═══════════════════════════════════════════════════════════════════════════════

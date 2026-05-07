@@ -53,16 +53,14 @@ from config.settings import settings
 from analyzer.strategy.framework.common.domain.ontology import get_ontology
 
 
-def _resolve_schema(schema: str, table_name: str, name_to_schema: Dict[str, str]) -> str:
+def _resolve_schema(schema: str) -> str:
     """Framework schema 결정 — `analyzer.common.cypher.schema_resolver.resolve_schema` 위계 적용.
 
     Framework 는 own_schema 개념 X (코드 안에 PROCEDURE 정의 없음).
-    위계: 1) explicit → 2) DDL name 매칭 → 3) "" (강제 'public' X).
+    위계: 1) explicit → 2) "" (강제 'public' X). DDL 매칭 단계 없음.
     """
     return resolve_schema(
         explicit_schema=schema or "",
-        table_name=table_name or "",
-        name_to_schema=name_to_schema or {},
         own_schema="",
     )
 
@@ -548,12 +546,10 @@ def build_sql_statement_queries(sql_chunks: List[SqlStatementChunk]) -> List[Dic
 def build_table_queries_from_reads_writes(
     reads_writes: List[ReadsWritesEdge],
     table_descriptions: Optional[Dict[Tuple[str, str], str]] = None,
-    *,
-    name_to_schema: Dict[str, str],
 ) -> List[Dict[str, Any]]:
     """Reads_writes에서 등장하는 테이블로 Table 노드 MERGE. DUAL 등 제외.
 
-    schema 결정은 `_resolve_schema` 위계 (LLM 명시 → DDL 매칭 → 빈값).
+    schema 결정은 `_resolve_schema` 위계 (LLM 명시 → 빈값).
     description 은 table_descriptions 에서 적용.
 
     주의: DBMS 전략에서 사용하는 라벨 이름은 `Table`(대소문자 포함)이므로,
@@ -567,7 +563,7 @@ def build_table_queries_from_reads_writes(
         name_lower = name.strip().lower()
         if name_lower in _EXCLUDED_TABLE_NAMES:
             continue
-        schema = _resolve_schema(rw.table_schema, name, name_to_schema)
+        schema = _resolve_schema(rw.table_schema)
         key = (schema, name)
         if key in seen:
             continue
@@ -595,19 +591,17 @@ def build_table_queries_from_reads_writes(
 
 def build_column_queries(
     column_refs: List[ColumnRef],
-    *,
-    name_to_schema: Dict[str, str],
 ) -> List[Dict[str, Any]]:
     """Column 노드 MERGE (fqn 기준). DUAL 등 제외.
 
-    schema 결정은 `_resolve_schema` 위계 (LLM 명시 → DDL 매칭 → 빈값).
+    schema 결정은 `_resolve_schema` 위계 (LLM 명시 → 빈값).
     """
     seen = set()
     queries = []
     for c in column_refs:
         if c.table_name.strip().lower() in _EXCLUDED_TABLE_NAMES:
             continue
-        _schema = _resolve_schema(c.table_schema, c.table_name, name_to_schema)
+        _schema = _resolve_schema(c.table_schema)
         fqn = _build_column_fqn(_schema, c.table_name, c.column_name)
         if fqn in seen:
             continue
@@ -841,8 +835,6 @@ def build_fk_to_column_queries(fk_edges: List[FkEdge]) -> List[Dict[str, Any]]:
 
 def build_has_column_queries(
     column_refs: List[ColumnRef],
-    *,
-    name_to_schema: Dict[str, str],
 ) -> List[Dict[str, Any]]:
     """(Table)-[:HAS_COLUMN]->(Column) 관계. DUAL 등 제외. schema 위계 적용."""
     seen = set()
@@ -850,7 +842,7 @@ def build_has_column_queries(
     for c in column_refs:
         if c.table_name.strip().lower() in _EXCLUDED_TABLE_NAMES:
             continue
-        schema = _resolve_schema(c.table_schema, c.table_name, name_to_schema)
+        schema = _resolve_schema(c.table_schema)
         name = c.table_name
         fqn = _build_column_fqn(schema, name, c.column_name)
         key = (schema, name, fqn)
@@ -870,8 +862,6 @@ def build_has_column_queries(
 
 def build_fk_to_table_queries(
     fk_edges: List[FkEdge],
-    *,
-    name_to_schema: Dict[str, str],
 ) -> List[Dict[str, Any]]:
     """(TABLE)-[:FK_TO_TABLE]->(TABLE) 관계를 테이블쌍당 1개만 생성.
 
@@ -885,8 +875,8 @@ def build_fk_to_table_queries(
     for e in fk_edges:
         from_table = e.from_table
         to_table = e.to_table
-        from_schema = _resolve_schema(e.from_schema, from_table, name_to_schema)
-        to_schema = _resolve_schema(e.to_schema, to_table, name_to_schema)
+        from_schema = _resolve_schema(e.from_schema)
+        to_schema = _resolve_schema(e.to_schema)
         if (from_table or "").strip().lower() in _EXCLUDED_TABLE_NAMES or (to_table or "").strip().lower() in _EXCLUDED_TABLE_NAMES:
             continue
         # 동일 테이블쌍 중복 방지 (대소문자 무시)
@@ -921,14 +911,12 @@ def build_fk_to_table_queries(
 
 def build_reads_writes_queries(
     edges: List[ReadsWritesEdge],
-    *,
-    name_to_schema: Dict[str, str],
 ) -> List[Dict[str, Any]]:
     """(SqlStatement)-[:SELECT|INSERT|UPDATE|DELETE]->(Table) 관계. DUAL 등 제외. schema 위계 적용."""
     queries = []
     for e in edges:
         name = e.table_name
-        schema = _resolve_schema(e.table_schema, name, name_to_schema)
+        schema = _resolve_schema(e.table_schema)
         if (name or "").strip().lower() in _EXCLUDED_TABLE_NAMES:
             continue
         if not e.relation or not e.relation.strip():
@@ -953,8 +941,6 @@ def build_reads_writes_queries(
 
 def build_node_table_queries(
     edges: List[FunctionTableEdge],
-    *,
-    name_to_schema: Dict[str, str],
 ) -> List[Dict[str, Any]]:
     """(Function|Field)-[:READS|WRITES]->(Table) 관계. DUAL 등 제외. schema 위계 적용.
 
@@ -964,7 +950,7 @@ def build_node_table_queries(
     queries = []
     for e in edges:
         name = e.table_name
-        schema = _resolve_schema(e.table_schema, name, name_to_schema)
+        schema = _resolve_schema(e.table_schema)
         if (name or "").strip().lower() in _EXCLUDED_TABLE_NAMES:
             continue
         if not e.relation or not e.relation.strip():
@@ -1009,12 +995,10 @@ def build_table_from_entity_classes(
     module_index: Dict[str, Any],
     variable_facts_list: Optional[List[VariableFacts]] = None,
     schema_default: str = "",
-    *,
-    name_to_schema: Dict[str, str],
 ) -> List[Dict[str, Any]]:
     """엔티티로 확정된 클래스/구조체의 멤버변수로 Column + HAS_COLUMN 노드/관계 생성.
 
-    schema 결정: schema_default (호출자 명시) > name_to_schema (DDL 매칭) > "".
+    schema 결정: schema_default (호출자 명시) > "" (모름).
 
     entity_map: {fqn: table_name} — 테이블명은 호출부에서 결정.
     컬럼명 = 멤버변수명 그대로 사용.
@@ -1034,7 +1018,7 @@ def build_table_from_entity_classes(
         module_key = info.get("module_key", "")
         if not table_name:
             continue
-        schema = _resolve_schema(schema_default, table_name, name_to_schema)
+        schema = _resolve_schema(schema_default)
 
         # 멤버변수(VariableFacts)에서 Column 정보 추출
         member_vars = vars_by_module.get(module_key, [])
@@ -1059,7 +1043,7 @@ def build_table_from_entity_classes(
         if not table_name or table_name in table_names_seen:
             continue
         table_names_seen.add(table_name)
-        schema = _resolve_schema(schema_default, table_name, name_to_schema)
+        schema = _resolve_schema(schema_default)
         table_id = f"{schema}.{table_name}" if schema else table_name
         q = (
             "MERGE (n:Table {db: $db, schema: $schema, name: $name})\n"
@@ -1073,22 +1057,20 @@ def build_table_from_entity_classes(
         })
 
     # Column 노드 MERGE + HAS_COLUMN 관계
-    queries.extend(build_column_queries(column_refs, name_to_schema=name_to_schema))
-    queries.extend(build_has_column_queries(column_refs, name_to_schema=name_to_schema))
+    queries.extend(build_column_queries(column_refs))
+    queries.extend(build_has_column_queries(column_refs))
 
     return queries
 
 
 def build_module_table_refer_to_queries(
     edges: List[ModuleTableEdge],
-    *,
-    name_to_schema: Dict[str, str],
 ) -> List[Dict[str, Any]]:
     """엔티티 (MODULE)-[:REFER_TO]->(TABLE) 출처 연결. DUAL 등 제외."""
     queries = []
     for e in edges:
         name = e.table_name.strip()
-        schema = _resolve_schema(e.table_schema, name, name_to_schema)
+        schema = _resolve_schema(e.table_schema)
         if (name or "").lower() in _EXCLUDED_TABLE_NAMES:
             continue
         fqn = e.module_fqn.strip()
@@ -1110,14 +1092,12 @@ def build_module_table_refer_to_queries(
 
 def build_artifact_table_refer_to_queries(
     edges: List[ArtifactTableEdge],
-    *,
-    name_to_schema: Dict[str, str],
 ) -> List[Dict[str, Any]]:
     """EJB XML (ARTIFACT_CHUNK)-[:REFER_TO]->(TABLE). entity_xml:: 전용."""
     queries = []
     for e in edges:
         name = e.table_name.strip()
-        schema = _resolve_schema(e.table_schema, name, name_to_schema)
+        schema = _resolve_schema(e.table_schema)
         if (name or "").lower() in _EXCLUDED_TABLE_NAMES:
             continue
         chunk_id = e.chunk_id.strip()

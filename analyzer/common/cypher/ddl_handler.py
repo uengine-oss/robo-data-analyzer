@@ -48,8 +48,6 @@ from analyzer.common.cypher.graph_writer import (
     FK_REF_TABLE_QUERY,
     FK_TO_TABLE_QUERY,
     FK_TO_COLUMN_QUERY,
-    DATASOURCE_CREATE_QUERY,
-    DATASOURCE_SCHEMA_QUERY,
 )
 
 logger = logging.getLogger(__name__)
@@ -846,15 +844,8 @@ async def process_ddl(
         for node in result.get("Nodes", []):
             all_nodes[node.get("Node ID")] = node
 
-    if schemas_data and datasource_name:
-        if emit_progress:
-            yield emit_user_message(f"      🔗 DataSource({datasource_name}) 노드 생성 및 스키마 연결 중...")
-        await client.execute_queries([DATASOURCE_CREATE_QUERY], {"datasource_name": datasource_name})
-        result = await client.run_batch_unwind(DATASOURCE_SCHEMA_QUERY, schemas_data)
-        for node in result.get("Nodes", []):
-            all_nodes[node.get("Node ID")] = node
-        for rel in result.get("Relationships", []):
-            all_relationships[rel.get("Relationship ID")] = rel
+    # DataSource 노드 자동 생성 X — env 의 datasource_name 으로 노드 만드는 동작 폐기.
+    # 진짜 데이터소스 연결 (catalog) 시점에서만 별도 작업으로 만들어야 함.
 
     if tables_data:
         if emit_progress:

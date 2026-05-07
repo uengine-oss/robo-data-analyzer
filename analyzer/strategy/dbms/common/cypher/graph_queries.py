@@ -231,12 +231,16 @@ def _build_label_pair_rel_unwind(rel_type: str, src_var: str, dst_var: str, src_
 
     label 은 Cypher 변수로 못 쓰므로 호출자가 그룹 단위로 같은 label pair 의 items 를 모음.
     src_name_field, dst_name_field: row 안의 src/dst 이름 필드명 (예: parent_name, child_name).
+
+    src_var/dst_var 는 ``"a:LABEL"`` / ``"b:LABEL"`` 형태 (MATCH 패턴용).
+    MERGE 절은 이미 바인딩된 변수만 — Neo4j 5+ 가 바인딩된 변수에 레이블 재지정 금지하므로
+    ``a``, ``b`` 만 사용.
     """
     return (
         f"UNWIND $rows AS row\n"
         f"MATCH ({src_var} {{name: row.{src_name_field}, directory: row.directory, file_name: row.file_name}})\n"
         f"MATCH ({dst_var} {{name: row.{dst_name_field}, directory: row.directory, file_name: row.file_name}})\n"
-        f"MERGE ({src_var})-[:{rel_type}]->({dst_var})"
+        f"MERGE (a)-[:{rel_type}]->(b)"
     )
 
 
@@ -588,13 +592,14 @@ def build_dml_table_relation_queries(items: List[Dict[str, Any]]) -> List[Dict[s
             f"MERGE (n)-[:{rt}]->(t)" for rt in rel_types
         )
         db_link_set = "\nSET t.db_link = COALESCE(t.db_link, row.db_link)" if has_db_link else ""
+        # MERGE 키에 db/schema/name 모두 박혀있으니 SET t.db 잉여 — INDEX_ENTRY EXCLUSIVE 락
+        # 잡아 deadlock 유발하던 회귀. db_link 는 신규 값일 수 있어 별도 SET (db_link_set) 유지.
         query = (
             "UNWIND $rows AS row\n"
             f"MATCH (n:{node_type} {{startLine: row.start_line, directory: row.directory, file_name: row.file_name}})\n"
             "MERGE (s:Schema {db: row.db, name: row.schema_name})\n"
             "MERGE (t:Table {name: row.table_name, schema: row.schema_name, db: row.db})\n"
-            "MERGE (t)-[:BELONGS_TO]->(s)\n"
-            "SET t.db = coalesce(t.db, row.db)"
+            "MERGE (t)-[:BELONGS_TO]->(s)"
             f"{db_link_set}"
         )
         if rel_merges:

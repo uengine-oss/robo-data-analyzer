@@ -9,7 +9,6 @@ from __future__ import annotations
 from typing import Any, AsyncGenerator
 
 from analyzer.common.cypher.ddl_handler import run_ddl_processing
-from analyzer.common.cypher.schema_resolver import build_name_to_schema
 from analyzer.strategy.dbms.linking import ddl_table_matcher
 from util.stream_emitter import (
     emit_user_message, emit_separator, emit_phase_header, emit_file_start,
@@ -60,7 +59,6 @@ async def run_phase_ddl(
         }
     ctx.state.ddl_table_index = ddl_table_index
     ctx.state.ddl_pattern = ddl_table_matcher.build_pattern(list(ddl_table_index.keys()))
-    ctx.state.name_to_schema = build_name_to_schema(ctx.ddl_table_metadata)
 
     yield emit_user_message("")
     yield emit_user_message("📊 DDL 처리 완료:")

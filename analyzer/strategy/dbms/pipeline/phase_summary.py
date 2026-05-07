@@ -259,8 +259,9 @@ def _build_column_metadata(
     columns_map: Dict[str, Dict[str, Any]],
     ddl_columns: Dict[str, Dict[str, Any]],
 ) -> Dict[str, Dict[str, Any]]:
+    """LLM 캐시 키 안정화 — column 이름 정렬 순서로 dict 빌드 (insertion order 결정론)."""
     column_metadata: Dict[str, Dict[str, Any]] = {}
-    for entry in columns_map.values():
+    for entry in sorted(columns_map.values(), key=lambda e: e.get("name", "")):
         col_name = entry["name"]
         ddl_col = ddl_columns.get(col_name, {})
         nullable_val = entry.get("nullable")
@@ -272,7 +273,8 @@ def _build_column_metadata(
             ),
             "examples": sorted(list(entry.get("examples") or []))[:5],
         }
-    for col_name, ddl_col in ddl_columns.items():
+    for col_name in sorted(ddl_columns.keys()):
+        ddl_col = ddl_columns[col_name]
         if col_name not in column_metadata:
             column_metadata[col_name] = {
                 "dtype": ddl_col.get("dtype") or "",
@@ -289,20 +291,26 @@ def _build_table_inputs(
     datasource_name: str,
     locale: str,
 ) -> List[Dict[str, Any]]:
-    """canonical TableInput 리스트 (run_table_enrichment 입력)."""
+    """canonical TableInput 리스트 (run_table_enrichment 입력).
+
+    LLM 캐시 키 안정화 — set/dict iteration 결과를 sorted() 로 정규화.
+    이전 단계 (Phase 2 LLM 비동기 배치) 의 완료 순서가 매 run 다른데,
+    그 결과가 그대로 LLM input list 에 들어가면 같은 의미인데 순서만 다른 prompt
+    가 매 run 생성되어 cache miss. sorted() 로 매번 동일 순서 강제.
+    """
     inputs: List[Dict[str, Any]] = []
-    for table_key, data in all_stores.items():
+    for table_key, data in sorted(all_stores.items()):
         schema_key, name_key = table_key
         ddl_key = (schema_key.lower(), name_key.lower())
         ddl_meta = all_ddl.get(ddl_key, {})
         ddl_description = (ddl_meta.get("description") or "").strip()
         ddl_columns = ddl_meta.get("columns") or {}
 
-        summaries = list(data.get("summaries") or [])
+        summaries = sorted(data.get("summaries") or [])
         columns_map = data.get("columns") or {}
         column_sentences: Dict[str, List[str]] = {
-            entry["name"]: list(entry["summaries"])
-            for entry in columns_map.values()
+            entry["name"]: sorted(entry["summaries"])
+            for entry in sorted(columns_map.values(), key=lambda e: e.get("name", ""))
             if entry.get("summaries")
         }
 

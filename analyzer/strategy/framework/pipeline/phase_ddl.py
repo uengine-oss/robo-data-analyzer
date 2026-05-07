@@ -8,7 +8,6 @@ from __future__ import annotations
 from typing import Any, AsyncGenerator
 
 from analyzer.common.cypher.ddl_handler import run_ddl_processing
-from analyzer.common.cypher.schema_resolver import build_name_to_schema
 
 
 async def run_phase_ddl(
@@ -28,4 +27,3 @@ async def run_phase_ddl(
 
     ctx.state.ddl_schemas = ddl_schemas
     ctx.state.ddl_table_metadata = ddl_table_metadata
-    ctx.state.name_to_schema = build_name_to_schema(ddl_table_metadata)
