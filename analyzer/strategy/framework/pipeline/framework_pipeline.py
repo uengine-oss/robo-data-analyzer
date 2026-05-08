@@ -30,9 +30,10 @@ from analyzer.strategy.framework.pipeline.phase_ast import run_phase_ast
 from analyzer.strategy.framework.pipeline.phase_ddl import run_phase_ddl
 from analyzer.strategy.framework.pipeline.phase_linking import run_phase_linking
 from analyzer.strategy.framework.pipeline.phase_summary import (
+    run_container_step,
     run_cross_module_actor_step,
-    run_module_step,
     run_table_description_step,
+    run_variable_summary_step,
 )
 from analyzer.strategy.framework.pipeline.phase_vector import run_phase_vector
 from analyzer.common.pipeline.stream_merge import merge_streams
@@ -162,8 +163,8 @@ class FrameworkPipeline(BaseStreamingAnalyzer):
         tracker = PhaseTracker(2, "코드 분석 + 보강", total_phases=3)
         tracker.define_steps([
             ("코드 분석", 35),
-            ("Field 분석", 15),
-            ("Module 분석", 25),
+            ("변수/필드 summary", 15),
+            ("컨테이너 분석", 25),
             ("Table Description 보강", 25),
         ])
 
@@ -172,20 +173,28 @@ class FrameworkPipeline(BaseStreamingAnalyzer):
             yield chunk
         yield emit_phase_event(3, "코드 분석", "completed", 50)
 
-        # ========== Phase 3-2: Module + Table description 병렬 → Cross-module actor merge ==========
+        # ========== Phase 3-2: 변수 summary → 컨테이너 + Table 병렬 → Cross-container actor merge ==========
         # 의존성:
-        #   - Module summary + Table description : Phase 3-1 method summary 만 의존 (서로 독립)
-        #   - Cross-module actor merge : Module summary 끝나야 (모듈 간 비교 + Actor 노드)
+        #   - 변수/필드 summary : function 분석 결과 부수 산출물에서 derive (현재 비활성)
+        #   - 컨테이너 summary  : function 분석 + 변수 summary input (변수가 채워지면 자동 활용)
+        #   - Table description : function 분석 method summary 만 의존 (컨테이너와 병렬)
+        #   - Cross-container actor merge : 모든 컨테이너 summary 끝나야 (컨테이너 간 비교 + Actor 노드)
         # 동시 실행은 단일 phase_event num + 통합 name (frontend 1 step 으로 인식).
-        yield emit_phase_event(4, "Module + Table description + Actor", "started", 50, {"canPause": True})
+        yield emit_phase_event(4, "컨테이너 + Table description + Actor", "started", 50, {"canPause": True})
+
+        # 변수/필드 summary 먼저 (현재 no-op — function 분석 출력 스키마 미확장)
+        async for chunk in run_variable_summary_step(ctx, tracker):
+            yield chunk
+
+        # 컨테이너 (MODULE + DATATYPE) summary + Table description 병렬
         async for chunk in merge_streams(
-            ("module",            run_module_step(ctx, tracker)),
+            ("container",         run_container_step(ctx, tracker)),
             ("table_description", run_table_description_step(ctx)),
         ):
             yield chunk
         async for chunk in run_cross_module_actor_step(ctx):
             yield chunk
-        yield emit_phase_event(4, "Module + Table description + Actor", "completed", 100)
+        yield emit_phase_event(4, "컨테이너 + Table description + Actor", "completed", 100)
 
         st = self._pipeline_state
         yield emit_user_message(

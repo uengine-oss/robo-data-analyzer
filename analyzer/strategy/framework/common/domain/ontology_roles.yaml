@@ -1,9 +1,19 @@
 roles:
-  module:           # MODULE 역할 (Neo4j 라벨: MODULE) — 파일/클래스/구조체 등 컨테이너
-    java:    [CLASS, INTERFACE, ENUM]
-    c:       [FILE, STRUCT, UNION, ENUM]
+  module:           # MODULE 역할 (Neo4j 라벨: MODULE) — 메서드/함수/필드를 품는 컨테이너 (파일·클래스 등)
+    # 분류 기준: "함수를 품을 수 있는 코드 단위" 만 module 로 분류.
+    # C 의 STRUCT/UNION/ENUM 은 메서드 못 가지므로 data_type 역할로 분리 (의미 정확성).
+    java:    [CLASS, INTERFACE, ENUM, RECORD]
+    c:       [FILE]
     python:  [CLASS, FILE]
     go:      [STRUCT, INTERFACE]
+
+  data_type:        # DATATYPE 역할 (Neo4j 라벨: DATATYPE) — 함수 못 품는 데이터/상수 타입 컨테이너
+    # 사실상 C 전용. 다른 메이저 언어의 struct/enum/record 는 모두 메서드 가질 수 있어 module 에 들어감.
+    # 새 언어 추가 시 그 언어가 "함수 못 품는 타입 정의" 가지면 여기 추가.
+    java:    []
+    c:       [STRUCT, UNION, ENUM]
+    python:  []
+    go:      []
 
   function:         # FUNCTION 역할 (Neo4j 라벨: FUNCTION) — 메서드/함수/생성자
     java:    [METHOD, CONSTRUCTOR]

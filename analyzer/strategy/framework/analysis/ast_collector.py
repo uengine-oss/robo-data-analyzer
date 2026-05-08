@@ -128,12 +128,13 @@ get_ontology = _get_ontology  # alias for merged ast_walker code
 _onto = _get_ontology()
 _ALL_LANGS = _onto.supported_languages()
 MODULE_TYPES: frozenset = frozenset().union(*(_onto.module_types(l) for l in _ALL_LANGS))
+DATA_TYPE_TYPES: frozenset = frozenset().union(*(_onto.data_type_types(l) for l in _ALL_LANGS))
 FUNCTION_TYPES: frozenset = frozenset().union(*(_onto.function_types(l) for l in _ALL_LANGS))
 VARIABLE_TYPES: frozenset = frozenset().union(*(_onto.variable_types(l) for l in _ALL_LANGS))
 CONSTANT_TYPES: frozenset = frozenset().union(*(_onto.constant_types(l) for l in _ALL_LANGS))
 ANALYZABLE_NODE_TYPES = FUNCTION_TYPES | VARIABLE_TYPES | CONSTANT_TYPES
 SILENT_NODE_TYPES: frozenset = frozenset().union(*(_onto.silent_types(l) for l in _ALL_LANGS))
-GRAPH_NODE_TYPES = MODULE_TYPES | FUNCTION_TYPES | VARIABLE_TYPES | CONSTANT_TYPES
+GRAPH_NODE_TYPES = MODULE_TYPES | DATA_TYPE_TYPES | FUNCTION_TYPES | VARIABLE_TYPES | CONSTANT_TYPES
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +184,7 @@ class StatementCollector:
         self.lang = lang
         onto = _get_ontology()
         self._module_types = onto.module_types(lang)
+        self._data_type_types = onto.data_type_types(lang)
         self._function_types = onto.function_types(lang)
         self._variable_types = onto.variable_types(lang)
         self._analyzable_types = onto.analyzable_types(lang)
@@ -284,7 +286,15 @@ class StatementCollector:
                     f"파일 컨테이너 등록: {package_name}.{file_stem} (FILE)",
                 )
 
-        if node_type in self._module_types and node_type != "FILE":
+        # 컨테이너 등록 — 자식 (필드/메서드) 가질 수 있는 코드 단위.
+        # module: 메서드 품는 컨테이너 (CLASS/INTERFACE/ENUM/RECORD/Go STRUCT 등)
+        # data_type: 메서드 못 품는 데이터 컨테이너 (C STRUCT/UNION/ENUM)
+        # 둘 다 graph 에 박혀야 하고 자식 등록도 동일. Neo4j 라벨만 primary_label_for 가 분기.
+        is_container = (
+            (node_type in self._module_types and node_type != "FILE")
+            or node_type in self._data_type_types
+        )
+        if is_container:
             extracted_name = node.get("name")
             module_key = self._make_module_key(package_name, extracted_name, start_line)
             module_name = extracted_name
@@ -346,9 +356,22 @@ class StatementCollector:
             c.parent = st
         st.children.extend(child_nodes)
 
-        if not analyzable and node_type not in self._module_types:
-            st.summary = st.get_raw_code()
-            st.completion_event.set()
+        # summary 처리 — 노드 종류별 명시 분기:
+        #
+        # 1. analyzable (function/variable/constant): LLM 분석이 summary 채움. 여기선 skip.
+        # 2. module 컨테이너: unit-summary 단계에서 자식들 모아 LLM 종합 summary 채움. skip.
+        # 3. data_type 컨테이너 (C STRUCT/UNION/ENUM): 행위 없이 필드만 가짐 — summary 자체
+        #    가 의미 없음. 자식 필드의 description 이 의미 담당. summary 비워두고 event 세팅
+        #    해 다운스트림 wait 안 막히게.
+        # 4. 그 외 (제어문/일반 statement): raw code 를 summary 로 박음.
+        if not analyzable:
+            if node_type in self._module_types:
+                pass  # unit-summary 가 채움
+            elif node_type in self._data_type_types:
+                st.completion_event.set()  # summary 빈 채로 완료 — 필드가 의미 담음
+            else:
+                st.summary = st.get_raw_code()
+                st.completion_event.set()
         elif analyzable and module_key and module_key in self.classes:
             self.classes[module_key].pending_nodes += 1
 
@@ -457,6 +480,7 @@ def _visit_ast_for_indices(
     """Raw AST 순회: symbol_type_index, function_index, ChunkBundle용 리스트 수집 (범용)."""
     onto = get_ontology()
     module_types = onto.module_types(lang)
+    data_type_types = onto.data_type_types(lang)
     function_types = onto.function_types(lang)
     call_types = onto.call_types(lang)
 
@@ -481,7 +505,12 @@ def _visit_ast_for_indices(
                 module_name = file_stem
                 module_fqn = f"{package_name}.{file_stem}" if package_name else file_stem
 
-    if node_type in module_types and node_type != "FILE":
+    # 컨테이너 (module + data_type) — FQN 트리에 쌓아 자식 식별자 부착에 사용.
+    is_container_non_file = (
+        (node_type in module_types and node_type != "FILE")
+        or node_type in data_type_types
+    )
+    if is_container_non_file:
         module_name = node.get("name") or module_name
         if package_name and module_name:
             module_fqn = f"{package_name}.{module_name}"
@@ -619,6 +648,7 @@ def build_function_facts_and_module_index(
     """한 AST 파일에서 FunctionFacts, module_index, VariableFacts 리스트 생성."""
     onto = get_ontology()
     module_types = onto.module_types(lang)
+    data_type_types = onto.data_type_types(lang)
     function_types = onto.function_types(lang)
     variable_types = onto.variable_types(lang) | onto.constant_types(lang)
 
@@ -943,6 +973,7 @@ __all__ = [
     "ModuleInfo",
     "StatementCollector",
     "MODULE_TYPES",
+    "DATA_TYPE_TYPES",
     "FUNCTION_TYPES",
     "VARIABLE_TYPES",
     "CONSTANT_TYPES",

@@ -55,6 +55,10 @@ class OntologyRoles:
     def constant_types(self, lang: str) -> FrozenSet[str]:
         return self._get_role("constant", lang)
 
+    def data_type_types(self, lang: str) -> FrozenSet[str]:
+        """data_type 역할 — 함수 못 품는 타입 컨테이너 (C 의 STRUCT/UNION/ENUM 등)."""
+        return self._get_role("data_type", lang)
+
     # --- 기존 메서드 ---
     def silent_types(self, lang: str) -> FrozenSet[str]:
         return self._get_role("silent", lang)
@@ -72,7 +76,13 @@ class OntologyRoles:
         return self.function_types(lang) | self.variable_types(lang) | self.constant_types(lang)
 
     def graph_node_types(self, lang: str) -> FrozenSet[str]:
-        return self.module_types(lang) | self.function_types(lang) | self.variable_types(lang) | self.constant_types(lang)
+        return (
+            self.module_types(lang)
+            | self.data_type_types(lang)
+            | self.function_types(lang)
+            | self.variable_types(lang)
+            | self.constant_types(lang)
+        )
 
     # --- 패러다임 ---
     def is_oop(self, lang: str) -> bool:
@@ -111,6 +121,8 @@ class OntologyRoles:
         """
         if node_type in self.module_types(lang):
             return "MODULE"
+        if node_type in self.data_type_types(lang):
+            return "DATATYPE"
         if node_type in self.function_types(lang):
             return "FUNCTION"
         if node_type in self.constant_types(lang):
