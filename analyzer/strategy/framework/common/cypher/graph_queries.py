@@ -391,23 +391,41 @@ def build_variable_queries(variable_facts_list: List[VariableFacts], lang: str, 
 # --- 2-2b. INIT_BY 관계 (Variable → Variable|Constant 초기화 출처) ---
 
 def build_init_by_queries(edges: List[InitByEdge]) -> List[Dict[str, Any]]:
-    """(VARIABLE)-[:INIT_BY]->(VARIABLE|CONSTANT) 초기화 관계를 생성한다.
+    """(VARIABLE)-[:INIT_BY]->(VARIABLE|CONSTANT) 초기화 관계.
 
-    변수가 다른 변수/상수 값으로 초기화될 때의 출처 관계.
-    UNWIND 배치로 한 번에 처리한다.
+    init_source_id 가 ``external:<NAME>`` prefix 면 EXTERNAL CONSTANT placeholder MERGE.
     """
     if not edges:
         return []
-    rows = [{"vid": e.variable_id, "sid": e.init_source_id} for e in edges]
-    return [{
-        "query": (
-            "UNWIND $rows AS row "
-            "MATCH (v {variable_id: row.vid}) WHERE v:VARIABLE OR v:CONSTANT "
-            "MATCH (s {variable_id: row.sid}) WHERE s:VARIABLE OR s:CONSTANT "
-            "MERGE (v)-[:INIT_BY]->(s)"
-        ),
-        "params": {"rows": rows},
-    }]
+    internal = [e for e in edges if not e.init_source_id.startswith("external:")]
+    external = [e for e in edges if e.init_source_id.startswith("external:")]
+    queries: List[Dict[str, Any]] = []
+    if internal:
+        queries.append({
+            "query": (
+                "UNWIND $rows AS row "
+                "MATCH (v {variable_id: row.vid}) WHERE v:VARIABLE OR v:CONSTANT "
+                "MATCH (s {variable_id: row.sid}) WHERE s:VARIABLE OR s:CONSTANT "
+                "MERGE (v)-[:INIT_BY]->(s)"
+            ),
+            "params": {"rows": [{"vid": e.variable_id, "sid": e.init_source_id} for e in internal]},
+        })
+    if external:
+        ext_rows = [
+            {"vid": e.variable_id, "sid": e.init_source_id, "name": e.init_source_id.split(":", 1)[1]}
+            for e in external
+        ]
+        queries.append({
+            "query": (
+                "UNWIND $rows AS row "
+                "MATCH (v {variable_id: row.vid}) WHERE v:VARIABLE OR v:CONSTANT "
+                "MERGE (s:CONSTANT:EXTERNAL {variable_id: row.sid}) "
+                "ON CREATE SET s.name = row.name, s.created_at = timestamp() "
+                "MERGE (v)-[:INIT_BY]->(s)"
+            ),
+            "params": {"rows": ext_rows},
+        })
+    return queries
 
 
 def build_column_description_update_queries(
@@ -457,22 +475,18 @@ def build_column_description_update_queries(
 
 
 def build_var_refs_queries(refs: List[tuple]) -> List[Dict[str, Any]]:
-    """(source)-[:REFERENCES]->(VARIABLE|CONSTANT).
+    """(FUNCTION)-[:REFERENCES]->(VARIABLE|CONSTANT). 함수 본문에서의 변수/상수 사용.
 
-    source 는 코드를 가진 어떤 노드든 가능 — 함수 본문(FUNCTION) 또는 변수 선언식(VARIABLE).
-    refs: ``[(source_id, variable_id), ...]``.
+    refs: ``[(function_id, variable_id), ...]``.
     """
     if not refs:
         return []
     return [{
         "query": (
             "UNWIND $rows AS row\n"
-            "OPTIONAL MATCH (f:FUNCTION {function_id: row.sid})\n"
-            "OPTIONAL MATCH (vsrc:VARIABLE {variable_id: row.sid})\n"
-            "WITH row, coalesce(f, vsrc) AS src\n"
-            "WHERE src IS NOT NULL\n"
+            "MATCH (f:FUNCTION {function_id: row.sid})\n"
             "MATCH (v {variable_id: row.vid}) WHERE v:VARIABLE OR v:CONSTANT\n"
-            "MERGE (src)-[:REFERENCES]->(v)"
+            "MERGE (f)-[:REFERENCES]->(v)"
         ),
         "params": {"rows": [{"sid": sid, "vid": vid} for sid, vid in refs]},
     }]

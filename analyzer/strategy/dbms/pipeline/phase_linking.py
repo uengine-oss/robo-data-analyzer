@@ -57,12 +57,15 @@ def _scope_id(node: StatementNode) -> Any:
 
 
 def _build_reference_targets_sources(nodes: List[StatementNode]):
-    """REFERENCES 매칭의 target/source 후보 분류.
+    """REFERENCES 매칭의 target / source 후보 분류.
+
+    REFERENCES = (PROCEDURE / FUNCTION / Statement) → (VARIABLE / CONSTANT_FIELD / …).
+    변수↔변수 초기화는 INIT_BY 가 담당 — source 에서 변수성 노드 제외.
 
     target 분류:
       - VARIABLE / PARAMETER → enclosing PROCEDURE/FUNCTION 의 scope (지역)
       - PACKAGE_VARIABLE / CONSTANT_FIELD → 파일 전체 (wildcard scope)
-    source: 분석 가능한 모든 노드 (코드 본문에서 변수명 토큰 등장 여부 매칭).
+    source: 분석 가능한 노드 중 변수성 노드 (_VAR_LIKE_TYPES) 제외.
     """
     targets: List[Dict[str, Any]] = []
     sources: List[Dict[str, Any]] = []
@@ -70,23 +73,19 @@ def _build_reference_targets_sources(nodes: List[StatementNode]):
         if not n.node_type:
             continue
         name = (n.name or "").strip()
-        if not name:
-            pass  # 식별자 없는 노드는 target 대상 아님
-        elif n.node_type in ("VARIABLE", "PARAMETER"):
-            # 지역 scope — 자기 함수 본문 안에서만 매칭
+        if name and n.node_type in ("VARIABLE", "PARAMETER"):
             targets.append({
                 "id": id(n), "name": name,
                 "scope_id": _scope_id(n),
                 "node": n,
             })
-        elif n.node_type in _PACKAGE_VAR_TYPES:
-            # 파일 전체 scope — 어느 함수에서 참조하든 매칭
+        elif name and n.node_type in _PACKAGE_VAR_TYPES:
             targets.append({
                 "id": id(n), "name": name,
                 "scope_id": WILDCARD_SCOPE,
                 "node": n,
             })
-        if n.analyzable and n.code:
+        if n.analyzable and n.code and n.node_type not in _VAR_LIKE_TYPES:
             sources.append({
                 "id": id(n),
                 "scope_id": _scope_id(n),
@@ -97,7 +96,11 @@ def _build_reference_targets_sources(nodes: List[StatementNode]):
 
 
 def _build_init_by_inputs(nodes: List[StatementNode]):
-    """VARIABLE 중 init_value 가진 노드 + name_index 구성."""
+    """INIT_BY 매칭 입력. src·target 둘 다 변수성 노드 (_VAR_LIKE_TYPES).
+
+    variables: init_value 가진 변수성 노드 (VARIABLE / CONSTANT_FIELD / PACKAGE_VARIABLE / PARAMETER 모두).
+    name_index: 모든 변수성 노드 (이름 → 노드 후보) — INIT_BY target 후보.
+    """
     variables: List[Dict[str, Any]] = []
     name_index: Dict[str, List[Dict[str, Any]]] = {}
     for n in nodes:
@@ -108,7 +111,7 @@ def _build_init_by_inputs(nodes: List[StatementNode]):
             continue
         entry = {"id": id(n), "name": name, "node": n}
         name_index.setdefault(name.lower(), []).append(entry)
-        if n.node_type == "VARIABLE" and n.init_value:
+        if n.init_value:
             variables.append({
                 "id": id(n), "name": name,
                 "init_value": n.init_value,

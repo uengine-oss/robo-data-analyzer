@@ -34,6 +34,9 @@ def find_init_by_sources(
 ) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
     """init_value 가 단순 식별자인 변수들과 name_index 매칭.
 
+    매칭 실패 (외부 헤더 정의 상수 등) 식별자는 external CONSTANT placeholder source 로 반환:
+    ``{"id": "external:<NAME>", "name": <NAME>, "external": True}``.
+
     Returns:
         [(variable, source), ...] 페어 리스트. self-edge 제외.
     """
@@ -49,17 +52,29 @@ def find_init_by_sources(
         identifier = _extract_identifier(init_text)
         if identifier is None:
             continue
-        for src in name_index.get(identifier.lower(), []):
-            if src["id"] == v["id"]:
-                continue
-            key = (v["id"], src["id"])
+        candidates = name_index.get(identifier.lower(), [])
+        if candidates:
+            for src in candidates:
+                if src["id"] == v["id"]:
+                    continue
+                key = (v["id"], src["id"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                pairs.append((v, src))
+        else:
+            ext_id = f"external:{identifier}"
+            key = (v["id"], ext_id)
             if key in seen:
                 continue
             seen.add(key)
-            pairs.append((v, src))
+            pairs.append((v, {"id": ext_id, "name": identifier, "external": True}))
 
+    matched = sum(1 for _v, s in pairs if not s.get("external"))
+    external = sum(1 for _v, s in pairs if s.get("external"))
     logger.info(
-        "[INIT_BY] 결정론 매칭 | variables=%d pairs=%d", len(variables), len(pairs),
+        "[INIT_BY] 결정론 매칭 | variables=%d pairs=%d (matched=%d external=%d)",
+        len(variables), len(pairs), matched, external,
     )
     return pairs
 

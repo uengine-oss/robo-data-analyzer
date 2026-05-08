@@ -84,15 +84,13 @@ class VariableFacts:
 
 @dataclass
 class InitByEdge:
-    """(VARIABLE)-[:INIT_BY]->(VARIABLE|CONSTANT) 초기화 관계.
+    """(VARIABLE|CONSTANT)-[:INIT_BY]->(VARIABLE|CONSTANT) 초기화 관계.
 
-    변수가 다른 변수 또는 상수의 값으로 초기화될 때 생성한다.
-    예: int limit = MAX_LOANS; → (VARIABLE:limit)-[:INIT_BY]->(CONSTANT:MAX_LOANS)
-
-    컨텍스트 역추적 시 REFERENCES + INIT_BY를 쌍으로 조회하여
-    함수가 참조하는 변수의 초기화 출처를 추적한다.
+    변수 또는 상수가 다른 변수/상수의 값으로 초기화될 때 생성.
+    예: ``int limit = MAX_LOANS;`` → (VARIABLE:limit)-[:INIT_BY]->(CONSTANT:MAX_LOANS)
+    예: ``#define MAX_TOTAL MAX_LOANS`` → (CONSTANT:MAX_TOTAL)-[:INIT_BY]->(CONSTANT:MAX_LOANS)
     """
-    variable_id: str      # 초기화되는 변수 (좌변)
+    variable_id: str      # 초기화되는 변수/상수 (좌변)
     init_source_id: str   # 초기화 출처 변수/상수 (우변)
 
 

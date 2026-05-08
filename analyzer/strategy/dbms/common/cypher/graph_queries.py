@@ -446,9 +446,9 @@ def build_references_queries(items: List[Dict[str, Any]]) -> List[Dict[str, Any]
 
 
 def build_init_by_queries(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """초기화식 식별자 매칭 → (:VARIABLE)-[:INIT_BY]->(:VARIABLE-like). UNWIND 단일 쿼리.
+    """초기화식 식별자 매칭 → (:VAR-like)-[:INIT_BY]->(:VAR-like). UNWIND 단일 쿼리.
 
-    src 는 항상 VARIABLE. target 은 같은 파일 내 동일 이름 variable-like 노드.
+    src·target 둘 다 변수성 노드 (VARIABLE / PACKAGE_VARIABLE / CONSTANT_FIELD / PARAMETER).
     items: 각 dict 에 ``{src_name, src_line, target_name, directory, file_name}``.
     """
     if not items:
@@ -465,7 +465,8 @@ def build_init_by_queries(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ]
     query = (
         "UNWIND $rows AS row\n"
-        "MATCH (s:VARIABLE {name: row.src_name, startLine: row.src_line, directory: row.directory, file_name: row.file_name})\n"
+        "MATCH (s {name: row.src_name, startLine: row.src_line, directory: row.directory, file_name: row.file_name})\n"
+        "WHERE s:VARIABLE OR s:PACKAGE_VARIABLE OR s:CONSTANT_FIELD OR s:PARAMETER\n"
         "MATCH (t {name: row.target_name, directory: row.directory, file_name: row.file_name})\n"
         "WHERE t:VARIABLE OR t:PACKAGE_VARIABLE OR t:CONSTANT_FIELD OR t:PARAMETER\n"
         "MERGE (s)-[:INIT_BY]->(t)"

@@ -500,20 +500,17 @@ async def run_deep_agent_parallel(ctx: LinkingContext) -> AsyncGenerator[bytes, 
             return
         logger.info("[PHASE:2:VARREF] 결정론적 매칭 시작 | variables=%d", len(variables))
 
-        # ── REFERENCES: variable_facts + 검색 source chunks → (source_id, variable_id) 페어 ──
-        # scope_id 정책 (find_variable_references 가 매칭에 사용):
+        # ── REFERENCES: (FUNCTION)→(VARIABLE|CONSTANT). 함수 본문 안에서의 변수/상수 사용. ──
+        # 변수↔변수/상수 초기화 참조는 INIT_BY 가 담당 (별도).
+        # source: function chunk 만 (id 에 `#` `C:` 없음). member_var / function_call /
+        # local_var initializer chunk 는 제외.
+        # scope_id:
         #   - VARIABLE / PARAMETER (함수 스코프) → scope_id = v.module_key (function_id).
-        #     자기 함수 chunk 와만 매칭됨 — 외부 함수의 동명 PARAMETER/VARIABLE false-positive 차단.
-        #   - GLOBAL_VARIABLE / DEFINE / CONSTANT_FIELD (모듈/전역 스코프) → 와일드카드.
-        #     모든 source 에서 reference 가능 (struct 멤버 배열 안의 매크로 포함).
-        # source: function chunk + member_var chunk (ontology 의 variable 역할 동등 취급).
-        #   - function chunk : function_id (점 표기, `#`/`C:` 없음)
-        #   - member_var chunk: variable_id (`#` 포함)
-        #   - 제외: function_call/local_var initializer chunk (`C:` 접두 — 함수 본문에 이미 포함됨)
+        #   - GLOBAL_VARIABLE / DEFINE / CONSTANT_FIELD (모듈/전역) → 와일드카드.
         _SCOPE_WILDCARD_KINDS = ("GLOBAL_VARIABLE", "DEFINE", "CONSTANT_FIELD")
         chunk_index = _ensure_chunk_index_in_state(st, ctx.data_dir)
         searchable_source_ids = frozenset(
-            cid for cid in (chunk_index or {}) if not cid.startswith("C:")
+            cid for cid in (chunk_index or {}) if "#" not in cid and not cid.startswith("C:")
         )
         targets = [
             {
