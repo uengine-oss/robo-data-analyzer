@@ -20,7 +20,11 @@ from analyzer.strategy.dbms.common.cypher.graph_queries import (
     build_init_by_queries,
     build_references_queries,
 )
-from analyzer.strategy.dbms.common.domain.analysis_constants import PROCEDURE_TYPES
+from analyzer.strategy.dbms.common.domain.analysis_constants import (
+    PACKAGE_VAR_TYPES,
+    PROCEDURE_TYPES,
+    VAR_LIKE_TYPES,
+)
 from analyzer.strategy.dbms.common.models.node_models import FileAnalysisContext, FileStatus, StatementNode
 from analyzer.strategy.dbms.linking.call_linker import build_calls_queries
 from util.logger import log_process
@@ -28,11 +32,6 @@ from util.stream_emitter import emit_user_message
 
 logger = logging.getLogger(__name__)
 
-# 파일 전체 scope (wildcard) 로 매칭되는 변수성 노드
-_PACKAGE_VAR_TYPES = {"PACKAGE_VARIABLE", "CONSTANT_FIELD"}
-# REFERENCES / INIT_BY name_index 등록 대상 — 모든 변수성 식별자.
-# PARAMETER 도 자식 식별자라 `tagNo := tagsn` 같은 변수↔파라미터 INIT_BY 매칭에 필요.
-_VAR_LIKE_TYPES = {"VARIABLE", "PACKAGE_VARIABLE", "CONSTANT_FIELD", "PARAMETER"}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -65,7 +64,7 @@ def _build_reference_targets_sources(nodes: List[StatementNode]):
     target 분류:
       - VARIABLE / PARAMETER → enclosing PROCEDURE/FUNCTION 의 scope (지역)
       - PACKAGE_VARIABLE / CONSTANT_FIELD → 파일 전체 (wildcard scope)
-    source: 분석 가능한 노드 중 변수성 노드 (_VAR_LIKE_TYPES) 제외.
+    source: 분석 가능한 노드 중 변수성 노드 (VAR_LIKE_TYPES) 제외.
     """
     targets: List[Dict[str, Any]] = []
     sources: List[Dict[str, Any]] = []
@@ -79,13 +78,13 @@ def _build_reference_targets_sources(nodes: List[StatementNode]):
                 "scope_id": _scope_id(n),
                 "node": n,
             })
-        elif name and n.node_type in _PACKAGE_VAR_TYPES:
+        elif name and n.node_type in PACKAGE_VAR_TYPES:
             targets.append({
                 "id": id(n), "name": name,
                 "scope_id": WILDCARD_SCOPE,
                 "node": n,
             })
-        if n.analyzable and n.code and n.node_type not in _VAR_LIKE_TYPES:
+        if n.analyzable and n.code and n.node_type not in VAR_LIKE_TYPES:
             sources.append({
                 "id": id(n),
                 "scope_id": _scope_id(n),
@@ -96,7 +95,7 @@ def _build_reference_targets_sources(nodes: List[StatementNode]):
 
 
 def _build_init_by_inputs(nodes: List[StatementNode]):
-    """INIT_BY 매칭 입력. src·target 둘 다 변수성 노드 (_VAR_LIKE_TYPES).
+    """INIT_BY 매칭 입력. src·target 둘 다 변수성 노드 (VAR_LIKE_TYPES).
 
     variables: init_value 가진 변수성 노드 (VARIABLE / CONSTANT_FIELD / PACKAGE_VARIABLE / PARAMETER 모두).
     name_index: 모든 변수성 노드 (이름 → 노드 후보) — INIT_BY target 후보.
@@ -104,7 +103,7 @@ def _build_init_by_inputs(nodes: List[StatementNode]):
     variables: List[Dict[str, Any]] = []
     name_index: Dict[str, List[Dict[str, Any]]] = {}
     for n in nodes:
-        if n.node_type not in _VAR_LIKE_TYPES:
+        if n.node_type not in VAR_LIKE_TYPES:
             continue
         name = (n.name or "").strip()
         if not name:

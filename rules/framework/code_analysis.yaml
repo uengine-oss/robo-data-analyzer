@@ -10,12 +10,10 @@ input_schema:
     - locale
   optional:
     - context
-    - field_initial_values
-    - ddl_context
-    - constants_context
+    - referenced_symbols     # 함수가 참조하는 변수/상수/필드/파라미터 통합 (`[TYPE] name (vtype) := init` 형식)
+    - tables                 # 함수가 접근하는 테이블 통합 (relation·op·columns·sample)
     - codebase_pattern
-    - module_intent          # 모듈 사전 요약 (한 줄 ~ 짧은 단락) — module_pre_analysis 산출
-    - module_annotations
+    - module_intent          # 모듈 사전 요약 — module_pre_analysis 가 헤더 주석·어노테이션·시그니처 정제. raw 어노테이션 입력 X
 
 system_prompt: |
   [ROLE]
@@ -53,7 +51,7 @@ system_prompt: |
   ✅ 보존: 도메인 코드값 리터럴·상태값·임계값·도메인 상수·enum/코드 분류. **변수명 X — 변수가 담는 값 + 의미** 풀어쓰기.
 
   ❌ 코드 한글 읽기 X: "0x00 초기화 / 매크로 길이만큼 복사 / 외부 함수 호출 후 성공코드 아니면 오류 반환" 같은 표현 금지.
-  {% if ddl_context or has_table_context | default(false) %}
+  {% if has_table_context | default(false) %}
   테이블 조작: INSERT=삽입 컬럼·값 출처 / UPDATE=변경 전→후·WHERE / DELETE=WHERE·FK영향
   {% endif %}
 
@@ -232,24 +230,19 @@ prompt: |
   Rule 후보/제외 판정 시 일반 원칙보다 **이 패턴을 우선 참조**.
   {{ codebase_pattern }}
   {% endif %}
-  {% if module_intent %}── [모듈 사전 요약]
+  {% if module_intent %}── [모듈 사전 요약 — 주석·어노테이션·시그니처 정제 결과]
   {{ module_intent }}
-  {% endif %}
-  {% if module_annotations %}── [모듈 어노테이션]
-  {{ module_annotations }}
   {% endif %}
   {% if context %}── [부모 컨텍스트] ── 연결된 SQL/Config/Class + called_method_summaries (참고만)
   {{ context }}
   {% endif %}
-  {% if field_initial_values %}── [참조 변수 — 사용 라인 매핑 포함]
-  자기 함수가 직접 reference 한 변수/상수/매크로/파라미터만.
-  {{ field_initial_values }}
+  {% if referenced_symbols %}── [참조 심볼 — 변수/상수/필드/파라미터 통합]
+  형식: `[TYPE] name (vtype) := init_value → 사용 라인: …`. TYPE 라벨로 종류 구분 (CONSTANT/VARIABLE/FIELD/PARAMETER 등). summary/examples 에서 상수는 실제 값으로 치환.
+  {{ referenced_symbols }}
   {% endif %}
-  {% if ddl_context %}── [DDL 컨텍스트 — 그래프 기반 테이블·컬럼 정의]
-  {{ ddl_context }}
-  {% endif %}
-  {% if constants_context %}── [상수 컨텍스트] ── 상수명→실제값 (summary/examples 에서 실제 값으로 치환)
-  {{ constants_context }}
+  {% if tables %}── [테이블 컨텍스트 — relation·op·schema·sample]
+  함수가 직접/전이로 접근하는 테이블. R/W relation 과 op (SELECT/INSERT/UPDATE/DELETE/MERGE) 라벨 포함.
+  {{ tables }}
   {% endif %}
   ── [분석 대상 코드] ── (L{{ startLine }}-{{ endLine }} {{ language | default("Java") }})
   {{ code }}

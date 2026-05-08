@@ -1,29 +1,26 @@
 """Framework Phase 3 코드 분석에 주입할 컨텍스트 수집기.
 
 수집 대상:
-  - constants_context (CONSTANT 노드 → 텍스트)
-  - referenced_vars_by_function (REFERENCES + INIT_BY 출처)
-  - codebase_pattern (Phase 1 codebase_profile.pattern 그대로)
-  - reads_writes_by_function (function_table_edges 기반)
-  - ddl_context_by_function (단일 컨텍스트):
-      schema = 그래프 Table/Column 노드 (catalog 무관, 항상 생성)
-      sample = catalog sample_rows (catalog 활성 시 schema 위에 부착)
+  - referenced_symbols_by_function: 함수가 참조하는 변수/상수/필드/파라미터 통합 bucket.
+      [TYPE] 라벨로 종류 구분 — VARIABLE / CONSTANT / FIELD / PARAMETER 등.
+  - tables_context_by_function: 함수가 접근하는 테이블 단일 bucket.
+      relation(R/W) + op(SELECT/INSERT/UPDATE/DELETE/MERGE) + columns + sample 통합.
+  - codebase_pattern: Phase 1 codebase_profile.pattern 그대로.
+  - module_intents_by_module_key: 모듈 헤더 주석에서 추출한 1~3 문장 의도.
 
-정책 정렬:
-  - 참조 변수 Neo4j 조회 실패 → fail-fast (이전과 동일)
-  - catalog 비활성 (`CATALOG_SERVICE_URL` 미설정) → schema 만 사용, sample 부착 skip
-  - catalog 활성 + 호출 실패 → fail-fast (사용자가 활성화했으면 떠있어야 함)
+정책:
+  - 참조 변수 Neo4j 조회 실패 → fail-fast.
+  - catalog 비활성 → schema 만 사용, sample 부착 skip.
+  - catalog 활성 + 호출 실패 → fail-fast.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-from analyzer.common.pipeline.analysis_context import (
-    fetch_constants_context,
-    format_table_context,
-)
+from analyzer.common.pipeline.analysis_context import format_table_context
+from analyzer.strategy.framework.common.domain.analysis_constants import SYMBOL_LABEL_PRIORITY
 from client.catalog_client import CatalogClient
 from client.neo4j_client import Neo4jClient
 from config.settings import settings
@@ -36,25 +33,19 @@ async def collect_analysis_context(st: Any, client: Neo4jClient, orchestrator: A
     """LLM 분석 prompt 에 주입할 컨텍스트 dict 반환.
 
     Returns:
-        ``{constants_context, referenced_vars_by_function, codebase_pattern,
-           reads_writes_by_function, ddl_context_by_function,
-           module_intents_by_module_key}``
+        ``{referenced_symbols_by_function, tables_context_by_function,
+           codebase_pattern, module_intents_by_module_key}``
     """
     ctx: Dict[str, Any] = {
-        "constants_context": "",
-        "referenced_vars_by_function": {},
+        "referenced_symbols_by_function": {},
         "codebase_pattern": "",
-        "reads_writes_by_function": {},
-        "ddl_context_by_function": {},
+        "tables_context_by_function": {},
         "module_intents_by_module_key": {},
     }
 
     rw_by_fn = _collect_reads_writes_by_function(st)
-    ctx["reads_writes_by_function"] = rw_by_fn
-
     ctx["codebase_pattern"] = _build_codebase_pattern(st)
-    ctx["constants_context"] = await fetch_constants_context(client)
-    ctx["referenced_vars_by_function"] = await _collect_referenced_vars(client)
+    ctx["referenced_symbols_by_function"] = await _collect_referenced_symbols(client)
 
     # ddl_context: schema 는 그래프에서 항상 생성, sample 은 catalog 활성 시만 부착.
     await _attach_table_context(ctx, st, client, orchestrator, rw_by_fn)
@@ -78,8 +69,10 @@ def _collect_module_intents(st: Any) -> Dict[str, Dict[str, str]]:
     """모듈마다 module_pre_analysis LLM 1회 호출 → ``{module_key: {intent, display_name}}``.
 
     헤더 주석 4KB → 한 줄 (~0.4KB) 로 압축해 함수 분석 (code_analysis) 의 매 호출 input 부담 ↓.
+    raw comment / raw annotations 는 본 LLM 입력에만 들어가고, 다운스트림 (code_analysis,
+    module_analysis) 은 정제된 ``intent`` 한 줄만 사용 — 중복·노이즈 0.
     부수: ``st.module_index`` 의 해당 entry 에 ``intent`` / ``display_name`` 키도 직접 주입
-    (다운스트림 _build_module_key_index 가 활용).
+    (다운스트림 _build_module_intent_index 가 활용).
     LLM 호출 실패는 fallback (해당 모듈만 skip — 함수 분석은 module_intent 없이 진행).
     """
     module_index = getattr(st, "module_index", None) or {}
@@ -259,29 +252,36 @@ def _build_codebase_pattern(st: Any) -> str:
 #   또한 link 단계가 동명 PARAMETER 노드를 자기 함수 외에도 연결하는 경우가 있어 노이즈 유발.
 _REFERENCED_VARS_QUERY = (
     "MATCH (f:FUNCTION)-[:REFERENCES]->(v) "
-    "WHERE v:VARIABLE OR v:GLOBAL_VARIABLE OR v:CONSTANT OR v:DEFINE "
     "OPTIONAL MATCH (v)-[:INIT_BY]->(src) "
     "RETURN f.function_id AS fid, "
+    "       labels(v) AS labels, "
     "       v.name AS name, v.variable_type AS vtype, "
-    "       v.start_line AS line, v.code_text AS code, "
+    "       v.start_line AS line, v.init_value AS init_value, "
     "       src.code_text AS src_code"
 )
 
 
-async def _collect_referenced_vars(client: Neo4jClient) -> Dict[str, list]:
-    """REFERENCES + INIT_BY → function_id 별 변수/상수/매크로 컨텍스트.
+def _resolve_symbol_label(labels: List[str]) -> str:
+    """노드 labels 에서 가장 구체적인 변수성 라벨 1 개 추출."""
+    label_set = set(labels or [])
+    for candidate in SYMBOL_LABEL_PRIORITY:
+        if candidate in label_set:
+            return candidate
+    return "VARIABLE"
 
-    텍스트 포맷은 DBMS ``referenced_variables`` 와 동일:
-        ``<name> (<vtype>) → 사용 라인: <line>``
-        ``  ↳ 초기화 출처: <src_code>``  (INIT_BY 가 있을 때만)
 
-    Neo4j 조회 실패는 fail-fast (이전 정책과 동일).
+async def _collect_referenced_symbols(client: Neo4jClient) -> Dict[str, list]:
+    """REFERENCES + INIT_BY → function_id 별 변수성 노드 통합 컨텍스트.
+
+    변수·상수·필드·파라미터 구분 없이 type 라벨로 표시:
+        ``[<TYPE>] <name> (<vtype>) := <init_value> → 사용 라인: <line>``
+        ``  ↳ 초기화 출처: <src_code>``  (INIT_BY 매칭 시)
     """
     try:
         results = await client.execute_queries([_REFERENCED_VARS_QUERY])
     except Exception as e:
         logger.error(
-            "[PHASE:3:CONTEXT] 참조 변수 수집 실패 (Fail-Fast) | %s: %s",
+            "[PHASE:3:CONTEXT] 참조 심볼 수집 실패 (Fail-Fast) | %s: %s",
             type(e).__name__, e, exc_info=True,
         )
         raise
@@ -294,21 +294,26 @@ async def _collect_referenced_vars(client: Neo4jClient) -> Dict[str, list]:
             name = (row.get("name") or "").strip()
             if not (fid and name):
                 continue
+            label = _resolve_symbol_label(row.get("labels") or [])
             vtype = (row.get("vtype") or "").strip()
+            init_value = (row.get("init_value") or "").strip()
             line = row.get("line")
-            head = f"{name} ({vtype})" if vtype else name
+            head = f"[{label}] {name}"
+            if vtype:
+                head += f" ({vtype})"
+            if init_value:
+                head += f" := {init_value}"
             if line:
                 head += f" → 사용 라인: {line}"
+            parts = [head]
             src_code = (row.get("src_code") or "").strip()
             if src_code:
-                entry = f"{head}\n  ↳ 초기화 출처: {src_code}"
+                parts.append(f"  ↳ 초기화 출처: {src_code}")
                 init_by_count += 1
-            else:
-                entry = head
-            out.setdefault(fid, []).append(entry)
+            out.setdefault(fid, []).append("\n".join(parts))
     if out:
         logger.info(
-            "[PHASE:3:CONTEXT] 참조 변수 수집 | functions=%d init_by_pairs=%d",
+            "[PHASE:3:CONTEXT] 참조 심볼 수집 | functions=%d init_by_pairs=%d",
             len(out), init_by_count,
         )
     return out
@@ -336,12 +341,12 @@ async def _attach_table_context(
     orchestrator: Any,
     rw_by_fn: Dict[str, list],
 ) -> None:
-    """함수별 ddl_context (schema + 가능 시 sample) 단일 통합 빌더.
+    """함수별 tables_context (schema + 가능 시 sample) 단일 통합 빌더.
 
     1) 그래프 Table/Column 노드 → schema_map (catalog 무관, 항상 생성).
        sample_map 호환 형식으로 만들어 ``format_table_context`` 재사용.
     2) catalog 활성 시 sample_rows 부착 (schema_map 위 sample_map 머지).
-    3) 함수별 전이 호출 그래프로 ``ddl_context_by_function`` 채움.
+    3) 함수별 전이 호출 그래프로 ``tables_context_by_function`` 채움 (op 라벨 포함).
 
     catalog 비활성 / datasource 미설정 → schema 만으로 진행 (skip 아님).
     catalog 활성 + 네트워크 실패 → fail-fast (raise).
@@ -368,13 +373,13 @@ async def _attach_table_context(
             "[PHASE:3:TABLE_CTX] catalog 비활성 또는 datasource 미설정 — schema 만으로 진행 (sample 미부착)"
         )
 
-    ddl_by_fn = _build_ddl_context_by_function(st, schema_map, rw_by_fn)
-    ctx["ddl_context_by_function"] = ddl_by_fn
+    tables_by_fn = _build_tables_context_by_function(st, schema_map, rw_by_fn)
+    ctx["tables_context_by_function"] = tables_by_fn
 
     all_fids_count = len(st.function_facts_list or [])
     logger.info(
-        "[PHASE:3:TABLE_CTX] 함수별 ddl_context 구성 | 함수 매핑=%d/%d tables=%d",
-        len(ddl_by_fn), all_fids_count, len(schema_map),
+        "[PHASE:3:TABLE_CTX] 함수별 tables 컨텍스트 구성 | 함수 매핑=%d/%d tables=%d",
+        len(tables_by_fn), all_fids_count, len(schema_map),
     )
 
 
@@ -422,16 +427,20 @@ def _merge_samples_into_schema(
     return schema_map
 
 
-def _build_ddl_context_by_function(
+def _build_tables_context_by_function(
     st: Any, schema_map: Dict[str, Dict[str, Any]], rw_by_fn: Dict[str, list],
 ) -> Dict[str, str]:
-    """호출 그래프 전이로 상위 함수가 하위 호출 경유 접근하는 테이블도 포함.
+    """함수별 테이블 컨텍스트 (R/W op + 컬럼 + description 통합).
 
-    각 테이블은 ``format_table_context`` (DBMS·framework 공용) 로 포맷.
+    direct R/W (자기 함수의 mpfmdbio/SQL) 는 op 라벨과 함께,
+    transitive (callee 경유) 는 op 없이 테이블 이름·컬럼만 추가.
     """
-    direct: Dict[str, set[str]] = {
-        fid: {t for t, _rel, _op in triples} for fid, triples in rw_by_fn.items()
-    }
+    direct_ops: Dict[str, Dict[str, set[str]]] = {}
+    for fid, triples in rw_by_fn.items():
+        for tbl, rel, op in triples:
+            label = f"{rel}({op})" if op else rel
+            direct_ops.setdefault(fid, {}).setdefault(tbl, set()).add(label)
+
     callees: Dict[str, set[str]] = {}
     for ce in (st.calls_edges or []):
         caller = ce.caller_function_id
@@ -439,25 +448,34 @@ def _build_ddl_context_by_function(
         if caller and callee:
             callees.setdefault(caller, set()).add(callee)
 
-    def transitive(fid: str, seen: set[str]) -> set[str]:
+    def transitive_tables(fid: str, seen: set[str]) -> set[str]:
         if fid in seen:
             return set()
         seen.add(fid)
-        acc = set(direct.get(fid, set()))
+        acc = set(direct_ops.get(fid, {}).keys())
         for cal in callees.get(fid, ()):
-            acc |= transitive(cal, seen)
+            acc |= transitive_tables(cal, seen)
         return acc
 
     all_fids = {m.function_id for m in (st.function_facts_list or [])}
-    ddl_by_fn: Dict[str, str] = {}
+    out: Dict[str, str] = {}
     for fid in all_fids:
-        tables_used = transitive(fid, set())
+        tables_used = transitive_tables(fid, set())
         if not tables_used:
             continue
-        section = format_table_context(schema_map, sorted(tables_used))
-        if section:
-            ddl_by_fn[fid] = section
-    return ddl_by_fn
+        sections: list = []
+        for tbl in sorted(tables_used):
+            base = format_table_context(schema_map, [tbl])
+            if not base:
+                continue
+            ops = direct_ops.get(fid, {}).get(tbl)
+            if ops:
+                op_label = ", ".join(sorted(ops))
+                base = base.replace(f"[{tbl}] 테이블", f"[{tbl}] {op_label}", 1)
+            sections.append(base)
+        if sections:
+            out[fid] = "\n\n".join(sections)
+    return out
 
 
 __all__ = ["collect_analysis_context"]

@@ -7,10 +7,8 @@ input_schema:
     - summaries
     - locale
   optional:
-    - variable_declarations       # 변수 선언·초기값
-    - constants_context           # 전역 상수 (상수명 → 실제 값)
+    - referenced_symbols          # 변수/상수/필드/파라미터 통합 ([TYPE] 라벨 — PARAMETER/VARIABLE/PACKAGE_VARIABLE/CONSTANT_FIELD/CONSTANT)
     - called_procedure_summaries  # 호출된 프로시저 요약 (참고만)
-    - module_intent               # 모듈 사전 요약 (있으면 참고만)
 
 system_prompt: |
   [ROLE]
@@ -29,7 +27,7 @@ system_prompt: |
   **원칙 3. 변수명 의미로 풀고 상수 실제 값으로 치환.**
     ❌ "X 변수를 입력에 복사" / ✅ "회사 구분 코드 ('01'=가맹점, '02'=중계사) 를 입력에 설정".
     도메인 코드값·상태값·임계값 보존 + 의미 (예: "응답코드 '0000'=성공/'0001'=한도초과").
-    constants_context 의 상수명은 실제 값으로 치환.
+    referenced_symbols 의 [CONSTANT] / [CONSTANT_FIELD] 라벨은 실제 값으로 치환.
 
   **원칙 4. 죽은 코드 주석·하위 호출 내부 모두 무시.**
     summaries 의 자식 텍스트에 SQL 키워드 포함 주석 (`--`, `/* */`) = 죽은 코드, 0 반영.
@@ -163,20 +161,13 @@ prompt: |
 
   ── [하위 블록 요약]
   {{ summaries }}
-  {% if module_intent %}
+  {% if referenced_symbols %}
 
-  ── [모듈 사전 요약]
-  {{ module_intent }}
-  {% endif %}
-  {% if variable_declarations %}
-
-  ── [변수 선언·초기값]
-  {{ variable_declarations }}
-  {% endif %}
-  {% if constants_context %}
-
-  ── [전역 상수] 상수명 → 실제 값. summary 에서 실제 값으로 치환.
-  {{ constants_context }}
+  ── [참조 심볼 — 변수/상수/필드/파라미터 통합]
+  형식: `[TYPE] <code 또는 name 정의>`. TYPE 라벨로 종류 구분
+  (PARAMETER / VARIABLE / PACKAGE_VARIABLE / CONSTANT_FIELD / CONSTANT).
+  summary 에서 [CONSTANT] / [CONSTANT_FIELD] 는 실제 값으로 치환.
+  {{ referenced_symbols }}
   {% endif %}
   {% if called_procedure_summaries %}
 

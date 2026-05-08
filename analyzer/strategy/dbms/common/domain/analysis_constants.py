@@ -15,6 +15,11 @@ NON_ANALYSIS_TYPES = frozenset([
 DML_STATEMENT_TYPES = frozenset(["SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "EXECUTE_IMMEDIATE", "FETCH", "CREATE_TEMP_TABLE", "CTE", "OPEN_CURSOR", "CURSOR_VARIABLE"])
 # 변수성 declaration — REFERENCES / INIT_BY 매칭의 target 후보. PARAMETER 도 포함 (함수 파라미터 = 변수성 식별자)
 VARIABLE_DECLARATION_TYPES = frozenset(["PACKAGE_VARIABLE", "DECLARE", "SPEC", "PARAMETER"])
+# 변수성 노드 — 함수 분석 referenced_symbols 통합 bucket 의 traverse 대상.
+# REFERENCES / INIT_BY 의 endpoint 후보. [TYPE] 라벨로 종류 구분.
+VAR_LIKE_TYPES = frozenset(["VARIABLE", "PACKAGE_VARIABLE", "CONSTANT_FIELD", "PARAMETER"])
+# 파일 전체 (wildcard scope) 로 매칭되는 변수성 노드 — 지역 변수 (VARIABLE/PARAMETER) 와 구별.
+PACKAGE_VAR_TYPES = frozenset(["PACKAGE_VARIABLE", "CONSTANT_FIELD"])
 
 # Bottom-up Rule 누적에서 제외되는 구조 래퍼 — 자식 rules 를 그대로 통과
 # 나머지 모든 노드는 rule_target (의미 부모 or 리프) 로 간주됨

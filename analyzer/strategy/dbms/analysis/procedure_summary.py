@@ -2,7 +2,7 @@
 
 원본 위치 (이전):
   - `analyzer/strategy/dbms/pipeline/phase_summary.py` 의
-    `_analyze_summary_only`, `_split_summaries_by_token`, `_collect_variable_declarations`,
+    `_analyze_summary_only`, `_split_summaries_by_token`, `_collect_referenced_symbols_for_unit`,
     `_collect_called_procedure_summaries` 그리고 `process_procedure` 클로저 일부
     + `_build_final_analysis` (Bottom-up Rule 조립)
 
@@ -36,25 +36,35 @@ logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def collect_variable_declarations(
+def collect_referenced_symbols_for_unit(
     nodes: List[Any],
     proc_key: str,
     var_types: frozenset,
+    constants_context: str = "",
 ) -> str:
-    """프로시저 내 DECLARE 블록의 변수 선언/초기값을 수집.
+    """unit 단위 referenced_symbols 통합 bucket — 변수/상수/필드/파라미터 한 입력.
+
+    enclosing PROCEDURE 의 자식 변수성 노드 (var_types) + 전역 CONSTANT 노드를
+    `[TYPE]` 라벨로 묶어 단일 텍스트. unit_analysis LLM 의 `referenced_symbols` 입력.
 
     Args:
         nodes: 처리기의 StatementNode 리스트 (`processor._nodes`)
         proc_key: 프로시저 unit_key
-        var_types: VARIABLE_DECLARATION_TYPES (PACKAGE_VARIABLE/DECLARE/SPEC)
+        var_types: VARIABLE_DECLARATION_TYPES (PACKAGE_VARIABLE/DECLARE/SPEC/PARAMETER)
+        constants_context: ``fetch_constants_context`` 산출 — 전역 CONSTANT 목록.
     """
     parts: List[str] = []
     for node in nodes:
         if node.unit_key == proc_key and node.node_type in var_types and node.code:
             code_line = " ".join(node.code.strip().split())
             if code_line:
-                parts.append(code_line)
-    return " | ".join(parts)
+                parts.append(f"[{node.node_type}] {code_line}")
+    if constants_context:
+        for line in constants_context.split("\n"):
+            line = line.strip()
+            if line and not line.startswith("[상수"):
+                parts.append(f"[CONSTANT] {line}")
+    return "\n".join(parts)
 
 
 async def collect_called_procedure_summaries(
@@ -139,16 +149,13 @@ def invoke_unit_analysis(
     api_key: str,
     locale: str,
     *,
-    variable_declarations: str = "",
-    constants_context: str = "",
+    referenced_symbols: str = "",
     called_procedure_summaries: str = "",
 ) -> Dict[str, Any]:
     """rules/dbms/unit_analysis.yaml 호출 — 프로시저 전체 summary 한 편 생성."""
     inputs: Dict[str, Any] = {"summaries": summaries, "locale": locale}
-    if variable_declarations:
-        inputs["variable_declarations"] = variable_declarations
-    if constants_context:
-        inputs["constants_context"] = constants_context
+    if referenced_symbols:
+        inputs["referenced_symbols"] = referenced_symbols
     if called_procedure_summaries:
         inputs["called_procedure_summaries"] = called_procedure_summaries
     return prompts.execute_raw("dbms", "unit_analysis", inputs, api_key)
@@ -185,8 +192,7 @@ async def summarize_procedure(
     deep_compact_code: str,
     api_key: str,
     locale: str,
-    variable_declarations: str = "",
-    constants_context: str = "",
+    referenced_symbols: str = "",
     called_procedure_summaries: str = "",
 ) -> str:
     """프로시저 1개의 통합 summary 생성.
@@ -210,8 +216,7 @@ async def summarize_procedure(
         result = await asyncio.to_thread(
             invoke_unit_analysis,
             chunk, api_key, locale,
-            variable_declarations=variable_declarations,
-            constants_context=constants_context,
+            referenced_symbols=referenced_symbols,
             called_procedure_summaries=called_procedure_summaries,
         )
         if not isinstance(result, dict):
@@ -238,8 +243,7 @@ async def summarize_procedure(
     merged = await asyncio.to_thread(
         invoke_unit_analysis,
         combined, api_key, locale,
-        variable_declarations=variable_declarations,
-        constants_context=constants_context,
+        referenced_symbols=referenced_symbols,
         called_procedure_summaries=called_procedure_summaries,
     )
     if not isinstance(merged, dict):
@@ -354,7 +358,7 @@ def assemble_final_analysis(proc_root: Any) -> Dict[str, Any]:
 
 
 __all__ = [
-    "collect_variable_declarations",
+    "collect_referenced_symbols_for_unit",
     "collect_called_procedure_summaries",
     "split_summaries_by_token",
     "invoke_unit_analysis",

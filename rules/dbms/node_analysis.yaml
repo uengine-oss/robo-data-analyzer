@@ -11,11 +11,9 @@ input_schema:
   optional:
     - context              # 부모·형제 컨텍스트 (node_context 산출물)
     - ddl_context          # 결정론 매칭된 테이블·컬럼 메타 (Phase 0 인덱스 기반)
-    - function_parameters  # enclosing PROCEDURE/FUNCTION 의 파라미터 텍스트 (이름·타입·모드)
-    - referenced_variables # 코드가 참조하는 enclosing 변수 목록 (name·type·initValue)
+    - referenced_symbols   # 코드가 참조하는 변수성 식별자 통합 ([TYPE] 라벨 — PARAMETER/VARIABLE/PACKAGE_VARIABLE/CONSTANT_FIELD)
     - has_dml              # DML 포함 여부 (summary DML 가이드 활성)
     - is_unit_root         # unit 최상위 (TRIGGER/PROCEDURE/FUNCTION) 여부 (actor 활성)
-    - module_intent        # 모듈 사전 요약 (있으면 참고만)
     - node_metadata        # [{node_category, child_rules, child_questions}, ...] (range 별)
 
 system_prompt: |
@@ -30,7 +28,7 @@ system_prompt: |
 
   **원칙 1. 분석 대상은 "자기 range 의 raw 코드 라인" 만.**
     각 range 의 startLine~endLine 안에 *실제 작성된 코드 텍스트* 만 분석.
-    부모 context · 자식 summary · ddl_context · function_parameters · referenced_variables 는
+    부모 context · 자식 summary · ddl_context · referenced_symbols 는
     *해석을 돕는 참고 자료* 일 뿐. 거기서 추가 추출/모방/복제 절대 X.
 
   **원칙 2. 컨텍스트는 "활용" 만, "출처" 아님.**
@@ -370,11 +368,6 @@ prompt: |
   - child_questions: 자식 노드들의 questions
   {{ node_metadata }}
   {% endif %}
-  {% if module_intent %}
-
-  ── [모듈 사전 요약]
-  {{ module_intent }}
-  {% endif %}
   {% if context %}
 
   ── [부모 구조 — 디렉토리 트리, ★ 자기 위치]
@@ -388,16 +381,13 @@ prompt: |
   각 테이블의 "사용 라인" 이 자기 range 와 겹치는 것만 자기 거.
   {{ ddl_context }}
   {% endif %}
-  {% if function_parameters %}
+  {% if referenced_symbols %}
 
-  ── [함수 파라미터] 호출자가 넘기는 입력값
-  {{ function_parameters }}
-  {% endif %}
-  {% if referenced_variables %}
-
-  ── [참조 변수 — 사용 라인 매핑]
-  각 변수의 "사용 라인" 이 자기 range 와 겹치는 것만 자기 거.
-  {{ referenced_variables }}
+  ── [참조 심볼 — 변수/상수/필드/파라미터 통합, 사용 라인 매핑]
+  형식: `[TYPE] name (vtype) := init_value → 사용 라인: …`. TYPE 라벨로 종류 구분
+  (PARAMETER / VARIABLE / PACKAGE_VARIABLE / CONSTANT_FIELD).
+  각 심볼의 "사용 라인" 이 자기 range 와 겹치는 것만 자기 거. 상수는 실제 값으로 치환.
+  {{ referenced_symbols }}
   {% endif %}
 
   ── [code 안의 자식 압축 표기]

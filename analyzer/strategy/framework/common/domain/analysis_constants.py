@@ -24,3 +24,10 @@ CATEGORY_SQL = "sql"                     # SQL 매핑
 CATEGORY_ENTITY = "entity"               # 엔티티 정의
 CATEGORY_CONFIG = "config"               # 설정 파일 (yaml, properties, json, 일반 xml)
 CATEGORY_DOCS = "docs"                   # 문서
+
+# 노드 labels 에서 가장 구체적인 변수성 라벨 1개 추출할 때 우선순위.
+# code_analysis LLM 입력 `referenced_symbols` 의 [TYPE] 라벨 결정에 사용.
+SYMBOL_LABEL_PRIORITY = (
+    "DEFINE", "CONSTANT_FIELD", "CONSTANT",
+    "GLOBAL_VARIABLE", "FIELD", "MEMBER", "PARAMETER", "VARIABLE",
+)

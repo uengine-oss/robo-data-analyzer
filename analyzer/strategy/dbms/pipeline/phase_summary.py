@@ -22,7 +22,7 @@ from analyzer.common.pipeline.table_description_enrichment import run_table_enri
 from analyzer.strategy.dbms.analysis.procedure_summary import assemble_final_analysis
 from analyzer.strategy.dbms.analysis.procedure_summary import (
     collect_called_procedure_summaries,
-    collect_variable_declarations,
+    collect_referenced_symbols_for_unit,
     summarize_procedure,
 )
 from analyzer.strategy.dbms.common.cypher.graph_queries import (
@@ -115,8 +115,9 @@ async def _process_one_procedure(
     """프로시저 1개의 summary 생성 + EM Cypher 반영."""
     async with semaphore:
         try:
-            var_decls = collect_variable_declarations(
+            referenced_symbols = collect_referenced_symbols_for_unit(
                 processor._nodes or [], proc_key, VARIABLE_DECLARATION_TYPES,
+                constants_context=constants_context,
             )
             called_summary = await collect_called_procedure_summaries(
                 client, info.procedure_name, processor.full_directory, processor.file_name,
@@ -127,8 +128,7 @@ async def _process_one_procedure(
                 summaries=summaries,
                 deep_compact_code=deep_compact,
                 api_key=api_key, locale=locale,
-                variable_declarations=var_decls,
-                constants_context=constants_context,
+                referenced_symbols=referenced_symbols,
                 called_procedure_summaries=called_summary,
             )
             if not final_summary:

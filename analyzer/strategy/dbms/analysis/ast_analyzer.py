@@ -37,6 +37,7 @@ from analyzer.strategy.dbms.common.domain.analysis_constants import (
     MAX_CONTEXT_TOKEN,
     OP_TO_RELATION,
     PROCEDURE_TYPES,
+    VAR_LIKE_TYPES,
 )
 from analyzer.strategy.dbms.common.cypher.graph_queries import (
     build_column_queries,
@@ -63,21 +64,6 @@ from util.llm_rule_runner import prompts
 from util.llm_call_safety import AsyncBatchExecutor, LLMRateLimiter
 
 
-def _extract_enclosing_parameters(batch_nodes: List[StatementNode]) -> str:
-    """batch 의 enclosing PROCEDURE/FUNCTION 의 parameters 텍스트.
-
-    같은 unit 의 batch 라면 첫 노드의 enclosing 만 확인하면 충분.
-    parameters 가 비어있으면 빈 문자열 반환.
-    """
-    for node in batch_nodes:
-        cur: Optional[StatementNode] = node
-        while cur is not None:
-            if cur.node_type in PROCEDURE_TYPES and cur.parameters:
-                return cur.parameters
-            cur = cur.parent
-    return ""
-
-
 def _find_enclosing_proc(node: StatementNode) -> Optional[StatementNode]:
     cur: Optional[StatementNode] = node
     while cur is not None:
@@ -87,13 +73,16 @@ def _find_enclosing_proc(node: StatementNode) -> Optional[StatementNode]:
     return None
 
 
-def _extract_referenced_variables(batch_nodes: List[StatementNode]) -> str:
-    """batch 코드에서 참조되는 enclosing 프로시저 변수 + 사용 라인 매핑.
+def _extract_referenced_symbols(batch_nodes: List[StatementNode]) -> str:
+    """batch 코드에서 실제 참조되는 변수성 식별자 + 사용 라인 매핑.
 
-    형식: ``<name> (<type>) := <init_value> → 사용 라인: 12, 15-17``
-    init_value 가 없으면 ``:= <init_value>`` 부분 생략.
-    사용 라인 매핑은 batch 안 노드들의 code (``"<line>: <text>"`` 형식) 에서 수집.
-    참조 변수가 없으면 빈 문자열.
+    enclosing PROCEDURE/FUNCTION 안의 자식 변수성 노드 (VAR_LIKE_TYPES =
+    PARAMETER + VARIABLE + PACKAGE_VARIABLE + CONSTANT_FIELD) 를 traverse 후
+    batch 코드 라인에 등장하는 것만 [TYPE] 라벨과 함께 출력.
+
+    형식:
+        [PARAMETER] p_co_cl_cd (VARCHAR2) := '01' → 사용 라인: 12, 15-17
+        [VARIABLE]  v_count (NUMBER) := 0 → 사용 라인: 22, 28
     """
     if not batch_nodes:
         return ""
@@ -101,17 +90,16 @@ def _extract_referenced_variables(batch_nodes: List[StatementNode]) -> str:
     if proc is None:
         return ""
 
-    proc_vars: List[StatementNode] = []
+    candidates: List[StatementNode] = []
     def _collect(n: StatementNode) -> None:
-        if n.node_type == "VARIABLE" and n.name:
-            proc_vars.append(n)
+        if n.node_type in VAR_LIKE_TYPES and n.name:
+            candidates.append(n)
         for c in n.children:
             _collect(c)
     _collect(proc)
-    if not proc_vars:
+    if not candidates:
         return ""
 
-    # batch 코드 라인별로 분리해 변수명 매칭 → 사용 라인 수집
     line_re = re.compile(r"^(\d+):\s?(.*)$")
     code_lines_by_no: List[Tuple[int, str]] = []
     for n in batch_nodes:
@@ -124,7 +112,7 @@ def _extract_referenced_variables(batch_nodes: List[StatementNode]) -> str:
 
     output: List[str] = []
     seen: Set[str] = set()
-    for v in proc_vars:
+    for v in candidates:
         if v.name in seen:
             continue
         var_pattern = re.compile(rf"\b{re.escape(v.name)}\b")
@@ -138,7 +126,7 @@ def _extract_referenced_variables(batch_nodes: List[StatementNode]) -> str:
         type_part = f" ({v.variable_type})" if v.variable_type else ""
         init_part = f" := {v.init_value}" if v.init_value else ""
         line_str = ddl_table_matcher.format_line_ranges(sorted(usage_lines))
-        output.append(f"{v.name}{type_part}{init_part} → 사용 라인: {line_str}")
+        output.append(f"[{v.node_type}] {v.name}{type_part}{init_part} → 사용 라인: {line_str}")
     return "\n".join(output)
 
 
@@ -1047,10 +1035,9 @@ class DbmsAstProcessor(BaseAstProcessor):
             )
             ddl_context = ddl_table_matcher.build_context(matched_with_lines, self._ddl_table_index)
 
-        # enclosing PROCEDURE/FUNCTION 의 parameters 텍스트 — LLM 의미 풀이용
-        function_parameters = _extract_enclosing_parameters(batch.nodes)
-        # 참조된 enclosing 변수들의 (name, type, init_value) — REFERENCES + initValue 컨텍스트
-        referenced_variables = _extract_referenced_variables(batch.nodes)
+        # batch 가 참조하는 변수성 식별자 (PARAMETER + VARIABLE + PACKAGE_VARIABLE + CONSTANT_FIELD)
+        # 단일 bucket 으로 통합 — [TYPE] 라벨로 종류 구분, 사용 라인 매핑 포함
+        referenced_symbols = _extract_referenced_symbols(batch.nodes)
 
         if batch.ranges:
             def _call_analyze_code():
@@ -1065,10 +1052,8 @@ class DbmsAstProcessor(BaseAstProcessor):
                     inputs["context"] = context
                 if ddl_context:
                     inputs["ddl_context"] = ddl_context
-                if function_parameters:
-                    inputs["function_parameters"] = function_parameters
-                if referenced_variables:
-                    inputs["referenced_variables"] = referenced_variables
+                if referenced_symbols:
+                    inputs["referenced_symbols"] = referenced_symbols
                 if has_dml:
                     inputs["has_dml"] = True
                 if is_unit_root:

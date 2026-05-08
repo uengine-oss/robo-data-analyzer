@@ -113,11 +113,9 @@ async def run_code_analysis(
         calls_edges=st.calls_edges or [],
         variable_facts_list=st.variable_facts_list or [],
         lang=st.lang,
-        ddl_context_by_function=summary_ctx.get("ddl_context_by_function") or None,
-        constants_context=summary_ctx.get("constants_context") or None,
-        referenced_vars_by_function=summary_ctx.get("referenced_vars_by_function") or None,
+        tables_context_by_function=summary_ctx.get("tables_context_by_function") or None,
+        referenced_symbols_by_function=summary_ctx.get("referenced_symbols_by_function") or None,
         codebase_pattern=summary_ctx.get("codebase_pattern") or None,
-        reads_writes_by_function=summary_ctx.get("reads_writes_by_function") or None,
     ):
         analysis_by_function.update(analysis_batch)
         msg, evt = tracker.tick()

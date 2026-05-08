@@ -48,28 +48,25 @@ def compute_stereotype(
     return "Command" if writes else "Query"
 
 
-def _build_module_key_index(module_index: Dict[str, Any]) -> Dict[str, Tuple[Optional[str], Optional[str]]]:
-    """module_index 에서 module_key → (intent, annotations) 역인덱스 구성.
+def _build_module_intent_index(module_index: Dict[str, Any]) -> Dict[str, str]:
+    """module_index 에서 module_key → intent 역인덱스 구성.
 
     intent 는 ``pre_analysis._collect_module_intents`` 가 module_pre_analysis LLM 호출 결과로
-    module_index entry 에 주입한 짧은 비즈니스 요약. intent 가 비어있으면 빈 문자열.
-    (이전 (comment, annotations) 매핑은 v6 까지의 흐름. v7 부터 매번 헤더 주석 4KB 박지 않음.)
+    module_index entry 에 주입한 짧은 비즈니스 요약 — 헤더 주석·어노테이션·시그니처가 모두
+    여기로 정제되어 들어가므로, 다운스트림 LLM 입력은 intent 한 줄만 사용.
     """
-    idx: Dict[str, Tuple[Optional[str], Optional[str]]] = {}
-    for info in (module_index or {}).values():
-        if isinstance(info, dict) and info.get("module_key"):
-            idx[info["module_key"]] = (info.get("intent") or "", info.get("annotations"))
-    return idx
+    return {
+        info["module_key"]: (info.get("intent") or "")
+        for info in (module_index or {}).values()
+        if isinstance(info, dict) and info.get("module_key")
+    }
 
 
-def _get_module_context(
-    module_key_index: Dict[str, Tuple[Optional[str], Optional[str]]],
-    module_key: Optional[str],
-) -> Tuple[Optional[str], Optional[str]]:
-    """module_key_index 에서 module_key 의 (intent, annotations) 반환. O(1)."""
+def _get_module_intent(module_intent_index: Dict[str, str], module_key: Optional[str]) -> Optional[str]:
+    """module_intent_index 에서 module_key 의 intent 반환. O(1)."""
     if not module_key:
-        return None, None
-    return module_key_index.get(module_key, (None, None))
+        return None
+    return module_intent_index.get(module_key) or None
 
 
 def _build_linked_sql_context(
@@ -164,23 +161,6 @@ def _build_linked_architecture_context(
     return out
 
 
-def _filter_by_code_reference(items: List[str], code: str) -> List[str]:
-    """items 중 code에 실제 등장하는 식별자가 있는 항목만 반환.
-
-    각 item의 단어(4자 이상)가 code에 포함되어 있으면 유지.
-    4자 미만은 'int', 'for' 같은 키워드와 오매칭을 방지하기 위해 제외.
-    """
-    result = []
-    for item in items:
-        item = item.strip()
-        if not item:
-            continue
-        words = item.replace("#define", "").split()
-        if any(w in code for w in words if len(w) > 3):
-            result.append(item)
-    return result
-
-
 def _build_module_fields_context(
     module_key: Optional[str],
     variable_facts_list: Optional[List[VariableFacts]],
@@ -222,23 +202,14 @@ def _invoke_analysis_llm(
     lang: str,
     locale: str = "ko",
     calls_outgoing: Optional[List[str]] = None,
-    reads_writes_summary: Optional[str] = None,
     module_intent: Optional[str] = None,
-    module_annotations: Optional[str] = None,
     linked_architecture_context: Optional[str] = None,
     called_method_summaries: Optional[List[Dict[str, Any]]] = None,
-    module_fields_context: Optional[str] = None,
-    field_initial_values: Optional[str] = None,
-    ddl_context: Optional[str] = None,
-    constants_context: Optional[str] = None,
+    referenced_symbols: Optional[str] = None,
+    tables: Optional[str] = None,
     codebase_pattern: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    """메서드 1개에 대해 analysis 규칙 실행 → summary/dependencies/stereotype.
-
-    called_method_summaries: 하위 메서드들의 summary 리스트.
-    호출 그래프 하위 노드부터 summary를 만든 뒤, 상위 노드에서는 이 정보를 context에 포함해
-    한 번의 LLM 호출로 최대한 풍부한 summary를 생성하기 위한 용도.
-    """
+    """메서드 1개 분석 → summary/dependencies/stereotype/rules/examples/questions."""
     if not api_key:
         raise RuntimeError(
             f"_analyze_code_node: api_key 누락 — service 진입점에서 검증되어야 함 (function_id={m.function_id})"
@@ -250,9 +221,7 @@ def _invoke_analysis_llm(
         )
         return None
     code = m.code.strip()
-    # lang → display_name (Java, C, Python 등)
     language = get_lang_profile().display_name(lang)
-
     onto = get_ontology()
     is_oop = onto.is_oop(lang)
     valid_stereotypes = sorted(onto.valid_stereotypes(lang))
@@ -265,60 +234,37 @@ def _invoke_analysis_llm(
         "language": language,
         "is_oop": is_oop,
         "valid_stereotypes": valid_stereotypes,
-        "has_table_context": bool(reads_writes_summary),
+        "has_table_context": bool(tables),
     }
-    # module_intent (한 줄 요약 — module_pre_analysis 산출) 와 module_annotations 는
-    # 모듈 단위 동일하지만 함수마다 일관 주입. 헤더 주석 4KB 그대로 박지 않음.
     if module_intent and module_intent.strip():
         inputs["module_intent"] = module_intent.strip()
-    if module_annotations and module_annotations.strip():
-        inputs["module_annotations"] = module_annotations.strip()
+
     context_parts: List[str] = []
     if calls_outgoing:
         context_parts.append("calls_outgoing: " + ", ".join(sorted(calls_outgoing)))
-    if reads_writes_summary:
-        context_parts.append("reads_writes: " + reads_writes_summary)
-    if module_fields_context and module_fields_context.strip():
-        filtered = _filter_by_code_reference(module_fields_context.strip().split(" | "), code)
-        if filtered:
-            context_parts.append("[CLASS_CONSTANTS_AND_FIELDS] " + " | ".join(filtered))
     if linked_architecture_context and linked_architecture_context.strip():
         context_parts.append(linked_architecture_context.strip())
     if called_method_summaries:
-        # 호출된 메서드들의 summary를 context에 포함 (정렬하여 캐시 키 안정성 보장)
         called_snippets: List[str] = []
         for cs in called_method_summaries:
-            try:
-                cls = str(cs.get("module_name") or "")
-                name = str(cs.get("function_name") or "")
-                summ = str(cs.get("summary") or "")
-            except Exception as e:
-                logger.error(
-                    "[CALLED_METHOD_SUMMARY] 파싱 실패 | item=%r | %s: %s",
-                    cs, type(e).__name__, e, exc_info=True,
-                )
-                raise RuntimeError(
-                    f"called_method_summary 파싱 실패: {type(e).__name__}: {e}"
-                ) from e
+            cls = str(cs.get("module_name") or "")
+            name = str(cs.get("function_name") or "")
+            summ = str(cs.get("summary") or "")
             if not summ:
                 continue
             id_part = f"{cls}.{name}" if cls and name else (name or cls or "")
             called_snippets.append(f"{id_part}: {summ}" if id_part else summ)
         if called_snippets:
-            called_snippets.sort()  # 정렬하여 병렬 처리 순서와 무관하게 캐시 키 일관성 보장
+            called_snippets.sort()
             context_parts.append("called_method_summaries: " + " || ".join(called_snippets))
             inputs["has_called_methods"] = True
-    context = "; ".join(context_parts)
-    if context.strip():
-        inputs["context"] = context
-    if field_initial_values and field_initial_values.strip():
-        inputs["field_initial_values"] = field_initial_values.strip()
-    if ddl_context and ddl_context.strip():
-        inputs["ddl_context"] = ddl_context.strip()
-    if constants_context and constants_context.strip():
-        filtered = _filter_by_code_reference(constants_context.strip().split("\n"), code)
-        if filtered:
-            inputs["constants_context"] = "\n".join(filtered)
+    if context_parts:
+        inputs["context"] = "; ".join(context_parts)
+
+    if referenced_symbols and referenced_symbols.strip():
+        inputs["referenced_symbols"] = referenced_symbols.strip()
+    if tables and tables.strip():
+        inputs["tables"] = tables.strip()
     if codebase_pattern and codebase_pattern.strip():
         inputs["codebase_pattern"] = codebase_pattern.strip()
     # Fail-Fast: LLM 예외는 그대로 상위로 전파.
@@ -353,36 +299,18 @@ def _analyze_code_node(
     module_index: Optional[Dict[str, Any]] = None,
     sql_index: Optional[Dict[str, Any]] = None,
     config_index: Optional[Dict[str, Any]] = None,
-    module_key_index: Optional[Dict[str, Tuple[Optional[str], Optional[str]]]] = None,
+    module_intent_index: Optional[Dict[str, str]] = None,
     called_summaries: Optional[List[Dict[str, Any]]] = None,
     variable_facts_list: Optional[List[VariableFacts]] = None,
-    ddl_context_by_function: Optional[Dict[str, str]] = None,
-    constants_context: Optional[str] = None,
-    referenced_vars_by_function: Optional[Dict[str, List[str]]] = None,
+    tables_context_by_function: Optional[Dict[str, str]] = None,
+    referenced_symbols_by_function: Optional[Dict[str, List[str]]] = None,
     codebase_pattern: Optional[str] = None,
-    reads_writes_by_function: Optional[Dict[str, List[Tuple[str, str, str]]]] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """단일 메서드에 대해 stereotype + (summary, dependencies) 계산."""
     default_stereotype = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
     summary = f"{m.fqn} ({default_stereotype}); lines {m.start_line}-{m.end_line}"
     method_edges = [e for e in refer_to_edges if e.function_id == m.function_id]
     calls_outgoing = [f"{e.target_type}:{e.target_id}" for e in method_edges]
-    # rw_summary: 1차 Table 엣지 기반, 2차 SqlStatement 경로 fallback.
-    # (SqlStatement 가 없는 프로젝트에서도 함수별 R/W 신호를 LLM 에 전달.)
-    rw_parts: List[str] = []
-    for tbl, rel, op in (reads_writes_by_function or {}).get(m.function_id, []):
-        label = f"{rel}:{op}" if op else rel
-        rw_parts.append(f"{tbl}({label})")
-    if not rw_parts:
-        sql_keys_for_m = {e.target_id for e in method_edges if e.target_type == "SqlStatement"}
-        seen = set()
-        for rw in reads_writes:
-            if rw.sql_key in sql_keys_for_m:
-                key = f"{rw.table_name}({rw.relation})"
-                if key not in seen:
-                    seen.add(key)
-                    rw_parts.append(key)
-    rw_summary = ", ".join(rw_parts)
     linked_architecture_context = _build_linked_architecture_context(
         m.function_id,
         refer_to_edges,
@@ -393,8 +321,11 @@ def _analyze_code_node(
         variable_facts_list=variable_facts_list,
         total_max_len=LINKED_ARCHITECTURE_CONTEXT_MAX,
     )
-    module_intent, module_annotations = _get_module_context(module_key_index or {}, m.module_key)
-    fields_ctx = _build_module_fields_context(m.module_key, variable_facts_list)
+    module_intent = _get_module_intent(module_intent_index or {}, m.module_key)
+    referenced_symbols = "\n".join(
+        (referenced_symbols_by_function or {}).get(m.function_id, [])
+    )
+    tables_section = (tables_context_by_function or {}).get(m.function_id) or ""
     dependencies: List[Dict[str, Any]] = []
     table_insights: List[Dict[str, Any]] = []
     rules: List[Dict[str, Any]] = []
@@ -410,15 +341,11 @@ def _analyze_code_node(
             lang,
             locale=locale,
             calls_outgoing=calls_outgoing,
-            reads_writes_summary=rw_summary or None,
             module_intent=module_intent,
-            module_annotations=module_annotations,
             linked_architecture_context=linked_architecture_context or None,
             called_method_summaries=called_summaries,
-            module_fields_context=fields_ctx or None,
-            field_initial_values="\n".join(referenced_vars_by_function.get(m.function_id, [])) if referenced_vars_by_function else None,
-            ddl_context=(ddl_context_by_function or {}).get(m.function_id),
-            constants_context=constants_context or None,
+            referenced_symbols=referenced_symbols or None,
+            tables=tables_section or None,
             codebase_pattern=codebase_pattern or None,
         )
         if analysis:
@@ -468,11 +395,9 @@ def analyze_and_enrich(
     config_index: Optional[Dict[str, Any]] = None,
     calls_edges: Optional[List[CallsEdge]] = None,
     variable_facts_list: Optional[List[VariableFacts]] = None,
-    ddl_context_by_function: Optional[Dict[str, str]] = None,
-    constants_context: Optional[str] = None,
-    referenced_vars_by_function: Optional[Dict[str, List[str]]] = None,
+    tables_context_by_function: Optional[Dict[str, str]] = None,
+    referenced_symbols_by_function: Optional[Dict[str, List[str]]] = None,
     codebase_pattern: Optional[str] = None,
-    reads_writes_by_function: Optional[Dict[str, List[Tuple[str, str, str]]]] = None,
 ) -> Generator[Dict[str, Dict[str, Any]], None, None]:
     """메서드별 stereotype, summary — 20개씩 배치로 yield.
 
@@ -484,7 +409,7 @@ def analyze_and_enrich(
             "[CODE_ANALYSIS] use_llm=True 인데 api_key 가 비어있음 — "
             "service 진입점에서 settings.llm.api_key 검증 필요"
         )
-    module_key_index = _build_module_key_index(module_index or {})
+    module_intent_index = _build_module_intent_index(module_index or {})
     logger.info(
         "[PHASE:3:CODE_ANALYSIS] 요약 진입 | function_facts=%d use_llm=%s api_key_set=%s parallel=%s calls_edges=%d",
         len(function_facts_list),
@@ -527,14 +452,12 @@ def analyze_and_enrich(
                         module_index,
                         sql_index,
                         config_index,
-                        module_key_index,
+                        module_intent_index,
                         None,
                         variable_facts_list,
-                        ddl_context_by_function,
-                        constants_context,
-                        referenced_vars_by_function,
+                        tables_context_by_function,
+                        referenced_symbols_by_function,
                         codebase_pattern,
-                        reads_writes_by_function,
                     ): m
                     for m in function_facts_list
                 }
@@ -568,14 +491,12 @@ def analyze_and_enrich(
                     module_index,
                     sql_index,
                     config_index,
-                    module_key_index,
+                    module_intent_index,
                     None,
                     variable_facts_list,
-                    ddl_context_by_function,
-                    constants_context,
-                    referenced_vars_by_function,
+                    tables_context_by_function,
+                    referenced_symbols_by_function,
                     codebase_pattern,
-                    reads_writes_by_function,
                 )
                 batch[function_id] = data
                 if len(batch) >= _ANALYSIS_BATCH_SIZE:
@@ -647,14 +568,12 @@ def analyze_and_enrich(
             module_index,
             sql_index,
             config_index,
-            module_key_index,
+            module_intent_index,
             called_list or None,
             variable_facts_list,
-            ddl_context_by_function,
-            constants_context,
-            referenced_vars_by_function,
+            tables_context_by_function,
+            referenced_symbols_by_function,
             codebase_pattern,
-            reads_writes_by_function,
         )
         return node_id, data
 
@@ -725,14 +644,12 @@ def analyze_and_enrich(
                 module_index,
                 sql_index,
                 config_index,
-                module_key_index,
+                module_intent_index,
                 None,
                 variable_facts_list,
-                ddl_context_by_function,
-                constants_context,
-                referenced_vars_by_function,
+                tables_context_by_function,
+                referenced_symbols_by_function,
                 codebase_pattern,
-                reads_writes_by_function,
             )
             batch[mid] = data
             if len(batch) >= _ANALYSIS_BATCH_SIZE:
@@ -752,7 +669,6 @@ def _invoke_module_summary_llm(
     module_fqn: str,
     items: List[Dict[str, Any]],
     module_intent: Optional[str],
-    module_annotations: Optional[str],
     prev_summary: Optional[str],
     api_key: str,
     locale: str = "ko",
@@ -777,8 +693,6 @@ def _invoke_module_summary_llm(
         inputs["kind"] = kind
     if module_intent:
         inputs["module_intent"] = module_intent
-    if module_annotations:
-        inputs["module_annotations"] = module_annotations
     if prev_summary:
         inputs["prev_summary"] = prev_summary
 
@@ -818,7 +732,7 @@ def run_module_summary(
         raise RuntimeError(
             "run_module_summary: api_key 누락 — service 진입점에서 검증되어야 함"
         )
-    module_key_index = _build_module_key_index(module_index or {})
+    module_intent_index = _build_module_intent_index(module_index or {})
     # module_key → kind 매핑 (FILE, STRUCT, CLASS 등)
     key_to_kind: Dict[str, str] = {}
     for info in (module_index or {}).values():
@@ -860,7 +774,7 @@ def run_module_summary(
         module_fqn = module_key
         if not items:
             return module_fqn, "", "", {}
-        module_intent, module_annotations = _get_module_context(module_key_index, module_key)
+        module_intent = _get_module_intent(module_intent_index, module_key)
         module_kind = key_to_kind.get(module_key)
 
         # 토큰 기반 청크 분할
@@ -884,7 +798,7 @@ def run_module_summary(
         # Map: 각 청크 독립 LLM 부분 요약 병렬 실행
         def _summarize_chunk(chunk: List[Dict[str, Any]]):
             return _invoke_module_summary_llm(
-                module_fqn, chunk, module_intent, module_annotations,
+                module_fqn, chunk, module_intent,
                 prev_summary=None, api_key=api_key, locale=locale, kind=module_kind,
             )
 
@@ -911,7 +825,7 @@ def run_module_summary(
                 for i, s in enumerate(partial_summaries)
             ]
             final_summary, merged_st, merged_unified = _invoke_module_summary_llm(
-                module_fqn, merge_items, module_intent, module_annotations,
+                module_fqn, merge_items, module_intent,
                 prev_summary=None, api_key=api_key, locale=locale, kind=module_kind,
             )
             if not final_summary:

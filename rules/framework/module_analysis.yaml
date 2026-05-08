@@ -8,8 +8,7 @@ input_schema:
     - items
     - locale
   optional:
-    - module_intent          # module_pre_analysis 산출 (한 줄). 있으면 prev_summary 대신 우선
-    - module_annotations
+    - module_intent          # module_pre_analysis 산출 — 헤더 주석/어노테이션/시그니처 정제. 다운스트림은 이것만 사용
     - prev_summary
     - kind
 
@@ -75,11 +74,8 @@ prompt: |
 
   FQN: {{ module_fqn }}
   {% if kind %}노드 종류: {{ kind }}{% endif %}
-  {% if module_intent %}── [모듈 사전 요약]
+  {% if module_intent %}── [모듈 사전 요약 — 주석·어노테이션·시그니처 정제 결과]
   {{ module_intent }}
-  {% endif %}
-  {% if module_annotations %}── [모듈 어노테이션]
-  {{ module_annotations }}
   {% endif %}
   {% if prev_summary %}── [이전 청크 요약 — 참고만]
   {{ prev_summary }}
