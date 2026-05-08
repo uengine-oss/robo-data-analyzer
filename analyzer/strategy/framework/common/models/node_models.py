@@ -244,7 +244,8 @@ class FunctionTableEdge:
     table_schema: str
     table_name: str
     relation: str  # "READS" | "WRITES"
-    variable_id: Optional[str] = None  # when set, source is Variable; else Function
+    variable_id: Optional[str] = None
+    op: str = ""  # "SELECT" | "INSERT" | "UPDATE" | "DELETE" | "MERGE"
 
 
 @dataclass

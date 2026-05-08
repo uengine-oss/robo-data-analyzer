@@ -1,6 +1,6 @@
 name: "module_analysis"
-description: "모듈 요약 — 멤버 요약 목록을 바탕으로 모듈 전체 요약 + 스테레오타입 + Actor 동의어 통합"
-version: "3.0"
+description: "모듈 사후 종합 — 멤버 summary 들을 모아 모듈 전체 책임 + 스테레오타입 + Actor 통합"
+version: "4.0"
 
 input_schema:
   required:
@@ -8,75 +8,90 @@ input_schema:
     - items
     - locale
   optional:
-    - module_comment
+    - module_intent          # module_pre_analysis 산출 (한 줄). 있으면 prev_summary 대신 우선
     - module_annotations
     - prev_summary
     - kind
 
-prompt: |
+system_prompt: |
   [ROLE]
-  당신은 클래스/모듈/구조체의 역할과 책임을 요약하는 전문가입니다.
+  클래스/모듈/구조체의 역할과 책임을 요약하는 전문가.
   응답 언어: {{ locale }}
 
 
-  [RULES]
+  ─────────────────────────────
+  [1] SUMMARY — 4 섹션 구조 (자르기 X). 멤버 summary 들을 종합
+  ─────────────────────────────
+  4 섹션으로 출력. 빈 섹션 생략. 분량 = 모듈 복잡도에 비례.
 
-  ★ 1. 모듈 요약 (summary):
-  - 멤버들의 요약을 종합하여 이 모듈의 전체 책임을 요약 (분량은 모듈 복잡도에 비례)
-  - **비즈니스 흐름 중심** — 코드를 한글로 읽지 말 것. 의도·역할·상태 변화로.
-  - **변수는 이름 그대로 X** — 변수가 담는 값과 의미를 풀어쓰기 (예: ❌ "X 변수를 입력에 복사" / ✅ "회사 구분 코드 ('01'=가맹점, '02'=중계사) 를 입력에 설정").
-  - 구체적 계산식·분기 조건·하드코딩 값·상태 전이는 절대 생략하지 마세요. 단 **도메인 값 + 그 의미** 같이 (예: "결제수단 'CARD' (카드결제) / 'BANK' (계좌이체) 분기").
-  - ❌ 제거: 메서드명·로컬변수명·클래스명·길이 매크로·메모리/문자열 연산 표현·반환코드 매크로·외부 함수명·아키텍처 레이어명.
-  - ✅ 보존: 도메인 코드값 리터럴·상태값·임계값·enum/코드 분류·엔티티 필드명.
+  [핵심] 이 모듈이 무엇을 하는지 1줄 (사용자 친화).
+
+  [흐름] 모듈 내 단계 / 핵심 분기 / 도메인 코드값 의미 / 상태 전이 / 임계값. 멤버들 종합해 모듈 차원에서.
+    - 도메인 값 + 의미 (예: "결제수단('CARD'=카드/'BANK'=계좌)").
+    - 멤버 단위 메서드명 X — 모듈 차원 흐름.
+
+  [쓰기] 이 모듈이 만지는 INSERT/UPDATE/DELETE 테이블 (멤버 누적).
+
+  [읽기] SELECT 테이블 (누적).
+
+  공통:
+  - 마크다운 헤딩/리스트 기호 X. 섹션 라벨만.
+  - 메서드명·변수명 X. 변수가 담는 값+의미.
+  - "이상"≠"초과" 정확히.
   {% if prev_summary %}
-  - prev_summary 를 이번 items 와 통합하여 일관된 요약 작성
+  - prev_summary 를 이번 items 와 통합해 일관된 요약 (이전 chunk 와 모순 없도록).
   {% endif %}
 
-  ★ 2. 스테레오타입 (moduleStereotype):
+
+  ─────────────────────────────
+  [2] STEREOTYPE — moduleStereotype
+  ─────────────────────────────
   {% if kind == "FILE" %}
-  C 소스파일: Module(기본), Service, Repository, Controller, Util, Config, Scheduler, Client, Gateway 중 하나
+  C 소스파일: Module(기본) / Service / Repository / Controller / Util / Config / Scheduler / Client / Gateway
   {% elif kind == "STRUCT" or kind == "UNION" %}
-  C 구조체: Entity, DTO, DataStructure(기본), Config, Enum 중 하나
+  C 구조체: Entity / DTO / DataStructure(기본) / Config / Enum
   {% else %}
-  OOP 클래스: Controller, Service, Repository, Entity, DTO, Config, Component, Aspect, Filter, Listener, Mapper, Util, ExceptionHandler, Enum, Gateway, Facade, Factory, Scheduler, Client 중 하나
+  OOP 클래스: Controller / Service / Repository / Entity / DTO / Config / Component / Aspect / Filter / Listener / Mapper / Util / ExceptionHandler / Enum / Gateway / Facade / Factory / Scheduler / Client
   {% endif %}
 
-  ★ 3. Actor 동의어 통합 (unified_actors):
-  - 같은 역할인데 이름만 다른 Actor를 하나로 통합
-  - 통합: 같은 모듈 CRUD 함수에 다른 Actor, 한국어/영어 표기 차이, 유사 의미
-  - 비통합: system/scheduler와 사람 역할, 명확한 권한 구분이 드러나는 경우
-  - 애매하면 통합. 대표명은 가장 많이 사용된 이름.
 
-  [EXAMPLE]
-  ── summary ──
-  ✅ "이 모듈은 (도메인 처리 단위) 한 건에 대해 입력검증 → (분류·식별) → (산정) → (적재) → (응답 조립) 까지 수행하며, 핵심 분기 컬럼 조합으로 분기한다." (각 단계와 분기 조건은 코드에서 관찰된 실제 식별자로 채움)
-  ❌ "이 모듈은 인증 처리를 담당한다." → 분기 조건, 처리 단계, 구체적 필드명 전부 누락
-
-  ── unified_actors ──
-  ✅ {"관리자": ["admin", "운영자"]} → 같은 역할의 다른 표현 통합
-  ❌ {"관리자": ["system"]} → system은 자동 처리 주체이므로 사람 역할과 통합 금지
+  ─────────────────────────────
+  [3] Actor 동의어 통합 (unified_actors)
+  ─────────────────────────────
+  - 통합: 같은 모듈 CRUD 함수의 다른 Actor / 한국어·영어 표기 차이 / 유사 의미.
+  - 비통합: system/scheduler 와 사람 역할 / 명확한 권한 구분.
+  - 애매하면 통합. 대표명은 가장 많이 쓰인 이름.
 
 
+  ─────────────────────────────
+  [SELF-CHECK]  출력 전
+  ─────────────────────────────
+  1. SUMMARY 의 [흐름] 에 분기 조건·도메인 값·상태 전이 누락 0?
+  2. 메서드명·변수명·매크로명 노출 X?
+  3. unified_actors 의 통합 기준 (같은 역할 / 다른 표기) 일관?
+
+prompt: |
   [INPUT]
 
   FQN: {{ module_fqn }}
   {% if kind %}노드 종류: {{ kind }}{% endif %}
-  {% if module_comment %}── [모듈/클래스 헤더 주석 — 원본 그대로, 참고용]
-  {{ module_comment }}
+  {% if module_intent %}── [모듈 사전 요약]
+  {{ module_intent }}
   {% endif %}
   {% if module_annotations %}── [모듈 어노테이션]
   {{ module_annotations }}
   {% endif %}
-  {% if prev_summary %}이전 청크 요약 (참고만, 현재 items로 이번 요약 작성):
+  {% if prev_summary %}── [이전 청크 요약 — 참고만]
   {{ prev_summary }}
   {% endif %}
 
-  현재 멤버 요약 목록:
+  ── [현재 멤버 요약 목록]
   {% for item in items %}
   - {{ item.name }}: {{ item.summary }}{% if item.actor %} [Actor: {{ item.actor }}]{% endif %}
   {% endfor %}
 
 
-  [OUTPUT]
-  JSON만 출력 (코드펜스, 백틱 금지):
-  {"summary": "모듈 요약", "moduleStereotype": "스테레오타입", "unified_actors": {}}
+  [OUTPUT]  JSON 만. 코드펜스·백틱 X.
+  {"summary": "[핵심]/[흐름]/[쓰기]/[읽기] 4 섹션 — 빈 섹션 생략",
+   "moduleStereotype": "스테레오타입",
+   "unified_actors": {}}

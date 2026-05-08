@@ -38,11 +38,24 @@ prompt: |
   매크로 함수 패턴이 **실제 함수 호출을 감싸고 있으면**, 매크로는 무시하고 **안쪽 실제 함수만** 추출.
   안쪽이 리터럴·상수뿐이면 전체 제외.
 
+  ── 🔑 동적 호출 wrapper (dynamic dispatch) ──
+  wrapper 함수가 **첫 인자로 string literal** 을 받아 그 이름의 진짜 함수/모듈을 호출하는 패턴이면,
+  wrapper 이름은 무시하고 **literal 안의 이름을 function_name 으로** 추출.
+  - C 동적 로딩 dispatcher: `dispatch("name", &io)` / `module_call("name", ...)` 등
+  - reflection invoke: `invokeMethod("name", args)` / `Method.invoke(obj, ...)` 등
+  - 함수 포인터 lookup table: `vtable["name"](args)` 등
+  → wrapper (`dispatch`/`module_call`/`invokeMethod` 등) = 무시, 첫 string literal = 진짜 function_name.
+  literal 이 변수로 들어와 동적 결정될 땐 추출 불가 → obj_name="", function_name="".
+
+  [코드베이스 패턴] 섹션의 dispatcher wrapper / 라이브러리 식별 신호 (헤더 / prefix / 대표 심볼) 가 명시되어 있으면 그것을 **우선 적용** — 새 케이스는 패턴이 알려준 대로.
+
   제외 대상 (obj_name="", function_name=""로 출력):
-  - 로깅: log.info, logger.debug, System.out.println, printf, fprintf, PFM_DBG, PRINT_*
-  - 언어 내장: toString, hashCode, equals, stream, filter, map, collect, orElse, orElseThrow
-  - 컬렉션/문자열 내장: list.add, list.get, list.size, map.put, map.get, set.contains, substring, trim, toLowerCase
-  - 기본 타입 변환: Integer.parseInt, Long.valueOf, String.valueOf, atoi, atol
+  - **[코드베이스 패턴] 의 "프레임워크 / 프로젝트 라이브러리" 그룹 심볼·prefix·헤더 매칭** — 1순위.
+  - 언어 표준 라이브러리 (별도 stdlib 목록 보유 — 자동 처리되지만 LLM 단계서도 안전하게 제외):
+    - 로깅: log.info, logger.debug, System.out.println, printf, fprintf
+    - 언어 내장: toString, hashCode, equals, stream, filter, map, collect, orElse, orElseThrow
+    - 컬렉션/문자열 내장: list.add, list.get, list.size, map.put, map.get, set.contains, substring, trim, toLowerCase
+    - 기본 타입 변환: Integer.parseInt, Long.valueOf, String.valueOf, atoi, atol
   - 위 제외 대상·래퍼 외 **모든 함수는 반드시 추출** (진짜 비즈니스 로직만 뽑는 것이 목표)
   - 동일 범위 내 중복 호출은 한 번만
 
@@ -64,7 +77,7 @@ prompt: |
 
   [INPUT]
 
-  {% if codebase_pattern %}── [코드베이스 패턴 — 매크로/함수 구분, CRUD suffix 매핑 등 추출 정확도 향상]
+  {% if codebase_pattern %}── [코드베이스 패턴 — 라이브러리 vs 사용자 정의 구분, dispatcher 래퍼, CRUD suffix 매핑 등 추출 기준]
   {{ codebase_pattern }}
   {% endif %}
 

@@ -79,38 +79,44 @@ prompt: |
 
   range 마다 다음 순서로 분석:
   1. range 의 startLine~endLine 안 raw 코드 라인 식별
-  2. accessMode 판정              → 섹션 A
+  2. 정확한 CRUD op 판정          → 섹션 A
   3. tables (+ columns) 추출       → 섹션 B
   4. fkRelations 추출              → 섹션 C
   5. dbLinks 추출                  → 섹션 D
 
   ════════════════════════════════════════════════════════════
-  [섹션 A. accessMode 판정 (r/w)]
+  [섹션 A. CRUD op 판정 (SELECT/INSERT/UPDATE/DELETE/MERGE/TRUNCATE)]
   ════════════════════════════════════════════════════════════
 
-  [A-1. 규칙]
-  - INSERT INTO / UPDATE / DELETE FROM / MERGE INTO / TRUNCATE / REPLACE INTO 의 대상 → `w`
-  - SELECT FROM / JOIN / WHERE 서브쿼리 source / EXISTS source / FROM (...) derived / CTE 본체 source → `r`
-  - INSERT INTO ... SELECT FROM: INSERT 대상 = `w`, SELECT source = `r`
-  - MERGE INTO ... USING: MERGE 대상 = `w`, USING source = `r`
-  - 한 range 에 r·w 둘 다면 `w` 우선 (대표 모드)
-  - 여러 테이블은 각자 독립 판정
-  - SQL Server `OUTPUT INTO`, PostgreSQL `RETURNING INTO`, Oracle `RETURNING INTO` 의 대상 → `w`
+  [A-1. 규칙 — 정확한 op 명시 (READS/WRITES 통합 라벨 X)]
+  - SELECT FROM / JOIN / WHERE 서브쿼리 source / EXISTS source / FROM (...) derived / CTE 본체 source → `SELECT`
+  - INSERT INTO 의 대상 → `INSERT`
+  - UPDATE 의 대상 → `UPDATE`
+  - DELETE FROM 의 대상 → `DELETE`
+  - MERGE INTO 의 대상 (UPSERT — INSERT/UPDATE 통합) → `MERGE`
+  - TRUNCATE 의 대상 → `TRUNCATE`
+  - REPLACE INTO (MySQL) 의 대상 → `MERGE` (UPSERT 의미상 동등)
+  - INSERT ... ON CONFLICT (PG) / ON DUPLICATE KEY UPDATE (MySQL) — 단일 문장이지만 UPSERT 의도면 → `MERGE`
+  - INSERT INTO ... SELECT FROM: INSERT 대상 = `INSERT`, SELECT source = `SELECT`
+  - MERGE INTO ... USING: MERGE 대상 = `MERGE`, USING source = `SELECT`
+  - 한 range 에 같은 테이블이 다른 op 둘 다 등장하면 각각 emit (write 우선 X — 둘 다 보존)
+  - SQL Server `OUTPUT INTO`, PostgreSQL `RETURNING INTO`, Oracle `RETURNING INTO` 의 대상 → 본문 op 그대로 (예: INSERT INTO ... RETURNING INTO → `INSERT`)
 
   [A-2. DBMS 별 표현 패턴]
-  - Oracle: MERGE INTO ... USING ... WHEN MATCHED THEN UPDATE / INSERT
-  - PostgreSQL: INSERT ... ON CONFLICT (...) DO UPDATE/NOTHING
-  - MySQL: INSERT ... ON DUPLICATE KEY UPDATE / REPLACE INTO
-  - SQL Server: MERGE ... USING / OUTPUT INTO
+  - Oracle: MERGE INTO ... USING ... WHEN MATCHED THEN UPDATE / INSERT → `MERGE`
+  - PostgreSQL: INSERT ... ON CONFLICT (...) DO UPDATE/NOTHING → `MERGE`
+  - MySQL: INSERT ... ON DUPLICATE KEY UPDATE / REPLACE INTO → `MERGE`
+  - SQL Server: MERGE ... USING / OUTPUT INTO → `MERGE`
 
   [A-3. 예시]
-  ✓ `SELECT * FROM CUSTOMER WHERE STATUS = 'A'` → CUSTOMER: `r`
-  ✓ `UPDATE ORDER SET STATUS='X' WHERE ID = 1` → ORDER: `w`
-  ✓ `INSERT INTO AUDIT_LOG SELECT * FROM TRANSACTION` → AUDIT_LOG: `w`, TRANSACTION: `r`
-  ✓ `MERGE INTO TARGET USING SOURCE ON ...` → TARGET: `w`, SOURCE: `r`
-  ✓ `DELETE FROM SESSION WHERE EXPIRY < NOW()` → SESSION: `w`
-  ✓ `INSERT ... ON CONFLICT (id) DO UPDATE SET ...` (PG) → 대상 테이블: `w`
-  ✓ `WITH X AS (SELECT * FROM A) SELECT * FROM X JOIN B` → A: `r`, B: `r` (X 는 CTE alias 제외)
+  ✓ `SELECT * FROM CUSTOMER WHERE STATUS = 'A'` → CUSTOMER: `SELECT`
+  ✓ `UPDATE ORDER SET STATUS='X' WHERE ID = 1` → ORDER: `UPDATE`
+  ✓ `INSERT INTO AUDIT_LOG SELECT * FROM TRANSACTION` → AUDIT_LOG: `INSERT`, TRANSACTION: `SELECT`
+  ✓ `MERGE INTO TARGET USING SOURCE ON ...` → TARGET: `MERGE`, SOURCE: `SELECT`
+  ✓ `DELETE FROM SESSION WHERE EXPIRY < NOW()` → SESSION: `DELETE`
+  ✓ `INSERT ... ON CONFLICT (id) DO UPDATE SET ...` (PG) → 대상 테이블: `MERGE`
+  ✓ `TRUNCATE TABLE STAGING` → STAGING: `TRUNCATE`
+  ✓ `WITH X AS (SELECT * FROM A) SELECT * FROM X JOIN B` → A: `SELECT`, B: `SELECT` (X 는 CTE alias 제외)
 
   ════════════════════════════════════════════════════════════
   [섹션 B. tables 추출]
@@ -396,7 +402,7 @@ prompt: |
         "tables": [
           {
             "table": "SCHEMA.TABLE_NAME",
-            "accessMode": "r|w",
+            "op": "SELECT|INSERT|UPDATE|DELETE|MERGE|TRUNCATE",
             "tableDescription": "이 SP 에서의 사용 역할",
             "columns": [
               {"name": "컬럼명", "description": "이 DML 에서 컬럼이 하는 역할"}

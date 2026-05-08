@@ -77,6 +77,31 @@ def _label_str(primary: str, sub_label: Optional[str]) -> str:
     return primary
 
 
+def _external_module_label_str(lang: str) -> str:
+    paradigm = get_ontology().paradigm(lang)
+    if paradigm == "oop":
+        return "MODULE:CLASS:EXTERNAL"
+    return "MODULE:EXTERNAL"
+
+
+def _external_function_label_str(lang: str) -> str:
+    paradigm = get_ontology().paradigm(lang)
+    if paradigm == "oop":
+        return "FUNCTION:METHOD:EXTERNAL"
+    return "FUNCTION:EXTERNAL"
+
+
+def _parse_external_function_id(callee_function_id: str) -> Tuple[str, str]:
+    if not callee_function_id or not callee_function_id.startswith("external:"):
+        return ("", "")
+    suffix = callee_function_id.split(":", 1)[1]
+    if "#" in suffix:
+        mod, fn = suffix.split("#", 1)
+        return (mod.strip(), fn.strip())
+    name = suffix.strip()
+    return (name, name)
+
+
 def _unwind_node_merge(label_str: str, key_field: str, prop_keys: List[str]) -> str:
     """UNWIND 기반 MERGE — CASE WHEN 가드로 빈/NULL 값일 때 기존 prop 보존.
 
@@ -260,11 +285,38 @@ def build_function_queries(function_facts_list: List[FunctionFacts], node_kinds:
     return _emit_node_merges(grouped, "function_id", _FUNCTION_PROP_KEYS)
 
 
-_MODULE_PROP_KEYS = ["name", "type", "package_name", "annotations", "comment"]
+_CONTAINER_PROP_KEYS = ["name", "type", "package_name", "annotations", "comment", "display_name", "intent"]
 
 
-def build_module_queries(module_index: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """MODULE 노드 MERGE — UNWIND, sub_label (kind) 그룹."""
+def build_module_queries(module_index: Dict[str, Any], lang: str) -> List[Dict[str, Any]]:
+    """MODULE 노드 MERGE — module 역할 (함수를 품을 수 있는 컨테이너) 만.
+
+    Java: CLASS/INTERFACE/ENUM/RECORD · C: FILE · Python: CLASS/FILE · Go: STRUCT/INTERFACE
+    """
+    return _build_container_queries(module_index, lang, role="module")
+
+
+def build_datatype_queries(module_index: Dict[str, Any], lang: str) -> List[Dict[str, Any]]:
+    """DATATYPE 노드 MERGE — data_type 역할 (함수 못 품는 데이터 타입 컨테이너) 만.
+
+    C: STRUCT/UNION/ENUM (다른 언어는 비어 있음)
+    """
+    return _build_container_queries(module_index, lang, role="data_type")
+
+
+def _build_container_queries(
+    module_index: Dict[str, Any], lang: str, role: str,
+) -> List[Dict[str, Any]]:
+    """ontology 의 role 에 해당하는 컨테이너만 필터해서 노드 MERGE 쿼리 생성."""
+    onto = get_ontology()
+    if role == "module":
+        kinds = onto.module_types(lang)
+    elif role == "data_type":
+        kinds = onto.data_type_types(lang)
+    else:
+        raise ValueError(f"_build_container_queries: 미지원 role='{role}'")
+    if not kinds:
+        return []
     grouped: Dict[str, List[Dict[str, Any]]] = {}
     for info in module_index.values():
         if not isinstance(info, dict):
@@ -272,11 +324,14 @@ def build_module_queries(module_index: Dict[str, Any]) -> List[Dict[str, Any]]:
         fqn = info.get("fqn") or info.get("module_key")
         if not fqn:
             continue
+        kind = info.get("kind", "")
+        if kind not in kinds:
+            continue
+        primary_label = onto.primary_label_for(kind, lang)
         name = info.get("name", "")
         if not name and fqn:
             name = _extract_short_name(fqn)
-        kind = info.get("kind", "")
-        label_str = _label_str("MODULE", kind)
+        label_str = _label_str(primary_label, kind)
         grouped.setdefault(label_str, []).append({
             "fqn":          fqn,
             "name":         name,
@@ -284,8 +339,10 @@ def build_module_queries(module_index: Dict[str, Any]) -> List[Dict[str, Any]]:
             "package_name": info.get("package_name") or "",
             "annotations":  info.get("annotations") or "",
             "comment":      info.get("comment") or "",
+            "display_name": info.get("display_name") or "",
+            "intent":       info.get("intent") or "",
         })
-    return _emit_node_merges(grouped, "fqn", _MODULE_PROP_KEYS)
+    return _emit_node_merges(grouped, "fqn", _CONTAINER_PROP_KEYS)
 
 
 def build_package_queries(package_fqns: List[str]) -> List[Dict[str, Any]]:
@@ -400,21 +457,24 @@ def build_column_description_update_queries(
 
 
 def build_var_refs_queries(refs: List[tuple]) -> List[Dict[str, Any]]:
-    """(FUNCTION)-[:REFERENCES]->(VARIABLE|CONSTANT) 참조 관계 UNWIND 빌더.
+    """(source)-[:REFERENCES]->(VARIABLE|CONSTANT).
 
-    Args:
-        refs: ``[(function_id, variable_id), ...]`` 튜플 리스트.
+    source 는 코드를 가진 어떤 노드든 가능 — 함수 본문(FUNCTION) 또는 변수 선언식(VARIABLE).
+    refs: ``[(source_id, variable_id), ...]``.
     """
     if not refs:
         return []
     return [{
         "query": (
-            "UNWIND $rows AS row "
-            "MATCH (f:FUNCTION {function_id: row.fid}) "
-            "MATCH (v {variable_id: row.vid}) WHERE v:VARIABLE OR v:CONSTANT "
-            "MERGE (f)-[:REFERENCES]->(v)"
+            "UNWIND $rows AS row\n"
+            "OPTIONAL MATCH (f:FUNCTION {function_id: row.sid})\n"
+            "OPTIONAL MATCH (vsrc:VARIABLE {variable_id: row.sid})\n"
+            "WITH row, coalesce(f, vsrc) AS src\n"
+            "WHERE src IS NOT NULL\n"
+            "MATCH (v {variable_id: row.vid}) WHERE v:VARIABLE OR v:CONSTANT\n"
+            "MERGE (src)-[:REFERENCES]->(v)"
         ),
-        "params": {"rows": [{"fid": fid, "vid": vid} for fid, vid in refs]},
+        "params": {"rows": [{"sid": sid, "vid": vid} for sid, vid in refs]},
     }]
 
 
@@ -778,22 +838,77 @@ def build_has_function_queries(
 def build_has_variable_queries(
     variable_facts_list: List[VariableFacts],
     module_index: Dict[str, Any],
+    lang: str,
 ) -> List[Dict[str, Any]]:
-    """(MODULE)-[:HAS_VARIABLE]->(VARIABLE) — UNWIND 단일 쿼리."""
-    rows = [
-        {"module_fqn": f.module_key, "variable_id": f.variable_id}
-        for f in variable_facts_list if f.module_key
-    ]
+    """(MODULE)-[:HAS_VARIABLE]->(VARIABLE) — module 역할 컨테이너 의 변수만."""
+    rows = _filter_variable_rows(variable_facts_list, module_index, lang, role="module")
     if not rows:
         return []
-    query = (
-        "UNWIND $rows AS row\n"
-        "MATCH (a:MODULE {fqn: row.module_fqn})\n"
-        "MATCH (b:VARIABLE {variable_id: row.variable_id})\n"
-        "MERGE (a)-[r:HAS_VARIABLE]->(b)\n"
-        "SET r.updated_at = timestamp()"
-    )
-    return [{"query": query, "params": {"rows": rows}}]
+    return [{
+        "query": (
+            "UNWIND $rows AS row\n"
+            "MATCH (a:MODULE {fqn: row.module_fqn})\n"
+            "MATCH (b:VARIABLE {variable_id: row.variable_id})\n"
+            "MERGE (a)-[r:HAS_VARIABLE]->(b)\n"
+            "SET r.updated_at = timestamp()"
+        ),
+        "params": {"rows": rows},
+    }]
+
+
+def build_has_member_queries(
+    variable_facts_list: List[VariableFacts],
+    module_index: Dict[str, Any],
+    lang: str,
+) -> List[Dict[str, Any]]:
+    """(DATATYPE)-[:HAS_MEMBER]->(VARIABLE) — data_type 역할 컨테이너 의 멤버만."""
+    rows = _filter_variable_rows(variable_facts_list, module_index, lang, role="data_type")
+    if not rows:
+        return []
+    return [{
+        "query": (
+            "UNWIND $rows AS row\n"
+            "MATCH (a:DATATYPE {fqn: row.module_fqn})\n"
+            "MATCH (b:VARIABLE {variable_id: row.variable_id})\n"
+            "MERGE (a)-[r:HAS_MEMBER]->(b)\n"
+            "SET r.updated_at = timestamp()"
+        ),
+        "params": {"rows": rows},
+    }]
+
+
+def _filter_variable_rows(
+    variable_facts_list: List[VariableFacts],
+    module_index: Dict[str, Any],
+    lang: str,
+    role: str,
+) -> List[Dict[str, Any]]:
+    """variable_facts 중 부모 컨테이너 kind 가 ontology 의 role 에 속한 것만 추려서 row 생성."""
+    onto = get_ontology()
+    if role == "module":
+        kinds = onto.module_types(lang)
+    elif role == "data_type":
+        kinds = onto.data_type_types(lang)
+    else:
+        raise ValueError(f"_filter_variable_rows: 미지원 role='{role}'")
+    if not kinds:
+        return []
+    parent_kind_by_key: Dict[str, str] = {}
+    for info in module_index.values():
+        if not isinstance(info, dict):
+            continue
+        mkey = info.get("module_key")
+        kind = info.get("kind", "")
+        if mkey and kind:
+            parent_kind_by_key[mkey] = kind
+    rows: List[Dict[str, Any]] = []
+    for f in variable_facts_list:
+        if not f.module_key:
+            continue
+        if parent_kind_by_key.get(f.module_key, "") not in kinds:
+            continue
+        rows.append({"module_fqn": f.module_key, "variable_id": f.variable_id})
+    return rows
 
 
 # --- 3-2. FK 관계 (FK_TO_COLUMN, FK_TO_TABLE) ---
@@ -958,13 +1073,11 @@ def build_node_table_queries(
                 f"build_node_table_queries: FunctionTableEdge.relation 누락 — function_id={e.function_id} table={schema}.{name}"
             )
         rel = e.relation
+        op = (getattr(e, "op", "") or "").strip().upper()
         use_field = getattr(e, "variable_id", None)
         source_match = "MATCH (f:VARIABLE {variable_id: $variable_id})\n" if use_field else "MATCH (m:FUNCTION {function_id: $function_id})\n"
         source_node = "f" if use_field else "m"
         table_id = f"{schema}.{name}" if schema else name
-        # 1) 대소문자 무시로 기존 테이블 찾기
-        # 2) 없으면 전달된 이름으로 MERGE 생성
-        # 3) 찾은(또는 생성된) 테이블에 관계 연결
         q = (
             source_match
             + "OPTIONAL MATCH (t_exist:Table {db: $db})\n"
@@ -979,11 +1092,14 @@ def build_node_table_queries(
             + "MATCH (t:Table {db: $db})\n"
             + "  WHERE toLower(t.name) = toLower($name)\n"
             + "    AND toLower(t.schema) = toLower($schema)\n"
-            + f"MERGE ({source_node})-[r:{rel}]->(t)\n"
+            + f"MERGE ({source_node})-[r:{rel} {{op: $op}}]->(t)\n"
             + "SET r.updated_at = timestamp()\n"
             + "RETURN r"
         )
-        params: Dict[str, Any] = {"function_id": e.function_id, "db": settings.defaults.db_dialect, "schema": schema, "name": name, "table_id": table_id}
+        params: Dict[str, Any] = {
+            "function_id": e.function_id, "db": settings.defaults.db_dialect,
+            "schema": schema, "name": name, "table_id": table_id, "op": op,
+        }
         if use_field:
             params["variable_id"] = e.variable_id
         queries.append({"query": q, "params": params})
@@ -1191,7 +1307,7 @@ def build_analysis_result_queries(
     function_rows: List[Dict[str, Any]] = []
     rule_rows: List[Dict[str, Any]] = []
     example_rows: List[Dict[str, Any]] = []
-    example_write_edges: List[Dict[str, Any]] = []
+    example_table_edges: List[Dict[str, Any]] = []
     question_rows: List[Dict[str, Any]] = []
     next_edges: List[Dict[str, Any]] = []
     branch_edges: List[Dict[str, Any]] = []
@@ -1236,7 +1352,7 @@ def build_analysis_result_queries(
                 "coupled_domains": [str(d).strip() for d in (r.get("coupled_domains") or []) if str(d).strip()],
             })
 
-        # Example 수집 (given/then dict→JSON, then.writes[]→AFFECTS_TABLE 엣지)
+        # Example 수집 (given/then dict→JSON, then.writes[]/then.reads[] → AFFECTS_TABLE 엣지)
         rows, writes = collect_example_rows(
             data.get("examples") or [],
             valid_rule_ids=flow_by_rid.keys(),
@@ -1245,7 +1361,7 @@ def build_analysis_result_queries(
         for r in rows:
             r["function_id"] = fid
             example_rows.append(r)
-        example_write_edges.extend(writes)
+        example_table_edges.extend(writes)
 
         # Question 수집
         for idx, q in enumerate(data.get("questions") or [], start=1):
@@ -1345,8 +1461,8 @@ def build_analysis_result_queries(
             "params": {"rows": example_rows},
         })
 
-    # Example → Table AFFECTS_TABLE 엣지 (then.writes[] 로부터)
-    if example_write_edges:
+    # Example → Table AFFECTS_TABLE 엣지 (then.writes[] + then.reads[] 로부터, op 으로 구분)
+    if example_table_edges:
         queries.append({
             "query": (
                 "UNWIND $rows AS row\n"
@@ -1356,7 +1472,7 @@ def build_analysis_result_queries(
                 "SET rel.updated_at = timestamp()\n"
                 "RETURN e, rel, t"
             ),
-            "params": {"rows": example_write_edges},
+            "params": {"rows": example_table_edges},
         })
 
     # Question 노드 + HAS_QUESTION 관계
@@ -1486,8 +1602,8 @@ def build_module_summary_queries(summary_by_module: Dict[str, Dict[str, Any]], l
 # 2-5. CALLS / USES — 호출·의존 관계 (UNWIND 배치)
 # ═══════════════════════════════════════════════════════════════════════════
 
-def build_calls_queries(edges: List[CallsEdge]) -> List[Dict[str, Any]]:
-    """(METHOD)-[:CALLS]->(METHOD). UNWIND 배치: internal/external 2개 쿼리."""
+def build_calls_queries(edges: List[CallsEdge], lang: str) -> List[Dict[str, Any]]:
+    """(FUNCTION)-[:CALLS]->(FUNCTION). UNWIND 배치: internal/external 2개 쿼리."""
     internal_rows = []
     external_rows = []
     for e in edges:
@@ -1498,12 +1614,11 @@ def build_calls_queries(edges: List[CallsEdge]) -> List[Dict[str, Any]]:
         callee_module_name = _extract_short_name(callee_cfqn)
 
         if scope == "external" or e.callee_function_id.startswith("external:"):
-            callee_module_name_ext = callee_module_name
-            callee_function_name_ext = callee_mname
-            if e.callee_function_id.startswith("external:") and "#" in e.callee_function_id:
-                _ext_class, _ext_method = e.callee_function_id.split(":", 1)[1].split("#", 1)
-                callee_module_name_ext = _ext_class.strip()
-                callee_function_name_ext = _ext_method.strip()
+            if e.callee_function_id.startswith("external:"):
+                callee_module_name_ext, callee_function_name_ext = _parse_external_function_id(e.callee_function_id)
+            else:
+                callee_module_name_ext = callee_module_name
+                callee_function_name_ext = callee_mname
             external_rows.append({
                 "caller_module_name": caller_module_name, "caller_function_name": caller_mname,
                 "callee_function_id": e.callee_function_id,
@@ -1536,15 +1651,17 @@ def build_calls_queries(edges: List[CallsEdge]) -> List[Dict[str, Any]]:
             "params": {"rows": internal_rows},
         })
     if external_rows:
+        ext_mod_label = _external_module_label_str(lang)
+        ext_fn_label = _external_function_label_str(lang)
         queries.append({
             "query": (
                 "UNWIND $rows AS row\n"
                 "MATCH (a:FUNCTION)\n"
                 "WHERE a.module_name = row.caller_module_name AND a.name = row.caller_function_name\n"
-                "MERGE (ec:MODULE:CLASS:EXTERNAL {name: row.callee_module_name})\n"
+                f"MERGE (ec:{ext_mod_label} {{name: row.callee_module_name}})\n"
                 "ON CREATE SET ec.created_at = timestamp()\n"
                 "ON MATCH SET ec.updated_at = timestamp()\n"
-                "MERGE (b:FUNCTION:METHOD:EXTERNAL {function_id: row.callee_function_id})\n"
+                f"MERGE (b:{ext_fn_label} {{function_id: row.callee_function_id}})\n"
                 "ON CREATE SET b.created_at = timestamp(), b.module_name = row.callee_module_name, b.name = row.callee_function_name\n"
                 "ON MATCH SET b.updated_at = timestamp(), b.module_name = row.callee_module_name, b.name = row.callee_function_name\n"
                 "MERGE (ec)-[:HAS_FUNCTION]->(b)\n"
@@ -1560,7 +1677,7 @@ def build_calls_queries(edges: List[CallsEdge]) -> List[Dict[str, Any]]:
     return queries
 
 
-def build_uses_queries(edges: List[UsesEdge]) -> List[Dict[str, Any]]:
+def build_uses_queries(edges: List[UsesEdge], lang: str) -> List[Dict[str, Any]]:
     """(MODULE)-[:USES]->(MODULE). UNWIND 배치: internal/external 2개 쿼리."""
     internal_rows = []
     external_rows = []
@@ -1595,12 +1712,13 @@ def build_uses_queries(edges: List[UsesEdge]) -> List[Dict[str, Any]]:
             "params": {"rows": internal_rows},
         })
     if external_rows:
+        ext_mod_label = _external_module_label_str(lang)
         queries.append({
             "query": (
                 "UNWIND $rows AS row\n"
                 "MATCH (a:MODULE)\n"
                 "WHERE a.name = row.from_module_name\n"
-                "MERGE (b:MODULE:CLASS:EXTERNAL {name: row.to_module_name})\n"
+                f"MERGE (b:{ext_mod_label} {{name: row.to_module_name}})\n"
                 "ON CREATE SET b.created_at = timestamp()\n"
                 "With a, b\n"
                 "WHERE a <> b\n"
@@ -1622,6 +1740,7 @@ def build_uml_dependency_queries(
     analysis_by_function: Dict[str, Dict[str, Any]],
     function_facts_list: List[Any],
     module_index: Dict[str, Any],
+    lang: str,
 ) -> List[Dict[str, Any]]:
     """Step6 analysis_by_function의 dependencies로 DEPENDENCY/COMPOSITION/AGGREGATION 쿼리 생성.
 
@@ -1703,11 +1822,12 @@ def build_uml_dependency_queries(
                     "RETURN r"
                 )
         else:
+            ext_mod_label = _external_module_label_str(lang)
             if rel_type == "DEPENDENCY":
                 q = (
                     "UNWIND $rows AS row\n"
                     "MATCH (src:MODULE {fqn: row.source_fqn})\n"
-                    "MERGE (t:MODULE:CLASS:EXTERNAL {name: row.target_module_name})\n"
+                    f"MERGE (t:{ext_mod_label} {{name: row.target_module_name}})\n"
                     "ON CREATE SET t.created_at = timestamp()\n"
                     "ON MATCH SET t.updated_at = timestamp()\n"
                     "MERGE (src)-[r:DEPENDENCY {source_member: row.source_member, usage: row.usage}]->(t)\n"
@@ -1719,7 +1839,7 @@ def build_uml_dependency_queries(
                 q = (
                     "UNWIND $rows AS row\n"
                     "MATCH (src:MODULE {fqn: row.source_fqn})\n"
-                    "MERGE (t:MODULE:CLASS:EXTERNAL {name: row.target_module_name})\n"
+                    f"MERGE (t:{ext_mod_label} {{name: row.target_module_name}})\n"
                     "ON CREATE SET t.created_at = timestamp()\n"
                     "ON MATCH SET t.updated_at = timestamp()\n"
                     f"MERGE (src)-[r:{rel_type} {{source_member: row.source_member}}]->(t)\n"

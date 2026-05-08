@@ -1,8 +1,8 @@
 """Linking 에이전트 빌더 — 도구·프롬프트·스킬·미들웨어 조립.
 
 호출자(entity_linker / unresolved_linker) 가 ToolResultCollector 와 함께 호출.
-배치별로 다른 도구 세트를 쓰는 경우 (`batch_startpoint_tables` 등) 위해
-factory 형태로 반환 — 같은 LLM·미들웨어 환경 위에서 도구만 갈아끼울 수 있음.
+호출 단위 (모듈별, 미해결 대상별 등) 에 따라 다른 도구 옵션 (file_path_filter 등) 을
+주입할 수 있도록 factory 로 반환 — 같은 LLM·미들웨어 환경 위에서 도구만 갈아끼움.
 """
 
 from __future__ import annotations

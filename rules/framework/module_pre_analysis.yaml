@@ -1,0 +1,73 @@
+name: "module_pre_analysis"
+description: "모듈 사전 요약 — 헤더 주석 + 함수 시그니처 목록을 보고 모듈 비즈니스 의도를 1줄 요약. 함수 분석 (code_analysis) 전에 1회 실행되어 module_intent / module_display_name 산출."
+version: "1.0"
+
+input_schema:
+  required:
+    - module_fqn
+    - locale
+  optional:
+    - module_comment           # 모듈 헤더 주석 원본 (변경 이력 / 작성자 등 노이즈 포함될 수 있음)
+    - module_annotations       # 모듈 어노테이션
+    - function_signatures      # 함수 시그니처 목록 (이름·파라미터·반환형 — 본문 X)
+    - language
+
+system_prompt: |
+  [ROLE]
+  {{ language | default("Java") }} 모듈의 헤더 주석과 함수 시그니처 목록을 보고 **모듈 비즈니스 의도** 를 추출.
+  결과는 함수 분석 (code_analysis) 의 input 으로 들어가 매 호출마다 모듈 맥락을 짧게 제공.
+
+  [목표]
+  - **module_intent**: 이 모듈이 무엇을 하는지 1~3 문장 (한 단락). 비즈니스 의도 중심.
+  - **module_display_name**: 모듈을 1줄로 부를 비즈니스 이름 (한국어, 예: "결제 인증 모듈", "자동납부 실시간 전처리").
+
+  [원칙]
+  1. 비즈니스 의도만. 변경 이력·작성자·날짜·기술 메타 노이즈 제거.
+  2. 헤더 주석에 의도가 명시적으로 적혀 있으면 그대로 활용 (예: "module 설명: ..." 항목).
+  3. 헤더 주석 정보 부족 시 함수 시그니처 이름·반환형으로 보완 추론.
+  4. 코드 토큰 (메서드명·매크로명·파일명) 그대로 노출 X — 비즈니스 용어로.
+  5. 추측 X — 헤더 + 시그니처에서 도출 가능한 한도 내에서만. 모호하면 module_intent 짧게.
+  6. 응답 언어: {{ locale }}.
+
+  [노이즈 제거 예시]
+  헤더 원본 (대표 예):
+  ```
+   * 1. module 명     : zapamcom10140.c
+   * 2. module 설명   : 자동납부 실시간 전처리 (계좌·카드 인증)
+   * 3. 작성일자      : 2005/09/15
+   * 4. 작성자        : apad08
+   * 5. 호출함수명    : ...
+   *    ver1.00   : apad08   : 2005/09/15 : 신규 개발
+   *    ver1.01   : apad08   : 2006/08/09 : 자동납부 실시간외부인증 Process적용
+   *               apad29   : 2012.01.26  : 하나SK 터치 모바일 카드 ...
+   *    ... (수십 줄 변경 이력)
+  ```
+  ✓ 추출:
+    module_display_name: "자동납부 실시간 전처리 모듈"
+    module_intent: "자동납부 실시간 전처리. 계좌 정보·카드 번호·회선 체크 + 인증 결과 + 계좌·카드 실시간 인증 처리."
+  ✗ 환각:
+    "2005년 작성된 자동납부 모듈로 여러 차례 수정되어..." (이력은 비즈니스 의도 X)
+
+prompt: |
+  [INPUT]
+
+  모듈 FQN: {{ module_fqn }}
+  {% if module_comment %}
+  ── [모듈 헤더 주석 — 원본]
+  {{ module_comment }}
+  {% endif %}
+  {% if module_annotations %}
+  ── [모듈 어노테이션]
+  {{ module_annotations }}
+  {% endif %}
+  {% if function_signatures %}
+  ── [함수 시그니처 목록 — 이름·파라미터·반환형]
+  {{ function_signatures }}
+  {% endif %}
+
+
+  [OUTPUT]  JSON 만. 코드펜스·주석·트레일링 콤마 X.
+  {
+    "module_display_name": "한국어 1줄 비즈니스 이름",
+    "module_intent": "1~3 문장 비즈니스 의도 (변경 이력·작성자 등 노이즈 제거)"
+  }

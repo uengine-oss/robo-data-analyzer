@@ -563,14 +563,7 @@ def build_create_temp_table_queries(items: List[Dict[str, Any]]) -> List[Dict[st
 
 
 def build_dml_table_relation_queries(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """DML 노드 → :Table 관계 — UNWIND, (node_type, rel_types, has_db_link) 그룹.
-
-    items: 각 dict 에 ``{node_type, start_line, directory, file_name,
-    db, schema_name, table_name, rel_types: List[str], db_link: Optional[str]}``.
-
-    rel_types 는 ``['FROM']`` / ``['WRITES']`` / ``['FROM','WRITES']`` 등. 빈 리스트면
-    관계 생성 X (Table MERGE 만). label 동적 (rel_type) 이라 그룹 단위로 묶음.
-    """
+    """DML 노드 → :Table 관계 — UNWIND, (node_type, rel_types, has_db_link) 그룹."""
     if not items:
         return []
     groups: Dict[tuple, List[Dict[str, Any]]] = {}
@@ -584,16 +577,15 @@ def build_dml_table_relation_queries(items: List[Dict[str, Any]]) -> List[Dict[s
             "db":          it["db"],
             "schema_name": it["schema_name"],
             "table_name":  it["table_name"],
+            "op":          (it.get("op") or "").strip().upper(),
             "db_link":     it.get("db_link"),
         })
     queries: List[Dict[str, Any]] = []
     for (node_type, rel_types, has_db_link), rows in groups.items():
         rel_merges = "\n".join(
-            f"MERGE (n)-[:{rt}]->(t)" for rt in rel_types
+            f"MERGE (n)-[:{rt} {{op: row.op}}]->(t)" for rt in rel_types
         )
         db_link_set = "\nSET t.db_link = COALESCE(t.db_link, row.db_link)" if has_db_link else ""
-        # MERGE 키에 db/schema/name 모두 박혀있으니 SET t.db 잉여 — INDEX_ENTRY EXCLUSIVE 락
-        # 잡아 deadlock 유발하던 회귀. db_link 는 신규 값일 수 있어 별도 SET (db_link_set) 유지.
         query = (
             "UNWIND $rows AS row\n"
             f"MATCH (n:{node_type} {{startLine: row.start_line, directory: row.directory, file_name: row.file_name}})\n"

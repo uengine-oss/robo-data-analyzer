@@ -26,7 +26,7 @@ import yaml
 from jinja2 import Template, TemplateError
 
 from langchain_core.output_parsers import JsonOutputParser
-from langchain_core.prompts import PromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 from langchain_core.runnables import RunnablePassthrough, RunnableLambda
 
 from util.llm_audit_logger import invoke_with_audit
@@ -147,15 +147,43 @@ class RuleLoader:
 
         return validated
 
-    def render_prompt(self, rule_name: str, inputs: Dict[str, Any]) -> str:
-        """프롬프트 렌더링 (LLM 미호출)"""
+    def render_messages(self, rule_name: str, inputs: Dict[str, Any]) -> tuple[str, str]:
+        """프롬프트를 (system, user) 두 영역으로 렌더 (LLM 미호출).
+
+        yaml 의 ``system_prompt`` (정적: ROLE / 가이드 / few-shot / self-check 등) 와
+        ``prompt`` (동적: 함수 코드 / context) 를 분리 반환.
+        - system_prompt 만 있고 prompt 없음 → user 는 빈 문자열
+        - prompt 만 있고 system_prompt 없음 → system 빈 문자열 (기존 단일 yaml 호환)
+
+        OpenAI Responses API / Anthropic API 가 system 영역을 prefix 로 자동 캐시 — 같은
+        모듈 내 함수 N 개 호출 시 system 부분 N-1 회 cache hit.
+        """
         rule = self._load_rule(rule_name)
         validated = self.validate_inputs(rule, inputs)
 
+        system_section = rule.get("system_prompt") or ""
+        user_section = rule.get("prompt") or ""
+
         try:
-            return Template(rule["prompt"]).render(**validated)
+            sys_rendered = Template(system_section).render(**validated) if system_section else ""
+            usr_rendered = Template(user_section).render(**validated) if user_section else ""
         except TemplateError as e:
             raise ValueError(f"프롬프트 렌더링 오류 ({rule_name}): {e}")
+
+        # 단일 영역 yaml 호환: system 만 있으면 그것을 user 로
+        if not usr_rendered and sys_rendered:
+            return "", sys_rendered
+        return sys_rendered, usr_rendered
+
+    def render_prompt(self, rule_name: str, inputs: Dict[str, Any]) -> str:
+        """레거시 호환 — system + user 합친 단일 텍스트 (audit 로그용).
+
+        새 호출 경로는 ``render_messages`` 사용.
+        """
+        sys_text, usr_text = self.render_messages(rule_name, inputs)
+        if sys_text and usr_text:
+            return sys_text.rstrip() + "\n\n" + usr_text.lstrip()
+        return usr_text or sys_text
 
     def execute(
         self,
@@ -164,19 +192,35 @@ class RuleLoader:
         api_key: str,
         model: str | None = None,
     ) -> Dict[str, Any]:
-        """프롬프트 실행 (LLM 호출, 429 Rate Limit 자동 재시도)"""
+        """프롬프트 실행 (LLM 호출, 429 Rate Limit 자동 재시도).
+
+        yaml 의 ``system_prompt`` (정적: ROLE / 가이드 / few-shot / self-check) 와
+        ``prompt`` (동적: 코드 / context) 가 ChatPromptTemplate 의 system / user 로 분리 전송 →
+        같은 system 텍스트는 OpenAI Responses API / Anthropic 의 prefix cache 에 자동 hit (5분 TTL).
+        """
         _ = self._load_rule(rule_name)
-        prompt_text = self.render_prompt(rule_name, inputs)
-        prompt_text = prompt_text.replace("\x00", "").replace("\ufeff", "")
+        sys_text, usr_text = self.render_messages(rule_name, inputs)
+        sys_text = sys_text.replace("\x00", "").replace("\ufeff", "")
+        usr_text = usr_text.replace("\x00", "").replace("\ufeff", "")
         rule_path = os.path.join(self.rule_dir, f"{rule_name}.yaml")
 
         llm = get_llm(api_key=api_key, model=model)
         current_max_tokens = int(getattr(llm, "max_tokens", None) or 0)
 
         def _build_chain(llm_inst):
+            # 단일 영역 yaml 호환 — system 비어있으면 user 만 보냄.
+            if sys_text:
+                template = ChatPromptTemplate.from_messages([
+                    ("system", "{system}"),
+                    ("human", "{user}"),
+                ])
+            else:
+                template = ChatPromptTemplate.from_messages([
+                    ("human", "{user}"),
+                ])
             return (
                 RunnablePassthrough()
-                | PromptTemplate.from_template("{prompt}")
+                | template
                 | llm_inst
                 | RunnableLambda(_log_finish_reason(rule_name))
                 | RunnableLambda(_sanitize_llm_output)
@@ -190,20 +234,26 @@ class RuleLoader:
         # parse 실패는 max_parse_retries, rate/400 은 max_retries. 둘 중 큰 값으로 루프 돌고 내부 조건으로 분기.
         loop_max = max(cfg.max_retries, cfg.max_parse_retries)
         for attempt in range(loop_max + 1):
-            # 재시도 시 이전 오류 원인 + 실패 응답 꼬리를 프롬프트에 덧붙여 모델에 수정 요청
-            current_prompt = prompt_text
+            # 재시도 시 이전 오류 원인 + 실패 응답 꼬리를 user 텍스트 끝에 덧붙여 수정 요청
+            current_user = usr_text
             if attempt > 0 and last_error is not None:
-                current_prompt = prompt_text + "\n\n" + _build_retry_feedback(
+                current_user = usr_text + "\n\n" + _build_retry_feedback(
                     last_error, attempt, response_tail=response_tail,
                 )
+            chain_input: Dict[str, Any] = {"user": current_user}
+            if sys_text:
+                chain_input["system"] = sys_text
+            audit_rendered = (sys_text + "\n\n" + current_user).strip() if sys_text else current_user
             try:
                 result = invoke_with_audit(
                     chain,
-                    {"prompt": current_prompt},
+                    chain_input,
                     prompt_name=f"rules/{self.target_lang}/{rule_name}",
                     input_payload={
                         "inputs": _safe_copy(inputs),
-                        "renderedPrompt": current_prompt,
+                        "renderedPrompt": audit_rendered,
+                        "systemPrompt": sys_text,
+                        "userPrompt": current_user,
                     },
                     metadata={
                         "rule": rule_name,

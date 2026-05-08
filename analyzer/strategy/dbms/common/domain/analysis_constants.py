@@ -49,8 +49,15 @@ DBMS_SYSTEM_PACKAGES = frozenset([
     "PG_CATALOG", "PG_STAT", "PG_ADVISORY",
 ])
 
-# 관계 매핑
-TABLE_RELATIONSHIP_MAP = {"r": "FROM", "w": "WRITES"}
+# CRUD op → Neo4j 관계 라벨 매핑. SELECT=:FROM, 그 외=:WRITES.
+OP_TO_RELATION = {
+    "SELECT":   "FROM",
+    "INSERT":   "WRITES",
+    "UPDATE":   "WRITES",
+    "DELETE":   "WRITES",
+    "MERGE":    "WRITES",
+    "TRUNCATE": "WRITES",
+}
 # 설정에서 가져오는 상수
 MAX_BATCH_TOKEN = settings.batch.max_batch_token
 MAX_CONCURRENCY = settings.concurrency.max_concurrency

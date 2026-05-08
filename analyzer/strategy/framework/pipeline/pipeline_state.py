@@ -61,6 +61,7 @@ class FrameworkPipelineState:
     function_facts_list: List[FunctionFacts] = field(default_factory=list)
     variable_facts_list: List[VariableFacts] = field(default_factory=list)
     module_index_ast: Dict[str, Any] = field(default_factory=dict)
+    datatype_index_ast: Dict[str, Any] = field(default_factory=dict)
     package_fqns: List[str] = field(default_factory=list)
     symbol_type_index: Dict[str, Dict[str, str]] = field(default_factory=dict)
     function_index: Dict[str, str] = field(default_factory=dict)

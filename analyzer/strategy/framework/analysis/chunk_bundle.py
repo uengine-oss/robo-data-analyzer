@@ -274,6 +274,14 @@ def build_bundle_span_index(
                         cid = f"C:{v.start_line}:{v.end_line}:var"
                         span_index[key] = {"chunk_id": cid, "text": v.initializer_code, "filePath": fp, "span": [v.start_line, v.end_line]}
                         chunk_index[cid] = {"filePath": fp, "span": [v.start_line, v.end_line], "text": v.initializer_code}
+                # struct/class 멤버 필드 — REFERENCES 검색 source 로 등록 (ontology 의 variable 역할 동등 취급).
+                # 멤버 선언 텍스트 (예: `char gc_xxx[LEN_XXX+1]`) 안의 매크로/식별자도 매칭 대상.
+                for mv in bundle.member_vars:
+                    if mv.variable_code:
+                        key = _span_index_key(fp, mv.start_line, mv.end_line)
+                        cid = mv.variable_id
+                        span_index[key] = {"chunk_id": cid, "text": mv.variable_code, "filePath": fp, "span": [mv.start_line, mv.end_line]}
+                        chunk_index[cid] = {"filePath": fp, "span": [mv.start_line, mv.end_line], "text": mv.variable_code}
             except Exception as e:
                 logger.error(
                     "[CHUNK_BUNDLE:INDEX] 인덱스 빌드 실패 | path=%s | %s: %s",
@@ -320,15 +328,23 @@ def bundle_search(
     kind: str = "text",
     span_index: Optional[Dict[str, Dict[str, Any]]] = None,
     chunk_index: Optional[Dict[str, Dict[str, Any]]] = None,
+    file_path_filter: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """번들에서 query 검색. kind: symbol|text. 반환: [{chunk_id, filePath, span, score}]."""
+    """번들에서 query 검색. kind: symbol|text. 반환: [{chunk_id, filePath, span, score}].
+
+    file_path_filter 가 주어지면 그 file_path 의 청크만 검색 — 모듈 격리용.
+    같은 파일을 가리키는 chunk 는 슬래시·드라이브 표기 차이가 있을 수 있어 정규화 후 비교.
+    """
     if span_index is None or chunk_index is None:
         span_index, chunk_index = build_bundle_span_index(data_dir)
     results: List[Dict[str, Any]] = []
     query_lower = (query or "").strip().lower()
     if not query_lower:
         return results
+    filter_norm = _normalize_path(file_path_filter) if file_path_filter else None
     for cid, info in chunk_index.items():
+        if filter_norm and _normalize_path(info.get("filePath", "")) != filter_norm:
+            continue
         text = (info.get("text") or "")
         if not text:
             continue
@@ -349,7 +365,12 @@ def bundle_search(
                     "span": info.get("span", [0, 0]),
                     "score": 0.85,
                 })
-    return results[:50]
+    return results
+
+
+def _normalize_path(path: str) -> str:
+    """슬래시·대소문자 정규화 — 같은 파일을 가리키는 다른 표기를 동일하게 매칭."""
+    return (path or "").replace("\\", "/").lower()
 
 
 def bundle_get_chunk(

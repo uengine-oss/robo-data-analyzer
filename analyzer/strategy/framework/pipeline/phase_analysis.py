@@ -129,6 +129,7 @@ async def run_code_analysis(
         if get_ontology().is_oop(st.lang):
             queries.extend(build_uml_dependency_queries(
                 analysis_batch, function_facts_list, st.module_index or {},
+                lang=st.lang,
             ))
 
         accumulate_table_insights(analysis_batch, table_map, allowed_tables)

@@ -22,12 +22,14 @@ from analyzer.strategy.framework.common.models.node_models import (
 from analyzer.strategy.framework.common.cypher.graph_queries import (
     build_package_queries,
     build_module_queries,
+    build_datatype_queries,
     build_function_queries,
     build_variable_queries,
     build_belongs_to_package_queries,
     build_root_package_queries,
     build_has_function_queries,
     build_has_variable_queries,
+    build_has_member_queries,
     _expand_package_fqns,
     build_package_hierarchy_queries,
     build_sql_statement_queries,
@@ -92,6 +94,7 @@ async def run_phase_ast(
     # 파일별 누적 변수
     function_facts_list: list[FunctionFacts] = []
     module_index_ast: dict[str, Any] = {}
+    datatype_index_ast: dict[str, Any] = {}
     variable_facts_list: list[VariableFacts] = []
     symbol_type_index: dict[str, dict[str, str]] = {}
     function_index: dict[str, str] = {}
@@ -106,11 +109,13 @@ async def run_phase_ast(
         ast_done += 1
         facts = file_result["facts"]
         cidx = file_result["cidx"]
+        didx = file_result["didx"]
         fields = file_result["fields"]
 
         # 누적
         function_facts_list.extend(facts)
         module_index_ast.update(cidx)
+        datatype_index_ast.update(didx)
         variable_facts_list.extend(fields)
         for name, fqns in file_result["module_name_to_fqn"].items():
             module_name_to_fqn.setdefault(name, []).extend(fqns)
@@ -129,11 +134,13 @@ async def run_phase_ast(
             try:
                 file_node_kinds = file_result.get("node_kinds", {})
                 queries: list[dict[str, Any]] = []
-                queries.extend(build_module_queries(cidx))
+                queries.extend(build_module_queries(cidx, lang=lang))
+                queries.extend(build_datatype_queries(didx, lang=lang))
                 queries.extend(build_function_queries(facts, node_kinds=file_node_kinds))
                 queries.extend(build_variable_queries(fields, node_kinds=file_node_kinds, lang=lang))
                 queries.extend(build_has_function_queries(facts, cidx))
-                queries.extend(build_has_variable_queries(fields, cidx))
+                queries.extend(build_has_variable_queries(fields, cidx, lang=lang))
+                queries.extend(build_has_member_queries(fields, didx, lang=lang))
                 if queries:
                     async for chunk in write_to_graph(client, queries, f"PHASE1:AST:{file_result['file_name']}"):
                         yield chunk
@@ -220,6 +227,7 @@ async def run_phase_ast(
     st.plan = plan
     st.function_facts_list = function_facts_list
     st.module_index_ast = module_index_ast
+    st.datatype_index_ast = datatype_index_ast
     st.package_fqns = package_fqns
     st.variable_facts_list = variable_facts_list
     st.symbol_type_index = symbol_type_index

@@ -35,8 +35,8 @@ from analyzer.strategy.dbms.linking import ddl_table_matcher
 from analyzer.strategy.dbms.common.domain.analysis_constants import (
     MAX_CONCURRENCY,
     MAX_CONTEXT_TOKEN,
+    OP_TO_RELATION,
     PROCEDURE_TYPES,
-    TABLE_RELATIONSHIP_MAP,
 )
 from analyzer.strategy.dbms.common.cypher.graph_queries import (
     build_column_queries,
@@ -1264,13 +1264,17 @@ class DbmsAstProcessor(BaseAstProcessor):
             else:
                 converted_name = name_part
 
-            access_mode_raw = entry.get('accessMode') or entry.get('mode')
-            if not access_mode_raw:
+            op_raw = entry.get('op')
+            if not op_raw:
                 raise RuntimeError(
-                    f"LLM dml_extract 결과에 accessMode/mode 누락 | table={table_name} entry={entry}"
+                    f"LLM dml_extract 결과에 op 누락 | table={table_name} entry={entry}"
                 )
-            access_mode = access_mode_raw.lower()
-            rel_types = [TABLE_RELATIONSHIP_MAP.get(mode, mode.upper()) for mode in ['r', 'w'] if mode in access_mode]
+            op = op_raw.strip().upper()
+            if op not in OP_TO_RELATION:
+                raise RuntimeError(
+                    f"LLM dml_extract op 미지원 값 | op={op_raw} table={table_name} entry={entry}"
+                )
+            rel_types = [OP_TO_RELATION[op]]
 
             table_desc_raw = entry.get('tableDescription') or entry.get('description') or ''
             bucket_key = self._record_table_summary(schema_part, name_part, table_desc_raw, skip_case_conversion=skip_case_conversion)
@@ -1284,6 +1288,7 @@ class DbmsAstProcessor(BaseAstProcessor):
                 "schema_name": effective_schema,
                 "table_name":  converted_name,
                 "rel_types":   rel_types,
+                "op":          op,
                 "db_link":     db_link_value or None,
             })
 

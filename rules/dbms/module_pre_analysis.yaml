@@ -1,0 +1,66 @@
+name: "module_pre_analysis"
+description: "DBMS unit (PROCEDURE/FUNCTION/TRIGGER) 사전 요약 — 헤더 주석/DECLARE + unit 시그니처를 보고 비즈니스 의도를 1줄 요약. node_analysis 전에 1회 실행되어 module_intent / module_display_name 산출."
+version: "1.0"
+
+input_schema:
+  required:
+    - module_fqn
+    - locale
+  optional:
+    - module_comment           # 파일/PROCEDURE 헤더 주석 (변경 이력 등 노이즈 포함 가능)
+    - unit_signatures          # PROCEDURE/FUNCTION 시그니처 목록 (이름·파라미터·반환형 — 본문 X)
+    - language                 # PL/SQL / T-SQL / PostgreSQL PL/pgSQL 등
+
+system_prompt: |
+  [ROLE]
+  DBMS 저장 객체 (PROCEDURE / FUNCTION / TRIGGER / PACKAGE) 의 헤더 주석과 unit 시그니처를 보고
+  **비즈니스 의도** 를 추출. 결과는 node_analysis 의 input 으로 들어가 매 호출마다 unit 맥락을 짧게 제공.
+  Oracle / PostgreSQL / SQL Server / MySQL / DB2 등 모든 RDBMS 보편.
+
+  [목표]
+  - **module_intent**: 이 unit/스크립트가 무엇을 하는지 1~3 문장 (한 단락). 비즈니스 의도 중심.
+  - **module_display_name**: 1줄 비즈니스 이름 (한국어, 예: "거래 이력 적재 프로시저", "월별 정산 집계 함수").
+
+  [원칙]
+  1. 비즈니스 의도만. 변경 이력·작성자·날짜·기술 메타 노이즈 제거.
+  2. 헤더 주석에 의도가 명시적으로 적혀 있으면 그대로 활용.
+  3. 헤더 정보 부족 시 PROCEDURE/FUNCTION 이름·파라미터로 보완 추론.
+  4. 코드 토큰 (PROCEDURE 명·시퀀스·매크로) 그대로 노출 X — 비즈니스 용어로.
+  5. 추측 X — 헤더 + 시그니처에서 도출 가능한 한도 내에서만.
+  6. 응답 언어: {{ locale }}.
+
+  [노이즈 제거 예시]
+  헤더 원본:
+  ```
+  -- ====================================================
+  -- 프로시저: SP_TD_AB00023
+  -- 설명   : 거래 이력 적재 (일별)
+  -- 작성자 : kim
+  -- 작성일 : 2024-01-01
+  -- 변경  : 2024-03-15 박  : 인덱스 추가
+  --        2024-08-20 이  : 조건 분기 추가
+  -- ====================================================
+  ```
+  ✓ 추출:
+    module_display_name: "거래 이력 일별 적재 프로시저"
+    module_intent: "거래 이력을 일별로 적재 (TD_AB00023). 분기 조건에 따른 상태 변경 포함."
+
+prompt: |
+  [INPUT]
+
+  Unit FQN: {{ module_fqn }}
+  {% if module_comment %}
+  ── [헤더 주석 — 원본]
+  {{ module_comment }}
+  {% endif %}
+  {% if unit_signatures %}
+  ── [Unit 시그니처 목록 — 이름·파라미터·반환형]
+  {{ unit_signatures }}
+  {% endif %}
+
+
+  [OUTPUT]  JSON 만. 코드펜스·주석·트레일링 콤마 X.
+  {
+    "module_display_name": "한국어 1줄 비즈니스 이름",
+    "module_intent": "1~3 문장 비즈니스 의도 (변경 이력·작성자 등 노이즈 제거)"
+  }

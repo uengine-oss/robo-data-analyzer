@@ -65,6 +65,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
+from config.settings import settings
 from service.source_analyze_service import AnalysisContext, run_source_analysis, discover_analyzable_files, get_analysis_directories
 from client.neo4j_client import Neo4jClient
 
@@ -77,7 +78,7 @@ os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
 # ==================== 테스트 설정 상수 ====================
 TEST_API_KEY = os.getenv("LLM_API_KEY")
-TEST_DB_NAME = os.getenv("TEST_DB_NAME", "test").strip() or "test"
+TEST_DB_NAME = os.getenv("TEST_DB_NAME", "").strip() or settings.neo4j.database
 TEST_LOCALE = os.getenv("TEST_LOCALE", "ko").strip() or "ko"
 TEST_ANALYSIS_STRATEGY = os.getenv("TEST_ANALYSIS_STRATEGY", "dbms").strip().lower() or "dbms"
 TEST_TARGET = os.getenv("TEST_TARGET", "").strip()
@@ -98,12 +99,6 @@ def _ensure_api_key():
     """API 키가 설정되어 있는지 확인"""
     if not TEST_API_KEY:
         pytest.skip("LLM_API_KEY가 설정되지 않았습니다")
-
-
-def _ensure_datasource():
-    """catalog 연동용 datasource가 설정되어 있는지 확인"""
-    if not TEST_DATASOURCE:
-        pytest.skip("TEST_DATASOURCE 미설정 — catalog 연동 샘플 수집 불가")
 
 
 async def _clear_graph(connection: Neo4jClient):
@@ -137,7 +132,6 @@ async def test_full_analysis_pipeline(real_neo4j: Neo4jClient):
     - Phase 5: 리니지 분석
     """
     _ensure_api_key()
-    _ensure_datasource()
 
     # 소스 파일 탐색
     try:

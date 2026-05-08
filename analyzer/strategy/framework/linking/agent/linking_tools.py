@@ -139,7 +139,7 @@ def build_tools(
     collector: ToolResultCollector,
     function_id: str = "",
     variable_id: Optional[str] = None,
-    batch_startpoint_tables: Optional[set] = None,
+    file_path_filter: Optional[str] = None,
 ) -> List[Any]:
     """linking 에이전트용 도구 11종 전체 세트 반환.
 
@@ -156,7 +156,6 @@ def build_tools(
     chunk_index = state.get("chunk_index") or {}
     data_dir = state.get("data_dir") or ""
 
-    # 기존 FK 세트 (중복 생성 방지)
     existing_fk_set: set = set()
     for (_s, _n), info in ddl_meta.items():
         for fk in (info.get("foreign_keys") or info.get("foreignKeys") or []):
@@ -164,6 +163,8 @@ def build_tools(
             fk_ref = (fk.get("ref") or "").strip().upper()
             if fk_col and fk_ref:
                 existing_fk_set.add((_n.upper(), fk_col, fk_ref))
+
+    known_table_names: set = {n.upper() for (_s, n) in ddl_meta.keys()} if ddl_meta else set()
 
     lock = collector.lock
 
@@ -210,10 +211,20 @@ def build_tools(
 
     @lc_tool
     def bundle_search_tool(query: str, kind: str = "symbol") -> str:
-        """ChunkBundle에서 심볼/텍스트 검색한다. kind: symbol|text."""
-        results = _bundle_search(data_dir, query, kind, span_index=span_index, chunk_index=chunk_index)
-        enriched = [_enrich_with_modulename(r) for r in results[:20]]
-        logger.info("[TOOL] bundle_search | query=%s kind=%s results=%d", query, kind, len(enriched))
+        """ChunkBundle에서 심볼/텍스트 검색한다. kind: symbol|text.
+
+        file_path_filter 가 주입된 경우 그 모듈의 청크만 검색 (모듈 격리).
+        """
+        results = _bundle_search(
+            data_dir, query, kind,
+            span_index=span_index, chunk_index=chunk_index,
+            file_path_filter=file_path_filter,
+        )
+        enriched = [_enrich_with_modulename(r) for r in results]
+        logger.info(
+            "[TOOL] bundle_search | query=%s kind=%s results=%d filter=%s",
+            query, kind, len(enriched), file_path_filter or "(none)",
+        )
         return json.dumps(enriched, ensure_ascii=False)
 
     @lc_tool
@@ -258,22 +269,40 @@ def build_tools(
         table_name: str, access: str,
         evidence: str = "", source_function_id: str = "",
     ) -> str:
-        """READS/WRITES 엣지를 생성한다. access: READS|WRITES. source_function_id 필수."""
+        """테이블 접근 엣지를 생성한다. access: SELECT|INSERT|UPDATE|DELETE|MERGE|READS|WRITES."""
         mid = source_function_id.strip() if source_function_id else function_id
-        rel = access.upper() if access else "READS"
-        if rel not in ("READS", "WRITES"):
-            rel = "READS"
         if not mid:
             return "error: source_function_id required"
+        tbl = (table_name or "").strip()
+        if not tbl:
+            return "error: table_name required"
+        if known_table_names and tbl.upper() not in known_table_names:
+            logger.warning(
+                "[TOOL:GUARD] table_access 거부 — DDL 비등록 테이블 | "
+                "function_id=%s table=%s file=%s known_count=%d evidence=%r",
+                mid, tbl, file_path_filter or "(none)", len(known_table_names), evidence,
+            )
+            return f"error: '{tbl}' not found in DDL table list — sequence/proc 또는 정규화 오류 의심"
+        raw = (access or "").strip().upper()
+        if raw in ("SELECT", "INSERT", "UPDATE", "DELETE", "MERGE"):
+            op = raw
+            rel = sql_op_to_method_relation(raw)
+        elif raw in ("READS", "WRITES"):
+            op = ""
+            rel = raw
+        else:
+            op = ""
+            rel = "READS"
         with lock:
             collector.table_access.append(FunctionTableEdge(
                 function_id=mid,
                 table_schema="",
-                table_name=table_name,
-                relation=sql_op_to_method_relation("INSERT" if rel == "WRITES" else "SELECT"),
+                table_name=tbl,
+                relation=rel,
                 variable_id=variable_id,
+                op=op,
             ))
-        logger.info("[TOOL] table_access | %s → %s %s", mid, rel, table_name)
+        logger.info("[TOOL] table_access | %s → %s%s %s", mid, rel, f"({op})" if op else "", tbl)
         return "ok"
 
     @lc_tool
@@ -309,9 +338,6 @@ def build_tools(
         """FK 관계를 등록한다. from_table=FK쪽(자식), to_table=PK쪽(부모)."""
         if from_table.upper() == to_table.upper():
             return "error: self-referencing FK not allowed"
-        if batch_startpoint_tables:
-            if from_table.upper() not in {t.upper() for t in batch_startpoint_tables}:
-                return "skipped: from_table not in this batch's startpoints"
         if ddl_meta:
             known_tables = {n.upper() for (_, n) in ddl_meta.keys()}
             for tbl in (from_table, to_table):
@@ -345,7 +371,7 @@ def build_tools(
             if keyword_norm in n.lower().replace("_", "")
         ]
         logger.info("[TOOL] table_search | keyword=%s results=%d", keyword, len(results))
-        return json.dumps(results[:20], ensure_ascii=False) if results else "no matching tables found"
+        return json.dumps(results, ensure_ascii=False) if results else "no matching tables found"
 
     @lc_tool
     def table_columns_tool(table_name: str, table_schema: str = "") -> str:

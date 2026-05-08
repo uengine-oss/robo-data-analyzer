@@ -27,6 +27,7 @@ from analyzer.common.pipeline.analysis_context import (
 from client.catalog_client import CatalogClient
 from client.neo4j_client import Neo4jClient
 from config.settings import settings
+from util.llm_rule_runner import prompts
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,8 @@ async def collect_analysis_context(st: Any, client: Neo4jClient, orchestrator: A
 
     Returns:
         ``{constants_context, referenced_vars_by_function, codebase_pattern,
-           reads_writes_by_function, ddl_context_by_function}``
+           reads_writes_by_function, ddl_context_by_function,
+           module_intents_by_module_key}``
     """
     ctx: Dict[str, Any] = {
         "constants_context": "",
@@ -44,6 +46,7 @@ async def collect_analysis_context(st: Any, client: Neo4jClient, orchestrator: A
         "codebase_pattern": "",
         "reads_writes_by_function": {},
         "ddl_context_by_function": {},
+        "module_intents_by_module_key": {},
     }
 
     rw_by_fn = _collect_reads_writes_by_function(st)
@@ -56,7 +59,151 @@ async def collect_analysis_context(st: Any, client: Neo4jClient, orchestrator: A
     # ddl_context: schema 는 그래프에서 항상 생성, sample 은 catalog 활성 시만 부착.
     await _attach_table_context(ctx, st, client, orchestrator, rw_by_fn)
 
+    # module_intent / module_display_name: 모듈마다 1회 LLM 호출 (code_analysis 전).
+    # 헤더 주석의 변경 이력·작성자 노이즈를 제거하고 1~3 문장 비즈니스 의도만 추출.
+    intents = _collect_module_intents(st)
+    ctx["module_intents_by_module_key"] = intents
+    if intents:
+        await _persist_module_intents_to_graph(intents, st, client)
+
     return ctx
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 모듈 사전 요약 (module_intent + module_display_name) — Phase 3 함수 분석 전 1회
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _collect_module_intents(st: Any) -> Dict[str, Dict[str, str]]:
+    """모듈마다 module_pre_analysis LLM 1회 호출 → ``{module_key: {intent, display_name}}``.
+
+    헤더 주석 4KB → 한 줄 (~0.4KB) 로 압축해 함수 분석 (code_analysis) 의 매 호출 input 부담 ↓.
+    부수: ``st.module_index`` 의 해당 entry 에 ``intent`` / ``display_name`` 키도 직접 주입
+    (다운스트림 _build_module_key_index 가 활용).
+    LLM 호출 실패는 fallback (해당 모듈만 skip — 함수 분석은 module_intent 없이 진행).
+    """
+    module_index = getattr(st, "module_index", None) or {}
+    if not module_index:
+        return {}
+
+    api_key = settings.llm.api_key
+    if not api_key:
+        logger.info("[PHASE:3:MODULE_PRE] api_key 없음 — module_intent 수집 skip")
+        return {}
+
+    locale = settings.locale
+    lang = getattr(st, "lang", "java")
+    function_facts_list = getattr(st, "function_facts_list", None) or []
+
+    # 모듈별 함수 시그니처 그룹핑
+    sigs_by_module_key: Dict[str, list] = {}
+    for f in function_facts_list:
+        mk = getattr(f, "module_key", "") or ""
+        if not mk:
+            continue
+        # FunctionFacts: fqn / signature / params / return_type — name 속성 없음. fqn 마지막 segment 사용.
+        fqn = getattr(f, "fqn", "") or ""
+        short_name = fqn.rsplit(".", 1)[-1] if "." in fqn else (fqn or getattr(f, "function_id", ""))
+        params = getattr(f, "params", "") or ""
+        ret = getattr(f, "return_type", "") or ""
+        sig = f"{short_name}({params})" + (f" → {ret}" if ret else "")
+        sigs_by_module_key.setdefault(mk, []).append(sig)
+
+    out: Dict[str, Dict[str, str]] = {}
+    ok_count = 0
+    skip_count = 0
+    for fqn, info in module_index.items():
+        if not isinstance(info, dict):
+            continue
+        module_key = info.get("module_key") or ""
+        if not module_key:
+            continue
+        comment = (info.get("comment") or "").strip()
+        annotations = (info.get("annotations") or "").strip()
+        sigs = sigs_by_module_key.get(module_key, [])
+        # 자료 0 — 추출할 게 없으면 skip (intent / display_name 빈 값으로 두고 다른 모듈 처리)
+        if not (comment or annotations or sigs):
+            skip_count += 1
+            continue
+        inputs: Dict[str, Any] = {
+            "module_fqn": fqn,
+            "locale": locale,
+            "language": lang,
+        }
+        if comment:
+            inputs["module_comment"] = comment
+        if annotations:
+            inputs["module_annotations"] = annotations
+        if sigs:
+            inputs["function_signatures"] = "\n".join(f"- {s}" for s in sigs[:80])
+        try:
+            result = prompts.execute_raw("framework", "module_pre_analysis", inputs, api_key)
+        except Exception as e:
+            logger.warning(
+                "[PHASE:3:MODULE_PRE] LLM 호출 실패 (해당 모듈 skip) | module=%s | %s: %s",
+                fqn, type(e).__name__, e,
+            )
+            skip_count += 1
+            continue
+        if not isinstance(result, dict):
+            skip_count += 1
+            continue
+        intent = (result.get("module_intent") or "").strip()
+        display_name = (result.get("module_display_name") or "").strip()
+        if not (intent or display_name):
+            skip_count += 1
+            continue
+        out[module_key] = {"intent": intent, "display_name": display_name}
+        # module_index entry 자체에 intent / display_name 주입 (다운스트림 가 lookup 편의)
+        info["intent"] = intent
+        info["display_name"] = display_name
+        ok_count += 1
+    logger.info(
+        "[PHASE:3:MODULE_PRE] module_intent 수집 | ok=%d skip=%d total=%d",
+        ok_count, skip_count, len(module_index),
+    )
+    return out
+
+
+async def _persist_module_intents_to_graph(
+    intents: Dict[str, Dict[str, str]],
+    st: Any,
+    client: Neo4jClient,
+) -> None:
+    """모듈 노드에 ``display_name`` / ``intent`` 속성 SET.
+
+    Phase 2 에서 모듈 노드는 이미 생성됐으므로 (display_name/intent 는 빈 값) 사후 SET.
+    노드 매칭 키는 ``fqn``.
+    """
+    module_index = getattr(st, "module_index", None) or {}
+    rows = []
+    for fqn, info in module_index.items():
+        if not isinstance(info, dict):
+            continue
+        module_key = info.get("module_key") or ""
+        rec = intents.get(module_key)
+        if not rec:
+            continue
+        rows.append({
+            "fqn": fqn,
+            "display_name": rec.get("display_name") or "",
+            "intent": rec.get("intent") or "",
+        })
+    if not rows:
+        return
+    query = (
+        "UNWIND $rows AS row "
+        "MATCH (m {fqn: row.fqn}) "
+        "SET m.display_name = row.display_name, m.intent = row.intent"
+    )
+    try:
+        await client.execute_queries([{"query": query, "params": {"rows": rows}}])
+        logger.info("[PHASE:3:MODULE_PRE] 모듈 노드 display_name/intent SET | rows=%d", len(rows))
+    except Exception as e:
+        logger.warning(
+            "[PHASE:3:MODULE_PRE] 모듈 노드 SET 실패 (계속 진행) | %s: %s",
+            type(e).__name__, e,
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -70,12 +217,13 @@ def _collect_reads_writes_by_function(st: Any) -> Dict[str, list]:
         fid = e.function_id
         tbl = (e.table_name or "").strip()
         rel = (e.relation or "").strip().upper()
+        op = (getattr(e, "op", "") or "").strip().upper()
         if not (fid and tbl and rel):
             continue
-        pair = (tbl, rel)
+        triple = (tbl, rel, op)
         bucket = rw_by_fn.setdefault(fid, [])
-        if pair not in bucket:
-            bucket.append(pair)
+        if triple not in bucket:
+            bucket.append(triple)
     if rw_by_fn:
         logger.info(
             "[PHASE:3:CONTEXT] 함수별 R/W 맵 수집 | functions=%d edges=%d",
@@ -282,7 +430,7 @@ def _build_ddl_context_by_function(
     각 테이블은 ``format_table_context`` (DBMS·framework 공용) 로 포맷.
     """
     direct: Dict[str, set[str]] = {
-        fid: {t for t, _op in pairs} for fid, pairs in rw_by_fn.items()
+        fid: {t for t, _rel, _op in triples} for fid, triples in rw_by_fn.items()
     }
     callees: Dict[str, set[str]] = {}
     for ce in (st.calls_edges or []):

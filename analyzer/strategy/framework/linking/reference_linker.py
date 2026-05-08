@@ -310,13 +310,14 @@ def derive_function_table_edges(
         variable_id = getattr(edge, "variable_id", None)
         for schema, table, sql_rel in sql_to_tables.get(edge.target_id, []):
             fn_rel = sql_op_to_method_relation(sql_rel)
-            dedup_key = (edge.function_id, variable_id or "", schema, table, fn_rel)
+            op = (sql_rel or "").strip().upper()
+            dedup_key = (edge.function_id, variable_id or "", schema, table, fn_rel, op)
             if dedup_key in seen:
                 continue
             seen.add(dedup_key)
             result.append(FunctionTableEdge(
                 function_id=edge.function_id, table_schema=schema,
-                table_name=table, relation=fn_rel, variable_id=variable_id,
+                table_name=table, relation=fn_rel, variable_id=variable_id, op=op,
             ))
 
     # 경로 2) Artifact: ArtifactChunk → Table

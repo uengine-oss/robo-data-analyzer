@@ -644,8 +644,12 @@ def build_function_facts_and_module_index(
     ast_data: dict,
     lang: str,
     data_dir: Optional[str] = None,
-) -> Tuple[List[FunctionFacts], Dict[str, Any], List[VariableFacts], Dict[str, List[str]]]:
-    """한 AST 파일에서 FunctionFacts, module_index, VariableFacts 리스트 생성."""
+) -> Tuple[List[FunctionFacts], Dict[str, Any], Dict[str, Any], List[VariableFacts], Dict[str, List[str]], Dict[str, str]]:
+    """한 AST 파일에서 FunctionFacts, module_index, datatype_index, VariableFacts 리스트 생성.
+
+    module_index : module 역할 컨테이너 (FILE/CLASS/INTERFACE 등 — 함수 품을 수 있음)
+    datatype_index: data_type 역할 컨테이너 (C STRUCT/UNION/ENUM — 함수 못 품음)
+    """
     onto = get_ontology()
     module_types = onto.module_types(lang)
     data_type_types = onto.data_type_types(lang)
@@ -695,6 +699,7 @@ def build_function_facts_and_module_index(
 
     function_facts_list: List[FunctionFacts] = []
     module_index: Dict[str, Any] = {}
+    datatype_index: Dict[str, Any] = {}
     variable_facts_list: List[VariableFacts] = []
     node_kinds: Dict[str, str] = {}  # variable_id/function_id → AST 노드 타입 (서브레이블용)
 
@@ -722,7 +727,7 @@ def build_function_facts_and_module_index(
             # variable_id → 원래 AST 노드 타입 (서브레이블용 + variable_linker scope 결정용)
             node_kinds[variable_id] = node.node_type
         if node.node_type in module_types and node.unit_name:
-            # FILE 노드: unit_kind를 통해 kind를 "FILE"로 저장
+            # module 역할 (FILE/CLASS/INTERFACE 등 — 함수 품는 컨테이너)
             kind = node.unit_kind if node.unit_kind else node.node_type
             fqn = f"{node.package_name}.{node.unit_name}" if node.package_name else node.unit_name
             module_index[fqn] = {
@@ -737,6 +742,21 @@ def build_function_facts_and_module_index(
                 "annotations": node.annotations,
                 "extends_type": node.extends_type,
                 "implements_types": node.implements_types,
+            }
+        elif node.node_type in data_type_types and node.unit_name:
+            # data_type 역할 (C STRUCT/UNION/ENUM — 함수 못 품는 데이터 컨테이너)
+            kind = node.unit_kind if node.unit_kind else node.node_type
+            fqn = f"{node.package_name}.{node.unit_name}" if node.package_name else node.unit_name
+            datatype_index[fqn] = {
+                "module_key": node.unit_key,
+                "fqn": fqn,
+                "package_name": node.package_name,
+                "name": node.unit_name,
+                "kind": kind,
+                "start_line": node.start_line,
+                "end_line": node.end_line,
+                "comment": node.comment,
+                "annotations": node.annotations,
             }
 
         if node.node_type in function_types and node.name:
@@ -769,13 +789,13 @@ def build_function_facts_and_module_index(
             )
 
     module_name_to_fqn: Dict[str, List[str]] = {}
-    for fqn, info in module_index.items():
+    for fqn, info in list(module_index.items()) + list(datatype_index.items()):
         if isinstance(info, dict):
             name = info.get("name")
             if name:
                 module_name_to_fqn.setdefault(name, []).append(fqn)
 
-    return function_facts_list, module_index, variable_facts_list, module_name_to_fqn, node_kinds
+    return function_facts_list, module_index, datatype_index, variable_facts_list, module_name_to_fqn, node_kinds
 
 
 def _extract_package_fqns(module_index: Dict[str, Any]) -> List[str]:
@@ -882,7 +902,7 @@ def extract_code_structure(
                 source_path_for_bundle = _source_path_for_ast(data_dir, path, lang=lang) if data_dir else None
 
             ast_data = load_ast_json(ast_path_val)
-            facts, cidx, fields, module_name_to_fqn, variable_node_kinds = build_function_facts_and_module_index(
+            facts, cidx, didx, fields, module_name_to_fqn, variable_node_kinds = build_function_facts_and_module_index(
                 ast_path_val, ast_data, data_dir=data_dir, lang=lang,
             )
 
@@ -953,6 +973,7 @@ def extract_code_structure(
             yield {
                 "facts": facts,
                 "cidx": cidx,
+                "didx": didx,
                 "fields": fields,
                 "module_name_to_fqn": module_name_to_fqn,
                 "sym_idx": sym_idx,

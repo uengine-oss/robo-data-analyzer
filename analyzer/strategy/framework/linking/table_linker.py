@@ -168,9 +168,9 @@ def _split_sql_for_llm(sql_text: str) -> List[str]:
 
 
 def sql_op_to_method_relation(sql_relation: str) -> str:
-    """SqlStatement->Table 연산(SELECT/INSERT/UPDATE/DELETE)을 Method->Table 관계(READS/WRITES)로 변환."""
+    """SqlStatement->Table 연산(SELECT/INSERT/UPDATE/DELETE/MERGE)을 Method->Table 관계(READS/WRITES)로 변환."""
     r = (sql_relation or "").strip().upper()
-    if r in ("INSERT", "UPDATE", "DELETE"):
+    if r in ("INSERT", "UPDATE", "DELETE", "MERGE"):
         return "WRITES"
     return "READS"
 

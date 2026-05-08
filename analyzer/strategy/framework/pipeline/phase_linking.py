@@ -404,8 +404,8 @@ async def run_deterministic_and_llm_batch(ctx: LinkingContext) -> AsyncGenerator
             ctx.uses_edges.extend(uses_batch)
             ctx.call_batch_count += 1
             queries = []
-            queries.extend(build_calls_queries(batch_call_edges))
-            queries.extend(build_uses_queries(uses_batch))
+            queries.extend(build_calls_queries(batch_call_edges, lang=ctx.st.lang))
+            queries.extend(build_uses_queries(uses_batch, lang=ctx.st.lang))
             if queries:
                 async for chunk in write_to_graph(ctx.client, queries, "PHASE2:CALL_BATCH"):
                     yield chunk
@@ -463,9 +463,9 @@ async def run_deep_agent_parallel(ctx: LinkingContext) -> AsyncGenerator[bytes, 
             codebase_pattern=codebase_pattern,
         )
         logger.info(
-            "[PHASE:2:ENTITY] startpoints | ddl=%d xml=%d annotated=%d candidates=%d profile=%s",
+            "[PHASE:2:ENTITY] startpoints | ddl=%d xml=%d annotated=%d profile=%s",
             len(startpoints.ddl_tables), len(startpoints.xml_entity_fqns),
-            len(startpoints.annotated_fqns), len(startpoints.class_candidates),
+            len(startpoints.annotated_fqns),
             bool(startpoints.codebase_pattern),
         )
         entity_state = {
@@ -476,6 +476,8 @@ async def run_deep_agent_parallel(ctx: LinkingContext) -> AsyncGenerator[bytes, 
             "run_dir": str(Path(st.run_dir)) if st.run_dir else None,
             "span_index": st.span_index,
             "chunk_index": st.chunk_index,
+            "module_index": st.module_index or {},
+            "lang": st.lang,
             "ddl_table_metadata": ddl_meta or None,
             "codebase_pattern": codebase_pattern,
             "function_count": len(st.function_facts_list or []),
@@ -498,18 +500,20 @@ async def run_deep_agent_parallel(ctx: LinkingContext) -> AsyncGenerator[bytes, 
             return
         logger.info("[PHASE:2:VARREF] 결정론적 매칭 시작 | variables=%d", len(variables))
 
-        # ── REFERENCES: variable_facts + function chunks → (function_id, variable_id) 페어 ──
+        # ── REFERENCES: variable_facts + 검색 source chunks → (source_id, variable_id) 페어 ──
         # scope_id 정책 (find_variable_references 가 매칭에 사용):
         #   - VARIABLE / PARAMETER (함수 스코프) → scope_id = v.module_key (function_id).
         #     자기 함수 chunk 와만 매칭됨 — 외부 함수의 동명 PARAMETER/VARIABLE false-positive 차단.
         #   - GLOBAL_VARIABLE / DEFINE / CONSTANT_FIELD (모듈/전역 스코프) → 와일드카드.
-        #     모든 함수에서 reference 가능.
-        # source.scope_id = chunk_id (= function_id) — function chunk 가 자기 함수의 코드.
+        #     모든 source 에서 reference 가능 (struct 멤버 배열 안의 매크로 포함).
+        # source: function chunk + member_var chunk (ontology 의 variable 역할 동등 취급).
+        #   - function chunk : function_id (점 표기, `#`/`C:` 없음)
+        #   - member_var chunk: variable_id (`#` 포함)
+        #   - 제외: function_call/local_var initializer chunk (`C:` 접두 — 함수 본문에 이미 포함됨)
         _SCOPE_WILDCARD_KINDS = ("GLOBAL_VARIABLE", "DEFINE", "CONSTANT_FIELD")
         chunk_index = _ensure_chunk_index_in_state(st, ctx.data_dir)
-        function_chunk_ids = frozenset(
-            cid for cid in (chunk_index or {})
-            if "#" not in cid and not cid.startswith("C:")
+        searchable_source_ids = frozenset(
+            cid for cid in (chunk_index or {}) if not cid.startswith("C:")
         )
         targets = [
             {
@@ -520,7 +524,7 @@ async def run_deep_agent_parallel(ctx: LinkingContext) -> AsyncGenerator[bytes, 
         ]
         sources = [
             {"id": cid, "scope_id": cid, "code": (info.get("text") or "")}
-            for cid, info in (chunk_index or {}).items() if cid in function_chunk_ids
+            for cid, info in (chunk_index or {}).items() if cid in searchable_source_ids
         ]
         ref_pairs = find_variable_references(targets=targets, sources=sources)
         refs = [(s["id"], t["id"]) for t, s in ref_pairs]

@@ -16,7 +16,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from analyzer.strategy.framework.analysis.chunk_bundle import (
     _get_chunk_bundle_dir_from_run_dir,
@@ -505,26 +505,42 @@ def resolve_calls_deterministic(
 def build_external_calls_edges(
     unresolved: List[Dict[str, Any]],
     module_map: Dict[Tuple[str, str], Tuple[str, str]],
+    *,
+    known_modules: Optional[Set[str]] = None,
 ) -> List[CallsEdge]:
-    """모듈맵에 있고 scope=external인 경우만 external CALLS 엣지 생성.
-    모듈맵에 존재하지 않는 (객체명, 타입) → 라이브러리/표준 메서드로 간주하여 CALLS 생성하지 않음."""
+    """모듈맵에 있고 scope=external 인 경우 external CALLS 엣지 생성.
+
+    추가 — **dispatcher 패턴** (obj_name 비어있고 function_name 이 진짜 타깃 모듈명):
+    function_name 이 분석 대상 코드베이스 (``known_modules``) 에 없는 비-stdlib 식별자면
+    ``external:<function_name>`` stub 으로 등록. 이 흐름이 없으면 ``mpfm_dlcall("zapamcom10040", ...)``
+    같은 cross-module 호출이 그래프에서 누락됨.
+    """
     external: List[CallsEdge] = []
+    known = known_modules or set()
     for r in unresolved or []:
         caller_id = r.get("parent_function_id")
         obj_name = r.get("objName") or ""
-        function_name = r.get("functionName") or "?"
-        if not caller_id or not obj_name:
+        function_name = r.get("functionName") or ""
+        if not caller_id or not function_name:
             continue
-        key = (caller_id, obj_name)
-        if key not in module_map:
-            # 모듈맵에 없음 = 라이브러리/표준 → CALLS 생성 안 함
-            continue
-        module_name, scope = module_map[key]
-        if scope != "external":
-            continue
-        if _is_stdlib_module(module_name):
-            continue
-        callee_id = f"external:{module_name}#{function_name}"
+        if obj_name:
+            # 일반 외부 객체 호출 — 기존 module_map 기반 흐름
+            key = (caller_id, obj_name)
+            if key not in module_map:
+                continue
+            module_name, scope = module_map[key]
+            if scope != "external":
+                continue
+            if _is_stdlib_module(module_name):
+                continue
+            callee_id = f"external:{module_name}#{function_name}"
+        else:
+            # dispatcher 패턴 — function_name 자체가 모듈명. 코드베이스 매칭 안 되고 stdlib 아니면 external.
+            if function_name in known:
+                continue
+            if _is_stdlib_module(function_name):
+                continue
+            callee_id = f"external:{function_name}"
         external.append(CallsEdge(
             caller_function_id=caller_id,
             callee_function_id=callee_id,
@@ -671,6 +687,12 @@ async def run_call_batch_pipeline_async(
     internal_module_fqns = set(function_index_by_module.keys())
     is_domain_module = lambda cn: bool(cn and str(cn).strip() and str(cn).strip()[0].isupper() and not _is_stdlib_module(str(cn).strip()))
     module_map = build_module_map_with_scope(type_map, m2c, internal_module_fqns, is_domain_module)
+    # dispatcher 패턴 (obj_name="" + function_name=모듈명) external 판정용 — 코드베이스 모듈 짧은 이름 set
+    known_modules: Set[str] = set()
+    for fqn in internal_module_fqns:
+        known_modules.add(fqn)
+        if "." in fqn:
+            known_modules.add(fqn.rsplit(".", 1)[-1])
 
     all_edges: List[CallsEdge] = []
     all_unresolved: List[Dict[str, Any]] = []
@@ -687,7 +709,7 @@ async def run_call_batch_pipeline_async(
             llm_out = await asyncio.to_thread(_extract_calls_batch_via_llm, batch, key)
             batch_flat = _flatten_one_batch(batch, llm_out, call_records_by_function, function_index_by_module)
             batch_edges, batch_unresolved = resolve_calls_deterministic(batch_flat, type_map, function_index_by_module, m2c)
-            batch_external = build_external_calls_edges(batch_unresolved, module_map)
+            batch_external = build_external_calls_edges(batch_unresolved, module_map, known_modules=known_modules)
             return batch_edges + batch_external, batch_unresolved
 
         def _on_result(result):
@@ -716,7 +738,7 @@ async def run_call_batch_pipeline_async(
                     obj_name, function_name = None, None
                 flat.append({"parent_function_id": function_id, "call_id": r.get("call_id", ""), "call_code": call_code, "objName": obj_name, "functionName": function_name})
         edges, unresolved = resolve_calls_deterministic(flat, type_map, function_index_by_module, m2c)
-        external_edges = build_external_calls_edges(unresolved, module_map)
+        external_edges = build_external_calls_edges(unresolved, module_map, known_modules=known_modules)
         all_edges = edges + external_edges
         all_unresolved = unresolved
         if on_batch and all_edges:

@@ -33,6 +33,8 @@ logger = logging.getLogger(__name__)
 # then.writes 의 op 가 누락됐거나 single-string 형식일 때의 generic op.
 # 정확한 op (INSERT/UPDATE/DELETE) 가 필요하면 LLM 출력의 then.writes[].op 또는 부모 노드 라벨로 추적.
 DEFAULT_WRITE_OP = "WRITE"
+# then.reads[] 는 op 가 항상 READ — SELECT 의 변형 구분 없음.
+READ_OP = "READ"
 
 
 def _parse_write_entry(w: Any) -> Tuple[str, str]:
@@ -53,6 +55,21 @@ def _parse_write_entry(w: Any) -> Tuple[str, str]:
     return "", ""
 
 
+def _parse_read_entry(r: Any) -> str:
+    """LLM 출력의 then.reads[] 한 항목 → table_name. op 는 항상 READ.
+
+    허용 형식:
+      - dict (정식): ``{"table": "X", "columns": [...]}`` — table 만 추출
+      - string (간이): ``"X"``
+      - 그 외: 무시 ("" 반환 → 호출자가 skip)
+    """
+    if isinstance(r, dict):
+        return str(r.get("table") or "").strip()
+    if isinstance(r, str):
+        return r.strip()
+    return ""
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # LLM 응답 평탄화 — examples / questions → Cypher UNWIND row
 # ═══════════════════════════════════════════════════════════════════════════
@@ -70,7 +87,7 @@ def collect_example_rows(
     valid_rule_ids: Iterable[str],
     example_id_factory,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    """examples 를 example_rows + example_write_edges 로 평탄화.
+    """examples 를 example_rows + example_table_edges 로 평탄화.
 
     Args:
         examples: LLM 응답의 examples 리스트.
@@ -78,16 +95,17 @@ def collect_example_rows(
         example_id_factory: (rule_id, idx) → example_id 문자열. 네이밍은 호출자가 결정.
 
     Returns:
-        (example_rows, example_write_edges)
+        (example_rows, example_table_edges)
         - example_rows: {rule_id, example_id, description, given, when_, then_, is_boundary}
-        - example_write_edges: {example_id, table_name, op}  (then.writes[] 유래)
+        - example_table_edges: {example_id, table_name, op}  (then.writes[] + then.reads[] 유래)
 
     given/then 이 dict 면 JSON 직렬화 (하이브리드 구조), 문자열이면 strip.
-    then.writes[] 는 (Example)-[:AFFECTS_TABLE {op}]->(Table) 엣지로 승격.
+    then.writes[] / then.reads[] 모두 (Example)-[:AFFECTS_TABLE {op}]->(Table) 엣지로 승격.
+    op 는 INSERT/UPDATE/DELETE/WRITE/READ.
     """
     valid = set(valid_rule_ids)
     example_rows: List[Dict[str, Any]] = []
-    write_edges: List[Dict[str, Any]] = []
+    table_edges: List[Dict[str, Any]] = []
 
     for idx, e in enumerate(examples or [], start=1):
         if not isinstance(e, dict):
@@ -113,14 +131,18 @@ def collect_example_rows(
             "is_boundary": bool(e.get("is_boundary")),
         })
 
-        # then.writes[] → AFFECTS_TABLE 엣지. LLM 형식 다양성 흡수 (dict / string / op 누락 dict 모두).
+        # then.writes[] / then.reads[] → AFFECTS_TABLE 엣지. LLM 형식 다양성 흡수.
         if isinstance(then_raw, dict):
             for w in (then_raw.get("writes") or []):
                 tname, op = _parse_write_entry(w)
                 if tname:
-                    write_edges.append({"example_id": example_id, "table_name": tname, "op": op})
+                    table_edges.append({"example_id": example_id, "table_name": tname, "op": op})
+            for r in (then_raw.get("reads") or []):
+                tname = _parse_read_entry(r)
+                if tname:
+                    table_edges.append({"example_id": example_id, "table_name": tname, "op": READ_OP})
 
-    return example_rows, write_edges
+    return example_rows, table_edges
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -206,7 +228,7 @@ def build_em_queries(
     # ─── (a) 평탄화: anchor 별 raw → row ───────────────────────────────
     rule_rows: List[Dict[str, Any]] = []
     example_rows: List[Dict[str, Any]] = []
-    example_write_edges: List[Dict[str, Any]] = []
+    example_table_edges: List[Dict[str, Any]] = []
     question_rows: List[Dict[str, Any]] = []
     next_edges: List[Dict[str, Any]] = []
     branch_edges: List[Dict[str, Any]] = []
@@ -246,7 +268,7 @@ def build_em_queries(
             }
             rule_rows.append(row)
 
-        # Example: 평탄화 — given/then dict→JSON 직렬화, then.writes[] → AFFECTS_TABLE 엣지
+        # Example: 평탄화 — given/then dict→JSON 직렬화, then.writes[]/then.reads[] → AFFECTS_TABLE 엣지
         rows, writes = collect_example_rows(
             batch.examples,
             valid_rule_ids=flow_by_rid.keys(),
@@ -255,7 +277,7 @@ def build_em_queries(
         for r in rows:
             r.update(batch.anchor_keys)
             example_rows.append(r)
-        example_write_edges.extend(writes)
+        example_table_edges.extend(writes)
 
         for idx, q in enumerate(batch.questions, start=1):
             if not isinstance(q, dict):
@@ -343,8 +365,8 @@ def build_em_queries(
             "params": {"rows": example_rows},
         })
 
-    # Example → Table AFFECTS_TABLE 엣지 (then.writes[] 로부터)
-    if example_write_edges:
+    # Example → Table AFFECTS_TABLE 엣지 (then.writes[] + then.reads[] 로부터, op 으로 구분)
+    if example_table_edges:
         queries.append({
             "query": (
                 "UNWIND $rows AS row\n"
@@ -354,7 +376,7 @@ def build_em_queries(
                 "SET rel.updated_at = timestamp()\n"
                 "RETURN e, rel, t"
             ),
-            "params": {"rows": example_write_edges},
+            "params": {"rows": example_table_edges},
         })
 
     # Question 노드 + HAS_QUESTION 관계

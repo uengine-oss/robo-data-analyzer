@@ -49,11 +49,16 @@ def compute_stereotype(
 
 
 def _build_module_key_index(module_index: Dict[str, Any]) -> Dict[str, Tuple[Optional[str], Optional[str]]]:
-    """module_index에서 module_key -> (comment, annotations) 역인덱스 구성."""
+    """module_index 에서 module_key → (intent, annotations) 역인덱스 구성.
+
+    intent 는 ``pre_analysis._collect_module_intents`` 가 module_pre_analysis LLM 호출 결과로
+    module_index entry 에 주입한 짧은 비즈니스 요약. intent 가 비어있으면 빈 문자열.
+    (이전 (comment, annotations) 매핑은 v6 까지의 흐름. v7 부터 매번 헤더 주석 4KB 박지 않음.)
+    """
     idx: Dict[str, Tuple[Optional[str], Optional[str]]] = {}
     for info in (module_index or {}).values():
         if isinstance(info, dict) and info.get("module_key"):
-            idx[info["module_key"]] = (info.get("comment"), info.get("annotations"))
+            idx[info["module_key"]] = (info.get("intent") or "", info.get("annotations"))
     return idx
 
 
@@ -61,7 +66,7 @@ def _get_module_context(
     module_key_index: Dict[str, Tuple[Optional[str], Optional[str]]],
     module_key: Optional[str],
 ) -> Tuple[Optional[str], Optional[str]]:
-    """module_key_index에서 module_key에 해당하는 comment, annotations 반환. O(1) 조회."""
+    """module_key_index 에서 module_key 의 (intent, annotations) 반환. O(1)."""
     if not module_key:
         return None, None
     return module_key_index.get(module_key, (None, None))
@@ -218,7 +223,7 @@ def _invoke_analysis_llm(
     locale: str = "ko",
     calls_outgoing: Optional[List[str]] = None,
     reads_writes_summary: Optional[str] = None,
-    module_comment: Optional[str] = None,
+    module_intent: Optional[str] = None,
     module_annotations: Optional[str] = None,
     linked_architecture_context: Optional[str] = None,
     called_method_summaries: Optional[List[Dict[str, Any]]] = None,
@@ -262,15 +267,15 @@ def _invoke_analysis_llm(
         "valid_stereotypes": valid_stereotypes,
         "has_table_context": bool(reads_writes_summary),
     }
-    # module_comment / module_annotations 는 정적 (모듈 단위 동일) — 별도 inputs 키로 분리.
-    # context 안에 합치지 않음 → yaml 에서 명시적 라벨 박스로 렌더 + prompt cache prefix 정렬에 유리.
-    if module_comment and module_comment.strip():
-        inputs["module_comment"] = module_comment.strip()
+    # module_intent (한 줄 요약 — module_pre_analysis 산출) 와 module_annotations 는
+    # 모듈 단위 동일하지만 함수마다 일관 주입. 헤더 주석 4KB 그대로 박지 않음.
+    if module_intent and module_intent.strip():
+        inputs["module_intent"] = module_intent.strip()
     if module_annotations and module_annotations.strip():
         inputs["module_annotations"] = module_annotations.strip()
     context_parts: List[str] = []
     if calls_outgoing:
-        context_parts.append("calls_outgoing: " + ", ".join(sorted(calls_outgoing[:20])))
+        context_parts.append("calls_outgoing: " + ", ".join(sorted(calls_outgoing)))
     if reads_writes_summary:
         context_parts.append("reads_writes: " + reads_writes_summary)
     if module_fields_context and module_fields_context.strip():
@@ -282,7 +287,7 @@ def _invoke_analysis_llm(
     if called_method_summaries:
         # 호출된 메서드들의 summary를 context에 포함 (정렬하여 캐시 키 안정성 보장)
         called_snippets: List[str] = []
-        for cs in called_method_summaries[:20]:
+        for cs in called_method_summaries:
             try:
                 cls = str(cs.get("module_name") or "")
                 name = str(cs.get("function_name") or "")
@@ -355,7 +360,7 @@ def _analyze_code_node(
     constants_context: Optional[str] = None,
     referenced_vars_by_function: Optional[Dict[str, List[str]]] = None,
     codebase_pattern: Optional[str] = None,
-    reads_writes_by_function: Optional[Dict[str, List[Tuple[str, str]]]] = None,
+    reads_writes_by_function: Optional[Dict[str, List[Tuple[str, str, str]]]] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """단일 메서드에 대해 stereotype + (summary, dependencies) 계산."""
     default_stereotype = compute_stereotype(m.function_id, refer_to_edges, reads_writes)
@@ -365,8 +370,9 @@ def _analyze_code_node(
     # rw_summary: 1차 Table 엣지 기반, 2차 SqlStatement 경로 fallback.
     # (SqlStatement 가 없는 프로젝트에서도 함수별 R/W 신호를 LLM 에 전달.)
     rw_parts: List[str] = []
-    for tbl, rel in (reads_writes_by_function or {}).get(m.function_id, []):
-        rw_parts.append(f"{tbl}({rel})")
+    for tbl, rel, op in (reads_writes_by_function or {}).get(m.function_id, []):
+        label = f"{rel}:{op}" if op else rel
+        rw_parts.append(f"{tbl}({label})")
     if not rw_parts:
         sql_keys_for_m = {e.target_id for e in method_edges if e.target_type == "SqlStatement"}
         seen = set()
@@ -376,7 +382,7 @@ def _analyze_code_node(
                 if key not in seen:
                     seen.add(key)
                     rw_parts.append(key)
-    rw_summary = ", ".join(rw_parts)[:200]
+    rw_summary = ", ".join(rw_parts)
     linked_architecture_context = _build_linked_architecture_context(
         m.function_id,
         refer_to_edges,
@@ -387,7 +393,7 @@ def _analyze_code_node(
         variable_facts_list=variable_facts_list,
         total_max_len=LINKED_ARCHITECTURE_CONTEXT_MAX,
     )
-    module_comment, module_annotations = _get_module_context(module_key_index or {}, m.module_key)
+    module_intent, module_annotations = _get_module_context(module_key_index or {}, m.module_key)
     fields_ctx = _build_module_fields_context(m.module_key, variable_facts_list)
     dependencies: List[Dict[str, Any]] = []
     table_insights: List[Dict[str, Any]] = []
@@ -405,7 +411,7 @@ def _analyze_code_node(
             locale=locale,
             calls_outgoing=calls_outgoing,
             reads_writes_summary=rw_summary or None,
-            module_comment=module_comment,
+            module_intent=module_intent,
             module_annotations=module_annotations,
             linked_architecture_context=linked_architecture_context or None,
             called_method_summaries=called_summaries,
@@ -466,7 +472,7 @@ def analyze_and_enrich(
     constants_context: Optional[str] = None,
     referenced_vars_by_function: Optional[Dict[str, List[str]]] = None,
     codebase_pattern: Optional[str] = None,
-    reads_writes_by_function: Optional[Dict[str, List[Tuple[str, str]]]] = None,
+    reads_writes_by_function: Optional[Dict[str, List[Tuple[str, str, str]]]] = None,
 ) -> Generator[Dict[str, Dict[str, Any]], None, None]:
     """메서드별 stereotype, summary — 20개씩 배치로 yield.
 
@@ -745,7 +751,7 @@ def analyze_and_enrich(
 def _invoke_module_summary_llm(
     module_fqn: str,
     items: List[Dict[str, Any]],
-    module_comment: Optional[str],
+    module_intent: Optional[str],
     module_annotations: Optional[str],
     prev_summary: Optional[str],
     api_key: str,
@@ -769,8 +775,8 @@ def _invoke_module_summary_llm(
     }
     if kind:
         inputs["kind"] = kind
-    if module_comment:
-        inputs["module_comment"] = module_comment
+    if module_intent:
+        inputs["module_intent"] = module_intent
     if module_annotations:
         inputs["module_annotations"] = module_annotations
     if prev_summary:
@@ -854,7 +860,7 @@ def run_module_summary(
         module_fqn = module_key
         if not items:
             return module_fqn, "", "", {}
-        module_comment, module_annotations = _get_module_context(module_key_index, module_key)
+        module_intent, module_annotations = _get_module_context(module_key_index, module_key)
         module_kind = key_to_kind.get(module_key)
 
         # 토큰 기반 청크 분할
@@ -878,7 +884,7 @@ def run_module_summary(
         # Map: 각 청크 독립 LLM 부분 요약 병렬 실행
         def _summarize_chunk(chunk: List[Dict[str, Any]]):
             return _invoke_module_summary_llm(
-                module_fqn, chunk, module_comment, module_annotations,
+                module_fqn, chunk, module_intent, module_annotations,
                 prev_summary=None, api_key=api_key, locale=locale, kind=module_kind,
             )
 
@@ -905,7 +911,7 @@ def run_module_summary(
                 for i, s in enumerate(partial_summaries)
             ]
             final_summary, merged_st, merged_unified = _invoke_module_summary_llm(
-                module_fqn, merge_items, module_comment, module_annotations,
+                module_fqn, merge_items, module_intent, module_annotations,
                 prev_summary=None, api_key=api_key, locale=locale, kind=module_kind,
             )
             if not final_summary:
