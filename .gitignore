@@ -42,5 +42,8 @@ test/data/neo4j_exports/records.json
 # Note folder
 /note/
 
+# 로컬 디버깅 산출물 (neo4j dump / replay 스크립트)
+/_debug/
+
 # Claude Code
 .claude

@@ -196,12 +196,19 @@ class PhaseTracker:
 async def stream_with_error_boundary(
     async_gen: AsyncGenerator[bytes, None],
 ) -> AsyncGenerator[bytes, None]:
-    """스트리밍 처리 경계"""
+    """스트리밍 처리 경계.
+
+    각 chunk yield 사이에 asyncio.sleep(0) 으로 event loop 에 제어 양보 —
+    Uvicorn / ASGI send buffer 가 즉시 flush 되어 reverse proxy (Gateway / Vite proxy)
+    가 chunk 단위로 forwarding 하도록 보장. 이게 없으면 generator 가 빠르게 chunk 를
+    연속 yield 할 때 TCP buffer 가 합쳐져서 "분석 끝나야 한꺼번에 도착" 현상 발생.
+    """
     trace_id = f"stream-{uuid.uuid4().hex[:8]}"
 
     try:
         async for chunk in async_gen:
             yield chunk
+            await asyncio.sleep(0)
         yield emit_complete()
     except GeneratorExit:  # noqa: SILENT_FAIL — 클라이언트 정상 종료 시그널, raise 하면 stream 정리 깨짐
         logging.info(f"[{trace_id}] 클라이언트 연결 종료")

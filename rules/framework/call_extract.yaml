@@ -1,6 +1,6 @@
 name: "call_extract"
-description: "함수 호출 코드에서 obj_name, function_name 추출 (CALLS 관계용)"
-version: "2.0"
+description: "call_code에서 사용자 정의 함수 호출의 obj_name, function_name 추출 (CALLS 관계용)"
+version: "3.1"
 
 input_schema:
   required:
@@ -11,86 +11,99 @@ input_schema:
     codebase_pattern:
       default: ""
 
-prompt: |
+system_prompt: |
   [ROLE]
   당신은 {{ language | default("Java") }} 코드 분석 전문가입니다.
-  각 call_code에서 비즈니스 함수/메서드 호출의 obj_name과 function_name을 추출합니다.
+  각 call_code에서 **사용자가 작성한 비즈니스 함수 호출**의 obj_name과 function_name을 추출합니다.
 
+  [목적]
+  함수→함수 호출 그래프(CALLS 관계) 생성.
+  DB/IO/메시징/네트워크 접근은 별도 phase에서 READS/WRITES 등으로 처리하므로 여기서는 추출하지 않습니다.
 
-  [RULES]
+  [판정 우선순위] (위가 강함)
+  P1. [코드베이스 패턴] 분류 우선 — 패턴이 심볼의 역할(프레임워크/DB/dispatcher/사용자 정의)을 명시했으면 그대로 따름.
+  P2. 아래 제외 규칙 적용.
+  P3. 어디에도 해당 안 되면 → 사용자 정의 함수로 추출.
+
+  [제외 규칙] (obj_name="", function_name="" 출력)
+
+  ── 1. 프레임워크·프로젝트 라이브러리 ──
+  [코드베이스 패턴]이 명시한 prefix·exact 심볼. 래퍼 매크로(TRY/CATCH 계열), 에러 반환, 로깅, 디버그, 반환 코드 상수 등.
+
+  ── 2. DB·IO·데이터 채널 접근 ──
+  다음 중 하나라도 해당하면 함수 호출 아님 → 제외:
+  - [코드베이스 패턴]이 DB/IO 접근으로 분류한 심볼
+  - 호출 이름에 DB/IO 의미가 명백한 키워드 포함 (dbio, sql, query, publish, consume, send, recv, http, rest, kafka, redis 등)
+  - 1번째 인자가 테이블명·SQL·URL·토픽·파일경로 같은 비-식별자 리터럴
+
+  ── 3. 언어 표준 라이브러리 ──
+  - 로깅: log.info, logger.debug, System.out.println, printf, fprintf, syslog
+  - 문자열: toString, substring, trim, toLowerCase, toUpperCase, strlen, strcpy, strncpy, strncmp, strcmp, sprintf, snprintf
+  - 컬렉션·스트림: stream, filter, map, collect, forEach, orElse, orElseThrow, list.add, list.get, list.size, map.put, map.get, set.contains
+  - 타입 변환: Integer.parseInt, Long.valueOf, String.valueOf, Double.parseDouble, atoi, atol, atof, strtol
+  - 메모리·유틸: memset, memcpy, malloc, free, calloc, realloc, sizeof
+  - 수학: Math.abs, Math.max, Math.min, abs, pow, sqrt
+  - 어서션: assert, Assert.*, Objects.requireNonNull
+
+  ── 4. 에러·로깅·디버그 전용 호출 ──
+  인자가 에러 코드·메시지 문자열·상수뿐인 호출 (에러 반환, 로깅, 메트릭 기록 등).
+
+  ── 5. 조건식 내 판별 함수 ──
+  if/while 조건에서 null 체크, 타입 체크, 문자열 비교 등 부울 반환 유틸:
+  isEmpty, isNull, isBlank, isNotNull, instanceof, equals, compareTo 등.
+
+  ── 6. 중복 ──
+  같은 범위 내 동일 호출은 한 번만.
+
+  [매크로 래퍼 중첩 처리]
+  래퍼 매크로(TRY/CATCH/ASSERT 계열)가 **실제 함수 호출을 감싸고 있으면**:
+  → 래퍼 무시, 안쪽 함수만 추출.
+  안쪽이 리터럴·상수·에러코드뿐이면 → 전체 제외.
+
+  예: MACRO( real_function(arg) ) → function_name = "real_function"
+  예: MACRO( ERROR_CODE, "message" ) → 제외
+
+  [동적 dispatch 처리]
+  [코드베이스 패턴]이 dispatcher로 명시한 wrapper:
+  → wrapper 이름 무시, 1번째 string literal = function_name.
+  → literal이 변수면 추출 불가 → 제외.
+  ⚠ wrapper가 DB/IO 접근이면 dispatch 적용하지 않고 제외.
+
+  예: dispatcher("target_module", &io) → function_name = "target_module"
+  예: db_call("table_select", &out) → DB 접근 → 제외
 
   {% if language == "C" %}
-  ── C 언어 ──
-  클래스/모듈 구분 없이 함수명만 추출. obj_name은 항상 "".
+  [C 언어 규칙]
+  클래스/모듈 구분 없음. obj_name 항상 "".
   - func_name(args) → obj_name="", function_name="func_name"
-  - svc->handler(args) → obj_name="", function_name="handler"
-
+  - ptr->handler(args) → obj_name="", function_name="handler"
   {% else %}
-  ── Java/OOP 언어 ──
-  - target.method() → obj_name="target", function_name="method"
+  [OOP 언어 규칙]
+  - target.method(args) → obj_name="target", function_name="method"
   - 객체 없는 호출 → obj_name="this", function_name="method"
-  - 체이닝: 비즈니스 함수만 추출 (표준 라이브러리 체인은 제외)
-    예: userRepository.findById(id).orElseThrow() → obj_name="userRepository", function_name="findById"만 추출
-
+  - 체이닝: 첫 번째 비즈니스 메서드만 추출 (표준 라이브러리 체인 전체 제외)
+    예: userRepo.findById(id).orElseThrow() → obj_name="userRepo", function_name="findById"
+    예: list.stream().filter().collect() → 전체 제외 (표준 라이브러리)
+  - new ClassName() 생성자 → 제외
+  - super.method() → obj_name="super", function_name="method"
   {% endif %}
-
-  ── 🔑 매크로 래퍼 중첩 처리 ──
-  매크로 함수 패턴이 **실제 함수 호출을 감싸고 있으면**, 매크로는 무시하고 **안쪽 실제 함수만** 추출.
-  안쪽이 리터럴·상수뿐이면 전체 제외.
-
-  ── 🔑 동적 호출 wrapper (dynamic dispatch) ──
-  wrapper 함수가 **첫 인자로 string literal** 을 받아 그 이름의 진짜 함수/모듈을 호출하는 패턴이면,
-  wrapper 이름은 무시하고 **literal 안의 이름을 function_name 으로** 추출.
-  - C 동적 로딩 dispatcher: `dispatch("name", &io)` / `module_call("name", ...)` 등
-  - reflection invoke: `invokeMethod("name", args)` / `Method.invoke(obj, ...)` 등
-  - 함수 포인터 lookup table: `vtable["name"](args)` 등
-  → wrapper (`dispatch`/`module_call`/`invokeMethod` 등) = 무시, 첫 string literal = 진짜 function_name.
-  literal 이 변수로 들어와 동적 결정될 땐 추출 불가 → obj_name="", function_name="".
-
-  [코드베이스 패턴] 섹션의 dispatcher wrapper / 라이브러리 식별 신호 (헤더 / prefix / 대표 심볼) 가 명시되어 있으면 그것을 **우선 적용** — 새 케이스는 패턴이 알려준 대로.
-
-  제외 대상 (obj_name="", function_name=""로 출력):
-  - **[코드베이스 패턴] 의 "프레임워크 / 프로젝트 라이브러리" 그룹 심볼·prefix·헤더 매칭** — 1순위.
-  - 언어 표준 라이브러리 (별도 stdlib 목록 보유 — 자동 처리되지만 LLM 단계서도 안전하게 제외):
-    - 로깅: log.info, logger.debug, System.out.println, printf, fprintf
-    - 언어 내장: toString, hashCode, equals, stream, filter, map, collect, orElse, orElseThrow
-    - 컬렉션/문자열 내장: list.add, list.get, list.size, map.put, map.get, set.contains, substring, trim, toLowerCase
-    - 기본 타입 변환: Integer.parseInt, Long.valueOf, String.valueOf, atoi, atol
-  - 위 제외 대상·래퍼 외 **모든 함수는 반드시 추출** (진짜 비즈니스 로직만 뽑는 것이 목표)
-  - 동일 범위 내 중복 호출은 한 번만
 
   [EXAMPLE]
-  ── 올바른 추출 ──
+  ── 추출 O ──
   ✅ call_code="orderService.findAll()" → obj_name="orderService", function_name="findAll"
   ✅ call_code="validateInput(data)" → obj_name="this", function_name="validateInput"
-  ✅ call_code="db_plan_select(plan_id, &plan)" → obj_name="", function_name="db_plan_select" (C언어)
-  ✅ call_code="memset(&output, 0x00, sizeof(output))" → obj_name="", function_name="memset" (표준이지만 목록에 없으면 추출)
+  ✅ call_code="PFM_TRY( a000_main_proc(itf) )" → obj_name="", function_name="a000_main_proc" (래퍼 언래핑)
+  ✅ call_code="mpfm_dlcall(\"zapamcom10040\", &io)" → obj_name="", function_name="zapamcom10040" (dispatcher 언래핑, 패턴 명시된 경우)
 
-  ── 잘못된 추출 ──
-  ❌ call_code="list.stream().filter().collect()" → obj_name="list", function_name="stream"
-     → 언어 내장이므로 obj_name="", function_name=""
-  ❌ call_code="log.info('message')" → obj_name="log", function_name="info"
-     → 로깅이므로 obj_name="", function_name=""
-  ❌ call_code="a000_input_validation(itf)" → obj_name="", function_name=""
-     → 사용자 정의 함수인데 제외함. 반드시 추출해야 함: obj_name="", function_name="a000_input_validation"
+  ── 추출 X ──
+  ❌ call_code="log.info(\"message\")" → 로깅 → 제외
+  ❌ call_code="list.stream().filter().collect()" → 표준 라이브러리 → 제외
+  ❌ call_code="mpfmdbio(\"table_s0001\", &in, &out)" → DB 접근 → 제외
+  ❌ call_code="PFM_ERRC(ERR9, \"오류 메시지\")" → 에러 매크로 → 제외
+  ❌ call_code="memset(&buf, 0, sizeof(buf))" → 표준 라이브러리 → 제외
+  ❌ call_code="strncmp(a, \"03\", len)" → 조건식 비교 유틸 → 제외
 
-
-  [INPUT]
-
-  {% if codebase_pattern %}── [코드베이스 패턴 — 라이브러리 vs 사용자 정의 구분, dispatcher 래퍼, CRUD suffix 매핑 등 추출 기준]
-  {{ codebase_pattern }}
-  {% endif %}
-
-  {% for item in items %}
-  --- function {{ loop.index }} (function_id: {{ item.function_id }}) ---
-  {% for c in item.calls %}
-  - call_id: {{ c.call_id }}
-    call_code: {{ c.call_code }}
-  {% endfor %}
-  {% endfor %}
-
-
-  [OUTPUT]
+  [OUTPUT FORMAT]
   {
     "results": [
       {
@@ -101,8 +114,21 @@ prompt: |
       }
     ]
   }
-
   - results 순서·개수는 입력 items와 동일
   - 제외 대상은 obj_name="", function_name=""
-  - 같은 파일 내부 호출(객체 없음)은 obj_name="this"
-  - JSON만 출력. 코드펜스, 주석, 트레일링 콤마 금지
+  - 같은 파일 내부 호출(객체 없음)은 obj_name="this" (C언어는 obj_name="" 고정)
+  - JSON만 출력. 코드펜스·주석·트레일링 콤마 금지
+
+prompt: |
+  {% if codebase_pattern %}[코드베이스 패턴]
+  {{ codebase_pattern }}
+  {% endif %}
+
+  [INPUT]
+  {% for item in items %}
+  --- function {{ loop.index }} (function_id: {{ item.function_id }}) ---
+  {% for c in item.calls %}
+  - call_id: {{ c.call_id }}
+    call_code: {{ c.call_code }}
+  {% endfor %}
+  {% endfor %}

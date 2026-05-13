@@ -108,6 +108,9 @@ def _unwind_node_merge(label_str: str, key_field: str, prop_keys: List[str]) -> 
     label_str: ``"FUNCTION"`` 또는 ``"FUNCTION:METHOD"`` (caller 가 sub_label 결정).
     prop_keys: row.<key> 로 SET 할 속성 이름들. 각 prop 마다
     ``n.X = CASE WHEN row.X IS NOT NULL AND trim(toString(row.X)) <> '' THEN row.X ELSE n.X END``.
+
+    ⚠ RETURN n 필수 — client 의 ``result.graph()`` 는 RETURN 절이 있어야 노드를 반환.
+    빠지면 노드가 Neo4j 에 들어가도 프론트로 스트리밍되지 X (Nodes=[] 빈 그래프).
     """
     set_parts = [
         f"n.{p} = CASE WHEN row.{p} IS NOT NULL AND trim(toString(row.{p})) <> '' "
@@ -123,12 +126,14 @@ def _unwind_node_merge(label_str: str, key_field: str, prop_keys: List[str]) -> 
         return (
             head
             + f"ON CREATE SET {set_clause}, n.created_at = timestamp()\n"
-            + f"ON MATCH SET {set_clause}, n.updated_at = timestamp()"
+            + f"ON MATCH SET {set_clause}, n.updated_at = timestamp()\n"
+            + "RETURN n"
         )
     return (
         head
         + "ON CREATE SET n.created_at = timestamp()\n"
-        + "ON MATCH SET n.updated_at = timestamp()"
+        + "ON MATCH SET n.updated_at = timestamp()\n"
+        + "RETURN n"
     )
 
 
@@ -285,7 +290,7 @@ def build_function_queries(function_facts_list: List[FunctionFacts], node_kinds:
     return _emit_node_merges(grouped, "function_id", _FUNCTION_PROP_KEYS)
 
 
-_CONTAINER_PROP_KEYS = ["name", "type", "package_name", "annotations", "comment", "display_name", "intent"]
+_CONTAINER_PROP_KEYS = ["name", "type", "package_name", "annotations", "comment", "logical_name", "intent"]
 
 
 def build_module_queries(module_index: Dict[str, Any], lang: str) -> List[Dict[str, Any]]:
@@ -339,7 +344,7 @@ def _build_container_queries(
             "package_name": info.get("package_name") or "",
             "annotations":  info.get("annotations") or "",
             "comment":      info.get("comment") or "",
-            "display_name": info.get("display_name") or "",
+            "logical_name": info.get("logical_name") or info.get("display_name") or "",
             "intent":       info.get("intent") or "",
         })
     return _emit_node_merges(grouped, "fqn", _CONTAINER_PROP_KEYS)
@@ -406,7 +411,8 @@ def build_init_by_queries(edges: List[InitByEdge]) -> List[Dict[str, Any]]:
                 "UNWIND $rows AS row "
                 "MATCH (v {variable_id: row.vid}) WHERE v:VARIABLE OR v:CONSTANT "
                 "MATCH (s {variable_id: row.sid}) WHERE s:VARIABLE OR s:CONSTANT "
-                "MERGE (v)-[:INIT_BY]->(s)"
+                "MERGE (v)-[r:INIT_BY]->(s) "
+                "RETURN r"
             ),
             "params": {"rows": [{"vid": e.variable_id, "sid": e.init_source_id} for e in internal]},
         })
@@ -421,7 +427,8 @@ def build_init_by_queries(edges: List[InitByEdge]) -> List[Dict[str, Any]]:
                 "MATCH (v {variable_id: row.vid}) WHERE v:VARIABLE OR v:CONSTANT "
                 "MERGE (s:CONSTANT:EXTERNAL {variable_id: row.sid}) "
                 "ON CREATE SET s.name = row.name, s.created_at = timestamp() "
-                "MERGE (v)-[:INIT_BY]->(s)"
+                "MERGE (v)-[r:INIT_BY]->(s) "
+                "RETURN r"
             ),
             "params": {"rows": ext_rows},
         })
@@ -486,7 +493,8 @@ def build_var_refs_queries(refs: List[tuple]) -> List[Dict[str, Any]]:
             "UNWIND $rows AS row\n"
             "MATCH (f:FUNCTION {function_id: row.sid})\n"
             "MATCH (v {variable_id: row.vid}) WHERE v:VARIABLE OR v:CONSTANT\n"
-            "MERGE (f)-[:REFERENCES]->(v)"
+            "MERGE (f)-[r:REFERENCES]->(v)\n"
+            "RETURN r"
         ),
         "params": {"rows": [{"sid": sid, "vid": vid} for sid, vid in refs]},
     }]
@@ -723,7 +731,8 @@ def build_package_hierarchy_queries(package_fqns: List[str]) -> List[Dict[str, A
         "MATCH (a:PACKAGE {fqn: row.fqn})\n"
         "MATCH (b:PACKAGE {fqn: row.parent_fqn})\n"
         "MERGE (a)-[r:BELONGS_TO_PACKAGE]->(b)\n"
-        "SET r.updated_at = timestamp()"
+        "SET r.updated_at = timestamp()\n"
+        "RETURN r"
     )
     return [{"query": query, "params": {"rows": rows}}]
 
@@ -745,7 +754,8 @@ def build_belongs_to_package_queries(module_index: Dict[str, Any]) -> List[Dict[
         "MATCH (a:MODULE {fqn: row.module_fqn})\n"
         "MATCH (b:PACKAGE {fqn: row.pkg_fqn})\n"
         "MERGE (a)-[r:BELONGS_TO_PACKAGE]->(b)\n"
-        "SET r.updated_at = timestamp()"
+        "SET r.updated_at = timestamp()\n"
+        "RETURN r"
     )
     return [{"query": query, "params": {"rows": rows}}]
 
@@ -778,7 +788,8 @@ def build_root_package_queries(
                 "MATCH (a:PACKAGE {fqn: row.fqn})\n"
                 "MATCH (b:PACKAGE {fqn: 'root'})\n"
                 "MERGE (a)-[r:BELONGS_TO_PACKAGE]->(b)\n"
-                "SET r.updated_at = timestamp()"
+                "SET r.updated_at = timestamp()\n"
+                "RETURN r"
             ),
             "params": {"rows": pkg_rows},
         })
@@ -799,7 +810,8 @@ def build_root_package_queries(
                 "MATCH (a:MODULE {fqn: row.fqn})\n"
                 "MATCH (b:PACKAGE {fqn: 'root'})\n"
                 "MERGE (a)-[r:BELONGS_TO_PACKAGE]->(b)\n"
-                "SET r.updated_at = timestamp()"
+                "SET r.updated_at = timestamp()\n"
+                "RETURN r"
             ),
             "params": {"rows": mod_rows},
         })
@@ -831,7 +843,8 @@ def build_has_function_queries(
                 "MATCH (a:MODULE {fqn: row.module_fqn})\n"
                 "MATCH (b:FUNCTION {function_id: row.function_id})\n"
                 "MERGE (a)-[r:HAS_FUNCTION]->(b)\n"
-                "SET r.updated_at = timestamp()"
+                "SET r.updated_at = timestamp()\n"
+                "RETURN r"
             ),
             "params": {"rows": has_func_rows},
         })
@@ -842,7 +855,8 @@ def build_has_function_queries(
                 "MATCH (a:PACKAGE {fqn: row.pkg_fqn})\n"
                 "MATCH (b:FUNCTION {function_id: row.function_id})\n"
                 "MERGE (a)-[r:BELONGS_TO_PACKAGE]->(b)\n"
-                "SET r.updated_at = timestamp()"
+                "SET r.updated_at = timestamp()\n"
+                "RETURN r"
             ),
             "params": {"rows": pkg_belongs_rows},
         })
@@ -864,7 +878,8 @@ def build_has_variable_queries(
             "MATCH (a:MODULE {fqn: row.module_fqn})\n"
             "MATCH (b:VARIABLE {variable_id: row.variable_id})\n"
             "MERGE (a)-[r:HAS_VARIABLE]->(b)\n"
-            "SET r.updated_at = timestamp()"
+            "SET r.updated_at = timestamp()\n"
+            "RETURN r"
         ),
         "params": {"rows": rows},
     }]
@@ -885,7 +900,8 @@ def build_has_member_queries(
             "MATCH (a:DATATYPE {fqn: row.module_fqn})\n"
             "MATCH (b:VARIABLE {variable_id: row.variable_id})\n"
             "MERGE (a)-[r:HAS_MEMBER]->(b)\n"
-            "SET r.updated_at = timestamp()"
+            "SET r.updated_at = timestamp()\n"
+            "RETURN r"
         ),
         "params": {"rows": rows},
     }]
@@ -1336,6 +1352,7 @@ def build_analysis_result_queries(
             "function_id": fid,
             "stereotype": stereotype,
             "summary": (data.get("summary") or "").strip(),
+            "logical_name": (data.get("logical_name") or "").strip(),
             "actor": (data.get("actor") or "").strip() or None,
         })
         if stereotype:
@@ -1419,13 +1436,14 @@ def build_analysis_result_queries(
     # ─────────────────────────────────────────────────────────────
     queries: List[Dict[str, Any]] = []
 
-    # FUNCTION 요약·stereotype 속성
+    # FUNCTION 요약·stereotype·logical_name 속성
     if function_rows:
         queries.append({
             "query": (
                 "UNWIND $rows AS row\n"
                 "MATCH (n:FUNCTION {function_id: row.function_id})\n"
-                "SET n.updated_at = timestamp(), n.stereotype = row.stereotype, n.summary = row.summary\n"
+                "SET n.updated_at = timestamp(), n.stereotype = row.stereotype, n.summary = row.summary,\n"
+                "  n.logical_name = CASE WHEN row.logical_name IS NOT NULL AND trim(toString(row.logical_name)) <> '' THEN row.logical_name ELSE n.logical_name END\n"
                 "RETURN n"
             ),
             "params": {"rows": function_rows},
@@ -1513,7 +1531,8 @@ def build_analysis_result_queries(
                     f"MATCH (f:FUNCTION {{function_id: row.function_id}})\n"
                     f"MATCH (f)-[:HAS_RULE {{local_id: row.from_rule_id}}]->(a:Rule)\n"
                     f"MATCH (f)-[:HAS_RULE {{local_id: row.to_rule_id}}]->(b:Rule)\n"
-                    f"MERGE (a)-[:{rel_type} {{function_id: row.function_id}}]->(b)"
+                    f"MERGE (a)-[r:{rel_type} {{function_id: row.function_id}}]->(b)\n"
+                    f"RETURN r"
                 ),
                 "params": {"rows": edges},
             })
@@ -1566,7 +1585,7 @@ def build_variable_summary_queries(summary_by_variable: Dict[str, Dict[str, Any]
 
 
 def build_module_summary_queries(summary_by_module: Dict[str, Dict[str, Any]], lang: str) -> List[Dict[str, Any]]:
-    """MODULE 노드에 summary·moduleStereotype 속성 및 언어별 레이블 업데이트 (fqn 기준). UNWIND 배치."""
+    """MODULE 노드에 summary·logical_name·moduleStereotype 속성 및 언어별 레이블 업데이트 (fqn 기준). UNWIND 배치."""
     onto = get_ontology()
 
     if not summary_by_module:
@@ -1576,7 +1595,12 @@ def build_module_summary_queries(summary_by_module: Dict[str, Dict[str, Any]], l
         module_st = (data.get("moduleStereotype") or "").strip()
         if module_st not in VALID_MODULE_STEREOTYPES:
             module_st = ""
-        rows.append({"fqn": fqn, "summary": data.get("summary", ""), "moduleStereotype": module_st})
+        rows.append({
+            "fqn": fqn,
+            "summary": data.get("summary", ""),
+            "logical_name": (data.get("logical_name") or "").strip(),
+            "moduleStereotype": module_st,
+        })
 
     queries = [{
         "query": (
@@ -1584,6 +1608,7 @@ def build_module_summary_queries(summary_by_module: Dict[str, Dict[str, Any]], l
             "MATCH (n:MODULE {fqn: row.fqn})\n"
             "SET n.updated_at = timestamp(),\n"
             "  n.summary = CASE WHEN row.summary IS NOT NULL AND trim(toString(row.summary)) <> '' THEN row.summary ELSE n.summary END,\n"
+            "  n.logical_name = CASE WHEN row.logical_name IS NOT NULL AND trim(toString(row.logical_name)) <> '' THEN row.logical_name ELSE n.logical_name END,\n"
             "  n.moduleStereotype = row.moduleStereotype\n"
             "RETURN n"
         ),

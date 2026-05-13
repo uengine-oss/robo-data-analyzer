@@ -23,17 +23,26 @@ logger = logging.getLogger(__name__)
 
 
 def extract_api_key(request: Request) -> str:
-    """API 키 추출 (헤더에서만 추출, 환경변수 폴백 없음)"""
+    """API 키 추출.
+
+    우선순위: OpenAI-Api-Key → Anthropic-Api-Key → X-LLM-Api-Key → 서버 ``settings.llm.api_key`` (.env).
+    헤더가 비어 있어도 서버에 ``LLM_API_KEY`` 가 있으면 분석 가능.
+    """
     api_key = (
-        request.headers.get("OpenAI-Api-Key") or
-        request.headers.get("Anthropic-Api-Key")
+        request.headers.get("OpenAI-Api-Key")
+        or request.headers.get("Anthropic-Api-Key")
+        or request.headers.get("X-LLM-Api-Key")
+        or settings.llm.api_key
     )
-    if not api_key:
+    key = (api_key or "").strip()
+    if not key:
         raise HTTPException(
             401,
-            "요청 헤더 누락: OpenAI-Api-Key 또는 Anthropic-Api-Key 헤더가 필요합니다."
+            "LLM API 키가 없습니다. 설정의 API Key를 입력하거나, "
+            "요청 헤더(OpenAI-Api-Key, Anthropic-Api-Key, X-LLM-Api-Key) 중 하나를 보내고, "
+            "서버에는 환경변수 LLM_API_KEY 를 설정하세요.",
         )
-    return api_key
+    return key
 
 
 def extract_locale(request: Request) -> str:
@@ -99,6 +108,11 @@ async def analyze_source_code(request: Request):
             )
         ),
         media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
     )
 
 

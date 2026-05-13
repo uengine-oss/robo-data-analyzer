@@ -33,7 +33,8 @@ from analyzer.strategy.framework.linking.agent.linking_tools import ToolResultCo
 
 logger = logging.getLogger(__name__)
 
-_BATCH_SIZE = settings.deep_agent.entity_batch_size
+# 임시 조치: DDL/entity_fqn 배치당 테이블 개수 (추후 settings.deep_agent.entity_batch_size / env 로 복원)
+_BATCH_SIZE = 3
 
 
 # 엔티티 시그널 — 언어/프레임워크 무관 (어노테이션, 상속 패턴)

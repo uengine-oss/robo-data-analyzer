@@ -50,7 +50,7 @@ async def collect_analysis_context(st: Any, client: Neo4jClient, orchestrator: A
     # ddl_context: schema 는 그래프에서 항상 생성, sample 은 catalog 활성 시만 부착.
     await _attach_table_context(ctx, st, client, orchestrator, rw_by_fn)
 
-    # module_intent / module_display_name: 모듈마다 1회 LLM 호출 (code_analysis 전).
+    # module_intent / logical_name: 모듈마다 1회 LLM 호출 (code_analysis 전).
     # 헤더 주석의 변경 이력·작성자 노이즈를 제거하고 1~3 문장 비즈니스 의도만 추출.
     intents = _collect_module_intents(st)
     ctx["module_intents_by_module_key"] = intents
@@ -142,14 +142,13 @@ def _collect_module_intents(st: Any) -> Dict[str, Dict[str, str]]:
             skip_count += 1
             continue
         intent = (result.get("module_intent") or "").strip()
-        display_name = (result.get("module_display_name") or "").strip()
-        if not (intent or display_name):
+        logical_name = (result.get("logical_name") or result.get("module_display_name") or "").strip()
+        if not (intent or logical_name):
             skip_count += 1
             continue
-        out[module_key] = {"intent": intent, "display_name": display_name}
-        # module_index entry 자체에 intent / display_name 주입 (다운스트림 가 lookup 편의)
+        out[module_key] = {"intent": intent, "logical_name": logical_name}
         info["intent"] = intent
-        info["display_name"] = display_name
+        info["logical_name"] = logical_name
         ok_count += 1
     logger.info(
         "[PHASE:3:MODULE_PRE] module_intent 수집 | ok=%d skip=%d total=%d",
@@ -163,9 +162,9 @@ async def _persist_module_intents_to_graph(
     st: Any,
     client: Neo4jClient,
 ) -> None:
-    """모듈 노드에 ``display_name`` / ``intent`` 속성 SET.
+    """모듈 노드에 ``logical_name`` / ``intent`` 속성 SET.
 
-    Phase 2 에서 모듈 노드는 이미 생성됐으므로 (display_name/intent 는 빈 값) 사후 SET.
+    Phase 2 에서 모듈 노드는 이미 생성됐으므로 (logical_name/intent 는 빈 값) 사후 SET.
     노드 매칭 키는 ``fqn``.
     """
     module_index = getattr(st, "module_index", None) or {}
@@ -179,7 +178,7 @@ async def _persist_module_intents_to_graph(
             continue
         rows.append({
             "fqn": fqn,
-            "display_name": rec.get("display_name") or "",
+            "logical_name": rec.get("logical_name") or "",
             "intent": rec.get("intent") or "",
         })
     if not rows:
@@ -187,11 +186,12 @@ async def _persist_module_intents_to_graph(
     query = (
         "UNWIND $rows AS row "
         "MATCH (m {fqn: row.fqn}) "
-        "SET m.display_name = row.display_name, m.intent = row.intent"
+        "SET m.logical_name = row.logical_name, m.intent = row.intent "
+        "RETURN m"
     )
     try:
         await client.execute_queries([{"query": query, "params": {"rows": rows}}])
-        logger.info("[PHASE:3:MODULE_PRE] 모듈 노드 display_name/intent SET | rows=%d", len(rows))
+        logger.info("[PHASE:3:MODULE_PRE] 모듈 노드 logical_name/intent SET | rows=%d", len(rows))
     except Exception as e:
         logger.warning(
             "[PHASE:3:MODULE_PRE] 모듈 노드 SET 실패 (계속 진행) | %s: %s",

@@ -43,7 +43,16 @@ system_prompt: |
 
 
   ─────────────────────────────
-  [2] STEREOTYPE — moduleStereotype
+  [2] LOGICAL_NAME — 모듈 논리명
+  ─────────────────────────────
+  - 멤버 요약 전체를 종합하여 이 모듈의 비즈니스 목적을 한국어 1줄로 표현.
+  - 코드 토큰(클래스명·메서드명·파일명) 그대로 노출 X — 비즈니스 용어로.
+  - 예: "결제 인증 모듈", "카드 한도 조회 서비스", "자동납부 실시간 전처리"
+  - module_intent 가 주어지면 참고하되, 멤버 요약 기반으로 더 정확하게 보완/갱신.
+
+
+  ─────────────────────────────
+  [3] STEREOTYPE — moduleStereotype
   ─────────────────────────────
   {% if kind == "FILE" %}
   C 소스파일: Module(기본) / Service / Repository / Controller / Util / Config / Scheduler / Client / Gateway
@@ -55,7 +64,7 @@ system_prompt: |
 
 
   ─────────────────────────────
-  [3] Actor 동의어 통합 (unified_actors)
+  [4] Actor 동의어 통합 (unified_actors)
   ─────────────────────────────
   - 통합: 같은 모듈 CRUD 함수의 다른 Actor / 한국어·영어 표기 차이 / 유사 의미.
   - 비통합: system/scheduler 와 사람 역할 / 명확한 권한 구분.
@@ -89,5 +98,6 @@ prompt: |
 
   [OUTPUT]  JSON 만. 코드펜스·백틱 X.
   {"summary": "[핵심]/[흐름]/[쓰기]/[읽기] 4 섹션 — 빈 섹션 생략",
+   "logical_name": "모듈 논리명 — 비즈니스 관점 한국어 1줄 (예: '결제 인증 모듈', '자동납부 실시간 전처리')",
    "moduleStereotype": "스테레오타입",
    "unified_actors": {}}

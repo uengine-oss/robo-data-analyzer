@@ -333,6 +333,7 @@ def _analyze_code_node(
     questions: List[Dict[str, Any]] = []
     stereotype = ""
     actor = ""
+    logical_name = ""
 
     if api_key:
         analysis = _invoke_analysis_llm(
@@ -351,6 +352,7 @@ def _analyze_code_node(
         if analysis:
             summary = analysis.get("summary") or summary
             actor = analysis.get("actor") or ""
+            logical_name = (analysis.get("logical_name") or "").strip()
             dependencies = list(analysis.get("dependencies") or [])
             table_insights = list(analysis.get("tableInsights") or [])
             rules = list(analysis.get("rules") or [])
@@ -367,6 +369,7 @@ def _analyze_code_node(
     data = {
         "stereotype": stereotype,
         "summary": summary,
+        "logical_name": logical_name,
         "actor": actor,
         "fqn": m.fqn,
         "dependencies": dependencies,
@@ -673,8 +676,8 @@ def _invoke_module_summary_llm(
     api_key: str,
     locale: str = "ko",
     kind: Optional[str] = None,
-) -> Tuple[Optional[str], str, Dict[str, List[str]]]:
-    """module_summary_batch 규칙 실행 → (모듈 요약, moduleStereotype, unified_actors) 반환.
+) -> Tuple[Optional[str], str, str, Dict[str, List[str]]]:
+    """module_summary_batch 규칙 실행 → (모듈 요약, logical_name, moduleStereotype, unified_actors) 반환.
 
     api_key 누락은 service 진입점 검증 누락이라 raise. items 비어있으면 빈 결과 반환.
     """
@@ -683,7 +686,7 @@ def _invoke_module_summary_llm(
             f"_invoke_module_summary_llm: api_key 누락 (module_fqn={module_fqn})"
         )
     if not items:
-        return None, "", {}
+        return None, "", "", {}
     inputs: Dict[str, Any] = {
         "module_fqn": module_fqn,
         "items": items,
@@ -707,10 +710,11 @@ def _invoke_module_summary_llm(
             f"module_analysis LLM 결과가 dict 가 아님: {type(result).__name__} (module_fqn={module_fqn})"
         )
     summary = result.get("summary") or None
+    logical_name = (result.get("logical_name") or "").strip()
     raw_module_st = (result.get("moduleStereotype") or "").strip()
     module_stereotype = raw_module_st if raw_module_st in VALID_MODULE_STEREOTYPES else ""
     unified_actors = result.get("unified_actors") or {}
-    return summary, module_stereotype, unified_actors
+    return summary, logical_name, module_stereotype, unified_actors
 
 
 def run_module_summary(
@@ -764,20 +768,17 @@ def run_module_summary(
             summary = f"{f.name}; field"
         by_class.setdefault(ck, []).append({"name": f.name, "summary": summary})
 
-    def _summarize_one_module(module_key: str, items: List[Dict[str, Any]]) -> Tuple[str, str, str, Dict[str, List[str]]]:
+    def _summarize_one_module(module_key: str, items: List[Dict[str, Any]]) -> Tuple[str, str, str, str, Dict[str, List[str]]]:
         """단일 모듈 요약 — Map-Reduce 패턴.
 
-        1) 모듈 항목을 max_batch_token 단위 청크로 분할
-        2) Map: 각 청크를 병렬로 LLM 부분 요약 (서로 의존성 없음)
-        3) Reduce: 부분 요약이 여러 개면 한 번 더 LLM으로 통합 요약
+        Returns: (module_fqn, summary, logical_name, module_stereotype, unified_actors)
         """
         module_fqn = module_key
         if not items:
-            return module_fqn, "", "", {}
+            return module_fqn, "", "", "", {}
         module_intent = _get_module_intent(module_intent_index, module_key)
         module_kind = key_to_kind.get(module_key)
 
-        # 토큰 기반 청크 분할
         chunks: List[List[Dict[str, Any]]] = []
         current: List[Dict[str, Any]] = []
         current_tokens = 0
@@ -793,9 +794,6 @@ def run_module_summary(
         if current:
             chunks.append(current)
 
-        # api_key 부재는 위 진입점에서 raise — 여기서는 LLM 호출 보장됨.
-
-        # Map: 각 청크 독립 LLM 부분 요약 병렬 실행
         def _summarize_chunk(chunk: List[Dict[str, Any]]):
             return _invoke_module_summary_llm(
                 module_fqn, chunk, module_intent,
@@ -809,22 +807,22 @@ def run_module_summary(
                 partial_results = list(inner.map(_summarize_chunk, chunks))
 
         # Reduce: 부분 요약 통합
-        partial_summaries = [s for s, _, _ in partial_results if s]
-        module_stereotype = next((st for _, st, _ in partial_results if st), "")
+        partial_summaries = [s for s, _ln, _st, _ua in partial_results if s]
+        logical_name = next((ln for _s, ln, _st, _ua in partial_results if ln), "")
+        module_stereotype = next((st for _s, _ln, st, _ua in partial_results if st), "")
         all_unified_actors: Dict[str, List[str]] = {}
-        for _, _, chunk_unified in partial_results:
+        for _s, _ln, _st, chunk_unified in partial_results:
             for rep, syns in (chunk_unified or {}).items():
                 all_unified_actors.setdefault(rep, []).extend(syns)
 
         if len(partial_summaries) <= 1:
             final_summary = partial_summaries[0] if partial_summaries else ""
         else:
-            # 부분 요약들을 items 형태로 묶어 1회 통합 호출
             merge_items = [
                 {"name": f"part_{i + 1}", "summary": s}
                 for i, s in enumerate(partial_summaries)
             ]
-            final_summary, merged_st, merged_unified = _invoke_module_summary_llm(
+            final_summary, merged_ln, merged_st, merged_unified = _invoke_module_summary_llm(
                 module_fqn, merge_items, module_intent,
                 prev_summary=None, api_key=api_key, locale=locale, kind=module_kind,
             )
@@ -836,12 +834,14 @@ def run_module_summary(
                 raise RuntimeError(
                     f"module_analysis 통합 요약 실패 (module_fqn={module_fqn}): 통합 LLM 이 빈 summary 반환"
                 )
+            if merged_ln:
+                logical_name = merged_ln
             if merged_st:
                 module_stereotype = merged_st
             for rep, syns in (merged_unified or {}).items():
                 all_unified_actors.setdefault(rep, []).extend(syns)
 
-        return module_fqn, final_summary, module_stereotype, all_unified_actors
+        return module_fqn, final_summary, logical_name, module_stereotype, all_unified_actors
 
     _CLASS_BATCH_SIZE = 5
     total_yielded = 0
@@ -854,18 +854,27 @@ def run_module_summary(
                 for ck, items in by_class.items()
             }
             for future in as_completed(futures):
-                # Fail-Fast: 실패 시 상위로 전파 (module summary 중 하나라도 실패하면 분석 중단)
-                module_fqn, summary, module_stereotype, unified = future.result()
+                module_fqn, summary, logical_name, module_stereotype, unified = future.result()
                 total_yielded += 1
-                batch[module_fqn] = {"summary": summary, "moduleStereotype": module_stereotype, "unified_actors": unified}
+                batch[module_fqn] = {
+                    "summary": summary,
+                    "logical_name": logical_name,
+                    "moduleStereotype": module_stereotype,
+                    "unified_actors": unified,
+                }
                 if len(batch) >= _CLASS_BATCH_SIZE:
                     yield batch
                     batch = {}
     else:
         for module_key, items in by_class.items():
-            module_fqn, summary, module_stereotype, unified = _summarize_one_module(module_key, items)
+            module_fqn, summary, logical_name, module_stereotype, unified = _summarize_one_module(module_key, items)
             total_yielded += 1
-            batch[module_fqn] = {"summary": summary, "moduleStereotype": module_stereotype, "unified_actors": unified}
+            batch[module_fqn] = {
+                "summary": summary,
+                "logical_name": logical_name,
+                "moduleStereotype": module_stereotype,
+                "unified_actors": unified,
+            }
             if len(batch) >= _CLASS_BATCH_SIZE:
                 yield batch
                 batch = {}
