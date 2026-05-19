@@ -3,18 +3,63 @@ system: |
 
   주어진 프로시저들의 summary 를 종합해 패키지 전체의 의미를 추출.
 
-  ## summary
+  ## 절대 규칙
 
-  - **패키지 영역**: 한 문장.
-  - **주요 책임**: 프로시저들의 역할 종합.
+  1. **프로시저명·변수명 X**. 패키지 차원 흐름.
+  2. **코드 토큰 그대로 X**. 패키지명·프로시저명 노출 X — 비즈니스 용어.
+  3. **추측 X**. 멤버 summary 에 안 보이는 책임 추가 X.
+  4. **마크다운 헤딩·리스트 기호 X**. 섹션 라벨만.
+  5. **"이상" ≠ "초과" 정확히**.
 
-  ## module_stereotype
+  ---
 
-  예: "BatchProcessing" / "MetadataService" / "TriggerLogic" / "ReportGenerator".
+  ## [1] summary — 4 섹션 마크다운 (자르기 X)
 
-  ## 출력
+  4 섹션 라벨 (`[핵심]` `[흐름]` `[쓰기]` `[읽기]`) 로 분리. 빈 섹션 생략.
 
-  ``ModuleSummaryOutput``.
+  - `[핵심]` 이 패키지가 무엇을 하는지 1 줄 (사용자 친화).
+  - `[흐름]` 패키지 내 단계 / 핵심 분기 / 도메인 코드값 / 상태 전이. 멤버들 종합해 패키지 차원.
+    - 도메인 값 + 의미 (예: "정산상태 ('OPEN'=마감전 / 'CLOSED'=확정)").
+    - 프로시저명 X — 패키지 차원 흐름.
+  - `[쓰기]` 이 패키지가 만지는 INSERT/UPDATE/DELETE/MERGE 테이블 (멤버 누적).
+  - `[읽기]` SELECT 테이블 (누적).
+
+  ---
+
+  ## [2] logical_name — 패키지 논리명
+
+  - 멤버 요약 종합 → 패키지의 비즈니스 목적 한국어 한 줄.
+  - 코드 토큰 X — 비즈니스 용어.
+  - 예: "정산 마감 처리 패키지", "거래 이력 집계 배치".
+
+  ---
+
+  ## [3] module_stereotype — 실제 동작 기준
+
+  허용 풀: BatchProcessing / MetadataService / TriggerLogic / ReportGenerator /
+  DataMigration / Validation / Aggregation / Cleanup / Utility.
+
+  - BatchProcessing: 배치 / 대량 데이터 처리.
+  - MetadataService: 마스터 / 코드 / 메타데이터 조회·갱신.
+  - TriggerLogic: 트리거 / 이벤트 반응.
+  - ReportGenerator: 집계·통계·리포트.
+  - DataMigration: 마이그레이션·동기화.
+  - Validation: 검증 전용.
+  - Aggregation: 집계 함수.
+  - Cleanup: 삭제·정리 작업.
+
+  ---
+
+  ## [4] unified_actors
+
+  - 통합: 같은 패키지의 actor 한국어·영어 표기 차이 / 유사 의미.
+  - 비통합: "정산담당자" vs "야간배치" 처럼 명확히 다른 역할.
+
+  ---
+
+  ## 형식 강제
+
+  `ModuleSummaryOutput` Pydantic 강제.
 
 user_template: |
   package_id: {module_id}
@@ -23,4 +68,4 @@ user_template: |
   member_procedures:
   {member_functions}
 
-  ModuleSummaryOutput 출력.
+  ▸ ModuleSummaryOutput 출력 — summary / logical_name / module_stereotype / unified_actors.

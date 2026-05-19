@@ -63,7 +63,26 @@ def _is_skipped(p: Path) -> bool:
 
 @tool
 def ls(path: str) -> str:
-    """디렉토리 안 항목 목록 (DIR / FILE 라벨 포함)."""
+    """디렉토리 안 항목 목록 — 폴더 의미로 가설 형성에 사용.
+
+    **언제 사용**:
+    - Profile Agent: 첫 호출 권장. `mapper/` `dao/` `repository/` `entity/` `sql/`
+      `include/` 같은 폴더명이 프레임워크 / DB 접근 패턴 가설로 직결.
+    - 가설을 좁히려는 하위 디렉토리 탐색 (`<project_root>/src/main/java` 등).
+
+    **인자**:
+    - `path`: user message 의 `project_root` 절대경로 그대로. 또는 그 하위 경로.
+      Windows / POSIX 절대경로 모두 OK. 시스템 표준 경로 (`/`, `/home`, `/app`) 추측 금지.
+
+    **결과 형식**:
+    - 한 줄당 `DIR  <name>` 또는 `FILE <name>`.
+    - 최대 500개. 빌드/캐시 디렉토리 (`node_modules` / `.git` / `__pycache__` /
+      `.venv` / `target` / `dist` 등) 는 자동 skip.
+
+    **실패 응답**:
+    - `NOT_FOUND: <path>` — 경로 존재 X (대개 user message 의 project_root 무시하고 추측).
+    - `NOT_A_DIR: <path>` — 파일 경로 줬을 때.
+    """
     p = _resolve_root(path)
     if not p.exists():
         return f"NOT_FOUND: {path}"
@@ -80,7 +99,27 @@ def ls(path: str) -> str:
 
 @tool
 def glob_search(pattern: str, base: str = ".") -> str:
-    """glob 패턴으로 파일 경로 검색 (최대 200 개). 빌드/캐시 디렉토리는 skip."""
+    """glob 패턴으로 파일 경로만 검색 (본문 X).
+
+    **언제 사용**:
+    - 확장자별 파일군 파악 (`**/*.java` / `**/*.xml` / `**/*.sql` / `src/**/*.py`).
+    - 특정 파일명 패턴 찾기 (`**/*Repository*.java` / `**/Dao*.kt`).
+    - mapper / config / yaml 파일 위치 확인 (`**/mapper/**/*.xml` / `**/*application*.yml`).
+
+    **인자**:
+    - `pattern`: glob 패턴 (`**/*.ext` 형태). 절대경로 X — 패턴은 상대 형식. Drive letter
+      (`C:`) 자동 제거. 빈 패턴이면 `*` 로 fallback.
+    - `base`: 검색 시작 디렉토리. user message 의 `project_root` 절대경로 그대로.
+
+    **결과 형식**:
+    - 한 줄당 절대경로 1개. 최대 200개.
+    - 빌드/캐시 디렉토리 자동 skip.
+
+    **실패 응답**:
+    - `NOT_FOUND: <base>` — base 경로 존재 X.
+    - `INVALID_GLOB: '<pattern>' (...)` — 패턴 문법 오류.
+    - `NO_MATCHES` — 매칭 파일 0개. 다른 확장자 / 변형 패턴 시도.
+    """
     base_path = _resolve_root(base)
     glob_pat = _normalize_glob_pattern(pattern)
     if not base_path.exists():
@@ -101,9 +140,32 @@ def glob_search(pattern: str, base: str = ".") -> str:
 
 @tool
 def grep(pattern: str, path_glob: str = "**/*", base: str = ".") -> str:
-    """정규식으로 파일 내용 검색 (최대 80 줄). 빌드/캐시 디렉토리는 skip.
+    """정규식으로 파일 내용 검색 — 매칭 라인 출력.
 
-    결과 형식: ``path:line:content``.
+    **언제 사용**:
+    - 의심 매크로 / 함수명 hit 수 확인 (≥ 3 hits 면 진짜 / 0 이면 이름 틀림).
+    - DB 접근 wrapper 확인 (`mpfm`, `delegator\\.`, `@Query`, `findBy`, `EntityManager` 등).
+    - 어노테이션 / 매핑 단서 (`@Entity`, `@Table\\(`, `<resultMap`, `@Mapper`).
+    - 식별자 변형 탐색 — 대소문자 / 부분 / 약어 (`Repository` → `Repo`).
+
+    **인자**:
+    - `pattern`: 정규식 (Python `re`). 단독 식별자 검색은 청크 폭발 가능 → 패턴 + 식별자 결합 권장.
+    - `path_glob`: 검색 대상 파일 패턴 (`**/*.java`). default `**/*` — 전체 파일.
+    - `base`: 검색 시작 디렉토리. user message 의 `project_root` 절대경로 그대로.
+
+    **결과 형식**:
+    - 한 줄당 `path:line:content`. 최대 80줄.
+    - 빌드/캐시 디렉토리 자동 skip.
+
+    **실패 응답**:
+    - `NOT_FOUND: <base>` — base 경로 존재 X.
+    - `INVALID_REGEX: ...` — 정규식 문법 오류.
+    - `INVALID_GLOB: '<pattern>' (...)` — path_glob 문법 오류.
+    - `NO_MATCHES` — 매칭 0건. 변형 검색 ≥ 3 회 후에만 0 결론.
+
+    **결과 활용**:
+    - hits 1~2 → 정확한 위치 확인 후 `read_file_range` 로 본문 확인.
+    - hits 80+ → 패턴이 너무 넓음. 더 좁은 정규식 / path_glob 으로 재검색.
     """
     base_path = _resolve_root(base)
     glob_pat = _normalize_glob_pattern(path_glob or "**/*")
@@ -139,9 +201,26 @@ def grep(pattern: str, path_glob: str = "**/*", base: str = ".") -> str:
 
 @tool
 def read_file(path: str, max_lines: int = 100) -> str:
-    """파일 앞쪽 N 줄 (default 100, 절대 한도 100). 절대경로 / 상대경로 모두 가능.
+    """파일 **앞쪽 N 줄** 읽기 (default 100, 절대 한도 100).
 
-    100 줄 초과 본문은 ``read_file_range(path, start, end)`` 로 정밀 정독.
+    **언제 사용**:
+    - 비함수 파일 (imports / `#include` / 매니페스트 / 설정) 앞부분 훑기.
+    - `pom.xml` / `package.json` / `build.gradle` / `Cargo.toml` 같은 manifest.
+    - 헤더 파일 (`*.h`) 의 함수 선언 / 매크로 정의.
+    - 설정 파일 (`application.yml` / `*.properties`) 의 키워드 단서.
+
+    **함수 본문은 X** — 큰 함수는 잘림. 함수 본문 정독은 `list_functions` 로 위치 확인 후
+    `read_file_range(path, start, end)` 사용.
+
+    **인자**:
+    - `path`: 파일 경로 (절대 / 상대 모두 가능).
+    - `max_lines`: 읽을 줄 수 (default 100, 절대 한도 100 — 큰 값 줘도 100 으로 강제 trim).
+
+    **결과 형식**: 줄바꿈으로 구분된 본문 (라인 번호 X).
+
+    **실패 응답**:
+    - `NOT_A_FILE: <path>` — 경로가 파일 아님 (디렉토리 / 존재 X).
+    - `READ_ERROR: ...` — I/O 오류.
     """
     p = _resolve_root(path)
     if not p.is_file():
@@ -162,15 +241,29 @@ def read_file(path: str, max_lines: int = 100) -> str:
 
 @tool
 def read_file_range(path: str, start: int, end: int) -> str:
-    """파일의 ``start ~ end`` 라인 정밀 읽기 (20 줄 한도).
+    """파일의 `start ~ end` 라인 **정밀 읽기** (20 줄 한도).
 
-    Anchor 라인 (이미 grep / list_functions 등으로 찾은 위치) 의 위아래 컨텍스트
-    정독용. 큰 본문은 ``read_file`` (100 줄 한도) 또는 grep 으로 우선 탐색.
+    **언제 사용**:
+    - Anchor 라인 (이미 `grep` / `list_functions` / `bundle_search_lines` 로 찾은 위치) 위아래
+      ~10 줄 컨텍스트 정독.
+    - 함수 본문 확인 — 매크로 호출 / 어노테이션 / 변수 할당 / SQL 리터럴 인용 가능 여부.
+    - Linking Agent: 한 case 당 본문 1 개 (≤ 30 줄). 다음 검색 전에 단서 등록 완료.
 
-    Args:
-        path: 파일 경로 (절대 / 상대 모두 가능).
-        start: 시작 라인 번호 (1-indexed, inclusive).
-        end: 종료 라인 번호 (inclusive). ``end - start > 20`` 이면 자동 trim.
+    **인자**:
+    - `path`: 파일 경로 (절대 / 상대 모두 가능).
+    - `start`: 시작 라인 (1-indexed, inclusive).
+    - `end`: 종료 라인 (inclusive). `end - start > 20` 이면 자동 trim.
+
+    **결과 형식**: 한 줄당 `<line_no>: <content>` (라인 번호 prefix). evidence `file:line` 인용에 그대로 사용 가능.
+
+    **실패 응답**:
+    - `NOT_A_FILE: <path>` — 경로가 파일 아님.
+    - `READ_ERROR: ...` — I/O 오류.
+
+    **운영 팁**:
+    - 묶음 적재 X — 한 본문 확인 후 다음 검색 호출. 본문 2 개 들고 다음 단계 가지 마.
+    - 함수 전체 본문이 필요하면 `list_functions(file)` 로 `start_line` / `end_line` 확인 후
+      범위 잡기. 큰 함수 (> 20 줄) 는 한 호출에 안 들어옴 — anchor 중심으로 좁히기.
     """
     p = _resolve_root(path)
     if not p.is_file():

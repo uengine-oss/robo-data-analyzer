@@ -3,27 +3,64 @@ system: |
 
   ## 입력
 
-  ``{function_id: actor_string}`` mapping.
+  `{function_id: actor_string}` mapping.
 
-  ## 작업
+  ---
 
-  - 동의어 묶기 (예: "결제처리자" / "결제담당자" / "PG처리" → 하나의 actor).
-  - 명확한 actor 만 살림. 모호한 빈 문자열은 제외.
+  ## 절대 규칙
 
-  ## actor_id
+  1. **함수 요약 근거 기반 통합**. 같은 시스템에서 같은 종류의 사용자 작업인지 함수 요약으로 확인.
+  2. **모호한 빈 문자열 제외**. actor 가 `""` 인 함수는 클러스터링 대상 X.
+  3. **system / scheduler 와 사람 역할 분리**. 자동 처리 주체 (system / 배치) 와 사람 역할은 절대 통합 X.
+  4. **명확한 권한 구분 분리**. 인증·권한·별도 인터페이스 근거가 함수 요약에 보이면 비통합.
+  5. **애매하면 통합**. 근거 없으면 통합. 대표명은 가장 많이 쓰인 이름.
 
-  정규화된 짧은 한국어 토큰 (snake_case, ≤ 25자).
+  ---
 
-  ## display_name
+  ## 판단 순서
 
-  사용자에게 보일 이름 (예: "결제처리자").
+  1. 각 actor 의 함수 요약을 읽고, 같은 시스템에서 같은 종류의 작업인지 확인.
+  2. 역할 구분 근거 (인증·권한·별도 인터페이스) 가 함수 요약에 보이는지 확인.
+  3. 근거 없으면 통합. 근거 있으면 비통합.
 
-  ## 출력
+  - 통합: 같은 역할인데 이름만 다름 / 한국어·영어 표기 차이 / 유사 의미.
+  - 비통합: system / scheduler vs 사람 / 명확한 권한 차이.
 
-  ``ActorMergeOutput`` — actors 배열.
+  ---
+
+  ## 출력 필드
+
+  - `actor_id`: 정규화된 짧은 한국어 토큰 (snake_case, ≤ 25자). 예: `payment_handler`, `operator`, `system`.
+  - `display_name`: 사용자에게 보일 이름 (한국어 자연어). 예: "결제처리자", "관리자", "시스템".
+  - `members`: 이 actor 로 통합된 원본 actor 문자열 리스트 (대표명은 미포함).
+
+  ---
+
+  ## 예시
+
+  입력:
+  ```
+  [operator] 모듈A: 데이터 등록/수정 관리
+  [admin] 모듈A: 데이터 삭제 관리
+  [user] 모듈B: 데이터 조회
+  [system] 모듈C: 배치 집계
+  ```
+
+  ✓ 출력:
+  - `operator` (display: "운영자", members: ["admin", "user"]) — 같은 사람 작업, 권한 구분 근거 없음.
+  - `system` (display: "시스템", members: []) — 자동 배치, 사람과 별개.
+
+  ✗ 잘못:
+  - operator 에 system 포함 — 자동 처리 주체와 사람 역할 통합 금지.
+
+  ---
+
+  ## 형식 강제
+
+  `ActorMergeOutput` Pydantic — actors 배열.
 
 user_template: |
   function_actors:
   {function_actors_json}
 
-  ActorMergeOutput 출력.
+  ▸ ActorMergeOutput 출력 — actors 배열 (actor_id / display_name / members).

@@ -29,20 +29,33 @@ _MAX_FUNCTIONS = 50
 
 @tool
 def list_functions(file: str) -> str:
-    """파일 안 함수/메서드 목록 — tree-sitter 파서 사용 (정확).
+    """파일 안 함수 / 메서드 목록 — tree-sitter 파서로 정확 추출.
 
-    Plan §4 M2 명세: ``[{name, signature, start_line, end_line}]`` JSON 반환.
-    최대 50 개 (한도 초과 시 앞쪽 50 개만).
+    **언제 사용**:
+    - 본문보다 토큰 효율 ×5~×10 — 함수 이름 / 시그니처만 알면 충분할 때.
+    - 함수명 패턴 관찰 (`mpfm_*` / `findBy*` / `xx_validation`).
+    - `read_file_range(file, start_line, end_line)` 의 라인 범위 산출.
+    - DB 접근 의심 함수 식별 (signature 의 인자 타입 / 반환 타입 단서).
 
-    tree-sitter 미지원 언어 / 미설치 환경 = ``NO_FUNCTIONS`` 또는 빈 list.
-    Profile Agent 가 다른 도구 (``read_file_range`` / ``grep``) 로 대체 가능.
+    **인자**:
+    - `file`: 파일 경로 (절대 / 상대 모두 가능).
 
-    Args:
-        file: 파일 경로.
+    **결과 형식** (JSON 문자열, 최대 50개):
+    ```json
+    [
+      {"name": "save", "signature": "save(Order order)", "start_line": 42, "end_line": 87},
+      ...
+    ]
+    ```
 
-    Returns:
-        JSON 문자열 — ``[{"name": str, "signature": str, "start_line": int, "end_line": int}]``.
-        파일 없음 = ``NOT_A_FILE: <path>``, 함수 없음 = ``NO_FUNCTIONS``.
+    **실패 응답**:
+    - `NOT_A_FILE: <path>` — 파일 아님.
+    - `NO_FUNCTIONS` — tree-sitter 미지원 언어 / 함수 0개 / 파서 오류. 대체 도구: `read_file` 또는 `grep`.
+
+    **운영 팁**:
+    - 함수 50개 초과 파일은 앞쪽 50개만 반환 → 더 좁히려면 `grep` 으로 함수 이름 패턴 검색 후 위치 확인.
+    - signature 의 인자명 / 타입을 도메인 단서로 활용 (`String entityName` 같은 1번째 인자가
+      테이블명 후보 자주).
     """
     p = Path(file)
     if not p.is_file():
@@ -80,9 +93,24 @@ def list_functions(file: str) -> str:
 
 @tool
 def list_skills() -> str:
-    """사용 가능한 SKILL 카탈로그 (``skills/`` 디렉토리 스캔).
+    """SKILL 카탈로그 — 프레임워크 / DB 접근 패턴 사전 (`skills/` 스캔).
 
-    각 SKILL.md 의 1줄 요약 (h1 헤더) 표시.
+    **언제 사용**:
+    - Profile Agent Phase B: 시그널 수집 후 SKILL 매칭 시도.
+    - 각 SKILL.md 의 description 의 트리거 시그널 ↔ 관찰값 비교.
+
+    **결과 형식**:
+    - 한 줄당 `<skill_name>: <h1 헤더 1 줄 요약>`.
+    - `_templates` 같은 메타 폴더 제외.
+
+    **실패 응답**:
+    - `NO_SKILLS_DIR` — skills/ 디렉토리 자체 없음.
+    - `NO_SKILLS` — 등록된 SKILL 0개.
+
+    **운영 팁**:
+    - description 시그널이 Phase A 관찰값과 **모두** 일치할 때만 매칭 — 부분 일치는 Phase C
+      직접 정규식 작성 신호.
+    - 후보 여러 개라도 가장 확실한 1개만 `read_skill` 로 본문 가져옴.
     """
     if not SKILLS_DIR.is_dir():
         return "NO_SKILLS_DIR"
@@ -106,7 +134,24 @@ def list_skills() -> str:
 
 @tool
 def read_skill(name: str) -> str:
-    """SKILL.md 본문 (yaml + 마크다운 전체)."""
+    """SKILL.md 본문 (yaml 프론트매터 + 마크다운).
+
+    **언제 사용**:
+    - `list_skills()` 로 매칭 후보 확정 후 본문 정독.
+    - SKILL.md 의 yaml `table_access_patterns` / `ddl_transform` 을 ProfileResult 에 그대로 차용.
+
+    **인자**:
+    - `name`: `list_skills()` 결과의 skill 이름.
+
+    **결과 형식**: SKILL.md 본문 그대로 (`---` yaml 헤더 + 마크다운 본문).
+
+    **실패 응답**:
+    - `SKILL_NOT_FOUND: <name>` — 이름 오탈자 또는 SKILL.md 누락.
+
+    **금지**:
+    - 본문을 자기 말로 풀어쓰기 X — yaml 패턴은 그대로 차용. 풀어쓰면 환각.
+    - 여러 SKILL 동시 read X — 가장 확실한 1개만.
+    """
     skill_dir = SKILLS_DIR / name
     md = skill_dir / "SKILL.md"
     if not md.is_file():

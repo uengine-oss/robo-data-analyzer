@@ -91,7 +91,31 @@ class ToolResultCollector:
 
 @tool
 async def ddl_lookup(table_name: str) -> str:
-    """DDL 테이블 + 컬럼 + PK + FK 조회 (Neo4j Table/Column)."""
+    """DDL 테이블 정확 매칭 — 컬럼 / PK / FK 조회.
+
+    **언제 사용** (Linking Agent):
+    - bundle_search 로 entity 후보 발견 후 DDL 실제 존재 확인.
+    - ddl_transform 변환 (camel_to_snake_upper 등) 적용 후 매칭 확인.
+    - FK 단서 확인 (이 테이블이 다른 테이블 어디로 FK 거는지).
+
+    **인자**:
+    - `table_name`: 테이블명 (대소문자 무시 — `toUpper` 비교).
+
+    **결과 형식** (JSON):
+    ```json
+    {
+      "db": "myapp", "schema": "PUBLIC", "name": "ORDER",
+      "description": "...",
+      "columns": [{"name": "ID", "dtype": "BIGINT", "pk": true, "nullable": false}, ...],
+      "fks": [{"from_col": "USER_ID", "to_table": "USERS", "to_col": "ID"}, ...]
+    }
+    ```
+
+    **실패 응답**:
+    - `NOT_FOUND: <name>` — DDL 에 없음. ddl_transform 의 다른 변형 / fallback_prefixes 시도.
+    - `GRAPH_CONTEXT_NOT_SET` — invoke 직전 `set_graph_context` 누락 (운영 버그).
+    - `QUERY_ERROR: ...` — Cypher 실행 오류.
+    """
     client = _graph_client_var.get()
     if client is None:
         return f"GRAPH_CONTEXT_NOT_SET: {table_name}"
@@ -117,7 +141,26 @@ async def ddl_lookup(table_name: str) -> str:
 
 @tool
 async def graph_get_callers(function_id: str, depth: int = 2) -> str:
-    """N홉 caller fqn 트리 (속성 X — fqn 만)."""
+    """N홉 caller **fqn 트리만** (노드 속성 X — 토큰 절감).
+
+    **언제 사용** (Linking Agent):
+    - wrapper / virtual_dispatch case 추적 — "이 함수를 누가 호출하는가?".
+    - REFER_TO 엣지 등록 시 어디 caller 에 붙일지 결정.
+    - Bottom-up 분석 의존성 확인.
+
+    **인자**:
+    - `function_id`: callee 함수 fqn.
+    - `depth`: N홉 (default 2, 최대 3). 3 초과 입력은 자동 3 으로 trim.
+
+    **결과 형식**:
+    - 한 줄당 fqn 경로 (`A → B → C`). 최대 50 라인.
+    - 노드 속성 (signature / file / line) X — 필요하면 별도 도구.
+
+    **실패 응답**:
+    - `NO_CALLERS` — caller 0개 (root / entry point).
+    - `GRAPH_CONTEXT_NOT_SET` — invoke 직전 컨텍스트 누락.
+    - `QUERY_ERROR: ...` — Cypher 오류.
+    """
     if depth > 3:
         depth = 3
     client = _graph_client_var.get()
@@ -138,7 +181,30 @@ async def graph_get_callers(function_id: str, depth: int = 2) -> str:
 
 @tool
 async def graph_get_callees(function_id: str, depth: int = 2) -> str:
-    """N홉 callee fqn 트리."""
+    """N홉 callee **fqn 트리만** (속성 X).
+
+    **언제 사용** (Linking Agent):
+    - wrapper_unwrap case — "이 함수가 안에서 어떤 함수를 호출하는가?"
+      안쪽 callee 본문이 SQL / DAO 호출 숨김.
+    - virtual_dispatch case — 구현 후보 식별 (depth=1 로 직접 호출만).
+    - Bottom-up 분석에서 callee summary 의존성 확인.
+
+    **인자**:
+    - `function_id`: caller 함수 fqn.
+    - `depth`: N홉 (default 2, 최대 3). 3 초과 자동 trim.
+
+    **결과 형식**:
+    - 한 줄당 fqn 경로 (`A → B → C`). 최대 50 라인.
+
+    **실패 응답**:
+    - `NO_CALLEES` — callee 0개 (leaf function).
+    - `GRAPH_CONTEXT_NOT_SET` — invoke 컨텍스트 누락.
+    - `QUERY_ERROR: ...` — Cypher 오류.
+
+    **운영 팁**:
+    - depth=1 부터 시작. 3 까지 가도 fqn 만이라 토큰 폭증 X.
+    - callee fqn 보고 본문 필요하면 `bundle_search_lines("<callee_name>")` 로 위치 확인 후 `read_file_range`.
+    """
     if depth > 3:
         depth = 3
     client = _graph_client_var.get()
@@ -159,7 +225,28 @@ async def graph_get_callees(function_id: str, depth: int = 2) -> str:
 
 @tool
 def graph_create_table_access(function_id: str, table: str, crud: str, evidence: str) -> str:
-    """READS/WRITES 엣지 등록 (collector 에 누적 — invoke 종료 후 메인이 flush)."""
+    """**Function → Table READS/WRITES 엣지 등록**.
+
+    **언제 사용** (Linking Agent):
+    - 본문에서 "DB 접근 패턴 + 대상 식별자" **직접 인용 가능** 할 때만.
+    - 추측 / 함수 이름 prefix / 컬럼명 일치 / 도메인 추측 등록 X — 추측이면 `resolved=False` + `diagnosis` 가 정답.
+    - 한 본문에서 여러 테이블 / 여러 op 보이면 **모두** 등록 (첫 매칭 후 멈추기 X).
+
+    **인자**:
+    - `function_id`: caller Function 의 fqn.
+    - `table`: 테이블 fqn (`db.schema.name` 또는 `name`). `ddl_lookup` 으로 DDL 매칭 확인 후 그 이름.
+    - `crud`: `READ` / `READS` / `WRITE` / `WRITES`. 자동 정규화 (READ → READS / WRITE → WRITES).
+    - `evidence`: `file:line` 형식. 인용 가능한 정확한 위치. 인용 불가면 등록 X.
+
+    **결과 응답**:
+    - `OK: <function_id> <crud> <table>` — collector 에 누적 (invoke 종료 후 메인이 flush).
+    - `INVALID_CRUD: <crud>` — 허용 값 외.
+    - `EDGE_COLLECTOR_NOT_SET` — invoke 컨텍스트 누락.
+
+    **금지**:
+    - DDL 매칭 안 된 테이블명 등록 (`ddl_lookup` 결과 `NOT_FOUND` 후 등록 X — 추측 환각).
+    - 같은 함수에 같은 테이블·op 중복 등록.
+    """
     collector = _edge_collector_var.get()
     if collector is None:
         return "EDGE_COLLECTOR_NOT_SET"
@@ -178,13 +265,27 @@ def graph_create_refer_to(
     target_key: str,
     evidence: str,
 ) -> str:
-    """REFER_TO 엣지 등록 — Function → SqlStatement / ConfigSection / UnresolvedRef.
+    """**Function → SqlStatement / ConfigSection / UnresolvedRef REFER_TO 엣지 등록**.
 
-    Args:
-        function_id: caller Function 의 fqn.
-        target_type: ``"sql_statement"`` / ``"config_section"`` / ``"unresolved"``.
-        target_key: 대상 식별자 (sql_key / config_key / unresolved key 등).
-        evidence: ``"file:line"`` 형식 출처.
+    **언제 사용** (Linking Agent):
+    - SQL 리터럴 / mapper namespace.id 참조 — `target_type="sql_statement"`.
+    - 설정 키 참조 (`application.yml` 의 `spring.datasource.*` 등) — `target_type="config_section"`.
+    - 추적 불가 (variable_alias / dynamic_sql / virtual_dispatch) — `target_type="unresolved"` 로 사람 검토 큐에 박음.
+
+    **인자**:
+    - `function_id`: caller Function 의 fqn.
+    - `target_type`: `sql_statement` / `config_section` / `unresolved` 중 1개.
+    - `target_key`: 대상 식별자 (mapper sql_key / config 키 / unresolved 단서 텍스트).
+    - `evidence`: `file:line` 형식 — 본문에서 인용 가능한 정확한 위치.
+
+    **결과 응답**:
+    - `OK: REFER_TO <function_id> → <target_type>/<target_key>` — collector 누적.
+    - `INVALID_TARGET_TYPE: <type>` — 허용 값 외.
+    - `EDGE_COLLECTOR_NOT_SET` — invoke 컨텍스트 누락.
+
+    **운영 팁**:
+    - 결정론 매칭 실패 + 추측 등록 대신 `unresolved` REFER_TO 로 박으면 사람 검토 큐 행 → 환각 회피.
+    - 같은 함수에 여러 SQL 참조 있으면 모두 등록 (sql_key 별 1 행).
     """
     collector = _edge_collector_var.get()
     if collector is None:
