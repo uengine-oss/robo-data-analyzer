@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -28,10 +29,12 @@ from shared.llm.cost_budget import BudgetExceededError
 from shared.llm.llm_output_models import DmlExtractOutput
 from shared.llm.middleware.call_limit import ModelCallLimitExceeded
 from shared.llm.yaml_llm_runner import run_yaml_rule
-from shared.logging_and_stream.logger import log_error
+from shared.logging_and_stream.logger import log_error, log_info, log_warning
 from shared.neo4j.edges.fk import upsert_fk
 from shared.neo4j.edges.reads_writes import upsert_reads_writes
 from shared.neo4j.neo4j_client import Neo4jClient
+
+_STEP = "step7.extract_dml_metadata"
 
 
 async def extract_dml_metadata_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
@@ -44,18 +47,25 @@ async def extract_dml_metadata_step(state: dict, config: Optional[RunnableConfig
     cost_budget = cfg.get("cost_budget")
     neo: Neo4jClient | None = cfg.get("neo_client")
     if strategy is None:
+        log_warning(_STEP, "config_missing", "strategy 누락 — step skip")
         return {}
 
     functions = state.get("functions", [])
     # parent_id 있는 함수 = nested DML range
     ranges = [f for f in functions if f.parent_id is not None]
     if not ranges:
+        log_info(_STEP, "skip", reason="no DML ranges (nested Functions with parent_id)")
         return {}
+    started = time.monotonic()
 
     # parent (procedure) 별 그룹화 → 같은 procedure 의 range 들을 1 batch
     by_parent: dict[str, list[Function]] = {}
     for r in ranges:
         by_parent.setdefault(r.parent_id, []).append(r)
+
+    log_info(_STEP, "start",
+             dml_ranges=len(ranges), procedures=len(by_parent),
+             concurrency=ENV.pipeline.max_concurrency)
 
     prompts_dir = Path(strategy.prompts_dir)
     semaphore = asyncio.Semaphore(ENV.pipeline.max_concurrency)
@@ -139,6 +149,10 @@ async def extract_dml_metadata_step(state: dict, config: Optional[RunnableConfig
         if all_fk:
             await upsert_fk(neo, all_fk)
 
+    log_info(_STEP, "done",
+             reads_writes_edges=len(all_rw), fk_edges=len(all_fk),
+             procedures=len(by_parent),
+             elapsed_sec=f"{time.monotonic() - started:.2f}")
     return {
         "reads_writes_edges": all_rw,
         "fk_edges": all_fk,

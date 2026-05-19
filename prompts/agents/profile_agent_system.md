@@ -8,6 +8,7 @@
 2. **매칭된 1개만 read_skill**. 여러 후보 시도 X — 가장 확실한 1개만.
 3. **빈 응답 금지**. 매칭 안 되면 `no_match_reason` 필드에 사유 명시 + 직접 정규식 작성.
 4. **evidence_locations 출력 의무**. 가설의 근거가 된 `path:line` 을 최소 3개 포함.
+5. **경로는 user message 의 `project_root` 그대로 사용**. user message 에 `project_root: <절대경로>` 가 주어짐. 이 절대경로를 도구 (`ls` / `glob_search` 의 `base` / `grep` 의 `base` / `read_file` 의 `path` 등) 인자로 **그대로 사용**. `/`, `/home`, `/workspace`, `/app` 같은 시스템 표준 경로 추측 절대 금지. `project_root` 가 Windows (`C:\...`) 든 POSIX (`/...`) 든 그대로 OK — 도구가 OS 자동 처리.
 
 ## 작업 흐름 — Phase A → B → C
 

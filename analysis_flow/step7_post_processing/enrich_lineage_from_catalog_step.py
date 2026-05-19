@@ -9,6 +9,7 @@ DBMS catalog ETL / 리니지 → ``ReadsWrites`` 엣지.
 """
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -16,17 +17,26 @@ import httpx
 from langchain_core.runnables import RunnableConfig
 
 from data_models.graph_edges import ReadsWrites
-from shared.logging_and_stream.logger import log_warning
+from shared.logging_and_stream.logger import log_info, log_warning
 from shared.neo4j.edges.reads_writes import upsert_reads_writes
 from shared.neo4j.neo4j_client import Neo4jClient
+
+_STEP = "step7.enrich_lineage_from_catalog"
 
 
 async def enrich_lineage_from_catalog_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
     cfg = (config or {}).get("configurable", {}) if isinstance(config, dict) else {}
     project = cfg.get("project")
     neo: Neo4jClient | None = cfg.get("neo_client")
-    if project is None or not getattr(project, "catalog_service_url", None):
+    if project is None:
+        log_warning(_STEP, "config_missing", "project 누락 — step skip")
         return {}
+    if not getattr(project, "catalog_service_url", None):
+        log_info(_STEP, "skip", reason="catalog_service_url 미설정 (Framework / catalog 미연동 정상)")
+        return {}
+
+    started = time.monotonic()
+    log_info(_STEP, "start", catalog_url=project.catalog_service_url, project=project.name)
 
     base_url = project.catalog_service_url.rstrip("/")
     headers = {}
@@ -100,6 +110,13 @@ async def enrich_lineage_from_catalog_step(state: dict, config: Optional[Runnabl
 
     if neo is not None and edges:
         await upsert_reads_writes(neo, edges)
+
+    catalog_only = sum(1 for e in edges if e.function_id.startswith("__catalog__:"))
+    log_info(_STEP, "done",
+             flows=len(data.get("flows") or []),
+             reads_writes_edges=len(edges),
+             catalog_only=catalog_only or None,
+             elapsed_sec=f"{time.monotonic() - started:.2f}")
     return {}
 
 

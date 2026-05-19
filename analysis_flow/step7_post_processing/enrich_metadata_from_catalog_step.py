@@ -13,27 +13,39 @@ catalog 서비스 endpoint 가정: ``GET /tables/<db>.<schema>.<name>/metadata``
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Optional
 
 import httpx
 from langchain_core.runnables import RunnableConfig
 
 from shared.config.env_catalog import ENV
-from shared.logging_and_stream.logger import log_warning
+from shared.logging_and_stream.logger import log_info, log_warning
 from shared.neo4j.neo4j_client import Neo4jClient
 from shared.neo4j.nodes.table import update_descriptions
+
+_STEP = "step7.enrich_metadata_from_catalog"
 
 
 async def enrich_metadata_from_catalog_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
     cfg = (config or {}).get("configurable", {}) if isinstance(config, dict) else {}
     project = cfg.get("project")
     neo: Neo4jClient | None = cfg.get("neo_client")
-    if project is None or not getattr(project, "catalog_service_url", None):
+    if project is None:
+        log_warning(_STEP, "config_missing", "project 누락 — step skip")
+        return {}
+    if not getattr(project, "catalog_service_url", None):
+        log_info(_STEP, "skip", reason="catalog_service_url 미설정 (Framework / catalog 미연동 정상)")
         return {}
 
     tables = state.get("tables", [])
     if not tables:
+        log_info(_STEP, "skip", reason="no tables")
         return {}
+    started = time.monotonic()
+    log_info(_STEP, "start",
+             catalog_url=project.catalog_service_url, tables=len(tables),
+             concurrency=ENV.pipeline.max_concurrency)
 
     base_url = project.catalog_service_url.rstrip("/")
     headers = {}
@@ -99,4 +111,9 @@ async def enrich_metadata_from_catalog_step(state: dict, config: Optional[Runnab
 
     if neo is not None and updates:
         await update_descriptions(neo, updates)
+
+    missed = sum(1 for r in results if r is None)
+    log_info(_STEP, "done",
+             tables=len(tables), updated=len(updates), catalog_miss=missed,
+             elapsed_sec=f"{time.monotonic() - started:.2f}")
     return {}
