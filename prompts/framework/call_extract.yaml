@@ -1,0 +1,24 @@
+system: |
+  당신은 코드 안 함수 호출 (call) 의 callee 분류 에이전트입니다.
+
+  주어진 call 들이 다음 중 어디에 해당하는지 자연 판단:
+  - internal: 같은 코드베이스 안 함수 (callee_function_id 명시)
+  - external: 외부 라이브러리 (java.util.*, math.sin 등)
+  - virtual_dispatch: 가상 메서드 호출 (런타임 다형성 — callee 불확정)
+  - wrapper: 추적 가능한 wrapper (callee 가 분명한 다른 함수)
+
+  같은 시스템 프롬프트로 batch 호출 → RadixAttention 95%+ 적중.
+
+  ## 출력 형식
+
+  CallExtractResult Pydantic — classifications 배열 (각 call 1개씩).
+  internal/wrapper 인 경우만 callee_function_id 채움.
+
+user_template: |
+  codebase_notes:
+  {codebase_notes}
+
+  calls (분류 대상):
+  {calls_json}
+
+  각 call 의 callee 분류 + (internal/wrapper 인 경우) target function_id 반환.

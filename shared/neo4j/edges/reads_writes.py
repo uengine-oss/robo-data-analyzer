@@ -1,0 +1,50 @@
+"""READS / WRITES 엣지 — Function → Table.
+
+Linking 1 단계 결정론 grep 또는 Linking Agent (stage3) 가 생성.
+relation 별로 다른 엣지 type 으로 박음.
+"""
+from __future__ import annotations
+
+from typing import Iterable
+
+from data_models.graph_edges import ReadsWrites
+from shared.neo4j.neo4j_client import Neo4jClient
+
+
+# relation 별 분기 — Cypher 의 dynamic relationship type 은 APOC 필요 →
+# 두 쿼리로 분리해서 호출.
+READS_QUERY = """
+UNWIND $items AS item
+MATCH (f:Function {function_id: item.function_id})
+MATCH (t:Table {fqn: item.table_fqn})
+MERGE (f)-[r:READS]->(t)
+SET r.evidence_file = item.evidence_file,
+    r.evidence_line = item.evidence_line
+"""
+
+WRITES_QUERY = """
+UNWIND $items AS item
+MATCH (f:Function {function_id: item.function_id})
+MATCH (t:Table {fqn: item.table_fqn})
+MERGE (f)-[r:WRITES]->(t)
+SET r.evidence_file = item.evidence_file,
+    r.evidence_line = item.evidence_line
+"""
+
+
+def _to_item(e: ReadsWrites) -> dict:
+    return {
+        "function_id": e.function_id,
+        "table_fqn": e.table_fqn,
+        "evidence_file": e.evidence_file,
+        "evidence_line": e.evidence_line,
+    }
+
+
+async def upsert_reads_writes(client: Neo4jClient, edges: Iterable[ReadsWrites]) -> None:
+    reads = [_to_item(e) for e in edges if e.relation == "READS"]
+    writes = [_to_item(e) for e in edges if e.relation == "WRITES"]
+    if reads:
+        await client.run_batch_unwind(READS_QUERY, reads)
+    if writes:
+        await client.run_batch_unwind(WRITES_QUERY, writes)

@@ -1,0 +1,25 @@
+name: byte-identical-check
+
+# 시스템 프롬프트 / yaml 변경 감지 — 캐시 깨짐 방지 보호장치.
+# prompts/ 아래 파일 SHA256 이 cli_scripts/prompt_hashes.json 과 다르면 빌드 실패.
+
+on:
+  pull_request:
+    paths:
+      - 'prompts/**'
+  push:
+    branches: [main]
+    paths:
+      - 'prompts/**'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python setup
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Byte-identical prompt check
+        run: python cli_scripts/check_byte_identical.py

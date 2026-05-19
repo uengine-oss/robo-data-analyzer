@@ -1,0 +1,109 @@
+"""FastAPI 분석 라우터 — 분석 시작 단일 엔드포인트.
+
+API key: ``X-LLM-Api-Key`` 헤더 단일 (Plan §4 M1: 4 단 분기 → 단일화).
+
+**폴링 / 컨트롤 엔드포인트 폐기 (Plan §4 M1)**:
+- ``/pipeline/status`` 폴링 ★ 폐기 — 진행 상태는 NDJSON 스트림 (``/analyze``).
+- ``/pipeline/control`` pause/resume/stop ★ 폐기 — LangGraph Checkpointer 가 흡수:
+  - pause = 클라이언트가 NDJSON stream 끊으면 자동 (MemorySaver 가 state 보존).
+  - resume = 같은 ``thread_id`` 로 ``/analyze`` 재호출.
+  - stop = 클라이언트가 다시 안 부르면 GC.
+
+엔드포인트 1 개::
+
+    POST /robo/analyze
+"""
+from __future__ import annotations
+
+import asyncio
+import os
+from pathlib import Path
+from typing import Optional
+
+from fastapi import APIRouter, Header, HTTPException
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+from analysis_pipelines import get_pipeline
+from data_models.project_and_run import Project
+from shared.config.env_catalog import ENV
+from shared.logging_and_stream.ndjson_stream import NDJSONStream
+from shared.workflow_runner.run_executor import execute_run
+
+
+router = APIRouter(prefix="/robo")
+
+
+class AnalyzeRequest(BaseModel):
+    """``/analyze`` 요청 모델."""
+    project_name: str
+    project_root: str
+    strategy: str                            # "framework" / "dbms"
+    ddl_dir: Optional[str] = None
+    has_xml_mapper: bool = False
+    locale: str = "ko"
+    thread_id: Optional[str] = None          # LangGraph Checkpointer thread (재개에 사용)
+    catalog_service_url: Optional[str] = None    # DBMS 만
+    catalog_api_key: Optional[str] = None        # DBMS 만
+
+
+def extract_api_key(x_llm_api_key: Optional[str] = Header(None)) -> str:
+    """``X-LLM-Api-Key`` 헤더 → API key (없으면 ``ENV.llm.api_key``)."""
+    key = x_llm_api_key or ENV.llm.api_key
+    if not key:
+        raise HTTPException(status_code=401, detail="Missing X-LLM-Api-Key header")
+    return key
+
+
+@router.post("/analyze")
+async def analyze(
+    req: AnalyzeRequest,
+    x_llm_api_key: Optional[str] = Header(None),
+) -> StreamingResponse:
+    """분석 시작 — NDJSON 스트림 즉시 반환, 워크플로우는 백그라운드 task.
+
+    클라이언트가 stream 끊으면 일시정지 (LangGraph Checkpointer 가 state 보존).
+    같은 ``thread_id`` 로 재호출 시 자동 resume.
+    """
+    api_key = extract_api_key(x_llm_api_key)
+
+    # X-LLM-Api-Key 헤더 → env override (ChatOpenAI / ChatAnthropic 가 ENV.llm.api_key 사용)
+    os.environ["ROBO_LLM_API_KEY"] = api_key
+
+    try:
+        pipeline = get_pipeline(req.strategy)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    project_root = Path(req.project_root)
+    if not project_root.exists():
+        raise HTTPException(status_code=400, detail=f"project_root not found: {req.project_root}")
+
+    project = Project(
+        name=req.project_name,
+        root=project_root,
+        strategy=req.strategy,  # type: ignore[arg-type]
+        ddl_dir=Path(req.ddl_dir) if req.ddl_dir else None,
+        has_xml_mapper=req.has_xml_mapper,
+        locale=req.locale,
+        catalog_service_url=req.catalog_service_url,
+        catalog_api_key=req.catalog_api_key,
+    )
+
+    stream = NDJSONStream()
+
+    async def _run_in_background():
+        try:
+            await execute_run(
+                strategy=pipeline,
+                project=project,
+                stream=stream,
+                thread_id=req.thread_id,
+            )
+        except Exception as e:
+            # 절대원칙 #3 — silent fail 금지. 오류 stream emit + stream 종료.
+            stream.emit({"type": "error", "message": f"{type(e).__name__}: {e}"})
+            await stream.close()
+
+    asyncio.create_task(_run_in_background())
+    return StreamingResponse(stream.iter(), media_type="application/x-ndjson")

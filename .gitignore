@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# venv
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets — API key / DB password 가 박힌 운영 환경 .env 절대 commit X
+.env
+
+# Run-time logs — 매 run 마다 latest/ rmtree
+logs/
+
+# 임시 파일
+*.tmp
+*.tmp.md
+*.backup
+*.backup.md
+_debug/

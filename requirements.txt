@@ -1,0 +1,57 @@
+# ROBO Analyzer — 의존성 (M0)
+# ───────────────────────────────────────────────────────────
+# 정책: 패치 버전 == 고정 (LangGraph 0.x → 1.x 회귀 버그 회피).
+#       새 모델 / 새 provider 추가 시에도 이 파일 외 변경 X.
+
+# Core LangChain / LangGraph
+langchain==0.3.27
+langchain-core==0.3.79
+langgraph==0.6.10
+langgraph-checkpoint==2.1.2
+
+# LLM provider SDK (provider 자동 인식 — base_url 통일)
+langchain-openai==0.3.45
+langchain-anthropic==0.3.30
+openai==1.108.0
+anthropic==0.42.0
+
+# DeepAgent 프레임워크 (Profile Agent / Linking Agent)
+deepagents==0.1.16
+
+# 데이터 검증 (Pydantic 출력 스키마 강제 — 환각 차단)
+pydantic==2.10.6
+pydantic-settings==2.7.1
+
+# SQL 파싱 — DDL 다중 방언 (Oracle / PostgreSQL / MySQL / MSSQL …)
+sqlglot==27.13.0
+
+# 코드 파싱 — Framework 는 tree-sitter, DBMS 는 ANTLR
+tree-sitter==0.23.2
+tree-sitter-languages==1.10.2
+antlr4-python3-runtime==4.13.2
+
+# Neo4j 그래프 DB
+neo4j==5.27.0
+
+# 임베딩 (phase_embed)
+sentence-transformers==3.3.1
+
+# Web API — FastAPI + NDJSON 단일 스트림 (폴링 폐기)
+fastapi==0.115.6
+uvicorn==0.34.0
+
+# YAML 파싱 — prompts/*.yaml
+pyyaml==6.0.2
+
+# .env 로딩
+python-dotenv==1.0.1
+
+# 재시도 — LLM provider rate limit / Neo4j TransientError
+tenacity==9.0.0
+
+# HTTP 클라이언트
+httpx==0.28.1
+aiohttp==3.11.11
+
+# 구조화 로깅
+structlog==24.4.0

@@ -1,0 +1,37 @@
+# 언어별 stereotype 풀 — analyze_function 의 SummaryOutput.stereotype 검증.
+#
+# LLM 이 자유롭게 stereotype 작성 X. 이 풀에서만 선택.
+# is_valid_stereotype() 가 검증 → 풀에 없으면 빈 문자열로 강제.
+
+framework:
+  # OOP 일반 — Java / Kotlin / Python / Go / C++
+  - ApplicationService     # use case 진입점 (transaction boundary)
+  - DomainService          # 도메인 로직 (여러 entity 협력)
+  - Repository             # DB 접근 (READ/WRITE)
+  - Factory                # 객체 생성 책임
+  - Command                # 상태 변경 (WRITE)
+  - Query                  # 조회 (READ-only)
+  - Validator              # 입력 검증
+  - Translator             # 데이터 변환 / 매핑
+  - Adapter                # 외부 시스템 연결
+  - Strategy               # 알고리즘 추상화
+  - EventHandler           # 이벤트 / 메시지 처리
+  - Scheduler              # 시간 기반 작업
+  - Helper                 # 부수 유틸리티
+  - Controller             # HTTP / API 진입점
+  - Initializer            # 시작 시 1회 설정
+
+dbms:
+  # PL/SQL 전용
+  - DataMutator            # INSERT / UPDATE / DELETE 위주
+  - DataQuery              # SELECT 위주 (조회)
+  - BatchProcessor         # 야간 / 정기 배치
+  - Validator              # 데이터 검증 / 정합성 체크
+  - MetadataLookup         # 마스터 / 코드 테이블 조회
+  - EventTrigger           # 트리거 핸들러
+  - Aggregator             # 집계 / 요약
+  - ReportGenerator        # 리포트 생성
+  - DataMigrator           # 데이터 마이그레이션
+  - CursorLooper           # 커서 순회 처리
+  - PackageInitializer     # 패키지 초기화
+  - Helper                 # 부수 유틸리티

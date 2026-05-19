@@ -1,0 +1,51 @@
+# Qwen3.6-35B-A3B — OpenRouter 임시 백엔드 (사내 GPU 점검 시)
+# ─────────────────────────────────────────────────────────────
+# 모델 출처: https://openrouter.ai/qwen/qwen3.6-35b-a3b
+# 가격: $0.15 / $1 per 1M tokens (input/output, 2026-04-27 출시)
+# 사내 SGLang 과 같은 모델 — sampling 권장값 그대로 유지.
+
+provider: openrouter
+
+api_base: https://openrouter.ai/api/v1
+
+# OpenRouter slug 형식
+model: qwen/qwen3.6-35b-a3b
+
+# 비용 절감용 작은 모델 — 안 박으면 model 사용
+model_small: ""
+
+# 토큰 / 타임아웃
+max_tokens: 128000
+timeout_seconds: 300
+
+verify_ssl: true
+
+# ChatOpenAI 표준 sampling (사내와 동일 권장값)
+sampling:
+  temperature: 0.7
+  top_p: 0.8
+
+# reasoning 끔 — OpenRouter 가 reasoning_effort=none 을 그대로 전달.
+# Qwen3.6 의 thinking mode default ON → 끄는 게 운영기 정책.
+reasoning_effort: none
+
+# OpenRouter 비표준 옵션 (OpenAI 표준 외 — extra_body 로만 전달).
+#
+# provider.sort: throughput
+#   OpenRouter 가 호스팅하는 여러 inference provider 중 **가장 빠른 throughput** 순으로
+#   라우팅. Qwen3.6-35B-A3B 호출 5분 (timeout 직전) → 30초~1분 기대.
+#   다른 옵션: "price" / "latency". 단축 표기: model slug 끝에 ``:nitro`` 도 가능.
+#   문서: https://openrouter.ai/docs/guides/routing/provider-selection
+#
+# reasoning.enabled: false
+#   Qwen3.6 의 thinking mode default ON → reasoning 토큰 폭증 (불필요 비용).
+#   OpenRouter 가 cross-provider 표준화 — SGLang 의 ``enable_thinking`` 도 자동 매핑.
+#
+# allow_fallbacks: true
+#   throughput 1위 provider 가 502/429 등 실패 시 다음 provider 로 자동 fallback.
+extra_body:
+  provider:
+    sort: throughput
+    allow_fallbacks: true
+  reasoning:
+    enabled: false

@@ -1,0 +1,43 @@
+# Qwen3.6-35B-A3B — 사내 SGLang 로컬 배포
+# ─────────────────────────────────────────────────────────────
+# 모델 출처: https://huggingface.co/Qwen/Qwen3.6-35B-A3B
+# 배포: SGLang (RadixAttention prefix caching 동작 O)
+# 운영자 권장 sampling 값 적용 (사내 채택)
+
+# provider 종류 — anthropic 외는 모두 OpenAI 호환으로 처리
+provider: sglang
+
+# API endpoint (api_key 는 .env 의 ROBO_LLM_API_KEY 로 별도)
+api_base: http://ai-server.dream-flow.com:30000/v1
+
+# 모델 이름 — 사내 SGLang 배포명 (HuggingFace slug 와 다름)
+model: frentis-ai-model
+
+# 비용 절감용 작은 모델 — 안 박으면 model 사용 (같은 endpoint 라 동일 모델)
+model_small: ""
+
+# 토큰 / 타임아웃
+max_tokens: 128000           # Qwen3.6 native context 262144, 출력 8K~128K 적당
+timeout_seconds: 300
+
+# 사내 자체 인증서 환경이 아니면 true. http endpoint 라 SSL 무관.
+verify_ssl: true
+
+# ChatOpenAI 표준 sampling — 모든 provider 공통
+sampling:
+  temperature: 0.7           # 운영자 권장 (사내 채택값)
+  top_p: 0.8
+
+# reasoning 모드 — cross-provider 추상화. 코드가 provider 별 키로 자동 변환:
+#   sglang/local → extra_body.chat_template_kwargs.enable_thinking = false
+#   openai       → reasoning_effort 인자 (low/medium/high 만 전달)
+#   anthropic    → thinking={"type":"disabled"} 또는 budget
+# Plan §3.4 — 운영기는 "none" 으로 토큰/비용 폭증 방지.
+reasoning_effort: none
+
+# SGLang 비표준 인자 — ChatOpenAI 의 extra_body 로 전달.
+# 운영자가 SGLang/vLLM 문서 보고 채움. 대표 provider (OpenAI/Anthropic/OpenRouter) 사용 시 비워둠.
+extra_body:
+  top_k: 20
+  min_p: 0.0
+  presence_penalty: 1.5
