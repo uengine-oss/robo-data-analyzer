@@ -30,6 +30,7 @@ from langchain.agents.middleware import (
     TodoListMiddleware,
 )
 
+from shared.config.env_catalog import ENV
 from shared.llm.cost_budget import CostBudget
 from shared.llm.middleware.cache_friendly_order import CacheFriendlyOrderMiddleware
 from shared.llm.middleware.call_limit import ModelCallLimitMiddleware
@@ -41,11 +42,11 @@ from shared.llm.middleware.tool_event_emitter import ToolEventEmitterMiddleware
 from shared.llm.token_usage import LatencyBasedCacheEstimator
 
 
-# 원본 운영 임계값 (analyzer/strategy/framework/agent/middleware.py 와 동일).
-# 256K context 모델 (Gemma-4-31b-it / Qwen3-Next) 기준.
-_TOOL_RESULT_CLEAR_TRIGGER_TOKENS = 128_000
+# 도구 결과 정리 / 요약 임계 — env 단일 진입점.
+# ``ROBO_AGENT_CONTEXT_EDITING_TRIGGER_TOKENS`` (default 80K) = clear trigger.
+# Summarize 는 clear trigger 의 1.5 배 (그보다 위에서 자동 요약 — 사실상 거의 안 걸림).
+# 모델 context window 보다 충분히 작게 잡아야 작동 (qwen3.6-35b 128K → 80K 적정).
 _TOOL_RESULT_KEEP_LAST = 3
-_SUMMARIZE_TRIGGER_TOKENS = 200_000
 
 
 def build_standard_stack(
@@ -77,17 +78,17 @@ def build_standard_stack(
         # 원본 LangChain 표준 ────────────────────────────────
         # write_todos 도구 자동 제공 + state.todos 누적
         TodoListMiddleware(),
-        # 도구 결과 누적 시 정리 (trigger=128K, keep=3)
+        # 도구 결과 누적 시 정리 — env (ROBO_AGENT_CONTEXT_EDITING_TRIGGER_TOKENS) 기반.
         ContextEditingMiddleware(edits=[
             ClearToolUsesEdit(
-                trigger=_TOOL_RESULT_CLEAR_TRIGGER_TOKENS,
+                trigger=ENV.agent.context_editing_trigger_tokens,
                 keep=_TOOL_RESULT_KEEP_LAST,
             ),
         ]),
-        # 컨텍스트 임계 초과 시 자동 요약
+        # 컨텍스트 임계 초과 시 자동 요약 — clear trigger 의 1.5 배.
         SummarizationMiddleware(
             model=llm_model,
-            trigger=("tokens", _SUMMARIZE_TRIGGER_TOKENS),
+            trigger=("tokens", int(ENV.agent.context_editing_trigger_tokens * 1.5)),
         ),
         # deepagents 도구 호출 패치 (LangChain create_agent 와 도구 호출 호환)
         PatchToolCallsMiddleware(),

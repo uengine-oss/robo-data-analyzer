@@ -14,15 +14,19 @@ sentence-transformers 다국어 모델 (한국어 + 영어). 모델은 ``require
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
+from shared.logging_and_stream.logger import log_info, log_warning
 from shared.neo4j.neo4j_client import Neo4jClient
 
 
 # 다국어 모델 (한국어 분석 결과 + 영어 코드 식별자 처리)
 _MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+
+_STEP = "step7.embed"
 
 _model = None
 
@@ -38,17 +42,13 @@ def _get_model():
 
 async def embed_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
     """description / summary → 벡터 → Neo4j embedding property."""
-    from shared.logging_and_stream.logger import log_info, log_warning
-    import time as _time
-
-    _STEP = "step7.embed"
     cfg = (config or {}).get("configurable", {}) if isinstance(config, dict) else {}
     neo: Neo4jClient | None = cfg.get("neo_client")
     if neo is None:
         log_warning(_STEP, "config_missing", "neo_client 누락 — step skip")
         return {}
 
-    started = _time.monotonic()
+    started = time.monotonic()
     log_info(_STEP, "start",
              tables=len(state.get("tables") or []),
              columns=len(state.get("columns") or []),
@@ -87,7 +87,7 @@ async def embed_step(state: dict, config: Optional[RunnableConfig] = None) -> di
         table_embedded=len(table_updates),
         column_embedded=len(column_updates),
         function_embedded=len(function_updates),
-        elapsed_sec=f"{_time.monotonic() - started:.2f}",
+        elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
     return {}
 

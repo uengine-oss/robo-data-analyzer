@@ -15,6 +15,7 @@ LLM 호출 = 큰 함수만 1 회 (작은 모델).
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -75,8 +76,7 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
         log_warning(_STEP, "config_missing", "strategy 누락 — step skip")
         return {}
 
-    import time as _time
-    started = _time.monotonic()
+    started = time.monotonic()
 
     builder = strategy.context_builder
     functions: list[Function] = state.get("functions", [])
@@ -156,7 +156,7 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
     log_info(
         _STEP, "done",
         contexts=len(contexts), big_functions=len(big_functions),
-        elapsed_sec=f"{_time.monotonic() - started:.2f}",
+        elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
     return {"analysis_contexts": contexts}
 

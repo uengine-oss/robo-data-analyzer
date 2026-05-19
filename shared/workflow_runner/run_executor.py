@@ -35,7 +35,6 @@ from shared.logging_and_stream.logger import (
     log_info,
 )
 from shared.logging_and_stream.ndjson_stream import NDJSONStream
-from shared.logging_and_stream.prompt_logger import reset_counters
 from shared.neo4j.neo4j_client import Neo4jClient
 from shared.neo4j.schema_constraints import ensure_schema
 from shared.workflow_runner.artifact_dumper import dump_state_artifacts
@@ -58,8 +57,7 @@ async def execute_run(
             같은 thread_id 로 재호출 시 마지막 state 복원 (일시정지/재개).
     """
     log_base = ENV.log.dir
-    _reset_latest_dirs(log_base)
-    reset_counters()
+    _reset_logs_root(log_base)
 
     run = Run.now(project=project, log_base=log_base)
     run.run_dir.mkdir(parents=True, exist_ok=True)
@@ -154,13 +152,18 @@ async def execute_run(
     return run
 
 
-def _reset_latest_dirs(log_base: Path) -> None:
-    """매 실행 ``latest/`` rmtree 후 재생성 (Plan §4 M1)."""
-    for sub in ("analysis.run/latest", "llm_prompts/latest"):
-        d = log_base / sub
-        if d.exists():
-            shutil.rmtree(d, ignore_errors=True)
-        d.mkdir(parents=True, exist_ok=True)
+def _reset_logs_root(log_base: Path) -> None:
+    """매 실행 ``logs/`` 통째 rmtree 후 재생성 — 옛 run 잔재로 인한 오해 차단.
+
+    옛 정책 (``analysis.run/latest`` + ``llm_prompts/latest`` 만 reset) 은 ``logs/`` 직속의
+    임시 파일 (``_latest_run_console.log`` 등) 또는 timestamp 폴더 잔재가 남을 수 있음 →
+    monitor 가 옛 inode 잡고 옛 라인 토해내는 사고 발생 → ``logs/`` 통째 정리.
+    """
+    if log_base.exists():
+        shutil.rmtree(log_base, ignore_errors=True)
+    log_base.mkdir(parents=True, exist_ok=True)
+    (log_base / "analysis.run" / "latest").mkdir(parents=True, exist_ok=True)
+    (log_base / "llm_prompts" / "latest").mkdir(parents=True, exist_ok=True)
 
 
 def _summarize_usage(run_dir: Path) -> None:

@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Optional
@@ -43,8 +44,7 @@ async def summarize_module_step(state: dict, config: Optional[RunnableConfig] = 
     if not modules or not functions:
         log_info(_STEP, "skip", modules=len(modules), functions=len(functions))
         return {}
-    import time as _time
-    started = _time.monotonic()
+    started = time.monotonic()
     log_info(_STEP, "start", modules=len(modules), functions=len(functions),
              concurrency=ENV.pipeline.max_concurrency)
 
@@ -104,7 +104,7 @@ async def summarize_module_step(state: dict, config: Optional[RunnableConfig] = 
     log_info(
         _STEP, "done",
         modules=len(modules), summarized=summarized,
-        elapsed_sec=f"{_time.monotonic() - started:.2f}",
+        elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
     return {"modules": list(updated)}
 

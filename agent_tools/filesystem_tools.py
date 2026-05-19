@@ -199,9 +199,12 @@ def grep(pattern: str, path_glob: str = "**/*", base: str = ".") -> str:
     return "\n".join(results) if results else "NO_MATCHES"
 
 
+_READ_FILE_MAX_LINES = 50              # 한 호출당 절대 한도 (LLM 입력 토큰 폭증 방지)
+
+
 @tool
-def read_file(path: str, max_lines: int = 100) -> str:
-    """파일 **앞쪽 N 줄** 읽기 (default 100, 절대 한도 100).
+def read_file(path: str, max_lines: int = 50) -> str:
+    """파일 **앞쪽 N 줄** 읽기 (default 50, 절대 한도 50).
 
     **언제 사용**:
     - 비함수 파일 (imports / `#include` / 매니페스트 / 설정) 앞부분 훑기.
@@ -210,11 +213,11 @@ def read_file(path: str, max_lines: int = 100) -> str:
     - 설정 파일 (`application.yml` / `*.properties`) 의 키워드 단서.
 
     **함수 본문은 X** — 큰 함수는 잘림. 함수 본문 정독은 `list_functions` 로 위치 확인 후
-    `read_file_range(path, start, end)` 사용.
+    `read_file_range(path, anchor)` 사용 (anchor ± 5줄).
 
     **인자**:
     - `path`: 파일 경로 (절대 / 상대 모두 가능).
-    - `max_lines`: 읽을 줄 수 (default 100, 절대 한도 100 — 큰 값 줘도 100 으로 강제 trim).
+    - `max_lines`: 읽을 줄 수 (default 50, 절대 한도 50 — 큰 값 줘도 50 으로 강제 trim).
 
     **결과 형식**: 줄바꿈으로 구분된 본문 (라인 번호 X).
 
@@ -226,7 +229,7 @@ def read_file(path: str, max_lines: int = 100) -> str:
     if not p.is_file():
         return f"NOT_A_FILE: {path}"
     # LLM 이 max_lines=500 처럼 큰 값 주는 거 차단 (입력 토큰 폭증 방지).
-    effective_max = min(max_lines, 100)
+    effective_max = min(max_lines, _READ_FILE_MAX_LINES)
     lines: list[str] = []
     try:
         with p.open("r", encoding="utf-8", errors="ignore") as f:
@@ -239,37 +242,34 @@ def read_file(path: str, max_lines: int = 100) -> str:
     return "\n".join(lines)
 
 
+_READ_FILE_RANGE_RADIUS = 5            # anchor 위/아래 라인 수
+
+
 @tool
-def read_file_range(path: str, start: int, end: int) -> str:
-    """파일의 `start ~ end` 라인 **정밀 읽기** (20 줄 한도).
+def read_file_range(path: str, anchor: int) -> str:
+    """파일의 `anchor` 라인 **위 5줄 + anchor + 아래 5줄 = 총 11줄** 읽기.
 
-    **언제 사용**:
-    - Anchor 라인 (이미 `grep` / `list_functions` / `bundle_search_lines` 로 찾은 위치) 위아래
-      ~10 줄 컨텍스트 정독.
-    - 함수 본문 확인 — 매크로 호출 / 어노테이션 / 변수 할당 / SQL 리터럴 인용 가능 여부.
-    - Linking Agent: 한 case 당 본문 1 개 (≤ 30 줄). 다음 검색 전에 단서 등록 완료.
+    `anchor` 결정:
+    - `list_functions(file)` 결과의 함수 `start_line` 들을 anchor 로 사용 (각 함수 정독).
+    - `grep` / `bundle_search_lines` 결과의 라인 번호도 anchor.
+    - 파일 시작 (anchor=1) 은 manifest / 헤더 / import 확인 시 1 번만.
 
-    **인자**:
-    - `path`: 파일 경로 (절대 / 상대 모두 가능).
-    - `start`: 시작 라인 (1-indexed, inclusive).
-    - `end`: 종료 라인 (inclusive). `end - start > 20` 이면 자동 trim.
+    **★ 같은 anchor 연속 호출 X** — 같은 라인 두 번 봐도 정보 안 변함. 큰 함수는 시작 / 중간 / 끝 등 **여러 anchor** 로.
 
-    **결과 형식**: 한 줄당 `<line_no>: <content>` (라인 번호 prefix). evidence `file:line` 인용에 그대로 사용 가능.
+    Args:
+        path: 파일 경로 (절대 / 상대 모두 가능).
+        anchor: 정독할 중심 라인 번호 (1-indexed).
 
-    **실패 응답**:
-    - `NOT_A_FILE: <path>` — 경로가 파일 아님.
-    - `READ_ERROR: ...` — I/O 오류.
-
-    **운영 팁**:
-    - 묶음 적재 X — 한 본문 확인 후 다음 검색 호출. 본문 2 개 들고 다음 단계 가지 마.
-    - 함수 전체 본문이 필요하면 `list_functions(file)` 로 `start_line` / `end_line` 확인 후
-      범위 잡기. 큰 함수 (> 20 줄) 는 한 호출에 안 들어옴 — anchor 중심으로 좁히기.
+    Returns:
+        ``<line_no>: <content>`` 형식. evidence `file:line` 인용 그대로 가능.
+        실패 시 ``NOT_A_FILE: <path>`` / ``READ_ERROR: ...``.
     """
     p = _resolve_root(path)
     if not p.is_file():
         return f"NOT_A_FILE: {path}"
-    if end - start > 20:
-        end = start + 20
+
+    start = max(anchor - _READ_FILE_RANGE_RADIUS, 1)
+    end = anchor + _READ_FILE_RANGE_RADIUS
 
     lines: list[str] = []
     try:

@@ -24,7 +24,7 @@ from shared.llm.llm_pricing import compute_cost
 from shared.llm.token_usage import LatencyBasedCacheEstimator, track_usage
 from shared.llm.usage_jsonl_writer import append_usage_record
 from shared.logging_and_stream.logger import log_info, log_warning
-from shared.logging_and_stream.prompt_logger import log_rule_call
+from shared.logging_and_stream.prompt_logger import append_agent_turn
 
 
 class CostTrackingMiddleware(AgentMiddleware):
@@ -46,10 +46,18 @@ class CostTrackingMiddleware(AgentMiddleware):
         # (LangChain 1.x AgentMiddleware 보장). state id 기반은 매 hook 사이에
         # state 가 mutate copy 되어 회수 실패 → 단일 instance 변수로 변경.
         self._last_call_start: Optional[float] = None
+        # turn 별 본문 적재 — 직전 turn 까지의 messages 길이. 새 turn 의 user 메시지만 추출.
+        # 같은 middleware 인스턴스가 한 invoke 동안 재사용 → 0 으로 초기화.
+        self._last_msg_count: int = 0
 
     def before_model(self, state: Any, runtime: Any) -> Any:
-        """LLM 호출 직전 — 시작 시각 기록 (latency 계산용)."""
+        """LLM 호출 직전 — 시작 시각 기록 + analyzer.log 진행 라인.
+
+        호출 시작 시점 라인이 없으면 LLM 응답 대기 vs 행 / 데드 구분 불가 →
+        ``▶ 시작`` 라인 1 줄 명시. ``after_model`` 의 ``✓ 완료`` 와 페어.
+        """
         self._last_call_start = time.monotonic()
+        log_info("llm.call", "start", agent=self.agent_name)
         return state
 
     def after_model(self, state: Any, runtime: Any) -> Any:
@@ -113,15 +121,12 @@ class CostTrackingMiddleware(AgentMiddleware):
             elapsed_ms=latency_ms,
         )
 
-        # ★ Agent reasoning + 도구 결정 사후 분석용 — prompt + response 본문 적재.
-        # ``yaml_llm_runner.run_yaml_rule`` 가 단순 LLM 호출에 쓰는 prompt_logger 와
-        # 같은 함수 재사용 → ``logs/llm_prompts/latest/agent_<name>/NNN.json`` 누적.
-        # Agent 가 의도대로 동작 안 할 때 (잘못된 도구 선택 / 경로 추측 등) 그 시점의
-        # system prompt / 누적 messages / assistant 응답 본문 그대로 보존 → 진단 가능.
-        # 실패는 graceful (로깅 보조라 분석 자체는 막지 않음).
+        # ★ Agent reasoning + 도구 결정 사후 분석 — turn 본문 적재.
+        # ``begin_agent_invoke`` 가 호출된 컨텍스트면 turn 누적, 아니면 silent skip.
+        # 한 invoke 의 흐름이 한 파일에 (``agent_<name>.json`` 또는 case 별).
+        # 실패는 graceful (분석 자체 막지 않음).
         try:
-            _log_agent_messages(
-                agent_name=self.agent_name,
+            self._append_turn(
                 messages=messages,
                 model=model,
                 latency_ms=latency_ms,
@@ -131,8 +136,8 @@ class CostTrackingMiddleware(AgentMiddleware):
         except Exception as e:  # noqa: BLE001 — 로깅 실패는 분석 막지 않음
             log_warning(
                 "shared.llm.middleware.cost_tracking",
-                "log_agent_messages",
-                "Agent 메시지 적재 실패 — 분석은 계속",
+                "append_turn",
+                "Agent turn 적재 실패 — 분석은 계속",
                 agent=self.agent_name,
                 error=f"{type(e).__name__}: {e}",
             )
@@ -141,66 +146,49 @@ class CostTrackingMiddleware(AgentMiddleware):
         self.cost_budget.add_sync(cost)
         return state
 
+    def _append_turn(
+        self,
+        messages: list,
+        model: str,
+        latency_ms: int,
+        cost_usd: float,
+        record: Any,
+    ) -> None:
+        """직전 turn 이후 새로 추가된 message 만 user_content 로 직렬화 + turn append.
 
-def _log_agent_messages(
-    agent_name: str,
-    messages: list,
-    model: str,
-    latency_ms: int,
-    cost_usd: float,
-    record: Any,
-) -> None:
-    """Agent 의 messages 누적을 prompt_logger 에 흘려보내 jsonl 누적.
+        - 첫 turn: ``messages = [System, Human, AIMessage]`` → user = [Human], response = AIMessage.
+        - 두 번째 turn: ``messages = [..., ToolMessage(s), AIMessage]`` → user = [ToolMessage(s)], response = AIMessage.
+        """
+        if not messages:
+            return
 
-    ``log_rule_call(rule_name=f"agent_{agent_name}", ...)`` 호출 →
-    ``logs/llm_prompts/latest/agent_<name>/NNN.json`` 에 호출당 1 파일.
+        # 새 message 만 슬라이스 (직전 turn 이후 추가분 ~ 마지막 assistant 직전까지)
+        start_idx = self._last_msg_count if self._last_msg_count > 0 else 1
+        new_msgs = messages[start_idx:-1]            # system 첫 turn 자동 제외 ([1:-1])
+        response_msg = messages[-1]
 
-    파일 내용:
-    - ``system_prompt``: messages[0] 의 content (SystemMessage 가정)
-    - ``user_content``: 마지막 LLM 호출 직전까지의 messages (system 제외) 직렬화
-    - ``response``: 마지막 assistant 메시지 (content + tool_calls)
-    - ``metadata``: model / tokens / latency / cost
-    """
-    if not messages:
-        return
+        user_content = "\n\n".join(
+            f"[{getattr(m, 'type', m.__class__.__name__)}]\n{_msg_content_str(m)}"
+            for m in new_msgs
+        )
 
-    # system prompt — 첫 SystemMessage 의 content
-    system_prompt = ""
-    first = messages[0]
-    if getattr(first, "type", "") == "system" or first.__class__.__name__ == "SystemMessage":
-        system_prompt = _msg_content_str(first)
+        response = {
+            "type": getattr(response_msg, "type", response_msg.__class__.__name__),
+            "content": _msg_content_str(response_msg),
+            "tool_calls": getattr(response_msg, "tool_calls", None) or [],
+        }
 
-    # user_content = system 외 모든 누적 messages 직렬화 (직전 + 도구 결과 + 이전 assistant)
-    body_msgs = messages[1:-1] if len(messages) > 2 else []
-    user_content = "\n\n".join(
-        f"[{getattr(m, 'type', m.__class__.__name__)}]\n{_msg_content_str(m)}"
-        for m in body_msgs
-    )
+        metadata = {
+            "model": model,
+            "input_tokens": record.input_tokens,
+            "output_tokens": record.output_tokens,
+            "cached_tokens": record.cached_tokens,
+            "latency_ms": latency_ms,
+            "cost_usd": cost_usd,
+        }
 
-    # response — 마지막 메시지 (assistant 응답)
-    last = messages[-1]
-    response = {
-        "type": getattr(last, "type", last.__class__.__name__),
-        "content": _msg_content_str(last),
-        "tool_calls": getattr(last, "tool_calls", None) or [],
-    }
-
-    metadata = {
-        "model": model,
-        "input_tokens": record.input_tokens,
-        "output_tokens": record.output_tokens,
-        "cached_tokens": record.cached_tokens,
-        "latency_ms": latency_ms,
-        "cost_usd": cost_usd,
-    }
-
-    log_rule_call(
-        rule_name=f"agent_{agent_name}",
-        system_prompt=system_prompt,
-        user_content=user_content,
-        response=response,
-        metadata=metadata,
-    )
+        append_agent_turn(user_content=user_content, response=response, metadata=metadata)
+        self._last_msg_count = len(messages)
 
 
 def _msg_content_str(msg: Any) -> str:

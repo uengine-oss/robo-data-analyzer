@@ -22,6 +22,7 @@ import asyncio
 import json
 from typing import AsyncIterator
 
+from shared.config.env_catalog import ENV
 from shared.logging_and_stream.logger import log_info, log_warning
 
 
@@ -36,6 +37,82 @@ _EVENT_LOGGER: dict[str, str] = {
 }
 
 
+def _shorten_path(p: str) -> str:
+    """긴 path → 짧은 표시 — ``ROBO_DATA_DIR/source/<project>/`` 이하 상대 경로만.
+
+    예: ``C:\\uEngine\\robo\\data\\source\\apascrt00010t02_20260406\\zapamcom10060.c``
+    → ``apascrt00010t02_20260406\\zapamcom10060.c`` (project_root 의 마지막 segment 부터).
+    """
+    if not isinstance(p, str) or not p:
+        return str(p)
+    try:
+        data_dir = str(ENV.data.dir).replace("\\", "/").rstrip("/")
+    except Exception:
+        data_dir = ""
+    norm = p.replace("\\", "/")
+    # ROBO_DATA_DIR 안이면 그 이후만
+    for marker in (f"{data_dir}/source/", f"{data_dir}/ddl/", "/data/source/", "/data/ddl/"):
+        if marker and marker in norm:
+            return norm.split(marker, 1)[1]
+    # 그 외 — 마지막 2 segment 만 (디렉토리/파일)
+    parts = norm.split("/")
+    if len(parts) > 2:
+        return "/".join(parts[-2:])
+    return norm
+
+
+def _shorten_args(tool_name: str, args: dict) -> dict:
+    """도구별 핵심 인자만 추출 — path 단축, 긴 pattern 줄임."""
+    if not isinstance(args, dict):
+        return {}
+    out: dict = {}
+    for key in ("path", "file", "base"):
+        v = args.get(key)
+        if v:
+            out[key] = _shorten_path(v)
+    pat = args.get("pattern")
+    if pat:
+        out["pattern"] = pat if len(str(pat)) <= 40 else str(pat)[:37] + "..."
+    glob_pat = args.get("path_glob")
+    if glob_pat and glob_pat != "**/*":
+        out["glob"] = glob_pat
+    for key in ("anchor", "start", "end", "max_lines", "name"):
+        v = args.get(key)
+        if v is not None:
+            out[key] = v
+    return out
+
+
+def _mirror_tool_event(body: dict) -> None:
+    """tool_event 전용 — 도구명을 op 라벨로, args 단축, 결과 통계만.
+
+    예 (이전):
+      🔧 도구 │ ▶ 도구: open|close|insert|... 정규식 검색 중... Agent=profile 도구=grep args={...풀...}
+    예 (이후):
+      🔧 도구 │ ▶ grep: pattern=open|close|insert|... base=apascrt00010t02_20260406
+      🔧 도구 │ ✓ grep: 매치=13 소요ms=0
+    """
+    sub_event = body.get("event")
+    tool_name = body.get("tool") or "?"
+    elapsed_ms = body.get("elapsed_ms")
+    error = body.get("error")
+    short_args = _shorten_args(tool_name, body.get("args") or {})
+
+    if sub_event == "tool_start":
+        op_label = f"▶ {tool_name}"
+        log_info("stream.tool", op_label, **short_args)
+        return
+    if sub_event == "tool_error":
+        op_label = f"✗ {tool_name}"
+        log_info("stream.tool", op_label, error=error, elapsed_ms=elapsed_ms)
+        return
+    # tool_end — 결과 통계 + 소요만 (인자는 시작 라인에 이미 있음).
+    op_label = f"✓ {tool_name}"
+    result_keys = {"항목", "DIR", "FILE", "파일", "매치", "읽은줄", "함수", "SKILL", "줄수", "결과"}
+    stats = {k: v for k, v in body.items() if k in result_keys}
+    log_info("stream.tool", op_label, elapsed_ms=elapsed_ms, **stats)
+
+
 def _mirror_event_to_logger(event: dict) -> None:
     """NDJSON 이벤트 1 건을 ``analyzer.log`` 에 한 줄로 mirror.
 
@@ -44,6 +121,7 @@ def _mirror_event_to_logger(event: dict) -> None:
     - 빈 값 / None 키는 ``log_info`` 의 ``_format_kv`` 가 자동 생략.
     - event 의 ``type`` 키는 component 결정에 쓰고 본문에선 제거 (중복 방지).
     - ``todos`` (todo_update) 는 full list 박지 X → in_progress 1 개 + counts 만 추출.
+    - ``tool_event`` 는 전용 분기 — 도구명을 op 라벨로, args 단축.
     """
     etype = event.get("type")
     component = _EVENT_LOGGER.get(etype)
@@ -52,6 +130,12 @@ def _mirror_event_to_logger(event: dict) -> None:
 
     # event 본문에서 type 빼고 모두 context 로 전달 (operation 결정용 키도 추출).
     body = {k: v for k, v in event.items() if k != "type"}
+
+    # tool_event 는 전용 처리 — 도구명 op 라벨 / args 단축.
+    if etype == "tool_event":
+        _mirror_tool_event(body)
+        return
+
     operation = body.pop("event", None) or body.pop("operation", None) or etype
 
     # todo_update 의 todos full list → 요약 (in_progress / counts).

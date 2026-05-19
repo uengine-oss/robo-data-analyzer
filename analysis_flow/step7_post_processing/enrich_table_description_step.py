@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Optional
@@ -24,17 +25,15 @@ from shared.llm.cost_budget import BudgetExceededError
 from shared.llm.llm_output_models import TableDescription
 from shared.llm.middleware.call_limit import ModelCallLimitExceeded
 from shared.llm.yaml_llm_runner import run_yaml_rule
-from shared.logging_and_stream.logger import log_error
+from shared.logging_and_stream.logger import log_error, log_info, log_warning
 from shared.neo4j.neo4j_client import Neo4jClient
 from shared.neo4j.nodes.column import upsert_columns
 from shared.neo4j.nodes.table import update_descriptions
 
+_STEP = "step7.enrich_table_description"
+
 
 async def enrich_table_description_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
-    from shared.logging_and_stream.logger import log_info, log_warning  # local import — 충돌 회피
-    import time as _time
-
-    _STEP = "step7.enrich_table_description"
     cfg = (config or {}).get("configurable", {}) if isinstance(config, dict) else {}
     strategy = cfg.get("strategy")
     cost_budget = cfg.get("cost_budget")
@@ -47,7 +46,7 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
     if not functions:
         log_info(_STEP, "skip", reason="no functions")
         return {}
-    started = _time.monotonic()
+    started = time.monotonic()
 
     # table_fqn → [{function_summary, role, columns}, ...]
     table_candidates: dict[str, list[dict]] = defaultdict(list)
@@ -141,6 +140,6 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
         _STEP, "done",
         tables=len(table_candidates),
         descriptions=len(table_updates), columns=len(column_upserts),
-        elapsed_sec=f"{_time.monotonic() - started:.2f}",
+        elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
     return {}

@@ -40,8 +40,9 @@ from shared.llm.llm_client import build_llm_client
 from shared.llm.llm_pricing import compute_cost
 from shared.llm.token_usage import track_usage
 from shared.llm.usage_jsonl_writer import append_usage_record
-from shared.logging_and_stream.logger import log_warning
+from shared.logging_and_stream.logger import log_info, log_warning
 from shared.logging_and_stream.message_filters import apply_cache_friendly_filters
+from shared.logging_and_stream.prompt_logger import write_rule_record
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -130,7 +131,6 @@ async def run_yaml_rule(
         )
 
         # analyzer.log 한 줄 — `tail -f` 로 LLM 호출 진행 보임.
-        from shared.logging_and_stream.logger import log_info
         log_info(
             "llm.call",
             "done",
@@ -154,22 +154,24 @@ async def run_yaml_rule(
             "cost_usd": cost,
         })
 
-    # prompt + 응답 logs/llm_prompts/latest/<rule_name>/NNN.json 적재.
-    # 로깅 실패는 호출 자체 성공으로 승격 X (디버깅 보조라 graceful degradation 가능).
-    # 단 silent skip 금지 — 사유는 stderr 로 명시.
+    # prompt + 응답 logs/llm_prompts/latest/<rule_name>.json 적재.
+    # 같은 rule 호출이 한 .json 의 records 배열에 누적 (소스 라인 순 정렬).
+    # 로깅 실패는 분석 자체 막지 X (graceful) — silent skip 금지, 사유 명시.
     try:
-        from shared.logging_and_stream.prompt_logger import log_rule_call
-        log_rule_call(
+        target_id, sort_key = _extract_target_and_sort(user_values)
+        write_rule_record(
             rule_name=rule_name,
+            target_id=target_id,
             system_prompt=system_prompt,
             user_content=user_content,
             response=parsed if parsed is not None else (raw_msg.content if raw_msg else ""),
             metadata=metadata,
+            sort_key=sort_key,
         )
     except Exception as e:
         log_warning(
             "shared.llm.yaml_llm_runner",
-            "log_rule_call",
+            "write_rule_record",
             "프롬프트 로그 적재 실패 — 호출 자체는 성공 (디버깅 보조만 누락)",
             rule_name=rule_name,
             error=f"{type(e).__name__}: {e}",
@@ -178,3 +180,31 @@ async def run_yaml_rule(
     if parsed is None:
         raise RuntimeError(f"LLM 응답 파싱 실패: rule={rule_name}")
     return parsed
+
+
+# user_values 의 어떤 키가 target_id / sort_key 로 적합한지 — 우선순위.
+# rule 별 user_template 의 placeholder 이름과 일치하면 자동 매핑.
+_TARGET_ID_KEYS = (
+    "function_id", "procedure_id", "module_id", "table_fqn",
+    "case_id", "name", "file",
+)
+
+
+def _extract_target_and_sort(user_values: dict) -> tuple[str | None, str | None]:
+    """``user_values`` 에서 target_id + sort_key 자동 추출.
+
+    target_id: ctrl+F 검색 / 가독성용. 첫 매칭 키 값.
+    sort_key: 한 파일 안 records 정렬용 — file 이 있으면 ``<file>:<start_line>`` 권장.
+    """
+    target_id: str | None = None
+    for k in _TARGET_ID_KEYS:
+        v = user_values.get(k)
+        if v:
+            target_id = str(v)
+            break
+
+    file_v = user_values.get("file") or user_values.get("file_path")
+    start_v = user_values.get("start_line") or user_values.get("line")
+    if file_v and start_v:
+        return target_id, f"{file_v}:{start_v}"
+    return target_id, target_id

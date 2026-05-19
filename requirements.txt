@@ -26,7 +26,8 @@ pydantic-settings==2.7.1
 sqlglot==27.13.0
 
 # 코드 파싱 — Framework 는 tree-sitter, DBMS 는 ANTLR
-tree-sitter==0.23.2
+# tree-sitter 0.21.3 = tree-sitter-languages 1.10.2 호환 한도 (0.23+ 와 ABI 깨짐).
+tree-sitter==0.21.3
 tree-sitter-languages==1.10.2
 antlr4-python3-runtime==4.13.2
 
