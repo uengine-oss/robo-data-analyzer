@@ -1,6 +1,6 @@
 """모델 → 비용 mapping.
 
-**새 LLM 모델 추가 시 손대는 곳: 이 파일 1곳만**.
+**가격 데이터 단일 진실: ``shared/llm/llm_pricing.yaml``** (이 파일은 yaml 로드 + 매칭 로직만).
 
 가격은 1M tokens 당 USD. provider 별로 prefix 가 다를 수 있음:
 - OpenRouter: ``"anthropic/claude-sonnet-4"``
@@ -12,12 +12,18 @@
 2. ★ 날짜 suffix 제거 (``-YYYYMMDD`` 또는 ``-YYYY-MM-DD``) — OpenRouter 등이 자동 추가
 3. provider prefix 제거 (``anthropic/`` / ``openai/`` / ``qwen/``)
 4. substring 매칭 (마지막 fallback)
+
+가격 변동 시: ``llm_pricing.yaml`` 한 곳만 갱신 + 커밋. 코드 무변경.
+갱신 보조: ``python cli_scripts/refresh_pricing.py``.
 """
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
+
+import yaml
 
 from shared.llm.token_usage import TokenUsageRecord
 from shared.logging_and_stream.logger import log_warning
@@ -41,35 +47,25 @@ class ModelPrice:
     cached_input_per_1m: float = 0.0         # cache hit 시 (보통 1/10 가격)
 
 
-# 모델 → 가격 mapping (1M tokens 당 USD, 2026-05 기준)
-# 새 모델 추가 = 이 dict 에 1줄.
-PRICING: dict[str, ModelPrice] = {
-    # Anthropic Claude
-    "claude-3-5-sonnet-20241022": ModelPrice(input_per_1m=3.0,  output_per_1m=15.0, cached_input_per_1m=0.30),
-    "claude-sonnet-4":             ModelPrice(input_per_1m=3.0,  output_per_1m=15.0, cached_input_per_1m=0.30),
-    "claude-opus-4":               ModelPrice(input_per_1m=15.0, output_per_1m=75.0, cached_input_per_1m=1.50),
-    "claude-haiku-4-5":            ModelPrice(input_per_1m=0.80, output_per_1m=4.0,  cached_input_per_1m=0.08),
+_PRICING_YAML: Path = Path(__file__).resolve().parent / "llm_pricing.yaml"
 
-    # OpenAI
-    "gpt-4o":                      ModelPrice(input_per_1m=2.50, output_per_1m=10.0),
-    "gpt-4o-mini":                 ModelPrice(input_per_1m=0.15, output_per_1m=0.60),
-    "gpt-5-nano":                  ModelPrice(input_per_1m=0.05, output_per_1m=0.40),
-    "gpt-5-mini":                  ModelPrice(input_per_1m=0.25, output_per_1m=2.00),
-    "gpt-5.4-nano":                ModelPrice(input_per_1m=0.20, output_per_1m=1.00),
-    "gpt-5.4-mini":                ModelPrice(input_per_1m=0.75, output_per_1m=4.50),
 
-    # Qwen (OpenRouter 또는 자체 호스팅)
-    "qwen-3-8b":                   ModelPrice(input_per_1m=0.06, output_per_1m=0.20),
-    "qwen-3-32b":                  ModelPrice(input_per_1m=0.30, output_per_1m=0.80),
-    "qwen-3-72b":                  ModelPrice(input_per_1m=0.60, output_per_1m=1.20),
-    # Qwen 3.6 (35B-A3B, OpenRouter https://openrouter.ai/qwen/qwen3.6-35b-a3b 출시 가격)
-    "qwen/qwen3.6-35b-a3b":        ModelPrice(input_per_1m=0.15, output_per_1m=1.0),
-    "qwen3.6-35b-a3b":             ModelPrice(input_per_1m=0.15, output_per_1m=1.0),
+def _load_pricing() -> dict[str, ModelPrice]:
+    """``llm_pricing.yaml`` → ``{model_name: ModelPrice}``.
 
-    # 로컬 / 자체 호스팅 SGLang / vLLM (비용 0)
-    "local":                       ModelPrice(input_per_1m=0.0,  output_per_1m=0.0),
-    "frentis-ai-model":            ModelPrice(input_per_1m=0.0,  output_per_1m=0.0),
-}
+    yaml 의 ``models:`` 키 아래 dict 를 ``ModelPrice`` 로 변환.
+    `cached_input_per_1m` 누락 시 기본값 0.0 (dataclass 기본값).
+    """
+    data = yaml.safe_load(_PRICING_YAML.read_text(encoding="utf-8"))
+    return {
+        name: ModelPrice(**price)
+        for name, price in (data.get("models") or {}).items()
+    }
+
+
+# 모델 → 가격 mapping (1M tokens 당 USD).
+# 단일 진실 = `llm_pricing.yaml`. 이 dict 는 import 시 yaml 로드 결과.
+PRICING: dict[str, ModelPrice] = _load_pricing()
 
 
 def lookup_price(model: str) -> Optional[ModelPrice]:
