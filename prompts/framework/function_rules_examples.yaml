@@ -3,122 +3,152 @@
 extends: _common
 user_template_specific: |
   # ════════════════════════════════════════════════════════════════
-  # [이 분할 고유 지침] — 분할별 다름 (캐시 미스 시작)
+  # [이 분할 고유 지침] — 분할 3: 비즈니스 규칙·시나리오·질문 추출
   # ════════════════════════════════════════════════════════════════
 
-  ## 이 분할의 일 — 비즈니스 규칙·시나리오·질문 추출 (rules + examples + questions)
+  ## 분할 책임 카드
 
-  ### 이 분할 고유 원칙
+  - **이 분할이 하는 일**: `rules` (비즈니스 규칙) + `examples` (given/when/then 시나리오)
+    + `questions` (모호점 검토 큐) 3 배열.
+  - **이 분할이 안 하는 일**: 함수 의미·역할(→분할 1) / 컬럼 의미(→분할 2)
+  - **출력 미리보기**:
+    ```
+    RulesExamplesOutput {
+      rules:     [{ rule_id, statement, flow_id, guard_rule_id, branch_from, coupled_domains }],
+      examples:  [{ rule_id, description, given, when, then, is_boundary }],
+      questions: [{ text, reason }]
+    }
+    ```
 
-  1. **비즈니스 규칙만 추출**. 기술 관심사 (DI / 로깅 / 트랜잭션 / DTO 변환 / 캐시 / 재시도 / 순수 방어 null) 는 Rule X.
-  2. **컨벤션 우선**. codebase_notes 의 패턴 (회사 wrapper / 에러 매크로) 은 Rule X — 컨벤션의 반복 관용구.
-  3. **인위적 개수 강제 X**. 단순 위임만 있는 함수는 Rule 0 정답. 분기 많으면 분기 수만큼.
-  4. **DDL 타입 X** — Rule statement 에 DDL 컬럼 타입 노출 X.
+  ### 빈값 규칙
+
+  - 단순 위임 함수: `rules: []` + `examples: []` 정답 (인위적 개수 강제 X).
+  - 코드 단서가 명확하면 `questions: []` 정답 (환각 방지).
 
   ---
 
   ## [1] rules — 비즈니스 규칙
 
+  ### Rule 결정 트리
+
+  ```
+  이 조건/분기가 도메인 정책·임계값·역할·상태·코드값 분기인가?
+    → 예 → 결정 질문: "이 조건을 제거하면 사용자(고객/정산/감사) 결과가 달라지는가?"
+            → YES → Rule O
+            → NO  → Rule X (단순 기술 분기)
+    → 아니오 → Rule X
+  ```
+
   ### Rule 후보 — 하나라도 맞으면 O
 
-  - 도메인 임계값 / 정책 값 (₩50,000 이상 할인 / 한도 초과 거절)
-  - 역할·상태·유형 차등 (관리자만 가능 / 'PAID' 상태에서만 환불)
-  - 엔티티·컬럼 값 분기 (결제수단 'CARD' vs 'BANK')
+  - 도메인 임계값·정책값 (₩50,000 이상 할인 / 한도 초과 거절 / 마감일 이전만 등록)
+  - 역할·상태·유형 차등 (관리자만 가능 / 'PAID' 상태에서만 환불 / VIP 만 무료배송)
+  - 엔티티·컬럼 값 분기 (결제수단 'CARD' vs 'BANK' / 처리구분 '01' vs '02')
   - 도메인 계산식 (수수료 = 금액 × 0.03, 단 최소 1000)
-  - 정책 상수 / 비즈니스 예외 throw
+  - 정책 상수·비즈니스 예외 throw (재고 부족 → 'INSUFFICIENT_STOCK' 예외)
 
   ### Rule 제외 — 하나라도 맞으면 X
 
-  - DI / 프레임워크 콜백 / 로깅 / 메트릭 / DTO↔Entity / SQL 바인딩 / 트랜잭션 / 캐시 / 재시도
-  - 순수 기술 예외 (NPE 방어 / 타입 캐스팅 실패)
-  - 순수 방어 null/empty (내부 헬퍼 인자 null 체크 / requireNonNull 일반 사용)
-  - 컨벤션의 반복 관용구 (회사 wrapper 매크로의 표준 에러 처리)
+  - DI / 프레임워크 콜백 / 로깅 / 메트릭 / DTO↔Entity / 트랜잭션 / 캐시 / 재시도
+  - 순수 기술 예외 (NPE 방어 / 타입 캐스팅 실패 / OOM)
+  - 순수 방어 null/empty (내부 헬퍼 인자 null 체크 / `requireNonNull` 일반 사용)
+  - 컨벤션 반복 관용구 (회사 wrapper 매크로의 표준 에러 처리)
 
-  ### NULL/빈값 구분 — 결정 질문
+  ### NULL/빈값 구분 — 결정 질문 필수
 
-  - O Rule: 도메인 식별자 NULL 검증 (청구번호·계좌번호·업무구분 검증) / NULL→기본값 / 조건부 필수.
-    - 함수명이 `*_validation` / `*_check_*` / `input_validation` 이면 안의 NULL 체크는 도메인 정책.
-  - X Rule: 내부 헬퍼 인자 null 체크 / 프레임워크 경계 방어.
-  - 결정 질문: "이 조건을 제거하면 사용자 (고객/정산/감사) 결과가 달라지는가?" YES → Rule / NO → 제외.
+  - O Rule (도메인 검증): 청구번호·계좌번호·업무구분 NULL → 거절 / NULL → 기본값 / 조건부 필수.
+    - 함수명이 `*_validation` / `*_check_*` / `input_validation` 패턴이면 그 안의 NULL 체크는
+      도메인 정책일 가능성 ↑.
+  - X Rule (기술 방어): 내부 헬퍼 인자 null 체크 / 프레임워크 경계 방어.
 
-  ### Rule 필드
+  ### 분기 누락 금지 — 종료 경로 N 개 = Rule 의미 N 개
 
-  - `statement`: "<조건>이면 <결과>" 10~30자. 코드 식별자 금지 (엔티티 필드명은 OK).
-  - `rule_id`: "R1", "R2", ...
-  - `flow_id`: "1" / "2" (메인) · "1-1" (R1 분기) · "2-1-1" (중첩).
-  - `guard_rule_id`: 선행 Rule 통과 전제이면 "R1", 없으면 null.
-  - `branch_from`: if/else/switch 갈래면 분기 원 Rule id, 없으면 null.
-  - `coupled_domains`: [] 기본. 타 도메인 테이블 WRITE·값 분기·enum·계산 시 도메인명 추가. 단순 코드 lookup·로깅 read 는 X.
+  본문에 분기가 N 개면 비즈니스 Rule 도 그 분기 수와 의미를 반영해야 함. 빠뜨리면
+  상위 분석이 흐름을 잃음.
 
-  비즈니스 정책 예외 throw = 독립 Rule 로 승격.
+  - 각 도메인 분기마다 1 Rule (값마다 Example).
+  - **에러 분기도 비즈니스 의미가 있으면 별도 Rule** — 예: "외부 인증 실패 시 안내
+    문구 결정" 은 기술 에러가 아니라 도메인 의사결정.
+  - **silent pass 분기 명시** — 에러 신호(코드/예외/null)를 받았으나 처리 없이
+    통과하는 분기. "특정 코드(NotFound·재시도 가능) 는 조용히 통과" 자체가 도메인 정책.
+  - **조기 return / break / continue** 로 인한 분기도 마찬가지.
+
+  ### Rule 필드 6개
+
+  - `statement` — `"<조건>이면 <결과>"` 10~30자. 코드 식별자 금지 (엔티티 필드명 OK).
+  - `rule_id` — "R1", "R2", ...
+  - `flow_id` — "1" / "2" (메인) · "1-1" (R1 분기) · "2-1-1" (중첩).
+  - `guard_rule_id` — 선행 Rule 통과 전제이면 "R1", 없으면 null.
+  - `branch_from` — if/else/switch 갈래면 분기 원 Rule id, 없으면 null.
+  - `coupled_domains` — `[]` 기본. 타 도메인 테이블 WRITE·값 분기·enum·계산 시 도메인명 추가.
+    단순 코드 lookup·로깅 read 는 추가 X.
+
+  ### 안티패턴/정답 쌍
+
+  #### a. 기술 관심사 → Rule
+
+  - X: Rule "트랜잭션 commit 실행" → 기술 관심사
+    O: Rule X (기술 메커니즘)
+  - X: Rule "DTO 를 Entity 로 변환" → 기술 관심사
+    O: Rule X (어댑터)
+
+  #### b. 동어반복 / 과한 세분화
+
+  - X: 결제수단 5개 값마다 Rule 5개 ("CARD 이면 ..." / "BANK 이면 ..." ...)
+    O: Rule 1개 ("결제수단 별로 한도 검증") + Example 5개 (값마다 시나리오)
+
+  #### c. 분기 누락
+
+  - X: Rule "조회 후 결과 반환" 만 적고 NotFound silent pass 누락
+    O: Rule 2개: 1) "조회 결과 있으면 반환" 2) "조회 결과 없으면 (NotFound) 로그·에러 없이 통과"
 
   ### 개수 가이드
 
-  - 인위적 상·하한 없음.
-  - 단순 위임만 있는 함수: 0 정답.
+  - **인위적 상·하한 없음**.
+  - 단순 위임만 있는 함수: **0 정답**.
   - 분기 많으면 분기 수만큼.
-  - 같은 패턴 값마다 Rule 쪼개는 과한 세분화 X — 복수 값/필드는 1 Rule + 값마다 Example.
-
-  ### 분기 누락 금지 — 모든 종료 경로 + silent pass
-
-  본문에 분기가 N개면 비즈니스 Rule 도 그 분기 수와 의미를 반영해야 한다. 빠뜨리면
-  상위(caller·부모) 분석이 흐름을 잃는다.
-
-  - **각 도메인 분기마다 1 Rule** (값마다 Example) — if/else/switch 갈래가 도메인
-    의미가 다르면 빠뜨림 없이.
-  - **에러 분기도 비즈니스 의미가 있으면 별도 Rule** — 예: "외부 인증 실패 시 안내
-    문구 결정" 은 기술 에러가 아니라 도메인 의사결정.
-  - **silent pass 분기 명시** — 에러 신호(코드/예외/null 등)를 받았으나 처리 없이
-    통과하는 분기는 의미상 별도 흐름. "특정 코드 (예: NotFound·재시도 가능) 는
-    조용히 통과" 자체가 도메인 정책일 수 있음 → Rule 후보.
-  - **조기 return / break** 로 인한 분기도 마찬가지.
-
-  마인드셋: 종료 경로가 N개면 Rule 도 비즈니스 의미가 있는 만큼. 한 흐름만 적고
-  다른 흐름 빠뜨리지 말 것. 언어 무관.
+  - 같은 패턴 값 5개 → Rule 1개 + Example 5개 (값별로 쪼개지 X).
 
   ---
 
   ## [2] examples — given/when/then 시나리오
 
-  각 Rule 의 행동 결과를 시나리오로:
+  각 Rule 의 행동 결과를 시나리오로. 자유 키 영역은 모두 `[{{ "key": "...", "value": "..." }}]`
+  리스트로 출력 ([[_common]] §4 — Pydantic strict mode).
 
-  - `rule_id`: 참조 Rule id.
-  - `description`: 사람용 한 줄 요약.
+  ### Example 필드
+
+  - `rule_id` — 참조 Rule id.
+  - `description` — 사람용 한 줄 요약.
   - `given`:
-    - `narrative`: 왜 이 시나리오인지 한 줄 (inputs 풀어쓰기 X).
-    - `inputs`: `[{{ "key": "<파라미터명>", "value": "<값/JSON>" }}]` — 파라미터 이름·값 쌍.
-    - `globals`: `[{{ "key": "<전역명>", "value": "<값/JSON>" }}]` — 전제 전역 상태.
-    - `stubs`: `[{{ "key": "<외부호출>", "value": "<반환값/JSON>" }}]` — 스텁 반환값.
-  - `when`: 자연어 한 줄 ("결제 요청" / "출금 요청"). 메서드명·클래스명 X.
+    - `narrative` — 왜 이 시나리오인지 한 줄 (inputs 풀어쓰기 X — 중복 금지).
+    - `inputs` — `[{{ "key": "<파라미터명>", "value": "<값/JSON>" }}]`.
+    - `globals` — `[{{ "key": "<전역명>", "value": "<값/JSON>" }}]`. 전제 전역 상태.
+    - `stubs` — `[{{ "key": "<외부호출>", "value": "<반환값/JSON>" }}]`. 스텁 반환값.
+  - `when` — 자연어 한 줄 ("결제 요청" / "출금 요청"). 메서드명·클래스명 X.
   - `then`:
-    - `narrative`: 결과 핵심 한 줄 (return·writes 풀어쓰기 X).
-    - `return_value`: 반환값 (단순값 또는 JSON 문자열). 반환 없으면 "".
-    - `exception`: null 또는 `{{ "type": "...", "code": "...", "message": "..." }}`.
-    - `reads`: `[{{ "table": "...", "columns": ["..."] }}]`.
-    - `writes`: `[{{ "table": "...", "op": "INSERT|UPDATE|DELETE|MERGE", "where": [{{key,value}}], "values": [{{key,value}}] }}]`.
-    - `globals`: `[{{ "key": "<전역명>", "value": "<값/JSON>" }}]` — 변경된 전역.
-    - `out_params`: `[{{ "key": "<OUT명>", "value": "<값/JSON>" }}]` — 변경된 OUT.
-  - `is_boundary`: true/false.
-
-  ### key/value 표기 규칙
-
-  자유 키 영역(inputs / globals / stubs / out_params / where / values) 은 모두
-  `[{{ "key": "...", "value": "..." }}]` 리스트로 출력. 값이 객체이면 value 안에 JSON
-  문자열로 직렬화. 빈 영역은 `[]`.
+    - `narrative` — 결과 핵심 한 줄 (return·writes 풀어쓰기 X).
+    - `return_value` — 반환값 (단순값 또는 JSON 문자열). 반환 없으면 `""`.
+    - `exception` — `null` 또는 `{{ "type": "...", "code": "...", "message": "..." }}`.
+    - `reads` — `[{{ "table": "...", "columns": ["..."] }}]`.
+    - `writes` — `[{{ "table": "...", "op": "INSERT|UPDATE|DELETE|MERGE", "where": [{{key,value}}], "values": [{{key,value}}] }}]`.
+    - `globals` — `[{{ "key": "<전역명>", "value": "<값/JSON>" }}]` — 변경된 전역.
+    - `out_params` — `[{{ "key": "<OUT명>", "value": "<값/JSON>" }}]` — 변경된 OUT 파라미터.
+  - `is_boundary` — true/false (경계 케이스 여부).
 
   ### narrative 규칙
 
-  "왜 이 시나리오인지" / "결과 핵심" 만 한 줄. inputs / return / writes 의 값을 풀어 쓰지 X
-  (해당 필드에 이미 있음 — 중복 금지).
+  - "왜 이 시나리오인지" / "결과 핵심" 만 한 줄.
+  - inputs / return / writes 의 값을 풀어 쓰지 X (해당 필드에 이미 있음 — 중복 금지).
 
-  ### 원칙
+  ### Example 작성 원칙 6가지
 
-  - `given.inputs` = 이 Rule 까지 도달 가능한 전체 입력 (선행 가드 통과값 포함).
-  - `then` = 관찰 가능한 모든 변화 (반환·예외·DB·전역·OUT) 빠짐없이.
-  - `reads` = 이 시나리오 접근 테이블·컬럼 (단순 SELECT 도 누락 X).
-  - 변경 없으면 `[]` (필드 생략 X).
-  - 값은 실제 리터럴만 (변수명·메서드명 X).
-  - JSON 유효 형식.
+  1. `given.inputs` = 이 Rule 까지 도달 가능한 전체 입력 (선행 가드 통과값 포함).
+  2. `then` = 관찰 가능한 모든 변화 (반환·예외·DB·전역·OUT) 빠짐 없이.
+  3. `reads` = 이 시나리오 접근 테이블·컬럼 (단순 SELECT 도 누락 X).
+  4. 변경 없으면 `[]` (필드 생략 X).
+  5. 값은 실제 리터럴만 (변수명·메서드명 X).
+  6. JSON 유효 형식. 자유 키 dict 절대 X (`list[KeyValueItem]` 강제).
 
   ### Example 필수 커버리지
 
@@ -128,28 +158,66 @@ user_template_specific: |
 
   ### 개수 가이드
 
-  - examples 총 ≤ 7개 권장. 더 필요하면 Rule 쪼개기 검토.
+  - examples 총 **≤ 7개 권장**. 더 필요하면 Rule 쪼개기 검토.
 
   ---
 
-  ## [3] questions — 사람 검토 큐
+  ## [3] questions — 사람 검토 큐 (★ 환각 방지 + 난사 방지)
 
-  코드 / callee summary 만으로 답할 수 없는 모호함을 한 줄 질문으로:
+  코드 / callee summary 만으로 답할 수 없는 모호함을 한 줄 질문으로.
 
-  - text: 한 줄 질문 (예: "REQUEST_CHANNEL 컬럼의 'M'·'W'·'A' 코드값 의미는?")
-  - reason: 코드 근거 없는 이유 (예: "본문에 리터럴은 박혀있으나 매핑 주석·상수 정의 없음")
+  ### Question 필드 2개
 
-  ★ 코드 단서가 분명한 사실은 Question X (환각 방지).
-  ★ Question 0 도 정상 (Rule·Example 과 독립).
+  - `text` — 한 줄 질문 (예: "REQUEST_CHANNEL 컬럼의 'M'·'W'·'A' 코드값 의미는?")
+  - `reason` — 코드 근거 없는 이유 (예: "본문에 리터럴은 박혀있으나 매핑 주석·상수 정의 없음")
 
-  ---
+  ### Question 강제 조건 — 다음 4 조건 **모두** 만족해야 출력
 
-  ## 이 분할 추가 규칙
+  하나라도 만족 못 하면 그 Question 은 **출력 금지** (환각·난사 방지):
 
-  rules 0개도 valid (단순 위임 함수). 그 경우 examples 도 [].
+  1. **본문에 명확한 모호 단서**가 있음 — 의미 알 수 없는 코드값 리터럴 / 매핑 없는
+     상수 / 정의 없는 외부 호출 등.
+  2. **코드 / callee_summary / codebase_notes / referenced_symbols 어디에도 답 없음**.
+  3. **이 함수의 분석 결과에 영향을 줄 정도의 모호함** — Rule 의 도메인 의미 / Example
+     의 시나리오 정확성에 직접 영향.
+  4. **다른 Question 과 의미 중복 없음** — 한 모호점은 1 Question. 같은 코드값을 여러
+     Question 으로 쪼개지 X.
+
+  ### Question 금지 패턴 — 다음 케이스는 절대 출력 X
+
+  - **답이 본문에 있는 질문** — 환각. 코드에 있는 사실은 Question X.
+  - **단순 호기심·일반 질문** — "이 함수는 왜 만들어졌나요?" 식 X. 분석 영향 0.
+  - **외부 시스템 일반 질문** — "PG 사가 어떻게 응답하나요?" X. 본문 분석 범위 밖.
+  - **분석 결과 영향 없는 질문** — "이 컬럼 옆 컬럼 의미?" 식 X.
+
+  ### 개수 가이드 (★ 난사 방지 — 직전 검증 이슈)
+
+  - **상한**: 함수당 **≤ 5개**. 5개 초과하면 분석 자체가 모호한 것 — 함수 분해 또는 도메인 컨텍스트
+    부족 신호. 5개 안에서 우선순위 높은 것만.
+  - **하한**: **0 정답** 정상. 코드 단서 명확하면 강제로 Question 만들 필요 X.
+  - **중복 거부**: 같은 코드값에 대한 Question 은 1개만. 의미 중복 0.
+
+  ### 좋은 예 (다양 도메인 — 3쌍)
+
+  - 결제: "RESPONSE_CODE 의 '0000' / '0001' / '0099' 외 코드값의 의미와 처리 방침은?"
+    reason: "본문에 '0000', '0001' 만 분기됨. 마스터 테이블 SELECT·주석·상수 정의 없음"
+  - 회원: "MEMBER_GRADE 의 'VIP' / 'GOLD' / 'SILVER' / 'BRONZE' 별 정책 차등 기준은?"
+    reason: "본문은 등급 컬럼만 갱신. 등급별 행동 차이는 다른 함수 책임이지만 도메인 정의 자료 부재"
+  - 정산: "SETTLE_DATE 가 NULL 일 때 미정산 의미인지, 마감 후 확정 의미인지?"
+    reason: "본문은 NULL 체크 후 다른 분기. 두 의미 모두 가능하며 codebase_notes 무관"
+
+  ### 안티패턴/정답 쌍
+
+  - X: "이 함수가 왜 호출되는가?" (분석 영향 X — 호기심 질문)
+    O: Question 출력 X
+  - X: 같은 상태값에 대해 Question 3개 ("STATUS 의 'A' 의미?", "'B' 의미?", "'C' 의미?")
+    O: Question 1개 ("STATUS 의 'A' / 'B' / 'C' 각각의 비즈니스 상태 의미는?")
+  - X: 본문에 명시된 사실을 Question 으로 ("결제수단 'CARD' / 'BANK' 의미는?" — 본문에 분기 명시)
+    O: Question X (본문에 답 있음)
 
   # ════════════════════════════════════════════════════════════════
   # [응답 형식 마무리]
   # ════════════════════════════════════════════════════════════════
 
-  ▸ 이번 호출: **RulesExamplesOutput** 출력 — rules / examples / questions.
+  Pydantic 모델: **RulesExamplesOutput** — `rules` / `examples` / `questions` 3 배열만
+  응답에 포함. 다른 필드는 다른 분할 책임.

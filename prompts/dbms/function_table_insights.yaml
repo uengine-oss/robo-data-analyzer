@@ -3,60 +3,143 @@
 extends: _common
 user_template_specific: |
   # ════════════════════════════════════════════════════════════════
-  # [이 분할 고유 지침] — 분할별 다름 (캐시 미스 시작)
+  # [이 분할 고유 지침] — 분할 2: 테이블별 사용 양상 분석
   # ════════════════════════════════════════════════════════════════
 
-  ## 이 분할의 일 — 테이블별 role + 컬럼 의미 (table_insights)
+  ## 분할 책임 카드
 
-  ### 이 분할 고유 원칙
+  - **이 분할이 하는 일**: `table_insights` 배열 — `reads` / `writes` 의 각 테이블에 대해
+    이 range 에서의 사용 역할(`role`) + raw SQL 에 등장한 컬럼의 비즈니스 의미(`columns`).
+  - **이 분할이 안 하는 일**: range 의미·역할(→분할 1) / 비즈니스 규칙·시나리오·질문(→분할 3)
+  - **출력 미리보기**:
+    ```
+    TableInsightsOutput {
+      table_insights: [
+        {
+          table_fqn: "db.schema.ZPAY_AP_RLTM_AUTH_HST",
+          role: "audit-write",
+          columns: [
+            { name: "RESPONSE_CODE", description: "...", usage: "values" },
+            { name: "APPROVE_TIME",  description: "...", usage: "values" }
+          ]
+        },
+        ...
+      ]
+    }
+    ```
 
-  - **DML 자체보다 의도** — "WHERE status='A'" → "활성 사용자만 대상".
-  - **DDL 타입·스키마 X** — 컬럼 description 은 비즈니스 의미만 (`VARCHAR2(20)` 같은 정의 X).
-  - **추측 컬럼 X** — raw SQL 에 등장한 컬럼만 (SELECT 절·WHERE·SET·VALUES·JOIN ON·집계함수 인자).
-  - **보수적 — 모호하면 안 한다** — 명확한 의미가 있을 때만 작성.
+  ### 빈값 규칙
+
+  - `reads` / `writes` 가 모두 비어있으면 `table_insights: []`.
+  - 어떤 테이블이 `reads` / `writes` 에는 있지만 raw SQL 에서 컬럼 등장 0 이면 그 테이블
+    엔트리는 `columns: []` (역할만 채움). 추측 컬럼 절대 X.
 
   ---
 
-  ### [1] table_insights — 테이블별 role + 컬럼 description
+  ## [1] role — 테이블별 1개 분류
 
-  주어진 reads / writes 의 각 테이블에 대해:
+  이 range 가 해당 테이블을 어떻게 다루는지 한 단어로 분류. 허용 풀:
 
-  #### role (테이블별 1개)
+  - `DML target`     — INSERT / UPDATE / DELETE / MERGE 대상.
+  - `reference`      — SELECT 만, 결과를 후속 DML / 분기에 씀.
+  - `aggregation`    — 집계 (SUM / COUNT / GROUP BY) 대상.
+  - `cursor-loop`    — 커서로 행 단위 순회.
+  - `lookup`         — 코드 / 마스터 조회 (단순 매핑 결정).
+  - `audit-write`    — append-only 이력 / 감사 로그.
+  - `merge-target`   — MERGE 의 target (INSERT-or-UPDATE).
 
-  이 range 가 해당 테이블을 어떻게 다루는지 한 단어로 분류:
+  ### role 결정 트리
 
-  - `DML target` — INSERT / UPDATE / DELETE / MERGE 대상.
-  - `reference` — SELECT 만, 결과를 후속 DML / 분기에 씀.
-  - `aggregation` — 집계 (SUM / COUNT / GROUP BY) 대상.
-  - `cursor-loop` — 커서로 행 단위 순회.
-  - `lookup` — 코드 / 마스터 조회 (단순 매핑 결정).
-  - `audit-write` — append-only 이력 / 감사 로그.
-  - `merge-target` — MERGE 의 target (INSERT-or-UPDATE).
+  ```
+  MERGE 의 target?
+    → 예 → merge-target
+    → 아니오 → 다음
+  INSERT 만 + 갱신/삭제 없음 (이력성)?
+    → 예 → audit-write
+    → 아니오 → 다음
+  INSERT/UPDATE/DELETE 본질?
+    → 예 → DML target
+    → 아니오 → 다음
+  SELECT 만 + 커서로 행 단위 순회?
+    → 예 → cursor-loop
+    → 아니오 → 다음
+  SELECT + 집계 (SUM/COUNT/AVG/GROUP BY)?
+    → 예 → aggregation
+    → 아니오 → 다음
+  SELECT + 코드/마스터 조회 (단순 매핑)?
+    → 예 → lookup
+    → 아니오 → reference
+  ```
 
-  role 은 reads / writes 의 op 와 본문 흐름을 함께 보고 결정. 단순 op 매핑 아님.
+  ### 안티패턴/정답 쌍
 
-  #### columns (테이블별 N개)
+  - X: 결제 이력 테이블에 INSERT 만 한데 `DML target` 박음
+    O: `audit-write` (이력성 — 갱신·삭제 없음)
+  - X: 카드사 코드 마스터를 SELECT 만 하는데 `reference`
+    O: `lookup` (코드 매핑 결정에 사용)
+  - X: MERGE 의 USING source 테이블을 `merge-target`
+    O: `reference` (target 이 아니라 source)
 
-  raw SQL 에 직접 등장한 컬럼만. 각 컬럼:
+  ---
 
-  - `name`: DDL 컬럼명 정확히 (예: `RESPONSE_CODE`). 추측 X.
-  - `description`: 비즈니스 의미 한 줄. DDL 타입 X / 동어반복 X.
-    - 예: "응답 코드 ('0000' = 성공 / '0001' = 한도초과)"
-    - 예: "정산일자 (YYYYMMDD 형태, 마감 처리 후 NULL → 확정일)"
-  - `usage`: `select` / `where` / `set` / `values` / `join_on` / `group_by` / `order_by` — 이 range 에서 어떻게 쓰는지.
+  ## [2] columns — 테이블별 N개
 
-  컬럼이 분명 등장했지만 의미 추론 불가 → description 에 추측 쓰지 말 것
-  (등장 맥락만; 모호점은 #3 questions 가 담당).
+  raw SQL 에 직접 등장한 컬럼만. 추측 컬럼 절대 X. 본문 등장 위치:
 
-  #### Oracle / PG / SQL Server 특이 표현
+  - SELECT 절 / WHERE 절 / SET 절 / VALUES 절 / JOIN ON 절 / GROUP BY / ORDER BY
+  - 집계 함수 인자 (`SUM(AMOUNT)` 의 AMOUNT)
+  - RETURNING / OUTPUT 절 (PG / SQL Server)
 
-  - Oracle: `SYS_GUID()` / `ROWNUM` / `LEVEL` / `CONNECT_BY_*` — DDL 컬럼 아님, 별도 인식.
-  - PostgreSQL: `RETURNING` 절의 컬럼은 write 후 회수 — usage=`returning`.
-  - SQL Server: `OUTPUT INSERTED.*` / `OUTPUT DELETED.*` — usage=`output`.
-  - 시퀀스 (`SEQ.NEXTVAL` / `nextval()`) — DDL 컬럼 아니지만 INSERT VALUES 자리에 등장 → values 에 시퀀스 명시.
+  ### 각 컬럼 필드 3개
+
+  - `name` — DDL 컬럼명 정확히 (예: `RESPONSE_CODE`). 대소문자 본문대로.
+  - `description` — 비즈니스 의미 한 줄. **반드시 지킬 4가지**:
+    1. DDL 타입 X (`VARCHAR2(20)` 같은 정의 적지 X)
+    2. 동어반복 X ("응답코드를 저장하는 컬럼" 식 금지)
+    3. SQL 문법 표현 X ("WHERE 절에 쓰이는 컬럼" 식 금지 — 그건 usage 가 담당)
+    4. 의미 추론 불가 → 빈값 X / 등장 맥락만 / 모호점은 분할 3 questions 가 담당
+  - `usage` — 이 range 에서 어떻게 쓰는지. 허용 풀:
+    - `select`     — SELECT 절 회수
+    - `where`      — WHERE 조건
+    - `set`        — UPDATE SET
+    - `values`     — INSERT VALUES
+    - `join_on`    — JOIN ON
+    - `group_by`   — GROUP BY 키
+    - `order_by`   — ORDER BY 키
+    - `returning`  — PG RETURNING 절
+    - `output`     — SQL Server OUTPUT 절
+
+  ### description 좋은 예 (6가지 도메인)
+
+  - 결제 응답: `RESPONSE_CODE` → "외부 PG 응답 코드 ('0000' = 성공 / '0001' = 한도초과)"
+  - 시간 기록: `APPROVE_TIME` → "결제 승인 시각 (외부 PG 응답 시점)"
+  - 정산 일자: `SETTLE_DATE` → "정산일자 (YYYYMMDD, 마감 후 NULL → 확정일)"
+  - 상태값: `ORDER_STATUS` → "주문 상태 코드 ('PAID' / 'CANCEL' / 'PENDING')"
+  - 카드 정보: `CARD_NO_PARTIAL` → "카드번호 일부 (마스킹 6자리 — '123456')"
+  - 회계 분개: `DEBIT_AMT` → "차변 금액 (정산 통화 단위)"
+
+  ### Oracle / PG / SQL Server / MySQL 특이 표현
+
+  - **Oracle**: `SYS_GUID()` / `ROWNUM` / `LEVEL` / `CONNECT_BY_*` / `SEQ.NEXTVAL` —
+    DDL 컬럼 아닌 함수·시퀀스 표현. **컬럼 출력 X**.
+  - **PostgreSQL**: `RETURNING` 절 컬럼 — usage=`returning`.
+  - **SQL Server**: `OUTPUT INSERTED.*` / `OUTPUT DELETED.*` — usage=`output`.
+  - **MySQL**: `ON DUPLICATE KEY UPDATE` 컬럼 — usage=`set`.
+
+  ### 안티패턴/정답 쌍
+
+  - X: description = "VARCHAR2(4) NOT NULL"
+    O: description = "외부 PG 응답 코드 ('0000' = 성공 / '0001' = 한도초과)"
+  - X: description = "WHERE 절에서 비교하는 컬럼" (SQL 문법 표현)
+    O: description = "주문 상태 코드" + usage=`where`
+  - X: `SEQ_ORDER.NEXTVAL` 을 컬럼으로 출력 (시퀀스 = 컬럼 아님)
+    O: 컬럼 출력 X. 시퀀스 사용은 분할 1 summary 의 DML 키포인트에서 명시
+  - X: SQL 에 없는 `CREATED_AT` 추측 추가
+    O: 본문에 없는 컬럼 출력 X. 의문은 분할 3 questions 로
 
   # ════════════════════════════════════════════════════════════════
   # [응답 형식 마무리]
   # ════════════════════════════════════════════════════════════════
 
-  ▸ 이번 호출: **TableInsightsOutput** 출력 — table_insights.
+  Pydantic 모델: **TableInsightsOutput** — `table_insights` 배열만 응답에 포함.
+  다른 필드는 다른 분할 책임.
