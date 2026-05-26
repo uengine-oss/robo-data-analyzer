@@ -28,7 +28,6 @@ from data_models.graph_edges import (
     ParentOf,
     ReadsWrites,
     References,
-    Uses,
 )
 from data_models.graph_nodes import (
     Column,
@@ -68,7 +67,6 @@ class WorkflowState(TypedDict, total=False):
     variables: Annotated[list[Variable], operator.add]
     constants: Annotated[list[Constant], operator.add]
     data_types: Annotated[list[DataType], operator.add]
-    uses_edges: Annotated[list[Uses], operator.add]
     parent_of_edges: Annotated[list[ParentOf], operator.add]
     has_function_edges: Annotated[list[HasFunction], operator.add]
     has_variable_edges: Annotated[list[HasVariable], operator.add]

@@ -25,7 +25,6 @@ from shared.neo4j.edges.has_variable import upsert_has_variable
 from shared.neo4j.edges.init_by import upsert_init_by
 from shared.neo4j.edges.parent_of import upsert_parent_of
 from shared.neo4j.edges.references import upsert_references
-from shared.neo4j.edges.uses import upsert_uses
 from shared.neo4j.neo4j_client import Neo4jClient
 from shared.neo4j.nodes.constant import upsert_constants
 from shared.neo4j.nodes.data_type import upsert_data_types
@@ -41,7 +40,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
     """antlr JSON 디렉토리 → 코드 노드 + 구조/참조 엣지 + call_sites/import_refs.
 
     코드 노드 = Function / Module / Package / Variable / Constant / DataType.
-    구조 엣지 = PARENT_OF / USES / HAS_FUNCTION / HAS_VARIABLE / HAS_MEMBER /
+    구조 엣지 = PARENT_OF / HAS_FUNCTION / HAS_VARIABLE / HAS_MEMBER /
                BELONGS_TO_PACKAGE (reader 가 antlr 트리에서 도출).
     참조 엣지 = REFERENCES / INIT_BY (reference_linker 결정론 식별자 매칭).
     antlr JSON 디렉토리가 없으면 ``FileNotFoundError`` — silent skip 하지 않는다.
@@ -67,7 +66,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
 
     functions, modules, packages = [], [], []
     variables, constants, data_types = [], [], []
-    parent_of, uses = [], []
+    parent_of = []
     has_function, has_variable, has_member, belongs_to_package = [], [], [], []
     call_sites, import_refs = [], []
     parsed_files = 0
@@ -82,7 +81,6 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         constants.extend(result.constants)
         data_types.extend(result.data_types)
         parent_of.extend(result.parent_of_edges)
-        uses.extend(result.uses_edges)
         has_function.extend(result.has_function_edges)
         has_variable.extend(result.has_variable_edges)
         has_member.extend(result.has_member_edges)
@@ -107,7 +105,6 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
             upsert_data_types(neo, data_types),
         )
         await upsert_parent_of(neo, parent_of)
-        await upsert_uses(neo, uses)
         await upsert_has_function(neo, has_function)
         await upsert_has_variable(neo, has_variable)
         await upsert_has_member(neo, has_member)
@@ -121,7 +118,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         functions=len(functions), modules=len(modules),
         packages=len(packages), variables=len(variables),
         constants=len(constants), data_types=len(data_types),
-        parent_of_edges=len(parent_of), uses_edges=len(uses),
+        parent_of_edges=len(parent_of),
         has_function=len(has_function), has_variable=len(has_variable),
         has_member=len(has_member), belongs_to_package=len(belongs_to_package),
         references=len(references), init_by=len(init_by),
@@ -136,7 +133,6 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         "constants": constants,
         "data_types": data_types,
         "parent_of_edges": parent_of,
-        "uses_edges": uses,
         "has_function_edges": has_function,
         "has_variable_edges": has_variable,
         "has_member_edges": has_member,

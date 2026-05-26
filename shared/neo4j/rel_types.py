@@ -11,7 +11,6 @@ from __future__ import annotations
 # 코드 구조 (antlr JSON 에서 도출)
 CALLS = "CALLS"              # Function → Function
 PARENT_OF = "PARENT_OF"      # Function → nested Function (DBMS range 트리)
-USES = "USES"                # Module → Module
 HAS_FUNCTION = "HAS_FUNCTION"               # Module → Function
 HAS_VARIABLE = "HAS_VARIABLE"               # Module → Variable
 HAS_MEMBER = "HAS_MEMBER"                   # DataType → Variable (struct 멤버)

@@ -132,7 +132,6 @@ _KEY_LABELS: dict[str, str] = {
     "belongs_to_edges":     "belongs_to",
     "fk_edges":             "fk",
     "parent_of_edges":      "parent_of",
-    "uses_edges":           "uses",
     "reads_writes_edges":   "R/W",
     "calls_edges":          "calls",
     "unresolved_cases":     "미해결",

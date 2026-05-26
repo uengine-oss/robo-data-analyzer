@@ -109,23 +109,6 @@ class ParentOf:
     child_function_id: str
 
 
-# ── Module ↔ Module ───────────────────────────────────────
-
-@dataclass(frozen=True)
-class Uses:
-    """Module → Module (모듈간 사용).
-
-    Framework 의 import / DBMS 의 package 참조 등.
-
-    scope:
-    - ``internal``: 같은 프로젝트 내
-    - ``external``: 외부 라이브러리 의존
-    """
-    from_module_id: str
-    to_module_id: str
-    scope: Literal["internal", "external"] = "internal"
-
-
 # ── 코드 구조 엣지 (load_ast 가 antlr JSON 트리에서 생성) ──
 
 @dataclass(frozen=True)

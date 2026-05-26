@@ -23,7 +23,6 @@ from data_models.graph_edges import (
     HasMember,
     HasVariable,
     ParentOf,
-    Uses,
 )
 from data_models.graph_nodes import Constant, DataType, Function, Module, Package, Variable
 from shared.config.env_catalog import ENV
@@ -52,7 +51,6 @@ class ParseResult:
     constants: list[Constant] = field(default_factory=list)
     data_types: list[DataType] = field(default_factory=list)
     parent_of_edges: list[ParentOf] = field(default_factory=list)
-    uses_edges: list[Uses] = field(default_factory=list)
     has_function_edges: list[HasFunction] = field(default_factory=list)
     has_variable_edges: list[HasVariable] = field(default_factory=list)
     has_member_edges: list[HasMember] = field(default_factory=list)

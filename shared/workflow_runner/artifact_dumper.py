@@ -70,7 +70,6 @@ def dump_state_artifacts(run: Run, state: dict) -> None:
     dump_artifact(run, "linking", {
         "reads_writes_edges": state.get("reads_writes_edges", []),
         "calls_edges": state.get("calls_edges", []),
-        "uses_edges": state.get("uses_edges", []),
         "unresolved_cases": state.get("unresolved_cases", []),
         "scan_result": state.get("scan_result", {}),
     })
