@@ -93,9 +93,6 @@ FRAMEWORK_PIPELINE = Strategy(
         link_deterministic_step,
         link_calls_by_name_step,              # ★ Framework 만 — 결정론 Call 분류 (LLM 0)
         link_residual_patterns_step,          # ★ Framework 만 — 잔여 패턴 루프 (테이블 미해결)
-        # link_architect_chunks_step 보류 — XML/구조화파일 링킹 재설계 전까지 비활성.
-        #   되살리려면 import 복원 + 이 자리에 다시 추가. 스텝·ArchitectChunk 노드·
-        #   REFER_TO 인프라는 보존(삭제 금지) — 휴면 상태. 상세: 계획 §2.8 Issue I.
         build_context_step,
         analyze_function_step,
         summarize_module_step,

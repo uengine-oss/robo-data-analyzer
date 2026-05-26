@@ -9,7 +9,6 @@ system: |
   - callee_summaries: Bottom-up DAG 로 이미 분석된 하위 호출 요약
   - reads / writes: 이미 결정된 테이블 접근 (phase_linking 결과)
   - referenced_symbols: 함수가 참조하는 변수·상수 (선언 타입·초기값·초기화 출처)
-  - referred_chunks: 함수가 참조하는 구조화 파일(XML mapper 등)의 키-값 블록
 
   ## 공통 원칙 (모든 분할 적용)
 
@@ -43,9 +42,6 @@ user_template: |
 
   referenced_symbols:
   {referenced_symbols}
-
-  referred_chunks:
-  {referred_chunks}
 
   callee_summaries:
   {callee_summaries}

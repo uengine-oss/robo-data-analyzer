@@ -9,7 +9,6 @@ system: |
   - reads / writes: 이미 결정된 테이블 접근
   - ancestor_context: 자기를 감싼 조상 range 들의 골격 (자식 구간 `....` 압축) — 자기 위치 파악용
   - referenced_symbols: 이 range 가 참조하는 변수·상수 (선언 타입·초기값·초기화 출처)
-  - referred_chunks: 이 range 가 참조하는 구조화 파일의 키-값 블록
 
   ## 공통 원칙 (모든 분할 적용)
 
@@ -45,9 +44,6 @@ user_template: |
 
   referenced_symbols:
   {referenced_symbols}
-
-  referred_chunks:
-  {referred_chunks}
 
   callee_summaries:
   {callee_summaries}

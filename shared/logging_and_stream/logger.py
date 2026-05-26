@@ -135,7 +135,6 @@ _KEY_LABELS: dict[str, str] = {
     "uses_edges":           "uses",
     "reads_writes_edges":   "R/W",
     "calls_edges":          "calls",
-    "refer_to_edges":       "refer_to",
     "unresolved_cases":     "미해결",
     "resolved":             "해결",
     "still_unresolved":     "남은미해결",

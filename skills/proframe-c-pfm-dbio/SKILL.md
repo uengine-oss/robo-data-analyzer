@@ -34,7 +34,7 @@ ProFrame SQL_KEY 는 두 형식이 존재한다:
   사실은 시퀀스만 봐도 보존됨.
 - 별도 ``SEQUENCE`` 노드는 안 만든다 — 분석 가치 대비 영역 폭증 (DDL parser·온톨로지·
   다운스트림 동시 손봐야). 필요해지면 별건으로 추가.
-- 시퀀스 wrapper 의 op 는 항상 ``s`` (SELECT) — crud=READ.
+- 시퀀스 wrapper 의 op 는 항상 ``s`` (SELECT) → 그래프엔 READS 엣지 (코드가 자동 매핑).
 
 ## 정규식 패턴
 

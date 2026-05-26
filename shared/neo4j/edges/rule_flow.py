@@ -1,8 +1,8 @@
 """Rule 간 흐름 엣지 — NEXT(메인 순서) / BRANCH(분기).
 
-NEXT·BRANCH 는 Cypher 가 동일 (rel 타입만 다름) — `refer_to.py` 처럼 한 파일에 통합
-(중복 파일 회피). Rule 노드는 함수 간 공유되므로 같은 함수의 HAS_RULE `local_rule_id`
-로 양끝 Rule 을 특정하고, 엣지 자체는 ``function_id`` 로 qualify.
+NEXT·BRANCH 는 Cypher 가 동일 (rel 타입만 다름) — 한 파일에 통합 (중복 회피).
+Rule 노드는 함수 간 공유되므로 같은 함수의 HAS_RULE `local_rule_id` 로 양끝 Rule 을
+특정하고, 엣지 자체는 ``function_id`` 로 qualify.
 """
 from __future__ import annotations
 

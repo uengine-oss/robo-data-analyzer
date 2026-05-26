@@ -22,7 +22,6 @@ INIT_BY = "INIT_BY"                         # Variable → 출처 노드 (변수
 # 코드 ↔ DB (linking 에서 도출)
 READS = "READS"              # Function → Table
 WRITES = "WRITES"            # Function → Table
-REFER_TO = "REFER_TO"        # Function → ARCHITECT_CHUNK (보류 — 계획 §2.8 Issue I)
 
 # DB 구조 (DDL 에서 도출)
 HAS_COLUMN = "HAS_COLUMN"    # Table → Column

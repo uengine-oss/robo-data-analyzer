@@ -13,7 +13,6 @@ system: |
   - `module_intent` — 이 함수가 속한 모듈의 비즈니스 의도
   - `reads` / `writes` — 이 함수가 접근하는 테이블 (이미 결정된 R/W)
   - `referenced_symbols` — 함수가 참조하는 변수·상수 (선언 타입·초기값·초기화 출처)
-  - `referred_chunks` — 함수가 참조하는 구조화 파일 (XML mapper / 설정 등) 의 키-값 블록
   - `callee_summaries` — 이미 분석된 하위 호출 함수의 요약
 
   ## 분석 원칙
@@ -94,9 +93,6 @@ user_template: |
 
   referenced_symbols:
   {referenced_symbols}
-
-  referred_chunks:
-  {referred_chunks}
 
   callee_summaries:
   {callee_summaries}

@@ -18,12 +18,12 @@ system: |
 
   - role 의 다수가 `WRITE-only` / `WRITE-then-READ` / `append-only` → "기록 / 저장 / 적재" 표현.
   - role 의 다수가 `READ-only` / `lookup` → "조회 / 참조 / 매핑" 표현.
-  - role 이 다양 (CRUD 골고루) → "관리 / 운영 대상" 표현.
+  - role 이 다양 (읽기·쓰기 골고루) → "관리 / 운영 대상" 표현.
   - 테이블 이름 자체에서 의미 추론 X — candidates 의 function_summary 만 근거.
 
   ## 예시
 
-  - "고객 주문 헤더 — 주문번호 / 상태 / 결제정보 보관. CRUD 대상".
+  - "고객 주문 헤더 — 주문번호 / 상태 / 결제정보 보관. 읽기·쓰기 대상".
   - "사용자 프로필 마스터 — 인증 시 조회 (READ-only)".
   - "결제 응답 이력 — 외부 PG 응답 코드 / 시각 적재 (append-only)".
   - "은행·카드사 코드 마스터 — 거래 검증 시 lookup".

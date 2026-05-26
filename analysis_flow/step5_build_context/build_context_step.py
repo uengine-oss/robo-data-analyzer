@@ -39,14 +39,11 @@ from shared.logging_and_stream.logger import log_error, log_info, log_warning
 _STEP = "step5.build_context"
 
 
-def _build_reference_context(
-    state: dict,
-) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
-    """state 엣지/노드 → (function_id 별 참조 심볼 줄, function_id 별 청크 블록).
+def _build_reference_context(state: dict) -> dict[str, list[str]]:
+    """state 엣지/노드 → function_id 별 참조 심볼 줄.
 
-    - referenced_symbols: REFERENCES(함수→변수/상수) + INIT_BY(변수 초기화 출처).
-    - referred_chunks:    REFER_TO(함수→ArchitectChunk) 의 키 + 값 본문.
-    둘 다 결정론 — LLM / Neo4j 조회 0. 같은 심볼·청크는 함수당 1회만.
+    referenced_symbols = REFERENCES(함수→변수/상수) + INIT_BY(변수 초기화 출처).
+    결정론 — LLM / Neo4j 조회 0. 같은 심볼은 함수당 1회만.
     """
     var_by_id: dict[str, Variable] = {v.variable_id: v for v in state.get("variables", [])}
     const_by_id: dict[str, Constant] = {c.constant_id: c for c in state.get("constants", [])}
@@ -67,19 +64,7 @@ def _build_reference_context(
             seen_sym[e.function_id].add(e.target_id)
             refsym_by_fn.setdefault(e.function_id, []).append(line)
 
-    chunk_by_key = {c.chunk_key: c for c in state.get("architect_chunks", [])}
-    chunks_by_fn: dict[str, list[str]] = {}
-    seen_chunk: dict[str, set[str]] = {}
-    for e in state.get("refer_to_edges", []):
-        if e.target_type != "architect_chunk":
-            continue
-        chunk = chunk_by_key.get(e.target_key)
-        if chunk is None or e.target_key in seen_chunk.setdefault(e.function_id, set()):
-            continue
-        seen_chunk[e.function_id].add(e.target_key)
-        chunks_by_fn.setdefault(e.function_id, []).append(f"[{chunk.chunk_key}]\n{chunk.body}")
-
-    return refsym_by_fn, chunks_by_fn
+    return refsym_by_fn
 
 
 def _format_referenced_symbol(
@@ -153,8 +138,8 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
         callees_by_fn.setdefault(e.caller_function_id, set()).add(e.callee_function_id)
         callers_by_fn.setdefault(e.callee_function_id, set()).add(e.caller_function_id)
 
-    # 참조 컨텍스트 — REFERENCES + INIT_BY (참조 변수/상수) · REFER_TO (구조화파일 청크).
-    refsym_by_fn, chunks_by_fn = _build_reference_context(state)
+    # 참조 컨텍스트 — REFERENCES + INIT_BY (참조 변수/상수).
+    refsym_by_fn = _build_reference_context(state)
 
     # 파일 본문 캐시 — 같은 file 여러 함수가 공유 (성능: N*M read → N read).
     body_cache = SourceFileCache()
@@ -174,7 +159,6 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
             callers=tuple(sorted(callers_by_fn.get(fn.function_id, ()))),
             callees=tuple(sorted(callees_by_fn.get(fn.function_id, ()))),
             referenced_symbols=tuple(refsym_by_fn.get(fn.function_id, ())),
-            referred_chunks=tuple(chunks_by_fn.get(fn.function_id, ())),
             token_count=estimate_tokens(body_text),
         )
         ctx = await builder.augment(ctx, fn, state)

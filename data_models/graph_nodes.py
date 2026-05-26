@@ -214,21 +214,6 @@ class DataType:
     comment: str = ""
 
 
-# ── 아키텍트 청크 노드 (linking 이 생성) ──
-
-@dataclass(frozen=True)
-class ArchitectChunk:
-    """구조화 파일(XML mapper / YAML / properties 등)의 키-값 청크.
-
-    키 하나 + 그 값 블록. 종류(sql / config / 설정)를 따지지 않는 generic 노드.
-    linking(step4)이 — **코드가 그 키를 실제로 참조하는 청크만** — 노드화한다
-    (안 쓰이는 키는 버림). 값 본문(body)은 step6 3분할이 의미 분석.
-    """
-    chunk_key: str                           # 키 (예: "<namespace>.<id>") — Neo4j unique key
-    body: str                                # 값 텍스트 (step6 분석 대상)
-    file_path: str = ""                      # 출처 구조화 파일 경로
-
-
 # ── Example Mapping 노드 (analyze_function 3분할 결과 → EM 빌더가 생성) ──
 
 @dataclass(frozen=True)

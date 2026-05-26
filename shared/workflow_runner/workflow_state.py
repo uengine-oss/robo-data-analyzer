@@ -28,11 +28,9 @@ from data_models.graph_edges import (
     ParentOf,
     ReadsWrites,
     References,
-    ReferTo,
     Uses,
 )
 from data_models.graph_nodes import (
-    ArchitectChunk,
     Column,
     Constant,
     DataType,
@@ -87,8 +85,6 @@ class WorkflowState(TypedDict, total=False):
     # ── step4_linking 결과 ────────────────────────
     reads_writes_edges: Annotated[list[ReadsWrites], operator.add]
     calls_edges: Annotated[list[Calls], operator.add]
-    refer_to_edges: Annotated[list[ReferTo], operator.add]
-    architect_chunks: Annotated[list[ArchitectChunk], operator.add]
     # unresolved_cases 는 평키(reducer 없음) — link_deterministic 가 raw 미해결을 쓰고
     # link_residual_patterns 가 최종 잔여로 덮어쓴다 (누적 reducer 면 raw·최종이 섞임).
     unresolved_cases: list[dict]

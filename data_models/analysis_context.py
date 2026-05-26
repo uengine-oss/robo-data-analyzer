@@ -55,7 +55,6 @@ class AnalysisContext:
 
     # 참조 컨텍스트 (build_context_step 가 state 엣지/노드에서 결정론 도출) ────
     referenced_symbols: tuple[str, ...] = ()  # REFERENCES + INIT_BY — 참조 변수/상수 줄
-    referred_chunks: tuple[str, ...] = ()     # REFER_TO — 구조화 파일 키-값 블록 (키 + 본문)
 
     # 큰 함수 사전 압축 (build_context_step 가 본문 토큰 > 임계 시 채움) ────
     one_liner: Optional[str] = None          # "결제 PG 호출 + 인증 처리" 식

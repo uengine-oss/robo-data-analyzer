@@ -109,25 +109,6 @@ class ParentOf:
     child_function_id: str
 
 
-# ── Function ↔ 외부 자원 ──────────────────────────────────
-
-@dataclass(frozen=True)
-class ReferTo:
-    """Function → 구조화 파일의 키-값 청크.
-
-    target_type ``architect_chunk``: 구조화 파일(XML 등)의 키-값 청크 (ArchitectChunk 노드).
-    종류(sql/config) 안 따짐 — 키 있으면 청크.
-
-    ※ 보류 — architect 청크 링킹은 재설계 전까지 파이프라인에서 비활성
-      (계획 §2.8 Issue I). 이 dataclass·refer_to upsert 인프라는 휴면 보존 — 삭제 금지.
-    """
-    function_id: str
-    target_type: Literal["architect_chunk"]
-    target_key: str
-    evidence_file: str = ""
-    evidence_line: int = 0
-
-
 # ── Module ↔ Module ───────────────────────────────────────
 
 @dataclass(frozen=True)

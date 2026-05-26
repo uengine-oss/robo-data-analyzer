@@ -35,10 +35,6 @@ CONSTRAINTS: list[str] = [
     "CREATE CONSTRAINT data_type_id IF NOT EXISTS "
     "FOR (d:DATA_TYPE) REQUIRE d.datatype_id IS UNIQUE",
 
-    # refer_to 엣지의 target 노드 (architect_chunk 링킹은 보류 — 계획 §2.8 Issue I)
-    "CREATE CONSTRAINT architect_chunk_key IF NOT EXISTS "
-    "FOR (c:ARCHITECT_CHUNK) REQUIRE c.chunk_key IS UNIQUE",
-
     # Example Mapping 노드 (analyze_function 3분할 → EM 빌더)
     "CREATE CONSTRAINT rule_hash IF NOT EXISTS "
     "FOR (r:RULE) REQUIRE r.rule_hash IS UNIQUE",

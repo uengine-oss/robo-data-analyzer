@@ -43,13 +43,6 @@ ddl_transform:
   fallback_prefixes: []
 ```
 
-## XML mapper 별도 처리
-
-XML mapper 파일도 함께 분석:
-- ``<select id="findById"> SELECT ... FROM USERS ...``
-- ``namespace.id`` → 함수 ↔ SQL statement REFER_TO 엣지
-- SQL 본문의 ``FROM`` / ``JOIN`` 절에서 테이블 추출
-
 ## codebase_notes 예시
 
 > MyBatis XML mapper 기반. Mapper 인터페이스 메서드 ↔ XML statement 1:1.
@@ -61,3 +54,4 @@ XML mapper 파일도 함께 분석:
 ## 한계
 
 - 동적 SQL (``<if>``, ``<foreach>``) 의 조건부 테이블 접근은 추정.
+- XML mapper 의 SQL 본문 직접 분석은 미지원 — Mapper 인터페이스 메서드를 통한 매핑만.

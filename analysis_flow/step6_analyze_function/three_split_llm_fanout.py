@@ -256,7 +256,6 @@ def _build_user_values(
         "codebase_notes": codebase_notes or "(없음)",
         "module_intent": module_intents.get(fn.module_id) or "(없음)",
         "referenced_symbols": "\n".join(ctx.referenced_symbols) or "(없음)",
-        "referred_chunks": "\n\n".join(ctx.referred_chunks) or "(없음)",
         "callee_summaries": _format_callee_summaries(ctx, contexts),
         "ancestor_context": ancestor_context(ctx, contexts, cache),
         "reads": _format_table_refs(ctx.reads, table_descriptions),

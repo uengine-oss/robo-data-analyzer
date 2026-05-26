@@ -4,7 +4,7 @@
 
 - ``ast.json``                — step1_parse_ddl + step2_load_ast 결과
                                 (Schema/Table/Column/Function/Module + 모든 구조 엣지)
-- ``linking.json``            — step4_linking 결과 (R/W / Calls / ReferTo / unresolved)
+- ``linking.json``            — step4_linking 결과 (R/W / Calls / unresolved)
 - ``analysis_contexts.json``  — step5_build_context 결과 (AnalysisContext per id)
 - ``analysis.json``           — step6_analyze_function + step7_post_processing 결과
                                 (Function summary / Module summary)
@@ -70,7 +70,6 @@ def dump_state_artifacts(run: Run, state: dict) -> None:
     dump_artifact(run, "linking", {
         "reads_writes_edges": state.get("reads_writes_edges", []),
         "calls_edges": state.get("calls_edges", []),
-        "refer_to_edges": state.get("refer_to_edges", []),
         "uses_edges": state.get("uses_edges", []),
         "unresolved_cases": state.get("unresolved_cases", []),
         "scan_result": state.get("scan_result", {}),

@@ -20,10 +20,10 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from agent_tools.agent_output_models import DdlTransform, TableAccessPattern
-from data_models.graph_edges import ReadsWrites, normalize_relation
+from data_models.graph_edges import ReadsWrites
 from data_models.graph_nodes import Function, Table
 from shared.config.env_catalog import ENV
 from shared.logging_and_stream.logger import log_warning
@@ -153,14 +153,14 @@ class RegexTableLinker:
                         })
                         continue
 
-                    # token → 표준 SQL op (SELECT/INSERT/UPDATE/DELETE) → READ/WRITE 자동 매핑.
-                    # token 미인식 시 보수적으로 READ (틀린 정규식은 verify 단계에서 탈락).
+                    # token → 표준 SQL op (SELECT/INSERT/UPDATE/DELETE) → READS/WRITES 자동 매핑.
+                    # token 미인식 시 보수적으로 READS (틀린 정규식은 verify 단계에서 탈락).
                     standard_op = op_lookup.get(op_token)
-                    crud = _standard_op_to_crud(standard_op) if standard_op else "READ"
+                    relation = _op_to_relation(standard_op) if standard_op else "READS"
                     outcome.edges.append(ReadsWrites(
                         function_id=caller_id,
                         table_fqn=table_fqn,
-                        relation=normalize_relation(crud) or "READS",
+                        relation=relation,
                         evidence_file=str(src_file),
                         evidence_line=line,
                     ))
@@ -222,12 +222,12 @@ async def verify_table_patterns(
 # ── 헬퍼 ──────────────────────────────────────────────────
 
 
-def _standard_op_to_crud(op: str) -> str:
-    """표준 SQL op → READ/WRITE 자동 매핑. SELECT=READ, INSERT/UPDATE/DELETE=WRITE.
+def _op_to_relation(op: str) -> Literal["READS", "WRITES"]:
+    """표준 SQL op → 그래프 관계. SELECT=READS, INSERT/UPDATE/DELETE=WRITES.
 
-    LLM 이 R/W 박을 필요 X — 표준 op 만 선택하면 코드가 나머지 결정 (환각 차단 + DRY).
+    LLM 은 표준 op 4종만 결정, READS/WRITES 매핑은 코드가 (환각 차단 + DRY).
     """
-    return "READ" if op == "SELECT" else "WRITE"
+    return "READS" if op == "SELECT" else "WRITES"
 
 
 def _compile_patterns(
