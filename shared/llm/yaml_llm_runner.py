@@ -7,13 +7,30 @@
 - ``analysis_flow/step7_post_processing`` (module_summary / table_description)
 - ``analysis_flow/step5_build_context/large_function_one_liner``
 
-yaml 형식::
+yaml 형식 (단순)::
 
     system: |
       <system prompt — byte-identical 보존>
     user_template: |
       <user 메시지 template (str.format 치환)>
     model: <옵션 — None 이면 현재 llm_config 의 model 사용>
+
+yaml 형식 (DRY — 분할 그룹의 KV 캐시 prefix 통일)::
+
+    # `prompts/<strategy>/_common.yaml` — 단일 진실
+    system: |
+      <분할 공통 system 본문>
+    user_template_inputs: |
+      <분할 공통 user_template 입력값 영역>
+
+    # `prompts/<strategy>/<split_name>.yaml` — 분할 고유만
+    extends: _common
+    user_template_specific: |
+      <이 분할 고유 user_template 지침>
+
+``extends`` 가 있으면 ``_common`` 의 ``system`` 을 그대로 + ``user_template_inputs`` 를
+prefix 로, ``user_template_specific`` 을 그 뒤에 붙여 최종 prompt 조립. 분할 그룹의
+system 본문은 글자 단위 동일이 강제됨 (KV 캐시 prefix 적중 보장). 자세한 원칙: [[kv-cache]].
 
 ``llm.with_structured_output(response_model, include_raw=True)`` 사용 →
 usage_metadata 동시 추출 + Pydantic 자동 파싱.
@@ -47,6 +64,29 @@ from shared.logging_and_stream.prompt_logger import write_rule_record
 T = TypeVar("T", bound=BaseModel)
 
 
+def _load_rule(prompts_dir: Path, rule_name: str) -> dict:
+    """yaml 룰 로딩 + ``extends`` 처리 → ``{system, user_template, model}`` 반환.
+
+    ``extends: <name>`` 가 있으면 ``<name>.yaml`` 의 ``system`` + ``user_template_inputs`` 를
+    공통 prefix 로 합쳐 분할 그룹의 system 본문 byte-identical 을 강제한다 (KV 캐시
+    prefix 적중 보장). ``model`` 은 분할 고유 > 공통 순으로 우선.
+    """
+    rule = yaml.safe_load((prompts_dir / f"{rule_name}.yaml").read_text(encoding="utf-8"))
+
+    extends = rule.get("extends")
+    if extends is None:
+        return rule
+
+    common = yaml.safe_load((prompts_dir / f"{extends}.yaml").read_text(encoding="utf-8"))
+    return {
+        "system": common.get("system", ""),
+        "user_template": (
+            common.get("user_template_inputs", "") + rule.get("user_template_specific", "")
+        ),
+        "model": rule.get("model") or common.get("model"),
+    }
+
+
 def _resolve_usage_log_path() -> Path:
     """``ENV.log.dir/analysis.run/latest/usage.jsonl`` — Agent 미들웨어와 동일 경로."""
     return ENV.log.dir / "analysis.run" / "latest" / "usage.jsonl"
@@ -73,8 +113,7 @@ async def run_yaml_rule(
     Returns:
         ``response_model`` 인스턴스.
     """
-    yaml_path = prompts_dir / f"{rule_name}.yaml"
-    rule = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    rule = _load_rule(prompts_dir, rule_name)
 
     system_prompt = rule.get("system", "")
     user_template = rule.get("user_template", "")
