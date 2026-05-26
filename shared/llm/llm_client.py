@@ -58,9 +58,7 @@ def build_llm_client(
     cfg = load_llm_config(ENV.llm.config)
 
     if not ENV.llm.api_key:
-        raise RuntimeError(
-            "ROBO_LLM_API_KEY 가 .env 에 설정되지 않음 (X-LLM-Api-Key 헤더로도 주입 가능)."
-        )
+        raise RuntimeError("ROBO_LLM_API_KEY 가 .env 에 설정되지 않음.")
 
     model = model or cfg.model
     temperature = cfg.sampling.temperature if temperature is None else temperature

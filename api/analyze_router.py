@@ -1,6 +1,7 @@
 """FastAPI 분석 라우터 — 분석 시작 단일 엔드포인트.
 
-API key: ``X-LLM-Api-Key`` 헤더 단일 (Plan §4 M1: 4 단 분기 → 단일화).
+API key: ``.env`` 의 ``ROBO_LLM_API_KEY`` 단일 진실. 헤더 override 미지원
+(``ENV.llm.api_key`` 는 import 시점에 frozen 되어 런타임 변경 불가 — 글로벌 write 위험 회피).
 
 **폴링 / 컨트롤 엔드포인트 폐기 (Plan §4 M1)**:
 - ``/pipeline/status`` 폴링 ★ 폐기 — 진행 상태는 NDJSON 스트림 (``/analyze``).
@@ -14,11 +15,10 @@ API key: ``X-LLM-Api-Key`` 헤더 단일 (Plan §4 M1: 4 단 분기 → 단일�
 from __future__ import annotations
 
 import asyncio
-import os
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -44,27 +44,15 @@ class AnalyzeRequest(BaseModel):
     catalog_api_key: Optional[str] = None        # DBMS 만
 
 
-def extract_api_key(x_llm_api_key: Optional[str] = Header(None)) -> str:
-    """``X-LLM-Api-Key`` 헤더 → API key (없으면 ``ENV.llm.api_key``)."""
-    key = x_llm_api_key or ENV.llm.api_key
-    if not key:
-        raise HTTPException(status_code=401, detail="Missing X-LLM-Api-Key header")
-    return key
-
-
 @router.post("/analyze")
-async def analyze(
-    req: AnalyzeRequest,
-    x_llm_api_key: Optional[str] = Header(None),
-) -> StreamingResponse:
+async def analyze(req: AnalyzeRequest) -> StreamingResponse:
     """분석 시작 — NDJSON 스트림 즉시 반환, 워크플로우는 백그라운드 task.
 
     매 호출이 독립 run. 클라이언트가 stream 을 끊으면 그 run 은 종료된다.
+    API key 는 ``.env`` 의 ``ROBO_LLM_API_KEY`` 가 단일 진실.
     """
-    api_key = extract_api_key(x_llm_api_key)
-
-    # X-LLM-Api-Key 헤더 → env override (ChatOpenAI / ChatAnthropic 가 ENV.llm.api_key 사용)
-    os.environ["ROBO_LLM_API_KEY"] = api_key
+    if not ENV.llm.api_key:
+        raise HTTPException(status_code=401, detail="ROBO_LLM_API_KEY missing in .env")
 
     try:
         pipeline = get_pipeline(req.strategy)

@@ -21,29 +21,10 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from analysis_pipelines import get_pipeline
+from cli_scripts.strategy_detector import detect_strategy
 from data_models.project_and_run import Project
 from shared.logging_and_stream.ndjson_stream import NDJSONStream
 from shared.workflow_runner.run_executor import execute_run
-
-
-# DBMS 로 인식할 확장자 (이외는 framework)
-_DBMS_EXTS = {".sql", ".pkb", ".pks", ".pls", ".ddl"}
-
-
-def _detect_strategy(project_dir: Path) -> str:
-    """프로젝트 디렉토리 내 파일 확장자 → framework / dbms 자동 판별."""
-    has_code = False
-    has_only_sql = True
-    for f in project_dir.rglob("*"):
-        if not f.is_file():
-            continue
-        ext = f.suffix.lower()
-        if ext in _DBMS_EXTS:
-            has_code = True
-        elif ext in {".java", ".kt", ".py", ".go", ".c", ".cpp", ".ts", ".js", ".rb", ".rs", ".php"}:
-            has_code = True
-            has_only_sql = False
-    return "dbms" if has_code and has_only_sql else "framework"
 
 
 async def run_one(project_root: Path, strategy_name: str) -> dict:
@@ -71,7 +52,7 @@ async def main(projects_dir: Path) -> None:
     for project_dir in sorted(projects_dir.iterdir()):
         if not project_dir.is_dir():
             continue
-        strategy = _detect_strategy(project_dir)
+        strategy = detect_strategy(project_dir)
         print(f"\n[baseline] Running {project_dir.name} (strategy={strategy})...")
         try:
             summary = await run_one(project_dir, strategy)
