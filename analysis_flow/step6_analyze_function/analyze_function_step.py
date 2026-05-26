@@ -30,11 +30,14 @@ from analysis_flow.step6_analyze_function.three_split_llm_fanout import (
     analyze_function_three_split,
     run_summary,
 )
+from data_models.graph_nodes import Function
 from shared.config.env_catalog import ENV
 from shared.example_mapping import build_example_mapping, write_example_mapping
+from shared.example_mapping.builder import ExampleMappingResult
 from shared.llm.cost_budget import BudgetExceededError
 from shared.llm.llm_output_models import SummaryOutput
 from shared.logging_and_stream.logger import log_error, log_info, log_warning
+from shared.logging_and_stream.ndjson_stream import NDJSONStream
 from shared.neo4j.neo4j_client import Neo4jClient
 from shared.neo4j.nodes.function import update_summaries
 
@@ -42,11 +45,16 @@ _STEP = "step6.analyze_function"
 
 
 async def analyze_function_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
-    """Bottom-up DAG + 3 분할 fan-out."""
+    """Bottom-up DAG + 3 분할 fan-out.
+
+    함수 분석 결과는 **함수 단위 즉시** Neo4j 박힘 + NDJSON stream emit — 라운드 또는
+    step 끝까지 batch 누적 안 함. 메모리 누적 0, 그래프 실시간 반영.
+    """
     cfg = step_config(config)
     strategy = cfg.get("strategy")
     cost_budget = cfg.get("cost_budget")
     neo: Neo4jClient | None = cfg.get("neo_client")
+    stream: Optional[NDJSONStream] = cfg.get("stream")
 
     contexts = state.get("analysis_contexts", {})
     functions_list = state.get("functions", [])
@@ -101,10 +109,10 @@ async def analyze_function_step(state: dict, config: Optional[RunnableConfig] = 
         concurrency=ENV.pipeline.max_concurrency,
     )
 
-    # 3. Round 별 병렬 분석 — Round 간은 순차
+    # 3. Round 별 병렬 분석 — Round 간은 순차. 결과는 함수 단위 즉시 영속화 + emit.
     semaphore = asyncio.Semaphore(ENV.pipeline.max_concurrency)
     source_cache = SourceFileCache()       # 같은 파일을 여러 함수가 1회만 read
-    analyzed: list = []
+    total_analyzed = 0
     total_failed = 0
 
     for round_idx, round_fn_ids in enumerate(rounds, start=1):
@@ -138,8 +146,10 @@ async def analyze_function_step(state: dict, config: Optional[RunnableConfig] = 
         ]
         # return_exceptions=True 로 받지만 BudgetExceededError 는 즉시 전파.
         # 개별 분석 실패 (Pydantic 파싱 등) 만 로깅 후 건너뜀.
+        # 성공 함수는 그 자리에서 즉시 Neo4j 박고 stream emit — batch 누적 X.
         results = await asyncio.gather(*tasks, return_exceptions=True)
         round_failed = 0
+        round_analyzed = 0
         for fn_id, r in zip(round_fn_ids, results):
             if isinstance(r, BudgetExceededError):
                 raise r          # 절대원칙 #3 — 회로 차단기 즉시 전파
@@ -147,25 +157,23 @@ async def analyze_function_step(state: dict, config: Optional[RunnableConfig] = 
                 round_failed += 1
                 log_error(_STEP, "round_analysis", r, function_id=fn_id, round=round_idx)
                 continue
-            if r is not None:
-                analyzed.append(r)
+            if r is None:
+                continue
+            await _persist_and_emit_function(r, neo, stream)
+            round_analyzed += 1
+
         total_failed += round_failed
+        total_analyzed += round_analyzed
         log_info(
             _STEP, "round_done",
             round=f"{round_idx}/{len(rounds)}",
-            analyzed=len(round_fn_ids) - round_failed, failed=round_failed or None,
+            analyzed=round_analyzed, failed=round_failed or None,
             elapsed_sec=f"{time.monotonic() - round_started:.2f}",
         )
 
-    # Neo4j 업서트 — Function.summary / stereotype / logical_name + table_insights.
-    # rules / examples / questions 는 EM 빌더가 Rule/Example/Question 그래프로 박음.
-    if neo is not None and analyzed:
-        await update_summaries(neo, analyzed)
-        await write_example_mapping(neo, build_example_mapping(analyzed))
-
     log_info(
         _STEP, "done",
-        functions=len(contexts), analyzed=len(analyzed),
+        functions=len(contexts), analyzed=total_analyzed,
         failed=total_failed or None, in_cycle=len(cycles),
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
@@ -195,3 +203,95 @@ async def _analyze_one(
             source_cache=source_cache,
             precomputed_summary=precomputed_summary,
         )
+
+
+# ─── 함수 분석 결과 영속화 + 스트림 ────────────────────────────
+# 함수 1건 분석 끝나면 즉시 호출 (batch 누적 X). 메모리 누적 0 + 그래프 실시간.
+
+async def _persist_and_emit_function(
+    fn: Function,
+    neo: Optional[Neo4jClient],
+    stream: Optional[NDJSONStream],
+) -> None:
+    """함수 분석 결과 1건 → Neo4j upsert + NDJSON node/relationship 이벤트.
+
+    동시 호출 X (caller 의 라운드 루프가 순차 처리) — Neo4j 락 경합 없음.
+    neo / stream 둘 중 하나라도 None 이면 그 쪽은 skip — 테스트·CLI 모드에서도 안전.
+    """
+    em = build_example_mapping([fn])
+    if neo is not None:
+        await update_summaries(neo, [fn])
+        await write_example_mapping(neo, em)
+    if stream is not None:
+        _emit_function_graph(stream, fn, em)
+
+
+def _emit_function_graph(stream: NDJSONStream, fn: Function, em: ExampleMappingResult) -> None:
+    """Function 노드 + EM 노드/엣지 → NDJSON node/relationship 이벤트.
+
+    프론트가 그래프를 함수 단위로 누적 렌더하도록 — 한 함수의 모든 변경을 묶어 emit.
+    """
+    stream.emit({
+        "type": "node_event", "op": "merge", "label": "Function",
+        "id": fn.function_id,
+        "props": {
+            "summary": fn.summary or "",
+            "stereotype": fn.stereotype or "",
+            "logical_name": fn.logical_name or "",
+        },
+    })
+    for r in em.rules:
+        stream.emit({
+            "type": "node_event", "op": "merge", "label": "Rule",
+            "id": r.rule_hash, "props": {"statement": r.statement},
+        })
+    for ex in em.examples:
+        stream.emit({
+            "type": "node_event", "op": "merge", "label": "Example",
+            "id": ex.example_id,
+            "props": {"description": ex.description, "is_boundary": ex.is_boundary},
+        })
+    for q in em.questions:
+        stream.emit({
+            "type": "node_event", "op": "merge", "label": "Question",
+            "id": q.question_id, "props": {"text": q.text, "reason": q.reason},
+        })
+
+    for hr in em.has_rule:
+        stream.emit({
+            "type": "relationship_event", "op": "merge", "rel_type": "HAS_RULE",
+            "from": {"label": "Function", "id": hr.function_id},
+            "to":   {"label": "Rule",     "id": hr.rule_hash},
+            "props": {"local_rule_id": hr.local_rule_id, "flow_id": hr.flow_id},
+        })
+    for he in em.has_example:
+        stream.emit({
+            "type": "relationship_event", "op": "merge", "rel_type": "HAS_EXAMPLE",
+            "from": {"label": "Rule",    "id": he.rule_hash},
+            "to":   {"label": "Example", "id": he.example_id},
+        })
+    for hq in em.has_question:
+        stream.emit({
+            "type": "relationship_event", "op": "merge", "rel_type": "HAS_QUESTION",
+            "from": {"label": "Function", "id": hq.function_id},
+            "to":   {"label": "Question", "id": hq.question_id},
+        })
+    for nx in em.next_edges:
+        stream.emit({
+            "type": "relationship_event", "op": "merge", "rel_type": "NEXT",
+            "from": {"label": "Function", "id": nx.function_id, "rule_id": nx.from_rule_id},
+            "to":   {"label": "Function", "id": nx.function_id, "rule_id": nx.to_rule_id},
+        })
+    for br in em.branch_edges:
+        stream.emit({
+            "type": "relationship_event", "op": "merge", "rel_type": "BRANCH",
+            "from": {"label": "Function", "id": br.function_id, "rule_id": br.from_rule_id},
+            "to":   {"label": "Function", "id": br.function_id, "rule_id": br.to_rule_id},
+        })
+    for at in em.affects_table:
+        stream.emit({
+            "type": "relationship_event", "op": "merge", "rel_type": "AFFECTS_TABLE",
+            "from":  {"label": "Example", "id": at.example_id},
+            "to":    {"label": "Table",   "name": at.table_name},
+            "props": {"op": at.op},
+        })

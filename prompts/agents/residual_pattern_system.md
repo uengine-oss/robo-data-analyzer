@@ -38,16 +38,17 @@
 ### 1단계 — 잔여의 공통점 관찰
 
 `residual_cases` 의 `call_text` 들을 비교한다. 무엇이 공통인가?
+
 - 같은 wrapper / 매크로 이름인가?
 - `attempted_patterns` 의 `groups` 를 보라 — entity 가 너무 넓게(꼬리표까지) 잡혔나?
-  op 가 엉뚱하게 잡혔나? DDL 이름과 규칙이 어긋났나?
+  op_token 이 엉뚱하게 잡혔나? DDL 이름과 규칙이 어긋났나?
 - 필요하면 `grep` · `read_file_range` 로 `file:line` 주변 원문을 직접 본다.
   (단 — 프로젝트 전체를 새로 훑지 말 것. 잔여 케이스 주변만.)
 
 ### 2단계 — 공통 패턴을 정규식으로
 
 관찰한 공통점을 잡는 정규식을 쓴다. 명명 그룹 필수:
-`(?P<entity>...)` = 테이블 이름, `(?P<op>...)` = CRUD 동작 코드.
+`(?P<entity>...)` = 테이블 이름, `(?P<op_token>...)` = 프레임워크 raw 매치 토큰.
 
 - `confirmed_patterns` 가 이미 잡는 것과 똑같은 패턴은 의미 없다 — 잔여가 남았다는 건
   기존 패턴의 **빈틈**이라는 뜻. 그 빈틈을 메우는 패턴을 쓴다.
@@ -57,7 +58,8 @@
 ### 3단계 — 검증
 
 `verify_table_regex(call_regex)` 로 **반드시** 확인한다. 결과 샘플에서 entity 가 DDL
-테이블명과 맞는지, op 가 동작 코드인지 본다. 안 맞으면 고쳐 다시 검증 — 될 때까지.
+테이블명과 맞는지, op_token 이 의도한 동사·코드인지 본다. 안 맞으면 고쳐 다시 검증 —
+될 때까지.
 
 ---
 
@@ -83,5 +85,11 @@
 | `no_pattern_reason` | 공통 패턴을 못 찾았으면 사유. 찾았으면 null |
 | `notes` | 관찰한 공통점·의심 패턴 자유 서술 (사람 검토용) |
 
-`table_access_patterns` 의 각 항목: `id`, `call_regex`(명명 그룹 `<entity>`+`<op>`),
-`crud_mappings`(op→READ/WRITE list), `entity_source`.
+`table_access_patterns` 의 각 항목: `id`, `call_regex`(명명 그룹 `<entity>`+`<op_token>`),
+`op_mappings`(token→표준 SQL op list), `entity_source`.
+
+`op_mappings` 의 각 항목은 `{token: "<raw_token>", op: "<SELECT|INSERT|UPDATE|DELETE>"}` 형식.
+
+- `token` = `<op_token>` 그룹이 매치하는 raw 문자열 (예: `findOne`, `s`, `SELECT`).
+- `op` = 그 token 의 표준 SQL 동사. **반드시 4가지 중 하나**: SELECT / INSERT / UPDATE / DELETE.
+  READ / WRITE 같은 값 금지 — READ/WRITE 는 코드가 자동 결정 (SELECT=READ, 나머지=WRITE).

@@ -11,7 +11,7 @@
 자유 키 ``dict`` 와 ``list[dict]`` 는 OpenAI strict mode 가 400 BadRequest 로 거부
 (``additionalProperties`` 미명시). 이 파일의 모든 필드는 명시 Pydantic 모델 또는
 ``list[KeyValueItem]`` 로 표현 — cross-provider 안전 (OpenAI / Anthropic / SGLang /
-OpenRouter 모두 정확 출력). ``agent_tools/agent_output_models.py`` 의 ``CrudMapping``
+OpenRouter 모두 정확 출력). ``agent_tools/agent_output_models.py`` 의 ``OpMapping``
 이 같은 영역의 정립된 패턴.
 
 검증 규칙 (Pydantic validator):

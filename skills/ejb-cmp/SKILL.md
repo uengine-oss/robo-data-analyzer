@@ -12,21 +12,23 @@
 
 ## 정규식 패턴
 
+정규식의 `<op_token>` 그룹은 메서드명 **prefix** 만 잡는다 (뒤에 `\w*` 로 suffix 흘림).
+이렇게 해야 매치된 토큰이 `op_mappings` 의 token 과 정확히 일치한다.
+
 ```yaml
 table_access_patterns:
   - id: ejb_cmp_home
-    call_regex: '(\w+Home)\.(?P<op>findBy\w*|find\w*|create|remove)\s*\('
-    crud_mappings:
-      - {op: findBy, crud: READ}
-      - {op: find, crud: READ}
-      - {op: create, crud: WRITE}
-      - {op: remove, crud: WRITE}
+    call_regex: '(\w+Home)\.(?P<op_token>find|create|remove)\w*\s*\('
+    op_mappings:
+      - {token: find,   op: SELECT}      # findByPrimaryKey / findByXxx / findAll 모두 prefix=find
+      - {token: create, op: INSERT}
+      - {token: remove, op: DELETE}
     entity_source: home_name_prefix         # "OrderHome" → "Order"
 
   - id: ejb_cmp_setter
-    call_regex: '\.set([A-Z]\w+)\s*\('
-    crud_mappings:
-      - {op: default, crud: WRITE}
+    call_regex: '\.(?P<op_token>set)[A-Z]\w+\s*\('
+    op_mappings:
+      - {token: set, op: UPDATE}            # setter 호출은 CMP UPDATE 트리거
     entity_source: caller_class_name
 
 ddl_transform:
@@ -36,8 +38,10 @@ ddl_transform:
 
 ## codebase_notes 예시
 
-> 레거시 EJB CMP 프로젝트. Entity Bean 의 ``Home.findByPrimaryKey``,
-> ``create``, ``remove`` 가 DB 직접 매핑. setter 호출이 UPDATE 트리거.
+> 레거시 EJB CMP 프로젝트. Entity Bean 의 ``Home.<method>`` 가 DB 직접 매핑.
+> **Home 메서드명·setter 호출이 함수의 DB 작업 종류 결정:**
+> ``find``/``findBy...`` = SELECT, ``create`` = INSERT, ``set<Field>(...)`` = UPDATE,
+> ``remove`` = DELETE.
 > 회사 표준 ``ejb-jar.xml`` 에 ``<cmp-field>`` 가 정확한 컬럼 매핑.
 
 ## 한계

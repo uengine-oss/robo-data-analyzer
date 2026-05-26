@@ -12,17 +12,20 @@
 
 ## 정규식 패턴
 
+정규식의 `<op_token>` 그룹은 메서드명 **prefix** 만 잡는다 (뒤에 `\w*` 로 suffix 흘림).
+이렇게 해야 매치된 토큰이 `op_mappings` 의 token 과 정확히 일치한다.
+
 ```yaml
 table_access_patterns:
   - id: jpa_repository_call
-    call_regex: '(\w+Repository)\.(?P<op>find\w*|save|delete\w*|update\w*|exists\w*|count\w*)\s*\('
-    crud_mappings:
-      - {op: find, crud: READ}
-      - {op: save, crud: WRITE}
-      - {op: delete, crud: WRITE}
-      - {op: update, crud: WRITE}
-      - {op: exists, crud: READ}
-      - {op: count, crud: READ}
+    call_regex: '(\w+Repository)\.(?P<op_token>find|save|delete|update|exists|count)\w*\s*\('
+    op_mappings:
+      - {token: find,   op: SELECT}    # findOne / findAll / findByXxx 모두 prefix=find
+      - {token: save,   op: INSERT}    # JPA save 는 새 row 또는 merge — 의미상 INSERT
+      - {token: delete, op: DELETE}
+      - {token: update, op: UPDATE}
+      - {token: exists, op: SELECT}
+      - {token: count,  op: SELECT}
     entity_source: repository_name_prefix    # "UserRepository" → "User"
 
 ddl_transform:
@@ -33,7 +36,8 @@ ddl_transform:
 ## codebase_notes 예시
 
 > Spring Data JPA 표준 프로젝트. ``@Entity`` 클래스가 DDL 테이블 1:1 대응.
-> Repository 메서드명 prefix (``find``/``save``/``delete``) 로 CRUD 판별.
+> **Repository 메서드명 prefix 가 함수의 DB 작업 종류 결정:**
+> ``find``/``exists``/``count`` = SELECT, ``save`` = INSERT, ``update`` = UPDATE, ``delete`` = DELETE.
 > Entity 클래스명 = 테이블명 (camelCase → SNAKE_UPPER 변환).
 
 ## 한계

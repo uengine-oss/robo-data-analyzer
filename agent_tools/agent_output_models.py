@@ -22,31 +22,60 @@ from pydantic import BaseModel, Field
 # 그래서 탐색/결정을 쪼개지 않고 단일 에이전트로 둔다.
 
 
-class CrudMapping(BaseModel):
-    """한 ``op`` (메서드명 / 연산 코드) → CRUD 매핑 row 1 개.
+class OpMapping(BaseModel):
+    """한 프레임워크 raw 매치 토큰 → 표준 SQL op 매핑 1행.
 
-    옛 ``dict[str, Literal["READ", "WRITE"]]`` 형식 대체 — OpenAI structured output
-    strict mode 가 dict 의 free-form key 거부 (400 BadRequest). list 는 cross-provider
-    안전 (OpenAI / Anthropic / SGLang / OpenRouter 모두 정확 출력).
+    R/W 분류는 코드가 자동 결정한다 (SELECT=READ, INSERT/UPDATE/DELETE=WRITE).
+    LLM 이 R/W 박을 필요 X — 표준 op 만 선택하면 끝.
 
-    예시: ``op="findOne"`` + ``crud="READ"`` / ``op="s"`` + ``crud="READ"`` (proframe).
+    유효한 출력 예시 (프레임워크별 token → 표준 op):
+    - ``{"token": "selectOne", "op": "SELECT"}``  (mybatis 메서드명)
+    - ``{"token": "insert",    "op": "INSERT"}``
+    - ``{"token": "findOne",   "op": "SELECT"}``  (jpa/ofbiz 메서드명 → SELECT 의미)
+    - ``{"token": "save",      "op": "INSERT"}``  (jpa — 새 row 의미면 INSERT)
+    - ``{"token": "remove",    "op": "DELETE"}``  (ofbiz)
+    - ``{"token": "s",         "op": "SELECT"}``  (proframe 한 글자)
+    - ``{"token": "i",         "op": "INSERT"}``
+    - ``{"token": "u",         "op": "UPDATE"}``
+    - ``{"token": "d",         "op": "DELETE"}``
+    - ``{"token": "SELECT",    "op": "SELECT"}``  (raw SQL — 토큰=표준 동사 같음)
+
+    잘못된 출력 (절대 금지):
+    - ``{"token": "save", "op": "WRITE"}``  ✗ — op 에 WRITE 박지 말 것. op 는 4가지 SQL 동사만.
+    - ``{"token": "s"}``                    ✗ — op 필드 누락 (필수).
+
+    이 모델 외 필드 추가 금지 — 정확히 token + op 두 필드만.
     """
-    op: str = Field(..., description="call_regex named group <op> 의 값 (예: 'findOne', 's', 'select')")
-    crud: Literal["READ", "WRITE"] = Field(..., description="이 op 의 R/W 분류")
+    token: str = Field(
+        ...,
+        description=(
+            "call_regex 의 <op_token> named group 이 매치한 raw 문자열. "
+            "프레임워크별 다양 — 메서드명('findOne'), 한 글자('s'), SQL 동사('SELECT') 등"
+        ),
+    )
+    op: Literal["SELECT", "INSERT", "UPDATE", "DELETE"] = Field(
+        ...,
+        description=(
+            "이 token 의 표준 SQL op. 정확히 4가지 중 하나: "
+            "SELECT / INSERT / UPDATE / DELETE. "
+            "★ READ/WRITE/CREATE 등 다른 값 금지"
+        ),
+    )
 
 
 class TableAccessPattern(BaseModel):
     """함수 → 테이블 접근 정규식 매칭 패턴 (Linking 1 단계 결정론 grep 용).
 
     ``call_regex`` 의 named group:
-    - ``<op>``: CRUD 동사 (find/save/update/...)
+    - ``<op_token>``: 프레임워크 raw 매치 토큰 (예: 's', 'findOne', 'SELECT')
     - ``<entity>``: 테이블/엔티티 이름
 
-    ``crud_mappings`` 의 각 ``CrudMapping`` 으로 op 값 → READ/WRITE 매핑.
+    ``op_mappings`` 의 각 ``OpMapping`` 으로 token → 표준 SQL op (SELECT/INSERT/UPDATE/DELETE) 변환.
+    READ/WRITE 는 코드가 자동 매핑 (SELECT=READ, 나머지=WRITE).
     """
     id: str = Field(..., description="패턴 식별자 (예: 'ofbiz_delegator')")
-    call_regex: str = Field(..., description="named group <op> + <entity> 포함")
-    crud_mappings: list[CrudMapping] = Field(...)
+    call_regex: str = Field(..., description="named group <op_token> + <entity> 포함")
+    op_mappings: list[OpMapping] = Field(...)
     entity_source: str = Field(..., description="entity 추출 위치 (예: 'first_arg_string')")
 
 
@@ -72,7 +101,16 @@ class ScanResult(BaseModel):
     )
 
     # 분석용 텍스트 (step6_analyze_function 컨텍스트 + 잔여 패턴 루프 prefix)
-    codebase_notes: str = Field("", description="프로젝트 성격 / wrapper / 명명 컨벤션 1단락")
+    codebase_notes: str = Field(
+        "",
+        description=(
+            "프로젝트 성격 / wrapper / 명명 컨벤션 + op 결정 신호 1단락. "
+            "함수 분석 LLM 호출마다 prefix 로 주입되므로 짧고 정확해야 한다. "
+            "★ op_mappings 의 token→표준 SQL op (SELECT/INSERT/UPDATE/DELETE) 매핑을 "
+            "1줄로 풀어 반드시 포함 (예: 'SQL_KEY <op>: s=SELECT, i=INSERT...'). "
+            "누락 시 함수 분석 LLM 이 코드 주석에 끌려 op 를 잘못 해석."
+        ),
+    )
 
     # 호출 분류용 — 프레임워크/런타임 함수 이름 (skill 문서에서 읽음). 호출 그래프에서 드롭.
     framework_functions: list[str] = Field(

@@ -37,10 +37,11 @@ def make_verify_table_regex_tool(
 
         **인자**:
         - `call_regex`: 검증할 정규식. 명명 그룹 `(?P<entity>...)` 필수,
-          `(?P<op>...)` 권장. `entity` = 테이블 이름, `op` = CRUD 동작 코드.
+          `(?P<op_token>...)` 권장. `entity` = 테이블 이름,
+          `op_token` = 프레임워크 raw 매치 (예: 's', 'findOne', 'SELECT').
 
         **결과**: 매치 건수 / R/W 엣지 건수 / 미해결 건수 + 추출 샘플
-        (entity·op·DDL 해소 여부). 샘플을 보고 정규식이 맞는지 판단한다.
+        (entity·op_token·DDL 해소 여부). 샘플을 보고 정규식이 맞는지 판단한다.
 
         **실패 응답**:
         - `INVALID_REGEX: ...` — 정규식 문법 오류.
@@ -57,7 +58,7 @@ def make_verify_table_regex_tool(
         candidate = TableAccessPattern(
             id="candidate",
             call_regex=call_regex,
-            crud_mappings=[],
+            op_mappings=[],
             entity_source="first_arg_string",
         )
         outcome = await RegexTableLinker().link(
@@ -81,10 +82,10 @@ def make_verify_table_regex_tool(
         for s in shown:
             mark = "O" if s.resolved_table else "X"
             tail = s.resolved_table or "DDL 테이블 아님"
-            lines.append(f"  [{mark}] entity='{s.entity}' op='{s.op}' -> {tail}")
+            lines.append(f"  [{mark}] entity='{s.entity}' op_token='{s.op_token}' -> {tail}")
         lines.append(
             "힌트: [X] 가 많고 entity 에 '_s0024' 같은 꼬리표가 붙으면 entity 그룹이 "
-            "너무 넓다 — 경계를 좁혀라. op 가 변수명이면 op 그룹을 교정하라. "
+            "너무 넓다 — 경계를 좁혀라. op_token 이 변수명이면 op_token 그룹을 교정하라. "
             "[X] 가 일부뿐이면 그 테이블은 분석 범위 밖(external)일 수 있다."
         )
         return "\n".join(lines)

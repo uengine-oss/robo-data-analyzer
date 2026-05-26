@@ -53,6 +53,9 @@ PRICING: dict[str, ModelPrice] = {
     # OpenAI
     "gpt-4o":                      ModelPrice(input_per_1m=2.50, output_per_1m=10.0),
     "gpt-4o-mini":                 ModelPrice(input_per_1m=0.15, output_per_1m=0.60),
+    "gpt-5-nano":                  ModelPrice(input_per_1m=0.05, output_per_1m=0.40),
+    "gpt-5-mini":                  ModelPrice(input_per_1m=0.25, output_per_1m=2.00),
+    "gpt-5.4-nano":                ModelPrice(input_per_1m=0.20, output_per_1m=1.00),
     "gpt-5.4-mini":                ModelPrice(input_per_1m=0.75, output_per_1m=4.50),
 
     # Qwen (OpenRouter 또는 자체 호스팅)

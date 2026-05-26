@@ -1,0 +1,40 @@
+# GPT-5.4 nano — OpenRouter 경유 (gpt-5-nano 환각 회피용 한 등급 업)
+# ─────────────────────────────────────────────────────────────
+# 모델 출처: https://openrouter.ai/openai/gpt-5.4-nano
+# gpt-5-nano + reasoning.effort=low 가 도구 호출 0회로 환각 응답하던 사례
+# (Scan Agent 가 ProFrame C 코드를 jpa-standard 로 매칭 + 존재하지 않는
+# evidence_locations 박음) → 한 등급 위 nano 로 교체.
+# tool_calling + structured response 둘 다 안정 (OpenAI 자사 모델 라인업).
+
+provider: openrouter
+
+api_base: https://openrouter.ai/api/v1
+
+# OpenRouter slug 형식 (벤더/모델)
+model: openai/gpt-5.4-nano
+
+# 비용 절감용 작은 모델 — 안 박으면 model 사용
+model_small: ""
+
+# 토큰 / 타임아웃
+max_tokens: 64000
+timeout_seconds: 300
+
+verify_ssl: true
+
+# ChatOpenAI 표준 sampling
+sampling:
+  temperature: 0.7
+  top_p: 1.0
+
+# OpenRouter 비표준 옵션 — extra_body 로만 전달.
+# provider.sort: throughput — 가장 빠른 OpenAI 경로 자동 선택.
+# allow_fallbacks: true — 1위 provider 실패 시 다음으로 자동 fallback.
+#
+# ★ reasoning: gpt-5.4-nano 기본값 = none (운영자 검증). 명시 안 박으면 모델 기본값
+#   적용 — 토큰/latency 최소. 정확도는 시스템 프롬프트 (지침) 로 끌어올림.
+#   필요 시 effort: minimal / low / medium / high 박기.
+extra_body:
+  provider:
+    sort: throughput
+    allow_fallbacks: true

@@ -191,11 +191,16 @@ class References:
 
 @dataclass(frozen=True)
 class InitBy:
-    """Variable → 출처 노드 (초기화식이 참조하는 변수·상수).
+    """변수/상수 → 출처 노드 (정의 시 참조하는 다른 변수·상수).
 
-    ``source_label`` 로 upsert 가 올바른 키로 MATCH.
+    의미 = "정의 시 외부 참조" — ``=`` 우변뿐 아니라 변수 size 표현식
+    (``static char x [LEN +1]``) · 상수 식 (``#define B (A+1)``) 등 모두 포함.
+    Python 쪽이 source 라인을 직접 읽어 토큰 추출하므로 antlr 가 못 준 의존도 잡힌다.
+
+    ``from_label`` / ``source_label`` 로 upsert 가 올바른 키로 MATCH.
     """
-    variable_id: str
+    from_id: str                              # 출발: Variable 또는 Constant id
+    from_label: Literal["VARIABLE", "CONSTANT"]
     source_id: str
     source_label: Literal["VARIABLE", "CONSTANT"]
 

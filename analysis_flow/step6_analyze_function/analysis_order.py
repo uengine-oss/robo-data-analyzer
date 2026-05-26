@@ -51,11 +51,16 @@ def bottom_up_rounds(
         group_members[gid].add(fn)
 
     # 그룹 단위 그래프 (cycle 내부 엣지는 제거 — 위상 정렬 가능하게)
+    # 외부 callee (분석 영역 밖 — 프레임워크/런타임 함수 등) 는 의존성 아님 → 무시.
+    # 무시 안 하면 children 카운트에 외부 노드가 박혀 pending 이 영원히 0 으로
+    # 안 떨어짐 → 모든 함수 라운드 미배치 (call_cycles.py 와 동일 필터링 패턴).
     children: dict[str, set[str]] = defaultdict(set)
     parents: dict[str, set[str]] = defaultdict(set)
     for caller, callee in edges:
-        g_caller = group_of.get(caller, caller)
-        g_callee = group_of.get(callee, callee)
+        g_caller = group_of.get(caller)
+        g_callee = group_of.get(callee)
+        if g_caller is None or g_callee is None:
+            continue  # 외부 노드 — 분석 영역 밖
         if g_caller == g_callee:
             continue  # cycle 내부 — 같은 그룹
         children[g_caller].add(g_callee)

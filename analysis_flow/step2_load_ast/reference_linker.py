@@ -1,10 +1,14 @@
 """REFERENCES / INIT_BY 엣지 — 결정론 식별자 매칭 (같은 모듈 + 모듈 너머).
 
-antlr JSON 에 "변수 참조" 노드가 없으므로, 함수 본문·변수 초기화식의 식별자
-토큰을 Variable/Constant 이름과 매칭한다. LLM 0회 — 순수 결정론.
+antlr JSON 에 "변수 참조" 노드가 없으므로, 함수 본문 텍스트의 식별자 토큰을
+Variable/Constant 이름과 매칭한다. LLM 0회 — 순수 결정론.
 
 - REFERENCES: 함수 본문이 참조하는 변수/상수 → Function → 그 노드.
-- INIT_BY:    변수 초기화식(initValue)이 참조하는 변수/상수 → Variable → 출처.
+- INIT_BY:    변수/상수 정의 시 참조하는 다른 변수/상수 → (Variable|Constant) → 출처.
+             "정의 시 참조" 의미: ``=`` 우변뿐 아니라 변수 size 표현식
+             (``[LEN +1]``) · 상수 식 (``#define B (A+1)``) 모두 포함.
+             antlr (C parser) 가 size 표현식까지 ``initValue`` 에 통합해 출력하므로
+             reader 는 ``Variable.init_value`` / ``Constant.value`` 만 보면 끝.
 
 2단 패스 (계획 §2.8):
 - **Pass 1 — 같은 파일(모듈) 안.** 전 언어 공통.
@@ -62,14 +66,16 @@ def link_references(
     constants: list[Constant],
     import_refs: list[dict],
 ) -> tuple[list[References], list[InitBy]]:
-    """함수 본문 → REFERENCES, 변수 초기화식 → INIT_BY (같은 모듈 + import 한 모듈)."""
+    """함수 본문 → REFERENCES, 변수/상수 ``initValue`` → INIT_BY (같은 모듈 + import 한 모듈).
+
+    INIT_BY 는 변수+상수 모두 출발 가능 — 정의 시 외부 토큰 참조하면 잡힌다.
+    """
     targets = _targets_by_module(variables, constants)
     modules_by_file, basename_index = _file_indexes(variables, constants)
     scopes = _build_scopes(import_refs, targets, modules_by_file, basename_index)
-    cache = SourceFileCache()
     return (
-        _link_function_bodies(functions, targets, scopes, cache),
-        _link_init_values(variables, targets, scopes),
+        _link_function_bodies(functions, targets, scopes, SourceFileCache()),
+        _link_init_values(variables, constants, targets, scopes),
     )
 
 
@@ -299,23 +305,40 @@ def _link_function_bodies(
 
 
 def _link_init_values(
-    variables: list[Variable], targets: _Targets, scopes: dict[str, _Scope],
+    variables: list[Variable], constants: list[Constant],
+    targets: _Targets, scopes: dict[str, _Scope],
 ) -> list[InitBy]:
-    """변수 초기화식(initValue) 의 식별자 → 출처 노드 INIT_BY (같은 모듈 + import)."""
+    """변수/상수 ``initValue`` 의 식별자 → 출처 노드 INIT_BY (같은 모듈 + import).
+
+    Variable.init_value / Constant.value 둘 다 antlr 가 통합 출력 — size 표현식
+    (``[LEN +1]``) · ``=`` 우변 · 상수 식 모두 포함. reader 는 그 텍스트만 본다.
+    """
     out: list[InitBy] = []
-    for v in variables:
-        if not v.init_value:
+    for node, from_label, from_id, init_text in _init_iter(variables, constants):
+        if not init_text:
             continue
-        own = targets.get(v.module_id) or {}
-        scope = scopes.get(v.file_path)
-        seen: set[str] = {v.variable_id}                # 자기참조 제외
-        text = _strip(v.init_value)
+        text = _strip(init_text)
+        own = targets.get(node.module_id) or {}
+        scope = scopes.get(node.file_path)
+        seen: set[str] = {from_id}                       # 자기참조 제외
         hits = _bare_hits(text, own, seen)
         if scope is not None:
             hits += _pass2_hits(text, scope, targets, seen)
-        for source_id, label in hits:
-            out.append(InitBy(v.variable_id, source_id, label))
+        for source_id, source_label in hits:
+            out.append(InitBy(from_id, from_label, source_id, source_label))
     return out
+
+
+def _init_iter(variables: list[Variable], constants: list[Constant]):
+    """(node, from_label, from_id, init_text) 4-튜플 순회 — 변수+상수 통합 처리용.
+
+    필드명이 모델별로 다르므로 (Variable.init_value vs Constant.value · variable_id
+    vs constant_id) 분기 한 곳에 가둔다 — _link_init_values 본문은 단일 흐름 유지.
+    """
+    for v in variables:
+        yield v, "VARIABLE", v.variable_id, v.init_value
+    for c in constants:
+        yield c, "CONSTANT", c.constant_id, c.value
 
 
 def _bare_hits(

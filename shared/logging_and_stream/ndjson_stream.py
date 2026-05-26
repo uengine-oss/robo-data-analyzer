@@ -5,12 +5,14 @@
 
 분석 시작 시 long-lived NDJSON connection 으로 모든 이벤트 push:
 
-- ``phase_event``  — step 시작 / 완료 / 종료
-- ``tool_event``   — Agent 도구 호출 친화 메시지
-- ``todo_update``  — Agent todo 진행
-- ``error``        — 오류 (silent fail 금지 — 명시 emit)
-- ``warning``      — 경고
-- ``stream_end``   — 스트림 종료 신호
+- ``phase_event``         — step 시작 / 완료 / 종료
+- ``tool_event``          — Agent 도구 호출 친화 메시지
+- ``todo_update``         — Agent todo 진행
+- ``node_event``          — 그래프 노드 생성/갱신 (label/id/props)
+- ``relationship_event``  — 그래프 엣지 생성/갱신 (rel_type/from/to)
+- ``error``               — 오류 (silent fail 금지 — 명시 emit)
+- ``warning``             — 경고
+- ``stream_end``          — 스트림 종료 신호
 
 ★ logger mirror: ``emit()`` 가 동시에 ``logger.info`` 호출 — 모든 NDJSON 이벤트가
 ``analyzer.log`` 에 자동 진입. (트렁크 녹임 — 각 호출처에서 따로 log_info 안 부름)
@@ -28,11 +30,13 @@ from shared.logging_and_stream.logger import log_info, log_warning
 # 이벤트 type 별 logger component 이름 (analyzer.log 에 표시).
 # stream_end 는 close 신호일 뿐 mirror 안 함 (노이즈).
 _EVENT_LOGGER: dict[str, str] = {
-    "phase_event": "stream.phase",
-    "tool_event":  "stream.tool",
-    "todo_update": "stream.todo",
-    "error":       "stream.error",   # log_error 도 별도 호출됐을 가능성 — mirror 는 INFO 로
-    "warning":     "stream.warning",
+    "phase_event":         "stream.phase",
+    "tool_event":          "stream.tool",
+    "todo_update":         "stream.todo",
+    "node_event":          "stream.node",          # 그래프 노드 생성/갱신
+    "relationship_event":  "stream.relationship",  # 그래프 엣지 생성/갱신
+    "error":               "stream.error",   # log_error 도 별도 호출됐을 가능성 — mirror 는 INFO 로
+    "warning":             "stream.warning",
 }
 
 

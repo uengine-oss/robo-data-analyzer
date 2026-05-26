@@ -80,8 +80,8 @@ class AgentSettings:
     context_editing_trigger_tokens: int = field(
         default_factory=lambda: _getenv_int("ROBO_AGENT_CONTEXT_EDITING_TRIGGER_TOKENS", 80000)
     )
-    # Scan Agent 의 table_access_patterns 검증 — 매치된 call site 중 op 가
-    # crud_mappings 에 인식된 비율의 최소 통과선. 틀린 정규식(op 가 변수명)은 0 → 탈락.
+    # Scan Agent 의 table_access_patterns 검증 — 매치된 call site 중 op_token 이
+    # op_mappings 에 인식된 비율의 최소 통과선. 틀린 정규식(op_token 이 변수명)은 0 → 탈락.
     scan_regex_min_op_ratio: float = field(
         default_factory=lambda: _getenv_float("ROBO_AGENT_SCAN_REGEX_MIN_OP_RATIO", 0.5)
     )

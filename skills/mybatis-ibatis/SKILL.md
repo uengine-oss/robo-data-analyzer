@@ -12,27 +12,30 @@
 
 ## 정규식 패턴
 
+정규식의 `<op_token>` 그룹은 메서드명 **prefix** 만 잡는다 (뒤에 `\w*` 로 suffix 흘림).
+이렇게 해야 매치된 토큰이 `op_mappings` 의 token 과 정확히 일치한다.
+
 ```yaml
 table_access_patterns:
   - id: mybatis_sqlsession
-    call_regex: 'sqlSession\.(?P<op>selectOne|selectList|insert|update|delete)\s*\(\s*"(?P<entity>[\w.]+)"'
-    crud_mappings:
-      - {op: selectOne, crud: READ}
-      - {op: selectList, crud: READ}
-      - {op: insert, crud: WRITE}
-      - {op: update, crud: WRITE}
-      - {op: delete, crud: WRITE}
+    call_regex: 'sqlSession\.(?P<op_token>selectOne|selectList|insert|update|delete)\s*\(\s*"(?P<entity>[\w.]+)"'
+    op_mappings:
+      - {token: selectOne,  op: SELECT}
+      - {token: selectList, op: SELECT}
+      - {token: insert,     op: INSERT}
+      - {token: update,     op: UPDATE}
+      - {token: delete,     op: DELETE}
     entity_source: first_arg_string
 
   - id: mybatis_mapper_call
-    call_regex: '(\w+Mapper)\.(?P<op>select\w*|find\w*|insert\w*|update\w*|delete\w*|count\w*)\s*\('
-    crud_mappings:
-      - {op: select, crud: READ}
-      - {op: find, crud: READ}
-      - {op: insert, crud: WRITE}
-      - {op: update, crud: WRITE}
-      - {op: delete, crud: WRITE}
-      - {op: count, crud: READ}
+    call_regex: '(\w+Mapper)\.(?P<op_token>select|find|insert|update|delete|count)\w*\s*\('
+    op_mappings:
+      - {token: select, op: SELECT}
+      - {token: find,   op: SELECT}
+      - {token: insert, op: INSERT}
+      - {token: update, op: UPDATE}
+      - {token: delete, op: DELETE}
+      - {token: count,  op: SELECT}
     entity_source: mapper_name_prefix
 
 ddl_transform:
@@ -51,6 +54,9 @@ XML mapper 파일도 함께 분석:
 
 > MyBatis XML mapper 기반. Mapper 인터페이스 메서드 ↔ XML statement 1:1.
 > namespace 가 Mapper FQN, id 가 메서드명.
+> **메서드명·sqlSession 호출명 prefix 가 함수의 DB 작업 종류 결정:**
+> ``select``/``selectOne``/``selectList``/``find``/``count`` = SELECT, ``insert`` = INSERT,
+> ``update`` = UPDATE, ``delete`` = DELETE.
 
 ## 한계
 

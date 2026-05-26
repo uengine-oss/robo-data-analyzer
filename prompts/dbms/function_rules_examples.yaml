@@ -216,6 +216,23 @@ user_template: |
 
   rules 0개도 valid (단순 leaf / wrapper). 그 경우 examples 도 [].
 
+  ### 분기 누락 금지 — 모든 종료 경로 + silent pass
+
+  본문에 분기가 N개면 비즈니스 Rule 도 그 분기 수와 의미를 반영해야 한다. 빠뜨리면
+  상위(caller·부모) 분석이 흐름을 잃는다.
+
+  - **각 도메인 분기마다 1 Rule** (값마다 Example) — IF/ELSIF/CASE 갈래가 도메인
+    의미가 다르면 빠뜨림 없이.
+  - **에러 분기도 비즈니스 의미가 있으면 별도 Rule** — 단순 RAISE 가 아니라 도메인
+    의사결정이면 Rule.
+  - **silent pass 분기 명시** — 에러 신호 (SQLCODE/NO_DATA_FOUND/null 등) 를
+    받았으나 처리 없이 통과하는 분기는 의미상 별도 흐름. "특정 코드는 조용히 통과"
+    자체가 도메인 정책일 수 있음 → Rule 후보.
+  - **조기 return / EXIT / GOTO** 로 인한 분기도 마찬가지.
+
+  마인드셋: 종료 경로가 N개면 Rule 도 비즈니스 의미가 있는 만큼. 한 흐름만 적고
+  다른 흐름 빠뜨리지 말 것. 언어 무관.
+
   child_business_logic: (자식 range 들이 이미 추출한 규칙 — 재추출 X, 분기 조건만 prefix)
   {child_business_logic}
 

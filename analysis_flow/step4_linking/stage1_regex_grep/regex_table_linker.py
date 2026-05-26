@@ -38,8 +38,8 @@ _SAMPLE_CAP = 25
 class MatchSample:
     """정규식 매치 1건의 추출 결과 — 검증 피드백용 (정규식이 맞는지 눈으로 확인)."""
     entity: str
-    op: str
-    op_recognized: bool                 # op 가 crud_mappings 에 있나
+    op_token: str                       # named group <op_token> raw 매치 (예: 's', 'findOne', 'SELECT')
+    token_recognized: bool              # token 이 op_mappings 에 있나 (→ 표준 op 변환 가능)
     resolved_table: Optional[str]       # entity → DDL fqn (None = 미해소)
 
 
@@ -49,7 +49,7 @@ class LinkOutcome:
     edges: list[ReadsWrites] = field(default_factory=list)
     unresolved: list[dict] = field(default_factory=list)
     matched_sites: int = 0              # entity 를 추출한 총 매치 수
-    op_recognized: int = 0              # 그중 op 가 crud_mappings 에 인식된 수
+    token_recognized: int = 0           # 그중 op_token 이 op_mappings 에 인식된 수
     samples: list[MatchSample] = field(default_factory=list)   # 앞 N건 (피드백용)
 
 
@@ -61,7 +61,7 @@ class PatternVerdict:
     edges: int
     unresolved: int
     resolved_ratio: float               # edges / matched_sites
-    op_ratio: float                     # op_recognized / matched_sites
+    token_recognized_ratio: float       # token_recognized / matched_sites
     summary: str                        # 사람·LLM 이 읽을 한 줄 요약
     samples: list[MatchSample] = field(default_factory=list)
 
@@ -111,26 +111,26 @@ class RegexTableLinker:
             except (OSError, UnicodeDecodeError):
                 continue
 
-            for pat, regex, crud_lookup in compiled:
+            for pat, regex, op_lookup in compiled:
                 for m in regex.finditer(text):
                     groups = m.groupdict()
                     entity = groups.get("entity", "")
                     if not entity:
                         continue
-                    op = groups.get("op", "")
+                    op_token = groups.get("op_token", "")
                     line = text[: m.start()].count("\n") + 1
 
-                    op_known = op in crud_lookup
+                    token_known = op_token in op_lookup
                     table_fqn = _resolve_table(entity, table_lookup, ddl_transform)
                     caller_id = locator.locate(str(src_file), line)
 
                     outcome.matched_sites += 1
-                    if op_known:
-                        outcome.op_recognized += 1
+                    if token_known:
+                        outcome.token_recognized += 1
                     if len(outcome.samples) < _SAMPLE_CAP:
                         outcome.samples.append(MatchSample(
-                            entity=entity, op=op,
-                            op_recognized=op_known, resolved_table=table_fqn,
+                            entity=entity, op_token=op_token,
+                            token_recognized=token_known, resolved_table=table_fqn,
                         ))
 
                     if table_fqn is None or caller_id is None:
@@ -153,10 +153,14 @@ class RegexTableLinker:
                         })
                         continue
 
+                    # token → 표준 SQL op (SELECT/INSERT/UPDATE/DELETE) → READ/WRITE 자동 매핑.
+                    # token 미인식 시 보수적으로 READ (틀린 정규식은 verify 단계에서 탈락).
+                    standard_op = op_lookup.get(op_token)
+                    crud = _standard_op_to_crud(standard_op) if standard_op else "READ"
                     outcome.edges.append(ReadsWrites(
                         function_id=caller_id,
                         table_fqn=table_fqn,
-                        relation=normalize_relation(crud_lookup.get(op, "READ")) or "READS",
+                        relation=normalize_relation(crud) or "READS",
                         evidence_file=str(src_file),
                         evidence_line=line,
                     ))
@@ -177,10 +181,10 @@ async def verify_table_patterns(
     반드시 이 검증을 통과해야 한다. ``restrict_to_files`` 로 검증 범위를 좁힐 수
     있다 (잔여 루프 — 잔여 케이스 파일만 검증, 전체 재스캔 회피).
 
-    ``ok`` 판정 = 매치 ≥ 1 · 엣지 ≥ 1 · op 인식률 ≥ 임계
+    ``ok`` 판정 = 매치 ≥ 1 · 엣지 ≥ 1 · op_token 인식률 ≥ 임계
     (``ROBO_AGENT_SCAN_REGEX_MIN_OP_RATIO``).
-    틀린 정규식 — entity 가 SQL_KEY 통째(``zngm_comm_cd_dtl_s0024``), op 가 C
-    변수명 — 은 엣지 0 · op 인식 0 → ``ok=False`` 로 걸린다.
+    틀린 정규식 — entity 가 SQL_KEY 통째(``zngm_comm_cd_dtl_s0024``), op_token 이 C
+    변수명 — 은 엣지 0 · token 인식 0 → ``ok=False`` 로 걸린다.
     """
     outcome = await RegexTableLinker().link(
         project_root=project_root,
@@ -193,15 +197,15 @@ async def verify_table_patterns(
     matched = outcome.matched_sites
     edges = len(outcome.edges)
     resolved_ratio = edges / matched if matched else 0.0
-    op_ratio = outcome.op_recognized / matched if matched else 0.0
+    token_ratio = outcome.token_recognized / matched if matched else 0.0
     ok = (
         matched > 0
         and edges > 0
-        and op_ratio >= ENV.agent.scan_regex_min_op_ratio
+        and token_ratio >= ENV.agent.scan_regex_min_op_ratio
     )
     summary = (
         f"매치 {matched}건 · R/W엣지 {edges}건 · 미해결 {len(outcome.unresolved)}건 · "
-        f"op인식 {op_ratio:.0%} · 테이블해소 {resolved_ratio:.0%}"
+        f"token인식 {token_ratio:.0%} · 테이블해소 {resolved_ratio:.0%}"
     )
     return PatternVerdict(
         ok=ok,
@@ -209,7 +213,7 @@ async def verify_table_patterns(
         edges=edges,
         unresolved=len(outcome.unresolved),
         resolved_ratio=resolved_ratio,
-        op_ratio=op_ratio,
+        token_recognized_ratio=token_ratio,
         summary=summary,
         samples=outcome.samples,
     )
@@ -218,10 +222,18 @@ async def verify_table_patterns(
 # ── 헬퍼 ──────────────────────────────────────────────────
 
 
+def _standard_op_to_crud(op: str) -> str:
+    """표준 SQL op → READ/WRITE 자동 매핑. SELECT=READ, INSERT/UPDATE/DELETE=WRITE.
+
+    LLM 이 R/W 박을 필요 X — 표준 op 만 선택하면 코드가 나머지 결정 (환각 차단 + DRY).
+    """
+    return "READ" if op == "SELECT" else "WRITE"
+
+
 def _compile_patterns(
     patterns: list[TableAccessPattern],
 ) -> list[tuple[TableAccessPattern, re.Pattern, dict[str, str]]]:
-    """``call_regex`` 사전 컴파일 + ``crud_mappings`` list → dict lookup 변환.
+    """``call_regex`` 사전 컴파일 + ``op_mappings`` list → token→op dict lookup 변환.
 
     컴파일 실패 패턴은 ``log_warning`` 후 건너뜀 (조용한 실패 X).
     """
@@ -236,8 +248,8 @@ def _compile_patterns(
                 pattern_id=pat.id, call_regex=pat.call_regex, error=str(e),
             )
             continue
-        crud_lookup = {m.op: m.crud for m in pat.crud_mappings}
-        compiled.append((pat, regex, crud_lookup))
+        op_lookup = {m.token: m.op for m in pat.op_mappings}
+        compiled.append((pat, regex, op_lookup))
     return compiled
 
 

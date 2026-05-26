@@ -45,18 +45,18 @@ ProFrame SQL_KEY 는 두 형식이 존재한다:
 ```yaml
 table_access_patterns:
   - id: proframe_mpfmdbio              # 본 테이블 R/W — 시퀀스 변종 거부 (lookbehind)
-    call_regex: 'mpfmdbio\s*\(\s*"(?P<entity>[A-Za-z0-9_]+?)(?<!_s)_(?P<op>[siud])\d{4}"'
-    crud_mappings:
-      - {op: s, crud: READ}
-      - {op: i, crud: WRITE}
-      - {op: u, crud: WRITE}
-      - {op: d, crud: WRITE}
+    call_regex: 'mpfmdbio\s*\(\s*"(?P<entity>[A-Za-z0-9_]+?)(?<!_s)_(?P<op_token>[siud])\d{4}"'
+    op_mappings:
+      - {token: s, op: SELECT}
+      - {token: i, op: INSERT}
+      - {token: u, op: UPDATE}
+      - {token: d, op: DELETE}
     entity_source: first_arg_string
 
   - id: proframe_mpfmdbio_seq          # 시퀀스 채번 wrapper — 본 테이블 READ 로 단일화
-    call_regex: 'mpfmdbio\s*\(\s*"(?P<entity>[A-Za-z0-9_]+?)_s_(?P<op>[siud])\d{4}"'
-    crud_mappings:
-      - {op: s, crud: READ}            # 시퀀스 호출은 항상 SELECT
+    call_regex: 'mpfmdbio\s*\(\s*"(?P<entity>[A-Za-z0-9_]+?)_s_(?P<op_token>[siud])\d{4}"'
+    op_mappings:
+      - {token: s, op: SELECT}        # 시퀀스 호출은 항상 SELECT (코드가 READ 로 자동 매핑)
     entity_source: first_arg_string
 
 ddl_transform:
@@ -81,6 +81,8 @@ ProFrame 의 런타임·매크로 함수. 업무 로직이 아니므로 호출 �
 > ProFrame C 프로젝트. ``mpfmdbio`` wrapper 로 모든 DB 접근.
 > SQL_KEY 두 형식 — 본 R/W ``<table>_<op><nnnn>``, 시퀀스 채번 ``<table>_s_<op><nnnn>``.
 > 첫 인자가 곧 SQL_KEY. 회사 표준이라 추가 변환 없이 entity = TABLE.
+> **SQL_KEY 의 ``<op>``: s=SELECT, i=INSERT, u=UPDATE, d=DELETE — 함수의 DB 작업 종류 결정**
+> (예: ``..._s0024`` = SELECT, ``..._i0002`` = INSERT). 코드 주석이 op 와 어긋나면 SQL_KEY 가 진실.
 > 시퀀스 채번은 본 테이블 READ 로 단일화 (별도 SEQUENCE 노드 없음).
 
 ## 한계

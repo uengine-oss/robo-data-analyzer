@@ -50,8 +50,10 @@ def _build_reference_context(
     """
     var_by_id: dict[str, Variable] = {v.variable_id: v for v in state.get("variables", [])}
     const_by_id: dict[str, Constant] = {c.constant_id: c for c in state.get("constants", [])}
-    initby_by_var: dict[str, tuple[str, str]] = {
-        e.variable_id: (e.source_id, e.source_label)
+    # InitBy 출발이 변수+상수 둘 다 가능 → (id, label) 합성키로 lookup.
+    # 한 노드가 여러 출처 참조 시 dict 1:1 한계 (마지막만 표시) — 보조 정보용이라 허용.
+    initby_by_target: dict[tuple[str, str], tuple[str, str]] = {
+        (e.from_id, e.from_label): (e.source_id, e.source_label)
         for e in state.get("init_by_edges", [])
     }
 
@@ -60,7 +62,7 @@ def _build_reference_context(
     for e in state.get("references_edges", []):
         if e.target_id in seen_sym.setdefault(e.function_id, set()):
             continue
-        line = _format_referenced_symbol(e, var_by_id, const_by_id, initby_by_var)
+        line = _format_referenced_symbol(e, var_by_id, const_by_id, initby_by_target)
         if line:
             seen_sym[e.function_id].add(e.target_id)
             refsym_by_fn.setdefault(e.function_id, []).append(line)
@@ -84,9 +86,12 @@ def _format_referenced_symbol(
     ref: References,
     var_by_id: dict[str, Variable],
     const_by_id: dict[str, Constant],
-    initby_by_var: dict[str, tuple[str, str]],
+    initby_by_target: dict[tuple[str, str], tuple[str, str]],
 ) -> str:
-    """REFERENCES 엣지 1개 → 참조 심볼 한 줄. 노드 미발견 시 빈 문자열."""
+    """REFERENCES 엣지 1개 → 참조 심볼 한 줄. 노드 미발견 시 빈 문자열.
+
+    변수·상수 모두 초기화 출처가 있으면 ``↳ 초기화 출처`` 로 부기.
+    """
     if ref.target_label == "CONSTANT":
         c = const_by_id.get(ref.target_id)
         if c is None:
@@ -96,16 +101,17 @@ def _format_referenced_symbol(
             head += f" ({c.var_type})"
         if c.value:
             head += f" = {c.value}"
-        return head
-    v = var_by_id.get(ref.target_id)
-    if v is None:
-        return ""
-    head = f"[변수] {v.name}"
-    if v.var_type:
-        head += f" ({v.var_type})"
-    if v.init_value:
-        head += f" := {v.init_value}"
-    src = initby_by_var.get(ref.target_id)
+    else:
+        v = var_by_id.get(ref.target_id)
+        if v is None:
+            return ""
+        head = f"[변수] {v.name}"
+        if v.var_type:
+            head += f" ({v.var_type})"
+        if v.init_value:
+            head += f" := {v.init_value}"
+
+    src = initby_by_target.get((ref.target_id, ref.target_label))
     if src is not None:
         src_node = (const_by_id if src[1] == "CONSTANT" else var_by_id).get(src[0])
         if src_node is not None:

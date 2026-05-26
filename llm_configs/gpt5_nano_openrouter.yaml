@@ -1,0 +1,42 @@
+# GPT-5 nano — OpenRouter 경유 (OpenAI 직접 키 quota 소진 시 / Qwen agent hang 회피용)
+# ─────────────────────────────────────────────────────────────
+# 모델 출처: https://openrouter.ai/openai/gpt-5-nano
+# OpenAI 본점 키 quota 와 별개 — OpenRouter credit 사용.
+# tool_calling + structured response 둘 다 안정적 (OpenAI 자사 모델 라인업).
+
+provider: openrouter
+
+api_base: https://openrouter.ai/api/v1
+
+# OpenRouter slug 형식 (벤더/모델)
+model: openai/gpt-5-nano
+
+# 비용 절감용 작은 모델 — 안 박으면 model 사용
+model_small: ""
+
+# 토큰 / 타임아웃
+max_tokens: 64000
+timeout_seconds: 300
+
+verify_ssl: true
+
+# ChatOpenAI 표준 sampling
+sampling:
+  temperature: 0.7
+  top_p: 1.0
+
+# OpenRouter 비표준 옵션 — extra_body 로만 전달.
+# provider.sort: throughput — 가장 빠른 OpenAI 경로 자동 선택.
+# allow_fallbacks: true — 1위 provider 실패 시 다음으로 자동 fallback.
+#
+# ★ reasoning.effort: gpt-5-nano 는 reasoning 완전 끄기 불가 (스펙). 옵션:
+#   - "minimal": 가장 짧음. 단 structured output(Pydantic) schema 못 따라 검증 실패 사례 보고됨.
+#   - "low": 약간 reasoning. schema 정확도 ↑, 비용·latency 약간 ↑.
+#   - "medium" / "high": 더 정확하지만 더 느림.
+#   완전 disable(reasoning: {enabled: false}) 박으면 400 BadRequest.
+extra_body:
+  provider:
+    sort: throughput
+    allow_fallbacks: true
+  reasoning:
+    effort: low

@@ -1,0 +1,37 @@
+# GPT-4o mini — OpenRouter 경유 (비-reasoning, tool_calling + structured 안정)
+# ─────────────────────────────────────────────────────────────
+# 모델 출처: https://openrouter.ai/openai/gpt-4o-mini
+# 비-reasoning 모델 — gpt-5 시리즈와 달리 reasoning layer 없음 (응답 빠름·저렴).
+# tool_calling + structured response 둘 다 안정적 지원.
+
+provider: openrouter
+
+api_base: https://openrouter.ai/api/v1
+
+model: openai/gpt-4o-mini
+
+# 비용 절감용 작은 모델 — 안 박으면 model 사용
+model_small: ""
+
+# 토큰 / 타임아웃
+max_tokens: 16384
+timeout_seconds: 300
+
+verify_ssl: true
+
+# ChatOpenAI 표준 sampling
+sampling:
+  temperature: 0.7
+  top_p: 1.0
+
+# 비-reasoning 모델 — reasoning_effort 자체가 무의미 (none 으로 무시됨).
+reasoning_effort: none
+
+# OpenRouter 비표준 옵션 — extra_body 로만 전달.
+# provider.sort: throughput — 가장 빠른 경로 자동 선택.
+# allow_fallbacks: true — 1위 provider 실패 시 다음으로 자동.
+# reasoning 블록 제외 — gpt-4o-mini 는 reasoning 자체가 없는 모델이라 옵션 X.
+extra_body:
+  provider:
+    sort: throughput
+    allow_fallbacks: true
