@@ -4,11 +4,14 @@ LLM 0회. sqlglot 다중 방언으로 결정론 파싱.
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
+
+from shared.workflow_runner.step_config import step_config
 
 from shared.ddl_parser.ddl_parser import parse_ddl_file
 from shared.logging_and_stream.logger import log_info, log_warning
@@ -28,7 +31,7 @@ async def parse_ddl_step(state: dict, config: Optional[RunnableConfig] = None) -
 
     config 의 ``configurable`` 에서 ``project`` / ``neo_client`` 추출.
     """
-    cfg = (config or {}).get("configurable", {}) if isinstance(config, dict) else {}
+    cfg = step_config(config)
     project = cfg.get("project")
     neo: Neo4jClient | None = cfg.get("neo_client")
     if project is None or neo is None:
@@ -62,13 +65,14 @@ async def parse_ddl_step(state: dict, config: Optional[RunnableConfig] = None) -
             elapsed_sec=f"{time.monotonic() - parse_started:.2f}",
         )
 
-    # Neo4j 업서트 (UNWIND 배치) — 각 단계마다 milestone log 로 hang 위치 정확히 추적.
-    log_info(_STEP, "upsert_schemas", count=len(schemas))
-    await upsert_schemas(neo, schemas)
-    log_info(_STEP, "upsert_tables", count=len(tables))
-    await upsert_tables(neo, tables)
-    log_info(_STEP, "upsert_columns", count=len(columns))
-    await upsert_columns(neo, columns)
+    # Neo4j 업서트 (UNWIND 배치). 노드는 라벨이 달라 동시쓰기 안전 → 병렬.
+    # 엣지는 노드 선행 필요 + 같은 노드 락 경합 가능 → 순차 (hang 위치 추적 겸).
+    log_info(_STEP, "upsert_nodes", schemas=len(schemas), tables=len(tables), columns=len(columns))
+    await asyncio.gather(
+        upsert_schemas(neo, schemas),
+        upsert_tables(neo, tables),
+        upsert_columns(neo, columns),
+    )
     log_info(_STEP, "upsert_has_column", count=len(has_cols))
     await upsert_has_column(neo, has_cols)
     log_info(_STEP, "upsert_belongs_to", count=len(belongs))

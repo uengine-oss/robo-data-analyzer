@@ -18,7 +18,6 @@ from data_models.graph_nodes import Function
 from shared.config.env_catalog import ENV
 from shared.llm.cost_budget import BudgetExceededError, CostBudget
 from shared.llm.llm_config_loader import load_llm_config
-from shared.llm.middleware.call_limit import ModelCallLimitExceeded
 from shared.llm.yaml_llm_runner import run_yaml_rule
 from shared.logging_and_stream.logger import log_error
 
@@ -70,7 +69,7 @@ async def compute_one_liner(
             model_override=small_model,
         )
         return result.one_liner
-    except (BudgetExceededError, ModelCallLimitExceeded):
+    except BudgetExceededError:
         raise        # 회로 차단기 상위로 전파
     except Exception as e:
         # 큰 함수 압축은 graceful degradation 가능 (없으면 본문 일부 fallback).

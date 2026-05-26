@@ -4,10 +4,8 @@ API key: ``X-LLM-Api-Key`` 헤더 단일 (Plan §4 M1: 4 단 분기 → 단일�
 
 **폴링 / 컨트롤 엔드포인트 폐기 (Plan §4 M1)**:
 - ``/pipeline/status`` 폴링 ★ 폐기 — 진행 상태는 NDJSON 스트림 (``/analyze``).
-- ``/pipeline/control`` pause/resume/stop ★ 폐기 — LangGraph Checkpointer 가 흡수:
-  - pause = 클라이언트가 NDJSON stream 끊으면 자동 (MemorySaver 가 state 보존).
-  - resume = 같은 ``thread_id`` 로 ``/analyze`` 재호출.
-  - stop = 클라이언트가 다시 안 부르면 GC.
+- ``/pipeline/control`` pause/resume/stop ★ 폐기 — 진행은 NDJSON 스트림 단일 채널.
+  매 ``/analyze`` = 독립 run. resume(중단 재개)은 미지원 (프론트가 필요로 할 때 도입).
 
 엔드포인트 1 개::
 
@@ -42,7 +40,6 @@ class AnalyzeRequest(BaseModel):
     ddl_dir: Optional[str] = None
     has_xml_mapper: bool = False
     locale: str = "ko"
-    thread_id: Optional[str] = None          # LangGraph Checkpointer thread (재개에 사용)
     catalog_service_url: Optional[str] = None    # DBMS 만
     catalog_api_key: Optional[str] = None        # DBMS 만
 
@@ -62,8 +59,7 @@ async def analyze(
 ) -> StreamingResponse:
     """분석 시작 — NDJSON 스트림 즉시 반환, 워크플로우는 백그라운드 task.
 
-    클라이언트가 stream 끊으면 일시정지 (LangGraph Checkpointer 가 state 보존).
-    같은 ``thread_id`` 로 재호출 시 자동 resume.
+    매 호출이 독립 run. 클라이언트가 stream 을 끊으면 그 run 은 종료된다.
     """
     api_key = extract_api_key(x_llm_api_key)
 
@@ -98,7 +94,6 @@ async def analyze(
                 strategy=pipeline,
                 project=project,
                 stream=stream,
-                thread_id=req.thread_id,
             )
         except Exception as e:
             # 절대원칙 #3 — silent fail 금지. 오류 stream emit + stream 종료.

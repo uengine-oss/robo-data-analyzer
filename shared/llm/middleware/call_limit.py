@@ -1,8 +1,8 @@
 """ModelCallLimitMiddleware — Agent 의 LLM 호출 횟수 한도.
 
 deepagents 표준:
-- Profile Agent ``max_calls=30`` (``ROBO_AGENT_PROFILE_MAX_CALLS``)
-- Linking Agent (subagent) ``max_calls=15`` (``ROBO_AGENT_LINKING_MAX_CALLS``)
+- Scan Agent ``max_calls=30`` (``ROBO_AGENT_SCAN_MAX_CALLS``)
+- 잔여 패턴 에이전트 ``max_calls=15`` (``ROBO_AGENT_RESIDUAL_MAX_CALLS``)
 
 한도 초과 시 ``ModelCallLimitExceeded`` raise → Agent 작업 중단 (폭주 차단).
 """

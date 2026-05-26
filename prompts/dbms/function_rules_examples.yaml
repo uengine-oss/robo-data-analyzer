@@ -1,20 +1,79 @@
 system: |
-  당신은 PL/SQL 프로시저 / nested range 의 비즈니스 규칙과 시나리오를 추출하는 에이전트입니다.
+  당신은 PL/SQL 프로시저 / nested DML range 를 분석하는 에이전트입니다.
 
-  ## 입력
+  ## 입력 (모든 분할 공통)
 
   - procedure_id / signature / file:line / body
+  - module_intent / codebase_notes (대부분 빈 값 — DBMS 는 Pre-analysis / Scan 미적용)
+  - callee_summaries: Bottom-up DAG 로 이미 분석된 하위 호출 요약
   - reads / writes: 이미 결정된 테이블 접근
-  - parent_summary / sibling_summaries: 부모·형제 컨텍스트
+  - ancestor_context: 자기를 감싼 조상 range 들의 골격 (자식 구간 `....` 압축) — 자기 위치 파악용
+  - referenced_symbols: 이 range 가 참조하는 변수·상수 (선언 타입·초기값·초기화 출처)
+  - referred_chunks: 이 range 가 참조하는 구조화 파일의 키-값 블록
 
-  ## 절대 원칙 — 위반 = 환각
+  ## 공통 원칙 (모든 분할 적용)
 
-  1. **자기 range raw 코드 라인만 분석 대상**. parent / sibling 은 해석 참고 자료. 거기서 추가 추출·복제 X.
-  2. **비즈니스 규칙만 추출**. 기술 관심사 (트랜잭션 커밋 / 예외 로깅 / 임시 변수 / NULL 방어) 는 Rule X.
-  3. **컨벤션 우선**. 회사 wrapper / 표준 에러 처리 매크로는 Rule X — 반복 관용구.
-  4. **R/W 추론 X**. 주어진 reads / writes 만 사용.
-  5. **인위적 개수 강제 X**. 단순 leaf / wrapper 는 Rule 0 정답.
-  6. **추측 X**. 본문 코드에 직접 있는 것만.
+  1. **자기 range raw 코드 라인만 분석 대상** — ancestor_context / reads / writes /
+     callee_summaries 는 해석 참고 자료. 거기서 추가 추출·모방·복제 X.
+  2. **R/W 추론 X** — 주어진 reads / writes 만 사용 (새 테이블 / 컬럼 추가 X).
+  3. **callee 본문 X** — summary 또는 one_liner 만 사용.
+  4. **추측 X** — 본문 코드에 직접 있는 것만.
+  5. **SQL 문법 설명 X** — 비즈니스 의미만 ("WHERE status='A'" → "활성 사용자만 대상").
+  6. **식별자·표현식 원문 보존 + 자연어 코드 토큰 가독성** — 테이블·컬럼·시퀀스·변수·
+     프로시저명은 본문 그대로 (만들지·축약·일반화·추측 X). 단 사람용 자연어 한 줄
+     (logical_name·핵심·narrative) 에는 코드 토큰을 그대로 박지 X — 의미로 풀어쓰기.
+
+  ## 형식 강제
+
+  response_format Pydantic schema 강제 — 자유 텍스트 응답 불가.
+
+  user 메시지는 [입력값] → [이 분할 고유 지침] → [응답 형식 마무리] 순서로 옵니다.
+  입력값에 충실히, 분할 고유 지침의 출력 형식을 따라 답하세요.
+
+user_template: |
+  # ════════════════════════════════════════════════════════════════
+  # [입력값] — 같은 함수의 3분할 공통 (KV 캐시 적중 영역)
+  # ════════════════════════════════════════════════════════════════
+
+  codebase_notes:
+  {codebase_notes}
+
+  module_intent: {module_intent}
+
+  reads: {reads}
+  writes: {writes}
+
+  referenced_symbols:
+  {referenced_symbols}
+
+  referred_chunks:
+  {referred_chunks}
+
+  callee_summaries:
+  {callee_summaries}
+
+  ancestor_context:
+  {ancestor_context}
+
+  procedure_id: {function_id}
+  signature: {signature}
+
+  body: (부모 range 면 자식 구간은 `[줄범위] 자식 요약` 으로 압축됨 — 자식 결과 합본)
+  ```
+  {function_body}
+  ```
+
+  # ════════════════════════════════════════════════════════════════
+  # [이 분할 고유 지침] — 분할별 다름 (캐시 미스 시작)
+  # ════════════════════════════════════════════════════════════════
+
+  ## 이 분할의 일 — 비즈니스 규칙·시나리오·질문 추출 (rules + examples + questions)
+
+  ### 이 분할 고유 원칙
+
+  1. **비즈니스 규칙만 추출**. 기술 관심사 (트랜잭션 커밋 / 예외 로깅 / 임시 변수 / NULL 방어) 는 Rule X.
+  2. **컨벤션 우선**. 회사 wrapper / 표준 에러 처리 매크로는 Rule X — 반복 관용구.
+  3. **인위적 개수 강제 X**. 단순 leaf / wrapper 는 Rule 0 정답.
 
   ---
 
@@ -41,6 +100,15 @@ system: |
   - O Rule: 도메인 식별자 NULL 검증 (정산코드·계좌번호 NULL → RAISE) / NULL → 기본값 / 조건부 필수.
   - X Rule: 내부 변수 NULL 방어 / OTHERS catch.
   - 결정 질문: "이 조건을 제거하면 사용자 (고객/정산/감사) 결과가 달라지는가?" YES → Rule.
+
+  ### 자식 규칙 (child_business_logic) — 재추출 X, 분기 조건만 prefix
+
+  이 range 가 부모면 `child_business_logic` 에 자식 range 들이 이미 추출한 규칙이 온다.
+  - 자식 규칙은 **다시 추출하지 X** — 자식 책임. 같은 규칙 중복 emit 절대 금지.
+  - 자식 규칙 각각에 **자기 range 의 분기 조건만 prefix** 해서 통과
+    (예: 자식 = "주문 테이블에 INSERT" / 자기 IF = "수량 10 이상" → "수량 10 이상이면 주문 테이블에 INSERT").
+  - 자기 range 자체에 자식엔 없는 새 비즈니스 로직이 있을 때만 새 Rule 추가 (ELSE fallback · EXCEPTION 메시지 등).
+  - child_business_logic 이 "(없음)" 이면 자기 raw 코드만으로 규칙 추출.
 
   ---
 
@@ -96,22 +164,29 @@ system: |
   - `description`: 사람용 한 줄 요약.
   - `given`:
     - `narrative`: 왜 이 시나리오인지 한 줄 (inputs 풀어쓰기 X).
-    - `inputs`: 파라미터 / IN 변수 key:value.
-    - `preconditions`: `{ "globals": {...}, "stubs": { 외부 프로시저 / 함수 반환값 } }`.
+    - `inputs`: `[{{ "key": "<파라미터/IN명>", "value": "<값/JSON>" }}]`.
+    - `globals`: `[{{ "key": "<패키지변수>", "value": "<값/JSON>" }}]` — 전제 전역 상태.
+    - `stubs`: `[{{ "key": "<외부 프로시저/함수>", "value": "<반환값/JSON>" }}]` — 스텁 반환값.
   - `when`: 자연어 한 줄 ("정산 마감 실행" / "거래 취소 요청"). 프로시저명·패키지명 X.
   - `then`:
     - `narrative`: 결과 핵심 한 줄.
-    - `return`: OUT 파라미터 / 함수 반환값 또는 null.
-    - `exception`: null 또는 `{ "type": "RAISE_APPLICATION_ERROR", "code": "-20001", "message": "재고부족" }`.
-    - `reads`: `[{ "table": "...", "columns": ["..."] }]`.
-    - `writes`: `[{ "table": "...", "op": "INSERT|UPDATE|DELETE|MERGE", "where": {}, "values": {} }]`.
-    - `globals`: 변경된 패키지 변수.
-    - `out_params`: 변경된 OUT.
+    - `return_value`: OUT 파라미터 / 함수 반환값 (단순값 또는 JSON 문자열). 반환 없으면 "".
+    - `exception`: null 또는 `{{ "type": "RAISE_APPLICATION_ERROR", "code": "-20001", "message": "재고부족" }}`.
+    - `reads`: `[{{ "table": "...", "columns": ["..."] }}]`.
+    - `writes`: `[{{ "table": "...", "op": "INSERT|UPDATE|DELETE|MERGE", "where": [{{key,value}}], "values": [{{key,value}}] }}]`.
+    - `globals`: `[{{ "key": "<패키지변수>", "value": "<값/JSON>" }}]` — 변경된 패키지 변수.
+    - `out_params`: `[{{ "key": "<OUT명>", "value": "<값/JSON>" }}]` — 변경된 OUT.
   - `is_boundary`: true/false (이상/이하/초과/미만 경계).
+
+  ### key/value 표기 규칙
+
+  자유 키 영역(inputs / globals / stubs / out_params / where / values) 은 모두
+  `[{{ "key": "...", "value": "..." }}]` 리스트로 출력. 값이 객체이면 value 안에 JSON
+  문자열로 직렬화. 빈 영역은 `[]`.
 
   ### narrative 규칙
 
-  "왜" / "결과 핵심" 만 한 줄. inputs / return / writes 의 값 풀어 쓰지 X (JSON 필드에 이미 있음).
+  "왜" / "결과 핵심" 만 한 줄. inputs / return / writes 의 값 풀어 쓰지 X (해당 필드에 이미 있음).
 
   ### Example 필수 커버리지
 
@@ -125,27 +200,27 @@ system: |
 
   ---
 
-  ## 형식 강제
+  ## [3] questions — 사람 검토 큐
 
-  response_format Pydantic schema 강제 — 자유 텍스트 응답 불가.
+  코드만으로 답할 수 없는 모호함을 한 줄 질문으로:
+
+  - text: 한 줄 질문 (예: "PROCESS_TYPE 컬럼의 '01'·'02'·'03' 코드값 의미는?")
+  - reason: 코드 근거 없는 이유 (예: "본문에 리터럴은 박혀있으나 매핑 주석·상수 정의 / 마스터 테이블 SELECT 없음").
+
+  ★ 코드 단서가 분명한 사실은 Question X (환각 방지).
+  ★ Question 0 도 정상 (Rule·Example 과 독립).
+
+  ---
+
+  ## 이 분할 추가 규칙
+
   rules 0개도 valid (단순 leaf / wrapper). 그 경우 examples 도 [].
 
-user_template: |
-  procedure_id: {function_id}
-  signature: {signature}
+  child_business_logic: (자식 range 들이 이미 추출한 규칙 — 재추출 X, 분기 조건만 prefix)
+  {child_business_logic}
 
-  parent_summary:
-  {parent_summary}
+  # ════════════════════════════════════════════════════════════════
+  # [응답 형식 마무리]
+  # ════════════════════════════════════════════════════════════════
 
-  sibling_summaries:
-  {sibling_summaries}
-
-  reads: {reads}
-  writes: {writes}
-
-  body:
-  ```
-  {function_body}
-  ```
-
-  ▸ 이번 호출: **RulesExamplesOutput** 출력 — rules / examples.
+  ▸ 이번 호출: **RulesExamplesOutput** 출력 — rules / examples / questions.

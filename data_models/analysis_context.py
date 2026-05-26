@@ -10,8 +10,8 @@
   → callee 본문 통째 노출 차단 ($400 사고 원인 차단).
 
 **Framework vs DBMS 컨텍스트 구성 차이** — 같은 dataclass 가 양쪽을 흡수:
-- Framework: ``callees`` (호출 그래프 callee 들의 summary) — Bottom-up DAG.
-- DBMS: ``extra["parent_summary"]`` + ``extra["sibling_ids"]`` — 트리 구조 (parent / sibling).
+- Framework: ``callees`` (호출 그래프) — Bottom-up DAG 로 callee summary 라이브 조회.
+- DBMS: ``extra`` 의 parent / sibling 트리 메타 — ``DbmsContextBuilder`` 가 채움.
 
 사용 흐름
 ─────────
@@ -31,9 +31,9 @@ from typing import Any, Optional
 class AnalysisContext:
     """함수 1개의 누적 분석 컨텍스트 (Framework / DBMS 공유).
 
-    공통 필드는 모든 strategy 공유. strategy 별 추가 정보는 ``extra`` dict 에:
-    - Framework: ``extra["callee_summaries"]`` 등
-    - DBMS: ``extra["parent_summary"]`` / ``extra["sibling_ids"]`` 등
+    공통 필드는 모든 strategy 공유. strategy 별 추가 정보는 ``extra`` dict 에
+    (DBMS 의 parent / sibling 트리 메타 등 — strategy context_builder 가 채움).
+    Framework 는 base 필드만으로 충분 — ``extra`` 미사용.
 
     새 strategy 가 필드 추가해도 이 dataclass 무변경.
     """
@@ -52,6 +52,10 @@ class AnalysisContext:
     writes: tuple[str, ...] = ()             # Table fqn 들
     callers: tuple[str, ...] = ()            # caller function_id 들
     callees: tuple[str, ...] = ()            # callee function_id 들
+
+    # 참조 컨텍스트 (build_context_step 가 state 엣지/노드에서 결정론 도출) ────
+    referenced_symbols: tuple[str, ...] = ()  # REFERENCES + INIT_BY — 참조 변수/상수 줄
+    referred_chunks: tuple[str, ...] = ()     # REFER_TO — 구조화 파일 키-값 블록 (키 + 본문)
 
     # 큰 함수 사전 압축 (build_context_step 가 본문 토큰 > 임계 시 채움) ────
     one_liner: Optional[str] = None          # "결제 PG 호출 + 인증 처리" 식

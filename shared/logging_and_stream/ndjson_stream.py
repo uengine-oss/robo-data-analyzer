@@ -1,8 +1,7 @@
-"""NDJSON 단일 스트림 emit — 폴링 대체 + 일시정지/재개 흡수 (Plan §4 M1).
+"""NDJSON 단일 스트림 emit — 폴링·컨트롤 엔드포인트 대체 (Plan §4 M1).
 
 ``/robo/pipeline/status`` 폴링 폐기. ``/robo/pipeline/control`` (pause/resume) 폐기 —
-LangGraph Checkpointer 가 흡수 (클라이언트가 stream 끊으면 자동 일시정지, 같은
-``thread_id`` 로 재호출 시 자동 resume).
+진행은 이 NDJSON 스트림 단일 채널. 매 ``/analyze`` = 독립 run (resume 미지원).
 
 분석 시작 시 long-lived NDJSON connection 으로 모든 이벤트 push:
 
@@ -61,56 +60,85 @@ def _shorten_path(p: str) -> str:
     return norm
 
 
-def _shorten_args(tool_name: str, args: dict) -> dict:
-    """도구별 핵심 인자만 추출 — path 단축, 긴 pattern 줄임."""
+# 도구별 한글 라벨 — start/done/error 의 메시지 prefix 공통.
+# 새 도구 추가 시 이 dict 한 줄. 매핑 없으면 영어 도구명 그대로 (graceful fallback).
+_TOOL_LABELS: dict[str, str] = {
+    "ls":                   "디렉토리 조회",
+    "glob_search":          "파일 검색",
+    "grep":                 "검색",
+    "read_file":            "파일 읽기",
+    "read_file_range":      "파일 범위 읽기",
+    "list_functions":       "함수목록 조회",
+    "list_skills":          "SKILL 목록 조회",
+    "read_skill":           "SKILL 읽기",
+    "verify_table_regex":   "정규식 검증",
+    "write_todos":          "작업목록 갱신",
+}
+
+# 도구별 핵심 인자 — start ↔ done 양쪽에 박힘 (대상 식별 / 대칭).
+# 도구의 args dict 에서 이 키들만 추출. path 류는 _shorten_path 자동 적용.
+# 키 자체는 영어 그대로 — logger 의 _KEY_LABELS 가 출력 시 한글화.
+_TOOL_PRIMARY_ARGS: dict[str, tuple[str, ...]] = {
+    "ls":                   ("path",),
+    "glob_search":          ("pattern", "base"),
+    "grep":                 ("pattern", "base", "path_glob"),
+    "read_file":            ("path", "file", "max_lines"),
+    "read_file_range":      ("path", "file", "anchor", "start", "end"),
+    "list_functions":       ("path", "file"),
+    "list_skills":          (),
+    "read_skill":           ("name",),
+    "verify_table_regex":   ("call_regex",),
+    "write_todos":          (),
+}
+
+# path / base / file 류 — 자동 단축 적용 (project_root 이하 상대 경로).
+_PATH_LIKE_KEYS = frozenset({"path", "file", "base"})
+
+
+def _primary_args(tool_name: str, args: dict) -> dict:
+    """도구별 핵심 인자 추출 + path 단축. start/done 양쪽에서 사용 (대칭)."""
     if not isinstance(args, dict):
         return {}
     out: dict = {}
-    for key in ("path", "file", "base"):
+    for key in _TOOL_PRIMARY_ARGS.get(tool_name, ()):
         v = args.get(key)
-        if v:
-            out[key] = _shorten_path(v)
-    pat = args.get("pattern")
-    if pat:
-        out["pattern"] = pat if len(str(pat)) <= 40 else str(pat)[:37] + "..."
-    glob_pat = args.get("path_glob")
-    if glob_pat and glob_pat != "**/*":
-        out["glob"] = glob_pat
-    for key in ("anchor", "start", "end", "max_lines", "name"):
-        v = args.get(key)
-        if v is not None:
-            out[key] = v
+        if v is None or v == "":
+            continue
+        if key in _PATH_LIKE_KEYS and isinstance(v, str):
+            v = _shorten_path(v)
+        # pattern 잘림 X — 검색 의도가 핵심 정보. 200자 한도 (이상은 잘림).
+        if key == "pattern" and isinstance(v, str) and len(v) > 200:
+            v = v[:197] + "..."
+        out[key] = v
     return out
 
 
 def _mirror_tool_event(body: dict) -> None:
-    """tool_event 전용 — 도구명을 op 라벨로, args 단축, 결과 통계만.
+    """tool_event 전용 — 한글 도구 라벨 + start ↔ done 대상 식별 대칭.
 
-    예 (이전):
-      🔧 도구 │ ▶ 도구: open|close|insert|... 정규식 검색 중... Agent=profile 도구=grep args={...풀...}
-    예 (이후):
-      🔧 도구 │ ▶ grep: pattern=open|close|insert|... base=apascrt00010t02_20260406
-      🔧 도구 │ ✓ grep: 매치=13 소요ms=0
+    예::
+
+      🔧 도구 │ ▶ 검색 │ 패턴: pfmdbio|DBIO|EXEC SQL · 경로: apascrt00010t02 · 글롭: **/*.c
+      🔧 도구 │ ✓ 검색 완료 │ 패턴: pfmdbio|DBIO|EXEC SQL · 경로: apascrt00010t02 · 매치: 80 · 소요: 15ms
+      🔧 도구 │ ✗ 검색 실패 │ 에러: ... · 소요: 15ms
     """
     sub_event = body.get("event")
     tool_name = body.get("tool") or "?"
     elapsed_ms = body.get("elapsed_ms")
     error = body.get("error")
-    short_args = _shorten_args(tool_name, body.get("args") or {})
+    args = _primary_args(tool_name, body.get("args") or {})
+    label = _TOOL_LABELS.get(tool_name, tool_name)
 
     if sub_event == "tool_start":
-        op_label = f"▶ {tool_name}"
-        log_info("stream.tool", op_label, **short_args)
+        log_info("stream.tool", f"▶ {label}", **args)
         return
     if sub_event == "tool_error":
-        op_label = f"✗ {tool_name}"
-        log_info("stream.tool", op_label, error=error, elapsed_ms=elapsed_ms)
+        log_info("stream.tool", f"✗ {label} 실패", error=error, elapsed_ms=elapsed_ms, **args)
         return
-    # tool_end — 결과 통계 + 소요만 (인자는 시작 라인에 이미 있음).
-    op_label = f"✓ {tool_name}"
+    # tool_end — 핵심 인자 (대상 식별) + 결과 통계 + 소요. start 와 대칭.
     result_keys = {"항목", "DIR", "FILE", "파일", "매치", "읽은줄", "함수", "SKILL", "줄수", "결과"}
     stats = {k: v for k, v in body.items() if k in result_keys}
-    log_info("stream.tool", op_label, elapsed_ms=elapsed_ms, **stats)
+    log_info("stream.tool", f"✓ {label} 완료", **args, **stats, elapsed_ms=elapsed_ms)
 
 
 def _mirror_event_to_logger(event: dict) -> None:

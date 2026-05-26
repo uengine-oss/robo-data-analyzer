@@ -1,21 +1,17 @@
-"""DbmsContextBuilder — DBMS 의 분석 컨텍스트 빌더.
+"""DbmsContextBuilder — DBMS 의 분석 컨텍스트 빌더 (주입 구현체).
 
-DBMS 의 nested range 는 parent / 직전 sibling 컨텍스트가 의미 분석에 핵심.
+DBMS Function 은 PROCEDURE 안에 IF/LOOP/DML 이 중첩된 트리(``parent_id``).
+``augment()`` 가 ``AnalysisContext.extra`` 에 트리 메타를 채운다 (LLM 0회, 결정적):
 
-``augment()`` 가 ``AnalysisContext.extra`` 에 다음 채움 (LLM 호출 0회, 결정적):
-- ``parent_id``: 부모 Function 식별자 (PARENT_OF 엣지)
-- ``parent_summary``: 부모의 summary 슬롯 (step6 가 Bottom-up 으로 채움)
-- ``sibling_ids``: 같은 부모 아래 형제 식별자 (sorted tuple)
-- ``sibling_summaries``: 형제 summary 슬롯 (step6 가 채움)
+- ``parent_id`` : 부모 Function 식별자 (PARENT_OF) — 조상 골격 context 추적용.
+- ``child_ids`` : 직속 자식 Function 식별자들 — compact_body·자식 규칙 수집용.
 
-**Framework vs DBMS 차이**: 같은 ``AnalysisContext`` dataclass 가 양쪽을 흡수.
-Framework 는 ``ctx.callees`` (호출 그래프) 사용, DBMS 는 ``ctx.extra["parent_*"]`` 사용.
+**자식→부모 단방향 흐름**(사용자 결정): 자식이 먼저 분석되고(Bottom-up Round),
+부모가 자식 summary·rules 를 받아 합성한다. 직전 형제 context 는 폐기 — 부모가 모든
+자식을 통합하므로 lateral 형제 전달은 중복.
 
-**Plan §6.3 vs 구현 차이 명시**:
-Plan §6.3 에는 ``prompts/dbms/node_context.yaml`` 가 명시되어 있으나, refact 설계에서
-DBMS 의 컨텍스트 빌드는 LLM 0 회 결정론으로 흡수 (parent/sibling 식별은 PARENT_OF
-엣지 + state 만으로 결정 가능). 별도 yaml 불필요 → 추가하지 않음.
-LLM 호출은 ``step6_analyze_function`` 의 3 분할에서만 발생.
+실제 컨텍스트 텍스트(compact 본문·조상 골격)는 step6 ``three_split_llm_fanout`` +
+``range_body`` 가 ``contexts`` 라이브 조회로 구성. 여기서는 트리 식별자만 stash.
 """
 from __future__ import annotations
 
@@ -24,7 +20,13 @@ from data_models.graph_nodes import Function
 
 
 class DbmsContextBuilder:
-    """DBMS: parent + sibling 컨텍스트 부착."""
+    """DBMS: nested-range 트리 메타(parent_id / child_ids) 부착."""
+
+    def __init__(self) -> None:
+        # parent_of_edges 리스트 1개당 children 맵 1회 빌드 후 재사용
+        # (augment 는 함수마다 호출 — 매번 전체 스캔 방지).
+        self._children: dict[str, tuple[str, ...]] = {}
+        self._cache_token: int | None = None
 
     async def augment(
         self,
@@ -32,20 +34,15 @@ class DbmsContextBuilder:
         function: Function,
         state: dict,
     ) -> AnalysisContext:
-        """``ctx.extra`` 에 parent / sibling 슬롯 + 식별자 리스트."""
-        ctx.extra["parent_id"] = function.parent_id
-        ctx.extra["parent_summary"] = None     # step6 가 Bottom-up 으로 채움
-        ctx.extra["sibling_summaries"] = []    # 직전 sibling 들의 summary
+        """``ctx.extra`` 에 parent_id + child_ids 설정 (PARENT_OF 엣지 기반)."""
+        edges = state.get("parent_of_edges", [])
+        if self._cache_token != id(edges):
+            grouped: dict[str, list[str]] = {}
+            for e in edges:
+                grouped.setdefault(e.parent_function_id, []).append(e.child_function_id)
+            self._children = {p: tuple(sorted(c)) for p, c in grouped.items()}
+            self._cache_token = id(edges)
 
-        # 같은 parent 아래 sibling 식별자 수집 (summary 는 차후 채움)
-        if function.parent_id:
-            parent_of_edges = state.get("parent_of_edges", [])
-            sibling_ids = [
-                e.child_function_id for e in parent_of_edges
-                if e.parent_function_id == function.parent_id
-                and e.child_function_id != function.function_id
-            ]
-            ctx.extra["sibling_ids"] = tuple(sorted(sibling_ids))
-        else:
-            ctx.extra["sibling_ids"] = ()
+        ctx.extra["parent_id"] = function.parent_id
+        ctx.extra["child_ids"] = self._children.get(function.function_id, ())
         return ctx

@@ -7,10 +7,13 @@
 - ``anthropic`` — Anthropic 직접 (``langchain_anthropic.ChatAnthropic``)
 - ``openai`` / ``openrouter`` / ``sglang`` / ``vllm`` / 자유 명명 — OpenAI 호환 (``langchain_openai.ChatOpenAI``)
 
-reasoning_effort cross-provider 매핑 (yaml 의 ``reasoning_effort`` 1 줄 → provider 별 키):
+reasoning_effort 의 cross-provider 매핑 — **표준 키만 코드가 자동 처리**:
+
 - OpenAI o-series  → ``reasoning_effort`` 인자 (low/medium/high 만, none 은 미전달)
 - Anthropic 3.7+   → ``thinking={"type":"disabled"}`` (none) / budget=1k/4k/16k (low/med/high)
-- 로컬 모델        → ``extra_body.chat_template_kwargs.enable_thinking = False`` (none 자동 주입)
+- 로컬 모델 (SGLang/vLLM) → **yaml 의 ``extra_body`` 에 운영자가 직접 명시**.
+  예: ``extra_body.chat_template_kwargs.enable_thinking: false``.
+  코드 자동 주입 X — provider 별 비표준 키 화이트리스트 / 분기 X.
 
 새 provider 추가 = ``llm_configs/<name>.yaml`` 1개. 코드 무변경.
 """
@@ -121,21 +124,16 @@ def _build_openai_compatible_client(
         timeout=cfg.timeout_seconds,
     )
 
-    # OpenAI o-series / gpt-5 — reasoning_effort 인자 (low/medium/high 만 전달).
-    # "none" / "" 은 미전달 = default.
-    effort = cfg.reasoning_effort
-    if effort in ("low", "medium", "high"):
-        kwargs["reasoning_effort"] = effort
+    # OpenAI 표준 reasoning_effort — low/medium/high 만 전달, none/"" 은 default.
+    if cfg.reasoning_effort in ("low", "medium", "high"):
+        kwargs["reasoning_effort"] = cfg.reasoning_effort
 
-    # 로컬 모델 비표준 인자 — yaml 의 extra_body 그대로 + reasoning none 매핑.
-    # 운영자가 이미 enable_thinking 박았으면 그대로 존중.
-    extra_body = dict(cfg.extra_body)
-    if effort == "none":
-        ctk = extra_body.setdefault("chat_template_kwargs", {})
-        if isinstance(ctk, dict):
-            ctk.setdefault("enable_thinking", False)
-    if extra_body:
-        kwargs["extra_body"] = extra_body
+    # extra_body 는 yaml 의 운영자 명시만 그대로 통과.
+    # 비표준 키 (chat_template_kwargs / top_k / min_p 등) 자동 주입 X — provider 별
+    # 호환성 분기는 yaml 의 책임. hosted API (OpenAI / Anthropic 등) 가 모르는 키 받으면
+    # 400 BadRequest, silent X (cost_tracking awrap 이 명시 로그).
+    if cfg.extra_body:
+        kwargs["extra_body"] = dict(cfg.extra_body)
 
     # 자체 인증서 환경 — verify_ssl=False 면 httpx Client 의 verify=False 주입.
     if not cfg.verify_ssl:

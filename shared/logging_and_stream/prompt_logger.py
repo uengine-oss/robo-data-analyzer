@@ -3,11 +3,11 @@
 두 진입점:
 
 1. ``write_rule_record(rule_name, ...)`` — yaml rule 단발 호출 (function_summary /
-   dml_extract / call_extract 등). 같은 ``<rule_name>.json`` 한 파일에 ``records`` 배열로
+   module_summary 등). 같은 ``<rule_name>.json`` 한 파일에 ``records`` 배열로
    누적. ``sort_key`` (file:line / function_id) 로 자연 정렬 → 디버깅 시 소스 라인 순.
 
 2. ``begin_agent_invoke`` / ``append_agent_turn`` / ``end_agent_invoke`` —
-   Agent multi-turn (Profile / Linking). 한 invoke 전체가 한 ``.json`` 에. 시스템 지시 1번
+   Agent multi-turn (Scan / Linking). 한 invoke 전체가 한 ``.json`` 에. 시스템 지시 1번
    + turns 배열 (turn-by-turn user/response/tool_calls) + totals 집계.
 
 ``run`` 간 누적 X — ``logs/`` 자체가 매 run rmtree (``run_executor._reset_logs_root``).
@@ -196,12 +196,12 @@ def begin_agent_invoke(agent_name: str, invoke_id: str, system_prompt: str) -> P
     """Agent invoke 시작 — contextvars 에 invoke 상태 set + 초기 파일 생성.
 
     파일명:
-    - Profile (invoke 1번): ``agent_profile.json``
+    - Scan (invoke 1번): ``agent_scan.json``
     - Linking (case 별 invoke): ``agent_linking/<invoke_id>.json``
 
     Args:
-        agent_name: ``profile`` / ``linking`` 등.
-        invoke_id: invoke 식별자 (Profile=run / Linking=case_id 등).
+        agent_name: ``scan`` / ``linking`` 등.
+        invoke_id: invoke 식별자 (Scan=run / Linking=case_id 등).
         system_prompt: 시스템 지시 전문 (invoke 동안 1번만 적재).
 
     Returns:
@@ -260,7 +260,7 @@ def end_agent_invoke() -> None:
 def _resolve_agent_path(agent_name: str, invoke_id: str) -> Path:
     """Agent + invoke 별 파일 경로 결정.
 
-    invoke_id 가 ``"run"`` / 빈 문자열이면 단일 파일 (Profile 1번 invoke).
+    invoke_id 가 ``"run"`` / 빈 문자열이면 단일 파일 (Scan 1번 invoke).
     그 외엔 ``agent_<name>/<invoke_id>.json`` (Linking case 별).
     """
     safe_agent = _sanitize_filename(agent_name)

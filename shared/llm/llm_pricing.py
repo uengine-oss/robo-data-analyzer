@@ -53,6 +53,7 @@ PRICING: dict[str, ModelPrice] = {
     # OpenAI
     "gpt-4o":                      ModelPrice(input_per_1m=2.50, output_per_1m=10.0),
     "gpt-4o-mini":                 ModelPrice(input_per_1m=0.15, output_per_1m=0.60),
+    "gpt-5.4-mini":                ModelPrice(input_per_1m=0.75, output_per_1m=4.50),
 
     # Qwen (OpenRouter 또는 자체 호스팅)
     "qwen-3-8b":                   ModelPrice(input_per_1m=0.06, output_per_1m=0.20),
@@ -64,6 +65,7 @@ PRICING: dict[str, ModelPrice] = {
 
     # 로컬 / 자체 호스팅 SGLang / vLLM (비용 0)
     "local":                       ModelPrice(input_per_1m=0.0,  output_per_1m=0.0),
+    "frentis-ai-model":            ModelPrice(input_per_1m=0.0,  output_per_1m=0.0),
 }
 
 

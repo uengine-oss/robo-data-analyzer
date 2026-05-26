@@ -13,16 +13,18 @@ system: |
 
   ---
 
-  ## [1] summary — 4 섹션 마크다운 (자르기 X)
+  ## [1] summary — 핵심 한 줄 + 내용
 
-  4 섹션 라벨 (`[핵심]` `[흐름]` `[쓰기]` `[읽기]`) 로 분리. 빈 섹션 생략.
+  형식: 첫 줄 `핵심:` 한 줄 → 빈 줄 → 내용. 하위 섹션 라벨 (`[흐름]`/`[쓰기]` 등) 없음.
 
-  - `[핵심]` 이 패키지가 무엇을 하는지 1 줄 (사용자 친화).
-  - `[흐름]` 패키지 내 단계 / 핵심 분기 / 도메인 코드값 / 상태 전이. 멤버들 종합해 패키지 차원.
-    - 도메인 값 + 의미 (예: "정산상태 ('OPEN'=마감전 / 'CLOSED'=확정)").
-    - 프로시저명 X — 패키지 차원 흐름.
-  - `[쓰기]` 이 패키지가 만지는 INSERT/UPDATE/DELETE/MERGE 테이블 (멤버 누적).
-  - `[읽기]` SELECT 테이블 (누적).
+  `핵심:` — 이 패키지가 무엇을 하는지 한 줄 (사용자 친화).
+
+  내용 — 멤버 프로시저들을 종합한 패키지 차원의 흐름. 반드시 지킬 것:
+  - 패키지 내 단계 / 핵심 분기 / 도메인 코드값 / 상태 전이를 비즈니스 언어로.
+    · 도메인 값 + 의미 (예: "정산상태 'OPEN'=마감전 / 'CLOSED'=확정").
+    · "이상"≠"초과" 정확히.
+  - 멤버 누적 분량보다 짧게 — 종합이지 나열이 아니다.
+  - 프로시저명·변수명 X — 패키지 차원 흐름. 코드 토큰 X.
 
   ---
 
@@ -34,7 +36,7 @@ system: |
 
   ---
 
-  ## [3] module_stereotype — 실제 동작 기준
+  ## [3] stereotype — 실제 동작 기준
 
   허용 풀: BatchProcessing / MetadataService / TriggerLogic / ReportGenerator /
   DataMigration / Validation / Aggregation / Cleanup / Utility.
@@ -50,13 +52,6 @@ system: |
 
   ---
 
-  ## [4] unified_actors
-
-  - 통합: 같은 패키지의 actor 한국어·영어 표기 차이 / 유사 의미.
-  - 비통합: "정산담당자" vs "야간배치" 처럼 명확히 다른 역할.
-
-  ---
-
   ## 형식 강제
 
   `ModuleSummaryOutput` Pydantic 강제.
@@ -68,4 +63,4 @@ user_template: |
   member_procedures:
   {member_functions}
 
-  ▸ ModuleSummaryOutput 출력 — summary / logical_name / module_stereotype / unified_actors.
+  ▸ ModuleSummaryOutput 출력 — summary / logical_name / stereotype.

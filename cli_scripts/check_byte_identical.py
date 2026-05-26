@@ -52,7 +52,7 @@ def main(update: bool = False) -> int:
 
     for rel, h in current.items():
         if expected.get(rel) is None:
-            failed.append(f"{rel} (new — add to baseline)")
+            failed.append(f"{rel} (new - add to baseline)")
         elif expected[rel] != h:
             failed.append(f"{rel} (modified)")
     for rel in expected:

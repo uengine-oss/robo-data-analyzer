@@ -16,17 +16,17 @@
 table_access_patterns:
   - id: ejb_cmp_home
     call_regex: '(\w+Home)\.(?P<op>findBy\w*|find\w*|create|remove)\s*\('
-    crud_map:
-      findBy: READ
-      find: READ
-      create: WRITE
-      remove: WRITE
+    crud_mappings:
+      - {op: findBy, crud: READ}
+      - {op: find, crud: READ}
+      - {op: create, crud: WRITE}
+      - {op: remove, crud: WRITE}
     entity_source: home_name_prefix         # "OrderHome" → "Order"
 
   - id: ejb_cmp_setter
     call_regex: '\.set([A-Z]\w+)\s*\('
-    crud_map:
-      default: WRITE
+    crud_mappings:
+      - {op: default, crud: WRITE}
     entity_source: caller_class_name
 
 ddl_transform:

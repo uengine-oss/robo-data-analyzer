@@ -2,11 +2,9 @@
 
 용도: ``prompts/<strategy>/<name>.yaml`` 의 룰 로딩 + LLM 호출 + Pydantic 응답.
 사용처:
-- ``analysis_flow/step4_linking/stage2_extract_calls`` (call_extract)
 - ``analysis_flow/step6_analyze_function`` (function_summary / function_table_insights /
   function_rules_examples)
-- ``analysis_flow/step7_post_processing`` (module_summary / dml_extract / actor_merge /
-  table_description)
+- ``analysis_flow/step7_post_processing`` (module_summary / table_description)
 - ``analysis_flow/step5_build_context/large_function_one_liner``
 
 yaml 형식::
@@ -37,6 +35,7 @@ from pydantic import BaseModel
 from shared.config.env_catalog import ENV
 from shared.llm.cost_budget import CostBudget
 from shared.llm.llm_client import build_llm_client
+from shared.llm.llm_config_loader import load_llm_config
 from shared.llm.llm_pricing import compute_cost
 from shared.llm.token_usage import track_usage
 from shared.llm.usage_jsonl_writer import append_usage_record
@@ -65,7 +64,7 @@ async def run_yaml_rule(
 
     Args:
         prompts_dir: ``strategy.prompts_dir`` (예: ``Path("prompts/framework")``).
-        rule_name: yaml 파일 이름 (확장자 X — "call_extract" 식).
+        rule_name: yaml 파일 이름 (확장자 X — "function_summary" 식).
         user_values: user_template 의 ``{placeholder}`` 치환 값.
         response_model: 응답 Pydantic 클래스.
         budget: ``CostBudget`` — 호출 후 ``add_sync(cost)``. 임계 초과 시 raise.
@@ -98,8 +97,22 @@ async def run_yaml_rule(
         provider=cfg.provider,
     )
 
+    # silent 차단 — cost_tracking 미들웨어 안 거치는 진입점이라 직접 wrap.
+    # 예외 (401 / 429 / 400 / timeout / network) 시 명시 로그 + raise.
     start = time.monotonic()
-    result = await structured.ainvoke(messages)
+    log_info("llm.call", "start", agent=f"rule:{rule_name}")
+    try:
+        result = await structured.ainvoke(messages)
+    except Exception as e:  # noqa: BLE001 — silent 차단 목적
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        log_warning(
+            "shared.llm.yaml_llm_runner",
+            "model_error",
+            f"LLM 호출 실패 (silent 차단) — {type(e).__name__}: {e}",
+            rule_name=rule_name,
+            elapsed_ms=elapsed_ms,
+        )
+        raise
     latency_ms = int((time.monotonic() - start) * 1000)
 
     raw_msg = result.get("raw")

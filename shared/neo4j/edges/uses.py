@@ -5,13 +5,14 @@ from typing import Iterable
 
 from data_models.graph_edges import Uses
 from shared.neo4j.neo4j_client import Neo4jClient
+from shared.neo4j.rel_types import USES
 
 
-MERGE_QUERY = """
+MERGE_QUERY = f"""
 UNWIND $items AS item
-MATCH (from:Module {module_id: item.from_module_id})
-MATCH (to:Module {module_id: item.to_module_id})
-MERGE (from)-[r:USES]->(to)
+MATCH (from:MODULE {{module_id: item.from_module_id}})
+MATCH (to:MODULE {{module_id: item.to_module_id}})
+MERGE (from)-[r:{USES}]->(to)
 SET r.scope = item.scope
 """
 

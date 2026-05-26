@@ -15,7 +15,7 @@ langchain-anthropic==0.3.30
 openai==1.108.0
 anthropic==0.42.0
 
-# DeepAgent 프레임워크 (Profile Agent / Linking Agent)
+# DeepAgent 프레임워크 (Scan Agent / Linking Agent)
 deepagents==0.1.16
 
 # 데이터 검증 (Pydantic 출력 스키마 강제 — 환각 차단)
@@ -25,10 +25,8 @@ pydantic-settings==2.7.1
 # SQL 파싱 — DDL 다중 방언 (Oracle / PostgreSQL / MySQL / MSSQL …)
 sqlglot==27.13.0
 
-# 코드 파싱 — Framework 는 tree-sitter, DBMS 는 ANTLR
-# tree-sitter 0.21.3 = tree-sitter-languages 1.10.2 호환 한도 (0.23+ 와 ABI 깨짐).
-tree-sitter==0.21.3
-tree-sitter-languages==1.10.2
+# 코드 파싱 — AST 는 antlr-parser(별도 Java 프로젝트)가 미리 JSON 으로 생성,
+# analyzer 는 data/analysis/target/*.json 을 읽기만 한다 (antlr_json_reader).
 antlr4-python3-runtime==4.13.2
 
 # Neo4j 그래프 DB

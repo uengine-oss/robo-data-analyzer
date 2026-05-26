@@ -1,6 +1,6 @@
 """usage.jsonl 적재 헬퍼 — Agent 미들웨어 / 단순 LLM 호출 공유.
 
-Plan §4 M0 명세: "모든 LLM 호출 (Profile / Linking Agent 내부 포함) 토큰/비용 측정,
+Plan §4 M0 명세: "모든 LLM 호출 (Scan / Linking Agent 내부 포함) 토큰/비용 측정,
 ``usage.jsonl`` 적재".
 
 설계:
@@ -28,7 +28,7 @@ def append_usage_record(
 
     Args:
         usage_log_path: 적재 경로 (예: ``logs/analysis.run/latest/usage.jsonl``).
-        agent_name: "profile" / "linking_subagent" / "rule:<rule_name>" 등.
+        agent_name: "scan" / "linking_subagent" / "rule:<rule_name>" 등.
         record: ``track_usage()`` 결과.
         cost_usd: ``compute_cost(record)`` 결과.
     """

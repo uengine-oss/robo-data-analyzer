@@ -19,6 +19,9 @@ from typing import Optional
 import httpx
 from langchain_core.runnables import RunnableConfig
 
+from shared.workflow_runner.step_config import step_config
+
+from shared.catalog_http import catalog_headers, get_catalog_json
 from shared.config.env_catalog import ENV
 from shared.logging_and_stream.logger import log_info, log_warning
 from shared.neo4j.neo4j_client import Neo4jClient
@@ -28,14 +31,17 @@ _STEP = "step7.enrich_metadata_from_catalog"
 
 
 async def enrich_metadata_from_catalog_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
-    cfg = (config or {}).get("configurable", {}) if isinstance(config, dict) else {}
+    cfg = step_config(config)
     project = cfg.get("project")
     neo: Neo4jClient | None = cfg.get("neo_client")
     if project is None:
         log_warning(_STEP, "config_missing", "project 누락 — step skip")
         return {}
+    if not ENV.catalog.enabled:
+        log_info(_STEP, "skip", reason="catalog 비활성화 (ROBO_CATALOG_ENABLED=false)")
+        return {}
     if not getattr(project, "catalog_service_url", None):
-        log_info(_STEP, "skip", reason="catalog_service_url 미설정 (Framework / catalog 미연동 정상)")
+        log_info(_STEP, "skip", reason="catalog_service_url 미설정 (이 프로젝트는 catalog 없음)")
         return {}
 
     tables = state.get("tables", [])
@@ -48,9 +54,7 @@ async def enrich_metadata_from_catalog_step(state: dict, config: Optional[Runnab
              concurrency=ENV.pipeline.max_concurrency)
 
     base_url = project.catalog_service_url.rstrip("/")
-    headers = {}
-    if project.catalog_api_key:
-        headers["Authorization"] = f"Bearer {project.catalog_api_key}"
+    headers = catalog_headers(project.catalog_api_key)
 
     semaphore = asyncio.Semaphore(ENV.pipeline.max_concurrency)
     updates: list[dict] = []
@@ -59,42 +63,10 @@ async def enrich_metadata_from_catalog_step(state: dict, config: Optional[Runnab
 
         async def _fetch_one(table):
             async with semaphore:
-                fqn = f"{table.db}.{table.schema}.{table.name}"
-                url = f"{base_url}/tables/{fqn}/metadata"
-                try:
-                    resp = await http.get(url, headers=headers)
-                except httpx.HTTPError as e:
-                    log_warning(
-                        "analysis_flow.step7_post_processing.enrich_metadata_from_catalog_step",
-                        "catalog_fetch",
-                        "catalog HTTP 오류 — 이 테이블 metadata enrichment 건너뜀",
-                        table_fqn=fqn,
-                        error=f"{type(e).__name__}: {e}",
-                    )
-                    return None
-                # 404 = 정상 (catalog 에 없음 — feedback memory: catalog_miss_skip_ok)
-                if resp.status_code == 404:
-                    return None
-                if resp.status_code != 200:
-                    log_warning(
-                        "analysis_flow.step7_post_processing.enrich_metadata_from_catalog_step",
-                        "catalog_fetch",
-                        "catalog non-200 응답 — 이 테이블 건너뜀",
-                        table_fqn=fqn,
-                        status=resp.status_code,
-                    )
-                    return None
-                try:
-                    return table, resp.json()
-                except ValueError as e:
-                    log_warning(
-                        "analysis_flow.step7_post_processing.enrich_metadata_from_catalog_step",
-                        "catalog_fetch",
-                        "catalog 응답 JSON 파싱 실패 — 이 테이블 건너뜀",
-                        table_fqn=fqn,
-                        error=str(e),
-                    )
-                    return None
+                url = f"{base_url}/tables/{table.fqn}/metadata"
+                # 404 = 정상 (이 테이블이 catalog 에 없을 뿐). non-200/파싱 실패는 전파.
+                data = await get_catalog_json(http, url, headers=headers, label="metadata")
+                return (table, data) if data is not None else None
 
         results = await asyncio.gather(*[_fetch_one(t) for t in tables])
 
@@ -105,7 +77,7 @@ async def enrich_metadata_from_catalog_step(state: dict, config: Optional[Runnab
         desc = data.get("description") or data.get("comment") or ""
         if desc:
             updates.append({
-                "fqn": f"{table.db}.{table.schema}.{table.name}",
+                "fqn": table.fqn,
                 "description": desc,
             })
 

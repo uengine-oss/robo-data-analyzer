@@ -15,16 +15,16 @@
 table_access_patterns:
   - id: ofbiz_delegator
     call_regex: 'delegator\.(?P<op>findOne|findByPrimaryKey|findList|findAll|find|create|store|remove|removeAll)\s*\(\s*"(?P<entity>\w+)"'
-    crud_map:
-      findOne: READ
-      findByPrimaryKey: READ
-      findList: READ
-      findAll: READ
-      find: READ
-      create: WRITE
-      store: WRITE
-      remove: WRITE
-      removeAll: WRITE
+    crud_mappings:
+      - {op: findOne, crud: READ}
+      - {op: findByPrimaryKey, crud: READ}
+      - {op: findList, crud: READ}
+      - {op: findAll, crud: READ}
+      - {op: find, crud: READ}
+      - {op: create, crud: WRITE}
+      - {op: store, crud: WRITE}
+      - {op: remove, crud: WRITE}
+      - {op: removeAll, crud: WRITE}
     entity_source: first_arg_string
 
 ddl_transform:

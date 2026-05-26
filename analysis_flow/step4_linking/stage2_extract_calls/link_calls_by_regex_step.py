@@ -10,6 +10,8 @@ from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
+from shared.workflow_runner.step_config import step_config
+
 from analysis_flow.step4_linking.stage2_extract_calls.call_regex_linker import CallRegexLinker
 from shared.logging_and_stream.logger import log_info, log_warning
 from shared.neo4j.edges.calls import upsert_calls
@@ -19,7 +21,7 @@ _STEP = "step4.link_calls_by_regex"
 
 
 async def link_calls_by_regex_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
-    cfg = (config or {}).get("configurable", {}) if isinstance(config, dict) else {}
+    cfg = step_config(config)
     project = cfg.get("project")
     neo: Neo4jClient | None = cfg.get("neo_client")
     if project is None:

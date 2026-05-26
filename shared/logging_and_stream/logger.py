@@ -59,17 +59,17 @@ _ERROR_LOG_FILENAME = "error.log"
 _COMPONENT_LABELS: dict[str, str] = {
     "run":                       "🚀 실행",
     "step1.parse_ddl":           "1️⃣  DDL 파싱",
-    "step2.parse_source":        "2️⃣  소스 파싱",
-    "step3.profile":             "3️⃣  Profile Agent",
+    "step2.load_ast":            "2️⃣  AST 적재",
+    "step3.scan":             "3️⃣  Scan Agent",
     "step4.link_deterministic":  "4️⃣ ①결정론 연결",
-    "step4.link_calls_by_llm":   "4️⃣ ②Call LLM 추출",
+    "step4.link_calls_by_name":  "4️⃣ ②Call 이름 분류",
     "step4.link_calls_by_regex": "4️⃣ ②Call regex 추출",
-    "step4.link_unresolved":     "4️⃣ ③Linking Agent",
+    "step4.link_residual_patterns": "4️⃣ ③잔여 패턴 루프",
     "step5.build_context":       "5️⃣  분석 컨텍스트",
     "step6.analyze_function":    "6️⃣  함수 분석",
     "step7.summarize_module":    "7️⃣  모듈 요약",
     "step7.enrich_table_description": "7️⃣  테이블 설명",
-    "step7.extract_dml_metadata":     "7️⃣  DML 메타",
+    "step4.link_dbms_tables":         "4️⃣ ①DBMS 테이블 매칭",
     "step7.enrich_metadata_from_catalog": "7️⃣  catalog 메타",
     "step7.enrich_lineage_from_catalog":  "7️⃣  catalog 리니지",
     "step7.embed":               "7️⃣  임베딩",
@@ -104,6 +104,7 @@ _OPERATION_LABELS: dict[str, str] = {
     "collecting_call_sites": "  call site 수집",
     "round_start":        "  ⤷ 라운드 시작",
     "round_done":         "  ⤶ 라운드 완료",
+    "round_stop":         "  ⊘ 라운드 종료",
     "one_liner_start":    "  one-liner 시작",
     "one_liner_done":     "  one-liner 완료",
     "node_done":          "  ✓ 노드",
@@ -116,7 +117,6 @@ _KEY_LABELS: dict[str, str] = {
     "project":              "프로젝트",
     "strategy":             "전략",
     "run_id":               "run",
-    "thread_id":            "thread",
     "database":             "DB",
     "ddl_dir":              "DDL경로",
     "source_root":          "소스경로",
@@ -151,13 +151,15 @@ _KEY_LABELS: dict[str, str] = {
     "agent":                "Agent",
     "model":                "모델",
     "prompt_name":          "프롬프트",
-    "input_tokens":         "입력토큰",
-    "output_tokens":        "출력토큰",
-    "cached_tokens":        "캐시토큰",
+    "input_tokens":         "입력",
+    "output_tokens":        "출력",
+    "cached_tokens":        "캐시",
     "total_tokens":         "총토큰",
-    "cost_usd":             "비용$",
-    "elapsed_ms":           "소요ms",
-    "elapsed_sec":          "소요s",
+    "cost_usd":             "비용",     # _humanize 가 "cost" 로 변환하지만 fallback 라벨
+    "cost":                 "비용",     # _humanize 가 cost_usd → cost 변환 후 사용
+    "elapsed_ms":           "소요",     # _humanize 가 "elapsed" 로 변환하지만 fallback
+    "elapsed_sec":          "소요",
+    "elapsed":              "소요",     # _humanize 변환 후 사용
     "size_bytes":           "크기B",
     "file":                 "파일",
     "function_id":          "함수ID",
@@ -170,6 +172,20 @@ _KEY_LABELS: dict[str, str] = {
     "batch":                "배치",
     "call_sites":           "call수",
     "max_limit":            "한도",
+    # 도구 인자 라벨 (ndjson_stream._mirror_tool_event 가 박는 영어 키 자동 한글화)
+    "path":                 "경로",
+    "base":                 "경로",
+    "pattern":              "패턴",
+    "path_glob":            "글롭",
+    "max_lines":            "최대",
+    "anchor":               "기준행",
+    "start":                "시작",
+    "end":                  "끝",
+    "name":                 "이름",
+    "table_name":           "테이블",
+    "query":                "쿼리",
+    "depth":                "깊이",
+    "wiped":                "초기화",
     "internal":             "내부",
     "external":             "외부",
     "table_embedded":       "테이블임베드",
@@ -307,19 +323,75 @@ def get_logger(component: str) -> logging.Logger:
 
 
 def _format_kv(kwargs: dict[str, Any]) -> str:
-    """key=value ... 한글 라벨로 직렬화 (None 값은 생략).
+    """key=value 한글 라벨로 친절 직렬화 + 자동 단위 변환 + 0/None/빈문자 제거.
 
+    형식: ``라벨: value · 라벨: value`` (가운데 점 구분, 콜론 + 공백).
     ``_KEY_LABELS`` 매핑에 없는 키는 영어 그대로 (graceful fallback).
+    ``_humanize`` 가 elapsed / cost / cached / model 의 단위/형식 자동 변환.
     """
     if not kwargs:
         return ""
+    kwargs = _humanize(dict(kwargs))  # mutating copy
     parts = []
     for k, v in kwargs.items():
-        if v is None:
+        if v is None or v == 0 or v == "":
             continue
         label = _KEY_LABELS.get(k, k)
-        parts.append(f"{label}={v}")
-    return " " + " ".join(parts) if parts else ""
+        parts.append(f"{label}: {v}")
+    return " │ " + " · ".join(parts) if parts else ""
+
+
+def _humanize(kw: dict[str, Any]) -> dict[str, Any]:
+    """단위 / 형식 자동 변환 — 호출처는 raw 값만 박고 이 함수가 친절히 가공.
+
+    - ``elapsed_ms`` ≥ 1000 → ``elapsed`` 키로 "7.5초", 미만은 "16ms"
+    - ``elapsed_sec`` → ``elapsed`` "0.1초"
+    - ``cost_usd`` → ``cost`` "$0.000" (소수 3자리)
+    - ``cached_tokens`` + ``input_tokens`` → ``cached_tokens`` "18,560 (98%)"
+    - ``model`` 의 ``-2026-03-17`` 같은 날짜 suffix 자동 제거
+    - 큰 정수 (≥ 10000) → 쉼표 표기 ("18,909")
+    """
+    # elapsed_ms → 초 또는 ms
+    if "elapsed_ms" in kw:
+        try:
+            ms = float(kw["elapsed_ms"])
+            kw.pop("elapsed_ms")
+            kw["elapsed"] = f"{ms/1000:.1f}초" if ms >= 1000 else f"{int(ms)}ms"
+        except (TypeError, ValueError):
+            pass
+    # elapsed_sec → 초
+    if "elapsed_sec" in kw:
+        try:
+            sec = float(kw.pop("elapsed_sec"))
+            kw["elapsed"] = f"{sec:.1f}초"
+        except (TypeError, ValueError):
+            pass
+    # cost_usd → $0.000
+    if "cost_usd" in kw:
+        v = kw.pop("cost_usd")
+        try:
+            kw["cost"] = f"${float(v):.3f}"
+        except (TypeError, ValueError):
+            kw["cost"] = f"${v}"
+    # model 의 날짜 suffix 제거
+    if "model" in kw and isinstance(kw["model"], str):
+        import re
+        kw["model"] = re.sub(r"-\d{4}-\d{2}-\d{2}$", "", kw["model"])
+    # cached_tokens + input_tokens → "18,560 (98%)"
+    cached = kw.get("cached_tokens")
+    inp = kw.get("input_tokens")
+    if cached and inp:
+        try:
+            pct = int(100 * float(cached) / float(inp))
+            kw["cached_tokens"] = f"{int(cached):,} ({pct}%)"
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
+    # 큰 정수 쉼표 표기 (단 토큰 / 매치 / 함수수 같은 분석 카운터)
+    for k in ("input_tokens", "output_tokens", "total_tokens"):
+        v = kw.get(k)
+        if isinstance(v, int) and v >= 10000:
+            kw[k] = f"{v:,}"
+    return kw
 
 
 def _label_operation(operation: str) -> str:
@@ -410,7 +482,7 @@ def log_info(
 
         [INFO] step1.parse_ddl: start project=apascrt strategy=framework
         [INFO] step1.parse_ddl: done schemas=1 tables=7 columns=73 elapsed=0.3s
-        [INFO] step4.link_calls_by_llm: batch 1/3 calls=30 elapsed=4.1s
+        [INFO] step4.link_calls_by_name: done call_sites=1158 internal=773 external=312
         [INFO] llm.call: done in=4500 out=850 cached=4400 cost=$0.0014 elapsed=8.2s
 
     Args:
@@ -421,6 +493,12 @@ def log_info(
     """
     kv = _format_kv(context)
     op_label = _label_operation(operation)
-    body = f"{message}{kv}" if message else kv.lstrip()
-    line = f"{op_label}: {body}" if body else op_label
+    # body 가 ` │ ` (kv 구분자) 로 시작하면 op_label 과 자연 결합 (콜론 X — 중복 차단).
+    # message 있을 땐 옛 형식 유지 (op_label: message [kv]).
+    if message:
+        line = f"{op_label}: {message}{kv}"
+    elif kv:
+        line = f"{op_label}{kv}"
+    else:
+        line = op_label
     get_logger(component).info(line)

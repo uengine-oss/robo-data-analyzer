@@ -17,15 +17,32 @@ from typing import Annotated, TypedDict
 from data_models.analysis_context import AnalysisContext
 from data_models.graph_edges import (
     BelongsTo,
+    BelongsToPackage,
     Calls,
     Fk,
     HasColumn,
+    HasFunction,
+    HasMember,
+    HasVariable,
+    InitBy,
     ParentOf,
     ReadsWrites,
+    References,
     ReferTo,
     Uses,
 )
-from data_models.graph_nodes import Actor, Column, Function, Module, Schema, Table
+from data_models.graph_nodes import (
+    ArchitectChunk,
+    Column,
+    Constant,
+    DataType,
+    Function,
+    Module,
+    Package,
+    Schema,
+    Table,
+    Variable,
+)
 from data_models.project_and_run import Run
 
 
@@ -46,23 +63,35 @@ class WorkflowState(TypedDict, total=False):
     belongs_to_edges: Annotated[list[BelongsTo], operator.add]
     fk_edges: Annotated[list[Fk], operator.add]
 
-    # ── step2_parse_source 결과 ───────────────────
+    # ── step2_load_ast 결과 ───────────────────────
     functions: Annotated[list[Function], operator.add]
     modules: Annotated[list[Module], operator.add]
+    packages: Annotated[list[Package], operator.add]
+    variables: Annotated[list[Variable], operator.add]
+    constants: Annotated[list[Constant], operator.add]
+    data_types: Annotated[list[DataType], operator.add]
     uses_edges: Annotated[list[Uses], operator.add]
     parent_of_edges: Annotated[list[ParentOf], operator.add]
+    has_function_edges: Annotated[list[HasFunction], operator.add]
+    has_variable_edges: Annotated[list[HasVariable], operator.add]
+    has_member_edges: Annotated[list[HasMember], operator.add]
+    belongs_to_package_edges: Annotated[list[BelongsToPackage], operator.add]
+    references_edges: Annotated[list[References], operator.add]
+    init_by_edges: Annotated[list[InitBy], operator.add]
+    call_sites: Annotated[list[dict], operator.add]
+    import_refs: Annotated[list[dict], operator.add]
 
-    # ── step3_profile_project 결과 (Framework 만) ─
-    profile_result: dict                     # ProfileResult Pydantic → dict
+    # ── step3_scan_project 결과 (Framework 만) ─
+    scan_result: dict                     # ScanResult Pydantic → dict
 
     # ── step4_linking 결과 ────────────────────────
     reads_writes_edges: Annotated[list[ReadsWrites], operator.add]
     calls_edges: Annotated[list[Calls], operator.add]
     refer_to_edges: Annotated[list[ReferTo], operator.add]
-    unresolved_cases: Annotated[list[dict], operator.add]
+    architect_chunks: Annotated[list[ArchitectChunk], operator.add]
+    # unresolved_cases 는 평키(reducer 없음) — link_deterministic 가 raw 미해결을 쓰고
+    # link_residual_patterns 가 최종 잔여로 덮어쓴다 (누적 reducer 면 raw·최종이 섞임).
+    unresolved_cases: list[dict]
 
     # ── step5_build_context 결과 ──────────────────
     analysis_contexts: dict[str, AnalysisContext]   # function_id → ctx
-
-    # ── step7_post_processing (Actor 통합) 결과 ──
-    actors: Annotated[list[Actor], operator.add]

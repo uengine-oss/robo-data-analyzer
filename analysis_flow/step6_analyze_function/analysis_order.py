@@ -13,6 +13,8 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Iterable
 
+from shared.logging_and_stream.logger import log_warning
+
 
 def bottom_up_rounds(
     edges: Iterable[tuple[str, str]],
@@ -74,4 +76,14 @@ def bottom_up_rounds(
             for p in parents[g]:
                 if p in pending:
                     pending[p] -= 1
+
+    # pending 잔여 = 위상 정렬에 안 들어간 그룹 — 라운드 미배치로 분석에서 누락된다.
+    # SCC 가 정상이면 발생 X — 조용히 빠뜨리지 않게 표면화 (절대원칙 #3).
+    if pending:
+        leftover = sorted(fn for g in pending for fn in group_members[g])
+        log_warning(
+            "step6.analyze_function", "bottom_up_rounds",
+            "위상 정렬 누락 함수 — 라운드 미배치로 분석에서 빠짐 (cycle 식별 누락 의심)",
+            count=len(leftover), sample=leftover[:10],
+        )
     return rounds

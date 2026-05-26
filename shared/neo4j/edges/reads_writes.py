@@ -9,25 +9,28 @@ from typing import Iterable
 
 from data_models.graph_edges import ReadsWrites
 from shared.neo4j.neo4j_client import Neo4jClient
+from shared.neo4j.rel_types import READS, WRITES
 
 
 # relation 별 분기 — Cypher 의 dynamic relationship type 은 APOC 필요 →
 # 두 쿼리로 분리해서 호출.
-READS_QUERY = """
+READS_QUERY = f"""
 UNWIND $items AS item
-MATCH (f:Function {function_id: item.function_id})
-MATCH (t:Table {fqn: item.table_fqn})
-MERGE (f)-[r:READS]->(t)
-SET r.evidence_file = item.evidence_file,
+MATCH (f:FUNCTION {{function_id: item.function_id}})
+MATCH (t:TABLE {{fqn: item.table_fqn}})
+MERGE (f)-[r:{READS}]->(t)
+SET r.dml_type = item.dml_type,
+    r.evidence_file = item.evidence_file,
     r.evidence_line = item.evidence_line
 """
 
-WRITES_QUERY = """
+WRITES_QUERY = f"""
 UNWIND $items AS item
-MATCH (f:Function {function_id: item.function_id})
-MATCH (t:Table {fqn: item.table_fqn})
-MERGE (f)-[r:WRITES]->(t)
-SET r.evidence_file = item.evidence_file,
+MATCH (f:FUNCTION {{function_id: item.function_id}})
+MATCH (t:TABLE {{fqn: item.table_fqn}})
+MERGE (f)-[r:{WRITES}]->(t)
+SET r.dml_type = item.dml_type,
+    r.evidence_file = item.evidence_file,
     r.evidence_line = item.evidence_line
 """
 
@@ -36,14 +39,15 @@ def _to_item(e: ReadsWrites) -> dict:
     return {
         "function_id": e.function_id,
         "table_fqn": e.table_fqn,
+        "dml_type": e.dml_type,
         "evidence_file": e.evidence_file,
         "evidence_line": e.evidence_line,
     }
 
 
 async def upsert_reads_writes(client: Neo4jClient, edges: Iterable[ReadsWrites]) -> None:
-    reads = [_to_item(e) for e in edges if e.relation == "READS"]
-    writes = [_to_item(e) for e in edges if e.relation == "WRITES"]
+    reads = [_to_item(e) for e in edges if e.relation == READS]
+    writes = [_to_item(e) for e in edges if e.relation == WRITES]
     if reads:
         await client.run_batch_unwind(READS_QUERY, reads)
     if writes:

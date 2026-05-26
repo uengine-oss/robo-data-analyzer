@@ -16,7 +16,11 @@ from typing import Optional
 import httpx
 from langchain_core.runnables import RunnableConfig
 
-from data_models.graph_edges import ReadsWrites
+from shared.workflow_runner.step_config import step_config
+
+from data_models.graph_edges import ReadsWrites, normalize_relation
+from shared.catalog_http import catalog_headers, get_catalog_json
+from shared.config.env_catalog import ENV
 from shared.logging_and_stream.logger import log_info, log_warning
 from shared.neo4j.edges.reads_writes import upsert_reads_writes
 from shared.neo4j.neo4j_client import Neo4jClient
@@ -25,60 +29,32 @@ _STEP = "step7.enrich_lineage_from_catalog"
 
 
 async def enrich_lineage_from_catalog_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
-    cfg = (config or {}).get("configurable", {}) if isinstance(config, dict) else {}
+    cfg = step_config(config)
     project = cfg.get("project")
     neo: Neo4jClient | None = cfg.get("neo_client")
     if project is None:
         log_warning(_STEP, "config_missing", "project 누락 — step skip")
         return {}
+    if not ENV.catalog.enabled:
+        log_info(_STEP, "skip", reason="catalog 비활성화 (ROBO_CATALOG_ENABLED=false)")
+        return {}
     if not getattr(project, "catalog_service_url", None):
-        log_info(_STEP, "skip", reason="catalog_service_url 미설정 (Framework / catalog 미연동 정상)")
+        log_info(_STEP, "skip", reason="catalog_service_url 미설정 (이 프로젝트는 catalog 없음)")
         return {}
 
     started = time.monotonic()
     log_info(_STEP, "start", catalog_url=project.catalog_service_url, project=project.name)
 
     base_url = project.catalog_service_url.rstrip("/")
-    headers = {}
-    if project.catalog_api_key:
-        headers["Authorization"] = f"Bearer {project.catalog_api_key}"
+    headers = catalog_headers(project.catalog_api_key)
 
     async with httpx.AsyncClient(timeout=120.0) as http:
         url = f"{base_url}/lineage/{project.name}"
-        try:
-            resp = await http.get(url, headers=headers)
-        except httpx.HTTPError as e:
-            log_warning(
-                "analysis_flow.step7_post_processing.enrich_lineage_from_catalog_step",
-                "catalog_fetch",
-                "catalog lineage HTTP 오류 — lineage enrichment 건너뜀",
-                project=project.name,
-                error=f"{type(e).__name__}: {e}",
-            )
-            return {}
-        # 404 = 정상 (이 프로젝트는 catalog 에 lineage 없음)
-        if resp.status_code == 404:
-            return {}
-        if resp.status_code != 200:
-            log_warning(
-                "analysis_flow.step7_post_processing.enrich_lineage_from_catalog_step",
-                "catalog_fetch",
-                "catalog non-200 응답 — lineage enrichment 건너뜀",
-                project=project.name,
-                status=resp.status_code,
-            )
-            return {}
-        try:
-            data = resp.json()
-        except ValueError as e:
-            log_warning(
-                "analysis_flow.step7_post_processing.enrich_lineage_from_catalog_step",
-                "catalog_fetch",
-                "catalog 응답 JSON 파싱 실패",
-                project=project.name,
-                error=str(e),
-            )
-            return {}
+        # non-200/파싱 실패는 전파. 404 만 정상(None).
+        data = await get_catalog_json(http, url, headers=headers, label="lineage")
+    if data is None:
+        # 404 — 이 프로젝트는 catalog 에 lineage 없음 (실패 아님).
+        return {}
 
     # 함수 매칭 인덱스: 절대 경로 / 상대 경로 / function_id 모두로 lookup
     fn_index = _build_function_index(state.get("functions", []), Path(project.root))
@@ -92,12 +68,8 @@ async def enrich_lineage_from_catalog_step(state: dict, config: Optional[Runnabl
         table_fqn = flow.get("table_fqn") or flow.get("to_table") or flow.get("from_table")
         if not table_fqn:
             continue
-        relation = (flow.get("relation") or "READS").upper()
-        if relation == "READ":
-            relation = "READS"
-        elif relation == "WRITE":
-            relation = "WRITES"
-        if relation not in ("READS", "WRITES"):
+        relation = normalize_relation(flow.get("relation") or "READS")
+        if relation is None:
             continue
 
         edges.append(ReadsWrites(

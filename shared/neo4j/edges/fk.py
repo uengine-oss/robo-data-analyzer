@@ -8,13 +8,14 @@ from typing import Iterable
 
 from data_models.graph_edges import Fk
 from shared.neo4j.neo4j_client import Neo4jClient
+from shared.neo4j.rel_types import FK
 
 
-MERGE_QUERY = """
+MERGE_QUERY = f"""
 UNWIND $items AS item
-MATCH (from:Table {fqn: item.from_table_fqn})
-MATCH (to:Table {fqn: item.to_table_fqn})
-MERGE (from)-[r:FK {from_column: item.from_column, to_column: item.to_column}]->(to)
+MATCH (from:TABLE {{fqn: item.from_table_fqn}})
+MATCH (to:TABLE {{fqn: item.to_table_fqn}})
+MERGE (from)-[r:{FK} {{from_column: item.from_column, to_column: item.to_column}}]->(to)
 SET r.fk_type = item.fk_type,
     r.is_candidate = item.is_candidate
 """

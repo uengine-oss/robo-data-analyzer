@@ -80,14 +80,14 @@ ROBO_LLM_CONFIG=myco_vllm_qwen
 
 ## `reasoning_effort` cross-provider 매핑
 
-운영자는 `reasoning_effort: none` 1줄만 — 코드가 자동 변환:
+**표준 키만 코드가 자동 변환** — 비표준 키는 yaml 운영자 책임.
 
-| provider | 매핑 결과 |
+| provider | 처리 |
 |---|---|
-| OpenAI (o-series, gpt-5) | `reasoning_effort=none` 미전달 (= default). `low/medium/high` 만 전달. |
-| Anthropic (Claude 3.7+) | `thinking={"type":"disabled"}` (none) / budget=1k/4k/16k (low/med/high) |
-| SGLang / vLLM / 로컬 | `extra_body.chat_template_kwargs.enable_thinking = false` (none 자동 주입) |
-| OpenRouter | OpenAI 표준으로 normalize — `reasoning_effort` 그대로 |
+| OpenAI (o-series, gpt-5) | `reasoning_effort=none` 미전달 (= default). `low/medium/high` 만 전달 — **자동** |
+| Anthropic (Claude 3.7+) | `thinking={"type":"disabled"}` (none) / budget=1k/4k/16k (low/med/high) — **자동** |
+| SGLang / vLLM / 로컬 | yaml `extra_body.chat_template_kwargs.enable_thinking: false` 운영자 직접 명시. 코드 자동 주입 X (hosted API 거부 400 사고 차단) |
+| OpenRouter | OpenAI 표준으로 normalize — `reasoning_effort` 그대로. 단 backend 마다 호환성 다름, 안정성 보장 X |
 
 ## 비밀 (API key) 분리 정책
 

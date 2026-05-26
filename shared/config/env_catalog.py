@@ -5,7 +5,7 @@
 - 모든 경계 상수 (임계값 / 배치 크기 / max_calls / URI / 비용 한도) 는
   ``ROBO_<영역>_<이름>`` env 로 외부화. 코드에 매직 넘버 박지 X.
 - 이 파일이 **유일한 진입점**. 모든 step / 모든 미들웨어가 여기를 import.
-- 영역별 prefix: LLM / CACHE / AGENT / BUDGET / NEO4J / PIPELINE / LOG / DATA.
+- 영역별 prefix: LLM / CACHE / AGENT / BUDGET / NEO4J / PIPELINE / CATALOG / LOG / DATA.
 - 단위 suffix: _SECONDS / _MS / _TOKENS / _USD / _PCT / _RATIO.
 
 새 env 변수 추가 = 이 파일 1곳만 손댐 → 코드 어디서나 ``ENV.<영역>.<이름>`` 로 접근.
@@ -74,11 +74,16 @@ class CacheSettings:
 
 @dataclass(frozen=True)
 class AgentSettings:
-    """ROBO_AGENT_* — Profile Agent / Linking Agent 호출 한도."""
-    profile_max_calls: int = field(default_factory=lambda: _getenv_int("ROBO_AGENT_PROFILE_MAX_CALLS", 30))
-    linking_max_calls: int = field(default_factory=lambda: _getenv_int("ROBO_AGENT_LINKING_MAX_CALLS", 15))
+    """ROBO_AGENT_* — Scan Agent / 잔여 패턴 에이전트 호출 한도 + 검증 임계."""
+    scan_max_calls: int = field(default_factory=lambda: _getenv_int("ROBO_AGENT_SCAN_MAX_CALLS", 30))
+    residual_max_calls: int = field(default_factory=lambda: _getenv_int("ROBO_AGENT_RESIDUAL_MAX_CALLS", 15))
     context_editing_trigger_tokens: int = field(
         default_factory=lambda: _getenv_int("ROBO_AGENT_CONTEXT_EDITING_TRIGGER_TOKENS", 80000)
+    )
+    # Scan Agent 의 table_access_patterns 검증 — 매치된 call site 중 op 가
+    # crud_mappings 에 인식된 비율의 최소 통과선. 틀린 정규식(op 가 변수명)은 0 → 탈락.
+    scan_regex_min_op_ratio: float = field(
+        default_factory=lambda: _getenv_float("ROBO_AGENT_SCAN_REGEX_MIN_OP_RATIO", 0.5)
     )
 
 
@@ -108,8 +113,23 @@ class PipelineSettings:
     big_context_threshold_tokens: int = field(
         default_factory=lambda: _getenv_int("ROBO_PIPELINE_BIG_CONTEXT_THRESHOLD_TOKENS", 1000)
     )
-    call_llm_batch_size: int = field(default_factory=lambda: _getenv_int("ROBO_PIPELINE_CALL_LLM_BATCH_SIZE", 30))
-    unresolved_batch_size: int = field(default_factory=lambda: _getenv_int("ROBO_PIPELINE_UNRESOLVED_BATCH_SIZE", 10))
+    # 잔여 패턴 루프 — 한 라운드 에이전트에 보내는 미해결 샘플 수 / 루프 반복 상한.
+    residual_sample_size: int = field(default_factory=lambda: _getenv_int("ROBO_PIPELINE_RESIDUAL_SAMPLE_SIZE", 30))
+    residual_max_rounds: int = field(default_factory=lambda: _getenv_int("ROBO_PIPELINE_RESIDUAL_MAX_ROUNDS", 3))
+    # 임베딩 step on/off — Framework/DBMS 공통. 기본 ON (운영=full 동작).
+    # 테스트/디버그 시 .env 로 off (느린 모델 로드 회피).
+    embed_enabled: bool = field(default_factory=lambda: _getenv_bool("ROBO_PIPELINE_EMBED_ENABLED", True))
+
+
+@dataclass(frozen=True)
+class CatalogSettings:
+    """ROBO_CATALOG_* — 외부 DB 카탈로그 연동 on/off.
+
+    ``enabled`` 기본 ON — 카탈로그는 운영 시 동작해야 하는 기능. 테스트/디버그 때만
+    ``.env`` 로 off. **ON 인데 catalog HTTP 시도가 실패하면 step 이 raise** (심각 —
+    조용히 skip 하지 않음). 단 개별 테이블 404 는 정상 (그 테이블이 카탈로그에 없을 뿐).
+    """
+    enabled: bool = field(default_factory=lambda: _getenv_bool("ROBO_CATALOG_ENABLED", True))
 
 
 @dataclass(frozen=True)
@@ -157,6 +177,7 @@ class EnvCatalog:
     budget: BudgetSettings = field(default_factory=BudgetSettings)
     neo4j: Neo4jSettings = field(default_factory=Neo4jSettings)
     pipeline: PipelineSettings = field(default_factory=PipelineSettings)
+    catalog: CatalogSettings = field(default_factory=CatalogSettings)
     log: LogSettings = field(default_factory=LogSettings)
     data: DataSettings = field(default_factory=DataSettings)
 

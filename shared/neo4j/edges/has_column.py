@@ -5,13 +5,14 @@ from typing import Iterable
 
 from data_models.graph_edges import HasColumn
 from shared.neo4j.neo4j_client import Neo4jClient
+from shared.neo4j.rel_types import HAS_COLUMN
 
 
-MERGE_QUERY = """
+MERGE_QUERY = f"""
 UNWIND $items AS item
-MATCH (t:Table {fqn: item.table_fqn})
-MATCH (c:Column {fqn: item.column_fqn})
-MERGE (t)-[:HAS_COLUMN]->(c)
+MATCH (t:TABLE {{fqn: item.table_fqn}})
+MATCH (c:COLUMN {{fqn: item.column_fqn}})
+MERGE (t)-[:{HAS_COLUMN}]->(c)
 """
 
 

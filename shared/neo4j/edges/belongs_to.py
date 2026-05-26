@@ -5,13 +5,14 @@ from typing import Iterable
 
 from data_models.graph_edges import BelongsTo
 from shared.neo4j.neo4j_client import Neo4jClient
+from shared.neo4j.rel_types import BELONGS_TO
 
 
-MERGE_QUERY = """
+MERGE_QUERY = f"""
 UNWIND $items AS item
-MATCH (t:Table {fqn: item.table_fqn})
-MATCH (s:Schema {fqn: item.schema_fqn})
-MERGE (t)-[:BELONGS_TO]->(s)
+MATCH (t:TABLE {{fqn: item.table_fqn}})
+MATCH (s:SCHEMA {{fqn: item.schema_fqn}})
+MERGE (t)-[:{BELONGS_TO}]->(s)
 """
 
 

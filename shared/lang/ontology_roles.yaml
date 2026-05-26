@@ -1,0 +1,81 @@
+# 온톨로지 — 언어별 antlr node type 분류 + stereotype 풀.
+#
+# roles     : antlr node type → 역할 (Framework 전용 — java/c/python).
+#             shared/lang/ontology.py 의 role_of / primary_label_of / sub_label_of 가 읽음.
+# paradigm  : 언어 → oop / procedural.
+# framework / dbms : LLM stereotype 풀 — 풀에 없는 값은 빈 문자열로 강제(환각 차단).
+#
+# ※ 실제 antlr-parser 출력 기준. Java 는 CONSTRUCTOR/ENUM/RECORD 안 박음,
+#   함수 내 지역변수 안 박음, PARAMETER 안 박음(시그니처 텍스트만).
+# ※ DBMS(PL/SQL)는 sub-label 없음 — 단일 라벨 + 속성. roles 는 Framework 전용.
+
+# ───────────────────────────────────────────────
+# 1. roles — node type → 역할 (Framework)
+# ───────────────────────────────────────────────
+roles:
+  module:                    # Neo4j MODULE 노드 (함수를 품는 컨테이너)
+    java:    [CLASS, INTERFACE]
+    c:       [FILE]
+    python:  [CLASS, FILE]
+  data_type:                 # Neo4j DATA_TYPE 노드 (함수 못 품 — C 구조체류)
+    c:       [STRUCT, UNION, ENUM]
+  function:                  # Neo4j FUNCTION 노드
+    java:    [METHOD]
+    c:       [FUNCTION]
+    python:  [METHOD, FUNCTION]
+  variable:                  # Neo4j VARIABLE 노드
+    java:    [FIELD]
+    c:       [FIELD, MEMBER, GLOBAL_VARIABLE]
+    python:  [FIELD, VARIABLE]
+  constant:                  # Neo4j CONSTANT 노드
+    java:    [CONSTANT_FIELD]
+    c:       [DEFINE, CONSTANT_FIELD]
+    python:  [CONSTANT_FIELD]
+  internal:                  # Neo4j 노드 X — 분석 흐름 단서 (호출/import/파일컨테이너)
+    java:    [FILE, FUNCTION_CALL, NEW_INSTANCE, IMPORT]
+    c:       [FUNCTION_CALL, INCLUDE, TYPEDEF, ENUM_CONSTANT]
+    python:  [FUNCTION_CALL, NEW_INSTANCE, IMPORT]
+
+# ───────────────────────────────────────────────
+# 2. paradigm — 언어 패러다임
+# ───────────────────────────────────────────────
+paradigm:
+  oop:        [java, python]
+  procedural: [c]
+
+# ───────────────────────────────────────────────
+# 3. stereotype 풀 — analyze_function 의 SummaryOutput.stereotype 검증.
+#    LLM 이 자유롭게 작성 X. 이 풀에서만 선택. 풀에 없으면 빈 문자열로 강제.
+# ───────────────────────────────────────────────
+framework:
+  # OOP 일반 — Java / Kotlin / Python / Go / C++
+  - ApplicationService     # use case 진입점 (transaction boundary)
+  - DomainService          # 도메인 로직 (여러 entity 협력)
+  - Repository             # DB 접근 (READ/WRITE)
+  - Factory                # 객체 생성 책임
+  - Command                # 상태 변경 (WRITE)
+  - Query                  # 조회 (READ-only)
+  - Validator              # 입력 검증
+  - Translator             # 데이터 변환 / 매핑
+  - Adapter                # 외부 시스템 연결
+  - Strategy               # 알고리즘 추상화
+  - EventHandler           # 이벤트 / 메시지 처리
+  - Scheduler              # 시간 기반 작업
+  - Helper                 # 부수 유틸리티
+  - Controller             # HTTP / API 진입점
+  - Initializer            # 시작 시 1회 설정
+
+dbms:
+  # PL/SQL 전용
+  - DataMutator            # INSERT / UPDATE / DELETE 위주
+  - DataQuery              # SELECT 위주 (조회)
+  - BatchProcessor         # 야간 / 정기 배치
+  - Validator              # 데이터 검증 / 정합성 체크
+  - MetadataLookup         # 마스터 / 코드 테이블 조회
+  - EventTrigger           # 트리거 핸들러
+  - Aggregator             # 집계 / 요약
+  - ReportGenerator        # 리포트 생성
+  - DataMigrator           # 데이터 마이그레이션
+  - CursorLooper           # 커서 순회 처리
+  - PackageInitializer     # 패키지 초기화
+  - Helper                 # 부수 유틸리티

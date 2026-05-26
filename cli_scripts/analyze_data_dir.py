@@ -15,9 +15,10 @@
                 ...
 
 자동 결정:
-- ``project_root`` = ``ROBO_DATA_DIR/source/<name>``
+- ``project_root`` = ``ROBO_DATA_DIR/source/<name>`` (하위 폴더). 하위 폴더 없이
+  소스 파일이 ``source/`` 직속이면 ``source/`` 자체가 1 프로젝트 (폴더 존재를 가정 X).
 - ``ddl_dir``      = ``ROBO_DATA_DIR/ddl`` (있으면)
-- ``strategy``     = ``source/<name>`` 안 확장자로 자동 (.sql/.pkb 만 = dbms, 그 외 = framework)
+- ``strategy``     = 소스 확장자로 자동 (.sql/.pkb 만 = dbms, 그 외 = framework)
 
 사용::
 
@@ -189,11 +190,17 @@ async def main(target: str | None, strategy_override: str | None) -> None:
             return
         targets = [project_dir]
     else:
-        targets = sorted(p for p in source_dir.iterdir() if p.is_dir())
-        if not targets:
-            print(f"ERROR: source/ 안에 분석 대상 디렉토리 없음: {source_dir}")
+        subdirs = sorted(p for p in source_dir.iterdir() if p.is_dir())
+        if subdirs:
+            targets = subdirs
+            print(f"=== {len(targets)} 개 프로젝트 일괄 분석 ===")
+        elif any(source_dir.iterdir()):
+            # 하위 폴더 없이 소스 파일이 source/ 직속 — source/ 자체가 1 프로젝트.
+            # source/<name>/ 구조를 항상 가정하지 않는다.
+            targets = [source_dir]
+        else:
+            print(f"ERROR: source/ 가 비어 있음: {source_dir}")
             return
-        print(f"=== {len(targets)} 개 프로젝트 일괄 분석 ===")
 
     for pd in targets:
         strategy = strategy_override or _detect_strategy(pd)

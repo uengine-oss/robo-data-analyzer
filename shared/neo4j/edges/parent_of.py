@@ -5,13 +5,14 @@ from typing import Iterable
 
 from data_models.graph_edges import ParentOf
 from shared.neo4j.neo4j_client import Neo4jClient
+from shared.neo4j.rel_types import PARENT_OF
 
 
-MERGE_QUERY = """
+MERGE_QUERY = f"""
 UNWIND $items AS item
-MATCH (parent:Function {function_id: item.parent_function_id})
-MATCH (child:Function {function_id: item.child_function_id})
-MERGE (parent)-[:PARENT_OF]->(child)
+MATCH (parent:FUNCTION {{function_id: item.parent_function_id}})
+MATCH (child:FUNCTION {{function_id: item.child_function_id}})
+MERGE (parent)-[:{PARENT_OF}]->(child)
 """
 
 

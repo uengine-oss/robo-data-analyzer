@@ -1,6 +1,6 @@
 """CallRegexLinker — PL/SQL PKG.FUNC + BARE FUNC regex (LLM 0회).
 
-DBMS 의 stage2_extract_calls 가 사용 (Framework 는 ``CallLLMBatcher``).
+DBMS 의 stage2_extract_calls 가 사용 (Framework 는 call_classifier 결정론 분류).
 
 DBMS_/UTL_/SYS_ 내장 패키지 = external.
 PL/SQL 예약어 + 내장 함수 = 호출 아님 (필터).

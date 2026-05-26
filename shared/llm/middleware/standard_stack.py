@@ -62,7 +62,7 @@ def build_standard_stack(
     """모든 Agent / Subagent 가 사용할 표준 미들웨어 스택.
 
     Args:
-        agent_name: ``"profile"`` / ``"linking_subagent"`` 등 — 로그 키 + 스트림 이벤트 키.
+        agent_name: ``"scan"`` / ``"linking_subagent"`` 등 — 로그 키 + 스트림 이벤트 키.
         max_calls: 이 Agent 의 LLM 호출 한도.
         run_dir: ``logs/analysis.run/latest/`` 경로.
         cost_budget: run 1회의 ``CostBudget``.

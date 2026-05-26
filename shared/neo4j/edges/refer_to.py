@@ -1,69 +1,39 @@
-"""REFER_TO 엣지 — Function → 외부 자원.
+"""REFER_TO 엣지 — Function → 구조화 파일의 키-값 청크 (ARCHITECT_CHUNK).
 
-target_type 별 노드 라벨 분기 (단순 추상화 X):
-- ``sql_statement``  → ``:SqlStatement {sql_key}``
-- ``config_section`` → ``:ConfigSection {config_key}``
-- ``unresolved``     → ``:UnresolvedRef {target_key}`` (사람 검토 큐)
+``architect_chunk`` → ``:ARCHITECT_CHUNK {chunk_key}`` 노드 + Function 의 REFER_TO 엣지.
 
-각 타입별 unique 키 + Function 와의 REFER_TO 엣지.
+※ 보류 — architect 청크 링킹은 재설계 전까지 파이프라인에서 비활성
+  (계획 §2.8 Issue I). 이 upsert 인프라는 휴면 상태로 보존 — 삭제 금지.
 """
 from __future__ import annotations
 
-from collections import defaultdict
 from typing import Iterable
 
 from data_models.graph_edges import ReferTo
 from shared.neo4j.neo4j_client import Neo4jClient
+from shared.neo4j.rel_types import REFER_TO
 
 
-_SQL_QUERY = """
+_CHUNK_QUERY = f"""
 UNWIND $items AS item
-MATCH (f:Function {function_id: item.function_id})
-MERGE (e:SqlStatement {sql_key: item.target_key})
-MERGE (f)-[r:REFER_TO]->(e)
+MATCH (f:FUNCTION {{function_id: item.function_id}})
+MERGE (e:ARCHITECT_CHUNK {{chunk_key: item.target_key}})
+MERGE (f)-[r:{REFER_TO}]->(e)
 SET r.evidence_file = item.evidence_file,
     r.evidence_line = item.evidence_line
 """
-
-_CONFIG_QUERY = """
-UNWIND $items AS item
-MATCH (f:Function {function_id: item.function_id})
-MERGE (e:ConfigSection {config_key: item.target_key})
-MERGE (f)-[r:REFER_TO]->(e)
-SET r.evidence_file = item.evidence_file,
-    r.evidence_line = item.evidence_line
-"""
-
-_UNRESOLVED_QUERY = """
-UNWIND $items AS item
-MATCH (f:Function {function_id: item.function_id})
-MERGE (e:UnresolvedRef {target_key: item.target_key})
-MERGE (f)-[r:REFER_TO]->(e)
-SET r.evidence_file = item.evidence_file,
-    r.evidence_line = item.evidence_line
-"""
-
-_QUERIES = {
-    "sql_statement": _SQL_QUERY,
-    "config_section": _CONFIG_QUERY,
-    "unresolved": _UNRESOLVED_QUERY,
-}
 
 
 async def upsert_refer_to(client: Neo4jClient, edges: Iterable[ReferTo]) -> None:
-    """target_type 별 분기 후 각 라벨 노드 + REFER_TO 엣지."""
-    by_type: dict[str, list[dict]] = defaultdict(list)
-    for e in edges:
-        item = {
+    """ARCHITECT_CHUNK 노드 + Function→청크 REFER_TO 엣지 일괄 업서트."""
+    items = [
+        {
             "function_id": e.function_id,
             "target_key": e.target_key,
             "evidence_file": e.evidence_file,
             "evidence_line": e.evidence_line,
         }
-        by_type[e.target_type].append(item)
-
-    for target_type, items in by_type.items():
-        query = _QUERIES.get(target_type)
-        if query is None:
-            continue
-        await client.run_batch_unwind(query, items)
+        for e in edges
+    ]
+    if items:
+        await client.run_batch_unwind(_CHUNK_QUERY, items)

@@ -1,13 +1,12 @@
-"""FrameworkContextBuilder — Framework 의 분석 컨텍스트 빌더.
+"""FrameworkContextBuilder — Framework 의 분석 컨텍스트 빌더 (주입 구현체).
 
-``build_context_step`` 이 ``strategy.context_builder`` 로 주입받음.
+``build_context_step`` 이 ``strategy.context_builder`` 로 주입받는다.
 
-``augment()`` 가 ``AnalysisContext.extra`` 에 다음 채움:
-- ``callee_summaries``: callee function 의 summary dict (Bottom-up DAG 의존성).
-  Bottom-up Round 진행 시 채워짐 — 처음에는 빈 dict.
-- ``callee_one_liners``: 큰 callee 의 사전 압축 one_liner.
-
-caller 분석 시 callee 본문 통째 노출 X — summary 또는 one_liner 만.
+Framework 는 strategy 별 추가 컨텍스트가 없다 — callee 의존성은 base ``ctx.callees``
+(호출 그래프) 로 이미 표현되고, callee 의 summary / one_liner 는 step6 Bottom-up 진행 중
+``contexts`` dict 라이브 조회(``three_split_llm_fanout._format_callee_summaries``)로
+가져온다. 따라서 ``augment`` 는 항등(ctx 무변경) — 모든 strategy 가 context_builder 를
+제공한다는 DI 계약을 지키기 위한 구현체.
 """
 from __future__ import annotations
 
@@ -16,7 +15,7 @@ from data_models.graph_nodes import Function
 
 
 class FrameworkContextBuilder:
-    """Framework: callee summary 컨텍스트 부착."""
+    """Framework: strategy 별 추가 컨텍스트 없음 — ``augment`` 는 항등."""
 
     async def augment(
         self,
@@ -24,11 +23,5 @@ class FrameworkContextBuilder:
         function: Function,
         state: dict,
     ) -> AnalysisContext:
-        """``ctx.extra`` 에 callee 관련 컨텍스트 슬롯 마련 (실제 채움은 step6).
-
-        ``build_context_step`` 시점에는 callee summary 아직 없음 (Bottom-up DAG 가
-        leaf → root 진행하며 채움). 여기서는 슬롯 + callee 식별자 리스트만.
-        """
-        ctx.extra["callee_summaries"] = {}     # callee_id → summary (step6 가 채움)
-        ctx.extra["callee_one_liners"] = {}    # callee_id → one_liner (큰 함수 사전 압축)
+        """Framework 는 추가 컨텍스트가 없다 — ``ctx`` 를 그대로 반환."""
         return ctx

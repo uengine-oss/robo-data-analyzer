@@ -1,0 +1,34 @@
+# GPT-5.4 Mini — OpenAI 본점 직접
+# ─────────────────────────────────────────────────────────────
+# Slug: gpt-5.4-mini  (OpenAI 직접 호출 시 prefix 없음)
+# 가격: $0.75 / 1M input / $4.50 / 1M output
+# Context: 400K input + 128K output
+#
+# 경로: ChatOpenAI → api.openai.com/v1.
+# OpenRouter 중개 X (사내 GPU 점검 중 직전 안정성 ↓ 이슈로 OpenAI 직접).
+# 라우팅 backend 단일 → hang / 429 / spec 거부 0.
+
+provider: openai
+
+api_base: https://api.openai.com/v1
+
+# OpenAI 표준 slug (prefix 없음)
+model: gpt-5.4-mini
+
+# 비용 절감용 작은 모델 — 안 박으면 model 사용
+model_small: ""
+
+# 토큰 / 타임아웃
+max_tokens: 128000
+timeout_seconds: 300
+
+verify_ssl: true
+
+# ChatOpenAI 표준 sampling
+sampling:
+  temperature: 0.7
+  top_p: 0.8
+
+# GPT-5 계열은 reasoning_effort 인자 정상 인식 — none = reasoning chain 생성 X.
+# 비용 절감 + 응답 latency ↓.
+reasoning_effort: none

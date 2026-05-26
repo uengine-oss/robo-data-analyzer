@@ -37,7 +37,7 @@ class ToolEventEmitterMiddleware(AgentMiddleware):
         self.agent_name = agent_name
         self.log_path = Path(log_path)
         self.stream_emit = stream_emit
-        # 예: {"ddl_lookup": "DDL 테이블 {table_name} 조회 중..."}
+        # 예: {"grep": "{pattern} 정규식 검색 중..."}
         self.tool_messages = tool_messages or {}
 
     def wrap_tool_call(
@@ -207,7 +207,7 @@ def _summarize_result(tool_name: str, result: Any) -> dict:
     if tool_name == "write_todos":
         # 결과는 보통 "Todos updated" 또는 todo 본문. status counts 는 args 에서 이미 emit.
         return {"결과": "갱신완료"}
-    # 그래프 도구 (Linking Agent) — ddl_lookup / graph_get_callers 등.
+    # 그 밖의 도구 (verify_table_regex 등) — 결과 줄 수만.
     return {"줄수": lines}
 
 

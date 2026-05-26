@@ -7,11 +7,10 @@
 4. Strategy 의 workflow 빌더 호출 → ``astream(stream_mode="updates")``.
 5. 산출물 4파일 (artifacts/) + ``usage_summary.json``.
 
-**일시정지 / 재개 정책 (Plan §4 M1)** — LangGraph Checkpointer 가 흡수:
-- 별도 컨트롤러 / control endpoint 없음.
-- 클라이언트가 NDJSON stream 끊으면 자동 일시정지 (MemorySaver 가 state 보존).
-- 같은 ``thread_id`` 로 ``/analyze`` 재호출 시 자동 resume.
-- stop = 클라이언트가 stream 끊고 다시 안 부르면 끝 (state 는 메모리에서 GC).
+**run 정책 (Plan §4 M1)** — 매 ``/analyze`` 호출 = 독립 run (``run_id`` 가 유일 식별자):
+- 별도 컨트롤러 / control endpoint 없음 — 진행은 NDJSON stream.
+- resume(중단된 run 재개)은 현재 미지원 — 진짜 프론트가 필요로 할 때 도입.
+  Checkpointer(MemorySaver)는 run 1회 안의 state 전파용으로만 둔다.
 """
 from __future__ import annotations
 
@@ -36,7 +35,7 @@ from shared.logging_and_stream.logger import (
 )
 from shared.logging_and_stream.ndjson_stream import NDJSONStream
 from shared.neo4j.neo4j_client import Neo4jClient
-from shared.neo4j.schema_constraints import ensure_schema
+from shared.neo4j.schema_constraints import ensure_schema, wipe_graph
 from shared.workflow_runner.artifact_dumper import dump_state_artifacts
 from shared.workflow_runner.langgraph_workflow import build_langgraph_workflow
 
@@ -45,16 +44,13 @@ async def execute_run(
     strategy: Any,
     project: Project,
     stream: Optional[NDJSONStream] = None,
-    thread_id: Optional[str] = None,
 ) -> Run:
-    """Run 1회 실행.
+    """Run 1회 실행 — 매 호출이 독립 run (``run_id`` 가 유일 식별자).
 
     Args:
         strategy: ``FRAMEWORK_PIPELINE`` 또는 ``DBMS_PIPELINE`` (``analysis_pipelines``).
         project: 분석 대상.
         stream: 프론트 NDJSON 스트림.
-        thread_id: LangGraph Checkpointer thread 식별자 (None=run_id).
-            같은 thread_id 로 재호출 시 마지막 state 복원 (일시정지/재개).
     """
     log_base = ENV.log.dir
     _reset_logs_root(log_base)
@@ -62,9 +58,6 @@ async def execute_run(
     run = Run.now(project=project, log_base=log_base)
     run.run_dir.mkdir(parents=True, exist_ok=True)
     (run.run_dir / "artifacts").mkdir(parents=True, exist_ok=True)
-
-    if thread_id is None:
-        thread_id = run.run_id
 
     # ── 파일 핸들러 attach (ROBO_LOG_FILE_ENABLED=true 일 때만) ──
     # analyzer.log (INFO+) + error.log (WARNING+) → tail -f 로 실시간 추적 가능.
@@ -78,13 +71,15 @@ async def execute_run(
         project=project.name,
         strategy=getattr(strategy, "name", "?"),
         run_id=run.run_id,
-        thread_id=thread_id,
     )
     try:
         neo_client = Neo4jClient()
         try:
+            # 매 run 시작 — 옛 노드/엣지 wipe (테스트 정책: 깨끗 상태).
+            # schema (제약/인덱스) 는 wipe 무관 — ensure_schema 가 idempotent.
+            await wipe_graph(neo_client)
             await ensure_schema(neo_client)
-            log_info("run", "neo4j_ready", database=ENV.neo4j.database)
+            log_info("run", "neo4j_ready", database=ENV.neo4j.database, wiped=True)
 
             cost_budget = CostBudget()
             checkpointer = MemorySaver()
@@ -93,7 +88,8 @@ async def execute_run(
             initial_state: dict = {"run": run}
             config = {
                 "configurable": {
-                    "thread_id": thread_id,
+                    # LangGraph Checkpointer 가 요구하는 키 — run_id 를 그대로 쓴다.
+                    "thread_id": run.run_id,
                     "strategy": strategy,
                     "project": project,
                     "run": run,
@@ -105,7 +101,7 @@ async def execute_run(
 
             if stream is not None:
                 # emit 안에서 logger mirror 가 자동으로 analyzer.log 에 phase_event 한 줄.
-                stream.emit({"type": "phase_event", "event": "start", "thread_id": thread_id})
+                stream.emit({"type": "phase_event", "event": "start", "run_id": run.run_id})
 
             final_state: dict = {}
             async for chunk in app.astream(initial_state, config=config, stream_mode="updates"):
@@ -132,7 +128,7 @@ async def execute_run(
             _summarize_usage(run.run_dir)
 
             if stream is not None:
-                stream.emit({"type": "phase_event", "event": "complete", "thread_id": thread_id})
+                stream.emit({"type": "phase_event", "event": "complete", "run_id": run.run_id})
 
             log_info(
                 "run",
@@ -143,12 +139,20 @@ async def execute_run(
 
         finally:
             await neo_client.close()
+    except Exception as e:
+        # 파이프라인 실패 — 스트림 consumer 가 알도록 에러 emit (조용한 실패 차단).
+        log_error(
+            "run", "run_failed", e,
+            stream_emit=stream.emit if stream is not None else None,
+            run_id=run.run_id,
+        )
+        raise
     finally:
         # neo close 다음 — Windows fd 충돌 회피 위해 attach 의 역순.
         detach_run_file_handlers(file_handlers)
-
-    if stream is not None:
-        await stream.close()
+        # 성공·실패 무관 스트림 종료 — 안 닫으면 consumer 가 stream_end 를 영구 대기 (hang).
+        if stream is not None:
+            await stream.close()
     return run
 
 

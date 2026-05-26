@@ -5,23 +5,26 @@
    (한 파일 안 여러 클래스 / 중첩 모듈 정확 처리)
 2. 매칭 안 된 함수는 file-level Module (start_line=0, end_line=0) 로.
 3. 각 Module 마다 멤버 함수들의 summary 종합 → ``module_summary.yaml`` LLM 호출.
-4. Module.summary / module_stereotype Neo4j 업서트.
+4. Module.summary / stereotype Neo4j 업서트 (replace 로 sub_label 등 보존).
 """
 from __future__ import annotations
 
 import asyncio
 import time
 from collections import defaultdict
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
+from shared.workflow_runner.step_config import step_config
+
 from data_models.graph_nodes import Function, Module
 from shared.config.env_catalog import ENV
 from shared.llm.cost_budget import BudgetExceededError
+from shared.llm.llm_fanout import gather_with_warmup
 from shared.llm.llm_output_models import ModuleSummaryOutput
-from shared.llm.middleware.call_limit import ModelCallLimitExceeded
 from shared.llm.yaml_llm_runner import run_yaml_rule
 from shared.logging_and_stream.logger import log_error, log_info, log_warning
 from shared.neo4j.neo4j_client import Neo4jClient
@@ -31,7 +34,7 @@ _STEP = "step7.summarize_module"
 
 
 async def summarize_module_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
-    cfg = (config or {}).get("configurable", {}) if isinstance(config, dict) else {}
+    cfg = step_config(config)
     strategy = cfg.get("strategy")
     cost_budget = cfg.get("cost_budget")
     neo: Neo4jClient | None = cfg.get("neo_client")
@@ -75,7 +78,7 @@ async def summarize_module_step(state: dict, config: Optional[RunnableConfig] = 
                     response_model=ModuleSummaryOutput,
                     budget=cost_budget,
                 )
-            except (BudgetExceededError, ModelCallLimitExceeded):
+            except BudgetExceededError:
                 raise            # 회로 차단기는 상위로 전파
             except Exception as e:
                 # 개별 모듈 요약 실패 → 로깅 후 원본 module 반환 (요약 없이).
@@ -86,17 +89,17 @@ async def summarize_module_step(state: dict, config: Optional[RunnableConfig] = 
                     module_id=module.module_id,
                 )
                 return module
-        return Module(
-            module_id=module.module_id,
-            name=module.name,
-            file_path=module.file_path,
-            start_line=module.start_line,
-            end_line=module.end_line,
+        # replace — sub_label / comment / intent 등 원본 필드 보존, 분석분만 갱신.
+        # logical_name 은 여기서 채움 — 헤더(M9 intent)가 아니라 멤버 분석 종합에서 도출.
+        return replace(
+            module,
             summary=result.summary,
-            module_stereotype=result.module_stereotype,
+            stereotype=result.stereotype,
+            logical_name=result.logical_name or None,
         )
 
-    updated = await asyncio.gather(*[_summarize_one(m) for m in modules])
+    # 첫 모듈 1건으로 prefix 캐시 워밍 → 나머지 병렬 (cold 동시요청 캐시 미스 방지).
+    updated = await gather_with_warmup([_summarize_one(m) for m in modules])
 
     if neo is not None:
         await upsert_modules(neo, updated)

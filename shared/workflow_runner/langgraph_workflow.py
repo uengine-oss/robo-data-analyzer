@@ -7,8 +7,8 @@
 
 **LangGraph 의 책임 — 별도 컨트롤러 X**:
 - 상태 관리: StateGraph 가 ``WorkflowState`` 자동 전파.
-- 일시정지 / 재개: ``Checkpointer`` (MemorySaver) 가 ``thread_id`` 별 state 보존 →
-  클라이언트가 stream 끊고 같은 thread_id 로 ``/analyze`` 재호출 → 자동 resume.
+- state 전파: ``Checkpointer`` (MemorySaver) 가 run 1회 안의 superstep state 보존.
+  (resume 는 현재 미지원 — 매 ``/analyze`` = 독립 run.)
 - 스트림: ``astream(stream_mode="updates")`` 단일 채널 (폴링 없음).
 
 **새 strategy 추가 = ``analysis_pipelines.py`` 의 ``Strategy(...)`` 선언만**.
@@ -42,15 +42,13 @@ def build_langgraph_workflow(
     project / neo_client / stream 전부 None → step 이 ``{}`` 만 반환 (silent 빈 결과).)
 
     state 는 WorkflowState (TypedDict). step 안에서
-    ``cfg = (config or {}).get("configurable", {})`` 로 strategy / run /
-    cost_budget / neo_client / stream 접근.
+    ``cfg = step_config(config)`` 로 strategy / run / cost_budget / neo_client / stream 접근.
 
     if 분기 0개. for 루프만.
 
     Args:
         strategy: ``FRAMEWORK_PIPELINE`` 또는 ``DBMS_PIPELINE`` (``analysis_pipelines.py``).
-        checkpointer: LangGraph Checkpointer (MemorySaver 등). 일시정지/재개에 사용 —
-            같은 ``thread_id`` 로 재호출 시 마지막 state 복원.
+        checkpointer: LangGraph Checkpointer (MemorySaver 등) — run 1회 안의 state 전파.
 
     Returns:
         Compiled StateGraph — ``app.astream(initial_state, config=...)`` 로 실행.

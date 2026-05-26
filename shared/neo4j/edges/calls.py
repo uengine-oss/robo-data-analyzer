@@ -5,13 +5,14 @@ from typing import Iterable
 
 from data_models.graph_edges import Calls
 from shared.neo4j.neo4j_client import Neo4jClient
+from shared.neo4j.rel_types import CALLS
 
 
-MERGE_QUERY = """
+MERGE_QUERY = f"""
 UNWIND $items AS item
-MATCH (caller:Function {function_id: item.caller_function_id})
-MATCH (callee:Function {function_id: item.callee_function_id})
-MERGE (caller)-[r:CALLS]->(callee)
+MATCH (caller:FUNCTION {{function_id: item.caller_function_id}})
+MATCH (callee:FUNCTION {{function_id: item.callee_function_id}})
+MERGE (caller)-[r:{CALLS}]->(callee)
 SET r.scope = item.scope
 """
 

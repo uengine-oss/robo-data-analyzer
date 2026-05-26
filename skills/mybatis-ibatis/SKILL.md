@@ -16,23 +16,23 @@
 table_access_patterns:
   - id: mybatis_sqlsession
     call_regex: 'sqlSession\.(?P<op>selectOne|selectList|insert|update|delete)\s*\(\s*"(?P<entity>[\w.]+)"'
-    crud_map:
-      selectOne: READ
-      selectList: READ
-      insert: WRITE
-      update: WRITE
-      delete: WRITE
+    crud_mappings:
+      - {op: selectOne, crud: READ}
+      - {op: selectList, crud: READ}
+      - {op: insert, crud: WRITE}
+      - {op: update, crud: WRITE}
+      - {op: delete, crud: WRITE}
     entity_source: first_arg_string
 
   - id: mybatis_mapper_call
     call_regex: '(\w+Mapper)\.(?P<op>select\w*|find\w*|insert\w*|update\w*|delete\w*|count\w*)\s*\('
-    crud_map:
-      select: READ
-      find: READ
-      insert: WRITE
-      update: WRITE
-      delete: WRITE
-      count: READ
+    crud_mappings:
+      - {op: select, crud: READ}
+      - {op: find, crud: READ}
+      - {op: insert, crud: WRITE}
+      - {op: update, crud: WRITE}
+      - {op: delete, crud: WRITE}
+      - {op: count, crud: READ}
     entity_source: mapper_name_prefix
 
 ddl_transform:

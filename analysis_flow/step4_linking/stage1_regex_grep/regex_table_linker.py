@@ -1,12 +1,16 @@
-"""RegexTableLinker — ``ProfileResult.table_access_patterns`` 의 regex 로 소스 grep.
+"""RegexTableLinker — ``table_access_patterns`` 의 regex 로 소스 grep → R/W 엣지.
 
 흐름:
 1. 정규식 매칭 → (caller_function_id, op, entity) 추출.
 2. ``ddl_transform`` 적용 → entity → DDL 테이블 이름 변환.
 3. DDL 테이블 lookup 성공 → ``ReadsWrites`` 엣지.
-4. lookup 실패 → ``unresolved_cases`` 큐 (Linking Agent 가 추적).
+4. lookup 실패 → ``unresolved`` 케이스 (Linking Agent 가 추적).
 
 LLM 0회. 결정론.
+
+**검증도 같은 엔진** — ``verify_table_patterns`` 는 이 링커를 그대로 한 번 돌려
+판정한다. "검증된 정규식 == 링킹이 실제로 작동하는 정규식" 을 코드 한 곳으로 보장
+(별도 검증 로직이 drift 하지 않음).
 
 **성능**: 파일 1회만 read — 모든 패턴이 같은 파일에서 ``finditer`` (N*M → N+M*P).
 """
@@ -14,70 +18,92 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
-from agent_tools.agent_output_models import ProfileResult
-from data_models.graph_edges import ReadsWrites
+from agent_tools.agent_output_models import DdlTransform, TableAccessPattern
+from data_models.graph_edges import ReadsWrites, normalize_relation
 from data_models.graph_nodes import Function, Table
+from shared.config.env_catalog import ENV
 from shared.logging_and_stream.logger import log_warning
+
+_LOG = "analysis_flow.step4_linking.stage1_regex_grep.regex_table_linker"
+
+# samples 누적 상한 — 검증 피드백·로그용. LLM 컨텍스트 폭증 방지.
+_SAMPLE_CAP = 25
+
+
+@dataclass
+class MatchSample:
+    """정규식 매치 1건의 추출 결과 — 검증 피드백용 (정규식이 맞는지 눈으로 확인)."""
+    entity: str
+    op: str
+    op_recognized: bool                 # op 가 crud_mappings 에 있나
+    resolved_table: Optional[str]       # entity → DDL fqn (None = 미해소)
+
+
+@dataclass
+class LinkOutcome:
+    """``RegexTableLinker.link`` 결과 — 엣지 + 미해결 + 검증용 매치 통계."""
+    edges: list[ReadsWrites] = field(default_factory=list)
+    unresolved: list[dict] = field(default_factory=list)
+    matched_sites: int = 0              # entity 를 추출한 총 매치 수
+    op_recognized: int = 0              # 그중 op 가 crud_mappings 에 인식된 수
+    samples: list[MatchSample] = field(default_factory=list)   # 앞 N건 (피드백용)
+
+
+@dataclass
+class PatternVerdict:
+    """``table_access_patterns`` 검증 판정 — 쓰기 전 작동 확인."""
+    ok: bool
+    matched_sites: int
+    edges: int
+    unresolved: int
+    resolved_ratio: float               # edges / matched_sites
+    op_ratio: float                     # op_recognized / matched_sites
+    summary: str                        # 사람·LLM 이 읽을 한 줄 요약
+    samples: list[MatchSample] = field(default_factory=list)
 
 
 class RegexTableLinker:
-    """결정론 정규식 grep → ``ReadsWrites`` 엣지 + ``unresolved`` 누적."""
+    """결정론 정규식 grep → ``ReadsWrites`` 엣지 + ``unresolved`` + 검증 통계."""
 
     async def link(
         self,
-        project: Any,
+        project_root: Path,
         functions: list[Function],
         tables: list[Table],
-        profile_result: Optional[dict] = None,
-    ) -> tuple[list[ReadsWrites], list[dict]]:
-        """프로젝트 소스 → (R/W 엣지 리스트, unresolved 케이스 리스트)."""
-        if not profile_result:
-            return [], []
-        try:
-            profile = ProfileResult.model_validate(profile_result)
-        except Exception as e:
-            log_warning(
-                "analysis_flow.step4_linking.stage1_regex_grep.regex_table_linker",
-                "validate_profile",
-                "ProfileResult 파싱 실패 — Linking 1 단계 건너뜀 (전체 unresolved 처리됨)",
-                error=f"{type(e).__name__}: {e}",
-            )
-            return [], []
-        if not profile.table_access_patterns:
-            return [], []
+        patterns: list[TableAccessPattern],
+        ddl_transform: DdlTransform,
+        restrict_to_files: Optional[set[str]] = None,
+    ) -> LinkOutcome:
+        """프로젝트 소스 → ``LinkOutcome`` (엣지 · 미해결 · 매치 통계).
 
-        # 함수 위치 인덱스 (file:line → function_id)
+        ``restrict_to_files`` 가 주어지면 전체 rglob 대신 그 파일들만 스캔한다 —
+        잔여 패턴 루프가 새 패턴을 잔여 케이스 파일에만 재적용할 때 (전체 재스캔 회피).
+        """
+        if not patterns:
+            return LinkOutcome()
+
+        compiled = _compile_patterns(patterns)
+        if not compiled:
+            return LinkOutcome()
+
+        # 함수 위치 인덱스 (file:line → function_id) + 테이블 이름 lookup.
         locator = FunctionLocator(functions)
-        # 테이블 이름 lookup (다양한 변형 → fqn)
         table_lookup = _build_table_lookup(tables)
 
-        # 정규식 사전 컴파일 — 패턴마다 컴파일 X (성능).
-        compiled_patterns: list[tuple[Any, Any]] = []  # (pat, compiled_regex)
-        for pat in profile.table_access_patterns:
-            try:
-                compiled_patterns.append((pat, re.compile(pat.call_regex)))
-            except re.error as e:
-                log_warning(
-                    "analysis_flow.step4_linking.stage1_regex_grep.regex_table_linker",
-                    "compile_pattern",
-                    "ProfileResult 의 call_regex 컴파일 실패 — 이 패턴 건너뜀",
-                    pattern_id=pat.id,
-                    call_regex=pat.call_regex,
-                    error=str(e),
-                )
-
-        if not compiled_patterns:
-            return [], []
-
-        edges: list[ReadsWrites] = []
-        unresolved: list[dict] = []
+        outcome = LinkOutcome()
 
         # 파일 1회만 read — 모든 패턴이 같은 파일에서 finditer.
-        source_root = Path(project.root)
-        for src_file in source_root.rglob("*"):
+        # restrict_to_files 가 있으면 그 파일만, 없으면 프로젝트 전체.
+        src_files = (
+            [Path(f) for f in sorted(restrict_to_files)]
+            if restrict_to_files is not None
+            else Path(project_root).rglob("*")
+        )
+        for src_file in src_files:
             if not src_file.is_file():
                 continue
             try:
@@ -85,21 +111,30 @@ class RegexTableLinker:
             except (OSError, UnicodeDecodeError):
                 continue
 
-            for pat, regex in compiled_patterns:
+            for pat, regex, crud_lookup in compiled:
                 for m in regex.finditer(text):
-                    line = text[: m.start()].count("\n") + 1
                     groups = m.groupdict()
-                    op = groups.get("op", "")
                     entity = groups.get("entity", "")
                     if not entity:
                         continue
+                    op = groups.get("op", "")
+                    line = text[: m.start()].count("\n") + 1
 
-                    rel = _normalize_relation(pat.crud_map.get(op, "READ"))
-                    table_fqn = _resolve_table(entity, table_lookup, profile.ddl_transform)
+                    op_known = op in crud_lookup
+                    table_fqn = _resolve_table(entity, table_lookup, ddl_transform)
                     caller_id = locator.locate(str(src_file), line)
 
+                    outcome.matched_sites += 1
+                    if op_known:
+                        outcome.op_recognized += 1
+                    if len(outcome.samples) < _SAMPLE_CAP:
+                        outcome.samples.append(MatchSample(
+                            entity=entity, op=op,
+                            op_recognized=op_known, resolved_table=table_fqn,
+                        ))
+
                     if table_fqn is None or caller_id is None:
-                        unresolved.append({
+                        outcome.unresolved.append({
                             "case_id": f"{pat.id}:{src_file}:{line}",
                             "file": str(src_file),
                             "line": line,
@@ -118,17 +153,92 @@ class RegexTableLinker:
                         })
                         continue
 
-                    edges.append(ReadsWrites(
+                    outcome.edges.append(ReadsWrites(
                         function_id=caller_id,
                         table_fqn=table_fqn,
-                        relation=rel,
+                        relation=normalize_relation(crud_lookup.get(op, "READ")) or "READS",
                         evidence_file=str(src_file),
                         evidence_line=line,
                     ))
-        return edges, unresolved
+        return outcome
+
+
+async def verify_table_patterns(
+    patterns: list[TableAccessPattern],
+    ddl_transform: DdlTransform,
+    project_root: Path,
+    functions: list[Function],
+    tables: list[Table],
+    restrict_to_files: Optional[set[str]] = None,
+) -> PatternVerdict:
+    """정규식을 실제 소스에 적용 → 작동 여부 판정 (``RegexTableLinker`` 재사용).
+
+    Scan Agent 가 채택한 정규식 · 잔여 패턴 루프가 발견한 정규식 모두 쓰기 전
+    반드시 이 검증을 통과해야 한다. ``restrict_to_files`` 로 검증 범위를 좁힐 수
+    있다 (잔여 루프 — 잔여 케이스 파일만 검증, 전체 재스캔 회피).
+
+    ``ok`` 판정 = 매치 ≥ 1 · 엣지 ≥ 1 · op 인식률 ≥ 임계
+    (``ROBO_AGENT_SCAN_REGEX_MIN_OP_RATIO``).
+    틀린 정규식 — entity 가 SQL_KEY 통째(``zngm_comm_cd_dtl_s0024``), op 가 C
+    변수명 — 은 엣지 0 · op 인식 0 → ``ok=False`` 로 걸린다.
+    """
+    outcome = await RegexTableLinker().link(
+        project_root=project_root,
+        functions=functions,
+        tables=tables,
+        patterns=patterns,
+        ddl_transform=ddl_transform,
+        restrict_to_files=restrict_to_files,
+    )
+    matched = outcome.matched_sites
+    edges = len(outcome.edges)
+    resolved_ratio = edges / matched if matched else 0.0
+    op_ratio = outcome.op_recognized / matched if matched else 0.0
+    ok = (
+        matched > 0
+        and edges > 0
+        and op_ratio >= ENV.agent.scan_regex_min_op_ratio
+    )
+    summary = (
+        f"매치 {matched}건 · R/W엣지 {edges}건 · 미해결 {len(outcome.unresolved)}건 · "
+        f"op인식 {op_ratio:.0%} · 테이블해소 {resolved_ratio:.0%}"
+    )
+    return PatternVerdict(
+        ok=ok,
+        matched_sites=matched,
+        edges=edges,
+        unresolved=len(outcome.unresolved),
+        resolved_ratio=resolved_ratio,
+        op_ratio=op_ratio,
+        summary=summary,
+        samples=outcome.samples,
+    )
 
 
 # ── 헬퍼 ──────────────────────────────────────────────────
+
+
+def _compile_patterns(
+    patterns: list[TableAccessPattern],
+) -> list[tuple[TableAccessPattern, re.Pattern, dict[str, str]]]:
+    """``call_regex`` 사전 컴파일 + ``crud_mappings`` list → dict lookup 변환.
+
+    컴파일 실패 패턴은 ``log_warning`` 후 건너뜀 (조용한 실패 X).
+    """
+    compiled: list[tuple[TableAccessPattern, re.Pattern, dict[str, str]]] = []
+    for pat in patterns:
+        try:
+            regex = re.compile(pat.call_regex)
+        except re.error as e:
+            log_warning(
+                _LOG, "compile_pattern",
+                "call_regex 컴파일 실패 — 이 패턴 건너뜀",
+                pattern_id=pat.id, call_regex=pat.call_regex, error=str(e),
+            )
+            continue
+        crud_lookup = {m.op: m.crud for m in pat.crud_mappings}
+        compiled.append((pat, regex, crud_lookup))
+    return compiled
 
 
 class FunctionLocator:
@@ -158,26 +268,17 @@ class FunctionLocator:
         return None
 
 
-def _normalize_relation(value: str) -> str:
-    """``crud_map`` 값 (``'READ'`` / ``'WRITE'``) → ``ReadsWrites.relation`` (``'READS'`` / ``'WRITES'``)."""
-    if value in ("READ", "READS"):
-        return "READS"
-    if value in ("WRITE", "WRITES"):
-        return "WRITES"
-    return "READS"
-
-
 def _build_table_lookup(tables: list[Table]) -> dict[str, str]:
     """테이블 이름 다양한 변형 → fqn lookup."""
     lookup: dict[str, str] = {}
     for t in tables:
-        fqn = f"{t.db}.{t.schema}.{t.name}"
+        fqn = t.fqn
         for key in (t.name, t.name.upper(), t.name.lower()):
             lookup.setdefault(key, fqn)
     return lookup
 
 
-def _resolve_table(entity: str, lookup: dict[str, str], transform) -> Optional[str]:
+def _resolve_table(entity: str, lookup: dict[str, str], transform: DdlTransform) -> Optional[str]:
     """entity → fqn 변환 (``ddl_transform`` 규칙 적용)."""
     rule = getattr(transform, "ddl_naming_rule", "as_is")
     candidates = [entity, entity.upper(), entity.lower()]

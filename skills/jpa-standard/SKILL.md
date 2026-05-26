@@ -16,13 +16,13 @@
 table_access_patterns:
   - id: jpa_repository_call
     call_regex: '(\w+Repository)\.(?P<op>find\w*|save|delete\w*|update\w*|exists\w*|count\w*)\s*\('
-    crud_map:
-      find: READ
-      save: WRITE
-      delete: WRITE
-      update: WRITE
-      exists: READ
-      count: READ
+    crud_mappings:
+      - {op: find, crud: READ}
+      - {op: save, crud: WRITE}
+      - {op: delete, crud: WRITE}
+      - {op: update, crud: WRITE}
+      - {op: exists, crud: READ}
+      - {op: count, crud: READ}
     entity_source: repository_name_prefix    # "UserRepository" → "User"
 
 ddl_transform:

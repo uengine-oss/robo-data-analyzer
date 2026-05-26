@@ -14,7 +14,7 @@ from shared.neo4j.neo4j_client import Neo4jClient
 
 MERGE_QUERY = """
 UNWIND $items AS item
-MERGE (s:Schema {db: item.db, name: item.name})
+MERGE (s:SCHEMA {db: item.db, name: item.name})
 SET s.fqn = item.db + '.' + item.name
 RETURN count(s) AS created
 """
