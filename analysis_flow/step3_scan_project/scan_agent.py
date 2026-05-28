@@ -21,14 +21,14 @@ import json
 from pathlib import Path
 from typing import Callable, Optional
 
-from agent_tools.agent_output_models import ScanResult
-from agent_tools.code_inspection_tools import (
+from data_models.agent_output import ScanResult
+from agent_tools.code_inspection import (
     SKILLS_DIR,
     list_skills,
     make_list_functions,
     read_skill,
 )
-from agent_tools.filesystem_tools import make_filesystem_tools
+from agent_tools.filesystem import make_filesystem_tools
 from analysis_flow.step3_scan_project.scan_verify_tool import make_verify_table_regex_tool
 from analysis_flow.step4_linking.stage1_regex_grep.regex_table_linker import (
     PatternVerdict,
@@ -38,7 +38,7 @@ from data_models.graph_nodes import Function, Table
 from shared.config.env_catalog import ENV
 from shared.llm.cost_budget import CostBudget
 from shared.llm.structured_agent import run_structured_agent
-from shared.logging_and_stream.logger import log_info, log_warning
+from shared.log.logger import log_info, log_warning
 
 _STEP = "step3.scan"
 
@@ -117,7 +117,11 @@ async def _run_agent(
     tables: list[Table],
     stream_emit: Optional[Callable[[dict], None]],
 ) -> ScanResult:
-    """단일 에이전트 invoke → ``ScanResult`` 초안 (공용 ``run_structured_agent``)."""
+    """단일 에이전트 invoke → ``ScanResult`` 초안 (공용 ``run_structured_agent``).
+
+    공용 함수가 ``response_format`` 을 submit 도구로 wrap — agent 가 탐색 끝에
+    ``submit_scan`` 호출 시 ScanResult 인스턴스가 state 에 적재된다.
+    """
     return await run_structured_agent(
         agent_name="scan",
         invoke_id="run",

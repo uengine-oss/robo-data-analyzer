@@ -20,7 +20,7 @@ from pathlib import Path
 
 from data_models.graph_edges import Calls
 from data_models.graph_nodes import Function
-from shared.lang.source_ext import EXT_TO_LANG
+from shared.lang.source_extension import EXT_TO_LANG
 
 _STDLIB_DIR = Path(__file__).resolve().parent / "stdlib"
 

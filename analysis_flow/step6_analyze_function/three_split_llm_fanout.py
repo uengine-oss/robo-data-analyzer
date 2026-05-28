@@ -40,13 +40,13 @@ from data_models.analysis_context import AnalysisContext
 from data_models.graph_nodes import Function
 from shared.lang.ontology import coerce_stereotype
 from shared.llm.cost_budget import BudgetExceededError, CostBudget
-from shared.llm.llm_output_models import (
+from data_models.function_analysis_output import (
     RulesExamplesOutput,
     SummaryOutput,
     TableInsightsOutput,
 )
 from shared.llm.yaml_llm_runner import run_yaml_rule
-from shared.logging_and_stream.logger import log_error, log_warning
+from shared.log.logger import log_error, log_warning
 from shared.source_file_cache import SourceFileCache
 
 _STEP = "step6.analyze_function.three_split"

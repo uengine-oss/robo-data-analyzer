@@ -17,9 +17,9 @@ from pydantic import BaseModel, Field
 from data_models.graph_nodes import Function
 from shared.config.env_catalog import ENV
 from shared.llm.cost_budget import BudgetExceededError, CostBudget
-from shared.llm.llm_config_loader import load_llm_config
+from shared.llm.config_loader import load_llm_config
 from shared.llm.yaml_llm_runner import run_yaml_rule
-from shared.logging_and_stream.logger import log_error
+from shared.log.logger import log_error
 
 
 class LargeFunctionOneLiner(BaseModel):

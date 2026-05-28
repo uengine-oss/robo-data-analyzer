@@ -27,7 +27,7 @@ from langchain_core.globals import set_llm_cache
 from langchain_openai import ChatOpenAI
 
 from shared.config.env_catalog import ENV
-from shared.llm.llm_config_loader import LLMConfig, load_llm_config
+from shared.llm.config_loader import LLMConfig, load_llm_config
 
 
 # 운영기 캐시 OFF 강제 (ROBO_CACHE_ENABLED=false 일 때 set_llm_cache(None)).

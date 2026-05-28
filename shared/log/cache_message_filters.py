@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from shared.logging_and_stream.regex_patterns import mask_dynamic_values
+from shared.log.prompt_mask_patterns import mask_dynamic_values
 
 
 def strip_cache_control(messages: list[Any], provider: str) -> None:

@@ -21,16 +21,16 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from analysis_pipelines import get_pipeline
-from cli_scripts.strategy_detector import detect_strategy
-from data_models.project_and_run import Project
-from shared.logging_and_stream.ndjson_stream import NDJSONStream
-from shared.workflow_runner.run_executor import execute_run
+from shared.lang.strategy_detector import detect_strategy
+from data_models.codebase import Codebase
+from shared.log.ndjson_stream import NDJSONStream
+from shared.workflow.executor import execute_run
 
 
 async def run_one(project_root: Path, strategy_name: str) -> dict:
     """프로젝트 1 개 실행 → ``usage_summary`` 반환."""
     pipeline = get_pipeline(strategy_name)
-    project = Project(
+    project = Codebase(
         name=project_root.name,
         root=project_root,
         strategy=strategy_name,  # type: ignore[arg-type]

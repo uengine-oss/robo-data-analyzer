@@ -23,10 +23,10 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from analysis_pipelines import get_pipeline
-from data_models.project_and_run import Project
+from data_models.codebase import Codebase
 from shared.config.env_catalog import ENV
-from shared.logging_and_stream.ndjson_stream import NDJSONStream
-from shared.workflow_runner.run_executor import execute_run
+from shared.log.ndjson_stream import NDJSONStream
+from shared.workflow.executor import execute_run
 
 
 router = APIRouter(prefix="/robo")
@@ -63,7 +63,7 @@ async def analyze(req: AnalyzeRequest) -> StreamingResponse:
     if not project_root.exists():
         raise HTTPException(status_code=400, detail=f"project_root not found: {req.project_root}")
 
-    project = Project(
+    project = Codebase(
         name=req.project_name,
         root=project_root,
         strategy=req.strategy,  # type: ignore[arg-type]

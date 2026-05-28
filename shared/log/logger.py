@@ -20,7 +20,7 @@
 
 사용 예::
 
-    from shared.logging_and_stream.logger import log_error, log_warning
+    from shared.log.logger import log_error, log_warning
 
     try:
         await dump_state_artifacts(run, state)

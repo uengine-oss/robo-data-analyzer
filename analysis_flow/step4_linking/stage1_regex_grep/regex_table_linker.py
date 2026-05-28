@@ -22,11 +22,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Optional
 
-from agent_tools.agent_output_models import DdlTransform, TableAccessPattern
+from data_models.agent_output import DdlTransform, TableAccessPattern
 from data_models.graph_edges import ReadsWrites
 from data_models.graph_nodes import Function, Table
 from shared.config.env_catalog import ENV
-from shared.logging_and_stream.logger import log_warning
+from shared.log.logger import log_warning
 
 _LOG = "analysis_flow.step4_linking.stage1_regex_grep.regex_table_linker"
 

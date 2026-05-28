@@ -41,6 +41,7 @@ usage_metadata 동시 추출 + Pydantic 자동 파싱.
 """
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 from typing import Optional, TypeVar
@@ -51,17 +52,38 @@ from pydantic import BaseModel
 
 from shared.config.env_catalog import ENV
 from shared.llm.cost_budget import CostBudget
-from shared.llm.llm_client import build_llm_client
-from shared.llm.llm_config_loader import load_llm_config
-from shared.llm.llm_pricing import compute_cost
+from shared.llm.client import build_llm_client
+from shared.llm.config_loader import load_llm_config
+from shared.llm.pricing import compute_cost
 from shared.llm.token_usage import track_usage
 from shared.llm.usage_jsonl_writer import append_usage_record
-from shared.logging_and_stream.logger import log_info, log_warning
-from shared.logging_and_stream.message_filters import apply_cache_friendly_filters
-from shared.logging_and_stream.prompt_logger import write_rule_record
+from shared.log.logger import log_info, log_warning
+from shared.log.cache_message_filters import apply_cache_friendly_filters
+from shared.log.prompt_logger import write_rule_record
 
 
 T = TypeVar("T", bound=BaseModel)
+
+
+def _safe_format(template: str, values: dict) -> str:
+    """``user_template`` 안전 치환 — yaml 안 자유 텍스트의 ``{...}`` 영향 0.
+
+    표준 ``str.format`` / ``str.format_map`` 은 yaml 안 자유 텍스트의 ``{key:val}``
+    형식도 placeholder 로 해석해서 ``KeyError`` (모르는 키) 또는 ``ValueError``
+    (``:`` 다음 문자열을 format spec 으로 검증) 를 낸다. format 메커니즘 자체를
+    회피하고 알려진 키만 ``re.sub`` 한 번 패스로 치환한다.
+
+    - 알려진 placeholder 만 치환 (``values.keys()`` 에 있는 키).
+    - 모르는 ``{...}`` 는 원형 보존 (yaml 출력 미리보기 같은 자유 텍스트 안전).
+    - ``re.sub`` 한 번 패스라 값 안의 ``{key}`` 가 다시 치환되는 일도 없다.
+    - ``{{`` → ``{`` (``}}`` → ``}``) escape 규칙은 그대로 작동 (yaml 작성자가
+      의도한 literal brace 표기 보존).
+    """
+    if values:
+        keys = "|".join(re.escape(k) for k in values)
+        pattern = re.compile(r"\{(" + keys + r")\}")
+        template = pattern.sub(lambda m: str(values[m.group(1)]), template)
+    return template.replace("{{", "{").replace("}}", "}")
 
 
 def _load_rule(prompts_dir: Path, rule_name: str) -> dict:
@@ -119,7 +141,7 @@ async def run_yaml_rule(
     user_template = rule.get("user_template", "")
     model = model_override or rule.get("model")
 
-    user_content = user_template.format(**user_values)
+    user_content = _safe_format(user_template, user_values)
 
     # 현재 LLM config — provider 정보를 cache friendly filter 에 전달
     cfg = load_llm_config(ENV.llm.config)

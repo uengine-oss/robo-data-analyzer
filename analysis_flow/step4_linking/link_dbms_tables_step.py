@@ -20,11 +20,11 @@ from typing import Optional
 from langchain_core.runnables import RunnableConfig
 
 from shared.source_file_cache import SourceFileCache
-from shared.workflow_runner.step_config import step_config
+from shared.workflow.step_utils import step_config
 
 from data_models.graph_edges import ReadsWrites
 from data_models.graph_nodes import Function, Table
-from shared.logging_and_stream.logger import log_info
+from shared.log.logger import log_info
 from shared.neo4j.edges.reads_writes import upsert_reads_writes
 from shared.neo4j.neo4j_client import Neo4jClient
 

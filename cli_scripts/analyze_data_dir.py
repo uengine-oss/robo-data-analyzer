@@ -55,11 +55,12 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from analysis_pipelines import get_pipeline
-from cli_scripts.strategy_detector import detect_strategy
-from data_models.project_and_run import Project, Run
+from shared.lang.strategy_detector import detect_strategy
+from data_models.analysis_run import AnalysisRun
+from data_models.codebase import Codebase
 from shared.config.env_catalog import ENV
-from shared.logging_and_stream.ndjson_stream import NDJSONStream
-from shared.workflow_runner.run_executor import execute_run
+from shared.log.ndjson_stream import NDJSONStream
+from shared.workflow.executor import execute_run
 
 
 async def _consume_stream(stream: NDJSONStream) -> None:
@@ -95,7 +96,7 @@ async def _consume_stream(stream: NDJSONStream) -> None:
             print(f"[{etype.upper()[:5]}] {text[:200]}")
 
 
-async def analyze_one(project_dir: Path, ddl_dir: Path | None, strategy: str) -> Run:
+async def analyze_one(project_dir: Path, ddl_dir: Path | None, strategy: str) -> AnalysisRun:
     """1 프로젝트 분석 + 결과 요약 출력."""
     print(f"\n{'='*60}")
     print(f"  project: {project_dir.name}")
@@ -105,7 +106,7 @@ async def analyze_one(project_dir: Path, ddl_dir: Path | None, strategy: str) ->
     print(f"{'='*60}\n")
 
     pipeline = get_pipeline(strategy)
-    project = Project(
+    project = Codebase(
         name=project_dir.name,
         root=project_dir,
         strategy=strategy,  # type: ignore[arg-type]

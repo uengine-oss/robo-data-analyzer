@@ -27,8 +27,8 @@ from data_models.graph_edges import (
 from data_models.graph_nodes import Constant, DataType, Function, Module, Package, Variable
 from shared.config.env_catalog import ENV
 from shared.lang.ontology import role_of, sub_label_of
-from shared.lang.source_ext import EXT_TO_LANG
-from shared.logging_and_stream.logger import log_error, log_warning
+from shared.lang.source_extension import EXT_TO_LANG
+from shared.log.logger import log_error, log_warning
 
 _COMPONENT = "analysis_flow.step2_load_ast.antlr_json_reader"
 

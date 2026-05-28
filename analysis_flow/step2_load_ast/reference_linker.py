@@ -32,8 +32,8 @@ from typing import NamedTuple
 
 from data_models.graph_edges import InitBy, References
 from data_models.graph_nodes import Constant, Function, Variable
-from shared.lang.source_ext import EXT_TO_LANG
-from shared.logging_and_stream.logger import log_info
+from shared.lang.source_extension import EXT_TO_LANG
+from shared.log.logger import log_info
 from shared.source_file_cache import SourceFileCache
 
 _COMPONENT = "step2.reference_linker"

@@ -112,21 +112,27 @@ class ReadItem(BaseModel):
     columns: list[str] = Field(default_factory=list, description="이 시나리오에서 읽는 컬럼 이름")
 
 
+# list 절대 상한 — qwen grammar 가 max_length 도달 시 ``]`` 강제 종료.
+# 5 entries 면 시나리오 본질 표현 충분 + 폭주 차단.
+_DICT_LIST_MAX = 5
+
+
 class WriteItem(BaseModel):
     """then.writes[] — 시나리오에서 쓰는 테이블+op+조건+값."""
     table: str = Field(..., description="테이블 이름")
     op: str = Field("WRITE", description="INSERT / UPDATE / DELETE / MERGE / WRITE")
-    where: list[KeyValueItem] = Field(default_factory=list, description="WHERE 절 조건 (컬럼=값)")
-    values: list[KeyValueItem] = Field(default_factory=list, description="SET / VALUES (컬럼=값)")
+    where: list[KeyValueItem] = Field(default_factory=list, max_length=_DICT_LIST_MAX, description="WHERE 절 조건 (컬럼=값)")
+    values: list[KeyValueItem] = Field(default_factory=list, max_length=_DICT_LIST_MAX, description="SET / VALUES (컬럼=값)")
 
 
 class GivenContext(BaseModel):
     """ExampleItem.given — 시나리오 진입 조건."""
     narrative: str = Field("", description="왜 이 시나리오인지 한 줄 (inputs 풀어쓰기 X)")
-    inputs: list[KeyValueItem] = Field(default_factory=list, description="파라미터 key:value")
-    globals: list[KeyValueItem] = Field(default_factory=list, description="전제 전역 상태 (preconditions.globals)")
+    inputs: list[KeyValueItem] = Field(default_factory=list, max_length=_DICT_LIST_MAX, description="파라미터 key:value")
+    globals: list[KeyValueItem] = Field(default_factory=list, max_length=_DICT_LIST_MAX, description="전제 전역 상태 (preconditions.globals)")
     stubs: list[KeyValueItem] = Field(
         default_factory=list,
+        max_length=_DICT_LIST_MAX,
         description="외부 호출 반환값 (preconditions.stubs — key=호출, value=반환값/JSON)",
     )
 
@@ -139,10 +145,10 @@ class ThenContext(BaseModel):
         description="반환값 (단순값 또는 JSON 직렬화 문자열). 반환 없으면 빈 문자열",
     )
     exception: Optional[ExceptionInfo] = Field(None, description="예외 발생 시. 없으면 null")
-    reads: list[ReadItem] = Field(default_factory=list, description="이 시나리오 SELECT 대상")
-    writes: list[WriteItem] = Field(default_factory=list, description="이 시나리오 INSERT/UPDATE/DELETE")
-    globals: list[KeyValueItem] = Field(default_factory=list, description="변경된 전역")
-    out_params: list[KeyValueItem] = Field(default_factory=list, description="변경된 OUT 파라미터")
+    reads: list[ReadItem] = Field(default_factory=list, max_length=_DICT_LIST_MAX, description="이 시나리오 SELECT 대상")
+    writes: list[WriteItem] = Field(default_factory=list, max_length=_DICT_LIST_MAX, description="이 시나리오 INSERT/UPDATE/DELETE")
+    globals: list[KeyValueItem] = Field(default_factory=list, max_length=_DICT_LIST_MAX, description="변경된 전역")
+    out_params: list[KeyValueItem] = Field(default_factory=list, max_length=_DICT_LIST_MAX, description="변경된 OUT 파라미터")
 
 
 class ExampleItem(BaseModel):
@@ -166,10 +172,13 @@ class QuestionItem(BaseModel):
 
 
 class RulesExamplesOutput(BaseModel):
-    rules: list[RuleItem] = Field(default_factory=list)
-    examples: list[ExampleItem] = Field(default_factory=list)
+    # max_length — qwen grammar 가 N개 후 `]` 강제 종료 (list 폭주 차단 안전망).
+    # 평균 함수는 3~7 Rule. 8개 충동 = 함수 분해 신호이지 더 만들 신호 X.
+    rules: list[RuleItem] = Field(default_factory=list, max_length=7)
+    examples: list[ExampleItem] = Field(default_factory=list, max_length=10)
     questions: list[QuestionItem] = Field(
         default_factory=list,
+        max_length=5,
         description="사람 검토 큐로 갈 질문 (text + reason)",
     )
 

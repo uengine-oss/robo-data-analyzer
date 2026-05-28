@@ -24,7 +24,7 @@ import json
 from typing import AsyncIterator
 
 from shared.config.env_catalog import ENV
-from shared.logging_and_stream.logger import log_info, log_warning
+from shared.log.logger import log_info, log_warning
 
 
 # 이벤트 type 별 logger component 이름 (analyzer.log 에 표시).

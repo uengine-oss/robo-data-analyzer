@@ -11,10 +11,10 @@ from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
-from shared.workflow_runner.step_config import step_config
+from shared.workflow.step_utils import step_config
 
-from shared.ddl_parser.ddl_parser import parse_ddl_file
-from shared.logging_and_stream.logger import log_info, log_warning
+from shared.ddl.parser import parse_ddl_file
+from shared.log.logger import log_info, log_warning
 from shared.neo4j.edges.belongs_to import upsert_belongs_to
 from shared.neo4j.edges.fk import upsert_fk
 from shared.neo4j.edges.has_column import upsert_has_column
@@ -32,7 +32,7 @@ async def parse_ddl_step(state: dict, config: Optional[RunnableConfig] = None) -
     config 의 ``configurable`` 에서 ``project`` / ``neo_client`` 추출.
     """
     cfg = step_config(config)
-    project = cfg.get("project")
+    project = cfg.get("codebase")
     neo: Neo4jClient | None = cfg.get("neo_client")
     if project is None or neo is None:
         # config 누락 — 단위 테스트 등에선 정상, 운영기에선 정합성 오류.

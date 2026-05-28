@@ -26,7 +26,7 @@ from typing import Optional
 import yaml
 
 from shared.llm.token_usage import TokenUsageRecord
-from shared.logging_and_stream.logger import log_warning
+from shared.log.logger import log_warning
 
 
 # 날짜 suffix 정규화 — ``-20260415`` 또는 ``-2026-04-15`` 자동 strip
@@ -108,7 +108,7 @@ def compute_cost(record: TokenUsageRecord) -> float:
         if record.model not in _WARNED_UNKNOWN_MODELS:
             _WARNED_UNKNOWN_MODELS.add(record.model)
             log_warning(
-                "shared.llm.llm_pricing",
+                "shared.llm.pricing",
                 "compute_cost",
                 "PRICING dict 에 없는 모델 — 비용 0 으로 집계됨 (측정 사각지대 위험)",
                 model=record.model,

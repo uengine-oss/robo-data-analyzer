@@ -14,8 +14,8 @@ from typing import Any
 from langchain.agents.middleware import AgentMiddleware
 
 from shared.config.env_catalog import ENV
-from shared.llm.llm_config_loader import load_llm_config
-from shared.logging_and_stream.message_filters import strip_cache_control
+from shared.llm.config_loader import load_llm_config
+from shared.log.cache_message_filters import strip_cache_control
 
 
 class StripAnthropicCacheControlMiddleware(AgentMiddleware):

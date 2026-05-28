@@ -21,7 +21,7 @@ from typing import Any, Optional
 from langchain_core.runnables import RunnableConfig
 
 from shared.source_file_cache import SourceFileCache
-from shared.workflow_runner.step_config import step_config
+from shared.workflow.step_utils import step_config
 
 from analysis_flow.step6_analyze_function.analysis_order import bottom_up_rounds
 from analysis_flow.step6_analyze_function.call_cycles import find_call_cycles
@@ -35,9 +35,9 @@ from shared.config.env_catalog import ENV
 from shared.example_mapping import build_example_mapping, write_example_mapping
 from shared.example_mapping.builder import ExampleMappingResult
 from shared.llm.cost_budget import BudgetExceededError
-from shared.llm.llm_output_models import SummaryOutput
-from shared.logging_and_stream.logger import log_error, log_info, log_warning
-from shared.logging_and_stream.ndjson_stream import NDJSONStream
+from data_models.function_analysis_output import SummaryOutput
+from shared.log.logger import log_error, log_info, log_warning
+from shared.log.ndjson_stream import NDJSONStream
 from shared.neo4j.neo4j_client import Neo4jClient
 from shared.neo4j.nodes.function import update_summaries
 

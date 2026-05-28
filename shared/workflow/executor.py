@@ -22,40 +22,41 @@ from typing import Any, Optional
 
 from langgraph.checkpoint.memory import MemorySaver
 
-from data_models.project_and_run import Project, Run
+from data_models.analysis_run import AnalysisRun
+from data_models.codebase import Codebase
 from shared.config.env_catalog import ENV
 import time
 
 from shared.llm.cost_budget import CostBudget
-from shared.logging_and_stream.logger import (
+from shared.log.logger import (
     attach_run_file_handlers,
     detach_run_file_handlers,
     log_error,
     log_info,
 )
-from shared.logging_and_stream.ndjson_stream import NDJSONStream
+from shared.log.ndjson_stream import NDJSONStream
 from shared.neo4j.neo4j_client import Neo4jClient
 from shared.neo4j.schema_constraints import ensure_schema, wipe_graph
-from shared.workflow_runner.artifact_dumper import dump_state_artifacts
-from shared.workflow_runner.langgraph_workflow import build_langgraph_workflow
+from shared.workflow.artifact_writer import dump_state_artifacts
+from shared.workflow.graph_builder import build_langgraph_workflow
 
 
 async def execute_run(
     strategy: Any,
-    project: Project,
+    codebase: Codebase,
     stream: Optional[NDJSONStream] = None,
-) -> Run:
-    """Run 1회 실행 — 매 호출이 독립 run (``run_id`` 가 유일 식별자).
+) -> AnalysisRun:
+    """AnalysisRun 1회 실행 — 매 호출이 독립 run (``run_id`` 가 유일 식별자).
 
     Args:
         strategy: ``FRAMEWORK_PIPELINE`` 또는 ``DBMS_PIPELINE`` (``analysis_pipelines``).
-        project: 분석 대상.
+        codebase: 분석 대상.
         stream: 프론트 NDJSON 스트림.
     """
     log_base = ENV.log.dir
     _reset_logs_root(log_base)
 
-    run = Run.now(project=project, log_base=log_base)
+    run = AnalysisRun.now(codebase=codebase, log_base=log_base)
     run.run_dir.mkdir(parents=True, exist_ok=True)
     (run.run_dir / "artifacts").mkdir(parents=True, exist_ok=True)
 
@@ -68,7 +69,7 @@ async def execute_run(
     log_info(
         "run",
         "start",
-        project=project.name,
+        codebase=codebase.name,
         strategy=getattr(strategy, "name", "?"),
         run_id=run.run_id,
     )
@@ -91,7 +92,7 @@ async def execute_run(
                     # LangGraph Checkpointer 가 요구하는 키 — run_id 를 그대로 쓴다.
                     "thread_id": run.run_id,
                     "strategy": strategy,
-                    "project": project,
+                    "codebase": codebase,
                     "run": run,
                     "cost_budget": cost_budget,
                     "stream": stream,

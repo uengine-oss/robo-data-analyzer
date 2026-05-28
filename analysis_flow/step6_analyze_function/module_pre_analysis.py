@@ -20,10 +20,10 @@ from typing import Any, Optional
 from data_models.graph_nodes import Function, Module
 from shared.config.env_catalog import ENV
 from shared.llm.cost_budget import BudgetExceededError, CostBudget
-from shared.llm.llm_fanout import gather_with_warmup
-from shared.llm.llm_output_models import ModulePreAnalysisOutput
+from shared.llm.fanout import gather_with_warmup
+from data_models.function_analysis_output import ModulePreAnalysisOutput
 from shared.llm.yaml_llm_runner import run_yaml_rule
-from shared.logging_and_stream.logger import log_error, log_info
+from shared.log.logger import log_error, log_info
 from shared.neo4j.neo4j_client import Neo4jClient
 from shared.neo4j.nodes.module import upsert_modules
 

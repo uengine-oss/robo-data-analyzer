@@ -19,11 +19,11 @@ from typing import Optional
 import httpx
 from langchain_core.runnables import RunnableConfig
 
-from shared.workflow_runner.step_config import step_config
+from shared.workflow.step_utils import step_config
 
-from shared.catalog_http import catalog_headers, get_catalog_json
+from shared.external.catalog_client import catalog_headers, get_catalog_json
 from shared.config.env_catalog import ENV
-from shared.logging_and_stream.logger import log_info, log_warning
+from shared.log.logger import log_info, log_warning
 from shared.neo4j.neo4j_client import Neo4jClient
 from shared.neo4j.nodes.table import update_descriptions
 
@@ -32,7 +32,7 @@ _STEP = "step7.enrich_metadata_from_catalog"
 
 async def enrich_metadata_from_catalog_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
     cfg = step_config(config)
-    project = cfg.get("project")
+    project = cfg.get("codebase")
     neo: Neo4jClient | None = cfg.get("neo_client")
     if project is None:
         log_warning(_STEP, "config_missing", "project 누락 — step skip")

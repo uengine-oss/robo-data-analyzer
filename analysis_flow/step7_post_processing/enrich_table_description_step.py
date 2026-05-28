@@ -19,14 +19,14 @@ from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
-from shared.workflow_runner.step_config import step_config
+from shared.workflow.step_utils import step_config
 
 from shared.config.env_catalog import ENV
 from shared.llm.cost_budget import BudgetExceededError
-from shared.llm.llm_fanout import gather_with_warmup
-from shared.llm.llm_output_models import TableDescription
+from shared.llm.fanout import gather_with_warmup
+from data_models.function_analysis_output import TableDescription
 from shared.llm.yaml_llm_runner import run_yaml_rule
-from shared.logging_and_stream.logger import log_error, log_info, log_warning
+from shared.log.logger import log_error, log_info, log_warning
 from shared.neo4j.neo4j_client import Neo4jClient
 from shared.neo4j.nodes.column import update_analyzed_descriptions as update_column_analyzed
 from shared.neo4j.nodes.table import update_analyzed_descriptions as update_table_analyzed

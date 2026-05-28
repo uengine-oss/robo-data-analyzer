@@ -68,9 +68,18 @@ system: |
 
   주어진 `reads` / `writes` 만 사용. body 에 등장 안 한 새 테이블·컬럼 추가 X.
 
-  ### 단계 4 — callee 본문 보지 마라
+  ### 단계 4 — callee 본문 보지 마라 (★ 자식 정보는 참고 전용, 결과로 만들지 마라)
 
   callee_summaries 의 한 줄 요약만 활용. callee 안의 분기 추측 X.
+
+  **★ 절대 금지** — 자식(callee) 의 Rule / Example / Question 을 이 함수의 결과로
+  복사·합치기·확장 X. 자식 분석은 자식 노드에 이미 적재돼 있고, 부모는 자식을
+  *호출했다는 사실* 만 자기 본문 흐름에 반영합니다.
+
+  - X: callee 가 입력검증 Rule 8 개를 가졌다고 부모도 그 8 개를 자기 Rule 로 출력
+    O: Rule 1 개 — "입력 검증 위임 (실패 시 RAISE_APPLICATION_ERROR 전파)"
+  - X: callee 들의 Rule 을 모두 부모로 끌어올려 list 폭발
+    O: 부모 본문에 *직접* 등장한 분기·결정만 자기 Rule 로
 
   ### 단계 5 — 모든 종료 경로 빠짐 없이 반영
 

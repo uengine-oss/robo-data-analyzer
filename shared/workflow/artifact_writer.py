@@ -18,16 +18,16 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 
-from data_models.project_and_run import Run
+from data_models.analysis_run import AnalysisRun
 
 
-def _artifacts_dir(run: Run) -> Path:
+def _artifacts_dir(run: AnalysisRun) -> Path:
     d = run.run_dir / "artifacts"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
-def dump_artifact(run: Run, name: str, data: Any) -> None:
+def dump_artifact(run: AnalysisRun, name: str, data: Any) -> None:
     """``artifacts/<name>.json`` 에 dataclass / dict 직렬화."""
     serialized = _serialize(data)
     path = _artifacts_dir(run) / f"{name}.json"
@@ -52,7 +52,7 @@ def _serialize(obj: Any) -> Any:
     return obj
 
 
-def dump_state_artifacts(run: Run, state: dict) -> None:
+def dump_state_artifacts(run: AnalysisRun, state: dict) -> None:
     """워크플로우 종료 후 state 에서 4 artifact 일괄 추출."""
     # ast.json — DDL + 소스 파싱 결과
     dump_artifact(run, "ast", {

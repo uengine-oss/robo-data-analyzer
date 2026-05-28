@@ -14,7 +14,7 @@ from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware
 
-from shared.logging_and_stream.message_filters import mask_dynamic_system_prompt
+from shared.log.cache_message_filters import mask_dynamic_system_prompt
 
 
 class StripDynamicSystemPromptMiddleware(AgentMiddleware):

@@ -19,8 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-from agent_tools.agent_output_models import DdlTransform, ResidualPatternResult, ScanResult
-from agent_tools.filesystem_tools import make_filesystem_tools
+from data_models.agent_output import DdlTransform, ResidualPatternResult, ScanResult
+from agent_tools.filesystem import make_filesystem_tools
 from analysis_flow.step3_scan_project.scan_verify_tool import make_verify_table_regex_tool
 from analysis_flow.step4_linking.stage1_regex_grep.regex_table_linker import (
     RegexTableLinker,
@@ -31,7 +31,7 @@ from data_models.graph_nodes import Function, Table
 from shared.config.env_catalog import ENV
 from shared.llm.cost_budget import CostBudget
 from shared.llm.structured_agent import run_structured_agent
-from shared.logging_and_stream.logger import log_info, log_warning
+from shared.log.logger import log_info, log_warning
 
 # 로그 component — link_residual_patterns_step 과 동일 키. 루프는 그 step 의
 # 구현부라 같은 키로 묶어야 analyzer.log 에서 한 단계 아래로 자연 정렬된다.

@@ -13,7 +13,7 @@ from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
-from shared.workflow_runner.step_config import step_config
+from shared.workflow.step_utils import step_config
 
 from analysis_flow.step3_scan_project.scan_agent import run_scan_agent
 from analysis_flow.step3_scan_project.scanner_input_collector import (
@@ -21,7 +21,7 @@ from analysis_flow.step3_scan_project.scanner_input_collector import (
 )
 from shared.llm.cost_budget import CostBudget
 from shared.llm.middleware.call_limit import ModelCallLimitExceeded
-from shared.logging_and_stream.logger import log_error, log_info, log_warning
+from shared.log.logger import log_error, log_info, log_warning
 
 _STEP = "step3.scan"
 
@@ -29,7 +29,7 @@ _STEP = "step3.scan"
 async def scan_codebase_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
     """Scan Agent 1회 invoke → ``state["scan_result"] = dict``."""
     cfg = step_config(config)
-    project = cfg.get("project")
+    project = cfg.get("codebase")
     run = cfg.get("run")
     cost_budget: CostBudget | None = cfg.get("cost_budget")
     stream = cfg.get("stream")

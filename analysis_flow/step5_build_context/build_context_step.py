@@ -22,7 +22,7 @@ from typing import Any, Optional
 from langchain_core.runnables import RunnableConfig
 
 from shared.source_file_cache import SourceFileCache
-from shared.workflow_runner.step_config import step_config
+from shared.workflow.step_utils import step_config
 
 from analysis_flow.step5_build_context.large_function_one_liner import (
     compute_one_liner,
@@ -33,8 +33,8 @@ from data_models.graph_edges import References
 from data_models.graph_nodes import Constant, Function, Variable
 from shared.config.env_catalog import ENV
 from shared.llm.cost_budget import BudgetExceededError, CostBudget
-from shared.llm.llm_fanout import gather_with_warmup
-from shared.logging_and_stream.logger import log_error, log_info, log_warning
+from shared.llm.fanout import gather_with_warmup
+from shared.log.logger import log_error, log_info, log_warning
 
 _STEP = "step5.build_context"
 

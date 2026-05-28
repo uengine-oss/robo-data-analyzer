@@ -40,7 +40,7 @@ from data_models.graph_nodes import (
     Table,
     Variable,
 )
-from data_models.project_and_run import Run
+from data_models.analysis_run import AnalysisRun
 
 
 class WorkflowState(TypedDict, total=False):
@@ -50,7 +50,7 @@ class WorkflowState(TypedDict, total=False):
     LangGraph 가 자동 누적. ``analysis_contexts`` 같은 dict 는 별도 reducer 없이 그냥 dict.
     """
     # ── 실행 메타 ─────────────────────────────────
-    run: Run
+    run: AnalysisRun
 
     # ── step1_parse_ddl 결과 ──────────────────────
     schemas: Annotated[list[Schema], operator.add]

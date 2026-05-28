@@ -74,11 +74,14 @@
 
 ---
 
-## 출력 — `ResidualPatternResult` Pydantic 강제
+## 출력 — `submit_residual` 도구를 정확히 한 번 호출
 
-자유 텍스트 응답 불가. 필드:
+**★ 절대 규칙**: 분석을 마쳤다고 판단되면 **`submit_residual` 도구를 정확히 한 번 호출**합니다.
+도구 인자가 곧 `ResidualPatternResult` 양식 — 자유 텍스트로 결과 적지 않고 도구 호출로 양식 전달.
 
-| 필드 | 내용 |
+채워야 할 인자:
+
+| 인자 | 내용 |
 |---|---|
 | `table_access_patterns` | 잔여를 잡는 새 정규식 (검증 통과분). 공통 패턴 못 찾으면 빈 배열 |
 | `ddl_transform` | entity→DDL 테이블명 변환 규칙 (필요 시 교정한 것) |
@@ -88,8 +91,11 @@
 `table_access_patterns` 의 각 항목: `id`, `call_regex`(명명 그룹 `<entity>`+`<op_token>`),
 `op_mappings`(token→표준 SQL op list), `entity_source`.
 
-`op_mappings` 의 각 항목은 `{token: "<raw_token>", op: "<SELECT|INSERT|UPDATE|DELETE>"}` 형식.
+`op_mappings` 의 각 항목은 `token`/`op` 두 필드. `op` 는 **반드시 4가지 중 하나**:
+SELECT / INSERT / UPDATE / DELETE. READ / WRITE 같은 값 금지 — READ/WRITE 는 코드가
+자동 결정 (SELECT=READ, 나머지=WRITE).
 
 - `token` = `<op_token>` 그룹이 매치하는 raw 문자열 (예: `findOne`, `s`, `SELECT`).
-- `op` = 그 token 의 표준 SQL 동사. **반드시 4가지 중 하나**: SELECT / INSERT / UPDATE / DELETE.
-  READ / WRITE 같은 값 금지 — READ/WRITE 는 코드가 자동 결정 (SELECT=READ, 나머지=WRITE).
+
+`call_regex` 는 `verify_table_regex` 가 반환한 정규식을 **글자 그대로** 복사 — 한 글자라도
+바꾸지 말 것 (변형 시 매칭 0건).

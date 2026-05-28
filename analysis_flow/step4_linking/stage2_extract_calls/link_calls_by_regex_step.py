@@ -10,10 +10,10 @@ from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
-from shared.workflow_runner.step_config import step_config
+from shared.workflow.step_utils import step_config
 
 from analysis_flow.step4_linking.stage2_extract_calls.call_regex_linker import CallRegexLinker
-from shared.logging_and_stream.logger import log_info, log_warning
+from shared.log.logger import log_info, log_warning
 from shared.neo4j.edges.calls import upsert_calls
 from shared.neo4j.neo4j_client import Neo4jClient
 
@@ -22,7 +22,7 @@ _STEP = "step4.link_calls_by_regex"
 
 async def link_calls_by_regex_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
     cfg = step_config(config)
-    project = cfg.get("project")
+    project = cfg.get("codebase")
     neo: Neo4jClient | None = cfg.get("neo_client")
     if project is None:
         log_warning(_STEP, "config_missing", "project 누락 — step skip")

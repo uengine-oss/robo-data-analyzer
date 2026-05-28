@@ -13,11 +13,11 @@ from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
-from shared.workflow_runner.step_config import step_config
+from shared.workflow.step_utils import step_config
 
-from agent_tools.agent_output_models import ScanResult
+from data_models.agent_output import ScanResult
 from analysis_flow.step4_linking.stage1_regex_grep.regex_table_linker import RegexTableLinker
-from shared.logging_and_stream.logger import log_info, log_warning
+from shared.log.logger import log_info, log_warning
 from shared.neo4j.edges.reads_writes import upsert_reads_writes
 from shared.neo4j.neo4j_client import Neo4jClient
 
@@ -27,7 +27,7 @@ _STEP = "step4.link_deterministic"
 async def link_deterministic_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
     """결정론 grep → ``ReadsWrites`` 엣지 + ``unresolved`` 큐."""
     cfg = step_config(config)
-    project = cfg.get("project")
+    project = cfg.get("codebase")
     neo: Neo4jClient | None = cfg.get("neo_client")
     if project is None:
         log_warning(_STEP, "config_missing", "project 누락 — step skip")

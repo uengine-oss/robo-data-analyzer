@@ -21,7 +21,7 @@ from tenacity import (
 )
 
 from shared.config.env_catalog import ENV
-from shared.logging_and_stream.logger import log_warning
+from shared.log.logger import log_warning
 
 
 class Neo4jClient:

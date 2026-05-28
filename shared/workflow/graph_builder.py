@@ -20,7 +20,7 @@ from typing import Any, Optional
 
 from langgraph.graph import END, START, StateGraph
 
-from shared.workflow_runner.workflow_state import WorkflowState
+from shared.workflow.state import WorkflowState
 
 
 def build_langgraph_workflow(

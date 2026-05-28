@@ -14,12 +14,12 @@ from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
-from shared.workflow_runner.step_config import step_config
+from shared.workflow.step_utils import step_config
 
 from analysis_flow.step4_linking.stage3_residual_patterns.residual_pattern_loop import (
     run_residual_loop,
 )
-from shared.logging_and_stream.logger import log_info, log_warning
+from shared.log.logger import log_info, log_warning
 from shared.neo4j.edges.reads_writes import upsert_reads_writes
 from shared.neo4j.neo4j_client import Neo4jClient
 
@@ -29,7 +29,7 @@ _STEP = "step4.link_residual_patterns"
 async def link_residual_patterns_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
     """잔여 미해결 케이스 → 패턴 루프 → 추가 ``ReadsWrites`` 엣지 + 최종 잔여."""
     cfg = step_config(config)
-    project = cfg.get("project")
+    project = cfg.get("codebase")
     run = cfg.get("run")
     cost_budget = cfg.get("cost_budget")
     stream = cfg.get("stream")

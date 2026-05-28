@@ -17,7 +17,7 @@ from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware
 
-from shared.logging_and_stream.message_filters import move_volatile_to_end
+from shared.log.cache_message_filters import move_volatile_to_end
 
 
 class CacheFriendlyOrderMiddleware(AgentMiddleware):
