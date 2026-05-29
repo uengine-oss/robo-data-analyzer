@@ -1,8 +1,7 @@
 """MODULE 노드 Cypher — Function 들의 컨테이너.
 
 라벨: ``:MODULE`` + Framework sub-label (``:MODULE:CLASS`` 등 — ``Module.sub_label``).
-summary / stereotype 는 summarize_module_step, intent 는 module_pre_analysis,
-logical_name 은 module 분석이 갱신.
+summary / stereotype / logical_name 은 summarize_module_step 이 갱신.
 """
 from __future__ import annotations
 
@@ -26,8 +25,7 @@ SET m.name = item.name,
     m.annotations = item.annotations,
     m.summary = coalesce(item.summary, m.summary),
     m.stereotype = coalesce(item.stereotype, m.stereotype),
-    m.logical_name = coalesce(item.logical_name, m.logical_name),
-    m.intent = coalesce(item.intent, m.intent)
+    m.logical_name = coalesce(item.logical_name, m.logical_name)
 RETURN count(m) AS created
 """
 
@@ -44,7 +42,6 @@ def to_item(mod: Module) -> dict:
         "summary": mod.summary or None,
         "stereotype": mod.stereotype or None,
         "logical_name": mod.logical_name,
-        "intent": mod.intent,
     }
 
 

@@ -36,13 +36,15 @@ SET t.description = item.description
 """
 
 # 분석 합성 설명 → analyzed_description SET (description=DDL/카탈로그 1차설명 은 안 건드림).
-# description_source: DDL description 이 비어 있으면 'source'(분석값이 유효 설명), 있으면 유지.
+# description_source: DDL description 이 비어 있으면 'code'(소스코드 분석값이 유효 설명),
+# 있으면 유지. 옛 'source' 값을 'code' 로 명명 변경 — db prefix "source" 와 단어 충돌
+# 회피 + "어디서 왔는지" 의미를 더 명확히 (ddl / code / catalog).
 SET_ANALYZED_QUERY = """
 UNWIND $items AS item
 MATCH (t:TABLE {fqn: item.fqn})
 SET t.analyzed_description = item.analyzed_description,
     t.description_source = CASE WHEN coalesce(t.description, '') = ''
-                                THEN 'source' ELSE t.description_source END
+                                THEN 'code' ELSE t.description_source END
 """
 
 

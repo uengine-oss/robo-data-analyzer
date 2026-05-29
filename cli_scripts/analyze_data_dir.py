@@ -107,7 +107,6 @@ async def analyze_one(project_dir: Path, ddl_dir: Path | None, strategy: str) ->
 
     pipeline = get_pipeline(strategy)
     project = Codebase(
-        name=project_dir.name,
         root=project_dir,
         strategy=strategy,  # type: ignore[arg-type]
         ddl_dir=ddl_dir,

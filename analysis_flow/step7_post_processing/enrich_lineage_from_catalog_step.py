@@ -3,9 +3,11 @@
 DBMS catalog ETL / 리니지 → ``ReadsWrites`` 엣지.
 
 흐름:
-1. ``project.catalog_service_url`` 로 HTTP — ETL flow 응답 받음.
+1. ``ENV.catalog.base_url`` (운영 단일 진실) 로 HTTP — ETL flow 응답 받음.
 2. flow 의 ``source`` (sql 파일 fqn / function_id) 를 코드의 실제 Function 과 매칭.
 3. 매칭된 Function 의 ``ReadsWrites`` 엣지 생성. 매칭 실패 시 ``__catalog__:`` prefix 가상 노드.
+
+분석기 영역 = HTTP 응답 처리. dataset 식별·인증은 catalog 영역 (URL 만 호출).
 """
 from __future__ import annotations
 
@@ -18,8 +20,8 @@ from langchain_core.runnables import RunnableConfig
 
 from shared.workflow.step_utils import step_config
 
-from data_models.graph_edges import ReadsWrites, normalize_relation
-from shared.external.catalog_client import catalog_headers, get_catalog_json
+from data_models.graph_edges import ReadsWrites, derive_dml_type, normalize_relation
+from shared.external.catalog_client import get_catalog_json
 from shared.config.env_catalog import ENV
 from shared.log.logger import log_info, log_warning
 from shared.neo4j.edges.reads_writes import upsert_reads_writes
@@ -38,22 +40,21 @@ async def enrich_lineage_from_catalog_step(state: dict, config: Optional[Runnabl
     if not ENV.catalog.enabled:
         log_info(_STEP, "skip", reason="catalog 비활성화 (ROBO_CATALOG_ENABLED=false)")
         return {}
-    if not getattr(project, "catalog_service_url", None):
-        log_info(_STEP, "skip", reason="catalog_service_url 미설정 (이 프로젝트는 catalog 없음)")
+    if not ENV.catalog.base_url:
+        log_info(_STEP, "skip", reason="ROBO_CATALOG_BASE_URL 미설정")
         return {}
 
     started = time.monotonic()
-    log_info(_STEP, "start", catalog_url=project.catalog_service_url, project=project.name)
+    log_info(_STEP, "start", catalog_url=ENV.catalog.base_url)
 
-    base_url = project.catalog_service_url.rstrip("/")
-    headers = catalog_headers(project.catalog_api_key)
+    base_url = ENV.catalog.base_url.rstrip("/")
 
-    async with httpx.AsyncClient(timeout=120.0) as http:
-        url = f"{base_url}/lineage/{project.name}"
+    async with httpx.AsyncClient(timeout=ENV.catalog.timeout_seconds) as http:
+        url = f"{base_url}/lineage"
         # non-200/파싱 실패는 전파. 404 만 정상(None).
-        data = await get_catalog_json(http, url, headers=headers, label="lineage")
+        data = await get_catalog_json(http, url, label="lineage")
     if data is None:
-        # 404 — 이 프로젝트는 catalog 에 lineage 없음 (실패 아님).
+        # 404 — catalog 에 lineage 없음 (실패 아님).
         return {}
 
     # 함수 매칭 인덱스: 절대 경로 / 상대 경로 / function_id 모두로 lookup
@@ -72,10 +73,12 @@ async def enrich_lineage_from_catalog_step(state: dict, config: Optional[Runnabl
         if relation is None:
             continue
 
+        # catalog 응답에 dml_type 이 있으면 표준화 (없으면 빈값 — 단일 진실 헬퍼).
         edges.append(ReadsWrites(
             function_id=fn_id,
             table_fqn=table_fqn,
             relation=relation,
+            dml_type=derive_dml_type(flow.get("dml_type")),
             evidence_file=str(source or "catalog"),
             evidence_line=0,
         ))
@@ -89,7 +92,9 @@ async def enrich_lineage_from_catalog_step(state: dict, config: Optional[Runnabl
              reads_writes_edges=len(edges),
              catalog_only=catalog_only or None,
              elapsed_sec=f"{time.monotonic() - started:.2f}")
-    return {}
+    # state 반영 — Neo4j MERGE 가 같은 (fn, table, relation) 키로 자동 dedup.
+    # catalog 발견 R/W 가 artifact dump 에도 같이 나온다 (raw 그대로).
+    return {"reads_writes_edges": edges}
 
 
 def _build_function_index(functions: list, project_root: Path) -> dict[str, str]:

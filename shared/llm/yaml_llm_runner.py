@@ -159,7 +159,8 @@ async def run_yaml_rule(
     )
 
     # silent 차단 — cost_tracking 미들웨어 안 거치는 진입점이라 직접 wrap.
-    # 예외 (401 / 429 / 400 / timeout / network) 시 명시 로그 + raise.
+    # 예외 (401 / 429 / 400 / timeout / network / LengthFinishReasonError) 시
+    # 명시 로그 + prompt 적재 (디버깅 보조) + raise. 적재 누락 = 사후 분석 불가.
     start = time.monotonic()
     log_info("llm.call", "start", agent=f"rule:{rule_name}")
     try:
@@ -173,6 +174,7 @@ async def run_yaml_rule(
             rule_name=rule_name,
             elapsed_ms=elapsed_ms,
         )
+        _write_error_record(rule_name, system_prompt, user_content, user_values, e, elapsed_ms)
         raise
     latency_ms = int((time.monotonic() - start) * 1000)
 
@@ -262,6 +264,73 @@ _TARGET_ID_KEYS = (
     "function_id", "procedure_id", "module_id", "table_fqn",
     "case_id", "name", "file",
 )
+
+
+def _write_error_record(
+    rule_name: str,
+    system_prompt: str,
+    user_content: str,
+    user_values: dict,
+    error: BaseException,
+    elapsed_ms: int,
+) -> None:
+    """LLM 호출 실패 시에도 prompt + error 적재 — 사후 디버깅 (silent skip 차단).
+
+    LengthFinishReasonError / 401 / 429 / timeout 같은 폭주 / 예외 케이스에서
+    prompt 가 사라지면 원인 분석 불가. except 가 raise 하기 전 호출 — 적재 자체
+    실패는 graceful (분석 흐름은 이미 raise 직전이라 막힐 거 없음).
+
+    ★ ``LengthFinishReasonError`` 는 ``completion`` 속성에 partial response 보유 —
+    폭주 내용 (반복 패턴 / 쓸데없는 내용) 진단을 위해 추출 적재.
+    """
+    partial_content = _extract_partial_content(error)
+    try:
+        target_id, sort_key = _extract_target_and_sort(user_values)
+        write_rule_record(
+            rule_name=rule_name,
+            target_id=target_id,
+            system_prompt=system_prompt,
+            user_content=user_content,
+            response=partial_content if partial_content else None,
+            metadata={
+                "error": f"{type(error).__name__}: {error}",
+                "latency_ms": elapsed_ms,
+                "partial_chars": len(partial_content) if partial_content else 0,
+            },
+            sort_key=sort_key,
+        )
+    except Exception as e:  # noqa: BLE001 — graceful (이미 raise 직전)
+        log_warning(
+            "shared.llm.yaml_llm_runner",
+            "write_error_record",
+            "에러 발생 prompt 적재 실패 — 디버깅 보조만 누락 (raise 는 계속)",
+            rule_name=rule_name,
+            inner_error=f"{type(e).__name__}: {e}",
+        )
+
+
+def _extract_partial_content(error: BaseException) -> str:
+    """``LengthFinishReasonError`` 의 ``completion`` 속성에서 partial response 추출.
+
+    OpenAI SDK 가 ``.parse()`` 안에서 raise — ``completion.choices[0].message.content`` 가
+    폭주 partial 본문. 그 외 예외는 빈 문자열 (graceful).
+
+    폭주 진단용 — 반복 패턴 / 쓸데없는 내용 / 무한 list 등을 사람·LLM 이 확인.
+    """
+    completion = getattr(error, "completion", None)
+    if completion is None:
+        return ""
+    try:
+        choices = getattr(completion, "choices", None) or []
+        if not choices:
+            return ""
+        message = getattr(choices[0], "message", None)
+        if message is None:
+            return ""
+        content = getattr(message, "content", "") or ""
+        return content
+    except Exception:  # noqa: BLE001 — partial 추출 실패는 silent (error 는 그대로 raise)
+        return ""
 
 
 def _extract_target_and_sort(user_values: dict) -> tuple[str | None, str | None]:

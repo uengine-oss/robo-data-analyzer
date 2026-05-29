@@ -22,7 +22,7 @@ from langchain_core.runnables import RunnableConfig
 from shared.source_file_cache import SourceFileCache
 from shared.workflow.step_utils import step_config
 
-from data_models.graph_edges import ReadsWrites
+from data_models.graph_edges import ReadsWrites, derive_dml_type
 from data_models.graph_nodes import Function, Table
 from shared.log.logger import log_info
 from shared.neo4j.edges.reads_writes import upsert_reads_writes
@@ -110,7 +110,7 @@ def _link(
                 function_id=fn.function_id,
                 table_fqn=fqn,
                 relation=relation,
-                dml_type=dml_type,
+                dml_type=derive_dml_type(dml_type),
                 evidence_file=fn.file_path,
                 evidence_line=fn.start_line,
             ))

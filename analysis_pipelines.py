@@ -7,7 +7,7 @@
   ``prompts_dir`` 의 데이터 컨테이너. 로직 X.
 - AST 파싱은 antlr JSON reader 공통 — strategy 별 parser 주입 없음
   (``load_ast_step`` 이 ``antlr_json_reader`` 를 직접 호출).
-- ``shared/workflow_runner/langgraph_workflow.build_langgraph_workflow(strategy)`` 가
+- ``shared/workflow/graph_builder.build_langgraph_workflow(strategy)`` 가
   ``strategy.steps`` 만 보고 그래프 빌드 — if 분기 0개.
 
 **LangGraph 의 책임**:
@@ -91,7 +91,7 @@ FRAMEWORK_PIPELINE = Strategy(
         load_ast_step,
         scan_codebase_step,                # ★ Framework 만 — Scan Agent 1회
         link_deterministic_step,
-        link_calls_by_name_step,              # ★ Framework 만 — 결정론 Call 분류 (LLM 0)
+        link_calls_by_name_step,              # ★ Framework 만 — 결정론 Call 분류 + wrapper 통합 (LLM 0)
         link_residual_patterns_step,          # ★ Framework 만 — 잔여 패턴 루프 (테이블 미해결)
         build_context_step,
         analyze_function_step,

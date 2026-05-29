@@ -118,18 +118,26 @@ class PipelineSettings:
     residual_max_rounds: int = field(default_factory=lambda: _getenv_int("ROBO_PIPELINE_RESIDUAL_MAX_ROUNDS", 3))
     # 임베딩 step on/off — Framework/DBMS 공통. 기본 ON (운영=full 동작).
     # 테스트/디버그 시 .env 로 off (느린 모델 로드 회피).
+    # 모델 자체는 LLM 영역 (shared/llm/embedder) 책임 — 분석기는 ENV 안 둠.
     embed_enabled: bool = field(default_factory=lambda: _getenv_bool("ROBO_PIPELINE_EMBED_ENABLED", True))
 
 
 @dataclass(frozen=True)
 class CatalogSettings:
-    """ROBO_CATALOG_* — 외부 DB 카탈로그 연동 on/off.
+    """ROBO_CATALOG_* — 외부 DB 카탈로그 연동 단일 진실.
 
-    ``enabled`` 기본 ON — 카탈로그는 운영 시 동작해야 하는 기능. 테스트/디버그 때만
-    ``.env`` 로 off. **ON 인데 catalog HTTP 시도가 실패하면 step 이 raise** (심각 —
-    조용히 skip 하지 않음). 단 개별 테이블 404 는 정상 (그 테이블이 카탈로그에 없을 뿐).
+    분석기는 HTTP 클라이언트 (URL 호출 + 응답 처리) 만 책임. catalog 서비스의
+    인증 / dataset 식별 / 정책은 catalog 영역 — 분석기에 인자로 흐르지 X.
+
+    - ``enabled`` 기본 ON — 카탈로그는 운영 시 동작해야 하는 기능. 테스트/디버그 때만
+      ``.env`` 로 off. **ON 인데 catalog HTTP 시도가 실패하면 step 이 raise** (심각 —
+      조용히 skip 하지 않음). 단 개별 자원 404 는 정상 (그 자원이 카탈로그에 없을 뿐).
+    - ``base_url`` — catalog 서비스 endpoint. enabled=true 시 필수.
+    - ``timeout_seconds`` — HTTP timeout (옛 매직 60/120 → 단일 진실).
     """
     enabled: bool = field(default_factory=lambda: _getenv_bool("ROBO_CATALOG_ENABLED", True))
+    base_url: str = field(default_factory=lambda: _getenv_str("ROBO_CATALOG_BASE_URL", ""))
+    timeout_seconds: float = field(default_factory=lambda: _getenv_float("ROBO_CATALOG_TIMEOUT_SECONDS", 120.0))
 
 
 @dataclass(frozen=True)

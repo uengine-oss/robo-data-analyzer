@@ -13,6 +13,12 @@
 - DB 노드(Schema/Table/Column): 키 = ``fqn`` (``"db.schema.table.column"``).
 - ``function_id`` / ``module_id`` 가 곧 그 노드의 fqn 역할 — 별도 ``fqn`` 필드 없음.
 
+정체성 키 = Neo4j MERGE 가 자동 dedup 책임자
+────────────────────────────────────────────
+같은 정체성 키 (function_id / module_id / fqn / rule_hash 등) 가 state list 에 raw
+중복 들어와도 **Neo4j MERGE Cypher 가 자동 dedup** (그래프 진실 보장자). state 자체는
+raw 그대로 유지 — 다른 step 이 set 변환으로 자동 dedup 하므로 분석 흐름 영향 0.
+
 노드 종류(antlr 원시 타입)는 Neo4j 라벨로만 표현 — 별도 ``node_type`` 속성 없음.
 라벨은 antlr ``type`` → ontology 가 도출 (Framework: ``:FUNCTION:METHOD`` 멀티라벨 /
 DBMS: ``:FUNCTION`` 단일 라벨).
@@ -20,7 +26,7 @@ DBMS: ``:FUNCTION`` 단일 라벨).
 새 노드 종류 추가 시 손대는 곳
 ─────────────────────────────
 1. 이 파일에 dataclass 추가
-2. ``shared/neo4j/nodes/<new>.py`` 에 Cypher 쿼리 추가
+2. ``shared/neo4j/nodes/<new>.py`` 에 Cypher 쿼리 추가 (MERGE 키 명시)
 """
 from __future__ import annotations
 
@@ -54,10 +60,13 @@ class Table:
     schema: str
     name: str
     description: str = ""                    # COMMENT ON·-- 주석·카탈로그 1차 설명
-    description_source: str = ""             # "ddl" / "source" / "" — 유효 설명이 어느 칸인지
+    description_source: str = ""             # "ddl" / "code" / "catalog" / "" — 유효 설명이 어느 칸인지
     comment: str = ""                        # -- /* */ 주석 원문 (COMMENT ON 없으면 description 출처)
     analyzed_description: str = ""           # 분석 LLM 합성 설명
     table_type: str = "TABLE"                # TABLE / VIEW / MATERIALIZED_VIEW
+    # embed_step 이 채우는 의미 벡터. metadata={"vector": True} 는 artifact dump 시 dim
+    # 만 표시하라는 표시 — 단일 진실 (artifact_writer 가 이 metadata 만 본다).
+    embedding: tuple[float, ...] = field(default=(), metadata={"vector": True})
 
     @property
     def fqn(self) -> str:
@@ -83,9 +92,10 @@ class Column:
     is_unique: bool = False
     default_value: Optional[str] = None
     description: str = ""                    # COMMENT ON·-- 주석 1차 설명
-    description_source: str = ""             # "ddl" / "source" / "" — 유효 설명이 어느 칸인지
+    description_source: str = ""             # "ddl" / "code" / "catalog" / "" — 유효 설명이 어느 칸인지
     comment: str = ""                        # -- /* */ 주석 원문 (COMMENT ON 없으면 description 출처)
     analyzed_description: str = ""           # 분석 LLM 합성 설명
+    embedding: tuple[float, ...] = field(default=(), metadata={"vector": True})
 
 
 # ── 코드 객체 (load_ast 가 antlr JSON 에서 생성) ──
@@ -109,9 +119,8 @@ class Module:
     DBMS 예: PL/SQL package · 스크립트 파일.
 
     ``start_line`` / ``end_line`` 으로 한 파일 안 여러 클래스(Java inner class 등)의
-    라인 범위 구분. ``intent`` 는 module_pre_analysis(M9 — 헤더 주석 정제),
-    ``summary`` / ``stereotype`` / ``logical_name`` 은 summarize_module 이 채운다
-    (표시명은 헤더가 아니라 분석 결과에서 도출).
+    라인 범위 구분. 표시명·요약·역할은 ``summarize_module`` (step7) 이 채운다 —
+    헤더 주석이 아니라 멤버 분석 종합에서 도출.
     """
     module_id: str                           # 고유 식별자 = 이 모듈의 fqn (예: "com.example.OrderService")
     name: str
@@ -128,7 +137,6 @@ class Module:
     summary: str = ""                        # summarize_module 가 채움
     stereotype: str = ""                     # summarize_module 가 채움 (Function.stereotype 과 명칭 통일)
     logical_name: Optional[str] = None       # 짧은 도메인 표시명 — summarize_module 가 채움
-    intent: Optional[str] = None             # 모듈 의도 1~3문장 — module_pre_analysis(M9)
 
 
 @dataclass
@@ -162,6 +170,7 @@ class Function:
     summary: Optional[str] = None            # 4 섹션 마크다운
     stereotype: Optional[str] = None         # ontology_roles.yaml 풀에서
     logical_name: Optional[str] = None       # 짧은 도메인 토큰
+    embedding: tuple[float, ...] = field(default=(), metadata={"vector": True})
 
     # strategy 별 확장 필드 (dict — 새 필드 추가 시 base 무변경) ────
     extra: dict = field(default_factory=dict)
@@ -220,8 +229,9 @@ class DataType:
 class Rule:
     """비즈니스 규칙 — 같은 statement 는 함수 간 1 노드 공유.
 
-    키 = ``rule_hash`` (정규화 statement MD5). per-function 정보(local rule_id /
+    정체성 = ``rule_hash`` (정규화 statement MD5). per-function 정보(local rule_id /
     flow_id / branch 등)는 노드가 아닌 ``HAS_RULE`` 엣지 속성에 (노드 공유라서).
+    Neo4j MERGE 가 rule_hash 키로 자동 dedup.
     """
     rule_hash: str                           # 정규화 statement MD5[:12] — Neo4j unique key
     statement: str                           # 비즈니스 규칙 문장
@@ -229,18 +239,23 @@ class Rule:
 
 @dataclass(frozen=True)
 class Example:
-    """Rule 의 given/when/then 시나리오 (Example Mapping)."""
-    example_id: str                          # "<function_id>::<rule_id>::<idx>" — unique key
+    """Rule 의 given/when/then 시나리오 (Example Mapping).
+
+    정체성 = ``example_id`` (``<function_id>::<rule_id>::<idx>``).
+    """
+    example_id: str
     description: str = ""
-    given: str = ""                          # JSON 직렬화 (narrative/inputs/preconditions)
+    given: str = ""                          # 자연어 한 줄 (진입 조건)
     when: str = ""                           # 자연어 한 줄
-    then: str = ""                           # JSON 직렬화 (return/exception/reads/writes 등)
-    is_boundary: bool = False                # 경계 케이스 여부
+    then: str = ""                           # 자연어 한 줄 (결과)
 
 
 @dataclass(frozen=True)
 class Question:
-    """코드만으로 답 안 되는 모호점 — 사람 검토 큐 (Example Mapping)."""
-    question_id: str                         # "<function_id>::Q<idx>" — unique key
+    """코드만으로 답 안 되는 모호점 — 사람 검토 큐 (Example Mapping).
+
+    정체성 = ``question_id`` (``<function_id>::Q<idx>``).
+    """
+    question_id: str
     text: str                                # 한 줄 질문
     reason: str = ""                         # 코드 근거 부재 사유

@@ -1,31 +1,29 @@
 """step6 phase-0 — 모듈 사전분석 (Framework 전용).
 
 함수 분석(Bottom-up DAG) 직전, 모듈마다 LLM 1회로 헤더 주석의 변경이력·작성자
-노이즈를 제거해 짧은 **모듈 의도(intent)** 를 뽑는다. 그 intent 는 함수 3분할
-분석의 공통 context 에 주입돼 함수마다 모듈 맥락을 짧게 제공한다.
+노이즈를 제거해 짧은 **모듈 의도(intent, 최대 2줄)** 를 뽑는다. 그 intent 는 함수
+3분할 분석의 공통 context prefix 로만 사용되고 끝 — 영구 그래프 속성 X.
 
 strategy 게이트: ``<prompts_dir>/module_pre_analysis.yaml`` 이 있는 strategy 만
-동작한다. DBMS 는 ``prompts/dbms`` 에 이 yaml 이 없어 자연히 skip — 헤더주석 개념이
-달라 별도 판단 대상 (plan §M9). ``if strategy`` 분기 없이 prompt 존재로 게이트.
+동작한다. DBMS 는 ``prompts/dbms`` 에 이 yaml 이 없어 자연히 skip.
 """
 from __future__ import annotations
 
 import asyncio
 import time
 from collections import defaultdict
-from dataclasses import replace
 from pathlib import Path
 from typing import Any, Optional
 
+from data_models.function_analysis_output import ModulePreAnalysisOutput
 from data_models.graph_nodes import Function, Module
 from shared.config.env_catalog import ENV
 from shared.llm.cost_budget import BudgetExceededError, CostBudget
 from shared.llm.fanout import gather_with_warmup
-from data_models.function_analysis_output import ModulePreAnalysisOutput
 from shared.llm.yaml_llm_runner import run_yaml_rule
 from shared.log.logger import log_error, log_info
-from shared.neo4j.neo4j_client import Neo4jClient
-from shared.neo4j.nodes.module import upsert_modules
+from shared.log.ndjson_stream import NDJSONStream
+from shared.log.processing_progress import step_processing_scope, track_processing
 
 _STEP = "step6.module_pre_analysis"
 _RULE = "module_pre_analysis"
@@ -37,13 +35,19 @@ async def run_module_pre_analysis(
     functions: list[Function],
     strategy: Any,
     cost_budget: Optional[CostBudget],
-    neo: Optional[Neo4jClient],
+    stream: Optional[NDJSONStream] = None,
 ) -> dict[str, str]:
     """모듈마다 LLM 1회 → ``{module_id: intent}``.
 
+    intent 는 **내부 분석용 임시 통신값** — 함수 분석 3분할의 공통 context prefix
+    로만 사용되고 끝. 영구 그래프 속성 X. Module 노드의 진짜 메타 (summary /
+    stereotype / logical_name) 는 step7 ``summarize_module`` 이 별도 채운다.
+
     이 strategy 에 ``module_pre_analysis.yaml`` 이 없으면 빈 dict 반환 (DBMS) —
-    함수 분석은 모듈 intent 없이 그대로 진행. intent 는 MODULE 노드에 영속화
-    (노드 자체는 step2_load_ast 가 이미 생성).
+    함수 분석은 intent 없이 진행.
+
+    진행 가시성: ``step_processing_scope`` 진입 → ``_analyze_module`` 안 ``track_processing``
+    이 자동 Module 단위 start/done/failed emit (sub_action=``pre_analysis``).
     """
     yaml_path = Path(strategy.prompts_dir) / f"{_RULE}.yaml"
     if not yaml_path.exists() or not modules:
@@ -62,32 +66,26 @@ async def run_module_pre_analysis(
     log_info(_STEP, "start", modules=len(targets), concurrency=ENV.pipeline.max_concurrency)
 
     semaphore = asyncio.Semaphore(ENV.pipeline.max_concurrency)
-    # 첫 모듈 1건으로 prefix 캐시 워밍 → 나머지 병렬 (cold 동시요청 캐시 미스 방지).
-    results = await gather_with_warmup(
-        (
-            _analyze_module(m, sigs_by_module.get(m.module_id, []), strategy, cost_budget, semaphore)
-            for m in targets
-        ),
-        return_exceptions=True,
-    )
+    with step_processing_scope(_STEP, stream):
+        results = await gather_with_warmup(
+            (
+                _analyze_module(m, sigs_by_module.get(m.module_id, []), strategy, cost_budget, semaphore)
+                for m in targets
+            ),
+            return_exceptions=True,
+        )
 
     intents: dict[str, str] = {}
-    updated: list[Module] = []
     failed = 0
     for module, r in zip(targets, results):
         if isinstance(r, BudgetExceededError):
-            raise r        # 회로 차단기 즉시 전파
+            raise r
         if isinstance(r, BaseException):
             failed += 1
             log_error(_STEP, "analyze_module", r, module_id=module.module_id)
             continue
-        intent = r
-        updated.append(replace(module, intent=intent or None))
-        if intent:
-            intents[module.module_id] = intent
-
-    if neo is not None and updated:
-        await upsert_modules(neo, updated)
+        if r:
+            intents[module.module_id] = r
 
     log_info(
         _STEP, "done",
@@ -113,19 +111,20 @@ async def _analyze_module(
     cost_budget: Optional[CostBudget],
     semaphore: asyncio.Semaphore,
 ) -> str:
-    """모듈 1개 LLM 호출 → intent. 회로 차단기는 그대로 raise."""
-    async with semaphore:
-        result: ModulePreAnalysisOutput = await run_yaml_rule(
-            prompts_dir=Path(strategy.prompts_dir),
-            rule_name=_RULE,
-            user_values={
-                "module_id": module.module_id,
-                "module_header": _format_header(module),
-                "function_signatures": _format_signatures(signatures),
-            },
-            response_model=ModulePreAnalysisOutput,
-            budget=cost_budget,
-        )
+    """모듈 1개 LLM 호출 → intent. track_processing 이 start/done/failed 자동 emit."""
+    async with track_processing("Module", module.module_id, sub_action="pre_analysis"):
+        async with semaphore:
+            result: ModulePreAnalysisOutput = await run_yaml_rule(
+                prompts_dir=Path(strategy.prompts_dir),
+                rule_name=_RULE,
+                user_values={
+                    "module_id": module.module_id,
+                    "module_header": _format_header(module),
+                    "function_signatures": _format_signatures(signatures),
+                },
+                response_model=ModulePreAnalysisOutput,
+                budget=cost_budget,
+            )
     return result.intent.strip()
 
 

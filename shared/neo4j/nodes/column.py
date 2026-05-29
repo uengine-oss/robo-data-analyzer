@@ -28,13 +28,14 @@ RETURN count(c) AS created
 """
 
 # 분석 합성 컬럼 설명 → analyzed_description SET (description=DDL 1차설명 은 안 건드림).
-# description_source: DDL description 이 비어 있으면 'source', 있으면 유지.
+# description_source: DDL description 이 비어 있으면 'code'(소스코드 분석값이 유효 설명),
+# 있으면 유지. 옛 'source' → 'code' (db prefix 와 단어 충돌 회피).
 SET_ANALYZED_QUERY = """
 UNWIND $items AS item
 MATCH (c:COLUMN {fqn: item.fqn})
 SET c.analyzed_description = item.analyzed_description,
     c.description_source = CASE WHEN coalesce(c.description, '') = ''
-                                THEN 'source' ELSE c.description_source END
+                                THEN 'code' ELSE c.description_source END
 """
 
 

@@ -1,13 +1,23 @@
 """WorkflowState — LangGraph StateGraph 의 state.
 
-설계 원칙:
+설계 원칙
+─────────
 - **strategy 무관** (Framework / DBMS 같은 state). 분기 0개.
-- 누적 데이터는 list (Annotated + ``operator.add`` reducer 로 LangGraph 가 자동 누적).
+- 각 state 키 = **1 step 만 반환** — LangGraph default replace 로 충분.
+  새 step 추가도 키 책임 단일하면 reducer 불필요.
 - 모든 step 의 입출력은 이 state 의 키.
 
-새 step / 새 데이터 종류 추가 시:
-1. ``data_models/`` 에 dataclass 추가 (해당 시)
-2. 이 state 에 키 추가 (Annotated + reducer)
+dedup / 단일 진실
+────────────────
+list 안 raw 중복은 **Neo4j MERGE Cypher 가 자동 dedup** (그래프 진실 보장자).
+state / artifact 의 list 가 raw 매치 그대로여도 분석 흐름엔 영향 0 — 다른 step 이
+``set`` 으로 변환해 사용 (예: ``build_context_step`` 의 reads/writes set).
+
+영역 규칙 — 새 step 추가 시
+─────────────────────────────
+각 step 은 자기가 만든 항목만 ``return {"<key>": [items]}`` 으로 돌려준다.
+LangGraph 가 default replace 로 state 에 박는다. 같은 키를 두 step 가 동시 책임?
+→ 영역 설계 잘못. 한 키 = 한 step 책임 단일화.
 """
 from __future__ import annotations
 
@@ -15,16 +25,23 @@ import operator
 from typing import Annotated, TypedDict
 
 from data_models.analysis_context import AnalysisContext
+from data_models.analysis_run import AnalysisRun
 from data_models.graph_edges import (
+    AffectsTable,
     BelongsTo,
     BelongsToPackage,
+    Branch,
     Calls,
     Fk,
     HasColumn,
+    HasExample,
     HasFunction,
     HasMember,
+    HasQuestion,
+    HasRule,
     HasVariable,
     InitBy,
+    Next,
     ParentOf,
     ReadsWrites,
     References,
@@ -33,47 +50,54 @@ from data_models.graph_nodes import (
     Column,
     Constant,
     DataType,
+    Example,
     Function,
     Module,
     Package,
+    Question,
+    Rule,
     Schema,
     Table,
     Variable,
 )
-from data_models.analysis_run import AnalysisRun
 
 
 class WorkflowState(TypedDict, total=False):
     """파이프라인 1회 실행의 누적 state.
 
-    각 step 이 자기 결과를 list 에 append → ``operator.add`` reducer 가
-    LangGraph 가 자동 누적. ``analysis_contexts`` 같은 dict 는 별도 reducer 없이 그냥 dict.
+    각 키 = 1 step 만 반환 — LangGraph default replace 로 충분.
+    list 중복은 Neo4j MERGE 가 dedup (그래프 진실 보장자), 분석 흐름은 set 변환으로
+    자동 dedup — state 자체는 raw list 그대로 OK.
+
+    call_sites / import_refs 만 ``operator.add`` reducer 유지 — step2 가 파일별 partial
+    로 여러 dict 반환 누적 (다른 키는 step 가 누적 list 한 번에 반환).
     """
     # ── 실행 메타 ─────────────────────────────────
     run: AnalysisRun
 
     # ── step1_parse_ddl 결과 ──────────────────────
-    schemas: Annotated[list[Schema], operator.add]
-    tables: Annotated[list[Table], operator.add]
-    columns: Annotated[list[Column], operator.add]
-    has_column_edges: Annotated[list[HasColumn], operator.add]
-    belongs_to_edges: Annotated[list[BelongsTo], operator.add]
-    fk_edges: Annotated[list[Fk], operator.add]
+    schemas: list[Schema]
+    tables: list[Table]
+    columns: list[Column]
+    has_column_edges: list[HasColumn]
+    belongs_to_edges: list[BelongsTo]
+    fk_edges: list[Fk]
 
     # ── step2_load_ast 결과 ───────────────────────
-    functions: Annotated[list[Function], operator.add]
-    modules: Annotated[list[Module], operator.add]
-    packages: Annotated[list[Package], operator.add]
-    variables: Annotated[list[Variable], operator.add]
-    constants: Annotated[list[Constant], operator.add]
-    data_types: Annotated[list[DataType], operator.add]
-    parent_of_edges: Annotated[list[ParentOf], operator.add]
-    has_function_edges: Annotated[list[HasFunction], operator.add]
-    has_variable_edges: Annotated[list[HasVariable], operator.add]
-    has_member_edges: Annotated[list[HasMember], operator.add]
-    belongs_to_package_edges: Annotated[list[BelongsToPackage], operator.add]
-    references_edges: Annotated[list[References], operator.add]
-    init_by_edges: Annotated[list[InitBy], operator.add]
+    functions: list[Function]
+    modules: list[Module]
+    packages: list[Package]
+    variables: list[Variable]
+    constants: list[Constant]
+    data_types: list[DataType]
+    parent_of_edges: list[ParentOf]
+    has_function_edges: list[HasFunction]
+    has_variable_edges: list[HasVariable]
+    has_member_edges: list[HasMember]
+    belongs_to_package_edges: list[BelongsToPackage]
+    references_edges: list[References]
+    init_by_edges: list[InitBy]
+    # step2 가 파일별 partial 로 여러 dict 반환 → 누적 필요 (다른 키는 한 번에 반환).
     call_sites: Annotated[list[dict], operator.add]
     import_refs: Annotated[list[dict], operator.add]
 
@@ -81,11 +105,23 @@ class WorkflowState(TypedDict, total=False):
     scan_result: dict                     # ScanResult Pydantic → dict
 
     # ── step4_linking 결과 ────────────────────────
-    reads_writes_edges: Annotated[list[ReadsWrites], operator.add]
-    calls_edges: Annotated[list[Calls], operator.add]
-    # unresolved_cases 는 평키(reducer 없음) — link_deterministic 가 raw 미해결을 쓰고
-    # link_residual_patterns 가 최종 잔여로 덮어쓴다 (누적 reducer 면 raw·최종이 섞임).
+    reads_writes_edges: list[ReadsWrites]
+    calls_edges: list[Calls]
     unresolved_cases: list[dict]
 
     # ── step5_build_context 결과 ──────────────────
     analysis_contexts: dict[str, AnalysisContext]   # function_id → ctx
+
+    # ── step6 Example Mapping 결과 (analyze_function 함수 단위 누적) ──
+    # 비즈니스 로직 3가지 (rules/examples/questions) + 관련 엣지 6종.
+    # Rule 노드는 rule_hash 가 정체성 식별자 — 같은 statement 함수 간 공유.
+    # 중복은 Neo4j MERGE Cypher 가 dedup (rule_hash / example_id / question_id 키).
+    rules: list[Rule]
+    examples: list[Example]
+    questions: list[Question]
+    has_rule_edges: list[HasRule]
+    has_example_edges: list[HasExample]
+    has_question_edges: list[HasQuestion]
+    next_edges: list[Next]
+    branch_edges: list[Branch]
+    affects_table_edges: list[AffectsTable]

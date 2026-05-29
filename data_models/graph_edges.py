@@ -6,15 +6,37 @@
 - DBMS 만의 PARENT_OF 도 공통 엣지로 포함 (Function 의 nested 표현).
 - Neo4j 에 박힐 때는 ``shared/neo4j/edges/<type>.py`` 의 Cypher 쿼리가 변환.
 
-새 엣지 종류 추가 시 손대는 곳
+정체성 키 = Neo4j MERGE 가 자동 dedup 책임자
+────────────────────────────────────────────
+같은 정체성 키 (function_id, table_fqn, relation) 가 state list 에 raw 중복 들어와도
+**Neo4j MERGE Cypher 가 자동 dedup** (그래프 진실 보장자). evidence_file / evidence_line
+같은 부속 메타는 정체성 무관 — 같은 엣지가 여러 라인에서 발견돼도 그래프엔 1 엣지.
+
+새 엣지 추가 시 손대는 곳
 ─────────────────────────────
 1. 이 파일에 dataclass 추가
-2. ``shared/neo4j/edges/<new>.py`` 에 Cypher 쿼리 추가
+2. ``shared/neo4j/edges/<new>.py`` 에 Cypher 쿼리 추가 (MERGE 키 명시)
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal, Optional
+
+
+# ── 공용 헬퍼 — dml_type 표준화 (정체성 외부) ────────────────
+
+def derive_dml_type(standard_op: Optional[str]) -> str:
+    """``standard_op`` (SELECT/INSERT/UPDATE/DELETE/MERGE) → ``dml_type`` 문자열.
+
+    None / 빈값 / 정규화 실패 시 빈 문자열. ReadsWrites 만드는 모든 지점이
+    공유 — 비표준 op 박는 사고 차단 (단일 진실).
+    """
+    if not standard_op:
+        return ""
+    v = standard_op.strip().upper()
+    if v in ("SELECT", "INSERT", "UPDATE", "DELETE", "MERGE"):
+        return v
+    return ""
 
 
 # ── 스키마 구조 엣지 (DDL 파싱에서만 생성) ──────────────────
@@ -55,6 +77,10 @@ class ReadsWrites:
     """Function → Table (R/W 엣지).
 
     Linking 1 단계 결정론 grep / DBMS DML 매칭 / Linking Agent (stage3) 가 생성.
+
+    정체성 = (function_id, table_fqn, relation). dml_type 과 evidence_* 는 부속 메타 —
+    같은 함수가 같은 테이블을 같은 동작으로 여러 라인에서 호출해도 그래프엔 1 엣지
+    (Neo4j MERGE 가 dedup). dml_type 은 ``derive_dml_type(standard_op)`` 헬퍼로 생성.
     """
     function_id: str
     table_fqn: str
@@ -90,6 +116,8 @@ class Calls:
     scope:
     - ``internal``: 같은 코드베이스 안 함수
     - ``external``: 분석 범위 밖 함수 / 외부 라이브러리 (예: java.util.*, DBMS_/UTL_ 내장)
+
+    정체성 = (caller, callee). scope 는 부속 — 같은 호출이 두 번 분류돼도 그래프엔 1 엣지.
     """
     caller_function_id: str
     callee_function_id: str
@@ -146,6 +174,7 @@ class References:
     """Function → Variable / Constant (함수 본문이 참조하는 변수·상수).
 
     ``target_label`` 로 upsert 가 올바른 키(variable_id / constant_id)로 MATCH.
+    정체성 = (function_id, target_id, target_label). evidence_line 은 부속.
     """
     function_id: str
     target_id: str
@@ -173,13 +202,15 @@ class InitBy:
 
 @dataclass(frozen=True)
 class HasRule:
-    """Function → Rule. Rule 노드는 함수 간 공유되므로 per-function 정보는 이 엣지 속성."""
+    """Function → Rule. Rule 노드는 함수 간 공유되므로 per-function 정보는 이 엣지 속성.
+
+    정체성 = (function_id, rule_hash). local_rule_id / flow_id 등은 부속 메타.
+    flow_id 의 ``-`` 계층이 분기 구조를 표현 (BRANCH 엣지 자동 도출).
+    """
     function_id: str
     rule_hash: str
     local_rule_id: str                       # 이 함수 안에서의 "R1" 등
     flow_id: str = ""
-    guard_rule_id: Optional[str] = None
-    branch_from: Optional[str] = None
     coupled_domains: tuple[str, ...] = ()
 
 

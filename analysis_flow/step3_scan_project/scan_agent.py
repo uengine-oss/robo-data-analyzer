@@ -17,6 +17,7 @@
 """
 from __future__ import annotations
 
+import html
 import json
 from pathlib import Path
 from typing import Callable, Optional
@@ -164,6 +165,8 @@ async def _finalize(
         verdict, draft.table_access_patterns, draft.no_match_reason,
     )
 
+    # codebase_notes — HTML entity (&lt; / &gt; / &amp;) 가 박힌 채 나오면 함수 분석
+    # LLM 이 그대로 prefix 로 받음. unescape 로 영구 차단 (모든 SKILL 적용).
     return ScanResult(
         matched_skill=draft.matched_skill,
         confidence=confidence,
@@ -171,8 +174,9 @@ async def _finalize(
         evidence_locations=draft.evidence_locations,
         table_access_patterns=draft.table_access_patterns,
         ddl_transform=draft.ddl_transform,
-        codebase_notes=draft.codebase_notes,
+        codebase_notes=html.unescape(draft.codebase_notes or ""),
         framework_functions=draft.framework_functions,
+        call_wrappers=draft.call_wrappers,
         no_match_reason=no_match_reason,
     )
 

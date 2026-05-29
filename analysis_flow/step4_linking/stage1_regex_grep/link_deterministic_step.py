@@ -44,7 +44,7 @@ async def link_deterministic_step(state: dict, config: Optional[RunnableConfig] 
     started = time.monotonic()
     log_info(
         _STEP, "start",
-        project=project.name,
+        root=str(project.root),
         patterns=len(patterns), functions=len(functions_in), tables=len(tables_in),
     )
 
@@ -56,6 +56,8 @@ async def link_deterministic_step(state: dict, config: Optional[RunnableConfig] 
         ddl_transform=scan.ddl_transform,
     )
 
+    # raw 중복 (같은 함수·테이블·동작을 여러 라인에서 매칭) 은 Neo4j MERGE 가 자동
+    # dedup — state 의 list 는 raw 그대로. 다른 step 이 set 으로 변환해 사용.
     if neo is not None and outcome.edges:
         await upsert_reads_writes(neo, outcome.edges)
 
@@ -70,7 +72,8 @@ async def link_deterministic_step(state: dict, config: Optional[RunnableConfig] 
 
     log_info(
         _STEP, "done",
-        reads_writes_edges=len(outcome.edges), unresolved_cases=len(outcome.unresolved),
+        reads_writes_edges=len(outcome.edges),
+        unresolved_cases=len(outcome.unresolved),
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
     return {

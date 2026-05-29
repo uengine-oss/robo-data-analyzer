@@ -30,7 +30,7 @@ async def link_calls_by_regex_step(state: dict, config: Optional[RunnableConfig]
 
     functions_in = state.get("functions") or []
     started = time.monotonic()
-    log_info(_STEP, "start", project=project.name, functions=len(functions_in))
+    log_info(_STEP, "start", root=str(project.root), functions=len(functions_in))
 
     linker = CallRegexLinker()
     edges = await linker.link(project=project, functions=functions_in)

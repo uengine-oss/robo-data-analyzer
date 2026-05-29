@@ -17,12 +17,11 @@ model: frentis-ai-model
 model_small: ""
 
 # 토큰 / 타임아웃
-# SGLang 배포 context 한도 131072 — 입력 + max_tokens 가 이를 넘으면 400 거부.
-# 16K = 분석 1 호출 적정 상한. 정상 응답 = 1~3K, 폭주 차단 안전망 = 16K.
-# 이전 65K 는 qwen 가 list 무한 생성 시 9분 동안 폭주 후 length limit hit 발생 →
-# 16K 로 줄이면 같은 폭주가 2~3분 안에 잘림 (시간 손실 ↓ + partial 빠른 회복).
-# 진짜 list 폭주 방지는 Pydantic `Field(max_length=N)` 가 grammar 강제 종료.
-max_tokens: 16384
+# max_tokens = 비상 브레이크일 뿐 — 길이 제어 수단 X.
+# 정상 분석 출력 = 1~3K (38 함수 평균). 30K = 정상 분량의 10 배 여유 = 충분한 비상 브레이크.
+# 60K → 30K 축소 (사용자 명시): examples 토큰 반복 루프 폭주가
+# 발생해도 60K 까지 가지 않게 일찍 끊음. 진짜 길이 제어는 sampling + 프롬프트 + schema.
+max_tokens: 30000
 timeout_seconds: 600
 
 # 사내 자체 인증서 환경이 아니면 true. http endpoint 라 SSL 무관.

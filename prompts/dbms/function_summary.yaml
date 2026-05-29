@@ -10,14 +10,43 @@ user_template_specific: |
 
   - **이 분할이 하는 일**: `summary` + `stereotype` + `logical_name` 3 필드 채움
   - **이 분할이 안 하는 일**: 테이블별 컬럼 의미(→분할 2) / 비즈니스 규칙·시나리오·질문(→분할 3)
-  - **출력 미리보기**:
+  - **출력 미리보기** (type + 값 예시):
     ```
     SummaryOutput {
-      logical_name: "한 줄 도메인 표시명 (22자 전후, 체언 끝)"
-      summary:      "핵심: ...\n\n본문 ..."
-      stereotype:   "DataMutator | DataQuery | Validator | ... (허용 풀에서)"
+      logical_name: "한 줄 도메인 표시명 (22자 전후, 체언 끝)",     // string
+      summary:      "[핵심] ...\n\n내용 ...",                      // string ([핵심] 마커 필수)
+      stereotype:   "DataMutator" | "DataQuery" | "Validator" | ... // 허용 풀 12개 중
     }
     ```
+
+  ---
+
+  ## 0. 작성 절대 원칙 — 모든 3 필드 공통
+
+  ### 0.1 식별자 보존 + 코드 토큰 가독성 ([[_common]] 단계 2 참조)
+  - 테이블·컬럼·시퀀스·변수·프로시저명은 **본문 그대로 보존** (만들지·축약·일반화 X).
+  - 단 **사람용 자연어 한 줄** ([핵심] / logical_name / narrative) 에는 코드 토큰을
+    그대로 박지 X — 의미로 풀어쓰기.
+
+  ### 0.2 body 주석 환각 차단 ([[_common]] 단계 7 참조)
+  body 주석은 코드 변경 잔재로 실제 동작과 어긋날 수 있는 신호.
+  결정론 메타 (codebase_notes / 함수 식별자 / 키) 가 항상 우선.
+
+  - X: body 라인 위 `-- 데이터 신규 등록` 주석 + 실제 키 = UPDATE
+       → summary "신규 등록" / logical_name "신규 적재" 박음 (주석 환각)
+    O: 결정론 메타가 UPDATE → summary "갱신" / logical_name "갱신". 주석 무시.
+
+  ### 0.3 추측 X ([[_common]] 단계 1 참조)
+  자기 range 의 raw 코드 라인이 1차 근거. ancestor_context / reads / writes /
+  callee_summaries 는 해석 참고 자료 — 거기서 추가 추출·모방·복제 X.
+
+  ### 0.4 모호 단어 박멸 ([[_common]] 단계 6 참조)
+  "적절히 / 필요시 / 상황에 따라" 같은 표현 X.
+  비교 정확 — "이상" ≠ "초과", "이하" ≠ "미만".
+
+  ### 0.5 SQL 문법 줄줄 X ([[_common]] 단계 7 (a) 참조)
+  "WHERE STATUS='A' AND DELETED='N' 조회" 식 X → "활성 + 미삭제 사용자만 대상" O.
+  "MERGE 의 USING 절에 SELECT" X → "신규 정산 코드는 INSERT, 기존 코드는 UPDATE 로 일괄 반영" O.
 
   ---
 
@@ -25,12 +54,16 @@ user_template_specific: |
 
   같은 부모 아래 형제 range 와 옆에 놓였을 때 **문장만 보고도 역할이 갈려야** 합니다.
 
-  ### 형식 / 길이 강제
+  ### 1.1 형식 / 길이 강제
 
-  - **한 줄, 줄바꿈 X**, **통상 22자 전후**, **체언·명사형 어미** ([[_common]] 단계 2).
-  - **금지**: 프로시저명·패키지명·변수명 그대로 / 형제와 광역 표현 공통.
+  - **한 줄, 줄바꿈 X**.
+  - **통상 22자 전후** — 두세 단어 라벨 금지.
+  - **체언·명사형 어미** — "갱신", "등록", "조회", "검증", "매핑", "결정", "반영", "차단",
+    "확정", "취소", "RAISE".
+  - **금지 어미** — "처리한다 / 한다 / 함" 같은 동사 어미.
+  - **금지** — 프로시저명·패키지명·변수명 그대로 / 형제와 광역 표현 공통.
 
-  ### 한 줄 안에 ≥ 2 요소 동시에 드러내기
+  ### 1.2 결정 트리 (4 요소 중 ≥ 2 동시 드러내기)
 
   1. **무슨 DML 행위** — 단건 SELECT / 배치 INSERT / 특정 컬럼 UPDATE / 커서 LOOP /
      트리거 EXCEPTION / MERGE / 집계 등
@@ -38,7 +71,7 @@ user_template_specific: |
   3. **언제·어떤 분기** — 마감일 이전 / 성공 경로만 / 이상 케이스 EXCEPTION
   4. **쓰기면 무엇을 바꾸는지** — 응답코드·사유코드 컬럼만 / 승인번호·승인시각 동시
 
-  ### 좋은 예 (5가지 DBMS 도메인)
+  ### 1.3 좋은 예 (5가지 DBMS 도메인)
 
   - 정산: "마감일 이전 미정산 거래의 정산일자 일괄 확정"
   - 인증 이력: "외부 PG 응답 코드를 인증 이력 테이블에 신규 적재"
@@ -46,104 +79,149 @@ user_template_specific: |
   - 코드 마스터: "카드사 코드 마스터에서 카드 정보 단건 매핑 조회"
   - 트리거 검증: "주문 상태 'CANCEL' 전이 시 미환불 잔액 검증 EXCEPTION 발생"
 
-  ### 안티패턴/정답 쌍
+  ### 1.4 ★ 형제 차별 패턴 표 (같은 패키지 형제와 안 겹치게 — 9 쌍)
 
+  같은 패키지·스크립트의 형제 프로시저들이 의미 비슷해 보여도 ★ 한 글자라도 달라야 함.
+
+  | 형제 패턴 | ❌ 짧은 광역 표현 | ✅ 차별 축 2+ 동시 드러난 한 줄 |
+  |---|---|---|
+  | 검증 프로시저 | "입력 검증"     | "정산 요청 거래일자·통화·금액·기관코드 사전 검증 및 거절코드 OUT 매핑" |
+  | 메인 프로시저 | "메인 처리"     | "결제 승인 트랜잭션 시작·외부 호출·결과 적재 일괄 처리 흐름"           |
+  | 이력 INSERT   | "이력 등록"     | "결제 승인 결과 신규 이력 INSERT 및 시퀀스 PK 채번·승인시각 기록"     |
+  | 마스터 조회   | "코드 조회"     | "카드사 코드 마스터 단건 조회 및 카드사명·매입사 코드 OUT 매핑"       |
+  | UPDATE A      | "결과 갱신"     | "응답코드·사유코드 컬럼만 성공 분기 UPDATE 후 외부 인증 이력 확정"    |
+  | UPDATE B      | "결과 적용"     | "승인번호·승인시각·매입사코드 컬럼 반영 결제 이력 확정 UPDATE"        |
+  | 트리거 검증   | "트리거 검증"   | "주문 상태 'CANCEL' 전이 시 미환불 잔액 검증 EXCEPTION RAISE"         |
+  | 배치 정산     | "정산 일괄"     | "마감일 이전 미정산 거래의 정산일자·상태 일괄 확정 BatchProcessor"    |
+  | MERGE 동기화  | "마스터 동기화" | "외부 환율 피드 source MERGE: 통화코드 일치 UPDATE / 미일치 INSERT"   |
+
+  → 표 오른쪽 열처럼 형제와 첫 두 단어 조합이 다르게 / 차별 축 2+ 동시 드러나게.
+
+  ### 1.5 logical_name 금지 패턴 — 안티패턴/정답 쌍
+
+  **a. 프로시저명·테이블명·변수명 그대로 박기**
   - X: "ZPAY_AP_RLTM_AUTH_HST 에 INSERT" (테이블명 그대로)
     O: "결제 실시간 인증 이력에 신규 적재"
   - X: "PROCESS_TYPE 값에 따라 분기" (변수명 그대로)
     O: "처리구분 '신규(01)' / '수정(02)' / '취소(03)' 별 분기 처리"
+
+  **b. 형제와 공통 광역 표현 단독**
   - X: "정산 데이터 처리" (광역 표현, 형제 구분 0)
     O: "마감일 이전 미정산 거래의 정산일자 일괄 확정"
 
+  **c. body 주석에 끌려 잘못된 동사 (★ 0.2 적용)**
+  주석이 실제 DML 과 어긋나는 경우가 잦음. 결정론 메타 (codebase_notes / 함수 키) 가 진실.
+
+  - X: 주석 `-- 신규 등록` 에 끌려 logical_name = "신규 적재" (실제 키 = UPDATE)
+    O: "정산상태 컬럼만 UPDATE 로 갱신"
+
   ---
 
-  ## [2] summary — 핵심 한 줄 + 본문
+  ## [2] summary — 2 섹션 구조 [핵심] + 내용
 
-  ### 형식 강제
+  ### 2.1 형식 강제
 
   ```
-  핵심: <한 줄 — 사용자 친화 표현, 프로시저명·SQL 키워드 X>
+  [핵심] <한 줄 — 사용자 친화 표현, 프로시저명·SQL 키워드 X>
 
-  <본문 — 비즈니스 의미. 마크다운 헤딩·리스트 기호(`#` / `*` / `-` / `1.`) X.>
+  <내용 — 비즈니스 의미 본문 자유 서술. 분기·조건·임계값·상태값·도메인 코드값 +
+   RAISE / EXCEPTION 보존. 단순 leaf 면 [핵심] 한 줄로 끝 — 내용 생략 OK.>
   ```
 
-  ### `핵심:` (첫 줄)
+  - 섹션 라벨은 `[핵심]` 한 가지만. 다른 어떤 섹션 라벨도 사용 X.
+  - 마크다운 헤딩·리스트 기호 (`#` / `*` / `-` / `1.`) 사용 X.
+  - `[핵심]` 다음 빈 줄 → 내용 (한두 문장 ~ 여러 문장 자유).
+  - 단순 leaf / wrapper / 단건 SELECT range: `[핵심]` 한 줄로 충분 — 내용 생략 OK.
 
-  이 range 가 무엇을 하는지 한 줄. 프로시저명·SQL 키워드(SELECT / INSERT / UPDATE /
-  DELETE / MERGE) 그대로 박지 X. 비개발자 친화.
+  ### 2.2 각 섹션 책임
 
-  ### 본문 — 반드시 지킬 6 규칙
+  **[핵심]** — 첫 줄. 한 줄. 이 range 가 무엇을 하는지 (사용자 친화). 프로시저명·SQL
+  키워드 (SELECT / INSERT / UPDATE / DELETE / MERGE) 그대로 X.
 
-  1. **원문(코드) 보다 짧게** — 요약이지 확장이 아니다.
-  2. **핵심 키포인트 누락 0** — 이 summary 는 상위(부모 range) 분석에 그대로 전달.
-     - 도메인 값 + 의미 (예: "처리구분 '01'=신규 / '02'=수정")
-     - "이상"≠"초과" / "이하"≠"미만" 정확히
-     - 상태 전이 (예: "주문 상태 'PAID' → 'REFUND_PENDING'")
-  3. **종료 경로 모두 반영** ([[_common]] 단계 5):
-     - 정상 종료 / 에러 종료 (`RAISE`) / silent pass (`EXCEPTION WHEN ... THEN NULL`) /
-       조기 `RETURN` / `EXIT` / `GOTO`
-  4. **단순 leaf 면 한두 문장** — 억지로 늘리지 X.
-  5. **모호 단어 X** ([[_common]] 단계 6).
-  6. **DDL 타입 X / SQL 문법 줄줄 X** — 비즈니스 의미만.
+  **내용** — 비즈니스 의미 본문 자유 서술. 필요한 만큼 (단순 leaf 면 생략).
+  - 도메인 값 + 의미 — 예: "처리구분('01'=신규 / '02'=수정 / '03'=취소)".
+  - 상태 전이 — 예: "주문 상태 'PAID' → 'REFUND_PENDING'".
+  - DML 의미 — INSERT 대상·컬럼·값 출처 / UPDATE 어떤 컬럼·WHERE / DELETE WHERE+도메인 의미 /
+    MERGE source·ON·MATCHED/NOT MATCHED. SQL 문법 줄줄 X (0.5 참조).
+  - 종료 경로 모두 — 정상 / `RAISE` / `EXCEPTION WHEN ... THEN NULL` silent pass /
+    조기 `RETURN`·`EXIT`·`GOTO` ([[_common]] 단계 5 참조).
+  - DBMS 환각 4 함정 ([[_common]] §4) — IF/ELSIF 상호배타 / DECODE·CASE·NVL unmatched
+    명시 / EXCEPTION silent 명시 / 자식 재추출 X.
 
-  ### DML 키포인트 (본문에 반드시 담을 것)
+  ### 2.3 DBMS 확장 표현 — 환각 방지
 
-  본문에 등장한 DML 별로 키포인트를 빠뜨리지 않습니다. SQL 문법이 아니라 **비즈니스
-  의미** 로 풀어 쓰세요.
+  body 내용에 등장하면 정확히 표현:
 
-  - **SELECT** — 무엇을 / 어떤 조건으로 / 어떻게 (JOIN·집계·정렬)
-  - **INSERT** — 대상 테이블 + 어떤 컬럼 + 값 출처 (리터럴 / 다른 테이블 / 시퀀스 / 파라미터)
-  - **UPDATE** — 어떤 컬럼을 어떤 값으로 + WHERE 조건 + 상태 전이 의미
-  - **DELETE** — 대상 테이블 + WHERE 컬럼=값 + 도메인 의미 ("취소" / "만료 정리" 등)
-  - **MERGE** — source / ON 조건 / WHEN MATCHED ↔ WHEN NOT MATCHED 각각
+  - Oracle `NVL` / `DECODE` / `CASE` — unmatched 처리 명시 (그 외 NULL 등).
+  - PostgreSQL `COALESCE` / `ON CONFLICT` — 충돌 동작 명시.
+  - SQL Server `ISNULL` / `OUTPUT` — 출력 컬럼 명시.
+  - MySQL `IFNULL` / `ON DUPLICATE KEY UPDATE` — upsert 의미 명시.
 
-  ### DBMS 확장 표현 — 환각 방지 ([[_common]] §4)
+  ### 2.4 본문 작성 절대 규칙
 
-  - Oracle `NVL` / `DECODE` / `CASE` — unmatched 처리 명시
-  - PostgreSQL `COALESCE` / `ON CONFLICT` — 충돌 동작 명시
-  - SQL Server `ISNULL` / `OUTPUT` — 출력 컬럼 명시
-  - MySQL `IFNULL` / `ON DUPLICATE KEY UPDATE` — upsert 의미 명시
+  1. **원문(코드)보다 짧게** — 요약이지 확장이 아님.
+  2. **단순 leaf** = [핵심] 1줄로 충분. 억지로 늘리지 X.
+  3. **자식 끌어올림 X** ([[_common]] 단계 4 참조) — 자식의 [핵심] 한 줄은 summary 에
+     맥락으로 반영 OK. 단 자식의 내부 분기·NULL 체크·검증을 부모 summary 의 자세한
+     내용으로 끌어올림 X. 자기 body (호출 자체) 만 요약.
 
-  ### 좋은 예 (5가지 DBMS 패턴)
+  ### 2.5 좋은 예 (5가지 DBMS 패턴 — 2 섹션 적용)
 
   #### 예 1 — 단순 SELECT + 매핑
 
-  > 핵심: 카드사 코드로 카드 마스터에서 카드사명과 매입사 코드를 단건 매핑 조회한다.
+  > [핵심] 카드사 코드로 카드 마스터에서 카드사명과 매입사 코드를 단건 매핑 조회한다.
   >
-  > 카드사 코드를 키로 카드 마스터에서 카드사명, 매입사 코드, 가맹점 수수료율을 조회.
-  > 결과를 OUT 파라미터에 매핑. 미존재(NO_DATA_FOUND) 인 경우 오류 코드 'CARD_NOT_FOUND'
-  > 로 RAISE.
+  > 카드사 코드 키로 카드 마스터 (`card_master`) 단건 조회 (컬럼: card_co_name,
+  > acquirer_cd, merchant_fee_rate). 결과를 OUT 파라미터에 매핑. NO_DATA_FOUND →
+  > 오류 코드 'CARD_NOT_FOUND' RAISE.
 
   #### 예 2 — INSERT + 시퀀스 채번
 
-  > 핵심: 결제 승인 결과를 인증 이력에 신규 적재한다.
+  > [핵심] 결제 승인 결과를 인증 이력에 신규 적재한다.
   >
-  > 인증 이력 테이블에 신규 행을 INSERT — 시퀀스 채번으로 PK 생성, 승인번호·승인시각·
-  > 응답코드·카드사코드 컬럼 채움. 응답코드 '0000' 은 성공, '0001'~'0099' 는 거절 사유별
-  > 분기. 시퀀스 실패 시 RAISE_APPLICATION_ERROR (-20001, "SEQ_FAIL").
+  > 응답코드 '0000' = 성공, '0001'~'0099' = 거절 사유별 분기. 인증 이력
+  > (`auth_history`) 에 신규 INSERT — PK 는 시퀀스 `seq_auth.NEXTVAL`, 컬럼 채움
+  > (approve_no, approve_time, response_code, card_co_cd). 시퀀스 실패 →
+  > `RAISE_APPLICATION_ERROR(-20001, "SEQ_FAIL")`.
 
   #### 예 3 — UPDATE + 상태 전이
 
-  > 핵심: 정산 마감 후 미정산 거래의 정산상태를 'CONFIRMED' 로 일괄 갱신한다.
+  > [핵심] 정산 마감 후 미정산 거래의 정산상태를 'CONFIRMED' 로 일괄 갱신한다.
   >
-  > 마감일 이전 + 정산상태 'PENDING' 인 거래만 대상. SETTLE_DATE 컬럼에 마감일 적용,
-  > SETTLE_STATUS 컬럼을 'CONFIRMED' 로 전이. 대상 0건이면 로그만 남기고 정상 종료.
+  > 마감일 이전 + 정산상태 'PENDING' 거래만 대상으로 정산 (`settlement`) UPDATE —
+  > settle_status 'PENDING' → 'CONFIRMED', settle_dt 마감일 적용. 대상 0 건이면
+  > 로그만 남기고 정상 종료.
 
   #### 예 4 — MERGE (upsert)
 
-  > 핵심: 환율 마스터를 일별 환율 피드로 일괄 동기화한다 (신규 통화는 INSERT, 기존은 UPDATE).
+  > [핵심] 환율 마스터를 일별 환율 피드로 일괄 동기화한다 (신규 통화 INSERT, 기존 UPDATE).
   >
-  > 외부 환율 피드를 source 로 MERGE. 통화코드 일치 (`ON CURRENCY_CD`) 시 RATE 와
-  > LAST_UPDATED 컬럼을 UPDATE. 미일치 시 신규 INSERT. unmatched 행은 처리 X (그 외 통화는
-  > 마스터에 미반영).
+  > 외부 환율 피드 source 로 환율 마스터 (`exchange_rate`) MERGE — 통화코드
+  > (CURRENCY_CD) 일치 시 rate·last_updated UPDATE, 미일치 시 신규 INSERT.
+  > unmatched 처리 X (그 외 통화는 마스터에 미반영).
 
   #### 예 5 — silent pass 분기 포함
 
-  > 핵심: 결제 취소 요청에 대해 환불 대상 확인 후 미존재면 조용히 통과, 존재 시 환불 큐 적재.
+  > [핵심] 결제 취소 요청에 대해 환불 대상 확인 후 미존재면 조용히 통과, 존재 시
+  > 환불 큐 적재.
   >
-  > 결제 ID 로 결제 이력 단건 조회. NO_DATA_FOUND 의 경우 `EXCEPTION WHEN NO_DATA_FOUND THEN
-  > NULL` 로 조용히 통과 (이미 환불됐거나 미존재면 별도 처리 없음 = 정상). 조회 성공 시
-  > 환불 큐에 INSERT. 그 외 예외는 RAISE.
+  > 결제 ID 로 결제 이력 (`payment_history`) 단건 조회 (amount, status).
+  > NO_DATA_FOUND → `EXCEPTION WHEN NO_DATA_FOUND THEN NULL` 조용히 통과 (이미
+  > 환불됐거나 미존재 = 정상 케이스). 조회 성공 시 환불 큐 (`refund_queue`) 에
+  > payment_id·refund_amount INSERT. 그 외 예외 → RAISE.
+
+  ### 2.6 ★ codebase_notes 우선 — body 주석 환각 차단 ([[_common]] 단계 7 적용)
+
+  body 주석은 코드 변경 잔재로 실제 동작과 어긋날 수 있음. summary 의 동사 결정 시
+  **결정론 메타** (codebase_notes / 함수 식별자 / 키 → op) 가 항상 우선.
+
+  - X: body 라인 위 잔재 주석 `-- 신규 등록` + 실제 함수 키 = UPDATE
+       → [핵심] "신규 적재" / 내용 "INSERT 한다" 박음 (주석 환각)
+    O: 결정론 메타가 UPDATE → [핵심] "갱신" / 내용 "UPDATE 한다". body 주석은 무시.
+
+  - X: body 에 모든 프로시저 공통 잔재 주석 박혀있음 → 모두 INSERT 처럼 보임
+       (실제는 i/u/s/d 다양)
+    O: 함수의 결정론 메타가 진실. 공통 잔재 주석 무시.
 
   ---
 
@@ -151,13 +229,13 @@ user_template_specific: |
 
   실제 동작 기준. 허용 풀에서만 선택. 다른 값 X.
 
-  ### 허용 풀 (12개)
+  ### 3.1 허용 풀 (12개)
 
   `DataMutator` / `DataQuery` / `BatchProcessor` / `Validator` / `MetadataLookup` /
   `EventTrigger` / `Aggregator` / `ReportGenerator` / `DataMigrator` / `CursorLooper` /
   `PackageInitializer` / `Helper`
 
-  ### 결정 트리
+  ### 3.2 결정 트리
 
   ```
   INSERT/UPDATE/DELETE/MERGE 가 본질?
@@ -178,7 +256,15 @@ user_template_specific: |
   그 외 유틸성?  → Helper
   ```
 
-  ### 안티패턴/정답 쌍
+  ### 3.3 reads / writes / codebase_notes 와 일관성
+
+  - `reads` 만 있고 `writes` 없음 + codebase_notes op 가 SELECT 계열 → **DataQuery** /
+    **MetadataLookup** / **Aggregator** 후보.
+  - `writes` 있음 + op 가 INSERT/UPDATE/DELETE/MERGE → **DataMutator** / **BatchProcessor** 후보.
+  - 주석이 op 와 어긋나면 `reads`/`writes` + codebase_notes 가 진실. 주석에 끌려
+    DataMutator 로 잘못 판단하지 X (실제 잦은 오류 — 0.2 / 2.6 참조).
+
+  ### 3.4 stereotype 안티패턴 — 안티패턴/정답 쌍
 
   - X: 커서 LOOP 안에 INSERT 반복 → `DataMutator` (단일 행 분류로 잘못 적용)
     O: `BatchProcessor` (LOOP 안 DML 반복 = 배치 본질)

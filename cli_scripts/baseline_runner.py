@@ -31,7 +31,6 @@ async def run_one(project_root: Path, strategy_name: str) -> dict:
     """프로젝트 1 개 실행 → ``usage_summary`` 반환."""
     pipeline = get_pipeline(strategy_name)
     project = Codebase(
-        name=project_root.name,
         root=project_root,
         strategy=strategy_name,  # type: ignore[arg-type]
     )

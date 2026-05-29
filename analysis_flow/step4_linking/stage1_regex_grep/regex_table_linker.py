@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Literal, Optional
 
 from data_models.agent_output import DdlTransform, TableAccessPattern
-from data_models.graph_edges import ReadsWrites
+from data_models.graph_edges import ReadsWrites, derive_dml_type
 from data_models.graph_nodes import Function, Table
 from shared.config.env_catalog import ENV
 from shared.log.logger import log_warning
@@ -161,6 +161,7 @@ class RegexTableLinker:
                         function_id=caller_id,
                         table_fqn=table_fqn,
                         relation=relation,
+                        dml_type=derive_dml_type(standard_op),
                         evidence_file=str(src_file),
                         evidence_line=line,
                     ))

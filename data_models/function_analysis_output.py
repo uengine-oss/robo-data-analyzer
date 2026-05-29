@@ -7,46 +7,39 @@
 - ``analysis_flow/step6_analyze_function``: SummaryOutput / TableInsightsOutput / RulesExamplesOutput
 - ``analysis_flow/step7_post_processing``: ModuleSummaryOutput / TableDescription
 
-**strict 호환 (OpenAI structured output 정책)**:
-자유 키 ``dict`` 와 ``list[dict]`` 는 OpenAI strict mode 가 400 BadRequest 로 거부
-(``additionalProperties`` 미명시). 이 파일의 모든 필드는 명시 Pydantic 모델 또는
-``list[KeyValueItem]`` 로 표현 — cross-provider 안전 (OpenAI / Anthropic / SGLang /
-OpenRouter 모두 정확 출력). ``agent_tools/agent_output_models.py`` 의 ``OpMapping``
-이 같은 영역의 정립된 패턴.
+호출 모드 (단일 진실):
+``llm.with_structured_output(..., method="function_calling")`` 가 기본 — strict 미강제.
+단 SGLang + xgrammar 환경에서 자유 키 ``dict[str, str]`` 는 value 시작 토큰
+선택 실패 → 공백 무한 폭주 사고 발생 (2026-05-30 5차). ``list[KeyValueItem]`` 도
+같은 구조 반복 폭주 사고 (4차). 둘 다 schema 강제 부작용 — 결론적으로 examples 의
+``given`` / ``then`` 은 **자연어 단일 문자열** 로 통합 (LLM 한테 가장 자유로운 출력 →
+폭주 메커니즘 자체 차단).
 
 검증 규칙 (Pydantic validator):
-- ``summary`` = ``핵심:`` 한 줄 + 내용 — ``핵심:`` 마커 없으면 LLM 재시도 유도
+- ``summary`` = 2 섹션 ``[핵심] 한 줄 + 빈 줄 + 내용`` — ``[핵심]`` 마커 없으면
+  LLM 재시도 유도 (단순 위임 함수는 ``[핵심]`` 한 줄로 끝, 내용 생략 OK).
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
-
-
-# ── 공통 — 자유 키 영역(inputs / globals / out_params 등) strict 표현 ──
-
-
-class KeyValueItem(BaseModel):
-    """자유 키 dict 의 strict 호환 표현 (예: inputs / globals / out_params / where / values).
-
-    LLM 출력 시 ``[{"key": "user_id", "value": "12345"}, ...]`` 모양.
-    value 는 단순값·JSON 직렬화 문자열 모두 허용 (모델 내부에선 str).
-    """
-    key: str = Field(..., description="필드/변수/컬럼 이름")
-    value: str = Field("", description="값 (단순값 또는 JSON 직렬화 문자열)")
 
 
 # ── 3 분할 #1: function_summary ───────────────────────────
 
 
 class SummaryOutput(BaseModel):
-    """함수/range 의미 요약 — ``핵심:`` 한 줄 + 내용 + 메타.
+    """함수/range 의미 요약 — 2 섹션 ``[핵심] 한 줄 + 내용`` + 메타.
 
     summary 는 Bottom-up DAG 로 상위(caller/부모)에 전달되므로 — 분기·조건·상태 등
     핵심 키포인트를 누락 없이, 단 원문보다 짧게(요약≤원문) 담아야 한다.
+    형식: ``[핵심]`` 한 줄 필수 + 빈 줄 + 내용 (자유 서술, 단순 위임 함수는 내용 생략 OK).
     """
-    summary: str = Field(..., description="'핵심:' 한 줄 + 내용 (키포인트 보존, 원문보다 짧게)")
+    summary: str = Field(
+        ...,
+        description="2 섹션 '[핵심] 한 줄' + 빈 줄 + 내용 (단순 위임은 [핵심] 만으로 끝)",
+    )
     stereotype: str = Field("", description="ontology_roles.yaml 풀에서 선택")
     logical_name: str = Field(
         "",
@@ -56,9 +49,9 @@ class SummaryOutput(BaseModel):
     @field_validator("summary")
     @classmethod
     def _validate_summary_format(cls, v: str) -> str:
-        """``핵심:`` 마커 검증 — 한 줄 핵심 + 내용 형식 강제."""
-        if v and "핵심:" not in v:
-            raise ValueError("summary 는 '핵심:' 한 줄로 시작해야 함 (핵심 + 내용)")
+        """``[핵심]`` 마커 검증 — 필수 진입점 강제 (없으면 LLM 재시도)."""
+        if v and "[핵심]" not in v:
+            raise ValueError("summary 는 '[핵심]' 한 줄로 시작해야 함")
         return v
 
 
@@ -90,75 +83,54 @@ class TableInsightsOutput(BaseModel):
 
 
 class RuleItem(BaseModel):
-    """비즈니스 규칙 1개 — Example Mapping(M12) 의 Rule 노드 입력."""
+    """비즈니스 규칙 1개 — Example Mapping(M12) 의 Rule 노드 입력.
+
+    옛 ``guard_rule_id`` / ``branch_from`` 은 ``flow_id`` 로 도출 가능 (builder 가
+    flow_id 의 ``-`` 계층으로 BRANCH 자동) → 폐기. ``flow_id`` + ``coupled_domains``
+    만으로 그래프 흐름·도메인 결합 표현 충분.
+    """
     rule_id: str = Field(..., description="'R1' / 'R2' ...")
     statement: str = Field(..., description="<조건>이면 <결과> — 코드 식별자 X")
-    flow_id: str = Field("", description="제어 흐름 위치 — '1' / '1-1' / '2-1-1'")
-    guard_rule_id: Optional[str] = Field(None, description="선행 통과 전제 Rule id (없으면 null)")
-    branch_from: Optional[str] = Field(None, description="if/else 갈래면 분기 원 Rule id (없으면 null)")
-    coupled_domains: list[str] = Field(default_factory=list, description="결합된 타 도메인 이름")
-
-
-class ExceptionInfo(BaseModel):
-    """then.exception — 구조 명확하므로 명시 모델."""
-    type: str = Field(..., description="예외 타입 (예: 'RAISE_APPLICATION_ERROR' / 'IllegalArgumentException')")
-    code: str = Field("", description="예외 코드 (예: '-20001' / 'BIZ_E001')")
-    message: str = Field("", description="예외 메시지")
-
-
-class ReadItem(BaseModel):
-    """then.reads[] — 시나리오에서 읽는 테이블+컬럼."""
-    table: str = Field(..., description="테이블 이름")
-    columns: list[str] = Field(default_factory=list, description="이 시나리오에서 읽는 컬럼 이름")
-
-
-# list 절대 상한 — qwen grammar 가 max_length 도달 시 ``]`` 강제 종료.
-# 5 entries 면 시나리오 본질 표현 충분 + 폭주 차단.
-_DICT_LIST_MAX = 5
-
-
-class WriteItem(BaseModel):
-    """then.writes[] — 시나리오에서 쓰는 테이블+op+조건+값."""
-    table: str = Field(..., description="테이블 이름")
-    op: str = Field("WRITE", description="INSERT / UPDATE / DELETE / MERGE / WRITE")
-    where: list[KeyValueItem] = Field(default_factory=list, max_length=_DICT_LIST_MAX, description="WHERE 절 조건 (컬럼=값)")
-    values: list[KeyValueItem] = Field(default_factory=list, max_length=_DICT_LIST_MAX, description="SET / VALUES (컬럼=값)")
-
-
-class GivenContext(BaseModel):
-    """ExampleItem.given — 시나리오 진입 조건."""
-    narrative: str = Field("", description="왜 이 시나리오인지 한 줄 (inputs 풀어쓰기 X)")
-    inputs: list[KeyValueItem] = Field(default_factory=list, max_length=_DICT_LIST_MAX, description="파라미터 key:value")
-    globals: list[KeyValueItem] = Field(default_factory=list, max_length=_DICT_LIST_MAX, description="전제 전역 상태 (preconditions.globals)")
-    stubs: list[KeyValueItem] = Field(
-        default_factory=list,
-        max_length=_DICT_LIST_MAX,
-        description="외부 호출 반환값 (preconditions.stubs — key=호출, value=반환값/JSON)",
-    )
-
-
-class ThenContext(BaseModel):
-    """ExampleItem.then — 시나리오 결과."""
-    narrative: str = Field("", description="결과 핵심 한 줄 (return·writes 풀어쓰기 X)")
-    return_value: str = Field(
+    flow_id: str = Field(
         "",
-        description="반환값 (단순값 또는 JSON 직렬화 문자열). 반환 없으면 빈 문자열",
+        description="제어 흐름 위치 — '1' / '2' (메인) / '1-1' (R1 분기) / '1-1-1' (중첩)",
     )
-    exception: Optional[ExceptionInfo] = Field(None, description="예외 발생 시. 없으면 null")
-    reads: list[ReadItem] = Field(default_factory=list, max_length=_DICT_LIST_MAX, description="이 시나리오 SELECT 대상")
-    writes: list[WriteItem] = Field(default_factory=list, max_length=_DICT_LIST_MAX, description="이 시나리오 INSERT/UPDATE/DELETE")
-    globals: list[KeyValueItem] = Field(default_factory=list, max_length=_DICT_LIST_MAX, description="변경된 전역")
-    out_params: list[KeyValueItem] = Field(default_factory=list, max_length=_DICT_LIST_MAX, description="변경된 OUT 파라미터")
+    coupled_domains: list[str] = Field(
+        default_factory=list,
+        description="결합된 타 도메인 이름 (타 도메인 테이블 WRITE·값 분기·계산 시)",
+    )
+
+
+class AffectedTable(BaseModel):
+    """이 시나리오에서 영향받는 테이블 1건 — AFFECTS_TABLE 엣지 단일 진실."""
+    table: str = Field(..., description="테이블 이름")
+    op: Literal["READ", "INSERT", "UPDATE", "DELETE", "MERGE"] = Field(
+        ...,
+        description="READ (SELECT) / INSERT / UPDATE / DELETE / MERGE",
+    )
 
 
 class ExampleItem(BaseModel):
-    """Rule 1개의 given/when/then 시나리오 — Example Mapping(M12) 의 Example 노드 입력."""
+    """Rule 1개의 given/when/then 시나리오 — Example Mapping 의 Example 노드 입력.
+
+    given/then 은 **자연어 단일 문자열** — schema 강제 부작용 (자유 키 dict 공백 폭주 /
+    list[KeyValueItem] 패턴 반복) 둘 다 차단. 사람용 narrative 1 줄.
+    """
     rule_id: str = Field(..., description="참조 Rule id")
-    description: str = Field("", description="사람용 한 줄 요약")
-    given: GivenContext = Field(default_factory=GivenContext)
+    description: str = Field("", description="시나리오 사람용 한 줄 요약")
+    given: str = Field(
+        "",
+        description="진입 조건 한 줄 — 'iFlag=0, 오류코드=X001' 처럼 자연어 (공백/빈 영역 X)",
+    )
     when: str = Field("", description="자연어 한 줄 — 메서드명·클래스명 X")
-    then: ThenContext = Field(default_factory=ThenContext)
-    is_boundary: bool = Field(False, description="경계 케이스(이상/이하/초과/미만) 여부")
+    then: str = Field(
+        "",
+        description="결과 한 줄 — '정상 RC_NRM 반환 / NotFound 면 RC_NFD' 처럼 자연어",
+    )
+    affected_tables: list[AffectedTable] = Field(
+        default_factory=list,
+        description="이 시나리오의 READ/WRITE 테이블 (op enum) — AFFECTS_TABLE 엣지 단일",
+    )
 
 
 class QuestionItem(BaseModel):
@@ -172,13 +144,17 @@ class QuestionItem(BaseModel):
 
 
 class RulesExamplesOutput(BaseModel):
-    # max_length — qwen grammar 가 N개 후 `]` 강제 종료 (list 폭주 차단 안전망).
-    # 평균 함수는 3~7 Rule. 8개 충동 = 함수 분해 신호이지 더 만들 신호 X.
-    rules: list[RuleItem] = Field(default_factory=list, max_length=7)
-    examples: list[ExampleItem] = Field(default_factory=list, max_length=10)
+    """Rule + Example + Question 추출 결과.
+
+    개수는 가치 결정 질문 (prompt §[1]) 통과한 것만 — Pydantic level 의 인위적 상한 X.
+    grammar 폭주 안전망은 max_length=30 으로 느슨하게 (실제 함수의 진짜 Rule 은 3~7 개라
+    이 상한엔 도달하지 X — 가치 결정 질문이 자연 압축).
+    """
+    rules: list[RuleItem] = Field(default_factory=list, max_length=30)
+    examples: list[ExampleItem] = Field(default_factory=list, max_length=30)
     questions: list[QuestionItem] = Field(
         default_factory=list,
-        max_length=5,
+        max_length=15,
         description="사람 검토 큐로 갈 질문 (text + reason)",
     )
 

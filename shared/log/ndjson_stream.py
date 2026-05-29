@@ -33,6 +33,7 @@ _EVENT_LOGGER: dict[str, str] = {
     "phase_event":         "stream.phase",
     "tool_event":          "stream.tool",
     "todo_update":         "stream.todo",
+    "processing_event":    "stream.processing",    # step 안 처리 단위 진행 (함수/모듈/테이블/split)
     "node_event":          "stream.node",          # 그래프 노드 생성/갱신
     "relationship_event":  "stream.relationship",  # 그래프 엣지 생성/갱신
     "error":               "stream.error",   # log_error 도 별도 호출됐을 가능성 — mirror 는 INFO 로
@@ -206,7 +207,7 @@ class NDJSONStream:
         """
         if self._closed:
             log_warning(
-                "logging_and_stream.ndjson_stream",
+                "log.ndjson_stream",
                 "emit_after_close",
                 "스트림 종료 후 emit — 이벤트 drop",
                 event_type=event.get("type"),
@@ -220,7 +221,7 @@ class NDJSONStream:
             self._queue.put_nowait(event)
         except asyncio.QueueFull:
             log_warning(
-                "logging_and_stream.ndjson_stream",
+                "log.ndjson_stream",
                 "queue_full",
                 "NDJSON queue 가 가득참 (unbounded 라 도달 안 해야 정상) — drop",
                 event_type=event.get("type"),

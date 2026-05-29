@@ -69,7 +69,7 @@ async def execute_run(
     log_info(
         "run",
         "start",
-        codebase=codebase.name,
+        root=str(codebase.root),
         strategy=getattr(strategy, "name", "?"),
         run_id=run.run_id,
     )

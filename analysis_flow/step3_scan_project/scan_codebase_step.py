@@ -15,6 +15,7 @@ from langchain_core.runnables import RunnableConfig
 
 from shared.workflow.step_utils import step_config
 
+from agent_tools.code_inspection import SKILLS_DIR
 from analysis_flow.step3_scan_project.scan_agent import run_scan_agent
 from analysis_flow.step3_scan_project.scanner_input_collector import (
     collect_scanner_input,
@@ -40,7 +41,7 @@ async def scan_codebase_step(state: dict, config: Optional[RunnableConfig] = Non
 
     project_root = Path(project.root)
     started = time.monotonic()
-    log_info(_STEP, "scanning", project=project.name, project_root=str(project_root))
+    log_info(_STEP, "scanning", project_root=str(project_root))
 
     scanner = collect_scanner_input(project_root)
     log_info(
@@ -73,6 +74,7 @@ async def scan_codebase_step(state: dict, config: Optional[RunnableConfig] = Non
         raise
 
     result_dict = result.model_dump()
+    _warn_if_call_wrappers_missing(result_dict)
     log_info(
         _STEP, "done",
         matched_skill=result_dict.get("matched_skill"),
@@ -81,3 +83,28 @@ async def scan_codebase_step(state: dict, config: Optional[RunnableConfig] = Non
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
     return {"scan_result": result_dict}
+
+
+def _warn_if_call_wrappers_missing(result_dict: dict) -> None:
+    """matched_skill 의 SKILL.md 에 ``## 호출 wrapper`` 절이 있는데 Agent 가
+    ``call_wrappers`` 를 빈 배열로 넘겼으면 표면화 — silent skip 차단.
+
+    실측 사례: ``mpfm_dlcall("zapamcom10040", ...)`` 11 건이 호출 그래프에서 사라진
+    사고 — SKILL 에 절은 있는데 Agent 가 ScanResult.call_wrappers 에 안 옮김 →
+    wrapper_patterns 빈 dict → wrapper 호출이 framework drop 으로 빠짐.
+    """
+    matched = result_dict.get("matched_skill")
+    if not matched or result_dict.get("call_wrappers"):
+        return        # SKILL 매칭 없음, 또는 Agent 가 옮겼음 — 정상
+    skill_path = SKILLS_DIR / matched / "SKILL.md"
+    if not skill_path.is_file():
+        return
+    if "## 호출 wrapper" not in skill_path.read_text(encoding="utf-8"):
+        return        # SKILL 에 절 자체 없음 = 빈 배열이 정답
+    log_warning(
+        _STEP, "call_wrappers_missing_from_scan",
+        f"SKILL '{matched}' 에 '## 호출 wrapper' 절이 있으나 ScanResult.call_wrappers "
+        "빈 배열 — Agent 가 옮기지 않음. wrapper 호출이 framework drop 으로 빠져 "
+        "호출 그래프에서 손실 (mpfm_dlcall 류 모듈 간 의존 누락).",
+        skill=matched,
+    )

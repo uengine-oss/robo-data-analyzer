@@ -40,10 +40,12 @@ async def parse_ddl_step(state: dict, config: Optional[RunnableConfig] = None) -
         return {}
 
     ddl_dir = project.ddl_dir or project.root
-    db_name = project.name
+    # db 자리는 DDL 명시값만 — 가공 식별자(예: 디렉토리 이름) 박지 X.
+    # 명시 없으면 빈값 → fqn = ".schema.name" 형태로 db 부재 명확.
+    db_name = ""
     started = time.monotonic()
     sql_files = sorted(Path(ddl_dir).rglob("*.sql"))
-    log_info(_STEP, "start", project=db_name, ddl_dir=str(ddl_dir), sql_files=len(sql_files))
+    log_info(_STEP, "start", root=str(project.root), ddl_dir=str(ddl_dir), sql_files=len(sql_files))
 
     schemas, tables, columns = [], [], []
     has_cols, belongs, fks = [], [], []

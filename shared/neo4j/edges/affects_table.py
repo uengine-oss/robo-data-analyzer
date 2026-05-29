@@ -1,7 +1,7 @@
 """AFFECTS_TABLE 엣지 — Example → Table.
 
-Example 의 ``then.writes[]`` / ``reads[]`` 에서 도출. op(INSERT/UPDATE/DELETE/
-WRITE/READ) 별로 엣지를 구분. Table 은 이름(대소문자 무시) 매칭 — DDL Table 노드.
+Example 의 ``affected_tables[]`` 에서 도출 — 단일 영역에 op (READ/INSERT/UPDATE/
+DELETE/MERGE) 가 들어있음. Table 은 이름(대소문자 무시) 매칭 — DDL Table 노드.
 """
 from __future__ import annotations
 

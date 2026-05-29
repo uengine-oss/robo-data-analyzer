@@ -14,6 +14,7 @@ import asyncio
 import json
 import time
 from collections import defaultdict
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
@@ -21,12 +22,14 @@ from langchain_core.runnables import RunnableConfig
 
 from shared.workflow.step_utils import step_config
 
+from data_models.graph_nodes import Column, Table
 from shared.config.env_catalog import ENV
 from shared.llm.cost_budget import BudgetExceededError
 from shared.llm.fanout import gather_with_warmup
 from data_models.function_analysis_output import TableDescription
 from shared.llm.yaml_llm_runner import run_yaml_rule
 from shared.log.logger import log_error, log_info, log_warning
+from shared.log.processing_progress import step_processing_scope, track_processing
 from shared.neo4j.neo4j_client import Neo4jClient
 from shared.neo4j.nodes.column import update_analyzed_descriptions as update_column_analyzed
 from shared.neo4j.nodes.table import update_analyzed_descriptions as update_table_analyzed
@@ -39,6 +42,7 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
     strategy = cfg.get("strategy")
     cost_budget = cfg.get("cost_budget")
     neo: Neo4jClient | None = cfg.get("neo_client")
+    stream = cfg.get("stream")
     if strategy is None:
         log_warning(_STEP, "config_missing", "strategy 누락 — step skip")
         return {}
@@ -83,9 +87,10 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
     prompts_dir = Path(strategy.prompts_dir)
     semaphore = asyncio.Semaphore(ENV.pipeline.max_concurrency)
 
-    async def _summarize_one(table_fqn: str, candidates: list[dict]):
-        async with semaphore:
-            try:
+    async def _summarize_one(table_fqn: str, candidates: list[dict]) -> TableDescription:
+        """성공 시 TableDescription / 실패 시 raise. fail 정책은 메인이 책임 (단일 책임)."""
+        async with track_processing("Table", table_fqn):
+            async with semaphore:
                 return await run_yaml_rule(
                     prompts_dir=prompts_dir,
                     rule_name="table_description",
@@ -96,25 +101,18 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
                     response_model=TableDescription,
                     budget=cost_budget,
                 )
-            except BudgetExceededError:
-                raise            # 회로 차단기 즉시 전파
-            except Exception as e:
-                log_error(
-                    "analysis_flow.step7_post_processing.enrich_table_description_step",
-                    "table_description",
-                    e,
-                    table_fqn=table_fqn,
-                )
-                return None
 
-    # 첫 테이블 1건으로 prefix 캐시 워밍 → 나머지 병렬 (cold 동시요청 캐시 미스 방지).
-    results = await gather_with_warmup([
-        _summarize_one(t, c) for t, c in table_candidates.items()
-    ])
+    # 첫 테이블 1건으로 prefix 캐시 워밍 → 나머지 병렬. fail 정책 = 개별 테이블 LLM 실패 시
+    # 로그 + 결과 drop (분석 흐름 유지). BudgetExceededError 만 즉시 전파.
+    table_fqns = list(table_candidates.keys())
+    with step_processing_scope(_STEP, stream):
+        raw_results = await gather_with_warmup(
+            [_summarize_one(t, table_candidates[t]) for t in table_fqns],
+            return_exceptions=True,
+        )
+    results = _apply_table_fail_policy(table_fqns, raw_results)
 
-    # 분석 합성 설명 → analyzed_description 에 SET. description(DDL/카탈로그 1차설명)은
-    # 안 건드린다 — AI 추론을 사실 칸에 섞지 않음. description_source 가 어느 칸을
-    # 봐야 하는지 가리킨다 (DDL description 비었으면 'source').
+    # 분석 합성 설명 → analyzed_description. description (DDL/catalog 1차설명) 은 안 건드림.
     table_updates = [
         {"fqn": f"{r.db}.{r.schema_}.{r.name}", "analyzed_description": r.description}
         for r in results if r is not None
@@ -130,10 +128,47 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
     if neo is not None and column_updates:
         await update_column_analyzed(neo, column_updates)
 
+    updated_tables = _replace_by_fqn(state.get("tables", []), table_updates, "analyzed_description")
+    updated_columns = _replace_by_fqn(state.get("columns", []), column_updates, "analyzed_description")
+
     log_info(
         _STEP, "done",
         tables=len(table_candidates),
         descriptions=len(table_updates), columns=len(column_updates),
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
-    return {}
+    return {"tables": updated_tables, "columns": updated_columns}
+
+
+def _apply_table_fail_policy(
+    table_fqns: list[str], results: list,
+) -> list[Optional[TableDescription]]:
+    """fan-out 결과에 fail 정책 적용 — 예외면 None drop + log, BudgetExceededError 는 raise.
+
+    단일 책임 — _summarize_one = 성공만 / 여기 = fail 정책 (응집 ★ DRY).
+    """
+    out: list[Optional[TableDescription]] = []
+    for table_fqn, result in zip(table_fqns, results):
+        if isinstance(result, BudgetExceededError):
+            raise result        # 회로 차단기는 상위로 전파
+        if isinstance(result, BaseException):
+            log_error(
+                "analysis_flow.step7_post_processing.enrich_table_description_step",
+                "table_description",
+                result,
+                table_fqn=table_fqn,
+            )
+            out.append(None)
+        else:
+            out.append(result)
+    return out
+
+
+def _replace_by_fqn(nodes: list, updates: list[dict], attr: str) -> list:
+    """``updates`` 의 fqn → ``attr`` 값을 같은 노드에 박은 새 인스턴스 리스트."""
+    fqn_to_val = {u["fqn"]: u[attr] for u in updates}
+    return [
+        replace(n, **{attr: fqn_to_val[n.fqn]})
+        for n in nodes
+        if n.fqn in fqn_to_val
+    ]

@@ -47,6 +47,7 @@ from data_models.function_analysis_output import (
 )
 from shared.llm.yaml_llm_runner import run_yaml_rule
 from shared.log.logger import log_error, log_warning
+from shared.log.processing_progress import track_processing
 from shared.source_file_cache import SourceFileCache
 
 _STEP = "step6.analyze_function.three_split"
@@ -69,6 +70,8 @@ async def run_summary(
     [공통지침 + 첫 함수 입력값] 올림. 결과를 ``precomputed_summary`` 로 첫 함수의
     ``analyze_function_three_split`` 에 다시 전달해 #1 중복 호출 방지.
 
+    track_processing 이 start/done/failed 자동 emit (stream 인자 chain X).
+
     Returns:
         SummaryOutput. 실패 시 None (BudgetExceededError 만 raise).
     """
@@ -83,15 +86,16 @@ async def run_summary(
         source_cache or SourceFileCache(),
     )
     try:
-        return await run_yaml_rule(
-            prompts_dir=Path(strategy.prompts_dir),
-            rule_name="function_summary",
-            user_values=common,
-            response_model=SummaryOutput,
-            budget=cost_budget,
-        )
+        async with track_processing("Function", function_id, sub_action="warmup_summary"):
+            return await run_yaml_rule(
+                prompts_dir=Path(strategy.prompts_dir),
+                rule_name="function_summary",
+                user_values=common,
+                response_model=SummaryOutput,
+                budget=cost_budget,
+            )
     except BudgetExceededError:
-        raise
+        raise        # 회로 차단기 — 그대로 전파
     except Exception as e:  # noqa: BLE001 — silent 차단 목적
         log_error(_STEP, "warmup_summary_failed", e, function_id=function_id)
         return None
@@ -139,14 +143,22 @@ async def analyze_function_three_split(
     rules_values = {**common, "child_business_logic": _format_child_business_logic(ctx, contexts)}
     prompts_dir = Path(strategy.prompts_dir)
 
+    # split 단위 wrapper — function_id 캡처 closure (응집 ★).
+    async def _track_split(sub_action: str, coro):
+        async with track_processing("Function", function_id, sub_action=sub_action):
+            return await coro
+
     # Phase 1: summary — 자기 함수의 cache 만들기 (precomputed 있으면 skip).
     if precomputed_summary is not None:
         summary_out = precomputed_summary
     else:
         try:
-            summary_out = await run_yaml_rule(
-                prompts_dir=prompts_dir, rule_name="function_summary",
-                user_values=common, response_model=SummaryOutput, budget=cost_budget,
+            summary_out = await _track_split(
+                "split_summary",
+                run_yaml_rule(
+                    prompts_dir=prompts_dir, rule_name="function_summary",
+                    user_values=common, response_model=SummaryOutput, budget=cost_budget,
+                ),
             )
         except BudgetExceededError:
             raise
@@ -157,16 +169,23 @@ async def analyze_function_three_split(
     # Phase 2: rules + insights 동시 — 자기 함수 cache 적중 (#1 이 방금 올림).
     # 부분 성공 허용 — rules/insights 한 조각 실패가 함수 폐기로 이어지지 않게.
     # BudgetExceededError 만 즉시 전파 (회로 차단기 — 절대원칙 #3).
+    # 두 split 은 함수 결과 합성 단위라 gather 가 자연 (라운드 단위 X — 그건 round 루프 영역).
     tasks = {
-        "rules": run_yaml_rule(
-            prompts_dir=prompts_dir, rule_name="function_rules_examples",
-            user_values=rules_values, response_model=RulesExamplesOutput, budget=cost_budget,
+        "rules": _track_split(
+            "split_rules",
+            run_yaml_rule(
+                prompts_dir=prompts_dir, rule_name="function_rules_examples",
+                user_values=rules_values, response_model=RulesExamplesOutput, budget=cost_budget,
+            ),
         ),
     }
     if ctx.reads or ctx.writes:
-        tasks["insights"] = run_yaml_rule(
-            prompts_dir=prompts_dir, rule_name="function_table_insights",
-            user_values=common, response_model=TableInsightsOutput, budget=cost_budget,
+        tasks["insights"] = _track_split(
+            "split_insights",
+            run_yaml_rule(
+                prompts_dir=prompts_dir, rule_name="function_table_insights",
+                user_values=common, response_model=TableInsightsOutput, budget=cost_budget,
+            ),
         )
 
     results = await asyncio.gather(*tasks.values(), return_exceptions=True)

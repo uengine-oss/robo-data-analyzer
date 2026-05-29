@@ -33,11 +33,15 @@ async def link_calls_by_name_step(state: dict, config: Optional[RunnableConfig] 
         return {"calls_edges": []}
 
     started = time.monotonic()
-    # 프레임워크 함수 목록 = step3 scan 이 skill 문서에서 읽어 채운 것.
-    # 없으면 빈 집합 → framework 드롭 없음 (프레임워크 호출은 external 로 남음).
+    # framework 함수 = drop 대상 (SKILL). call_wrappers = 인자가 실제 호출 대상인
+    # 함수 (SKILL) — call_classifier 가 라인 본문에서 인자 추출 후 internal/external 분류.
     scan_result = state.get("scan_result") or {}
     framework_names = frozenset(scan_result.get("framework_functions") or [])
-    result = classify_call_sites(call_sites, state.get("functions", []), framework_names)
+    call_wrappers = scan_result.get("call_wrappers") or []
+    result = classify_call_sites(
+        call_sites, state.get("functions", []),
+        framework_names=framework_names, wrappers=call_wrappers,
+    )
 
     if neo is not None and result.edges:
         await upsert_calls(neo, result.edges)
@@ -49,6 +53,12 @@ async def link_calls_by_name_step(state: dict, config: Optional[RunnableConfig] 
             "call_text / caller 누락 call site — 분류 불가, 드롭",
             count=result.dropped_incomplete,
         )
+    if result.wrapper_unresolved:
+        log_warning(
+            _STEP, "wrapper_unresolved",
+            "wrapper 매치했으나 본문에서 인자 추출 실패 (라인/정규식 불일치 가능)",
+            count=result.wrapper_unresolved,
+        )
 
     internal = sum(1 for e in result.edges if e.scope == "internal")
     log_info(
@@ -58,6 +68,7 @@ async def link_calls_by_name_step(state: dict, config: Optional[RunnableConfig] 
         dropped_stdlib=result.dropped_stdlib,
         dropped_framework=result.dropped_framework,
         dropped_incomplete=result.dropped_incomplete,
+        wrapper_unresolved=result.wrapper_unresolved or None,
         calls_edges=len(result.edges),
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )

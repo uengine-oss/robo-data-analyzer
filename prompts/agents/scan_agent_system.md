@@ -61,6 +61,18 @@ table-access 정규식과 프레임워크 함수 목록을 `ScanResult` 에 **�
   아니라 호출 그래프에서 드롭된다.
 - SKILL 에 목록이 없으면 빈 채로 둔다 (추측해 채우지 말 것).
 
+**호출 wrapper** (`call_wrappers`) — ★ 누락 시 모듈 간 호출 손실:
+
+- SKILL 문서에 `## 호출 wrapper` 절이 있으면 그 yaml 항목들을 `call_wrappers` 에
+  **그대로 옮겨 담는다**. 각 항목 = `{wrapper: 함수 이름, callee_from: 인자 추출 위치}`.
+- wrapper = 첫 인자 string 이 실제 호출 대상인 동적 dispatch 함수 (예: ProFrame 의
+  `mpfm_dlcall("모듈명", ...)`). wrapper 자체는 `framework_functions` 에도 들어가지만,
+  인자가 진짜 호출 대상이라 `call_classifier` 가 본문에서 추출해 호출 그래프에 정합.
+- SKILL 에 `## 호출 wrapper` 절이 **없으면 빈 배열** — 대부분 빈 배열이 정답
+  (JPA / MyBatis / OFBiz / EJB-CMP 등은 wrapper 없음).
+- **★ 누락 사고**: SKILL 에 절이 있는데 빈 배열로 두면 → wrapper 호출이 framework 드롭으로
+  빠져 호출 그래프에서 사라짐 → 모듈 간 의존관계 손실 (실측 사례: mpfm_dlcall 11 건 누락).
+
 **codebase_notes** (★ 필수 포함):
 
 - SKILL 의 `codebase_notes 예시` 단락을 본보기로 1단락 작성. 이 단락은 함수 분석
@@ -106,7 +118,8 @@ table-access 정규식과 프레임워크 함수 목록을 `ScanResult` 에 **�
 | `table_access_patterns` | 검증 통과한 정규식 (SKILL 본문 차용 또는 직접 작성). 못 구하면 빈 배열 |
 | `ddl_transform` | entity→DDL 테이블명 변환 규칙 |
 | `codebase_notes` | 프로젝트 성격 / wrapper / 명명 컨벤션 + **op 결정 신호** 1단락 |
-| `framework_functions` | 프레임워크/런타임 함수 이름 목록 (SKILL 출처). 없으면 빈 배열 |
+| `framework_functions` | 프레임워크/런타임 함수 이름 / **glob 패턴** (`PRINT_*` 같은). 없으면 빈 배열 |
+| `call_wrappers` | 호출 wrapper 명시 — 인자가 실제 호출 대상인 함수. 각 항목 `{wrapper: 함수 이름, callee_from: 인자 추출 위치}`. SKILL 의 "## 호출 wrapper" 절 본문 차용. 없으면 빈 배열 |
 | `no_match_reason` | SKILL 매칭 X 또는 정규식 미산출 시 사유. 정상이면 null |
 
 `table_access_patterns` 의 각 항목: `id`, `call_regex`(명명 그룹 `<entity>`+`<op_token>`),

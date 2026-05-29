@@ -9,15 +9,18 @@ DBMS=PROCEDURE)가 달라 분기가 있었으나, refact 는 M5 에서 DBMS rang
   NEXT / BRANCH / AFFECTS_TABLE 엣지. 결정론 — LLM 0회.
 
 Rule 공유: 같은 statement 는 ``rule_hash`` 가 같아 1 노드 — 함수 간 규칙을 공유한다.
-per-function 정보(local rule_id / flow_id / branch 등)는 ``HAS_RULE`` 엣지 속성에.
+per-function 정보(local rule_id / flow_id / coupled_domains)는 ``HAS_RULE`` 엣지 속성에.
+
+응답 형식 단일 진실 ([[function_analysis_output]] RulesExamplesOutput):
+- rules:    {rule_id, statement, flow_id, coupled_domains}
+- examples: {rule_id, description, given, when, then, affected_tables}
+- questions:{text, reason}
 """
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from dataclasses import dataclass, field
-from typing import Any
 
 from data_models.graph_edges import (
     AffectsTable,
@@ -28,10 +31,6 @@ from data_models.graph_edges import (
     Next,
 )
 from data_models.graph_nodes import Example, Function, Question, Rule
-
-# then.writes[] 에 op 가 없을 때의 generic write op.
-_WRITE_OP_DEFAULT = "WRITE"
-_READ_OP = "READ"
 
 
 @dataclass
@@ -69,21 +68,20 @@ def _build_one(
 ) -> None:
     """함수 1개의 rules/examples/questions → 노드·엣지 누적."""
     extra = fn.extra or {}
-    flow_by_rid, hash_by_rid, branch_by_rid = _collect_rules(
+    flow_by_rid, hash_by_rid = _collect_rules(
         fn.function_id, extra.get("rules") or [], result, rule_by_hash,
     )
     _collect_examples(fn.function_id, extra.get("examples") or [], hash_by_rid, result)
     _collect_questions(fn.function_id, extra.get("questions") or [], result)
-    _collect_flow_edges(fn.function_id, flow_by_rid, branch_by_rid, result)
+    _collect_flow_edges(fn.function_id, flow_by_rid, result)
 
 
 def _collect_rules(
     fid: str, rules: list, result: ExampleMappingResult, rule_by_hash: dict[str, Rule],
-) -> tuple[dict[str, str], dict[str, str], dict[str, Any]]:
-    """rules → Rule 노드(공유) + HAS_RULE 엣지. (flow_by_rid, hash_by_rid, branch_by_rid) 반환."""
+) -> tuple[dict[str, str], dict[str, str]]:
+    """rules → Rule 노드(공유) + HAS_RULE 엣지. (flow_by_rid, hash_by_rid) 반환."""
     flow_by_rid: dict[str, str] = {}
     hash_by_rid: dict[str, str] = {}
-    branch_by_rid: dict[str, Any] = {}
     for r in rules:
         if not isinstance(r, dict):
             continue
@@ -94,28 +92,24 @@ def _collect_rules(
         rh = rule_hash(statement)
         rule_by_hash.setdefault(rh, Rule(rule_hash=rh, statement=statement))
         flow_id = str(r.get("flow_id") or "").strip() or rid
-        branch_from = r.get("branch_from") or None
         flow_by_rid[rid] = flow_id
         hash_by_rid[rid] = rh
-        branch_by_rid[rid] = branch_from
         result.has_rule.append(HasRule(
             function_id=fid,
             rule_hash=rh,
             local_rule_id=rid,
             flow_id=flow_id,
-            guard_rule_id=r.get("guard_rule_id") or None,
-            branch_from=branch_from,
             coupled_domains=tuple(
                 str(d).strip() for d in (r.get("coupled_domains") or []) if str(d).strip()
             ),
         ))
-    return flow_by_rid, hash_by_rid, branch_by_rid
+    return flow_by_rid, hash_by_rid
 
 
 def _collect_examples(
     fid: str, examples: list, hash_by_rid: dict[str, str], result: ExampleMappingResult,
 ) -> None:
-    """examples → Example 노드 + HAS_EXAMPLE + (then.writes/reads →) AFFECTS_TABLE."""
+    """examples → Example 노드 + HAS_EXAMPLE + AFFECTS_TABLE."""
     for idx, e in enumerate(examples, start=1):
         if not isinstance(e, dict):
             continue
@@ -123,10 +117,9 @@ def _collect_examples(
         rh = hash_by_rid.get(rid)
         if rh is None:
             continue   # 존재하지 않는 Rule 참조 — 드롭
-        given = _serialize(e.get("given"))
+        given = (e.get("given") or "").strip()
         when = (e.get("when") or "").strip()
-        then_raw = e.get("then")
-        then = _serialize(then_raw)
+        then = (e.get("then") or "").strip()
         if not (given or when or then):
             continue
         eid = f"{fid}::{rid}::{idx}"
@@ -134,24 +127,25 @@ def _collect_examples(
             example_id=eid,
             description=(e.get("description") or "").strip(),
             given=given, when=when, then=then,
-            is_boundary=bool(e.get("is_boundary")),
         ))
         result.has_example.append(HasExample(rule_hash=rh, example_id=eid))
-        _collect_affects_table(eid, then_raw, result)
+        _collect_affects_table(eid, e.get("affected_tables") or [], result)
 
 
-def _collect_affects_table(eid: str, then_raw: Any, result: ExampleMappingResult) -> None:
-    """then.writes[] / then.reads[] → AFFECTS_TABLE 엣지 (op 별)."""
-    if not isinstance(then_raw, dict):
-        return
-    for w in (then_raw.get("writes") or []):
-        table, op = _write_entry(w)
-        if table:
-            result.affects_table.append(AffectsTable(example_id=eid, table_name=table, op=op))
-    for r in (then_raw.get("reads") or []):
-        table = _read_entry(r)
-        if table:
-            result.affects_table.append(AffectsTable(example_id=eid, table_name=table, op=_READ_OP))
+def _collect_affects_table(
+    eid: str, affected: list, result: ExampleMappingResult,
+) -> None:
+    """affected_tables[] → AFFECTS_TABLE 엣지 (op enum 별)."""
+    for entry in affected:
+        if not isinstance(entry, dict):
+            continue
+        table = str(entry.get("table") or "").strip()
+        op = str(entry.get("op") or "").strip().upper()
+        if not table or not op:
+            continue
+        result.affects_table.append(
+            AffectsTable(example_id=eid, table_name=table, op=op)
+        )
 
 
 def _collect_questions(fid: str, questions: list, result: ExampleMappingResult) -> None:
@@ -174,13 +168,12 @@ def _collect_questions(fid: str, questions: list, result: ExampleMappingResult) 
 def _collect_flow_edges(
     fid: str,
     flow_by_rid: dict[str, str],
-    branch_by_rid: dict[str, Any],
     result: ExampleMappingResult,
 ) -> None:
     """flow_id 로 Rule 간 NEXT(메인 흐름) / BRANCH(분기) 도출.
 
     flow_id 에 ``-`` 없음 = 메인 chain → flow_id 순서대로 NEXT.
-    ``-`` 있음 = 분기 → branch_from 또는 상위 flow_id 의 Rule 에서 BRANCH.
+    ``-`` 있음 = 분기 → 상위 flow_id (``rsplit("-", 1)[0]``) 의 Rule 에서 BRANCH.
     """
     main_rids = sorted(
         (rid for rid, flow in flow_by_rid.items() if "-" not in flow),
@@ -193,34 +186,10 @@ def _collect_flow_edges(
     for rid, flow in flow_by_rid.items():
         if "-" not in flow:
             continue
-        parent = branch_by_rid.get(rid) or flow_to_rid.get(flow.rsplit("-", 1)[0])
+        parent = flow_to_rid.get(flow.rsplit("-", 1)[0])
         if parent and parent in flow_by_rid:
             result.branch_edges.append(
                 Branch(function_id=fid, from_rule_id=parent, to_rule_id=rid)
             )
 
 
-def _serialize(raw: Any) -> str:
-    """dict/list → JSON 문자열(빈 것은 ""), 그 외 → strip 문자열."""
-    if isinstance(raw, (dict, list)):
-        return json.dumps(raw, ensure_ascii=False) if raw else ""
-    return str(raw or "").strip()
-
-
-def _write_entry(w: Any) -> tuple[str, str]:
-    """then.writes[] 한 항목 → (table_name, op). dict / str 허용."""
-    if isinstance(w, dict):
-        op = str(w.get("op") or "").strip().upper() or _WRITE_OP_DEFAULT
-        return str(w.get("table") or "").strip(), op
-    if isinstance(w, str):
-        return w.strip(), _WRITE_OP_DEFAULT
-    return "", ""
-
-
-def _read_entry(r: Any) -> str:
-    """then.reads[] 한 항목 → table_name. dict / str 허용."""
-    if isinstance(r, dict):
-        return str(r.get("table") or "").strip()
-    if isinstance(r, str):
-        return r.strip()
-    return ""

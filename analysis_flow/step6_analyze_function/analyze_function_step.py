@@ -6,7 +6,9 @@
 1. 호출 그래프 (CALLS + PARENT_OF) → ``find_call_cycles`` → cycle 식별 (Tarjan SCC).
 2. ``bottom_up_rounds`` → leaf → root Round 별 정렬.
 3. Round 별 병렬 분석:
-   - 같은 Round 함수들 ``asyncio.gather`` + ``Semaphore`` 병렬.
+   - 같은 Round 함수들 ``asyncio.as_completed`` + ``Semaphore`` 병렬 — 끝나는 순서대로
+     즉시 Neo4j 영속화 + NDJSON emit (★ 라운드 단위 묶음 X — 라운드는 내부 concurrency
+     제어 + 메타 정보일 뿐).
    - Round 간 순차 — 다음 Round 의 caller 가 이전 Round 의 callee summary 사용.
 4. 각 함수 = ``analyze_function_three_split`` (3 분할 fan-out, RadixAttention 95%+).
 
@@ -15,6 +17,7 @@ cycle 내부 함수 → callee summary 없이 분석 (``is_in_cycle=True`` 메�
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import time
 from typing import Any, Optional
 
@@ -38,6 +41,7 @@ from shared.llm.cost_budget import BudgetExceededError
 from data_models.function_analysis_output import SummaryOutput
 from shared.log.logger import log_error, log_info, log_warning
 from shared.log.ndjson_stream import NDJSONStream
+from shared.log.processing_progress import step_processing_scope, track_processing
 from shared.neo4j.neo4j_client import Neo4jClient
 from shared.neo4j.nodes.function import update_summaries
 
@@ -78,10 +82,12 @@ async def analyze_function_step(state: dict, config: Optional[RunnableConfig] = 
 
     started = time.monotonic()
 
-    # 0. 모듈 사전분석 — 모듈당 LLM 1회로 헤더 주석 → 모듈 의도.
-    #    DBMS 는 module_pre_analysis.yaml 이 없어 빈 dict 반환 (Framework 전용).
+    # 0. 모듈 사전분석 — 모듈당 LLM 1회로 헤더 주석 → 모듈 의도 (최대 2줄).
+    # intent 는 함수 3분할 공통 context prefix 로만 사용 — 영구 그래프 속성 X.
+    # module_pre_analysis 가 자체 step_processing_scope 진입 → 가시성 자동.
     module_intents = await run_module_pre_analysis(
-        state.get("modules", []), functions_list, strategy, cost_budget, neo,
+        state.get("modules", []), functions_list, strategy, cost_budget,
+        stream=stream,
     )
 
     # 1. cycle 식별 (CALLS + PARENT_OF 둘 다)
@@ -110,74 +116,135 @@ async def analyze_function_step(state: dict, config: Optional[RunnableConfig] = 
     )
 
     # 3. Round 별 병렬 분석 — Round 간은 순차. 결과는 함수 단위 즉시 영속화 + emit.
+    # Example Mapping 9 종 (Rule/Example/Question + 6 엣지) 은 함수 단위로 만들어져
+    # round 끝까지 누적 → step 마지막에 state 로 반영. Neo4j MERGE 가 정체성 키
+    # (rule_hash / example_id / question_id) 로 자동 dedup — state list 는 raw 그대로.
     semaphore = asyncio.Semaphore(ENV.pipeline.max_concurrency)
-    source_cache = SourceFileCache()       # 같은 파일을 여러 함수가 1회만 read
-    total_analyzed = 0
-    total_failed = 0
+    source_cache = SourceFileCache()
+    em_acc = ExampleMappingResult()
 
-    for round_idx, round_fn_ids in enumerate(rounds, start=1):
-        round_started = time.monotonic()
-        log_info(_STEP, "round_start", round=f"{round_idx}/{len(rounds)}", functions=len(round_fn_ids))
+    async def _run_rounds() -> tuple[int, int]:
+        """Round 루프 — 메인 변수 closure 캡처 (rounds / contexts / em_acc / neo / stream 등).
 
-        if not round_fn_ids:
-            continue
+        ``step_processing_scope`` 안에서 호출 — track_processing 이 자동 emit.
+        반환: ``(total_analyzed, total_failed)``.
+        """
+        analyzed_count = 0
+        failed_count = 0
+        for round_idx, round_fn_ids in enumerate(rounds, start=1):
+            round_started = time.monotonic()
+            log_info(_STEP, "round_start", round=f"{round_idx}/{len(rounds)}", functions=len(round_fn_ids))
 
-        # === Round 워밍 ===
-        # 첫 함수의 #1 summary 만 단독 선호출 → LLM 서버 prefix cache 에 공통지침
-        # 올림. 그 후 모든 함수 풀어놓으면 — 각 함수가 자기 흐름 (#1 → #2 #3),
-        # 함수 사이 동시 진행. 같은 함수 안만 #1 → #2 #3 순서 (cache 효과 위해).
-        first_id = round_fn_ids[0]
-        first_summary: Optional[SummaryOutput] = await run_summary(
-            first_id, contexts, function_by_id, strategy, cost_budget,
-            codebase_notes, module_intents, table_descriptions, source_cache,
-        )
+            if not round_fn_ids:
+                continue
 
-        # === 모든 함수 풀어놓음 ===
-        # 첫 함수는 워밍 결과 재사용 (precomputed_summary), 나머지는 각자 처음부터.
-        # 각 함수 안에서 #1 → #2 #3 흐름은 await + asyncio.gather 가 자동 보장.
-        tasks = [
-            _analyze_one(
-                fn_id, contexts, function_by_id, strategy, cost_budget,
-                semaphore, codebase_notes, module_intents, table_descriptions,
-                source_cache,
-                precomputed_summary=(first_summary if fn_id == first_id else None),
+            # === Round 워밍 ===
+            # 첫 함수의 #1 summary 만 단독 선호출 → LLM 서버 prefix cache 에 공통지침
+            # 올림. 그 후 모든 함수 풀어놓으면 — 각 함수가 자기 흐름 (#1 → #2 #3),
+            # 함수 사이 동시 진행. 같은 함수 안만 #1 → #2 #3 순서 (cache 효과 위해).
+            first_id = round_fn_ids[0]
+            first_summary: Optional[SummaryOutput] = await run_summary(
+                first_id, contexts, function_by_id, strategy, cost_budget,
+                codebase_notes, module_intents, table_descriptions, source_cache,
             )
-            for fn_id in round_fn_ids
-        ]
-        # return_exceptions=True 로 받지만 BudgetExceededError 는 즉시 전파.
-        # 개별 분석 실패 (Pydantic 파싱 등) 만 로깅 후 건너뜀.
-        # 성공 함수는 그 자리에서 즉시 Neo4j 박고 stream emit — batch 누적 X.
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        round_failed = 0
-        round_analyzed = 0
-        for fn_id, r in zip(round_fn_ids, results):
-            if isinstance(r, BudgetExceededError):
-                raise r          # 절대원칙 #3 — 회로 차단기 즉시 전파
-            if isinstance(r, BaseException):
-                round_failed += 1
-                log_error(_STEP, "round_analysis", r, function_id=fn_id, round=round_idx)
-                continue
-            if r is None:
-                continue
-            await _persist_and_emit_function(r, neo, stream)
-            round_analyzed += 1
 
-        total_failed += round_failed
-        total_analyzed += round_analyzed
-        log_info(
-            _STEP, "round_done",
-            round=f"{round_idx}/{len(rounds)}",
-            analyzed=round_analyzed, failed=round_failed or None,
-            elapsed_sec=f"{time.monotonic() - round_started:.2f}",
-        )
+            # === 모든 함수 풀어놓음 ===
+            # 첫 함수는 워밍 결과 재사용 (precomputed_summary), 나머지는 각자 처음부터.
+            # 각 함수 안에서 #1 → #2 #3 흐름은 await + asyncio.gather 가 자동 보장.
+            # 끝나는 순서 = 영속화/emit 순서 (라운드 단위 X — 라운드는 내부 concurrency 제어).
+            # asyncio.as_completed 가 각 task 완료 즉시 yield → Neo4j SET + NDJSON emit
+            # 즉시 발생. ★ "함수 단위 진짜 즉시 영속화" 의 단일 진입점.
+            tasks = [
+                _run_with_id(
+                    fn_id,
+                    _analyze_one(
+                        fn_id, contexts, function_by_id, strategy, cost_budget,
+                        semaphore, codebase_notes, module_intents, table_descriptions,
+                        source_cache,
+                        precomputed_summary=(first_summary if fn_id == first_id else None),
+                    ),
+                )
+                for fn_id in round_fn_ids
+            ]
+            round_failed = 0
+            round_analyzed = 0
+            for finished in asyncio.as_completed(tasks):
+                fn_id, r = await finished
+                if isinstance(r, BudgetExceededError):
+                    raise r          # 절대원칙 #3 — 회로 차단기 즉시 전파
+                if isinstance(r, BaseException):
+                    round_failed += 1
+                    log_error(_STEP, "round_analysis", r, function_id=fn_id, round=round_idx)
+                    continue
+                if r is None:
+                    continue
+                em = await _persist_and_emit_function(r, neo, stream)
+                _accumulate_em(em_acc, em)
+                round_analyzed += 1
+
+            failed_count += round_failed
+            analyzed_count += round_analyzed
+            log_info(
+                _STEP, "round_done",
+                round=f"{round_idx}/{len(rounds)}",
+                analyzed=round_analyzed, failed=round_failed or None,
+                elapsed_sec=f"{time.monotonic() - round_started:.2f}",
+            )
+        return analyzed_count, failed_count
+
+    with step_processing_scope(_STEP, stream):
+        total_analyzed, total_failed = await _run_rounds()
 
     log_info(
         _STEP, "done",
         functions=len(contexts), analyzed=total_analyzed,
         failed=total_failed or None, in_cycle=len(cycles),
+        rules=len(em_acc.rules), examples=len(em_acc.examples), questions=len(em_acc.questions),
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
-    return {"analysis_contexts": contexts}
+    # functions 는 _persist_and_emit_function 가 in-place 갱신 (frozen=False)
+    # → state["functions"] 리스트 안의 같은 객체 참조라 자동 반영.
+    # Example Mapping 9 종은 누적 결과를 state 키 9 개로 반환.
+    return {
+        "analysis_contexts": contexts,
+        "rules": em_acc.rules,
+        "examples": em_acc.examples,
+        "questions": em_acc.questions,
+        "has_rule_edges": em_acc.has_rule,
+        "has_example_edges": em_acc.has_example,
+        "has_question_edges": em_acc.has_question,
+        "next_edges": em_acc.next_edges,
+        "branch_edges": em_acc.branch_edges,
+        "affects_table_edges": em_acc.affects_table,
+    }
+
+
+def _accumulate_em(acc: ExampleMappingResult, em: ExampleMappingResult) -> None:
+    """함수 단위 ``ExampleMappingResult`` 를 round 누적 결과에 합친다.
+
+    중복 제거는 Neo4j MERGE 가 정체성 키(rule_hash 등)로 자동 처리 — state 는 단순 extend.
+    Rule 노드는 ``rule_hash`` 키로 함수 간 공유 (같은 statement = 같은 노드).
+
+    새 필드 추가 시 ``ExampleMappingResult`` 의 list 필드면 자동 누적 — dataclass 의
+    ``fields`` 가 단일 진실.
+    """
+    for f in dataclasses.fields(em):
+        new = getattr(em, f.name)
+        if isinstance(new, list):
+            getattr(acc, f.name).extend(new)
+
+
+async def _run_with_id(fn_id: str, coro) -> tuple[str, Any]:
+    """coro 의 결과 또는 예외를 ``(fn_id, value)`` tuple 로 묶음 — ``asyncio.as_completed``
+    가 task 객체만 yield 하므로 호출자가 어느 fn_id 의 결과인지 매칭 가능.
+
+    예외는 raise 안 하고 tuple 의 두 번째 자리에 — 호출자가 isinstance 체크로 분기.
+    """
+    try:
+        result = await coro
+    except BaseException as e:  # noqa: BLE001 — 예외도 매칭 가능하게 묶어 반환
+        return (fn_id, e)
+    return (fn_id, result)
 
 
 async def _analyze_one(
@@ -193,16 +260,18 @@ async def _analyze_one(
     source_cache: SourceFileCache,
     precomputed_summary: Optional[SummaryOutput] = None,
 ):
-    async with semaphore:
-        return await analyze_function_three_split(
-            fn_id, contexts, function_by_id, strategy,
-            cost_budget=cost_budget,
-            codebase_notes=codebase_notes,
-            module_intents=module_intents,
-            table_descriptions=table_descriptions,
-            source_cache=source_cache,
-            precomputed_summary=precomputed_summary,
-        )
+    """함수 1개 분석 — track_processing 이 start/done/failed 자동 emit (stream 인자 chain X)."""
+    async with track_processing("Function", fn_id):
+        async with semaphore:
+            return await analyze_function_three_split(
+                fn_id, contexts, function_by_id, strategy,
+                cost_budget=cost_budget,
+                codebase_notes=codebase_notes,
+                module_intents=module_intents,
+                table_descriptions=table_descriptions,
+                source_cache=source_cache,
+                precomputed_summary=precomputed_summary,
+            )
 
 
 # ─── 함수 분석 결과 영속화 + 스트림 ────────────────────────────
@@ -212,11 +281,11 @@ async def _persist_and_emit_function(
     fn: Function,
     neo: Optional[Neo4jClient],
     stream: Optional[NDJSONStream],
-) -> None:
-    """함수 분석 결과 1건 → Neo4j upsert + NDJSON node/relationship 이벤트.
+) -> ExampleMappingResult:
+    """함수 분석 결과 1건 → Neo4j upsert + NDJSON 이벤트 + EM 결과 반환.
 
+    EM 결과는 caller 가 round 단위 누적 후 step 종료 시 state 반영 (artifact 검증 정합).
     동시 호출 X (caller 의 라운드 루프가 순차 처리) — Neo4j 락 경합 없음.
-    neo / stream 둘 중 하나라도 None 이면 그 쪽은 skip — 테스트·CLI 모드에서도 안전.
     """
     em = build_example_mapping([fn])
     if neo is not None:
@@ -224,6 +293,7 @@ async def _persist_and_emit_function(
         await write_example_mapping(neo, em)
     if stream is not None:
         _emit_function_graph(stream, fn, em)
+    return em
 
 
 def _emit_function_graph(stream: NDJSONStream, fn: Function, em: ExampleMappingResult) -> None:
@@ -249,7 +319,7 @@ def _emit_function_graph(stream: NDJSONStream, fn: Function, em: ExampleMappingR
         stream.emit({
             "type": "node_event", "op": "merge", "label": "Example",
             "id": ex.example_id,
-            "props": {"description": ex.description, "is_boundary": ex.is_boundary},
+            "props": {"description": ex.description},
         })
     for q in em.questions:
         stream.emit({

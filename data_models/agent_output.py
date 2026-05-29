@@ -87,6 +87,50 @@ class DdlTransform(BaseModel):
     fallback_prefixes: list[str] = Field(default_factory=list)
 
 
+# ───────────────────────────────────────────────────────────────
+# 호출 wrapper — 인자(이름 string)가 실제 호출 대상인 함수
+# ───────────────────────────────────────────────────────────────
+#
+# wrapper 자체는 ``framework_functions`` 에 들어가 호출 그래프에서 드롭되지만,
+# 그 인자가 실제 호출 타겟(다른 함수/모듈)인 경우 — 그 인자를 추출해 ``Calls`` 엣지로
+# 정합한다. 별도 카테고리/별도 step 이 아니라 ``call_classifier`` 안에서 처리 — 호출은
+# 한 영역 (Calls 엣지) 으로 단일화.
+#
+# 적용 framework 예 (개념적):
+# - 런타임 동적 dispatch (이름 string 으로 호출)
+# - IoC 컨테이너 lookup (이름으로 빈/서비스 조회)
+# - 리플렉션 호출 (메서드 이름 / 모듈 이름)
+
+
+class CallWrapper(BaseModel):
+    """호출 wrapper 명시 — wrapper 함수 이름 + 인자 추출 위치.
+
+    SKILL 의 ``## 호출 wrapper`` 절 본문을 **그대로 옮겨 담는다** (matched SKILL 에
+    절이 있으면 반드시 채움). 누락 시 wrapper 호출이 호출 그래프에서 사라짐 (framework
+    drop 으로 빠짐) — 모듈 간 의존관계 손실 사고. 대부분 빈 배열이 정답이지만
+    (JPA/MyBatis/OFBiz 등은 wrapper 없음), ProFrame 류는 반드시 옮겨야 함.
+
+    ``call_classifier`` 가 wrapper 호출을 만나면 그 라인의 본문에서 인자를 추출해
+    실제 호출 대상으로 분류한다 (functions 안에 있으면 internal, 없으면 external).
+    """
+    wrapper: str = Field(
+        ...,
+        description=(
+            "wrapper 함수 이름 — SKILL 의 ``## 호출 wrapper`` yaml 의 ``wrapper`` 값 "
+            "그대로 (예: ProFrame ``mpfm_dlcall``). framework_functions 에도 동시 포함되지만 "
+            "인자가 진짜 호출 대상이라 별도 분류."
+        ),
+    )
+    callee_from: str = Field(
+        "first_arg_string",
+        description=(
+            "호출 대상을 어디서 뽑을지 — SKILL 의 ``callee_from`` 값 그대로. "
+            "지원: 'first_arg_string' (첫 인자 큰따옴표) / 'first_arg_identifier' "
+            "(첫 인자 식별자). SKILL 이 wrapper 의 의미에 맞게 명시."
+        ),
+    )
+
+
 class ScanResult(BaseModel):
     """Scan Agent 1회 invoke 의 최종 출력."""
     matched_skill: Optional[str] = Field(None, description="매칭된 SKILL 이름 또는 null")
@@ -99,6 +143,10 @@ class ScanResult(BaseModel):
     ddl_transform: DdlTransform = Field(
         default_factory=lambda: DdlTransform(ddl_naming_rule="as_is")
     )
+
+    # 호출 wrapper — 인자가 실제 호출 대상인 함수 (SKILL 이 정의). 없으면 빈배열.
+    # ``call_classifier`` 가 wrapper 호출을 만나면 인자를 추출해 Calls 엣지로 정합.
+    call_wrappers: list[CallWrapper] = Field(default_factory=list)
 
     # 분석용 텍스트 (step6_analyze_function 컨텍스트 + 잔여 패턴 루프 prefix)
     codebase_notes: str = Field(

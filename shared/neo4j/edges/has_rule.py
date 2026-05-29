@@ -1,7 +1,7 @@
 """HAS_RULE 엣지 — Function → Rule.
 
 Rule 노드는 함수 간 공유(rule_hash) 되므로 per-function 정보(local rule_id /
-flow_id / guard / branch / coupled_domains)는 이 엣지 속성에 둔다.
+flow_id / coupled_domains)는 이 엣지 속성에 둔다.
 엣지는 ``local_rule_id`` 로 구분 — 한 함수의 여러 규칙이 각각의 HAS_RULE.
 """
 from __future__ import annotations
@@ -18,8 +18,6 @@ MATCH (f:FUNCTION {{function_id: item.function_id}})
 MATCH (r:RULE {{rule_hash: item.rule_hash}})
 MERGE (f)-[rel:{HAS_RULE} {{local_rule_id: item.local_rule_id}}]->(r)
 SET rel.flow_id = item.flow_id,
-    rel.guard_rule_id = item.guard_rule_id,
-    rel.branch_from = item.branch_from,
     rel.coupled_domains = item.coupled_domains
 """
 
@@ -32,8 +30,6 @@ async def upsert_has_rule(client: Neo4jClient, edges: Iterable[HasRule]) -> None
             "rule_hash": e.rule_hash,
             "local_rule_id": e.local_rule_id,
             "flow_id": e.flow_id,
-            "guard_rule_id": e.guard_rule_id,
-            "branch_from": e.branch_from,
             "coupled_domains": list(e.coupled_domains),
         }
         for e in edges

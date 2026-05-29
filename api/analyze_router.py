@@ -33,15 +33,16 @@ router = APIRouter(prefix="/robo")
 
 
 class AnalyzeRequest(BaseModel):
-    """``/analyze`` 요청 모델."""
-    project_name: str
+    """``/analyze`` 요청 모델.
+
+    가공 식별자(``project_name``) + catalog 관련 인자 모두 폐기 — 진실은
+    ``project_root`` 경로뿐. catalog 서비스 정보는 운영 영역 (``ROBO_CATALOG_*`` env).
+    """
     project_root: str
     strategy: str                            # "framework" / "dbms"
     ddl_dir: Optional[str] = None
     has_xml_mapper: bool = False
     locale: str = "ko"
-    catalog_service_url: Optional[str] = None    # DBMS 만
-    catalog_api_key: Optional[str] = None        # DBMS 만
 
 
 @router.post("/analyze")
@@ -64,14 +65,11 @@ async def analyze(req: AnalyzeRequest) -> StreamingResponse:
         raise HTTPException(status_code=400, detail=f"project_root not found: {req.project_root}")
 
     project = Codebase(
-        name=req.project_name,
         root=project_root,
         strategy=req.strategy,  # type: ignore[arg-type]
         ddl_dir=Path(req.ddl_dir) if req.ddl_dir else None,
         has_xml_mapper=req.has_xml_mapper,
         locale=req.locale,
-        catalog_service_url=req.catalog_service_url,
-        catalog_api_key=req.catalog_api_key,
     )
 
     stream = NDJSONStream()

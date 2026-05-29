@@ -64,14 +64,35 @@ ddl_transform:
   fallback_prefixes: []
 ```
 
+## 호출 wrapper (인자가 실제 호출 대상)
+
+ProFrame 의 동적 모듈 호출 — `mpfm_dlcall("<모듈명>", ...)`. 첫 인자 string 이
+호출 대상 모듈. wrapper 자체는 framework_functions 에 들어가 드롭되지만 — 인자가
+진짜 호출 타겟이므로 `call_classifier` 가 라인 본문에서 인자 추출 후 호출 그래프에
+정합한다 (별도 step 없음 — Calls 엣지 단일 영역).
+
+```yaml
+call_wrappers:
+  - wrapper: mpfm_dlcall
+    callee_from: first_arg_string
+```
+
+`callee_from` = 인자 추출 위치 (`first_arg_string` = 첫 인자 큰따옴표 문자열).
+
+인자가 분석 대상 코드의 module_id 와 일치하면 그 모듈 entry 함수로 internal,
+일치 안 하면 인자 이름 그대로 external.
+
 ## 프레임워크 함수 (호출 분류 시 드롭)
 
 ProFrame 의 런타임·매크로 함수. 업무 로직이 아니므로 호출 그래프에서 제외한다
-(`ScanResult.framework_functions` 에 담음):
+(`ScanResult.framework_functions` 에 담음). **각 항목은 glob 패턴** —
+`PRINT_*` 같이 와일드카드로 시리즈 전체 매칭 가능.
 
 - 예외/흐름 매크로: `PFM_TRY` `PFM_TRYNJ` `PFM_CATCH` `PFM_MSGE` `PFM_ERRC` `PFM_ERRS` `PFM_DBG`
 - DB IO 런타임: `mpfmdbio` `mpfmdbio_errno` `mpfmdbio_errstr` `mpfmdbio_reccnt` `mpfmdbio_free_blob` `mpfmdbio_alloc_blob` `mpfmdbio_write_blob`
 - 유틸: `mpfm_isspnull` `mpfm_isnull` `mpfm_trim` `mpfm_dlcall` `mpfm_get_date_time` `mpfm_get_date_utime`
+- 디버그 PRINT 매크로 (glob 시리즈): `PRINT_*` — `PRINT_<TABLE>_<OP>_IN_T` / `_OUT_T`
+  계열. 자동 생성 디버그 매크로이고 비즈니스 호출이 아니므로 드롭.
 
 > `mpfmdbio` 는 위 정규식(table_access_patterns)의 앵커이기도 하다 — 테이블 R/W 는
 > 정규식이 잡고, 호출 그래프에서는 프레임워크 함수로 드롭된다 (서로 다른 단계).

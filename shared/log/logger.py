@@ -15,7 +15,7 @@
 
 ``ROBO_LOG_FILE_ENABLED=false`` (운영기) 면 attach 자체 안 함 → I/O 0 / 성능 영향 0.
 ``delay=True`` 옵션으로 첫 write 시점에만 파일 open → 빈 run 의 빈 파일 X.
-``run_executor`` 가 ``finally`` 에서 ``detach_run_file_handlers`` 로 close 보장
+``executor`` 가 ``finally`` 에서 ``detach_run_file_handlers`` 로 close 보장
 (Windows fd 충돌 회피 + FastAPI 멀티 run 동시 격리).
 
 사용 예::
@@ -25,7 +25,7 @@
     try:
         await dump_state_artifacts(run, state)
     except Exception as e:
-        log_error("workflow_runner.artifact_dumper", "dump_state_artifacts", e,
+        log_error("workflow.artifact_writer", "dump_state_artifacts", e,
                   stream_emit=stream.emit if stream else None,
                   run_id=run.run_id)
         raise   # 절대원칙 #3 — silent return 금지. 호출자가 결정.

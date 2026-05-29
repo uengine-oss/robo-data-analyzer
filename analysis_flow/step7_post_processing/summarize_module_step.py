@@ -27,6 +27,7 @@ from shared.llm.fanout import gather_with_warmup
 from data_models.function_analysis_output import ModuleSummaryOutput
 from shared.llm.yaml_llm_runner import run_yaml_rule
 from shared.log.logger import log_error, log_info, log_warning
+from shared.log.processing_progress import step_processing_scope, track_processing
 from shared.neo4j.neo4j_client import Neo4jClient
 from shared.neo4j.nodes.module import upsert_modules
 
@@ -38,6 +39,7 @@ async def summarize_module_step(state: dict, config: Optional[RunnableConfig] = 
     strategy = cfg.get("strategy")
     cost_budget = cfg.get("cost_budget")
     neo: Neo4jClient | None = cfg.get("neo_client")
+    stream = cfg.get("stream")
     if strategy is None:
         log_warning(_STEP, "config_missing", "strategy 누락 — step skip")
         return {}
@@ -57,7 +59,12 @@ async def summarize_module_step(state: dict, config: Optional[RunnableConfig] = 
     prompts_dir = Path(strategy.prompts_dir)
     semaphore = asyncio.Semaphore(ENV.pipeline.max_concurrency)
 
-    async def _summarize_one(module: Module):
+    async def _summarize_one(module: Module) -> Module:
+        """성공 시 새 module / 실패 시 raise (BudgetExceededError 또는 LLM 예외).
+
+        fail 정책 처리 (log + 원본 반환) 는 메인 함수가 책임 — _summarize_one 은
+        성공 경로만 책임 (단일 책임).
+        """
         members = fn_by_module.get(module.module_id, [])
         if not members:
             return module
@@ -65,8 +72,8 @@ async def summarize_module_step(state: dict, config: Optional[RunnableConfig] = 
             f"- {fn.signature}: {fn.summary or fn.logical_name or '(분석 전)'}"
             for fn in members
         )
-        async with semaphore:
-            try:
+        async with track_processing("Module", module.module_id):
+            async with semaphore:
                 result: ModuleSummaryOutput = await run_yaml_rule(
                     prompts_dir=prompts_dir,
                     rule_name="module_summary",
@@ -78,19 +85,8 @@ async def summarize_module_step(state: dict, config: Optional[RunnableConfig] = 
                     response_model=ModuleSummaryOutput,
                     budget=cost_budget,
                 )
-            except BudgetExceededError:
-                raise            # 회로 차단기는 상위로 전파
-            except Exception as e:
-                # 개별 모듈 요약 실패 → 로깅 후 원본 module 반환 (요약 없이).
-                log_error(
-                    "analysis_flow.step7_post_processing.summarize_module_step",
-                    "module_summary",
-                    e,
-                    module_id=module.module_id,
-                )
-                return module
-        # replace — sub_label / comment / intent 등 원본 필드 보존, 분석분만 갱신.
-        # logical_name 은 여기서 채움 — 헤더(M9 intent)가 아니라 멤버 분석 종합에서 도출.
+        # replace — sub_label / comment / annotations 등 원본 필드 보존, 분석분만 갱신.
+        # logical_name 은 여기서 채움 — 헤더 임시 정보가 아니라 멤버 분석 종합에서 도출.
         return replace(
             module,
             summary=result.summary,
@@ -98,8 +94,13 @@ async def summarize_module_step(state: dict, config: Optional[RunnableConfig] = 
             logical_name=result.logical_name or None,
         )
 
-    # 첫 모듈 1건으로 prefix 캐시 워밍 → 나머지 병렬 (cold 동시요청 캐시 미스 방지).
-    updated = await gather_with_warmup([_summarize_one(m) for m in modules])
+    # 첫 모듈 1건으로 prefix 캐시 워밍 → 나머지 병렬. fail 정책 = 개별 모듈 LLM 실패 시
+    # 로그 + 원본 module 반환 (분석 흐름 유지). BudgetExceededError 만 즉시 전파.
+    with step_processing_scope(_STEP, stream):
+        results = await gather_with_warmup(
+            [_summarize_one(m) for m in modules], return_exceptions=True,
+        )
+    updated = _apply_fail_policy(modules, results)
 
     if neo is not None:
         await upsert_modules(neo, updated)
@@ -109,7 +110,30 @@ async def summarize_module_step(state: dict, config: Optional[RunnableConfig] = 
         modules=len(modules), summarized=summarized,
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
-    return {"modules": list(updated)}
+    return {"modules": updated}
+
+
+def _apply_fail_policy(modules: list[Module], results: list) -> list[Module]:
+    """fan-out 결과에 fail 정책 적용 — 예외면 원본 module + log, BudgetExceededError 는 raise.
+
+    ``_summarize_one`` 이 raise 한 예외를 여기서 받아 분석 흐름 유지 정책 (원본 반환)
+    실행. 단일 책임 — _summarize_one = 성공만 / 여기 = fail 정책.
+    """
+    updated: list[Module] = []
+    for module, result in zip(modules, results):
+        if isinstance(result, BudgetExceededError):
+            raise result        # 회로 차단기는 상위로 전파
+        if isinstance(result, BaseException):
+            log_error(
+                "analysis_flow.step7_post_processing.summarize_module_step",
+                "module_summary",
+                result,
+                module_id=module.module_id,
+            )
+            updated.append(module)
+        else:
+            updated.append(result)
+    return updated
 
 
 def _match_functions_to_modules(

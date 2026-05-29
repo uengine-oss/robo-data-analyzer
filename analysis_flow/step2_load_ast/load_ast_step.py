@@ -59,10 +59,10 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         err = FileNotFoundError(
             f"antlr JSON 디렉토리 없음: {ast_dir} — antlr-parser 를 먼저 실행하세요"
         )
-        log_error(_STEP, "start", err, project=project.name)
+        log_error(_STEP, "start", err, root=str(project.root))
         raise err
 
-    log_info(_STEP, "start", project=project.name, ast_dir=str(ast_dir))
+    log_info(_STEP, "start", root=str(project.root), ast_dir=str(ast_dir))
 
     functions, modules, packages = [], [], []
     variables, constants, data_types = [], [], []

@@ -35,6 +35,7 @@ from shared.config.env_catalog import ENV
 from shared.llm.cost_budget import BudgetExceededError, CostBudget
 from shared.llm.fanout import gather_with_warmup
 from shared.log.logger import log_error, log_info, log_warning
+from shared.log.processing_progress import step_processing_scope, track_processing
 
 _STEP = "step5.build_context"
 
@@ -109,6 +110,7 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
     cfg = step_config(config)
     strategy = cfg.get("strategy")
     cost_budget: CostBudget | None = cfg.get("cost_budget")
+    stream = cfg.get("stream")
     if strategy is None:
         log_warning(_STEP, "config_missing", "strategy 누락 — step skip")
         return {}
@@ -182,7 +184,8 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
             for fn in big_functions
         ]
         # 첫 함수 1건으로 prefix 캐시 워밍 → 나머지 병렬 (cold 동시요청 캐시 미스 방지).
-        results = await gather_with_warmup(tasks, return_exceptions=True)
+        with step_processing_scope(_STEP, stream):
+            results = await gather_with_warmup(tasks, return_exceptions=True)
         failed = 0
         for fn, r in zip(big_functions, results):
             if isinstance(r, BudgetExceededError):
@@ -213,9 +216,11 @@ async def _compute_one_liner_safe(
     """본문 캐시 사용해서 one_liner 계산 → ``ctx.one_liner`` 채움.
 
     회로 차단기는 raise (gather 가 잡아 상위로 전파).
+    track_processing 이 start/done/failed 자동 emit — stream 인자 chain 불필요.
     """
-    async with semaphore:
-        body_text = body_cache.slice(fn.file_path, fn.start_line, fn.end_line)
-        one_liner = await compute_one_liner(fn, body_text, cost_budget=cost_budget)
-        if one_liner:
-            contexts[fn.function_id].one_liner = one_liner
+    async with track_processing("Function", fn.function_id, sub_action="one_liner"):
+        async with semaphore:
+            body_text = body_cache.slice(fn.file_path, fn.start_line, fn.end_line)
+            one_liner = await compute_one_liner(fn, body_text, cost_budget=cost_budget)
+            if one_liner:
+                contexts[fn.function_id].one_liner = one_liner

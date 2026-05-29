@@ -16,8 +16,7 @@ MERGE (e:EXAMPLE {example_id: item.example_id})
 SET e.description = item.description,
     e.given = item.given,
     e.when_ = item.when_,
-    e.then_ = item.then_,
-    e.is_boundary = item.is_boundary
+    e.then_ = item.then_
 """
 
 
@@ -30,7 +29,6 @@ async def upsert_examples(client: Neo4jClient, examples: Iterable[Example]) -> N
             "given": e.given,
             "when_": e.when,
             "then_": e.then,
-            "is_boundary": e.is_boundary,
         }
         for e in examples
     ]
