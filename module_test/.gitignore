@@ -1,0 +1,5 @@
+# CodeGraph 인덱스는 재생성 가능 — 추적 안 함 (test 영역만, robo data와 분리)
+**/.codegraph/
+
+# 테스트용 고객 레거시 소스는 원격에 올리지 않음 (민감)
+testdata/source/*.c
