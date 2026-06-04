@@ -1,12 +1,16 @@
-"""step4 linking (DBMS 전용) — DML leaf range → DDL 테이블 결정론 매칭.
+"""step4 linking (DBMS 전용) — 모든 DML range → DDL 테이블 결정론 매칭.
 
-DBMS 는 SQL 이 코드에 그대로 있다 — leaf range(자식 없는 단일 statement)의 본문에서
-DDL 테이블 이름을 단어경계 문자열검색해 ``ReadsWrites`` 엣지를 만든다. **AST 파싱·LLM 0.**
+DBMS 는 SQL 이 코드에 그대로 있다 — 각 노드의 **자기 줄**(자기 범위 − 직속 자식 줄범위)
+본문에서 DDL 테이블 이름을 단어경계 문자열검색해 ``ReadsWrites`` 엣지를 만든다.
+**AST 파싱·LLM 0.**
 
 - relation / dml_type : 본문 첫 DML 키워드 (SELECT/WITH=READS · INSERT/UPDATE/DELETE/MERGE=WRITES).
 - write 대상 (INSERT INTO / UPDATE / DELETE FROM / MERGE INTO 직후 테이블) = WRITES, 그 외 = READS.
-- leaf 만 처리 — 컨테이너 range(PROCEDURE/IF/LOOP)는 자식 DML 을 품을 뿐 자기 statement 가
-  아니므로 제외 (같은 테이블 R/W 엣지 중복 방지).
+- **모든 노드를 자기 줄만 스캔** — ``MERGE INTO …USING(SELECT…)`` 처럼 자식을 가진 부모
+  노드도 자기 줄(바깥 문)에 INTO 대상·메인 FROM 이 있으므로 스캔한다. 자식 구간(서브쿼리)은
+  그 자식 노드가 자기 줄로 따로 스캔 → **누락 0 · 중복 0** (각 테이블이 자기 줄이 속한
+  노드에서 정확히 1 번). 자기 줄에 테이블 텍스트가 그대로 있어 ``EXECUTE IMMEDIATE`` 안
+  리터럴 SQL 의 테이블도 자동 포착 (주석만 제거, 문자열은 보존).
 
 (구 ``extract_dml_metadata_step`` 의 LLM 테이블 추출을 결정론으로 대체 — plan §M13.)
 """
@@ -14,7 +18,6 @@ from __future__ import annotations
 
 import re
 import time
-from pathlib import Path
 from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
@@ -42,7 +45,7 @@ _COMMENT_RE = re.compile(r"--[^\n]*|/\*.*?\*/", re.DOTALL)
 
 
 async def link_dbms_tables_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
-    """DBMS DML leaf range → DDL 테이블 결정론 매칭 → ``ReadsWrites`` 엣지."""
+    """DBMS DML range → DDL 테이블 결정론 매칭 → ``ReadsWrites`` 엣지 (모든 노드 자기 줄)."""
     cfg = step_config(config)
     neo: Neo4jClient | None = cfg.get("neo_client")
 
@@ -70,7 +73,7 @@ async def link_dbms_tables_step(state: dict, config: Optional[RunnableConfig] = 
 def _link(
     functions: list[Function], tables: list[Table], parent_of_edges: list,
 ) -> list[ReadsWrites]:
-    """leaf DML range 본문에서 DDL 테이블명 문자열검색 → ReadsWrites."""
+    """모든 노드의 자기 줄(자기 범위 − 자식 줄범위) 에서 DDL 테이블명 검색 → ReadsWrites."""
     name_to_fqn = {t.name.upper(): t.fqn for t in tables}
     if not name_to_fqn:
         return []
@@ -79,23 +82,30 @@ def _link(
         r"\b(" + "|".join(re.escape(n) for n in sorted(name_to_fqn, key=len, reverse=True)) + r")\b",
         re.IGNORECASE,
     )
-    parent_ids = {e.parent_function_id for e in parent_of_edges}
+    # 각 노드의 직속 자식 줄범위 — 자기 줄 = 자기 범위에서 이 구간들을 뺀 나머지.
+    # parent_of_edges 는 "스킵 대상" 이 아니라 "자기 줄 계산용" 으로만 쓴다.
+    fn_by_id = {fn.function_id: fn for fn in functions}
+    child_ranges: dict[str, list[tuple[int, int]]] = {}
+    for e in parent_of_edges:
+        child = fn_by_id.get(e.child_function_id)
+        if child is not None:
+            child_ranges.setdefault(e.parent_function_id, []).append(
+                (child.start_line, child.end_line)
+            )
 
     file_cache = SourceFileCache()
     edges: list[ReadsWrites] = []
     seen: set[tuple[str, str, str]] = set()
 
     for fn in functions:
-        if fn.function_id in parent_ids:
-            continue   # 컨테이너 range — leaf 만 처리
         body = _COMMENT_RE.sub(
-            " ", file_cache.slice(fn.file_path, fn.start_line, fn.end_line),
+            " ", _own_body(fn, child_ranges.get(fn.function_id, ()), file_cache),
         )
         if not body.strip():
             continue
         dml_type = _first_dml(body)
         if dml_type is None:
-            continue   # DML statement 아님 (ASSIGN/RAISE/CALL 등)
+            continue   # DML statement 아님 (ASSIGN/RAISE/CALL/컨테이너 골격 등)
         write_targets = {t.upper() for t in _WRITE_TARGET_RE.findall(body)}
         for m in table_re.finditer(body):
             fqn = name_to_fqn.get(m.group(1).upper())
@@ -115,6 +125,29 @@ def _link(
                 evidence_line=fn.start_line,
             ))
     return edges
+
+
+def _own_body(fn: Function, child_ranges, file_cache: SourceFileCache) -> str:
+    """fn 의 자기 줄 텍스트 — 자기 ``[start, end]`` 에서 직속 자식 줄범위를 뺀 나머지 줄.
+
+    부모 노드도 자기 줄(바깥 문: ``MERGE INTO …`` · 메인 ``FROM …``)만 본다 → 자식
+    구간(서브쿼리)은 그 자식 노드가 따로 스캔. ``range_body._transform`` 의 line-walk 과
+    같은 발상이되, 여기선 치환이 아니라 자식 줄 제거만 한다 (R/W 텍스트 스캔 입력).
+    """
+    lines = file_cache.lines(fn.file_path)
+    if not lines:
+        return ""
+    end = fn.end_line if fn.end_line > 0 else len(lines)
+    covered: set[int] = set()
+    for cs, ce in child_ranges:
+        for ln in range(cs, (ce if ce > 0 else cs) + 1):
+            covered.add(ln)
+    own = [
+        lines[ln - 1]
+        for ln in range(max(fn.start_line, 1), min(end, len(lines)) + 1)
+        if ln not in covered
+    ]
+    return "\n".join(own)
 
 
 def _first_dml(body: str) -> Optional[str]:

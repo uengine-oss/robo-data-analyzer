@@ -49,8 +49,8 @@ from analysis_flow.step4_linking.stage3_residual_patterns.link_residual_patterns
 
 # DBMS 전용 step
 from analysis_flow.step4_linking.link_dbms_tables_step import link_dbms_tables_step
-from analysis_flow.step4_linking.stage2_extract_calls.link_calls_by_regex_step import (
-    link_calls_by_regex_step,
+from analysis_flow.step4_linking.stage2_extract_calls.link_calls_by_ast_step import (
+    link_calls_by_ast_step,
 )
 from analysis_flow.step7_post_processing.enrich_lineage_from_catalog_step import (
     enrich_lineage_from_catalog_step,
@@ -115,8 +115,10 @@ DBMS_PIPELINE = Strategy(
         load_ast_step,
         # scan_codebase_step 없음 — DBMS 는 Scan Agent 안 씀 (Plan §6)
         link_dbms_tables_step,                # ★ DBMS 만 — DML range → DDL 테이블 결정론 매칭 (LLM 0)
-        link_deterministic_step,
-        link_calls_by_regex_step,             # ★ DBMS 만 — PL/SQL PKG.FUNC regex
+        # link_deterministic_step 없음 — DBMS 는 Scan 미사용이라 R/W 0 을 반환해
+        #   link_dbms_tables_step 의 R/W 를 덮어쓸 뿐 (artifact 오기록). stage3 도 없어
+        #   unresolved 소비처도 없음 → 데드 step (Framework 만 사용).
+        link_calls_by_ast_step,               # ★ DBMS 만 — AST CALL 노드 분류 (빌트인·자기루프 드롭)
         # 잔여 패턴 루프 없음 — DBMS 는 에이전트 링킹을 안 씀
         build_context_step,
         analyze_function_step,

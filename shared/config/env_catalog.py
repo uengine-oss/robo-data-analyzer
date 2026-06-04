@@ -116,6 +116,9 @@ class PipelineSettings:
     # 잔여 패턴 루프 — 한 라운드 에이전트에 보내는 미해결 샘플 수 / 루프 반복 상한.
     residual_sample_size: int = field(default_factory=lambda: _getenv_int("ROBO_PIPELINE_RESIDUAL_SAMPLE_SIZE", 30))
     residual_max_rounds: int = field(default_factory=lambda: _getenv_int("ROBO_PIPELINE_RESIDUAL_MAX_ROUNDS", 3))
+    # DBMS step6 배치(🅕) — 같은 부모 형제를 한 LLM 콜로 묶을 때의 입력 토큰 상한.
+    # 작게(기본 1500) 잡아 출력 폭주 차단 — 한 노드가 이 한도 초과면 단독 배치.
+    batch_max_tokens: int = field(default_factory=lambda: _getenv_int("ROBO_PIPELINE_BATCH_MAX_TOKENS", 1500))
     # 임베딩 step on/off — Framework/DBMS 공통. 기본 ON (운영=full 동작).
     # 테스트/디버그 시 .env 로 off (느린 모델 로드 회피).
     # 모델 자체는 LLM 영역 (shared/llm/embedder) 책임 — 분석기는 ENV 안 둠.
@@ -158,10 +161,26 @@ class LogSettings:
     level: str = field(default_factory=lambda: _getenv_str("ROBO_LOG_LEVEL", "INFO"))
 
 
+# robo-data-analyzer 와 같은 레벨(형제)에 있는 ``data`` 폴더 — 실행 위치(cwd) 무관 고정 기준.
+# 이 파일: robo-data-analyzer/shared/config/env_catalog.py → parents[2] = robo-data-analyzer.
+# antlr-code-parser 도 동일하게 "자기 위치의 부모 + data" 로 이 폴더에 산출물(source/ddl/analysis)을 쌓는다.
+_DEFAULT_DATA_DIR = Path(__file__).resolve().parents[2].parent / "data"
+
+
+def _resolve_data_dir() -> Path:
+    """분석 베이스 폴더. ``ROBO_DATA_DIR`` 명시 시 그걸로 override, 없으면 형제 ``data``."""
+    override = os.environ.get("ROBO_DATA_DIR", "").strip()
+    return Path(override) if override else _DEFAULT_DATA_DIR
+
+
 @dataclass(frozen=True)
 class DataSettings:
-    """ROBO_DATA_* — 분석 대상 프로젝트 베이스."""
-    dir: Path = field(default_factory=lambda: Path(_getenv_str("ROBO_DATA_DIR", "./data")))
+    """ROBO_DATA_* — 분석 대상 베이스 (source / ddl / analysis 공유 루트).
+
+    기본값 = robo-data-analyzer 와 같은 레벨의 ``data`` 폴더 (cwd 무관, 머신 독립).
+    다른 위치를 쓰려면 ``ROBO_DATA_DIR`` 로 override.
+    """
+    dir: Path = field(default_factory=_resolve_data_dir)
 
 
 # ── 통합 카탈로그 ──────────────────────────────────────────

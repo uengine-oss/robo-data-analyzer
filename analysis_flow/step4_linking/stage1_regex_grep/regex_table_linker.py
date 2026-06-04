@@ -101,7 +101,7 @@ class RegexTableLinker:
         src_files = (
             [Path(f) for f in sorted(restrict_to_files)]
             if restrict_to_files is not None
-            else Path(project_root).rglob("*")
+            else sorted(Path(project_root).rglob("*"))
         )
         for src_file in src_files:
             if not src_file.is_file():

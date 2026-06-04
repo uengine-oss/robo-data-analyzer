@@ -27,6 +27,7 @@ from shared.source_file_cache import SourceFileCache
 from shared.workflow.step_utils import step_config
 
 from analysis_flow.step6_analyze_function.analysis_order import bottom_up_rounds
+from analysis_flow.step6_analyze_function.batch_analyze import run_dbms_batch_analysis
 from analysis_flow.step6_analyze_function.call_cycles import find_call_cycles
 from analysis_flow.step6_analyze_function.module_pre_analysis import run_module_pre_analysis
 from analysis_flow.step6_analyze_function.three_split_llm_fanout import (
@@ -90,7 +91,15 @@ async def analyze_function_step(state: dict, config: Optional[RunnableConfig] = 
         stream=stream,
     )
 
-    # 1. cycle 식별 (CALLS + PARENT_OF 둘 다)
+    # DBMS 는 배치 분석 (🅕 — 같은 부모 형제 1콜). Framework 는 아래 per-node 3분할 유지.
+    if strategy is not None and getattr(strategy, "name", "") == "dbms":
+        with step_processing_scope(_STEP, stream):
+            return await run_dbms_batch_analysis(
+                state, contexts, function_by_id, strategy, cost_budget, neo, stream,
+                codebase_notes, module_intents, table_descriptions,
+            )
+
+    # 1. cycle 식별 (CALLS + PARENT_OF 둘 다) — Framework per-node 경로
     edges: list[tuple[str, str]] = [
         (e.caller_function_id, e.callee_function_id)
         for e in state.get("calls_edges", [])

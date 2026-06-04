@@ -1,6 +1,6 @@
 """ROBO_DATA_DIR 기준 단발 / 일괄 분석 — 운영자 표준 진입점.
 
-표준 디렉토리 규약 (``ROBO_DATA_DIR`` 환경변수, 기본 ``./data``):
+표준 디렉토리 규약 (``ROBO_DATA_DIR`` 환경변수, 미지정 시 robo-data-analyzer 형제 ``data``):
 
 ::
 

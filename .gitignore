@@ -35,3 +35,6 @@ logs/
 *.backup
 *.backup.md
 _debug/
+
+# 테스트 PoC 모듈(고객 .c 테스트데이터 포함) — 푸시 금지
+module_test/

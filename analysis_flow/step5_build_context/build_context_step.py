@@ -160,7 +160,7 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
             writes=tuple(sorted(writes_by_fn.get(fn.function_id, ()))),
             callers=tuple(sorted(callers_by_fn.get(fn.function_id, ()))),
             callees=tuple(sorted(callees_by_fn.get(fn.function_id, ()))),
-            referenced_symbols=tuple(refsym_by_fn.get(fn.function_id, ())),
+            referenced_symbols=tuple(sorted(refsym_by_fn.get(fn.function_id, ()))),
             token_count=estimate_tokens(body_text),
         )
         ctx = await builder.augment(ctx, fn, state)

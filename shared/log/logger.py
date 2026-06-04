@@ -63,7 +63,7 @@ _COMPONENT_LABELS: dict[str, str] = {
     "step3.scan":             "3️⃣  Scan Agent",
     "step4.link_deterministic":  "4️⃣ ①결정론 연결",
     "step4.link_calls_by_name":  "4️⃣ ②Call 이름 분류",
-    "step4.link_calls_by_regex": "4️⃣ ②Call regex 추출",
+    "step4.link_calls_by_ast":   "4️⃣ ②Call AST 분류",
     "step4.link_residual_patterns": "4️⃣ ③잔여 패턴 루프",
     "step5.build_context":       "5️⃣  분석 컨텍스트",
     "step6.analyze_function":    "6️⃣  함수 분석",

@@ -57,7 +57,7 @@ def collect_scanner_input(project_root: Path) -> dict:
     ext_counter: Counter = Counter()
     categories: dict[str, list[str]] = {k: [] for k in _CATEGORY_EXTENSIONS}
 
-    for f in project_root.rglob("*"):
+    for f in sorted(project_root.rglob("*")):
         if not f.is_file():
             continue
         ext = f.suffix.lower()

@@ -217,9 +217,9 @@ parse_ddl_step
 parse_ddl_step
  → load_ast_step
  (scan_codebase_step 없음 — DBMS 는 Scan Agent 안 씀)
- → link_dbms_tables_step            ★ DBMS only — DML range → DDL 테이블 결정론 매칭
- → link_deterministic_step          (잔여 정규식 — 거의 동작 안 함)
- → link_calls_by_regex_step         ★ DBMS only — PL/SQL PKG.FUNC regex
+ → link_dbms_tables_step            ★ DBMS only — 모든 노드 자기줄 → DDL 테이블 결정론 매칭
+ (link_deterministic_step 없음 — DBMS 는 Scan 미사용, R/W 0 으로 덮어쓰는 데드 step)
+ → link_calls_by_ast_step           ★ DBMS only — AST CALL 노드 분류 (빌트인·자기루프 드롭)
  (잔여 패턴 루프 없음 — DBMS 는 에이전트 링킹 안 씀)
  → build_context_step
  → analyze_function_step
@@ -300,15 +300,18 @@ step2 의 `call_sites` 를 코드 목록 대조로 분류:
 - `framework_functions` 의 런타임/매크로 → 드롭
 - 그 외 → `external` `Calls` 엣지
 
-#### 4-B' `link_calls_by_regex_step` (DBMS, LLM 0)
+#### 4-B' `link_calls_by_ast_step` (DBMS, LLM 0)
 
-PL/SQL `PKG.FUNC(...)` 단순 정규식으로 호출 추출 → `Calls` 엣지.
+antlr `CALL` 노드를 분류 → `Calls` 엣지. 빌트인(`DBMS_`/`UTL_`/…) 드롭, 콜리 단순명이
+정의 노드(프로시저/함수/트리거 루트) 와 일치하면 internal(방향 = caller→정의), 그 외
+external, 자기루프 드롭. 정규식 아닌 AST 라 문자열·주석처리 호출 오인식 0.
 
 #### 4-B'' `link_dbms_tables_step` (DBMS, LLM 0)
 
-leaf range (자식 없는 단일 statement) 본문에서 **DDL 테이블명 단어경계 문자열검색**.
+**모든 노드의 자기 줄**(자기 범위 − 자식 줄범위) 에서 **DDL 테이블명 단어경계 문자열검색**.
+부모(`MERGE INTO…USING(SELECT…)`) 도 자기 줄(바깥 문)을 스캔 → 누락·중복 0.
 첫 DML 키워드(SELECT/WITH/INSERT/UPDATE/DELETE/MERGE) 가 relation/dml_type 결정.
-주석은 `--` / `/* */` 제거 후 매칭.
+주석은 `--` / `/* */` 제거 후 매칭 (문자열은 보존 — EXECUTE IMMEDIATE 리터럴 SQL 포착).
 
 #### 4-C `link_residual_patterns_step` (Framework only, LLM Agent 라운드 루프)
 
@@ -503,8 +506,8 @@ robo-analyzer-refact/
 │   │   │   └── regex_table_linker.py
 │   │   ├── stage2_extract_calls/
 │   │   │   ├── link_calls_by_name_step.py  # Framework
-│   │   │   ├── link_calls_by_regex_step.py # DBMS
-│   │   │   └── call_regex_linker.py
+│   │   │   ├── link_calls_by_ast_step.py   # DBMS
+│   │   │   └── call_linker.py
 │   │   └── stage3_residual_patterns/
 │   │       ├── link_residual_patterns_step.py    # Framework only
 │   │       └── residual_pattern_loop.py

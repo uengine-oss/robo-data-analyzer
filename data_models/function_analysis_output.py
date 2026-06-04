@@ -159,6 +159,38 @@ class RulesExamplesOutput(BaseModel):
     )
 
 
+# ── DBMS 배치 분석 (🅕 — 같은 부모 형제 N 노드를 1 콜로) ──
+
+
+class NodeAnalysis(BaseModel):
+    """배치 안 노드 1개의 분석 결과 — ``node_key`` 로 어느 노드인지 식별.
+
+    ★ 평탄 구조 (자유 키 dict X) — 과거 4·5차 폭주(자유키 dict value 토큰 폭주 /
+    중첩 반복 구조)를 구조적으로 차단. per-node 3분할(Summary/RulesExamples/
+    TableInsights)의 필드를 **노드별 1 항목으로 합본** — 분할이 "별도 콜"이 아니라
+    "한 노드의 출력 필드"가 됨 (노드당 3콜 → 청크당 1콜).
+
+    상한(max_length)은 per-node 와 동일한 느슨한 폭주 안전망.
+    """
+    node_key: str = Field(..., description="이 결과가 어느 노드인지 — 입력에 주어진 줄범위 '<start>-<end>' 그대로 echo")
+    summary: str = Field("", description="2 섹션 '[핵심] 한 줄' + 빈 줄 + 내용 (단순 노드는 [핵심] 한 줄)")
+    stereotype: str = Field("", description="ontology_roles.yaml 풀에서 선택 (없으면 빈 값)")
+    logical_name: str = Field("", description="형제와 구별되는 도메인 한 줄 표시명")
+    rules: list[RuleItem] = Field(default_factory=list, max_length=30)
+    examples: list[ExampleItem] = Field(default_factory=list, max_length=30)
+    questions: list[QuestionItem] = Field(default_factory=list, max_length=15)
+    table_insights: list[TableInsightItem] = Field(default_factory=list)
+
+
+class BatchAnalysisOutput(BaseModel):
+    """같은 부모 형제 노드 묶음(배치)의 분석 결과 — 노드별 ``NodeAnalysis`` 리스트.
+
+    ``nodes`` 는 입력 노드와 1:1 (``node_key`` 줄범위로 매칭 — 위치매핑 X). 누락 노드는
+    호출자가 미니 재요청으로 보강 (silent fail 금지).
+    """
+    nodes: list[NodeAnalysis] = Field(default_factory=list)
+
+
 # ── 모듈 사전분석 (module_pre_analysis — 함수 분석 전 1회) ──
 
 

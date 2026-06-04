@@ -346,7 +346,7 @@ def _bare_hits(
 ) -> list[tuple[str, str]]:
     """텍스트의 식별자 토큰을 ``names`` 테이블과 정확 일치 — 미방문분만."""
     hits: list[tuple[str, str]] = []
-    for token in set(_IDENT.findall(text)):
+    for token in sorted(set(_IDENT.findall(text))):
         hits += _collect(names.get(token, ()), seen)
     return hits
 
@@ -362,7 +362,7 @@ def _pass2_hits(
         for mid in scope.owner_map.get(owner, ()):
             hits += _collect(targets.get(mid, {}).get(member, ()), seen)
     if scope.bare_map:                                  # from-import / static import 맨이름
-        for token in set(_IDENT.findall(text)):
+        for token in sorted(set(_IDENT.findall(text))):
             for mid in scope.bare_map.get(token, ()):
                 hits += _collect(targets.get(mid, {}).get(token, ()), seen)
     return hits

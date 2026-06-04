@@ -175,6 +175,18 @@ class Function:
     # strategy 별 확장 필드 (dict — 새 필드 추가 시 base 무변경) ────
     extra: dict = field(default_factory=dict)
 
+    def own_ast_type(self) -> str:
+        """이 노드의 antlr 원시 타입 (DBMS nested: ``CALL``/``MERGE``/``TRY``/``IF`` 등).
+
+        DBMS function_id 는 ``{parent_id}:{TYPE}:{line}`` 로 조립되므로(`antlr_json_reader`)
+        부모 id 를 떼면 첫 세그먼트가 **자기 타입**이다. uniqueness 접미사(``:line#n``)에도
+        robust — 자손 타입에 오염되지 않는다 (부분문자열 매칭의 컨테이너 오류 차단).
+        루트(parent_id None) · Framework(``.`` id) 는 빈 문자열.
+        """
+        if self.parent_id and self.function_id.startswith(self.parent_id + ":"):
+            return self.function_id[len(self.parent_id) + 1:].split(":")[0]
+        return ""
+
 
 @dataclass(frozen=True)
 class Variable:

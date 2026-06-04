@@ -111,17 +111,26 @@ class Calls:
     """Function → Function (호출 관계).
 
     Framework: 결정론 분류 (link_calls_by_name — 함수 이름 목록 대조).
-    DBMS: regex 추출 (link_calls_by_regex — PKG.FUNC 단순 패턴).
+    DBMS: AST CALL 노드 분류 (link_calls_by_ast — 빌트인·자기루프 드롭).
 
     scope:
-    - ``internal``: 같은 코드베이스 안 함수
-    - ``external``: 분석 범위 밖 함수 / 외부 라이브러리 (예: java.util.*, DBMS_/UTL_ 내장)
+    - ``internal``: 같은 코드베이스 안 함수 — 콜리 정의 노드가 이미 존재.
+    - ``external``: 분석 범위 밖 실 함수/프로시저 (예: 자기 스키마의 미분석 프로시저,
+      다른 스키마/라이브러리). 콜리 정의 노드가 없어 ``upsert_calls`` 가
+      ``:FUNCTION:EXTERNAL`` stub 노드를 모듈·스키마와 함께 internal 과 대칭으로 생성.
 
-    정체성 = (caller, callee). scope 는 부속 — 같은 호출이 두 번 분류돼도 그래프엔 1 엣지.
+    external 분해 메타 (``callee_*``) — strategy 별 linker 가 **언어 의미**로 채운다
+    (DBMS: package=스키마·module=프로시저, Framework: package=패키지·module=클래스).
+    internal 은 콜리 노드가 이미 있어 빈 값 (upsert 가 function_id 로 기본값 보충).
+
+    정체성 = (caller, callee). scope·callee_* 는 부속 — 같은 호출이 두 번 분류돼도 그래프엔 1 엣지.
     """
     caller_function_id: str
     callee_function_id: str
     scope: Literal["internal", "external"] = "internal"
+    callee_module_id: str = ""               # external 콜리의 모듈 (DBMS=프로시저명 / FW=클래스)
+    callee_package_id: str = ""              # external 콜리의 스키마(DBMS) / 패키지(FW)
+    callee_name: str = ""                    # external 콜리 표시명
 
 
 @dataclass(frozen=True)
