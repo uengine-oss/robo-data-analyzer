@@ -1,7 +1,8 @@
-"""NDJSON 단일 스트림 emit — 폴링·컨트롤 엔드포인트 대체 (Plan §4 M1).
+"""NDJSON 단일 스트림 emit — 진행 상태 단일 채널 (폴링 없음).
 
-``/robo/pipeline/status`` 폴링 폐기. ``/robo/pipeline/control`` (pause/resume) 폐기 —
-진행은 이 NDJSON 스트림 단일 채널. 매 ``/analyze`` = 독립 run (resume 미지원).
+진행 상태는 폴링이 아니라 이 NDJSON 스트림으로 push. 일시정지/재개/중단 제어는 별도
+``POST /robo/analyze/control`` 엔드포인트가 담당 — 그 상태 전이(paused/resumed/stopped)도
+여기 ``phase_event`` 로 흘러나온다.
 
 분석 시작 시 long-lived NDJSON connection 으로 모든 이벤트 push:
 

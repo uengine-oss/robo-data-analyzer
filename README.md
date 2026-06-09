@@ -175,8 +175,12 @@ NDJSON 이벤트 7종 — `phase_event` / `tool_event` / `todo_update` / `node_e
 
 `GET /` — health check (`{"status": "ok"}`).
 
-> 폴링/컨트롤 엔드포인트는 **없다** (Plan §4 M1). 매 `/analyze` = 독립 run.
-> resume(중단 재개) 미지원. 클라이언트가 stream 끊으면 그 run 종료.
+`POST /robo/analyze/control` — 진행 중 분석 제어 `{action: pause|resume|stop}` →
+`{success, action, status: {isPaused, isStopped}}`. "동시 분석 1개" 모델(payload 에
+run_id 없음). 일시정지는 같은 세션 안의 soft hold — 서버를 끄면 run 도 끝난다(디스크 재개 X).
+
+> 진행 상태 폴링 엔드포인트는 **없다**. 진행은 `/analyze` 의 NDJSON 스트림 단일 채널.
+> 클라이언트가 stream 끊으면 그 run 종료.
 
 ### 3.3 보조 CLI
 

@@ -30,6 +30,7 @@ from shared.llm.yaml_llm_runner import run_yaml_rule
 from shared.log.logger import log_error, log_info, log_warning
 from shared.log.processing_progress import track_processing
 from shared.source_file_cache import SourceFileCache
+from shared.workflow.pause_controller import PauseController
 
 _STEP = "step6.analyze_function.batch"
 
@@ -45,10 +46,14 @@ async def run_dbms_batch_analysis(
     codebase_notes: str,
     module_intents: dict[str, str],
     table_descriptions: dict[str, str],
+    pause: PauseController,
 ) -> dict:
     """DBMS 배치 분석 — 유효 트리 → 바텀업 라운드 → 라운드별 형제 배치 1콜.
 
     결과는 ``analyze_function_step`` 과 동일한 state dict (analysis_contexts + EM 9종).
+
+    일시정지/중단은 ``pause.gate()`` 로 소비 — Framework ``_run_rounds`` 와 동일 정책:
+    paused 면 hold, stop 이면 RunStopped, 일시정지로 취소된 배치는 재개 시 재투입.
     """
     # persist/EM 헬퍼는 analyze_function_step 공유 (지연 import — 순환 회피).
     from analysis_flow.step6_analyze_function.analyze_function_step import (
@@ -87,25 +92,47 @@ async def run_dbms_batch_analysis(
             continue
         batches = plan_batches(round_ids, eff_parent, start_of, token_of, ENV.pipeline.batch_max_tokens)
         batch_count += len(batches)
-        tasks = [
-            _analyze_batch_guarded(
-                b, contexts, function_by_id, strategy, cost_budget,
-                codebase_notes, module_intents, table_descriptions, source_cache, semaphore,
-            )
-            for b in batches
-        ]
-        for finished in asyncio.as_completed(tasks):
-            result = await finished
-            if isinstance(result, BudgetExceededError):
-                raise result                       # 회로 차단기 즉시 전파
-            if isinstance(result, BaseException):
-                failed += 1
-                log_error(_STEP, "batch", result, round=round_idx)
-                continue
-            for fn in result:                      # 배치가 분석한 Function 들
-                em = await _persist_and_emit_function(fn, neo, stream)
-                _accumulate_em(em_acc, em)
-                analyzed += 1
+
+        # 미완료 배치가 빌 때까지 투입 — 일시정지로 취소된 배치만 재투입(Neo4j MERGE 라 안전).
+        remaining = list(batches)
+        while remaining:
+            await pause.gate()
+            tasks = [
+                asyncio.ensure_future(
+                    _run_batch_with_ref(
+                        b,
+                        _analyze_batch_guarded(
+                            b, contexts, function_by_id, strategy, cost_budget,
+                            codebase_notes, module_intents, table_descriptions, source_cache, semaphore,
+                        ),
+                    )
+                )
+                for b in remaining
+            ]
+            pause.set_inflight(tasks)
+            done_batches: set[int] = set()
+            try:
+                for finished in asyncio.as_completed(tasks):
+                    batch, result = await finished
+                    if isinstance(result, asyncio.CancelledError):
+                        continue                   # 일시정지로 취소 → remaining 에 남겨 재투입
+                    done_batches.add(id(batch))
+                    if isinstance(result, BudgetExceededError):
+                        raise result               # 회로 차단기 즉시 전파
+                    if isinstance(result, BaseException):
+                        failed += 1
+                        log_error(_STEP, "batch", result, round=round_idx)
+                        continue
+                    for fn in result:              # 배치가 분석한 Function 들
+                        em = await _persist_and_emit_function(fn, neo, stream)
+                        _accumulate_em(em_acc, em)
+                        analyzed += 1
+            finally:
+                pause.clear_inflight()
+                for task in tasks:                 # budget 차단 등 조기 이탈 시 orphan LLM 호출 차단
+                    if not task.done():
+                        task.cancel()
+            remaining = [b for b in remaining if id(b) not in done_batches]
 
     log_info(
         _STEP, "done",
@@ -136,6 +163,14 @@ def _apply_effective_tree(
     for fid, ctx in contexts.items():
         ctx.extra["parent_id"] = eff_parent.get(fid)
         ctx.extra["child_ids"] = tuple(eff_children.get(fid, ()))
+
+
+async def _run_batch_with_ref(batch: Batch, coro):
+    """coro 결과를 ``(batch, result)`` 로 묶음 — ``as_completed`` 가 어느 배치인지 매칭 가능하게.
+
+    ``_analyze_batch_guarded`` 가 예외(취소 포함)를 값으로 반환하므로 여기선 그대로 전달.
+    """
+    return batch, await coro
 
 
 async def _analyze_batch_guarded(

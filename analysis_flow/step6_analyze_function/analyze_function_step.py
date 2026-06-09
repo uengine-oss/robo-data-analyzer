@@ -24,6 +24,7 @@ from typing import Any, Optional
 from langchain_core.runnables import RunnableConfig
 
 from shared.source_file_cache import SourceFileCache
+from shared.workflow.pause_controller import NULL_PAUSE, PauseController
 from shared.workflow.step_utils import step_config
 
 from analysis_flow.step6_analyze_function.analysis_order import bottom_up_rounds
@@ -60,6 +61,7 @@ async def analyze_function_step(state: dict, config: Optional[RunnableConfig] = 
     cost_budget = cfg.get("cost_budget")
     neo: Neo4jClient | None = cfg.get("neo_client")
     stream: Optional[NDJSONStream] = cfg.get("stream")
+    pause: PauseController = cfg.get("pause") or NULL_PAUSE
 
     contexts = state.get("analysis_contexts", {})
     functions_list = state.get("functions", [])
@@ -96,7 +98,7 @@ async def analyze_function_step(state: dict, config: Optional[RunnableConfig] = 
         with step_processing_scope(_STEP, stream):
             return await run_dbms_batch_analysis(
                 state, contexts, function_by_id, strategy, cost_budget, neo, stream,
-                codebase_notes, module_intents, table_descriptions,
+                codebase_notes, module_intents, table_descriptions, pause,
             )
 
     # 1. cycle 식별 (CALLS + PARENT_OF 둘 다) — Framework per-node 경로
@@ -136,60 +138,78 @@ async def analyze_function_step(state: dict, config: Optional[RunnableConfig] = 
         """Round 루프 — 메인 변수 closure 캡처 (rounds / contexts / em_acc / neo / stream 등).
 
         ``step_processing_scope`` 안에서 호출 — track_processing 이 자동 emit.
+
+        일시정지/중단은 ``pause.gate()`` 로 소비: paused 면 hold, stop 이면 RunStopped.
+        일시정지 순간 in-flight 함수 task 는 controller 가 즉시 cancel — 취소된 함수만
+        ``remaining`` 에 남아 재개 시 재투입(Neo4j MERGE 라 재실행 안전).
         반환: ``(total_analyzed, total_failed)``.
         """
         analyzed_count = 0
         failed_count = 0
         for round_idx, round_fn_ids in enumerate(rounds, start=1):
+            if not round_fn_ids:
+                continue
             round_started = time.monotonic()
             log_info(_STEP, "round_start", round=f"{round_idx}/{len(rounds)}", functions=len(round_fn_ids))
 
-            if not round_fn_ids:
-                continue
-
-            # === Round 워밍 ===
-            # 첫 함수의 #1 summary 만 단독 선호출 → LLM 서버 prefix cache 에 공통지침
-            # 올림. 그 후 모든 함수 풀어놓으면 — 각 함수가 자기 흐름 (#1 → #2 #3),
-            # 함수 사이 동시 진행. 같은 함수 안만 #1 → #2 #3 순서 (cache 효과 위해).
+            # === Round 워밍 (라운드당 1회) ===
+            # 첫 함수의 #1 summary 만 단독 선호출 → LLM 서버 prefix cache 에 공통지침 올림.
+            # 그 후 모든 함수가 자기 흐름(#1 → #2 #3)으로 동시 진행, 그 prefix 에 적중.
+            await pause.gate()
             first_id = round_fn_ids[0]
             first_summary: Optional[SummaryOutput] = await run_summary(
                 first_id, contexts, function_by_id, strategy, cost_budget,
                 codebase_notes, module_intents, table_descriptions, source_cache,
             )
 
-            # === 모든 함수 풀어놓음 ===
-            # 첫 함수는 워밍 결과 재사용 (precomputed_summary), 나머지는 각자 처음부터.
-            # 각 함수 안에서 #1 → #2 #3 흐름은 await + asyncio.gather 가 자동 보장.
+            # === 미완료분이 빌 때까지 투입 — 일시정지로 취소된 함수만 재투입 ===
             # 끝나는 순서 = 영속화/emit 순서 (라운드 단위 X — 라운드는 내부 concurrency 제어).
-            # asyncio.as_completed 가 각 task 완료 즉시 yield → Neo4j SET + NDJSON emit
-            # 즉시 발생. ★ "함수 단위 진짜 즉시 영속화" 의 단일 진입점.
-            tasks = [
-                _run_with_id(
-                    fn_id,
-                    _analyze_one(
-                        fn_id, contexts, function_by_id, strategy, cost_budget,
-                        semaphore, codebase_notes, module_intents, table_descriptions,
-                        source_cache,
-                        precomputed_summary=(first_summary if fn_id == first_id else None),
-                    ),
-                )
-                for fn_id in round_fn_ids
-            ]
+            # asyncio.as_completed 가 완료 즉시 yield → Neo4j SET + NDJSON emit 즉시.
+            # 첫 함수는 워밍 결과(precomputed_summary) 재사용.
+            remaining = list(round_fn_ids)
             round_failed = 0
             round_analyzed = 0
-            for finished in asyncio.as_completed(tasks):
-                fn_id, r = await finished
-                if isinstance(r, BudgetExceededError):
-                    raise r          # 절대원칙 #3 — 회로 차단기 즉시 전파
-                if isinstance(r, BaseException):
-                    round_failed += 1
-                    log_error(_STEP, "round_analysis", r, function_id=fn_id, round=round_idx)
-                    continue
-                if r is None:
-                    continue
-                em = await _persist_and_emit_function(r, neo, stream)
-                _accumulate_em(em_acc, em)
-                round_analyzed += 1
+            while remaining:
+                await pause.gate()
+                tasks = [
+                    asyncio.ensure_future(
+                        _run_with_id(
+                            fn_id,
+                            _analyze_one(
+                                fn_id, contexts, function_by_id, strategy, cost_budget,
+                                semaphore, codebase_notes, module_intents, table_descriptions,
+                                source_cache,
+                                precomputed_summary=(first_summary if fn_id == first_id else None),
+                            ),
+                        )
+                    )
+                    for fn_id in remaining
+                ]
+                pause.set_inflight(tasks)
+                done_ids: set[str] = set()
+                try:
+                    for finished in asyncio.as_completed(tasks):
+                        fn_id, r = await finished
+                        if isinstance(r, asyncio.CancelledError):
+                            continue          # 일시정지로 취소 → remaining 에 남겨 재개 시 재투입
+                        done_ids.add(fn_id)   # 성공·분석실패·None = 처리 완료 (재시도 X)
+                        if isinstance(r, BudgetExceededError):
+                            raise r           # 절대원칙 #3 — 회로 차단기 즉시 전파
+                        if isinstance(r, BaseException):
+                            round_failed += 1
+                            log_error(_STEP, "round_analysis", r, function_id=fn_id, round=round_idx)
+                            continue
+                        if r is None:
+                            continue
+                        em = await _persist_and_emit_function(r, neo, stream)
+                        _accumulate_em(em_acc, em)
+                        round_analyzed += 1
+                finally:
+                    pause.clear_inflight()
+                    for task in tasks:        # budget 차단 등 조기 이탈 시 orphan LLM 호출 차단
+                        if not task.done():
+                            task.cancel()
+                remaining = [fn_id for fn_id in remaining if fn_id not in done_ids]
 
             failed_count += round_failed
             analyzed_count += round_analyzed

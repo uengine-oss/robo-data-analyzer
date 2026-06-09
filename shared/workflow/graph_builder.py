@@ -5,11 +5,13 @@
 - 어떤 step 활성? → ``strategy.steps`` 리스트에 포함되냐 여부로 결정.
 - 같은 step 인데 처리 방식 다름? → step 함수 안에서 ``cfg["strategy"].<implementer>`` 호출 (DI).
 
-**LangGraph 의 책임 — 별도 컨트롤러 X**:
+**LangGraph 의 책임**:
 - 상태 관리: StateGraph 가 ``WorkflowState`` 자동 전파.
 - state 전파: ``Checkpointer`` (MemorySaver) 가 run 1회 안의 superstep state 보존.
-  (resume 는 현재 미지원 — 매 ``/analyze`` = 독립 run.)
 - 스트림: ``astream(stream_mode="updates")`` 단일 채널 (폴링 없음).
+
+일시정지/재개/중단은 ``PauseController`` (cfg["pause"]) 가 담당 — step 함수가 안전
+지점에서 ``gate()`` 로 소비. 같은 세션 안의 soft hold (디스크 재개 아님).
 
 **새 strategy 추가 = ``analysis_pipelines.py`` 의 ``Strategy(...)`` 선언만**.
 코드 어디 분기 추가 X.

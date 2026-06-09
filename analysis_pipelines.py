@@ -12,7 +12,7 @@
 
 **LangGraph 의 책임**:
 - 상태 관리: ``StateGraph`` 가 ``WorkflowState`` 자동 전파.
-- state 전파: ``Checkpointer`` 가 run 1회 안의 state 보존 (resume 미지원 — 매 run 독립).
+- state 전파: ``Checkpointer`` 가 run 1회 안의 state 보존 (매 ``/analyze`` = 독립 run).
 - 스트림: ``astream(stream_mode="updates")`` 단일 채널.
 
 7 단계 흐름은 ``analysis_flow/step1~step7/`` 폴더 구조로 그대로 드러남.

@@ -3,14 +3,17 @@
 흐름:
 1. ``logs/analysis.run/latest/`` + ``logs/llm_prompts/latest/`` rmtree + 재생성.
 2. ``Run`` 메타 생성 + Neo4j 인덱스 / 제약 보장.
-3. ``CostBudget`` + ``MemorySaver`` (Checkpointer) 생성.
+3. ``CostBudget`` + ``MemorySaver`` (Checkpointer) + ``PauseController`` 생성.
 4. Strategy 의 workflow 빌더 호출 → ``astream(stream_mode="updates")``.
 5. 산출물 4파일 (artifacts/) + ``usage_summary.json``.
 
-**run 정책 (Plan §4 M1)** — 매 ``/analyze`` 호출 = 독립 run (``run_id`` 가 유일 식별자):
-- 별도 컨트롤러 / control endpoint 없음 — 진행은 NDJSON stream.
-- resume(중단된 run 재개)은 현재 미지원 — 진짜 프론트가 필요로 할 때 도입.
-  Checkpointer(MemorySaver)는 run 1회 안의 state 전파용으로만 둔다.
+**run 정책** — 매 ``/analyze`` 호출 = 독립 run (``run_id`` 가 유일 식별자). 진행은 NDJSON stream.
+
+**일시정지 / 재개 / 중단** (소프트 — 프로세스가 살아있는 동안의 hold):
+- ``PauseController`` 를 만들어 ``run_registry`` 에 등록 → control 엔드포인트가 신호.
+- astream 소비 루프가 step 경계마다 ``pause.gate()`` 로 소비(paused 면 hold).
+- stop 은 ``RunStopped`` 로 정상 종료(실패 아님). 서버를 끄면 run 도 끝난다(디스크 재개 X).
+- Checkpointer(MemorySaver)는 run 1회 안의 state 전파용 — wipe / thread_id 정책 그대로.
 """
 from __future__ import annotations
 
@@ -39,6 +42,9 @@ from shared.neo4j.neo4j_client import Neo4jClient
 from shared.neo4j.schema_constraints import ensure_schema, wipe_graph
 from shared.workflow.artifact_writer import dump_state_artifacts
 from shared.workflow.graph_builder import build_langgraph_workflow
+from shared.workflow.pause_controller import PauseController
+from shared.workflow.run_registry import clear as clear_active_run
+from shared.workflow.run_registry import set_active as set_active_run
 
 
 async def execute_run(
@@ -86,6 +92,10 @@ async def execute_run(
             checkpointer = MemorySaver()
             app = build_langgraph_workflow(strategy, checkpointer=checkpointer)
 
+            # 일시정지/재개/중단 컨트롤러 — control 엔드포인트가 registry 로 찾아 신호.
+            pause = PauseController(stream)
+            set_active_run(run.run_id, pause)
+
             initial_state: dict = {"run": run}
             config = {
                 "configurable": {
@@ -97,6 +107,7 @@ async def execute_run(
                     "cost_budget": cost_budget,
                     "stream": stream,
                     "neo_client": neo_client,
+                    "pause": pause,
                 }
             }
 
@@ -104,41 +115,57 @@ async def execute_run(
                 # emit 안에서 logger mirror 가 자동으로 analyzer.log 에 phase_event 한 줄.
                 stream.emit({"type": "phase_event", "event": "start", "run_id": run.run_id})
 
+            # step 경계마다 pause.gate() — paused 면 다음 step 앞에서 hold, stopped 면
+            # RunStopped. stop 은 사용자 의도된 종료라 실패가 아님 → 정상 경로로 마무리.
             final_state: dict = {}
-            async for chunk in app.astream(initial_state, config=config, stream_mode="updates"):
-                if isinstance(chunk, dict):
-                    for node_name, state_update in chunk.items():
-                        if stream is not None:
-                            stream.emit({"type": "phase_event", "event": "node_done", "node": node_name})
-                        if isinstance(state_update, dict):
-                            final_state.update(state_update)
-
-            # artifacts/ 4파일 — 실패 시 명시 emit + 상위로 전파 (silent X)
+            stopped = False
             try:
-                dump_state_artifacts(run, final_state)
-                log_info("run", "artifacts_dumped", run_dir=str(run.run_dir))
-            except Exception as e:
-                log_error(
+                async for chunk in app.astream(initial_state, config=config, stream_mode="updates"):
+                    if isinstance(chunk, dict):
+                        for node_name, state_update in chunk.items():
+                            if stream is not None:
+                                stream.emit({"type": "phase_event", "event": "node_done", "node": node_name})
+                            if isinstance(state_update, dict):
+                                final_state.update(state_update)
+                    await pause.gate()
+            except Exception:
+                # stopped 플래그가 켜진 채 빠져나온 예외 = 사용자 중단(RunStopped / 취소된
+                # in-flight 의 래핑). 그 외 예외는 진짜 실패 → 그대로 위로 전파.
+                if not pause.status()["isStopped"]:
+                    raise
+                stopped = True
+                if stream is not None:
+                    stream.emit({"type": "phase_event", "event": "stopped", "run_id": run.run_id})
+                log_info("run", "stopped", run_id=run.run_id)
+
+            if not stopped:
+                # artifacts/ 4파일 — 실패 시 명시 emit + 상위로 전파 (silent X)
+                try:
+                    dump_state_artifacts(run, final_state)
+                    log_info("run", "artifacts_dumped", run_dir=str(run.run_dir))
+                except Exception as e:
+                    log_error(
+                        "run",
+                        "dump_artifacts_failed",
+                        e,
+                        stream_emit=stream.emit if stream is not None else None,
+                        run_id=run.run_id,
+                    )
+                    raise
+                _summarize_usage(run.run_dir)
+
+                if stream is not None:
+                    stream.emit({"type": "phase_event", "event": "complete", "run_id": run.run_id})
+
+                log_info(
                     "run",
-                    "dump_artifacts_failed",
-                    e,
-                    stream_emit=stream.emit if stream is not None else None,
+                    "complete",
                     run_id=run.run_id,
+                    elapsed_sec=f"{time.monotonic() - run_started_at:.1f}",
                 )
-                raise
-            _summarize_usage(run.run_dir)
-
-            if stream is not None:
-                stream.emit({"type": "phase_event", "event": "complete", "run_id": run.run_id})
-
-            log_info(
-                "run",
-                "complete",
-                run_id=run.run_id,
-                elapsed_sec=f"{time.monotonic() - run_started_at:.1f}",
-            )
 
         finally:
+            clear_active_run(run.run_id)
             await neo_client.close()
     except Exception as e:
         # 파이프라인 실패 — 스트림 consumer 가 알도록 에러 emit (조용한 실패 차단).
