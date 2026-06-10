@@ -75,8 +75,8 @@ def _dataclass_to_dict(obj: Any) -> dict:
     실제 벡터는 Neo4j property 에 박혀 있고, artifact 검증은 dim 비교로 충분.
 
     ``@property`` 정책 — ``fqn`` 같은 derived 식별자는 artifact 검증/디버깅의 핵심이라
-    화이트리스트 ``_DUMP_PROPERTIES`` 로 명시 dump. ``key`` 같은 reducer 내부용 property 는
-    dump 제외 (artifact 노이즈 차단).
+    화이트리스트 ``_DUMP_PROPERTIES`` 로 명시 dump. 그 외 derived property 는 dump 제외
+    (artifact 노이즈 차단).
     """
     result: dict[str, Any] = {}
     for f in dataclasses.fields(obj):
@@ -95,8 +95,7 @@ def _dataclass_to_dict(obj: Any) -> dict:
     return result
 
 
-# artifact 에 dump 할 ``@property`` 화이트리스트 — derived 식별자.
-# ``key`` 같은 reducer 내부용은 제외 (artifact 노이즈 차단).
+# artifact 에 dump 할 ``@property`` 화이트리스트 — derived 식별자 (그 외 property 는 노이즈라 제외).
 _DUMP_PROPERTIES: frozenset[str] = frozenset({"fqn"})
 
 
@@ -155,6 +154,11 @@ _CATEGORY: dict[str, str] = {
     "next_edges":               "analysis",
     "branch_edges":             "analysis",
     "affects_table_edges":      "analysis",
+
+    # 컴포넌트 — step7 build_components 결과 (군집 부품 + 멤버/부품간 엣지)
+    "components":               "analysis",
+    "component_member_edges":   "analysis",
+    "component_calls_edges":    "analysis",
 
     # run — 실행 메타 (artifact dump 대상 아님)
     "run":                      "_skip",

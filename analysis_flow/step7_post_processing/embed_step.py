@@ -92,13 +92,14 @@ def _attach_embedding(nodes: list, updates: list[dict], key_attr: str) -> list:
     """``updates`` 의 vector 를 같은 키의 노드에 박은 새 인스턴스 리스트.
 
     ``updates`` 형식: ``[{<key_attr>: ..., "vector": [...]}, ...]``.
-    매치 안 된 노드는 결과에서 제외 — reducer 가 기존 노드는 그대로 유지.
+    임베딩 못 받은 노드는 그대로 유지 — state 키엔 reducer 가 없어(default replace)
+    전체 리스트를 돌려줘야 최종 state·artifact 가 노드를 잃지 않는다.
     """
     key_to_vec = {u[key_attr]: u["vector"] for u in updates}
     return [
         replace(n, embedding=tuple(key_to_vec[getattr(n, key_attr)]))
+        if getattr(n, key_attr) in key_to_vec else n
         for n in nodes
-        if getattr(n, key_attr) in key_to_vec
     ]
 
 

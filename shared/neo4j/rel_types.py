@@ -34,3 +34,7 @@ HAS_QUESTION = "HAS_QUESTION"    # Function → Question
 NEXT = "NEXT"                    # Rule → Rule (메인 흐름 순서)
 BRANCH = "BRANCH"                # Rule → Rule (분기)
 AFFECTS_TABLE = "AFFECTS_TABLE"  # Example → Table
+
+# 컴포넌트 (build_components_step 군집화)
+HAS_COMPONENT_MEMBER = "HAS_COMPONENT_MEMBER"   # Component → Function
+COMPONENT_CALLS = "COMPONENT_CALLS"             # Component → Component

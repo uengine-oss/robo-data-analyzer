@@ -61,22 +61,16 @@ class ParseResult:
 
 # ── 파일 진입점 ───────────────────────────────────────────────
 
-def antlr_json_path(source_path: Path) -> tuple[Path, Path]:
-    """``data/source`` 아래 경로 → ``data/analysis`` 의 대응 경로 + 소스 루트.
+def ast_and_source_roots(source_path: Path) -> tuple[Path, Path]:
+    """소스 루트 → ``(AST 루트 = data/analysis, 소스 루트)``.
 
-    ``data/analysis`` 는 ``data/source`` 구조를 그대로 미러 — 중간 ``target`` 폴더 없음.
-    파일이면 확장자를 ``.json`` 으로, 디렉토리면 그대로 미러. ``data/source`` 밖이면
-    analysis 루트를 그대로 반환 (fallback).
+    antlr 가 AST 를 항상 ``data/analysis`` 에 **소스 루트 구조 그대로 미러**로 쓴다
+    (중간 ``target`` 폴더 없음). 소스 루트는 분석 대상 경로 그 자체 — 업로드 모드면
+    ``data/source``, 경로 모드(Electron)면 사용자가 고른 로컬 폴더. 둘 다 ``project_root``
+    로 들어오므로 모드 무관하게 동일 처리.
     """
-    data_dir = ENV.data.dir
-    source_root = (data_dir / "source").resolve()
-    analysis_root = data_dir / "analysis"
-    try:
-        rel = source_path.resolve().relative_to(source_root)
-    except ValueError:
-        return analysis_root, source_root
-    json_path = analysis_root / rel
-    return (json_path.with_suffix(".json") if rel.suffix else json_path), source_root
+    analysis_root = ENV.data.dir / "analysis"
+    return analysis_root, source_path.resolve()
 
 
 def read_antlr_json(json_path: Path, source_root: Path) -> ParseResult:

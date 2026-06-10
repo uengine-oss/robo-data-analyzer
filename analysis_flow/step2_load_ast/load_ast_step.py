@@ -15,7 +15,7 @@ from langchain_core.runnables import RunnableConfig
 
 from shared.workflow.step_utils import step_config
 
-from analysis_flow.step2_load_ast.antlr_json_reader import antlr_json_path, read_antlr_json
+from analysis_flow.step2_load_ast.antlr_json_reader import ast_and_source_roots, read_antlr_json
 from analysis_flow.step2_load_ast.reference_linker import link_references
 from shared.log.logger import log_error, log_info, log_warning
 from shared.neo4j.edges.belongs_to_package import upsert_belongs_to_package
@@ -53,7 +53,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         return {}
 
     started = time.monotonic()
-    ast_dir, source_root = antlr_json_path(Path(project.root))
+    ast_dir, source_root = ast_and_source_roots(Path(project.root))
 
     if not ast_dir.is_dir():
         err = FileNotFoundError(

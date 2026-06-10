@@ -112,7 +112,7 @@ def compute_cost(record: TokenUsageRecord) -> float:
                 "compute_cost",
                 "PRICING dict 에 없는 모델 — 비용 0 으로 집계됨 (측정 사각지대 위험)",
                 model=record.model,
-                action="add this model to PRICING in shared/llm/llm_pricing.py",
+                action="add this model to shared/llm/llm_pricing.yaml",
             )
         return 0.0
     fresh_input = max(record.input_tokens - record.cached_tokens, 0)

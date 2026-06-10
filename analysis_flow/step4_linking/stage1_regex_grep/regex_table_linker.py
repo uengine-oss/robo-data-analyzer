@@ -55,15 +55,14 @@ class LinkOutcome:
 
 @dataclass
 class PatternVerdict:
-    """``table_access_patterns`` 검증 판정 — 쓰기 전 작동 확인."""
+    """``table_access_patterns`` 검증 판정 — 쓰기 전 작동 확인.
+
+    수치 상세(매치/엣지/미해결/인식률)는 ``summary`` 한 줄에 담는다 — 소비자
+    (scan_agent · residual_pattern_loop)는 ok · resolved_ratio · summary 만 읽는다.
+    """
     ok: bool
-    matched_sites: int
-    edges: int
-    unresolved: int
-    resolved_ratio: float               # edges / matched_sites
-    token_recognized_ratio: float       # token_recognized / matched_sites
+    resolved_ratio: float               # edges / matched_sites — 검증 실패 시 점수 환산용
     summary: str                        # 사람·LLM 이 읽을 한 줄 요약
-    samples: list[MatchSample] = field(default_factory=list)
 
 
 class RegexTableLinker:
@@ -208,16 +207,7 @@ async def verify_table_patterns(
         f"매치 {matched}건 · R/W엣지 {edges}건 · 미해결 {len(outcome.unresolved)}건 · "
         f"token인식 {token_ratio:.0%} · 테이블해소 {resolved_ratio:.0%}"
     )
-    return PatternVerdict(
-        ok=ok,
-        matched_sites=matched,
-        edges=edges,
-        unresolved=len(outcome.unresolved),
-        resolved_ratio=resolved_ratio,
-        token_recognized_ratio=token_ratio,
-        summary=summary,
-        samples=outcome.samples,
-    )
+    return PatternVerdict(ok=ok, resolved_ratio=resolved_ratio, summary=summary)
 
 
 # ── 헬퍼 ──────────────────────────────────────────────────

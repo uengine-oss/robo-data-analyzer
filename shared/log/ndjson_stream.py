@@ -50,10 +50,7 @@ def _shorten_path(p: str) -> str:
     """
     if not isinstance(p, str) or not p:
         return str(p)
-    try:
-        data_dir = str(ENV.data.dir).replace("\\", "/").rstrip("/")
-    except Exception:
-        data_dir = ""
+    data_dir = str(ENV.data.dir).replace("\\", "/").rstrip("/")
     norm = p.replace("\\", "/")
     # ROBO_DATA_DIR 안이면 그 이후만
     for marker in (f"{data_dir}/source/", f"{data_dir}/ddl/", "/data/source/", "/data/ddl/"):

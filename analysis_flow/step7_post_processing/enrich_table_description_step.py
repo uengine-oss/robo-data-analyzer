@@ -22,7 +22,6 @@ from langchain_core.runnables import RunnableConfig
 
 from shared.workflow.step_utils import step_config
 
-from data_models.graph_nodes import Column, Table
 from shared.config.env_catalog import ENV
 from shared.llm.cost_budget import BudgetExceededError
 from shared.llm.fanout import gather_with_warmup
@@ -85,7 +84,8 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
         column_descriptions=sum(len(v) for v in column_descriptions.values()),
     )
     prompts_dir = Path(strategy.prompts_dir)
-    semaphore = asyncio.Semaphore(ENV.pipeline.max_concurrency)
+    # 병렬 그룹 공유 세마포어 (executor 주입) — 없으면 단독 생성(순차 실행 시 동일).
+    semaphore = cfg.get("llm_semaphore") or asyncio.Semaphore(ENV.pipeline.max_concurrency)
 
     async def _summarize_one(table_fqn: str, candidates: list[dict]) -> TableDescription:
         """성공 시 TableDescription / 실패 시 raise. fail 정책은 메인이 책임 (단일 책임)."""
@@ -165,10 +165,13 @@ def _apply_table_fail_policy(
 
 
 def _replace_by_fqn(nodes: list, updates: list[dict], attr: str) -> list:
-    """``updates`` 의 fqn → ``attr`` 값을 같은 노드에 박은 새 인스턴스 리스트."""
+    """``updates`` 의 fqn → ``attr`` 값을 같은 노드에 박은 새 인스턴스 리스트.
+
+    매치 안 된 노드는 그대로 유지 — state 키엔 reducer 가 없어(default replace) 전체
+    리스트를 돌려줘야 다음 step·artifact 가 노드를 잃지 않는다.
+    """
     fqn_to_val = {u["fqn"]: u[attr] for u in updates}
     return [
-        replace(n, **{attr: fqn_to_val[n.fqn]})
+        replace(n, **{attr: fqn_to_val[n.fqn]}) if n.fqn in fqn_to_val else n
         for n in nodes
-        if n.fqn in fqn_to_val
     ]

@@ -32,8 +32,10 @@ from data_models.graph_edges import (
     BelongsToPackage,
     Branch,
     Calls,
+    ComponentCalls,
     Fk,
     HasColumn,
+    HasComponentMember,
     HasExample,
     HasFunction,
     HasMember,
@@ -48,6 +50,7 @@ from data_models.graph_edges import (
 )
 from data_models.graph_nodes import (
     Column,
+    Component,
     Constant,
     DataType,
     Example,
@@ -69,8 +72,10 @@ class WorkflowState(TypedDict, total=False):
     list 중복은 Neo4j MERGE 가 dedup (그래프 진실 보장자), 분석 흐름은 set 변환으로
     자동 dedup — state 자체는 raw list 그대로 OK.
 
-    call_sites / import_refs 만 ``operator.add`` reducer 유지 — step2 가 파일별 partial
-    로 여러 dict 반환 누적 (다른 키는 step 가 누적 list 한 번에 반환).
+    ``operator.add`` reducer 키 (여러 step 이 나눠 누적 반환):
+    - ``call_sites`` / ``import_refs`` — step2 가 파일별 partial 로 여러 dict 반환.
+    - ``reads_writes_edges`` — 링킹 여러 step(결정론 + 잔여 루프 / DML + catalog)이 누적.
+    그 밖 키는 1 step 이 누적 list 를 한 번에 반환 (default replace 로 충분).
     """
     # ── 실행 메타 ─────────────────────────────────
     run: AnalysisRun
@@ -105,8 +110,13 @@ class WorkflowState(TypedDict, total=False):
     scan_result: dict                     # ScanResult Pydantic → dict
 
     # ── step4_linking 결과 ────────────────────────
-    reads_writes_edges: list[ReadsWrites]
+    # 여러 step 이 누적 반환 — framework: 결정론(stage1) + 잔여 패턴 루프(stage3) /
+    # dbms: DML 매칭(stage1) + catalog lineage(step7). reducer 가 없으면 뒤 step 이
+    # 앞 엣지를 통째 덮어써 step5(build_context)가 불완전한 R/W 를 LLM 에 전달한다
+    # → ``operator.add`` 로 누적 (중복은 Neo4j MERGE·step5 set 변환이 자동 dedup).
+    reads_writes_edges: Annotated[list[ReadsWrites], operator.add]
     calls_edges: list[Calls]
+    # 잔여 루프가 결정론 단계의 raw 를 '최종 잔여'로 덮는 게 의도 — default replace 유지.
     unresolved_cases: list[dict]
 
     # ── step5_build_context 결과 ──────────────────
@@ -125,3 +135,8 @@ class WorkflowState(TypedDict, total=False):
     next_edges: list[Next]
     branch_edges: list[Branch]
     affects_table_edges: list[AffectsTable]
+
+    # ── step7 컴포넌트 (build_components_step — 함수 호출 군집 '부품') ──
+    components: list[Component]
+    component_member_edges: list[HasComponentMember]
+    component_calls_edges: list[ComponentCalls]

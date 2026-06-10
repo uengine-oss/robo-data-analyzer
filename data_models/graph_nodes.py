@@ -167,7 +167,7 @@ class Function:
     params: str = ""                         # 파라미터 목록 텍스트
 
     # 분석 결과 (analyze_function 이 채움) ────
-    summary: Optional[str] = None            # 4 섹션 마크다운
+    summary: Optional[str] = None            # 2 섹션 '[핵심] 한 줄' + 내용 (SummaryOutput 검증)
     stereotype: Optional[str] = None         # ontology_roles.yaml 풀에서
     logical_name: Optional[str] = None       # 짧은 도메인 토큰
     embedding: tuple[float, ...] = field(default=(), metadata={"vector": True})
@@ -186,6 +186,23 @@ class Function:
         if self.parent_id and self.function_id.startswith(self.parent_id + ":"):
             return self.function_id[len(self.parent_id) + 1:].split(":")[0]
         return ""
+
+
+@dataclass(frozen=True)
+class Component:
+    """컴포넌트(부품) — 함수들의 논리적 상위 묶음 (Leiden 호출 군집화 결과).
+
+    Module(파일/클래스)·Package(폴더)와 **다른 축** — 호출 밀도로 묶은 "기능 부품"이라
+    여러 모듈에 걸치거나 한 모듈을 쪼갤 수 있다. 군집화=결정론(Leiden), 이름·설명은
+    ``build_components_step`` 이 멤버 함수 요약 종합에서 LLM 으로 도출.
+
+    ``component_id`` = 멤버 중 정렬상 첫 ``function_id`` 기반 (같은 그래프 재분석 시 안정 키).
+    """
+    component_id: str
+    name: str = ""            # 사람이 읽는 부품명 (LLM)
+    description: str = ""     # 한 줄 설명 (LLM)
+    stereotype: str = ""      # 역할 라벨 (선택)
+    size: int = 0             # 멤버 함수 수
 
 
 @dataclass(frozen=True)

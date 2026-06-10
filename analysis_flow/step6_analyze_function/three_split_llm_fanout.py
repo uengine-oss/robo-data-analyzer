@@ -195,8 +195,8 @@ async def analyze_function_three_split(
         if isinstance(result, BudgetExceededError):
             raise result
 
-    rules_out = _take(done, "rules", function_id, required=False)
-    insights_out = _take(done, "insights", function_id, required=False)  # 키 없으면 None
+    rules_out = _take(done, "rules", function_id)
+    insights_out = _take(done, "insights", function_id)  # 키 없으면 None
 
     # partial = 호출했는데 실패한 조각 (호출 안 한 #2 skip 은 partial 아님).
     partial_parts = tuple(
@@ -227,28 +227,22 @@ async def analyze_function_three_split(
     return fn
 
 
-def _take(
-    done: dict, key: str, function_id: str, *, required: bool,
-):
+def _take(done: dict, key: str, function_id: str):
     """gather(return_exceptions=True) 결과 1조각 → 성공이면 인스턴스, 실패면 None.
 
-    실패 시 ``required=True`` 는 log_error(이 함수 폐기), ``required=False`` 는
-    log_warning + None (이 조각만 빈 결과로 진행). 키 자체가 없으면(테이블 없어 #2
-    skip 등) silent None — 정상 흐름.
+    실패 시 log_warning + None (이 조각만 빈 결과로 진행, partial 마크). 키 자체가
+    없으면(테이블 없어 #2 skip 등) silent None — 정상 흐름.
     """
     if key not in done:
         return None
     result = done[key]
     if isinstance(result, BaseException):
-        if required:
-            log_error(_STEP, f"{key}_failed", result, function_id=function_id)
-        else:
-            log_warning(
-                _STEP, f"{key}_failed",
-                f"{key} 조각 실패 — 빈 결과로 진행 (partial 마크)",
-                function_id=function_id,
-                error=f"{type(result).__name__}: {result}",
-            )
+        log_warning(
+            _STEP, f"{key}_failed",
+            f"{key} 조각 실패 — 빈 결과로 진행 (partial 마크)",
+            function_id=function_id,
+            error=f"{type(result).__name__}: {result}",
+        )
         return None
     return result
 

@@ -215,6 +215,16 @@ class ModuleSummaryOutput(BaseModel):
     logical_name: str = Field("", description="모듈 도메인 표시명 한 줄 (코드 식별자 X)")
 
 
+# ── 컴포넌트 이름 (build_components_step) ─────────────────
+
+
+class ComponentNamingOutput(BaseModel):
+    """부품(함수 군집) 이름·설명 — 멤버 함수 요약 종합. 평탄 구조(자유키 dict X)."""
+    name: str = Field(..., description="부품 도메인 이름 한 줄 (코드 식별자 X)")
+    description: str = Field("", description="이 부품이 하는 일 한 줄 설명")
+    stereotype: str = Field("", description="역할 라벨 (예: Service/Repository/Batch — 없으면 빈 값)")
+
+
 # ── 테이블 description 통합 (enrich_table_description_step) ──
 
 

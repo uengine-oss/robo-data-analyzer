@@ -1,53 +1,48 @@
-# ROBO Analyzer — 의존성 (M0)
+# ROBO Analyzer — 의존성
 # ───────────────────────────────────────────────────────────
-# 정책: 패치 버전 == 고정 (LangGraph 0.x → 1.x 회귀 버그 회피).
-#       새 모델 / 새 provider 추가 시에도 이 파일 외 변경 X.
+# 2026-05-30 — refactor 브랜치 원본 핀(== 정확핀)이 공개 PyPI에 없는
+#   미래 버전을 가리켜 설치 불가 → 코드가 실제 import 하는 패키지만
+#   범위(>=) 로 풀어 resolver 가 호환 최신 세트(langchain 1.x + deepagents)를
+#   맞추도록 정리. (커밋 X — 로컬 실행용)
 
-# Core LangChain / LangGraph
-langchain==0.3.27
-langchain-core==0.3.79
-langgraph==0.6.10
-langgraph-checkpoint==2.1.2
+# Core LangChain / LangGraph (deepagents 가 1.x 를 끌어올림)
+langchain>=1.0.0
+langchain-core>=1.0.0
+langchain-openai>=1.0.0
+langchain-anthropic>=1.0.0
+langgraph>=1.0.0
+langgraph-checkpoint>=2.1.0
 
-# LLM provider SDK (provider 자동 인식 — base_url 통일)
-langchain-openai==0.3.45
-langchain-anthropic==0.3.30
-openai==1.108.0
-anthropic==0.42.0
+# DeepAgent 프레임워크 (Scan / Linking 에이전트 — middleware import)
+deepagents>=0.2.0
 
-# DeepAgent 프레임워크 (Scan Agent / Linking Agent)
-deepagents==0.1.16
+# 데이터 검증
+pydantic>=2.10.0
+pydantic-settings>=2.7.0
 
-# 데이터 검증 (Pydantic 출력 스키마 강제 — 환각 차단)
-pydantic==2.10.6
-pydantic-settings==2.7.1
+# SQL 파싱
+sqlglot>=27.0.0
 
-# SQL 파싱 — DDL 다중 방언 (Oracle / PostgreSQL / MySQL / MSSQL …)
-sqlglot==27.13.0
-
-# 코드 파싱 — AST 는 antlr-parser(별도 Java 프로젝트)가 미리 JSON 으로 생성,
-# analyzer 는 data/analysis/target/*.json 을 읽기만 한다 (antlr_json_reader).
-antlr4-python3-runtime==4.13.2
+# 코드 파싱 — antlr-parser 가 생성한 JSON AST 읽기만
+antlr4-python3-runtime>=4.13.0
 
 # Neo4j 그래프 DB
-neo4j==5.27.0
+neo4j>=5.27.0
 
-# 임베딩 (phase_embed)
-sentence-transformers==3.3.1
+# 컴포넌트 군집화 (build_components_step — Leiden community detection)
+leidenalg>=0.10.0
+igraph>=0.11.0
 
-# Web API — FastAPI + NDJSON 단일 스트림 (폴링 폐기)
-fastapi==0.115.6
-uvicorn==0.34.0
+# 임베딩 (phase_embed — 기본 비활성 ROBO_PIPELINE_EMBED_ENABLED=false)
+sentence-transformers>=3.3.0
 
-# YAML 파싱 — prompts/*.yaml
-pyyaml==6.0.2
+# Web API
+fastapi>=0.115.0
+uvicorn>=0.34.0
 
-# .env 로딩
-python-dotenv==1.0.1
-
-# 재시도 — LLM provider rate limit / Neo4j TransientError
-tenacity==9.0.0
-
-# HTTP 클라이언트
-httpx==0.28.1
-aiohttp==3.11.11
+# YAML / .env / 재시도 / HTTP
+pyyaml>=6.0.0
+python-dotenv>=1.0.0
+tenacity>=9.0.0
+httpx>=0.28.0
+aiohttp>=3.11.0

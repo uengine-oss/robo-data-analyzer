@@ -329,7 +329,8 @@ def _extract_partial_content(error: BaseException) -> str:
             return ""
         content = getattr(message, "content", "") or ""
         return content
-    except Exception:  # noqa: BLE001 — partial 추출 실패는 silent (error 는 그대로 raise)
+    except (IndexError, TypeError, AttributeError):
+        # completion 객체 모양이 예상과 다름 — partial 추출만 포기(원 error 는 호출부가 그대로 raise).
         return ""
 
 

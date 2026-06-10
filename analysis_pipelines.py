@@ -37,6 +37,8 @@ from analysis_flow.step7_post_processing.enrich_table_description_step import (
     enrich_table_description_step,
 )
 from analysis_flow.step7_post_processing.summarize_module_step import summarize_module_step
+from analysis_flow.step7_post_processing.build_components_step import build_components_step
+from analysis_flow.step7_post_processing.health_metrics_step import health_metrics_step
 
 # Framework 전용 step
 from analysis_flow.step3_scan_project.scan_codebase_step import scan_codebase_step
@@ -95,8 +97,15 @@ FRAMEWORK_PIPELINE = Strategy(
         link_residual_patterns_step,          # ★ Framework 만 — 잔여 패턴 루프 (테이블 미해결)
         build_context_step,
         analyze_function_step,
-        summarize_module_step,
-        enrich_table_description_step,
+        # ★ 후처리 병렬 그룹 — 4 step 서로 독립(입력 read-only·return state 키 비충돌:
+        #   modules / tables+columns / components+edges / {}). 동시 실행 후 embed 에서 합류.
+        #   공유 llm_semaphore(executor 주입)로 서버 총 동시수 제어(과부하 방지).
+        (
+            summarize_module_step,
+            enrich_table_description_step,
+            build_components_step,            # ① 컴포넌트 군집화+이름 (Leiden + 병렬 naming)
+            health_metrics_step,              # ② 건강지표 (결정론·LLM 0 — 그래프 위 계산)
+        ),
         embed_step,
     ),
 )
@@ -126,6 +135,8 @@ DBMS_PIPELINE = Strategy(
         enrich_table_description_step,
         enrich_metadata_from_catalog_step,    # ★ DBMS 만 — catalog metadata
         enrich_lineage_from_catalog_step,     # ★ DBMS 만 — catalog lineage
+        build_components_step,                # ① 컴포넌트 군집화+이름 (Leiden + 병렬 naming)
+        health_metrics_step,                  # ② 건강지표 (결정론·LLM 0 — 그래프 위 계산)
         embed_step,
     ),
 )

@@ -58,7 +58,7 @@ class Neo4jClient:
     def _on_sigterm(self, *_args) -> None:
         """SIGTERM 수신 시 driver close — event loop 없으면 graceful X."""
         try:
-            asyncio.get_event_loop().create_task(self.close())
+            asyncio.get_running_loop().create_task(self.close())
         except RuntimeError as e:
             log_warning(
                 "shared.neo4j.neo4j_client",

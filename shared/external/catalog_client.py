@@ -12,6 +12,24 @@ from typing import Any, Optional
 
 import httpx
 
+from shared.config.env_catalog import ENV
+from shared.log.logger import log_info
+
+
+def catalog_base_url_or_skip(step: str) -> Optional[str]:
+    """catalog 활성·base_url 가드 — enrich_metadata / enrich_lineage 공용.
+
+    비활성(``ROBO_CATALOG_ENABLED=false``)/base_url 미설정이면 ``log_info(skip)`` 후 None
+    (호출 step 은 None 이면 ``return {}``). 활성이면 rstrip 된 base_url 반환.
+    """
+    if not ENV.catalog.enabled:
+        log_info(step, "skip", reason="catalog 비활성화 (ROBO_CATALOG_ENABLED=false)")
+        return None
+    if not ENV.catalog.base_url:
+        log_info(step, "skip", reason="ROBO_CATALOG_BASE_URL 미설정")
+        return None
+    return ENV.catalog.base_url.rstrip("/")
+
 
 async def get_catalog_json(
     http: httpx.AsyncClient, url: str, *, label: str,

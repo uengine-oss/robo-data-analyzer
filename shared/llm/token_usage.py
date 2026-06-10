@@ -44,7 +44,7 @@ def track_usage(
 
     Args:
         response: LangChain LLM 응답 (AIMessage 또는 ChatResult).
-        model: 모델 이름 — ``llm_pricing.py`` 가 비용 계산에 사용.
+        model: 모델 이름 — ``llm_pricing.yaml`` 가 비용 계산에 사용.
         latency_ms: LLM 호출 latency (cache_estimator fallback 용).
         cache_estimator: cached_tokens=0 이면 추정 (옵션).
 

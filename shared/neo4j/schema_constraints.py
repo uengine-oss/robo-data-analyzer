@@ -42,6 +42,10 @@ CONSTRAINTS: list[str] = [
     "FOR (e:EXAMPLE) REQUIRE e.example_id IS UNIQUE",
     "CREATE CONSTRAINT question_id IF NOT EXISTS "
     "FOR (q:QUESTION) REQUIRE q.question_id IS UNIQUE",
+
+    # 컴포넌트 (build_components_step 군집화)
+    "CREATE CONSTRAINT component_id IF NOT EXISTS "
+    "FOR (c:COMPONENT) REQUIRE c.component_id IS UNIQUE",
 ]
 
 # 조회 인덱스

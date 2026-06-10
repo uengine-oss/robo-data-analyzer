@@ -37,8 +37,11 @@ class AnalyzeRequest(BaseModel):
 
     가공 식별자(``project_name``) + catalog 관련 인자 모두 폐기 — 진실은
     ``project_root`` 경로뿐. catalog 서비스 정보는 운영 영역 (``ROBO_CATALOG_*`` env).
+
+    ``project_root`` 미전달(None) = 업로드 모드 → ``ENV.data.dir/source`` 기본.
+    값 전달 = 경로 모드(Electron) → 그 로컬 폴더를 직접 분석.
     """
-    project_root: str
+    project_root: Optional[str] = None
     strategy: str                            # "framework" / "dbms"
     ddl_dir: Optional[str] = None
     has_xml_mapper: bool = False
@@ -65,9 +68,11 @@ async def analyze(req: AnalyzeRequest) -> StreamingResponse:
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    project_root = Path(req.project_root)
+    # project_root 미전달 = 업로드 모드 → 공유 data/source. 전달 = 경로 모드(로컬 폴더).
+    root_str = req.project_root or str(ENV.data.dir / "source")
+    project_root = Path(root_str)
     if not project_root.exists():
-        raise HTTPException(status_code=400, detail=f"project_root not found: {req.project_root}")
+        raise HTTPException(status_code=400, detail=f"project_root not found: {root_str}")
 
     codebase = Codebase(
         root=project_root,

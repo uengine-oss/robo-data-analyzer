@@ -1,7 +1,10 @@
 """LangGraph StateGraph 빌더 — Strategy 의 step 리스트로 그래프 구성.
 
-**분기 0개**:
-- 빌더는 strategy 가 뭔지 모름. ``for step_fn in strategy.steps`` 로 노드 추가만.
+**조건(if) 분기 0개 — 단, 병렬 그룹은 지원**:
+- 빌더는 strategy 가 뭔지 모름. ``strategy.steps`` 를 순회하며 노드 추가만.
+- steps 항목이 **함수면 단일 노드**(선형), **tuple 이면 병렬 그룹**(동시 실행 후 합류).
+  → 조건 분기가 아니라 결정론 fan-out/fan-in. 병렬 그룹 멤버는 서로 독립이어야 함
+  (입력 read-only·return state 키 비충돌 — 충돌 시 LangGraph 가 에러로 표면화).
 - 어떤 step 활성? → ``strategy.steps`` 리스트에 포함되냐 여부로 결정.
 - 같은 step 인데 처리 방식 다름? → step 함수 안에서 ``cfg["strategy"].<implementer>`` 호출 (DI).
 
@@ -57,12 +60,22 @@ def build_langgraph_workflow(
     """
     builder = StateGraph(WorkflowState)
 
-    prev = START
-    for step_fn in strategy.steps:
-        node_name = step_fn.__name__
-        builder.add_node(node_name, step_fn)
-        builder.add_edge(prev, node_name)
-        prev = node_name
-    builder.add_edge(prev, END)
+    # prev = 직전 단계의 노드 이름들(항상 list). steps 항목이 **함수면 단일 노드**,
+    # **tuple 이면 "병렬 그룹"** — 그룹의 노드들은 직전 단계(들)에서 fan-out 되어 동시
+    # 실행되고, 다음 단계는 그룹 전체 완료를 기다려 fan-in(superstep 배리어). 조건 if 분기는
+    # 여전히 0개 — 결정론 fan-out/fan-in 만(병렬 그룹은 서로 독립·state 키 비충돌이 전제).
+    prev: list = [START]
+    for entry in strategy.steps:
+        group = entry if isinstance(entry, tuple) else (entry,)
+        names: list[str] = []
+        for step_fn in group:
+            node_name = step_fn.__name__
+            builder.add_node(node_name, step_fn)
+            for p in prev:
+                builder.add_edge(p, node_name)   # 직전 단계(들) → 이 노드
+            names.append(node_name)
+        prev = names                              # 다음 단계는 이 노드(들) 완료 후 (fan-in)
+    for p in prev:
+        builder.add_edge(p, END)
 
     return builder.compile(checkpointer=checkpointer)

@@ -21,7 +21,7 @@ from langchain_core.runnables import RunnableConfig
 from shared.workflow.step_utils import step_config
 
 from data_models.graph_edges import ReadsWrites, derive_dml_type, normalize_relation
-from shared.external.catalog_client import get_catalog_json
+from shared.external.catalog_client import catalog_base_url_or_skip, get_catalog_json
 from shared.config.env_catalog import ENV
 from shared.log.logger import log_info, log_warning
 from shared.neo4j.edges.reads_writes import upsert_reads_writes
@@ -37,17 +37,12 @@ async def enrich_lineage_from_catalog_step(state: dict, config: Optional[Runnabl
     if project is None:
         log_warning(_STEP, "config_missing", "project 누락 — step skip")
         return {}
-    if not ENV.catalog.enabled:
-        log_info(_STEP, "skip", reason="catalog 비활성화 (ROBO_CATALOG_ENABLED=false)")
-        return {}
-    if not ENV.catalog.base_url:
-        log_info(_STEP, "skip", reason="ROBO_CATALOG_BASE_URL 미설정")
+    base_url = catalog_base_url_or_skip(_STEP)
+    if base_url is None:
         return {}
 
     started = time.monotonic()
     log_info(_STEP, "start", catalog_url=ENV.catalog.base_url)
-
-    base_url = ENV.catalog.base_url.rstrip("/")
 
     async with httpx.AsyncClient(timeout=ENV.catalog.timeout_seconds) as http:
         url = f"{base_url}/lineage"

@@ -22,6 +22,8 @@ from langchain.agents.middleware.types import ToolCallRequest
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
+from shared.content_text import content_to_text
+
 
 class ToolEventEmitterMiddleware(AgentMiddleware):
     """도구 호출 wrap → 친화 메시지 emit (시작/끝 두 번)."""
@@ -220,14 +222,7 @@ def _extract_content(result: Any) -> Optional[str]:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        # multi-part content (이미지 등 포함 가능) — 텍스트 부분만 join
-        parts = []
-        for item in content:
-            if isinstance(item, str):
-                parts.append(item)
-            elif isinstance(item, dict) and item.get("type") == "text":
-                parts.append(str(item.get("text", "")))
-        return "\n".join(parts) if parts else None
+        return content_to_text(content) or None
     if isinstance(result, str):
         return result
     return None

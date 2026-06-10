@@ -17,6 +17,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 from collections import defaultdict
@@ -92,6 +93,11 @@ async def execute_run(
             checkpointer = MemorySaver()
             app = build_langgraph_workflow(strategy, checkpointer=checkpointer)
 
+            # 병렬 그룹(후처리) 공유 LLM 세마포어 — step 마다 따로 Semaphore(30) 를 만들면
+            # 동시 실행 시 30×N 이 한 서버로 몰려 과부하. 하나를 공유해 총 동시수를 묶는다.
+            # 그룹 아닌(순차) step 도 같은 세마포어를 써도 결과 동일(동시엔 1 step 만 활성).
+            llm_semaphore = asyncio.Semaphore(ENV.pipeline.max_concurrency)
+
             # 일시정지/재개/중단 컨트롤러 — control 엔드포인트가 registry 로 찾아 신호.
             pause = PauseController(stream)
             set_active_run(run.run_id, pause)
@@ -108,6 +114,7 @@ async def execute_run(
                     "stream": stream,
                     "neo_client": neo_client,
                     "pause": pause,
+                    "llm_semaphore": llm_semaphore,   # 후처리 병렬 그룹 공유 동시성 한도
                 }
             }
 
@@ -117,16 +124,13 @@ async def execute_run(
 
             # step 경계마다 pause.gate() — paused 면 다음 step 앞에서 hold, stopped 면
             # RunStopped. stop 은 사용자 의도된 종료라 실패가 아님 → 정상 경로로 마무리.
-            final_state: dict = {}
             stopped = False
             try:
                 async for chunk in app.astream(initial_state, config=config, stream_mode="updates"):
                     if isinstance(chunk, dict):
-                        for node_name, state_update in chunk.items():
+                        for node_name in chunk:
                             if stream is not None:
                                 stream.emit({"type": "phase_event", "event": "node_done", "node": node_name})
-                            if isinstance(state_update, dict):
-                                final_state.update(state_update)
                     await pause.gate()
             except Exception:
                 # stopped 플래그가 켜진 채 빠져나온 예외 = 사용자 중단(RunStopped / 취소된
@@ -139,6 +143,11 @@ async def execute_run(
                 log_info("run", "stopped", run_id=run.run_id)
 
             if not stopped:
+                # 최종 state = LangGraph 가 reducer(operator.add)까지 적용한 누적 state.
+                # ★ astream "updates" 델타를 dict.update 로 모으면 operator.add 키
+                #   (reads_writes_edges / call_sites 등)가 덮어써져 artifact 가 불완전해진다
+                #   — checkpointer 의 reduced state 를 단일 진실로 쓴다.
+                final_state = dict((await app.aget_state(config)).values)
                 # artifacts/ 4파일 — 실패 시 명시 emit + 상위로 전파 (silent X)
                 try:
                     dump_state_artifacts(run, final_state)

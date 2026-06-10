@@ -36,6 +36,7 @@ from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage
 
 from shared.llm.cost_budget import CostBudget
+from shared.content_text import content_to_text
 from shared.llm.pricing import compute_cost
 from shared.llm.token_usage import LatencyBasedCacheEstimator, track_usage
 from shared.llm.usage_jsonl_writer import append_usage_record
@@ -231,14 +232,6 @@ def _extract_state_messages(request: ModelRequest) -> list:
 def _msg_content_str(msg: Any) -> str:
     """LangChain message 의 content → 문자열 (list 형식이면 text 부분 join)."""
     content = getattr(msg, "content", "")
-    if isinstance(content, str):
-        return content
     if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, str):
-                parts.append(item)
-            elif isinstance(item, dict) and item.get("type") == "text":
-                parts.append(str(item.get("text", "")))
-        return "\n".join(parts)
-    return str(content)
+        return content_to_text(content)
+    return content if isinstance(content, str) else str(content)

@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from shared.config.env_catalog import ENV
+from shared.content_text import content_to_text
 
 _FILE_LOCK = threading.Lock()
 
@@ -289,17 +290,9 @@ def _serialize_response(response: Any) -> dict:
 
 
 def _content_to_str(content: Any) -> str:
-    if isinstance(content, str):
-        return content
     if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, str):
-                parts.append(item)
-            elif isinstance(item, dict) and item.get("type") == "text":
-                parts.append(str(item.get("text", "")))
-        return "\n".join(parts)
-    return str(content)
+        return content_to_text(content)
+    return content if isinstance(content, str) else str(content)
 
 
 def _aggregate_totals(turns: list[dict]) -> dict:

@@ -57,7 +57,8 @@ async def summarize_module_step(state: dict, config: Optional[RunnableConfig] = 
     fn_by_module = _match_functions_to_modules(functions, modules)
 
     prompts_dir = Path(strategy.prompts_dir)
-    semaphore = asyncio.Semaphore(ENV.pipeline.max_concurrency)
+    # 병렬 그룹 공유 세마포어 (executor 주입) — 없으면 단독 생성(순차 실행 시 동일).
+    semaphore = cfg.get("llm_semaphore") or asyncio.Semaphore(ENV.pipeline.max_concurrency)
 
     async def _summarize_one(module: Module) -> Module:
         """성공 시 새 module / 실패 시 raise (BudgetExceededError 또는 LLM 예외).

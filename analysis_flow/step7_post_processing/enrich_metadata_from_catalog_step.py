@@ -24,10 +24,9 @@ from langchain_core.runnables import RunnableConfig
 
 from shared.workflow.step_utils import step_config
 
-from data_models.graph_nodes import Table
-from shared.external.catalog_client import get_catalog_json
+from shared.external.catalog_client import catalog_base_url_or_skip, get_catalog_json
 from shared.config.env_catalog import ENV
-from shared.log.logger import log_info, log_warning
+from shared.log.logger import log_info
 from shared.log.processing_progress import step_processing_scope, track_processing
 from shared.neo4j.neo4j_client import Neo4jClient
 from shared.neo4j.nodes.table import update_descriptions
@@ -39,11 +38,8 @@ async def enrich_metadata_from_catalog_step(state: dict, config: Optional[Runnab
     cfg = step_config(config)
     neo: Neo4jClient | None = cfg.get("neo_client")
     stream = cfg.get("stream")
-    if not ENV.catalog.enabled:
-        log_info(_STEP, "skip", reason="catalog 비활성화 (ROBO_CATALOG_ENABLED=false)")
-        return {}
-    if not ENV.catalog.base_url:
-        log_info(_STEP, "skip", reason="ROBO_CATALOG_BASE_URL 미설정")
+    base_url = catalog_base_url_or_skip(_STEP)
+    if base_url is None:
         return {}
 
     tables = state.get("tables", [])
@@ -55,7 +51,6 @@ async def enrich_metadata_from_catalog_step(state: dict, config: Optional[Runnab
              catalog_url=ENV.catalog.base_url, tables=len(tables),
              concurrency=ENV.pipeline.max_concurrency)
 
-    base_url = ENV.catalog.base_url.rstrip("/")
     semaphore = asyncio.Semaphore(ENV.pipeline.max_concurrency)
     updates: list[dict] = []
 
@@ -89,10 +84,12 @@ async def enrich_metadata_from_catalog_step(state: dict, config: Optional[Runnab
 
     # state 반영 — catalog description 박은 새 Table 인스턴스로 교체.
     fqn_to_desc = {u["fqn"]: u["description"] for u in updates}
+    # 매치 안 된 테이블도 그대로 유지 — state 키엔 reducer 가 없어(default replace)
+    # 전체 리스트를 돌려줘야 다음 step·artifact 가 테이블을 잃지 않는다.
     updated_tables = [
         replace(t, description=fqn_to_desc[t.fqn], description_source="catalog")
+        if t.fqn in fqn_to_desc else t
         for t in tables
-        if t.fqn in fqn_to_desc
     ]
 
     missed = sum(1 for r in results if r is None)
