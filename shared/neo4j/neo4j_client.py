@@ -22,10 +22,14 @@ from tenacity import (
 
 from shared.config.env_catalog import ENV
 from shared.log.logger import log_warning
+from shared.neo4j.connection_context import get_override
 
 
 class Neo4jClient:
     """Neo4j async 클라이언트.
+
+    연결 출처: 현재 run 컨텍스트에 Neo4j override(Electron 호스트가 헤더로 주입)가 있으면
+    그 값을, 없으면(브라우저/테스트/CLI) ``ENV.neo4j``(.env) 를 쓴다.
 
     Usage::
 
@@ -36,11 +40,14 @@ class Neo4jClient:
     """
 
     def __init__(self):
-        self._driver = AsyncGraphDatabase.driver(
-            ENV.neo4j.uri,
-            auth=(ENV.neo4j.user, ENV.neo4j.password),
-        )
-        self._database = ENV.neo4j.database
+        override = get_override()
+        if override is not None:
+            uri, user, password = override.uri, override.user, override.password
+            self._database = override.database or ENV.neo4j.database
+        else:
+            uri, user, password = ENV.neo4j.uri, ENV.neo4j.user, ENV.neo4j.password
+            self._database = ENV.neo4j.database
+        self._driver = AsyncGraphDatabase.driver(uri, auth=(user, password))
         self._closed = False
 
         # SIGTERM graceful close (메인 스레드에서만 가능 — 백그라운드 thread 면 실패).

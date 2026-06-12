@@ -17,7 +17,7 @@ import asyncio
 from pathlib import Path
 from typing import Literal, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -25,6 +25,7 @@ from analysis_pipelines import get_pipeline
 from data_models.codebase import Codebase
 from shared.config.env_catalog import ENV
 from shared.log.ndjson_stream import NDJSONStream
+from shared.neo4j.connection_context import Neo4jOverride, set_override
 from shared.workflow.executor import execute_run
 from shared.workflow.run_registry import get_active
 
@@ -35,8 +36,9 @@ router = APIRouter(prefix="/robo")
 class AnalyzeRequest(BaseModel):
     """``/analyze`` 요청 모델.
 
-    가공 식별자(``project_name``) + catalog 관련 인자 모두 폐기 — 진실은
-    ``project_root`` 경로뿐. catalog 서비스 정보는 운영 영역 (``ROBO_CATALOG_*`` env).
+    가공 식별자(``project_name``) 폐기 — 진실은 ``project_root`` 경로.
+    catalog **접속 설정**(base_url/enabled)은 운영 영역 (``ROBO_CATALOG_*`` env).
+    단 ``datasource`` ("이번 분석에서 어느 DB 를 샘플링")는 분석 입력값.
 
     ``project_root`` 미전달(None) = 업로드 모드 → ``ENV.data.dir/source`` 기본.
     값 전달 = 경로 모드(Electron) → 그 로컬 폴더를 직접 분석.
@@ -46,6 +48,7 @@ class AnalyzeRequest(BaseModel):
     ddl_dir: Optional[str] = None
     has_xml_mapper: bool = False
     locale: str = "ko"
+    datasource: Optional[str] = None         # 메타 보강 시 샘플링할 DB(MindsDB datasource). None=skip.
 
 
 class ControlRequest(BaseModel):
@@ -54,14 +57,19 @@ class ControlRequest(BaseModel):
 
 
 @router.post("/analyze")
-async def analyze(req: AnalyzeRequest) -> StreamingResponse:
+async def analyze(req: AnalyzeRequest, request: Request) -> StreamingResponse:
     """분석 시작 — NDJSON 스트림 즉시 반환, 워크플로우는 백그라운드 task.
 
     매 호출이 독립 run. 클라이언트가 stream 을 끊으면 그 run 은 종료된다.
     API key 는 ``.env`` 의 ``ROBO_LLM_API_KEY`` 가 단일 진실.
+    Neo4j 연결: ``X-Neo4j-*`` 헤더(Electron) 있으면 이 run 에 override, 없으면 env.
     """
     if not ENV.llm.api_key:
         raise HTTPException(status_code=401, detail="ROBO_LLM_API_KEY missing in .env")
+
+    # Neo4j override 를 이 run 컨텍스트에 설정 — create_task 가 컨텍스트를 복사하므로
+    # 파이프라인 전 단계의 Neo4jClient 가 그대로 본다. 헤더 없으면 None → env 폴백.
+    set_override(Neo4jOverride.from_headers(request.headers))
 
     try:
         pipeline = get_pipeline(req.strategy)
@@ -80,6 +88,7 @@ async def analyze(req: AnalyzeRequest) -> StreamingResponse:
         ddl_dir=Path(req.ddl_dir) if req.ddl_dir else None,
         has_xml_mapper=req.has_xml_mapper,
         locale=req.locale,
+        datasource=req.datasource,
     )
 
     stream = NDJSONStream()
