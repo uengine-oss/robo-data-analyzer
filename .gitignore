@@ -38,3 +38,7 @@ _debug/
 
 # 테스트 PoC 모듈(고객 .c 테스트데이터 포함) — 푸시 금지
 module_test/
+
+# Spec Kit / Claude Code agent folder — speckit init 으로 재생성 가능, 로컬 자격증명 보관 가능성
+# (specs/ 와 .specify/(헌법·템플릿)는 공유 산출물이므로 commit 한다)
+.claude/
