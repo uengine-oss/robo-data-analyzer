@@ -42,16 +42,15 @@ CONSTRAINTS: list[str] = [
     "FOR (e:EXAMPLE) REQUIRE e.example_id IS UNIQUE",
     "CREATE CONSTRAINT question_id IF NOT EXISTS "
     "FOR (q:QUESTION) REQUIRE q.question_id IS UNIQUE",
-
-    # 컴포넌트 (build_components_step 군집화)
-    "CREATE CONSTRAINT component_id IF NOT EXISTS "
-    "FOR (c:COMPONENT) REQUIRE c.component_id IS UNIQUE",
+    # 컴포넌트는 합성 노드(:COMPONENT)가 없으므로 제약 불필요 — 멤버십은 FUNCTION.component_id 속성.
 ]
 
 # 조회 인덱스
 INDEXES: list[str] = [
     "CREATE INDEX function_file_path IF NOT EXISTS FOR (f:FUNCTION) ON (f.file_path)",
     "CREATE INDEX function_parent_id IF NOT EXISTS FOR (f:FUNCTION) ON (f.parent_id)",
+    # 컴포넌트 멤버십 조회/집계(영역 hull, 그룹↔그룹 호출 GROUP BY)용.
+    "CREATE INDEX function_component_id IF NOT EXISTS FOR (f:FUNCTION) ON (f.component_id)",
     "CREATE INDEX table_schema IF NOT EXISTS FOR (t:TABLE) ON (t.schema)",
 ]
 

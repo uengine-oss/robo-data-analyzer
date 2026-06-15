@@ -1,0 +1,39 @@
+# robo-data-analyzer — K8s 배포 스펙 (이 서비스 단독).
+# data/ 는 antlr 가 채운 공유 PVC(analyzer-data, RWX)를 /data 로 읽는다(입구 통일 spec 014).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: robo-analyzer
+  namespace: robo
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: robo-analyzer }
+  template:
+    metadata:
+      labels: { app: robo-analyzer }
+    spec:
+      containers:
+        - name: analyzer
+          image: robo/analyzer:latest          # 엄브렐러 kustomization 에서 레지스트리 치환
+          envFrom:
+            - configMapRef: { name: robo-config }
+            - secretRef: { name: robo-secret }
+          env:
+            - { name: ROBO_DATA_DIR, value: /data }
+          ports: [ { containerPort: 5502 } ]
+          volumeMounts:
+            - { name: work-data, mountPath: /data }
+      volumes:
+        - name: work-data
+          persistentVolumeClaim:
+            claimName: analyzer-data            # antlr 와 공유(RWX)
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: robo-analyzer
+  namespace: robo
+spec:
+  selector: { app: robo-analyzer }
+  ports: [ { port: 5502, targetPort: 5502 } ]

@@ -36,16 +36,17 @@ router = APIRouter(prefix="/robo")
 class AnalyzeRequest(BaseModel):
     """``/analyze`` 요청 모델.
 
-    가공 식별자(``project_name``) 폐기 — 진실은 ``project_root`` 경로.
     catalog **접속 설정**(base_url/enabled)은 운영 영역 (``ROBO_CATALOG_*`` env).
     단 ``datasource`` ("이번 분석에서 어느 DB 를 샘플링")는 분석 입력값.
 
-    ``project_root`` 미전달(None) = 업로드 모드 → ``ENV.data.dir/source`` 기본.
-    값 전달 = 경로 모드(Electron) → 그 로컬 폴더를 직접 분석.
+    입구 통일(antlr spec 006 · analyzer spec 014): 분석기는 입력 모드와 무관하게 항상
+    표준 ``ENV.data.dir/{source, ddl, analysis}`` 만 소비한다. 소스의 data/ 반입과
+    DDL/source 내용 분류는 상류 파서(antlr)가 단독 책임진다. ``project_root`` 는 역호환
+    위해 받기만 하고 **무시(inert)** — 소스를 바꾸지 않는다.
     """
-    project_root: Optional[str] = None
+    project_root: Optional[str] = None       # (역호환) 수용하되 무시 — 소스는 항상 data/source
     strategy: str                            # "framework" / "dbms"
-    ddl_dir: Optional[str] = None
+    ddl_dir: Optional[str] = None            # 미전달 시 data/ddl
     has_xml_mapper: bool = False
     locale: str = "ko"
     datasource: Optional[str] = None         # 메타 보강 시 샘플링할 DB(MindsDB datasource). None=skip.
@@ -76,16 +77,16 @@ async def analyze(req: AnalyzeRequest, request: Request) -> StreamingResponse:
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # project_root 미전달 = 업로드 모드 → 공유 data/source. 전달 = 경로 모드(로컬 폴더).
-    root_str = req.project_root or str(ENV.data.dir / "source")
-    project_root = Path(root_str)
-    if not project_root.exists():
-        raise HTTPException(status_code=400, detail=f"project_root not found: {root_str}")
+    # 입구 통일: 입력 모드와 무관하게 표준 data/ 만 소비. 소스의 data/ 반입·내용 분류는
+    # 상류 파서(antlr spec 006)가 책임진다. req.project_root 는 받되 무시(inert).
+    source_root = ENV.data.dir / "source"
+    if not source_root.exists():
+        raise HTTPException(status_code=400, detail=f"source dir not found: {source_root}")
 
     codebase = Codebase(
-        root=project_root,
+        root=source_root,
         strategy=req.strategy,  # type: ignore[arg-type]
-        ddl_dir=Path(req.ddl_dir) if req.ddl_dir else None,
+        ddl_dir=Path(req.ddl_dir) if req.ddl_dir else ENV.data.dir / "ddl",
         has_xml_mapper=req.has_xml_mapper,
         locale=req.locale,
         datasource=req.datasource,

@@ -32,10 +32,8 @@ from data_models.graph_edges import (
     BelongsToPackage,
     Branch,
     Calls,
-    ComponentCalls,
     Fk,
     HasColumn,
-    HasComponentMember,
     HasExample,
     HasFunction,
     HasMember,
@@ -50,7 +48,6 @@ from data_models.graph_edges import (
 )
 from data_models.graph_nodes import (
     Column,
-    Component,
     Constant,
     DataType,
     Example,
@@ -122,6 +119,11 @@ class WorkflowState(TypedDict, total=False):
     # ── step5_build_context 결과 ──────────────────
     analysis_contexts: dict[str, AnalysisContext]   # function_id → ctx
 
+    # ── step5 데이터준비 (enrich_table_data — 옵션·전략독립) ──────
+    # catalog sample-context 로 받은 테이블별 실제 샘플행 — step6 GWT 입력값.
+    # {table_fqn: {columns, sample_rows}}. 토글 off / datasource 미지정 / 미매칭 → 키 없음.
+    table_sample_data: dict[str, dict]
+
     # ── step6 Example Mapping 결과 (analyze_function 함수 단위 누적) ──
     # 비즈니스 로직 3가지 (rules/examples/questions) + 관련 엣지 6종.
     # Rule 노드는 rule_hash 가 정체성 식별자 — 같은 statement 함수 간 공유.
@@ -136,7 +138,4 @@ class WorkflowState(TypedDict, total=False):
     branch_edges: list[Branch]
     affects_table_edges: list[AffectsTable]
 
-    # ── step7 컴포넌트 (build_components_step — 함수 호출 군집 '부품') ──
-    components: list[Component]
-    component_member_edges: list[HasComponentMember]
-    component_calls_edges: list[ComponentCalls]
+    # step7 build_components 는 합성 노드를 만들지 않고 FUNCTION.component_id 속성만 SET — state 누적 없음.

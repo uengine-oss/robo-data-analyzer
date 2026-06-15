@@ -146,21 +146,8 @@ class ParentOf:
     child_function_id: str
 
 
-# ── Component (build_components_step 군집화 결과) ──────────
-
-@dataclass(frozen=True)
-class HasComponentMember:
-    """Component → Function (부품이 멤버 함수를 품음)."""
-    component_id: str
-    function_id: str
-
-
-@dataclass(frozen=True)
-class ComponentCalls:
-    """Component → Component (부품 간 호출 — 멤버 호출 롤업, ``count`` 부속)."""
-    caller_component_id: str
-    callee_component_id: str
-    count: int = 0
+# 컴포넌트 멤버십/그룹간 호출은 엣지로 저장하지 않는다 — 멤버십은 FUNCTION.component_id 속성,
+# 그룹↔그룹 호출은 CALLS + component_id 로 온디맨드 GROUP BY (build_components_step 참고).
 
 
 # ── 코드 구조 엣지 (load_ast 가 antlr JSON 트리에서 생성) ──

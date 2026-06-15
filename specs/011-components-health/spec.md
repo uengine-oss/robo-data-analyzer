@@ -10,19 +10,21 @@
 
 ## User Scenarios & Testing *(mandatory)*
 
-### User Story 1 - 호출 군집을 '부품(COMPONENT)'으로 묶어 보기 (Priority: P1)
+### User Story 1 - 호출 군집을 함수 속성(component_id)으로 묶어 보기 (Priority: P1)
 
-레거시 분석가는 수천 개 함수를 개별로 보는 대신, 함께 자주 호출하는 함수들이 어떤 "기능 부품"으로 묶이는지 보고 싶다. 시스템은 내부 CALLS 엣지만으로 함수를 군집화하고, 각 부품에 사람이 읽을 수 있는 도메인 이름·설명·역할(stereotype)을 붙여 Neo4j 에 적재한다.
+레거시 분석가는 수천 개 함수를 개별로 보는 대신, 함께 자주 호출하는 함수들이 어떤 "기능 부품(바운디드 컨텍스트)"으로 묶이는지 보고 싶다. 시스템은 내부 CALLS 엣지만으로 함수를 군집화하고, 각 군집에 사람이 읽을 이름을 붙여, **그 멤버십을 각 FUNCTION 노드의 `component_id`·`component_name` 속성으로 SET** 한다.
 
-**Why this priority**: 부품 군집은 이 기능의 핵심 산출물이다. 군집화만 단독으로 동작해도 "거대 코드베이스를 몇십 개 부품으로 압축해 보여준다"는 가치를 즉시 제공한다.
+> **★ 합성 노드 없음(2026-06-15 개정)**: 군집을 `:COMPONENT` 노드로 materialize 하지 않는다. 멤버십은 **`FUNCTION.component_id` 속성이 단일 진실**이고, 이름·그룹간 관계는 전부 거기서 파생한다 — 시각화(영역 hull)는 뷰에서 `component_id` 기준 오버레이, 그룹↔그룹 호출은 저장하지 않고 `CALLS` + `component_id` 로 온디맨드 GROUP BY. 합성 노드/엣지를 만들면 도달성·중심성·임팩트 분석이 왜곡되므로 금지.
 
-**Independent Test**: 함수/호출 그래프가 담긴 state 로 step 을 실행 → `COMPONENT` 노드 + `HAS_COMPONENT_MEMBER` + `COMPONENT_CALLS` 엣지가 Neo4j 에 생성되는지 확인. 같은 입력을 두 번 돌려 동일 군집(seed 고정)이 나오는지 확인.
+**Why this priority**: 군집 멤버십은 이 기능의 핵심 산출물이다. 군집화만 단독으로 동작해도 "거대 코드베이스를 몇십 개 부품으로 압축해 본다"는 가치를 즉시 제공한다.
+
+**Independent Test**: 함수/호출 그래프가 담긴 state 로 step 실행 → 멤버 함수마다 `FUNCTION.component_id`(+`component_name`)가 SET 되는지 확인(`:COMPONENT` 노드·`HAS_COMPONENT_MEMBER`·`COMPONENT_CALLS` 는 생기지 **않아야** 함). 같은 입력 두 번 → 동일 군집(seed 고정).
 
 **Acceptance Scenarios**:
 
-1. **Given** 내부 CALLS 엣지가 있는 함수 집합, **When** build_components_step 실행, **Then** 멤버 2개 이상인 군집마다 `COMPONENT` 노드가 생기고 멤버 함수마다 `HAS_COMPONENT_MEMBER` 엣지가 연결된다.
-2. **Given** 부품 A 의 함수가 부품 B 의 함수를 내부 호출, **When** 관계 롤업, **Then** `COMPONENT_CALLS(A→B)` 엣지가 호출 쌍 개수(count)를 부속으로 생긴다.
-3. **Given** 동일 그래프 재분석, **When** 두 번 실행(seed=42), **Then** 동일한 component_id·멤버 구성이 나온다(결정론).
+1. **Given** 내부 CALLS 엣지가 있는 함수 집합, **When** build_components_step 실행, **Then** 멤버 2개 이상인 군집의 모든 멤버 FUNCTION 에 동일 `component_id` 가 SET 되고, **`:COMPONENT` 노드/엣지는 생성되지 않는다**.
+2. **Given** 그룹 A 함수가 그룹 B 함수를 내부 호출, **When** 그룹간 호출이 필요, **Then** 저장된 엣지가 아니라 `CALLS` + 양끝 `component_id` 를 GROUP BY 해 온디맨드로 집계한다.
+3. **Given** 동일 그래프 재분석, **When** 두 번 실행(seed=42), **Then** 동일한 `component_id`·멤버 구성이 나온다(결정론).
 
 ---
 

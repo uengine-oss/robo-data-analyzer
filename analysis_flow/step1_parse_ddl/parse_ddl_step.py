@@ -13,6 +13,7 @@ from langchain_core.runnables import RunnableConfig
 
 from shared.workflow.step_utils import step_config
 
+from shared.config.env_catalog import ENV
 from shared.ddl.parser import parse_ddl_file
 from shared.log.logger import log_info, log_warning
 from shared.neo4j.edges.belongs_to import upsert_belongs_to
@@ -39,7 +40,9 @@ async def parse_ddl_step(state: dict, config: Optional[RunnableConfig] = None) -
         log_warning(_STEP, "config_missing", "project/neo_client 누락 — step skip (state 변경 X)")
         return {}
 
-    ddl_dir = project.ddl_dir or project.root
+    # ddl_dir 미설정 시 표준 data/ddl 로 폴백 — 절대 source 루트를 긁지 않는다
+    # (입구 통일 후 data/ddl 엔 표 정의만 존재; 프로시저가 sqlglot 에 닿아 run 이 죽던 사고 차단).
+    ddl_dir = project.ddl_dir or (ENV.data.dir / "ddl")
     # db 자리는 DDL 명시값만 — 가공 식별자(예: 디렉토리 이름) 박지 X.
     # 명시 없으면 빈값 → fqn = ".schema.name" 형태로 db 부재 명확.
     db_name = ""
