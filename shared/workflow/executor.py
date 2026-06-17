@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from data_models.analysis_run import AnalysisRun
 from data_models.codebase import Codebase
@@ -90,7 +91,11 @@ async def execute_run(
             log_info("run", "neo4j_ready", database=ENV.neo4j.database, wiped=True)
 
             cost_budget = CostBudget()
-            checkpointer = MemorySaver()
+            # serde 에 allowed_msgpack_modules=True 명시 — 체크포인트가 data_models 의 커스텀
+            # 타입(Function/Table/Rule/Calls 등)을 직렬화할 때 "미등록 타입" 경고가 뜨고 미래
+            # langgraph 에서 차단되는 것을 방지. MemorySaver 는 in-memory·1회 run·자기 데이터
+            # (신뢰됨)라 전체 허용이 안전.
+            checkpointer = MemorySaver(serde=JsonPlusSerializer(allowed_msgpack_modules=True))
             app = build_langgraph_workflow(strategy, checkpointer=checkpointer)
 
             # 병렬 그룹(후처리) 공유 LLM 세마포어 — step 마다 따로 Semaphore(30) 를 만들면
