@@ -23,19 +23,17 @@ def _merge_query(label: str) -> str:
     """
     return f"""
 UNWIND $items AS item
-MERGE (f:{label} {{function_id: item.function_id}})
-SET f.signature = item.signature,
-    f.file_path = item.file_path,
-    f.start_line = item.start_line,
-    f.end_line = item.end_line,
-    f.parent_id = item.parent_id,
-    f.module_id = item.module_id,
-    f.package_id = item.package_id,
-    f.annotations = item.annotations,
-    f.comment = item.comment,
-    f.return_type = item.return_type,
-    f.params = item.params
-RETURN count(f) AS created
+MERGE (node:{label} {{id: item.id}})
+SET node.name = item.name,
+    node.signature = item.signature,
+    node.file_path = item.file_path,
+    node.start_line = item.start_line,
+    node.end_line = item.end_line,
+    node.annotations = item.annotations,
+    node.comment = item.comment,
+    node.return_type = item.return_type,
+    node.params = item.params
+RETURN count(node) AS created
 """
 
 
@@ -44,24 +42,23 @@ RETURN count(f) AS created
 # M12 에서 Rule/Example/Question 그래프 노드로 분리 — 여기서 안 박음.
 SET_SUMMARY_QUERY = """
 UNWIND $items AS item
-MATCH (f:FUNCTION {function_id: item.function_id})
-SET f.summary = item.summary,
-    f.stereotype = item.stereotype,
-    f.logical_name = item.logical_name,
-    f.table_insights_json = item.table_insights_json
+MATCH (node {id: item.id})
+SET node.summary = item.summary,
+    node.stereotype = item.stereotype,
+    node.logical_name = item.logical_name,
+    node.table_insights_json = item.table_insights_json,
+    node.code_text = item.code_text
 """
 
 
 def to_item(fn: Function) -> dict:
     return {
-        "function_id": fn.function_id,
+        "id": fn.id,
+        "name": fn.name,
         "signature": fn.signature,
         "file_path": fn.file_path,
         "start_line": fn.start_line,
         "end_line": fn.end_line,
-        "parent_id": fn.parent_id,
-        "module_id": fn.module_id,
-        "package_id": fn.package_id,
         "annotations": fn.annotations,
         "comment": fn.comment,
         "return_type": fn.return_type,
@@ -78,21 +75,26 @@ def to_summary_item(fn: Function) -> dict:
     """
     extra = fn.extra or {}
     return {
-        "function_id": fn.function_id,
+        "id": fn.id,
         "summary": fn.summary,
         "stereotype": fn.stereotype,
         "logical_name": fn.logical_name,
         "table_insights_json": json.dumps(extra.get("table_insights", []), ensure_ascii=False),
+        "code_text": fn.code_text,
     }
 
 
 async def upsert_functions(client: Neo4jClient, functions: Iterable[Function]) -> None:
-    """sub_label 별로 묶어 — 묶음마다 라벨 박힌 MERGE (멀티라벨 ``:FUNCTION:METHOD`` 등)."""
-    by_sub: dict[str, list[dict]] = defaultdict(list)
+    """(primary_label, sub_label) 별로 묶어 라벨 박힌 MERGE.
+
+    Framework: primary="FUNCTION" + ontology sub-label → ``:FUNCTION:METHOD`` (역할 그룹).
+    DBMS: primary=antlr type, sub 없음 → ``:SELECT``/``:PROCEDURE``/``:IF`` … (spec 016).
+    """
+    by_label: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for fn in functions:
-        by_sub[fn.sub_label].append(to_item(fn))
-    for sub, items in by_sub.items():
-        label = f"FUNCTION:{sub}" if sub else "FUNCTION"
+        by_label[(fn.primary_label or "FUNCTION", fn.sub_label)].append(to_item(fn))
+    for (primary, sub), items in by_label.items():
+        label = f"{primary}:{sub}" if sub else primary
         await client.run_batch_unwind(_merge_query(label), items)
 
 

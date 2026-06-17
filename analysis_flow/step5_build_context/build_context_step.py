@@ -46,8 +46,8 @@ def _build_reference_context(state: dict) -> dict[str, list[str]]:
     referenced_symbols = REFERENCES(함수→변수/상수) + INIT_BY(변수 초기화 출처).
     결정론 — LLM / Neo4j 조회 0. 같은 심볼은 함수당 1회만.
     """
-    var_by_id: dict[str, Variable] = {v.variable_id: v for v in state.get("variables", [])}
-    const_by_id: dict[str, Constant] = {c.constant_id: c for c in state.get("constants", [])}
+    var_by_id: dict[str, Variable] = {v.id: v for v in state.get("variables", [])}
+    const_by_id: dict[str, Constant] = {c.id: c for c in state.get("constants", [])}
     # InitBy 출발이 변수+상수 둘 다 가능 → (id, label) 합성키로 lookup.
     # 한 노드가 여러 출처 참조 시 dict 1:1 한계 (마지막만 표시) — 보조 정보용이라 허용.
     initby_by_target: dict[tuple[str, str], tuple[str, str]] = {
@@ -58,12 +58,12 @@ def _build_reference_context(state: dict) -> dict[str, list[str]]:
     refsym_by_fn: dict[str, list[str]] = {}
     seen_sym: dict[str, set[str]] = {}
     for e in state.get("references_edges", []):
-        if e.target_id in seen_sym.setdefault(e.function_id, set()):
+        if e.target_id in seen_sym.setdefault(e.source_id, set()):
             continue
         line = _format_referenced_symbol(e, var_by_id, const_by_id, initby_by_target)
         if line:
-            seen_sym[e.function_id].add(e.target_id)
-            refsym_by_fn.setdefault(e.function_id, []).append(line)
+            seen_sym[e.source_id].add(e.target_id)
+            refsym_by_fn.setdefault(e.source_id, []).append(line)
 
     return refsym_by_fn
 
@@ -132,13 +132,13 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
     writes_by_fn: dict[str, set[str]] = {}
     for e in rw_edges:
         bucket = reads_by_fn if e.relation == "READS" else writes_by_fn
-        bucket.setdefault(e.function_id, set()).add(e.table_fqn)
+        bucket.setdefault(e.source_id, set()).add(e.target_id)
 
     callers_by_fn: dict[str, set[str]] = {}
     callees_by_fn: dict[str, set[str]] = {}
     for e in calls_edges:
-        callees_by_fn.setdefault(e.caller_function_id, set()).add(e.callee_function_id)
-        callers_by_fn.setdefault(e.callee_function_id, set()).add(e.caller_function_id)
+        callees_by_fn.setdefault(e.caller_id, set()).add(e.callee_id)
+        callers_by_fn.setdefault(e.callee_id, set()).add(e.caller_id)
 
     # 참조 컨텍스트 — REFERENCES + INIT_BY (참조 변수/상수).
     refsym_by_fn = _build_reference_context(state)
@@ -151,25 +151,25 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
     for fn in functions:
         body_text = body_cache.slice(fn.file_path, fn.start_line, fn.end_line)
         ctx = AnalysisContext(
-            function_id=fn.function_id,
+            id=fn.id,
             signature=fn.signature,
             file_path=fn.file_path,
             start_line=fn.start_line,
             end_line=fn.end_line,
-            reads=tuple(sorted(reads_by_fn.get(fn.function_id, ()))),
-            writes=tuple(sorted(writes_by_fn.get(fn.function_id, ()))),
-            callers=tuple(sorted(callers_by_fn.get(fn.function_id, ()))),
-            callees=tuple(sorted(callees_by_fn.get(fn.function_id, ()))),
-            referenced_symbols=tuple(sorted(refsym_by_fn.get(fn.function_id, ()))),
+            reads=tuple(sorted(reads_by_fn.get(fn.id, ()))),
+            writes=tuple(sorted(writes_by_fn.get(fn.id, ()))),
+            callers=tuple(sorted(callers_by_fn.get(fn.id, ()))),
+            callees=tuple(sorted(callees_by_fn.get(fn.id, ()))),
+            referenced_symbols=tuple(sorted(refsym_by_fn.get(fn.id, ()))),
             token_count=estimate_tokens(body_text),
         )
         ctx = await builder.augment(ctx, fn, state)
-        contexts[fn.function_id] = ctx
+        contexts[fn.id] = ctx
 
     # 큰 함수만 one_liner 사전 압축 (LLM 1 회 — model_small)
     big_functions = [
         fn for fn in functions
-        if contexts[fn.function_id].token_count >= ENV.pipeline.big_context_threshold_tokens
+        if contexts[fn.id].token_count >= ENV.pipeline.big_context_threshold_tokens
     ]
     if big_functions:
         log_info(
@@ -194,7 +194,7 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
                 failed += 1
                 log_error(
                     _STEP, "compute_one_liner", r,
-                    function_id=fn.function_id,
+                    function_id=fn.id,
                 )
         log_info(_STEP, "one_liner_done", big_functions=len(big_functions), failed=failed or None)
 
@@ -218,9 +218,9 @@ async def _compute_one_liner_safe(
     회로 차단기는 raise (gather 가 잡아 상위로 전파).
     track_processing 이 start/done/failed 자동 emit — stream 인자 chain 불필요.
     """
-    async with track_processing("Function", fn.function_id, sub_action="one_liner"):
+    async with track_processing("Function", fn.id, sub_action="one_liner"):
         async with semaphore:
             body_text = body_cache.slice(fn.file_path, fn.start_line, fn.end_line)
             one_liner = await compute_one_liner(fn, body_text, cost_budget=cost_budget)
             if one_liner:
-                contexts[fn.function_id].one_liner = one_liner
+                contexts[fn.id].one_liner = one_liner

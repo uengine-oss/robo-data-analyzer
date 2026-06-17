@@ -9,13 +9,13 @@ from shared.neo4j.rel_types import HAS_QUESTION
 
 _UPSERT_QUERY = f"""
 UNWIND $items AS item
-MATCH (f:FUNCTION {{function_id: item.function_id}})
-MATCH (q:QUESTION {{question_id: item.question_id}})
-MERGE (f)-[:{HAS_QUESTION}]->(q)
+MATCH (node {{id: item.source_id}})
+MATCH (q:QUESTION {{id: item.target_id}})
+MERGE (node)-[:{HAS_QUESTION}]->(q)
 """
 
 
 async def upsert_has_question(client: Neo4jClient, edges: Iterable[HasQuestion]) -> None:
     """Function → Question 엣지."""
-    items = [{"function_id": e.function_id, "question_id": e.question_id} for e in edges]
+    items = [{"source_id": e.source_id, "target_id": e.target_id} for e in edges]
     await client.run_batch_unwind(_UPSERT_QUERY, items)

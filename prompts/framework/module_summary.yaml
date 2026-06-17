@@ -54,7 +54,7 @@ system: |
   `ModuleSummaryOutput` Pydantic 강제 — 자유 텍스트 응답 불가.
 
 user_template: |
-  module_id: {module_id}
+  id: {id}
   name: {name}
 
   member_functions:

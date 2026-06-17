@@ -39,10 +39,10 @@ class DbmsContextBuilder:
         if self._cache_token != id(edges):
             grouped: dict[str, list[str]] = {}
             for e in edges:
-                grouped.setdefault(e.parent_function_id, []).append(e.child_function_id)
+                grouped.setdefault(e.parent_id, []).append(e.child_id)
             self._children = {p: tuple(sorted(c)) for p, c in grouped.items()}
             self._cache_token = id(edges)
 
         ctx.extra["parent_id"] = function.parent_id
-        ctx.extra["child_ids"] = self._children.get(function.function_id, ())
+        ctx.extra["child_ids"] = self._children.get(function.id, ())
         return ctx

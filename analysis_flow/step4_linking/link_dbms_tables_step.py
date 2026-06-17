@@ -74,22 +74,22 @@ def _link(
     functions: list[Function], tables: list[Table], parent_of_edges: list,
 ) -> list[ReadsWrites]:
     """모든 노드의 자기 줄(자기 범위 − 자식 줄범위) 에서 DDL 테이블명 검색 → ReadsWrites."""
-    name_to_fqn = {t.name.upper(): t.fqn for t in tables}
-    if not name_to_fqn:
+    name_to_id = {t.name.upper(): t.id for t in tables}
+    if not name_to_id:
         return []
     # 긴 이름 우선 — 부분매칭 방지. 단어경계.
     table_re = re.compile(
-        r"\b(" + "|".join(re.escape(n) for n in sorted(name_to_fqn, key=len, reverse=True)) + r")\b",
+        r"\b(" + "|".join(re.escape(n) for n in sorted(name_to_id, key=len, reverse=True)) + r")\b",
         re.IGNORECASE,
     )
     # 각 노드의 직속 자식 줄범위 — 자기 줄 = 자기 범위에서 이 구간들을 뺀 나머지.
     # parent_of_edges 는 "스킵 대상" 이 아니라 "자기 줄 계산용" 으로만 쓴다.
-    fn_by_id = {fn.function_id: fn for fn in functions}
+    fn_by_id = {fn.id: fn for fn in functions}
     child_ranges: dict[str, list[tuple[int, int]]] = {}
     for e in parent_of_edges:
-        child = fn_by_id.get(e.child_function_id)
+        child = fn_by_id.get(e.child_id)
         if child is not None:
-            child_ranges.setdefault(e.parent_function_id, []).append(
+            child_ranges.setdefault(e.parent_id, []).append(
                 (child.start_line, child.end_line)
             )
 
@@ -99,7 +99,7 @@ def _link(
 
     for fn in functions:
         body = _COMMENT_RE.sub(
-            " ", _own_body(fn, child_ranges.get(fn.function_id, ()), file_cache),
+            " ", _own_body(fn, child_ranges.get(fn.id, ()), file_cache),
         )
         if not body.strip():
             continue
@@ -108,17 +108,17 @@ def _link(
             continue   # DML statement 아님 (ASSIGN/RAISE/CALL/컨테이너 골격 등)
         write_targets = {t.upper() for t in _WRITE_TARGET_RE.findall(body)}
         for m in table_re.finditer(body):
-            fqn = name_to_fqn.get(m.group(1).upper())
-            if fqn is None:
+            tid = name_to_id.get(m.group(1).upper())
+            if tid is None:
                 continue
             relation = "WRITES" if m.group(1).upper() in write_targets else "READS"
-            key = (fn.function_id, fqn, relation)
+            key = (fn.id, tid, relation)
             if key in seen:
                 continue
             seen.add(key)
             edges.append(ReadsWrites(
-                function_id=fn.function_id,
-                table_fqn=fqn,
+                source_id=fn.id,
+                target_id=tid,
                 relation=relation,
                 dml_type=derive_dml_type(dml_type),
                 evidence_file=fn.file_path,

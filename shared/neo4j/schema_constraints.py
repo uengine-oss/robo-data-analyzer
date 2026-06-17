@@ -11,44 +11,44 @@ from __future__ import annotations
 from shared.neo4j.neo4j_client import Neo4jClient
 
 
-# 노드 유일성 제약 (UNIQUE)
+# 노드 유일성 제약 (UNIQUE) — 모든 노드 식별 키 = ``id`` 단일 (종류 무관).
+#   값은 노드별 고유 문자열 (DB=db.schema.name / 코드=fqn형태 / EM=해시·합성키).
+# 제약 이름은 ``uniq_<label>`` — 옛 버전이 ``module_id`` 등 동일 이름을 옛 속성(m.module_id)에
+# 걸어둔 더티 DB 에서도 ``IF NOT EXISTS`` 가 (이름 충돌로) 새 ``.id`` 제약 생성을 막지 않도록
+# 새 이름 사용. (이미 .id 에 동등 제약이 있으면 IF NOT EXISTS 가 no-op — clean·dirty 양쪽 안전.)
 CONSTRAINTS: list[str] = [
-    # DB 노드 — 키 = fqn
-    "CREATE CONSTRAINT schema_db_name IF NOT EXISTS "
-    "FOR (s:SCHEMA) REQUIRE (s.db, s.name) IS UNIQUE",
-    "CREATE CONSTRAINT table_fqn IF NOT EXISTS "
-    "FOR (t:TABLE) REQUIRE t.fqn IS UNIQUE",
-    "CREATE CONSTRAINT column_fqn IF NOT EXISTS "
-    "FOR (c:COLUMN) REQUIRE c.fqn IS UNIQUE",
-
-    # 코드 노드 — 키 = <타입>_id
-    "CREATE CONSTRAINT function_id IF NOT EXISTS "
-    "FOR (f:FUNCTION) REQUIRE f.function_id IS UNIQUE",
-    "CREATE CONSTRAINT module_id IF NOT EXISTS "
-    "FOR (m:MODULE) REQUIRE m.module_id IS UNIQUE",
-    "CREATE CONSTRAINT package_id IF NOT EXISTS "
-    "FOR (p:PACKAGE) REQUIRE p.package_id IS UNIQUE",
-    "CREATE CONSTRAINT variable_id IF NOT EXISTS "
-    "FOR (v:VARIABLE) REQUIRE v.variable_id IS UNIQUE",
-    "CREATE CONSTRAINT constant_id IF NOT EXISTS "
-    "FOR (c:CONSTANT) REQUIRE c.constant_id IS UNIQUE",
-    "CREATE CONSTRAINT data_type_id IF NOT EXISTS "
-    "FOR (d:DATA_TYPE) REQUIRE d.datatype_id IS UNIQUE",
-
+    "CREATE CONSTRAINT uniq_schema IF NOT EXISTS "
+    "FOR (s:SCHEMA) REQUIRE s.id IS UNIQUE",
+    "CREATE CONSTRAINT uniq_table IF NOT EXISTS "
+    "FOR (t:TABLE) REQUIRE t.id IS UNIQUE",
+    "CREATE CONSTRAINT uniq_column IF NOT EXISTS "
+    "FOR (c:COLUMN) REQUIRE c.id IS UNIQUE",
+    "CREATE CONSTRAINT uniq_function IF NOT EXISTS "
+    "FOR (f:FUNCTION) REQUIRE f.id IS UNIQUE",
+    "CREATE CONSTRAINT uniq_module IF NOT EXISTS "
+    "FOR (m:MODULE) REQUIRE m.id IS UNIQUE",
+    "CREATE CONSTRAINT uniq_package IF NOT EXISTS "
+    "FOR (p:PACKAGE) REQUIRE p.id IS UNIQUE",
+    "CREATE CONSTRAINT uniq_variable IF NOT EXISTS "
+    "FOR (v:VARIABLE) REQUIRE v.id IS UNIQUE",
+    "CREATE CONSTRAINT uniq_constant IF NOT EXISTS "
+    "FOR (c:CONSTANT) REQUIRE c.id IS UNIQUE",
+    "CREATE CONSTRAINT uniq_data_type IF NOT EXISTS "
+    "FOR (d:DATA_TYPE) REQUIRE d.id IS UNIQUE",
     # Example Mapping 노드 (analyze_function 3분할 → EM 빌더)
-    "CREATE CONSTRAINT rule_hash IF NOT EXISTS "
-    "FOR (r:RULE) REQUIRE r.rule_hash IS UNIQUE",
-    "CREATE CONSTRAINT example_id IF NOT EXISTS "
-    "FOR (e:EXAMPLE) REQUIRE e.example_id IS UNIQUE",
-    "CREATE CONSTRAINT question_id IF NOT EXISTS "
-    "FOR (q:QUESTION) REQUIRE q.question_id IS UNIQUE",
+    "CREATE CONSTRAINT uniq_rule IF NOT EXISTS "
+    "FOR (r:RULE) REQUIRE r.id IS UNIQUE",
+    "CREATE CONSTRAINT uniq_example IF NOT EXISTS "
+    "FOR (e:EXAMPLE) REQUIRE e.id IS UNIQUE",
+    "CREATE CONSTRAINT uniq_question IF NOT EXISTS "
+    "FOR (q:QUESTION) REQUIRE q.id IS UNIQUE",
     # 컴포넌트는 합성 노드(:COMPONENT)가 없으므로 제약 불필요 — 멤버십은 FUNCTION.component_id 속성.
 ]
 
 # 조회 인덱스
 INDEXES: list[str] = [
     "CREATE INDEX function_file_path IF NOT EXISTS FOR (f:FUNCTION) ON (f.file_path)",
-    "CREATE INDEX function_parent_id IF NOT EXISTS FOR (f:FUNCTION) ON (f.parent_id)",
+    # 트리(parent_id) 는 노드 속성 아닌 PARENT_OF 엣지로 표현 → parent_id 인덱스 불필요.
     # 컴포넌트 멤버십 조회/집계(영역 hull, 그룹↔그룹 호출 GROUP BY)용.
     "CREATE INDEX function_component_id IF NOT EXISTS FOR (f:FUNCTION) ON (f.component_id)",
     "CREATE INDEX table_schema IF NOT EXISTS FOR (t:TABLE) ON (t.schema)",

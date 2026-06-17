@@ -261,8 +261,7 @@ async def run_yaml_rule(
 # user_values 의 어떤 키가 target_id / sort_key 로 적합한지 — 우선순위.
 # rule 별 user_template 의 placeholder 이름과 일치하면 자동 매핑.
 _TARGET_ID_KEYS = (
-    "function_id", "procedure_id", "module_id", "table_fqn",
-    "case_id", "name", "file",
+    "id", "table_fqn", "case_id", "name", "file",
 )
 
 

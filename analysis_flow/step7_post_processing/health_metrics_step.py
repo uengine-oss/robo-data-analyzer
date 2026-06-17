@@ -43,14 +43,14 @@ TABLE_COUPLING_THRESHOLD = 5   # 이만큼 많은 테이블을 만지면 데이�
 
 _SET_QUERY = """
 UNWIND $items AS item
-MATCH (f:FUNCTION {function_id: item.function_id})
-SET f.fan_in = item.fan_in,
-    f.fan_out = item.fan_out,
-    f.loc = item.loc,
-    f.in_cycle = item.in_cycle,
-    f.table_coupling = item.table_coupling,
-    f.god_flag = item.god_flag,
-    f.risk = item.risk
+MATCH (node {id: item.id})
+SET node.fan_in = item.fan_in,
+    node.fan_out = item.fan_out,
+    node.loc = item.loc,
+    node.in_cycle = item.in_cycle,
+    node.table_coupling = item.table_coupling,
+    node.god_flag = item.god_flag,
+    node.risk = item.risk
 """
 
 
@@ -99,13 +99,13 @@ def _compute_metrics(
     reads_writes: list[ReadsWrites],
 ) -> list[dict]:
     """결정론 계산 — 함수별 지표 dict 리스트 (Neo4j SET item 형식)."""
-    ids = {f.function_id for f in functions}
+    ids = {f.id for f in functions}
 
     # 내부 호출만 (external = 분석 범위 밖 stub → 차수·순환 계산서 제외).
     internal_edges = [
-        (c.caller_function_id, c.callee_function_id)
+        (c.caller_id, c.callee_id)
         for c in calls
-        if c.scope == "internal" and c.caller_function_id in ids and c.callee_function_id in ids
+        if c.scope == "internal" and c.caller_id in ids and c.callee_id in ids
     ]
 
     fan_out_sets: dict[str, set[str]] = defaultdict(set)
@@ -120,12 +120,12 @@ def _compute_metrics(
     # 데이터 결합도 — 함수가 만지는 distinct 테이블 수.
     table_sets: dict[str, set[str]] = defaultdict(set)
     for rw in reads_writes:
-        if rw.function_id in ids:
-            table_sets[rw.function_id].add(rw.table_fqn)
+        if rw.source_id in ids:
+            table_sets[rw.source_id].add(rw.target_id)
 
     items: list[dict] = []
     for f in functions:
-        fid = f.function_id
+        fid = f.id
         fan_out = len(fan_out_sets.get(fid, ()))
         fan_in = len(fan_in_sets.get(fid, ()))
         loc = (f.end_line - f.start_line + 1) if (f.end_line and f.start_line and f.end_line >= f.start_line) else 0
@@ -133,7 +133,7 @@ def _compute_metrics(
         table_coupling = len(table_sets.get(fid, ()))
         god_flag = loc >= GOD_LOC_THRESHOLD and fan_out >= GOD_FANOUT_THRESHOLD
         items.append({
-            "function_id": fid,
+            "id": fid,
             "fan_in": fan_in,
             "fan_out": fan_out,
             "loc": loc,

@@ -28,7 +28,7 @@
 - `framework_functions` — 프레임워크 함수 목록 (참고용)
 - `ddl_tables` — 이 프로젝트의 DB 테이블 목록 (`verify_table_regex` 해소 기준)
 - `residual_cases` — 잔여 미해결 케이스 샘플. 각 케이스: `file` · `line` ·
-  `call_text`(매칭된 호출 원문) · `function_id` · `attempted_patterns`(어떤 정규식이
+  `call_text`(매칭된 호출 원문) · `source_id` · `attempted_patterns`(어떤 정규식이
   어떻게 매칭됐고 왜 테이블을 못 찾았는지)
 
 ---

@@ -138,7 +138,7 @@ class RegexTableLinker:
                             "file": str(src_file),
                             "line": line,
                             "call_text": m.group(0),
-                            "function_id": caller_id or "",
+                            "source_id": caller_id or "",
                             "attempted_patterns": [{
                                 "pattern_id": pat.id,
                                 "regex": pat.call_regex,
@@ -157,8 +157,8 @@ class RegexTableLinker:
                     standard_op = op_lookup.get(op_token)
                     relation = _op_to_relation(standard_op) if standard_op else "READS"
                     outcome.edges.append(ReadsWrites(
-                        function_id=caller_id,
-                        table_fqn=table_fqn,
+                        source_id=caller_id,
+                        target_id=table_fqn,
                         relation=relation,
                         dml_type=derive_dml_type(standard_op),
                         evidence_file=str(src_file),
@@ -251,7 +251,7 @@ class FunctionLocator:
         # file_path → [(start, end, function_id)] sorted
         self.by_file: dict[str, list[tuple[int, int, str]]] = defaultdict(list)
         for fn in functions:
-            self.by_file[fn.file_path].append((fn.start_line, fn.end_line, fn.function_id))
+            self.by_file[fn.file_path].append((fn.start_line, fn.end_line, fn.id))
         for k in self.by_file:
             self.by_file[k].sort()
 
@@ -275,9 +275,9 @@ def _build_table_lookup(tables: list[Table]) -> dict[str, str]:
     """테이블 이름 다양한 변형 → fqn lookup."""
     lookup: dict[str, str] = {}
     for t in tables:
-        fqn = t.fqn
+        tid = t.id
         for key in (t.name, t.name.upper(), t.name.lower()):
-            lookup.setdefault(key, fqn)
+            lookup.setdefault(key, tid)
     return lookup
 
 

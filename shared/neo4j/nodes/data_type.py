@@ -15,9 +15,8 @@ def _merge_query(label: str) -> str:
     """label 은 ``DataType.sub_label`` 통제값 — 주입 안전."""
     return f"""
 UNWIND $items AS item
-MERGE (d:{label} {{datatype_id: item.datatype_id}})
-SET d.module_id = item.module_id,
-    d.name = item.name,
+MERGE (d:{label} {{id: item.id}})
+SET d.name = item.name,
     d.file_path = item.file_path,
     d.start_line = item.start_line,
     d.end_line = item.end_line,
@@ -28,8 +27,7 @@ RETURN count(d) AS created
 
 def to_item(d: DataType) -> dict:
     return {
-        "datatype_id": d.datatype_id,
-        "module_id": d.module_id,
+        "id": d.id,
         "name": d.name,
         "file_path": d.file_path,
         "start_line": d.start_line,

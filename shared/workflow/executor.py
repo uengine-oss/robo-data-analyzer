@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import shutil
 from collections import defaultdict
@@ -27,6 +28,8 @@ from typing import Any, Optional
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
+from data_models import graph_edges, graph_nodes
+from data_models.analysis_context import AnalysisContext
 from data_models.analysis_run import AnalysisRun
 from data_models.codebase import Codebase
 from shared.config.env_catalog import ENV
@@ -47,6 +50,28 @@ from shared.workflow.graph_builder import build_langgraph_workflow
 from shared.workflow.pause_controller import PauseController
 from shared.workflow.run_registry import clear as clear_active_run
 from shared.workflow.run_registry import set_active as set_active_run
+
+
+def _state_msgpack_allowlist() -> tuple[type, ...]:
+    """체크포인트(MemorySaver·msgpack)에 직렬화되는 state dataclass 전부 — langgraph
+    역직렬화 명시 allowlist.
+
+    ``graph_nodes`` / ``graph_edges`` 에서 dataclass 를 자동 수집(새 노드/엣지 추가 시 자동
+    등록 — 누락 0) + 컨텍스트 / 코드베이스 / run. ``allowed_msgpack_modules=True`` 는
+    "전체 허용 + 미등록 경고"라 근본 해결이 아님 — 명시 목록이라야 경고 0 + 장래 STRICT 차단에도 안전.
+    """
+    types = [
+        obj
+        for mod in (graph_nodes, graph_edges)
+        for obj in vars(mod).values()
+        if isinstance(obj, type) and dataclasses.is_dataclass(obj)
+    ]
+    types += [AnalysisContext, Codebase, AnalysisRun]
+    return tuple(types)
+
+
+# import 시 1회 — 직렬화기 allowlist (run 마다 재계산 불필요).
+_STATE_MSGPACK_ALLOWLIST = _state_msgpack_allowlist()
 
 
 async def execute_run(
@@ -91,11 +116,12 @@ async def execute_run(
             log_info("run", "neo4j_ready", database=ENV.neo4j.database, wiped=True)
 
             cost_budget = CostBudget()
-            # serde 에 allowed_msgpack_modules=True 명시 — 체크포인트가 data_models 의 커스텀
-            # 타입(Function/Table/Rule/Calls 등)을 직렬화할 때 "미등록 타입" 경고가 뜨고 미래
-            # langgraph 에서 차단되는 것을 방지. MemorySaver 는 in-memory·1회 run·자기 데이터
-            # (신뢰됨)라 전체 허용이 안전.
-            checkpointer = MemorySaver(serde=JsonPlusSerializer(allowed_msgpack_modules=True))
+            # 체크포인트(msgpack)가 직렬화하는 state dataclass(Function/Table/Rule/Calls 등)를
+            # 명시 allowlist 로 등록 — langgraph 가 "미등록 타입" 경고 없이 조용히 역직렬화하고,
+            # 장래 STRICT 차단에도 안전. (=True 는 "전체허용+경고"라 근본 해결 아님.)
+            checkpointer = MemorySaver(
+                serde=JsonPlusSerializer(allowed_msgpack_modules=_STATE_MSGPACK_ALLOWLIST)
+            )
             app = build_langgraph_workflow(strategy, checkpointer=checkpointer)
 
             # 병렬 그룹(후처리) 공유 LLM 세마포어 — step 마다 따로 Semaphore(30) 를 만들면

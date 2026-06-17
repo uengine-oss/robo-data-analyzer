@@ -111,6 +111,9 @@ async def analyze_one(project_dir: Path, ddl_dir: Path | None, strategy: str) ->
         strategy=strategy,  # type: ignore[arg-type]
         ddl_dir=ddl_dir,
         locale="ko",
+        # CLI/테스트 전용: 어느 DB 를 샘플링할지 env 로 받음(운영 HTTP 는 AnalyzeRequest 입력).
+        # 비어 있으면 None → 샘플 보강 skip.
+        datasource=ENV.catalog.test_datasource or None,
     )
 
     stream = NDJSONStream()

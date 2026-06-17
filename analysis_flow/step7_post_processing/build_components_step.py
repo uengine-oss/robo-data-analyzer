@@ -46,9 +46,9 @@ LEIDEN_SEED = 42           # 결정론 — 같은 그래프 → 같은 군집
 # 멤버 FUNCTION 노드에 군집 멤버십을 속성으로 SET (합성 노드 없음). health_metrics 와 동일 패턴.
 _SET_QUERY = """
 UNWIND $items AS item
-MATCH (f:FUNCTION {function_id: item.function_id})
-SET f.component_id = item.component_id,
-    f.component_name = item.component_name
+MATCH (node {id: item.id})
+SET node.component_id = item.component_id,
+    node.component_name = item.component_name
 """
 
 
@@ -81,7 +81,7 @@ async def build_components_step(state: dict, config: Optional[RunnableConfig] = 
     # 2. 이름 (LLM, 병렬) — 군집당 사람이 읽을 이름 하나.
     prompts_dir = Path(strategy.prompts_dir)
     semaphore = cfg.get("llm_semaphore") or asyncio.Semaphore(ENV.pipeline.max_concurrency)
-    fn_by_id = {f.function_id: f for f in functions}
+    fn_by_id = {f.id: f for f in functions}
 
     async def _name_one(component_id: str, members: list[str]) -> str:
         member_fns = [fn_by_id[m] for m in members if m in fn_by_id]
@@ -109,7 +109,7 @@ async def build_components_step(state: dict, config: Optional[RunnableConfig] = 
 
     # 3. 적재 — 각 멤버 FUNCTION 노드에 component_id/name 속성 SET (합성 노드/엣지 없음).
     items = [
-        {"function_id": m, "component_id": cid, "component_name": names[cid]}
+        {"id": m, "component_id": cid, "component_name": names[cid]}
         for cid, members in clusters
         for m in members
     ]
@@ -133,15 +133,15 @@ def _cluster(functions: list[Function], calls: list[Calls]) -> list[tuple[str, l
     Leiden(leidenalg/igraph)은 여기서 lazy import — 미설치면 명시 에러(설치 안내).
     component_id = 멤버 정렬 첫 function_id 기반 → 같은 그래프 재분석 시 안정 키.
     """
-    ids = [f.function_id for f in functions]
+    ids = [f.id for f in functions]
     id_set = set(ids)
     edges = [
-        (c.caller_function_id, c.callee_function_id)
+        (c.caller_id, c.callee_id)
         for c in calls
         if c.scope == "internal"
-        and c.caller_function_id in id_set
-        and c.callee_function_id in id_set
-        and c.caller_function_id != c.callee_function_id
+        and c.caller_id in id_set
+        and c.callee_id in id_set
+        and c.caller_id != c.callee_id
     ]
     if not edges:
         return []
@@ -208,4 +208,4 @@ def _headline(fn: Optional[Function]) -> str:
         line = line.strip()
         if line:
             return line.replace("[핵심]", "").strip()
-    return fn.signature or fn.function_id
+    return fn.signature or fn.id

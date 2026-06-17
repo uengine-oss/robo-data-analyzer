@@ -9,14 +9,14 @@ from shared.neo4j.neo4j_client import Neo4jClient
 
 MERGE_QUERY = """
 UNWIND $items AS item
-MERGE (p:PACKAGE {package_id: item.package_id})
+MERGE (p:PACKAGE {id: item.id})
 SET p.name = item.name
 RETURN count(p) AS created
 """
 
 
 def to_item(pkg: Package) -> dict:
-    return {"package_id": pkg.package_id, "name": pkg.name}
+    return {"id": pkg.id, "name": pkg.name}
 
 
 async def upsert_packages(client: Neo4jClient, packages: Iterable[Package]) -> None:

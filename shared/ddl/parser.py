@@ -265,8 +265,8 @@ def _handle_create(
         ))
         if schema_name:
             result.belongs_to_edges.append(BelongsTo(
-                table_fqn=f"{db}.{schema_name}.{table_name}",
-                schema_fqn=f"{db}.{schema_name}",
+                child_id=f"{db}.{schema_name}.{table_name}",
+                parent_id=f"{db}.{schema_name}",
             ))
 
     # Columns + 테이블 레벨 PK + FK — 컬럼목록 있는 경우만 (평범한 VIEW 는 skip)
@@ -356,7 +356,7 @@ def _handle_column(
     )
     col_fqn = f"{table_fqn}.{name}"
     result.columns.append(Column(
-        fqn=col_fqn,
+        id=col_fqn,
         name=name,
         dtype=dtype_str,
         nullable=not (is_not_null or is_pk),   # PK 는 항상 NOT NULL
@@ -367,7 +367,7 @@ def _handle_column(
         description_source=description_source,
         comment=raw_comment,
     ))
-    result.has_column_edges.append(HasColumn(table_fqn=table_fqn, column_fqn=col_fqn))
+    result.has_column_edges.append(HasColumn(parent_id=table_fqn, child_id=col_fqn))
 
 
 def _handle_inline_fk(
@@ -402,8 +402,8 @@ def _handle_inline_fk(
 
     for from_col, to_col in zip(from_cols, to_cols):
         result.fk_edges.append(Fk(
-            from_table_fqn=f"{db}.{from_schema}.{from_table}",
-            to_table_fqn=f"{db}.{to_schema}.{to_table}",
+            from_id=f"{db}.{from_schema}.{from_table}",
+            to_id=f"{db}.{to_schema}.{to_table}",
             from_column=from_col,
             to_column=to_col,
         ))

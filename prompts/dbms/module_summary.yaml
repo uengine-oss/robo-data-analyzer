@@ -56,7 +56,7 @@ system: |
   `ModuleSummaryOutput` Pydantic 강제.
 
 user_template: |
-  package_id: {module_id}
+  id: {id}
   name: {name}
 
   member_procedures:

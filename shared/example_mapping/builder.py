@@ -69,11 +69,11 @@ def _build_one(
     """함수 1개의 rules/examples/questions → 노드·엣지 누적."""
     extra = fn.extra or {}
     flow_by_rid, hash_by_rid = _collect_rules(
-        fn.function_id, extra.get("rules") or [], result, rule_by_hash,
+        fn.id, extra.get("rules") or [], result, rule_by_hash,
     )
-    _collect_examples(fn.function_id, extra.get("examples") or [], hash_by_rid, result)
-    _collect_questions(fn.function_id, extra.get("questions") or [], result)
-    _collect_flow_edges(fn.function_id, flow_by_rid, result)
+    _collect_examples(fn.id, extra.get("examples") or [], hash_by_rid, result)
+    _collect_questions(fn.id, extra.get("questions") or [], result)
+    _collect_flow_edges(fn.id, flow_by_rid, result)
 
 
 def _collect_rules(
@@ -90,13 +90,13 @@ def _collect_rules(
         if not rid or not statement:
             continue
         rh = rule_hash(statement)
-        rule_by_hash.setdefault(rh, Rule(rule_hash=rh, statement=statement))
+        rule_by_hash.setdefault(rh, Rule(id=rh, statement=statement))
         flow_id = str(r.get("flow_id") or "").strip() or rid
         flow_by_rid[rid] = flow_id
         hash_by_rid[rid] = rh
         result.has_rule.append(HasRule(
-            function_id=fid,
-            rule_hash=rh,
+            source_id=fid,
+            target_id=rh,
             local_rule_id=rid,
             flow_id=flow_id,
             coupled_domains=tuple(
@@ -124,11 +124,11 @@ def _collect_examples(
             continue
         eid = f"{fid}::{rid}::{idx}"
         result.examples.append(Example(
-            example_id=eid,
+            id=eid,
             description=(e.get("description") or "").strip(),
             given=given, when=when, then=then,
         ))
-        result.has_example.append(HasExample(rule_hash=rh, example_id=eid))
+        result.has_example.append(HasExample(source_id=rh, target_id=eid))
         _collect_affects_table(eid, e.get("affected_tables") or [], result)
 
 
@@ -144,7 +144,7 @@ def _collect_affects_table(
         if not table or not op:
             continue
         result.affects_table.append(
-            AffectsTable(example_id=eid, table_name=table, op=op)
+            AffectsTable(source_id=eid, table_name=table, op=op)
         )
 
 
@@ -161,8 +161,8 @@ def _collect_questions(fid: str, questions: list, result: ExampleMappingResult) 
         if not text:
             continue
         qid = f"{fid}::Q{idx}"
-        result.questions.append(Question(question_id=qid, text=text, reason=reason))
-        result.has_question.append(HasQuestion(function_id=fid, question_id=qid))
+        result.questions.append(Question(id=qid, text=text, reason=reason))
+        result.has_question.append(HasQuestion(source_id=fid, target_id=qid))
 
 
 def _collect_flow_edges(
@@ -180,7 +180,7 @@ def _collect_flow_edges(
         key=lambda rid: flow_by_rid[rid],
     )
     for from_rid, to_rid in zip(main_rids, main_rids[1:]):
-        result.next_edges.append(Next(function_id=fid, from_rule_id=from_rid, to_rule_id=to_rid))
+        result.next_edges.append(Next(owner_id=fid, from_rule_id=from_rid, to_rule_id=to_rid))
 
     flow_to_rid = {flow: rid for rid, flow in flow_by_rid.items()}
     for rid, flow in flow_by_rid.items():
@@ -189,7 +189,7 @@ def _collect_flow_edges(
         parent = flow_to_rid.get(flow.rsplit("-", 1)[0])
         if parent and parent in flow_by_rid:
             result.branch_edges.append(
-                Branch(function_id=fid, from_rule_id=parent, to_rule_id=rid)
+                Branch(owner_id=fid, from_rule_id=parent, to_rule_id=rid)
             )
 
 

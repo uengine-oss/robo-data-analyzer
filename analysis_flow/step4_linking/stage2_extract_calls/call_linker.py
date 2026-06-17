@@ -30,13 +30,13 @@ class CallLinker:
         if not functions:
             return []
 
-        fn_by_id = {fn.function_id: fn for fn in functions}
-        # 정의 노드(루트: parent_id None) 단순명 → function_id.
+        fn_by_id = {fn.id: fn for fn in functions}
+        # 정의 노드(루트: parent_id None) 단순명 → id.
         # callee 는 정의 노드로만 해석 (CALL-site 노드 후보 제외 → 방향 garbled 차단).
         roots_by_name: dict[str, str] = {}
         for fn in functions:
             if fn.parent_id is None:
-                roots_by_name.setdefault(_proc_name(fn.signature), fn.function_id)
+                roots_by_name.setdefault(_proc_name(fn.signature), fn.id)
 
         edges: list[Calls] = []
         seen: set[tuple[str, str]] = set()
@@ -57,8 +57,8 @@ class CallLinker:
                     continue
                 seen.add((caller_id, internal_id))
                 edges.append(Calls(
-                    caller_function_id=caller_id,
-                    callee_function_id=internal_id,
+                    caller_id=caller_id,
+                    callee_id=internal_id,
                     scope="internal",
                 ))
             else:
@@ -69,27 +69,27 @@ class CallLinker:
                     continue
                 seen.add((caller_id, simple))
                 caller_root = fn_by_id.get(caller_id)
-                schema = _qualifier(callee_raw) or (getattr(caller_root, "package_id", "") or "")
+                schema = _qualifier(callee_raw) or (getattr(caller_root, "package", "") or "")
                 edges.append(Calls(
-                    caller_function_id=caller_id,
-                    callee_function_id=simple,
+                    caller_id=caller_id,
+                    callee_id=simple,
                     scope="external",
-                    callee_module_id=simple,
-                    callee_package_id=schema.upper(),
+                    callee_module=simple,
+                    callee_package=schema.upper(),
                     callee_name=simple,
                 ))
         return edges
 
 
 def _root_of(fn: Function, fn_by_id: dict[str, Function]) -> str:
-    """fn 의 프로시저 루트 function_id — parent_id 체인 최상위 (= 호출자)."""
+    """fn 의 프로시저 루트 id — parent_id 체인 최상위 (= 호출자)."""
     cur = fn
     while cur.parent_id is not None:
         parent = fn_by_id.get(cur.parent_id)
         if parent is None:
             break
         cur = parent
-    return cur.function_id
+    return cur.id
 
 
 def _proc_name(text: str) -> str:

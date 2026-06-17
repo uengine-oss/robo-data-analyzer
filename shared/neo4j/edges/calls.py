@@ -21,26 +21,25 @@ from shared.neo4j.rel_types import BELONGS_TO_PACKAGE, CALLS, HAS_FUNCTION
 # internal — 콜리 정의 노드가 이미 존재 → MATCH 로 연결 (없으면 자연 제외).
 INTERNAL_QUERY = f"""
 UNWIND $items AS item
-MATCH (caller:FUNCTION {{function_id: item.caller_function_id}})
-MATCH (callee:FUNCTION {{function_id: item.callee_function_id}})
+MATCH (caller {{id: item.caller_id}})
+MATCH (callee {{id: item.callee_id}})
 MERGE (caller)-[r:{CALLS}]->(callee)
 SET r.scope = item.scope
 """
 
 # external — 콜리 정의 노드 없음 → stub(:FUNCTION:EXTERNAL) + 모듈(:MODULE:EXTERNAL)
 # + 스키마(:PACKAGE, 있을 때) 를 internal 과 대칭으로 생성하고 호출 연결.
+# 소속은 HAS_FUNCTION / BELONGS_TO_PACKAGE 엣지로만 표현 (노드에 소속 속성 안 박음).
 EXTERNAL_QUERY = f"""
 UNWIND $items AS item
-MATCH (caller:FUNCTION {{function_id: item.caller_function_id}})
-MERGE (callee:FUNCTION:EXTERNAL {{function_id: item.callee_function_id}})
-  ON CREATE SET callee.signature = item.callee_name,
-                callee.module_id = item.callee_module_id,
-                callee.package_id = item.callee_package_id
-MERGE (m:MODULE:EXTERNAL {{module_id: item.callee_module_id}})
+MATCH (caller {{id: item.caller_id}})
+MERGE (callee:FUNCTION:EXTERNAL {{id: item.callee_id}})
+  ON CREATE SET callee.signature = item.callee_name
+MERGE (m:MODULE:EXTERNAL {{id: item.callee_module}})
   ON CREATE SET m.name = item.callee_name
 MERGE (m)-[:{HAS_FUNCTION}]->(callee)
-FOREACH (_ IN CASE WHEN item.callee_package_id <> '' THEN [1] ELSE [] END |
-  MERGE (p:PACKAGE {{package_id: item.callee_package_id}})
+FOREACH (_ IN CASE WHEN item.callee_package <> '' THEN [1] ELSE [] END |
+  MERGE (p:PACKAGE {{id: item.callee_package}})
   MERGE (m)-[:{BELONGS_TO_PACKAGE}]->(p)
 )
 MERGE (caller)-[r:{CALLS}]->(callee)
@@ -51,21 +50,21 @@ SET r.scope = item.scope
 async def upsert_calls(client: Neo4jClient, edges: Iterable[Calls]) -> None:
     """CALLS 업서트 — internal 은 기존 노드 연결, external 은 stub 노드 생성·연결.
 
-    external 의 모듈/이름은 linker 가 비웠으면 function_id 로 보충 (스키마는 빈 채 →
+    external 의 모듈/이름은 linker 가 비웠으면 콜리 id 로 보충 (스키마는 빈 채 →
     PACKAGE 연결 생략). MERGE 가 중복 dedup.
     """
     edges = list(edges)
     internal = [{
-        "caller_function_id": e.caller_function_id,
-        "callee_function_id": e.callee_function_id,
+        "caller_id": e.caller_id,
+        "callee_id": e.callee_id,
         "scope": e.scope,
     } for e in edges if e.scope == "internal"]
     external = [{
-        "caller_function_id": e.caller_function_id,
-        "callee_function_id": e.callee_function_id,
-        "callee_module_id": e.callee_module_id or e.callee_function_id,
-        "callee_package_id": e.callee_package_id,
-        "callee_name": e.callee_name or e.callee_function_id,
+        "caller_id": e.caller_id,
+        "callee_id": e.callee_id,
+        "callee_module": e.callee_module or e.callee_id,
+        "callee_package": e.callee_package,
+        "callee_name": e.callee_name or e.callee_id,
         "scope": e.scope,
     } for e in edges if e.scope == "external"]
     if internal:

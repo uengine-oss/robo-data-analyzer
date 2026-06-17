@@ -62,7 +62,7 @@ def make_list_functions(functions: list[Function]):
             return "NO_FUNCTIONS"
         items = [
             {
-                "name": fn.function_id.rsplit(".", 1)[-1],
+                "name": fn.id.rsplit(".", 1)[-1],
                 "signature": fn.signature,
                 "start_line": fn.start_line,
                 "end_line": fn.end_line,

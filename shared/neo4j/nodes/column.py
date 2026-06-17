@@ -13,7 +13,7 @@ from shared.neo4j.neo4j_client import Neo4jClient
 
 MERGE_QUERY = """
 UNWIND $items AS item
-MERGE (c:COLUMN {fqn: item.fqn})
+MERGE (c:COLUMN {id: item.id})
 SET c.name = item.name,
     c.dtype = item.dtype,
     c.nullable = item.nullable,
@@ -32,7 +32,7 @@ RETURN count(c) AS created
 # 있으면 유지. 옛 'source' → 'code' (db prefix 와 단어 충돌 회피).
 SET_ANALYZED_QUERY = """
 UNWIND $items AS item
-MATCH (c:COLUMN {fqn: item.fqn})
+MATCH (c:COLUMN {id: item.id})
 SET c.analyzed_description = item.analyzed_description,
     c.description_source = CASE WHEN coalesce(c.description, '') = ''
                                 THEN 'code' ELSE c.description_source END
@@ -41,7 +41,7 @@ SET c.analyzed_description = item.analyzed_description,
 
 def to_item(col: Column) -> dict:
     return {
-        "fqn": col.fqn,
+        "id": col.id,
         "name": col.name,
         "dtype": col.dtype,
         "nullable": col.nullable,
@@ -61,5 +61,5 @@ async def upsert_columns(client: Neo4jClient, columns: Iterable[Column]) -> None
 
 
 async def update_analyzed_descriptions(client: Neo4jClient, updates: list[dict]) -> None:
-    """``[{"fqn", "analyzed_description"}]`` — 분석 합성 컬럼 설명 일괄 SET."""
+    """``[{"id", "analyzed_description"}]`` — 분석 합성 컬럼 설명 일괄 SET."""
     await client.run_batch_unwind(SET_ANALYZED_QUERY, updates)

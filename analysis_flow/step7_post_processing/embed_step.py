@@ -62,17 +62,17 @@ async def embed_step(state: dict, config: Optional[RunnableConfig] = None) -> di
         _build_embeddings, state
     )
 
-    for label, key, items in (
-        ("TABLE", "fqn", table_updates),
-        ("COLUMN", "fqn", column_updates),
-        ("FUNCTION", "function_id", function_updates),
+    for label, items in (
+        ("TABLE", table_updates),
+        ("COLUMN", column_updates),
+        ("FUNCTION", function_updates),
     ):
         if items:
-            await neo.run_batch_unwind(_embedding_query(label, key), items)
+            await neo.run_batch_unwind(_embedding_query(label, "id"), items)
 
-    updated_tables = _attach_embedding(state.get("tables", []), table_updates, "fqn")
-    updated_columns = _attach_embedding(state.get("columns", []), column_updates, "fqn")
-    updated_functions = _attach_embedding(state.get("functions", []), function_updates, "function_id")
+    updated_tables = _attach_embedding(state.get("tables", []), table_updates, "id")
+    updated_columns = _attach_embedding(state.get("columns", []), column_updates, "id")
+    updated_functions = _attach_embedding(state.get("functions", []), function_updates, "id")
 
     log_info(
         _STEP, "done",
@@ -113,9 +113,9 @@ def _build_embeddings(state: dict) -> tuple[list[dict], list[dict], list[dict]]:
     function_pending = _collect_function_texts(state.get("functions", []))
 
     return (
-        _encode_pairs(table_pending, "fqn"),
-        _encode_pairs(column_pending, "fqn"),
-        _encode_pairs(function_pending, "function_id"),
+        _encode_pairs(table_pending, "id"),
+        _encode_pairs(column_pending, "id"),
+        _encode_pairs(function_pending, "id"),
     )
 
 
@@ -126,7 +126,7 @@ def _collect_table_texts(tables: list) -> list[tuple[str, str]]:
         desc = (t.description or "").strip()
         if not desc:
             continue
-        out.append((t.fqn, f"{t.name}: {desc}"))
+        out.append((t.id, f"{t.name}: {desc}"))
     return out
 
 
@@ -140,9 +140,9 @@ def _collect_column_texts(columns: list) -> list[tuple[str, str]]:
         desc = (c.description or "").strip()
         if not desc:
             continue
-        parts = c.fqn.split(".")
+        parts = c.id.split(".")
         label = f"{parts[-2]}.{c.name}" if len(parts) >= 2 else c.name
-        out.append((c.fqn, f"{label}: {desc}"))
+        out.append((c.id, f"{label}: {desc}"))
     return out
 
 
@@ -153,7 +153,7 @@ def _collect_function_texts(functions: list) -> list[tuple[str, str]]:
         summary = getattr(f, "summary", None)
         if not summary:
             continue
-        out.append((f.function_id, summary))
+        out.append((f.id, summary))
     return out
 
 

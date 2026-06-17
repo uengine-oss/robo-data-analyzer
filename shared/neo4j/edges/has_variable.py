@@ -10,12 +10,12 @@ from shared.neo4j.rel_types import HAS_VARIABLE
 
 MERGE_QUERY = f"""
 UNWIND $items AS item
-MATCH (m:MODULE {{module_id: item.module_id}})
-MATCH (v:VARIABLE {{variable_id: item.variable_id}})
+MATCH (m:MODULE {{id: item.parent_id}})
+MATCH (v:VARIABLE {{id: item.child_id}})
 MERGE (m)-[:{HAS_VARIABLE}]->(v)
 """
 
 
 async def upsert_has_variable(client: Neo4jClient, edges: Iterable[HasVariable]) -> None:
-    items = [{"module_id": e.module_id, "variable_id": e.variable_id} for e in edges]
+    items = [{"parent_id": e.parent_id, "child_id": e.child_id} for e in edges]
     await client.run_batch_unwind(MERGE_QUERY, items)

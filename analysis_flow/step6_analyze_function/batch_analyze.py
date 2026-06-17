@@ -71,7 +71,7 @@ async def run_dbms_batch_analysis(
     # 2. 바텀업 라운드 — 유효 parent→child + CALLS (자식·피호출 먼저).
     edges: list[tuple[str, str]] = [(p, c) for c, p in eff_parent.items() if p is not None]
     edges.extend(
-        (e.caller_function_id, e.callee_function_id) for e in state.get("calls_edges", [])
+        (e.caller_id, e.callee_id) for e in state.get("calls_edges", [])
     )
     cycles = find_call_cycles(edges, list(analysis_ids))
     for fn_id in cycles:
@@ -124,7 +124,7 @@ async def run_dbms_batch_analysis(
                         log_error(_STEP, "batch", result, round=round_idx)
                         continue
                     for fn in result:              # 배치가 분석한 Function 들
-                        em = await _persist_and_emit_function(fn, neo, stream)
+                        em = await _persist_and_emit_function(fn, neo, stream, source_cache)
                         _accumulate_em(em_acc, em)
                         analyzed += 1
             finally:
@@ -298,9 +298,9 @@ def _build_batch_values(
         )
 
     values = {
-        "unit_id": root.function_id if root else first_ctx.function_id,
+        "unit_id": root.id if root else first_ctx.id,
         "unit_signature": root.signature if root else first_ctx.signature,
-        "module_intent": module_intents.get(root.module_id if root else "") or "(없음)",
+        "module_intent": module_intents.get(root.owner_id if root else "") or "(없음)",
         "codebase_notes": codebase_notes or "(없음)",
         "ancestor_context": ancestor,
         "node_count": str(len(batch.node_ids)),

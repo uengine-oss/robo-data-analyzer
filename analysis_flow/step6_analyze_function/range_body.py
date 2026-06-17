@@ -115,7 +115,7 @@ def ancestor_context(
         if skel and estimate_tokens(skel) > threshold and actx.one_liner:
             skel = actx.one_liner.strip()
         if skel:
-            chain.append(f"[{actx.function_id}]\n{skel}")
+            chain.append(f"[{actx.id}]\n{skel}")
         pid = actx.extra.get("parent_id")
     if not chain:
         return "(없음)"

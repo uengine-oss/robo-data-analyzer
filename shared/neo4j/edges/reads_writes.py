@@ -16,9 +16,9 @@ from shared.neo4j.rel_types import READS, WRITES
 # 두 쿼리로 분리해서 호출.
 READS_QUERY = f"""
 UNWIND $items AS item
-MATCH (f:FUNCTION {{function_id: item.function_id}})
-MATCH (t:TABLE {{fqn: item.table_fqn}})
-MERGE (f)-[r:{READS}]->(t)
+MATCH (node {{id: item.source_id}})
+MATCH (t:TABLE {{id: item.target_id}})
+MERGE (node)-[r:{READS}]->(t)
 SET r.dml_type = item.dml_type,
     r.evidence_file = item.evidence_file,
     r.evidence_line = item.evidence_line
@@ -26,9 +26,9 @@ SET r.dml_type = item.dml_type,
 
 WRITES_QUERY = f"""
 UNWIND $items AS item
-MATCH (f:FUNCTION {{function_id: item.function_id}})
-MATCH (t:TABLE {{fqn: item.table_fqn}})
-MERGE (f)-[r:{WRITES}]->(t)
+MATCH (node {{id: item.source_id}})
+MATCH (t:TABLE {{id: item.target_id}})
+MERGE (node)-[r:{WRITES}]->(t)
 SET r.dml_type = item.dml_type,
     r.evidence_file = item.evidence_file,
     r.evidence_line = item.evidence_line
@@ -37,8 +37,8 @@ SET r.dml_type = item.dml_type,
 
 def _to_item(e: ReadsWrites) -> dict:
     return {
-        "function_id": e.function_id,
-        "table_fqn": e.table_fqn,
+        "source_id": e.source_id,
+        "target_id": e.target_id,
         "dml_type": e.dml_type,
         "evidence_file": e.evidence_file,
         "evidence_line": e.evidence_line,

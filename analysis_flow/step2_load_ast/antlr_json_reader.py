@@ -55,7 +55,7 @@ class ParseResult:
     has_variable_edges: list[HasVariable] = field(default_factory=list)
     has_member_edges: list[HasMember] = field(default_factory=list)
     belongs_to_package_edges: list[BelongsToPackage] = field(default_factory=list)
-    call_sites: list[dict] = field(default_factory=list)   # FUNCTION_CALL: {call_id, caller_function_id, call_text, file, line}
+    call_sites: list[dict] = field(default_factory=list)   # FUNCTION_CALL: {call_id, caller_id, call_text, file, line}
     import_refs: list[dict] = field(default_factory=list)  # INCLUDE/IMPORT: {name, file, line}
 
 
@@ -124,7 +124,7 @@ def read_antlr_json(json_path: Path, source_root: Path) -> ParseResult:
 class _FwCtx:
     """한 Framework 파일을 순회하는 동안 고정인 값."""
     lang: str
-    package_id: str          # 파일이 든 폴더 (최상위면 "")
+    package: str             # 파일이 든 폴더 id (최상위면 "")
     src_path: str
     result: ParseResult
     seen: set[str]
@@ -156,7 +156,7 @@ def _read_framework(
         # java — FILE 은 internal. namespace = packageName (없으면 default 패키지).
         base_id = (raw.get("packageName") or "").strip()
 
-    ctx = _FwCtx(lang=lang, package_id=package_id, src_path=src_path, result=result, seen=set())
+    ctx = _FwCtx(lang=lang, package=package_id, src_path=src_path, result=result, seen=set())
     _walk_framework(raw, ctx, base_id, None)
     _derive_structure_edges(result, package_id)
     return result
@@ -187,12 +187,10 @@ def _fw_module(child: dict, ctx: _FwCtx, module_id: str, parent_fid: str | None)
 def _fw_function(child: dict, ctx: _FwCtx, module_id: str, parent_fid: str | None) -> None:
     fid, sub_label = _id_and_sub(child, ctx, module_id)
     ctx.result.functions.append(_make_function(
-        child, fid, module_id, ctx.package_id, ctx.src_path, parent_fid, sub_label,
+        child, fid, module_id, ctx.package, ctx.src_path, parent_fid, sub_label,
     ))
     if parent_fid is not None:
-        ctx.result.parent_of_edges.append(ParentOf(
-            parent_function_id=parent_fid, child_function_id=fid,
-        ))
+        ctx.result.parent_of_edges.append(ParentOf(parent_id=parent_fid, child_id=fid))
     _walk_framework(child, ctx, module_id, fid)
 
 
@@ -246,7 +244,7 @@ def _collect_internal(
     if ctype == "FUNCTION_CALL" and parent_fid is not None:
         result.call_sites.append({
             "call_id": f"{parent_fid}:{sl}:{len(result.call_sites)}",
-            "caller_function_id": parent_fid,
+            "caller_id": parent_fid,
             "call_text": node.get("name") or "",
             "file": src_path,
             "line": sl,
@@ -265,7 +263,7 @@ def _collect_internal(
 class _DbmsCtx:
     """한 DBMS 파일을 순회하는 동안 고정인 값."""
     file_stem: str           # 파일 = 컨테이너 Module
-    package_id: str          # 파일이 든 폴더 (최상위면 "")
+    package: str             # 파일이 든 폴더 id (최상위면 "")
     src_path: str
     result: ParseResult
     seen: set[str]
@@ -290,7 +288,7 @@ def _read_dbms(raw: dict, source_root: Path, json_path: Path) -> ParseResult:
     result.modules.append(_make_module(raw, file_stem, file_stem, src_path, "", 0, 0))
 
     ctx = _DbmsCtx(
-        file_stem=file_stem, package_id=package_id,
+        file_stem=file_stem, package=package_id,
         src_path=src_path, result=result, seen=set(),
     )
     for child in raw.get("children") or []:
@@ -335,13 +333,13 @@ def _walk_dbms(node: dict, ctx: _DbmsCtx, parent_id: str | None) -> None:
     name = node.get("name") or ntype
     base = f"{ctx.file_stem}:{name}:{sl}" if parent_id is None else f"{parent_id}:{ntype}:{sl}"
     fid = _unique_id(base, sl, ctx.seen)
+    # DBMS: 노드의 antlr type 그대로가 primary 라벨 (:SELECT/:PROCEDURE/:IF…). 역할 라벨·sub-label 없음.
     ctx.result.functions.append(_make_function(
-        node, fid, ctx.file_stem, ctx.package_id, ctx.src_path, parent_id, "",
+        node, fid, ctx.file_stem, ctx.package, ctx.src_path, parent_id, "",
+        primary_label=ntype or "FUNCTION",
     ))
     if parent_id is not None:
-        ctx.result.parent_of_edges.append(ParentOf(
-            parent_function_id=parent_id, child_function_id=fid,
-        ))
+        ctx.result.parent_of_edges.append(ParentOf(parent_id=parent_id, child_id=fid))
     for child in node.get("children") or []:
         _walk_dbms(child, ctx, fid)
 
@@ -353,7 +351,7 @@ def _make_module(
     start_line: int, end_line: int,
 ) -> Module:
     return Module(
-        module_id=module_id, name=name, file_path=src_path,
+        id=module_id, name=name, file_path=src_path,
         sub_label=sub_label, start_line=start_line, end_line=end_line,
         annotations=node.get("annotations") or "",
         comment=node.get("comment") or "",
@@ -363,18 +361,26 @@ def _make_module(
 def _make_function(
     node: dict, fid: str, module_id: str, package_id: str,
     src_path: str, parent_fid: str | None, sub_label: str,
+    primary_label: str = "FUNCTION",
 ) -> Function:
+    """primary_label: Framework="FUNCTION"(역할) / DBMS=antlr type 그대로(:SELECT 등).
+
+    ``module_id`` (소속 모듈 id) → ``owner_id`` (HAS_FUNCTION 빌드·그룹핑).
+    ``package_id`` (소속 폴더 id) → ``package`` (external 호출 스키마 귀속, call_linker).
+    """
     sl = int(node.get("startLine") or 0)
     return Function(
-        function_id=fid,
+        id=fid,
+        name=node.get("name") or "",          # 표시명 (구문은 "" — 라벨[라인]으로 표시)
+        primary_label=primary_label or "FUNCTION",
         signature=_clean_signature(node.get("signature"))
                   or node.get("name") or node.get("type") or "",
         file_path=src_path,
         start_line=sl,
         end_line=int(node.get("endLine") or sl),
         sub_label=sub_label,
-        module_id=module_id,
-        package_id=package_id,
+        owner_id=module_id,
+        package=package_id,
         parent_id=parent_fid,
         annotations=node.get("annotations") or "",
         comment=node.get("comment") or "",
@@ -388,8 +394,8 @@ def _make_variable(
 ) -> Variable:
     sl = int(node.get("startLine") or 0)
     return Variable(
-        variable_id=vid,
-        module_id=module_id,
+        id=vid,
+        owner_id=module_id,
         name=node.get("name") or "",
         file_path=src_path,
         start_line=sl,
@@ -407,8 +413,8 @@ def _make_constant(
 ) -> Constant:
     sl = int(node.get("startLine") or 0)
     return Constant(
-        constant_id=cid,
-        module_id=module_id,
+        id=cid,
+        owner_id=module_id,
         name=node.get("name") or "",
         file_path=src_path,
         start_line=sl,
@@ -425,8 +431,8 @@ def _make_data_type(
 ) -> DataType:
     sl = int(node.get("startLine") or 0)
     return DataType(
-        datatype_id=did,
-        module_id=module_id,
+        id=did,
+        owner_id=module_id,
         name=node.get("name") or "",
         file_path=src_path,
         start_line=sl,
@@ -456,14 +462,14 @@ def _derive_structure_edges(result: ParseResult, package_id: str) -> None:
     HAS_VARIABLE 에서 제외 (변수는 모듈 소속이거나 자료형 멤버, 둘 중 하나).
     """
     for fn in result.functions:
-        result.has_function_edges.append(HasFunction(fn.module_id, fn.function_id))
-    member_ids = {e.variable_id for e in result.has_member_edges}
+        result.has_function_edges.append(HasFunction(fn.owner_id, fn.id))
+    member_ids = {e.child_id for e in result.has_member_edges}
     for v in result.variables:
-        if v.variable_id not in member_ids:
-            result.has_variable_edges.append(HasVariable(v.module_id, v.variable_id))
+        if v.id not in member_ids:
+            result.has_variable_edges.append(HasVariable(v.owner_id, v.id))
     if package_id:
         for m in result.modules:
-            result.belongs_to_package_edges.append(BelongsToPackage(m.module_id, package_id))
+            result.belongs_to_package_edges.append(BelongsToPackage(m.id, package_id))
 
 
 def _folder_package(rel_path: str) -> tuple[str, Package | None]:
@@ -476,7 +482,7 @@ def _folder_package(rel_path: str) -> tuple[str, Package | None]:
     if not parts:
         return "", None
     package_id = ".".join(parts)
-    return package_id, Package(package_id=package_id, name=parts[-1])
+    return package_id, Package(id=package_id, name=parts[-1])
 
 
 def _src_path(raw: dict, source_root: Path, json_path: Path) -> str:

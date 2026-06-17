@@ -15,9 +15,8 @@ def _merge_query(label: str) -> str:
     """label 은 ``Constant.sub_label`` 통제값 — 주입 안전."""
     return f"""
 UNWIND $items AS item
-MERGE (c:{label} {{constant_id: item.constant_id}})
-SET c.module_id = item.module_id,
-    c.name = item.name,
+MERGE (c:{label} {{id: item.id}})
+SET c.name = item.name,
     c.file_path = item.file_path,
     c.start_line = item.start_line,
     c.end_line = item.end_line,
@@ -30,8 +29,7 @@ RETURN count(c) AS created
 
 def to_item(c: Constant) -> dict:
     return {
-        "constant_id": c.constant_id,
-        "module_id": c.module_id,
+        "id": c.id,
         "name": c.name,
         "file_path": c.file_path,
         "start_line": c.start_line,

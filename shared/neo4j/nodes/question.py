@@ -8,7 +8,7 @@ from shared.neo4j.neo4j_client import Neo4jClient
 
 _UPSERT_QUERY = """
 UNWIND $items AS item
-MERGE (q:QUESTION {question_id: item.question_id})
+MERGE (q:QUESTION {id: item.id})
 SET q.text = item.text,
     q.reason = item.reason
 """
@@ -17,7 +17,7 @@ SET q.text = item.text,
 async def upsert_questions(client: Neo4jClient, questions: Iterable[Question]) -> None:
     """QUESTION 노드 MERGE."""
     items = [
-        {"question_id": q.question_id, "text": q.text, "reason": q.reason}
+        {"id": q.id, "text": q.text, "reason": q.reason}
         for q in questions
     ]
     await client.run_batch_unwind(_UPSERT_QUERY, items)

@@ -77,8 +77,8 @@ async def run_residual_loop(
         return ResidualOutcome(residual=list(unresolved_cases))
 
     # caller 를 못 찾은 케이스(AST 공백)는 정규식으로 못 고침 — 바로 미해결 격리.
-    fixable = [c for c in unresolved_cases if c.get("function_id")]
-    truly_unresolved = [c for c in unresolved_cases if not c.get("function_id")]
+    fixable = [c for c in unresolved_cases if c.get("source_id")]
+    truly_unresolved = [c for c in unresolved_cases if not c.get("source_id")]
     if not fixable:
         return ResidualOutcome(residual=truly_unresolved)
 
@@ -138,7 +138,7 @@ async def run_residual_loop(
         )
         # 순-신규 엣지 = 재적용 결과 - 기준선 (결정론 단계가 이미 만든 엣지 제외).
         edges = [e for e in applied.edges if e not in baseline_edges]
-        next_fixable = [u for u in applied.unresolved if u.get("function_id")]
+        next_fixable = [u for u in applied.unresolved if u.get("source_id")]
 
         # 진전 = 케이스 ID 집합 변화로 측정 (카운트 비교는 해소·신규 동률 시 오판).
         prev_ids = {c["case_id"] for c in fixable}

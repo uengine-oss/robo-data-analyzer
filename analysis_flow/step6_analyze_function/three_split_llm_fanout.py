@@ -263,11 +263,11 @@ def _build_user_values(
     ``reads`` / ``writes`` 는 테이블 fqn + DDL 설명 — LLM 이 테이블 의미를 알고 분석.
     """
     return {
-        "function_id": fn.function_id,
+        "id": fn.id,
         "signature": fn.signature,
         "function_body": body_for(ctx, contexts, cache),
         "codebase_notes": codebase_notes or "(없음)",
-        "module_intent": module_intents.get(fn.module_id) or "(없음)",
+        "module_intent": module_intents.get(fn.owner_id) or "(없음)",
         "referenced_symbols": "\n".join(ctx.referenced_symbols) or "(없음)",
         "callee_summaries": _format_callee_summaries(ctx, contexts),
         "ancestor_context": ancestor_context(ctx, contexts, cache),
@@ -280,9 +280,10 @@ def _format_table_refs(
     fqns: tuple[str, ...],
     table_descriptions: dict[str, str],
 ) -> str:
-    """테이블 fqn 목록 → ``- fqn: DDL설명`` 줄들. 설명 없으면 fqn 만.
+    """테이블 fqn 목록 → ``- fqn: 컨텍스트`` 줄들. 값 없으면 fqn 만.
 
-    LLM 이 R/W 테이블의 의미(DDL COMMENT / 주석)를 알고 분석하도록. 빈 목록은 "(없음)".
+    ``table_descriptions`` 값 = step6 진입부에서 DDL설명 + 실제 샘플행을 합쳐 만든
+    "테이블 컨텍스트" 문자열 (LLM 이 의미+실제값으로 GWT 시나리오 생성). 빈 목록 "(없음)".
     """
     if not fqns:
         return "(없음)"

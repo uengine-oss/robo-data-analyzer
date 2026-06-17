@@ -50,6 +50,43 @@ from shared.neo4j.nodes.function import update_summaries
 _STEP = "step6.analyze_function"
 
 
+def _build_table_contexts(tables: list, table_sample_data: dict) -> dict[str, str]:
+    """{fqn: "DDL설명 | 샘플(N행) {...}"} — DDL 설명 + 실제 샘플행 합본 (LLM 1채널).
+
+    step5(fetch_table_samples)가 채운 ``table_sample_data`` ({fqn:{sample_rows}}) 와 각
+    Table 의 ``description`` 을 한 문자열로 합쳐, 렌더(_format_table_refs / batch _fmt_tables)가
+    함수별 reads/writes 만 골라 GWT 입력에 보여주게 한다. 둘 다 없으면 키 없음.
+    """
+    out: dict[str, str] = {}
+    for t in tables:
+        tid = getattr(t, "id", None)
+        if not tid:
+            continue
+        parts: list[str] = []
+        if t.description:
+            parts.append(t.description)
+        rows = (table_sample_data.get(tid) or {}).get("sample_rows") or []
+        if rows:
+            parts.append(f"샘플({len(rows)}행) {_fmt_sample_rows(rows)}")
+        if parts:
+            out[tid] = " | ".join(parts)
+    return out
+
+
+def _fmt_sample_rows(rows: list, max_cell: int = 60) -> str:
+    """샘플 행(dict 목록) → compact 1줄. 긴 셀 값은 truncate (토큰 통제)."""
+    parts: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        cells = [
+            (f"{k}={str(v)[:max_cell]}…" if len(str(v)) > max_cell else f"{k}={v}")
+            for k, v in row.items()
+        ]
+        parts.append("{" + ", ".join(cells) + "}")
+    return " ".join(parts)
+
+
 async def analyze_function_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
     """Bottom-up DAG + 3 분할 fan-out.
 
@@ -65,14 +102,16 @@ async def analyze_function_step(state: dict, config: Optional[RunnableConfig] = 
 
     contexts = state.get("analysis_contexts", {})
     functions_list = state.get("functions", [])
-    function_by_id = {f.function_id: f for f in functions_list}
+    function_by_id = {f.id: f for f in functions_list}
 
     # 테이블 fqn → DDL 설명 — 3분할 reads/writes 렌더에 의미 부여 (LLM 이 테이블 뜻을 앎).
-    table_descriptions = {
-        t.fqn: t.description
-        for t in state.get("tables", [])
-        if t.description
-    }
+    # 테이블 "컨텍스트" = DDL 설명 + step5(fetch_table_samples)가 채운 실제 샘플행 합본.
+    # 1채널(table_descriptions)로 흘려 _format_table_refs / batch _fmt_tables 가 함수별
+    # reads/writes 테이블만 골라 GWT 입력에 렌더(threading·렌더러 변경 0, framework·dbms 공통).
+    # 샘플은 토글 off / datasource 미지정 / 미매칭 시 없음 → 설명만(없으면 fqn 만).
+    table_descriptions = _build_table_contexts(
+        state.get("tables", []), state.get("table_sample_data", {}),
+    )
 
     # ScanResult.codebase_notes — 3분할 모든 호출이 공통 prefix 로 사용 (캐시 친화).
     # Framework 만 채움 — DBMS 는 빈 문자열 (Scan Agent 안 씀).
@@ -103,11 +142,11 @@ async def analyze_function_step(state: dict, config: Optional[RunnableConfig] = 
 
     # 1. cycle 식별 (CALLS + PARENT_OF 둘 다) — Framework per-node 경로
     edges: list[tuple[str, str]] = [
-        (e.caller_function_id, e.callee_function_id)
+        (e.caller_id, e.callee_id)
         for e in state.get("calls_edges", [])
     ]
     edges.extend(
-        (e.parent_function_id, e.child_function_id)
+        (e.parent_id, e.child_id)
         for e in state.get("parent_of_edges", [])
     )
     all_ids = list(contexts.keys())
@@ -201,7 +240,7 @@ async def analyze_function_step(state: dict, config: Optional[RunnableConfig] = 
                             continue
                         if r is None:
                             continue
-                        em = await _persist_and_emit_function(r, neo, stream)
+                        em = await _persist_and_emit_function(r, neo, stream, source_cache)
                         _accumulate_em(em_acc, em)
                         round_analyzed += 1
                 finally:
@@ -310,12 +349,16 @@ async def _persist_and_emit_function(
     fn: Function,
     neo: Optional[Neo4jClient],
     stream: Optional[NDJSONStream],
+    source_cache: SourceFileCache,
 ) -> ExampleMappingResult:
     """함수 분석 결과 1건 → Neo4j upsert + NDJSON 이벤트 + EM 결과 반환.
 
     EM 결과는 caller 가 round 단위 누적 후 step 종료 시 state 반영 (artifact 검증 정합).
     동시 호출 X (caller 의 라운드 루프가 순차 처리) — Neo4j 락 경합 없음.
     """
+    # 원문코드 = 본문 raw 슬라이스. 이미 읽은 소스 캐시 재활용(추가 IO 없음).
+    if fn.start_line and not fn.code_text:
+        fn.code_text = source_cache.slice(fn.file_path, fn.start_line, fn.end_line)
     em = build_example_mapping([fn])
     if neo is not None:
         await update_summaries(neo, [fn])
@@ -331,9 +374,11 @@ def _emit_function_graph(stream: NDJSONStream, fn: Function, em: ExampleMappingR
     프론트가 그래프를 함수 단위로 누적 렌더하도록 — 한 함수의 모든 변경을 묶어 emit.
     """
     stream.emit({
-        "type": "node_event", "op": "merge", "label": "Function",
-        "id": fn.function_id,
+        "type": "node_event", "op": "merge", "label": "FUNCTION",
+        "id": fn.id,
         "props": {
+            # signature = 사람이 읽는 표시명(프론트 pickDisplayName 폴백). 없으면 id 로 떠서 추가.
+            "signature": fn.signature or "",
             "summary": fn.summary or "",
             "stereotype": fn.stereotype or "",
             "logical_name": fn.logical_name or "",
@@ -341,56 +386,56 @@ def _emit_function_graph(stream: NDJSONStream, fn: Function, em: ExampleMappingR
     })
     for r in em.rules:
         stream.emit({
-            "type": "node_event", "op": "merge", "label": "Rule",
-            "id": r.rule_hash, "props": {"statement": r.statement},
+            "type": "node_event", "op": "merge", "label": "RULE",
+            "id": r.id, "props": {"statement": r.statement},
         })
     for ex in em.examples:
         stream.emit({
-            "type": "node_event", "op": "merge", "label": "Example",
-            "id": ex.example_id,
+            "type": "node_event", "op": "merge", "label": "EXAMPLE",
+            "id": ex.id,
             "props": {"description": ex.description},
         })
     for q in em.questions:
         stream.emit({
-            "type": "node_event", "op": "merge", "label": "Question",
-            "id": q.question_id, "props": {"text": q.text, "reason": q.reason},
+            "type": "node_event", "op": "merge", "label": "QUESTION",
+            "id": q.id, "props": {"text": q.text, "reason": q.reason},
         })
 
     for hr in em.has_rule:
         stream.emit({
             "type": "relationship_event", "op": "merge", "rel_type": "HAS_RULE",
-            "from": {"label": "Function", "id": hr.function_id},
-            "to":   {"label": "Rule",     "id": hr.rule_hash},
+            "from": {"label": "FUNCTION", "id": hr.source_id},
+            "to":   {"label": "RULE",     "id": hr.target_id},
             "props": {"local_rule_id": hr.local_rule_id, "flow_id": hr.flow_id},
         })
     for he in em.has_example:
         stream.emit({
             "type": "relationship_event", "op": "merge", "rel_type": "HAS_EXAMPLE",
-            "from": {"label": "Rule",    "id": he.rule_hash},
-            "to":   {"label": "Example", "id": he.example_id},
+            "from": {"label": "RULE",    "id": he.source_id},
+            "to":   {"label": "EXAMPLE", "id": he.target_id},
         })
     for hq in em.has_question:
         stream.emit({
             "type": "relationship_event", "op": "merge", "rel_type": "HAS_QUESTION",
-            "from": {"label": "Function", "id": hq.function_id},
-            "to":   {"label": "Question", "id": hq.question_id},
+            "from": {"label": "FUNCTION", "id": hq.source_id},
+            "to":   {"label": "QUESTION", "id": hq.target_id},
         })
     for nx in em.next_edges:
         stream.emit({
             "type": "relationship_event", "op": "merge", "rel_type": "NEXT",
-            "from": {"label": "Function", "id": nx.function_id, "rule_id": nx.from_rule_id},
-            "to":   {"label": "Function", "id": nx.function_id, "rule_id": nx.to_rule_id},
+            "from": {"label": "FUNCTION", "id": nx.owner_id, "rule_id": nx.from_rule_id},
+            "to":   {"label": "FUNCTION", "id": nx.owner_id, "rule_id": nx.to_rule_id},
         })
     for br in em.branch_edges:
         stream.emit({
             "type": "relationship_event", "op": "merge", "rel_type": "BRANCH",
-            "from": {"label": "Function", "id": br.function_id, "rule_id": br.from_rule_id},
-            "to":   {"label": "Function", "id": br.function_id, "rule_id": br.to_rule_id},
+            "from": {"label": "FUNCTION", "id": br.owner_id, "rule_id": br.from_rule_id},
+            "to":   {"label": "FUNCTION", "id": br.owner_id, "rule_id": br.to_rule_id},
         })
     for at in em.affects_table:
         stream.emit({
             "type": "relationship_event", "op": "merge", "rel_type": "AFFECTS_TABLE",
-            "from":  {"label": "Example", "id": at.example_id},
-            "to":    {"label": "Table",   "name": at.table_name},
+            "from":  {"label": "EXAMPLE", "id": at.source_id},
+            "to":    {"label": "TABLE",   "name": at.table_name},
             "props": {"op": at.op},
         })

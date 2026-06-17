@@ -60,7 +60,7 @@ async def compute_one_liner(
             prompts_dir=_PROMPTS_COMMON,
             rule_name="large_function_one_liner",
             user_values={
-                "function_id": fn.function_id,
+                "id": fn.id,
                 "signature": fn.signature,
                 "function_body": body_text,
             },
@@ -78,6 +78,6 @@ async def compute_one_liner(
             "analysis_flow.step5_build_context.large_function_one_liner",
             "compute_one_liner",
             e,
-            function_id=fn.function_id,
+            function_id=fn.id,
         )
         return None

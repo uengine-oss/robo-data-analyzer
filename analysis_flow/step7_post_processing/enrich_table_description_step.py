@@ -114,22 +114,22 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
 
     # 분석 합성 설명 → analyzed_description. description (DDL/catalog 1차설명) 은 안 건드림.
     table_updates = [
-        {"fqn": f"{r.db}.{r.schema_}.{r.name}", "analyzed_description": r.description}
+        {"id": f"{r.db}.{r.schema_}.{r.name}", "analyzed_description": r.description}
         for r in results if r is not None
     ]
     if neo is not None and table_updates:
         await update_table_analyzed(neo, table_updates)
 
     column_updates = [
-        {"fqn": f"{table_fqn}.{cname}", "analyzed_description": cdesc}
+        {"id": f"{table_fqn}.{cname}", "analyzed_description": cdesc}
         for table_fqn, cols in column_descriptions.items()
         for cname, cdesc in cols.items()
     ]
     if neo is not None and column_updates:
         await update_column_analyzed(neo, column_updates)
 
-    updated_tables = _replace_by_fqn(state.get("tables", []), table_updates, "analyzed_description")
-    updated_columns = _replace_by_fqn(state.get("columns", []), column_updates, "analyzed_description")
+    updated_tables = _replace_by_id(state.get("tables", []), table_updates, "analyzed_description")
+    updated_columns = _replace_by_id(state.get("columns", []), column_updates, "analyzed_description")
 
     log_info(
         _STEP, "done",
@@ -164,14 +164,14 @@ def _apply_table_fail_policy(
     return out
 
 
-def _replace_by_fqn(nodes: list, updates: list[dict], attr: str) -> list:
-    """``updates`` 의 fqn → ``attr`` 값을 같은 노드에 박은 새 인스턴스 리스트.
+def _replace_by_id(nodes: list, updates: list[dict], attr: str) -> list:
+    """``updates`` 의 id → ``attr`` 값을 같은 노드에 박은 새 인스턴스 리스트.
 
     매치 안 된 노드는 그대로 유지 — state 키엔 reducer 가 없어(default replace) 전체
     리스트를 돌려줘야 다음 step·artifact 가 노드를 잃지 않는다.
     """
-    fqn_to_val = {u["fqn"]: u[attr] for u in updates}
+    id_to_val = {u["id"]: u[attr] for u in updates}
     return [
-        replace(n, **{attr: fqn_to_val[n.fqn]}) if n.fqn in fqn_to_val else n
+        replace(n, **{attr: id_to_val[n.id]}) if n.id in id_to_val else n
         for n in nodes
     ]

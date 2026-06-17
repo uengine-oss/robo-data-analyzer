@@ -34,7 +34,7 @@ system: |
   user 메시지의 [입력값] 절에 다음이 전달됩니다. 각 항목의 의미·우선순위를 정확히
   이해해야 합니다.
 
-  - `function_id` / `signature` / `function body` — 분석 대상 함수 자체. **모든
+  - `id` / `signature` / `function body` — 분석 대상 함수 자체. **모든
     추출의 1차 근거**. 함수 본문에 직접 있는 사실만 결과에 반영합니다.
   - `codebase_notes` — 프로젝트 전체 안내. 프레임워크 wrapper / 명명 컨벤션 /
     DB 작업 op 의 의미 (예: SQL_KEY `_s` = SELECT) 등. **DB 작업 종류 결정 신호가
@@ -225,7 +225,7 @@ user_template_inputs: |
   callee_summaries:
   {callee_summaries}
 
-  function_id: {function_id}
+  id: {id}
   signature: {signature}
 
   function body:

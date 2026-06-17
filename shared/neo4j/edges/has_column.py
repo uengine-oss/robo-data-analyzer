@@ -10,12 +10,12 @@ from shared.neo4j.rel_types import HAS_COLUMN
 
 MERGE_QUERY = f"""
 UNWIND $items AS item
-MATCH (t:TABLE {{fqn: item.table_fqn}})
-MATCH (c:COLUMN {{fqn: item.column_fqn}})
+MATCH (t:TABLE {{id: item.parent_id}})
+MATCH (c:COLUMN {{id: item.child_id}})
 MERGE (t)-[:{HAS_COLUMN}]->(c)
 """
 
 
 async def upsert_has_column(client: Neo4jClient, edges: Iterable[HasColumn]) -> None:
-    items = [{"table_fqn": e.table_fqn, "column_fqn": e.column_fqn} for e in edges]
+    items = [{"parent_id": e.parent_id, "child_id": e.child_id} for e in edges]
     await client.run_batch_unwind(MERGE_QUERY, items)

@@ -96,7 +96,7 @@ def _dataclass_to_dict(obj: Any) -> dict:
 
 
 # artifact 에 dump 할 ``@property`` 화이트리스트 — derived 식별자 (그 외 property 는 노이즈라 제외).
-_DUMP_PROPERTIES: frozenset[str] = frozenset({"fqn"})
+_DUMP_PROPERTIES: frozenset[str] = frozenset({"id"})
 
 
 def _is_vector_field(field_def: dataclasses.Field, val: Any) -> bool:

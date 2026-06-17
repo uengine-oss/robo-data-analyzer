@@ -16,7 +16,7 @@ def _merge_query(label: str) -> str:
     """주어진 라벨로 MERGE 쿼리 생성. label 은 ``Module.sub_label`` 통제값 — 주입 안전."""
     return f"""
 UNWIND $items AS item
-MERGE (m:{label} {{module_id: item.module_id}})
+MERGE (m:{label} {{id: item.id}})
 SET m.name = item.name,
     m.file_path = item.file_path,
     m.start_line = item.start_line,
@@ -32,7 +32,7 @@ RETURN count(m) AS created
 
 def to_item(mod: Module) -> dict:
     return {
-        "module_id": mod.module_id,
+        "id": mod.id,
         "name": mod.name,
         "file_path": mod.file_path,
         "start_line": mod.start_line,

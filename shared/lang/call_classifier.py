@@ -58,8 +58,8 @@ def _lang_of(file_path: str) -> str:
     return EXT_TO_LANG.get(Path(file_path).suffix.lstrip(".").lower(), "")
 
 
-def _bare_name(function_id: str) -> str:
-    return _ID_SUFFIX.sub("", function_id).rsplit(".", 1)[-1]
+def _bare_name(node_id: str) -> str:
+    return _ID_SUFFIX.sub("", node_id).rsplit(".", 1)[-1]
 
 
 def _should_drop_as_framework(name: str, patterns: Iterable[str]) -> bool:
@@ -115,7 +115,7 @@ def classify_call_sites(
     """call_sites 를 결정론 분류 → ``Calls`` 엣지 + 드롭 집계.
 
     Args:
-        call_sites: ``[{call_id, caller_function_id, call_text, file, line}, ...]``.
+        call_sites: ``[{call_id, caller_id, call_text, file, line}, ...]``.
         functions: 같은 프로젝트 Function 노드 — internal 매칭 대상.
         framework_names: 프레임워크 함수 패턴 집합 (skill 출처) — glob 허용.
         wrappers: 호출 wrapper 명시 — ``[{wrapper, callee_from}, ...]``. SKILL 정의.
@@ -125,24 +125,24 @@ def classify_call_sites(
     by_name: dict[str, list[str]] = defaultdict(list)
     module_of: dict[str, str] = {}
     for fn in functions:
-        by_name[_bare_name(fn.function_id)].append(fn.function_id)
-        module_of[fn.function_id] = fn.module_id
+        by_name[_bare_name(fn.id)].append(fn.id)
+        module_of[fn.id] = fn.owner_id
 
-    # wrapper 인자 → 진짜 호출 대상 분류용: module_id → entry function_id 매핑.
-    # entry = function_id 가 "<module_id>.<module_id>" 형태인 함수 (모듈 엔트리 표준).
-    # 같은 module_id 의 entry 가 없으면 그 module_id 의 함수 중 정렬상 첫 후보 (단순화).
+    # wrapper 인자 → 진짜 호출 대상 분류용: 모듈 id → entry 함수 id 매핑.
+    # entry = id 가 "<owner_id>.<owner_id>" 형태인 함수 (모듈 엔트리 표준).
+    # 같은 모듈의 entry 가 없으면 그 모듈 함수 중 정렬상 첫 후보 (단순화).
     entry_by_module: dict[str, str] = {}
     other_by_module: dict[str, list[str]] = defaultdict(list)
     for fn in functions:
-        if not fn.module_id:
+        if not fn.owner_id:
             continue
-        if fn.function_id == f"{fn.module_id}.{fn.module_id}":
-            entry_by_module[fn.module_id] = fn.function_id
+        if fn.id == f"{fn.owner_id}.{fn.owner_id}":
+            entry_by_module[fn.owner_id] = fn.id
         else:
-            other_by_module[fn.module_id].append(fn.function_id)
+            other_by_module[fn.owner_id].append(fn.id)
 
     def _wrapper_callee_to_internal(callee_name: str) -> Optional[str]:
-        """wrapper 인자(이름) → internal function_id 또는 None (external)."""
+        """wrapper 인자(이름) → internal 함수 id 또는 None (external)."""
         if callee_name in entry_by_module:
             return entry_by_module[callee_name]
         siblings = other_by_module.get(callee_name)
@@ -165,7 +165,7 @@ def classify_call_sites(
     result = CallClassifyResult()
     for cs in call_sites:
         name = (cs.get("call_text") or "").strip()
-        caller = cs.get("caller_function_id", "")
+        caller = cs.get("caller_id", "")
         if not name or not caller:
             result.dropped_incomplete += 1
             continue
@@ -173,7 +173,7 @@ def classify_call_sites(
         callee = _resolve_internal(name, caller, by_name, module_of)
         if callee is not None:
             result.edges.append(Calls(
-                caller_function_id=caller, callee_function_id=callee, scope="internal",
+                caller_id=caller, callee_id=callee, scope="internal",
             ))
             continue
 
@@ -190,11 +190,11 @@ def classify_call_sites(
             internal_id = _wrapper_callee_to_internal(extracted)
             if internal_id is not None:
                 result.edges.append(Calls(
-                    caller_function_id=caller, callee_function_id=internal_id, scope="internal",
+                    caller_id=caller, callee_id=internal_id, scope="internal",
                 ))
             else:
                 result.edges.append(Calls(
-                    caller_function_id=caller, callee_function_id=extracted, scope="external",
+                    caller_id=caller, callee_id=extracted, scope="external",
                 ))
             continue
 
@@ -204,7 +204,7 @@ def classify_call_sites(
             result.dropped_framework += 1
         else:
             result.edges.append(Calls(
-                caller_function_id=caller, callee_function_id=name, scope="external",
+                caller_id=caller, callee_id=name, scope="external",
             ))
     return result
 

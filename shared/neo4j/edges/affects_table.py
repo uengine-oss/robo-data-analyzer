@@ -13,7 +13,7 @@ from shared.neo4j.rel_types import AFFECTS_TABLE
 
 _UPSERT_QUERY = f"""
 UNWIND $items AS item
-MATCH (e:EXAMPLE {{example_id: item.example_id}})
+MATCH (e:EXAMPLE {{id: item.source_id}})
 MATCH (t:TABLE) WHERE toLower(t.name) = toLower(item.table_name)
 MERGE (e)-[:{AFFECTS_TABLE} {{op: item.op}}]->(t)
 """
@@ -22,7 +22,7 @@ MERGE (e)-[:{AFFECTS_TABLE} {{op: item.op}}]->(t)
 async def upsert_affects_table(client: Neo4jClient, edges: Iterable[AffectsTable]) -> None:
     """Example → Table 엣지 (op 별)."""
     items = [
-        {"example_id": e.example_id, "table_name": e.table_name, "op": e.op}
+        {"source_id": e.source_id, "table_name": e.table_name, "op": e.op}
         for e in edges
     ]
     await client.run_batch_unwind(_UPSERT_QUERY, items)

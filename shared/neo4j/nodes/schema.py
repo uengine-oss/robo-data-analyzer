@@ -14,14 +14,15 @@ from shared.neo4j.neo4j_client import Neo4jClient
 
 MERGE_QUERY = """
 UNWIND $items AS item
-MERGE (s:SCHEMA {db: item.db, name: item.name})
-SET s.fqn = item.db + '.' + item.name
+MERGE (s:SCHEMA {id: item.id})
+SET s.db = item.db,
+    s.name = item.name
 RETURN count(s) AS created
 """
 
 
 def to_item(schema: Schema) -> dict:
-    return {"db": schema.db, "name": schema.name}
+    return {"id": schema.id, "db": schema.db, "name": schema.name}
 
 
 async def upsert_schemas(client: Neo4jClient, schemas: Iterable[Schema]) -> None:

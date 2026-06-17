@@ -12,7 +12,7 @@ from shared.neo4j.neo4j_client import Neo4jClient
 
 _UPSERT_QUERY = """
 UNWIND $items AS item
-MERGE (e:EXAMPLE {example_id: item.example_id})
+MERGE (e:EXAMPLE {id: item.id})
 SET e.description = item.description,
     e.given = item.given,
     e.when_ = item.when_,
@@ -24,7 +24,7 @@ async def upsert_examples(client: Neo4jClient, examples: Iterable[Example]) -> N
     """EXAMPLE 노드 MERGE."""
     items = [
         {
-            "example_id": e.example_id,
+            "id": e.id,
             "description": e.description,
             "given": e.given,
             "when_": e.when,

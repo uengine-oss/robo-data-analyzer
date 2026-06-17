@@ -10,12 +10,12 @@ from shared.neo4j.rel_types import HAS_MEMBER
 
 MERGE_QUERY = f"""
 UNWIND $items AS item
-MATCH (d:DATA_TYPE {{datatype_id: item.datatype_id}})
-MATCH (v:VARIABLE {{variable_id: item.variable_id}})
+MATCH (d:DATA_TYPE {{id: item.parent_id}})
+MATCH (v:VARIABLE {{id: item.child_id}})
 MERGE (d)-[:{HAS_MEMBER}]->(v)
 """
 
 
 async def upsert_has_member(client: Neo4jClient, edges: Iterable[HasMember]) -> None:
-    items = [{"datatype_id": e.datatype_id, "variable_id": e.variable_id} for e in edges]
+    items = [{"parent_id": e.parent_id, "child_id": e.child_id} for e in edges]
     await client.run_batch_unwind(MERGE_QUERY, items)

@@ -1,8 +1,8 @@
 """Rule 간 흐름 엣지 — NEXT(메인 순서) / BRANCH(분기).
 
 NEXT·BRANCH 는 Cypher 가 동일 (rel 타입만 다름) — 한 파일에 통합 (중복 회피).
-Rule 노드는 함수 간 공유되므로 같은 함수의 HAS_RULE `local_rule_id` 로 양끝 Rule 을
-특정하고, 엣지 자체는 ``function_id`` 로 qualify.
+Rule 노드는 함수 간 공유되므로 같은 함수(owner)의 HAS_RULE `local_rule_id` 로 양끝 Rule 을
+특정하고, 엣지 자체는 ``owner_id`` 로 qualify.
 """
 from __future__ import annotations
 
@@ -17,10 +17,10 @@ def _flow_query(rel: str) -> str:
     """rel(NEXT / BRANCH) 별 Rule→Rule MERGE 쿼리."""
     return f"""
 UNWIND $items AS item
-MATCH (f:FUNCTION {{function_id: item.function_id}})
+MATCH (node {{id: item.owner_id}})
       -[:{HAS_RULE} {{local_rule_id: item.from_rule_id}}]->(r1:RULE)
-MATCH (f)-[:{HAS_RULE} {{local_rule_id: item.to_rule_id}}]->(r2:RULE)
-MERGE (r1)-[:{rel} {{function_id: item.function_id}}]->(r2)
+MATCH (node)-[:{HAS_RULE} {{local_rule_id: item.to_rule_id}}]->(r2:RULE)
+MERGE (r1)-[:{rel} {{owner_id: item.owner_id}}]->(r2)
 """
 
 
@@ -31,7 +31,7 @@ _BRANCH_QUERY = _flow_query(BRANCH)
 def _items(edges) -> list[dict]:
     return [
         {
-            "function_id": e.function_id,
+            "owner_id": e.owner_id,
             "from_rule_id": e.from_rule_id,
             "to_rule_id": e.to_rule_id,
         }

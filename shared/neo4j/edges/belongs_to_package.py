@@ -10,12 +10,12 @@ from shared.neo4j.rel_types import BELONGS_TO_PACKAGE
 
 MERGE_QUERY = f"""
 UNWIND $items AS item
-MATCH (m:MODULE {{module_id: item.module_id}})
-MATCH (p:PACKAGE {{package_id: item.package_id}})
+MATCH (m:MODULE {{id: item.child_id}})
+MATCH (p:PACKAGE {{id: item.parent_id}})
 MERGE (m)-[:{BELONGS_TO_PACKAGE}]->(p)
 """
 
 
 async def upsert_belongs_to_package(client: Neo4jClient, edges: Iterable[BelongsToPackage]) -> None:
-    items = [{"module_id": e.module_id, "package_id": e.package_id} for e in edges]
+    items = [{"child_id": e.child_id, "parent_id": e.parent_id} for e in edges]
     await client.run_batch_unwind(MERGE_QUERY, items)

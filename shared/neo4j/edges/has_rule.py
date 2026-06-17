@@ -14,9 +14,9 @@ from shared.neo4j.rel_types import HAS_RULE
 
 _UPSERT_QUERY = f"""
 UNWIND $items AS item
-MATCH (f:FUNCTION {{function_id: item.function_id}})
-MATCH (r:RULE {{rule_hash: item.rule_hash}})
-MERGE (f)-[rel:{HAS_RULE} {{local_rule_id: item.local_rule_id}}]->(r)
+MATCH (node {{id: item.source_id}})
+MATCH (r:RULE {{id: item.target_id}})
+MERGE (node)-[rel:{HAS_RULE} {{local_rule_id: item.local_rule_id}}]->(r)
 SET rel.flow_id = item.flow_id,
     rel.coupled_domains = item.coupled_domains
 """
@@ -26,8 +26,8 @@ async def upsert_has_rule(client: Neo4jClient, edges: Iterable[HasRule]) -> None
     """Function → Rule 엣지 + per-function 속성."""
     items = [
         {
-            "function_id": e.function_id,
-            "rule_hash": e.rule_hash,
+            "source_id": e.source_id,
+            "target_id": e.target_id,
             "local_rule_id": e.local_rule_id,
             "flow_id": e.flow_id,
             "coupled_domains": list(e.coupled_domains),

@@ -44,9 +44,9 @@ def build_effective_tree(
         - effective_children[pid]: pid 를 유효부모로 갖는 non-skip 노드 list.
         - analysis_ids: 분석 대상(non-skip) 노드 id set.
     """
-    parent_by_id = {f.function_id: f.parent_id for f in functions}
-    skip_ids = {f.function_id for f in functions if f.own_ast_type() in _SKIP_ANALYSIS_TYPES}
-    analysis_ids = [f.function_id for f in functions if f.function_id not in skip_ids]
+    parent_by_id = {f.id: f.parent_id for f in functions}
+    skip_ids = {f.id for f in functions if f.own_ast_type() in _SKIP_ANALYSIS_TYPES}
+    analysis_ids = [f.id for f in functions if f.id not in skip_ids]
 
     effective_parent: dict[str, str | None] = {}
     for nid in analysis_ids:

@@ -38,7 +38,7 @@ class AnalysisContext:
     새 strategy 가 필드 추가해도 이 dataclass 무변경.
     """
     # 식별 ────────────────────────────────────────────────
-    function_id: str
+    id: str
     signature: str
 
     # 위치 ────────────────────────────────────────────────
@@ -50,8 +50,8 @@ class AnalysisContext:
     # tuple + sorted 고정 → set/dict iteration 비결정성 차단 (캐시 친화)
     reads: tuple[str, ...] = ()              # Table fqn 들
     writes: tuple[str, ...] = ()             # Table fqn 들
-    callers: tuple[str, ...] = ()            # caller function_id 들
-    callees: tuple[str, ...] = ()            # callee function_id 들
+    callers: tuple[str, ...] = ()            # caller id 들
+    callees: tuple[str, ...] = ()            # callee id 들
 
     # 참조 컨텍스트 (build_context_step 가 state 엣지/노드에서 결정론 도출) ────
     referenced_symbols: tuple[str, ...] = ()  # REFERENCES + INIT_BY — 참조 변수/상수 줄

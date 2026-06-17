@@ -10,12 +10,12 @@ from shared.neo4j.rel_types import BELONGS_TO
 
 MERGE_QUERY = f"""
 UNWIND $items AS item
-MATCH (t:TABLE {{fqn: item.table_fqn}})
-MATCH (s:SCHEMA {{fqn: item.schema_fqn}})
+MATCH (t:TABLE {{id: item.child_id}})
+MATCH (s:SCHEMA {{id: item.parent_id}})
 MERGE (t)-[:{BELONGS_TO}]->(s)
 """
 
 
 async def upsert_belongs_to(client: Neo4jClient, edges: Iterable[BelongsTo]) -> None:
-    items = [{"table_fqn": e.table_fqn, "schema_fqn": e.schema_fqn} for e in edges]
+    items = [{"child_id": e.child_id, "parent_id": e.parent_id} for e in edges]
     await client.run_batch_unwind(MERGE_QUERY, items)

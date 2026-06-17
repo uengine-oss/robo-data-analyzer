@@ -70,8 +70,8 @@ async def enrich_lineage_from_catalog_step(state: dict, config: Optional[Runnabl
 
         # catalog 응답에 dml_type 이 있으면 표준화 (없으면 빈값 — 단일 진실 헬퍼).
         edges.append(ReadsWrites(
-            function_id=fn_id,
-            table_fqn=table_fqn,
+            source_id=fn_id,
+            target_id=table_fqn,
             relation=relation,
             dml_type=derive_dml_type(flow.get("dml_type")),
             evidence_file=str(source or "catalog"),
@@ -81,7 +81,7 @@ async def enrich_lineage_from_catalog_step(state: dict, config: Optional[Runnabl
     if neo is not None and edges:
         await upsert_reads_writes(neo, edges)
 
-    catalog_only = sum(1 for e in edges if e.function_id.startswith("__catalog__:"))
+    catalog_only = sum(1 for e in edges if e.source_id.startswith("__catalog__:"))
     log_info(_STEP, "done",
              flows=len(data.get("flows") or []),
              reads_writes_edges=len(edges),
@@ -93,16 +93,16 @@ async def enrich_lineage_from_catalog_step(state: dict, config: Optional[Runnabl
 
 
 def _build_function_index(functions: list, project_root: Path) -> dict[str, str]:
-    """function_id / file 경로 다양한 변형 → function_id 매핑."""
+    """id / file 경로 다양한 변형 → 함수 id 매핑."""
     index: dict[str, str] = {}
     for fn in functions:
-        index[fn.function_id] = fn.function_id
-        index[fn.file_path] = fn.function_id
+        index[fn.id] = fn.id
+        index[fn.file_path] = fn.id
         try:
             abs_path = str(Path(fn.file_path).resolve())
-            index[abs_path] = fn.function_id
+            index[abs_path] = fn.id
             rel_path = str(Path(fn.file_path).resolve().relative_to(project_root.resolve()))
-            index[rel_path] = fn.function_id
+            index[rel_path] = fn.id
         except (ValueError, OSError):
             pass
     return index

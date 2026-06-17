@@ -35,7 +35,7 @@ system: |
   `LargeFunctionOneLiner` Pydantic — `one_liner` 필드 1개.
 
 user_template: |
-  function_id: {function_id}
+  id: {id}
   signature: {signature}
 
   function body:

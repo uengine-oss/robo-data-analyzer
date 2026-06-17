@@ -66,20 +66,20 @@ async def summarize_module_step(state: dict, config: Optional[RunnableConfig] = 
         fail 정책 처리 (log + 원본 반환) 는 메인 함수가 책임 — _summarize_one 은
         성공 경로만 책임 (단일 책임).
         """
-        members = fn_by_module.get(module.module_id, [])
+        members = fn_by_module.get(module.id, [])
         if not members:
             return module
         member_text = "\n".join(
             f"- {fn.signature}: {fn.summary or fn.logical_name or '(분석 전)'}"
             for fn in members
         )
-        async with track_processing("Module", module.module_id):
+        async with track_processing("Module", module.id):
             async with semaphore:
                 result: ModuleSummaryOutput = await run_yaml_rule(
                     prompts_dir=prompts_dir,
                     rule_name="module_summary",
                     user_values={
-                        "module_id": module.module_id,
+                        "id": module.id,
                         "name": module.name,
                         "member_functions": member_text,
                     },
@@ -129,7 +129,7 @@ def _apply_fail_policy(modules: list[Module], results: list) -> list[Module]:
                 "analysis_flow.step7_post_processing.summarize_module_step",
                 "module_summary",
                 result,
-                module_id=module.module_id,
+                module_id=module.id,
             )
             updated.append(module)
         else:
@@ -149,7 +149,7 @@ def _match_functions_to_modules(
     # file_path → [(start, end, module_id)] sorted by 범위 좁은 순
     by_file: dict[str, list[tuple[int, int, str]]] = defaultdict(list)
     for m in modules:
-        by_file[m.file_path].append((m.start_line, m.end_line, m.module_id))
+        by_file[m.file_path].append((m.start_line, m.end_line, m.id))
     for k in by_file:
         # 범위 좁은 모듈 먼저 — function 매칭 시 inner class 우선
         by_file[k].sort(key=lambda x: (x[1] - x[0]) if x[1] > 0 else 10**9)

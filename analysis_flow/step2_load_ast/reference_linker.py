@@ -88,10 +88,10 @@ def _targets_by_module(
     by_module: _Targets = defaultdict(lambda: defaultdict(list))
     for v in variables:
         if v.name:
-            by_module[v.module_id][v.name].append((v.variable_id, "VARIABLE"))
+            by_module[v.owner_id][v.name].append((v.id, "VARIABLE"))
     for c in constants:
         if c.name:
-            by_module[c.module_id][c.name].append((c.constant_id, "CONSTANT"))
+            by_module[c.owner_id][c.name].append((c.id, "CONSTANT"))
     return by_module
 
 
@@ -109,8 +109,8 @@ def _file_indexes(
         if not node.file_path:
             continue
         norm = node.file_path.replace("\\", "/")
-        by_path[norm].add(node.module_id)
-        by_basename[norm.rsplit("/", 1)[-1]].add(node.module_id)
+        by_path[norm].add(node.owner_id)
+        by_basename[norm.rsplit("/", 1)[-1]].add(node.owner_id)
     return by_path, by_basename
 
 
@@ -286,7 +286,7 @@ def _link_function_bodies(
     """
     out: list[References] = []
     for fn in functions:
-        own = targets.get(fn.module_id) or {}
+        own = targets.get(fn.owner_id) or {}
         scope = scopes.get(fn.file_path)
         if not own and scope is None:
             continue
@@ -297,10 +297,10 @@ def _link_function_bodies(
             text = _strip(raw)
             evidence = start + offset + 1
             for tid, label in _bare_hits(text, own, seen):
-                out.append(References(fn.function_id, tid, label, evidence))
+                out.append(References(fn.id, tid, label, evidence))
             if scope is not None:
                 for tid, label in _pass2_hits(text, scope, targets, seen):
-                    out.append(References(fn.function_id, tid, label, evidence))
+                    out.append(References(fn.id, tid, label, evidence))
     return out
 
 
@@ -318,7 +318,7 @@ def _link_init_values(
         if not init_text:
             continue
         text = _strip(init_text)
-        own = targets.get(node.module_id) or {}
+        own = targets.get(node.owner_id) or {}
         scope = scopes.get(node.file_path)
         seen: set[str] = {from_id}                       # 자기참조 제외
         hits = _bare_hits(text, own, seen)
@@ -336,9 +336,9 @@ def _init_iter(variables: list[Variable], constants: list[Constant]):
     vs constant_id) 분기 한 곳에 가둔다 — _link_init_values 본문은 단일 흐름 유지.
     """
     for v in variables:
-        yield v, "VARIABLE", v.variable_id, v.init_value
+        yield v, "VARIABLE", v.id, v.init_value
     for c in constants:
-        yield c, "CONSTANT", c.constant_id, c.value
+        yield c, "CONSTANT", c.id, c.value
 
 
 def _bare_hits(

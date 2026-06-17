@@ -57,7 +57,7 @@ async def run_module_pre_analysis(
     sigs_by_module = _signatures_by_module(functions)
     targets = [
         m for m in modules
-        if m.comment.strip() or m.annotations.strip() or sigs_by_module.get(m.module_id)
+        if m.comment.strip() or m.annotations.strip() or sigs_by_module.get(m.id)
     ]
     if not targets:
         log_info(_STEP, "skip", reason="no header/signatures", modules=len(modules))
@@ -69,7 +69,7 @@ async def run_module_pre_analysis(
     with step_processing_scope(_STEP, stream):
         results = await gather_with_warmup(
             (
-                _analyze_module(m, sigs_by_module.get(m.module_id, []), strategy, cost_budget, semaphore)
+                _analyze_module(m, sigs_by_module.get(m.id, []), strategy, cost_budget, semaphore)
                 for m in targets
             ),
             return_exceptions=True,
@@ -82,10 +82,10 @@ async def run_module_pre_analysis(
             raise r
         if isinstance(r, BaseException):
             failed += 1
-            log_error(_STEP, "analyze_module", r, module_id=module.module_id)
+            log_error(_STEP, "analyze_module", r, module_id=module.id)
             continue
         if r:
-            intents[module.module_id] = r
+            intents[module.id] = r
 
     log_info(
         _STEP, "done",
@@ -99,8 +99,8 @@ def _signatures_by_module(functions: list[Function]) -> dict[str, list[str]]:
     """함수 signature 를 소속 module_id 로 그룹핑."""
     out: dict[str, list[str]] = defaultdict(list)
     for fn in functions:
-        if fn.module_id:
-            out[fn.module_id].append(fn.signature)
+        if fn.owner_id:
+            out[fn.owner_id].append(fn.signature)
     return out
 
 
@@ -112,13 +112,13 @@ async def _analyze_module(
     semaphore: asyncio.Semaphore,
 ) -> str:
     """모듈 1개 LLM 호출 → intent. track_processing 이 start/done/failed 자동 emit."""
-    async with track_processing("Module", module.module_id, sub_action="pre_analysis"):
+    async with track_processing("Module", module.id, sub_action="pre_analysis"):
         async with semaphore:
             result: ModulePreAnalysisOutput = await run_yaml_rule(
                 prompts_dir=Path(strategy.prompts_dir),
                 rule_name=_RULE,
                 user_values={
-                    "module_id": module.module_id,
+                    "id": module.id,
                     "module_header": _format_header(module),
                     "function_signatures": _format_signatures(signatures),
                 },

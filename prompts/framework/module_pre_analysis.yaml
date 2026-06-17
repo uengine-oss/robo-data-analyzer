@@ -7,7 +7,7 @@ system: |
 
   ## 입력
 
-  - module_id: 모듈 식별자
+  - id: 모듈 식별자
   - module_header: 모듈/파일 헤더 주석 + 어노테이션 (변경이력·작성자·날짜 등 노이즈 포함 가능)
   - function_signatures: 이 모듈이 가진 함수 시그니처 목록 (이름·파라미터·반환형 — 본문 X)
 
@@ -29,7 +29,7 @@ system: |
   response_format Pydantic schema 강제 — 자유 텍스트 응답 불가.
 
 user_template: |
-  module_id: {module_id}
+  id: {id}
 
   module_header:
   {module_header}

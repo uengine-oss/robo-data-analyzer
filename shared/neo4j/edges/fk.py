@@ -13,8 +13,8 @@ from shared.neo4j.rel_types import FK
 
 MERGE_QUERY = f"""
 UNWIND $items AS item
-MATCH (from:TABLE {{fqn: item.from_table_fqn}})
-MATCH (to:TABLE {{fqn: item.to_table_fqn}})
+MATCH (from:TABLE {{id: item.from_id}})
+MATCH (to:TABLE {{id: item.to_id}})
 MERGE (from)-[r:{FK} {{from_column: item.from_column, to_column: item.to_column}}]->(to)
 SET r.fk_type = item.fk_type,
     r.is_candidate = item.is_candidate
@@ -23,8 +23,8 @@ SET r.fk_type = item.fk_type,
 
 async def upsert_fk(client: Neo4jClient, edges: Iterable[Fk]) -> None:
     items = [{
-        "from_table_fqn": e.from_table_fqn,
-        "to_table_fqn": e.to_table_fqn,
+        "from_id": e.from_id,
+        "to_id": e.to_id,
         "from_column": e.from_column,
         "to_column": e.to_column,
         "fk_type": e.fk_type,

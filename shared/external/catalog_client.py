@@ -48,3 +48,35 @@ async def get_catalog_json(
             f"catalog {label} non-200 응답 — url={url} status={resp.status_code}"
         )
     return resp.json()
+
+
+async def post_sample_context(
+    http: httpx.AsyncClient,
+    base_url: str,
+    datasource: str,
+    table_names: list[str],
+    *,
+    sample_limit: int = 5,
+    similarity_threshold: float = 85.0,
+) -> dict[str, Any]:
+    """catalog ``POST /tables/sample-context`` — 테이블명 batch → 매칭·샘플 map.
+
+    응답: ``{요청 테이블명: {resolved, score, columns, sample_rows} | None}`` (매칭 실패=None).
+    빈 ``table_names`` → ``{}`` (호출 안 함). non-200 → RuntimeError 전파(조용히 묻지 X).
+    ``base_url`` 은 catalog api_prefix(``/robo``) 포함 — ``get_catalog_json`` 과 동일 규약.
+    """
+    if not table_names:
+        return {}
+    url = f"{base_url}/tables/sample-context"
+    body = {
+        "datasource": datasource,
+        "table_names": table_names,
+        "sample_limit": sample_limit,
+        "similarity_threshold": similarity_threshold,
+    }
+    resp = await http.post(url, json=body)
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"catalog sample-context non-200 응답 — url={url} status={resp.status_code}"
+        )
+    return resp.json()

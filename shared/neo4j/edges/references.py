@@ -1,6 +1,6 @@
 """REFERENCES 엣지 — Function → Variable / Constant.
 
-target_label 별 분기 — Variable 은 variable_id, Constant 는 constant_id 키로 MATCH.
+target_label(=Neo4j 라벨 VARIABLE/CONSTANT)로 MATCH 정밀화 — 키는 모든 노드 공통 ``id``.
 """
 from __future__ import annotations
 
@@ -12,36 +12,25 @@ from shared.neo4j.neo4j_client import Neo4jClient
 from shared.neo4j.rel_types import REFERENCES
 
 
-# target_label → (Neo4j 라벨, 키 속성)
-_TARGET: dict[str, tuple[str, str]] = {
-    "VARIABLE": ("VARIABLE", "variable_id"),
-    "CONSTANT": ("CONSTANT", "constant_id"),
-}
-
-
-def _merge_query(label: str, key: str) -> str:
-    """label / key 는 ``_TARGET`` 통제값 — 주입 안전."""
+def _merge_query(label: str) -> str:
+    """label 은 ``References.target_label`` 통제값(VARIABLE/CONSTANT) — 주입 안전."""
     return f"""
 UNWIND $items AS item
-MATCH (f:FUNCTION {{function_id: item.function_id}})
-MATCH (t:{label} {{{key}: item.target_id}})
-MERGE (f)-[r:{REFERENCES}]->(t)
+MATCH (node {{id: item.source_id}})
+MATCH (t:{label} {{id: item.target_id}})
+MERGE (node)-[r:{REFERENCES}]->(t)
 SET r.evidence_line = item.evidence_line
 """
 
 
 async def upsert_references(client: Neo4jClient, edges: Iterable[References]) -> None:
-    """target_label 별로 묶어 MERGE."""
+    """target_label 별로 묶어 MERGE (라벨 정밀 MATCH, 키는 id)."""
     by_label: dict[str, list[dict]] = defaultdict(list)
     for e in edges:
         by_label[e.target_label].append({
-            "function_id": e.function_id,
+            "source_id": e.source_id,
             "target_id": e.target_id,
             "evidence_line": e.evidence_line,
         })
     for target_label, items in by_label.items():
-        spec = _TARGET.get(target_label)
-        if spec is None:
-            continue
-        label, key = spec
-        await client.run_batch_unwind(_merge_query(label, key), items)
+        await client.run_batch_unwind(_merge_query(target_label), items)

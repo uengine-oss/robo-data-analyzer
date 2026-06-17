@@ -10,12 +10,12 @@ from shared.neo4j.rel_types import HAS_FUNCTION
 
 MERGE_QUERY = f"""
 UNWIND $items AS item
-MATCH (m:MODULE {{module_id: item.module_id}})
-MATCH (f:FUNCTION {{function_id: item.function_id}})
-MERGE (m)-[:{HAS_FUNCTION}]->(f)
+MATCH (m:MODULE {{id: item.parent_id}})
+MATCH (node {{id: item.child_id}})
+MERGE (m)-[:{HAS_FUNCTION}]->(node)
 """
 
 
 async def upsert_has_function(client: Neo4jClient, edges: Iterable[HasFunction]) -> None:
-    items = [{"module_id": e.module_id, "function_id": e.function_id} for e in edges]
+    items = [{"parent_id": e.parent_id, "child_id": e.child_id} for e in edges]
     await client.run_batch_unwind(MERGE_QUERY, items)

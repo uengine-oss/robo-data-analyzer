@@ -141,6 +141,13 @@ class CatalogSettings:
     enabled: bool = field(default_factory=lambda: _getenv_bool("ROBO_CATALOG_ENABLED", True))
     base_url: str = field(default_factory=lambda: _getenv_str("ROBO_CATALOG_BASE_URL", ""))
     timeout_seconds: float = field(default_factory=lambda: _getenv_float("ROBO_CATALOG_TIMEOUT_SECONDS", 120.0))
+    # ─────────────────────────────────────────────────────────────
+    # ⚠️ 테스트 전용 (운영 아님)
+    #   운영(HTTP /analyze)은 datasource 를 AnalyzeRequest 입력으로 받는다.
+    #   이 env 는 CLI(analyze_data_dir.py)/테스트에서 "어느 DB 를 샘플링"할지 줄 때만 사용.
+    #   비어 있으면(기본) 샘플 보강 skip. 운영 코드 경로는 이 값을 읽지 않는다.
+    # ─────────────────────────────────────────────────────────────
+    test_datasource: str = field(default_factory=lambda: _getenv_str("ROBO_CATALOG_TEST_DATASOURCE", ""))
 
 
 @dataclass(frozen=True)
