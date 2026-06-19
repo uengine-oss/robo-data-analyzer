@@ -1,6 +1,6 @@
 """CallLinker — AST CALL 노드 → ``Calls`` 엣지 (정규식·LLM 0).
 
-antlr 이 이미 뽑은 ``CALL`` 노드(``…:CALL:<line>`` function_id + 콜리 이름 = signature)를
+antlr 이 이미 뽑은 ``CALL`` 노드(``…:CALL:<line>`` code_id + 콜리 이름 = signature)를
 호출의 단일 출처로 쓴다. 생 텍스트 정규식이 아니므로 문자열 상수·선언·**주석처리된 호출**은
 애초에 CALL 노드가 아니어서 오인식이 원천 차단된다.
 
@@ -10,14 +10,14 @@ antlr 이 이미 뽑은 ``CALL`` 노드(``…:CALL:<line>`` function_id + 콜리
   (대상 = 그 정의 노드 — CALL-site 가 아니라 정의 노드로 해석해 방향 정확).
 - 그 외 실제 프로시저명 → **external** — 그래프에 ``:FUNCTION:EXTERNAL`` stub 생성
   (upsert_calls). 스키마(package) = 호출 수식어(``SCH.PROC``) 또는 없으면 호출자 자기
-  스키마(bare = 자기 스키마의 프로시저). 모듈·함수 = 프로시저명.
+  스키마(bare = 자기 스키마의 프로시저). 모듈·루틴 = 프로시저명.
 
 caller = 그 CALL 을 감싼 프로시저 루트 (parent_id 체인 최상위). caller == callee 자기루프 드롭.
 """
 from __future__ import annotations
 
 from data_models.graph_edges import Calls
-from data_models.graph_nodes import Function
+from data_models.graph_nodes import CodeNode
 
 # 내장 패키지/표준 라이브러리 prefix → 드롭 (분석 대상 프로시저 아님).
 _BUILTIN_PREFIXES = ("DBMS_", "UTL_", "SYS_", "ORA_", "OWA_", "STANDARD")
@@ -26,21 +26,21 @@ _BUILTIN_PREFIXES = ("DBMS_", "UTL_", "SYS_", "ORA_", "OWA_", "STANDARD")
 class CallLinker:
     """AST CALL 노드 → ``Calls`` 엣지."""
 
-    async def link(self, functions: list[Function]) -> list[Calls]:
-        if not functions:
+    async def link(self, code_nodes: list[CodeNode]) -> list[Calls]:
+        if not code_nodes:
             return []
 
-        fn_by_id = {fn.id: fn for fn in functions}
+        fn_by_id = {fn.id: fn for fn in code_nodes}
         # 정의 노드(루트: parent_id None) 단순명 → id.
         # callee 는 정의 노드로만 해석 (CALL-site 노드 후보 제외 → 방향 garbled 차단).
         roots_by_name: dict[str, str] = {}
-        for fn in functions:
+        for fn in code_nodes:
             if fn.parent_id is None:
                 roots_by_name.setdefault(_proc_name(fn.signature), fn.id)
 
         edges: list[Calls] = []
         seen: set[tuple[str, str]] = set()
-        for fn in functions:
+        for fn in code_nodes:
             if fn.own_ast_type() != "CALL":
                 continue                       # CALL 노드만 (자기 타입 — 자손 오염 X)
             callee_raw = fn.signature.strip()
@@ -63,7 +63,7 @@ class CallLinker:
                 ))
             else:
                 # external = 분석대상 밖 실 프로시저. 스키마(package) = 호출 수식어
-                # (SCH.PROC) 또는 bare 면 호출자 자기 스키마. 모듈·함수 = 프로시저명.
+                # (SCH.PROC) 또는 bare 면 호출자 자기 스키마. 모듈·루틴 = 프로시저명.
                 # upsert_calls 가 internal 과 대칭으로 :FUNCTION:EXTERNAL stub 생성.
                 if (caller_id, simple) in seen:
                     continue
@@ -81,7 +81,7 @@ class CallLinker:
         return edges
 
 
-def _root_of(fn: Function, fn_by_id: dict[str, Function]) -> str:
+def _root_of(fn: CodeNode, fn_by_id: dict[str, CodeNode]) -> str:
     """fn 의 프로시저 루트 id — parent_id 체인 최상위 (= 호출자)."""
     cur = fn
     while cur.parent_id is not None:

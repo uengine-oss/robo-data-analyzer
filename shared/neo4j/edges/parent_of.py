@@ -1,4 +1,4 @@
-"""PARENT_OF 엣지 — Function → nested Function (DBMS 의 nested range)."""
+"""PARENT_OF 엣지 — CodeNode → nested CodeNode (DBMS 의 nested range)."""
 from __future__ import annotations
 
 from typing import Iterable

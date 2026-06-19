@@ -32,7 +32,7 @@ from analysis_flow.step5_build_context.build_context_step import build_context_s
 from analysis_flow.step5_build_context.dbms_context_builder import DbmsContextBuilder
 from analysis_flow.step5_build_context.framework_context_builder import FrameworkContextBuilder
 from analysis_flow.step5_build_context.fetch_table_samples_step import fetch_table_samples_step
-from analysis_flow.step6_analyze_function.analyze_function_step import analyze_function_step
+from analysis_flow.step6_analyze_code.analyze_code_step import analyze_code_step
 from analysis_flow.step7_post_processing.embed_step import embed_step
 from analysis_flow.step7_post_processing.enrich_table_description_step import (
     enrich_table_description_step,
@@ -95,7 +95,7 @@ FRAMEWORK_PIPELINE = Strategy(
         link_residual_patterns_step,          # ★ Framework 만 — 잔여 패턴 루프 (테이블 미해결)
         build_context_step,
         fetch_table_samples_step,             # ★ 옵션·전략독립 — catalog 샘플 → table_sample_data (analyze 전)
-        analyze_function_step,
+        analyze_code_step,
         # ★ 후처리 병렬 그룹 — 4 step 서로 독립(입력 read-only·return state 키 비충돌:
         #   modules / tables+columns / components+edges / {}). 동시 실행 후 embed 에서 합류.
         #   공유 llm_semaphore(executor 주입)로 서버 총 동시수 제어(과부하 방지).
@@ -130,7 +130,7 @@ DBMS_PIPELINE = Strategy(
         # 잔여 패턴 루프 없음 — DBMS 는 에이전트 링킹을 안 씀
         build_context_step,
         fetch_table_samples_step,             # ★ 옵션·전략독립 — catalog 샘플 → table_sample_data (analyze 전)
-        analyze_function_step,
+        analyze_code_step,
         summarize_module_step,
         enrich_table_description_step,
         # enrich_metadata_from_catalog_step 제거 — 미존재 엔드포인트(GET /tables/<fqn>/metadata)

@@ -1,7 +1,7 @@
-"""embed_step — Table / Column / Function 의미 텍스트 임베딩 → Neo4j.
+"""embed_step — Table / Column / CodeNode 의미 텍스트 임베딩 → Neo4j.
 
 흐름:
-1. ``Table.description`` / ``Column.description`` / ``Function.summary`` 텍스트 수집.
+1. ``Table.description`` / ``Column.description`` / ``CodeNode.summary`` 텍스트 수집.
 2. ``shared.llm.embedder.encode_texts`` 로 배치 인코딩 — 어디서 어떻게 임베딩을
    받는지는 LLM 영역 책임. 이 step 은 텍스트 → 벡터의 mechanic 만.
 3. Neo4j UNWIND 배치로 ``embedding`` property SET.
@@ -27,10 +27,12 @@ _STEP = "step7.embed"
 
 
 def _embedding_query(label: str, key: str) -> str:
-    """``embedding`` property SET UNWIND 쿼리 — 라벨·식별키만 다르고 형태 동일."""
+    """``embedding`` property SET UNWIND 쿼리. ``label`` 빈 문자열이면 무라벨 MATCH —
+    코드 노드는 라벨이 antlr type 열린집합이라 id 키로만 매치(METHOD/SELECT/… 전부 포함)."""
+    matcher = f"(n:{label} {{{key}: item.{key}}})" if label else f"(n {{{key}: item.{key}}})"
     return (
         f"UNWIND $items AS item "
-        f"MATCH (n:{label} {{{key}: item.{key}}}) "
+        f"MATCH {matcher} "
         f"SET n.embedding = item.vector"
     )
 
@@ -54,37 +56,37 @@ async def embed_step(state: dict, config: Optional[RunnableConfig] = None) -> di
     log_info(_STEP, "start",
              tables=len(state.get("tables") or []),
              columns=len(state.get("columns") or []),
-             functions=len(state.get("functions") or []),
+             code_nodes=len(state.get("code_nodes") or []),
              backend=embedder.describe())
 
     # 동기 호출 → asyncio.to_thread 로 격리 (현재 backend 는 로컬 sentence-transformers).
-    table_updates, column_updates, function_updates = await asyncio.to_thread(
+    table_updates, column_updates, code_updates = await asyncio.to_thread(
         _build_embeddings, state
     )
 
     for label, items in (
         ("TABLE", table_updates),
         ("COLUMN", column_updates),
-        ("FUNCTION", function_updates),
+        ("", code_updates),        # 코드 노드 = 라벨 열린집합 → id 무라벨 매치 (METHOD/SELECT/… 포함)
     ):
         if items:
             await neo.run_batch_unwind(_embedding_query(label, "id"), items)
 
     updated_tables = _attach_embedding(state.get("tables", []), table_updates, "id")
     updated_columns = _attach_embedding(state.get("columns", []), column_updates, "id")
-    updated_functions = _attach_embedding(state.get("functions", []), function_updates, "id")
+    updated_code_nodes = _attach_embedding(state.get("code_nodes", []), code_updates, "id")
 
     log_info(
         _STEP, "done",
         table_embedded=len(table_updates),
         column_embedded=len(column_updates),
-        function_embedded=len(function_updates),
+        code_embedded=len(code_updates),
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
     return {
         "tables": updated_tables,
         "columns": updated_columns,
-        "functions": updated_functions,
+        "code_nodes": updated_code_nodes,
     }
 
 
@@ -110,12 +112,12 @@ def _build_embeddings(state: dict) -> tuple[list[dict], list[dict], list[dict]]:
     """
     table_pending = _collect_table_texts(state.get("tables", []))
     column_pending = _collect_column_texts(state.get("columns", []))
-    function_pending = _collect_function_texts(state.get("functions", []))
+    code_pending = _collect_code_texts(state.get("code_nodes", []))
 
     return (
         _encode_pairs(table_pending, "id"),
         _encode_pairs(column_pending, "id"),
-        _encode_pairs(function_pending, "id"),
+        _encode_pairs(code_pending, "id"),
     )
 
 
@@ -146,10 +148,10 @@ def _collect_column_texts(columns: list) -> list[tuple[str, str]]:
     return out
 
 
-def _collect_function_texts(functions: list) -> list[tuple[str, str]]:
-    """``Function`` 들의 (function_id, summary) 쌍. summary 빈 것은 제외."""
+def _collect_code_texts(code_nodes: list) -> list[tuple[str, str]]:
+    """``CodeNode`` 들의 (code_id, summary) 쌍. summary 빈 것은 제외."""
     out: list[tuple[str, str]] = []
-    for f in functions:
+    for f in code_nodes:
         summary = getattr(f, "summary", None)
         if not summary:
             continue

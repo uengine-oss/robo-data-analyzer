@@ -116,7 +116,7 @@ async def execute_run(
             log_info("run", "neo4j_ready", database=ENV.neo4j.database, wiped=True)
 
             cost_budget = CostBudget()
-            # 체크포인트(msgpack)가 직렬화하는 state dataclass(Function/Table/Rule/Calls 등)를
+            # 체크포인트(msgpack)가 직렬화하는 state dataclass(CodeNode/Table/Rule/Calls 등)를
             # 명시 allowlist 로 등록 — langgraph 가 "미등록 타입" 경고 없이 조용히 역직렬화하고,
             # 장래 STRICT 차단에도 안전. (=True 는 "전체허용+경고"라 근본 해결 아님.)
             checkpointer = MemorySaver(

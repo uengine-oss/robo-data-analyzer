@@ -9,7 +9,7 @@ system: |
 
   - id: 모듈 식별자
   - module_header: 모듈/파일 헤더 주석 + 어노테이션 (변경이력·작성자·날짜 등 노이즈 포함 가능)
-  - function_signatures: 이 모듈이 가진 함수 시그니처 목록 (이름·파라미터·반환형 — 본문 X)
+  - code_signatures: 이 모듈이 가진 함수 시그니처 목록 (이름·파라미터·반환형 — 본문 X)
 
   ## 출력
 
@@ -34,7 +34,7 @@ user_template: |
   module_header:
   {module_header}
 
-  function_signatures:
-  {function_signatures}
+  code_signatures:
+  {code_signatures}
 
   ▸ 이 모듈의 intent 를 출력하세요.

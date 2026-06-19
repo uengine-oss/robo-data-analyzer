@@ -1,7 +1,7 @@
 """stage2_extract_calls — Framework 호출 결정론 분류 → ``Calls`` 엣지.
 
 호출은 코드 목록 대조만으로 분류된다 (LLM·에이전트 0):
-프로젝트 함수 → internal / stdlib·프레임워크 → 드롭 / 그 외 → external.
+프로젝트 루틴 → internal / stdlib·프레임워크 → 드롭 / 그 외 → external.
 "미해결" 개념 없음 — ``unresolved_cases`` 에 아무것도 안 넣는다.
 """
 from __future__ import annotations
@@ -17,6 +17,7 @@ from shared.lang.call_classifier import classify_call_sites
 from shared.log.logger import log_info, log_warning
 from shared.neo4j.edges.calls import upsert_calls
 from shared.neo4j.neo4j_client import Neo4jClient
+from shared.workflow.graph_stream import emit_edges, emit_message
 
 _STEP = "step4.link_calls_by_name"
 
@@ -33,18 +34,23 @@ async def link_calls_by_name_step(state: dict, config: Optional[RunnableConfig] 
         return {"calls_edges": []}
 
     started = time.monotonic()
-    # framework 함수 = drop 대상 (SKILL). call_wrappers = 인자가 실제 호출 대상인
-    # 함수 (SKILL) — call_classifier 가 라인 본문에서 인자 추출 후 internal/external 분류.
+    # framework 루틴 = drop 대상 (SKILL). call_wrappers = 인자가 실제 호출 대상인
+    # 루틴 (SKILL) — call_classifier 가 라인 본문에서 인자 추출 후 internal/external 분류.
     scan_result = state.get("scan_result") or {}
-    framework_names = frozenset(scan_result.get("framework_functions") or [])
+    framework_names = frozenset(scan_result.get("framework_code_nodes") or [])
     call_wrappers = scan_result.get("call_wrappers") or []
     result = classify_call_sites(
-        call_sites, state.get("functions", []),
+        call_sites, state.get("code_nodes", []),
         framework_names=framework_names, wrappers=call_wrappers,
     )
 
     if neo is not None and result.edges:
         await upsert_calls(neo, result.edges)
+
+    # 라이브 스트림 — 호출 관계를 step 완료 즉시 화면으로.
+    stream = cfg.get("stream")
+    emit_edges(stream, result.edges)
+    emit_message(stream, f"✅ 호출 이름 분류 완료 — {len(result.edges)}건")
 
     # call_text / caller 누락 = AST 불완전 — 드롭하되 조용히 묻지 않는다.
     if result.dropped_incomplete:

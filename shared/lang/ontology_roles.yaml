@@ -1,33 +1,34 @@
 # 온톨로지 — 언어별 antlr node type 분류 + stereotype 풀.
 #
 # roles     : antlr node type → 역할 (Framework 전용 — java/c/python).
-#             shared/lang/ontology.py 의 role_of / primary_label_of / sub_label_of 가 읽음.
+#             shared/lang/ontology.py 의 role_of 가 읽음 (분류 전용 — 라벨엔 안 씀).
 # paradigm  : 언어 → oop / procedural.
 # framework / dbms : LLM stereotype 풀 — 풀에 없는 값은 빈 문자열로 강제(환각 차단).
 #
+# ★Neo4j 라벨 = 노드의 antlr type 그대로 (reader 가 node["type"] 직결). roles 는 "어느
+#   dataclass / 어느 엣지 / internal(노드X)"를 정하는 분류 전용 — 라벨 결정엔 안 쓴다.
 # ※ 실제 antlr-parser 출력 기준. Java 는 CONSTRUCTOR/ENUM/RECORD 안 박음,
 #   함수 내 지역변수 안 박음, PARAMETER 안 박음(시그니처 텍스트만).
-# ※ DBMS(PL/SQL)는 sub-label 없음 — 단일 라벨 + 속성. roles 는 Framework 전용.
 
 # ───────────────────────────────────────────────
 # 1. roles — node type → 역할 (Framework)
 # ───────────────────────────────────────────────
 roles:
-  module:                    # Neo4j MODULE 노드 (함수를 품는 컨테이너)
+  module:                    # 역할=컨테이너(그릇). 라벨은 antlr type(CLASS/INTERFACE/FILE)
     java:    [CLASS, INTERFACE]
     c:       [FILE]
     python:  [CLASS, FILE]
-  data_type:                 # Neo4j DATA_TYPE 노드 (함수 못 품 — C 구조체류)
+  data_type:                 # 역할=데이터타입(함수 못 품 — C 구조체류). 라벨=STRUCT/UNION/ENUM
     c:       [STRUCT, UNION, ENUM]
-  function:                  # Neo4j FUNCTION 노드
+  function:                  # 역할=함수(호출가능). 라벨=METHOD/FUNCTION
     java:    [METHOD]
     c:       [FUNCTION]
     python:  [METHOD, FUNCTION]
-  variable:                  # Neo4j VARIABLE 노드
+  variable:                  # 역할=변수. 라벨=FIELD/MEMBER/GLOBAL_VARIABLE/VARIABLE
     java:    [FIELD]
     c:       [FIELD, MEMBER, GLOBAL_VARIABLE]
     python:  [FIELD, VARIABLE]
-  constant:                  # Neo4j CONSTANT 노드
+  constant:                  # 역할=상수. 라벨=CONSTANT_FIELD/DEFINE
     java:    [CONSTANT_FIELD]
     c:       [DEFINE, CONSTANT_FIELD]
     python:  [CONSTANT_FIELD]

@@ -27,7 +27,7 @@ from analysis_flow.step4_linking.stage1_regex_grep.regex_table_linker import (
     verify_table_patterns,
 )
 from data_models.graph_edges import ReadsWrites
-from data_models.graph_nodes import Function, Table
+from data_models.graph_nodes import CodeNode, Table
 from shared.config.env_catalog import ENV
 from shared.llm.cost_budget import CostBudget
 from shared.llm.structured_agent import run_structured_agent
@@ -57,7 +57,7 @@ async def run_residual_loop(
     unresolved_cases: list[dict],
     scan_result: dict,
     project_root: Path,
-    functions: list[Function],
+    code_nodes: list[CodeNode],
     tables: list[Table],
     run_dir: Path,
     cost_budget: CostBudget,
@@ -87,7 +87,7 @@ async def run_residual_loop(
     # 기준선 — 잔여 파일을 결정론(scan) 패턴만으로 스캔. 결정론 단계가 이미 만든 엣지.
     # 루프가 추가한 "순-신규" 엣지를 가려내는 기준 (재적용 결과에서 이 집합을 뺀다).
     baseline = await RegexTableLinker().link(
-        project_root=project_root, functions=functions, tables=tables,
+        project_root=project_root, code_nodes=code_nodes, tables=tables,
         patterns=scan.table_access_patterns, ddl_transform=scan.ddl_transform,
         restrict_to_files=residual_files,
     )
@@ -106,7 +106,7 @@ async def run_residual_loop(
 
         found = await _find_pattern(
             sample=sample, scan=scan, ddl_transform=ddl_transform,
-            project_root=project_root, functions=functions, tables=tables,
+            project_root=project_root, code_nodes=code_nodes, tables=tables,
             run_dir=run_dir, cost_budget=cost_budget, round_no=round_no,
             stream_emit=stream_emit,
         )
@@ -118,7 +118,7 @@ async def run_residual_loop(
         # 코드 검증 — 검증 안 된 정규식은 안 쓴다. 잔여 파일 한정 (전체 재스캔 회피).
         verdict = await verify_table_patterns(
             patterns=found.table_access_patterns, ddl_transform=found.ddl_transform,
-            project_root=project_root, functions=functions, tables=tables,
+            project_root=project_root, code_nodes=code_nodes, tables=tables,
             restrict_to_files=residual_files,
         )
         if not verdict.ok:
@@ -132,7 +132,7 @@ async def run_residual_loop(
 
         # scan + 누적 extra 패턴을 잔여 파일에 재적용 → 엣지·잔여 갱신.
         applied = await RegexTableLinker().link(
-            project_root=project_root, functions=functions, tables=tables,
+            project_root=project_root, code_nodes=code_nodes, tables=tables,
             patterns=scan.table_access_patterns + extra_patterns,
             ddl_transform=ddl_transform, restrict_to_files=residual_files,
         )
@@ -171,7 +171,7 @@ async def _find_pattern(
     scan: ScanResult,
     ddl_transform: DdlTransform,
     project_root: Path,
-    functions: list[Function],
+    code_nodes: list[CodeNode],
     tables: list[Table],
     run_dir: Path,
     cost_budget: CostBudget,
@@ -186,7 +186,7 @@ async def _find_pattern(
     """
     tools = [
         *make_filesystem_tools(project_root).values(),
-        make_verify_table_regex_tool(project_root, functions, tables),
+        make_verify_table_regex_tool(project_root, code_nodes, tables),
     ]
     return await run_structured_agent(
         agent_name="residual",
@@ -208,7 +208,7 @@ def _build_residual_message(
     """잔여 샘플 + 이미 파악된 scan 맥락을 user 메시지로 직렬화 (재탐색 금지).
 
     KV 캐시 — 라운드 사이 prefix 적중 최대화 위해 [라운드 동일 영역] → [라운드 변동
-    영역] 순으로 배치. matched_skill / codebase_notes / framework_functions /
+    영역] 순으로 배치. matched_skill / codebase_notes / framework_code_nodes /
     ddl_tables 는 라운드 사이 동일 → 앞. confirmed_patterns / current_ddl_transform /
     residual_cases 는 라운드마다 변경 → 뒤.
     """
@@ -221,7 +221,7 @@ def _build_residual_message(
         "codebase_notes:",
         scan.codebase_notes or "(없음)",
         "",
-        f"framework_functions: {', '.join(scan.framework_functions) or '(없음)'}",
+        f"framework_code_nodes: {', '.join(scan.framework_code_nodes) or '(없음)'}",
         "",
         "ddl_tables (verify_table_regex 해소 기준):",
         ddl_tables,

@@ -16,7 +16,7 @@ TOOL_MESSAGES: dict[str, str] = {
     "grep":              "{pattern} 정규식 검색 중...",
     "read_file":         "{path} 파일 읽는 중...",
     "read_file_range":   "{path} 의 {anchor} 라인 정밀 읽는 중...",
-    "list_functions":    "{file} 의 함수 목록 추출 중...",
+    "list_code_nodes":    "{file} 의 코드노드 목록 추출 중...",
     "list_skills":       "사용 가능한 SKILL 목록 조회 중...",
     "read_skill":        "{name} SKILL 본문 읽는 중...",
     "write_todos":       "할 일 목록 갱신 중...",

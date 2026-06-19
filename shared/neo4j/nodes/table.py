@@ -3,7 +3,7 @@
 식별 키: ``id = "db.schema.name"`` 단일. ``db`` / ``schema`` / ``name`` 은 보조 속성.
 
 description          = DDL COMMENT ON / 카탈로그 1차 설명.
-analyzed_description = analyze_function 3분할 합성 설명 (enrich step 이 SET).
+analyzed_description = analyze_code 3분할 합성 설명 (enrich step 이 SET).
 """
 from __future__ import annotations
 

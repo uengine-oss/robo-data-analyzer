@@ -1,17 +1,17 @@
-"""Example Mapping 단일 빌더 — analyze_function 3분할 결과 → EM 그래프.
+"""Example Mapping 단일 빌더 — analyze_code 3분할 결과 → EM 그래프.
 
 Framework / DBMS **공통 단일 빌더**. 원본은 strategy 별 anchor(Framework=FUNCTION /
 DBMS=PROCEDURE)가 달라 분기가 있었으나, refact 는 M5 에서 DBMS range 도 FUNCTION 으로
 통일 → anchor 가 ``FUNCTION`` 하나 → 분기조차 불필요.
 
-흐름: 분석된 Function 들의 ``extra["rules" / "examples" / "questions"]``
+흐름: 분석된 CodeNode 들의 ``extra["rules" / "examples" / "questions"]``
 → Rule(공유)·Example·Question 노드 + HAS_RULE / HAS_EXAMPLE / HAS_QUESTION /
   NEXT / BRANCH / AFFECTS_TABLE 엣지. 결정론 — LLM 0회.
 
-Rule 공유: 같은 statement 는 ``rule_hash`` 가 같아 1 노드 — 함수 간 규칙을 공유한다.
+Rule 공유: 같은 statement 는 ``rule_hash`` 가 같아 1 노드 — 코드노드 간 규칙을 공유한다.
 per-function 정보(local rule_id / flow_id / coupled_domains)는 ``HAS_RULE`` 엣지 속성에.
 
-응답 형식 단일 진실 ([[function_analysis_output]] RulesExamplesOutput):
+응답 형식 단일 진실 ([[code_analysis_output]] RulesExamplesOutput):
 - rules:    {rule_id, statement, flow_id, coupled_domains}
 - examples: {rule_id, description, given, when, then, affected_tables}
 - questions:{text, reason}
@@ -30,7 +30,7 @@ from data_models.graph_edges import (
     HasRule,
     Next,
 )
-from data_models.graph_nodes import Example, Function, Question, Rule
+from data_models.graph_nodes import Example, CodeNode, Question, Rule
 
 
 @dataclass
@@ -53,20 +53,20 @@ def rule_hash(statement: str) -> str:
     return hashlib.md5(normalized.encode("utf-8")).hexdigest()[:12]
 
 
-def build_example_mapping(functions: list[Function]) -> ExampleMappingResult:
-    """분석된 Function 들 → Example Mapping 노드·엣지 (결정론, LLM 0)."""
+def build_example_mapping(code_nodes: list[CodeNode]) -> ExampleMappingResult:
+    """분석된 CodeNode 들 → Example Mapping 노드·엣지 (결정론, LLM 0)."""
     result = ExampleMappingResult()
     rule_by_hash: dict[str, Rule] = {}
-    for fn in functions:
+    for fn in code_nodes:
         _build_one(fn, result, rule_by_hash)
     result.rules = list(rule_by_hash.values())
     return result
 
 
 def _build_one(
-    fn: Function, result: ExampleMappingResult, rule_by_hash: dict[str, Rule],
+    fn: CodeNode, result: ExampleMappingResult, rule_by_hash: dict[str, Rule],
 ) -> None:
-    """함수 1개의 rules/examples/questions → 노드·엣지 누적."""
+    """코드노드 1개의 rules/examples/questions → 노드·엣지 누적."""
     extra = fn.extra or {}
     flow_by_rid, hash_by_rid = _collect_rules(
         fn.id, extra.get("rules") or [], result, rule_by_hash,

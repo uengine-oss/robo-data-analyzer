@@ -8,7 +8,7 @@ Plan §4 M2 명세:
 - ``scanner_categories``: 카테고리당 최대 50개
 
 ★ 제거: ``representative_file`` (자바 식 가정 — 범용 X. Agent 가 도구로 직접 탐색)
-★ 제거: 함수 시그니처 인덱스 / Import 빈도 (Agent 가 ``list_functions`` / ``grep`` 로 직접 봄)
+★ 제거: 코드노드 시그니처 인덱스 / Import 빈도 (Agent 가 ``list_code_nodes`` / ``grep`` 로 직접 봄)
 """
 from __future__ import annotations
 

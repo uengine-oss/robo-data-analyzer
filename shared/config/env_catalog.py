@@ -107,7 +107,7 @@ class Neo4jSettings:
 
 @dataclass(frozen=True)
 class PipelineSettings:
-    """ROBO_PIPELINE_* — 동시성 / 배치 / 큰 함수 임계."""
+    """ROBO_PIPELINE_* — 동시성 / 배치 / 큰 코드노드 임계."""
     max_concurrency: int = field(default_factory=lambda: _getenv_int("ROBO_PIPELINE_MAX_CONCURRENCY", 30))
     file_concurrency: int = field(default_factory=lambda: _getenv_int("ROBO_PIPELINE_FILE_CONCURRENCY", 4))
     big_context_threshold_tokens: int = field(

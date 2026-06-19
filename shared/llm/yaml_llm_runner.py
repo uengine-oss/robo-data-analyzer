@@ -2,10 +2,10 @@
 
 용도: ``prompts/<strategy>/<name>.yaml`` 의 룰 로딩 + LLM 호출 + Pydantic 응답.
 사용처:
-- ``analysis_flow/step6_analyze_function`` (function_summary / function_table_insights /
-  function_rules_examples)
+- ``analysis_flow/step6_analyze_code`` (code_summary / code_table_insights /
+  code_rules_examples)
 - ``analysis_flow/step7_post_processing`` (module_summary / table_description)
-- ``analysis_flow/step5_build_context/large_function_one_liner``
+- ``analysis_flow/step5_build_context/large_code_one_liner``
 
 yaml 형식 (단순)::
 
@@ -126,7 +126,7 @@ async def run_yaml_rule(
 
     Args:
         prompts_dir: ``strategy.prompts_dir`` (예: ``Path("prompts/framework")``).
-        rule_name: yaml 파일 이름 (확장자 X — "function_summary" 식).
+        rule_name: yaml 파일 이름 (확장자 X — "code_summary" 식).
         user_values: user_template 의 ``{placeholder}`` 치환 값.
         response_model: 응답 Pydantic 클래스.
         budget: ``CostBudget`` — 호출 후 ``add_sync(cost)``. 임계 초과 시 raise.

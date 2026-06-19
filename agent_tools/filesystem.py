@@ -127,7 +127,7 @@ def make_filesystem_tools(root: Path) -> dict:
         """정규식으로 파일 내용 검색 — 매칭 라인 출력.
 
         **언제 사용**:
-        - 의심 매크로 / 함수명 hit 수 확인 (≥ 3 hits 면 진짜 / 0 이면 이름 틀림).
+        - 의심 매크로 / 이름 hit 수 확인 (≥ 3 hits 면 진짜 / 0 이면 이름 틀림).
         - DB 접근 wrapper / 어노테이션 단서 (`@Entity`, `findBy`, `mpfm` 등).
 
         **인자**:
@@ -183,7 +183,7 @@ def make_filesystem_tools(root: Path) -> dict:
         - 비함수 파일 (imports / `#include` / 매니페스트 / 설정) 앞부분 훑기.
         - `pom.xml` / `package.json` / `*.h` / `application.yml` 등.
 
-        **함수 본문은 X** — 큰 함수는 잘림. 함수 본문 정독은 `list_functions` 로
+        **본문은 X** — 큰 코드노드는 잘림. 본문 정독은 `list_code_nodes` 로
         위치 확인 후 `read_file_range(path, anchor)`.
 
         **인자**:
@@ -220,10 +220,10 @@ def make_filesystem_tools(root: Path) -> dict:
         """파일의 `anchor` 라인 **위 5줄 + anchor + 아래 5줄 = 총 11줄** 읽기.
 
         `anchor` 결정:
-        - `list_functions(file)` 결과 함수의 `start_line` 들.
+        - `list_code_nodes(file)` 결과 코드노드의 `start_line` 들.
         - `grep` 결과의 라인 번호.
 
-        **★ 같은 anchor 연속 호출 X** — 큰 함수는 시작 / 중간 / 끝 여러 anchor 로.
+        **★ 같은 anchor 연속 호출 X** — 큰 코드노드는 시작 / 중간 / 끝 여러 anchor 로.
 
         Args:
             path: 파일 경로. 분석 대상 폴더 안이어야 한다.

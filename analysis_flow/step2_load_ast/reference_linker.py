@@ -1,9 +1,9 @@
 """REFERENCES / INIT_BY 엣지 — 결정론 식별자 매칭 (같은 모듈 + 모듈 너머).
 
-antlr JSON 에 "변수 참조" 노드가 없으므로, 함수 본문 텍스트의 식별자 토큰을
+antlr JSON 에 "변수 참조" 노드가 없으므로, 본문 텍스트의 식별자 토큰을
 Variable/Constant 이름과 매칭한다. LLM 0회 — 순수 결정론.
 
-- REFERENCES: 함수 본문이 참조하는 변수/상수 → Function → 그 노드.
+- REFERENCES: 본문이 참조하는 변수/상수 → CodeNode → 그 노드.
 - INIT_BY:    변수/상수 정의 시 참조하는 다른 변수/상수 → (Variable|Constant) → 출처.
              "정의 시 참조" 의미: ``=`` 우변뿐 아니라 변수 size 표현식
              (``[LEN +1]``) · 상수 식 (``#define B (A+1)``) 모두 포함.
@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from data_models.graph_edges import InitBy, References
-from data_models.graph_nodes import Constant, Function, Variable
+from data_models.graph_nodes import Constant, CodeNode, Variable
 from shared.lang.source_extension import EXT_TO_LANG
 from shared.log.logger import log_info
 from shared.source_file_cache import SourceFileCache
@@ -61,12 +61,12 @@ class _Scope(NamedTuple):
 
 
 def link_references(
-    functions: list[Function],
+    code_nodes: list[CodeNode],
     variables: list[Variable],
     constants: list[Constant],
     import_refs: list[dict],
 ) -> tuple[list[References], list[InitBy]]:
-    """함수 본문 → REFERENCES, 변수/상수 ``initValue`` → INIT_BY (같은 모듈 + import 한 모듈).
+    """본문 → REFERENCES, 변수/상수 ``initValue`` → INIT_BY (같은 모듈 + import 한 모듈).
 
     INIT_BY 는 변수+상수 모두 출발 가능 — 정의 시 외부 토큰 참조하면 잡힌다.
     """
@@ -74,7 +74,7 @@ def link_references(
     modules_by_file, basename_index = _file_indexes(variables, constants)
     scopes = _build_scopes(import_refs, targets, modules_by_file, basename_index)
     return (
-        _link_function_bodies(functions, targets, scopes, SourceFileCache()),
+        _link_code_bodies(code_nodes, targets, scopes, SourceFileCache()),
         _link_init_values(variables, constants, targets, scopes),
     )
 
@@ -276,16 +276,16 @@ def _c_names(
 
 # ── 링킹 (Pass 1 + Pass 2) ──────────────────────────────────
 
-def _link_function_bodies(
-    functions: list[Function], targets: _Targets,
+def _link_code_bodies(
+    code_nodes: list[CodeNode], targets: _Targets,
     scopes: dict[str, _Scope], cache: SourceFileCache,
 ) -> list[References]:
-    """함수 본문 라인 스캔 — 같은 모듈(Pass 1) + import 한 모듈(Pass 2) 매칭.
+    """본문 라인 스캔 — 같은 모듈(Pass 1) + import 한 모듈(Pass 2) 매칭.
 
-    함수당 타겟별 1개 (첫 등장 라인을 evidence 로).
+    코드노드당 타겟별 1개 (첫 등장 라인을 evidence 로).
     """
     out: list[References] = []
-    for fn in functions:
+    for fn in code_nodes:
         own = targets.get(fn.owner_id) or {}
         scope = scopes.get(fn.file_path)
         if not own and scope is None:
@@ -296,11 +296,11 @@ def _link_function_bodies(
         for offset, raw in enumerate(lines[start:fn.end_line]):
             text = _strip(raw)
             evidence = start + offset + 1
-            for tid, label in _bare_hits(text, own, seen):
-                out.append(References(fn.id, tid, label, evidence))
+            for tid, _ in _bare_hits(text, own, seen):
+                out.append(References(fn.id, tid, evidence))
             if scope is not None:
-                for tid, label in _pass2_hits(text, scope, targets, seen):
-                    out.append(References(fn.id, tid, label, evidence))
+                for tid, _ in _pass2_hits(text, scope, targets, seen):
+                    out.append(References(fn.id, tid, evidence))
     return out
 
 
@@ -314,7 +314,7 @@ def _link_init_values(
     (``[LEN +1]``) · ``=`` 우변 · 상수 식 모두 포함. reader 는 그 텍스트만 본다.
     """
     out: list[InitBy] = []
-    for node, from_label, from_id, init_text in _init_iter(variables, constants):
+    for node, from_id, init_text in _init_iter(variables, constants):
         if not init_text:
             continue
         text = _strip(init_text)
@@ -324,21 +324,21 @@ def _link_init_values(
         hits = _bare_hits(text, own, seen)
         if scope is not None:
             hits += _pass2_hits(text, scope, targets, seen)
-        for source_id, source_label in hits:
-            out.append(InitBy(from_id, from_label, source_id, source_label))
+        for source_id, _ in hits:
+            out.append(InitBy(from_id, source_id))
     return out
 
 
 def _init_iter(variables: list[Variable], constants: list[Constant]):
-    """(node, from_label, from_id, init_text) 4-튜플 순회 — 변수+상수 통합 처리용.
+    """(node, from_id, init_text) 3-튜플 순회 — 변수+상수 통합 처리용.
 
-    필드명이 모델별로 다르므로 (Variable.init_value vs Constant.value · variable_id
-    vs constant_id) 분기 한 곳에 가둔다 — _link_init_values 본문은 단일 흐름 유지.
+    필드명이 모델별로 다르므로 (Variable.init_value vs Constant.value) 분기 한 곳에
+    가둔다 — _link_init_values 본문은 단일 흐름 유지.
     """
     for v in variables:
-        yield v, "VARIABLE", v.id, v.init_value
+        yield v, v.id, v.init_value
     for c in constants:
-        yield c, "CONSTANT", c.id, c.value
+        yield c, c.id, c.value
 
 
 def _bare_hits(

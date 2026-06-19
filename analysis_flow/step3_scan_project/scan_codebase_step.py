@@ -23,6 +23,7 @@ from analysis_flow.step3_scan_project.scanner_input_collector import (
 from shared.llm.cost_budget import CostBudget
 from shared.llm.middleware.call_limit import ModelCallLimitExceeded
 from shared.log.logger import log_error, log_info, log_warning
+from shared.workflow.graph_stream import emit_message
 
 _STEP = "step3.scan"
 
@@ -58,7 +59,7 @@ async def scan_codebase_step(state: dict, config: Optional[RunnableConfig] = Non
             scanner_input=scanner,
             run_dir=run.run_dir,
             cost_budget=cost_budget,
-            functions=state.get("functions", []),
+            code_nodes=state.get("code_nodes", []),
             tables=state.get("tables", []),
             stream_emit=stream.emit if stream is not None else None,
         )
@@ -75,6 +76,10 @@ async def scan_codebase_step(state: dict, config: Optional[RunnableConfig] = Non
 
     result_dict = result.model_dump()
     _warn_if_call_wrappers_missing(result_dict)
+    emit_message(
+        stream,
+        f"✅ 코드베이스 스캔 완료 — 패턴 {len(result_dict.get('table_access_patterns') or [])}",
+    )
     log_info(
         _STEP, "done",
         matched_skill=result_dict.get("matched_skill"),

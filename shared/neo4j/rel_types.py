@@ -9,29 +9,29 @@
 from __future__ import annotations
 
 # 코드 구조 (antlr JSON 에서 도출)
-CALLS = "CALLS"              # Function → Function
-PARENT_OF = "PARENT_OF"      # Function → nested Function (DBMS range 트리)
-HAS_FUNCTION = "HAS_FUNCTION"               # Module → Function
-HAS_VARIABLE = "HAS_VARIABLE"               # Module → Variable
-HAS_MEMBER = "HAS_MEMBER"                   # DataType → Variable (struct 멤버)
-BELONGS_TO_PACKAGE = "BELONGS_TO_PACKAGE"   # Module → Package
-REFERENCES = "REFERENCES"                   # Function → Variable / Constant
-INIT_BY = "INIT_BY"                         # Variable → 출처 노드 (변수·상수)
+CALLS = "CALLS"              # CodeNode → CodeNode
+PARENT_OF = "PARENT_OF"      # 부모 노드 → 중첩 자식 노드 (AST 트리 — 구문 중첩·중첩함수)
+HAS_MEMBER = "HAS_MEMBER"    # 그릇(FILE/CLASS/PACKAGE/DataType) → 멤버 (루틴/변수/상수/필드)
+                             #   "가지다" — 멤버 종류는 노드 라벨로 구분. 구문은 멤버 아님(PARENT_OF/NEXT 만).
+REFERENCES = "REFERENCES"    # CodeNode → Variable / Constant
+INIT_BY = "INIT_BY"          # Variable → 출처 노드 (변수·상수)
 
 # 코드 ↔ DB (linking 에서 도출)
-READS = "READS"              # Function → Table
-WRITES = "WRITES"            # Function → Table
+READS = "READS"              # CodeNode → Table
+WRITES = "WRITES"            # CodeNode → Table
+
+# 네임스페이스 소속 (DDL: Table → Schema / AST: 그릇 → Package·Folder)
+BELONGS_TO = "BELONGS_TO"    # child → 네임스페이스 (Table→Schema, FILE/CLASS→Package)
 
 # DB 구조 (DDL 에서 도출)
 HAS_COLUMN = "HAS_COLUMN"    # Table → Column
-BELONGS_TO = "BELONGS_TO"    # Table → Schema
 FK = "FK"                    # Table → Table
 
-# Example Mapping (analyze_function 3분할 → EM 그래프)
-HAS_RULE = "HAS_RULE"            # Function → Rule (per-function 정보는 이 엣지 속성)
+# Example Mapping (analyze_code 3분할 → EM 그래프)
+HAS_RULE = "HAS_RULE"            # CodeNode → Rule (per-function 정보는 이 엣지 속성)
 HAS_EXAMPLE = "HAS_EXAMPLE"      # Rule → Example
-HAS_QUESTION = "HAS_QUESTION"    # Function → Question
-NEXT = "NEXT"                    # Rule → Rule (메인 흐름 순서)
+HAS_QUESTION = "HAS_QUESTION"    # CodeNode → Question
+NEXT = "NEXT"                    # 실행 순서(흐름): 구문→구문 (DBMS, edges/next.py) · Rule→Rule (EM, edges/rule_flow.py)
 BRANCH = "BRANCH"                # Rule → Rule (분기)
 AFFECTS_TABLE = "AFFECTS_TABLE"  # Example → Table
 

@@ -2,12 +2,12 @@
 
 설계
 ─────────────
-LangGraph step 안 "지금 누구를 처리 중" (함수 / 모듈 / 테이블 / split) 진행도는
+LangGraph step 안 "지금 누구를 처리 중" (코드노드 / 모듈 / 테이블 / split) 진행도는
 비즈니스 함수 시그니처를 어지럽히면 안 된다 (stream 인자 chain 금지). 대신:
 
 1. **step 진입 시 1 회** ``with step_processing_scope(step, stream)`` —
    contextvars 에 stream + step 박음 (그 안 모든 ``track_processing`` 이 자동 캐치).
-2. **각 처리 단위 1 줄** ``async with track_processing("Function", fn_id)`` —
+2. **각 처리 단위 1 줄** ``async with track_processing("CodeNode", fn_id)`` —
    start/done/failed 자동 emit. 비즈니스 함수는 stream 인자 모름.
 
 영역 분리 (기존 NDJSON 이벤트와 중복 0)
@@ -16,7 +16,7 @@ LangGraph step 안 "지금 누구를 처리 중" (함수 / 모듈 / 테이블 / 
 | ``tool_event``          | Agent 도구 호출 (Scan/Residual 미들웨어)    |
 | ``todo_update``         | Agent todo (미들웨어)                      |
 | ``node_event`` / ``relationship_event`` | 그래프 결과 노드/엣지 (완료) |
-| **``processing_event`` (이 모듈)** | step 안 처리 단위 진행 (함수 / 모듈 / 테이블 / split) |
+| **``processing_event`` (이 모듈)** | step 안 처리 단위 진행 (코드노드 / 모듈 / 테이블 / split) |
 
 contextvars 안전성
 ──────────────────
@@ -55,14 +55,14 @@ def step_processing_scope(step: str, stream: Optional[NDJSONStream]):
     """LangGraph step 진입 시 1 회 set — 그 블록 안 모든 ``track_processing`` 이 자동 사용.
 
     Args:
-        step: 영역명 — ``"step6.analyze_function"`` / ``"step7.summarize_module"`` 등.
+        step: 영역명 — ``"step6.analyze_code"`` / ``"step7.summarize_module"`` 등.
         stream: NDJSONStream. CLI 단독 (stream 미연결) 이면 None — ``track_processing`` 이 no-op.
 
     Usage::
 
         async def my_step(state, config):
             cfg = step_config(config)
-            with step_processing_scope("step6.analyze_function", cfg.get("stream")):
+            with step_processing_scope("step6.analyze_code", cfg.get("stream")):
                 # 이 블록 안 모든 track_processing 이 자동으로 step + stream 캐치
                 ...
 
@@ -82,16 +82,16 @@ async def track_processing(entity_kind: str, entity_id: str, *, sub_action: str 
     """처리 단위 wrap — start emit → block 실행 → done/failed 자동 emit.
 
     Args:
-        entity_kind: 처리 대상 종류 — ``"Function"`` / ``"Module"`` / ``"Table"`` / ``"Split"``.
-        entity_id: 처리 대상 식별자 — function_id / module_id / table_fqn 등.
+        entity_kind: 처리 대상 종류 — ``"CodeNode"`` / ``"Module"`` / ``"Table"`` / ``"Split"``.
+        entity_id: 처리 대상 식별자 — code_id / module_id / table_fqn 등.
         sub_action: 세부 액션 (선택) — ``"split_summary"`` / ``"split_rules"`` / ``"one_liner"`` 등.
 
     Usage::
 
-        async with track_processing("Function", fn_id):
-            return await analyze_function_three_split(...)
+        async with track_processing("CodeNode", fn_id):
+            return await analyze_code_three_split(...)
 
-        async with track_processing("Function", fn_id, sub_action="split_rules"):
+        async with track_processing("CodeNode", fn_id, sub_action="split_rules"):
             return await run_yaml_rule(...)
 
     예외 발생 시 ``failed`` emit 후 re-raise (silent 차단 X).

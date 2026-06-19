@@ -1,7 +1,7 @@
 """프로젝트 폴더의 파일 확장자로 strategy(framework / dbms) 자동 감지.
 
 CLI 의 strategy 자동 결정 단일 진실 — `analyze_data_dir.py` / `baseline_runner.py`
-두 곳에서 같이 import. 함수가 두 곳에 따로 있으면 drift 위험.
+두 곳에서 같이 import. 루틴이 두 곳에 따로 있으면 drift 위험.
 """
 from __future__ import annotations
 

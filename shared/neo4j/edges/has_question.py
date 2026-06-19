@@ -1,4 +1,4 @@
-"""HAS_QUESTION 엣지 — Function → Question (Example Mapping)."""
+"""HAS_QUESTION 엣지 — CodeNode → Question (Example Mapping)."""
 from __future__ import annotations
 
 from typing import Iterable
@@ -16,6 +16,6 @@ MERGE (node)-[:{HAS_QUESTION}]->(q)
 
 
 async def upsert_has_question(client: Neo4jClient, edges: Iterable[HasQuestion]) -> None:
-    """Function → Question 엣지."""
+    """CodeNode → Question 엣지."""
     items = [{"source_id": e.source_id, "target_id": e.target_id} for e in edges]
     await client.run_batch_unwind(_UPSERT_QUERY, items)

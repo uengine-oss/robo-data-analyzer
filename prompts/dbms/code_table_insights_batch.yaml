@@ -1,0 +1,81 @@
+## code_table_insights_batch (dbms 분할 2) — 배치 안 각 DML 노드의 테이블 role + 컬럼 의미.
+## 공통 system + user_template 입력값은 [[_common.yaml]] 가 단일 진실 (extends).
+## ★ 이 분할은 테이블을 건드리는 DML 노드만 배치로 들어온다 (비-DML 노드는 호출자가 제외).
+extends: _common
+user_template_specific: |
+  # ════════════════════════════════════════════════════════════════
+  # [이 분할 고유 지침] — 분할 2: 테이블별 사용 양상 (배치 안 각 노드)
+  # ════════════════════════════════════════════════════════════════
+
+  ## 분할 책임 카드
+
+  - **이 분할이 하는 일**: 각 노드마다 `table_insights` 배열 — 그 노드의 `reads`/`writes`
+    각 테이블에 대해 사용 역할(`role`) + 본문 등장 컬럼의 비즈니스 의미(`columns`).
+  - **이 분할이 안 하는 일**: 노드 의미·역할(→분할 1) / 비즈니스 규칙·시나리오·질문(→분할 3).
+  - **입력**: 이 배치 노드는 모두 **DML(테이블 접근) 노드** — 각자 reads/writes 가 있음.
+  - **출력**: `nodes` 배열 — 입력 `### 노드 <key>` 마다 1 항목 (`node_key` echo + `table_insights`).
+    ```
+    BatchTableInsightsItem {
+      node_key: "<start>-<end>",
+      table_insights: [
+        { table: "db.schema.RDD01DD_TB", role: "upsert",
+          columns: [ { name:"VAL", description:"일 용수공급 수량(집계 결과)" },
+                     { name:"LOG_TIME", description:"수집 일시 키" } ] }
+      ]
+    }
+    ```
+
+  ## 0. 작성 절대 원칙 (모든 영역 공통)
+  - **0.1 추측 컬럼 절대 X**(공통 단계 3): 본문에 직접 등장한 컬럼만. "자동 채워질 것 같은"
+    컬럼 추측 X → 모호하면 분할 3 questions 로 이월.
+  - **0.2 코드 식별자 X**(공통 단계 1): 컬럼명 자체는 본문 그대로 보존, 단 `description`
+    자연어에는 변수·프로시저·커서명 같은 코드 토큰 박지 X.
+  - **0.3 주석 환각 차단**(공통 단계 7): `usage` 결정은 실제 SQL 위치가 진실. 주석 무시.
+  - **0.4 빈값**: reads/writes 모두 비면 `table_insights: []`. 테이블은 있지만 본문 컬럼
+    등장 0 이면 그 테이블 엔트리는 `columns: []`(역할만). 추측 컬럼 X.
+
+  ## [1] role — 테이블별 1개 (허용 풀 6)
+  - `READ-only` — SELECT 만, 조회 후 분기/반환.
+  - `WRITE-only` — INSERT/UPDATE/DELETE 만, 후속 SELECT 없음.
+  - `WRITE-then-READ` — 쓰고 같은 트랜잭션서 다시 SELECT(시퀀스·자동컬럼 회수).
+  - `append-only` — INSERT 만, 갱신·삭제 X(이력/로그).
+  - `lookup` — SELECT 후 코드/상태값을 결정에 사용(단순 표시 X).
+  - `upsert` — INSERT-or-UPDATE(MERGE / ON CONFLICT). ★PL/SQL MERGE 가 대표.
+
+  ### 결정 트리
+  ```
+  INSERT 만, 같은 테이블 UPDATE/DELETE 없음? → append-only
+  INSERT/UPDATE/DELETE 후 같은 트랜잭션서 같은 테이블 SELECT? → WRITE-then-READ
+  INSERT-or-UPDATE(MERGE)? → upsert
+  SELECT 만 + 결과를 분기·계산·매핑? → lookup
+  SELECT 만 + 결과 그대로 반환? → READ-only
+  INSERT/UPDATE/DELETE 만 + 후속 SELECT 없음? → WRITE-only
+  ```
+  ### 안티패턴
+  - X: SELECT+반환만인데 `lookup` → O: `READ-only`.
+  - X: INSERT 만인데 `WRITE-then-READ` → O: `append-only`/`WRITE-only`.
+  - X: UPDATE 한 번인데 `upsert`(MERGE 아님) → O: `WRITE-only`.
+
+  ## [2] columns — 테이블별 N개 (본문 등장 컬럼만)
+  ### 등장 위치
+  - raw SQL SELECT 절 / WHERE 절 / SET 절 / VALUES 절 / JOIN ON 절.
+  ### 각 컬럼 필드 3개
+  - `name` — DDL 컬럼명 정확히(추측 X, 대소문자 본문대로).
+  - `description` — 비즈니스 의미 한 줄. **4가지 준수**: ①DDL 타입 X(`VARCHAR2(20)` 같은
+    정의 X) ②코드 토큰 X ③동어반복 X("X를 저장하는 컬럼" 금지) ④추론 불가 시 빈값 X /
+    등장 맥락만 + 모호점은 분할 3 questions.
+  - (필드는 name·description 둘뿐 — 사용위치 usage 는 소비처 미사용이라 응답에서 제외.)
+  ### description 좋은 예
+  - `STATUS` → "처리 상태 코드 ('A'=활성 / 'C'=취소 / 'P'=대기)"
+  - `SETTLE_DATE` → "정산일자 (YYYYMMDD, 마감 후 확정)"
+  - `VAL` → "수집 구간 용수공급 수량 (집계 결과)"
+  ### 안티패턴
+  - X: description="VARCHAR2(20) 컬럼"(DDL 타입) → O: "처리 상태 코드 ('A'/'C'/'P')".
+  - X: "X를 저장하는 컬럼"(동어반복) → O: "처리 상태 코드 — 흐름 분기에 사용".
+  - X: SQL 미등장 `CREATED_AT` 추측 추가 → O: 본문 없는 컬럼 출력 X, 의문은 분할 3 questions.
+
+  # ════════════════════════════════════════════════════════════════
+  # [응답 형식 마무리]
+  # ════════════════════════════════════════════════════════════════
+  # BatchTableInsightsOutput.nodes — 입력 각 노드마다 BatchTableInsightsItem 1개.
+  # node_key echo. 이번 호출은 table_insights 만 (의미·규칙은 다른 분할). 공백 폭주 금지.

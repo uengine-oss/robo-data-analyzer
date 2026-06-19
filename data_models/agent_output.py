@@ -64,7 +64,7 @@ class OpMapping(BaseModel):
 
 
 class TableAccessPattern(BaseModel):
-    """함수 → 테이블 접근 정규식 매칭 패턴 (Linking 1 단계 결정론 grep 용).
+    """코드노드 → 테이블 접근 정규식 매칭 패턴 (Linking 1 단계 결정론 grep 용).
 
     ``call_regex`` 의 named group:
     - ``<op_token>``: 프레임워크 raw 매치 토큰 (예: 's', 'findOne', 'SELECT')
@@ -88,11 +88,11 @@ class DdlTransform(BaseModel):
 
 
 # ───────────────────────────────────────────────────────────────
-# 호출 wrapper — 인자(이름 string)가 실제 호출 대상인 함수
+# 호출 wrapper — 인자(이름 string)가 실제 호출 대상인 코드노드
 # ───────────────────────────────────────────────────────────────
 #
-# wrapper 자체는 ``framework_functions`` 에 들어가 호출 그래프에서 드롭되지만,
-# 그 인자가 실제 호출 타겟(다른 함수/모듈)인 경우 — 그 인자를 추출해 ``Calls`` 엣지로
+# wrapper 자체는 ``framework_code_nodes`` 에 들어가 호출 그래프에서 드롭되지만,
+# 그 인자가 실제 호출 타겟(다른 코드노드/모듈)인 경우 — 그 인자를 추출해 ``Calls`` 엣지로
 # 정합한다. 별도 카테고리/별도 step 이 아니라 ``call_classifier`` 안에서 처리 — 호출은
 # 한 영역 (Calls 엣지) 으로 단일화.
 #
@@ -103,7 +103,7 @@ class DdlTransform(BaseModel):
 
 
 class CallWrapper(BaseModel):
-    """호출 wrapper 명시 — wrapper 함수 이름 + 인자 추출 위치.
+    """호출 wrapper 명시 — wrapper 이름 + 인자 추출 위치.
 
     SKILL 의 ``## 호출 wrapper`` 절 본문을 **그대로 옮겨 담는다** (matched SKILL 에
     절이 있으면 반드시 채움). 누락 시 wrapper 호출이 호출 그래프에서 사라짐 (framework
@@ -111,13 +111,13 @@ class CallWrapper(BaseModel):
     (JPA/MyBatis/OFBiz 등은 wrapper 없음), ProFrame 류는 반드시 옮겨야 함.
 
     ``call_classifier`` 가 wrapper 호출을 만나면 그 라인의 본문에서 인자를 추출해
-    실제 호출 대상으로 분류한다 (functions 안에 있으면 internal, 없으면 external).
+    실제 호출 대상으로 분류한다 (code_nodes 안에 있으면 internal, 없으면 external).
     """
     wrapper: str = Field(
         ...,
         description=(
             "wrapper 함수 이름 — SKILL 의 ``## 호출 wrapper`` yaml 의 ``wrapper`` 값 "
-            "그대로 (예: ProFrame ``mpfm_dlcall``). framework_functions 에도 동시 포함되지만 "
+            "그대로 (예: ProFrame ``mpfm_dlcall``). framework_code_nodes 에도 동시 포함되지만 "
             "인자가 진짜 호출 대상이라 별도 분류."
         ),
     )
@@ -144,11 +144,11 @@ class ScanResult(BaseModel):
         default_factory=lambda: DdlTransform(ddl_naming_rule="as_is")
     )
 
-    # 호출 wrapper — 인자가 실제 호출 대상인 함수 (SKILL 이 정의). 없으면 빈배열.
+    # 호출 wrapper — 인자가 실제 호출 대상인 코드노드 (SKILL 이 정의). 없으면 빈배열.
     # ``call_classifier`` 가 wrapper 호출을 만나면 인자를 추출해 Calls 엣지로 정합.
     call_wrappers: list[CallWrapper] = Field(default_factory=list)
 
-    # 분석용 텍스트 (step6_analyze_function 컨텍스트 + 잔여 패턴 루프 prefix)
+    # 분석용 텍스트 (step6_analyze_code 컨텍스트 + 잔여 패턴 루프 prefix)
     codebase_notes: str = Field(
         "",
         description=(
@@ -160,8 +160,8 @@ class ScanResult(BaseModel):
         ),
     )
 
-    # 호출 분류용 — 프레임워크/런타임 함수 이름 (skill 문서에서 읽음). 호출 그래프에서 드롭.
-    framework_functions: list[str] = Field(
+    # 호출 분류용 — 프레임워크/런타임 루틴 이름 (skill 문서에서 읽음). 호출 그래프에서 드롭.
+    framework_code_nodes: list[str] = Field(
         default_factory=list,
         description="프레임워크/런타임 함수 이름 (업무 로직 아님 — 호출 분류 시 드롭)",
     )

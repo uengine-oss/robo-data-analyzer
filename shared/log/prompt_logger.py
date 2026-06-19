@@ -2,9 +2,9 @@
 
 두 진입점:
 
-1. ``write_rule_record(rule_name, ...)`` — yaml rule 단발 호출 (function_summary /
+1. ``write_rule_record(rule_name, ...)`` — yaml rule 단발 호출 (code_summary /
    module_summary 등). 같은 ``<rule_name>.json`` 한 파일에 ``records`` 배열로
-   누적. ``sort_key`` (file:line / function_id) 로 자연 정렬 → 디버깅 시 소스 라인 순.
+   누적. ``sort_key`` (file:line / code_id) 로 자연 정렬 → 디버깅 시 소스 라인 순.
 
 2. ``begin_agent_invoke`` / ``append_agent_turn`` / ``end_agent_invoke`` —
    Agent multi-turn (Scan / Linking). 한 invoke 전체가 한 ``.json`` 에. 시스템 지시 1번
@@ -62,7 +62,7 @@ def write_rule_record(
     파일 형식::
 
         {
-          "rule_name": "function_summary",
+          "rule_name": "code_summary",
           "records": [
             {"target_id": "OrderService.save", "sort_key": "OrderService.java:42",
              "system_prompt": "...", "user_content": "...", "response": {...},
@@ -75,8 +75,8 @@ def write_rule_record(
     ``sort_key`` 가 있으면 정렬 (예: ``file:line`` → 소스 라인 순 자연 정렬).
 
     Args:
-        rule_name: yaml rule 이름 (예: "function_summary").
-        target_id: 이 호출의 대상 식별자 (function_id / procedure_id / table_fqn / case_id).
+        rule_name: yaml rule 이름 (예: "code_summary").
+        target_id: 이 호출의 대상 식별자 (code_id / procedure_id / table_fqn / case_id).
             None 이면 ``unknown``. ctrl+F 검색에 쓰임.
         system_prompt: 시스템 메시지 전문.
         user_content: 치환 완료된 user 메시지 전문.

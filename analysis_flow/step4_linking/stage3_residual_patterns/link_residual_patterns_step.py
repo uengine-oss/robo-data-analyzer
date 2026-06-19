@@ -22,6 +22,7 @@ from analysis_flow.step4_linking.stage3_residual_patterns.residual_pattern_loop 
 from shared.log.logger import log_info, log_warning
 from shared.neo4j.edges.reads_writes import upsert_reads_writes
 from shared.neo4j.neo4j_client import Neo4jClient
+from shared.workflow.graph_stream import emit_edges, emit_message
 
 _STEP = "step4.link_residual_patterns"
 
@@ -53,7 +54,7 @@ async def link_residual_patterns_step(state: dict, config: Optional[RunnableConf
         unresolved_cases=unresolved,
         scan_result=state.get("scan_result") or {},
         project_root=project.root,
-        functions=state.get("functions") or [],
+        code_nodes=state.get("code_nodes") or [],
         tables=state.get("tables") or [],
         run_dir=run.run_dir,
         cost_budget=cost_budget,
@@ -62,6 +63,10 @@ async def link_residual_patterns_step(state: dict, config: Optional[RunnableConf
 
     if neo is not None and outcome.edges:
         await upsert_reads_writes(neo, outcome.edges)
+
+    # 라이브 스트림 — 잔여 패턴 R/W 링킹 결과를 step 완료 즉시 화면으로.
+    emit_edges(stream, outcome.edges)
+    emit_message(stream, f"✅ 잔여 패턴 링킹 완료 — {len(outcome.edges)}건")
 
     log_info(
         _STEP, "done",

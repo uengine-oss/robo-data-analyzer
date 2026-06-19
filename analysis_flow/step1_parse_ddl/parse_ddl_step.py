@@ -23,6 +23,7 @@ from shared.neo4j.neo4j_client import Neo4jClient
 from shared.neo4j.nodes.column import upsert_columns
 from shared.neo4j.nodes.schema import upsert_schemas
 from shared.neo4j.nodes.table import upsert_tables
+from shared.workflow.graph_stream import emit_edges, emit_message, emit_nodes
 
 _STEP = "step1.parse_ddl"
 
@@ -84,6 +85,16 @@ async def parse_ddl_step(state: dict, config: Optional[RunnableConfig] = None) -
     await upsert_belongs_to(neo, belongs)
     log_info(_STEP, "upsert_fk", count=len(fks))
     await upsert_fk(neo, fks)
+
+    # 라이브 스트림 — DDL 골격을 step 완료 즉시 화면으로(프론트 트리·그래프 라이브).
+    stream = cfg.get("stream")
+    emit_nodes(stream, schemas)
+    emit_nodes(stream, tables)
+    emit_nodes(stream, columns)
+    emit_edges(stream, has_cols)
+    emit_edges(stream, belongs)
+    emit_edges(stream, fks)
+    emit_message(stream, f"✅ DDL 파싱 완료 — 테이블 {len(tables)}, 컬럼 {len(columns)}, FK {len(fks)}")
 
     log_info(
         _STEP, "done",

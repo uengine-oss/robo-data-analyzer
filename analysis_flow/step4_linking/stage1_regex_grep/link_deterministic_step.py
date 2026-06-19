@@ -20,6 +20,7 @@ from analysis_flow.step4_linking.stage1_regex_grep.regex_table_linker import Reg
 from shared.log.logger import log_info, log_warning
 from shared.neo4j.edges.reads_writes import upsert_reads_writes
 from shared.neo4j.neo4j_client import Neo4jClient
+from shared.workflow.graph_stream import emit_edges, emit_message
 
 _STEP = "step4.link_deterministic"
 
@@ -38,28 +39,33 @@ async def link_deterministic_step(state: dict, config: Optional[RunnableConfig] 
         log_info(_STEP, "skip", reason="scan_result 없음/검증 실패")
         return {"reads_writes_edges": [], "unresolved_cases": []}
 
-    functions_in = state.get("functions") or []
+    code_nodes_in = state.get("code_nodes") or []
     tables_in = state.get("tables") or []
     patterns = scan.table_access_patterns
     started = time.monotonic()
     log_info(
         _STEP, "start",
         root=str(project.root),
-        patterns=len(patterns), functions=len(functions_in), tables=len(tables_in),
+        patterns=len(patterns), code_nodes=len(code_nodes_in), tables=len(tables_in),
     )
 
     outcome = await RegexTableLinker().link(
         project_root=project.root,
-        functions=functions_in,
+        code_nodes=code_nodes_in,
         tables=tables_in,
         patterns=patterns,
         ddl_transform=scan.ddl_transform,
     )
 
-    # raw 중복 (같은 함수·테이블·동작을 여러 라인에서 매칭) 은 Neo4j MERGE 가 자동
+    # raw 중복 (같은 코드노드·테이블·동작을 여러 라인에서 매칭) 은 Neo4j MERGE 가 자동
     # dedup — state 의 list 는 raw 그대로. 다른 step 이 set 으로 변환해 사용.
     if neo is not None and outcome.edges:
         await upsert_reads_writes(neo, outcome.edges)
+
+    # 라이브 스트림 — 결정론 R/W 링킹 결과를 step 완료 즉시 화면으로.
+    stream = cfg.get("stream")
+    emit_edges(stream, outcome.edges)
+    emit_message(stream, f"✅ 결정론 R/W 링킹 완료 — {len(outcome.edges)}건")
 
     # 패턴은 있는데 R/W 엣지 0 — 정규식이 소스와 안 맞음 (조용한 실패 표면화).
     if patterns and not outcome.edges:

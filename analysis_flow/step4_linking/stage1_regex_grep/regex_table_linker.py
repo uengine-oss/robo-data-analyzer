@@ -1,7 +1,7 @@
 """RegexTableLinker — ``table_access_patterns`` 의 regex 로 소스 grep → R/W 엣지.
 
 흐름:
-1. 정규식 매칭 → (caller_function_id, op, entity) 추출.
+1. 정규식 매칭 → (caller_id, op, entity) 추출.
 2. ``ddl_transform`` 적용 → entity → DDL 테이블 이름 변환.
 3. DDL 테이블 lookup 성공 → ``ReadsWrites`` 엣지.
 4. lookup 실패 → ``unresolved`` 케이스 (Linking Agent 가 추적).
@@ -24,7 +24,7 @@ from typing import Literal, Optional
 
 from data_models.agent_output import DdlTransform, TableAccessPattern
 from data_models.graph_edges import ReadsWrites, derive_dml_type
-from data_models.graph_nodes import Function, Table
+from data_models.graph_nodes import CodeNode, Table
 from shared.config.env_catalog import ENV
 from shared.log.logger import log_warning
 
@@ -71,7 +71,7 @@ class RegexTableLinker:
     async def link(
         self,
         project_root: Path,
-        functions: list[Function],
+        code_nodes: list[CodeNode],
         tables: list[Table],
         patterns: list[TableAccessPattern],
         ddl_transform: DdlTransform,
@@ -89,8 +89,8 @@ class RegexTableLinker:
         if not compiled:
             return LinkOutcome()
 
-        # 함수 위치 인덱스 (file:line → function_id) + 테이블 이름 lookup.
-        locator = FunctionLocator(functions)
+        # 코드노드 위치 인덱스 (file:line → code_id) + 테이블 이름 lookup.
+        locator = CodeLocator(code_nodes)
         table_lookup = _build_table_lookup(tables)
 
         outcome = LinkOutcome()
@@ -171,7 +171,7 @@ async def verify_table_patterns(
     patterns: list[TableAccessPattern],
     ddl_transform: DdlTransform,
     project_root: Path,
-    functions: list[Function],
+    code_nodes: list[CodeNode],
     tables: list[Table],
     restrict_to_files: Optional[set[str]] = None,
 ) -> PatternVerdict:
@@ -188,7 +188,7 @@ async def verify_table_patterns(
     """
     outcome = await RegexTableLinker().link(
         project_root=project_root,
-        functions=functions,
+        code_nodes=code_nodes,
         tables=tables,
         patterns=patterns,
         ddl_transform=ddl_transform,
@@ -244,13 +244,13 @@ def _compile_patterns(
     return compiled
 
 
-class FunctionLocator:
-    """``file_path`` + ``line`` → ``function_id`` 매핑."""
+class CodeLocator:
+    """``file_path`` + ``line`` → ``code_id`` 매핑."""
 
-    def __init__(self, functions: list[Function]):
-        # file_path → [(start, end, function_id)] sorted
+    def __init__(self, code_nodes: list[CodeNode]):
+        # file_path → [(start, end, code_id)] sorted
         self.by_file: dict[str, list[tuple[int, int, str]]] = defaultdict(list)
-        for fn in functions:
+        for fn in code_nodes:
             self.by_file[fn.file_path].append((fn.start_line, fn.end_line, fn.id))
         for k in self.by_file:
             self.by_file[k].sort()

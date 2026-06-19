@@ -295,8 +295,8 @@ state 누적 + Neo4j UNWIND 배치 UPSERT.
 **파서**: `antlr_json_reader.py` — 언어별 ontology 매핑. `reference_linker.py` 가
 REFERENCES / INIT_BY 결정론 식별자 매칭.
 **출력 노드**: `FUNCTION` · `MODULE` · `PACKAGE` · `VARIABLE` · `CONSTANT` · `DATA_TYPE`.
-**출력 엣지**: `PARENT_OF` · `HAS_FUNCTION` · `HAS_VARIABLE` · `HAS_MEMBER` ·
-`BELONGS_TO_PACKAGE` · `REFERENCES` · `INIT_BY` + state `call_sites`(raw — step4 분류) · `import_refs`.
+**출력 엣지**: `PARENT_OF` · `HAS_MEMBER`(그릇→루틴/데이터) · `BELONGS_TO`(그릇→폴더) ·
+`NEXT`(DBMS 구문 실행 흐름) · `REFERENCES` · `INIT_BY` + state `call_sites`(raw — step4 분류) · `import_refs`.
 **실패 정책**: AST 디렉토리 없으면 명시 `FileNotFoundError` (silent skip 금지).
 
 ### Step 3 — `scan_codebase_step` (Framework only, LLM Agent 1 회)
@@ -458,7 +458,7 @@ logs/
 
 | 구분 | 엣지 |
 |------|------|
-| 코드 구조 | `CALLS`(scope) · `PARENT_OF` · `HAS_FUNCTION` · `HAS_VARIABLE` · `HAS_MEMBER` · `BELONGS_TO_PACKAGE` |
+| 코드 구조 | `CALLS`(scope) · `PARENT_OF` · `HAS_MEMBER`(그릇→루틴/데이터) · `BELONGS_TO`(그릇→폴더) · `NEXT`(DBMS 구문 흐름) |
 | 코드 참조 | `REFERENCES` · `INIT_BY` |
 | 코드↔DB | `READS`(dml_type) · `WRITES`(dml_type) |
 | DB 구조 | `HAS_COLUMN` · `BELONGS_TO` · `FK` |

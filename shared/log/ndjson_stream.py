@@ -34,7 +34,7 @@ _EVENT_LOGGER: dict[str, str] = {
     "phase_event":         "stream.phase",
     "tool_event":          "stream.tool",
     "todo_update":         "stream.todo",
-    "processing_event":    "stream.processing",    # step 안 처리 단위 진행 (함수/모듈/테이블/split)
+    "processing_event":    "stream.processing",    # step 안 처리 단위 진행 (코드노드/모듈/테이블/split)
     "node_event":          "stream.node",          # 그래프 노드 생성/갱신
     "relationship_event":  "stream.relationship",  # 그래프 엣지 생성/갱신
     "error":               "stream.error",   # log_error 도 별도 호출됐을 가능성 — mirror 는 INFO 로
@@ -71,7 +71,7 @@ _TOOL_LABELS: dict[str, str] = {
     "grep":                 "검색",
     "read_file":            "파일 읽기",
     "read_file_range":      "파일 범위 읽기",
-    "list_functions":       "함수목록 조회",
+    "list_code_nodes":       "코드노드목록 조회",
     "list_skills":          "SKILL 목록 조회",
     "read_skill":           "SKILL 읽기",
     "verify_table_regex":   "정규식 검증",
@@ -87,7 +87,7 @@ _TOOL_PRIMARY_ARGS: dict[str, tuple[str, ...]] = {
     "grep":                 ("pattern", "base", "path_glob"),
     "read_file":            ("path", "file", "max_lines"),
     "read_file_range":      ("path", "file", "anchor", "start", "end"),
-    "list_functions":       ("path", "file"),
+    "list_code_nodes":       ("path", "file"),
     "list_skills":          (),
     "read_skill":           ("name",),
     "verify_table_regex":   ("call_regex",),

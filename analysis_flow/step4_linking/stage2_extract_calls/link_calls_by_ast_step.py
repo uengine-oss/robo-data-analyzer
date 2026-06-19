@@ -17,6 +17,7 @@ from analysis_flow.step4_linking.stage2_extract_calls.call_linker import CallLin
 from shared.log.logger import log_info, log_warning
 from shared.neo4j.edges.calls import upsert_calls
 from shared.neo4j.neo4j_client import Neo4jClient
+from shared.workflow.graph_stream import emit_edges, emit_message
 
 _STEP = "step4.link_calls_by_ast"
 
@@ -29,16 +30,22 @@ async def link_calls_by_ast_step(state: dict, config: Optional[RunnableConfig] =
         log_warning(_STEP, "config_missing", "project 누락 — step skip")
         return {}
 
-    functions_in = state.get("functions") or []
+    code_nodes_in = state.get("code_nodes") or []
     started = time.monotonic()
-    log_info(_STEP, "start", root=str(project.root), functions=len(functions_in))
+    log_info(_STEP, "start", root=str(project.root), code_nodes=len(code_nodes_in))
 
-    edges = await CallLinker().link(functions=functions_in)
+    edges = await CallLinker().link(code_nodes=code_nodes_in)
 
     # Framework(link_calls_by_name)와 동일: 전체 엣지를 upsert. internal 은 기존 노드 연결,
     # external 은 :FUNCTION:EXTERNAL stub(+모듈+스키마) 생성·연결 (upsert_calls 가 분기).
     if neo is not None and edges:
         await upsert_calls(neo, edges)
+
+    # 라이브 스트림 — 호출 관계를 step 완료 즉시 화면으로. external stub 노드는
+    # upsert_calls가 Neo4j에 생성(여기 dataclass 노드 없음) → 최종 fetch에서 합류.
+    stream = cfg.get("stream")
+    emit_edges(stream, edges)
+    emit_message(stream, f"✅ 호출 링킹 완료 — {len(edges)}건")
 
     internal = sum(1 for e in edges if e.scope == "internal")
     log_info(

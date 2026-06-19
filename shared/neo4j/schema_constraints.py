@@ -16,6 +16,10 @@ from shared.neo4j.neo4j_client import Neo4jClient
 # 제약 이름은 ``uniq_<label>`` — 옛 버전이 ``module_id`` 등 동일 이름을 옛 속성(m.module_id)에
 # 걸어둔 더티 DB 에서도 ``IF NOT EXISTS`` 가 (이름 충돌로) 새 ``.id`` 제약 생성을 막지 않도록
 # 새 이름 사용. (이미 .id 에 동등 제약이 있으면 IF NOT EXISTS 가 no-op — clean·dirty 양쪽 안전.)
+# ★코드 노드(파일/클래스/함수/메서드/구문/변수/상수/데이터타입)는 라벨 = 자기 antlr type
+#   (METHOD/FUNCTION/SELECT/FIELD/STRUCT…) = **열린 집합**이라 종류별 제약 열거 불가.
+#   식별 키 ``id`` 가 전역 유일이고 MERGE 가 id 로 dedup → 코드 노드는 제약 없이 안전.
+#   안정 라벨(DB / EM / PACKAGE)만 id-유일 제약을 둔다.
 CONSTRAINTS: list[str] = [
     "CREATE CONSTRAINT uniq_schema IF NOT EXISTS "
     "FOR (s:SCHEMA) REQUIRE s.id IS UNIQUE",
@@ -23,34 +27,20 @@ CONSTRAINTS: list[str] = [
     "FOR (t:TABLE) REQUIRE t.id IS UNIQUE",
     "CREATE CONSTRAINT uniq_column IF NOT EXISTS "
     "FOR (c:COLUMN) REQUIRE c.id IS UNIQUE",
-    "CREATE CONSTRAINT uniq_function IF NOT EXISTS "
-    "FOR (f:FUNCTION) REQUIRE f.id IS UNIQUE",
-    "CREATE CONSTRAINT uniq_module IF NOT EXISTS "
-    "FOR (m:MODULE) REQUIRE m.id IS UNIQUE",
     "CREATE CONSTRAINT uniq_package IF NOT EXISTS "
     "FOR (p:PACKAGE) REQUIRE p.id IS UNIQUE",
-    "CREATE CONSTRAINT uniq_variable IF NOT EXISTS "
-    "FOR (v:VARIABLE) REQUIRE v.id IS UNIQUE",
-    "CREATE CONSTRAINT uniq_constant IF NOT EXISTS "
-    "FOR (c:CONSTANT) REQUIRE c.id IS UNIQUE",
-    "CREATE CONSTRAINT uniq_data_type IF NOT EXISTS "
-    "FOR (d:DATA_TYPE) REQUIRE d.id IS UNIQUE",
-    # Example Mapping 노드 (analyze_function 3분할 → EM 빌더)
+    # Example Mapping 노드 (analyze_code 3분할 → EM 빌더)
     "CREATE CONSTRAINT uniq_rule IF NOT EXISTS "
     "FOR (r:RULE) REQUIRE r.id IS UNIQUE",
     "CREATE CONSTRAINT uniq_example IF NOT EXISTS "
     "FOR (e:EXAMPLE) REQUIRE e.id IS UNIQUE",
     "CREATE CONSTRAINT uniq_question IF NOT EXISTS "
     "FOR (q:QUESTION) REQUIRE q.id IS UNIQUE",
-    # 컴포넌트는 합성 노드(:COMPONENT)가 없으므로 제약 불필요 — 멤버십은 FUNCTION.component_id 속성.
+    # 컴포넌트는 합성 노드(:COMPONENT)가 없으므로 제약 불필요 — 멤버십은 component_id 속성.
 ]
 
-# 조회 인덱스
+# 조회 인덱스 (안정 라벨만 — 코드 노드는 열린 antlr type 라벨이라 id 키로 조회).
 INDEXES: list[str] = [
-    "CREATE INDEX function_file_path IF NOT EXISTS FOR (f:FUNCTION) ON (f.file_path)",
-    # 트리(parent_id) 는 노드 속성 아닌 PARENT_OF 엣지로 표현 → parent_id 인덱스 불필요.
-    # 컴포넌트 멤버십 조회/집계(영역 hull, 그룹↔그룹 호출 GROUP BY)용.
-    "CREATE INDEX function_component_id IF NOT EXISTS FOR (f:FUNCTION) ON (f.component_id)",
     "CREATE INDEX table_schema IF NOT EXISTS FOR (t:TABLE) ON (t.schema)",
 ]
 

@@ -1,12 +1,12 @@
 """분석 컨텍스트 — Framework / DBMS 양쪽이 공유.
 
-``build_context_step`` 이 생성, ``analyze_function_step`` 이 채움.
+``build_context_step`` 이 생성, ``analyze_code_step`` 이 채움.
 
 설계 원칙
 ─────────
 - 공통 필드 = strategy 무관 (id, signature, reads/writes, callers/callees, summary).
 - strategy 별 확장은 ``extra: dict[str, Any]`` 로 — dataclass 계승 X.
-- 큰 함수 본문은 ``large_function_one_liner`` 에서 압축 후 ``one_liner`` 필드에 박음.
+- 큰 코드노드 본문은 ``large_code_one_liner`` 에서 압축 후 ``one_liner`` 필드에 박음.
   → callee 본문 통째 노출 차단 ($400 사고 원인 차단).
 
 **Framework vs DBMS 컨텍스트 구성 차이** — 같은 dataclass 가 양쪽을 흡수:
@@ -17,7 +17,7 @@
 ─────────
 1. ``build_context_step`` 이 결정적 메타 (id/signature/reads/writes/callers/callees) 로
    컨텍스트 생성. ``summary`` = None 으로 둠.
-2. ``analyze_function_step`` (Bottom-up DAG, leaf → root) 이 ``summary`` 채움.
+2. ``analyze_code_step`` (Bottom-up DAG, leaf → root) 이 ``summary`` 채움.
 3. caller 분석 시점에 callee 컨텍스트 (``summary`` 포함) 가 입력으로 들어감 →
    본문 통째 노출 X. 토큰 폭증 차단.
 """
@@ -29,7 +29,7 @@ from typing import Any, Optional
 
 @dataclass
 class AnalysisContext:
-    """함수 1개의 누적 분석 컨텍스트 (Framework / DBMS 공유).
+    """코드노드 1개의 누적 분석 컨텍스트 (Framework / DBMS 공유).
 
     공통 필드는 모든 strategy 공유. strategy 별 추가 정보는 ``extra`` dict 에
     (DBMS 의 parent / sibling 트리 메타 등 — strategy context_builder 가 채움).
@@ -56,11 +56,11 @@ class AnalysisContext:
     # 참조 컨텍스트 (build_context_step 가 state 엣지/노드에서 결정론 도출) ────
     referenced_symbols: tuple[str, ...] = ()  # REFERENCES + INIT_BY — 참조 변수/상수 줄
 
-    # 큰 함수 사전 압축 (build_context_step 가 본문 토큰 > 임계 시 채움) ────
+    # 큰 코드노드 사전 압축 (build_context_step 가 본문 토큰 > 임계 시 채움) ────
     one_liner: Optional[str] = None          # "결제 PG 호출 + 인증 처리" 식
     token_count: int = 0                     # 본문 토큰 수
 
-    # 의미 분석 결과 (analyze_function_step 이 채움) ──────────────
+    # 의미 분석 결과 (analyze_code_step 이 채움) ──────────────
     summary: Optional[str] = None            # 2 섹션 '[핵심] 한 줄' + 내용 (SummaryOutput 검증)
 
     # Bottom-up DAG 메타 (call_cycles 가 채움) ──────────────

@@ -26,7 +26,7 @@ from data_models.agent_output import ScanResult
 from agent_tools.code_inspection import (
     SKILLS_DIR,
     list_skills,
-    make_list_functions,
+    make_list_code_nodes,
     read_skill,
 )
 from agent_tools.filesystem import make_filesystem_tools
@@ -35,7 +35,7 @@ from analysis_flow.step4_linking.stage1_regex_grep.regex_table_linker import (
     PatternVerdict,
     verify_table_patterns,
 )
-from data_models.graph_nodes import Function, Table
+from data_models.graph_nodes import CodeNode, Table
 from shared.config.env_catalog import ENV
 from shared.llm.cost_budget import CostBudget
 from shared.llm.structured_agent import run_structured_agent
@@ -51,21 +51,21 @@ _SYSTEM_PROMPT_PATH = (
 
 
 def _build_scan_tools(
-    project_root: Path, functions: list[Function], tables: list[Table],
+    project_root: Path, code_nodes: list[CodeNode], tables: list[Table],
 ) -> list:
     """Scan Agent 도구 9 종 조립.
 
     파일시스템 5종(ls/glob_search/grep/read_file/read_file_range)은 project_root 에
-    묶여 그 밖을 못 본다. list_functions 는 step2 가 파싱한 함수 목록을 본다.
+    묶여 그 밖을 못 본다. list_code_nodes 는 step2 가 파싱한 코드노드 목록을 본다.
     verify_table_regex 는 에이전트가 작성한 정규식을 실제 소스에 검증한다.
     write_todos 는 LangChain TodoListMiddleware 가 자동 제공 (여기 없음).
     """
     return [
         *make_filesystem_tools(project_root).values(),
-        make_list_functions(functions),
+        make_list_code_nodes(code_nodes),
         list_skills,
         read_skill,
-        make_verify_table_regex_tool(project_root, functions, tables),
+        make_verify_table_regex_tool(project_root, code_nodes, tables),
     ]
 
 
@@ -74,7 +74,7 @@ async def run_scan_agent(
     scanner_input: dict,
     run_dir: Path,
     cost_budget: CostBudget,
-    functions: list[Function],
+    code_nodes: list[CodeNode],
     tables: list[Table],
     stream_emit: Optional[Callable[[dict], None]] = None,
 ) -> ScanResult:
@@ -85,7 +85,7 @@ async def run_scan_agent(
         scanner_input: 사전 수집 단서 (extensions_count / manifest_content / scanner_categories).
         run_dir: ``logs/analysis.run/latest/`` 경로.
         cost_budget: run 1회의 ``CostBudget``.
-        functions: step2(load_ast)가 파싱한 Function 목록.
+        code_nodes: step2(load_ast)가 파싱한 CodeNode 목록.
         tables: step1(parse_ddl)의 DDL 테이블 — 정규식 검증 기준.
         stream_emit: 프론트 NDJSON 스트림 emit (옵션).
 
@@ -97,11 +97,11 @@ async def run_scan_agent(
         scanner_input=scanner_input,
         run_dir=run_dir,
         cost_budget=cost_budget,
-        functions=functions,
+        code_nodes=code_nodes,
         tables=tables,
         stream_emit=stream_emit,
     )
-    return await _finalize(draft, project_root, functions, tables)
+    return await _finalize(draft, project_root, code_nodes, tables)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -114,20 +114,20 @@ async def _run_agent(
     scanner_input: dict,
     run_dir: Path,
     cost_budget: CostBudget,
-    functions: list[Function],
+    code_nodes: list[CodeNode],
     tables: list[Table],
     stream_emit: Optional[Callable[[dict], None]],
 ) -> ScanResult:
     """단일 에이전트 invoke → ``ScanResult`` 초안 (공용 ``run_structured_agent``).
 
-    공용 함수가 ``response_format`` 을 submit 도구로 wrap — agent 가 탐색 끝에
+    공용 루틴이 ``response_format`` 을 submit 도구로 wrap — agent 가 탐색 끝에
     ``submit_scan`` 호출 시 ScanResult 인스턴스가 state 에 적재된다.
     """
     return await run_structured_agent(
         agent_name="scan",
         invoke_id="run",
         system_prompt=_SYSTEM_PROMPT_PATH.read_text(encoding="utf-8"),
-        tools=_build_scan_tools(project_root, functions, tables),
+        tools=_build_scan_tools(project_root, code_nodes, tables),
         response_format=ScanResult,
         user_message=_build_user_message(project_root, scanner_input, tables),
         max_calls=ENV.agent.scan_max_calls,
@@ -145,7 +145,7 @@ async def _run_agent(
 async def _finalize(
     draft: ScanResult,
     project_root: Path,
-    functions: list[Function],
+    code_nodes: list[CodeNode],
     tables: list[Table],
 ) -> ScanResult:
     """에이전트 draft → 결정론 검증 → 최종 ``ScanResult``.
@@ -158,14 +158,14 @@ async def _finalize(
         patterns=draft.table_access_patterns,
         ddl_transform=draft.ddl_transform,
         project_root=project_root,
-        functions=functions,
+        code_nodes=code_nodes,
         tables=tables,
     )
     confidence, no_match_reason = _apply_verdict(
         verdict, draft.table_access_patterns, draft.no_match_reason,
     )
 
-    # codebase_notes — HTML entity (&lt; / &gt; / &amp;) 가 박힌 채 나오면 함수 분석
+    # codebase_notes — HTML entity (&lt; / &gt; / &amp;) 가 박힌 채 나오면 코드노드 분석
     # LLM 이 그대로 prefix 로 받음. unescape 로 영구 차단 (모든 SKILL 적용).
     return ScanResult(
         matched_skill=draft.matched_skill,
@@ -175,7 +175,7 @@ async def _finalize(
         table_access_patterns=draft.table_access_patterns,
         ddl_transform=draft.ddl_transform,
         codebase_notes=html.unescape(draft.codebase_notes or ""),
-        framework_functions=draft.framework_functions,
+        framework_code_nodes=draft.framework_code_nodes,
         call_wrappers=draft.call_wrappers,
         no_match_reason=no_match_reason,
     )

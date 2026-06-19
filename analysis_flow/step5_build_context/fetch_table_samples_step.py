@@ -2,7 +2,7 @@
 
 step6(GWT)가 실제 값 기반 시나리오를 만들도록, 분석 전(build_context 직후)에
 catalog ``sample-context`` 로 테이블별 샘플행을 한 번에 받아 ``table_sample_data`` 에 둔다.
-함수별 주입은 step6 가 ``ctx.reads/writes`` 로 골라 쓴다 (여기선 전 테이블 수집만 — 노이즈는 step6 책임).
+코드노드별 주입은 step6 가 ``ctx.reads/writes`` 로 골라 쓴다 (여기선 전 테이블 수집만 — 노이즈는 step6 책임).
 
 가드 (즉시 skip — graceful):
 - ``ROBO_CATALOG_ENABLED=false`` (토글 off)              → ``catalog_base_url_or_skip`` None.

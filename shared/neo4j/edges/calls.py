@@ -1,4 +1,4 @@
-"""CALLS 엣지 — Function → Function (호출 관계).
+"""CALLS 엣지 — CodeNode → CodeNode (호출 관계).
 
 internal 콜리는 그래프에 정의 노드가 이미 있어 ``MATCH`` 로 연결한다.
 external 콜리(분석 범위 밖 실 프로시저/메소드)는 정의 노드가 없으므로 — legacy 와
@@ -15,7 +15,7 @@ from typing import Iterable
 
 from data_models.graph_edges import Calls
 from shared.neo4j.neo4j_client import Neo4jClient
-from shared.neo4j.rel_types import BELONGS_TO_PACKAGE, CALLS, HAS_FUNCTION
+from shared.neo4j.rel_types import BELONGS_TO, CALLS, HAS_MEMBER
 
 
 # internal — 콜리 정의 노드가 이미 존재 → MATCH 로 연결 (없으면 자연 제외).
@@ -27,20 +27,22 @@ MERGE (caller)-[r:{CALLS}]->(callee)
 SET r.scope = item.scope
 """
 
-# external — 콜리 정의 노드 없음 → stub(:FUNCTION:EXTERNAL) + 모듈(:MODULE:EXTERNAL)
+# external — 콜리 정의 노드 없음 → stub(:FUNCTION:EXTERNAL) + 소유 컨테이너(:MODULE:EXTERNAL)
 # + 스키마(:PACKAGE, 있을 때) 를 internal 과 대칭으로 생성하고 호출 연결.
-# 소속은 HAS_FUNCTION / BELONGS_TO_PACKAGE 엣지로만 표현 (노드에 소속 속성 안 박음).
+# 소속은 HAS_MEMBER / BELONGS_TO 엣지로만 표현 (노드에 소속 속성 안 박음).
+# ★컨테이너 라벨 = :MODULE:EXTERNAL 유지 (의도적): 외부 콜리의 소유 컨테이너는 종류미상
+#   (분석 범위 밖) — 실제 파싱한 그릇만 정체대로(FILE/CLASS), 외부 stub 은 중립 합성 라벨.
 EXTERNAL_QUERY = f"""
 UNWIND $items AS item
 MATCH (caller {{id: item.caller_id}})
 MERGE (callee:FUNCTION:EXTERNAL {{id: item.callee_id}})
-  ON CREATE SET callee.signature = item.callee_name
+  ON CREATE SET callee.name = item.callee_name
 MERGE (m:MODULE:EXTERNAL {{id: item.callee_module}})
   ON CREATE SET m.name = item.callee_name
-MERGE (m)-[:{HAS_FUNCTION}]->(callee)
+MERGE (m)-[:{HAS_MEMBER}]->(callee)
 FOREACH (_ IN CASE WHEN item.callee_package <> '' THEN [1] ELSE [] END |
   MERGE (p:PACKAGE {{id: item.callee_package}})
-  MERGE (m)-[:{BELONGS_TO_PACKAGE}]->(p)
+  MERGE (m)-[:{BELONGS_TO}]->(p)
 )
 MERGE (caller)-[r:{CALLS}]->(callee)
 SET r.scope = item.scope

@@ -1,12 +1,13 @@
-"""온톨로지 로더 — antlr node type 의 역할 / Neo4j 라벨 분류 + stereotype 검증.
+"""온톨로지 로더 — antlr node type 의 역할 분류 + stereotype 검증.
 
 ``ontology_roles.yaml`` 단일 진실:
 - ``roles``    : 언어별 node type → 역할 (module/data_type/function/variable/constant/internal).
 - ``paradigm`` : 언어 → oop / procedural.
 - ``framework`` / ``dbms`` : LLM stereotype 풀.
 
-node 분류 코드가 yaml 을 직접 읽지 않고 이 모듈만 거치게 한다 (단일 진입점).
-DBMS(PL/SQL)는 sub-label 없음 — ``roles`` 는 Framework(java/c/python) 전용.
+★Neo4j 라벨 = 노드의 antlr type 그대로 (reader 가 ``node["type"]`` 직결). ontology 는
+**분류 전용** — ``role_of`` 가 "어느 dataclass / 어느 엣지 / internal(노드X)"를 정한다 (라벨엔 안 씀).
+``roles`` 의 언어별 매핑이 module 기준 등 언어차를 흡수 (java FILE=internal · c FILE=module).
 """
 from __future__ import annotations
 
@@ -16,15 +17,6 @@ from pathlib import Path
 import yaml
 
 _ONTOLOGY_PATH = Path(__file__).resolve().parent / "ontology_roles.yaml"
-
-# 역할 → Neo4j primary 라벨 (그래프 노드가 되는 역할만)
-_ROLE_TO_LABEL: dict[str, str] = {
-    "module":    "MODULE",
-    "data_type": "DATA_TYPE",
-    "function":  "FUNCTION",
-    "variable":  "VARIABLE",
-    "constant":  "CONSTANT",
-}
 
 
 @lru_cache(maxsize=1)
@@ -45,29 +37,6 @@ def role_of(node_type: str, lang: str) -> str | None:
         if node_type in (langs.get(lang) or []):
             return role
     return None
-
-
-@lru_cache(maxsize=None)
-def primary_label_of(node_type: str, lang: str) -> str | None:
-    """node type → Neo4j primary 라벨 (MODULE/DATA_TYPE/FUNCTION/VARIABLE/CONSTANT).
-
-    internal·import·미분류는 None — 그래프 노드로 박지 않는다.
-    """
-    role = role_of(node_type, lang)
-    return _ROLE_TO_LABEL.get(role) if role else None
-
-
-@lru_cache(maxsize=None)
-def sub_label_of(node_type: str, lang: str) -> str | None:
-    """Framework sub-label — node type 이 primary 라벨과 다르면 그 node type.
-
-    primary 와 같으면 None (단일 라벨). 예: ``METHOD`` → "METHOD" (:FUNCTION:METHOD),
-    C ``FUNCTION`` → None (:FUNCTION 단일 라벨).
-    """
-    primary = primary_label_of(node_type, lang)
-    if primary is None or node_type == primary:
-        return None
-    return node_type
 
 
 def is_internal(node_type: str, lang: str) -> bool:

@@ -1,7 +1,7 @@
 """COLUMN 노드 Cypher.
 
 description          = DDL COMMENT ON 1차 설명.
-analyzed_description = analyze_function 3분할 tableInsights 합성 설명.
+analyzed_description = analyze_code 3분할 tableInsights 합성 설명.
 """
 from __future__ import annotations
 

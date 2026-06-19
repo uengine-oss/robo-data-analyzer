@@ -26,10 +26,11 @@ from shared.source_file_cache import SourceFileCache
 from shared.workflow.step_utils import step_config
 
 from data_models.graph_edges import ReadsWrites, derive_dml_type
-from data_models.graph_nodes import Function, Table
+from data_models.graph_nodes import CodeNode, Table
 from shared.log.logger import log_info
 from shared.neo4j.edges.reads_writes import upsert_reads_writes
 from shared.neo4j.neo4j_client import Neo4jClient
+from shared.workflow.graph_stream import emit_edges, emit_message
 
 _STEP = "step4.link_dbms_tables"
 
@@ -49,18 +50,23 @@ async def link_dbms_tables_step(state: dict, config: Optional[RunnableConfig] = 
     cfg = step_config(config)
     neo: Neo4jClient | None = cfg.get("neo_client")
 
-    functions: list[Function] = state.get("functions") or []
+    code_nodes: list[CodeNode] = state.get("code_nodes") or []
     tables: list[Table] = state.get("tables") or []
-    if not functions or not tables:
-        log_info(_STEP, "skip", reason="no functions or no DDL tables")
+    if not code_nodes or not tables:
+        log_info(_STEP, "skip", reason="no code_nodes or no DDL tables")
         return {}
 
     started = time.monotonic()
-    log_info(_STEP, "start", functions=len(functions), tables=len(tables))
-    edges = _link(functions, tables, state.get("parent_of_edges") or [])
+    log_info(_STEP, "start", code_nodes=len(code_nodes), tables=len(tables))
+    edges = _link(code_nodes, tables, state.get("parent_of_edges") or [])
 
     if neo is not None and edges:
         await upsert_reads_writes(neo, edges)
+
+    # 라이브 스트림 — R/W 링킹 결과를 step 완료 즉시 화면으로(관계 수 0 탈출).
+    stream = cfg.get("stream")
+    emit_edges(stream, edges)
+    emit_message(stream, f"✅ 테이블 읽기/쓰기 링킹 완료 — {len(edges)}건")
 
     log_info(
         _STEP, "done",
@@ -71,7 +77,7 @@ async def link_dbms_tables_step(state: dict, config: Optional[RunnableConfig] = 
 
 
 def _link(
-    functions: list[Function], tables: list[Table], parent_of_edges: list,
+    code_nodes: list[CodeNode], tables: list[Table], parent_of_edges: list,
 ) -> list[ReadsWrites]:
     """모든 노드의 자기 줄(자기 범위 − 자식 줄범위) 에서 DDL 테이블명 검색 → ReadsWrites."""
     name_to_id = {t.name.upper(): t.id for t in tables}
@@ -84,7 +90,7 @@ def _link(
     )
     # 각 노드의 직속 자식 줄범위 — 자기 줄 = 자기 범위에서 이 구간들을 뺀 나머지.
     # parent_of_edges 는 "스킵 대상" 이 아니라 "자기 줄 계산용" 으로만 쓴다.
-    fn_by_id = {fn.id: fn for fn in functions}
+    fn_by_id = {fn.id: fn for fn in code_nodes}
     child_ranges: dict[str, list[tuple[int, int]]] = {}
     for e in parent_of_edges:
         child = fn_by_id.get(e.child_id)
@@ -97,7 +103,7 @@ def _link(
     edges: list[ReadsWrites] = []
     seen: set[tuple[str, str, str]] = set()
 
-    for fn in functions:
+    for fn in code_nodes:
         body = _COMMENT_RE.sub(
             " ", _own_body(fn, child_ranges.get(fn.id, ()), file_cache),
         )
@@ -127,7 +133,7 @@ def _link(
     return edges
 
 
-def _own_body(fn: Function, child_ranges, file_cache: SourceFileCache) -> str:
+def _own_body(fn: CodeNode, child_ranges, file_cache: SourceFileCache) -> str:
     """fn 의 자기 줄 텍스트 — 자기 ``[start, end]`` 에서 직속 자식 줄범위를 뺀 나머지 줄.
 
     부모 노드도 자기 줄(바깥 문: ``MERGE INTO …`` · 메인 ``FROM …``)만 본다 → 자식

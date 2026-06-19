@@ -172,7 +172,7 @@ def _summarize_result(tool_name: str, result: Any) -> dict:
     - ``grep``         → 매치수 (또는 NO_MATCHES)
     - ``read_file``    → 읽은줄
     - ``read_file_range`` → 읽은줄
-    - ``list_functions`` → 함수수
+    - ``list_code_nodes`` → 함수수
     - ``list_skills``  → SKILL수
     - ``read_skill``   → 줄수
     - ``write_todos``  → 갱신 (status counts)
@@ -200,7 +200,7 @@ def _summarize_result(tool_name: str, result: Any) -> dict:
         return {"매치": lines}
     if tool_name in ("read_file", "read_file_range"):
         return {"읽은줄": lines}
-    if tool_name == "list_functions":
+    if tool_name == "list_code_nodes":
         return {"함수": lines}
     if tool_name == "list_skills":
         return {"SKILL": lines}

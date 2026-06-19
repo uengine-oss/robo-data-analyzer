@@ -15,17 +15,17 @@ from langchain.tools import tool
 
 from data_models.agent_output import DdlTransform, TableAccessPattern
 from analysis_flow.step4_linking.stage1_regex_grep.regex_table_linker import RegexTableLinker
-from data_models.graph_nodes import Function, Table
+from data_models.graph_nodes import CodeNode, Table
 
 _SAMPLE_SHOWN = 20
 
 
 def make_verify_table_regex_tool(
     project_root: Path,
-    functions: list[Function],
+    code_nodes: list[CodeNode],
     tables: list[Table],
 ):
-    """``verify_table_regex`` 도구 생성 — project_root / functions / tables 를 묶는다."""
+    """``verify_table_regex`` 도구 생성 — project_root / code_nodes / tables 를 묶는다."""
 
     @tool
     async def verify_table_regex(call_regex: str) -> str:
@@ -63,7 +63,7 @@ def make_verify_table_regex_tool(
         )
         outcome = await RegexTableLinker().link(
             project_root=project_root,
-            functions=functions,
+            code_nodes=code_nodes,
             tables=tables,
             patterns=[candidate],
             ddl_transform=DdlTransform(ddl_naming_rule="as_is"),

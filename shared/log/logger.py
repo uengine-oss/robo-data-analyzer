@@ -67,7 +67,7 @@ _COMPONENT_LABELS: dict[str, str] = {
     "step4.link_residual_patterns": "4️⃣ ③잔여 패턴 루프",
     "step5.build_context":       "5️⃣  분석 컨텍스트",
     "step5.fetch_table_samples": "5️⃣  catalog 샘플",
-    "step6.analyze_function":    "6️⃣  함수 분석",
+    "step6.analyze_code":    "6️⃣  코드노드 분석",
     "step7.summarize_module":    "7️⃣  모듈 요약",
     "step7.enrich_table_description": "7️⃣  테이블 설명",
     "step4.link_dbms_tables":         "4️⃣ ①DBMS 테이블 매칭",
@@ -126,7 +126,7 @@ _KEY_LABELS: dict[str, str] = {
     "schemas":              "스키마",
     "tables":               "테이블",
     "columns":              "컬럼",
-    "functions":            "함수",
+    "code_nodes":            "코드노드",
     "modules":              "모듈",
     "has_column_edges":     "has_column",
     "belongs_to_edges":     "belongs_to",
@@ -160,7 +160,7 @@ _KEY_LABELS: dict[str, str] = {
     "elapsed":              "소요",     # _humanize 변환 후 사용
     "size_bytes":           "크기B",
     "file":                 "파일",
-    "function_id":          "함수ID",
+    "code_id":              "코드ID",
     "tool":                 "도구",
     "message":              "메시지",
     "in_progress":          "진행중",
@@ -188,9 +188,9 @@ _KEY_LABELS: dict[str, str] = {
     "external":             "외부",
     "table_embedded":       "테이블임베드",
     "column_embedded":      "컬럼임베드",
-    "function_embedded":    "함수임베드",
+    "code_embedded":    "코드노드임베드",
     "builder":              "빌더",
-    "big_functions":        "큰함수",
+    "big_code_nodes":        "큰코드노드",
     "threshold_tokens":     "임계토큰",
     "contexts":             "컨텍스트",
 }
@@ -411,11 +411,11 @@ def log_error(
     NDJSON 스트림 / analyzer.log 의 한 줄에는 type+msg 만 박혀 노이즈 없음.
 
     Args:
-        component: 모듈 경로 (예: ``"analysis_flow.step6_analyze_function"``).
-        operation: 함수/작업 이름 (예: ``"analyze_function_three_split"``).
+        component: 모듈 경로 (예: ``"analysis_flow.step6_analyze_code"``).
+        operation: 함수/작업 이름 (예: ``"analyze_code_three_split"``).
         error: Exception 또는 메시지 문자열.
         stream_emit: NDJSON 스트림 emit 함수 (없으면 file handler / stderr 만).
-        **context: 추가 컨텍스트 (run_id / function_id 등).
+        **context: 추가 컨텍스트 (run_id / code_id 등).
     """
     if isinstance(error, BaseException):
         error_str = f"{type(error).__name__}: {error}"

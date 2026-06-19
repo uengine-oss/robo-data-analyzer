@@ -57,7 +57,7 @@ user_template: |
   id: {id}
   name: {name}
 
-  member_functions:
-  {member_functions}
+  member_code_nodes:
+  {member_code_nodes}
 
   ▸ ModuleSummaryOutput 출력 — summary / logical_name / stereotype.

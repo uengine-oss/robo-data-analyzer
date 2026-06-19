@@ -29,29 +29,27 @@ from data_models.analysis_run import AnalysisRun
 from data_models.graph_edges import (
     AffectsTable,
     BelongsTo,
-    BelongsToPackage,
     Branch,
     Calls,
     Fk,
     HasColumn,
     HasExample,
-    HasFunction,
     HasMember,
     HasQuestion,
     HasRule,
-    HasVariable,
     InitBy,
     Next,
     ParentOf,
     ReadsWrites,
     References,
+    StatementNext,
 )
 from data_models.graph_nodes import (
     Column,
     Constant,
     DataType,
     Example,
-    Function,
+    CodeNode,
     Module,
     Package,
     Question,
@@ -82,21 +80,24 @@ class WorkflowState(TypedDict, total=False):
     tables: list[Table]
     columns: list[Column]
     has_column_edges: list[HasColumn]
-    belongs_to_edges: list[BelongsTo]
+    # BELONGS_TO 는 두 step 이 누적: step1(Table→Schema) + step2(그릇 FILE/CLASS→Package).
+    # 끝점 종류만 다른 같은 "소속" 관계 — default replace 면 step2 가 step1 을 덮어쓰므로
+    # ``operator.add`` 로 누적 (reads_writes_edges 와 동일 패턴). 중복은 Neo4j MERGE 가 dedup.
+    belongs_to_edges: Annotated[list[BelongsTo], operator.add]
     fk_edges: list[Fk]
 
     # ── step2_load_ast 결과 ───────────────────────
-    functions: list[Function]
+    code_nodes: list[CodeNode]
     modules: list[Module]
     packages: list[Package]
     variables: list[Variable]
     constants: list[Constant]
     data_types: list[DataType]
     parent_of_edges: list[ParentOf]
-    has_function_edges: list[HasFunction]
-    has_variable_edges: list[HasVariable]
+    # 그릇 → 멤버 (루틴/변수/상수/struct 멤버). 멤버 종류는 노드 라벨로 구분.
     has_member_edges: list[HasMember]
-    belongs_to_package_edges: list[BelongsToPackage]
+    # 구문 → 다음 구문 (DBMS 실행 흐름). Rule-flow 의 next_edges(step6)와 별개 키.
+    statement_next_edges: list[StatementNext]
     references_edges: list[References]
     init_by_edges: list[InitBy]
     # step2 가 파일별 partial 로 여러 dict 반환 → 누적 필요 (다른 키는 한 번에 반환).
@@ -117,16 +118,16 @@ class WorkflowState(TypedDict, total=False):
     unresolved_cases: list[dict]
 
     # ── step5_build_context 결과 ──────────────────
-    analysis_contexts: dict[str, AnalysisContext]   # function_id → ctx
+    analysis_contexts: dict[str, AnalysisContext]   # code_id → ctx
 
     # ── step5 데이터준비 (enrich_table_data — 옵션·전략독립) ──────
     # catalog sample-context 로 받은 테이블별 실제 샘플행 — step6 GWT 입력값.
     # {table_fqn: {columns, sample_rows}}. 토글 off / datasource 미지정 / 미매칭 → 키 없음.
     table_sample_data: dict[str, dict]
 
-    # ── step6 Example Mapping 결과 (analyze_function 함수 단위 누적) ──
+    # ── step6 Example Mapping 결과 (analyze_code 함수 단위 누적) ──
     # 비즈니스 로직 3가지 (rules/examples/questions) + 관련 엣지 6종.
-    # Rule 노드는 rule_hash 가 정체성 식별자 — 같은 statement 함수 간 공유.
+    # Rule 노드는 rule_hash 가 정체성 식별자 — 같은 statement 코드노드 간 공유.
     # 중복은 Neo4j MERGE Cypher 가 dedup (rule_hash / example_id / question_id 키).
     rules: list[Rule]
     examples: list[Example]

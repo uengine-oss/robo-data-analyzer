@@ -4,8 +4,8 @@ DBMS catalog ETL / 리니지 → ``ReadsWrites`` 엣지.
 
 흐름:
 1. ``ENV.catalog.base_url`` (운영 단일 진실) 로 HTTP — ETL flow 응답 받음.
-2. flow 의 ``source`` (sql 파일 fqn / function_id) 를 코드의 실제 Function 과 매칭.
-3. 매칭된 Function 의 ``ReadsWrites`` 엣지 생성. 매칭 실패 시 ``__catalog__:`` prefix 가상 노드.
+2. flow 의 ``source`` (sql 파일 fqn / function_id) 를 코드의 실제 CodeNode 과 매칭.
+3. 매칭된 CodeNode 의 ``ReadsWrites`` 엣지 생성. 매칭 실패 시 ``__catalog__:`` prefix 가상 노드.
 
 분석기 영역 = HTTP 응답 처리. dataset 식별·인증은 catalog 영역 (URL 만 호출).
 """
@@ -52,14 +52,14 @@ async def enrich_lineage_from_catalog_step(state: dict, config: Optional[Runnabl
         # 404 — catalog 에 lineage 없음 (실패 아님).
         return {}
 
-    # 함수 매칭 인덱스: 절대 경로 / 상대 경로 / function_id 모두로 lookup
-    fn_index = _build_function_index(state.get("functions", []), Path(project.root))
+    # 코드노드 매칭 인덱스: 절대 경로 / 상대 경로 / code_id 모두로 lookup
+    fn_index = _build_code_index(state.get("code_nodes", []), Path(project.root))
 
     edges: list[ReadsWrites] = []
     for flow in data.get("flows", []) or []:
         # source = sql 파일 경로 또는 procedure fqn (catalog 응답 형식)
         source = flow.get("source") or flow.get("source_file") or flow.get("function_id")
-        fn_id = _resolve_function_id(source, fn_index) or f"__catalog__:{source}"
+        fn_id = _resolve_code_id(source, fn_index) or f"__catalog__:{source}"
 
         table_fqn = flow.get("table_fqn") or flow.get("to_table") or flow.get("from_table")
         if not table_fqn:
@@ -92,10 +92,10 @@ async def enrich_lineage_from_catalog_step(state: dict, config: Optional[Runnabl
     return {"reads_writes_edges": edges}
 
 
-def _build_function_index(functions: list, project_root: Path) -> dict[str, str]:
-    """id / file 경로 다양한 변형 → 함수 id 매핑."""
+def _build_code_index(code_nodes: list, project_root: Path) -> dict[str, str]:
+    """id / file 경로 다양한 변형 → 코드노드 id 매핑."""
     index: dict[str, str] = {}
-    for fn in functions:
+    for fn in code_nodes:
         index[fn.id] = fn.id
         index[fn.file_path] = fn.id
         try:
@@ -108,8 +108,8 @@ def _build_function_index(functions: list, project_root: Path) -> dict[str, str]
     return index
 
 
-def _resolve_function_id(source: str | None, index: dict[str, str]) -> str | None:
-    """catalog source → 실제 function_id (없으면 None)."""
+def _resolve_code_id(source: str | None, index: dict[str, str]) -> str | None:
+    """catalog source → 실제 code_id (없으면 None)."""
     if not source:
         return None
     if source in index:

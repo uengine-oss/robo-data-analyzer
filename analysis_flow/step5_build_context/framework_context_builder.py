@@ -11,7 +11,7 @@ Framework 는 strategy 별 추가 컨텍스트가 없다 — callee 의존성은
 from __future__ import annotations
 
 from data_models.analysis_context import AnalysisContext
-from data_models.graph_nodes import Function
+from data_models.graph_nodes import CodeNode
 
 
 class FrameworkContextBuilder:
@@ -20,7 +20,7 @@ class FrameworkContextBuilder:
     async def augment(
         self,
         ctx: AnalysisContext,
-        function: Function,
+        code_node: CodeNode,
         state: dict,
     ) -> AnalysisContext:
         """Framework 는 추가 컨텍스트가 없다 — ``ctx`` 를 그대로 반환."""

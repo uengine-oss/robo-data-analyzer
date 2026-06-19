@@ -60,6 +60,6 @@ user_template: |
   name: {name}
 
   member_procedures:
-  {member_functions}
+  {member_code_nodes}
 
   ▸ ModuleSummaryOutput 출력 — summary / logical_name / stereotype.

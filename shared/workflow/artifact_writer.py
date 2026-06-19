@@ -3,13 +3,13 @@
 파일 정책 (Plan §6.3 logs 구조):
 
 - ``ast.json``                — step1_parse_ddl + step2_load_ast 결과
-                                (Schema/Table/Column/Function/Module/Package/Variable
+                                (Schema/Table/Column/CodeNode/Module/Package/Variable
                                 /Constant/DataType + 모든 구조·참조 엣지 + raw call_sites
                                 / import_refs)
 - ``linking.json``            — step4_linking 결과 (R/W / Calls / unresolved / scan)
 - ``analysis_contexts.json``  — step5_build_context 결과 (AnalysisContext per id)
-- ``analysis.json``           — step6_analyze_function + step7_post_processing 결과
-                                (Function summary / Module summary)
+- ``analysis.json``           — step6_analyze_code + step7_post_processing 결과
+                                (CodeNode summary / Module summary)
 - ``graph_extras.json``       — ★ 위 4 분류에 매핑 안 된 state 키 자동 dump
                                 (새 키 추가 시 누락 사각지대 차단 — 단일 진실)
 
@@ -116,7 +116,7 @@ _CATEGORY: dict[str, str] = {
     "schemas":                  "ast",
     "tables":                   "ast",
     "columns":                  "ast",
-    "functions":                "ast",   # 함수 전체 (summary 채워진 것은 analysis.json 에도 별도 추출)
+    "code_nodes":                "ast",   # 코드노드 전체 (summary 채워진 것은 analysis.json 에도 별도 추출)
     "modules":                  "ast",
     "packages":                 "ast",
     "variables":                "ast",
@@ -126,10 +126,8 @@ _CATEGORY: dict[str, str] = {
     "belongs_to_edges":         "ast",
     "fk_edges":                 "ast",
     "parent_of_edges":          "ast",
-    "has_function_edges":       "ast",
-    "has_variable_edges":       "ast",
     "has_member_edges":         "ast",
-    "belongs_to_package_edges": "ast",
+    "statement_next_edges":     "ast",
     "references_edges":         "ast",
     "init_by_edges":            "ast",
     "call_sites":               "ast",   # step2 raw — step4 가 Calls 엣지로 분류
@@ -198,7 +196,7 @@ def dump_state_artifacts(run: AnalysisRun, state: dict) -> None:
             continue
         buckets.setdefault(category, {})[key] = value
 
-    # analysis.json 은 LLM 분석 결과 관점 — Function summary 채워진 것 + Module 종합 +
+    # analysis.json 은 LLM 분석 결과 관점 — CodeNode summary 채워진 것 + Module 종합 +
     # Example Mapping 9 종을 한 파일로. 자동 카테고리 dump 에서는 분리 처리 (덮어쓰기 회피).
     analysis_payload = buckets.pop("analysis", {})
 
@@ -214,10 +212,10 @@ def dump_state_artifacts(run: AnalysisRun, state: dict) -> None:
     if extras:
         dump_artifact(run, "graph_extras", extras)
 
-    # analysis.json — Function summary 채워진 것 + Module 종합 + Example Mapping 9 종.
-    functions_with_summary = [
-        f for f in state.get("functions", []) if getattr(f, "summary", None)
+    # analysis.json — CodeNode summary 채워진 것 + Module 종합 + Example Mapping 9 종.
+    code_nodes_with_summary = [
+        f for f in state.get("code_nodes", []) if getattr(f, "summary", None)
     ]
-    analysis_payload.setdefault("functions", functions_with_summary)
+    analysis_payload.setdefault("code_nodes", code_nodes_with_summary)
     analysis_payload.setdefault("modules", state.get("modules", []))
     dump_artifact(run, "analysis", analysis_payload)

@@ -3,7 +3,7 @@
 설계 원칙
 ─────────
 - Framework / DBMS 양쪽이 같은 dataclass 사용 (분기 0개).
-- DBMS 만의 PARENT_OF 도 공통 엣지로 포함 (Function 의 nested 표현).
+- DBMS 만의 PARENT_OF 도 공통 엣지로 포함 (CodeNode 의 nested 표현).
 - Neo4j 에 박힐 때는 ``shared/neo4j/edges/<type>.py`` 의 Cypher 쿼리가 변환.
 
 endpoint 필드 = 가리키는 노드의 ``id`` (관계 역할명)
@@ -46,9 +46,13 @@ class HasColumn:
 
 @dataclass(frozen=True)
 class BelongsTo:
-    """Table → Schema. child=table, parent=schema."""
-    child_id: str                            # table id
-    parent_id: str                           # schema id "db.schema"
+    """네임스페이스 소속. child → parent(네임스페이스).
+
+    DDL: Table → Schema (child=table, parent=schema "db.schema").
+    AST: 그릇(FILE/CLASS) → Package (child=그릇 id, parent=폴더/패키지 id).
+    """
+    child_id: str
+    parent_id: str
 
 
 @dataclass(frozen=True)
@@ -66,16 +70,16 @@ class Fk:
     is_candidate: bool = False
 
 
-# ── Function ↔ Table (Linking 결과) ────────────────────────
+# ── CodeNode ↔ Table (Linking 결과) ────────────────────────
 
 @dataclass(frozen=True)
 class ReadsWrites:
-    """Function → Table (R/W 엣지). source=function, target=table.
+    """CodeNode → Table (R/W 엣지). source=function, target=table.
 
     Linking 1 단계 결정론 grep / DBMS DML 매칭 / Linking Agent (stage3) 가 생성.
 
     정체성 = (source_id, target_id, relation). dml_type 과 evidence_* 는 부속 메타 —
-    같은 함수가 같은 테이블을 같은 동작으로 여러 라인에서 호출해도 그래프엔 1 엣지
+    같은 코드노드가 같은 테이블을 같은 동작으로 여러 라인에서 호출해도 그래프엔 1 엣지
     (Neo4j MERGE 가 dedup). dml_type 은 ``derive_dml_type(standard_op)`` 헬퍼로 생성.
     """
     source_id: str
@@ -100,18 +104,18 @@ def normalize_relation(value: str) -> Optional[Literal["READS", "WRITES"]]:
     return None
 
 
-# ── Function ↔ Function (호출 / 부모-자식) ─────────────────
+# ── CodeNode ↔ CodeNode (호출 / 부모-자식) ─────────────────
 
 @dataclass(frozen=True)
 class Calls:
-    """Function → Function (호출 관계).
+    """CodeNode → CodeNode (호출 관계).
 
-    Framework: 결정론 분류 (link_calls_by_name — 함수 이름 목록 대조).
+    Framework: 결정론 분류 (link_calls_by_name — 이름 목록 대조).
     DBMS: AST CALL 노드 분류 (link_calls_by_ast — 빌트인·자기루프 드롭).
 
     scope:
-    - ``internal``: 같은 코드베이스 안 함수 — 콜리 정의 노드가 이미 존재.
-    - ``external``: 분석 범위 밖 실 함수/프로시저 (예: 자기 스키마의 미분석 프로시저,
+    - ``internal``: 같은 코드베이스 안 코드노드 — 콜리 정의 노드가 이미 존재.
+    - ``external``: 분석 범위 밖 실 루틴/프로시저 (예: 자기 스키마의 미분석 프로시저,
       다른 스키마/라이브러리). 콜리 정의 노드가 없어 ``upsert_calls`` 가
       ``:FUNCTION:EXTERNAL`` stub 노드를 모듈·스키마와 함께 internal 과 대칭으로 생성.
 
@@ -131,7 +135,7 @@ class Calls:
 
 @dataclass(frozen=True)
 class ParentOf:
-    """Function → nested Function. parent=상위, child=중첩.
+    """CodeNode → nested CodeNode. parent=상위, child=중첩.
 
     DBMS 의 PL/SQL procedure 안 SELECT/IF/CASE 같은 분석 단위가 parent 의 child.
     Framework 는 거의 안 씀 (메서드는 평면 구조).
@@ -149,45 +153,41 @@ class ParentOf:
 # ── 코드 구조 엣지 (load_ast 가 antlr JSON 트리에서 생성) ──
 
 @dataclass(frozen=True)
-class HasFunction:
-    """Module → Function (모듈이 함수를 품음). parent=module, child=function."""
-    parent_id: str
-    child_id: str
-
-
-@dataclass(frozen=True)
-class HasVariable:
-    """Module → Variable (모듈 레벨 변수 — 클래스 필드 / 전역변수). parent=module, child=variable."""
-    parent_id: str
-    child_id: str
-
-
-@dataclass(frozen=True)
 class HasMember:
-    """DataType → Variable (struct / union 의 멤버 변수). parent=data_type, child=variable."""
+    """그릇 → 멤버 ("가지다"). parent=그릇, child=멤버.
+
+    그릇 = FILE / CLASS / PACKAGE / DataType. 멤버 = 루틴(PROCEDURE/FUNCTION/METHOD/
+    TRIGGER) · 데이터(VARIABLE/CONSTANT/FIELD/PARAMETER) · struct 멤버변수.
+    멤버 종류는 **노드 라벨**로 구분 (관계는 범용). 일반 구문(SELECT/IF…)은 멤버가
+    아니라 루틴 본문의 일부 → HAS_MEMBER 아님, PARENT_OF(중첩)+NEXT(흐름) 로만.
+    """
     parent_id: str
     child_id: str
 
 
 @dataclass(frozen=True)
-class BelongsToPackage:
-    """Module → Package (모듈이 든 패키지 = 파일이 든 폴더). child=module, parent=package."""
-    child_id: str
-    parent_id: str
+class StatementNext:
+    """구문 → 다음 구문 (DBMS 실행 흐름). prev=이전 구문, next=다음 구문.
+
+    같은 부모 아래 형제 구문을 등장(실행) 순서로 연결 — 절차적 로직 흐름 추적.
+    Rule→Rule 흐름(``Next``, edges/rule_flow)과 rel 타입(NEXT)은 공유하나 끝점이
+    구문 노드라 라벨로 구분. Framework 는 구문 단위 흐름 개념 없음 → 생성 안 함.
+    """
+    prev_id: str
+    next_id: str
 
 
 # ── 코드 참조 엣지 (결정론 식별자 매칭) ────────────────────
 
 @dataclass(frozen=True)
 class References:
-    """Function → Variable / Constant (함수 본문이 참조하는 변수·상수). source=function, target=var/const.
+    """CodeNode → Variable / Constant (본문이 참조하는 변수·상수). source=function, target=var/const.
 
-    ``target_label`` 로 upsert 가 올바른 라벨로 MATCH (키는 항상 ``id``).
-    정체성 = (source_id, target_id, target_label). evidence_line 은 부속.
+    MATCH 는 모든 노드 공통 ``id`` 로만 (라벨 무관 — 변수/상수 라벨이 antlr type 열린집합).
+    정체성 = (source_id, target_id). evidence_line 은 부속.
     """
     source_id: str
     target_id: str
-    target_label: Literal["VARIABLE", "CONSTANT"]
     evidence_line: int = 0
 
 
@@ -199,26 +199,24 @@ class InitBy:
     (``static char x [LEN +1]``) · 상수 식 (``#define B (A+1)``) 등 모두 포함.
     Python 쪽이 source 라인을 직접 읽어 토큰 추출하므로 antlr 가 못 준 의존도 잡힌다.
 
-    ``from_label`` / ``source_label`` 로 upsert 가 올바른 라벨로 MATCH (키는 항상 ``id``).
+    MATCH 는 모든 노드 공통 ``id`` 로만 (라벨 무관).
     """
     from_id: str                              # 출발: Variable 또는 Constant id
-    from_label: Literal["VARIABLE", "CONSTANT"]
     source_id: str
-    source_label: Literal["VARIABLE", "CONSTANT"]
 
 
-# ── Example Mapping 엣지 (analyze_function 3분할 → EM 빌더가 생성) ──
+# ── Example Mapping 엣지 (analyze_code 3분할 → EM 빌더가 생성) ──
 
 @dataclass(frozen=True)
 class HasRule:
-    """Function → Rule. source=function, target=rule. Rule 노드는 함수 간 공유되므로 per-function 정보는 이 엣지 속성.
+    """CodeNode → Rule. source=function, target=rule. Rule 노드는 코드노드 간 공유되므로 per-function 정보는 이 엣지 속성.
 
     정체성 = (source_id, target_id). local_rule_id / flow_id 등은 부속 메타.
     flow_id 의 ``-`` 계층이 분기 구조를 표현 (BRANCH 엣지 자동 도출).
     """
     source_id: str
     target_id: str
-    local_rule_id: str                       # 이 함수 안에서의 "R1" 등
+    local_rule_id: str                       # 이 코드노드 안에서의 "R1" 등
     flow_id: str = ""
     coupled_domains: tuple[str, ...] = ()
 
@@ -232,23 +230,23 @@ class HasExample:
 
 @dataclass(frozen=True)
 class HasQuestion:
-    """Function → Question. source=function, target=question."""
+    """CodeNode → Question. source=function, target=question."""
     source_id: str
     target_id: str
 
 
 @dataclass(frozen=True)
 class Next:
-    """Rule → Rule (메인 흐름 순서). 같은 함수(owner) 안 — HAS_RULE local_rule_id 로 매칭."""
-    owner_id: str                            # 규칙들을 품은 함수의 id
+    """Rule → Rule (메인 흐름 순서). 같은 코드노드(owner) 안 — HAS_RULE local_rule_id 로 매칭."""
+    owner_id: str                            # 규칙들을 품은 코드노드의 id
     from_rule_id: str                        # local rule_id ("R1" 등)
     to_rule_id: str
 
 
 @dataclass(frozen=True)
 class Branch:
-    """Rule → Rule (분기). 같은 함수(owner) 안 — HAS_RULE local_rule_id 로 매칭."""
-    owner_id: str                            # 규칙들을 품은 함수의 id
+    """Rule → Rule (분기). 같은 코드노드(owner) 안 — HAS_RULE local_rule_id 로 매칭."""
+    owner_id: str                            # 규칙들을 품은 코드노드의 id
     from_rule_id: str
     to_rule_id: str
 

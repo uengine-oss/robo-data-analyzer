@@ -4,12 +4,12 @@ antlr-parser 가 만든 ``data/analysis/target/<p>/*.json`` 트리만 읽는다 
 Framework / DBMS 공용 단일 reader (언어 해석은 ontology 가 흡수).
 
 생산물 (ParseResult):
-- Module / Function / Package / Variable / Constant / DataType 노드
+- Module / CodeNode / Package / Variable / Constant / DataType 노드
 - PARENT_OF (트리 중첩) 엣지
 - call_sites (FUNCTION_CALL) · import_refs (INCLUDE/IMPORT) — 노드 아님, 후속 step 단서
 
-노드 종류는 Neo4j 라벨로만 표현 (graph_nodes 참조) — Framework 는 ontology 가
-sub_label 을 도출(``:FUNCTION:METHOD``), DBMS 는 단일 라벨. ``node_type`` 속성 없음.
+노드 라벨 = 자기 antlr ``type`` 하나 (reader 가 ``node["type"]`` 직결, Framework/DBMS 공통).
+ontology ``role_of`` 는 분류 전용 — 어느 dataclass/엣지/internal 인지만 정한다 (라벨엔 안 씀).
 """
 from __future__ import annotations
 
@@ -18,15 +18,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from data_models.graph_edges import (
-    BelongsToPackage,
-    HasFunction,
+    BelongsTo,
     HasMember,
-    HasVariable,
     ParentOf,
+    StatementNext,
 )
-from data_models.graph_nodes import Constant, DataType, Function, Module, Package, Variable
+from data_models.graph_nodes import Constant, DataType, CodeNode, Module, Package, Variable
 from shared.config.env_catalog import ENV
-from shared.lang.ontology import role_of, sub_label_of
+from shared.lang.ontology import role_of
 from shared.lang.source_extension import EXT_TO_LANG
 from shared.log.logger import log_error, log_warning
 
@@ -35,26 +34,29 @@ _COMPONENT = "analysis_flow.step2_load_ast.antlr_json_reader"
 # DBMS(PL/SQL · PL/pgSQL) 확장자 — 제어흐름 트리 해석 경로.
 _DBMS_EXTS: frozenset[str] = frozenset({"sql", "pks", "pkb", "pls", "ddl"})
 
-# DBMS 선언 노드 — Variable 노드로 수집 (Function 아님).
+# DBMS 선언 노드 — Variable 노드로 수집 (CodeNode 아님).
 _DBMS_VAR_TYPES: frozenset[str] = frozenset({
     "PARAMETER", "VARIABLE", "PACKAGE_VARIABLE", "CURSOR_VARIABLE",
 })
+
+# 루틴(호출 가능 단위) 라벨 — HAS_MEMBER(그릇→멤버) 자격. 라벨 = antlr type 이라 종류 집합.
+# 일반 구문(SELECT/IF/LOOP…)·구조 노드(DECLARE/TRY…)는 멤버 아님 → PARENT_OF+NEXT 만.
+_ROUTINE_LABELS: frozenset[str] = frozenset({"FUNCTION", "PROCEDURE", "METHOD", "TRIGGER"})
 
 
 @dataclass
 class ParseResult:
     """한 antlr JSON 파일의 노드 / 엣지 / 분석 단서."""
-    functions: list[Function] = field(default_factory=list)
+    code_nodes: list[CodeNode] = field(default_factory=list)
     modules: list[Module] = field(default_factory=list)
     packages: list[Package] = field(default_factory=list)
     variables: list[Variable] = field(default_factory=list)
     constants: list[Constant] = field(default_factory=list)
     data_types: list[DataType] = field(default_factory=list)
     parent_of_edges: list[ParentOf] = field(default_factory=list)
-    has_function_edges: list[HasFunction] = field(default_factory=list)
-    has_variable_edges: list[HasVariable] = field(default_factory=list)
-    has_member_edges: list[HasMember] = field(default_factory=list)
-    belongs_to_package_edges: list[BelongsToPackage] = field(default_factory=list)
+    has_member_edges: list[HasMember] = field(default_factory=list)          # 그릇 → 루틴/데이터 멤버
+    belongs_to_edges: list[BelongsTo] = field(default_factory=list)          # 그릇 → Package(폴더) 소속
+    statement_next_edges: list[StatementNext] = field(default_factory=list)  # 구문 → 다음 구문 (DBMS 실행 흐름)
     call_sites: list[dict] = field(default_factory=list)   # FUNCTION_CALL: {call_id, caller_id, call_text, file, line}
     import_refs: list[dict] = field(default_factory=list)  # INCLUDE/IMPORT: {name, file, line}
 
@@ -62,15 +64,28 @@ class ParseResult:
 # ── 파일 진입점 ───────────────────────────────────────────────
 
 def ast_and_source_roots(source_path: Path) -> tuple[Path, Path]:
-    """소스 루트 → ``(AST 루트 = data/analysis, 소스 루트)``.
+    """``project.root`` → ``(AST 루트, 소스 루트)``.
 
-    antlr 가 AST 를 항상 ``data/analysis`` 에 **소스 루트 구조 그대로 미러**로 쓴다
-    (중간 ``target`` 폴더 없음). 소스 루트는 분석 대상 경로 그 자체 — 업로드 모드면
-    ``data/source``, 경로 모드(Electron)면 사용자가 고른 로컬 폴더. 둘 다 ``project_root``
-    로 들어오므로 모드 무관하게 동일 처리.
+    소스 루트 = AST 의 ``filePath`` 가 상대로 매달린 **antlr 파싱 base** (``_src_path``
+    가 ``source_root / filePath`` 로 원문 슬라이싱). 이 데이터 규약(``data/source/<project>``
+    + AST ``filePath="<project>/file"``)에서 base 는 항상 ``data/source``:
+    - ``project.root == data/source`` (HTTP 업로드·일괄) → 소스루트=``data/source``,
+      AST=``data/analysis`` 전체.
+    - ``project.root == data/source/<project>`` (CLI 단일 대상) → 소스루트=``data/source``
+      (base 복원 — 이중경로 차단), AST=``data/analysis/<project>`` 로 스코프(그 프로젝트만).
+    - ``data/source`` 밖 (Electron 경로모드, 사용자가 고른 로컬 폴더) → 소스루트=그 폴더,
+      AST=``data/analysis`` 전체 (antlr 가 그 구조로 미러).
     """
     analysis_root = ENV.data.dir / "analysis"
-    return analysis_root, source_path.resolve()
+    source_base = (ENV.data.dir / "source").resolve()
+    root = source_path.resolve()
+    try:
+        rel = root.relative_to(source_base)
+    except ValueError:
+        return analysis_root, root           # 경로모드 — base = 고른 폴더 그대로
+    if rel == Path("."):
+        return analysis_root, source_base    # 업로드·일괄 — 전체
+    return analysis_root / rel, source_base   # CLI 단일 대상 — 그 프로젝트로 스코프
 
 
 def read_antlr_json(json_path: Path, source_root: Path) -> ParseResult:
@@ -133,7 +148,7 @@ class _FwCtx:
 def _read_framework(
     raw: dict, lang: str, source_root: Path, json_path: Path,
 ) -> ParseResult:
-    """Framework 파일 → Module / Function / Variable / Constant / DataType 노드.
+    """Framework 파일 → Module / CodeNode / Variable / Constant / DataType 노드.
 
     ``FILE`` 자체가 모듈인 언어(c / python)는 file-level Module 을 만들고,
     Java 는 ``packageName`` 을 namespace 로 써서 CLASS 가 Module 이 된다.
@@ -150,7 +165,7 @@ def _read_framework(
         base_id = _file_module_id(rel)
         result.modules.append(_make_module(
             raw, base_id, Path(raw.get("fileName") or json_path.name).stem,
-            src_path, sub_label_of("FILE", lang) or "", 0, 0,
+            src_path, 0, 0,
         ))
     else:
         # java — FILE 은 internal. namespace = packageName (없으면 default 패키지).
@@ -178,16 +193,16 @@ def _fw_module(child: dict, ctx: _FwCtx, module_id: str, parent_fid: str | None)
     name = child.get("name") or ""
     sub_id = f"{module_id}.{name}" if module_id else name
     ctx.result.modules.append(_make_module(
-        child, sub_id, name, ctx.src_path, sub_label_of(child.get("type", ""), ctx.lang) or "",
+        child, sub_id, name, ctx.src_path,
         int(child.get("startLine") or 0), int(child.get("endLine") or 0),
     ))
     _walk_framework(child, ctx, sub_id, parent_fid)
 
 
-def _fw_function(child: dict, ctx: _FwCtx, module_id: str, parent_fid: str | None) -> None:
-    fid, sub_label = _id_and_sub(child, ctx, module_id)
-    ctx.result.functions.append(_make_function(
-        child, fid, module_id, ctx.package, ctx.src_path, parent_fid, sub_label,
+def _fw_code(child: dict, ctx: _FwCtx, module_id: str, parent_fid: str | None) -> None:
+    fid = _node_id(child, ctx, module_id)
+    ctx.result.code_nodes.append(_make_code_node(
+        child, fid, module_id, ctx.package, ctx.src_path, parent_fid,
     ))
     if parent_fid is not None:
         ctx.result.parent_of_edges.append(ParentOf(parent_id=parent_fid, child_id=fid))
@@ -195,24 +210,24 @@ def _fw_function(child: dict, ctx: _FwCtx, module_id: str, parent_fid: str | Non
 
 
 def _fw_variable(child: dict, ctx: _FwCtx, module_id: str, parent_fid: str | None) -> None:
-    vid, sub_label = _id_and_sub(child, ctx, module_id)
-    ctx.result.variables.append(_make_variable(child, vid, module_id, ctx.src_path, sub_label))
+    vid = _node_id(child, ctx, module_id)
+    ctx.result.variables.append(_make_variable(child, vid, module_id, ctx.src_path))
 
 
 def _fw_constant(child: dict, ctx: _FwCtx, module_id: str, parent_fid: str | None) -> None:
-    cid, sub_label = _id_and_sub(child, ctx, module_id)
-    ctx.result.constants.append(_make_constant(child, cid, module_id, ctx.src_path, sub_label))
+    cid = _node_id(child, ctx, module_id)
+    ctx.result.constants.append(_make_constant(child, cid, module_id, ctx.src_path))
 
 
 def _fw_data_type(child: dict, ctx: _FwCtx, module_id: str, parent_fid: str | None) -> None:
-    did, sub_label = _id_and_sub(child, ctx, module_id)
-    ctx.result.data_types.append(_make_data_type(child, did, module_id, ctx.src_path, sub_label))
+    did = _node_id(child, ctx, module_id)
+    ctx.result.data_types.append(_make_data_type(child, did, module_id, ctx.src_path))
     # struct / union 멤버 → Variable 노드 + HAS_MEMBER (모듈 소속 아닌 자료형 소속).
     for member in child.get("children") or []:
         role = role_of(member.get("type", ""), ctx.lang)
         if role == "variable":
-            vid, m_sub = _id_and_sub(member, ctx, module_id)
-            ctx.result.variables.append(_make_variable(member, vid, module_id, ctx.src_path, m_sub))
+            vid = _node_id(member, ctx, module_id)
+            ctx.result.variables.append(_make_variable(member, vid, module_id, ctx.src_path))
             ctx.result.has_member_edges.append(HasMember(did, vid))
         elif role == "data_type":
             _fw_data_type(member, ctx, module_id, parent_fid)  # 중첩 struct
@@ -227,7 +242,7 @@ def _fw_internal(child: dict, ctx: _FwCtx, module_id: str, parent_fid: str | Non
 
 _FW_DISPATCH = {
     "module":    _fw_module,
-    "function":  _fw_function,
+    "function":  _fw_code,
     "variable":  _fw_variable,
     "constant":  _fw_constant,
     "data_type": _fw_data_type,
@@ -270,10 +285,10 @@ class _DbmsCtx:
 
 
 def _read_dbms(raw: dict, source_root: Path, json_path: Path) -> ParseResult:
-    """DBMS 파일 → Module(파일) + Function 제어흐름 트리 + Variable/Constant.
+    """DBMS 파일 → Module(파일) + CodeNode 제어흐름 트리 + Variable/Constant.
 
-    PROCEDURE/FUNCTION/TRIGGER 가 Function 루트. 그 안의 IF/LOOP/CASE/DML 등
-    중첩 노드도 전부 Function (``parent_id`` 트리). 선언 노드(VARIABLE 등)는
+    PROCEDURE/FUNCTION/TRIGGER 가 CodeNode 루트. 그 안의 IF/LOOP/CASE/DML 등
+    중첩 노드도 전부 CodeNode (``parent_id`` 트리). 선언 노드(VARIABLE 등)는
     Variable/Constant 로 수집. DBMS 는 sub-label 없음 (단일 라벨).
     """
     result = ParseResult()
@@ -284,101 +299,112 @@ def _read_dbms(raw: dict, source_root: Path, json_path: Path) -> ParseResult:
     if package is not None:
         result.packages.append(package)
 
-    # 파일 자체가 컨테이너 Module (PL/SQL 스크립트 / 패키지 파일).
-    result.modules.append(_make_module(raw, file_stem, file_stem, src_path, "", 0, 0))
+    # 파일 자체가 컨테이너 Module (PL/SQL 스크립트 / 패키지 파일). 라벨 = raw["type"] = FILE.
+    result.modules.append(_make_module(raw, file_stem, file_stem, src_path, 0, 0))
 
     ctx = _DbmsCtx(
         file_stem=file_stem, package=package_id,
         src_path=src_path, result=result, seen=set(),
     )
-    for child in raw.get("children") or []:
-        _walk_dbms(child, ctx, None)
+    _walk_dbms_siblings(raw.get("children"), ctx, None)
     _derive_structure_edges(result, package_id)
     return result
 
 
-def _walk_dbms(node: dict, ctx: _DbmsCtx, parent_id: str | None) -> None:
-    """DBMS 노드 재귀 순회.
+def _walk_dbms_siblings(
+    children: list[dict] | None, ctx: _DbmsCtx, parent_id: str | None,
+) -> None:
+    """같은 부모 아래 형제 노드 순회 + 구문 실행 흐름(NEXT) 연결.
 
-    - ``DECLARE``   : 선언 묶음 래퍼 — 노드 X, 자식만 순회.
-    - 변수류         : Variable 노드 (leaf).
-    - CONSTANT_FIELD: Constant 노드 (leaf).
-    - 그 외          : Function 노드 (제어흐름 트리, 자식 재귀).
+    각 형제를 ``_walk_dbms`` 로 처리하고, 구문(CodeNode) 노드끼리 **등장(실행) 순서**로
+    ``(이전)→[:NEXT]→(다음)`` 연결한다. 변수/상수(leaf 데이터, ``None`` 반환)는 흐름에
+    참여하지 않아 NEXT 체인을 끊지 않는다. DBMS 전용 — Framework 는 구문 흐름 개념 없음.
+    """
+    prev_id: str | None = None
+    for child in children or []:
+        curr_id = _walk_dbms(child, ctx, parent_id)
+        if curr_id is None:
+            continue
+        if prev_id is not None:
+            ctx.result.statement_next_edges.append(StatementNext(prev_id, curr_id))
+        prev_id = curr_id
+
+
+def _walk_dbms(node: dict, ctx: _DbmsCtx, parent_id: str | None) -> str | None:
+    """DBMS 노드 1개 재귀 처리 → 생성한 구문(CodeNode) 노드 id (없으면 ``None``).
+
+    - 변수류         : Variable 노드 (leaf) → ``None`` (흐름 비참여).
+    - CONSTANT_FIELD: Constant 노드 (leaf) → ``None``.
+    - 그 외(DECLARE/TRY/구문 포함): CodeNode 노드 (제어흐름 트리, 자식 재귀) → 그 id.
+      ★구조 노드(DECLARE/TRY/TRIGGER_BLOCK)도 **노드로 보존** — LLM 분석만 batch_planner 가
+      제외(누락 0). 노드 종류는 antlr type 그대로 primary 라벨.
     """
     ntype = node.get("type", "")
-
-    if ntype == "DECLARE":
-        for child in node.get("children") or []:
-            _walk_dbms(child, ctx, parent_id)
-        return
 
     if ntype in _DBMS_VAR_TYPES:
         vid = _unique_id(
             f"{ctx.file_stem}.{node.get('name') or ntype}",
             int(node.get("startLine") or 0), ctx.seen,
         )
-        ctx.result.variables.append(_make_variable(node, vid, ctx.file_stem, ctx.src_path, ""))
-        return
+        ctx.result.variables.append(_make_variable(node, vid, ctx.file_stem, ctx.src_path))
+        return None
 
     if ntype == "CONSTANT_FIELD":
         cid = _unique_id(
             f"{ctx.file_stem}.{node.get('name') or ntype}",
             int(node.get("startLine") or 0), ctx.seen,
         )
-        ctx.result.constants.append(_make_constant(node, cid, ctx.file_stem, ctx.src_path, ""))
-        return
+        ctx.result.constants.append(_make_constant(node, cid, ctx.file_stem, ctx.src_path))
+        return None
 
-    # 그 외 전부 Function (제어흐름 트리).
+    # 그 외 전부 CodeNode (제어흐름 트리 — 구문 + 구조 노드).
     sl = int(node.get("startLine") or 0)
     name = node.get("name") or ntype
     base = f"{ctx.file_stem}:{name}:{sl}" if parent_id is None else f"{parent_id}:{ntype}:{sl}"
     fid = _unique_id(base, sl, ctx.seen)
-    # DBMS: 노드의 antlr type 그대로가 primary 라벨 (:SELECT/:PROCEDURE/:IF…). 역할 라벨·sub-label 없음.
-    ctx.result.functions.append(_make_function(
-        node, fid, ctx.file_stem, ctx.package, ctx.src_path, parent_id, "",
-        primary_label=ntype or "FUNCTION",
+    # DBMS: 노드의 antlr type 그대로가 라벨 (:SELECT/:PROCEDURE/:IF/:DECLARE…). _make_code_node 이 node["type"] 직결.
+    ctx.result.code_nodes.append(_make_code_node(
+        node, fid, ctx.file_stem, ctx.package, ctx.src_path, parent_id,
     ))
     if parent_id is not None:
         ctx.result.parent_of_edges.append(ParentOf(parent_id=parent_id, child_id=fid))
-    for child in node.get("children") or []:
-        _walk_dbms(child, ctx, fid)
+    _walk_dbms_siblings(node.get("children"), ctx, fid)
+    return fid
 
 
 # ── 노드 빌더 — antlr dict → dataclass (Framework / DBMS 공용) ──
 
 def _make_module(
-    node: dict, module_id: str, name: str, src_path: str, sub_label: str,
+    node: dict, module_id: str, name: str, src_path: str,
     start_line: int, end_line: int,
 ) -> Module:
     return Module(
         id=module_id, name=name, file_path=src_path,
-        sub_label=sub_label, start_line=start_line, end_line=end_line,
+        label=node["type"], start_line=start_line, end_line=end_line,
         annotations=node.get("annotations") or "",
         comment=node.get("comment") or "",
     )
 
 
-def _make_function(
+def _make_code_node(
     node: dict, fid: str, module_id: str, package_id: str,
-    src_path: str, parent_fid: str | None, sub_label: str,
-    primary_label: str = "FUNCTION",
-) -> Function:
-    """primary_label: Framework="FUNCTION"(역할) / DBMS=antlr type 그대로(:SELECT 등).
+    src_path: str, parent_fid: str | None,
+) -> CodeNode:
+    """라벨 = ``node["type"]`` (Framework METHOD/FUNCTION · DBMS PROCEDURE/SELECT/IF 등).
 
-    ``module_id`` (소속 모듈 id) → ``owner_id`` (HAS_FUNCTION 빌드·그룹핑).
+    ``module_id`` (소속 모듈 id) → ``owner_id`` (HAS_MEMBER 빌드·그룹핑).
     ``package_id`` (소속 폴더 id) → ``package`` (external 호출 스키마 귀속, call_linker).
     """
     sl = int(node.get("startLine") or 0)
-    return Function(
+    return CodeNode(
         id=fid,
         name=node.get("name") or "",          # 표시명 (구문은 "" — 라벨[라인]으로 표시)
-        primary_label=primary_label or "FUNCTION",
+        label=node["type"],
         signature=_clean_signature(node.get("signature"))
                   or node.get("name") or node.get("type") or "",
         file_path=src_path,
         start_line=sl,
         end_line=int(node.get("endLine") or sl),
-        sub_label=sub_label,
         owner_id=module_id,
         package=package_id,
         parent_id=parent_fid,
@@ -390,7 +416,7 @@ def _make_function(
 
 
 def _make_variable(
-    node: dict, vid: str, module_id: str, src_path: str, sub_label: str,
+    node: dict, vid: str, module_id: str, src_path: str,
 ) -> Variable:
     sl = int(node.get("startLine") or 0)
     return Variable(
@@ -404,12 +430,12 @@ def _make_variable(
         comment=node.get("comment") or "",
         annotations=node.get("annotations") or "",
         init_value=node.get("initValue") or "",
-        sub_label=sub_label,
+        label=node["type"],
     )
 
 
 def _make_constant(
-    node: dict, cid: str, module_id: str, src_path: str, sub_label: str,
+    node: dict, cid: str, module_id: str, src_path: str,
 ) -> Constant:
     sl = int(node.get("startLine") or 0)
     return Constant(
@@ -422,12 +448,12 @@ def _make_constant(
         value=node.get("initValue") or "",
         var_type=node.get("variableType") or "",
         comment=node.get("comment") or "",
-        sub_label=sub_label,
+        label=node["type"],
     )
 
 
 def _make_data_type(
-    node: dict, did: str, module_id: str, src_path: str, sub_label: str,
+    node: dict, did: str, module_id: str, src_path: str,
 ) -> DataType:
     sl = int(node.get("startLine") or 0)
     return DataType(
@@ -437,39 +463,41 @@ def _make_data_type(
         file_path=src_path,
         start_line=sl,
         end_line=int(node.get("endLine") or sl),
-        sub_label=sub_label,
+        label=node["type"],
         comment=node.get("comment") or "",
     )
 
 
 # ── 헬퍼 ──────────────────────────────────────────────────────
 
-def _id_and_sub(node: dict, ctx: _FwCtx, module_id: str) -> tuple[str, str]:
-    """Framework 노드 → (고유 id, sub_label).
-
-    id = ``<module_id>.<name>`` (충돌 시 ``:<line>`` 접미). sub_label 은 ontology 도출.
-    """
+def _node_id(node: dict, ctx: _FwCtx, module_id: str) -> str:
+    """Framework 노드 → 고유 id = ``<module_id>.<name>`` (충돌 시 ``:<line>`` 접미)."""
     name = node.get("name") or node.get("type") or ""
     sl = int(node.get("startLine") or 0)
-    node_id = _unique_id(f"{module_id}.{name}" if module_id else name, sl, ctx.seen)
-    return node_id, (sub_label_of(node.get("type", ""), ctx.lang) or "")
+    return _unique_id(f"{module_id}.{name}" if module_id else name, sl, ctx.seen)
 
 
 def _derive_structure_edges(result: ParseResult, package_id: str) -> None:
-    """노드 리스트에서 구조 엣지 도출 — HAS_FUNCTION / HAS_VARIABLE / BELONGS_TO_PACKAGE.
+    """노드 리스트에서 구조 엣지 도출 — HAS_MEMBER(그릇→멤버) / BELONGS_TO(그릇→폴더).
 
-    HAS_MEMBER 는 walk 중 struct 컨텍스트에서 이미 생성됨 — 그 멤버 변수는
-    HAS_VARIABLE 에서 제외 (변수는 모듈 소속이거나 자료형 멤버, 둘 중 하나).
+    HAS_MEMBER = 그릇이 멤버를 가짐 (멤버 종류는 노드 라벨로 구분):
+    - 루틴(PROCEDURE/FUNCTION/METHOD/TRIGGER)만 — 일반 구문(SELECT/IF…)·구조 노드는
+      멤버가 아니라 루틴 본문의 일부라 제외 (PARENT_OF 중첩 + NEXT 흐름으로만 연결).
+    - 데이터(변수/상수). struct 멤버변수는 walk 중 HAS_MEMBER 로 이미 생성됨 → 중복 제외.
+    BELONGS_TO = 그릇(모듈/파일/클래스)이 든 폴더(Package) 소속.
     """
-    for fn in result.functions:
-        result.has_function_edges.append(HasFunction(fn.owner_id, fn.id))
+    for fn in result.code_nodes:
+        if fn.label in _ROUTINE_LABELS:
+            result.has_member_edges.append(HasMember(fn.owner_id, fn.id))
     member_ids = {e.child_id for e in result.has_member_edges}
     for v in result.variables:
         if v.id not in member_ids:
-            result.has_variable_edges.append(HasVariable(v.owner_id, v.id))
+            result.has_member_edges.append(HasMember(v.owner_id, v.id))
+    for c in result.constants:
+        result.has_member_edges.append(HasMember(c.owner_id, c.id))
     if package_id:
         for m in result.modules:
-            result.belongs_to_package_edges.append(BelongsToPackage(m.id, package_id))
+            result.belongs_to_edges.append(BelongsTo(m.id, package_id))
 
 
 def _folder_package(rel_path: str) -> tuple[str, Package | None]:

@@ -1,4 +1,4 @@
-"""READS / WRITES 엣지 — Function → Table.
+"""READS / WRITES 엣지 — CodeNode → Table.
 
 Linking 1 단계 결정론 grep 또는 Linking Agent (stage3) 가 생성.
 relation 별로 다른 엣지 type 으로 박음.

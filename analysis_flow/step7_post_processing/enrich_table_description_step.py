@@ -1,8 +1,8 @@
 """enrich_table_description_step — 테이블 description 통합 LLM 호출.
 
 흐름:
-1. ``step6_analyze_function`` 의 ``tableInsights`` (``Function.extra["table_insights"]``) 누적.
-2. ``table_fqn`` 별로 candidates (모든 함수 관점의 role + columns) 모음.
+1. ``step6_analyze_code`` 의 ``tableInsights`` (``CodeNode.extra["table_insights"]``) 누적.
+2. ``table_fqn`` 별로 candidates (모든 코드노드 관점의 role + columns) 모음.
 3. ``prompts/<strategy>/table_description.yaml`` LLM 호출 → 통합 description.
 4. Table/Column.analyzed_description Neo4j SET — DDL/카탈로그 1차 description 과 격리.
 
@@ -25,7 +25,7 @@ from shared.workflow.step_utils import step_config
 from shared.config.env_catalog import ENV
 from shared.llm.cost_budget import BudgetExceededError
 from shared.llm.fanout import gather_with_warmup
-from data_models.function_analysis_output import TableDescription
+from data_models.code_analysis_output import TableDescription
 from shared.llm.yaml_llm_runner import run_yaml_rule
 from shared.log.logger import log_error, log_info, log_warning
 from shared.log.processing_progress import step_processing_scope, track_processing
@@ -46,24 +46,24 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
         log_warning(_STEP, "config_missing", "strategy 누락 — step skip")
         return {}
 
-    functions = state.get("functions", [])
-    if not functions:
-        log_info(_STEP, "skip", reason="no functions")
+    code_nodes = state.get("code_nodes", [])
+    if not code_nodes:
+        log_info(_STEP, "skip", reason="no code_nodes")
         return {}
     started = time.monotonic()
 
-    # table_fqn → [{function_summary, role, columns}, ...]
+    # table_fqn → [{code_summary, role, columns}, ...]
     table_candidates: dict[str, list[dict]] = defaultdict(list)
     # table_fqn → {column_name: description (가장 명확한 1개)}
     column_descriptions: dict[str, dict[str, str]] = defaultdict(dict)
 
-    for fn in functions:
+    for fn in code_nodes:
         for insight in fn.extra.get("table_insights", []) or []:
             table = insight.get("table") or ""
             if not table:
                 continue
             table_candidates[table].append({
-                "function_summary": fn.summary or fn.logical_name or fn.signature,
+                "code_summary": fn.summary or fn.logical_name or fn.signature,
                 "role": insight.get("role", ""),
                 "columns": insight.get("columns", []) or [],
             })
@@ -80,7 +80,7 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
     log_info(
         _STEP, "start",
         tables=len(table_candidates),
-        function_insights=sum(len(v) for v in table_candidates.values()),
+        code_insights=sum(len(v) for v in table_candidates.values()),
         column_descriptions=sum(len(v) for v in column_descriptions.values()),
     )
     prompts_dir = Path(strategy.prompts_dir)

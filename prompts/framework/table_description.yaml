@@ -4,7 +4,7 @@ system: |
   ## 입력
 
   - `table_fqn`: `db.schema.name`.
-  - `candidates`: 이 테이블을 access 한 함수들의 `(function_summary, role, columns)` 리스트.
+  - `candidates`: 이 테이블을 access 한 함수들의 `(code_summary, role, columns)` 리스트.
 
   ## 절대 규칙
 
@@ -19,7 +19,7 @@ system: |
   - role 의 다수가 `WRITE-only` / `WRITE-then-READ` / `append-only` → "기록 / 저장 / 적재" 표현.
   - role 의 다수가 `READ-only` / `lookup` → "조회 / 참조 / 매핑" 표현.
   - role 이 다양 (읽기·쓰기 골고루) → "관리 / 운영 대상" 표현.
-  - 테이블 이름 자체에서 의미 추론 X — candidates 의 function_summary 만 근거.
+  - 테이블 이름 자체에서 의미 추론 X — candidates 의 code_summary 만 근거.
 
   ## 예시
 

@@ -1,16 +1,16 @@
-"""호출(call site) 결정론 분류 — 프로젝트 함수 / stdlib / 프레임워크 / external.
+"""호출(call site) 결정론 분류 — 프로젝트 루틴 / stdlib / 프레임워크 / external.
 
 호출엔 "미해결"이 없다. call_text 를 세 목록과 대조해 분류한다 (LLM·에이전트 0):
-- 프로젝트 함수 → ``CALLS{internal}`` (callee 확정). **먼저 검사** — 우리 함수가
+- 프로젝트 루틴 → ``CALLS{internal}`` (callee 확정). **먼저 검사** — 우리 루틴이
   stdlib 동명에 가려지지 않게.
 - stdlib 심볼 → 드롭.
-- 프레임워크 함수(skill 이 알려준 목록) → 드롭.
+- 프레임워크 루틴(skill 이 알려준 목록) → 드롭.
 - **호출 wrapper**(skill 이 알려준 — 인자가 실제 호출 대상) → 라인 본문에서 인자
-  추출 후 ``CALLS{internal|external}``. 인자가 functions 의 module_id 와 매치되면
-  그 모듈 entry 함수로 internal, 매치 안 되면 인자 이름 그대로 external.
+  추출 후 ``CALLS{internal|external}``. 인자가 code_nodes 의 module_id 와 매치되면
+  그 모듈 entry 루틴으로 internal, 매치 안 되면 인자 이름 그대로 external.
 - 그 외 → ``CALLS{external}`` (분석 범위 밖 — 호출 사실만 기록).
 
-``framework_functions`` 의 각 항목은 **글로브 패턴** (``fnmatchcase``) 으로 해석.
+``framework_code_nodes`` 의 각 항목은 **글로브 패턴** (``fnmatchcase``) 으로 해석.
 
 stdlib 목록 = ``shared/lang/stdlib/{c,java,python}_stdlib.json``.
 """
@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from data_models.graph_edges import Calls
-from data_models.graph_nodes import Function
+from data_models.graph_nodes import CodeNode
 from shared.lang.source_extension import EXT_TO_LANG
 from shared.source_file_cache import SourceFileCache
 
@@ -108,7 +108,7 @@ def _extract_wrapper_callee(
 
 def classify_call_sites(
     call_sites: list[dict],
-    functions: list[Function],
+    code_nodes: list[CodeNode],
     framework_names: frozenset[str] = frozenset(),
     wrappers: Iterable[dict] = (),
 ) -> CallClassifyResult:
@@ -116,24 +116,24 @@ def classify_call_sites(
 
     Args:
         call_sites: ``[{call_id, caller_id, call_text, file, line}, ...]``.
-        functions: 같은 프로젝트 Function 노드 — internal 매칭 대상.
-        framework_names: 프레임워크 함수 패턴 집합 (skill 출처) — glob 허용.
+        code_nodes: 같은 프로젝트 CodeNode 노드 — internal 매칭 대상.
+        framework_names: 프레임워크 루틴 패턴 집합 (skill 출처) — glob 허용.
         wrappers: 호출 wrapper 명시 — ``[{wrapper, callee_from}, ...]``. SKILL 정의.
-                  wrapper 호출은 라인 본문에서 인자 추출 후 분류 — 모듈 entry 함수와
+                  wrapper 호출은 라인 본문에서 인자 추출 후 분류 — 모듈 entry 루틴과
                   매치되면 internal, 아니면 external.
     """
     by_name: dict[str, list[str]] = defaultdict(list)
     module_of: dict[str, str] = {}
-    for fn in functions:
+    for fn in code_nodes:
         by_name[_bare_name(fn.id)].append(fn.id)
         module_of[fn.id] = fn.owner_id
 
-    # wrapper 인자 → 진짜 호출 대상 분류용: 모듈 id → entry 함수 id 매핑.
-    # entry = id 가 "<owner_id>.<owner_id>" 형태인 함수 (모듈 엔트리 표준).
-    # 같은 모듈의 entry 가 없으면 그 모듈 함수 중 정렬상 첫 후보 (단순화).
+    # wrapper 인자 → 진짜 호출 대상 분류용: 모듈 id → entry 루틴 id 매핑.
+    # entry = id 가 "<owner_id>.<owner_id>" 형태인 루틴 (모듈 엔트리 표준).
+    # 같은 모듈의 entry 가 없으면 그 모듈 루틴 중 정렬상 첫 후보 (단순화).
     entry_by_module: dict[str, str] = {}
     other_by_module: dict[str, list[str]] = defaultdict(list)
-    for fn in functions:
+    for fn in code_nodes:
         if not fn.owner_id:
             continue
         if fn.id == f"{fn.owner_id}.{fn.owner_id}":
@@ -142,7 +142,7 @@ def classify_call_sites(
             other_by_module[fn.owner_id].append(fn.id)
 
     def _wrapper_callee_to_internal(callee_name: str) -> Optional[str]:
-        """wrapper 인자(이름) → internal 함수 id 또는 None (external)."""
+        """wrapper 인자(이름) → internal 루틴 id 또는 None (external)."""
         if callee_name in entry_by_module:
             return entry_by_module[callee_name]
         siblings = other_by_module.get(callee_name)
@@ -215,9 +215,9 @@ def _resolve_internal(
     by_name: dict[str, list[str]],
     module_of: dict[str, str],
 ) -> str | None:
-    """call_text → 프로젝트 함수 function_id. 프로젝트 함수 아니면 None.
+    """call_text → 프로젝트 루틴 code_id. 프로젝트 루틴 아니면 None.
 
-    동명 함수 다수면 호출한 함수와 같은 모듈 후보 우선 (C ``static`` 은 파일 스코프).
+    동명 루틴 다수면 호출한 루틴과 같은 모듈 후보 우선 (C ``static`` 은 파일 스코프).
     """
     matches = by_name.get(name)
     if not matches:

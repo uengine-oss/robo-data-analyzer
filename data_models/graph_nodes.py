@@ -3,7 +3,7 @@
 설계 원칙
 ─────────
 - Framework 와 DBMS 양쪽이 **같은 dataclass** 사용 (분기 0개).
-- DBMS 의 nested DML range 도 ``Function`` 으로 흡수 (``parent_id`` 필드로 트리 표현).
+- DBMS 의 nested DML range 도 ``CodeNode`` 으로 흡수 (``parent_id`` 필드로 트리 표현).
 - Neo4j 에 박힐 때는 ``shared/neo4j/nodes/<type>.py`` 의 Cypher 쿼리가 변환.
 
 정체성(식별자) 규칙
@@ -18,9 +18,8 @@
 같은 ``id`` 가 state list 에 raw 중복 들어와도 **Neo4j MERGE Cypher 가 자동 dedup**
 (그래프 진실 보장자). state 자체는 raw 그대로 — 다른 step 이 set 변환으로 자동 dedup.
 
-노드 종류(antlr 원시 타입)는 Neo4j 라벨로만 표현 — 별도 ``node_type`` 속성 없음.
-라벨은 antlr ``type`` → ontology 가 도출 (Framework: ``:FUNCTION:METHOD`` 멀티라벨 /
-DBMS: antlr type 그대로 ``:SELECT``/``:PROCEDURE``).
+노드 종류 = Neo4j 라벨 하나 = 그 노드의 antlr ``type`` (``label`` 필드 = 필수). 별도
+``node_type`` 속성 없음. Framework/DBMS 공통 — reader 가 ``node["type"]`` 직결 (역할 라벨 폐기).
 
 새 노드 종류 추가 시 손대는 곳
 ─────────────────────────────
@@ -59,7 +58,7 @@ class Table:
 
     description       = ``COMMENT ON`` 우선·없으면 ``--`` 주석 / 카탈로그 (출처 = description_source).
     comment           = 테이블 위 ``--`` / ``/* */`` 주석 원문 — 항상 보존 (분석 입력 단서).
-    analyzed_description = analyze_function 3분할이 합성한 설명 (분석 결과, 항상 덮어씀).
+    analyzed_description = analyze_code 3분할이 합성한 설명 (분석 결과, 항상 덮어씀).
     """
     db: str
     schema: str
@@ -87,7 +86,7 @@ class Column:
 
     description       = ``COMMENT ON`` 우선·없으면 ``--`` 주석 1차 설명 (출처 = description_source).
     comment           = 컬럼 옆 ``--`` / ``/* */`` 주석 원문 — 항상 보존 (분석 입력 단서).
-    analyzed_description = analyze_function 3분할 tableInsights 가 합성한 설명.
+    analyzed_description = analyze_code 3분할 tableInsights 가 합성한 설명.
     """
     id: str                                  # "prod_main.PUBLIC.USERS.user_id"
     name: str                                # "user_id"
@@ -118,7 +117,7 @@ class Package:
 
 @dataclass(frozen=True)
 class Module:
-    """모듈 / 클래스 — Function 들의 컨테이너.
+    """모듈 / 클래스 — CodeNode 들의 컨테이너.
 
     Framework 예: Java class / Python module / C file.
     DBMS 예: PL/SQL package · 스크립트 파일.
@@ -130,7 +129,7 @@ class Module:
     id: str                                  # 고유 식별자 = 이 모듈의 fqn (예: "com.example.OrderService")
     name: str
     file_path: str
-    sub_label: str = ""                      # Neo4j sub-label — reader 가 ontology 로 도출 (Framework CLASS 등 / 없으면 빈값)
+    label: str                               # Neo4j 라벨 = 자기 antlr type (필수, FILE / CLASS / INTERFACE …)
     start_line: int = 0                      # 0 = 파일 전체 (file-level module)
     end_line: int = 0                        # 0 = 파일 전체
 
@@ -140,43 +139,41 @@ class Module:
 
     # 분석 결과 ────
     summary: str = ""                        # summarize_module 가 채움
-    stereotype: str = ""                     # summarize_module 가 채움 (Function.stereotype 과 명칭 통일)
+    stereotype: str = ""                     # summarize_module 가 채움 (CodeNode.stereotype 과 명칭 통일)
     logical_name: Optional[str] = None       # 짧은 도메인 표시명 — summarize_module 가 채움
 
 
 @dataclass
-class Function:
-    """함수 / 메서드 / 프로시저 — 분석의 기본 단위.
+class CodeNode:
+    """코드노드 / 메서드 / 프로시저 — 분석의 기본 단위.
 
     Framework 예: Java method / Python function / C function.
     DBMS 예: PL/SQL procedure / function / nested DML range (``parent_id`` 로 트리).
 
-    Note: ``frozen=False`` — ``analyze_function`` 이 in-place 로 ``summary`` 등 채워야 함.
+    Note: ``frozen=False`` — ``analyze_code`` 이 in-place 로 ``summary`` 등 채워야 함.
     """
     id: str                                  # 고유 식별자 = fqn 역할 (Framework: "owner_id.name" / DBMS: "file:proc:line")
     signature: str                           # "save(Order order) -> OrderResult"
     file_path: str                           # 절대 또는 프로젝트 상대 경로
     start_line: int
     end_line: int
+    label: str                               # Neo4j 라벨 = 자기 antlr type (필수, METHOD / FUNCTION / PROCEDURE / SELECT / IF …)
 
     name: str = ""                           # antlr node.name (콜러블=루틴명 / 구문=빈값). 표시명.
-    # Neo4j primary 라벨 — Framework="FUNCTION"(역할) / DBMS=antlr type 그대로(:SELECT/:PROCEDURE…).
-    primary_label: str = "FUNCTION"
     code_text: str = ""                      # 본문 원문 슬라이스 (step6 가 채움 — step2 는 소스 무파싱)
 
-    sub_label: str = ""                      # Neo4j sub-label (역할 그룹) — Framework 전용 ontology 도출 (METHOD 등 / DBMS 빈값)
     # 소속·트리 (참조 = 대상 노드의 id) ────
-    owner_id: str = ""                       # 소속 Module 의 id (HAS_FUNCTION 엣지 빌드 + 모듈 그룹핑용 — 노드 속성엔 안 박음)
+    owner_id: str = ""                       # 소속 Module 의 id (HAS_MEMBER 엣지 빌드 + 모듈 그룹핑용 — 노드 속성엔 안 박음)
     package: str = ""                        # 소속 패키지(폴더) id — external 호출 스키마 귀속용 (노드 속성엔 안 박음)
     parent_id: Optional[str] = None          # 트리 부모 (DBMS nested range 흡수 — Framework 는 거의 None)
 
     # antlr JSON 풍부 필드 (load_ast 가 채움) ────
     annotations: str = ""                    # 데코레이터 / @Annotation
-    comment: str = ""                        # 함수 주석 / Javadoc
+    comment: str = ""                        # 코드노드 주석 / Javadoc
     return_type: str = ""                    # 반환 타입
     params: str = ""                         # 파라미터 목록 텍스트
 
-    # 분석 결과 (analyze_function 이 채움) ────
+    # 분석 결과 (analyze_code 이 채움) ────
     summary: Optional[str] = None            # 2 섹션 '[핵심] 한 줄' + 내용 (SummaryOutput 검증)
     stereotype: Optional[str] = None         # ontology_roles.yaml 풀에서
     logical_name: Optional[str] = None       # 짧은 도메인 토큰
@@ -214,11 +211,11 @@ class Variable:
     file_path: str
     start_line: int
     end_line: int
+    label: str                               # Neo4j 라벨 = 자기 antlr type (필수, FIELD / MEMBER / GLOBAL_VARIABLE / VARIABLE / PARAMETER …)
     var_type: str = ""                       # 선언 타입
     comment: str = ""
     annotations: str = ""
     init_value: str = ""                     # 초기화식
-    sub_label: str = ""                      # Neo4j sub-label — reader 가 ontology 로 도출
 
 
 @dataclass(frozen=True)
@@ -230,10 +227,10 @@ class Constant:
     file_path: str
     start_line: int
     end_line: int
+    label: str                               # Neo4j 라벨 = 자기 antlr type (필수, DEFINE / CONSTANT_FIELD …)
     value: str = ""                          # 상수 값
     var_type: str = ""
     comment: str = ""
-    sub_label: str = ""                      # Neo4j sub-label — reader 가 ontology 로 도출
 
 
 @dataclass(frozen=True)
@@ -245,15 +242,15 @@ class DataType:
     file_path: str
     start_line: int
     end_line: int
-    sub_label: str = ""                      # Neo4j sub-label — reader 가 ontology 로 도출
+    label: str                               # Neo4j 라벨 = 자기 antlr type (필수, STRUCT / UNION / ENUM …)
     comment: str = ""
 
 
-# ── Example Mapping 노드 (analyze_function 3분할 결과 → EM 빌더가 생성) ──
+# ── Example Mapping 노드 (analyze_code 3분할 결과 → EM 빌더가 생성) ──
 
 @dataclass(frozen=True)
 class Rule:
-    """비즈니스 규칙 — 같은 statement 는 함수 간 1 노드 공유.
+    """비즈니스 규칙 — 같은 statement 는 코드노드 간 1 노드 공유.
 
     정체성 ``id`` = 정규화 statement MD5[:12]. per-function 정보(local rule_id /
     flow_id / branch 등)는 노드가 아닌 ``HAS_RULE`` 엣지 속성에 (노드 공유라서).
