@@ -28,7 +28,7 @@
  [입력]                          [ROBO Analyzer]                      [출력]
  ─────────                       ──────────────                      ─────────
  소스 코드 디렉토리   ─┐                                    ┌─►  Neo4j 지식 그래프
- (*.c *.java *.py …)   │     ┌──────────────────────┐       │     (노드 13종 · 엣지 21종)
+ (*.c *.java *.py …)   │     ┌──────────────────────┐       │     (노드 12종 · 엣지 16종)
                        ├──►  │  LangGraph 11~13 step │  ──►  ┤
  DDL (*.sql)           │     │  결정론 + 선택적 LLM   │       ├─►  artifacts/*.json (5종)
  antlr AST (*.json)   ─┘     └──────────────────────┘       │     + usage_summary.json
@@ -186,7 +186,7 @@ Content-Type: application/json
 X-Neo4j-Uri / X-Neo4j-User / X-Neo4j-Password / X-Neo4j-Database   # 선택 — 요청별 Neo4j override
 
 {
-  "project_root": "d:/work/robo/project/data/source/<name>",  # null 이면 업로드 모드(ENV.data.dir/source)
+  "project_root": "d:/work/robo/project/data/source/<name>",  # (역호환) 받되 무시(inert) — 소스는 항상 ENV.data.dir/source
   "strategy": "framework",            # "framework" | "dbms"
   "ddl_dir": "d:/work/robo/project/data/ddl",                 # 선택
   "has_xml_mapper": false,
@@ -243,10 +243,10 @@ parse_ddl_step
  → link_residual_patterns_step      ★ Framework only — 잔여 패턴 루프 (Agent 라운드)
  → build_context_step               (큰 함수 one_liner LLM, 그 외 결정론)
  → fetch_table_samples_step         (옵션·전략독립 — catalog 샘플 행, analyze 전)
- → analyze_function_step            (module pre-analysis + Bottom-up DAG + 3분할 fan-out)
+ → analyze_code_step                (module pre-analysis + Bottom-up DAG + 3분할 fan-out)
  → ┌ summarize_module_step       ┐  ← 병렬 그룹 (4 step 동시, 공유 semaphore)
    │ enrich_table_description_step │
-   │ build_components_step         │  ★ Leiden 군집 + 컴포넌트 이름 LLM
+   │ build_components_step         │  ★ Leiden 군집 → component_id 속성 SET + 이름 LLM
    └ health_metrics_step          ┘  ★ 건강지표 (결정론·LLM 0)
  → embed_step                       (ROBO_PIPELINE_EMBED_ENABLED=true 일 때만)
 ```
@@ -262,7 +262,7 @@ parse_ddl_step
  (잔여 패턴 루프 없음 — DBMS 는 에이전트 링킹 안 씀)
  → build_context_step               (parent/sibling 트리 컨텍스트 보강)
  → fetch_table_samples_step
- → analyze_function_step            (형제 함수 batch 분석 — ROBO_PIPELINE_BATCH_MAX_TOKENS)
+ → analyze_code_step                (형제 함수 batch 를 framework 처럼 3분할(요약/테이블/비즈로직) 콜로 — ROBO_PIPELINE_BATCH_MAX_TOKENS)
  → summarize_module_step
  → enrich_table_description_step
  → enrich_lineage_from_catalog_step ★ DBMS only — catalog ETL 리니지
@@ -346,7 +346,7 @@ LLM 이 찾게 해 코드가 일괄 적용). 시스템 프롬프트 `prompts/age
 #### 5-A `build_context_step` (큰 함수만 LLM 1 회)
 모든 `Function` 에 `AnalysisContext` 생성: 식별/위치/`reads·writes·callers·callees`(정렬 tuple)
 / `referenced_symbols`(REFERENCES+INIT_BY 결정론) / `one_liner`(본문 토큰 >
-`ROBO_PIPELINE_BIG_CONTEXT_THRESHOLD_TOKENS`(1000) 면 `large_function_one_liner.yaml` 압축 LLM
+`ROBO_PIPELINE_BIG_CONTEXT_THRESHOLD_TOKENS`(1000) 면 `large_code_one_liner.yaml` 압축 LLM
 1회(작은 모델) → callee 본문 통째 노출 차단). `context_builder.augment()`:
 Framework=항등, DBMS=`DbmsContextBuilder` 가 parent/sibling 트리 메타를 `extra` 에 채움.
 
@@ -355,7 +355,7 @@ catalog `sample-context` 엔드포인트로 테이블별 **실제 샘플 행**(�
 `table_sample_data`. 100개씩 청크 병렬 HTTP. `ROBO_CATALOG_ENABLED=false` / `datasource` 미지정 /
 테이블 0개 면 graceful skip. 청크 실패 시 그 테이블만 샘플 없이 진행(분석 계속).
 
-### Step 6 — `analyze_function_step` (모듈 사전분석 + Bottom-up DAG + fan-out)
+### Step 6 — `analyze_code_step` (모듈 사전분석 + Bottom-up DAG + fan-out)
 
 0. **모듈 사전분석** (Framework only — `module_pre_analysis.yaml`): 모듈 헤더 주석 → `Module.intent`.
    공통 context prefix 로 주입.
@@ -366,13 +366,16 @@ catalog `sample-context` 엔드포인트로 테이블별 **실제 샘플 행**(�
    (`await run_summary`) 후 나머지 병렬 — KV prefix 캐시 워밍.
 3. **함수 분석**:
    - **Framework — 3분할 fan-out** (`three_split_llm_fanout.py`):
-     **#1 `function_summary`**(항상 → `SummaryOutput`: 요약 + stereotype + logical_name) →
-     `gather(`**#2 `function_rules_examples`**(항상 → rules+examples+questions)`,`
-     **#3 `function_table_insights`**(R/W 테이블 있을 때만 → table+column insights)`)`.
+     **#1 `code_summary`**(항상 → `SummaryOutput`: 요약 + stereotype + logical_name) →
+     `gather(`**#2 `code_rules_examples`**(항상 → rules+examples+questions)`,`
+     **#3 `code_table_insights`**(R/W 테이블 있을 때만 → table+column insights)`)`.
      3분할 입력 = [공통 context byte-identical] + [#3 전용 자식 rules]. KV 캐시 prefix 적중
      (`prompts/framework/_common.yaml` ← `extends`).
-   - **DBMS — batch 분석** (`batch_analyze.py` + `batch_planner.py`): 같은 부모의 형제 함수를
-     입력 토큰 `ROBO_PIPELINE_BATCH_MAX_TOKENS`(1500) 한도로 묶어 LLM 1회(출력 폭주 방지 — 큰 노드는 단독 batch).
+   - **DBMS — batch 3분할 분석** (`batch_analyze.py` + `batch_planner.py`): 같은 유효 부모의 형제
+     함수를 입력 토큰 `ROBO_PIPELINE_BATCH_MAX_TOKENS`(1500) 한도로 **배치(그룹)** 로 묶고,
+     framework 처럼 관심사별 3콜(`code_summary_batch` / `code_rules_examples_batch` /
+     `code_table_insights_batch`)로 분석 — 콜당 "한 관심사 × 노드 리스트" 평탄 출력(출력 폭주 방지),
+     `node_key`(줄범위)로 fan-in.
 4. **즉시 적재**: 함수 1개 완료 즉시 `update_summaries()` + `node_event`/`relationship_event`
    NDJSON emit. 배치 누적 없음.
 5. **Example Mapping 빌더** (`shared/example_mapping/builder.py`, 결정론): 결과 → `RULE`(공유,
@@ -388,8 +391,8 @@ catalog `sample-context` 엔드포인트로 테이블별 **실제 샘플 행**(�
   (DDL/카탈로그 1차 description 과 격리).
 - **`build_components_step`** ★ — 내부 `CALLS` 엣지만으로 **Leiden 군집**(leidenalg/igraph, seed=42
   결정론, 최소 크기 2). 컴포넌트마다 멤버 headline 모아 `component_naming.yaml` LLM 1회 →
-  이름/설명/stereotype. `upsert_components()` 가 `COMPONENT` 노드 + `HAS_COMPONENT_MEMBER` +
-  `COMPONENT_CALLS`(쌍별 호출수 rollup) 적재.
+  이름. **합성 노드 없음** — 각 멤버 `FUNCTION` 노드에 `component_id`/`component_name` 속성을
+  배치 UNWIND SET (멤버십 단일 진실). 그룹↔그룹 관계는 `CALLS`+`component_id` 로 온디맨드 파생.
 - **`health_metrics_step`** ★ (결정론·LLM 0) — `FUNCTION` 마다 `fan_in / fan_out / loc /
   in_cycle / table_coupling / god_flag / risk(low·medium·high)` 계산 → Neo4j SET +
   `logs/analysis.run/latest/health_report.json`(risk 분포 + top 20 위험 함수).
@@ -418,8 +421,8 @@ logs/
 │   └── artifacts/
 │       ├── ast.json               # step1+2 (schema/table/column + function/module/… + 구조 엣지)
 │       ├── linking.json           # step4 (reads_writes + calls + unresolved + scan_result)
-│       ├── analysis_contexts.json # step5 (function_id → AnalysisContext)
-│       ├── analysis.json          # step6+7 (summary + rules/examples/questions + ★components + ★component edges)
+│       ├── analysis_contexts.json # step5 (code_id → AnalysisContext)
+│       ├── analysis.json          # step6+7 (summary + rules/examples/questions; 컴포넌트는 FUNCTION.component_id 속성)
 │       └── graph_extras.json      # 매핑 안 된 state 키 auto-dump (신규 키 누락 방지 catch-all)
 └── llm_prompts/latest/
     └── ...                         # 룰별 LLM 입력 미리보기 (prompt_logger)
@@ -441,20 +444,23 @@ logs/
 
 > `emit()` 이 동시에 `logger.info` 호출 → 모든 NDJSON 이벤트가 자동으로 `analyzer.log` 에 적재.
 
-### 6.3 Neo4j 그래프 스키마 — 노드 13종 / 엣지 21종
+### 6.3 Neo4j 그래프 스키마 — 노드 12종 / 엣지 16종
 
-**노드 13종 (`shared/neo4j/nodes/` 12 + `shared/neo4j/component.py` 1, 라벨 UPPER_SNAKE)**
-— `MODULE/FUNCTION/VARIABLE/CONSTANT/DATA_TYPE` 는 ontology 도출 sub-label 동적 부착
-(예: `FUNCTION:METHOD`, `MODULE:EXTERNAL`):
+**노드 12종 (`shared/neo4j/nodes/` 12파일, 라벨 UPPER_SNAKE)** — 모든 노드 식별 키 = **`id` 하나
+(종류 무관 균일)**. 함수·메서드·구문은 모두 `CodeNode` dataclass 1종이며 라벨만 자기 antlr type
+(예: `METHOD` / `FUNCTION` / `PROCEDURE` / `SELECT` / `IF` …, 열린 집합):
 
 | 구분 | 노드 (key) |
 |------|-----------|
-| DB | `SCHEMA`(db,name) · `TABLE`(fqn) · `COLUMN`(fqn) |
-| 코드 | `FUNCTION`(function_id) · `MODULE`(module_id) · `PACKAGE`(package_id) · `VARIABLE`(variable_id) · `CONSTANT`(constant_id) · `DATA_TYPE`(datatype_id) |
-| Example Mapping | `RULE`(rule_hash) · `EXAMPLE`(example_id) · `QUESTION`(question_id) |
-| 컴포넌트 | `COMPONENT`(component_id) |
+| DB | `SCHEMA`(id) · `TABLE`(id) · `COLUMN`(id) |
+| 코드 | `CodeNode`(id, 라벨=antlr type) · `MODULE`(id) · `PACKAGE`(id) · `VARIABLE`(id) · `CONSTANT`(id) · `DATA_TYPE`(id) |
+| Example Mapping | `RULE`(id) · `EXAMPLE`(id) · `QUESTION`(id) |
 
-**엣지 21종 (`shared/neo4j/rel_types.py` 단일 정의처)**:
+> 컴포넌트(부품)는 합성 `:COMPONENT` 노드로 만들지 않는다 — Leiden 군집 멤버십은
+> **`FUNCTION.component_id`/`component_name` 속성**이 단일 진실(`build_components_step`).
+> 이름·그룹간 관계는 거기서 파생(시각화=hull 오버레이, 그룹↔그룹 호출=`CALLS`+`component_id` 온디맨드 GROUP BY).
+
+**엣지 16종 (`shared/neo4j/rel_types.py` 단일 정의처)**:
 
 | 구분 | 엣지 |
 |------|------|
@@ -463,7 +469,6 @@ logs/
 | 코드↔DB | `READS`(dml_type) · `WRITES`(dml_type) |
 | DB 구조 | `HAS_COLUMN` · `BELONGS_TO` · `FK` |
 | Example Mapping | `HAS_RULE` · `HAS_EXAMPLE` · `HAS_QUESTION` · `NEXT` · `BRANCH` · `AFFECTS_TABLE` |
-| 컴포넌트 | `HAS_COMPONENT_MEMBER` · `COMPONENT_CALLS`(count) |
 
 > 새 노드/엣지 = `data_models/graph_nodes.py`(또는 `graph_edges.py`) + `shared/neo4j/nodes/<new>.py`
 > (또는 `edges/<new>.py`) + `rel_types.py` 상수. 관계명은 `rel_types.py` 에서만 정의(Cypher 직박 금지).
@@ -497,12 +502,12 @@ robo-data-analyzer/
 │   │   └── stage3_residual_patterns/{link_residual_patterns_step, residual_pattern_loop}.py
 │   ├── step5_build_context/
 │   │   ├── build_context_step.py · framework_context_builder.py · dbms_context_builder.py
-│   │   ├── large_function_one_liner.py · fetch_table_samples_step.py
-│   ├── step6_analyze_function/
-│   │   ├── analyze_function_step.py                     # 메인 — 모듈 pre + DAG + 3분할/batch
+│   │   ├── large_code_one_liner.py · fetch_table_samples_step.py
+│   ├── step6_analyze_code/
+│   │   ├── analyze_code_step.py                         # 메인 — 모듈 pre + DAG + 3분할/batch
 │   │   ├── analysis_order.py · call_cycles.py(Tarjan) · module_pre_analysis.py
 │   │   ├── range_body.py · three_split_llm_fanout.py    # Framework 3분할
-│   │   └── batch_analyze.py · batch_planner.py          # DBMS batch
+│   │   └── batch_analyze.py · batch_planner.py          # DBMS batch 3분할
 │   └── step7_post_processing/
 │       ├── summarize_module_step.py · enrich_table_description_step.py
 │       ├── build_components_step.py                     # ★ Leiden 컴포넌트
@@ -515,8 +520,8 @@ robo-data-analyzer/
 │
 ├── data_models/
 │   ├── codebase.py · analysis_run.py                    # Codebase / Run dataclass
-│   ├── graph_nodes.py · graph_edges.py                  # 노드 13 / 엣지 21 dataclass (Component 포함)
-│   ├── analysis_context.py · agent_output.py · function_analysis_output.py
+│   ├── graph_nodes.py · graph_edges.py                  # 노드 12 / 엣지 16 dataclass
+│   ├── analysis_context.py · agent_output.py · code_analysis_output.py
 │
 ├── shared/
 │   ├── config/env_catalog.py       # ★ ROBO_* env 단일 진입점 (ENV 싱글톤)
@@ -537,9 +542,8 @@ robo-data-analyzer/
 │   │                   strip_cache_control, strip_dynamic_system_prompt, todo_tracker, tool_event_emitter}.py
 │   ├── neo4j/
 │   │   ├── neo4j_client.py         # 비동기 driver + UNWIND 배치 + tenacity 재시도
-│   │   ├── schema_constraints.py · rel_types.py · connection_context.py
-│   │   ├── component.py            # ★ COMPONENT 노드+엣지 합본 (응집)
-│   │   ├── nodes/<12 종>.py · edges/<17 파일>.py
+│   │   ├── schema_constraints.py · rel_types.py · connection_context.py · props.py
+│   │   ├── nodes/<12 파일>.py · edges/<15 파일, 관계 16종>.py   # 컴포넌트 합성 노드/엣지 없음 (component_id 속성)
 │   ├── log/{logger, ndjson_stream, prompt_logger, processing_progress,
 │   │        prompt_mask_patterns, cache_message_filters}.py
 │   ├── example_mapping/{builder, graph_writer}.py       # 3분할 결과 → Rule/Example/Question (결정론)
@@ -547,11 +551,12 @@ robo-data-analyzer/
 │   └── source_file_cache.py · content_text.py
 │
 ├── prompts/
-│   ├── common/large_function_one_liner.yaml
-│   ├── framework/  _common(extends 베이스) + module_pre_analysis + function_summary +
-│   │               function_rules_examples + function_table_insights + module_summary +
+│   ├── common/large_code_one_liner.yaml
+│   ├── framework/  _common(extends 베이스) + module_pre_analysis + code_summary +
+│   │               code_rules_examples + code_table_insights + module_summary +
 │   │               table_description + component_naming
-│   ├── dbms/       function_batch + module_summary + table_description + component_naming
+│   ├── dbms/       _common(extends 베이스) + code_summary_batch + code_rules_examples_batch +
+│   │               code_table_insights_batch + module_summary + table_description + component_naming
 │   └── agents/     scan_agent_system.md + residual_pattern_system.md
 │
 ├── skills/                         # Agent 가 read_skill 로 읽는 자유 문서
@@ -606,7 +611,7 @@ robo-data-analyzer/
 |-----|------|------|
 | `ROBO_PIPELINE_MAX_CONCURRENCY` | **30** | step6 round 안 + 병렬 후처리 그룹 동시 LLM |
 | `ROBO_PIPELINE_FILE_CONCURRENCY` | 4 | 파일 단위 동시성 |
-| `ROBO_PIPELINE_BIG_CONTEXT_THRESHOLD_TOKENS` | 1000 | 이상 → large_function_one_liner LLM |
+| `ROBO_PIPELINE_BIG_CONTEXT_THRESHOLD_TOKENS` | 1000 | 이상 → large_code_one_liner LLM |
 | `ROBO_PIPELINE_RESIDUAL_SAMPLE_SIZE` / `ROBO_PIPELINE_RESIDUAL_MAX_ROUNDS` | 30 / 3 | 잔여 패턴 라운드 |
 | `ROBO_PIPELINE_BATCH_MAX_TOKENS` | 1500 | DBMS step6 형제 함수 batch 입력 토큰 한도 |
 | `ROBO_PIPELINE_EMBED_ENABLED` | true | embed_step on/off (.env.production 에선 false 권장) |
@@ -648,8 +653,9 @@ robo-data-analyzer/
    — schema 강제 부작용(반복 폭주·공백 폭주) 차단 (2026-05-30 사고 후 단순화).
 7. **submit 도구 패턴**: Agent 출력 강제는 LangChain `response_format` 직접 전달 대신
    `structured_agent.py` 의 submit-도구 wrap — qwen+SGLang xgrammar 동시 마스킹 hang 회피.
-8. **응집 합본 예외**: `COMPONENT` 는 노드+엣지가 한 응집 단위라 `nodes/`·`edges/` 분리 관례 대신
-   `shared/neo4j/component.py` 1파일 합본 (노드→member→calls 적재 순서 보장).
+8. **합성 노드 회피**: 컴포넌트(부품)는 `:COMPONENT` 합성 노드/엣지로 materialize 하지 않고
+   **`FUNCTION.component_id`/`component_name` 속성**으로만 표현 (`build_components_step`) — 그래프에
+   합성 노드 0 → 도달성·중심성·임팩트 분석 왜곡 없음. 이름·그룹간 호출은 거기서 파생(온디맨드 GROUP BY).
 
 ---
 
