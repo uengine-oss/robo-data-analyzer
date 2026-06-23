@@ -22,6 +22,7 @@ from analysis_flow.step6_analyze_code.batch_planner import (
 )
 from analysis_flow.step6_analyze_code.call_cycles import find_call_cycles
 from analysis_flow.step6_analyze_code.range_body import ancestor_context, body_for
+from analysis_flow.step4_linking.stage2_extract_calls.call_linker import routine_call_pairs
 from data_models.analysis_context import AnalysisContext
 from data_models.code_analysis_output import (
     BatchRulesItem,
@@ -78,10 +79,9 @@ async def run_dbms_batch_analysis(
     _apply_effective_tree(contexts, eff_parent, eff_children)
 
     # 2. 바텀업 라운드 — 유효 parent→child + CALLS (자식·피호출 먼저).
+    # CALLS 는 CALL→대상 저장이므로 루틴쌍으로 해소(단일 해소기) 후 정렬에 사용.
     edges: list[tuple[str, str]] = [(p, c) for c, p in eff_parent.items() if p is not None]
-    edges.extend(
-        (e.caller_id, e.callee_id) for e in state.get("calls_edges", [])
-    )
+    edges.extend(routine_call_pairs(code_nodes, state.get("calls_edges", [])))
     cycles = find_call_cycles(edges, list(analysis_ids))
     for fn_id in cycles:
         if fn_id in contexts:

@@ -24,6 +24,7 @@ from typing import Optional
 from langchain_core.runnables import RunnableConfig
 
 from analysis_flow.step2_load_ast.antlr_json_reader import _ROUTINE_LABELS
+from analysis_flow.step4_linking.stage2_extract_calls.call_linker import routine_call_pairs
 from analysis_flow.step6_analyze_code.call_cycles import find_call_cycles
 from data_models.graph_edges import Calls, ReadsWrites
 from data_models.graph_nodes import CodeNode
@@ -108,12 +109,8 @@ def _compute_metrics(
     """결정론 계산 — 코드노드별 지표 dict 리스트 (Neo4j SET item 형식)."""
     ids = {f.id for f in code_nodes}
 
-    # 내부 호출만 (external = 분석 범위 밖 stub → 차수·순환 계산서 제외).
-    internal_edges = [
-        (c.caller_id, c.callee_id)
-        for c in calls
-        if c.scope == "internal" and c.caller_id in ids and c.callee_id in ids
-    ]
+    # CALL→대상 저장을 루틴쌍으로 해소(단일 해소기). external/빌트인은 internal 아님 → 자연 제외.
+    internal_edges = routine_call_pairs(code_nodes, calls)
 
     fan_out_sets: dict[str, set[str]] = defaultdict(set)
     fan_in_sets: dict[str, set[str]] = defaultdict(set)

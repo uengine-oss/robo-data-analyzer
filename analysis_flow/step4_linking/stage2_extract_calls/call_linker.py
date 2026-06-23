@@ -1,45 +1,40 @@
-"""CallLinker — AST CALL 노드 → ``Calls`` 엣지 (정규식·LLM 0).
+"""CallLinker — AST CALL 노드 → ``Calls`` 엣지 (CALL 노드 → 호출 대상). 정규식·LLM 0.
 
-antlr 이 이미 뽑은 ``CALL`` 노드(``…:CALL:<line>`` code_id + 콜리 이름 = signature)를
-호출의 단일 출처로 쓴다. 생 텍스트 정규식이 아니므로 문자열 상수·선언·**주석처리된 호출**은
-애초에 CALL 노드가 아니어서 오인식이 원천 차단된다.
+antlr CALL 노드(``…:CALL:line`` + 콜리 이름 = signature)가 호출의 단일 출처. 각 CALL 노드를
+호출 대상에 직접 잇는다 — 호출 지점 단위(같은 대상 N회 호출 = N 엣지).
 
-분류 (사용자 확정 기준):
-- 콜리 이름이 빌트인/표준(``DBMS_``/``UTL_``/… prefix) → **드롭** (분석 대상 아님).
-- 콜리 단순명이 분석대상 정의 노드(PROCEDURE/FUNCTION/TRIGGER 루트)와 일치 → **internal**
-  (대상 = 그 정의 노드 — CALL-site 가 아니라 정의 노드로 해석해 방향 정확).
-- 그 외 실제 프로시저명 → **external** — 그래프에 ``:FUNCTION:EXTERNAL`` stub 생성
-  (upsert_calls). 스키마(package) = 호출 수식어(``SCH.PROC``) 또는 없으면 호출자 자기
-  스키마(bare = 자기 스키마의 프로시저). 모듈·루틴 = 프로시저명.
+분류:
+- 콜리가 빌트인/표준(``DBMS_``/``UTL_``/… prefix) → 드롭.
+- 콜리 단순명이 분석대상 정의 노드(루트)와 일치 → internal (CALL 노드 → 그 정의 노드).
+- 그 외 → external — ``:FUNCTION:EXTERNAL`` stub (스키마 = 호출 수식어 또는 호출자 자기 스키마).
 
-caller = 그 CALL 을 감싼 프로시저 루트 (parent_id 체인 최상위). caller == callee 자기루프 드롭.
+프로시저↔프로시저는 저장하지 않는다. 루틴 단위가 필요한 소비처는 ``routine_call_pairs`` 로 파생.
 """
 from __future__ import annotations
 
 from data_models.graph_edges import Calls
 from data_models.graph_nodes import CodeNode
+from shared.log.logger import log_warning
 
 # 내장 패키지/표준 라이브러리 prefix → 드롭 (분석 대상 프로시저 아님).
 _BUILTIN_PREFIXES = ("DBMS_", "UTL_", "SYS_", "ORA_", "OWA_", "STANDARD")
 
 
 class CallLinker:
-    """AST CALL 노드 → ``Calls`` 엣지."""
+    """AST CALL 노드 → ``Calls`` 엣지 (CALL 노드 → 호출 대상)."""
 
     async def link(self, code_nodes: list[CodeNode]) -> list[Calls]:
         if not code_nodes:
             return []
 
         fn_by_id = {fn.id: fn for fn in code_nodes}
-        # 정의 노드(루트: parent_id None) 단순명 → id.
-        # callee 는 정의 노드로만 해석 (CALL-site 노드 후보 제외 → 방향 garbled 차단).
+        # 콜리는 정의 노드(루트: parent_id None)로만 해석 → 방향 정확.
         roots_by_name: dict[str, str] = {}
         for fn in code_nodes:
             if fn.parent_id is None:
                 roots_by_name.setdefault(_proc_name(fn.signature), fn.id)
 
         edges: list[Calls] = []
-        seen: set[tuple[str, str]] = set()
         for fn in code_nodes:
             if fn.own_ast_type() != "CALL":
                 continue                       # CALL 노드만 (자기 타입 — 자손 오염 X)
@@ -47,31 +42,21 @@ class CallLinker:
             if not callee_raw or any(callee_raw.upper().startswith(p) for p in _BUILTIN_PREFIXES):
                 continue                       # 빌트인/표준 → 드롭
 
-            caller_id = _root_of(fn, fn_by_id)
             simple = _proc_name(callee_raw)
             internal_id = roots_by_name.get(simple)
             if internal_id is not None:
-                if caller_id == internal_id:
-                    continue                   # 자기루프 드롭
-                if (caller_id, internal_id) in seen:
-                    continue
-                seen.add((caller_id, internal_id))
                 edges.append(Calls(
-                    caller_id=caller_id,
+                    caller_id=fn.id,
                     callee_id=internal_id,
                     scope="internal",
                 ))
             else:
-                # external = 분석대상 밖 실 프로시저. 스키마(package) = 호출 수식어
-                # (SCH.PROC) 또는 bare 면 호출자 자기 스키마. 모듈·루틴 = 프로시저명.
-                # upsert_calls 가 internal 과 대칭으로 :FUNCTION:EXTERNAL stub 생성.
-                if (caller_id, simple) in seen:
-                    continue
-                seen.add((caller_id, simple))
-                caller_root = fn_by_id.get(caller_id)
-                schema = _qualifier(callee_raw) or (getattr(caller_root, "package", "") or "")
+                # external = 분석대상 밖 실 프로시저. 스키마 = 호출 수식어(SCH.PROC) 또는
+                # bare 면 호출자(루트 루틴) 자기 스키마. upsert_calls 가 stub 생성.
+                root = fn_by_id.get(_root_of(fn, fn_by_id))
+                schema = _qualifier(callee_raw) or (getattr(root, "package", "") or "")
                 edges.append(Calls(
-                    caller_id=caller_id,
+                    caller_id=fn.id,
                     callee_id=simple,
                     scope="external",
                     callee_module=simple,
@@ -114,3 +99,40 @@ def _qualifier(text: str) -> str:
     if "." in token:
         return token.rsplit(".", 1)[0].strip('"').upper()
     return ""
+
+
+def routine_call_pairs(
+    code_nodes: list[CodeNode], calls: list[Calls],
+) -> list[tuple[str, str]]:
+    """저장된 CALL→대상 internal 호출을 (소유 루트 루틴, 대상 루틴) 쌍으로 해소.
+
+    호출을 프로시저 단위로 보는 백엔드 소비처(컴포넌트·건강·분석순서)의 단일 출처.
+    중첩 CALL 에서 거슬러 올라가 만난 재귀(DBMS)는 루틴 자기루프로 만들지 않는다(옛 동작 보존);
+    루틴이 직접 자기를 참조하는 경우(Framework)는 보존. 중복 제거, 해소 실패는 로그로 표면화.
+    """
+    fn_by_id = {f.id: f for f in code_nodes}
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    unresolved = 0
+    for c in calls:
+        if c.scope != "internal":
+            continue
+        caller = fn_by_id.get(c.caller_id)
+        if caller is None or c.callee_id not in fn_by_id:
+            unresolved += 1
+            continue
+        root = _root_of(caller, fn_by_id)
+        if root == c.callee_id and c.caller_id != root:
+            continue                           # 중첩 호출이 거슬러 올라가 만난 재귀 → 자기루프 X
+        key = (root, c.callee_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        pairs.append(key)
+    if unresolved:
+        log_warning(
+            "call_linker.routine_call_pairs", "unresolved",
+            "CALL 노드의 소유 루틴/대상 해소 실패 — 루틴 단위 파생서 제외",
+            count=unresolved,
+        )
+    return pairs

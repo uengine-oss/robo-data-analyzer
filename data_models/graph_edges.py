@@ -110,8 +110,9 @@ def normalize_relation(value: str) -> Optional[Literal["READS", "WRITES"]]:
 class Calls:
     """CodeNode → CodeNode (호출 관계).
 
-    Framework: 결정론 분류 (link_calls_by_name — 이름 목록 대조).
-    DBMS: AST CALL 노드 분류 (link_calls_by_ast — 빌트인·자기루프 드롭).
+    Framework: 결정론 분류 (link_calls_by_name) — caller/callee = 함수.
+    DBMS: AST CALL 노드 → 대상 (link_calls_by_ast) — caller = CALL 노드, 빌트인 드롭·재귀 보존.
+    프로시저 단위 호출은 저장하지 않고 ``call_linker.routine_call_pairs`` 로 파생.
 
     scope:
     - ``internal``: 같은 코드베이스 안 코드노드 — 콜리 정의 노드가 이미 존재.

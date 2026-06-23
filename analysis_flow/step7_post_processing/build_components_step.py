@@ -23,6 +23,7 @@ from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
+from analysis_flow.step4_linking.stage2_extract_calls.call_linker import routine_call_pairs
 from data_models.code_analysis_output import ComponentNamingOutput
 from data_models.graph_edges import Calls
 from data_models.graph_nodes import CodeNode
@@ -134,15 +135,8 @@ def _cluster(code_nodes: list[CodeNode], calls: list[Calls]) -> list[tuple[str, 
     component_id = 멤버 정렬 첫 code_id 기반 → 같은 그래프 재분석 시 안정 키.
     """
     ids = [f.id for f in code_nodes]
-    id_set = set(ids)
-    edges = [
-        (c.caller_id, c.callee_id)
-        for c in calls
-        if c.scope == "internal"
-        and c.caller_id in id_set
-        and c.callee_id in id_set
-        and c.caller_id != c.callee_id
-    ]
+    # CALL→대상 저장을 루틴쌍으로 해소(단일 해소기). 군집에 자기루프는 무의미 → 제외.
+    edges = [(a, b) for a, b in routine_call_pairs(code_nodes, calls) if a != b]
     if not edges:
         return []
 

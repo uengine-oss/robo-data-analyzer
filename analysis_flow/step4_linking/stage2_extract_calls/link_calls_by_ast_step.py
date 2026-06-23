@@ -1,6 +1,6 @@
 """stage2_extract_calls (DBMS) — AST CALL 노드 → ``Calls`` 엣지 (LLM 0).
 
-``CallLinker`` 가 antlr CALL 노드를 분류 → internal / external (빌트인·자기루프 드롭).
+``CallLinker`` 가 각 CALL 노드를 호출 대상에 직접 잇는다(출발 = CALL 노드, 빌트인 드롭).
 internal 은 기존 노드에 연결, external 은 ``:FUNCTION:EXTERNAL`` stub 노드를 스키마·모듈과
 함께 생성해 연결 — 둘 다 ``upsert_calls`` 가 처리 (Framework ``link_calls_by_name`` 과 동일).
 """
