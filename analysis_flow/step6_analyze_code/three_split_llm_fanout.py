@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from analysis_flow.step6_analyze_code.range_body import ancestor_context, body_for
+from analysis_flow.step6_analyze_code.rw_table_filter import constrain_tables_to_rw
 from data_models.analysis_context import AnalysisContext
 from data_models.graph_nodes import CodeNode
 from shared.lang.ontology import coerce_stereotype
@@ -203,6 +204,9 @@ async def analyze_code_three_split(
         k for k in ("rules", "insights")
         if k in tasks and isinstance(done[k], BaseException)
     )
+
+    # spec 027: LLM 귀속 테이블을 결정론 reads/writes 로 제한 (callee 함수명 오귀속 차단).
+    constrain_tables_to_rw(code_id, ctx.reads, ctx.writes, insights_out, rules_out)
 
     # fan-in 머지 → CodeNode 에 적용
     # stereotype 은 ontology_roles.yaml 풀과 검증 (없으면 빈 문자열로 강제)

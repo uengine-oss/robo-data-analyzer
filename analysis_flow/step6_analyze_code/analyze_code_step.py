@@ -51,13 +51,20 @@ from shared.neo4j.nodes.code_node import update_summaries
 _STEP = "step6.analyze_code"
 
 
-def _build_table_contexts(tables: list, table_sample_data: dict) -> dict[str, str]:
-    """{fqn: "DDL설명 | 샘플(N행) {...}"} — DDL 설명 + 실제 샘플행 합본 (LLM 1채널).
+def _build_table_contexts(
+    tables: list, table_sample_data: dict, columns_by_table: dict | None = None,
+) -> dict[str, str]:
+    """{fqn: "DDL설명 | 컬럼: … | 샘플(N행) {...}"} — DDL 설명 + 컬럼목록 + 샘플행 (LLM 1채널).
 
     step5(fetch_table_samples)가 채운 ``table_sample_data`` ({fqn:{sample_rows}}) 와 각
     Table 의 ``description`` 을 한 문자열로 합쳐, 렌더(_format_table_refs / batch _fmt_tables)가
     코드노드별 reads/writes 만 골라 GWT 입력에 보여주게 한다. 둘 다 없으면 키 없음.
+
+    spec 027: ``columns_by_table`` (DDL 파싱 결정론 컬럼명)을 주입 — 라이브 datasource 가
+    없어 샘플행이 비어도 LLM 이 알려진 컬럼 목록 기준으로 빠짐없이 서술하게 한다(컬럼 설명
+    누락 방지). 컬럼은 R/W 로 그라운드된 테이블에만 렌더되므로 노이즈 없음.
     """
+    columns_by_table = columns_by_table or {}
     out: dict[str, str] = {}
     for t in tables:
         tid = getattr(t, "id", None)
@@ -66,6 +73,9 @@ def _build_table_contexts(tables: list, table_sample_data: dict) -> dict[str, st
         parts: list[str] = []
         if t.description:
             parts.append(t.description)
+        cols = columns_by_table.get(tid) or []
+        if cols:
+            parts.append("컬럼: " + ", ".join(cols))
         rows = (table_sample_data.get(tid) or {}).get("sample_rows") or []
         if rows:
             parts.append(f"샘플({len(rows)}행) {_fmt_sample_rows(rows)}")
@@ -110,8 +120,13 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
     # 1채널(table_descriptions)로 흘려 _format_table_refs / batch _fmt_tables 가 코드노드별
     # reads/writes 테이블만 골라 GWT 입력에 렌더(threading·렌더러 변경 0, framework·dbms 공통).
     # 샘플은 토글 off / datasource 미지정 / 미매칭 시 없음 → 설명만(없으면 fqn 만).
+    # spec 027: DDL 파싱 컬럼(결정론)을 테이블 fqn 별로 모아 컨텍스트에 주입.
+    columns_by_table: dict[str, list[str]] = {}
+    for c in state.get("columns", []):
+        t_fqn = c.id.rsplit(".", 1)[0]
+        columns_by_table.setdefault(t_fqn, []).append(c.name)
     table_descriptions = _build_table_contexts(
-        state.get("tables", []), state.get("table_sample_data", {}),
+        state.get("tables", []), state.get("table_sample_data", {}), columns_by_table,
     )
 
     # ScanResult.codebase_notes — 3분할 모든 호출이 공통 prefix 로 사용 (캐시 친화).

@@ -22,6 +22,7 @@ from analysis_flow.step6_analyze_code.batch_planner import (
 )
 from analysis_flow.step6_analyze_code.call_cycles import find_call_cycles
 from analysis_flow.step6_analyze_code.range_body import ancestor_context, body_for
+from analysis_flow.step6_analyze_code.rw_table_filter import constrain_tables_to_rw
 from analysis_flow.step4_linking.stage2_extract_calls.call_linker import routine_call_pairs
 from data_models.analysis_context import AnalysisContext
 from data_models.code_analysis_output import (
@@ -322,6 +323,8 @@ def _apply_node_analysis(
     fn.summary = summary.summary
     fn.stereotype = coerce_stereotype(summary.stereotype or "", strategy.name) or None
     fn.logical_name = summary.logical_name or None
+    # spec 027: LLM 귀속 테이블을 결정론 reads/writes 로 제한 (callee 함수명 오귀속 차단).
+    constrain_tables_to_rw(fn.id, ctx.reads, ctx.writes, table, rules)
     fn.extra["table_insights"] = [t.model_dump() for t in table.table_insights] if table else []
     fn.extra["rules"] = [r.model_dump() for r in rules.rules] if rules else []
     fn.extra["examples"] = [e.model_dump() for e in rules.examples] if rules else []

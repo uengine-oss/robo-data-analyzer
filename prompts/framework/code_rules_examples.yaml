@@ -217,7 +217,10 @@ user_template_specific: |
     예: "OVER_LIMIT 거절" / "정상 RC_NRM 반환, transaction_history INSERT"
     반환·예외·전역·OUT 변화를 자연어로 결합. 보통 1~2 가지.
   - `affected_tables` — `[{{ "table": "...", "op": "READ|INSERT|UPDATE|DELETE|MERGE" }}]`.
-    이 시나리오에서 영향받는 테이블만 (본문 R/W 와 일관). 없으면 `[]`.
+    **이 함수가 직접 R/W 하는 테이블만** (= reads/writes 에 있는 테이블). 없으면 `[]`.
+    ★ **callee(하위호출 함수)는 테이블이 아니다** — callee 이름(예: `*_dbio_*`, `*_call_*_proc`)을
+    table 로 절대 쓰지 X. callee 가 건드리는 테이블은 그 callee 자기 분석 몫. 이 함수가 직접
+    R/W 안 하면 `affected_tables: []`.
 
   ### 2.2 ★★ 개수 정책 — rule 당 1~2 (★ 폭주 차단 핵심)
 

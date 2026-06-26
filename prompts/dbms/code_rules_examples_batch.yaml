@@ -67,7 +67,8 @@ user_template_specific: |
   ### 2.1 필드 6개
   - `rule_id` 참조 / `description` 한 줄 요약 / `given` 자연어 한 줄(진입조건, 핵심 키 3-5개)
     / `when` 자연어 한 줄(트리거, 프로시저명 X) / `then` 자연어 한 줄(반환·예외·OUT 변화 결합)
-    / `affected_tables` `[{ table, op }]` 본문 R/W 와 일관, 없으면 `[]`.
+    / `affected_tables` `[{ table, op }]` **이 함수가 직접 R/W 하는 테이블만**(reads/writes 내), 없으면 `[]`.
+      ★ **callee(하위호출)는 테이블 아님** — callee 이름(`*_dbio_*`/`*_call_*_proc` 등)을 table 로 쓰지 X.
   ### 2.2 ★★ 개수 — rule당 1~2 (★폭주 차단 핵심)
   - happy path 1 + (예외 throw 면) 예외 1. 그 외 변주 X(미세 변주는 description 한 줄에 통합).
   - 0 정답 가능(Rule 0 → examples 0).
