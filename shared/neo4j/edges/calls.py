@@ -61,14 +61,23 @@ async def upsert_calls(client: Neo4jClient, edges: Iterable[Calls]) -> None:
         "callee_id": e.callee_id,
         "scope": e.scope,
     } for e in edges if e.scope == "internal"]
-    external = [{
-        "caller_id": e.caller_id,
-        "callee_id": e.callee_id,
-        "callee_module": e.callee_module or e.callee_id,
-        "callee_package": e.callee_package,
-        "callee_name": e.callee_name or e.callee_id,
-        "scope": e.scope,
-    } for e in edges if e.scope == "external"]
+    # 외부 = 컨테이너(MODULE) + 엔트리 함수(FUNCTION). 둘의 id 를 구분한다(식별키 유일성):
+    # 모듈 id = 호출 모듈명, 엔트리 함수 id = "{module}.{name}" (내부 owner.name 패턴과 동일)
+    # → 같은-id 충돌 없이 모듈·함수가 별개 노드로 공존(화면에 "모듈 → 엔트리 함수").
+    external = []
+    for e in edges:
+        if e.scope != "external":
+            continue
+        module_id = e.callee_module or e.callee_id
+        name = e.callee_name or e.callee_id
+        external.append({
+            "caller_id": e.caller_id,
+            "callee_id": f"{module_id}.{name}",
+            "callee_module": module_id,
+            "callee_package": e.callee_package,
+            "callee_name": name,
+            "scope": e.scope,
+        })
     if internal:
         await client.run_batch_unwind(INTERNAL_QUERY, internal)
     if external:
