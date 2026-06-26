@@ -6,8 +6,8 @@
 - stdlib 심볼 → 드롭.
 - 프레임워크 루틴(skill 이 알려준 목록) → 드롭.
 - **호출 wrapper**(skill 이 알려준 — 인자가 실제 호출 대상) → 라인 본문에서 인자
-  추출 후 ``CALLS{internal|external}``. 인자가 code_nodes 의 module_id 와 매치되면
-  그 모듈 entry 루틴으로 internal, 매치 안 되면 인자 이름 그대로 external.
+  추출 후 ``CALLS{internal|external}``. 추출 인자를 직접 호출과 동일 리졸버(_resolve_internal)로
+  해소 — 분석대상 내부 루틴(모듈 엔트리 함수 등)과 매치되면 internal, 아니면 인자 이름 external.
 - 그 외 → ``CALLS{external}`` (분석 범위 밖 — 호출 사실만 기록).
 
 ``framework_runtime_functions`` 의 각 항목은 **글로브 패턴** (``fnmatchcase``) 으로 해석.
@@ -128,28 +128,6 @@ def classify_call_sites(
         by_name[_bare_name(fn.id)].append(fn.id)
         module_of[fn.id] = fn.owner_id
 
-    # wrapper 인자 → 진짜 호출 대상 분류용: 모듈 id → entry 루틴 id 매핑.
-    # entry = id 가 "<owner_id>.<owner_id>" 형태인 루틴 (모듈 엔트리 표준).
-    # 같은 모듈의 entry 가 없으면 그 모듈 루틴 중 정렬상 첫 후보 (단순화).
-    entry_by_module: dict[str, str] = {}
-    other_by_module: dict[str, list[str]] = defaultdict(list)
-    for fn in code_nodes:
-        if not fn.owner_id:
-            continue
-        if fn.id == f"{fn.owner_id}.{fn.owner_id}":
-            entry_by_module[fn.owner_id] = fn.id
-        else:
-            other_by_module[fn.owner_id].append(fn.id)
-
-    def _wrapper_callee_to_internal(callee_name: str) -> Optional[str]:
-        """wrapper 인자(이름) → internal 루틴 id 또는 None (external)."""
-        if callee_name in entry_by_module:
-            return entry_by_module[callee_name]
-        siblings = other_by_module.get(callee_name)
-        if siblings:
-            return sorted(siblings)[0]
-        return None
-
     wrapper_patterns: dict[str, re.Pattern] = {}
     for w in wrappers:
         name = w.get("wrapper") if isinstance(w, dict) else getattr(w, "wrapper", None)
@@ -187,7 +165,8 @@ def classify_call_sites(
             if not extracted:
                 result.wrapper_unresolved += 1
                 continue
-            internal_id = _wrapper_callee_to_internal(extracted)
+            # 추출 대상도 직접 호출과 동일 리졸버로 — 내부 모듈이면 엔트리 함수 정식 id, 아니면 None(external).
+            internal_id = _resolve_internal(extracted, caller, by_name, module_of)
             if internal_id is not None:
                 result.edges.append(Calls(
                     caller_id=caller, callee_id=internal_id, scope="internal",
