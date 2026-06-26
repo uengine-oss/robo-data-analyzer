@@ -22,15 +22,21 @@ system: |
   - `cursor-loop` 다수 → "행 단위 순회 / 일괄 처리 대상".
   - `audit-write` / `append-only` 다수 → "이력 / 로그 적재".
 
-  ## 예시
+  ## 예시 (description)
 
   - "정산 거래 마스터 — 일별 정산 배치의 DML target. 월말 마감까지 update".
   - "코드 테이블 — 다수 프로시저가 reference (lookup 만)".
   - "거래 이력 로그 — 트리거 / 배치가 append 만, 갱신 없음".
 
+  ## logical_name — 짧은 도메인 표시명 (물리명과 별개)
+
+  - 물리명(RDD01DD_TB 등) 대신 **사람이 읽을 도메인 이름** — 통상 8~20자, 체언/명사형.
+  - 역할 + 업무데이터를 한 줄로. 예: "일 용수공급량 일보", "시간별 계측 정산", "변경 이력 로그".
+  - **물리명·SQL 식별자 그대로 X**. **근거 부족하면 빈 문자열**(없는 이름 날조 X — candidates 로 못 정하면 "").
+
   ## 형식 강제
 
-  `TableDescription` Pydantic — `db` / `schema` / `name` / `description`.
+  `TableDescription` Pydantic — `db` / `schema` / `name` / `logical_name` / `description`.
 
 user_template: |
   table_fqn: {table_fqn}

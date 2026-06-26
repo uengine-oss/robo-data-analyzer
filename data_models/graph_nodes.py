@@ -31,6 +31,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
+from shared.neo4j.ids import fqn
+
 
 # ── DB 객체 (DDL 파싱에서만 생성, 이후 단계는 신규 생성 X) ──
 
@@ -46,8 +48,8 @@ class Schema:
 
     @property
     def id(self) -> str:
-        """``db.name`` — Neo4j 단일 식별 키."""
-        return f"{self.db}.{self.name}"
+        """``db.name`` — Neo4j 단일 식별 키 (빈 구성요소 생략)."""
+        return fqn(self.db, self.name)
 
 
 @dataclass(frozen=True)
@@ -63,6 +65,7 @@ class Table:
     db: str
     schema: str
     name: str
+    logical_name: str = ""                   # 짧은 도메인 표시명(물리명과 별개) — spec 025, 빈값 미저장
     description: str = ""                    # COMMENT ON·-- 주석·카탈로그 1차 설명
     description_source: str = ""             # "ddl" / "code" / "catalog" / "" — 유효 설명이 어느 칸인지
     comment: str = ""                        # -- /* */ 주석 원문 (COMMENT ON 없으면 description 출처)
@@ -74,8 +77,8 @@ class Table:
 
     @property
     def id(self) -> str:
-        """``db.schema.name`` — Neo4j 단일 식별 키."""
-        return f"{self.db}.{self.schema}.{self.name}"
+        """``db.schema.name`` — Neo4j 단일 식별 키 (빈 구성요소 생략)."""
+        return fqn(self.db, self.schema, self.name)
 
 
 @dataclass(frozen=True)

@@ -59,11 +59,13 @@ class SummaryOutput(BaseModel):
 
 
 class ColumnInsight(BaseModel):
-    """코드노드 관점 컬럼 의미 1건 — 소비처(enrich_table_description)가 name·description 만 사용.
+    """코드노드 관점 컬럼 의미 1건 — 소비처(enrich_table_description)가 name·logical_name·description 사용.
 
     ``usage`` 는 생성돼도 소비 0(전수 grep 확정) → 응답 스키마에서 제외(불필요 토큰·폭주면적 차단).
+    ``logical_name`` = 테이블 logical_name(spec 025) 미러 — 짧은 업무 표시명(spec 028).
     """
     name: str = Field(..., description="DDL 컬럼명 정확히 (추측 X)")
+    logical_name: str = Field("", description="컬럼 도메인 표시명 한 줄 (코드 식별자·DDL 타입·동어반복 X)")
     description: str = Field("", description="비즈니스 의미 한 줄 (DDL 타입 X / 동어반복 X)")
 
 
@@ -244,6 +246,7 @@ class TableDescription(BaseModel):
     db: str
     schema_: str = Field(..., alias="schema")
     name: str
+    logical_name: str = ""          # 짧은 도메인 표시명(물리명과 별개, 근거없으면 빈값) — spec 025
     description: str
 
     class Config:

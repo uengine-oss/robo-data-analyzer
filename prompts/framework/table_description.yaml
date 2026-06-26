@@ -21,16 +21,21 @@ system: |
   - role 이 다양 (읽기·쓰기 골고루) → "관리 / 운영 대상" 표현.
   - 테이블 이름 자체에서 의미 추론 X — candidates 의 code_summary 만 근거.
 
-  ## 예시
+  ## 예시 (description)
 
   - "고객 주문 헤더 — 주문번호 / 상태 / 결제정보 보관. 읽기·쓰기 대상".
   - "사용자 프로필 마스터 — 인증 시 조회 (READ-only)".
   - "결제 응답 이력 — 외부 PG 응답 코드 / 시각 적재 (append-only)".
   - "은행·카드사 코드 마스터 — 거래 검증 시 lookup".
 
+  ## logical_name — 짧은 도메인 표시명 (물리명과 별개)
+
+  - 물리명 대신 **사람이 읽을 도메인 이름** — 통상 8~20자, 체언/명사형. 예: "고객 주문 헤더", "결제 응답 이력".
+  - **물리명·코드 토큰 그대로 X**. **근거 부족하면 빈 문자열**(candidates 로 못 정하면 "" — 날조 X).
+
   ## 형식 강제
 
-  `TableDescription` Pydantic — `db` / `schema` / `name` / `description`.
+  `TableDescription` Pydantic — `db` / `schema` / `name` / `logical_name` / `description`.
 
 user_template: |
   table_fqn: {table_fqn}

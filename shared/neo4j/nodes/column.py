@@ -9,6 +9,7 @@ from typing import Iterable
 
 from data_models.graph_nodes import Column
 from shared.neo4j.neo4j_client import Neo4jClient
+from shared.neo4j.props import nonempty
 
 
 MERGE_QUERY = """
@@ -34,6 +35,8 @@ SET_ANALYZED_QUERY = """
 UNWIND $items AS item
 MATCH (c:COLUMN {id: item.id})
 SET c.analyzed_description = item.analyzed_description,
+    c.logical_name = CASE WHEN coalesce(item.logical_name, '') <> ''
+                          THEN item.logical_name ELSE c.logical_name END,
     c.description_source = CASE WHEN coalesce(c.description, '') = ''
                                 THEN 'code' ELSE c.description_source END
 """
@@ -56,10 +59,15 @@ def to_item(col: Column) -> dict:
 
 
 async def upsert_columns(client: Neo4jClient, columns: Iterable[Column]) -> None:
-    items = [to_item(c) for c in columns]
+    # 빈값미저장(spec 020/024): 빈 comment·default_value 등은 키로 저장 안 함.
+    items = [nonempty(to_item(c)) for c in columns]
     await client.run_batch_unwind(MERGE_QUERY, items)
 
 
-async def update_analyzed_descriptions(client: Neo4jClient, updates: list[dict]) -> None:
-    """``[{"id", "analyzed_description"}]`` — 분석 합성 컬럼 설명 일괄 SET."""
+async def update_analyzed_descriptions(client: Neo4jClient, updates: list[dict]) -> int:
+    """``[{"id", "analyzed_description"}]`` — 분석 합성 컬럼 설명 일괄 SET. 반환=실제 매칭 노드 수."""
     await client.run_batch_unwind(SET_ANALYZED_QUERY, updates)
+    ids = [u["id"] for u in updates]
+    rows = await client.run_read_query(
+        "MATCH (c:COLUMN) WHERE c.id IN $ids RETURN count(c) AS matched", {"ids": ids})
+    return int(rows[0]["matched"]) if rows else 0

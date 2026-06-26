@@ -29,6 +29,7 @@ from data_models.code_analysis_output import TableDescription
 from shared.llm.yaml_llm_runner import run_yaml_rule
 from shared.log.logger import log_error, log_info, log_warning
 from shared.log.processing_progress import step_processing_scope, track_processing
+from shared.neo4j.ids import fqn
 from shared.neo4j.neo4j_client import Neo4jClient
 from shared.neo4j.nodes.column import update_analyzed_descriptions as update_column_analyzed
 from shared.neo4j.nodes.table import update_analyzed_descriptions as update_table_analyzed
@@ -56,6 +57,8 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
     table_candidates: dict[str, list[dict]] = defaultdict(list)
     # table_fqn → {column_name: description (가장 명확한 1개)}
     column_descriptions: dict[str, dict[str, str]] = defaultdict(dict)
+    # table_fqn → {column_name: logical_name (가장 명확한 1개)} — 컬럼 논리명(spec 028)
+    column_logicals: dict[str, dict[str, str]] = defaultdict(dict)
 
     for fn in code_nodes:
         for insight in fn.extra.get("table_insights", []) or []:
@@ -72,6 +75,9 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
                 cdesc = col.get("description")
                 if cname and cdesc:
                     column_descriptions[table].setdefault(cname, cdesc)
+                clog = col.get("logical_name")
+                if cname and clog:
+                    column_logicals[table].setdefault(cname, clog)
 
     if not table_candidates:
         log_info(_STEP, "skip", reason="no table_insights aggregated")
@@ -112,21 +118,28 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
         )
     results = _apply_table_fail_policy(table_fqns, raw_results)
 
-    # 분석 합성 설명 → analyzed_description. description (DDL/catalog 1차설명) 은 안 건드림.
+    # 분석 합성 설명/논리명 → 노드에 SET. ★id = 원본 table_fqn(= 노드 id, 결정론) 직접 사용.
+    # LLM 이 반환한 db/schema/name 으로 id 를 재조립하면 오파싱(name='TB' 등)으로 불일치·유실
+    # (컬럼 경로와 동일하게 원본 fqn 사용 — spec 024). r 은 설명·논리명 내용만 쓴다.
     table_updates = [
-        {"id": f"{r.db}.{r.schema_}.{r.name}", "analyzed_description": r.description}
-        for r in results if r is not None
+        {"id": table_fqn, "logical_name": r.logical_name, "analyzed_description": r.description}
+        for table_fqn, r in zip(table_fqns, results) if r is not None
     ]
     if neo is not None and table_updates:
-        await update_table_analyzed(neo, table_updates)
+        matched = await update_table_analyzed(neo, table_updates)
+        _warn_unmatched("테이블", table_updates, matched)
 
+    # 컬럼 논리명(spec 028)도 동반 SET — 빈값은 column.py SET_ANALYZED 가 미저장 처리.
     column_updates = [
-        {"id": f"{table_fqn}.{cname}", "analyzed_description": cdesc}
+        {"id": fqn(table_fqn, cname),
+         "analyzed_description": cdesc,
+         "logical_name": column_logicals.get(table_fqn, {}).get(cname, "")}
         for table_fqn, cols in column_descriptions.items()
         for cname, cdesc in cols.items()
     ]
     if neo is not None and column_updates:
-        await update_column_analyzed(neo, column_updates)
+        matched = await update_column_analyzed(neo, column_updates)
+        _warn_unmatched("컬럼", column_updates, matched)
 
     updated_tables = _replace_by_id(state.get("tables", []), table_updates, "analyzed_description")
     updated_columns = _replace_by_id(state.get("columns", []), column_updates, "analyzed_description")
@@ -162,6 +175,20 @@ def _apply_table_fail_policy(
         else:
             out.append(result)
     return out
+
+
+def _warn_unmatched(kind: str, updates: list[dict], matched: int) -> None:
+    """미반영 = LLM 설명의 id 가 실제 노드와 불일치(= 노드 아닌 대상) → 그 설명만 버려진다.
+    실제 노드는 id 일치 시 채워지므로 이건 **컬럼 유실이 아니라 무해한 잉여**다. 따라서
+    error 로 오해되지 않게 INFO(analyzer.log)에만 남긴다 — error.log(WARNING+) 에 안 띄움.
+    (진짜 유실 = '쓰는 컬럼이 빈값'은 spec 027 컬럼 주입으로 예방. spec 024→027 정정.)
+    """
+    if matched < len(updates):
+        log_info(
+            _STEP, "analyzed_desc_unmatched",
+            f"{kind} 분석설명 {len(updates) - matched}/{len(updates)}건 미반영"
+            " (노드 아닌 대상 = 무해한 잉여, 컬럼 유실 아님)",
+        )
 
 
 def _replace_by_id(nodes: list, updates: list[dict], attr: str) -> list:

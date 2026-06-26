@@ -29,6 +29,6 @@ sampling:
   temperature: 0.7
   top_p: 0.8
 
-# GPT-5 계열은 reasoning_effort 인자 정상 인식 — none = reasoning chain 생성 X.
-# 비용 절감 + 응답 latency ↓.
+# gpt-5.4-mini reasoning_effort 지원값 = none | low | medium | high | xhigh.
+# none = reasoning chain 생성 X → 비용·latency 최소. 검색 심판엔 none 충분.
 reasoning_effort: none

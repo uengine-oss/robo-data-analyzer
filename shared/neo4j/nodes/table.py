@@ -11,6 +11,7 @@ from typing import Iterable
 
 from data_models.graph_nodes import Table
 from shared.neo4j.neo4j_client import Neo4jClient
+from shared.neo4j.props import nonempty
 
 
 # id 단일 식별 (schema_constraints.py 의 UNIQUE 제약과 통일) — 값 = "db.schema.name"
@@ -36,6 +37,8 @@ SET_ANALYZED_QUERY = """
 UNWIND $items AS item
 MATCH (t:TABLE {id: item.id})
 SET t.analyzed_description = item.analyzed_description,
+    t.logical_name = CASE WHEN coalesce(item.logical_name, '') <> ''
+                          THEN item.logical_name ELSE t.logical_name END,
     t.description_source = CASE WHEN coalesce(t.description, '') = ''
                                 THEN 'code' ELSE t.description_source END
 """
@@ -56,10 +59,16 @@ def to_item(table: Table) -> dict:
 
 
 async def upsert_tables(client: Neo4jClient, tables: Iterable[Table]) -> None:
-    items = [to_item(t) for t in tables]
+    # 빈값미저장(spec 020/024): 빈 db·comment 등은 키로 저장 안 함. id 는 항상 비어있지 않음.
+    items = [nonempty(to_item(t)) for t in tables]
     await client.run_batch_unwind(MERGE_QUERY, items)
 
 
-async def update_analyzed_descriptions(client: Neo4jClient, updates: list[dict]) -> None:
-    """``[{"id", "analyzed_description"}]`` — 분석 합성 설명 일괄 SET."""
+async def update_analyzed_descriptions(client: Neo4jClient, updates: list[dict]) -> int:
+    """``[{"id", "analyzed_description"}]`` — 분석 합성 설명 일괄 SET. 반환=실제 매칭된 노드 수.
+    매칭 수 < 입력 수면 id 불일치로 유실(호출측이 표면화, spec 024)."""
     await client.run_batch_unwind(SET_ANALYZED_QUERY, updates)
+    ids = [u["id"] for u in updates]
+    rows = await client.run_read_query(
+        "MATCH (t:TABLE) WHERE t.id IN $ids RETURN count(t) AS matched", {"ids": ids})
+    return int(rows[0]["matched"]) if rows else 0
