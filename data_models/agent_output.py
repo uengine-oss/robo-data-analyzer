@@ -91,7 +91,7 @@ class DdlTransform(BaseModel):
 # 호출 wrapper — 인자(이름 string)가 실제 호출 대상인 코드노드
 # ───────────────────────────────────────────────────────────────
 #
-# wrapper 자체는 ``framework_code_nodes`` 에 들어가 호출 그래프에서 드롭되지만,
+# wrapper 자체는 ``framework_runtime_functions`` 에 들어가 호출 그래프에서 드롭되지만,
 # 그 인자가 실제 호출 타겟(다른 코드노드/모듈)인 경우 — 그 인자를 추출해 ``Calls`` 엣지로
 # 정합한다. 별도 카테고리/별도 step 이 아니라 ``call_classifier`` 안에서 처리 — 호출은
 # 한 영역 (Calls 엣지) 으로 단일화.
@@ -117,7 +117,7 @@ class CallWrapper(BaseModel):
         ...,
         description=(
             "wrapper 함수 이름 — SKILL 의 ``## 호출 wrapper`` yaml 의 ``wrapper`` 값 "
-            "그대로 (예: ProFrame ``mpfm_dlcall``). framework_code_nodes 에도 동시 포함되지만 "
+            "그대로 (예: ProFrame ``mpfm_dlcall``). framework_runtime_functions 에도 동시 포함되지만 "
             "인자가 진짜 호출 대상이라 별도 분류."
         ),
     )
@@ -161,9 +161,13 @@ class ScanResult(BaseModel):
     )
 
     # 호출 분류용 — 프레임워크/런타임 루틴 이름 (skill 문서에서 읽음). 호출 그래프에서 드롭.
-    framework_code_nodes: list[str] = Field(
+    framework_runtime_functions: list[str] = Field(
         default_factory=list,
-        description="프레임워크/런타임 함수 이름 (업무 로직 아님 — 호출 분류 시 드롭)",
+        description=(
+            "드롭할 프레임워크/런타임 함수 이름 (PFM_*/mpfm_*/PRINT_* 류 — 업무 로직 아님, "
+            "호출 분류 시 그래프에서 드롭). ★프로젝트 자기 함수(code_nodes)는 절대 넣지 말 것 "
+            "— 여기 넣으면 그 함수 호출이 그래프에서 사라진다."
+        ),
     )
 
     no_match_reason: Optional[str] = None

@@ -41,7 +41,7 @@ ddl_transform:
 
 ## 프레임워크 함수 (호출 분류 시 드롭)
 
-업무 로직이 아닌 프레임워크/런타임 함수 이름. Scan Agent 가 `ScanResult.framework_functions`
+업무 로직이 아닌 프레임워크/런타임 함수 이름. Scan Agent 가 `ScanResult.framework_runtime_functions`
 에 담고, 호출 분류에서 드롭된다 (호출 그래프 노이즈 제거).
 
 - <예: `PFM_TRY` `PFM_MSGE` ... / ORM 의 `flush` `persist` 등>

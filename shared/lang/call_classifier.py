@@ -10,7 +10,7 @@
   그 모듈 entry 루틴으로 internal, 매치 안 되면 인자 이름 그대로 external.
 - 그 외 → ``CALLS{external}`` (분석 범위 밖 — 호출 사실만 기록).
 
-``framework_code_nodes`` 의 각 항목은 **글로브 패턴** (``fnmatchcase``) 으로 해석.
+``framework_runtime_functions`` 의 각 항목은 **글로브 패턴** (``fnmatchcase``) 으로 해석.
 
 stdlib 목록 = ``shared/lang/stdlib/{c,java,python}_stdlib.json``.
 """

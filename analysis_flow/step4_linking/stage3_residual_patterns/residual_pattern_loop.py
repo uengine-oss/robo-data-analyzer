@@ -208,7 +208,7 @@ def _build_residual_message(
     """잔여 샘플 + 이미 파악된 scan 맥락을 user 메시지로 직렬화 (재탐색 금지).
 
     KV 캐시 — 라운드 사이 prefix 적중 최대화 위해 [라운드 동일 영역] → [라운드 변동
-    영역] 순으로 배치. matched_skill / codebase_notes / framework_code_nodes /
+    영역] 순으로 배치. matched_skill / codebase_notes / framework_runtime_functions /
     ddl_tables 는 라운드 사이 동일 → 앞. confirmed_patterns / current_ddl_transform /
     residual_cases 는 라운드마다 변경 → 뒤.
     """
@@ -221,7 +221,7 @@ def _build_residual_message(
         "codebase_notes:",
         scan.codebase_notes or "(없음)",
         "",
-        f"framework_code_nodes: {', '.join(scan.framework_code_nodes) or '(없음)'}",
+        f"framework_runtime_functions: {', '.join(scan.framework_runtime_functions) or '(없음)'}",
         "",
         "ddl_tables (verify_table_regex 해소 기준):",
         ddl_tables,

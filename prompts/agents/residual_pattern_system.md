@@ -25,7 +25,7 @@
 - `matched_skill` / `codebase_notes` — 이미 파악된 프로젝트 성격 (참고용, 재판단 X)
 - `confirmed_patterns` — 결정론 단계가 이미 쓰고 있는 정규식 (이것과 **겹치지 않는**
   새 패턴을 찾아야 의미가 있다)
-- `framework_functions` — 프레임워크 함수 목록 (참고용)
+- `framework_runtime_functions` — 프레임워크 함수 목록 (참고용)
 - `ddl_tables` — 이 프로젝트의 DB 테이블 목록 (`verify_table_regex` 해소 기준)
 - `residual_cases` — 잔여 미해결 케이스 샘플. 각 케이스: `file` · `line` ·
   `call_text`(매칭된 호출 원문) · `source_id` · `attempted_patterns`(어떤 정규식이

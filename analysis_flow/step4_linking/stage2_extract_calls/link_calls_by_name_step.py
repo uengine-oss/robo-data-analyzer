@@ -37,7 +37,7 @@ async def link_calls_by_name_step(state: dict, config: Optional[RunnableConfig] 
     # framework 루틴 = drop 대상 (SKILL). call_wrappers = 인자가 실제 호출 대상인
     # 루틴 (SKILL) — call_classifier 가 라인 본문에서 인자 추출 후 internal/external 분류.
     scan_result = state.get("scan_result") or {}
-    framework_names = frozenset(scan_result.get("framework_code_nodes") or [])
+    framework_names = frozenset(scan_result.get("framework_runtime_functions") or [])
     call_wrappers = scan_result.get("call_wrappers") or []
     result = classify_call_sites(
         call_sites, state.get("code_nodes", []),

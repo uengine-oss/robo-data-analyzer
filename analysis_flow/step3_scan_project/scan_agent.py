@@ -175,7 +175,7 @@ async def _finalize(
         table_access_patterns=draft.table_access_patterns,
         ddl_transform=draft.ddl_transform,
         codebase_notes=html.unescape(draft.codebase_notes or ""),
-        framework_code_nodes=draft.framework_code_nodes,
+        framework_runtime_functions=draft.framework_runtime_functions,
         call_wrappers=draft.call_wrappers,
         no_match_reason=no_match_reason,
     )

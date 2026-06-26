@@ -54,10 +54,10 @@ table-access 정규식과 프레임워크 함수 목록을 `ScanResult` 에 **�
 - 끝내 못 맞추겠으면 지어내지 말 것. `table_access_patterns` 를 비우고
   `no_match_reason` 에 사유를 적는다 (조용한 실패 금지).
 
-**프레임워크 함수** (`framework_functions`):
+**프레임워크 함수** (`framework_runtime_functions`):
 
 - SKILL 문서에 프레임워크/런타임 함수 목록이 있으면 (예: ProFrame 의 `PFM_*` /
-  `mpfm*`), 그 이름들을 `framework_functions` 에 담는다. 이 함수들은 업무 로직이
+  `mpfm*`), 그 이름들을 `framework_runtime_functions` 에 담는다. 이 함수들은 업무 로직이
   아니라 호출 그래프에서 드롭된다.
 - SKILL 에 목록이 없으면 빈 채로 둔다 (추측해 채우지 말 것).
 
@@ -66,7 +66,7 @@ table-access 정규식과 프레임워크 함수 목록을 `ScanResult` 에 **�
 - SKILL 문서에 `## 호출 wrapper` 절이 있으면 그 yaml 항목들을 `call_wrappers` 에
   **그대로 옮겨 담는다**. 각 항목 = `{wrapper: 함수 이름, callee_from: 인자 추출 위치}`.
 - wrapper = 첫 인자 string 이 실제 호출 대상인 동적 dispatch 함수 (예: ProFrame 의
-  `mpfm_dlcall("모듈명", ...)`). wrapper 자체는 `framework_functions` 에도 들어가지만,
+  `mpfm_dlcall("모듈명", ...)`). wrapper 자체는 `framework_runtime_functions` 에도 들어가지만,
   인자가 진짜 호출 대상이라 `call_classifier` 가 본문에서 추출해 호출 그래프에 정합.
 - SKILL 에 `## 호출 wrapper` 절이 **없으면 빈 배열** — 대부분 빈 배열이 정답
   (JPA / MyBatis / OFBiz / EJB-CMP 등은 wrapper 없음).
@@ -118,7 +118,7 @@ table-access 정규식과 프레임워크 함수 목록을 `ScanResult` 에 **�
 | `table_access_patterns` | 검증 통과한 정규식 (SKILL 본문 차용 또는 직접 작성). 못 구하면 빈 배열 |
 | `ddl_transform` | entity→DDL 테이블명 변환 규칙 |
 | `codebase_notes` | 프로젝트 성격 / wrapper / 명명 컨벤션 + **op 결정 신호** 1단락 |
-| `framework_functions` | 프레임워크/런타임 함수 이름 / **glob 패턴** (`PRINT_*` 같은). 없으면 빈 배열 |
+| `framework_runtime_functions` | 프레임워크/런타임 함수 이름 / **glob 패턴** (`PRINT_*` 같은). 없으면 빈 배열 |
 | `call_wrappers` | 호출 wrapper 명시 — 인자가 실제 호출 대상인 함수. 각 항목 `{wrapper: 함수 이름, callee_from: 인자 추출 위치}`. SKILL 의 "## 호출 wrapper" 절 본문 차용. 없으면 빈 배열 |
 | `no_match_reason` | SKILL 매칭 X 또는 정규식 미산출 시 사유. 정상이면 null |
 

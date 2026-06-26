@@ -20,6 +20,7 @@ from analysis_flow.step3_scan_project.scan_agent import run_scan_agent
 from analysis_flow.step3_scan_project.scanner_input_collector import (
     collect_scanner_input,
 )
+from shared.lang.call_classifier import _bare_name
 from shared.llm.cost_budget import CostBudget
 from shared.llm.middleware.call_limit import ModelCallLimitExceeded
 from shared.log.logger import log_error, log_info, log_warning
@@ -76,6 +77,7 @@ async def scan_codebase_step(state: dict, config: Optional[RunnableConfig] = Non
 
     result_dict = result.model_dump()
     _warn_if_call_wrappers_missing(result_dict)
+    _warn_if_framework_overlaps_project(result_dict, state.get("code_nodes", []))
     emit_message(
         stream,
         f"✅ 코드베이스 스캔 완료 — 패턴 {len(result_dict.get('table_access_patterns') or [])}",
@@ -113,3 +115,38 @@ def _warn_if_call_wrappers_missing(result_dict: dict) -> None:
         "호출 그래프에서 손실 (mpfm_dlcall 류 모듈 간 의존 누락).",
         skill=matched,
     )
+
+
+def _warn_if_framework_overlaps_project(result_dict: dict, code_nodes: list) -> None:
+    """드롭 목록(``framework_runtime_functions``)에 프로젝트 자기 함수(code_nodes)가
+    섞이면 표면화 — silent corruption 차단 (절대원칙 #3 / Constitution IV).
+
+    실측 사례(2026-06-26): 스캔 에이전트가 ``framework_runtime_functions`` 에 프레임워크
+    런타임 함수(PFM_*/mpfm_*) 대신 프로젝트 업무 함수(a000_*/b000_*)를 채움 → 자기 함수
+    호출이 framework drop 으로 빠져 internal 호출 그래프가 붕괴(internal 54 같은 비정상).
+    이 둘은 상호 배타여야 하므로 겹침은 항상 비정상.
+    """
+    drop = result_dict.get("framework_runtime_functions") or []
+    if not drop or not code_nodes:
+        return
+    project_names: set[str] = set()
+    for fn in code_nodes:
+        nid = getattr(fn, "id", None)
+        if nid is None and isinstance(fn, dict):
+            nid = fn.get("id")
+        if nid:
+            project_names.add(_bare_name(nid))
+    # 글로브 메타문자가 있는 항목(PRINT_* 류)은 오탐 방지 위해 제외 — 정확 이름만 대조.
+    overlap = sorted(
+        d for d in drop
+        if not any(c in d for c in "*?[") and d in project_names
+    )
+    if overlap:
+        log_warning(
+            _STEP, "framework_drop_overlaps_project",
+            f"framework_runtime_functions 에 프로젝트 자기 함수 {len(overlap)}건 혼입 "
+            f"(예: {', '.join(overlap[:8])}). 이 함수들의 호출이 framework drop 으로 빠져 "
+            "internal 호출 그래프가 붕괴한다. 스캔 에이전트가 드롭 목록에 런타임 함수가 아닌 "
+            "프로젝트 함수를 채운 정황 — SKILL/프롬프트의 framework_runtime_functions 지시 점검.",
+            overlap_count=len(overlap),
+        )
