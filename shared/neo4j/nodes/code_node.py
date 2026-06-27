@@ -15,7 +15,6 @@ from typing import Iterable
 
 from data_models.graph_nodes import CodeNode
 from shared.neo4j.neo4j_client import Neo4jClient
-from shared.neo4j.nodes.stereotype_label import apply_stereotype_labels
 from shared.neo4j.props import join_notes, nonempty
 
 
@@ -74,10 +73,6 @@ async def upsert_code_nodes(client: Neo4jClient, code_nodes: Iterable[CodeNode])
 
 
 async def update_summaries(client: Neo4jClient, code_nodes: Iterable[CodeNode]) -> None:
-    """analyze_code 결과 (summary / stereotype / logical_name / code_text) 일괄 갱신.
-
-    stereotype 은 속성 + **라벨**로 부여(spec 032) — 소비처가 역할로 필터/색칠하기 쉽게.
-    """
-    analyzed = [f for f in code_nodes if f.summary is not None]
-    await client.run_batch_unwind(SET_SUMMARY_QUERY, [to_summary_item(f) for f in analyzed])
-    await apply_stereotype_labels(client, [(f.id, f.stereotype or "") for f in analyzed])
+    """analyze_code 결과 (summary / stereotype / logical_name / code_text) 일괄 갱신."""
+    items = [to_summary_item(f) for f in code_nodes if f.summary is not None]
+    await client.run_batch_unwind(SET_SUMMARY_QUERY, items)

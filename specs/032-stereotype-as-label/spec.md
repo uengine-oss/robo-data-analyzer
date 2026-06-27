@@ -4,7 +4,18 @@
 
 **Created**: 2026-06-27
 
-**Status**: Draft (Phase 1 — additive, 무중단)
+**Status**: ⛔ SUPERSEDED / REVERTED (2026-06-27) — 유지보수 판단으로 철회. stereotype 은 **속성 유지**(spec 020)가 결론.
+
+> **왜 철회**: stereotype 을 레이블로 올리면 노드가 멀티레이블이 되어 **모든 라벨 소비처**(프론트 타입표시·색상·필터칩, catalog `labels()[0]`, architect)가 "종류 vs 역할"을 매번 분류해야 함 → 하드코딩 역할집합(드리프트) 또는 라벨순서 의존(★Neo4j 라벨 순서 비보장 = catalog `labels()[0]` 버그 부류 재유발). 디버깅·유지보수 비용 큼. 반면 **속성 유지** 시: 라벨=종류 단일(깨끗·결정적), 역할은 속성 1곳에서만(프론트가 `node.properties.stereotype` 로 필터/색상). neo4j 반영도 속성으로 충족. 레이블의 유일 장점(`MATCH (:Command)`)은 현재 소비처 0.
+> **조치**: 본 spec 코드(stereotype_label.py·code_node/module 호출) 되돌림(커밋). 현재 그래프 마이그레이션 라벨도 REMOVE(속성만 유지). 역할 UI 는 프론트가 속성 기반으로 처리(후속 frontend spec). 본 문서는 결정 역사 기록용으로 보존.
+
+---
+
+**Feature Branch**: `refactor`
+
+**Created**: 2026-06-27
+
+**원안 Status**: Draft (Phase 1 — additive, 무중단)
 
 **Input**: 사용자 결정 — stereotype(역할: Service/Command/Query/Adapter/Validator/…)을 노드 **속성**이 아니라 **레이블**로 두자. 그래야 프론트 필터/색상·neo4j 쿼리에서 역할로 필터/색칠이 일급으로 쉽고 유지보수가 낫다. (spec 020의 "stereotype=속성" 결정을 역할 가시성 위해 전환.)
 
