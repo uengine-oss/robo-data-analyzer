@@ -429,17 +429,27 @@ def _emit_code_graph(stream: NDJSONStream, fn: CodeNode, em: ExampleMappingResul
             "from": {"label": node_label, "id": hq.source_id},
             "to":   {"label": "QUESTION", "id": hq.target_id},
         })
+    # 룰 흐름(NEXT/BRANCH)은 DB 저장(rule_flow.py)과 동일하게 **룰 노드 끝점**으로 발신한다.
+    # owner_id+local_rule_id 로 보내면 프론트가 함수 self-loop 로 그린다 — HAS_RULE 가 주는
+    # local_rule_id→룰노드 id 매핑으로 해소해 룰→룰 로 보낸다(끝점 미해소면 생략).
+    rule_by_local = {hr.local_rule_id: hr.target_id for hr in em.has_rule}
     for nx in em.next_edges:
+        src, tgt = rule_by_local.get(nx.from_rule_id), rule_by_local.get(nx.to_rule_id)
+        if not src or not tgt:
+            continue
         stream.emit({
             "type": "relationship_event", "op": "merge", "rel_type": "NEXT",
-            "from": {"label": node_label, "id": nx.owner_id, "rule_id": nx.from_rule_id},
-            "to":   {"label": node_label, "id": nx.owner_id, "rule_id": nx.to_rule_id},
+            "from": {"label": "RULE", "id": src},
+            "to":   {"label": "RULE", "id": tgt},
         })
     for br in em.branch_edges:
+        src, tgt = rule_by_local.get(br.from_rule_id), rule_by_local.get(br.to_rule_id)
+        if not src or not tgt:
+            continue
         stream.emit({
             "type": "relationship_event", "op": "merge", "rel_type": "BRANCH",
-            "from": {"label": node_label, "id": br.owner_id, "rule_id": br.from_rule_id},
-            "to":   {"label": node_label, "id": br.owner_id, "rule_id": br.to_rule_id},
+            "from": {"label": "RULE", "id": src},
+            "to":   {"label": "RULE", "id": tgt},
         })
     for at in em.affects_table:
         stream.emit({

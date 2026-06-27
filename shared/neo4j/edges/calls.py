@@ -49,36 +49,67 @@ SET r.scope = item.scope
 """
 
 
-async def upsert_calls(client: Neo4jClient, edges: Iterable[Calls]) -> None:
-    """CALLS 업서트 — internal 은 기존 노드 연결, external 은 stub 노드 생성·연결.
+def _split_calls(edges: Iterable[Calls]) -> tuple[list[dict], list[dict]]:
+    """edges → (internal items, external items). 저장(upsert)·라이브 발신(emit) 공유 단일출처.
 
-    external 의 모듈/이름은 linker 가 비웠으면 콜리 id 로 보충 (스키마는 빈 채 →
-    PACKAGE 연결 생략). MERGE 가 중복 dedup.
+    외부 = 컨테이너(MODULE) + 엔트리 함수(FUNCTION). 둘의 id 구분(식별키 유일성):
+    모듈 id = 호출 모듈명, 엔트리 함수 id = "{module}.{name}" (내부 owner.name 패턴과 동일).
+    모듈/이름은 linker 가 비웠으면 콜리 id 로 보충.
     """
-    edges = list(edges)
-    internal = [{
-        "caller_id": e.caller_id,
-        "callee_id": e.callee_id,
-        "scope": e.scope,
-    } for e in edges if e.scope == "internal"]
-    # 외부 = 컨테이너(MODULE) + 엔트리 함수(FUNCTION). 둘의 id 를 구분한다(식별키 유일성):
-    # 모듈 id = 호출 모듈명, 엔트리 함수 id = "{module}.{name}" (내부 owner.name 패턴과 동일)
-    # → 같은-id 충돌 없이 모듈·함수가 별개 노드로 공존(화면에 "모듈 → 엔트리 함수").
-    external = []
+    internal, external = [], []
     for e in edges:
-        if e.scope != "external":
-            continue
-        module_id = e.callee_module or e.callee_id
-        name = e.callee_name or e.callee_id
-        external.append({
-            "caller_id": e.caller_id,
-            "callee_id": f"{module_id}.{name}",
-            "callee_module": module_id,
-            "callee_package": e.callee_package,
-            "callee_name": name,
-            "scope": e.scope,
-        })
+        if e.scope == "internal":
+            internal.append({"caller_id": e.caller_id, "callee_id": e.callee_id, "scope": e.scope})
+        elif e.scope == "external":
+            module_id = e.callee_module or e.callee_id
+            name = e.callee_name or e.callee_id
+            external.append({
+                "caller_id": e.caller_id,
+                "callee_id": f"{module_id}.{name}",
+                "callee_module": module_id,
+                "callee_package": e.callee_package,
+                "callee_name": name,
+                "scope": e.scope,
+            })
+    return internal, external
+
+
+async def upsert_calls(client: Neo4jClient, edges: Iterable[Calls]) -> None:
+    """CALLS 업서트 — internal 은 기존 노드 연결, external 은 stub 노드 생성·연결. MERGE 가 dedup."""
+    internal, external = _split_calls(list(edges))
     if internal:
         await client.run_batch_unwind(INTERNAL_QUERY, internal)
     if external:
         await client.run_batch_unwind(EXTERNAL_QUERY, external)
+
+
+def emit_calls(stream, edges: Iterable[Calls]) -> None:
+    """CALLS 라이브 발신 — 저장(upsert_calls)과 **같은 그래프**를 스트림으로(_split_calls 공유 = 드리프트 0).
+
+    internal=CALLS 엣지. external=stub 노드(:FUNCTION:EXTERNAL / :MODULE:EXTERNAL) + HAS_MEMBER +
+    CALLS(+PACKAGE/BELONGS_TO). 끝점 id 가 저장과 동일해 라이브=neo4j. (과거엔 raw callee_id 만
+    보내 외부 CALLS 가 끝점 노드 없이 떠다니고 stub 노드가 라이브에 안 떴음.)
+    """
+    if stream is None:
+        return
+    internal, external = _split_calls(list(edges))
+    for it in internal:
+        stream.emit({
+            "type": "relationship_event", "op": "merge", "rel_type": CALLS,
+            "from": {"id": it["caller_id"]}, "to": {"id": it["callee_id"]}, "props": {},
+        })
+    for it in external:
+        cid, mid, pkg, nm = it["callee_id"], it["callee_module"], it["callee_package"], it["callee_name"]
+        stream.emit({"type": "node_event", "op": "merge", "label": "FUNCTION",
+                     "labels": ["FUNCTION", "EXTERNAL"], "id": cid, "props": {"name": nm}})
+        stream.emit({"type": "node_event", "op": "merge", "label": "MODULE",
+                     "labels": ["MODULE", "EXTERNAL"], "id": mid, "props": {"name": nm}})
+        stream.emit({"type": "relationship_event", "op": "merge", "rel_type": HAS_MEMBER,
+                     "from": {"id": mid}, "to": {"id": cid}, "props": {}})
+        if pkg:
+            stream.emit({"type": "node_event", "op": "merge", "label": "PACKAGE",
+                         "labels": ["PACKAGE"], "id": pkg, "props": {}})
+            stream.emit({"type": "relationship_event", "op": "merge", "rel_type": BELONGS_TO,
+                         "from": {"id": mid}, "to": {"id": pkg}, "props": {}})
+        stream.emit({"type": "relationship_event", "op": "merge", "rel_type": CALLS,
+                     "from": {"id": it["caller_id"]}, "to": {"id": cid}, "props": {}})

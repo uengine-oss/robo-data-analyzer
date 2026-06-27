@@ -15,9 +15,9 @@ from shared.workflow.step_utils import step_config
 
 from shared.lang.call_classifier import classify_call_sites
 from shared.log.logger import log_info, log_warning
-from shared.neo4j.edges.calls import upsert_calls
+from shared.neo4j.edges.calls import upsert_calls, emit_calls
 from shared.neo4j.neo4j_client import Neo4jClient
-from shared.workflow.graph_stream import emit_edges, emit_message
+from shared.workflow.graph_stream import emit_message
 
 _STEP = "step4.link_calls_by_name"
 
@@ -47,9 +47,10 @@ async def link_calls_by_name_step(state: dict, config: Optional[RunnableConfig] 
     if neo is not None and result.edges:
         await upsert_calls(neo, result.edges)
 
-    # 라이브 스트림 — 호출 관계를 step 완료 즉시 화면으로.
+    # 라이브 스트림 — 호출 관계를 step 완료 즉시 화면으로. external 은 stub 노드까지 함께
+    # 발신(emit_calls = upsert_calls 와 동일 그래프) → 라이브=neo4j (외부호출 끝점 일치).
     stream = cfg.get("stream")
-    emit_edges(stream, result.edges)
+    emit_calls(stream, result.edges)
     emit_message(stream, f"✅ 호출 이름 분류 완료 — {len(result.edges)}건")
 
     # call_text / caller 누락 = AST 불완전 — 드롭하되 조용히 묻지 않는다.
