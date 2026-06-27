@@ -30,6 +30,7 @@ from shared.log.logger import log_error, log_info, log_warning
 from shared.log.processing_progress import step_processing_scope, track_processing
 from shared.neo4j.neo4j_client import Neo4jClient
 from shared.neo4j.nodes.module import upsert_modules
+from shared.workflow.graph_stream import emit_nodes
 
 _STEP = "step7.summarize_module"
 
@@ -105,6 +106,8 @@ async def summarize_module_step(state: dict, config: Optional[RunnableConfig] = 
 
     if neo is not None:
         await upsert_modules(neo, updated)
+    # 모듈 stereotype(FILE→Service 등)을 라이브 발신 — labels[1:]에 역할 실어 프론트 즉시 반영(spec 034).
+    emit_nodes(stream, updated)
     summarized = sum(1 for m in updated if getattr(m, "summary", None))
     log_info(
         _STEP, "done",

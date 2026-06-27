@@ -53,6 +53,19 @@ def _node_label(node) -> Optional[str]:
     return getattr(node, "label", None) or _FIXED_NODE_LABEL.get(type(node))
 
 
+def _node_labels(node) -> list[str]:
+    """node_event 라벨 배열 = [antlr 타입] + (stereotype 있으면) — Neo4j 멀티라벨과 동형.
+
+    위치: labels[0]=타입, labels[1:]=stereotype(spec 033/035 일관). stereotype 은 CodeNode·
+    Module 만 가짐(그 외 노드는 getattr 기본 None) → labels=[타입].
+    """
+    primary = _node_label(node)
+    if not primary:
+        return []
+    stereotype = getattr(node, "stereotype", None)
+    return [primary, stereotype] if stereotype else [primary]
+
+
 def _node_props(node) -> dict:
     return nonempty({k: getattr(node, k, "") for k in _DISPLAY_PROP_KEYS})
 
@@ -81,7 +94,9 @@ def emit_nodes(stream: Optional[NDJSONStream], nodes: Iterable) -> int:
             continue
         stream.emit({
             "type": "node_event", "op": "merge",
-            "label": label, "id": nid, "props": _node_props(node),
+            # label = 단일 타입(back-compat=labels[0]). labels = 전체 라벨(타입+stereotype)
+            # → 프론트가 역할을 라이브로 받는다(spec 034).
+            "label": label, "labels": _node_labels(node), "id": nid, "props": _node_props(node),
         })
         count += 1
     return count
