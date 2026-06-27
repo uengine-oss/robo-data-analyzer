@@ -13,6 +13,7 @@ from typing import Iterable
 
 from data_models.graph_nodes import Module
 from shared.neo4j.neo4j_client import Neo4jClient
+from shared.neo4j.nodes.stereotype_label import apply_stereotype_labels
 from shared.neo4j.props import join_notes, nonempty
 
 
@@ -50,3 +51,5 @@ async def upsert_modules(client: Neo4jClient, modules: Iterable[Module]) -> None
         by_label[m.label].append(to_item(m))
     for label, items in by_label.items():
         await client.run_batch_unwind(_merge_query(label), items)
+    # stereotype 을 라벨로도 부여(spec 032) — 속성 유지(무중단). summarize_module 이 채운 값.
+    await apply_stereotype_labels(client, [(m.id, m.stereotype or "") for m in modules])
