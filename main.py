@@ -21,10 +21,12 @@ if str(_ROOT) not in sys.path:
 from fastapi import FastAPI
 
 from api.analyze_router import router as analyze_router
+from api.source_router import router as source_router
 
 
 app = FastAPI(title="ROBO Analyzer", version="0.1.0")
 app.include_router(analyze_router)
+app.include_router(source_router)
 
 
 @app.get("/")
