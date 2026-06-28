@@ -3,6 +3,7 @@
 **Feature Branch**: `refactor` (analyzer 고정)
 **Created**: 2026-06-26
 **Status**: Draft
+**Amended**: 2026-06-28 — FR-005 정밀화(드롭 표면화 심각도를 디스패처 예상 드롭=INFO / 진짜 오귀속=WARNING 으로 분리, error.log 소음 제거). 데이터·필터 판정 불변.
 
 **Input**: step6 코드 분석 에이전트가 받는 컨텍스트가 결정론 R/W 사실에 그라운드되지 않아 ① 테이블 컬럼 목록 미주입으로 컬럼 설명 누락, ② callee 함수 목록 노출로 LLM이 callee 함수명을 테이블로 오귀속.
 
@@ -38,7 +39,8 @@ DB를 읽고/쓰는 함수를 분석하면, 그 함수가 실제로 다루는 �
 
 **Acceptance Scenarios**:
 1. **Given** reads=[]·writes=[] 디스패처 함수 + callee가 DBIO 함수, **When** 분석, **Then** 그 함수의 AFFECTS_TABLE = 0 (callee 함수명이 테이블로 안 박힘).
-2. **Given** LLM이 reads/writes 밖 테이블명을 출력, **When** 영속 전, **Then** 결정론 집합 밖이면 드롭 + 표면화(경고).
+2. **Given** reads/writes 빈 디스패처에서 LLM이 callee 테이블을 귀속, **When** 영속 전, **Then** 전부 드롭 + **INFO**로 표면화(analyzer.log만, error.log 미오염 — 예상된 정상 동작).
+3. **Given** reads/writes 있는 함수에서 LLM이 집합 밖 테이블을 1건이라도 귀속, **When** 영속 전, **Then** 그 건 드롭 + **WARNING**으로 표면화(error.log — 점검 가치 있는 진짜 오귀속).
 
 ### Edge Cases
 - 정당하게 컬럼을 안 쓰는 R/W(테이블 전체 SELECT * 등) → 컬럼 목록 주되 강요 안 함.
@@ -51,7 +53,8 @@ DB를 읽고/쓰는 함수를 분석하면, 그 함수가 실제로 다루는 �
 - **FR-002**: code_table_insights 프롬프트(dbms·framework)는 **주입된 컬럼 목록을 기준으로, 코드에서 실제 쓰는 컬럼을 빠짐없이 서술**하도록 지시한다(struct 멤버↔컬럼 매핑 포함). "추측 컬럼 금지"는 유지하되 "주입된 목록 내"로 한정.
 - **FR-003**: 함수의 테이블 귀속(AFFECTS_TABLE·table_insights table)은 **그 함수의 결정론 `reads ∪ writes` 집합으로 제한**한다. 집합 밖 테이블(특히 callee 함수명)은 드롭한다.
 - **FR-004**: code_rules_examples 프롬프트(dbms·framework)는 **callee(하위호출)는 테이블이 아니며, AFFECTS_TABLE는 이 함수가 직접 R/W 하는 테이블만**임을 명시한다.
-- **FR-005**: 결정론 집합 밖 테이블 귀속이 드롭되면 **표면화(경고)** 한다 — 조용한 유실/오염 금지(Constitution IV).
+- **FR-005**: 집합 밖 테이블 귀속 드롭은 **항상 표면화**한다(조용한 유실/오염 금지, Constitution IV) — 단 심각도를 사실에 맞춘다. ① 허용집합(reads∪writes)이 **비어 있어** 전부 드롭되는 경우(=직접 R/W 없는 디스패처, bottom-up 설계상 callee 테이블이 컨텍스트에 노출돼 생기는 **예상된 정상 동작**)는 per-함수로는 **INFO**(analyzer.log, 추적용) → 사고 추적 전용 error.log에 함수마다 쌓이는 소음 제거. ② 허용집합이 **비어 있지 않은데** 그 밖 테이블이 드롭되는 경우(=진짜 오귀속, 점검 가치 있음)는 발생 즉시 **WARNING**(error.log). 분기 기준 = `allowed` 집합의 공백 여부 단 하나.
+- **FR-005a**: ①(디스패처 예상 드롭)은 per-함수 소음을 내지 않되 **누락도 되지 않게**, run(step6) 종료 시 **집계 1줄을 error.log에 표면화**한다("디스패처 callee-테이블 드롭 N함수 M건, 예상 동작"). = 표면화는 하되(1줄, 사고로그에 보임) per-함수 노이즈는 0. 집계는 step6 시작 reset / 종료 flush 로 run-scoped(analyzer 단일 run).
 - **FR-006**: 분류/매칭 알고리즘(call_classifier·fqn·upsert)·Neo4j 스키마는 **변경하지 않는다**.
 - **FR-007**: 프롬프트 변경은 KV-cache(Constitution V)를 위반하지 않는다 — per-함수 가변부(컬럼 목록)는 user_values 채널, 시스템 본문 지시 변경은 1회성 캐시 리셋만 허용.
 
@@ -66,6 +69,8 @@ DB를 읽고/쓰는 함수를 분석하면, 그 함수가 실제로 다루는 �
 - **SC-003**: reads/writes 빈 디스패처 함수의 AFFECTS_TABLE = 0.
 - **SC-004**: 분류기/baseline 회귀 0.
 - **SC-005**: 재분석 1회로 ① 컬럼 채움 ② 가짜 테이블 0 동시 확인.
+- **SC-006**: 재분석 후 error.log 의 per-함수 `table_attr_off_rw` = **허용집합 비지 않은 진짜 오귀속만**(디스패처 예상 드롭은 analyzer.log INFO 로만, per-함수 error.log엔 0건). 데이터·드롭 판정 불변.
+- **SC-007**: 디스패처 드롭이 1건 이상인 run 은 error.log 에 **집계 1줄**(`table_attr_off_rw_dispatcher`, N함수 M건)이 정확히 한 번 표면화된다(per-함수 N줄 아님). 드롭 0인 run 은 그 줄도 없음.
 
 ## Assumptions
 - 컬럼의 권위 목록 = DDL 파싱 결과(state["columns"], COLUMN 노드). 라이브 datasource 없어도 DDL 컬럼은 존재.

@@ -32,6 +32,7 @@ from analysis_flow.step6_analyze_code.analysis_order import bottom_up_rounds
 from analysis_flow.step6_analyze_code.batch_analyze import run_dbms_batch_analysis
 from analysis_flow.step6_analyze_code.call_cycles import find_call_cycles
 from analysis_flow.step6_analyze_code.module_pre_analysis import run_module_pre_analysis
+from analysis_flow.step6_analyze_code.rw_table_filter import flush_drop_summary, reset_drop_stats
 from analysis_flow.step6_analyze_code.three_split_llm_fanout import (
     analyze_code_three_split,
     run_summary,
@@ -139,6 +140,7 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
         return {}
 
     started = time.monotonic()
+    reset_drop_stats()  # 디스패처 테이블-드롭 run 집계 시작 (종료 시 flush 가 1줄 표면화)
 
     # 0. 모듈 사전분석 — 모듈당 LLM 1회로 헤더 주석 → 모듈 의도 (최대 2줄).
     # intent 는 코드노드 3분할 공통 context prefix 로만 사용 — 영구 그래프 속성 X.
@@ -151,10 +153,12 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
     # DBMS 는 배치 분석 (🅕 — 같은 부모 형제 1콜). Framework 는 아래 per-node 3분할 유지.
     if strategy is not None and getattr(strategy, "name", "") == "dbms":
         with step_processing_scope(_STEP, stream):
-            return await run_dbms_batch_analysis(
+            result = await run_dbms_batch_analysis(
                 state, contexts, code_by_id, strategy, cost_budget, neo, stream,
                 codebase_notes, module_intents, table_descriptions, pause,
             )
+        flush_drop_summary()  # 디스패처 드롭 집계 1줄 표면화 (FR-005a)
+        return result
 
     # 1. cycle 식별 (CALLS + PARENT_OF 둘 다) — Framework per-node 경로
     edges: list[tuple[str, str]] = [
@@ -279,6 +283,7 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
     with step_processing_scope(_STEP, stream):
         total_analyzed, total_failed = await _run_rounds()
 
+    flush_drop_summary()  # 디스패처 드롭 집계 1줄 표면화 (FR-005a)
     log_info(
         _STEP, "done",
         code_nodes=len(contexts), analyzed=total_analyzed,

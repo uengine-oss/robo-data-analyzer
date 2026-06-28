@@ -23,3 +23,4 @@
 
 ## Notes
 - KV-cache(V): 시스템 본문 지시 변경=1회 리셋, 컬럼은 가변부 — Phase0/implement 에서 공유 prefix 바이트동일 확인.
+- 2026-06-28 FR-005 정밀화: 드롭 표면화 심각도를 디스패처 예상 드롭=INFO(analyzer.log) / 진짜 오귀속=WARNING(error.log)으로 분리. Constitution IV 불변(INFO도 로그에 남아 silent 아님). 데이터·필터 드롭 판정·프롬프트·스키마 불변. 분기 기준 = `allowed` 공백 여부 단 하나. 시나리오 US2-2/3, SC-006 추가.

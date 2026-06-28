@@ -12,6 +12,13 @@
 - [ ] **T005** `batch_analyze.py`(dbms) per-함수 조립부에 T003 필터 적용.
 - [ ] **T006** 프롬프트 `prompts/framework/code_rules_examples.yaml` + `prompts/dbms/code_rules_examples_batch.yaml`: "callee(하위호출)는 테이블 아님. AFFECTS_TABLE = 이 함수가 직접 R/W 하는 테이블만."
 
+## Phase D — FR-005 드롭 표면화 심각도 정밀화 + 집계 표면화 (2026-06-28 갱신)
+- [x] **T010** `rw_table_filter.py` `constrain_tables_to_rw` 로깅: `allowed` 비면(=디스패처 예상 드롭) per-함수 `log_info`(analyzer.log) + run 집계 누적(`_drop_stats`), 비지 않은데 밖 테이블이면(=진짜 오귀속) `log_warning`(error.log). 필터 드롭 판정·반환값·프롬프트·스키마 불변. dbms·framework 공통.
+- [x] **T010a** `rw_table_filter.py` run-scoped 집계 `reset_drop_stats`/`flush_drop_summary` 추가 — flush 가 디스패처 예상 드롭을 error.log **1줄**(`table_attr_off_rw_dispatcher`, N함수 M건)로 표면화 후 초기화(FR-005a). `analyze_code_step.py`: step6 시작 reset + 종료 flush(framework·dbms 양 경로).
+- [x] **T011** `test_rw_table_filter.py`: 디스패처→INFO / 오귀속→WARNING 분기 + 집계 누적·flush 1줄·드롭0 무음(SC-007) 검증. (8/8 통과)
+- [x] **T010b** 실제 파일 핸들러 결정론 검증(라우팅+집계): ① 디스패처 per-함수 error.log 0 ② 집계 error.log 정확히 1줄 ③ 오귀속 error.log WARNING ④ per-함수 상세 analyzer.log. **ALL PASS**. step6 임포트(순환참조 0) OK.
+- [x] **T012** 회귀 재분석 완료(라이브, 이번 run 디스패처 드롭 1건 실발생): 파이프라인 정상 종료(38/38 분석) · 데이터 불변(b000·c300 AFFECTS_TABLE=0) · **error.log = 집계 1줄만**(`table_attr_off_rw_dispatcher: …1함수 1건`, per-함수 디스패처 0줄) · per-함수 상세는 analyzer.log INFO. SC-006·SC-007 충족, 회귀 0.
+
 ## Phase C — 검증 (US1+US2)
 - [ ] **T007** 단위: 필터 헬퍼(reads/writes 밖 드롭+경고 / 안쪽 유지) 테스트.
 - [ ] **T008** 임포트·문법 검증.
