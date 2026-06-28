@@ -12,18 +12,29 @@
 """
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from typing import Iterable
 
 from shared.neo4j.neo4j_client import Neo4jClient
 
 
-def _set_label_query(stereotype: str) -> str:
-    # stereotype 은 검증풀 통제값 — 백틱으로 한 번 더 방어(공백/특수문자 시에도 안전).
+def _label_of(stereotype: str) -> str:
+    """stereotype 값 → Neo4j 라벨용 UPPER_SNAKE (spec 036).
+
+    architect 의 DDD/CQRS 라벨(:Command/:Event…, PascalCase)과 전역 네임스페이스를
+    공유하면 architect 삭제에 휩쓸린다 → 표기를 분리. 'Command'→'COMMAND',
+    'ApplicationService'→'APPLICATION_SERVICE'. 속성 ``stereotype`` 은 PascalCase 유지.
+    """
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", stereotype).upper()
+
+
+def _set_label_query(label: str) -> str:
+    # label 은 검증풀 파생 UPPER_SNAKE — 백틱으로 한 번 더 방어(특수문자 시에도 안전).
     return f"""
 UNWIND $items AS item
 MATCH (node {{id: item.id}})
-SET node:`{stereotype}`
+SET node:`{label}`
 """
 
 
@@ -32,11 +43,12 @@ async def apply_stereotype_labels(
 ) -> None:
     """``(node_id, stereotype)`` 쌍에 stereotype 라벨 부여. 빈 stereotype 은 건너뜀.
 
-    같은 stereotype 끼리 묶어 1 배치로 ``SET node:`<값>` `` (값별 동적 라벨).
+    라벨은 UPPER_SNAKE(``_label_of``, spec 036) — 속성 ``stereotype`` 은 PascalCase 유지.
+    같은 라벨끼리 묶어 1 배치로 ``SET node:`<라벨>` `` (값별 동적 라벨).
     """
-    by_st: dict[str, list[dict]] = defaultdict(list)
+    by_label: dict[str, list[dict]] = defaultdict(list)
     for node_id, stereotype in pairs:
         if stereotype:
-            by_st[stereotype].append({"id": node_id})
-    for stereotype, items in by_st.items():
-        await client.run_batch_unwind(_set_label_query(stereotype), items)
+            by_label[_label_of(stereotype)].append({"id": node_id})
+    for label, items in by_label.items():
+        await client.run_batch_unwind(_set_label_query(label), items)
