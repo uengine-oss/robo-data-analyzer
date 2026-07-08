@@ -72,26 +72,70 @@ def compact_body(
 
     def _ph(child: AnalysisContext) -> str:
         text = (child.summary or child.one_liner or "(분석 전)").strip()
-        return f"    [{child.start_line}~{child.end_line}] {text}"
+        label = child.extra.get("label", "")
+        tag = f"{label}: " if label else ""      # 자식 구문 타입(IF/MERGE/SELECT…) 명시 → 별개 문장 경계
+        return f"    [{child.start_line}~{child.end_line}] {tag}{text}"
 
     return _transform(ctx, children, _ph, cache)
+
+
+def _strip_sql_comments(text: str) -> str:
+    """SQL 주석(`--`·`/* */`) 제거 + 빈 줄 압축 — 골격 전용, 문자열 리터럴 안은 보존.
+
+    골격은 "자기 위치 파악용"이라 주석이 불필요한데, 죽은(주석처리) 코드·노트가 그대로
+    실려 LLM 이 실동작으로 오인하는 환각의 공급로였다(실측). 결정론 제거로 원천 차단.
+    분석 본문(compact/raw body)의 주석은 유지 — 메타정보(지침이 처리).
+    """
+    out: list[str] = []
+    i, n, in_str = 0, len(text), False
+    while i < n:
+        c = text[i]
+        if in_str:
+            out.append(c)
+            in_str = c != "'"
+            i += 1
+        elif c == "'":
+            in_str = True
+            out.append(c)
+            i += 1
+        elif c == "-" and text[i + 1 : i + 2] == "-":
+            while i < n and text[i] != "\n":
+                i += 1
+        elif c == "/" and text[i + 1 : i + 2] == "*":
+            i += 2
+            while i < n and text[i : i + 2] != "*/":
+                i += 1
+            i += 2
+        else:
+            out.append(c)
+            i += 1
+    lines = [line.rstrip() for line in "".join(out).split("\n")]
+    compact: list[str] = []
+    for line in lines:                      # 주석 제거로 생긴 연속 빈 줄 → 1줄
+        if line or (compact and compact[-1]):
+            compact.append(line)
+    return "\n".join(compact)
 
 
 def skeleton_body(
     ctx: AnalysisContext, contexts: dict[str, AnalysisContext], cache: SourceFileCache,
 ) -> str:
-    """range 골격 — 자식 구간을 ``....`` 로 치환 (구조만, 자식 의미 X)."""
+    """range 골격 — 자식 구간을 ``....`` 로 치환 + 주석 제거 (구조만, 자식 의미·주석 X)."""
     children = _children(ctx, contexts)
     if not children:
-        return _raw_body(ctx, cache)
-    return _transform(ctx, children, lambda _child: _CHILD_MARK, cache)
+        return _strip_sql_comments(_raw_body(ctx, cache))
+    return _strip_sql_comments(_transform(ctx, children, lambda _child: _CHILD_MARK, cache))
 
 
 def body_for(
     ctx: AnalysisContext, contexts: dict[str, AnalysisContext], cache: SourceFileCache,
 ) -> str:
-    """분석 입력 본문 — 자식 있으면 compact, 없으면 raw."""
-    if ctx.extra.get("child_ids"):
+    """분석 입력 본문 — **원문이 예산에 들어가면 원문(1차 증거), 아니면 compact**.
+
+    단일 원리(모든 분할 공통): 요약 치환은 손실 압축이라 예산 초과(거대 컨테이너)에서만
+    쓴다. 중소 부모까지 원문 승격 → 값 집합·매핑·보정 로직이 전달 게임 없이 직달.
+    """
+    if ctx.extra.get("child_ids") and ctx.token_count > ENV.pipeline.batch_max_tokens:
         return compact_body(ctx, contexts, cache)
     return _raw_body(ctx, cache)
 

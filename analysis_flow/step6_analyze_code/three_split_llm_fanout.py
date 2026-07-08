@@ -2,7 +2,7 @@
 
 코드노드 1개당 LLM 호출 (병렬, 2~3 번):
 - ``code_summary``        → summary + stereotype + logical_name (항상)
-- ``code_rules_examples`` → rules + examples + questions (항상)
+- ``code_rules_examples`` → rules + examples + questions (항상 — framework 는 함수 단위)
 - ``code_table_insights`` → table_insights (R/W 테이블 있을 때만 — 없으면 skip)
 
 **3분할 입력 구조** = [공통 context] + [#3 전용]:
@@ -217,8 +217,7 @@ async def analyze_code_three_split(
     fn.extra["table_insights"] = (
         [t.model_dump() for t in insights_out.table_insights] if insights_out else []
     )
-    fn.extra["rules"] = [r.model_dump() for r in rules_out.rules] if rules_out else []
-    fn.extra["examples"] = [e.model_dump() for e in rules_out.examples] if rules_out else []
+    fn.extra["rules"] = [r.model_dump() for r in rules_out.rules] if rules_out else []   # examples 는 각 rule 하위 중첩
     fn.extra["questions"] = [q.model_dump() for q in rules_out.questions] if rules_out else []
     if partial_parts:
         fn.extra["partial"] = partial_parts

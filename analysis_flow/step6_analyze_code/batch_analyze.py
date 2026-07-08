@@ -7,6 +7,10 @@ N 노드를 **배치(그룹)** 로 묶어 던진다 — 관심사별 1콜씩 총
 - skip 노드(괄호 DECLARE/TRY/TRIGGER_BLOCK)는 분석 제외 + 컨텍스트 투명(E).
 - 바텀업 라운드(유효 트리+CALLS)·persist·EM 누적은 ``analyze_code_step`` 헬퍼 재사용.
 - ★ 각 콜은 "한 관심사 × 노드 리스트" 평탄 출력(깊은 중첩 0) → LLM 응답 폭주(length max) 차단.
+- 비즈로직(rules) 분할 단위 = **예산 내 최고 조상**(budget descent — 루틴 직속에서 시작, 예산 초과
+  컨테이너만 자식으로 하강). 단위 body 는 원문 통째(1차 증거 — ``body_for`` 의 "예산 내 원문" 원리) →
+  값 집합·매핑·보정이 전달 게임(요약 경유) 없이 직달. 단위 아래 노드는 규칙 X(파편·중복 차단 원리 유지),
+  문맥은 조상 골격(주석 스트립)이 나른다.
 - 테이블 분할은 ``reads``/``writes`` 있는 **DML 노드만** 입력(three_split 와 동일 게이트).
 """
 from __future__ import annotations
@@ -21,7 +25,7 @@ from analysis_flow.step6_analyze_code.batch_planner import (
     Batch, build_effective_tree, plan_batches,
 )
 from analysis_flow.step6_analyze_code.call_cycles import find_call_cycles
-from analysis_flow.step6_analyze_code.range_body import ancestor_context, body_for
+from analysis_flow.step6_analyze_code.range_body import ancestor_context, body_for, skeleton_body
 from analysis_flow.step6_analyze_code.rw_table_filter import constrain_tables_to_rw
 from analysis_flow.step4_linking.stage2_extract_calls.call_linker import routine_call_pairs
 from data_models.analysis_context import AnalysisContext
@@ -44,6 +48,44 @@ from shared.source_file_cache import SourceFileCache
 from shared.workflow.pause_controller import PauseController
 
 _STEP = "step6.analyze_code.batch"
+
+# rules(비즈니스 규칙) 추출 단위 = "원문(RAW)이 토큰 예산에 들어가는 가장 높은 문장"(budget descent).
+# 루틴 직속(레벨1)부터 시작해 예산 초과 컨테이너만 자식으로 내려간다 — 증거는 항상 1차(원문),
+# 크기는 예산으로 안전. 단위 아래 노드는 규칙 X(단위가 흡수 = 파편·중복 차단은 레벨1 원리 유지).
+_ROUTINE_TYPES = frozenset({"PROCEDURE", "FUNCTION", "TRIGGER"})
+
+
+def _plan_rule_units(
+    code_by_id: dict[str, CodeNode],
+    eff_children: dict[str, list[str]],
+    token_of: dict[str, int],
+    budget: int,
+) -> tuple[set[str], set[str]]:
+    """규칙 추출 단위 선정 — 루틴의 각 톱레벨 문장에서 시작해 예산 초과 + 자식 있으면 하강.
+
+    Returns:
+        ``(units, gates)`` — units: 예산에 들어가 원문 통째로 규칙을 뽑는 단위(초과인데
+        자식 없으면 그대로 단위 — 희귀, solo 배치). gates: 하강하며 지나간 컨테이너 —
+        자식이 내용 규칙을 담당하므로, 컨테이너는 **골격(자식 접힘)으로 자기 줄의
+        게이트·선별 조건만** 규칙화한다(내용 중복 원천 차단).
+    """
+    units: set[str] = set()
+    gates: set[str] = set()
+
+    def descend(nid: str) -> None:
+        kids = eff_children.get(nid, [])
+        if token_of.get(nid, 0) <= budget or not kids:
+            units.add(nid)
+            return
+        gates.add(nid)
+        for child in kids:
+            descend(child)
+
+    for node in code_by_id.values():
+        if node.label in _ROUTINE_TYPES:
+            for child in eff_children.get(node.id, []):
+                descend(child)
+    return units, gates
 
 
 async def run_dbms_batch_analysis(
@@ -77,7 +119,7 @@ async def run_dbms_batch_analysis(
 
     # 1. skip-투명 유효 트리 → 컨텍스트 child_ids/parent_id 를 유효값으로 (range_body 투명).
     eff_parent, eff_children, analysis_ids = build_effective_tree(code_nodes)
-    _apply_effective_tree(contexts, eff_parent, eff_children)
+    _apply_effective_tree(contexts, eff_parent, eff_children, code_by_id)
 
     # 2. 바텀업 라운드 — 유효 parent→child + CALLS (자식·피호출 먼저).
     # CALLS 는 CALL→대상 저장이므로 루틴쌍으로 해소(단일 해소기) 후 정렬에 사용.
@@ -91,6 +133,12 @@ async def run_dbms_batch_analysis(
 
     start_of = {fid: contexts[fid].start_line for fid in analysis_ids if fid in contexts}
     token_of = {fid: contexts[fid].token_count for fid in analysis_ids if fid in contexts}
+
+    # 규칙 추출 단위 = 예산 내 최고 조상 (budget descent). body_for 의 단일 원리(예산 내 원문)와
+    # 결합 → 단위 노드의 body 는 자동으로 원문(1차 증거). 하강한 컨테이너(gates)는 골격으로
+    # 자기 줄 게이트 조건만 규칙화(자식 내용은 각 단위 담당 — 중복 0).
+    rule_units, rule_gates = _plan_rule_units(code_by_id, eff_children, token_of, ENV.pipeline.batch_max_tokens)
+    log_info(_STEP, "rule_units", units=len(rule_units), gates=len(rule_gates), analysis_nodes=len(analysis_ids))
 
     semaphore = asyncio.Semaphore(ENV.pipeline.max_concurrency)
     source_cache = SourceFileCache()
@@ -114,6 +162,7 @@ async def run_dbms_batch_analysis(
                         _analyze_batch_guarded(
                             b, contexts, code_by_id, strategy, cost_budget,
                             codebase_notes, module_intents, table_descriptions, source_cache, semaphore,
+                            rule_units, rule_gates,
                         ),
                     )
                 )
@@ -158,8 +207,6 @@ async def run_dbms_batch_analysis(
         "has_rule_edges": em_acc.has_rule,
         "has_example_edges": em_acc.has_example,
         "has_question_edges": em_acc.has_question,
-        "next_edges": em_acc.next_edges,
-        "branch_edges": em_acc.branch_edges,
         "affects_table_edges": em_acc.affects_table,
     }
 
@@ -168,11 +215,19 @@ def _apply_effective_tree(
     contexts: dict[str, AnalysisContext],
     eff_parent: dict[str, str | None],
     eff_children: dict[str, list[str]],
+    code_by_id: dict[str, CodeNode],
 ) -> None:
-    """컨텍스트의 child_ids/parent_id 를 유효(skip-투명) 값으로 덮어씀 → range_body 투명 동작."""
+    """컨텍스트의 child_ids/parent_id 를 유효(skip-투명) 값으로 덮어씀 → range_body 투명 동작.
+
+    ``label`` (노드 타입)도 함께 채운다 — compact 치환이 `[범위] TYPE: 요약` 으로 자식이 별개
+    문장임을 명시(요약이 산문처럼 이어져 여러 결정이 한 규칙으로 뭉치는 것 방지).
+    """
     for fid, ctx in contexts.items():
         ctx.extra["parent_id"] = eff_parent.get(fid)
         ctx.extra["child_ids"] = tuple(eff_children.get(fid, ()))
+        node = code_by_id.get(fid)
+        if node is not None:
+            ctx.extra["label"] = node.label
 
 
 async def _run_batch_with_ref(batch: Batch, coro):
@@ -186,6 +241,7 @@ async def _run_batch_with_ref(batch: Batch, coro):
 async def _analyze_batch_guarded(
     batch: Batch, contexts, code_by_id, strategy, cost_budget,
     codebase_notes, module_intents, table_descriptions, source_cache, semaphore,
+    rule_units: set[str], rule_gates: set[str],
 ):
     """배치 1개 분석 — 예외를 값으로 묶어 반환 (as_completed 매칭). 성공 시 CodeNode 리스트."""
     async with track_processing("Batch", batch.parent_id or batch.node_ids[0]):
@@ -194,6 +250,7 @@ async def _analyze_batch_guarded(
                 return await _analyze_batch(
                     batch, contexts, code_by_id, strategy, cost_budget,
                     codebase_notes, module_intents, table_descriptions, source_cache,
+                    rule_units, rule_gates,
                 )
             except BudgetExceededError as e:
                 return e
@@ -203,18 +260,20 @@ async def _analyze_batch_guarded(
 
 async def _analyze_batch(
     batch: Batch, contexts, code_by_id, strategy, cost_budget,
-    codebase_notes, module_intents, table_descriptions, source_cache,
+    codebase_notes, module_intents, table_descriptions, source_cache, rule_units, rule_gates,
 ) -> list[CodeNode]:
     """배치 형제들을 1 LLM 콜로 분석 → node_key 분배. 누락 노드는 1회 미니 재요청 (누락 0 보장)."""
     applied, missing = await _batch_call(
         batch.parent_id, list(batch.node_ids), contexts, code_by_id, strategy,
         cost_budget, codebase_notes, module_intents, table_descriptions, source_cache,
+        rule_units, rule_gates,
     )
     if missing:
         # 미니 재요청 — 누락 노드만 다시 1콜 (단독 배치라 적중률 ↑). silent fail 금지.
         retry, still = await _batch_call(
             batch.parent_id, missing, contexts, code_by_id, strategy,
             cost_budget, codebase_notes, module_intents, table_descriptions, source_cache,
+            rule_units, rule_gates,
         )
         applied.extend(retry)
         if still:
@@ -228,12 +287,12 @@ async def _analyze_batch(
 
 async def _batch_call(
     parent_id, node_ids, contexts, code_by_id, strategy, cost_budget,
-    codebase_notes, module_intents, table_descriptions, source_cache,
+    codebase_notes, module_intents, table_descriptions, source_cache, rule_units, rule_gates,
 ) -> tuple[list[CodeNode], list[str]]:
     """그룹(node_ids)을 3 관심사 콜로 분석 → ``(적용된 CodeNode 들, 누락 node_id 들)``.
 
-    ①요약(전 노드) ②비즈로직(전 노드) ③테이블(DML 노드만). 각 콜은 "한 관심사 × 노드
-    리스트"의 평탄 출력 → 깊은 중첩 0(폭주 차단). node_key(줄범위)로 3 결과 fan-in.
+    ①요약(전 노드) ②비즈로직(rule_units=원문 / rule_gates=골격 — 게이트 조건만) ③테이블(DML 노드만).
+    각 콜은 "한 관심사 × 노드 리스트" 평탄 출력 → 깊은 중첩 0(폭주 차단). node_key(줄범위)로 fan-in.
     흐름: 요약 먼저(같은 배치 입력 prefix 를 cache 에 올림) → 비즈로직+테이블 동시(적중).
     부분 성공 허용 — 비즈로직/테이블 한 조각 실패가 노드 폐기로 이어지지 않게(요약만 코어).
     """
@@ -250,14 +309,38 @@ async def _batch_call(
         user_values=user_values, response_model=BatchSummaryOutput, budget=cost_budget,
     )
 
-    # 분할 3 비즈로직 — 전 노드 / 분할 2 테이블 — DML(reads/writes 있는) 노드만.
+    # 분할 3 비즈로직 — rule_units(예산 내 최고 조상) 노드만. 단위는 예산에 들어가므로
+    #   body_for 가 이미 원문(자식 서브트리 포함)을 줬다 = 1차 증거, 특수 입력 빌드 불필요.
+    #   단위 아래 노드는 규칙 X(단위가 흡수 — 파편·중복 차단). 배치에 단위가 일부만 있으면
+    #   그 부분집합으로만 rules 콜(같은 빌더 재사용).
+    # 분할 2 테이블 — DML 노드만.
+    rule_ids = [nid for nid in node_ids if nid in rule_units]
+    gate_ids = [nid for nid in node_ids if nid in rule_gates]
     dml_ids = [nid for nid in node_ids if contexts[nid].reads or contexts[nid].writes]
-    tasks = {
-        "rules": run_yaml_rule(
+    tasks = {}
+    if rule_ids:
+        rule_values = user_values
+        if len(rule_ids) != len(node_ids):
+            rule_values, _ = _build_batch_values(
+                Batch(parent_id, tuple(rule_ids)), contexts, code_by_id,
+                codebase_notes, module_intents, table_descriptions, source_cache,
+            )
+        tasks["rules"] = run_yaml_rule(
             prompts_dir=prompts_dir, rule_name="code_rules_examples_batch",
-            user_values=user_values, response_model=BatchRulesOutput, budget=cost_budget,
-        ),
-    }
+            user_values=rule_values, response_model=BatchRulesOutput, budget=cost_budget,
+        )
+    if gate_ids:
+        # 하강한 컨테이너 — 골격(자식 `....` 접힘)으로 자기 줄 게이트·선별 조건만 규칙화.
+        # 자식 내용은 각 단위가 담당하므로 골격엔 안 보임 = 내용 중복 원천 차단.
+        gate_values, _ = _build_batch_values(
+            Batch(parent_id, tuple(gate_ids)), contexts, code_by_id,
+            codebase_notes, module_intents, table_descriptions, source_cache,
+            body_fn=skeleton_body,
+        )
+        tasks["gate_rules"] = run_yaml_rule(
+            prompts_dir=prompts_dir, rule_name="code_gate_rules_batch",
+            user_values=gate_values, response_model=BatchRulesOutput, budget=cost_budget,
+        )
     if dml_ids:
         dml_values, _ = _build_batch_values(
             Batch(parent_id, tuple(dml_ids)), contexts, code_by_id,
@@ -275,7 +358,7 @@ async def _batch_call(
             raise r        # 회로 차단기 — 즉시 전파 (절대원칙 #3)
 
     summary_by_key = {s.node_key.strip(): s for s in summary_out.nodes}
-    rules_by_key = _by_key(done.get("rules"))
+    rules_by_key = {**_by_key(done.get("rules")), **_by_key(done.get("gate_rules"))}  # 단위∩게이트 = ∅
     table_by_key = _by_key(done.get("table"))
 
     applied: list[CodeNode] = []
@@ -326,8 +409,7 @@ def _apply_node_analysis(
     # spec 027: LLM 귀속 테이블을 결정론 reads/writes 로 제한 (callee 함수명 오귀속 차단).
     constrain_tables_to_rw(fn.id, ctx.reads, ctx.writes, table, rules)
     fn.extra["table_insights"] = [t.model_dump() for t in table.table_insights] if table else []
-    fn.extra["rules"] = [r.model_dump() for r in rules.rules] if rules else []
-    fn.extra["examples"] = [e.model_dump() for e in rules.examples] if rules else []
+    fn.extra["rules"] = [r.model_dump() for r in rules.rules] if rules else []   # examples 는 각 rule 하위 중첩
     fn.extra["questions"] = [q.model_dump() for q in rules.questions] if rules else []
     # ctx 에 부착 — 부모 배치가 compact_body·자식규칙으로 라이브 조회.
     ctx.summary = summary.summary
@@ -344,11 +426,13 @@ def _build_batch_values(
     module_intents: dict[str, str],
     table_descriptions: dict[str, str],
     cache: SourceFileCache,
+    body_fn=body_for,
 ) -> tuple[dict, dict[str, str]]:
     """배치 → batch yaml user_values + ``node_key -> code_id`` 매핑.
 
     프로시저 정보(루트)·조상 골격은 배치 1회 공유(prefix 캐시). 각 형제는 줄범위 key +
-    reads/writes/참조심볼 + body(자식 있으면 compact = 자식 요약 합본).
+    reads/writes/참조심볼 + body. body 는 ``body_fn`` — 기본 ``body_for``(예산 내 원문,
+    초과 시 compact). 게이트 규칙 콜만 ``skeleton_body``(자식 접힘 — 자기 줄 조건만).
     """
     first_ctx = contexts[batch.node_ids[0]]
     root = _root_code_node(batch.node_ids[0], contexts, code_by_id)
@@ -361,7 +445,7 @@ def _build_batch_values(
         ctx = contexts[nid]
         key = f"{ctx.start_line}-{ctx.end_line}"
         key_to_id[key] = nid
-        body = body_for(ctx, contexts, cache)
+        body = body_fn(ctx, contexts, cache)
         blocks.append(
             f"### 노드 {key}\n"
             f"reads: {_fmt_tables(ctx.reads, table_descriptions)}\n"

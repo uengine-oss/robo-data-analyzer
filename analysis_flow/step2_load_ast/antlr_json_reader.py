@@ -34,9 +34,11 @@ _COMPONENT = "analysis_flow.step2_load_ast.antlr_json_reader"
 # DBMS(PL/SQL · PL/pgSQL) 확장자 — 제어흐름 트리 해석 경로.
 _DBMS_EXTS: frozenset[str] = frozenset({"sql", "pks", "pkb", "pls", "ddl"})
 
-# DBMS 선언 노드 — Variable 노드로 수집 (CodeNode 아님).
+# DBMS 순수 선언 노드 — Variable 노드로 수집 (CodeNode 아님, 분석 제외).
+# ★ CURSOR 정의는 제외 — 쿼리 로직(선별 조건 = 비즈니스 규칙)을 담으므로 CodeNode 로 분석한다
+#   (자식 SELECT 요약 → 커서가 톱레벨 문장으로 규칙 추출). DECLARE(skip) 안이라 유효부모=루틴.
 _DBMS_VAR_TYPES: frozenset[str] = frozenset({
-    "PARAMETER", "VARIABLE", "PACKAGE_VARIABLE", "CURSOR_VARIABLE",
+    "PARAMETER", "VARIABLE", "PACKAGE_VARIABLE",
 })
 
 # 루틴(호출 가능 단위) 라벨 — HAS_MEMBER(그릇→멤버) 자격. 라벨 = antlr type 이라 종류 집합.
