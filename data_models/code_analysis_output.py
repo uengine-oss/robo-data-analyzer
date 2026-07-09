@@ -1,4 +1,4 @@
-"""단순 LLM 호출 (Agent 아닌 것) 의 Pydantic 출력 스키마.
+﻿"""단순 LLM 호출 (Agent 아닌 것) 의 Pydantic 출력 스키마.
 
 3 분할 fan-out + 모듈 요약 + 테이블 description 등.
 각 yaml 의 ``response_format`` 으로 강제 — 자유 텍스트 응답 X.
@@ -15,9 +15,17 @@
 ``given`` / ``then`` 은 **자연어 단일 문자열** 로 통합 (LLM 한테 가장 자유로운 출력 →
 폭주 메커니즘 자체 차단).
 
+TODO (재발 시): ``search_text``/``domain_terms`` 는 나열형 자연어라 낮은 확률(실측 b720
+1/162)로 출력 반복 폭주 가능. 현재 방어 = ``SummaryCoreOutput`` 축소 폴백(노드 상실 0) +
+greppable 로그 태그 ``search_field_overflow``. **폭주가 잦아지면** 이 필드들을 개수 캡 있는
+구조(list[짧은 항목])로 전환 검토 — 단 위 4·5차 사고처럼 SGLang 자유키/반복구조가 더 크게
+터진 이력이 있어, 전환 전 로그로 빈도 실측 후 결정한다(추측 전환 금지).
+
 검증 규칙 (Pydantic validator):
-- ``summary`` = 2 섹션 ``[핵심] 한 줄 + 빈 줄 + 내용`` — ``[핵심]`` 마커 없으면
-  LLM 재시도 유도 (단순 위임 코드노드는 ``[핵심]`` 한 줄로 끝, 내용 생략 OK).
+- ``summary`` = 마커 없는 1~3줄 짧은 요약 (spec 041 다이어트) — validator 는 거부가
+  아니라 **결정론 정규화**: 옛 ``[핵심]`` 마커는 벗기고, 3줄 초과분은 절단. 호출 재시도가
+  없는 구조라 거부는 곧 노드 분석 소실(실측: 다이어트 런에서 요약 7건 유실) — 편차는
+  흡수하고 마지노선은 기계가 보장한다. 세부 분기·코드값은 ``search_text`` 가 담당.
 """
 from __future__ import annotations
 
@@ -26,33 +34,60 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 
+def _normalize_diet_summary(v: str) -> str:
+    """summary 다이어트 정규화 — 마커 제거 + 비어있지 않은 줄 3줄 절단 (실패 없음)."""
+    if not v:
+        return v
+    v = v.replace("[핵심]", " ").strip()
+    lines = [ln.strip() for ln in v.splitlines() if ln.strip()]
+    return "\n".join(lines[:3])
+
+
 # ── 3 분할 #1: code_summary ───────────────────────────
 
 
 class SummaryOutput(BaseModel):
-    """코드노드/range 의미 요약 — 2 섹션 ``[핵심] 한 줄 + 내용`` + 메타.
+    """코드노드/range 의미 요약(1~3줄) + 검색 서술 + 메타.
 
-    summary 는 Bottom-up DAG 로 상위(caller/부모)에 전달되므로 — 분기·조건·상태 등
-    핵심 키포인트를 누락 없이, 단 원문보다 짧게(요약≤원문) 담아야 한다.
-    형식: ``[핵심]`` 한 줄 필수 + 빈 줄 + 내용 (자유 서술, 단순 위임 코드노드는 내용 생략 OK).
+    summary = 사람이 "뭘 하는 함수인지" 즉시 파악하는 짧은 요약(마커 없는 1~3줄) —
+    Bottom-up DAG 로 상위(caller/부모)에 전달된다. 분기·코드값·테이블 세부는
+    search_text(검색 전용, 프론트 비노출)가 누락 없이 담는다.
     """
     summary: str = Field(
         ...,
-        description="2 섹션 '[핵심] 한 줄' + 빈 줄 + 내용 (단순 위임은 [핵심] 만으로 끝)",
+        description="마커 없는 1~3줄 짧은 요약 (세부 분기·코드값은 search_text 책임)",
     )
     stereotype: str = Field("", description="ontology_roles.yaml 풀에서 선택")
     logical_name: str = Field(
         "",
         description="형제 함수와 구별되는 도메인 한 줄 (코드 식별자 X — 프롬프트 [0] 지침)",
     )
+    search_text: str = Field(
+        "",
+        description="검색 전용 서술 — 분기 조건·상태 전이·코드값·테이블 상호작용을 업무 어휘로 (프론트 비노출, 단순 노드는 빈 값)",
+    )
+    domain_terms: str = Field(
+        "",
+        description="용어 조각 '약어=뜻; 약어=뜻' — 본문 실재 약어·시스템명만, 뜻은 일반 업계 의미 우선 (없으면 빈 값)",
+    )
 
     @field_validator("summary")
     @classmethod
     def _validate_summary_format(cls, v: str) -> str:
-        """``[핵심]`` 마커 검증 — 필수 진입점 강제 (없으면 LLM 재시도)."""
-        if v and "[핵심]" not in v:
-            raise ValueError("summary 는 '[핵심]' 한 줄로 시작해야 함")
-        return v
+        return _normalize_diet_summary(v)
+
+
+class SummaryCoreOutput(BaseModel):
+    """분할1 축소 폴백 — 검색 필드(search_text/domain_terms) 생성 중 출력 폭주로 본 호출이
+    실패했을 때, 핵심 3필드만으로 1회 재호출해 노드 상실을 막는다(전부 잃기 < 핵심 확보)."""
+    summary: str = Field(..., description="마커 없는 1~3줄 짧은 요약")
+    stereotype: str = Field("", description="ontology_roles.yaml 풀에서 선택")
+    logical_name: str = Field("", description="형제 함수와 구별되는 도메인 한 줄")
+
+    @field_validator("summary")
+    @classmethod
+    def _validate_summary_format(cls, v: str) -> str:
+        return _normalize_diet_summary(v)
 
 
 # ── 3 분할 #2: code_table_insights ────────────────────
@@ -86,25 +121,6 @@ class TableInsightsOutput(BaseModel):
 # ── 3 분할 #3: code_rules_examples ────────────────────
 
 
-class RuleItem(BaseModel):
-    """비즈니스 규칙 1개 — Example Mapping(M12) 의 Rule 노드 입력.
-
-    옛 ``guard_rule_id`` / ``branch_from`` 은 ``flow_id`` 로 도출 가능 (builder 가
-    flow_id 의 ``-`` 계층으로 BRANCH 자동) → 폐기. ``flow_id`` + ``coupled_domains``
-    만으로 그래프 흐름·도메인 결합 표현 충분.
-    """
-    rule_id: str = Field(..., description="'R1' / 'R2' ...")
-    statement: str = Field(..., description="<조건>이면 <결과> — 코드 식별자 X")
-    flow_id: str = Field(
-        "",
-        description="제어 흐름 위치 — '1' / '2' (메인) / '1-1' (R1 분기) / '1-1-1' (중첩)",
-    )
-    coupled_domains: list[str] = Field(
-        default_factory=list,
-        description="결합된 타 도메인 이름 (타 도메인 테이블 WRITE·값 분기·계산 시)",
-    )
-
-
 class AffectedTable(BaseModel):
     """이 시나리오에서 영향받는 테이블 1건 — AFFECTS_TABLE 엣지 단일 진실."""
     table: str = Field(..., description="테이블 이름")
@@ -115,25 +131,35 @@ class AffectedTable(BaseModel):
 
 
 class ExampleItem(BaseModel):
-    """Rule 1개의 given/when/then 시나리오 — Example Mapping 의 Example 노드 입력.
+    """Rule 하위 given/when/then 시나리오 — Example Mapping 의 Example 노드 입력.
 
-    given/then 은 **자연어 단일 문자열** — schema 강제 부작용 (자유 키 dict 공백 폭주 /
-    list[KeyValueItem] 패턴 반복) 둘 다 차단. 사람용 narrative 1 줄.
+    given/then 은 자유키 dict 폭주 차단 위해 자연어 단일 문자열. 소속 Rule 하위 중첩 —
+    참조 id 없이 구조로 연결.
     """
-    rule_id: str = Field(..., description="참조 Rule id")
-    description: str = Field("", description="시나리오 사람용 한 줄 요약")
-    given: str = Field(
-        "",
-        description="진입 조건 한 줄 — 'iFlag=0, 오류코드=X001' 처럼 자연어 (공백/빈 영역 X)",
-    )
+    given: str = Field("", description="진입 조건 한 줄 (자연어, 공백/빈 영역 X)")
     when: str = Field("", description="자연어 한 줄 — 메서드명·클래스명 X")
-    then: str = Field(
-        "",
-        description="결과 한 줄 — '정상 RC_NRM 반환 / NotFound 면 RC_NFD' 처럼 자연어",
-    )
+    then: str = Field("", description="결과 한 줄 (자연어)")
     affected_tables: list[AffectedTable] = Field(
         default_factory=list,
         description="이 시나리오의 READ/WRITE 테이블 (op enum) — AFFECTS_TABLE 엣지 단일",
+    )
+
+
+class RuleItem(BaseModel):
+    """비즈니스 규칙 1개 + 그 시나리오 — Example Mapping 의 Rule 노드 입력.
+
+    흐름(순서/분기)은 응답에서 뺀다: 순서=배열 순서, 분기 의미=statement 텍스트.
+    examples 는 소속 rule 하위 중첩(참조 id 폐기).
+    """
+    statement: str = Field(..., description="<조건>이면 <결과> — 코드 식별자 X")
+    coupled_domains: list[str] = Field(
+        default_factory=list,
+        description="결합된 타 도메인 이름 (타 도메인 테이블 WRITE·값 분기·계산 시)",
+    )
+    examples: list[ExampleItem] = Field(
+        default_factory=list,
+        max_length=30,
+        description="이 규칙의 given/when/then 시나리오 (같은결과 변주만 1~2)",
     )
 
 
@@ -148,14 +174,12 @@ class QuestionItem(BaseModel):
 
 
 class RulesExamplesOutput(BaseModel):
-    """Rule + Example + Question 추출 결과.
+    """Rule(하위 Example 중첩) + Question 추출 결과.
 
-    개수는 가치 결정 질문 (prompt §[1]) 통과한 것만 — Pydantic level 의 인위적 상한 X.
-    grammar 폭주 안전망은 max_length=30 으로 느슨하게 (실제 코드노드의 진짜 Rule 은 3~7 개라
-    이 상한엔 도달하지 X — 가치 결정 질문이 자연 압축).
+    개수는 가치 결정 질문 (prompt §[1]) 통과한 것만. grammar 폭주 안전망은 rules/questions
+    및 rule 하위 examples 각각 max_length 캡 (실제 Rule 3~7 개라 도달 X — 자연 압축).
     """
     rules: list[RuleItem] = Field(default_factory=list, max_length=30)
-    examples: list[ExampleItem] = Field(default_factory=list, max_length=30)
     questions: list[QuestionItem] = Field(
         default_factory=list,
         max_length=15,
@@ -173,9 +197,22 @@ class RulesExamplesOutput(BaseModel):
 class BatchSummaryItem(BaseModel):
     """배치 요약분할 — 노드 1개의 요약/식별 결과."""
     node_key: str = Field(..., description="입력 줄범위 '<start>-<end>' 그대로 echo")
-    summary: str = Field("", description="2 섹션 '[핵심] 한 줄' + 빈 줄 + 내용 (단순 노드는 [핵심] 한 줄)")
+    summary: str = Field("", description="마커 없는 1~3줄 짧은 요약 (세부 분기·코드값은 search_text 책임)")
     stereotype: str = Field("", description="ontology_roles.yaml 풀에서 선택 (없으면 빈 값)")
     logical_name: str = Field("", description="형제와 구별되는 도메인 한 줄 표시명")
+    search_text: str = Field(
+        "",
+        description="검색 전용 서술 — 분기 조건·상태 전이·코드값·테이블 상호작용을 업무 어휘로 (프론트 비노출, 단순 노드는 빈 값)",
+    )
+    domain_terms: str = Field(
+        "",
+        description="용어 조각 '약어=뜻; 약어=뜻' — 본문 실재 약어·시스템명만, 뜻은 일반 업계 의미 우선 (없으면 빈 값)",
+    )
+
+    @field_validator("summary")
+    @classmethod
+    def _validate_summary_format(cls, v: str) -> str:
+        return _normalize_diet_summary(v)
 
 
 class BatchSummaryOutput(BaseModel):
@@ -184,10 +221,9 @@ class BatchSummaryOutput(BaseModel):
 
 
 class BatchRulesItem(BaseModel):
-    """배치 비즈니스로직 분할 — 노드 1개의 규칙/예시/질문."""
+    """배치 비즈니스로직 분할 — 노드 1개의 규칙(하위 예시 중첩)/질문."""
     node_key: str = Field(..., description="입력 줄범위 '<start>-<end>' 그대로 echo")
     rules: list[RuleItem] = Field(default_factory=list, max_length=30)
-    examples: list[ExampleItem] = Field(default_factory=list, max_length=30)
     questions: list[QuestionItem] = Field(default_factory=list, max_length=15)
 
 

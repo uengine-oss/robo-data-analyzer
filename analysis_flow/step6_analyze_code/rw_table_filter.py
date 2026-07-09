@@ -61,7 +61,7 @@ def constrain_tables_to_rw(
     """LLM 귀속 테이블을 reads∪writes(bare name) 로 제한 — in-place 수정, 드롭 수 반환.
 
     - ``insights_out.table_insights[*].table``
-    - ``rules_out.examples[*].affected_tables[*].table``
+    - ``rules_out.rules[*].examples[*].affected_tables[*].table``
     중 허용 집합 밖은 제거. reads/writes 비면 허용 집합도 비어 전부 드롭(디스패처).
     """
     allowed = {_bare(t) for t in (reads or ())} | {_bare(t) for t in (writes or ())}
@@ -78,19 +78,20 @@ def constrain_tables_to_rw(
                 off.add(str(ti.table))
         insights_out.table_insights = kept
 
-    if rules_out is not None and getattr(rules_out, "examples", None):
-        for ex in rules_out.examples:
-            ats = getattr(ex, "affected_tables", None)
-            if not ats:
-                continue
-            kept = []
-            for at in ats:
-                if _bare(at.table) in allowed:
-                    kept.append(at)
-                else:
-                    dropped += 1
-                    off.add(str(at.table))
-            ex.affected_tables = kept
+    if rules_out is not None and getattr(rules_out, "rules", None):
+        for rule in rules_out.rules:
+            for ex in getattr(rule, "examples", None) or []:
+                ats = getattr(ex, "affected_tables", None)
+                if not ats:
+                    continue
+                kept = []
+                for at in ats:
+                    if _bare(at.table) in allowed:
+                        kept.append(at)
+                    else:
+                        dropped += 1
+                        off.add(str(at.table))
+                ex.affected_tables = kept
 
     if dropped:
         # 표면화(Constitution IV) — 단 심각도는 사실에 맞춘다(FR-005).

@@ -43,6 +43,7 @@ from shared.lang.ontology import coerce_stereotype
 from shared.llm.cost_budget import BudgetExceededError, CostBudget
 from data_models.code_analysis_output import (
     RulesExamplesOutput,
+    SummaryCoreOutput,
     SummaryOutput,
     TableInsightsOutput,
 )
@@ -164,8 +165,32 @@ async def analyze_code_three_split(
         except BudgetExceededError:
             raise
         except Exception as e:  # noqa: BLE001 — silent 차단
-            log_error(_STEP, "summary_failed", e, code_id=code_id)
-            return None
+            # 검색 필드 생성 중 출력 폭주(LengthFinishReasonError 등)로 실패 시, 핵심 3필드
+            # 축소 스키마로 1회 폴백 — 노드 상실(요약 없는 노드 = 검색 코퍼스 탈락) 방지.
+            # 실측: b720(간편결제사 확인) 나열형 필드 반복 폭주. 재발 감시용 명시 로그(greppable
+            # 태그 "search_field_overflow"). 잦아지면 domain_terms/search_text dict 전환 검토
+            # (단 SGLang 자유키 dict = 과거 5차 사고, code_analysis_output.py 머리말 참조).
+            log_warning(_STEP, "search_field_overflow",
+                        f"summary+검색필드 실패({type(e).__name__}) — 핵심 3필드 축소 폴백 재호출 "
+                        f"(나열형 필드 출력 폭주 의심)",
+                        code_id=code_id)
+            try:
+                core = await _track_split(
+                    "split_summary_core",
+                    run_yaml_rule(
+                        prompts_dir=prompts_dir, rule_name="code_summary",
+                        user_values=common, response_model=SummaryCoreOutput, budget=cost_budget,
+                    ),
+                )
+                summary_out = SummaryOutput(
+                    summary=core.summary, stereotype=core.stereotype,
+                    logical_name=core.logical_name,
+                )
+            except BudgetExceededError:
+                raise
+            except Exception as e2:  # noqa: BLE001 — silent 차단
+                log_error(_STEP, "summary_failed", e2, code_id=code_id)
+                return None
 
     # Phase 2: rules + insights 동시 — 자기 코드노드 cache 적중 (#1 이 방금 올림).
     # 부분 성공 허용 — rules/insights 한 조각 실패가 코드노드 폐기로 이어지지 않게.
@@ -214,6 +239,8 @@ async def analyze_code_three_split(
     fn.summary = summary_out.summary
     fn.stereotype = validated_stereotype or None
     fn.logical_name = summary_out.logical_name or None
+    fn.search_text = summary_out.search_text or None
+    fn.domain_terms = summary_out.domain_terms or None
     fn.extra["table_insights"] = (
         [t.model_dump() for t in insights_out.table_insights] if insights_out else []
     )

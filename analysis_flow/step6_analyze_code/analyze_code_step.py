@@ -302,8 +302,6 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
         "has_rule_edges": em_acc.has_rule,
         "has_example_edges": em_acc.has_example,
         "has_question_edges": em_acc.has_question,
-        "next_edges": em_acc.next_edges,
-        "branch_edges": em_acc.branch_edges,
         "affects_table_edges": em_acc.affects_table,
     }
 
@@ -407,7 +405,7 @@ def _emit_code_graph(stream: NDJSONStream, fn: CodeNode, em: ExampleMappingResul
         stream.emit({
             "type": "node_event", "op": "merge", "label": "EXAMPLE",
             "id": ex.id,
-            "props": {"description": ex.description},
+            "props": {"given": ex.given, "when": ex.when, "then": ex.then},
         })
     for q in em.questions:
         stream.emit({
@@ -420,7 +418,6 @@ def _emit_code_graph(stream: NDJSONStream, fn: CodeNode, em: ExampleMappingResul
             "type": "relationship_event", "op": "merge", "rel_type": "HAS_RULE",
             "from": {"label": node_label, "id": hr.source_id},
             "to":   {"label": "RULE",     "id": hr.target_id},
-            "props": {"local_rule_id": hr.local_rule_id, "flow_id": hr.flow_id},
         })
     for he in em.has_example:
         stream.emit({
@@ -433,28 +430,6 @@ def _emit_code_graph(stream: NDJSONStream, fn: CodeNode, em: ExampleMappingResul
             "type": "relationship_event", "op": "merge", "rel_type": "HAS_QUESTION",
             "from": {"label": node_label, "id": hq.source_id},
             "to":   {"label": "QUESTION", "id": hq.target_id},
-        })
-    # 룰 흐름(NEXT/BRANCH)은 DB 저장(rule_flow.py)과 동일하게 **룰 노드 끝점**으로 발신한다.
-    # owner_id+local_rule_id 로 보내면 프론트가 함수 self-loop 로 그린다 — HAS_RULE 가 주는
-    # local_rule_id→룰노드 id 매핑으로 해소해 룰→룰 로 보낸다(끝점 미해소면 생략).
-    rule_by_local = {hr.local_rule_id: hr.target_id for hr in em.has_rule}
-    for nx in em.next_edges:
-        src, tgt = rule_by_local.get(nx.from_rule_id), rule_by_local.get(nx.to_rule_id)
-        if not src or not tgt:
-            continue
-        stream.emit({
-            "type": "relationship_event", "op": "merge", "rel_type": "NEXT",
-            "from": {"label": "RULE", "id": src},
-            "to":   {"label": "RULE", "id": tgt},
-        })
-    for br in em.branch_edges:
-        src, tgt = rule_by_local.get(br.from_rule_id), rule_by_local.get(br.to_rule_id)
-        if not src or not tgt:
-            continue
-        stream.emit({
-            "type": "relationship_event", "op": "merge", "rel_type": "BRANCH",
-            "from": {"label": "RULE", "id": src},
-            "to":   {"label": "RULE", "id": tgt},
         })
     for at in em.affects_table:
         stream.emit({

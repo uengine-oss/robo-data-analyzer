@@ -29,7 +29,6 @@ from data_models.analysis_run import AnalysisRun
 from data_models.graph_edges import (
     AffectsTable,
     BelongsTo,
-    Branch,
     Calls,
     Fk,
     HasColumn,
@@ -38,7 +37,6 @@ from data_models.graph_edges import (
     HasQuestion,
     HasRule,
     InitBy,
-    Next,
     ParentOf,
     ReadsWrites,
     References,
@@ -96,7 +94,7 @@ class WorkflowState(TypedDict, total=False):
     parent_of_edges: list[ParentOf]
     # 그릇 → 멤버 (루틴/변수/상수/struct 멤버). 멤버 종류는 노드 라벨로 구분.
     has_member_edges: list[HasMember]
-    # 구문 → 다음 구문 (DBMS 실행 흐름). Rule-flow 의 next_edges(step6)와 별개 키.
+    # 구문 → 다음 구문 (DBMS 실행 흐름).
     statement_next_edges: list[StatementNext]
     references_edges: list[References]
     init_by_edges: list[InitBy]
@@ -135,8 +133,6 @@ class WorkflowState(TypedDict, total=False):
     has_rule_edges: list[HasRule]
     has_example_edges: list[HasExample]
     has_question_edges: list[HasQuestion]
-    next_edges: list[Next]
-    branch_edges: list[Branch]
     affects_table_edges: list[AffectsTable]
 
     # step7 build_components 는 합성 노드를 만들지 않고 FUNCTION.component_id 속성만 SET — state 누적 없음.

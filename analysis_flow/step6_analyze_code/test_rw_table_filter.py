@@ -21,7 +21,7 @@ def _insights(*tables):
 
 
 def _rules(*tables):
-    return NS(examples=[NS(affected_tables=[NS(table=t) for t in tables])])
+    return NS(rules=[NS(examples=[NS(affected_tables=[NS(table=t) for t in tables])])])
 
 
 def test_drops_offrw_table_in_insights():
@@ -37,7 +37,7 @@ def test_drops_offrw_table_in_examples():
     ru = _rules("zord_jncard", "zapamcom.zapamcom10140.d100_call_zapamcom10060_proc")
     dropped = M.constrain_tables_to_rw("f2", [], ["zord_jncard"], None, ru)
     assert dropped == 1
-    assert [a.table for a in ru.examples[0].affected_tables] == ["zord_jncard"]
+    assert [a.table for a in ru.rules[0].examples[0].affected_tables] == ["zord_jncard"]
 
 
 def test_empty_rw_drops_all():
@@ -46,7 +46,7 @@ def test_empty_rw_drops_all():
     dropped = M.constrain_tables_to_rw("dispatcher", [], [], ins, ru)
     assert dropped == 2
     assert ins.table_insights == []
-    assert ru.examples[0].affected_tables == []
+    assert ru.rules[0].examples[0].affected_tables == []
 
 
 def test_keeps_all_when_in_rw():

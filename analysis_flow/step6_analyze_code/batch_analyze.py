@@ -406,6 +406,8 @@ def _apply_node_analysis(
     fn.summary = summary.summary
     fn.stereotype = coerce_stereotype(summary.stereotype or "", strategy.name) or None
     fn.logical_name = summary.logical_name or None
+    fn.search_text = summary.search_text or None
+    fn.domain_terms = summary.domain_terms or None
     # spec 027: LLM 귀속 테이블을 결정론 reads/writes 로 제한 (callee 함수명 오귀속 차단).
     constrain_tables_to_rw(fn.id, ctx.reads, ctx.writes, table, rules)
     fn.extra["table_insights"] = [t.model_dump() for t in table.table_insights] if table else []

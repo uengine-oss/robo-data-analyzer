@@ -149,8 +149,6 @@ _CATEGORY: dict[str, str] = {
     "has_rule_edges":           "analysis",
     "has_example_edges":        "analysis",
     "has_question_edges":       "analysis",
-    "next_edges":               "analysis",
-    "branch_edges":             "analysis",
     "affects_table_edges":      "analysis",
 
     # 컴포넌트 — step7 build_components 결과 (군집 부품 + 멤버/부품간 엣지)

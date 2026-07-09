@@ -61,7 +61,7 @@ class AnalysisContext:
     token_count: int = 0                     # 본문 토큰 수
 
     # 의미 분석 결과 (analyze_code_step 이 채움) ──────────────
-    summary: Optional[str] = None            # 2 섹션 '[핵심] 한 줄' + 내용 (SummaryOutput 검증)
+    summary: Optional[str] = None            # 마커 없는 1~3줄 짧은 요약 (SummaryOutput 검증)
 
     # Bottom-up DAG 메타 (call_cycles 가 채움) ──────────────
     is_in_cycle: bool = False                # SCC cycle 내부 → callee summary 없이 분석

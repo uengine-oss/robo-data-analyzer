@@ -31,8 +31,7 @@ FK = "FK"                    # Table → Table
 HAS_RULE = "HAS_RULE"            # CodeNode → Rule (per-function 정보는 이 엣지 속성)
 HAS_EXAMPLE = "HAS_EXAMPLE"      # Rule → Example
 HAS_QUESTION = "HAS_QUESTION"    # CodeNode → Question
-NEXT = "NEXT"                    # 실행 순서(흐름): 구문→구문 (DBMS, edges/next.py) · Rule→Rule (EM, edges/rule_flow.py)
-BRANCH = "BRANCH"                # Rule → Rule (분기)
+NEXT = "NEXT"                    # 실행 순서(흐름): 구문→구문 (DBMS, edges/next.py)
 AFFECTS_TABLE = "AFFECTS_TABLE"  # Example → Table
 
 # 컴포넌트 멤버십은 관계가 아니라 FUNCTION.component_id 속성 (build_components_step) — 합성 엣지 없음.

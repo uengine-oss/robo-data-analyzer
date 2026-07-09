@@ -2,8 +2,8 @@
 
 robo 가 이미 만든 호출그래프(state 의 `code_nodes`/`calls_edges`)만으로:
 1. **나누기(결정론, LLM 0):** 내부 호출 그래프에 Leiden 군집화 → 코드노드들을 군집(부품)으로.
-2. **이름(LLM, 군집당 1콜·전부 병렬):** 멤버 코드노드의 `[핵심]` 한 줄만 모아 →
-   `run_yaml_rule("component_naming")` 로 사람이 읽을 이름 생성.
+2. **이름(LLM, 군집당 1콜·전부 병렬):** 멤버 코드노드의 한 줄 압축 표현(logical_name
+   우선, 없으면 요약 첫 줄)만 모아 → `run_yaml_rule("component_naming")` 로 이름 생성.
 3. **적재:** 각 멤버 FUNCTION 노드에 `component_id`·`component_name` 속성을 SET
    (health_metrics 와 동일한 배치 UNWIND SET 패턴).
 
@@ -41,7 +41,7 @@ _STEP = "step7.build_components"
 
 # 군집/이름 파라미터 (튜닝 가능).
 MIN_COMPONENT_SIZE = 2     # 멤버 1개(고립 코드노드)는 군집으로 X (노이즈 차단)
-NAME_MAX_MEMBERS = 40      # 이름 입력에 넣을 멤버 [핵심] 줄 상한 (토큰 안전)
+NAME_MAX_MEMBERS = 40      # 이름 입력에 넣을 멤버 압축 줄 상한 (토큰 안전)
 LEIDEN_SEED = 42           # 결정론 — 같은 그래프 → 같은 군집
 
 # 멤버 FUNCTION 노드에 군집 멤버십을 속성으로 SET (합성 노드 없음). health_metrics 와 동일 패턴.
@@ -171,7 +171,7 @@ def _resolve_names(
     results: list,
     fn_by_id: dict[str, CodeNode],
 ) -> dict[str, str]:
-    """component_id → 이름. LLM 실패 시 대표 코드노드 [핵심]로 fallback, BudgetExceededError 는 전파."""
+    """component_id → 이름. LLM 실패 시 대표 코드노드 압축 표현으로 fallback, BudgetExceededError 는 전파."""
     names: dict[str, str] = {}
     for (cid, members), result in zip(clusters, results):
         if isinstance(result, BudgetExceededError):
@@ -189,9 +189,9 @@ def _resolve_names(
 
 
 def _headline(fn: Optional[CodeNode]) -> str:
-    """코드노드의 압축 표현 — logical_name 우선, 없으면 summary 의 `[핵심]` 첫 줄.
+    """코드노드의 압축 표현 — logical_name 우선, 없으면 summary 첫 줄.
 
-    군집 이름 입력은 본문(내용) 빼고 `[핵심]` 한 줄만 → 멤버 많아도 토큰 안전.
+    군집 이름 입력은 노드당 한 줄만 → 멤버 많아도 토큰 안전.
     """
     if fn is None:
         return ""
@@ -201,5 +201,5 @@ def _headline(fn: Optional[CodeNode]) -> str:
     for line in summary.splitlines():
         line = line.strip()
         if line:
-            return line.replace("[핵심]", "").strip()
+            return line
     return fn.signature or fn.id

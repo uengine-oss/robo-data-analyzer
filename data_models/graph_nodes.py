@@ -177,9 +177,11 @@ class CodeNode:
     params: str = ""                         # 파라미터 목록 텍스트
 
     # 분석 결과 (analyze_code 이 채움) ────
-    summary: Optional[str] = None            # 2 섹션 '[핵심] 한 줄' + 내용 (SummaryOutput 검증)
+    summary: Optional[str] = None            # 마커 없는 1~3줄 짧은 요약 (SummaryOutput 검증)
     stereotype: Optional[str] = None         # ontology_roles.yaml 풀에서
     logical_name: Optional[str] = None       # 짧은 도메인 토큰
+    search_text: Optional[str] = None        # 검색 전용 서술 (프론트 비노출 — 임베딩·검색 재료)
+    domain_terms: Optional[str] = None       # 용어 조각 "약어=뜻; …" (그래프 미저장 — 후처리 용어집 종합 입력)
     embedding: tuple[float, ...] = field(default=(), metadata={"vector": True})
 
     # strategy 별 확장 필드 (dict — 새 필드 추가 시 base 무변경) ────
@@ -255,8 +257,8 @@ class DataType:
 class Rule:
     """비즈니스 규칙 — 같은 statement 는 코드노드 간 1 노드 공유.
 
-    정체성 ``id`` = 정규화 statement MD5[:12]. per-function 정보(local rule_id /
-    flow_id / branch 등)는 노드가 아닌 ``HAS_RULE`` 엣지 속성에 (노드 공유라서).
+    정체성 ``id`` = 정규화 statement MD5[:12]. per-function 정보(coupled_domains)는
+    노드가 아닌 ``HAS_RULE`` 엣지 속성에 (노드 공유라서).
     Neo4j MERGE 가 id(=해시) 키로 자동 dedup.
     """
     id: str                                  # 정규화 statement MD5[:12] — Neo4j unique key
@@ -267,10 +269,9 @@ class Rule:
 class Example:
     """Rule 의 given/when/then 시나리오 (Example Mapping).
 
-    정체성 ``id`` = ``<function id>::<rule_id>::<idx>``.
+    정체성 ``id`` = ``<function id>::<rule_hash>::<idx>``.
     """
     id: str
-    description: str = ""
     given: str = ""                          # 자연어 한 줄 (진입 조건)
     when: str = ""                           # 자연어 한 줄
     then: str = ""                           # 자연어 한 줄 (결과)

@@ -1,5 +1,5 @@
 [
-  "printf", "fprintf", "sprintf", "snprintf", "scanf", "fscanf", "sscanf",
+  "printf", "fprintf", "sprintf", "snprintf", "vsnprintf", "vsprintf", "vprintf", "vfprintf", "scanf", "fscanf", "sscanf",
   "puts", "fputs", "gets", "fgets", "putchar", "getchar", "fputc", "fgetc",
   "fopen", "fclose", "fread", "fwrite", "fseek", "ftell", "rewind", "fflush",
   "malloc", "calloc", "realloc", "free",

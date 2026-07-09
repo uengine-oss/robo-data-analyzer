@@ -171,8 +171,8 @@ class StatementNext:
     """구문 → 다음 구문 (DBMS 실행 흐름). prev=이전 구문, next=다음 구문.
 
     같은 부모 아래 형제 구문을 등장(실행) 순서로 연결 — 절차적 로직 흐름 추적.
-    Rule→Rule 흐름(``Next``, edges/rule_flow)과 rel 타입(NEXT)은 공유하나 끝점이
-    구문 노드라 라벨로 구분. Framework 는 구문 단위 흐름 개념 없음 → 생성 안 함.
+    rel 타입(NEXT)은 다른 소비처와 공유하나 끝점이 구문 노드라 라벨로 구분.
+    Framework 는 구문 단위 흐름 개념 없음 → 생성 안 함.
     """
     prev_id: str
     next_id: str
@@ -210,15 +210,12 @@ class InitBy:
 
 @dataclass(frozen=True)
 class HasRule:
-    """CodeNode → Rule. source=function, target=rule. Rule 노드는 코드노드 간 공유되므로 per-function 정보는 이 엣지 속성.
+    """CodeNode → Rule. Rule 노드는 코드노드 간 공유되므로 per-function 정보(coupled_domains)는 이 엣지 속성.
 
-    정체성 = (source_id, target_id). local_rule_id / flow_id 등은 부속 메타.
-    flow_id 의 ``-`` 계층이 분기 구조를 표현 (BRANCH 엣지 자동 도출).
+    정체성 = (source_id, target_id).
     """
     source_id: str
     target_id: str
-    local_rule_id: str                       # 이 코드노드 안에서의 "R1" 등
-    flow_id: str = ""
     coupled_domains: tuple[str, ...] = ()
 
 
@@ -234,22 +231,6 @@ class HasQuestion:
     """CodeNode → Question. source=function, target=question."""
     source_id: str
     target_id: str
-
-
-@dataclass(frozen=True)
-class Next:
-    """Rule → Rule (메인 흐름 순서). 같은 코드노드(owner) 안 — HAS_RULE local_rule_id 로 매칭."""
-    owner_id: str                            # 규칙들을 품은 코드노드의 id
-    from_rule_id: str                        # local rule_id ("R1" 등)
-    to_rule_id: str
-
-
-@dataclass(frozen=True)
-class Branch:
-    """Rule → Rule (분기). 같은 코드노드(owner) 안 — HAS_RULE local_rule_id 로 매칭."""
-    owner_id: str                            # 규칙들을 품은 코드노드의 id
-    from_rule_id: str
-    to_rule_id: str
 
 
 @dataclass(frozen=True)
