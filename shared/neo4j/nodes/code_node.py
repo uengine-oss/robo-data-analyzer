@@ -61,6 +61,7 @@ def to_summary_item(fn: CodeNode) -> dict:
         "stereotype": fn.stereotype,
         "logical_name": fn.logical_name,
         "search_text": fn.search_text,
+        "domain_terms": fn.domain_terms,
         "code_text": fn.code_text,
     })
 

@@ -15,11 +15,21 @@
 ``given`` / ``then`` 은 **자연어 단일 문자열** 로 통합 (LLM 한테 가장 자유로운 출력 →
 폭주 메커니즘 자체 차단).
 
-TODO (재발 시): ``search_text``/``domain_terms`` 는 나열형 자연어라 낮은 확률(실측 b720
-1/162)로 출력 반복 폭주 가능. 현재 방어 = ``SummaryCoreOutput`` 축소 폴백(노드 상실 0) +
-greppable 로그 태그 ``search_field_overflow``. **폭주가 잦아지면** 이 필드들을 개수 캡 있는
-구조(list[짧은 항목])로 전환 검토 — 단 위 4·5차 사고처럼 SGLang 자유키/반복구조가 더 크게
-터진 이력이 있어, 전환 전 로그로 빈도 실측 후 결정한다(추측 전환 금지).
+나열형 필드(``domain_terms``) 폭주 방어 — 실측 근거로 확정한 3겹:
+1. **필드 순서**: 나열형·개방형은 앞, 닫힌 선택지는 끝
+   (``search_text`` → ``domain_terms`` → ``logical_name`` → ``summary`` → ``stereotype``).
+   나열형이 **마지막**이면 뒤에 쓸 게 없어 "끝"의 경계가 사라지고, 앞서 쓴 산문을 재조합하며
+   무한 생성으로 샌다(실측: domain_terms 가 맨 끝일 때 load_pg_company 30k 토큰·255초 폭주).
+   ``search_text`` 를 먼저 두는 이유 = 코드를 정독하는 작업이라 코드가 끝나면 자연히 멈춘다(무폭주 실적).
+2. **표제어 = 본문 실재 토큰만**: 코드에 그 글자 그대로 있는 식별자만. 조합어 창작 금지 →
+   후보가 유한해져 다 훑으면 자연히 멈춘다. 단 **뜻풀이에는 약어를 일반 업계 말로 풀어써야**
+   검색 다리가 놓인다(실측: 뜻이 "SK-VAN 등록 여부"뿐이면 "결제망" 질의가 못 찾음).
+3. **폴백**: 그래도 터지면 ``SummaryCoreOutput`` 축소 재호출로 노드 상실 0 + 로그 태그
+   ``search_field_overflow`` 로 표면화.
+※ **개수 캡(최대 N개)은 기각** — 식별자가 N개를 넘는 함수에서 핵심 어휘를 버리게 되어
+   사전에 구멍이 뚫린다(검색 미회수 유발). 캡이 아니라 "지어낼 여지를 없애는" 것이 근본.
+※ **max_tokens 하향도 기각** — 정상적으로 긴 출력까지 자를 수 있다.
+※ dict/list 구조 전환도 신중 — 위 4·5차 사고처럼 SGLang 자유키/반복구조가 더 크게 터졌다.
 
 검증 규칙 (Pydantic validator):
 - ``summary`` = 마커 없는 1~3줄 짧은 요약 (spec 041 다이어트) — validator 는 거부가
@@ -53,23 +63,31 @@ class SummaryOutput(BaseModel):
     Bottom-up DAG 로 상위(caller/부모)에 전달된다. 분기·코드값·테이블 세부는
     search_text(검색 전용, 프론트 비노출)가 누락 없이 담는다.
     """
-    summary: str = Field(
-        ...,
-        description="마커 없는 1~3줄 짧은 요약 (세부 분기·코드값은 search_text 책임)",
-    )
-    stereotype: str = Field("", description="ontology_roles.yaml 풀에서 선택")
-    logical_name: str = Field(
-        "",
-        description="형제 함수와 구별되는 도메인 한 줄 (코드 식별자 X — 프롬프트 [0] 지침)",
-    )
+    # ★ 필드 순서 = 폭주 방어 설계 (실측 근거):
+    #   ① 나열형·개방형 필드는 앞에 — 마지막이면 "끝"의 경계가 없어 무한 생성으로 샌다
+    #      (실측: domain_terms 가 맨 끝일 때 load_pg_company 30k 토큰 폭주).
+    #   ② search_text 가 먼저 — 코드를 정독하며 분기·식별자를 훑는 작업. 코드가 끝나면
+    #      쓸 게 없어 자연히 멈춘다(무폭주 실적).
+    #   ③ domain_terms 는 그 직후 — 방금 훑은 식별자가 눈앞에 있고, 뒤에 남은 필드가
+    #      "끝"의 경계가 되어준다.
+    #   ④ summary 는 최종 결론이라 뒤쪽. stereotype 은 닫힌 15지선다라 폭주 불가 → 맨 끝.
     search_text: str = Field(
         "",
         description="검색 전용 서술 — 분기 조건·상태 전이·코드값·테이블 상호작용을 업무 어휘로 (프론트 비노출, 단순 노드는 빈 값)",
     )
     domain_terms: str = Field(
         "",
-        description="용어 조각 '약어=뜻; 약어=뜻' — 본문 실재 약어·시스템명만, 뜻은 일반 업계 의미 우선 (없으면 빈 값)",
+        description="용어 조각 '용어=뜻; 용어=뜻' — 본문에 그 글자 그대로 있는 낯선 식별자만 (조합어 창작 금지, 없으면 빈 값)",
     )
+    logical_name: str = Field(
+        "",
+        description="형제 함수와 구별되는 도메인 한 줄 (코드 식별자 X — 프롬프트 [0] 지침)",
+    )
+    summary: str = Field(
+        ...,
+        description="마커 없는 1~3줄 짧은 요약 (세부 분기·코드값은 search_text 책임)",
+    )
+    stereotype: str = Field("", description="ontology_roles.yaml 풀에서 선택")
 
     @field_validator("summary")
     @classmethod
@@ -197,17 +215,18 @@ class RulesExamplesOutput(BaseModel):
 class BatchSummaryItem(BaseModel):
     """배치 요약분할 — 노드 1개의 요약/식별 결과."""
     node_key: str = Field(..., description="입력 줄범위 '<start>-<end>' 그대로 echo")
-    summary: str = Field("", description="마커 없는 1~3줄 짧은 요약 (세부 분기·코드값은 search_text 책임)")
-    stereotype: str = Field("", description="ontology_roles.yaml 풀에서 선택 (없으면 빈 값)")
-    logical_name: str = Field("", description="형제와 구별되는 도메인 한 줄 표시명")
+    # ★ 필드 순서 = 폭주 방어 (SummaryOutput 주석 참조): 나열형 앞 → 닫힌 선택지 끝.
     search_text: str = Field(
         "",
         description="검색 전용 서술 — 분기 조건·상태 전이·코드값·테이블 상호작용을 업무 어휘로 (프론트 비노출, 단순 노드는 빈 값)",
     )
     domain_terms: str = Field(
         "",
-        description="용어 조각 '약어=뜻; 약어=뜻' — 본문 실재 약어·시스템명만, 뜻은 일반 업계 의미 우선 (없으면 빈 값)",
+        description="용어 조각 '용어=뜻; 용어=뜻' — 본문에 그 글자 그대로 있는 낯선 식별자만 (조합어 창작 금지, 없으면 빈 값)",
     )
+    logical_name: str = Field("", description="형제와 구별되는 도메인 한 줄 표시명")
+    summary: str = Field("", description="마커 없는 1~3줄 짧은 요약 (세부 분기·코드값은 search_text 책임)")
+    stereotype: str = Field("", description="ontology_roles.yaml 풀에서 선택 (없으면 빈 값)")
 
     @field_validator("summary")
     @classmethod
@@ -263,6 +282,19 @@ class ModuleSummaryOutput(BaseModel):
     summary: str = Field(..., description="모듈 전체 의미 (~2 단락)")
     stereotype: str = Field("", description="예: 'Service' / 'Repository' / 'Controller'")
     logical_name: str = Field("", description="모듈 도메인 표시명 한 줄 (코드 식별자 X)")
+
+
+# ── 용어사전 종합 (build_glossary_step, spec 043) ─────────────
+
+
+class GlossarySynthesisOutput(BaseModel):
+    """용어 1개의 종합 결과 — 평탄 문자열 3필드(중첩·자유키 금지, 폭주 이력 준수).
+
+    수용은 결정론 검증이 한다: evidence 가 입력 문맥의 실제 부분열이 아니면 종합 기각
+    (기존 뜻 유지), aliases 는 전체 표제어 목록에 실재하는 것만 인정."""
+    meaning: str = Field(..., description="종합된 뜻 한 줄 — 제공된 문맥에 적힌 근거로만")
+    aliases: str = Field("", description="같은 실체를 가리키는 다른 표제어들(쉼표구분, 목록에 실재하는 표기만, 없으면 빈 값)")
+    evidence: str = Field("", description="뜻·변종 판단의 근거 문장(제공된 문맥에서 그대로 복사)")
 
 
 # ── 컴포넌트 이름 (build_components_step) ─────────────────

@@ -97,16 +97,16 @@ FRAMEWORK_PIPELINE = Strategy(
         build_context_step,
         fetch_table_samples_step,             # ★ 옵션·전략독립 — catalog 샘플 → table_sample_data (analyze 전)
         analyze_code_step,
-        # ★ 후처리 병렬 그룹 — 5 step 서로 독립(입력 read-only·return state 키 비충돌:
-        #   modules / tables+columns / components+edges / {} / {}). 동시 실행 후 embed 에서 합류.
+        # ★ 후처리 병렬 그룹 — 4 step 서로 독립(입력 read-only·return state 키 비충돌:
+        #   modules / tables+columns / components+edges / {}). 동시 실행 후 합류.
         #   공유 llm_semaphore(executor 주입)로 서버 총 동시수 제어(과부하 방지).
         (
             summarize_module_step,
             enrich_table_description_step,
             build_components_step,            # ① 컴포넌트 군집화+이름 (Leiden + 병렬 naming)
             health_metrics_step,              # ② 건강지표 (결정론·LLM 0 — 그래프 위 계산)
-            build_glossary_step,              # ③ 용어사전 종합 (결정론·LLM 0 — spec 042)
         ),
+        build_glossary_step,                  # 용어사전 종합 (spec 043 — 모듈 요약을 문맥으로 쓰므로 그룹 뒤)
         embed_step,
     ),
 )
@@ -140,7 +140,7 @@ DBMS_PIPELINE = Strategy(
         enrich_lineage_from_catalog_step,     # ★ DBMS 만 — catalog lineage
         build_components_step,                # ① 컴포넌트 군집화+이름 (Leiden + 병렬 naming)
         health_metrics_step,                  # ② 건강지표 (결정론·LLM 0 — 그래프 위 계산)
-        build_glossary_step,                  # ③ 용어사전 종합 (결정론·LLM 0 — spec 042)
+        build_glossary_step,                  # 용어사전 종합 (spec 043 — 모듈 요약 뒤)
         embed_step,
     ),
 )

@@ -181,7 +181,7 @@ class CodeNode:
     stereotype: Optional[str] = None         # ontology_roles.yaml 풀에서
     logical_name: Optional[str] = None       # 짧은 도메인 토큰
     search_text: Optional[str] = None        # 검색 전용 서술 (프론트 비노출 — 임베딩·검색 재료)
-    domain_terms: Optional[str] = None       # 용어 조각 "약어=뜻; …" (그래프 미저장 — 후처리 용어집 종합 입력)
+    domain_terms: Optional[str] = None       # 용어 조각 "약어=뜻; …" (그래프 저장·화면 비노출 — 용어집 종합·재종합 재료)
     embedding: tuple[float, ...] = field(default=(), metadata={"vector": True})
 
     # strategy 별 확장 필드 (dict — 새 필드 추가 시 base 무변경) ────
