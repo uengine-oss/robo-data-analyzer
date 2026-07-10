@@ -56,24 +56,34 @@
       [실행검증 curl: progress→result→stream_end / 빈질의 400 / 잘못된 creds→error 이벤트 / 헤더로 SKT·shopmall 전환]
       [잔여: 취소(disconnect) 기전 실측 미완 · 503 매핑(현재 error 이벤트로 표면화)]
 - [x] T014 `shared/log/ndjson_stream.py` — `_EVENT_LOGGER` 에 `progress`/`result`(검색) 추가(로그 미러)
-- [ ] T015 `api/mcp_app.py` — FastMCP streamable-http mount `/robo/mcp` + `mcp` SDK 의존성 +
-      기동 워밍(CE 로드 비차단, 준비 전 503) (FR-002)
-- [~] T016 gateway `application.yml` — `api-gateway-robo-analyze`(5502) predicate 에
-      `/api/gateway/robo/search/**` 추가 완료(catalog catch-all 앞). **잔여: 실행중 게이트웨이(:9000,
-      PID 17504, mvnw)는 재시작해야 적용 — 공유 서비스라 밤중 재시작 보류.** `/robo/mcp/**` 는 MCP 이식 후.
-      ★프론트 vite 프록시 STREAM_PATTERNS 에 `/search` 없음 → 검색 NDJSON 버퍼링 우려(프론트팀 반영 필요). (FR-010)
-- [ ] T017 놀이터 stdio MCP 폐기 — `mcp/server.py` 제거, README 를 URL 등록법으로 (SC-005)
-- [ ] T018 아키텍트 `.mcp.json` 템플릿 grep·URL 방식 교체 (교차서비스, plan §G)
-- [ ] T019 REST·MCP 스모크 — 직접 호출 + `claude mcp add --transport http` 등록 호출 (SC-004)
+- [x] T015 `api/mcp_app.py` — FastMCP streamable-http mount `/robo/mcp`(stateless) + main.py
+      session_manager lifespan. cluster_retrieve(query, database?) = REST 와 같은 run_search 코어.
+      [실증: curl JSON-RPC tools/call → 정답 뭉치(2026-07-11 재확인). 기동 워밍(CE 비차단 로드)은
+      미구현 — 첫 질의가 모델 로드 흡수(수십 초), 후속 개선] (FR-002)
+- [x] T016 gateway `application.yml` — `/api/gateway/robo/search/**` → analyzer(5502) 추가·커밋·**재시작
+      적용 완료**. 실경로 검증: `9000/api/gateway/robo/search/semantic` → NDJSON 스트림 정상.
+      프론트 vite 프록시 STREAM_PATTERNS `/search` 추가·커밋 완료. (FR-010) [gateway ca28a3b·frontend ec14416]
+- [x] T017 놀이터 stdio MCP 폐기 — `server.py`→`.bak` 보존, README 를 HTTP URL 등록법으로 (SC-005)
+- [x] T018 아키텍트 `.mcp.json` 주입 — setup-project(router.py)가 대상 프로젝트 .mcp.json 에
+      robo-cluster http URL 기입(architect 4b0ebaf), 단일 출처 cluster_mcp_url() 정합(5466571)
+- [x] T019 REST·MCP 스모크 — curl NDJSON + MCP JSON-RPC tools/call 정답 뭉치 실증(2026-07-11)
 - [ ] T019b CE 성능 다이얼 검증 — ce_top15·ONNX INT8·디스크캐시 적용 상태로 게이트(SC-001) 통과
       + ONNX vs torch 점수 대조(순위 불변) + 속도 실측 기록 (plan §C 다이얼)
-- [ ] T019c ★아키텍트 배선 전수조사 — 현행 레거시 참조("통째 들고오기") 경로 grep·정독
-      (ingestion·module_retriever·Claude Code 스폰·.mcp.json 템플릿) → 교체 설계 확정 (SC-009 전제)
-- [ ] T019d 아키텍트 레거시참조 스킬화 — 자연어 질의 → MCP cluster_retrieve 필요분 참조로 교체 (SC-009)
+- [x] T019c ★아키텍트 배선 전수조사 완료(2026-07-11) — ★확정 사실: ① 인텐트 스폰(skill_runner)은
+      cwd=robo-architect 루트인데 그곳에 .mcp.json 이 없어 **robo-cluster 가 스킬에 안 보였음**
+      (router.py 주입은 Code탭 대상 프로젝트 전용) ② robo-proposals 스킬 전체에 cluster/레거시 지시 0
+      ③ 정방향 Proposal→DDD 는 레거시 무참조(통째 브리프는 역방향 047 전용) (SC-009 전제)
+- [~] T019d 아키텍트 레거시참조 스킬화 — **구현 완료(architect 5466571)**: skill_runner 가 모든 스킬
+      스폰에 `--mcp-config`(robo-cluster) 주입 + robo-proposal-intent SKILL.md 에 "분해 전
+      cluster_retrieve 필요분 참조(통째 금지)·narration [레거시 참조]" 지시. **실증(E2E)은 미완** —
+      아키텍트 8001 을 Claude 세션 밖에서 재기동해야 신코드 적용+스폰 차단 해제(T023b). plan·discover
+      등 타 스테이지 확장은 intent 실증 후 (SC-009)
 
 ## Phase 4 — 프론트 (FR-009·016 + UI)
 
-- [ ] T020 `nodeLabels.ts` — `MARKER_LABELS {EXTERNAL, EMBEDDED}` (교차서비스 1곳, FR-009)
+- [x] T020 프론트 EMBEDDED 마커 제외 — nodeLabels.ts MARKER_LABELS/isHiddenMarker +
+      nodeClassify·navigator ROLE_LABELS (frontend c826f86). GraphTab 통계 제외 1줄은 spec 046
+      미커밋 뭉치 동승(같은 파일). 실물 확인(SC-006)은 T023 에서 (FR-009)
 - [ ] T021 analyze 진행 UI — embed_step `processing_event`(step=`step7.embed`) phase 추가 (교차서비스, FR-016)
 - [ ] T022 검색창 — 그래프 탭 Overview 질의 입력→NDJSON 스트림 소비(progress 표시→result 뭉치 리스트)
       →노드 상세 연결 + 새 검색 시 이전 요청 AbortController abort (plan §F)
@@ -81,6 +91,9 @@
       콘솔·페이지 오류 0까지 전부 수정(사용자 지시). vite 프록시 STREAM_PATTERNS `/search` 추가 (SC-006·004·008)
 - [ ] T023b ★E2E DDD 완주 — 쇼핑몰+DDL 업로드→분석→아키텍트 Proposal 자연어 요구사항→스킬 참조
       →DDD 생성 끝까지, Playwright 실물·오류 전수 포착 (SC-009)
+      [★전제(2026-07-11 확정): 아키텍트 8001 을 **Claude 세션 밖**(사용자 터미널)에서 5466571 이후
+      코드로 재기동 — 세션 안 기동은 하니스가 nested claude(--dangerously-skip-permissions) 차단.
+      검증 신호 = 인텐트 SSE tool_use `mcp__robo-cluster__cluster_retrieve` + narration [레거시 참조]]
 
 ## TODO (범위 밖 — 후속)
 
