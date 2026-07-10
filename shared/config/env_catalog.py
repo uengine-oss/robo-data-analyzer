@@ -67,6 +67,46 @@ class LLMSettings:
 
 
 @dataclass(frozen=True)
+class EmbedSettings:
+    """ROBO_EMBED_* — 임베딩 공급자 + 전송 규율 (spec 044).
+
+    분석용 생성 LLM(``ROBO_LLM_*``)과 **완전히 분리**한다 — 하나를 바꿀 때 다른 하나가
+    조용히 따라 바뀌는 사고를 막는다.
+
+    기본값은 2026-07-10 실측. 사내 SGLang 이 ``BAAI/bge-m3``(1024d, 정규화 제공)를 서빙하지만
+    ``/v1/models`` 목록에는 없다(비공식 경로 — 운영자 확인 필요). 거부(424)의 정체는 토큰 한도가
+    아니라 **GPU 메모리 부족**이며 시간이 지나면 회복된다. 그래서 동시성을 올릴수록 서로 메모리를
+    뺏어 **오히려 느려진다**: 동시 8=38초 / 12=173초 / 16=333초(1만 노드 환산, 전부 손실 0).
+    로컬 CPU 는 GPU 부재 시 1만 노드 171분 → 폴백 전용(경고).
+    """
+    provider: str = field(default_factory=lambda: _getenv_str("ROBO_EMBED_PROVIDER", "sglang"))
+    model: str = field(default_factory=lambda: _getenv_str("ROBO_EMBED_MODEL", "BAAI/bge-m3"))
+    # 비우면 llm_configs/<ROBO_LLM_CONFIG>.yaml 의 api_base 재사용 (같은 사내 서버).
+    api_base: str = field(default_factory=lambda: _getenv_str("ROBO_EMBED_API_BASE", ""))
+    api_key: str = field(default_factory=lambda: _getenv_str("ROBO_EMBED_API_KEY", ""))
+    concurrency: int = field(default_factory=lambda: _getenv_int("ROBO_EMBED_CONCURRENCY", 8))
+    char_budget: int = field(default_factory=lambda: _getenv_int("ROBO_EMBED_CHAR_BUDGET", 700))
+    max_retries: int = field(default_factory=lambda: _getenv_int("ROBO_EMBED_MAX_RETRIES", 6))
+    timeout_seconds: float = field(default_factory=lambda: _getenv_float("ROBO_EMBED_TIMEOUT_SECONDS", 180.0))
+
+
+@dataclass(frozen=True)
+class SearchSettings:
+    """ROBO_SEARCH_* — 검색용 생성 LLM(질의 번역·심판) + dense 채널 (spec 044).
+
+    분석용 LLM 과 별도 — 검색은 판단 품질이 중요해 gpt-5.4-mini 를 쓴다(사용자 결정).
+    사내 GPU 전환은 TODO(전환 시 심판·번역 승자 구성의 성적 재측정 필수).
+
+    ``dense_impl`` = ``index``(Neo4j 벡터 인덱스) | ``scan``(전량 코사인). SC-002 리콜 미달 시
+    ``scan`` 으로 원복하기 위한 단일 스위치 — 두 경로가 한 곳에서 교체된다.
+    """
+    llm_config: str = field(default_factory=lambda: _getenv_str("ROBO_SEARCH_LLM_CONFIG", "gpt54_mini_openai"))
+    llm_api_key: str = field(default_factory=lambda: _getenv_str("ROBO_SEARCH_LLM_API_KEY", ""))
+    dense_impl: str = field(default_factory=lambda: _getenv_str("ROBO_SEARCH_DENSE_IMPL", "index"))
+    fetch_k: int = field(default_factory=lambda: _getenv_int("ROBO_SEARCH_FETCH_K", 100))
+
+
+@dataclass(frozen=True)
 class CacheSettings:
     """ROBO_CACHE_* — SQLite LLM 응답 캐시 (운영기 OFF)."""
     enabled: bool = field(default_factory=lambda: _getenv_bool("ROBO_CACHE_ENABLED", False))
@@ -206,6 +246,8 @@ class EnvCatalog:
     영역 추가 시: 위에 새 Settings dataclass + 여기 필드 추가 → 즉시 전역 사용.
     """
     llm: LLMSettings = field(default_factory=LLMSettings)
+    embed: EmbedSettings = field(default_factory=EmbedSettings)
+    search: SearchSettings = field(default_factory=SearchSettings)
     cache: CacheSettings = field(default_factory=CacheSettings)
     agent: AgentSettings = field(default_factory=AgentSettings)
     budget: BudgetSettings = field(default_factory=BudgetSettings)

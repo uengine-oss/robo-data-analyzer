@@ -57,7 +57,7 @@ async def embed_step(state: dict, config: Optional[RunnableConfig] = None) -> di
              tables=len(state.get("tables") or []),
              columns=len(state.get("columns") or []),
              code_nodes=len(state.get("code_nodes") or []),
-             backend=embedder.describe())
+             backend=embedder.fingerprint())
 
     # 동기 호출 → asyncio.to_thread 로 격리 (현재 backend 는 로컬 sentence-transformers).
     table_updates, column_updates, code_updates = await asyncio.to_thread(
