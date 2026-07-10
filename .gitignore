@@ -42,3 +42,10 @@ module_test/
 # Spec Kit / Claude Code agent folder — speckit init 으로 재생성 가능, 로컬 자격증명 보관 가능성
 # (specs/ 와 .specify/(헌법·템플릿)는 공유 산출물이므로 commit 한다)
 .claude/
+
+# 검색 CE 점수 디스크 캐시 (런타임)
+.search_cache/
+
+# 검색 게이트 골드·장부 = 고객데이터(SKT 기밀 포함) 커밋 제외 (module_test 정책)
+search/eval/*.yaml
+search/eval/measure_log.md

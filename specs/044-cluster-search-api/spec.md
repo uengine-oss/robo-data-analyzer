@@ -27,9 +27,18 @@
   인덱스 1개. 라벨 열거·전략 분기 없음(새 전략 자동 포함).
 - **라벨 위치 계약**(spec 033/035): `labels[0]`=종류, `labels[1:]`=역할. 프론트는 위치로 자르되
   **마커 제외 장치**(EXTERNAL) 보유 — EMBEDDED 를 마커 집합에 추가(프론트 단일 유틸 1곳).
-  아키텍트는 `labels[0]`/포함검사만 사용 → 영향 0 확인.
+- **★그래프 스키마 계약(교차서비스: robo-architect)**: 신규 라벨 `EMBEDDED`(코드노드 `labels[1:]`
+  마커)·`EMBED_META`(별도 메타노드)·`embedding` 속성·벡터 인덱스는 헌법이 명시한 **robo-architect
+  Neo4j 출력 계약**(13라벨/21엣지)을 건드린다. 아키텍트는 `labels[0]`/포함검사만 쓰므로 **영향 0으로
+  판단**하되, 이는 단언이 아니라 **실측 검증 대상**(SC-006·T024 — 아키텍트 ingestion 이 신규 라벨을
+  무시함을 확인). 미달 시 supersede 명시.
 - **소비자 = 2**: ① 아키텍트(Claude Code 스폰 + `.mcp.json` 주입 경로 실재 — 백엔드 직접 호출
   코드는 없음) ② analyzer UI 검색창. MCP 는 소비자가 아니라 ①의 통로.
+- **프론트 계약 확정(2026-07-11 수신·합의)**: 그래프 탭 Overview 에 "의미 기반 코드 검색"을
+  붙인다. 경로 `POST /robo/search/semantic`, 응답 = **NDJSON 스트림**, 대상 DB = 요청 헤더
+  `X-Neo4j-*`(per-request), 취소 = AbortController(연결 끊기면 중단), 동시 검색 허용(읽기전용),
+  노드 식별자 = `id`+`element_id` 병기, score/relevance = 0~1. 6항목 확정 답 =
+  `frontend-contract-reply.md`. 이 계약은 아래 FR-001·013~016 으로 요구사항화된다.
 - **현 MCP(stdio)는 임시 배선**: 놀이터 venv 절대경로 하드코딩·로직 직접 보유·모델 중복 로드.
   → analyzer 가 **MCP over HTTP** 를 직접 노출하고 stdio 서버는 폐기.
 - **검색용 생성 LLM = gpt-5.4-mini 유지**(사용자 결정, GPU 판단력 우려) — 분석용과 **별도 env**.
@@ -56,8 +65,12 @@ Claude Code 가 MCP 도구로 검색을 호출해 관련 코드 뭉치(호출관
    코드 노드(이름·역할·요약·읽고쓰는 테이블·호출관계·관련도·core/related)와 진단 메타(채택
    보조질의)가 반환된다.
 2. **Given** 무관한 문장, **When** 검색, **Then** 빈 뭉치 또는 소수만 반환(곁가지 무더기 금지).
-3. **Given** 임베딩 없는 그래프, **When** 검색, **Then** "임베딩 없음" 명시적 오류(빈 결과를
-   성공으로 위장 금지).
+3. **Given** 임베딩 없는 그래프(EMBEDDED 인덱스 부재), **When** 검색, **Then**
+   `{"type":"error","message":"이 그래프에는 검색 임베딩이 없습니다 (분석을 다시 실행하세요)"}`
+   명시적 오류(빈 결과를 성공으로 위장 금지).
+4. **Given** 분석 완료 그래프, **When** 검색, **Then** 진행 단계(rewrite→recall→rerank→
+   expand→judge)가 `progress` 로 스트리밍된 뒤 `result`(clusters)·`stream_end` 로 끝난다.
+5. **Given** 검색 진행 중, **When** 프론트가 연결을 abort, **Then** 서버가 진행 작업을 중단한다.
 
 ---
 
@@ -126,8 +139,14 @@ analyzer UI·Claude Code(MCP)가 같은 검색 코어를 쓰고, 놀이터 stdio
 
 ### Functional Requirements
 
-- **FR-001 (검색 API)**: analyzer 서버는 자연어 요구사항 → 관련 코드 뭉치 REST 엔드포인트를
-  제공해야 한다(반환: 노드 요약·테이블 관계·호출관계·관련도·역할 + 진단 메타 + 임베딩 커버리지).
+- **FR-001 (검색 API·스트림)**: analyzer 서버는 자연어 요구사항 → 관련 코드 뭉치 엔드포인트
+  `POST /robo/search/semantic` 를 제공해야 한다. 응답은 **NDJSON 스트림**(한 줄=한 JSON,
+  `application/x-ndjson`, 기존 `NDJSONStream` 재사용): `{"type":"progress",...}` × N →
+  `{"type":"result","clusters":[...],"meta":{...}}` → `{"type":"stream_end"}`. 실패는
+  `{"type":"error","message":...}`, 결과 0건은 `{"type":"result","clusters":[]}`(에러 아님).
+  각 뭉치·노드는 요약·읽고쓰는 테이블·호출관계·관련도(뭉치 `score`·노드 `relevance`, 둘 다
+  0~1)·역할을 담고, `meta` 는 채택 보조질의·임베딩 커버리지를 담는다. 노드 식별자는 `id`
+  (=node.id 속성, catalog `/robo/graph` 와 동일 체계)와 `element_id` 를 **병기**한다.
 - **FR-002 (MCP over HTTP)**: analyzer 서버는 같은 검색 코어를 MCP(HTTP transport)로도 노출해야
   한다. 놀이터 stdio MCP 서버는 폐기하고, `.mcp.json` 등록은 URL 방식으로 대체된다. 검색
   알고리즘 사본은 저장소에 1개여야 한다.
@@ -157,6 +176,25 @@ analyzer UI·Claude Code(MCP)가 같은 검색 코어를 쓰고, 놀이터 stdio
   CLI 를 제공한다.
 - **FR-012 (범용성 제약)**: 특정 라벨 열거·형태 규칙·전략 분기 금지. 판단(뭉치 선별)은 기존
   검색 코어, 기계 작업(인덱스·전송·저장)은 결정론.
+- **FR-013 (스트림 진행 계약)**: `progress` 이벤트의 단계는 검색 파이프라인 실제 순서를 따른다:
+  `rewrite`(질의 이해·용어 보강) → `recall`(관련 코드 후보) → `rerank`(관련도 채점) →
+  `expand`(호출관계 확장) → `judge`(무관 제거). 각 단계 시작마다
+  `{"type":"progress","stage":...,"label":<한국어>,"detail":...,"done":false}` 1개를 emit한다
+  (보강 미발동 시 `rewrite` 생략 가능 — 프론트는 임의 개수 허용). stage 어휘·라벨은
+  `frontend-contract-reply.md` §2 확정본과 일치. `progress`/`result`/`error` 는 검색 전용
+  이벤트 타입(analyze 의 `phase_event`/`processing_event` 와 별개)이며 로그 미러 대상에 추가한다.
+- **FR-014 (요청별 DB·전역 싱글턴 금지)**: 검색은 매 요청의 `X-Neo4j-*` 헤더가 가리키는 DB 를
+  대상으로 한다(analyze 규약 — 라우터가 `set_override` 로 contextvar 설정, `create_task` 가
+  컨텍스트 복사, 검색 코어의 `Neo4jClient` 가 그 DB 를 조회). 검색 코어는 기동 시 한 DB 를
+  잡아두는 **전역 싱글턴 캐시(`.npz`·전역 코퍼스)를 두지 않는다**. dense 채널은 요청 DB 의 벡터
+  인덱스를, 코퍼스 메타(name·summary·search_text·stereotype·관계)는 요청 DB 를 조회한다
+  (요청별 DB 전환이 공짜 — Phase 0 실측 A(.npz)=B(인덱스) 53/53 동치).
+- **FR-015 (취소·동시성)**: 검색은 읽기전용이므로 **동시 여러 건 허용**(analyze 의 "동시 1건"과
+  다름 — 별도 control 엔드포인트 없음). 클라이언트가 연결을 끊으면(AbortController) 서버는
+  disconnect 를 감지해 진행 중 작업을 중단한다(analyze 와 동일 — StreamingResponse + create_task).
+- **FR-016 (임베딩 진행 스트림)**: embed_step 은 analyze 진행 스트림에 **새 단계로 진척을
+  emit**해야 한다(`{"type":"processing_event",...}`, 예 `120/124`). 프론트 analyze 진행 UI 가
+  이 단계를 phase 목록에 추가할 수 있도록 계약으로 노출한다(**교차서비스: frontend analyze 진행 UI**).
 
 ### Key Entities
 
@@ -168,21 +206,33 @@ analyzer UI·Claude Code(MCP)가 같은 검색 코어를 쓰고, 놀이터 stdio
 
 ## Success Criteria *(mandatory)*
 
-- **SC-001 (무회귀 관문)**: 이식 코드 + DB 벡터 인덱스로 게이트 SKT 7/7 · 쇼핑몰 11/11 재현.
-  실패 시 이후 단계 진행 금지.
-- **SC-002 (인덱스 리콜·원복 조항)**: 인덱스 탐색이 전량 코사인 대비 골드 정답을 누락하지
-  않아야 한다. 현 코퍼스(38·124노드)는 후보 수(100)와 규모가 비슷해 판별력이 없으므로,
-  **합성 대규모(1만·10만 노드)에서 recall@k 를 실측**한다. 미달 시 다이얼을 순서대로 적용:
-  ① 후보 k 확대(CE 가 재채점하므로 흡수) ② 인덱스 파라미터를 정확도 쪽으로 ③ **셋 다
-  미달이면 전량 코사인 경로로 원복**(사유·수치를 measure_log 에 기록). 눈대중 통과 금지.
+- **SC-001 (무회귀 관문)**: 이식 코드 + DB 벡터 인덱스로 **두 골드셋 모두** 재현 —
+  ① 위험질의 게이트 SKT 7/7 · 쇼핑몰 11/11(합 18/18) ② full cluster gold 합산 52/53(쇼핑몰 30 +
+  SKT 23 중 52). 둘 중 하나라도 미달이면 이후 단계(API 공개) 진행 금지. (두 지표는 별개 골드 —
+  위험질의는 회귀 방어 스냅샷, full gold 는 이식 동등성 판정.)
+- **SC-002 (인덱스 리콜 — 현 규모 동등성으로 종결)**: 인덱스 탐색이 전량 코사인 대비 골드 정답을
+  누락하지 않아야 한다. **현 규모(124·38노드) Phase 0 실측 = 인덱스 = 전량 코사인 53/53 순위
+  일치로 충족·종결**한다. **합성 대규모(1만·10만) 재확인은 범위 제외**(사용자 결정 2026-07-11 —
+  현 규모에서 만족). 원복 스위치 `ROBO_SEARCH_DENSE_IMPL=index|scan` 은 코드에 남겨 두어(비용 0),
+  훗날 실제 대규모 코퍼스에서 누락이 관측되면 그때 `scan` 으로 전환·측정한다(선제 합성측정 안 함).
 - **SC-003 (임베딩 성능·무손실)**: 두 코퍼스 재분석에서 손실 0·차원 동일, 1만 노드 환산 1분
   이내(실측 43초 기준).
 - **SC-004 (연동 성립)**: `.mcp.json` URL 등록으로 Claude Code 가 검색 도구 호출 성공 + analyzer
   UI 검색창 실물 동작(Playwright).
 - **SC-005 (로직 단일·stdio 폐기)**: 저장소에 검색 알고리즘 1벌, 놀이터 stdio MCP 서버 제거.
 - **SC-006 (계약 안전)**: 프론트에서 EMBEDDED 가 역할로 표시되지 않음(실물 확인) ·
-  text2sql/catalog 기존 벡터 인덱스·속성 무변화.
+  text2sql/catalog 기존 벡터 인덱스·속성 무변화 · **robo-architect ingestion 이 신규 라벨
+  (EMBEDDED·EMBED_META)을 무시하고 정상 동작**(그래프 스키마 계약 무영향 실측).
 - **SC-007 (불변식)**: 임베딩 모델 불일치 설정 시 기동 거부.
+- **SC-008 (스트림·요청별 DB·취소)**: `/robo/search/semantic` 이 NDJSON `progress`→`result`→
+  `stream_end` 순서로 스트리밍하고(결과0=`clusters:[]`·임베딩없음=`error`), 요청 헤더 DB 를
+  대상으로 조회하며(전역 싱글턴 없음 — 두 DB 를 번갈아 검색해 각기 다른 코퍼스 반환 확인),
+  클라이언트 abort 시 서버 작업이 중단됨을 실물(프론트/curl)로 확인.
+- **SC-009 (아키텍트 E2E — 사용자 지시 2026-07-11)**: 아키텍트의 레거시 참조가 "그래프 통째
+  들고오기"가 아니라 **자연어 질의 기반 필요분 참조**(이 검색을 MCP/스킬로 호출)로 동작하고,
+  쇼핑몰 도메인(+DDL 포함 업로드·분석) 위에서 **Proposal→DDD 생성이 끝까지 완주**됨을 실물
+  (Playwright, 콘솔·페이지 오류 0)로 확인. 전제 = 아키텍트 현행 참조 배선 전수조사 후 교체
+  (배선 이해 전 구현 금지).
 
 ## Assumptions
 

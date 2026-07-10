@@ -45,7 +45,23 @@ def encode_texts(texts: Sequence[str]) -> list[Vector]:
         raise EmbeddingError(
             f"알 수 없는 임베딩 공급자: {ENV.embed.provider!r} (가능: {sorted(_ENCODERS)})"
         )
-    return encode(list(texts))
+    return encode(_truncate_oversized(list(texts)))
+
+
+def _truncate_oversized(texts: list[str]) -> list[str]:
+    """서버 텍스트 한도 초과분만 절단(+경고). 초과 1건이 요청 전체를 거부시켜 노드를 유실시키는
+    것을 막는 최후수단 — 정상 길이는 무변경이고, 절단은 벡터 의미를 바꾸므로 조용히 하지 않는다."""
+    limit = ENV.embed.max_chars
+    out: list[str] = []
+    for t in texts:
+        if len(t) > limit:
+            log_warning(_STEP, "truncate",
+                        "노드 텍스트가 서버 한도 초과 — 절단(검색 품질 저하 가능)",
+                        chars=len(t), limit=limit)
+            out.append(t[:limit])
+        else:
+            out.append(t)
+    return out
 
 
 # ── 사내 임베딩 서버 (기본) ────────────────────────────────

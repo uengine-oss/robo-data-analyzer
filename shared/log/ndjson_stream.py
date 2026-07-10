@@ -35,6 +35,8 @@ _EVENT_LOGGER: dict[str, str] = {
     "tool_event":          "stream.tool",
     "todo_update":         "stream.todo",
     "processing_event":    "stream.processing",    # step 안 처리 단위 진행 (코드노드/모듈/테이블/split)
+    "progress":            "stream.search",         # 검색 진행 (rewrite/recall/rerank/expand/judge)
+    "result":              "stream.search",         # 검색 결과 뭉치
     "node_event":          "stream.node",          # 그래프 노드 생성/갱신
     "relationship_event":  "stream.relationship",  # 그래프 엣지 생성/갱신
     "error":               "stream.error",   # log_error 도 별도 호출됐을 가능성 — mirror 는 INFO 로
@@ -45,8 +47,8 @@ _EVENT_LOGGER: dict[str, str] = {
 def _shorten_path(p: str) -> str:
     """긴 path → 짧은 표시 — ``ROBO_DATA_DIR/source/<project>/`` 이하 상대 경로만.
 
-    예: ``C:\\uEngine\\robo\\data\\source\\apascrt00010t02_20260406\\zapamcom10060.c``
-    → ``apascrt00010t02_20260406\\zapamcom10060.c`` (project_root 의 마지막 segment 부터).
+    예: ``C:\\uEngine\\robo\\data\\source\\<project_20260406>\\<module>.c``
+    → ``<project_20260406>\\<module>.c`` (project_root 의 마지막 segment 부터).
     """
     if not isinstance(p, str) or not p:
         return str(p)

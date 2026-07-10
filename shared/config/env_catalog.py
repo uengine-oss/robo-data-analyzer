@@ -88,6 +88,9 @@ class EmbedSettings:
     char_budget: int = field(default_factory=lambda: _getenv_int("ROBO_EMBED_CHAR_BUDGET", 700))
     max_retries: int = field(default_factory=lambda: _getenv_int("ROBO_EMBED_MAX_RETRIES", 6))
     timeout_seconds: float = field(default_factory=lambda: _getenv_float("ROBO_EMBED_TIMEOUT_SECONDS", 180.0))
+    # 서버 텍스트 한도(≈2084자, 부하 의존) 근처. 초과 텍스트만 절단+경고(손실 방지 최후수단 —
+    # 정상 길이 노드는 무변경, 절단은 벡터 의미를 바꾸므로 조용히 하지 않는다).
+    max_chars: int = field(default_factory=lambda: _getenv_int("ROBO_EMBED_MAX_CHARS", 2000))
 
 
 @dataclass(frozen=True)
@@ -100,7 +103,9 @@ class SearchSettings:
     ``dense_impl`` = ``index``(Neo4j 벡터 인덱스) | ``scan``(전량 코사인). SC-002 리콜 미달 시
     ``scan`` 으로 원복하기 위한 단일 스위치 — 두 경로가 한 곳에서 교체된다.
     """
-    llm_config: str = field(default_factory=lambda: _getenv_str("ROBO_SEARCH_LLM_CONFIG", "gpt54_mini_openai"))
+    # GPU 통일(사용자 결정 2026-07-11): 심판·번역도 사내 Qwen(GPU)으로 — 기밀 유지·과금 0,
+    # 죽은 OpenAI 키 의존 제거. gpt-5 로 되돌리려면 env `ROBO_SEARCH_LLM_CONFIG=gpt54_mini_openai`.
+    llm_config: str = field(default_factory=lambda: _getenv_str("ROBO_SEARCH_LLM_CONFIG", "qwen36_sglang_local"))
     llm_api_key: str = field(default_factory=lambda: _getenv_str("ROBO_SEARCH_LLM_API_KEY", ""))
     dense_impl: str = field(default_factory=lambda: _getenv_str("ROBO_SEARCH_DENSE_IMPL", "index"))
     fetch_k: int = field(default_factory=lambda: _getenv_int("ROBO_SEARCH_FETCH_K", 100))

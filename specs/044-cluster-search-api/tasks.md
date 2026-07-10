@@ -2,50 +2,97 @@
 
 **Input**: [plan.md](plan.md) | **Spec**: [spec.md](spec.md)
 
+> 상태 범례: `[x]` 완료·검증 / `[ ]` 미착수. 완료분은 `78a8c02` 커밋(현실 반영 — plan "이미 커밋된 것").
+
 ## Phase 1 — 임베딩 기반 (US3)
 
-- [ ] T001 `shared/config/env_catalog.py` — `ROBO_EMBED_PROVIDER/MODEL/API_BASE/CONCURRENCY/
-      CHAR_BUDGET` + `ROBO_SEARCH_LLM_CONFIG/API_KEY` (FR-007)
-- [ ] T002 `search/embed_text.py` — `compose_embed_text` (놀이터 `_compose_embed_text`
-      searchfield 모드와 글자 단위 동일, 단일 진실) (FR-003)
-- [ ] T003 `shared/llm/embedder.py` 재작성 — 사내 서버 HTTP·문자예산 배치·동시 16·
-      분할/백오프·순서 보존·`fingerprint()`·local 폴백(경고) (FR-005·006, A)
-- [ ] T004 `embed_step.py` — compose_embed_text 사용·`:EMBEDDED`·`:EMBED_META` 지문·
-      VECTOR INDEX IF NOT EXISTS·커버리지/절단 로그·Table/Column 임베더 교체 (FR-003·004, B)
-- [ ] T005 `analysis_pipelines.py` — `(build_glossary_step, embed_step)` 2층 병렬(양 전략)·
-      `.env` `ROBO_PIPELINE_EMBED_ENABLED=true` (FR-008)
-- [ ] T006 `cli_scripts/reembed_graph.py` — 재분석 없이 임베딩·마커·인덱스 재구성 (FR-011)
-- [ ] T007 ★판정: 재임베딩 CLI 로 양 코퍼스(test·neo4j) 임베딩 — 손실 0·차원 1024·
+- [x] T001 `shared/config/env_catalog.py` — `EmbedSettings`(ROBO_EMBED_*) + `SearchSettings`
+      (ROBO_SEARCH_LLM_* · DENSE_IMPL index|scan · FETCH_K) (FR-007) ✅`78a8c02`
+- [x] T002 `search/embed_material.py` — `FETCH_MATERIAL` + `compose_embed_text` (놀이터 searchfield
+      모드와 동형, 단일 진실) (FR-003) ✅`78a8c02`
+- [x] T003 `shared/llm/embedder.py` — 사내 서버 HTTP·문자예산 배치·동시 세마포어·분할/백오프·
+      순서 보존·`fingerprint()`·local 폴백 (FR-005·006) ✅`78a8c02`
+- [ ] T003b (잔여·비차단) 공유 세마포어(FR-008)·dim 지문 — 실측 후 판단(T025에서 결론, 게이트 선행 아님)
+- [x] T004 `embed_step.py` **재작성** — 코드노드=`run_read_query(FETCH_MATERIAL)`→`compose_embed_text`
+      →`encode_texts`→`SET n.embedding, SET n:EMBEDDED` · `MERGE (:EMBED_META) SET fingerprint` ·
+      `CREATE VECTOR INDEX embedded_code_vec IF NOT EXISTS`(1024 cosine)·`db.awaitIndexes` ·
+      차원충돌 수동 DROP 안내 로그 · `processing_progress` 재사용(processing_event) ·
+      Table/Column 현행 유지 · 커버리지/절단 로그 (FR-003·004·016, plan §B)
+- [ ] T005 `analysis_pipelines.py` — `(build_glossary_step, embed_step)` 2층 병렬(양 전략).
+      `ROBO_PIPELINE_EMBED_ENABLED` 는 기본 true(현행) (FR-008)
+- [x] T006 `cli_scripts/reembed_graph.py` — 재분석 없이 저장 결과로 임베딩·마커·인덱스 재구성 (FR-011)
+      [실행검증: 양 DB에서 embed_step 재사용, 파이프라인 토글 무시(명시적 임베딩)]
+- [x] T007 ★판정: 재임베딩 CLI 로 양 코퍼스(test·neo4j) 임베딩 — 손실 0·차원 1024·
       EMBEDDED 수=대상 수·소요 기록 (SC-003)
+      [실측 2026-07-11: neo4j 124/124 손실0 1.7s · test 38/38 손실0 0.9s · dim=1024 단일 · 인덱스 ONLINE · EMBED_META=sglang:BAAI/bge-m3]
 
 ## Phase 2 — 검색 코어 이식 (US2) ★관문
 
-- [ ] T008 `search/` 패키지 이식 — recall(dense=`db.index.vector.queryNodes`+1홉 동일 Cypher,
-      bm25/식별자=기동 캐시)·rerank·fusion·expand·judge·rewrite·glossary·retriever·config
-      (검색 LLM=`ROBO_SEARCH_LLM_CONFIG`) (FR-001·002·012, C)
-- [ ] T009 인덱스 정합 probe — 인덱스 vs 전량 코사인 상위 100 대조, 골드 정답 누락 0 (SC-002)
-- [ ] T010 브리지 모드(`ROBO_SEARCH_IMPL=analyzer`) — 놀이터 eval 이 analyzer search/ 를 쓰게
-- [ ] T011 ★★관문: 게이트 재현 SKT 7/7 · 쇼핑몰 11/11 (SC-001) — 실패 시 Phase 3 진행 금지
+- [x] T008 `search/corpus.py` — **DB별 키 캐시**(전역 .npz 대체): 요청 DB 코퍼스 메타·bm25·
+      structural·fan_in lazy 로드, 키=(uri,database), `:EMBED_META` 지문+EMBEDDED 수 서명 무효화,
+      모델 지문 대조(불일치·임베딩없음 → SearchUnavailable). 전역 싱글턴 없음 (FR-014, plan §C)
+      [실행검증: shopmall(124)·SKT(38) 각기 로드, 헤더로 요청별 전환]
+- [~] T009 `search/` 코어 이식 — **base 결정론 코어 완료·실증**(recall dense=`queryNodes`+bm25+
+      structural·RRF / rerank CE / fusion 타입힌트 / expand 1홉 / retriever `on_progress`·후보벡터 조회 /
+      config·neo). `dense_impl=scan` 폴백 코드 포함. **잔여: judge·rewrite·glossary·llm(LLM 토글,
+      기본 off) 미이식 → 게이트 52/53 재현(T012)은 이후.** rel_types 정합·CE GPU/원격은 별개.
+      (FR-001·002·006·012·014, plan §C)
+- [x] T010 인덱스 정합 — **현 규모 동등성으로 종결**(Phase 0: 인덱스=전량코사인 53/53 일치 + index
+      모드 양 DB 실질의 정상). **대규모 합성측정은 범위 제외**(사용자 결정 2026-07-11). scan 원복
+      스위치는 코드 보존 (SC-002)
+- [ ] T011 브리지 모드(`ROBO_SEARCH_IMPL=analyzer`) — 놀이터 eval 이 analyzer `search/` 를 쓰게
+- [x] T012 ★★관문: 게이트 측정 — **51/53** (shopmall 30/30·SKT 21/23), 채택 config=rewrite
+      novel_abbrev·judge **off**·ce_top15 (GPU Qwen). 놀이터 52/53과 −1(유일 미스 = SKT 코퍼스
+      결제망 약어 케이스 1건). ★실측 결론: Qwen 심판은 과잉삭제(gpt 승자 무효)라 off /
+      ce_top15가 30보다 우수(CE 비단조). 장부·골드=`search/eval/`(고객데이터라 gitignore) (SC-001)
+      [잔여 TODO: 결제망 약어 케이스 부검 · gpt심판 복구/Qwen완화 · CE GPU서빙]
 
 ## Phase 3 — 노출 (US1·US4)
 
-- [ ] T012 `api/search_router.py` — POST /robo/search/cluster (400/503·coverage meta) (FR-001)
-- [ ] T013 `api/mcp_app.py` — FastMCP streamable-http mount `/robo/mcp` + `mcp` SDK 의존성 +
-      기동 워밍(지문 검증·CE 로드·코퍼스 캐시, 준비 전 503) (FR-002·006)
-- [ ] T014 gateway `application.yml` — robo-analyzer Path 에 `/robo/search/**,/robo/mcp/**`
-      (교차서비스, FR-010)
-- [ ] T015 놀이터 stdio MCP 폐기 — mcp/server.py 제거, README 를 URL 등록법으로 (SC-005)
-- [ ] T016 아키텍트 `.mcp.json` 템플릿 grep·URL 방식 교체 (교차서비스, F)
-- [ ] T017 REST·MCP 스모크 — 직접 호출 + `claude mcp add --transport http` 등록 호출 (SC-004)
+- [x] T013 `api/search_router.py` — **POST /robo/search/semantic** NDJSON 스트림: `set_override`
+      (요청 DB)→`NDJSONStream`→`create_task`→`StreamingResponse`. progress(recall→rerank→expand)→
+      result(clusters·meta·`id`+`element_id`)→stream_end / error. 400(빈 질의). CPU 코어 to_thread +
+      progress 는 `call_soon_threadsafe`(스레드 안전) (FR-001·013·014·015)
+      [실행검증 curl: progress→result→stream_end / 빈질의 400 / 잘못된 creds→error 이벤트 / 헤더로 SKT·shopmall 전환]
+      [잔여: 취소(disconnect) 기전 실측 미완 · 503 매핑(현재 error 이벤트로 표면화)]
+- [x] T014 `shared/log/ndjson_stream.py` — `_EVENT_LOGGER` 에 `progress`/`result`(검색) 추가(로그 미러)
+- [ ] T015 `api/mcp_app.py` — FastMCP streamable-http mount `/robo/mcp` + `mcp` SDK 의존성 +
+      기동 워밍(CE 로드 비차단, 준비 전 503) (FR-002)
+- [~] T016 gateway `application.yml` — `api-gateway-robo-analyze`(5502) predicate 에
+      `/api/gateway/robo/search/**` 추가 완료(catalog catch-all 앞). **잔여: 실행중 게이트웨이(:9000,
+      PID 17504, mvnw)는 재시작해야 적용 — 공유 서비스라 밤중 재시작 보류.** `/robo/mcp/**` 는 MCP 이식 후.
+      ★프론트 vite 프록시 STREAM_PATTERNS 에 `/search` 없음 → 검색 NDJSON 버퍼링 우려(프론트팀 반영 필요). (FR-010)
+- [ ] T017 놀이터 stdio MCP 폐기 — `mcp/server.py` 제거, README 를 URL 등록법으로 (SC-005)
+- [ ] T018 아키텍트 `.mcp.json` 템플릿 grep·URL 방식 교체 (교차서비스, plan §G)
+- [ ] T019 REST·MCP 스모크 — 직접 호출 + `claude mcp add --transport http` 등록 호출 (SC-004)
+- [ ] T019b CE 성능 다이얼 검증 — ce_top15·ONNX INT8·디스크캐시 적용 상태로 게이트(SC-001) 통과
+      + ONNX vs torch 점수 대조(순위 불변) + 속도 실측 기록 (plan §C 다이얼)
+- [ ] T019c ★아키텍트 배선 전수조사 — 현행 레거시 참조("통째 들고오기") 경로 grep·정독
+      (ingestion·module_retriever·Claude Code 스폰·.mcp.json 템플릿) → 교체 설계 확정 (SC-009 전제)
+- [ ] T019d 아키텍트 레거시참조 스킬화 — 자연어 질의 → MCP cluster_retrieve 필요분 참조로 교체 (SC-009)
 
-## Phase 4 — 프론트 (FR-009 + UI)
+## Phase 4 — 프론트 (FR-009·016 + UI)
 
-- [ ] T018 `nodeLabels.ts` — MARKER_LABELS {EXTERNAL, EMBEDDED} (교차서비스 1곳)
-- [ ] T019 검색창 — code-analysis 화면 질의 입력→뭉치 리스트→노드 상세 연결
-- [ ] T020 Playwright 실물 — EMBEDDED 역할 비표시 + 검색창 end-to-end 스크린샷 (SC-006·004)
+- [ ] T020 `nodeLabels.ts` — `MARKER_LABELS {EXTERNAL, EMBEDDED}` (교차서비스 1곳, FR-009)
+- [ ] T021 analyze 진행 UI — embed_step `processing_event`(step=`step7.embed`) phase 추가 (교차서비스, FR-016)
+- [ ] T022 검색창 — 그래프 탭 Overview 질의 입력→NDJSON 스트림 소비(progress 표시→result 뭉치 리스트)
+      →노드 상세 연결 + 새 검색 시 이전 요청 AbortController abort (plan §F)
+- [ ] T023 Playwright 실물 — EMBEDDED 역할 비표시 + 검색창 end-to-end + progress 스트리밍 스크린샷.
+      콘솔·페이지 오류 0까지 전부 수정(사용자 지시). vite 프록시 STREAM_PATTERNS `/search` 추가 (SC-006·004·008)
+- [ ] T023b ★E2E DDD 완주 — 쇼핑몰+DDL 업로드→분석→아키텍트 Proposal 자연어 요구사항→스킬 참조
+      →DDD 생성 끝까지, Playwright 실물·오류 전수 포착 (SC-009)
+
+## TODO (범위 밖 — 후속)
+
+- **재채점(CE) GPU 서빙** — 현재 로컬 CPU(무거운 bge-reranker-v2-m3-ko 568M라 새 질의당 15~60초).
+  **CPU 유지 확정**(사용자 결정 2026-07-11 — 레퍼런스 mpower-rag도 동일 계열 CPU 사용 실측). 후속
+  속도개선: ⓐ 사내 GPU 서버에 리랭커 배포(sglang `/v1/rerank` 존재하나 리랭커 모델 미탑재 → 서버
+  담당자 요청) ⓑ ONNX+INT8 양자화(2~4배, 재측정) ⓒ 경량 다국어 모델(Qwen3-Reranker-0.6B). [[embedding-spaces]]
 
 ## Phase 5 — 마무리
 
-- [ ] T021 모델 불일치 기동 거부 실측(SC-007) · text2sql 인덱스 6종 무변화 재확인(SC-006)
-- [ ] T022 병렬 이득 실측(전/후) — 무이득 시 순차 원복 (FR-008)
-- [ ] T023 measure_log 기록·메모리 갱신·커밋(analyzer/frontend/gateway)·서브모듈 bump
+- [ ] T024 SC 실측: 모델 불일치 지문 요청 거부(SC-007) · 두 DB 번갈아 검색=각기 다른 코퍼스
+      (전역 싱글턴 없음)·abort 중단(SC-008) · text2sql 인덱스 6종 무변화 · **robo-architect ingestion
+      이 신규 라벨(EMBEDDED·EMBED_META) 무시하고 정상 동작**(그래프 스키마 계약 무영향) (SC-006)
+- [ ] T025 병렬 이득 실측(전/후) — 무이득 시 순차 원복 + T003b(공유 세마포어) 결론 (FR-008)
+- [ ] T026 measure_log 기록·메모리 갱신·커밋(analyzer/frontend/gateway)·서브모듈 bump

@@ -1,11 +1,19 @@
-"""embed_step — Table / Column / CodeNode 의미 텍스트 임베딩 → Neo4j.
+"""embed_step — 분석 끝 임베딩 → Neo4j (코드노드 = 검색 강화텍스트 + :EMBEDDED + 벡터 인덱스).
+
+코드노드 임베딩 텍스트는 검색측과 **글자 단위 동일**한 ``search/embed_material.compose_embed_text``
+로 **그래프에서** 조성한다(요약만이 아니라 종류·역할·테이블관계·검색문장 — 검색이 성립하려면
+생성·검색이 같은 문장이어야 하므로 단일 진실). 파이프라인 끝이라 테이블 관계 엣지까지 완성돼 있다.
+Table/Column 은 description 기반 현행 유지(검색 대상 아님 — :EMBEDDED 안 붙임).
 
 흐름:
-1. ``Table.description`` / ``Column.description`` / ``CodeNode.summary`` 텍스트 수집.
-2. ``shared.llm.embedder.encode_texts`` 로 배치 인코딩 — 어디서 어떻게 임베딩을
-   받는지는 LLM 영역 책임. 이 step 은 텍스트 → 벡터의 mechanic 만.
-3. Neo4j UNWIND 배치로 ``embedding`` property SET.
-4. state 의 노드 객체에 embedding 박은 새 인스턴스로 교체 (artifact 검증 정합).
+1. 그래프에서 코드노드 재료(``FETCH_MATERIAL``) 읽어 ``compose_embed_text`` → 벡터.
+2. Table/Column description → 벡터 (현행).
+3. UNWIND 배치 SET — 코드노드는 ``embedding`` + ``:EMBEDDED`` 마커, Table/Column 은 ``embedding``.
+4. ``:EMBED_META`` 지문 upsert(검색이 질의 임베더와 대조) + 벡터 인덱스 IF NOT EXISTS + ONLINE 대기.
+5. state 노드에 embedding 반영(artifact 정합).
+
+on/off 토글 — ``ROBO_PIPELINE_EMBED_ENABLED`` (기본 ON). 인덱스=스키마라 매 run wipe(DETACH
+DELETE=데이터만) 를 견딘다. 임베딩 실패는 raise(헌법 IV — 벡터 없는 노드는 검색에서 영구 실종).
 """
 from __future__ import annotations
 
@@ -16,32 +24,31 @@ from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
+from search.embed_material import (
+    EMBED_META_LABEL,
+    EMBEDDED_LABEL,
+    FETCH_MATERIAL,
+    VECTOR_INDEX_NAME,
+    compose_embed_text,
+)
 from shared.config.env_catalog import ENV
 from shared.llm import embedder
 from shared.log.logger import log_info, log_warning
+from shared.log.processing_progress import emit_processing_event, step_processing_scope
 from shared.neo4j.neo4j_client import Neo4jClient
 from shared.workflow.step_utils import step_config
 
 
 _STEP = "step7.embed"
 
-
-def _embedding_query(label: str, key: str) -> str:
-    """``embedding`` property SET UNWIND 쿼리. ``label`` 빈 문자열이면 무라벨 MATCH —
-    코드 노드는 라벨이 antlr type 열린집합이라 id 키로만 매치(METHOD/SELECT/… 전부 포함)."""
-    matcher = f"(n:{label} {{{key}: item.{key}}})" if label else f"(n {{{key}: item.{key}}})"
-    return (
-        f"UNWIND $items AS item "
-        f"MATCH {matcher} "
-        f"SET n.embedding = item.vector"
-    )
+# 진척 emit 단위(스트림 가시성용) — 임베딩 자체는 embedder 가 문자예산·동시로 배치한다.
+_PROGRESS_BATCH = 500
+# 인덱스 ONLINE 대기 상한(초). 검색은 분석 완료 후에만 일어나므로 준비 대기는 run 안에서 끝난다.
+_AWAIT_INDEX_TIMEOUT = 300
 
 
 async def embed_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
-    """description / summary → 벡터 → Neo4j embedding property + state 반영.
-
-    on/off 토글 — ``ROBO_PIPELINE_EMBED_ENABLED`` (기본 ON). 비활성 시 step skip.
-    """
+    """코드노드(강화텍스트)·Table/Column(description) → 벡터 → Neo4j + 코드노드 :EMBEDDED·인덱스·지문."""
     if not ENV.pipeline.embed_enabled:
         log_info(_STEP, "skip", reason="임베딩 비활성화 (ROBO_PIPELINE_EMBED_ENABLED=false)")
         return {}
@@ -51,6 +58,7 @@ async def embed_step(state: dict, config: Optional[RunnableConfig] = None) -> di
     if neo is None:
         log_warning(_STEP, "config_missing", "neo_client 누락 — step skip")
         return {}
+    stream = cfg.get("stream")
 
     started = time.monotonic()
     log_info(_STEP, "start",
@@ -59,18 +67,21 @@ async def embed_step(state: dict, config: Optional[RunnableConfig] = None) -> di
              code_nodes=len(state.get("code_nodes") or []),
              backend=embedder.fingerprint())
 
-    # 동기 호출 → asyncio.to_thread 로 격리 (현재 backend 는 로컬 sentence-transformers).
-    table_updates, column_updates, code_updates = await asyncio.to_thread(
-        _build_embeddings, state
-    )
+    with step_processing_scope(_STEP, stream):
+        # 코드노드 — 그래프 재료로 강화텍스트 임베딩(검색과 동일 조성).
+        material = await neo.run_read_query(FETCH_MATERIAL)
+        code_updates = await _embed_code_material(material, stream)
 
-    for label, items in (
-        ("TABLE", table_updates),
-        ("COLUMN", column_updates),
-        ("", code_updates),        # 코드 노드 = 라벨 열린집합 → id 무라벨 매치 (METHOD/SELECT/… 포함)
-    ):
+        # Table/Column — description 기반(현행), 임베더만 원격 1024d.
+        table_updates, column_updates = await asyncio.to_thread(_build_table_column_embeddings, state)
+
+    if code_updates:
+        await neo.run_batch_unwind(_embedded_code_query(), code_updates)
+    for label, items in (("TABLE", table_updates), ("COLUMN", column_updates)):
         if items:
             await neo.run_batch_unwind(_embedding_query(label, "id"), items)
+
+    await _ensure_vector_index(neo, code_updates)
 
     updated_tables = _attach_embedding(state.get("tables", []), table_updates, "id")
     updated_columns = _attach_embedding(state.get("columns", []), column_updates, "id")
@@ -78,9 +89,10 @@ async def embed_step(state: dict, config: Optional[RunnableConfig] = None) -> di
 
     log_info(
         _STEP, "done",
+        code_embedded=len(code_updates),
+        code_material=len(material),
         table_embedded=len(table_updates),
         column_embedded=len(column_updates),
-        code_embedded=len(code_updates),
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
     return {
@@ -90,34 +102,112 @@ async def embed_step(state: dict, config: Optional[RunnableConfig] = None) -> di
     }
 
 
-def _attach_embedding(nodes: list, updates: list[dict], key_attr: str) -> list:
-    """``updates`` 의 vector 를 같은 키의 노드에 박은 새 인스턴스 리스트.
+# ── 코드노드 (그래프 재료 → 강화텍스트) ────────────────────────
 
-    ``updates`` 형식: ``[{<key_attr>: ..., "vector": [...]}, ...]``.
-    임베딩 못 받은 노드는 그대로 유지 — state 키엔 reducer 가 없어(default replace)
-    전체 리스트를 돌려줘야 최종 state·artifact 가 노드를 잃지 않는다.
-    """
-    key_to_vec = {u[key_attr]: u["vector"] for u in updates}
-    return [
-        replace(n, embedding=tuple(key_to_vec[getattr(n, key_attr)]))
-        if getattr(n, key_attr) in key_to_vec else n
-        for n in nodes
-    ]
+async def _embed_code_material(material: list[dict], stream) -> list[dict]:
+    """``FETCH_MATERIAL`` row 들을 ``compose_embed_text`` 로 조성 → 벡터. 배치마다 진척 emit.
+
+    encode_texts 는 sync(내부 asyncio.run) 이므로 ``to_thread`` 로 격리한다. 배치 경계에서만
+    루프 위에서 emit → CPU 스레드가 스트림 큐를 직접 만지지 않는다(스레드 안전)."""
+    total = len(material)
+    if total == 0:
+        log_warning(_STEP, "no_code_material", "summary 보유 코드노드 0 — 검색 임베딩 없음")
+        return []
+    updates: list[dict] = []
+    for start in range(0, total, _PROGRESS_BATCH):
+        batch = material[start:start + _PROGRESS_BATCH]
+        updates.extend(await asyncio.to_thread(_encode_code_rows, batch))
+        emit_processing_event(stream, _STEP, "CodeNode", f"{len(updates)}/{total}", status="done")
+    return updates
 
 
-def _build_embeddings(state: dict) -> tuple[list[dict], list[dict], list[dict]]:
-    """state 의 description / summary 수집 → 그룹별 배치 인코딩 → updates dict.
+def _encode_code_rows(rows: list[dict]) -> list[dict]:
+    """``[row]`` → ``[{"id", "vector"}]``. 텍스트 조성은 검색과 공용 단일 진실."""
+    texts = [compose_embed_text(r) for r in rows]
+    vectors = embedder.encode_texts(texts)
+    return [{"id": r["id"], "vector": vec} for r, vec in zip(rows, vectors)]
 
-    그룹별 텍스트 수집 → ``embedder.encode_texts`` 1회 호출씩 → 키-벡터 쌍 dict.
-    """
-    table_pending = _collect_table_texts(state.get("tables", []))
-    column_pending = _collect_column_texts(state.get("columns", []))
-    code_pending = _collect_code_texts(state.get("code_nodes", []))
 
+def _embedded_code_query() -> str:
+    """코드노드 벡터 SET + ``:EMBEDDED`` 마커. id 무라벨 매치(코드 라벨은 antlr 열린집합)."""
     return (
-        _encode_pairs(table_pending, "id"),
-        _encode_pairs(column_pending, "id"),
-        _encode_pairs(code_pending, "id"),
+        "UNWIND $items AS item "
+        "MATCH (n {id: item.id}) "
+        f"SET n.embedding = item.vector, n:{EMBEDDED_LABEL}"
+    )
+
+
+# ── 벡터 인덱스 + 지문 ────────────────────────────────────────
+
+async def _ensure_vector_index(neo: Neo4jClient, code_updates: list[dict]) -> None:
+    """``:EMBEDDED`` 벡터 인덱스 IF NOT EXISTS + ONLINE 대기 + 지문 메타. 차원은 실벡터에서 도출.
+
+    임베딩된 코드노드가 없으면 인덱스 생성 불가(차원 미상) → skip. 차원 불일치 옛 인덱스가
+    남아 있으면 CREATE IF NOT EXISTS 는 no-op 이므로 **수동 DROP 을 명시 안내**(눈대중 금지)."""
+    if not code_updates:
+        log_warning(_STEP, "index_skip", "임베딩된 코드노드 0 — 벡터 인덱스 생성 생략")
+        return
+
+    dim = len(code_updates[0]["vector"])
+    await _warn_on_dim_mismatch(neo, dim)
+    await neo.run_query(_create_vector_index_query(dim))
+    await neo.run_query(f"CALL db.awaitIndexes({_AWAIT_INDEX_TIMEOUT})")
+    await neo.run_query(
+        f"MERGE (m:{EMBED_META_LABEL}) SET m.fingerprint = $fp, m.dim = $dim",
+        {"fp": embedder.fingerprint(), "dim": dim},
+    )
+    log_info(_STEP, "index_ready", index=VECTOR_INDEX_NAME, dim=dim, fingerprint=embedder.fingerprint())
+
+
+def _create_vector_index_query(dim: int) -> str:
+    """벡터 인덱스 생성 쿼리. dim 은 실벡터 길이(int) 인라인 — 사용자 입력 아님(안전)."""
+    return (
+        f"CREATE VECTOR INDEX {VECTOR_INDEX_NAME} IF NOT EXISTS "
+        f"FOR (n:{EMBEDDED_LABEL}) ON (n.embedding) "
+        "OPTIONS {indexConfig: {"
+        f"`vector.dimensions`: {int(dim)}, "
+        "`vector.similarity_function`: 'cosine'}}"
+    )
+
+
+async def _warn_on_dim_mismatch(neo: Neo4jClient, dim: int) -> None:
+    """기존 동명 벡터 인덱스의 차원이 현재와 다르면 CREATE IF NOT EXISTS 가 no-op → DROP 안내."""
+    try:
+        rows = await neo.run_read_query(
+            "SHOW INDEXES YIELD name, options WHERE name = $name",
+            {"name": VECTOR_INDEX_NAME},
+        )
+    except Exception as e:  # SHOW 구문 차이 등 — 사전점검은 최선수단, 검색측 지문검증이 최종 안전망
+        log_warning(_STEP, "index_dim_check_failed",
+                    "인덱스 차원 사전점검 실패 — 검색측 지문검증이 최종 안전망", error=str(e))
+        return
+    if not rows:
+        return
+    config = (rows[0].get("options") or {}).get("indexConfig") or {}
+    existing = config.get("vector.dimensions")
+    if existing is not None and int(existing) != int(dim):
+        log_warning(_STEP, "index_dim_mismatch",
+                    f"기존 벡터 인덱스 차원({existing}) ≠ 현재({dim}) — CREATE IF NOT EXISTS 는 no-op. "
+                    f"수동 실행 필요: DROP INDEX {VECTOR_INDEX_NAME}",
+                    existing=int(existing), current=int(dim))
+
+
+# ── Table / Column (description 기반, 현행) ────────────────────
+
+def _embedding_query(label: str, key: str) -> str:
+    """``embedding`` property SET UNWIND 쿼리(Table/Column — 마커 없음)."""
+    return (
+        f"UNWIND $items AS item "
+        f"MATCH (n:{label} {{{key}: item.{key}}}) "
+        f"SET n.embedding = item.vector"
+    )
+
+
+def _build_table_column_embeddings(state: dict) -> tuple[list[dict], list[dict]]:
+    """Table/Column description 수집 → 그룹별 배치 인코딩 → updates."""
+    return (
+        _encode_pairs(_collect_table_texts(state.get("tables", [])), "id"),
+        _encode_pairs(_collect_column_texts(state.get("columns", [])), "id"),
     )
 
 
@@ -148,24 +238,26 @@ def _collect_column_texts(columns: list) -> list[tuple[str, str]]:
     return out
 
 
-def _collect_code_texts(code_nodes: list) -> list[tuple[str, str]]:
-    """``CodeNode`` 들의 (code_id, summary) 쌍. summary 빈 것은 제외."""
-    out: list[tuple[str, str]] = []
-    for f in code_nodes:
-        summary = getattr(f, "summary", None)
-        if not summary:
-            continue
-        out.append((f.id, summary))
-    return out
-
-
 def _encode_pairs(pending: list[tuple[str, str]], key_name: str) -> list[dict]:
     """``[(키, 텍스트)]`` → ``[{key_name: 키, "vector": [...]}]``. embedder 1회 호출."""
     if not pending:
         return []
     texts = [text for _, text in pending]
     vectors = embedder.encode_texts(texts)
+    return [{key_name: key, "vector": vec} for (key, _), vec in zip(pending, vectors)]
+
+
+# ── state 반영 ────────────────────────────────────────────────
+
+def _attach_embedding(nodes: list, updates: list[dict], key_attr: str) -> list:
+    """``updates`` 의 vector 를 같은 키의 노드에 박은 새 인스턴스 리스트.
+
+    임베딩 못 받은 노드는 그대로 유지 — state 키엔 reducer 가 없어(default replace) 전체
+    리스트를 돌려줘야 최종 state·artifact 가 노드를 잃지 않는다.
+    """
+    key_to_vec = {u[key_attr]: u["vector"] for u in updates}
     return [
-        {key_name: key, "vector": vec}
-        for (key, _), vec in zip(pending, vectors)
+        replace(n, embedding=tuple(key_to_vec[getattr(n, key_attr)]))
+        if getattr(n, key_attr) in key_to_vec else n
+        for n in nodes
     ]
