@@ -18,9 +18,9 @@ user_template_specific: |
     BatchTableInsightsItem {
       node_key: "<start>-<end>",
       table_insights: [
-        { table: "db.schema.RDD01DD_TB", role: "upsert",
-          columns: [ { name:"VAL", logical_name:"용수공급량", description:"일 용수공급 수량(집계 결과)" },
-                     { name:"LOG_TIME", logical_name:"수집일시", description:"수집 일시 키" } ] }
+        { table: "db.schema.BERTH_DAY_TB", role: "upsert",
+          columns: [ { name:"BERTH_CNT", logical_name:"접안횟수", description:"일별 접안 횟수(집계 결과)" },
+                     { name:"WORK_DATE", logical_name:"작업일자", description:"집계 기준 일자 키" } ] }
       ]
     }
     ```
@@ -63,7 +63,7 @@ user_template_specific: |
   - raw SQL SELECT 절 / WHERE 절 / SET 절 / VALUES 절 / JOIN ON 절.
   ### 각 컬럼 필드 3개
   - `name` — DDL 컬럼명 정확히(추측 X, 대소문자 본문대로).
-  - `logical_name` — 짧은 업무 표시명(논리명) 한 줄(2~10자 체언, 예 `VAL`→"용수공급량").
+  - `logical_name` — 짧은 업무 표시명(논리명) 한 줄(2~10자 체언, 예 `BERTH_CNT`→"접안횟수").
     ①코드 식별자·DDL 타입·물리 컬럼명 그대로 X ②동어반복·문장형 X(짧은 이름만) ③근거 부족 시 빈값(날조 X).
   - `description` — 비즈니스 의미 한 줄. **4가지 준수**: ①DDL 타입 X(`VARCHAR2(20)` 같은
     정의 X) ②코드 토큰 X ③동어반복 X("X를 저장하는 컬럼" 금지) ④추론 불가 시 빈값 X /
@@ -72,7 +72,7 @@ user_template_specific: |
   ### description 좋은 예
   - `STATUS` → "처리 상태 코드 ('A'=활성 / 'C'=취소 / 'P'=대기)"
   - `SETTLE_DATE` → "정산일자 (YYYYMMDD, 마감 후 확정)"
-  - `VAL` → "수집 구간 용수공급 수량 (집계 결과)"
+  - `BERTH_CNT` → "일별 접안 횟수 (집계 결과)"
   ### 안티패턴
   - X: description="VARCHAR2(20) 컬럼"(DDL 타입) → O: "처리 상태 코드 ('A'/'C'/'P')".
   - X: "X를 저장하는 컬럼"(동어반복) → O: "처리 상태 코드 — 흐름 분기에 사용".

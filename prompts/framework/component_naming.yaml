@@ -5,7 +5,7 @@ system: |
 
   규칙:
   - name: 코드 식별자(함수명/클래스명/파일명)가 아니라 업무 도메인 용어 한 줄.
-    (예: "자동납부 인증이력 기록", "주문 정산 배치")
+    (예: "입항 신고 이력 기록", "주문 정산 배치")
   - description: 이 부품이 하는 일을 한 줄로.
   - stereotype: 역할 라벨 한 단어 (예: Service / Repository / Batch / Validator / Controller).
     명확하지 않으면 빈 값.
