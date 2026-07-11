@@ -33,8 +33,11 @@ neo4j>=5.27.0
 leidenalg>=0.10.0
 igraph>=0.11.0
 
-# 임베딩 (phase_embed — 기본 비활성 ROBO_PIPELINE_EMBED_ENABLED=false)
+# 임베딩(embed_step) + 검색 재채점 크로스인코더(search/rerank — CE 게이트)
 sentence-transformers>=3.3.0
+
+# 검색 리콜 희소채널 — BM25 키워드 매칭 (search/recall)
+rank-bm25>=0.2.2
 
 # Web API
 fastapi>=0.115.0
