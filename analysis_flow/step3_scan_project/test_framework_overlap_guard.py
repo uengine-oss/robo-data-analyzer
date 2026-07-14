@@ -16,13 +16,14 @@ from analysis_flow.step3_scan_project import scan_codebase_step as S
 
 
 class _Node:
-    def __init__(self, _id: str) -> None:
+    def __init__(self, _id: str, name: str) -> None:
         self.id = _id
+        self.name = name
 
 
 _CODE_NODES = [
-    _Node("zapamcom10060.b000_main_proc:10"),
-    _Node("zapamcom10060.a000_input_validation:5"),
+    _Node("code:zapamcom10060.c:b000_main_proc", "b000_main_proc"),
+    {"id": "opaque-id-that-must-not-be-parsed", "name": "a000_input_validation"},
 ]
 
 

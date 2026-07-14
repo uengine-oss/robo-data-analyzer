@@ -20,7 +20,6 @@ from analysis_flow.step3_scan_project.scan_agent import run_scan_agent
 from analysis_flow.step3_scan_project.scanner_input_collector import (
     collect_scanner_input,
 )
-from shared.lang.call_classifier import _bare_name
 from shared.llm.cost_budget import CostBudget
 from shared.llm.middleware.call_limit import ModelCallLimitExceeded
 from shared.log.logger import log_error, log_info, log_warning
@@ -131,11 +130,9 @@ def _warn_if_framework_overlaps_project(result_dict: dict, code_nodes: list) -> 
         return
     project_names: set[str] = set()
     for fn in code_nodes:
-        nid = getattr(fn, "id", None)
-        if nid is None and isinstance(fn, dict):
-            nid = fn.get("id")
-        if nid:
-            project_names.add(_bare_name(nid))
+        name = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", None)
+        if name and str(name).strip():
+            project_names.add(str(name).strip())
     # 글로브 메타문자가 있는 항목(PRINT_* 류)은 오탐 방지 위해 제외 — 정확 이름만 대조.
     overlap = sorted(
         d for d in drop
