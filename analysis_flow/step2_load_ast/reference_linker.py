@@ -65,16 +65,20 @@ def link_references(
     variables: list[Variable],
     constants: list[Constant],
     import_refs: list[dict],
+    source_cache: SourceFileCache | None = None,
 ) -> tuple[list[References], list[InitBy]]:
     """본문 → REFERENCES, 변수/상수 ``initValue`` → INIT_BY (같은 모듈 + import 한 모듈).
 
     INIT_BY 는 변수+상수 모두 출발 가능 — 정의 시 외부 토큰 참조하면 잡힌다.
+
+    ``source_cache`` 는 호출부(step2)가 주입 — 같은 step 안에서 캐시를 **두 벌** 만들면
+    파일을 두 번 읽는다 (spec 046 FR-008: 종전엔 여기와 load_ast_step 이 각자 만들었다).
     """
     targets = _targets_by_module(variables, constants)
     modules_by_file, basename_index = _file_indexes(variables, constants)
     scopes = _build_scopes(import_refs, targets, modules_by_file, basename_index)
     return (
-        _link_code_bodies(code_nodes, targets, scopes, SourceFileCache()),
+        _link_code_bodies(code_nodes, targets, scopes, source_cache or SourceFileCache()),
         _link_init_values(variables, constants, targets, scopes),
     )
 

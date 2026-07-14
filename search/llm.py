@@ -10,11 +10,15 @@ LLM 죽으면 chat_json 이 None → 호출부(judge/rewrite)가 폴백(원결�
 from __future__ import annotations
 
 import json
+import time
 
 import httpx
 
 from shared.config.env_catalog import ENV
 from shared.llm.config_loader import load_llm_config
+from shared.llm.pricing import compute_cost
+from shared.llm.token_usage import TokenUsageRecord
+from shared.llm.usage_jsonl_writer import append_usage_record
 from shared.log.logger import log_warning
 
 _STEP = "search.llm"
@@ -36,7 +40,11 @@ def _is_openai_reasoning(cfg) -> bool:
 
 
 def chat(prompt: str, *, system: str = "", max_tokens: int = 1024, temperature: float = 0.0) -> str | None:
-    """단발 chat. 실패 시 None(상위 폴백). Qwen thinking 은 config 의 extra_body 로 끔."""
+    """단발 chat. 실패 시 None(상위 폴백). Qwen thinking 은 config 의 extra_body 로 끔.
+
+    토큰·비용은 ``_record_usage`` 가 ``usage.jsonl`` 에 남긴다 (spec 046 FR-006) — 종전엔
+    검색 LLM(질의마다 심판·재작성 호출) 의 비용이 **어디에도 안 잡혔다**.
+    """
     cfg, key = _config()
     messages = ([{"role": "system", "content": system}] if system else []) + \
                [{"role": "user", "content": prompt}]
@@ -47,16 +55,51 @@ def chat(prompt: str, *, system: str = "", max_tokens: int = 1024, temperature: 
     else:
         body["max_tokens"] = max_tokens
         body["temperature"] = temperature
+    started = time.monotonic()
     try:
         r = httpx.post(f"{cfg.api_base.rstrip('/')}/chat/completions",
                        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
                        json=body, timeout=cfg.timeout_seconds)
         r.raise_for_status()
-        content = r.json()["choices"][0]["message"].get("content")
+        payload = r.json()
+        _record_usage(payload, cfg.model, int((time.monotonic() - started) * 1000))
+        content = payload["choices"][0]["message"].get("content")
         return content.strip() if content else None
     except Exception as exc:  # noqa: BLE001 — 폴백 사유 로그 후 None
         log_warning(_STEP, "chat_failed", f"검색 LLM 호출 실패(폴백): {exc!r}", model=cfg.model)
         return None
+
+
+def _record_usage(payload: dict, model: str, latency_ms: int) -> None:
+    """OpenAI 호환 응답의 ``usage`` → ``usage.jsonl`` 적재 (spec 046 FR-006).
+
+    검색 LLM 은 LangChain 미들웨어 스택을 안 타는 raw httpx 경로라, 비용추적이 **전무**했다.
+    여기서 표준 기록 경로(``append_usage_record``)에 편입해 **모든 LLM 호출이 계측**되게 한다.
+
+    적재 실패가 검색을 막아선 안 되므로 예외는 경고로만 남긴다 (검색 결과는 그대로 반환).
+    """
+    try:
+        usage = payload.get("usage") or {}
+        if not usage:
+            return
+        record = TokenUsageRecord(
+            model=model,
+            input_tokens=int(usage.get("prompt_tokens") or 0),
+            output_tokens=int(usage.get("completion_tokens") or 0),
+            cached_tokens=int(
+                (usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0
+            ),
+            total_tokens=int(usage.get("total_tokens") or 0),
+            latency_ms=latency_ms,
+        )
+        append_usage_record(
+            ENV.log.dir / "search" / "usage.jsonl",
+            agent_name="search",
+            record=record,
+            cost_usd=compute_cost(record),
+        )
+    except Exception as exc:  # noqa: BLE001 — 계측 실패가 검색을 막지 않는다
+        log_warning(_STEP, "usage_record_failed", f"검색 LLM 사용량 적재 실패: {exc!r}")
 
 
 def chat_json(prompt: str, *, system: str = "", max_tokens: int = 1024,

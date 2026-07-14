@@ -4,41 +4,32 @@
 """
 from __future__ import annotations
 
-from collections import defaultdict
 from typing import Iterable
 
 from data_models.graph_nodes import Variable
+from shared.neo4j.merge import upsert_by_node_label
 from shared.neo4j.neo4j_client import Neo4jClient
 from shared.neo4j.props import join_notes, nonempty
 
 
-def _merge_query(label: str) -> str:
-    """빈값 미저장 (`SET v += item`). label 은 ``Variable.label``(antlr type) 통제값 — 주입 안전."""
-    return f"""
-UNWIND $items AS item
-MERGE (v:{label} {{id: item.id}})
-SET v += item
-RETURN count(v) AS created
-"""
+# MERGE 쿼리·라벨 그룹핑은 ``shared/neo4j/merge.py`` 단일 정의처 (spec 046 FR-004).
 
 
 def to_item(v: Variable) -> dict:
     return nonempty({
         "id": v.id,
+        "owner_id": v.owner_id,   # 소속 모듈 (spec 047 FR-007 — 소비자가 id 를 뜯지 않게)
         "name": v.name,
         "file_path": v.file_path,
         "start_line": v.start_line,
         "end_line": v.end_line,
         "var_type": v.var_type,
         "init_value": v.init_value,
+        "code_text": v.code_text,
         "notes": join_notes(v.comment, v.annotations),
     })
 
 
 async def upsert_variables(client: Neo4jClient, variables: Iterable[Variable]) -> None:
     """antlr type 라벨(``v.label``)별로 묶어 MERGE — ``:FIELD``/``:MEMBER``/``:GLOBAL_VARIABLE``/``:VARIABLE``/``:PARAMETER``."""
-    by_label: dict[str, list[dict]] = defaultdict(list)
-    for v in variables:
-        by_label[v.label].append(to_item(v))
-    for label, items in by_label.items():
-        await client.run_batch_unwind(_merge_query(label), items)
+    await upsert_by_node_label(client, variables, to_item)

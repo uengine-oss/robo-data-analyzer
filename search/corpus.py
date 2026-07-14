@@ -21,7 +21,7 @@ _CORPUS_QUERY = """
 MATCH (n)
 WHERE n.summary IS NOT NULL AND n.summary <> ''
   AND NOT n:FILE AND NOT n:MODULE AND NOT n:PACKAGE
-RETURN n.id AS id, labels(n)[0] AS label,
+RETURN n.id AS id, coalesce(n.type, head(labels(n))) AS label,
        coalesce(n.name,'') AS name, n.summary AS summary,
        coalesce(n.code_text,'') AS code_text,
        coalesce(n.search_text,'') AS search_text,

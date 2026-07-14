@@ -32,7 +32,11 @@ from analysis_flow.step5_build_context.build_context_step import build_context_s
 from analysis_flow.step5_build_context.dbms_context_builder import DbmsContextBuilder
 from analysis_flow.step5_build_context.framework_context_builder import FrameworkContextBuilder
 from analysis_flow.step5_build_context.fetch_table_samples_step import fetch_table_samples_step
-from analysis_flow.step6_analyze_code.analyze_code_step import analyze_code_step
+from analysis_flow.step6_analyze_code.analyze_code_step import (
+    analyze_code_step,
+    run_framework_per_node_analysis,
+)
+from analysis_flow.step6_analyze_code.batch_analyze import run_dbms_batch_analysis
 from analysis_flow.step7_post_processing.embed_step import embed_step
 from analysis_flow.step7_post_processing.enrich_table_description_step import (
     enrich_table_description_step,
@@ -68,6 +72,10 @@ class Strategy:
     Fields:
         name: 식별자 (``"framework"`` / ``"dbms"``).
         context_builder: ``build_context_step`` 이 주입받는 컨텍스트 빌더 인스턴스.
+        code_analyzer: ``analyze_code_step`` 이 주입받는 **분석 엔진** (per-node 3분할 /
+            형제 배치). 두 구현체는 **동일 시그니처** — step 은 어느 쪽인지 모른다.
+            (헌법 II "분기 0" — 종전엔 step 안에 ``strategy.name == "dbms"`` 하드분기가
+            있었다. spec 046 FR-001.)
         prompts_dir: yaml 프롬프트 위치 (``"prompts/framework"`` / ``"prompts/dbms"``).
         steps: 활성 step 함수 tuple (이 순서대로 LangGraph StateGraph 노드).
 
@@ -75,6 +83,7 @@ class Strategy:
     """
     name: str
     context_builder: Any
+    code_analyzer: Callable
     prompts_dir: str
     steps: tuple[Callable, ...]
 
@@ -86,6 +95,7 @@ class Strategy:
 FRAMEWORK_PIPELINE = Strategy(
     name="framework",
     context_builder=FrameworkContextBuilder(),    # build_context_step 이 주입받음
+    code_analyzer=run_framework_per_node_analysis,  # analyze_code_step 이 주입받음 (per-node 3분할)
     prompts_dir="prompts/framework",
     steps=(
         parse_ddl_step,
@@ -98,7 +108,8 @@ FRAMEWORK_PIPELINE = Strategy(
         fetch_table_samples_step,             # ★ 옵션·전략독립 — catalog 샘플 → table_sample_data (analyze 전)
         analyze_code_step,
         # ★ 후처리 병렬 그룹 — 4 step 서로 독립(입력 read-only·return state 키 비충돌:
-        #   modules / tables+columns / components+edges / {}). 동시 실행 후 합류.
+        #   modules / tables+columns / {} / {}). 동시 실행 후 합류.
+        #   (build_components·health_metrics 는 state 를 안 늘리고 노드 속성만 SET → {} 반환.)
         #   공유 llm_semaphore(executor 주입)로 서버 총 동시수 제어(과부하 방지).
         (
             summarize_module_step,
@@ -119,6 +130,7 @@ FRAMEWORK_PIPELINE = Strategy(
 DBMS_PIPELINE = Strategy(
     name="dbms",
     context_builder=DbmsContextBuilder(),     # parent + sibling 컨텍스트
+    code_analyzer=run_dbms_batch_analysis,    # analyze_code_step 이 주입받음 (형제 배치 1콜)
     prompts_dir="prompts/dbms",
     steps=(
         parse_ddl_step,

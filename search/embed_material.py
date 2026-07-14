@@ -23,7 +23,7 @@ WHERE n.summary IS NOT NULL AND n.summary <> ''
 OPTIONAL MATCH (n)-[rw:READS|WRITES|AFFECTS_TABLE]->(t:TABLE)
 WITH n, collect(DISTINCT type(rw) + ':' + coalesce(t.name, '')) AS rels
 RETURN n.id AS id,
-       labels(n)[0] AS label,
+       coalesce(n.type, head(labels(n))) AS label,
        coalesce(n.name, '') AS name,
        coalesce(n.stereotype, '') AS stereotype,
        n.summary AS summary,

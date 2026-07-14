@@ -39,7 +39,7 @@ from data_models.code_analysis_output import (
 )
 from data_models.graph_nodes import CodeNode
 from shared.config.env_catalog import ENV
-from shared.lang.ontology import coerce_stereotype
+from shared.lang.ontology import ROUTINE_LABELS, coerce_stereotype
 from shared.llm.cost_budget import BudgetExceededError
 from shared.llm.yaml_llm_runner import run_yaml_rule
 from shared.log.logger import log_error, log_info, log_warning
@@ -52,7 +52,9 @@ _STEP = "step6.analyze_code.batch"
 # rules(비즈니스 규칙) 추출 단위 = "원문(RAW)이 토큰 예산에 들어가는 가장 높은 문장"(budget descent).
 # 루틴 직속(레벨1)부터 시작해 예산 초과 컨테이너만 자식으로 내려간다 — 증거는 항상 1차(원문),
 # 크기는 예산으로 안전. 단위 아래 노드는 규칙 X(단위가 흡수 = 파편·중복 차단은 레벨1 원리 유지).
-_ROUTINE_TYPES = frozenset({"PROCEDURE", "FUNCTION", "TRIGGER"})
+#
+# 루틴 판정은 ``ontology.ROUTINE_LABELS`` 단일 정의처를 쓴다 (옛 로컬 ``_ROUTINE_TYPES`` 는
+# METHOD 가 빠져 있어 실제로 갈라져 있었다 — spec 046 FR-005).
 
 
 def _plan_rule_units(
@@ -82,7 +84,7 @@ def _plan_rule_units(
             descend(child)
 
     for node in code_by_id.values():
-        if node.label in _ROUTINE_TYPES:
+        if node.label in ROUTINE_LABELS:
             for child in eff_children.get(node.id, []):
                 descend(child)
     return units, gates
@@ -100,8 +102,12 @@ async def run_dbms_batch_analysis(
     module_intents: dict[str, str],
     table_descriptions: dict[str, str],
     pause: PauseController,
+    source_cache: SourceFileCache,
 ) -> dict:
     """DBMS 배치 분석 — 유효 트리 → 바텀업 라운드 → 라운드별 형제 배치 1콜.
+
+    ``run_framework_per_node_analysis`` 와 **동일 시그니처** — 전략이 둘 중 하나를 주입한다
+    (``Strategy.code_analyzer``, 헌법 II / spec 046 FR-001).
 
     결과는 ``analyze_code_step`` 과 동일한 state dict (analysis_contexts + EM 9종).
 
@@ -141,7 +147,7 @@ async def run_dbms_batch_analysis(
     log_info(_STEP, "rule_units", units=len(rule_units), gates=len(rule_gates), analysis_nodes=len(analysis_ids))
 
     semaphore = asyncio.Semaphore(ENV.pipeline.max_concurrency)
-    source_cache = SourceFileCache()
+    # source_cache 는 caller(analyze_code_step)가 주입 — run 스코프 공유 (spec 046 FR-008).
     em_acc = ExampleMappingResult()
     analyzed = failed = batch_count = 0
 
@@ -183,7 +189,7 @@ async def run_dbms_batch_analysis(
                         log_error(_STEP, "batch", result, round=round_idx)
                         continue
                     for fn in result:              # 배치가 분석한 CodeNode 들
-                        em = await _persist_and_emit_code(fn, neo, stream, source_cache)
+                        em = await _persist_and_emit_code(fn, neo, stream)
                         _accumulate_em(em_acc, em)
                         analyzed += 1
             finally:
@@ -193,10 +199,24 @@ async def run_dbms_batch_analysis(
                         task.cancel()
             remaining = [b for b in remaining if id(b) not in done_batches]
 
+    # 불변식 (spec 045 FR-008): ``failed`` 는 **배치** 단위라 노드 집계와 단위가 다르다.
+    # 분석 대상 노드 중 결과를 못 받은 노드는 summary 없이 남아 검색 코퍼스에서 빠진다
+    # → 노드 기준으로 직접 검산해 표면화한다 (조용한 유실 금지).
+    unanalyzed = len(analysis_ids) - analyzed
+    if unanalyzed:
+        log_warning(
+            _STEP, "nodes_unanalyzed",
+            f"분석 대상 {len(analysis_ids)} 중 {unanalyzed}개가 결과 없이 남음 "
+            f"(실패 배치 {failed}건). summary 미부여 → 검색 코퍼스에서 제외된다.",
+            analysis_nodes=len(analysis_ids), analyzed=analyzed, unanalyzed=unanalyzed,
+            failed_batches=failed,
+        )
+
     log_info(
         _STEP, "done",
         analysis_nodes=len(analysis_ids), batches=batch_count,
-        analyzed=analyzed, failed=failed or None, in_cycle=len(cycles),
+        analyzed=analyzed, failed_batches=failed or None,
+        unanalyzed=unanalyzed or None, in_cycle=len(cycles),
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
     return {

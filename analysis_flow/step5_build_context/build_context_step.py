@@ -16,8 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
@@ -142,12 +141,15 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
     refsym_by_fn = _build_reference_context(state)
 
     # 파일 본문 캐시 — 같은 file 여러 코드노드가 공유 (성능: N*M read → N read).
-    body_cache = SourceFileCache()
+    body_cache = cfg.get("source_cache") or SourceFileCache()   # run 스코프 공유 (FR-008)
 
     # 컨텍스트 생성 (결정적 메타)
     contexts: dict[str, AnalysisContext] = {}
     for fn in code_nodes:
-        body_text = body_cache.slice(fn.file_path, fn.start_line, fn.end_line)
+        # 원문은 step2 가 이미 채웠다 (code_text) — 같은 (file,start,end) 를 여기서 다시
+        # 잘라내지 않는다 (spec 046 FR-007: 슬라이싱 계산은 한 곳). 없을 때만 캐시에서 슬라이스
+        # (code_text 가 빈 경우 = 소스 read 실패 — FR-004 가 이미 경고를 남겼다).
+        body_text = fn.code_text or body_cache.slice(fn.file_path, fn.start_line, fn.end_line)
         ctx = AnalysisContext(
             id=fn.id,
             signature=fn.signature,

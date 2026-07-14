@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import replace
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TypeVar
 
 from langchain_core.runnables import RunnableConfig
 
@@ -18,6 +19,8 @@ from shared.workflow.step_utils import step_config
 from analysis_flow.step2_load_ast.antlr_json_reader import ast_and_source_roots, read_antlr_json
 from analysis_flow.step2_load_ast.reference_linker import link_references
 from shared.log.logger import log_error, log_info, log_warning
+from shared.node_registry import NodeIdentityCollision, canonicalize_node_lists
+from shared.source_file_cache import SourceFileCache
 from shared.neo4j.edges.belongs_to import upsert_belongs_to
 from shared.neo4j.edges.has_member import upsert_has_member
 from shared.neo4j.edges.init_by import upsert_init_by
@@ -34,6 +37,65 @@ from shared.neo4j.nodes.variable import upsert_variables
 from shared.workflow.graph_stream import emit_edges, emit_message, emit_nodes
 
 _STEP = "step2.load_ast"
+
+_N = TypeVar("_N")
+
+
+def _with_code_text(nodes: list[_N], cache: SourceFileCache) -> list[_N]:
+    """라인 범위가 있는 노드에 원문 슬라이스를 붙인다 (frozen dataclass → replace).
+
+    규칙 하나: **파일·라인이 있으면 그 원문을 갖는다.** 노드 종류로 분기하지 않는다.
+    ``end_line`` 0 = 파일 끝까지 (SourceFileCache.slice 규약).
+    """
+    return [
+        replace(n, code_text=cache.slice(n.file_path, n.start_line, n.end_line))
+        if n.file_path and not n.code_text else n
+        for n in nodes
+    ]
+
+
+def _assert_unique_ids(*node_lists: list) -> None:
+    """**id 전역 유일성 가드** (spec 047 FR-005) — 중복이면 즉시 raise.
+
+    왜 필요한가: 이 불변식이 깨지면 무라벨 ``MATCH (n {id: …})`` 가 **두 노드를 모두** 잡아
+    엣지·라벨이 엉뚱한 곳에 박힌다 (실제로 터졌다 — 테이블에 코드 HAS_MEMBER 144개,
+    구조체가 DB 컬럼을 멤버로 가짐). 그래프가 조용히 거짓말을 하므로 **조용히 넘기면 안 된다**.
+
+    이제 id 는 네임스페이스(``code:``/``db:``) + 위치(파일경로·컨테이너경로)로 만들어져
+    구조적으로 겹칠 수 없다. 이 가드는 **그 설계가 깨졌을 때 즉시 알려주는 센서**다.
+    """
+    seen: dict[str, str] = {}
+    dups: list[str] = []
+    for nodes in node_lists:
+        for n in nodes:
+            nid = n.id
+            label = getattr(n, "label", type(n).__name__)
+            if nid in seen:
+                dups.append(f"{nid!r} ({seen[nid]} ↔ {label})")
+            else:
+                seen[nid] = label
+    if dups:
+        err = ValueError(
+            f"노드 id 중복 {len(dups)}건 — 서로 다른 노드가 같은 식별자를 갖는다 "
+            f"(spec 047 불변식 위반): {dups[:5]}"
+        )
+        log_error(_STEP, "duplicate_node_id", err, count=len(dups))
+        raise err
+
+
+def _code_text_missing(*node_lists: list) -> int:
+    """**불변식 감시** (spec 045 FR-005): file_path 가 있는데 원문이 빈 노드 수.
+
+    0 이 아니면 소스를 못 읽었다는 뜻 — ``SourceFileCache`` 가 남긴 ``source_read_failed``
+    경고와 짝을 이룬다. file_path 가 **없는** 노드(외부 stub 등)는 "원래 본문이 없는 것"이라
+    카운트에서 제외한다 — 못 읽은 것과 섞지 않는다.
+    """
+    return sum(
+        1
+        for nodes in node_lists
+        for n in nodes
+        if n.file_path and not n.code_text
+    )
 
 
 async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
@@ -88,9 +150,48 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         import_refs.extend(result.import_refs)
         parsed_files += 1
 
+    try:
+        canonical, collapsed_node_observations = canonicalize_node_lists(
+            code_nodes, modules, packages, variables, constants, data_types,
+        )
+        (
+            code_nodes, modules, packages,
+            variables, constants, data_types,
+        ) = canonical
+    except NodeIdentityCollision as err:
+        log_error(_STEP, "node_identity_collision", err)
+        raise
+
+    if collapsed_node_observations:
+        log_info(
+            _STEP,
+            "node_observations_canonicalized",
+            count=collapsed_node_observations,
+        )
+
+    # run 스코프 공유 캐시 (executor 주입) — 없으면 단독 생성(CLI/테스트 경로). FR-008.
+    # ★ reference_linker 와 **같은 인스턴스**를 쓴다 — 종전엔 둘이 각자 캐시를 만들어
+    #   step2 안에서만 같은 파일을 두 번 읽었다.
+    source_cache = cfg.get("source_cache") or SourceFileCache()
+
     # REFERENCES / INIT_BY — 전 파일 노드가 모인 뒤 결정론 식별자 매칭.
     # import_refs 를 넘겨 모듈 너머 참조까지 (계획 §2.8 Pass 2).
-    references, init_by = link_references(code_nodes, variables, constants, import_refs)
+    references, init_by = link_references(
+        code_nodes, variables, constants, import_refs, source_cache,
+    )
+
+    # 원문 코드 — **파일·라인이 있는 모든 노드**에 붙이는 단일 지점. 노드 종류로 분기하지 않는다.
+    # (루틴뿐 아니라 선언 노드 DEFINE/STRUCT/GLOBAL_VARIABLE/MEMBER 도 자기 원문을 갖는다 —
+    #  노드 패널이 "이 코드에서 도출됐다"를 보여주는 근거.)
+    code_nodes = _with_code_text(code_nodes, source_cache)
+    modules = _with_code_text(modules, source_cache)
+    variables = _with_code_text(variables, source_cache)
+    constants = _with_code_text(constants, source_cache)
+    data_types = _with_code_text(data_types, source_cache)
+
+    # ★ id 전역 유일성 가드 (spec 047) — 깨지면 그래프가 조용히 거짓말을 하므로 즉시 실패.
+    #   (DB 노드는 step1 이 만들지만 네임스페이스가 달라(`db:`) 코드 노드와 겹칠 수 없다.)
+    _assert_unique_ids(code_nodes, modules, packages, variables, constants, data_types)
 
     if neo is not None:
         # 노드는 라벨이 달라 동시쓰기 안전 → 병렬. 엣지는 노드 선행 필요 +
@@ -129,9 +230,23 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         f"✅ 코드 구조 적재 완료 — 노드 {len(code_nodes)}, 소속·부모 {len(has_member) + len(parent_of)}",
     )
 
+    # 불변식 감시 — file_path 가 있는데 원문이 빈 노드가 있으면 소스를 못 읽은 것 (FR-005).
+    code_text_missing = _code_text_missing(
+        code_nodes, modules, variables, constants, data_types
+    )
+    if code_text_missing:
+        log_warning(
+            _STEP, "code_text_missing",
+            f"파일·라인이 있는데 원문을 못 얻은 노드 {code_text_missing}개 — "
+            "소스 read 실패(source_read_failed 경고 참조). 노드 패널·검색 재료가 빈다.",
+            count=code_text_missing,
+        )
+
     log_info(
         _STEP, "done",
         parsed_files=parsed_files,
+        collapsed_node_observations=collapsed_node_observations,
+        code_text_missing=code_text_missing,
         code_nodes=len(code_nodes), modules=len(modules),
         packages=len(packages), variables=len(variables),
         constants=len(constants), data_types=len(data_types),

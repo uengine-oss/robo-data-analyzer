@@ -83,7 +83,10 @@ class Neo4jClient:
         """``UNWIND $items AS item ...`` 형식 쿼리 배치 실행 (재시도 포함).
 
         items 빈 list 면 즉시 None 반환 (불필요한 호출 차단).
-        ``ROBO_NEO4J_UNWIND_BATCH_SIZE`` 보다 크면 호출자가 사전 분할해야 함.
+
+        **배치 분할은 하지 않는다** — 옛 docstring 은 ``ROBO_NEO4J_UNWIND_BATCH_SIZE`` 를
+        언급했으나 그 설정은 **읽히지도 강제되지도 않았다**(문서가 거짓말). 설정은 삭제했고
+        (spec 046 FR-010), 실제 동작은 "받은 items 를 한 번에 UNWIND" 다.
         """
         if not items:
             return None

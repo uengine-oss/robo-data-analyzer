@@ -108,14 +108,45 @@ def _build_code_index(code_nodes: list, project_root: Path) -> dict[str, str]:
     return index
 
 
+def _path_suffix_match(key: str, source: str) -> bool:
+    """``key`` 가 ``source`` 로 끝나는가 — **경로 세그먼트 경계**를 존중 (spec 045 FR-017).
+
+    옛 구현은 맨 ``str.endswith`` 라 ``"a.sql"`` 이 ``".../xxa.sql"`` 에 매칭됐다 →
+    엉뚱한 코드노드에 R/W 엣지가 붙는 **조용한 오답**. 경계를 강제해 차단한다.
+    (``"x/a.sql".endswith("a.sql")`` 는 참이되 ``"x/xxa.sql"`` 은 거짓.)
+    """
+    k = key.replace("\\", "/")
+    s = source.replace("\\", "/").lstrip("/")
+    if not s:
+        return False
+    return k == s or k.endswith("/" + s)
+
+
 def _resolve_code_id(source: str | None, index: dict[str, str]) -> str | None:
-    """catalog source → 실제 code_id (없으면 None)."""
+    """catalog source → 실제 code_id (없으면 None).
+
+    정확 일치 우선. 그다음 **경로 세그먼트 경계**를 지키는 접미 매칭(절대/상대 경로 차이 흡수).
+    후보가 **여럿이면 추측하지 않고** 경고 후 드롭한다 (FR-018) — 하나를 골라 붙이면
+    그래프가 거짓을 말하고 아무도 모른다.
+    """
     if not source:
         return None
     if source in index:
         return index[source]
-    # suffix 매칭 (절대/상대 경로 차이)
-    for key, fid in index.items():
-        if key.endswith(source) or source.endswith(key):
-            return fid
-    return None
+
+    hits = {
+        fid
+        for key, fid in index.items()
+        if _path_suffix_match(key, source) or _path_suffix_match(source, key)
+    }
+    if not hits:
+        return None
+    if len(hits) > 1:
+        log_warning(
+            _STEP, "lineage_ambiguous_source",
+            f"catalog lineage 의 source 가 코드노드 {len(hits)}개에 해당 — "
+            "추측 금지, 이 lineage 는 드롭한다.",
+            source=source, candidates=sorted(hits)[:5],
+        )
+        return None
+    return next(iter(hits))

@@ -107,7 +107,14 @@ class RegexTableLinker:
                 continue
             try:
                 text = src_file.read_text(encoding="utf-8", errors="ignore")
-            except (OSError, UnicodeDecodeError):
+            except (OSError, UnicodeDecodeError) as e:
+                # 조용히 건너뛰면 이 파일의 테이블 R/W 엣지가 통째로 0건이 되는데
+                # 아무도 그 사실을 모른다 (헌법 IV / spec 045 FR-006).
+                log_warning(
+                    _LOG, "source_read_failed",
+                    f"파일 read 실패 — 이 파일의 테이블 R/W 링킹이 통째로 누락된다: {e!r}",
+                    file_path=str(src_file),
+                )
                 continue
 
             for pat, regex, op_lookup in compiled:

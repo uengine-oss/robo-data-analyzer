@@ -80,6 +80,11 @@ async def run_summary(
     ctx = contexts.get(code_id)
     fn = code_by_id.get(code_id)
     if ctx is None or fn is None:
+        log_warning(
+            _STEP, "warmup_input_missing",
+            "워밍 요약 입력 부재 — 이 Round 는 캐시 프리픽스 워밍 없이 진행한다.",
+            code_id=code_id, ctx_missing=ctx is None, node_missing=fn is None,
+        )
         return None
 
     common = _build_user_values(
@@ -133,6 +138,13 @@ async def analyze_code_three_split(
     ctx = contexts.get(code_id)
     fn = code_by_id.get(code_id)
     if ctx is None or fn is None:
+        # 조용히 None 을 내면 호출부가 analyzed/failed 어디에도 안 세어 노드가 실종된다
+        # (헌법 IV / spec 045 FR-008) → 원인(둘 중 뭐가 없는지)을 남긴다.
+        log_warning(
+            _STEP, "analysis_input_missing",
+            "코드노드 분석 입력 부재 — 이 노드는 summary 없이 남는다(검색 코퍼스 제외).",
+            code_id=code_id, ctx_missing=ctx is None, node_missing=fn is None,
+        )
         return None
 
     # [공통 context] — 3분할 동일 (캐시되는 prefix).

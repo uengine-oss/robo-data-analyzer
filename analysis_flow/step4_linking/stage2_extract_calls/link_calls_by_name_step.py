@@ -42,6 +42,8 @@ async def link_calls_by_name_step(state: dict, config: Optional[RunnableConfig] 
     result = classify_call_sites(
         call_sites, state.get("code_nodes", []),
         framework_names=framework_names, wrappers=call_wrappers,
+        # run 스코프 공유 캐시 (executor 주입) — wrapper 인자 추출이 소스를 읽는다 (FR-008).
+        source_cache=cfg.get("source_cache"),
     )
 
     if neo is not None and result.edges:

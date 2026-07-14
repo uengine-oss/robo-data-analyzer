@@ -45,6 +45,7 @@ from shared.log.logger import (
 from shared.log.ndjson_stream import NDJSONStream
 from shared.neo4j.neo4j_client import Neo4jClient
 from shared.neo4j.schema_constraints import ensure_schema, wipe_graph
+from shared.source_file_cache import SourceFileCache
 from shared.workflow.artifact_writer import dump_state_artifacts
 from shared.workflow.graph_builder import build_langgraph_workflow
 from shared.workflow.pause_controller import PauseController
@@ -146,6 +147,11 @@ async def execute_run(
                     "neo_client": neo_client,
                     "pause": pause,
                     "llm_semaphore": llm_semaphore,   # 후처리 병렬 그룹 공유 동시성 한도
+                    # ★ run 스코프 소스 캐시 (spec 046 FR-008) — 파일당 디스크 read 1회.
+                    #   종전엔 step 마다 새 인스턴스를 만들어 캐시가 무력화됐고, 같은 파일을
+                    #   한 run 에서 5~8회 읽었다 (step2 안에서만 2회).
+                    #   run 스코프라 "장수명 서버의 stale" 위험(SourceFileCache docstring)도 없다.
+                    "source_cache": SourceFileCache(),
                 }
             }
 
@@ -213,6 +219,7 @@ async def execute_run(
             "run", "run_failed", e,
             stream_emit=stream.emit if stream is not None else None,
             run_id=run.run_id,
+            fatal=True,
         )
         raise
     finally:

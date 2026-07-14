@@ -8,9 +8,12 @@
                                 / import_refs)
 - ``linking.json``            — step4_linking 결과 (R/W / Calls / unresolved / scan)
 - ``analysis_contexts.json``  — step5_build_context 결과 (AnalysisContext per id)
+- ``table_samples.json``      — step5 fetch_table_samples 결과 (catalog 실제 DB 샘플 행)
 - ``analysis.json``           — step6_analyze_code + step7_post_processing 결과
-                                (CodeNode summary / Module summary)
-- ``graph_extras.json``       — ★ 위 4 분류에 매핑 안 된 state 키 자동 dump
+                                (CodeNode summary / Module summary / Example Mapping).
+                                **원문(code_text)은 안 담는다** — 원문의 집은 ast.json 하나
+                                (spec 045 FR-014: 안 그러면 같은 원문이 두 파일에 중복).
+- ``graph_extras.json``       — ★ 위 분류에 매핑 안 된 state 키 자동 dump
                                 (새 키 추가 시 누락 사각지대 차단 — 단일 진실)
 
 영역 규칙 — 새 state 키 추가 시
@@ -141,6 +144,7 @@ _CATEGORY: dict[str, str] = {
 
     # contexts — step5 결과 (특별 dict 직렬화)
     "analysis_contexts":        "analysis_contexts",
+    "table_sample_data":        "table_samples",   # catalog 에서 받은 실제 DB 샘플 행
 
     # Example Mapping — step6 결과 (Rule/Example/Question + 6 엣지)
     "rules":                    "analysis",
@@ -151,14 +155,31 @@ _CATEGORY: dict[str, str] = {
     "has_question_edges":       "analysis",
     "affects_table_edges":      "analysis",
 
-    # 컴포넌트 — step7 build_components 결과 (군집 부품 + 멤버/부품간 엣지)
-    "components":               "analysis",
-    "component_member_edges":   "analysis",
-    "component_calls_edges":    "analysis",
+    # 컴포넌트 — state 키 없음. build_components_step 은 합성 노드를 만들지 않고
+    # FUNCTION.component_id / component_name 속성만 SET 한다 (state.py:138) → 매핑 불필요.
+    # (옛 "components"/"component_member_edges"/"component_calls_edges" 유령 키 제거 — spec 045 FR-015)
 
     # run — 실행 메타 (artifact dump 대상 아님)
     "run":                      "_skip",
 }
+
+
+# analysis.json 에서 제외할 필드 — **원문의 집은 ast.json 하나** (spec 045 FR-014).
+# analysis.json 의 책임은 LLM 분석 결과(summary/stereotype/logical_name/search_text/EM)이지
+# 원문 사본이 아니다. 안 빼면 같은 code_text 가 두 파일에 통째로 중복된다.
+_ANALYSIS_EXCLUDED_FIELDS: frozenset[str] = frozenset({"code_text"})
+
+
+def _analysis_view(nodes: list) -> list[dict]:
+    """노드 → analysis.json 용 dict (원문 제외). 구조·원문은 ast.json 이 책임."""
+    views: list[dict] = []
+    for node in nodes:
+        d = _serialize(node)
+        if isinstance(d, dict):
+            for key in _ANALYSIS_EXCLUDED_FIELDS:
+                d.pop(key, None)
+        views.append(d)
+    return views
 
 
 def dump_state_artifacts(run: AnalysisRun, state: dict) -> None:
@@ -211,9 +232,10 @@ def dump_state_artifacts(run: AnalysisRun, state: dict) -> None:
         dump_artifact(run, "graph_extras", extras)
 
     # analysis.json — CodeNode summary 채워진 것 + Module 종합 + Example Mapping 9 종.
+    # ★ 원문(code_text)은 제외 — ast.json 이 원문의 유일한 집이다 (FR-014).
     code_nodes_with_summary = [
         f for f in state.get("code_nodes", []) if getattr(f, "summary", None)
     ]
-    analysis_payload.setdefault("code_nodes", code_nodes_with_summary)
-    analysis_payload.setdefault("modules", state.get("modules", []))
+    analysis_payload.setdefault("code_nodes", _analysis_view(code_nodes_with_summary))
+    analysis_payload.setdefault("modules", _analysis_view(state.get("modules", [])))
     dump_artifact(run, "analysis", analysis_payload)

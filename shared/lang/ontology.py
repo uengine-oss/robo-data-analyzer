@@ -2,7 +2,6 @@
 
 ``ontology_roles.yaml`` 단일 진실:
 - ``roles``    : 언어별 node type → 역할 (module/data_type/function/variable/constant/internal).
-- ``paradigm`` : 언어 → oop / procedural.
 - ``framework`` / ``dbms`` : LLM stereotype 풀.
 
 ★Neo4j 라벨 = 노드의 antlr type 그대로 (reader 가 ``node["type"]`` 직결). ontology 는
@@ -17,6 +16,16 @@ from pathlib import Path
 import yaml
 
 _ONTOLOGY_PATH = Path(__file__).resolve().parent / "ontology_roles.yaml"
+
+
+# ── 루틴(호출 가능 단위) 라벨 — **단일 정의처** (헌법 III / spec 046 FR-005) ──
+# 라벨 = antlr type 이라 종류 집합. HAS_MEMBER(그릇→멤버) 자격 + 배치 계획의 루틴 판정에 쓴다.
+# 일반 구문(SELECT/IF/LOOP…)·구조 노드(DECLARE/TRY…)는 루틴이 아니다.
+#
+# ★ 종전엔 antlr_json_reader(_ROUTINE_LABELS) 와 batch_analyze(_ROUTINE_TYPES) 가 목록을
+#   따로 들었고 **실제로 갈라져 있었다** — batch_analyze 쪽엔 ``METHOD`` 가 빠져 있었다.
+#   (DBMS 전용 경로라 지금은 무해했지만, 같은 개념의 정의가 두 벌인 것 자체가 결함.)
+ROUTINE_LABELS: frozenset[str] = frozenset({"FUNCTION", "PROCEDURE", "METHOD", "TRIGGER"})
 
 
 @lru_cache(maxsize=1)
@@ -39,18 +48,9 @@ def role_of(node_type: str, lang: str) -> str | None:
     return None
 
 
-def is_internal(node_type: str, lang: str) -> bool:
-    """Neo4j 노드로 안 박는 타입인지 (FUNCTION_CALL/IMPORT/FILE 컨테이너 등)."""
-    return role_of(node_type, lang) == "internal"
-
-
-@lru_cache(maxsize=None)
-def paradigm(lang: str) -> str | None:
-    """언어 → "oop" / "procedural". 미등록은 None."""
-    for para, langs in (_load().get("paradigm") or {}).items():
-        if lang in (langs or []):
-            return para
-    return None
+# (옛 ``is_internal`` / ``paradigm`` 삭제 — 호출부 0건, 4개 레포 전수 확인. spec 046 FR-010.
+#  소비처는 ``role_of(...) == "internal"`` 을 직접 비교한다. yaml 의 ``paradigm:`` 섹션도
+#  이 죽은 함수만 읽던 죽은 데이터라 함께 제거.)
 
 
 # ─────────────────────────────────────────────

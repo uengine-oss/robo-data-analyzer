@@ -4,7 +4,22 @@
 
 **Created**: 2026-06-17
 
-**Status**: Draft (합의 전 — 코드 착수 금지)
+**Status**: Draft (합의 전 — 코드 착수 금지) · **⚠️ FR-004 는 [045-graph-integrity-restore](../045-graph-integrity-restore/spec.md) FR-019 로 대체됨 (2026-07-13)**
+
+> ## ⚠️ 부분 supersede 고지 (2026-07-13)
+>
+> **이 문서의 FR-004 는 더 이상 유효하지 않다.** 나머지 조항은 그대로 유효하다.
+>
+> | | 내용 |
+> |---|---|
+> | **옛 규칙 (016 FR-004)** | *"코드 노드에 `code_text`(본문 원문 슬라이스)를 **step6**에서 저장한다(**step2 소스 무파싱 불변식** 보존)."* |
+> | **새 규칙 (045 FR-019)** | 코드 원문은 **step2(load_ast)** 가 **파일·라인 범위를 가진 모든 노드**(CodeNode·Module·Variable·Constant·DataType)에 **단일 지점**에서 부여한다. **"step2 는 소스를 읽지 않는다"는 불변식은 폐기.** |
+>
+> **왜 바뀌었나**: 원문은 노드 종류와 무관하게 *"파일·라인이 있으면 그 원문을 갖는다"* 는 **하나의 규칙**으로 충분하다. 종류별로 채우는 단계를 나누면 분기가 생기고, 실제로 선언 노드(변수·상수·데이터타입·파일)는 원문을 못 받아 노드 패널이 비어 있었다. 소비처가 실재함이 확인되었다 — 상세 카드 6종(File/Function/Variable/Datatype/NonCode/SqlStatement)과 robo-architect 의 추적성 조회가 모두 이 원문을 읽는다.
+>
+> 이 문서는 **역사 기록으로 보존**한다 (SpecKit supersede 규약: 옛 스펙을 고치지 않고 새 스펙이 대체를 명시).
+
+
 
 **Input**: 사용자 확정 규칙 — ① **레이블(primary)은 antlr JSON `type`을 따라간다 — 전략 무관.** 지금 DBMS가 SELECT·IF·PROCEDURE를 전부 `:FUNCTION`으로 뭉개는 건 **완전 잘못된 로직**(antlr type을 버림). ② **sub-label = 온톨로지 = Framework에서만**. ③ **EXTERNAL은 두 전략 다** 쓰임. ④ 프론트가 `function_id`/`signature`를 파싱해 타입·이름을 뽑던 건 폐지 — 라벨(=타입)·속성(=이름·원문) 직독. ⑤ 모든 코드 노드는 start_line·end_line·원문코드 보유.
 

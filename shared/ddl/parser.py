@@ -23,7 +23,7 @@ import sqlglot.expressions as exp
 
 from data_models.graph_edges import BelongsTo, Fk, HasColumn
 from data_models.graph_nodes import Column, Schema, Table
-from shared.neo4j.ids import fqn
+from shared.neo4j.ids import db_id, fqn
 
 
 @dataclass
@@ -266,14 +266,14 @@ def _handle_create(
         ))
         if schema_name:
             result.belongs_to_edges.append(BelongsTo(
-                child_id=fqn(db, schema_name, table_name),
-                parent_id=fqn(db, schema_name),
+                child_id=db_id(db, schema_name, table_name),
+                parent_id=db_id(db, schema_name),
             ))
 
     # Columns + 테이블 레벨 PK + FK — 컬럼목록 있는 경우만 (평범한 VIEW 는 skip)
     if col_container is None:
         return
-    table_fqn = fqn(db, schema_name, table_name)
+    table_fqn = db_id(db, schema_name, table_name)
     pk_cols = _table_pk_columns(col_container)
     for col_expr in col_container.expressions:
         if isinstance(col_expr, exp.ColumnDef):
@@ -403,8 +403,8 @@ def _handle_inline_fk(
 
     for from_col, to_col in zip(from_cols, to_cols):
         result.fk_edges.append(Fk(
-            from_id=fqn(db, from_schema, from_table),
-            to_id=fqn(db, to_schema, to_table),
+            from_id=db_id(db, from_schema, from_table),
+            to_id=db_id(db, to_schema, to_table),
             from_column=from_col,
             to_column=to_col,
         ))

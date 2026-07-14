@@ -321,5 +321,5 @@ class TableDescription(BaseModel):
         populate_by_name = True
 
 
-class TableDescriptionsOutput(BaseModel):
-    tables: list[TableDescription] = Field(default_factory=list)
+# (옛 ``TableDescriptionsOutput`` 삭제 — 참조 0건. 실제 response_model 은 단수형
+#  ``TableDescription`` (enrich_table_description_step). spec 046 FR-010.)

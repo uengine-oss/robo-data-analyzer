@@ -62,7 +62,7 @@ def make_list_code_nodes(code_nodes: list[CodeNode]):
             return "NO_FUNCTIONS"
         items = [
             {
-                "name": fn.id.rsplit(".", 1)[-1],
+                "name": fn.name,
                 "signature": fn.signature,
                 "start_line": fn.start_line,
                 "end_line": fn.end_line,

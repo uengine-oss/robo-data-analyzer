@@ -29,7 +29,7 @@ from shared.workflow.pause_controller import NULL_PAUSE, PauseController
 from shared.workflow.step_utils import step_config
 
 from analysis_flow.step6_analyze_code.analysis_order import bottom_up_rounds
-from analysis_flow.step6_analyze_code.batch_analyze import run_dbms_batch_analysis
+# (dbms 엔진은 여기서 import 하지 않는다 — 전략이 주입한다(analysis_pipelines). 헌법 II.)
 from analysis_flow.step6_analyze_code.call_cycles import find_call_cycles
 from analysis_flow.step6_analyze_code.module_pre_analysis import run_module_pre_analysis
 from analysis_flow.step6_analyze_code.rw_table_filter import flush_drop_summary, reset_drop_stats
@@ -122,10 +122,16 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
     # reads/writes 테이블만 골라 GWT 입력에 렌더(threading·렌더러 변경 0, framework·dbms 공통).
     # 샘플은 토글 off / datasource 미지정 / 미매칭 시 없음 → 설명만(없으면 fqn 만).
     # spec 027: DDL 파싱 컬럼(결정론)을 테이블 fqn 별로 모아 컨텍스트에 주입.
+    # ★ 컬럼의 소속 테이블은 **관계(HAS_COLUMN)** 로 찾는다 — id 를 뜯지 않는다 (spec 047 FR-008).
+    #   종전엔 id 문자열을 잘라 테이블 id 를 얻었다. 그러면 소비자가
+    #   id 의 **모양**에 묶여, id 규칙을 바꿀 수 없고 겹침도 못 고친다(그게 이 스펙 이전의 상태).
+    #   id 는 불투명한 열쇠일 뿐이다 — 소속은 관계가 말해준다.
+    name_by_col: dict[str, str] = {c.id: c.name for c in state.get("columns", [])}
     columns_by_table: dict[str, list[str]] = {}
-    for c in state.get("columns", []):
-        t_fqn = c.id.rsplit(".", 1)[0]
-        columns_by_table.setdefault(t_fqn, []).append(c.name)
+    for e in state.get("has_column_edges", []):
+        cname = name_by_col.get(e.child_id)
+        if cname:
+            columns_by_table.setdefault(e.parent_id, []).append(cname)
     table_descriptions = _build_table_contexts(
         state.get("tables", []), state.get("table_sample_data", {}), columns_by_table,
     )
@@ -150,15 +156,47 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
         stream=stream,
     )
 
-    # DBMS 는 배치 분석 (🅕 — 같은 부모 형제 1콜). Framework 는 아래 per-node 3분할 유지.
-    if strategy is not None and getattr(strategy, "name", "") == "dbms":
-        with step_processing_scope(_STEP, stream):
-            result = await run_dbms_batch_analysis(
-                state, contexts, code_by_id, strategy, cost_budget, neo, stream,
-                codebase_notes, module_intents, table_descriptions, pause,
-            )
-        flush_drop_summary()  # 디스패처 드롭 집계 1줄 표면화 (FR-005a)
-        return result
+    # ★ 분석 엔진은 **전략이 주입**한다 (헌법 II "분기 0" / spec 046 FR-001).
+    #   framework = per-node 3분할 / dbms = 형제 배치 1콜.
+    #   종전엔 여기에 `strategy.name == "dbms"` 하드분기가 있었다 — graph_builder 규약이
+    #   *"같은 step 인데 처리 방식 다름? → cfg["strategy"].<implementer> 호출(DI)"* 라고
+    #   못박아 놓은 것을 위반한 상태였다.
+    #   두 엔진은 **유지**한다 (FR-002): 노드 우주 정의가 실제로 다르다 — framework 는
+    #   contexts 전체, dbms 는 skip-투명 유효트리.
+    # run 스코프 공유 소스 캐시 (executor 주입) — 없으면 단독 생성(CLI/테스트 경로). FR-008.
+    source_cache = cfg.get("source_cache") or SourceFileCache()
+
+    with step_processing_scope(_STEP, stream):
+        result = await strategy.code_analyzer(
+            state, contexts, code_by_id, strategy, cost_budget, neo, stream,
+            codebase_notes, module_intents, table_descriptions, pause, source_cache,
+        )
+    flush_drop_summary()  # 디스패처 드롭 집계 1줄 표면화 (FR-005a)
+    return result
+
+
+async def run_framework_per_node_analysis(
+    state: dict,
+    contexts: dict,
+    code_by_id: dict,
+    strategy,
+    cost_budget,
+    neo: Neo4jClient | None,
+    stream: Optional[NDJSONStream],
+    codebase_notes: str,
+    module_intents: dict[str, str],
+    table_descriptions: dict[str, str],
+    pause: PauseController,
+    source_cache: SourceFileCache,
+) -> dict:
+    """Framework 분석 엔진 — 코드노드 **1개당** 3분할 fan-out (per-node).
+
+    ``run_dbms_batch_analysis`` 와 **동일 시그니처** — 전략이 둘 중 하나를 주입한다
+    (``Strategy.code_analyzer``). 호출부(``analyze_code_step``)는 어느 쪽인지 모른다.
+
+    caller 가 ``step_processing_scope`` 진입 + ``flush_drop_summary`` 를 책임진다.
+    """
+    started = time.monotonic()
 
     # 1. cycle 식별 (CALLS + PARENT_OF 둘 다) — Framework per-node 경로
     edges: list[tuple[str, str]] = [
@@ -190,10 +228,10 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
     # round 끝까지 누적 → step 마지막에 state 로 반영. Neo4j MERGE 가 정체성 키
     # (rule_hash / example_id / question_id) 로 자동 dedup — state list 는 raw 그대로.
     semaphore = asyncio.Semaphore(ENV.pipeline.max_concurrency)
-    source_cache = SourceFileCache()
+    # source_cache 는 caller(analyze_code_step)가 주입 — run 스코프 공유 (FR-008).
     em_acc = ExampleMappingResult()
 
-    async def _run_rounds() -> tuple[int, int]:
+    async def _run_rounds() -> tuple[int, int, int]:
         """Round 루프 — 메인 변수 closure 캡처 (rounds / contexts / em_acc / neo / stream 등).
 
         ``step_processing_scope`` 안에서 호출 — track_processing 이 자동 emit.
@@ -201,10 +239,15 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
         일시정지/중단은 ``pause.gate()`` 로 소비: paused 면 hold, stop 이면 RunStopped.
         일시정지 순간 in-flight 코드노드 task 는 controller 가 즉시 cancel — 취소된 코드노드만
         ``remaining`` 에 남아 재개 시 재투입(Neo4j MERGE 라 재실행 안전).
-        반환: ``(total_analyzed, total_failed)``.
+        반환: ``(total_analyzed, total_failed, total_skipped)``.
+
+        ``skipped`` = LLM 이 결과를 못 낸(None) 코드노드. **analyzed 로도 failed 로도 안 세면
+        어디에도 안 잡힌 채 사라진다** → summary 없는 노드가 검색 코퍼스에서 영구 실종
+        (spec 045 FR-008). ``analyzed + failed + skipped = code_nodes`` 등식이 성립해야 한다.
         """
         analyzed_count = 0
         failed_count = 0
+        skipped_count = 0
         for round_idx, round_fn_ids in enumerate(rounds, start=1):
             if not round_fn_ids:
                 continue
@@ -228,6 +271,7 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
             remaining = list(round_fn_ids)
             round_failed = 0
             round_analyzed = 0
+            round_skipped = 0
             while remaining:
                 await pause.gate()
                 tasks = [
@@ -259,8 +303,15 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
                             log_error(_STEP, "round_analysis", r, code_id=fn_id, round=round_idx)
                             continue
                         if r is None:
+                            # LLM 이 결과를 못 냄 — 어디에도 안 세면 조용히 실종된다 (FR-008).
+                            round_skipped += 1
+                            log_warning(
+                                _STEP, "node_skipped",
+                                "코드노드가 분석 결과 없이 종료 — summary 미부여 → 검색 코퍼스에서 제외된다.",
+                                code_id=fn_id, round=round_idx,
+                            )
                             continue
-                        em = await _persist_and_emit_code(r, neo, stream, source_cache)
+                        em = await _persist_and_emit_code(r, neo, stream)
                         _accumulate_em(em_acc, em)
                         round_analyzed += 1
                 finally:
@@ -272,22 +323,33 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
 
             failed_count += round_failed
             analyzed_count += round_analyzed
+            skipped_count += round_skipped
             log_info(
                 _STEP, "round_done",
                 round=f"{round_idx}/{len(rounds)}",
                 analyzed=round_analyzed, failed=round_failed or None,
+                skipped=round_skipped or None,
                 elapsed_sec=f"{time.monotonic() - round_started:.2f}",
             )
-        return analyzed_count, failed_count
+        return analyzed_count, failed_count, skipped_count
 
-    with step_processing_scope(_STEP, stream):
-        total_analyzed, total_failed = await _run_rounds()
+    # step_processing_scope / flush_drop_summary 는 caller(analyze_code_step) 책임 —
+    # dbms 엔진과 대칭(둘 다 caller 가 감싼다). 여기서 또 진입하면 중첩된다.
+    total_analyzed, total_failed, total_skipped = await _run_rounds()
 
-    flush_drop_summary()  # 디스패처 드롭 집계 1줄 표면화 (FR-005a)
+    # 불변식: analyzed + failed + skipped = 대상 코드노드 수 (FR-008). 안 맞으면 조용한 유실.
+    _accounted = total_analyzed + total_failed + total_skipped
+    if _accounted != len(contexts):
+        log_warning(
+            _STEP, "node_accounting_mismatch",
+            f"집계 불일치 — 대상 {len(contexts)} ≠ analyzed {total_analyzed} + "
+            f"failed {total_failed} + skipped {total_skipped} ({_accounted}). 조용한 유실 신호.",
+            expected=len(contexts), accounted=_accounted,
+        )
     log_info(
         _STEP, "done",
         code_nodes=len(contexts), analyzed=total_analyzed,
-        failed=total_failed or None, in_cycle=len(cycles),
+        failed=total_failed or None, skipped=total_skipped or None, in_cycle=len(cycles),
         rules=len(em_acc.rules), examples=len(em_acc.examples), questions=len(em_acc.questions),
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
@@ -368,16 +430,13 @@ async def _persist_and_emit_code(
     fn: CodeNode,
     neo: Optional[Neo4jClient],
     stream: Optional[NDJSONStream],
-    source_cache: SourceFileCache,
 ) -> ExampleMappingResult:
     """코드노드 분석 결과 1건 → Neo4j upsert + NDJSON 이벤트 + EM 결과 반환.
 
+    ``code_text``(원문 슬라이스)는 step2 가 이미 채웠다 — 여기선 관여하지 않는다.
     EM 결과는 caller 가 round 단위 누적 후 step 종료 시 state 반영 (artifact 검증 정합).
     동시 호출 X (caller 의 라운드 루프가 순차 처리) — Neo4j 락 경합 없음.
     """
-    # 원문코드 = 본문 raw 슬라이스. 이미 읽은 소스 캐시 재활용(추가 IO 없음).
-    if fn.start_line and not fn.code_text:
-        fn.code_text = source_cache.slice(fn.file_path, fn.start_line, fn.end_line)
     em = build_example_mapping([fn])
     if neo is not None:
         await update_summaries(neo, [fn])

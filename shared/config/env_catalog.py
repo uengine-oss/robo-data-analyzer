@@ -145,7 +145,8 @@ class Neo4jSettings:
     user: str = field(default_factory=lambda: _getenv_str("ROBO_NEO4J_USER", "neo4j"))
     password: str = field(default_factory=lambda: _getenv_str("ROBO_NEO4J_PASSWORD", ""))
     database: str = field(default_factory=lambda: _getenv_str("ROBO_NEO4J_DATABASE", "neo4j"))
-    unwind_batch_size: int = field(default_factory=lambda: _getenv_int("ROBO_NEO4J_UNWIND_BATCH_SIZE", 2000))
+    # (옛 unwind_batch_size 삭제 — 소비처 0건. neo4j_client 는 이 값을 읽지도 강제하지도
+    #  않았다(docstring 에서만 언급) → 설정이 거짓말을 했다. spec 046 FR-010.)
     retry_max_attempts: int = field(default_factory=lambda: _getenv_int("ROBO_NEO4J_RETRY_MAX_ATTEMPTS", 5))
     retry_backoff_seconds: float = field(default_factory=lambda: _getenv_float("ROBO_NEO4J_RETRY_BACKOFF_SECONDS", 2.0))
 
@@ -154,7 +155,7 @@ class Neo4jSettings:
 class PipelineSettings:
     """ROBO_PIPELINE_* — 동시성 / 배치 / 큰 코드노드 임계."""
     max_concurrency: int = field(default_factory=lambda: _getenv_int("ROBO_PIPELINE_MAX_CONCURRENCY", 30))
-    file_concurrency: int = field(default_factory=lambda: _getenv_int("ROBO_PIPELINE_FILE_CONCURRENCY", 4))
+    # (옛 file_concurrency 삭제 — 소비처 0건. spec 046 FR-010.)
     big_context_threshold_tokens: int = field(
         default_factory=lambda: _getenv_int("ROBO_PIPELINE_BIG_CONTEXT_THRESHOLD_TOKENS", 1000)
     )
@@ -208,7 +209,8 @@ class LogSettings:
     내부적으로 ``WARNING+`` 으로 강제 (logger 모듈 책임).
     """
     dir: Path = field(default_factory=lambda: Path(_getenv_str("ROBO_LOG_DIR", "./logs")))
-    mask_secrets: bool = field(default_factory=lambda: _getenv_bool("ROBO_LOG_MASK_SECRETS", True))
+    # (옛 mask_secrets 삭제 — **거짓 설정**이었다: 소비처 0건이고 마스킹은
+    #  cache_message_filters 가 **무조건** 수행한다. on/off 를 고를 수 있는 척했다. FR-010.)
     file_enabled: bool = field(default_factory=lambda: _getenv_bool("ROBO_LOG_FILE_ENABLED", True))
     level: str = field(default_factory=lambda: _getenv_str("ROBO_LOG_LEVEL", "INFO"))
 

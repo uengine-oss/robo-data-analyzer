@@ -31,7 +31,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
-from shared.neo4j.ids import fqn
+from shared.neo4j.ids import db_id, fqn
 
 
 # ── DB 객체 (DDL 파싱에서만 생성, 이후 단계는 신규 생성 X) ──
@@ -48,8 +48,8 @@ class Schema:
 
     @property
     def id(self) -> str:
-        """``db.name`` — Neo4j 단일 식별 키 (빈 구성요소 생략)."""
-        return fqn(self.db, self.name)
+        """``db:<db>.<name>`` — DB 네임스페이스 (코드 id 와 절대 안 겹침, spec 047)."""
+        return db_id(self.db, self.name)
 
 
 @dataclass(frozen=True)
@@ -77,8 +77,11 @@ class Table:
 
     @property
     def id(self) -> str:
-        """``db.schema.name`` — Neo4j 단일 식별 키 (빈 구성요소 생략)."""
-        return fqn(self.db, self.schema, self.name)
+        """``db:<db>.<schema>.<name>`` — DB 네임스페이스 (코드 id 와 절대 안 겹침, spec 047).
+
+        종전엔 db·schema 가 빈값이면 ``"cart"`` 가 되어 **소스 파일 cart.c 의 id 와 충돌**했다.
+        """
+        return db_id(self.db, self.schema, self.name)
 
 
 @dataclass(frozen=True)
@@ -98,6 +101,8 @@ class Column:
     is_primary_key: bool = False
     is_unique: bool = False
     default_value: Optional[str] = None
+    logical_name: str = ""                   # 짧은 도메인 표시명 — spec 028, enrich_table_description 이 채움
+                                             # (Table 과 대칭: 없으면 Neo4j 에만 있고 artifact 엔 빈값 = 검증 사각지대)
     description: str = ""                    # COMMENT ON·-- 주석 1차 설명
     description_source: str = ""             # "ddl" / "code" / "catalog" / "" — 유효 설명이 어느 칸인지
     comment: str = ""                        # -- /* */ 주석 원문 (COMMENT ON 없으면 description 출처)
@@ -139,6 +144,7 @@ class Module:
     # antlr JSON 풍부 필드 (load_ast 가 채움) — module_pre_analysis(M9) 의 LLM 입력 ────
     comment: str = ""                        # 모듈/파일 헤더 주석 (변경이력·작성자 노이즈 포함 — 원본)
     annotations: str = ""                    # 클래스 어노테이션 (Java @Annotation 등)
+    code_text: str = ""                      # 원문 슬라이스 (step2 가 채움 — 라인 범위 기준)
 
     # 분석 결과 ────
     summary: str = ""                        # summarize_module 가 채움
@@ -163,7 +169,7 @@ class CodeNode:
     label: str                               # Neo4j 라벨 = 자기 antlr type (필수, METHOD / FUNCTION / PROCEDURE / SELECT / IF …)
 
     name: str = ""                           # antlr node.name (콜러블=루틴명 / 구문=빈값). 표시명.
-    code_text: str = ""                      # 본문 원문 슬라이스 (step6 가 채움 — step2 는 소스 무파싱)
+    code_text: str = ""                      # 본문 원문 슬라이스 (step2 가 채움 — 라인 범위 기준)
 
     # 소속·트리 (참조 = 대상 노드의 id) ────
     owner_id: str = ""                       # 소속 Module 의 id (HAS_MEMBER 엣지 빌드 + 모듈 그룹핑용 — 노드 속성엔 안 박음)
@@ -195,9 +201,7 @@ class CodeNode:
         robust — 자손 타입에 오염되지 않는다 (부분문자열 매칭의 컨테이너 오류 차단).
         루트(parent_id None) · Framework(``.`` id) 는 빈 문자열.
         """
-        if self.parent_id and self.id.startswith(self.parent_id + ":"):
-            return self.id[len(self.parent_id) + 1:].split(":")[0]
-        return ""
+        return self.label
 
 
 # 컴포넌트(부품)는 합성 노드로 만들지 않는다 — Leiden 군집 멤버십은 FUNCTION.component_id
@@ -221,6 +225,7 @@ class Variable:
     comment: str = ""
     annotations: str = ""
     init_value: str = ""                     # 초기화식
+    code_text: str = ""                      # 원문 슬라이스 (step2 가 채움 — 라인 범위 기준)
 
 
 @dataclass(frozen=True)
@@ -236,6 +241,7 @@ class Constant:
     value: str = ""                          # 상수 값
     var_type: str = ""
     comment: str = ""
+    code_text: str = ""                      # 원문 슬라이스 (step2 가 채움 — 라인 범위 기준)
 
 
 @dataclass(frozen=True)
@@ -249,6 +255,7 @@ class DataType:
     end_line: int
     label: str                               # Neo4j 라벨 = 자기 antlr type (필수, STRUCT / UNION / ENUM …)
     comment: str = ""
+    code_text: str = ""                      # 원문 슬라이스 (step2 가 채움 — 라인 범위 기준)
 
 
 # ── Example Mapping 노드 (analyze_code 3분할 결과 → EM 빌더가 생성) ──

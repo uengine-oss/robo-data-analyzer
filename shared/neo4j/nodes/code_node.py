@@ -10,24 +10,17 @@
 """
 from __future__ import annotations
 
-from collections import defaultdict
 from typing import Iterable
 
 from data_models.graph_nodes import CodeNode
+from shared.neo4j.merge import upsert_by_node_label
 from shared.neo4j.neo4j_client import Neo4jClient
 from shared.neo4j.nodes.stereotype_label import apply_stereotype_labels
 from shared.neo4j.props import join_notes, nonempty
 
 
-# 빈값 미저장 — item 에 담긴(비어있지 않은) 키만 SET. 구문 노드는 params/return_type 등을
-# 자연히 안 가짐. label 은 ``CodeNode.label`` 통제값(주입 안전).
-def _merge_query(label: str) -> str:
-    return f"""
-UNWIND $items AS item
-MERGE (node:{label} {{id: item.id}})
-SET node += item
-RETURN count(node) AS created
-"""
+# MERGE 쿼리·라벨 그룹핑은 ``shared/neo4j/merge.py`` 단일 정의처 (spec 046 FR-004).
+# 빈값 미저장 — ``nonempty()`` 가 뺀 키는 ``SET n += item`` 이라 애초에 안 박힌다.
 
 
 # 의미 분석 결과 갱신 (analyze_code_step). table_insights 는 노드에 안 박는다 —
@@ -40,21 +33,33 @@ SET node += item
 
 
 def to_item(fn: CodeNode) -> dict:
-    """저장 속성 (비어있지 않은 것만). signature 미저장, comment+annotations→notes."""
+    """저장 속성 (비어있지 않은 것만). signature 미저장, comment+annotations→notes.
+
+    ★ ``owner_id``(소속 모듈)를 **그래프에 저장한다** (spec 047 FR-007).
+    종전엔 dataclass 에만 있고 노드 속성엔 안 박았다 → 소비자(아키텍트)가 소속 모듈을 알려면
+    **id 문자열을 잘라내는 수밖에 없었다**. 그 파싱이 id 규칙을
+    붙들어 매서 id 겹침을 못 고치게 만든 **병의 뿌리**였다. 소속을 알려주면 뜯을 이유가 없다.
+    """
     return nonempty({
         "id": fn.id,
+        "type": fn.label,
+        "owner_id": fn.owner_id,          # 소속 모듈 id — 소비자가 id 를 뜯지 않게 (FR-007)
         "name": fn.name,
         "file_path": fn.file_path,
         "start_line": fn.start_line,
         "end_line": fn.end_line,
         "return_type": fn.return_type,
         "params": fn.params,
+        "code_text": fn.code_text,
         "notes": join_notes(fn.comment, fn.annotations),
     })
 
 
 def to_summary_item(fn: CodeNode) -> dict:
-    """3 분할 분석 결과 → 적재 item (비어있지 않은 것만). table_insights 는 컬럼/엣지로 분배."""
+    """3 분할 분석 결과 → 적재 item (비어있지 않은 것만). table_insights 는 컬럼/엣지로 분배.
+
+    ``code_text`` 는 분석 결과가 아니라 원문 — step2 가 채우고 저장한다 (여기 없음).
+    """
     return nonempty({
         "id": fn.id,
         "summary": fn.summary,
@@ -62,21 +67,16 @@ def to_summary_item(fn: CodeNode) -> dict:
         "logical_name": fn.logical_name,
         "search_text": fn.search_text,
         "domain_terms": fn.domain_terms,
-        "code_text": fn.code_text,
     })
 
 
 async def upsert_code_nodes(client: Neo4jClient, code_nodes: Iterable[CodeNode]) -> None:
     """노드의 antlr type 라벨(``fn.label``)별로 묶어 MERGE — ``:METHOD``/``:FUNCTION``/``:PROCEDURE``/``:SELECT`` …"""
-    by_label: dict[str, list[dict]] = defaultdict(list)
-    for fn in code_nodes:
-        by_label[fn.label].append(to_item(fn))
-    for label, items in by_label.items():
-        await client.run_batch_unwind(_merge_query(label), items)
+    await upsert_by_node_label(client, code_nodes, to_item)
 
 
 async def update_summaries(client: Neo4jClient, code_nodes: Iterable[CodeNode]) -> None:
-    """analyze_code 결과 (summary / stereotype / logical_name / code_text) 일괄 갱신.
+    """analyze_code 결과 (summary / stereotype / logical_name / search_text / domain_terms) 일괄 갱신.
 
     stereotype 은 속성 + **라벨**로 부여(spec 033) — 소비처가 위치(labels[1:])로 역할 필터/색칠.
     """

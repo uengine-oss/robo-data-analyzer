@@ -59,7 +59,7 @@ class BelongsTo:
 class Fk:
     """Table → Table (외래키).
 
-    DDL 에서만 생성. ``fk_type`` 은 sqlglot 분석 또는 ``schema_resolver`` 결과.
+    DDL 에서만 생성. ``fk_type`` 은 sqlglot 분석 결과.
     ``is_candidate=True`` 는 DDL 에 명시되지 않은 추론된 FK (사람 검토 큐).
     """
     from_id: str                             # 출발 table id

@@ -37,15 +37,11 @@ roles:
     c:       [FUNCTION_CALL, INCLUDE, TYPEDEF, ENUM_CONSTANT]
     python:  [FUNCTION_CALL, NEW_INSTANCE, IMPORT]
 
-# ───────────────────────────────────────────────
-# 2. paradigm — 언어 패러다임
-# ───────────────────────────────────────────────
-paradigm:
-  oop:        [java, python]
-  procedural: [c]
+# (옛 `paradigm:` 섹션 삭제 — ontology.paradigm() 만 읽던 죽은 데이터였고
+#  그 함수도 호출부 0건이라 함께 제거. spec 046 FR-010.)
 
 # ───────────────────────────────────────────────
-# 3. stereotype 풀 — analyze_function 의 SummaryOutput.stereotype 검증.
+# 2. stereotype 풀 — analyze_function 의 SummaryOutput.stereotype 검증.
 #    LLM 이 자유롭게 작성 X. 이 풀에서만 선택. 풀에 없으면 빈 문자열로 강제.
 # ───────────────────────────────────────────────
 framework:

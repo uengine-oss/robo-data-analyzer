@@ -45,6 +45,22 @@ robo-data-analyzer turns legacy source code (Java/C/Python/… or Oracle PL/SQL)
 | 012 | [Catalog Integration & Embedding](012-catalog-embedding/spec.md) | catalog sample rows + ETL lineage; MiniLM embeddings | step5/7 |
 | 013 | [LLM Configuration, Cost Governance & Structured Agent Output](013-llm-cost-config/spec.md) | one-file LLM config, USD circuit breaker, submit-tool wrap | cross-cutting |
 
+> **001–013 = 백필된 코어 스펙** (2026-06 시점 코드에서 역공학). 그 이후 **014–046** 은 기능별 증분
+> 스펙이며 폴더로만 쌓인다 (append-only). 아래는 그중 **현행 규칙을 바꾼 것**만 추린다.
+
+### 최근 스펙 (현행 규칙 변경)
+
+| # | Spec | One-liner | 비고 |
+|---|------|-----------|------|
+| 045 | [Graph Integrity Restore](045-graph-integrity-restore/spec.md) | 헌법 위반 시정 — full-rebuild wipe 복원 · 조용한 실패 제거 · 소비자 계약 이름 정합 · artifact 이중덤프 제거 | **016 FR-004 supersede** (code_text 는 step6 아니라 **step2** 가 채운다) |
+| 046 | [DRY / Single Truth](046-dry-single-truth/spec.md) | 헌법 II·III 복원 — 전략 분기 0 (DI) · 확장자·루틴라벨·비용추적·MERGE 쿼리 단일진실 · run 스코프 소스캐시 · 죽은 코드 삭제 | 동작 불변 리팩터 |
+
+### Supersede 목록 (옛 스펙의 어느 조항이 죽었나)
+
+| 옛 스펙 | 죽은 조항 | 대체 |
+|---|---|---|
+| [016](016-node-display-properties/spec.md) | **FR-004** — *"code_text 는 step6 에서 저장 (step2 소스 무파싱 불변식 보존)"* | **045 FR-019** — code_text 는 **step2** 가 파일·라인 있는 **모든 노드**에 단일 지점에서 부여. **step2 무파싱 불변식 폐기.** |
+
 ## Cross-service contracts (boundaries)
 
 The analyzer is one service in a pipeline. Only these boundaries ripple to other services

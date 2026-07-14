@@ -23,7 +23,7 @@ from shared.workflow.step_utils import step_config
 from data_models.graph_nodes import CodeNode, Module
 from shared.config.env_catalog import ENV
 from shared.llm.cost_budget import BudgetExceededError
-from shared.llm.fanout import gather_with_warmup
+from shared.llm.fanout import gather_with_warmup, partition_llm_results
 from data_models.code_analysis_output import ModuleSummaryOutput
 from shared.llm.yaml_llm_runner import run_yaml_rule
 from shared.log.logger import log_error, log_info, log_warning
@@ -120,23 +120,17 @@ async def summarize_module_step(state: dict, config: Optional[RunnableConfig] = 
 def _apply_fail_policy(modules: list[Module], results: list) -> list[Module]:
     """fan-out 결과에 fail 정책 적용 — 예외면 원본 module + log, BudgetExceededError 는 raise.
 
-    ``_summarize_one`` 이 raise 한 예외를 여기서 받아 분석 흐름 유지 정책 (원본 반환)
-    실행. 단일 책임 — _summarize_one = 성공만 / 여기 = fail 정책.
+    분류 규칙 자체는 ``partition_llm_results`` 단일 정의처가 갖는다 (spec 046 FR-011).
+    여기 정책 = ``on_failure="keep"`` — 요약 실패한 모듈은 **원본 그대로** 유지해 분석 흐름을
+    끊지 않는다 (모듈이 리스트에서 사라지면 후속 step·artifact 가 노드를 잃는다).
     """
-    updated: list[Module] = []
-    for module, result in zip(modules, results):
-        if isinstance(result, BudgetExceededError):
-            raise result        # 회로 차단기는 상위로 전파
-        if isinstance(result, BaseException):
-            log_error(
-                "analysis_flow.step7_post_processing.summarize_module_step",
-                "module_summary",
-                result,
-                module_id=module.id,
-            )
-            updated.append(module)
-        else:
-            updated.append(result)
+    updated, _failed = partition_llm_results(
+        modules, results,
+        component="analysis_flow.step7_post_processing.summarize_module_step",
+        operation="module_summary",
+        id_of=lambda m: m.id,
+        on_failure="keep",
+    )
     return updated
 
 

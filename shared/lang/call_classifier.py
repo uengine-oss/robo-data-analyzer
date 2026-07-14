@@ -32,7 +32,6 @@ from shared.source_file_cache import SourceFileCache
 
 _STDLIB_DIR = Path(__file__).resolve().parent / "stdlib"
 
-_ID_SUFFIX = re.compile(r":\d+(?:#\d+)?$")
 
 
 @dataclass
@@ -43,6 +42,10 @@ class CallClassifyResult:
     dropped_framework: int = 0
     dropped_incomplete: int = 0
     wrapper_unresolved: int = 0          # wrapper 매치했으나 본문에서 인자 추출 실패
+
+
+class CallClassificationInvariantError(RuntimeError):
+    """A workspace-defined function was emitted as external."""
 
 
 @lru_cache(maxsize=None)
@@ -56,10 +59,6 @@ def _stdlib_set(lang: str) -> frozenset[str]:
 
 def _lang_of(file_path: str) -> str:
     return EXT_TO_LANG.get(Path(file_path).suffix.lstrip(".").lower(), "")
-
-
-def _bare_name(node_id: str) -> str:
-    return _ID_SUFFIX.sub("", node_id).rsplit(".", 1)[-1]
 
 
 def _should_drop_as_framework(name: str, patterns: Iterable[str]) -> bool:
@@ -111,6 +110,7 @@ def classify_call_sites(
     code_nodes: list[CodeNode],
     framework_names: frozenset[str] = frozenset(),
     wrappers: Iterable[dict] = (),
+    source_cache: Optional[SourceFileCache] = None,
 ) -> CallClassifyResult:
     """call_sites 를 결정론 분류 → ``Calls`` 엣지 + 드롭 집계.
 
@@ -122,10 +122,14 @@ def classify_call_sites(
                   wrapper 호출은 라인 본문에서 인자 추출 후 분류 — 모듈 entry 루틴과
                   매치되면 internal, 아니면 external.
     """
+    defined_names = {(fn.name or "").strip() for fn in code_nodes if (fn.name or "").strip()}
     by_name: dict[str, list[str]] = defaultdict(list)
     module_of: dict[str, str] = {}
     for fn in code_nodes:
-        by_name[_bare_name(fn.id)].append(fn.id)
+        name = (fn.name or "").strip()
+        if not name:
+            continue
+        by_name[name].append(fn.id)
         module_of[fn.id] = fn.owner_id
 
     wrapper_patterns: dict[str, re.Pattern] = {}
@@ -138,7 +142,8 @@ def classify_call_sites(
         if pat is not None:
             wrapper_patterns[name] = pat
 
-    file_cache = SourceFileCache() if wrapper_patterns else None
+    # 캐시는 호출부가 주입(run 스코프 공유) — 없으면 단독 생성 (spec 046 FR-008).
+    file_cache = (source_cache or SourceFileCache()) if wrapper_patterns else None
 
     result = CallClassifyResult()
     for cs in call_sites:
@@ -185,6 +190,18 @@ def classify_call_sites(
             result.edges.append(Calls(
                 caller_id=caller, callee_id=name, scope="external",
             ))
+    leaked = [
+        edge for edge in result.edges
+        if edge.scope == "external" and edge.callee_id in defined_names
+    ]
+    if leaked:
+        details = ", ".join(
+            f"caller={edge.caller_id!r} callee={edge.callee_id!r}"
+            for edge in leaked[:10]
+        )
+        raise CallClassificationInvariantError(
+            "workspace-defined functions were classified as external: " + details
+        )
     return result
 
 

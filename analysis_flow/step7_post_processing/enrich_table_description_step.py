@@ -24,7 +24,7 @@ from shared.workflow.step_utils import step_config
 
 from shared.config.env_catalog import ENV
 from shared.llm.cost_budget import BudgetExceededError
-from shared.llm.fanout import gather_with_warmup
+from shared.llm.fanout import gather_with_warmup, partition_llm_results
 from data_models.code_analysis_output import TableDescription
 from shared.llm.yaml_llm_runner import run_yaml_rule
 from shared.log.logger import log_error, log_info, log_warning
@@ -141,8 +141,14 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
         matched = await update_column_analyzed(neo, column_updates)
         _warn_unmatched("컬럼", column_updates, matched)
 
-    updated_tables = _replace_by_id(state.get("tables", []), table_updates, "analyzed_description")
-    updated_columns = _replace_by_id(state.get("columns", []), column_updates, "analyzed_description")
+    # ★ logical_name 도 함께 반영 (FR-013) — Neo4j 에만 넣고 state 를 안 고치면
+    #   artifact(ast.json)엔 빈값이 남아 그래프와 다른 사실을 말한다.
+    updated_tables = _replace_by_id(
+        state.get("tables", []), table_updates, "analyzed_description", "logical_name",
+    )
+    updated_columns = _replace_by_id(
+        state.get("columns", []), column_updates, "analyzed_description", "logical_name",
+    )
 
     log_info(
         _STEP, "done",
@@ -158,22 +164,17 @@ def _apply_table_fail_policy(
 ) -> list[Optional[TableDescription]]:
     """fan-out 결과에 fail 정책 적용 — 예외면 None drop + log, BudgetExceededError 는 raise.
 
-    단일 책임 — _summarize_one = 성공만 / 여기 = fail 정책 (응집 ★ DRY).
+    분류 규칙 자체는 ``partition_llm_results`` 단일 정의처가 갖는다 (spec 046 FR-011).
+    여기 정책 = ``on_failure="none"`` — 실패한 테이블은 **자리(None)를 남긴다**.
+    호출부가 ``zip(table_fqns, results)`` 로 짝지으므로 길이가 맞아야 한다.
     """
-    out: list[Optional[TableDescription]] = []
-    for table_fqn, result in zip(table_fqns, results):
-        if isinstance(result, BudgetExceededError):
-            raise result        # 회로 차단기는 상위로 전파
-        if isinstance(result, BaseException):
-            log_error(
-                "analysis_flow.step7_post_processing.enrich_table_description_step",
-                "table_description",
-                result,
-                table_fqn=table_fqn,
-            )
-            out.append(None)
-        else:
-            out.append(result)
+    out, _failed = partition_llm_results(
+        table_fqns, results,
+        component="analysis_flow.step7_post_processing.enrich_table_description_step",
+        operation="table_description",
+        id_of=lambda fqn: fqn,
+        on_failure="none",
+    )
     return out
 
 
@@ -191,14 +192,24 @@ def _warn_unmatched(kind: str, updates: list[dict], matched: int) -> None:
         )
 
 
-def _replace_by_id(nodes: list, updates: list[dict], attr: str) -> list:
-    """``updates`` 의 id → ``attr`` 값을 같은 노드에 박은 새 인스턴스 리스트.
+def _replace_by_id(nodes: list, updates: list[dict], *attrs: str) -> list:
+    """``updates`` 의 id → ``attrs`` 값들을 같은 노드에 박은 새 인스턴스 리스트.
 
     매치 안 된 노드는 그대로 유지 — state 키엔 reducer 가 없어(default replace) 전체
     리스트를 돌려줘야 다음 step·artifact 가 노드를 잃지 않는다.
+
+    **여러 필드**를 받는다 (spec 045 FR-013): 옛 단일 필드 버전은 ``analyzed_description``
+    만 되돌려 써서 ``logical_name`` 이 Neo4j 에만 들어가고 state/artifact 에는 빈값으로 남았다
+    → 그래프와 artifact 가 다른 사실을 말하는 검증 사각지대. 빈값은 덮어쓰지 않는다
+    (LLM 이 논리명을 못 낸 테이블의 기존 값을 지우지 않도록).
     """
-    id_to_val = {u["id"]: u[attr] for u in updates}
+    id_to_vals = {u["id"]: u for u in updates}
     return [
-        replace(n, **{attr: id_to_val[n.id]}) if n.id in id_to_val else n
+        replace(n, **{
+            a: id_to_vals[n.id][a]
+            for a in attrs
+            if a in id_to_vals[n.id] and id_to_vals[n.id][a]
+        })
+        if n.id in id_to_vals else n
         for n in nodes
     ]

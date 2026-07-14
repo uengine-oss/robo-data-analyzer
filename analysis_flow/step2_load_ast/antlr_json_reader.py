@@ -25,14 +25,12 @@ from data_models.graph_edges import (
 )
 from data_models.graph_nodes import Constant, DataType, CodeNode, Module, Package, Variable
 from shared.config.env_catalog import ENV
-from shared.lang.ontology import role_of
-from shared.lang.source_extension import EXT_TO_LANG
+from shared.lang.ontology import ROUTINE_LABELS, role_of
+from shared.lang.source_extension import DBMS_EXTS, EXT_TO_LANG
+from shared.neo4j.ids import child_id, code_file_id, code_ns_id, positioned
 from shared.log.logger import log_error, log_warning
 
 _COMPONENT = "analysis_flow.step2_load_ast.antlr_json_reader"
-
-# DBMS(PL/SQL · PL/pgSQL) 확장자 — 제어흐름 트리 해석 경로.
-_DBMS_EXTS: frozenset[str] = frozenset({"sql", "pks", "pkb", "pls", "ddl"})
 
 # DBMS 순수 선언 노드 — Variable 노드로 수집 (CodeNode 아님, 분석 제외).
 # ★ CURSOR 정의는 제외 — 쿼리 로직(선별 조건 = 비즈니스 규칙)을 담으므로 CodeNode 로 분석한다
@@ -41,9 +39,9 @@ _DBMS_VAR_TYPES: frozenset[str] = frozenset({
     "PARAMETER", "VARIABLE", "PACKAGE_VARIABLE",
 })
 
-# 루틴(호출 가능 단위) 라벨 — HAS_MEMBER(그릇→멤버) 자격. 라벨 = antlr type 이라 종류 집합.
-# 일반 구문(SELECT/IF/LOOP…)·구조 노드(DECLARE/TRY…)는 멤버 아님 → PARENT_OF+NEXT 만.
-_ROUTINE_LABELS: frozenset[str] = frozenset({"FUNCTION", "PROCEDURE", "METHOD", "TRIGGER"})
+# (옛 ``_DBMS_EXTS`` / ``_ROUTINE_LABELS`` 삭제 — 각각 ``source_extension.DBMS_EXTS`` 와
+#  ``ontology.ROUTINE_LABELS`` 가 단일 정의처다. 종전엔 여기와 batch_analyze 가 목록을
+#  따로 들어 실제로 갈라졌다: batch_analyze 쪽엔 METHOD 가 빠져 있었다. spec 046 FR-003/FR-005.)
 
 
 @dataclass
@@ -120,7 +118,7 @@ def read_antlr_json(json_path: Path, source_root: Path) -> ParseResult:
     file_name = raw.get("fileName") or json_path.name
     ext = Path(file_name).suffix.lstrip(".").lower()
 
-    if ext in _DBMS_EXTS:
+    if ext in DBMS_EXTS:
         return _read_dbms(raw, source_root, json_path)
 
     lang = EXT_TO_LANG.get(ext)
@@ -163,18 +161,20 @@ def _read_framework(
         result.packages.append(package)
 
     if role_of("FILE", lang) == "module":
-        # c / python — 파일 자체가 모듈 (start/end = 0 → 파일 전체).
-        base_id = _file_module_id(rel)
+        # c / python — **파일이 곧 모듈**이다 (start/end = 0 → 파일 전체).
+        module_id = _file_module_id(rel)
         result.modules.append(_make_module(
-            raw, base_id, Path(raw.get("fileName") or json_path.name).stem,
+            raw, module_id, Path(raw.get("fileName") or json_path.name).stem,
             src_path, 0, 0,
         ))
     else:
-        # java — FILE 은 internal. namespace = packageName (없으면 default 패키지).
-        base_id = (raw.get("packageName") or "").strip()
+        # java — FILE 은 internal(노드 X). **클래스가 모듈**이고, 그 위 네임스페이스가 패키지다.
+        # 자바는 파일이 아니라 **패키지+클래스**가 유일성의 원천이다 (언어가 보장).
+        # 여기 module_id 는 아직 "패키지 네임스페이스"이고, _fw_module 이 클래스를 이어붙인다.
+        module_id = code_ns_id(raw.get("packageName") or "")
 
     ctx = _FwCtx(lang=lang, package=package_id, src_path=src_path, result=result, seen=set())
-    _walk_framework(raw, ctx, base_id, None)
+    _walk_framework(raw, ctx, module_id, None)
     _derive_structure_edges(result, package_id)
     return result
 
@@ -192,8 +192,12 @@ def _walk_framework(
 # ── role 별 핸들러 — 노드 1개 생성 + 필요 시 재귀 ──
 
 def _fw_module(child: dict, ctx: _FwCtx, module_id: str, parent_fid: str | None) -> None:
+    """중첩 컨테이너(java 클래스·inner class) → Module 노드.
+
+    id = ``<상위 컨테이너>:<이름>`` (spec 047) — 패키지·바깥클래스 경로가 끝까지 반영된다.
+    """
     name = child.get("name") or ""
-    sub_id = f"{module_id}.{name}" if module_id else name
+    sub_id = child_id(module_id, name)
     ctx.result.modules.append(_make_module(
         child, sub_id, name, ctx.src_path,
         int(child.get("startLine") or 0), int(child.get("endLine") or 0),
@@ -225,10 +229,14 @@ def _fw_data_type(child: dict, ctx: _FwCtx, module_id: str, parent_fid: str | No
     did = _node_id(child, ctx, module_id)
     ctx.result.data_types.append(_make_data_type(child, did, module_id, ctx.src_path))
     # struct / union 멤버 → Variable 노드 + HAS_MEMBER (모듈 소속 아닌 자료형 소속).
+    # ★ 멤버의 컨테이너는 **구조체(did)** 다 — 모듈이 아니다 (spec 047).
+    #   종전엔 module_id 를 넘겨 구조체 이름이 id 에서 사라졌고, 그래서
+    #   `member.c` 의 구조체 필드 `member_id` 가 **DB 컬럼 `member.member_id` 와 겹쳤다**.
+    #   (owner_id 는 여전히 모듈 — 소속 모듈은 바뀌지 않는다.)
     for member in child.get("children") or []:
         role = role_of(member.get("type", ""), ctx.lang)
         if role == "variable":
-            vid = _node_id(member, ctx, module_id)
+            vid = _node_id(member, ctx, did)          # ← 컨테이너 = 구조체
             ctx.result.variables.append(_make_variable(member, vid, module_id, ctx.src_path))
             ctx.result.has_member_edges.append(HasMember(did, vid))
         elif role == "data_type":
@@ -279,7 +287,9 @@ def _collect_internal(
 @dataclass
 class _DbmsCtx:
     """한 DBMS 파일을 순회하는 동안 고정인 값."""
-    file_stem: str           # 파일 = 컨테이너 Module
+    module_id: str           # 이 파일의 모듈(그릇) id — code:<경로>. 담긴 값과 이름을 일치시킴
+                             # (옛 이름 `file_stem` 은 "파일명 어간"인데 실제론 모듈 id 를 담아
+                             #  이름이 거짓말을 했다 — spec 047)
     package: str             # 파일이 든 폴더 id (최상위면 "")
     src_path: str
     result: ParseResult
@@ -302,10 +312,12 @@ def _read_dbms(raw: dict, source_root: Path, json_path: Path) -> ParseResult:
         result.packages.append(package)
 
     # 파일 자체가 컨테이너 Module (PL/SQL 스크립트 / 패키지 파일). 라벨 = raw["type"] = FILE.
-    result.modules.append(_make_module(raw, file_stem, file_stem, src_path, 0, 0))
+    # id = code:<경로(확장자 포함)> — Framework 와 동일 규칙 (spec 047).
+    module_id = code_file_id(rel)
+    result.modules.append(_make_module(raw, module_id, file_stem, src_path, 0, 0))
 
     ctx = _DbmsCtx(
-        file_stem=file_stem, package=package_id,
+        module_id=module_id, package=package_id,
         src_path=src_path, result=result, seen=set(),
     )
     _walk_dbms_siblings(raw.get("children"), ctx, None)
@@ -343,30 +355,34 @@ def _walk_dbms(node: dict, ctx: _DbmsCtx, parent_id: str | None) -> str | None:
     """
     ntype = node.get("type", "")
 
+    # 변수·상수 id = <파일 모듈>:<이름> — Framework 와 동일 규칙 (spec 047).
     if ntype in _DBMS_VAR_TYPES:
         vid = _unique_id(
-            f"{ctx.file_stem}.{node.get('name') or ntype}",
+            child_id(ctx.module_id, node.get("name") or ntype),
             int(node.get("startLine") or 0), ctx.seen,
         )
-        ctx.result.variables.append(_make_variable(node, vid, ctx.file_stem, ctx.src_path))
+        ctx.result.variables.append(_make_variable(node, vid, ctx.module_id, ctx.src_path))
         return None
 
     if ntype == "CONSTANT_FIELD":
         cid = _unique_id(
-            f"{ctx.file_stem}.{node.get('name') or ntype}",
+            child_id(ctx.module_id, node.get("name") or ntype),
             int(node.get("startLine") or 0), ctx.seen,
         )
-        ctx.result.constants.append(_make_constant(node, cid, ctx.file_stem, ctx.src_path))
+        ctx.result.constants.append(_make_constant(node, cid, ctx.module_id, ctx.src_path))
         return None
 
     # 그 외 전부 CodeNode (제어흐름 트리 — 구문 + 구조 노드).
+    # id = <컨테이너>:<이름>@<줄> — 컨테이너는 루틴이면 파일 모듈, 중첩 구문이면 부모 구문.
+    # 이름 없는 구문(IF/LOOP…)은 antlr type 이 이름 역할 → 같은 부모에 여러 개 → 줄로 구분.
     sl = int(node.get("startLine") or 0)
-    name = node.get("name") or ntype
-    base = f"{ctx.file_stem}:{name}:{sl}" if parent_id is None else f"{parent_id}:{ntype}:{sl}"
+    container = ctx.module_id if parent_id is None else parent_id
+    name = (node.get("name") or ntype) if parent_id is None else ntype
+    base = positioned(child_id(container, name), sl)
     fid = _unique_id(base, sl, ctx.seen)
     # DBMS: 노드의 antlr type 그대로가 라벨 (:SELECT/:PROCEDURE/:IF/:DECLARE…). _make_code_node 이 node["type"] 직결.
     ctx.result.code_nodes.append(_make_code_node(
-        node, fid, ctx.file_stem, ctx.package, ctx.src_path, parent_id,
+        node, fid, ctx.module_id, ctx.package, ctx.src_path, parent_id,
     ))
     if parent_id is not None:
         ctx.result.parent_of_edges.append(ParentOf(parent_id=parent_id, child_id=fid))
@@ -472,11 +488,18 @@ def _make_data_type(
 
 # ── 헬퍼 ──────────────────────────────────────────────────────
 
-def _node_id(node: dict, ctx: _FwCtx, module_id: str) -> str:
-    """Framework 노드 → 고유 id = ``<module_id>.<name>`` (충돌 시 ``:<line>`` 접미)."""
+def _node_id(node: dict, ctx: _FwCtx, container_id: str) -> str:
+    """Framework 노드 → 고유 id = ``<컨테이너>:<이름>`` (spec 047).
+
+    ``container_id`` 는 **직접 담고 있는 것**이다 — 파일이면 파일 id, 구조체 멤버면
+    **구조체 id**. 종전엔 항상 모듈 id 를 넘겨서 구조체 이름이 id 에서 사라졌고,
+    그 결과 구조체 필드와 전역변수(같은 이름)가 겹쳤다.
+
+    같은 컨테이너에 같은 이름이 합법인 경우(Java 오버로드)만 ``@<line>`` 접미.
+    """
     name = node.get("name") or node.get("type") or ""
     sl = int(node.get("startLine") or 0)
-    return _unique_id(f"{module_id}.{name}" if module_id else name, sl, ctx.seen)
+    return _unique_id(child_id(container_id, name), sl, ctx.seen)
 
 
 def _derive_structure_edges(result: ParseResult, package_id: str) -> None:
@@ -489,7 +512,7 @@ def _derive_structure_edges(result: ParseResult, package_id: str) -> None:
     BELONGS_TO = 그릇(모듈/파일/클래스)이 든 폴더(Package) 소속.
     """
     for fn in result.code_nodes:
-        if fn.label in _ROUTINE_LABELS:
+        if fn.label in ROUTINE_LABELS:
             result.has_member_edges.append(HasMember(fn.owner_id, fn.id))
     member_ids = {e.child_id for e in result.has_member_edges}
     for v in result.variables:
@@ -511,23 +534,40 @@ def _folder_package(rel_path: str) -> tuple[str, Package | None]:
     parts = [p for p in Path(rel_path).parent.as_posix().split("/") if p and p != "."]
     if not parts:
         return "", None
-    package_id = ".".join(parts)
+    package_id = code_ns_id(".".join(parts))
     return package_id, Package(id=package_id, name=parts[-1])
 
 
 def _src_path(raw: dict, source_root: Path, json_path: Path) -> str:
-    """antlr JSON 의 ``filePath`` → 절대 소스 경로 (step6 본문 슬라이싱용)."""
-    rel = raw.get("filePath") or raw.get("fileName") or json_path.stem
+    """antlr JSON 의 ``filePath`` → 절대 소스 경로 (step2 code_text 슬라이싱용).
+
+    ``filePath`` 가 없으면 폴백하지만, ``fileName`` 은 디렉토리 없는 basename 이고
+    ``json_path.stem`` 은 확장자까지 잃는다 → **존재하지 않을 경로를 지어낸다**.
+    그러면 SourceFileCache 가 못 읽어 code_text 가 통째로 빈다(spec 045 FR-007)
+    → 조용히 넘기지 않고 경고로 표면화한다.
+    """
+    rel = raw.get("filePath")
+    if not rel:
+        rel = raw.get("fileName") or json_path.stem
+        log_warning(
+            _COMPONENT, "src_path_fallback",
+            "antlr JSON 에 filePath 가 없어 폴백으로 경로를 구성했다 — "
+            "실제 파일과 다를 수 있고, 그 경우 이 파일의 code_text 가 전부 빈다.",
+            fallback=str(rel), json_path=str(json_path),
+        )
     return str(source_root / rel)
 
 
 def _file_module_id(file_path: str) -> str:
-    """소스 상대경로 → file-level module_id (확장자 제거, ``/`` → ``.``).
+    """소스 상대경로 → file-level module id — ``code:<경로(확장자 포함)>`` (spec 047).
 
-    예: ``"sub/dir/foo.c"`` → ``"sub.dir.foo"``.
+    예: ``"sub/dir/foo.c"`` → ``"code:sub/dir/foo.c"``.
+
+    **확장자를 버리지 않는다**: 종전엔 ``foo.c`` 와 ``foo.h`` 가 둘 다 ``"foo"`` 가 되어
+    같은 노드로 뭉갰고, 확장자 없는 ``"cart"`` 는 **테이블 cart 의 id 와도 충돌**했다.
+    파일시스템이 경로의 유일성을 보장하므로 그걸 그대로 쓴다.
     """
-    parts = Path(file_path).with_suffix("").as_posix().strip("/").split("/")
-    return ".".join(p for p in parts if p)
+    return code_file_id(file_path)
 
 
 def _clean_signature(sig: str | None) -> str:
@@ -538,14 +578,21 @@ def _clean_signature(sig: str | None) -> str:
 
 
 def _unique_id(base: str, start_line: int, seen: set[str]) -> str:
-    """노드 id 충돌 방지 — 중복 시 ``:<startLine>`` 접미 (Java 오버로드 등)."""
+    """동명 충돌 방지 — 중복 시 ``@<startLine>`` 접미 (Java 오버로드 등, spec 047).
+
+    접미 구분자는 ``@`` 다 — 경로 구분자 ``:`` 와 **달라야** 경로 해석이 흐려지지 않는다
+    (종전엔 둘 다 ``:`` 라 ``code:foo.c:bar:12`` 가 "bar 안의 12" 처럼 보였다).
+
+    위치 기반 id(파일경로+컨테이너경로+이름) 도입 후엔 여기 걸릴 일이 거의 없다 —
+    같은 컨테이너에 같은 이름은 대부분 언어가 금지한다. Java 오버로드만 예외.
+    """
     if base not in seen:
         seen.add(base)
         return base
-    candidate = f"{base}:{start_line}"
+    candidate = positioned(base, start_line)
     n = 2
     while candidate in seen:
-        candidate = f"{base}:{start_line}#{n}"
+        candidate = f"{positioned(base, start_line)}#{n}"
         n += 1
     seen.add(candidate)
     return candidate

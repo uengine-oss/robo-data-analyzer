@@ -16,6 +16,7 @@ from typing import Iterable
 from data_models.graph_edges import Calls
 from shared.neo4j.neo4j_client import Neo4jClient
 from shared.neo4j.rel_types import BELONGS_TO, CALLS, HAS_MEMBER
+from shared.neo4j.ids import child_id, external_id
 
 
 # internal — 콜리 정의 노드가 이미 존재 → MATCH 로 연결 (없으면 자연 제외).
@@ -36,9 +37,9 @@ EXTERNAL_QUERY = f"""
 UNWIND $items AS item
 MATCH (caller {{id: item.caller_id}})
 MERGE (callee:FUNCTION:EXTERNAL {{id: item.callee_id}})
-  ON CREATE SET callee.name = item.callee_name
+  ON CREATE SET callee.name = item.callee_name, callee.type = 'FUNCTION'
 MERGE (m:MODULE:EXTERNAL {{id: item.callee_module}})
-  ON CREATE SET m.name = item.callee_name
+  ON CREATE SET m.name = item.callee_name, m.type = 'MODULE'
 MERGE (m)-[:{HAS_MEMBER}]->(callee)
 FOREACH (_ IN CASE WHEN item.callee_package <> '' THEN [1] ELSE [] END |
   MERGE (p:PACKAGE {{id: item.callee_package}})
@@ -61,13 +62,16 @@ def _split_calls(edges: Iterable[Calls]) -> tuple[list[dict], list[dict]]:
         if e.scope == "internal":
             internal.append({"caller_id": e.caller_id, "callee_id": e.callee_id, "scope": e.scope})
         elif e.scope == "external":
-            module_id = e.callee_module or e.callee_id
+            module_name = e.callee_module or e.callee_id
             name = e.callee_name or e.callee_id
+            module_key = f"{e.callee_package}/{module_name}" if e.callee_package else module_name
+            module_id = external_id("module", module_key)
+            package_id = external_id("package", e.callee_package) if e.callee_package else ""
             external.append({
                 "caller_id": e.caller_id,
-                "callee_id": f"{module_id}.{name}",
+                "callee_id": child_id(module_id, name),
                 "callee_module": module_id,
-                "callee_package": e.callee_package,
+                "callee_package": package_id,
                 "callee_name": name,
                 "scope": e.scope,
             })

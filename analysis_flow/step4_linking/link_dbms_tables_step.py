@@ -99,7 +99,8 @@ def _link(
                 (child.start_line, child.end_line)
             )
 
-    file_cache = SourceFileCache()
+    # run 스코프 공유 캐시 (executor 주입) — 파일당 read 1회 (spec 046 FR-008).
+    file_cache = cfg.get("source_cache") or SourceFileCache()
     edges: list[ReadsWrites] = []
     seen: set[tuple[str, str, str]] = set()
 

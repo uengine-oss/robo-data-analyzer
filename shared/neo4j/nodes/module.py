@@ -8,33 +8,28 @@ summary / stereotype / logical_name 은 summarize_module_step 이 갱신.
 """
 from __future__ import annotations
 
-from collections import defaultdict
 from typing import Iterable
 
 from data_models.graph_nodes import Module
+from shared.neo4j.merge import upsert_by_node_label
 from shared.neo4j.neo4j_client import Neo4jClient
 from shared.neo4j.nodes.stereotype_label import apply_stereotype_labels
 from shared.neo4j.props import join_notes, nonempty
 
 
-def _merge_query(label: str) -> str:
-    """빈값 미저장 (`SET m += item`) — 빈 summary 등은 키가 없어 기존값 보존. 라벨 통제값(주입 안전)."""
-    return f"""
-UNWIND $items AS item
-MERGE (m:{label} {{id: item.id}})
-SET m += item
-RETURN count(m) AS created
-"""
+# MERGE 쿼리·라벨 그룹핑은 ``shared/neo4j/merge.py`` 단일 정의처 (spec 046 FR-004).
 
 
 def to_item(mod: Module) -> dict:
     return nonempty({
         "id": mod.id,
+        "type": mod.label,
         "name": mod.name,
         "file_path": mod.file_path,
         "start_line": mod.start_line,
         "end_line": mod.end_line,
         "notes": join_notes(mod.comment, mod.annotations),
+        "code_text": mod.code_text,
         "summary": mod.summary,
         "stereotype": mod.stereotype,
         "logical_name": mod.logical_name,
@@ -46,10 +41,6 @@ async def upsert_modules(client: Neo4jClient, modules: Iterable[Module]) -> None
 
     옛 ``:MODULE`` 폐기 — 소비처는 그릇을 타입 집합{FILE,CLASS,…}으로 식별(navigator).
     """
-    by_label: dict[str, list[dict]] = defaultdict(list)
-    for m in modules:
-        by_label[m.label].append(to_item(m))
-    for label, items in by_label.items():
-        await client.run_batch_unwind(_merge_query(label), items)
+    await upsert_by_node_label(client, modules, to_item)
     # stereotype 을 라벨로도 부여(spec 033) — 속성 유지(무중단). summarize_module 이 채운 값.
     await apply_stereotype_labels(client, [(m.id, m.stereotype or "") for m in modules])

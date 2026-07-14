@@ -45,6 +45,16 @@ SET t.analyzed_description = item.analyzed_description,
 
 
 def to_item(table: Table) -> dict:
+    """저장 속성.
+
+    ``nonempty()`` 를 **쓰지 않는다** — 다른 노드는 ``SET n += item`` 이라 키가 빠지면
+    "미저장"이지만, 여기 ``MERGE_QUERY`` 는 속성을 **하나씩 명시 SET** 한다(``coalesce`` 로
+    DDL 설명 보존). 키를 빼면 ``item.x`` 가 null 이 되어 **기존 속성이 삭제**된다 → 의도적 예외.
+
+    ``logical_name`` 도 여기 없다 — DDL 파싱 시점엔 항상 빈값이고, 값은 step7
+    (``enrich_table_description``) 이 ``SET_ANALYZED_QUERY`` 로 넣는다. 그 값이 state/artifact
+    에도 반영되도록 하는 것이 spec 045 FR-013 (수정 위치 = step7 의 state 반영, 여기가 아님).
+    """
     return {
         "id": table.id,
         "db": table.db,

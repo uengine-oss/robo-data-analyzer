@@ -8,6 +8,22 @@
 
 ---
 
+## ⚠️ 최근 변경 (2026-07-13) — 읽고 시작하세요
+
+전수 DRY·정합 조사([보고서](docs/작업보고내용/2026-07-13-analyzer-DRY조사.md))에서 **헌법 위반 5종**이 확인되어 두 스펙으로 시정했다.
+
+| 무엇이 바뀌었나 | 왜 | 스펙 |
+|---|---|---|
+| **그래프 wipe 가 라벨을 안 가린다** — `MATCH (n) DETACH DELETE n`. 같은 DB 의 **catalog·architect 데이터도 함께 삭제**된다 (분석 후 재등록 필요) | 헌법 *"매 run = full rebuild"* 복원. 옛 `DataSource` 예외는 자식(`:Schema`/`:Table`/`:Column`)을 못 살려 **껍데기만 남는 반쪽 상태**였다 | [045](specs/045-graph-integrity-restore/spec.md) |
+| **원문(`code_text`) 은 step2 가 모든 노드에 부여** (코드노드·파일·변수·상수·데이터타입) | 옛 규칙(step6 에서만 코드노드에)은 선언 노드의 노드 패널을 비게 했다. **spec 016 FR-004 supersede** | [045](specs/045-graph-integrity-restore/spec.md) |
+| **소스 read 실패가 로그로 표면화** + `code_text_missing` 카운터 | 종전엔 로그 0건으로 삼켜져 "성공"으로 끝났다 (헌법 IV 위반) | [045](specs/045-graph-integrity-restore/spec.md) |
+| **`analysis.json` 에 원문이 안 담긴다** — 원문의 집은 `ast.json` 하나 | 같은 원문 842 KB 가 두 파일에 중복이었다 | [045](specs/045-graph-integrity-restore/spec.md) |
+| **전략 분기 0** — `analyze_code_step` 이 `Strategy.code_analyzer` 를 **주입**받는다 | 헌법 II 복원 (`strategy.name == "dbms"` 하드분기 제거) | [046](specs/046-dry-single-truth/spec.md) |
+| **지원 확장자·루틴 라벨·MERGE 쿼리·소스 캐시 단일 진실화** | 헌법 III 복원. 확장자는 **실제로 갈라져 있었다**(4종 vs 14종) → `.kt` 프로젝트가 **0노드 "성공"** 으로 끝났다. 이제 **명시적 실패** | [046](specs/046-dry-single-truth/spec.md) |
+| **죽은 코드 삭제** — 모듈 1 · 함수 4 · env 키 6 (특히 `ROBO_LOG_MASK_SECRETS` 는 **효과 없는 거짓 설정**이었다) | | [046](specs/046-dry-single-truth/spec.md) |
+
+---
+
 ## 0. 한눈에 — 무엇을 / 누구에게 / 무슨 결과
 
 ### 0.1 이게 뭐 하는 거냐 (비개발자용 30초 설명)
@@ -73,7 +89,10 @@ origin: `github.com/uengine-oss/robo-data-analyzer` · `github.com/uengine-oss/a
 UPSERT 가 매 step 마다 일어나므로 **Neo4j 인스턴스 필수**. `.env` 의
 `ROBO_NEO4J_URI / USER / PASSWORD / DATABASE` 로 설정.
 analyzer 는 매 Run 시작에 `MATCH (n) DETACH DELETE n` 으로 그래프를 wipe → `ensure_schema()`
-로 제약/인덱스를 재확인한다(idempotent). HTTP 헤더 `X-Neo4j-*` 로 요청별 override 도 가능
+로 제약/인덱스를 재확인한다(idempotent). **⚠️ 라벨을 가리지 않는다 — 같은 DB 를 공유하는 다른
+서비스의 데이터(catalog 의 `:DataSource`/`:Schema`/`:Table`/`:Column`, architect 의 설계 그래프)도
+함께 지워진다.** 헌법의 full-rebuild 정책상 의도된 동작이며, 해당 서비스는 분석 후 자기 데이터를
+다시 등록/생성해야 한다 (spec 045). HTTP 헤더 `X-Neo4j-*` 로 요청별 override 도 가능
 (Electron 데스크톱 임베드 대응 — `Neo4jOverride.from_headers()`).
 
 ### 1.3 LLM 엔드포인트
@@ -285,7 +304,8 @@ parse_ddl_step
 ### Step 1 — `parse_ddl_step` (LLM 0)
 
 **입력**: `codebase.ddl_dir`(또는 `codebase.root`) 안의 `*.sql`.
-**파서**: `sqlglot` 다중 방언 → `shared/ddl/parser.py` (FK 자동추론 `schema_resolver.py`).
+**파서**: `sqlglot` 다중 방언 → `shared/ddl/parser.py`. FK 는 **DDL 에 명시된 것만** 추출한다
+(자동추론 없음 — 옛 `schema_resolver.py` 는 호출부 0건이라 삭제, spec 046).
 **출력 노드/엣지**: `SCHEMA` · `TABLE` · `COLUMN` 노드 + `HAS_COLUMN` · `BELONGS_TO` · `FK` 엣지.
 state 누적 + Neo4j UNWIND 배치 UPSERT.
 
@@ -423,6 +443,7 @@ logs/
 │       ├── linking.json           # step4 (reads_writes + calls + unresolved + scan_result)
 │       ├── analysis_contexts.json # step5 (code_id → AnalysisContext)
 │       ├── analysis.json          # step6+7 (summary + rules/examples/questions; 컴포넌트는 FUNCTION.component_id 속성)
+│       │                          #   ★ 원문(code_text)은 안 담는다 — 원문의 집은 ast.json 하나 (spec 045)
 │       └── graph_extras.json      # 매핑 안 된 state 키 auto-dump (신규 키 누락 방지 catch-all)
 └── llm_prompts/latest/
     └── ...                         # 룰별 LLM 입력 미리보기 (prompt_logger)
@@ -529,7 +550,7 @@ robo-data-analyzer/
 │   │   ├── executor.py             # execute_run() — Run 1회 (rmtree latest → workflow → artifact dump)
 │   │   ├── graph_builder.py        # build_langgraph_workflow — strategy.steps 로 StateGraph (tuple=병렬)
 │   │   ├── state.py · step_utils.py · artifact_writer.py · pause_controller.py · run_registry.py
-│   ├── ddl/{parser, schema_resolver}.py                # sqlglot 다중 방언 + FK 추론
+│   ├── ddl/parser.py                                  # sqlglot 다중 방언 (명시 FK 만)
 │   ├── lang/
 │   │   ├── strategy_detector.py · call_classifier.py · source_extension.py
 │   │   ├── ontology.py + ontology_roles.yaml           # antlr type → 라벨/stereotype
@@ -603,14 +624,12 @@ robo-data-analyzer/
 |-----|------|
 | `ROBO_NEO4J_URI` | `bolt://localhost:7687` |
 | `ROBO_NEO4J_USER` / `ROBO_NEO4J_PASSWORD` / `ROBO_NEO4J_DATABASE` | `neo4j` / `""` / `neo4j` |
-| `ROBO_NEO4J_UNWIND_BATCH_SIZE` | 2000 |
 | `ROBO_NEO4J_RETRY_MAX_ATTEMPTS` / `ROBO_NEO4J_RETRY_BACKOFF_SECONDS` | 5 / 2.0 |
 
 ### Pipeline (`ENV.pipeline`)
 | env | 기본 | 설명 |
 |-----|------|------|
 | `ROBO_PIPELINE_MAX_CONCURRENCY` | **30** | step6 round 안 + 병렬 후처리 그룹 동시 LLM |
-| `ROBO_PIPELINE_FILE_CONCURRENCY` | 4 | 파일 단위 동시성 |
 | `ROBO_PIPELINE_BIG_CONTEXT_THRESHOLD_TOKENS` | 1000 | 이상 → large_code_one_liner LLM |
 | `ROBO_PIPELINE_RESIDUAL_SAMPLE_SIZE` / `ROBO_PIPELINE_RESIDUAL_MAX_ROUNDS` | 30 / 3 | 잔여 패턴 라운드 |
 | `ROBO_PIPELINE_BATCH_MAX_TOKENS` | 1500 | DBMS step6 형제 함수 batch 입력 토큰 한도 |
@@ -628,7 +647,6 @@ robo-data-analyzer/
 | env | 기본 | 설명 |
 |-----|------|------|
 | `ROBO_LOG_DIR` | `./logs` | 통째 rmtree 후 재생성 |
-| `ROBO_LOG_MASK_SECRETS` | true | API key/password mask |
 | `ROBO_LOG_FILE_ENABLED` | true | analyzer.log + error.log 파일 핸들러 (운영기 false 권장) |
 | `ROBO_LOG_LEVEL` | INFO | DEBUG/INFO/WARNING/ERROR (error.log 는 내부적으로 WARNING+ 강제) |
 
@@ -664,7 +682,8 @@ robo-data-analyzer/
 - **antlr JSON 디렉토리 없음** — `step2_load_ast` 가 `FileNotFoundError` raise.
   → `d:/work/robo/project/antlr-code-parser` 먼저 실행해 `data/analysis/` 채우기.
 - **`logs/` 내용이 다음 run 에 사라짐** — 정상. `_reset_logs_root` 가 매 run 통째 rmtree.
-- **Neo4j 그래프가 매 run 비워짐** — 정상. `wipe_graph()` 의 `DETACH DELETE` (테스트 정책).
+- **Neo4j 그래프가 매 run 비워짐** — 정상. `wipe_graph()` 의 `DETACH DELETE` (헌법: 매 run = full rebuild).
+  **같은 DB 를 쓰는 catalog·architect 데이터도 함께 지워진다** — 분석 후 재등록 필요.
 - **Scan Agent 가 도구 호출 안 함** — `submit_scan` 누락 시 raise. `scan_agent_system.md` 확인.
 - **`leidenalg`/`igraph` import 오류** — `build_components_step` 가 명시 raise.
   → `pip install -r requirements.txt` 로 설치.

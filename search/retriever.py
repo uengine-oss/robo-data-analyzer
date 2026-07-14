@@ -101,7 +101,7 @@ class Retriever:
         n = self.c.by_id[cid]
         return {
             "id": cid, "element_id": rec["eid"] if rec else None,
-            "name": n.get("name") or cid.split(":")[0],
+            "name": n.get("name") or n.get("label") or "Unknown",
             "label": n.get("label", ""), "stereotype": n.get("stereotype", ""),
             "summary": (n.get("summary") or "").replace("\n", " "),
             "search_text": (n.get("search_text") or "").replace("\n", " "),

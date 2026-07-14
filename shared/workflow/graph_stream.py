@@ -33,7 +33,8 @@ _FIXED_NODE_LABEL: dict[type, str] = {
 
 # 프론트 표시에 쓰는 속성만 emit (caption·트리 라벨). 빈값은 nonempty가 제거.
 _DISPLAY_PROP_KEYS = (
-    "name", "logical_name", "signature", "summary", "stereotype", "start_line", "dtype",
+    "name", "logical_name", "signature", "summary", "stereotype",
+    "file_path", "start_line", "end_line", "owner_id", "dtype",
 )
 
 # 관계 dataclass → (rel_type, from 필드, to 필드). ReadsWrites는 relation 필드가 동적 → 별도.
@@ -122,14 +123,8 @@ def emit_edges(stream: Optional[NDJSONStream], edges: Iterable) -> int:
     return count
 
 
-def emit_graph_delta(
-    stream: Optional[NDJSONStream],
-    *,
-    nodes: Iterable = (),
-    edges: Iterable = (),
-) -> tuple[int, int]:
-    """노드+관계 델타 한 번에 emit. (노드수, 관계수) 반환 — step message 요약에 사용."""
-    return emit_nodes(stream, nodes), emit_edges(stream, edges)
+# (옛 ``emit_graph_delta`` 삭제 — 호출부 0건. 소비처는 ``emit_nodes``/``emit_edges`` 를
+#  직접 호출한다. spec 046 FR-010.)
 
 
 def emit_message(stream: Optional[NDJSONStream], content: str) -> None:

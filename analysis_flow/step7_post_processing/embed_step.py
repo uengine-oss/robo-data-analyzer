@@ -207,7 +207,10 @@ def _build_table_column_embeddings(state: dict) -> tuple[list[dict], list[dict]]
     """Table/Column description 수집 → 그룹별 배치 인코딩 → updates."""
     return (
         _encode_pairs(_collect_table_texts(state.get("tables", [])), "id"),
-        _encode_pairs(_collect_column_texts(state.get("columns", [])), "id"),
+        _encode_pairs(_collect_column_texts(
+            state.get("columns", []), state.get("tables", []),
+            state.get("has_column_edges", []),
+        ), "id"),
     )
 
 
@@ -222,18 +225,20 @@ def _collect_table_texts(tables: list) -> list[tuple[str, str]]:
     return out
 
 
-def _collect_column_texts(columns: list) -> list[tuple[str, str]]:
+def _collect_column_texts(columns: list, tables: list, has_column_edges: list) -> list[tuple[str, str]]:
     """``Column`` 들의 (fqn, ``"<table>.<column>: description"``) 쌍.
 
     테이블 prefix — 동명 컬럼(id/name 등) 벡터가 테이블 구분 없이 뭉치는 것 방지.
     """
+    table_name_by_id = {t.id: t.name for t in tables}
+    table_id_by_column = {e.child_id: e.parent_id for e in has_column_edges}
     out: list[tuple[str, str]] = []
     for c in columns:
         desc = (c.description or "").strip()
         if not desc:
             continue
-        parts = c.id.split(".")
-        label = f"{parts[-2]}.{c.name}" if len(parts) >= 2 else c.name
+        table_name = table_name_by_id.get(table_id_by_column.get(c.id, ""), "")
+        label = f"{table_name}.{c.name}" if table_name else c.name
         out.append((c.id, f"{label}: {desc}"))
     return out
 
