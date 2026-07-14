@@ -42,6 +42,7 @@ rank-bm25>=0.2.2
 # Web API
 fastapi>=0.115.0
 uvicorn>=0.34.0
+mcp>=1.0.0
 
 # YAML / .env / 재시도 / HTTP
 pyyaml>=6.0.0
