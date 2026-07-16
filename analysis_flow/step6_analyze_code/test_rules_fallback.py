@@ -23,7 +23,7 @@ from data_models.code_analysis_output import (
     RuleItem,
     RulesExamplesOutput,
 )
-from shared.llm.cost_budget import BudgetExceededError
+from llm.client.usage.cost_budget import BudgetExceededError
 
 
 def _ex(given="g", when="w", then="t", tables=()):

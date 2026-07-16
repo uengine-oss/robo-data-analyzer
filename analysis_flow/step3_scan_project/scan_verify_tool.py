@@ -13,7 +13,7 @@ from pathlib import Path
 
 from langchain.tools import tool
 
-from data_models.agent_output import DdlTransform, TableAccessPattern
+from llm.agents.agent_output import DdlTransform, TableAccessPattern
 from analysis_flow.step4_linking.stage1_regex_grep.regex_table_linker import RegexTableLinker
 from graph.schema.graph_nodes import CodeNode, Table
 

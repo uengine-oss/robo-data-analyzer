@@ -16,13 +16,13 @@ from langchain_core.runnables import RunnableConfig
 
 from shared.workflow.step_utils import step_config
 
-from agent_tools.code_inspection import SKILLS_DIR
+from llm.agents.code_inspection import SKILLS_DIR
 from analysis_flow.step3_scan_project.scan_agent import run_scan_agent
 from analysis_flow.step3_scan_project.scanner_input_collector import (
     collect_scanner_input,
 )
-from shared.llm.cost_budget import CostBudget
-from shared.llm.middleware.call_limit import ModelCallLimitExceeded
+from llm.client.usage.cost_budget import CostBudget
+from llm.client.middleware.call_limit import ModelCallLimitExceeded
 from shared.log.logger import log_error, log_info, log_warning
 from shared.workflow.graph_stream import emit_message
 

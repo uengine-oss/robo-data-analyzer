@@ -35,7 +35,7 @@ from data_models.codebase import Codebase
 from system.env_catalog import ENV
 import time
 
-from shared.llm.cost_budget import CostBudget
+from llm.client.usage.cost_budget import CostBudget
 from shared.log.logger import (
     attach_run_file_handlers,
     detach_run_file_handlers,

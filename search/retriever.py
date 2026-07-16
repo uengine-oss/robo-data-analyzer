@@ -15,7 +15,7 @@ from search.config import Config
 from search.fusion import infer_types, type_affinity
 from search.recall import recall
 from search.rerank import passage, predict_cached
-from shared.llm import embedder
+from llm.client import embedder
 
 _TABLE_RELS = ("READS", "WRITES", "AFFECTS_TABLE")
 

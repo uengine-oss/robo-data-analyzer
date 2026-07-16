@@ -8,7 +8,7 @@
 위험 회피 — 운영자가 페이지를 직접 보고 yaml 수동 편집이 안전).
 
 흐름:
-1. ``shared/llm/llm_pricing.yaml`` 현재 가격 표 + ``last_updated`` 출력
+1. ``llm/client/usage/llm_pricing.yaml`` 현재 가격 표 + ``last_updated`` 출력
 2. 공식 가격 페이지 URL 3개 안내
 3. 갱신 절차 가이드 (yaml 직접 편집 → ``last_updated`` 갱신 → commit)
 
@@ -31,7 +31,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-_PRICING_YAML = _ROOT / "shared" / "llm" / "llm_pricing.yaml"
+_PRICING_YAML = _ROOT / "llm" / "client" / "usage" / "llm_pricing.yaml"
 
 
 def main() -> None:

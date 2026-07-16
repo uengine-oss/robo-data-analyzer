@@ -23,14 +23,14 @@ import json
 from pathlib import Path
 from typing import Callable, Optional
 
-from data_models.agent_output import ScanResult
-from agent_tools.code_inspection import (
+from llm.agents.agent_output import ScanResult
+from llm.agents.code_inspection import (
     SKILLS_DIR,
     list_skills,
     make_list_code_nodes,
     read_skill,
 )
-from agent_tools.filesystem import make_filesystem_tools
+from llm.agents.filesystem_tools import make_filesystem_tools
 from analysis_flow.step3_scan_project.scan_verify_tool import make_verify_table_regex_tool
 from analysis_flow.step4_linking.stage1_regex_grep.regex_table_linker import (
     PatternVerdict,
@@ -38,8 +38,8 @@ from analysis_flow.step4_linking.stage1_regex_grep.regex_table_linker import (
 )
 from graph.schema.graph_nodes import CodeNode, Table
 from system.env_catalog import ENV
-from shared.llm.cost_budget import CostBudget
-from shared.llm.structured_agent import run_structured_agent
+from llm.client.usage.cost_budget import CostBudget
+from llm.client.runners.structured_agent import run_structured_agent
 from shared.log.logger import log_info, log_warning
 
 _STEP = "step3.scan"
@@ -47,7 +47,7 @@ _STEP = "step3.scan"
 # 시스템 프롬프트 위치 — byte-identical 보존 (CI 검증 대상)
 _SYSTEM_PROMPT_PATH = (
     Path(__file__).resolve().parent.parent.parent
-    / "prompts" / "agents" / "scan_agent_system.md"
+    / "llm" / "agents" / "scan_agent_system.md"
 )
 
 
@@ -248,7 +248,7 @@ def _build_user_message(project_root: Path, scanner: dict, tables: list[Table]) 
 
 
 def _list_skills_brief() -> str:
-    """``skills/`` 의 SKILL.md 첫 줄 (h1) 만 직렬 — 에이전트가 후보 보고 자율 판단."""
+    """``llm/skills/`` 의 SKILL.md 첫 줄만 직렬화해 후보 판단에 제공한다."""
     if not SKILLS_DIR.is_dir():
         return "(no skills)"
     items: list[str] = []

@@ -50,13 +50,13 @@ semantic and integration regression battery.
 
 **Independent Test**: prompt hashes and common prefixes pass byte-identical checks, structured agents import, and old LLM asset paths are inactive.
 
-- [ ] T017 [US1] Move `shared/llm/` into `llm/client/` subowners and update middleware/runner consumers
-- [ ] T018 [US1] Move `shared/content_text.py` to `llm/client/message_content.py` and preserve its three consumers and tests
-- [ ] T019 [US1] Move LLM-only prompt logging helpers from `shared/log/` into `llm/client/prompt_logging/`
-- [ ] T020 [US1] Move `prompts/`, `skills/`, `llm_configs/` and `agent_tools/` into `llm/{prompts,skills,configs,agents}/`
-- [ ] T021 [US1] Move prompt hashes to `llm/prompts/prompt_hashes.json`, regenerate only for path-set changes and pass byte-identical verification
-- [ ] T022 [US1] Pass structured-agent, middleware, budget, prompt and import focused tests under `tests/llm/`
-- [ ] T023 [US1] Reconcile all LLM rows and evidence in `specs/058-analyzer-structure-refactor/audit-ledger.tsv`
+- [x] T017 [US1] Move `shared/llm/` into `llm/client/` subowners and update middleware/runner consumers
+- [x] T018 [US1] Move `shared/content_text.py` to `llm/client/message_content.py` and preserve its three consumers and tests
+- [x] T019 [US1] Move LLM-only prompt logging helpers from `shared/log/` into `llm/client/prompt_logging/`
+- [x] T020 [US1] Move `prompts/`, `skills/`, `llm_configs/` and `agent_tools/` into `llm/{prompts,skills,configs,agents}/`
+- [x] T021 [US1] Move prompt hashes to `llm/prompts/prompt_hashes.json`, regenerate only for path-set changes and pass byte-identical verification
+- [x] T022 [US1] Pass structured-agent, middleware, budget, prompt and import focused tests under `tests/llm/`
+- [x] T023 [US1] Reconcile all LLM rows and evidence in `specs/058-analyzer-structure-refactor/audit-ledger.tsv`
 
 ---
 

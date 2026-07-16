@@ -19,8 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-from data_models.agent_output import DdlTransform, ResidualPatternResult, ScanResult
-from agent_tools.filesystem import make_filesystem_tools
+from llm.agents.agent_output import DdlTransform, ResidualPatternResult, ScanResult
+from llm.agents.filesystem_tools import make_filesystem_tools
 from analysis_flow.step3_scan_project.scan_verify_tool import make_verify_table_regex_tool
 from analysis_flow.step4_linking.stage1_regex_grep.regex_table_linker import (
     RegexTableLinker,
@@ -29,8 +29,8 @@ from analysis_flow.step4_linking.stage1_regex_grep.regex_table_linker import (
 from graph.schema.graph_edges import ReadsWrites
 from graph.schema.graph_nodes import CodeNode, Table
 from system.env_catalog import ENV
-from shared.llm.cost_budget import CostBudget
-from shared.llm.structured_agent import run_structured_agent
+from llm.client.usage.cost_budget import CostBudget
+from llm.client.runners.structured_agent import run_structured_agent
 from shared.log.logger import log_info, log_warning
 
 # 로그 component — link_residual_patterns_step 과 동일 키. 루프는 그 step 의
@@ -39,7 +39,7 @@ _STEP = "step4.link_residual_patterns"
 
 _RESIDUAL_PROMPT_PATH = (
     Path(__file__).resolve().parent.parent.parent.parent
-    / "prompts" / "agents" / "residual_pattern_system.md"
+    / "llm" / "agents" / "residual_pattern_system.md"
 )
 
 

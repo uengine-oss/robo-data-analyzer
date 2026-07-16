@@ -42,8 +42,8 @@ from graph.schema.graph_nodes import CodeNode
 from system.env_catalog import ENV
 from shared.domain_terms import normalize_domain_terms
 from shared.lang.ontology import ROUTINE_LABELS, coerce_stereotype
-from shared.llm.cost_budget import BudgetExceededError
-from shared.llm.yaml_llm_runner import run_yaml_rule
+from llm.client.usage.cost_budget import BudgetExceededError
+from llm.client.runners.yaml_llm_runner import run_yaml_rule
 from shared.log.logger import log_error, log_info, log_warning
 from shared.log.processing_progress import track_processing
 from shared.source_file_cache import SourceFileCache

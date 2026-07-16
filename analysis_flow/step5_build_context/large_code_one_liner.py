@@ -16,9 +16,9 @@ from pydantic import BaseModel, Field
 
 from graph.schema.graph_nodes import CodeNode
 from system.env_catalog import ENV
-from shared.llm.cost_budget import BudgetExceededError, CostBudget
-from shared.llm.config_loader import load_llm_config
-from shared.llm.yaml_llm_runner import run_yaml_rule
+from llm.client.usage.cost_budget import BudgetExceededError, CostBudget
+from llm.client.llm_config_loader import load_llm_config
+from llm.client.runners.yaml_llm_runner import run_yaml_rule
 from shared.log.logger import log_error
 
 
@@ -27,8 +27,8 @@ class LargeCodeOneLiner(BaseModel):
     one_liner: str = Field(..., max_length=120, description="≤ 60 자 권장, 최대 120 자")
 
 
-# strategy 무관이라 ``prompts/common/`` 에 yaml
-_PROMPTS_COMMON = Path(__file__).resolve().parent.parent.parent / "prompts" / "common"
+# strategy 무관이라 ``llm/prompts/common/`` 에 yaml
+_PROMPTS_COMMON = Path(__file__).resolve().parent.parent.parent / "llm" / "prompts" / "common"
 
 
 def estimate_tokens(text: str) -> int:

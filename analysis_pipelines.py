@@ -76,7 +76,7 @@ class Strategy:
             형제 배치). 두 구현체는 **동일 시그니처** — step 은 어느 쪽인지 모른다.
             (헌법 II "분기 0" — 종전엔 step 안에 ``strategy.name == "dbms"`` 하드분기가
             있었다. spec 046 FR-001.)
-        prompts_dir: yaml 프롬프트 위치 (``"prompts/framework"`` / ``"prompts/dbms"``).
+        prompts_dir: yaml 프롬프트 위치 (``"llm/prompts/framework"`` / ``"llm/prompts/dbms"``).
         steps: 활성 step 함수 tuple (이 순서대로 LangGraph StateGraph 노드).
 
     Note: AST 파싱은 ``antlr_json_reader`` 공통 — parser 주입 없음.
@@ -96,7 +96,7 @@ FRAMEWORK_PIPELINE = Strategy(
     name="framework",
     context_builder=FrameworkContextBuilder(),    # build_context_step 이 주입받음
     code_analyzer=run_framework_per_node_analysis,  # analyze_code_step 이 주입받음 (per-node 3분할)
-    prompts_dir="prompts/framework",
+    prompts_dir="llm/prompts/framework",
     steps=(
         parse_ddl_step,
         load_ast_step,
@@ -131,7 +131,7 @@ DBMS_PIPELINE = Strategy(
     name="dbms",
     context_builder=DbmsContextBuilder(),     # parent + sibling 컨텍스트
     code_analyzer=run_dbms_batch_analysis,    # analyze_code_step 이 주입받음 (형제 배치 1콜)
-    prompts_dir="prompts/dbms",
+    prompts_dir="llm/prompts/dbms",
     steps=(
         parse_ddl_step,
         load_ast_step,

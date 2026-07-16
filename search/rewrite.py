@@ -23,7 +23,7 @@ def _semantic_scores(q: str, terms: list[dict]) -> list[float]:
     """질의↔용어카드(표준어+별칭+뜻) 코사인 — 사내 임베더(질의·노드와 동일 모델)."""
     import numpy as np
 
-    from shared.llm import embedder
+    from llm.client import embedder
     cards = [" ".join([t.get("canonical", ""), *(t.get("colloquial") or []), t.get("meaning", "")])
              for t in terms]
     vecs = np.array(embedder.encode_texts(cards), dtype=np.float32)

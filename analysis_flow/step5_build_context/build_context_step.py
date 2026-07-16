@@ -31,8 +31,8 @@ from analysis_flow.step5_build_context.referenced_symbols import _build_referenc
 from data_models.analysis_context import AnalysisContext
 from graph.schema.graph_nodes import CodeNode
 from system.env_catalog import ENV
-from shared.llm.cost_budget import BudgetExceededError, CostBudget
-from shared.llm.fanout import gather_with_warmup
+from llm.client.usage.cost_budget import BudgetExceededError, CostBudget
+from llm.client.llm_fanout import gather_with_warmup
 from shared.log.logger import log_error, log_info, log_warning
 from shared.log.processing_progress import step_processing_scope, track_processing
 

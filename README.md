@@ -60,7 +60,7 @@
 | **출력** | Neo4j 그래프(UPSERT) + `logs/analysis.run/latest/artifacts/*.json` 5종 + `usage_summary.json` + `health_report.json` + NDJSON 스트림 |
 | **엔진** | FastAPI + LangGraph StateGraph + LangChain/deepagents Agent |
 | **2개 Strategy** | `framework`(응용코드) / `dbms`(PL/SQL) — 확장자로 자동 감지, `--strategy`로 override |
-| **LLM 정책** | 모델+배포환경 1셋 = `llm_configs/<name>.yaml` 1개. `.env`의 `ROBO_LLM_CONFIG` 1줄로 전환 |
+| **LLM 정책** | 모델+배포환경 1셋 = `llm/configs/<name>.yaml` 1개. `.env`의 `ROBO_LLM_CONFIG` 1줄로 전환 |
 | **결정론 우선** | DDL·AST 파싱 / 링킹 grep / 호출 분류 / Bottom-up DAG / 컴포넌트 군집 / 건강지표 = **LLM 0회**. LLM은 "의미"가 필요한 곳에만 |
 | **실행 단위** | `/robo/analyze` 1회 = LangGraph workflow 1회 = `Run` 1개. 매 Run 시작 시 그래프 wipe + `logs/` rmtree |
 | **위치** | `d:/work/robo/project/robo-data-analyzer` (origin: `github.com/uengine-oss/robo-data-analyzer`) |
@@ -97,7 +97,7 @@ analyzer 는 매 Run 시작에 `MATCH (n) DETACH DELETE n` 으로 그래프를 w
 
 ### 1.3 LLM 엔드포인트
 
-`llm_configs/<name>.yaml` (4개 동봉):
+`llm/configs/<name>.yaml` (4개 동봉):
 
 | yaml | provider | 비고 |
 |------|----------|------|
@@ -107,7 +107,7 @@ analyzer 는 매 Run 시작에 `MATCH (n) DETACH DELETE n` 으로 그래프를 w
 | `gpt54_nano_openrouter` | openrouter | gpt-5.4-nano (Scan Agent 환각 회피 대체용) |
 
 > 새 config 추가 = yaml 1개 + `.env` 의 `ROBO_LLM_CONFIG=<name>` 1줄. 코드 변경 0.
-> 자세한 스키마: [`llm_configs/README.md`](llm_configs/README.md).
+> 자세한 스키마: [`llm/configs/README.md`](llm/configs/README.md).
 
 ### 1.4 Python 의존성
 
@@ -235,8 +235,8 @@ POST /robo/analyze/control
 |---------|------|
 | `analyze_data_dir.py` | ★ 운영자 표준 진입점 (위 3.1) |
 | `baseline_runner.py` | 여러 프로젝트 일괄 + 종합 `baseline_summaries.json` 생성 |
-| `check_byte_identical.py` | `prompts/**` SHA256 ↔ `prompt_hashes.json` 검증 (CI 보호장치) |
-| `refresh_pricing.py` | `shared/llm/llm_pricing.yaml` 갱신 보조 (현재 yaml + 공식 URL 안내) |
+| `check_byte_identical.py` | `llm/prompts/**` SHA256 ↔ `prompt_hashes.json` 검증 (CI 보호장치) |
+| `refresh_pricing.py` | `llm/client/usage/llm_pricing.yaml` 갱신 보조 (현재 yaml + 공식 URL 안내) |
 | `reset_neo4j_schema.py` | Neo4j 제약/인덱스 1회 리셋 (오염 정리 — 평상시 불필요) |
 
 ---
@@ -583,7 +583,7 @@ robo-data-analyzer/
 ├── skills/                         # Agent 가 read_skill 로 읽는 자유 문서
 │   ├── _templates · ejb-cmp · jpa-standard · mybatis-ibatis · ofbiz · proframe-c-pfm-dbio  (각 SKILL.md)
 │
-├── llm_configs/
+├── llm/configs/
 │   ├── README.md + qwen36_sglang_local(★현재 활성) / qwen36_openrouter / gpt54_mini_openai / gpt54_nano_openrouter.yaml
 │
 └── .github/workflows/byte_identical.yml   # prompts/ SHA256 CI 검증
@@ -600,7 +600,7 @@ robo-data-analyzer/
 ### LLM (`ENV.llm`)
 | env | 기본 | 설명 |
 |-----|------|------|
-| `ROBO_LLM_CONFIG` | `""` | `llm_configs/<name>.yaml` 의 name (필수) |
+| `ROBO_LLM_CONFIG` | `""` | `llm/configs/<name>.yaml` 의 name (필수) |
 | `ROBO_LLM_API_KEY` | `""` | 현 config provider 비밀 (필수) |
 
 ### Cache (`ENV.cache`)
@@ -695,7 +695,7 @@ robo-data-analyzer/
 
 ## 11. 관련 문서
 
-- [`llm_configs/README.md`](llm_configs/README.md) — LLM yaml 스키마
+- [`llm/configs/README.md`](llm/configs/README.md) — LLM yaml 스키마
 - [`skills/_templates/SKILL.md`](skills/_templates/SKILL.md) — 새 skill 작성 템플릿
 - [`skills/proframe-c-pfm-dbio/SKILL.md`](skills/proframe-c-pfm-dbio/SKILL.md) — 테스트 데이터 대응 skill
 - `.github/workflows/byte_identical.yml` — prompts/ SHA256 CI 검증

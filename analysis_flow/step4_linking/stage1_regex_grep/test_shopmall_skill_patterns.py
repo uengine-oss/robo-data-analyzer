@@ -15,10 +15,10 @@ from analysis_flow.step4_linking.stage1_regex_grep.regex_table_linker import (
     _entity_group_complete,
     _resolve_table,
 )
-from data_models.agent_output import DdlTransform
+from llm.agents.agent_output import DdlTransform
 
 
-_SKILL = _ROOT / "skills" / "shopmall-c-facade" / "SKILL.md"
+_SKILL = _ROOT / "llm" / "skills" / "shopmall-c-facade" / "SKILL.md"
 
 
 def _patterns() -> dict[str, re.Pattern]:

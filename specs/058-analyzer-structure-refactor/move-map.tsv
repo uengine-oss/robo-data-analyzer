@@ -5,11 +5,11 @@ old_path	final_path	action	static_importer_count	static_importers_sample	notes
 Dockerfile	Dockerfile	keep	0	-	-
 README.md	README.md	keep	0	-	-
 __init__.py	__init__.py	keep	0	-	-
-agent_tools/__init__.py	llm/agents/__init__.py	move	6	agent_tools/code_inspection.py;agent_tools/filesystem.py;analysis_flow/step3_scan_project/scan_agent.py;analysis_flow/step3_scan_project/scan_codebase_step.py;analysis_flow/step4_linking/stage3_residual_patterns/residual_pattern_loop.py;shared/llm/structured_agent.py	-
-agent_tools/code_inspection.py	llm/agents/code_inspection.py	move	2	analysis_flow/step3_scan_project/scan_agent.py;analysis_flow/step3_scan_project/scan_codebase_step.py	-
-agent_tools/filesystem.py	llm/agents/filesystem_tools.py	move	2	analysis_flow/step3_scan_project/scan_agent.py;analysis_flow/step4_linking/stage3_residual_patterns/residual_pattern_loop.py	-
-agent_tools/path_boundary.py	llm/agents/path_boundary.py	move	2	agent_tools/code_inspection.py;agent_tools/filesystem.py	-
-agent_tools/tool_messages.py	llm/agents/tool_messages.py	move	1	shared/llm/structured_agent.py	-
+agent_tools/__init__.py	llm/agents/__init__.py	move	0	-	-
+agent_tools/code_inspection.py	llm/agents/code_inspection.py	move	0	-	-
+agent_tools/filesystem.py	llm/agents/filesystem_tools.py	move	0	-	-
+agent_tools/path_boundary.py	llm/agents/path_boundary.py	move	0	-	-
+agent_tools/tool_messages.py	llm/agents/tool_messages.py	move	0	-	-
 analysis_flow/__init__.py	pipeline/steps/__init__.py	move	32	analysis_flow/step2_load_ast/load_ast_step.py;analysis_flow/step2_load_ast/test_control_structure_walk.py;analysis_flow/step3_scan_project/scan_agent.py;analysis_flow/step3_scan_project/scan_codebase_step.py;analysis_flow/step3_scan_project/scan_verify_tool.py;analysis_flow/step3_scan_project/test_framework_overlap_guard.py;analysis_flow/step4_linking/stage1_regex_grep/link_deterministic_step.py;analysis_flow/step4_linking/stage1_regex_grep/test_shopmall_skill_patterns.py	+24 more
 analysis_flow/step1_parse_ddl/__init__.py	pipeline/steps/step1_parse_ddl/__init__.py	move	1	analysis_pipelines.py	-
 analysis_flow/step1_parse_ddl/parse_ddl_step.py	pipeline/steps/step1_parse_ddl/parse_ddl_step.py	move	1	analysis_pipelines.py	-
@@ -91,8 +91,8 @@ cli_scripts/refresh_pricing.py	scripts/llm_maintenance/refresh_pricing.py	move	0
 cli_scripts/reset_neo4j_schema.py	scripts/graph_maintenance/reset_neo4j_schema.py	move	0	-	-
 cli_scripts/resynthesize_glossary.py	scripts/graph_maintenance/resynthesize_glossary.py	move	0	-	-
 cli_scripts/verify_045_046.py	scripts/analysis/verify_045_046.py	move	0	-	-
-data_models/__init__.py	pipeline/data_models/__init__.py	move	33	analysis_flow/step3_scan_project/scan_agent.py;analysis_flow/step3_scan_project/scan_verify_tool.py;analysis_flow/step4_linking/stage1_regex_grep/link_deterministic_step.py;analysis_flow/step4_linking/stage1_regex_grep/regex_table_linker.py;analysis_flow/step4_linking/stage1_regex_grep/test_shopmall_skill_patterns.py;analysis_flow/step4_linking/stage3_residual_patterns/residual_pattern_loop.py;analysis_flow/step5_build_context/build_context_step.py;analysis_flow/step5_build_context/dbms_context_builder.py	+25 more
-data_models/agent_output.py	llm/agents/agent_output.py	move	6	analysis_flow/step3_scan_project/scan_agent.py;analysis_flow/step3_scan_project/scan_verify_tool.py;analysis_flow/step4_linking/stage1_regex_grep/link_deterministic_step.py;analysis_flow/step4_linking/stage1_regex_grep/regex_table_linker.py;analysis_flow/step4_linking/stage1_regex_grep/test_shopmall_skill_patterns.py;analysis_flow/step4_linking/stage3_residual_patterns/residual_pattern_loop.py	-
+data_models/__init__.py	pipeline/data_models/__init__.py	move	27	analysis_flow/step5_build_context/build_context_step.py;analysis_flow/step5_build_context/dbms_context_builder.py;analysis_flow/step5_build_context/framework_context_builder.py;analysis_flow/step5_build_context/referenced_symbols.py;analysis_flow/step5_build_context/test_structured_referenced_symbols.py;analysis_flow/step6_analyze_code/analyze_code_step.py;analysis_flow/step6_analyze_code/batch_analyze.py;analysis_flow/step6_analyze_code/module_pre_analysis.py	+19 more
+data_models/agent_output.py	llm/agents/agent_output.py	move	0	-	-
 data_models/analysis_context.py	pipeline/data_models/analysis_context.py	move	10	analysis_flow/step5_build_context/build_context_step.py;analysis_flow/step5_build_context/dbms_context_builder.py;analysis_flow/step5_build_context/framework_context_builder.py;analysis_flow/step5_build_context/referenced_symbols.py;analysis_flow/step5_build_context/test_structured_referenced_symbols.py;analysis_flow/step6_analyze_code/batch_analyze.py;analysis_flow/step6_analyze_code/range_body.py;analysis_flow/step6_analyze_code/three_split_llm_fanout.py	+2 more
 data_models/analysis_run.py	pipeline/data_models/analysis_meta.py	move	4	cli_scripts/analyze_data_dir.py;shared/workflow/artifact_writer.py;shared/workflow/executor.py;shared/workflow/state.py	-
 data_models/code_analysis_output.py	pipeline/data_models/code_analysis_output.py	move	14	analysis_flow/step6_analyze_code/analyze_code_step.py;analysis_flow/step6_analyze_code/batch_analyze.py;analysis_flow/step6_analyze_code/module_pre_analysis.py;analysis_flow/step6_analyze_code/rule_quality.py;analysis_flow/step6_analyze_code/rules_fallback.py;analysis_flow/step6_analyze_code/test_rule_quality.py;analysis_flow/step6_analyze_code/test_rules_fallback.py;analysis_flow/step6_analyze_code/three_split_llm_fanout.py	+6 more
@@ -147,10 +147,10 @@ search/rewrite.py	search/query/query_rewrite.py	move	1	search/retriever.py	-
 search/service.py	search/service.py	keep	2	api/mcp_app.py;api/search_router.py	-
 search/test_global_anchor.py	tests/search/test_global_anchor.py	move	0	-	-
 search/test_rules_traversal.py	tests/search/test_rules_traversal.py	move	0	-	-
-shared/__init__.py	(remove-empty-package)	delete-empty	79	analysis_flow/step1_parse_ddl/parse_ddl_step.py;analysis_flow/step2_load_ast/antlr_json_reader.py;analysis_flow/step2_load_ast/load_ast_step.py;analysis_flow/step2_load_ast/reference_linker.py;analysis_flow/step2_load_ast/test_control_structure_walk.py;analysis_flow/step3_scan_project/scan_agent.py;analysis_flow/step3_scan_project/scan_codebase_step.py;analysis_flow/step3_scan_project/scanner_input_collector.py	+71 more
+shared/__init__.py	(remove-empty-package)	delete-empty	60	analysis_flow/step1_parse_ddl/parse_ddl_step.py;analysis_flow/step2_load_ast/antlr_json_reader.py;analysis_flow/step2_load_ast/load_ast_step.py;analysis_flow/step2_load_ast/reference_linker.py;analysis_flow/step2_load_ast/test_control_structure_walk.py;analysis_flow/step3_scan_project/scan_agent.py;analysis_flow/step3_scan_project/scan_codebase_step.py;analysis_flow/step3_scan_project/scanner_input_collector.py	+52 more
 shared/config/__init__.py	system/__init__.py	move	0	-	-
 shared/config/env_catalog.py	system/env_catalog.py	move	0	-	-
-shared/content_text.py	llm/client/message_content.py	move	3	shared/llm/middleware/cost_tracking.py;shared/llm/middleware/tool_event_emitter.py;shared/log/prompt_logger.py	-
+shared/content_text.py	llm/client/message_content.py	move	0	-	-
 shared/ddl/__init__.py	pipeline/steps/step1_parse_ddl/__init__.py	move	1	analysis_flow/step1_parse_ddl/parse_ddl_step.py	-
 shared/ddl/parser.py	pipeline/steps/step1_parse_ddl/ddl_parser.py	move	1	analysis_flow/step1_parse_ddl/parse_ddl_step.py	-
 shared/domain_terms.py	pipeline/domain_terms.py	move	4	analysis_flow/step6_analyze_code/batch_analyze.py;analysis_flow/step6_analyze_code/three_split_llm_fanout.py;cli_scripts/resynthesize_glossary.py;shared/test_domain_terms.py	-
@@ -169,34 +169,34 @@ shared/lang/stdlib/java_stdlib.json	pipeline/steps/step4_linking/stdlib/java_std
 shared/lang/stdlib/python_stdlib.json	pipeline/steps/step4_linking/stdlib/python_stdlib.json	move	0	-	-
 shared/lang/strategy_detector.py	pipeline/programming_languages.py	move	2	cli_scripts/analyze_data_dir.py;cli_scripts/baseline_runner.py	-
 shared/lang/test_call_classifier.py	tests/pipeline/step4_linking/test_call_classifier.py	move	0	-	-
-shared/llm/__init__.py	llm/client/__init__.py	move	32	analysis_flow/step3_scan_project/scan_agent.py;analysis_flow/step3_scan_project/scan_codebase_step.py;analysis_flow/step4_linking/stage3_residual_patterns/residual_pattern_loop.py;analysis_flow/step5_build_context/build_context_step.py;analysis_flow/step5_build_context/large_code_one_liner.py;analysis_flow/step6_analyze_code/analyze_code_step.py;analysis_flow/step6_analyze_code/batch_analyze.py;analysis_flow/step6_analyze_code/module_pre_analysis.py	+24 more
-shared/llm/client.py	llm/client/llm_client.py	move	2	shared/llm/structured_agent.py;shared/llm/yaml_llm_runner.py	-
-shared/llm/config_loader.py	llm/client/llm_config_loader.py	move	6	analysis_flow/step5_build_context/large_code_one_liner.py;search/llm.py;shared/llm/client.py;shared/llm/embedder.py;shared/llm/middleware/strip_cache_control.py;shared/llm/yaml_llm_runner.py	-
-shared/llm/cost_budget.py	llm/client/usage/cost_budget.py	move	21	analysis_flow/step3_scan_project/scan_agent.py;analysis_flow/step3_scan_project/scan_codebase_step.py;analysis_flow/step4_linking/stage3_residual_patterns/residual_pattern_loop.py;analysis_flow/step5_build_context/build_context_step.py;analysis_flow/step5_build_context/large_code_one_liner.py;analysis_flow/step6_analyze_code/analyze_code_step.py;analysis_flow/step6_analyze_code/batch_analyze.py;analysis_flow/step6_analyze_code/module_pre_analysis.py	+13 more
+shared/llm/__init__.py	llm/client/__init__.py	move	0	-	-
+shared/llm/client.py	llm/client/llm_client.py	move	0	-	-
+shared/llm/config_loader.py	llm/client/llm_config_loader.py	move	0	-	-
+shared/llm/cost_budget.py	llm/client/usage/cost_budget.py	move	0	-	-
 shared/llm/embedder.py	llm/client/embedder.py	move	0	-	-
-shared/llm/fanout.py	llm/client/llm_fanout.py	move	7	analysis_flow/step5_build_context/build_context_step.py;analysis_flow/step6_analyze_code/module_pre_analysis.py;analysis_flow/step7_post_processing/build_components_step.py;analysis_flow/step7_post_processing/build_glossary_step.py;analysis_flow/step7_post_processing/enrich_table_description_step.py;analysis_flow/step7_post_processing/summarize_module_step.py;cli_scripts/resynthesize_glossary.py	-
+shared/llm/fanout.py	llm/client/llm_fanout.py	move	0	-	-
 shared/llm/llm_pricing.yaml	llm/client/usage/llm_pricing.yaml	move	0	-	-
-shared/llm/middleware/__init__.py	llm/client/middleware/__init__.py	move	3	analysis_flow/step3_scan_project/scan_codebase_step.py;shared/llm/middleware/standard_stack.py;shared/llm/structured_agent.py	-
-shared/llm/middleware/cache_friendly_order.py	llm/client/middleware/cache_friendly_order.py	move	1	shared/llm/middleware/standard_stack.py	-
-shared/llm/middleware/call_limit.py	llm/client/middleware/call_limit.py	move	2	analysis_flow/step3_scan_project/scan_codebase_step.py;shared/llm/middleware/standard_stack.py	-
-shared/llm/middleware/cost_tracking.py	llm/client/middleware/cost_tracking.py	move	1	shared/llm/middleware/standard_stack.py	-
-shared/llm/middleware/standard_stack.py	llm/client/middleware/standard_stack.py	move	1	shared/llm/structured_agent.py	-
-shared/llm/middleware/strip_cache_control.py	llm/client/middleware/strip_cache_control.py	move	1	shared/llm/middleware/standard_stack.py	-
-shared/llm/middleware/strip_dynamic_system_prompt.py	llm/client/middleware/strip_dynamic_system_prompt.py	move	1	shared/llm/middleware/standard_stack.py	-
-shared/llm/middleware/todo_tracker.py	llm/client/middleware/todo_tracker.py	move	1	shared/llm/middleware/standard_stack.py	-
-shared/llm/middleware/tool_event_emitter.py	llm/client/middleware/tool_event_emitter.py	move	1	shared/llm/middleware/standard_stack.py	-
-shared/llm/pricing.py	llm/client/usage/pricing.py	move	3	search/llm.py;shared/llm/middleware/cost_tracking.py;shared/llm/yaml_llm_runner.py	-
-shared/llm/structured_agent.py	llm/client/runners/structured_agent.py	move	2	analysis_flow/step3_scan_project/scan_agent.py;analysis_flow/step4_linking/stage3_residual_patterns/residual_pattern_loop.py	-
-shared/llm/token_usage.py	llm/client/usage/token_usage.py	move	6	search/llm.py;shared/llm/middleware/cost_tracking.py;shared/llm/middleware/standard_stack.py;shared/llm/pricing.py;shared/llm/usage_jsonl_writer.py;shared/llm/yaml_llm_runner.py	-
-shared/llm/usage_jsonl_writer.py	llm/client/usage/usage_jsonl_writer.py	move	3	search/llm.py;shared/llm/middleware/cost_tracking.py;shared/llm/yaml_llm_runner.py	-
-shared/llm/yaml_llm_runner.py	llm/client/runners/yaml_llm_runner.py	move	9	analysis_flow/step5_build_context/large_code_one_liner.py;analysis_flow/step6_analyze_code/batch_analyze.py;analysis_flow/step6_analyze_code/module_pre_analysis.py;analysis_flow/step6_analyze_code/three_split_llm_fanout.py;analysis_flow/step7_post_processing/build_components_step.py;analysis_flow/step7_post_processing/build_glossary_step.py;analysis_flow/step7_post_processing/enrich_table_description_step.py;analysis_flow/step7_post_processing/summarize_module_step.py	+1 more
-shared/log/__init__.py	log/__init__.py	move	58	analysis_flow/step1_parse_ddl/parse_ddl_step.py;analysis_flow/step2_load_ast/antlr_json_reader.py;analysis_flow/step2_load_ast/load_ast_step.py;analysis_flow/step2_load_ast/reference_linker.py;analysis_flow/step3_scan_project/scan_agent.py;analysis_flow/step3_scan_project/scan_codebase_step.py;analysis_flow/step3_scan_project/scanner_input_collector.py;analysis_flow/step4_linking/link_dbms_tables_step.py	+50 more
-shared/log/cache_message_filters.py	llm/client/prompt_logging/cache_message_filters.py	move	4	shared/llm/middleware/cache_friendly_order.py;shared/llm/middleware/strip_cache_control.py;shared/llm/middleware/strip_dynamic_system_prompt.py;shared/llm/yaml_llm_runner.py	-
-shared/log/logger.py	log/logger.py	move	48	analysis_flow/step1_parse_ddl/parse_ddl_step.py;analysis_flow/step2_load_ast/antlr_json_reader.py;analysis_flow/step2_load_ast/load_ast_step.py;analysis_flow/step2_load_ast/reference_linker.py;analysis_flow/step3_scan_project/scan_agent.py;analysis_flow/step3_scan_project/scan_codebase_step.py;analysis_flow/step3_scan_project/scanner_input_collector.py;analysis_flow/step4_linking/link_dbms_tables_step.py	+40 more
+shared/llm/middleware/__init__.py	llm/client/middleware/__init__.py	move	0	-	-
+shared/llm/middleware/cache_friendly_order.py	llm/client/middleware/cache_friendly_order.py	move	0	-	-
+shared/llm/middleware/call_limit.py	llm/client/middleware/call_limit.py	move	0	-	-
+shared/llm/middleware/cost_tracking.py	llm/client/middleware/cost_tracking.py	move	0	-	-
+shared/llm/middleware/standard_stack.py	llm/client/middleware/standard_stack.py	move	0	-	-
+shared/llm/middleware/strip_cache_control.py	llm/client/middleware/strip_cache_control.py	move	0	-	-
+shared/llm/middleware/strip_dynamic_system_prompt.py	llm/client/middleware/strip_dynamic_system_prompt.py	move	0	-	-
+shared/llm/middleware/todo_tracker.py	llm/client/middleware/todo_tracker.py	move	0	-	-
+shared/llm/middleware/tool_event_emitter.py	llm/client/middleware/tool_event_emitter.py	move	0	-	-
+shared/llm/pricing.py	llm/client/usage/pricing.py	move	0	-	-
+shared/llm/structured_agent.py	llm/client/runners/structured_agent.py	move	0	-	-
+shared/llm/token_usage.py	llm/client/usage/token_usage.py	move	0	-	-
+shared/llm/usage_jsonl_writer.py	llm/client/usage/usage_jsonl_writer.py	move	0	-	-
+shared/llm/yaml_llm_runner.py	llm/client/runners/yaml_llm_runner.py	move	0	-	-
+shared/log/__init__.py	log/__init__.py	move	47	analysis_flow/step1_parse_ddl/parse_ddl_step.py;analysis_flow/step2_load_ast/antlr_json_reader.py;analysis_flow/step2_load_ast/load_ast_step.py;analysis_flow/step2_load_ast/reference_linker.py;analysis_flow/step3_scan_project/scan_agent.py;analysis_flow/step3_scan_project/scan_codebase_step.py;analysis_flow/step3_scan_project/scanner_input_collector.py;analysis_flow/step4_linking/link_dbms_tables_step.py	+39 more
+shared/log/cache_message_filters.py	llm/client/prompt_logging/cache_message_filters.py	move	0	-	-
+shared/log/logger.py	log/logger.py	move	42	analysis_flow/step1_parse_ddl/parse_ddl_step.py;analysis_flow/step2_load_ast/antlr_json_reader.py;analysis_flow/step2_load_ast/load_ast_step.py;analysis_flow/step2_load_ast/reference_linker.py;analysis_flow/step3_scan_project/scan_agent.py;analysis_flow/step3_scan_project/scan_codebase_step.py;analysis_flow/step3_scan_project/scanner_input_collector.py;analysis_flow/step4_linking/link_dbms_tables_step.py	+34 more
 shared/log/ndjson_stream.py	log/ndjson_stream.py	move	10	analysis_flow/step6_analyze_code/analyze_code_step.py;analysis_flow/step6_analyze_code/module_pre_analysis.py;api/analyze_router.py;api/search_router.py;cli_scripts/analyze_data_dir.py;cli_scripts/baseline_runner.py;shared/log/processing_progress.py;shared/workflow/executor.py	+2 more
 shared/log/processing_progress.py	log/processing_progress.py	move	11	analysis_flow/step5_build_context/build_context_step.py;analysis_flow/step5_build_context/fetch_table_samples_step.py;analysis_flow/step6_analyze_code/analyze_code_step.py;analysis_flow/step6_analyze_code/batch_analyze.py;analysis_flow/step6_analyze_code/module_pre_analysis.py;analysis_flow/step6_analyze_code/rules_fallback.py;analysis_flow/step6_analyze_code/three_split_llm_fanout.py;analysis_flow/step7_post_processing/build_components_step.py	+3 more
-shared/log/prompt_logger.py	llm/client/prompt_logging/prompt_logger.py	move	3	shared/llm/middleware/cost_tracking.py;shared/llm/structured_agent.py;shared/llm/yaml_llm_runner.py	-
-shared/log/prompt_mask_patterns.py	llm/client/prompt_logging/prompt_mask_patterns.py	move	1	shared/log/cache_message_filters.py	-
+shared/log/prompt_logger.py	llm/client/prompt_logging/prompt_logger.py	move	0	-	-
+shared/log/prompt_mask_patterns.py	llm/client/prompt_logging/prompt_mask_patterns.py	move	0	-	-
 shared/neo4j/__init__.py	graph/__init__.py	move	0	-	-
 shared/neo4j/connection_context.py	graph/connection_context.py	move	0	-	-
 shared/neo4j/edges/__init__.py	graph/edges/__init__.py	move	0	-	-

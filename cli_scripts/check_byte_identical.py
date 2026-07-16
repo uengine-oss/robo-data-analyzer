@@ -1,6 +1,7 @@
 """byte-identical CI 체크 — 시스템 프롬프트 / yaml SHA256 비교.
 
-캐시 깨짐 방지의 보호장치. ``prompts/`` 안 .md / .yaml 변경 시 CI 빌드 실패.
+캐시 깨짐 방지의 보호장치. ``llm/prompts/`` 규칙과 ``llm/agents/`` system prompt의
+.md/.yaml 변경 시 CI 빌드 실패.
 
 사용::
 
@@ -19,20 +20,23 @@ from pathlib import Path
 
 
 _ROOT = Path(__file__).resolve().parent.parent
-PROMPTS_DIR = _ROOT / "prompts"
-HASHES_PATH = _ROOT / "cli_scripts" / "prompt_hashes.json"
+PROMPTS_DIR = _ROOT / "llm" / "prompts"
+AGENTS_DIR = _ROOT / "llm" / "agents"
+HASHES_PATH = PROMPTS_DIR / "prompt_hashes.json"
+PROMPT_ROOTS = (("prompts", PROMPTS_DIR), ("agents", AGENTS_DIR))
 
 
 def compute_hashes() -> dict[str, str]:
-    """``prompts/`` 안 모든 ``.md`` / ``.yaml`` / ``.yml`` 파일의 SHA256."""
+    """규칙 prompt와 agent system prompt의 SHA256을 경로와 함께 계산한다."""
     hashes: dict[str, str] = {}
-    for p in sorted(PROMPTS_DIR.rglob("*")):
-        if not p.is_file():
-            continue
-        if p.suffix.lower() not in (".md", ".yaml", ".yml"):
-            continue
-        rel = str(p.relative_to(PROMPTS_DIR)).replace("\\", "/")
-        hashes[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
+    for owner, root in PROMPT_ROOTS:
+        for path in sorted(root.rglob("*")):
+            if not path.is_file():
+                continue
+            if path.suffix.lower() not in (".md", ".yaml", ".yml"):
+                continue
+            rel = str(path.relative_to(root)).replace("\\", "/")
+            hashes[f"{owner}/{rel}"] = hashlib.sha256(path.read_bytes()).hexdigest()
     return hashes
 
 

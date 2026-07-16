@@ -32,7 +32,7 @@ from search.embed_material import (
     compose_embed_text,
 )
 from system.env_catalog import ENV
-from shared.llm import embedder
+from llm.client import embedder
 from shared.log.logger import log_info, log_warning
 from shared.log.processing_progress import emit_processing_event, step_processing_scope
 from graph.neo4j_client import Neo4jClient

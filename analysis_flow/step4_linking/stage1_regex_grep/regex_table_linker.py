@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Optional
 
-from data_models.agent_output import DdlTransform, TableAccessPattern
+from llm.agents.agent_output import DdlTransform, TableAccessPattern
 from graph.schema.graph_edges import ReadsWrites, derive_dml_type
 from graph.schema.graph_nodes import CodeNode, Table
 from system.env_catalog import ENV

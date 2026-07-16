@@ -3,7 +3,7 @@
 흐름:
 1. ``step6_analyze_code`` 의 ``tableInsights`` (``CodeNode.extra["table_insights"]``) 누적.
 2. ``table_fqn`` 별로 candidates (모든 코드노드 관점의 role + columns) 모음.
-3. ``prompts/<strategy>/table_description.yaml`` LLM 호출 → 통합 description.
+3. ``llm/prompts/<strategy>/table_description.yaml`` LLM 호출 → 통합 description.
 4. Table/Column.analyzed_description Neo4j SET — DDL/카탈로그 1차 description 과 격리.
 
 LLM 호출 = 테이블당 1 회 (병렬, ``max_concurrency``).
@@ -23,10 +23,10 @@ from langchain_core.runnables import RunnableConfig
 from shared.workflow.step_utils import step_config
 
 from system.env_catalog import ENV
-from shared.llm.cost_budget import BudgetExceededError
-from shared.llm.fanout import gather_with_warmup, partition_llm_results
+from llm.client.usage.cost_budget import BudgetExceededError
+from llm.client.llm_fanout import gather_with_warmup, partition_llm_results
 from data_models.code_analysis_output import TableDescription
-from shared.llm.yaml_llm_runner import run_yaml_rule
+from llm.client.runners.yaml_llm_runner import run_yaml_rule
 from shared.log.logger import log_error, log_info, log_warning
 from shared.log.processing_progress import step_processing_scope, track_processing
 from graph.neo4j_client import Neo4jClient

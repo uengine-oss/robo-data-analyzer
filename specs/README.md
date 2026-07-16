@@ -89,8 +89,8 @@ The backfill found several stale docs/comments; specs follow the **code**, not t
   `own_ast_type()`, not the docstring's substring claim.
 - **011** — `health_report.json` `top_risky` is **high-risk only**, sorted by (fan_in, loc), so
   it can be fewer than 20 (README says a flat "top 20").
-- **013** — `llm_configs/README.md` import snippet (`shared.llm.llm_config_loader`) is stale;
-  the real module is `shared/llm/config_loader.py`.
+- **013** — 과거 `llm_configs/README.md` import snippet은 폐기됐으며, 현재 구성 로더는
+  `llm/client/llm_config_loader.py`이다.
 - **007** — README's `_RESIDUAL_MAX_ROUNDS` shorthand is the env var `ROBO_PIPELINE_RESIDUAL_MAX_ROUNDS`.
 
 Specs are intentionally short (~100-165 lines each) — they describe the contract, not the code.

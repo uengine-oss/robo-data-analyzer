@@ -15,10 +15,10 @@ import time
 import httpx
 
 from system.env_catalog import ENV
-from shared.llm.config_loader import load_llm_config
-from shared.llm.pricing import compute_cost
-from shared.llm.token_usage import TokenUsageRecord
-from shared.llm.usage_jsonl_writer import append_usage_record
+from llm.client.llm_config_loader import load_llm_config
+from llm.client.usage.pricing import compute_cost
+from llm.client.usage.token_usage import TokenUsageRecord
+from llm.client.usage.usage_jsonl_writer import append_usage_record
 from shared.log.logger import log_warning
 
 _STEP = "search.llm"

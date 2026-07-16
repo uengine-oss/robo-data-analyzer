@@ -56,11 +56,11 @@ class LLMSettings:
     """ROBO_LLM_* — config 이름 + 비밀만.
 
     ``.env`` 에 박는 것:
-    - ``ROBO_LLM_CONFIG``: ``llm_configs/<name>.yaml`` 의 ``<name>`` (필수)
+    - ``ROBO_LLM_CONFIG``: ``llm/configs/<name>.yaml`` 의 ``<name>`` (필수)
     - ``ROBO_LLM_API_KEY``: 비밀 (secret manager 친화 — yaml 에 박지 X)
 
     그 외 모든 설정 (provider / model / sampling / extra_body / reasoning_effort 등) 은
-    ``llm_configs/<name>.yaml`` 안에 있음. 자세한 건 ``llm_configs/README.md``.
+    ``llm/configs/<name>.yaml`` 안에 있음. 자세한 건 ``llm/configs/README.md``.
     """
     config: str = field(default_factory=lambda: _getenv_str("ROBO_LLM_CONFIG", ""))
     api_key: str = field(default_factory=lambda: _getenv_str("ROBO_LLM_API_KEY", ""))
@@ -81,7 +81,7 @@ class EmbedSettings:
     """
     provider: str = field(default_factory=lambda: _getenv_str("ROBO_EMBED_PROVIDER", "sglang"))
     model: str = field(default_factory=lambda: _getenv_str("ROBO_EMBED_MODEL", "BAAI/bge-m3"))
-    # 비우면 llm_configs/<ROBO_LLM_CONFIG>.yaml 의 api_base 재사용 (같은 사내 서버).
+    # 비우면 llm/configs/<ROBO_LLM_CONFIG>.yaml 의 api_base 재사용 (같은 사내 서버).
     api_base: str = field(default_factory=lambda: _getenv_str("ROBO_EMBED_API_BASE", ""))
     api_key: str = field(default_factory=lambda: _getenv_str("ROBO_EMBED_API_KEY", ""))
     concurrency: int = field(default_factory=lambda: _getenv_int("ROBO_EMBED_CONCURRENCY", 8))
@@ -167,7 +167,7 @@ class PipelineSettings:
     batch_max_tokens: int = field(default_factory=lambda: _getenv_int("ROBO_PIPELINE_BATCH_MAX_TOKENS", 1500))
     # 임베딩 step on/off — Framework/DBMS 공통. 기본 ON (운영=full 동작).
     # 테스트/디버그 시 .env 로 off (느린 모델 로드 회피).
-    # 모델 자체는 LLM 영역 (shared/llm/embedder) 책임 — 분석기는 ENV 안 둠.
+    # 모델 자체는 LLM 영역 (llm/client/embedder.py) 책임 — 분석기는 ENV 안 둠.
     embed_enabled: bool = field(default_factory=lambda: _getenv_bool("ROBO_PIPELINE_EMBED_ENABLED", True))
 
 

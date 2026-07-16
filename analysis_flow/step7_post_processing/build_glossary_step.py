@@ -28,9 +28,9 @@ from pathlib import Path
 from data_models.code_analysis_output import GlossarySynthesisOutput
 from graph.schema.graph_nodes import CodeNode, Module
 from system.env_catalog import ENV
-from shared.llm.cost_budget import BudgetExceededError
-from shared.llm.fanout import gather_with_warmup
-from shared.llm.yaml_llm_runner import run_yaml_rule
+from llm.client.usage.cost_budget import BudgetExceededError
+from llm.client.llm_fanout import gather_with_warmup
+from llm.client.runners.yaml_llm_runner import run_yaml_rule
 from shared.log.logger import log_error, log_info, log_warning
 from graph.neo4j_client import Neo4jClient
 from shared.workflow.step_utils import step_config

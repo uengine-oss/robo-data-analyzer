@@ -5,7 +5,7 @@
 3분할 분석의 공통 context prefix 로만 사용되고 끝 — 영구 그래프 속성 X.
 
 strategy 게이트: ``<prompts_dir>/module_pre_analysis.yaml`` 이 있는 strategy 만
-동작한다. DBMS 는 ``prompts/dbms`` 에 이 yaml 이 없어 자연히 skip.
+동작한다. DBMS 는 ``llm/prompts/dbms`` 에 이 yaml 이 없어 자연히 skip.
 """
 from __future__ import annotations
 
@@ -18,9 +18,9 @@ from typing import Any, Optional
 from data_models.code_analysis_output import ModulePreAnalysisOutput
 from graph.schema.graph_nodes import CodeNode, Module
 from system.env_catalog import ENV
-from shared.llm.cost_budget import BudgetExceededError, CostBudget
-from shared.llm.fanout import gather_with_warmup
-from shared.llm.yaml_llm_runner import run_yaml_rule
+from llm.client.usage.cost_budget import BudgetExceededError, CostBudget
+from llm.client.llm_fanout import gather_with_warmup
+from llm.client.runners.yaml_llm_runner import run_yaml_rule
 from shared.log.logger import log_error, log_info
 from shared.log.ndjson_stream import NDJSONStream
 from shared.log.processing_progress import step_processing_scope, track_processing

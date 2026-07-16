@@ -1,11 +1,13 @@
+"""Domain-term prompt byte/content contracts."""
+
 from pathlib import Path
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SUMMARY_PROMPTS = (
-    ROOT / "prompts" / "framework" / "code_summary.yaml",
-    ROOT / "prompts" / "dbms" / "code_summary_batch.yaml",
+    ROOT / "llm" / "prompts" / "framework" / "code_summary.yaml",
+    ROOT / "llm" / "prompts" / "dbms" / "code_summary_batch.yaml",
 )
 
 
@@ -47,7 +49,7 @@ class DomainTermPromptContractTest(unittest.TestCase):
                     self.assertNotIn(phrase, text)
 
     def test_core_fallback_forbids_search_fields_and_has_small_budget(self) -> None:
-        prompt = (ROOT / "prompts" / "framework" / "code_summary_core.yaml").read_text(
+        prompt = (ROOT / "llm" / "prompts" / "framework" / "code_summary_core.yaml").read_text(
             encoding="utf-8"
         )
         self.assertIn("max_tokens: 600", prompt)

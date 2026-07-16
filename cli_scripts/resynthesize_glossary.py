@@ -26,8 +26,8 @@ from analysis_flow.step7_post_processing.build_glossary_step import (
 from analysis_pipelines import PIPELINES
 from data_models.code_analysis_output import GlossarySynthesisOutput
 from system.env_catalog import ENV
-from shared.llm.fanout import gather_with_warmup
-from shared.llm.yaml_llm_runner import run_yaml_rule
+from llm.client.llm_fanout import gather_with_warmup
+from llm.client.runners.yaml_llm_runner import run_yaml_rule
 from shared.domain_terms import load_domain_terms
 
 _NODES_QUERY = """
