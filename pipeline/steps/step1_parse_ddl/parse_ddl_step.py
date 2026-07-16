@@ -44,9 +44,9 @@ async def parse_ddl_step(state: dict, config: Optional[RunnableConfig] = None) -
     # ddl_dir 미설정 시 표준 data/ddl 로 폴백 — 절대 source 루트를 긁지 않는다
     # (입구 통일 후 data/ddl 엔 표 정의만 존재; 프로시저가 sqlglot 에 닿아 run 이 죽던 사고 차단).
     ddl_dir = project.ddl_dir or (ENV.data.dir / "ddl")
-    # db 자리는 DDL 명시값만 — 가공 식별자(예: 디렉토리 이름) 박지 X.
-    # 명시 없으면 빈값 → fqn = ".schema.name" 형태로 db 부재 명확.
-    db_name = ""
+    # 분석 요청의 datasource는 실제 대상 DB namespace다. 디렉토리명 같은 가공값은 쓰지 않고,
+    # 명시되지 않은 run만 빈값으로 남긴다.
+    db_name = (getattr(project, "datasource", None) or "").strip()
     started = time.monotonic()
     sql_files = sorted(Path(ddl_dir).rglob("*.sql"))
     log_info(_STEP, "start", root=str(project.root), ddl_dir=str(ddl_dir), sql_files=len(sql_files))

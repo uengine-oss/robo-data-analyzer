@@ -9,6 +9,8 @@
 - run 시작 초기화는 Analyzer owner 노드와 명확한 legacy UPPER_SNAKE 분석 노드만 삭제한다.
 - `DataSource` 및 Architect session/설계 노드는 어떤 분석 초기화에서도 삭제하지 않는다.
 - TABLE처럼 공용 upsert 예외인 writer도 동일 owner 계약을 지킨다.
+- 분석 요청의 `datasource`는 DDL Schema/TABLE/COLUMN의 `db` namespace로 전달해 Catalog의
+  datasource-scoped sample/enrichment 소비자가 같은 분석 run만 선택할 수 있게 한다.
 - 관계는 양 끝 owner node 삭제에 따라 정리하며 다른 owner 양 끝 관계는 보존한다.
 - 혼합 owner fixture와 실제 재분석 before/after count로 격리를 증명한다.
 - `CALLS` 자기연결은 무조건 삭제하지 않고 실제 caller/callee 식별자가 같을 때

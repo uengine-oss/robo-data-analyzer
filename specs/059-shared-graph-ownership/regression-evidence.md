@@ -10,3 +10,10 @@
 - 의미 품질: e2e 14/14, rule 386개·example 최대 46·반복 statement 0, GLOSSARY 182개, semantic search rules/tables 전달 통과.
 
 실행 증거는 `goal-verify/output/runs/r1b-owner-reanalysis/shopmall-reanalysis.ndjson`와 `goal-verify/output/reports/{e2e-report,quality-report}.json`에 보존했다.
+
+동일한 혼합 owner 조건에서 datasource namespace 수정 후 두 번째 전체 재분석과 Catalog 실제 보강을 연속 검증했다.
+
+- `Codebase.datasource=shopmall`을 DDL parser의 `db_name`으로 전달해 TABLE 22/22가 `db=shopmall` namespace를 갖는다. 빈 문자열로 버리던 생산자 경로는 단위 회귀 테스트로 잠갔다.
+- 두 번째 재분석은 440.0초, 8,205,386 bytes, failure 0으로 종료됐다. e2e 14/14, 함수 124/124, TABLE 22/22, FK 11/11, AFFECTS_TABLE 269개 bad target 0, CALLS 662개 누락/과잉 0, 실제 재귀 1/1, 고아/중복 0을 통과했다.
+- 실제 Catalog가 `shopmall` TABLE 1개를 실제 Fabric sample과 OpenAI-compatible provider로 보강했고 wrong owner 0, Proposal·DataSource ID 보존을 확인했다. 최종 owner 검증은 Analyzer 3,427개, `proposal_preserved=true`, `datasource_preserved=true`, sentinel cleanup=true였다.
+- Analyzer 전체 unittest 54개와 감사대장 `fixed 309 / deleted 1 / no-violation 243`을 통과했다. 두 번째 실행 원본은 `goal-verify/output/runs/r1b-owner-reanalysis/shopmall-datasource-reanalysis.ndjson`에 보존했다.
