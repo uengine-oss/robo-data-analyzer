@@ -192,7 +192,9 @@ def _imports(paths: list[str]) -> dict[str, list[str]]:
 
 def main() -> None:
     paths = subprocess.check_output(
-        ["git", "ls-tree", "-r", "--name-only", BASELINE], text=True
+        ["git", "-c", "core.quotePath=false", "ls-tree", "-r", "--name-only", BASELINE],
+        text=True,
+        encoding="utf-8",
     ).splitlines()
     importers = _imports(paths)
     rows = ["old_path\tfinal_path\taction\tstatic_importer_count\tstatic_importers_sample\tnotes"]
@@ -202,8 +204,8 @@ def main() -> None:
         target = _target(path)
         users = importers.get(path, [])
         action = "keep" if target == path else "delete-empty" if target.startswith("(") else "move"
-        sample = ";".join(users[:8])
-        note = f"+{len(users) - 8} more" if len(users) > 8 else ""
+        sample = ";".join(users[:8]) or "-"
+        note = f"+{len(users) - 8} more" if len(users) > 8 else "-"
         rows.append(f"{path}\t{target}\t{action}\t{len(users)}\t{sample}\t{note}")
     OUT.write_text("\n".join(rows) + "\n", encoding="utf-8")
 
