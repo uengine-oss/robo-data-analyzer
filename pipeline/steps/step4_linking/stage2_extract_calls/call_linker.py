@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from graph.schema.graph_edges import Calls
 from graph.schema.graph_nodes import CodeNode
-from shared.log.logger import log_warning
+from log.logger import log_warning
 
 # 내장 패키지/표준 라이브러리 prefix → 드롭 (분석 대상 프로시저 아님).
 _BUILTIN_PREFIXES = ("DBMS_", "UTL_", "SYS_", "ORA_", "OWA_", "STANDARD")

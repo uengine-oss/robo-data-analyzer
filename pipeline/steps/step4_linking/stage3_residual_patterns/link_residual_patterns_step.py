@@ -19,7 +19,7 @@ from pipeline.execution.step_config import step_config
 from pipeline.steps.step4_linking.stage3_residual_patterns.residual_pattern_loop import (
     run_residual_loop,
 )
-from shared.log.logger import log_info, log_warning
+from log.logger import log_info, log_warning
 from graph.edges.reads_writes import upsert_reads_writes
 from graph.neo4j_client import Neo4jClient
 from pipeline.execution.graph_delta_stream import emit_edges, emit_message

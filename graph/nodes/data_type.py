@@ -12,7 +12,7 @@ from graph.neo4j_client import Neo4jClient
 from graph.node_upsert import join_notes, nonempty
 
 
-# MERGE 쿼리·라벨 그룹핑은 ``shared/neo4j/merge.py`` 단일 정의처 (spec 046 FR-004).
+# MERGE 쿼리·라벨 그룹핑은 ``graph/node_upsert.py`` 단일 정의처 (spec 046 FR-004).
 
 
 def to_item(d: DataType) -> dict:

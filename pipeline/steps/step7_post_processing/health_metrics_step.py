@@ -29,7 +29,7 @@ from pipeline.steps.step6_analyze_code.call_cycles import find_call_cycles
 from graph.schema.graph_edges import Calls, ReadsWrites
 from graph.schema.graph_nodes import CodeNode
 from system.env_catalog import ENV
-from shared.log.logger import log_info, log_warning
+from log.logger import log_info, log_warning
 from graph.neo4j_client import Neo4jClient
 from pipeline.execution.step_config import step_config
 

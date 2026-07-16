@@ -4,7 +4,7 @@
 ─────────
 - Framework 와 DBMS 양쪽이 **같은 dataclass** 사용 (분기 0개).
 - DBMS 의 nested DML range 도 ``CodeNode`` 으로 흡수 (``parent_id`` 필드로 트리 표현).
-- Neo4j 에 박힐 때는 ``shared/neo4j/nodes/<type>.py`` 의 Cypher 쿼리가 변환.
+- Neo4j 에 박힐 때는 ``graph/nodes/<type>.py`` 의 Cypher 쿼리가 변환.
 
 정체성(식별자) 규칙
 ────────────────────
@@ -24,7 +24,7 @@
 새 노드 종류 추가 시 손대는 곳
 ─────────────────────────────
 1. 이 파일에 dataclass 추가 (식별 키 = ``id``)
-2. ``shared/neo4j/nodes/<new>.py`` 에 Cypher 쿼리 추가 (MERGE 키 = ``id``)
+2. ``graph/nodes/<new>.py`` 에 Cypher 쿼리 추가 (MERGE 키 = ``id``)
 """
 from __future__ import annotations
 

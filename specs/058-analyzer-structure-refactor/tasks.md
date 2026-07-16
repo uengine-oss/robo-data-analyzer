@@ -84,13 +84,13 @@ semantic and integration regression battery.
 
 **Independent Test**: REST/MCP/search entry points import, focused tests pass, and no active old root remains.
 
-- [ ] T033 [US1] Refactor search modules into `search/{ranking,corpus,query}/` with approved descriptive filenames
-- [ ] T034 [US1] Move operational logging into `log/` and preserve error/NDJSON/progress contracts
-- [ ] T035 [US1] Move `cli_scripts/` into `scripts/{graph_maintenance,analysis,llm_maintenance}/`
-- [ ] T036 [US1] Update `api/`, root `main.py`, Docker, deploy and workspace/goal-verify consumers for final internal paths
-- [ ] T037 [US1] Move search/API/eval tests and gold assets into `tests/{search,api,eval}/`
-- [ ] T038 [US1] Remove empty `shared/`, `analysis_flow/`, `agent_tools/`, `data_models/`, `llm_configs/`, `prompts/` and `cli_scripts/` roots only after active old-reference search returns zero
-- [ ] T039 [US1] Reconcile search/API/log/scripts/root rows in `specs/058-analyzer-structure-refactor/audit-ledger.tsv`
+- [x] T033 [US1] Refactor search modules into `search/{ranking,corpus,query}/` with approved descriptive filenames
+- [x] T034 [US1] Move operational logging into `log/` and preserve error/NDJSON/progress contracts
+- [x] T035 [US1] Move `cli_scripts/` into `scripts/{graph_maintenance,analysis,llm_maintenance}/`
+- [x] T036 [US1] Update `api/`, root `main.py`, Docker, deploy and workspace/goal-verify consumers for final internal paths
+- [x] T037 [US1] Move search/API/eval tests and gold assets into `tests/{search,api,eval}/`
+- [x] T038 [US1] Remove empty `shared/`, `analysis_flow/`, `agent_tools/`, `data_models/`, `llm_configs/`, `prompts/` and `cli_scripts/` roots only after active old-reference search returns zero
+- [x] T039 [US1] Reconcile search/API/log/scripts/root rows in `specs/058-analyzer-structure-refactor/audit-ledger.tsv`
 
 ---
 
@@ -100,13 +100,13 @@ semantic and integration regression battery.
 
 **Independent Test**: baseline count is 503, every new file is covered, verdicts are valid, and pending count is zero.
 
-- [ ] T040 [US3] Audit all runtime Python files for responsibility, DRY/SSOT, naming, dependency direction and dead code in `specs/058-analyzer-structure-refactor/audit-ledger.tsv`
-- [ ] T041 [US3] Audit exception/logging, timeout/retry/cancel/shutdown, transaction/idempotency/concurrency and false-success behavior
-- [ ] T042 [US3] Audit I/O/query bounds, caching, performance, credential/secret exposure, input and query security boundaries
-- [ ] T043 [US3] Audit sample hardcoding, experimental artifacts, scripts, routes, dependencies and compatibility shims in `specs/058-analyzer-structure-refactor/audit-ledger.tsv`
-- [ ] T044 [US3] Review the eight nominated large files and record `split` or `no-violation` evidence in `specs/058-analyzer-structure-refactor/audit-ledger.tsv`
-- [ ] T045 [US3] Audit prompts, YAML/JSON, Docker/deploy/config, README, specs and baseline files including immutable-history classification
-- [ ] T046 [US3] Add every new R1 file to the ledger and pass `tests/structure/test_refactor_contract.py` with zero pending rows
+- [x] T040 [US3] Audit all runtime Python files for responsibility, DRY/SSOT, naming, dependency direction and dead code in `specs/058-analyzer-structure-refactor/audit-ledger.tsv`
+- [x] T041 [US3] Audit exception/logging, timeout/retry/cancel/shutdown, transaction/idempotency/concurrency and false-success behavior
+- [x] T042 [US3] Audit I/O/query bounds, caching, performance, credential/secret exposure, input and query security boundaries
+- [x] T043 [US3] Audit sample hardcoding, experimental artifacts, scripts, routes, dependencies and compatibility shims in `specs/058-analyzer-structure-refactor/audit-ledger.tsv`
+- [x] T044 [US3] Review the eight nominated large files and record `split` or `no-violation` evidence in `specs/058-analyzer-structure-refactor/audit-ledger.tsv`
+- [x] T045 [US3] Audit prompts, YAML/JSON, Docker/deploy/config, README, specs and baseline files including immutable-history classification
+- [x] T046 [US3] Add every new R1 file to the ledger and pass `tests/structure/test_refactor_contract.py` with zero pending rows
 
 ---
 
@@ -116,13 +116,13 @@ semantic and integration regression battery.
 
 **Independent Test**: every required gate in quickstart passes with captured evidence.
 
-- [ ] T047 [US2] Run full unit/import/compile tests and record results in `specs/058-analyzer-structure-refactor/regression-evidence.md`
-- [ ] T048 [US2] Run prompt byte-identical and hash-coverage checks against final `llm/prompts/`
-- [ ] T049 [US2] Run the 057 search gold battery and require at least 29/30
-- [ ] T050 [US2] Run a clean shopmall reanalysis and compare graph/meaning results to the approved baseline
-- [ ] T051 [US2] Run live REST, MCP, central UI and Architect legacy-evidence/canvas smoke scenarios
-- [ ] T052 [US2] Update `./README.md`, `../../goal-verify/runners/` and `../../goal-verify/docs/handoffs/` to the verified final structure
-- [ ] T053 [US2] Run old-path/name search, diff check, secret check and independent self-contradiction review
+- [x] T047 [US2] Run full unit/import/compile tests and record results in `specs/058-analyzer-structure-refactor/regression-evidence.md`
+- [x] T048 [US2] Run prompt byte-identical and hash-coverage checks against final `llm/prompts/`
+- [x] T049 [US2] Run the 057 search gold battery and require at least 29/30
+- [x] T050 [US2] Run a clean shopmall reanalysis and compare graph/meaning results to the approved baseline
+- [x] T051 [US2] Run live REST, MCP, central UI and Architect legacy-evidence/canvas smoke scenarios (R1 behavior PASS; strict cross-service smoke retains separately recorded pre-existing text2sql/Figma failures for R3)
+- [x] T052 [US2] Update `./README.md`, `../../goal-verify/runners/` and `../../goal-verify/docs/handoffs/` to the verified final structure
+- [x] T053 [US2] Run old-path/name search, diff check, secret check and independent self-contradiction review
 - [ ] T054 [US2] Commit and push verified R1 slices, then confirm local/origin hashes and clean worktrees
 
 ---

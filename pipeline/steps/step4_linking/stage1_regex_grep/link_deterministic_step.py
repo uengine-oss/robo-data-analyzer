@@ -17,7 +17,7 @@ from pipeline.execution.step_config import step_config
 
 from llm.agents.agent_output import ScanResult
 from pipeline.steps.step4_linking.stage1_regex_grep.regex_table_linker import RegexTableLinker
-from shared.log.logger import log_info, log_warning
+from log.logger import log_info, log_warning
 from graph.edges.reads_writes import upsert_reads_writes
 from graph.neo4j_client import Neo4jClient
 from pipeline.execution.graph_delta_stream import emit_edges, emit_message

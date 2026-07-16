@@ -24,7 +24,8 @@ from pydantic import BaseModel
 from pipeline.analysis_pipelines import get_pipeline
 from pipeline.data_models.analysis_meta import Codebase
 from system.env_catalog import ENV
-from shared.log.ndjson_stream import NDJSONStream
+from log.ndjson_stream import NDJSONStream
+from log.logger import log_warning
 from graph.connection_context import Neo4jOverride, set_override
 from pipeline.execution.run_executor import execute_run
 from pipeline.execution.run_registry import get_active
@@ -99,8 +100,15 @@ async def analyze(req: AnalyzeRequest, request: Request) -> StreamingResponse:
         # task 의 unhandled 예외만 흡수(중복 emit 금지).
         try:
             await execute_run(strategy=pipeline, codebase=codebase, stream=stream)
-        except Exception:
-            pass
+        except Exception as error:
+            # execute_run이 원인과 스트림 오류를 이미 기록한다. task 예외를 소비했다는
+            # 사실도 남겨 background task 종료가 조용히 사라지지 않게 한다.
+            log_warning(
+                "api.analyze_router",
+                "background_run_terminated",
+                "분석 background task가 오류로 종료됨 — 상세 원인은 run_failed 로그 참조",
+                error=f"{type(error).__name__}: {error}",
+            )
 
     asyncio.create_task(_run_in_background())
     return StreamingResponse(stream.iter(), media_type="application/x-ndjson")

@@ -1,7 +1,7 @@
 """MCP over HTTP — 검색 코어를 Claude Code 도구로 노출 (spec 044 FR-002).
 
 FastMCP(streamable-http, stateless)를 FastAPI `/robo/mcp` 에 mount. 도구 = REST 와 **같은
-검색 코어**(`search.retriever`) 호출 — 알고리즘 사본 0(SC-005). MCP 는 최종 결과만 반환
+검색 코어**(`search.ranking.retriever`) 호출 — 알고리즘 사본 0(SC-005). MCP 는 최종 결과만 반환
 (진행 스트림은 프론트 REST 전용 — 사용자 합의).
 
 spec 057: 기본 응답은 계층화 프로파일(`detail='tiered'`) + **compact 비이스케이프 JSON
@@ -54,7 +54,7 @@ def _table_columns(table_ids: list[str]) -> dict[str, list[dict]]:
     """TABLE 컬럼 배치 조회 — 컬럼 미수집 테이블은 정상 빈 배열(조회 실패는 예외 표면화)."""
     if not table_ids:
         return {}
-    from search.neo import read_driver
+    from search.corpus.neo4j_reader import read_driver
     drv, dbn = read_driver()
     try:
         with drv.session(database=dbn) as s:
@@ -132,7 +132,7 @@ async def cluster_retrieve(
             set_override(Neo4jOverride(
                 uri=ENV.neo4j.uri, user=ENV.neo4j.user,
                 password=ENV.neo4j.password, database=database))
-        from search.corpus import SearchUnavailable, load_corpus
+        from search.corpus.corpus import SearchUnavailable, load_corpus
         from search.service import run_search
         try:
             clusters, meta = run_search(q)

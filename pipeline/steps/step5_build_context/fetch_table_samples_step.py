@@ -25,8 +25,8 @@ from pipeline.execution.step_config import step_config
 
 from pipeline.catalog_client import catalog_base_url_or_skip, post_sample_context
 from system.env_catalog import ENV
-from shared.log.logger import log_info, log_warning
-from shared.log.processing_progress import step_processing_scope
+from log.logger import log_info, log_warning
+from log.processing_progress import step_processing_scope
 
 _STEP = "step5.fetch_table_samples"
 _CHUNK = 100       # 테이블명 한 요청 당 최대 — 거대 응답/타임아웃 회피

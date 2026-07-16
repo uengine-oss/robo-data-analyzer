@@ -26,7 +26,7 @@ from llm.agents.agent_output import DdlTransform, TableAccessPattern
 from graph.schema.graph_edges import ReadsWrites, derive_dml_type
 from graph.schema.graph_nodes import CodeNode, Table
 from system.env_catalog import ENV
-from shared.log.logger import log_warning
+from log.logger import log_warning
 
 _LOG = "pipeline.steps.step4_linking.stage1_regex_grep.regex_table_linker"
 

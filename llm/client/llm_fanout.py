@@ -16,7 +16,7 @@ import asyncio
 from typing import Any, Callable, Iterable, Literal, Optional
 
 from llm.client.usage.cost_budget import BudgetExceededError
-from shared.log.logger import log_error
+from log.logger import log_error
 
 
 async def gather_with_warmup(coros: Iterable, *, return_exceptions: bool = False) -> list:

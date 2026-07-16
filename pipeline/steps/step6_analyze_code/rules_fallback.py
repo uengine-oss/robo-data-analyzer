@@ -34,8 +34,8 @@ from pipeline.steps.step6_analyze_code.rule_quality import (
 )
 from pipeline.data_models.code_analysis_output import RulesExamplesOutput
 from llm.client.usage.cost_budget import BudgetExceededError
-from shared.log.logger import log_error, log_warning
-from shared.log.processing_progress import emit_current, track_processing
+from log.logger import log_error, log_warning
+from log.processing_progress import emit_current, track_processing
 
 _STEP = "step6.analyze_code.rules_fallback"
 

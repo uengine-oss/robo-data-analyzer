@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from shared.log.logger import log_warning
+from log.logger import log_warning
 
 
 _LOG = "pipeline.source_file_cache"

@@ -6,10 +6,10 @@ sync — 호출측(async)이 to_thread 로 격리한다.
 """
 from __future__ import annotations
 
-from search.config import DEFAULT
-from search.corpus import load_corpus
-from search.neo import read_driver
-from search.retriever import Retriever
+from search.search_config import DEFAULT
+from search.corpus.corpus import load_corpus
+from search.corpus.neo4j_reader import read_driver
+from search.ranking.retriever import Retriever
 
 
 def run_search(query: str, on_progress=None) -> tuple[list[dict], dict]:

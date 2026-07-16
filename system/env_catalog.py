@@ -216,9 +216,9 @@ class LogSettings:
 
 
 # robo-data-analyzer 와 같은 레벨(형제)에 있는 ``data`` 폴더 — 실행 위치(cwd) 무관 고정 기준.
-# 이 파일: robo-data-analyzer/shared/config/env_catalog.py → parents[2] = robo-data-analyzer.
+# 이 파일은 robo-data-analyzer/system/env_catalog.py에 있으므로 parents[1]이 저장소 루트다.
 # antlr-code-parser 도 동일하게 "자기 위치의 부모 + data" 로 이 폴더에 산출물(source/ddl/analysis)을 쌓는다.
-_DEFAULT_DATA_DIR = Path(__file__).resolve().parents[2].parent / "data"
+_DEFAULT_DATA_DIR = Path(__file__).resolve().parents[1].parent / "data"
 
 
 def _resolve_data_dir() -> Path:

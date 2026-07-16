@@ -33,7 +33,7 @@ from typing import NamedTuple
 from graph.schema.graph_edges import InitBy, References
 from graph.schema.graph_nodes import Constant, CodeNode, Variable
 from pipeline.programming_languages import EXT_TO_LANG
-from shared.log.logger import log_info
+from log.logger import log_info
 from pipeline.source_file_cache import SourceFileCache
 
 _COMPONENT = "step2.reference_linker"

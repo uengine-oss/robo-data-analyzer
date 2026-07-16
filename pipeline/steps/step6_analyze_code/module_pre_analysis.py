@@ -21,9 +21,9 @@ from system.env_catalog import ENV
 from llm.client.usage.cost_budget import BudgetExceededError, CostBudget
 from llm.client.llm_fanout import gather_with_warmup
 from llm.client.runners.yaml_llm_runner import run_yaml_rule
-from shared.log.logger import log_error, log_info
-from shared.log.ndjson_stream import NDJSONStream
-from shared.log.processing_progress import step_processing_scope, track_processing
+from log.logger import log_error, log_info
+from log.ndjson_stream import NDJSONStream
+from log.processing_progress import step_processing_scope, track_processing
 
 _STEP = "step6.module_pre_analysis"
 _RULE = "module_pre_analysis"

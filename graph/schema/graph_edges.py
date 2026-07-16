@@ -4,7 +4,7 @@
 ─────────
 - Framework / DBMS 양쪽이 같은 dataclass 사용 (분기 0개).
 - DBMS 만의 PARENT_OF 도 공통 엣지로 포함 (CodeNode 의 nested 표현).
-- Neo4j 에 박힐 때는 ``shared/neo4j/edges/<type>.py`` 의 Cypher 쿼리가 변환.
+- Neo4j 에 박힐 때는 ``graph/edges/<type>.py`` 의 Cypher 쿼리가 변환.
 
 endpoint 필드 = 가리키는 노드의 ``id`` (관계 역할명)
 ────────────────────────────────────────────────────

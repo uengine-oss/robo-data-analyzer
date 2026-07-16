@@ -40,7 +40,7 @@ from llm.client.message_content import content_to_text
 from llm.client.usage.pricing import compute_cost
 from llm.client.usage.token_usage import LatencyBasedCacheEstimator, track_usage
 from llm.client.usage.usage_jsonl_writer import append_usage_record
-from shared.log.logger import log_info, log_warning
+from log.logger import log_info, log_warning
 from llm.client.prompt_logging.prompt_logger import append_agent_turn
 
 

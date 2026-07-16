@@ -14,7 +14,7 @@ from langchain_core.runnables import RunnableConfig
 from pipeline.execution.step_config import step_config
 
 from pipeline.steps.step4_linking.call_classifier import classify_call_sites
-from shared.log.logger import log_info, log_warning
+from log.logger import log_info, log_warning
 from graph.edges.calls import upsert_calls, emit_calls
 from graph.neo4j_client import Neo4jClient
 from pipeline.execution.graph_delta_stream import emit_message

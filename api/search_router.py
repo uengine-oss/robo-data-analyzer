@@ -17,10 +17,10 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from search.corpus import SearchUnavailable
+from search.corpus.corpus import SearchUnavailable
 from search.service import run_search
-from shared.log.logger import log_error, log_info
-from shared.log.ndjson_stream import NDJSONStream
+from log.logger import log_error, log_info
+from log.ndjson_stream import NDJSONStream
 from graph.connection_context import Neo4jOverride, set_override
 
 router = APIRouter(prefix="/robo")

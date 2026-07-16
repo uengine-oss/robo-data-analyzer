@@ -47,9 +47,9 @@ from graph.nodes.example_writer import write_example_mapping
 from llm.client.usage.cost_budget import BudgetExceededError
 from pipeline.data_models.code_analysis_output import SummaryOutput
 from pipeline.programming_languages import ROUTINE_LABELS
-from shared.log.logger import log_error, log_info, log_warning
-from shared.log.ndjson_stream import NDJSONStream
-from shared.log.processing_progress import step_processing_scope, track_processing
+from log.logger import log_error, log_info, log_warning
+from log.ndjson_stream import NDJSONStream
+from log.processing_progress import step_processing_scope, track_processing
 from graph.neo4j_client import Neo4jClient
 from graph.nodes.code_node import update_summaries
 

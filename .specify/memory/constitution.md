@@ -22,7 +22,7 @@ regex or graph algorithm suffices is a defect, not a feature.
 ### II. Zero-Branch Strategy Pattern (분기 0)
 
 Pipeline variants (`framework` / `dbms`) are expressed by **declaring** a `Strategy(steps=…)`
-in `analysis_pipelines.py`. `graph_builder` assembles the LangGraph StateGraph with **no
+in `pipeline/analysis_pipelines.py`. `pipeline/execution/langgraph_builder.py` assembles the LangGraph StateGraph with **no
 strategy `if` branches**. A step tuple = a parallel superstep group. Adding a new strategy
 MUST touch exactly one place (the declaration) and zero control-flow branches.
 
@@ -71,23 +71,21 @@ masking. Agents finalize by calling their submit tool exactly once.
 **Rationale**: provider-specific grammar masking deadlocks; the submit-tool pattern is the
 portable way to guarantee a typed result.
 
-### VIII. Cohesion Over Convention (응집 합본 예외)
+### VIII. Explicit Ownership and Dependency Direction (명시적 소유권과 의존 방향)
 
-The default layout splits Neo4j nodes (`nodes/`) and edges (`edges/`). The single sanctioned
-exception is `COMPONENT`, whose node + member + calls upserts form one ordered unit and live
-together in `shared/neo4j/component.py`. Cohesion of a tightly-coupled write sequence outranks
-the file-split convention.
+Every module MUST live under the owner that changes for the same reason: pipeline, graph, LLM,
+search, logging, API, or system configuration. High-level orchestration may depend on these
+owners; low-level contracts MUST NOT import a heavyweight orchestrator merely to reuse a small
+helper. Shared behavior belongs in the narrowest stable owner with all consumers identified.
 
-**Rationale**: splitting an order-dependent write across files invites ordering bugs.
+**Rationale**: explicit ownership prevents generic shared dumping grounds, circular dependencies,
+duplicate truths, and refactors that only make the directory tree cosmetically smaller.
 
 ## Cross-Service Contracts
 
 The analyzer is one service in a pipeline. Its boundaries (and therefore the only things that
 ripple to other services when changed) are:
 
-- **↑ Input — antlr-code-parser**: the JSON AST format read from `data/analysis/`.
-- **↓ Output — robo-architect**: the Neo4j graph schema (13 node labels / 21 edge types,
-  defined in `graph/schema/graph_*.py` + `graph/schema/rel_types.py`).
 - **↔ Catalog service**: HTTP `sample-context` and `/lineage` endpoints.
 
 A spec change that does NOT touch a contract is internal (no cross-service impact). A spec
@@ -109,4 +107,4 @@ This constitution supersedes ad-hoc convention. New features go through
 verifying compliance with the principles above. A principle is amended only by editing this
 file and bumping the version, with the rationale recorded.
 
-**Version**: 1.1.0 | **Ratified**: 2026-06-15 | **Last Amended**: 2026-07-16
+**Version**: 1.2.0 | **Ratified**: 2026-06-15 | **Last Amended**: 2026-07-16

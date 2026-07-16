@@ -18,7 +18,7 @@ from typing import Iterable, Optional
 
 from graph.schema import graph_edges as ge
 from graph.schema import graph_nodes as gn
-from shared.log.ndjson_stream import NDJSONStream
+from log.ndjson_stream import NDJSONStream
 from graph.schema import rel_types as rt
 from graph.node_upsert import nonempty
 

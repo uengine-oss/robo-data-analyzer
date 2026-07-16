@@ -1,7 +1,7 @@
 """Schema 노드 Cypher — UNWIND 배치 MERGE.
 
 새 Schema 필드 추가 시 손대는 곳:
-1. ``data_models/graph_nodes.py`` 의 Schema dataclass
+1. ``graph/schema/graph_nodes.py`` 의 Schema dataclass
 2. 이 파일의 MERGE_QUERY + to_item
 """
 from __future__ import annotations

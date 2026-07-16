@@ -16,8 +16,8 @@ from __future__ import annotations
 import asyncio
 from typing import Optional
 
-from shared.log.logger import log_info
-from shared.log.ndjson_stream import NDJSONStream
+from log.logger import log_info
+from log.ndjson_stream import NDJSONStream
 
 
 class RunStopped(Exception):

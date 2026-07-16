@@ -19,7 +19,7 @@ from graph.nodes.stereotype_label import apply_stereotype_labels
 from pipeline.domain_terms import dump_domain_terms
 
 
-# MERGE 쿼리·라벨 그룹핑은 ``shared/neo4j/merge.py`` 단일 정의처 (spec 046 FR-004).
+# MERGE 쿼리·라벨 그룹핑은 ``graph/node_upsert.py`` 단일 정의처 (spec 046 FR-004).
 # 빈값 미저장 — ``nonempty()`` 가 뺀 키는 ``SET n += item`` 이라 애초에 안 박힌다.
 
 

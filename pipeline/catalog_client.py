@@ -13,7 +13,7 @@ from typing import Any, Optional
 import httpx
 
 from system.env_catalog import ENV
-from shared.log.logger import log_info
+from log.logger import log_info
 
 
 def catalog_base_url_or_skip(step: str) -> Optional[str]:

@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
+from llm import LLM_PACKAGE_DIR
 from llm.agents.agent_output import DdlTransform, ResidualPatternResult, ScanResult
 from llm.agents.filesystem_tools import make_filesystem_tools
 from pipeline.steps.step3_scan_project.scan_verify_tool import make_verify_table_regex_tool
@@ -31,16 +32,13 @@ from graph.schema.graph_nodes import CodeNode, Table
 from system.env_catalog import ENV
 from llm.client.usage.cost_budget import CostBudget
 from llm.client.runners.structured_agent import run_structured_agent
-from shared.log.logger import log_info, log_warning
+from log.logger import log_info, log_warning
 
 # 로그 component — link_residual_patterns_step 과 동일 키. 루프는 그 step 의
 # 구현부라 같은 키로 묶어야 analyzer.log 에서 한 단계 아래로 자연 정렬된다.
 _STEP = "step4.link_residual_patterns"
 
-_RESIDUAL_PROMPT_PATH = (
-    Path(__file__).resolve().parent.parent.parent.parent
-    / "llm" / "agents" / "residual_pattern_system.md"
-)
+_RESIDUAL_PROMPT_PATH = LLM_PACKAGE_DIR / "agents" / "residual_pattern_system.md"
 
 
 @dataclass

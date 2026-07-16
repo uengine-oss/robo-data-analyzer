@@ -44,8 +44,8 @@ from pipeline.domain_terms import normalize_domain_terms
 from pipeline.programming_languages import ROUTINE_LABELS, coerce_stereotype
 from llm.client.usage.cost_budget import BudgetExceededError
 from llm.client.runners.yaml_llm_runner import run_yaml_rule
-from shared.log.logger import log_error, log_info, log_warning
-from shared.log.processing_progress import track_processing
+from log.logger import log_error, log_info, log_warning
+from log.processing_progress import track_processing
 from pipeline.source_file_cache import SourceFileCache
 from pipeline.execution.pause_controller import PauseController
 

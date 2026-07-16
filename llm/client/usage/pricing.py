@@ -14,7 +14,7 @@
 4. substring 매칭 (마지막 fallback)
 
 가격 변동 시: ``llm_pricing.yaml`` 한 곳만 갱신 + 커밋. 코드 무변경.
-갱신 보조: ``python cli_scripts/refresh_pricing.py``.
+갱신 보조: ``python scripts/llm_maintenance/refresh_pricing.py``.
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from typing import Optional
 import yaml
 
 from llm.client.usage.token_usage import TokenUsageRecord
-from shared.log.logger import log_warning
+from log.logger import log_warning
 
 
 # 날짜 suffix 정규화 — ``-20260415`` 또는 ``-2026-04-15`` 자동 strip

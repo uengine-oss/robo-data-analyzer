@@ -57,7 +57,7 @@ from llm.client.llm_config_loader import load_llm_config
 from llm.client.usage.pricing import compute_cost
 from llm.client.usage.token_usage import track_usage
 from llm.client.usage.usage_jsonl_writer import append_usage_record
-from shared.log.logger import log_info, log_warning
+from log.logger import log_info, log_warning
 from llm.client.prompt_logging.cache_message_filters import apply_cache_friendly_filters
 from llm.client.prompt_logging.prompt_logger import write_rule_record
 

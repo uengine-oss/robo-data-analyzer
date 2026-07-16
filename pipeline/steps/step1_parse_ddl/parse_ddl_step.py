@@ -15,7 +15,7 @@ from pipeline.execution.step_config import step_config
 
 from system.env_catalog import ENV
 from pipeline.steps.step1_parse_ddl.ddl_parser import parse_ddl_file
-from shared.log.logger import log_info, log_warning
+from log.logger import log_info, log_warning
 from graph.edges.belongs_to import upsert_belongs_to
 from graph.edges.fk import upsert_fk
 from graph.edges.has_column import upsert_has_column

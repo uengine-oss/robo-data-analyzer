@@ -18,7 +18,7 @@ from pipeline.execution.step_config import step_config
 
 from pipeline.steps.step2_load_ast.antlr_json_reader import ast_and_source_roots, read_antlr_json
 from pipeline.steps.step2_load_ast.reference_linker import link_references
-from shared.log.logger import log_error, log_info, log_warning
+from log.logger import log_error, log_info, log_warning
 from pipeline.steps.step2_load_ast.node_identity_registry import NodeIdentityCollision, canonicalize_node_lists
 from pipeline.source_file_cache import SourceFileCache
 from graph.edges.belongs_to import upsert_belongs_to

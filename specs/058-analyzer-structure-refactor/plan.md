@@ -46,7 +46,7 @@ external workspace/deploy/goal-verify consumers
 - **V KV-Cache-Friendly Prompts**: PASS if prompt moves preserve bytes and regenerated hashes pass byte-identical verification.
 - **VI Schema Restraint**: PASS. Public Pydantic and MCP output contracts remain unchanged.
 - **VII Submit-Tool Wrap**: PASS. Agent runner moves without changing structured output mechanism.
-- **VIII Cohesion Over Convention**: PASS. Component write cohesion remains intact; new merges require consumer evidence.
+- **VIII Explicit Ownership and Dependency Direction**: PASS. Component write cohesion remains intact; new merges require consumer evidence.
 - **Cross-service contracts**: PASS only after AST input, Neo4j schema, Catalog HTTP and Architect MCP smoke tests.
 - **Cost & safety**: PASS only if budget breaker and run lifecycle tests remain green. Destructive graph lifecycle is not
   redesigned in R1; ownership/lifecycle replacement belongs to R1B and is documented as a known constraint.

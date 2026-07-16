@@ -23,6 +23,7 @@ import json
 from pathlib import Path
 from typing import Callable, Optional
 
+from llm import LLM_PACKAGE_DIR
 from llm.agents.agent_output import ScanResult
 from llm.agents.code_inspection import (
     SKILLS_DIR,
@@ -40,15 +41,12 @@ from graph.schema.graph_nodes import CodeNode, Table
 from system.env_catalog import ENV
 from llm.client.usage.cost_budget import CostBudget
 from llm.client.runners.structured_agent import run_structured_agent
-from shared.log.logger import log_info, log_warning
+from log.logger import log_info, log_warning
 
 _STEP = "step3.scan"
 
 # 시스템 프롬프트 위치 — byte-identical 보존 (CI 검증 대상)
-_SYSTEM_PROMPT_PATH = (
-    Path(__file__).resolve().parent.parent.parent
-    / "llm" / "agents" / "scan_agent_system.md"
-)
+_SYSTEM_PROMPT_PATH = LLM_PACKAGE_DIR / "agents" / "scan_agent_system.md"
 
 
 def _build_scan_tools(

@@ -9,17 +9,17 @@ strategy 무관 (본문만 보고 압축). 작은 모델 (``ROBO_LLM_MODEL_SMALL
 """
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Optional
 
 from pydantic import BaseModel, Field
 
 from graph.schema.graph_nodes import CodeNode
+from llm import LLM_PACKAGE_DIR
 from system.env_catalog import ENV
 from llm.client.usage.cost_budget import BudgetExceededError, CostBudget
 from llm.client.llm_config_loader import load_llm_config
 from llm.client.runners.yaml_llm_runner import run_yaml_rule
-from shared.log.logger import log_error
+from log.logger import log_error
 
 
 class LargeCodeOneLiner(BaseModel):
@@ -28,7 +28,7 @@ class LargeCodeOneLiner(BaseModel):
 
 
 # strategy 무관이라 ``llm/prompts/common/`` 에 yaml
-_PROMPTS_COMMON = Path(__file__).resolve().parent.parent.parent / "llm" / "prompts" / "common"
+_PROMPTS_COMMON = LLM_PACKAGE_DIR / "prompts" / "common"
 
 
 def estimate_tokens(text: str) -> int:

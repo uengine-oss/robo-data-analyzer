@@ -19,7 +19,7 @@ import httpx
 
 from system.env_catalog import ENV
 from llm.client.llm_config_loader import load_llm_config
-from shared.log.logger import log_info, log_warning
+from log.logger import log_info, log_warning
 
 Vector = List[float]
 

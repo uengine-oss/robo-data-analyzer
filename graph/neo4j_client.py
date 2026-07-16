@@ -21,7 +21,7 @@ from tenacity import (
 )
 
 from system.env_catalog import ENV
-from shared.log.logger import log_warning
+from log.logger import log_warning
 from graph.connection_context import get_override
 
 

@@ -36,13 +36,13 @@ from pipeline.data_models.analysis_meta import Codebase
 from system.env_catalog import ENV
 
 from llm.client.usage.cost_budget import CostBudget
-from shared.log.logger import (
+from log.logger import (
     attach_run_file_handlers,
     detach_run_file_handlers,
     log_error,
     log_info,
 )
-from shared.log.ndjson_stream import NDJSONStream
+from log.ndjson_stream import NDJSONStream
 from graph.neo4j_client import Neo4jClient
 from graph.schema.schema_constraints import ensure_schema, wipe_graph
 from pipeline.source_file_cache import SourceFileCache

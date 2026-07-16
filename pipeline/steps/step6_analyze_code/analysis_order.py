@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Iterable
 
-from shared.log.logger import log_warning
+from log.logger import log_warning
 
 
 def bottom_up_rounds(

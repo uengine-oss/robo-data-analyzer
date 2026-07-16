@@ -1,9 +1,6 @@
 # ROBO Analyzer — 의존성
 # ───────────────────────────────────────────────────────────
-# 2026-05-30 — refactor 브랜치 원본 핀(== 정확핀)이 공개 PyPI에 없는
-#   미래 버전을 가리켜 설치 불가 → 코드가 실제 import 하는 패키지만
-#   범위(>=) 로 풀어 resolver 가 호환 최신 세트(langchain 1.x + deepagents)를
-#   맞추도록 정리. (커밋 X — 로컬 실행용)
+# 실행 코드가 직접 사용하는 패키지만 유지한다. 호환 세부 버전은 배포 잠금 파일에서 고정한다.
 
 # Core LangChain / LangGraph (deepagents 가 1.x 를 끌어올림)
 langchain>=1.0.0
@@ -23,9 +20,6 @@ pydantic-settings>=2.7.0
 # SQL 파싱
 sqlglot>=27.0.0
 
-# 코드 파싱 — antlr-parser 가 생성한 JSON AST 읽기만
-antlr4-python3-runtime>=4.13.0
-
 # Neo4j 그래프 DB
 neo4j>=5.27.0
 
@@ -33,10 +27,10 @@ neo4j>=5.27.0
 leidenalg>=0.10.0
 igraph>=0.11.0
 
-# 임베딩(embed_step) + 검색 재채점 크로스인코더(search/rerank — CE 게이트)
+# 임베딩(embed_step) + 검색 재채점 크로스인코더(search/ranking/rerank — CE 게이트)
 sentence-transformers>=3.3.0
 
-# 검색 리콜 희소채널 — BM25 키워드 매칭 (search/recall)
+# 검색 리콜 희소채널 — BM25 키워드 매칭 (search/ranking/recall)
 rank-bm25>=0.2.2
 
 # Web API
@@ -49,4 +43,3 @@ pyyaml>=6.0.0
 python-dotenv>=1.0.0
 tenacity>=9.0.0
 httpx>=0.28.0
-aiohttp>=3.11.0

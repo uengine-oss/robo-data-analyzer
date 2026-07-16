@@ -41,7 +41,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 def _normalize_diet_summary(v: str) -> str:
@@ -322,15 +322,13 @@ class ComponentNamingOutput(BaseModel):
 
 
 class TableDescription(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     db: str
     schema_: str = Field(..., alias="schema")
     name: str
     logical_name: str = ""          # 짧은 도메인 표시명(물리명과 별개, 근거없으면 빈값) — spec 025
     description: str
-
-    class Config:
-        populate_by_name = True
-
 
 # (옛 ``TableDescriptionsOutput`` 삭제 — 참조 0건. 실제 response_model 은 단수형
 #  ``TableDescription`` (enrich_table_description_step). spec 046 FR-010.)

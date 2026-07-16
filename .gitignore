@@ -47,5 +47,5 @@ module_test/
 .search_cache/
 
 # 검색 게이트 골드·장부 = 고객데이터(SKT 기밀 포함) 커밋 제외 (module_test 정책)
-search/eval/*.yaml
-search/eval/measure_log.md
+tests/eval/*.yaml
+tests/eval/measure_log.md

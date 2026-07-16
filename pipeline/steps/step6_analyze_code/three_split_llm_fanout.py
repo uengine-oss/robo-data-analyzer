@@ -52,8 +52,8 @@ from pipeline.data_models.code_analysis_output import (
 )
 from llm.client.runners.yaml_llm_runner import run_yaml_rule
 from pipeline.domain_terms import normalize_domain_terms
-from shared.log.logger import log_error, log_warning
-from shared.log.processing_progress import track_processing
+from log.logger import log_error, log_warning
+from log.processing_progress import track_processing
 from pipeline.source_file_cache import SourceFileCache
 
 _STEP = "step6.analyze_code.three_split"

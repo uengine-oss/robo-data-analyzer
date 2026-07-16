@@ -6,7 +6,7 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from shared.log.logger import log_warning
+from log.logger import log_warning
 
 MAX_DOMAIN_TERMS = 10
 _ASCII_CODE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")

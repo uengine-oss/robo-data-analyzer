@@ -23,7 +23,7 @@ from pipeline.execution.step_config import step_config
 from graph.schema.graph_edges import ReadsWrites, derive_dml_type, normalize_relation
 from pipeline.catalog_client import catalog_base_url_or_skip, get_catalog_json
 from system.env_catalog import ENV
-from shared.log.logger import log_info, log_warning
+from log.logger import log_info, log_warning
 from graph.edges.reads_writes import upsert_reads_writes
 from graph.neo4j_client import Neo4jClient
 

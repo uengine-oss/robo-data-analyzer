@@ -15,7 +15,7 @@ import json
 from pathlib import Path
 
 from llm.client.usage.token_usage import TokenUsageRecord
-from shared.log.logger import log_warning
+from log.logger import log_warning
 
 
 def append_usage_record(

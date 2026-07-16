@@ -17,7 +17,7 @@ from graph.nodes.stereotype_label import apply_stereotype_labels
 from graph.node_upsert import join_notes, nonempty
 
 
-# MERGE 쿼리·라벨 그룹핑은 ``shared/neo4j/merge.py`` 단일 정의처 (spec 046 FR-004).
+# MERGE 쿼리·라벨 그룹핑은 ``graph/node_upsert.py`` 단일 정의처 (spec 046 FR-004).
 
 
 def to_item(mod: Module) -> dict:

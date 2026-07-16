@@ -31,7 +31,7 @@ from typing import Any, Optional
 
 from system.env_catalog import ENV
 from llm.client.message_content import content_to_text
-from shared.log.logger import log_warning
+from log.logger import log_warning
 
 _FILE_LOCK = threading.Lock()
 
