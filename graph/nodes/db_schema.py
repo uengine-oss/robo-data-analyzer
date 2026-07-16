@@ -10,13 +10,15 @@ from typing import Iterable
 
 from graph.schema.graph_nodes import Schema
 from graph.neo4j_client import Neo4jClient
+from graph.node_upsert import ANALYZER_GRAPH_OWNER
 
 
-MERGE_QUERY = """
+MERGE_QUERY = f"""
 UNWIND $items AS item
-MERGE (s:SCHEMA {id: item.id})
+MERGE (s:SCHEMA {{id: item.id}})
 SET s.db = item.db,
-    s.name = item.name
+    s.name = item.name,
+    s.graph_owner = '{ANALYZER_GRAPH_OWNER}'
 RETURN count(s) AS created
 """
 

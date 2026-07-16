@@ -29,6 +29,9 @@ from typing import Callable, Iterable
 from graph.neo4j_client import Neo4jClient
 
 
+ANALYZER_GRAPH_OWNER = "analyzer"
+
+
 def nonempty(props: dict) -> dict:
     """빈 문자열·None 키를 제거하고 0·False 같은 의미값은 유지한다."""
     return {key: value for key, value in props.items() if value not in (None, "")}
@@ -44,7 +47,8 @@ def merge_query(label: str) -> str:
     return f"""
 UNWIND $items AS item
 MERGE (n:{label} {{id: item.id}})
-SET n += item
+SET n += item,
+    n.graph_owner = '{ANALYZER_GRAPH_OWNER}'
 RETURN count(n) AS created
 """
 

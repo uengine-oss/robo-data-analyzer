@@ -36,6 +36,7 @@ from llm.client import embedder
 from log.logger import log_info, log_warning
 from log.processing_progress import emit_processing_event, step_processing_scope
 from graph.neo4j_client import Neo4jClient
+from graph.node_upsert import ANALYZER_GRAPH_OWNER
 from pipeline.execution.step_config import step_config
 
 
@@ -139,6 +140,13 @@ def _embedded_code_query() -> str:
 
 # ── 벡터 인덱스 + 지문 ────────────────────────────────────────
 
+def _metadata_upsert_query() -> str:
+    """임베딩 인덱스 지문도 Analyzer 소유권 경계를 따른다."""
+    return (
+        f"MERGE (m:{EMBED_META_LABEL}) "
+        f"SET m.fingerprint = $fp, m.dim = $dim, m.graph_owner = '{ANALYZER_GRAPH_OWNER}'"
+    )
+
 async def _ensure_vector_index(neo: Neo4jClient, code_updates: list[dict]) -> None:
     """``:EMBEDDED`` 벡터 인덱스 IF NOT EXISTS + ONLINE 대기 + 지문 메타. 차원은 실벡터에서 도출.
 
@@ -152,10 +160,7 @@ async def _ensure_vector_index(neo: Neo4jClient, code_updates: list[dict]) -> No
     await _warn_on_dim_mismatch(neo, dim)
     await neo.run_query(_create_vector_index_query(dim))
     await neo.run_query(f"CALL db.awaitIndexes({_AWAIT_INDEX_TIMEOUT})")
-    await neo.run_query(
-        f"MERGE (m:{EMBED_META_LABEL}) SET m.fingerprint = $fp, m.dim = $dim",
-        {"fp": embedder.fingerprint(), "dim": dim},
-    )
+    await neo.run_query(_metadata_upsert_query(), {"fp": embedder.fingerprint(), "dim": dim})
     log_info(_STEP, "index_ready", index=VECTOR_INDEX_NAME, dim=dim, fingerprint=embedder.fingerprint())
 
 

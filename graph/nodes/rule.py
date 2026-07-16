@@ -9,11 +9,13 @@ from typing import Iterable
 
 from graph.schema.graph_nodes import Rule
 from graph.neo4j_client import Neo4jClient
+from graph.node_upsert import ANALYZER_GRAPH_OWNER
 
-_UPSERT_QUERY = """
+_UPSERT_QUERY = f"""
 UNWIND $items AS item
-MERGE (r:RULE {id: item.id})
-SET r.statement = item.statement
+MERGE (r:RULE {{id: item.id}})
+SET r.statement = item.statement,
+    r.graph_owner = '{ANALYZER_GRAPH_OWNER}'
 """
 
 

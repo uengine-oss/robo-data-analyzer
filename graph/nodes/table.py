@@ -11,13 +11,13 @@ from typing import Iterable
 
 from graph.schema.graph_nodes import Table
 from graph.neo4j_client import Neo4jClient
-from graph.node_upsert import nonempty
+from graph.node_upsert import ANALYZER_GRAPH_OWNER, nonempty
 
 
 # id 단일 식별 (schema_constraints.py 의 UNIQUE 제약과 통일) — 값 = "db.schema.name"
-MERGE_QUERY = """
+MERGE_QUERY = f"""
 UNWIND $items AS item
-MERGE (t:TABLE {id: item.id})
+MERGE (t:TABLE {{id: item.id}})
 SET t.db = item.db,
     t.schema = item.schema,
     t.name = item.name,
@@ -25,7 +25,8 @@ SET t.db = item.db,
     t.description_source = coalesce(t.description_source, item.description_source),
     t.comment = coalesce(t.comment, item.comment),
     t.analyzed_description = coalesce(t.analyzed_description, item.analyzed_description),
-    t.table_type = item.table_type
+    t.table_type = item.table_type,
+    t.graph_owner = '{ANALYZER_GRAPH_OWNER}'
 RETURN count(t) AS created
 """
 

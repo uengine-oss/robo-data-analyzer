@@ -9,12 +9,12 @@ from typing import Iterable
 
 from graph.schema.graph_nodes import Column
 from graph.neo4j_client import Neo4jClient
-from graph.node_upsert import nonempty
+from graph.node_upsert import ANALYZER_GRAPH_OWNER, nonempty
 
 
-MERGE_QUERY = """
+MERGE_QUERY = f"""
 UNWIND $items AS item
-MERGE (c:COLUMN {id: item.id})
+MERGE (c:COLUMN {{id: item.id}})
 SET c.name = item.name,
     c.dtype = item.dtype,
     c.nullable = item.nullable,
@@ -24,7 +24,8 @@ SET c.name = item.name,
     c.description = coalesce(c.description, item.description),
     c.description_source = coalesce(c.description_source, item.description_source),
     c.comment = coalesce(c.comment, item.comment),
-    c.analyzed_description = coalesce(c.analyzed_description, item.analyzed_description)
+    c.analyzed_description = coalesce(c.analyzed_description, item.analyzed_description),
+    c.graph_owner = '{ANALYZER_GRAPH_OWNER}'
 RETURN count(c) AS created
 """
 

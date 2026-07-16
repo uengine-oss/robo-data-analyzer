@@ -5,12 +5,14 @@ from typing import Iterable
 
 from graph.schema.graph_nodes import Package
 from graph.neo4j_client import Neo4jClient
+from graph.node_upsert import ANALYZER_GRAPH_OWNER
 
 
-MERGE_QUERY = """
+MERGE_QUERY = f"""
 UNWIND $items AS item
-MERGE (p:PACKAGE {id: item.id})
-SET p.name = item.name
+MERGE (p:PACKAGE {{id: item.id}})
+SET p.name = item.name,
+    p.graph_owner = '{ANALYZER_GRAPH_OWNER}'
 RETURN count(p) AS created
 """
 

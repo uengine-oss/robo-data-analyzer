@@ -33,6 +33,7 @@ from llm.client.llm_fanout import gather_with_warmup
 from llm.client.runners.yaml_llm_runner import run_yaml_rule
 from log.logger import log_error, log_info, log_warning
 from graph.neo4j_client import Neo4jClient
+from graph.node_upsert import ANALYZER_GRAPH_OWNER
 from pipeline.execution.step_config import step_config
 
 from pipeline.steps.step7_post_processing.summarize_module_step import _match_code_to_modules
@@ -41,10 +42,12 @@ _STEP = "step7.build_glossary"
 MAX_MEANINGS = 3      # 용어당 나란히 보존할 뜻 상한 (다의어 — 그 이상은 초기 등장 순)
 MAX_CTX_NODES = 6     # 종합 문맥에 넣을 출처 노드 상한 (초과분 컷은 로그)
 
-_UPSERT_QUERY = """
+_UPSERT_QUERY = f"""
 UNWIND $items AS item
-MERGE (g:GLOSSARY {id: "glossary"})
-SET g.terms_json = item.terms_json, g.n_terms = item.n_terms
+MERGE (g:GLOSSARY {{id: "glossary"}})
+SET g.terms_json = item.terms_json,
+    g.n_terms = item.n_terms,
+    g.graph_owner = '{ANALYZER_GRAPH_OWNER}'
 """
 
 

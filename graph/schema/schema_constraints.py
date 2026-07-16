@@ -9,6 +9,7 @@ run 시작 시 1회 호출 (``ensure_schema()``).
 from __future__ import annotations
 
 from graph.neo4j_client import Neo4jClient
+from graph.node_upsert import ANALYZER_GRAPH_OWNER
 
 
 # 노드 유일성 제약 (UNIQUE) — 모든 노드 식별 키 = ``id`` 단일 (종류 무관).
@@ -44,6 +45,26 @@ INDEXES: list[str] = [
     "CREATE INDEX table_schema IF NOT EXISTS FOR (t:TABLE) ON (t.schema)",
 ]
 
+# 무소유 레거시를 자동 migration할 수 있는 Analyzer 고유 라벨만 열거한다. Architect의 ``UI``처럼
+# 대문자 라벨도 존재하므로 "대문자면 Analyzer"라는 포괄 규칙은 금지한다. 열린 집합 코드 라벨은
+# Analyzer 원문 좌표 3종(file_path/start_line/end_line)이 모두 있을 때만 분류한다.
+LEGACY_ANALYZER_STABLE_LABELS: tuple[str, ...] = (
+    "COLUMN", "EMBED_META", "EXAMPLE", "GLOSSARY", "PACKAGE",
+    "QUESTION", "RULE", "SCHEMA", "TABLE",
+)
+
+LEGACY_OWNER_MIGRATION_QUERY = """
+MATCH (n)
+WHERE n.graph_owner IS NULL
+  AND (
+    any(label IN labels(n) WHERE label IN $stable_labels)
+    OR 'EXTERNAL' IN labels(n)
+    OR (n.file_path IS NOT NULL AND n.start_line IS NOT NULL AND n.end_line IS NOT NULL)
+  )
+SET n.graph_owner = $graph_owner
+RETURN count(n) AS migrated
+"""
+
 
 async def ensure_schema(client: Neo4jClient) -> None:
     """제약 + 인덱스 생성 (``IF NOT EXISTS`` — 이미 있으면 무시). run 시작 시 1회.
@@ -57,20 +78,17 @@ async def ensure_schema(client: Neo4jClient) -> None:
 
 
 async def wipe_graph(client: Neo4jClient) -> None:
-    """그래프 전체 삭제 — 매 run 시작 시 호출 (헌법 Cost & Safety: **매 run = full rebuild**).
+    """현재 Analyzer가 소유한 분석 그래프만 초기화한다.
 
-    옛 run 의 잔재 (노드/엣지) 가 새 분석 결과와 섞이면 검증 사각지대.
-    ``DETACH DELETE`` = 노드 + 그 노드의 모든 엣지 동시 삭제.
-    제약 / 인덱스 (schema) 는 보존 — ``ensure_schema`` 가 idempotent.
-
-    ★ **라벨을 가리지 않는다 — 같은 DB 를 공유하는 다른 서비스의 데이터도 함께 지운다**
-    (catalog 의 ``:DataSource``/``:Schema``/``:Table``/``:Column`` 등록, architect 의 설계
-    그래프 ``:BoundedContext``/``:Aggregate``/…). 헌법이 못박은 full-rebuild 정책상 **의도된
-    동작**이며, 해당 서비스는 분석 후 자기 데이터를 다시 등록/생성해야 한다 (spec 045 FR-001~003).
-
-    라벨 예외(화이트리스트)를 두지 않는 이유: 코드 노드 라벨은 antlr type = **열린 집합**이라
-    "남길 것"을 열거하는 방식은 원천적으로 불완전하다. 선택적 보존이 필요해지면 **소유 마커
-    라벨**(analyzer 가 만든 노드에만 부여) 기반으로 뒤집어야 한다 — spec 046 의 저장 계층
-    통합이 선행되면 MERGE 단일 지점에 1줄로 들어간다.
+    공유 Neo4j의 Fabric 연결 registry와 Architect 설계 그래프는 보존한다. 무소유 레거시
+    분석 노드는 별도 검증된 migration에서 owner를 부여한 뒤 이 경계로 삭제한다.
     """
-    await client.run_query("MATCH (n) DETACH DELETE n")
+    params = {
+        "graph_owner": ANALYZER_GRAPH_OWNER,
+        "stable_labels": list(LEGACY_ANALYZER_STABLE_LABELS),
+    }
+    await client.run_query(LEGACY_OWNER_MIGRATION_QUERY, params)
+    await client.run_query(
+        "MATCH (n) WHERE n.graph_owner = $graph_owner DETACH DELETE n",
+        {"graph_owner": ANALYZER_GRAPH_OWNER},
+    )

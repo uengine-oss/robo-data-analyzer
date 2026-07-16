@@ -17,6 +17,7 @@ from graph.schema.graph_edges import Calls
 from graph.neo4j_client import Neo4jClient
 from graph.schema.rel_types import BELONGS_TO, CALLS, HAS_MEMBER
 from graph.schema.node_ids import child_id, external_id
+from graph.node_upsert import ANALYZER_GRAPH_OWNER
 
 
 # internal — 콜리 정의 노드가 이미 존재 → MATCH 로 연결 (없으면 자연 제외).
@@ -25,7 +26,8 @@ UNWIND $items AS item
 MATCH (caller {{id: item.caller_id}})
 MATCH (callee {{id: item.callee_id}})
 MERGE (caller)-[r:{CALLS}]->(callee)
-SET r.scope = item.scope
+SET r.scope = item.scope,
+    r.recursive = item.recursive
 """
 
 # external — 콜리 정의 노드 없음 → stub(:FUNCTION:EXTERNAL) + 소유 컨테이너(:MODULE:EXTERNAL)
@@ -37,12 +39,17 @@ EXTERNAL_QUERY = f"""
 UNWIND $items AS item
 MATCH (caller {{id: item.caller_id}})
 MERGE (callee:FUNCTION:EXTERNAL {{id: item.callee_id}})
-  ON CREATE SET callee.name = item.callee_name, callee.type = 'FUNCTION'
+  SET callee.name = coalesce(callee.name, item.callee_name),
+      callee.type = coalesce(callee.type, 'FUNCTION'),
+      callee.graph_owner = '{ANALYZER_GRAPH_OWNER}'
 MERGE (m:MODULE:EXTERNAL {{id: item.callee_module}})
-  ON CREATE SET m.name = item.callee_name, m.type = 'MODULE'
+  SET m.name = coalesce(m.name, item.callee_name),
+      m.type = coalesce(m.type, 'MODULE'),
+      m.graph_owner = '{ANALYZER_GRAPH_OWNER}'
 MERGE (m)-[:{HAS_MEMBER}]->(callee)
 FOREACH (_ IN CASE WHEN item.callee_package <> '' THEN [1] ELSE [] END |
   MERGE (p:PACKAGE {{id: item.callee_package}})
+  SET p.graph_owner = '{ANALYZER_GRAPH_OWNER}'
   MERGE (m)-[:{BELONGS_TO}]->(p)
 )
 MERGE (caller)-[r:{CALLS}]->(callee)
@@ -60,7 +67,12 @@ def _split_calls(edges: Iterable[Calls]) -> tuple[list[dict], list[dict]]:
     internal, external = [], []
     for e in edges:
         if e.scope == "internal":
-            internal.append({"caller_id": e.caller_id, "callee_id": e.callee_id, "scope": e.scope})
+            internal.append({
+                "caller_id": e.caller_id,
+                "callee_id": e.callee_id,
+                "scope": e.scope,
+                "recursive": e.caller_id == e.callee_id,
+            })
         elif e.scope == "external":
             module_name = e.callee_module or e.callee_id
             name = e.callee_name or e.callee_id
@@ -100,7 +112,8 @@ def emit_calls(stream, edges: Iterable[Calls]) -> None:
     for it in internal:
         stream.emit({
             "type": "relationship_event", "op": "merge", "rel_type": CALLS,
-            "from": {"id": it["caller_id"]}, "to": {"id": it["callee_id"]}, "props": {},
+            "from": {"id": it["caller_id"]}, "to": {"id": it["callee_id"]},
+            "props": {"recursive": it["recursive"]},
         })
     for it in external:
         cid, mid, pkg, nm = it["callee_id"], it["callee_module"], it["callee_package"], it["callee_name"]

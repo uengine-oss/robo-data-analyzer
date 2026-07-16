@@ -1,0 +1,1 @@
+"""Analyzer graph contract tests."""
