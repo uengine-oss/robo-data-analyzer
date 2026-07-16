@@ -123,7 +123,7 @@ semantic and integration regression battery.
 - [x] T051 [US2] Run live REST, MCP, central UI and Architect legacy-evidence/canvas smoke scenarios (R1 behavior PASS; strict cross-service smoke retains separately recorded pre-existing text2sql/Figma failures for R3)
 - [x] T052 [US2] Update `./README.md`, `../../goal-verify/runners/` and `../../goal-verify/docs/handoffs/` to the verified final structure
 - [x] T053 [US2] Run old-path/name search, diff check, secret check and independent self-contradiction review
-- [ ] T054 [US2] Commit and push verified R1 slices, then confirm local/origin hashes and clean worktrees
+- [x] T054 [US2] Commit and push verified R1 slices, then confirm local/origin hashes and clean worktrees
 
 ---
 

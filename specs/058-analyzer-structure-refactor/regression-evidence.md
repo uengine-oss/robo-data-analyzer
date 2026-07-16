@@ -82,3 +82,7 @@ asset paths relative to their new nested files, and the search move first retain
 accidentally rewrote `ENV.search.llm_config` as though the field were a module path. The fixes establish one
 `LLM_PACKAGE_DIR` asset root, use explicit `search.query.query_llm` imports, preserve the `SearchSettings` SSOT,
 and add executable path/settings regression assertions. Final active old-path search is zero.
+
+The verified R1 implementation was committed as `eebebc76cd90aacf0a1808c94a26b29a291c4bdb` and pushed to
+`origin/main`; local and origin hashes matched after a fresh fetch. The final task/evidence closure is recorded in
+the immediately following documentation commit.
