@@ -27,8 +27,9 @@ from analysis_flow.step6_analyze_code.batch_planner import (
 from analysis_flow.step6_analyze_code.call_cycles import find_call_cycles
 from analysis_flow.step6_analyze_code.range_body import ancestor_context, body_for, skeleton_body
 from analysis_flow.step6_analyze_code.rw_table_filter import constrain_tables_to_rw
+from analysis_flow.step6_analyze_code.table_prompt_context import dump_table_refs
 from analysis_flow.step4_linking.stage2_extract_calls.call_linker import routine_call_pairs
-from data_models.analysis_context import AnalysisContext
+from data_models.analysis_context import AnalysisContext, dump_referenced_symbols
 from data_models.code_analysis_output import (
     BatchRulesItem,
     BatchRulesOutput,
@@ -39,6 +40,7 @@ from data_models.code_analysis_output import (
 )
 from data_models.graph_nodes import CodeNode
 from shared.config.env_catalog import ENV
+from shared.domain_terms import normalize_domain_terms
 from shared.lang.ontology import ROUTINE_LABELS, coerce_stereotype
 from shared.llm.cost_budget import BudgetExceededError
 from shared.llm.yaml_llm_runner import run_yaml_rule
@@ -100,7 +102,7 @@ async def run_dbms_batch_analysis(
     stream,
     codebase_notes: str,
     module_intents: dict[str, str],
-    table_descriptions: dict[str, str],
+    table_descriptions: dict[str, dict],
     pause: PauseController,
     source_cache: SourceFileCache,
 ) -> dict:
@@ -427,9 +429,17 @@ def _apply_node_analysis(
     fn.stereotype = coerce_stereotype(summary.stereotype or "", strategy.name) or None
     fn.logical_name = summary.logical_name or None
     fn.search_text = summary.search_text or None
-    fn.domain_terms = summary.domain_terms or None
+    fn.domain_terms = normalize_domain_terms(
+        summary.domain_terms,
+        source_text="\n".join(filter(None, (fn.comment, fn.code_text))),
+        code_id=fn.id,
+        component=_STEP,
+    )
     # spec 027: LLM 귀속 테이블을 결정론 reads/writes 로 제한 (callee 함수명 오귀속 차단).
-    constrain_tables_to_rw(fn.id, ctx.reads, ctx.writes, table, rules)
+    constrain_tables_to_rw(
+        fn.id, ctx.reads, ctx.writes, table, rules,
+        allowed_columns_by_table=ctx.extra.get("ddl_columns_by_table"),
+    )
     fn.extra["table_insights"] = [t.model_dump() for t in table.table_insights] if table else []
     fn.extra["rules"] = [r.model_dump() for r in rules.rules] if rules else []   # examples 는 각 rule 하위 중첩
     fn.extra["questions"] = [q.model_dump() for q in rules.questions] if rules else []
@@ -446,7 +456,7 @@ def _build_batch_values(
     code_by_id: dict[str, CodeNode],
     codebase_notes: str,
     module_intents: dict[str, str],
-    table_descriptions: dict[str, str],
+    table_descriptions: dict[str, dict],
     cache: SourceFileCache,
     body_fn=body_for,
 ) -> tuple[dict, dict[str, str]]:
@@ -470,9 +480,9 @@ def _build_batch_values(
         body = body_fn(ctx, contexts, cache)
         blocks.append(
             f"### 노드 {key}\n"
-            f"reads: {_fmt_tables(ctx.reads, table_descriptions)}\n"
-            f"writes: {_fmt_tables(ctx.writes, table_descriptions)}\n"
-            f"참조심볼: {', '.join(ctx.referenced_symbols) or '(없음)'}\n"
+            f"reads(JSON): {dump_table_refs(ctx.reads, table_descriptions)}\n"
+            f"writes(JSON): {dump_table_refs(ctx.writes, table_descriptions)}\n"
+            f"참조심볼(JSON): {dump_referenced_symbols(ctx.referenced_symbols)}\n"
             f"body:\n```\n{body}\n```"
         )
 
@@ -503,14 +513,3 @@ def _root_code_node(
             break
         cur = pid
     return code_by_id.get(cur)
-
-
-def _fmt_tables(fqns: tuple[str, ...], table_descriptions: dict[str, str]) -> str:
-    """테이블 fqn 목록 → 한 줄 (설명 있으면 부기). 빈 목록은 '(없음)'."""
-    if not fqns:
-        return "(없음)"
-    parts = []
-    for fqn in fqns:
-        desc = table_descriptions.get(fqn, "")
-        parts.append(f"{fqn}({desc})" if desc else fqn)
-    return ", ".join(parts)

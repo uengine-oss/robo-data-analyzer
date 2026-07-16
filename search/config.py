@@ -21,6 +21,28 @@ class Config:
 
     # ── 요구사항→관련코드 뭉치 (spec 005, CE 게이트) ──
     cluster_top_n: int = 12               # 곁가지 컷: 상위 N만 핵심
+    # spec 053: legacy=변형별 core+확장 후 합집합 / global_anchor=후보 합집합 후 단일 선별.
+    # spec 053 A/B: shopmall full gold 30/30, average result size 18.8 -> 16.5.
+    # legacy remains available as an explicit rollback mode.
+    cluster_selection_mode: str = os.environ.get("ROBO_SEARCH_SELECTION", "global_anchor")
+    cluster_anchor_top_n: int = int(os.environ.get("ROBO_SEARCH_ANCHOR_TOP", "3"))
+    cluster_support_root_top_n: int = int(os.environ.get("ROBO_SEARCH_SUPPORT_ROOT_TOP", "12"))
+    cluster_evidence_top_n: int = int(os.environ.get("ROBO_SEARCH_EVIDENCE_TOP", "15"))
+    # spec 057: 앵커 점수절벽 게이트 — top1 과의 격차가 gap 초과면 앵커 제외(상한 top_n·하한 1).
+    # 동반 입장 정책 — all_candidates(구 동작·롤백) | anchors_only | gated_direct |
+    # graph_gated(기본): 비앵커는 [score ≥ top1−direct_gap] OR [앵커와 CALLS 거리 ≤ hop_gate]
+    # 일 때만 입장(이중 신호 — 점수만으로는 신호 .676 < 노이즈 .765 역전이 실측됨).
+    # 값은 골드 A/B 채택(specs/057 research.md 스윕 표 — 대조표 없는 임의 조정 금지).
+    # 채택값 = 2026-07-16 골드 전수 스윕 P5 h3/r2 (research.md 표): recall 29/30(기준선 동률,
+    # 유일 미스 release_stock 은 P0 도 미스) · 검증질의 노이즈 14→6 · 평균크기 18.2→15.9.
+    cluster_anchor_gap: float = float(os.environ.get("ROBO_SEARCH_ANCHOR_GAP", "0.12"))
+    cluster_support_policy: str = os.environ.get("ROBO_SEARCH_SUPPORT_POLICY", "graph_gated")
+    cluster_direct_gap: float = float(os.environ.get("ROBO_SEARCH_DIRECT_GAP", "0.12"))
+    cluster_hop_gate: int = int(os.environ.get("ROBO_SEARCH_HOP_GATE", "3"))
+    # 순위 구제(graph_gated 보조): 의미순위 상위 N 은 직행 근거로 무조건 포함(확장 뿌리 자격
+    # 은 없음). 점수 역전으로 절벽 밖에 있는 상위권 정답(실측: shipping_calc_fee 0.669 <
+    # 노이즈 0.765) 보존용.
+    cluster_rank_floor: int = int(os.environ.get("ROBO_SEARCH_RANK_FLOOR", "2"))
     cluster_hub_fanin: int = 20           # 허브 컷: 호출 팬인 이상이면 인프라 유틸로 제외
     cluster_expand_hops: int = 1          # 관계확장 홉
     cluster_ce_min: float = 0.20          # core 게이트(CE 활성): CE 확률 미만은 곁가지

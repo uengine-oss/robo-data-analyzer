@@ -32,15 +32,16 @@ def make_verify_table_regex_tool(
         """table-access 정규식을 실제 소스에 적용 → 매치·해소 결과 리포트.
 
         **언제 사용**:
-        - SKILL 의 정규식을 본떴거나 직접 작성한 뒤, 출력 전 **반드시** 1회.
-        - 결과가 나쁘면 (매치 0 / DDL 해소 0) 정규식을 고쳐 다시 호출 — 될 때까지.
+        - SKILL contract 정규식을 복사했거나 직접 작성한 뒤, 출력 전 **반드시** 1회.
+        - 직접 작성한 패턴이 나쁘면 소스를 다시 보고 수정 후 재호출한다.
+        - 매칭된 SKILL contract가 실패하면 정규식을 변형하지 말고 Skill 매칭부터 재판정한다.
 
         **인자**:
         - `call_regex`: 검증할 정규식. 명명 그룹 `(?P<entity>...)` 필수,
           `(?P<op_token>...)` 권장. `entity` = 테이블 이름,
           `op_token` = 프레임워크 raw 매치 (예: 's', 'findOne', 'SELECT').
 
-        **결과**: 매치 건수 / R/W 엣지 건수 / 미해결 건수 + 추출 샘플
+        **결과**: 매치 건수 / R/W 엣지 건수 / 미해결·부분추출 건수 + 추출 샘플
         (entity·op_token·DDL 해소 여부). 샘플을 보고 정규식이 맞는지 판단한다.
 
         **실패 응답**:
@@ -80,12 +81,17 @@ def make_verify_table_regex_tool(
             f"추출 샘플 (앞 {len(shown)}건):",
         ]
         for s in shown:
-            mark = "O" if s.resolved_table else "X"
-            tail = s.resolved_table or "DDL 테이블 아님"
+            mark = "O" if s.resolved_table and s.entity_complete else "X"
+            tail = (
+                s.resolved_table if s.resolved_table
+                else "부분 추출" if not s.entity_complete
+                else "DDL 테이블 아님"
+            )
             lines.append(f"  [{mark}] entity='{s.entity}' op_token='{s.op_token}' -> {tail}")
         lines.append(
-            "힌트: [X] 가 많고 entity 에 '_s0024' 같은 꼬리표가 붙으면 entity 그룹이 "
-            "너무 넓다 — 경계를 좁혀라. op_token 이 변수명이면 op_token 그룹을 교정하라. "
+            "힌트: '부분 추출'은 entity 뒤에 `_`, `-`, `.`, `$` 등 실제 이름 문자가 "
+            "남았다는 뜻이다. 전체 테이블 토큰을 캡처하라. entity 에 '_s0024' 같은 꼬리표가 "
+            "붙으면 반대로 그룹이 너무 넓다 — 경계를 좁혀라. op_token 이 변수명이면 교정하라. "
             "[X] 가 일부뿐이면 그 테이블은 분석 범위 밖(external)일 수 있다."
         )
         return "\n".join(lines)

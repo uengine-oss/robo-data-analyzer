@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 from typing import Optional
@@ -76,7 +77,9 @@ async def scan_codebase_step(state: dict, config: Optional[RunnableConfig] = Non
 
     result_dict = result.model_dump()
     _warn_if_call_wrappers_missing(result_dict)
-    _warn_if_framework_overlaps_project(result_dict, state.get("code_nodes", []))
+    _remove_project_functions_from_framework_drop(
+        result_dict, state.get("code_nodes", []),
+    )
     emit_message(
         stream,
         f"✅ 코드베이스 스캔 완료 — 패턴 {len(result_dict.get('table_access_patterns') or [])}",
@@ -92,7 +95,7 @@ async def scan_codebase_step(state: dict, config: Optional[RunnableConfig] = Non
 
 
 def _warn_if_call_wrappers_missing(result_dict: dict) -> None:
-    """matched_skill 의 SKILL.md 에 ``## 호출 wrapper`` 절이 있는데 Agent 가
+    """matched_skill 의 SKILL contract 에 ``call_wrappers``가 있는데 Agent 가
     ``call_wrappers`` 를 빈 배열로 넘겼으면 표면화 — silent skip 차단.
 
     실측 사례: ``mpfm_dlcall("zapamcom10040", ...)`` 11 건이 호출 그래프에서 사라진
@@ -105,25 +108,27 @@ def _warn_if_call_wrappers_missing(result_dict: dict) -> None:
     skill_path = SKILLS_DIR / matched / "SKILL.md"
     if not skill_path.is_file():
         return
-    if "## 호출 wrapper" not in skill_path.read_text(encoding="utf-8"):
+    skill_text = skill_path.read_text(encoding="utf-8")
+    if not re.search(r"(?m)^call_wrappers:\s*\n\s+-\s+wrapper:", skill_text):
         return        # SKILL 에 절 자체 없음 = 빈 배열이 정답
     log_warning(
         _STEP, "call_wrappers_missing_from_scan",
-        f"SKILL '{matched}' 에 '## 호출 wrapper' 절이 있으나 ScanResult.call_wrappers "
+        f"SKILL '{matched}' contract에 call_wrappers가 있으나 ScanResult.call_wrappers "
         "빈 배열 — Agent 가 옮기지 않음. wrapper 호출이 framework drop 으로 빠져 "
         "호출 그래프에서 손실 (mpfm_dlcall 류 모듈 간 의존 누락).",
         skill=matched,
     )
 
 
-def _warn_if_framework_overlaps_project(result_dict: dict, code_nodes: list) -> None:
-    """드롭 목록(``framework_runtime_functions``)에 프로젝트 자기 함수(code_nodes)가
-    섞이면 표면화 — silent corruption 차단 (절대원칙 #3 / Constitution IV).
+def _remove_project_functions_from_framework_drop(
+    result_dict: dict, code_nodes: list,
+) -> None:
+    """프로젝트 함수와 정확히 겹치는 framework drop 항목을 제거한다.
 
     실측 사례(2026-06-26): 스캔 에이전트가 ``framework_runtime_functions`` 에 프레임워크
     런타임 함수(PFM_*/mpfm_*) 대신 프로젝트 업무 함수(a000_*/b000_*)를 채움 → 자기 함수
     호출이 framework drop 으로 빠져 internal 호출 그래프가 붕괴(internal 54 같은 비정상).
-    이 둘은 상호 배타여야 하므로 겹침은 항상 비정상.
+    이 둘은 상호 배타다. 정확 이름 교집합만 제거하며 glob 의미는 추정하지 않는다.
     """
     drop = result_dict.get("framework_runtime_functions") or []
     if not drop or not code_nodes:
@@ -139,11 +144,13 @@ def _warn_if_framework_overlaps_project(result_dict: dict, code_nodes: list) -> 
         if not any(c in d for c in "*?[") and d in project_names
     )
     if overlap:
+        result_dict["framework_runtime_functions"] = [
+            item for item in drop if item not in set(overlap)
+        ]
         log_warning(
-            _STEP, "framework_drop_overlaps_project",
+            _STEP, "framework_drop_project_functions_removed",
             f"framework_runtime_functions 에 프로젝트 자기 함수 {len(overlap)}건 혼입 "
-            f"(예: {', '.join(overlap[:8])}). 이 함수들의 호출이 framework drop 으로 빠져 "
-            "internal 호출 그래프가 붕괴한다. 스캔 에이전트가 드롭 목록에 런타임 함수가 아닌 "
-            "프로젝트 함수를 채운 정황 — SKILL/프롬프트의 framework_runtime_functions 지시 점검.",
+            f"(예: {', '.join(overlap[:8])}) — 정확 교집합을 드롭 목록에서 제거해 "
+            "프로젝트 호출 그래프를 보존했다.",
             overlap_count=len(overlap),
         )

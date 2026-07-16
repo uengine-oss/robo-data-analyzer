@@ -36,6 +36,13 @@ roles:
     java:    [FILE, FUNCTION_CALL, NEW_INSTANCE, IMPORT]
     c:       [FUNCTION_CALL, INCLUDE, TYPEDEF, ENUM_CONSTANT]
     python:  [FUNCTION_CALL, NEW_INSTANCE, IMPORT]
+  control_structure:         # 제어 흐름 의미 AST 뼈대 (spec 007, parser 007 emit).
+                             # 그래프에 CodeNode 로 보존(기본 숨김)하되 routine 이 아니므로
+                             # LLM 분석 대상에서 제외된다(ROUTINE_LABELS 단일 진실). 폴백 분할용.
+                             # CALLS/READS/WRITES 는 이 노드가 아니라 소유 routine 에 귀속(reader).
+    c:       [IF, ELSE, LOOP, SWITCH, CASE]
+    java:    [IF, ELSE, LOOP, SWITCH, CASE, TRY, CATCH]   # parser JavaAstListener 구현(계약 §1)
+    python:  [IF, ELSE, LOOP, TRY, CATCH]                 # SWITCH/CASE 없음, match 는 범위 밖(계약 §1)
 
 # (옛 `paradigm:` 섹션 삭제 — ontology.paradigm() 만 읽던 죽은 데이터였고
 #  그 함수도 호출부 0건이라 함께 제거. spec 046 FR-010.)

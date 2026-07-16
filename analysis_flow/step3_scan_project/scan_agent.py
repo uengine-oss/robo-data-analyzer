@@ -7,8 +7,9 @@
   작성·검증해 ``ScanResult`` 를 출력한다. 별도 결정 LLM 없음 — 정규식 같은
   구조물은 검증 도구를 가진 에이전트만 만들 수 있다 (탐색/결정 분리 시 검증된
   정규식이 전달 스키마에서 증발 — 과거 버그).
-- skill 은 자유 문서 — 에이전트가 ``read_skill`` 로 읽고 ``ScanResult`` 로 정규화한다.
-  코드는 skill 을 파싱하지 않는다.
+- skill 은 식별 단서와 ``ScanResult contract``를 가진 문서다. 에이전트가
+  ``read_skill``로 읽고, 매칭 시 contract 필드를 변경 없이 ``ScanResult``로 옮긴다.
+  코드는 skill 을 파싱하지 않으며 실제 소스 검증으로 부분 추출·미해소를 거부한다.
 - 출력 후 코드가 마무리(``_finalize``): 에이전트가 채운 정규식을 ``verify_table_patterns``
   로 결정론 검증해 confidence 산정 — 검증 안 된 정규식은 링킹에 안 넘긴다.
 - ``response_format=ScanResult`` Pydantic 강제.
@@ -150,8 +151,8 @@ async def _finalize(
 ) -> ScanResult:
     """에이전트 draft → 결정론 검증 → 최종 ``ScanResult``.
 
-    정규식은 skill 매칭이든 직접 작성이든 에이전트가 draft 에 직접 채운다 (skill 은
-    자유 문서 — 에이전트가 읽어 정규화). 코드는 ``verify_table_patterns`` 로 검증만 —
+    정규식은 skill 매칭이든 직접 작성이든 에이전트가 draft 에 직접 채운다 (매칭된 skill은
+    ``ScanResult contract``를 변경 없이 복사). 코드는 ``verify_table_patterns`` 로 검증만 —
     통과 못 하면 ``_apply_verdict`` 가 ``no_match_reason`` 으로 표면화한다.
     """
     verdict = await verify_table_patterns(

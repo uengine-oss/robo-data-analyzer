@@ -39,6 +39,7 @@ class MatchSample:
     """정규식 매치 1건의 추출 결과 — 검증 피드백용 (정규식이 맞는지 눈으로 확인)."""
     entity: str
     op_token: str                       # named group <op_token> raw 매치 (예: 's', 'findOne', 'SELECT')
+    entity_complete: bool               # 소스의 전체 식별자 토큰을 캡처했나 (prefix 부분매치 방지)
     token_recognized: bool              # token 이 op_mappings 에 있나 (→ 표준 op 변환 가능)
     resolved_table: Optional[str]       # entity → DDL fqn (None = 미해소)
 
@@ -49,6 +50,7 @@ class LinkOutcome:
     edges: list[ReadsWrites] = field(default_factory=list)
     unresolved: list[dict] = field(default_factory=list)
     matched_sites: int = 0              # entity 를 추출한 총 매치 수
+    partial_entities: int = 0            # entity 앞뒤에 식별자 문자가 남은 부분 추출 수
     token_recognized: int = 0           # 그중 op_token 이 op_mappings 에 인식된 수
     samples: list[MatchSample] = field(default_factory=list)   # 앞 N건 (피드백용)
 
@@ -126,16 +128,23 @@ class RegexTableLinker:
                     op_token = groups.get("op_token", "")
                     line = text[: m.start()].count("\n") + 1
 
+                    entity_complete = _entity_group_complete(text, m)
                     token_known = op_token in op_lookup
-                    table_fqn = _resolve_table(entity, table_lookup, ddl_transform)
+                    table_fqn = (
+                        _resolve_table(entity, table_lookup, ddl_transform)
+                        if entity_complete else None
+                    )
                     caller_id = locator.locate(str(src_file), line)
 
                     outcome.matched_sites += 1
+                    if not entity_complete:
+                        outcome.partial_entities += 1
                     if token_known:
                         outcome.token_recognized += 1
                     if len(outcome.samples) < _SAMPLE_CAP:
                         outcome.samples.append(MatchSample(
                             entity=entity, op_token=op_token,
+                            entity_complete=entity_complete,
                             token_recognized=token_known, resolved_table=table_fqn,
                         ))
 
@@ -152,7 +161,8 @@ class RegexTableLinker:
                                 "result": "matched",
                                 "groups": dict(groups),
                                 "ddl_lookup_result": (
-                                    "not_found" if table_fqn is None
+                                    "partial_entity" if not entity_complete
+                                    else "not_found" if table_fqn is None
                                     else f"found:{table_fqn}"
                                 ),
                             }],
@@ -208,10 +218,12 @@ async def verify_table_patterns(
     ok = (
         matched > 0
         and edges > 0
+        and outcome.partial_entities == 0
         and token_ratio >= ENV.agent.scan_regex_min_op_ratio
     )
     summary = (
         f"매치 {matched}건 · R/W엣지 {edges}건 · 미해결 {len(outcome.unresolved)}건 · "
+        f"부분추출 {outcome.partial_entities}건 · "
         f"token인식 {token_ratio:.0%} · 테이블해소 {resolved_ratio:.0%}"
     )
     return PatternVerdict(ok=ok, resolved_ratio=resolved_ratio, summary=summary)
@@ -279,33 +291,45 @@ class CodeLocator:
 
 
 def _build_table_lookup(tables: list[Table]) -> dict[str, str]:
-    """테이블 이름 다양한 변형 → fqn lookup."""
-    lookup: dict[str, str] = {}
-    for t in tables:
-        tid = t.id
-        for key in (t.name, t.name.upper(), t.name.lower()):
-            lookup.setdefault(key, tid)
-    return lookup
+    """실제 DDL 테이블 이름 → fqn. 이름 변형은 만들지 않는다."""
+    return {t.name: t.id for t in tables}
 
 
 def _resolve_table(entity: str, lookup: dict[str, str], transform: DdlTransform) -> Optional[str]:
     """entity → fqn 변환 (``ddl_transform`` 규칙 적용)."""
     rule = getattr(transform, "ddl_naming_rule", "as_is")
-    candidates = [entity, entity.upper(), entity.lower()]
+    candidates = [entity]
 
     if rule == "camel_to_snake_upper":
-        candidates.append(_camel_to_snake(entity).upper())
+        candidates = [_camel_to_snake(entity).upper()]
     elif rule == "snake_to_camel":
-        candidates.append(_snake_to_camel(entity))
+        candidates = [_snake_to_camel(entity)]
 
     # fallback prefix
     for prefix in getattr(transform, "fallback_prefixes", None) or []:
-        candidates.extend([f"{prefix}{entity}", f"{prefix}{entity.upper()}"])
+        candidates.append(f"{prefix}{entity}")
 
     for c in candidates:
         if c in lookup:
             return lookup[c]
     return None
+
+
+def _entity_group_complete(text: str, match: re.Match) -> bool:
+    """entity 그룹이 실제 식별자 전체인지 확인한다.
+
+    `_`, quoted-name의 `-`, schema 구분 `.` 등이 그룹 직전·직후에 남으면 DDL에 우연히
+    존재하는 짧은 접두 이름으로 잘못 해소될 수 있으므로 부분 추출로 거부한다.
+    """
+    start, end = match.span("entity")
+
+    def continues(ch: str) -> bool:
+        return ch.isalnum() or ch in "_.$-"
+
+    return not (
+        (start > 0 and continues(text[start - 1]))
+        or (end < len(text) and continues(text[end]))
+    )
 
 
 def _camel_to_snake(name: str) -> str:

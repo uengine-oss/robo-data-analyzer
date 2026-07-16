@@ -20,6 +20,13 @@ def _insights(*tables):
     return NS(table_insights=[NS(table=t) for t in tables])
 
 
+def _insight_with_columns(table, *columns):
+    return NS(table_insights=[NS(
+        table=table,
+        columns=[NS(name=name, logical_name=f"논리-{name}", description="") for name in columns],
+    )])
+
+
 def _rules(*tables):
     return NS(rules=[NS(examples=[NS(affected_tables=[NS(table=t) for t in tables])])])
 
@@ -54,6 +61,56 @@ def test_keeps_all_when_in_rw():
     ru = _rules("t1", "t2")
     dropped = M.constrain_tables_to_rw("f3", ["t1"], ["t2"], ins, ru)
     assert dropped == 0
+
+
+def test_rejects_nonexact_table_identifier_variants():
+    ins = _insights("db:shipping", "db.shipping", "db:shipping:shipping", "shipping")
+    ru = _rules("db.shipping", "db:shipping")
+    dropped = M.constrain_tables_to_rw("f5", ["db:shipping"], [], ins, ru)
+    assert dropped == 4
+    assert [t.table for t in ins.table_insights] == ["db:shipping"]
+    assert [at.table for at in ru.rules[0].examples[0].affected_tables] == ["db:shipping"]
+
+
+def test_ambiguous_bare_name_is_not_attributed():
+    ins = _insights("orders")
+    dropped = M.constrain_tables_to_rw(
+        "f6", ["db:shop.orders", "db:archive.orders"], [], ins, None,
+    )
+    assert dropped == 1
+    assert ins.table_insights == []
+
+    exact = _insights("db:shop.orders")
+    assert M.constrain_tables_to_rw(
+        "f6", ["db:shop.orders", "db:archive.orders"], [], exact, None,
+    ) == 0
+    assert exact.table_insights[0].table == "db:shop.orders"
+
+
+def test_columns_are_limited_to_exact_ddl_allowlist():
+    ins = _insight_with_columns("db:shipping", "SHIP_SEQ", "ship_seq", "GHOST_COLUMN")
+    with patch.object(M, "log_warning") as warning:
+        dropped = M.constrain_tables_to_rw(
+            "f7", ["db:shipping"], [], ins, None,
+            allowed_columns_by_table={"db:shipping": ["SHIP_SEQ", "SHIP_STATUS_CD"]},
+        )
+    assert dropped == 0
+    assert ins.table_insights[0].table == "db:shipping"
+    assert [column.name for column in ins.table_insights[0].columns] == ["SHIP_SEQ"]
+    assert any(call.args[1] == "column_off_ddl" for call in warning.call_args_list)
+
+
+def test_multiple_rw_tables_are_preserved_and_missing_table_is_reported():
+    complete = _insights("db:orders", "db:shipping")
+    assert M.constrain_tables_to_rw(
+        "f8", ["db:orders"], ["db:shipping"], complete, None,
+    ) == 0
+    assert [item.table for item in complete.table_insights] == ["db:orders", "db:shipping"]
+
+    incomplete = _insights("db:orders")
+    with patch.object(M, "log_warning") as warning:
+        M.constrain_tables_to_rw("f8", ["db:orders"], ["db:shipping"], incomplete, None)
+    assert any(call.args[1] == "table_insight_missing" for call in warning.call_args_list)
 
 
 def test_dispatcher_drop_logs_info_not_warning():
@@ -97,8 +154,12 @@ if __name__ == "__main__":
     test_drops_offrw_table_in_examples()
     test_empty_rw_drops_all()
     test_keeps_all_when_in_rw()
+    test_rejects_nonexact_table_identifier_variants()
+    test_ambiguous_bare_name_is_not_attributed()
+    test_columns_are_limited_to_exact_ddl_allowlist()
+    test_multiple_rw_tables_are_preserved_and_missing_table_is_reported()
     test_dispatcher_drop_logs_info_not_warning()
     test_offrw_misattribution_logs_warning_not_info()
     test_dispatcher_drops_accumulate_and_flush_once()
     test_flush_no_drops_is_silent()
-    print("[OK] rw_table_filter: 8/8 passed")
+    print("[OK] rw_table_filter: 12/12 passed")

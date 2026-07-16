@@ -46,37 +46,53 @@ def flush_drop_summary() -> None:
     reset_drop_stats()
 
 
-def _bare(name: object) -> str:
-    """fqn/함수id 의 마지막 세그먼트 (테이블명 비교용, 수식 차이 흡수)."""
-    return str(name).rsplit(".", 1)[-1]
-
-
 def constrain_tables_to_rw(
     code_id: str,
     reads: Iterable[str],
     writes: Iterable[str],
     insights_out: Optional[object] = None,   # TableInsightsOutput | None
     rules_out: Optional[object] = None,       # RulesExamplesOutput | None
+    allowed_columns_by_table: Optional[dict[str, Iterable[str]]] = None,
 ) -> int:
-    """LLM 귀속 테이블을 reads∪writes(bare name) 로 제한 — in-place 수정, 드롭 수 반환.
+    """LLM 귀속 테이블을 reads∪writes 정확 ID로 제한 — in-place 수정, 드롭 수 반환.
 
     - ``insights_out.table_insights[*].table``
     - ``rules_out.rules[*].examples[*].affected_tables[*].table``
     중 허용 집합 밖은 제거. reads/writes 비면 허용 집합도 비어 전부 드롭(디스패처).
     """
-    allowed = {_bare(t) for t in (reads or ())} | {_bare(t) for t in (writes or ())}
+    allowed_exact = {str(t) for t in [*(reads or ()), *(writes or ())]}
+
+    def resolve(table: object) -> str | None:
+        exact = str(table)
+        return exact if exact in allowed_exact else None
     dropped = 0
     off: set[str] = set()
 
+    kept_table_ids: set[str] = set()
     if insights_out is not None and getattr(insights_out, "table_insights", None):
         kept = []
         for ti in insights_out.table_insights:
-            if _bare(ti.table) in allowed:
+            canonical = resolve(ti.table)
+            if canonical:
+                ti.table = canonical
+                kept_table_ids.add(canonical)
+                _constrain_columns(
+                    code_id, ti, canonical, allowed_columns_by_table,
+                )
                 kept.append(ti)
             else:
                 dropped += 1
                 off.add(str(ti.table))
         insights_out.table_insights = kept
+
+    if insights_out is not None and allowed_exact:
+        missing = sorted(allowed_exact - kept_table_ids)
+        if missing:
+            log_warning(
+                _STEP, "table_insight_missing",
+                f"LLM table_insights 누락 {len(missing)}건: {missing[:8]}",
+                code_id=code_id, missing=missing[:8],
+            )
 
     if rules_out is not None and getattr(rules_out, "rules", None):
         for rule in rules_out.rules:
@@ -86,7 +102,9 @@ def constrain_tables_to_rw(
                     continue
                 kept = []
                 for at in ats:
-                    if _bare(at.table) in allowed:
+                    canonical = resolve(at.table)
+                    if canonical:
+                        at.table = canonical
                         kept.append(at)
                     else:
                         dropped += 1
@@ -95,7 +113,7 @@ def constrain_tables_to_rw(
 
     if dropped:
         # 표면화(Constitution IV) — 단 심각도는 사실에 맞춘다(FR-005).
-        if not allowed:
+        if not allowed_exact:
             # 직접 R/W 없는 디스패처: callee 테이블이 컨텍스트에 노출돼 생기는 예상된 드롭.
             # per-함수는 INFO(analyzer.log 추적용), run 집계는 flush 가 1줄로 표면화(노이즈 0).
             _drop_stats["funcs"] += 1
@@ -110,6 +128,40 @@ def constrain_tables_to_rw(
             log_warning(
                 _STEP, "table_attr_off_rw",
                 f"reads/writes 밖 테이블 오귀속 {dropped}건 드롭: {sorted(off)[:8]}",
-                code_id=code_id, dropped=dropped, allowed=sorted(allowed)[:8],
+                code_id=code_id, dropped=dropped, allowed=sorted(allowed_exact)[:8],
             )
     return dropped
+
+
+def _constrain_columns(
+    code_id: str,
+    table_insight: object,
+    table_id: str,
+    allowed_columns_by_table: Optional[dict[str, Iterable[str]]],
+) -> None:
+    """컬럼 출력을 해당 DDL 테이블의 실제 이름과 정확히 일치할 때만 유지한다."""
+    if allowed_columns_by_table is None:
+        return
+    allowed = {
+        str(name): str(name)
+        for name in allowed_columns_by_table.get(table_id, ())
+        if str(name).strip()
+    }
+    columns = list(getattr(table_insight, "columns", None) or [])
+    kept = []
+    rejected: list[str] = []
+    for column in columns:
+        raw = str(getattr(column, "name", ""))
+        canonical = allowed.get(raw)
+        if canonical:
+            column.name = canonical
+            kept.append(column)
+        else:
+            rejected.append(raw)
+    table_insight.columns = kept
+    if rejected:
+        log_warning(
+            _STEP, "column_off_ddl",
+            f"DDL allowlist 밖 컬럼 {len(rejected)}건 드롭: {rejected[:8]}",
+            code_id=code_id, table=table_id, rejected=rejected[:8],
+        )

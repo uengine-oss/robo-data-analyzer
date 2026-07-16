@@ -1,4 +1,4 @@
-"""resynthesize_glossary — 그래프에 저장된 domain_terms 조각으로 용어사전 종합만 재실행 (spec 043 US3).
+"""resynthesize_glossary — 그래프의 domain_terms_json으로 용어사전 종합만 재실행.
 
 전량 재분석(수 분·요약 재생성 변동) 없이, 종합 프롬프트/병합 로직 개선을 반복 검증한다.
 수집·문맥조립·수용·그룹 로직은 build_glossary_step 의 것을 그대로 재사용(단일 진실).
@@ -28,13 +28,14 @@ from data_models.code_analysis_output import GlossarySynthesisOutput
 from shared.config.env_catalog import ENV
 from shared.llm.fanout import gather_with_warmup
 from shared.llm.yaml_llm_runner import run_yaml_rule
+from shared.domain_terms import load_domain_terms
 
 _NODES_QUERY = """
-MATCH (n) WHERE n.domain_terms IS NOT NULL AND n.domain_terms <> ''
+MATCH (n) WHERE n.domain_terms_json IS NOT NULL AND n.domain_terms_json <> ''
 RETURN n.id AS id, n.name AS name, coalesce(n.file_path,'') AS file_path,
        coalesce(n.start_line,0) AS start_line,
        coalesce(n.summary,'') AS summary, coalesce(n.search_text,'') AS search_text,
-       n.domain_terms AS domain_terms
+       n.domain_terms_json AS domain_terms_json
 """
 _MODULES_QUERY = """
 MATCH (m) WHERE (m:MODULE OR m:FILE) AND m.summary IS NOT NULL
@@ -48,7 +49,10 @@ def _fetch(db: str) -> tuple[list, list]:
     from neo4j import GraphDatabase
     drv = GraphDatabase.driver(ENV.neo4j.uri, auth=(ENV.neo4j.user, ENV.neo4j.password))
     with drv.session(database=db) as s:
-        nodes = [SimpleNamespace(**r) for r in s.run(_NODES_QUERY).data()]
+        nodes = []
+        for record in s.run(_NODES_QUERY).data():
+            record["domain_terms"] = load_domain_terms(record.pop("domain_terms_json"))
+            nodes.append(SimpleNamespace(**record))
         modules = [SimpleNamespace(**r) for r in s.run(_MODULES_QUERY).data()]
     drv.close()
     return nodes, modules

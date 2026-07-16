@@ -43,6 +43,7 @@ from shared.example_mapping import build_example_mapping, write_example_mapping
 from shared.example_mapping.builder import ExampleMappingResult
 from shared.llm.cost_budget import BudgetExceededError
 from data_models.code_analysis_output import SummaryOutput
+from shared.lang.ontology import ROUTINE_LABELS
 from shared.log.logger import log_error, log_info, log_warning
 from shared.log.ndjson_stream import NDJSONStream
 from shared.log.processing_progress import step_processing_scope, track_processing
@@ -54,49 +55,31 @@ _STEP = "step6.analyze_code"
 
 def _build_table_contexts(
     tables: list, table_sample_data: dict, columns_by_table: dict | None = None,
-) -> dict[str, str]:
-    """{fqn: "DDL설명 | 컬럼: … | 샘플(N행) {...}"} — DDL 설명 + 컬럼목록 + 샘플행 (LLM 1채널).
+) -> dict[str, dict]:
+    """정확한 table id를 설명·컬럼·샘플과 분리한 프롬프트 컨텍스트를 만든다.
 
     step5(fetch_table_samples)가 채운 ``table_sample_data`` ({fqn:{sample_rows}}) 와 각
-    Table 의 ``description`` 을 한 문자열로 합쳐, 렌더(_format_table_refs / batch _fmt_tables)가
-    코드노드별 reads/writes 만 골라 GWT 입력에 보여주게 한다. 둘 다 없으면 키 없음.
+    렌더러는 코드노드별 reads/writes만 골라 JSON으로 직렬화한다. table id와 설명을
+    한 문자열로 합치지 않으므로 LLM이 긴 설명을 id 일부로 오인하지 않는다.
 
     spec 027: ``columns_by_table`` (DDL 파싱 결정론 컬럼명)을 주입 — 라이브 datasource 가
     없어 샘플행이 비어도 LLM 이 알려진 컬럼 목록 기준으로 빠짐없이 서술하게 한다(컬럼 설명
     누락 방지). 컬럼은 R/W 로 그라운드된 테이블에만 렌더되므로 노이즈 없음.
     """
     columns_by_table = columns_by_table or {}
-    out: dict[str, str] = {}
+    out: dict[str, dict] = {}
     for t in tables:
         tid = getattr(t, "id", None)
         if not tid:
             continue
-        parts: list[str] = []
-        if t.description:
-            parts.append(t.description)
-        cols = columns_by_table.get(tid) or []
-        if cols:
-            parts.append("컬럼: " + ", ".join(cols))
+        cols = list(columns_by_table.get(tid) or [])
         rows = (table_sample_data.get(tid) or {}).get("sample_rows") or []
-        if rows:
-            parts.append(f"샘플({len(rows)}행) {_fmt_sample_rows(rows)}")
-        if parts:
-            out[tid] = " | ".join(parts)
+        out[tid] = {
+            "description": t.description or "",
+            "columns": cols,
+            "sample_rows": rows,
+        }
     return out
-
-
-def _fmt_sample_rows(rows: list, max_cell: int = 60) -> str:
-    """샘플 행(dict 목록) → compact 1줄. 긴 셀 값은 truncate (토큰 통제)."""
-    parts: list[str] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        cells = [
-            (f"{k}={str(v)[:max_cell]}…" if len(str(v)) > max_cell else f"{k}={v}")
-            for k, v in row.items()
-        ]
-        parts.append("{" + ", ".join(cells) + "}")
-    return " ".join(parts)
 
 
 async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
@@ -118,8 +101,7 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
 
     # 테이블 fqn → DDL 설명 — 3분할 reads/writes 렌더에 의미 부여 (LLM 이 테이블 뜻을 앎).
     # 테이블 "컨텍스트" = DDL 설명 + step5(fetch_table_samples)가 채운 실제 샘플행 합본.
-    # 1채널(table_descriptions)로 흘려 _format_table_refs / batch _fmt_tables 가 코드노드별
-    # reads/writes 테이블만 골라 GWT 입력에 렌더(threading·렌더러 변경 0, framework·dbms 공통).
+    # 1채널(table_descriptions)로 흘려 공통 JSON 직렬화기가 코드노드별 reads/writes만 렌더한다.
     # 샘플은 토글 off / datasource 미지정 / 미매칭 시 없음 → 설명만(없으면 fqn 만).
     # spec 027: DDL 파싱 컬럼(결정론)을 테이블 fqn 별로 모아 컨텍스트에 주입.
     # ★ 컬럼의 소속 테이블은 **관계(HAS_COLUMN)** 로 찾는다 — id 를 뜯지 않는다 (spec 047 FR-008).
@@ -135,6 +117,13 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
     table_descriptions = _build_table_contexts(
         state.get("tables", []), state.get("table_sample_data", {}), columns_by_table,
     )
+    # LLM에 보여준 DDL 컬럼 allowlist를 결과 검증에도 같은 단일 진실로 사용한다.
+    # 각 코드노드는 자기 R/W 테이블만 보유하므로 다른 테이블 컬럼이 섞일 수 없다.
+    for ctx in contexts.values():
+        ctx.extra["ddl_columns_by_table"] = {
+            table_id: tuple(columns_by_table.get(table_id, ()))
+            for table_id in dict.fromkeys((*ctx.reads, *ctx.writes))
+        }
 
     # ScanResult.codebase_notes — 3분할 모든 호출이 공통 prefix 로 사용 (캐시 친화).
     # Framework 만 채움 — DBMS 는 빈 문자열 (Scan Agent 안 씀).
@@ -185,7 +174,7 @@ async def run_framework_per_node_analysis(
     stream: Optional[NDJSONStream],
     codebase_notes: str,
     module_intents: dict[str, str],
-    table_descriptions: dict[str, str],
+    table_descriptions: dict[str, dict],
     pause: PauseController,
     source_cache: SourceFileCache,
 ) -> dict:
@@ -198,7 +187,21 @@ async def run_framework_per_node_analysis(
     """
     started = time.monotonic()
 
-    # 1. cycle 식별 (CALLS + PARENT_OF 둘 다) — Framework per-node 경로
+    # 0. 분석 대상 = routine 만 (spec 054 FR-005). parser 007 이 emit 하는 제어문(IF/LOOP/…)은
+    #    reader 가 그래프에 CodeNode 로 보존하지만 routine 이 아니므로 LLM 분석에서 제외한다.
+    #    ``ROUTINE_LABELS`` 가 단일 진실(DBMS batch 와 동일) — 소비자마다 if 분기 흩뿌리지 않는다.
+    #    이 한 곳에서 걸러 all_ids/rounds/accounting/return 이 모두 routine 기준으로 흐른다.
+    label_by_id = {fn.id: fn.label for fn in state.get("code_nodes", [])}
+    non_routine = [cid for cid in contexts if label_by_id.get(cid) not in ROUTINE_LABELS]
+    if non_routine:
+        contexts = {cid: ctx for cid, ctx in contexts.items() if cid not in non_routine}
+        log_info(_STEP, "analysis_target_filter",
+                 routines=len(contexts), excluded_structural=len(non_routine))
+
+    # 1. cycle 식별 (CALLS + PARENT_OF 둘 다) — Framework per-node 경로.
+    #    all_ids 가 routine 뿐이라 제어문 PARENT_OF 는 endpoint 가 all_ids 밖 → 순서 계산에 오염 X.
+    #    (주의: 제어문 아래 중첩 함수(Python nested def 등)의 함수→함수 순서는 제어문이 끊는다.
+    #     C 는 중첩 함수가 없어 무영향 — Java/Python 확장 시 routine 투과 containment 재검토.)
     edges: list[tuple[str, str]] = [
         (e.caller_id, e.callee_id)
         for e in state.get("calls_edges", [])
@@ -405,7 +408,7 @@ async def _analyze_one(
     semaphore: asyncio.Semaphore,
     codebase_notes: str,
     module_intents: dict[str, str],
-    table_descriptions: dict[str, str],
+    table_descriptions: dict[str, dict],
     source_cache: SourceFileCache,
     precomputed_summary: Optional[SummaryOutput] = None,
 ):

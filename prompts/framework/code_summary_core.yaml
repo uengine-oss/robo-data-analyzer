@@ -1,0 +1,22 @@
+## code_summary_core — summary/search 폭주 시 핵심 3필드 전용 폴백
+extends: _common
+max_tokens: 600
+user_template_specific: |
+  # [축소 폴백 — 세 필드만]
+
+  이번 호출은 `SummaryCoreOutput`의 `logical_name`, `summary`, `stereotype`만 작성한다.
+  `search_text`와 `domain_terms`는 절대 생성하지 않는다. 용어 목록·규칙·예시·테이블 설명도
+  쓰지 않는다.
+
+  - `logical_name`: 업무 표시명 한 줄, 권장 22자 전후 체언형. 같은 문구 반복 금지.
+  - `summary`: 함수가 무엇을 판단·변경·반환하는지 1~3줄. 같은 문장 반복 금지.
+  - `stereotype`: 아래 허용값 하나.
+
+  `ApplicationService`, `DomainService`, `Repository`, `Factory`, `Command`, `Query`,
+  `Validator`, `Translator`, `Adapter`, `Strategy`, `EventHandler`, `Scheduler`, `Helper`,
+  `Controller`, `Initializer`.
+
+  잘못된 예: `logical_name`에 같은 정산 설명을 길이 제한까지 반복.
+  올바른 예: `logical_name="주문별 정산 내역 확정 및 반영"`처럼 한 번만 작성.
+
+  세 필드를 각각 한 번 작성하고 즉시 JSON을 닫는다.

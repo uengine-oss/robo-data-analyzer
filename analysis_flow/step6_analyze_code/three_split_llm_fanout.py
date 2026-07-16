@@ -36,8 +36,11 @@ from pathlib import Path
 from typing import Any, Optional
 
 from analysis_flow.step6_analyze_code.range_body import ancestor_context, body_for
+from analysis_flow.step6_analyze_code.rule_quality import check_rule_quality
+from analysis_flow.step6_analyze_code.rules_fallback import run_rules_fallback
 from analysis_flow.step6_analyze_code.rw_table_filter import constrain_tables_to_rw
-from data_models.analysis_context import AnalysisContext
+from analysis_flow.step6_analyze_code.table_prompt_context import dump_table_refs
+from data_models.analysis_context import AnalysisContext, dump_referenced_symbols
 from data_models.graph_nodes import CodeNode
 from shared.lang.ontology import coerce_stereotype
 from shared.llm.cost_budget import BudgetExceededError, CostBudget
@@ -48,6 +51,7 @@ from data_models.code_analysis_output import (
     TableInsightsOutput,
 )
 from shared.llm.yaml_llm_runner import run_yaml_rule
+from shared.domain_terms import normalize_domain_terms
 from shared.log.logger import log_error, log_warning
 from shared.log.processing_progress import track_processing
 from shared.source_file_cache import SourceFileCache
@@ -63,7 +67,7 @@ async def run_summary(
     cost_budget: Optional[CostBudget] = None,
     codebase_notes: str = "",
     module_intents: Optional[dict[str, str]] = None,
-    table_descriptions: Optional[dict[str, str]] = None,
+    table_descriptions: Optional[dict[str, dict]] = None,
     source_cache: Optional[SourceFileCache] = None,
 ) -> Optional[SummaryOutput]:
     """#1 summary 단독 호출 — Round 첫 코드노드의 cache 워밍용.
@@ -116,7 +120,7 @@ async def analyze_code_three_split(
     cost_budget: Optional[CostBudget] = None,
     codebase_notes: str = "",
     module_intents: Optional[dict[str, str]] = None,
-    table_descriptions: Optional[dict[str, str]] = None,
+    table_descriptions: Optional[dict[str, dict]] = None,
     source_cache: Optional[SourceFileCache] = None,
     precomputed_summary: Optional[SummaryOutput] = None,
 ) -> Optional[CodeNode]:
@@ -180,8 +184,8 @@ async def analyze_code_three_split(
             # 검색 필드 생성 중 출력 폭주(LengthFinishReasonError 등)로 실패 시, 핵심 3필드
             # 축소 스키마로 1회 폴백 — 노드 상실(요약 없는 노드 = 검색 코퍼스 탈락) 방지.
             # 실측: b720(간편결제사 확인) 나열형 필드 반복 폭주. 재발 감시용 명시 로그(greppable
-            # 태그 "search_field_overflow"). 잦아지면 domain_terms/search_text dict 전환 검토
-            # (단 SGLang 자유키 dict = 과거 5차 사고, code_analysis_output.py 머리말 참조).
+            # 태그 "search_field_overflow"). domain_terms는 fixed-item 배열이며
+            # search_text 또는 provider 이상 응답에도 대비해 핵심 요약 폴백은 유지한다.
             log_warning(_STEP, "search_field_overflow",
                         f"summary+검색필드 실패({type(e).__name__}) — 핵심 3필드 축소 폴백 재호출 "
                         f"(나열형 필드 출력 폭주 의심)",
@@ -190,7 +194,7 @@ async def analyze_code_three_split(
                 core = await _track_split(
                     "split_summary_core",
                     run_yaml_rule(
-                        prompts_dir=prompts_dir, rule_name="code_summary",
+                        prompts_dir=prompts_dir, rule_name="code_summary_core",
                         user_values=common, response_model=SummaryCoreOutput, budget=cost_budget,
                     ),
                 )
@@ -242,8 +246,29 @@ async def analyze_code_three_split(
         if k in tasks and isinstance(done[k], BaseException)
     )
 
+    # spec 054 US3: rules 이상 시에만 폴백(정상 경로는 통째 스킵 — 성능·캐시 불변, FR-016).
+    # 최초 전체 분석의 rules_out 을 결정론 품질검사 → 이상이면 분할→조각분석→병합→재검사.
+    fallback_flag: Optional[str] = None
+    if rules_out is not None:
+        quality = check_rule_quality(rules_out, common["code_body"])
+        if quality.is_anomaly:
+            outcome = await run_rules_fallback(
+                code_id=code_id,
+                rules_out=rules_out,
+                report=quality,
+                code_body=common["code_body"],
+                control_subtree=ctx.extra.get("control_subtree"),
+                analyze_fragment=_make_fragment_analyzer(prompts_dir, common, cost_budget),
+                merge_fragments=_make_fragment_merger(prompts_dir, common, fn.signature, cost_budget),
+            )
+            rules_out = outcome.rules_out
+            fallback_flag = outcome.anomaly_flag
+
     # spec 027: LLM 귀속 테이블을 결정론 reads/writes 로 제한 (callee 함수명 오귀속 차단).
-    constrain_tables_to_rw(code_id, ctx.reads, ctx.writes, insights_out, rules_out)
+    constrain_tables_to_rw(
+        code_id, ctx.reads, ctx.writes, insights_out, rules_out,
+        allowed_columns_by_table=ctx.extra.get("ddl_columns_by_table"),
+    )
 
     # fan-in 머지 → CodeNode 에 적용
     # stereotype 은 ontology_roles.yaml 풀과 검증 (없으면 빈 문자열로 강제)
@@ -252,7 +277,12 @@ async def analyze_code_three_split(
     fn.stereotype = validated_stereotype or None
     fn.logical_name = summary_out.logical_name or None
     fn.search_text = summary_out.search_text or None
-    fn.domain_terms = summary_out.domain_terms or None
+    fn.domain_terms = normalize_domain_terms(
+        summary_out.domain_terms,
+        source_text=common["code_body"],
+        code_id=fn.id,
+        component=_STEP,
+    )
     fn.extra["table_insights"] = (
         [t.model_dump() for t in insights_out.table_insights] if insights_out else []
     )
@@ -260,6 +290,9 @@ async def analyze_code_three_split(
     fn.extra["questions"] = [q.model_dump() for q in rules_out.questions] if rules_out else []
     if partial_parts:
         fn.extra["partial"] = partial_parts
+    if fallback_flag:
+        # 폴백 재검사도 이상 → 결정론 dedupe 한 부분 결과 + 이상 플래그(silent success 금지, FR-023).
+        fn.extra["rules_quality_flag"] = fallback_flag
 
     # ctx 에 분석 결과 부착 — Bottom-up 으로 상위(caller·부모)가 라이브 조회.
     # summary → callee/compact 본문 / rules·questions → 부모 #3 분할 입력.
@@ -295,7 +328,7 @@ def _build_user_values(
     contexts: dict[str, AnalysisContext],
     codebase_notes: str,
     module_intents: dict[str, str],
-    table_descriptions: dict[str, str],
+    table_descriptions: dict[str, dict],
     cache: SourceFileCache,
 ) -> dict:
     """3 yaml 공통 ``user_template`` 의 치환 값 ([공통 context]).
@@ -310,30 +343,12 @@ def _build_user_values(
         "code_body": body_for(ctx, contexts, cache),
         "codebase_notes": codebase_notes or "(없음)",
         "module_intent": module_intents.get(fn.owner_id) or "(없음)",
-        "referenced_symbols": "\n".join(ctx.referenced_symbols) or "(없음)",
+        "referenced_symbols": dump_referenced_symbols(ctx.referenced_symbols),
         "callee_summaries": _format_callee_summaries(ctx, contexts),
         "ancestor_context": ancestor_context(ctx, contexts, cache),
-        "reads": _format_table_refs(ctx.reads, table_descriptions),
-        "writes": _format_table_refs(ctx.writes, table_descriptions),
+        "reads": dump_table_refs(ctx.reads, table_descriptions),
+        "writes": dump_table_refs(ctx.writes, table_descriptions),
     }
-
-
-def _format_table_refs(
-    fqns: tuple[str, ...],
-    table_descriptions: dict[str, str],
-) -> str:
-    """테이블 fqn 목록 → ``- fqn: 컨텍스트`` 줄들. 값 없으면 fqn 만.
-
-    ``table_descriptions`` 값 = step6 진입부에서 DDL설명 + 실제 샘플행을 합쳐 만든
-    "테이블 컨텍스트" 문자열 (LLM 이 의미+실제값으로 GWT 시나리오 생성). 빈 목록 "(없음)".
-    """
-    if not fqns:
-        return "(없음)"
-    lines = []
-    for fqn in fqns:
-        desc = table_descriptions.get(fqn, "")
-        lines.append(f"    - {fqn}: {desc}" if desc else f"    - {fqn}")
-    return "\n" + "\n".join(lines)
 
 
 def _format_callee_summaries(
@@ -394,3 +409,52 @@ def _format_child_business_logic(
             if text:
                 parts.append(f"- {text}")
     return "\n".join(parts)
+
+
+# ── spec 054 폴백: 조각/병합 LLM 콜러블 팩토리 (배관은 여기, 오케스트레이션은 rules_fallback) ──
+
+
+def _make_fragment_analyzer(prompts_dir, common: dict, cost_budget):
+    """조각 rules LLM 콜러블 — 조각 본문 + 조상 조건 경로로 code_rules_examples 호출.
+
+    조각은 함수 시그니처·공통 문맥(common)을 그대로 물려받고, code_body 만 조각 원문으로,
+    ancestor_context 는 이 조각을 감싸는 제어문 조건 경로로 바꾼다(FR-021).
+    """
+    async def _analyze(frag):
+        frag_values = {
+            **common,
+            "code_body": frag.text,
+            "ancestor_context": "\n".join(frag.ancestor_path) if frag.ancestor_path else "(없음)",
+            "child_business_logic": "(없음)",
+        }
+        return await run_yaml_rule(
+            prompts_dir=prompts_dir, rule_name="code_rules_examples",
+            user_values=frag_values, response_model=RulesExamplesOutput, budget=cost_budget,
+        )
+
+    return _analyze
+
+
+def _make_fragment_merger(prompts_dir, common: dict, signature: str, cost_budget):
+    """병합 LLM 콜러블 — 조각별 결과 → 함수 하나의 규칙/예시(code_rules_merge, LLM 1회)."""
+    async def _merge(fragment_outputs):
+        merge_values = {
+            **common,
+            "signature": signature,
+            "fragment_results": _format_fragment_results(fragment_outputs),
+        }
+        return await run_yaml_rule(
+            prompts_dir=prompts_dir, rule_name="code_rules_merge",
+            user_values=merge_values, response_model=RulesExamplesOutput, budget=cost_budget,
+        )
+
+    return _merge
+
+
+def _format_fragment_results(fragment_outputs) -> str:
+    """조각별 RulesExamplesOutput → 병합 프롬프트 입력 텍스트(조각 경계 표시)."""
+    parts: list[str] = []
+    for idx, out in enumerate(fragment_outputs, start=1):
+        parts.append(f"[조각 {idx}]")
+        parts.append(out.model_dump_json())
+    return "\n".join(parts) if parts else "(조각 결과 없음)"

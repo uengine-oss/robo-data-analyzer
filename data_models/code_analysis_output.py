@@ -10,8 +10,9 @@
 호출 모드 (단일 진실):
 ``llm.with_structured_output(..., method="function_calling")`` 가 기본 — strict 미강제.
 단 SGLang + xgrammar 환경에서 자유 키 ``dict[str, str]`` 는 value 시작 토큰
-선택 실패 → 공백 무한 폭주 사고 발생 (2026-05-30 5차). ``list[KeyValueItem]`` 도
-같은 구조 반복 폭주 사고 (4차). 둘 다 schema 강제 부작용 — 결론적으로 examples 의
+선택 실패 → 공백 무한 폭주 사고 발생 (2026-05-30 5차). 깊고 상한 없는
+``list[KeyValueItem]`` 도 같은 구조 반복 폭주 사고 (4차). 둘 다 schema 강제 부작용 —
+결론적으로 examples 의
 ``given`` / ``then`` 은 **자연어 단일 문자열** 로 통합 (LLM 한테 가장 자유로운 출력 →
 폭주 메커니즘 자체 차단).
 
@@ -26,10 +27,9 @@
    검색 다리가 놓인다(실측: 뜻이 "SK-VAN 등록 여부"뿐이면 "결제망" 질의가 못 찾음).
 3. **폴백**: 그래도 터지면 ``SummaryCoreOutput`` 축소 재호출로 노드 상실 0 + 로그 태그
    ``search_field_overflow`` 로 표면화.
-※ **개수 캡(최대 N개)은 기각** — 식별자가 N개를 넘는 함수에서 핵심 어휘를 버리게 되어
-   사전에 구멍이 뚫린다(검색 미회수 유발). 캡이 아니라 "지어낼 여지를 없애는" 것이 근본.
-※ **max_tokens 하향도 기각** — 정상적으로 긴 출력까지 자를 수 있다.
-※ dict/list 구조 전환도 신중 — 위 4·5차 사고처럼 SGLang 자유키/반복구조가 더 크게 터졌다.
+4. **구조·상한**: 자유키 dict가 아닌 고정형 ``DomainTermItem`` 배열(0~10)을 사용한다.
+   10개는 목표가 아니라 절대 상한이다. 후보가 더 많으면 의미 우선순위 상위 10개만 선택한다.
+   규칙별 출력 토큰 상한도 별도로 둔다.
 
 검증 규칙 (Pydantic validator):
 - ``summary`` = 마커 없는 1~3줄 짧은 요약 (spec 041 다이어트) — validator 는 거부가
@@ -75,9 +75,10 @@ class SummaryOutput(BaseModel):
         "",
         description="검색 전용 서술 — 분기 조건·상태 전이·코드값·테이블 상호작용을 업무 어휘로 (프론트 비노출, 단순 노드는 빈 값)",
     )
-    domain_terms: str = Field(
-        "",
-        description="용어 조각 '용어=뜻; 용어=뜻' — 본문에 그 글자 그대로 있는 낯선 식별자만 (조합어 창작 금지, 없으면 빈 값)",
+    domain_terms: list["DomainTermItem"] = Field(
+        default_factory=list,
+        max_length=10,
+        description="본문 실재 표제어와 업무 뜻의 구조화 목록 (0~10개; 10개는 목표가 아닌 절대 상한)",
     )
     logical_name: str = Field(
         "",
@@ -106,6 +107,12 @@ class SummaryCoreOutput(BaseModel):
     @classmethod
     def _validate_summary_format(cls, v: str) -> str:
         return _normalize_diet_summary(v)
+
+
+class DomainTermItem(BaseModel):
+    """LLM 경계용 고정 키 구조. 내부에서는 검증 후 dict로 변환한다."""
+    term: str = Field(..., min_length=1, max_length=60)
+    meaning: str = Field(..., min_length=1, max_length=500)
 
 
 # ── 3 분할 #2: code_table_insights ────────────────────
@@ -154,9 +161,9 @@ class ExampleItem(BaseModel):
     given/then 은 자유키 dict 폭주 차단 위해 자연어 단일 문자열. 소속 Rule 하위 중첩 —
     참조 id 없이 구조로 연결.
     """
-    given: str = Field("", description="진입 조건 한 줄 (자연어, 공백/빈 영역 X)")
-    when: str = Field("", description="자연어 한 줄 — 메서드명·클래스명 X")
-    then: str = Field("", description="결과 한 줄 (자연어)")
+    given: str = Field("", description="진입 조건 한 줄 (확정된 코드 리터럴은 정확히 보존)")
+    when: str = Field("", description="트리거 한 줄 (메서드명·클래스명 X, 확정 리터럴 보존)")
+    then: str = Field("", description="결과 한 줄 (확정된 실제 코드값 보존, 불명확하면 추측 X)")
     affected_tables: list[AffectedTable] = Field(
         default_factory=list,
         description="이 시나리오의 READ/WRITE 테이블 (op enum) — AFFECTS_TABLE 엣지 단일",
@@ -176,7 +183,7 @@ class RuleItem(BaseModel):
     )
     examples: list[ExampleItem] = Field(
         default_factory=list,
-        max_length=30,
+        max_length=80,
         description="이 규칙의 given/when/then 시나리오 (같은결과 변주만 1~2)",
     )
 
@@ -194,8 +201,11 @@ class QuestionItem(BaseModel):
 class RulesExamplesOutput(BaseModel):
     """Rule(하위 Example 중첩) + Question 추출 결과.
 
-    개수는 가치 결정 질문 (prompt §[1]) 통과한 것만. grammar 폭주 안전망은 rules/questions
-    및 rule 하위 examples 각각 max_length 캡 (실제 Rule 3~7 개라 도달 X — 자연 압축).
+    개수는 가치 결정 질문 (prompt §[1]) 통과한 것만. max_length 캡은 **비즈니스 규칙이 아니라
+    provider 출력 폭주(수백 개) 안전망**이다 — "정상적으로 많은 것"을 막지 않는다(spec 054 FR-022).
+    실제 품질(반복·무근거·Rule 비매핑) 판정은 결정론 품질검사기(rule_quality)와 폴백이 전담한다.
+    examples 캡은 30→80 (관측 정상 범위 21~47 을 여유 있게 수용, 수백 개 폭주는 여전히 차단).
+    rules/questions 캡(30/15)은 개수 폭주가 관측된 적 없어 유지.
     """
     rules: list[RuleItem] = Field(default_factory=list, max_length=30)
     questions: list[QuestionItem] = Field(
@@ -220,9 +230,10 @@ class BatchSummaryItem(BaseModel):
         "",
         description="검색 전용 서술 — 분기 조건·상태 전이·코드값·테이블 상호작용을 업무 어휘로 (프론트 비노출, 단순 노드는 빈 값)",
     )
-    domain_terms: str = Field(
-        "",
-        description="용어 조각 '용어=뜻; 용어=뜻' — 본문에 그 글자 그대로 있는 낯선 식별자만 (조합어 창작 금지, 없으면 빈 값)",
+    domain_terms: list[DomainTermItem] = Field(
+        default_factory=list,
+        max_length=10,
+        description="본문 실재 표제어와 업무 뜻의 구조화 목록 (0~10개; 10개는 목표가 아닌 절대 상한)",
     )
     logical_name: str = Field("", description="형제와 구별되는 도메인 한 줄 표시명")
     summary: str = Field("", description="마커 없는 1~3줄 짧은 요약 (세부 분기·코드값은 search_text 책임)")

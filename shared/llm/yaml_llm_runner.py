@@ -106,6 +106,7 @@ def _load_rule(prompts_dir: Path, rule_name: str) -> dict:
             common.get("user_template_inputs", "") + rule.get("user_template_specific", "")
         ),
         "model": rule.get("model") or common.get("model"),
+        "max_tokens": rule.get("max_tokens") or common.get("max_tokens"),
     }
 
 
@@ -145,7 +146,7 @@ async def run_yaml_rule(
 
     # 현재 LLM config — provider 정보를 cache friendly filter 에 전달
     cfg = load_llm_config(ENV.llm.config)
-    llm = build_llm_client(model=model)
+    llm = build_llm_client(model=model, max_tokens=rule.get("max_tokens"))
     # include_raw=True — Pydantic 결과 + usage_metadata 동시 획득
     structured = llm.with_structured_output(response_model, include_raw=True)
 

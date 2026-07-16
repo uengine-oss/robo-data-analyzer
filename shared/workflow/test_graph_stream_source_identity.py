@@ -37,7 +37,7 @@ def test_code_node_event_keeps_owner_without_internal_analysis_material() -> Non
         end_line=40,
         label="FUNCTION",
         search_text="internal search material",
-        domain_terms="internal domain material",
+        domain_terms={"internal": "domain material"},
         embedding=(0.1, 0.2),
     )])
     props = stream.events[0]["props"]

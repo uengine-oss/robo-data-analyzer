@@ -23,8 +23,42 @@
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, Optional
+
+
+@dataclass(frozen=True)
+class ReferencedSymbolContext:
+    """A referenced symbol with explicit value provenance and mutability."""
+
+    id: str
+    name: str
+    kind: str
+    data_type: str = ""
+    declared_value: str = ""
+    value_semantics: str = ""
+    initialization_sources: tuple[str, ...] = ()
+
+    def as_prompt_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "kind": self.kind,
+            "data_type": self.data_type,
+            "declared_value": self.declared_value,
+            "value_semantics": self.value_semantics,
+            "initialization_sources": list(self.initialization_sources),
+        }
+
+
+def dump_referenced_symbols(symbols: tuple[ReferencedSymbolContext, ...]) -> str:
+    """Serialize the single prompt-input contract without delimiter parsing."""
+    return json.dumps(
+        [symbol.as_prompt_dict() for symbol in symbols],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 @dataclass
@@ -54,7 +88,7 @@ class AnalysisContext:
     callees: tuple[str, ...] = ()            # callee id 들
 
     # 참조 컨텍스트 (build_context_step 가 state 엣지/노드에서 결정론 도출) ────
-    referenced_symbols: tuple[str, ...] = ()  # REFERENCES + INIT_BY — 참조 변수/상수 줄
+    referenced_symbols: tuple[ReferencedSymbolContext, ...] = ()
 
     # 큰 코드노드 사전 압축 (build_context_step 가 본문 토큰 > 임계 시 채움) ────
     one_liner: Optional[str] = None          # "결제 PG 호출 + 인증 처리" 식

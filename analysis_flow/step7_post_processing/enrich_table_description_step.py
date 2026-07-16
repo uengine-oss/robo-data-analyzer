@@ -29,10 +29,10 @@ from data_models.code_analysis_output import TableDescription
 from shared.llm.yaml_llm_runner import run_yaml_rule
 from shared.log.logger import log_error, log_info, log_warning
 from shared.log.processing_progress import step_processing_scope, track_processing
-from shared.neo4j.ids import fqn
 from shared.neo4j.neo4j_client import Neo4jClient
 from shared.neo4j.nodes.column import update_analyzed_descriptions as update_column_analyzed
 from shared.neo4j.nodes.table import update_analyzed_descriptions as update_table_analyzed
+from analysis_flow.step7_post_processing.table_logical_names import build_column_updates
 
 _STEP = "step7.enrich_table_description"
 
@@ -130,13 +130,11 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
         _warn_unmatched("테이블", table_updates, matched)
 
     # 컬럼 논리명(spec 028)도 동반 SET — 빈값은 column.py SET_ANALYZED 가 미저장 처리.
-    column_updates = [
-        {"id": fqn(table_fqn, cname),
-         "analyzed_description": cdesc,
-         "logical_name": column_logicals.get(table_fqn, {}).get(cname, "")}
-        for table_fqn, cols in column_descriptions.items()
-        for cname, cdesc in cols.items()
-    ]
+    # description 없이 logical_name만 반환된 컬럼도 보존한다. 종전에는
+    # column_descriptions를 반복해 이 경우 logical_name이 집계 단계에서 소실됐다.
+    column_updates = build_column_updates(
+        table_candidates, column_descriptions, column_logicals,
+    )
     if neo is not None and column_updates:
         matched = await update_column_analyzed(neo, column_updates)
         _warn_unmatched("컬럼", column_updates, matched)

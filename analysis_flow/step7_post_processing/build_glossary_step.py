@@ -1,7 +1,7 @@
 """build_glossary_step — 도메인 용어사전 종합 (spec 042 수집 + spec 043 AI 종합).
 
 흐름 (수집·조립·확정은 결정론, 판단만 LLM — 헌법 I):
-1. 수집 — 노드별 ``CodeNode.domain_terms`` 조각("약어=뜻; …")을 표제어 단위로 병합하며
+1. 수집 — 노드별 ``CodeNode.domain_terms`` dict를 표제어 단위로 병합하며
    출처 노드를 기록한다.
 2. 문맥 조립 — 표제어마다 [전체 표제어 목록(모든 콜 공유 접두 — KV 캐시)] + [출처 노드들의
    summary·search_text] + [그 노드들의 모듈 요약]을 묶는다. 출처 노드 상한 초과분은 컷하되
@@ -51,11 +51,10 @@ SET g.terms_json = item.terms_json, g.n_terms = item.n_terms
 # ── 1. 수집 (결정론) ──────────────────────────────────────
 
 def _collect_terms(code_nodes: list[CodeNode]) -> dict[str, dict]:
-    """노드별 "약어=뜻; …" 조각 → lower(표제어) 키 병합 + 출처 노드 기록."""
+    """노드별 표제어→뜻 dict를 lower(표제어) 키로 병합하고 출처 노드를 기록한다."""
     merged: dict[str, dict] = {}
     for fn in code_nodes:
-        for piece in (fn.domain_terms or "").split(";"):
-            term, _, meaning = piece.partition("=")
+        for term, meaning in fn.domain_terms.items():
             term, meaning = term.strip(), meaning.strip()
             if not term or not meaning or len(term) > 60:
                 continue

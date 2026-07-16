@@ -174,24 +174,33 @@ def _read_framework(
         module_id = code_ns_id(raw.get("packageName") or "")
 
     ctx = _FwCtx(lang=lang, package=package_id, src_path=src_path, result=result, seen=set())
-    _walk_framework(raw, ctx, module_id, None)
+    # 파일(FILE) 진입 — 아직 구조 부모도 소유 routine 도 없다(둘 다 None). 함수 진입 시 갱신.
+    _walk_framework(raw, ctx, module_id, None, None)
     _derive_structure_edges(result, package_id)
     return result
 
 
 def _walk_framework(
-    node: dict, ctx: _FwCtx, module_id: str, parent_fid: str | None,
+    node: dict, ctx: _FwCtx, module_id: str,
+    parent_fid: str | None, owner_routine_id: str | None,
 ) -> None:
-    """children 을 role 별 핸들러로 디스패치 (``_FW_DISPATCH``)."""
+    """children 을 role 별 핸들러로 디스패치 (``_FW_DISPATCH``).
+
+    두 컨텍스트를 분리 스레딩한다 (spec 054 FR-008):
+    - ``parent_fid``       : PARENT_OF(구조 부모). 제어문으로 내려가면 그 제어문으로 바뀐다.
+    - ``owner_routine_id`` : CALLS/READS/WRITES 귀속용 소유 routine(가장 가까운 FUNCTION/METHOD).
+                             제어문을 지나쳐도 바뀌지 않는다 — 호출의 주어는 언제나 함수다.
+    """
     for child in node.get("children") or []:
         handler = _FW_DISPATCH.get(role_of(child.get("type", ""), ctx.lang))
         if handler is not None:
-            handler(child, ctx, module_id, parent_fid)
+            handler(child, ctx, module_id, parent_fid, owner_routine_id)
 
 
 # ── role 별 핸들러 — 노드 1개 생성 + 필요 시 재귀 ──
 
-def _fw_module(child: dict, ctx: _FwCtx, module_id: str, parent_fid: str | None) -> None:
+def _fw_module(child: dict, ctx: _FwCtx, module_id: str,
+               parent_fid: str | None, owner_routine_id: str | None) -> None:
     """중첩 컨테이너(java 클래스·inner class) → Module 노드.
 
     id = ``<상위 컨테이너>:<이름>`` (spec 047) — 패키지·바깥클래스 경로가 끝까지 반영된다.
@@ -202,30 +211,55 @@ def _fw_module(child: dict, ctx: _FwCtx, module_id: str, parent_fid: str | None)
         child, sub_id, name, ctx.src_path,
         int(child.get("startLine") or 0), int(child.get("endLine") or 0),
     ))
-    _walk_framework(child, ctx, sub_id, parent_fid)
+    _walk_framework(child, ctx, sub_id, parent_fid, owner_routine_id)
 
 
-def _fw_code(child: dict, ctx: _FwCtx, module_id: str, parent_fid: str | None) -> None:
+def _fw_code(child: dict, ctx: _FwCtx, module_id: str,
+             parent_fid: str | None, owner_routine_id: str | None) -> None:
     fid = _node_id(child, ctx, module_id)
     ctx.result.code_nodes.append(_make_code_node(
         child, fid, module_id, ctx.package, ctx.src_path, parent_fid,
     ))
     if parent_fid is not None:
         ctx.result.parent_of_edges.append(ParentOf(parent_id=parent_fid, child_id=fid))
-    _walk_framework(child, ctx, module_id, fid)
+    # 함수는 구조 부모이자 소유 routine — 둘 다 자기 자신(fid)으로 갱신하며 하강.
+    _walk_framework(child, ctx, module_id, fid, fid)
 
 
-def _fw_variable(child: dict, ctx: _FwCtx, module_id: str, parent_fid: str | None) -> None:
+def _fw_control(child: dict, ctx: _FwCtx, module_id: str,
+                parent_fid: str | None, owner_routine_id: str | None) -> None:
+    """제어 흐름 뼈대(IF/ELSE/LOOP/SWITCH/CASE) → CodeNode (spec 007/054).
+
+    그래프에 보존(라벨=antlr type)하되 routine 이 아니므로 분석 대상에서 제외된다
+    (``ROUTINE_LABELS`` 단일 진실 — build_context/step6 가 필터). 구조 부모는 이 제어문
+    으로 바뀌지만 **소유 routine 은 불변**이라, 아래 FUNCTION_CALL 의 CALLS 는 함수에 귀속된다.
+    id 규칙은 DBMS 구조 노드와 동일: ``<부모>:<TYPE>@<줄>`` (같은 부모의 동종 노드는 줄로 구분).
+    """
+    sl = int(child.get("startLine") or 0)
+    container = parent_fid if parent_fid is not None else module_id
+    cid = _unique_id(positioned(child_id(container, child.get("type", "")), sl), sl, ctx.seen)
+    ctx.result.code_nodes.append(_make_code_node(
+        child, cid, module_id, ctx.package, ctx.src_path, parent_fid,
+    ))
+    if parent_fid is not None:
+        ctx.result.parent_of_edges.append(ParentOf(parent_id=parent_fid, child_id=cid))
+    _walk_framework(child, ctx, module_id, cid, owner_routine_id)
+
+
+def _fw_variable(child: dict, ctx: _FwCtx, module_id: str,
+                 parent_fid: str | None, owner_routine_id: str | None) -> None:
     vid = _node_id(child, ctx, module_id)
     ctx.result.variables.append(_make_variable(child, vid, module_id, ctx.src_path))
 
 
-def _fw_constant(child: dict, ctx: _FwCtx, module_id: str, parent_fid: str | None) -> None:
+def _fw_constant(child: dict, ctx: _FwCtx, module_id: str,
+                 parent_fid: str | None, owner_routine_id: str | None) -> None:
     cid = _node_id(child, ctx, module_id)
     ctx.result.constants.append(_make_constant(child, cid, module_id, ctx.src_path))
 
 
-def _fw_data_type(child: dict, ctx: _FwCtx, module_id: str, parent_fid: str | None) -> None:
+def _fw_data_type(child: dict, ctx: _FwCtx, module_id: str,
+                  parent_fid: str | None, owner_routine_id: str | None) -> None:
     did = _node_id(child, ctx, module_id)
     ctx.result.data_types.append(_make_data_type(child, did, module_id, ctx.src_path))
     # struct / union 멤버 → Variable 노드 + HAS_MEMBER (모듈 소속 아닌 자료형 소속).
@@ -240,36 +274,43 @@ def _fw_data_type(child: dict, ctx: _FwCtx, module_id: str, parent_fid: str | No
             ctx.result.variables.append(_make_variable(member, vid, module_id, ctx.src_path))
             ctx.result.has_member_edges.append(HasMember(did, vid))
         elif role == "data_type":
-            _fw_data_type(member, ctx, module_id, parent_fid)  # 중첩 struct
+            _fw_data_type(member, ctx, module_id, parent_fid, owner_routine_id)  # 중첩 struct
 
 
-def _fw_internal(child: dict, ctx: _FwCtx, module_id: str, parent_fid: str | None) -> None:
-    _collect_internal(child, ctx.src_path, ctx.result, parent_fid)
+def _fw_internal(child: dict, ctx: _FwCtx, module_id: str,
+                 parent_fid: str | None, owner_routine_id: str | None) -> None:
+    # CALLS/import 의 주어(caller)는 구조 부모가 아니라 소유 routine 이다 (제어문 아래여도 함수).
+    _collect_internal(child, ctx.src_path, ctx.result, owner_routine_id)
     if child.get("type", "") == "FUNCTION_CALL":
-        # foo(bar()) — 중첩 호출도 같은 caller 로
-        _walk_framework(child, ctx, module_id, parent_fid)
+        # foo(bar()) — 중첩 호출도 같은 소유 routine 로
+        _walk_framework(child, ctx, module_id, parent_fid, owner_routine_id)
 
 
 _FW_DISPATCH = {
-    "module":    _fw_module,
-    "function":  _fw_code,
-    "variable":  _fw_variable,
-    "constant":  _fw_constant,
-    "data_type": _fw_data_type,
-    "internal":  _fw_internal,
+    "module":            _fw_module,
+    "function":          _fw_code,
+    "control_structure": _fw_control,
+    "variable":          _fw_variable,
+    "constant":          _fw_constant,
+    "data_type":         _fw_data_type,
+    "internal":          _fw_internal,
 }
 
 
 def _collect_internal(
-    node: dict, src_path: str, result: ParseResult, parent_fid: str | None,
+    node: dict, src_path: str, result: ParseResult, owner_routine_id: str | None,
 ) -> None:
-    """internal 노드 → 호출/import 단서 수집 (Neo4j 노드 X)."""
+    """internal 노드 → 호출/import 단서 수집 (Neo4j 노드 X).
+
+    ``owner_routine_id`` = 이 호출의 주어(소유 routine). 제어문 아래에 있어도 구조 부모가
+    아니라 이 값(가장 가까운 함수)으로 caller 를 귀속시킨다 (spec 054 FR-009).
+    """
     ctype = node.get("type", "")
     sl = int(node.get("startLine") or 0)
-    if ctype == "FUNCTION_CALL" and parent_fid is not None:
+    if ctype == "FUNCTION_CALL" and owner_routine_id is not None:
         result.call_sites.append({
-            "call_id": f"{parent_fid}:{sl}:{len(result.call_sites)}",
-            "caller_id": parent_fid,
+            "call_id": f"{owner_routine_id}:{sl}:{len(result.call_sites)}",
+            "caller_id": owner_routine_id,
             "call_text": node.get("name") or "",
             "file": src_path,
             "line": sl,

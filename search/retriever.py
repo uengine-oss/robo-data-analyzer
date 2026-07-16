@@ -87,6 +87,74 @@ class Retriever:
             "MATCH (x {id:$id})-[:CALLS]->(b) WHERE b.id IS NOT NULL "
             "RETURN b.id AS id, coalesce(b.name,'') AS name", id=cid).data()
 
+    def _call_neighbors(self, cid: str) -> list[dict]:
+        """CALLS 1홉 양방향. 방향은 evidence 설명용이며 확장 깊이에는 영향이 없다."""
+        outgoing = self.s.run(
+            "MATCH (a {id:$id})-[:CALLS]->(b) WHERE b.id IS NOT NULL "
+            "RETURN b.id AS id, coalesce(b.name,'') AS name, 'CALLS' AS relation, 'out' AS direction",
+            id=cid,
+        ).data()
+        incoming = self.s.run(
+            "MATCH (a)-[:CALLS]->(b {id:$id}) WHERE a.id IS NOT NULL "
+            "RETURN a.id AS id, coalesce(a.name,'') AS name, 'CALLS' AS relation, 'in' AS direction",
+            id=cid,
+        ).data()
+        return outgoing + incoming
+
+    def _table_neighbors(self, cid: str) -> list[dict]:
+        """코드 앵커가 직접 읽고/쓰는 TABLE 노드를 실제 id와 함께 반환한다."""
+        return self.s.run(
+            "MATCH (a {id:$id})-[r]->(t:TABLE) WHERE type(r) IN $rels AND t.id IS NOT NULL "
+            "RETURN t.id AS id, elementId(t) AS eid, coalesce(t.name,'') AS name, "
+            "coalesce(t.logical_name,'') AS logical_name, "
+            "coalesce(t.analyzed_description, t.description, '') AS summary, type(r) AS relation",
+            id=cid, rels=list(_TABLE_RELS),
+        ).data()
+
+    def _rules_for(self, cid: str) -> list[dict]:
+        """이 함수의 Rule → Example → AFFECTS_TABLE 트래버설 → 아키텍트 전달용 중첩 구조.
+
+        RULE 노드는 statement 해시로 함수 간 **공유**된다(builder.rule_hash) — 따라서
+        ``(x)-[:HAS_RULE]->(r)-[:HAS_EXAMPLE]->(e)`` 만으로는 같은 규칙을 쓰는 다른 함수의
+        Example 까지 끌려온다. Example id 는 ``{함수id}::{rule_hash}::{idx}`` 라서
+        ``e.id STARTS WITH '<cid>::'`` 로 이 함수 소유 Example 만 남긴다(누락·오염 0).
+        반환: ``[{statement, examples:[{given, when, then, tables:[{name, op}]}]}]`` (규칙 순서 보존).
+        """
+        rows = self.s.run(
+            "MATCH (x {id:$id})-[:HAS_RULE]->(r:RULE) "
+            "OPTIONAL MATCH (r)-[:HAS_EXAMPLE]->(e:EXAMPLE) WHERE e.id STARTS WITH $prefix "
+            "OPTIONAL MATCH (e)-[at:AFFECTS_TABLE]->(t:TABLE) "
+            "WITH r, e, collect(DISTINCT CASE WHEN t IS NULL THEN NULL "
+            "  ELSE {name: t.name, op: at.op} END) AS tbs "
+            "RETURN r.id AS rule_id, r.statement AS statement, e.id AS example_id, "
+            "  e.given AS given, e.when_ AS when_, e.then_ AS then_, "
+            "  [x IN tbs WHERE x IS NOT NULL] AS tables "
+            # example id = '{fid}::{rh}::{idx}' — 같은 rule 은 prefix 길이가 같아 size 선행 정렬이
+            # idx 를 숫자 순서로 만든다(문자열 정렬만 쓰면 '::10' 이 '::2' 앞에 온다).
+            "ORDER BY r.statement, size(e.id), e.id",
+            id=cid, prefix=f"{cid}::",
+        ).data()
+        rules: list[dict] = []
+        by_rule: dict[str, dict] = {}
+        for row in rows:
+            rule = by_rule.get(row["rule_id"])
+            if rule is None:
+                rule = {"statement": row.get("statement") or "", "examples": []}
+                by_rule[row["rule_id"]] = rule
+                rules.append(rule)
+            if row.get("example_id") is None:
+                continue
+            rule["examples"].append({
+                "given": row.get("given") or "",
+                "when": row.get("when_") or "",
+                "then": row.get("then_") or "",
+                "tables": [
+                    {"name": tb["name"], "op": tb.get("op") or ""}
+                    for tb in (row.get("tables") or []) if tb.get("name")
+                ],
+            })
+        return rules
+
     def _node_row(self, cid: str, cfg, qv, score: dict, callees: list[dict], role: str) -> dict:
         rec = self.s.run(
             "MATCH (x {id:$id}) "
@@ -108,12 +176,38 @@ class Retriever:
             "writes": sorted(set(rw.get("WRITES", []))),
             "reads": sorted(set(rw.get("READS", []) + rw.get("AFFECTS_TABLE", []))),
             "calls": calls,
+            "rules": self._rules_for(cid),
             "relevance": round(score[cid][1], 3), "role": role,
+        }
+
+    @staticmethod
+    def _table_row(table: dict, anchor_id: str, anchor_relevance: float) -> dict:
+        return {
+            "id": table["id"], "element_id": table.get("eid"),
+            "name": table.get("logical_name") or table.get("name") or "Unknown",
+            "physical_name": table.get("name") or "",
+            "label": "TABLE", "stereotype": "",
+            "summary": (table.get("summary") or "").replace("\n", " "),
+            "search_text": "", "writes": [], "reads": [], "calls": [], "rules": [],
+            # 구조 근거는 확률이 아니다. 정렬 안정성을 위해 앵커 점수만 계승한다.
+            "relevance": round(anchor_relevance, 3), "role": "evidence",
+            "evidence": [{
+                "anchor_id": anchor_id,
+                "relation": table.get("relation") or "",
+                "direction": "out",
+            }],
         }
 
     # ── 파이프라인 ──
     def retrieve(self, query: str, cfg: Config, pool_k: int = 30,
                  on_progress=None, meta: dict | None = None) -> list[dict]:
+        if cfg.cluster_selection_mode == "global_anchor":
+            return self._retrieve_global_anchors(query, cfg, pool_k, on_progress, meta)
+        return self._retrieve_legacy(query, cfg, pool_k, on_progress, meta)
+
+    def _retrieve_legacy(self, query: str, cfg: Config, pool_k: int,
+                         on_progress=None, meta: dict | None = None) -> list[dict]:
+        """spec 044 기준선. spec 053 A/B가 끝날 때까지 삭제하지 않는다."""
         base = self._retrieve_one(query, cfg, pool_k, on_progress)
         if cfg.cluster_rewrite_mode != "novel_abbrev":
             return self._judge_prune(query, base, cfg, meta, on_progress)
@@ -132,7 +226,246 @@ class Retriever:
                 meta["rewritten_query"] = rw["rewritten"]
         return self._judge_prune(query, out, cfg, meta, on_progress)
 
-    def _retrieve_one(self, query: str, cfg: Config, pool_k: int, on_progress) -> list[dict]:
+    def _hop_distances(self, anchor_ids: list[str], other_ids: list[str],
+                       max_hops: int, cfg: Config | None = None) -> dict[str, int]:
+        """앵커와의 CALLS 거리(무방향 BFS, ≤max_hops) — 단 **허브 비경유**.
+
+        공용 유틸(fan_in ≥ hub_fanin, 예: SAFECPY_STR)을 경유하면 전 함수가 2홉이 되어
+        거리가 무의미해진다(실측) — 확장은 비허브 노드를 통해서만 한다(도착 노드 자체는
+        허브 여부와 무관하게 거리를 기록).
+        """
+        others = {cid for cid in other_ids if cid not in anchor_ids}
+        if not anchor_ids or not others:
+            return {}
+        hub_fanin = cfg.cluster_hub_fanin if cfg else 20
+        dist: dict[str, int] = {}
+        frontier = set(anchor_ids)
+        seen = set(anchor_ids)
+        for hop in range(1, max_hops + 1):
+            if not frontier:
+                break
+            rows = self.s.run(
+                "MATCH (x)-[:CALLS]-(y) WHERE x.id IN $ids AND y.id IS NOT NULL "
+                "RETURN DISTINCT y.id AS id", ids=list(frontier)).data()
+            reached = {r["id"] for r in rows} - seen
+            for cid in reached & others:
+                dist.setdefault(cid, hop)
+            seen |= reached
+            frontier = {cid for cid in reached if self.c.fan_in.get(cid, 0) < hub_fanin}
+        return dist
+
+    @staticmethod
+    def _support_plan(ranked: list[str], anchors: list[str], score: dict,
+                      cfg: Config, dists: dict[str, int] | None = None,
+                      ) -> tuple[list[str], list[str]]:
+        """spec 057 — 1홉 확장 뿌리(roots)와 의미 직행(direct) 자격 산정.
+
+        all_candidates: 구 동작(후보 상위 N 전원 뿌리, 비앵커 전원 직행) — 롤백 모드.
+        anchors_only:   뿌리=앵커만, 직행 없음.
+        gated_direct:   뿌리=앵커만, 직행은 top1 격차 direct_gap 이내 후보만.
+        graph_gated:    직행 = [top1 격차 direct_gap 이내] OR [앵커와 CALLS 거리 hop_gate
+                        이내](기본) — 점수 역전(신호 .676 < 노이즈 .765 실측)을 그래프
+                        근접성이 보정한다. 뿌리 = 앵커 + 직행 자격 후보.
+        """
+        policy = cfg.cluster_support_policy
+        if policy == "all_candidates":
+            roots = ranked[:cfg.cluster_support_root_top_n]
+            return roots, [cid for cid in roots if cid not in anchors]
+        if policy == "anchors_only":
+            return list(anchors), []
+        if policy in ("gated_direct", "graph_gated"):
+            top = score[ranked[0]][1] if ranked else 0.0
+            near = dists or {}
+            direct: list[str] = []
+            for idx, cid in enumerate(ranked[:cfg.cluster_support_root_top_n]):
+                if cid in anchors:
+                    continue
+                by_score = score[cid][1] >= top - cfg.cluster_direct_gap - 1e-9  # float 오차
+                by_dist = policy == "graph_gated" and cid in near
+                by_rank = policy == "graph_gated" and idx < cfg.cluster_rank_floor
+                if by_score or by_dist or by_rank:
+                    direct.append(cid)
+            # 확장 뿌리는 앵커 + 그래프 근접 자격자만 — 점수·순위 구제자는 근거로만 남고
+            # 자기 이웃을 끌고 들어오지 못한다(노이즈 증폭 차단).
+            roots = list(anchors) + (
+                [cid for cid in direct if cid in near] if policy == "graph_gated" else [])
+            return roots, direct
+        raise ValueError(f"unknown cluster_support_policy: {policy!r}")  # 조용한 폴백 금지
+
+    def _retrieve_global_anchors(self, query: str, cfg: Config, pool_k: int,
+                                 on_progress=None, meta: dict | None = None) -> list[dict]:
+        """변형별 후보를 먼저 합친 뒤 전역 앵커를 게이트로 고르고 딱 1홉만 evidence로 확장."""
+        base = self._retrieve_one(query, cfg, pool_k, on_progress, expand=False)
+        variants: list[tuple[str, str, list[dict]]] = [("original", query, base)]
+
+        if cfg.cluster_rewrite_mode == "novel_abbrev":
+            from search.rewrite import expand_abbrevs, rewrite_for_cluster
+
+            ab = expand_abbrevs(query)
+            if ab["terms"]:
+                variants.append((
+                    "abbrev", ab["expanded"],
+                    self._retrieve_one(ab["expanded"], cfg, pool_k, None, expand=False),
+                ))
+                if meta is not None:
+                    meta["expanded_query"] = ab["expanded"]
+            rw = rewrite_for_cluster(query)
+            if rw["ok"] and rw["rewritten"].strip() != query.strip() and _has_novel_terms(base, rw):
+                variants.append((
+                    "rewrite", rw["rewritten"],
+                    self._retrieve_one(rw["rewritten"], cfg, pool_k, None, expand=False),
+                ))
+                if meta is not None:
+                    meta["rewritten_query"] = rw["rewritten"]
+
+        candidates: dict[str, dict] = {}
+        sources: dict[str, set[str]] = {}
+        for source, _variant_query, nodes in variants:
+            for node in nodes:
+                sources.setdefault(node["id"], set()).add(source)
+                current = candidates.get(node["id"])
+                if current is None or node["relevance"] > current["relevance"]:
+                    candidates[node["id"]] = node
+        if not candidates:
+            return []
+
+        # 전역 채점은 변형별 최종결과를 합치는 대신, 채택된 모든 질의 문맥으로 후보를 한 번
+        # 다시 비교한다. 후보 수는 변형당 top_n의 합 이하라 기존 변형별 CE 총량보다 크지 않다.
+        combined_query = "\n".join(dict.fromkeys(vq for _, vq, _ in variants))
+        candidate_ids = list(candidates)
+        qv = np.array(embedder.encode_texts([combined_query])[0], dtype=np.float32)
+        self._ensure_vecs(candidate_ids)
+        ce = self._ce(combined_query, candidate_ids, cfg)
+        cos = {cid: self._cos(cid, qv) for cid in candidate_ids}
+        alive = sum(1 for value in ce.values() if value >= cfg.cluster_ce_min) >= cfg.cluster_ce_quorum
+        # CE와 bi-encoder는 실패 모드가 다르다. 전역 3개 선택에서 한 신호가 확실한 후보를
+        # 다른 신호의 0점으로 죽이지 않도록 기존 합집합 게이트와 같은 max 결합을 쓴다.
+        sem = {cid: max(ce.get(cid, 0.0), cos[cid]) for cid in candidate_ids} if alive else cos
+        score = self._fuse(candidate_ids, sem, infer_types(query), cfg)
+        ranked_candidates = sorted(
+            (cid for cid in candidate_ids if not self._is_hub(cid, cfg)),
+            key=lambda cid: -score[cid][1],
+        )
+        # spec 057: 점수절벽 게이트 — top1 과의 격차가 anchor_gap 초과면 앵커 제외.
+        # 하한 1(top1 은 격차 0으로 항상 통과)·상한 anchor_top_n(기존). 상수는 골드 A/B 채택값.
+        top_score = score[ranked_candidates[0]][1] if ranked_candidates else 0.0
+        anchors = [
+            cid for cid in ranked_candidates[:cfg.cluster_anchor_top_n]
+            if score[cid][1] >= top_score - cfg.cluster_anchor_gap - 1e-9  # float 오차 허용
+        ]
+        if on_progress:
+            on_progress("rerank", "관련도 전역 채점 완료",
+                        f"통합 후보 {len(candidate_ids)}개 → 주요 앵커 {len(anchors)}개")
+
+        result: dict[str, dict] = {}
+        for cid in anchors:
+            row = self._node_row(cid, cfg, qv, score, self._callees(cid), "anchor")
+            row["candidate_sources"] = sorted(sources.get(cid, ()))
+            row["evidence"] = []
+            result[cid] = row
+
+        if cfg.cluster_expand_hops >= 1:
+            # 복합 흐름의 구현이 의미순위 4~12위에 흩어지는 것이 과거 골드에서 확인됐다 —
+            # 그 재현율은 직행(direct) 자격으로 지키되, 낮은 순위 후보가 무조건 자기 1홉
+            # 이웃까지 끌고 들어오던 증폭(spec 057 실측)은 정책으로 차단한다.
+            cand_dists: dict[str, int] = {}
+            if cfg.cluster_support_policy == "graph_gated":
+                cand_dists = self._hop_distances(
+                    anchors, ranked_candidates[:cfg.cluster_support_root_top_n],
+                    cfg.cluster_hop_gate, cfg)
+            support_roots, direct_ids = self._support_plan(
+                ranked_candidates, anchors, score, cfg, cand_dists)
+            raw_neighbors: dict[str, list[dict]] = {}
+            evidence_links: dict[str, list[dict]] = {
+                cid: [{
+                    "anchor_id": "",
+                    "relation": "SEMANTIC_SUPPORT",
+                    "direction": "",
+                    "support_root_id": cid,
+                }]
+                for cid in direct_ids
+            }
+            for support_id in support_roots:
+                for neighbor in self._call_neighbors(support_id):
+                    if neighbor["id"] in anchors:
+                        continue
+                    raw_neighbors.setdefault(neighbor["id"], []).append({
+                        "anchor_id": support_id if support_id in anchors else "",
+                        "relation": neighbor["relation"],
+                        "direction": neighbor["direction"],
+                        "support_root_id": support_id,
+                    })
+            self._ensure_vecs(raw_neighbors)
+            kept = [cid for cid in raw_neighbors
+                    if cid in candidates or self._keep_neighbor(cid, cfg, qv)]
+            neighbor_sem = {cid: self._cos(cid, qv) for cid in kept}
+            score.update(self._fuse(kept, neighbor_sem, infer_types(query), cfg))
+            for cid, links in raw_neighbors.items():
+                if cid in kept:
+                    evidence_links.setdefault(cid, []).extend(links)
+
+            evidence_ids = [cid for cid in evidence_links if cid not in anchors and cid in score]
+            if cfg.cluster_support_policy == "graph_gated" and evidence_ids:
+                # 최종 입장도 동일 이중신호 — 자격 뿌리의 1홉이라도 자신이 [점수 OR 거리 OR
+                # 직행 자격]을 통과해야 한다(허브형 뿌리의 무관 이웃 재유입 차단).
+                qualified = set(direct_ids)
+                new_ids = [cid for cid in evidence_ids
+                           if cid not in cand_dists and cid not in qualified]
+                cand_dists.update(self._hop_distances(anchors, new_ids,
+                                                      cfg.cluster_hop_gate, cfg))
+                top_s = score[ranked_candidates[0]][1] if ranked_candidates else 0.0
+                evidence_ids = [
+                    cid for cid in evidence_ids
+                    # 3홉은 의미 후보(직행 자격 판정을 거친 쪽)에만 허용 — 단순 1홉 이웃은
+                    # 비허브 2홉 이내여야 한다(약신호 2개 합류 원칙).
+                    if cid in qualified or cand_dists.get(cid, 99) <= 2
+                    or score[cid][1] >= top_s - cfg.cluster_direct_gap - 1e-9
+                ]
+            evidence_ids.sort(key=lambda item: -score[item][1])
+            evidence_ids = evidence_ids[:cfg.cluster_evidence_top_n]
+            for cid in evidence_ids:
+                row = self._node_row(cid, cfg, qv, score, self._callees(cid), "evidence")
+                row["candidate_sources"] = sorted(sources.get(cid, ()))
+                row["evidence"] = evidence_links[cid]
+                result[cid] = row
+
+            for anchor_id in anchors:
+                for table in self._table_neighbors(anchor_id):
+                    table_row = self._table_row(table, anchor_id, score[anchor_id][1])
+                    existing = result.get(table_row["id"])
+                    if existing is None:
+                        result[table_row["id"]] = table_row
+                    else:
+                        existing.setdefault("evidence", []).extend(table_row["evidence"])
+
+        if meta is not None:
+            meta["selection"] = {
+                "mode": "global_anchor",
+                "candidates": len(candidate_ids),
+                "anchors": len(anchors),
+                "evidence": len(result) - len(anchors),
+                "ranked_candidates": [
+                    {
+                        "rank": rank,
+                        "id": cid,
+                        "name": self.c.by_id[cid].get("name") or cid,
+                        "score": round(score[cid][1], 3),
+                        "sources": sorted(sources.get(cid, ())),
+                    }
+                    for rank, cid in enumerate(ranked_candidates, 1)
+                ],
+            }
+        if on_progress:
+            on_progress("expand", "앵커의 1단계 근거 연결 완료",
+                        f"앵커 {len(anchors)}개 + 근거 {len(result) - len(anchors)}개")
+        return sorted(result.values(), key=lambda node: (
+            node["role"] != "anchor",
+            node.get("label") == "TABLE",
+            -node["relevance"],
+        ))
+
+    def _retrieve_one(self, query: str, cfg: Config, pool_k: int, on_progress,
+                      *, expand: bool = True) -> list[dict]:
         wanted = infer_types(query)
         qv = np.array(embedder.encode_texts([query])[0], dtype=np.float32)
         cands = recall(self.s, self.c, [query], [qv], cfg)
@@ -159,7 +492,7 @@ class Retriever:
 
         callees = {cid: self._callees(cid) for cid in core}
         related: list[str] = []
-        if cfg.cluster_expand_hops >= 1:
+        if expand and cfg.cluster_expand_hops >= 1:
             cand = {c["id"] for cs in callees.values() for c in cs} - set(core)
             self._ensure_vecs(cand)
             related = [b for b in cand if self._keep_neighbor(b, cfg, qv)]

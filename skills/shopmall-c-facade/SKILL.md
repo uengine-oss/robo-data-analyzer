@@ -1,52 +1,81 @@
 # SKILL: shopmall-c-facade
 
-> 사내 C 쇼핑몰 코어. SQL 은 `sprintf(g_sqlbuf, "...", 값)` 로 조립 후 `db_query(g_sqlbuf,...)` /
-> `db_exec(g_sqlbuf)` 로 실행. 테이블명은 호출줄이 아니라 **SQL 문자열 리터럴**(FROM/INTO/UPDATE/DELETE) 안.
+## Match when
 
-## 식별 단서
-- 주 언어: C. 매니페스트: `#include "shopmall.h"`, 전역 `g_ctx`/`g_sqlbuf`, 반환코드 `RET_*`.
-- DB 접근: `sprintf(g_sqlbuf, "SELECT|INSERT|UPDATE|DELETE ... <table> ...", ...); db_query|db_exec(g_sqlbuf,...);`
-- 모듈 간 호출: `dispatch_call("<module>","<op>",ctx)`. 외부 연동: `legacy_pg_send/legacy_courier_if/legacy_sms_send`.
+- C 소스에 `shopmall.h`, 전역 `g_ctx`/`g_sqlbuf`, `RET_*` 반환코드가 있다.
+- SQL을 `sprintf(g_sqlbuf, ...)`로 만들고 `db_query`/`db_exec`로 실행한다.
+- 모듈 호출은 `dispatch_call("<module>", "<op>", ctx)` 형태다.
 
-## 정규식 패턴 (SQL 문자열에 앵커 — db_query 호출줄 아님)
+## ScanResult contract
+
+매칭되면 아래 YAML 필드를 그대로 사용한다. 패턴을 합치거나, 테이블명을 나열하거나,
+대안 순서를 바꾸거나, 이름을 정규화하지 않는다.
+
 ```yaml
 table_access_patterns:
   - id: shopmall_sql_insert
-    call_regex: '(?P<op_token>INSERT)\s+INTO\s+(?P<entity>[A-Za-z_][A-Za-z0-9_]*)'
+    call_regex: '(?P<op_token>INSERT)(?:\s|"\s*)+INTO(?:\s|"\s*)+(?P<entity>[A-Za-z_][A-Za-z0-9_]*)'
     op_mappings: [{token: INSERT, op: INSERT}]
     entity_source: sql_literal
   - id: shopmall_sql_update
-    call_regex: '(?P<op_token>UPDATE)\s+(?P<entity>[A-Za-z_][A-Za-z0-9_]*)\s+SET'
+    call_regex: '(?P<op_token>UPDATE)(?:\s|"\s*)+(?P<entity>[A-Za-z_][A-Za-z0-9_]*)(?:\s|"\s*)+SET'
     op_mappings: [{token: UPDATE, op: UPDATE}]
     entity_source: sql_literal
   - id: shopmall_sql_delete
-    call_regex: '(?P<op_token>DELETE)\s+FROM\s+(?P<entity>[A-Za-z_][A-Za-z0-9_]*)'
+    call_regex: '(?P<op_token>DELETE)(?:\s|"\s*)+FROM(?:\s|"\s*)+(?P<entity>[A-Za-z_][A-Za-z0-9_]*)'
     op_mappings: [{token: DELETE, op: DELETE}]
     entity_source: sql_literal
   - id: shopmall_sql_select
-    call_regex: '(?P<op_token>FROM)\s+(?P<entity>[A-Za-z_][A-Za-z0-9_]*)'
+    call_regex: '(?P<op_token>FROM)(?:\s|"\s*)+(?P<entity>[A-Za-z_][A-Za-z0-9_]*)'
     op_mappings: [{token: FROM, op: SELECT}]
     entity_source: sql_literal
-
 ddl_transform:
   ddl_naming_rule: as_is
   fallback_prefixes: []
-```
-
-## 호출 wrapper
-```yaml
 call_wrappers:
   - wrapper: dispatch_call
     callee_from: first_arg_string
+framework_runtime_functions:
+  - LOG_DBG
+  - SAFECPY
+codebase_notes: 'C 쇼핑몰 코어. SQL은 sprintf로 g_sqlbuf에 조립 후 db_query/db_exec로 실행한다. 정적 테이블명은 SQL 리터럴에서 추출하며 C 인접 문자열 경계는 원문 정규식이 처리한다. SELECT(FROM)=READ, INSERT/UPDATE/DELETE=WRITE. 런타임 테이블명은 추측하지 않는다. 모듈 호출은 dispatch_call을 사용한다.'
 ```
 
-## 프레임워크 함수 (드롭 — 이 프로젝트 커스텀 래퍼/매크로만; 표준함수는 내장 stdlib 필터가 처리)
-`db_query` `db_exec` `db_next_seq` `db_commit` `db_rollback` `db_encrypt` `db_decrypt`
-`log_event` `LOG_INFO` `LOG_ERR` `LOG_DBG` `SAFECPY` `SAFECPY_STR`
+## Why these patterns
 
-- 드롭 금지(업무 허브): `get_code_name` `write_audit`
-- 드롭 금지(외부 스텁 → EXTERNAL): `legacy_pg_send` `legacy_courier_if` `legacy_sms_send`
+`(?:\s|"\s*)+`는 SQL 토큰 사이의 공백과 C 인접 문자열 경계만 처리한다. 원문을
+합치거나 따옴표를 삭제하지 않는다. `[A-Za-z_][A-Za-z0-9_]*`는 `product_stock`처럼
+밑줄이 포함된 전체 식별자를 그대로 추출한다.
 
-## codebase_notes 예시
-> SQL 은 `sprintf(g_sqlbuf,"...",값)` 로 조립 후 `db_query/db_exec(g_sqlbuf)` 실행. 테이블명은 SQL 문자열
-> 리터럴의 FROM/INTO/UPDATE/DELETE 뒤. **SELECT(FROM)=READ, INSERT/UPDATE/DELETE=WRITE.** 모듈간=`dispatch_call`.
+정답:
+
+```c
+"UPDATE product_stock " "SET avail_qty = %d"
+```
+
+`entity=product_stock`이다. `product`로 자르거나 `productStock`으로 바꾸지 않는다.
+
+오답:
+
+```regex
+(?P<entity>product|product_stock|product_price_hst)
+```
+
+왼쪽 대안 `product`가 먼저 성공해 뒤의 `_stock`, `_price_hst`를 남긴다. 실제 DDL 이름을
+정규식 대안으로 나열하지 말고 전체 식별자를 추출한다.
+
+런타임 이름은 미해결로 둔다:
+
+```c
+sprintf(g_sqlbuf, "UPDATE %s SET status_cd='20'", table_name);
+```
+
+`%s`를 DDL의 비슷한 이름으로 바꾸지 않는다. 이 프로젝트의 정적 테이블명에는 하이픈이
+없다. 다른 프로젝트에서 quoted `"order-item"`처럼 하이픈이 실제 DDL 이름의 일부라면
+그 프로젝트 Skill이 하이픈까지 전체 캡처해야 하며 `order_item`으로 정규화하면 안 된다.
+
+## Do not drop project functions
+
+`db_query`, `db_exec`, `db_next_seq`, `db_commit`, `db_rollback`, `db_encrypt`,
+`db_decrypt`, `dispatch_call`, `log_event`, `write_audit`, `get_code_name`,
+`SAFECPY_STR`는 프로젝트에 정의된 코드노드이므로 `framework_runtime_functions`에 넣지 않는다.

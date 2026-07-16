@@ -27,9 +27,9 @@ from analysis_flow.step5_build_context.large_code_one_liner import (
     compute_one_liner,
     estimate_tokens,
 )
+from analysis_flow.step5_build_context.referenced_symbols import _build_reference_context
 from data_models.analysis_context import AnalysisContext
-from data_models.graph_edges import References
-from data_models.graph_nodes import Constant, CodeNode, Variable
+from data_models.graph_nodes import CodeNode
 from shared.config.env_catalog import ENV
 from shared.llm.cost_budget import BudgetExceededError, CostBudget
 from shared.llm.fanout import gather_with_warmup
@@ -37,69 +37,6 @@ from shared.log.logger import log_error, log_info, log_warning
 from shared.log.processing_progress import step_processing_scope, track_processing
 
 _STEP = "step5.build_context"
-
-
-def _build_reference_context(state: dict) -> dict[str, list[str]]:
-    """state 엣지/노드 → code_id 별 참조 심볼 줄.
-
-    referenced_symbols = REFERENCES(코드노드→변수/상수) + INIT_BY(변수 초기화 출처).
-    결정론 — LLM / Neo4j 조회 0. 같은 심볼은 코드노드당 1회만.
-    """
-    var_by_id: dict[str, Variable] = {v.id: v for v in state.get("variables", [])}
-    const_by_id: dict[str, Constant] = {c.id: c for c in state.get("constants", [])}
-    # InitBy 출발 id → 출처 id. 한 노드가 여러 출처 참조 시 dict 1:1 한계 (마지막만 표시)
-    # — 보조 정보용이라 허용. 변수/상수 구분은 const_by_id/var_by_id 멤버십으로 파생.
-    initby_by_target: dict[str, str] = {
-        e.from_id: e.source_id
-        for e in state.get("init_by_edges", [])
-    }
-
-    refsym_by_fn: dict[str, list[str]] = {}
-    seen_sym: dict[str, set[str]] = {}
-    for e in state.get("references_edges", []):
-        if e.target_id in seen_sym.setdefault(e.source_id, set()):
-            continue
-        line = _format_referenced_symbol(e, var_by_id, const_by_id, initby_by_target)
-        if line:
-            seen_sym[e.source_id].add(e.target_id)
-            refsym_by_fn.setdefault(e.source_id, []).append(line)
-
-    return refsym_by_fn
-
-
-def _format_referenced_symbol(
-    ref: References,
-    var_by_id: dict[str, Variable],
-    const_by_id: dict[str, Constant],
-    initby_by_target: dict[str, str],
-) -> str:
-    """REFERENCES 엣지 1개 → 참조 심볼 한 줄. 노드 미발견 시 빈 문자열.
-
-    변수/상수 구분 = const_by_id 멤버십. 초기화 출처가 있으면 ``↳ 초기화 출처`` 로 부기.
-    """
-    c = const_by_id.get(ref.target_id)
-    if c is not None:
-        head = f"[상수] {c.name}"
-        if c.var_type:
-            head += f" ({c.var_type})"
-        if c.value:
-            head += f" = {c.value}"
-    else:
-        v = var_by_id.get(ref.target_id)
-        if v is None:
-            return ""
-        head = f"[변수] {v.name}"
-        if v.var_type:
-            head += f" ({v.var_type})"
-        if v.init_value:
-            head += f" := {v.init_value}"
-
-    src_id = initby_by_target.get(ref.target_id)
-    if src_id is not None:
-        src_node = const_by_id.get(src_id) or var_by_id.get(src_id)
-        if src_node is not None:
-            head += f"  ↳ 초기화 출처: {src_node.name}"
-    return head
 
 
 async def build_context_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
@@ -160,7 +97,7 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
             writes=tuple(sorted(writes_by_fn.get(fn.id, ()))),
             callers=tuple(sorted(callers_by_fn.get(fn.id, ()))),
             callees=tuple(sorted(callees_by_fn.get(fn.id, ()))),
-            referenced_symbols=tuple(sorted(refsym_by_fn.get(fn.id, ()))),
+            referenced_symbols=tuple(sorted(refsym_by_fn.get(fn.id, ()), key=lambda symbol: (symbol.kind, symbol.name, symbol.id))),
             token_count=estimate_tokens(body_text),
         )
         ctx = await builder.augment(ctx, fn, state)

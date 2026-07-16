@@ -108,6 +108,25 @@ async def track_processing(entity_kind: str, entity_id: str, *, sub_action: str 
     emit_processing_event(stream, step, entity_kind, entity_id, sub_action=sub_action, status="done")
 
 
+def emit_current(
+    entity_kind: str,
+    entity_id: str,
+    *,
+    sub_action: str = "",
+    status: str = "done",
+) -> None:
+    """contextvars 흐름 안에서 단발 processing_event emit (start/done 쌍이 아닌 마일스톤용).
+
+    ``track_processing`` 은 await 를 감싸 start→done/failed 를 낸다. 폴백의 감지·분할계획·
+    재검사·최종요약처럼 **await 가 아닌 결정 시점**을 스트림에 남길 때 이 헬퍼를 쓴다 —
+    현재 step/stream 을 contextvars 에서 읽어 emit(스트림 인자 chain 금지 설계 유지).
+    """
+    emit_processing_event(
+        _current_stream.get(), _current_step.get() or "(unknown)",
+        entity_kind, entity_id, sub_action=sub_action, status=status,
+    )
+
+
 def emit_processing_event(
     stream: Optional[NDJSONStream],
     step: str,

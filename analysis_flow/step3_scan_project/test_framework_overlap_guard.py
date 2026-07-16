@@ -27,29 +27,30 @@ _CODE_NODES = [
 ]
 
 
-def test_warns_when_project_functions_in_drop_list():
+def test_removes_project_functions_from_drop_list():
     bad = {"framework_runtime_functions": ["b000_main_proc", "a000_input_validation", "PRINT_*"]}
     with patch.object(S, "log_warning") as w:
-        S._warn_if_framework_overlaps_project(bad, _CODE_NODES)
+        S._remove_project_functions_from_framework_drop(bad, _CODE_NODES)
         assert w.called
-        assert w.call_args[0][1] == "framework_drop_overlaps_project"
+        assert w.call_args[0][1] == "framework_drop_project_functions_removed"
+        assert bad["framework_runtime_functions"] == ["PRINT_*"]
 
 
 def test_silent_when_only_runtime_functions():
     good = {"framework_runtime_functions": ["PFM_TRY", "mpfm_isnull", "PRINT_*"]}
     with patch.object(S, "log_warning") as w:
-        S._warn_if_framework_overlaps_project(good, _CODE_NODES)
+        S._remove_project_functions_from_framework_drop(good, _CODE_NODES)
         assert not w.called
 
 
 def test_silent_when_empty_drop_list():
     with patch.object(S, "log_warning") as w:
-        S._warn_if_framework_overlaps_project({"framework_runtime_functions": []}, _CODE_NODES)
+        S._remove_project_functions_from_framework_drop({"framework_runtime_functions": []}, _CODE_NODES)
         assert not w.called
 
 
 if __name__ == "__main__":
-    test_warns_when_project_functions_in_drop_list()
+    test_removes_project_functions_from_drop_list()
     test_silent_when_only_runtime_functions()
     test_silent_when_empty_drop_list()
     print("[OK] FR-003 guard: 3/3 passed")
