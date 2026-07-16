@@ -45,7 +45,7 @@ from shared.log.logger import (
 from shared.log.ndjson_stream import NDJSONStream
 from graph.neo4j_client import Neo4jClient
 from graph.schema.schema_constraints import ensure_schema, wipe_graph
-from shared.source_file_cache import SourceFileCache
+from pipeline.source_file_cache import SourceFileCache
 from pipeline.execution.artifact_writer import dump_state_artifacts
 from pipeline.execution.langgraph_builder import build_langgraph_workflow
 from pipeline.execution.pause_controller import PauseController

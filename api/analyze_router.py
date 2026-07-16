@@ -21,7 +21,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from analysis_pipelines import get_pipeline
+from pipeline.analysis_pipelines import get_pipeline
 from pipeline.data_models.analysis_meta import Codebase
 from system.env_catalog import ENV
 from shared.log.ndjson_stream import NDJSONStream

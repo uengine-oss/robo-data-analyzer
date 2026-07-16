@@ -75,7 +75,7 @@
 
 ROBO Analyzer 는 소스를 **직접 파싱하지 않는다.** 외부 Java 파서인 **antlr-code-parser**
 가 미리 만들어 둔 **JSON AST** 를 `data/analysis/` 에서 읽기만 한다
-(`analysis_flow/step2_load_ast/antlr_json_reader.py`).
+(`pipeline/steps/step2_load_ast/antlr_json_reader.py`).
 
 | repo | 위치(로컬) | 역할 |
 |------|-----------|------|
@@ -156,7 +156,7 @@ ROBO_DATA_DIR/                  # 기본값 = robo-data-analyzer 옆 형제 ./da
 - DDL 디렉토리는 없어도 동작 (Table 노드 0개로 진행, R/W 엣지 안 생김).
 - `analysis/` 가 없거나 비어 있으면 `step2_load_ast` 가 `FileNotFoundError` 명시 raise.
 
-### 2.2 Strategy 자동 감지 — `shared/lang/strategy_detector.py`
+### 2.2 Strategy 자동 감지 — `pipeline/programming_languages.py`
 
 `project_dir.rglob("*")` 의 확장자 기반:
 
@@ -243,7 +243,7 @@ POST /robo/analyze/control
 
 ## 4. 파이프라인 — Strategy 별 step 흐름
 
-`analysis_pipelines.py` 의 `Strategy` 데이터클래스가 step 함수 tuple 을 **declare 만**
+`pipeline/analysis_pipelines.py` 의 `Strategy` 데이터클래스가 step 함수 tuple 을 **declare 만**
 하면, `pipeline/execution/langgraph_builder.py:build_langgraph_workflow()` 가 **if 분기 0개** 로
 LangGraph StateGraph 노드를 순서대로 추가한다. step1~step7 **폴더(7 phase)** 구조가 흐름
 그대로 드러나며, 실제 실행 step 함수는 Framework 11개 / DBMS 13개.
@@ -292,7 +292,7 @@ parse_ddl_step
 
 > `enrich_metadata_from_catalog_step` 은 **제거됨** — 미존재 엔드포인트(`GET /tables/<fqn>/metadata`)
 > 기반이라 동작 X. 테이블 메타(샘플)는 `fetch_table_samples_step` (sample-context) 로 대체.
-> 새 strategy 추가 = `analysis_pipelines.py` 의 `Strategy(...)` declare 만. 코드 분기 0.
+> 새 strategy 추가 = `pipeline/analysis_pipelines.py` 의 `Strategy(...)` declare 만. 코드 분기 0.
 
 ---
 
@@ -304,7 +304,7 @@ parse_ddl_step
 ### Step 1 — `parse_ddl_step` (LLM 0)
 
 **입력**: `codebase.ddl_dir`(또는 `codebase.root`) 안의 `*.sql`.
-**파서**: `sqlglot` 다중 방언 → `shared/ddl/parser.py`. FK 는 **DDL 에 명시된 것만** 추출한다
+**파서**: `sqlglot` 다중 방언 → `pipeline/steps/step1_parse_ddl/ddl_parser.py`. FK 는 **DDL 에 명시된 것만** 추출한다
 (자동추론 없음 — 옛 `schema_resolver.py` 는 호출부 0건이라 삭제, spec 046).
 **출력 노드/엣지**: `SCHEMA` · `TABLE` · `COLUMN` 노드 + `HAS_COLUMN` · `BELONGS_TO` · `FK` 엣지.
 state 누적 + Neo4j UNWIND 배치 UPSERT.
@@ -398,7 +398,7 @@ catalog `sample-context` 엔드포인트로 테이블별 **실제 샘플 행**(�
      `node_key`(줄범위)로 fan-in.
 4. **즉시 적재**: 함수 1개 완료 즉시 `update_summaries()` + `node_event`/`relationship_event`
    NDJSON emit. 배치 누적 없음.
-5. **Example Mapping 빌더** (`shared/example_mapping/builder.py`, 결정론): 결과 → `RULE`(공유,
+5. **Example Mapping 빌더** (`pipeline/steps/step6_analyze_code/example_mapping_builder.py`, 결정론): 결과 → `RULE`(공유,
    `rule_hash`) / `EXAMPLE` / `QUESTION` 노드 + `HAS_RULE` / `HAS_EXAMPLE` / `HAS_QUESTION` /
    `NEXT` / `BRANCH` / `AFFECTS_TABLE` 엣지. (per-function 정보는 `HAS_RULE` 엣지 속성)
 
@@ -501,7 +501,7 @@ logs/
 ```
 robo-data-analyzer/
 ├── main.py                         # FastAPI 진입점 (GET / + POST /robo/analyze[,/control])
-├── analysis_pipelines.py           # Strategy declare — Framework / DBMS 두 파이프라인 한 파일
+├── pipeline/analysis_pipelines.py           # Strategy declare — Framework / DBMS 두 파이프라인 한 파일
 ├── requirements.txt                # 범위(>=) 핀 — langchain 1.x + deepagents
 ├── .env / .env.example / .env.production
 │
@@ -512,7 +512,7 @@ robo-data-analyzer/
 │   ├── baseline_runner.py · check_byte_identical.py · refresh_pricing.py · reset_neo4j_schema.py
 │   └── prompt_hashes.json          # prompts/ SHA256 보존
 │
-├── analysis_flow/                  # 7 phase(step1~step7) LangGraph 노드
+├── pipeline/steps/                  # 7 phase(step1~step7) LangGraph 노드
 │   ├── step1_parse_ddl/parse_ddl_step.py
 │   ├── step2_load_ast/{antlr_json_reader, reference_linker, load_ast_step}.py
 │   ├── step3_scan_project/{scan_codebase_step, scan_agent, scan_verify_tool, scanner_input_collector}.py
@@ -660,7 +660,7 @@ robo-data-analyzer/
 
 1. **결정론 우선**: AST·DDL 파싱·R/W grep·Calls 분류·Bottom-up DAG·Example Mapping 빌더·
    Leiden 컴포넌트 군집·건강지표 = 모두 **LLM 0**. LLM 은 의미가 필요한 곳에만.
-2. **분기 0 (Strategy 패턴)**: `analysis_pipelines.py` 의 `Strategy(steps=...)` declare 만 하면
+2. **분기 0 (Strategy 패턴)**: `pipeline/analysis_pipelines.py` 의 `Strategy(steps=...)` declare 만 하면
    `graph_builder` 가 if 분기 없이 그래프 구성. 새 strategy = 한 곳만. (tuple = 병렬 그룹)
 3. **단일 진실**: 모든 ROBO_* env = `env_catalog.py` 1곳. 관계명 = `rel_types.py` 1곳. 매직넘버 X.
 4. **silent fail 금지**: 모든 step 실패는 `log_error` + `stream.emit(error)` + raise. 조용한 빈

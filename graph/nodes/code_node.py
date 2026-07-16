@@ -16,7 +16,7 @@ from graph.schema.graph_nodes import CodeNode
 from graph.node_upsert import join_notes, nonempty, upsert_by_node_label
 from graph.neo4j_client import Neo4jClient
 from graph.nodes.stereotype_label import apply_stereotype_labels
-from shared.domain_terms import dump_domain_terms
+from pipeline.domain_terms import dump_domain_terms
 
 
 # MERGE 쿼리·라벨 그룹핑은 ``shared/neo4j/merge.py`` 단일 정의처 (spec 046 FR-004).

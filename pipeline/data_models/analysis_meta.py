@@ -21,7 +21,7 @@ class Codebase:
 
     Fields:
         root: 소스 디렉토리 경로 — **분석 대상 단일 진실**. 그 외 식별자 없음.
-        strategy: ``"framework"`` 또는 ``"dbms"`` — ``analysis_pipelines.py`` 의
+        strategy: ``"framework"`` 또는 ``"dbms"`` — ``pipeline/analysis_pipelines.py`` 의
             ``FRAMEWORK_PIPELINE`` / ``DBMS_PIPELINE`` 과 매칭.
         ddl_dir: 별도 DDL 디렉토리 (None 이면 root 안에서 자동 탐색).
         has_xml_mapper: Framework 의 XML mapper 자료 활성 여부 (옵션 자료).

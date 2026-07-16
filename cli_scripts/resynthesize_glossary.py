@@ -20,15 +20,15 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from analysis_flow.step7_post_processing.build_glossary_step import (
+from pipeline.steps.step7_post_processing.build_glossary_step import (
     _accept, _build_contexts, _collect_terms, _union_groups, _UPSERT_QUERY,
 )
-from analysis_pipelines import PIPELINES
+from pipeline.analysis_pipelines import PIPELINES
 from pipeline.data_models.code_analysis_output import GlossarySynthesisOutput
 from system.env_catalog import ENV
 from llm.client.llm_fanout import gather_with_warmup
 from llm.client.runners.yaml_llm_runner import run_yaml_rule
-from shared.domain_terms import load_domain_terms
+from pipeline.domain_terms import load_domain_terms
 
 _NODES_QUERY = """
 MATCH (n) WHERE n.domain_terms_json IS NOT NULL AND n.domain_terms_json <> ''

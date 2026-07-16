@@ -27,6 +27,7 @@ Append one row per migration slice with exact command, pass/fail, old-reference 
 | LLM ownership | PASS | unittest 46/46 (3 migration skips), plain 51/51, prompt 23/23, config/pricing smoke PASS | old LLM imports and active asset paths = 0 | 67 baseline files + new package markers audited; silent backup failure fixed; ledger cumulative 109 fixed |
 | pipeline policy + models | PASS | unittest 46/46 (3 migration skips), direct policy/model smoke PASS | old language-policy and analysis-model imports = 0 | 9 baseline files audited; policy/model SSOT merges; ledger cumulative 118 fixed |
 | pipeline execution | PASS | unittest 46/46 (3 migration skips), plain 51/51 | old `shared.workflow` imports and active paths = 0 | 10 baseline files audited; silent artifact/cleanup failures fixed; ledger cumulative 128 fixed |
+| pipeline steps + helpers | PASS | unittest 46/46 (2 migration skips), plain 51/51 | old flow, policy-helper and dynamic asset paths = 0 | 83 baseline files audited; discovery/path regressions and silent lineage-index failure fixed; ledger cumulative 211 fixed |
 
 The first LLM full-suite attempt used the system Python and failed collection because that interpreter lacks
 `langchain`, `mcp`, `numpy` and `langchain_anthropic`. The authoritative rerun used `.venv/Scripts/python.exe`,

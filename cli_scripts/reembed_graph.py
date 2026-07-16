@@ -28,7 +28,7 @@ os.environ["ROBO_PIPELINE_EMBED_ENABLED"] = "true"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from analysis_flow.step7_post_processing.embed_step import embed_step
+from pipeline.steps.step7_post_processing.embed_step import embed_step
 from search.embed_material import EMBED_META_LABEL, EMBEDDED_LABEL, VECTOR_INDEX_NAME
 from system.env_catalog import ENV
 from graph.connection_context import Neo4jOverride, set_override

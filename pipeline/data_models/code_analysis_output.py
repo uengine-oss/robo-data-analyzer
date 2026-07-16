@@ -1,11 +1,11 @@
-﻿"""단순 LLM 호출 (Agent 아닌 것) 의 Pydantic 출력 스키마.
+"""단순 LLM 호출 (Agent 아닌 것) 의 Pydantic 출력 스키마.
 
 3 분할 fan-out + 모듈 요약 + 테이블 description 등.
 각 yaml 의 ``response_format`` 으로 강제 — 자유 텍스트 응답 X.
 
 사용처:
-- ``analysis_flow/step6_analyze_code``: SummaryOutput / TableInsightsOutput / RulesExamplesOutput
-- ``analysis_flow/step7_post_processing``: ModuleSummaryOutput / TableDescription
+- ``pipeline/steps/step6_analyze_code``: SummaryOutput / TableInsightsOutput / RulesExamplesOutput
+- ``pipeline/steps/step7_post_processing``: ModuleSummaryOutput / TableDescription
 
 호출 모드 (단일 진실):
 ``llm.with_structured_output(..., method="function_calling")`` 가 기본 — strict 미강제.

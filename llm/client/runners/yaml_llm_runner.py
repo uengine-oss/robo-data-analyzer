@@ -2,10 +2,10 @@
 
 용도: ``llm/prompts/<strategy>/<name>.yaml`` 의 룰 로딩 + LLM 호출 + Pydantic 응답.
 사용처:
-- ``analysis_flow/step6_analyze_code`` (code_summary / code_table_insights /
+- ``pipeline/steps/step6_analyze_code`` (code_summary / code_table_insights /
   code_rules_examples)
-- ``analysis_flow/step7_post_processing`` (module_summary / table_description)
-- ``analysis_flow/step5_build_context/large_code_one_liner``
+- ``pipeline/steps/step7_post_processing`` (module_summary / table_description)
+- ``pipeline/steps/step5_build_context/large_code_one_liner``
 
 yaml 형식 (단순)::
 

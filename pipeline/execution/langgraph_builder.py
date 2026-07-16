@@ -16,7 +16,7 @@
 일시정지/재개/중단은 ``PauseController`` (cfg["pause"]) 가 담당 — step 함수가 안전
 지점에서 ``gate()`` 로 소비. 같은 세션 안의 soft hold (디스크 재개 아님).
 
-**새 strategy 추가 = ``analysis_pipelines.py`` 의 ``Strategy(...)`` 선언만**.
+**새 strategy 추가 = ``pipeline/analysis_pipelines.py`` 의 ``Strategy(...)`` 선언만**.
 코드 어디 분기 추가 X.
 """
 from __future__ import annotations
@@ -52,7 +52,7 @@ def build_langgraph_workflow(
     if 분기 0개. for 루프만.
 
     Args:
-        strategy: ``FRAMEWORK_PIPELINE`` 또는 ``DBMS_PIPELINE`` (``analysis_pipelines.py``).
+        strategy: ``FRAMEWORK_PIPELINE`` 또는 ``DBMS_PIPELINE`` (``pipeline/analysis_pipelines.py``).
         checkpointer: LangGraph Checkpointer (MemorySaver 등) — run 1회 안의 state 전파.
 
     Returns:
