@@ -27,7 +27,7 @@ from typing import Iterable, Optional
 
 from graph.schema.graph_edges import Calls
 from graph.schema.graph_nodes import CodeNode
-from shared.lang.source_extension import EXT_TO_LANG
+from pipeline.programming_languages import EXT_TO_LANG
 from shared.source_file_cache import SourceFileCache
 
 _STDLIB_DIR = Path(__file__).resolve().parent / "stdlib"

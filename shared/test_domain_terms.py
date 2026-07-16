@@ -4,7 +4,7 @@ import unittest
 from pydantic import ValidationError
 
 from analysis_flow.step7_post_processing.build_glossary_step import _collect_terms
-from data_models.code_analysis_output import BatchSummaryItem, DomainTermItem, SummaryOutput
+from pipeline.data_models.code_analysis_output import BatchSummaryItem, DomainTermItem, SummaryOutput
 from shared.domain_terms import (
     dump_domain_terms,
     load_domain_terms,

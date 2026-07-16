@@ -67,9 +67,9 @@ semantic and integration regression battery.
 **Independent Test**: both framework and DBMS pipeline declarations build without strategy branches; step tests pass; old pipeline/shared imports are inactive.
 
 - [ ] T024 [US1] Move `analysis_pipelines.py` into `pipeline/analysis_pipelines.py` and preserve zero-branch strategy declarations
-- [ ] T025 [US1] Merge language extension, ontology and strategy detection into `pipeline/programming_languages.py` with adjacent `ontology_roles.yaml`
+- [x] T025 [US1] Merge language extension, ontology and strategy detection into `pipeline/programming_languages.py` with adjacent `ontology_roles.yaml`
 - [ ] T026 [US1] Move workflow execution modules into `pipeline/execution/` and absorb `step_utils.py` into `run_executor.py`
-- [ ] T027 [US1] Merge `analysis_run.py` and `codebase.py` into `pipeline/data_models/analysis_meta.py` and move remaining analysis models
+- [x] T027 [US1] Merge `analysis_run.py` and `codebase.py` into `pipeline/data_models/analysis_meta.py` and move remaining analysis models
 - [ ] T028 [US1] Move `analysis_flow/` into `pipeline/steps/` and update every internal, API, script and external runner consumer
 - [ ] T029 [US1] Move single-owner helpers into their step: DDL parser, call classifier, example mapping builder/writer and AST identity registry
 - [ ] T030 [US1] Move `domain_terms.py`, `source_file_cache.py` and Catalog client into explicit `pipeline/` owners

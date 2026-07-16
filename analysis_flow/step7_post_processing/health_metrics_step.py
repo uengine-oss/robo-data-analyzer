@@ -23,7 +23,7 @@ from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
-from shared.lang.ontology import ROUTINE_LABELS
+from pipeline.programming_languages import ROUTINE_LABELS
 from analysis_flow.step4_linking.stage2_extract_calls.call_linker import routine_call_pairs
 from analysis_flow.step6_analyze_code.call_cycles import find_call_cycles
 from graph.schema.graph_edges import Calls, ReadsWrites

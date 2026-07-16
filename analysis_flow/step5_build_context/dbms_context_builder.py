@@ -15,7 +15,7 @@ DBMS CodeNode 은 PROCEDURE 안에 IF/LOOP/DML 이 중첩된 트리(``parent_id`
 """
 from __future__ import annotations
 
-from data_models.analysis_context import AnalysisContext
+from pipeline.data_models.analysis_context import AnalysisContext
 from graph.schema.graph_nodes import CodeNode
 
 

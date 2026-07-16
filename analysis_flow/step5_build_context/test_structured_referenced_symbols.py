@@ -11,7 +11,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from analysis_flow.step5_build_context.referenced_symbols import _build_reference_context
-from data_models.analysis_context import ReferencedSymbolContext, dump_referenced_symbols
+from pipeline.data_models.analysis_context import ReferencedSymbolContext, dump_referenced_symbols
 
 
 def _state():

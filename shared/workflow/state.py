@@ -24,8 +24,8 @@ from __future__ import annotations
 import operator
 from typing import Annotated, TypedDict
 
-from data_models.analysis_context import AnalysisContext
-from data_models.analysis_run import AnalysisRun
+from pipeline.data_models.analysis_context import AnalysisContext
+from pipeline.data_models.analysis_meta import AnalysisRun
 from graph.schema.graph_edges import (
     AffectsTable,
     BelongsTo,

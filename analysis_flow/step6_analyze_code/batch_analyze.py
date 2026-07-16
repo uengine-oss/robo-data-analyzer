@@ -29,8 +29,8 @@ from analysis_flow.step6_analyze_code.range_body import ancestor_context, body_f
 from analysis_flow.step6_analyze_code.rw_table_filter import constrain_tables_to_rw
 from analysis_flow.step6_analyze_code.table_prompt_context import dump_table_refs
 from analysis_flow.step4_linking.stage2_extract_calls.call_linker import routine_call_pairs
-from data_models.analysis_context import AnalysisContext, dump_referenced_symbols
-from data_models.code_analysis_output import (
+from pipeline.data_models.analysis_context import AnalysisContext, dump_referenced_symbols
+from pipeline.data_models.code_analysis_output import (
     BatchRulesItem,
     BatchRulesOutput,
     BatchSummaryItem,
@@ -41,7 +41,7 @@ from data_models.code_analysis_output import (
 from graph.schema.graph_nodes import CodeNode
 from system.env_catalog import ENV
 from shared.domain_terms import normalize_domain_terms
-from shared.lang.ontology import ROUTINE_LABELS, coerce_stereotype
+from pipeline.programming_languages import ROUTINE_LABELS, coerce_stereotype
 from llm.client.usage.cost_budget import BudgetExceededError
 from llm.client.runners.yaml_llm_runner import run_yaml_rule
 from shared.log.logger import log_error, log_info, log_warning

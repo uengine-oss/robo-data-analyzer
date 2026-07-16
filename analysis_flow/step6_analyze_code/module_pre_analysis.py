@@ -15,7 +15,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Optional
 
-from data_models.code_analysis_output import ModulePreAnalysisOutput
+from pipeline.data_models.code_analysis_output import ModulePreAnalysisOutput
 from graph.schema.graph_nodes import CodeNode, Module
 from system.env_catalog import ENV
 from llm.client.usage.cost_budget import BudgetExceededError, CostBudget

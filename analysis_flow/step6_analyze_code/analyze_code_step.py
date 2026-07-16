@@ -42,8 +42,8 @@ from system.env_catalog import ENV
 from shared.example_mapping import build_example_mapping, write_example_mapping
 from shared.example_mapping.builder import ExampleMappingResult
 from llm.client.usage.cost_budget import BudgetExceededError
-from data_models.code_analysis_output import SummaryOutput
-from shared.lang.ontology import ROUTINE_LABELS
+from pipeline.data_models.code_analysis_output import SummaryOutput
+from pipeline.programming_languages import ROUTINE_LABELS
 from shared.log.logger import log_error, log_info, log_warning
 from shared.log.ndjson_stream import NDJSONStream
 from shared.log.processing_progress import step_processing_scope, track_processing

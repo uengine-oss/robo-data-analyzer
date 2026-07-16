@@ -32,7 +32,7 @@ from dataclasses import is_dataclass
 from pathlib import Path
 from typing import Any
 
-from data_models.analysis_run import AnalysisRun
+from pipeline.data_models.analysis_meta import AnalysisRun
 from shared.log.logger import log_warning
 from shared.workflow.state import WorkflowState
 

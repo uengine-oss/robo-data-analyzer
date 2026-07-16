@@ -1,7 +1,7 @@
 # 온톨로지 — 언어별 antlr node type 분류 + stereotype 풀.
 #
 # roles     : antlr node type → 역할 (Framework 전용 — java/c/python).
-#             shared/lang/ontology.py 의 role_of 가 읽음 (분류 전용 — 라벨엔 안 씀).
+#             pipeline/programming_languages.py 의 role_of 가 읽음 (분류 전용 — 라벨엔 안 씀).
 # paradigm  : 언어 → oop / procedural.
 # framework / dbms : LLM stereotype 풀 — 풀에 없는 값은 빈 문자열로 강제(환각 차단).
 #

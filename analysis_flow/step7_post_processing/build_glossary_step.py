@@ -25,7 +25,7 @@ from typing import Optional
 from langchain_core.runnables import RunnableConfig
 from pathlib import Path
 
-from data_models.code_analysis_output import GlossarySynthesisOutput
+from pipeline.data_models.code_analysis_output import GlossarySynthesisOutput
 from graph.schema.graph_nodes import CodeNode, Module
 from system.env_catalog import ENV
 from llm.client.usage.cost_budget import BudgetExceededError

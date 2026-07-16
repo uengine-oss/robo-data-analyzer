@@ -24,7 +24,7 @@ from typing import Optional
 from langchain_core.runnables import RunnableConfig
 
 from analysis_flow.step4_linking.stage2_extract_calls.call_linker import routine_call_pairs
-from data_models.code_analysis_output import ComponentNamingOutput
+from pipeline.data_models.code_analysis_output import ComponentNamingOutput
 from graph.schema.graph_edges import Calls
 from graph.schema.graph_nodes import CodeNode
 from system.env_catalog import ENV

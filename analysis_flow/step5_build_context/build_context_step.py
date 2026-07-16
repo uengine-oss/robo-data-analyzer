@@ -28,7 +28,7 @@ from analysis_flow.step5_build_context.large_code_one_liner import (
     estimate_tokens,
 )
 from analysis_flow.step5_build_context.referenced_symbols import _build_reference_context
-from data_models.analysis_context import AnalysisContext
+from pipeline.data_models.analysis_context import AnalysisContext
 from graph.schema.graph_nodes import CodeNode
 from system.env_catalog import ENV
 from llm.client.usage.cost_budget import BudgetExceededError, CostBudget

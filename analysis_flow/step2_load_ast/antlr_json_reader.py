@@ -25,8 +25,8 @@ from graph.schema.graph_edges import (
 )
 from graph.schema.graph_nodes import Constant, DataType, CodeNode, Module, Package, Variable
 from system.env_catalog import ENV
-from shared.lang.ontology import ROUTINE_LABELS, role_of
-from shared.lang.source_extension import DBMS_EXTS, EXT_TO_LANG
+from pipeline.programming_languages import ROUTINE_LABELS, role_of
+from pipeline.programming_languages import DBMS_EXTS, EXT_TO_LANG
 from graph.schema.node_ids import child_id, code_file_id, code_ns_id, positioned
 from shared.log.logger import log_error, log_warning
 

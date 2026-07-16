@@ -17,7 +17,7 @@ Framework 코드노드는 평면(자식 없음) — ``body_for`` 가 raw 본문 
 from __future__ import annotations
 
 from analysis_flow.step5_build_context.large_code_one_liner import estimate_tokens
-from data_models.analysis_context import AnalysisContext
+from pipeline.data_models.analysis_context import AnalysisContext
 from system.env_catalog import ENV
 from shared.source_file_cache import SourceFileCache
 

@@ -21,8 +21,8 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from analysis_pipelines import get_pipeline
-from shared.lang.strategy_detector import detect_strategy
-from data_models.codebase import Codebase
+from pipeline.programming_languages import detect_strategy
+from pipeline.data_models.analysis_meta import Codebase
 from shared.log.ndjson_stream import NDJSONStream
 from shared.workflow.executor import execute_run
 

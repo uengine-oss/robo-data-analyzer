@@ -17,7 +17,7 @@ from analysis_flow.step6_analyze_code.rules_fallback import (
     build_fragments,
     run_rules_fallback,
 )
-from data_models.code_analysis_output import (
+from pipeline.data_models.code_analysis_output import (
     AffectedTable,
     ExampleItem,
     RuleItem,

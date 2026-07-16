@@ -32,7 +32,7 @@ from analysis_flow.step6_analyze_code.rule_quality import (
     check_rule_quality,
     deterministic_dedupe,
 )
-from data_models.code_analysis_output import RulesExamplesOutput
+from pipeline.data_models.code_analysis_output import RulesExamplesOutput
 from llm.client.usage.cost_budget import BudgetExceededError
 from shared.log.logger import log_error, log_warning
 from shared.log.processing_progress import emit_current, track_processing

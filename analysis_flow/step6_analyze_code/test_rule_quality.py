@@ -3,7 +3,7 @@
 load_target_orders(보존 run: 60개 중 53 반복, 동일 의미 24회, Rule 2개 동일)를 재현해
 이상 감지되는지, 정상(고유 21~22)은 통과하는지 검증한다.
 """
-from data_models.code_analysis_output import (
+from pipeline.data_models.code_analysis_output import (
     AffectedTable, ExampleItem, RuleItem, RulesExamplesOutput,
 )
 from analysis_flow.step6_analyze_code.rule_quality import (

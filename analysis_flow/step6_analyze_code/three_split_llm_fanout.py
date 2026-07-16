@@ -40,11 +40,11 @@ from analysis_flow.step6_analyze_code.rule_quality import check_rule_quality
 from analysis_flow.step6_analyze_code.rules_fallback import run_rules_fallback
 from analysis_flow.step6_analyze_code.rw_table_filter import constrain_tables_to_rw
 from analysis_flow.step6_analyze_code.table_prompt_context import dump_table_refs
-from data_models.analysis_context import AnalysisContext, dump_referenced_symbols
+from pipeline.data_models.analysis_context import AnalysisContext, dump_referenced_symbols
 from graph.schema.graph_nodes import CodeNode
-from shared.lang.ontology import coerce_stereotype
+from pipeline.programming_languages import coerce_stereotype
 from llm.client.usage.cost_budget import BudgetExceededError, CostBudget
-from data_models.code_analysis_output import (
+from pipeline.data_models.code_analysis_output import (
     RulesExamplesOutput,
     SummaryCoreOutput,
     SummaryOutput,

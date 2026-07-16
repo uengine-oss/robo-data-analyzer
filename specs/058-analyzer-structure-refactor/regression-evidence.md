@@ -25,6 +25,7 @@ Append one row per migration slice with exact command, pass/fail, old-reference 
 |---|---|---|---|---|
 | system + graph | PASS | 24 tests + node-upsert helper parity PASS | `shared.config`, `shared.neo4j`, graph `data_models` = 0 | 42 files AST/content scan; relation literals 0; ledger 42 fixed |
 | LLM ownership | PASS | unittest 46/46 (3 migration skips), plain 51/51, prompt 23/23, config/pricing smoke PASS | old LLM imports and active asset paths = 0 | 67 baseline files + new package markers audited; silent backup failure fixed; ledger cumulative 109 fixed |
+| pipeline policy + models | PASS | unittest 46/46 (3 migration skips), direct policy/model smoke PASS | old language-policy and analysis-model imports = 0 | 9 baseline files audited; policy/model SSOT merges; ledger cumulative 118 fixed |
 
 The first LLM full-suite attempt used the system Python and failed collection because that interpreter lacks
 `langchain`, `mcp`, `numpy` and `langchain_anthropic`. The authoritative rerun used `.venv/Scripts/python.exe`,

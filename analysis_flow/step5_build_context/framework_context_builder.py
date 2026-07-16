@@ -10,7 +10,7 @@ Framework 는 strategy 별 추가 컨텍스트가 없다 — callee 의존성은
 """
 from __future__ import annotations
 
-from data_models.analysis_context import AnalysisContext
+from pipeline.data_models.analysis_context import AnalysisContext
 from graph.schema.graph_nodes import CodeNode
 
 

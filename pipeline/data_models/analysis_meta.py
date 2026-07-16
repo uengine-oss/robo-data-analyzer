@@ -1,4 +1,4 @@
-"""Codebase — 분석 대상 코드베이스 메타.
+"""분석 입력과 실행 메타데이터.
 
 분석 1회의 입력 단위. 디렉토리 경로 + strategy (+ 옵션 datasource).
 
@@ -10,6 +10,7 @@ catalog **접속 설정**(``base_url`` / ``enabled``)은 운영 영역 (``env_ca
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -35,3 +36,24 @@ class Codebase:
     has_xml_mapper: bool = False
     locale: str = "ko"
     datasource: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class AnalysisRun:
+    """한 번의 분석 실행을 식별하고 산출물 위치를 고정한다."""
+
+    run_id: str
+    codebase: Codebase
+    started_at: datetime
+    run_dir: Path
+
+    @classmethod
+    def now(cls, codebase: Codebase, log_base: Path) -> "AnalysisRun":
+        """현재 UTC 시각으로 새 실행 메타를 만든다."""
+        now = datetime.now(timezone.utc)
+        return cls(
+            run_id=now.strftime("%Y%m%d_%H%M%S"),
+            codebase=codebase,
+            started_at=now,
+            run_dir=log_base / "analysis.run" / "latest",
+        )
