@@ -37,8 +37,8 @@ from analysis_flow.step6_analyze_code.three_split_llm_fanout import (
     analyze_code_three_split,
     run_summary,
 )
-from data_models.graph_nodes import CodeNode
-from shared.config.env_catalog import ENV
+from graph.schema.graph_nodes import CodeNode
+from system.env_catalog import ENV
 from shared.example_mapping import build_example_mapping, write_example_mapping
 from shared.example_mapping.builder import ExampleMappingResult
 from shared.llm.cost_budget import BudgetExceededError
@@ -47,8 +47,8 @@ from shared.lang.ontology import ROUTINE_LABELS
 from shared.log.logger import log_error, log_info, log_warning
 from shared.log.ndjson_stream import NDJSONStream
 from shared.log.processing_progress import step_processing_scope, track_processing
-from shared.neo4j.neo4j_client import Neo4jClient
-from shared.neo4j.nodes.code_node import update_summaries
+from graph.neo4j_client import Neo4jClient
+from graph.nodes.code_node import update_summaries
 
 _STEP = "step6.analyze_code"
 

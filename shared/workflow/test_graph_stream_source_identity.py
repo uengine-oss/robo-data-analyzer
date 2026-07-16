@@ -1,4 +1,4 @@
-from data_models.graph_nodes import CodeNode, Module
+from graph.schema.graph_nodes import CodeNode, Module
 from shared.workflow.graph_stream import emit_nodes
 
 

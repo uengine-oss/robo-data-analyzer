@@ -21,7 +21,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 from neo4j import AsyncGraphDatabase  # noqa: E402
 
-from shared.config.env_catalog import ENV  # noqa: E402
+from system.env_catalog import ENV  # noqa: E402
 
 
 # ── 리팩터 전 실측 기준선 (2026-07-13, neo4j DB) ──────────────────────

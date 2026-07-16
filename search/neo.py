@@ -7,8 +7,8 @@
 """
 from __future__ import annotations
 
-from shared.config.env_catalog import ENV
-from shared.neo4j.connection_context import get_override
+from system.env_catalog import ENV
+from graph.connection_context import get_override
 
 
 def resolve_target() -> tuple[str, str, str, str]:

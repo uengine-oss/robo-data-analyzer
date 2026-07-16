@@ -19,13 +19,13 @@ import hashlib
 import re
 from dataclasses import dataclass, field
 
-from data_models.graph_edges import (
+from graph.schema.graph_edges import (
     AffectsTable,
     HasExample,
     HasQuestion,
     HasRule,
 )
-from data_models.graph_nodes import Example, CodeNode, Question, Rule
+from graph.schema.graph_nodes import Example, CodeNode, Question, Rule
 
 
 @dataclass

@@ -25,15 +25,15 @@ from langchain_core.runnables import RunnableConfig
 
 from analysis_flow.step4_linking.stage2_extract_calls.call_linker import routine_call_pairs
 from data_models.code_analysis_output import ComponentNamingOutput
-from data_models.graph_edges import Calls
-from data_models.graph_nodes import CodeNode
-from shared.config.env_catalog import ENV
+from graph.schema.graph_edges import Calls
+from graph.schema.graph_nodes import CodeNode
+from system.env_catalog import ENV
 from shared.llm.cost_budget import BudgetExceededError
 from shared.llm.fanout import gather_with_warmup
 from shared.llm.yaml_llm_runner import run_yaml_rule
 from shared.log.logger import log_error, log_info, log_warning
 from shared.log.processing_progress import step_processing_scope, track_processing
-from shared.neo4j.neo4j_client import Neo4jClient
+from graph.neo4j_client import Neo4jClient
 from shared.workflow.step_utils import step_config
 
 

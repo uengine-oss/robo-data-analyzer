@@ -21,9 +21,9 @@ from pathlib import Path
 import sqlglot
 import sqlglot.expressions as exp
 
-from data_models.graph_edges import BelongsTo, Fk, HasColumn
-from data_models.graph_nodes import Column, Schema, Table
-from shared.neo4j.ids import db_id, fqn
+from graph.schema.graph_edges import BelongsTo, Fk, HasColumn
+from graph.schema.graph_nodes import Column, Schema, Table
+from graph.schema.node_ids import db_id, fqn
 
 
 @dataclass

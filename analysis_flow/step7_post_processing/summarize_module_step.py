@@ -20,16 +20,16 @@ from langchain_core.runnables import RunnableConfig
 
 from shared.workflow.step_utils import step_config
 
-from data_models.graph_nodes import CodeNode, Module
-from shared.config.env_catalog import ENV
+from graph.schema.graph_nodes import CodeNode, Module
+from system.env_catalog import ENV
 from shared.llm.cost_budget import BudgetExceededError
 from shared.llm.fanout import gather_with_warmup, partition_llm_results
 from data_models.code_analysis_output import ModuleSummaryOutput
 from shared.llm.yaml_llm_runner import run_yaml_rule
 from shared.log.logger import log_error, log_info, log_warning
 from shared.log.processing_progress import step_processing_scope, track_processing
-from shared.neo4j.neo4j_client import Neo4jClient
-from shared.neo4j.nodes.module import upsert_modules
+from graph.neo4j_client import Neo4jClient
+from graph.nodes.module import upsert_modules
 from shared.workflow.graph_stream import emit_nodes
 
 _STEP = "step7.summarize_module"

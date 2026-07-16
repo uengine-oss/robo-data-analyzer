@@ -14,7 +14,7 @@ import time
 
 import httpx
 
-from shared.config.env_catalog import ENV
+from system.env_catalog import ENV
 from shared.llm.config_loader import load_llm_config
 from shared.llm.pricing import compute_cost
 from shared.llm.token_usage import TokenUsageRecord

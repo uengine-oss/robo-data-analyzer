@@ -22,16 +22,16 @@ from langchain_core.runnables import RunnableConfig
 
 from shared.workflow.step_utils import step_config
 
-from shared.config.env_catalog import ENV
+from system.env_catalog import ENV
 from shared.llm.cost_budget import BudgetExceededError
 from shared.llm.fanout import gather_with_warmup, partition_llm_results
 from data_models.code_analysis_output import TableDescription
 from shared.llm.yaml_llm_runner import run_yaml_rule
 from shared.log.logger import log_error, log_info, log_warning
 from shared.log.processing_progress import step_processing_scope, track_processing
-from shared.neo4j.neo4j_client import Neo4jClient
-from shared.neo4j.nodes.column import update_analyzed_descriptions as update_column_analyzed
-from shared.neo4j.nodes.table import update_analyzed_descriptions as update_table_analyzed
+from graph.neo4j_client import Neo4jClient
+from graph.nodes.column import update_analyzed_descriptions as update_column_analyzed
+from graph.nodes.table import update_analyzed_descriptions as update_table_analyzed
 from analysis_flow.step7_post_processing.table_logical_names import build_column_updates
 
 _STEP = "step7.enrich_table_description"

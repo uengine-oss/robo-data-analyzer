@@ -13,7 +13,7 @@ from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware
 
-from shared.config.env_catalog import ENV
+from system.env_catalog import ENV
 from shared.llm.config_loader import load_llm_config
 from shared.log.cache_message_filters import strip_cache_control
 

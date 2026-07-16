@@ -30,9 +30,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from analysis_flow.step7_post_processing.embed_step import embed_step
 from search.embed_material import EMBED_META_LABEL, EMBEDDED_LABEL, VECTOR_INDEX_NAME
-from shared.config.env_catalog import ENV
-from shared.neo4j.connection_context import Neo4jOverride, set_override
-from shared.neo4j.neo4j_client import Neo4jClient
+from system.env_catalog import ENV
+from graph.connection_context import Neo4jOverride, set_override
+from graph.neo4j_client import Neo4jClient
 
 
 async def _verify(neo: Neo4jClient) -> None:

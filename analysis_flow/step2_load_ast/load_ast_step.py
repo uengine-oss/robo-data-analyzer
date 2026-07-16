@@ -21,19 +21,19 @@ from analysis_flow.step2_load_ast.reference_linker import link_references
 from shared.log.logger import log_error, log_info, log_warning
 from shared.node_registry import NodeIdentityCollision, canonicalize_node_lists
 from shared.source_file_cache import SourceFileCache
-from shared.neo4j.edges.belongs_to import upsert_belongs_to
-from shared.neo4j.edges.has_member import upsert_has_member
-from shared.neo4j.edges.init_by import upsert_init_by
-from shared.neo4j.edges.next import upsert_statement_next
-from shared.neo4j.edges.parent_of import upsert_parent_of
-from shared.neo4j.edges.references import upsert_references
-from shared.neo4j.neo4j_client import Neo4jClient
-from shared.neo4j.nodes.constant import upsert_constants
-from shared.neo4j.nodes.data_type import upsert_data_types
-from shared.neo4j.nodes.code_node import upsert_code_nodes
-from shared.neo4j.nodes.module import upsert_modules
-from shared.neo4j.nodes.package import upsert_packages
-from shared.neo4j.nodes.variable import upsert_variables
+from graph.edges.belongs_to import upsert_belongs_to
+from graph.edges.has_member import upsert_has_member
+from graph.edges.init_by import upsert_init_by
+from graph.edges.next import upsert_statement_next
+from graph.edges.parent_of import upsert_parent_of
+from graph.edges.references import upsert_references
+from graph.neo4j_client import Neo4jClient
+from graph.nodes.constant import upsert_constants
+from graph.nodes.data_type import upsert_data_types
+from graph.nodes.code_node import upsert_code_nodes
+from graph.nodes.module import upsert_modules
+from graph.nodes.package import upsert_packages
+from graph.nodes.variable import upsert_variables
 from shared.workflow.graph_stream import emit_edges, emit_message, emit_nodes
 
 _STEP = "step2.load_ast"

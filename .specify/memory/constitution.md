@@ -31,8 +31,8 @@ MUST touch exactly one place (the declaration) and zero control-flow branches.
 ### III. Single Source of Truth (단일 진실)
 
 Each cross-cutting fact has exactly one home: all `ROBO_*` environment config lives in
-`shared/config/env_catalog.py` (the `ENV` singleton); all Neo4j relationship names live in
-`shared/neo4j/rel_types.py` (never a Cypher string literal). No magic numbers inline.
+`system/env_catalog.py` (the `ENV` singleton); all Neo4j relationship names live in
+`graph/schema/rel_types.py` (never a Cypher string literal). No magic numbers inline.
 
 **Rationale**: one definition, one place to change, no drift.
 
@@ -47,8 +47,8 @@ invalidate a phase (e.g. missing antlr AST dir) MUST raise an explicit error, no
 ### V. KV-Cache-Friendly Prompts (KV 캐시 친화)
 
 LLM prompt system bodies that share a prefix MUST be **byte-identical** so the inference
-cache (KV/RadixAttention) hits. The 3-split fan-out shares one `prompts/framework/_common.yaml`
-via `extends`. Prompt files are SHA256-pinned in `prompt_hashes.json` and guarded by CI
+cache (KV/RadixAttention) hits. The 3-split fan-out shares one `llm/prompts/framework/_common.yaml`
+via `extends`. Prompt files are SHA256-pinned in `llm/prompts/prompt_hashes.json` and guarded by CI
 (`byte_identical.yml`) — any drift fails the build.
 
 **Rationale**: a one-character diff in a shared system prompt silently destroys cache reuse
@@ -87,7 +87,7 @@ ripple to other services when changed) are:
 
 - **↑ Input — antlr-code-parser**: the JSON AST format read from `data/analysis/`.
 - **↓ Output — robo-architect**: the Neo4j graph schema (13 node labels / 21 edge types,
-  defined in `data_models/graph_*.py` + `shared/neo4j/rel_types.py`).
+  defined in `graph/schema/graph_*.py` + `graph/schema/rel_types.py`).
 - **↔ Catalog service**: HTTP `sample-context` and `/lineage` endpoints.
 
 A spec change that does NOT touch a contract is internal (no cross-service impact). A spec
@@ -109,4 +109,4 @@ This constitution supersedes ad-hoc convention. New features go through
 verifying compliance with the principles above. A principle is amended only by editing this
 file and bumping the version, with the rationale recorded.
 
-**Version**: 1.0.0 | **Ratified**: 2026-06-15 | **Last Amended**: 2026-06-15
+**Version**: 1.1.0 | **Ratified**: 2026-06-15 | **Last Amended**: 2026-07-16

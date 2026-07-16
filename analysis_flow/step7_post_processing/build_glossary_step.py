@@ -26,13 +26,13 @@ from langchain_core.runnables import RunnableConfig
 from pathlib import Path
 
 from data_models.code_analysis_output import GlossarySynthesisOutput
-from data_models.graph_nodes import CodeNode, Module
-from shared.config.env_catalog import ENV
+from graph.schema.graph_nodes import CodeNode, Module
+from system.env_catalog import ENV
 from shared.llm.cost_budget import BudgetExceededError
 from shared.llm.fanout import gather_with_warmup
 from shared.llm.yaml_llm_runner import run_yaml_rule
 from shared.log.logger import log_error, log_info, log_warning
-from shared.neo4j.neo4j_client import Neo4jClient
+from graph.neo4j_client import Neo4jClient
 from shared.workflow.step_utils import step_config
 
 from analysis_flow.step7_post_processing.summarize_module_step import _match_code_to_modules

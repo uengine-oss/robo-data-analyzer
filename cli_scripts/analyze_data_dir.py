@@ -58,7 +58,7 @@ from analysis_pipelines import get_pipeline
 from shared.lang.strategy_detector import detect_strategy
 from data_models.analysis_run import AnalysisRun
 from data_models.codebase import Codebase
-from shared.config.env_catalog import ENV
+from system.env_catalog import ENV
 from shared.log.ndjson_stream import NDJSONStream
 from shared.workflow.executor import execute_run
 

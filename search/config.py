@@ -7,7 +7,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from shared.config.env_catalog import ENV
+from system.env_catalog import ENV
 
 
 @dataclass

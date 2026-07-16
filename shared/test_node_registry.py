@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from data_models.graph_nodes import Module, Package
+from graph.schema.graph_nodes import Module, Package
 from shared.node_registry import NodeIdentityCollision, canonicalize_node_lists
 
 

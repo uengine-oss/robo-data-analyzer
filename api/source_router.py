@@ -18,7 +18,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
-from shared.config.env_catalog import ENV
+from system.env_catalog import ENV
 from shared.source_file_cache import SourceFileCache
 
 router = APIRouter(prefix="/robo")

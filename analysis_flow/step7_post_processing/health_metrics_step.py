@@ -26,11 +26,11 @@ from langchain_core.runnables import RunnableConfig
 from shared.lang.ontology import ROUTINE_LABELS
 from analysis_flow.step4_linking.stage2_extract_calls.call_linker import routine_call_pairs
 from analysis_flow.step6_analyze_code.call_cycles import find_call_cycles
-from data_models.graph_edges import Calls, ReadsWrites
-from data_models.graph_nodes import CodeNode
-from shared.config.env_catalog import ENV
+from graph.schema.graph_edges import Calls, ReadsWrites
+from graph.schema.graph_nodes import CodeNode
+from system.env_catalog import ENV
 from shared.log.logger import log_info, log_warning
-from shared.neo4j.neo4j_client import Neo4jClient
+from graph.neo4j_client import Neo4jClient
 from shared.workflow.step_utils import step_config
 
 

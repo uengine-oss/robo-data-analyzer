@@ -50,7 +50,7 @@ import yaml
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel
 
-from shared.config.env_catalog import ENV
+from system.env_catalog import ENV
 from shared.llm.cost_budget import CostBudget
 from shared.llm.client import build_llm_client
 from shared.llm.config_loader import load_llm_config

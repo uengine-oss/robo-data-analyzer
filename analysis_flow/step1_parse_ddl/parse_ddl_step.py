@@ -13,16 +13,16 @@ from langchain_core.runnables import RunnableConfig
 
 from shared.workflow.step_utils import step_config
 
-from shared.config.env_catalog import ENV
+from system.env_catalog import ENV
 from shared.ddl.parser import parse_ddl_file
 from shared.log.logger import log_info, log_warning
-from shared.neo4j.edges.belongs_to import upsert_belongs_to
-from shared.neo4j.edges.fk import upsert_fk
-from shared.neo4j.edges.has_column import upsert_has_column
-from shared.neo4j.neo4j_client import Neo4jClient
-from shared.neo4j.nodes.column import upsert_columns
-from shared.neo4j.nodes.schema import upsert_schemas
-from shared.neo4j.nodes.table import upsert_tables
+from graph.edges.belongs_to import upsert_belongs_to
+from graph.edges.fk import upsert_fk
+from graph.edges.has_column import upsert_has_column
+from graph.neo4j_client import Neo4jClient
+from graph.nodes.column import upsert_columns
+from graph.nodes.db_schema import upsert_schemas
+from graph.nodes.table import upsert_tables
 from shared.workflow.graph_stream import emit_edges, emit_message, emit_nodes
 
 _STEP = "step1.parse_ddl"

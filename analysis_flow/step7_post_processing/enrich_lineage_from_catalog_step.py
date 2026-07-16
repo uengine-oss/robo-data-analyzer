@@ -20,12 +20,12 @@ from langchain_core.runnables import RunnableConfig
 
 from shared.workflow.step_utils import step_config
 
-from data_models.graph_edges import ReadsWrites, derive_dml_type, normalize_relation
+from graph.schema.graph_edges import ReadsWrites, derive_dml_type, normalize_relation
 from shared.external.catalog_client import catalog_base_url_or_skip, get_catalog_json
-from shared.config.env_catalog import ENV
+from system.env_catalog import ENV
 from shared.log.logger import log_info, log_warning
-from shared.neo4j.edges.reads_writes import upsert_reads_writes
-from shared.neo4j.neo4j_client import Neo4jClient
+from graph.edges.reads_writes import upsert_reads_writes
+from graph.neo4j_client import Neo4jClient
 
 _STEP = "step7.enrich_lineage_from_catalog"
 

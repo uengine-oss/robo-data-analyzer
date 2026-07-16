@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 
-from shared.config.env_catalog import ENV
+from system.env_catalog import ENV
 
 
 class BudgetExceededError(RuntimeError):

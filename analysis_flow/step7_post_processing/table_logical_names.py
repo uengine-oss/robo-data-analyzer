@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from shared.neo4j.ids import fqn
+from graph.schema.node_ids import fqn
 
 
 def build_column_updates(

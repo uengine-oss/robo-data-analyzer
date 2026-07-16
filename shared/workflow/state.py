@@ -26,7 +26,7 @@ from typing import Annotated, TypedDict
 
 from data_models.analysis_context import AnalysisContext
 from data_models.analysis_run import AnalysisRun
-from data_models.graph_edges import (
+from graph.schema.graph_edges import (
     AffectsTable,
     BelongsTo,
     Calls,
@@ -42,7 +42,7 @@ from data_models.graph_edges import (
     References,
     StatementNext,
 )
-from data_models.graph_nodes import (
+from graph.schema.graph_nodes import (
     Column,
     Constant,
     DataType,

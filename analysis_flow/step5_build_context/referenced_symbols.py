@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from data_models.analysis_context import ReferencedSymbolContext
-from data_models.graph_nodes import Constant, Variable
+from graph.schema.graph_nodes import Constant, Variable
 
 
 def _build_reference_context(state: dict) -> dict[str, list[ReferencedSymbolContext]]:

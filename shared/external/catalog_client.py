@@ -12,7 +12,7 @@ from typing import Any, Optional
 
 import httpx
 
-from shared.config.env_catalog import ENV
+from system.env_catalog import ENV
 from shared.log.logger import log_info
 
 

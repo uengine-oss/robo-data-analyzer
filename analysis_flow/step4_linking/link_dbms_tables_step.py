@@ -25,11 +25,11 @@ from langchain_core.runnables import RunnableConfig
 from shared.source_file_cache import SourceFileCache
 from shared.workflow.step_utils import step_config
 
-from data_models.graph_edges import ReadsWrites, derive_dml_type
-from data_models.graph_nodes import CodeNode, Table
+from graph.schema.graph_edges import ReadsWrites, derive_dml_type
+from graph.schema.graph_nodes import CodeNode, Table
 from shared.log.logger import log_info
-from shared.neo4j.edges.reads_writes import upsert_reads_writes
-from shared.neo4j.neo4j_client import Neo4jClient
+from graph.edges.reads_writes import upsert_reads_writes
+from graph.neo4j_client import Neo4jClient
 from shared.workflow.graph_stream import emit_edges, emit_message
 
 _STEP = "step4.link_dbms_tables"

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from analysis_flow.step5_build_context.large_code_one_liner import estimate_tokens
 from data_models.analysis_context import AnalysisContext
-from shared.config.env_catalog import ENV
+from system.env_catalog import ENV
 from shared.source_file_cache import SourceFileCache
 
 _CHILD_MARK = "    ...."

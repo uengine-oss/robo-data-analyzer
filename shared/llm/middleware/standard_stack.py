@@ -30,7 +30,7 @@ from langchain.agents.middleware import (
     TodoListMiddleware,
 )
 
-from shared.config.env_catalog import ENV
+from system.env_catalog import ENV
 from shared.llm.cost_budget import CostBudget
 from shared.llm.middleware.cache_friendly_order import CacheFriendlyOrderMiddleware
 from shared.llm.middleware.call_limit import ModelCallLimitMiddleware

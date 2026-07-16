@@ -39,7 +39,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from shared.config.env_catalog import ENV
+from system.env_catalog import ENV
 
 
 _LOG_FORMAT = "%(asctime)s %(levelname)-7s │ %(name)s │ %(message)s"

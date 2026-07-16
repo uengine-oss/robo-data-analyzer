@@ -23,9 +23,9 @@ from pydantic import BaseModel
 
 from analysis_pipelines import get_pipeline
 from data_models.codebase import Codebase
-from shared.config.env_catalog import ENV
+from system.env_catalog import ENV
 from shared.log.ndjson_stream import NDJSONStream
-from shared.neo4j.connection_context import Neo4jOverride, set_override
+from graph.connection_context import Neo4jOverride, set_override
 from shared.workflow.executor import execute_run
 from shared.workflow.run_registry import get_active
 

@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 from data_models.code_analysis_output import ModulePreAnalysisOutput
-from data_models.graph_nodes import CodeNode, Module
-from shared.config.env_catalog import ENV
+from graph.schema.graph_nodes import CodeNode, Module
+from system.env_catalog import ENV
 from shared.llm.cost_budget import BudgetExceededError, CostBudget
 from shared.llm.fanout import gather_with_warmup
 from shared.llm.yaml_llm_runner import run_yaml_rule

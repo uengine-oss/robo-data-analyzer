@@ -28,11 +28,11 @@ from typing import Any, Optional
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
-from data_models import graph_edges, graph_nodes
+from graph.schema import graph_edges, graph_nodes
 from data_models.analysis_context import AnalysisContext
 from data_models.analysis_run import AnalysisRun
 from data_models.codebase import Codebase
-from shared.config.env_catalog import ENV
+from system.env_catalog import ENV
 import time
 
 from shared.llm.cost_budget import CostBudget
@@ -43,8 +43,8 @@ from shared.log.logger import (
     log_info,
 )
 from shared.log.ndjson_stream import NDJSONStream
-from shared.neo4j.neo4j_client import Neo4jClient
-from shared.neo4j.schema_constraints import ensure_schema, wipe_graph
+from graph.neo4j_client import Neo4jClient
+from graph.schema.schema_constraints import ensure_schema, wipe_graph
 from shared.source_file_cache import SourceFileCache
 from shared.workflow.artifact_writer import dump_state_artifacts
 from shared.workflow.graph_builder import build_langgraph_workflow

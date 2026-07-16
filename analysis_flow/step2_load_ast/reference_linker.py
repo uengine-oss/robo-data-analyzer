@@ -30,8 +30,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import NamedTuple
 
-from data_models.graph_edges import InitBy, References
-from data_models.graph_nodes import Constant, CodeNode, Variable
+from graph.schema.graph_edges import InitBy, References
+from graph.schema.graph_nodes import Constant, CodeNode, Variable
 from shared.lang.source_extension import EXT_TO_LANG
 from shared.log.logger import log_info
 from shared.source_file_cache import SourceFileCache

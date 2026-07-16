@@ -17,7 +17,7 @@ from typing import Callable, List, Sequence
 
 import httpx
 
-from shared.config.env_catalog import ENV
+from system.env_catalog import ENV
 from shared.llm.config_loader import load_llm_config
 from shared.log.logger import log_info, log_warning
 

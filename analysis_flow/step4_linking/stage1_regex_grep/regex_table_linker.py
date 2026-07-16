@@ -23,9 +23,9 @@ from pathlib import Path
 from typing import Literal, Optional
 
 from data_models.agent_output import DdlTransform, TableAccessPattern
-from data_models.graph_edges import ReadsWrites, derive_dml_type
-from data_models.graph_nodes import CodeNode, Table
-from shared.config.env_catalog import ENV
+from graph.schema.graph_edges import ReadsWrites, derive_dml_type
+from graph.schema.graph_nodes import CodeNode, Table
+from system.env_catalog import ENV
 from shared.log.logger import log_warning
 
 _LOG = "analysis_flow.step4_linking.stage1_regex_grep.regex_table_linker"

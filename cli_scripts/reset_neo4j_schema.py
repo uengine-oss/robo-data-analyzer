@@ -23,8 +23,8 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from shared.neo4j.neo4j_client import Neo4jClient
-from shared.neo4j.schema_constraints import ensure_schema
+from graph.neo4j_client import Neo4jClient
+from graph.schema.schema_constraints import ensure_schema
 
 
 async def main() -> None:

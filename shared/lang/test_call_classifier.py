@@ -1,4 +1,4 @@
-from data_models.graph_nodes import CodeNode
+from graph.schema.graph_nodes import CodeNode
 from shared.lang.call_classifier import classify_call_sites
 
 

@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from shared.config.env_catalog import ENV
+from system.env_catalog import ENV
 from shared.content_text import content_to_text
 
 _FILE_LOCK = threading.Lock()

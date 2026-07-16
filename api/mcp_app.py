@@ -19,9 +19,9 @@ from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 
-from shared.config.env_catalog import ENV
-from shared.neo4j.connection_context import Neo4jOverride, set_override
-from shared.neo4j.rel_types import HAS_COLUMN
+from system.env_catalog import ENV
+from graph.connection_context import Neo4jOverride, set_override
+from graph.schema.rel_types import HAS_COLUMN
 
 mcp = FastMCP(
     "robo-cluster",

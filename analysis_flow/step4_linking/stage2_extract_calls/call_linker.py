@@ -12,8 +12,8 @@ antlr CALL 노드(``…:CALL:line`` + 콜리 이름 = signature)가 호출의 �
 """
 from __future__ import annotations
 
-from data_models.graph_edges import Calls
-from data_models.graph_nodes import CodeNode
+from graph.schema.graph_edges import Calls
+from graph.schema.graph_nodes import CodeNode
 from shared.log.logger import log_warning
 
 # 내장 패키지/표준 라이브러리 prefix → 드롭 (분석 대상 프로시저 아님).

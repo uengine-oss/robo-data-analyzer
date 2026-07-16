@@ -38,8 +38,8 @@ from data_models.code_analysis_output import (
     BatchTableInsightsOutput,
     BatchSummaryOutput,
 )
-from data_models.graph_nodes import CodeNode
-from shared.config.env_catalog import ENV
+from graph.schema.graph_nodes import CodeNode
+from system.env_catalog import ENV
 from shared.domain_terms import normalize_domain_terms
 from shared.lang.ontology import ROUTINE_LABELS, coerce_stereotype
 from shared.llm.cost_budget import BudgetExceededError

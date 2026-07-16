@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from search.embed_material import EMBED_META_LABEL, EMBEDDED_LABEL
 from search.recall import tokenize
-from shared.config.env_catalog import ENV
+from system.env_catalog import ENV
 from shared.llm import embedder
 
 _NO_EMBED_MSG = "이 그래프에는 검색 임베딩이 없습니다 (분석을 다시 실행하세요)"

@@ -24,7 +24,7 @@ import asyncio
 import json
 from typing import AsyncIterator
 
-from shared.config.env_catalog import ENV
+from system.env_catalog import ENV
 from shared.log.logger import log_info, log_warning
 
 

@@ -29,8 +29,8 @@ from analysis_flow.step5_build_context.large_code_one_liner import (
 )
 from analysis_flow.step5_build_context.referenced_symbols import _build_reference_context
 from data_models.analysis_context import AnalysisContext
-from data_models.graph_nodes import CodeNode
-from shared.config.env_catalog import ENV
+from graph.schema.graph_nodes import CodeNode
+from system.env_catalog import ENV
 from shared.llm.cost_budget import BudgetExceededError, CostBudget
 from shared.llm.fanout import gather_with_warmup
 from shared.log.logger import log_error, log_info, log_warning

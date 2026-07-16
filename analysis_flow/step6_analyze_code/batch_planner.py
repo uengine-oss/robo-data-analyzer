@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 
-from data_models.graph_nodes import CodeNode
+from graph.schema.graph_nodes import CodeNode
 
 # 그래프엔 그리되 LLM 분석 제외하는 순수 괄호 노드 (E — 사용자 확정 2026-06-05).
 # 판별은 ``CodeNode.own_ast_type()`` (자기 타입 — 자손 오염 X). code_id 부분문자열 X.

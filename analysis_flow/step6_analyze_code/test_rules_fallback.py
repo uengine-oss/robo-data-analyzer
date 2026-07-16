@@ -154,8 +154,8 @@ class RunFallbackTest(unittest.IsolatedAsyncioTestCase):
     def test_flag_persists_to_graph_item(self):
         """FR-023: 이상 플래그는 그래프 적재 item 에 포함돼야 함수 노드에 저장된다.
         정상경로(플래그 없음)는 키 자체가 빠져 속성이 생기지 않는다(nonempty 규약)."""
-        from data_models.graph_nodes import CodeNode
-        from shared.neo4j.nodes.code_node import to_summary_item
+        from graph.schema.graph_nodes import CodeNode
+        from graph.nodes.code_node import to_summary_item
 
         flagged = CodeNode(id="f1", label="FUNCTION", name="f1", signature="f1()",
                            file_path="x.c", start_line=1, end_line=2, owner_id="m")

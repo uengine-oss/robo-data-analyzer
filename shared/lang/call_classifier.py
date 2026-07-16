@@ -25,8 +25,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Optional
 
-from data_models.graph_edges import Calls
-from data_models.graph_nodes import CodeNode
+from graph.schema.graph_edges import Calls
+from graph.schema.graph_nodes import CodeNode
 from shared.lang.source_extension import EXT_TO_LANG
 from shared.source_file_cache import SourceFileCache
 

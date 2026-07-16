@@ -31,11 +31,11 @@ from search.embed_material import (
     VECTOR_INDEX_NAME,
     compose_embed_text,
 )
-from shared.config.env_catalog import ENV
+from system.env_catalog import ENV
 from shared.llm import embedder
 from shared.log.logger import log_info, log_warning
 from shared.log.processing_progress import emit_processing_event, step_processing_scope
-from shared.neo4j.neo4j_client import Neo4jClient
+from graph.neo4j_client import Neo4jClient
 from shared.workflow.step_utils import step_config
 
 

@@ -20,8 +20,8 @@ from search.corpus import load_corpus
 from search.eval.gate_eval import load_items
 from search.neo import read_driver
 from search.retriever import Retriever
-from shared.config.env_catalog import ENV
-from shared.neo4j.connection_context import Neo4jOverride, set_override
+from system.env_catalog import ENV
+from graph.connection_context import Neo4jOverride, set_override
 
 
 def run_db(db: str, pool_k: int, wanted_ids: set[str] | None, evidence_top_n: int) -> dict:

@@ -21,7 +21,7 @@ from search.corpus import SearchUnavailable
 from search.service import run_search
 from shared.log.logger import log_error, log_info
 from shared.log.ndjson_stream import NDJSONStream
-from shared.neo4j.connection_context import Neo4jOverride, set_override
+from graph.connection_context import Neo4jOverride, set_override
 
 router = APIRouter(prefix="/robo")
 

@@ -6,14 +6,14 @@ builder.py(순수) 가 만든 노드·엣지 dataclass 리스트를 Neo4j 에 �
 from __future__ import annotations
 
 from shared.example_mapping.builder import ExampleMappingResult
-from shared.neo4j.edges.affects_table import upsert_affects_table
-from shared.neo4j.edges.has_example import upsert_has_example
-from shared.neo4j.edges.has_question import upsert_has_question
-from shared.neo4j.edges.has_rule import upsert_has_rule
-from shared.neo4j.neo4j_client import Neo4jClient
-from shared.neo4j.nodes.example import upsert_examples
-from shared.neo4j.nodes.question import upsert_questions
-from shared.neo4j.nodes.rule import upsert_rules
+from graph.edges.affects_table import upsert_affects_table
+from graph.edges.has_example import upsert_has_example
+from graph.edges.has_question import upsert_has_question
+from graph.edges.has_rule import upsert_has_rule
+from graph.neo4j_client import Neo4jClient
+from graph.nodes.example import upsert_examples
+from graph.nodes.question import upsert_questions
+from graph.nodes.rule import upsert_rules
 
 
 async def write_example_mapping(client: Neo4jClient, em: ExampleMappingResult) -> None:

@@ -24,7 +24,7 @@ from langchain_core.runnables import RunnableConfig
 from shared.workflow.step_utils import step_config
 
 from shared.external.catalog_client import catalog_base_url_or_skip, post_sample_context
-from shared.config.env_catalog import ENV
+from system.env_catalog import ENV
 from shared.log.logger import log_info, log_warning
 from shared.log.processing_progress import step_processing_scope
 

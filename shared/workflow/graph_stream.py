@@ -16,11 +16,11 @@ from __future__ import annotations
 
 from typing import Iterable, Optional
 
-from data_models import graph_edges as ge
-from data_models import graph_nodes as gn
+from graph.schema import graph_edges as ge
+from graph.schema import graph_nodes as gn
 from shared.log.ndjson_stream import NDJSONStream
-from shared.neo4j import rel_types as rt
-from shared.neo4j.props import nonempty
+from graph.schema import rel_types as rt
+from graph.node_upsert import nonempty
 
 
 # label 필드 없는 노드 종류의 고정 라벨 (나머지는 node.label = antlr type).

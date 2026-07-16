@@ -22,7 +22,7 @@ from pathlib import Path
 from langchain.tools import tool
 
 from agent_tools.path_boundary import PathOutsideRoot, resolve_within
-from data_models.graph_nodes import CodeNode
+from graph.schema.graph_nodes import CodeNode
 
 # robo-analyzer-refact/skills/ 경로 (실행 시 robo 루트 기준)
 SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"

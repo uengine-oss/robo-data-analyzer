@@ -18,8 +18,8 @@ from shared.workflow.step_utils import step_config
 from data_models.agent_output import ScanResult
 from analysis_flow.step4_linking.stage1_regex_grep.regex_table_linker import RegexTableLinker
 from shared.log.logger import log_info, log_warning
-from shared.neo4j.edges.reads_writes import upsert_reads_writes
-from shared.neo4j.neo4j_client import Neo4jClient
+from graph.edges.reads_writes import upsert_reads_writes
+from graph.neo4j_client import Neo4jClient
 from shared.workflow.graph_stream import emit_edges, emit_message
 
 _STEP = "step4.link_deterministic"

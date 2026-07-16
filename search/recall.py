@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from search.embed_material import VECTOR_INDEX_NAME
-from shared.config.env_catalog import ENV
+from system.env_catalog import ENV
 
 _TOKEN = re.compile(r"[A-Za-z0-9]+|[가-힣]+")
 

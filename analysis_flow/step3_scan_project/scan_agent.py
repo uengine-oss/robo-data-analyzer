@@ -36,8 +36,8 @@ from analysis_flow.step4_linking.stage1_regex_grep.regex_table_linker import (
     PatternVerdict,
     verify_table_patterns,
 )
-from data_models.graph_nodes import CodeNode, Table
-from shared.config.env_catalog import ENV
+from graph.schema.graph_nodes import CodeNode, Table
+from system.env_catalog import ENV
 from shared.llm.cost_budget import CostBudget
 from shared.llm.structured_agent import run_structured_agent
 from shared.log.logger import log_info, log_warning

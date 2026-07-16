@@ -26,7 +26,7 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.globals import set_llm_cache
 from langchain_openai import ChatOpenAI
 
-from shared.config.env_catalog import ENV
+from system.env_catalog import ENV
 from shared.llm.config_loader import LLMConfig, load_llm_config
 
 

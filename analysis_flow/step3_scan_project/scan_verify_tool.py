@@ -15,7 +15,7 @@ from langchain.tools import tool
 
 from data_models.agent_output import DdlTransform, TableAccessPattern
 from analysis_flow.step4_linking.stage1_regex_grep.regex_table_linker import RegexTableLinker
-from data_models.graph_nodes import CodeNode, Table
+from graph.schema.graph_nodes import CodeNode, Table
 
 _SAMPLE_SHOWN = 20
 
