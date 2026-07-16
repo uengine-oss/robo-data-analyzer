@@ -21,7 +21,7 @@ from typing import Optional
 import httpx
 from langchain_core.runnables import RunnableConfig
 
-from shared.workflow.step_utils import step_config
+from pipeline.execution.step_config import step_config
 
 from shared.external.catalog_client import catalog_base_url_or_skip, post_sample_context
 from system.env_catalog import ENV

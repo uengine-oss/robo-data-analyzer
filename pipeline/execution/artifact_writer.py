@@ -33,11 +33,10 @@ from pathlib import Path
 from typing import Any
 
 from pipeline.data_models.analysis_meta import AnalysisRun
-from shared.log.logger import log_warning
-from shared.workflow.state import WorkflowState
+from pipeline.execution.workflow_state import WorkflowState
 
 
-_LOG = "shared.workflow.artifact_writer"
+_LOG = "pipeline.execution.artifact_writer"
 
 
 def _artifacts_dir(run: AnalysisRun) -> Path:
@@ -91,10 +90,9 @@ def _dataclass_to_dict(obj: Any) -> dict:
     for prop_name in _DUMP_PROPERTIES:
         prop = getattr(type(obj), prop_name, None)
         if isinstance(prop, property):
-            try:
-                result[prop_name] = _serialize(getattr(obj, prop_name))
-            except Exception:  # noqa: BLE001 — property 계산 실패는 dump 만 누락
-                pass
+            # 식별자 계산 실패를 숨기면 검증 artifact가 불완전해진다. 호출자가 기록 후
+            # run을 실패 처리하도록 그대로 전파한다.
+            result[prop_name] = _serialize(getattr(obj, prop_name))
     return result
 
 

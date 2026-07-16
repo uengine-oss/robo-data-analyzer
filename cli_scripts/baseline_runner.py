@@ -24,7 +24,7 @@ from analysis_pipelines import get_pipeline
 from pipeline.programming_languages import detect_strategy
 from pipeline.data_models.analysis_meta import Codebase
 from shared.log.ndjson_stream import NDJSONStream
-from shared.workflow.executor import execute_run
+from pipeline.execution.run_executor import execute_run
 
 
 async def run_one(project_root: Path, strategy_name: str) -> dict:

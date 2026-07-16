@@ -21,7 +21,7 @@ from typing import Optional
 from langchain_core.runnables import RunnableConfig
 
 from shared.source_file_cache import SourceFileCache
-from shared.workflow.step_utils import step_config
+from pipeline.execution.step_config import step_config
 
 from analysis_flow.step5_build_context.large_code_one_liner import (
     compute_one_liner,

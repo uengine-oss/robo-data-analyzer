@@ -14,7 +14,7 @@ from typing import Optional, TypeVar
 
 from langchain_core.runnables import RunnableConfig
 
-from shared.workflow.step_utils import step_config
+from pipeline.execution.step_config import step_config
 
 from analysis_flow.step2_load_ast.antlr_json_reader import ast_and_source_roots, read_antlr_json
 from analysis_flow.step2_load_ast.reference_linker import link_references
@@ -34,7 +34,7 @@ from graph.nodes.code_node import upsert_code_nodes
 from graph.nodes.module import upsert_modules
 from graph.nodes.package import upsert_packages
 from graph.nodes.variable import upsert_variables
-from shared.workflow.graph_stream import emit_edges, emit_message, emit_nodes
+from pipeline.execution.graph_delta_stream import emit_edges, emit_message, emit_nodes
 
 _STEP = "step2.load_ast"
 

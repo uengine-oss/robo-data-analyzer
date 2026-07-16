@@ -11,13 +11,13 @@ from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
-from shared.workflow.step_utils import step_config
+from pipeline.execution.step_config import step_config
 
 from analysis_flow.step4_linking.stage2_extract_calls.call_linker import CallLinker
 from shared.log.logger import log_info, log_warning
 from graph.edges.calls import upsert_calls, emit_calls
 from graph.neo4j_client import Neo4jClient
-from shared.workflow.graph_stream import emit_message
+from pipeline.execution.graph_delta_stream import emit_message
 
 _STEP = "step4.link_calls_by_ast"
 

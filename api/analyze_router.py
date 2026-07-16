@@ -26,8 +26,8 @@ from pipeline.data_models.analysis_meta import Codebase
 from system.env_catalog import ENV
 from shared.log.ndjson_stream import NDJSONStream
 from graph.connection_context import Neo4jOverride, set_override
-from shared.workflow.executor import execute_run
-from shared.workflow.run_registry import get_active
+from pipeline.execution.run_executor import execute_run
+from pipeline.execution.run_registry import get_active
 
 
 router = APIRouter(prefix="/robo")

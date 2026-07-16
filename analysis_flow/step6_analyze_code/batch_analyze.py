@@ -47,7 +47,7 @@ from llm.client.runners.yaml_llm_runner import run_yaml_rule
 from shared.log.logger import log_error, log_info, log_warning
 from shared.log.processing_progress import track_processing
 from shared.source_file_cache import SourceFileCache
-from shared.workflow.pause_controller import PauseController
+from pipeline.execution.pause_controller import PauseController
 
 _STEP = "step6.analyze_code.batch"
 

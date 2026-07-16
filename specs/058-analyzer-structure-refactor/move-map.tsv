@@ -147,7 +147,7 @@ search/rewrite.py	search/query/query_rewrite.py	move	1	search/retriever.py	-
 search/service.py	search/service.py	keep	2	api/mcp_app.py;api/search_router.py	-
 search/test_global_anchor.py	tests/search/test_global_anchor.py	move	0	-	-
 search/test_rules_traversal.py	tests/search/test_rules_traversal.py	move	0	-	-
-shared/__init__.py	(remove-empty-package)	delete-empty	58	analysis_flow/step1_parse_ddl/parse_ddl_step.py;analysis_flow/step2_load_ast/antlr_json_reader.py;analysis_flow/step2_load_ast/load_ast_step.py;analysis_flow/step2_load_ast/reference_linker.py;analysis_flow/step3_scan_project/scan_agent.py;analysis_flow/step3_scan_project/scan_codebase_step.py;analysis_flow/step3_scan_project/scanner_input_collector.py;analysis_flow/step4_linking/link_dbms_tables_step.py	+50 more
+shared/__init__.py	(remove-empty-package)	delete-empty	51	analysis_flow/step1_parse_ddl/parse_ddl_step.py;analysis_flow/step2_load_ast/antlr_json_reader.py;analysis_flow/step2_load_ast/load_ast_step.py;analysis_flow/step2_load_ast/reference_linker.py;analysis_flow/step3_scan_project/scan_agent.py;analysis_flow/step3_scan_project/scan_codebase_step.py;analysis_flow/step3_scan_project/scanner_input_collector.py;analysis_flow/step4_linking/link_dbms_tables_step.py	+43 more
 shared/config/__init__.py	system/__init__.py	move	0	-	-
 shared/config/env_catalog.py	system/env_catalog.py	move	0	-	-
 shared/content_text.py	llm/client/message_content.py	move	0	-	-
@@ -190,10 +190,10 @@ shared/llm/structured_agent.py	llm/client/runners/structured_agent.py	move	0	-	-
 shared/llm/token_usage.py	llm/client/usage/token_usage.py	move	0	-	-
 shared/llm/usage_jsonl_writer.py	llm/client/usage/usage_jsonl_writer.py	move	0	-	-
 shared/llm/yaml_llm_runner.py	llm/client/runners/yaml_llm_runner.py	move	0	-	-
-shared/log/__init__.py	log/__init__.py	move	47	analysis_flow/step1_parse_ddl/parse_ddl_step.py;analysis_flow/step2_load_ast/antlr_json_reader.py;analysis_flow/step2_load_ast/load_ast_step.py;analysis_flow/step2_load_ast/reference_linker.py;analysis_flow/step3_scan_project/scan_agent.py;analysis_flow/step3_scan_project/scan_codebase_step.py;analysis_flow/step3_scan_project/scanner_input_collector.py;analysis_flow/step4_linking/link_dbms_tables_step.py	+39 more
+shared/log/__init__.py	log/__init__.py	move	42	analysis_flow/step1_parse_ddl/parse_ddl_step.py;analysis_flow/step2_load_ast/antlr_json_reader.py;analysis_flow/step2_load_ast/load_ast_step.py;analysis_flow/step2_load_ast/reference_linker.py;analysis_flow/step3_scan_project/scan_agent.py;analysis_flow/step3_scan_project/scan_codebase_step.py;analysis_flow/step3_scan_project/scanner_input_collector.py;analysis_flow/step4_linking/link_dbms_tables_step.py	+34 more
 shared/log/cache_message_filters.py	llm/client/prompt_logging/cache_message_filters.py	move	0	-	-
-shared/log/logger.py	log/logger.py	move	42	analysis_flow/step1_parse_ddl/parse_ddl_step.py;analysis_flow/step2_load_ast/antlr_json_reader.py;analysis_flow/step2_load_ast/load_ast_step.py;analysis_flow/step2_load_ast/reference_linker.py;analysis_flow/step3_scan_project/scan_agent.py;analysis_flow/step3_scan_project/scan_codebase_step.py;analysis_flow/step3_scan_project/scanner_input_collector.py;analysis_flow/step4_linking/link_dbms_tables_step.py	+34 more
-shared/log/ndjson_stream.py	log/ndjson_stream.py	move	10	analysis_flow/step6_analyze_code/analyze_code_step.py;analysis_flow/step6_analyze_code/module_pre_analysis.py;api/analyze_router.py;api/search_router.py;cli_scripts/analyze_data_dir.py;cli_scripts/baseline_runner.py;shared/log/processing_progress.py;shared/workflow/executor.py	+2 more
+shared/log/logger.py	log/logger.py	move	38	analysis_flow/step1_parse_ddl/parse_ddl_step.py;analysis_flow/step2_load_ast/antlr_json_reader.py;analysis_flow/step2_load_ast/load_ast_step.py;analysis_flow/step2_load_ast/reference_linker.py;analysis_flow/step3_scan_project/scan_agent.py;analysis_flow/step3_scan_project/scan_codebase_step.py;analysis_flow/step3_scan_project/scanner_input_collector.py;analysis_flow/step4_linking/link_dbms_tables_step.py	+30 more
+shared/log/ndjson_stream.py	log/ndjson_stream.py	move	7	analysis_flow/step6_analyze_code/analyze_code_step.py;analysis_flow/step6_analyze_code/module_pre_analysis.py;api/analyze_router.py;api/search_router.py;cli_scripts/analyze_data_dir.py;cli_scripts/baseline_runner.py;shared/log/processing_progress.py	-
 shared/log/processing_progress.py	log/processing_progress.py	move	11	analysis_flow/step5_build_context/build_context_step.py;analysis_flow/step5_build_context/fetch_table_samples_step.py;analysis_flow/step6_analyze_code/analyze_code_step.py;analysis_flow/step6_analyze_code/batch_analyze.py;analysis_flow/step6_analyze_code/module_pre_analysis.py;analysis_flow/step6_analyze_code/rules_fallback.py;analysis_flow/step6_analyze_code/three_split_llm_fanout.py;analysis_flow/step7_post_processing/build_components_step.py	+3 more
 shared/log/prompt_logger.py	llm/client/prompt_logging/prompt_logger.py	move	0	-	-
 shared/log/prompt_mask_patterns.py	llm/client/prompt_logging/prompt_mask_patterns.py	move	0	-	-
@@ -236,19 +236,19 @@ shared/neo4j/props.py	graph/node_upsert.py	move	0	-	-
 shared/neo4j/rel_types.py	graph/schema/rel_types.py	move	0	-	-
 shared/neo4j/schema_constraints.py	graph/schema/schema_constraints.py	move	0	-	-
 shared/node_registry.py	pipeline/steps/step2_load_ast/node_identity_registry.py	move	2	analysis_flow/step2_load_ast/load_ast_step.py;shared/test_node_registry.py	-
-shared/source_file_cache.py	pipeline/source_file_cache.py	move	11	analysis_flow/step2_load_ast/load_ast_step.py;analysis_flow/step2_load_ast/reference_linker.py;analysis_flow/step4_linking/link_dbms_tables_step.py;analysis_flow/step5_build_context/build_context_step.py;analysis_flow/step6_analyze_code/analyze_code_step.py;analysis_flow/step6_analyze_code/batch_analyze.py;analysis_flow/step6_analyze_code/range_body.py;analysis_flow/step6_analyze_code/three_split_llm_fanout.py	+3 more
+shared/source_file_cache.py	pipeline/source_file_cache.py	move	10	analysis_flow/step2_load_ast/load_ast_step.py;analysis_flow/step2_load_ast/reference_linker.py;analysis_flow/step4_linking/link_dbms_tables_step.py;analysis_flow/step5_build_context/build_context_step.py;analysis_flow/step6_analyze_code/analyze_code_step.py;analysis_flow/step6_analyze_code/batch_analyze.py;analysis_flow/step6_analyze_code/range_body.py;analysis_flow/step6_analyze_code/three_split_llm_fanout.py	+2 more
 shared/test_domain_term_prompt_contract.py	tests/pipeline/test_domain_term_prompt_contract.py	move	0	-	-
 shared/test_domain_terms.py	tests/pipeline/test_domain_terms.py	move	0	-	-
 shared/test_node_registry.py	tests/pipeline/step2_load_ast/test_node_identity_registry.py	move	0	-	-
-shared/workflow/__init__.py	pipeline/execution/__init__.py	move	27	analysis_flow/step1_parse_ddl/parse_ddl_step.py;analysis_flow/step2_load_ast/load_ast_step.py;analysis_flow/step3_scan_project/scan_codebase_step.py;analysis_flow/step4_linking/link_dbms_tables_step.py;analysis_flow/step4_linking/stage1_regex_grep/link_deterministic_step.py;analysis_flow/step4_linking/stage2_extract_calls/link_calls_by_ast_step.py;analysis_flow/step4_linking/stage2_extract_calls/link_calls_by_name_step.py;analysis_flow/step4_linking/stage3_residual_patterns/link_residual_patterns_step.py	+19 more
-shared/workflow/artifact_writer.py	pipeline/execution/artifact_writer.py	move	1	shared/workflow/executor.py	-
-shared/workflow/executor.py	pipeline/execution/run_executor.py	move	3	api/analyze_router.py;cli_scripts/analyze_data_dir.py;cli_scripts/baseline_runner.py	-
-shared/workflow/graph_builder.py	pipeline/execution/langgraph_builder.py	move	1	shared/workflow/executor.py	-
-shared/workflow/graph_stream.py	pipeline/execution/graph_delta_stream.py	move	11	analysis_flow/step1_parse_ddl/parse_ddl_step.py;analysis_flow/step2_load_ast/load_ast_step.py;analysis_flow/step3_scan_project/scan_codebase_step.py;analysis_flow/step4_linking/link_dbms_tables_step.py;analysis_flow/step4_linking/stage1_regex_grep/link_deterministic_step.py;analysis_flow/step4_linking/stage2_extract_calls/link_calls_by_ast_step.py;analysis_flow/step4_linking/stage2_extract_calls/link_calls_by_name_step.py;analysis_flow/step4_linking/stage3_residual_patterns/link_residual_patterns_step.py	+3 more
-shared/workflow/pause_controller.py	pipeline/execution/pause_controller.py	move	4	analysis_flow/step6_analyze_code/analyze_code_step.py;analysis_flow/step6_analyze_code/batch_analyze.py;shared/workflow/executor.py;shared/workflow/run_registry.py	-
-shared/workflow/run_registry.py	pipeline/execution/run_registry.py	move	2	api/analyze_router.py;shared/workflow/executor.py	-
-shared/workflow/state.py	pipeline/execution/workflow_state.py	move	2	shared/workflow/artifact_writer.py;shared/workflow/graph_builder.py	-
-shared/workflow/step_utils.py	pipeline/execution/run_executor.py	move	18	analysis_flow/step1_parse_ddl/parse_ddl_step.py;analysis_flow/step2_load_ast/load_ast_step.py;analysis_flow/step3_scan_project/scan_codebase_step.py;analysis_flow/step4_linking/link_dbms_tables_step.py;analysis_flow/step4_linking/stage1_regex_grep/link_deterministic_step.py;analysis_flow/step4_linking/stage2_extract_calls/link_calls_by_ast_step.py;analysis_flow/step4_linking/stage2_extract_calls/link_calls_by_name_step.py;analysis_flow/step4_linking/stage3_residual_patterns/link_residual_patterns_step.py	+10 more
+shared/workflow/__init__.py	pipeline/execution/__init__.py	move	0	-	-
+shared/workflow/artifact_writer.py	pipeline/execution/artifact_writer.py	move	0	-	-
+shared/workflow/executor.py	pipeline/execution/run_executor.py	move	0	-	-
+shared/workflow/graph_builder.py	pipeline/execution/langgraph_builder.py	move	0	-	-
+shared/workflow/graph_stream.py	pipeline/execution/graph_delta_stream.py	move	0	-	-
+shared/workflow/pause_controller.py	pipeline/execution/pause_controller.py	move	0	-	-
+shared/workflow/run_registry.py	pipeline/execution/run_registry.py	move	0	-	-
+shared/workflow/state.py	pipeline/execution/workflow_state.py	move	0	-	-
+shared/workflow/step_utils.py	pipeline/execution/step_config.py	move	0	-	-
 shared/workflow/test_graph_stream_source_identity.py	tests/pipeline/execution/test_graph_stream_source_identity.py	move	0	-	-
 skills/_templates/SKILL.md	llm/skills/_templates/SKILL.md	move	0	-	-
 skills/ejb-cmp/SKILL.md	llm/skills/ejb-cmp/SKILL.md	move	0	-	-

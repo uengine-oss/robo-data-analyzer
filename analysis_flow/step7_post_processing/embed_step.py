@@ -36,7 +36,7 @@ from llm.client import embedder
 from shared.log.logger import log_info, log_warning
 from shared.log.processing_progress import emit_processing_event, step_processing_scope
 from graph.neo4j_client import Neo4jClient
-from shared.workflow.step_utils import step_config
+from pipeline.execution.step_config import step_config
 
 
 _STEP = "step7.embed"

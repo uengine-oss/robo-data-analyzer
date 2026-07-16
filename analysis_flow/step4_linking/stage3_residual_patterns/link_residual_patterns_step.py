@@ -14,7 +14,7 @@ from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
-from shared.workflow.step_utils import step_config
+from pipeline.execution.step_config import step_config
 
 from analysis_flow.step4_linking.stage3_residual_patterns.residual_pattern_loop import (
     run_residual_loop,
@@ -22,7 +22,7 @@ from analysis_flow.step4_linking.stage3_residual_patterns.residual_pattern_loop 
 from shared.log.logger import log_info, log_warning
 from graph.edges.reads_writes import upsert_reads_writes
 from graph.neo4j_client import Neo4jClient
-from shared.workflow.graph_stream import emit_edges, emit_message
+from pipeline.execution.graph_delta_stream import emit_edges, emit_message
 
 _STEP = "step4.link_residual_patterns"
 

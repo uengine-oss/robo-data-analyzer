@@ -18,7 +18,7 @@ from typing import Optional
 import httpx
 from langchain_core.runnables import RunnableConfig
 
-from shared.workflow.step_utils import step_config
+from pipeline.execution.step_config import step_config
 
 from graph.schema.graph_edges import ReadsWrites, derive_dml_type, normalize_relation
 from shared.external.catalog_client import catalog_base_url_or_skip, get_catalog_json

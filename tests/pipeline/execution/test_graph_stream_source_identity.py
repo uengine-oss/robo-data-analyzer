@@ -1,5 +1,5 @@
 from graph.schema.graph_nodes import CodeNode, Module
-from shared.workflow.graph_stream import emit_nodes
+from pipeline.execution.graph_delta_stream import emit_nodes
 
 
 class _Stream:

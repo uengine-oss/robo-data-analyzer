@@ -34,7 +34,7 @@ from llm.client.runners.yaml_llm_runner import run_yaml_rule
 from shared.log.logger import log_error, log_info, log_warning
 from shared.log.processing_progress import step_processing_scope, track_processing
 from graph.neo4j_client import Neo4jClient
-from shared.workflow.step_utils import step_config
+from pipeline.execution.step_config import step_config
 
 
 _STEP = "step7.build_components"

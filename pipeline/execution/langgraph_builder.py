@@ -25,7 +25,7 @@ from typing import Any, Optional
 
 from langgraph.graph import END, START, StateGraph
 
-from shared.workflow.state import WorkflowState
+from pipeline.execution.workflow_state import WorkflowState
 
 
 def build_langgraph_workflow(

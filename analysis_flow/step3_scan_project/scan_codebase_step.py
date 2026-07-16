@@ -14,7 +14,7 @@ from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
-from shared.workflow.step_utils import step_config
+from pipeline.execution.step_config import step_config
 
 from llm.agents.code_inspection import SKILLS_DIR
 from analysis_flow.step3_scan_project.scan_agent import run_scan_agent
@@ -24,7 +24,7 @@ from analysis_flow.step3_scan_project.scanner_input_collector import (
 from llm.client.usage.cost_budget import CostBudget
 from llm.client.middleware.call_limit import ModelCallLimitExceeded
 from shared.log.logger import log_error, log_info, log_warning
-from shared.workflow.graph_stream import emit_message
+from pipeline.execution.graph_delta_stream import emit_message
 
 _STEP = "step3.scan"
 

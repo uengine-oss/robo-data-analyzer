@@ -155,7 +155,7 @@ def _target(path: str) -> str:
             "graph_builder.py": "langgraph_builder.py",
             "state.py": "workflow_state.py",
             "graph_stream.py": "graph_delta_stream.py",
-            "step_utils.py": "run_executor.py",
+            "step_utils.py": "step_config.py",
         }
         if name == "test_graph_stream_source_identity.py":
             return f"tests/pipeline/execution/{name}"

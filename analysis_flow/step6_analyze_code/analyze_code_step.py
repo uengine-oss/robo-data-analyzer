@@ -24,9 +24,9 @@ from typing import Any, Optional
 from langchain_core.runnables import RunnableConfig
 
 from shared.source_file_cache import SourceFileCache
-from shared.workflow.graph_stream import emit_nodes
-from shared.workflow.pause_controller import NULL_PAUSE, PauseController
-from shared.workflow.step_utils import step_config
+from pipeline.execution.graph_delta_stream import emit_nodes
+from pipeline.execution.pause_controller import NULL_PAUSE, PauseController
+from pipeline.execution.step_config import step_config
 
 from analysis_flow.step6_analyze_code.analysis_order import bottom_up_rounds
 # (dbms 엔진은 여기서 import 하지 않는다 — 전략이 주입한다(analysis_pipelines). 헌법 II.)

@@ -18,7 +18,7 @@ from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
-from shared.workflow.step_utils import step_config
+from pipeline.execution.step_config import step_config
 
 from graph.schema.graph_nodes import CodeNode, Module
 from system.env_catalog import ENV
@@ -30,7 +30,7 @@ from shared.log.logger import log_error, log_info, log_warning
 from shared.log.processing_progress import step_processing_scope, track_processing
 from graph.neo4j_client import Neo4jClient
 from graph.nodes.module import upsert_modules
-from shared.workflow.graph_stream import emit_nodes
+from pipeline.execution.graph_delta_stream import emit_nodes
 
 _STEP = "step7.summarize_module"
 

@@ -7,7 +7,7 @@
   ``prompts_dir`` 의 데이터 컨테이너. 로직 X.
 - AST 파싱은 antlr JSON reader 공통 — strategy 별 parser 주입 없음
   (``load_ast_step`` 이 ``antlr_json_reader`` 를 직접 호출).
-- ``shared/workflow/graph_builder.build_langgraph_workflow(strategy)`` 가
+- ``pipeline/execution/langgraph_builder.build_langgraph_workflow(strategy)`` 가
   ``strategy.steps`` 만 보고 그래프 빌드 — if 분기 0개.
 
 **LangGraph 의 책임**:

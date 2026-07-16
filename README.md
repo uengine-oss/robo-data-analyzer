@@ -244,7 +244,7 @@ POST /robo/analyze/control
 ## 4. 파이프라인 — Strategy 별 step 흐름
 
 `analysis_pipelines.py` 의 `Strategy` 데이터클래스가 step 함수 tuple 을 **declare 만**
-하면, `shared/workflow/graph_builder.py:build_langgraph_workflow()` 가 **if 분기 0개** 로
+하면, `pipeline/execution/langgraph_builder.py:build_langgraph_workflow()` 가 **if 분기 0개** 로
 LangGraph StateGraph 노드를 순서대로 추가한다. step1~step7 **폴더(7 phase)** 구조가 흐름
 그대로 드러나며, 실제 실행 step 함수는 Framework 11개 / DBMS 13개.
 

@@ -20,7 +20,7 @@ from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
-from shared.workflow.step_utils import step_config
+from pipeline.execution.step_config import step_config
 
 from system.env_catalog import ENV
 from llm.client.usage.cost_budget import BudgetExceededError

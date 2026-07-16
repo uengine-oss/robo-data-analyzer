@@ -21,6 +21,7 @@ import asyncio
 import dataclasses
 import json
 import shutil
+import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Optional
@@ -33,7 +34,6 @@ from pipeline.data_models.analysis_context import AnalysisContext
 from pipeline.data_models.analysis_meta import AnalysisRun
 from pipeline.data_models.analysis_meta import Codebase
 from system.env_catalog import ENV
-import time
 
 from llm.client.usage.cost_budget import CostBudget
 from shared.log.logger import (
@@ -46,11 +46,11 @@ from shared.log.ndjson_stream import NDJSONStream
 from graph.neo4j_client import Neo4jClient
 from graph.schema.schema_constraints import ensure_schema, wipe_graph
 from shared.source_file_cache import SourceFileCache
-from shared.workflow.artifact_writer import dump_state_artifacts
-from shared.workflow.graph_builder import build_langgraph_workflow
-from shared.workflow.pause_controller import PauseController
-from shared.workflow.run_registry import clear as clear_active_run
-from shared.workflow.run_registry import set_active as set_active_run
+from pipeline.execution.artifact_writer import dump_state_artifacts
+from pipeline.execution.langgraph_builder import build_langgraph_workflow
+from pipeline.execution.pause_controller import PauseController
+from pipeline.execution.run_registry import clear as clear_active_run
+from pipeline.execution.run_registry import set_active as set_active_run
 
 
 def _state_msgpack_allowlist() -> tuple[type, ...]:
@@ -239,7 +239,8 @@ def _reset_logs_root(log_base: Path) -> None:
     monitor 가 옛 inode 잡고 옛 라인 토해내는 사고 발생 → ``logs/`` 통째 정리.
     """
     if log_base.exists():
-        shutil.rmtree(log_base, ignore_errors=True)
+        # 정리에 실패한 옛 로그를 새 run의 결과로 오인하지 않도록 오류를 전파한다.
+        shutil.rmtree(log_base)
     log_base.mkdir(parents=True, exist_ok=True)
     (log_base / "analysis.run" / "latest").mkdir(parents=True, exist_ok=True)
     (log_base / "llm_prompts" / "latest").mkdir(parents=True, exist_ok=True)

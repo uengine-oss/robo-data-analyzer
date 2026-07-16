@@ -68,7 +68,7 @@ semantic and integration regression battery.
 
 - [ ] T024 [US1] Move `analysis_pipelines.py` into `pipeline/analysis_pipelines.py` and preserve zero-branch strategy declarations
 - [x] T025 [US1] Merge language extension, ontology and strategy detection into `pipeline/programming_languages.py` with adjacent `ontology_roles.yaml`
-- [ ] T026 [US1] Move workflow execution modules into `pipeline/execution/` and absorb `step_utils.py` into `run_executor.py`
+- [x] T026 [US1] Move workflow execution modules into `pipeline/execution/`; keep the 18-consumer lightweight `step_config.py` contract independent from the heavy run executor
 - [x] T027 [US1] Merge `analysis_run.py` and `codebase.py` into `pipeline/data_models/analysis_meta.py` and move remaining analysis models
 - [ ] T028 [US1] Move `analysis_flow/` into `pipeline/steps/` and update every internal, API, script and external runner consumer
 - [ ] T029 [US1] Move single-owner helpers into their step: DDL parser, call classifier, example mapping builder/writer and AST identity registry

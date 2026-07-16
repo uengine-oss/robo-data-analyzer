@@ -11,7 +11,7 @@ from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
-from shared.workflow.step_utils import step_config
+from pipeline.execution.step_config import step_config
 
 from system.env_catalog import ENV
 from shared.ddl.parser import parse_ddl_file
@@ -23,7 +23,7 @@ from graph.neo4j_client import Neo4jClient
 from graph.nodes.column import upsert_columns
 from graph.nodes.db_schema import upsert_schemas
 from graph.nodes.table import upsert_tables
-from shared.workflow.graph_stream import emit_edges, emit_message, emit_nodes
+from pipeline.execution.graph_delta_stream import emit_edges, emit_message, emit_nodes
 
 _STEP = "step1.parse_ddl"
 

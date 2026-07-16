@@ -31,7 +31,7 @@ from graph.schema.graph_nodes import CodeNode
 from system.env_catalog import ENV
 from shared.log.logger import log_info, log_warning
 from graph.neo4j_client import Neo4jClient
-from shared.workflow.step_utils import step_config
+from pipeline.execution.step_config import step_config
 
 
 _STEP = "step7.health_metrics"

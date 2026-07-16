@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Optional
 
 from shared.log.logger import log_warning
-from shared.workflow.pause_controller import PauseController
+from pipeline.execution.pause_controller import PauseController
 
 _active: Optional[tuple[str, PauseController]] = None
 

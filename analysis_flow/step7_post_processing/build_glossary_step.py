@@ -33,7 +33,7 @@ from llm.client.llm_fanout import gather_with_warmup
 from llm.client.runners.yaml_llm_runner import run_yaml_rule
 from shared.log.logger import log_error, log_info, log_warning
 from graph.neo4j_client import Neo4jClient
-from shared.workflow.step_utils import step_config
+from pipeline.execution.step_config import step_config
 
 from analysis_flow.step7_post_processing.summarize_module_step import _match_code_to_modules
 

@@ -60,7 +60,7 @@ from pipeline.data_models.analysis_meta import AnalysisRun
 from pipeline.data_models.analysis_meta import Codebase
 from system.env_catalog import ENV
 from shared.log.ndjson_stream import NDJSONStream
-from shared.workflow.executor import execute_run
+from pipeline.execution.run_executor import execute_run
 
 
 async def _consume_stream(stream: NDJSONStream) -> None:

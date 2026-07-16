@@ -23,14 +23,14 @@ from typing import Optional
 from langchain_core.runnables import RunnableConfig
 
 from shared.source_file_cache import SourceFileCache
-from shared.workflow.step_utils import step_config
+from pipeline.execution.step_config import step_config
 
 from graph.schema.graph_edges import ReadsWrites, derive_dml_type
 from graph.schema.graph_nodes import CodeNode, Table
 from shared.log.logger import log_info
 from graph.edges.reads_writes import upsert_reads_writes
 from graph.neo4j_client import Neo4jClient
-from shared.workflow.graph_stream import emit_edges, emit_message
+from pipeline.execution.graph_delta_stream import emit_edges, emit_message
 
 _STEP = "step4.link_dbms_tables"
 
