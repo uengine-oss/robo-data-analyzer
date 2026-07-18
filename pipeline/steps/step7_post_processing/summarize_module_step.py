@@ -19,15 +19,16 @@ from typing import Optional
 from langchain_core.runnables import RunnableConfig
 
 from pipeline.execution.step_config import step_config
+from pipeline.execution.pause_controller import PauseController
 
 from graph.schema.graph_nodes import CodeNode, Module
-from system.env_catalog import ENV
-from llm.client.usage.cost_budget import BudgetExceededError
-from llm.client.llm_fanout import gather_with_warmup, partition_llm_results
-from pipeline.data_models.code_analysis_output import ModuleSummaryOutput
-from llm.client.runners.yaml_llm_runner import run_yaml_rule
-from log.logger import log_error, log_info, log_warning
-from log.processing_progress import step_processing_scope, track_processing
+from analyzer_settings import SETTINGS
+from llm.usage.cost_budget import BudgetExceededError
+from llm.llm_fanout import gather_with_warmup, partition_llm_results
+from pipeline.models.code_analysis_output import ModuleSummaryOutput
+from llm.runners.yaml_llm_runner import run_yaml_rule
+from runtime_events.runtime_logger import log_error, log_info, log_warning
+from runtime_events.processing_events import step_processing_scope, track_processing
 from graph.neo4j_client import Neo4jClient
 from graph.nodes.module import upsert_modules
 from pipeline.execution.graph_delta_stream import emit_nodes
@@ -41,6 +42,7 @@ async def summarize_module_step(state: dict, config: Optional[RunnableConfig] = 
     cost_budget = cfg.get("cost_budget")
     neo: Neo4jClient | None = cfg.get("neo_client")
     stream = cfg.get("stream")
+    pause: PauseController = cfg.get("pause") or PauseController()
     if strategy is None:
         log_warning(_STEP, "config_missing", "strategy 누락 — step skip")
         return {}
@@ -52,14 +54,14 @@ async def summarize_module_step(state: dict, config: Optional[RunnableConfig] = 
         return {}
     started = time.monotonic()
     log_info(_STEP, "start", modules=len(modules), code_nodes=len(code_nodes),
-             concurrency=ENV.pipeline.max_concurrency)
+             concurrency=SETTINGS.analysis_pipeline.max_concurrency)
 
     # CodeNode → Module 매칭 (file_path + line range)
     fn_by_module = _match_code_to_modules(code_nodes, modules)
 
     prompts_dir = Path(strategy.prompts_dir)
     # 병렬 그룹 공유 세마포어 (executor 주입) — 없으면 단독 생성(순차 실행 시 동일).
-    semaphore = cfg.get("llm_semaphore") or asyncio.Semaphore(ENV.pipeline.max_concurrency)
+    semaphore = cfg.get("llm_semaphore") or asyncio.Semaphore(SETTINGS.analysis_pipeline.max_concurrency)
 
     async def _summarize_one(module: Module) -> Module:
         """성공 시 새 module / 실패 시 raise (BudgetExceededError 또는 LLM 예외).
@@ -98,16 +100,19 @@ async def summarize_module_step(state: dict, config: Optional[RunnableConfig] = 
 
     # 첫 모듈 1건으로 prefix 캐시 워밍 → 나머지 병렬. fail 정책 = 개별 모듈 LLM 실패 시
     # 로그 + 원본 module 반환 (분석 흐름 유지). BudgetExceededError 만 즉시 전파.
-    with step_processing_scope(_STEP, stream):
-        results = await gather_with_warmup(
+    async def _run_fanout() -> list:
+        return await gather_with_warmup(
             [_summarize_one(m) for m in modules], return_exceptions=True,
         )
+
+    with step_processing_scope(_STEP, stream):
+        results = await pause.run_restartable_during_pause(_run_fanout)
     updated = _apply_fail_policy(modules, results)
 
     if neo is not None:
         await upsert_modules(neo, updated)
     # 모듈 stereotype(FILE→Service 등)을 라이브 발신 — labels[1:]에 역할 실어 프론트 즉시 반영(spec 034).
-    emit_nodes(stream, updated)
+    await emit_nodes(stream, updated)
     summarized = sum(1 for m in updated if getattr(m, "summary", None))
     log_info(
         _STEP, "done",

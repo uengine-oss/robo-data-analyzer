@@ -16,19 +16,15 @@ table_access_patterns:
   - id: shopmall_sql_insert
     call_regex: '(?P<op_token>INSERT)(?:\s|"\s*)+INTO(?:\s|"\s*)+(?P<entity>[A-Za-z_][A-Za-z0-9_]*)'
     op_mappings: [{token: INSERT, op: INSERT}]
-    entity_source: sql_literal
   - id: shopmall_sql_update
     call_regex: '(?P<op_token>UPDATE)(?:\s|"\s*)+(?P<entity>[A-Za-z_][A-Za-z0-9_]*)(?:\s|"\s*)+SET'
     op_mappings: [{token: UPDATE, op: UPDATE}]
-    entity_source: sql_literal
   - id: shopmall_sql_delete
     call_regex: '(?P<op_token>DELETE)(?:\s|"\s*)+FROM(?:\s|"\s*)+(?P<entity>[A-Za-z_][A-Za-z0-9_]*)'
     op_mappings: [{token: DELETE, op: DELETE}]
-    entity_source: sql_literal
   - id: shopmall_sql_select
     call_regex: '(?P<op_token>FROM)(?:\s|"\s*)+(?P<entity>[A-Za-z_][A-Za-z0-9_]*)'
     op_mappings: [{token: FROM, op: SELECT}]
-    entity_source: sql_literal
 ddl_transform:
   ddl_naming_rule: as_is
   fallback_prefixes: []

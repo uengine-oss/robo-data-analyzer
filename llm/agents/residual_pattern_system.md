@@ -89,7 +89,7 @@
 | `notes` | 관찰한 공통점·의심 패턴 자유 서술 (사람 검토용) |
 
 `table_access_patterns` 의 각 항목: `id`, `call_regex`(명명 그룹 `<entity>`+`<op_token>`),
-`op_mappings`(token→표준 SQL op list), `entity_source`.
+`op_mappings`(token→표준 SQL op list).
 
 `op_mappings` 의 각 항목은 `token`/`op` 두 필드. `op` 는 **반드시 4가지 중 하나**:
 SELECT / INSERT / UPDATE / DELETE. READ / WRITE 같은 값 금지 — READ/WRITE 는 코드가

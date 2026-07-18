@@ -18,7 +18,7 @@ from typing import Iterable, Optional
 
 from graph.schema import graph_edges as ge
 from graph.schema import graph_nodes as gn
-from log.ndjson_stream import NDJSONStream
+from runtime_events.ndjson_event_stream import NDJSONStream
 from graph.schema import rel_types as rt
 from graph.node_upsert import nonempty
 
@@ -29,12 +29,16 @@ _FIXED_NODE_LABEL: dict[type, str] = {
     gn.Column: "COLUMN",
     gn.Package: "PACKAGE",
     gn.Schema: "SCHEMA",
+    gn.Rule: "RULE",
+    gn.Example: "EXAMPLE",
+    gn.Question: "QUESTION",
 }
 
 # 프론트 표시에 쓰는 속성만 emit (caption·트리 라벨). 빈값은 nonempty가 제거.
 _DISPLAY_PROP_KEYS = (
     "name", "logical_name", "signature", "summary", "stereotype",
     "file_path", "start_line", "end_line", "owner_id", "dtype",
+    "statement", "given", "when", "then", "text", "reason",
 )
 
 # 관계 dataclass → (rel_type, from 필드, to 필드). ReadsWrites는 relation 필드가 동적 → 별도.
@@ -42,12 +46,20 @@ _EDGE_SPEC: dict[type, tuple[str, str, str]] = {
     ge.HasColumn:  (rt.HAS_COLUMN, "parent_id", "child_id"),
     ge.BelongsTo:  (rt.BELONGS_TO, "child_id", "parent_id"),
     ge.Fk:         (rt.FK,         "from_id", "to_id"),
-    ge.Calls:      (rt.CALLS,      "caller_id", "callee_id"),
     ge.ParentOf:   (rt.PARENT_OF,  "parent_id", "child_id"),
     ge.HasMember:  (rt.HAS_MEMBER, "parent_id", "child_id"),
+    ge.StatementNext: (rt.NEXT,    "prev_id", "next_id"),
     ge.References: (rt.REFERENCES, "source_id", "target_id"),
     ge.InitBy:     (rt.INIT_BY,    "from_id", "source_id"),
+    ge.HasRule:    (rt.HAS_RULE,   "source_id", "target_id"),
+    ge.HasExample: (rt.HAS_EXAMPLE, "source_id", "target_id"),
+    ge.HasQuestion: (rt.HAS_QUESTION, "source_id", "target_id"),
+    ge.AffectsTable: (rt.AFFECTS_TABLE, "source_id", "target_id"),
 }
+
+
+class GraphDeltaContractError(ValueError):
+    """저장 그래프를 라이브 이벤트로 동형 변환할 수 없을 때 발생한다."""
 
 
 def _node_label(node) -> Optional[str]:
@@ -72,18 +84,44 @@ def _node_props(node) -> dict:
 
 
 def _edge_wire(edge) -> Optional[tuple[str, str, str, dict]]:
-    """엣지 → (rel_type, from_id, to_id, props). 미등록 종류면 None."""
+    """엣지 → (rel_type, from_id, to_id, props). 미등록 종류는 조용히 누락하지 않는다."""
     if type(edge) is ge.ReadsWrites:
         return (edge.relation, edge.source_id, edge.target_id,
-                nonempty({"dml_type": edge.dml_type}))
+                nonempty({
+                    "dml_type": edge.dml_type,
+                    "evidence_file": edge.evidence_file,
+                    "evidence_line": edge.evidence_line,
+                }))
+    if type(edge) is ge.Calls:
+        raise GraphDeltaContractError(
+            "CALLS must use graph.edges.calls.emit_calls so recursion intent and external stub IDs are preserved"
+        )
     spec = _EDGE_SPEC.get(type(edge))
     if spec is None:
-        return None
+        raise GraphDeltaContractError(f"unsupported graph edge type: {type(edge).__name__}")
     rel_type, from_attr, to_attr = spec
-    return (rel_type, getattr(edge, from_attr, ""), getattr(edge, to_attr, ""), {})
+    if type(edge) is ge.Fk:
+        props = {
+            "from_column": edge.from_column,
+            "to_column": edge.to_column,
+            "fk_type": edge.fk_type,
+            "is_candidate": edge.is_candidate,
+        }
+    elif type(edge) is ge.References:
+        props = {"evidence_line": edge.evidence_line}
+    elif type(edge) is ge.AffectsTable:
+        props = {"op": edge.op}
+    else:
+        props = {}
+    return (
+        rel_type,
+        getattr(edge, from_attr, ""),
+        getattr(edge, to_attr, ""),
+        nonempty(props),
+    )
 
 
-def emit_nodes(stream: Optional[NDJSONStream], nodes: Iterable) -> int:
+async def emit_nodes(stream: Optional[NDJSONStream], nodes: Iterable) -> int:
     """노드 델타 → node_event. emit한 개수 반환(message 요약용)."""
     if stream is None:
         return 0
@@ -93,7 +131,7 @@ def emit_nodes(stream: Optional[NDJSONStream], nodes: Iterable) -> int:
         nid = getattr(node, "id", None)
         if not label or not nid:
             continue
-        stream.emit({
+        await stream.emit_async({
             "type": "node_event", "op": "merge",
             # label = 단일 타입(back-compat=labels[0]). labels = 전체 라벨(타입+stereotype)
             # → 프론트가 역할을 라이브로 받는다(spec 034).
@@ -103,19 +141,19 @@ def emit_nodes(stream: Optional[NDJSONStream], nodes: Iterable) -> int:
     return count
 
 
-def emit_edges(stream: Optional[NDJSONStream], edges: Iterable) -> int:
+async def emit_edges(stream: Optional[NDJSONStream], edges: Iterable) -> int:
     """관계 델타 → relationship_event. emit한 개수 반환."""
     if stream is None:
         return 0
     count = 0
     for edge in edges:
         wire = _edge_wire(edge)
-        if wire is None:
-            continue
         rel_type, from_id, to_id, props = wire
         if not from_id or not to_id:
-            continue
-        stream.emit({
+            raise GraphDeltaContractError(
+                f"{type(edge).__name__} has an empty endpoint: from={from_id!r}, to={to_id!r}"
+            )
+        await stream.emit_async({
             "type": "relationship_event", "op": "merge", "rel_type": rel_type,
             "from": {"id": from_id}, "to": {"id": to_id}, "props": props,
         })

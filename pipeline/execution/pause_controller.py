@@ -7,17 +7,21 @@ control 엔드포인트(다른 asyncio task)가 신호를 set 하고, run 태스
 일시정지 순간 진행 중인 LLM 함수 분석 task 는 ``request_pause`` 가 **즉시 cancel** 한다.
 재개하면 호출자가 미완료분을 재투입 — 함수 분석은 Neo4j MERGE/SET 이라 재실행이 안전.
 
-게이트는 단 두 곳:
+게이트 위치:
 - step 경계 (executor 의 astream 소비 루프) — 모든 step 공통 hold 지점.
-- step6 라운드 루프 — 멀티-아워 무거운 경로의 즉시-취소 hold 지점.
+- step2 파일·연결·저장·스트림 배치 경계 — AST 적재 중 cooperative hold 지점.
+- step6/7 라운드·fan-out — 멀티-아워 무거운 경로의 즉시-취소 hold 지점.
 """
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
+from typing import Any, Awaitable, Callable, Optional, TypeVar
 
-from log.logger import log_info
-from log.ndjson_stream import NDJSONStream
+from runtime_events.runtime_logger import log_info
+from runtime_events.ndjson_event_stream import NDJSONStream
+
+
+T = TypeVar("T")
 
 
 class RunStopped(Exception):
@@ -34,6 +38,7 @@ class PauseController:
         self._paused = False
         self._stopped = False
         self._inflight: list[asyncio.Task] = []   # 취소 대상 in-flight task (라운드마다 갱신)
+        self._controller_cancelled_tasks: set[asyncio.Task] = set()
 
     # ── 엔드포인트가 부르는 신호 (set) ─────────────────────────────
     def request_pause(self) -> None:
@@ -72,11 +77,56 @@ class PauseController:
     def clear_inflight(self) -> None:
         self._inflight = []
 
+    async def cancel_and_wait(self, tasks: list[asyncio.Task[Any]]) -> list[Any]:
+        """등록 해제 후 미완료 task를 취소하고 모든 종료·예외를 수거한다.
+
+        pause/stop이 이미 ``_cancel_inflight``를 호출했어도 로컬 task 목록으로 await하므로
+        coroutine ``finally``가 끝나기 전에 재투입이나 run 종료로 넘어가지 않는다.
+        """
+        self.clear_inflight()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for task in tasks:
+            self._controller_cancelled_tasks.discard(task)
+        return results
+
+    async def run_restartable_during_pause(
+        self,
+        operation: Callable[[], Awaitable[T]],
+    ) -> T:
+        """pause/stop이 취소한 단일 작업만 resume 후 재시도한다.
+
+        상위 task·클라이언트 연결 종료가 일으킨 외부 cancellation은 재시도로 위장하지 않고
+        그대로 전파한다. 각 시도는 cancellation ``finally``까지 수거한다.
+        """
+        while True:
+            await self.gate()
+            task = asyncio.create_task(operation())
+            self.set_inflight([task])
+            controller_cancelled = False
+            try:
+                return await task
+            except asyncio.CancelledError:
+                controller_cancelled = task in self._controller_cancelled_tasks
+                if not controller_cancelled:
+                    raise
+            finally:
+                await self.cancel_and_wait([task])
+            # pause면 gate에서 resume를 기다리고, stop이면 RunStopped를 발생시킨다.
+            if controller_cancelled:
+                continue
+
     async def gate(self) -> None:
         """안전 지점에서 호출 — stopped 면 ``RunStopped`` raise, paused 면 resume 까지 hold.
 
         paused 진입/해제 시 NDJSON ``phase_event`` 한 줄(paused/resumed) emit.
         """
+        # 상태 확인 전에 반드시 event loop에 제어권을 넘긴다. 호출자가 동기 CPU/파일
+        # 배치 사이에서 gate를 호출해도 control HTTP task가 pause/stop을 먼저 기록할
+        # 기회를 얻어야 이 메서드가 실제 cooperative checkpoint가 된다.
+        await asyncio.sleep(0)
         if self._stopped:
             raise RunStopped()
         if self._paused:
@@ -90,6 +140,7 @@ class PauseController:
     def _cancel_inflight(self) -> None:
         for task in self._inflight:
             if not task.done():
+                self._controller_cancelled_tasks.add(task)
                 task.cancel()
         self._inflight = []
 

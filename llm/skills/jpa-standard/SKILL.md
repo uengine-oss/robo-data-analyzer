@@ -26,7 +26,6 @@ table_access_patterns:
       - {token: update, op: UPDATE}
       - {token: exists, op: SELECT}
       - {token: count,  op: SELECT}
-    entity_source: repository_name_prefix    # "UserRepository" → "User"
 
 ddl_transform:
   ddl_naming_rule: camel_to_snake_upper      # User → USER, OrderItem → ORDER_ITEM

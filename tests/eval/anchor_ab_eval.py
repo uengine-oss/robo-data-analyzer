@@ -15,17 +15,17 @@ sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
 _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))
 
-from search.search_config import DEFAULT
+from search.config import DEFAULT
 from search.corpus.corpus import load_corpus
 from tests.eval.gate_eval import load_items
 from search.corpus.neo4j_reader import read_driver
 from search.ranking.retriever import Retriever
-from system.env_catalog import ENV
+from analyzer_settings import SETTINGS
 from graph.connection_context import Neo4jOverride, set_override
 
 
 def run_db(db: str, pool_k: int, wanted_ids: set[str] | None, evidence_top_n: int) -> dict:
-    set_override(Neo4jOverride(ENV.neo4j.uri, ENV.neo4j.user, ENV.neo4j.password, db))
+    set_override(Neo4jOverride(SETTINGS.graph_database.uri, SETTINGS.graph_database.user, SETTINGS.graph_database.password, db))
     corpus = load_corpus()
     drv, dbn = read_driver()
     legacy_cfg = replace(DEFAULT, cluster_selection_mode="legacy")

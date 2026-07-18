@@ -23,9 +23,9 @@ from langchain.tools import tool
 
 from llm.agents.path_boundary import PathOutsideRoot, resolve_within
 from graph.schema.graph_nodes import CodeNode
+from llm.agents.skill_catalog import SKILLS_DIR, SkillCatalogError, build_skill_catalog
 
 # llm/skills/ 경로
-SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
 
 # 결과 최대 개수 (Plan §4 M2)
 _MAX_FUNCTIONS = 50
@@ -95,24 +95,7 @@ def list_skills() -> str:
       직접 정규식 작성 신호.
     - 후보 여러 개라도 가장 확실한 1개만 `read_skill` 로 본문 가져옴.
     """
-    if not SKILLS_DIR.is_dir():
-        return "NO_SKILLS_DIR"
-    skills: list[str] = []
-    for sub in sorted(SKILLS_DIR.iterdir()):
-        if not sub.is_dir():
-            continue
-        if sub.name.startswith("_"):
-            continue  # _templates 같은 메타 폴더 제외
-        md = sub / "SKILL.md"
-        if not md.exists():
-            continue
-        try:
-            first_line = md.read_text(encoding="utf-8").splitlines()[0]
-        except (OSError, IndexError):
-            first_line = ""
-        first_line = first_line.lstrip("# ").strip()
-        skills.append(f"{sub.name}: {first_line}")
-    return "\n".join(skills) if skills else "NO_SKILLS"
+    return build_skill_catalog()
 
 
 @tool

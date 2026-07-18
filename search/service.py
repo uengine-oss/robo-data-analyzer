@@ -6,21 +6,28 @@ sync — 호출측(async)이 to_thread 로 격리한다.
 """
 from __future__ import annotations
 
-from search.search_config import DEFAULT
+from dataclasses import replace
+
+from search.config import DEFAULT
 from search.corpus.corpus import load_corpus
 from search.corpus.neo4j_reader import read_driver
 from search.ranking.retriever import Retriever
 
 
-def run_search(query: str, on_progress=None) -> tuple[list[dict], dict]:
+def run_search(
+    query: str, on_progress=None, *, top_n: int | None = None,
+) -> tuple[list[dict], dict]:
     """요구사항 1건 검색 → (clusters, meta). SearchUnavailable 은 호출측이 표면화."""
+    if top_n is not None and not 1 <= top_n <= 100:
+        raise ValueError(f"top_n must be between 1 and 100: {top_n!r}")
+    cfg = replace(DEFAULT, cluster_top_n=top_n) if top_n is not None else DEFAULT
     corpus = load_corpus()
     meta: dict = {}
     drv, db = read_driver()
     try:
         with drv.session(database=db) as session:
             nodes = Retriever(session, corpus).retrieve(
-                query, DEFAULT, on_progress=on_progress, meta=meta)
+                query, cfg, on_progress=on_progress, meta=meta)
     finally:
         drv.close()
 

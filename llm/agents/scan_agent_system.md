@@ -156,7 +156,7 @@ table-access 정규식과 프레임워크 함수 목록을 `ScanResult` 에 **�
 | `no_match_reason` | SKILL 매칭 X 또는 정규식 미산출 시 사유. 정상이면 null |
 
 `table_access_patterns` 의 각 항목: `id`, `call_regex`(명명 그룹 `<entity>`+`<op_token>`),
-`op_mappings`(token→표준 SQL op list), `entity_source`.
+`op_mappings`(token→표준 SQL op list).
 
 `op_mappings` 의 각 항목은 `token`/`op` 두 필드. `op` 는 **반드시 4가지 중 하나**:
 SELECT / INSERT / UPDATE / DELETE. READ / WRITE / CREATE 같은 값 금지 — READ/WRITE 는

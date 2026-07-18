@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from search.search_config import Config
+from search.config import Config
 from search.ranking.retriever import Retriever
 
 

@@ -16,11 +16,11 @@ from langchain_core.runnables import RunnableConfig
 
 from pipeline.execution.step_config import step_config
 
-from pipeline.steps.step2_load_ast.antlr_json_reader import ast_and_source_roots, read_antlr_json
-from pipeline.steps.step2_load_ast.reference_linker import link_references
-from log.logger import log_error, log_info, log_warning
+from pipeline.steps.step2_load_ast.dispatch import ast_and_source_roots, read_antlr_json
+from pipeline.steps.step2_load_ast.token_matcher import link_references
+from runtime_events.runtime_logger import log_error, log_info, log_warning
 from pipeline.steps.step2_load_ast.node_identity_registry import NodeIdentityCollision, canonicalize_node_lists
-from pipeline.source_file_cache import SourceFileCache
+from source.file_cache import SourceFileCache
 from graph.edges.belongs_to import upsert_belongs_to
 from graph.edges.has_member import upsert_has_member
 from graph.edges.init_by import upsert_init_by
@@ -35,6 +35,7 @@ from graph.nodes.module import upsert_modules
 from graph.nodes.package import upsert_packages
 from graph.nodes.variable import upsert_variables
 from pipeline.execution.graph_delta_stream import emit_edges, emit_message, emit_nodes
+from pipeline.execution.pause_controller import NULL_PAUSE, PauseController
 
 _STEP = "step2.load_ast"
 
@@ -110,6 +111,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
     cfg = step_config(config)
     project = cfg.get("codebase")
     neo: Neo4jClient | None = cfg.get("neo_client")
+    pause: PauseController = cfg.get("pause") or NULL_PAUSE
     if project is None:
         log_warning(_STEP, "config_missing", "project 누락 — step skip")
         return {}
@@ -132,6 +134,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
     has_member, belongs_to, statement_next = [], [], []
     call_sites, import_refs = [], []
     parsed_files = 0
+    await pause.gate()
     for json_path in sorted(ast_dir.rglob("*.json")):
         if not json_path.is_file():
             continue
@@ -149,7 +152,9 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         call_sites.extend(result.call_sites)
         import_refs.extend(result.import_refs)
         parsed_files += 1
+        await pause.gate()
 
+    await pause.gate()
     try:
         canonical, collapsed_node_observations = canonicalize_node_lists(
             code_nodes, modules, packages, variables, constants, data_types,
@@ -169,6 +174,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
             count=collapsed_node_observations,
         )
 
+    await pause.gate()
     # run 스코프 공유 캐시 (executor 주입) — 없으면 단독 생성(CLI/테스트 경로). FR-008.
     # ★ reference_linker 와 **같은 인스턴스**를 쓴다 — 종전엔 둘이 각자 캐시를 만들어
     #   step2 안에서만 같은 파일을 두 번 읽었다.
@@ -176,10 +182,12 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
 
     # REFERENCES / INIT_BY — 전 파일 노드가 모인 뒤 결정론 식별자 매칭.
     # import_refs 를 넘겨 모듈 너머 참조까지 (계획 §2.8 Pass 2).
-    references, init_by = link_references(
+    references, init_by = await link_references(
         code_nodes, variables, constants, import_refs, source_cache,
+        checkpoint=pause.gate,
     )
 
+    await pause.gate()
     # 원문 코드 — **파일·라인이 있는 모든 노드**에 붙이는 단일 지점. 노드 종류로 분기하지 않는다.
     # (루틴뿐 아니라 선언 노드 DEFINE/STRUCT/GLOBAL_VARIABLE/MEMBER 도 자기 원문을 갖는다 —
     #  노드 패널이 "이 코드에서 도출됐다"를 보여주는 근거.)
@@ -204,27 +212,47 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
             upsert_constants(neo, constants),
             upsert_data_types(neo, data_types),
         )
+        await pause.gate()
         await upsert_parent_of(neo, parent_of)
+        await pause.gate()
         await upsert_has_member(neo, has_member)
+        await pause.gate()
         await upsert_belongs_to(neo, belongs_to)
+        await pause.gate()
         await upsert_statement_next(neo, statement_next)
+        await pause.gate()
         await upsert_references(neo, references)
+        await pause.gate()
         await upsert_init_by(neo, init_by)
+        await pause.gate()
 
-    # 라이브 스트림 — 코드 구조 골격을 step 완료 즉시 화면으로. NEXT(statement_next)는
-    # 프론트 비표시 종류라 제외(REFERENCES/INIT_BY는 보내되 프론트 정책이 표시 결정).
+    # 라이브 스트림 — 저장 그래프와 같은 골격을 발신한다. NEXT를 포함한 기본 숨김 여부는
+    # 생산 단계에서 누락하지 않고 프론트의 단일 가시성 정책이 결정한다.
     stream = cfg.get("stream")
-    emit_nodes(stream, code_nodes)
-    emit_nodes(stream, modules)
-    emit_nodes(stream, packages)
-    emit_nodes(stream, variables)
-    emit_nodes(stream, constants)
-    emit_nodes(stream, data_types)
-    emit_edges(stream, parent_of)
-    emit_edges(stream, has_member)
-    emit_edges(stream, belongs_to)
-    emit_edges(stream, references)
-    emit_edges(stream, init_by)
+    await emit_nodes(stream, code_nodes)
+    await pause.gate()
+    await emit_nodes(stream, modules)
+    await pause.gate()
+    await emit_nodes(stream, packages)
+    await pause.gate()
+    await emit_nodes(stream, variables)
+    await pause.gate()
+    await emit_nodes(stream, constants)
+    await pause.gate()
+    await emit_nodes(stream, data_types)
+    await pause.gate()
+    await emit_edges(stream, parent_of)
+    await pause.gate()
+    await emit_edges(stream, has_member)
+    await pause.gate()
+    await emit_edges(stream, belongs_to)
+    await pause.gate()
+    await emit_edges(stream, statement_next)
+    await pause.gate()
+    await emit_edges(stream, references)
+    await pause.gate()
+    await emit_edges(stream, init_by)
+    await pause.gate()
     emit_message(
         stream,
         f"✅ 코드 구조 적재 완료 — 노드 {len(code_nodes)}, 소속·부모 {len(has_member) + len(parent_of)}",

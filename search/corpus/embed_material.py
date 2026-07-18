@@ -9,6 +9,8 @@
 """
 from __future__ import annotations
 
+from graph.ownership import ANALYZER_GRAPH_OWNER
+
 # 임베딩·검색 공용 식별자 (생성=embed_step / 조회=search/ranking/recall — 단일 진실).
 EMBEDDED_LABEL = "EMBEDDED"              # 코드노드 검색벡터 보유 마커 (labels[1:], 역할 아님)
 EMBED_META_LABEL = "EMBED_META"          # 임베딩 지문 메타노드 (검색이 질의 임베더와 대조)
@@ -16,11 +18,12 @@ VECTOR_INDEX_NAME = "embedded_code_vec"  # (:EMBEDDED).embedding 벡터 인덱�
 
 # 임베딩 대상 = 요약을 가진 코드노드. 컨테이너(FILE/MODULE/PACKAGE)는 로직이 아니라 제외.
 # 테이블 관계는 노드 속성이 아니라 엣지라 여기서 함께 걷어 온다.
-FETCH_MATERIAL = """
+FETCH_MATERIAL = f"""
 MATCH (n)
-WHERE n.summary IS NOT NULL AND n.summary <> ''
+WHERE n.graph_owner = '{ANALYZER_GRAPH_OWNER}'
+  AND n.summary IS NOT NULL AND n.summary <> ''
   AND NOT n:FILE AND NOT n:MODULE AND NOT n:PACKAGE
-OPTIONAL MATCH (n)-[rw:READS|WRITES|AFFECTS_TABLE]->(t:TABLE)
+OPTIONAL MATCH (n)-[rw:READS|WRITES|AFFECTS_TABLE]->(t:TABLE {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 WITH n, collect(DISTINCT type(rw) + ':' + coalesce(t.name, '')) AS rels
 RETURN n.id AS id,
        coalesce(n.type, head(labels(n))) AS label,

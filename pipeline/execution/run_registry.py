@@ -8,21 +8,20 @@ from __future__ import annotations
 
 from typing import Optional
 
-from log.logger import log_warning
 from pipeline.execution.pause_controller import PauseController
 
 _active: Optional[tuple[str, PauseController]] = None
 
 
+class ConcurrentAnalysisRunError(RuntimeError):
+    """단일 활성 분석 슬롯이 이미 사용 중이다."""
+
+
 def set_active(run_id: str, controller: PauseController) -> None:
     global _active
-    if _active is not None and _active[0] != run_id:
-        log_warning(
-            "run.registry",
-            "active_overwritten",
-            "직전 활성 run 이 정리되기 전 새 run 시작 — 슬롯 덮어씀",
-            previous=_active[0],
-            new=run_id,
+    if _active is not None:
+        raise ConcurrentAnalysisRunError(
+            f"분석 run이 이미 활성 상태입니다: {_active[0]}"
         )
     _active = (run_id, controller)
 

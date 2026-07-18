@@ -15,15 +15,15 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Optional
 
-from pipeline.data_models.code_analysis_output import ModulePreAnalysisOutput
+from pipeline.models.code_analysis_output import ModulePreAnalysisOutput
 from graph.schema.graph_nodes import CodeNode, Module
-from system.env_catalog import ENV
-from llm.client.usage.cost_budget import BudgetExceededError, CostBudget
-from llm.client.llm_fanout import gather_with_warmup
-from llm.client.runners.yaml_llm_runner import run_yaml_rule
-from log.logger import log_error, log_info
-from log.ndjson_stream import NDJSONStream
-from log.processing_progress import step_processing_scope, track_processing
+from analyzer_settings import SETTINGS
+from llm.usage.cost_budget import BudgetExceededError, CostBudget
+from llm.llm_fanout import gather_with_warmup
+from llm.runners.yaml_llm_runner import run_yaml_rule
+from runtime_events.runtime_logger import log_error, log_info
+from runtime_events.ndjson_event_stream import NDJSONStream
+from runtime_events.processing_events import step_processing_scope, track_processing
 
 _STEP = "step6.module_pre_analysis"
 _RULE = "module_pre_analysis"
@@ -63,9 +63,9 @@ async def run_module_pre_analysis(
         log_info(_STEP, "skip", reason="no header/signatures", modules=len(modules))
         return {}
 
-    log_info(_STEP, "start", modules=len(targets), concurrency=ENV.pipeline.max_concurrency)
+    log_info(_STEP, "start", modules=len(targets), concurrency=SETTINGS.analysis_pipeline.max_concurrency)
 
-    semaphore = asyncio.Semaphore(ENV.pipeline.max_concurrency)
+    semaphore = asyncio.Semaphore(SETTINGS.analysis_pipeline.max_concurrency)
     with step_processing_scope(_STEP, stream):
         results = await gather_with_warmup(
             (

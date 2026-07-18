@@ -17,14 +17,18 @@ from graph.schema.graph_edges import Calls
 from graph.neo4j_client import Neo4jClient
 from graph.schema.rel_types import BELONGS_TO, CALLS, HAS_MEMBER
 from graph.schema.node_ids import child_id, external_id
-from graph.node_upsert import ANALYZER_GRAPH_OWNER
+from graph.ownership import ANALYZER_GRAPH_OWNER
+
+
+class CallRelationshipInvariantError(ValueError):
+    """CALLS 끝점과 생산자가 확인한 재귀 의도가 서로 일치하지 않는다."""
 
 
 # internal — 콜리 정의 노드가 이미 존재 → MATCH 로 연결 (없으면 자연 제외).
 INTERNAL_QUERY = f"""
 UNWIND $items AS item
-MATCH (caller {{id: item.caller_id}})
-MATCH (callee {{id: item.callee_id}})
+MATCH (caller {{id: item.caller_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (callee {{id: item.callee_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 MERGE (caller)-[r:{CALLS}]->(callee)
 SET r.scope = item.scope,
     r.recursive = item.recursive
@@ -37,23 +41,24 @@ SET r.scope = item.scope,
 #   (분석 범위 밖) — 실제 파싱한 그릇만 정체대로(FILE/CLASS), 외부 stub 은 중립 합성 라벨.
 EXTERNAL_QUERY = f"""
 UNWIND $items AS item
-MATCH (caller {{id: item.caller_id}})
-MERGE (callee:FUNCTION:EXTERNAL {{id: item.callee_id}})
+MATCH (caller {{id: item.caller_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MERGE (callee:FUNCTION:EXTERNAL {{id: item.callee_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
   SET callee.name = coalesce(callee.name, item.callee_name),
       callee.type = coalesce(callee.type, 'FUNCTION'),
       callee.graph_owner = '{ANALYZER_GRAPH_OWNER}'
-MERGE (m:MODULE:EXTERNAL {{id: item.callee_module}})
+MERGE (m:MODULE:EXTERNAL {{id: item.callee_module, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
   SET m.name = coalesce(m.name, item.callee_name),
       m.type = coalesce(m.type, 'MODULE'),
       m.graph_owner = '{ANALYZER_GRAPH_OWNER}'
 MERGE (m)-[:{HAS_MEMBER}]->(callee)
 FOREACH (_ IN CASE WHEN item.callee_package <> '' THEN [1] ELSE [] END |
-  MERGE (p:PACKAGE {{id: item.callee_package}})
+  MERGE (p:PACKAGE {{id: item.callee_package, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
   SET p.graph_owner = '{ANALYZER_GRAPH_OWNER}'
   MERGE (m)-[:{BELONGS_TO}]->(p)
 )
 MERGE (caller)-[r:{CALLS}]->(callee)
-SET r.scope = item.scope
+SET r.scope = item.scope,
+    r.recursive = item.recursive
 """
 
 
@@ -67,11 +72,17 @@ def _split_calls(edges: Iterable[Calls]) -> tuple[list[dict], list[dict]]:
     internal, external = [], []
     for e in edges:
         if e.scope == "internal":
+            endpoints_are_identical = e.caller_id == e.callee_id
+            if endpoints_are_identical != e.recursive:
+                raise CallRelationshipInvariantError(
+                    "internal CALLS recursion intent does not match its endpoints: "
+                    f"caller={e.caller_id!r} callee={e.callee_id!r} recursive={e.recursive!r}"
+                )
             internal.append({
                 "caller_id": e.caller_id,
                 "callee_id": e.callee_id,
                 "scope": e.scope,
-                "recursive": e.caller_id == e.callee_id,
+                "recursive": e.recursive,
             })
         elif e.scope == "external":
             module_name = e.callee_module or e.callee_id
@@ -86,7 +97,12 @@ def _split_calls(edges: Iterable[Calls]) -> tuple[list[dict], list[dict]]:
                 "callee_package": package_id,
                 "callee_name": name,
                 "scope": e.scope,
+                "recursive": e.recursive,
             })
+        else:
+            raise CallRelationshipInvariantError(
+                f"unknown CALLS scope at storage boundary: {e.scope!r}"
+            )
     return internal, external
 
 
@@ -99,7 +115,7 @@ async def upsert_calls(client: Neo4jClient, edges: Iterable[Calls]) -> None:
         await client.run_batch_unwind(EXTERNAL_QUERY, external)
 
 
-def emit_calls(stream, edges: Iterable[Calls]) -> None:
+async def emit_calls(stream, edges: Iterable[Calls]) -> None:
     """CALLS 라이브 발신 — 저장(upsert_calls)과 **같은 그래프**를 스트림으로(_split_calls 공유 = 드리프트 0).
 
     internal=CALLS 엣지. external=stub 노드(:FUNCTION:EXTERNAL / :MODULE:EXTERNAL) + HAS_MEMBER +
@@ -110,23 +126,24 @@ def emit_calls(stream, edges: Iterable[Calls]) -> None:
         return
     internal, external = _split_calls(list(edges))
     for it in internal:
-        stream.emit({
+        await stream.emit_async({
             "type": "relationship_event", "op": "merge", "rel_type": CALLS,
             "from": {"id": it["caller_id"]}, "to": {"id": it["callee_id"]},
-            "props": {"recursive": it["recursive"]},
+            "props": {"scope": it["scope"], "recursive": it["recursive"]},
         })
     for it in external:
         cid, mid, pkg, nm = it["callee_id"], it["callee_module"], it["callee_package"], it["callee_name"]
-        stream.emit({"type": "node_event", "op": "merge", "label": "FUNCTION",
+        await stream.emit_async({"type": "node_event", "op": "merge", "label": "FUNCTION",
                      "labels": ["FUNCTION", "EXTERNAL"], "id": cid, "props": {"name": nm}})
-        stream.emit({"type": "node_event", "op": "merge", "label": "MODULE",
+        await stream.emit_async({"type": "node_event", "op": "merge", "label": "MODULE",
                      "labels": ["MODULE", "EXTERNAL"], "id": mid, "props": {"name": nm}})
-        stream.emit({"type": "relationship_event", "op": "merge", "rel_type": HAS_MEMBER,
+        await stream.emit_async({"type": "relationship_event", "op": "merge", "rel_type": HAS_MEMBER,
                      "from": {"id": mid}, "to": {"id": cid}, "props": {}})
         if pkg:
-            stream.emit({"type": "node_event", "op": "merge", "label": "PACKAGE",
+            await stream.emit_async({"type": "node_event", "op": "merge", "label": "PACKAGE",
                          "labels": ["PACKAGE"], "id": pkg, "props": {}})
-            stream.emit({"type": "relationship_event", "op": "merge", "rel_type": BELONGS_TO,
+            await stream.emit_async({"type": "relationship_event", "op": "merge", "rel_type": BELONGS_TO,
                          "from": {"id": mid}, "to": {"id": pkg}, "props": {}})
-        stream.emit({"type": "relationship_event", "op": "merge", "rel_type": CALLS,
-                     "from": {"id": it["caller_id"]}, "to": {"id": cid}, "props": {}})
+        await stream.emit_async({"type": "relationship_event", "op": "merge", "rel_type": CALLS,
+                     "from": {"id": it["caller_id"]}, "to": {"id": cid},
+                     "props": {"scope": it["scope"], "recursive": it["recursive"]}})

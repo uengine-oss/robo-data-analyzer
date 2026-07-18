@@ -2,8 +2,8 @@
 
 > **Backfilled** on 2026-06-15 by reverse-engineering the existing codebase using the
 > [GitHub Spec Kit](https://github.com/github/spec-kit) format. Each `spec.md` was derived
-> from the actual implementation (LangGraph step functions, agents, Neo4j writers, env
-> catalog) — **not** from a prior design doc. Endpoint paths, Neo4j labels, env vars, and
+> from the actual implementation (LangGraph step functions, agents, Neo4j writers, SETTINGS
+> catalog) — **not** from a prior design doc. Endpoint paths, Neo4j labels, SETTINGS vars, and
 > pipeline behaviors are grounded in code, and several README/docstring claims were
 > **corrected against the code** during backfill (see "Discrepancies" below).
 
@@ -74,7 +74,7 @@ when changed (see [constitution](../.specify/memory/constitution.md) → Cross-S
 
 Each spec was produced by: (1) identifying a coherent unit of capability (a pipeline phase or
 a cross-cutting concern) rather than splitting by file; (2) reading the real step functions,
-agents, Neo4j writers, and `env_catalog.py`; (3) writing WHAT/WHY language — prioritized user
+agents, Neo4j writers, and `analyzer_settings.py`; (3) writing WHAT/WHY language — prioritized user
 stories, observable functional requirements, real Neo4j entities, measurable
 technology-agnostic success criteria, and the assumptions baked into the implementation.
 
@@ -91,7 +91,7 @@ The backfill found several stale docs/comments; specs follow the **code**, not t
   it can be fewer than 20 (README says a flat "top 20").
 - **013** — 과거 `llm_configs/README.md` import snippet은 폐기됐으며, 현재 구성 로더는
   `llm/client/llm_config_loader.py`이다.
-- **007** — README's `_RESIDUAL_MAX_ROUNDS` shorthand is the env var `ROBO_PIPELINE_RESIDUAL_MAX_ROUNDS`.
+- **007** — README's `_RESIDUAL_MAX_ROUNDS` shorthand is the SETTINGS var `ROBO_PIPELINE_RESIDUAL_MAX_ROUNDS`.
 
 Specs are intentionally short (~100-165 lines each) — they describe the contract, not the code.
 </content>

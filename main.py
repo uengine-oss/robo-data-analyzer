@@ -2,7 +2,7 @@
 
 Usage::
 
-    uvicorn main:app --host 0.0.0.0 --port 5502
+    uvicorn main:app --host 0.0.0.0 --port 15502
 
 또는 직접::
 
@@ -50,4 +50,4 @@ async def health() -> dict:
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=5502)
+    uvicorn.run(app, host="0.0.0.0", port=15502)

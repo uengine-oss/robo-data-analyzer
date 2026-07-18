@@ -27,21 +27,22 @@ from llm import LLM_PACKAGE_DIR
 from llm.agents.agent_output import ScanResult
 from llm.agents.code_inspection import (
     SKILLS_DIR,
+    build_skill_catalog,
     list_skills,
     make_list_code_nodes,
     read_skill,
 )
 from llm.agents.filesystem_tools import make_filesystem_tools
-from pipeline.steps.step3_scan_project.scan_verify_tool import make_verify_table_regex_tool
-from pipeline.steps.step4_linking.stage1_regex_grep.regex_table_linker import (
+from pipeline.steps.step4_linking.link_tables.scan_verify_tool import make_verify_table_regex_tool
+from pipeline.steps.step4_linking.link_tables.regex_table_linker import (
     PatternVerdict,
     verify_table_patterns,
 )
 from graph.schema.graph_nodes import CodeNode, Table
-from system.env_catalog import ENV
-from llm.client.usage.cost_budget import CostBudget
-from llm.client.runners.structured_agent import run_structured_agent
-from log.logger import log_info, log_warning
+from analyzer_settings import SETTINGS
+from llm.usage.cost_budget import CostBudget
+from llm.runners.structured_agent import run_structured_agent
+from runtime_events.runtime_logger import log_info, log_warning
 
 _STEP = "step3.scan"
 
@@ -82,7 +83,7 @@ async def run_scan_agent(
     Args:
         project_root: 분석 대상 디렉토리.
         scanner_input: 사전 수집 단서 (extensions_count / manifest_content / scanner_categories).
-        run_dir: ``logs/analysis.run/latest/`` 경로.
+        run_dir: ``run-output/analysis/latest/`` 경로.
         cost_budget: run 1회의 ``CostBudget``.
         code_nodes: step2(load_ast)가 파싱한 CodeNode 목록.
         tables: step1(parse_ddl)의 DDL 테이블 — 정규식 검증 기준.
@@ -129,7 +130,7 @@ async def _run_agent(
         tools=_build_scan_tools(project_root, code_nodes, tables),
         response_format=ScanResult,
         user_message=_build_user_message(project_root, scanner_input, tables),
-        max_calls=ENV.agent.scan_max_calls,
+        max_calls=SETTINGS.analysis_agents.scan_max_calls,
         run_dir=run_dir,
         cost_budget=cost_budget,
         stream_emit=stream_emit,
@@ -201,7 +202,11 @@ def _apply_verdict(
     if verdict.ok:
         log_info(_STEP, "patterns_verified", result=verdict.summary)
         # confidence = 테이블 해소율(측정값). 검증 자체는 통과했으므로 최소 0.5.
-        return max(0.5, round(verdict.resolved_ratio, 2)), no_match_reason
+        # A single regex site can legitimately yield multiple semantic R/W edges,
+        # so ``edges / matched_sites`` is a coverage score, not a probability.
+        # ScanResult's public contract is a bounded confidence value.
+        confidence = min(1.0, max(0.5, round(verdict.resolved_ratio, 2)))
+        return confidence, no_match_reason
 
     # 검증 실패 — 정규식이 소스/DDL 과 안 맞음. 표면화.
     log_warning(
@@ -247,18 +252,5 @@ def _build_user_message(project_root: Path, scanner: dict, tables: list[Table]) 
 
 def _list_skills_brief() -> str:
     """``llm/skills/`` 의 SKILL.md 첫 줄만 직렬화해 후보 판단에 제공한다."""
-    if not SKILLS_DIR.is_dir():
-        return "(no skills)"
-    items: list[str] = []
-    for sub in sorted(SKILLS_DIR.iterdir()):
-        if not sub.is_dir() or sub.name.startswith("_"):
-            continue
-        md = sub / "SKILL.md"
-        if not md.exists():
-            continue
-        try:
-            first_line = md.read_text(encoding="utf-8").splitlines()[0].lstrip("# ").strip()
-        except (OSError, IndexError):
-            first_line = ""
-        items.append(f"- {sub.name}: {first_line}")
-    return "\n".join(items) if items else "(no skills)"
+    catalog = build_skill_catalog(SKILLS_DIR, prefix="- ")
+    return "(no skills)" if catalog in {"NO_SKILLS_DIR", "NO_SKILLS"} else catalog

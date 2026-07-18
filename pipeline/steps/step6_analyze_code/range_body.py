@@ -17,9 +17,9 @@ Framework 코드노드는 평면(자식 없음) — ``body_for`` 가 raw 본문 
 from __future__ import annotations
 
 from pipeline.steps.step5_build_context.large_code_one_liner import estimate_tokens
-from pipeline.data_models.analysis_context import AnalysisContext
-from system.env_catalog import ENV
-from pipeline.source_file_cache import SourceFileCache
+from pipeline.models.analysis_context import AnalysisContext
+from analyzer_settings import SETTINGS
+from source.file_cache import SourceFileCache
 
 _CHILD_MARK = "    ...."
 
@@ -135,7 +135,7 @@ def body_for(
     단일 원리(모든 분할 공통): 요약 치환은 손실 압축이라 예산 초과(거대 컨테이너)에서만
     쓴다. 중소 부모까지 원문 승격 → 값 집합·매핑·보정 로직이 전달 게임 없이 직달.
     """
-    if ctx.extra.get("child_ids") and ctx.token_count > ENV.pipeline.batch_max_tokens:
+    if ctx.extra.get("child_ids") and ctx.token_count > SETTINGS.analysis_pipeline.batch_max_tokens:
         return compact_body(ctx, contexts, cache)
     return _raw_body(ctx, cache)
 
@@ -148,7 +148,7 @@ def ancestor_context(
     조상 skeleton 이 토큰 임계 초과 시 그 조상의 ``one_liner`` 로 대체
     (one_liner 는 build_context_step 이 큰 코드노드에 대해 이미 산출 — 추가 LLM 0).
     """
-    threshold = ENV.pipeline.big_context_threshold_tokens
+    threshold = SETTINGS.analysis_pipeline.big_context_threshold_tokens
     chain: list[str] = []
     seen: set[str] = set()
     pid = ctx.extra.get("parent_id")

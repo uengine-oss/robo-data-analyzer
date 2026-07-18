@@ -31,12 +31,12 @@ from search.corpus.embed_material import (
     VECTOR_INDEX_NAME,
     compose_embed_text,
 )
-from system.env_catalog import ENV
-from llm.client import embedder
-from log.logger import log_info, log_warning
-from log.processing_progress import emit_processing_event, step_processing_scope
+from analyzer_settings import SETTINGS
+from llm import embedder
+from runtime_events.runtime_logger import log_info, log_warning
+from runtime_events.processing_events import emit_processing_event, step_processing_scope
 from graph.neo4j_client import Neo4jClient
-from graph.node_upsert import ANALYZER_GRAPH_OWNER
+from graph.ownership import ANALYZER_GRAPH_OWNER
 from pipeline.execution.step_config import step_config
 
 
@@ -50,7 +50,7 @@ _AWAIT_INDEX_TIMEOUT = 300
 
 async def embed_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
     """코드노드(강화텍스트)·Table/Column(description) → 벡터 → Neo4j + 코드노드 :EMBEDDED·인덱스·지문."""
-    if not ENV.pipeline.embed_enabled:
+    if not SETTINGS.analysis_pipeline.embed_enabled:
         log_info(_STEP, "skip", reason="임베딩 비활성화 (ROBO_PIPELINE_EMBED_ENABLED=false)")
         return {}
 
@@ -133,7 +133,7 @@ def _embedded_code_query() -> str:
     """코드노드 벡터 SET + ``:EMBEDDED`` 마커. id 무라벨 매치(코드 라벨은 antlr 열린집합)."""
     return (
         "UNWIND $items AS item "
-        "MATCH (n {id: item.id}) "
+        f"MATCH (n {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}}) "
         f"SET n.embedding = item.vector, n:{EMBEDDED_LABEL}"
     )
 
@@ -143,8 +143,8 @@ def _embedded_code_query() -> str:
 def _metadata_upsert_query() -> str:
     """임베딩 인덱스 지문도 Analyzer 소유권 경계를 따른다."""
     return (
-        f"MERGE (m:{EMBED_META_LABEL}) "
-        f"SET m.fingerprint = $fp, m.dim = $dim, m.graph_owner = '{ANALYZER_GRAPH_OWNER}'"
+        f"MERGE (m:{EMBED_META_LABEL} {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}}) "
+        "SET m.fingerprint = $fp, m.dim = $dim"
     )
 
 async def _ensure_vector_index(neo: Neo4jClient, code_updates: list[dict]) -> None:
@@ -203,7 +203,7 @@ def _embedding_query(label: str, key: str) -> str:
     """``embedding`` property SET UNWIND 쿼리(Table/Column — 마커 없음)."""
     return (
         f"UNWIND $items AS item "
-        f"MATCH (n:{label} {{{key}: item.{key}}}) "
+        f"MATCH (n:{label} {{{key}: item.{key}, graph_owner: '{ANALYZER_GRAPH_OWNER}'}}) "
         f"SET n.embedding = item.vector"
     )
 

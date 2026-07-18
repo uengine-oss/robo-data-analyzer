@@ -51,13 +51,11 @@ table_access_patterns:
       - {token: i, op: INSERT}
       - {token: u, op: UPDATE}
       - {token: d, op: DELETE}
-    entity_source: first_arg_string
 
   - id: proframe_mpfmdbio_seq          # 시퀀스 채번 wrapper — 본 테이블 READ 로 단일화
     call_regex: 'mpfmdbio\s*\(\s*"(?P<entity>[A-Za-z0-9_]+?)_s_(?P<op_token>[siud])\d{4}"'
     op_mappings:
       - {token: s, op: SELECT}        # 시퀀스 호출은 항상 SELECT (코드가 READ 로 자동 매핑)
-    entity_source: first_arg_string
 
 ddl_transform:
   ddl_naming_rule: as_is        # entity 가 이미 DDL 테이블명 형식

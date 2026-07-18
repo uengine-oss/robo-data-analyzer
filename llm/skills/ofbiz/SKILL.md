@@ -25,7 +25,6 @@ table_access_patterns:
       - {token: store,             op: UPDATE}   # ofbiz store = update if PK exists
       - {token: remove,            op: DELETE}
       - {token: removeAll,         op: DELETE}
-    entity_source: first_arg_string
 
 ddl_transform:
   ddl_naming_rule: camel_to_snake_upper      # entitymodel 의 entity-name → table-name 변환

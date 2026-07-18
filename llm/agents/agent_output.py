@@ -8,7 +8,13 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class StrictAgentOutput(BaseModel):
+    """에이전트가 계약 밖 필드를 조용히 흘리지 못하게 하는 공통 출력 경계."""
+
+    model_config = ConfigDict(extra="forbid")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -22,7 +28,7 @@ from pydantic import BaseModel, Field
 # 그래서 탐색/결정을 쪼개지 않고 단일 에이전트로 둔다.
 
 
-class OpMapping(BaseModel):
+class OpMapping(StrictAgentOutput):
     """한 프레임워크 raw 매치 토큰 → 표준 SQL op 매핑 1행.
 
     R/W 분류는 코드가 자동 결정한다 (SELECT=READ, INSERT/UPDATE/DELETE=WRITE).
@@ -63,7 +69,7 @@ class OpMapping(BaseModel):
     )
 
 
-class TableAccessPattern(BaseModel):
+class TableAccessPattern(StrictAgentOutput):
     """코드노드 → 테이블 접근 정규식 매칭 패턴 (Linking 1 단계 결정론 grep 용).
 
     ``call_regex`` 의 named group:
@@ -76,12 +82,11 @@ class TableAccessPattern(BaseModel):
     id: str = Field(..., description="패턴 식별자 (예: 'ofbiz_delegator')")
     call_regex: str = Field(..., description="named group <op_token> + <entity> 포함")
     op_mappings: list[OpMapping] = Field(...)
-    entity_source: str = Field(..., description="entity 추출 위치 (예: 'first_arg_string')")
 
 
-class DdlTransform(BaseModel):
+class DdlTransform(StrictAgentOutput):
     """엔티티 이름 → DDL 테이블 이름 변환 규칙."""
-    ddl_naming_rule: str = Field(
+    ddl_naming_rule: Literal["as_is", "camel_to_snake_upper", "snake_to_camel"] = Field(
         ..., description="예: 'as_is' / 'camel_to_snake_upper' / 'snake_to_camel'"
     )
     fallback_prefixes: list[str] = Field(default_factory=list)
@@ -102,7 +107,7 @@ class DdlTransform(BaseModel):
 # - 리플렉션 호출 (메서드 이름 / 모듈 이름)
 
 
-class CallWrapper(BaseModel):
+class CallWrapper(StrictAgentOutput):
     """호출 wrapper 명시 — wrapper 이름 + 인자 추출 위치.
 
     SKILL 의 ``ScanResult contract.call_wrappers``를 **그대로 옮겨 담는다** (matched
@@ -121,7 +126,7 @@ class CallWrapper(BaseModel):
             "인자가 진짜 호출 대상이라 별도 분류."
         ),
     )
-    callee_from: str = Field(
+    callee_from: Literal["first_arg_string", "first_arg_identifier"] = Field(
         "first_arg_string",
         description=(
             "호출 대상을 어디서 뽑을지 — SKILL 의 ``callee_from`` 값 그대로. "
@@ -131,7 +136,7 @@ class CallWrapper(BaseModel):
     )
 
 
-class ScanResult(BaseModel):
+class ScanResult(StrictAgentOutput):
     """Scan Agent 1회 invoke 의 최종 출력."""
     matched_skill: Optional[str] = Field(None, description="매칭된 SKILL 이름 또는 null")
     confidence: float = Field(..., ge=0.0, le=1.0)
@@ -182,7 +187,7 @@ class ScanResult(BaseModel):
 # 라운드에서 에이전트가 발견한 패턴이다.
 
 
-class ResidualPatternResult(BaseModel):
+class ResidualPatternResult(StrictAgentOutput):
     """잔여 패턴 루프 — 에이전트 1라운드의 출력.
 
     잔여 미해결 테이블 케이스 샘플에서 발견한 공통 접근 패턴. ``ScanResult`` 와

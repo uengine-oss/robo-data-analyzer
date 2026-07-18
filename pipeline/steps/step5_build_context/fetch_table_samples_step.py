@@ -6,7 +6,7 @@ catalog ``sample-context`` 로 테이블별 샘플행을 한 번에 받아 ``tab
 
 가드 (즉시 skip — graceful):
 - ``ROBO_CATALOG_ENABLED=false`` (토글 off)              → ``catalog_base_url_or_skip`` None.
-- ``codebase.datasource`` 미지정                          → 운영=AnalyzeRequest / 테스트=ENV.catalog.test_datasource.
+- ``codebase.datasource`` 미지정                          → 운영=AnalyzeRequest / 테스트=SETTINGS.catalog_api.test_datasource.
 - ``tables`` 없음.
 
 성능: 전 테이블을 청크(100)로 나눠 **병렬 호출** (catalog 내부 Semaphore 로 DB 동시쿼리 상한).
@@ -23,10 +23,10 @@ from langchain_core.runnables import RunnableConfig
 
 from pipeline.execution.step_config import step_config
 
-from pipeline.catalog_client import catalog_base_url_or_skip, post_sample_context
-from system.env_catalog import ENV
-from log.logger import log_info, log_warning
-from log.processing_progress import step_processing_scope
+from external.catalog import catalog_base_url_or_skip, post_sample_context
+from analyzer_settings import SETTINGS
+from runtime_events.runtime_logger import log_info, log_warning
+from runtime_events.processing_events import step_processing_scope
 
 _STEP = "step5.fetch_table_samples"
 _CHUNK = 100       # 테이블명 한 요청 당 최대 — 거대 응답/타임아웃 회피
@@ -45,7 +45,7 @@ async def fetch_table_samples_step(state: dict, config: Optional[RunnableConfig]
     datasource = getattr(codebase, "datasource", None)
     if not datasource:
         log_info(_STEP, "skip",
-                 reason="datasource 미지정 (운영=AnalyzeRequest / 테스트=ENV.catalog.test_datasource)")
+                 reason="datasource 미지정 (운영=AnalyzeRequest / 테스트=SETTINGS.catalog_api.test_datasource)")
         return {}
 
     table_fqns = [t.id for t in state.get("tables", []) if getattr(t, "id", None)]
@@ -57,7 +57,7 @@ async def fetch_table_samples_step(state: dict, config: Optional[RunnableConfig]
     chunks = [table_fqns[i:i + _CHUNK] for i in range(0, len(table_fqns), _CHUNK)]
     log_info(_STEP, "start", datasource=datasource, tables=len(table_fqns), chunks=len(chunks))
 
-    async with httpx.AsyncClient(timeout=ENV.catalog.timeout_seconds) as http:
+    async with httpx.AsyncClient(timeout=SETTINGS.catalog_api.timeout_seconds) as http:
         with step_processing_scope(_STEP, stream):
             results = await asyncio.gather(
                 *[post_sample_context(http, base_url, datasource, c, sample_limit=_SAMPLE_LIMIT)

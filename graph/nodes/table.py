@@ -11,13 +11,14 @@ from typing import Iterable
 
 from graph.schema.graph_nodes import Table
 from graph.neo4j_client import Neo4jClient
-from graph.node_upsert import ANALYZER_GRAPH_OWNER, nonempty
+from graph.ownership import ANALYZER_GRAPH_OWNER
+from graph.node_upsert import nonempty
 
 
 # id 단일 식별 (schema_constraints.py 의 UNIQUE 제약과 통일) — 값 = "db.schema.name"
 MERGE_QUERY = f"""
 UNWIND $items AS item
-MERGE (t:TABLE {{id: item.id}})
+MERGE (t:TABLE {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 SET t.db = item.db,
     t.schema = item.schema,
     t.name = item.name,
@@ -34,9 +35,9 @@ RETURN count(t) AS created
 # description_source: DDL description 이 비어 있으면 'code'(소스코드 분석값이 유효 설명),
 # 있으면 유지. 옛 'source' 값을 'code' 로 명명 변경 — db prefix "source" 와 단어 충돌
 # 회피 + "어디서 왔는지" 의미를 더 명확히 (ddl / code / catalog).
-SET_ANALYZED_QUERY = """
+SET_ANALYZED_QUERY = f"""
 UNWIND $items AS item
-MATCH (t:TABLE {id: item.id})
+MATCH (t:TABLE {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 SET t.analyzed_description = item.analyzed_description,
     t.logical_name = CASE WHEN coalesce(item.logical_name, '') <> ''
                           THEN item.logical_name ELSE t.logical_name END,
@@ -81,5 +82,7 @@ async def update_analyzed_descriptions(client: Neo4jClient, updates: list[dict])
     await client.run_batch_unwind(SET_ANALYZED_QUERY, updates)
     ids = [u["id"] for u in updates]
     rows = await client.run_read_query(
-        "MATCH (t:TABLE) WHERE t.id IN $ids RETURN count(t) AS matched", {"ids": ids})
+        "MATCH (t:TABLE {graph_owner: $graph_owner}) WHERE t.id IN $ids "
+        "RETURN count(t) AS matched",
+        {"ids": ids, "graph_owner": ANALYZER_GRAPH_OWNER})
     return int(rows[0]["matched"]) if rows else 0

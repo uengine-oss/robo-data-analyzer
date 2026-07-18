@@ -17,18 +17,22 @@ REMOVED_RUNTIME_ROOTS = (
     "prompts",
     "shared",
     "skills",
+    "system",
+    "log",
+    "logs",
+    "deploy",
 )
 
 
 class RefactorContractTest(unittest.TestCase):
-    def test_default_data_dir_survives_env_catalog_move(self) -> None:
-        from system.env_catalog import _DEFAULT_DATA_DIR
+    def test_default_data_dir_survives_analyzer_settings_move(self) -> None:
+        from analyzer_settings import _DEFAULT_DATA_DIR
 
         self.assertEqual((REPO.parent / "data").resolve(), _DEFAULT_DATA_DIR.resolve())
 
     def test_pipeline_llm_asset_paths_survive_moves(self) -> None:
         from pipeline.steps.step3_scan_project.scan_agent import _SYSTEM_PROMPT_PATH
-        from pipeline.steps.step4_linking.stage3_residual_patterns.residual_pattern_loop import (
+        from pipeline.steps.step4_linking.link_tables.residual_pattern_loop import (
             _RESIDUAL_PROMPT_PATH,
         )
         from pipeline.steps.step5_build_context.large_code_one_liner import _PROMPTS_COMMON
@@ -85,6 +89,46 @@ class RefactorContractTest(unittest.TestCase):
         current = {path for path in listed if path and (REPO / path).is_file()}
         missing = sorted(current - covered)
         self.assertEqual([], missing, f"unaudited new files: {missing[:10]}")
+
+    def test_every_audit_row_has_a_final_verdict(self) -> None:
+        with (SPEC / "audit-ledger.tsv").open(encoding="utf-8", newline="") as stream:
+            rows = list(csv.DictReader(stream, delimiter="\t"))
+        baseline_paths = [row["baseline_path"] for row in rows]
+        self.assertEqual(
+            len(baseline_paths),
+            len(set(baseline_paths)),
+            "audit ledger contains duplicate baseline_path rows",
+        )
+        allowed = {"fixed", "deleted", "no-violation"}
+        invalid = [
+            (row["baseline_path"], row["verdict"])
+            for row in rows
+            if row["verdict"] not in allowed
+        ]
+        self.assertEqual([], invalid, f"non-final audit verdicts: {invalid[:10]}")
+
+    def test_move_map_resolves_each_declared_path(self) -> None:
+        with (SPEC / "move-map.tsv").open(encoding="utf-8", newline="") as stream:
+            rows = list(csv.DictReader(stream, delimiter="\t"))
+        old_paths = [row["old_path"] for row in rows]
+        self.assertEqual(len(old_paths), len(set(old_paths)), "move map contains duplicate old_path rows")
+        allowed_actions = {"keep", "move", "delete", "delete-empty"}
+        invalid_actions = [
+            (row["old_path"], row["action"])
+            for row in rows
+            if row["action"] not in allowed_actions
+        ]
+        self.assertEqual([], invalid_actions, f"invalid move actions: {invalid_actions[:10]}")
+        for row in rows:
+            with self.subTest(old_path=row["old_path"], action=row["action"]):
+                old_exists = (REPO / row["old_path"]).exists()
+                if row["action"] == "keep":
+                    self.assertTrue(old_exists)
+                    self.assertEqual(row["old_path"], row["final_path"])
+                else:
+                    self.assertFalse(old_exists)
+                if row["action"] == "move":
+                    self.assertTrue((REPO / row["final_path"]).is_file())
 
     @unittest.skipIf(
         any((REPO / name).exists() for name in REMOVED_RUNTIME_ROOTS),

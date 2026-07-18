@@ -15,11 +15,11 @@ from pydantic import BaseModel, Field
 
 from graph.schema.graph_nodes import CodeNode
 from llm import LLM_PACKAGE_DIR
-from system.env_catalog import ENV
-from llm.client.usage.cost_budget import BudgetExceededError, CostBudget
-from llm.client.llm_config_loader import load_llm_config
-from llm.client.runners.yaml_llm_runner import run_yaml_rule
-from log.logger import log_error
+from analyzer_settings import SETTINGS
+from llm.usage.cost_budget import BudgetExceededError, CostBudget
+from llm.llm_config_loader import load_llm_config
+from llm.runners.yaml_llm_runner import run_yaml_rule
+from runtime_events.runtime_logger import log_error
 
 
 class LargeCodeOneLiner(BaseModel):
@@ -49,11 +49,11 @@ async def compute_one_liner(
         압축 결과 또는 None (임계 미만 또는 LLM 호출 실패).
     """
     token_count = estimate_tokens(body_text)
-    if token_count < ENV.pipeline.big_context_threshold_tokens:
+    if token_count < SETTINGS.analysis_pipeline.big_context_threshold_tokens:
         return None
 
     # 작은 모델 결정 — llm_config 의 model_small 필드 (빈 값이면 model 사용)
-    small_model = load_llm_config(ENV.llm.config).resolve_small_model()
+    small_model = load_llm_config(SETTINGS.analysis_llm.config).resolve_small_model()
 
     try:
         result: LargeCodeOneLiner = await run_yaml_rule(

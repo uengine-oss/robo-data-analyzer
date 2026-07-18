@@ -9,6 +9,7 @@ from typing import Iterable
 
 from graph.schema.graph_edges import ReadsWrites
 from graph.neo4j_client import Neo4jClient
+from graph.ownership import ANALYZER_GRAPH_OWNER
 from graph.schema.rel_types import READS, WRITES
 
 
@@ -16,8 +17,8 @@ from graph.schema.rel_types import READS, WRITES
 # 두 쿼리로 분리해서 호출.
 READS_QUERY = f"""
 UNWIND $items AS item
-MATCH (node {{id: item.source_id}})
-MATCH (t:TABLE {{id: item.target_id}})
+MATCH (node {{id: item.source_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (t:TABLE {{id: item.target_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 MERGE (node)-[r:{READS}]->(t)
 SET r.dml_type = item.dml_type,
     r.evidence_file = item.evidence_file,
@@ -26,8 +27,8 @@ SET r.dml_type = item.dml_type,
 
 WRITES_QUERY = f"""
 UNWIND $items AS item
-MATCH (node {{id: item.source_id}})
-MATCH (t:TABLE {{id: item.target_id}})
+MATCH (node {{id: item.source_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (t:TABLE {{id: item.target_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 MERGE (node)-[r:{WRITES}]->(t)
 SET r.dml_type = item.dml_type,
     r.evidence_file = item.evidence_file,

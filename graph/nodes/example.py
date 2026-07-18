@@ -9,11 +9,11 @@ from typing import Iterable
 
 from graph.schema.graph_nodes import Example
 from graph.neo4j_client import Neo4jClient
-from graph.node_upsert import ANALYZER_GRAPH_OWNER
+from graph.ownership import ANALYZER_GRAPH_OWNER
 
 _UPSERT_QUERY = f"""
 UNWIND $items AS item
-MERGE (e:EXAMPLE {{id: item.id}})
+MERGE (e:EXAMPLE {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 SET e.given = item.given,
     e.when_ = item.when_,
     e.then_ = item.then_,

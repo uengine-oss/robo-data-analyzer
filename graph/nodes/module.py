@@ -41,6 +41,7 @@ async def upsert_modules(client: Neo4jClient, modules: Iterable[Module]) -> None
 
     옛 ``:MODULE`` 폐기 — 소비처는 그릇을 타입 집합{FILE,CLASS,…}으로 식별(navigator).
     """
-    await upsert_by_node_label(client, modules, to_item)
+    module_list = list(modules)
+    await upsert_by_node_label(client, module_list, to_item)
     # stereotype 을 라벨로도 부여(spec 033) — 속성 유지(무중단). summarize_module 이 채운 값.
-    await apply_stereotype_labels(client, [(m.id, m.stereotype or "") for m in modules])
+    await apply_stereotype_labels(client, [(m.id, m.stereotype or "") for m in module_list])

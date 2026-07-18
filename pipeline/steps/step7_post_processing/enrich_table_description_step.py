@@ -21,14 +21,15 @@ from typing import Optional
 from langchain_core.runnables import RunnableConfig
 
 from pipeline.execution.step_config import step_config
+from pipeline.execution.pause_controller import PauseController
 
-from system.env_catalog import ENV
-from llm.client.usage.cost_budget import BudgetExceededError
-from llm.client.llm_fanout import gather_with_warmup, partition_llm_results
-from pipeline.data_models.code_analysis_output import TableDescription
-from llm.client.runners.yaml_llm_runner import run_yaml_rule
-from log.logger import log_error, log_info, log_warning
-from log.processing_progress import step_processing_scope, track_processing
+from analyzer_settings import SETTINGS
+from llm.usage.cost_budget import BudgetExceededError
+from llm.llm_fanout import gather_with_warmup, partition_llm_results
+from pipeline.models.code_analysis_output import TableDescription
+from llm.runners.yaml_llm_runner import run_yaml_rule
+from runtime_events.runtime_logger import log_error, log_info, log_warning
+from runtime_events.processing_events import step_processing_scope, track_processing
 from graph.neo4j_client import Neo4jClient
 from graph.nodes.column import update_analyzed_descriptions as update_column_analyzed
 from graph.nodes.table import update_analyzed_descriptions as update_table_analyzed
@@ -43,6 +44,7 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
     cost_budget = cfg.get("cost_budget")
     neo: Neo4jClient | None = cfg.get("neo_client")
     stream = cfg.get("stream")
+    pause: PauseController = cfg.get("pause") or PauseController()
     if strategy is None:
         log_warning(_STEP, "config_missing", "strategy 누락 — step skip")
         return {}
@@ -91,7 +93,7 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
     )
     prompts_dir = Path(strategy.prompts_dir)
     # 병렬 그룹 공유 세마포어 (executor 주입) — 없으면 단독 생성(순차 실행 시 동일).
-    semaphore = cfg.get("llm_semaphore") or asyncio.Semaphore(ENV.pipeline.max_concurrency)
+    semaphore = cfg.get("llm_semaphore") or asyncio.Semaphore(SETTINGS.analysis_pipeline.max_concurrency)
 
     async def _summarize_one(table_fqn: str, candidates: list[dict]) -> TableDescription:
         """성공 시 TableDescription / 실패 시 raise. fail 정책은 메인이 책임 (단일 책임)."""
@@ -111,11 +113,14 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
     # 첫 테이블 1건으로 prefix 캐시 워밍 → 나머지 병렬. fail 정책 = 개별 테이블 LLM 실패 시
     # 로그 + 결과 drop (분석 흐름 유지). BudgetExceededError 만 즉시 전파.
     table_fqns = list(table_candidates.keys())
-    with step_processing_scope(_STEP, stream):
-        raw_results = await gather_with_warmup(
+    async def _run_fanout() -> list:
+        return await gather_with_warmup(
             [_summarize_one(t, table_candidates[t]) for t in table_fqns],
             return_exceptions=True,
         )
+
+    with step_processing_scope(_STEP, stream):
+        raw_results = await pause.run_restartable_during_pause(_run_fanout)
     results = _apply_table_fail_policy(table_fqns, raw_results)
 
     # 분석 합성 설명/논리명 → 노드에 SET. ★id = 원본 table_fqn(= 노드 id, 결정론) 직접 사용.

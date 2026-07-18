@@ -1,6 +1,8 @@
 ## code_summary_batch — 배치 노드별 summary + stereotype + logical_name + search_text + domain_terms
 extends: _common
 max_tokens: 8000
+shared_values:
+  summary_contract: ../_shared/summary_contract.md
 user_template_specific: |
   # [이 분할 고유 지침]
 
@@ -13,7 +15,7 @@ user_template_specific: |
   1. 해당 노드 body만 한 번 읽는다.
   2. `search_text` 1~2문장을 쓴다.
   3. `domain_terms`를 0~10개 쓴 뒤 배열을 닫는다.
-  4. `logical_name`, `summary`, `stereotype`을 각각 한 번 쓰고 다음 노드로 이동한다.
+  4. `logical_name`, 한 문장 `summary`, `stereotype`을 각각 한 번 쓰고 다음 노드로 이동한다.
   5. 완료한 노드로 돌아가 항목·문장을 추가하거나 반복하지 않는다.
 
   ## search_text
@@ -42,7 +44,7 @@ user_template_specific: |
   금지:
 
   - 변수·프로시저·상수·테이블·물리 컬럼명과 그 번역
-  - 해당 노드 body에 있더라도 상태·쿠폰·이벤트·채널 등의 조회 키인 영문/숫자 코드값과
+  - 해당 노드 body에 있더라도 상태·유형 등의 조회 키인 영문/숫자 코드값과
     열거 리터럴. 코드가 가리키는 이름 붙은 업무 개념이 body에 별도로 쓰였을 때만 그 업무
     명칭을 후보로 삼고, 식별용 값 자체는 쓰지 않는다.
   - SQL/프로그래밍 용어와 기술 리턴·버퍼·길이
@@ -63,19 +65,18 @@ user_template_specific: |
     `ENC`, `HEX`, `TMP`, `BUF`처럼 인코딩·표현형식·임시값·버퍼를 나타내는 기술 표식도
     제외한다. 대문자 약어는 원문이 외부 시스템·공식 규격·이름 붙은 업무 등급/분류라고
     명시할 때만 예외적으로 허용한다.
-  - `가용재고`, `정산대상`처럼 원문에 그대로 있고 현업 검색에 쓰이는 완전한 업무 명사는
-    더 일반적인 `재고`, `정산`보다 우선한다.
+  - 원문에 그대로 있고 검색에 쓰이는 완전한 업무 명사는 더 일반적인 부분 문자열보다 우선한다.
   - 노드 배열을 닫기 직전 ASCII 대문자 전용 항목마다 공식 명칭 예외의 원문 근거를 다시
     확인하고, 입증하지 못한 기술 표식은 삭제한다.
 
   ### 올바른 예시
 
-  노드 주석과 문자열에 `SK-VAN`과 `부분취소`만 실제로 있으면:
+  노드 주석과 문자열에 공식 외부망명과 업무상태명이 실제로 있으면:
 
   ```json
   [
-    {"term":"SK-VAN","meaning":"카드 승인 요청을 중계하는 결제망"},
-    {"term":"부분취소","meaning":"결제 금액 일부만 취소하는 처리"}
+    {"term":"<원문의 외부망명>","meaning":"<원문이 밝힌 뜻>"},
+    {"term":"<원문의 업무상태명>","meaning":"<원문이 밝힌 뜻>"}
   ]
   ```
 
@@ -89,10 +90,10 @@ user_template_specific: |
 
   ```json
   [
-    {"term":"PG사 정산 대조 결과","meaning":"..."},
-    {"term":"PG사 정산 대조 결과 상세","meaning":"..."},
-    {"term":"PG사 정산 대조 결과 상세 코드","meaning":"..."},
-    {"term":"PG사 정산 대조 결과 상세 메시지","meaning":"..."}
+    {"term":"업무 결과","meaning":"..."},
+    {"term":"업무 결과 상세","meaning":"..."},
+    {"term":"업무 결과 상세 코드","meaning":"..."},
+    {"term":"업무 결과 상세 메시지","meaning":"..."}
   ]
   ```
 
@@ -107,7 +108,7 @@ user_template_specific: |
   ## logical_name / summary / stereotype
 
   - `logical_name`: 형제와 구별되는 업무 표시명 한 줄, 권장 22자 전후 체언형. 반복 금지.
-  - `summary`: 노드가 판단·변경·반환하는 내용을 1~3줄. 세부 규칙 나열·반복 금지.
+  {summary_contract}
   - `stereotype`: 아래 허용값 하나만 사용.
 
   `ApplicationService`, `DomainService`, `Repository`, `Factory`, `Command`, `Query`,

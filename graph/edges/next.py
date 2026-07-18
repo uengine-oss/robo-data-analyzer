@@ -9,13 +9,14 @@ from typing import Iterable
 
 from graph.schema.graph_edges import StatementNext
 from graph.neo4j_client import Neo4jClient
+from graph.ownership import ANALYZER_GRAPH_OWNER
 from graph.schema.rel_types import NEXT
 
 
 MERGE_QUERY = f"""
 UNWIND $items AS item
-MATCH (prev {{id: item.prev_id}})
-MATCH (next {{id: item.next_id}})
+MATCH (prev {{id: item.prev_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (next {{id: item.next_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 MERGE (prev)-[:{NEXT}]->(next)
 """
 

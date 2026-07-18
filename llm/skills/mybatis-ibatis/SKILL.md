@@ -25,7 +25,6 @@ table_access_patterns:
       - {token: insert,     op: INSERT}
       - {token: update,     op: UPDATE}
       - {token: delete,     op: DELETE}
-    entity_source: first_arg_string
 
   - id: mybatis_mapper_call
     call_regex: '(\w+Mapper)\.(?P<op_token>select|find|insert|update|delete|count)\w*\s*\('
@@ -36,7 +35,6 @@ table_access_patterns:
       - {token: update, op: UPDATE}
       - {token: delete, op: DELETE}
       - {token: count,  op: SELECT}
-    entity_source: mapper_name_prefix
 
 ddl_transform:
   ddl_naming_rule: camel_to_snake_upper

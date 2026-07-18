@@ -132,6 +132,7 @@ class Calls:
     callee_module: str = ""                  # external 콜리의 모듈 id (DBMS=프로시저명 / FW=클래스)
     callee_package: str = ""                 # external 콜리의 패키지 id — 스키마(DBMS) / 패키지(FW)
     callee_name: str = ""                    # external 콜리 표시명
+    recursive: bool = False                  # 원문 호출이 자기 루틴을 직접 지목했을 때만 True
 
 
 @dataclass(frozen=True)
@@ -210,13 +211,9 @@ class InitBy:
 
 @dataclass(frozen=True)
 class HasRule:
-    """CodeNode → Rule. Rule 노드는 코드노드 간 공유되므로 per-function 정보(coupled_domains)는 이 엣지 속성.
-
-    정체성 = (source_id, target_id).
-    """
+    """CodeNode → Rule. 정체성 = (source_id, target_id)."""
     source_id: str
     target_id: str
-    coupled_domains: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -235,7 +232,7 @@ class HasQuestion:
 
 @dataclass(frozen=True)
 class AffectsTable:
-    """Example → Table. source=example, table_name=이름매칭. op(INSERT/UPDATE/DELETE/WRITE/READ) 별."""
+    """Example → Table. R/W 필터가 확정한 Table ID를 끝점까지 보존한다."""
     source_id: str
-    table_name: str
+    target_id: str
     op: str

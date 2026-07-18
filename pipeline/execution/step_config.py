@@ -11,5 +11,21 @@ from langchain_core.runnables import RunnableConfig
 
 
 def step_config(config: Optional[RunnableConfig]) -> dict:
-    """``RunnableConfig`` 의 ``configurable`` dict 반환 (없거나 dict 아니면 빈 dict)."""
-    return (config or {}).get("configurable", {}) if isinstance(config, dict) else {}
+    """``RunnableConfig`` 의 ``configurable`` dict 반환.
+
+    설정 자체나 ``configurable``이 미지정이면 빈 dict다. 명시된 값의 구조가 잘못됐으면
+    늦은 step 내부 ``.get`` 오류로 흘리지 않고 이 경계에서 거부한다.
+    """
+    if config is None:
+        return {}
+    if not isinstance(config, dict):
+        raise TypeError(f"RunnableConfig must be a dict; got {type(config).__name__}")
+    configurable = config.get("configurable")
+    if configurable is None:
+        return {}
+    if not isinstance(configurable, dict):
+        raise TypeError(
+            "RunnableConfig.configurable must be a dict; "
+            f"got {type(configurable).__name__}"
+        )
+    return configurable

@@ -23,14 +23,15 @@ from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
-from pipeline.programming_languages import ROUTINE_LABELS
-from pipeline.steps.step4_linking.stage2_extract_calls.call_linker import routine_call_pairs
+from pipeline.languages import ROUTINE_LABELS
+from pipeline.steps.step4_linking.link_calls.call_linker import routine_call_pairs
 from pipeline.steps.step6_analyze_code.call_cycles import find_call_cycles
 from graph.schema.graph_edges import Calls, ReadsWrites
 from graph.schema.graph_nodes import CodeNode
-from system.env_catalog import ENV
-from log.logger import log_info, log_warning
+from analyzer_settings import SETTINGS
+from runtime_events.runtime_logger import log_info, log_warning
 from graph.neo4j_client import Neo4jClient
+from graph.ownership import ANALYZER_GRAPH_OWNER
 from pipeline.execution.step_config import step_config
 
 
@@ -45,9 +46,9 @@ TABLE_COUPLING_THRESHOLD = 5   # 이만큼 많은 테이블을 만지면 데이�
 
 # 저장은 최종 판정만 (spec 020): risk_level(+in_call_cycle). 중간 지표(loc·fan·god·table_coupling)는
 # 계산·리포트엔 쓰되 노드에 안 박는다. fan 은 CALLS 관계로 즉석 파생. 루틴 노드에만 SET.
-_SET_QUERY = """
+_SET_QUERY = f"""
 UNWIND $items AS item
-MATCH (node {id: item.id})
+MATCH (node {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 SET node += item
 """
 
@@ -161,7 +162,7 @@ def _risk_label(loc: int, fan_in: int, fan_out: int, in_cycle: bool,
 
 
 def _write_report(items: list[dict]) -> None:
-    """요약 리포트 → ``ENV.log.dir/analysis.run/latest/health_report.json`` (graceful).
+    """요약 리포트 → ``SETTINGS.run_output.dir/analysis/latest/health_report.json`` (graceful).
 
     저장만으론 안 보이므로 사람·UI 가 볼 요약 산출 (소비처 확보). 적재 실패는 분석 흐름
     막지 X — 사유 명시 후 skip.
@@ -188,7 +189,7 @@ def _write_report(items: list[dict]) -> None:
         },
     }
     try:
-        path = ENV.log.dir / "analysis.run" / "latest" / "health_report.json"
+        path = SETTINGS.run_output.dir / "analysis" / "latest" / "health_report.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         log_info(_STEP, "report", path=str(path))

@@ -11,29 +11,24 @@ from __future__ import annotations
 
 import numpy as np
 
-from search.search_config import Config
+from search.config import Config
 from search.ranking.fusion import infer_types, type_affinity
 from search.ranking.recall import recall
 from search.ranking.rerank import passage, predict_cached
-from llm.client import embedder
+from search.corpus.evidence_reader import read_rules
+from llm import embedder
+from graph.ownership import ANALYZER_GRAPH_OWNER
+from search.ranking.anchors import merge_clusters
+from search.ranking.graph_access import (
+    callees,
+    call_neighbors,
+    rules_for,
+    table_neighbors,
+)
+from search.ranking.row_builder import table_row
+from search.ranking.selection_policy import support_plan
 
 _TABLE_RELS = ("READS", "WRITES", "AFFECTS_TABLE")
-
-
-def merge_clusters(a: list[dict], b: list[dict]) -> list[dict]:
-    """뭉치 병합 — id 기준, core 우선·relevance 큰 쪽. calls 는 사본 간 합집합(구조 증거 보존)."""
-    out: dict[str, dict] = {}
-    for x in a + b:
-        cur = out.get(x["id"])
-        if cur is None:
-            out[x["id"]] = x
-            continue
-        merged_calls = list(dict.fromkeys(cur.get("calls", []) + x.get("calls", [])))
-        if (x["role"] == "core" and cur["role"] != "core") \
-                or (x["role"] == cur["role"] and x["relevance"] > cur["relevance"]):
-            out[x["id"]] = x
-        out[x["id"]]["calls"] = merged_calls
-    return sorted(out.values(), key=lambda x: (x["role"] != "core", -x["relevance"]))
 
 
 class Retriever:
@@ -50,8 +45,11 @@ class Retriever:
         if not missing:
             return
         rows = self.s.run(
-            "MATCH (n) WHERE n.id IN $ids AND n.embedding IS NOT NULL "
-            "RETURN n.id AS id, n.embedding AS v", ids=list(missing)).data()
+            "MATCH (n {graph_owner:$graph_owner}) "
+            "WHERE n.id IN $ids AND n.embedding IS NOT NULL "
+            "RETURN n.id AS id, n.embedding AS v",
+            ids=list(missing), graph_owner=ANALYZER_GRAPH_OWNER,
+        ).data()
         for r in rows:
             self._vecs[r["id"]] = np.array(r["v"], dtype=np.float32)
 
@@ -83,84 +81,25 @@ class Retriever:
 
     # ── 그래프 조회 ──
     def _callees(self, cid: str) -> list[dict]:
-        return self.s.run(
-            "MATCH (x {id:$id})-[:CALLS]->(b) WHERE b.id IS NOT NULL "
-            "RETURN b.id AS id, coalesce(b.name,'') AS name", id=cid).data()
+        return callees(self.s, cid)
 
     def _call_neighbors(self, cid: str) -> list[dict]:
-        """CALLS 1홉 양방향. 방향은 evidence 설명용이며 확장 깊이에는 영향이 없다."""
-        outgoing = self.s.run(
-            "MATCH (a {id:$id})-[:CALLS]->(b) WHERE b.id IS NOT NULL "
-            "RETURN b.id AS id, coalesce(b.name,'') AS name, 'CALLS' AS relation, 'out' AS direction",
-            id=cid,
-        ).data()
-        incoming = self.s.run(
-            "MATCH (a)-[:CALLS]->(b {id:$id}) WHERE a.id IS NOT NULL "
-            "RETURN a.id AS id, coalesce(a.name,'') AS name, 'CALLS' AS relation, 'in' AS direction",
-            id=cid,
-        ).data()
-        return outgoing + incoming
+        return call_neighbors(self.s, cid)
 
     def _table_neighbors(self, cid: str) -> list[dict]:
-        """코드 앵커가 직접 읽고/쓰는 TABLE 노드를 실제 id와 함께 반환한다."""
-        return self.s.run(
-            "MATCH (a {id:$id})-[r]->(t:TABLE) WHERE type(r) IN $rels AND t.id IS NOT NULL "
-            "RETURN t.id AS id, elementId(t) AS eid, coalesce(t.name,'') AS name, "
-            "coalesce(t.logical_name,'') AS logical_name, "
-            "coalesce(t.analyzed_description, t.description, '') AS summary, type(r) AS relation",
-            id=cid, rels=list(_TABLE_RELS),
-        ).data()
+        return table_neighbors(self.s, cid)
 
     def _rules_for(self, cid: str) -> list[dict]:
-        """이 함수의 Rule → Example → AFFECTS_TABLE 트래버설 → 아키텍트 전달용 중첩 구조.
-
-        RULE 노드는 statement 해시로 함수 간 **공유**된다(builder.rule_hash) — 따라서
-        ``(x)-[:HAS_RULE]->(r)-[:HAS_EXAMPLE]->(e)`` 만으로는 같은 규칙을 쓰는 다른 함수의
-        Example 까지 끌려온다. Example id 는 ``{함수id}::{rule_hash}::{idx}`` 라서
-        ``e.id STARTS WITH '<cid>::'`` 로 이 함수 소유 Example 만 남긴다(누락·오염 0).
-        반환: ``[{statement, examples:[{given, when, then, tables:[{name, op}]}]}]`` (규칙 순서 보존).
-        """
-        rows = self.s.run(
-            "MATCH (x {id:$id})-[:HAS_RULE]->(r:RULE) "
-            "OPTIONAL MATCH (r)-[:HAS_EXAMPLE]->(e:EXAMPLE) WHERE e.id STARTS WITH $prefix "
-            "OPTIONAL MATCH (e)-[at:AFFECTS_TABLE]->(t:TABLE) "
-            "WITH r, e, collect(DISTINCT CASE WHEN t IS NULL THEN NULL "
-            "  ELSE {name: t.name, op: at.op} END) AS tbs "
-            "RETURN r.id AS rule_id, r.statement AS statement, e.id AS example_id, "
-            "  e.given AS given, e.when_ AS when_, e.then_ AS then_, "
-            "  [x IN tbs WHERE x IS NOT NULL] AS tables "
-            # example id = '{fid}::{rh}::{idx}' — 같은 rule 은 prefix 길이가 같아 size 선행 정렬이
-            # idx 를 숫자 순서로 만든다(문자열 정렬만 쓰면 '::10' 이 '::2' 앞에 온다).
-            "ORDER BY r.statement, size(e.id), e.id",
-            id=cid, prefix=f"{cid}::",
-        ).data()
-        rules: list[dict] = []
-        by_rule: dict[str, dict] = {}
-        for row in rows:
-            rule = by_rule.get(row["rule_id"])
-            if rule is None:
-                rule = {"statement": row.get("statement") or "", "examples": []}
-                by_rule[row["rule_id"]] = rule
-                rules.append(rule)
-            if row.get("example_id") is None:
-                continue
-            rule["examples"].append({
-                "given": row.get("given") or "",
-                "when": row.get("when_") or "",
-                "then": row.get("then_") or "",
-                "tables": [
-                    {"name": tb["name"], "op": tb.get("op") or ""}
-                    for tb in (row.get("tables") or []) if tb.get("name")
-                ],
-            })
-        return rules
+        return rules_for(self.s, cid)
 
     def _node_row(self, cid: str, cfg, qv, score: dict, callees: list[dict], role: str) -> dict:
         rec = self.s.run(
-            "MATCH (x {id:$id}) "
-            "OPTIONAL MATCH (x)-[r]->(t:TABLE) WHERE type(r) IN $rels "
+            "MATCH (x {id:$id, graph_owner:$graph_owner}) "
+            "OPTIONAL MATCH (x)-[r]->(t:TABLE {graph_owner:$graph_owner}) "
+            "WHERE type(r) IN $rels "
             "RETURN elementId(x) AS eid, collect({rel:type(r), t:t.name}) AS tb",
-            id=cid, rels=list(_TABLE_RELS)).single()
+            id=cid, rels=list(_TABLE_RELS), graph_owner=ANALYZER_GRAPH_OWNER,
+        ).single()
         rw: dict[str, list] = {}
         for e in (rec["tb"] if rec else []):
             if e.get("rel") and e.get("t"):
@@ -182,21 +121,9 @@ class Retriever:
 
     @staticmethod
     def _table_row(table: dict, anchor_id: str, anchor_relevance: float) -> dict:
-        return {
-            "id": table["id"], "element_id": table.get("eid"),
-            "name": table.get("logical_name") or table.get("name") or "Unknown",
-            "physical_name": table.get("name") or "",
-            "label": "TABLE", "stereotype": "",
-            "summary": (table.get("summary") or "").replace("\n", " "),
-            "search_text": "", "writes": [], "reads": [], "calls": [], "rules": [],
-            # 구조 근거는 확률이 아니다. 정렬 안정성을 위해 앵커 점수만 계승한다.
-            "relevance": round(anchor_relevance, 3), "role": "evidence",
-            "evidence": [{
-                "anchor_id": anchor_id,
-                "relation": table.get("relation") or "",
-                "direction": "out",
-            }],
-        }
+        return table_row(table, anchor_id, anchor_relevance)
+
+    # retrieval pipeline
 
     # ── 파이프라인 ──
     def retrieve(self, query: str, cfg: Config, pool_k: int = 30,
@@ -211,7 +138,7 @@ class Retriever:
         base = self._retrieve_one(query, cfg, pool_k, on_progress)
         if cfg.cluster_rewrite_mode != "novel_abbrev":
             return self._judge_prune(query, base, cfg, meta, on_progress)
-        from search.query.query_rewrite import expand_abbrevs, rewrite_for_cluster  # lazy — LLM 경로
+        from search.query.rewrite import expand_abbrevs, rewrite_for_cluster  # lazy — LLM 경로
 
         out = base
         ab = expand_abbrevs(query)
@@ -245,8 +172,12 @@ class Retriever:
             if not frontier:
                 break
             rows = self.s.run(
-                "MATCH (x)-[:CALLS]-(y) WHERE x.id IN $ids AND y.id IS NOT NULL "
-                "RETURN DISTINCT y.id AS id", ids=list(frontier)).data()
+                "MATCH (x {graph_owner:$graph_owner})-[:CALLS]-"
+                "(y {graph_owner:$graph_owner}) "
+                "WHERE x.id IN $ids AND y.id IS NOT NULL "
+                "RETURN DISTINCT y.id AS id",
+                ids=list(frontier), graph_owner=ANALYZER_GRAPH_OWNER,
+            ).data()
             reached = {r["id"] for r in rows} - seen
             for cid in reached & others:
                 dist.setdefault(cid, hop)
@@ -258,39 +189,7 @@ class Retriever:
     def _support_plan(ranked: list[str], anchors: list[str], score: dict,
                       cfg: Config, dists: dict[str, int] | None = None,
                       ) -> tuple[list[str], list[str]]:
-        """spec 057 — 1홉 확장 뿌리(roots)와 의미 직행(direct) 자격 산정.
-
-        all_candidates: 구 동작(후보 상위 N 전원 뿌리, 비앵커 전원 직행) — 롤백 모드.
-        anchors_only:   뿌리=앵커만, 직행 없음.
-        gated_direct:   뿌리=앵커만, 직행은 top1 격차 direct_gap 이내 후보만.
-        graph_gated:    직행 = [top1 격차 direct_gap 이내] OR [앵커와 CALLS 거리 hop_gate
-                        이내](기본) — 점수 역전(신호 .676 < 노이즈 .765 실측)을 그래프
-                        근접성이 보정한다. 뿌리 = 앵커 + 직행 자격 후보.
-        """
-        policy = cfg.cluster_support_policy
-        if policy == "all_candidates":
-            roots = ranked[:cfg.cluster_support_root_top_n]
-            return roots, [cid for cid in roots if cid not in anchors]
-        if policy == "anchors_only":
-            return list(anchors), []
-        if policy in ("gated_direct", "graph_gated"):
-            top = score[ranked[0]][1] if ranked else 0.0
-            near = dists or {}
-            direct: list[str] = []
-            for idx, cid in enumerate(ranked[:cfg.cluster_support_root_top_n]):
-                if cid in anchors:
-                    continue
-                by_score = score[cid][1] >= top - cfg.cluster_direct_gap - 1e-9  # float 오차
-                by_dist = policy == "graph_gated" and cid in near
-                by_rank = policy == "graph_gated" and idx < cfg.cluster_rank_floor
-                if by_score or by_dist or by_rank:
-                    direct.append(cid)
-            # 확장 뿌리는 앵커 + 그래프 근접 자격자만 — 점수·순위 구제자는 근거로만 남고
-            # 자기 이웃을 끌고 들어오지 못한다(노이즈 증폭 차단).
-            roots = list(anchors) + (
-                [cid for cid in direct if cid in near] if policy == "graph_gated" else [])
-            return roots, direct
-        raise ValueError(f"unknown cluster_support_policy: {policy!r}")  # 조용한 폴백 금지
+        return support_plan(ranked, anchors, score, cfg, dists)
 
     def _retrieve_global_anchors(self, query: str, cfg: Config, pool_k: int,
                                  on_progress=None, meta: dict | None = None) -> list[dict]:
@@ -299,7 +198,7 @@ class Retriever:
         variants: list[tuple[str, str, list[dict]]] = [("original", query, base)]
 
         if cfg.cluster_rewrite_mode == "novel_abbrev":
-            from search.query.query_rewrite import expand_abbrevs, rewrite_for_cluster
+            from search.query.rewrite import expand_abbrevs, rewrite_for_cluster
 
             ab = expand_abbrevs(query)
             if ab["terms"]:
@@ -514,7 +413,7 @@ class Retriever:
                      meta: dict | None, on_progress) -> list[dict]:
         if cfg.cluster_judge_mode != "p15" or len(out) < cfg.cluster_judge_min:
             return out
-        from search.query.relevance_judge import judge  # lazy — LLM 경로
+        from search.query.judge import judge  # lazy — LLM 경로
 
         if on_progress:
             on_progress("judge", "관련 없는 것 걸러내는 중",

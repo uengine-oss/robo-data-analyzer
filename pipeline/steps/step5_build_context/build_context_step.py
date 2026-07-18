@@ -20,21 +20,22 @@ from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
-from pipeline.source_file_cache import SourceFileCache
+from source.file_cache import SourceFileCache
 from pipeline.execution.step_config import step_config
 
 from pipeline.steps.step5_build_context.large_code_one_liner import (
     compute_one_liner,
     estimate_tokens,
 )
+from pipeline.steps.step5_build_context.control_subtree import build_control_subtrees
 from pipeline.steps.step5_build_context.referenced_symbols import _build_reference_context
-from pipeline.data_models.analysis_context import AnalysisContext
+from pipeline.models.analysis_context import AnalysisContext
 from graph.schema.graph_nodes import CodeNode
-from system.env_catalog import ENV
-from llm.client.usage.cost_budget import BudgetExceededError, CostBudget
-from llm.client.llm_fanout import gather_with_warmup
-from log.logger import log_error, log_info, log_warning
-from log.processing_progress import step_processing_scope, track_processing
+from analyzer_settings import SETTINGS
+from llm.usage.cost_budget import BudgetExceededError, CostBudget
+from llm.llm_fanout import gather_with_warmup
+from runtime_events.runtime_logger import log_error, log_info, log_warning
+from runtime_events.processing_events import step_processing_scope, track_processing
 
 _STEP = "step5.build_context"
 
@@ -82,6 +83,7 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
 
     # 컨텍스트 생성 (결정적 메타)
     contexts: dict[str, AnalysisContext] = {}
+    control_subtrees = build_control_subtrees(code_nodes)
     for fn in code_nodes:
         # 원문은 step2 가 이미 채웠다 (code_text) — 같은 (file,start,end) 를 여기서 다시
         # 잘라내지 않는다 (spec 046 FR-007: 슬라이싱 계산은 한 곳). 없을 때만 캐시에서 슬라이스
@@ -101,21 +103,23 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
             token_count=estimate_tokens(body_text),
         )
         ctx = await builder.augment(ctx, fn, state)
+        if fn.id in control_subtrees:
+            ctx.extra["control_subtree"] = control_subtrees[fn.id]
         contexts[fn.id] = ctx
 
     # 큰 코드노드만 one_liner 사전 압축 (LLM 1 회 — model_small)
     big_code_nodes = [
         fn for fn in code_nodes
-        if contexts[fn.id].token_count >= ENV.pipeline.big_context_threshold_tokens
+        if contexts[fn.id].token_count >= SETTINGS.analysis_pipeline.big_context_threshold_tokens
     ]
     if big_code_nodes:
         log_info(
             _STEP, "one_liner_start",
             big_code_nodes=len(big_code_nodes),
-            threshold_tokens=ENV.pipeline.big_context_threshold_tokens,
-            concurrency=ENV.pipeline.max_concurrency,
+            threshold_tokens=SETTINGS.analysis_pipeline.big_context_threshold_tokens,
+            concurrency=SETTINGS.analysis_pipeline.max_concurrency,
         )
-        semaphore = asyncio.Semaphore(ENV.pipeline.max_concurrency)
+        semaphore = asyncio.Semaphore(SETTINGS.analysis_pipeline.max_concurrency)
         tasks = [
             _compute_one_liner_safe(fn, contexts, cost_budget, semaphore, body_cache)
             for fn in big_code_nodes

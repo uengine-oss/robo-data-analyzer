@@ -10,13 +10,14 @@ from typing import Iterable
 
 from graph.schema.graph_edges import HasMember
 from graph.neo4j_client import Neo4jClient
+from graph.ownership import ANALYZER_GRAPH_OWNER
 from graph.schema.rel_types import HAS_MEMBER
 
 
 MERGE_QUERY = f"""
 UNWIND $items AS item
-MATCH (parent {{id: item.parent_id}})
-MATCH (member {{id: item.child_id}})
+MATCH (parent {{id: item.parent_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (member {{id: item.child_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 MERGE (parent)-[:{HAS_MEMBER}]->(member)
 """
 

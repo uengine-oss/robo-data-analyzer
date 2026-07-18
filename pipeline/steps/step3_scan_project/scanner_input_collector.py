@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections import Counter
 from pathlib import Path
 
-from log.logger import log_warning
+from runtime_events.runtime_logger import log_warning
 
 
 # 매니페스트 우선순위 — 발견된 첫 1개의 앞 60줄을 단서로 제공

@@ -9,8 +9,8 @@ parser 007 이 emit 하는 C 제어문(IF/ELSE/LOOP/SWITCH/CASE)을 reader 가:
 """
 from pathlib import Path
 
-from pipeline.steps.step2_load_ast.antlr_json_reader import _read_framework
-from pipeline.programming_languages import ROUTINE_LABELS
+from pipeline.steps.step2_load_ast.framework_reader import _read_framework
+from pipeline.languages import ROUTINE_LABELS
 
 
 def _sample_raw() -> dict:

@@ -8,13 +8,14 @@ from typing import Iterable
 
 from graph.schema.graph_edges import Fk
 from graph.neo4j_client import Neo4jClient
+from graph.ownership import ANALYZER_GRAPH_OWNER
 from graph.schema.rel_types import FK
 
 
 MERGE_QUERY = f"""
 UNWIND $items AS item
-MATCH (from:TABLE {{id: item.from_id}})
-MATCH (to:TABLE {{id: item.to_id}})
+MATCH (from:TABLE {{id: item.from_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (to:TABLE {{id: item.to_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 MERGE (from)-[r:{FK} {{from_column: item.from_column, to_column: item.to_column}}]->(to)
 SET r.fk_type = item.fk_type,
     r.is_candidate = item.is_candidate

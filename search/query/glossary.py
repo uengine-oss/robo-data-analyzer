@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 
+from graph.ownership import ANALYZER_GRAPH_OWNER
+
 # (uri, db) -> glossary dict
 _cache: dict[tuple[str, str], dict] = {}
 
@@ -24,7 +26,11 @@ def build() -> dict:
     glo = {"terms": [], "actions": [], "meta": {"db": db, "source": "none"}}
     try:
         with drv.session(database=db) as s:
-            row = s.run('MATCH (g:GLOSSARY {id:"glossary"}) RETURN g.terms_json AS tj').single()
+            row = s.run(
+                'MATCH (g:GLOSSARY {id:"glossary", graph_owner:$graph_owner}) '
+                "RETURN g.terms_json AS tj",
+                graph_owner=ANALYZER_GRAPH_OWNER,
+            ).single()
         if row and row["tj"]:
             glo = json.loads(row["tj"])
             glo["meta"] = {"db": db, "source": "graph"}

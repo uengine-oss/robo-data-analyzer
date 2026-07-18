@@ -26,8 +26,8 @@ Thumbs.db
 # Secrets — API key / DB password 가 박힌 운영 환경 .env 절대 commit X
 .env
 
-# Run-time logs — 매 run 마다 latest/ rmtree
-logs/
+# Generated run output — 매 run 마다 latest/ rmtree
+run-output/
 
 # 임시 파일
 *.tmp
@@ -49,3 +49,6 @@ module_test/
 # 검색 게이트 골드·장부 = 고객데이터(SKT 기밀 포함) 커밋 제외 (module_test 정책)
 tests/eval/*.yaml
 tests/eval/measure_log.md
+
+# 코드 인덱스 (로컬 개발 도구 — 머신별 산출물)
+.codegraph/

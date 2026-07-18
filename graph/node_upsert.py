@@ -5,7 +5,7 @@
 한 곳만 빠뜨리면 조용히 안 저장된다.
 
     UNWIND $items AS item
-    MERGE (n:<LABEL> {id: item.id})
+    MERGE (n:<LABEL> {id: item.id, graph_owner: 'analyzer'})
     SET n += item
 
 **빈값 미저장**(spec 020): ``SET n += item`` 이라 ``props.nonempty()`` 가 빼둔 키는 애초에
@@ -29,7 +29,7 @@ from typing import Callable, Iterable
 from graph.neo4j_client import Neo4jClient
 
 
-ANALYZER_GRAPH_OWNER = "analyzer"
+from graph.ownership import ANALYZER_GRAPH_OWNER
 
 
 def nonempty(props: dict) -> dict:
@@ -46,7 +46,7 @@ def merge_query(label: str) -> str:
     """``:label`` 노드를 id 로 MERGE + 빈값 제외 속성 SET. 라벨은 통제값(주입 안전)."""
     return f"""
 UNWIND $items AS item
-MERGE (n:{label} {{id: item.id}})
+MERGE (n:{label} {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 SET n += item,
     n.graph_owner = '{ANALYZER_GRAPH_OWNER}'
 RETURN count(n) AS created

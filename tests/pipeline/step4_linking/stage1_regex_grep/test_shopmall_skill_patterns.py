@@ -11,7 +11,7 @@ _ROOT = Path(__file__).resolve().parents[4]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from pipeline.steps.step4_linking.stage1_regex_grep.regex_table_linker import (
+from pipeline.steps.step4_linking.link_tables.regex_table_linker import (
     _entity_group_complete,
     _resolve_table,
 )

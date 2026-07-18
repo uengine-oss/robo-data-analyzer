@@ -2,7 +2,7 @@
 
 분석용 LLM(`ROBO_LLM_CONFIG`)과 **별도** `ROBO_SEARCH_LLM_CONFIG` 를 쓴다(FR-007). 기본은
 사내 Qwen(`qwen36_sglang_local`) = GPU 통일(임베딩·심판·번역 모두 사내 서버, 기밀 유지·과금 0).
-gpt-5 계열로 바꾸려면 env 만 교체(`ROBO_SEARCH_LLM_CONFIG=gpt54_mini_openai`).
+gpt-5 계열로 바꾸려면 환경변수만 교체(`ROBO_SEARCH_LLM_CONFIG=gpt54_mini_openai`).
 
 LLM 죽으면 chat_json 이 None → 호출부(judge/rewrite)가 폴백(원결과 유지 — 헌법 IV 는 검색
 품질 저하가 아니라 조용한 오류 금지가 목적이므로, 판단 실패는 원결과 보존이 올바른 폴백).
@@ -11,15 +11,16 @@ from __future__ import annotations
 
 import json
 import time
+from types import SimpleNamespace
 
 import httpx
 
-from system.env_catalog import ENV
-from llm.client.llm_config_loader import load_llm_config
-from llm.client.usage.pricing import compute_cost
-from llm.client.usage.token_usage import TokenUsageRecord
-from llm.client.usage.usage_jsonl_writer import append_usage_record
-from log.logger import log_warning
+from analyzer_settings import SETTINGS
+from llm.llm_config_loader import load_llm_config
+from llm.usage.pricing import compute_cost
+from llm.usage.token_usage import UnmeteredLlmCallError, track_usage
+from llm.usage.usage_jsonl_writer import append_usage_record
+from runtime_events.runtime_logger import log_warning
 
 _STEP = "search.query.query_llm"
 _cfg_cache: dict = {}
@@ -27,10 +28,10 @@ _cfg_cache: dict = {}
 
 def _config():
     """검색 LLM config + 키(캐시). 키는 ROBO_SEARCH_LLM_API_KEY, 없으면 분석 키 폴백(사내 공유)."""
-    name = ENV.search.llm_config
+    name = SETTINGS.semantic_search.llm_config
     if name not in _cfg_cache:
         cfg = load_llm_config(name)
-        key = ENV.search.llm_api_key or ENV.llm.api_key
+        key = SETTINGS.semantic_search.llm_api_key or SETTINGS.analysis_llm.api_key
         _cfg_cache[name] = (cfg, key)
     return _cfg_cache[name]
 
@@ -76,30 +77,49 @@ def _record_usage(payload: dict, model: str, latency_ms: int) -> None:
     검색 LLM 은 LangChain 미들웨어 스택을 안 타는 raw httpx 경로라, 비용추적이 **전무**했다.
     여기서 표준 기록 경로(``append_usage_record``)에 편입해 **모든 LLM 호출이 계측**되게 한다.
 
-    적재 실패가 검색을 막아선 안 되므로 예외는 경고로만 남긴다 (검색 결과는 그대로 반환).
+    usage 누락·형식 오류·적재 실패는 호출 성공으로 승격하지 않는다. 예외는 ``chat``의
+    명시적 검색 폴백 경계로 전파되어 계측되지 않은 LLM 결과가 사용되지 않게 한다.
     """
-    try:
-        usage = payload.get("usage") or {}
-        if not usage:
-            return
-        record = TokenUsageRecord(
-            model=model,
-            input_tokens=int(usage.get("prompt_tokens") or 0),
-            output_tokens=int(usage.get("completion_tokens") or 0),
-            cached_tokens=int(
-                (usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0
-            ),
-            total_tokens=int(usage.get("total_tokens") or 0),
-            latency_ms=latency_ms,
+    usage = payload.get("usage")
+    if not isinstance(usage, dict):
+        raise UnmeteredLlmCallError("Search LLM response has no usage object")
+    missing_fields = {
+        field_name
+        for field_name in ("prompt_tokens", "completion_tokens")
+        if field_name not in usage
+    }
+    if missing_fields:
+        raise UnmeteredLlmCallError(
+            "Search LLM usage is missing required fields: "
+            + ", ".join(sorted(missing_fields))
         )
-        append_usage_record(
-            ENV.log.dir / "search" / "usage.jsonl",
-            agent_name="search",
-            record=record,
-            cost_usd=compute_cost(record),
+    prompt_token_details = usage.get("prompt_tokens_details") or {}
+    if not isinstance(prompt_token_details, dict):
+        raise UnmeteredLlmCallError(
+            "Search LLM prompt_tokens_details must be an object when present"
         )
-    except Exception as exc:  # noqa: BLE001 — 계측 실패가 검색을 막지 않는다
-        log_warning(_STEP, "usage_record_failed", f"검색 LLM 사용량 적재 실패: {exc!r}")
+    normalized_usage = {
+        "input_tokens": usage.get("prompt_tokens"),
+        "output_tokens": usage.get("completion_tokens"),
+        "total_tokens": usage.get(
+            "total_tokens",
+            (usage.get("prompt_tokens") or 0) + (usage.get("completion_tokens") or 0),
+        ),
+        "input_token_details": {
+            "cache_read": prompt_token_details.get("cached_tokens", 0)
+        },
+    }
+    record = track_usage(
+        SimpleNamespace(usage_metadata=normalized_usage),
+        model=model,
+        latency_ms=latency_ms,
+    )
+    append_usage_record(
+        SETTINGS.run_output.dir / "search" / "usage.jsonl",
+        agent_name="search",
+        record=record,
+        cost_usd=compute_cost(record),
+    )
 
 
 def chat_json(prompt: str, *, system: str = "", max_tokens: int = 1024,

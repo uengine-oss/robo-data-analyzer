@@ -31,7 +31,7 @@ MUST touch exactly one place (the declaration) and zero control-flow branches.
 ### III. Single Source of Truth (단일 진실)
 
 Each cross-cutting fact has exactly one home: all `ROBO_*` environment config lives in
-`system/env_catalog.py` (the `ENV` singleton); all Neo4j relationship names live in
+`analyzer_settings.py` (the `SETTINGS` singleton); all Neo4j relationship names live in
 `graph/schema/rel_types.py` (never a Cypher string literal). No magic numbers inline.
 
 **Rationale**: one definition, one place to change, no drift.

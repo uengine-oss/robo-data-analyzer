@@ -23,18 +23,20 @@ from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
-from pipeline.steps.step4_linking.stage2_extract_calls.call_linker import routine_call_pairs
-from pipeline.data_models.code_analysis_output import ComponentNamingOutput
+from pipeline.steps.step4_linking.link_calls.call_linker import routine_call_pairs
+from pipeline.models.code_analysis_output import ComponentNamingOutput
 from graph.schema.graph_edges import Calls
 from graph.schema.graph_nodes import CodeNode
-from system.env_catalog import ENV
-from llm.client.usage.cost_budget import BudgetExceededError
-from llm.client.llm_fanout import gather_with_warmup
-from llm.client.runners.yaml_llm_runner import run_yaml_rule
-from log.logger import log_error, log_info, log_warning
-from log.processing_progress import step_processing_scope, track_processing
+from analyzer_settings import SETTINGS
+from llm.usage.cost_budget import BudgetExceededError
+from llm.llm_fanout import gather_with_warmup
+from llm.runners.yaml_llm_runner import run_yaml_rule
+from runtime_events.runtime_logger import log_error, log_info, log_warning
+from runtime_events.processing_events import step_processing_scope, track_processing
 from graph.neo4j_client import Neo4jClient
+from graph.ownership import ANALYZER_GRAPH_OWNER
 from pipeline.execution.step_config import step_config
+from pipeline.execution.pause_controller import PauseController
 
 
 _STEP = "step7.build_components"
@@ -45,9 +47,9 @@ NAME_MAX_MEMBERS = 40      # 이름 입력에 넣을 멤버 압축 줄 상한 (�
 LEIDEN_SEED = 42           # 결정론 — 같은 그래프 → 같은 군집
 
 # 멤버 FUNCTION 노드에 군집 멤버십을 속성으로 SET (합성 노드 없음). health_metrics 와 동일 패턴.
-_SET_QUERY = """
+_SET_QUERY = f"""
 UNWIND $items AS item
-MATCH (node {id: item.id})
+MATCH (node {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 SET node.component_id = item.component_id,
     node.component_name = item.component_name
 """
@@ -60,6 +62,7 @@ async def build_components_step(state: dict, config: Optional[RunnableConfig] = 
     cost_budget = cfg.get("cost_budget")
     neo: Neo4jClient | None = cfg.get("neo_client")
     stream = cfg.get("stream")
+    pause: PauseController = cfg.get("pause") or PauseController()
     if strategy is None:
         log_warning(_STEP, "config_missing", "strategy 누락 — step skip")
         return {}
@@ -77,11 +80,11 @@ async def build_components_step(state: dict, config: Optional[RunnableConfig] = 
         log_info(_STEP, "skip", reason="군집 없음 (내부 호출 부족)")
         return {}
     log_info(_STEP, "start", code_nodes=len(code_nodes), components=len(clusters),
-             concurrency=ENV.pipeline.max_concurrency)
+             concurrency=SETTINGS.analysis_pipeline.max_concurrency)
 
     # 2. 이름 (LLM, 병렬) — 군집당 사람이 읽을 이름 하나.
     prompts_dir = Path(strategy.prompts_dir)
-    semaphore = cfg.get("llm_semaphore") or asyncio.Semaphore(ENV.pipeline.max_concurrency)
+    semaphore = cfg.get("llm_semaphore") or asyncio.Semaphore(SETTINGS.analysis_pipeline.max_concurrency)
     fn_by_id = {f.id: f for f in code_nodes}
 
     async def _name_one(component_id: str, members: list[str]) -> str:
@@ -102,10 +105,13 @@ async def build_components_step(state: dict, config: Optional[RunnableConfig] = 
                 )
         return result.name
 
-    with step_processing_scope(_STEP, stream):
-        results = await gather_with_warmup(
+    async def _run_fanout() -> list:
+        return await gather_with_warmup(
             [_name_one(cid, members) for cid, members in clusters], return_exceptions=True,
         )
+
+    with step_processing_scope(_STEP, stream):
+        results = await pause.run_restartable_during_pause(_run_fanout)
     names = _resolve_names(clusters, results, fn_by_id)   # component_id → name
 
     # 3. 적재 — 각 멤버 FUNCTION 노드에 component_id/name 속성 SET (합성 노드/엣지 없음).

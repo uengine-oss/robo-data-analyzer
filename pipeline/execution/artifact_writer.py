@@ -1,4 +1,4 @@
-"""step 산출물 ``logs/analysis.run/latest/artifacts/`` 적재.
+"""step 산출물 ``run-output/analysis/latest/artifacts/`` 적재.
 
 파일 정책 (Plan §6.3 logs 구조):
 
@@ -28,12 +28,15 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 from dataclasses import is_dataclass
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from pipeline.data_models.analysis_meta import AnalysisRun
+from pipeline.models.analysis_meta import AnalysisRun
 from pipeline.execution.workflow_state import WorkflowState
+from runtime_events.runtime_logger import log_warning
 
 
 _LOG = "pipeline.execution.artifact_writer"
@@ -49,10 +52,15 @@ def dump_artifact(run: AnalysisRun, name: str, data: Any) -> None:
     """``artifacts/<name>.json`` 에 dataclass / dict 직렬화."""
     serialized = _serialize(data)
     path = _artifacts_dir(run) / f"{name}.json"
-    path.write_text(
-        json.dumps(serialized, ensure_ascii=False, indent=2, default=str),
-        encoding="utf-8",
-    )
+    temporary_path = path.with_name(f".{path.name}.tmp")
+    try:
+        temporary_path.write_text(
+            json.dumps(serialized, ensure_ascii=False, indent=2, allow_nan=False),
+            encoding="utf-8",
+        )
+        temporary_path.replace(path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def _serialize(obj: Any) -> Any:
@@ -60,14 +68,39 @@ def _serialize(obj: Any) -> Any:
     if is_dataclass(obj):
         return _dataclass_to_dict(obj)
     if hasattr(obj, "model_dump"):
-        return obj.model_dump()
+        return _serialize(obj.model_dump())
     if isinstance(obj, dict):
-        return {k: _serialize(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple, set)):
+        serialized: dict[str, Any] = {}
+        for key, value in obj.items():
+            if not isinstance(key, str):
+                raise TypeError(f"Unsupported artifact mapping key: {key!r}")
+            serialized[key] = _serialize(value)
+        return serialized
+    if isinstance(obj, (list, tuple)):
         return [_serialize(x) for x in obj]
+    if isinstance(obj, set):
+        values = [_serialize(x) for x in obj]
+        return sorted(
+            values,
+            key=lambda value: json.dumps(
+                value,
+                ensure_ascii=False,
+                sort_keys=True,
+                allow_nan=False,
+                separators=(",", ":"),
+            ),
+        )
     if isinstance(obj, Path):
         return str(obj)
-    return obj
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    if obj is None or isinstance(obj, (str, bool, int)):
+        return obj
+    if isinstance(obj, float):
+        if not math.isfinite(obj):
+            raise ValueError(f"Artifact numeric values must be finite; got {obj!r}")
+        return obj
+    raise TypeError(f"Unsupported artifact value: {type(obj).__name__}")
 
 
 def _dataclass_to_dict(obj: Any) -> dict:

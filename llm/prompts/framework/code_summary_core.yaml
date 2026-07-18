@@ -1,6 +1,8 @@
 ## code_summary_core — summary/search 폭주 시 핵심 3필드 전용 폴백
 extends: _common
 max_tokens: 600
+shared_values:
+  summary_contract: ../_shared/summary_contract.md
 user_template_specific: |
   # [축소 폴백 — 세 필드만]
 
@@ -9,7 +11,7 @@ user_template_specific: |
   쓰지 않는다.
 
   - `logical_name`: 업무 표시명 한 줄, 권장 22자 전후 체언형. 같은 문구 반복 금지.
-  - `summary`: 함수가 무엇을 판단·변경·반환하는지 1~3줄. 같은 문장 반복 금지.
+  {summary_contract}
   - `stereotype`: 아래 허용값 하나.
 
   `ApplicationService`, `DomainService`, `Repository`, `Factory`, `Command`, `Query`,

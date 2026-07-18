@@ -12,7 +12,9 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+
+from pipeline.models.analysis_context import ControlSubtreeNode
 
 # 문자 길이 → 근사 토큰 (research.md §2: 코드 평균 ~3.5 char/token). 외부 tokenizer 의존 없음.
 _CHARS_PER_TOKEN = 3.5
@@ -22,14 +24,9 @@ def approx_tokens(text: str) -> int:
     return int(len(text) / _CHARS_PER_TOKEN)
 
 
-@dataclass
-class SubtreeNode:
-    """분할 입력 — 함수 아래 제어문 1개 (reader code_nodes 로부터 조립)."""
-    node_id: str
-    ntype: str                 # IF / ELSE / LOOP / SWITCH / CASE
-    start: int                 # 1-based 시작 줄
-    end: int                   # 1-based 끝 줄
-    children: list["SubtreeNode"] = field(default_factory=list)
+# Historical public name retained inside the active step6 module; the transport
+# model itself belongs to the shared analysis-context boundary.
+SubtreeNode = ControlSubtreeNode
 
 
 @dataclass

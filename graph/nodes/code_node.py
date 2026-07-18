@@ -14,9 +14,10 @@ from typing import Iterable
 
 from graph.schema.graph_nodes import CodeNode
 from graph.node_upsert import join_notes, nonempty, upsert_by_node_label
+from graph.ownership import ANALYZER_GRAPH_OWNER
 from graph.neo4j_client import Neo4jClient
 from graph.nodes.stereotype_label import apply_stereotype_labels
-from pipeline.domain_terms import dump_domain_terms
+from graph.schema.domain_terms import dump_domain_terms
 
 
 # MERGE 쿼리·라벨 그룹핑은 ``graph/node_upsert.py`` 단일 정의처 (spec 046 FR-004).
@@ -25,9 +26,9 @@ from pipeline.domain_terms import dump_domain_terms
 
 # 의미 분석 결과 갱신 (analyze_code_step). table_insights 는 노드에 안 박는다 —
 # enrich_table_description_step 이 Table/Column.analyzed_description 으로 분배(제자리, spec 020).
-SET_SUMMARY_QUERY = """
+SET_SUMMARY_QUERY = f"""
 UNWIND $items AS item
-MATCH (node {id: item.id})
+MATCH (node {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 REMOVE node.domain_terms, node.domain_terms_json
 SET node += item
 """

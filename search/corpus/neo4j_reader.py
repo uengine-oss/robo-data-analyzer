@@ -7,16 +7,16 @@
 """
 from __future__ import annotations
 
-from system.env_catalog import ENV
+from analyzer_settings import SETTINGS
 from graph.connection_context import get_override
 
 
 def resolve_target() -> tuple[str, str, str, str]:
-    """(uri, user, password, database) — 요청 override 우선, 없으면 env."""
+    """(uri, user, password, database) — 요청 override 우선, 없으면 SETTINGS."""
     ov = get_override()
     if ov is not None:
-        return ov.uri, ov.user, ov.password, (ov.database or ENV.neo4j.database)
-    return ENV.neo4j.uri, ENV.neo4j.user, ENV.neo4j.password, ENV.neo4j.database
+        return ov.uri, ov.user, ov.password, (ov.database or SETTINGS.graph_database.database)
+    return SETTINGS.graph_database.uri, SETTINGS.graph_database.user, SETTINGS.graph_database.password, SETTINGS.graph_database.database
 
 
 def read_driver():

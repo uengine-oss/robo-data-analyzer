@@ -15,7 +15,7 @@ user_template_specific: |
   ## 출력 스키마 (code_rules_examples 와 동일)
   ```
   RulesExamplesOutput {
-    rules:[ { statement:"<조건>이면 <결과>", coupled_domains:["..."],
+    rules:[ { statement:"<조건>이면 <결과>",
               examples:[ { given, when, then, affected_tables:[ {table, op} ] } ] } ],
     questions:[ { text, reason } ] }
   ```
@@ -33,7 +33,7 @@ user_template_specific: |
      새 Rule/Example 을 지어내지 않는다.
   6. **개수 상한을 목표로 채우거나 자르지 않는다.** 서로 다른 결과는 개수와 무관하게 모두
      보존하고, 중복은 개수와 무관하게 모두 제거한다.
-  7. `affected_tables` 는 조각 결과의 값을 그대로 유지한다(재추론 X). `coupled_domains` 도 유지.
+  7. `affected_tables` 는 조각 결과의 값을 그대로 유지한다(재추론 X).
 
   ## 제출 전 자가 점검
   - 병합 후 동일 `(given, when, then, affected_tables)` 가 2회 이상이면 첫 행만 남긴다.

@@ -18,8 +18,8 @@ user_template_specific: |
     BatchTableInsightsItem {
       node_key: "<start>-<end>",
       table_insights: [
-        { table: "db.schema.BERTH_DAY_TB", role: "upsert",
-          columns: [ { name:"BERTH_CNT", logical_name:"접안횟수", description:"일별 접안 횟수(집계 결과)" },
+        { table: "db.schema.TARGET_DAILY_TB", role: "upsert",
+          columns: [ { name:"ITEM_CNT", logical_name:"항목건수", description:"일별 항목 건수" },
                      { name:"WORK_DATE", logical_name:"작업일자", description:"집계 기준 일자 키" } ] }
       ]
     }
@@ -76,7 +76,7 @@ user_template_specific: |
   수량/일자/시각/여부/내용처럼 이름에서 직접 확인되는 보수적 역할만 쓴다.
   ### 각 컬럼 필드 3개
   - `name` — DDL 컬럼명 정확히(추측 X, 대소문자 본문대로).
-  - `logical_name` — 짧은 업무 표시명(논리명) 한 줄(2~10자 체언, 예 `BERTH_CNT`→"접안횟수").
+  - `logical_name` — 이름에서 직접 확인되는 최소 표시명 한 줄(2~10자 체언).
     ①코드 식별자·DDL 타입·물리 컬럼명 그대로 X ②동어반복·문장형 X(짧은 이름만)
     ③모든 주입 컬럼에 비어 있지 않은 표시명. 근거가 적으면 `식별자`, `상태코드`, `등록일시`처럼
     이름의 토큰이 직접 드러내는 최소 역할만 쓰고 업무 의미를 창작하지 않는다.
@@ -85,9 +85,9 @@ user_template_specific: |
     확인 가능한 최소 역할을 비어 있지 않게 기재하고 코드값 의미·정책·상태 전이는 추측하지 않는다.
   - (필드는 name·logical_name·description 셋 — 사용위치 usage 는 소비처 미사용이라 응답에서 제외.)
   ### description 좋은 예
-  - `STATUS` → "처리 상태 코드 ('A'=활성 / 'C'=취소 / 'P'=대기)"
-  - `SETTLE_DATE` → "정산일자 (YYYYMMDD, 마감 후 확정)"
-  - `BERTH_CNT` → "일별 접안 횟수 (집계 결과)"
+  - 상태 코드의 값별 뜻이 입력에 없으면 "처리 상태 코드"까지만 쓴다.
+  - 날짜 이름만 확인되면 "기준 일자"처럼 최소 의미만 쓴다.
+  - 건수 이름만 확인되면 "집계 건수"처럼 최소 의미만 쓴다.
   ### 안티패턴
   - X: description="VARCHAR2(20) 컬럼"(DDL 타입) → O: "처리 상태 코드 ('A'/'C'/'P')".
   - X: "X를 저장하는 컬럼"(동어반복) → O: "처리 상태 코드 — 흐름 분기에 사용".

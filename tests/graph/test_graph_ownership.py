@@ -2,7 +2,8 @@ import asyncio
 from pathlib import Path
 
 from graph.edges.calls import EXTERNAL_QUERY
-from graph.node_upsert import ANALYZER_GRAPH_OWNER, merge_query
+from graph.ownership import ANALYZER_GRAPH_OWNER
+from graph.node_upsert import merge_query
 from graph.nodes.column import MERGE_QUERY as COLUMN_MERGE_QUERY
 from graph.nodes.db_schema import MERGE_QUERY as SCHEMA_MERGE_QUERY
 from graph.nodes.example import _UPSERT_QUERY as EXAMPLE_MERGE_QUERY
@@ -10,7 +11,7 @@ from graph.nodes.package import MERGE_QUERY as PACKAGE_MERGE_QUERY
 from graph.nodes.question import _UPSERT_QUERY as QUESTION_MERGE_QUERY
 from graph.nodes.rule import _UPSERT_QUERY as RULE_MERGE_QUERY
 from graph.nodes.table import MERGE_QUERY as TABLE_MERGE_QUERY
-from graph.schema.schema_constraints import (
+from graph.schema.constraints import (
     LEGACY_ANALYZER_STABLE_LABELS,
     LEGACY_OWNER_MIGRATION_QUERY,
     wipe_graph,

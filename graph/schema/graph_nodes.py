@@ -264,9 +264,7 @@ class DataType:
 class Rule:
     """비즈니스 규칙 — 같은 statement 는 코드노드 간 1 노드 공유.
 
-    정체성 ``id`` = 정규화 statement MD5[:12]. per-function 정보(coupled_domains)는
-    노드가 아닌 ``HAS_RULE`` 엣지 속성에 (노드 공유라서).
-    Neo4j MERGE 가 id(=해시) 키로 자동 dedup.
+    정체성 ``id`` = 정규화 statement MD5[:12]. Neo4j MERGE 가 id(=해시) 키로 자동 dedup.
     """
     id: str                                  # 정규화 statement MD5[:12] — Neo4j unique key
     statement: str                           # 비즈니스 규칙 문장

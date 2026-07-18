@@ -9,13 +9,14 @@ from typing import Iterable
 
 from graph.schema.graph_edges import BelongsTo
 from graph.neo4j_client import Neo4jClient
+from graph.ownership import ANALYZER_GRAPH_OWNER
 from graph.schema.rel_types import BELONGS_TO
 
 
 MERGE_QUERY = f"""
 UNWIND $items AS item
-MATCH (child {{id: item.child_id}})
-MATCH (parent {{id: item.parent_id}})
+MATCH (child {{id: item.child_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (parent {{id: item.parent_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 MERGE (child)-[:{BELONGS_TO}]->(parent)
 """
 

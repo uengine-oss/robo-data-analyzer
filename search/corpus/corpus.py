@@ -12,14 +12,16 @@ from __future__ import annotations
 
 from search.corpus.embed_material import EMBED_META_LABEL, EMBEDDED_LABEL
 from search.ranking.recall import tokenize
-from system.env_catalog import ENV
-from llm.client import embedder
+from analyzer_settings import SETTINGS
+from llm import embedder
+from graph.ownership import ANALYZER_GRAPH_OWNER
 
 _NO_EMBED_MSG = "이 그래프에는 검색 임베딩이 없습니다 (분석을 다시 실행하세요)"
 
-_CORPUS_QUERY = """
+_CORPUS_QUERY = f"""
 MATCH (n)
-WHERE n.summary IS NOT NULL AND n.summary <> ''
+WHERE n.graph_owner = '{ANALYZER_GRAPH_OWNER}'
+  AND n.summary IS NOT NULL AND n.summary <> ''
   AND NOT n:FILE AND NOT n:MODULE AND NOT n:PACKAGE
 RETURN n.id AS id, coalesce(n.type, head(labels(n))) AS label,
        coalesce(n.name,'') AS name, n.summary AS summary,
@@ -29,7 +31,8 @@ RETURN n.id AS id, coalesce(n.type, head(labels(n))) AS label,
        coalesce(n.logical_name,'') AS logical_name
 ORDER BY id
 """
-_FAN_IN_QUERY = ("MATCH (a)-[:CALLS]->(n) WHERE n.id IS NOT NULL "
+_FAN_IN_QUERY = (f"MATCH (a {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}})-[:CALLS]->"
+                 f"(n {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}}) WHERE n.id IS NOT NULL "
                  "RETURN n.id AS id, count(DISTINCT a) AS fi")
 
 # (uri, db) -> (signature, Corpus)
@@ -67,14 +70,21 @@ def load_corpus() -> Corpus:
     drv, db = read_driver()
     try:
         with drv.session(database=db) as s:
-            meta = s.run(f"MATCH (m:{EMBED_META_LABEL}) RETURN m.fingerprint AS fp").single()
+            meta = s.run(
+                f"MATCH (m:{EMBED_META_LABEL} {{graph_owner: $graph_owner}}) "
+                "RETURN m.fingerprint AS fp",
+                graph_owner=ANALYZER_GRAPH_OWNER,
+            ).single()
             fp = meta["fp"] if meta else None
             if not fp:
                 raise SearchUnavailable(_NO_EMBED_MSG)
             want = embedder.fingerprint()
             if fp != want:
                 raise SearchUnavailable(f"임베딩 모델 불일치 (그래프={fp}, 질의={want}) — 재분석 필요")
-            count = s.run(f"MATCH (n:{EMBEDDED_LABEL}) RETURN count(n) AS c").single()["c"]
+            count = s.run(
+                f"MATCH (n:{EMBEDDED_LABEL} {{graph_owner: $graph_owner}}) RETURN count(n) AS c",
+                graph_owner=ANALYZER_GRAPH_OWNER,
+            ).single()["c"]
             if count == 0:
                 raise SearchUnavailable(_NO_EMBED_MSG)
 
@@ -86,7 +96,7 @@ def load_corpus() -> Corpus:
 
             rows = s.run(_CORPUS_QUERY).data()
             fan_in = {r["id"]: r["fi"] for r in s.run(_FAN_IN_QUERY).data()}
-            vecs = _load_vectors(s, [r["id"] for r in rows]) if ENV.search.dense_impl == "scan" else None
+            vecs = _load_vectors(s, [r["id"] for r in rows]) if SETTINGS.semantic_search.dense_impl == "scan" else None
         corpus = Corpus(rows, fan_in, vecs)
         _cache[key] = (sig, corpus)
         return corpus
@@ -99,6 +109,10 @@ def _load_vectors(session, ids: list[str]):
     import numpy as np
 
     m = {r["id"]: r["v"] for r in session.run(
-        "MATCH (n) WHERE n.id IN $ids AND n.embedding IS NOT NULL "
-        "RETURN n.id AS id, n.embedding AS v", ids=ids).data()}
+        "MATCH (n {graph_owner: $graph_owner}) "
+        "WHERE n.id IN $ids AND n.embedding IS NOT NULL "
+        "RETURN n.id AS id, n.embedding AS v",
+        ids=ids,
+        graph_owner=ANALYZER_GRAPH_OWNER,
+    ).data()}
     return np.array([m[i] for i in ids if i in m], dtype=np.float32)

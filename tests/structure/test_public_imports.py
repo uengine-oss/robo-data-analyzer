@@ -8,17 +8,21 @@ from unittest.mock import patch
 
 PUBLIC_MODULES = (
     "main",
+    "analyzer_settings",
+    "runtime_events.runtime_logger",
+    "runtime_events.ndjson_event_stream",
+    "runtime_events.processing_events",
     "api.analyze_router",
     "api.search_router",
     "api.source_router",
     "api.mcp_app",
-    "pipeline.analysis_pipelines",
+    "pipeline.strategies",
     "pipeline.execution.run_executor",
     "graph.neo4j_client",
     "search.service",
-    "search.query.query_rewrite",
-    "search.query.relevance_judge",
-    "llm.client.llm_client",
+    "search.query.rewrite",
+    "search.query.judge",
+    "llm.llm_client",
 )
 
 
@@ -45,16 +49,16 @@ class PublicImportTest(unittest.TestCase):
 
     def test_query_llm_reads_search_settings_contract(self) -> None:
         from search.query import query_llm
-        from system.env_catalog import ENV
+        from analyzer_settings import SETTINGS
 
         query_llm._cfg_cache.clear()
         sentinel_config = object()
         try:
             with patch.object(query_llm, "load_llm_config", return_value=sentinel_config) as loader:
                 config, api_key = query_llm._config()
-            loader.assert_called_once_with(ENV.search.llm_config)
+            loader.assert_called_once_with(SETTINGS.semantic_search.llm_config)
             self.assertIs(config, sentinel_config)
-            self.assertEqual(api_key, ENV.search.llm_api_key or ENV.llm.api_key)
+            self.assertEqual(api_key, SETTINGS.semantic_search.llm_api_key or SETTINGS.analysis_llm.api_key)
         finally:
             query_llm._cfg_cache.clear()
 

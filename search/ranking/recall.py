@@ -12,13 +12,15 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from search.corpus.embed_material import VECTOR_INDEX_NAME
-from system.env_catalog import ENV
+from analyzer_settings import SETTINGS
+from graph.ownership import ANALYZER_GRAPH_OWNER
 
 _TOKEN = re.compile(r"[A-Za-z0-9]+|[가-힣]+")
 
 _QUERY_NODES = (
     "CALL db.index.vector.queryNodes($name, $k, $qv) YIELD node, score "
-    "WHERE node.id IS NOT NULL RETURN node.id AS id, score AS score"
+    "WHERE node.id IS NOT NULL AND node.graph_owner = $graph_owner "
+    "RETURN node.id AS id, score AS score"
 )
 
 
@@ -52,8 +54,13 @@ class Cand:
 
 def _dense_index(session, qv, k: int) -> list[tuple[str, float]]:
     """요청 DB 벡터 인덱스 근사탐색 top-k (id, cosine)."""
-    rows = session.run(_QUERY_NODES, name=VECTOR_INDEX_NAME, k=k,
-                       qv=[float(x) for x in qv]).data()
+    rows = session.run(
+        _QUERY_NODES,
+        name=VECTOR_INDEX_NAME,
+        k=k,
+        qv=[float(x) for x in qv],
+        graph_owner=ANALYZER_GRAPH_OWNER,
+    ).data()
     return [(r["id"], float(r["score"])) for r in rows]
 
 
@@ -92,7 +99,7 @@ def recall(session, corpus, queries: list[str], query_vecs: list, cfg) -> list[C
     """채널×질의 전부 RRF 융합. dense=인덱스(기본)/scan(원복), bm25·structural=코퍼스."""
     rrf_k = cfg.rrf_k
     agg: dict[str, Cand] = {}
-    use_index = ENV.search.dense_impl != "scan"
+    use_index = SETTINGS.semantic_search.dense_impl != "scan"
 
     def add(ch: str, ranked: list[tuple[str, float]]):
         for rank, (cid, sc) in enumerate(ranked):

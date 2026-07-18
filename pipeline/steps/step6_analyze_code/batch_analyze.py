@@ -24,13 +24,14 @@ from pipeline.steps.step6_analyze_code.analysis_order import bottom_up_rounds
 from pipeline.steps.step6_analyze_code.batch_planner import (
     Batch, build_effective_tree, plan_batches,
 )
+from pipeline.steps.step6_analyze_code.batch_prompt_values import _build_batch_values
 from pipeline.steps.step6_analyze_code.call_cycles import find_call_cycles
 from pipeline.steps.step6_analyze_code.range_body import ancestor_context, body_for, skeleton_body
 from pipeline.steps.step6_analyze_code.rw_table_filter import constrain_tables_to_rw
 from pipeline.steps.step6_analyze_code.table_prompt_context import dump_table_refs
-from pipeline.steps.step4_linking.stage2_extract_calls.call_linker import routine_call_pairs
-from pipeline.data_models.analysis_context import AnalysisContext, dump_referenced_symbols
-from pipeline.data_models.code_analysis_output import (
+from pipeline.steps.step4_linking.link_calls.call_linker import routine_call_pairs
+from pipeline.models.analysis_context import AnalysisContext, dump_referenced_symbols
+from pipeline.models.code_analysis_output import (
     BatchRulesItem,
     BatchRulesOutput,
     BatchSummaryItem,
@@ -39,14 +40,15 @@ from pipeline.data_models.code_analysis_output import (
     BatchSummaryOutput,
 )
 from graph.schema.graph_nodes import CodeNode
-from system.env_catalog import ENV
-from pipeline.domain_terms import normalize_domain_terms
-from pipeline.programming_languages import ROUTINE_LABELS, coerce_stereotype
-from llm.client.usage.cost_budget import BudgetExceededError
-from llm.client.runners.yaml_llm_runner import run_yaml_rule
-from log.logger import log_error, log_info, log_warning
-from log.processing_progress import track_processing
-from pipeline.source_file_cache import SourceFileCache
+from analyzer_settings import SETTINGS
+from pipeline.steps.step6_analyze_code.domain_terms import normalize_domain_terms
+from pipeline.steps.step6_analyze_code.summary_quality import enforce_summary_boundary
+from pipeline.languages import ROUTINE_LABELS, coerce_stereotype
+from llm.usage.cost_budget import BudgetExceededError
+from llm.runners.yaml_llm_runner import run_yaml_rule
+from runtime_events.runtime_logger import log_error, log_info, log_warning
+from runtime_events.processing_events import track_processing
+from source.file_cache import SourceFileCache
 from pipeline.execution.pause_controller import PauseController
 
 _STEP = "step6.analyze_code.batch"
@@ -117,9 +119,8 @@ async def run_dbms_batch_analysis(
     paused 면 hold, stop 이면 RunStopped, 일시정지로 취소된 배치는 재개 시 재투입.
     """
     # persist/EM 헬퍼는 analyze_code_step 공유 (지연 import — 순환 회피).
-    from pipeline.steps.step6_analyze_code.analyze_code_step import (
-        _accumulate_em, _persist_and_emit_code,
-    )
+    from pipeline.steps.step6_analyze_code.framework_per_node import _accumulate_em
+    from pipeline.steps.step6_analyze_code.result_sink import _persist_and_emit_code
     from pipeline.steps.step6_analyze_code.example_mapping_builder import ExampleMappingResult
 
     started = time.monotonic()
@@ -145,10 +146,10 @@ async def run_dbms_batch_analysis(
     # 규칙 추출 단위 = 예산 내 최고 조상 (budget descent). body_for 의 단일 원리(예산 내 원문)와
     # 결합 → 단위 노드의 body 는 자동으로 원문(1차 증거). 하강한 컨테이너(gates)는 골격으로
     # 자기 줄 게이트 조건만 규칙화(자식 내용은 각 단위 담당 — 중복 0).
-    rule_units, rule_gates = _plan_rule_units(code_by_id, eff_children, token_of, ENV.pipeline.batch_max_tokens)
+    rule_units, rule_gates = _plan_rule_units(code_by_id, eff_children, token_of, SETTINGS.analysis_pipeline.batch_max_tokens)
     log_info(_STEP, "rule_units", units=len(rule_units), gates=len(rule_gates), analysis_nodes=len(analysis_ids))
 
-    semaphore = asyncio.Semaphore(ENV.pipeline.max_concurrency)
+    semaphore = asyncio.Semaphore(SETTINGS.analysis_pipeline.max_concurrency)
     # source_cache 는 caller(analyze_code_step)가 주입 — run 스코프 공유 (spec 046 FR-008).
     em_acc = ExampleMappingResult()
     analyzed = failed = batch_count = 0
@@ -156,7 +157,7 @@ async def run_dbms_batch_analysis(
     for round_idx, round_ids in enumerate(rounds, start=1):
         if not round_ids:
             continue
-        batches = plan_batches(round_ids, eff_parent, start_of, token_of, ENV.pipeline.batch_max_tokens)
+        batches = plan_batches(round_ids, eff_parent, start_of, token_of, SETTINGS.analysis_pipeline.batch_max_tokens)
         batch_count += len(batches)
 
         # 미완료 배치가 빌 때까지 투입 — 일시정지로 취소된 배치만 재투입(Neo4j MERGE 라 안전).
@@ -195,10 +196,8 @@ async def run_dbms_batch_analysis(
                         _accumulate_em(em_acc, em)
                         analyzed += 1
             finally:
-                pause.clear_inflight()
-                for task in tasks:                 # budget 차단 등 조기 이탈 시 orphan LLM 호출 차단
-                    if not task.done():
-                        task.cancel()
+                # pause/stop/예산 차단/상위 취소 모두 coroutine finally까지 수거한 뒤 진행.
+                await pause.cancel_and_wait(tasks)
             remaining = [b for b in remaining if id(b) not in done_batches]
 
     # 불변식 (spec 045 FR-008): ``failed`` 는 **배치** 단위라 노드 집계와 단위가 다르다.
@@ -330,6 +329,18 @@ async def _batch_call(
         prompts_dir=prompts_dir, rule_name="code_summary_batch",
         user_values=user_values, response_model=BatchSummaryOutput, budget=cost_budget,
     )
+    for summary in summary_out.nodes:
+        fid = key_to_id.get(summary.node_key.strip())
+        if fid is None:
+            continue
+        summary.summary = await enforce_summary_boundary(
+            summary=summary.summary,
+            node_name=code_by_id[fid].name,
+            logical_name=summary.logical_name,
+            search_text=summary.search_text,
+            budget=cost_budget,
+            audit_id=fid,
+        )
 
     # 분할 3 비즈로직 — rule_units(예산 내 최고 조상) 노드만. 단위는 예산에 들어가므로
     #   body_for 가 이미 원문(자식 서브트리 포함)을 줬다 = 1차 증거, 특수 입력 빌드 불필요.
@@ -448,68 +459,3 @@ def _apply_node_analysis(
     ctx.extra["rules"] = fn.extra["rules"]
     ctx.extra["questions"] = fn.extra["questions"]
     return fn
-
-
-def _build_batch_values(
-    batch: Batch,
-    contexts: dict[str, AnalysisContext],
-    code_by_id: dict[str, CodeNode],
-    codebase_notes: str,
-    module_intents: dict[str, str],
-    table_descriptions: dict[str, dict],
-    cache: SourceFileCache,
-    body_fn=body_for,
-) -> tuple[dict, dict[str, str]]:
-    """배치 → batch yaml user_values + ``node_key -> code_id`` 매핑.
-
-    프로시저 정보(루트)·조상 골격은 배치 1회 공유(prefix 캐시). 각 형제는 줄범위 key +
-    reads/writes/참조심볼 + body. body 는 ``body_fn`` — 기본 ``body_for``(예산 내 원문,
-    초과 시 compact). 게이트 규칙 콜만 ``skeleton_body``(자식 접힘 — 자기 줄 조건만).
-    """
-    first_ctx = contexts[batch.node_ids[0]]
-    root = _root_code_node(batch.node_ids[0], contexts, code_by_id)
-    parent_ctx = contexts.get(batch.parent_id) if batch.parent_id else None
-    ancestor = ancestor_context(first_ctx, contexts, cache) if parent_ctx is not None else "(없음)"
-
-    blocks: list[str] = []
-    key_to_id: dict[str, str] = {}
-    for nid in batch.node_ids:
-        ctx = contexts[nid]
-        key = f"{ctx.start_line}-{ctx.end_line}"
-        key_to_id[key] = nid
-        body = body_fn(ctx, contexts, cache)
-        blocks.append(
-            f"### 노드 {key}\n"
-            f"reads(JSON): {dump_table_refs(ctx.reads, table_descriptions)}\n"
-            f"writes(JSON): {dump_table_refs(ctx.writes, table_descriptions)}\n"
-            f"참조심볼(JSON): {dump_referenced_symbols(ctx.referenced_symbols)}\n"
-            f"body:\n```\n{body}\n```"
-        )
-
-    values = {
-        "unit_id": root.id if root else first_ctx.id,
-        "unit_signature": root.signature if root else first_ctx.signature,
-        "module_intent": module_intents.get(root.owner_id if root else "") or "(없음)",
-        "codebase_notes": codebase_notes or "(없음)",
-        "ancestor_context": ancestor,
-        "node_count": str(len(batch.node_ids)),
-        "node_keys": ", ".join(key_to_id),
-        "nodes": "\n\n".join(blocks),
-    }
-    return values, key_to_id
-
-
-def _root_code_node(
-    node_id: str, contexts: dict[str, AnalysisContext], code_by_id: dict[str, CodeNode],
-) -> Optional[CodeNode]:
-    """노드의 프로시저 루트 CodeNode — 유효 parent_id 체인 최상위."""
-    cur = node_id
-    seen: set[str] = set()
-    while cur not in seen:
-        seen.add(cur)
-        ctx = contexts.get(cur)
-        pid = ctx.extra.get("parent_id") if ctx else None
-        if pid is None:
-            break
-        cur = pid
-    return code_by_id.get(cur)

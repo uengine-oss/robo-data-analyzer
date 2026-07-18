@@ -5,12 +5,13 @@ from typing import Iterable
 
 from graph.schema.graph_edges import HasQuestion
 from graph.neo4j_client import Neo4jClient
+from graph.ownership import ANALYZER_GRAPH_OWNER
 from graph.schema.rel_types import HAS_QUESTION
 
 _UPSERT_QUERY = f"""
 UNWIND $items AS item
-MATCH (node {{id: item.source_id}})
-MATCH (q:QUESTION {{id: item.target_id}})
+MATCH (node {{id: item.source_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (q:QUESTION {{id: item.target_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 MERGE (node)-[:{HAS_QUESTION}]->(q)
 """
 

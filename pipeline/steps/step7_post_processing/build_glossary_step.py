@@ -25,16 +25,17 @@ from typing import Optional
 from langchain_core.runnables import RunnableConfig
 from pathlib import Path
 
-from pipeline.data_models.code_analysis_output import GlossarySynthesisOutput
+from pipeline.models.code_analysis_output import GlossarySynthesisOutput
 from graph.schema.graph_nodes import CodeNode, Module
-from system.env_catalog import ENV
-from llm.client.usage.cost_budget import BudgetExceededError
-from llm.client.llm_fanout import gather_with_warmup
-from llm.client.runners.yaml_llm_runner import run_yaml_rule
-from log.logger import log_error, log_info, log_warning
+from analyzer_settings import SETTINGS
+from llm.usage.cost_budget import BudgetExceededError
+from llm.llm_fanout import gather_with_warmup
+from llm.runners.yaml_llm_runner import run_yaml_rule
+from runtime_events.runtime_logger import log_error, log_info, log_warning
 from graph.neo4j_client import Neo4jClient
-from graph.node_upsert import ANALYZER_GRAPH_OWNER
+from graph.ownership import ANALYZER_GRAPH_OWNER
 from pipeline.execution.step_config import step_config
+from pipeline.execution.pause_controller import PauseController
 
 from pipeline.steps.step7_post_processing.summarize_module_step import _match_code_to_modules
 
@@ -44,10 +45,9 @@ MAX_CTX_NODES = 6     # 종합 문맥에 넣을 출처 노드 상한 (초과분 
 
 _UPSERT_QUERY = f"""
 UNWIND $items AS item
-MERGE (g:GLOSSARY {{id: "glossary"}})
+MERGE (g:GLOSSARY {{id: "glossary", graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 SET g.terms_json = item.terms_json,
-    g.n_terms = item.n_terms,
-    g.graph_owner = '{ANALYZER_GRAPH_OWNER}'
+    g.n_terms = item.n_terms
 """
 
 
@@ -192,6 +192,7 @@ async def build_glossary_step(state: dict, config: Optional[RunnableConfig] = No
     strategy = cfg.get("strategy")
     cost_budget = cfg.get("cost_budget")
     neo: Neo4jClient | None = cfg.get("neo_client")
+    pause: PauseController = cfg.get("pause") or PauseController()
 
     code_nodes: list[CodeNode] = state.get("code_nodes", [])
     modules: list[Module] = state.get("modules", [])
@@ -210,7 +211,7 @@ async def build_glossary_step(state: dict, config: Optional[RunnableConfig] = No
     term_catalog = "\n".join(f"- {v['canonical']}" for v in terms.values())
 
     prompts_dir = Path(strategy.prompts_dir)
-    semaphore = cfg.get("llm_semaphore") or asyncio.Semaphore(ENV.pipeline.max_concurrency)
+    semaphore = cfg.get("llm_semaphore") or asyncio.Semaphore(SETTINGS.analysis_pipeline.max_concurrency)
 
     async def _synthesize_one(key: str) -> tuple[str, GlossarySynthesisOutput]:
         slot = terms[key]
@@ -230,9 +231,12 @@ async def build_glossary_step(state: dict, config: Optional[RunnableConfig] = No
         return key, result
 
     keys = list(terms)
-    results = await gather_with_warmup(
-        [_synthesize_one(k) for k in keys], return_exceptions=True,
-    )
+    async def _run_fanout() -> list:
+        return await gather_with_warmup(
+            [_synthesize_one(k) for k in keys], return_exceptions=True,
+        )
+
+    results = await pause.run_restartable_during_pause(_run_fanout)
 
     accepted: dict[str, dict] = {}
     failed = rejected = 0

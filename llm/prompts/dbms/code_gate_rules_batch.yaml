@@ -15,7 +15,7 @@ user_template_specific: |
   - 출력 스키마 (입력 `### 노드 <key>` 마다 1 항목):
     ```
     BatchRulesItem { node_key:"<start>-<end>",
-      rules:[ { statement:"<조건>이면 <결과>", coupled_domains:[],
+      rules:[ { statement:"<조건>이면 <결과>",
                 examples:[ { given, when, then, affected_tables:[] } ] } ],
       questions:[] }
     ```
@@ -24,9 +24,9 @@ user_template_specific: |
   ## 1. ★★ 기본값 = 규칙 1개 (빈 배열이 아니다)
   이 콜에 온 컨테이너는 **자기 줄에 진입 조건·선별 로직이 있어서** 온 것이다. 자기 줄의 도메인 조건이
   보이면 **"<조건>일 때만 <접힌 내부 처리>를 수행한다" 규칙 1개가 기본**이다.
-  - ✅ 예: body `IF 정산 대상 건수 >= 1 AND 작업일 < 오늘 THEN .... END IF`
-    → 규칙 "정산 대상이 존재하고 작업일이 오늘 이전일 때만 후속 정산 집계를 수행한다"
-      · example given "정산 대상 ≥ 1 且 작업일 < 오늘" then "후속 집계 수행" / given "그 외" then "수행하지 않음".
+  - ✅ 예: body `IF 대상 건수 >= 1 AND 기준일 < 오늘 THEN .... END IF`
+    → 규칙 "대상이 존재하고 기준일이 오늘 이전일 때만 후속 처리를 수행한다"
+      · example given "대상 ≥ 1 且 기준일 < 오늘" then "후속 처리" / given "그 외" then "수행하지 않음".
   - ✅ 예: body `LOOP  -- 커서: 검증 '불일치' 건 순회  FETCH ...; EXIT WHEN ...; .... END LOOP`
     → 규칙 "검증 결과가 '불일치'인 건만 재처리 대상으로 순회한다".
   - ✅ 예: body `IF 처리유형 = 1 THEN .... ELSE .... END IF` (자기 줄 분기 조건)

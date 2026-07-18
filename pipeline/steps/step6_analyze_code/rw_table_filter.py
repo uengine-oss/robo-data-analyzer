@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Iterable, Optional
 
-from log.logger import log_info, log_warning
+from runtime_events.runtime_logger import log_info, log_warning
 
 _STEP = "step6.analyze_code.rw_filter"
 

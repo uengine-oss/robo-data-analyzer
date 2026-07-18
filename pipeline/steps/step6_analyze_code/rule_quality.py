@@ -14,7 +14,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 
-from pipeline.data_models.code_analysis_output import ExampleItem, RulesExamplesOutput
+from pipeline.models.code_analysis_output import ExampleItem, RulesExamplesOutput
 
 # ── 임계 시작값 (research.md §1) — 실측 후 조정. 이 파일이 단일 진실 ──
 DUP_RATIO_ANOMALY = 0.20       # 정규화 후 완전중복 Example 비율

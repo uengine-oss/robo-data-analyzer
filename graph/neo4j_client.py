@@ -20,8 +20,8 @@ from tenacity import (
     wait_exponential,
 )
 
-from system.env_catalog import ENV
-from log.logger import log_warning
+from analyzer_settings import SETTINGS
+from runtime_events.runtime_logger import log_warning
 from graph.connection_context import get_override
 
 
@@ -29,7 +29,7 @@ class Neo4jClient:
     """Neo4j async 클라이언트.
 
     연결 출처: 현재 run 컨텍스트에 Neo4j override(Electron 호스트가 헤더로 주입)가 있으면
-    그 값을, 없으면(브라우저/테스트/CLI) ``ENV.neo4j``(.env) 를 쓴다.
+    그 값을, 없으면(브라우저/테스트/CLI) ``SETTINGS.graph_database``(.env) 를 쓴다.
 
     Usage::
 
@@ -43,10 +43,10 @@ class Neo4jClient:
         override = get_override()
         if override is not None:
             uri, user, password = override.uri, override.user, override.password
-            self._database = override.database or ENV.neo4j.database
+            self._database = override.database or SETTINGS.graph_database.database
         else:
-            uri, user, password = ENV.neo4j.uri, ENV.neo4j.user, ENV.neo4j.password
-            self._database = ENV.neo4j.database
+            uri, user, password = SETTINGS.graph_database.uri, SETTINGS.graph_database.user, SETTINGS.graph_database.password
+            self._database = SETTINGS.graph_database.database
         self._driver = AsyncGraphDatabase.driver(uri, auth=(user, password))
         self._closed = False
 
@@ -92,8 +92,8 @@ class Neo4jClient:
             return None
 
         async for attempt in AsyncRetrying(
-            stop=stop_after_attempt(ENV.neo4j.retry_max_attempts),
-            wait=wait_exponential(multiplier=ENV.neo4j.retry_backoff_seconds),
+            stop=stop_after_attempt(SETTINGS.graph_database.retry_max_attempts),
+            wait=wait_exponential(multiplier=SETTINGS.graph_database.retry_backoff_seconds),
             retry=retry_if_exception_type((TransientError, ServiceUnavailable)),
             reraise=True,
         ):

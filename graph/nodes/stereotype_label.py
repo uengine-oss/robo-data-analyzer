@@ -17,6 +17,7 @@ from collections import defaultdict
 from typing import Iterable
 
 from graph.neo4j_client import Neo4jClient
+from graph.ownership import ANALYZER_GRAPH_OWNER
 
 
 def _label_of(stereotype: str) -> str:
@@ -33,7 +34,7 @@ def _set_label_query(label: str) -> str:
     # label 은 검증풀 파생 UPPER_SNAKE — 백틱으로 한 번 더 방어(특수문자 시에도 안전).
     return f"""
 UNWIND $items AS item
-MATCH (node {{id: item.id}})
+MATCH (node {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 SET node:`{label}`
 """
 

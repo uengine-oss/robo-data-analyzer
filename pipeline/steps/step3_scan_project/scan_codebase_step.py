@@ -21,9 +21,9 @@ from pipeline.steps.step3_scan_project.scan_agent import run_scan_agent
 from pipeline.steps.step3_scan_project.scanner_input_collector import (
     collect_scanner_input,
 )
-from llm.client.usage.cost_budget import CostBudget
-from llm.client.middleware.call_limit import ModelCallLimitExceeded
-from log.logger import log_error, log_info, log_warning
+from llm.usage.cost_budget import CostBudget
+from llm.middleware.call_limit import ModelCallLimitExceeded
+from runtime_events.runtime_logger import log_error, log_info, log_warning
 from pipeline.execution.graph_delta_stream import emit_message
 
 _STEP = "step3.scan"

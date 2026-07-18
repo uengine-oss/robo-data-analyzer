@@ -13,9 +13,9 @@ from langchain_core.runnables import RunnableConfig
 
 from pipeline.execution.step_config import step_config
 
-from system.env_catalog import ENV
+from analyzer_settings import SETTINGS
 from pipeline.steps.step1_parse_ddl.ddl_parser import parse_ddl_file
-from log.logger import log_info, log_warning
+from runtime_events.runtime_logger import log_info, log_warning
 from graph.edges.belongs_to import upsert_belongs_to
 from graph.edges.fk import upsert_fk
 from graph.edges.has_column import upsert_has_column
@@ -43,7 +43,7 @@ async def parse_ddl_step(state: dict, config: Optional[RunnableConfig] = None) -
 
     # ddl_dir 미설정 시 표준 data/ddl 로 폴백 — 절대 source 루트를 긁지 않는다
     # (입구 통일 후 data/ddl 엔 표 정의만 존재; 프로시저가 sqlglot 에 닿아 run 이 죽던 사고 차단).
-    ddl_dir = project.ddl_dir or (ENV.data.dir / "ddl")
+    ddl_dir = project.ddl_dir or (SETTINGS.analysis_data.dir / "ddl")
     # 분석 요청의 datasource는 실제 대상 DB namespace다. 디렉토리명 같은 가공값은 쓰지 않고,
     # 명시되지 않은 run만 빈값으로 남긴다.
     db_name = (getattr(project, "datasource", None) or "").strip()
@@ -88,12 +88,12 @@ async def parse_ddl_step(state: dict, config: Optional[RunnableConfig] = None) -
 
     # 라이브 스트림 — DDL 골격을 step 완료 즉시 화면으로(프론트 트리·그래프 라이브).
     stream = cfg.get("stream")
-    emit_nodes(stream, schemas)
-    emit_nodes(stream, tables)
-    emit_nodes(stream, columns)
-    emit_edges(stream, has_cols)
-    emit_edges(stream, belongs)
-    emit_edges(stream, fks)
+    await emit_nodes(stream, schemas)
+    await emit_nodes(stream, tables)
+    await emit_nodes(stream, columns)
+    await emit_edges(stream, has_cols)
+    await emit_edges(stream, belongs)
+    await emit_edges(stream, fks)
     emit_message(stream, f"✅ DDL 파싱 완료 — 테이블 {len(tables)}, 컬럼 {len(columns)}, FK {len(fks)}")
 
     log_info(

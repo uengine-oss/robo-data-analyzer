@@ -23,13 +23,11 @@ table_access_patterns:
       - {token: find,   op: SELECT}      # findByPrimaryKey / findByXxx / findAll 모두 prefix=find
       - {token: create, op: INSERT}
       - {token: remove, op: DELETE}
-    entity_source: home_name_prefix         # "OrderHome" → "Order"
 
   - id: ejb_cmp_setter
     call_regex: '\.(?P<op_token>set)[A-Z]\w+\s*\('
     op_mappings:
       - {token: set, op: UPDATE}            # setter 호출은 CMP UPDATE 트리거
-    entity_source: caller_class_name
 
 ddl_transform:
   ddl_naming_rule: camel_to_snake_upper

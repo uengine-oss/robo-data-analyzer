@@ -15,12 +15,12 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from search.corpus.corpus import SearchUnavailable
 from search.service import run_search
-from log.logger import log_error, log_info
-from log.ndjson_stream import NDJSONStream
+from runtime_events.runtime_logger import log_error, log_info
+from runtime_events.ndjson_event_stream import NDJSONStream
 from graph.connection_context import Neo4jOverride, set_override
 
 router = APIRouter(prefix="/robo")
@@ -28,7 +28,7 @@ router = APIRouter(prefix="/robo")
 
 class SearchRequest(BaseModel):
     query: str
-    top_n: Optional[int] = None
+    top_n: Optional[int] = Field(default=None, ge=1, le=100)
 
 
 @router.post("/search/semantic")
@@ -38,7 +38,10 @@ async def search_semantic(req: SearchRequest, request: Request) -> StreamingResp
     if not query:
         raise HTTPException(status_code=400, detail="빈 질의")
 
-    set_override(Neo4jOverride.from_headers(request.headers))
+    try:
+        set_override(Neo4jOverride.from_headers(request.headers))
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail="Invalid Neo4j override headers") from error
     stream = NDJSONStream()
     loop = asyncio.get_running_loop()
 
@@ -49,17 +52,26 @@ async def search_semantic(req: SearchRequest, request: Request) -> StreamingResp
                     "type": "progress", "stage": stage, "label": label,
                     "detail": detail, "done": False,
                 })
-            clusters, meta = await asyncio.to_thread(run_search, query, on_progress)
+            clusters, meta = await asyncio.to_thread(
+                run_search, query, on_progress, top_n=req.top_n,
+            )
             log_info("api.search", "done", query=query,
                      nodes=sum(len(c["nodes"]) for c in clusters))
             stream.emit({"type": "result", "clusters": clusters, "meta": meta})
         except SearchUnavailable as e:
             stream.emit({"type": "error", "message": str(e)})
         except Exception as e:  # noqa: BLE001 — 표면화(헌법 IV): 조용한 실패 금지
-            log_error("api.search", "search_failed", f"검색 실패: {e}", query=query)
-            stream.emit({"type": "error", "message": f"검색 실패: {e}"})
+            log_error("api.search", "search_failed", e, query=query)
+            stream.emit({
+                "type": "error",
+                "message": "검색 처리에 실패했습니다.",
+                "error_type": type(e).__name__,
+            })
         finally:
             await stream.close()
 
-    asyncio.create_task(_run())
-    return StreamingResponse(stream.iter(), media_type="application/x-ndjson")
+    producer = asyncio.create_task(_run())
+    return StreamingResponse(
+        stream.iter_with_producer(producer),
+        media_type="application/x-ndjson",
+    )

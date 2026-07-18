@@ -8,13 +8,14 @@ from typing import Iterable
 
 from graph.schema.graph_edges import References
 from graph.neo4j_client import Neo4jClient
+from graph.ownership import ANALYZER_GRAPH_OWNER
 from graph.schema.rel_types import REFERENCES
 
 
 MERGE_QUERY = f"""
 UNWIND $items AS item
-MATCH (node {{id: item.source_id}})
-MATCH (t {{id: item.target_id}})
+MATCH (node {{id: item.source_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (t {{id: item.target_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 MERGE (node)-[r:{REFERENCES}]->(t)
 SET r.evidence_line = item.evidence_line
 """

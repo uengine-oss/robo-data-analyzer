@@ -1,7 +1,7 @@
 # 온톨로지 — 언어별 antlr node type 분류 + stereotype 풀.
 #
 # roles     : antlr node type → 역할 (Framework 전용 — java/c/python).
-#             pipeline/programming_languages.py 의 role_of 가 읽음 (분류 전용 — 라벨엔 안 씀).
+#             pipeline/languages.py 의 role_of 가 읽음 (분류 전용 — 라벨엔 안 씀).
 # paradigm  : 언어 → oop / procedural.
 # framework / dbms : LLM stereotype 풀 — 풀에 없는 값은 빈 문자열로 강제(환각 차단).
 #
@@ -46,6 +46,34 @@ roles:
 
 # (옛 `paradigm:` 섹션 삭제 — ontology.paradigm() 만 읽던 죽은 데이터였고
 #  그 함수도 호출부 0건이라 함께 제거. spec 046 FR-010.)
+
+# DBMS 플랫폼의 내장 패키지. 호출 텍스트의 식별자 한 세그먼트와 정확히
+# 일치할 때만 builtin 으로 분류한다. prefix 패턴은 application package 를
+# 조용히 버리므로 금지한다. dialect key 는 parser 지원 확장 시 독립 확장점이다.
+dbms_builtin_packages:
+  oracle:
+    - DBMS_APPLICATION_INFO
+    - DBMS_ASSERT
+    - DBMS_CRYPTO
+    - DBMS_LOB
+    - DBMS_LOCK
+    - DBMS_METADATA
+    - DBMS_OUTPUT
+    - DBMS_RANDOM
+    - DBMS_SCHEDULER
+    - DBMS_SESSION
+    - DBMS_SQL
+    - DBMS_STATS
+    - DBMS_UTILITY
+    - HTF
+    - HTP
+    - OWA_UTIL
+    - STANDARD
+    - UTL_FILE
+    - UTL_HTTP
+    - UTL_RAW
+    - UTL_SMTP
+    - UTL_TCP
 
 # ───────────────────────────────────────────────
 # 2. stereotype 풀 — analyze_function 의 SummaryOutput.stereotype 검증.

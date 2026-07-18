@@ -33,13 +33,17 @@ def _target(path: str) -> str:
         name = path.removeprefix("cli_scripts/")
         if name == "prompt_hashes.json":
             return "llm/prompts/prompt_hashes.json"
-        if name in {"check_byte_identical.py", "refresh_pricing.py"}:
-            return f"scripts/llm_maintenance/{name}"
-        if name in {"reembed_graph.py", "reset_neo4j_schema.py", "resynthesize_glossary.py"}:
-            return f"scripts/graph_maintenance/{name}"
+        if name in {
+            "check_byte_identical.py",
+            "refresh_pricing.py",
+            "reembed_graph.py",
+            "reset_neo4j_schema.py",
+            "resynthesize_glossary.py",
+        }:
+            return f"scripts/{name}"
         if name == "README.md":
             return "scripts/README.md"
-        return f"scripts/analysis/{name}"
+        return f"scripts/{name}"
     if path.startswith("data_models/"):
         name = path.removeprefix("data_models/")
         if name in {"graph_nodes.py", "graph_edges.py"}:
@@ -50,7 +54,7 @@ def _target(path: str) -> str:
             return "pipeline/data_models/analysis_meta.py"
         return f"pipeline/data_models/{name}"
     if path.startswith("llm_configs/"):
-        return f"llm/configs/{path.removeprefix('llm_configs/')}"
+        return f"llm/model_configs/{path.removeprefix('llm_configs/')}"
     if path.startswith("prompts/agents/"):
         return f"llm/agents/{path.removeprefix('prompts/agents/')}"
     if path.startswith("prompts/"):
@@ -134,7 +138,12 @@ def _target(path: str) -> str:
         name = path.removeprefix("shared/log/")
         if name in {"prompt_logger.py", "prompt_mask_patterns.py", "cache_message_filters.py"}:
             return f"llm/client/prompt_logging/{name}"
-        return f"log/{name}"
+        renames = {
+            "logger.py": "runtime_logger.py",
+            "ndjson_stream.py": "ndjson_event_stream.py",
+            "processing_progress.py": "processing_events.py",
+        }
+        return f"runtime_events/{renames.get(name, name)}"
     if path.startswith("shared/neo4j/"):
         name = path.removeprefix("shared/neo4j/")
         if name == "ids.py":

@@ -13,7 +13,6 @@ robo.cmd up analyzer
 | 구분 | 명령 | 사용자 | 유지 이유 |
 |---|---|---|---|
 | 표준 분석 | `analyze_data_dir.py` | 운영자 | API와 같은 분석 파이프라인의 공식 CLI |
-| 기준선 | `baseline_runner.py` | 개발자 | 여러 프로젝트 회귀 비교 |
 | CI 검증 | `check_byte_identical.py` | 개발자/CI | 프롬프트 prefix 캐시 계약 검증 |
 | 데이터 재생성 | `reembed_graph.py` | 운영자 | 전체 재분석 없이 검색 임베딩 재생성 |
 | 데이터 재생성 | `resynthesize_glossary.py` | 운영자 | 전체 재분석 없이 용어사전 재종합 |

@@ -161,19 +161,26 @@ def make_filesystem_tools(root: Path) -> dict:
             return f"INVALID_GLOB: '{path_glob}' ({e})"
 
         results: list[str] = []
+        read_failures: list[str] = []
         for p in sorted(candidates):
             if not p.is_file() or is_skipped(p):
                 continue
             try:
-                text = p.read_text(encoding="utf-8", errors="ignore")
-            except (OSError, UnicodeDecodeError):
+                text = p.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as error:
+                read_failures.append(f"{p}:{type(error).__name__}")
                 continue
             for line_no, line in enumerate(text.splitlines(), start=1):
                 if regex.search(line):
                     results.append(f"{p}:{line_no}:{line.rstrip()}")
                     if len(results) >= 80:
                         return "\n".join(results)
-        return "\n".join(results) if results else "NO_MATCHES"
+        output_lines = results or ["NO_MATCHES"]
+        if read_failures:
+            output_lines.append(
+                f"READ_SKIPPED: count={len(read_failures)} first={read_failures[0]}"
+            )
+        return "\n".join(output_lines)
 
     @tool
     def read_file(path: str, max_lines: int = 50) -> str:
@@ -206,12 +213,12 @@ def make_filesystem_tools(root: Path) -> dict:
         effective_max = min(max_lines, _READ_FILE_MAX_LINES)
         lines: list[str] = []
         try:
-            with p.open("r", encoding="utf-8", errors="ignore") as f:
+            with p.open("r", encoding="utf-8") as f:
                 for i, line in enumerate(f):
                     if i >= effective_max:
                         break
                     lines.append(line.rstrip())
-        except OSError as e:
+        except (OSError, UnicodeDecodeError) as e:
             return f"READ_ERROR: {e}"
         return "\n".join(lines)
 
@@ -243,14 +250,14 @@ def make_filesystem_tools(root: Path) -> dict:
         end = anchor + _READ_FILE_RANGE_RADIUS
         lines: list[str] = []
         try:
-            with p.open("r", encoding="utf-8", errors="ignore") as f:
+            with p.open("r", encoding="utf-8") as f:
                 for i, line in enumerate(f, start=1):
                     if i < start:
                         continue
                     if i > end:
                         break
                     lines.append(f"{i}: {line.rstrip()}")
-        except OSError as e:
+        except (OSError, UnicodeDecodeError) as e:
             return f"READ_ERROR: {e}"
         return "\n".join(lines)
 

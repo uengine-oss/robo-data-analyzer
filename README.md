@@ -20,7 +20,7 @@
 | **`analysis.json` 에 원문이 안 담긴다** — 원문의 집은 `ast.json` 하나 | 같은 원문 842 KB 가 두 파일에 중복이었다 | [045](specs/045-graph-integrity-restore/spec.md) |
 | **전략 분기 0** — `analyze_code_step` 이 `Strategy.code_analyzer` 를 **주입**받는다 | 헌법 II 복원 (`strategy.name == "dbms"` 하드분기 제거) | [046](specs/046-dry-single-truth/spec.md) |
 | **지원 확장자·루틴 라벨·MERGE 쿼리·소스 캐시 단일 진실화** | 헌법 III 복원. 확장자는 **실제로 갈라져 있었다**(4종 vs 14종) → `.kt` 프로젝트가 **0노드 "성공"** 으로 끝났다. 이제 **명시적 실패** | [046](specs/046-dry-single-truth/spec.md) |
-| **죽은 코드 삭제** — 모듈 1 · 함수 4 · env 키 6 (특히 `ROBO_LOG_MASK_SECRETS` 는 **효과 없는 거짓 설정**이었다) | | [046](specs/046-dry-single-truth/spec.md) |
+| **죽은 코드 삭제** — 모듈 1 · 함수 4 · 환경변수 키 6 (특히 `ROBO_LOG_MASK_SECRETS` 는 **효과 없는 거짓 설정**이었다) | | [046](specs/046-dry-single-truth/spec.md) |
 
 ---
 
@@ -57,12 +57,12 @@
 |------|------|
 | **입력 대상(타겟)** | 레거시 **응용 코드**(Framework: 자바/C/파이썬/Go/TS 등) 또는 **DBMS**(Oracle PL/SQL 패키지) |
 | **누구를 위해** | 레거시를 인수해 **현대화·재구축·마이그레이션**해야 하는 아키텍트/개발자 (downstream: robo-architect 그래프 뷰어) |
-| **출력** | Neo4j 그래프(UPSERT) + `logs/analysis.run/latest/artifacts/*.json` 5종 + `usage_summary.json` + `health_report.json` + NDJSON 스트림 |
+| **출력** | Neo4j 그래프(UPSERT) + `run-output/analysis/latest/artifacts/*.json` 5종 + `usage_summary.json` + `health_report.json` + NDJSON 스트림 |
 | **엔진** | FastAPI + LangGraph StateGraph + LangChain/deepagents Agent |
 | **2개 Strategy** | `framework`(응용코드) / `dbms`(PL/SQL) — 확장자로 자동 감지, `--strategy`로 override |
-| **LLM 정책** | 모델+배포환경 1셋 = `llm/configs/<name>.yaml` 1개. `.env`의 `ROBO_LLM_CONFIG` 1줄로 전환 |
+| **LLM 정책** | 모델+배포환경 1셋 = `llm/model_configs/<name>.yaml` 1개. `.env`의 `ROBO_LLM_CONFIG` 1줄로 전환 |
 | **결정론 우선** | DDL·AST 파싱 / 링킹 grep / 호출 분류 / Bottom-up DAG / 컴포넌트 군집 / 건강지표 = **LLM 0회**. LLM은 "의미"가 필요한 곳에만 |
-| **실행 단위** | `/robo/analyze` 1회 = LangGraph workflow 1회 = `Run` 1개. 매 Run 시작 시 그래프 wipe + `logs/` rmtree |
+| **실행 단위** | `/robo/analyze` 1회 = LangGraph workflow 1회 = `Run` 1개. 매 Run 시작 시 그래프 wipe + `run-output/` rmtree |
 | **위치** | `d:/work/robo/project/robo-data-analyzer` (origin: `github.com/uengine-oss/robo-data-analyzer`) |
 
 > 더 깊은 영역 노트는 메모리(`[[manual_overview]]` · `[[manual_run]]`) 및 학습노트 참조.
@@ -97,7 +97,7 @@ analyzer 는 매 Run 시작에 `MATCH (n) DETACH DELETE n` 으로 그래프를 w
 
 ### 1.3 LLM 엔드포인트
 
-`llm/configs/<name>.yaml` (4개 동봉):
+`llm/model_configs/<name>.yaml` (4개 동봉):
 
 | yaml | provider | 비고 |
 |------|----------|------|
@@ -107,7 +107,7 @@ analyzer 는 매 Run 시작에 `MATCH (n) DETACH DELETE n` 으로 그래프를 w
 | `gpt54_nano_openrouter` | openrouter | gpt-5.4-nano (Scan Agent 환각 회피 대체용) |
 
 > 새 config 추가 = yaml 1개 + `.env` 의 `ROBO_LLM_CONFIG=<name>` 1줄. 코드 변경 0.
-> 자세한 스키마: [`llm/configs/README.md`](llm/configs/README.md).
+> 자세한 스키마: [`llm/model_configs/README.md`](llm/model_configs/README.md).
 
 ### 1.4 Python 의존성
 
@@ -156,7 +156,7 @@ ROBO_DATA_DIR/                  # 기본값 = robo-data-analyzer 옆 형제 ./da
 - DDL 디렉토리는 없어도 동작 (Table 노드 0개로 진행, R/W 엣지 안 생김).
 - `analysis/` 가 없거나 비어 있으면 `step2_load_ast` 가 `FileNotFoundError` 명시 raise.
 
-### 2.2 Strategy 자동 감지 — `pipeline/programming_languages.py`
+### 2.2 Strategy 자동 감지 — `pipeline/languages.py`
 
 `project_dir.rglob("*")` 의 확장자 기반:
 
@@ -176,13 +176,13 @@ ROBO_DATA_DIR/                  # 기본값 = robo-data-analyzer 옆 형제 ./da
 cd d:/work/robo/project/robo-data-analyzer
 
 # source/ 안 모든 프로젝트 일괄 분석
-python scripts/analysis/analyze_data_dir.py
+python scripts/analyze_data_dir.py
 
 # 1 프로젝트만 (source/ 하위 폴더 이름)
-python scripts/analysis/analyze_data_dir.py <project_name>
+python scripts/analyze_data_dir.py <project_name>
 
 # strategy 강제 override
-python scripts/analysis/analyze_data_dir.py <project_name> --strategy dbms
+python scripts/analyze_data_dir.py <project_name> --strategy dbms
 ```
 
 인자: `target`(생략 시 source/ 전체) + `--strategy {framework,dbms}`(생략 시 자동 감지).
@@ -205,7 +205,7 @@ Content-Type: application/json
 X-Neo4j-Uri / X-Neo4j-User / X-Neo4j-Password / X-Neo4j-Database   # 선택 — 요청별 Neo4j override
 
 {
-  "project_root": "d:/work/robo/project/data/source/<name>",  # (역호환) 받되 무시(inert) — 소스는 항상 ENV.data.dir/source
+  "project_root": "d:/work/robo/project/data/source/<name>",  # (역호환) 받되 무시(inert) — 소스는 항상 SETTINGS.analysis_data.dir/source
   "strategy": "framework",            # "framework" | "dbms"
   "ddl_dir": "d:/work/robo/project/data/ddl",                 # 선택
   "has_xml_mapper": false,
@@ -234,16 +234,15 @@ POST /robo/analyze/control
 | 스크립트 | 용도 |
 |---------|------|
 | `analyze_data_dir.py` | ★ 운영자 표준 진입점 (위 3.1) |
-| `baseline_runner.py` | 여러 프로젝트 일괄 + 종합 `baseline_summaries.json` 생성 |
 | `check_byte_identical.py` | `llm/prompts/**` SHA256 ↔ `prompt_hashes.json` 검증 (CI 보호장치) |
-| `refresh_pricing.py` | `llm/client/usage/llm_pricing.yaml` 갱신 보조 (현재 yaml + 공식 URL 안내) |
+| `refresh_pricing.py` | `llm/usage/llm_pricing.yaml` 갱신 보조 (현재 yaml + 공식 URL 안내) |
 | `reset_neo4j_schema.py` | Neo4j 제약/인덱스 1회 리셋 (오염 정리 — 평상시 불필요) |
 
 ---
 
 ## 4. 파이프라인 — Strategy 별 step 흐름
 
-`pipeline/analysis_pipelines.py` 의 `Strategy` 데이터클래스가 step 함수 tuple 을 **declare 만**
+`pipeline/strategies.py` 의 `Strategy` 데이터클래스가 step 함수 tuple 을 **declare 만**
 하면, `pipeline/execution/langgraph_builder.py:build_langgraph_workflow()` 가 **if 분기 0개** 로
 LangGraph StateGraph 노드를 순서대로 추가한다. step1~step7 **폴더(7 phase)** 구조가 흐름
 그대로 드러나며, 실제 실행 step 함수는 Framework 11개 / DBMS 13개.
@@ -292,7 +291,7 @@ parse_ddl_step
 
 > `enrich_metadata_from_catalog_step` 은 **제거됨** — 미존재 엔드포인트(`GET /tables/<fqn>/metadata`)
 > 기반이라 동작 X. 테이블 메타(샘플)는 `fetch_table_samples_step` (sample-context) 로 대체.
-> 새 strategy 추가 = `pipeline/analysis_pipelines.py` 의 `Strategy(...)` declare 만. 코드 분기 0.
+> 새 strategy 추가 = `pipeline/strategies.py` 의 `Strategy(...)` declare 만. 코드 분기 0.
 
 ---
 
@@ -368,7 +367,7 @@ LLM 이 찾게 해 코드가 일괄 적용). 시스템 프롬프트 `llm/agents/
 / `referenced_symbols`(REFERENCES+INIT_BY 결정론) / `one_liner`(본문 토큰 >
 `ROBO_PIPELINE_BIG_CONTEXT_THRESHOLD_TOKENS`(1000) 면 `large_code_one_liner.yaml` 압축 LLM
 1회(작은 모델) → callee 본문 통째 노출 차단). `context_builder.augment()`:
-Framework=항등, DBMS=`DbmsContextBuilder` 가 parent/sibling 트리 메타를 `extra` 에 채움.
+Framework와 DBMS의 기본 builder는 항등이며, DBMS 유효 트리는 step6에서 계산한다.
 
 #### 5-B `fetch_table_samples_step` (옵션·전략독립, LLM 0)
 catalog `sample-context` 엔드포인트로 테이블별 **실제 샘플 행**(최대 5행) 수집 → state
@@ -400,7 +399,7 @@ catalog `sample-context` 엔드포인트로 테이블별 **실제 샘플 행**(�
    NDJSON emit. 배치 누적 없음.
 5. **Example Mapping 빌더** (`pipeline/steps/step6_analyze_code/example_mapping_builder.py`, 결정론): 결과 → `RULE`(공유,
    `rule_hash`) / `EXAMPLE` / `QUESTION` 노드 + `HAS_RULE` / `HAS_EXAMPLE` / `HAS_QUESTION` /
-   `NEXT` / `BRANCH` / `AFFECTS_TABLE` 엣지. (per-function 정보는 `HAS_RULE` 엣지 속성)
+   `AFFECTS_TABLE` 엣지. 구문 실행 순서 `NEXT`는 Step 2 AST 적재 결과이며 Example Mapping 관계가 아니다.
 
 ### Step 7 — Post Processing
 
@@ -415,7 +414,7 @@ catalog `sample-context` 엔드포인트로 테이블별 **실제 샘플 행**(�
   배치 UNWIND SET (멤버십 단일 진실). 그룹↔그룹 관계는 `CALLS`+`component_id` 로 온디맨드 파생.
 - **`health_metrics_step`** ★ (결정론·LLM 0) — `FUNCTION` 마다 `fan_in / fan_out / loc /
   in_cycle / table_coupling / god_flag / risk(low·medium·high)` 계산 → Neo4j SET +
-  `logs/analysis.run/latest/health_report.json`(risk 분포 + top 20 위험 함수).
+  `run-output/analysis/latest/health_report.json`(risk 분포 + top 20 위험 함수).
   임계: LOC≥300 & fan_out≥15 → god_flag; in_cycle 또는 god_flag → high.
 - **`enrich_lineage_from_catalog_step`** (DBMS only) — catalog `/lineage` → `READS`/`WRITES`
   엣지 추가(매칭 실패 시 `__catalog__:<source>` 가상 노드).
@@ -426,14 +425,15 @@ catalog `sample-context` 엔드포인트로 테이블별 **실제 샘플 행**(�
 
 ## 6. 출력 / 산출물
 
-### 6.1 디렉토리 구조 — `ROBO_LOG_DIR/` (기본 `./logs`)
+### 6.1 디렉토리 구조 — `ROBO_RUN_OUTPUT_DIR/` (기본 `./run-output`)
 
-매 run 시작 시 **`logs/` 통째 rmtree** 후 재생성 (`executor.py:_reset_logs_root`).
+매 run 시작 시 **`run-output/` 통째 rmtree** 후 재생성
+(`pipeline/execution/run_executor.py:_reset_run_output_root`).
 
 ```
-logs/
-├── analysis.run/latest/
-│   ├── analyzer.log               # INFO+ (ROBO_LOG_FILE_ENABLED=true 일 때)
+run-output/
+├── analysis/latest/
+│   ├── analyzer.log               # INFO+ (ROBO_RUNTIME_EVENT_FILE_ENABLED=true 일 때)
 │   ├── error.log                  # WARNING+ — 사고 추적 전용
 │   ├── usage.jsonl                # 모든 LLM 호출 토큰/비용 NDJSON (agent + yaml_rule)
 │   ├── usage_summary.json         # usage.jsonl 집계 (total + per_agent_model)
@@ -445,7 +445,7 @@ logs/
 │       ├── analysis.json          # step6+7 (summary + rules/examples/questions; 컴포넌트는 FUNCTION.component_id 속성)
 │       │                          #   ★ 원문(code_text)은 안 담는다 — 원문의 집은 ast.json 하나 (spec 045)
 │       └── graph_extras.json      # 매핑 안 된 state 키 auto-dump (신규 키 누락 방지 catch-all)
-└── llm_prompts/latest/
+└── llm-prompts/latest/
     └── ...                         # 룰별 LLM 입력 미리보기 (prompt_logger)
 ```
 
@@ -465,7 +465,14 @@ logs/
 
 > `emit()` 이 동시에 `logger.info` 호출 → 모든 NDJSON 이벤트가 자동으로 `analyzer.log` 에 적재.
 
-### 6.3 Neo4j 그래프 스키마 — 노드 12종 / 엣지 16종
+### 6.3 MCP 레거시 참조 도구
+
+`/robo/mcp`는 compact JSON 텍스트를 반환하는 두 도구를 제공한다. 먼저
+`cluster_retrieve(query, database?)`로 ID·요약·관계 단서·RULE/EXAMPLE 목록을 받고,
+검토할 ID만 `node_detail(node_id, database?)`로 원문 코드·파일·시작/끝 줄·실제 관계·
+TABLE 컬럼까지 조회한다. 목록 응답에는 원문 코드와 전체 컬럼이 포함되지 않는다.
+
+### 6.4 Neo4j 그래프 스키마 — 노드 12종 / 엣지 16종
 
 **노드 12종 (`graph/nodes/` 12파일, 라벨 UPPER_SNAKE)** — 모든 노드 식별 키 = **`id` 하나
 (종류 무관 균일)**. 함수·메서드·구문은 모두 `CodeNode` dataclass 1종이며 라벨만 자기 antlr type
@@ -481,7 +488,7 @@ logs/
 > **`FUNCTION.component_id`/`component_name` 속성**이 단일 진실(`build_components_step`).
 > 이름·그룹간 관계는 거기서 파생(시각화=hull 오버레이, 그룹↔그룹 호출=`CALLS`+`component_id` 온디맨드 GROUP BY).
 
-**엣지 16종 (`graph/schema/rel_types.py` 단일 정의처)**:
+**엣지 15종 (`graph/schema/rel_types.py` 단일 정의처)**:
 
 | 구분 | 엣지 |
 |------|------|
@@ -489,7 +496,7 @@ logs/
 | 코드 참조 | `REFERENCES` · `INIT_BY` |
 | 코드↔DB | `READS`(dml_type) · `WRITES`(dml_type) |
 | DB 구조 | `HAS_COLUMN` · `BELONGS_TO` · `FK` |
-| Example Mapping | `HAS_RULE` · `HAS_EXAMPLE` · `HAS_QUESTION` · `NEXT` · `BRANCH` · `AFFECTS_TABLE` |
+| Example Mapping | `HAS_RULE` · `HAS_EXAMPLE` · `HAS_QUESTION` · `AFFECTS_TABLE` |
 
 > 새 노드/엣지 = `graph/schema/graph_nodes.py`(또는 `graph_edges.py`) + `graph/nodes/<new>.py`
 > (또는 `graph/edges/<new>.py`) + `graph/schema/rel_types.py` 상수. 관계명은 이 파일에서만 정의한다.
@@ -501,10 +508,10 @@ logs/
 ```
 robo-data-analyzer/
 ├── main.py · api/                  # FastAPI, REST, MCP, NDJSON 공개 진입점
-├── system/env_catalog.py          # ROBO_* 환경 설정 단일 진실
+├── analyzer_settings.py                 # ROBO_* 환경 설정 단일 진실
 ├── pipeline/
-│   ├── analysis_pipelines.py · programming_languages.py · ontology_roles.yaml
-│   ├── data_models/               # 분석 입력·상태·LLM 출력 계약
+│   ├── strategies.py · languages.py · ontology_roles.yaml
+│   ├── models/               # 분석 입력·상태·LLM 출력 계약
 │   ├── execution/                 # run 수명주기·상태·제어·artifact·delta stream
 │   └── steps/step1_parse_ddl … step7_post_processing
 ├── graph/
@@ -513,12 +520,12 @@ robo-data-analyzer/
 │   └── neo4j_client.py · node_upsert.py · connection_context.py
 ├── llm/
 │   ├── agents/ · prompts/ · skills/ · configs/
-│   └── client/{middleware,prompt_logging,runners,usage}/
+│   └── {middleware,prompt_logging,runners,usage}/
 ├── search/
 │   ├── corpus/                    # 코퍼스·임베딩 재료·Neo4j reader
 │   ├── query/                     # 용어집·재작성·심판·검색 LLM
 │   └── ranking/                   # recall·fusion·rerank·retriever
-├── log/                           # 운영 로그·진행 상태·NDJSON
+├── observability/                # 런타임 로그·처리 이벤트·NDJSON 스트림
 ├── scripts/{analysis,graph_maintenance,llm_maintenance}/
 ├── tests/{api,eval,graph,pipeline,search,structure}/
 └── specs/                         # 완료 기능의 변경 당시 계약 이력
@@ -526,43 +533,43 @@ robo-data-analyzer/
 
 ---
 
-## 8. 환경변수 — 단일 진입점 `system/env_catalog.py`
+## 8. 환경변수 — 단일 진입점 `analyzer_settings.py`
 
-모든 ROBO_* env 는 영역별 dataclass 로 묶여 `ENV` 싱글톤으로 노출.
-`from system.env_catalog import ENV; ENV.pipeline.max_concurrency`.
+모든 ROBO_* 환경변수는 영역별 dataclass로 묶여 `SETTINGS` 싱글톤으로 노출됩니다.
+`from analyzer_settings import SETTINGS; SETTINGS.analysis_pipeline.max_concurrency`.
 명명 규칙 `ROBO_<영역>_<이름>`, 단위 suffix `_SECONDS / _TOKENS / _USD / _RATIO`.
 
-### LLM (`ENV.llm`)
-| env | 기본 | 설명 |
+### LLM (`SETTINGS.analysis_llm`)
+| 환경변수 | 기본 | 설명 |
 |-----|------|------|
-| `ROBO_LLM_CONFIG` | `""` | `llm/configs/<name>.yaml` 의 name (필수) |
+| `ROBO_LLM_CONFIG` | `""` | `llm/model_configs/<name>.yaml` 의 name (필수) |
 | `ROBO_LLM_API_KEY` | `""` | 현 config provider 비밀 (필수) |
 
-### Cache (`ENV.cache`)
+### Cache (`SETTINGS.llm_response_cache`)
 | `ROBO_CACHE_ENABLED` | `false` | SQLite LLM 응답 캐시 (운영기 OFF 권장) |
 |---|---|---|
 
-### Agent (`ENV.agent`)
-| env | 기본 | 설명 |
+### Agent (`SETTINGS.analysis_agents`)
+| 환경변수 | 기본 | 설명 |
 |-----|------|------|
 | `ROBO_AGENT_SCAN_MAX_CALLS` | 30 | Scan Agent LLM 호출 한도 |
 | `ROBO_AGENT_RESIDUAL_MAX_CALLS` | 15 | 잔여 패턴 루프 한도 |
 | `ROBO_AGENT_CONTEXT_EDITING_TRIGGER_TOKENS` | 80000 | context editing 트리거 |
 | `ROBO_AGENT_SCAN_REGEX_MIN_OP_RATIO` | 0.5 | op_token 인식률 최소 통과선 (미달 정규식 reject) |
 
-### Budget (`ENV.budget`)
+### Budget (`SETTINGS.run_budget`)
 | `ROBO_BUDGET_RUN_USD` | 20.0 | run 당 USD 회로차단기 (초과 raise — $400 사고 재발 방지) |
 |---|---|---|
 
-### Neo4j (`ENV.neo4j`)
-| env | 기본 |
+### Neo4j (`SETTINGS.graph_database`)
+| 환경변수 | 기본 |
 |-----|------|
 | `ROBO_NEO4J_URI` | `bolt://localhost:7687` |
 | `ROBO_NEO4J_USER` / `ROBO_NEO4J_PASSWORD` / `ROBO_NEO4J_DATABASE` | `neo4j` / `""` / `neo4j` |
 | `ROBO_NEO4J_RETRY_MAX_ATTEMPTS` / `ROBO_NEO4J_RETRY_BACKOFF_SECONDS` | 5 / 2.0 |
 
-### Pipeline (`ENV.pipeline`)
-| env | 기본 | 설명 |
+### Pipeline (`SETTINGS.analysis_pipeline`)
+| 환경변수 | 기본 | 설명 |
 |-----|------|------|
 | `ROBO_PIPELINE_MAX_CONCURRENCY` | **30** | step6 round 안 + 병렬 후처리 그룹 동시 LLM |
 | `ROBO_PIPELINE_BIG_CONTEXT_THRESHOLD_TOKENS` | 1000 | 이상 → large_code_one_liner LLM |
@@ -570,22 +577,22 @@ robo-data-analyzer/
 | `ROBO_PIPELINE_BATCH_MAX_TOKENS` | 1500 | DBMS step6 형제 함수 batch 입력 토큰 한도 |
 | `ROBO_PIPELINE_EMBED_ENABLED` | true | embed_step on/off (.env.production 에선 false 권장) |
 
-### Catalog (`ENV.catalog`)
-| env | 기본 | 설명 |
+### Catalog (`SETTINGS.catalog_api`)
+| 환경변수 | 기본 | 설명 |
 |-----|------|------|
 | `ROBO_CATALOG_ENABLED` | true | catalog HTTP on/off (off=skip, on+실패=raise. 개별 404 는 정상) |
 | `ROBO_CATALOG_BASE_URL` | `""` | catalog endpoint (enabled=true 면 필수) |
 | `ROBO_CATALOG_TIMEOUT_SECONDS` | 120.0 | catalog HTTP timeout |
 | `ROBO_CATALOG_TEST_DATASOURCE` | `""` | 테스트 전용 샘플 datasource (운영 경로 미사용) |
 
-### Log (`ENV.log`)
-| env | 기본 | 설명 |
+### Runtime events / run output (`SETTINGS.observability`, `SETTINGS.run_output`)
+| 환경변수 | 기본 | 설명 |
 |-----|------|------|
-| `ROBO_LOG_DIR` | `./logs` | 통째 rmtree 후 재생성 |
-| `ROBO_LOG_FILE_ENABLED` | true | analyzer.log + error.log 파일 핸들러 (운영기 false 권장) |
-| `ROBO_LOG_LEVEL` | INFO | DEBUG/INFO/WARNING/ERROR (error.log 는 내부적으로 WARNING+ 강제) |
+| `ROBO_RUN_OUTPUT_DIR` | `./run-output` | 통째 rmtree 후 재생성 |
+| `ROBO_RUNTIME_EVENT_FILE_ENABLED` | true | analyzer.log + error.log 파일 핸들러 (운영기 false 권장) |
+| `ROBO_RUNTIME_EVENT_LEVEL` | INFO | DEBUG/INFO/WARNING/ERROR (error.log 는 내부적으로 WARNING+ 강제) |
 
-### Data (`ENV.data`)
+### Data (`SETTINGS.analysis_data`)
 | `ROBO_DATA_DIR` | robo-data-analyzer 형제 `data/` (computed, cwd 무관) |
 |---|---|
 
@@ -595,9 +602,9 @@ robo-data-analyzer/
 
 1. **결정론 우선**: AST·DDL 파싱·R/W grep·Calls 분류·Bottom-up DAG·Example Mapping 빌더·
    Leiden 컴포넌트 군집·건강지표 = 모두 **LLM 0**. LLM 은 의미가 필요한 곳에만.
-2. **분기 0 (Strategy 패턴)**: `pipeline/analysis_pipelines.py` 의 `Strategy(steps=...)` declare 만 하면
+2. **분기 0 (Strategy 패턴)**: `pipeline/strategies.py` 의 `Strategy(steps=...)` declare 만 하면
    `langgraph_builder` 가 if 분기 없이 그래프 구성. 새 strategy = 한 곳만. (tuple = 병렬 그룹)
-3. **단일 진실**: 모든 ROBO_* env = `system/env_catalog.py` 1곳. 관계명 = `graph/schema/rel_types.py` 1곳. 매직넘버 X.
+3. **단일 진실**: 모든 ROBO_* 환경변수 = `analyzer_settings.py` 1곳. 관계명 = `graph/schema/rel_types.py` 1곳. 매직넘버 X.
 4. **silent fail 금지**: 모든 step 실패는 `log_error` + `stream.emit(error)` + raise. 조용한 빈
    결과 returning 금지 (잔여 패턴 큐 미해결 비움 사고 방지).
 5. **KV 캐시 친화**: 3분할 system 본문 byte-identical 강제 (`llm/prompts/framework/_common.yaml`
@@ -616,7 +623,7 @@ robo-data-analyzer/
 
 - **antlr JSON 디렉토리 없음** — `step2_load_ast` 가 `FileNotFoundError` raise.
   → `d:/work/robo/project/antlr-code-parser` 먼저 실행해 `data/analysis/` 채우기.
-- **`logs/` 내용이 다음 run 에 사라짐** — 정상. `_reset_logs_root` 가 매 run 통째 rmtree.
+- **`run-output/` 내용이 다음 run 에 사라짐** — 정상. `_reset_run_output_root` 가 매 run 통째 rmtree.
 - **Neo4j 그래프가 매 run 비워짐** — 정상. `wipe_graph()` 의 `DETACH DELETE` (헌법: 매 run = full rebuild).
   **같은 DB 를 쓰는 catalog·architect 데이터도 함께 지워진다** — 분석 후 재등록 필요.
 - **Scan Agent 가 도구 호출 안 함** — `submit_scan` 누락 시 raise. `scan_agent_system.md` 확인.
@@ -630,7 +637,7 @@ robo-data-analyzer/
 
 ## 11. 관련 문서
 
-- [`llm/configs/README.md`](llm/configs/README.md) — LLM yaml 스키마
+- [`llm/model_configs/README.md`](llm/model_configs/README.md) — LLM yaml 스키마
 - [`llm/skills/_templates/SKILL.md`](llm/skills/_templates/SKILL.md) — 새 skill 작성 템플릿
 - [`llm/skills/proframe-c-pfm-dbio/SKILL.md`](llm/skills/proframe-c-pfm-dbio/SKILL.md) — 테스트 데이터 대응 skill
-- `python scripts/llm_maintenance/check_byte_identical.py` — 프롬프트 SHA256 검증
+- `python scripts/check_byte_identical.py` — 프롬프트 SHA256 검증

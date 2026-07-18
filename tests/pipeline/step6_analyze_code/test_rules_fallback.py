@@ -17,13 +17,13 @@ from pipeline.steps.step6_analyze_code.rules_fallback import (
     build_fragments,
     run_rules_fallback,
 )
-from pipeline.data_models.code_analysis_output import (
+from pipeline.models.code_analysis_output import (
     AffectedTable,
     ExampleItem,
     RuleItem,
     RulesExamplesOutput,
 )
-from llm.client.usage.cost_budget import BudgetExceededError
+from llm.usage.cost_budget import BudgetExceededError
 
 
 def _ex(given="g", when="w", then="t", tables=()):

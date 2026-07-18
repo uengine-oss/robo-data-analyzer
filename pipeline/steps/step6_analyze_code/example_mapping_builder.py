@@ -7,10 +7,10 @@ Framework / DBMS **공통 단일 빌더**. anchor 는 ``FUNCTION`` 하나.
   AFFECTS_TABLE 엣지. 결정론 — LLM 0회.
 
 Rule 공유: 같은 statement 는 ``rule_hash`` 가 같아 1 노드 — 코드노드 간 규칙을 공유한다.
-examples 는 소속 rule 하위 중첩. coupled_domains 는 ``HAS_RULE`` 엣지 속성에.
+examples 는 소속 rule 하위 중첩.
 
 응답 형식 단일 진실 ([[code_analysis_output]] RulesExamplesOutput):
-- rules:    {statement, coupled_domains, examples:[{given, when, then, affected_tables}]}
+- rules:    {statement, examples:[{given, when, then, affected_tables}]}
 - questions:{text, reason}
 """
 from __future__ import annotations
@@ -77,13 +77,7 @@ def _collect_rules(
             continue
         rh = rule_hash(statement)
         rule_by_hash.setdefault(rh, Rule(id=rh, statement=statement))
-        result.has_rule.append(HasRule(
-            source_id=fid,
-            target_id=rh,
-            coupled_domains=tuple(
-                str(d).strip() for d in (r.get("coupled_domains") or []) if str(d).strip()
-            ),
-        ))
+        result.has_rule.append(HasRule(source_id=fid, target_id=rh))
         _collect_examples(fid, rh, r.get("examples") or [], result)
 
 
@@ -117,7 +111,7 @@ def _collect_affects_table(
         if not table or not op:
             continue
         result.affects_table.append(
-            AffectsTable(source_id=eid, table_name=table, op=op)
+            AffectsTable(source_id=eid, target_id=table, op=op)
         )
 
 

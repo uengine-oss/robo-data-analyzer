@@ -184,6 +184,7 @@ def parse_ddl_file(
     result = DDLParseResult()
     seen_schemas: set[str] = set()
     seen_tables: set[tuple[str, str]] = set()
+    unique_keys_by_table: dict[tuple[str, str], set[frozenset[str]]] = {}
 
     statements = sqlglot.parse(norm_sql, dialect=effective_dialect)
     # 비수식 테이블의 소속 스키마 — SET search_path 가 구문 순서대로 갱신.
@@ -196,10 +197,10 @@ def parse_ddl_file(
         elif isinstance(stmt, exp.Create):
             _handle_create(
                 stmt, db, current_schema, table_comments, column_comments,
-                result, seen_schemas, seen_tables,
+                result, seen_schemas, seen_tables, unique_keys_by_table,
             )
         elif isinstance(stmt, exp.Alter):
-            _handle_alter(stmt, db, current_schema, result)
+            _handle_alter(stmt, db, current_schema, result, unique_keys_by_table)
     return result
 
 
@@ -212,6 +213,7 @@ def _handle_create(
     result: DDLParseResult,
     seen_schemas: set[str],
     seen_tables: set[tuple[str, str]],
+    unique_keys_by_table: dict[tuple[str, str], set[frozenset[str]]],
 ) -> None:
     """CREATE 구문 처리 — kind 로 SCHEMA / TABLE / VIEW 분기.
 
@@ -275,11 +277,15 @@ def _handle_create(
         return
     table_fqn = db_id(db, schema_name, table_name)
     pk_cols = _table_pk_columns(col_container)
+    unique_keys = _declared_unique_keys(col_container)
+    unique_keys_by_table[(schema_name.lower(), table_name.lower())] = unique_keys
     for col_expr in col_container.expressions:
         if isinstance(col_expr, exp.ColumnDef):
             _handle_column(col_expr, table_name, table_fqn, pk_cols, column_comments, result)
     for fk_expr in col_container.find_all(exp.ForeignKey):
-        _handle_inline_fk(fk_expr, db, schema_name, table_name, default_schema, result)
+        _handle_inline_fk(
+            fk_expr, db, schema_name, table_name, default_schema, result, unique_keys,
+        )
 
 
 def _handle_create_schema(
@@ -316,6 +322,41 @@ def _table_pk_columns(table_expr: exp.Schema) -> set[str]:
         for ident in pk.expressions:
             pk_cols.add(ident.name.lower())
     return pk_cols
+
+
+def _declared_unique_keys(table_expr: exp.Schema) -> set[frozenset[str]]:
+    """Return exact local column sets declared unique by PRIMARY KEY or UNIQUE.
+
+    Cardinality belongs to the complete constraint, not to each member: a
+    single column from ``PRIMARY KEY (tenant_id, id)`` is therefore not a
+    unique key. Column-level constraints are represented separately by
+    sqlglot and become singleton keys.
+    """
+    keys: set[frozenset[str]] = set()
+
+    for pk in table_expr.find_all(exp.PrimaryKey):
+        names = frozenset(ident.name.lower() for ident in pk.expressions if ident.name)
+        if names:
+            keys.add(names)
+
+    for unique in table_expr.find_all(exp.UniqueColumnConstraint):
+        target = unique.this
+        if isinstance(target, exp.Schema):
+            names = frozenset(
+                ident.name.lower() for ident in target.expressions if ident.name
+            )
+            if names:
+                keys.add(names)
+
+    for col in table_expr.expressions:
+        if not isinstance(col, exp.ColumnDef):
+            continue
+        for constraint in col.args.get("constraints") or []:
+            kind = getattr(constraint, "kind", None)
+            if isinstance(kind, (exp.PrimaryKeyColumnConstraint, exp.UniqueColumnConstraint)):
+                keys.add(frozenset((col.name.lower(),)))
+
+    return keys
 
 
 def _handle_column(
@@ -378,6 +419,7 @@ def _handle_inline_fk(
     from_table: str,
     default_schema: str,
     result: DDLParseResult,
+    source_unique_keys: set[frozenset[str]],
 ) -> None:
     """테이블 레벨 FK (``FOREIGN KEY`` 절 — 명명 ``CONSTRAINT`` 포함) → Fk 엣지.
 
@@ -401,12 +443,19 @@ def _handle_inline_fk(
     if not from_cols or not to_cols or len(from_cols) != len(to_cols):
         return
 
+    fk_type = (
+        "one_to_one"
+        if frozenset(col.lower() for col in from_cols) in source_unique_keys
+        else "many_to_one"
+    )
     for from_col, to_col in zip(from_cols, to_cols):
         result.fk_edges.append(Fk(
             from_id=db_id(db, from_schema, from_table),
             to_id=db_id(db, to_schema, to_table),
             from_column=from_col,
             to_column=to_col,
+            fk_type=fk_type,
+            is_candidate=False,
         ))
 
 
@@ -415,6 +464,7 @@ def _handle_alter(
     db: str,
     default_schema: str,
     result: DDLParseResult,
+    unique_keys_by_table: dict[tuple[str, str], set[frozenset[str]]],
 ) -> None:
     """ALTER TABLE ADD CONSTRAINT FOREIGN KEY 처리."""
     table_expr = stmt.this
@@ -422,7 +472,12 @@ def _handle_alter(
         return
     from_schema = table_expr.db or default_schema or ""
     from_table = table_expr.name
+    unique_keys = unique_keys_by_table.get(
+        (from_schema.lower(), from_table.lower()), set(),
+    )
 
     for action in stmt.args.get("actions", []) or []:
         for fk_expr in action.find_all(exp.ForeignKey):
-            _handle_inline_fk(fk_expr, db, from_schema, from_table, default_schema, result)
+            _handle_inline_fk(
+                fk_expr, db, from_schema, from_table, default_schema, result, unique_keys,
+            )

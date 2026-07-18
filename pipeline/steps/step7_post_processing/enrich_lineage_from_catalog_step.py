@@ -3,7 +3,7 @@
 DBMS catalog ETL / 리니지 → ``ReadsWrites`` 엣지.
 
 흐름:
-1. ``ENV.catalog.base_url`` (운영 단일 진실) 로 HTTP — ETL flow 응답 받음.
+1. ``SETTINGS.catalog_api.base_url`` (운영 단일 진실) 로 HTTP — ETL flow 응답 받음.
 2. flow 의 ``source`` (sql 파일 fqn / function_id) 를 코드의 실제 CodeNode 과 매칭.
 3. 매칭된 CodeNode 의 ``ReadsWrites`` 엣지 생성. 매칭 실패 시 ``__catalog__:`` prefix 가상 노드.
 
@@ -21,13 +21,18 @@ from langchain_core.runnables import RunnableConfig
 from pipeline.execution.step_config import step_config
 
 from graph.schema.graph_edges import ReadsWrites, derive_dml_type, normalize_relation
-from pipeline.catalog_client import catalog_base_url_or_skip, get_catalog_json
-from system.env_catalog import ENV
-from log.logger import log_info, log_warning
+from external.catalog import catalog_base_url_or_skip, get_catalog_json
+from analyzer_settings import SETTINGS
+from runtime_events.runtime_logger import log_info, log_warning
 from graph.edges.reads_writes import upsert_reads_writes
 from graph.neo4j_client import Neo4jClient
 
 _STEP = "step7.enrich_lineage_from_catalog"
+
+
+def _catalog_lineage_url(base_url: str) -> str:
+    """Return Catalog's documented non-redirecting lineage route."""
+    return f"{base_url.rstrip('/')}/lineage/"
 
 
 async def enrich_lineage_from_catalog_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
@@ -42,10 +47,10 @@ async def enrich_lineage_from_catalog_step(state: dict, config: Optional[Runnabl
         return {}
 
     started = time.monotonic()
-    log_info(_STEP, "start", catalog_url=ENV.catalog.base_url)
+    log_info(_STEP, "start", catalog_url=SETTINGS.catalog_api.base_url)
 
-    async with httpx.AsyncClient(timeout=ENV.catalog.timeout_seconds) as http:
-        url = f"{base_url}/lineage"
+    async with httpx.AsyncClient(timeout=SETTINGS.catalog_api.timeout_seconds) as http:
+        url = _catalog_lineage_url(base_url)
         # non-200/파싱 실패는 전파. 404 만 정상(None).
         data = await get_catalog_json(http, url, label="lineage")
     if data is None:

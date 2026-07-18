@@ -61,8 +61,10 @@ parser 없이 fixture JSON으로 선행 가능.
 - [ ] T012 [US2] `antlr_json_reader._walk_framework`에 `owner_routine_id` 인자 추가 —
       `control_structure`는 그래프 노드 생성+자식 재귀(structural_parent=자기, owner=불변), `internal`은
       CALLS/RW를 owner_routine 기준으로, 구조 노드로도 보존(결정론 필드만). 함수에서 owner 갱신.
-- [ ] T013 [US2] `_make_structural_node` — `CodeNode`를 결정론 필드만 채워 생성(`code_text` 슬라이스 재사용,
-      LLM 필드 미설정). 함수 `control_subtree`를 context에 실음.
+- [x] T013 [US2] `_make_structural_node` — `CodeNode`를 결정론 필드만 채워 생성(`code_text` 슬라이스 재사용,
+      LLM 필드 미설정). 함수 `control_subtree`를 context에 실음. **현재 구조 증거(spec 069)**:
+      reader가 보존한 `CodeNode.parent_id/start/end`를 step5가 함수 상대좌표 트리로 조립해
+      `AnalysisContext.extra`에 주입. context/subtree/fallback 11/11, 전체 168/168 통과.
 - [ ] T014 [US2] `load_ast_step.py` — `code_nodes`(전부, graph)와 `analysis_target_ids`(함수만) 분리 산출.
 - [ ] T015 [US2] `analyze_code_step.py::run_framework_per_node_analysis` — `all_ids`/cycle/round를
       `analysis_target_ids`만으로. 제어문 PARENT_OF를 순서 엣지에서 제외.
@@ -100,10 +102,9 @@ parser 없이 fixture JSON으로 선행 가능.
       (`_make_fragment_analyzer`/`_make_fragment_merger`)로 배관·오케스트레이션 분리. 증거: 편집 py_compile OK.
       재점검 보강: FR-023 "플래그를 함수에 저장"이 그래프까지 가도록 `code_node.to_summary_item` 에
       `rules_quality_flag` 추가(빈값 미저장 규약 — 정상경로 속성 0). 테스트 `test_flag_persists_to_graph_item`.
-      ⚠ **미완(T013 의존)**: `ctx.extra["control_subtree"]` 를 채우는 생산 측이 아직 없어(reader→context
-      스레딩 미구현), 현재는 이상함수가 "수렴→dedupe+플래그" 경로만 탄다(조각분할 e2e 미검증). 소비 측
-      (`three_split` 훅이 `ctx.extra.get("control_subtree")` 읽음)은 배선 완료. 그래프엔 IF/ELSE 제어노드가
-      실제 저장됨(재분석 PARENT_OF 1656 확인) — 남은 일은 그 서브트리를 함수 컨텍스트로 잇는 T013.
+      ✅ **T013 생산 배선 완료(spec 069)**: `ctx.extra["control_subtree"]`가 함수 본문 상대좌표로 채워지고,
+      생산 context에서 `build_fragments`가 비어 있지 않은 조각을 만드는 계약을 검증했다. 그래프의
+      IF/ELSE 제어노드·PARENT_OF 계약은 그대로 유지된다.
 
 **Checkpoint**: 이상만 폴백, 정상은 무영향. load_target_orders 재검사 통과.
 

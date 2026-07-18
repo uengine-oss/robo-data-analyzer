@@ -8,13 +8,14 @@ from typing import Iterable
 
 from graph.schema.graph_edges import InitBy
 from graph.neo4j_client import Neo4jClient
+from graph.ownership import ANALYZER_GRAPH_OWNER
 from graph.schema.rel_types import INIT_BY
 
 
 MERGE_QUERY = f"""
 UNWIND $items AS item
-MATCH (f {{id: item.from_id}})
-MATCH (s {{id: item.source_id}})
+MATCH (f {{id: item.from_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (s {{id: item.source_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 MERGE (f)-[:{INIT_BY}]->(s)
 """
 

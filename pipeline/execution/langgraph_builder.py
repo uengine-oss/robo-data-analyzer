@@ -16,7 +16,7 @@
 일시정지/재개/중단은 ``PauseController`` (cfg["pause"]) 가 담당 — step 함수가 안전
 지점에서 ``gate()`` 로 소비. 같은 세션 안의 soft hold (디스크 재개 아님).
 
-**새 strategy 추가 = ``pipeline/analysis_pipelines.py`` 의 ``Strategy(...)`` 선언만**.
+**새 strategy 추가 = ``pipeline/strategies.py`` 의 ``Strategy(...)`` 선언만**.
 코드 어디 분기 추가 X.
 """
 from __future__ import annotations
@@ -52,12 +52,36 @@ def build_langgraph_workflow(
     if 분기 0개. for 루프만.
 
     Args:
-        strategy: ``FRAMEWORK_PIPELINE`` 또는 ``DBMS_PIPELINE`` (``pipeline/analysis_pipelines.py``).
+        strategy: ``FRAMEWORK_PIPELINE`` 또는 ``DBMS_PIPELINE`` (``pipeline/strategies.py``).
         checkpointer: LangGraph Checkpointer (MemorySaver 등) — run 1회 안의 state 전파.
 
     Returns:
         Compiled StateGraph — ``app.astream(initial_state, config=...)`` 로 실행.
     """
+    try:
+        steps = list(strategy.steps)
+    except (AttributeError, TypeError) as error:
+        raise TypeError("strategy.steps must be an iterable of workflow steps") from error
+    if not steps:
+        raise ValueError("workflow must contain at least one step")
+
+    normalized_groups: list[tuple] = []
+    seen_names: set[str] = set()
+    for index, entry in enumerate(steps):
+        group = entry if isinstance(entry, tuple) else (entry,)
+        if not group:
+            raise ValueError(f"workflow parallel group at index {index} is empty")
+        for step_fn in group:
+            if not callable(step_fn):
+                raise TypeError(f"workflow step at index {index} is not callable: {step_fn!r}")
+            node_name = getattr(step_fn, "__name__", "")
+            if not node_name:
+                raise ValueError(f"workflow step at index {index} has no __name__")
+            if node_name in seen_names:
+                raise ValueError(f"duplicate step name: {node_name}")
+            seen_names.add(node_name)
+        normalized_groups.append(group)
+
     builder = StateGraph(WorkflowState)
 
     # prev = 직전 단계의 노드 이름들(항상 list). steps 항목이 **함수면 단일 노드**,
@@ -65,8 +89,7 @@ def build_langgraph_workflow(
     # 실행되고, 다음 단계는 그룹 전체 완료를 기다려 fan-in(superstep 배리어). 조건 if 분기는
     # 여전히 0개 — 결정론 fan-out/fan-in 만(병렬 그룹은 서로 독립·state 키 비충돌이 전제).
     prev: list = [START]
-    for entry in strategy.steps:
-        group = entry if isinstance(entry, tuple) else (entry,)
+    for group in normalized_groups:
         names: list[str] = []
         for step_fn in group:
             node_name = step_fn.__name__

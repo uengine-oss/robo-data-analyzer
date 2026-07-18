@@ -5,11 +5,11 @@ from typing import Iterable
 
 from graph.schema.graph_nodes import Question
 from graph.neo4j_client import Neo4jClient
-from graph.node_upsert import ANALYZER_GRAPH_OWNER
+from graph.ownership import ANALYZER_GRAPH_OWNER
 
 _UPSERT_QUERY = f"""
 UNWIND $items AS item
-MERGE (q:QUESTION {{id: item.id}})
+MERGE (q:QUESTION {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 SET q.text = item.text,
     q.reason = item.reason,
     q.graph_owner = '{ANALYZER_GRAPH_OWNER}'

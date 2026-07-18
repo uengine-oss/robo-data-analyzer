@@ -1,7 +1,7 @@
 """tests/eval/gate_eval — 검색 게이트 상시 측정 (놀이터 이관·정착, spec 044 SC-001).
 
 analyzer `search/` 코어를 골드(cluster_gold + rewrite_gold)로 채점 → gold 이름 회수율.
-현 config(rewrite/judge/ce_top)를 그대로 쓰되 env 로 A/B 가능:
+현 config(rewrite/judge/ce_top)를 그대로 쓰되 환경변수로 A/B 가능:
   ROBO_SEARCH_JUDGE=off|p15  ROBO_SEARCH_REWRITE=off|novel_abbrev  ROBO_SEARCH_CE_TOP=15|30
 
 실행: ./.venv/Scripts/python.exe tests/eval/gate_eval.py [--pool 30]
@@ -19,11 +19,11 @@ _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))
 import yaml
 
-from search.search_config import DEFAULT
+from search.config import DEFAULT
 from search.corpus.corpus import load_corpus
 from search.corpus.neo4j_reader import read_driver
 from search.ranking.retriever import Retriever
-from system.env_catalog import ENV
+from analyzer_settings import SETTINGS
 from graph.connection_context import Neo4jOverride, set_override
 
 _GOLD = Path(__file__).resolve().parent
@@ -40,7 +40,7 @@ def load_items(db: str) -> list[dict]:
 
 
 def run_db(db: str, pool_k: int) -> tuple[int, int, list]:
-    set_override(Neo4jOverride(ENV.neo4j.uri, ENV.neo4j.user, ENV.neo4j.password, db))
+    set_override(Neo4jOverride(SETTINGS.graph_database.uri, SETTINGS.graph_database.user, SETTINGS.graph_database.password, db))
     corpus = load_corpus()
     drv, dbn = read_driver()
     hits = total = 0
@@ -67,7 +67,7 @@ if __name__ == "__main__":
     ap.add_argument("--pool", type=int, default=30)
     args = ap.parse_args()
     print(f"════ 게이트 pool_k={args.pool} · rewrite={DEFAULT.cluster_rewrite_mode} "
-          f"judge={DEFAULT.cluster_judge_mode} ce_top={DEFAULT.cluster_ce_top} · LLM={ENV.search.llm_config} ════", flush=True)
+          f"judge={DEFAULT.cluster_judge_mode} ce_top={DEFAULT.cluster_ce_top} · LLM={SETTINGS.semantic_search.llm_config} ════", flush=True)
     nh, nt, nm = run_db("neo4j", args.pool)
     th, tt, tm = run_db("test", args.pool)
     print(f"\n════ 합산 {nh + th}/{nt + tt}  (neo4j {nh}/{nt} · test {th}/{tt}) ════")

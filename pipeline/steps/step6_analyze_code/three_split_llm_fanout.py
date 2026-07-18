@@ -40,21 +40,22 @@ from pipeline.steps.step6_analyze_code.rule_quality import check_rule_quality
 from pipeline.steps.step6_analyze_code.rules_fallback import run_rules_fallback
 from pipeline.steps.step6_analyze_code.rw_table_filter import constrain_tables_to_rw
 from pipeline.steps.step6_analyze_code.table_prompt_context import dump_table_refs
-from pipeline.data_models.analysis_context import AnalysisContext, dump_referenced_symbols
+from pipeline.steps.step6_analyze_code.summary_quality import enforce_summary_boundary
+from pipeline.models.analysis_context import AnalysisContext, dump_referenced_symbols
 from graph.schema.graph_nodes import CodeNode
-from pipeline.programming_languages import coerce_stereotype
-from llm.client.usage.cost_budget import BudgetExceededError, CostBudget
-from pipeline.data_models.code_analysis_output import (
+from pipeline.languages import coerce_stereotype
+from llm.usage.cost_budget import BudgetExceededError, CostBudget
+from pipeline.models.code_analysis_output import (
     RulesExamplesOutput,
     SummaryCoreOutput,
     SummaryOutput,
     TableInsightsOutput,
 )
-from llm.client.runners.yaml_llm_runner import run_yaml_rule
-from pipeline.domain_terms import normalize_domain_terms
-from log.logger import log_error, log_warning
-from log.processing_progress import track_processing
-from pipeline.source_file_cache import SourceFileCache
+from llm.runners.yaml_llm_runner import run_yaml_rule
+from pipeline.steps.step6_analyze_code.domain_terms import normalize_domain_terms
+from runtime_events.runtime_logger import log_error, log_warning
+from runtime_events.processing_events import track_processing
+from source.file_cache import SourceFileCache
 
 _STEP = "step6.analyze_code.three_split"
 
@@ -207,6 +208,15 @@ async def analyze_code_three_split(
             except Exception as e2:  # noqa: BLE001 — silent 차단
                 log_error(_STEP, "summary_failed", e2, code_id=code_id)
                 return None
+
+    summary_out.summary = await enforce_summary_boundary(
+        summary=summary_out.summary,
+        node_name=fn.name,
+        logical_name=summary_out.logical_name,
+        search_text=summary_out.search_text,
+        budget=cost_budget,
+        audit_id=code_id,
+    )
 
     # Phase 2: rules + insights 동시 — 자기 코드노드 cache 적중 (#1 이 방금 올림).
     # 부분 성공 허용 — rules/insights 한 조각 실패가 코드노드 폐기로 이어지지 않게.

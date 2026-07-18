@@ -1,7 +1,7 @@
 """REFERENCES/INIT_BY → Rule/Example용 구조화 값 근거."""
 from __future__ import annotations
 
-from pipeline.data_models.analysis_context import ReferencedSymbolContext
+from pipeline.models.analysis_context import ReferencedSymbolContext
 from graph.schema.graph_nodes import Constant, Variable
 
 

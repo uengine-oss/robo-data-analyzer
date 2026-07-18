@@ -1,6 +1,8 @@
 ## code_summary — 분할 1: summary + stereotype + logical_name + search_text + domain_terms
 extends: _common
 max_tokens: 1500
+shared_values:
+  summary_contract: ../_shared/summary_contract.md
 user_template_specific: |
   # [이 분할 고유 지침]
 
@@ -12,7 +14,7 @@ user_template_specific: |
 
   1. 본문을 한 번 읽고 `search_text`를 1~2문장으로 쓴다.
   2. 같은 읽기에서 확인한 후보로 `domain_terms`를 0~10개 쓴 뒤 배열을 닫는다.
-  3. `logical_name` 한 줄, `summary` 1~3줄, `stereotype` 하나를 쓰고 즉시 종료한다.
+  3. `logical_name` 한 줄, `summary` 한 문장, `stereotype` 하나를 쓰고 즉시 종료한다.
   4. 이미 닫은 필드로 돌아가 항목이나 문장을 추가하지 않는다.
   5. 동일·유사 문구를 반복하지 않는다.
 
@@ -74,23 +76,16 @@ user_template_specific: |
 
   ### 올바른 예시
 
-  입력:
-
-  ```c
-  /* SK-VAN: 카드 승인 중계망. 부분취소 요청을 전송한다. */
-  send_to_pg("SK-VAN", amount);
-  ```
-
-  출력:
+  노드 주석과 문자열에 공식 외부망명과 업무상태명이 실제로 있으면:
 
   ```json
   [
-    {"term":"SK-VAN","meaning":"카드 승인 요청을 중계하는 결제망"},
-    {"term":"부분취소","meaning":"결제 금액 일부만 취소하는 처리"}
+    {"term":"<원문의 외부망명>","meaning":"<원문이 밝힌 뜻>"},
+    {"term":"<원문의 업무상태명>","meaning":"<원문이 밝힌 뜻>"}
   ]
   ```
 
-  실제 후보가 2개이므로 2개에서 끝낸다.
+  실제 후보가 2개이므로 2개에서 끝낸다. 특정 고객·산업의 이름을 예시로 주입하지 않는다.
 
   후보가 없으면 `[]`가 정답이다. 10개를 채우기 위해 하나라도 만들면 실패다.
 
@@ -101,10 +96,10 @@ user_template_specific: |
 
   ```json
   [
-    {"term":"PG사 정산 대조 결과","meaning":"..."},
-    {"term":"PG사 정산 대조 결과 상세","meaning":"..."},
-    {"term":"PG사 정산 대조 결과 상세 코드","meaning":"..."},
-    {"term":"PG사 정산 대조 결과 상세 메시지","meaning":"..."}
+    {"term":"업무 결과","meaning":"..."},
+    {"term":"업무 결과 상세","meaning":"..."},
+    {"term":"업무 결과 상세 코드","meaning":"..."},
+    {"term":"업무 결과 상세 메시지","meaning":"..."}
   ]
   ```
 
@@ -124,8 +119,7 @@ user_template_specific: |
 
   ## summary
 
-  함수가 무엇을 판단·변경·반환하는지 1~3줄로 쓴다. 세부 규칙을 나열하거나 동일 내용을
-  반복하지 않는다.
+  {summary_contract}
 
   ## stereotype
 

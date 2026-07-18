@@ -30,7 +30,6 @@ table_access_patterns:
       - {token: <raw_token2>, op: INSERT}   # 예: save, i, insert
       - {token: <raw_token3>, op: UPDATE}
       - {token: <raw_token4>, op: DELETE}
-    entity_source: first_arg_string   # 또는 method_name_suffix 등
 
 ddl_transform:
   ddl_naming_rule: <as_is | camel_to_snake_upper | snake_to_camel>

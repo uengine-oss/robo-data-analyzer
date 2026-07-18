@@ -1,7 +1,7 @@
 """Run 1회 실행 어댑터 — rmtree latest + LangGraph workflow 실행 + 종료 처리.
 
 흐름:
-1. ``logs/analysis.run/latest/`` + ``logs/llm_prompts/latest/`` rmtree + 재생성.
+1. ``run-output/analysis/latest/`` + ``run-output/llm-prompts/latest/`` rmtree + 재생성.
 2. ``Run`` 메타 생성 + Neo4j 인덱스 / 제약 보장.
 3. ``CostBudget`` + ``MemorySaver`` (Checkpointer) + ``PauseController`` 생성.
 4. Strategy 의 workflow 빌더 호출 → ``astream(stream_mode="updates")``.
@@ -30,27 +30,32 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from graph.schema import graph_edges, graph_nodes
-from pipeline.data_models.analysis_context import AnalysisContext
-from pipeline.data_models.analysis_meta import AnalysisRun
-from pipeline.data_models.analysis_meta import Codebase
-from system.env_catalog import ENV
+from pipeline.models import analysis_context
+from pipeline.models.analysis_meta import AnalysisRun
+from pipeline.models.analysis_meta import Codebase
+from analyzer_settings import SETTINGS
 
-from llm.client.usage.cost_budget import CostBudget
-from log.logger import (
+from llm.usage.cost_budget import CostBudget
+from runtime_events.runtime_logger import (
     attach_run_file_handlers,
     detach_run_file_handlers,
     log_error,
     log_info,
 )
-from log.ndjson_stream import NDJSONStream
+from runtime_events.ndjson_event_stream import NDJSONStream
 from graph.neo4j_client import Neo4jClient
-from graph.schema.schema_constraints import ensure_schema, wipe_graph
-from pipeline.source_file_cache import SourceFileCache
+from graph.schema.constraints import ensure_schema, wipe_graph
+from source.file_cache import SourceFileCache
 from pipeline.execution.artifact_writer import dump_state_artifacts
 from pipeline.execution.langgraph_builder import build_langgraph_workflow
 from pipeline.execution.pause_controller import PauseController
 from pipeline.execution.run_registry import clear as clear_active_run
 from pipeline.execution.run_registry import set_active as set_active_run
+from pipeline.execution.run_registry import ConcurrentAnalysisRunError
+
+
+_RUN_OUTPUT_OWNER_MARKER = ".robo-data-analyzer-run-output"
+_RUN_OUTPUT_OWNER_MARKER_CONTENT = "robo-data-analyzer\n"
 
 
 def _state_msgpack_allowlist() -> tuple[type, ...]:
@@ -67,7 +72,12 @@ def _state_msgpack_allowlist() -> tuple[type, ...]:
         for obj in vars(mod).values()
         if isinstance(obj, type) and dataclasses.is_dataclass(obj)
     ]
-    types += [AnalysisContext, Codebase, AnalysisRun]
+    types += [
+        obj
+        for obj in vars(analysis_context).values()
+        if isinstance(obj, type) and dataclasses.is_dataclass(obj)
+    ]
+    types += [Codebase, AnalysisRun]
     return tuple(types)
 
 
@@ -87,34 +97,61 @@ async def execute_run(
         codebase: 분석 대상.
         stream: 프론트 NDJSON 스트림.
     """
-    log_base = ENV.log.dir
-    _reset_logs_root(log_base)
+    run_output_root = SETTINGS.run_output.dir
+    run = AnalysisRun.now(codebase=codebase, run_output_root=run_output_root)
+    pause = PauseController(stream)
 
-    run = AnalysisRun.now(codebase=codebase, log_base=log_base)
-    run.run_dir.mkdir(parents=True, exist_ok=True)
-    (run.run_dir / "artifacts").mkdir(parents=True, exist_ok=True)
-
-    # ── 파일 핸들러 attach (ROBO_LOG_FILE_ENABLED=true 일 때만) ──
-    # analyzer.log (INFO+) + error.log (WARNING+) → tail -f 로 실시간 추적 가능.
-    # 운영기 OFF → 빈 리스트 → detach no-op → 디스크 I/O 0.
-    # mkdir 직후 attach — 즉시 발생하는 ensure_schema / LangGraph 빌드 / step 로그 다 포함.
-    file_handlers = attach_run_file_handlers(run.run_dir)
-    run_started_at = time.monotonic()
-    log_info(
-        "run",
-        "start",
-        root=str(codebase.root),
-        strategy=getattr(strategy, "name", "?"),
-        run_id=run.run_id,
-    )
     try:
+        # 단일 활성 슬롯은 run-output reset/Neo4j wipe보다 먼저 선점한다. 두 번째 run이
+        # 파괴 작업에 진입한 뒤 control 슬롯만 덮어쓰는 경쟁을 막는다.
+        set_active_run(run.run_id, pause)
+    except ConcurrentAnalysisRunError as error:
+        if stream is not None:
+            stream.emit({
+                "type": "error",
+                "component": "run.registry",
+                "operation": "claim_active_run",
+                "message": str(error),
+            })
+            await stream.close()
+        raise
+    except BaseException:
+        if stream is not None:
+            await stream.close()
+        raise
+
+    try:
+        _reset_run_output_root(run_output_root)
+        run.run_dir.mkdir(parents=True, exist_ok=True)
+        (run.run_dir / "artifacts").mkdir(parents=True, exist_ok=True)
+
+        # ── 파일 핸들러 attach (ROBO_RUNTIME_EVENT_FILE_ENABLED=true 일 때만) ──
+        # analyzer.log (INFO+) + error.log (WARNING+) → tail -f 로 실시간 추적 가능.
+        # 운영기 OFF → 빈 리스트 → detach no-op → 디스크 I/O 0.
+        # mkdir 직후 attach — 즉시 발생하는 ensure_schema / LangGraph 빌드 / step 로그 다 포함.
+        file_handlers = attach_run_file_handlers(run.run_dir)
+    except BaseException:
+        clear_active_run(run.run_id)
+        if stream is not None:
+            await stream.close()
+        raise
+
+    run_started_at = time.monotonic()
+    try:
+        log_info(
+            "run",
+            "start",
+            root=str(codebase.root),
+            strategy=getattr(strategy, "name", "?"),
+            run_id=run.run_id,
+        )
         neo_client = Neo4jClient()
         try:
             # 매 run 시작 — 옛 노드/엣지 wipe (테스트 정책: 깨끗 상태).
             # schema (제약/인덱스) 는 wipe 무관 — ensure_schema 가 idempotent.
             await wipe_graph(neo_client)
             await ensure_schema(neo_client)
-            log_info("run", "neo4j_ready", database=ENV.neo4j.database, wiped=True)
+            log_info("run", "neo4j_ready", database=SETTINGS.graph_database.database, wiped=True)
 
             cost_budget = CostBudget()
             # 체크포인트(msgpack)가 직렬화하는 state dataclass(CodeNode/Table/Rule/Calls 등)를
@@ -128,12 +165,9 @@ async def execute_run(
             # 병렬 그룹(후처리) 공유 LLM 세마포어 — step 마다 따로 Semaphore(30) 를 만들면
             # 동시 실행 시 30×N 이 한 서버로 몰려 과부하. 하나를 공유해 총 동시수를 묶는다.
             # 그룹 아닌(순차) step 도 같은 세마포어를 써도 결과 동일(동시엔 1 step 만 활성).
-            llm_semaphore = asyncio.Semaphore(ENV.pipeline.max_concurrency)
+            llm_semaphore = asyncio.Semaphore(SETTINGS.analysis_pipeline.max_concurrency)
 
             # 일시정지/재개/중단 컨트롤러 — control 엔드포인트가 registry 로 찾아 신호.
-            pause = PauseController(stream)
-            set_active_run(run.run_id, pause)
-
             initial_state: dict = {"run": run}
             config = {
                 "configurable": {
@@ -173,6 +207,19 @@ async def execute_run(
                 # stopped 플래그가 켜진 채 빠져나온 예외 = 사용자 중단(RunStopped / 취소된
                 # in-flight 의 래핑). 그 외 예외는 진짜 실패 → 그대로 위로 전파.
                 if not pause.status()["isStopped"]:
+                    # LangGraph checkpointer에는 실패 직전까지 완료된 step state가 남아 있다.
+                    # 원래 pipeline 오류를 가리지 않는 best-effort 경로로 step1~6 산출물을
+                    # 먼저 보존한다. 특히 step7 외부 연동 실패가 수시간 분석을 지우지 않게 한다.
+                    try:
+                        await _dump_checkpoint_artifacts(app, config, run)
+                        _summarize_usage(run.run_dir)
+                        log_info("run", "failure_artifacts_dumped", run_dir=str(run.run_dir))
+                    except Exception as artifact_error:
+                        log_error(
+                            "run", "dump_failure_artifacts_failed", artifact_error,
+                            stream_emit=stream.emit if stream is not None else None,
+                            run_id=run.run_id,
+                        )
                     raise
                 stopped = True
                 if stream is not None:
@@ -184,10 +231,9 @@ async def execute_run(
                 # ★ astream "updates" 델타를 dict.update 로 모으면 operator.add 키
                 #   (reads_writes_edges / call_sites 등)가 덮어써져 artifact 가 불완전해진다
                 #   — checkpointer 의 reduced state 를 단일 진실로 쓴다.
-                final_state = dict((await app.aget_state(config)).values)
                 # artifacts/ 4파일 — 실패 시 명시 emit + 상위로 전파 (silent X)
                 try:
-                    dump_state_artifacts(run, final_state)
+                    await _dump_checkpoint_artifacts(app, config, run)
                     log_info("run", "artifacts_dumped", run_dir=str(run.run_dir))
                 except Exception as e:
                     log_error(
@@ -211,7 +257,6 @@ async def execute_run(
                 )
 
         finally:
-            clear_active_run(run.run_id)
             await neo_client.close()
     except Exception as e:
         # 파이프라인 실패 — 스트림 consumer 가 알도록 에러 emit (조용한 실패 차단).
@@ -223,6 +268,7 @@ async def execute_run(
         )
         raise
     finally:
+        clear_active_run(run.run_id)
         # neo close 다음 — Windows fd 충돌 회피 위해 attach 의 역순.
         detach_run_file_handlers(file_handlers)
         # 성공·실패 무관 스트림 종료 — 안 닫으면 consumer 가 stream_end 를 영구 대기 (hang).
@@ -231,19 +277,49 @@ async def execute_run(
     return run
 
 
-def _reset_logs_root(log_base: Path) -> None:
-    """매 실행 ``logs/`` 통째 rmtree 후 재생성 — 옛 run 잔재로 인한 오해 차단.
+async def _dump_checkpoint_artifacts(app: Any, config: dict, run: AnalysisRun) -> dict:
+    """최신 reduced checkpoint state를 artifact에 보존하고 그 state를 반환한다."""
+    state = dict((await app.aget_state(config)).values)
+    dump_state_artifacts(run, state)
+    return state
 
-    옛 정책 (``analysis.run/latest`` + ``llm_prompts/latest`` 만 reset) 은 ``logs/`` 직속의
-    임시 파일 (``_latest_run_console.log`` 등) 또는 timestamp 폴더 잔재가 남을 수 있음 →
-    monitor 가 옛 inode 잡고 옛 라인 토해내는 사고 발생 → ``logs/`` 통째 정리.
+
+def _reset_run_output_root(run_output_root: Path) -> None:
+    """Analyzer가 소유한 실행 결과 루트만 초기화한다.
+
+    최초에는 없거나 빈 디렉터리만 소유권 표식과 함께 인수한다. 이후에는 표식 내용까지
+    일치해야만 전체 삭제한다. 경로 오설정이나 이름 우연 일치로 사용자 파일을 지우지 않는다.
     """
-    if log_base.exists():
+    if not isinstance(run_output_root, Path):
+        raise ValueError(f"run_output_root must be a Path; got {run_output_root!r}")
+    if run_output_root.is_symlink():
+        raise ValueError(f"실행 결과 루트는 심볼릭 링크일 수 없습니다: {run_output_root}")
+
+    root = run_output_root.resolve()
+    if root == Path.cwd().resolve():
+        raise ValueError(f"실행 결과 루트는 현재 작업 디렉터리일 수 없습니다: {root}")
+    if root == Path(root.anchor):
+        raise ValueError(f"실행 결과 루트는 파일시스템 루트일 수 없습니다: {root}")
+    if root.exists() and not root.is_dir():
+        raise ValueError(f"실행 결과 루트가 디렉터리가 아닙니다: {root}")
+
+    marker = root / _RUN_OUTPUT_OWNER_MARKER
+    if root.exists() and any(root.iterdir()):
+        if not marker.is_file():
+            raise ValueError(f"Analyzer가 소유하지 않은 비어 있지 않은 디렉터리입니다: {root}")
+        try:
+            marker_content = marker.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ValueError(f"실행 결과 소유권 표식을 읽을 수 없습니다: {marker}") from exc
+        if marker_content != _RUN_OUTPUT_OWNER_MARKER_CONTENT:
+            raise ValueError(f"실행 결과 소유권 표식이 올바르지 않습니다: {marker}")
         # 정리에 실패한 옛 로그를 새 run의 결과로 오인하지 않도록 오류를 전파한다.
-        shutil.rmtree(log_base)
-    log_base.mkdir(parents=True, exist_ok=True)
-    (log_base / "analysis.run" / "latest").mkdir(parents=True, exist_ok=True)
-    (log_base / "llm_prompts" / "latest").mkdir(parents=True, exist_ok=True)
+        shutil.rmtree(root)
+
+    root.mkdir(parents=True, exist_ok=True)
+    marker.write_text(_RUN_OUTPUT_OWNER_MARKER_CONTENT, encoding="utf-8")
+    (root / "analysis" / "latest").mkdir(parents=True, exist_ok=True)
+    (root / "llm-prompts" / "latest").mkdir(parents=True, exist_ok=True)
 
 
 def _summarize_usage(run_dir: Path) -> None:

@@ -15,7 +15,7 @@ user_template_specific: |
   - 스키마:
     ```
     RulesExamplesOutput {
-      rules:[ { statement:"<조건>이면 <결과>", coupled_domains:["..."],
+      rules:[ { statement:"<조건>이면 <결과>",
                 examples:[ { given:"...", when:"...", then:"...",
                              affected_tables:[ { table:"...", op:"READ"|"INSERT"|"UPDATE"|"DELETE"|"MERGE" } ] } ] } ],
       questions:[ { text:"한 줄 질문", reason:"코드 근거 부재 사유" } ] }
@@ -70,8 +70,7 @@ user_template_specific: |
     - 분리(별 Rule) = 조건 **의미·결과가 다름** → 합치면 누락.
     - 자가점검: "두 Rule 합치면 둘 중 한 동작을 잃나?" → 잃으면 분리.
     - 예: 통합 "결제수단 A·B·C 모두 같은 한도검증" / 분리 "상태 X→환불 / Y→취소 / Z→보류"(Rule 3개).
-  - **Rule 필드**: `statement` "<조건>이면 <결과>"(도메인 코드값 리터럴은 보존) /
-    `coupled_domains` `[]` 기본(타 도메인 테이블 WRITE·값분기·계산 있을 때만 도메인명) / `examples` 중첩.
+  - **Rule 필드**: `statement` "<조건>이면 <결과>"(도메인 코드값 리터럴은 보존) / `examples` 중첩.
 
   # ════════════════════════════════════════════════════════════════
   # 3. examples — 3축 + 의미 유일성 + 매핑형

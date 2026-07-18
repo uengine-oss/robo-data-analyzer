@@ -15,6 +15,7 @@ HAS_MEMBER = "HAS_MEMBER"    # 그릇(FILE/CLASS/PACKAGE/DataType) → 멤버 (�
                              #   "가지다" — 멤버 종류는 노드 라벨로 구분. 구문은 멤버 아님(PARENT_OF/NEXT 만).
 REFERENCES = "REFERENCES"    # CodeNode → Variable / Constant
 INIT_BY = "INIT_BY"          # Variable → 출처 노드 (변수·상수)
+NEXT = "NEXT"                # 실행 순서(흐름): 구문 → 구문 (DBMS, edges/next.py)
 
 # 코드 ↔ DB (linking 에서 도출)
 READS = "READS"              # CodeNode → Table
@@ -28,10 +29,9 @@ HAS_COLUMN = "HAS_COLUMN"    # Table → Column
 FK = "FK"                    # Table → Table
 
 # Example Mapping (analyze_code 3분할 → EM 그래프)
-HAS_RULE = "HAS_RULE"            # CodeNode → Rule (per-function 정보는 이 엣지 속성)
+HAS_RULE = "HAS_RULE"            # CodeNode → Rule
 HAS_EXAMPLE = "HAS_EXAMPLE"      # Rule → Example
 HAS_QUESTION = "HAS_QUESTION"    # CodeNode → Question
-NEXT = "NEXT"                    # 실행 순서(흐름): 구문→구문 (DBMS, edges/next.py)
 AFFECTS_TABLE = "AFFECTS_TABLE"  # Example → Table
 
 # 컴포넌트 멤버십은 관계가 아니라 FUNCTION.component_id 속성 (build_components_step) — 합성 엣지 없음.
