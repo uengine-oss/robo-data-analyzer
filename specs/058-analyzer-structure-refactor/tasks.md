@@ -1,5 +1,9 @@
 # Tasks: Analyzer Structure Refactor
 
+> Historical R1 task ledger. Completed move destinations below capture that
+> slice and may have been renamed again by spec 062. Current paths are defined
+> by the source tree and `D:/work/robo/세서비스-최종트리.md`.
+
 **Input**: Design documents from `specs/058-analyzer-structure-refactor/`
 
 **Prerequisites**: `spec.md`, `plan.md`, `research.md`, `data-model.md`, `contracts/`, `quickstart.md`
@@ -121,7 +125,7 @@ semantic and integration regression battery.
 - [x] T049 [US2] Run the 057 search gold battery and require at least 29/30
 - [x] T050 [US2] Run a clean shopmall reanalysis and compare graph/meaning results to the approved baseline
 - [x] T051 [US2] Run live REST, MCP, central UI and Architect legacy-evidence/canvas smoke scenarios (R1 behavior PASS; strict cross-service smoke retains separately recorded pre-existing text2sql/Figma failures for R3)
-- [x] T052 [US2] Update `./README.md`, `../../goal-verify/runners/` and `../../goal-verify/docs/handoffs/` to the verified final structure
+- [x] T052 [US2] Update the then-current README, verifier runners, and handoff evidence; the retired handoff path is superseded by spec 062 and `D:/work/robo/세서비스-최종트리.md`
 - [x] T053 [US2] Run old-path/name search, diff check, secret check and independent self-contradiction review
 - [x] T054 [US2] Commit and push verified R1 slices, then confirm local/origin hashes and clean worktrees
 

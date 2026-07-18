@@ -1,5 +1,10 @@
 # Feature Specification: Analyzer Structure Refactor
 
+> Historical migration record. The intermediate v10 paths in this spec were
+> subsequently superseded by spec 062 and the verified target tree at
+> `D:/work/robo/세서비스-최종트리.md`. Use the current source tree, README,
+> spec 062, and final regression evidence for present-day paths.
+
 **Feature Branch**: `main`
 
 **Created**: 2026-07-16
@@ -130,8 +135,8 @@ Analyzer를 처음 보는 유지보수자는 폴더와 파일 이름만으로 �
 
 ## Assumptions
 
-- 승인된 v10 구조와 개명·합침·삭제 후보표는 `goal-verify/docs/handoffs/analyzer-refactor.md`가
-  단일 진실이며, 구현 중 임의 재설계하지 않는다.
+- 이 R1 당시 승인된 v10 구조와 개명·합침·삭제 후보표는 당시 handoff가 단일 진실이었다.
+  해당 handoff 경로는 폐기됐으며 현재 구조는 spec 062와 `D:/work/robo/세서비스-최종트리.md`를 따른다.
 - 현재 `main`의 커밋 `4a1bb126...`이 구조 변경 전 기준선이다.
 - `module_test`는 현재 작업트리에 존재하지 않으므로 이번 구현의 삭제 대상이 아니다.
 - 내부 경로 이동 자체는 외부 공개 계약 변경으로 간주하지 않지만, 외부 러너와 배포 참조는 실제

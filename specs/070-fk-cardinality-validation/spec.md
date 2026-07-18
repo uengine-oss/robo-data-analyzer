@@ -2,7 +2,7 @@
 
 ## Problem
 
-DDL parsing emits FK edges with dataclass defaults, while GOAL-D validation
+DDL parsing emits FK edges with dataclass defaults, while the integration validator
 compares only table endpoints. A graph can therefore pass even when a foreign
 key is attached to the wrong column or carries an incorrect `fk_type` or
 `is_candidate` value.

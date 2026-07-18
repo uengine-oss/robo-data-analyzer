@@ -16,5 +16,6 @@
   self-loops 0. Independent answer-key CALL comparison mismatch 0.
 - DBMS run log contains `link_dbms_tables_step` completion and zero
   `link_deterministic_step` events; the declaration contract pins the no-op.
-- Evidence: `GOAL-D/run-output/rwis-live/calls-proof.json`,
-  `graph-proof.json`, and `analyzer-live-success.log`.
+- Final evidence: `D:/work/robo/goal-verify/output/reports/diff-report-rwis.json`
+  and `rwis-stream-graph-grounded.json`; the live run completed with DBMS
+  CALLS self-loops 0 and answer-key relation mismatches 0.

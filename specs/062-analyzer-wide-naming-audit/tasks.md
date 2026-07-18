@@ -6,7 +6,7 @@
 - [x] T004 Apply evidence-backed moves, renames, splits, merges and dead-code deletions.
 - [x] T005 Reconcile ledger/move map/docs and prove old-name/missing-row zero.
 - [x] T006 Run full static, unit, prompt, official runtime, REST/MCP/UI/Architect gates.
-- [x] T029 Bind every current Analyzer runtime file to the GOAL-D final tree and resolve post-§1 conflicts explicitly.
+- [x] T029 Bind every current Analyzer runtime file to `D:/work/robo/세서비스-최종트리.md` and resolve post-§1 conflicts explicitly.
 - [x] T030 Implement the final source/external/pipeline/models/strategy/language ownership paths without shims.
 - [x] T031 Implement the required Step2/Step4/Step6, graph, search, LLM and observability splits/deletions.
 - [x] T032 Pass machine final-tree verification with missing 0, forbidden 0 and unclassified 0.
@@ -15,7 +15,7 @@
 
 - Final-tree verifier: Analyzer required paths 687; missing 0, forbidden 0,
   unexpected 0, unclassified 0 across the three-product inventory.
-- Authoritative Analyzer suites: structure 18/18 and full 186/186; prompt hash
+- Authoritative final Analyzer suites: structure 18/18 and full 194/194; prompt hash
   26/26; compileall and diff-check pass.
 - Final RWIS run `20260717_182434_d09f866e5048` completed all 14 steps with
   Catalog lineage 200, no failed events, prompt-record warnings, or checkpoint

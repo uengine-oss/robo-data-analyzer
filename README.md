@@ -8,13 +8,17 @@
 
 ---
 
-## ⚠️ 최근 변경 (2026-07-13) — 읽고 시작하세요
+## ⚠️ 최근 변경 (2026-07-18) — 읽고 시작하세요
 
-전수 DRY·정합 조사([보고서](docs/작업보고내용/2026-07-13-analyzer-DRY조사.md))에서 **헌법 위반 5종**이 확인되어 두 스펙으로 시정했다.
+전수 DRY·정합 조사와 세 서비스 구조 리팩터에서 확인된 위반을
+[045](specs/045-graph-integrity-restore/spec.md),
+[046](specs/046-dry-single-truth/spec.md),
+[059](specs/059-shared-graph-ownership/spec.md),
+[062](specs/062-analyzer-wide-naming-audit/spec.md)로 시정했다.
 
 | 무엇이 바뀌었나 | 왜 | 스펙 |
 |---|---|---|
-| **그래프 wipe 가 라벨을 안 가린다** — `MATCH (n) DETACH DELETE n`. 같은 DB 의 **catalog·architect 데이터도 함께 삭제**된다 (분석 후 재등록 필요) | 헌법 *"매 run = full rebuild"* 복원. 옛 `DataSource` 예외는 자식(`:Schema`/`:Table`/`:Column`)을 못 살려 **껍데기만 남는 반쪽 상태**였다 | [045](specs/045-graph-integrity-restore/spec.md) |
+| **그래프 reset은 Analyzer 소유 노드만 지운다** — `graph_owner='analyzer'` 범위에서 `DETACH DELETE`. Data Fabric의 `DataSource`와 다른 서비스 데이터는 보존한다 | 프로필·서비스 소유권 격리. Analyzer 자체는 매 run full rebuild를 유지한다 | [059](specs/059-shared-graph-ownership/spec.md) |
 | **원문(`code_text`) 은 step2 가 모든 노드에 부여** (코드노드·파일·변수·상수·데이터타입) | 옛 규칙(step6 에서만 코드노드에)은 선언 노드의 노드 패널을 비게 했다. **spec 016 FR-004 supersede** | [045](specs/045-graph-integrity-restore/spec.md) |
 | **소스 read 실패가 로그로 표면화** + `code_text_missing` 카운터 | 종전엔 로그 0건으로 삼켜져 "성공"으로 끝났다 (헌법 IV 위반) | [045](specs/045-graph-integrity-restore/spec.md) |
 | **`analysis.json` 에 원문이 안 담긴다** — 원문의 집은 `ast.json` 하나 | 같은 원문 842 KB 가 두 파일에 중복이었다 | [045](specs/045-graph-integrity-restore/spec.md) |
@@ -62,7 +66,7 @@
 | **2개 Strategy** | `framework`(응용코드) / `dbms`(PL/SQL) — 확장자로 자동 감지, `--strategy`로 override |
 | **LLM 정책** | 모델+배포환경 1셋 = `llm/model_configs/<name>.yaml` 1개. `.env`의 `ROBO_LLM_CONFIG` 1줄로 전환 |
 | **결정론 우선** | DDL·AST 파싱 / 링킹 grep / 호출 분류 / Bottom-up DAG / 컴포넌트 군집 / 건강지표 = **LLM 0회**. LLM은 "의미"가 필요한 곳에만 |
-| **실행 단위** | `/robo/analyze` 1회 = LangGraph workflow 1회 = `Run` 1개. 매 Run 시작 시 그래프 wipe + `run-output/` rmtree |
+| **실행 단위** | `/robo/analyze` 1회 = LangGraph workflow 1회 = `Run` 1개. 매 Run 시작 시 Analyzer 소유 그래프 reset + `run-output/` rmtree |
 | **위치** | `d:/work/robo/project/robo-data-analyzer` (origin: `github.com/uengine-oss/robo-data-analyzer`) |
 
 > 더 깊은 영역 노트는 메모리(`[[manual_overview]]` · `[[manual_run]]`) 및 학습노트 참조.
@@ -88,11 +92,10 @@ origin: `github.com/uengine-oss/robo-data-analyzer` · `github.com/uengine-oss/a
 
 UPSERT 가 매 step 마다 일어나므로 **Neo4j 인스턴스 필수**. `.env` 의
 `ROBO_NEO4J_URI / USER / PASSWORD / DATABASE` 로 설정.
-analyzer 는 매 Run 시작에 `MATCH (n) DETACH DELETE n` 으로 그래프를 wipe → `ensure_schema()`
-로 제약/인덱스를 재확인한다(idempotent). **⚠️ 라벨을 가리지 않는다 — 같은 DB 를 공유하는 다른
-서비스의 데이터(catalog 의 `:DataSource`/`:Schema`/`:Table`/`:Column`, architect 의 설계 그래프)도
-함께 지워진다.** 헌법의 full-rebuild 정책상 의도된 동작이며, 해당 서비스는 분석 후 자기 데이터를
-다시 등록/생성해야 한다 (spec 045). HTTP 헤더 `X-Neo4j-*` 로 요청별 override 도 가능
+analyzer 는 매 Run 시작에 `graph_owner='analyzer'`인 노드만 `DETACH DELETE`하고 `ensure_schema()`로
+제약/인덱스를 재확인한다(idempotent). 같은 DB를 공유하는 Data Fabric의 `DataSource`와 다른 서비스
+소유 노드는 보존된다. Analyzer 소유 그래프 안에서는 full-rebuild 정책을 유지한다(spec 059).
+HTTP 헤더 `X-Neo4j-*` 로 요청별 override 도 가능
 (Electron 데스크톱 임베드 대응 — `Neo4jOverride.from_headers()`).
 
 ### 1.3 LLM 엔드포인트
@@ -624,8 +627,8 @@ robo-data-analyzer/
 - **antlr JSON 디렉토리 없음** — `step2_load_ast` 가 `FileNotFoundError` raise.
   → `d:/work/robo/project/antlr-code-parser` 먼저 실행해 `data/analysis/` 채우기.
 - **`run-output/` 내용이 다음 run 에 사라짐** — 정상. `_reset_run_output_root` 가 매 run 통째 rmtree.
-- **Neo4j 그래프가 매 run 비워짐** — 정상. `wipe_graph()` 의 `DETACH DELETE` (헌법: 매 run = full rebuild).
-  **같은 DB 를 쓰는 catalog·architect 데이터도 함께 지워진다** — 분석 후 재등록 필요.
+- **Analyzer 그래프가 매 run 비워짐** — 정상. `wipe_graph()`가 `graph_owner='analyzer'` 범위만
+  `DETACH DELETE`한다. Data Fabric의 DataSource와 다른 서비스 소유 데이터는 보존된다.
 - **Scan Agent 가 도구 호출 안 함** — `submit_scan` 누락 시 raise. `scan_agent_system.md` 확인.
 - **`leidenalg`/`igraph` import 오류** — `build_components_step` 가 명시 raise.
   → `pip install -r requirements.txt` 로 설치.

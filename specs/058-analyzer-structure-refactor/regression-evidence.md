@@ -1,5 +1,10 @@
 # Regression Evidence: Analyzer Structure Refactor
 
+> The pre-move and slice commands below are immutable historical evidence.
+> They are not current run instructions. The present final layout is governed
+> by spec 062 and `D:/work/robo/세서비스-최종트리.md`; the current authoritative
+> suite is `python -m unittest discover -s tests -p "test_*.py" -t .` (194/194).
+
 ## Pre-move baseline — commit `4a1bb126b3fe1c26c0ce54363bb4caab49863486`
 
 | Gate | Result | Evidence |

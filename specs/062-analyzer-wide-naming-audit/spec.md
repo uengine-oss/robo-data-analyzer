@@ -1,7 +1,7 @@
 # Feature Specification: Analyzer 전 파일 명명·책임 재감사
 
 **Created**: 2026-07-17
-**Status**: In progress
+**Status**: Complete
 
 ## Requirements
 
@@ -97,10 +97,11 @@
 공식 Analyzer 재시작, REST/MCP/Analyzer UI와 Architect 연동 회귀가 모두 통과한다.
 단, 사용자가 `project_temp`에서 실행 중인 서버·포트는 건드리지 않고 별도 포트와 산출물로 격리한다.
 
-## GOAL-D final-structure binding
+## Final target-tree binding
 
-`D:/work/robo/GOAL-D/02-최종구조.md` §1과 §4는 이 spec의 필수 구조
-계약이다. 이전 spec 058 구조 테스트의 통과는 이 계약을 대신하지 않는다.
+`D:/work/robo/세서비스-최종트리.md` §1과 §4는 이 spec의 목표 구조다.
+이 문서는 정적 목표일 뿐 소스 코드보다 우선하는 정답은 아니며, 완료 구현·감사대장·실행 가능한
+검증기가 최종 판정 근거다. 이전 spec 058 구조 테스트의 통과만으로 이 계약을 대신하지 않는다.
 
 - `source/{file_cache,path_resolver}.py`와 `external/catalog.py`를 실제 소유
   경계로 만들고 옛 `pipeline/{source_file_cache,catalog_client}.py`를 남기지 않는다.
@@ -111,7 +112,7 @@
   batch planning 책임을 문서의 분해선대로 실제 파일로 분리한다.
 - graph domain-term 소유권과 example orchestration, search ranking, LLM 중간
   `client/` 계층, observability logger 분해, 죽은 scripts/files를 문서대로 정리한다.
-- D-1 이후 생산자가 생긴 `control_subtree` 계열처럼 §1 작성 뒤 GOAL-D가
+- D-1 이후 생산자가 생긴 `control_subtree` 계열처럼 §1 작성 뒤 목표 트리가
   의도적으로 살린 경로는 삭제하지 않고 충돌표에 후속 명세 근거를 기록한다.
 - 현재 runtime 파일 전부가 최종 유지·이동/분해·삭제 중 하나로 파일 단위
   매핑되어야 하며, 미분류 0과 required missing 0/forbidden present 0을 기계 검증한다.

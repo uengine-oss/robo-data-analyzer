@@ -3,7 +3,7 @@
 **Feature Branch**: `main`
 **Created**: 2026-07-17
 **Status**: Active
-**Input**: GOAL-D D-0 — pinned Analyzer의 residual 복원력을 본진 구조에 맞게 재판정하고, 문자열 예외 판별 없이 근본 계약으로 이관한다.
+**Input**: 최종 리팩터 D-0 요구 — pinned Analyzer의 residual 복원력을 본진 구조에 맞게 재판정하고, 문자열 예외 판별 없이 근본 계약으로 이관한다.
 
 ## User Scenarios & Testing
 

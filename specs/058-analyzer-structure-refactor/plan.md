@@ -1,5 +1,9 @@
 # Implementation Plan: Analyzer Structure Refactor
 
+> Historical migration plan. Paths below describe the R1 move sequence, not
+> the final runtime layout. Spec 062 and `D:/work/robo/세서비스-최종트리.md`
+> supersede its intermediate names.
+
 **Branch**: `main` | **Date**: 2026-07-16 | **Spec**: [spec.md](./spec.md)
 
 **Input**: Feature specification from `specs/058-analyzer-structure-refactor/spec.md`
@@ -107,8 +111,9 @@ tests/{pipeline,graph,search,api,eval}/
 specs/ · .specify/ · README.md · requirements.txt · Dockerfile
 ```
 
-**Structure Decision**: Use the approved v10 tree from
-`goal-verify/docs/handoffs/analyzer-refactor.md`. `shared/`, `analysis_flow/`, `agent_tools/`, `data_models/`,
+**Structure Decision (historical)**: This R1 slice used the then-approved v10
+handoff. The handoff path has since been retired; the current target is
+`D:/work/robo/세서비스-최종트리.md`. `shared/`, `analysis_flow/`, `agent_tools/`, `data_models/`,
 `llm_configs/`, root `prompts/` and `cli_scripts/` disappear after all consumers move. Internal `deploy/` is not
 removed in R1; cross-service deployment cleanup is the later R1B slice after root-deploy consumption is proven.
 

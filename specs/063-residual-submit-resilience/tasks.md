@@ -18,7 +18,7 @@
 - [x] T006 국소 정상/submit 누락/다른 오류 테스트를 통과시킨다.
 - [x] T007 관련 LLM 경계·step4 회귀를 통과시킨다.
 - [x] T008 구조·전체 unittest(`-t .`)·prompt byte-identical·compileall·diff check를 통과시킨다.
-- [x] T009 감사대장과 GOAL-D D-0 검증됨/실패/미검증 기록을 현재 증거로 갱신한다.
+- [x] T009 감사대장과 최종 D-0 검증됨/실패/미검증 기록을 현재 증거로 갱신한다.
 
 ## Evidence
 
