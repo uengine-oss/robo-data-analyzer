@@ -149,7 +149,7 @@ an entry in `verification-evidence.md` is not completion evidence.
 - [x] T102 [P6] Update only `src/features/code-analysis/analyzer.ts` and
       `src/shared/utils/graphVisibility.ts` plus owned tests.
 - [x] T103 [P6] Run strict TypeScript, build and focused frontend tests without overwriting dirty package/graphCanvas files.
-- [ ] T104 [P6] Live Playwright: step3/step5 progress, default hidden, show-all, exact node/edge inventory,
+- [x] T104 [P6] Live Playwright: step3/step5 progress, default hidden, show-all, exact node/edge inventory,
       unrelated relationship 0, console/network error 0.
 - [x] T105 [P6] Recompare all pre-existing Frontend WIP hashes/diffs and record P6 evidence.
 
@@ -170,9 +170,9 @@ an entry in `verification-evidence.md` is not completion evidence.
 - [x] T121 [P8] Search all `has_xml_mapper` producers/consumers; remove API/model/README/tests only after consumer 0 proof.
 - [x] T122 [P8] Organize all required xlink verification assets under Analyzer-owned tests/scripts; prohibited module copies 0.
 - [x] T123 [P8] Run full Analyzer unittest, structure tests, prompt hash, compileall and dependency/import smoke.
-- [ ] T124 [P8] Run real Neo4j Analyzer Framework and DBMS analyses with isolated input/output; verify no failed events.
-- [ ] T125 [P8] Compare source→AST→chunk→graph→context→REST/MCP per answer-key item and graph fingerprint/idempotency.
-- [ ] T126 [P8] Run Frontend live E2E and capture screenshots/event/network/console evidence.
+- [x] T124 [P8] Run real Neo4j Analyzer Framework and DBMS analyses with isolated input/output; verify no failed events.
+- [x] T125 [P8] Compare source→AST→chunk→graph→context→REST/MCP per answer-key item and graph fingerprint/idempotency.
+- [x] T126 [P8] Run Frontend live E2E and capture screenshots/event/network/console evidence.
 - [x] T127 [P8] Final active grep 0: old steps, format/filetype, prohibited copies, has_xml_mapper, compatibility shim, temp files.
 - [x] T128 [P8] Final Git diff/status audit in every repository; confirm unrelated WIP unchanged.
 - [x] T129 [P8] Cross-check spec↔plan↔tasks↔code↔evidence requirement by requirement; leave any weak item unchecked.
