@@ -4,14 +4,14 @@ import unittest
 from pathlib import Path
 
 from graph.ownership import ANALYZER_GRAPH_OWNER
-from pipeline.steps.step7_post_processing.build_components_step import _SET_QUERY as COMPONENT_SET_QUERY
-from pipeline.steps.step7_post_processing.build_glossary_step import _UPSERT_QUERY as GLOSSARY_UPSERT_QUERY
-from pipeline.steps.step7_post_processing.embed_step import (
+from pipeline.steps.step8_post_processing.build_components_step import _SET_QUERY as COMPONENT_SET_QUERY
+from pipeline.steps.step8_post_processing.build_glossary_step import _UPSERT_QUERY as GLOSSARY_UPSERT_QUERY
+from pipeline.steps.step8_post_processing.embed_step import (
     _embedded_code_query,
     _embedding_query,
     _metadata_upsert_query,
 )
-from pipeline.steps.step7_post_processing.health_metrics_step import _SET_QUERY as HEALTH_SET_QUERY
+from pipeline.steps.step8_post_processing.health_metrics_step import _SET_QUERY as HEALTH_SET_QUERY
 from search.corpus.corpus import _CORPUS_QUERY, _FAN_IN_QUERY
 from search.corpus.embed_material import FETCH_MATERIAL
 from search.ranking.recall import _QUERY_NODES

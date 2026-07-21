@@ -15,12 +15,12 @@ from types import SimpleNamespace
 
 import httpx
 
-from analyzer_settings import SETTINGS
-from llm.llm_config_loader import load_llm_config
+from shared.config.settings import SETTINGS
+from llm.configs.loader import load_llm_config
 from llm.usage.pricing import compute_cost
 from llm.usage.token_usage import UnmeteredLlmCallError, track_usage
 from llm.usage.usage_jsonl_writer import append_usage_record
-from runtime_events.runtime_logger import log_warning
+from shared.events.runtime_logger import log_warning
 
 _STEP = "search.query.query_llm"
 _cfg_cache: dict = {}

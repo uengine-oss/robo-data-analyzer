@@ -3,8 +3,13 @@ from dataclasses import dataclass
 
 from pydantic import ValidationError
 
-from graph.schema.graph_edges import Calls, HasRule, ReadsWrites, StatementNext
-from graph.schema.graph_nodes import Example, Question, Rule
+from graph.schema.graph_edges import (
+    Calls, CallsSql, HasChunk, HasPart, HasRule, HasSection, Mentions,
+    ReadsWrites, ReferTo, StatementNext, UsesConfig,
+)
+from graph.schema.graph_nodes import (
+    CandidateLink, DocumentNode, Example, ExternalChunk, ProjectFile, Question, Rule, UnresolvedRef,
+)
 from pipeline.models.code_analysis_output import RuleItem
 from pipeline.execution.graph_delta_stream import emit_edges, emit_nodes
 
@@ -27,6 +32,46 @@ class _UnsupportedEdge:
 
 
 class GraphDeltaContractTests(unittest.IsolatedAsyncioTestCase):
+    async def test_external_nodes_have_exact_labels_and_display_properties(self) -> None:
+        stream = _CaptureStream()
+        nodes = [
+            ProjectFile("file:shop/a.sql", "a.sql", "shop", "a.sql", ".sql", "custom", "analyzed"),
+            ExternalChunk("file:shop/a.sql:chunk:1", "find", "find", "sql", "SQL_STATEMENT", "select 1",
+                          "a.sql", 1, 1, 0, "", 8, "a" * 64, "SELECT"),
+            DocumentNode("file:shop/a.md:doc", "DOCUMENT", "Guide", "Guide", "", "a.md", 1, 4, 0, "", "b" * 64),
+            UnresolvedRef("file:unresolved:1", "missing", "code", "missing", "key_not_found_in_code", "a.sql"),
+            CandidateLink("file:candidate:1", "a -> b", "a", "b", 0.75, "embed-v1"),
+        ]
+        await emit_nodes(stream, nodes)
+        self.assertEqual([event["label"] for event in stream.events], [
+            "PROJECT_FILE", "SQL_STATEMENT", "DOCUMENT", "UNRESOLVED_REF", "CANDIDATE_LINK",
+        ])
+        self.assertEqual(stream.events[0]["props"]["status"], "analyzed")
+        self.assertEqual(stream.events[1]["props"]["key"], "find")
+        self.assertEqual(stream.events[2]["props"]["title"], "Guide")
+        self.assertEqual(stream.events[4]["props"]["score"], 0.75)
+
+    async def test_external_edges_have_exact_wire_shapes(self) -> None:
+        stream = _CaptureStream()
+        edges = [
+            CallsSql("code:f", "file:sql", "A.java", 3, "Q"),
+            UsesConfig("code:f", "file:cfg", "A.java", 4, "KEY"),
+            ReferTo("code:f", "file:artifact", "A.java", 5, "a.B"),
+            Mentions("file:doc", "code:f", "A.f", "guide.md", 8),
+            HasChunk("file:root", "file:chunk"),
+            HasPart("file:anchor", "file:part", 2),
+            HasSection("file:doc", "file:section", 1),
+        ]
+        await emit_edges(stream, edges)
+        self.assertEqual([event["rel_type"] for event in stream.events], [
+            "CALLS_SQL", "USES_CONFIG", "REFER_TO", "MENTIONS", "HAS_CHUNK", "HAS_PART", "HAS_SECTION",
+        ])
+        self.assertEqual(stream.events[0]["props"], {
+            "evidence_file": "A.java", "evidence_line": 3, "via_const": "Q",
+        })
+        self.assertEqual(stream.events[5]["props"], {"part_index": 2})
+        self.assertEqual(stream.events[6]["props"], {"order": 1})
+
     async def test_removed_coupled_domains_llm_field_is_rejected(self) -> None:
         with self.assertRaises(ValidationError):
             RuleItem.model_validate({

@@ -19,8 +19,8 @@ from pydantic import BaseModel, Field
 
 from search.corpus.corpus import SearchUnavailable
 from search.service import run_search
-from runtime_events.runtime_logger import log_error, log_info
-from runtime_events.ndjson_event_stream import NDJSONStream
+from shared.events.runtime_logger import log_error, log_info
+from shared.events.ndjson_event_stream import NDJSONStream
 from graph.connection_context import Neo4jOverride, set_override
 
 router = APIRouter(prefix="/robo")

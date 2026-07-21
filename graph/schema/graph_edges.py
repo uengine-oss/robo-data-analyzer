@@ -16,7 +16,7 @@ endpoint 필드 = 가리키는 노드의 ``id`` (관계 역할명)
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Literal, Optional, Union
 
 
 # ── 공용 헬퍼 — dml_type 표준화 (정체성 외부) ────────────────
@@ -236,3 +236,98 @@ class AffectsTable:
     source_id: str
     target_id: str
     op: str
+
+
+# ── External-file relationships (spec 075) ──────────────────────────
+
+def _validate_external_edge(source_id: str, target_id: str, evidence_line: int | None = None) -> None:
+    if not source_id.strip() or not target_id.strip():
+        raise ValueError("external relationship endpoints must be non-empty")
+    if evidence_line is not None and (
+        isinstance(evidence_line, bool) or not isinstance(evidence_line, int) or evidence_line < 0
+    ):
+        raise ValueError("evidence_line must be a non-negative integer")
+
+
+@dataclass(frozen=True)
+class CallsSql:
+    source_id: str
+    target_id: str
+    evidence_file: str = ""
+    evidence_line: int = 0
+    via_const: str = ""
+
+    def __post_init__(self) -> None:
+        _validate_external_edge(self.source_id, self.target_id, self.evidence_line)
+
+
+@dataclass(frozen=True)
+class UsesConfig:
+    source_id: str
+    target_id: str
+    evidence_file: str = ""
+    evidence_line: int = 0
+    via_const: str = ""
+
+    def __post_init__(self) -> None:
+        _validate_external_edge(self.source_id, self.target_id, self.evidence_line)
+
+
+@dataclass(frozen=True)
+class ReferTo:
+    source_id: str
+    target_id: str
+    evidence_file: str = ""
+    evidence_line: int = 0
+    matched_fqn: str = ""
+
+    def __post_init__(self) -> None:
+        _validate_external_edge(self.source_id, self.target_id, self.evidence_line)
+
+
+@dataclass(frozen=True)
+class Mentions:
+    source_id: str
+    target_id: str
+    matched_text: str = ""
+    evidence_file: str = ""
+    evidence_line: int = 0
+
+    def __post_init__(self) -> None:
+        _validate_external_edge(self.source_id, self.target_id, self.evidence_line)
+
+
+@dataclass(frozen=True)
+class HasChunk:
+    source_id: str
+    target_id: str
+
+    def __post_init__(self) -> None:
+        _validate_external_edge(self.source_id, self.target_id)
+
+
+@dataclass(frozen=True)
+class HasPart:
+    source_id: str
+    target_id: str
+    part_index: int
+
+    def __post_init__(self) -> None:
+        _validate_external_edge(self.source_id, self.target_id)
+        if isinstance(self.part_index, bool) or not isinstance(self.part_index, int) or self.part_index <= 0:
+            raise ValueError("part_index must be a positive integer")
+
+
+@dataclass(frozen=True)
+class HasSection:
+    source_id: str
+    target_id: str
+    order: int
+
+    def __post_init__(self) -> None:
+        _validate_external_edge(self.source_id, self.target_id)
+        if isinstance(self.order, bool) or not isinstance(self.order, int) or self.order < 0:
+            raise ValueError("order must be a non-negative integer")
+
+
+ExternalEdge = Union[CallsSql, UsesConfig, ReferTo, Mentions, HasChunk, HasPart, HasSection]

@@ -13,9 +13,9 @@ from langchain_core.runnables import RunnableConfig
 
 from pipeline.execution.step_config import step_config
 
-from analyzer_settings import SETTINGS
+from shared.config.settings import SETTINGS
 from pipeline.steps.step1_parse_ddl.ddl_parser import parse_ddl_file
-from runtime_events.runtime_logger import log_info, log_warning
+from shared.events.runtime_logger import log_info, log_warning
 from graph.edges.belongs_to import upsert_belongs_to
 from graph.edges.fk import upsert_fk
 from graph.edges.has_column import upsert_has_column

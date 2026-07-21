@@ -12,7 +12,7 @@ from pipeline.models.analysis_context import ControlSubtreeNode, ReferencedSymbo
 from pipeline.models.analysis_meta import AnalysisRun, Codebase
 from pipeline.execution import run_executor, run_registry
 from pipeline.execution.pause_controller import PauseController
-from runtime_events.ndjson_event_stream import NDJSONStream
+from shared.events.ndjson_event_stream import NDJSONStream
 
 
 class RunRegistryContractTest(unittest.TestCase):
@@ -36,8 +36,8 @@ class RunRegistryContractTest(unittest.TestCase):
         fixed_time = datetime(2026, 7, 17, 1, 2, 3, tzinfo=timezone.utc)
         with patch.object(analysis_meta, "datetime") as mocked_datetime:
             mocked_datetime.now.return_value = fixed_time
-            first = AnalysisRun.now(codebase, Path("run-output"))
-            second = AnalysisRun.now(codebase, Path("run-output"))
+            first = AnalysisRun.now(codebase, Path("output"))
+            second = AnalysisRun.now(codebase, Path("output"))
 
         self.assertNotEqual(first.run_id, second.run_id)
 

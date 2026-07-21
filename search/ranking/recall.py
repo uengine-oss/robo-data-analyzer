@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from search.corpus.embed_material import VECTOR_INDEX_NAME
-from analyzer_settings import SETTINGS
+from shared.config.settings import SETTINGS
 from graph.ownership import ANALYZER_GRAPH_OWNER
 
 _TOKEN = re.compile(r"[A-Za-z0-9]+|[가-힣]+")

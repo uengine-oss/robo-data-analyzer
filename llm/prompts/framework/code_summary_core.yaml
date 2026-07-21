@@ -2,7 +2,7 @@
 extends: _common
 max_tokens: 600
 shared_values:
-  summary_contract: ../_shared/summary_contract.md
+  summary_contract: ../common/summary_contract.md
 user_template_specific: |
   # [축소 폴백 — 세 필드만]
 

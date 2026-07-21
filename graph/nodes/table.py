@@ -55,7 +55,7 @@ def to_item(table: Table) -> dict:
 
     ``logical_name`` 도 여기 없다 — DDL 파싱 시점엔 항상 빈값이고, 값은 step7
     (``enrich_table_description``) 이 ``SET_ANALYZED_QUERY`` 로 넣는다. 그 값이 state/artifact
-    에도 반영되도록 하는 것이 spec 045 FR-013 (수정 위치 = step7 의 state 반영, 여기가 아님).
+    에도 반영되도록 하는 것이 spec 045 FR-013 (수정 위치 = step8의 state 반영, 여기가 아님).
     """
     return {
         "id": table.id,

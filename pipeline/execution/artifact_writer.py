@@ -1,4 +1,4 @@
-"""step 산출물 ``run-output/analysis/latest/artifacts/`` 적재.
+"""step 산출물 ``output/analysis/latest/artifacts/`` 적재.
 
 파일 정책 (Plan §6.3 logs 구조):
 
@@ -6,10 +6,10 @@
                                 (Schema/Table/Column/CodeNode/Module/Package/Variable
                                 /Constant/DataType + 모든 구조·참조 엣지 + raw call_sites
                                 / import_refs)
-- ``linking.json``            — step4_linking 결과 (R/W / Calls / unresolved / scan)
-- ``analysis_contexts.json``  — step5_build_context 결과 (AnalysisContext per id)
-- ``table_samples.json``      — step5 fetch_table_samples 결과 (catalog 실제 DB 샘플 행)
-- ``analysis.json``           — step6_analyze_code + step7_post_processing 결과
+- ``linking.json``            — step5_linking 결과 (R/W / Calls / unresolved / scan)
+- ``analysis_contexts.json``  — step6_build_context 결과 (AnalysisContext per id)
+- ``table_samples.json``      — step6 fetch_table_samples 결과 (catalog 실제 DB 샘플 행)
+- ``analysis.json``           — step7_analyze_code + step8_post_processing 결과
                                 (CodeNode summary / Module summary / Example Mapping).
                                 **원문(code_text)은 안 담는다** — 원문의 집은 ast.json 하나
                                 (spec 045 FR-014: 안 그러면 같은 원문이 두 파일에 중복).
@@ -36,7 +36,7 @@ from typing import Any
 
 from pipeline.models.analysis_meta import AnalysisRun
 from pipeline.execution.workflow_state import WorkflowState
-from runtime_events.runtime_logger import log_warning
+from shared.events.runtime_logger import log_warning
 
 
 _LOG = "pipeline.execution.artifact_writer"
@@ -164,20 +164,28 @@ _CATEGORY: dict[str, str] = {
     "statement_next_edges":     "ast",
     "references_edges":         "ast",
     "init_by_edges":            "ast",
-    "call_sites":               "ast",   # step2 raw — step4 가 Calls 엣지로 분류
+    "call_sites":               "ast",   # step2 raw — step5가 Calls 엣지로 분류
     "import_refs":              "ast",
 
-    # linking — step4 결과
+    # external — step3 inventory/parse structure + step5 facts/candidates
+    "project_files":            "external",
+    "external_chunks":          "external",
+    "document_nodes":           "external",
+    "external_edges":           "external",
+    "unresolved_refs":          "external",
+    "candidate_links":          "external",
+
+    # linking — step5 결과
     "reads_writes_edges":       "linking",
     "calls_edges":              "linking",
     "unresolved_cases":         "linking",
     "scan_result":              "linking",
 
-    # contexts — step5 결과 (특별 dict 직렬화)
+    # contexts — step6 결과 (특별 dict 직렬화)
     "analysis_contexts":        "analysis_contexts",
     "table_sample_data":        "table_samples",   # catalog 에서 받은 실제 DB 샘플 행
 
-    # Example Mapping — step6 결과 (Rule/Example/Question + 6 엣지)
+    # Example Mapping — step7 결과 (Rule/Example/Question + 6 엣지)
     "rules":                    "analysis",
     "examples":                 "analysis",
     "questions":                "analysis",

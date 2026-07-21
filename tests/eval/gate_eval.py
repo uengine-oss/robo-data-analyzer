@@ -23,7 +23,7 @@ from search.config import DEFAULT
 from search.corpus.corpus import load_corpus
 from search.corpus.neo4j_reader import read_driver
 from search.ranking.retriever import Retriever
-from analyzer_settings import SETTINGS
+from shared.config.settings import SETTINGS
 from graph.connection_context import Neo4jOverride, set_override
 
 _GOLD = Path(__file__).resolve().parent

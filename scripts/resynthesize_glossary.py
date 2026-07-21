@@ -20,13 +20,13 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from pipeline.steps.step7_post_processing.build_glossary_step import (
+from pipeline.steps.step8_post_processing.build_glossary_step import (
     _accept, _build_contexts, _collect_terms, _union_groups, _UPSERT_QUERY,
 )
 from pipeline.strategies import PIPELINES
 from pipeline.models.code_analysis_output import GlossarySynthesisOutput
-from analyzer_settings import SETTINGS
-from llm.llm_fanout import gather_with_warmup
+from shared.config.settings import SETTINGS
+from llm.fanout import gather_with_warmup
 from llm.runners.yaml_llm_runner import run_yaml_rule
 from graph.schema.domain_terms import load_domain_terms
 from graph.ownership import ANALYZER_GRAPH_OWNER

@@ -10,6 +10,7 @@ from graph.nodes.example import _UPSERT_QUERY as EXAMPLE_MERGE_QUERY
 from graph.nodes.package import MERGE_QUERY as PACKAGE_MERGE_QUERY
 from graph.nodes.question import _UPSERT_QUERY as QUESTION_MERGE_QUERY
 from graph.nodes.rule import _UPSERT_QUERY as RULE_MERGE_QUERY
+from graph.nodes.external import EXTERNAL_NODE_LABELS
 from graph.nodes.table import MERGE_QUERY as TABLE_MERGE_QUERY
 from graph.schema.constraints import (
     LEGACY_ANALYZER_STABLE_LABELS,
@@ -32,8 +33,9 @@ def test_every_node_creation_query_stamps_analyzer_owner() -> None:
         "example": EXAMPLE_MERGE_QUERY,
         "question": QUESTION_MERGE_QUERY,
         "external_call_stubs": EXTERNAL_QUERY,
-        "glossary": (ROOT / "pipeline/steps/step7_post_processing/build_glossary_step.py").read_text(encoding="utf-8"),
-        "embedding_metadata": (ROOT / "pipeline/steps/step7_post_processing/embed_step.py").read_text(encoding="utf-8"),
+        **{f"external_{label.lower()}": merge_query(label) for label in EXTERNAL_NODE_LABELS},
+        "glossary": (ROOT / "pipeline/steps/step8_post_processing/build_glossary_step.py").read_text(encoding="utf-8"),
+        "embedding_metadata": (ROOT / "pipeline/steps/step8_post_processing/embed_step.py").read_text(encoding="utf-8"),
     }
 
     assert ANALYZER_GRAPH_OWNER == "analyzer"
@@ -68,6 +70,7 @@ async def test_wipe_graph_is_owner_scoped() -> None:
     assert "start_line IS NOT NULL" in migration_query
     assert "end_line IS NOT NULL" in migration_query
     assert "UI" not in LEGACY_ANALYZER_STABLE_LABELS
+    assert EXTERNAL_NODE_LABELS.issubset(LEGACY_ANALYZER_STABLE_LABELS)
 
     query, params = client.calls[1]
     assert params == {"graph_owner": ANALYZER_GRAPH_OWNER}

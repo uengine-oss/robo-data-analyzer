@@ -19,7 +19,7 @@ from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 
-from analyzer_settings import SETTINGS
+from shared.config.settings import SETTINGS
 from graph.connection_context import Neo4jOverride, set_override
 
 mcp = FastMCP(

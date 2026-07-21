@@ -1,0 +1,15 @@
+slice	current_path	target_path	action	verification
+P1-A	pipeline/steps/step7_post_processing	pipeline/steps/step8_post_processing	git mv	step8 focused + active old path 0
+P1-A	tests/pipeline/step7_post_processing	tests/pipeline/step8_post_processing	git mv	step8 tests discover
+P1-B	pipeline/steps/step6_analyze_code	pipeline/steps/step7_analyze_code	git mv	step7 focused + active old path 0
+P1-B	tests/pipeline/step6_analyze_code	tests/pipeline/step7_analyze_code	git mv	step7 tests discover
+P1-C	pipeline/steps/step5_build_context	pipeline/steps/step6_build_context	git mv	step6 focused + active old path 0
+P1-C	tests/pipeline/step5_build_context	tests/pipeline/step6_build_context	git mv	step6 tests discover
+P1-D	pipeline/steps/step4_linking	pipeline/steps/step5_linking	git mv	step5 focused + active old path 0
+P1-D	tests/pipeline/step4_linking	tests/pipeline/step5_linking	git mv	step5 tests discover
+P1-E	pipeline/steps/step3_scan_project	pipeline/steps/step4_scan_project	git mv	step4 focused + active old path 0
+P1-E	tests/pipeline/step3_scan_project	tests/pipeline/step4_scan_project	git mv	step4 tests discover
+P2	-	pipeline/steps/step3_load_external	add	loader contract and integration
+P3	-	pipeline/steps/step5_linking/link_external	add	actual AST linking suites
+P4	llm/skills/{ejb-cmp,jpa-standard,mybatis-ibatis,ofbiz,proframe-c-pfm-dbio,shopmall-c-facade}	agents/skills/framework/{same}	git mv	catalog isolation + prompt tests
+P4	-	agents/skills/external	add	external skill reload

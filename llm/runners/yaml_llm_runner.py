@@ -2,10 +2,10 @@
 
 용도: ``llm/prompts/<strategy>/<name>.yaml`` 의 룰 로딩 + LLM 호출 + Pydantic 응답.
 사용처:
-- ``pipeline/steps/step6_analyze_code`` (code_summary / code_table_insights /
+- ``pipeline/steps/step7_analyze_code`` (code_summary / code_table_insights /
   code_rules_examples)
-- ``pipeline/steps/step7_post_processing`` (module_summary / table_description)
-- ``pipeline/steps/step5_build_context/large_code_one_liner``
+- ``pipeline/steps/step8_post_processing`` (module_summary / table_description)
+- ``pipeline/steps/step6_build_context/large_code_one_liner``
 
 yaml 형식 (단순)::
 
@@ -50,16 +50,16 @@ import yaml
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel
 
-from analyzer_settings import SETTINGS
+from shared.config.settings import SETTINGS
 from llm.usage.cost_budget import CostBudget
-from llm.llm_client import build_llm_client
-from llm.llm_config_loader import load_llm_config
+from llm.client import build_llm_client
+from llm.configs.loader import load_llm_config
 from llm.usage.pricing import compute_cost
 from llm.usage.token_usage import UnmeteredLlmCallError, track_usage
 from llm.usage.usage_jsonl_writer import persist_usage_and_charge_budget
-from runtime_events.runtime_logger import log_info, log_warning
-from llm.middleware.cache_message_filters import apply_cache_friendly_filters
-from llm.prompt_logging.prompt_logger import write_rule_record
+from shared.events.runtime_logger import log_info, log_warning
+from llm.filters import apply_cache_friendly_filters
+from llm.tracing import write_rule_record
 
 
 T = TypeVar("T", bound=BaseModel)

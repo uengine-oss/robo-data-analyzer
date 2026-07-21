@@ -5,7 +5,7 @@ builder.py(순수) 가 만든 노드·엣지 dataclass 리스트를 Neo4j 에 �
 """
 from __future__ import annotations
 
-from pipeline.steps.step6_analyze_code.example_mapping_builder import ExampleMappingResult
+from pipeline.steps.step7_analyze_code.example_mapping_builder import ExampleMappingResult
 from graph.edges.affects_table import upsert_affects_table
 from graph.edges.has_example import upsert_has_example
 from graph.edges.has_question import upsert_has_question

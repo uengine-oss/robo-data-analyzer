@@ -1,6 +1,6 @@
 import unittest
 
-from pipeline.steps.step7_post_processing.enrich_lineage_from_catalog_step import (
+from pipeline.steps.step8_post_processing.enrich_lineage_from_catalog_step import (
     _catalog_lineage_url,
 )
 

@@ -52,6 +52,36 @@ class ReferencedSymbolContext:
         }
 
 
+@dataclass(frozen=True)
+class ExternalEvidenceContext:
+    """One exact graph-linked external anchor, bounded only after hash verification."""
+
+    id: str
+    file_path: str
+    key: str
+    kind: str
+    text: str
+    start_line: int
+    end_line: int
+    content_hash: str
+    full_len: int
+    truncated: bool = False
+
+    def as_prompt_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "file_path": self.file_path,
+            "key": self.key,
+            "kind": self.kind,
+            "text": self.text,
+            "start_line": self.start_line,
+            "end_line": self.end_line,
+            "content_hash": self.content_hash,
+            "full_len": self.full_len,
+            "truncated": self.truncated,
+        }
+
+
 @dataclass
 class ControlSubtreeNode:
     """Routine-relative control tree consumed by deterministic rule splitting."""
@@ -67,6 +97,15 @@ def dump_referenced_symbols(symbols: tuple[ReferencedSymbolContext, ...]) -> str
     """Serialize the single prompt-input contract without delimiter parsing."""
     return json.dumps(
         [symbol.as_prompt_dict() for symbol in symbols],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def dump_external_evidence(evidence: tuple[ExternalEvidenceContext, ...]) -> str:
+    """Serialize linked external facts without delimiter parsing or inferred labels."""
+    return json.dumps(
+        [item.as_prompt_dict() for item in evidence],
         ensure_ascii=False,
         separators=(",", ":"),
     )
@@ -100,6 +139,7 @@ class AnalysisContext:
 
     # 참조 컨텍스트 (build_context_step 가 state 엣지/노드에서 결정론 도출) ────
     referenced_symbols: tuple[ReferencedSymbolContext, ...] = ()
+    external_evidence: tuple[ExternalEvidenceContext, ...] = ()
 
     # 큰 코드노드 사전 압축 (build_context_step 가 본문 토큰 > 임계 시 채움) ────
     one_liner: Optional[str] = None          # "결제 PG 호출 + 인증 처리" 식

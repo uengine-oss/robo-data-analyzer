@@ -38,6 +38,12 @@ fastapi>=0.115.0
 uvicorn>=0.34.0
 mcp>=1.0.0
 
+# 외부 파일 결정론 파싱/안전 경계 (spec 075)
+charset-normalizer>=3.4.9
+javaproperties>=0.8.2
+regex>=2026.7.19
+lxml>=6.1.1
+
 # YAML / .env / 재시도 / HTTP
 pyyaml>=6.0.0
 python-dotenv>=1.0.0

@@ -10,7 +10,7 @@ import asyncio
 import math
 from dataclasses import dataclass, field
 
-from analyzer_settings import SETTINGS
+from shared.config.settings import SETTINGS
 
 
 class BudgetExceededError(RuntimeError):

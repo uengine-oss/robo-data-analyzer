@@ -18,9 +18,9 @@ from pipeline.execution.step_config import step_config
 
 from pipeline.steps.step2_load_ast.dispatch import ast_and_source_roots, read_antlr_json
 from pipeline.steps.step2_load_ast.token_matcher import link_references
-from runtime_events.runtime_logger import log_error, log_info, log_warning
+from shared.events.runtime_logger import log_error, log_info, log_warning
 from pipeline.steps.step2_load_ast.node_identity_registry import NodeIdentityCollision, canonicalize_node_lists
-from source.file_cache import SourceFileCache
+from shared.files.cache import SourceFileCache
 from graph.edges.belongs_to import upsert_belongs_to
 from graph.edges.has_member import upsert_has_member
 from graph.edges.init_by import upsert_init_by

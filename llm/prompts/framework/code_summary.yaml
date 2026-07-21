@@ -2,7 +2,7 @@
 extends: _common
 max_tokens: 1500
 shared_values:
-  summary_contract: ../_shared/summary_contract.md
+  summary_contract: ../common/summary_contract.md
 user_template_specific: |
   # [이 분할 고유 지침]
 

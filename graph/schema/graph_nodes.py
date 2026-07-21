@@ -29,7 +29,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+import math
+from typing import Literal, Optional
 
 from graph.schema.node_ids import db_id, fqn
 
@@ -291,3 +292,153 @@ class Question:
     id: str
     text: str                                # 한 줄 질문
     reason: str = ""                         # 코드 근거 부재 사유
+
+
+# ── External-file graph nodes (spec 075) ─────────────────────────────
+
+ExternalCategory = Literal[
+    "source", "sql_xml", "config", "artifact_xml", "document", "custom", "binary", "unknown",
+]
+ProjectFileStatus = Literal["registered", "analyzed", "unanalyzed", "failed"]
+ExternalChunkKind = Literal["sql", "config", "artifact", "custom"]
+ExternalChunkLabel = Literal["SQL_STATEMENT", "CONFIG_SECTION", "ARTIFACT_CHUNK", "CHUNK"]
+DocumentLabel = Literal["DOCUMENT", "DOC_SECTION", "DOC_CHUNK"]
+UnresolvedReason = Literal[
+    "key_not_found_in_code", "table_not_in_ddl", "parse_failed", "binary_unanalyzed",
+    "pattern_rejected", "dynamic_key_suspected", "optional_dependency_missing", "path_rejected",
+]
+
+
+def _require_non_negative_integer(value: int, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
+
+
+def _require_lines(start_line: int, end_line: int) -> None:
+    _require_non_negative_integer(start_line, "start_line")
+    _require_non_negative_integer(end_line, "end_line")
+    if (start_line == 0) != (end_line == 0) or (start_line and end_line < start_line):
+        raise ValueError("line coordinates must both be zero or form an ordered 1-based range")
+
+
+@dataclass(frozen=True)
+class ProjectFile:
+    id: str
+    name: str
+    project: str
+    relpath: str
+    ext: str
+    category: ExternalCategory
+    status: ProjectFileStatus
+    reason: str = ""
+    label: str = field(default="PROJECT_FILE", init=False)
+
+    def __post_init__(self) -> None:
+        if self.category not in ExternalCategory.__args__:
+            raise ValueError(f"unsupported external file category: {self.category!r}")
+        if self.status not in ProjectFileStatus.__args__:
+            raise ValueError(f"unsupported project file status: {self.status!r}")
+        if self.status in ("unanalyzed", "failed") and not self.reason.strip():
+            raise ValueError(f"status {self.status!r} requires a reason")
+
+
+@dataclass(frozen=True)
+class ExternalChunk:
+    id: str
+    name: str
+    key: str
+    kind: ExternalChunkKind
+    label: ExternalChunkLabel
+    text: str
+    file_path: str
+    start_line: int
+    end_line: int
+    part_index: int = 0
+    anchor_id: str = ""
+    full_len: int = 0
+    content_hash: str = ""
+    sql_type: str = ""
+    related_fqns: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        allowed_labels = {
+            "sql": "SQL_STATEMENT", "config": "CONFIG_SECTION",
+            "artifact": "ARTIFACT_CHUNK", "custom": "CHUNK",
+        }
+        if self.kind not in allowed_labels or self.label != allowed_labels[self.kind]:
+            raise ValueError(f"invalid external chunk kind/label pair: {self.kind!r}/{self.label!r}")
+        if len(self.text) > 1200:
+            raise ValueError("external chunk text exceeds 1200 characters")
+        _require_lines(self.start_line, self.end_line)
+        _require_non_negative_integer(self.part_index, "part_index")
+        _require_non_negative_integer(self.full_len, "full_len")
+        if self.full_len < len(self.text):
+            raise ValueError("full_len cannot be shorter than chunk text")
+        if self.part_index == 0 and self.anchor_id:
+            raise ValueError("anchor chunks cannot have anchor_id")
+        if self.part_index > 0 and not self.anchor_id:
+            raise ValueError("part chunks require anchor_id")
+        if len(self.content_hash) != 64 or any(ch not in "0123456789abcdef" for ch in self.content_hash.lower()):
+            raise ValueError("content_hash must be a SHA-256 hex digest")
+
+
+@dataclass(frozen=True)
+class DocumentNode:
+    id: str
+    label: DocumentLabel
+    name: str
+    title: str
+    text: str
+    file_path: str
+    start_line: int
+    end_line: int
+    order: int
+    parent_id: str
+    content_hash: str
+
+    def __post_init__(self) -> None:
+        if self.label not in DocumentLabel.__args__:
+            raise ValueError(f"unsupported document label: {self.label!r}")
+        if self.label == "DOC_CHUNK" and len(self.text) > 1200:
+            raise ValueError("document chunk text exceeds 1200 characters")
+        _require_lines(self.start_line, self.end_line)
+        _require_non_negative_integer(self.order, "order")
+        if self.label == "DOCUMENT" and self.parent_id:
+            raise ValueError("document root cannot have parent_id")
+        if self.label != "DOCUMENT" and not self.parent_id:
+            raise ValueError("document section/chunk requires parent_id")
+        if len(self.content_hash) != 64 or any(ch not in "0123456789abcdef" for ch in self.content_hash.lower()):
+            raise ValueError("content_hash must be a SHA-256 hex digest")
+
+
+@dataclass(frozen=True)
+class UnresolvedRef:
+    id: str
+    name: str
+    target_type: str
+    key: str
+    reason: UnresolvedReason
+    file_path: str
+    detail: str = ""
+    label: str = field(default="UNRESOLVED_REF", init=False)
+
+    def __post_init__(self) -> None:
+        if self.reason not in UnresolvedReason.__args__:
+            raise ValueError(f"unsupported unresolved reason: {self.reason!r}")
+
+
+@dataclass(frozen=True)
+class CandidateLink:
+    id: str
+    name: str
+    source_id: str
+    target_id: str
+    score: float
+    model: str
+    reason: str = ""
+    status: str = field(default="candidate", init=False)
+    label: str = field(default="CANDIDATE_LINK", init=False)
+
+    def __post_init__(self) -> None:
+        if isinstance(self.score, bool) or not math.isfinite(self.score) or not 0.0 <= self.score <= 1.0:
+            raise ValueError("candidate score must be finite and between 0 and 1")

@@ -31,7 +31,7 @@ from typing import Awaitable, Callable, NamedTuple
 
 from graph.schema.graph_edges import InitBy, References
 from graph.schema.graph_nodes import Constant, CodeNode, Variable
-from source.file_cache import SourceFileCache
+from shared.files.cache import SourceFileCache
 
 _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _QUALIFIED = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)")

@@ -7,7 +7,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from analyzer_settings import SETTINGS
+from shared.config.settings import SETTINGS
 
 
 @dataclass

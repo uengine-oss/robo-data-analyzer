@@ -14,9 +14,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
 
-from analyzer_settings import SETTINGS
-from source.file_cache import SourceFileCache
-from source.path_resolver import AmbiguousSourceFileError, resolve_source_file
+from shared.config.settings import SETTINGS
+from shared.files.cache import SourceFileCache
+from api.source_resolver import AmbiguousSourceFileError, resolve_source_file
 
 router = APIRouter(prefix="/robo")
 

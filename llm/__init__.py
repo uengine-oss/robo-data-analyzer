@@ -1,4 +1,4 @@
-"""LLM clients, prompts, agents, skills, and model configuration."""
+"""Model clients, configuration, middleware, prompts, runners, and usage."""
 from pathlib import Path
 
 

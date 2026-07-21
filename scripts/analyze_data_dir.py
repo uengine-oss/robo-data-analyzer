@@ -58,8 +58,8 @@ from pipeline.strategies import get_pipeline
 from pipeline.languages import detect_strategy
 from pipeline.models.analysis_meta import AnalysisRun
 from pipeline.models.analysis_meta import Codebase
-from analyzer_settings import SETTINGS
-from runtime_events.ndjson_event_stream import NDJSONStream
+from shared.config.settings import SETTINGS
+from shared.events.ndjson_event_stream import NDJSONStream
 from pipeline.execution.run_executor import execute_run
 
 

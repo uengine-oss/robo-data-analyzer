@@ -34,4 +34,13 @@ HAS_EXAMPLE = "HAS_EXAMPLE"      # Rule → Example
 HAS_QUESTION = "HAS_QUESTION"    # CodeNode → Question
 AFFECTS_TABLE = "AFFECTS_TABLE"  # Example → Table
 
+# 외부 파일 연결 (spec 075)
+CALLS_SQL = "CALLS_SQL"          # CodeNode → SQL_STATEMENT
+USES_CONFIG = "USES_CONFIG"      # CodeNode → CONFIG_SECTION/CHUNK
+REFER_TO = "REFER_TO"            # CodeNode ↔ ARTIFACT_CHUNK
+MENTIONS = "MENTIONS"            # DOC_CHUNK → code/TABLE
+HAS_CHUNK = "HAS_CHUNK"          # PROJECT_FILE → chunk/document root
+HAS_PART = "HAS_PART"            # anchor → bounded part
+HAS_SECTION = "HAS_SECTION"      # document/section → section/chunk
+
 # 컴포넌트 멤버십은 관계가 아니라 FUNCTION.component_id 속성 (build_components_step) — 합성 엣지 없음.

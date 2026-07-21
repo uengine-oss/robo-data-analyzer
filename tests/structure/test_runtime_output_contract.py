@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from analyzer_settings import (
+from shared.config.settings import (
     AnalysisRunOutputSettings,
     EmbeddingSettings,
     RuntimeEventSettings,
@@ -16,7 +16,7 @@ from analyzer_settings import (
 )
 from pipeline.models.analysis_meta import AnalysisRun, Codebase
 from pipeline.execution.run_executor import _reset_run_output_root
-from runtime_events.runtime_logger import _level_from_name
+from shared.events.runtime_logger import _level_from_name
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -24,18 +24,18 @@ REPO = Path(__file__).resolve().parents[2]
 
 class RuntimeOutputContractTest(unittest.TestCase):
     def test_default_setting_and_analysis_run_use_new_output_tree(self) -> None:
-        with patch.dict(os.environ, {"ROBO_RUN_OUTPUT_DIR": "./run-output"}, clear=False):
+        with patch.dict(os.environ, {"ROBO_RUN_OUTPUT_DIR": "./output"}, clear=False):
             settings = AnalysisRunOutputSettings()
-        self.assertEqual(Path("./run-output"), settings.dir)
+        self.assertEqual(Path("./output"), settings.dir)
 
         run = AnalysisRun.now(Codebase(root=REPO, strategy="framework"), settings.dir)
-        self.assertEqual(Path("run-output/analysis/latest"), run.run_dir)
+        self.assertEqual(Path("output/analysis/latest"), run.run_dir)
 
     def test_reset_creates_only_named_output_owners(self) -> None:
         with tempfile.TemporaryDirectory() as parent:
-            root = Path(parent) / "run-output"
+            root = Path(parent) / "output"
             _reset_run_output_root(root)
-            self.assertTrue((root / ".robo-data-analyzer-run-output").is_file())
+            self.assertTrue((root / ".robo-data-analyzer-output").is_file())
             self.assertTrue((root / "analysis/latest").is_dir())
             self.assertTrue((root / "llm-prompts/latest").is_dir())
             self.assertFalse((root / "analysis.run").exists())
@@ -60,9 +60,9 @@ class RuntimeOutputContractTest(unittest.TestCase):
 
     def test_reset_rejects_invalid_marker_and_non_directory_path(self) -> None:
         with tempfile.TemporaryDirectory() as parent:
-            root = Path(parent) / "run-output"
+            root = Path(parent) / "output"
             root.mkdir()
-            marker = root / ".robo-data-analyzer-run-output"
+            marker = root / ".robo-data-analyzer-output"
             marker.write_text("another-owner\n", encoding="utf-8")
             sentinel = root / "result.json"
             sentinel.write_text("preserve", encoding="utf-8")
@@ -79,7 +79,7 @@ class RuntimeOutputContractTest(unittest.TestCase):
 
     def test_reset_refuses_even_legacy_shaped_tree_without_explicit_ownership(self) -> None:
         with tempfile.TemporaryDirectory() as parent:
-            root = Path(parent) / "run-output"
+            root = Path(parent) / "output"
             (root / "analysis" / "latest").mkdir(parents=True)
             (root / "llm-prompts" / "latest").mkdir(parents=True)
             (root / "search").mkdir()

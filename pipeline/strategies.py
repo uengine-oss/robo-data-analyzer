@@ -15,7 +15,8 @@
 - state 전파: ``Checkpointer`` 가 run 1회 안의 state 보존 (매 ``/analyze`` = 독립 run).
 - 스트림: ``astream(stream_mode="updates")`` 단일 채널.
 
-7 단계 흐름은 ``pipeline/steps/step1~step7/`` 폴더 구조로 그대로 드러남.
+8단계 흐름은 ``pipeline/steps/step1~step8/`` 폴더 구조로 그대로 드러난다.
+step3 external loader는 spec 075에서 두 전략의 공통 step으로 삽입된다.
 """
 from __future__ import annotations
 
@@ -25,39 +26,42 @@ from typing import Any, Callable
 # 공통 step (양쪽 다 씀)
 from pipeline.steps.step1_parse_ddl.parse_ddl_step import parse_ddl_step
 from pipeline.steps.step2_load_ast.load_ast_step import load_ast_step
-from pipeline.steps.step4_linking.link_tables.link_tables_by_regex_step import (
+from pipeline.steps.step3_load_external.load_external_step import load_external_step
+from pipeline.steps.step5_linking.link_tables.link_tables_by_regex_step import (
     link_deterministic_step,
 )
-from pipeline.steps.step5_build_context.build_context_step import build_context_step
-from pipeline.steps.step5_build_context.framework_context_builder import FrameworkContextBuilder
-from pipeline.steps.step5_build_context.fetch_table_samples_step import fetch_table_samples_step
-from pipeline.steps.step6_analyze_code.step_entry import analyze_code_step
-from pipeline.steps.step6_analyze_code.framework_per_node import run_framework_per_node_analysis
-from pipeline.steps.step6_analyze_code.batch_analyze import run_dbms_batch_analysis
-from pipeline.steps.step7_post_processing.embed_step import embed_step
-from pipeline.steps.step7_post_processing.enrich_table_description_step import (
+from pipeline.steps.step5_linking.link_external.link_external_step import link_external_step
+from pipeline.steps.step6_build_context.build_context_step import build_context_step
+from pipeline.steps.step6_build_context.framework_context_builder import FrameworkContextBuilder
+from pipeline.steps.step6_build_context.fetch_table_samples_step import fetch_table_samples_step
+from pipeline.steps.step7_analyze_code.step_entry import analyze_code_step
+from pipeline.steps.step7_analyze_code.framework_per_node import run_framework_per_node_analysis
+from pipeline.steps.step7_analyze_code.batch_analyze import run_dbms_batch_analysis
+from pipeline.steps.step8_post_processing.embed_step import embed_step
+from pipeline.steps.step8_post_processing.enrich_table_description_step import (
     enrich_table_description_step,
 )
-from pipeline.steps.step7_post_processing.summarize_module_step import summarize_module_step
-from pipeline.steps.step7_post_processing.build_components_step import build_components_step
-from pipeline.steps.step7_post_processing.build_glossary_step import build_glossary_step
-from pipeline.steps.step7_post_processing.health_metrics_step import health_metrics_step
+from pipeline.steps.step8_post_processing.summarize_module_step import summarize_module_step
+from pipeline.steps.step8_post_processing.build_components_step import build_components_step
+from pipeline.steps.step8_post_processing.build_glossary_step import build_glossary_step
+from pipeline.steps.step8_post_processing.health_metrics_step import health_metrics_step
 
 # Framework 전용 step
-from pipeline.steps.step3_scan_project.scan_codebase_step import scan_codebase_step
-from pipeline.steps.step4_linking.link_calls.link_calls_by_name_step import (
+from pipeline.steps.step4_scan_project.scan_codebase_step import scan_codebase_step
+from pipeline.steps.step4_scan_project.scan_external_step import scan_external_step
+from pipeline.steps.step5_linking.link_calls.link_calls_by_name_step import (
     link_calls_by_name_step,
 )
-from pipeline.steps.step4_linking.link_tables.link_residual_patterns_step import (
+from pipeline.steps.step5_linking.link_tables.link_residual_patterns_step import (
     link_residual_patterns_step,
 )
 
 # DBMS 전용 step
-from pipeline.steps.step4_linking.link_tables.link_dbms_tables_step import link_dbms_tables_step
-from pipeline.steps.step4_linking.link_calls.link_calls_by_ast_step import (
+from pipeline.steps.step5_linking.link_tables.link_dbms_tables_step import link_dbms_tables_step
+from pipeline.steps.step5_linking.link_calls.link_calls_by_ast_step import (
     link_calls_by_ast_step,
 )
-from pipeline.steps.step7_post_processing.enrich_lineage_from_catalog_step import (
+from pipeline.steps.step8_post_processing.enrich_lineage_from_catalog_step import (
     enrich_lineage_from_catalog_step,
 )
 
@@ -96,11 +100,13 @@ FRAMEWORK_PIPELINE = Strategy(
     prompts_dir="llm/prompts/framework",
     steps=(
         parse_ddl_step,
-        load_ast_step,
+        (load_ast_step, load_external_step),
         scan_codebase_step,                # ★ Framework 만 — Scan Agent 1회
+        scan_external_step,                # unknown text만 — external skill reload/agent
         link_deterministic_step,
         link_calls_by_name_step,              # ★ Framework 만 — 결정론 Call 분류 + wrapper 통합 (LLM 0)
         link_residual_patterns_step,          # ★ Framework 만 — 잔여 패턴 루프 (테이블 미해결)
+        link_external_step,                   # 외부 파일 key/FQN/SQL→DDL 결정론 연결
         build_context_step,
         fetch_table_samples_step,             # ★ 옵션·전략독립 — catalog 샘플 → table_sample_data (analyze 전)
         analyze_code_step,
@@ -131,13 +137,15 @@ DBMS_PIPELINE = Strategy(
     prompts_dir="llm/prompts/dbms",
     steps=(
         parse_ddl_step,
-        load_ast_step,
+        (load_ast_step, load_external_step),
+        scan_external_step,                # unknown text만 — external skill reload/agent
         # scan_codebase_step 없음 — DBMS 는 Scan Agent 안 씀 (Plan §6)
         link_dbms_tables_step,                # ★ DBMS 만 — DML range → DDL 테이블 결정론 매칭 (LLM 0)
         # link_deterministic_step 없음 — DBMS R/W의 단일 생산자는 위
         # link_dbms_tables_step이다. 이 부재는 test_dbms_pipeline_contract가 고정한다.
         link_calls_by_ast_step,               # ★ DBMS 만 — AST CALL 노드 분류 (빌트인·자기루프 드롭)
         # 잔여 패턴 루프 없음 — DBMS 는 에이전트 링킹을 안 씀
+        link_external_step,                   # 외부 파일 key/FQN/SQL→DDL 결정론 연결
         build_context_step,
         fetch_table_samples_step,             # ★ 옵션·전략독립 — catalog 샘플 → table_sample_data (analyze 전)
         analyze_code_step,

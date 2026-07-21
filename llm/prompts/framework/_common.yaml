@@ -44,6 +44,8 @@ system: |
     결정론 R/W 식별자이고 `description`·`columns`·`sample_rows`는 보강 정보입니다.
     `table_id`를 설명과 이어 붙이거나 변형하지 말고, 테이블을 추가·제거하지 마세요.
   - `referenced_symbols` — 함수가 참조하는 변수·상수 (선언 타입·초기값·초기화 출처).
+  - `external_evidence` — 이 함수 또는 소속 모듈에 결정론적으로 연결된 외부 파일 청크.
+    `file_path`·`key`·`kind`·`text`를 근거로만 사용하며, 목록에 없는 외부 파일을 추론하지 않습니다.
   - `callee_summaries` — 이미 분석된 하위 호출 함수의 한 줄 요약.
 
   ## 3. 공통 원칙 — 단계별 체크리스트
@@ -231,6 +233,9 @@ user_template_inputs: |
 
   referenced_symbols:
   {referenced_symbols}
+
+  external_evidence(JSON):
+  {external_evidence}
 
   callee_summaries:
   {callee_summaries}

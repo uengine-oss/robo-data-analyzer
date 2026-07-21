@@ -22,9 +22,9 @@ from pydantic import BaseModel
 
 from pipeline.strategies import get_pipeline
 from pipeline.models.analysis_meta import Codebase
-from analyzer_settings import SETTINGS
-from runtime_events.ndjson_event_stream import NDJSONStream
-from runtime_events.runtime_logger import log_warning
+from shared.config.settings import SETTINGS
+from shared.events.ndjson_event_stream import NDJSONStream
+from shared.events.runtime_logger import log_warning
 from graph.connection_context import Neo4jOverride, set_override
 from pipeline.execution.run_executor import execute_run
 from pipeline.execution.run_registry import get_active
@@ -47,7 +47,6 @@ class AnalyzeRequest(BaseModel):
     project_root: Optional[str] = None       # (역호환) 수용하되 무시 — 소스는 항상 data/source
     strategy: str                            # "framework" / "dbms"
     ddl_dir: Optional[str] = None            # (역호환) 수용하되 무시 — DDL은 항상 data/ddl
-    has_xml_mapper: bool = False
     locale: str = "ko"
     datasource: Optional[str] = None         # 메타 보강 시 샘플링할 DB(MindsDB datasource). None=skip.
 
@@ -92,7 +91,6 @@ async def analyze(req: AnalyzeRequest, request: Request) -> StreamingResponse:
         # Like project_root, the legacy ddl_dir is inert. Parser owns ingress and
         # Analyzer consumes only the canonical data/ddl directory.
         ddl_dir=SETTINGS.analysis_data.dir / "ddl",
-        has_xml_mapper=req.has_xml_mapper,
         locale=req.locale,
         datasource=req.datasource,
     )

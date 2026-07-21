@@ -17,9 +17,9 @@ from typing import Callable, List, Sequence
 
 import httpx
 
-from analyzer_settings import SETTINGS
-from llm.llm_config_loader import load_llm_config
-from runtime_events.runtime_logger import log_info, log_warning
+from shared.config.settings import SETTINGS
+from llm.configs.loader import load_llm_config
+from shared.events.runtime_logger import log_info, log_warning
 
 Vector = List[float]
 

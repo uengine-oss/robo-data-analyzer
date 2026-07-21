@@ -35,7 +35,9 @@ Neo4j 의 UNIQUE 제약은 **라벨별**이라 이걸 못 막는다. 그 결과 
 """
 from __future__ import annotations
 
-from pathlib import Path
+import hashlib
+import unicodedata
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from urllib.parse import quote
 
 
@@ -43,12 +45,71 @@ from urllib.parse import quote
 # ':' 는 파일명(Windows 금지)·SQL/C 식별자에 들어갈 수 없다 → 두 세계가 섞일 방법이 없다.
 CODE_NS = "code:"
 DB_NS = "db:"
+FILE_NS = "file:"
 
 # 컨테이너 경로 구분자 (파일 → 구조체 → 필드).
 SEP = ":"
 
 # 동명 충돌(Java 오버로드) 시 붙이는 위치 접미 — **경로 구분자와 달라야** 한다.
 POS = "@"
+
+
+def _normalized_text(value: object, field_name: str) -> str:
+    text = unicodedata.normalize("NFC", str(value)).strip()
+    if not text or "\x00" in text:
+        raise ValueError(f"{field_name} must be non-empty and contain no NUL")
+    return text
+
+
+def _relative_posix_path(rel_path: str) -> str:
+    raw = _normalized_text(rel_path, "rel_path").replace("\\", "/")
+    if PurePosixPath(raw).is_absolute() or PureWindowsPath(raw).is_absolute() or PureWindowsPath(raw).drive:
+        raise ValueError(f"rel_path must be relative: {rel_path!r}")
+    parts = [part for part in raw.split("/") if part not in ("", ".")]
+    if not parts or any(part == ".." for part in parts):
+        raise ValueError(f"rel_path escapes the project root: {rel_path!r}")
+    return "/".join(parts)
+
+
+def _semantic_hash(*parts: str) -> str:
+    payload = "".join(f"{len(part)}:{part}" for part in parts).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def project_file_id(project: str, rel_path: str) -> str:
+    """Return the stable file identity for one project-relative path."""
+    project_name = _normalized_text(project, "project")
+    relative = _relative_posix_path(rel_path)
+    return f"{FILE_NS}{quote(project_name, safe='')}/{quote(relative, safe='/')}"
+
+
+def external_chunk_id(file_id: str, key: str, ordinal: int = 0) -> str:
+    """Return a file-scoped opaque identity for an external anchor or part."""
+    fid = _normalized_text(file_id, "file_id")
+    semantic_key = _normalized_text(key, "key")
+    if not fid.startswith(FILE_NS):
+        raise ValueError(f"file_id must use {FILE_NS!r} namespace")
+    if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 0:
+        raise ValueError("ordinal must be a non-negative integer")
+    return f"{fid}:chunk:{_semantic_hash(fid, semantic_key, str(ordinal))}"
+
+
+def unresolved_ref_id(*identity_parts: str) -> str:
+    """Return an opaque identity for a specific unresolved observation."""
+    parts = tuple(_normalized_text(part, "identity_part") for part in identity_parts)
+    if not parts:
+        raise ValueError("at least one identity part is required")
+    return f"{FILE_NS}unresolved:{_semantic_hash(*parts)}"
+
+
+def candidate_link_id(source_id: str, target_id: str, model: str) -> str:
+    """Return an opaque candidate-node identity; this never denotes a fact edge."""
+    parts = (
+        _normalized_text(source_id, "source_id"),
+        _normalized_text(target_id, "target_id"),
+        _normalized_text(model, "model"),
+    )
+    return f"{FILE_NS}candidate:{_semantic_hash(*parts)}"
 
 
 def fqn(*parts: object) -> str:

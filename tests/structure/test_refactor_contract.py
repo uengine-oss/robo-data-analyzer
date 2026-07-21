@@ -25,17 +25,15 @@ REMOVED_RUNTIME_ROOTS = (
 
 
 class RefactorContractTest(unittest.TestCase):
-    def test_default_data_dir_survives_analyzer_settings_move(self) -> None:
-        from analyzer_settings import _DEFAULT_DATA_DIR
+    def test_default_data_dir_survives_settings_move(self) -> None:
+        from shared.config.settings import _DEFAULT_DATA_DIR
 
         self.assertEqual((REPO.parent / "data").resolve(), _DEFAULT_DATA_DIR.resolve())
 
     def test_pipeline_llm_asset_paths_survive_moves(self) -> None:
-        from pipeline.steps.step3_scan_project.scan_agent import _SYSTEM_PROMPT_PATH
-        from pipeline.steps.step4_linking.link_tables.residual_pattern_loop import (
-            _RESIDUAL_PROMPT_PATH,
-        )
-        from pipeline.steps.step5_build_context.large_code_one_liner import _PROMPTS_COMMON
+        from agents.residual import _RESIDUAL_PROMPT_PATH
+        from agents.scan import _SYSTEM_PROMPT_PATH
+        from pipeline.steps.step6_build_context.large_code_one_liner import _PROMPTS_COMMON
 
         self.assertTrue(_SYSTEM_PROMPT_PATH.is_file())
         self.assertTrue(_RESIDUAL_PROMPT_PATH.is_file())
@@ -107,6 +105,10 @@ class RefactorContractTest(unittest.TestCase):
         ]
         self.assertEqual([], invalid, f"non-final audit verdicts: {invalid[:10]}")
 
+    @unittest.skipIf(
+        (REPO / "specs" / "076-shared-layout").exists() and (REPO / "shared").exists(),
+        "legacy final tree is superseded by spec 076",
+    )
     def test_move_map_resolves_each_declared_path(self) -> None:
         with (SPEC / "move-map.tsv").open(encoding="utf-8", newline="") as stream:
             rows = list(csv.DictReader(stream, delimiter="\t"))

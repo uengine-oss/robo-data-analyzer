@@ -1,7 +1,7 @@
 import unittest
 
 from graph.connection_context import Neo4jOverride
-from analyzer_settings import AnalysisGraphDatabaseSettings
+from shared.config.settings import AnalysisGraphDatabaseSettings
 
 
 class AnalyzerConnectionContextTest(unittest.TestCase):

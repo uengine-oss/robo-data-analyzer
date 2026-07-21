@@ -1,7 +1,7 @@
 """Run 1회 실행 어댑터 — rmtree latest + LangGraph workflow 실행 + 종료 처리.
 
 흐름:
-1. ``run-output/analysis/latest/`` + ``run-output/llm-prompts/latest/`` rmtree + 재생성.
+1. ``output/analysis/latest/`` + ``output/llm-prompts/latest/`` rmtree + 재생성.
 2. ``Run`` 메타 생성 + Neo4j 인덱스 / 제약 보장.
 3. ``CostBudget`` + ``MemorySaver`` (Checkpointer) + ``PauseController`` 생성.
 4. Strategy 의 workflow 빌더 호출 → ``astream(stream_mode="updates")``.
@@ -33,19 +33,19 @@ from graph.schema import graph_edges, graph_nodes
 from pipeline.models import analysis_context
 from pipeline.models.analysis_meta import AnalysisRun
 from pipeline.models.analysis_meta import Codebase
-from analyzer_settings import SETTINGS
+from shared.config.settings import SETTINGS
 
 from llm.usage.cost_budget import CostBudget
-from runtime_events.runtime_logger import (
+from shared.events.runtime_logger import (
     attach_run_file_handlers,
     detach_run_file_handlers,
     log_error,
     log_info,
 )
-from runtime_events.ndjson_event_stream import NDJSONStream
+from shared.events.ndjson_event_stream import NDJSONStream
 from graph.neo4j_client import Neo4jClient
 from graph.schema.constraints import ensure_schema, wipe_graph
-from source.file_cache import SourceFileCache
+from shared.files.cache import SourceFileCache
 from pipeline.execution.artifact_writer import dump_state_artifacts
 from pipeline.execution.langgraph_builder import build_langgraph_workflow
 from pipeline.execution.pause_controller import PauseController
@@ -54,7 +54,7 @@ from pipeline.execution.run_registry import set_active as set_active_run
 from pipeline.execution.run_registry import ConcurrentAnalysisRunError
 
 
-_RUN_OUTPUT_OWNER_MARKER = ".robo-data-analyzer-run-output"
+_RUN_OUTPUT_OWNER_MARKER = ".robo-data-analyzer-output"
 _RUN_OUTPUT_OWNER_MARKER_CONTENT = "robo-data-analyzer\n"
 
 
@@ -102,7 +102,7 @@ async def execute_run(
     pause = PauseController(stream)
 
     try:
-        # 단일 활성 슬롯은 run-output reset/Neo4j wipe보다 먼저 선점한다. 두 번째 run이
+        # 단일 활성 슬롯은 output reset/Neo4j wipe보다 먼저 선점한다. 두 번째 run이
         # 파괴 작업에 진입한 뒤 control 슬롯만 덮어쓰는 경쟁을 막는다.
         set_active_run(run.run_id, pause)
     except ConcurrentAnalysisRunError as error:
@@ -209,7 +209,7 @@ async def execute_run(
                 if not pause.status()["isStopped"]:
                     # LangGraph checkpointer에는 실패 직전까지 완료된 step state가 남아 있다.
                     # 원래 pipeline 오류를 가리지 않는 best-effort 경로로 step1~6 산출물을
-                    # 먼저 보존한다. 특히 step7 외부 연동 실패가 수시간 분석을 지우지 않게 한다.
+                    # 먼저 보존한다. 특히 step8 외부 연동 실패가 수시간 분석을 지우지 않게 한다.
                     try:
                         await _dump_checkpoint_artifacts(app, config, run)
                         _summarize_usage(run.run_dir)

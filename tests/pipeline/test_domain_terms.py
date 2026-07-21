@@ -3,10 +3,10 @@ import unittest
 
 from pydantic import ValidationError
 
-from pipeline.steps.step7_post_processing.build_glossary_step import _collect_terms
+from pipeline.steps.step8_post_processing.build_glossary_step import _collect_terms
 from pipeline.models.code_analysis_output import BatchSummaryItem, DomainTermItem, SummaryOutput
 from graph.schema.domain_terms import dump_domain_terms, load_domain_terms
-from pipeline.steps.step6_analyze_code.domain_terms import normalize_domain_terms
+from pipeline.steps.step7_analyze_code.domain_terms import normalize_domain_terms
 
 
 def _item(term: str, meaning: str) -> DomainTermItem:

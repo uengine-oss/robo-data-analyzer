@@ -20,8 +20,8 @@ from tenacity import (
     wait_exponential,
 )
 
-from analyzer_settings import SETTINGS
-from runtime_events.runtime_logger import log_warning
+from shared.config.settings import SETTINGS
+from shared.events.runtime_logger import log_warning
 from graph.connection_context import get_override
 
 

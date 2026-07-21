@@ -8,10 +8,10 @@ from unittest.mock import patch
 
 PUBLIC_MODULES = (
     "main",
-    "analyzer_settings",
-    "runtime_events.runtime_logger",
-    "runtime_events.ndjson_event_stream",
-    "runtime_events.processing_events",
+    "shared.config.settings",
+    "shared.events.runtime_logger",
+    "shared.events.ndjson_event_stream",
+    "shared.events.processing_events",
     "api.analyze_router",
     "api.search_router",
     "api.source_router",
@@ -22,7 +22,7 @@ PUBLIC_MODULES = (
     "search.service",
     "search.query.rewrite",
     "search.query.judge",
-    "llm.llm_client",
+    "llm.client",
 )
 
 
@@ -49,7 +49,7 @@ class PublicImportTest(unittest.TestCase):
 
     def test_query_llm_reads_search_settings_contract(self) -> None:
         from search.query import query_llm
-        from analyzer_settings import SETTINGS
+        from shared.config.settings import SETTINGS
 
         query_llm._cfg_cache.clear()
         sentinel_config = object()

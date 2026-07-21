@@ -41,6 +41,7 @@ from graph.schema.graph_edges import (
     ReadsWrites,
     References,
     StatementNext,
+    ExternalEdge,
 )
 from graph.schema.graph_nodes import (
     Column,
@@ -55,6 +56,11 @@ from graph.schema.graph_nodes import (
     Schema,
     Table,
     Variable,
+    CandidateLink,
+    DocumentNode,
+    ExternalChunk,
+    ProjectFile,
+    UnresolvedRef,
 )
 
 
@@ -102,28 +108,36 @@ class WorkflowState(TypedDict, total=False):
     call_sites: Annotated[list[dict], operator.add]
     import_refs: Annotated[list[dict], operator.add]
 
-    # ── step3_scan_project 결과 (Framework 만) ─
+    # ── step3_load_external + step5_linking 결과 (spec 075) ──
+    project_files: list[ProjectFile]
+    external_chunks: list[ExternalChunk]
+    document_nodes: list[DocumentNode]
+    external_edges: Annotated[list[ExternalEdge], operator.add]
+    unresolved_refs: Annotated[list[UnresolvedRef], operator.add]
+    candidate_links: list[CandidateLink]
+
+    # ── step4_scan_project 결과 (Framework 만) ─
     scan_result: dict                     # ScanResult Pydantic → dict
 
-    # ── step4_linking 결과 ────────────────────────
+    # ── step5_linking 결과 ────────────────────────
     # 여러 step 이 누적 반환 — framework: 결정론(stage1) + 잔여 패턴 루프(stage3) /
-    # dbms: DML 매칭(stage1) + catalog lineage(step7). reducer 가 없으면 뒤 step 이
-    # 앞 엣지를 통째 덮어써 step5(build_context)가 불완전한 R/W 를 LLM 에 전달한다
-    # → ``operator.add`` 로 누적 (중복은 Neo4j MERGE·step5 set 변환이 자동 dedup).
+    # dbms: DML 매칭(stage1) + catalog lineage(step8). reducer가 없으면 뒤 step이
+    # 앞 엣지를 통째 덮어써 step6(build_context)가 불완전한 R/W를 LLM에 전달한다.
+    # → ``operator.add``로 누적 (중복은 Neo4j MERGE·step6 set 변환이 자동 dedup).
     reads_writes_edges: Annotated[list[ReadsWrites], operator.add]
     calls_edges: list[Calls]
     # 잔여 루프가 결정론 단계의 raw 를 '최종 잔여'로 덮는 게 의도 — default replace 유지.
     unresolved_cases: list[dict]
 
-    # ── step5_build_context 결과 ──────────────────
+    # ── step6_build_context 결과 ──────────────────
     analysis_contexts: dict[str, AnalysisContext]   # code_id → ctx
 
-    # ── step5 데이터준비 (enrich_table_data — 옵션·전략독립) ──────
-    # catalog sample-context 로 받은 테이블별 실제 샘플행 — step6 GWT 입력값.
+    # ── step6 데이터 준비 (fetch_table_samples — 옵션·전략독립) ───
+    # catalog sample-context로 받은 테이블별 실제 샘플행 — step7 분석 입력값.
     # {table_fqn: {columns, sample_rows}}. 토글 off / datasource 미지정 / 미매칭 → 키 없음.
     table_sample_data: dict[str, dict]
 
-    # ── step6 Example Mapping 결과 (analyze_code 함수 단위 누적) ──
+    # ── step7 Example Mapping 결과 (analyze_code 함수 단위 누적) ──
     # 비즈니스 로직 3가지 (rules/examples/questions) + 관련 엣지 6종.
     # Rule 노드는 rule_hash 가 정체성 식별자 — 같은 statement 코드노드 간 공유.
     # 중복은 Neo4j MERGE Cypher 가 dedup (rule_hash / example_id / question_id 키).
@@ -135,4 +149,4 @@ class WorkflowState(TypedDict, total=False):
     has_question_edges: list[HasQuestion]
     affects_table_edges: list[AffectsTable]
 
-    # step7 build_components 는 합성 노드를 만들지 않고 FUNCTION.component_id 속성만 SET — state 누적 없음.
+    # step8 build_components는 합성 노드를 만들지 않고 FUNCTION.component_id 속성만 SET — state 누적 없음.

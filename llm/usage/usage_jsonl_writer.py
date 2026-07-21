@@ -16,7 +16,7 @@ from pathlib import Path
 
 from llm.usage.token_usage import TokenUsageRecord
 from llm.usage.cost_budget import CostBudget
-from runtime_events.runtime_logger import log_warning
+from shared.events.runtime_logger import log_warning
 
 
 class UsageRecordWriteError(RuntimeError):
@@ -32,7 +32,7 @@ def append_usage_record(
     """``usage.jsonl`` 에 1 LLM 호출 record append.
 
     Args:
-        usage_log_path: 적재 경로 (예: ``run-output/analysis/latest/usage.jsonl``).
+        usage_log_path: 적재 경로 (예: ``output/analysis/latest/usage.jsonl``).
         agent_name: "scan" / "linking_subagent" / "rule:<rule_name>" 등.
         record: ``track_usage()`` 결과.
         cost_usd: ``compute_cost(record)`` 결과.

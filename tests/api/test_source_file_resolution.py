@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from source.path_resolver import AmbiguousSourceFileError, resolve_source_file
+from api.source_resolver import AmbiguousSourceFileError, resolve_source_file
 
 
 class SourceFileResolutionTest(unittest.TestCase):

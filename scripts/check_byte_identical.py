@@ -1,7 +1,6 @@
 """byte-identical CI 체크 — 시스템 프롬프트 / yaml SHA256 비교.
 
-캐시 깨짐 방지의 보호장치. ``llm/prompts/`` 규칙과 ``llm/agents/`` system prompt의
-.md/.yaml 변경 시 CI 빌드 실패.
+캐시 깨짐 방지의 보호장치. ``llm/prompts/`` 아래 .md/.yaml 변경 시 CI 빌드 실패.
 
 사용::
 
@@ -21,13 +20,16 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent
 PROMPTS_DIR = _ROOT / "llm" / "prompts"
-AGENTS_DIR = _ROOT / "llm" / "agents"
+AGENT_PROMPTS_DIR = _ROOT / "agents" / "prompts"
 HASHES_PATH = PROMPTS_DIR / "prompt_hashes.json"
-PROMPT_ROOTS = (("prompts", PROMPTS_DIR), ("agents", AGENTS_DIR))
+PROMPT_ROOTS = (
+    ("prompts", PROMPTS_DIR),
+    ("agents", AGENT_PROMPTS_DIR),
+)
 
 
 def compute_hashes() -> dict[str, str]:
-    """규칙 prompt와 agent system prompt의 SHA256을 경로와 함께 계산한다."""
+    """모든 prompt의 SHA256을 경로와 함께 계산한다."""
     hashes: dict[str, str] = {}
     for owner, root in PROMPT_ROOTS:
         for path in sorted(root.rglob("*")):

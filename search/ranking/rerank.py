@@ -11,7 +11,7 @@ import json
 import os
 from pathlib import Path
 
-from runtime_events.runtime_logger import log_warning
+from shared.events.runtime_logger import log_warning
 
 
 _LOG = "search.ranking.rerank"
@@ -20,7 +20,7 @@ _SEM_UNIFIED = os.environ.get("ROBO_SEM_UNIFIED", "1") == "1"
 
 _ce_cache: dict = {}
 # CE 점수 = 결정론(같은 model·질의·passage → 항상 같은 점수) → 디스크 캐시로 재측정·반복질의 0초.
-# 첫 채점만 CPU 비용 지불, 이후 재사용. run-output/ 밖 전용 디렉토리(plan §C).
+# 첫 채점만 CPU 비용 지불, 이후 재사용. output/ 밖 전용 디렉토리(plan §C).
 _CACHE_PATH = Path(__file__).resolve().parent.parent / ".search_cache" / "ce_scores.json"
 _score_cache: dict | None = None
 

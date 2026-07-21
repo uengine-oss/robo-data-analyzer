@@ -66,7 +66,7 @@ class DomainTermPromptContractTest(unittest.TestCase):
             (ROOT / "llm" / "prompts" / "framework", "code_summary_core"),
             (ROOT / "llm" / "prompts" / "dbms", "code_summary_batch"),
         )
-        shared = (ROOT / "llm" / "prompts" / "_shared" / "summary_contract.md").read_text(
+        shared = (ROOT / "llm" / "prompts" / "common" / "summary_contract.md").read_text(
             encoding="utf-8"
         ).strip()
         for directory, rule_name in cases:
@@ -76,7 +76,7 @@ class DomainTermPromptContractTest(unittest.TestCase):
                 self.assertIn("{summary_contract}", rule["user_template"])
 
     def test_common_prompts_do_not_override_summary_rule_boundary(self) -> None:
-        shared = (ROOT / "llm" / "prompts" / "_shared" / "summary_contract.md").read_text(
+        shared = (ROOT / "llm" / "prompts" / "common" / "summary_contract.md").read_text(
             encoding="utf-8"
         )
         self.assertIn("목적과 성공 시 남는 주요 효과", shared)

@@ -17,8 +17,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Awaitable, Callable, Optional, TypeVar
 
-from runtime_events.runtime_logger import log_info
-from runtime_events.ndjson_event_stream import NDJSONStream
+from shared.events.runtime_logger import log_info
+from shared.events.ndjson_event_stream import NDJSONStream
 
 
 T = TypeVar("T")
@@ -150,5 +150,5 @@ class PauseController:
 
 
 # control 신호가 없는 경로(CLI 단독 실행·테스트) 용 no-op — 절대 paused/stopped 되지
-# 않으므로 gate() 는 즉시 통과, set_inflight 는 무해. step6 가 cfg 에 pause 가 없을 때 사용.
+# 않으므로 gate()는 즉시 통과, set_inflight는 무해. step7이 cfg에 pause가 없을 때 사용.
 NULL_PAUSE = PauseController()

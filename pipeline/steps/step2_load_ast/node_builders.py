@@ -24,11 +24,11 @@ from graph.schema.graph_edges import (
     StatementNext,
 )
 from graph.schema.graph_nodes import Constant, DataType, CodeNode, Module, Package, Variable
-from analyzer_settings import SETTINGS
+from shared.config.settings import SETTINGS
 from pipeline.languages import ROUTINE_LABELS, role_of
 from pipeline.languages import DBMS_EXTS, EXT_TO_LANG
 from graph.schema.node_ids import child_id, code_file_id, code_ns_id, positioned
-from runtime_events.runtime_logger import log_error, log_warning
+from shared.events.runtime_logger import log_error, log_warning
 
 _COMPONENT = "pipeline.steps.step2_load_ast.antlr_json_reader"
 

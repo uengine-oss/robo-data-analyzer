@@ -37,6 +37,13 @@ CONSTRAINTS: list[str] = [
     "FOR (e:EXAMPLE) REQUIRE e.id IS UNIQUE",
     "CREATE CONSTRAINT uniq_question IF NOT EXISTS "
     "FOR (q:QUESTION) REQUIRE q.id IS UNIQUE",
+    *[
+        f"CREATE CONSTRAINT uniq_{label.lower()} IF NOT EXISTS FOR (n:{label}) REQUIRE n.id IS UNIQUE"
+        for label in (
+            "PROJECT_FILE", "SQL_STATEMENT", "CONFIG_SECTION", "ARTIFACT_CHUNK", "CHUNK",
+            "DOCUMENT", "DOC_SECTION", "DOC_CHUNK", "UNRESOLVED_REF", "CANDIDATE_LINK",
+        )
+    ],
     # 컴포넌트는 합성 노드(:COMPONENT)가 없으므로 제약 불필요 — 멤버십은 component_id 속성.
 ]
 
@@ -51,6 +58,8 @@ INDEXES: list[str] = [
 LEGACY_ANALYZER_STABLE_LABELS: tuple[str, ...] = (
     "COLUMN", "EMBED_META", "EXAMPLE", "GLOSSARY", "PACKAGE",
     "QUESTION", "RULE", "SCHEMA", "TABLE",
+    "PROJECT_FILE", "SQL_STATEMENT", "CONFIG_SECTION", "ARTIFACT_CHUNK", "CHUNK",
+    "DOCUMENT", "DOC_SECTION", "DOC_CHUNK", "UNRESOLVED_REF", "CANDIDATE_LINK",
 )
 
 LEGACY_OWNER_MIGRATION_QUERY = """

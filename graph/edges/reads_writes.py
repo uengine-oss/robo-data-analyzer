@@ -1,6 +1,7 @@
-"""READS / WRITES 엣지 — CodeNode → Table.
+"""READS / WRITES 엣지 — CodeNode 또는 SQL_STATEMENT → Table.
 
-Linking 1 단계 결정론 grep 또는 Linking Agent (stage3) 가 생성.
+Linking 결정론 단계 또는 Linking Agent가 생성. source MATCH는 의도적으로 라벨을 고정하지 않아
+spec 075의 SQL_STATEMENT anchor도 같은 단일 writer를 사용한다.
 relation 별로 다른 엣지 type 으로 박음.
 """
 from __future__ import annotations

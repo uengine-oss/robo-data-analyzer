@@ -7,7 +7,7 @@
 """
 from __future__ import annotations
 
-from analyzer_settings import SETTINGS
+from shared.config.settings import SETTINGS
 from graph.connection_context import get_override
 
 

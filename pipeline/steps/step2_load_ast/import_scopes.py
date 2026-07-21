@@ -33,8 +33,8 @@ from typing import Awaitable, Callable, NamedTuple
 from graph.schema.graph_edges import InitBy, References
 from graph.schema.graph_nodes import Constant, CodeNode, Variable
 from pipeline.languages import EXT_TO_LANG
-from runtime_events.runtime_logger import log_info
-from source.file_cache import SourceFileCache
+from shared.events.runtime_logger import log_info
+from shared.files.cache import SourceFileCache
 
 _COMPONENT = "step2.reference_linker"
 

@@ -4,8 +4,8 @@
 각 yaml 의 ``response_format`` 으로 강제 — 자유 텍스트 응답 X.
 
 사용처:
-- ``pipeline/steps/step6_analyze_code``: SummaryOutput / TableInsightsOutput / RulesExamplesOutput
-- ``pipeline/steps/step7_post_processing``: ModuleSummaryOutput / TableDescription
+- ``pipeline/steps/step7_analyze_code``: SummaryOutput / TableInsightsOutput / RulesExamplesOutput
+- ``pipeline/steps/step8_post_processing``: ModuleSummaryOutput / TableDescription
 
 호출 모드 (단일 진실):
 ``llm.with_structured_output(..., method="function_calling")`` 가 기본 — strict 미강제.

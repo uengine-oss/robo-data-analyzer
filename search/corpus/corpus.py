@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from search.corpus.embed_material import EMBED_META_LABEL, EMBEDDED_LABEL
 from search.ranking.recall import tokenize
-from analyzer_settings import SETTINGS
+from shared.config.settings import SETTINGS
 from llm import embedder
 from graph.ownership import ANALYZER_GRAPH_OWNER
 
