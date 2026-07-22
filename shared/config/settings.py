@@ -243,7 +243,8 @@ class AnalysisGraphDatabaseSettings:
 @dataclass(frozen=True)
 class AnalysisPipelineSettings:
     """ROBO_PIPELINE_* — 동시성 / 배치 / 큰 코드노드 임계."""
-    max_concurrency: int = field(default_factory=lambda: _getenv_int("ROBO_PIPELINE_MAX_CONCURRENCY", 30))
+    # 기본 64 = GPU 서버 동시 요청 상한 (sglang max_running_requests 실측).
+    max_concurrency: int = field(default_factory=lambda: _getenv_int("ROBO_PIPELINE_MAX_CONCURRENCY", 64))
     # (옛 file_concurrency 삭제 — 소비처 0건. spec 046 FR-010.)
     big_context_threshold_tokens: int = field(
         default_factory=lambda: _getenv_int("ROBO_PIPELINE_BIG_CONTEXT_THRESHOLD_TOKENS", 1000)
@@ -305,7 +306,7 @@ class RuntimeEventSettings:
     """런타임 이벤트의 표준 로그 레벨과 선택적 파일 기록 정책.
 
     ``file_logging_enabled`` 정책:
-    - 개발 / 테스트 (``.env``): ``true`` — ``output/analysis/latest/analyzer.log``
+    - 개발 / 테스트 (``.env``): ``true`` — ``logs/analyzer.log``
       + ``error.log`` 파일 핸들러 attach. ``tail -f`` 로 진행 추적 가능.
     - 운영 (``.env.production``): ``false`` — stderr 만. 디스크 I/O 0, 성능 영향 0.
 
@@ -332,7 +333,7 @@ class RuntimeEventSettings:
 def _resolve_run_output_dir() -> Path:
     raw = os.environ.get("ROBO_RUN_OUTPUT_DIR")
     if raw is None:
-        return Path("./output")
+        return Path("./logs")
     if not raw.strip():
         raise ValueError("ROBO_RUN_OUTPUT_DIR must not be blank")
     return Path(raw)

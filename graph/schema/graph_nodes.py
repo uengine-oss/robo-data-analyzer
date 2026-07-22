@@ -31,7 +31,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal, Optional
 
-from graph.schema.node_ids import db_id, fqn
+from graph.schema.node_ids import db_id
 
 
 # ── DB 객체 (DDL 파싱에서만 생성, 이후 단계는 신규 생성 X) ──
@@ -71,8 +71,8 @@ class Table:
     comment: str = ""                        # -- /* */ 주석 원문 (COMMENT ON 없으면 description 출처)
     analyzed_description: str = ""           # 분석 LLM 합성 설명
     table_type: str = "TABLE"                # TABLE / VIEW / MATERIALIZED_VIEW
-    # embed_step 이 채우는 의미 벡터. metadata={"vector": True} 는 artifact dump 시 dim
-    # 만 표시하라는 표시 — 단일 진실 (artifact_writer 가 이 metadata 만 본다).
+    # embed_step 이 채우는 의미 벡터. metadata={"vector": True} = 직렬화 소비자용
+    # "dim 만 표시" 계약 표식.
     embedding: tuple[float, ...] = field(default=(), metadata={"vector": True})
 
     @property

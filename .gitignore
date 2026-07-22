@@ -27,7 +27,7 @@ Thumbs.db
 .env
 
 # Generated output — 매 run 마다 latest/ rmtree
-output/
+logs/
 
 # 임시 파일
 *.tmp

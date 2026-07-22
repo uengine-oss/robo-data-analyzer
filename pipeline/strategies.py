@@ -107,20 +107,17 @@ FRAMEWORK_PIPELINE = Strategy(
         link_calls_by_name_step,              # ★ Framework 만 — 결정론 Call 분류 + wrapper 통합 (LLM 0)
         link_residual_patterns_step,          # ★ Framework 만 — 잔여 패턴 루프 (테이블 미해결)
         link_external_step,                   # 외부 파일 key/FQN/SQL→DDL 결정론 연결
-        build_context_step,
-        fetch_table_samples_step,             # ★ 옵션·전략독립 — catalog 샘플 → table_sample_data (analyze 전)
+        (build_context_step, fetch_table_samples_step),   # 독립 — HTTP 지연 은닉
+
         analyze_code_step,
-        # ★ 후처리 병렬 그룹 — 4 step 서로 독립(입력 read-only·return state 키 비충돌:
-        #   modules / tables+columns / {} / {}). 동시 실행 후 합류.
-        #   (build_components·health_metrics 는 state 를 안 늘리고 노드 속성만 SET → {} 반환.)
-        #   공유 llm_semaphore(executor 주입)로 서버 총 동시수 제어(과부하 방지).
+        # glossary 의 의존은 summarize 뿐 — 최장 스텝인 glossary 를 나머지와 겹친다.
+        summarize_module_step,
         (
-            summarize_module_step,
             enrich_table_description_step,
             build_components_step,            # ① 컴포넌트 군집화+이름 (Leiden + 병렬 naming)
             health_metrics_step,              # ② 건강지표 (결정론·LLM 0 — 그래프 위 계산)
+            build_glossary_step,              # 용어사전 종합 (spec 043 — 모듈 요약 의존만)
         ),
-        build_glossary_step,                  # 용어사전 종합 (spec 043 — 모듈 요약을 문맥으로 쓰므로 그룹 뒤)
         embed_step,
     ),
 )
@@ -146,17 +143,18 @@ DBMS_PIPELINE = Strategy(
         link_calls_by_ast_step,               # ★ DBMS 만 — AST CALL 노드 분류 (빌트인·자기루프 드롭)
         # 잔여 패턴 루프 없음 — DBMS 는 에이전트 링킹을 안 씀
         link_external_step,                   # 외부 파일 key/FQN/SQL→DDL 결정론 연결
-        build_context_step,
-        fetch_table_samples_step,             # ★ 옵션·전략독립 — catalog 샘플 → table_sample_data (analyze 전)
+        (build_context_step, fetch_table_samples_step),   # 독립 — HTTP 지연 은닉
+
         analyze_code_step,
+        # glossary 의 의존은 summarize 뿐 — 최장 스텝인 glossary 를 나머지와 겹친다.
         summarize_module_step,
-        enrich_table_description_step,
-        # enrich_metadata_from_catalog_step 제거 — 미존재 엔드포인트(GET /tables/<fqn>/metadata)
-        #   기반이라 동작 X. 테이블 메타(샘플)는 fetch_table_samples_step(sample-context)로 대체.
-        enrich_lineage_from_catalog_step,     # ★ DBMS 만 — catalog lineage
-        build_components_step,                # ① 컴포넌트 군집화+이름 (Leiden + 병렬 naming)
-        health_metrics_step,                  # ② 건강지표 (결정론·LLM 0 — 그래프 위 계산)
-        build_glossary_step,                  # 용어사전 종합 (spec 043 — 모듈 요약 뒤)
+        (
+            enrich_table_description_step,
+            enrich_lineage_from_catalog_step, # ★ DBMS 만 — catalog lineage (HTTP, 독립)
+            build_components_step,            # ① 컴포넌트 군집화+이름 (Leiden + 병렬 naming)
+            health_metrics_step,              # ② 건강지표 (결정론·LLM 0 — 그래프 위 계산)
+            build_glossary_step,              # 용어사전 종합 (spec 043 — 모듈 요약 의존만)
+        ),
         embed_step,
     ),
 )

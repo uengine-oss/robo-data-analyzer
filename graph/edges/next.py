@@ -1,7 +1,7 @@
 """NEXT 엣지 (구문 흐름) — 이전 구문 → 다음 구문 (DBMS 실행 순서).
 
 같은 부모 아래 형제 구문을 등장(실행) 순서로 연결해 절차적 로직 흐름을 추적한다.
-끝점이 구문 노드라 **무라벨 MATCH by id** (id 단일 유니크 키).
+끝점이 구문 노드(열린 라벨)라 ``:ANALYZER_OWNED`` + id 로 MATCH.
 """
 from __future__ import annotations
 
@@ -15,8 +15,8 @@ from graph.schema.rel_types import NEXT
 
 MERGE_QUERY = f"""
 UNWIND $items AS item
-MATCH (prev {{id: item.prev_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-MATCH (next {{id: item.next_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (prev:ANALYZER_OWNED {{id: item.prev_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (next:ANALYZER_OWNED {{id: item.next_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 MERGE (prev)-[:{NEXT}]->(next)
 """
 

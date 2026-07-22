@@ -17,11 +17,12 @@ from graph.ownership import ANALYZER_GRAPH_OWNER
 # 제약 이름은 ``uniq_<label>`` — 옛 버전이 ``module_id`` 등 동일 이름을 옛 속성(m.module_id)에
 # 걸어둔 더티 DB 에서도 ``IF NOT EXISTS`` 가 (이름 충돌로) 새 ``.id`` 제약 생성을 막지 않도록
 # 새 이름 사용. (이미 .id 에 동등 제약이 있으면 IF NOT EXISTS 가 no-op — clean·dirty 양쪽 안전.)
-# ★코드 노드(파일/클래스/함수/메서드/구문/변수/상수/데이터타입)는 라벨 = 자기 antlr type
-#   (METHOD/FUNCTION/SELECT/FIELD/STRUCT…) = **열린 집합**이라 종류별 제약 열거 불가.
-#   식별 키 ``id`` 가 전역 유일이고 MERGE 가 id 로 dedup → 코드 노드는 제약 없이 안전.
-#   안정 라벨(DB / EM / PACKAGE)만 id-유일 제약을 둔다.
+# ★코드 노드 라벨은 antlr type **열린 집합**이라 종류별 제약 열거 불가 →
+#   전 노드 공통 마커 ``:ANALYZER_OWNED`` 에 id 유니크 제약을 건다. 이 인덱스가 없으면
+#   무라벨 MATCH by id 가 AllNodesScan — AST 적재 159초의 원인이었다 (run6 실측).
 CONSTRAINTS: list[str] = [
+    "CREATE CONSTRAINT uniq_analyzer_owned IF NOT EXISTS "
+    "FOR (n:ANALYZER_OWNED) REQUIRE n.id IS UNIQUE",
     "CREATE CONSTRAINT uniq_schema IF NOT EXISTS "
     "FOR (s:SCHEMA) REQUIRE s.id IS UNIQUE",
     "CREATE CONSTRAINT uniq_table IF NOT EXISTS "

@@ -16,8 +16,9 @@ from langchain_core.runnables import RunnableConfig
 
 from pipeline.execution.step_config import step_config
 
+from agents.contracts import CallWrapper, DdlTransform, TableAccessPattern
 from agents.scan import run_scan_agent
-from agents.skills.catalog import FRAMEWORK_SKILLS_DIR
+from agents.skills.catalog import FRAMEWORK_SKILLS_DIR, load_skill_contract
 from pipeline.steps.step4_scan_project.scanner_input_collector import (
     collect_scanner_input,
 )
@@ -76,6 +77,7 @@ async def scan_codebase_step(state: dict, config: Optional[RunnableConfig] = Non
         raise
 
     result_dict = result.model_dump()
+    _apply_skill_contract(result_dict)
     _warn_if_call_wrappers_missing(result_dict)
     _remove_project_functions_from_framework_drop(
         result_dict, state.get("code_nodes", []),
@@ -94,11 +96,41 @@ async def scan_codebase_step(state: dict, config: Optional[RunnableConfig] = Non
     return {"scan_result": result_dict}
 
 
+def _apply_skill_contract(result_dict: dict) -> None:
+    """matched SKILL 의 YAML fence 계약을 결정론 주입한다 (spec 079).
+
+    SKILL.md 가 단일 진실 — fence 에 절이 있으면 Agent(LLM) 산출을 그 파싱값으로
+    덮어쓴다. 받아쓰기 누락·왜곡 사고를 원천 차단. fence 가 없거나 스킬 미매칭이면
+    기존 동작(LLM 산출 유지). pydantic 재검증으로 ScanResult 와 같은 형태를 보증한다.
+    깨진 fence 는 SkillCatalogError 그대로 전파 — 스킬 문서 결함은 여기서 멈춘다.
+    """
+    matched = result_dict.get("matched_skill")
+    if not matched:
+        return
+    contract = load_skill_contract(matched)
+    if not contract:
+        return
+    if "table_access_patterns" in contract:
+        result_dict["table_access_patterns"] = [
+            TableAccessPattern(**p).model_dump() for p in contract["table_access_patterns"]
+        ]
+    if "ddl_transform" in contract:
+        result_dict["ddl_transform"] = DdlTransform(**contract["ddl_transform"]).model_dump()
+    if "call_wrappers" in contract:
+        result_dict["call_wrappers"] = [
+            CallWrapper(**w).model_dump() for w in contract["call_wrappers"]
+        ]
+    log_info(
+        _STEP, "skill_contract_applied",
+        skill=matched, keys=sorted(contract),
+    )
+
+
 def _warn_if_call_wrappers_missing(result_dict: dict) -> None:
     """matched_skill 의 SKILL contract 에 ``call_wrappers``가 있는데 Agent 가
     ``call_wrappers`` 를 빈 배열로 넘겼으면 표면화 — silent skip 차단.
 
-    실측 사례: ``mpfm_dlcall("zapamcom10040", ...)`` 11 건이 호출 그래프에서 사라진
+    실측 사례: ``mpfm_dlcall("<모듈명>", ...)`` 11 건이 호출 그래프에서 사라진
     사고 — SKILL 에 절은 있는데 Agent 가 ScanResult.call_wrappers 에 안 옮김 →
     wrapper_patterns 빈 dict → wrapper 호출이 framework drop 으로 빠짐.
     """

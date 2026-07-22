@@ -28,6 +28,11 @@ def make_verify_table_regex_tool(
 ):
     """``verify_table_regex`` 도구 생성 — project_root / code_nodes / tables 를 묶는다."""
 
+    # 멱등 가드 — 같은 입력은 결정론이므로 캐시 반환 + "다음 단계로" 명시로
+    # 약한 모델의 재검증 루프 연료를 끊는다.
+    validated: dict[str, str] = {}
+    repeat_count: dict[str, int] = {}
+
     @tool
     async def verify_table_regex(call_regex: str) -> str:
         """table-access 정규식을 실제 소스에 적용 → 매치·해소 결과 리포트.
@@ -49,6 +54,16 @@ def make_verify_table_regex_tool(
         - `INVALID_REGEX: ...` — 정규식 문법 오류.
         - `MISSING_GROUP: ...` — `(?P<entity>...)` 명명 그룹 없음.
         """
+        if call_regex in validated:
+            n = repeat_count[call_regex] = repeat_count.get(call_regex, 1) + 1
+            return (
+                f"이미 검증 완료된 정규식이다 (동일 입력 {n}회째 호출). 같은 입력은 "
+                "결과가 결정론으로 동일하다 — 재검증 불필요. 아래는 이전 결과 그대로.\n"
+                "이 결과로 판단이 끝났으면 verify_table_regex 를 다시 호출하지 말고 "
+                "다음 단계(최종 ScanResult 출력)로 진행하라.\n"
+                + validated[call_regex]
+            )
+
         if "(?P<entity>" not in call_regex:
             return ("MISSING_GROUP: 정규식에 (?P<entity>...) 명명 그룹이 없음 — "
                     "테이블 이름을 잡는 그룹은 필수")
@@ -71,8 +86,10 @@ def make_verify_table_regex_tool(
         )
 
         if outcome.matched_sites == 0:
-            return ("매치 0건 — 이 정규식은 소스의 어떤 호출과도 안 맞음. "
-                    "wrapper 이름 · 따옴표 · 공백(\\s*) · 인자 구분자를 다시 확인하라.")
+            report = ("매치 0건 — 이 정규식은 소스의 어떤 호출과도 안 맞음. "
+                      "wrapper 이름 · 따옴표 · 공백(\\s*) · 인자 구분자를 다시 확인하라.")
+            validated[call_regex] = report
+            return report
 
         shown = outcome.samples[:_SAMPLE_SHOWN]
         lines = [
@@ -94,7 +111,9 @@ def make_verify_table_regex_tool(
             "붙으면 반대로 그룹이 너무 넓다 — 경계를 좁혀라. op_token 이 변수명이면 교정하라. "
             "[X] 가 일부뿐이면 그 테이블은 분석 범위 밖(external)일 수 있다."
         )
-        return "\n".join(lines)
+        report = "\n".join(lines)
+        validated[call_regex] = report
+        return report
 
     return verify_table_regex
 

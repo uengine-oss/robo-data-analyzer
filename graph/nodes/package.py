@@ -11,7 +11,8 @@ from graph.ownership import ANALYZER_GRAPH_OWNER
 MERGE_QUERY = f"""
 UNWIND $items AS item
 MERGE (p:PACKAGE {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-SET p.name = item.name,
+SET p:ANALYZER_OWNED,
+    p.name = item.name,
     p.graph_owner = '{ANALYZER_GRAPH_OWNER}'
 RETURN count(p) AS created
 """

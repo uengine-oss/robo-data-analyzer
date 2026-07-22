@@ -11,6 +11,7 @@ from pathlib import Path
 
 from pipeline.steps.step2_load_ast.framework_reader import _read_framework
 from pipeline.languages import ROUTINE_LABELS
+import unittest
 
 
 def _sample_raw() -> dict:
@@ -93,3 +94,21 @@ def test_control_nodes_have_no_llm_fields():
             assert not n.domain_terms
             assert n.stereotype is None
             assert n.owner_id  # 소속은 채워짐(결정론)
+
+
+# ── 스위트 편입 브리지 (2026-07-22 테스트 정리) ──────────────────────────
+# 함수식 케이스는 unittest discover 에 수집되지 않아 스위트에서 실행되지 않는
+# 일회성이었다. 아래 브리지가 전 케이스를 스위트 회귀로 편입한다 (재사용 보장).
+class ModuleCasesSuiteBridge(unittest.TestCase):
+    def test_module_cases(self):
+        import asyncio
+        import inspect
+        cases = [(n, f) for n, f in sorted(globals().items())
+                 if n.startswith("test_") and inspect.isfunction(f)]
+        self.assertTrue(cases, "함수식 케이스가 없다")
+        for name, fn in cases:
+            with self.subTest(case=name):
+                if inspect.iscoroutinefunction(fn):
+                    asyncio.run(fn())
+                else:
+                    fn()

@@ -17,7 +17,7 @@ _EDGE_SPECS: dict[type, tuple[str, tuple[str, ...]]] = {
 
 _ENDPOINT_QUERY = f"""
 UNWIND $ids AS id
-MATCH (node {{id: id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (node:ANALYZER_OWNED {{id: id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 RETURN node.id AS id
 """
 
@@ -31,8 +31,8 @@ def _merge_query(rel_type: str, properties: tuple[str, ...]) -> str:
     set_clause = f"\nSET {assignments}" if assignments else ""
     return f"""
 UNWIND $items AS item
-MATCH (source {{id: item.source_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-MATCH (target {{id: item.target_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (source:ANALYZER_OWNED {{id: item.source_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (target:ANALYZER_OWNED {{id: item.target_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 MERGE (source)-[r:{rel_type}]->(target){set_clause}
 """
 

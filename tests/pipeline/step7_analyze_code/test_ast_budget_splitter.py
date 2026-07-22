@@ -6,6 +6,7 @@ if 조건+몸통(then+else) 연속 보존 / 조상 경로 전달.
 from pipeline.steps.step7_analyze_code.ast_budget_splitter import (
     SubtreeNode, approx_tokens, split,
 )
+import unittest
 
 
 def _lines(n: int) -> list[str]:
@@ -70,3 +71,21 @@ def test_if_condition_and_body_not_split_apart():
 def test_approx_tokens_monotonic():
     assert approx_tokens("") == 0
     assert approx_tokens("x" * 35) == 10
+
+
+# ── 스위트 편입 브리지 (2026-07-22 테스트 정리) ──────────────────────────
+# 함수식 케이스는 unittest discover 에 수집되지 않아 스위트에서 실행되지 않는
+# 일회성이었다. 아래 브리지가 전 케이스를 스위트 회귀로 편입한다 (재사용 보장).
+class ModuleCasesSuiteBridge(unittest.TestCase):
+    def test_module_cases(self):
+        import asyncio
+        import inspect
+        cases = [(n, f) for n, f in sorted(globals().items())
+                 if n.startswith("test_") and inspect.isfunction(f)]
+        self.assertTrue(cases, "함수식 케이스가 없다")
+        for name, fn in cases:
+            with self.subTest(case=name):
+                if inspect.iscoroutinefunction(fn):
+                    asyncio.run(fn())
+                else:
+                    fn()

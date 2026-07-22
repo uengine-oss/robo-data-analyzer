@@ -23,25 +23,25 @@ REPO = Path(__file__).resolve().parents[2]
 
 
 class RuntimeOutputContractTest(unittest.TestCase):
-    def test_default_setting_and_analysis_run_use_new_output_tree(self) -> None:
-        with patch.dict(os.environ, {"ROBO_RUN_OUTPUT_DIR": "./output"}, clear=False):
+    def test_default_setting_and_analysis_run_use_flat_logs_root(self) -> None:
+        # 사용자 지시(2026-07-22, spec 079): logs/ 는 계층 없이 run 산출물을 직접 담는다.
+        with patch.dict(os.environ, {"ROBO_RUN_OUTPUT_DIR": "./logs"}, clear=False):
             settings = AnalysisRunOutputSettings()
-        self.assertEqual(Path("./output"), settings.dir)
+        self.assertEqual(Path("./logs"), settings.dir)
 
         run = AnalysisRun.now(Codebase(root=REPO, strategy="framework"), settings.dir)
-        self.assertEqual(Path("output/analysis/latest"), run.run_dir)
+        self.assertEqual(Path("./logs"), run.run_dir)
 
     def test_reset_creates_only_named_output_owners(self) -> None:
         with tempfile.TemporaryDirectory() as parent:
-            root = Path(parent) / "output"
+            root = Path(parent) / "logs"
             _reset_run_output_root(root)
             self.assertTrue((root / ".robo-data-analyzer-output").is_file())
-            self.assertTrue((root / "analysis/latest").is_dir())
-            self.assertTrue((root / "llm-prompts/latest").is_dir())
-            self.assertFalse((root / "analysis.run").exists())
-            self.assertFalse((root / "llm_prompts").exists())
+            self.assertTrue((root / "llm-prompts").is_dir())
+            self.assertFalse((root / "analysis").exists())
+            self.assertFalse((root / "artifacts").exists())
 
-            sentinel = root / "analysis" / "latest" / "stale.txt"
+            sentinel = root / "stale.txt"
             sentinel.write_text("stale", encoding="utf-8")
             _reset_run_output_root(root)
             self.assertFalse(sentinel.exists())
@@ -119,7 +119,8 @@ class RuntimeOutputContractTest(unittest.TestCase):
                 AnalysisRunOutputSettings(dir=Path(anchor))
 
     def test_old_runtime_roots_are_absent(self) -> None:
-        for old_root in ("system", "log", "logs", "deploy"):
+        # logs 는 현행 정본 루트로 복귀 (사용자 지시 2026-07-22) — 옛 루트는 output/run-output.
+        for old_root in ("system", "log", "deploy", "output", "run-output"):
             self.assertFalse((REPO / old_root).exists(), old_root)
 
 

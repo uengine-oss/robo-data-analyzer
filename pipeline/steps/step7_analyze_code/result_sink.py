@@ -4,52 +4,27 @@
 0. 모듈 사전분석 (Framework 전용) — 모듈마다 LLM 1회로 헤더 주석 → 모듈 의도.
    결과 ``module_intent`` 는 아래 코드노드 분석의 3분할 공통 context 에 주입.
 1. 호출 그래프 (CALLS + PARENT_OF) → ``find_call_cycles`` → cycle 식별 (Tarjan SCC).
-2. ``bottom_up_rounds`` → leaf → root Round 별 정렬.
-3. Round 별 병렬 분석:
-   - 같은 Round 코드노드들 ``asyncio.as_completed`` + ``Semaphore`` 병렬 — 끝나는 순서대로
-     즉시 Neo4j 영속화 + NDJSON emit (★ 라운드 단위 묶음 X — 라운드는 내부 concurrency
-     제어 + 메타 정보일 뿐).
-   - Round 간 순차 — 다음 Round 의 caller 가 이전 Round 의 callee summary 사용.
-4. 각 코드노드 = ``analyze_code_three_split`` (3 분할 fan-out, RadixAttention 95%+).
+2. dataflow 스케줄링 — callee 의존이 풀린 코드노드부터 즉시 분석 (라운드 배리어 없음),
+   끝나는 순서대로 즉시 Neo4j 영속화 + NDJSON emit.
+3. 각 코드노드 = ``analyze_code_three_split`` (3 분할 fan-out, RadixAttention 95%+).
 
 cycle 내부 코드노드 → callee summary 없이 분석 (``is_in_cycle=True`` 메타).
 """
 from __future__ import annotations
 
-import asyncio
-import dataclasses
-import time
-from typing import Any, Optional
+from typing import Optional
 
-from langchain_core.runnables import RunnableConfig
 
-from shared.files.cache import SourceFileCache
 from pipeline.execution.graph_delta_stream import emit_edges, emit_nodes
-from pipeline.execution.pause_controller import NULL_PAUSE, PauseController
-from pipeline.execution.step_config import step_config
 
-from pipeline.steps.step7_analyze_code.analysis_order import bottom_up_rounds
 # (dbms 엔진은 여기서 import 하지 않는다 — 전략이 주입한다(analysis_pipelines). 헌법 II.)
-from pipeline.steps.step7_analyze_code.call_cycles import find_call_cycles
-from pipeline.steps.step7_analyze_code.module_pre_analysis import run_module_pre_analysis
-from pipeline.steps.step7_analyze_code.rw_table_filter import flush_drop_summary, reset_drop_stats
-from pipeline.steps.step7_analyze_code.three_split_llm_fanout import (
-    analyze_code_three_split,
-    run_summary,
-)
 from graph.schema.graph_nodes import CodeNode
-from shared.config.settings import SETTINGS
 from pipeline.steps.step7_analyze_code.example_mapping_builder import (
     ExampleMappingResult,
     build_example_mapping,
 )
 from graph.writers.example_writer import write_example_mapping
-from llm.usage.cost_budget import BudgetExceededError
-from pipeline.models.code_analysis_output import SummaryOutput
-from pipeline.languages import ROUTINE_LABELS
-from shared.events.runtime_logger import log_error, log_info, log_warning
 from shared.events.ndjson_event_stream import NDJSONStream
-from shared.events.processing_events import step_processing_scope, track_processing
 from graph.neo4j_client import Neo4jClient
 from graph.nodes.code_node import update_summaries
 

@@ -31,7 +31,7 @@
     # strategy 강제 override
     python scripts/analyze_data_dir.py apascrt00010t02_20260406 --strategy framework
 
-NDJSON 스트림 실시간 출력 + 종료 후 ``usage_summary.json`` / ``artifacts/`` 요약.
+NDJSON 스트림 실시간 출력 + 종료 후 ``usage_summary.json`` 요약.
 
 ★ Windows 콘솔 (cp949) 에서도 한글 print 깨지지 않게 stdout/stderr 를 UTF-8 로 재구성.
 """
@@ -139,11 +139,6 @@ async def analyze_one(project_dir: Path, ddl_dir: Path | None, strategy: str) ->
               f"cached={total.get('cached_tokens',0):,}  "
               f"cost=${total.get('cost_usd',0):.6f}")
 
-    artifacts = run.run_dir / "artifacts"
-    if artifacts.exists():
-        files = sorted(artifacts.iterdir())
-        print(f"  artifacts: {', '.join(f'{f.name}({f.stat().st_size:,}B)' for f in files)}")
-
     return run
 
 
@@ -155,7 +150,7 @@ async def main(target: str | None, strategy_override: str | None) -> None:
     if not source_dir.is_dir():
         print(f"ERROR: source 디렉토리 없음: {source_dir}")
         print(f"  ROBO_DATA_DIR = {data_dir}")
-        print(f"  ROBO_DATA_DIR/source/ 안에 분석 대상 프로젝트 디렉토리 두세요.")
+        print("  ROBO_DATA_DIR/source/ 안에 분석 대상 프로젝트 디렉토리 두세요.")
         return
 
     ddl_path = ddl_dir if ddl_dir.is_dir() else None

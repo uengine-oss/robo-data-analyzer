@@ -12,6 +12,7 @@ if str(_ROOT) not in sys.path:
 
 from pipeline.steps.step6_build_context.referenced_symbols import _build_reference_context
 from pipeline.models.analysis_context import ReferencedSymbolContext, dump_referenced_symbols
+import unittest
 
 
 def _state():
@@ -61,7 +62,8 @@ def test_unicode_quotes_and_commas_are_valid_json():
 
 def test_framework_and_dbms_consumers_use_same_json_contract():
     framework = (_ROOT / "pipeline/steps/step7_analyze_code/three_split_llm_fanout.py").read_text(encoding="utf-8")
-    dbms = (_ROOT / "pipeline/steps/step7_analyze_code/batch_analyze.py").read_text(encoding="utf-8")
+    # DBMS 프롬프트 조립은 batch_prompt_values 로 이사 (2026-07 리팩토링) — 계약 대상 갱신.
+    dbms = (_ROOT / "pipeline/steps/step7_analyze_code/batch_prompt_values.py").read_text(encoding="utf-8")
     canonical_call = "dump_referenced_symbols(ctx.referenced_symbols)"
     legacy_join = "join(" + "ctx.referenced_symbols)"
     assert canonical_call in framework
@@ -75,3 +77,21 @@ if __name__ == "__main__":
     test_unicode_quotes_and_commas_are_valid_json()
     test_framework_and_dbms_consumers_use_same_json_contract()
     print("[OK] structured_referenced_symbols: 3/3 passed")
+
+
+# ── 스위트 편입 브리지 (2026-07-22 테스트 정리) ──────────────────────────
+# 함수식 케이스는 unittest discover 에 수집되지 않아 스위트에서 실행되지 않는
+# 일회성이었다. 아래 브리지가 전 케이스를 스위트 회귀로 편입한다 (재사용 보장).
+class ModuleCasesSuiteBridge(unittest.TestCase):
+    def test_module_cases(self):
+        import asyncio
+        import inspect
+        cases = [(n, f) for n, f in sorted(globals().items())
+                 if n.startswith("test_") and inspect.isfunction(f)]
+        self.assertTrue(cases, "함수식 케이스가 없다")
+        for name, fn in cases:
+            with self.subTest(case=name):
+                if inspect.iscoroutinefunction(fn):
+                    asyncio.run(fn())
+                else:
+                    fn()

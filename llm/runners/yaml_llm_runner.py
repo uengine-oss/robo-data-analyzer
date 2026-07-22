@@ -41,12 +41,10 @@ usage_metadata 동시 추출 + Pydantic 자동 파싱.
 """
 from __future__ import annotations
 
-import re
 import time
 from pathlib import Path
 from typing import Optional, TypeVar
 
-import yaml
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel
 
@@ -71,29 +69,33 @@ from llm.runners.invocation import _write_error_record
 
 def _resolve_usage_log_path() -> Path:
     """``ENV.log.dir/analysis.run/latest/usage.jsonl`` — Agent 미들웨어와 동일 경로."""
-    return SETTINGS.run_output.dir / "analysis" / "latest" / "usage.jsonl"
+    # logs/ 바로 아래 (2026-07-22 평탄화 — 계층 없음)
+    return SETTINGS.run_output.dir / "usage.jsonl"
 
 
 async def run_yaml_rule(
     prompts_dir: Path,
     rule_name: str,
     user_values: dict,
-    response_model: type[T],
+    response_model: type[T] | None,
     budget: Optional[CostBudget] = None,
     model_override: Optional[str] = None,
-) -> T:
-    """yaml 룰 로딩 + LLM 호출 → Pydantic 응답.
+) -> T | str:
+    """yaml 룰 로딩 + LLM 호출 → Pydantic 응답 (또는 평문 텍스트).
 
     Args:
         prompts_dir: ``strategy.prompts_dir`` (예: ``Path("llm/prompts/framework")``).
         rule_name: yaml 파일 이름 (확장자 X — "code_summary" 식).
         user_values: user_template 의 ``{placeholder}`` 치환 값.
-        response_model: 응답 Pydantic 클래스.
+        response_model: 응답 Pydantic 클래스. **None = 평문 텍스트 모드** — 스칼라 1개짜리
+            출력에 JSON 문법 강제를 걸면 약한 모델이 문법상 합법인 공백만 뽑는 폭주가
+            가능해서(run7 실측 3만 토큰), 그런 룰은 평문으로 받고 형식은 호출측
+            결정론 코드가 검증한다.
         budget: ``CostBudget`` — 호출 후 ``add_sync(cost)``. 임계 초과 시 raise.
         model_override: yaml 의 ``model`` 보다 우선. ``ROBO_LLM_MODEL_SMALL`` 등 전달 가능.
 
     Returns:
-        ``response_model`` 인스턴스.
+        ``response_model`` 인스턴스 (텍스트 모드는 응답 본문 ``str``).
     """
     rule = _load_rule(prompts_dir, rule_name)
 
@@ -110,7 +112,10 @@ async def run_yaml_rule(
     cfg = load_llm_config(SETTINGS.analysis_llm.config)
     llm = build_llm_client(model=model, max_tokens=rule.get("max_tokens"))
     # include_raw=True — Pydantic 결과 + usage_metadata 동시 획득
-    structured = llm.with_structured_output(response_model, include_raw=True)
+    runnable = (
+        llm if response_model is None
+        else llm.with_structured_output(response_model, include_raw=True)
+    )
 
     # 캐시 친화 필터 — 단순 LLM 호출에도 미들웨어와 동일 로직 적용
     messages = apply_cache_friendly_filters(
@@ -127,7 +132,7 @@ async def run_yaml_rule(
     start = time.monotonic()
     log_info("llm.call", "start", agent=f"rule:{rule_name}")
     try:
-        result = await structured.ainvoke(messages)
+        result = await runnable.ainvoke(messages)
     except Exception as e:  # noqa: BLE001 — silent 차단 목적
         elapsed_ms = int((time.monotonic() - start) * 1000)
         log_warning(
@@ -141,8 +146,11 @@ async def run_yaml_rule(
         raise
     latency_ms = int((time.monotonic() - start) * 1000)
 
-    raw_msg = result.get("raw")
-    parsed = result.get("parsed")
+    if response_model is None:
+        raw_msg, parsed = result, result.content
+    else:
+        raw_msg = result.get("raw")
+        parsed = result.get("parsed")
 
     if raw_msg is None:
         error = UnmeteredLlmCallError(
@@ -207,7 +215,7 @@ async def run_yaml_rule(
             "cost_usd": cost,
         })
 
-    # prompt + 응답 logs/llm_prompts/latest/<rule_name>.json 적재.
+    # prompt + 응답 logs/llm-prompts/<rule_name>.json 적재.
     # 같은 rule 호출이 한 .json 의 records 배열에 누적 (소스 라인 순 정렬).
     # 로깅 실패는 분석 자체 막지 X (graceful) — silent skip 금지, 사유 명시.
     try:

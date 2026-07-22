@@ -16,9 +16,10 @@ from pipeline.steps.step5_linking.link_tables.regex_table_linker import (
     _resolve_table,
 )
 from agents.contracts import DdlTransform
+import unittest
 
 
-_SKILL = _ROOT / "llm" / "skills" / "framework" / "shopmall-c-facade" / "SKILL.md"
+_SKILL = _ROOT / "agents" / "skills" / "framework" / "shopmall-c-facade" / "SKILL.md"
 
 
 def _patterns() -> dict[str, re.Pattern]:
@@ -82,10 +83,54 @@ def test_identifier_punctuation_is_preserved_and_as_is_is_exact() -> None:
     assert _resolve_table("order_item", lookup, transform) is None
 
 
+def test_entity_completeness_respects_pattern_consumed_tail():
+    """spec 079 회귀 — 2026-07-22 실측: ProFrame SQL_KEY(테이블명+``_<op><nnnn>`` 꼬리)
+    314/314 이 부분추출로 오탈락. 가드는 entity 그룹 끝이 아니라 **매치 전체의 끝**
+    기준으로 "이름이 이어지는가"를 판정해야 한다 (패턴이 소비한 꼬리는 계약의 일부).
+    """
+    tail_pattern = re.compile(
+        r'mpfmdbio\s*\(\s*"(?P<entity>[A-Za-z0-9_]+?)_(?P<op_token>[siud])\d{4}"'
+    )
+    ok = tail_pattern.search('rc = mpfmdbio("acct_ledger_s0004", &in);')
+    assert ok is not None and ok.group("entity") == "acct_ledger"
+    assert _entity_group_complete(ok.string, ok) is True    # 꼬리는 계약 — 통과
+
+    open_pattern = re.compile(
+        r'mpfmdbio\s*\(\s*"(?P<entity>[A-Za-z0-9_]+?)_(?P<op_token>[siud])\d{4}'
+    )
+    cut = open_pattern.search('rc = mpfmdbio("acct_ledger_s0004abc", &in);')
+    assert cut is not None
+    assert _entity_group_complete(cut.string, cut) is False  # 매치 뒤 이름 이어짐 — 진짜 잘림
+
+    bare = re.compile(r'get\("(?P<entity>[a-z]+)')
+    part = bare.search('get("stock_item")')
+    assert part is not None and part.group("entity") == "stock"
+    assert _entity_group_complete(part.string, part) is False  # 기존 반토막 보호 유지
+
+
 if __name__ == "__main__":
     test_adjacent_literals_are_matched_without_source_rewriting()
     test_multiple_patterns_preserve_multiple_tables()
     test_runtime_table_placeholder_is_not_captured_as_entity()
     test_prefix_alternation_is_rejected_as_partial_entity()
     test_identifier_punctuation_is_preserved_and_as_is_is_exact()
-    print("[OK] shopmall skill SQL patterns: 5/5 passed")
+    test_entity_completeness_respects_pattern_consumed_tail()
+    print("[OK] shopmall skill SQL patterns: 6/6 passed")
+
+
+# ── 스위트 편입 브리지 (2026-07-22 테스트 정리) ──────────────────────────
+# 함수식 케이스는 unittest discover 에 수집되지 않아 스위트에서 실행되지 않는
+# 일회성이었다. 아래 브리지가 전 케이스를 스위트 회귀로 편입한다 (재사용 보장).
+class ModuleCasesSuiteBridge(unittest.TestCase):
+    def test_module_cases(self):
+        import asyncio
+        import inspect
+        cases = [(n, f) for n, f in sorted(globals().items())
+                 if n.startswith("test_") and inspect.isfunction(f)]
+        self.assertTrue(cases, "함수식 케이스가 없다")
+        for name, fn in cases:
+            with self.subTest(case=name):
+                if inspect.iscoroutinefunction(fn):
+                    asyncio.run(fn())
+                else:
+                    fn()

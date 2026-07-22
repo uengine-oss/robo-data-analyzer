@@ -1,11 +1,11 @@
 """Run 1회 실행 어댑터 — rmtree latest + LangGraph workflow 실행 + 종료 처리.
 
 흐름:
-1. ``output/analysis/latest/`` + ``output/llm-prompts/latest/`` rmtree + 재생성.
+1. ``logs/`` rmtree + 재생성 — 로그·jsonl·llm-prompts 만 담는다 (계층 없음).
 2. ``Run`` 메타 생성 + Neo4j 인덱스 / 제약 보장.
 3. ``CostBudget`` + ``MemorySaver`` (Checkpointer) + ``PauseController`` 생성.
 4. Strategy 의 workflow 빌더 호출 → ``astream(stream_mode="updates")``.
-5. 산출물 4파일 (artifacts/) + ``usage_summary.json``.
+5. ``usage_summary.json`` 집계.
 
 **run 정책** — 매 ``/analyze`` 호출 = 독립 run (``run_id`` 가 유일 식별자). 진행은 NDJSON stream.
 
@@ -46,7 +46,6 @@ from shared.events.ndjson_event_stream import NDJSONStream
 from graph.neo4j_client import Neo4jClient
 from graph.schema.constraints import ensure_schema, wipe_graph
 from shared.files.cache import SourceFileCache
-from pipeline.execution.artifact_writer import dump_state_artifacts
 from pipeline.execution.langgraph_builder import build_langgraph_workflow
 from pipeline.execution.pause_controller import PauseController
 from pipeline.execution.run_registry import clear as clear_active_run
@@ -123,7 +122,6 @@ async def execute_run(
     try:
         _reset_run_output_root(run_output_root)
         run.run_dir.mkdir(parents=True, exist_ok=True)
-        (run.run_dir / "artifacts").mkdir(parents=True, exist_ok=True)
 
         # ── 파일 핸들러 attach (ROBO_RUNTIME_EVENT_FILE_ENABLED=true 일 때만) ──
         # analyzer.log (INFO+) + error.log (WARNING+) → tail -f 로 실시간 추적 가능.
@@ -207,13 +205,11 @@ async def execute_run(
                 # stopped 플래그가 켜진 채 빠져나온 예외 = 사용자 중단(RunStopped / 취소된
                 # in-flight 의 래핑). 그 외 예외는 진짜 실패 → 그대로 위로 전파.
                 if not pause.status()["isStopped"]:
-                    # LangGraph checkpointer에는 실패 직전까지 완료된 step state가 남아 있다.
-                    # 원래 pipeline 오류를 가리지 않는 best-effort 경로로 step1~6 산출물을
-                    # 먼저 보존한다. 특히 step8 외부 연동 실패가 수시간 분석을 지우지 않게 한다.
+                    # 실패해도 사용량 집계는 남긴다 (state artifact 덤프는 사용자 지시로 제거
+                    # — logs/ 는 로그·jsonl·llm-prompts 만 담는다. spec 079).
                     try:
-                        await _dump_checkpoint_artifacts(app, config, run)
                         _summarize_usage(run.run_dir)
-                        log_info("run", "failure_artifacts_dumped", run_dir=str(run.run_dir))
+                        log_info("run", "failure_usage_summarized", run_dir=str(run.run_dir))
                     except Exception as artifact_error:
                         log_error(
                             "run", "dump_failure_artifacts_failed", artifact_error,
@@ -227,23 +223,6 @@ async def execute_run(
                 log_info("run", "stopped", run_id=run.run_id)
 
             if not stopped:
-                # 최종 state = LangGraph 가 reducer(operator.add)까지 적용한 누적 state.
-                # ★ astream "updates" 델타를 dict.update 로 모으면 operator.add 키
-                #   (reads_writes_edges / call_sites 등)가 덮어써져 artifact 가 불완전해진다
-                #   — checkpointer 의 reduced state 를 단일 진실로 쓴다.
-                # artifacts/ 4파일 — 실패 시 명시 emit + 상위로 전파 (silent X)
-                try:
-                    await _dump_checkpoint_artifacts(app, config, run)
-                    log_info("run", "artifacts_dumped", run_dir=str(run.run_dir))
-                except Exception as e:
-                    log_error(
-                        "run",
-                        "dump_artifacts_failed",
-                        e,
-                        stream_emit=stream.emit if stream is not None else None,
-                        run_id=run.run_id,
-                    )
-                    raise
                 _summarize_usage(run.run_dir)
 
                 if stream is not None:
@@ -275,13 +254,6 @@ async def execute_run(
         if stream is not None:
             await stream.close()
     return run
-
-
-async def _dump_checkpoint_artifacts(app: Any, config: dict, run: AnalysisRun) -> dict:
-    """최신 reduced checkpoint state를 artifact에 보존하고 그 state를 반환한다."""
-    state = dict((await app.aget_state(config)).values)
-    dump_state_artifacts(run, state)
-    return state
 
 
 def _reset_run_output_root(run_output_root: Path) -> None:
@@ -318,8 +290,7 @@ def _reset_run_output_root(run_output_root: Path) -> None:
 
     root.mkdir(parents=True, exist_ok=True)
     marker.write_text(_RUN_OUTPUT_OWNER_MARKER_CONTENT, encoding="utf-8")
-    (root / "analysis" / "latest").mkdir(parents=True, exist_ok=True)
-    (root / "llm-prompts" / "latest").mkdir(parents=True, exist_ok=True)
+    (root / "llm-prompts").mkdir(parents=True, exist_ok=True)
 
 
 def _summarize_usage(run_dir: Path) -> None:

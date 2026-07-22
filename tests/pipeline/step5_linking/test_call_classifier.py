@@ -1,5 +1,6 @@
 from graph.schema.graph_nodes import CodeNode
 from pipeline.steps.step5_linking.link_calls.call_classifier import classify_call_sites
+import unittest
 
 
 def _fn(node_id: str, name: str, owner_id: str) -> CodeNode:
@@ -56,3 +57,21 @@ def test_direct_self_call_carries_explicit_recursive_intent() -> None:
     assert len(result.edges) == 1
     assert result.edges[0].caller_id == result.edges[0].callee_id
     assert result.edges[0].recursive is True
+
+
+# ── 스위트 편입 브리지 (2026-07-22 테스트 정리) ──────────────────────────
+# 함수식 케이스는 unittest discover 에 수집되지 않아 스위트에서 실행되지 않는
+# 일회성이었다. 아래 브리지가 전 케이스를 스위트 회귀로 편입한다 (재사용 보장).
+class ModuleCasesSuiteBridge(unittest.TestCase):
+    def test_module_cases(self):
+        import asyncio
+        import inspect
+        cases = [(n, f) for n, f in sorted(globals().items())
+                 if n.startswith("test_") and inspect.isfunction(f)]
+        self.assertTrue(cases, "함수식 케이스가 없다")
+        for name, fn in cases:
+            with self.subTest(case=name):
+                if inspect.iscoroutinefunction(fn):
+                    asyncio.run(fn())
+                else:
+                    fn()

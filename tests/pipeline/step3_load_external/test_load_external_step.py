@@ -90,7 +90,7 @@ class LoadExternalStepTest(unittest.IsolatedAsyncioTestCase):
             project_payloads = [
                 item
                 for query, items in neo.writes
-                if "MERGE (n:PROJECT_FILE" in query
+                if "SET n:PROJECT_FILE" in query
                 for item in items
             ]
             self.assertEqual(5, len(project_payloads))

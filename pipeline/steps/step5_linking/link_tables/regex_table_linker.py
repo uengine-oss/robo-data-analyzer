@@ -502,7 +502,7 @@ async def verify_table_patterns(
 
     ``ok`` 판정 = 매치 ≥ 1 · 엣지 ≥ 1 · op_token 인식률 ≥ 임계
     (``ROBO_AGENT_SCAN_REGEX_MIN_OP_RATIO``).
-    틀린 정규식 — entity 가 SQL_KEY 통째(``zngm_comm_cd_dtl_s0024``), op_token 이 C
+    틀린 정규식 — entity 가 SQL_KEY 통째(``<테이블명>_s0024`` 형태), op_token 이 C
     변수명 — 은 엣지 0 · token 인식 0 → ``ok=False`` 로 걸린다.
     """
     outcome = await RegexTableLinker().link(
@@ -628,9 +628,13 @@ def _entity_group_complete(text: str, match: re.Match) -> bool:
     def continues(ch: str) -> bool:
         return ch.isalnum() or ch in "_.$-"
 
+    # 후방 검사는 매치 전체의 끝 기준 — 패턴이 소비한 꼬리(SQL_KEY 의 ``_<op>\d{4}``)를
+    # entity 그룹 끝 기준으로 보면 부분 추출로 오판한다.
+    tail_pos = end if end == match.end() else match.end()
+
     return not (
         (start > 0 and continues(text[start - 1]))
-        or (end < len(text) and continues(text[end]))
+        or (tail_pos < len(text) and continues(text[tail_pos]))
     )
 
 

@@ -67,13 +67,21 @@ async def link_deterministic_step(state: dict, config: Optional[RunnableConfig] 
     await emit_edges(stream, outcome.edges)
     emit_message(stream, f"✅ 결정론 R/W 링킹 완료 — {len(outcome.edges)}건")
 
-    # 패턴은 있는데 R/W 엣지 0 — 정규식이 소스와 안 맞음 (조용한 실패 표면화).
+    # 패턴은 있는데 R/W 엣지 0 — 같은 증상이라도 처방이 다르므로 원인 3종을 가른다.
     if patterns and not outcome.edges:
+        if outcome.matched_sites == 0:
+            diagnosis = ("정규식이 소스의 어떤 호출과도 안 맞음 — "
+                         "step4 Scan 검증을 통과한 패턴인지 확인 필요")
+        elif outcome.partial_entities >= outcome.matched_sites:
+            diagnosis = ("매치는 전건 성공했으나 완전성 검사가 전건을 부분추출로 탈락 — "
+                         "패턴 구조(꼬리 소비형)와 검사 위치 충돌 의심")
+        else:
+            diagnosis = ("매치는 있으나 entity 가 DDL 테이블로 해소되지 않음 — "
+                         "DDL 누락 또는 ddl_transform 규칙 확인 필요")
         log_warning(
-            _STEP, "no_edges",
-            "table_access_patterns 가 있는데 R/W 엣지 0건 — 정규식이 소스와 안 맞음. "
-            "step4 Scan 검증을 통과한 패턴인지 확인 필요",
+            _STEP, "no_edges", diagnosis,
             patterns=len(patterns), matched_sites=outcome.matched_sites,
+            partial_entities=outcome.partial_entities,
         )
 
     log_info(

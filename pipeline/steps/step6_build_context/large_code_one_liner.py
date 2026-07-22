@@ -11,20 +11,16 @@ from __future__ import annotations
 
 from typing import Optional
 
-from pydantic import BaseModel, Field
-
 from graph.schema.graph_nodes import CodeNode
 from llm import LLM_PACKAGE_DIR
 from shared.config.settings import SETTINGS
 from llm.usage.cost_budget import BudgetExceededError, CostBudget
 from llm.configs.loader import load_llm_config
 from llm.runners.yaml_llm_runner import run_yaml_rule
-from shared.events.runtime_logger import log_error
+from shared.events.runtime_logger import log_error, log_warning
 
-
-class LargeCodeOneLiner(BaseModel):
-    """yaml 출력 Pydantic."""
-    one_liner: str = Field(..., max_length=120, description="≤ 60 자 권장, 최대 120 자")
+# 출력 계약: 한 문장, 최대 120자 (초과분은 압축 목적상 결정론 절단).
+_MAX_ONE_LINER_CHARS = 120
 
 
 # strategy 무관이라 ``llm/prompts/common/`` 에 yaml
@@ -56,7 +52,9 @@ async def compute_one_liner(
     small_model = load_llm_config(SETTINGS.analysis_llm.config).resolve_small_model()
 
     try:
-        result: LargeCodeOneLiner = await run_yaml_rule(
+        # 평문 텍스트 모드 — 스칼라 1개 출력에 JSON 문법 강제를 걸면 공백 폭주가
+        # 가능하다(run7 실측 3만 토큰). 형식(한 줄·길이)은 아래 결정론 코드가 집행.
+        raw = await run_yaml_rule(
             prompts_dir=_PROMPTS_COMMON,
             rule_name="large_code_one_liner",
             user_values={
@@ -64,11 +62,20 @@ async def compute_one_liner(
                 "signature": fn.signature,
                 "code_body": body_text,
             },
-            response_model=LargeCodeOneLiner,
+            response_model=None,
             budget=cost_budget,
             model_override=small_model,
         )
-        return result.one_liner
+        one_liner = " ".join(str(raw).split())    # 개행·연속 공백 → 한 줄 정규화
+        if not one_liner:
+            log_warning(
+                "pipeline.steps.step6_build_context.large_code_one_liner",
+                "empty_response",
+                "one_liner 응답이 비어 있음 — 본문 폴백 사용",
+                code_id=fn.id,
+            )
+            return None
+        return one_liner[:_MAX_ONE_LINER_CHARS]
     except BudgetExceededError:
         raise        # 회로 차단기 상위로 전파
     except Exception as e:

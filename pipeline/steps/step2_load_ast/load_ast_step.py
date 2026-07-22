@@ -135,6 +135,8 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
     call_sites, import_refs = [], []
     parsed_files = 0
     await pause.gate()
+    # 파일 순차 유지 — 제어 계약(정지 시 다음 파일을 읽지 않음)이 파일 단위 gate 를
+    # 요구한다. 이 단계의 시간 지배는 파싱이 아니라 Neo4j 업서트다.
     for json_path in sorted(ast_dir.rglob("*.json")):
         if not json_path.is_file():
             continue

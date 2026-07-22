@@ -10,6 +10,7 @@ robo 가 이미 만든 그래프(state 의 code_nodes / calls_edges / reads_writ
 - ``table_coupling``        : R/W 하는 distinct 테이블 수 (데이터 결합도)
 - ``god_flag``              : 거대 코드노드 후보 (LOC 큼 + fan_out 큼)
 - ``risk``                  : low / medium / high 종합 라벨
+- ``db_reach``              : DB 도달성 — R/W 보유 함수와 그 호출 조상 전부 (spec 079)
 
 ★ 본 로직(step1~7·DB 분석) 무수정 — state를 읽어 계산하고 Neo4j에 속성만 SET.
    embed_step 과 동일 패턴(읽기→배치 UNWIND SET). 새 노드/엣지/의존성 없음.
@@ -48,7 +49,7 @@ TABLE_COUPLING_THRESHOLD = 5   # 이만큼 많은 테이블을 만지면 데이�
 # 계산·리포트엔 쓰되 노드에 안 박는다. fan 은 CALLS 관계로 즉석 파생. 루틴 노드에만 SET.
 _SET_QUERY = f"""
 UNWIND $items AS item
-MATCH (node {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (node:ANALYZER_OWNED {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 SET node += item
 """
 
@@ -82,6 +83,8 @@ async def health_metrics_step(state: dict, config: Optional[RunnableConfig] = No
         ni = {"id": it["id"], "risk_level": it["risk"]}
         if it["in_cycle"]:
             ni["in_call_cycle"] = True
+        if it["db_reach"]:
+            ni["db_reach"] = True
         neo_items.append(ni)
 
     if neo is not None:
@@ -128,6 +131,22 @@ def _compute_metrics(
         if rw.source_id in ids:
             table_sets[rw.source_id].add(rw.target_id)
 
+    # DB 도달성 (spec 079) — 시드: R/W 엣지 보유 함수. internal 호출 역방향 BFS 로
+    # "실행하면 호출 사슬 어딘가에서 DB 에 도달한다"를 판정. 순환은 방문 집합이 흡수.
+    callers_of: dict[str, set[str]] = defaultdict(set)
+    for caller, callee in internal_edges:
+        callers_of[callee].add(caller)
+    db_reach: set[str] = set(table_sets)
+    frontier: list[str] = list(db_reach)
+    while frontier:
+        nxt: list[str] = []
+        for fid in frontier:
+            for caller in callers_of.get(fid, ()):
+                if caller not in db_reach:
+                    db_reach.add(caller)
+                    nxt.append(caller)
+        frontier = nxt
+
     items: list[dict] = []
     for f in code_nodes:
         fid = f.id
@@ -145,6 +164,7 @@ def _compute_metrics(
             "in_cycle": in_cycle,
             "table_coupling": table_coupling,
             "god_flag": god_flag,
+            "db_reach": fid in db_reach,
             "risk": _risk_label(loc, fan_in, fan_out, in_cycle, god_flag, table_coupling),
         })
     return items
@@ -162,7 +182,7 @@ def _risk_label(loc: int, fan_in: int, fan_out: int, in_cycle: bool,
 
 
 def _write_report(items: list[dict]) -> None:
-    """요약 리포트 → ``SETTINGS.run_output.dir/analysis/latest/health_report.json`` (graceful).
+    """요약 리포트 → ``SETTINGS.run_output.dir/health_report.json`` (graceful).
 
     저장만으론 안 보이므로 사람·UI 가 볼 요약 산출 (소비처 확보). 적재 실패는 분석 흐름
     막지 X — 사유 명시 후 skip.
@@ -177,6 +197,12 @@ def _write_report(items: list[dict]) -> None:
         },
         "in_cycle": sum(1 for it in items if it["in_cycle"]),
         "god_code_nodes": sum(1 for it in items if it["god_flag"]),
+        # DB 도달성 (spec 079) — direct: R/W 보유(table_coupling>0), indirect: 전파로만.
+        "db_reach": {
+            "direct": sum(1 for it in items if it["db_reach"] and it["table_coupling"] > 0),
+            "indirect": sum(1 for it in items if it["db_reach"] and it["table_coupling"] == 0),
+            "total": sum(1 for it in items if it["db_reach"]),
+        },
         # 위험 상위 — fan_in·loc 큰 순 (변경 파급·규모).
         "top_risky": sorted(
             high, key=lambda it: (it["fan_in"], it["loc"]), reverse=True,
@@ -189,7 +215,7 @@ def _write_report(items: list[dict]) -> None:
         },
     }
     try:
-        path = SETTINGS.run_output.dir / "analysis" / "latest" / "health_report.json"
+        path = SETTINGS.run_output.dir / "health_report.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         log_info(_STEP, "report", path=str(path))

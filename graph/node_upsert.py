@@ -18,8 +18,10 @@
 명시 SET 하며 ``coalesce`` 로 **DDL 1차 설명을 보존**해야 하기 때문 (``SET n += item`` 은
 덮어쓴다). 예외임을 여기와 그쪽 docstring 양쪽에 못박는다.
 
-향후: analyzer 소유 노드만 지우는 삭제(소유 마커 라벨)가 필요해지면 **이 파일 1줄**
-(``SET n:ANALYZED, n += item``)로 전 노드에 도장이 찍힌다 — 종전엔 13곳을 고쳐야 했다.
+★ **:ANALYZER_OWNED 마커 라벨**: 모든 analyzer 노드에 찍는다. 코드 노드 라벨은 열린 집합이라
+개별 인덱스를 못 걸므로, 이 공통 라벨의 id 유니크 제약(``constraints.py``)이 유일한
+인덱스 경로다 — 무라벨 ``MATCH {id}`` 는 AllNodesScan(엣지 1건당 전 노드 스캔)이 되어
+AST 적재 159초의 원인이었다 (run6 실측 + EXPLAIN 확인).
 """
 from __future__ import annotations
 
@@ -43,11 +45,16 @@ def join_notes(*parts: str) -> str:
 
 
 def merge_query(label: str) -> str:
-    """``:label`` 노드를 id 로 MERGE + 빈값 제외 속성 SET. 라벨은 통제값(주입 안전)."""
+    """id 로 MERGE + 빈값 제외 속성 SET. 라벨은 통제값(주입 안전).
+
+    MERGE 는 ``:ANALYZER_OWNED`` 유니크 제약 인덱스를 타고, 종류 라벨은 SET 으로 부여한다 —
+    id 가 전역 유일(step2 가드)이라 의미는 같고 열린 라벨 스캔만 사라진다.
+    """
     return f"""
 UNWIND $items AS item
-MERGE (n:{label} {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-SET n += item,
+MERGE (n:ANALYZER_OWNED {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+SET n:{label},
+    n += item,
     n.graph_owner = '{ANALYZER_GRAPH_OWNER}'
 RETURN count(n) AS created
 """

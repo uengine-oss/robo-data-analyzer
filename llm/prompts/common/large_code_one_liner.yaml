@@ -30,9 +30,9 @@ system: |
   - "여러 작업을 처리" 같은 광역 표현.
   - 함수명 / 변수명 박기.
 
-  ## 형식 강제
+  ## 형식
 
-  `LargeCodeOneLiner` Pydantic — `one_liner` 필드 1개.
+  출력은 요약 문장 하나뿐 — JSON·코드블록·따옴표·접두어·부연 설명 금지.
 
 user_template: |
   id: {id}
@@ -43,6 +43,9 @@ user_template: |
   {code_body}
   ```
 
-  ▸ 비즈니스 의미를 한 문장 (≤ 60자) 으로 압축 — `LargeCodeOneLiner` 출력.
+  ▸ 비즈니스 의미를 한 문장 (≤ 60자) 으로 압축.
+  ▸ 출력은 **요약 문장 하나뿐** — JSON·코드블록·따옴표·접두어("요약:" 등)·부연 설명 금지.
 
 model: <model_small>
+# 출력 계약이 한 문장(≤120자)이라 반복 폭주를 조기 차단 — 실패는 그대로 표면화 + 본문 폴백.
+max_tokens: 300

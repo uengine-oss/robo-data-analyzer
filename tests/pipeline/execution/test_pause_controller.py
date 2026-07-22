@@ -117,7 +117,9 @@ class PauseControllerContractTest(unittest.IsolatedAsyncioTestCase):
         ):
             source = (repository_root / relative_path).read_text(encoding="utf-8")
             with self.subTest(path=relative_path):
-                self.assertIn("await pause.cancel_and_wait(tasks)", source)
+                # 계약: 두 엔진 모두 공유 비동기 정리를 호출한다. 인자 표기는 엔진별
+                # 자료구조에 따름 (framework dataflow 는 pending dict — spec 079).
+                self.assertIn("await pause.cancel_and_wait(", source)
 
         framework_source = (
             repository_root / "pipeline/steps/step7_analyze_code/framework_per_node.py"

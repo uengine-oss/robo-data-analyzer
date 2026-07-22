@@ -42,7 +42,10 @@ reasoning_effort: none
 
 # SGLang 비표준 인자 — ChatOpenAI 의 extra_body 로 전달.
 # ``chat_template_kwargs.enable_thinking: false`` = qwen3.6 thinking mode 끄기 (reasoning none 효과).
-# ``top_k: 1`` = 매 토큰 가장 확률 높은 1개만 선택 (deterministic). presence_penalty 0 = 분석 작업엔 불필요.
+# ``top_k: 1`` = 매 토큰 가장 확률 높은 1개만 선택 (deterministic).
+# presence_penalty 는 0 유지 — 0.15 실험(run9)에서 반복 루프를 못 막고(용어사전 3만
+# 토큰 내용 루프 실증) 산출물만 미세 변동(examples 1780→1757). 루프 피해는 룰별
+# max_tokens 상한(실측 기반)이 초 단위로 고정한다.
 # OpenAI 본점 / Anthropic 호출 시 yaml 에서 이 블록 통째 제거 (hosted API 거부 400).
 extra_body:
   chat_template_kwargs:

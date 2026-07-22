@@ -83,7 +83,7 @@ async def run_scan_agent(
     Args:
         project_root: 분석 대상 디렉토리.
         scanner_input: 사전 수집 단서 (extensions_count / manifest_content / scanner_categories).
-        run_dir: ``output/analysis/latest/`` 경로.
+        run_dir: run 로그 디렉토리 (``logs/``).
         cost_budget: run 1회의 ``CostBudget``.
         code_nodes: step2(load_ast)가 파싱한 CodeNode 목록.
         tables: step1(parse_ddl)의 DDL 테이블 — 정규식 검증 기준.

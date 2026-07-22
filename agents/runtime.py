@@ -136,7 +136,7 @@ async def run_structured_agent(
         response_format: 출력 강제 Pydantic 모델 — submit 도구로 wrap 된다.
         user_message: user 메시지 전문.
         max_calls: 이 invoke 의 LLM 호출 한도 (회로 차단기).
-        run_dir: ``output/analysis/latest/`` 경로.
+        run_dir: run 로그 디렉토리 (``logs/``).
         cost_budget: run 1회의 ``CostBudget``.
         stream_emit: 프론트 NDJSON 스트림 emit (옵션).
 
@@ -144,7 +144,9 @@ async def run_structured_agent(
         ``response_format`` 인스턴스. agent 가 submit 도구를 호출하지 않고 끝나면
         ``ValueError`` (silent 실패 금지 — 표면화).
     """
-    llm_model = build_llm_client()
+    # 에이전트 응답 상한 = 실측 정상 최대(scan 1.4k·residual 3.6k)의 여유배수 —
+    # 반복 루프 피해를 초 단위로 고정 (run10 실측: 무상한 에이전트 콜 1건이 3만 토큰·207초).
+    llm_model = build_llm_client(max_tokens=8000)
     middleware = build_standard_stack(
         agent_name=agent_name,
         max_calls=max_calls,

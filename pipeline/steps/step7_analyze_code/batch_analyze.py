@@ -26,11 +26,10 @@ from pipeline.steps.step7_analyze_code.batch_planner import (
 )
 from pipeline.steps.step7_analyze_code.batch_prompt_values import _build_batch_values
 from pipeline.steps.step7_analyze_code.call_cycles import find_call_cycles
-from pipeline.steps.step7_analyze_code.range_body import ancestor_context, body_for, skeleton_body
+from pipeline.steps.step7_analyze_code.range_body import skeleton_body
 from pipeline.steps.step7_analyze_code.rw_table_filter import constrain_tables_to_rw
-from pipeline.steps.step7_analyze_code.table_prompt_context import dump_table_refs
 from pipeline.steps.step5_linking.link_calls.call_linker import routine_call_pairs
-from pipeline.models.analysis_context import AnalysisContext, dump_referenced_symbols
+from pipeline.models.analysis_context import AnalysisContext
 from pipeline.models.code_analysis_output import (
     BatchRulesItem,
     BatchRulesOutput,
@@ -154,18 +153,40 @@ async def run_dbms_batch_analysis(
     em_acc = ExampleMappingResult()
     analyzed = failed = batch_count = 0
 
-    for round_idx, round_ids in enumerate(rounds, start=1):
+    # Dataflow 스케줄 — 배치 의존(배치 밖 callee) 완료 즉시 투입 (framework 엔진과 동일).
+    # 실패 배치의 노드도 의존 해소로 간주(라운드 방식과 동일 의미).
+    all_batches: list = []
+    batch_nodes: dict[int, set[str]] = {}
+    for round_ids in rounds:
         if not round_ids:
             continue
-        batches = plan_batches(round_ids, eff_parent, start_of, token_of, SETTINGS.analysis_pipeline.batch_max_tokens)
-        batch_count += len(batches)
+        for b in plan_batches(round_ids, eff_parent, start_of, token_of,
+                              SETTINGS.analysis_pipeline.batch_max_tokens):
+            all_batches.append(b)
+            batch_nodes[id(b)] = set(b.node_ids)   # Batch 계약: node_ids tuple[str, ...]
+    batch_count += len(all_batches)
 
-        # 미완료 배치가 빌 때까지 투입 — 일시정지로 취소된 배치만 재투입(Neo4j MERGE 라 안전).
-        remaining = list(batches)
-        while remaining:
+    node_deps: dict[str, set[str]] = {fid: set() for fid in analysis_ids}
+    for caller, callee in edges:
+        if (caller in node_deps and callee in node_deps and caller != callee
+                and cycles.get(caller, caller) != cycles.get(callee, callee)):
+            node_deps[caller].add(callee)
+    batch_deps: dict[int, set[str]] = {}
+    for b in all_batches:
+        own = batch_nodes[id(b)]
+        batch_deps[id(b)] = set().union(*(node_deps.get(n, set()) for n in own)) - own
+
+    done_nodes: set[str] = set()
+    scheduled: set[int] = set()
+    pending: dict[asyncio.Task, Any] = {}
+    remaining_batches = {id(b): b for b in all_batches}
+    try:
+        while remaining_batches:
             await pause.gate()
-            tasks = [
-                asyncio.ensure_future(
+            ready = [b for bid, b in remaining_batches.items()
+                     if bid not in scheduled and batch_deps[bid] <= done_nodes]
+            for b in ready:
+                task = asyncio.ensure_future(
                     _run_batch_with_ref(
                         b,
                         _analyze_batch_guarded(
@@ -175,30 +196,39 @@ async def run_dbms_batch_analysis(
                         ),
                     )
                 )
-                for b in remaining
-            ]
-            pause.set_inflight(tasks)
-            done_batches: set[int] = set()
-            try:
-                for finished in asyncio.as_completed(tasks):
-                    batch, result = await finished
-                    if isinstance(result, asyncio.CancelledError):
-                        continue                   # 일시정지로 취소 → remaining 에 남겨 재투입
-                    done_batches.add(id(batch))
-                    if isinstance(result, BudgetExceededError):
-                        raise result               # 회로 차단기 즉시 전파
-                    if isinstance(result, BaseException):
-                        failed += 1
-                        log_error(_STEP, "batch", result, round=round_idx)
-                        continue
-                    for fn in result:              # 배치가 분석한 CodeNode 들
-                        em = await _persist_and_emit_code(fn, neo, stream)
-                        _accumulate_em(em_acc, em)
-                        analyzed += 1
-            finally:
-                # pause/stop/예산 차단/상위 취소 모두 coroutine finally까지 수거한 뒤 진행.
-                await pause.cancel_and_wait(tasks)
-            remaining = [b for b in remaining if id(b) not in done_batches]
+                pending[task] = b
+                scheduled.add(id(b))
+            if not pending:
+                raise RuntimeError(
+                    f"dataflow 교착 — 미완 배치 {len(remaining_batches)}개가 준비되지 않음 "
+                    "(의존 그래프 결함 의심)"
+                )
+            pause.set_inflight(list(pending))
+            finished, _ = await asyncio.wait(set(pending), return_when=asyncio.FIRST_COMPLETED)
+            for task in finished:
+                b = pending.pop(task)
+                if task.cancelled():
+                    scheduled.discard(id(b))       # 일시정지 취소 → 재개 시 재투입
+                    continue
+                _bref, result = task.result()
+                if isinstance(result, asyncio.CancelledError):
+                    scheduled.discard(id(b))
+                    continue
+                remaining_batches.pop(id(b), None)
+                done_nodes |= batch_nodes[id(b)]   # 실패여도 의존 해소 (기존 라운드 의미)
+                if isinstance(result, BudgetExceededError):
+                    raise result                   # 회로 차단기 즉시 전파
+                if isinstance(result, BaseException):
+                    failed += 1
+                    log_error(_STEP, "batch", result)
+                    continue
+                for fn in result:                  # 배치가 분석한 CodeNode 들
+                    em = await _persist_and_emit_code(fn, neo, stream)
+                    _accumulate_em(em_acc, em)
+                    analyzed += 1
+    finally:
+        # pause/stop/예산 차단/상위 취소 모두 coroutine finally까지 수거한 뒤 진행.
+        await pause.cancel_and_wait(list(pending))
 
     # 불변식 (spec 045 FR-008): ``failed`` 는 **배치** 단위라 노드 집계와 단위가 다르다.
     # 분석 대상 노드 중 결과를 못 받은 노드는 summary 없이 남아 검색 코퍼스에서 빠진다

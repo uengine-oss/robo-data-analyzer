@@ -27,8 +27,8 @@ class CallRelationshipInvariantError(ValueError):
 # internal — 콜리 정의 노드가 이미 존재 → MATCH 로 연결 (없으면 자연 제외).
 INTERNAL_QUERY = f"""
 UNWIND $items AS item
-MATCH (caller {{id: item.caller_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-MATCH (callee {{id: item.callee_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (caller:ANALYZER_OWNED {{id: item.caller_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (callee:ANALYZER_OWNED {{id: item.callee_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 MERGE (caller)-[r:{CALLS}]->(callee)
 SET r.scope = item.scope,
     r.recursive = item.recursive
@@ -41,19 +41,21 @@ SET r.scope = item.scope,
 #   (분석 범위 밖) — 실제 파싱한 그릇만 정체대로(FILE/CLASS), 외부 stub 은 중립 합성 라벨.
 EXTERNAL_QUERY = f"""
 UNWIND $items AS item
-MATCH (caller {{id: item.caller_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (caller:ANALYZER_OWNED {{id: item.caller_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 MERGE (callee:FUNCTION:EXTERNAL {{id: item.callee_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-  SET callee.name = coalesce(callee.name, item.callee_name),
+  SET callee:ANALYZER_OWNED,
+      callee.name = coalesce(callee.name, item.callee_name),
       callee.type = coalesce(callee.type, 'FUNCTION'),
       callee.graph_owner = '{ANALYZER_GRAPH_OWNER}'
 MERGE (m:MODULE:EXTERNAL {{id: item.callee_module, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-  SET m.name = coalesce(m.name, item.callee_name),
+  SET m:ANALYZER_OWNED,
+      m.name = coalesce(m.name, item.callee_name),
       m.type = coalesce(m.type, 'MODULE'),
       m.graph_owner = '{ANALYZER_GRAPH_OWNER}'
 MERGE (m)-[:{HAS_MEMBER}]->(callee)
 FOREACH (_ IN CASE WHEN item.callee_package <> '' THEN [1] ELSE [] END |
   MERGE (p:PACKAGE {{id: item.callee_package, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-  SET p.graph_owner = '{ANALYZER_GRAPH_OWNER}'
+  SET p:ANALYZER_OWNED, p.graph_owner = '{ANALYZER_GRAPH_OWNER}'
   MERGE (m)-[:{BELONGS_TO}]->(p)
 )
 MERGE (caller)-[r:{CALLS}]->(callee)

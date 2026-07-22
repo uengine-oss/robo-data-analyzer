@@ -19,3 +19,6 @@ user_template: |
   {members}
 
   위 묶음의 부품 이름(name) · 한 줄 설명(description) · 역할(stereotype) 을 정하라.
+
+# 출력 상한 = 실측 정상 최대의 여유배수 — 반복 루프 피해를 초 단위로 고정 (정상 호출 영향 0).
+max_tokens: 500

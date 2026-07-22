@@ -32,7 +32,7 @@ def append_usage_record(
     """``usage.jsonl`` 에 1 LLM 호출 record append.
 
     Args:
-        usage_log_path: 적재 경로 (예: ``output/analysis/latest/usage.jsonl``).
+        usage_log_path: 적재 경로 (예: ``logs/usage.jsonl``).
         agent_name: "scan" / "linking_subagent" / "rule:<rule_name>" 등.
         record: ``track_usage()`` 결과.
         cost_usd: ``compute_cost(record)`` 결과.

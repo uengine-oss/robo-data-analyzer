@@ -38,7 +38,8 @@ _FILE_LOCK = threading.Lock()
 
 
 def _prompts_dir() -> Path:
-    return SETTINGS.run_output.dir / "llm-prompts" / "latest"
+    # logs/ 바로 아래 (사용자 지시 2026-07-22: 계층 없이 로그·jsonl·llm-prompts 만).
+    return SETTINGS.run_output.dir / "llm-prompts"
 
 
 # ── yaml rule 단발 호출 적재 ──────────────────────────────────

@@ -9,6 +9,7 @@ from pipeline.models.code_analysis_output import (
 from pipeline.steps.step7_analyze_code.rule_quality import (
     check_rule_quality, deterministic_dedupe,
 )
+import unittest
 
 
 def _ex(given, when="대상 판정", then="제외", tables=None):
@@ -77,3 +78,21 @@ def test_deterministic_dedupe_removes_exact_dups():
     assert len(out.rules[0].examples) == 2
     # dedupe 후 재검사 = 정상
     assert not check_rule_quality(out).is_anomaly
+
+
+# ── 스위트 편입 브리지 (2026-07-22 테스트 정리) ──────────────────────────
+# 함수식 케이스는 unittest discover 에 수집되지 않아 스위트에서 실행되지 않는
+# 일회성이었다. 아래 브리지가 전 케이스를 스위트 회귀로 편입한다 (재사용 보장).
+class ModuleCasesSuiteBridge(unittest.TestCase):
+    def test_module_cases(self):
+        import asyncio
+        import inspect
+        cases = [(n, f) for n, f in sorted(globals().items())
+                 if n.startswith("test_") and inspect.isfunction(f)]
+        self.assertTrue(cases, "함수식 케이스가 없다")
+        for name, fn in cases:
+            with self.subTest(case=name):
+                if inspect.iscoroutinefunction(fn):
+                    asyncio.run(fn())
+                else:
+                    fn()

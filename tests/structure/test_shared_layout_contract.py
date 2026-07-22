@@ -36,7 +36,7 @@ class SharedLayoutContractTest(unittest.TestCase):
 
     def test_generated_output_default_and_marker_are_renamed(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(Path("output"), AnalysisRunOutputSettings().dir)
+            self.assertEqual(Path("logs"), AnalysisRunOutputSettings().dir)
         executor = (REPO / "pipeline/execution/run_executor.py").read_text(encoding="utf-8")
         self.assertIn('.robo-data-analyzer-output', executor)
 

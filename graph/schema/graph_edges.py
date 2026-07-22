@@ -185,7 +185,7 @@ class StatementNext:
 class References:
     """CodeNode → Variable / Constant (본문이 참조하는 변수·상수). source=function, target=var/const.
 
-    MATCH 는 모든 노드 공통 ``id`` 로만 (라벨 무관 — 변수/상수 라벨이 antlr type 열린집합).
+    MATCH 는 ``:ANALYZER_OWNED`` + ``id`` (변수/상수 종류 라벨이 열린집합이라 마커로 시크).
     정체성 = (source_id, target_id). evidence_line 은 부속.
     """
     source_id: str
@@ -201,7 +201,7 @@ class InitBy:
     (``static char x [LEN +1]``) · 상수 식 (``#define B (A+1)``) 등 모두 포함.
     Python 쪽이 source 라인을 직접 읽어 토큰 추출하므로 antlr 가 못 준 의존도 잡힌다.
 
-    MATCH 는 모든 노드 공통 ``id`` 로만 (라벨 무관).
+    MATCH 는 ``:ANALYZER_OWNED`` + ``id`` (종류 라벨 무관).
     """
     from_id: str                              # 출발: Variable 또는 Constant id
     source_id: str

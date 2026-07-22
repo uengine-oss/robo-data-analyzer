@@ -21,7 +21,7 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pipeline.steps.step8_post_processing.build_glossary_step import (
-    _accept, _build_contexts, _collect_terms, _union_groups, _UPSERT_QUERY,
+    _accept, _alias_candidates, _build_contexts, _collect_terms, _union_groups, _UPSERT_QUERY,
 )
 from pipeline.strategies import PIPELINES
 from pipeline.models.code_analysis_output import GlossarySynthesisOutput
@@ -32,7 +32,7 @@ from graph.schema.domain_terms import load_domain_terms
 from graph.ownership import ANALYZER_GRAPH_OWNER
 
 _NODES_QUERY = f"""
-MATCH (n {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (n:ANALYZER_OWNED {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 WHERE n.domain_terms_json IS NOT NULL AND n.domain_terms_json <> ''
 RETURN n.id AS id, n.name AS name, coalesce(n.file_path,'') AS file_path,
        coalesce(n.start_line,0) AS start_line,
@@ -40,7 +40,7 @@ RETURN n.id AS id, n.name AS name, coalesce(n.file_path,'') AS file_path,
        n.domain_terms_json AS domain_terms_json
 """
 _MODULES_QUERY = f"""
-MATCH (m {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (m:ANALYZER_OWNED {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 WHERE (m:MODULE OR m:FILE) AND m.summary IS NOT NULL
 RETURN m.id AS id, coalesce(m.file_path,'') AS file_path,
        coalesce(m.start_line,0) AS start_line, coalesce(m.end_line,0) AS end_line,
@@ -69,8 +69,8 @@ async def _run(strategy_name: str) -> None:
         print(f"[{db}] domain_terms 조각 0 — 재종합 불가(재분석 필요)")
         return
     contexts = _build_contexts(terms, nodes, modules)
-    catalog = {k: v["canonical"] for k, v in terms.items()}
-    term_catalog = "\n".join(f"- {v['canonical']}" for v in terms.values())
+    # 별칭 후보 — step 과 같은 결정론 추림 (닫힌 선택, spec 079)
+    candidates_of = {k: _alias_candidates(k, terms) for k in terms}
     prompts_dir = Path(PIPELINES[strategy_name].prompts_dir)
     semaphore = asyncio.Semaphore(SETTINGS.analysis_pipeline.max_concurrency)
     started = time.monotonic()
@@ -80,7 +80,8 @@ async def _run(strategy_name: str) -> None:
         async with semaphore:
             return key, await run_yaml_rule(
                 prompts_dir=prompts_dir, rule_name="glossary_synthesis",
-                user_values={"term_catalog": term_catalog, "term": slot["canonical"],
+                user_values={"alias_candidates": ("\n".join(f"- {c}" for c in candidates_of[key]) or "(없음)"),
+                             "term": slot["canonical"],
                              "meanings": " / ".join(slot["meanings"]), "context": contexts[key]},
                 response_model=GlossarySynthesisOutput, budget=None,
             )
@@ -92,7 +93,7 @@ async def _run(strategy_name: str) -> None:
         if isinstance(result, BaseException):
             failed += 1
             continue
-        res = _accept(result[1], contexts[key], catalog, key)
+        res = _accept(result[1], contexts[key], {c.lower() for c in candidates_of[key]}, key)
         if res is None:
             rejected += 1
             continue

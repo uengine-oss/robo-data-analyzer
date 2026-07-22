@@ -3,13 +3,14 @@
 흐름 (수집·조립·확정은 결정론, 판단만 LLM — 헌법 I):
 1. 수집 — 노드별 ``CodeNode.domain_terms`` dict를 표제어 단위로 병합하며
    출처 노드를 기록한다.
-2. 문맥 조립 — 표제어마다 [전체 표제어 목록(모든 콜 공유 접두 — KV 캐시)] + [출처 노드들의
+2. 문맥 조립 — 표제어마다 [별칭 후보(결정론 추림 — 닫힌 선택)] + [출처 노드들의
    summary·search_text] + [그 노드들의 모듈 요약]을 묶는다. 출처 노드 상한 초과분은 컷하되
    로그로 남긴다(조용한 절단 금지 — 헌법 IV).
-3. AI 종합 — 용어당 1콜 병렬(``glossary_synthesis`` rule): 뜻 종합 + 같은 실체 표기 변종
-   지목(aliases). 실패 = 그 용어 원본 유지(개선 전용, 사전을 악화시킬 수 없음).
-4. 수용(결정론) — evidence 가 입력 문맥의 실제 부분열이 아니면 종합 기각, aliases 는 전체
-   표제어 목록에 실재하는 표기만 인정(LLM 창작 원천 차단).
+3. AI 종합 — 용어당 1콜 병렬(``glossary_synthesis`` rule): 뜻 종합 + 별칭 후보 중
+   같은 실체 표기 선택(aliases). 전체 목록 열린 나열은 반복 폭주를 유발해 폐기
+   (run9 실측). 실패 = 그 용어 원본 유지(개선 전용, 사전을 악화시킬 수 없음).
+4. 수용(결정론) — evidence 가 입력 문맥의 실제 부분열이 아니면 종합 기각, aliases 는
+   별칭 후보에 실재하는 표기만 인정(LLM 창작 원천 차단).
 5. 그룹 확정(결정론 union-find) — 대표 = 최다 표본 표제어, 나머지는 colloquial 로. 검색기
    호환 스키마(terms_json: canonical/colloquial/meaning) 그대로 ``:GLOSSARY`` 저장.
 """
@@ -46,7 +47,8 @@ MAX_CTX_NODES = 6     # 종합 문맥에 넣을 출처 노드 상한 (초과분 
 _UPSERT_QUERY = f"""
 UNWIND $items AS item
 MERGE (g:GLOSSARY {{id: "glossary", graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-SET g.terms_json = item.terms_json,
+SET g:ANALYZER_OWNED,
+    g.terms_json = item.terms_json,
     g.n_terms = item.n_terms
 """
 
@@ -111,16 +113,42 @@ def _build_contexts(
 # ── 4. 수용 (결정론 — LLM 창작 차단) ──────────────────────
 
 _WS = re.compile(r"\s+")
+_FLAT = re.compile(r"[\s_\-]+")
 
 
 def _norm(s: str) -> str:
     return _WS.sub(" ", s or "").strip().lower()
 
 
+def _flat(s: str) -> str:
+    """표기 변종 비교용 정규화 — 공백·하이픈·언더스코어 제거 + 소문자."""
+    return _FLAT.sub("", (s or "").lower())
+
+
+def _alias_candidates(self_key: str, terms: dict[str, dict], cap: int = 30) -> list[str]:
+    """별칭 후보(결정론) — 정규화 후 포함 관계인 표기만, 근접 순 상위 cap.
+
+    LLM에게 전체 표제어 대신 이 후보만 준다 — 별칭 출력이 후보의 부분집합이 되어
+    열린 나열 폭주(run9 실측: 유사 표기 5종 267회 반복·3만 토큰)가 구조적으로 불가능.
+    """
+    base = _flat(terms[self_key]["canonical"])
+    hits: list[tuple[int, str]] = []
+    for k, v in terms.items():
+        if k == self_key:
+            continue
+        other = _flat(v["canonical"])
+        if min(len(base), len(other)) < 3:
+            continue                       # 초단문 표기는 아무 데나 포함됨 — 후보 제외
+        if base in other or other in base:
+            hits.append((abs(len(other) - len(base)), v["canonical"]))
+    hits.sort()
+    return [c for _, c in hits[:cap]]
+
+
 def _accept(
-    out: GlossarySynthesisOutput, context: str, catalog: dict[str, str], self_key: str
+    out: GlossarySynthesisOutput, context: str, candidates: set[str], self_key: str
 ) -> dict | None:
-    """수용 규칙: evidence ⊂ 문맥 실문장, aliases ∈ 표제어 목록(자기 제외). 위반은 기각/정화."""
+    """수용 규칙: evidence ⊂ 문맥 실문장, aliases ∈ 별칭 후보(자기 제외). 위반은 기각/정화."""
     if not (out.meaning or "").strip():
         return None
     if _norm(out.evidence) and _norm(out.evidence) not in _norm(context):
@@ -128,8 +156,8 @@ def _accept(
     aliases = []
     for a in (out.aliases or "").split(","):
         a = a.strip()
-        if a.lower() in catalog and a.lower() != self_key:
-            aliases.append(a)              # 목록 실재 표기만 인정(그 항목만 정화)
+        if a.lower() in candidates and a.lower() != self_key:
+            aliases.append(a)              # 후보 실재 표기만 인정(그 항목만 정화)
     return {"meaning": out.meaning.strip(), "aliases": aliases}
 
 
@@ -207,8 +235,8 @@ async def build_glossary_step(state: dict, config: Optional[RunnableConfig] = No
         return {}
 
     contexts = _build_contexts(terms, code_nodes, modules)
-    catalog = {k: v["canonical"] for k, v in terms.items()}      # lower → 원표기
-    term_catalog = "\n".join(f"- {v['canonical']}" for v in terms.values())
+    # 용어별 별칭 후보 — 결정론 추림. LLM 은 이 안에서 고르기만 한다 (닫힌 선택).
+    candidates_of = {k: _alias_candidates(k, terms) for k in terms}
 
     prompts_dir = Path(strategy.prompts_dir)
     semaphore = cfg.get("llm_semaphore") or asyncio.Semaphore(SETTINGS.analysis_pipeline.max_concurrency)
@@ -220,7 +248,9 @@ async def build_glossary_step(state: dict, config: Optional[RunnableConfig] = No
                 prompts_dir=prompts_dir,
                 rule_name="glossary_synthesis",
                 user_values={
-                    "term_catalog": term_catalog,
+                    "alias_candidates": (
+                        "\n".join(f"- {c}" for c in candidates_of[key]) or "(없음)"
+                    ),
                     "term": slot["canonical"],
                     "meanings": " / ".join(slot["meanings"]),
                     "context": contexts[key],
@@ -248,7 +278,7 @@ async def build_glossary_step(state: dict, config: Optional[RunnableConfig] = No
             log_error(_STEP, "synthesis_call", result, term=terms[key]["canonical"])
             continue
         _, out = result
-        res = _accept(out, contexts[key], catalog, key)
+        res = _accept(out, contexts[key], {c.lower() for c in candidates_of[key]}, key)
         if res is None:
             rejected += 1                  # 근거 불충분 → 원본 유지 (기각 자체는 정상 경로)
             continue

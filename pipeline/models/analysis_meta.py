@@ -54,5 +54,5 @@ class AnalysisRun:
             run_id=f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:12]}",
             codebase=codebase,
             started_at=now,
-            run_dir=run_output_root / "analysis" / "latest",
+            run_dir=run_output_root,
         )

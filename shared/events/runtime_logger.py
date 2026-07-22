@@ -23,9 +23,9 @@
     from shared.events.runtime_logger import log_error, log_warning
 
     try:
-        await dump_state_artifacts(run, state)
+        await upsert_nodes(neo, nodes)
     except Exception as e:
-        log_error("workflow.artifact_writer", "dump_state_artifacts", e,
+        log_error("graph.node_upsert", "upsert_nodes", e,
                   stream_emit=stream.emit if stream else None,
                   run_id=run.run_id)
         raise   # 절대원칙 #3 — silent return 금지. 호출자가 결정.

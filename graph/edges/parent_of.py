@@ -11,8 +11,8 @@ from graph.schema.rel_types import PARENT_OF
 
 MERGE_QUERY = f"""
 UNWIND $items AS item
-MATCH (parent {{id: item.parent_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-MATCH (child {{id: item.child_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (parent:ANALYZER_OWNED {{id: item.parent_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (child:ANALYZER_OWNED {{id: item.child_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 MERGE (parent)-[:{PARENT_OF}]->(child)
 """
 

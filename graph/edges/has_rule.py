@@ -13,7 +13,7 @@ from graph.schema.rel_types import HAS_RULE
 
 _UPSERT_QUERY = f"""
 UNWIND $items AS item
-MATCH (node {{id: item.source_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (node:ANALYZER_OWNED {{id: item.source_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 MATCH (r:RULE {{id: item.target_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 MERGE (node)-[rel:{HAS_RULE}]->(r)
 REMOVE rel.coupled_domains

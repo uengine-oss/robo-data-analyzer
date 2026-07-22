@@ -7,6 +7,7 @@ Files without a span adapter stay honestly ``unanalyzed``; parse failures are
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from pathlib import Path
 import time
@@ -43,10 +44,7 @@ from pipeline.steps.step3_load_external.parsers.span_config import (
 )
 from pipeline.steps.step3_load_external.parsers.span_markdown import parse_markdown_spans
 from pipeline.steps.step3_load_external.parsers.span_xml import parse_xml_spans
-from pipeline.steps.step3_load_external.span_verifier import (
-    SpanVerificationError,
-    verify_spans,
-)
+from pipeline.steps.step3_load_external.span_verifier import verify_spans
 from shared.events.processing_events import step_processing_scope, track_processing
 from shared.events.runtime_logger import log_info, log_warning
 from shared.files.cache import SourceFileCache
@@ -118,14 +116,16 @@ async def load_external_step(state: dict, config: Optional[RunnableConfig] = Non
         if pause is not None:
             await pause.gate()
 
-    with step_processing_scope(_STEP, stream):
-        for item in inventory:
-            await gate()
+    # 파일별 독립 처리 — gather 가 inventory 순서를 보존해 결정론 유지. 8 = 추출 IO 상한.
+    _sem = asyncio.Semaphore(8)
+
+    async def _process_one(item) -> tuple:
+        await gate()
+        async with _sem:
             async with track_processing("ProjectFile", item.relpath):
                 file_node = _project_node(project, item)
                 if item.status in ("failed", "unanalyzed") or item.category == "source":
-                    project_files.append(file_node)
-                    continue
+                    return file_node, (), ()
 
                 file_id = file_node.id
                 try:
@@ -137,40 +137,40 @@ async def load_external_step(state: dict, config: Optional[RunnableConfig] = Non
                         ]
                         nodes, edges = build_derived_chunks(
                             file_id=file_id, relpath=item.relpath, segments=segments)
-                        external_chunks.extend(nodes)
-                        structural_edges.extend(edges)
-                        file_node = replace(file_node, status="analyzed", reason="")
-                    else:
-                        adapter = _SPAN_ADAPTERS.get(_adapter_suffix(item))
-                        if adapter is None:
-                            file_node = replace(
-                                file_node, status="unanalyzed", reason="no_span_adapter")
-                        else:
-                            decoded = read_text(item.path, source_cache)
-                            verified = verify_spans(decoded.text, adapter(decoded.text))
-                            nodes, edges = build_source_chunks(
-                                file_id=file_id,
-                                relpath=item.relpath,
-                                source=decoded.text,
-                                verified=verified,
-                            )
-                            external_chunks.extend(nodes)
-                            structural_edges.extend(edges)
-                            status = "analyzed" if nodes else "unanalyzed"
-                            reason = "" if nodes else "no_semantic_chunks"
-                            file_node = replace(file_node, status=status, reason=reason)
+                        return replace(file_node, status="analyzed", reason=""), nodes, edges
+                    adapter = _SPAN_ADAPTERS.get(_adapter_suffix(item))
+                    if adapter is None:
+                        return (replace(file_node, status="unanalyzed", reason="no_span_adapter"),
+                                (), ())
+                    decoded = read_text(item.path, source_cache)
+                    verified = verify_spans(decoded.text, adapter(decoded.text))
+                    nodes, edges = build_source_chunks(
+                        file_id=file_id,
+                        relpath=item.relpath,
+                        source=decoded.text,
+                        verified=verified,
+                    )
+                    status = "analyzed" if nodes else "unanalyzed"
+                    reason = "" if nodes else "no_semantic_chunks"
+                    return replace(file_node, status=status, reason=reason), nodes, edges
                 except OptionalDependencyMissing:
-                    file_node = replace(
-                        file_node, status="unanalyzed", reason="optional_dependency_missing")
+                    return (replace(file_node, status="unanalyzed",
+                                    reason="optional_dependency_missing"), (), ())
                 except Exception as error:  # AdapterParseError·SpanVerificationError 포함 fail-closed
-                    file_node = replace(file_node, status="failed", reason="parse_failed")
                     log_warning(
                         _STEP,
                         "parse_failed",
                         f"외부 파일 파싱 실패: {type(error).__name__}",
                         file_path=item.relpath,
                     )
-                project_files.append(file_node)
+                    return replace(file_node, status="failed", reason="parse_failed"), (), ()
+
+    with step_processing_scope(_STEP, stream):
+        results = await asyncio.gather(*[_process_one(item) for item in inventory])
+        for file_node, nodes, edges in results:
+            project_files.append(file_node)
+            external_chunks.extend(nodes)
+            structural_edges.extend(edges)
 
     await gate()
     if neo is not None:

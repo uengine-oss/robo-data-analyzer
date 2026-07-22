@@ -28,7 +28,7 @@ from graph.schema.domain_terms import dump_domain_terms
 # enrich_table_description_step 이 Table/Column.analyzed_description 으로 분배(제자리, spec 020).
 SET_SUMMARY_QUERY = f"""
 UNWIND $items AS item
-MATCH (node {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (node:ANALYZER_OWNED {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 REMOVE node.domain_terms, node.domain_terms_json
 SET node += item
 """

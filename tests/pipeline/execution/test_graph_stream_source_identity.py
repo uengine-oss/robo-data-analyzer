@@ -2,6 +2,7 @@ import asyncio
 
 from graph.schema.graph_nodes import CodeNode, Module
 from pipeline.execution.graph_delta_stream import emit_nodes
+import unittest
 
 
 class _Stream:
@@ -56,3 +57,21 @@ if __name__ == "__main__":
     test_file_node_event_keeps_source_identity()
     test_code_node_event_keeps_owner_without_internal_analysis_material()
     print("[OK] graph stream source identity")
+
+
+# ── 스위트 편입 브리지 (2026-07-22 테스트 정리) ──────────────────────────
+# 함수식 케이스는 unittest discover 에 수집되지 않아 스위트에서 실행되지 않는
+# 일회성이었다. 아래 브리지가 전 케이스를 스위트 회귀로 편입한다 (재사용 보장).
+class ModuleCasesSuiteBridge(unittest.TestCase):
+    def test_module_cases(self):
+        import asyncio
+        import inspect
+        cases = [(n, f) for n, f in sorted(globals().items())
+                 if n.startswith("test_") and inspect.isfunction(f)]
+        self.assertTrue(cases, "함수식 케이스가 없다")
+        for name, fn in cases:
+            with self.subTest(case=name):
+                if inspect.iscoroutinefunction(fn):
+                    asyncio.run(fn())
+                else:
+                    fn()

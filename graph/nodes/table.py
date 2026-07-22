@@ -19,7 +19,8 @@ from graph.node_upsert import nonempty
 MERGE_QUERY = f"""
 UNWIND $items AS item
 MERGE (t:TABLE {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-SET t.db = item.db,
+SET t:ANALYZER_OWNED,
+    t.db = item.db,
     t.schema = item.schema,
     t.name = item.name,
     t.description = coalesce(t.description, item.description),

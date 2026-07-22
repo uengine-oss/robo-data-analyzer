@@ -64,7 +64,7 @@ def build_standard_stack(
     Args:
         agent_name: ``"scan"`` / ``"linking_subagent"`` 등 — 로그 키 + 스트림 이벤트 키.
         max_calls: 이 Agent 의 LLM 호출 한도.
-        run_dir: ``output/analysis/latest/`` 경로.
+        run_dir: run 로그 디렉토리 (``logs/``).
         cost_budget: run 1회의 ``CostBudget``.
         llm_model: ``SummarizationMiddleware`` 가 컨텍스트 요약에 사용할 LLM.
         stream_emit: 프론트 NDJSON 스트림 emit 함수.
