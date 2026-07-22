@@ -11,6 +11,7 @@ from pipeline.steps.step4_scan_project.external_skills import (
     ExternalExtractionRule,
     ExternalSkill,
     ExternalSkillValidationError,
+    _effective_timeout,
     apply_validated_external_skill,
     load_external_skills,
     persist_external_skill,
@@ -71,6 +72,11 @@ class ExternalSkillContractTest(unittest.TestCase):
             self.assertTrue(skill_matches_file(_skill(), ".cfgx", "prefix CFG[x]"))
             self.assertFalse(skill_matches_file(_skill(), ".java", "CFG[x]"))
             self.assertEqual([], list(root.glob("**/*.tmp")))
+
+    def test_default_timeout_scales_with_text_size_and_is_capped(self) -> None:
+        self.assertAlmostEqual(0.25, _effective_timeout(0))
+        self.assertLess(_effective_timeout(21_269), _effective_timeout(5_000_000))
+        self.assertEqual(5.0, _effective_timeout(10**9))
 
     def test_regex_timeout_leaves_no_worker(self) -> None:
         before = {thread.ident for thread in threading.enumerate()}

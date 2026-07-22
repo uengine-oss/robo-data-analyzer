@@ -113,6 +113,18 @@ class ExternalSkillValidationError(ValueError):
     pass
 
 
+def _effective_timeout(text_length: int) -> float:
+    """Size-aware default regex timeout (wall-clock).
+
+    고정 50ms 는 두 가지 실측 문제를 냈다: ① MB 급 실물 파일은 선형 패턴도 초과,
+    ② 로컬 LLM 이 같은 머신 CPU 를 점유하면 프로세스 선점만으로 수십 ms 가 튄다
+    (동일 skill 이 검증은 통과하고 적용에서 죽는 비결정 거부). 선형 스캔 여유
+    (≈1MB/s)+고정 여유로 두되, 상한 5초는 파국적 백트래킹(초과 시간)을 여전히
+    걸러낸다. 호출자가 timeout_seconds 를 명시하면 그 값이 그대로 쓰인다.
+    """
+    return min(5.0, 0.25 + text_length * 1e-6)
+
+
 def _compiled_rule(rule: ExternalExtractionRule):
     for unsafe in _UNSAFE:
         if unsafe.search(rule.pattern):
@@ -132,13 +144,14 @@ def _apply_rule(
     rule: ExternalExtractionRule,
     text: str,
     *,
-    timeout_seconds: float,
+    timeout_seconds: float | None,
     max_matches: int,
 ) -> list[ExternalRuleMatch]:
     compiled = _compiled_rule(rule)
+    timeout = timeout_seconds if timeout_seconds is not None else _effective_timeout(len(text))
     output: list[ExternalRuleMatch] = []
     try:
-        for match in compiled.finditer(text, timeout=timeout_seconds):
+        for match in compiled.finditer(text, timeout=timeout):
             key = (match.group(rule.key_group) or "").strip()
             if not key:
                 raise ExternalSkillValidationError(f"rule {rule.name} produced an empty key")
@@ -163,7 +176,7 @@ def probe_extraction_rule(
     key_group: str,
     text: str,
     *,
-    timeout_seconds: float = 0.05,
+    timeout_seconds: float | None = None,
     max_matches: int = 1000,
 ) -> list[ExternalRuleMatch]:
     """Run one candidate rule against one text with the production engine.
@@ -189,7 +202,7 @@ def validate_external_skill(
     positive_samples: list[str],
     *,
     negative_samples: list[str] | None = None,
-    timeout_seconds: float = 0.05,
+    timeout_seconds: float | None = None,
     max_matches: int = 1000,
 ) -> ValidatedExternalSkill:
     """Validate compile/safety/timeout/positive/negative/overfit contracts."""
@@ -217,7 +230,7 @@ def apply_validated_external_skill(
     validated: ValidatedExternalSkill,
     text: str,
     *,
-    timeout_seconds: float = 0.05,
+    timeout_seconds: float | None = None,
     max_matches: int = 1000,
 ) -> list[ExternalRuleMatch]:
     if not validated.is_validated or validated.fingerprint != _fingerprint(validated.skill):
