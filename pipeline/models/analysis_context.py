@@ -54,31 +54,29 @@ class ReferencedSymbolContext:
 
 @dataclass(frozen=True)
 class ExternalEvidenceContext:
-    """One exact graph-linked external anchor, bounded only after hash verification."""
+    """One REFER_TO-linked external chunk, included whole or not at all (spec 078)."""
 
     id: str
     file_path: str
-    key: str
-    kind: str
+    matched_key: str
+    semantic_kind: str
+    provenance: str
     text: str
     start_line: int
     end_line: int
     content_hash: str
-    full_len: int
-    truncated: bool = False
 
     def as_prompt_dict(self) -> dict:
         return {
             "id": self.id,
             "file_path": self.file_path,
-            "key": self.key,
-            "kind": self.kind,
+            "matched_key": self.matched_key,
+            "semantic_kind": self.semantic_kind,
+            "provenance": self.provenance,
             "text": self.text,
             "start_line": self.start_line,
             "end_line": self.end_line,
             "content_hash": self.content_hash,
-            "full_len": self.full_len,
-            "truncated": self.truncated,
         }
 
 

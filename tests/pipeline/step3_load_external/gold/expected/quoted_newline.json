@@ -1,0 +1,16 @@
+{
+  "format": "csv",
+  "fail_closed": false,
+  "chunks": [
+    {
+      "text": "ORDER1,\"line1\nline2\"\n",
+      "keys": ["ORDER1"],
+      "semantic_kind": "row"
+    },
+    {
+      "text": "ORDER2,simple\n",
+      "keys": ["ORDER2"],
+      "semantic_kind": "row"
+    }
+  ]
+}

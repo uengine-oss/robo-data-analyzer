@@ -39,10 +39,7 @@ CONSTRAINTS: list[str] = [
     "FOR (q:QUESTION) REQUIRE q.id IS UNIQUE",
     *[
         f"CREATE CONSTRAINT uniq_{label.lower()} IF NOT EXISTS FOR (n:{label}) REQUIRE n.id IS UNIQUE"
-        for label in (
-            "PROJECT_FILE", "SQL_STATEMENT", "CONFIG_SECTION", "ARTIFACT_CHUNK", "CHUNK",
-            "DOCUMENT", "DOC_SECTION", "DOC_CHUNK", "UNRESOLVED_REF", "CANDIDATE_LINK",
-        )
+        for label in ("PROJECT_FILE", "EXTERNAL_CHUNK")
     ],
     # 컴포넌트는 합성 노드(:COMPONENT)가 없으므로 제약 불필요 — 멤버십은 component_id 속성.
 ]
@@ -55,10 +52,14 @@ INDEXES: list[str] = [
 # 무소유 레거시를 자동 migration할 수 있는 Analyzer 고유 라벨만 열거한다. Architect의 ``UI``처럼
 # 대문자 라벨도 존재하므로 "대문자면 Analyzer"라는 포괄 규칙은 금지한다. 열린 집합 코드 라벨은
 # Analyzer 원문 좌표 3종(file_path/start_line/end_line)이 모두 있을 때만 분류한다.
+# 뒤쪽 외부 라벨 10종은 spec 075 시절 산출물 — 새 계약(spec 078)은 PROJECT_FILE·
+# EXTERNAL_CHUNK 만 생산하지만, 옛 run 이 남긴 무소유 데이터를 owner-scoped wipe 로
+# 지울 수 있도록 legacy 데이터 라벨로만 유지한다 (active producer/consumer 아님).
 LEGACY_ANALYZER_STABLE_LABELS: tuple[str, ...] = (
     "COLUMN", "EMBED_META", "EXAMPLE", "GLOSSARY", "PACKAGE",
     "QUESTION", "RULE", "SCHEMA", "TABLE",
-    "PROJECT_FILE", "SQL_STATEMENT", "CONFIG_SECTION", "ARTIFACT_CHUNK", "CHUNK",
+    "PROJECT_FILE", "EXTERNAL_CHUNK",
+    "SQL_STATEMENT", "CONFIG_SECTION", "ARTIFACT_CHUNK", "CHUNK",
     "DOCUMENT", "DOC_SECTION", "DOC_CHUNK", "UNRESOLVED_REF", "CANDIDATE_LINK",
 )
 

@@ -18,7 +18,6 @@ DELETE=데이터만) 를 견딘다. 임베딩 실패는 raise(헌법 IV — 벡�
 from __future__ import annotations
 
 import asyncio
-import math
 import time
 from dataclasses import replace
 from typing import Optional
@@ -37,12 +36,7 @@ from llm import embedder
 from shared.events.runtime_logger import log_info, log_warning
 from shared.events.processing_events import emit_processing_event, step_processing_scope
 from graph.neo4j_client import Neo4jClient
-from graph.nodes.external import upsert_external_nodes
 from graph.ownership import ANALYZER_GRAPH_OWNER
-from graph.schema.graph_edges import Mentions
-from graph.schema.graph_nodes import CandidateLink, DocumentNode
-from graph.schema.node_ids import candidate_link_id
-from pipeline.execution.graph_delta_stream import emit_nodes
 from pipeline.execution.step_config import step_config
 
 
@@ -52,10 +46,6 @@ _STEP = "step8.embed"
 _PROGRESS_BATCH = 500
 # 인덱스 ONLINE 대기 상한(초). 검색은 분석 완료 후에만 일어나므로 준비 대기는 run 안에서 끝난다.
 _AWAIT_INDEX_TIMEOUT = 300
-_DOCUMENT_CANDIDATE_THRESHOLD = 0.82
-_DOCUMENT_CANDIDATES_PER_CHUNK = 3
-_DOCUMENT_EMBED_BATCH = 256
-_MAX_DOCUMENT_CANDIDATES = 1000
 
 
 async def embed_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
@@ -83,27 +73,11 @@ async def embed_step(state: dict, config: Optional[RunnableConfig] = None) -> di
         material = await neo.run_read_query(FETCH_MATERIAL)
         code_updates = await _embed_code_material(material, stream)
 
-        exact_pairs = {
-            (edge.source_id, edge.target_id)
-            for edge in (state.get("external_edges") or [])
-            if isinstance(edge, Mentions)
-        }
-        candidate_links = await asyncio.to_thread(
-            _build_document_candidates,
-            state.get("document_nodes") or [],
-            material,
-            code_updates,
-            excluded_pairs=exact_pairs,
-        )
-
         # Table/Column — description 기반(현행), 임베더만 원격 1024d.
         table_updates, column_updates = await asyncio.to_thread(_build_table_column_embeddings, state)
 
     if code_updates:
         await neo.run_batch_unwind(_embedded_code_query(), code_updates)
-    if candidate_links:
-        await upsert_external_nodes(neo, candidate_links)
-        await emit_nodes(stream, candidate_links)
     for label, items in (("TABLE", table_updates), ("COLUMN", column_updates)):
         if items:
             await neo.run_batch_unwind(_embedding_query(label, "id"), items)
@@ -118,7 +92,6 @@ async def embed_step(state: dict, config: Optional[RunnableConfig] = None) -> di
         _STEP, "done",
         code_embedded=len(code_updates),
         code_material=len(material),
-        document_candidates=len(candidate_links),
         table_embedded=len(table_updates),
         column_embedded=len(column_updates),
         elapsed_sec=f"{time.monotonic() - started:.2f}",
@@ -127,72 +100,7 @@ async def embed_step(state: dict, config: Optional[RunnableConfig] = None) -> di
         "tables": updated_tables,
         "columns": updated_columns,
         "code_nodes": updated_code_nodes,
-        "candidate_links": candidate_links,
     }
-
-
-def _cosine(left: list[float], right: list[float]) -> float:
-    if len(left) != len(right) or not left:
-        return 0.0
-    dot = sum(a * b for a, b in zip(left, right))
-    left_norm = math.sqrt(sum(value * value for value in left))
-    right_norm = math.sqrt(sum(value * value for value in right))
-    if not left_norm or not right_norm:
-        return 0.0
-    return max(0.0, min(1.0, dot / (left_norm * right_norm)))
-
-
-def _build_document_candidates(
-    document_nodes: list[DocumentNode],
-    material: list[dict],
-    code_updates: list[dict],
-    *,
-    threshold: float = _DOCUMENT_CANDIDATE_THRESHOLD,
-    max_per_chunk: int = _DOCUMENT_CANDIDATES_PER_CHUNK,
-    max_candidates: int = _MAX_DOCUMENT_CANDIDATES,
-    excluded_pairs: set[tuple[str, str]] | None = None,
-) -> list[CandidateLink]:
-    """Create review-only semantic candidates inside the existing embed owner."""
-    if not 0.0 <= threshold <= 1.0 or max_per_chunk <= 0 or max_candidates <= 0:
-        raise ValueError("document candidate bounds are invalid")
-    documents = sorted(
-        (node for node in document_nodes if node.label == "DOC_CHUNK" and node.text.strip()),
-        key=lambda node: (node.file_path, node.order, node.id),
-    )
-    vectors_by_code = {item["id"]: list(item["vector"]) for item in code_updates}
-    code_ids = [row["id"] for row in material if row.get("id") in vectors_by_code]
-    if not documents or not code_ids:
-        return []
-    model = embedder.fingerprint()
-    excluded = excluded_pairs or set()
-    result: list[CandidateLink] = []
-    for start in range(0, len(documents), _DOCUMENT_EMBED_BATCH):
-        batch = documents[start:start + _DOCUMENT_EMBED_BATCH]
-        document_vectors = embedder.encode_texts([node.text for node in batch])
-        for document, vector in zip(batch, document_vectors):
-            ranked = sorted(
-                (
-                    (_cosine(list(vector), vectors_by_code[code_id]), code_id)
-                    for code_id in code_ids
-                    if (document.id, code_id) not in excluded
-                ),
-                key=lambda item: (-item[0], item[1]),
-            )
-            for score, code_id in ranked[:max_per_chunk]:
-                if score < threshold:
-                    continue
-                result.append(CandidateLink(
-                    id=candidate_link_id(document.id, code_id, model),
-                    name=f"{document.name} -> {code_id}",
-                    source_id=document.id,
-                    target_id=code_id,
-                    score=score,
-                    model=model,
-                    reason="document/code semantic similarity; review required",
-                ))
-                if len(result) >= max_candidates:
-                    return result
-    return result
 
 
 # ── 코드노드 (그래프 재료 → 강화텍스트) ────────────────────────

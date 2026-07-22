@@ -33,8 +33,6 @@ _FIXED_NODE_LABEL: dict[type, str] = {
     gn.Example: "EXAMPLE",
     gn.Question: "QUESTION",
     gn.ProjectFile: "PROJECT_FILE",
-    gn.UnresolvedRef: "UNRESOLVED_REF",
-    gn.CandidateLink: "CANDIDATE_LINK",
 }
 
 # 프론트 표시에 쓰는 속성만 emit (caption·트리 라벨). 빈값은 nonempty가 제거.
@@ -42,7 +40,7 @@ _DISPLAY_PROP_KEYS = (
     "name", "logical_name", "signature", "summary", "stereotype",
     "file_path", "start_line", "end_line", "owner_id", "dtype",
     "statement", "given", "when", "then", "text", "reason",
-    "key", "kind", "title", "status", "category", "order", "part_index", "score", "model",
+    "keys", "semantic_kind", "provenance", "status", "category",
 )
 
 # 관계 dataclass → (rel_type, from 필드, to 필드). ReadsWrites는 relation 필드가 동적 → 별도.
@@ -59,13 +57,8 @@ _EDGE_SPEC: dict[type, tuple[str, str, str]] = {
     ge.HasExample: (rt.HAS_EXAMPLE, "source_id", "target_id"),
     ge.HasQuestion: (rt.HAS_QUESTION, "source_id", "target_id"),
     ge.AffectsTable: (rt.AFFECTS_TABLE, "source_id", "target_id"),
-    ge.CallsSql: (rt.CALLS_SQL, "source_id", "target_id"),
-    ge.UsesConfig: (rt.USES_CONFIG, "source_id", "target_id"),
     ge.ReferTo: (rt.REFER_TO, "source_id", "target_id"),
-    ge.Mentions: (rt.MENTIONS, "source_id", "target_id"),
     ge.HasChunk: (rt.HAS_CHUNK, "source_id", "target_id"),
-    ge.HasPart: (rt.HAS_PART, "source_id", "target_id"),
-    ge.HasSection: (rt.HAS_SECTION, "source_id", "target_id"),
 }
 
 
@@ -122,28 +115,13 @@ def _edge_wire(edge) -> Optional[tuple[str, str, str, dict]]:
         props = {"evidence_line": edge.evidence_line}
     elif type(edge) is ge.AffectsTable:
         props = {"op": edge.op}
-    elif type(edge) in (ge.CallsSql, ge.UsesConfig):
-        props = {
-            "evidence_file": edge.evidence_file,
-            "evidence_line": edge.evidence_line,
-            "via_const": edge.via_const,
-        }
     elif type(edge) is ge.ReferTo:
         props = {
+            "matched_key": edge.matched_key,
             "evidence_file": edge.evidence_file,
             "evidence_line": edge.evidence_line,
-            "matched_fqn": edge.matched_fqn,
+            "via_symbol": edge.via_symbol,
         }
-    elif type(edge) is ge.Mentions:
-        props = {
-            "matched_text": edge.matched_text,
-            "evidence_file": edge.evidence_file,
-            "evidence_line": edge.evidence_line,
-        }
-    elif type(edge) is ge.HasPart:
-        props = {"part_index": edge.part_index}
-    elif type(edge) is ge.HasSection:
-        props = {"order": edge.order}
     else:
         props = {}
     return (

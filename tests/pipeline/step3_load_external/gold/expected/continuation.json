@@ -1,0 +1,21 @@
+{
+  "format": "properties",
+  "fail_closed": false,
+  "chunks": [
+    {
+      "text": "greeting=Hello \\\nWorld\n",
+      "keys": ["greeting"],
+      "semantic_kind": "record"
+    },
+    {
+      "text": "path.key=C\\:\\\\tmp\n",
+      "keys": ["path.key"],
+      "semantic_kind": "record"
+    },
+    {
+      "text": "empty=\n",
+      "keys": ["empty"],
+      "semantic_kind": "record"
+    }
+  ]
+}

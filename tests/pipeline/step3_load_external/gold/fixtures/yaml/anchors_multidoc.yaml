@@ -1,0 +1,7 @@
+defaults: &base
+  retries: 3
+service:
+  <<: *base
+  name: orders
+---
+other: 1

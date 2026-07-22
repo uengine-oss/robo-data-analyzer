@@ -170,10 +170,7 @@ _CATEGORY: dict[str, str] = {
     # external — step3 inventory/parse structure + step5 facts/candidates
     "project_files":            "external",
     "external_chunks":          "external",
-    "document_nodes":           "external",
     "external_edges":           "external",
-    "unresolved_refs":          "external",
-    "candidate_links":          "external",
 
     # linking — step5 결과
     "reads_writes_edges":       "linking",

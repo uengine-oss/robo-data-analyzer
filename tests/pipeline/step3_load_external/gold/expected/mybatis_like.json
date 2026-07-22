@@ -1,0 +1,16 @@
+{
+  "format": "xml",
+  "fail_closed": false,
+  "chunks": [
+    {
+      "text": "<select id=\"getOrderDetail\" resultType=\"Order\">\n    SELECT * FROM orders\n\n    <where><if test=\"id != null\">id = #{id}</if></where>\n  </select>",
+      "keys": ["OrderMapper.getOrderDetail", "getOrderDetail"],
+      "semantic_kind": "xml_element"
+    },
+    {
+      "text": "<insert id=\"insertOrder\">\n    INSERT INTO orders (id) VALUES (#{id})\n  </insert>",
+      "keys": ["OrderMapper.insertOrder", "insertOrder"],
+      "semantic_kind": "xml_element"
+    }
+  ]
+}

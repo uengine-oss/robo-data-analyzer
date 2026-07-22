@@ -320,11 +320,15 @@ REFERENCES / INIT_BY 결정론 식별자 매칭.
 `NEXT`(DBMS 구문 실행 흐름) · `REFERENCES` · `INIT_BY` + state `call_sites`(raw — step5 분류) · `import_refs`.
 **실패 정책**: AST 디렉토리 없으면 명시 `FileNotFoundError` (silent skip 금지).
 
-### Step 3 — External file loading
+### Step 3 — External file loading (spec 078)
 
-프로젝트 inventory에서 SQL/XML·설정·artifact·문서를 안전하게 분류하고, `PROJECT_FILE`과
-bounded chunk/document 구조로 정규화한다. source/DDL/AST의 기존 책임은 침범하지 않으며
-확정할 수 없는 파일과 키는 `UNRESOLVED_REF`로 보존한다. 두 strategy가 공유하는 결정론 단계다.
+프로젝트 inventory의 비코드 파일을 형식별 span 어댑터(XML/YAML/JSON/JSONL/MD/properties/
+INI/CSV — 순수 Python, in-process)로 **완전한 의미 단위 청크**로 나눈다. 모든 source_span
+청크는 `text == decoded_source[char_start:char_end]` 불변식을 verifier가 강제하며,
+그래프는 `PROJECT_FILE ─HAS_CHUNK→ EXTERNAL_CHUNK`만 생산한다. 파싱 실패·미지원 형식은
+청크 없이 `failed`/`unanalyzed` + 사유로 정직하게 남는다(별도 unresolved 노드 없음).
+PDF/Office/HWP 변환 산출물은 `derived_document` provenance로 구분 저장된다.
+두 strategy가 공유하는 결정론 단계다.
 
 ### Step 4 — `scan_codebase_step` (Framework only, LLM Agent 1 회)
 

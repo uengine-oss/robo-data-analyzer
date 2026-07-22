@@ -74,7 +74,8 @@ class ScanExternalStepTest(unittest.IsolatedAsyncioTestCase):
             root = Path(temp) / "source"
             skills = Path(temp) / "skills"
             root.mkdir()
-            (root / "settings.cfgx").write_text("ORDER.API=/orders\n", encoding="utf-8")
+            source = "ORDER.API=/orders\n"
+            (root / "settings.cfgx").write_text(source, encoding="utf-8", newline="\n")
             persist_external_skill(_skill(), skills)
             invoke = AsyncMock()
 
@@ -90,18 +91,21 @@ class ScanExternalStepTest(unittest.IsolatedAsyncioTestCase):
             invoke.assert_not_awaited()
             self.assertEqual("analyzed", result["project_files"][0].status)
             self.assertEqual("custom", result["project_files"][0].category)
-            self.assertEqual(["ORDER.API"], [chunk.key for chunk in result["external_chunks"]])
+            chunk = result["external_chunks"][0]
+            self.assertEqual(("ORDER.API",), chunk.keys)
+            # 청크는 원문 슬라이스여야 한다 (재직렬화 금지).
+            self.assertEqual(source[chunk.char_start:chunk.char_end], chunk.text)
+            self.assertEqual("agent_segment", chunk.semantic_kind)
             self.assertIsInstance(result["external_edges"][0], HasChunk)
-            self.assertEqual([], result["unresolved_refs"])
 
-    async def test_first_consensus_is_persisted_then_applied(self) -> None:
+    async def test_new_skill_requires_held_out_pass_then_is_persisted(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "source"
             skills = Path(temp) / "skills"
             root.mkdir()
-            text = "ORDER.API=/orders\n"
-            (root / "settings.cfgx").write_text(text, encoding="utf-8")
-            accepted = validate_external_skill(_skill(), [text])
+            (root / "settings.cfgx").write_text("ORDER.API=/orders\n", encoding="utf-8")
+            (root / "other.cfgx").write_text("STOCK.API=/stocks\n", encoding="utf-8")
+            accepted = validate_external_skill(_skill(), ["ORDER.API=/orders\n"])
             invoke = AsyncMock(return_value=accepted)
 
             with (
@@ -109,21 +113,29 @@ class ScanExternalStepTest(unittest.IsolatedAsyncioTestCase):
                 patch("pipeline.steps.step4_scan_project.scan_external_step.run_external_agent", invoke),
             ):
                 result = await scan_external_step(
-                    {"project_files": [_project_file()], "external_chunks": []},
+                    {
+                        "project_files": [
+                            _project_file("other.cfgx"), _project_file("settings.cfgx"),
+                        ],
+                        "external_chunks": [],
+                    },
                     _config(root),
                 )
 
             invoke.assert_awaited_once()
+            # 제안에는 held-out 1개를 제외한 train 샘플만 전달된다.
+            self.assertEqual(1, len(invoke.await_args.kwargs["samples"]))
             self.assertTrue((skills / _skill().name / "SKILL.md").is_file())
-            self.assertEqual("ORDER.API", result["external_chunks"][0].key)
+            all_keys = {key for chunk in result["external_chunks"] for key in chunk.keys}
+            self.assertEqual({"ORDER.API", "STOCK.API"}, all_keys)
 
-    async def test_agent_rejection_is_an_explicit_unresolved_ref(self) -> None:
+    async def test_single_file_without_held_out_stays_unanalyzed(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "source"
             skills = Path(temp) / "skills"
             root.mkdir()
-            (root / "settings.cfgx").write_text("not understood\n", encoding="utf-8")
-            invoke = AsyncMock(side_effect=ExternalAgentRejected("no reusable consensus"))
+            (root / "settings.cfgx").write_text("ORDER.API=/orders\n", encoding="utf-8")
+            invoke = AsyncMock()
 
             with (
                 patch("pipeline.steps.step4_scan_project.scan_external_step.EXTERNAL_SKILLS_DIR", skills),
@@ -134,9 +146,37 @@ class ScanExternalStepTest(unittest.IsolatedAsyncioTestCase):
                     _config(root),
                 )
 
+            invoke.assert_not_awaited()
             self.assertEqual([], result["external_chunks"])
-            self.assertEqual("pattern_rejected", result["unresolved_refs"][0].reason)
-            self.assertIn("no reusable consensus", result["unresolved_refs"][0].detail)
+            self.assertEqual("unanalyzed", result["project_files"][0].status)
+            self.assertEqual("no_held_out_evidence", result["project_files"][0].reason)
+
+    async def test_agent_rejection_keeps_files_honestly_unanalyzed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "source"
+            skills = Path(temp) / "skills"
+            root.mkdir()
+            (root / "settings.cfgx").write_text("not understood\n", encoding="utf-8")
+            (root / "other.cfgx").write_text("also opaque\n", encoding="utf-8")
+            invoke = AsyncMock(side_effect=ExternalAgentRejected("no reusable consensus"))
+
+            with (
+                patch("pipeline.steps.step4_scan_project.scan_external_step.EXTERNAL_SKILLS_DIR", skills),
+                patch("pipeline.steps.step4_scan_project.scan_external_step.run_external_agent", invoke),
+            ):
+                result = await scan_external_step(
+                    {
+                        "project_files": [
+                            _project_file("settings.cfgx"), _project_file("other.cfgx"),
+                        ],
+                        "external_chunks": [],
+                    },
+                    _config(root),
+                )
+
+            self.assertEqual([], result["external_chunks"])
+            for file in result["project_files"]:
+                self.assertEqual(("unanalyzed", "pattern_rejected"), (file.status, file.reason))
 
     def test_catalogs_and_strategy_positions_are_isolated(self) -> None:
         framework = build_skill_catalog(FRAMEWORK_SKILLS_DIR)

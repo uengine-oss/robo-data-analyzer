@@ -1,0 +1,11 @@
+{
+  "format": "xml",
+  "fail_closed": false,
+  "chunks": [
+    {
+      "text": "<session>\n      <ejb-name>LoanFacade</ejb-name>\n      <ejb-class>com.loan.LoanFacadeBean</ejb-class>\n    </session>",
+      "keys": ["LoanFacade"],
+      "semantic_kind": "xml_element"
+    }
+  ]
+}

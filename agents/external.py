@@ -48,7 +48,7 @@ def _user_message(extension: str, samples: list[str], feedback: str) -> str:
 
 def _result_signature(validated: ValidatedExternalSkill, samples: list[str]) -> tuple:
     return tuple(
-        tuple(sorted((match.key, match.value, match.line) for match in apply_validated_external_skill(validated, sample)))
+        tuple(sorted((match.key, match.start, match.end) for match in apply_validated_external_skill(validated, sample)))
         for sample in samples
     )
 

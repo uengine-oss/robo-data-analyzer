@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="euc-kr"?>
+<쿼리모음>
+  <질의 id="주문조회">SELECT 1 -- 주문</질의>
+</쿼리모음>

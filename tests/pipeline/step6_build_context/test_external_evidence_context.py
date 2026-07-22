@@ -1,7 +1,11 @@
+"""Step6 external evidence selection contracts (spec 078).
+
+Outgoing REFER_TO only; whole-chunk-or-skip; hash re-verification fail-closed;
+no leak of other routines' evidence into prompt values.
+"""
 from __future__ import annotations
 
 from dataclasses import replace
-import hashlib
 import json
 import tempfile
 import unittest
@@ -9,11 +13,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from graph.schema.graph_edges import Mentions, ReferTo, UsesConfig
-from graph.schema.graph_nodes import CandidateLink, CodeNode, DocumentNode
-from graph.schema.node_ids import project_file_id
-from pipeline.models.analysis_context import AnalysisContext
-from pipeline.steps.step3_load_external.chunking import make_external_chunks
+from graph.schema.graph_edges import ReferTo
+from graph.schema.graph_nodes import CodeNode, ExternalChunk
+from graph.schema.node_ids import external_chunk_id, project_file_id
+from pipeline.steps.step3_load_external.span_verifier import sha256_text
 from pipeline.steps.step6_build_context.build_context_step import build_context_step
 from pipeline.steps.step6_build_context.external_evidence import (
     ExternalEvidenceContractError,
@@ -39,110 +42,87 @@ def _code(code_id: str = "code:shop.Order:run") -> CodeNode:
         owner_id="code:shop.Order",
     )
 
-
-def _chunks(key: str, text: str, path: str = "app.cfgx"):
-    return make_external_chunks(
-        file_id=project_file_id("shop", path),
-        key=key,
-        kind="custom",
+def _chunk(key: str, text: str, path: str = "app.cfgx") -> ExternalChunk:
+    file_id = project_file_id("shop", path)
+    return ExternalChunk(
+        id=external_chunk_id(file_id, 0, len(text)),
+        name=key,
+        keys=(key,),
+        semantic_kind="record",
         text=text,
         file_path=path,
+        char_start=0,
+        char_end=len(text),
         start_line=2,
         end_line=3,
-    )[0]
+        provenance="source_span",
+        source_hash=sha256_text(text),
+        content_hash=sha256_text(text),
+    )
 
 
 class ExternalEvidenceContextTest(unittest.IsolatedAsyncioTestCase):
-    def test_exact_document_mention_is_injected_without_candidate_promotion(self) -> None:
+    def test_only_outgoing_refer_to_is_selected_and_deduplicated(self) -> None:
         code = _code()
-        text = "run 호출은 주문을 저장한다."
-        document = DocumentNode(
-            "file:guide:chunk", "DOC_CHUNK", "chunk 1", "", text,
-            "guide.md", 5, 5, 1, "file:guide:root",
-            hashlib.sha256(text.encode()).hexdigest(),
-        )
+        linked = _chunk("ORDER.API", "A" * 1300)
+        unrelated = _chunk("UNRELATED", "must-not-leak", "other.cfgx")
         state = {
-            "external_chunks": [],
-            "document_nodes": [document],
-            "external_edges": [Mentions(document.id, code.id, "run", "guide.md", 5)],
-        }
-        evidence = build_external_evidence_context(state, [code])[code.id][0]
-        self.assertEqual(("document", text), (evidence.kind, evidence.text))
-
-    def test_damaged_document_hash_fails_before_context_injection(self) -> None:
-        code = _code()
-        document = DocumentNode(
-            "file:guide:chunk", "DOC_CHUNK", "chunk 1", "", "changed",
-            "guide.md", 5, 5, 1, "file:guide:root", "0" * 64,
-        )
-        with self.assertRaises(ExternalEvidenceContractError):
-            build_external_evidence_context({
-                "external_chunks": [],
-                "document_nodes": [document],
-                "external_edges": [Mentions(document.id, code.id)],
-            }, [code])
-
-    def test_only_exact_links_are_reassembled_sorted_and_deduplicated(self) -> None:
-        code = _code()
-        linked = _chunks("ORDER.API", "A" * 1300)
-        unrelated = _chunks("UNRELATED", "must-not-leak", "other.cfgx")
-        state = {
-            "external_chunks": [*linked, *unrelated],
+            "external_chunks": [linked, unrelated],
             "external_edges": [
-                UsesConfig(code.id, linked[0].id),
-                UsesConfig(code.id, linked[0].id),
+                ReferTo(code.id, linked.id, matched_key="ORDER.API"),
+                ReferTo(code.id, linked.id, matched_key="ORDER.API"),
             ],
-            "candidate_links": [CandidateLink(
-                id="file:candidate", name="candidate", source_id=code.id,
-                target_id=unrelated[0].id, score=0.99, model="test",
-            )],
         }
-
         result = build_external_evidence_context(state, [code], char_budget=3000)
-
         self.assertEqual(1, len(result[code.id]))
         evidence = result[code.id][0]
         self.assertEqual("A" * 1300, evidence.text)
-        self.assertFalse(evidence.truncated)
+        self.assertEqual("ORDER.API", evidence.matched_key)
         self.assertNotIn("must-not-leak", json.dumps(evidence.as_prompt_dict()))
 
-    def test_module_fqn_link_is_relevant_to_members_and_budget_is_hard(self) -> None:
+    def test_reverse_direction_edges_are_never_selected(self) -> None:
         code = _code()
-        artifact = _chunks("orderService", "Z" * 1000, "beans.xml")
+        chunk = _chunk("orderService", "Z" * 100, "beans.xml")
         state = {
-            "external_chunks": artifact,
-            "external_edges": [ReferTo(artifact[0].id, code.owner_id, matched_fqn="shop.Order")],
+            "external_chunks": [chunk],
+            "external_edges": [ReferTo(chunk.id, code.id, matched_key="orderService")],
         }
+        self.assertEqual({}, build_external_evidence_context(state, [code]))
 
-        evidence = build_external_evidence_context(state, [code], char_budget=240)[code.id][0]
-
-        self.assertTrue(evidence.truncated)
-        self.assertGreater(len(evidence.text), 0)
-        self.assertLessEqual(
-            len(evidence.text) + len(evidence.file_path) + len(evidence.key) + len(evidence.kind) + 96,
-            240,
-        )
-
-    def test_damaged_part_sequence_fails_before_context_injection(self) -> None:
+    def test_oversize_chunk_is_skipped_whole_never_truncated(self) -> None:
         code = _code()
-        chunks = _chunks("ORDER.API", "A" * 1300)
-        chunks[1] = replace(chunks[1], part_index=2)
+        big = _chunk("BIG.KEY", "Z" * 1000, "big.cfgx")
+        small = _chunk("SMALL.KEY", "s" * 50, "small.cfgx")
         state = {
-            "external_chunks": chunks,
-            "external_edges": [UsesConfig(code.id, chunks[0].id)],
+            "external_chunks": [big, small],
+            "external_edges": [
+                ReferTo(code.id, big.id, matched_key="BIG.KEY"),
+                ReferTo(code.id, small.id, matched_key="SMALL.KEY"),
+            ],
         }
+        result = build_external_evidence_context(state, [code], char_budget=300)
+        texts = [item.text for item in result[code.id]]
+        # 큰 청크는 통째로 생략, 작은 청크는 전문 포함 — 부분 절단은 존재하지 않는다.
+        self.assertEqual(["s" * 50], texts)
 
+    def test_damaged_hash_fails_before_context_injection(self) -> None:
+        code = _code()
+        chunk = replace(_chunk("ORDER.API", "payload"), content_hash="0" * 64)
+        state = {
+            "external_chunks": [chunk],
+            "external_edges": [ReferTo(code.id, chunk.id, matched_key="ORDER.API")],
+        }
         with self.assertRaises(ExternalEvidenceContractError):
             build_external_evidence_context(state, [code])
 
     async def test_build_context_and_both_prompt_owners_receive_same_exact_json(self) -> None:
         code = _code()
-        linked = _chunks("ORDER.API", "/orders")
-        unrelated = _chunks("UNRELATED", "must-not-leak", "other.cfgx")
+        linked = _chunk("ORDER.API", "/orders")
+        unrelated = _chunk("UNRELATED", "must-not-leak", "other.cfgx")
         state = {
             "code_nodes": [code],
-            "external_chunks": [*linked, *unrelated],
-            "external_edges": [UsesConfig(code.id, linked[0].id)],
+            "external_chunks": [linked, unrelated],
+            "external_edges": [ReferTo(code.id, linked.id, matched_key="ORDER.API")],
             "reads_writes_edges": [],
             "calls_edges": [],
         }
@@ -156,7 +136,7 @@ class ExternalEvidenceContextTest(unittest.IsolatedAsyncioTestCase):
                 {"configurable": {"strategy": strategy, "source_cache": SourceFileCache()}},
             )
         context = result["analysis_contexts"][code.id]
-        self.assertEqual("ORDER.API", context.external_evidence[0].key)
+        self.assertEqual("ORDER.API", context.external_evidence[0].matched_key)
 
         with tempfile.TemporaryDirectory() as temp:
             source = Path(temp) / "Order.java"
@@ -177,9 +157,10 @@ class ExternalEvidenceContextTest(unittest.IsolatedAsyncioTestCase):
             body_fn=lambda *_: code.code_text,
         )
 
-        self.assertIn('"key":"ORDER.API"', framework_values["external_evidence"])
+        self.assertIn('"matched_key":"ORDER.API"', framework_values["external_evidence"])
+        self.assertIn('"text":"/orders"', framework_values["external_evidence"])
         self.assertNotIn("must-not-leak", framework_values["external_evidence"])
-        self.assertIn('"key":"ORDER.API"', batch_values["nodes"])
+        self.assertIn('"matched_key":"ORDER.API"', batch_values["nodes"])
         self.assertNotIn("must-not-leak", batch_values["nodes"])
 
 

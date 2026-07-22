@@ -48,7 +48,7 @@ class LoadExternalStepTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(("document", "unanalyzed", "optional_dependency_missing"), (
                 item.category, item.status, item.reason,
             ))
-            self.assertEqual("optional_dependency_missing", result["unresolved_refs"][0].reason)
+            self.assertEqual([], result["external_chunks"])
 
     async def test_real_inventory_produces_honest_status_and_disjoint_state(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -70,16 +70,23 @@ class LoadExternalStepTest(unittest.IsolatedAsyncioTestCase):
                 "neo_client": neo,
             }})
             self.assertEqual(
-                {"project_files", "external_chunks", "document_nodes", "external_edges", "unresolved_refs"},
+                {"project_files", "external_chunks", "external_edges"},
                 set(result),
             )
             by_path = {item.relpath: item for item in result["project_files"]}
             self.assertEqual("registered", by_path["A.java"].status)
             self.assertEqual("analyzed", by_path["app.properties"].status)
-            self.assertEqual("sql_xml", by_path["mapper.xml"].category)
+            self.assertEqual("artifact_xml", by_path["mapper.xml"].category)
             self.assertEqual("binary_unanalyzed", by_path["blob.bin"].reason)
-            self.assertTrue(any(chunk.key == "shop.title" for chunk in result["external_chunks"]))
-            self.assertTrue(any(chunk.key == "shop.M.find" for chunk in result["external_chunks"]))
+            all_keys = {key for chunk in result["external_chunks"] for key in chunk.keys}
+            self.assertIn("shop.title", all_keys)
+            self.assertIn("shop.M.find", all_keys)
+            # CP949 원문도 디코딩된 소스의 정확한 슬라이스여야 한다.
+            for chunk in result["external_chunks"]:
+                self.assertEqual("source_span", chunk.provenance)
+                self.assertEqual(chunk.char_end - chunk.char_start, len(chunk.text))
+            md_chunks = [c for c in result["external_chunks"] if c.file_path == "README.md"]
+            self.assertEqual(["md_section"], [c.semantic_kind for c in md_chunks])
             project_payloads = [
                 item
                 for query, items in neo.writes

@@ -1,0 +1,5 @@
+{
+  "first": {"enabled": true},
+  "second": {"enabled": false},
+  "path": "C:\\tmp\\x \"quoted\""
+}

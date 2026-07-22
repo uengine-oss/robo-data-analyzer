@@ -1,0 +1,4 @@
+<root>
+  <select id="broken">
+    SELECT 1
+</root>

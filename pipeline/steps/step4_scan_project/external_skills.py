@@ -94,8 +94,10 @@ class ExternalSkill(BaseModel):
 
 @dataclass(frozen=True)
 class ExternalRuleMatch:
+    """One proposed span over the original text — never generated content (spec 078)."""
     key: str
-    value: str
+    start: int                               # char offset of the full match in the source
+    end: int                                 # exclusive char offset
     line: int
     rule_name: str
 
@@ -142,9 +144,10 @@ def _apply_rule(
                 raise ExternalSkillValidationError(f"rule {rule.name} produced an empty key")
             if len(key) > 240:
                 raise ExternalSkillValidationError(f"rule {rule.name} produced an oversized key")
-            value = (match.group(rule.value_group) or "").strip() if rule.value_group else match.group(0).strip()
+            if match.end() <= match.start():
+                raise ExternalSkillValidationError(f"rule {rule.name} produced a zero-width span")
             line = text.count("\n", 0, match.start()) + 1
-            output.append(ExternalRuleMatch(key, value, line, rule.name))
+            output.append(ExternalRuleMatch(key, match.start(), match.end(), line, rule.name))
             if len(output) > max_matches:
                 raise ExternalSkillValidationError(f"rule {rule.name} exceeded match limit {max_matches}")
     except TimeoutError as error:
@@ -203,10 +206,10 @@ def apply_validated_external_skill(
         for rule in validated.skill.rules
         for match in _apply_rule(rule, text, timeout_seconds=timeout_seconds, max_matches=max_matches)
     ]
-    seen: set[tuple[str, str, int, str]] = set()
+    seen: set[tuple[str, int, int]] = set()
     unique: list[ExternalRuleMatch] = []
     for item in output:
-        identity = (item.key, item.value, item.line, item.rule_name)
+        identity = (item.key, item.start, item.end)
         if identity in seen:
             continue
         seen.add(identity)

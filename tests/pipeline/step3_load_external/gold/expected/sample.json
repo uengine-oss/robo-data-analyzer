@@ -1,0 +1,16 @@
+{
+  "format": "jsonl",
+  "fail_closed": false,
+  "chunks": [
+    {
+      "text": "{\"a\": 1}",
+      "keys": ["[0].a"],
+      "semantic_kind": "json_entry"
+    },
+    {
+      "text": "{\"b\": {\"c\": 2}}",
+      "keys": ["[1].b", "[1].b.c"],
+      "semantic_kind": "json_entry"
+    }
+  ]
+}

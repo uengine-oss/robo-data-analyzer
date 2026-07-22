@@ -29,7 +29,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import math
 from typing import Literal, Optional
 
 from graph.schema.node_ids import db_id, fqn
@@ -294,18 +293,16 @@ class Question:
     reason: str = ""                         # 코드 근거 부재 사유
 
 
-# ── External-file graph nodes (spec 075) ─────────────────────────────
+# ── External-file graph nodes (spec 078) ─────────────────────────────
 
 ExternalCategory = Literal[
     "source", "sql_xml", "config", "artifact_xml", "document", "custom", "binary", "unknown",
 ]
 ProjectFileStatus = Literal["registered", "analyzed", "unanalyzed", "failed"]
-ExternalChunkKind = Literal["sql", "config", "artifact", "custom"]
-ExternalChunkLabel = Literal["SQL_STATEMENT", "CONFIG_SECTION", "ARTIFACT_CHUNK", "CHUNK"]
-DocumentLabel = Literal["DOCUMENT", "DOC_SECTION", "DOC_CHUNK"]
-UnresolvedReason = Literal[
-    "key_not_found_in_code", "table_not_in_ddl", "parse_failed", "binary_unanalyzed",
-    "pattern_rejected", "dynamic_key_suspected", "optional_dependency_missing", "path_rejected",
+ChunkProvenance = Literal["source_span", "derived_document"]
+SemanticKind = Literal[
+    "xml_element", "yaml_entry", "json_entry", "md_section", "record", "row",
+    "agent_segment", "derived_document",
 ]
 
 
@@ -319,6 +316,11 @@ def _require_lines(start_line: int, end_line: int) -> None:
     _require_non_negative_integer(end_line, "end_line")
     if (start_line == 0) != (end_line == 0) or (start_line and end_line < start_line):
         raise ValueError("line coordinates must both be zero or form an ordered 1-based range")
+
+
+def _require_sha256(value: str, name: str) -> None:
+    if len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value.lower()):
+        raise ValueError(f"{name} must be a SHA-256 hex digest")
 
 
 @dataclass(frozen=True)
@@ -344,101 +346,45 @@ class ProjectFile:
 
 @dataclass(frozen=True)
 class ExternalChunk:
+    """One complete semantic unit of an external file (spec 078).
+
+    ``source_span`` chunks satisfy ``text == decoded_source[char_start:char_end]``
+    and carry the decoded source's hash so the invariant stays re-checkable.
+    ``derived_document`` chunks come from binary conversions, have no source
+    span (both offsets 0) and are never direct ``REFER_TO`` targets.
+    """
     id: str
     name: str
-    key: str
-    kind: ExternalChunkKind
-    label: ExternalChunkLabel
+    keys: tuple[str, ...]
+    semantic_kind: SemanticKind
     text: str
     file_path: str
+    char_start: int
+    char_end: int
     start_line: int
     end_line: int
-    part_index: int = 0
-    anchor_id: str = ""
-    full_len: int = 0
-    content_hash: str = ""
-    sql_type: str = ""
-    related_fqns: tuple[str, ...] = ()
-
-    def __post_init__(self) -> None:
-        allowed_labels = {
-            "sql": "SQL_STATEMENT", "config": "CONFIG_SECTION",
-            "artifact": "ARTIFACT_CHUNK", "custom": "CHUNK",
-        }
-        if self.kind not in allowed_labels or self.label != allowed_labels[self.kind]:
-            raise ValueError(f"invalid external chunk kind/label pair: {self.kind!r}/{self.label!r}")
-        if len(self.text) > 1200:
-            raise ValueError("external chunk text exceeds 1200 characters")
-        _require_lines(self.start_line, self.end_line)
-        _require_non_negative_integer(self.part_index, "part_index")
-        _require_non_negative_integer(self.full_len, "full_len")
-        if self.full_len < len(self.text):
-            raise ValueError("full_len cannot be shorter than chunk text")
-        if self.part_index == 0 and self.anchor_id:
-            raise ValueError("anchor chunks cannot have anchor_id")
-        if self.part_index > 0 and not self.anchor_id:
-            raise ValueError("part chunks require anchor_id")
-        if len(self.content_hash) != 64 or any(ch not in "0123456789abcdef" for ch in self.content_hash.lower()):
-            raise ValueError("content_hash must be a SHA-256 hex digest")
-
-
-@dataclass(frozen=True)
-class DocumentNode:
-    id: str
-    label: DocumentLabel
-    name: str
-    title: str
-    text: str
-    file_path: str
-    start_line: int
-    end_line: int
-    order: int
-    parent_id: str
+    provenance: ChunkProvenance
+    source_hash: str
     content_hash: str
+    label: str = field(default="EXTERNAL_CHUNK", init=False)
 
     def __post_init__(self) -> None:
-        if self.label not in DocumentLabel.__args__:
-            raise ValueError(f"unsupported document label: {self.label!r}")
-        if self.label == "DOC_CHUNK" and len(self.text) > 1200:
-            raise ValueError("document chunk text exceeds 1200 characters")
+        if self.semantic_kind not in SemanticKind.__args__:
+            raise ValueError(f"unsupported semantic kind: {self.semantic_kind!r}")
+        if self.provenance not in ChunkProvenance.__args__:
+            raise ValueError(f"unsupported chunk provenance: {self.provenance!r}")
+        if not self.text:
+            raise ValueError("external chunk text must be non-empty")
         _require_lines(self.start_line, self.end_line)
-        _require_non_negative_integer(self.order, "order")
-        if self.label == "DOCUMENT" and self.parent_id:
-            raise ValueError("document root cannot have parent_id")
-        if self.label != "DOCUMENT" and not self.parent_id:
-            raise ValueError("document section/chunk requires parent_id")
-        if len(self.content_hash) != 64 or any(ch not in "0123456789abcdef" for ch in self.content_hash.lower()):
-            raise ValueError("content_hash must be a SHA-256 hex digest")
-
-
-@dataclass(frozen=True)
-class UnresolvedRef:
-    id: str
-    name: str
-    target_type: str
-    key: str
-    reason: UnresolvedReason
-    file_path: str
-    detail: str = ""
-    label: str = field(default="UNRESOLVED_REF", init=False)
-
-    def __post_init__(self) -> None:
-        if self.reason not in UnresolvedReason.__args__:
-            raise ValueError(f"unsupported unresolved reason: {self.reason!r}")
-
-
-@dataclass(frozen=True)
-class CandidateLink:
-    id: str
-    name: str
-    source_id: str
-    target_id: str
-    score: float
-    model: str
-    reason: str = ""
-    status: str = field(default="candidate", init=False)
-    label: str = field(default="CANDIDATE_LINK", init=False)
-
-    def __post_init__(self) -> None:
-        if isinstance(self.score, bool) or not math.isfinite(self.score) or not 0.0 <= self.score <= 1.0:
-            raise ValueError("candidate score must be finite and between 0 and 1")
+        _require_non_negative_integer(self.char_start, "char_start")
+        _require_non_negative_integer(self.char_end, "char_end")
+        _require_sha256(self.content_hash, "content_hash")
+        if self.provenance == "source_span":
+            if self.char_end - self.char_start != len(self.text):
+                raise ValueError("source_span chunk length must equal its span width")
+            _require_sha256(self.source_hash, "source_hash")
+        else:
+            if self.char_start or self.char_end:
+                raise ValueError("derived_document chunks cannot claim a source span")
+        if sorted(set(self.keys)) != list(self.keys):
+            raise ValueError("chunk keys must be sorted and unique")

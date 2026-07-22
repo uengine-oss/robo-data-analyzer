@@ -56,11 +56,8 @@ from graph.schema.graph_nodes import (
     Schema,
     Table,
     Variable,
-    CandidateLink,
-    DocumentNode,
     ExternalChunk,
     ProjectFile,
-    UnresolvedRef,
 )
 
 
@@ -108,13 +105,10 @@ class WorkflowState(TypedDict, total=False):
     call_sites: Annotated[list[dict], operator.add]
     import_refs: Annotated[list[dict], operator.add]
 
-    # ── step3_load_external + step5_linking 결과 (spec 075) ──
+    # ── step3_load_external + step5_linking 결과 (spec 078) ──
     project_files: list[ProjectFile]
     external_chunks: list[ExternalChunk]
-    document_nodes: list[DocumentNode]
     external_edges: Annotated[list[ExternalEdge], operator.add]
-    unresolved_refs: Annotated[list[UnresolvedRef], operator.add]
-    candidate_links: list[CandidateLink]
 
     # ── step4_scan_project 결과 (Framework 만) ─
     scan_result: dict                     # ScanResult Pydantic → dict

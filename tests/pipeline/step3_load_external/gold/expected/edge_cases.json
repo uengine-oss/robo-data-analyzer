@@ -1,0 +1,21 @@
+{
+  "format": "xml",
+  "fail_closed": false,
+  "chunks": [
+    {
+      "text": "<query id=\"rawCompare\"><![CDATA[a > b\n\nc < d]]></query>",
+      "keys": ["rawCompare"],
+      "semantic_kind": "xml_element"
+    },
+    {
+      "text": "<rule id=\"tricky\" expr=\"1 &gt; 2\" note='literal > inside quotes'>ok</rule>",
+      "keys": ["tricky"],
+      "semantic_kind": "xml_element"
+    },
+    {
+      "text": "<flag id=\"emptyFlag\"/>",
+      "keys": ["emptyFlag"],
+      "semantic_kind": "xml_element"
+    }
+  ]
+}

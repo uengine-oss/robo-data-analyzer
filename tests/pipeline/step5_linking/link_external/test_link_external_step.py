@@ -16,7 +16,7 @@ class LinkExternalStepTest(unittest.IsolatedAsyncioTestCase):
             {"code_nodes": [], "has_member_edges": [], "external_chunks": []},
             {"configurable": {}},
         )
-        self.assertEqual({"external_edges": [], "reads_writes_edges": [], "unresolved_refs": []}, result)
+        self.assertEqual({"external_edges": []}, result)
 
     def test_link_step_precedes_context_in_both_strategies(self) -> None:
         for strategy in (FRAMEWORK_PIPELINE, DBMS_PIPELINE):

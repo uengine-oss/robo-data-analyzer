@@ -1,0 +1,55 @@
+{
+  "_doc": "078 REFER_TO gold. chunks: key->청크 수. code: routine 본문. expected: [{matched_key, via_symbol}] — 빈 배열이면 연결 0이 정답. occurrence 계약: logger/client 구분은 주장하지 않는다(케이스 1).",
+  "cases": [
+    {
+      "name": "occurrence_links_regardless_of_call_meaning",
+      "chunks": {"ORDER.API": 1},
+      "code": "void a() { logger.info(\"ORDER.API\"); client.get(\"ORDER.API\"); }",
+      "expected": [{"matched_key": "ORDER.API", "via_symbol": ""}]
+    },
+    {
+      "name": "duplicate_key_two_chunks_no_link",
+      "chunks": {"ORDER.API": 2},
+      "code": "void a() { client.get(\"ORDER.API\"); }",
+      "expected": []
+    },
+    {
+      "name": "dynamic_concat_no_link",
+      "chunks": {"ORDER.API": 1},
+      "code": "void a() { client.get(\"ORDER.\" + suffix); }",
+      "expected": []
+    },
+    {
+      "name": "case_variant_no_link",
+      "chunks": {"ORDER.API": 1},
+      "code": "void a() { client.get(\"order.api\"); }",
+      "expected": []
+    },
+    {
+      "name": "comment_occurrence_no_link",
+      "chunks": {"ORDER.API": 1},
+      "code": "void a() { /* ORDER.API */ // ORDER.API\n }",
+      "expected": []
+    },
+    {
+      "name": "partial_substring_no_link",
+      "chunks": {"ORDER.API.DETAIL": 1},
+      "code": "void a() { client.get(\"ORDER.API\"); }",
+      "expected": []
+    },
+    {
+      "name": "one_step_immutable_symbol_links",
+      "chunks": {"ORDER.API": 1},
+      "constant": {"name": "KEY", "value": "ORDER.API"},
+      "code": "void a() { client.get(KEY); }",
+      "expected": [{"matched_key": "ORDER.API", "via_symbol": "KEY"}]
+    },
+    {
+      "name": "getOrderDetail_xml_id_links_once",
+      "chunks": {"OrderMapper.getOrderDetail": 1, "getOrderDetail": 1},
+      "_note": "같은 청크가 qualified/bare 두 key를 노출하는 상황 — 두 key 모두 유일하면 리터럴별로 연결되지만 동일 target이므로 그래프엔 1 엣지",
+      "code": "Order find(String id) { return sql.selectOne(\"getOrderDetail\", id); }",
+      "expected": [{"matched_key": "getOrderDetail", "via_symbol": ""}]
+    }
+  ]
+}

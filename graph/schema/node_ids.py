@@ -83,33 +83,27 @@ def project_file_id(project: str, rel_path: str) -> str:
     return f"{FILE_NS}{quote(project_name, safe='')}/{quote(relative, safe='/')}"
 
 
-def external_chunk_id(file_id: str, key: str, ordinal: int = 0) -> str:
-    """Return a file-scoped opaque identity for an external anchor or part."""
+def external_chunk_id(file_id: str, char_start: int, char_end: int) -> str:
+    """Return the span-scoped identity of one external semantic chunk (spec 078)."""
     fid = _normalized_text(file_id, "file_id")
-    semantic_key = _normalized_text(key, "key")
+    if not fid.startswith(FILE_NS):
+        raise ValueError(f"file_id must use {FILE_NS!r} namespace")
+    for name, value in (("char_start", char_start), ("char_end", char_end)):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"{name} must be a non-negative integer")
+    if char_end <= char_start:
+        raise ValueError("char_end must be greater than char_start")
+    return f"{fid}:chunk:{char_start}-{char_end}"
+
+
+def derived_chunk_id(file_id: str, ordinal: int) -> str:
+    """Identity for a derived-document chunk, which has no source span (spec 078)."""
+    fid = _normalized_text(file_id, "file_id")
     if not fid.startswith(FILE_NS):
         raise ValueError(f"file_id must use {FILE_NS!r} namespace")
     if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 0:
         raise ValueError("ordinal must be a non-negative integer")
-    return f"{fid}:chunk:{_semantic_hash(fid, semantic_key, str(ordinal))}"
-
-
-def unresolved_ref_id(*identity_parts: str) -> str:
-    """Return an opaque identity for a specific unresolved observation."""
-    parts = tuple(_normalized_text(part, "identity_part") for part in identity_parts)
-    if not parts:
-        raise ValueError("at least one identity part is required")
-    return f"{FILE_NS}unresolved:{_semantic_hash(*parts)}"
-
-
-def candidate_link_id(source_id: str, target_id: str, model: str) -> str:
-    """Return an opaque candidate-node identity; this never denotes a fact edge."""
-    parts = (
-        _normalized_text(source_id, "source_id"),
-        _normalized_text(target_id, "target_id"),
-        _normalized_text(model, "model"),
-    )
-    return f"{FILE_NS}candidate:{_semantic_hash(*parts)}"
+    return f"{fid}:chunk:derived-{ordinal}"
 
 
 def fqn(*parts: object) -> str:

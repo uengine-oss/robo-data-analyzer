@@ -1,0 +1,16 @@
+{
+  "format": "xml",
+  "fail_closed": false,
+  "chunks": [
+    {
+      "text": "<group id=\"outerGroup\">\n    <item id=\"innerItem\">value</item>\n  </group>",
+      "keys": ["innerItem", "outerGroup"],
+      "semantic_kind": "xml_element"
+    },
+    {
+      "text": "<item id=\"standalone\"/>",
+      "keys": ["standalone"],
+      "semantic_kind": "xml_element"
+    }
+  ]
+}

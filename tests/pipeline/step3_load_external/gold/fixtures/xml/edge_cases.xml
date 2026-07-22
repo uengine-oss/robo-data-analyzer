@@ -1,0 +1,7 @@
+<root>
+  <query id="rawCompare"><![CDATA[a > b
+
+c < d]]></query>
+  <rule id="tricky" expr="1 &gt; 2" note='literal > inside quotes'>ok</rule>
+  <flag id="emptyFlag"/>
+</root>

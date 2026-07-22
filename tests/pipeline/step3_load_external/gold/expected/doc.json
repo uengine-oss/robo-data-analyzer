@@ -1,0 +1,21 @@
+{
+  "format": "md",
+  "fail_closed": false,
+  "chunks": [
+    {
+      "text": "intro text\n\n",
+      "keys": [],
+      "semantic_kind": "md_section"
+    },
+    {
+      "text": "# Title\n\n```sql\nSELECT *\n\nFROM orders\n# not a heading\n```\n\n",
+      "keys": [],
+      "semantic_kind": "md_section"
+    },
+    {
+      "text": "## Sub\n\ntail\n",
+      "keys": [],
+      "semantic_kind": "md_section"
+    }
+  ]
+}

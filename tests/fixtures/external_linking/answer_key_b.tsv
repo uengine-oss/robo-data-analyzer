@@ -1,7 +1,0 @@
-verdict	method	sql_key	table	rel	dml
-OK	createOrder	order.insertOrder	ORDERS	WRITES	INSERT
-OK	getOrder	order.selectOrder	ORDERS	READS	SELECT
-OK	getOrder	order.selectOrder	ORDER_ITEM	READS	SELECT
-OK	removeItems	order.deleteOrderItems	ORDER_ITEM	WRITES	DELETE
-OK	updateStatus	order.updateOrderStatus	ORDERS	WRITES	UPDATE
-OK	updateStatus	order.updateOrderStatus	ORDER_HISTORY	WRITES	UPDATE

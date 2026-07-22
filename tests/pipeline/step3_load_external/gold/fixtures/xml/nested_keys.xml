@@ -1,0 +1,6 @@
+<config>
+  <group id="outerGroup">
+    <item id="innerItem">value</item>
+  </group>
+  <item id="standalone"/>
+</config>

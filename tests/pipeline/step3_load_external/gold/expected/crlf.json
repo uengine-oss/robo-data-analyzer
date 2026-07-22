@@ -1,0 +1,16 @@
+{
+  "format": "yaml",
+  "fail_closed": false,
+  "chunks": [
+    {
+      "text": "first:\r\n  enabled: true\r\n",
+      "keys": ["first", "first.enabled"],
+      "semantic_kind": "yaml_entry"
+    },
+    {
+      "text": "second:\r\n  enabled: false\r\n",
+      "keys": ["second", "second.enabled"],
+      "semantic_kind": "yaml_entry"
+    }
+  ]
+}

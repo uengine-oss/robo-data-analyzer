@@ -1,24 +1,28 @@
-"""Deterministic per-code external evidence selection and bounded reconstruction."""
+"""Per-routine external evidence selection (spec 078).
+
+Only the routine's outgoing ``REFER_TO`` targets are selected, each chunk is
+re-verified against its stored hash and included **whole or not at all** —
+mid-chunk truncation is forbidden.  Chunks that do not fit the character
+budget are skipped with an explicit log, never silently shortened.
+"""
 from __future__ import annotations
 
 from collections import defaultdict
-import hashlib
 
-from graph.schema.graph_edges import CallsSql, Mentions, ReferTo, UsesConfig
-from graph.schema.graph_nodes import CodeNode, DocumentNode, ExternalChunk
+from graph.schema.graph_edges import ReferTo
+from graph.schema.graph_nodes import CodeNode, ExternalChunk
 from pipeline.models.analysis_context import ExternalEvidenceContext
-from pipeline.steps.step3_load_external.chunking import (
-    ExternalChunkIntegrityError,
-    reconstruct_external_chunk,
-)
+from pipeline.steps.step3_load_external.span_verifier import sha256_text
+from shared.events.runtime_logger import log_info
 
 
 MAX_EXTERNAL_EVIDENCE_ITEMS = 8
 MAX_EXTERNAL_EVIDENCE_CHARS = 6000
+_STEP = "step6.external_evidence"
 
 
 class ExternalEvidenceContractError(ValueError):
-    """Raised when linked external evidence cannot be reconstructed faithfully."""
+    """Raised when linked external evidence fails hash re-verification."""
 
 
 def build_external_evidence_context(
@@ -28,96 +32,55 @@ def build_external_evidence_context(
     max_items: int = MAX_EXTERNAL_EVIDENCE_ITEMS,
     char_budget: int = MAX_EXTERNAL_EVIDENCE_CHARS,
 ) -> dict[str, tuple[ExternalEvidenceContext, ...]]:
-    """Return only exact linked chunks for each code node, with stable bounds."""
+    """Return whole linked chunks for each routine, deterministically ordered."""
     if max_items <= 0 or char_budget <= 0:
         raise ValueError("external evidence bounds must be positive")
 
-    chunks: list[ExternalChunk] = state.get("external_chunks") or []
-    anchors = {chunk.id: chunk for chunk in chunks if chunk.part_index == 0 and chunk.key}
-    document_chunks: dict[str, DocumentNode] = {
-        node.id: node
-        for node in (state.get("document_nodes") or [])
-        if node.label == "DOC_CHUNK" and node.text
+    chunks: dict[str, ExternalChunk] = {
+        chunk.id: chunk for chunk in (state.get("external_chunks") or [])
     }
-    parts_by_anchor: dict[str, list[ExternalChunk]] = defaultdict(list)
-    for chunk in chunks:
-        if chunk.part_index:
-            parts_by_anchor[chunk.anchor_id].append(chunk)
-
     code_ids = {node.id for node in code_nodes}
-    code_ids_by_owner: dict[str, list[str]] = defaultdict(list)
-    for node in code_nodes:
-        if node.owner_id:
-            code_ids_by_owner[node.owner_id].append(node.id)
 
-    linked: dict[str, set[str]] = defaultdict(set)
+    linked: dict[str, dict[str, str]] = defaultdict(dict)   # code_id -> chunk_id -> matched_key
     for edge in state.get("external_edges") or []:
-        if isinstance(edge, (CallsSql, UsesConfig)):
-            if edge.source_id in code_ids and edge.target_id in anchors:
-                linked[edge.source_id].add(edge.target_id)
-        elif isinstance(edge, ReferTo):
-            if edge.source_id in code_ids and edge.target_id in anchors:
-                linked[edge.source_id].add(edge.target_id)
-            elif edge.source_id in anchors:
-                for code_id in code_ids_by_owner.get(edge.target_id, ()):
-                    linked[code_id].add(edge.source_id)
-        elif isinstance(edge, Mentions) and edge.source_id in document_chunks and edge.target_id in code_ids:
-            linked[edge.target_id].add(edge.source_id)
+        if isinstance(edge, ReferTo) and edge.source_id in code_ids and edge.target_id in chunks:
+            linked[edge.source_id].setdefault(edge.target_id, edge.matched_key)
 
     result: dict[str, tuple[ExternalEvidenceContext, ...]] = {}
-    for code_id, anchor_ids in linked.items():
+    for code_id, targets in linked.items():
+        ordered = sorted(
+            (chunks[chunk_id] for chunk_id in targets),
+            key=lambda chunk: (chunk.file_path, chunk.char_start, chunk.id),
+        )
         remaining = char_budget
         evidence: list[ExternalEvidenceContext] = []
-        sources = [
-            anchors[source_id] if source_id in anchors else document_chunks[source_id]
-            for source_id in anchor_ids
-            if source_id in anchors or source_id in document_chunks
-        ]
-        ordered = sorted(sources, key=lambda item: (
-            item.file_path,
-            item.start_line,
-            getattr(item, "key", getattr(item, "title", "")),
-            item.id,
-        ))
-        for anchor in ordered[:max_items]:
-            if isinstance(anchor, ExternalChunk):
-                try:
-                    full_text = reconstruct_external_chunk(anchor, parts_by_anchor.get(anchor.id, []))
-                except ExternalChunkIntegrityError as error:
-                    raise ExternalEvidenceContractError(str(error)) from error
-                key = anchor.key
-                kind = anchor.kind
-                full_len = anchor.full_len
-            else:
-                full_text = anchor.text
-                actual_hash = hashlib.sha256(full_text.encode("utf-8")).hexdigest()
-                if actual_hash != anchor.content_hash:
-                    raise ExternalEvidenceContractError(
-                        f"document chunk content hash mismatch: {anchor.id}"
-                    )
-                key = anchor.title or anchor.name
-                kind = "document"
-                full_len = len(full_text)
-            metadata_chars = len(anchor.file_path) + len(key) + len(kind) + 96
-            available = max(0, remaining - metadata_chars)
-            if full_text and available == 0:
+        for chunk in ordered:
+            if len(evidence) >= max_items:
                 break
-            text = full_text[:available]
+            if sha256_text(chunk.text) != chunk.content_hash:
+                raise ExternalEvidenceContractError(
+                    f"external chunk content hash mismatch: {chunk.id}")
+            metadata_chars = len(chunk.file_path) + len(chunk.semantic_kind) + 96
+            cost = metadata_chars + len(chunk.text)
+            if cost > remaining:
+                # 통째-or-skip: 절단 대신 명시적 생략 (silent truncation 금지).
+                log_info(
+                    _STEP, "skipped_oversize",
+                    code_id=code_id, chunk_id=chunk.id, chunk_chars=len(chunk.text),
+                )
+                continue
             evidence.append(ExternalEvidenceContext(
-                id=anchor.id,
-                file_path=anchor.file_path,
-                key=key,
-                kind=kind,
-                text=text,
-                start_line=anchor.start_line,
-                end_line=anchor.end_line,
-                content_hash=anchor.content_hash,
-                full_len=full_len,
-                truncated=len(text) < len(full_text),
+                id=chunk.id,
+                file_path=chunk.file_path,
+                matched_key=targets[chunk.id],
+                semantic_kind=chunk.semantic_kind,
+                provenance=chunk.provenance,
+                text=chunk.text,
+                start_line=chunk.start_line,
+                end_line=chunk.end_line,
+                content_hash=chunk.content_hash,
             ))
-            remaining -= metadata_chars + len(text)
-            if remaining <= 0:
-                break
+            remaining -= cost
         if evidence:
             result[code_id] = tuple(evidence)
     return result

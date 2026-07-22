@@ -1,0 +1,16 @@
+{
+  "format": "ini",
+  "fail_closed": false,
+  "chunks": [
+    {
+      "text": "[db]\nhost=localhost\nport=5432\n",
+      "keys": ["db", "db.host", "db.port"],
+      "semantic_kind": "record"
+    },
+    {
+      "text": "[db2]\nhost=remote\n",
+      "keys": ["db2", "db2.host"],
+      "semantic_kind": "record"
+    }
+  ]
+}

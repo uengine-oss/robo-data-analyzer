@@ -1,0 +1,21 @@
+{
+  "format": "json",
+  "fail_closed": false,
+  "chunks": [
+    {
+      "text": "\"first\": {\"enabled\": true}",
+      "keys": ["first", "first.enabled"],
+      "semantic_kind": "json_entry"
+    },
+    {
+      "text": "\"second\": {\"enabled\": false}",
+      "keys": ["second", "second.enabled"],
+      "semantic_kind": "json_entry"
+    },
+    {
+      "text": "\"path\": \"C:\\\\tmp\\\\x \\\"quoted\\\"\"",
+      "keys": ["path"],
+      "semantic_kind": "json_entry"
+    }
+  ]
+}

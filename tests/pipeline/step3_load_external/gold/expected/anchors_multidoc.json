@@ -1,0 +1,21 @@
+{
+  "format": "yaml",
+  "fail_closed": false,
+  "chunks": [
+    {
+      "text": "defaults: &base\n  retries: 3\n",
+      "keys": ["defaults", "defaults.retries"],
+      "semantic_kind": "yaml_entry"
+    },
+    {
+      "text": "service:\n  <<: *base\n  name: orders\n",
+      "keys": ["service", "service.name"],
+      "semantic_kind": "yaml_entry"
+    },
+    {
+      "text": "other: 1\n",
+      "keys": ["other"],
+      "semantic_kind": "yaml_entry"
+    }
+  ]
+}

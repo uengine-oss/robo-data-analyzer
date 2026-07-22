@@ -238,7 +238,7 @@ class AffectsTable:
     op: str
 
 
-# ── External-file relationships (spec 075) ──────────────────────────
+# ── External-file relationships (spec 078) ──────────────────────────
 
 def _validate_external_edge(source_id: str, target_id: str, evidence_line: int | None = None) -> None:
     if not source_id.strip() or not target_id.strip():
@@ -250,51 +250,25 @@ def _validate_external_edge(source_id: str, target_id: str, evidence_line: int |
 
 
 @dataclass(frozen=True)
-class CallsSql:
-    source_id: str
-    target_id: str
-    evidence_file: str = ""
-    evidence_line: int = 0
-    via_const: str = ""
-
-    def __post_init__(self) -> None:
-        _validate_external_edge(self.source_id, self.target_id, self.evidence_line)
-
-
-@dataclass(frozen=True)
-class UsesConfig:
-    source_id: str
-    target_id: str
-    evidence_file: str = ""
-    evidence_line: int = 0
-    via_const: str = ""
-
-    def __post_init__(self) -> None:
-        _validate_external_edge(self.source_id, self.target_id, self.evidence_line)
-
-
-@dataclass(frozen=True)
 class ReferTo:
+    """METHOD/FUNCTION → EXTERNAL_CHUNK: verified exact textual occurrence.
+
+    ``matched_key`` is the chunk key the code literal equalled (whole-token,
+    case-sensitive).  ``via_symbol`` names the one-step immutable constant when
+    the literal was reached through it; empty for a direct literal.
+    The relation asserts occurrence only — never call/consumption semantics.
+    """
     source_id: str
     target_id: str
+    matched_key: str
     evidence_file: str = ""
     evidence_line: int = 0
-    matched_fqn: str = ""
+    via_symbol: str = ""
 
     def __post_init__(self) -> None:
         _validate_external_edge(self.source_id, self.target_id, self.evidence_line)
-
-
-@dataclass(frozen=True)
-class Mentions:
-    source_id: str
-    target_id: str
-    matched_text: str = ""
-    evidence_file: str = ""
-    evidence_line: int = 0
-
-    def __post_init__(self) -> None:
-        _validate_external_edge(self.source_id, self.target_id, self.evidence_line)
+        if not self.matched_key.strip():
+            raise ValueError("REFER_TO requires the matched key")
 
 
 @dataclass(frozen=True)
@@ -306,28 +280,4 @@ class HasChunk:
         _validate_external_edge(self.source_id, self.target_id)
 
 
-@dataclass(frozen=True)
-class HasPart:
-    source_id: str
-    target_id: str
-    part_index: int
-
-    def __post_init__(self) -> None:
-        _validate_external_edge(self.source_id, self.target_id)
-        if isinstance(self.part_index, bool) or not isinstance(self.part_index, int) or self.part_index <= 0:
-            raise ValueError("part_index must be a positive integer")
-
-
-@dataclass(frozen=True)
-class HasSection:
-    source_id: str
-    target_id: str
-    order: int
-
-    def __post_init__(self) -> None:
-        _validate_external_edge(self.source_id, self.target_id)
-        if isinstance(self.order, bool) or not isinstance(self.order, int) or self.order < 0:
-            raise ValueError("order must be a non-negative integer")
-
-
-ExternalEdge = Union[CallsSql, UsesConfig, ReferTo, Mentions, HasChunk, HasPart, HasSection]
+ExternalEdge = Union[ReferTo, HasChunk]

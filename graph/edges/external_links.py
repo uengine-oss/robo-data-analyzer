@@ -7,17 +7,12 @@ from typing import Iterable
 from graph.neo4j_client import Neo4jClient
 from graph.ownership import ANALYZER_GRAPH_OWNER
 from graph.schema import rel_types as rt
-from graph.schema.graph_edges import CallsSql, ExternalEdge, HasChunk, HasPart, HasSection, Mentions, ReferTo, UsesConfig
+from graph.schema.graph_edges import ExternalEdge, HasChunk, ReferTo
 
 
 _EDGE_SPECS: dict[type, tuple[str, tuple[str, ...]]] = {
-    CallsSql: (rt.CALLS_SQL, ("evidence_file", "evidence_line", "via_const")),
-    UsesConfig: (rt.USES_CONFIG, ("evidence_file", "evidence_line", "via_const")),
-    ReferTo: (rt.REFER_TO, ("evidence_file", "evidence_line", "matched_fqn")),
-    Mentions: (rt.MENTIONS, ("matched_text", "evidence_file", "evidence_line")),
+    ReferTo: (rt.REFER_TO, ("matched_key", "evidence_file", "evidence_line", "via_symbol")),
     HasChunk: (rt.HAS_CHUNK, ()),
-    HasPart: (rt.HAS_PART, ("part_index",)),
-    HasSection: (rt.HAS_SECTION, ("order",)),
 }
 
 _ENDPOINT_QUERY = f"""

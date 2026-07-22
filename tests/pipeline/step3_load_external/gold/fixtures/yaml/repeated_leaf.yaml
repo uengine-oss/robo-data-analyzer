@@ -1,0 +1,4 @@
+first:
+  enabled: true
+second:
+  enabled: false
