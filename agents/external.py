@@ -120,6 +120,12 @@ async def run_external_agent(
             async with llm_semaphore:
                 draft = await invoke(candidate_index, attempt, feedback)
             try:
+                if extension not in draft.extensions:
+                    # 배운 확장자를 선언하지 않은 skill 은 저장 후 다른 형식을 납치하거나
+                    # 정작 자기 형식에 재사용되지 못한다 — 결정론으로 즉시 반려.
+                    raise ExternalSkillValidationError(
+                        f"skill extensions {list(draft.extensions)} must include the learned extension {extension}"
+                    )
                 return validate_external_skill(
                     draft,
                     samples,
@@ -160,8 +166,19 @@ async def run_external_agent(
     # 기각하지 않고 최대 그룹 대표를 선별한다 (공백 처리 등 미세 차이로 결과셋이
     # 갈리는 약한 로컬 모델에서 유효한 제안을 버리지 않기 위함 — 실측 근거).
     groups: dict[tuple, list[ValidatedExternalSkill]] = defaultdict(list)
-    for validated in accepted:
-        groups[_result_signature(validated, samples)].append(validated)
+    for index, validated in enumerate(accepted):
+        try:
+            signature = _result_signature(validated, samples)
+        except ExternalSkillValidationError as error:
+            # 검증은 통과했지만 재적용(서명 계산)에서 죽는 후보(wall-clock 변동 등)는
+            # run 크래시가 아니라 후보 탈락으로 처리한다 (fail-closed).
+            log_error("step4.external_agent", "candidate_rejected", error, candidate=index)
+            continue
+        groups[signature].append(validated)
+    if not groups:
+        raise ExternalAgentRejected(
+            "all validated candidates failed signature re-application"
+        )
     winning_group = max(
         groups.values(),
         key=lambda group: (len(group), tuple(_result_signature(group[0], samples))),

@@ -1,4 +1,4 @@
-"""Closed ExternalSkill schema, timeout validation and atomic persistence."""
+﻿"""Closed ExternalSkill schema, timeout validation and atomic persistence."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -145,10 +145,14 @@ def _apply_rule(
     text: str,
     *,
     timeout_seconds: float | None,
-    max_matches: int,
+    max_matches: int | None,
 ) -> list[ExternalRuleMatch]:
     compiled = _compiled_rule(rule)
     timeout = timeout_seconds if timeout_seconds is not None else _effective_timeout(len(text))
+    if max_matches is None:
+        # 매치 상한도 크기 비례 — 고정 1000 이면 레코드 1,000건 초과 실물 파일이
+        # 형식과 무관하게 영구 미분석이 된다. 라인 수를 넘는 매치는 여전히 폭주다.
+        max_matches = max(1000, text.count("\n") + 1)
     output: list[ExternalRuleMatch] = []
     try:
         for match in compiled.finditer(text, timeout=timeout):
@@ -177,7 +181,7 @@ def probe_extraction_rule(
     text: str,
     *,
     timeout_seconds: float | None = None,
-    max_matches: int = 1000,
+    max_matches: int | None = None,
 ) -> list[ExternalRuleMatch]:
     """Run one candidate rule against one text with the production engine.
 
@@ -203,7 +207,7 @@ def validate_external_skill(
     *,
     negative_samples: list[str] | None = None,
     timeout_seconds: float | None = None,
-    max_matches: int = 1000,
+    max_matches: int | None = None,
 ) -> ValidatedExternalSkill:
     """Validate compile/safety/timeout/positive/negative/overfit contracts."""
     if not positive_samples:
@@ -231,7 +235,7 @@ def apply_validated_external_skill(
     text: str,
     *,
     timeout_seconds: float | None = None,
-    max_matches: int = 1000,
+    max_matches: int | None = None,
 ) -> list[ExternalRuleMatch]:
     if not validated.is_validated or validated.fingerprint != _fingerprint(validated.skill):
         raise ExternalSkillValidationError("external skill validation fingerprint mismatch")

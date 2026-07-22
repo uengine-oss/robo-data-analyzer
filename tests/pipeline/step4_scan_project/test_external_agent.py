@@ -59,6 +59,15 @@ class ExternalAgentTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(selected.is_validated)
         self.assertIn("ALT", selected.skill.rules[0].pattern)   # 4표 그룹(ALT)이 최대
 
+    async def test_skill_must_declare_the_learned_extension(self) -> None:
+        # 배운 확장자를 선언하지 않은 skill 은 저장 후 다른 형식을 납치할 수 있다.
+        async def invoke(candidate: int, attempt: int, feedback: str) -> ExternalSkill:
+            skill = _skill("CFG", f"candidate-{candidate}")
+            return skill.model_copy(update={"extensions": (".other",)})
+
+        with self.assertRaises(ExternalAgentRejected):
+            await self._run(invoke, ["CFG[shop.title] = 쇼핑몰"])
+
     async def test_all_candidates_invalid_is_still_rejected(self) -> None:
         async def invoke(candidate: int, attempt: int, feedback: str) -> ExternalSkill:
             return _skill("MISS", f"candidate-{candidate}")      # 어떤 sample 도 못 맞춤

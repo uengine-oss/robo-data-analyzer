@@ -25,8 +25,8 @@ from agents.skills.catalog import EXTERNAL_SKILLS_DIR
 from pipeline.execution.graph_delta_stream import emit_edges, emit_message, emit_nodes
 from pipeline.execution.step_config import step_config
 from pipeline.steps.step3_load_external.chunk_builder import build_source_chunks
-from pipeline.steps.step3_load_external.encoding_reader import read_text
-from pipeline.steps.step3_load_external.parsers.span_common import SemanticSpan
+from pipeline.steps.step3_load_external.encoding_reader import TextDecodeError, read_text
+from pipeline.steps.step3_load_external.parsers.span_common import SemanticSpan, is_reference_key
 from pipeline.steps.step3_load_external.span_verifier import (
     SpanVerificationError,
     verify_spans,
@@ -82,7 +82,9 @@ def _skill_chunks(
         SemanticSpan(
             char_start=match.start,
             char_end=match.end,
-            keys=(match.key,),
+            # 어댑터 경로와 같은 식별자 형태 게이트 — 형태 미달 key 는 링킹 대상에서
+            # 제외한다 (청크는 유지). custom key 가 REFER_TO 오연결을 만들지 않게.
+            keys=(match.key,) if is_reference_key(match.key) else (),
             semantic_kind="agent_segment",
             name=match.key,
         )
@@ -118,9 +120,15 @@ async def scan_external_step(state: dict, config: Optional[RunnableConfig] = Non
 
     decoded: dict[str, str] = {}
     grouped: dict[str, list[ProjectFile]] = defaultdict(list)
+    undecodable: list[tuple[ProjectFile, str]] = []
     for file in unknown_files:
         path = resolve_within(root, file.relpath)
-        decoded[file.id] = read_text(path, source_cache).text
+        try:
+            decoded[file.id] = read_text(path, source_cache).text
+        except TextDecodeError as error:
+            # 해독 불가 파일 하나가 run 전체를 죽이면 안 된다 — 그 파일만 정직 미분석.
+            undecodable.append((file, str(error)))
+            continue
         grouped[file.ext or Path(file.relpath).suffix.lower()].append(file)
 
     loaded_skills = load_external_skills(skills_root)
@@ -134,6 +142,8 @@ async def scan_external_step(state: dict, config: Optional[RunnableConfig] = Non
             updated[file.id] = replace(file, status="unanalyzed", reason=reason)
 
     with step_processing_scope(_STEP, stream):
+        for file, detail in undecodable:
+            reject([file], "undecodable_text", detail)
         for extension, files in sorted(grouped.items()):
             await gate()
             samples = [decoded[file.id] for file in files]

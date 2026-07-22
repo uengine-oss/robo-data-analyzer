@@ -203,6 +203,69 @@ class ScanExternalStepTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("unanalyzed", result["project_files"][0].status)
             self.assertEqual("pattern_rejected", result["project_files"][0].reason)
 
+    async def test_undecodable_file_is_rejected_without_killing_the_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "source"
+            skills = Path(temp) / "skills"
+            root.mkdir()
+            (root / "broken.cfgx").write_bytes(b"\x00\x01\xff\xfe" * 40)
+            (root / "settings.cfgx").write_text("ORDER.API=/orders\n", encoding="utf-8", newline="\n")
+            persist_external_skill(_skill(), skills)
+            invoke = AsyncMock()
+
+            with (
+                patch("pipeline.steps.step4_scan_project.scan_external_step.EXTERNAL_SKILLS_DIR", skills),
+                patch("pipeline.steps.step4_scan_project.scan_external_step.run_external_agent", invoke),
+            ):
+                result = await scan_external_step(
+                    {
+                        "project_files": [
+                            _project_file("broken.cfgx"), _project_file("settings.cfgx"),
+                        ],
+                        "external_chunks": [],
+                    },
+                    _config(root),
+                )
+
+            # 해독 불가 파일은 run 을 죽이지 않고 혼자 미분석으로 남는다.
+            by_path = {f.relpath: (f.status, f.reason) for f in result["project_files"]}
+            self.assertEqual(("unanalyzed", "undecodable_text"), by_path["broken.cfgx"])
+            self.assertEqual(("analyzed", ""), by_path["settings.cfgx"][:1] + (by_path["settings.cfgx"][1],))
+
+    async def test_non_identifier_keys_never_become_link_targets(self) -> None:
+        # custom key 는 어댑터와 같은 식별자 형태 게이트를 거친다 — 형태 미달이면
+        # 청크는 남되 링킹 대상 key 가 되지 않는다 (REFER_TO 오염 차단).
+        loose = ExternalSkill(
+            name="loose-sentence",
+            extensions=(".cfgx",),
+            content_signatures=("=",),
+            rules=(ExternalExtractionRule(
+                name="entry",
+                pattern=r"(?m)^(?P<key>[A-Z]+ [A-Z]+)=(?P<value>.+)$",
+                key_group="key",
+                value_group="value",
+            ),),
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "source"
+            skills = Path(temp) / "skills"
+            root.mkdir()
+            source = "ORDER API=/orders\n"
+            (root / "settings.cfgx").write_text(source, encoding="utf-8", newline="\n")
+            persist_external_skill(loose, skills)
+
+            with patch(
+                "pipeline.steps.step4_scan_project.scan_external_step.EXTERNAL_SKILLS_DIR", skills,
+            ):
+                result = await scan_external_step(
+                    {"project_files": [_project_file()], "external_chunks": []},
+                    _config(root),
+                )
+
+            chunk = result["external_chunks"][0]
+            self.assertEqual((), chunk.keys)
+            self.assertEqual(source[chunk.char_start:chunk.char_end], chunk.text)
+
     async def test_agent_rejection_keeps_files_honestly_unanalyzed(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "source"
