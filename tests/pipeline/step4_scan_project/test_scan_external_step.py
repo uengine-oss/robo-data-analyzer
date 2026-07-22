@@ -129,7 +129,7 @@ class ScanExternalStepTest(unittest.IsolatedAsyncioTestCase):
             all_keys = {key for chunk in result["external_chunks"] for key in chunk.keys}
             self.assertEqual({"ORDER.API", "STOCK.API"}, all_keys)
 
-    async def test_single_file_without_held_out_stays_unanalyzed(self) -> None:
+    async def test_single_small_file_without_repetition_stays_unanalyzed(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "source"
             skills = Path(temp) / "skills"
@@ -150,6 +150,58 @@ class ScanExternalStepTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([], result["external_chunks"])
             self.assertEqual("unanalyzed", result["project_files"][0].status)
             self.assertEqual("no_held_out_evidence", result["project_files"][0].reason)
+
+    async def test_single_file_with_repetition_promotes_via_intra_file_held_out(self) -> None:
+        source = "".join(f"KEY{i:02d}.PATH=/v{i}\n" for i in range(30))
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "source"
+            skills = Path(temp) / "skills"
+            root.mkdir()
+            (root / "settings.cfgx").write_text(source, encoding="utf-8", newline="\n")
+            invoke = AsyncMock(return_value=validate_external_skill(_skill(), [source]))
+
+            with (
+                patch("pipeline.steps.step4_scan_project.scan_external_step.EXTERNAL_SKILLS_DIR", skills),
+                patch("pipeline.steps.step4_scan_project.scan_external_step.run_external_agent", invoke),
+            ):
+                result = await scan_external_step(
+                    {"project_files": [_project_file()], "external_chunks": []},
+                    _config(root),
+                )
+
+            invoke.assert_awaited_once()
+            # Agent 는 앞 70%(21줄)만 본다 — 뒷부분은 미관측 held-out 증거.
+            observed = invoke.await_args.kwargs["samples"]
+            self.assertEqual(["".join(source.splitlines(keepends=True)[:21])], observed)
+            self.assertEqual("analyzed", result["project_files"][0].status)
+            # 청크는 분할과 무관하게 파일 전문에서 생성된다.
+            self.assertEqual(30, len(result["external_chunks"]))
+            self.assertTrue((skills / _skill().name / "SKILL.md").is_file())
+
+    async def test_single_file_whose_tail_breaks_the_rule_is_rejected(self) -> None:
+        source = "".join(f"KEY{i:02d}.PATH=/v{i}\n" for i in range(21)) + "opaque tail\n" * 9
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "source"
+            skills = Path(temp) / "skills"
+            root.mkdir()
+            (root / "settings.cfgx").write_text(source, encoding="utf-8", newline="\n")
+            invoke = AsyncMock(return_value=validate_external_skill(
+                _skill(), ["".join(source.splitlines(keepends=True)[:21])]))
+
+            with (
+                patch("pipeline.steps.step4_scan_project.scan_external_step.EXTERNAL_SKILLS_DIR", skills),
+                patch("pipeline.steps.step4_scan_project.scan_external_step.run_external_agent", invoke),
+            ):
+                result = await scan_external_step(
+                    {"project_files": [_project_file()], "external_chunks": []},
+                    _config(root),
+                )
+
+            # held-out(뒷부분)에서 규칙이 죽으면 1회 재제안 후에도 실패 → 정직 거부.
+            self.assertEqual(2, invoke.await_count)
+            self.assertEqual([], result["external_chunks"])
+            self.assertEqual("unanalyzed", result["project_files"][0].status)
+            self.assertEqual("pattern_rejected", result["project_files"][0].reason)
 
     async def test_agent_rejection_keeps_files_honestly_unanalyzed(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

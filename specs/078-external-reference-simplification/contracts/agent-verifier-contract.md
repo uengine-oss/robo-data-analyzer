@@ -8,9 +8,12 @@
   1. slice-exact: 각 span에 대해 `slice == decoded_source[start:end]`
   2. no-overlap: span 상호 무중첩·정렬 가능
   3. bounds: 파일 범위 내, 빈 span 금지
-  4. **held-out**: 같은 형식으로 분류된 파일 중 제안에 사용하지 않은 파일에서
-     같은 skill이 불변식을 유지 (held-out 0건이면 승격 불가 — 그 파일들은
-     `unanalyzed` 유지)
+  4. **held-out**: Agent 가 관찰하지 않은 데이터에서 같은 skill이 불변식을 유지해야
+     승격한다. 증거의 단위는 파일이 아니라 미관측 데이터다:
+     - 파일 2개 이상: 제안에 사용하지 않은 파일(크기 오름차순 최소 1개)이 held-out.
+     - 파일 1개: 파일 내부 반복이 충분하면(비공백 20줄 이상) 라인 경계 앞 70%만
+       관찰시키고 뒤 30%(비공백 5줄 이상)를 held-out 으로 쓴다.
+     - 어느 쪽도 성립하지 않으면 승격 불가 — 그 파일들은 `unanalyzed` 유지.
   5. negative: 다른 형식 decoy 샘플에서 매치 폭주(파일 전체 삼킴·0폭 매치 등) 없음
 - 전부 통과 시에만 span을 청크로 확정. 하나라도 실패하면 청크 0개 +
   `unanalyzed`/사유 (fail-closed). LLM 후보 간 합의는 후보 선별 신호일 뿐 승인

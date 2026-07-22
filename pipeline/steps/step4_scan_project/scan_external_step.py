@@ -55,6 +55,25 @@ _BUILTIN_NEGATIVE_SAMPLES = (
 )
 
 
+# 파일 내 held-out 분할 기준: 검증 증거의 단위는 파일이 아니라 반복 레코드다.
+# 최소 반복 증거(비공백 20줄)와 유의미한 미관측 구간(비공백 5줄)이 있어야 하며,
+# 라인 경계로만 자른다. 기준 미달이면 분할하지 않는다(정직한 미분석 유지).
+_INTRA_MIN_LINES = 20
+_INTRA_MIN_HELD_OUT_LINES = 5
+_INTRA_TRAIN_RATIO = 0.7
+
+
+def _intra_file_held_out(text: str) -> tuple[str, str] | None:
+    lines = text.splitlines(keepends=True)
+    if sum(1 for line in lines if line.strip()) < _INTRA_MIN_LINES:
+        return None
+    cut = int(len(lines) * _INTRA_TRAIN_RATIO)
+    train, held_out = "".join(lines[:cut]), "".join(lines[cut:])
+    if sum(1 for line in held_out.splitlines() if line.strip()) < _INTRA_MIN_HELD_OUT_LINES:
+        return None
+    return train, held_out
+
+
 def _skill_chunks(
     validated: ValidatedExternalSkill, file: ProjectFile, source: str,
 ) -> tuple[list[ExternalChunk], list[HasChunk]]:
@@ -143,11 +162,6 @@ async def scan_external_step(state: dict, config: Optional[RunnableConfig] = Non
                     log_warning(_STEP, "stored_skill_rejected", str(error), skill=matches[0].name)
 
             if validated is None:
-                if len(samples) < 2:
-                    # held-out 검증 없이는 새 skill 을 승격할 수 없다 (agent-verifier-contract).
-                    reject(files, "no_held_out_evidence",
-                           f"single {extension} file cannot provide held-out validation")
-                    continue
                 run = cfg.get("run")
                 cost_budget = cfg.get("cost_budget")
                 llm_semaphore = cfg.get("llm_semaphore")
@@ -155,9 +169,20 @@ async def scan_external_step(state: dict, config: Optional[RunnableConfig] = Non
                     raise RuntimeError(
                         "unknown external format requires run/cost_budget/llm_semaphore/pause configurable"
                     )
-                # train 은 큰 파일부터 — 구조 증거가 많은 쪽을 관찰시키고 작은 쪽을 held-out 으로.
-                ordered = sorted(samples, key=len, reverse=True)
-                train_samples, held_out_samples = ordered[:-1], ordered[-1:]
+                if len(samples) >= 2:
+                    # train 은 큰 파일부터 — 구조 증거가 많은 쪽을 관찰시키고 작은 쪽을 held-out 으로.
+                    ordered = sorted(samples, key=len, reverse=True)
+                    train_samples, held_out_samples = ordered[:-1], ordered[-1:]
+                else:
+                    # 파일이 1개뿐이면 파일 내부 반복으로 미관측 증거를 만든다:
+                    # 앞부분만 관찰시키고 뒷부분(held-out)은 Agent 가 보지 못한다.
+                    # 반복이 빈약해 분할이 성립하지 않으면 종전대로 정직하게 미분석.
+                    split = _intra_file_held_out(samples[0])
+                    if split is None:
+                        reject(files, "no_held_out_evidence",
+                               f"single {extension} file lacks enough repetition for intra-file held-out")
+                        continue
+                    train_samples, held_out_samples = [split[0]], [split[1]]
                 heldout_feedback = ""
                 validated = None
                 try:
