@@ -9,6 +9,7 @@ from typing import Awaitable, Callable, Optional
 
 from agents import AGENTS_PACKAGE_DIR
 from agents.runtime import run_structured_agent
+from agents.tools.validation import make_verify_external_rule_tool
 from llm.fanout import gather_with_warmup
 from llm.usage.cost_budget import BudgetExceededError, CostBudget
 from pipeline.execution.pause_controller import PauseController
@@ -70,14 +71,20 @@ async def run_external_agent(
         raise ExternalAgentRejected("external agent requires at least one text sample")
 
     async def default_invoke(candidate: int, attempt: int, feedback: str) -> ExternalSkill:
+        # 규칙을 실제 samples 에 돌려보는 검증 도구 — 약한 로컬 모델도 상상 대신
+        # 경험적 피드백으로 규칙을 다듬을 수 있다 (Scan 의 verify_table_regex 와 동형).
+        verify_tool = make_verify_external_rule_tool(
+            [sample[:20000] for sample in samples[:3]],
+            [sample[:20000] for sample in negative_samples[:5]],
+        )
         return await run_structured_agent(
             agent_name="external",
             invoke_id=f"candidate-{candidate}-attempt-{attempt}",
             system_prompt=_SYSTEM_PROMPT_PATH.read_text(encoding="utf-8"),
-            tools=[],
+            tools=[verify_tool],
             response_format=ExternalSkill,
             user_message=_user_message(extension, samples, feedback),
-            max_calls=6,
+            max_calls=12,
             run_dir=run_dir,
             cost_budget=cost_budget,
             stream_emit=stream_emit,
@@ -122,24 +129,32 @@ async def run_external_agent(
             log_error("step4.external_agent", "candidate_rejected", result, candidate=index)
             continue
         accepted.append(result)
+    if not accepted:
+        raise ExternalAgentRejected(
+            f"external skill proposals all failed deterministic validation (candidates={CONSENSUS_N})"
+        )
+    # 합의는 후보 "선별" 신호다 — 승인 근거가 아니다 (agent-verifier-contract).
+    # accepted 는 이미 전원 결정론 검증(samples+negative)을 통과했고, 최종 승인은
+    # 호출부의 held-out 게이트가 한다. 따라서 ≥CONSENSUS_AGREE 동률 그룹이 없어도
+    # 기각하지 않고 최대 그룹 대표를 선별한다 (공백 처리 등 미세 차이로 결과셋이
+    # 갈리는 약한 로컬 모델에서 유효한 제안을 버리지 않기 위함 — 실측 근거).
     groups: dict[tuple, list[ValidatedExternalSkill]] = defaultdict(list)
     for validated in accepted:
         groups[_result_signature(validated, samples)].append(validated)
-    winners = [group for group in groups.values() if len(group) >= CONSENSUS_AGREE]
-    if not winners:
-        raise ExternalAgentRejected(
-            f"external skill consensus failed: accepted={len(accepted)} groups={[len(group) for group in groups.values()]}"
-        )
-    winning_group = max(winners, key=lambda group: (len(group), tuple(_result_signature(group[0], samples))))
+    winning_group = max(
+        groups.values(),
+        key=lambda group: (len(group), tuple(_result_signature(group[0], samples))),
+    )
     selected = min(
         winning_group,
         key=lambda item: (sum(len(rule.pattern) for rule in item.skill.rules), item.fingerprint),
     )
     log_info(
         "step4.external_agent",
-        "consensus",
+        "consensus" if len(winning_group) >= CONSENSUS_AGREE else "consensus_soft",
         accepted=len(accepted),
         agreeing=len(winning_group),
+        groups=sorted((len(group) for group in groups.values()), reverse=True),
         skill=selected.skill.name,
     )
     return selected

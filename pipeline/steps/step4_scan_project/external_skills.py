@@ -158,6 +158,27 @@ def _apply_rule(
     return output
 
 
+def probe_extraction_rule(
+    pattern: str,
+    key_group: str,
+    text: str,
+    *,
+    timeout_seconds: float = 0.05,
+    max_matches: int = 1000,
+) -> list[ExternalRuleMatch]:
+    """Run one candidate rule against one text with the production engine.
+
+    Shared by the agent's verify tool so "what the agent verified" is byte-for-
+    byte "what validation/production will execute" (same safety checks, same
+    span semantics).  Raises ``ExternalSkillValidationError`` on any rejection.
+    """
+    try:
+        rule = ExternalExtractionRule(name="candidate", pattern=pattern, key_group=key_group)
+    except Exception as error:
+        raise ExternalSkillValidationError(f"invalid rule fields: {error}") from error
+    return _apply_rule(rule, text, timeout_seconds=timeout_seconds, max_matches=max_matches)
+
+
 def _fingerprint(skill: ExternalSkill) -> str:
     payload = json.dumps(skill.model_dump(mode="json"), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()

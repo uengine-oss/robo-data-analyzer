@@ -48,6 +48,24 @@ class ExternalAgentTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(selected.skill.name.startswith("candidate-"))
         self.assertIn("CFG", selected.skill.rules[0].pattern)
 
+    async def test_soft_consensus_selects_largest_group_below_agree_threshold(self) -> None:
+        # 합의는 선별 신호일 뿐 승인 근거가 아니다(agent-verifier-contract) —
+        # 전원 결정론 검증을 통과했지만 결과셋이 3/4 로 갈려 4표 미달이어도
+        # 최대 그룹 대표를 선별한다 (최종 승인은 호출부 held-out 게이트).
+        async def invoke(candidate: int, attempt: int, feedback: str) -> ExternalSkill:
+            return _skill("CFG", f"candidate-{candidate}") if candidate < 3 else _skill("ALT", f"candidate-{candidate}")
+
+        selected = await self._run(invoke)
+        self.assertTrue(selected.is_validated)
+        self.assertIn("ALT", selected.skill.rules[0].pattern)   # 4표 그룹(ALT)이 최대
+
+    async def test_all_candidates_invalid_is_still_rejected(self) -> None:
+        async def invoke(candidate: int, attempt: int, feedback: str) -> ExternalSkill:
+            return _skill("MISS", f"candidate-{candidate}")      # 어떤 sample 도 못 맞춤
+
+        with self.assertRaises(ExternalAgentRejected):
+            await self._run(invoke, ["CFG[shop.title] = 쇼핑몰"])
+
     async def test_one_repair_succeeds_and_never_exceeds_r2(self) -> None:
         calls: dict[int, int] = {}
 

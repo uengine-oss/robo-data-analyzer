@@ -1,10 +1,11 @@
-"""Scan Agent 의 정규식 검증 도구.
+"""Agent 정규식 검증 도구 모음.
 
-``verify_table_regex`` — 에이전트가 차용/작성한 table-access 정규식을 실제 소스에
-돌려보고 매치·해소 결과를 받아본다. 에이전트는 이 피드백으로 정규식을 고친다.
+``verify_table_regex`` — Scan Agent 가 table-access 정규식을 실제 소스에 돌려보고
+매치·해소 결과를 받아본다. 엔진은 step5 stage1의 ``RegexTableLinker`` 그대로.
 
-검증 엔진은 step5 stage1의 ``RegexTableLinker`` 그대로 — "에이전트가 검증한
-정규식 == 링킹이 실제로 쓰는 정규식" 을 코드 한 곳으로 보장한다.
+``verify_external_rule`` — External Format Agent 가 청크 분할 규칙을 실제 samples 에
+돌려보고 스팬·키 결과를 받아본다. 엔진은 step4 ``external_skills`` 의 production
+적용 경로 그대로 — "에이전트가 검증한 규칙 == 검증기/운영이 실행할 규칙".
 """
 from __future__ import annotations
 
@@ -96,3 +97,60 @@ def make_verify_table_regex_tool(
         return "\n".join(lines)
 
     return verify_table_regex
+
+
+def make_verify_external_rule_tool(samples: list[str], negative_samples: list[str]):
+    """``verify_external_rule`` 도구 생성 — 미지 형식 samples/negative 를 묶는다."""
+    from pipeline.steps.step4_scan_project.external_skills import (
+        ExternalSkillValidationError,
+        probe_extraction_rule,
+    )
+
+    @tool
+    def verify_external_rule(pattern: str, key_group: str = "key") -> str:
+        """청크 분할 규칙 후보 1개를 실제 samples 에 적용 → 스팬·키 결과 리포트.
+
+        **언제 사용**: 규칙을 설계한 뒤 submit_external 전에 **반드시** 규칙마다 1회.
+        결과가 나쁘면 규칙을 고쳐 재호출한다.
+
+        **인자**:
+        - `pattern`: MULTILINE 로 컴파일되는 정규식. 전체 매치 = 청크 하나.
+          key 는 named group 으로 (예: `(?P<key>...)`).
+        - `key_group`: key 를 담은 그룹 이름 (소문자·숫자·밑줄만).
+
+        **결과 읽는 법**:
+        - 각 sample 의 매치 수와 (key → 매치 원문 앞부분) 목록. 매치가 레코드 전체를
+          덮는지, key 가 올바른지 여기서 직접 확인한다.
+        - `REJECTED:` = 규칙 자체가 실격 (금지 구문·빈 키·zero-width 등) — 원인대로 수정.
+        - `NEGATIVE_MATCH` = 다른 형식 decoy 까지 삼킴 — 규칙이 너무 넓다.
+        - 어떤 sample 이 매치 0건이면 그 구조를 다시 관찰하라.
+        """
+        lines: list[str] = []
+        for index, sample in enumerate(samples):
+            try:
+                matches = probe_extraction_rule(pattern, key_group, sample)
+            except ExternalSkillValidationError as error:
+                return f"REJECTED: {error}"
+            lines.append(f"sample[{index}]: 매치 {len(matches)}건")
+            for match in matches[:8]:
+                excerpt = sample[match.start:match.end].replace("\n", "\\n")
+                if len(excerpt) > 90:
+                    excerpt = excerpt[:90] + "…"
+                lines.append(f"  key='{match.key}' span=[{match.start}:{match.end}] text='{excerpt}'")
+            if len(matches) > 8:
+                lines.append(f"  … 외 {len(matches) - 8}건")
+        negative_hits = 0
+        for sample in negative_samples:
+            try:
+                if probe_extraction_rule(pattern, key_group, sample):
+                    negative_hits += 1
+            except ExternalSkillValidationError:
+                continue                     # 실격 사유는 위 positive 경로에서 이미 보고됨
+        if negative_hits:
+            lines.append(
+                f"NEGATIVE_MATCH: 다른 형식 decoy {negative_hits}개 파일에서 매치 발생 — "
+                "규칙이 너무 넓다. 이 형식 고유의 구조(고정 토큰·구분자)로 좁혀라."
+            )
+        return "\n".join(lines)
+
+    return verify_external_rule
