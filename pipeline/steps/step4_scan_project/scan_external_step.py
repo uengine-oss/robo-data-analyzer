@@ -155,24 +155,44 @@ async def scan_external_step(state: dict, config: Optional[RunnableConfig] = Non
                     raise RuntimeError(
                         "unknown external format requires run/cost_budget/llm_semaphore/pause configurable"
                     )
-                train_samples, held_out_samples = samples[:-1], samples[-1:]
+                # train 은 큰 파일부터 — 구조 증거가 많은 쪽을 관찰시키고 작은 쪽을 held-out 으로.
+                ordered = sorted(samples, key=len, reverse=True)
+                train_samples, held_out_samples = ordered[:-1], ordered[-1:]
+                heldout_feedback = ""
+                validated = None
                 try:
-                    proposed = await run_external_agent(
-                        extension=extension,
-                        samples=train_samples,
-                        negative_samples=negative_samples,
-                        run_dir=run.run_dir,
-                        cost_budget=cost_budget,
-                        llm_semaphore=llm_semaphore,
-                        pause=pause,
-                        stream_emit=stream.emit if stream is not None else None,
-                    )
-                    # 결정론 held-out 게이트: 제안에 쓰지 않은 파일에서도 성립해야 승격.
-                    validated = validate_external_skill(
-                        proposed.skill, held_out_samples, negative_samples=negative_samples)
+                    # held-out 실패는 사유를 피드백으로 1회 재제안한다 — 승인 권한은
+                    # 여전히 결정론 게이트에 있고, Agent 는 교정 기회만 얻는다.
+                    for _held_out_attempt in range(2):
+                        proposed = await run_external_agent(
+                            extension=extension,
+                            samples=train_samples,
+                            negative_samples=negative_samples,
+                            run_dir=run.run_dir,
+                            cost_budget=cost_budget,
+                            llm_semaphore=llm_semaphore,
+                            pause=pause,
+                            stream_emit=stream.emit if stream is not None else None,
+                            initial_feedback=heldout_feedback,
+                        )
+                        try:
+                            validated = validate_external_skill(
+                                proposed.skill, held_out_samples,
+                                negative_samples=negative_samples)
+                            break
+                        except ExternalSkillValidationError as error:
+                            heldout_feedback = (
+                                f"held-out validation failed: {error} — 규칙이 관찰 파일에만 "
+                                "있는 접두/토큰을 리터럴로 고정하지 않았는지 점검하고, "
+                                "구조(문자 부류)로 일반화한 변형을 채택하라."
+                            )
+                            log_warning(_STEP, "held_out_retry", str(error), extension=extension)
+                    if validated is None:
+                        reject(files, "pattern_rejected", heldout_feedback)
+                        continue
                     persist_external_skill(validated.skill, skills_root)
                     loaded_skills.append(validated.skill)
-                except (ExternalAgentRejected, ExternalSkillValidationError) as error:
+                except ExternalAgentRejected as error:
                     reject(files, "pattern_rejected", str(error))
                     continue
 

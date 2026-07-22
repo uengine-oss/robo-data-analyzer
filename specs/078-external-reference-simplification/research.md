@@ -176,3 +176,27 @@ CANDIDATE_LINK/역FQN/외부 SQL→TABLE 파생 = 전부 제거.
 
 이 선정은 스파이크 실측(20/20)·라이선스 실측·코퍼스 실측에 근거하며, 딥리서치 결과에
 의존하되 종속되지 않는다.
+
+## 9. Agent 고도화 — 딥리서치 2호(구조 마이닝) 반영 (2026-07-22)
+
+원문: [research/deep-research-2-structure-mining.md](research/deep-research-2-structure-mining.md).
+채택 방식은 "갈아엎기"가 아니라 **후보 생성 단계만 결정론으로 보강** — verifier·held-out
+게이트·계약(agent-verifier-contract)은 불변이다.
+
+- **기성 라이브러리 기각**: Drain3·logparser 계열은 전처리(strip)·재토큰화로 원문 span을
+  파괴한다. `chunk.text == source[start:end]` 불변식과 양립 불가 → Drain의 *원리*(고정
+  깊이 토큰 클래스 군집)만 자체 구현. → `structure_miner.py` (순수 Python, 신규 의존성 0).
+- **결정론 구조 마이너**: 토큰 클래스(W/N/S/구두점) 시퀀스로 라인 군집 → 상수/변수 판별 →
+  후보 정규식 합성(key=최초 유일 식별자 변수 run) + **접두 일반화 변형(widened variant)**
+  대안 제공 → `probe_extraction_rule`(production 엔진 단일 진실)로 자가검증 후만 노출.
+  줄레코드·구획블록·구분자표·섹션 4계열, CRLF 대응.
+- **Agent 역할 재정의**: 1차 책임은 마이너 후보(`list_structure_candidates`) *검토·선택*,
+  발명은 최후수단. 탐색 도구(sample_overview/read_sample_range/grep_samples)로 전문 확인,
+  verify_external_rule로 제출 전 자가검증(꼬리 미매치 경고 포함). 큰 파일은 미리보기
+  (4KB)+전문 도구 조합으로 처리 — 마이너는 항상 전문을 스캔한다.
+- **held-out 재시도 1회**: held-out 실패 사유를 `initial_feedback`으로 전 후보 첫
+  프롬프트에 주입해 1회 재제안. 승인 권한은 여전히 결정론 게이트. train은 크기 내림차순
+  배정(구조 증거가 많은 파일을 관찰시키고 작은 파일을 held-out으로).
+- **실측**: 4형식(줄레코드 .ifd/블록 .blkdef/구분자표 .tbl/섹션 .sect) 승격 4/4·링킹 4/4·
+  slice 불일치 0. 큰 파일(21KB, 4KB 미리보기 밖 구조 전환) 800청크·두 구조 모두 추출 PASS.
+  전부 로컬 GPU 모델(qwen36_sglang_local)만 사용.

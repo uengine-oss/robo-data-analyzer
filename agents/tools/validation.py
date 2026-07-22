@@ -131,7 +131,7 @@ def make_verify_external_rule_tool(samples: list[str], negative_samples: list[st
                 matches = probe_extraction_rule(pattern, key_group, sample)
             except ExternalSkillValidationError as error:
                 return f"REJECTED: {error}"
-            lines.append(f"sample[{index}]: 매치 {len(matches)}건")
+            lines.append(f"sample[{index}]: 매치 {len(matches)}건 (파일 {len(sample):,}자)")
             for match in matches[:8]:
                 excerpt = sample[match.start:match.end].replace("\n", "\\n")
                 if len(excerpt) > 90:
@@ -139,6 +139,16 @@ def make_verify_external_rule_tool(samples: list[str], negative_samples: list[st
                 lines.append(f"  key='{match.key}' span=[{match.start}:{match.end}] text='{excerpt}'")
             if len(matches) > 8:
                 lines.append(f"  … 외 {len(matches) - 8}건")
+            # 큰 파일 안전망: 매치가 앞부분에만 몰려 있으면 뒤쪽에 다른 구조가 있다는 신호.
+            if matches:
+                tail_start = matches[-1].end
+                tail = sample[tail_start:]
+                if len(tail.strip()) > 200:
+                    tail_line = sample.count("\n", 0, tail_start) + 1
+                    lines.append(
+                        f"  ⚠ 마지막 매치 이후 {len(tail):,}자({tail_line}줄 이후)에 매치가 없다 — "
+                        f"read_sample_range({index}, {tail_line}) 로 뒤쪽 구조를 확인하라."
+                    )
         negative_hits = 0
         for sample in negative_samples:
             try:
