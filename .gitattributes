@@ -1,0 +1,3 @@
+# Gold corpus fixtures are byte-exact answer keys (spec 078) — the boundary
+# tests compare exact CR/LF and encodings, so git must never convert them.
+tests/pipeline/step3_load_external/gold/fixtures/** -text
