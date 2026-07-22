@@ -1,8 +1,10 @@
 """Step4 unknown-format learning and deterministic custom chunk application (spec 078).
 
 The Agent only proposes span-producing skills; a deterministic verifier gate
-decides.  A freshly proposed skill is promoted only when it also holds on a
-held-out file it never saw, and every skill must reject negative decoys.
+decides.  A freshly proposed skill is promoted only when it also holds on
+held-out evidence the Agent never observed — another file of the group, or
+the hidden tail of a lone file — and every skill must reject negative decoys.
+Format groups are built from dominant line shapes, not filename extensions.
 Files that cannot be verified stay honestly ``unanalyzed`` — no partial chunks.
 """
 from __future__ import annotations
@@ -32,6 +34,7 @@ from pipeline.steps.step3_load_external.span_verifier import (
     verify_spans,
 )
 from pipeline.steps.step4_scan_project.external_skills import (
+    ExternalSkill,
     ExternalSkillValidationError,
     ValidatedExternalSkill,
     apply_validated_external_skill,
@@ -67,7 +70,7 @@ _INTRA_TRAIN_RATIO = 0.7
 def _shape_groups(
     files: list[ProjectFile], profiles: dict[str, frozenset],
 ) -> list[tuple[set, list[ProjectFile]]]:
-    """같은 확장자 안에서 내용 모양이 겹치는 파일끼리 묶는다 (감사 반영).
+    """같은 확장자 안에서 내용 모양이 겹치는 파일끼리 묶는다.
 
     "같은 확장자 = 같은 형식" 은 이름 기반 짐작이라 혼합 확장자에서 오분할을
     낳는다 — 지배적 줄 모양이 하나라도 겹칠 때만 같은 형식으로 본다. 겹침이
@@ -135,6 +138,82 @@ def _skill_chunks(
         file_id=file.id, relpath=file.relpath, source=source, verified=verified)
 
 
+async def _learn_group_skill(
+    *,
+    extension: str,
+    samples: list[str],
+    negative_samples: list[str],
+    cfg: dict,
+    pause,
+    stream,
+    skills_root: Path,
+    loaded_skills: list[ExternalSkill],
+) -> tuple[ValidatedExternalSkill | None, tuple[str, str] | None]:
+    """한 형식 그룹의 새 skill 학습 — Agent 제안 → held-out 게이트 → 저장.
+
+    성공 시 (validated, None), 실패 시 (None, (reason, detail)) 로 호출부가 reject 한다.
+    승인 권한은 끝까지 결정론 게이트(held-out)에 있다.
+    """
+    run = cfg.get("run")
+    cost_budget = cfg.get("cost_budget")
+    llm_semaphore = cfg.get("llm_semaphore")
+    if run is None or cost_budget is None or llm_semaphore is None or pause is None:
+        raise RuntimeError(
+            "unknown external format requires run/cost_budget/llm_semaphore/pause configurable"
+        )
+    if len(samples) >= 2:
+        # train 은 큰 파일부터 — 구조 증거가 많은 쪽을 관찰시키고 작은 쪽을 held-out 으로.
+        ordered = sorted(samples, key=len, reverse=True)
+        train_samples, held_out_samples = ordered[:-1], ordered[-1:]
+    else:
+        # 파일이 1개뿐이면 파일 내부 반복으로 미관측 증거를 만든다: 앞부분만
+        # 관찰시키고 뒷부분(held-out)은 Agent 가 보지 못한다. 반복이 빈약해
+        # 분할이 성립하지 않으면 종전대로 정직하게 미분석.
+        split = _intra_file_held_out(samples[0])
+        if split is None:
+            return None, ("no_held_out_evidence",
+                          f"single {extension} file lacks enough repetition for intra-file held-out")
+        train_samples, held_out_samples = [split[0]], [split[1]]
+
+    heldout_feedback = ""
+    try:
+        # held-out 실패는 사유를 피드백으로 1회 재제안한다 — Agent 는 교정 기회만 얻는다.
+        for _held_out_attempt in range(2):
+            proposed = await run_external_agent(
+                extension=extension,
+                samples=train_samples,
+                negative_samples=negative_samples,
+                run_dir=run.run_dir,
+                cost_budget=cost_budget,
+                llm_semaphore=llm_semaphore,
+                pause=pause,
+                stream_emit=stream.emit if stream is not None else None,
+                initial_feedback=heldout_feedback,
+            )
+            try:
+                validated = validate_external_skill(
+                    proposed.skill, held_out_samples, negative_samples=negative_samples)
+            except ExternalSkillValidationError as error:
+                heldout_feedback = (
+                    f"held-out validation failed: {error} — 규칙이 관찰 파일에만 "
+                    "있는 접두/토큰을 리터럴로 고정하지 않았는지 점검하고, "
+                    "구조(문자 부류)로 일반화한 변형을 채택하라."
+                )
+                log_warning(_STEP, "held_out_retry", str(error), extension=extension)
+                continue
+            if extension:
+                persist_external_skill(validated.skill, skills_root)
+                loaded_skills.append(validated.skill)
+            else:
+                # 확장자 없는 파일용 skill 은 재사용 매칭 근거(확장자)가 없어 저장하지
+                # 않는다 — 와일드카드 재사용은 형식 납치 위험이 더 크다. run 내에서만 사용.
+                log_info(_STEP, "extensionless_skill_in_run_only", skill=validated.skill.name)
+            return validated, None
+    except ExternalAgentRejected as error:
+        return None, ("pattern_rejected", str(error))
+    return None, ("pattern_rejected", heldout_feedback)
+
+
 async def scan_external_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
     unknown_files = [
         file for file in (state.get("project_files") or [])
@@ -197,7 +276,7 @@ async def scan_external_step(state: dict, config: Optional[RunnableConfig] = Non
             member_ids = {file.id for file in files}
             # 미끼는 "다른 그룹" 파일 중 모양이 겹치지 않는 것만 — 같은 형식이 두
             # 확장자로 존재할 때 서로를 실격시키던 가정("다른 확장자=다른 형식")을
-            # 내용 증거로 대체한다 (감사 반영). 같은 확장자의 다른 모양 그룹은
+            # 내용 증거로 대체한다. 같은 확장자의 다른 모양 그룹은
             # 이제 정당한 미끼가 된다.
             shape_safe_decoys = [
                 decoded[other.id][:20000]
@@ -225,69 +304,18 @@ async def scan_external_step(state: dict, config: Optional[RunnableConfig] = Non
                     log_warning(_STEP, "stored_skill_rejected", str(error), skill=matches[0].name)
 
             if validated is None:
-                run = cfg.get("run")
-                cost_budget = cfg.get("cost_budget")
-                llm_semaphore = cfg.get("llm_semaphore")
-                if run is None or cost_budget is None or llm_semaphore is None or pause is None:
-                    raise RuntimeError(
-                        "unknown external format requires run/cost_budget/llm_semaphore/pause configurable"
-                    )
-                if len(samples) >= 2:
-                    # train 은 큰 파일부터 — 구조 증거가 많은 쪽을 관찰시키고 작은 쪽을 held-out 으로.
-                    ordered = sorted(samples, key=len, reverse=True)
-                    train_samples, held_out_samples = ordered[:-1], ordered[-1:]
-                else:
-                    # 파일이 1개뿐이면 파일 내부 반복으로 미관측 증거를 만든다:
-                    # 앞부분만 관찰시키고 뒷부분(held-out)은 Agent 가 보지 못한다.
-                    # 반복이 빈약해 분할이 성립하지 않으면 종전대로 정직하게 미분석.
-                    split = _intra_file_held_out(samples[0])
-                    if split is None:
-                        reject(files, "no_held_out_evidence",
-                               f"single {extension} file lacks enough repetition for intra-file held-out")
-                        continue
-                    train_samples, held_out_samples = [split[0]], [split[1]]
-                heldout_feedback = ""
-                validated = None
-                try:
-                    # held-out 실패는 사유를 피드백으로 1회 재제안한다 — 승인 권한은
-                    # 여전히 결정론 게이트에 있고, Agent 는 교정 기회만 얻는다.
-                    for _held_out_attempt in range(2):
-                        proposed = await run_external_agent(
-                            extension=extension,
-                            samples=train_samples,
-                            negative_samples=negative_samples,
-                            run_dir=run.run_dir,
-                            cost_budget=cost_budget,
-                            llm_semaphore=llm_semaphore,
-                            pause=pause,
-                            stream_emit=stream.emit if stream is not None else None,
-                            initial_feedback=heldout_feedback,
-                        )
-                        try:
-                            validated = validate_external_skill(
-                                proposed.skill, held_out_samples,
-                                negative_samples=negative_samples)
-                            break
-                        except ExternalSkillValidationError as error:
-                            heldout_feedback = (
-                                f"held-out validation failed: {error} — 규칙이 관찰 파일에만 "
-                                "있는 접두/토큰을 리터럴로 고정하지 않았는지 점검하고, "
-                                "구조(문자 부류)로 일반화한 변형을 채택하라."
-                            )
-                            log_warning(_STEP, "held_out_retry", str(error), extension=extension)
-                    if validated is None:
-                        reject(files, "pattern_rejected", heldout_feedback)
-                        continue
-                    if extension:
-                        persist_external_skill(validated.skill, skills_root)
-                        loaded_skills.append(validated.skill)
-                    else:
-                        # 확장자 없는 파일용 skill 은 재사용 매칭 근거(확장자)가 없어
-                        # 저장하지 않는다 — 와일드카드 재사용은 형식 납치 위험이 더 크다.
-                        # 이번 run 안에서는 그대로 사용한다 (다음 run 은 재학습).
-                        log_info(_STEP, "extensionless_skill_in_run_only", skill=validated.skill.name)
-                except ExternalAgentRejected as error:
-                    reject(files, "pattern_rejected", str(error))
+                validated, failure = await _learn_group_skill(
+                    extension=extension,
+                    samples=samples,
+                    negative_samples=negative_samples,
+                    cfg=cfg,
+                    pause=pause,
+                    stream=stream,
+                    skills_root=skills_root,
+                    loaded_skills=loaded_skills,
+                )
+                if validated is None:
+                    reject(files, *failure)
                     continue
 
             for file in files:
@@ -317,7 +345,7 @@ async def scan_external_step(state: dict, config: Optional[RunnableConfig] = Non
     analyzed_count = sum(
         1 for file in unknown_files if updated[file.id].status == "analyzed")
     unanalyzed_count = len(unknown_files) - analyzed_count
-    # 전건 거부여도 성공처럼 읽히지 않게 분석/미분석을 그대로 표기한다 (감사 반영).
+    # 전건 거부여도 성공처럼 읽히지 않게 분석/미분석을 그대로 표기한다.
     emit_message(
         stream,
         f"외부 포맷 스캔 — 분석 {analyzed_count} · 미분석 {unanalyzed_count} · "

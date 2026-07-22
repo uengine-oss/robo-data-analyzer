@@ -1,4 +1,4 @@
-﻿"""Closed ExternalSkill schema, timeout validation and atomic persistence."""
+"""Closed ExternalSkill schema, timeout validation and atomic persistence."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -174,7 +174,7 @@ def _apply_rule(
     line_count = text.count("\n") + 1
     # key 반복 자체는 정상 데이터다(중복 key 는 링킹에서 무연결 처리) — 폭주는
     # "줄 수를 넘는 매치"와 결합할 때만 판정한다. 유일 key 가 몇 종뿐인 형식
-    # (등급/코드류)이 101번째 매치에서 죽던 가정을 제거 (감사 반영).
+    # (등급/코드류)이 101번째 매치에서 죽던 가정을 제거.
     if output and len(output) > max(100, len(unique_keys) * 20) and len(output) > line_count:
         raise ExternalSkillValidationError(f"rule {rule.name} caused duplicate explosion")
     return output
@@ -282,7 +282,7 @@ def persist_external_skill(skill: ExternalSkill, root: Path) -> Path:
     skill_dir.mkdir(parents=True, exist_ok=True)
     target = skill_dir / "SKILL.md"
     # 고정 tmp 이름은 동시 run 2개가 같은 skill 을 저장할 때 상대 쓰기를 지울 수
-    # 있다 (감사 반영) — 프로세스별 유일 이름으로 원자 교체.
+    # 있다 — 프로세스별 유일 이름으로 원자 교체.
     temporary = skill_dir / f".SKILL.md.{os.getpid()}.tmp"
     try:
         temporary.write_text(serialize_external_skill(skill), encoding="utf-8")
