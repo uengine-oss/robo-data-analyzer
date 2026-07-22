@@ -73,6 +73,13 @@ class ExternalSkillContractTest(unittest.TestCase):
             self.assertFalse(skill_matches_file(_skill(), ".java", "CFG[x]"))
             self.assertEqual([], list(root.glob("**/*.tmp")))
 
+    def test_repeated_keys_up_to_one_match_per_line_are_allowed(self) -> None:
+        # 유일 key 가 몇 종뿐인 형식(등급/코드류)은 정상 데이터다 — 줄 수를 넘지
+        # 않는 반복 매치는 폭주가 아니다 (감사 반영).
+        text = "".join(f"CFG[level.{i % 3}] = x\n" for i in range(150))
+        validated = validate_external_skill(_skill(), [text])
+        self.assertEqual(150, len(apply_validated_external_skill(validated, text)))
+
     def test_default_timeout_scales_with_text_size_and_is_capped(self) -> None:
         self.assertAlmostEqual(0.25, _effective_timeout(0))
         self.assertLess(_effective_timeout(21_269), _effective_timeout(5_000_000))

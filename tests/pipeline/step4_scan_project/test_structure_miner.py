@@ -9,7 +9,27 @@ from __future__ import annotations
 import unittest
 
 from pipeline.steps.step4_scan_project.external_skills import probe_extraction_rule
-from pipeline.steps.step4_scan_project.structure_miner import mine_rule_candidates
+from pipeline.steps.step4_scan_project.structure_miner import (
+    line_shape_profile,
+    mine_rule_candidates,
+)
+
+
+class LineShapeProfileTest(unittest.TestCase):
+    def test_dominant_shapes_only_and_small_files_keep_all(self) -> None:
+        # 큰 파일(비공백 9줄↑)은 3회 미만 모양을 잡음으로 버린다.
+        big = "".join(f"K{i}=1\n" for i in range(10)) + "산문 한 줄은 잡음이다\n"
+        self.assertEqual(1, len(line_shape_profile(big)))
+        # 작은 파일은 모든 줄이 유의미 — 한 줄짜리 레코드 파일도 프로파일을 가진다.
+        self.assertEqual(1, len(line_shape_profile("ORDER.API=/orders\n")))
+
+    def test_different_formats_have_disjoint_profiles(self) -> None:
+        records = "".join(f"KEY{i:02d}.PATH=/v{i}\n" for i in range(5))
+        table = "".join(f"row{i}|{i}|on\n" for i in range(5))
+        self.assertEqual(
+            frozenset(),
+            line_shape_profile(records) & line_shape_profile(table),
+        )
 
 
 def _spans_ok(pattern: str, samples: list[str]) -> int:

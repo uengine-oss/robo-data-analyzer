@@ -40,6 +40,7 @@ from pipeline.steps.step4_scan_project.external_skills import (
     skill_matches_file,
     validate_external_skill,
 )
+from pipeline.steps.step4_scan_project.structure_miner import line_shape_profile
 from shared.events.processing_events import step_processing_scope, track_processing
 from shared.events.runtime_logger import log_info, log_warning
 from shared.files.cache import SourceFileCache
@@ -61,6 +62,45 @@ _BUILTIN_NEGATIVE_SAMPLES = (
 _INTRA_MIN_LINES = 20
 _INTRA_MIN_HELD_OUT_LINES = 5
 _INTRA_TRAIN_RATIO = 0.7
+
+
+def _shape_groups(
+    files: list[ProjectFile], profiles: dict[str, frozenset],
+) -> list[tuple[set, list[ProjectFile]]]:
+    """같은 확장자 안에서 내용 모양이 겹치는 파일끼리 묶는다 (감사 반영).
+
+    "같은 확장자 = 같은 형식" 은 이름 기반 짐작이라 혼합 확장자에서 오분할을
+    낳는다 — 지배적 줄 모양이 하나라도 겹칠 때만 같은 형식으로 본다. 겹침이
+    전무한 파일(자유서식 포함)은 단독 그룹이 되어 파일 내 held-out 경로를 탄다.
+    """
+    groups: list[tuple[set, list[ProjectFile]]] = []
+    for file in files:
+        profile = set(profiles[file.id])
+        merged: tuple[set, list[ProjectFile]] | None = None
+        for group in groups:
+            if profile & group[0]:
+                group[0].update(profile)
+                group[1].append(file)
+                merged = group
+                break
+        if merged is None:
+            groups.append((profile, [file]))
+            continue
+        # 새 파일이 다리가 되어 기존 그룹끼리 연결될 수 있다 — 고정점까지 병합.
+        changed = True
+        while changed:
+            changed = False
+            for a in range(len(groups)):
+                for b in range(a + 1, len(groups)):
+                    if groups[a][0] & groups[b][0]:
+                        groups[a][0].update(groups[b][0])
+                        groups[a][1].extend(groups[b][1])
+                        del groups[b]
+                        changed = True
+                        break
+                if changed:
+                    break
+    return groups
 
 
 def _intra_file_held_out(text: str) -> tuple[str, str] | None:
@@ -141,18 +181,31 @@ async def scan_external_step(state: dict, config: Optional[RunnableConfig] = Non
         for file in files:
             updated[file.id] = replace(file, status="unanalyzed", reason=reason)
 
+    profiles = {file_id: line_shape_profile(text) for file_id, text in decoded.items()}
+    format_groups = [
+        (extension, group_profile, group_files)
+        for extension, files in sorted(grouped.items())
+        for group_profile, group_files in _shape_groups(files, profiles)
+    ]
+
     with step_processing_scope(_STEP, stream):
         for file, detail in undecodable:
             reject([file], "undecodable_text", detail)
-        for extension, files in sorted(grouped.items()):
+        for extension, group_profile, files in format_groups:
             await gate()
             samples = [decoded[file.id] for file in files]
-            negative_samples = [
-                *_BUILTIN_NEGATIVE_SAMPLES,
-                *(decoded[other.id][:20000]
-                  for other_ext, group in sorted(grouped.items()) if other_ext != extension
-                  for other in group[:2]),
-            ]
+            member_ids = {file.id for file in files}
+            # 미끼는 "다른 그룹" 파일 중 모양이 겹치지 않는 것만 — 같은 형식이 두
+            # 확장자로 존재할 때 서로를 실격시키던 가정("다른 확장자=다른 형식")을
+            # 내용 증거로 대체한다 (감사 반영). 같은 확장자의 다른 모양 그룹은
+            # 이제 정당한 미끼가 된다.
+            shape_safe_decoys = [
+                decoded[other.id][:20000]
+                for other in unknown_files
+                if other.id in decoded and other.id not in member_ids
+                and not (set(profiles[other.id]) & group_profile)
+            ][:6]
+            negative_samples = [*_BUILTIN_NEGATIVE_SAMPLES, *shape_safe_decoys]
             matches = [
                 skill for skill in loaded_skills
                 if any(skill_matches_file(skill, extension, decoded[file.id]) for file in files)
@@ -225,8 +278,14 @@ async def scan_external_step(state: dict, config: Optional[RunnableConfig] = Non
                     if validated is None:
                         reject(files, "pattern_rejected", heldout_feedback)
                         continue
-                    persist_external_skill(validated.skill, skills_root)
-                    loaded_skills.append(validated.skill)
+                    if extension:
+                        persist_external_skill(validated.skill, skills_root)
+                        loaded_skills.append(validated.skill)
+                    else:
+                        # 확장자 없는 파일용 skill 은 재사용 매칭 근거(확장자)가 없어
+                        # 저장하지 않는다 — 와일드카드 재사용은 형식 납치 위험이 더 크다.
+                        # 이번 run 안에서는 그대로 사용한다 (다음 run 은 재학습).
+                        log_info(_STEP, "extensionless_skill_in_run_only", skill=validated.skill.name)
                 except ExternalAgentRejected as error:
                     reject(files, "pattern_rejected", str(error))
                     continue
@@ -255,7 +314,15 @@ async def scan_external_step(state: dict, config: Optional[RunnableConfig] = Non
     await emit_nodes(stream, new_chunks)
     await emit_edges(stream, new_edges)
     await gate()
-    emit_message(stream, f"✅ 외부 포맷 스캔 완료 — custom 청크 {len(new_chunks)}")
+    analyzed_count = sum(
+        1 for file in unknown_files if updated[file.id].status == "analyzed")
+    unanalyzed_count = len(unknown_files) - analyzed_count
+    # 전건 거부여도 성공처럼 읽히지 않게 분석/미분석을 그대로 표기한다 (감사 반영).
+    emit_message(
+        stream,
+        f"외부 포맷 스캔 — 분석 {analyzed_count} · 미분석 {unanalyzed_count} · "
+        f"custom 청크 {len(new_chunks)}",
+    )
     log_info(
         _STEP,
         "done",

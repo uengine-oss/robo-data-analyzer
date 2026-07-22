@@ -266,6 +266,109 @@ class ScanExternalStepTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((), chunk.keys)
             self.assertEqual(source[chunk.char_start:chunk.char_end], chunk.text)
 
+    async def test_mixed_shapes_within_extension_learn_separately(self) -> None:
+        # "같은 확장자 = 같은 형식" 가정 제거 — 모양이 다르면 딴 형식으로 묶는다.
+        upper = "".join(f"KEY{i:02d}.PATH=/v{i}\n" for i in range(30))
+        table = "".join(f"row{i}|{i}|on\n" for i in range(30))
+        table_skill = ExternalSkill(
+            name="pipe-table",
+            extensions=(".cfgx",),
+            content_signatures=("|",),
+            rules=(ExternalExtractionRule(
+                name="row",
+                pattern=r"(?m)^(?P<key>[a-z]+\d+)\|\d+\|\w+$",
+                key_group="key",
+            ),),
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "source"
+            skills = Path(temp) / "skills"
+            root.mkdir()
+            (root / "a.cfgx").write_text(upper, encoding="utf-8", newline="\n")
+            (root / "b.cfgx").write_text(table, encoding="utf-8", newline="\n")
+            invoke = AsyncMock(side_effect=[
+                validate_external_skill(_skill(), [upper]),
+                validate_external_skill(table_skill, [table]),
+            ])
+
+            with (
+                patch("pipeline.steps.step4_scan_project.scan_external_step.EXTERNAL_SKILLS_DIR", skills),
+                patch("pipeline.steps.step4_scan_project.scan_external_step.run_external_agent", invoke),
+            ):
+                result = await scan_external_step(
+                    {
+                        "project_files": [_project_file("a.cfgx"), _project_file("b.cfgx")],
+                        "external_chunks": [],
+                    },
+                    _config(root),
+                )
+
+            self.assertEqual(2, invoke.await_count)     # 형식 그룹 2개로 따로 학습
+            statuses = {f.relpath: f.status for f in result["project_files"]}
+            self.assertEqual({"a.cfgx": "analyzed", "b.cfgx": "analyzed"}, statuses)
+            self.assertEqual(60, len(result["external_chunks"]))
+
+    async def test_same_shape_across_extensions_is_not_used_as_decoy(self) -> None:
+        # "다른 확장자 = 다른 형식" 가정 제거 — 같은 형식이 두 확장자로 존재해도
+        # 서로를 미끼로 실격시키지 않는다.
+        cfgx = "".join(f"AAA{i:02d}.PATH=/x{i}\n" for i in range(30))
+        cfgy = "".join(f"BBB{i:02d}.PATH=/y{i}\n" for i in range(30))
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "source"
+            skills = Path(temp) / "skills"
+            root.mkdir()
+            (root / "one.cfgx").write_text(cfgx, encoding="utf-8", newline="\n")
+            (root / "two.cfgy").write_text(cfgy, encoding="utf-8", newline="\n")
+            twin = _project_file("two.cfgy")
+            twin = type(twin)(**{**twin.__dict__, "ext": ".cfgy"})
+            invoke = AsyncMock(side_effect=[
+                validate_external_skill(_skill(), [cfgx]),
+                validate_external_skill(
+                    _skill().model_copy(update={"name": "twin-format", "extensions": (".cfgy",)}),
+                    [cfgy],
+                ),
+            ])
+
+            with (
+                patch("pipeline.steps.step4_scan_project.scan_external_step.EXTERNAL_SKILLS_DIR", skills),
+                patch("pipeline.steps.step4_scan_project.scan_external_step.run_external_agent", invoke),
+            ):
+                result = await scan_external_step(
+                    {
+                        "project_files": [_project_file("one.cfgx"), twin],
+                        "external_chunks": [],
+                    },
+                    _config(root),
+                )
+
+            statuses = {f.relpath: (f.status, f.reason) for f in result["project_files"]}
+            self.assertEqual(("analyzed", ""), statuses["one.cfgx"])
+            self.assertEqual(("analyzed", ""), statuses["two.cfgy"])
+
+    async def test_extensionless_files_analyze_in_run_but_do_not_persist(self) -> None:
+        source = "".join(f"KEY{i:02d}.PATH=/v{i}\n" for i in range(30))
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "source"
+            skills = Path(temp) / "skills"
+            root.mkdir()
+            (root / "DATAFILE").write_text(source, encoding="utf-8", newline="\n")
+            base = _project_file("DATAFILE")
+            file = type(base)(**{**base.__dict__, "ext": ""})
+            invoke = AsyncMock(return_value=validate_external_skill(_skill(), [source]))
+
+            with (
+                patch("pipeline.steps.step4_scan_project.scan_external_step.EXTERNAL_SKILLS_DIR", skills),
+                patch("pipeline.steps.step4_scan_project.scan_external_step.run_external_agent", invoke),
+            ):
+                result = await scan_external_step(
+                    {"project_files": [file], "external_chunks": []},
+                    _config(root),
+                )
+
+            self.assertEqual("analyzed", result["project_files"][0].status)
+            # 확장자 없는 skill 은 재사용 근거가 없어 저장하지 않는다 (in-run 전용).
+            self.assertEqual([], list(skills.glob("*/SKILL.md")))
+
     async def test_agent_rejection_keeps_files_honestly_unanalyzed(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "source"

@@ -120,9 +120,10 @@ async def run_external_agent(
             async with llm_semaphore:
                 draft = await invoke(candidate_index, attempt, feedback)
             try:
-                if extension not in draft.extensions:
+                if extension and extension not in draft.extensions:
                     # 배운 확장자를 선언하지 않은 skill 은 저장 후 다른 형식을 납치하거나
                     # 정작 자기 형식에 재사용되지 못한다 — 결정론으로 즉시 반려.
+                    # (확장자 없는 그룹은 저장 자체를 안 하므로 검사 대상이 아니다.)
                     raise ExternalSkillValidationError(
                         f"skill extensions {list(draft.extensions)} must include the learned extension {extension}"
                     )
