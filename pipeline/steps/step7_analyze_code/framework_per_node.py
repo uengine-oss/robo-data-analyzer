@@ -47,6 +47,16 @@ _STEP = "step7.analyze_code"
 from pipeline.steps.step7_analyze_code.result_sink import _persist_and_emit_code
 
 
+def framework_analysis_targets(code_nodes: list) -> set[str]:
+    """Framework 가 실제로 분석하는 노드 = routine 라벨만 (spec 054 FR-005).
+
+    이 엔진과 ``build_context_step`` 이 같은 답을 봐야 해서 여기 한 곳에 둔다 —
+    분석 대상 밖 노드는 아래에서 컨텍스트에서 빠지므로 어느 렌더에서도 조회되지 않는다.
+    parser 가 emit 하는 제어문(IF/LOOP/…)은 그래프엔 남지만 LLM 분석 대상이 아니다.
+    """
+    return {fn.id for fn in code_nodes if fn.label in ROUTINE_LABELS}
+
+
 async def run_framework_per_node_analysis(
     state: dict,
     contexts: dict,
@@ -74,8 +84,8 @@ async def run_framework_per_node_analysis(
     #    reader 가 그래프에 CodeNode 로 보존하지만 routine 이 아니므로 LLM 분석에서 제외한다.
     #    ``ROUTINE_LABELS`` 가 단일 진실(DBMS batch 와 동일) — 소비자마다 if 분기 흩뿌리지 않는다.
     #    이 한 곳에서 걸러 all_ids/rounds/accounting/return 이 모두 routine 기준으로 흐른다.
-    label_by_id = {fn.id: fn.label for fn in state.get("code_nodes", [])}
-    non_routine = [cid for cid in contexts if label_by_id.get(cid) not in ROUTINE_LABELS]
+    targets = framework_analysis_targets(state.get("code_nodes", []))
+    non_routine = [cid for cid in contexts if cid not in targets]
     if non_routine:
         contexts = {cid: ctx for cid, ctx in contexts.items() if cid not in non_routine}
         log_info(_STEP, "analysis_target_filter",

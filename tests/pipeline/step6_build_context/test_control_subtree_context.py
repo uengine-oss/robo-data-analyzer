@@ -5,6 +5,7 @@ from graph.schema.graph_nodes import CodeNode
 from pipeline.steps.step6_build_context.build_context_step import build_context_step
 from pipeline.steps.step6_build_context.framework_context_builder import FrameworkContextBuilder
 from pipeline.steps.step6_build_context.control_subtree import build_control_subtrees
+from pipeline.steps.step7_analyze_code.framework_per_node import framework_analysis_targets
 from pipeline.steps.step7_analyze_code.rules_fallback import build_fragments
 
 
@@ -56,7 +57,10 @@ class ControlSubtreeTest(unittest.TestCase):
 class ControlSubtreeWiringTest(unittest.IsolatedAsyncioTestCase):
     async def test_attaches_only_to_routine_and_drives_nonempty_fragments(self):
         nodes = _tree()
-        strategy = SimpleNamespace(context_builder=FrameworkContextBuilder())
+        strategy = SimpleNamespace(
+            context_builder=FrameworkContextBuilder(),
+            analysis_targets=framework_analysis_targets,
+        )
 
         result = await build_context_step(
             {"code_nodes": nodes},

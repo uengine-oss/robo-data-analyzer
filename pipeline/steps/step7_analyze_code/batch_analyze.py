@@ -60,6 +60,15 @@ _STEP = "step7.analyze_code.batch"
 # METHOD 가 빠져 있어 실제로 갈라져 있었다 — spec 046 FR-005).
 
 
+def dbms_analysis_targets(code_nodes: list[CodeNode]) -> set[str]:
+    """DBMS 가 실제로 분석하는 노드 = skip-투명 유효 트리에 남는 노드.
+
+    이 엔진과 ``build_context_step`` 이 같은 답을 봐야 해서 여기 한 곳에 둔다.
+    skip 노드는 트리에서 투명 처리돼 자식·조상 어느 렌더에도 등장하지 않는다.
+    """
+    return set(build_effective_tree(code_nodes)[2])
+
+
 def _plan_rule_units(
     code_by_id: dict[str, CodeNode],
     eff_children: dict[str, list[str]],

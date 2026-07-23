@@ -24,6 +24,7 @@ from pipeline.steps.step6_build_context.external_evidence import (
 )
 from pipeline.steps.step6_build_context.framework_context_builder import FrameworkContextBuilder
 from pipeline.steps.step7_analyze_code.batch_planner import Batch
+from pipeline.steps.step7_analyze_code.framework_per_node import framework_analysis_targets
 from pipeline.steps.step7_analyze_code.batch_prompt_values import _build_batch_values
 from pipeline.steps.step7_analyze_code.three_split_llm_fanout import _build_user_values
 from shared.files.cache import SourceFileCache
@@ -126,7 +127,10 @@ class ExternalEvidenceContextTest(unittest.IsolatedAsyncioTestCase):
             "reads_writes_edges": [],
             "calls_edges": [],
         }
-        strategy = SimpleNamespace(context_builder=FrameworkContextBuilder())
+        strategy = SimpleNamespace(
+            context_builder=FrameworkContextBuilder(),
+            analysis_targets=framework_analysis_targets,
+        )
         with patch(
             "pipeline.steps.step6_build_context.build_context_step.build_control_subtrees",
             return_value={},

@@ -23,7 +23,11 @@ from agents.middleware.todos import TodoTrackerMiddleware
 from agents.middleware.tool_events import ToolEventEmitterMiddleware
 from llm.runners.yaml_llm_runner import run_yaml_rule
 from llm.runners.prompt_values import _extract_target_and_sort
-from agents.runtime import run_structured_agent
+from agents.runtime import (
+    _MAX_SUBMIT_ATTEMPTS,
+    StructuredResponseMissingError,
+    run_structured_agent,
+)
 from llm import tracing
 from llm.usage.cost_budget import CostBudget, InvalidCostAmountError
 from llm.usage.pricing import UnknownModelPriceError, compute_cost
@@ -360,6 +364,63 @@ class AsyncLlmBoundaryContractTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.value, "ok")
         end_recording.assert_not_called()
+
+    async def test_missing_submit_tool_is_retried_with_a_fixed_instruction(self) -> None:
+        """제출 도구를 건너뛴 턴 하나로 run 전체가 죽지 않는다 (실측: run14~16 스캔 실패)."""
+        skipped = {"messages": [SimpleNamespace(content="후보만 메모하고 끝냄")]}
+        agent = SimpleNamespace(
+            ainvoke=AsyncMock(
+                side_effect=[skipped, {"structured_response": _BoundaryResponse(value="ok")}]
+            )
+        )
+        with (
+            patch("agents.runtime.build_llm_client", return_value=object()),
+            patch("agents.runtime.build_standard_stack", return_value=[]),
+            patch("agents.runtime.create_agent", return_value=agent),
+            patch("agents.runtime.begin_agent_invoke"),
+            patch("agents.runtime.end_agent_invoke"),
+        ):
+            result = await run_structured_agent(
+                agent_name="boundary",
+                invoke_id="run",
+                system_prompt="submit when done",
+                tools=[],
+                response_format=_BoundaryResponse,
+                user_message="inspect",
+                max_calls=2,
+                run_dir=Path("unused"),
+                cost_budget=CostBudget(limit_usd=1.0),
+            )
+
+        self.assertEqual(result.value, "ok")
+        self.assertEqual(agent.ainvoke.await_count, 2)
+        # 재시도는 앞선 대화를 이어받고, 고정 지시 한 줄만 덧붙인다(재현성 유지).
+        retried = agent.ainvoke.await_args_list[1].args[0]["messages"]
+        self.assertEqual(len(retried), 2)
+        self.assertIn("submit_boundary", retried[-1].content)
+
+    async def test_persistent_missing_submit_still_fails_loudly(self) -> None:
+        agent = SimpleNamespace(ainvoke=AsyncMock(return_value={"messages": []}))
+        with (
+            patch("agents.runtime.build_llm_client", return_value=object()),
+            patch("agents.runtime.build_standard_stack", return_value=[]),
+            patch("agents.runtime.create_agent", return_value=agent),
+            patch("agents.runtime.begin_agent_invoke"),
+            patch("agents.runtime.end_agent_invoke"),
+        ):
+            with self.assertRaises(StructuredResponseMissingError):
+                await run_structured_agent(
+                    agent_name="boundary",
+                    invoke_id="run",
+                    system_prompt="submit when done",
+                    tools=[],
+                    response_format=_BoundaryResponse,
+                    user_message="inspect",
+                    max_calls=3,
+                    run_dir=Path("unused"),
+                    cost_budget=CostBudget(limit_usd=1.0),
+                )
+        self.assertEqual(agent.ainvoke.await_count, _MAX_SUBMIT_ATTEMPTS)
 
     async def test_prompt_context_is_cleared_when_final_write_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

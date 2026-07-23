@@ -35,8 +35,14 @@ from pipeline.steps.step6_build_context.build_context_step import build_context_
 from pipeline.steps.step6_build_context.framework_context_builder import FrameworkContextBuilder
 from pipeline.steps.step6_build_context.fetch_table_samples_step import fetch_table_samples_step
 from pipeline.steps.step7_analyze_code.step_entry import analyze_code_step
-from pipeline.steps.step7_analyze_code.framework_per_node import run_framework_per_node_analysis
-from pipeline.steps.step7_analyze_code.batch_analyze import run_dbms_batch_analysis
+from pipeline.steps.step7_analyze_code.framework_per_node import (
+    framework_analysis_targets,
+    run_framework_per_node_analysis,
+)
+from pipeline.steps.step7_analyze_code.batch_analyze import (
+    dbms_analysis_targets,
+    run_dbms_batch_analysis,
+)
 from pipeline.steps.step8_post_processing.embed_step import embed_step
 from pipeline.steps.step8_post_processing.enrich_table_description_step import (
     enrich_table_description_step,
@@ -77,6 +83,9 @@ class Strategy:
             형제 배치). 두 구현체는 **동일 시그니처** — step 은 어느 쪽인지 모른다.
             (헌법 II "분기 0" — 종전엔 step 안에 ``strategy.name == "dbms"`` 하드분기가
             있었다. spec 046 FR-001.)
+        analysis_targets: ``code_nodes`` → 그 엔진이 실제로 분석할 노드 id 집합.
+            엔진과 ``build_context_step`` 이 같은 답을 봐야 하는 단일 진실 —
+            대상 밖 노드는 어느 렌더에도 등장하지 않으므로 사전 압축 대상도 아니다.
         prompts_dir: yaml 프롬프트 위치 (``"llm/prompts/framework"`` / ``"llm/prompts/dbms"``).
         steps: 활성 step 함수 tuple (이 순서대로 LangGraph StateGraph 노드).
 
@@ -85,6 +94,7 @@ class Strategy:
     name: str
     context_builder: Any
     code_analyzer: Callable
+    analysis_targets: Callable
     prompts_dir: str
     steps: tuple[Callable, ...]
 
@@ -97,6 +107,7 @@ FRAMEWORK_PIPELINE = Strategy(
     name="framework",
     context_builder=FrameworkContextBuilder(),    # build_context_step 이 주입받음
     code_analyzer=run_framework_per_node_analysis,  # analyze_code_step 이 주입받음 (per-node 3분할)
+    analysis_targets=framework_analysis_targets,    # routine 만 — 위 엔진의 필터와 같은 함수
     prompts_dir="llm/prompts/framework",
     steps=(
         parse_ddl_step,
@@ -131,6 +142,7 @@ DBMS_PIPELINE = Strategy(
     name="dbms",
     context_builder=FrameworkContextBuilder(),     # parent + sibling 컨텍스트
     code_analyzer=run_dbms_batch_analysis,    # analyze_code_step 이 주입받음 (형제 배치 1콜)
+    analysis_targets=dbms_analysis_targets,   # 유효 트리 잔존 노드 — 위 엔진과 같은 집합
     prompts_dir="llm/prompts/dbms",
     steps=(
         parse_ddl_step,

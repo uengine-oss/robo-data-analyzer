@@ -40,6 +40,18 @@ _T = TypeVar("_T", bound=BaseModel)
 # Agent state 에 최종 인스턴스를 적재할 표준 키 — 호출자가 result[_STATE_KEY] 로 받음.
 _STATE_KEY = "structured_response"
 
+# 제출 도구 미호출로 끝난 invoke 의 총 시도 횟수(최초 1회 + 재시도). 실측 근거:
+# 같은 입력 9,176 토큰에서 모델이 도구 호출 대신 평문 20토큰을 내는 턴이 관측됐고
+# (2026-07-23 run14~16, 스트리밍 on/off 무관), 그 한 턴으로 12분짜리 run 전체가 죽었다.
+_MAX_SUBMIT_ATTEMPTS = 3
+
+# 재시도 시 덧붙이는 고정 지시 — 문구가 고정이라 재현성을 깨지 않는다.
+_SUBMIT_NUDGE = (
+    "지금까지 관찰한 내용만으로 최종 결과를 제출하라. "
+    "설명이나 메모를 쓰지 말고 `{tool}` 도구를 정확히 한 번 호출하라. "
+    "확인하지 못한 항목은 비워 두고 제출한다."
+)
+
 
 class StructuredResponseMissingError(ValueError):
     """Agent가 최종 submit 도구 없이 종료해 구조화 결과가 없을 때 발생."""
@@ -191,10 +203,29 @@ async def run_structured_agent(
     invoke_config = (
         {"callbacks": [RepetitionGuardCallback(f"agent:{agent_name}")]} if guard_on else None
     )
+    submit_tool_name = f"submit_{agent_name}"
+    messages: list = [HumanMessage(content=user_message)]
+    instance = None
     try:
-        result = await agent.ainvoke(
-            {"messages": [HumanMessage(content=user_message)]}, config=invoke_config
-        )
+        for attempt in range(1, _MAX_SUBMIT_ATTEMPTS + 1):
+            result = await agent.ainvoke({"messages": messages}, config=invoke_config)
+            instance = result.get(_STATE_KEY)
+            if isinstance(instance, response_format):
+                break
+            if attempt == _MAX_SUBMIT_ATTEMPTS:
+                break
+            # 약한 모델이 탐색만 하고 제출 도구를 건너뛴 턴 — 같은 대화에 결정론 지시 한 줄을
+            # 덧붙여 다시 태운다. 한 턴의 흔들림이 run 전체를 죽이지 않게 하는 최소 복구이며,
+            # 지시문이 고정이라 재현성을 깨지 않는다. 호출 총량은 max_calls 미들웨어가 막는다.
+            log_warning(
+                "agents.runtime",
+                "submit_tool_missing",
+                f"{submit_tool_name} 미호출로 invoke 종료 — 제출 지시 후 재시도 "
+                f"({attempt}/{_MAX_SUBMIT_ATTEMPTS})",
+                agent=agent_name,
+            )
+            messages = list(result.get("messages") or messages)
+            messages.append(HumanMessage(content=_SUBMIT_NUDGE.format(tool=submit_tool_name)))
     finally:
         if prompt_recording_started:
             try:
@@ -208,11 +239,11 @@ async def run_structured_agent(
                     error=f"{type(error).__name__}: {error}",
                 )
 
-    instance = result.get(_STATE_KEY)
     if isinstance(instance, response_format):
         return instance
 
     raise StructuredResponseMissingError(
-        f"agent '{agent_name}' invoke 종료 — submit_{agent_name} 호출 누락. "
+        f"agent '{agent_name}' invoke 종료 — {submit_tool_name} 호출 누락 "
+        f"(제출 지시 재시도 {_MAX_SUBMIT_ATTEMPTS - 1}회 포함). "
         f"system prompt 의 '도구 호출 안내' 가 모델에게 명확히 전달됐는지 확인."
     )

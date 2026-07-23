@@ -110,10 +110,15 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
             ctx.extra["control_subtree"] = control_subtrees[fn.id]
         contexts[fn.id] = ctx
 
-    # 큰 코드노드만 one_liner 사전 압축 (LLM 1 회 — model_small)
+    # 큰 코드노드만 one_liner 사전 압축 (LLM 1 회 — model_small).
+    # 분석 대상 노드로 한정한다: one_liner 의 세 소비처(callee 요약·자식 치환·조상 골격)는
+    # 모두 분석 컨텍스트에 있는 id 만 조회하므로, 대상 밖 노드의 one_liner 는 만들어도
+    # 읽힐 수 없다. 실측(SKT 44k): 큰 노드 335개 중 208개가 제어문이라 전량 사장됐다.
+    analysis_targets = strategy.analysis_targets(code_nodes)
     big_code_nodes = [
         fn for fn in code_nodes
-        if contexts[fn.id].token_count >= SETTINGS.analysis_pipeline.big_context_threshold_tokens
+        if fn.id in analysis_targets
+        and contexts[fn.id].token_count >= SETTINGS.analysis_pipeline.big_context_threshold_tokens
     ]
     if big_code_nodes:
         log_info(
