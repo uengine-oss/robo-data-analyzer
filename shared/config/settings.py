@@ -96,6 +96,11 @@ class AnalysisLlmSettings:
     """
     config: str = field(default_factory=lambda: _getenv_str("ROBO_LLM_CONFIG", ""))
     api_key: str = field(default_factory=lambda: _getenv_str("ROBO_LLM_API_KEY", ""))
+    # 생성 중 반복 폭주 실시간 차단 (llm/repetition_guard.py, spec 080). 스트리밍 수신을
+    # 전제하므로 스트리밍/usage 이상 진단 시에만 끄는 킬스위치 — 기본 ON.
+    repetition_guard: bool = field(
+        default_factory=lambda: _getenv_bool("ROBO_LLM_REPETITION_GUARD", True)
+    )
 
 
 @dataclass(frozen=True)

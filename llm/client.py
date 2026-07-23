@@ -41,6 +41,7 @@ def build_llm_client(
     model: Optional[str] = None,
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
+    streaming: bool = False,
 ):
     """``llm/configs/<ROBO_LLM_CONFIG>.yaml`` 기반 LangChain 클라이언트 생성.
 
@@ -49,6 +50,9 @@ def build_llm_client(
             ``cfg.resolve_small_model()`` 결과 전달 가능.
         temperature: temperature override (기본 ``cfg.sampling.temperature``).
         max_tokens: max_tokens override (기본 ``cfg.max_tokens``).
+        streaming: True 면 ainvoke 도 내부적으로 스트리밍 수신·집계한다 — 반복 폭주
+            실시간 차단(spec 080)의 전제. OpenAI 호환 경로는 ``stream_usage=True`` 를
+            함께 켜서 usage 회계(UnmeteredLlmCallError 계약)를 유지한다.
 
     Returns:
         LangChain BaseChatModel 인스턴스 (ChatOpenAI 또는 ChatAnthropic).
@@ -78,8 +82,8 @@ def build_llm_client(
         raise RuntimeError("LLM max_tokens override must be a positive integer")
 
     if cfg.provider == "anthropic":
-        return _build_anthropic_client(cfg, model, temperature, max_tokens)
-    return _build_openai_compatible_client(cfg, model, temperature, max_tokens)
+        return _build_anthropic_client(cfg, model, temperature, max_tokens, streaming)
+    return _build_openai_compatible_client(cfg, model, temperature, max_tokens, streaming)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -92,6 +96,7 @@ def _build_anthropic_client(
     model: str,
     temperature: float,
     max_tokens: int,
+    streaming: bool,
 ) -> ChatAnthropic:
     """ChatAnthropic — Anthropic 직접 API.
 
@@ -105,6 +110,7 @@ def _build_anthropic_client(
         top_p=cfg.sampling.top_p,
         max_tokens=max_tokens,
         timeout=cfg.timeout_seconds,
+        streaming=streaming,
     )
 
     thinking = _resolve_anthropic_thinking(cfg.reasoning_effort)
@@ -119,6 +125,7 @@ def _build_openai_compatible_client(
     model: str,
     temperature: float,
     max_tokens: int,
+    streaming: bool,
 ) -> ChatOpenAI:
     """ChatOpenAI — OpenAI / OpenRouter / 로컬 모델 (SGLang / vLLM 등 호환).
 
@@ -134,6 +141,11 @@ def _build_openai_compatible_client(
         max_tokens=max_tokens,
         timeout=cfg.timeout_seconds,
     )
+    if streaming:
+        # 스트리밍 집계 시에도 최종 usage 를 받도록 stream_usage 필수 —
+        # 없으면 track_usage 가 UnmeteredLlmCallError 로 전 호출을 실패시킨다.
+        kwargs["streaming"] = True
+        kwargs["stream_usage"] = True
 
     # OpenAI 표준 reasoning_effort — low/medium/high 만 전달, none/"" 은 default.
     if cfg.reasoning_effort in ("low", "medium", "high"):

@@ -57,6 +57,7 @@ from llm.usage.token_usage import UnmeteredLlmCallError, track_usage
 from llm.usage.usage_jsonl_writer import persist_usage_and_charge_budget
 from shared.events.runtime_logger import log_info, log_warning
 from llm.filters import apply_cache_friendly_filters
+from llm.repetition_guard import RepetitionGuardCallback, RepetitionLoopAborted
 from llm.tracing import write_rule_record
 
 
@@ -110,7 +111,11 @@ async def run_yaml_rule(
 
     # 현재 LLM config — provider 정보를 cache friendly filter 에 전달
     cfg = load_llm_config(SETTINGS.analysis_llm.config)
-    llm = build_llm_client(model=model, max_tokens=rule.get("max_tokens"))
+    # 반복 폭주 실시간 차단(spec 080) — 감지기가 켜져 있으면 스트리밍 수신으로 전환.
+    guard_on = SETTINGS.analysis_llm.repetition_guard
+    llm = build_llm_client(
+        model=model, max_tokens=rule.get("max_tokens"), streaming=guard_on
+    )
     # include_raw=True — Pydantic 결과 + usage_metadata 동시 획득
     runnable = (
         llm if response_model is None
@@ -129,16 +134,22 @@ async def run_yaml_rule(
     # silent 차단 — cost_tracking 미들웨어 안 거치는 진입점이라 직접 wrap.
     # 예외 (401 / 429 / 400 / timeout / network / LengthFinishReasonError) 시
     # 명시 로그 + prompt 적재 (디버깅 보조) + raise. 적재 누락 = 사후 분석 불가.
+    invoke_config = (
+        {"callbacks": [RepetitionGuardCallback(f"rule:{rule_name}")]} if guard_on else None
+    )
+
     start = time.monotonic()
     log_info("llm.call", "start", agent=f"rule:{rule_name}")
     try:
-        result = await runnable.ainvoke(messages)
+        result = await runnable.ainvoke(messages, config=invoke_config)
     except Exception as e:  # noqa: BLE001 — silent 차단 목적
         elapsed_ms = int((time.monotonic() - start) * 1000)
+        # 폭주 차단은 오류가 아니라 방어 작동 — 별도 이벤트명으로 greppable 하게 남긴다.
+        event = "repetition_guard_abort" if isinstance(e, RepetitionLoopAborted) else "model_error"
         log_warning(
             "llm.runners.yaml_llm_runner",
-            "model_error",
-            f"LLM 호출 실패 (silent 차단) — {type(e).__name__}: {e}",
+            event,
+            f"LLM 호출 중단 — {type(e).__name__}: {e}",
             rule_name=rule_name,
             elapsed_ms=elapsed_ms,
         )
