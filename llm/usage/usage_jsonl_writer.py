@@ -28,6 +28,8 @@ def append_usage_record(
     agent_name: str,
     record: TokenUsageRecord,
     cost_usd: float,
+    *,
+    response_cache_hit: bool = False,
 ) -> None:
     """``usage.jsonl`` 에 1 LLM 호출 record append.
 
@@ -36,6 +38,10 @@ def append_usage_record(
         agent_name: "scan" / "linking_subagent" / "rule:<rule_name>" 등.
         record: ``track_usage()`` 결과.
         cost_usd: ``compute_cost(record)`` 결과.
+        response_cache_hit: 우리 응답 캐시(spec 091)가 답을 돌려줘 서버를 부르지 않은 호출.
+            토큰 4종과 비용은 전부 0 이고 ``latency_ms`` 는 캐시 조회 시간이다.
+            **``cached_tokens`` 와 혼동 금지** — 그쪽은 서버측 프리픽스 캐시(RadixAttention)라
+            성격이 다르다. 한 필드에 섞으면 회계가 거짓이 된다.
     """
     line = json.dumps({
         "agent": agent_name,
@@ -46,6 +52,7 @@ def append_usage_record(
         "total_tokens": record.total_tokens,
         "latency_ms": record.latency_ms,
         "cost_usd": cost_usd,
+        "response_cache_hit": response_cache_hit,
     }, ensure_ascii=False)
 
     try:
@@ -73,10 +80,15 @@ def persist_usage_and_charge_budget(
     record: TokenUsageRecord,
     cost_usd: float,
     cost_budget: CostBudget | None,
+    *,
+    response_cache_hit: bool = False,
 ) -> None:
     """usage를 영속화하고, 기록 성공 여부와 무관하게 이미 발생한 비용을 누적한다."""
     try:
-        append_usage_record(usage_log_path, agent_name, record, cost_usd)
+        append_usage_record(
+            usage_log_path, agent_name, record, cost_usd,
+            response_cache_hit=response_cache_hit,
+        )
     finally:
         if cost_budget is not None:
             cost_budget.add_sync(cost_usd)

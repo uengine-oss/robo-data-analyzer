@@ -53,7 +53,7 @@ from llm.usage.cost_budget import CostBudget
 from llm.client import build_llm_client
 from llm.configs.loader import load_llm_config
 from llm.usage.pricing import compute_cost
-from llm.usage.token_usage import UnmeteredLlmCallError, track_usage
+from llm.usage.token_usage import TokenUsageRecord, UnmeteredLlmCallError, track_usage
 from llm.usage.usage_jsonl_writer import persist_usage_and_charge_budget
 from shared.events.runtime_logger import log_info, log_warning
 from llm.filters import apply_cache_friendly_filters
@@ -115,17 +115,33 @@ async def run_yaml_rule(
 
     # 콘텐츠 해시 캐시 — 같은 입력이면 서버를 다시 부르지 않는다(재현성 + 재실행 비용).
     # 키가 프롬프트 전체라서 코드·프롬프트가 바뀌면 자동으로 미적중된다.
+    cache_model = model or cfg.model
+    cache_start = time.monotonic()
     cache_key = response_cache.make_key(
         rule_name=rule_name,
         system_prompt=system_prompt,
         user_content=user_content,
-        model=model or cfg.model,
+        model=cache_model,
         max_tokens=rule.get("max_tokens"),
         response_model=response_model,
     )
     cached = response_cache.load(cache_key, response_model)
     if cached is not None:
-        log_info("llm.call", "cache_hit", agent=f"rule:{rule_name}")
+        lookup_ms = int((time.monotonic() - cache_start) * 1000)
+        # 적중도 LLM 호출이다 — 적재를 건너뛰면 "모든 LLM 호출을 usage.jsonl 에 적재"
+        # (Plan §4 M0) 가 깨지고 사용량 통계가 호출 수를 과소 보고한다.
+        # 서버를 안 불렀으므로 토큰·비용은 0 이고, model 은 키를 만든 요청측 이름이다
+        # (응답이 없어 response_metadata 의 이름을 알 수 없다).
+        persist_usage_and_charge_budget(
+            usage_log_path=_resolve_usage_log_path(),
+            agent_name=f"rule:{rule_name}",
+            record=TokenUsageRecord(model=cache_model, input_tokens=0, output_tokens=0,
+                                    latency_ms=lookup_ms),
+            cost_usd=0.0,
+            cost_budget=budget,
+            response_cache_hit=True,
+        )
+        log_info("llm.call", "cache_hit", agent=f"rule:{rule_name}", elapsed_ms=lookup_ms)
         return cached
     # 반복 폭주 실시간 차단(spec 080) — 감지기가 켜져 있으면 스트리밍 수신으로 전환.
     guard_on = SETTINGS.analysis_llm.repetition_guard

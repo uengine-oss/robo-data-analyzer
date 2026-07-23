@@ -299,6 +299,8 @@ def _summarize_usage(run_dir: Path) -> None:
     if not usage_path.exists():
         return
 
+    # ``response_cache_hits`` — 응답 캐시(spec 091)가 답을 돌려준 호출 수. 적중도 ``calls``
+    # 에 포함되므로 이 값이 없으면 "호출은 늘었는데 토큰은 0" 으로 보여 집계가 오해를 만든다.
     per_agent_model: dict[tuple[str, str], dict] = defaultdict(lambda: {
         "input_tokens": 0,
         "output_tokens": 0,
@@ -306,6 +308,7 @@ def _summarize_usage(run_dir: Path) -> None:
         "total_tokens": 0,
         "cost_usd": 0.0,
         "calls": 0,
+        "response_cache_hits": 0,
     })
     total = {
         "input_tokens": 0,
@@ -314,6 +317,7 @@ def _summarize_usage(run_dir: Path) -> None:
         "total_tokens": 0,
         "cost_usd": 0.0,
         "calls": 0,
+        "response_cache_hits": 0,
     }
 
     with usage_path.open("r", encoding="utf-8") as f:
@@ -331,6 +335,9 @@ def _summarize_usage(run_dir: Path) -> None:
             total["cost_usd"] += float(record.get("cost_usd", 0.0))
             bucket["calls"] += 1
             total["calls"] += 1
+            if record.get("response_cache_hit"):
+                bucket["response_cache_hits"] += 1
+                total["response_cache_hits"] += 1
 
     summary = {
         "total": total,

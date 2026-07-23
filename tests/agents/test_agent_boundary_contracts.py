@@ -1,6 +1,7 @@
 """Agent contracts plus the LLM infrastructure they execute through."""
 
 import asyncio
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -493,6 +494,78 @@ class AsyncLlmBoundaryContractTest(unittest.IsolatedAsyncioTestCase):
                     )
 
         error_record.assert_called_once()
+
+    async def test_response_cache_hit_is_recorded_as_a_metered_call(self) -> None:
+        """적중도 LLM 호출이다 — 적재를 건너뛰면 사용량 통계가 호출 수를 과소 보고한다.
+
+        서버를 안 불렀으므로 토큰 4종·비용은 0 이고, 서버측 프리픽스 캐시를 뜻하는
+        ``cached_tokens`` 가 아니라 별도 필드 ``response_cache_hit`` 로 구분한다.
+        """
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            prompts_dir = Path(temporary_directory)
+            (prompts_dir / "boundary.yaml").write_text(
+                "system: test system\nuser_template: '{value}'\nmodel: test-model\n",
+                encoding="utf-8",
+            )
+            usage_path = prompts_dir / "usage.jsonl"
+            budget = CostBudget(limit_usd=1.0)
+
+            with (
+                patch(
+                    "llm.runners.yaml_llm_runner.load_llm_config",
+                    return_value=SimpleNamespace(provider="openai", model="cfg-model"),
+                ),
+                patch(
+                    "llm.runners.yaml_llm_runner.response_cache.load",
+                    return_value=_BoundaryResponse(value="cached"),
+                ),
+                patch(
+                    "llm.runners.yaml_llm_runner._resolve_usage_log_path",
+                    return_value=usage_path,
+                ),
+                patch("llm.runners.yaml_llm_runner.build_llm_client") as build_client,
+            ):
+                result = await run_yaml_rule(
+                    prompts_dir=prompts_dir,
+                    rule_name="boundary",
+                    user_values={"value": "input"},
+                    response_model=_BoundaryResponse,
+                    budget=budget,
+                )
+
+            build_client.assert_not_called()
+            self.assertEqual("cached", result.value)
+
+            lines = usage_path.read_text(encoding="utf-8").strip().splitlines()
+            self.assertEqual(1, len(lines), "적중 1건에 usage 기록이 1줄이 아니다")
+            record = json.loads(lines[0])
+
+        self.assertTrue(record["response_cache_hit"])
+        self.assertEqual("rule:boundary", record["agent"])
+        self.assertEqual("test-model", record["model"])
+        self.assertEqual(
+            [0, 0, 0, 0, 0.0],
+            [record["input_tokens"], record["output_tokens"], record["cached_tokens"],
+             record["total_tokens"], record["cost_usd"]],
+        )
+        self.assertEqual(0.0, budget.spent_usd, "적중에 비용을 물리면 회계가 부풀려진다")
+
+    async def test_server_call_is_recorded_as_not_a_cache_hit(self) -> None:
+        """실제 호출 줄은 ``response_cache_hit=False`` — 두 종류가 한 필드에서 안 섞인다."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            usage_path = Path(temporary_directory) / "usage.jsonl"
+            append_usage_record(
+                usage_path,
+                "rule:boundary",
+                TokenUsageRecord(model="m", input_tokens=10, output_tokens=5,
+                                 cached_tokens=4, total_tokens=15),
+                0.5,
+            )
+            record = json.loads(usage_path.read_text(encoding="utf-8").strip())
+
+        self.assertFalse(record["response_cache_hit"])
+        self.assertEqual(4, record["cached_tokens"],
+                         "서버측 프리픽스 캐시 토큰은 그대로 보존돼야 한다")
 
 
 if __name__ == "__main__":

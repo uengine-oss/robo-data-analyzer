@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import unittest
 import json
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -44,6 +45,46 @@ class RunRegistryContractTest(unittest.TestCase):
     def test_nested_analysis_context_types_are_checkpoint_allowlisted(self) -> None:
         self.assertIn(ReferencedSymbolContext, run_executor._STATE_MSGPACK_ALLOWLIST)
         self.assertIn(ControlSubtreeNode, run_executor._STATE_MSGPACK_ALLOWLIST)
+
+
+class UsageSummaryContractTest(unittest.TestCase):
+    """캐시 적중은 호출로 세되 토큰이 0 이라, 집계가 둘을 구분해야 통계가 오해를 안 만든다."""
+
+    def _summarize(self, records: tuple[dict, ...]) -> dict:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_dir = Path(temporary_directory)
+            (run_dir / "usage.jsonl").write_text(
+                "".join(f"{json.dumps(record, ensure_ascii=False)}\n" for record in records),
+                encoding="utf-8",
+            )
+            run_executor._summarize_usage(run_dir)
+            return json.loads((run_dir / "usage_summary.json").read_text(encoding="utf-8"))
+
+    def test_cache_hits_are_counted_separately_from_server_calls(self) -> None:
+        summary = self._summarize((
+            {"agent": "rule:a", "model": "m", "input_tokens": 10, "output_tokens": 5,
+             "cached_tokens": 4, "total_tokens": 15, "cost_usd": 0.5,
+             "response_cache_hit": False},
+            {"agent": "rule:a", "model": "m", "input_tokens": 0, "output_tokens": 0,
+             "cached_tokens": 0, "total_tokens": 0, "cost_usd": 0.0,
+             "response_cache_hit": True},
+        ))
+
+        self.assertEqual(2, summary["total"]["calls"])
+        self.assertEqual(1, summary["total"]["response_cache_hits"])
+        self.assertEqual(15, summary["total"]["total_tokens"])
+        self.assertEqual(4, summary["total"]["cached_tokens"],
+                         "서버측 프리픽스 캐시 토큰이 응답 캐시 적중에 오염됐다")
+        self.assertEqual(1, summary["per_agent_model"][0]["response_cache_hits"])
+
+    def test_records_without_the_field_are_not_counted_as_hits(self) -> None:
+        summary = self._summarize((
+            {"agent": "rule:a", "model": "m", "input_tokens": 10, "output_tokens": 5,
+             "cached_tokens": 0, "total_tokens": 15, "cost_usd": 0.5},
+        ))
+
+        self.assertEqual(1, summary["total"]["calls"])
+        self.assertEqual(0, summary["total"]["response_cache_hits"])
 
 
 class RunInitializationContractTest(unittest.IsolatedAsyncioTestCase):
