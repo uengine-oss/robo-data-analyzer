@@ -173,8 +173,11 @@ def make_verify_external_rule_tool(samples: list[str], negative_samples: list[st
             try:
                 if probe_extraction_rule(pattern, key_group, sample):
                     negative_hits += 1
-            except ExternalSkillValidationError:
-                continue                     # 실격 사유는 위 positive 경로에서 이미 보고됨
+            except ExternalSkillValidationError as error:
+                # 검증기는 negative 에도 규칙을 돌리므로 여기서 죽는 규칙은 승격에서
+                # 거부된다 — positive 가 멀쩡해도 삼키지 말고 그대로 드러낸다
+                # ("검증한 규칙 == 검증기가 실행할 규칙" 계약).
+                return f"REJECTED (decoy 적용 중): {error}"
         if negative_hits:
             lines.append(
                 f"NEGATIVE_MATCH: 다른 형식 decoy {negative_hits}개 파일에서 매치 발생 — "
