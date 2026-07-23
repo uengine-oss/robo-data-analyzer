@@ -33,6 +33,7 @@ from pipeline.steps.step6_build_context.external_evidence import build_external_
 from pipeline.models.analysis_context import AnalysisContext
 from graph.schema.graph_nodes import CodeNode
 from shared.config.settings import SETTINGS
+from shared.graphs.call_cycles import find_call_cycles
 from llm.usage.cost_budget import BudgetExceededError, CostBudget
 from llm.fanout import gather_with_warmup
 from shared.events.runtime_logger import log_error, log_info, log_warning
@@ -114,10 +115,15 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
     # 분석 대상 노드로 한정한다: one_liner 의 세 소비처(callee 요약·자식 치환·조상 골격)는
     # 모두 분석 컨텍스트에 있는 id 만 조회하므로, 대상 밖 노드의 one_liner 는 만들어도
     # 읽힐 수 없다. 실측(SKT 44k): 큰 노드 335개 중 208개가 제어문이라 전량 사장됐다.
+    #
+    # 나아가 **읽힐 수 있는 자리에 있는지**까지 본다(_one_liner_readable_ids). 대상 노드라도
+    # 세 소비처의 관문(부모-자식 관계·순환)에 걸리지 않으면 만들어도 사장된다.
     analysis_targets = strategy.analysis_targets(code_nodes)
+    readable = _one_liner_readable_ids(contexts)
     big_code_nodes = [
         fn for fn in code_nodes
         if fn.id in analysis_targets
+        and fn.id in readable
         and contexts[fn.id].token_count >= SETTINGS.analysis_pipeline.big_context_threshold_tokens
     ]
     if big_code_nodes:
@@ -153,6 +159,33 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
     return {"analysis_contexts": contexts}
+
+
+def _one_liner_readable_ids(contexts: dict[str, AnalysisContext]) -> set[str]:
+    """one_liner 가 **읽힐 수 있는** 코드노드 id — 소비처 세 곳의 관문에서 역산한다.
+
+    소비처와 그 관문:
+    1. callee 요약(``_format_callee_summaries``) — callee 의 summary 가 아직 없을 때만 쓴다.
+       Bottom-up 순서상 summary 가 없는 건 **순환 내부**뿐이다.
+    2. 자식 치환(``range_body.compact_body``) — ``ctx.extra["child_ids"]`` 가 있어야 도달한다.
+    3. 조상 골격(``range_body.ancestor_context``) — ``ctx.extra["parent_id"]`` 가 있어야 도달한다.
+
+    엔진 이름으로 분기하지 않는다. 부모-자식 관계를 채우는 strategy(DBMS 의 nested range)는
+    2·3 이 그대로 살아 있고, 안 채우는 strategy 는 관문이 닫혀 자동으로 1 만 남는다.
+    같은 코드가 두 엔진에서 각자 옳게 동작한다.
+    """
+    readable: set[str] = set()
+    edges: list[tuple[str, str]] = []
+    for ctx in contexts.values():
+        parent_id = ctx.extra.get("parent_id")
+        if parent_id:
+            readable.add(parent_id)                       # 3. 조상 골격
+        readable.update(ctx.extra.get("child_ids") or ())  # 2. 자식 치환
+        edges.extend((ctx.id, callee_id) for callee_id in ctx.callees)
+
+    # 1. 순환 내부 — callee summary 가 제때 없을 수 있는 유일한 구조적 경우.
+    readable.update(find_call_cycles(edges, contexts.keys()))
+    return readable
 
 
 async def _compute_one_liner_safe(

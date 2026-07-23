@@ -25,7 +25,7 @@ from pipeline.steps.step7_analyze_code.batch_planner import (
     Batch, build_effective_tree, plan_batches,
 )
 from pipeline.steps.step7_analyze_code.batch_prompt_values import _build_batch_values
-from pipeline.steps.step7_analyze_code.call_cycles import find_call_cycles
+from shared.graphs.call_cycles import find_call_cycles
 from pipeline.steps.step7_analyze_code.range_body import skeleton_body
 from pipeline.steps.step7_analyze_code.rw_table_filter import constrain_tables_to_rw
 from pipeline.steps.step5_linking.link_calls.call_linker import routine_call_pairs

@@ -26,7 +26,7 @@ from langchain_core.runnables import RunnableConfig
 
 from pipeline.languages import ROUTINE_LABELS
 from pipeline.steps.step5_linking.link_calls.call_linker import routine_call_pairs
-from pipeline.steps.step7_analyze_code.call_cycles import find_call_cycles
+from shared.graphs.call_cycles import find_call_cycles
 from graph.schema.graph_edges import Calls, ReadsWrites
 from graph.schema.graph_nodes import CodeNode
 from shared.config.settings import SETTINGS

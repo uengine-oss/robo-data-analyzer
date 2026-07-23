@@ -26,7 +26,7 @@ from shared.files.cache import SourceFileCache
 from pipeline.execution.pause_controller import PauseController
 
 # (dbms 엔진은 여기서 import 하지 않는다 — 전략이 주입한다(analysis_pipelines). 헌법 II.)
-from pipeline.steps.step7_analyze_code.call_cycles import find_call_cycles
+from shared.graphs.call_cycles import find_call_cycles
 from pipeline.steps.step7_analyze_code.three_split_llm_fanout import (
     analyze_code_three_split,
     run_summary,
