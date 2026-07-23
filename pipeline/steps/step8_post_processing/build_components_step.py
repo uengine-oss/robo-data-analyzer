@@ -16,7 +16,6 @@ robo 가 이미 만든 호출그래프(state 의 `code_nodes`/`calls_edges`)만�
 """
 from __future__ import annotations
 
-import asyncio
 import time
 from pathlib import Path
 from typing import Optional
@@ -35,6 +34,11 @@ from shared.events.runtime_logger import log_error, log_info, log_warning
 from shared.events.processing_events import step_processing_scope, track_processing
 from graph.neo4j_client import Neo4jClient
 from graph.ownership import ANALYZER_GRAPH_OWNER
+from pipeline.execution.analysis_handoff import (
+    POSTPROCESS_PRIORITY,
+    AnalysisHandoffAborted,
+    handoff_of,
+)
 from pipeline.execution.step_config import step_config
 from pipeline.execution.pause_controller import PauseController
 
@@ -67,7 +71,16 @@ async def build_components_step(state: dict, config: Optional[RunnableConfig] = 
         log_warning(_STEP, "config_missing", "strategy 누락 — step skip")
         return {}
 
-    code_nodes: list[CodeNode] = state.get("code_nodes", [])
+    # 군집은 결정론 호출그래프(step5)로 만들고, 이름은 코드노드의 logical_name·summary
+    # 한 줄만 읽는다 — 둘 다 step7 #1 summary 산물이다(spec 096). rules·insights 는 안 읽는다.
+    handoff = handoff_of(cfg)
+    try:
+        await handoff.summaries()
+    except AnalysisHandoffAborted:
+        log_warning(_STEP, "analysis_aborted", "분석이 실패로 끝남 — 컴포넌트 군집 skip")
+        return {}
+
+    code_nodes: list[CodeNode] = handoff.merge(state.get("code_nodes", []))
     calls: list[Calls] = state.get("calls_edges", [])
     if not code_nodes:
         log_info(_STEP, "skip", reason="code_nodes 0")
@@ -84,7 +97,8 @@ async def build_components_step(state: dict, config: Optional[RunnableConfig] = 
 
     # 2. 이름 (LLM, 병렬) — 군집당 사람이 읽을 이름 하나.
     prompts_dir = Path(strategy.prompts_dir)
-    semaphore = cfg.get("llm_semaphore") or asyncio.Semaphore(SETTINGS.analysis_pipeline.max_concurrency)
+    # run 공유 슬롯 — step7 과 같은 세마포어를 낮은 우선순위로 쓴다 (spec 096).
+    slots = handoff.slots
     fn_by_id = {f.id: f for f in code_nodes}
 
     async def _name_one(component_id: str, members: list[str]) -> str:
@@ -95,7 +109,7 @@ async def build_components_step(state: dict, config: Optional[RunnableConfig] = 
             lines.append(f"- (외 {extra}개 함수)")
         members_text = "\n".join(lines)
         async with track_processing("Component", component_id):
-            async with semaphore:
+            async with slots.at(POSTPROCESS_PRIORITY):
                 result: ComponentNamingOutput = await run_yaml_rule(
                     prompts_dir=prompts_dir,
                     rule_name="component_naming",

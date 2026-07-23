@@ -22,7 +22,9 @@ import time
 from typing import Any, Optional
 
 
+from shared.concurrency.priority_semaphore import PrioritySemaphore
 from shared.files.cache import SourceFileCache
+from pipeline.execution.analysis_handoff import AnalysisHandoff
 from pipeline.execution.pause_controller import PauseController
 
 # (dbms 엔진은 여기서 import 하지 않는다 — 전략이 주입한다(analysis_pipelines). 헌법 II.)
@@ -70,13 +72,15 @@ async def run_framework_per_node_analysis(
     table_descriptions: dict[str, dict],
     pause: PauseController,
     source_cache: SourceFileCache,
+    handoff: AnalysisHandoff,
 ) -> dict:
     """Framework 분석 엔진 — 코드노드 **1개당** 3분할 fan-out (per-node).
 
     ``run_dbms_batch_analysis`` 와 **동일 시그니처** — 전략이 둘 중 하나를 주입한다
     (``Strategy.code_analyzer``). 호출부(``analyze_code_step``)는 어느 쪽인지 모른다.
 
-    caller 가 ``step_processing_scope`` 진입 + ``flush_drop_summary`` 를 책임진다.
+    caller 가 ``step_processing_scope`` 진입 + ``flush_drop_summary`` + ``handoff`` 종료를
+    책임진다.
     """
     started = time.monotonic()
 
@@ -130,7 +134,10 @@ async def run_framework_per_node_analysis(
     # Example Mapping 9 종 (Rule/Example/Question + 6 엣지) 은 코드노드 단위로 만들어져
     # round 끝까지 누적 → step 마지막에 state 로 반영. Neo4j MERGE 가 정체성 키
     # (rule_hash / example_id / question_id) 로 자동 dedup — state list 는 raw 그대로.
-    semaphore = asyncio.Semaphore(SETTINGS.analysis_pipeline.max_concurrency)
+    # run 공유 슬롯 — 후처리와 **같은 세마포어**를 쓴다(spec 096). step7 은 우선순위 0
+    # 이라 후처리보다 항상 먼저 슬롯을 잡는다. 총량은 종전과 같다(값 = max_concurrency).
+    semaphore = handoff.slots
+    handoff.expect(contexts.keys())
     # source_cache 는 caller(analyze_code_step)가 주입 — run 스코프 공유 (FR-008).
     em_acc = ExampleMappingResult()
 
@@ -156,6 +163,11 @@ async def run_framework_per_node_analysis(
         def _mark_summary_ready(fid: str) -> None:
             summary_done.add(fid)
             summary_event.set()
+            node = code_by_id.get(fid)
+            if node is not None:
+                # 후처리(모듈요약·컴포넌트명·용어사전)는 이 시점의 필드만 읽는다 — 노드
+                # 완료가 아니라 여기서 인계해야 step7 의 빈 슬롯을 채울 수 있다 (spec 096).
+                handoff.publish_summary(node)
 
         def _ready() -> list[str]:
             return sorted(
@@ -228,6 +240,7 @@ async def run_framework_per_node_analysis(
                         continue
                     done.add(fn_id)               # 성공·분석실패·None = 처리 완료 (재시도 X)
                     summary_done.add(fn_id)       # 실패·스킵 노드도 caller 를 막지 않는다
+                    handoff.resolve(fn_id)        # 후처리 대기에서도 빼야 게이트가 열린다
                     if isinstance(r, BudgetExceededError):
                         raise r                   # 절대원칙 #3 — 회로 차단기 즉시 전파
                     if isinstance(r, BaseException):
@@ -382,7 +395,7 @@ async def _analyze_one(
     code_by_id: dict,
     strategy: Any,
     cost_budget,
-    semaphore: asyncio.Semaphore,
+    semaphore: PrioritySemaphore,
     codebase_notes: str,
     module_intents: dict[str, str],
     table_descriptions: dict[str, dict],

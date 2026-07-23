@@ -17,7 +17,6 @@
 """
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 import json
 import shutil
@@ -47,6 +46,8 @@ from shared.events.ndjson_event_stream import NDJSONStream
 from graph.neo4j_client import Neo4jClient
 from graph.schema.constraints import ensure_schema, wipe_graph
 from shared.files.cache import SourceFileCache
+from shared.concurrency.priority_semaphore import PrioritySemaphore
+from pipeline.execution.analysis_handoff import AnalysisHandoff
 from pipeline.execution.langgraph_builder import build_langgraph_workflow
 from pipeline.execution.pause_controller import PauseController
 from pipeline.execution.run_registry import clear as clear_active_run
@@ -165,10 +166,13 @@ async def execute_run(
             )
             app = build_langgraph_workflow(strategy, checkpointer=checkpointer)
 
-            # 병렬 그룹(후처리) 공유 LLM 세마포어 — step 마다 따로 Semaphore(30) 를 만들면
-            # 동시 실행 시 30×N 이 한 서버로 몰려 과부하. 하나를 공유해 총 동시수를 묶는다.
-            # 그룹 아닌(순차) step 도 같은 세마포어를 써도 결과 동일(동시엔 1 step 만 활성).
-            llm_semaphore = asyncio.Semaphore(SETTINGS.analysis_pipeline.max_concurrency)
+            # run 전체가 공유하는 **단 하나의** LLM 슬롯 (spec 096). step 마다 따로 만들면
+            # 동시 실행 시 N 배가 한 서버로 몰려 과부하 — 실측으로 닫힌 길이다.
+            # 우선순위 세마포어인 이유: step7 과 후처리가 이제 같은 superstep 에서 겹치므로
+            # 총량은 그대로 두되 임계경로(step7)가 항상 먼저 슬롯을 잡아야 한다.
+            llm_semaphore = PrioritySemaphore(SETTINGS.analysis_pipeline.max_concurrency)
+            # step7 → 후처리 인계 채널 — 분할이 확정된 시점을 후처리에 알려 배리어를 없앤다.
+            analysis_handoff = AnalysisHandoff(llm_semaphore)
 
             # 일시정지/재개/중단 컨트롤러 — control 엔드포인트가 registry 로 찾아 신호.
             initial_state: dict = {"run": run}
@@ -183,7 +187,8 @@ async def execute_run(
                     "stream": stream,
                     "neo_client": neo_client,
                     "pause": pause,
-                    "llm_semaphore": llm_semaphore,   # 후처리 병렬 그룹 공유 동시성 한도
+                    "llm_semaphore": llm_semaphore,   # run 공유 동시성 한도 (총량 단일 진실)
+                    "analysis_handoff": analysis_handoff,  # step7 분할 확정 → 후처리 인계
                     # ★ run 스코프 소스 캐시 (spec 046 FR-008) — 파일당 디스크 read 1회.
                     #   종전엔 step 마다 새 인스턴스를 만들어 캐시가 무력화됐고, 같은 파일을
                     #   한 run 에서 5~8회 읽었다 (step2 안에서만 2회).

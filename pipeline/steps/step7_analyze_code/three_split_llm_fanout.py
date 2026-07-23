@@ -225,6 +225,11 @@ async def analyze_code_three_split(
     # #2/#3(rules·insights) 완료를 기다리게 하면 CALLS 의존 caller 가 그만큼 늦게 풀린다
     # (실측: rules p95 85초). 값은 아래 fan-in 시점과 동일하므로 산출물 불변이다.
     ctx.summary = summary_out.summary
+    # ★ #1 에서만 나오는 다섯 필드를 여기서 노드에 확정한다 (spec 096). 종전엔 같은 값을
+    #   아래 fan-in 지점에서 넣었다 — #2·#3 은 이 필드들을 건드리지 않으므로 값은 같고
+    #   시점만 앞당겨진다. 이 시점이 곧 후처리(모듈요약·컴포넌트명·용어사전)의 의존
+    #   해제 시점이다. 노드 완료를 기다리게 하면 그 차이만큼 GPU 슬롯이 빈다.
+    _apply_summary_fields(fn, summary_out, common["code_body"], strategy)
     if on_summary_ready is not None:
         on_summary_ready(code_id)
 
@@ -290,19 +295,7 @@ async def analyze_code_three_split(
         allowed_columns_by_table=ctx.extra.get("ddl_columns_by_table"),
     )
 
-    # fan-in 머지 → CodeNode 에 적용
-    # stereotype 은 ontology_roles.yaml 풀과 검증 (없으면 빈 문자열로 강제)
-    validated_stereotype = coerce_stereotype(summary_out.stereotype or "", strategy.name)
-    fn.summary = summary_out.summary
-    fn.stereotype = validated_stereotype or None
-    fn.logical_name = summary_out.logical_name or None
-    fn.search_text = summary_out.search_text or None
-    fn.domain_terms = normalize_domain_terms(
-        summary_out.domain_terms,
-        source_text=common["code_body"],
-        code_id=fn.id,
-        component=_STEP,
-    )
+    # fan-in 머지 → CodeNode 에 적용 (#1 유래 다섯 필드는 Phase 1 에서 이미 확정됐다).
     fn.extra["table_insights"] = (
         [t.model_dump() for t in insights_out.table_insights] if insights_out else []
     )
@@ -319,6 +312,27 @@ async def analyze_code_three_split(
     ctx.extra["rules"] = fn.extra["rules"]
     ctx.extra["questions"] = fn.extra["questions"]
     return fn
+
+
+def _apply_summary_fields(
+    fn: CodeNode, summary_out: SummaryOutput, code_body: str, strategy: Any,
+) -> None:
+    """#1 summary 에서만 나오는 코드노드 필드를 확정한다 (spec 096).
+
+    #2(insights)·#3(rules)는 이 다섯 필드를 읽지도 쓰지도 않는다. 그래서 노드 완료가
+    아니라 #1 확정 시점에 넣어도 값이 같고, 후처리는 그만큼 일찍 시작할 수 있다.
+    stereotype 은 ontology_roles.yaml 풀과 검증 (없으면 빈 문자열로 강제).
+    """
+    fn.summary = summary_out.summary
+    fn.stereotype = coerce_stereotype(summary_out.stereotype or "", strategy.name) or None
+    fn.logical_name = summary_out.logical_name or None
+    fn.search_text = summary_out.search_text or None
+    fn.domain_terms = normalize_domain_terms(
+        summary_out.domain_terms,
+        source_text=code_body,
+        code_id=fn.id,
+        component=_STEP,
+    )
 
 
 def _take(done: dict, key: str, code_id: str):

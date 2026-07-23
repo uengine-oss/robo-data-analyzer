@@ -16,7 +16,10 @@ from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
+from shared.concurrency.priority_semaphore import PrioritySemaphore
+from shared.config.settings import SETTINGS
 from shared.files.cache import SourceFileCache
+from pipeline.execution.analysis_handoff import AnalysisHandoff
 from pipeline.execution.pause_controller import NULL_PAUSE, PauseController
 from pipeline.execution.step_config import step_config
 
@@ -72,6 +75,11 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
     neo: Neo4jClient | None = cfg.get("neo_client")
     stream: Optional[NDJSONStream] = cfg.get("stream")
     pause: PauseController = cfg.get("pause") or NULL_PAUSE
+    # 후처리와 슬롯·분할 확정 신호를 나누는 run 스코프 채널 (spec 096).
+    # 없으면(단독 호출·테스트) 이 run 안에서만 쓰는 것을 만든다 — 겹칠 상대가 없어 동작 동일.
+    handoff: AnalysisHandoff = cfg.get("analysis_handoff") or AnalysisHandoff(
+        PrioritySemaphore(SETTINGS.analysis_pipeline.max_concurrency)
+    )
 
     contexts = state.get("analysis_contexts", {})
     code_node_list = state.get("code_nodes", [])
@@ -110,6 +118,7 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
 
     if not contexts:
         log_info(_STEP, "skip", reason="no analysis_contexts")
+        handoff.close()   # 후처리가 영원히 기다리지 않게 — 조용한 교착 금지
         return {}
 
     reset_drop_stats()  # 디스패처 테이블-드롭 run 집계 시작 (종료 시 flush 가 1줄 표면화)
@@ -132,10 +141,19 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
     # run 스코프 공유 소스 캐시 (executor 주입) — 없으면 단독 생성(CLI/테스트 경로). FR-008.
     source_cache = cfg.get("source_cache") or SourceFileCache()
 
-    with step_processing_scope(_STEP, stream):
-        result = await strategy.code_analyzer(
-            state, contexts, code_by_id, strategy, cost_budget, neo, stream,
-            codebase_notes, module_intents, table_descriptions, pause, source_cache,
-        )
+    # 인계 채널은 **어떤 경로로 빠져나가든** 반드시 닫는다. 안 닫으면 같은 superstep 의
+    # 후처리가 게이트에서 영원히 대기해 run 이 끝나지 않는다 (조용한 교착 금지).
+    try:
+        with step_processing_scope(_STEP, stream):
+            result = await strategy.code_analyzer(
+                state, contexts, code_by_id, strategy, cost_budget, neo, stream,
+                codebase_notes, module_intents, table_descriptions, pause, source_cache,
+                handoff,
+            )
+    except BaseException as error:
+        handoff.abort(error)
+        raise
+    finally:
+        handoff.close()
     flush_drop_summary()  # 디스패처 드롭 집계 1줄 표면화 (FR-005a)
     return result

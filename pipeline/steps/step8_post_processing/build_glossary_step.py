@@ -16,7 +16,6 @@
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 import time
@@ -28,13 +27,17 @@ from pathlib import Path
 
 from pipeline.models.code_analysis_output import GlossarySynthesisOutput
 from graph.schema.graph_nodes import CodeNode, Module
-from shared.config.settings import SETTINGS
 from llm.usage.cost_budget import BudgetExceededError
 from llm.fanout import gather_with_warmup
 from llm.runners.yaml_llm_runner import run_yaml_rule
 from shared.events.runtime_logger import log_error, log_info, log_warning
 from graph.neo4j_client import Neo4jClient
 from graph.ownership import ANALYZER_GRAPH_OWNER
+from pipeline.execution.analysis_handoff import (
+    POSTPROCESS_PRIORITY,
+    AnalysisHandoffAborted,
+    handoff_of,
+)
 from pipeline.execution.step_config import step_config
 from pipeline.execution.pause_controller import PauseController
 
@@ -222,8 +225,16 @@ async def build_glossary_step(state: dict, config: Optional[RunnableConfig] = No
     neo: Neo4jClient | None = cfg.get("neo_client")
     pause: PauseController = cfg.get("pause") or PauseController()
 
-    code_nodes: list[CodeNode] = state.get("code_nodes", [])
-    modules: list[Module] = state.get("modules", [])
+    # 용어 조각(domain_terms)·요약·검색문은 전부 step7 #1 summary 산물이고, 문맥에 얹는
+    # 모듈 요약은 summarize_module 산물이다(spec 096). 두 인계를 기다린 뒤 시작하면
+    # 입력 집합이 종전과 같으면서 step7 의 빈 슬롯을 쓸 수 있다.
+    handoff = handoff_of(cfg)
+    try:
+        modules: list[Module] = await handoff.modules() or state.get("modules", [])
+        code_nodes: list[CodeNode] = handoff.merge(state.get("code_nodes", []))
+    except AnalysisHandoffAborted:
+        log_warning(_STEP, "analysis_aborted", "분석이 실패로 끝남 — 용어사전 skip")
+        return {}
     started = time.monotonic()
 
     terms = _collect_terms(code_nodes)
@@ -239,11 +250,12 @@ async def build_glossary_step(state: dict, config: Optional[RunnableConfig] = No
     candidates_of = {k: _alias_candidates(k, terms) for k in terms}
 
     prompts_dir = Path(strategy.prompts_dir)
-    semaphore = cfg.get("llm_semaphore") or asyncio.Semaphore(SETTINGS.analysis_pipeline.max_concurrency)
+    # run 공유 슬롯 — step7 과 같은 세마포어를 낮은 우선순위로 쓴다 (spec 096).
+    slots = handoff.slots
 
     async def _synthesize_one(key: str) -> tuple[str, GlossarySynthesisOutput]:
         slot = terms[key]
-        async with semaphore:
+        async with slots.at(POSTPROCESS_PRIORITY):
             result: GlossarySynthesisOutput = await run_yaml_rule(
                 prompts_dir=prompts_dir,
                 rule_name="glossary_synthesis",

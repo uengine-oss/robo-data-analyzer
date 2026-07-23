@@ -11,6 +11,8 @@ import unittest
 from dataclasses import dataclass, field
 from unittest import mock
 
+from pipeline.execution.analysis_handoff import AnalysisHandoff
+from shared.concurrency.priority_semaphore import PrioritySemaphore
 from pipeline.steps.step7_analyze_code.framework_per_node import (
     _build_dependency_map,
     _dispatch_ranks,
@@ -111,6 +113,7 @@ class EarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
                 cost_budget=None, neo=None, stream=None,
                 codebase_notes="", module_intents={}, table_descriptions={},
                 pause=PauseController(), source_cache=mock.Mock(),
+                handoff=AnalysisHandoff(PrioritySemaphore(64)),
             )
 
         # 핵심 계약: caller 는 callee 의 done 이전(=summary 확정 후)에 시작해야 한다.

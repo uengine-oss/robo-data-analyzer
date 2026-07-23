@@ -10,7 +10,6 @@ LLM 호출 = 테이블당 1 회 (병렬, ``max_concurrency``).
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import time
 from collections import defaultdict
@@ -20,10 +19,14 @@ from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
+from pipeline.execution.analysis_handoff import (
+    POSTPROCESS_PRIORITY,
+    AnalysisHandoffAborted,
+    handoff_of,
+)
 from pipeline.execution.step_config import step_config
 from pipeline.execution.pause_controller import PauseController
 
-from shared.config.settings import SETTINGS
 from llm.usage.cost_budget import BudgetExceededError
 from llm.fanout import gather_with_warmup, partition_llm_results
 from pipeline.models.code_analysis_output import TableDescription
@@ -49,7 +52,17 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
         log_warning(_STEP, "config_missing", "strategy 누락 — step skip")
         return {}
 
-    code_nodes = state.get("code_nodes", [])
+    # ``table_insights`` 는 ``constrain_tables_to_rw`` 가 rules 와 함께 정리하므로 노드
+    # **완료** 시점에만 확정된다 — 그래서 #1 이 아니라 전 노드 완료를 기다린다(spec 096).
+    # 7콜뿐이라 이 게이트가 늦어도 손해가 없다.
+    handoff = handoff_of(cfg)
+    try:
+        await handoff.analysis()
+    except AnalysisHandoffAborted:
+        log_warning(_STEP, "analysis_aborted", "분석이 실패로 끝남 — 테이블 설명 skip")
+        return {}
+
+    code_nodes = handoff.merge(state.get("code_nodes", []))
     if not code_nodes:
         log_info(_STEP, "skip", reason="no code_nodes")
         return {}
@@ -92,13 +105,13 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
         column_descriptions=sum(len(v) for v in column_descriptions.values()),
     )
     prompts_dir = Path(strategy.prompts_dir)
-    # 병렬 그룹 공유 세마포어 (executor 주입) — 없으면 단독 생성(순차 실행 시 동일).
-    semaphore = cfg.get("llm_semaphore") or asyncio.Semaphore(SETTINGS.analysis_pipeline.max_concurrency)
+    # run 공유 슬롯 — step7 과 같은 세마포어를 낮은 우선순위로 쓴다 (spec 096).
+    slots = handoff.slots
 
     async def _summarize_one(table_fqn: str, candidates: list[dict]) -> TableDescription:
         """성공 시 TableDescription / 실패 시 raise. fail 정책은 메인이 책임 (단일 책임)."""
         async with track_processing("Table", table_fqn):
-            async with semaphore:
+            async with slots.at(POSTPROCESS_PRIORITY):
                 return await run_yaml_rule(
                     prompts_dir=prompts_dir,
                     rule_name="table_description",

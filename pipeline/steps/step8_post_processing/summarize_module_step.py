@@ -9,7 +9,6 @@
 """
 from __future__ import annotations
 
-import asyncio
 import time
 from collections import defaultdict
 from dataclasses import replace
@@ -18,6 +17,11 @@ from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
+from pipeline.execution.analysis_handoff import (
+    POSTPROCESS_PRIORITY,
+    AnalysisHandoffAborted,
+    handoff_of,
+)
 from pipeline.execution.step_config import step_config
 from pipeline.execution.pause_controller import PauseController
 
@@ -43,12 +47,37 @@ async def summarize_module_step(state: dict, config: Optional[RunnableConfig] = 
     neo: Neo4jClient | None = cfg.get("neo_client")
     stream = cfg.get("stream")
     pause: PauseController = cfg.get("pause") or PauseController()
+    # 이 step 이 읽는 것은 코드노드의 signature·summary·logical_name 뿐 — 전부 step7 의
+    # #1 summary 에서 나온다(spec 096). 그래서 노드 전체 완료가 아니라 전 대상의 #1 확정을
+    # 기다린다. 기다리는 동안 step7 이 슬롯을 쓰고, 열리는 즉시 남은 빈 슬롯을 채운다.
+    # 결과는 어떤 경로로 끝나든 인계한다 — 안 하면 용어사전이 영원히 기다린다.
+    handoff = handoff_of(cfg)
+    try:
+        result = await _summarize(state, handoff, strategy, cost_budget, neo, stream, pause)
+    except AnalysisHandoffAborted:
+        log_warning(_STEP, "analysis_aborted", "분석이 실패로 끝남 — 모듈 요약 skip")
+        return {}
+    except BaseException as error:
+        # 실패한 요약을 인계하면 용어사전이 잘못된 문맥으로 392 콜을 쏜다. 원인을 넘긴다.
+        handoff.abort(error)
+        raise
+    if not handoff.modules_published:
+        # 요약을 못 낸 경로(설정 누락·모듈 0)도 반드시 인계 — 안 하면 용어사전이 굶는다.
+        handoff.publish_modules(state.get("modules", []))
+    return result
+
+
+async def _summarize(
+    state: dict, handoff, strategy, cost_budget, neo, stream, pause,
+) -> dict:
+    """모듈 요약 본체 — 게이트 통과 후. 인계·실패 정책은 호출부가 감싼다."""
     if strategy is None:
         log_warning(_STEP, "config_missing", "strategy 누락 — step skip")
         return {}
 
+    await handoff.summaries()
     modules: list[Module] = state.get("modules", [])
-    code_nodes: list[CodeNode] = state.get("code_nodes", [])
+    code_nodes: list[CodeNode] = handoff.merge(state.get("code_nodes", []))
     if not modules or not code_nodes:
         log_info(_STEP, "skip", modules=len(modules), code_nodes=len(code_nodes))
         return {}
@@ -60,8 +89,8 @@ async def summarize_module_step(state: dict, config: Optional[RunnableConfig] = 
     fn_by_module = _match_code_to_modules(code_nodes, modules)
 
     prompts_dir = Path(strategy.prompts_dir)
-    # 병렬 그룹 공유 세마포어 (executor 주입) — 없으면 단독 생성(순차 실행 시 동일).
-    semaphore = cfg.get("llm_semaphore") or asyncio.Semaphore(SETTINGS.analysis_pipeline.max_concurrency)
+    # run 공유 슬롯 — step7 과 같은 세마포어를 낮은 우선순위로 쓴다 (spec 096).
+    slots = handoff.slots
 
     async def _summarize_one(module: Module) -> Module:
         """성공 시 새 module / 실패 시 raise (BudgetExceededError 또는 LLM 예외).
@@ -77,7 +106,7 @@ async def summarize_module_step(state: dict, config: Optional[RunnableConfig] = 
             for fn in members
         )
         async with track_processing("Module", module.id):
-            async with semaphore:
+            async with slots.at(POSTPROCESS_PRIORITY):
                 result: ModuleSummaryOutput = await run_yaml_rule(
                     prompts_dir=prompts_dir,
                     rule_name="module_summary",
@@ -108,6 +137,8 @@ async def summarize_module_step(state: dict, config: Optional[RunnableConfig] = 
     with step_processing_scope(_STEP, stream):
         results = await pause.run_restartable_during_pause(_run_fanout)
     updated = _apply_fail_policy(modules, results)
+    # 용어사전이 모듈 요약을 문맥으로 읽는다 — Neo4j 적재를 기다리지 않고 바로 인계한다.
+    handoff.publish_modules(updated)
 
     if neo is not None:
         await upsert_modules(neo, updated)

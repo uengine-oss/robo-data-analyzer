@@ -120,14 +120,18 @@ FRAMEWORK_PIPELINE = Strategy(
         link_external_step,                   # 외부 파일 key/FQN/SQL→DDL 결정론 연결
         (build_context_step, fetch_table_samples_step),   # 독립 — HTTP 지연 은닉
 
-        analyze_code_step,
-        # glossary 의 의존은 summarize 뿐 — 최장 스텝인 glossary 를 나머지와 겹친다.
-        summarize_module_step,
+        # ★ 후처리는 step7 과 **같은 superstep**에서 돈다 (spec 096). 노드 간 배리어를 두면
+        #   후처리가 step7 의 마지막 콜까지 기다리는데, 실제로 후처리가 읽는 값은 step7 의
+        #   일부 분할에서만 나온다. 각 step 이 ``AnalysisHandoff`` 로 자기 의존이 풀리는
+        #   시점을 스스로 기다리고, 남는 LLM 슬롯을 낮은 우선순위로 채운다.
+        #   (총 동시 요청은 안 늘어난다 — 세마포어가 run 에 하나뿐이다.)
         (
-            enrich_table_description_step,
-            build_components_step,            # ① 컴포넌트 군집화+이름 (Leiden + 병렬 naming)
-            health_metrics_step,              # ② 건강지표 (결정론·LLM 0 — 그래프 위 계산)
-            build_glossary_step,              # 용어사전 종합 (spec 043 — 모듈 요약 의존만)
+            analyze_code_step,
+            summarize_module_step,            # 게이트: 전 노드 #1 summary
+            build_components_step,            # 게이트: 전 노드 #1 summary (Leiden + 병렬 naming)
+            build_glossary_step,              # 게이트: 모듈 요약 (spec 043)
+            enrich_table_description_step,    # 게이트: 전 노드 완료 (insights 가 rules 와 함께 확정)
+            health_metrics_step,              # 게이트 없음 — 결정론 그래프(step2·5)만 읽는다
         ),
         embed_step,
     ),
@@ -157,15 +161,17 @@ DBMS_PIPELINE = Strategy(
         link_external_step,                   # 외부 파일 key/FQN/SQL→DDL 결정론 연결
         (build_context_step, fetch_table_samples_step),   # 독립 — HTTP 지연 은닉
 
-        analyze_code_step,
-        # glossary 의 의존은 summarize 뿐 — 최장 스텝인 glossary 를 나머지와 겹친다.
-        summarize_module_step,
+        # ★ Framework 와 같은 겹치기 (spec 096) — 각 step 이 ``AnalysisHandoff`` 로 자기
+        #   의존 해제를 기다린다. DBMS 배치 엔진은 summary 와 rules 가 한 콜에서 같이
+        #   확정되므로 #1 게이트와 완료 게이트가 사실상 같은 시점이다.
         (
-            enrich_table_description_step,
-            enrich_lineage_from_catalog_step, # ★ DBMS 만 — catalog lineage (HTTP, 독립)
-            build_components_step,            # ① 컴포넌트 군집화+이름 (Leiden + 병렬 naming)
-            health_metrics_step,              # ② 건강지표 (결정론·LLM 0 — 그래프 위 계산)
-            build_glossary_step,              # 용어사전 종합 (spec 043 — 모듈 요약 의존만)
+            analyze_code_step,
+            summarize_module_step,            # 게이트: 전 노드 요약
+            build_components_step,            # 게이트: 전 노드 요약
+            build_glossary_step,              # 게이트: 모듈 요약 (spec 043)
+            enrich_table_description_step,    # 게이트: 전 노드 완료
+            enrich_lineage_from_catalog_step, # ★ DBMS 만 — catalog lineage (HTTP, step7 무관)
+            health_metrics_step,              # 게이트 없음 — 결정론 그래프(step2·5)만 읽는다
         ),
         embed_step,
     ),

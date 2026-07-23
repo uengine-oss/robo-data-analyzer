@@ -48,6 +48,7 @@ from llm.runners.yaml_llm_runner import run_yaml_rule
 from shared.events.runtime_logger import log_error, log_info, log_warning
 from shared.events.processing_events import track_processing
 from shared.files.cache import SourceFileCache
+from pipeline.execution.analysis_handoff import AnalysisHandoff
 from pipeline.execution.pause_controller import PauseController
 
 _STEP = "step7.analyze_code.batch"
@@ -115,6 +116,7 @@ async def run_dbms_batch_analysis(
     table_descriptions: dict[str, dict],
     pause: PauseController,
     source_cache: SourceFileCache,
+    handoff: AnalysisHandoff,
 ) -> dict:
     """DBMS 배치 분석 — 유효 트리 → 바텀업 라운드 → 라운드별 형제 배치 1콜.
 
@@ -157,7 +159,11 @@ async def run_dbms_batch_analysis(
     rule_units, rule_gates = _plan_rule_units(code_by_id, eff_children, token_of, SETTINGS.analysis_pipeline.batch_max_tokens)
     log_info(_STEP, "rule_units", units=len(rule_units), gates=len(rule_gates), analysis_nodes=len(analysis_ids))
 
-    semaphore = asyncio.Semaphore(SETTINGS.analysis_pipeline.max_concurrency)
+    # run 공유 슬롯 — 후처리와 같은 세마포어(spec 096). 총량은 종전과 같고 우선순위만 다르다.
+    # 배치 엔진은 형제를 한 콜로 묶으므로 summary 와 rules 가 동시에 확정된다 → 후처리 인계는
+    # 노드 완료 시점 하나뿐이다(per-node 엔진처럼 #1 을 앞당길 자리가 없다).
+    semaphore = handoff.slots
+    handoff.expect(analysis_ids)
     # source_cache 는 caller(analyze_code_step)가 주입 — run 스코프 공유 (spec 046 FR-008).
     em_acc = ExampleMappingResult()
     analyzed = failed = batch_count = 0
@@ -230,11 +236,16 @@ async def run_dbms_batch_analysis(
                 if isinstance(result, BaseException):
                     failed += 1
                     log_error(_STEP, "batch", result)
-                    continue
-                for fn in result:                  # 배치가 분석한 CodeNode 들
-                    em = await _persist_and_emit_code(fn, neo, stream)
-                    _accumulate_em(em_acc, em)
-                    analyzed += 1
+                else:
+                    for fn in result:              # 배치가 분석한 CodeNode 들
+                        handoff.publish_summary(fn)   # 결과 확정 — 후처리 인계
+                        em = await _persist_and_emit_code(fn, neo, stream)
+                        _accumulate_em(em_acc, em)
+                        analyzed += 1
+                # 인계 해제는 **공개 뒤에** — 순서가 뒤집히면 게이트가 열린 뒤에 노드가
+                # 실려 후처리가 미완성 목록을 읽는다.
+                for node_id in batch_nodes[id(b)]:
+                    handoff.resolve(node_id)
     finally:
         # pause/stop/예산 차단/상위 취소 모두 coroutine finally까지 수거한 뒤 진행.
         await pause.cancel_and_wait(list(pending))
