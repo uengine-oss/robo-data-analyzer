@@ -19,6 +19,7 @@ LLM 배관(run_yaml_rule·프롬프트·예산)은 호출부(three_split)가 콜
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 
@@ -108,11 +109,20 @@ async def run_rules_fallback(
 
     if fragments:
         emit_current("Fragment", code_id, sub_action=f"split:{len(fragments)}", status="done")
-        fragment_outputs: list[RulesExamplesOutput] = []
-        for frag in fragments:
-            out = await _analyze_one_fragment(code_id, frag, analyze_fragment)
-            if out is not None:
-                fragment_outputs.append(out)
+        # 조각은 서로 독립이므로 동시에 분석한다. ``gather`` 는 입력 순서를 보존하므로
+        # 병합 입력은 순차 실행과 동일하다(산출물 불변). 종전 순차 실행은 폭주 폴백이
+        # step7 꼬리에 걸릴 때 조각 수만큼 콜을 직렬로 쌓아 run 전체를 늘렸다
+        # (run20 실측: 감지기 발동 16:59:43 → 폴백 병합 종료 17:02:28 = step7 종료 시각).
+        results = await asyncio.gather(
+            *(_analyze_one_fragment(code_id, frag, analyze_fragment) for frag in fragments),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, BudgetExceededError):
+                raise result        # 회로 차단기 — 그대로 전파
+        fragment_outputs: list[RulesExamplesOutput] = [
+            r for r in results if isinstance(r, RulesExamplesOutput)
+        ]
         if fragment_outputs:
             merged = await _merge(code_id, fragment_outputs, merge_fragments)
         else:

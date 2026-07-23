@@ -6,6 +6,7 @@ no-op 이라 그대로 통과. 검증: 분할→조각→병합→재검사 통�
 """
 from __future__ import annotations
 
+import asyncio
 import unittest
 
 from pipeline.steps.step7_analyze_code.ast_budget_splitter import SubtreeNode
@@ -192,3 +193,60 @@ class RunFallbackTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FragmentConcurrencyTest(unittest.IsolatedAsyncioTestCase):
+    """조각 분석은 동시에 돈다 — 폭주 폴백이 step7 꼬리에 걸릴 때 직렬 사슬이 되지 않게."""
+
+    async def test_fragments_run_concurrently_and_keep_input_order(self):
+        subtree = [
+            SubtreeNode("if1", "IF", 1, 40),
+            SubtreeNode("if2", "IF", 41, 70),
+            SubtreeNode("if3", "IF", 71, 100),
+        ]
+        live = 0
+        peak = 0
+        seen: list[str] = []
+
+        async def af(frag):
+            nonlocal live, peak
+            live += 1
+            peak = max(peak, live)
+            await asyncio.sleep(0)          # 다른 조각에 양보 — 동시성 관측
+            live -= 1
+            seen.append(frag.fragment_id)
+            return _clean()
+
+        merged_inputs: list = []
+
+        async def mf(outs):
+            merged_inputs.extend(outs)
+            return _clean()
+
+        outcome = await run_rules_fallback(
+            code_id="fn::calc", rules_out=_anomalous(),
+            report=check_rule_quality(_anomalous(), _BIG_BODY),
+            code_body=_BIG_BODY, control_subtree=subtree,
+            analyze_fragment=af, merge_fragments=mf, budget_tokens=20,
+        )
+
+        self.assertEqual(outcome.status, STATUS_FALLBACK_OK)
+        self.assertGreater(peak, 1, "조각이 직렬로 돌았다 — 병렬화가 풀렸다")
+        self.assertEqual(len(merged_inputs), len(seen))
+
+    async def test_budget_breaker_still_propagates(self):
+        subtree = [SubtreeNode("if1", "IF", 1, 50), SubtreeNode("if2", "IF", 51, 100)]
+
+        async def af(frag):
+            raise BudgetExceededError(10.0, 1.0)
+
+        async def mf(outs):
+            raise AssertionError("예산 차단 시 병합까지 가면 안 된다")
+
+        with self.assertRaises(BudgetExceededError):
+            await run_rules_fallback(
+                code_id="fn::calc", rules_out=_anomalous(),
+                report=check_rule_quality(_anomalous(), _BIG_BODY),
+                code_body=_BIG_BODY, control_subtree=subtree,
+                analyze_fragment=af, merge_fragments=mf, budget_tokens=20,
+            )
