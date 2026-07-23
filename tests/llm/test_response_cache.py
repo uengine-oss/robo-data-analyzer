@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,12 +18,12 @@ class _Out(BaseModel):
     text: str = ""
 
 
-def _settings(root: Path, enabled: bool = True):
+def _settings(root: Path, enabled: bool = True, max_mb: int = 512):
     return mock.patch.object(
         response_cache,
         "SETTINGS",
         SimpleNamespace(
-            analysis_llm=SimpleNamespace(response_cache=enabled),
+            analysis_llm=SimpleNamespace(response_cache=enabled, response_cache_max_mb=max_mb),
             analysis_data=SimpleNamespace(dir=root),
         ),
     )
@@ -105,6 +106,62 @@ class AtomicWriteTest(unittest.TestCase):
             response_cache.store(key, _Out(text="첫값"))
             response_cache.store(key, _Out(text="둘째값"))
             self.assertEqual(response_cache.load(key, _Out), _Out(text="둘째값"))
+
+class SweepTest(unittest.TestCase):
+    """상한 초과 시 오래 안 쓴 것부터 지운다 — 안 지우면 코퍼스 옆에서 무한히 쌓인다."""
+
+    def _fill(self, root: Path, count: int, payload_chars: int) -> list[Path]:
+        paths = []
+        for index in range(count):
+            key = f"{index:064d}"
+            path = root / ".llm-cache" / key[:2] / f"{key}.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"value": "x" * payload_chars}), encoding="utf-8")
+            os.utime(path, (1_700_000_000 + index, 1_700_000_000 + index))  # 오래된 것부터
+            paths.append(path)
+        return paths
+
+    def test_over_limit_evicts_least_recently_used_first(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, _settings(Path(tmp), max_mb=1):
+            paths = self._fill(Path(tmp), count=20, payload_chars=100 * 1024)  # 약 2MB
+
+            response_cache.sweep()
+
+            survivors = [p for p in paths if p.exists()]
+            self.assertTrue(survivors, "전부 지웠다 — 목표치 계산이 틀렸다")
+            self.assertLess(len(survivors), len(paths), "상한을 넘겼는데 아무것도 안 지웠다")
+            self.assertEqual(paths[len(paths) - len(survivors):], survivors,
+                             "최근에 쓴 것이 지워졌다 — LRU 순서가 아니다")
+            total = sum(p.stat().st_size for p in survivors)
+            self.assertLessEqual(total, 1024 * 1024, "정리 후에도 상한을 넘는다")
+
+    def test_under_limit_deletes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, _settings(Path(tmp), max_mb=512):
+            paths = self._fill(Path(tmp), count=5, payload_chars=1024)
+
+            response_cache.sweep()
+
+            self.assertTrue(all(p.exists() for p in paths))
+
+    def test_disabled_limit_never_deletes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, _settings(Path(tmp), max_mb=0):
+            paths = self._fill(Path(tmp), count=5, payload_chars=100 * 1024)
+
+            response_cache.sweep()
+
+            self.assertTrue(all(p.exists() for p in paths))
+
+    def test_load_refreshes_recency_so_used_entries_survive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, _settings(Path(tmp)):
+            paths = self._fill(Path(tmp), count=3, payload_chars=64)
+            oldest = paths[0]
+            before = oldest.stat().st_mtime
+
+            response_cache.load(oldest.stem, None)
+
+            self.assertGreater(oldest.stat().st_mtime, before,
+                               "적중했는데 최근성이 그대로다 — LRU 가 쓰는 것을 지운다")
+
 
 if __name__ == "__main__":
     unittest.main()

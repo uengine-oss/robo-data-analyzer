@@ -106,6 +106,12 @@ class AnalysisLlmSettings:
     response_cache: bool = field(
         default_factory=lambda: _getenv_bool("ROBO_LLM_RESPONSE_CACHE", True)
     )
+    # 응답 캐시 용량 상한(MB). 키가 프롬프트 전체라서 프롬프트·코드를 고칠 때마다 옛 항목이
+    # 다시는 안 읽히는 채로 남는다 — 상한이 없으면 코퍼스 옆에서 무한히 쌓인다.
+    # 초과 시 오래 안 쓴 것부터 지운다(LRU). 0 이하면 정리 안 함.
+    response_cache_max_mb: int = field(
+        default_factory=lambda: _getenv_int("ROBO_LLM_RESPONSE_CACHE_MAX_MB", 512)
+    )
 
 
 @dataclass(frozen=True)

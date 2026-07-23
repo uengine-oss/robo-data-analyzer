@@ -35,6 +35,7 @@ from pipeline.models.analysis_meta import AnalysisRun
 from pipeline.models.analysis_meta import Codebase
 from shared.config.settings import SETTINGS
 
+from llm import response_cache
 from llm.usage.cost_budget import CostBudget
 from shared.events.runtime_logger import (
     attach_run_file_handlers,
@@ -150,6 +151,10 @@ async def execute_run(
             await wipe_graph(neo_client)
             await ensure_schema(neo_client)
             log_info("run", "neo4j_ready", database=SETTINGS.graph_database.database, wiped=True)
+
+            # 응답 캐시 정리 — 프롬프트를 고칠 때마다 다시는 안 읽히는 항목이 쌓인다.
+            # run 시작 1회, 상한 초과 시에만 실제로 지운다.
+            response_cache.sweep()
 
             cost_budget = CostBudget()
             # 체크포인트(msgpack)가 직렬화하는 state dataclass(CodeNode/Table/Rule/Calls 등)를
@@ -349,4 +354,15 @@ def _summarize_usage(run_dir: Path) -> None:
     (run_dir / "usage_summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2),
         encoding="utf-8",
+    )
+
+    # 캐시가 일하는지 헛도는지 한 줄로 보인다 — 적중률이 뜻밖의 값이면 키가 깨진 것이다.
+    calls = total["calls"]
+    hits = total["response_cache_hits"]
+    log_info(
+        "llm.response_cache",
+        "hit_rate",
+        calls=calls,
+        hits=hits,
+        rate=f"{(hits / calls * 100) if calls else 0:.1f}%",
     )

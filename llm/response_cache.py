@@ -25,7 +25,7 @@ from typing import Any, Optional
 from pydantic import BaseModel
 
 from shared.config.settings import SETTINGS
-from shared.events.runtime_logger import log_warning
+from shared.events.runtime_logger import log_info, log_warning
 
 _COMPONENT = "llm.response_cache"
 
@@ -74,6 +74,12 @@ def load(key: str, response_model: Optional[type[BaseModel]]) -> Any:
         return None
     try:
         value = json.loads(path.read_text(encoding="utf-8"))["value"]
+        # 마지막 사용 시각 갱신 — sweep() 이 이걸로 "안 쓰는 것"을 가린다. 실패해도
+        # 무해하므로(정리 우선순위만 부정확해진다) 조회를 막지 않는다.
+        try:
+            os.utime(path, None)
+        except OSError:
+            pass
     except Exception as error:  # noqa: BLE001 — 캐시는 보조물
         log_warning(_COMPONENT, "cache_read_failed",
                     "캐시 항목을 읽지 못해 다시 호출한다",
@@ -89,6 +95,55 @@ def load(key: str, response_model: Optional[type[BaseModel]]) -> Any:
                     key=key, schema=response_model.__name__,
                     error=f"{type(error).__name__}: {error}")
         return None
+
+
+def sweep() -> None:
+    """용량 상한을 넘으면 오래 안 쓴 항목부터 지운다(LRU).
+
+    키가 프롬프트 전체라서 프롬프트·코드를 고치면 옛 항목은 **다시는 안 읽히는 채로**
+    남는다. 상한이 없으면 코퍼스 옆에서 무한히 쌓인다. 지워도 손실은 없다 — 필요하면
+    다시 만든다(비용만 든다). 그래서 정리 실패도 경고로 끝낸다.
+
+    최근성은 ``load()`` 가 갱신하는 mtime 이다. 목표치를 상한의 80% 로 잡아, 매 run 마다
+    경계에서 조금씩 지우는 낭비를 막는다.
+    """
+    root = cache_root()
+    limit_mb = SETTINGS.analysis_llm.response_cache_max_mb
+    if root is None or limit_mb <= 0 or not root.is_dir():
+        return
+    limit_bytes = limit_mb * 1024 * 1024
+    try:
+        entries = [(p, p.stat()) for p in root.rglob("*.json")]
+    except OSError as error:
+        log_warning(_COMPONENT, "cache_sweep_failed",
+                    "캐시 용량 점검 실패 — 정리를 건너뛴다",
+                    error=f"{type(error).__name__}: {error}")
+        return
+
+    total = sum(stat.st_size for _, stat in entries)
+    if total <= limit_bytes:
+        return
+
+    target = int(limit_bytes * 0.8)
+    entries.sort(key=lambda item: item[1].st_mtime)  # 오래 안 쓴 것부터
+    removed = removed_bytes = 0
+    for path, stat in entries:
+        if total <= target:
+            break
+        try:
+            path.unlink()
+        except OSError:
+            continue  # 다른 프로세스가 먼저 지웠거나 잠겼다 — 다음 것으로
+        total -= stat.st_size
+        removed += 1
+        removed_bytes += stat.st_size
+
+    # 조용한 삭제 금지 — 무엇을 얼마나 지웠는지 남긴다.
+    log_info(_COMPONENT, "cache_swept",
+             deleted=removed,
+             deleted_mb=f"{removed_bytes / 1024 / 1024:.1f}",
+             remaining_mb=f"{total / 1024 / 1024:.1f}",
+             limit_mb=limit_mb)
 
 
 def store(key: str, value: Any) -> None:
