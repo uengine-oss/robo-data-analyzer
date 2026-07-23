@@ -15,6 +15,10 @@ from bisect import bisect_right
 from dataclasses import dataclass, field
 from xml.parsers import expat
 
+from pipeline.steps.step3_load_external.parsers.key_roles import (
+    is_addressable_attribute,
+    is_addressable_child_text,
+)
 from pipeline.steps.step3_load_external.parsers.span_common import (
     AdapterParseError,
     SemanticSpan,
@@ -33,6 +37,7 @@ class _Open:
     tag_close: int                           # byte offset just past start tag '>'
     self_closing: bool
     keys: list[str]
+    addressable: list[str] = field(default_factory=list)
     text: list[str] = field(default_factory=list)
 
 
@@ -42,6 +47,7 @@ class _Element:
     end: int
     keys: tuple[str, ...]
     name: str
+    addressable: tuple[str, ...] = ()
 
 
 def _tag_end(data: bytes, start: int) -> int:
@@ -83,20 +89,29 @@ def parse_xml_spans(source: str) -> list[SemanticSpan]:
         start = parser.CurrentByteIndex
         tag_close = _tag_end(data, start)
         keys: list[str] = []
+        addressable: list[str] = []
         for attribute in _KEY_ATTRS:
             value = (attrs.get(attribute) or "").strip()
-            if is_reference_key(value):
-                keys.append(value)
-                if attribute == "id" and namespace:
-                    qualified = f"{namespace}.{value}"
-                    if is_reference_key(qualified):
-                        keys.append(qualified)
+            if not is_reference_key(value):
+                continue
+            # 이 자리가 조회 주소인지는 요소·속성 조합이 정한다 (key_roles 표).
+            is_address = is_addressable_attribute(tag, attribute)
+            keys.append(value)
+            if is_address:
+                addressable.append(value)
+            if attribute == "id" and namespace:
+                qualified = f"{namespace}.{value}"
+                if is_reference_key(qualified):
+                    keys.append(qualified)
+                    if is_address:
+                        addressable.append(qualified)
         stack.append(_Open(
             tag=tag,
             start=start,
             tag_close=tag_close,
             self_closing=data[tag_close - 2:tag_close] == b"/>",
             keys=keys,
+            addressable=addressable,
         ))
 
     def on_text(text: str) -> None:
@@ -110,9 +125,13 @@ def parse_xml_spans(source: str) -> list[SemanticSpan]:
             own_text = "".join(node.text).strip()
             if is_reference_key(own_text):
                 stack[-1].keys.append(own_text)
+                # 같은 태그라도 정의 자리(<session>)면 주소, 언급 자리(<method>)면 아니다.
+                if is_addressable_child_text(stack[-1].tag, node.tag):
+                    stack[-1].addressable.append(own_text)
         if node.keys:
             elements.append(_Element(
-                start=node.start, end=end, keys=tuple(node.keys), name=node.keys[0]))
+                start=node.start, end=end, keys=tuple(node.keys), name=node.keys[0],
+                addressable=tuple(node.addressable)))
 
     parser.EntityDeclHandler = on_entity_decl
     parser.ExternalEntityRefHandler = on_external_entity
@@ -128,12 +147,15 @@ def parse_xml_spans(source: str) -> list[SemanticSpan]:
     elements.sort(key=lambda element: (element.start, -element.end))
     kept: list[_Element] = []
     merged_keys: list[list[str]] = []
+    merged_addressable: list[list[str]] = []
     for element in elements:
         if kept and element.end <= kept[-1].end:
             merged_keys[-1].extend(element.keys)
+            merged_addressable[-1].extend(element.addressable)
             continue
         kept.append(element)
         merged_keys.append(list(element.keys))
+        merged_addressable.append(list(element.addressable))
 
     # expat indexes bytes; spans are stored as char offsets of the decoded source.
     byte_offsets = [0]
@@ -153,6 +175,7 @@ def parse_xml_spans(source: str) -> list[SemanticSpan]:
             keys=sorted_unique_keys(keys),
             semantic_kind="xml_element",
             name=element.name,
+            addressable_keys=sorted_unique_keys(addressable),
         )
-        for element, keys in zip(kept, merged_keys)
+        for element, keys, addressable in zip(kept, merged_keys, merged_addressable)
     ]

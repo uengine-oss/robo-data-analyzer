@@ -23,6 +23,9 @@ class SemanticSpan:
     keys: tuple[str, ...]
     semantic_kind: str
     name: str = ""
+    # ``keys`` 중 "코드가 이 키로 내용을 가져올 수 있는 주소"인 것들 (spec 081).
+    # 스키마 필드명처럼 이름만 같은 키는 여기 들어가지 않는다. 판정 표는 ``key_roles``.
+    addressable_keys: tuple[str, ...] = ()
 
 
 _KEY_PATTERN = re.compile(r"^[\w가-힣\[][\w.\-\[\]가-힣]*$")

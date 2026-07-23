@@ -251,11 +251,13 @@ def _validate_external_edge(source_id: str, target_id: str, evidence_line: int |
 
 @dataclass(frozen=True)
 class ReferTo:
-    """METHOD/FUNCTION → EXTERNAL_CHUNK: verified exact textual occurrence.
+    """METHOD/FUNCTION → EXTERNAL_CHUNK | PROJECT_FILE: verified exact occurrence.
 
-    ``matched_key`` is the chunk key the code literal equalled (whole-token,
-    case-sensitive).  ``via_symbol`` names the one-step immutable constant when
-    the literal was reached through it; empty for a direct literal.
+    ``matched_key`` is the chunk key, file name or path suffix that the code's
+    determined string equalled; the target is a chunk when a key pinned one
+    chunk, and a file when the string named the file itself (spec 081).
+    ``via_symbol`` names the constant the value was folded from; empty for a
+    direct literal.
     The relation asserts occurrence only — never call/consumption semantics.
     """
     source_id: str

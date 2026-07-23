@@ -366,6 +366,9 @@ class ExternalChunk:
     provenance: ChunkProvenance
     source_hash: str
     content_hash: str
+    # ``keys`` 중 "코드가 이 키로 내용을 가져올 수 있는 주소"인 것들 (spec 081).
+    # 스키마 필드명처럼 이름만 겹치는 키는 제외된다 — 링킹은 이 목록만 대상으로 한다.
+    addressable_keys: tuple[str, ...] = ()
     label: str = field(default="EXTERNAL_CHUNK", init=False)
 
     def __post_init__(self) -> None:

@@ -44,6 +44,9 @@ async def link_external_step(state: dict, config: Optional[RunnableConfig] = Non
             constants=state.get("constants") or [],
             chunks=state.get("external_chunks") or [],
             routine_ids=routine_ids,
+            project_files=state.get("project_files") or [],
+            references_edges=state.get("references_edges") or [],
+            init_by_edges=state.get("init_by_edges") or [],
         )
     await gate()
     if neo is not None:
@@ -51,11 +54,20 @@ async def link_external_step(state: dict, config: Optional[RunnableConfig] = Non
 
     await emit_edges(stream, outcome.external_edges)
     await gate()
-    emit_message(stream, f"✅ 외부 파일 연결 완료 — REFER_TO {len(outcome.external_edges)}")
+    emit_message(
+        stream,
+        f"✅ 외부 파일 연결 완료 — REFER_TO {len(outcome.external_edges)}"
+        f" · 키가 동적이라 포기 {outcome.dynamic_key_sites}"
+        f" · 아무도 안 부르는 조각 {len(outcome.orphan_chunks)}",
+    )
     log_info(
         _STEP,
         "done",
         external_edges=len(outcome.external_edges),
+        # 아래 셋은 그래프에 넣지 않는다 — 다음에 무엇을 확장할지 판단하는 관측치다.
+        dynamic_key_sites=outcome.dynamic_key_sites,
+        orphan_chunks=len(outcome.orphan_chunks),
+        promoted_wrappers=sorted(outcome.promoted_wrappers),
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
     return {"external_edges": outcome.external_edges}

@@ -27,6 +27,7 @@ class VerifiedChunk:
     start_line: int
     end_line: int
     content_hash: str
+    addressable_keys: tuple[str, ...] = ()
 
 
 def sha256_text(text: str) -> str:
@@ -61,5 +62,6 @@ def verify_spans(source: str, spans: list[SemanticSpan]) -> list[VerifiedChunk]:
             start_line=start_line,
             end_line=max(start_line, end_line),
             content_hash=sha256_text(text),
+            addressable_keys=span.addressable_keys,
         ))
     return chunks

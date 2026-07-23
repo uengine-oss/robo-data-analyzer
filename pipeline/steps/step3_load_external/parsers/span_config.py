@@ -197,6 +197,8 @@ def parse_properties_spans(source: str) -> list[SemanticSpan]:
             keys=sorted_unique_keys([key]),
             semantic_kind="record",
             name=key,
+            # properties 는 형식 자체가 "키로 값을 꺼내는 주소록"이다 (spec 081).
+            addressable_keys=sorted_unique_keys([key]),
         ))
         index += 1
     return spans
@@ -244,6 +246,8 @@ def parse_ini_spans(source: str) -> list[SemanticSpan]:
             keys=sorted_unique_keys(keys),
             semantic_kind="record",
             name=name,
+            # ini/conf 도 섹션·키로 값을 꺼내는 주소록이다 (spec 081).
+            addressable_keys=sorted_unique_keys(keys),
         ))
     return spans
 

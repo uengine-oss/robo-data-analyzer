@@ -38,6 +38,7 @@ def build_source_chunks(
             provenance="source_span",
             source_hash=source_hash,
             content_hash=chunk.content_hash,
+            addressable_keys=chunk.addressable_keys,
         )
         nodes.append(node)
         edges.append(HasChunk(source_id=file_id, target_id=node.id))

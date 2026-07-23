@@ -28,13 +28,12 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from pathlib import Path
-from typing import Awaitable, Callable, NamedTuple
+from typing import NamedTuple
 
-from graph.schema.graph_edges import InitBy, References
-from graph.schema.graph_nodes import Constant, CodeNode, Variable
+from graph.schema.graph_nodes import Constant, Variable
+from graph.schema.node_ids import SEP, child_id, code_ns_id
 from pipeline.languages import EXT_TO_LANG
 from shared.events.runtime_logger import log_info
-from shared.files.cache import SourceFileCache
 
 _COMPONENT = "step2.reference_linker"
 
@@ -149,36 +148,48 @@ def _warn_unsupported(lang: str | None) -> None:
 
 # ── Pass 2 언어별 import 해석 ────────────────────────────────
 
+def _container_and_name(node_id: str) -> tuple[str, str]:
+    """노드 id → (컨테이너 id, 마지막 이름). ``node_ids`` 의 경로 규약만 쓰는 언어 무관 분해."""
+    container, separator, name = node_id.rpartition(SEP)
+    return (container, name) if separator else ("", node_id)
+
+
 def _java_maps(
     names: list[str], own_module_ids: set[str], targets: _Targets,
 ) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
-    """Java import → (소유자 simpleName → FQN, static 멤버 → 소유 FQN).
+    """Java import 문법 해석 → (소유자 simpleName → module_id, static 멤버 → 소유 module_id).
 
-    Java module_id 는 클래스 FQN 그대로라 import 이름이 곧 module_id. ``import static``
-    은 멤버를 맨이름으로 들여오고, ``.*`` 와일드카드·같은 패키지 클래스도 후보에 포함.
+    언어별인 것은 **import 문법**뿐이다. id 는 언어 무관 단일 규약(``node_ids``)을 그대로
+    쓴다 — ``code_ns_id(패키지)`` 아래 ``child_id(…, 클래스)``. 여기서 id 를 따로 만들면
+    규약이 두 곳에 살게 되므로 반드시 그 함수들만 쓴다.
+
+    ``import static`` 은 멤버를 맨이름으로 들여오고, ``.*`` 와일드카드·같은 패키지
+    클래스도 후보에 포함한다.
     """
     owner_map: dict[str, list[str]] = defaultdict(list)
     bare_map: dict[str, list[str]] = defaultdict(list)
     for name in names:
         if name.startswith("static"):                  # import static pkg.Cls.MEMBER
-            owner, _, member = name[len("static"):].rpartition(".")
-            if owner and member:
-                bare_map[member].append(owner)
+            owner, _, member = name[len("static"):].strip().rpartition(".")
+            package, _, simple = owner.rpartition(".")
+            if simple and member:
+                bare_map[member].append(child_id(code_ns_id(package), simple))
         elif name.endswith(".*"):                       # import pkg.*
-            prefix = name[:-2]
+            package_id = code_ns_id(name[:-2])
             for mid in targets:
-                rest = mid[len(prefix) + 1:] if mid.startswith(prefix + ".") else ""
-                if rest and "." not in rest:
-                    owner_map[rest].append(mid)
+                container, simple = _container_and_name(mid)
+                if container == package_id and simple:
+                    owner_map[simple].append(mid)
         else:                                           # import pkg.Cls
-            simple = name.rpartition(".")[2]
+            package, _, simple = name.rpartition(".")
             if simple:
-                owner_map[simple].append(name)
-    # 같은 패키지 클래스 — import 없이 simpleName 으로 쓰임.
-    packages = {mid.rpartition(".")[0] for mid in own_module_ids if "." in mid}
+                owner_map[simple].append(child_id(code_ns_id(package), simple))
+    # 같은 패키지 클래스 — import 없이 simpleName 으로 쓰인다.
+    packages = {container
+                for container, _ in map(_container_and_name, own_module_ids) if container}
     for mid in targets:
-        pkg, _, simple = mid.rpartition(".")
-        if pkg in packages:
+        container, simple = _container_and_name(mid)
+        if container in packages and simple:
             owner_map[simple].append(mid)
     return dict(owner_map), dict(bare_map)
 
