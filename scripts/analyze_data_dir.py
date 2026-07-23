@@ -31,6 +31,9 @@
     # strategy 강제 override
     python scripts/analyze_data_dir.py apascrt00010t02_20260406 --strategy framework
 
+    # 코퍼스 루트를 명령에서 직접 지정 (.env 수정 없이 임의 코퍼스 실행)
+    python scripts/analyze_data_dir.py --data-dir D:\\corpora\\my_project --strategy framework
+
 NDJSON 스트림 실시간 출력 + 종료 후 ``usage_summary.json`` 요약.
 
 ★ Windows 콘솔 (cp949) 에서도 한글 print 깨지지 않게 stdout/stderr 를 UTF-8 로 재구성.
@@ -40,6 +43,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -53,6 +57,20 @@ if hasattr(sys.stderr, "reconfigure"):
 _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
+
+# ``--data-dir`` 는 SETTINGS 가 모듈 로드 시점에 ROBO_DATA_DIR 를 고정하기 때문에
+# 아래 본 임포트보다 먼저 env 로 반영해야 한다 (선처리 — 본 파서에도 help 용으로 재선언).
+# import 시 sys.argv 를 건드리는 부작용을 막기 위해 스크립트 실행일 때만 작동한다.
+if __name__ == "__main__":
+    _pre = argparse.ArgumentParser(add_help=False)
+    _pre.add_argument("--data-dir")
+    _pre_args, _ = _pre.parse_known_args()
+    if _pre_args.data_dir:
+        _data_dir = Path(_pre_args.data_dir)
+        if not _data_dir.is_dir():
+            print(f"ERROR: --data-dir 디렉토리 없음: {_data_dir}")
+            sys.exit(1)
+        os.environ["ROBO_DATA_DIR"] = str(_data_dir.resolve())
 
 from pipeline.strategies import get_pipeline
 from pipeline.languages import detect_strategy
@@ -193,6 +211,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--strategy", choices=["framework", "dbms"],
         help="strategy 강제 override (미명시 시 확장자 자동 감지).",
+    )
+    parser.add_argument(
+        "--data-dir",
+        help="코퍼스 루트 직접 지정 (source/ ddl/ analysis/ 구조). "
+             "ROBO_DATA_DIR env 보다 우선 — .env 수정 없이 임의 코퍼스 실행.",
     )
     args = parser.parse_args()
     asyncio.run(main(args.target, args.strategy))
