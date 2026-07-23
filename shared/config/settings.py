@@ -101,6 +101,11 @@ class AnalysisLlmSettings:
     repetition_guard: bool = field(
         default_factory=lambda: _getenv_bool("ROBO_LLM_REPETITION_GUARD", True)
     )
+    # 콘텐츠 해시 응답 캐시 (llm/response_cache.py). 같은 입력이면 서버를 다시 부르지 않아
+    # 재실행이 빨라지고, 서버 배치 비결정성(같은 입력·다른 출력)이 클라이언트에서 끝난다.
+    response_cache: bool = field(
+        default_factory=lambda: _getenv_bool("ROBO_LLM_RESPONSE_CACHE", True)
+    )
 
 
 @dataclass(frozen=True)

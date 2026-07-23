@@ -57,6 +57,7 @@ from llm.usage.token_usage import UnmeteredLlmCallError, track_usage
 from llm.usage.usage_jsonl_writer import persist_usage_and_charge_budget
 from shared.events.runtime_logger import log_info, log_warning
 from llm.filters import apply_cache_friendly_filters
+from llm import response_cache
 from llm.repetition_guard import RepetitionGuardCallback, RepetitionLoopAborted
 from llm.tracing import write_rule_record
 
@@ -111,6 +112,21 @@ async def run_yaml_rule(
 
     # 현재 LLM config — provider 정보를 cache friendly filter 에 전달
     cfg = load_llm_config(SETTINGS.analysis_llm.config)
+
+    # 콘텐츠 해시 캐시 — 같은 입력이면 서버를 다시 부르지 않는다(재현성 + 재실행 비용).
+    # 키가 프롬프트 전체라서 코드·프롬프트가 바뀌면 자동으로 미적중된다.
+    cache_key = response_cache.make_key(
+        rule_name=rule_name,
+        system_prompt=system_prompt,
+        user_content=user_content,
+        model=model or cfg.model,
+        max_tokens=rule.get("max_tokens"),
+        response_model=response_model,
+    )
+    cached = response_cache.load(cache_key, response_model)
+    if cached is not None:
+        log_info("llm.call", "cache_hit", agent=f"rule:{rule_name}")
+        return cached
     # 반복 폭주 실시간 차단(spec 080) — 감지기가 켜져 있으면 스트리밍 수신으로 전환.
     guard_on = SETTINGS.analysis_llm.repetition_guard
     llm = build_llm_client(
@@ -251,4 +267,5 @@ async def run_yaml_rule(
 
     if parsed is None:
         raise RuntimeError(f"LLM 응답 파싱 실패: rule={rule_name}")
+    response_cache.store(cache_key, parsed)
     return parsed

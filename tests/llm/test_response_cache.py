@@ -1,0 +1,89 @@
+"""응답 캐시 계약 — 키는 보낸 것 전부, 실패는 미적중으로 강등 (spec 091)."""
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+
+from pydantic import BaseModel
+
+from llm import response_cache
+
+
+class _Out(BaseModel):
+    text: str = ""
+
+
+def _settings(root: Path, enabled: bool = True):
+    return mock.patch.object(
+        response_cache,
+        "SETTINGS",
+        SimpleNamespace(
+            analysis_llm=SimpleNamespace(response_cache=enabled),
+            analysis_data=SimpleNamespace(dir=root),
+        ),
+    )
+
+
+_BASE = dict(rule_name="code_summary", system_prompt="sys", user_content="본문",
+             model="m", max_tokens=100, response_model=_Out)
+
+
+class KeyTest(unittest.TestCase):
+    def test_every_sent_field_changes_the_key(self):
+        base = response_cache.make_key(**_BASE)
+        for field, other in (("system_prompt", "다름"), ("user_content", "다름"),
+                             ("model", "m2"), ("max_tokens", 200), ("rule_name", "other")):
+            self.assertNotEqual(base, response_cache.make_key(**{**_BASE, field: other}),
+                                f"{field} 가 바뀌었는데 키가 같다 — 낡은 답이 살아남는다")
+
+    def test_same_input_same_key(self):
+        self.assertEqual(response_cache.make_key(**_BASE), response_cache.make_key(**_BASE))
+
+
+class RoundTripTest(unittest.TestCase):
+    def test_store_then_load_returns_equal_model(self):
+        with tempfile.TemporaryDirectory() as tmp, _settings(Path(tmp)):
+            key = response_cache.make_key(**_BASE)
+            response_cache.store(key, _Out(text="요약"))
+            self.assertEqual(response_cache.load(key, _Out), _Out(text="요약"))
+
+    def test_plaintext_value_round_trips(self):
+        with tempfile.TemporaryDirectory() as tmp, _settings(Path(tmp)):
+            response_cache.store("k" * 64, "평문 결과")
+            self.assertEqual(response_cache.load("k" * 64, None), "평문 결과")
+
+    def test_disabled_never_stores_or_loads(self):
+        with tempfile.TemporaryDirectory() as tmp, _settings(Path(tmp), enabled=False):
+            response_cache.store("k" * 64, _Out(text="x"))
+            self.assertIsNone(response_cache.load("k" * 64, _Out))
+            self.assertEqual(list(Path(tmp).rglob("*.json")), [])
+
+
+class DegradationTest(unittest.TestCase):
+    def test_corrupt_entry_is_a_miss_not_a_crash(self):
+        with tempfile.TemporaryDirectory() as tmp, _settings(Path(tmp)):
+            key = "a" * 64
+            path = Path(tmp) / ".llm-cache" / key[:2] / f"{key}.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{깨진 json", encoding="utf-8")
+            self.assertIsNone(response_cache.load(key, _Out))
+
+    def test_schema_mismatch_is_a_miss(self):
+        with tempfile.TemporaryDirectory() as tmp, _settings(Path(tmp)):
+            key = "b" * 64
+            path = Path(tmp) / ".llm-cache" / key[:2] / f"{key}.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"value": {"unknown": 1}}), encoding="utf-8")
+
+            class _Strict(BaseModel):
+                required: int
+
+            self.assertIsNone(response_cache.load(key, _Strict))
+
+
+if __name__ == "__main__":
+    unittest.main()
