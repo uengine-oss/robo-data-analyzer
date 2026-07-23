@@ -170,39 +170,6 @@ async def analyze_code_three_split(
         async with track_processing("CodeNode", code_id, sub_action=sub_action):
             return await coro
 
-    # #2·#3 을 먼저 띄운다 — 둘 다 #1 의 결과를 입력으로 쓰지 않기 때문이다(입력은 common /
-    # rules_values 뿐). 종전엔 캐시 워밍을 위해 #1 을 기다렸지만, 콜 시간의 97% 가 decode 라
-    # prefill 절감(2~3%)보다 노드 내부 직렬 손실이 훨씬 크다 — 실측 16노드 30.4초 → 20.7초(-32%).
-    # 프롬프트는 그대로이므로 산출물은 바뀌지 않는다.
-    pending: dict[str, asyncio.Task] = {
-        "rules": asyncio.ensure_future(
-            _track_split(
-                "split_rules",
-                run_yaml_rule(
-                    prompts_dir=prompts_dir, rule_name="code_rules_examples",
-                    user_values=rules_values, response_model=RulesExamplesOutput,
-                    budget=cost_budget,
-                ),
-            )
-        )
-    }
-    if ctx.reads or ctx.writes:
-        pending["insights"] = asyncio.ensure_future(
-            _track_split(
-                "split_insights",
-                run_yaml_rule(
-                    prompts_dir=prompts_dir, rule_name="code_table_insights",
-                    user_values=common, response_model=TableInsightsOutput, budget=cost_budget,
-                ),
-            )
-        )
-
-    async def _drop_pending() -> None:
-        """summary 실패로 노드를 포기할 때 #2·#3 을 남기지 않는다(고아 태스크 금지)."""
-        for task in pending.values():
-            task.cancel()
-        await asyncio.gather(*pending.values(), return_exceptions=True)
-
     # Phase 1: summary — 자기 코드노드의 cache 만들기 (precomputed 있으면 skip).
     if precomputed_summary is not None:
         summary_out = precomputed_summary
@@ -216,7 +183,6 @@ async def analyze_code_three_split(
                 ),
             )
         except BudgetExceededError:
-            await _drop_pending()
             raise
         except Exception as e:  # noqa: BLE001 — silent 차단
             # 검색 필드 생성 중 출력 폭주(LengthFinishReasonError 등)로 실패 시, 핵심 3필드
@@ -241,11 +207,9 @@ async def analyze_code_three_split(
                     logical_name=core.logical_name,
                 )
             except BudgetExceededError:
-                await _drop_pending()
                 raise
             except Exception as e2:  # noqa: BLE001 — silent 차단
                 log_error(_STEP, "summary_failed", e2, code_id=code_id)
-                await _drop_pending()
                 return None
 
     summary_out.summary = await enforce_summary_boundary(
@@ -264,10 +228,28 @@ async def analyze_code_three_split(
     if on_summary_ready is not None:
         on_summary_ready(code_id)
 
-    # #2·#3 수거 — 위에서 이미 발사돼 summary 와 겹쳐 돌았다.
-    # 부분 성공 허용 — 한 조각 실패가 코드노드 폐기로 이어지지 않게.
+    # Phase 2: rules + insights 동시 — 자기 코드노드 cache 적중 (#1 이 방금 올림).
+    # 부분 성공 허용 — rules/insights 한 조각 실패가 코드노드 폐기로 이어지지 않게.
     # BudgetExceededError 만 즉시 전파 (회로 차단기 — 절대원칙 #3).
-    tasks = pending
+    # 두 split 은 코드노드 결과 합성 단위라 gather 가 자연 (라운드 단위 X — 그건 round 루프 영역).
+    tasks = {
+        "rules": _track_split(
+            "split_rules",
+            run_yaml_rule(
+                prompts_dir=prompts_dir, rule_name="code_rules_examples",
+                user_values=rules_values, response_model=RulesExamplesOutput, budget=cost_budget,
+            ),
+        ),
+    }
+    if ctx.reads or ctx.writes:
+        tasks["insights"] = _track_split(
+            "split_insights",
+            run_yaml_rule(
+                prompts_dir=prompts_dir, rule_name="code_table_insights",
+                user_values=common, response_model=TableInsightsOutput, budget=cost_budget,
+            ),
+        )
+
     results = await asyncio.gather(*tasks.values(), return_exceptions=True)
     done = dict(zip(tasks, results))
 
