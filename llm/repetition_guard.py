@@ -84,6 +84,11 @@ class RepetitionGuardCallback(AsyncCallbackHandler):
         self.label = label
         self.detector = RepetitionDetector()
 
+    async def on_chat_model_start(self, *args: Any, **kwargs: Any) -> None:
+        # 에이전트처럼 한 invoke 에 LLM 콜이 여러 번이면 콜마다 새 판정 — 턴 경계의
+        # 텍스트가 섞여 주기성 판정을 오염시키지 않게 한다.
+        self.detector = RepetitionDetector()
+
     async def on_llm_new_token(self, token: str, *, chunk: Any = None, **kwargs: Any) -> None:
         text = token
         if not text and chunk is not None:

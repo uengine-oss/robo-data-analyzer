@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from pipeline.steps.step7_analyze_code.range_body import ancestor_context, body_for
 from pipeline.steps.step7_analyze_code.rule_quality import check_rule_quality
@@ -124,6 +124,7 @@ async def analyze_code_three_split(
     table_descriptions: Optional[dict[str, dict]] = None,
     source_cache: Optional[SourceFileCache] = None,
     precomputed_summary: Optional[SummaryOutput] = None,
+    on_summary_ready: Optional[Callable[[str], None]] = None,
 ) -> Optional[CodeNode]:
     """코드노드 1개의 3 분할 분석 — 결과를 ``CodeNode`` 에 적용해 반환.
 
@@ -136,6 +137,8 @@ async def analyze_code_three_split(
         module_intents: ``{module_id: intent}`` — module_pre_analysis(M9) 결과.
         table_descriptions: ``{table_fqn: DDL 설명}`` — reads/writes 렌더에 의미 부여.
         precomputed_summary: Round 첫 코드노드의 워밍 결과. 있으면 #1 호출 skip.
+        on_summary_ready: summary 확정(경계 검사 후) 직후 호출되는 스케줄러 신호 —
+            CALLS 의존 caller 를 #2/#3 완료를 기다리지 않고 조기 투입하게 한다.
 
     Returns:
         summary/stereotype/logical_name 채워진 CodeNode. summary 실패 시 None.
@@ -217,6 +220,13 @@ async def analyze_code_three_split(
         budget=cost_budget,
         audit_id=code_id,
     )
+
+    # summary 최종값을 여기서 즉시 공개 — caller 의 callee_summaries 는 이 값 하나만 읽는다.
+    # #2/#3(rules·insights) 완료를 기다리게 하면 CALLS 의존 caller 가 그만큼 늦게 풀린다
+    # (실측: rules p95 85초). 값은 아래 fan-in 시점과 동일하므로 산출물 불변이다.
+    ctx.summary = summary_out.summary
+    if on_summary_ready is not None:
+        on_summary_ready(code_id)
 
     # Phase 2: rules + insights 동시 — 자기 코드노드 cache 적중 (#1 이 방금 올림).
     # 부분 성공 허용 — rules/insights 한 조각 실패가 코드노드 폐기로 이어지지 않게.
@@ -304,9 +314,8 @@ async def analyze_code_three_split(
         # 폴백 재검사도 이상 → 결정론 dedupe 한 부분 결과 + 이상 플래그(silent success 금지, FR-023).
         fn.extra["rules_quality_flag"] = fallback_flag
 
-    # ctx 에 분석 결과 부착 — Bottom-up 으로 상위(caller·부모)가 라이브 조회.
-    # summary → callee/compact 본문 / rules·questions → 부모 #3 분할 입력.
-    ctx.summary = summary_out.summary
+    # ctx 에 나머지 분석 결과 부착 — 부모(PARENT_OF)의 #3 분할 입력.
+    # (summary 는 위 Phase 1 종료 시점에 이미 공개됨 — CALLS 의존 조기 해제.)
     ctx.extra["rules"] = fn.extra["rules"]
     ctx.extra["questions"] = fn.extra["questions"]
     return fn

@@ -29,8 +29,10 @@ from pydantic import BaseModel
 from agents.tools.messages import TOOL_MESSAGES
 from llm.usage.cost_budget import CostBudget
 from llm.client import build_llm_client
+from llm.repetition_guard import RepetitionGuardCallback
 from agents.middleware.stack import build_standard_stack
 from llm.tracing import begin_agent_invoke, end_agent_invoke
+from shared.config.settings import SETTINGS
 from shared.events.runtime_logger import log_warning
 
 _T = TypeVar("_T", bound=BaseModel)
@@ -146,7 +148,9 @@ async def run_structured_agent(
     """
     # 에이전트 응답 상한 = 실측 정상 최대(scan 1.4k·residual 3.6k)의 여유배수 —
     # 반복 루프 피해를 초 단위로 고정 (run10 실측: 무상한 에이전트 콜 1건이 3만 토큰·207초).
-    llm_model = build_llm_client(max_tokens=8000)
+    # 반복 폭주 실시간 차단(spec 080)도 같은 스위치로 — 상한 도달 전에 수 초 내 끊는다.
+    guard_on = SETTINGS.analysis_llm.repetition_guard
+    llm_model = build_llm_client(max_tokens=8000, streaming=guard_on)
     middleware = build_standard_stack(
         agent_name=agent_name,
         max_calls=max_calls,
@@ -184,8 +188,13 @@ async def run_structured_agent(
             agent=agent_name,
             error=f"{type(error).__name__}: {error}",
         )
+    invoke_config = (
+        {"callbacks": [RepetitionGuardCallback(f"agent:{agent_name}")]} if guard_on else None
+    )
     try:
-        result = await agent.ainvoke({"messages": [HumanMessage(content=user_message)]})
+        result = await agent.ainvoke(
+            {"messages": [HumanMessage(content=user_message)]}, config=invoke_config
+        )
     finally:
         if prompt_recording_started:
             try:

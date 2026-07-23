@@ -5,8 +5,11 @@
    결과 ``module_intent`` 는 아래 코드노드 분석의 3분할 공통 context 에 주입.
 1. 호출 그래프 (CALLS + PARENT_OF) → ``find_call_cycles`` → cycle 식별 (Tarjan SCC).
 2. 의존 그래프(callee→caller) 구성 — dataflow 스케줄 (spec 079, 라운드 배리어 제거):
-   callee 의존이 풀린 코드노드부터 즉시 분석, 끝나는 순서대로 즉시 Neo4j 영속화 +
-   NDJSON emit. caller 는 자기 callee 들의 summary 완료만 기다린다.
+   의존이 풀린 코드노드부터 즉시 분석, 끝나는 순서대로 즉시 Neo4j 영속화 + NDJSON emit.
+   의존 해제 시점은 종류별로 다르다 — CALLS 의존은 callee 의 summary 확정 신호로
+   조기 해제(caller 프롬프트는 summary 한 줄만 읽음), PARENT_OF 의존은 자식의
+   rules·questions 까지 필요해 전체 완료를 기다린다. 투입 순서는 critical-path
+   rank 내림차순(긴 사슬·큰 노드 우선) — 전부 산출물 불변인 스케줄 결정이다.
 3. 각 코드노드 = ``analyze_code_three_split`` (3 분할 fan-out, RadixAttention 95%+).
 
 cycle 내부 코드노드 → callee summary 없이 분석 (``is_in_cycle=True`` 메타).
@@ -82,31 +85,33 @@ async def run_framework_per_node_analysis(
     #    all_ids 가 routine 뿐이라 제어문 PARENT_OF 는 endpoint 가 all_ids 밖 → 순서 계산에 오염 X.
     #    (주의: 제어문 아래 중첩 함수(Python nested def 등)의 함수→함수 순서는 제어문이 끊는다.
     #     C 는 중첩 함수가 없어 무영향 — Java/Python 확장 시 routine 투과 containment 재검토.)
-    edges: list[tuple[str, str]] = [
+    call_edges: list[tuple[str, str]] = [
         (e.caller_id, e.callee_id)
         for e in state.get("calls_edges", [])
     ]
-    edges.extend(
+    parent_edges: list[tuple[str, str]] = [
         (e.parent_id, e.child_id)
         for e in state.get("parent_of_edges", [])
-    )
+    ]
     all_ids = list(contexts.keys())
-    cycles = find_call_cycles(edges, all_ids)
+    cycles = find_call_cycles(call_edges + parent_edges, all_ids)
 
     # cycle 메타 ctx 에 부착
     for fn_id in cycles:
         if fn_id in contexts:
             contexts[fn_id].is_in_cycle = True
 
-    # 2. 의존 그래프 — caller 는 자기 callee 완료만 기다린다 (SCC 내부 의존은 끊음).
-    deps: dict[str, set[str]] = {fid: set() for fid in contexts}
-    for caller, callee in edges:
-        if (caller in contexts and callee in contexts and caller != callee
-                and cycles.get(caller, caller) != cycles.get(callee, callee)):
-            deps[caller].add(callee)
+    # 2. 의존 그래프 — 의존 종류에 따라 해제 시점이 다르다 (SCC 내부 의존은 끊음).
+    #    CALLS: caller 의 프롬프트는 callee 의 summary 한 줄만 읽는다 → summary 확정 즉시 해제.
+    #    PARENT_OF: 부모의 #3 분할은 자식 rules·questions 를 읽는다 → 전체 완료까지 대기.
+    summary_deps = _build_dependency_map(call_edges, contexts, cycles)
+    full_deps = _build_dependency_map(parent_edges, contexts, cycles)
+    ranks = _dispatch_ranks(contexts, code_by_id, summary_deps, full_deps)
     log_info(
         _STEP, "start",
-        code_nodes=len(contexts), dep_edges=sum(len(s) for s in deps.values()),
+        code_nodes=len(contexts),
+        summary_dep_edges=sum(len(s) for s in summary_deps.values()),
+        full_dep_edges=sum(len(s) for s in full_deps.values()),
         in_cycle=len(cycles),
         concurrency=SETTINGS.analysis_pipeline.max_concurrency,
     )
@@ -122,22 +127,36 @@ async def run_framework_per_node_analysis(
     async def _run_dataflow() -> tuple[int, int, int]:
         """의존 완료 즉시 투입하는 dataflow 스케줄 — 라운드 배리어의 꼬리 유휴 제거.
 
+        CALLS 의존은 callee 의 summary 확정 신호(``on_summary_ready``)로 조기 해제하고,
+        PARENT_OF 의존만 전체 완료를 기다린다. 투입 순서는 ``ranks`` 내림차순 —
+        긴 의존 사슬·큰 노드를 먼저 넣어 종반 꼬리 유휴를 줄인다(산출물 불변).
         취소된 노드만 재투입, ``analyzed+failed+skipped = code_nodes`` 등식 유지(FR-008).
         """
         analyzed_count = 0
         failed_count = 0
         skipped_count = 0
         done: set[str] = set()
+        summary_done: set[str] = set()
         scheduled: set[str] = set()
         pending: dict[asyncio.Task, str] = {}
+        summary_event = asyncio.Event()
         warm_id: Optional[str] = None
         first_summary: Optional[SummaryOutput] = None
 
+        def _mark_summary_ready(fid: str) -> None:
+            summary_done.add(fid)
+            summary_event.set()
+
         def _ready() -> list[str]:
-            return [
-                fid for fid in contexts
-                if fid not in done and fid not in scheduled and deps[fid] <= done
-            ]
+            return sorted(
+                (
+                    fid for fid in contexts
+                    if fid not in done and fid not in scheduled
+                    and summary_deps[fid] <= summary_done and full_deps[fid] <= done
+                ),
+                key=lambda fid: ranks[fid],
+                reverse=True,
+            )
 
         try:
             while len(done) < len(contexts):
@@ -163,6 +182,7 @@ async def run_framework_per_node_analysis(
                                 semaphore, codebase_notes, module_intents, table_descriptions,
                                 source_cache,
                                 precomputed_summary=(first_summary if fn_id == warm_id else None),
+                                on_summary_ready=_mark_summary_ready,
                             ),
                         )
                     )
@@ -177,9 +197,16 @@ async def run_framework_per_node_analysis(
                     )
 
                 pause.set_inflight(list(pending))
-                finished, _ = await asyncio.wait(
-                    set(pending), return_when=asyncio.FIRST_COMPLETED
-                )
+                # summary 확정 신호로도 깨어난다 — 조기 해제된 caller 를 즉시 투입하기 위함.
+                waker = asyncio.ensure_future(summary_event.wait())
+                try:
+                    finished, _ = await asyncio.wait(
+                        {*pending, waker}, return_when=asyncio.FIRST_COMPLETED
+                    )
+                finally:
+                    waker.cancel()
+                summary_event.clear()   # 신호의 진실은 summary_done — 이벤트는 wake 전용.
+                finished.discard(waker)
                 for task in finished:
                     fn_id = pending.pop(task)
                     if task.cancelled():
@@ -190,6 +217,7 @@ async def run_framework_per_node_analysis(
                         scheduled.discard(fn_id)  # 〃
                         continue
                     done.add(fn_id)               # 성공·분석실패·None = 처리 완료 (재시도 X)
+                    summary_done.add(fn_id)       # 실패·스킵 노드도 caller 를 막지 않는다
                     if isinstance(r, BudgetExceededError):
                         raise r                   # 절대원칙 #3 — 회로 차단기 즉시 전파
                     if isinstance(r, BaseException):
@@ -248,6 +276,68 @@ async def run_framework_per_node_analysis(
     }
 
 
+def _build_dependency_map(
+    edge_pairs: list[tuple[str, str]],
+    contexts: dict,
+    cycles: dict[str, str],
+) -> dict[str, set[str]]:
+    """의존 맵 — a 가 b 를 기다린다(a→b). contexts 밖·자기자신·같은 SCC 의존은 제외."""
+    deps: dict[str, set[str]] = {fid: set() for fid in contexts}
+    for a, b in edge_pairs:
+        if (a in contexts and b in contexts and a != b
+                and cycles.get(a, a) != cycles.get(b, b)):
+            deps[a].add(b)
+    return deps
+
+
+def _dispatch_ranks(
+    contexts: dict,
+    code_by_id: dict,
+    summary_deps: dict[str, set[str]],
+    full_deps: dict[str, set[str]],
+) -> dict[str, int]:
+    """투입 우선순위 — 자기 비용(줄 수) + 나를 기다리는 사슬의 최대 rank (critical path).
+
+    긴 의존 사슬의 아래쪽(callee·자식)과 큰 노드를 먼저 투입해 종반에 소수 노드만
+    남아 GPU 가 노는 꼬리 유휴를 줄인다. 신호는 범용(코드 줄 수·의존 구조)뿐 —
+    프로젝트 특화 판단은 없다. SCC 는 이미 끊겨 DAG 전제가 성립한다.
+    """
+    def _cost(fid: str) -> int:
+        fn = code_by_id.get(fid)
+        start = getattr(fn, "start_line", None) or 0
+        end = getattr(fn, "end_line", None) or 0
+        return max(1, end - start)
+
+    waiters: dict[str, list[str]] = {fid: [] for fid in contexts}
+    for deps in (summary_deps, full_deps):
+        for waiter, needed in deps.items():
+            for dep in needed:
+                waiters[dep].append(waiter)
+
+    # 나를 기다리는 노드(waiter)들이 전부 rank 된 뒤에 내 rank 확정 — Kahn 위상 처리.
+    unranked_waiters = {fid: len(waiters[fid]) for fid in contexts}
+    queue = [fid for fid, n in unranked_waiters.items() if n == 0]
+    ranks: dict[str, int] = {}
+    while queue:
+        fid = queue.pop()
+        ranks[fid] = _cost(fid) + max((ranks[w] for w in waiters[fid]), default=0)
+        for dep in summary_deps[fid] | full_deps[fid]:
+            unranked_waiters[dep] -= 1
+            if unranked_waiters[dep] == 0:
+                queue.append(dep)
+    leftover = [fid for fid in contexts if fid not in ranks]
+    if leftover:
+        # SCC 절단 후에도 순환이 남았다는 신호 — 교착은 아니므로 비용만으로 투입.
+        log_warning(
+            _STEP, "dispatch_rank_leftover",
+            "우선순위 위상 처리가 닿지 못한 노드 — 자기 비용만으로 투입한다.",
+            count=len(leftover),
+        )
+        for fid in leftover:
+            ranks[fid] = _cost(fid)
+    return ranks
+
+
 def _accumulate_em(acc: ExampleMappingResult, em: ExampleMappingResult) -> None:
     """코드노드 단위 ``ExampleMappingResult`` 를 round 누적 결과에 합친다.
 
@@ -288,6 +378,7 @@ async def _analyze_one(
     table_descriptions: dict[str, dict],
     source_cache: SourceFileCache,
     precomputed_summary: Optional[SummaryOutput] = None,
+    on_summary_ready=None,
 ):
     """코드노드 1개 분석 — track_processing 이 start/done/failed 자동 emit (stream 인자 chain X)."""
     async with track_processing("CodeNode", fn_id):
@@ -300,6 +391,7 @@ async def _analyze_one(
                 table_descriptions=table_descriptions,
                 source_cache=source_cache,
                 precomputed_summary=precomputed_summary,
+                on_summary_ready=on_summary_ready,
             )
 
 
