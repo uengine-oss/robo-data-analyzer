@@ -128,3 +128,47 @@ class EarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ThreeSplitConcurrencyTest(unittest.IsolatedAsyncioTestCase):
+    """#1 요약과 #2·#3 은 동시에 발사된다 — 노드 내부 직렬 손실 제거(spec 090)."""
+
+    async def test_rules_starts_before_summary_finishes(self):
+        from pipeline.steps.step7_analyze_code import three_split_llm_fanout as tsf
+
+        events: list[str] = []
+        summary_gate = asyncio.Event()
+
+        async def fake_rule(*, prompts_dir, rule_name, user_values, response_model, budget=None, **kw):
+            events.append(f"start:{rule_name}")
+            if rule_name == "code_summary":
+                await summary_gate.wait()          # 요약을 인위로 붙잡는다
+            events.append(f"end:{rule_name}")
+            if rule_name == "code_summary":
+                return mock.Mock(summary="요약", stereotype="Helper", logical_name="논리명",
+                                 search_text="", domain_terms=[])
+            return mock.Mock(rules=[], questions=[])
+
+        ctx = mock.Mock(reads=(), writes=(), callees=(), summary=None,
+                        extra={}, referenced_symbols=(), external_evidence=())
+        fn = mock.Mock(id="fn", name="fn", signature="long fn(void)", extra={})
+
+        with mock.patch.object(tsf, "run_yaml_rule", fake_rule), \
+             mock.patch.object(tsf, "_build_user_values", return_value={"code_body": "x"}), \
+             mock.patch.object(tsf, "_format_child_business_logic", return_value="(없음)"), \
+             mock.patch.object(tsf, "enforce_summary_boundary", mock.AsyncMock(side_effect=lambda **k: k["summary"])), \
+             mock.patch.object(tsf, "check_rule_quality", return_value=mock.Mock(is_anomaly=False)), \
+             mock.patch.object(tsf, "constrain_tables_to_rw", lambda *a, **k: None), \
+             mock.patch.object(tsf, "coerce_stereotype", lambda s, n: s), \
+             mock.patch.object(tsf, "normalize_domain_terms", lambda *a, **k: []):
+            task = asyncio.ensure_future(tsf.analyze_code_three_split(
+                "fn", {"fn": ctx}, {"fn": fn}, mock.Mock(prompts_dir="p", name="framework")))
+            for _ in range(20):                    # rules 가 먼저 시작할 틈을 준다
+                await asyncio.sleep(0)
+            started_rules_early = "start:code_rules_examples" in events
+            summary_gate.set()
+            await task
+
+        self.assertTrue(started_rules_early,
+                        "rules 가 summary 완료를 기다렸다 — 노드 내부 직렬이 남아 있다")
+        self.assertLess(events.index("start:code_rules_examples"), events.index("end:code_summary"))
