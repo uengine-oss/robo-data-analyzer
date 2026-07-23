@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any, Optional
 
@@ -98,7 +99,12 @@ def store(key: str, value: Any) -> None:
     body = value.model_dump() if isinstance(value, BaseModel) else value
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"value": body}, ensure_ascii=False), encoding="utf-8")
+        # 같은 키를 여러 콜이 동시에 쓸 수 있다(3분할·폴백 조각이 동시 실행).
+        # 임시 파일에 쓰고 rename 하면 반쪽 파일이 구조적으로 남을 수 없다 — 다음 run 이
+        # 손상 항목을 읽고 미적중 처리하는 낭비를 원천 차단한다.
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps({"value": body}, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
     except Exception as error:  # noqa: BLE001
         log_warning(_COMPONENT, "cache_write_failed",
                     "캐시 적재 실패 — 분석 결과에는 영향 없음",

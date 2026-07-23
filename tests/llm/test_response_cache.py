@@ -85,5 +85,26 @@ class DegradationTest(unittest.TestCase):
             self.assertIsNone(response_cache.load(key, _Strict))
 
 
+
+
+class AtomicWriteTest(unittest.TestCase):
+    """동시 쓰기에도 반쪽 파일이 남지 않는다 — 임시파일 → rename."""
+
+    def test_no_partial_file_remains_after_store(self):
+        with tempfile.TemporaryDirectory() as tmp, _settings(Path(tmp)):
+            key = "c" * 64
+            response_cache.store(key, _Out(text="값"))
+            root = Path(tmp) / ".llm-cache"
+            self.assertEqual([p.name for p in root.rglob("*.tmp")], [],
+                             "임시 파일이 남았다 — rename 이 안 됐다")
+            self.assertEqual(response_cache.load(key, _Out), _Out(text="값"))
+
+    def test_overwrite_keeps_readable_entry(self):
+        with tempfile.TemporaryDirectory() as tmp, _settings(Path(tmp)):
+            key = "d" * 64
+            response_cache.store(key, _Out(text="첫값"))
+            response_cache.store(key, _Out(text="둘째값"))
+            self.assertEqual(response_cache.load(key, _Out), _Out(text="둘째값"))
+
 if __name__ == "__main__":
     unittest.main()
