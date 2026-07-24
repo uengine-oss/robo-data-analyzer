@@ -103,6 +103,35 @@ def control_structure_labels() -> frozenset[str]:
     )
 
 
+class UnknownSourceLexiconError(RuntimeError):
+    """어휘 구문 표가 없는 언어 — 조용한 폴백 대신 명시적 실패."""
+
+
+def lang_of(path_suffix: str) -> str:
+    """``Path.suffix`` (예 ``".c"``) → 언어 키. DBMS 방언은 모두 ``sql`` 하나다."""
+    suffix = path_suffix.lower().lstrip(".")
+    if suffix in EXT_TO_LANG:
+        return EXT_TO_LANG[suffix]
+    if suffix in DBMS_EXTS:
+        return "sql"
+    raise NoSupportedSourceError(
+        f"지원하지 않는 확장자: {path_suffix!r} — pipeline/languages.py 가 단일 정의처"
+    )
+
+
+@lru_cache(maxsize=None)
+def source_lexicon(lang: str) -> dict:
+    """언어의 주석·문자열·비활성블록 구문 표(데이터). 품질 게이트는 이것만 본다."""
+    table = _load_ontology().get("source_lexicon") or {}
+    entry = table.get(lang)
+    if not entry:
+        raise UnknownSourceLexiconError(
+            f"source_lexicon 에 {lang!r} 없음 — ontology_roles.yaml 에 한 줄 추가해야 한다 "
+            f"(등록됨: {sorted(table)})"
+        )
+    return entry
+
+
 @lru_cache(maxsize=1)
 def dbms_builtin_packages() -> frozenset[str]:
     """Return exact package identifiers declared by supported DBMS dialects.

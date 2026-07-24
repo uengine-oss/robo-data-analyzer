@@ -42,8 +42,10 @@ from pipeline.steps.step7_analyze_code.rw_table_filter import constrain_tables_t
 from pipeline.steps.step7_analyze_code.table_prompt_context import dump_table_refs
 from pipeline.steps.step7_analyze_code.summary_quality import enforce_summary_boundary
 from pipeline.models.analysis_context import AnalysisContext, dump_external_evidence, dump_referenced_symbols
+from pipeline.quality_gates.branch_inventory import build_inventory
+from pipeline.quality_gates.grounding import check_grounding
 from graph.schema.graph_nodes import CodeNode
-from pipeline.languages import coerce_stereotype
+from pipeline.languages import NoSupportedSourceError, coerce_stereotype, lang_of
 from llm.usage.cost_budget import BudgetExceededError, CostBudget
 from pipeline.models.code_analysis_output import (
     RulesExamplesOutput,
@@ -302,6 +304,9 @@ async def analyze_code_three_split(
         table_op=ctx.extra.get("table_op"),
     )
 
+    # spec 101: 근거성 게이트 — 측정 전용. 산출물을 바꾸지 않고 findings 만 남긴다.
+    grounding_findings = _measure_grounding(fn, ctx, common["code_body"], rules_out)
+
     # fan-in 머지 → CodeNode 에 적용 (#1 유래 다섯 필드는 Phase 1 에서 이미 확정됐다).
     fn.extra["table_insights"] = (
         [t.model_dump() for t in insights_out.table_insights] if insights_out else []
@@ -313,12 +318,40 @@ async def analyze_code_three_split(
     if fallback_flag:
         # 폴백 재검사도 이상 → 결정론 dedupe 한 부분 결과 + 이상 플래그(silent success 금지, FR-023).
         fn.extra["rules_quality_flag"] = fallback_flag
+    if grounding_findings:
+        fn.extra["grounding_findings"] = [f.as_dict() for f in grounding_findings]
 
     # ctx 에 나머지 분석 결과 부착 — 부모(PARENT_OF)의 #3 분할 입력.
     # (summary 는 위 Phase 1 종료 시점에 이미 공개됨 — CALLS 의존 조기 해제.)
     ctx.extra["rules"] = fn.extra["rules"]
     ctx.extra["questions"] = fn.extra["questions"]
     return fn
+
+
+def _measure_grounding(
+    fn: CodeNode, ctx: AnalysisContext, code_body: str, rules_out: Optional[RulesExamplesOutput]
+) -> list:
+    """근거성 게이트를 **측정 전용**으로 돌린다 (spec 101).
+
+    게이트 실패가 분석을 죽이면 안 된다 — 측정은 부가 관측이고 산출물은 이미 확정됐다.
+    다만 조용히 삼키지도 않는다(절대원칙 #3): 실패는 경고로 표면화하고 findings 만 비운다.
+    """
+    if rules_out is None or not rules_out.rules:
+        return []
+    try:
+        inventory = build_inventory(
+            code_body, ctx.extra.get("control_subtree"), lang_of(Path(fn.file_path).suffix)
+        )
+        return check_grounding(rules_out, inventory)
+    except NoSupportedSourceError:
+        return []          # 게이트 밖 언어 — 관측 대상이 아니다
+    except Exception as error:  # noqa: BLE001 — 관측 실패가 분석을 죽이지 않게
+        log_warning(
+            _STEP, "grounding_gate_failed",
+            "근거성 게이트 측정 실패 — 분석 산출물은 영향 없음",
+            code_id=fn.id, error=repr(error),
+        )
+        return []
 
 
 def _apply_summary_fields(
