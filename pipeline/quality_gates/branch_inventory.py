@@ -123,19 +123,34 @@ class BranchInventory:
         return frozenset(found)
 
     def branch_index(self) -> str:
-        """LLM 에게 보여줄 분기 목록 — ``줄번호: 조건식``. 고를 수 있는 후보를 못 박는다.
+        """LLM 에게 보여줄 분기 목록 — 고를 수 있는 후보를 못 박는다.
 
-        **줄번호는 유일해야 한다.** 같은 줄에서 시작하는 분기가 둘이면(``else if``) 답이
-        어느 쪽인지 확정되지 않아 앵커가 무의미해진다.
+        목록이 원문을 왜곡하면 앵커는 오히려 해가 된다. 실측으로 확인한 세 가지를 지킨다.
+
+        1. **줄번호 유일** — ``else if`` 는 ELSE 와 IF 가 같은 줄에서 시작한다. 둘 다 실으면
+           그 줄을 지목했을 때 어느 분기인지 확정되지 않는다(실측 74건).
+        2. **조건식 절단 금지** — 110자로 자르니 여러 줄에 걸친 값 열거의 뒷부분이 사라져
+           모델이 못 본 범위를 지어냈다(실측: `Bank_054` 의 과목코드 집합).
+        3. **중첩 표시** — 부모·자식을 평면으로 나열하면 형제로 오해해 조건을 뒤집는다
+           (실측: `cF10` 의 `cms_fb_req_yn` 안에 있는 `gc_send_ex_bank` 를 형제로 봄).
+           들여쓰기로 소속을 드러내고, 조건식이 없는 분기(`else`)는 여집합임을 명시한다.
         """
         by_line: dict[int, list[Branch]] = {}
         for branch in self.all_branches:
             by_line.setdefault(branch.start, []).append(branch)
+        chosen = {line: self._most_specific(group) for line, group in by_line.items()}
+
         rows = []
-        for line in sorted(by_line):
-            branch = self._most_specific(by_line[line])
-            condition = " ".join(branch.condition.split())[:110]
-            rows.append(f"{line}: {branch.ntype} {condition}")
+        for line in sorted(chosen):
+            branch = chosen[line]
+            depth = sum(1 for a in branch.ancestors() if a.start in chosen and chosen[a.start] is a)
+            condition = " ".join(branch.condition.split())
+            # 조건식에 **판정에 쓸 원자가 없으면** 여집합 분기다(`else`/`default`).
+            # 키워드 이름으로 판정하지 않는다 — 언어마다 다르고 그 순간 범용성이 깨진다.
+            # 원자 1개 이하 = 키워드 자신뿐이라는 뜻이다.
+            if len(atoms(branch.condition, self.lang)) <= 1:
+                condition = "(그 외 — 같은 층 다른 분기의 여집합)"
+            rows.append(f"{'  ' * depth}{line}: {branch.ntype} {condition}")
         return "\n".join(rows) or "(분기 없음)"
 
     def best_match(self, values: set[str]) -> tuple[Branch | None, set[str]]:
