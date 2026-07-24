@@ -9,7 +9,7 @@ import unittest
 from pipeline.models.analysis_context import ControlSubtreeNode
 from pipeline.models.code_analysis_output import ExampleItem, RuleItem, RulesExamplesOutput
 from pipeline.quality_gates.branch_inventory import build_inventory, condition_text
-from pipeline.quality_gates.grounding import check_grounding, code_values
+from pipeline.quality_gates.grounding import check_grounding, code_values, fabricated_values
 from pipeline.quality_gates.lexing import literal_values, split_source
 
 
@@ -69,10 +69,14 @@ class LexingContract(unittest.TestCase):
 class ConditionExtraction(unittest.TestCase):
     def test_multiline_condition_is_not_cut_by_line_count(self):
         body = 'if (eq(a,"11") ||\n    eq(a,"12") ||\n    eq(a,"13"))\n{\n    run();\n}'
-        self.assertEqual(literal_values(condition_text(body, "IF"), "c"), {"11", "12", "13"})
+        self.assertEqual(literal_values(condition_text(body, "IF", "c"), "c"), {"11", "12", "13"})
 
-    def test_case_condition_stops_at_label_colon(self):
-        self.assertEqual(condition_text("case 21:\n    run();", "CASE").strip(), "case 21")
+    def test_case_label_end_token_comes_from_the_table(self):
+        self.assertEqual(condition_text("case 21:\n    run();", "CASE", "c").strip(), "case 21")
+        # sql 은 콜론이 아니라 THEN 으로 라벨이 끝난다 — 표가 바뀌면 판정도 따라간다
+        self.assertEqual(
+            condition_text("WHEN '21' THEN\n    run();", "CASE", "sql").strip(), "WHEN '21'"
+        )
 
 
 class ValueSetCheck(unittest.TestCase):
@@ -159,12 +163,23 @@ class LanguageIndependence(unittest.TestCase):
 
 
 class OutputValueExtraction(unittest.TestCase):
-    def test_unquoted_numbers_need_the_run_s_own_anchor(self):
+    """코드값 인정은 **그 run 의 소스에 실재하는가**로만 판정한다 — 산문 언어를 모른다."""
+
+    def test_every_candidate_needs_the_run_s_own_anchor(self):
         self.assertEqual(code_values("과목코드가 101 이면"), set())
         self.assertEqual(code_values("과목코드가 101 이면", frozenset({"101"})), {"101"})
 
-    def test_korean_prose_inside_quotes_is_not_a_code_value(self):
-        self.assertEqual(code_values("'간편결제' 이면"), set())
+    def test_prose_in_quotes_is_rejected_in_any_language(self):
+        for prose in ("'간편결제' 이면", "'refund request' then", "'払い戻し' の場合"):
+            with self.subTest(prose=prose):
+                self.assertEqual(code_values(prose, frozenset({"01", "02"})), set())
+
+    def test_fabrication_needs_shape_agreement_not_a_language_rule(self):
+        anchor = frozenset({"11", "13", "21"})
+        # 같은 모양(2자리)이라 집합의 일원 행세 → 날조로 본다
+        self.assertEqual(fabricated_values("'11','13','12'", anchor, {"d2"}), {"12"})
+        # 산문 인용구는 그 모양 집합에 없다 → 조용히 무시
+        self.assertEqual(fabricated_values("'11','간편결제'", anchor, {"d2"}), set())
 
 
 if __name__ == "__main__":

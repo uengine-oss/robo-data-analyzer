@@ -17,7 +17,6 @@ from pipeline.models.analysis_context import ControlSubtreeNode
 from pipeline.quality_gates.lexing import SplitSource, literal_values, split_source
 
 _CALL = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(")
-_CONTROL_KEYWORDS = frozenset({"if", "else", "for", "while", "switch", "case", "return"})
 
 
 @dataclass
@@ -55,6 +54,7 @@ class BranchInventory:
     roots: tuple[Branch, ...]
     all_branches: tuple[Branch, ...]
     callees: frozenset[str]
+    source_values: frozenset[str]
 
     def dispatch_tables(self) -> list[dict[str, frozenset[str]]]:
         """SWITCH 마다 ``라벨 코드값 → 효과(호출 집합)`` 대응.
@@ -94,16 +94,23 @@ class BranchInventory:
         return best, best_hit
 
 
-def condition_text(body: str, ntype: str) -> str:
+def condition_text(body: str, ntype: str, lang: str) -> str:
     """분기의 조건식 텍스트.
 
     괄호 조건(``if (...)``)은 **여는 괄호부터 짝이 맞을 때까지** 읽는다. 줄 수로 자르면 여러
     줄에 걸친 코드값 열거(``a=="11" || a=="12" || ...``)가 잘려 뒤쪽 값이 통째로 "근거 없음"
     으로 오판된다 — 이 게이트에서 가장 비싼 오탐이라 좌표가 아니라 문법으로 끊는다.
+
+    CASE 라벨의 끝 토큰과 예약어 목록은 언어 표에서 받는다(코드에 언어 지식을 두지 않는다).
     """
     if ntype == "CASE":
-        colon = body.find(":")
-        return body[:colon] if colon >= 0 else body.split("\n", 1)[0]
+        head = body.split("\n", 1)[0]
+        ends = [
+            head.lower().find(token)
+            for token in (source_lexicon(lang).get("case_label_end") or [])
+            if head.lower().find(token) >= 0
+        ]
+        return head[: min(ends)] if ends else head
     # 여는 괄호는 **분기 키워드가 있는 첫 줄**에서만 찾는다. 본문 전체에서 찾으면 뒤쪽
     # 호출문의 괄호를 조건식으로 오인한다 — 괄호 없는 문법(python/sql)이 통째로 무력화된다.
     first_line = body.split("\n", 1)[0]
@@ -122,11 +129,11 @@ def condition_text(body: str, ntype: str) -> str:
     return body[open_paren:]
 
 
-def _calls(text: str) -> frozenset[str]:
+def _calls(text: str, lang: str) -> frozenset[str]:
+    """``이름(`` 중 실제 호출만. 예약어 목록은 언어 표(데이터)에서 온다."""
+    keywords = {k.lower() for k in (source_lexicon(lang).get("control_keywords") or [])}
     return frozenset(
-        m.group(1).lower()
-        for m in _CALL.finditer(text)
-        if m.group(1).lower() not in _CONTROL_KEYWORDS
+        m.group(1).lower() for m in _CALL.finditer(text) if m.group(1).lower() not in keywords
     )
 
 
@@ -142,7 +149,7 @@ def build_inventory(
 
     def convert(node: ControlSubtreeNode, parent: Branch | None) -> Branch:
         body = split.live(node.start, node.end)
-        condition = condition_text(body, node.ntype)
+        condition = condition_text(body, node.ntype, lang)
         branch = Branch(
             node_id=node.node_id,
             ntype=node.ntype,
@@ -151,7 +158,7 @@ def build_inventory(
             parent=parent,
             condition=condition,
             cond_values=frozenset(literal_values(condition, lang)),
-            callees=_calls(body) - _calls(condition),
+            callees=_calls(body, lang) - _calls(condition, lang),
         )
         all_branches.append(branch)
         branch.children = [convert(child, branch) for child in node.children]
@@ -162,5 +169,6 @@ def build_inventory(
         lang=lang,
         roots=roots,
         all_branches=tuple(all_branches),
-        callees=_calls(split.live()),
+        callees=_calls(split.live(), lang),
+        source_values=frozenset(literal_values(split.live(), lang)),
     )

@@ -17,8 +17,7 @@ from dataclasses import dataclass
 from pipeline.models.code_analysis_output import RulesExamplesOutput
 from pipeline.quality_gates.branch_inventory import BranchInventory
 
-_HANGUL = re.compile(r"[가-힣]")
-_QUOTED = re.compile(r"['\"‘’“”]([^'\"‘’“”\n]{1,16})['\"‘’“”]")
+_QUOTED = re.compile(r"['\"‘’“”]([^'\"‘’“”\n]{1,32})['\"‘’“”]")
 _NUMERIC = re.compile(r"\d+")
 
 CHECKS = ("delegation", "value_set")
@@ -43,20 +42,34 @@ class GroundingFinding:
 
 
 def code_values(text: str, anchor: frozenset[str] = frozenset()) -> set[str]:
-    """산출물의 **도메인 코드값 리터럴**.
+    """산출물의 **도메인 코드값 리터럴** — 후보 전부를 그 함수의 소스 리터럴에 자가 앵커링한다.
 
-    인용된 값 + *그 함수의 분기 조건에 실재하는* 무인용 수치. 무인용 수치를 무조건 받으면
-    "3자리"·"12자리" 같은 산문 수치가 섞이므로, 후보를 그 run 의 AST 조건 리터럴로 자가
-    앵커링한다(외부 어휘표 없음 — 범용성 계약).
+    앵커링이 언어·산문 무관성을 만든다. 앵커 없이 "따옴표 안이면 코드값"으로 받으면 산출물
+    산문의 인용구(``'간편결제'``·``'refund request'``)를 코드값으로 오인하고, 무인용 수치를
+    받으면 "12자리" 같은 산문 수치가 섞인다. 그래서 **그 run 의 소스에 실제로 존재하는 값만**
+    코드값으로 인정한다 — 어떤 자연어 목록도, 어떤 언어 지식도 필요 없다.
+
+    (종전 구현은 "한글이 섞이면 코드값 아님" 규칙을 코드에 박고 있었다. 산출물이 한국어라는
+    전제라서 다른 프로젝트·다른 산문 언어에서 그대로 깨진다.)
     """
-    values: set[str] = set()
-    for match in _QUOTED.finditer(text or ""):
-        value = match.group(1).strip()
-        if value and not _HANGUL.search(value):
-            values.add(value.lower())
-    if anchor:
-        values |= {m.group(0) for m in _NUMERIC.finditer(text or "") if m.group(0) in anchor}
-    return values
+    return {v for v in _candidates(text) if v in anchor}
+
+
+def _candidates(text: str) -> set[str]:
+    """인용된 값과 수치 — 앵커 판정 **전**의 원시 후보."""
+    values = {m.group(1).strip().lower() for m in _QUOTED.finditer(text or "")}
+    values |= {m.group(0) for m in _NUMERIC.finditer(text or "")}
+    return {v for v in values if v}
+
+
+def fabricated_values(text: str, anchor: frozenset[str], shapes: set[str]) -> set[str]:
+    """소스 어디에도 없는데 **앵커된 값들과 같은 모양**인 후보 = 지어낸 코드값.
+
+    모양 동질성이 언어 지식을 대신한다. 규칙이 ``'11','13','21'`` 을 열거하는데 ``'12'`` 가
+    소스에 없으면, 그 값은 같은 집합의 일원 행세를 하는 날조다. 반대로 산문 인용구
+    (``'간편결제'``·``'refund request'``)는 그 모양 집합에 속하지 않아 걸러진다.
+    """
+    return {v for v in _candidates(text) - anchor if _shape(v) in shapes}
 
 
 def _shape(value: str) -> str:
@@ -131,7 +144,11 @@ def _check_value_set(
         for child in branch.children:
             known |= child.cond_values
         shapes = {_shape(value) for value in overlap}
-        foreign = tuple(sorted(v for v in values - known if _shape(v) in shapes))
+        # 근거 분기 밖의 값 두 종류: 함수 어딘가엔 있으나 이 분기엔 없는 값 + 소스 어디에도 없는 값
+        foreign = tuple(sorted(
+            {v for v in values - known if _shape(v) in shapes}
+            | fabricated_values(condition, inventory.source_values, shapes)
+        ))
         if foreign:
             findings.append(
                 GroundingFinding(
@@ -154,8 +171,7 @@ def check_grounding(
     delegation = _check_delegation(rules_out, inventory)
     if delegation:
         return delegation
-    anchor = frozenset().union(*(b.cond_values for b in inventory.all_branches)) \
-        if inventory.all_branches else frozenset()
+    anchor = inventory.source_values
     findings: list[GroundingFinding] = []
     for scope, condition in _conditions(rules_out):
         findings.extend(_check_value_set(scope, condition, inventory, anchor))

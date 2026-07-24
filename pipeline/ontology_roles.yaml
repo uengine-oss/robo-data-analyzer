@@ -58,6 +58,8 @@ roles:
 #   string_quotes    : 문자열/문자 리터럴 인용부호 (주석 판정에서 보호할 구간)
 #   inactive         : 컴파일에서 빠지는 블록 [열림, 중첩열림, 닫힘] 정규식
 #   case_fallthrough : 본문 없는 CASE 가 다음 CASE 의 효과를 공유하는가
+#   control_keywords : `이름(` 형태지만 호출이 아닌 예약어 (호출 집합에서 제외)
+#   case_label_end   : CASE 라벨이 끝나는 토큰 (라벨과 본문을 가르는 자리)
 source_lexicon:
   c:
     line:          ["//"]
@@ -65,24 +67,35 @@ source_lexicon:
     string_quotes: ["\"", "'"]
     inactive:      ['^#\s*if\s+0\b', '^#\s*if', '^#\s*endif']
     case_fallthrough: true
+    control_keywords: [if, else, for, while, do, switch, case, default, return, sizeof]
+    case_label_end:   [":"]
   java:
     line:          ["//"]
     block:         [["/*", "*/"]]
     string_quotes: ["\"", "'"]
     inactive:      []
     case_fallthrough: true
+    control_keywords: [if, else, for, while, do, switch, case, default, return, try, catch,
+                       finally, synchronized, throw, new, instanceof]
+    case_label_end:   [":", "->"]
   python:
     line:          ["#"]
     block:         []
     string_quotes: ["\"", "'"]
     inactive:      []
     case_fallthrough: false
+    control_keywords: [if, elif, else, for, while, try, except, finally, with, return,
+                       match, case, assert, print]
+    case_label_end:   [":"]
   sql:
     line:          ["--"]
     block:         [["/*", "*/"]]
     string_quotes: ["'", "\""]
     inactive:      []
     case_fallthrough: false
+    control_keywords: [if, elsif, elseif, else, loop, while, for, case, when, then,
+                       return, exit, begin, end]
+    case_label_end:   ["then", ":"]
 
 # DBMS 플랫폼의 내장 패키지. 호출 텍스트의 식별자 한 세그먼트와 정확히
 # 일치할 때만 builtin 으로 분류한다. prefix 패턴은 application package 를
