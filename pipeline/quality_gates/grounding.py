@@ -191,8 +191,25 @@ def _check_anchor(
         known |= ancestor.cond_values
     for child in branch.children:
         known |= child.cond_values
-    claimed = code_values(rule.statement or "", anchor)
-    missing = tuple(sorted(claimed - known))
+    # ``else``/``default`` 는 형제 조건의 부정으로 정의된다 — 형제의 조건값은 정당한 어휘다.
+    # (실측 오탐: `default:` 에 앵커한 "11,12,13,14 가 아니면" 규칙이 전부 위반으로 잡혔다)
+    for sibling in inventory.siblings(branch):
+        known |= sibling.cond_values
+
+    # statement 는 "<조건>이면 <결과>" 구조라 **결과값도 섞여 있다**. 결과값을 조건값 대조에
+    # 넣으면 정상 규칙이 무더기로 걸린다(실측 오탐 최대 원인: `gubun='1' 로 조회`·`납부주기를
+    # '4' 로 변경`). 조건절을 산문으로 가르는 대신, **예시의 then 에 나온 값은 결과로 보고
+    # 조건 대조에서 뺀다** — 필드 구조로 판정하므로 산문 언어를 몰라도 된다.
+    produced_by_rule: set[str] = set()
+    for example in rule.examples:
+        produced_by_rule |= code_values(example.then or "", anchor)
+    claimed = code_values(rule.statement or "", anchor) - produced_by_rule
+    # 소스 어디에도 없는데 지목 분기 조건값과 **같은 모양**인 값 = 그 조건 자리에 지어낸 값.
+    # (실측: 코드가 `x=="Y"` 인데 규칙이 "'N' 이면" 이라 쓴 매핑 반전. 'N' 은 소스에 없어
+    #  앵커링만으로는 코드값으로 뽑히지 않으므로 이 경로가 없으면 통째로 놓친다.)
+    shapes = {_shape(value) for value in branch.cond_values}
+    fabricated = fabricated_values(rule.statement or "", anchor, shapes) - produced_by_rule
+    missing = tuple(sorted((claimed - known) | fabricated))
     if missing:
         findings.append(
             GroundingFinding(
@@ -202,13 +219,16 @@ def _check_anchor(
             )
         )
 
-    effects = inventory.reachable_effects(branch)
+    effects = set(inventory.reachable_effects(branch))
     for ancestor in branch.ancestors():
         effects |= ancestor.effect_atoms
-    outcome: set[str] = set()
-    for example in rule.examples:
-        outcome |= code_values(example.then or "", anchor)
-    absent = tuple(sorted(v for v in outcome - effects if v in anchor))
+    # 예시가 여럿인 규칙은 **여러 경로를 함께 서술**한다(`A면 정상, 아니면 거절`). 그때는
+    # 형제 분기의 산물도 정당하다. 예시가 하나면 한 경로만 말하는 것이므로 그 분기가 실제로
+    # 만드는 결과여야 한다 — 이 구분이 없으면 형제 결과를 갖다 쓴 반전 결함을 놓친다.
+    if len(rule.examples) > 1:
+        for sibling in inventory.siblings(branch):
+            effects |= inventory.reachable_effects(sibling)
+    absent = tuple(sorted(v for v in produced_by_rule - effects if v in anchor))
     if absent:
         findings.append(
             GroundingFinding(

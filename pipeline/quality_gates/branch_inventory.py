@@ -36,8 +36,9 @@ class Branch:
     condition: str = ""
     cond_values: frozenset[str] = frozenset()
     callees: frozenset[str] = frozenset()
-    # 그 분기가 **만들어내는 것** — 본문 원자에서 조건 원자를 뺀 나머지(대입값·호출·반환 상수).
-    # 언어별 대입/반환 문법을 몰라도 되게 "조건 밖에서 등장하는 것"으로 정의한다.
+    # 그 분기가 **만들어내는 것** — 본문에 등장하는 원자 전부(대입값·호출·반환 상수).
+    # 조건 원자를 빼면 안 된다: `if(x=="Y") { f="Y"; }` 처럼 조건값이 결과값이기도 하면
+    # 그 값이 통째로 사라져 "만들지 않는 결과"로 오판한다(실측 오탐 원인).
     effect_atoms: frozenset[str] = frozenset()
     children: list["Branch"] = field(default_factory=list)
 
@@ -86,6 +87,12 @@ class BranchInventory:
             if effects:
                 tables.append(effects)
         return tables
+
+    def siblings(self, branch: Branch) -> tuple[Branch, ...]:
+        """같은 부모를 공유하는 형제 분기. ``else``/``default`` 는 형제 조건의 **부정**으로
+        정의되므로, 그 형제들의 조건값은 그 분기의 정당한 어휘다."""
+        pool = branch.parent.children if branch.parent else self.roots
+        return tuple(b for b in pool if b is not branch)
 
     def at_line(self, line: int) -> "Branch | None":
         """그 줄에서 시작하는 분기. 없으면 그 줄을 품는 가장 안쪽 분기."""
@@ -184,7 +191,7 @@ def build_inventory(
             condition=condition,
             cond_values=frozenset(literal_values(condition, lang)),
             callees=_calls(body, lang) - _calls(condition, lang),
-            effect_atoms=frozenset(atoms(body, lang)) - frozenset(atoms(condition, lang)),
+            effect_atoms=frozenset(atoms(body, lang)),
         )
         all_branches.append(branch)
         branch.children = [convert(child, branch) for child in node.children]

@@ -214,11 +214,27 @@ class AnchorCheck(unittest.TestCase):
         self.assertEqual([f.check for f in findings], ["anchor_values"])
         self.assertIn("999", findings[0].values)
 
-    def test_value_absent_from_the_anchored_branch_is_flagged(self):
-        # '11' 은 IF 조건이지 ELSE 조건이 아니다 — ELSE 를 지목하면 위반
-        findings = check_grounding(self._rule("코드 '11' 이면 처리", 5), self._inv())
+    def test_sibling_condition_is_legitimate_vocabulary_for_else(self):
+        # ELSE 는 형제 IF 조건의 부정으로 정의된다 — "'11' 이 아니면" 은 정상 서술이다
+        self.assertEqual(check_grounding(self._rule("코드 '11' 이면 처리", 5), self._inv()), [])
+
+    def test_value_from_an_unrelated_branch_is_flagged(self):
+        # '9999' 는 소스에 있지만 ELSE 의 **결과값**이다 — IF 의 조건인 양 쓰면 위반
+        findings = check_grounding(self._rule("코드 '9999' 이면 처리", 1), self._inv())
         self.assertEqual([f.check for f in findings], ["anchor_values"])
-        self.assertEqual(findings[0].values, ("11",))
+        self.assertEqual(findings[0].values, ("9999",))
+
+    def test_absent_but_same_shaped_value_is_treated_as_fabricated(self):
+        # '77' 은 소스에 없지만 지목 분기 조건('11')과 같은 모양이라 그 자리에 지어낸 값이다
+        findings = check_grounding(self._rule("코드 '77' 이면 처리", 1), self._inv())
+        self.assertEqual([f.check for f in findings], ["anchor_values"])
+        self.assertEqual(findings[0].values, ("77",))
+
+    def test_prose_in_quotes_is_still_ignored(self):
+        # 모양이 달라 조건값 자리로 볼 수 없다 — 산문 언어를 몰라도 걸러진다
+        self.assertEqual(
+            check_grounding(self._rule("'간편결제 신청' 이면 처리", 1), self._inv()), []
+        )
 
     def test_result_the_anchored_branch_never_produces_is_flagged(self):
         findings = check_grounding(
