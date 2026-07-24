@@ -184,3 +184,54 @@ class OutputValueExtraction(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AnchorCheck(unittest.TestCase):
+    """규칙이 스스로 지목한 분기에 대고 검증한다 (spec 102)."""
+
+    BODY = ('if (eq(a,"11"))\n{\n    set(dst,"0000");\n}\n'
+            'else\n{\n    set(dst,"9999");\n}')
+    TREE = [
+        ControlSubtreeNode(node_id="if", ntype="IF", start=1, end=4),
+        ControlSubtreeNode(node_id="el", ntype="ELSE", start=5, end=7),
+    ]
+
+    def _inv(self):
+        return build_inventory(self.BODY, self.TREE, "c")
+
+    def _rule(self, statement, line, then=""):
+        return RulesExamplesOutput(rules=[RuleItem(
+            statement=statement, anchor_line=line,
+            examples=[ExampleItem(given="", when="", then=then)],
+        )])
+
+    def test_line_inside_a_branch_resolves_to_that_branch(self):
+        # 3 은 IF(1-4) 안쪽 — 머리줄이 아니어도 그 분기로 해석한다(관대하게).
+        self.assertEqual(check_grounding(self._rule("코드 '11' 이면 처리", 3), self._inv()), [])
+
+    def test_anchor_outside_every_branch_is_flagged(self):
+        findings = check_grounding(self._rule("코드 '11' 이면 처리", 999), self._inv())
+        self.assertEqual([f.check for f in findings], ["anchor_values"])
+        self.assertIn("999", findings[0].values)
+
+    def test_value_absent_from_the_anchored_branch_is_flagged(self):
+        # '11' 은 IF 조건이지 ELSE 조건이 아니다 — ELSE 를 지목하면 위반
+        findings = check_grounding(self._rule("코드 '11' 이면 처리", 5), self._inv())
+        self.assertEqual([f.check for f in findings], ["anchor_values"])
+        self.assertEqual(findings[0].values, ("11",))
+
+    def test_result_the_anchored_branch_never_produces_is_flagged(self):
+        findings = check_grounding(
+            self._rule("코드 '11' 이면 처리", 1, then="결과코드 '9999' 를 설정한다"), self._inv()
+        )
+        self.assertEqual([f.check for f in findings], ["anchor_effect"])
+        self.assertEqual(findings[0].values, ("9999",))
+
+    def test_correct_anchor_produces_no_finding(self):
+        findings = check_grounding(
+            self._rule("코드 '11' 이면 처리", 1, then="결과코드 '0000' 을 설정한다"), self._inv()
+        )
+        self.assertEqual(findings, [])
+
+    def test_zero_anchor_is_not_judged(self):
+        self.assertEqual(check_grounding(self._rule("무조건 처리", 0), self._inv()), [])

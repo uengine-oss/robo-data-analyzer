@@ -431,7 +431,19 @@ def _build_user_values(
         "ancestor_context": ancestor_context(ctx, contexts, cache),
         "reads": dump_table_refs(ctx.reads, table_descriptions),
         "writes": dump_table_refs(ctx.writes, table_descriptions),
+        # spec 102: 규칙이 고를 수 있는 근거 분기 후보. 분할 3 템플릿만 참조한다.
+        "branch_index": _branch_index(fn, ctx, body_for(ctx, contexts, cache)),
     }
+
+
+def _branch_index(fn: CodeNode, ctx: AnalysisContext, code_body: str) -> str:
+    """``줄번호: 조건식`` 목록. 게이트가 쓰는 분기 대장과 **같은 정의처**에서 만든다."""
+    try:
+        return build_inventory(
+            code_body, ctx.extra.get("control_subtree"), lang_of(Path(fn.file_path).suffix)
+        ).branch_index()
+    except NoSupportedSourceError:
+        return "(분기 없음)"
 
 
 def _format_callee_summaries(

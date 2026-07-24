@@ -20,7 +20,7 @@ from pipeline.quality_gates.branch_inventory import BranchInventory
 _QUOTED = re.compile(r"['\"‘’“”]([^'\"‘’“”\n]{1,32})['\"‘’“”]")
 _NUMERIC = re.compile(r"\d+")
 
-CHECKS = ("delegation", "value_set")
+CHECKS = ("delegation", "value_set", "anchor_values", "anchor_effect")
 
 
 @dataclass(frozen=True)
@@ -162,6 +162,63 @@ def _check_value_set(
     return findings
 
 
+def _check_anchor(
+    rule_index: int, rule, inventory: BranchInventory, anchor: frozenset[str]
+) -> list[GroundingFinding]:
+    """규칙이 **스스로 지목한 분기**에 대고 검증한다 — 추정이 아니라 확정 대조다.
+
+    ``best_match`` 추정은 조건값이 겹치는 분기를 고르므로, 규칙이 애초에 엉뚱한 분기를
+    말하고 있으면 그 오류를 볼 수 없다(추정이 오류를 따라간다). 규칙이 직접 줄을 대면
+    "네가 말한 그 분기에 그 값·그 결과가 있느냐"를 물을 수 있다.
+    """
+    line = getattr(rule, "anchor_line", 0) or 0
+    if line <= 0:
+        return []
+    branch = inventory.at_line(line)
+    if branch is None:
+        return [
+            GroundingFinding(
+                "anchor_values", f"R{rule_index}", (str(line),),
+                f"지목한 줄 {line} 에 분기가 없다",
+            )
+        ]
+
+    findings: list[GroundingFinding] = []
+    scope = f"R{rule_index}"
+
+    known = set(branch.cond_values)
+    for ancestor in branch.ancestors():
+        known |= ancestor.cond_values
+    for child in branch.children:
+        known |= child.cond_values
+    claimed = code_values(rule.statement or "", anchor)
+    missing = tuple(sorted(claimed - known))
+    if missing:
+        findings.append(
+            GroundingFinding(
+                "anchor_values", scope, missing,
+                f"지목 분기({branch.ntype}@{branch.start})의 조건에 없는 코드값 "
+                f"(그 분기의 값 {sorted(branch.cond_values)})",
+            )
+        )
+
+    effects = inventory.reachable_effects(branch)
+    for ancestor in branch.ancestors():
+        effects |= ancestor.effect_atoms
+    outcome: set[str] = set()
+    for example in rule.examples:
+        outcome |= code_values(example.then or "", anchor)
+    absent = tuple(sorted(v for v in outcome - effects if v in anchor))
+    if absent:
+        findings.append(
+            GroundingFinding(
+                "anchor_effect", scope, absent,
+                f"지목 분기({branch.ntype}@{branch.start})가 만들지 않는 결과값",
+            )
+        )
+    return findings
+
+
 def check_grounding(
     rules_out: RulesExamplesOutput | None, inventory: BranchInventory
 ) -> list[GroundingFinding]:
@@ -175,4 +232,6 @@ def check_grounding(
     findings: list[GroundingFinding] = []
     for scope, condition in _conditions(rules_out):
         findings.extend(_check_value_set(scope, condition, inventory, anchor))
+    for rule_index, rule in enumerate(rules_out.rules):
+        findings.extend(_check_anchor(rule_index, rule, inventory, anchor))
     return findings

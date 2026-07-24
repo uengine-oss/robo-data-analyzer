@@ -189,6 +189,13 @@ class RuleItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     statement: str = Field(..., description="<조건>이면 <결과> — 코드 식별자 X")
+    # spec 102: 근거 인용. 줄번호 하나라 나열형 폭주와 무관하고(정수 1개), 도메인어가 아니라
+    # 좌표라서 "코드 식별자 금지" 원칙과도 충돌하지 않는다. 이 값이 있어야 결정론 게이트가
+    # "그 규칙이 말하는 분기"를 추정이 아니라 확정으로 잡는다(실측 8% → 92%).
+    anchor_line: int = Field(
+        0, ge=0,
+        description="이 규칙을 결정하는 분기의 줄번호 ([분기 목록]에서 고른다). 분기 없으면 0",
+    )
     examples: list[ExampleItem] = Field(
         default_factory=list,
         max_length=80,

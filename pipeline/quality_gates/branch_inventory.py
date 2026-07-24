@@ -14,7 +14,7 @@ from typing import Sequence
 
 from pipeline.languages import source_lexicon
 from pipeline.models.analysis_context import ControlSubtreeNode
-from pipeline.quality_gates.lexing import SplitSource, literal_values, split_source
+from pipeline.quality_gates.lexing import SplitSource, atoms, literal_values, split_source
 
 _CALL = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 
@@ -36,6 +36,9 @@ class Branch:
     condition: str = ""
     cond_values: frozenset[str] = frozenset()
     callees: frozenset[str] = frozenset()
+    # 그 분기가 **만들어내는 것** — 본문 원자에서 조건 원자를 뺀 나머지(대입값·호출·반환 상수).
+    # 언어별 대입/반환 문법을 몰라도 되게 "조건 밖에서 등장하는 것"으로 정의한다.
+    effect_atoms: frozenset[str] = frozenset()
     children: list["Branch"] = field(default_factory=list)
 
     def ancestors(self) -> list["Branch"]:
@@ -83,6 +86,28 @@ class BranchInventory:
             if effects:
                 tables.append(effects)
         return tables
+
+    def at_line(self, line: int) -> "Branch | None":
+        """그 줄에서 시작하는 분기. 없으면 그 줄을 품는 가장 안쪽 분기."""
+        starting = [b for b in self.all_branches if b.start == line]
+        if starting:
+            return starting[0]
+        covering = [b for b in self.all_branches if b.start <= line <= b.end]
+        return min(covering, key=lambda b: b.end - b.start) if covering else None
+
+    def reachable_effects(self, branch: Branch) -> frozenset[str]:
+        """그 분기와 그 안쪽 분기들이 만들어내는 것 전부."""
+        found = set(branch.effect_atoms)
+        for child in branch.children:
+            found |= self.reachable_effects(child)
+        return frozenset(found)
+
+    def branch_index(self) -> str:
+        """LLM 에게 보여줄 분기 목록 — ``줄번호: 조건식``. 고를 수 있는 후보를 못 박는다."""
+        return "\n".join(
+            f"{b.start}: {b.ntype} {' '.join(b.condition.split())[:110]}"
+            for b in sorted(self.all_branches, key=lambda x: x.start)
+        ) or "(분기 없음)"
 
     def best_match(self, values: set[str]) -> tuple[Branch | None, set[str]]:
         """항목이 근거로 삼은 분기 = 조건 코드값이 가장 많이 겹치는 분기."""
@@ -159,6 +184,7 @@ def build_inventory(
             condition=condition,
             cond_values=frozenset(literal_values(condition, lang)),
             callees=_calls(body, lang) - _calls(condition, lang),
+            effect_atoms=frozenset(atoms(body, lang)) - frozenset(atoms(condition, lang)),
         )
         all_branches.append(branch)
         branch.children = [convert(child, branch) for child in node.children]
