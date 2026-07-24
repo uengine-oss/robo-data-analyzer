@@ -32,6 +32,7 @@ DBMS 부모 range 는 본문이 ``compact_body`` (자식 구간 → 자식 summa
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -320,6 +321,14 @@ async def analyze_code_three_split(
         fn.extra["rules_quality_flag"] = fallback_flag
     if grounding_findings:
         fn.extra["grounding_findings"] = [f.as_dict() for f in grounding_findings]
+        # 측정값은 **보여야** 측정이다. 계산만 하고 버리면 죽은 데이터다.
+        log_warning(
+            _STEP, "grounding_findings",
+            "규칙·사례가 근거 분기와 어긋난다 (측정 전용 — 산출물은 그대로)",
+            code_id=fn.id,
+            counts=dict(Counter(f.check for f in grounding_findings)),
+            findings=[f.as_dict() for f in grounding_findings],
+        )
 
     # ctx 에 나머지 분석 결과 부착 — 부모(PARENT_OF)의 #3 분할 입력.
     # (summary 는 위 Phase 1 종료 시점에 이미 공개됨 — CALLS 의존 조기 해제.)

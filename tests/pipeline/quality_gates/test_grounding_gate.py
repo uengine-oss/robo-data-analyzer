@@ -117,6 +117,47 @@ class DelegationCheck(unittest.TestCase):
         self.assertEqual(check_grounding(RulesExamplesOutput(), inventory), [])
 
 
+class LanguageIndependence(unittest.TestCase):
+    """게이트 로직에 언어 분기가 없다 — 같은 코드가 표(데이터)만 바꿔 java/python/sql 을 판정한다.
+
+    C 코퍼스로만 실측했으므로 **적중률은 다른 언어에서 미검증**이다. 여기서 단언하는 것은
+    "판정 경로가 언어에 걸려 죽지 않는다"까지다.
+    """
+
+    JAVA = 'if (code.equals("11") || code.equals("14")) {\n    apply();\n}'
+    PYTHON = 'if code == "11" or code == "14":\n    apply()'
+    SQL = "IF v_code = '11' OR v_code = '14' THEN\n    apply();\nEND IF;"
+
+    def test_condition_literals_are_read_in_every_language(self):
+        for lang, body in (("java", self.JAVA), ("python", self.PYTHON), ("sql", self.SQL)):
+            with self.subTest(lang=lang):
+                tree = [ControlSubtreeNode(node_id="if", ntype="IF", start=1, end=3)]
+                inventory = build_inventory(body, tree, lang)
+                self.assertEqual(inventory.all_branches[0].cond_values, frozenset({"11", "14"}))
+
+    def test_line_comment_token_comes_from_the_table(self):
+        self.assertNotIn("dead", split_source("live();\n// dead();", "java").live())
+        self.assertNotIn("dead", split_source("live()\n# dead()", "python").live())
+        self.assertNotIn("dead", split_source("live();\n-- dead();", "sql").live())
+
+    def test_fabricated_value_is_flagged_in_java_and_python(self):
+        for lang, body in (("java", self.JAVA), ("python", self.PYTHON)):
+            with self.subTest(lang=lang):
+                tree = [ControlSubtreeNode(node_id="if", ntype="IF", start=1, end=3)]
+                findings = check_grounding(
+                    _rules("코드가 '11','14','99' 중 하나이면 처리한다"),
+                    build_inventory(body, tree, lang),
+                )
+                self.assertTrue(findings, f"{lang} 에서 판정이 안 났다")
+                self.assertEqual(findings[0].values, ("99",))
+
+    def test_unregistered_language_fails_loudly_instead_of_passing_silently(self):
+        from pipeline.languages import UnknownSourceLexiconError
+
+        with self.assertRaises(UnknownSourceLexiconError):
+            split_source("x = 1", "cobol")
+
+
 class OutputValueExtraction(unittest.TestCase):
     def test_unquoted_numbers_need_the_run_s_own_anchor(self):
         self.assertEqual(code_values("과목코드가 101 이면"), set())

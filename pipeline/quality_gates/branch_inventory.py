@@ -104,10 +104,13 @@ def condition_text(body: str, ntype: str) -> str:
     if ntype == "CASE":
         colon = body.find(":")
         return body[:colon] if colon >= 0 else body.split("\n", 1)[0]
-    open_paren = body.find("(")
-    brace = body.find("{")
+    # 여는 괄호는 **분기 키워드가 있는 첫 줄**에서만 찾는다. 본문 전체에서 찾으면 뒤쪽
+    # 호출문의 괄호를 조건식으로 오인한다 — 괄호 없는 문법(python/sql)이 통째로 무력화된다.
+    first_line = body.split("\n", 1)[0]
+    open_paren = first_line.find("(")
+    brace = first_line.find("{")
     if open_paren < 0 or (0 <= brace < open_paren):
-        return body.split("\n", 1)[0]
+        return first_line
     depth = 0
     for index in range(open_paren, len(body)):
         if body[index] == "(":
