@@ -80,7 +80,10 @@ source_lexicon:
     case_label_end:   [":", "->"]
   python:
     line:          ["#"]
-    block:         []
+    # 삼중따옴표는 문법상 문자열이지만 **실행 코드가 아니다**(독스트링). 활성으로 두면
+    # 그 안의 산문·예시 SQL 이 "코드에 있는 값"으로 둔갑해 근거성 판정이 무너진다.
+    # (실측: library_system/database.py 의 CREATE TABLE 독스트링이 활성 원자로 샜다)
+    block:         [['"""', '"""'], ["'''", "'''"]]
     string_quotes: ["\"", "'"]
     inactive:      []
     case_fallthrough: false

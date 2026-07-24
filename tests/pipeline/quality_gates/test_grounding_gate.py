@@ -139,6 +139,25 @@ class LanguageIndependence(unittest.TestCase):
                 inventory = build_inventory(body, tree, lang)
                 self.assertEqual(inventory.all_branches[0].cond_values, frozenset({"11", "14"}))
 
+    def test_python_docstring_is_not_live_code(self):
+        """독스트링은 문법상 문자열이지만 실행 코드가 아니다.
+
+        활성으로 두면 그 안의 산문·예시 SQL 이 "코드에 있는 값"으로 둔갑해 근거성이 무너진다.
+        실측 사례: library_system/src/core/database.py 의 CREATE TABLE 독스트링.
+        """
+        body = '\n'.join([
+            'def make():',
+            '    """설정 파서',
+            '    CREATE TABLE books (isbn TEXT PRIMARY KEY)',
+            '    """',
+            '    return "0001"',
+        ])
+        live = split_source(body, "python").live()
+        self.assertNotIn("CREATE TABLE", live)
+        self.assertNotIn("isbn", live)
+        self.assertIn('"0001"', live)          # 진짜 코드값은 남는다
+        self.assertNotIn("0001", split_source(body, "python").dead())
+
     def test_line_comment_token_comes_from_the_table(self):
         self.assertNotIn("dead", split_source("live();\n// dead();", "java").live())
         self.assertNotIn("dead", split_source("live()\n# dead()", "python").live())
