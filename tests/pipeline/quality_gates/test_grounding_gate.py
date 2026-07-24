@@ -112,6 +112,14 @@ class ConditionValueAxis(unittest.TestCase):
         body = 'if (strncmp(itf->in.chg_rsn_cd, "08", LEN) == 0)\n{\n    run();\n}'
         self.assertIn("08", self._values(body, "IF"))
 
+    def test_declared_constants_outside_the_body_count_as_source(self):
+        """본문 밖 `#define` 상수는 프롬프트가 증거 2순위로 주는 값이다 — 앵커에 포함한다."""
+        body = 'if (rc != OK)\n{\n    put(DOCU_RCV);\n}'
+        inv = build_inventory(body, [], "c", declared_values=['"ZAPAE0021"'])
+        self.assertIn("zapae0021", inv.source_values)
+        plain = build_inventory(body, [], "c")
+        self.assertNotIn("zapae0021", plain.source_values)
+
 
 class ConditionExtraction(unittest.TestCase):
     def test_multiline_condition_is_not_cut_by_line_count(self):

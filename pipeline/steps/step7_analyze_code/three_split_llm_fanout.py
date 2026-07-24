@@ -349,7 +349,8 @@ def _measure_grounding(
         return []
     try:
         inventory = build_inventory(
-            code_body, ctx.extra.get("control_subtree"), lang_of(Path(fn.file_path).suffix)
+            code_body, ctx.extra.get("control_subtree"), lang_of(Path(fn.file_path).suffix),
+            declared_values=[s.declared_value for s in ctx.referenced_symbols],
         )
         return check_grounding(rules_out, inventory)
     except NoSupportedSourceError:

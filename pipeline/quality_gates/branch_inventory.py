@@ -244,8 +244,16 @@ def build_inventory(
     control_subtree: Sequence[ControlSubtreeNode] | None,
     lang: str,
     split: SplitSource | None = None,
+    declared_values: Sequence[str] = (),
 ) -> BranchInventory:
-    """분기 대장을 만든다. ``control_subtree`` 가 없으면 분기 0으로 본다."""
+    """분기 대장을 만든다. ``control_subtree`` 가 없으면 분기 0으로 본다.
+
+    ``declared_values`` 는 함수 **본문 밖**에서 선언된 상수의 값이다(``#define`` 등).
+    프롬프트는 이 값을 증거 2순위로 인정하므로(``referenced_symbols`` 의
+    ``immutable_constant.declared_value``) 근거 앵커도 같은 것을 인정해야 한다.
+    본문만 앵커로 쓰면 정당하게 인용한 상수를 날조로 오판한다
+    (실측: `#define ... "ZAPAE0021"` 을 인용한 규칙이 무근거로 잡혔다).
+    """
     split = split or split_source(code_body, lang)
     all_branches: list[Branch] = []
 
@@ -270,10 +278,12 @@ def build_inventory(
         return branch
 
     roots = tuple(convert(node, None) for node in (control_subtree or ()))
+    declared = {value.strip().lower() for value in declared_values if value and value.strip()}
+    declared |= {v for value in declared_values for v in literal_values(value or "", lang)}
     return BranchInventory(
         lang=lang,
         roots=roots,
         all_branches=tuple(all_branches),
         callees=_calls(split.live(), lang),
-        source_values=frozenset(literal_values(split.live(), lang)),
+        source_values=frozenset(literal_values(split.live(), lang) | declared),
     )

@@ -56,8 +56,14 @@ system: |
 
   ### 단계 1 — 코드 토큰 박멸
 
-  사람용 자연어 필드(summary / logical_name / narrative / description) 에 코드
-  식별자를 그대로 박지 마세요. **이름이 아니라 의미를 적습니다**.
+  사람이 읽는 자연어 필드 **전부** — `summary` / `logical_name` / `narrative` /
+  `description` / `search_text` / rule 의 `statement` / example 의 `given`·`when`·`then` —
+  에 코드 식별자를 그대로 박지 마세요. **이름이 아니라 의미를 적습니다**.
+
+  ★ 이 목록에 rule/example 필드가 포함된다. 규칙과 예시도 사람이 읽는 산출물이므로
+  같은 금지가 걸린다 — "예시는 코드에 가까우니 필드명을 써도 된다"는 예외는 없다.
+  물리 필드명을 괄호로 병기하는 것도 금지다(`계정번호(acnt_num)` ❌ / `계정번호` ✅).
+  그 이름이 꼭 필요하면 `search_text` 가 담는다.
 
   금지(코드 식별자 그대로):
   - 메서드명 (예: `processOrder`, `checkUserStatus`, `validateInput`)
