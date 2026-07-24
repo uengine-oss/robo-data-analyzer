@@ -67,9 +67,15 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
     # code_id → reads/writes/callers/callees 집계 (sorted tuple 강제 — 캐시 친화)
     reads_by_fn: dict[str, set[str]] = {}
     writes_by_fn: dict[str, set[str]] = {}
+    # (fn, table) → 결정론 dml_type 집합. SQL_KEY 접미(_i/_u/_d 등)에서 나온 권위 op 다
+    # (spec 100). 뒤에서 "단일 op" 만 골라 LLM 의 op 오귀속(예: _u 인데 INSERT)을 교정한다.
+    op_by_fn: dict[str, dict[str, set[str]]] = {}
     for e in rw_edges:
         bucket = reads_by_fn if e.relation == "READS" else writes_by_fn
         bucket.setdefault(e.source_id, set()).add(e.target_id)
+        dml = getattr(e, "dml_type", "") or ""
+        if dml:
+            op_by_fn.setdefault(e.source_id, {}).setdefault(e.target_id, set()).add(dml)
 
     callers_by_fn: dict[str, set[str]] = {}
     callees_by_fn: dict[str, set[str]] = {}
@@ -109,6 +115,16 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
         ctx = await builder.augment(ctx, fn, state)
         if fn.id in control_subtrees:
             ctx.extra["control_subtree"] = control_subtrees[fn.id]
+        # 권위 op 맵 — 한 (fn,table) 이 **단일 dml_type** 일 때만(모호하면 제외). LLM 이
+        # 낡은 주석에 속아 op 를 뒤바꾸는 환각(감사 최대 결함)을 결정론으로 교정하는 근거.
+        # SELECT → AffectedTable.op 형식 "READ" 로 정규화, 나머지는 그대로.
+        fn_ops = op_by_fn.get(fn.id, {})
+        table_op = {
+            table: ("READ" if next(iter(ops)) == "SELECT" else next(iter(ops)))
+            for table, ops in fn_ops.items() if len(ops) == 1
+        }
+        if table_op:
+            ctx.extra["table_op"] = table_op
         contexts[fn.id] = ctx
 
     # 큰 코드노드만 one_liner 사전 압축 (LLM 1 회 — model_small).

@@ -53,12 +53,18 @@ def constrain_tables_to_rw(
     insights_out: Optional[object] = None,   # TableInsightsOutput | None
     rules_out: Optional[object] = None,       # RulesExamplesOutput | None
     allowed_columns_by_table: Optional[dict[str, Iterable[str]]] = None,
+    table_op: Optional[dict[str, str]] = None,
 ) -> int:
     """LLM 귀속 테이블을 reads∪writes 정확 ID로 제한 — in-place 수정, 드롭 수 반환.
 
     - ``insights_out.table_insights[*].table``
     - ``rules_out.rules[*].examples[*].affected_tables[*].table``
     중 허용 집합 밖은 제거. reads/writes 비면 허용 집합도 비어 전부 드롭(디스패처).
+
+    ``table_op`` (spec 100): {table_id: 권위 op(READ/INSERT/UPDATE/DELETE/MERGE)}. 한
+    (함수,테이블)이 **단일 결정론 op** 일 때만 채워진다(모호하면 제외). LLM 이 낡은 주석에
+    속아 op 를 뒤바꾼 경우(예: SQL_KEY _u=UPDATE 인데 INSERT 로 서술) 이 권위값으로 교정한다.
+    테이블 제한(spec 027)과 같은 원리 — 의미 판단은 결정론이 소유하고 LLM 창작을 덮지 않는다.
     """
     allowed_exact = {str(t) for t in [*(reads or ()), *(writes or ())]}
 
@@ -66,7 +72,9 @@ def constrain_tables_to_rw(
         exact = str(table)
         return exact if exact in allowed_exact else None
     dropped = 0
+    op_corrected = 0
     off: set[str] = set()
+    table_op = table_op or {}
 
     kept_table_ids: set[str] = set()
     if insights_out is not None and getattr(insights_out, "table_insights", None):
@@ -105,12 +113,22 @@ def constrain_tables_to_rw(
                     canonical = resolve(at.table)
                     if canonical:
                         at.table = canonical
+                        # 권위 op 교정 — 단일 결정론 op 가 있고 LLM op 가 다르면 덮는다.
+                        auth = table_op.get(canonical)
+                        if auth and at.op != auth:
+                            at.op = auth
+                            op_corrected += 1
                         kept.append(at)
                     else:
                         dropped += 1
                         off.add(str(at.table))
                 ex.affected_tables = kept
 
+    if op_corrected:
+        # LLM op 오귀속을 권위 op 로 덮은 수 — 표면화(헌법 IV). 잦으면 프롬프트/입력 점검 신호.
+        log_info(_STEP, "table_op_corrected",
+                 f"권위 op(SQL_KEY 유래)로 affected_tables op 교정 {op_corrected}건",
+                 code_id=code_id, corrected=op_corrected)
     if dropped:
         # 표면화(Constitution IV) — 단 심각도는 사실에 맞춘다(FR-005).
         if not allowed_exact:

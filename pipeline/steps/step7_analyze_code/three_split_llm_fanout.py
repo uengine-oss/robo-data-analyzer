@@ -299,6 +299,7 @@ async def analyze_code_three_split(
     constrain_tables_to_rw(
         code_id, ctx.reads, ctx.writes, insights_out, rules_out,
         allowed_columns_by_table=ctx.extra.get("ddl_columns_by_table"),
+        table_op=ctx.extra.get("table_op"),
     )
 
     # fan-in 머지 → CodeNode 에 적용 (#1 유래 다섯 필드는 Phase 1 에서 이미 확정됐다).

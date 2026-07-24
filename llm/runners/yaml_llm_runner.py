@@ -237,6 +237,11 @@ async def run_yaml_rule(
             cost_budget=budget,
         )
 
+        # finish_reason 관측 (가드레일 리서치 #3) — `length` = 종료 실패/절단 신호.
+        # MTP 등 서버 변화가 조용한 절단을 유발하면 여기 비율이 급증한다(finish_reason=length grep).
+        # 구조화 출력은 length 시 파싱 실패로 예외 경로를 타지만, 성공 콜에도 실어 분포를 남긴다.
+        finish_reason = response_meta.get("finish_reason")
+
         # analyzer.log 한 줄 — `tail -f` 로 LLM 호출 진행 보임.
         log_info(
             "llm.call",
@@ -246,6 +251,7 @@ async def run_yaml_rule(
             input_tokens=record.input_tokens,
             output_tokens=record.output_tokens,
             cached_tokens=record.cached_tokens or None,
+            finish_reason=finish_reason if finish_reason and finish_reason != "stop" else None,
             cost_usd=f"{cost:.6f}",
             elapsed_ms=latency_ms,
         )

@@ -32,6 +32,40 @@ def _rules(*tables):
     return NS(rules=[NS(examples=[NS(affected_tables=[NS(table=t) for t in tables])])])
 
 
+def _rules_with_op(*table_ops):
+    return NS(rules=[NS(examples=[NS(affected_tables=[
+        NS(table=t, op=op) for t, op in table_ops])])])
+
+
+def test_op_corrected_to_authoritative_when_single_op():
+    """spec 100: LLM 이 op 를 뒤바꿔도 단일 결정론 op 로 교정한다(SQL_KEY _u=UPDATE)."""
+    ru = _rules_with_op(("zpay_ap_rltm_auth_hst", "INSERT"))
+    dropped = M.constrain_tables_to_rw(
+        "f", [], ["zpay_ap_rltm_auth_hst"], None, ru,
+        table_op={"zpay_ap_rltm_auth_hst": "UPDATE"},
+    )
+    assert dropped == 0
+    at = ru.rules[0].examples[0].affected_tables[0]
+    assert at.op == "UPDATE", f"op 교정 실패: {at.op}"
+
+
+def test_op_not_corrected_when_ambiguous_absent():
+    """권위 op 가 없으면(다중 op → table_op 에서 제외) LLM op 를 그대로 둔다."""
+    ru = _rules_with_op(("t", "READ"))
+    M.constrain_tables_to_rw("f", ["t"], [], None, ru, table_op={})
+    assert ru.rules[0].examples[0].affected_tables[0].op == "READ"
+
+
+def test_op_correction_after_table_dropped_is_noop():
+    """허용 밖 테이블은 드롭되므로 교정 대상이 아니다(교정은 남은 것에만)."""
+    ru = _rules_with_op(("off_table", "INSERT"))
+    dropped = M.constrain_tables_to_rw(
+        "f", ["allowed"], [], None, ru, table_op={"off_table": "UPDATE"},
+    )
+    assert dropped == 1
+    assert ru.rules[0].examples[0].affected_tables == []
+
+
 def test_drops_offrw_table_in_insights():
     ins = _insights("zpay_ap_rltm_auth_hst", "zapamcom.zapamcom10140.e800_dbio_rltm_auth_hst_u0004")
     with patch.object(M, "log_warning") as w:
