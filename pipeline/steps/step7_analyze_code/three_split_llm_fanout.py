@@ -264,30 +264,36 @@ async def analyze_code_three_split(
 
     rules_out = _take(done, "rules", code_id)
     insights_out = _take(done, "insights", code_id)  # 키 없으면 None
+    rules_call_failed = isinstance(done.get("rules"), BaseException)
 
-    # partial = 호출했는데 실패한 조각 (호출 안 한 #2 skip 은 partial 아님).
+    # rules 복구 (spec 054 이상 경로 + spec 099 실패 경로 통합). 두 사건 모두 "전체 분석이
+    # 신뢰할 rules 를 못 냈다" — 같은 조각 메커니즘으로 처리한다(특수 분기 누적 아님).
+    #   · rules_out 있음 + 품질 이상  → 최초 결과를 재검사·복구 (정상 경로는 통째 스킵, FR-016)
+    #   · rules_out 없음 + 콜 실패     → 조각으로 새로 복구 (길이 초과 폭주 시 rules 통째 손실 방지)
+    # 정상(성공·품질 정상) 경로는 폴백을 타지 않는다 — 성능·캐시 불변.
+    fallback_flag: Optional[str] = None
+    quality = check_rule_quality(rules_out, common["code_body"]) if rules_out is not None else None
+    if (quality is not None and quality.is_anomaly) or rules_call_failed:
+        outcome = await run_rules_fallback(
+            code_id=code_id,
+            rules_out=rules_out,
+            report=quality,
+            code_body=common["code_body"],
+            control_subtree=ctx.extra.get("control_subtree"),
+            analyze_fragment=_make_fragment_analyzer(prompts_dir, common, cost_budget),
+            merge_fragments=_make_fragment_merger(prompts_dir, common, fn.signature, cost_budget),
+        )
+        rules_out = outcome.rules_out
+        fallback_flag = outcome.anomaly_flag
+
+    # partial = 결과를 못 낸 조각. rules 는 위에서 복구를 **시도**했으므로, 복구가 실제
+    # rules 를 냈으면 partial 아님(플래그로 신뢰도는 이미 표시됨). insights 는 복구 없음.
+    rules_missing = rules_out is None or not rules_out.rules
     partial_parts = tuple(
         k for k in ("rules", "insights")
         if k in tasks and isinstance(done[k], BaseException)
+        and not (k == "rules" and not rules_missing)
     )
-
-    # spec 054 US3: rules 이상 시에만 폴백(정상 경로는 통째 스킵 — 성능·캐시 불변, FR-016).
-    # 최초 전체 분석의 rules_out 을 결정론 품질검사 → 이상이면 분할→조각분석→병합→재검사.
-    fallback_flag: Optional[str] = None
-    if rules_out is not None:
-        quality = check_rule_quality(rules_out, common["code_body"])
-        if quality.is_anomaly:
-            outcome = await run_rules_fallback(
-                code_id=code_id,
-                rules_out=rules_out,
-                report=quality,
-                code_body=common["code_body"],
-                control_subtree=ctx.extra.get("control_subtree"),
-                analyze_fragment=_make_fragment_analyzer(prompts_dir, common, cost_budget),
-                merge_fragments=_make_fragment_merger(prompts_dir, common, fn.signature, cost_budget),
-            )
-            rules_out = outcome.rules_out
-            fallback_flag = outcome.anomaly_flag
 
     # spec 027: LLM 귀속 테이블을 결정론 reads/writes 로 제한 (callee 함수명 오귀속 차단).
     constrain_tables_to_rw(

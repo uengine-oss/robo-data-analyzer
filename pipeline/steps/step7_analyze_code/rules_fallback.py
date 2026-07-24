@@ -89,20 +89,30 @@ def build_fragments(
 async def run_rules_fallback(
     *,
     code_id: str,
-    rules_out: RulesExamplesOutput,
-    report: RuleQualityReport,
+    rules_out: Optional[RulesExamplesOutput],
+    report: Optional[RuleQualityReport],
     code_body: str,
     control_subtree: Optional[list[SubtreeNode]],
     analyze_fragment: AnalyzeFragment,
     merge_fragments: MergeFragments,
     budget_tokens: int = FRAGMENT_BUDGET_TOKENS,
 ) -> FallbackOutcome:
-    """이상 판정된 함수 복구. ``rules_out``/``report`` 는 최초 전체 분석의 결과·이상보고.
+    """함수 rules 복구. **두 진입을 하나로 통합**한다 (spec 099):
+
+    - **품질 이상**: ``rules_out`` = 최초 전체 분석 결과, ``report`` = 이상보고.
+    - **콜 실패**(길이 초과 폭주 등): ``rules_out=None``, ``report=None``. 최초 결과가 아예
+      없으니 조각 분석·병합만으로 rules 를 **새로 복구**한다. 둘 다 "전체 분석이 신뢰할
+      rules 를 못 냈다"는 같은 사건이라 같은 조각 메커니즘으로 처리한다.
+
+    조각을 만들 수 없거나(작은/평면 함수) 전부 실패하면 — 실패 진입은 복구할 최초 결과도
+    없으므로 **빈 rules + 미복구 플래그**로 정직하게 표면화한다(조용한 손실 금지). 이상 진입은
+    종전대로 최초 결과를 재검사한다.
 
     BudgetExceededError(회로 차단기)만 그대로 전파한다. 그 외 조각 실패는 해당 조각만
     건너뛰고(부분 실패 은폐 금지 — log+stream failed), 나머지 조각은 계속한다(FR-026).
     """
-    emit_current("Fragment", code_id, sub_action=f"detected:{'|'.join(report.reasons)}", status="done")
+    detected = "|".join(report.reasons) if report is not None else "call_failed"
+    emit_current("Fragment", code_id, sub_action=f"detected:{detected}", status="done")
 
     fragments = build_fragments(code_body, control_subtree, budget_tokens)
     merged: Optional[RulesExamplesOutput] = None
@@ -133,6 +143,19 @@ async def run_rules_fallback(
     # 병합 성공이면 병합 결과, 아니면(수렴/조각·병합 실패) 최초 전체 분석 결과를 재검사.
     final = merged if merged is not None else rules_out
     fragment_count = len(fragments)
+
+    if final is None:
+        # 콜 실패 진입인데 조각을 못 만들거나(control_subtree 없음) 전부 실패 — 복구할
+        # 최초 결과도 없다. 빈 rules 를 미복구로 표면화한다(조용한 손실 금지 — 헌법 IV).
+        empty = RulesExamplesOutput()
+        log_warning(_STEP, "rules_unrecovered",
+                    "rules 콜 실패 후 조각 복구 불가(조각 없음/전부 실패) — 빈 rules + 미복구 플래그",
+                    code_id=code_id, fragments=fragment_count)
+        emit_current("Fragment", code_id, sub_action="unrecovered", status="failed")
+        return FallbackOutcome(
+            empty, check_rule_quality(empty, code_body),
+            STATUS_FALLBACK_FLAGGED, fragment_count, ANOMALY_FLAG,
+        )
 
     recheck = check_rule_quality(final, code_body)
     emit_current("Fragment", code_id,

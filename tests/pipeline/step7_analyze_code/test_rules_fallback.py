@@ -190,6 +190,76 @@ class RunFallbackTest(unittest.IsolatedAsyncioTestCase):
                 budget_tokens=20,
             )
 
+    # ── spec 099: rules 콜 **실패**(길이 초과 폭주 등) 복구 — 최초 결과가 아예 없다 ──
+
+    async def test_call_failure_recovers_rules_from_fragments(self):
+        """rules_out=None(콜 실패)이어도 조각으로 rules 를 새로 복구한다 — 손실 방지."""
+        subtree = [SubtreeNode("if1", "IF", 1, 50), SubtreeNode("if2", "IF", 51, 100)]
+
+        async def af(frag):
+            return _clean()
+
+        async def mf(outs):
+            return _clean()
+
+        outcome = await run_rules_fallback(
+            code_id="fn::runaway",
+            rules_out=None,             # 콜이 폭주로 실패 — 최초 결과 없음
+            report=None,
+            code_body=_BIG_BODY,
+            control_subtree=subtree,
+            analyze_fragment=af,
+            merge_fragments=mf,
+            budget_tokens=20,
+        )
+        self.assertEqual(outcome.status, STATUS_FALLBACK_OK)
+        self.assertGreaterEqual(len(outcome.rules_out.rules), 1)  # rules 복구됨(빈값 아님)
+        self.assertGreaterEqual(outcome.fragment_count, 1)
+
+    async def test_call_failure_no_subtree_flags_unrecovered_not_crash(self):
+        """평면 함수(조각 불가) + 콜 실패 → 빈 rules + 미복구 플래그. 크래시·조용한 손실 금지."""
+        async def af(frag):
+            raise AssertionError("조각 없음이면 호출 금지")
+
+        async def mf(outs):
+            raise AssertionError("조각 없음이면 호출 금지")
+
+        outcome = await run_rules_fallback(
+            code_id="fn::flat_runaway",
+            rules_out=None,
+            report=None,
+            code_body=_BIG_BODY,
+            control_subtree=None,       # 제어문 없음 → 분할 불가
+            analyze_fragment=af,
+            merge_fragments=mf,
+        )
+        self.assertEqual(outcome.status, STATUS_FALLBACK_FLAGGED)
+        self.assertEqual(outcome.anomaly_flag, ANOMALY_FLAG)   # 미복구를 정직하게 표면화
+        self.assertEqual(outcome.rules_out.rules, [])          # 빈 rules (조용한 손실 아님)
+
+    async def test_call_failure_all_fragments_fail_flags_unrecovered(self):
+        """조각이 있으나 전부 실패 → 빈 rules + 미복구 플래그(수렴할 최초 결과가 없으므로)."""
+        subtree = [SubtreeNode("if1", "IF", 1, 50), SubtreeNode("if2", "IF", 51, 100)]
+
+        async def af(frag):
+            raise RuntimeError("조각도 폭주")
+
+        async def mf(outs):
+            raise AssertionError("성공 조각이 없으면 병합 호출 금지")
+
+        outcome = await run_rules_fallback(
+            code_id="fn::all_fail",
+            rules_out=None,
+            report=None,
+            code_body=_BIG_BODY,
+            control_subtree=subtree,
+            analyze_fragment=af,
+            merge_fragments=mf,
+            budget_tokens=20,
+        )
+        self.assertEqual(outcome.status, STATUS_FALLBACK_FLAGGED)
+        self.assertEqual(outcome.rules_out.rules, [])
+
 
 if __name__ == "__main__":
     unittest.main()
