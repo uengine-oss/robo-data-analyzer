@@ -17,6 +17,7 @@ from pipeline.models.analysis_context import ControlSubtreeNode
 from pipeline.quality_gates.lexing import SplitSource, atoms, literal_values, split_source
 
 _CALL = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 @dataclass
@@ -198,6 +199,38 @@ def condition_text(body: str, ntype: str, lang: str) -> str:
     return body[open_paren:]
 
 
+def _loop_test(condition: str, lang: str) -> str:
+    """계수형 반복문 머리에서 **판정절만** 남긴다.
+
+    `for (i = 0; i < 11; i++)` 의 `0`·`11` 은 반복 제어 상수이지 업무 코드값이 아니다.
+    이걸 조건 코드값으로 세면 "규칙이 이 값을 안 담았다"는 거짓 누락이 쏟아진다
+    (실측: 미반영으로 잡힌 값의 다수가 루프 카운터였다).
+
+    구분자는 언어 표에서 받는다. 그 문법이 없는 언어는 조건을 그대로 돌려준다.
+    """
+    sep = source_lexicon(lang).get("loop_header_parts") or ""
+    if not sep:
+        return condition
+    parts = condition.split(sep)
+    return parts[1] if len(parts) == 3 else condition
+
+
+def _symbol_like(values: set[str], body: str, lang: str) -> set[str]:
+    """인용값 중 **이 본문에 식별자로도 등장하는 것**을 뺀다.
+
+    `strncmp("ordf_chk_iden_numb", itf->in.func_ident_id, LEN)` 의 인용 문자열은
+    호출 대상·함수 이름이지 도메인 코드값이 아니다. 이름 목록을 코드에 박지 않고
+    **그 실행의 본문**에서 같은 토큰이 식별자로 쓰였는지로 판정한다(범용).
+    """
+    quotes = source_lexicon(lang).get("string_quotes") or []
+    bare = body
+    for quote in quotes:
+        escaped = re.escape(quote)
+        bare = re.sub(rf"{escaped}[^{escaped}\\\n]{{0,64}}{escaped}", " ", bare)
+    names = {m.group(0).lower() for m in _IDENT.finditer(bare)}
+    return {v for v in values if v.lower() not in names}
+
+
 def _calls(text: str, lang: str) -> frozenset[str]:
     """``이름(`` 중 실제 호출만. 예약어 목록은 언어 표(데이터)에서 온다."""
     keywords = {k.lower() for k in (source_lexicon(lang).get("control_keywords") or [])}
@@ -219,6 +252,8 @@ def build_inventory(
     def convert(node: ControlSubtreeNode, parent: Branch | None) -> Branch:
         body = split.live(node.start, node.end)
         condition = condition_text(body, node.ntype, lang)
+        tested = _loop_test(condition, lang)
+        cond_values = _symbol_like(literal_values(tested, lang), body, lang)
         branch = Branch(
             node_id=node.node_id,
             ntype=node.ntype,
@@ -226,7 +261,7 @@ def build_inventory(
             end=node.end,
             parent=parent,
             condition=condition,
-            cond_values=frozenset(literal_values(condition, lang)),
+            cond_values=frozenset(cond_values),
             callees=_calls(body, lang) - _calls(condition, lang),
             effect_atoms=frozenset(atoms(body, lang)),
         )

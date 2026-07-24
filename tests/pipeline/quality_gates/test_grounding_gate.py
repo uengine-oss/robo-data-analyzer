@@ -65,6 +65,53 @@ class LexingContract(unittest.TestCase):
     def test_literal_values_exclude_identifiers(self):
         self.assertEqual(literal_values('x == "01"', "c"), {"01"})
 
+    def test_digits_inside_identifiers_are_not_code_values(self):
+        """이름 안의 숫자를 코드값으로 세면 근거 대조축이 통째로 오염된다.
+
+        실측: `LEN_APA_01` 의 `01`, `zngmmcap20020_io` 의 `20020` 이 분기 조건값으로
+        잡혀 "규칙이 이 값을 안 담았다"는 거짓 누락을 대량 생산했다.
+        """
+        condition = 'strncmp(INPUT->pay_mthd_cd, "01", LEN_APASCRTU0010T02_IN_PAY_MTHD_CD)'
+        self.assertEqual(literal_values(condition, "c"), {"01"})
+        self.assertEqual(literal_values("zngmmcap20020_io.out.result", "c"), set())
+        self.assertEqual(literal_values("curcnt != AS_ZNGM_COMM_CD_DTL_F1075", "c"), set())
+
+    def test_standalone_numbers_and_radix_prefix_survive(self):
+        self.assertEqual(literal_values("case 10:", "c"), {"10"})
+        self.assertEqual(literal_values("x <= 010 )", "c"), {"010"})
+        self.assertEqual(literal_values("flag == 0x1F", "c"), {"0x1F"})
+
+
+class ConditionValueAxis(unittest.TestCase):
+    """조건 코드값 = 그 분기가 **판정하는 업무 값**. 반복 제어·이름은 값이 아니다."""
+
+    @staticmethod
+    def _values(body: str, ntype: str, lang: str = "c") -> set[str]:
+        node = ControlSubtreeNode(
+            node_id="n", ntype=ntype, start=1, end=len(body.splitlines()), children=[])
+        return set(build_inventory(body, [node], lang).all_branches[0].cond_values)
+
+    def test_counted_loop_header_keeps_only_the_test_clause(self):
+        """`for (i = 0; i < 11; i++)` 의 0·11 은 반복 제어다. 담기지 않아도 누락이 아니다."""
+        self.assertEqual(self._values("for (li = 0; li <= 10; li++)\n{\n}", "LOOP"), {"10"})
+
+    def test_language_without_counted_loop_syntax_keeps_condition(self):
+        self.assertEqual(self._values('while status != "DONE"\n    pass', "LOOP", "python"),
+                         {"done"})
+
+    def test_quoted_symbol_name_is_not_a_code_value(self):
+        """호출 대상·함수 이름 문자열은 도메인 코드값이 아니다 — 본문 식별자로 판정한다.
+
+        남는 `0` 은 `strncmp(...) == 0` 의 비교 상수다(값 축의 잔여 잡음).
+        """
+        body = ('if (strncmp("ordf_chk_iden_numb", itf->in.id, LEN) == 0)\n'
+                '{\n    ordf_chk_iden_numb(itf);\n}')
+        self.assertEqual(self._values(body, "IF"), {"0"})
+
+    def test_domain_literal_survives_next_to_a_symbol_name(self):
+        body = 'if (strncmp(itf->in.chg_rsn_cd, "08", LEN) == 0)\n{\n    run();\n}'
+        self.assertIn("08", self._values(body, "IF"))
+
 
 class ConditionExtraction(unittest.TestCase):
     def test_multiline_condition_is_not_cut_by_line_count(self):

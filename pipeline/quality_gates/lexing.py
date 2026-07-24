@@ -15,7 +15,11 @@ from dataclasses import dataclass
 from pipeline.languages import source_lexicon
 
 _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_NUM = re.compile(r"\d+")
+# 수치 리터럴은 **식별자 경계 밖**에서만 인정한다. 경계를 안 걸면 이름 안의 숫자가 코드값으로
+# 둔갑한다 — `LEN_APA_01` → `01`, `zngmmcap20020_io` → `20020`, `AS_..._F1075` → `1075`.
+# 실측에서 이 유령 값이 분기 조건값의 다수를 차지해 근거 대조축 자체를 오염시켰다.
+# 진법 접두사(`0x`)는 하나의 리터럴로 함께 끊는다(§6 "리터럴 표기 그대로").
+_NUM = re.compile(r"(?<![A-Za-z0-9_])(?:0[xX][0-9A-Fa-f]+|\d+)(?![A-Za-z0-9_])")
 
 
 @dataclass(frozen=True)
