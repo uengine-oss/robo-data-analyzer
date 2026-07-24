@@ -270,3 +270,32 @@ class AnchorCheck(unittest.TestCase):
 
     def test_zero_anchor_is_not_judged(self):
         self.assertEqual(check_grounding(self._rule("무조건 처리", 0), self._inv()), [])
+
+
+class BranchIndexUniqueness(unittest.TestCase):
+    """분기 목록의 줄번호는 유일해야 한다 — 앵커가 확정되지 않으면 무의미하다."""
+
+    BODY = ('if (a == "1")\n{\n    x();\n}\nelse if (a == "2")\n{\n    y();\n}\n')
+    # else if → ELSE 와 IF 가 같은 줄(5)에서 시작한다
+    TREE = [
+        ControlSubtreeNode(node_id="if1", ntype="IF", start=1, end=4),
+        ControlSubtreeNode(node_id="el", ntype="ELSE", start=5, end=8, children=[
+            ControlSubtreeNode(node_id="if2", ntype="IF", start=5, end=8),
+        ]),
+    ]
+
+    def setUp(self):
+        self.inv = build_inventory(self.BODY, self.TREE, "c")
+
+    def test_line_numbers_are_unique(self):
+        lines = [row.split(":")[0] for row in self.inv.branch_index().splitlines()]
+        self.assertEqual(len(lines), len(set(lines)), self.inv.branch_index())
+
+    def test_conditioned_branch_wins_over_bare_else(self):
+        row = [r for r in self.inv.branch_index().splitlines() if r.startswith("5:")][0]
+        self.assertIn("IF", row)
+        self.assertIn('"2"', row)
+
+    def test_at_line_resolves_to_the_conditioned_branch(self):
+        branch = self.inv.at_line(5)
+        self.assertEqual(branch.cond_values, frozenset({"2"}))

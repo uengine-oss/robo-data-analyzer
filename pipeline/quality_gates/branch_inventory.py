@@ -94,11 +94,24 @@ class BranchInventory:
         pool = branch.parent.children if branch.parent else self.roots
         return tuple(b for b in pool if b is not branch)
 
+    @staticmethod
+    def _most_specific(group: list[Branch]) -> Branch:
+        """같은 줄에서 시작하는 분기 중 **조건을 가진 쪽**을 대표로 삼는다.
+
+        ``else if`` 는 ELSE 와 IF 두 노드가 같은 줄에서 시작한다. ELSE 는 컨테이너일 뿐이고
+        실제 판정은 그 안의 IF 가 한다 — 컨테이너를 고르면 그 규칙이 무엇을 근거로 하는지
+        알 수 없다(실측: 앵커 954건 중 74건이 이 중복 줄을 지목했다).
+
+        판정 기준은 **깊이**다. 같은 줄에서 시작하는 둘 중 안쪽(자손)이 더 구체적인 결정을
+        한다. 노드 타입 이름으로 고르지 않는다 — 언어마다 이름이 다르다.
+        """
+        return max(group, key=lambda b: (len(b.ancestors()), len(b.cond_values)))
+
     def at_line(self, line: int) -> "Branch | None":
         """그 줄에서 시작하는 분기. 없으면 그 줄을 품는 가장 안쪽 분기."""
         starting = [b for b in self.all_branches if b.start == line]
         if starting:
-            return starting[0]
+            return self._most_specific(starting)
         covering = [b for b in self.all_branches if b.start <= line <= b.end]
         return min(covering, key=lambda b: b.end - b.start) if covering else None
 
@@ -110,11 +123,20 @@ class BranchInventory:
         return frozenset(found)
 
     def branch_index(self) -> str:
-        """LLM 에게 보여줄 분기 목록 — ``줄번호: 조건식``. 고를 수 있는 후보를 못 박는다."""
-        return "\n".join(
-            f"{b.start}: {b.ntype} {' '.join(b.condition.split())[:110]}"
-            for b in sorted(self.all_branches, key=lambda x: x.start)
-        ) or "(분기 없음)"
+        """LLM 에게 보여줄 분기 목록 — ``줄번호: 조건식``. 고를 수 있는 후보를 못 박는다.
+
+        **줄번호는 유일해야 한다.** 같은 줄에서 시작하는 분기가 둘이면(``else if``) 답이
+        어느 쪽인지 확정되지 않아 앵커가 무의미해진다.
+        """
+        by_line: dict[int, list[Branch]] = {}
+        for branch in self.all_branches:
+            by_line.setdefault(branch.start, []).append(branch)
+        rows = []
+        for line in sorted(by_line):
+            branch = self._most_specific(by_line[line])
+            condition = " ".join(branch.condition.split())[:110]
+            rows.append(f"{line}: {branch.ntype} {condition}")
+        return "\n".join(rows) or "(분기 없음)"
 
     def best_match(self, values: set[str]) -> tuple[Branch | None, set[str]]:
         """항목이 근거로 삼은 분기 = 조건 코드값이 가장 많이 겹치는 분기."""
