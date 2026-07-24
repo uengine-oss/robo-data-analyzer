@@ -268,6 +268,10 @@ user_template_specific: |
   - 같은 테스트가 일반 Rule 과 세부 Rule 에 동시 귀속 안 됐나. affected_tables 가 주입 reads/writes 와 교집합인가(callee 0).
   - 본문 도메인 분기 중 Rule 로 안 잡힌 것(순수 기술 제외) 없나. 코드값 집합의 모든 값이 given 에(축2), 값→결과 복원(축3).
   - given/then/statement 의 모든 값이 본문에 실제로 있나(환각 0). fetch/writer/위임에 본문에 없는 분기 안 지어냈나.
+  - **예시 데이터를 창작하지 마라.** given/then 의 값은 본문·`referenced_symbols` 에 실재하는
+    것만 쓴다. 그럴듯한 계좌번호·카드번호·날짜를 만들어 넣으면 그 자체가 환각이다.
+    ❌ "바코드번호가 `'1234567890'` 이면" (본문에 없는 값을 지어냄)
+    ✅ "바코드번호가 입력되어 있으면" (값이 없으면 값 없이 조건만 쓴다)
   - given/when/then 에 변수·메서드 토큰(`객체.필드`/`gc_*`/`*_yn`/`이름()`) 남았나? 남았으면 도메인어로 교체.
   - questions 는 4 조건 다 만족만(못 채우면 0) — 가드·else·default 가 곧 답이면 질문 X.
 
