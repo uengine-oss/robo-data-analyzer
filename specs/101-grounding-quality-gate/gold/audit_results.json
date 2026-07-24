@@ -1,0 +1,1317 @@
+[
+ {
+  "id": "code:apascrtu0010t02.c:a000_init_proc",
+  "overall": "sound",
+  "reimpl": "yes",
+  "conf_ungrounded": 0,
+  "conf_lowvalue": 0,
+  "conf_missing": 0,
+  "audit": {
+   "target_id": "code:apascrtu0010t02.c:a000_init_proc",
+   "n_rules": 0,
+   "n_examples": 0,
+   "ungrounded": [],
+   "low_value_examples": [],
+   "missing_rules": [],
+   "reimplementable": "yes",
+   "reimplementable_gaps": [
+    "함수 본문은 순수 기술 초기화(memset ctx, memset INNER, gc_pushpossible=FALSE, return RC_NRM)뿐이라 도메인 규칙이 존재하지 않는다. 재구현할 업무 행위가 없으므로 빈 rules/examples 로도 도메인 행위 동등성은 보존된다. 단 초기화 자체(구조체 0-clear, 플래그 FALSE 세팅)는 기술 관심사로 규칙에서 제외된 것이며, 이는 프롬프트 지침(§2 기술 가지 폐기)에 부합하는 의도된 누락이다."
+   ],
+   "overall": "sound",
+   "notes": "a000_init_proc 는 컨텍스트/내부구조체를 memset 으로 0-clear 하고 전역 gc_pushpossible=FALSE 로 세팅한 뒤 RC_NRM 을 반환하는 순수 초기화 함수다. 분기·검증·상태전이·에러처리·코드값 매핑·계산이 전혀 없고 reads/writes 도 모두 비어 있다. 생성 출력의 rules:[] · questions:[] 는 프롬프트의 명시 지침(순수 기술 함수는 빈 배열이 정답)과 정확히 일치한다. 환각도 저가치 사례도 누락된 도메인 규칙도 없다. 유일한 미세 논점은 '초기화'를 도메인 규칙으로 볼지 여부인데, 값에 따른 분기가 없는 단순 0-clear/플래그세팅은 기술 관심사로 배제하는 것이 옳다. 판정: sound."
+  },
+  "verdict": {}
+ },
+ {
+  "id": "code:zapamcom10080.c:zapamcom10080",
+  "overall": "significant_issues",
+  "reimpl": "partial",
+  "conf_ungrounded": 2,
+  "conf_lowvalue": 1,
+  "conf_missing": 0,
+  "audit": {
+   "target_id": "code:zapamcom10080.c:zapamcom10080",
+   "n_rules": 1,
+   "n_examples": 1,
+   "ungrounded": [
+    {
+     "kind": "rule",
+     "text": "입력 검증 및 업무 구분 코드에 따라 하위 모듈로 처리를 위임한다.",
+     "why": "함수 본문에는 '업무 구분 코드'에 따른 분기가 전혀 없다. 본문은 a000_input_validation, c000_main_proc 를 순차 호출하는 PFM_TRY 2개와 try/catch 뿐이다. '업무 구분 코드에 따라' 는 c000_main_proc 의 callee_summary(조회·등록·변경·해지 등을 하위 모듈에 위임)에서 끌어온 것으로, §1 증거순서(callee 의 Rule 을 가져오지 않는다)와 §5(부모 도메인 분기 0 + 자식 호출 + try/catch → rules:[]) 위반이다."
+    },
+    {
+     "kind": "example",
+     "text": "given: 입력 데이터가 필수 항목을 갖추고 부분정보 일련번호가 매칭되며, 업무 구분 코드가 조회·등록·변경·해지·명의변경·가입개통 중 하나일 때",
+     "why": "'필수 항목', '부분정보 일련번호 매칭' 은 a000_input_validation callee_summary 에서, '조회·등록·변경·해지·명의변경·가입개통' 코드 집합은 c000_main_proc callee_summary 에서 가져온 것이다. 부모 함수 본문(code_body)에는 이런 리터럴·검증 조건·코드 집합이 한 글자도 없다. callee 내부 로직을 부모 Example 로 복제한 환각이다."
+    }
+   ],
+   "low_value_examples": [
+    {
+     "text": "given: ...업무 구분 코드가 ... 중 하나일 때 / when: 입력 검증과 메인 업무 처리를 하위 모듈에 위임 / then: 위임된 모듈의 처리 결과를 정상 반환하거나, 검증 실패/처리 실패 시 오류 코드 반환",
+     "why": "then 이 '정상 반환하거나 오류 코드 반환' 으로, 프롬프트가 명시적으로 금지한 '정상 처리'·'결과 반환' 형 무정보 서술이다(§3.4). 부모 본문의 실제 관측 결과는 '두 콜리를 순차 호출, 둘 다 성공 시 RC_NRM 반환, 어느 하나 예외면 rc 전파' 라는 표준 try/catch 배관이며, 이는 §2 폐기(기술) 항목의 '오류면 에러 반환' 그 자체다. 이 Example 이 없어도 재구현 행위는 달라지지 않는다.",
+     "category": "vague"
+    }
+   ],
+   "missing_rules": [],
+   "reimplementable": "partial",
+   "reimplementable_gaps": [
+    "부모 함수의 실제 행위(a000_input_validation 먼저, 성공하면 c000_main_proc, 둘 다 성공 시 RC_NRM, 예외 시 rc 전파)는 규칙에 '위임한다'로만 뭉개져 있어 호출 순서·에러 전파 규약을 규칙만으로 정확히 복원하기 어렵다.",
+    "규칙이 '업무 구분 코드 분기'를 부모에 있는 것처럼 서술해, 이 규칙만 보고 재구현하면 부모에 없는 분기를 넣게 되어 실제 코드 구조(분기는 c000_main_proc 소유)와 어긋난다.",
+    "실제 도메인 로직 전부가 두 콜리 안에 있는데 이 산출물엔 콜리 명세가 없어 행위 동등 재구현은 불가하다(단, 이는 분할3의 rules-only 산출 특성이자 부모가 순수 오케스트레이터라 rules:[] 가 정답이었음을 의미)."
+   ],
+   "overall": "significant_issues",
+   "notes": "부모 zapamcom10080 은 도메인 분기 0의 순수 오케스트레이터(PFM_TRY 2회 + try/catch)로, 프롬프트 §5 위임 규칙상 정답은 rules:[] 다. 생성 출력은 유일한 1개 규칙 전체가 (1) 기술 배관을 도메인 규칙으로 승격했고, (2) 부모 본문에 없는 callee_summary 리터럴('부분정보 일련번호 매칭', '조회·등록·변경·해지·명의변경·가입개통' 코드 집합)을 부모 Example 로 끌어온 환각이며, (3) then 이 금지된 '정상 반환/오류 반환' 무정보 서술이다. 즉 출력의 100%가 문제이며 이는 §1·§3.4·§5 를 동시 위반한다. 누락 도메인 규칙은 없다(본문에 도메인 로직 자체가 없으므로). questions:[] 는 적절하다(진짜 모호점 없음)."
+  },
+  "verdict": {
+   "target_id": "code:zapamcom10080.c:zapamcom10080",
+   "confirmed_ungrounded": 2,
+   "confirmed_low_value": 1,
+   "confirmed_missing": 0,
+   "refuted": [],
+   "verdict_notes": "Function is pure delegation: `long rc=RC_NRM; PFM_TRY(a000_input_validation); PFM_TRY(c000_main_proc); return RC_NRM; PFM_CATCH: return rc;` — zero domain branches, two callee calls, try/catch. Per §5 위임 this must be rules:[]; the single emitted rule should not exist at all.\n\nungrounded (2 confirmed): (1) Rule statement \"업무 구분 코드에 따라 ... 위임\" — no 업무 구분 코드 dispatch exists in the parent body; the phrase is lifted from c000_main_proc callee_summary. Violates §1 rank-4 (callee summary does not import callee Rules) and §5. (2) Example given literals — \"필수 항목\", \"부분정보 일련번호 매칭\" (from a000 summary) and the code set \"조회·등록·변경·해지·명의변경·가입개통\" (from c000 summary) appear nowhere in code_body; hallucinated downstream/child logic copied into parent (§5 ❌).\n\nlow_value (1 confirmed): the then \"정상 반환하거나 ... 오류 코드 반환\" is exactly the §3.4-forbidden \"정상 처리/결과 반환\" no-information form, and the real observed behavior (call two callees, RC_NRM on success, propagate rc on exception) is §2 폐기 기술 배관 (\"오류면 에러 반환\"). Example changes no reimplementation behavior.\n\nRefuted: none. Body is unambiguous; every finding is grounded in the prompt's own rules."
+  }
+ },
+ {
+  "id": "code:zapamcom10020.c:Bank_064_CSB_Check",
+  "overall": "sound",
+  "reimpl": "yes",
+  "conf_ungrounded": 0,
+  "conf_lowvalue": 0,
+  "conf_missing": 0,
+  "audit": {
+   "target_id": "code:zapamcom10020.c:Bank_064_CSB_Check",
+   "n_rules": 3,
+   "n_examples": 5,
+   "ungrounded": [],
+   "low_value_examples": [],
+   "missing_rules": [],
+   "reimplementable": "yes",
+   "reimplementable_gaps": [
+    "RC_NRM/RC_ERR are preserved symbolically (not defined in referenced_symbols), but pass-vs-fail semantics plus the result_cd='00' side effect are fully specified, so behavior equivalence is achievable without the numeric values."
+   ],
+   "overall": "sound",
+   "notes": "Faithful, complete extraction of a CSB bank-account validation function. All three rules and five examples are directly grounded in the switch-on-length control flow: len==12 checks chars 4-5 (offset &gc_Acnt_Crd_No[3]) against {11,12,13,14,15}; len==13 checks chars 6-7 (offset [5]) against {21,22,27,30,32}; any other length rejects. Index-to-position mapping ('인덱스 3~4'→'4~5번째', '인덱스 5~6'→'6~7번째') is correct, all code-value sets are listed exactly (축2 satisfied), and return codes plus the result_cd='00' side effect on every failure path are captured verbatim — including the counterintuitive '00' error code that the source literally sets. No ungrounded content and no fabricated downstream branches.\\n\\nThe three failure examples (Rule1-ex2, Rule2-ex2, Rule3) are NOT mechanical negatives: each carries the distinct observable behavior (result_cd='00' + RC_ERR) under a distinct condition, and each is load-bearing for reimplementation — removing e.g. Rule1-ex2 would leave 'valid 12-length account with invalid gmok' unspecified, since Rule3 only covers non-12/13 lengths. Hence low_value_examples is empty.\\n\\nNo missing rules: the two success paths (case 12 uses break→return RC_NRM, case 13 uses direct return RC_NRM) are behaviorally identical and correctly unified; the outer default is captured as Rule 3. questions:[] is the correct answer — the 과목코드 literals have no semantic mapping in code/notes, but membership testing is unambiguous regardless, so no §7 question meets condition ③ (direct impact on rule correctness). Fully reimplementable to behavior equivalence from the rules+examples alone."
+  },
+  "verdict": {}
+ },
+ {
+  "id": "code:zapamcom13010.c:a000_input_validation",
+  "overall": "minor_issues",
+  "reimpl": "partial",
+  "conf_ungrounded": 0,
+  "conf_lowvalue": 0,
+  "conf_missing": 0,
+  "audit": {
+   "target_id": "code:zapamcom13010.c:a000_input_validation",
+   "n_rules": 3,
+   "n_examples": 3,
+   "ungrounded": [],
+   "low_value_examples": [],
+   "missing_rules": [
+    {
+     "description": "성공 경로 미표현: 모든 필수 검증을 통과하면 함수는 RC_NRM(정상)을 반환한다. 세 규칙 모두 거절(RC_ERR) 분기만 담고, 검증 통과 시의 반환값이 하나도 명시되지 않아 재구현자가 성공 시 무엇을 반환해야 하는지 알 수 없다. happy-path example(§3 축1: happy 1 + 예외 1) 누락.",
+     "code_evidence": "함수 말미 `return RC_NRM;` — 모든 if 분기를 빠져나오면 정상 반환. 반면 각 검증 실패는 `return RC_ERR;`."
+    }
+   ],
+   "reimplementable": "partial",
+   "reimplementable_gaps": [
+    "성공 시 반환값(RC_NRM)이 규칙/사례 어디에도 없어, 검증 통과 시 함수가 무엇을 반환하는지 재구현 근거가 없다. 거절값(RC_ERR)만 명시됨.",
+    "op_cl_cd '01'/'99' 분기와 else 분기의 핵심 행위 차이(등록/배치는 카드주 주민일련번호 ctz_biz_ser_num를 추가로 요구, 해지 등은 요구하지 않음)는 R2와 R3의 필드 목록을 나란히 대조해야만 드러난다. 값이 정확히 보존되어 재구현은 가능하나, 차이 자체를 규칙 문장으로 명시하지 않아 놓치기 쉽다."
+   ],
+   "overall": "minor_issues",
+   "notes": "근거성은 우수하다. 세 규칙 모두 code_body에 실재하는 분기에서 정확히 도출됐고 환각이 없다. 특히 R3(else 분기)이 ctz_biz_ser_num(카드주 주민일련번호)를 올바르게 제외한 점이 정확하다 — else 블록에는 실제로 이 검사가 없다. R2/R3의 필드 집합·op 코드값('01','99')·반환값(RC_ERR)이 모두 원문 그대로 보존됐다. else가 원래 주석의 '02' 조건이 아니라 무조건 catch-all임을 R3이 '01/99가 아닌 경우(해지 등)'로 정확히 반영했다.\\n\\n저가치 사례 없음: R1(5개 필수 식별자 null 검증)은 순수 방어 체크에 가깝지만 지침이 '필수 도메인 식별자 NULL→거절'을 도메인으로 허용하며, 재구현 시 이 사례가 없으면 행위가 달라지므로 저가치가 아니다. R2/R3은 op 유형별 요구 필드 차등이라는 명백한 도메인 정책이다. mechanical_negative/trivial/redundant/vague 어디에도 해당하지 않는다.\\n\\naffected_tables는 reads/writes가 모두 비어 있어 전부 []로 올바르게 처리됐다(§4.2 준수).\\n\\n유일한 결함은 성공 경로(RC_NRM) 미표현으로, 이 때문에 재구현 가능성이 yes가 아닌 partial이다. questions:[]도 적절하다 — 본문에 모호점이 없다."
+  },
+  "verdict": {
+   "target_id": "code:zapamcom13010.c:a000_input_validation",
+   "confirmed_ungrounded": 0,
+   "confirmed_low_value": 0,
+   "confirmed_missing": 0,
+   "refuted": [
+    "missing: 성공 경로(RC_NRM) happy-path example 누락 — 반증됨. 프롬프트 §8 종합예시의 정답 R1('필수 식별자 누락 시 거절')이 rejection example만 담고 happy-path example을 두지 않는다. 이 함수는 그 gold 패턴과 동일한 검증-거절 함수이므로 성공 예시 부재는 확정 결함이 아니다. §3 축1의 'happy 1 + (있으면)예외 1'은 행 수 축소 지침이지 성공행 강제 조항이 아니며('(있으면)'), RC_NRM은 세 거절 Rule의 명시적 여집합으로 재구현자가 자명하게 복원 가능하다. '모든 필수값 존재→통과'는 추가 도메인 결정을 담지 않아 §2 기준 기술적·저가치다."
+   ],
+   "verdict_notes": "감사 제기 1건(missing) 전부 반증. 핵심 반증 근거: 프롬프트 §8의 정답 R1이 required-field 검증 Rule을 rejection example만으로 올바르게 표현하며 happy-path example을 두지 않는다 — 본 함수는 이와 동일한 검증-거절 함수. §3 축1은 example 행 수 축소 지침이지 성공행 필수 조항이 아님('(있으면)'). RC_NRM은 세 거절 Rule의 여집합으로 재구현 자명. 확정 문제 0건."
+  }
+ },
+ {
+  "id": "code:zapamcom10110.c:c800_ngmf_spcl_pwd_chk",
+  "overall": "minor_issues",
+  "reimpl": "partial",
+  "conf_ungrounded": 0,
+  "conf_lowvalue": 0,
+  "conf_missing": 0,
+  "audit": {
+   "target_id": "code:zapamcom10110.c:c800_ngmf_spcl_pwd_chk",
+   "n_rules": 1,
+   "n_examples": 3,
+   "ungrounded": [],
+   "low_value_examples": [
+    {
+     "text": "given: 서비스 관리번호가 입력되어 있고, 외부 검사 결과 'N' 또는 'E' 외의 값(정상) / when: 비밀번호 신청 고객 확인 / then: 정상 코드 RC_NRM 반환",
+     "why": "코드의 else(디폴트) 가지를 기계적으로 역진술한 것. 앞의 'N'·'E' 두 차단 조건에 해당하지 않으면 함수 말미의 return RC_NRM 으로 떨어지는 자연 디폴트라, 이 사례가 없어도 재구현자는 나머지 입력을 성공 반환으로 처리해 행위가 동일하다. 새 행위 정보 없음.",
+     "category": "mechanical_negative"
+    }
+   ],
+   "missing_rules": [],
+   "reimplementable": "partial",
+   "reimplementable_gaps": [
+    "규칙이 '외부 검사'로만 추상화돼 있어, 실제로 어떤 검사를 요청하는지(check_type = ZNGMMCAP20020_TYPE_PASSWD_SET_SVC, table_type='S', svc_mgmt_num = itf->out.rep_svc_mgmt_num 로 zngmmcap20020 모듈 호출)가 규칙·사례만으로는 복원되지 않는다. '비밀번호 신청 여부를 검사' 라는 statement 로 의도는 잡히나 호출 대상·입력 매핑은 없다.",
+    "모듈 호출 자체가 실패(rc != RC_NRM)하면 RC_ERR 를 반환하는 가지가 규칙/사례에 표현되어 있지 않다(기술 에러 전파라 폐기된 것은 정책상 타당하나, 행위 동등 재구현 관점에서는 이 실패 경로도 필요하다).",
+    "'N' 은 고정 안내 메시지(\"비밀번호 신청고객입니다.\")를, 'E' 는 자식이 준 err_msg 를 출력한다는 출력 문구 차이가 then 에 '안내 메시지'/'오류 메시지'로만 뭉개져 있어 정확한 메시지 문자열까지는 복원 불가."
+   ],
+   "overall": "minor_issues",
+   "notes": "근거성은 양호하다. 세 사례 모두 실제 코드 분기(result=='N'/'E'/기타)에 대응하며 환각·무근거 항목이 없고, reads/writes 가 비어 affected_tables 를 모두 []로 둔 것도 §4.2 규칙에 정확히 맞다. 위임 함수지만 부모가 자식 반환 코드로 직접 분기하므로 규칙 추출 자체가 타당하다(§5). Example 2('E'→RC_ERR)는 저가치가 아니라 load-bearing 이다 — 없으면 'E'가 디폴트(기타→RC_NRM)로 흡수돼 오류가 삼켜지고 정상 통과하는 행위 오류가 생긴다. Example 3(기타→RC_NRM)만 디폴트의 기계적 역진술이라 저가치로 분류했다. 모듈 호출 실패(rc!=RC_NRM→RC_ERR) 가지는 '호출 실패면 에러 반환'인 기술 에러 전파라 규칙에서 제외한 것이 정책상 옳아 missing 으로 잡지 않았다. 핵심 도메인 결정(비밀번호 신청 고객이면 처리 중단)은 Example 1에 잘 포착됨. questions:[] 도 적절(본문에 답이 다 있음)."
+  },
+  "verdict": {
+   "target_id": "code:zapamcom10110.c:c800_ngmf_spcl_pwd_chk",
+   "confirmed_ungrounded": 0,
+   "confirmed_low_value": 0,
+   "confirmed_missing": 0,
+   "refuted": [
+    "low_value: given '외부 검사 결과 N 또는 E 외의 값(정상)' → RC_NRM 반환 (default/happy-path example)"
+   ],
+   "verdict_notes": "Refuted. The challenged third example is the guard function's happy-path/pass outcome, which the prompt itself treats as the expected baseline (§3 축1: 'happy 1 + 예외 1 이 기본'). Its observable result (RC_NRM) is genuinely DIFFERENT from the RC_ERR of both blocking branches — it is not a duplicate restatement. §3.1's 'mechanical negative / catch-all 대표 1개' rule targets multiple arbitrary values collapsing to the SAME result; here there is a single representative whose outcome is the opposite (customer allowed through), which is the actual domain contract of this password-check guard. The audit's 'reimplementer assumes success anyway' argument would invalidate every happy-path row, contradicting the prompt's own baseline. No confirmed defects."
+  }
+ },
+ {
+  "id": "code:zapamcom10070.c:c220_update_zpay_ap_auth_req_hst",
+  "overall": "minor_issues",
+  "reimpl": "partial",
+  "conf_ungrounded": 0,
+  "conf_lowvalue": 0,
+  "conf_missing": 0,
+  "audit": {
+   "target_id": "code:zapamcom10070.c:c220_update_zpay_ap_auth_req_hst",
+   "n_rules": 2,
+   "n_examples": 5,
+   "ungrounded": [],
+   "low_value_examples": [
+    {
+     "text": "Rule1 3번째 예: given '거래 ID가 TR02/TR04 계열에 속하지 않는 다른 값이고 입력 일련번호가 1000' → then '일련번호를 1000으로 설정(그대로) 갱신'",
+     "why": "else 분기의 결과(일련번호 그대로)는 Rule1 1번째 예(TR02→그대로)와 관측 결과가 완전히 동일하다. else는 값 변경 없는 디폴트 catch-all의 기계적 재진술로, 이 예가 없어도 재구현 행위는 달라지지 않는다(TR04만 +1, 그 외 전부 그대로라는 정보는 이미 예1+예2로 완결). 새 행위 정보 없음.",
+     "category": "mechanical_negative"
+    }
+   ],
+   "missing_rules": [
+    {
+     "description": "인증요청시각(ap_req_dtm) 입력이 비어 있으면 현재 일시로 자동 채운다(입력이 있으면 입력값 유지). 갱신 레코드에 기록되는 타임스탬프 값을 결정하는 NULL→기본값 매핑 정책으로, 두 규칙 어디에도 없다. (경계선: 순수 기술 타임스탬프 디폴트로 볼 여지도 있으나, 프롬프트 §2 'NULL→도메인 기본값 매핑=도메인 O' 기준상 도메인 규칙에 가깝다.)",
+     "code_evidence": "if ( mpfm_isspnull(itf->in.ap_req_dtm) == RC_NRM ) { mpfm_get_date_time(itf->in.ap_req_dtm); }  // 이후 이 값이 edi_ap_req_dtm / ap_req_dtm 컬럼으로 매핑됨"
+    }
+   ],
+   "reimplementable": "partial",
+   "reimplementable_gaps": [
+    "ap_req_dtm 공백 시 현재시각 자동 채움 정책이 규칙에 없어, 규칙만으로는 이 타임스탬프 디폴트를 복원할 수 없다(입력이 비면 빈 값 그대로 기록하게 됨 — 원본과 행위 불일치).",
+    "Rule2 EDI/FB 분기는 given/when 은 도메인어이나 then 이 실제 struct 필드명(edi_req_dt, edi_aply_dt, cms_fb_req_dt, act_dt 등)으로 서술돼 있다 — 하지만 'E'→edi_* 필드군, 'F'→cms/fb 필드군이라는 값→결과 대응 자체는 명확해 이 분기의 재구현은 가능하다.",
+    "이 분할(규칙+사례)만으로는 항상 세팅되는 필드(acnt_num, auto_pay_req_rslt_cd, audit_id)와 대상 테이블에 대한 UPDATE 수행 사실이 드러나지 않는다 — 다만 이는 표준 writer 사실을 다른 분할로 넘기고 주입 reads/writes=[] 라 affected_tables=[] 로 둔 설계 의도에 부합(이 분할의 결함으로 보기 어려움)."
+   ],
+   "overall": "minor_issues",
+   "notes": "두 규칙 모두 코드의 실제 분기(deal_id별 일련번호 처리, edi_fb_cl_cd 'E'/'F' 필드매핑)에서 도출된 근거 있는 규칙이며 행위 환각은 없다. 예시의 구체값('20250101','S','R','Y','120000','1000')은 입력 passthrough를 예시하는 임의 테스트값으로, 코드 로직에서 계산되는 값이 아니라 그대로 복사되는 값이므로 환각으로 보지 않는다. affected_tables가 모두 []인 것은 주입 reads/writes가 비어 있으므로 §4.2 규칙상 정답이다. 오류처리(rc!=RC_NRM→RC_ERR)를 규칙으로 만들지 않은 것도 옳다(표준 에러전달=기술). 결함은 (1) Rule1 else 예의 저가치 1건, (2) ap_req_dtm 공백 시 현재시각 채움 정책 누락 1건. u0023 접미사=UPDATE 판정과 일치하며(주석의 'Insert'류 오도 없음, 코드에도 없음) op 오독 문제도 없다. 전체적으로 근거성은 견고하나 타임스탬프 디폴트 누락으로 행위 동등 재구현은 partial."
+  },
+  "verdict": {
+   "target_id": "code:zapamcom10070.c:c220_update_zpay_ap_auth_req_hst",
+   "confirmed_ungrounded": 0,
+   "confirmed_low_value": 0,
+   "confirmed_missing": 0,
+   "refuted": [
+    "low_value: Rule1 else example (given=non-TR02/TR04 → then=unchanged) is NOT a mechanical duplicate. The audit's core claim 'examples 1+2 already complete the info' is factually wrong: the Rule statement covers only TR02 and TR04 and is silent on the default 'neither' case — a reimplementer cannot derive the default (unchanged vs error vs +1) from examples 1+2. Example 3 pins it. Prompt §7 explicitly instructs capturing else/default AS an example (not a question), and §3.1 endorses one representative else example. Example 1's branch (explicit TR02 if) and example 3's branch (else catch-all) are different 원문 분기, so not semantic duplicates under the (Rule + 원문 분기 + 관측 결과) key.",
+    "missing: ap_req_dtm NULL→current-datetime auto-fill. The audit itself concedes this is borderline ('경계선', 'purely technical timestamp default 로 볼 여지도 있으나'). Auto-filling a persisted column with the current SYSTEM datetime is canonical technical plumbing — directly analogous to 채번/auto-generation which §5 explicitly classifies as technical, and an empty-check-then-fill defensive pattern per §2 '순수 방어 null·empty 체크 = 기술'. §2's NULL→domain-default examples are business-meaningful values, not a system clock read. Under the skeptical default-refute mandate, a self-admittedly borderline item is dismissed."
+   ],
+   "verdict_notes": "Both audit challenges refuted. (1) low_value on Rule1 else example: the audit's assertion that examples 1+2 already complete the behavior is false — the Rule statement never states the non-TR02/TR04 default, so example 3 (else→unchanged) is load-bearing; prompt §7 and §3.1 explicitly mandate capturing else/default as an example, and it is a distinct 원문 분기 from example 1. (2) missing on ap_req_dtm auto-fill: filling a timestamp with current system datetime is technical plumbing (analogous to 채번 per §5, defensive empty-check fill per §2), not a business-meaningful domain default; audit itself admits borderline, so dismissed under default-refute."
+  }
+ },
+ {
+  "id": "code:zapamcom13010.c:c100_dc_req_yn_chk",
+  "overall": "minor_issues",
+  "reimpl": "partial",
+  "conf_ungrounded": 0,
+  "conf_lowvalue": 0,
+  "conf_missing": 0,
+  "audit": {
+   "target_id": "code:zapamcom13010.c:c100_dc_req_yn_chk",
+   "n_rules": 1,
+   "n_examples": 3,
+   "ungrounded": [
+    {
+     "kind": "rule",
+     "text": "Rule 1 statement: '...등록을 중단하고 오류를 반환한다' (stops registration and returns error)",
+     "why": "The active execution path performs NO registration/insert. The only INSERT (zpay_ap_info_chg_hst_i0003) lives entirely inside the disabled #if 0 ... #endif block, which never executes. The active branch only sets rslt_cd='XXXX' and returns RC_ERR — there is nothing to 'stop registering'. The '등록 중단' framing is pulled from dead code. The return-error behavior itself is grounded; only the 'registration' framing is ungrounded."
+    }
+   ],
+   "low_value_examples": [
+    {
+     "text": "Example 2 — given '기존 카드번호와 다른 경우, 또는 achg_itm_ctt 가 N이 아닌 경우' → then '0000 설정 후 RC_NRM 반환'",
+     "why": "This is the mechanical negation of Rule 1's error condition, producing the function's default terminal result. Under rc==RC_NRM, whenever the (card-same AND achg=='N') gate is not met, control simply falls through to the default 'strncpy 0000; return RC_NRM' at the bottom. It restates the default success path as 'if not the error condition, succeed' and adds no behavior beyond the negation of Rule 1's own guard.",
+     "category": "mechanical_negative"
+    }
+   ],
+   "missing_rules": [
+    {
+     "description": "The else branch: when the SELECT returns any result code other than RC_NFD or RC_NRM (i.e. a DB error/other status), the function sets rslt_cd='XXXX' and returns RC_ERR. This is the behavioral contrast that makes the RC_NFD→success path (Example 3) meaningful — NFD is treated as success, while other non-normal codes are treated as failure. Output has no example for this. For behavior-equivalent reimplementation this matters: without it, a reimplementer treating all non-normal rc as success would diverge on real DB errors. (Note: per a strict 'error→error is technical' reading this is borderline-technical, but the audit's reimplementation-equivalence goal makes it load-bearing.)",
+     "code_evidence": "}else\\n{\\n    strncpy(itf->out.rslt_cd, \"XXXX\", LEN_ZAPAMCOM13010_OUT_RSLT_CD);\\n    return RC_ERR;\\n}"
+    }
+   ],
+   "reimplementable": "partial",
+   "reimplementable_gaps": [
+    "The else branch (rc other than RC_NFD/RC_NRM → XXXX/RC_ERR) is absent, so a reimplementer cannot distinguish 'not found = success' from 'other DB error = failure' — Example 3 alone implies NFD→success but nothing states other rc→error, risking incorrect success on real errors.",
+    "given/when/then leak raw source identifiers (card_ser_num, bchg_itm_ctt, achg_itm_ctt) instead of domain language; achg_itm_ctt=='N' semantics ('할인 유지 아님') and bchg_itm_ctt holding the prior card serial number are stated only via variable names, so a reader without the source cannot recover the intent cleanly.",
+    "The equality compares itf->in.card_ser_num (numeric) against atoi(bchg_itm_ctt) (string-to-int of the stored prior card serial); the numeric/string coercion is not conveyed, only 'card number same'."
+   ],
+   "overall": "minor_issues",
+   "notes": "Rules are largely grounded and the affected_tables=[] discipline is correct (reads/writes both empty; the SELECT on zpay_ap_info_chg_hst_s0003 is correctly NOT surfaced as a READ, and the dead #if 0 INSERT is correctly not extracted). The core error condition (Example 1: card-serial equal AND achg_itm_ctt=='N' → XXXX/RC_ERR) is accurate to active code, and Example 3 (RC_NFD → 0000/RC_NRM silent-pass) correctly captures the documented '데이터 없을 경우 정상진행' policy — both behaviorally load-bearing, not low value. Issues are minor: (1) Example 2 is a mechanical-negative restatement of the default success path; (2) the Rule 1 statement's '등록을 중단' wording borrows the 'registration' notion from disabled #if 0 code (behavior itself right, framing wrong); (3) the else→RC_ERR branch is missing, which weakens reimplementation to 'partial'; (4) given/when/then retain raw variable tokens against the split's own no-identifier rule. No fabricated tables, values, or branches beyond the '등록' framing. questions:[] is appropriate — no genuine ambiguity meets the 4 conditions."
+  },
+  "verdict": {
+   "target_id": "code:zapamcom13010.c:c100_dc_req_yn_chk",
+   "confirmed_ungrounded": 0,
+   "confirmed_low_value": 0,
+   "confirmed_missing": 0,
+   "refuted": [
+    "ungrounded: Rule1 '등록을 중단' — defensible validation-gate framing; the function is a change-lifecycle precondition check (module_intent: 신청/변경/해지) and RC_ERR rejects the change so it isn't registered downstream. It does NOT claim this function performs an INSERT. Observable behavior (XXXX/RC_ERR) is correctly captured in the example; not a load-bearing hallucination.",
+    "low_value: Example2 — this is the happy path of the RC_NRM branch, paired with Example1 (exception). Prompt §3 axis-1 explicitly makes 'happy 1 + 예외 1' the standard. It captures the real terminal result 0000/RC_NRM for data-found-no-conflict, distinct from Example3's NFD silent-pass. The audit's 'any happy path = negation of guard' logic would over-prune against the prompt's own rule.",
+    "missing: else branch (rc != RC_NFD && != RC_NRM → XXXX/RC_ERR) is pure DB/call-failure propagation, which the prompt explicitly discards as 기술(폐기) in §2, §1 step2, and §3.1 ('호출 실패면 에러 반환'). The domain contrast (NFD=success) is already captured by Example3. Audit itself concedes it is 'borderline-technical.' Omission is correct per the prompt."
+   ],
+   "verdict_notes": "All three claims refuted. The #if 0 INSERT block is dead code, correctly excluded. (1) '등록을 중단' is a valid domain description of a validation gate aborting a change request in a lifecycle module; behavior (RC_ERR) is grounded and correctly examplified — not a hallucinated insert. (2) Example2 is the standard happy-path counterpart to the error case (§3 axis-1 happy+exception), capturing the actual 0000/RC_NRM terminal result, distinct from Example3's NFD silent-pass. (3) The else branch is pure DB-failure propagation ('호출 실패면 에러 반환'), which the prompt explicitly instructs to discard as technical; the audit even admits it's borderline-technical, and the load-bearing NFD-as-success contrast is already present in Example3."
+  }
+ },
+ {
+  "id": "code:apascrtu0010t02.c:c660_call_zapamcom10101",
+  "overall": "minor_issues",
+  "reimpl": "partial",
+  "conf_ungrounded": 0,
+  "conf_lowvalue": 0,
+  "conf_missing": 0,
+  "audit": {
+   "target_id": "code:apascrtu0010t02.c:c660_call_zapamcom10101",
+   "n_rules": 2,
+   "n_examples": 3,
+   "ungrounded": [],
+   "low_value_examples": [],
+   "missing_rules": [
+    {
+     "description": "모듈 호출 실패 시 에러를 삼키고 항상 정상(RC_NRM)을 반환한다 — 이 동작이 규칙/사례에 전혀 없다. Rule2의 then은 '하위 모듈을 호출한다'까지만 명시하고, 호출 결과가 실패여도 함수는 성공으로 종료한다는 행위가 빠졌다. 재구현자가 규칙만 보면 실패 시 에러를 전파하도록 짜기 쉬워 원본과 행위가 갈린다. (다만 분석기 설계상 '호출 실패면 에러 반환'류는 기술 관심사로 배제하는 정책이 있어 경계선상이며, 여기서는 에러를 삼킨다는 점에서 오히려 주목할 만하다.)",
+     "code_evidence": "rc = mpfm_dlcall(\"zapamcom10101\", ...); if ( rc != RC_NRM ) { PFM_ERRS(\"...에러 발생 [%ld]\", rc); //return RC_ERR; } ... return RC_NRM;"
+    }
+   ],
+   "reimplementable": "partial",
+   "reimplementable_gaps": [
+    "모듈 호출 실패 시 동작 미명시: rc != RC_NRM 이어도 return RC_ERR 이 주석 처리되어 함수는 언제나 RC_NRM 을 반환한다. 규칙만으로는 실패 반환값을 복원할 수 없다.",
+    "모듈 입력 필드 매핑 미명시: pgm_id='ZAPASCRT30002' 고정, rcv_phon_num 을 svc_num 에서 채움(전화번호 필드를 서비스번호로 채우는 특이 매핑), user_id=ctx->gc_req_opr_id, acnt_num/svc_cd/svc_num/pay_mthd_cd/bank_card_co_cd=INPUT->각 필드. 이들은 분석기 설계상 다른 분할(배관·컬럼의미) 몫이라 rule 에서 제외되지만, 순수 규칙+사례만으로는 호출 페이로드를 복원할 수 없어 엄밀한 행위 동등 재구현은 불가.",
+    "RC_NRM 의 리터럴 값(=0 추정)이 referenced_symbols 에 없어 then 에 상수명으로만 남음(경미)."
+   ],
+   "overall": "minor_issues",
+   "notes": "두 규칙 모두 code_body 활성 분기에 정확히 근거하며 환각 없음. Rule1(XXXX→호출 없이 RC_NRM 반환)과 Rule2(0000→req_cl_cd '1', else '9' 로 설정 후 호출) 모두 실제 if/else 분기와 리터럴('XXXX','0000','1','9')을 그대로 보존했고, reads/writes 가 비어 affected_tables:[] 도 정답. Rule2 두 번째 사례('0000 아님→9')는 기계적 역진술이 아니라 실제로 서로 다른 값('9')을 산출하는 분기라 저가치가 아니다(재구현에 필수). 저가치 사례·환각·중복 없음. questions:[] 도 적절(본문에 답이 다 있음). 주요 결함은 재구현 관점 두 가지: (1) 모듈 호출 실패 시 에러를 삼키고 RC_NRM 반환하는 행위 누락, (2) 모듈 입력 페이로드 매핑(특히 rcv_phon_num←svc_num 특이 매핑) 미명시 — 후자는 분석기 분할 설계상 의도된 제외라 규칙 자체의 결함으로 보긴 어렵다. 이 두 가지로 순수 규칙+사례만의 완전한 행위 동등 재구현은 partial. Rule1 statement 의 'SMS 대상이 아님' 근거는 주석에서 왔으나 실제 행위(조기 반환)는 코드 근거가 있어 환각으로 분류하지 않음."
+  },
+  "verdict": {
+   "target_id": "code:apascrtu0010t02.c:c660_call_zapamcom10101",
+   "confirmed_ungrounded": 0,
+   "confirmed_low_value": 0,
+   "confirmed_missing": 0,
+   "refuted": [
+    "missing: 모듈 호출 실패 시 에러를 삼키고 RC_NRM 반환이 규칙에 없다는 제기 — 반증됨. prompt_user §2 폐기 목록이 '호출 실패면 에러 반환'류 호출-실패 에러처리를 도메인 규칙이 아닌 기술 관심사로 명시적으로 배제한다. 여기서 삼키는 대상은 mpfm_dlcall 호출 실패로, 정확히 그 배제 클래스(기술 배관). §2 'silent pass 누락 금지'가 말하는 도메인 silent pass는 '대상 없으면 통과'(=본 함수의 'XXXX' 조기반환)로 이미 Rule1에 포착돼 있다. 주석처리된 return RC_ERR은 업무-대상 결정이 아니라 dlcall 에러처리이므로 도메인 규칙 누락이 아니다. 감사 제기 본인도 경계선상이며 배제 정책이 있음을 인정."
+   ],
+   "verdict_notes": "감사가 제기한 유일한 항목(missing)은 반증됐다. 분석기 정책(§2 폐기)이 '호출 실패면 에러 반환'류 호출-실패 에러처리를 기술 관심사로 명시 배제하므로, 그 에러를 삼키는 동작(주석처리된 return RC_ERR) 역시 같은 배제 클래스에 속한다. 실제 도메인 silent pass('XXXX' 조기반환)는 Rule1에 이미 포착됨. confirmed 0건."
+  }
+ },
+ {
+  "id": "code:zapamcom10200.c:b320_get_svc_st_cd",
+  "overall": "significant_issues",
+  "reimpl": "partial",
+  "conf_ungrounded": 3,
+  "conf_lowvalue": 1,
+  "conf_missing": 1,
+  "audit": {
+   "target_id": "code:zapamcom10200.c:b320_get_svc_st_cd",
+   "n_rules": 2,
+   "n_examples": 6,
+   "ungrounded": [
+    {
+     "kind": "example",
+     "text": "Rule1 Example1: given '계좌 조회 데이터 없음(RC_NFD)', when 'req_cl_cd=P 이고 대체 조회 결과 연락처가 없거나 조회 실패', then 'RC_NRM(정상 통과) 반환'",
+     "why": "환각/로직 혼입. 'P' 분기(s1149)에는 '연락처' 개념 자체가 없다 — s1149 성공 시 cust_nm/svc_st_cd/svc_dtl_cl_cd만 복사한다. '연락처 없으면 통과'는 뒤쪽 C9/s0032 블록의 로직이며, 그 블록을 P 분기로 끌어와 혼동했다. 게다가 s1149 '조회 실패'(rc!=RC_NRM)면 코드는 return rc(에러 전파)이지 RC_NRM이 아니다. 즉 실제 동작을 정반대(에러→정상)로 뒤집었다."
+    },
+    {
+     "kind": "rule",
+     "text": "Rule1 statement '...대체 조회하고 연락처가 없으면 통과, 그 외 실패 시 거절한다'",
+     "why": "'연락처가 없으면 통과'는 P/s1149 대체조회 경로에 존재하지 않는다. C9/s0032 블록의 mpfm_isspnull(cntc_plc_info)==0 → return RC_NRM 로직을 Rule1(계좌 조회 분기)로 잘못 병합했다."
+    },
+    {
+     "kind": "example",
+     "text": "Rule1 Example2: when 'req_cl_cd가 P가 아니고 대체 조회 수행'",
+     "why": "when 서술이 코드와 반대. req_cl_cd[0]!='P'면 else 로 가 즉시 return rc 이며 대체 조회(s1149)는 수행하지 않는다. then의 RC_NFD 반환 결과 자체는 맞지만 'when 대체 조회 수행'은 코드에 없는 동작이다."
+    }
+   ],
+   "low_value_examples": [
+    {
+     "text": "Rule2 Example3: given 'svc_dtl_cl_cd가 C9가 아님', when '연락처 조회 조건 불만족', then '연락처 조회 없이 RC_NRM 반환'",
+     "why": "C9 분기 조건의 기계적 역진술. C9가 아니면 아무 동작 없이 함수 끝의 return RC_NRM 으로 떨어지는 디폴트를 재진술할 뿐, 새 행위 정보가 없다. 이 사례가 없어도 재구현 행위는 동일하다.",
+     "category": "mechanical_negative"
+    }
+   ],
+   "missing_rules": [
+    {
+     "description": "본 조회(s1196)가 데이터 없음(RC_NFD)이고 신청구분이 'P'(간편결제)인 경우 고객번호·서비스번호로 대체조회(s1149)를 수행해 성공 시 그 결과(고객명·서비스상태코드·서비스상세분류코드)를 적재하고 함수를 계속 진행(이후 C9 판정까지)한다. 이 'P 대체조회 성공→적재 후 진행' 경로가 출력에 전혀 없다. 대신 Example1이 이 경로를 잘못된 RC_NRM 조기반환으로 대체해버려, 재구현 시 실제와 다른 행위가 나온다.",
+     "code_evidence": "else 블록: if(itf->in.req_cl_cd[0]=='P') { ... rc=mpfmdbio(\"zord_svc_s1149\",...); if(rc!=RC_NRM){...return rc;} ... gl_svc_mgmt_num=itf->in.svc_mgmt_num; strncpy(gc_cust_nm, zord_svc_s1149_out.cust_nm,...); strncpy(gc_svc_st_cd,...); strncpy(gc_svc_dtl_cl_cd,...); }"
+    }
+   ],
+   "reimplementable": "partial",
+   "reimplementable_gaps": [
+    "'P'(간편결제) 대체조회 분기의 실제 행위가 뒤집혀 있어 그대로 재구현하면 s1149 조회 실패 시 에러(rc)를 전파해야 하는데 RC_NRM으로 정상 통과하는 잘못된 코드가 나온다.",
+    "s1196 RC_NFD + 'P' + s1149 성공 시 데이터를 적재하고 계속 진행하는 happy-path가 누락돼, 재구현 시 P 고객의 서비스상태 적재·이후 C9 처리가 빠진다.",
+    "s0032 조회 키가 svc_mgmt_num(gl_svc_mgmt_num)인데 Rule2 statement는 '서비스번호로 조회'라 하여 조회 키 필드를 오인할 여지가 있다.",
+    "affected_tables가 모두 []인데 함수는 실제로 s1196/s1149/s0032 SELECT를 수행한다. 주입된 reads/writes가 빈 값이라 스플릿 규칙상 []가 맞지만, 이 규칙·사례만으로는 어떤 테이블을 읽는지 재현 불가(상위 입력에서 reads 미주입 문제)."
+   ],
+   "overall": "significant_issues",
+   "notes": "Rule2(C9 연락처 대체) 본체 사례(Example1·2)는 코드에 정확히 근거하며 양호하다. 문제는 Rule1이다. Example1은 C9/s0032의 '연락처 없으면 통과' 로직을 'P' 간편결제 대체조회(s1149) 분기로 끌어와 병합하고, s1149 조회 실패의 실제 결과(return rc=에러 전파)를 RC_NRM 정상통과로 정반대로 뒤집었다 — 이는 재구현 행위동등성을 직접 깨는 치명적 환각이다. Rule1 statement도 같은 병합 오류를 담고 있다. Example2는 결과(RC_NFD 반환)는 맞으나 'when 대체 조회 수행' 서술이 코드와 반대(비-P는 대체조회 없이 즉시 반환)다. 실제로 존재하는 도메인 경로 — s1196 RC_NFD + 'P' + s1149 성공 → 적재 후 진행 — 은 출력에 없다. Example2.3은 C9 조건의 기계적 역진술로 저가치. affected_tables는 주입 reads/writes가 []이므로 모두 []인 것이 스플릿 규칙상 정합적이며 그 부분은 문제 없다. questions:[]도 적절(본문에 답이 다 있음). 요컨대 C9 규칙은 sound지만 계좌/간편결제 분기(Rule1)가 행위를 뒤집는 수준으로 잘못되어 전체는 significant_issues."
+  },
+  "verdict": {
+   "target_id": "code:zapamcom10200.c:b320_get_svc_st_cd",
+   "confirmed_ungrounded": 3,
+   "confirmed_low_value": 1,
+   "confirmed_missing": 1,
+   "refuted": [],
+   "verdict_notes": "All five audit claims confirmed against code.\n\nUNGROUNDED (3):\n- Rule1 Example1: The 'P'/s1149 branch has no '연락처' concept (it copies only cust_nm/svc_st_cd/svc_dtl_cl_cd). '연락처 없으면 통과' is the separate C9/s0032 block (mpfm_isspnull(cntc_plc_info)==0 → return RC_NRM). On s1149 failure code does `return rc` (error), NOT RC_NRM. Example inverts error→normal and imports C9-block logic.\n- Rule1 statement: '연락처가 없으면 통과' does not exist in the P/s1149 path; it is the s0032 block's logic wrongly merged into the account-lookup rule.\n- Rule1 Example2: for req_cl_cd != 'P' the code hits `else { return rc; }` immediately with NO s1149; the `then` (RC_NFD) is right but the `when` '대체 조회 수행' is a fabricated action.\n\nLOW_VALUE (1):\n- Rule2 Example3: 'svc_dtl_cl_cd != C9' just falls through to terminal `return RC_NRM`; mechanical negation of the C9 guard, no new behavior, already implied by Rule2's C9 scope.\n\nMISSING (1):\n- The genuine 'P 대체조회 성공→적재 후 진행' path (s1196 RC_NFD + req_cl_cd=='P' → s1149 by cust_num/svc_num → copy cust_nm/svc_st_cd/svc_dtl_cl_cd → continue to C9 check) is entirely absent; Example1 replaced it with a wrong RC_NRM early-return, so reimplementation diverges. This is a real domain data-source-selection decision, not pure technical plumbing.\n\nREFUTED: none."
+  }
+ },
+ {
+  "id": "code:apascrtu0010t02.c:c500_call_zapamcom10070",
+  "overall": "minor_issues",
+  "reimpl": "partial",
+  "conf_ungrounded": 0,
+  "conf_lowvalue": 0,
+  "conf_missing": 3,
+  "audit": {
+   "target_id": "code:apascrtu0010t02.c:c500_call_zapamcom10070",
+   "n_rules": 1,
+   "n_examples": 7,
+   "ungrounded": [],
+   "low_value_examples": [],
+   "missing_rules": [
+    {
+     "description": "이동전화 서비스(서비스구분코드 첫 글자가 'C')인 경우에만 식별번호를 대표서비스번호(svc_num)에서 채워 하위 모듈로 전달한다. 그 외 서비스는 식별번호를 세팅하지 않는다. 이는 §5 writer 지침이 명시한 '특정 유형일 때만 특정 컬럼 세팅' 도메인 분기이며 출력의 어떤 rule/example 에도 없다.",
+     "code_evidence": "if (INPUT->svc_cd[0] == 'C') { strncpy(zapamcom10070_io.in.idnt_num_cd, INPUT->svc_num, LEN_ZAPAMCOM10070_IN_IDNT_NUM_CD); PFM_DBG(\"패치된 식별번호? [%s]\", ...); }"
+    },
+    {
+     "description": "납부방법이 은행이고 SK-VAN 원장등록을 하지 않는(else) 경로에서, EDI/FB구분코드='E'이면 EDI인증여부(edi_auth_yn)='N', 그 외에는 CMS인증여부(cms_auth_yn)='N'으로 서로 다른 필드에 값을 세팅한다. 두 인증여부 필드 중 어느 것이 채워지는지가 EDI/FB 구분에 따라 갈리는 도메인 분기인데 Example 4·5의 then 에 누락됐다.",
+     "code_evidence": "if (strncmp(ctx->gc_edi_fb_cl_cd, \"E\", LEN_APA_01) == RC_NRM) { strncpy(zapamcom10070_io.in.edi_auth_yn, \"N\", ...); } else { strncpy(zapamcom10070_io.in.cms_auth_yn, \"N\", ...); }"
+    },
+    {
+     "description": "은행 + SK-VAN 원장등록 + 인증요청처리 정상('Y') 경로에서만 처리상태코드(op_st_cd)='Y'로 설정된다. Example 1·2가 이 정상 경로를 다루지만 then 에 op_st_cd='Y'가 빠져 있어 해당 경로 고유의 상태값 세팅이 복원되지 않는다.",
+     "code_evidence": "if (strncmp(ctx->gc_rltm_auth_rslt_aply_yn, \"Y\", ...) == RC_NRM) { strncpy(zapamcom10070_io.in.op_st_cd, \"Y\", LEN_ZAPAMCOM10070_IN_OP_ST_CD); ... }"
+    }
+   ],
+   "reimplementable": "partial",
+   "reimplementable_gaps": [
+    "이동전화(svc_cd[0]=='C') 시 식별번호를 svc_num에서 채우는 분기가 누락되어, 재구현 시 이동전화 요청의 식별번호가 세팅되지 않아 행위가 달라진다.",
+    "SK-VAN 원장등록 조건이 실제로는 OR(gc_edi_bank_yn=='Y' 또는 gc_skvan_bank_yn=='Y')인데, Example 은 두 플래그를 모두 'Y'로만 제시해 OR 조건임을 복원할 수 없다. 재구현자가 AND로 오해할 수 있다.",
+    "은행 비-SKVAN 경로의 edi_auth_yn/cms_auth_yn 분기, 정상 SK-VAN 경로의 op_st_cd='Y' 등 경로별 고유 출력 필드가 then 에서 누락되어 완전한 행위 동등 재현이 불가.",
+    "단일 rule 의 statement 가 Example 1(은행·SKVAN·정상→0000) 시나리오만 서술하는데 그 아래 7개 example 은 카드·비정상·무인증 등 전혀 다른 결과 분기까지 담고 있어, statement 만으로는 rule 의 실제 적용 범위를 복원할 수 없다."
+   ],
+   "overall": "minor_issues",
+   "notes": "근거성은 양호하다. 7개 example 모두 code_body 의 실제 분기·리터럴에서 도출되며 환각은 없다(인증결과코드 000/0000/SKIP/XXXX, 시행일자 현재일/99991231, 송신구분코드 4/1/3, 기관구분코드 01/04, CMS구분코드 C/X, 비정상 시 eai_gw_rsp_cd 전달 등 모두 원문과 일치). affected_tables 도 reads/writes 가 모두 비어 있어 전부 []로 정확하다. 이 함수는 writer/dispatcher 이지만 납부방법(은행/카드)·SK-VAN 원장등록 여부·인증요청처리 결과·실시간인증결과코드에 따라 인증결과코드와 송신/기관/CMS 구분코드가 갈리는 실질 도메인 분기를 담고 있어 rule 추출 자체는 타당하다.\\n\\n다만 두 가지 결함: (1) 명확한 도메인 분기 누락 — 이동전화(svc_cd[0]=='C')일 때만 식별번호를 세팅하는 조건부 필드가 빠졌고, 은행 비-SKVAN 경로의 edi_auth_yn/cms_auth_yn 갈림과 정상 SK-VAN 경로의 op_st_cd='Y'도 누락됐다. (2) 구조 문제 — 서로 다른 업무 결과(은행/카드, 정상/비정상, 무인증/정상)를 하나의 rule 로 뭉치고 statement 는 그 중 한 시나리오만 서술한다. §2 통합vs분리 기준상 '합치면 한 동작을 잃는' 서로 다른 결과이므로 별도 rule 로 분리하거나 최소한 statement 를 분기 전체를 포괄하도록 고쳤어야 한다. low_value_examples 는 없다(7개 모두 서로 구별되는 결과 조합). questions 0 도 적절하다(코드 내 else/분기가 답을 제공)."
+  },
+  "verdict": {
+   "target_id": "code:apascrtu0010t02.c:c500_call_zapamcom10070",
+   "confirmed_ungrounded": 0,
+   "confirmed_low_value": 0,
+   "confirmed_missing": 3,
+   "refuted": [],
+   "verdict_notes": "All three missing claims confirmed against active code; none refutable.\n\n1) svc_cd[0]=='C' -> idnt_num_cd=svc_num: active if-branch, sets identification-number column only for mobile-phone service. Exactly §5's named domain-branch pattern (특정 유형일 때만 특정 컬럼 세팅). Absent from every rule/example. CONFIRMED.\n\n2) SK-VAN else path EDI/FB='E'->edi_auth_yn='N' / else->cms_auth_yn='N': active branch that routes 'N' to different auth-flag columns by EDI/FB type. The analyzer itself split the SIBLING EDI/FB branch in the SK-VAN='Y' path into Example 1 vs 2 (auth_rslt_cd 000 vs 0000), so by its own standard this else-path EDI/FB split is domain-worthy and is missing from Examples 4/5. CONFIRMED (borderline domain-vs-technical, but internal inconsistency of the output settles it).\n\n3) op_st_cd='Y' set only in bank+SK-VAN+rltm_auth='Y' normal path: active strncpy, unique to that path. Examples 1/2 cover that path and enumerate other set values but omit op_st_cd='Y'. Completeness gap (축2). CONFIRMED."
+  }
+ },
+ {
+  "id": "code:zapamcom10060.c:b400_dbio_rltm_auth_his_u0001",
+  "overall": "significant_issues",
+  "reimpl": "no",
+  "conf_ungrounded": 3,
+  "conf_lowvalue": 0,
+  "conf_missing": 0,
+  "audit": {
+   "target_id": "code:zapamcom10060.c:b400_dbio_rltm_auth_his_u0001",
+   "n_rules": 1,
+   "n_examples": 2,
+   "ungrounded": [
+    {
+     "kind": "rule",
+     "text": "statement: '...이력 테이블에 신규 등록한다' + both examples then '신규 INSERT' + affected_tables op:'INSERT'",
+     "why": "Op inversion. SQL_KEY passed to mpfmdbio is 'zpay_ap_rltm_auth_hst_u0001' — suffix _u0001 = UPDATE per codebase_notes ('u=UPDATE', 'SQL_KEY가 진실'). The writes description lists u0001 as an UPDATE DBIO, and the guard 'mpfmdbio_reccnt()==RC_NRM || rc!=RC_NRM' treats 0 affected rows as an error, which is UPDATE (not INSERT) semantics. Output was misled by the stale '/* DBIO 단일 Insert처리 수행 */' comment — exactly the forbidden _u->INSERT inversion."
+    },
+    {
+     "kind": "example",
+     "text": "Both examples then: '계좌번호, 결제수단코드(pay_mthd_cd), 인증결과코드... 를 사용하여 ... INSERT'",
+     "why": "pay_mthd_cd is NOT written. The only pay_mthd_cd strncpy is commented out ('//20060530 strncpy(...pay_mthd_cd...)'). The active code never assigns pay_mthd_cd, so listing it among written fields is ungrounded (inherited from the input struct / dead code)."
+    },
+    {
+     "kind": "rule",
+     "text": "statement frames '인증결과 코드와 적용여부, 제외여부, 이력반영여부...에 따라' as the branch condition",
+     "why": "These fields are copied unconditionally (rltm_auth_rslt_cd, gc_rltm_auth_rslt_aply_yn, gc_rltm_cnt_rst_exl_yn, ap_auth_req_hst_aply_yn are all set with no if-branch). The ONLY conditional in the body is strncmp(gc_co_cl_cd,\"B\")==0. Presenting non-conditions as conditions ('~에 따라') is not grounded in any branch."
+    }
+   ],
+   "low_value_examples": [
+    {
+     "text": "Example 1 (VAN사 구분 gc_co_cl_cd != 'B' 경우): base write without bank_dpstr_nm",
+     "why": "Mechanical negation of the sole domain branch. The write happens identically in both cases; the only real behavior delta is 'when co_cl_cd=='B', additionally set bank account holder name'. Example 1 merely restates the default (holder name not set). Removing it does not change reimplementation — the else path is the implied default of Example 2's condition.",
+     "category": "mechanical_negative"
+    }
+   ],
+   "missing_rules": [],
+   "reimplementable": "no",
+   "reimplementable_gaps": [
+    "Core DB operation is wrong: rules say INSERT/신규 등록, but the actual op is UPDATE (SQL_KEY _u0001). Reimplementing from these rules yields an INSERT that appends rows instead of updating — not behavior-equivalent.",
+    "Error path missing: reccnt()==0 (no row affected) or rc!=RC_NRM raises PFM_ERR9/PFM_MSGE and returns RC_ERR. Rules only describe the success path (RC_NRM).",
+    "pay_mthd_cd is listed as a written field but is commented out; a reimplementer following the rules would write a column the original does not.",
+    "auth_req_ser_num handling is unresolved (commented-out +1 logic; active code leaves it at 0/memset). Flagged by the question but no rule fixes the behavior."
+   ],
+   "overall": "significant_issues",
+   "notes": "File: C:/Users/roede/AppData/Local/Temp/claude/d--work-robo/9bddfc26-a607-45f8-9298-b2a230432d0a/scratchpad/audit/fn_02.json. Function b400_dbio_rltm_auth_his_u0001 is essentially a writer with a single genuine domain branch: if VAN사 구분(co_cl_cd)=='B', additionally set the VAN-supplied bank account holder name (bank_dpstr_nm). The output DOES correctly identify that branch and the 'B' literal, and the target table echo (db:zpay_ap_rltm_auth_hst) is a valid writes-list member — so the skeleton is right. But three defects make it significant: (1) OP INVERSION — labeled INSERT/신규 등록 everywhere (statement, both then, affected_tables op) when SQL_KEY _u0001 = UPDATE; this is the §6-forbidden comment-driven inversion and breaks behavior-equivalent reimplementation. (2) Ungrounded written field pay_mthd_cd (its strncpy is commented out). (3) The statement dresses up unconditionally-copied fields (aply_yn/exl_yn/hist-aply/result-cd) as branch conditions, when only co_cl_cd=='B' actually branches. Additional quality problem (not a hallucination): given/when/then are saturated with raw C identifiers (gc_*, *_yn, acnt_num, auth_req_ser_num, pay_mthd_cd, bank_dpstr_nm, audit_id) instead of domain language, violating the §3 self-check ('변수·메서드 토큰 금지'). Also note ap_auth_req_hst_aply_yn is fed from the aply_yn global (not a distinct '이력반영여부' global as the then implies). The single question (auth_req_ser_num +1 commented out) is borderline-acceptable: the active code's behavior (ser_num left at 0) is observable, but whether that is intended for an UPDATE key is a real ambiguity, so it is not clearly a §7-violating 'answer-in-body' question."
+  },
+  "verdict": {
+   "target_id": "code:zapamcom10060.c:b400_dbio_rltm_auth_his_u0001",
+   "confirmed_ungrounded": 3,
+   "confirmed_low_value": 0,
+   "confirmed_missing": 0,
+   "refuted": [
+    "low_value: Example 1 (co_cl_cd != 'B') as mechanical_negative — REFUTED: Examples 1 and 2 are not semantic duplicates (§3.1). They differ in given (B vs not-B), in then (Example 2 additionally writes bank_dpstr_nm), and in observed result. This is the standard happy(축1)+variant pattern and 축3 requires preserving both outcomes of the sole conditional field; dropping Example 1 loses the non-B default (holder name not set). The prompt's duplication rule does not reject this pair."
+   ],
+   "verdict_notes": "Ungrounded #1 (op inversion) CONFIRMED: SQL_KEY 'zpay_ap_rltm_auth_hst_u0001' has suffix _u0001 = UPDATE per codebase_notes ('u=UPDATE', 'SQL_KEY가 진실'); output wrote '신규 INSERT'/op:'INSERT' driven by the stale '/* Insert 처리 */' comment — the exact _u->INSERT inversion §6 forbids. The guard 'mpfmdbio_reccnt()==RC_NRM || rc!=RC_NRM' treats 0 affected rows as error = UPDATE semantics, corroborating.\n\nUngrounded #2 (pay_mthd_cd) CONFIRMED: the only pay_mthd_cd strncpy is commented out ('//20060530 strncpy(...pay_mthd_cd...)'). Active body never assigns pay_mthd_cd, yet both then-clauses list '결제수단코드 ... 를 사용하여' among written fields. Inherited from dead code; violates §3.4 활성 코드만 사실.\n\nUngrounded #3 (non-conditions framed as conditions) CONFIRMED: rltm_auth_rslt_cd, gc_rltm_auth_rslt_aply_yn, gc_rltm_cnt_rst_exl_yn, ap_auth_req_hst_aply_yn are all copied with no if-branch. The sole conditional in the body is strncmp(gc_co_cl_cd,'B')==RC_NRM. The statement's '...적용여부, 제외여부, 이력반영여부...에 따라' presents unconditional writer copies as decision conditions (§5 says these are technical writer mappings, not domain conditions).\n\nLow_value REFUTED (see refuted array) — the two examples encode the two distinct outcomes of the one real branch, required by 축3."
+  }
+ },
+ {
+  "id": "code:apascrtu0010t02.c:b000_input_validation",
+  "overall": "minor_issues",
+  "reimpl": "partial",
+  "conf_ungrounded": 0,
+  "conf_lowvalue": 1,
+  "conf_missing": 1,
+  "audit": {
+   "target_id": "code:apascrtu0010t02.c:b000_input_validation",
+   "n_rules": 6,
+   "n_examples": 11,
+   "ungrounded": [
+    {
+     "kind": "example",
+     "text": "Rule 3 (ctz_biz_num 패딩) then: '6번째 인덱스부터 7자리를 0으로 채워 13자리로 변환'",
+     "why": "코드는 strncpy(&ctz_biz_num[6], \"0000000\", 7)로 인덱스 6~12에 7개의 '0'을 in-place로 덮어쓸 뿐, 문자열 길이를 13자리로 만든다는 근거는 없다. 결과 길이는 원본 버퍼 길이에 의존하며 '13자리로 변환'은 원본이 13자리라는 가정을 얹은 과잉 명세. 앞부분('6번째 인덱스부터 7자리를 0으로 채워')은 정확하나 '13자리로 변환' 꼬리는 근거 초과."
+    }
+   ],
+   "low_value_examples": [
+    {
+     "text": "Rule 5 두 번째 example: given '고객관계식별코드가 03이 아님', then '식별번호 정합성 검증 모듈 호출을 생략하고 다음 검증으로 진행'",
+     "why": "Rule 5의 조건(=='03'이면 호출)을 기계적으로 뒤집은 역진술일 뿐 새 행위 정보가 없다. 03이 아니면 c002를 안 부르는 것은 if 조건의 디폴트 재진술이며, 이 example이 없어도 첫 번째 example(03이면 호출)만으로 재구현 행위가 동일하다.",
+     "category": "mechanical_negative"
+    }
+   ],
+   "missing_rules": [
+    {
+     "description": "납부방법(pay_mthd_cd)이 '01'(은행)인 경우에만 출금동의증빙유형코드(drwagr_prf_typ_cd)와 출금동의증빙키값(drwagr_prf_key_val)을 입력에서 컨텍스트로 세팅한다. 카드 등 그 외 결제수단에서는 이 두 증빙 필드를 세팅하지 않는다.",
+     "code_evidence": "함수 상단: if (strncmp(INPUT->pay_mthd_cd, \"01\", ...) == RC_NRM) { strncpy(ctx->gc_drwagr_prf_typ_cd, INPUT->drwagr_prf_typ_cd, ...); strncpy(ctx->gc_drwagr_prf_key_val, INPUT->drwagr_prf_key_val, ...); }  — 결제수단 코드값('01')에 따라 특정 필드만 조건부로 세팅하는 도메인 분기(§5 writer: '특정 유형일 때만 특정 컬럼 세팅'은 살려야 함). 출력 rules에 완전히 누락됨."
+    },
+    {
+     "description": "(보조/낮은 확신) IS_LINK가 아닌(비링크) 환경에서만 식별번호 정합성 검증(사업자 03일 때)·자동납부 불가계좌 체크(c003)·대표서비스여부 체크(c120)·일련번호 최종여부 체크(c005)를 수행하고, 링크 환경에서는 이 검증들을 모두 건너뛴다. Rule 5는 '비링크 환경'을 when에 언급하지만 c003/c120/c005 세 검증이 비링크에서 무조건 수행되고 링크에서 생략된다는 IS_LINK 게이트 자체는 규칙으로 표면화되지 않았다.",
+     "code_evidence": "if (! IS_LINK) { if(...=='03') PFM_TRY(c002...); PFM_TRY(c003_call_zapamcom10150(ctx)); PFM_TRY(c120_get_rep_svc_yn(ctx)); PFM_TRY(c005_chk_input_ser_num(ctx)); }  — 다만 c003/c120/c005는 부모 분기 없는 위임 호출이라 그 규칙은 각 callee 몫이라는 해석도 가능. IS_LINK 게이트만이 부모 수준 정책."
+    }
+   ],
+   "reimplementable": "partial",
+   "reimplementable_gaps": [
+    "은행(pay_mthd_cd=='01')일 때 출금동의증빙 유형코드/키값을 컨텍스트로 조건부 세팅하는 로직이 규칙에 없어, 규칙만으로 재구현하면 은행 결제 시 증빙 필드가 채워지지 않아 행위가 달라진다.",
+    "무조건 수행되는 하위 위임 호출들(c003 자동납부 불가계좌 체크, c120 대표서비스여부, c005 일련번호 최종체크, c100 본인신청여부, c004 암호화)이 규칙에 없어 이 함수의 오케스트레이션(검증 호출 순서·존재)이 재현되지 않는다. 분석기 설계상 callee 규칙은 별도라지만, 이 함수 자체의 행위 동등을 위해서는 이 호출 시퀀스가 필요하다.",
+    "IS_LINK 게이트(링크 환경에서 네 가지 검증 일괄 생략)가 규칙으로 명시되지 않아 링크/비링크 분기 행위를 복원할 수 없다.",
+    "Rule 3의 패딩 결과 길이('13자리') 명세가 부정확해, 인덱스 6부터 7자 '0' in-place 덮어쓰기라는 실제 연산으로 교정 필요."
+   ],
+   "overall": "minor_issues",
+   "notes": "근거성은 대체로 양호: Rule 1(op_cl 공백→RC_ERR), Rule 2(acnt_num==0→RC_ERR), Rule 4(ctz_biz_num_idnt 5/6/7/8→'05', 그외→'01', 10자리→'03'), Rule 5 첫 example(03일 때만 c002 호출), Rule 6(은행→c700 / 카드&drw_ts==0→c700 / 카드&drw_ts!=0→입력 그대로) 모두 코드 분기·리터럴과 정확히 일치하며 환각 없음. affected_tables는 reads/writes 모두 비어 있어 전부 []로 올바르게 처리됨. 문제는 (1) Rule 5 두 번째 example의 기계적 역진술 1건(저가치), (2) Rule 3의 '13자리로 변환' 과잉 명세, (3) 은행 결제 시 출금동의증빙 필드 조건부 세팅이라는 실제 도메인 분기 누락. 셋 다 국소적이라 significant까지는 아니고 minor_issues. mpfm_isspnull 반환규약(RC_NRM=널/공백) 해석도 Rule 1에서 올바르게 반영됨(반전 오독 없음)."
+  },
+  "verdict": {
+   "target_id": "code:apascrtu0010t02.c:b000_input_validation",
+   "confirmed_ungrounded": 0,
+   "confirmed_low_value": 1,
+   "confirmed_missing": 1,
+   "refuted": [
+    "ungrounded/Rule3 '13자리로 변환': 근거 있음. 코드는 리터럴 인덱스 6에서 시작해 LEN_ZERO_PADDING=7개의 '0'을 쓴다(인덱스 6~12=13번째 문자까지). else 분기는 길이!=10일 때 진입하며, 이 도메인에서 비10자리는 13자리 주민/외국인등록번호다. 6(보존)+7(패딩)=13은 코드 상수의 산술 도출이자 도메인 시나리오와 정확히 일치. 환각값이 아니라 정합한 파생 명세다.",
+    "missing/IS_LINK 게이트(c003·c120·c005): 반증. c003/c120/c005는 !IS_LINK 블록 안의 부모 분기 없는 위임 호출이라 §5상 도메인 규칙은 각 callee 몫이다. 부모 고유 분기는 IS_LINK 하나뿐이고, 그것은 이미 Rule 5의 when('비링크(IS_LINK가 아님) 환경')에 표면화돼 있다. 감사관 스스로 '낮은 확신'과 위임 해석을 병기했다. 애매하므로 기각."
+   ],
+   "verdict_notes": "3건 제기 중 low_value 1건·missing 1건 confirmed, ungrounded 1건·missing 1건 refuted.\n\nCONFIRMED low_value(Rule5 2번째 example): 코드 `if(gc_cust_num_idnt_cl_cd=='03'){c002}` 에 else 없음. statement가 이미 \"'03'인 경우에만 수행\"이라 비-03→생략은 else-less 게이트의 자명한 디폴트이고 '다음 검증으로 진행'은 일반 제어흐름일 뿐 도메인 행위 아님. §3.1 기계적 역진술 배제 대상. positive example만으로 재구현 동일.\n\nCONFIRMED missing(drwagr_prf): 함수 상단 `if(pay_mthd_cd==\"01\"){strncpy(gc_drwagr_prf_typ_cd...); strncpy(gc_drwagr_prf_key_val...);}` — 납부방법 코드값에 따라 두 증빙 필드만 조건부 세팅하는 §5 '특정 유형일 때만 특정 컬럼 세팅' 도메인 분기. Rule 6은 pay_mthd '01'을 회차정보에만 다룰 뿐 이 증빙 세팅은 규칙 전무. 실제 누락.\n\nREFUTED ungrounded(Rule3 '13자리'): 인덱스 6+패딩7=13은 코드 리터럴의 산술 도출이며 비10자리=13자리(주민/외국인) 도메인과 일치. 과잉명세 아님.\nREFUTED missing(IS_LINK 게이트): 부모 고유 게이트는 IS_LINK뿐이며 Rule5 when에 이미 표면화. c003/c120/c005는 위임이라 callee 몫. 감사관도 저확신 병기. 기각."
+  }
+ },
+ {
+  "id": "code:zapamcom10020.c:Bank_002_CSB_Check",
+  "overall": "significant_issues",
+  "reimpl": "partial",
+  "conf_ungrounded": 0,
+  "conf_lowvalue": 0,
+  "conf_missing": 1,
+  "audit": {
+   "target_id": "code:zapamcom10020.c:Bank_002_CSB_Check",
+   "n_rules": 4,
+   "n_examples": 7,
+   "ungrounded": [],
+   "low_value_examples": [
+    {
+     "text": "Rule2 example1 — given \"계좌번호 길이=14자리, 계좌과목 코드 ∈ [11, 13, 19, 20, 22]\" / when \"계좌번호 정합성 검증\" / then \"계좌과목 조건 통과\"",
+     "why": "switch의 break(통과) 분기를 기계적으로 재진술한 것. '실패 조건이 아니면 계속 진행'이라는 디폴트의 역진술일 뿐, 관측 가능한 최종 업무 결과(반환값·상태변경)가 없다. Rule2 statement의 실패 조건만으로 이 행위가 완전히 복원된다 — 이 example이 없어도 재구현 행위는 동일.",
+     "category": "mechanical_negative"
+    },
+    {
+     "text": "Rule3 example1 — given \"계좌번호 길이=11자리, 계좌과목 코드 ∈ [11, 13, 19, 20, 22]\" / when \"계좌번호 정합성 검증\" / then \"계좌과목 조건 통과\"",
+     "why": "11자리 분기의 switch break를 재진술한 mechanical positive. then '조건 통과'는 다음 단계(체크섬)로의 진행일 뿐 관측 가능한 결과가 아니며, Rule3 실패 조건의 단순 보수(complement). 없어도 재구현 행위 불변.",
+     "category": "mechanical_negative"
+    }
+   ],
+   "missing_rules": [
+    {
+     "description": "14자리 계좌번호가 '010'으로 시작하면 계좌과목·체크섬 검증을 모두 건너뛰고 즉시 정상(RC_NRM) 반환하는 도메인 바이패스 규칙이 규칙 배열에서 누락됨. 이 동작은 업무 결과(통과/실패)를 결정적으로 바꾸는 도메인 정책인데, 규칙이 아니라 questions로만 다뤄짐(질문은 '왜'를 묻지만 행위 자체는 규칙으로 명세되지 않음). 재구현 시 010 계좌에도 전체 검증을 돌려 원본과 행위가 달라짐.",
+     "code_evidence": "if(gl_Acnt_Length == 14) { if( strncmp(gc_Acnt_Crd_No, \"010\", LEN_ZAPAMCOM10020_THREE) == RC_NRM ){ return RC_NRM; } ... }"
+    },
+    {
+     "description": "체크디짓 산출 알고리즘 자체가 누락됨. Rule4는 '체크섬 계산값과 실제 체크디짓 불일치→실패'라는 비교 결과만 담고, 이 함수 본문에 있는 산출 로직(modele=11, 가중치 \"0002987432987\", weight1='000'+계좌번호, (Check_Sum(13)+11)%1000 → 자리 조작으로 summ2 산출 → summ2==0이면 '0' else 10-summ2 → 계좌번호 11번째 자리 c_Weight1[13]과 비교)을 전혀 명세하지 않음. Check_Sum은 callee지만 modulo·자리조작·비교는 모두 부모 본문의 도메인 계산식이므로 이 함수 몫이다. 이 알고리즘 없이는 원본과 동일한 체크디짓을 만들 수 없어 행위 동등 재구현 불가.",
+     "code_evidence": "Bank_Param_st.l_Modele = 11; strncpy(c_Weight1,\"000\",3); ngmf_strncat(c_Weight1,...,gc_Acnt_Crd_No,11); strncpy(c_Weight2,\"0002987432987\",13); l_Summ1=((Check_Sum(13)+l_Modele)%1000); ... l_Summ2=(l_Summ2%10); ... l_Summ2=10-l_Summ2; ... if (c_Weight1[13] != c_Check_Digit[0]) return RC_ERR;"
+    }
+   ],
+   "reimplementable": "partial",
+   "reimplementable_gaps": [
+    "체크디짓 산출 알고리즘(modele 11, 가중치 \"0002987432987\", %1000 후 자리별 곱셈 축약, 10-보수, 계좌 11번째 자리와 비교) 전체가 규칙에 없어 원본과 동일한 통과/실패 판정을 재현할 수 없다 — 이것이 'CSB check' 함수의 핵심이라 결정적 결함.",
+    "14자리 '010' 접두 즉시성공(RC_NRM) 바이패스가 규칙으로 없어(질문으로만 존재) 010 계좌 처리 행위가 갈린다.",
+    "계좌과목(gmok) 추출 위치가 자리수에 따라 다른데(14자리=앞 3자리, 11자리=4~5번째 2자리) 규칙은 '계좌과목 코드'로만 뭉개져 추출 위치가 복원되지 않는다.",
+    "실패 시 out.result_cd=\"00\" 세팅과 반환코드 RC_ERR/RC_NRM의 구체값이 then에 '검증 실패/성공 코드'로만 표기됨(단, RC_ERR/RC_NRM 실제 정수값은 referenced_symbols에 미주입이라 부분적으로 정당)."
+   ],
+   "overall": "significant_issues",
+   "notes": "근거성은 양호하다 — 생성된 4개 규칙과 7개 example 모두 code_body의 실제 분기에 매핑되며 환각(지어낸 값/분기)은 없다. 길이 게이트(11/14), 14자리·11자리 계좌과목 집합 [11,13,19,20,22], 체크섬 불일치 실패는 모두 정확히 grounded. 문제는 '누락'과 '가치'다. (1) 이 함수의 정체성인 modulo-11 체크디짓 산출 알고리즘 전체가 Rule4에서 블랙박스로 처리돼 재구현 시 재현 불가 — 게다가 §3 지침대로 '복잡해서 못 담으면 question으로 표면화'도 하지 않았다. (2) '010' 접두 즉시성공은 업무 결과를 바꾸는 도메인 규칙인데 규칙이 아니라 질문으로만 존재한다(질문 자체는 근거 있으나, 행위가 규칙으로 명세되지 않은 게 결함). (3) Rule2/Rule3의 '조건 통과' positive example 2건은 switch break의 기계적 역진술로 저가치. 하이라이트: 환각 0이라 #1 기준은 통과하지만, 행위 동등 재구현이라는 용도 기준(#4)에서는 핵심 계산식+도메인 바이패스 누락으로 significant. affected_tables는 reads/writes 모두 빈 함수라 전부 [] 로 올바르게 처리됨."
+  },
+  "verdict": {
+   "target_id": "code:zapamcom10020.c:Bank_002_CSB_Check",
+   "confirmed_ungrounded": 0,
+   "confirmed_low_value": 0,
+   "confirmed_missing": 1,
+   "refuted": [
+    "low_value Rule2 example1 (14자리 계좌과목 통과): §3 axis1이 happy+exception 패턴을 기본으로 명시함 — 실패 예시의 정당한 짝. then 표현이 다소 약하나 무가치 여부는 애매 → 기각",
+    "low_value Rule3 example1 (11자리 계좌과목 통과): Rule2 ex1과 대칭, 동일 근거로 기각",
+    "missing 체크디짓 산출 알고리즘: modulo-11 체크섬은 §5 기술 성격의 검증 메커니즘에 가깝고, 관측 가능한 도메인 결과(일치→성공/불일치→실패)는 Rule4가 이미 포착. given/when/then은 기술 토큰·알고리즘 파라미터('0002987432987')를 금지하므로 규칙으로 표현 불가 — 분류 애매 → 기각"
+   ],
+   "verdict_notes": "확정 1건: '010' 바이패스 규칙 누락. 본문 `if(gl_Acnt_Length==14){ if(strncmp(gc_Acnt_Crd_No,\"010\",...)==RC_NRM) return RC_NRM; }` — 14자리 010 시작 계좌는 계좌과목·체크섬 검증을 모두 건너뛰고 즉시 정상 반환하는 도메인 정책으로 업무 결과(항상 유효)를 결정적으로 바꿈. 현재 questions에서 '왜'만 묻고 행위 규칙은 rules 배열에 부재. §7 원칙(본문에 답 있으면 example로 담기)상 규칙 누락 확정.\n\n반증 3건: (1)(2) low_value 두 건 — 계좌과목 switch의 통과 분기 예시는 §3 axis1이 명시적으로 승인한 happy+exception 기본 패턴의 happy 짝. then \"통과\"가 최종 반환이 아니라 다소 약하나 무가치임이 확실치 않아 애매 → 기각 규칙 적용. (3) 체크디짓 산출 알고리즘 누락 — modulo-11 체크섬 산출은 표준 검증 메커니즘(§5 기술 성격)으로 도메인 정책이라기보다 구현. 관측 도메인 결과는 Rule4가 포착했고, given/when/then의 도메인어·비기술토큰 제약상 알고리즘 표현 자체가 불가. domain/technical 분류가 애매 → 기각."
+  }
+ },
+ {
+  "id": "code:zapamcom10060.c:b205_dbio_rltm_auth_his_i0002_EDI",
+  "overall": "minor_issues",
+  "reimpl": "partial",
+  "conf_ungrounded": 0,
+  "conf_lowvalue": 1,
+  "conf_missing": 0,
+  "audit": {
+   "target_id": "code:zapamcom10060.c:b205_dbio_rltm_auth_his_i0002_EDI",
+   "n_rules": 5,
+   "n_examples": 5,
+   "ungrounded": [],
+   "low_value_examples": [
+    {
+     "text": "Rule #5 example — given: 'mpfmdbio 호출 후 반환된 레코드 수 확인 또는 DBIO 반환 코드가 에러 상태', when: '처리 결과 검증', then: '에러 로그 및 메시지 출력 후 에러 코드(RC_ERR) 반환, 이력 미등록'",
+     "why": "표준 DBIO 실패 처리(오류면 RC_ERR 반환)로, 지침 §2가 명시적으로 폐기 대상으로 분류하는 순수 기술 관심사다. 재구현 시 자명한 에러 전파일 뿐 도메인 행위 정보가 없다. 원문의 reccnt==RC_NRM(동시성 충돌 '이미 변경됨' 메시지) vs 일반 오류 구분도 반환값·DB상태가 동일(둘 다 RC_ERR·미등록)해 새 행위 정보를 더하지 않는다.",
+     "category": "trivial"
+    }
+   ],
+   "missing_rules": [],
+   "reimplementable": "partial",
+   "reimplementable_gaps": [
+    "세 도메인 분기(op_cl='03' 여부, bank_dpstr_nm 공백 시 dpst_card_ownr_nm 대체, pwd 존재 시 card_pwd_auth_yn='Y')와 그 분기별 리터럴 값은 규칙만으로 정확히 복원 가능하다.",
+    "그러나 memset 이후 무조건 수행되는 약 15개 필드 직카피 매핑(acnt_num, auth_req_ser_num, pay_mthd_cd, bank_card_co_cd, bank_card_ser_num, bank_card_num_pinf, card_eff_ym, drw_bank_ctz_ser_num, drw_bank_ctz_num_pinf, dpst_card_ownr_nm, auth_cl_cd, fst_auth_dt, op_sale_org_id, rcv_sale_org_id←rcv_br_org_id, req_opr_id, audit_id, co_cl_cd←gc_co_cl_cd, edi_ap_req_dtm←현재시각)는 규칙에 없어 INSERT 레코드 전체 내용을 재현할 수 없다. 다만 이는 writer의 컬럼매핑으로 다른 분할(분할2) 책임이며 rules 분할 범위 밖이라 설계상 정상 누락이다.",
+    "rcv_sale_org_id 컬럼이 입력 rcv_br_org_id에서 오는 비대칭 매핑, edi_ap_req_dtm이 현재시스템시간으로 채워진다는 점 등은 규칙에 반영되지 않았다."
+   ],
+   "overall": "minor_issues",
+   "notes": "근거성은 양호하다 — 환각 규칙 0건, 모든 규칙이 활성 실행 본문에 대응한다. isspnull 규약도 Rule #3(pwd, !=RC_NRM→값있음)과 Rule #4(bank_dpstr_nm, ==RC_NRM→공백) 사이에서 일관되게 해석되어 §6의 반전 함정을 피했다. Rules #1/#2 분리도 정당하다(op_cl='03' 분기에서 ap_auth_req_hst_aply_yn·edi_auth_rslt_cd·edi_rltm_auth_rslt_aply_yn의 결과값이 실제로 다름). 세 도메인 분기 모두 포착되어 누락 규칙은 없다.\\n\\n지적사항(모두 경미): (1) Rule #5는 순수 기술 에러처리로 §2 폐기 대상인데 추출됨 → 저가치(trivial). (2) Rule #2의 then에 'gc_rltm_auth_rslt_aply_yn' 변수 토큰이 그대로 노출 — §3 자가점검(변수·gc_* 토큰 도메인어로 교체)을 위반. (3) Rules #1/#2의 given이 입력 필드 16개를 나열 — §5 writer 지침('핵심 도메인 키 3~5개만')을 위반한 과잉 열거로, example 가독성/신호가 희석됨. (4) Rule #3/#4의 affected_tables=[]는 when이 '구조체 초기화'로 표현돼 정합하나, 실제 이 컬럼들은 최종 INSERT에 실림 — 규칙 간 op 표기가 다소 불일치(경미).\\n\\n이들은 정확성보다 신호밀도/스타일 문제이며 핵심 도메인 결정은 올바르게 잡혀 minor_issues로 판정한다."
+  },
+  "verdict": {
+   "target_id": "code:zapamcom10060.c:b205_dbio_rltm_auth_his_i0002_EDI",
+   "confirmed_ungrounded": 0,
+   "confirmed_low_value": 1,
+   "confirmed_missing": 0,
+   "refuted": [],
+   "verdict_notes": "Rule #5 low_value 제기 = CONFIRMED. Rule #5 statement(\"...DBIO 오류가 발생하면 등록을 중단하고 에러를 반환한다\")은 지침 §2가 폐기(기술)로 명시 열거한 \"'오류면 에러 반환'·'호출 실패면 에러 반환'\" 패턴과 문자 그대로 일치하며, §1 출력절차 step 2(\"DB/호출 실패 전달는 버린다\")에도 해당. 방어 시도: reccnt()==RC_NRM 분기가 사용자 메시지 \"자동납부 정보가 이미 변경되었습니다\"(동시성 충돌)를 내므로 비즈니스 예외로 볼 여지가 있으나 — (1) Rule #5는 그 구분을 담지 않고 두 분기를 일반 에러반환으로 뭉갬, (2) 두 서브분기 모두 RC_ERR 반환·이력 미등록으로 반환값·DB상태 동일, 차이는 메시지 문구뿐 → §3.1 \"로그/메시지 문구만 다르고 반환값·상태·데이터 결과 같으면 새 행 아님\"에 걸림. 반증 실패. ungrounded·missing 제기는 없음."
+  }
+ },
+ {
+  "id": "code:apascrtu0010t02.c:c020_rltm_auth_rslt_proc",
+  "overall": "minor_issues",
+  "reimpl": "partial",
+  "conf_ungrounded": 1,
+  "conf_lowvalue": 0,
+  "conf_missing": 0,
+  "audit": {
+   "target_id": "code:apascrtu0010t02.c:c020_rltm_auth_rslt_proc",
+   "n_rules": 5,
+   "n_examples": 7,
+   "ungrounded": [
+    {
+     "kind": "rule",
+     "text": "Rule 5: '카드 자동납부(02)이면서 카드무인증(C 아님) 대상이면 ... c660 호출' — statement/example condition is 'INPUT.pay_mthd_cd = 02 AND ctx.gc_rltm_result_cd != C' with no precondition.",
+     "why": "In the code the c660 call (pay_mthd_cd=='02' && gc_rltm_result_cd!='C') sits INSIDE the outer 'else if (gc_edi_fb_cl_cd == \"X\")' block. c660 therefore executes ONLY when gc_edi_fb_cl_cd=='X'. The rule drops that gate, so it asserts c660 fires for states the code never reaches (e.g., fb_cl_cd=='E'/'F' with pay=='02', rltm!='C'), which is a behavior divergence."
+    }
+   ],
+   "low_value_examples": [
+    {
+     "text": "Rule 3, Example 2: given 'gc_edi_fb_cl_cd = E 또는 F AND gc_sms_send_yn = Y', then '계정정보 변경 및 메시지 발송을 수행하지 않고 통과'.",
+     "why": "This is the mechanical negation of the same rule's own guard (the block runs only when gc_sms_send_yn != 'Y'). It restates the default/skip path and adds no new behavior beyond negating the condition already stated in Example 1.",
+     "category": "mechanical_negative"
+    }
+   ],
+   "missing_rules": [
+    {
+     "description": "USIM 가입 시(gc_usim_yn == 'Y', USIM 단독개통) SMS/MMS 안내 발송을 전체 생략(silent pass)한다는 정책이 독립 규칙으로 명시되지 않음. Rules 3·4 는 'USIM 미가입 시 발송'만 서술해 USIM 가입→발송 스킵이 암시로만 남는다. E/F 분기와 X 분기 양쪽에 동일하게 적용되는 도메인 분기.",
+     "code_evidence": "if ( (strncmp(ctx->gc_usim_yn, \"Y\", LEN_USIM_YN) != RC_NRM) ) { ... c520_mms_psbl_yn_check / c810 / c800 ... }  — USIM='Y'면 이 블록 전체(메시지 발송)를 건너뜀"
+    }
+   ],
+   "reimplementable": "partial",
+   "reimplementable_gaps": [
+    "Rule 5 lacks its gating precondition (gc_edi_fb_cl_cd=='X'); reimplementing from it would invoke the affiliate-card SMS path (c660) in wrong states.",
+    "Unconditional pipeline delegations (c400 인출예정일자, c410 전일자 납부방법, c450 가접수 상태변경, c500 인증요청이력, e500 신청결과 체크, e600 SMS전송여부 UPDATE) are not represented at all, so the required call sequence/side-effects cannot be reconstructed from rules+examples alone — by-rubric they are technical, but behavior equivalence needs them.",
+    "USIM='Y' -> skip-all-messaging is only implicit ('USIM 미가입 시 발송'), not an explicit branch.",
+    "Rule 2 mislabels c600 as '실시간 계정변경 반영 모듈' whereas it is 자동납부 신청명세(c600) 호출; the trigger condition is grounded but the effect wording is loose."
+   ],
+   "overall": "minor_issues",
+   "notes": "대부분의 도메인 분기(pay_mthd_cd '01'/'02', edi_bank/skvan_bank 'Y', gc_edi_fb_cl_cd 'E'/'F'/'X' 디스패치, MMS(mms_psbl='Y' && svc_cd='C') vs SMS 선택)는 실제 코드 리터럴로 근거 있게 추출됨. affected_tables 는 reads/writes 가 모두 비어 있어 전 예시 [] 가 정답이며 c450/e500/e600 콜리 테이블을 부모에 끌어오지 않아 §4.2 준수. n_examples=7(R1:1,R2:2,R3:2,R4:1,R5:1). 핵심 결함은 하나: Rule 5 가 'X' 분기 내부 게이트를 누락해 과도하게 넓게 서술된 점(행위 발산). 그 외 Rule 3 Ex2 의 기계적 역진술 1건, USIM 스킵 정책의 암시적 처리, Rule 2 효과 문구의 느슨함이 부차적. 환각(코드에 없는 값·테이블 지어냄)은 없음."
+  },
+  "verdict": {
+   "target_id": "code:apascrtu0010t02.c:c020_rltm_auth_rslt_proc",
+   "confirmed_ungrounded": 1,
+   "confirmed_low_value": 0,
+   "confirmed_missing": 0,
+   "refuted": [
+    "low_value: Rule 3 Example 2 (sms_send_yn=='Y' -> skip) is NOT mechanical negation. The guard 'if (sms_send_yn != Y)' wraps c700 (account-info change) + notify + e600 update; when already sent, the whole block is skipped. This is a domain idempotency policy (no duplicate customer SMS, account-change skipped) with a distinct observed result from Example 1. The prompt's silent-pass mandate (§2) and semantic-uniqueness rule (§3.1) both support keeping it as valuable and grounded.",
+    "missing: USIM='Y' silent-pass is NOT missing. The USIM gate 'if (gc_usim_yn != Y){send}' is already encoded in the then-clauses of both Rule 3 and Rule 4 as 'USIM 미가입 시 ... 발송'. The complement (USIM subscribed -> no send) is directly reconstructable from the stated positive condition; per the guide a stated guard IS the answer, so no independent rule is required and behavior is preserved."
+   ],
+   "verdict_notes": "Claim 1 CONFIRMED ungrounded: c660 physically resides inside the mutually-exclusive 'else if (gc_edi_fb_cl_cd==\"X\")' block, so it fires only when fb_cl_cd=='X' AND pay=='02' AND rltm!='C'. Rule 5's statement/example omit the fb_cl_cd=='X' precondition, asserting c660 for E/F states (pay=='02', rltm!='C') that the code never reaches — real behavioral divergence, cannot refute. Claims 2 and 3 refuted: Example-2 skip is a genuine domain idempotency silent-pass with a distinct result (grounded per §2/§3.1), and the USIM skip is already captured via the 'USIM 미가입 시' guard in the then-clauses of Rules 3 & 4 (reconstructable, not absent)."
+  }
+ },
+ {
+  "id": "code:zapamcom10101.c:b200_SMS_transfer",
+  "overall": "significant_issues",
+  "reimpl": "partial",
+  "conf_ungrounded": 1,
+  "conf_lowvalue": 0,
+  "conf_missing": 0,
+  "audit": {
+   "target_id": "code:zapamcom10101.c:b200_SMS_transfer",
+   "n_rules": 6,
+   "n_examples": 7,
+   "ungrounded": [
+    {
+     "kind": "rule",
+     "text": "계정 상태가 'N'(정지)이면 SMS 회신번호를 '146633'으로 설정하고, 그 외에는 '114'로 설정한다. (examples: gc_nacnt_yn='Y'→'114', gc_nacnt_yn='N'→'146633')",
+     "why": "코드와 정반대로 매핑을 뒤집었다. 실제 코드는 if(strncmp(gc_nacnt_yn,\"Y\",..)==RC_NRM) → '146633', else → '114'. RC_NRM=0이고 strncmp는 같을 때 0을 반환하므로 gc_nacnt_yn=='Y'일 때 참이 되어 '146633', 그 외('Y'가 아님)일 때 '114'다. 규칙은 두 example의 then 값을 모두 반대로 적었다(Y→114, else→146633로 서술). 재구현 시 회신번호가 정반대로 나온다. 또한 'N'을 '(정지)'로, 'Y'를 계정상태로 해석한 라벨도 코드 근거가 없다 — gc_nacnt_yn은 이 함수에서 세팅되지 않는 전역이라 의미가 확인되지 않는다."
+    }
+   ],
+   "low_value_examples": [],
+   "missing_rules": [
+    {
+     "description": "SMS 실제 송신(ngmf_send_sms) 실패는 치명적이지 않다 — 실패해도 에러를 반환하지 않고 로그만 남긴 뒤 함수는 정상(RC_NRM)으로 종료한다. 즉 SMS 전송은 best-effort이며 송신 실패가 상위 처리 결과를 실패로 만들지 않는다. (표준 '호출 실패→에러 반환' 패턴의 정반대라 행위 명세로 보존 가치가 있다)",
+     "code_evidence": "rc = ngmf_send_sms( &zngmmmsg12310_io ); if ( rc != RC_NRM ) { PFM_DBG(\"<-----sms 송신 실패--->계정번호[%ld]\", itf->in.acnt_num); } ... return RC_NRM;  (실패 분기에 return 없음, 마지막에 무조건 RC_NRM 반환)"
+    },
+    {
+     "description": "(경계·저확신) 신청 구분 코드가 '1'/'3'/'5'/'9' 중 어느 것도 아니면 어떤 템플릿ID도 설정되지 않아 tmplt_id가 빈 값(memset 0x00) 그대로 남는다. 템플릿 선택 if/else if 체인에 else가 없어 미지의 요청코드는 빈 템플릿으로 하위(zinvmcom09000, ngmf_send_sms)에 전달된다. 명시적 분기가 아닌 암묵적 기본값이라 기계적 역진술에 가깝지만, 재구현 시 이 공백 동작을 재현하려면 필요하다.",
+     "code_evidence": "if (req_cl_cd=='1'||'5') tmplt_id=\"APACRT101\"; else if('3') \"APACRT102\"; else if('9') \"APACRT103\";  — else 절 없음. 앞서 memset(&zngmmmsg12310_io,0x00,...)로 tmplt_id는 빈 값으로 초기화됨."
+    }
+   ],
+   "reimplementable": "partial",
+   "reimplementable_gaps": [
+    "회신번호 규칙(Rule 5)이 정반대로 서술돼 그대로 재구현하면 gc_nacnt_yn='Y'/그외에 대한 회신번호가 뒤바뀐다(행위 비동등).",
+    "SMS 송신 실패가 비치명적(로그만, RC_NRM 반환)이라는 동작이 누락돼, 재구현자가 표준대로 '송신 실패→에러 반환'을 넣으면 행위가 달라진다.",
+    "요청 구분 코드가 1/3/5/9 이외일 때 빈 템플릿으로 진행하는 기본 동작이 명세에 없다.",
+    "gc_nacnt_yn의 의미·설정 출처가 명세에 없어(코드에도 이 함수 내 세팅 없음) 회신번호 분기 조건을 정확히 복원하기 어렵다."
+   ],
+   "overall": "significant_issues",
+   "notes": "Rule 1~4, 6은 코드에 정확히 근거하고 도메인적으로 유의미하다: 요청구분 '1'/'5'→APACRT101, '3'→APACRT102, '9'→APACRT103(템플릿 매핑), '5'→전송시작 62분(3720초) 후 세팅, 그리고 zinvmcom09000(gbn_cd='C', svc_num/svc_cd)로 조회한 수신거부(rejt_yn='Y')시 전송 없이 RC_NRM 통과 — 모두 검증됨. affected_tables가 전부 []인 것도 주입 reads/writes가 비어 있으므로 §4.2 규칙상 정답이다(zinvmcom09000의 조회는 자식 몫). 핵심 결함은 Rule 5(회신번호) 두 example의 then 값이 코드와 완전히 반대라는 점 — RC_NRM=0, strncmp 동등시 0 반환을 오독한 §6형 반전 오류로, 행위 동등성을 정면으로 깨므로 significant_issues로 판정했다. 부차적으로 SMS 송신 실패의 비치명(silent-pass) 동작과 미지 요청코드의 빈 템플릿 기본동작이 누락됐다. 스타일상 Rule 1~3은 매핑형(§3.2)이라 1개 파라미터화 규칙으로 합칠 수도 있으나 명시적 if/else if 리터럴 분기라 분리 보존도 허용 범위이며 저가치는 아니다. questions:[]는 적절 — 본문·else·가드가 답을 주는 지점에 억지 질문이 없다(gc_nacnt_yn 의미 모호는 있으나 전역 read 사안). 순수 기술 가지(62분 계산 실패→RC_ERR, zinvmcom09000 실패→RC_ERR, sms_phrs 포맷, long_sms_op_typ='4', 트림/로그)를 Rule로 만들지 않은 것은 올바른 절제다."
+  },
+  "verdict": {
+   "target_id": "code:zapamcom10101.c:b200_SMS_transfer",
+   "confirmed_ungrounded": 1,
+   "confirmed_low_value": 0,
+   "confirmed_missing": 0,
+   "refuted": [
+    "missing: SMS send failure (ngmf_send_sms) non-fatal/best-effort — the rc!=RC_NRM block is log-only (PFM_DBG) with no error return; the 'non-fatal' behavior is the ABSENCE of an error return, not a decision branch. Prompt explicitly discards log-only branches and '호출 실패면 에러 반환' class as technical ('로그 기록만으로는 Rule 아님'). Removing the branch changes no business outcome. Correctly omitted.",
+    "missing: unknown req_cl_cd -> empty template fallthrough — no explicit else exists; it is an implicit fall-through leaving memset-zeroed tmplt_id. Audit self-rates '(경계·저확신)' and '기계적 역진술에 가깝다'. No explicit domain branch makes this decision; manufacturing a rule from implicit fall-through is speculative. Ambiguous -> refute per default."
+   ],
+   "verdict_notes": "CONFIRMED ungrounded: Rule 5 (reply-number mapping) is fully inverted vs the active code body. Code: strncmp(gc_nacnt_yn,\\\"Y\\\")==RC_NRM(0) => gc_nacnt_yn=='Y' -> '146633', else -> '114'. JSON examples: given Y->then'114' (wrong), given N->then'146633' (wrong) — both mirror-flipped. Statement 'N->146633, else->114' is likewise the mirror of code 'Y->146633, else->114'. Top gate makes active execution body the truth; the comment ('N - 146633') is priority-5 and cannot override the strncmp check. The 'N=(정지)' account-status label is also ungrounded (gc_nacnt_yn is an unset global here, declaration_initializer only), but the decisive, certain defect is the inverted then-values. Cannot be refuted. Two missing claims both refuted as technical/borderline per skeptical default."
+  }
+ },
+ {
+  "id": "code:zapamcom13010.c:d010_get_svc_ctz",
+  "overall": "minor_issues",
+  "reimpl": "partial",
+  "conf_ungrounded": 1,
+  "conf_lowvalue": 1,
+  "conf_missing": 2,
+  "audit": {
+   "target_id": "code:zapamcom13010.c:d010_get_svc_ctz",
+   "n_rules": 5,
+   "n_examples": 8,
+   "ungrounded": [
+    {
+     "kind": "example",
+     "text": "Rule 5, Example 3: given '작업 종류가 03이 아니고 복호화 조회 실패' / when '복호화 처리 중 오류 발생' / then '결과코드 XXXX를 설정하고 에러를 반환'",
+     "why": "코드의 복호화 실패 경로는 PFM_TRY(b200_call_zngmmcap50000_proc(itf)) 실패 시 PFM_CATCH로 점프해 곧바로 'return RC_ERR' 만 한다. 이 경로에는 strncpy(itf->out.rslt_cd, \"XXXX\", ...) 가 존재하지 않는다. 'XXXX 설정'은 코드에 없는 결과를 지어낸 것이다(다른 명시적 에러 경로들의 XXXX 세팅에서 끌어온 환각). 관측 결과는 rslt_cd 미변경 + RC_ERR 반환일 뿐이다."
+    }
+   ],
+   "low_value_examples": [
+    {
+     "text": "Rule 5, Example 3: 복호화 조회/호출 실패 시 에러 반환",
+     "why": "이는 callee(b200_call_zngmmcap50000_proc)의 호출 실패를 PFM_TRY로 그대로 상위 전달하는 순수 기술 예외 전파('호출 실패면 에러 반환')다. 지침 §2가 명시적으로 폐기 대상(기술 관심사)으로 분류한 가지로, 도메인 행위 정보가 없다. 별도 example로 뽑을 가치가 없다(게다가 then까지 틀렸다).",
+     "category": "trivial"
+    }
+   ],
+   "missing_rules": [
+    {
+     "description": "해지/신청 표준 흐름(Rule 4·5)은 첫 조회 zord_svc_tmp_s0131 이 RC_NFD(명의변경 내역 없음)일 때에만 진입한다는 게이팅이 명시되지 않았다. Rule 4·5가 op_cl_cd 만으로 무조건 성립하는 것처럼 서술돼, PR/CO/기타 상태에서 early return 되어 해지·신청 흐름을 타지 않는다는 순서 의존(선행 조건)이 규칙 텍스트에서 소실됐다.",
+     "code_evidence": "if (rc == RC_NFD){ //명의변경 내역이 없으므로 정상진행 ; } else if (rc == RC_NRM){ ... 모든 하위 분기가 return; } else { return RC_ERR; } /* 이후 */ if( strncmp(itf->in.op_cl_cd, \"03\" ...) == RC_NRM ){ ... } else { ... } — op_cl_cd 블록은 RC_NFD로 fall-through 한 경우에만 실행된다."
+    },
+    {
+     "description": "신청(op_cl_cd != '03') 분기에서 복호화 공통모듈 호출은 ctz_biz_ser_num > 0 일 때만 조건부로 수행된다는 도메인 가드가 Rule 5에서 누락됐다. ctz_biz_ser_num <= 0 이면 복호화를 건너뛰어 gc_ctz_biz_num 이 memset된 0값으로 남고, 그 상태로 명의자 생년월일(6자리) 비교가 수행된다. 재구현 시 이 가드를 빠뜨리면 비교 대상 값과 분기 결과가 달라진다.",
+     "code_evidence": "memset( gc_ctz_biz_num, 0x00, sizeof(gc_ctz_biz_num) ); if (itf->in.ctz_biz_ser_num > 0){ PFM_TRY( b200_call_zngmmcap50000_proc( itf ) ); } if( strncmp(zord_cust_s1264_out.ctz_corp_biz_num_pinf, gc_ctz_biz_num, LEN_APA_06) != RC_NRM ){ ... return RC_ERR; }"
+    }
+   ],
+   "reimplementable": "partial",
+   "reimplementable_gaps": [
+    "Rule 5 Example 3의 복호화 실패 결과가 틀림: 실제로는 rslt_cd 미변경 + RC_ERR 반환인데 'XXXX 설정'으로 기술돼, 그대로 재구현하면 원본과 out 상태가 달라진다.",
+    "해지/신청(Rule 4·5) 진입이 첫 조회 RC_NFD(명의변경 내역 없음)에 종속된다는 게이팅 미명시 — early return 구조를 함께 복원하지 않으면 PR/CO 서비스가 잘못 해지·신청 흐름을 탈 수 있다.",
+    "신청 분기의 복호화 호출이 ctz_biz_ser_num > 0 조건부라는 가드 누락 — 이 값이 0 이하일 때 gc_ctz_biz_num이 0값으로 비교되는 행위를 재현할 수 없다.",
+    "affected_tables가 전부 []인 것은 주입 reads/writes가 비어 있어 §4.2상 정답이지만, 이 규칙·사례만으로는 어떤 테이블을 조회하는지(s0131/s0004/s0196/s1264) 복원할 수 없다(단, 이는 이 분할의 책임 밖)."
+   ],
+   "overall": "minor_issues",
+   "notes": "핵심 도메인 분기(PR→양수인, CO+할인이력→양도인+변경코드 'D', 기타 상태→중단, 03해지→s0196 양쪽 대입, 신청→생년월일 6자리 대조)는 대체로 정확히 근거화됐고 리터럴('PR','CO','D','03','0000','XXXX','000000'→6자리) 보존도 양호하다. 특히 해지는 사업자일련번호+고객번호 둘 다, 신청은 사업자일련번호만 대입하는 차이를 정확히 구분한 점은 좋다. 결함은 세 가지: (1) Rule 5 Example 3이 복호화 실패 경로의 결과를 'XXXX 설정'으로 환각(실제 PFM_CATCH는 rslt_cd 미변경 후 RC_ERR만) + 애초에 순수 기술 전파 가지라 추출 부적절, (2) 해지/신청 흐름이 첫 조회 RC_NFD에만 진입한다는 순서 게이팅 미명시, (3) 신청 분기 복호화가 ctz_biz_ser_num>0 조건부라는 가드 누락. affected_tables=[]는 주입 reads/writes가 비어 규정상 정답이라 감점 요인 아님. questions=[]도 적절(코드 내 else/default가 답을 이미 제공). Rule 2 Example 2(CO+할인이력 없음→중단)와 Rule 3(CN 등 기타 상태→제휴카드 처리 안함)은 로그가 아닌 실제 반환/정책 결정이라 도메인으로 유지 타당."
+  },
+  "verdict": {
+   "target_id": "code:zapamcom13010.c:d010_get_svc_ctz",
+   "confirmed_ungrounded": 1,
+   "confirmed_low_value": 1,
+   "confirmed_missing": 2,
+   "refuted": [],
+   "verdict_notes": "All four raised issues survive skeptical refutation.\n\nUNGROUNDED (1) — Rule 5 Ex.3 \"then 결과코드 XXXX 설정\": the example's when=\"복호화 처리 중 오류 발생\" maps to PFM_TRY(b200_call_zngmmcap50000_proc(itf)). On failure it jumps to `PFM_CATCH : return RC_ERR;` with NO strncpy(rslt_cd,\"XXXX\"). The XXXX writes exist only on other explicit paths (s0004/s0196/s1264 failures, else-status). Observed decryption-failure behavior = rslt_cd unchanged + RC_ERR. Could not refute; it is not the s1264 \"고객 조회 실패\" path (that says 복호화, not 고객조회). Confirmed.\n\nLOW_VALUE (1) — same Ex.3: pure call-failure propagation via PFM_TRY, which §2 explicitly names as discardable technical (\"호출 실패면 에러 반환\"). No domain outcome, and the then is also fabricated. Confirmed.\n\nMISSING (2):\n1) RC_NFD gating: verified every sub-branch of `rc==RC_NRM` returns, and non-NFD/non-NRM `else` returns RC_ERR; only RC_NFD (명의변경 내역 없음) falls through to the op_cl_cd block. Rules 4·5 state op_cl_cd handling unconditionally, dropping this precondition. Strong confirm.\n2) ctz_biz_ser_num>0 decryption guard: 신청 branch memsets gc_ctz_biz_num to 0, decrypts only when serial>0, then always runs the 6-digit birthdate strncmp. Serial≤0 leaves gc zero-filled → generally reject, but edge (empty customer birthdate) → match→accept. A real conditional branch omitted from Rule 5. Weakest of the four but a genuine code branch with a scenario where outcome differs; confirmed."
+  }
+ },
+ {
+  "id": "code:zapamcom10070.c:c910_insert_zpay_ap_auth_req_hst",
+  "overall": "significant_issues",
+  "reimpl": "no",
+  "conf_ungrounded": 3,
+  "conf_lowvalue": 2,
+  "conf_missing": 1,
+  "audit": {
+   "target_id": "code:zapamcom10070.c:c910_insert_zpay_ap_auth_req_hst",
+   "n_rules": 7,
+   "n_examples": 10,
+   "ungrounded": [
+    {
+     "kind": "rule",
+     "text": "Rule 5: 입력 auto_pay_rcv_cl_cd가 '5'이고 edi_fb_cl_cd가 'E'(EDI)일 때, 은행이 EDI 대상이면 EDI 자동신청 처리를 한다 (example given: s0293 edi_yn='Y', then: edi_send_cl_cd='1', edi_auth_rslt_cd='SKIP', edi_auth_yn='N').",
+     "why": "코드에서 auto_pay=5 블록의 EDI은행 조회(s0293/edi_yn)와 EDI필드 세팅은 edi_fb_cl_cd=='F' 가지 안에 있다. edi_fb_cl_cd=='E' 가지는 s0098(skvan_yn)을 조회해 CMS/FB 필드를 채운다. 규칙이 조건('E')과 조회맵/필드(s0293·EDI, 'F'가지 소속)를 뒤바꿔 결합했다. then 에 옮겨 적은 리터럴(edi_send_cl_cd='1' 등)이 실제로는 'F' 가지 값이라 스왑이 확정된다."
+    },
+    {
+     "kind": "rule",
+     "text": "Rule 6: 입력 auto_pay_rcv_cl_cd가 '5'이고 edi_fb_cl_cd가 'F'(FB)일 때, 은행이 SKVAN 대상이면 FB 자동신청 처리를 한다 (example given: s0098 skvan_yn='Y', then: send_cl_cd='1', auth_rslt_cd='SKIP', cms_auth_yn='N').",
+     "why": "Rule 5 와 대칭으로 스왑됨. 코드에서 s0098(skvan_yn) 조회와 CMS/FB 필드 세팅은 edi_fb_cl_cd=='E' 가지에 있다. edi_fb_cl_cd=='F' 가지는 s0293(edi_yn)로 EDI 필드를 채운다. 규칙은 'F'와 s0098·CMS/FB(실제 'E'가지 소속)를 잘못 묶었다. then 리터럴(send_cl_cd='1' 등)이 실제 'E'가지 값이라 스왑 확정."
+    },
+    {
+     "kind": "example",
+     "text": "Rule 1 examples then: 'EDI/FB/S 구분과 무관하게 관련 필드가 전송제외용/기본값으로 채워진다'",
+     "why": "gc_send_ex_bank 값은 edi_fb_cl_cd=='E' 및 =='F' 가지에서만 참조된다. =='S'(간편결제) 가지에는 gc_send_ex_bank 분기가 전혀 없다. '구분과 무관하게'는 'S' 케이스에 대해 사실이 아닌 과잉일반화."
+    }
+   ],
+   "low_value_examples": [
+    {
+     "text": "Rule 5 example 2 — given: edi_yn이 'Y'가 아니고, then: EDI 자동신청 관련 필드 설정 없이 기본값으로 처리된다.",
+     "why": "조건 불충족 시 '아무 필드도 세팅하지 않고 앞서 채운 기본값 유지'는 if 조건의 기계적 역진술로, 새 행위 정보가 없다. 재구현 관점에서 이 사례가 없어도 동작이 달라지지 않는다.",
+     "category": "mechanical_negative"
+    },
+    {
+     "text": "Rule 6 example 2 — given: skvan_yn이 'Y'가 아니고, then: FB 자동신청 관련 필드 설정 없이 기본값으로 처리된다.",
+     "why": "Rule 5 example 2 와 동일한 조건 역진술. 분기 미진입 시 디폴트 유지를 재서술한 것뿐이라 행위 명세로서 정보 없음.",
+     "category": "mechanical_negative"
+    }
+   ],
+   "missing_rules": [
+    {
+     "description": "edi_fb_cl_cd 'E'/'F'/'S' 각 가지의 '기본(비-SKIP) 채널 필드 세팅' + 가지 내에서 무조건 실행되는 gc_send_ex_bank Y/else 오버라이드. Rule 2/3/4 는 auth_rslt_cd=='SKIP' 하위 케이스만 뽑고, 각 채널의 주 처리(입력값 기반 필드 채움)와 전송제외/기본값 분기 결과(auth_rslt_cd='0000'&cms_auth_yn='Y' vs 'DFLT'&'N'; edi_auth_rslt_cd='000' vs 'DFLT')를 규칙으로 남기지 않았다. 이 함수의 핵심 도메인 결정이 SKIP 예외만 남고 사라짐.",
+     "code_evidence": "if (strncmp(itf->in.edi_fb_cl_cd,\"E\",...)==RC_NRM){ ... edi_req_dt=act_dt; ...; if(auth_rslt_cd==\"SKIP\"){...} if(strncmp(gc_send_ex_bank,\"Y\",...)==RC_NRM){ ...send_cl_cd=\"3\"; auth_rslt_cd=\"0000\"; cms_auth_yn=\"Y\"; } else { ...auth_rslt_cd=\"DFLT\"; cms_auth_yn=\"N\"; } }  // 'F' 가지도 대칭으로 edi_* 필드에 000/DFLT, 'S' 가지는 gc 분기 없음"
+    },
+    {
+     "description": "등록 은행이라도 납부주기가 '0' 또는 '8'이면 전송제외 대상이 아님(전송). row_cnt>0 이면서 pay_cycl_cd 가 '0'/'8'이면 gc_send_ex_bank 가 'Y'로 세팅되지 않고 memset 상태(공란)로 유지되어 이후 전송제외 분기를 타지 않는다. Rule 1 은 이를 조건 문구('0주기 또는 8주기 외')로만 암시하고 별개 결과로 명시하지 않음.",
+     "code_evidence": "if (zngm_comm_cd_dtl_s0316_out.row_cnt > 0){ /* 0주기 , 8주기는 전송 */ if(strncmp(itf->in.pay_cycl_cd,\"0\",...)!=RC_NRM && strncmp(itf->in.pay_cycl_cd,\"8\",...)!=RC_NRM){ strncpy(gc_send_ex_bank,\"Y\",...); } } else { strncpy(gc_send_ex_bank,\"N\",...); }"
+    }
+   ],
+   "reimplementable": "no",
+   "reimplementable_gaps": [
+    "Rule 5·6 의 edi_fb_cl_cd 'E'↔'F' 스왑을 그대로 구현하면 auto_pay_rcv_cl_cd=='5' 경로의 채널 매핑이 원본과 정반대가 되어 행위 불일치가 발생한다.",
+    "edi_fb_cl_cd 'E'/'F' 가지에서 무조건 실행되는 gc_send_ex_bank Y/else 오버라이드(전송제외 정상 vs 기본값: 0000/Y vs DFLT/N, 000/Y vs DFLT/N)가 규칙에 없어, 비-SKIP 정상 케이스의 핵심 결과를 복원할 수 없다.",
+    "각 채널의 기본 필드 세팅(입력값 그대로 복사되는 send_cl_cd·auth_rslt_cd·cms_auth_yn 등)이 SKIP 케이스 외에는 명세되지 않아 정상 입력의 결과가 불확정.",
+    "zpay_ap_auth_req_hst_i0001 INSERT 자체와 그 뒤 mpfmdbio_reccnt()==0 → '이미 변경됨/등록오류' RC_ERR 처리(활성 코드)는 어느 규칙에도 반영되지 않음(affected_tables 도 zngm_comm_cd_dtl READ 만 인용)."
+   ],
+   "overall": "significant_issues",
+   "notes": "근거 대조 결과, 규칙 1(전송제외 은행 판별)·2·3·4(E/F/S 무인증 SKIP)·7(auto_pay=5, S 기본값)은 코드에 실재해 근거성은 있으나 상당수가 부분적이다. 가장 심각한 문제는 Rule 5·6 이 auto_pay_rcv_cl_cd=='5' 블록에서 edi_fb_cl_cd 'E'와 'F'를 서로 뒤바꿔 조회맵(s0293/s0098)·필드(EDI/CMS·FB)를 잘못 결합한 점이다 — then 에 옮겨 적은 리터럴이 정반대 가지의 값이라 스왑이 확정된다. 코드 실제: edi_fb='F'→s0293(edi_yn)→EDI필드, edi_fb='E'→s0098(skvan_yn)→CMS/FB필드. 둘째, Rule 2/3/4 는 각 채널의 SKIP 예외만 뽑고 비-SKIP 정상 처리 및 가지 내 무조건 실행되는 gc_send_ex_bank Y/else 오버라이드(함수의 핵심 값매핑)를 누락했다. affected_tables 는 zngm_comm_cd_dtl READ 만 인용하고 정작 함수 목적인 zpay_ap_auth_req_hst i0001 INSERT 는 when 문구로만 언급될 뿐 테이블·op 로 잡히지 않았다(입력 writes:[] 라 정책상 제약일 수 있음). questions 는 빈 배열인데, E/F 크로스오버 매핑이 직관과 반대여서 최소 1건은 '재검 필요' 질문으로 표면화됐어야 한다. n_examples=10(Rule1:2, 2:1, 3:1, 4:1, 5:2, 6:2, 7:1)."
+  },
+  "verdict": {
+   "target_id": "code:zapamcom10070.c:c910_insert_zpay_ap_auth_req_hst",
+   "confirmed_ungrounded": 3,
+   "confirmed_low_value": 2,
+   "confirmed_missing": 1,
+   "refuted": [
+    "missing: 등록 은행이라도 0/8주기면 전송제외 아님(gc_send_ex_bank 공란 유지) — Rule 1 statement 의 '전송제외 대상(0주기 또는 8주기 외)' 문구에 이미 조건이 명시돼 있고, 공란(\"\")은 다운스트림 모든 strncmp(...,\"Y\") 비교에서 'N'과 완전히 동일하게 else 경로를 타 동일 insert 레코드를 만든다. 별개 결과로 분리하면 기계적 부정에 불과하므로 유의미한 누락 아님 — 기각."
+   ],
+   "verdict_notes": "ungrounded 3건 전부 확정. Rule 5/6 은 실제로 E↔F 스왑이 확정된다: auto_pay_rcv_cl_cd=='5' 블록에서 코드는 edi_fb_cl_cd=='F' 가지가 s0293(edi_yn)를 조회해 edi_* 필드(else: edi_send_cl_cd='1', edi_auth_rslt_cd='SKIP', edi_auth_yn='N')를, edi_fb_cl_cd=='E' 가지가 s0098(skvan_yn)를 조회해 cms/send 필드(else: send_cl_cd='1', auth_rslt_cd='SKIP', cms_auth_yn='N')를 채운다. Rule 5 는 'E'에 s0293·edi_* 리터럴을(실제 'F' 값), Rule 6 은 'F'에 s0098·cms 리터럴을(실제 'E' 값) 붙여, 각 규칙의 'given'(edi_fb_cl_cd 조건 하의 조회맵)이 존재하지 않는 코드경로다. ungrounded #3: gc_send_ex_bank 는 'E'/'F' 가지에서만 참조되고 'S' 가지(본 블록·auto_pay=5 블록 모두)엔 전혀 없어 'EDI/FB/S 구분과 무관하게'는 'S'에 대해 거짓. low_value 2건: Rule 5/6 예제2는 if(edi_yn=='Y')/if(skvan_yn=='Y')에 else 가지가 없어 '조건 불충족→디폴트 유지'는 if 가드의 기계적 역진술, 새 행위 없음. missing #1 확정: Rule 2/3/4 는 SKIP 하위만, Rule 1 은 'F'측 edi 오버라이드(000/DFLT)만 부분 포착 — 각 가지의 비-SKIP 주 처리(입력값 기반 필드 채움)와 'E' 가지의 무조건 gc_send_ex_bank Y/else 오버라이드(auth_rslt_cd='0000'&cms_auth_yn='Y' vs 'DFLT'&'N')가 어느 규칙에도 없다. 이는 insert 레코드의 핵심 도메인 결정이라 확정 누락. missing #2 는 반증(위 refuted 사유)."
+  }
+ },
+ {
+  "id": "code:zapamcom10070.c:c000_main_proc",
+  "overall": "minor_issues",
+  "reimpl": "partial",
+  "conf_ungrounded": 6,
+  "conf_lowvalue": 0,
+  "conf_missing": 4,
+  "audit": {
+   "target_id": "code:zapamcom10070.c:c000_main_proc",
+   "n_rules": 14,
+   "n_examples": 14,
+   "ungrounded": [
+    {
+     "kind": "rule",
+     "text": "Rule 2: op_cl ∈ ['11','14','21','31'] → 신규 등록/갱신 (하나의 규칙)",
+     "why": "코드에서 11·14는 c200_proc를, 21·31은 c900_proc(다른 함수)를 호출한다. 서로 다른 dispatch 대상을 한 규칙으로 병합해 op_cl→callee 매핑(축3)이 깨졌다. then의 '시리얼 번호 산정...' 서술은 c200 summary만 반영하고 c900(EDI/FB 구분 판단)은 오도한다. 재구현 시 4개 코드가 같은 연산으로 라우팅되어 행위 동등성이 깨진다."
+    },
+    {
+     "kind": "rule",
+     "text": "Rule 3: op_cl ∈ ['12','22','32'] → 이력 갱신 (하나의 규칙)",
+     "why": "코드에서 12는 cD00_update(연락처·예금주명·인쇄여부 갱신)를, 22·32는 c300_update(가입개통/명의변경 개통)를 호출한다. 서로 다른 callee를 병합해 12와 22/32의 dispatch 구분이 소실됐다. then '입력된 정보로 이력 갱신'은 두 callee 어느 쪽도 특정하지 못한다."
+    },
+    {
+     "kind": "rule",
+     "text": "Rule 4: op_cl ∈ ['13','15','41'] → 해지/취소 (하나의 규칙)",
+     "why": "코드에서 13·15는 c400_proc를, 41은 c500_proc(다른 함수)를 호출한다. 41을 13/15와 병합해 라우팅 대상 구분이 소실됐다."
+    },
+    {
+     "kind": "rule",
+     "text": "Rule 7: op_cl ∈ ['18','43'] → 신규 등록(원복) (하나의 규칙)",
+     "why": "코드에서 18은 c800_insert를, 43은 cC00_insert(다른 함수)를 호출한다. 둘 다 INSERT지만 서로 다른 callee이며 병합 시 어느 함수를 부를지 복원 불가."
+    },
+    {
+     "kind": "rule",
+     "text": "모든 규칙의 then이 callee 내부 동작을 서술 (예: R1 '계정번호 키로 이력 조회 후 상세 정보 반환', R11 '전송제외 은행 조회...')",
+     "why": "code_body는 switch 분기와 PFM_TRY(callee) 호출뿐이다. then들이 기술하는 조회·시리얼 산정·신규등록·갱신 로직은 이 함수 본문에 없고 callee_summaries에서 가져온 것이다. 프롬프트 증거순서 #4는 'callee의 Rule을 가져오지 않는다', §3.4는 라우터 then을 '선택된 대상 호출 1회 발생, 반환코드 무변경 전달'로 규정한다. 관측 가능 결과(어느 callee 1회 호출·그 rc 전달)가 아니라 callee 내부를 서술해 code_body 미근거."
+    },
+    {
+     "kind": "example",
+     "text": "Rule 13 then: '...이력 신규 등록 (send_cl_cd=3 전송금지)'",
+     "why": "send_cl_cd=3 설정은 이 함수 본문 활성 코드에 없다. case 63의 주석 라인에서만 나오며 실제 값 세팅은 cJ00_insert의 몫이다. 주석·callee에서 끌어온 미근거 상세."
+    }
+   ],
+   "low_value_examples": [],
+   "missing_rules": [
+    {
+     "description": "op_cl 21·31의 dispatch가 c900_proc(EDI/FB 구분 기반 존재판단 후 신규등록/갱신)로 향한다는 사실이 별도 규칙으로 보존되지 않음 — Rule 2에 11·14와 병합되어 소실",
+     "code_evidence": "case 21: PFM_TRY( c900_proc_zpay_ap_auth_req_hst(itf) ); / case 31: PFM_TRY( c900_proc_zpay_ap_auth_req_hst(itf) ); (11·14는 c200_proc)"
+    },
+    {
+     "description": "op_cl 22·32의 dispatch가 c300_update(가입개통/명의변경 개통)로 향한다는 구분이 소실 — Rule 3에 12(cD00_update)와 병합",
+     "code_evidence": "case 22: PFM_TRY( c300_update_zpay_ap_auth_req_hst(itf) ); / case 32: PFM_TRY( c300_update...(itf) ); (12는 cD00_update)"
+    },
+    {
+     "description": "op_cl 41의 dispatch가 c500_proc로 향한다는 구분이 소실 — Rule 4에 13·15(c400_proc)와 병합",
+     "code_evidence": "case 41: PFM_TRY( c500_proc_zpay_ap_auth_req_hst(itf) ); (13·15는 c400_proc)"
+    },
+    {
+     "description": "op_cl 43의 dispatch가 cC00_insert로 향한다는 구분이 소실 — Rule 7에 18(c800_insert)과 병합",
+     "code_evidence": "case 43: PFM_TRY( cC00_insert_zpay_ap_auth_req_hst(itf) ); (18은 c800_insert)"
+    }
+   ],
+   "reimplementable": "partial",
+   "reimplementable_gaps": [
+    "병합 규칙(R2·R3·R4·R7)이 op_cl→callee 라우팅을 뭉개, 11/14 vs 21/31, 12 vs 22/32, 13/15 vs 41, 18 vs 43 이 서로 다른 연산으로 분기한다는 사실을 규칙만으로 복원 불가 — 재구현 시 8개 코드가 잘못된 연산으로 라우팅될 수 있어 행위 동등성 붕괴",
+    "then들이 callee 내부 동작을 서술하나 이 함수 관점의 관측 결과(어느 함수 1회 호출·rc 무변경 전달·성공 시 RC_NRM 반환)는 명시되지 않아 라우터 자체의 계약이 불명확",
+    "switch가 atoi(op_cl) 정수 비교라는 점(문자열이 아닌 수치 파싱, 선행 0·공백 처리 등)이 규칙에 반영되지 않음"
+   ],
+   "overall": "minor_issues",
+   "notes": "함수는 op_cl 코드를 17개 callee로 분기하는 순수 라우터이며 default는 RC_ERR을 반환한다. 23개 case + default가 14개 규칙으로 전부 커버되고(누락된 case 없음), 10개 규칙(R1,R5,R6,R8~R14)은 단일 callee로 정확히 매핑되어 근거성이 좋다. 핵심 결함 두 가지: (1) R2·R3·R4·R7이 서로 다른 callee로 분기하는 op_cl 코드를 한 규칙으로 병합해 라우팅 매핑(축3)을 훼손 — DDD 재구현의 행위 동등성 목적에 직접 해가 된다. (2) 모든 then이 이 함수 본문에 없는 callee 내부 로직을 서술(callee_summaries에서 import)하여, 라우터가 관측하는 결과가 아니라 위임 대상의 내부를 기술한다. questions:[]는 적절(op_cl 값은 헤더 주석에 전부 문서화, 미해결 모호점 없음). affected_tables가 전부 []인 것도 정확(reads/writes 모두 빈 주입, 테이블 작업은 callee 몫). 병합만 개별 규칙으로 분리하고 then을 '해당 callee 1회 호출·rc 전달'로 교정하면 sound 수준이 된다."
+  },
+  "verdict": {
+   "target_id": "code:zapamcom10070.c:c000_main_proc",
+   "confirmed_ungrounded": 6,
+   "confirmed_low_value": 0,
+   "confirmed_missing": 4,
+   "refuted": [],
+   "verdict_notes": "Tried to refute each claim; none survived except a minor imprecision noted below.\n\nUNGROUNDED (6/6 CONFIRMED):\n- Rules 2/3/4/7 merges: verified in switch body that each merged op_cl group routes to DIFFERENT callees (11·14→c200 vs 21·31→c900; 12→cD00 vs 22·32→c300; 13·15→c400 vs 41→c500; 18→c800 vs 43→cC00). This is a dispatcher; per §3.4 the observable result IS which callee is invoked, and §3 축3 requires value→result mapping be recoverable from the example. Merged rules make it impossible to recover which callee runs. Refutation attempt (grouping by common domain outcome \"신규등록/갱신\") fails because §2 통합 requires 조건 의미가 같음; op_cl 11(자납신청) vs 21(가입입력) are distinct business ops → 분리 required. The `then` strings also narrate only one callee's internals (e.g. c200 \"시리얼 번호 산정\") which is false for the other (c900 = EDI/FB 구분), actively misleading. CONFIRMED.\n- \"All thens narrate callee internals\": code_body is only switch+PFM_TRY; thens import callee_summaries content (R1 \"계정번호 키로 이력 조회\", R11/op_cl 52 \"전송제외 은행 조회\"), violating evidence-order #4 (callee summary 보조일 뿐, callee Rule 가져오지 않음) and §3.4 router-then spec. Minor imprecision: the word \"모든\" is overbroad — Rule 14 (default) then IS grounded (PFM_ERRC/RC_ERR in active code). But the cited exemplars (R1, R11) and the substantive defect are real and grounded, so the finding stands. CONFIRMED.\n- send_cl_cd=3 (Rule 13/op_cl 63): value appears ONLY in the case-63 comment; active code just calls cJ00_insert and sets nothing. §6/§3.4 forbid comment-only detail in then. CONFIRMED.\n\nMISSING (4/4 CONFIRMED): the c900 (21·31), c300 (22·32), c500 (41), cC00 (43) dispatch distinctions are genuinely absent from output, absorbed into the merged rules. These are the valid flip-side of the merge defects and each is an independently true statement about a lost op_cl→callee routing (축3). Code evidence for each case line matches the audit exactly. CONFIRMED.\n\nLOW_VALUE: none filed."
+  }
+ },
+ {
+  "id": "code:zapamcom10140.c:c300_call_zapamcom10050_proc",
+  "overall": "minor_issues",
+  "reimpl": "partial",
+  "conf_ungrounded": 2,
+  "conf_lowvalue": 1,
+  "conf_missing": 2,
+  "audit": {
+   "target_id": "code:zapamcom10140.c:c300_call_zapamcom10050_proc",
+   "n_rules": 13,
+   "n_examples": 15,
+   "ungrounded": [
+    {
+     "kind": "rule",
+     "text": "Rule 11 statement: '...result_cd를 'S' 또는 'N'으로 설정한 뒤...'",
+     "why": "코드의 pay_mthd_cd==1 && auth_cl_cd!='1' else 분기에서, EDI/SK-VAN='Y'일 때만 result_cd='S'를 세팅하고, 아닐 때(else)는 rltm_auth_rslt_cd='SKIP'만 세팅할 뿐 result_cd='N'을 세팅하는 활성 코드가 없다. 'N'(NORMAL)은 주석(그이외는 'N')에만 있는 미실행 값이다. §6 '로그/주석은 실행결과 아님'. 다만 example 본문 2건은 result_cd='N'을 넣지 않아 정확하다 — statement 문구만 과장."
+    },
+    {
+     "kind": "rule",
+     "text": "Rule 3·4의 'co_cl_cd='B'(B2B)' 및 여러 rule의 의미 주석",
+     "why": "co_cl_cd='B'를 'B2B'로 해석한 근거가 코드·주석·referenced_symbols 어디에도 없다(리터럴 'B'는 보존되어 있으나 'B2B' 뜻풀이는 무근거). 재구현 행위엔 영향 없는 경미한 gloss."
+    }
+   ],
+   "low_value_examples": [
+    {
+     "text": "Rule 4 — given 'co_cl_cd='B'이고 non_auth_yn='Y''; then 'auth_cl_cd='3'로 변경'",
+     "why": "함수 첫 블록(Rule 1)이 non_auth_yn=='Y'면 무조건 auth_cl_cd='3'을 먼저 세팅한다. co_cl_cd='B' 블록의 non_auth 재세팅은 이미 '3'인 값을 '3'으로 다시 쓰는 것이라, Rule 4를 제거해도 재구현 행위가 달라지지 않는다(non_auth_yn='Y'면 co_cl_cd와 무관하게 '3'). Rule 1과 관측 결과가 동일한 redundant.",
+     "category": "redundant"
+    }
+   ],
+   "missing_rules": [
+    {
+     "description": "금결원(KFTC) 계좌인증만 수행 정책: 특정 deal_id 집합이거나 co_cl_cd='T'이면서 특정 deal_id 집합이면 하위 인증모듈 입력 kftc_only_auth_yn='Y'로 설정한다. 어떤 거래가 KFTC 단독 계좌인증 경로를 타는지 결정하는 도메인 정책인데 rule에 전혀 없다.",
+     "code_evidence": "if ((strncmp(itf->in.deal_id,\"ZEQPSBIZ00610_TR06\",...)==RC_NRM) || (strncmp(itf->in.deal_id,\"ZAPASCRT60010_TR84\",...)==RC_NRM) || ( (strncmp(itf->in.co_cl_cd,\"T\",...)==RC_NRM) && ( ...ZPAYSTRM20100_TR03 / ZPAYSREG00100_TR13 / ZPAYSREG00420_TR04 / ZPAYSREG00420_TR02 / ZPAYSOVRN0900_TR82 ... ) ) ) { strncpy( zapamcom10050_io.in.kftc_only_auth_yn , \"Y\" , ...); }"
+    },
+    {
+     "description": "EDI/FB 구분코드가 'K'이면 KSNET 인증 경로로 전환하는 정책: 하위 인증모듈 입력 kftc_only_auth_yn='Y', edi_fb_cl_cd='E'로 변환한다(그 외에는 입력 edi_fb_cl_cd를 그대로 전달). 결제수단 인증 라우팅을 바꾸는 도메인 결정인데 누락됨.",
+     "code_evidence": "if (strncmp(itf->in.edi_fb_cl_cd,\"K\",...)==RC_NRM) { strncpy(zapamcom10050_io.in.kftc_only_auth_yn,\"Y\",...); strncpy(zapamcom10050_io.in.edi_fb_cl_cd,\"E\",...); } else { strncpy(zapamcom10050_io.in.edi_fb_cl_cd, itf->in.edi_fb_cl_cd,...); }  /* 2019.09.26 edi_fb_cl_cd='K' 인경우 kftc_only_auth_yn=Y 로 하여 ksnet인증 하도록함 */"
+    }
+   ],
+   "reimplementable": "partial",
+   "reimplementable_gaps": [
+    "하위 인증모듈(zapamcom10050) 호출 전 KFTC 단독인증 정책(deal_id/co_cl_cd 집합→kftc_only_auth_yn='Y')과 EDI 'K'→'E'/KSNET 라우팅 정책이 rule에 없어, 인증경로 결정 로직을 원본과 동등하게 재구현할 수 없다.",
+    "블록 간 우선순위/순서가 rule로 명시되지 않는다. 원본은 (1)non_auth→'3' (2)co_cl_cd='B' 보정 (3)EDI/SKVAN 신규가입 조기 return (4)외부인증='2' return (5)TGATE return (6)pay_mthd 분기 순으로 상호 덮어쓰기가 있는데, 개별 rule만으로는 이 선후·override 관계 복원이 불확실.",
+    "Rule 11 statement의 result_cd='N' 문구는 실행되지 않으므로 그대로 재구현하면 원본과 어긋난다(example 본문을 따라야 정확).",
+    "zapamcom10050 자체가 외부/미해결이라, 그 반환 auth_cl_cd 산출은 어차피 이 함수만으로 재현 불가(입력 세팅 정책 보존이 최선인데 그마저 누락)."
+   ],
+   "overall": "minor_issues",
+   "notes": "전반적으로 근거성이 높은 추출이다. 함수 후반부(auth_cl_cd 결정·조기 return·pay_mthd별 rltm_auth_rslt_cd/result_cd/이력호출)는 코드와 잘 일치하고 환각이 거의 없다. Rule 10·11의 2-example 분리(EDI/SKVAN='Y' vs 아님)는 §3 축3(값→결과 보존) 준수로 적절. Rule 5(신규가입 조기 return, '3'/SKIP/'S')와 Rule 12(간편결제 '5'→이력호출 안 함, 주석처리된 d100 반영)도 정확.\\n\\n주요 흠 3가지: (1) 하위 인증모듈 호출 전의 두 도메인 정책(KFTC 단독계좌인증 결정, EDI 'K'→KSNET 라우팅)이 통째로 누락 — 이 함수의 인증경로 선택 핵심 로직임. split-3 지침상 callee 입력 DTO 매핑은 기술로 볼 여지가 있으나, '어떤 거래가 KFTC-only 인증을 받는가'는 조건부 정책 세팅이라 도메인으로 판단. (2) Rule 11 statement의 result_cd='N'은 미실행 주석값(과장). (3) Rule 4는 Rule 1과 관측결과 동일한 redundant.\\n\\n경미: Rule 13의 bank_card_co_cd=='NF' 경우는 아무 것도 세팅 안 하고 return하는 silent-pass인데(주석상 도달불가로 명시) rule엔 !='NF'만 담김 — 도달불가 방어라 큰 문제는 아님. co_cl_cd='B'→'B2B' 등 일부 의미 gloss는 무근거지만 행위 영향 없음.\\n\\naffected_tables는 reads/writes 모두 비어 전 example []로 정확(§4.2 준수, callee 테이블 미유입 확인). questions=[]도 타당(본문·주석·심볼로 대부분 해소, 억지 질문 없음)."
+  },
+  "verdict": {
+   "target_id": "code:zapamcom10140.c:c300_call_zapamcom10050_proc",
+   "confirmed_ungrounded": 2,
+   "confirmed_low_value": 1,
+   "confirmed_missing": 2,
+   "refuted": [],
+   "verdict_notes": "All 5 raised issues confirmed; none refutable. UNGROUNDED-1 (Rule 11 'N'): active code in the pay_mthd_cd==1/auth_cl_cd!='1' else-branch sets only rltm_auth_rslt_cd='SKIP', never result_cd='N' — 'N' is comment-only (§6). Statement asserts an unset value; examples themselves are correct. UNGROUNDED-2 (co_cl_cd='B'(B2B)): literal 'B' preserved, but no code/comment/callee/referenced_symbol grounds 'B2B'; fabricated gloss, not needed for reimpl. LOW_VALUE (Rule 4): first block unconditionally sets auth_cl_cd='3' on non_auth_yn=='Y' and skips the module call, so the co_cl_cd=='B' block's re-set of '3' is a no-op fully subsumed by Rule 1 — identical observable outcome, cross-rule redundancy (§3.3). MISSING-1 (KFTC-only policy): kftc_only_auth_yn='Y' set for specific deal_id set / co_cl_cd='T'+deal_id set — parent's own dated domain routing decision, changes downstream auth; §5 flags omitting parent value-branches as 큰 누락. MISSING-2 (edi_fb_cl_cd='K'→KSNET): pre-call transform sets kftc_only_auth_yn='Y' and converts edi_fb_cl_cd 'K'→'E' for KSNET auth; distinct from the later K-check in Rules 10/11 (which history module to call), and absent from all rules."
+  }
+ },
+ {
+  "id": "code:zapamcom10090.c:b800_update_zord_acnt_dc_rt",
+  "overall": "significant_issues",
+  "reimpl": "partial",
+  "conf_ungrounded": 1,
+  "conf_lowvalue": 0,
+  "conf_missing": 3,
+  "audit": {
+   "target_id": "code:zapamcom10090.c:b800_update_zord_acnt_dc_rt",
+   "n_rules": 12,
+   "n_examples": 15,
+   "ungrounded": [
+    {
+     "kind": "example",
+     "text": "Rule 8 (11/12/22/71 은행변경) 두 번째 예: given '전일 납부방법이 은행이 아님' → then '할인율/청구유형 0으로 갱신'",
+     "why": "코드는 이 분기에서 전일 여부로 직접 갈리지 않는다. 11/12/22/71 은 모두 c870_chk_req_01() 호출 후 무조건 u0035 = gc_*_a 로 세팅한다. 실제 전일 판정은 c870 내부에 있어 code_body 에 없다. 게다가 code_body 의 주석은 3-way(은행→원복 / 카드→현재할인율 유지 / 간편결제→0)를 명시한다. 즉 '전일=카드'면 유지인데 규칙은 '전일≠은행 → 0'으로 뭉개 카드 케이스를 0으로 잘못 진술한다(주석과 모순)."
+    },
+    {
+     "kind": "rule",
+     "text": "Rule 2 statement: '변경 사유가 22(은행변경)이고 기존 01 AND 변경후 01 이면 유지'",
+     "why": "코드 조건은 오직 gc_pre_pay_mthd_cd==\"01\" && itf->in.pay_mthd_cd==\"01\" 뿐이고 acnt_chg_rsn_cd 를 전혀 검사하지 않는다. '22'는 코드 주석이 예시로 든 케이스(71 도 함께 나열됨) 중 하나일 뿐인데 이를 게이팅 조건처럼 서술했다. given 절은 pay_mthd 조건만 있어 정확하나, statement 가 조건을 지어냈다."
+    },
+    {
+     "kind": "rule",
+     "text": "Rule 3 statement: '변경 사유가 21,71,54 이고 기존 02 AND 변경후 02 이면 유지'",
+     "why": "Rule 2 와 동일. 코드 조건은 gc_pre_pay_mthd_cd==\"02\" && pay_mthd_cd==\"02\" 뿐, acnt_chg_rsn_cd 미검사. 21/71/54 는 주석 예시일 뿐 실제 게이팅 조건이 아니다."
+    }
+   ],
+   "low_value_examples": [
+    {
+     "text": "Rule 9: given acnt_chg_rsn_cd='62'(클라우드개통) → 할인율 0",
+     "why": "코드상 62 는 은행 분기의 else(기본) 경로다: '13,41,11,12,22,71 이외 코드 → 할인율=0'. 62 하나만 집어내면 재구현 행위에 필요한 '기타 사유 전부 → 0'이라는 일반 규칙을 담지 못하며, 62 만으로는 정보가 부족하다. 실제 규칙(은행 분기 기타→0)의 한 인스턴스에 불과하다.",
+     "category": "trivial"
+    },
+    {
+     "text": "Rule 7: given '변경 사유 13 OR 41 AND 변경 전 납부방법이 은행이 아님' → then '변경 전 최종 할인율 원복'",
+     "why": "given 이 실제 판별자를 못 짚는다. Rule 5(카드 13/41)와 Rule 7(은행 13/41)의 진짜 구분자는 '변경후 pay_mthd_cd'(02 vs 01)인데 both given 이 '변경전' 상태로 서술해 어느 규칙이 적용되는지 모호하다. 또한 은행 분기 13/41 의 핵심 내부 분기(gc_max 할인율==0/공백이면 c830 재조회, >0 이면 copy)를 '원복' 한 마디로 뭉개 재구현 근거가 되지 못한다.",
+     "category": "vague"
+    }
+   ],
+   "missing_rules": [
+    {
+     "description": "변경 후 카드(pay_mthd_cd='02')이고 사유가 13/41/21 이외(예: 11 신청-카드, 61 개통-카드 등)이면 할인율을 0으로 초기화한다. 카드 신청/개통 시 자동이체 할인 미부여라는 실질 업무 규칙인데 출력에 전혀 없다(Rule 5/6 은 13/41/21 만 다룸).",
+     "code_evidence": "pay_mthd_cd==\"02\" 분기 말미: '}else { // 그외 카드로 변경시 할인율 =0 \\n iCaseNum = 0; }'"
+    },
+    {
+     "description": "은행 변경 13/41 사유에서 계정변경이력 최종 할인율(gc_max_auto_trnsf_dc_rt_b)이 '0' 또는 공백이면, 그 신청일자(gc_max_chg_dt)로 은행해지 이력(c830_sel_zord_acnt_chg_hst_s0036)을 재조회해 그 할인율로 세팅하고, 0 초과이면 최종 할인율을 그대로 copy 한다. Rule 7 이 이 이중 분기를 '원복' 한 마디로 삭제했다.",
+     "code_evidence": "if ( strncmp( gc_max_auto_trnsf_dc_rt_b, \"0\" , 1) == RC_NRM || mpfm_isspnull(gc_max_auto_trnsf_dc_rt_b ) == RC_NRM ) { strncpy( gc_chg_dt_s0036, gc_max_chg_dt, 8); rc = c830_sel_zord_acnt_chg_hst_s0036(itf); ... } else { ... = gc_max_auto_trnsf_dc_rt_b; }"
+    },
+    {
+     "description": "현재 할인율 조회(c840_sel_zord_acnt_s0221)가 실패(RC_NRM 아님)하면 변경 전 할인율/청구유형 기준값을 '0'으로 초기화한다. 이후 모든 '유지/원복' 계산의 기준값을 결정하는 전제인데 누락됐다.",
+     "code_evidence": "rc = c840_sel_zord_acnt_s0221( itf ); if ( rc != RC_NRM) { strncpy(gc_inv_pay_dc_strd_cl_cd_b, \"0\", 1); strncpy(gc_auto_trnsf_dc_rt_b, \"0\", 1); }"
+    },
+    {
+     "description": "이력/전일 조회 콜리(c860, c820, c830, c870)가 RC_ERR 를 반환하면 즉시 RC_ERR 로 중단한다(에러 전파). 출력의 어떤 규칙도 에러 처리 경로를 담지 않는다.",
+     "code_evidence": "각 호출 뒤 'if (rc == RC_ERR) { PFM_ERRC(...); return RC_ERR; }' 반복 (c860_sel_..s0030, c820_sel_..s0064, c830_sel_..s0036, c870_chk_req_01)"
+    },
+    {
+     "description": "최종 zord_acnt_u0035 UPDATE 실패(RC_NRM 아님) 시 에러 로그/메시지 출력 후 RC_ERR 반환. 성공 시에만 RC_NRM. 실제 DB 갱신의 성패 처리가 누락됐다.",
+     "code_evidence": "rc = mpfmdbio(\"zord_acnt_u0035\", &zord_acnt_u0035_in, NULL); if (rc != RC_NRM) { PFM_ERRC(...); PFM_MSGE(...); return RC_ERR; }"
+    }
+   ],
+   "reimplementable": "partial",
+   "reimplementable_gaps": [
+    "카드로 변경 시 13/41/21 이외 사유(11 신청-카드, 61 개통 등) → 할인율 0 규칙이 없어 카드 신청/개통 행위를 재현 불가",
+    "은행 13/41 의 내부 이중 분기(gc_max==0 → c830 재조회 vs >0 → copy)가 '원복'으로 뭉개져 정확한 할인율 산정 재현 불가",
+    "Rule 5(카드 13/41)와 Rule 7(은행 13/41)의 실제 판별자가 '변경후 pay_mthd_cd'(02/01)인데 given 이 이를 명시하지 않아 어느 분기인지 결정 불가",
+    "Rule 8/10 의 11/12/22/71·22 처리는 c870_chk_req_01 내부(전일 은행/카드/간편 3-way)에 의존하는데 규칙이 2-way 로 축약하고 '전일≠은행→0'으로 카드 유지 케이스를 잘못 서술",
+    "c840 조회 실패 시 기준 할인율 0 초기화라는 전제, 콜리 RC_ERR 전파, 최종 UPDATE 실패 RC_ERR 등 에러/전제 경로 전부 누락",
+    "Rule 2/3 statement 가 실재하지 않는 rsn 게이팅 조건(22 / 21,71,54)을 붙여, 그대로 재구현하면 없는 조건을 추가하게 됨"
+   ],
+   "overall": "significant_issues",
+   "notes": "해피패스 분기(pay_mthd × acnt_chg_rsn_cd)의 골격은 12개 규칙으로 상당 부분 포착됐고, 최종 대상 테이블(zord_acnt, UPDATE via zord_acnt_u0035 — SQL_KEY 규약상 op=u)은 일관되게 맞다. Rule 1(납부방법 null→return), Rule 12(rsn=12→갱신없이 return)는 코드와 정확히 일치하는 좋은 규칙이다. 그러나 (a) 카드 분기 기본값(그외 카드 변경→0) 규칙 통째 누락, (b) 은행 13/41 내부 이중분기(c830 재조회) 삭제, (c) c840 실패 초기화·콜리 RC_ERR 전파·최종 UPDATE 실패 등 에러/전제 경로 전면 누락, (d) Rule 8 예2가 code_body 주석과 모순(전일=카드는 유지인데 0으로 진술)되는 부정확, (e) Rule 2/3 statement 의 rsn 조건 날조 — 이 다섯 때문에 규칙+사례만으로 행위 동등 재구현은 partial 이며 전체는 significant_issues. questions 배열은 비어 있는데, 이 함수는 다수의 opaque 콜리(c870 의 3-way 전일 판정, c830/c860 이 반환하는 값의 의미)에 행위가 크게 의존하므로 질문거리가 분명히 존재한다(질문 0건은 과소)."
+  },
+  "verdict": {
+   "target_id": "code:zapamcom10090.c:b800_update_zord_acnt_dc_rt",
+   "confirmed_ungrounded": 1,
+   "confirmed_low_value": 0,
+   "confirmed_missing": 3,
+   "refuted": [
+    "ungrounded Rule 2 statement (22 gate): reason code is grounded in branch comment and given clause uses only the true pay_mthd 01/01 condition; representative code in NL summary is not fabrication",
+    "ungrounded Rule 3 statement (21/71/54 gate): identical to Rule 2 - codes come verbatim from the card->card branch comment; given clause is correct pay_mthd 02/02",
+    "low_value Rule 9 (62->0): comment explicitly documents '이 외) 62 (클라우드개통) - 할인율=0' as a distinct business case; correct and grounded",
+    "low_value Rule 7 (vague): captures a real business case (bank 13/41 -> restore prior discount); '변경전!=은행' is a genuine precondition of this branch; summarization is not low value",
+    "missing[3] callee RC_ERR propagation: generic ProFrame error boilerplate, not a distinctive business rule",
+    "missing[4] final update RC_ERR: same generic DB-error propagation boilerplate present in every DBIO function"
+   ],
+   "verdict_notes": "Verified against function body in fn_19.json (all quoted code sections confirmed via Read + Grep). CONFIRMED ungrounded: Rule 8's 2nd example collapses the documented 3-way (전일=카드->유지) into '전일!=은행->0', contradicting the 11/12/22/71 branch comment; the value is computed in c870 (not in body), so the 0-outcome is both unsupported and comment-contradicting. REFUTED two ungrounded rule-statement claims: the 22 and 21/71/54 reason codes are grounded in branch comments and the machine-condition (given clause) uses only pay_mthd, so behavior is preserved. CONFIRMED 3 missing: (0) card-branch else->0 for other card reasons (real 'else' branch, not in 13/41/21 rules); (1) bank 13/41 dual-branch (gc_max==0/blank -> c830 re-query by app date vs >0 -> copy) flattened to '원복', outcomes can differ; (2) c840 failure -> baseline '0', a value fallback feeding every keep/restore path. REFUTED both low_value (Rule 9/62 is a documented business case; Rule 7 carries genuine value) and missing[3]/[4] (generic ProFrame RC_ERR propagation boilerplate, not distinctive rules)."
+  }
+ },
+ {
+  "id": "code:zapamcom10020.c:Bank_034_CSB_Check",
+  "overall": "significant_issues",
+  "reimpl": "no",
+  "conf_ungrounded": 2,
+  "conf_lowvalue": 0,
+  "conf_missing": 2,
+  "audit": {
+   "target_id": "code:zapamcom10020.c:Bank_034_CSB_Check",
+   "n_rules": 16,
+   "n_examples": 16,
+   "ungrounded": [
+    {
+     "kind": "rule",
+     "text": "Rule 2: '12자리 계좌 중 3자리 과목코드가 101,103,107,108,109,121,122,123,124,127,731이면 오류를 반환한다' → then '오류 코드 00을 설정하고 오류를 반환한다'",
+     "why": "코드에 이런 오류 반환 경로가 없다. 전처리 블록(prefix '00')의 inner switch에서 case 101..127은 break(그대로 유지→후속 처리 진행)이고 case 731은 'return RC_NRM'(정상 반환)이다. 어느 경우에도 result_cd '00'/RC_ERR을 설정하지 않는다. '오류 반환'은 완전한 환각이며, 특히 731의 실제 결과(정상 통과)를 정반대로 뒤집었다."
+    },
+    {
+     "kind": "rule",
+     "text": "Rule 4: '12자리 계좌 중 1자리 과목코드가 0이고 3자리 과목코드가 101..731이면 오류를 반환한다' → then '오류 코드 00 설정하고 오류 반환'",
+     "why": "prefix '0' 전처리 블록도 동일하다. case 101..127은 break, case 731은 'return RC_NRM'. 오류 반환 경로가 코드에 존재하지 않는다. Rule 2와 같은 환각(731을 정상→오류로 반전)."
+    },
+    {
+     "kind": "rule",
+     "text": "Rule 16: '12자리 계좌 중 4~6자리 과목코드가 101..731이 아니면 가중치 계산·체크섬 검증한다'",
+     "why": "메인 switch case 12에서 집합의 값들이 동질적으로 동작하지 않는다. 101..127은 break→체크섬으로 '진행'하고(집합에 속해도 체크섬 실행), 731만 'return RC_NRM'으로 조기 정상 반환(체크섬 생략)이며, default(집합 밖)도 체크섬으로 진행한다. 즉 '집합에 속하면 체크섬 안 함'이라는 함의가 틀렸다 — 731을 제외한 집합원과 집합 밖이 똑같이 체크섬을 탄다. 값→결과 대응(축3) 깨짐."
+    }
+   ],
+   "low_value_examples": [
+    {
+     "text": "Rule 6 example: 10자리 계좌 과목코드 01,02,03,20 → 가중치 계산 후 체크섬 검증",
+     "why": "case 10 inner switch에서 01/02/03/20은 break만 하고 계좌를 전혀 변경하지 않는다. 결과 동작이 default(Rule 10)와 완전히 동일(무변경→체크섬). 05·37만이 실제 변경을 일으키므로, 이 명시 case는 default와 행위가 같아 재구현에 새 정보를 주지 않는다.",
+     "category": "redundant"
+    },
+    {
+     "text": "Rule 9 example: 10자리 계좌 과목코드 37이고 체크값 80000 이하 → 무변경 체크섬",
+     "why": "Rule 8('37이고 >80000이면 변경')의 if 조건에 대한 기계적 역진술이다. '80000 초과면 변경'을 알면 '이하면 무변경'은 자동으로 따라오는 디폴트로, 별도 행위 정보가 없다.",
+     "category": "mechanical_negative"
+    },
+    {
+     "text": "Rule 11 example: 11자리 계좌 과목코드 01,02,03,20 → 가중치 계산 후 체크섬 검증",
+     "why": "case 11의 01/02/03/20도 break만 하고 무변경. default(Rule 15)와 행위 동일. Rule 6과 같은 redundant 패턴(11자리판).",
+     "category": "redundant"
+    },
+    {
+     "text": "Rule 14 example: 11자리 계좌 과목코드 37이고 체크값 80000 이하 → 무변경 체크섬",
+     "why": "Rule 13('37 & >80000이면 변경')의 if 조건 기계적 역진술. 새 행위 정보 없음.",
+     "category": "mechanical_negative"
+    }
+   ],
+   "missing_rules": [
+    {
+     "description": "과목코드 731이면 즉시 정상(RC_NRM) 반환하여 체크섬 검증을 생략한다 — 전처리 두 블록과 메인 switch case 12 모두에 존재하는 도메인 규칙('계좌정합성 현행화 2013.02.14' 주석). 현재 출력은 이 동작을 오류 반환(Rule 2,4)으로 반전하거나 체크섬 대상(Rule 16)으로 뭉개 잘못 표현했고, '즉시 정상 통과'라는 실제 결과를 어디에도 정확히 담지 못했다.",
+     "code_evidence": "세 곳 모두 'case 731:\\n    return RC_NRM;' (전처리 블록1, 전처리 블록2, 메인 switch case 12의 inner switch)"
+    },
+    {
+     "description": "전처리 자리수 축소의 접두 조건 누락: 12자리를 10자리로 축소(Rule 3)하려면 앞 2자리가 '00'이어야 하고, 11자리로 축소(Rule 5)하려면 앞 1자리가 '0'이어야 한다. Rule 3·5는 이 접두 조건을 빠뜨려, 접두가 다른 12자리 계좌도 축소되는 것처럼 오인시킨다. 또한 축소 후 '통과한다'는 표현은 틀림 — 반환하지 않고 후속 메인 switch·체크섬으로 계속 진행한다.",
+     "code_evidence": "if ((gl_Acnt_Length == 12) && (strncmp(Bank_Param_st.c_Gmok2,\"00\", 2) == 0)) {...default: strncpy(c_Weight1,&gc_Acnt_Crd_No[2],10); gl_Acnt_Length=10;} / if ((gl_Acnt_Length==12) && (strncmp(c_Gmok,\"0\",1)==0)) {...default: gl_Acnt_Length=11;}"
+    },
+    {
+     "description": "최종 검증 판정 기준(체크디짓 비교)이 구체적으로 누락됨. 길이별로 c_Weight1 접두('3400'=10/11자리, '00'=12자리)와 c_Weight2 가중치 문자열('8732320987432'=10/11자리, '0018712387431'=12자리)이 다르며, 체크디짓=(10 - Check_Sum(13)%10)%10 을 계좌 14번째 문자(c_Weight1[13])와 비교해 불일치 시 RC_ERR. 규칙들은 '가중치 계산 후 체크섬 검증'으로만 추상화해, 통과/실패를 재현할 실제 상수·판정 위치를 담지 않았다.",
+     "code_evidence": "l_Summ1=(Check_Sum(13)%l_Modele); l_Summ2=l_Modele-l_Summ1; l_Summ2%=10; snprintf(c_Check_Digit,...,\"%ld\",l_Summ2); if (c_Weight1[13]!=c_Check_Digit[0]) { strncpy(itf->out.result_cd,\"00\",...); return RC_ERR; } / 길이별 strncpy(c_Weight1,\"3400\"/\"00\",..), strncpy(c_Weight2,\"8732320987432\"/\"0018712387431\",13)"
+    }
+   ],
+   "reimplementable": "no",
+   "reimplementable_gaps": [
+    "과목코드 731의 실제 동작(즉시 RC_NRM 정상 반환)이 Rule 2·4에서 '오류 반환'으로 반전되어, 재구현하면 정상 계좌를 거절한다 — 행위 동등 불가.",
+    "최종 검증의 핵심(통과/실패 판정)을 재현할 수 없다. 길이별 접두 상수('3400'/'00'), 가중치 문자열('8732320987432'/'0018712387431'), 체크디짓 산식(10-합%10)%10, 비교 위치(14번째 문자)가 규칙에 없이 '체크섬 검증'으로만 추상화됨.",
+    "전처리 축소(Rule 3·5)의 접두 조건('00'/'0')이 빠져, 어떤 12자리 계좌가 10/11자리로 축소되는지 정확히 재현 불가.",
+    "Rule 16이 731과 101~127을 한 집합으로 묶어 값→결과 대응이 깨져, case 12에서 어떤 코드가 조기 반환하고 어떤 코드가 체크섬으로 진행하는지 복원 불가."
+   ],
+   "overall": "significant_issues",
+   "notes": "함수는 은행 034(CSB) 계좌번호 정합성 검증기다. 실제 도메인 골격은 3단계: (1) 12자리 정규화 전처리(접두 '00'→앞2자리 제거해 10자리, 접두 '0'→앞1자리 제거해 11자리; 단 과목코드가 특정 집합이면 유지, 731이면 즉시 정상 반환), (2) 길이별(10/11/12) inner switch에서 특정 과목코드(05, 37&체크값>80000)일 때만 계좌 7~8자리를 '02'로 강제 치환·731이면 정상 반환·그 외 무변경, (3) 길이별 접두·가중치 문자열로 체크디짓 계산 후 계좌 14번째 문자와 비교해 통과/오류.\\n\\n실제 행위를 바꾸는 도메인 결정은 사실상 (a) 자리수 정규화+접두조건, (b) 과목코드 731→즉시 정상, (c) 05/37>80000→7~8자리 '02' 치환, (d) 최종 체크디짓 비교 4가지뿐이다. 생성된 16개 규칙 중 진짜 고유 도메인 내용을 담은 것은 Rule 7·8·12·13(치환) 정도이고, 나머지 상당수는 '무변경→체크섬'을 반복하는 redundant/mechanical negative다.\\n\\n가장 심각한 결함은 환각이다. Rule 2·4가 과목코드 731·101~127에 대해 존재하지 않는 '오류 코드 00 설정·오류 반환'을 지어냈고, 특히 731의 실제 결과(RC_NRM 정상 통과)를 정반대로 뒤집었다. Rule 16도 731을 101~127과 같은 집합에 묶어 값→결과 대응을 깨뜨렸다. 그 결과 731 계좌의 실제 동작(체크섬 생략하고 즉시 정상)이 출력 어디에도 올바로 담기지 않았다.\\n\\nRule 3·5는 축소 변환 자체는 근거가 있으나 접두 조건('00'/'0')을 빠뜨렸고 '통과한다'로 오작(반환이 아니라 후속 진행). affected_tables는 reads/writes 모두 비어 전부 [] 로 정확하다. questions=[]은 적절(본문에 답이 있는 분기들뿐)."
+  },
+  "verdict": {
+   "target_id": "code:zapamcom10020.c:Bank_034_CSB_Check",
+   "confirmed_ungrounded": 2,
+   "confirmed_low_value": 0,
+   "confirmed_missing": 2,
+   "refuted": [
+    "ungrounded Rule 16: statement asserts only the complement (not-in-set -> checksum), which IS grounded in the case-12 default:break->checksum path; not a fabricated path. The real 731/in-set defect is already carried by Rule 2/4 + the 731 missing item.",
+    "low_value Rule 6 (redundant): audit assumes it duplicates default Rule 10, but Rule 10 is phrased to EXCLUDE 01,02,03,20; pruning leaves them uncovered (value-set gap, axis-2). Also explicit case labels, which prompt 3.1 allows preserving.",
+    "low_value Rule 9 (mechanical_negative): audit assumes 37&<=80000 equals default, but Rule 10 EXCLUDES code 37 entirely, so Rule 9 is the only coverage for 37&<=80000; pruning creates a real gap. Audit premise factually wrong.",
+    "low_value Rule 11 (redundant): same as Rule 6 for the 11-digit block (Rule 15 excludes 01,02,03,20; explicit case labels).",
+    "low_value Rule 14 (mechanical_negative): same as Rule 9 for the 11-digit block (Rule 15 excludes 37; only coverage for 37&<=80000).",
+    "missing checksum-constants: the checksum verification and its pass(정상)/fail(오류) outcomes ARE captured; weight strings, prefixes, modulus and check-digit formula are checksum-algorithm implementation detail, not business decisions, and not in referenced_symbols (no 4.1 mandate). Acceptable abstraction.",
+    "sub-part of missing prefix-guard claim: Rule 5 does NOT omit its prefix — its given already includes '1자리 과목코드가 0' (the first-digit==0 guard). Only Rule 3's '00' prefix is genuinely absent."
+   ],
+   "verdict_notes": "Headline finding upheld: Rules 2 and 4 are true hallucinations — code returns NO error for codes 101..127 (break) and returns RC_NRM (normal, the OPPOSITE) for 731; the rules claim 오류 반환. Confirmed ungrounded (2). Correspondingly, the domain decision 'subject code 731 -> immediate RC_NRM, skip checksum' (present at all three switch sites, business comment 2013.02.14) is genuinely missing/misrepresented -> confirmed missing. Second confirmed missing: Rule 3 (12->10 reduction) omits the required first-2-digits=='00' guard, which without it conflicts with Rule 5's 11-digit reduction for a '0x...' account. Refuted: Rule 16 ungrounded (its complement statement is grounded in case-12 default->checksum). All 4 low_value claims refuted on the same factual flaw — the audit calls them 'identical to default (Rule 10/15)', but those default rules are written to EXCLUDE exactly these codes ('...아니면'), so the codes are NOT covered by default and pruning the rules opens value-set-completeness gaps (axis-2); Rule 6/11 are additionally explicit case labels blessed by prompt section 3.1. Missing checksum-constants refuted: pass/fail outcomes are captured and the weight literals are algorithm implementation detail not in referenced_symbols. Note: the prefix-guard missing item is partly inaccurate — it wrongly also accuses Rule 5, which does include its '0' prefix; only the Rule 3 '00' gap is real, which is why the item is still confirmed."
+  }
+ },
+ {
+  "id": "code:zapamcom10100.c:b200_SMS_transfer",
+  "overall": "minor_issues",
+  "reimpl": "partial",
+  "conf_ungrounded": 1,
+  "conf_lowvalue": 1,
+  "conf_missing": 2,
+  "audit": {
+   "target_id": "code:zapamcom10100.c:b200_SMS_transfer",
+   "n_rules": 12,
+   "n_examples": 26,
+   "ungrounded": [
+    {
+     "kind": "example",
+     "text": "Rule 5 (req_cl_cd='7' 간편결제 오류결과) ex0/ex1: given에 '계좌인쇄여부(bank_prt_yn)=Y/N' 조건 포함",
+     "why": "'7' 브랜치의 pay!='05' & rslt_cd='0000' & ap_req_typ='C' 경로는 bank_prt_yn을 전혀 분기 조건으로 쓰지 않는다. 코드상 두 경우 모두 tmplt=APACRT018, sms_phrs=[message]|[고객명]로 동일. bank_prt_yn 분기는 신청(1,6,9)·해지(3)·신규(5) 브랜치에만 존재하며 '7'에는 없다 — 이 경로에서 계좌인쇄여부가 결과를 가른다는 인상은 지어낸 것."
+    }
+   ],
+   "low_value_examples": [
+    {
+     "text": "Rule 5 ex1 (req_cl_cd='7', rslt='0000', 변경='C', 계좌인쇄='N' → APACRT018, [message]|[고객명])",
+     "why": "ex0(계좌인쇄='Y')과 then이 완전히 동일(APACRT018, message|고객명). 코드가 '7'에서 bank_prt_yn을 보지 않으므로 유일한 차이 조건이 무의미 — 제거해도 재구현 행위 불변.",
+     "category": "redundant"
+    },
+    {
+     "text": "Rule 1 ex1 (req_cl_cd='5', MMS가능='N' → SMS 발송, '템플릿/내용은 변경여부/계좌인쇄여부에 따라 신청(1,6,9) 규칙과 동일하게 구성')",
+     "why": "then이 '신청 규칙과 동일하게 구성'으로 뭉개져 '5' SMS 브랜치의 실제 동작(zordms0100023 경유 APACRT012/015/025 + svc_cd C/D·N서비스별 cb_num 146633/114/16002000 설정)을 복원할 수 없다. 실행 모듈도 신청 브랜치(zngmmmsg12310)와 다른데 '동일'로 표현.",
+     "category": "vague"
+    }
+   ],
+   "missing_rules": [
+    {
+     "description": "ap_req_typ_cd(변경여부) 미입력 기본값 정책: 값이 공백/NULL이면 'C'(변경)로 세팅한다. 이 기본값이 이후 C/R 분기(APACRT012·015 vs APACRT025) 라우팅을 좌우하므로 도메인 결과를 바꾼다.",
+     "code_evidence": "if ( mpfm_isspnull(itf->in.ap_req_typ_cd) == RC_NRM || strlen( mpfm_trim(itf->in.ap_req_typ_cd )) == 0 ) { itf->in.ap_req_typ_cd[0] = 'C' ; }"
+    },
+    {
+     "description": "회신/콜백번호 결정 규칙(고객이 보는 발신번호): 발송 직전 svc_cd(C/D=유선 vs 무선)·SKT가입여부(gc_skt_svc_yn)·N서비스(gc_nacnt_yn)에 따라 회신번호를 다르게 세팅. 어떤 규칙에도 없음.",
+     "code_evidence": "if(svc_cd 'C'||'D'){ if(skt_svc_yn=='Y'){ nacnt=='Y'?rply='146633':rply='114'; } else rply='15990011'; } else rply='16002000';  또한 '5' 브랜치 내부 cb_num: MMS는 nacnt=='Y'?146633:114, SMS는 svc_cd C/D면 nacnt Y?146633:114 else 16002000"
+    }
+   ],
+   "reimplementable": "partial",
+   "reimplementable_gaps": [
+    "ap_req_typ_cd 공백→'C' 기본값 미기재 → 빈 입력 시 라우팅이 원본과 달라질 수 있음",
+    "회신/콜백번호(146633/114/15990011/16002000) 결정 로직 전무 → 고객이 받는 발신번호가 원본과 불일치",
+    "req_cl_cd='5' SMS 경로의 실제 템플릿(APACRT012/015/025)·cb_num이 Rule 1 ex1에서 '동일하게 구성'으로 뭉개져 정확 복원 불가",
+    "카드/은행 번호 마스킹 산식(카드=앞6자리+**, 은행=앞4자리+**)이 규칙에 없음 — 프롬프트가 마스킹을 '기술'로 분류해 의도적으로 제외하나, 행위 동등 출력에는 실제 필요",
+    "지연시간 파라미터를 '720분/3720분'으로 표기했으나 실제 값 720/3720은 '초'(각 12분/62분). 괄호의 (12분)/(62분)은 맞지만 단위 라벨이 모순",
+    "Rule 8('P' 간편결제 URL안내)의 지연시간 조회는 db:zngm_comm_cd_dtl READ(s0003)인데 affected_tables가 []로 태깅 누락 (주입 reads에 db:zngm_comm_cd_dtl 존재)"
+   ],
+   "overall": "minor_issues",
+   "notes": "핵심 디스패치(req_cl_cd 1/6/9,5,8,A,E,7,T,S,P,3/else)와 템플릿·메시지 필드 구성은 대체로 정확하고 근거가 확실하다(Rule 2·3·4·7·9·10·11 등 강함). 환각으로 없는 템플릿을 지어낸 곳은 없다. 결함은 (a) 예시 1건 중복(R5 ex1)·1건 모호(R1 ex1), (b) '7' 브랜치에 없는 bank_prt_yn 조건을 given에 삽입(R5), (c) 행위에 영향 주는 두 규칙 누락(변경여부 기본값 'C', 회신/콜백번호 결정), (d) 지연시간 단위 라벨 오류('분' vs 실제 '초')로 요약된다.\\n\\n질문(questions) 품질 문제 별도 지적: Q1(‘P’에서 개통모듈이 아닐 때 지연시간 스킵/기본값 여부)의 답은 코드에 이미 있다 — 지연 로직 전체가 if(pgm_id=='ZAPASCRT11010') 내부에 있고 else가 없으므로 '기본값 미적용, 즉시 발송'이 명백. §7의 '답이 본문에 있는데 묻기' 위반. Q2는 본문에 '이 질문은 제거하는 것이 좋음... 이 질문은 제거됨' 같은 모델 내부 추론이 그대로 노출된 산출물 위생 결함이며, 질문 자체도 코드로 이미 명확(N서비스→APACRT219, else→APACRT207). 두 질문 모두 폐기 대상.\\n\\n세부: Rule 9는 given을 req_cl_cd='3'로 적었으나 실제로는 전체 else(catch-all) 분기라 위 어느 값에도 안 걸리는 모든 값이 여기로 감(주석이 '3'으로 라벨). 경미. Rule 0 ex4의 '9' 12분 지연은 ap_req_typ='C'일 때만·bank_prt Y/N 공통으로 적용되는데 예시엔 Y만 표기(경미). '7' pay=='05'는 rslt 무관 항상 APACRT003+지연없음이라는 하위 분기가 Rule 5에 정확히 반영되지 않음(경미)."
+  },
+  "verdict": {
+   "target_id": "code:zapamcom10100.c:b200_SMS_transfer",
+   "confirmed_ungrounded": 1,
+   "confirmed_low_value": 1,
+   "confirmed_missing": 2,
+   "refuted": [
+    "low_value/vague: Rule 1('5') ex1 '신청 규칙과 동일하게 구성' — REFUTED: the '5' SMS path template+content are in fact identical to the 신청(1,6,9) rules (APACRT012/015/025 with matching phrs), which the output explicitly cross-references and Rule 1's examples fully specify, so the content IS recoverable; the then is scoped to 템플릿/내용 and does not claim the module is identical, and cb_num is a separate (confirmed) missing item, not a vagueness of this then."
+   ],
+   "verdict_notes": "Ungrounded CONFIRMED: '7' branch (pay!='05', rslt='0000', ap_req_typ='C') sets APACRT018/[message]|[고객명] with NO bank_prt_yn check anywhere in the '7' path; the given condition 계좌인쇄여부=Y/N is fabricated. Redundant low_value CONFIRMED: Rule 5 ex1 is byte-identical in `then` to ex0 and its sole distinguishing given (계좌인쇄) is not a real code branch. Missing1 CONFIRMED: ap_req_typ_cd blank/NULL→'C' default set at function top (mpfm_isspnull||strlen==0), governs C/R template routing, absent from all 12 rules. Missing2 CONFIRMED: cb_num 146633/114/16002000 by nacnt_yn + svc_cd(C/D) in the '5' MMS and SMS paths — customer-visible callback number, absent from all rules. Vague claim REFUTED because content is recoverable via the cross-referenced 신청 rule."
+  }
+ },
+ {
+  "id": "code:zapamcom10090.c:b000_main_proc",
+  "overall": "significant_issues",
+  "reimpl": "partial",
+  "conf_ungrounded": 3,
+  "conf_lowvalue": 1,
+  "conf_missing": 3,
+  "audit": {
+   "target_id": "code:zapamcom10090.c:b000_main_proc",
+   "n_rules": 10,
+   "n_examples": 11,
+   "ungrounded": [
+    {
+     "kind": "rule",
+     "text": "Rule 1: 계정 변경 사유 코드 ∈ [...,'12',...] 이면 계정 정보 갱신 및 변경 이력 생성 (then: ICAS 동기화 요청 전송)",
+     "why": "본문 Block B 첫 if의 코드 집합은 11,13,21,22,31,41,42,51,52,54,61,62,71,72,15,25 로 '12'가 없다. Rule 1은 '12'를 추가해 지어냈다. 또한 then의 'ICAS 시스템 동기화 요청 전송'은 별도 블록(m950, !IS_BATCH 게이트, 코드집합 11,13,21,22,31,41,42,51,52,54,61,71,72,15,25)을 Block B 갱신 규칙에 잘못 병합한 것. IS_BATCH 게이트도 누락."
+    },
+    {
+     "kind": "rule",
+     "text": "Rule 6: 회사코드='B' AND 계정 변경 사유 코드 ∈ [...,'13',...] 이면 고객 계정 변경 이력 생성",
+     "why": "본문 Block F의 B-branch(b200/b210/b220 호출) if 코드 집합은 11,12,21,22,31,41,42,71,72 로 '13'이 없다. '13'은 인접한 dc_rt 블록(Rule 4)에만 있어 Rule 6이 잘못 끌어와 지어냈다."
+    },
+    {
+     "kind": "rule",
+     "text": "Rule 7: 회사코드='T' AND 계정 변경 사유 코드 ∈ [...,'13',...] 이면 고객 계정 변경 이력 생성",
+     "why": "본문 Block F의 T-branch(b200/b210 호출) else if 코드 집합은 11,12,21,22,31,41,42,54,61,71,72,15,25 로 '13'이 없다. Rule 7이 '13'을 추가해 지어냈다."
+    }
+   ],
+   "low_value_examples": [
+    {
+     "category": "vague",
+     "text": "Rule 0 EX1 — given: 회사구분코드='T' / when: N계정 여부 조회 / then: N계정 여부를 전역 변수에 반영하여 후속 처리에 사용",
+     "why": "then이 'N계정 여부가 무엇을 좌우하는가'를 명시하지 않아('후속 처리에 사용') 재구현 근거가 되지 못한다. 실제로 gc_nacnt_yn=='Y'는 Block B 내 N서비스 주기 강제변경 분기를 트리거하지만 그 행위 자체가 출력에 누락돼 있어 이 사례만으로는 아무 행위도 재현할 수 없다."
+    }
+   ],
+   "missing_rules": [
+    {
+     "description": "N서비스 주기 강제변경: 회사코드='T' AND N계정여부(gc_nacnt_yn)='Y' AND 납부방법코드!='05' AND (입력 납부주기가 null 아님 AND 현재 납부주기(gc_cur_pay_cycl_cd) != 입력 납부주기) 이면, 납부주기 설정값(gc_pay_cycl_cd_set)을 입력 납부주기로 세팅 후 b105_update_zord_acnt(계정 갱신) + b130_call_zordms0800030(계정변경 이력 생성). Block B 내부의 독립 다중조건 분기인데 출력에 전혀 없다.",
+     "code_evidence": "if ((strncmp(gc_co_cl_cd,\"T\",...)==RC_NRM) && (strncmp(gc_nacnt_yn,\"Y\",...)==RC_NRM) && (strncmp(itf->in.pay_mthd_cd,\"05\",...)!=RC_NRM) && (mpfm_isspnull(itf->in.pay_cycl_cd)!=RC_NRM && strncmp(gc_cur_pay_cycl_cd,itf->in.pay_cycl_cd,...)!=RC_NRM)) { strncpy(gc_pay_cycl_cd_set, itf->in.pay_cycl_cd...); PFM_TRY(b105_update_zord_acnt(itf)); PFM_TRY(b130_call_zordms0800030(itf)); }"
+    },
+    {
+     "description": "ICAS 계정 I/F 동기화(m950)를 독립 규칙으로: 계정 변경 사유 코드 ∈ [11,13,21,22,31,41,42,51,52,54,61,71,72,15,25] 이고 배치 실행이 아닐 때(!IS_BATCH)에만 m950_call_zordms0200950(ICAS 동기화)호출. 배치 게이트(IS_BATCH)와 정확한 코드집합이 Rule 1에 잘못 흡수돼 사실상 누락.",
+     "code_evidence": "if ( (acnt_chg_rsn_cd ∈ 11,13,21,22,31,41,42,51,52,54,61,71,72,15,25) ) { if( !IS_BATCH ) { PFM_TRY( m950_call_zordms0200950( itf ) ); } }"
+    },
+    {
+     "description": "Block B의 세부 부수효과 누락: b060_get_cur_myway_drw_day_cd(내맘대로인출일코드 조회) 및 b110_call_zordms0800030(내맘대로인출일 계정변경이력)이 Rule 1의 '갱신 및 이력 생성'에 뭉뚱그려져 개별 행위로 보존되지 않음.",
+     "code_evidence": "PFM_TRY( b060_get_cur_myway_drw_day_cd( itf ) ); PFM_TRY( b100_update_zord_acnt ( itf ) ); PFM_TRY( b110_call_zordms0800030( itf ) );"
+    },
+    {
+     "description": "Block F의 B-branch는 T-branch와 달리 b220_call_zordms0800030(SKB납기일다양화 이력)까지 추가 호출. Rule 6은 이 세 번째 이력 호출을 누락해 B와 T의 행위 차이를 잃음.",
+     "code_evidence": "B: b200_call_zordms0800030; b210_call_zordms0800030; b220_call_zordms0800030;  vs  T: b200; b210; (b220 없음)"
+    }
+   ],
+   "reimplementable": "partial",
+   "reimplementable_gaps": [
+    "Rule 1의 트리거 코드 집합에 실제 없는 '12'가 들어가 acnt_chg_rsn_cd='12' 입력에서 재구현이 잘못 갱신/이력을 수행(원본은 미수행).",
+    "Rule 6·7의 트리거 코드 집합에 실제 없는 '13'이 들어가 acnt_chg_rsn_cd='13' 입력에서 원본에 없는 b200/b210 이력을 생성.",
+    "ICAS 동기화(m950)의 !IS_BATCH 게이트가 규칙으로 없어, 재구현이 배치 실행에서도 ICAS를 호출해 원본과 행위가 달라짐.",
+    "N서비스 주기 강제변경(T+nacnt_yn=Y+pay_mthd!=05+납부주기 변경) 분기가 통째로 빠져 재현 불가.",
+    "b200/b210/b220 등 callee가 '이력 생성'으로 뭉뚱그려져 어떤 이력 레코드가 생기는지 재현 불가(Rule 4/5 then은 b800/b820 요약을 서로 바꿔 기술).",
+    "affected_tables가 전부 비어 있고, 본문 유일한 직접 DB 접근인 mpfmdbio(\"zord_svc_s0576\", READ)(Rule 2)조차 테이블/op 누락돼 데이터 접근 재현 근거 없음.",
+    "Block B 갱신·각 이력 호출·Rule 8/9(8·2주기 강제변경)의 실행 순서·상호관계가 명시되지 않아 순차 부수효과 재현 불확실."
+   ],
+   "overall": "significant_issues",
+   "notes": "함수 b000_main_proc는 acnt_chg_rsn_cd(변경사유코드)와 gc_co_cl_cd(회사구분 B/T)로 다수 분기를 태워 계정 갱신·할인율 산정·계정변경이력 생성·ICAS 동기화를 수행하는 디스패처다. 근거성: Rule 0,2,3,4,5,8,9는 코드 집합과 조건(co_cl_cd, pay_mthd_cd '05'/'01', 현재주기 '8'/'2', 서비스수>0 등)이 본문과 정확히 일치해 근거 있음. Rule 1('12' 추가+ICAS 병합), Rule 6('13' 추가), Rule 7('13' 추가)은 인접 블록의 코드값을 잘못 섞어 실제 본문에 없는 트리거 코드를 지어냈다 — DDD 재구현 기준점에서 트리거 조건 오류는 곳 행위 불일치라 심각하게 봤다. 사례는 규칙당 1개(Rule 0만 2개)로 대부분 규칙 문장을 그대로 되풀이하는 1:1 미러이며 구체 경계값/계산값 인스턴스가 없어 정보량이 낮으나 서로 중복은 아니다. 핵심 결손은 (1) N서비스 강제 주기변경 분기, (2) ICAS m950의 !IS_BATCH 게이트, (3) Block B의 b060/b110 및 Block F-B의 b220 세부 이력. questions는 빈 배열인데, 코드 근거가 명확한 함수라 질문 부재 자체는 문제 아니다.\""
+  },
+  "verdict": {
+   "target_id": "code:zapamcom10090.c:b000_main_proc",
+   "confirmed_ungrounded": 3,
+   "confirmed_low_value": 1,
+   "confirmed_missing": 3,
+   "refuted": [
+    "missing: b060_get_cur_myway_drw_day_cd / b110 세부 부수효과 누락 — b060은 순수 읽기 셋업(기술 가지), b110은 계정변경이력 생성의 한 변형으로 Rule 1의 then '계정 테이블 갱신, 변경 이력 생성'에 이미 포섭됨. 업무결과 누락이 아니라 세분화(granularity) 지적이라 기각."
+   ],
+   "verdict_notes": "UNGROUNDED 3건 전부 확인. (1) Rule 1 코드집합에 '12' 추가 — Block B 첫 if(11,13,21,22,31,41,42,51,52,54,61,62,71,72,15,25)에도 ICAS m950 블록(11,13,21,22,31,41,42,51,52,54,61,71,72,15,25)에도 '12' 없음. 두 집합 합집합에도 없어 순수 지어냄. 아울러 Rule 1은 Block B 갱신 규칙에 별도 m950/ICAS 블록의 then을 잘못 병합했고 !IS_BATCH 게이트를 흡수·소실. (2) Rule 6 B-branch 이력 규칙에 '13' 추가 — 실제 b200/b210/b220 호출 if는 11,12,21,22,31,41,42,71,72로 '13' 없음. (3) Rule 7 T-branch 이력 규칙에 '13' 추가 — 실제 b200/b210 호출 if는 11,12,21,22,31,41,42,54,61,71,72,15,25로 '13' 없음.\n\nLOW_VALUE 1건 확인. Rule 0 T-example의 then '후속 처리에 사용'은 N계정여부가 무엇을 좌우하는지 명시 못 함. gc_nacnt_yn='Y'가 트리거하는 실제 행위(N서비스 강제 주기변경)가 출력에 전무하여 이 예시만으로 재현 불가한 떠 있는 읽기.\n\nMISSING 3건 확인 / 1건 기각. 확인: (a) N서비스 강제 주기변경 분기(T && gc_nacnt_yn='Y' && pay_mthd_cd!='05' && 납부주기 변경 → b105_update+b130_call) — Block B 내부 독립 다중조건인데 어느 rule에도 없음(Rule 8/9는 각각 05/8주기, 62/2주기로 별개). (b) ICAS m950의 !IS_BATCH 게이트 — 배치 여부가 ICAS 동기화 발화를 좌우하는 결과변경 조건인데 전 rule에서 소실. (c) B-branch 전용 b220(SKB납기일다양화 이력) — Rule 6/7이 코드집합만 다른 쌍둥이 규칙인데 B의 세 번째 이력 호출(=B/T 실제 행위 차이)이 어느 then에도 반영 안 됨. 기각: b060/b110은 위 refuted 사유대로 세분화 지적."
+  }
+ }
+]
