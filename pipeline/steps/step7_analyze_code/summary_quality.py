@@ -17,10 +17,17 @@ _RULE_MARKER = re.compile(
     r"(?<![가-힣])(?:시|때)(?![가-힣])"
 )
 _POLICY_NUMBER = re.compile(r"(?<![A-Za-z가-힣])(?:-?\d[\d,.]*|[A-Z]+\d+)(?![A-Za-z가-힣])")
+# summary 스키마 상한과 같은 값(``_normalize_diet_summary`` 가 3줄에서 자른다).
+_MAX_SUMMARY_LINES = 3
 
 
 def summary_boundary_reasons(summary: str) -> list[str]:
-    """목적 요약에 정책 상세가 섞였다는 결정론 신호를 반환한다."""
+    """목적 요약에 정책 상세가 섞였다는 결정론 신호를 반환한다.
+
+    이 게이트가 막는 것은 **조건 서술**이지 분량이 아니다. 줄 수 상한은 스키마
+    (``1~3줄``)와 같아야 한다 — 더 좁게 잡으면 조건이 없는 정상 요약까지 재작성으로
+    끌고 가 업무 내용이 깎인다(실측: 416건 전부 1줄·중앙값 47자).
+    """
     text = summary or ""
     markers = _RULE_MARKER.findall(text)
     reasons = []
@@ -28,7 +35,7 @@ def summary_boundary_reasons(summary: str) -> list[str]:
         reasons.append("rule_marker")
     if _POLICY_NUMBER.search(text):
         reasons.append("policy_number_or_code")
-    if len([line for line in text.splitlines() if line.strip()]) > 1:
+    if len([line for line in text.splitlines() if line.strip()]) > _MAX_SUMMARY_LINES:
         reasons.append("multiple_lines")
     return reasons
 

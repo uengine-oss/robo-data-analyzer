@@ -39,18 +39,36 @@
 """
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+# 문장 끝 — 종결부호 뒤에 공백이나 문장 끝이 오는 자리에서만 끊는다. 숫자 뒤 마침표
+# (`10,000.` `v1.2`)는 소수점·판번호라 문장 경계가 아니다.
+_SENTENCE_END = re.compile(r"(?<!\d)[.!?](?=\s|$)")
+_MAX_SUMMARY_UNITS = 3
+
+
+def _clip_sentences(text: str, limit: int) -> str:
+    """앞에서부터 ``limit`` 문장만 남긴다. 종결부호가 없으면 원문 그대로."""
+    ends = [m.end() for m in _SENTENCE_END.finditer(text)]
+    return text if len(ends) <= limit else text[: ends[limit - 1]].strip()
+
+
 def _normalize_diet_summary(v: str) -> str:
-    """summary 다이어트 정규화 — 마커 제거 + 비어있지 않은 줄 3줄 절단 (실패 없음)."""
+    """summary 다이어트 정규화 — 마커 제거 + 3줄·3문장 절단 (실패 없음).
+
+    줄 수만 세면 상한이 새어 나간다: 모델은 1~3문장을 **줄바꿈 없이** 한 줄로 쓰기 때문에
+    줄 기준으로는 언제나 1줄이다(실측: 한 줄짜리 1,027자 요약이 통과했다). 계약이 말하는
+    "1~3줄"의 실질은 문장 수이므로 둘 다 건다.
+    """
     if not v:
         return v
     v = v.replace("[핵심]", " ").strip()
     lines = [ln.strip() for ln in v.splitlines() if ln.strip()]
-    return "\n".join(lines[:3])
+    return _clip_sentences("\n".join(lines[:_MAX_SUMMARY_UNITS]), _MAX_SUMMARY_UNITS)
 
 
 # ── 3 분할 #1: code_summary ───────────────────────────
@@ -73,7 +91,7 @@ class SummaryOutput(BaseModel):
     #   ④ summary 는 최종 결론이라 뒤쪽. stereotype 은 닫힌 15지선다라 폭주 불가 → 맨 끝.
     search_text: str = Field(
         "",
-        description="검색 전용 서술 — 분기 조건·상태 전이·코드값·테이블 상호작용을 업무 어휘로 (프론트 비노출, 단순 노드는 빈 값)",
+        description="검색 전용 서술 — 분기 조건·상태 전이·코드값·테이블 상호작용을 업무 어휘로 (프론트 비노출; 본문에 업무 판단이 하나도 없을 때만 빈 값, 함수 이름으로 판정 금지)",
     )
     domain_terms: list["DomainTermItem"] = Field(
         default_factory=list,
@@ -243,7 +261,7 @@ class BatchSummaryItem(BaseModel):
     # ★ 필드 순서 = 폭주 방어 (SummaryOutput 주석 참조): 나열형 앞 → 닫힌 선택지 끝.
     search_text: str = Field(
         "",
-        description="검색 전용 서술 — 분기 조건·상태 전이·코드값·테이블 상호작용을 업무 어휘로 (프론트 비노출, 단순 노드는 빈 값)",
+        description="검색 전용 서술 — 분기 조건·상태 전이·코드값·테이블 상호작용을 업무 어휘로 (프론트 비노출; 본문에 업무 판단이 하나도 없을 때만 빈 값, 함수 이름으로 판정 금지)",
     )
     domain_terms: list[DomainTermItem] = Field(
         default_factory=list,
