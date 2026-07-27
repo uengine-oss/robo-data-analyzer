@@ -28,6 +28,10 @@ def _insight_with_columns(table, *columns):
     )])
 
 
+def _insight_with_role(table, role):
+    return NS(table_insights=[NS(table=table, role=role, columns=[])])
+
+
 def _rules(*tables):
     return NS(rules=[NS(examples=[NS(affected_tables=[NS(table=t) for t in tables])])])
 
@@ -39,10 +43,10 @@ def _rules_with_op(*table_ops):
 
 def test_op_corrected_to_authoritative_when_single_op():
     """spec 100: LLM 이 op 를 뒤바꿔도 단일 결정론 op 로 교정한다(SQL_KEY _u=UPDATE)."""
-    ru = _rules_with_op(("zpay_ap_rltm_auth_hst", "INSERT"))
+    ru = _rules_with_op(("event_delivery_history", "INSERT"))
     dropped = M.constrain_tables_to_rw(
-        "f", [], ["zpay_ap_rltm_auth_hst"], None, ru,
-        table_op={"zpay_ap_rltm_auth_hst": "UPDATE"},
+        "f", [], ["event_delivery_history"], None, ru,
+        table_op={"event_delivery_history": "UPDATE"},
     )
     assert dropped == 0
     at = ru.rules[0].examples[0].affected_tables[0]
@@ -67,19 +71,19 @@ def test_op_correction_after_table_dropped_is_noop():
 
 
 def test_drops_offrw_table_in_insights():
-    ins = _insights("zpay_ap_rltm_auth_hst", "zapamcom.zapamcom10140.e800_dbio_rltm_auth_hst_u0004")
+    ins = _insights("event_delivery_history", "delivery.module.write_history")
     with patch.object(M, "log_warning") as w:
-        dropped = M.constrain_tables_to_rw("f1", ["zpay_ap_rltm_auth_hst"], [], ins, None)
+        dropped = M.constrain_tables_to_rw("f1", ["event_delivery_history"], [], ins, None)
     assert dropped == 1
-    assert [t.table for t in ins.table_insights] == ["zpay_ap_rltm_auth_hst"]
+    assert [t.table for t in ins.table_insights] == ["event_delivery_history"]
     assert w.called
 
 
 def test_drops_offrw_table_in_examples():
-    ru = _rules("zord_jncard", "zapamcom.zapamcom10140.d100_call_zapamcom10060_proc")
-    dropped = M.constrain_tables_to_rw("f2", [], ["zord_jncard"], None, ru)
+    ru = _rules("delivery_queue", "delivery.module.load_remote_policy")
+    dropped = M.constrain_tables_to_rw("f2", [], ["delivery_queue"], None, ru)
     assert dropped == 1
-    assert [a.table for a in ru.rules[0].examples[0].affected_tables] == ["zord_jncard"]
+    assert [a.table for a in ru.rules[0].examples[0].affected_tables] == ["delivery_queue"]
 
 
 def test_empty_rw_drops_all():
@@ -133,6 +137,40 @@ def test_columns_are_limited_to_exact_ddl_allowlist():
     assert ins.table_insights[0].table == "db:shipping"
     assert [column.name for column in ins.table_insights[0].columns] == ["SHIP_SEQ"]
     assert any(call.args[1] == "column_off_ddl" for call in warning.call_args_list)
+
+
+def test_read_only_evidence_rejects_write_role_without_rewriting():
+    ins = _insight_with_role("db:orders", "WRITE-only")
+    with patch.object(M, "log_warning") as warning:
+        dropped = M.constrain_tables_to_rw(
+            "f-role", ["db:orders"], [], ins, None,
+        )
+    assert dropped == 1
+    assert ins.table_insights == []
+    assert any(call.args[1] == "table_role_off_rw" for call in warning.call_args_list)
+
+
+def test_role_subtypes_stay_llm_owned_when_direction_is_supported():
+    read = _insight_with_role("db:orders", "lookup")
+    write = _insight_with_role("db:history", "append-only")
+    assert M.constrain_tables_to_rw("f-read", ["db:orders"], [], read, None) == 0
+    assert M.constrain_tables_to_rw("f-write", [], ["db:history"], write, None) == 0
+    assert read.table_insights[0].role == "lookup"
+    assert write.table_insights[0].role == "append-only"
+
+
+def test_upsert_requires_authoritative_merge_evidence():
+    unsupported = _insight_with_role("db:orders", "upsert")
+    supported = _insight_with_role("db:orders", "upsert")
+    assert M.constrain_tables_to_rw(
+        "f-no-merge", [], ["db:orders"], unsupported, None,
+        table_op={"db:orders": "UPDATE"},
+    ) == 1
+    assert unsupported.table_insights == []
+    assert M.constrain_tables_to_rw(
+        "f-merge", [], ["db:orders"], supported, None,
+        table_op={"db:orders": "MERGE"},
+    ) == 0
 
 
 def test_multiple_rw_tables_are_preserved_and_missing_table_is_reported():

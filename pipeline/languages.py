@@ -103,6 +103,15 @@ def control_structure_labels() -> frozenset[str]:
     )
 
 
+@lru_cache(maxsize=None)
+def control_role_of(node_type: str) -> str:
+    """Canonical parser control-node kind → language-neutral prompt role."""
+    for role, node_types in (_load_ontology().get("control_roles") or {}).items():
+        if node_type in (node_types or []):
+            return role
+    return "decision"
+
+
 class UnknownSourceLexiconError(RuntimeError):
     """어휘 구문 표가 없는 언어 — 조용한 폴백 대신 명시적 실패."""
 
@@ -150,12 +159,39 @@ def dbms_builtin_packages() -> frozenset[str]:
 
 
 @lru_cache(maxsize=1)
-def _stereotype_pools() -> dict[str, frozenset]:
+def _stereotype_values() -> dict[str, tuple[str, ...]]:
     data = _load_ontology()
     return {
-        "framework": frozenset(data.get("framework") or []),
-        "dbms": frozenset(data.get("dbms") or []),
+        "framework": tuple(data.get("framework") or []),
+        "dbms": tuple(data.get("dbms") or []),
     }
+
+
+@lru_cache(maxsize=1)
+def _stereotype_pools() -> dict[str, frozenset[str]]:
+    return {
+        strategy: frozenset(values)
+        for strategy, values in _stereotype_values().items()
+    }
+
+
+def stereotype_values(strategy: str) -> tuple[str, ...]:
+    """프롬프트와 parser가 함께 쓰는 순서 보존 폐쇄형 라벨 목록."""
+    values = _stereotype_values().get(strategy)
+    if values is None:
+        raise ValueError(f"unknown stereotype strategy: {strategy!r}")
+    return values
+
+
+def stereotype_prompt_options(strategy: str) -> str:
+    """ontology의 정확 라벨과 범용 정의를 prompt 선택표로 렌더링한다."""
+    entries = _load_ontology().get(strategy) or {}
+    if isinstance(entries, dict):
+        return "\n".join(
+            f"- `{value}`: {str(description).strip()}"
+            for value, description in entries.items()
+        )
+    return "\n".join(f"- `{value}`" for value in stereotype_values(strategy))
 
 
 def is_valid_stereotype(stereotype: str, strategy: str) -> bool:
@@ -166,3 +202,29 @@ def is_valid_stereotype(stereotype: str, strategy: str) -> bool:
 def coerce_stereotype(stereotype: str, strategy: str) -> str:
     """허용 목록 밖의 LLM stereotype을 빈 값으로 정규화한다."""
     return stereotype if is_valid_stereotype(stereotype, strategy) else ""
+
+
+@lru_cache(maxsize=1)
+def _module_stereotype_values() -> dict[str, tuple[str, ...]]:
+    data = _load_ontology()
+    return {
+        "framework": tuple(data.get("module_framework") or []),
+        "dbms": tuple(data.get("module_dbms") or []),
+    }
+
+
+def module_stereotype_values(strategy: str) -> tuple[str, ...]:
+    """모듈 prompt와 parser가 함께 쓰는 순서 보존 폐쇄형 라벨 목록."""
+    values = _module_stereotype_values().get(strategy)
+    if values is None:
+        raise ValueError(f"unknown module stereotype strategy: {strategy!r}")
+    return values
+
+
+def module_stereotype_prompt_options(strategy: str) -> str:
+    return ", ".join(f"`{value}`" for value in module_stereotype_values(strategy))
+
+
+def coerce_module_stereotype(stereotype: str, strategy: str) -> str:
+    allowed = frozenset(module_stereotype_values(strategy))
+    return stereotype if not stereotype or stereotype in allowed else ""

@@ -220,10 +220,10 @@ def _build_table_column_embeddings(state: dict) -> tuple[list[dict], list[dict]]
 
 
 def _collect_table_texts(tables: list) -> list[tuple[str, str]]:
-    """``Table`` 들의 (fqn, ``"name: description"``) 쌍. description 빈 것은 제외."""
+    """Table 설명 쌍. 원본 description이 비었을 때만 analyzed_description을 사용한다."""
     out: list[tuple[str, str]] = []
     for t in tables:
-        desc = (t.description or "").strip()
+        desc = (t.description or "").strip() or (t.analyzed_description or "").strip()
         if not desc:
             continue
         out.append((t.id, f"{t.name}: {desc}"))
@@ -239,7 +239,7 @@ def _collect_column_texts(columns: list, tables: list, has_column_edges: list) -
     table_id_by_column = {e.child_id: e.parent_id for e in has_column_edges}
     out: list[tuple[str, str]] = []
     for c in columns:
-        desc = (c.description or "").strip()
+        desc = (c.description or "").strip() or (c.analyzed_description or "").strip()
         if not desc:
             continue
         table_name = table_name_by_id.get(table_id_by_column.get(c.id, ""), "")

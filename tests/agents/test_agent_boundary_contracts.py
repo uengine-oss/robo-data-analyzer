@@ -523,6 +523,7 @@ class AsyncLlmBoundaryContractTest(unittest.IsolatedAsyncioTestCase):
                     "llm.runners.yaml_llm_runner._resolve_usage_log_path",
                     return_value=usage_path,
                 ),
+                patch("llm.runners.yaml_llm_runner.write_rule_record") as prompt_record,
                 patch("llm.runners.yaml_llm_runner.build_llm_client") as build_client,
             ):
                 result = await run_yaml_rule(
@@ -535,6 +536,13 @@ class AsyncLlmBoundaryContractTest(unittest.IsolatedAsyncioTestCase):
 
             build_client.assert_not_called()
             self.assertEqual("cached", result.value)
+            prompt_record.assert_called_once()
+            evidence = prompt_record.call_args.kwargs
+            self.assertIsNone(evidence["response"]["raw"])
+            self.assertEqual(
+                {"value": "cached"}, evidence["response"]["parsed"],
+            )
+            self.assertTrue(evidence["metadata"]["response_cache_hit"])
 
             lines = usage_path.read_text(encoding="utf-8").strip().splitlines()
             self.assertEqual(1, len(lines), "적중 1건에 usage 기록이 1줄이 아니다")

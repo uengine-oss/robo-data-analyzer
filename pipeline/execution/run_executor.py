@@ -1,7 +1,7 @@
 """Run 1회 실행 어댑터 — rmtree latest + LangGraph workflow 실행 + 종료 처리.
 
 흐름:
-1. ``logs/`` rmtree + 재생성 — 로그·jsonl·llm-prompts 만 담는다 (계층 없음).
+1. 선택된 run-output 루트를 초기화한다. 미지정 시 기존 기본 ``logs/``를 사용한다.
 2. ``Run`` 메타 생성 + Neo4j 인덱스 / 제약 보장.
 3. ``CostBudget`` + ``MemorySaver`` (Checkpointer) + ``PauseController`` 생성.
 4. Strategy 의 workflow 빌더 호출 → ``astream(stream_mode="updates")``.
@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import shutil
 import time
@@ -45,6 +46,7 @@ from shared.events.runtime_logger import (
 from shared.events.ndjson_event_stream import NDJSONStream
 from graph.neo4j_client import Neo4jClient
 from graph.schema.constraints import ensure_schema, wipe_graph
+from graph.connection_context import get_override
 from shared.files.cache import SourceFileCache
 from shared.concurrency.priority_semaphore import PrioritySemaphore
 from pipeline.execution.analysis_handoff import AnalysisHandoff
@@ -53,6 +55,12 @@ from pipeline.execution.pause_controller import PauseController
 from pipeline.execution.run_registry import clear as clear_active_run
 from pipeline.execution.run_registry import set_active as set_active_run
 from pipeline.execution.run_registry import ConcurrentAnalysisRunError
+from pipeline.execution.run_output_context import (
+    reset_response_locale,
+    reset_run_dir,
+    set_response_locale,
+    set_run_dir,
+)
 
 
 _RUN_OUTPUT_OWNER_MARKER = ".robo-data-analyzer-output"
@@ -90,6 +98,7 @@ async def execute_run(
     strategy: Any,
     codebase: Codebase,
     stream: Optional[NDJSONStream] = None,
+    run_output_root: Path | None = None,
 ) -> AnalysisRun:
     """AnalysisRun 1회 실행 — 매 호출이 독립 run (``run_id`` 가 유일 식별자).
 
@@ -98,7 +107,7 @@ async def execute_run(
         codebase: 분석 대상.
         stream: 프론트 NDJSON 스트림.
     """
-    run_output_root = SETTINGS.run_output.dir
+    run_output_root = run_output_root or SETTINGS.run_output.dir
     run = AnalysisRun.now(codebase=codebase, run_output_root=run_output_root)
     pause = PauseController(stream)
 
@@ -121,9 +130,13 @@ async def execute_run(
             await stream.close()
         raise
 
+    output_context_token = None
+    locale_context_token = None
     try:
         _reset_run_output_root(run_output_root)
-        run.run_dir.mkdir(parents=True, exist_ok=True)
+        output_context_token = set_run_dir(run.run_dir)
+        locale_context_token = set_response_locale(codebase.locale)
+        _write_initial_manifest(run, strategy)
 
         # ── 파일 핸들러 attach (ROBO_RUNTIME_EVENT_FILE_ENABLED=true 일 때만) ──
         # analyzer.log (INFO+) + error.log (WARNING+) → tail -f 로 실시간 추적 가능.
@@ -131,6 +144,10 @@ async def execute_run(
         # mkdir 직후 attach — 즉시 발생하는 ensure_schema / LangGraph 빌드 / step 로그 다 포함.
         file_handlers = attach_run_file_handlers(run.run_dir)
     except BaseException:
+        if locale_context_token is not None:
+            reset_response_locale(locale_context_token)
+        if output_context_token is not None:
+            reset_run_dir(output_context_token)
         clear_active_run(run.run_id)
         if stream is not None:
             await stream.close()
@@ -151,7 +168,7 @@ async def execute_run(
             # schema (제약/인덱스) 는 wipe 무관 — ensure_schema 가 idempotent.
             await wipe_graph(neo_client)
             await ensure_schema(neo_client)
-            log_info("run", "neo4j_ready", database=SETTINGS.graph_database.database, wiped=True)
+            log_info("run", "neo4j_ready", database=_resolved_neo4j_database(), wiped=True)
 
             # 응답 캐시 정리 — 프롬프트를 고칠 때마다 다시는 안 읽히는 항목이 쌓인다.
             # run 시작 1회, 상한 초과 시에만 실제로 지운다.
@@ -216,7 +233,7 @@ async def execute_run(
                 # in-flight 의 래핑). 그 외 예외는 진짜 실패 → 그대로 위로 전파.
                 if not pause.status()["isStopped"]:
                     # 실패해도 사용량 집계는 남긴다 (state artifact 덤프는 사용자 지시로 제거
-                    # — logs/ 는 로그·jsonl·llm-prompts 만 담는다. spec 079).
+                    # — 선택된 logs 루트에는 로그·jsonl·llm-prompts만 둔다).
                     try:
                         _summarize_usage(run.run_dir)
                         log_info("run", "failure_usage_summarized", run_dir=str(run.run_dir))
@@ -260,6 +277,10 @@ async def execute_run(
         clear_active_run(run.run_id)
         # neo close 다음 — Windows fd 충돌 회피 위해 attach 의 역순.
         detach_run_file_handlers(file_handlers)
+        if output_context_token is not None:
+            reset_run_dir(output_context_token)
+        if locale_context_token is not None:
+            reset_response_locale(locale_context_token)
         # 성공·실패 무관 스트림 종료 — 안 닫으면 consumer 가 stream_end 를 영구 대기 (hang).
         if stream is not None:
             await stream.close()
@@ -267,10 +288,10 @@ async def execute_run(
 
 
 def _reset_run_output_root(run_output_root: Path) -> None:
-    """Analyzer가 소유한 실행 결과 루트만 초기화한다.
+    """Analyzer가 소유한 선택된 실행 결과 루트만 초기화한다.
 
-    최초에는 없거나 빈 디렉터리만 소유권 표식과 함께 인수한다. 이후에는 표식 내용까지
-    일치해야만 전체 삭제한다. 경로 오설정이나 이름 우연 일치로 사용자 파일을 지우지 않는다.
+    기본값은 기존 ``logs/``다. ``--run-output``이 명시된 경우에만 그 경로를 같은
+    계약으로 사용한다. 자동 하위 run 디렉터리나 백업은 만들지 않는다.
     """
     if not isinstance(run_output_root, Path):
         raise ValueError(f"run_output_root must be a Path; got {run_output_root!r}")
@@ -299,8 +320,68 @@ def _reset_run_output_root(run_output_root: Path) -> None:
         shutil.rmtree(root)
 
     root.mkdir(parents=True, exist_ok=True)
+    marker = root / _RUN_OUTPUT_OWNER_MARKER
     marker.write_text(_RUN_OUTPUT_OWNER_MARKER_CONTENT, encoding="utf-8")
     (root / "llm-prompts").mkdir(parents=True, exist_ok=True)
+
+
+def _prompt_tree_sha256(prompts_root: Path) -> str:
+    """prompt 상대경로와 바이트를 안정 순서로 해시한다."""
+    digest = hashlib.sha256()
+    for path in sorted(
+        (item for item in prompts_root.rglob("*") if item.is_file()),
+        key=lambda item: item.relative_to(prompts_root).as_posix(),
+    ):
+        relative = path.relative_to(prompts_root).as_posix().encode("utf-8")
+        payload = path.read_bytes()
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(len(payload).to_bytes(8, "big"))
+        digest.update(payload)
+    return digest.hexdigest()
+
+
+def _resolved_neo4j_database() -> str:
+    override = get_override()
+    return (
+        override.database
+        if override is not None and override.database
+        else SETTINGS.graph_database.database
+    )
+
+
+def _write_initial_manifest(run: AnalysisRun, strategy: Any) -> None:
+    """그래프 변경/LLM 호출 전에 현행 실행의 입력 정체성과 prompt hash를 기록한다."""
+    repository_root = Path(__file__).resolve().parents[2]
+    strategy_prompts = Path(getattr(strategy, "prompts_dir", "llm/prompts"))
+    if not strategy_prompts.is_absolute():
+        strategy_prompts = repository_root / strategy_prompts
+    prompts_root = strategy_prompts.resolve().parent
+    if prompts_root.name != "prompts":
+        prompts_root = (repository_root / "llm" / "prompts").resolve()
+
+    source_root = run.codebase.root.resolve()
+    corpus_root = (run.codebase.corpus_root or run.codebase.root).resolve()
+    ddl_root = run.codebase.ddl_dir.resolve() if run.codebase.ddl_dir else None
+    manifest = {
+        "schema_version": "1.0",
+        "run_id": run.run_id,
+        "started_at": run.started_at.isoformat(),
+        "corpus_root": str(corpus_root),
+        "source_root": str(source_root),
+        "ddl_root": str(ddl_root) if ddl_root else None,
+        "strategy": run.codebase.strategy,
+        "locale": run.codebase.locale,
+        "neo4j_database": _resolved_neo4j_database(),
+        "run_output_root": str(run.run_dir.resolve()),
+        "run_dir": str(run.run_dir.resolve()),
+        "llm_config": SETTINGS.analysis_llm.config,
+        "prompt_tree_sha256": _prompt_tree_sha256(prompts_root),
+    }
+    manifest_path = run.run_dir / "manifest.json"
+    with manifest_path.open("x", encoding="utf-8") as file:
+        json.dump(manifest, file, ensure_ascii=False, indent=2)
+        file.write("\n")
 
 
 def _summarize_usage(run_dir: Path) -> None:

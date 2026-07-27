@@ -41,7 +41,9 @@ from pipeline.models.code_analysis_output import (
 from graph.schema.graph_nodes import CodeNode
 from shared.config.settings import SETTINGS
 from pipeline.steps.step7_analyze_code.domain_terms import normalize_domain_terms
-from pipeline.steps.step7_analyze_code.summary_quality import enforce_summary_boundary
+from pipeline.steps.step7_analyze_code.summary_quality import (
+    normalize_searchable_text,
+)
 from pipeline.languages import ROUTINE_LABELS, coerce_stereotype
 from llm.usage.cost_budget import BudgetExceededError
 from llm.runners.yaml_llm_runner import run_yaml_rule
@@ -379,19 +381,6 @@ async def _batch_call(
         prompts_dir=prompts_dir, rule_name="code_summary_batch",
         user_values=user_values, response_model=BatchSummaryOutput, budget=cost_budget,
     )
-    for summary in summary_out.nodes:
-        fid = key_to_id.get(summary.node_key.strip())
-        if fid is None:
-            continue
-        summary.summary = await enforce_summary_boundary(
-            summary=summary.summary,
-            node_name=code_by_id[fid].name,
-            logical_name=summary.logical_name,
-            search_text=summary.search_text,
-            budget=cost_budget,
-            audit_id=fid,
-        )
-
     # 분할 3 비즈로직 — rule_units(예산 내 최고 조상) 노드만. 단위는 예산에 들어가므로
     #   body_for 가 이미 원문(자식 서브트리 포함)을 줬다 = 1차 증거, 특수 입력 빌드 불필요.
     #   단위 아래 노드는 규칙 X(단위가 흡수 — 파편·중복 차단). 배치에 단위가 일부만 있으면
@@ -448,12 +437,14 @@ async def _batch_call(
     missing: list[str] = []
     for key, fid in key_to_id.items():
         s = summary_by_key.get(key)
-        if s is None:                 # 요약(코어) 없음 = 누락 → 호출자가 미니 재요청
+        if s is None or not s.summary.strip() or not s.search_text.strip():
+            # 관측 가능한 설명이 전혀 없으면 임의 이름 추론으로 채우지 않고 호출자가
+            # 미니 재요청한다. 단순히 "의미 없음"으로 간주해 검색에서 빼지 않는다.
             missing.append(fid)
             continue
         applied.append(_apply_node_analysis(
             s, rules_by_key.get(key), table_by_key.get(key),
-            code_by_id[fid], contexts[fid], strategy,
+            code_by_id[fid], contexts[fid], strategy, source_cache,
         ))
     return applied, missing
 
@@ -481,18 +472,28 @@ def _apply_node_analysis(
     fn: CodeNode,
     ctx: AnalysisContext,
     strategy: Any,
+    source_cache: SourceFileCache,
 ) -> CodeNode:
     """3 배치 분할 결과(요약/비즈로직/테이블) → CodeNode + ctx 반영 (three_split fan-in 동일).
 
     rules/table 은 조각 실패·비-DML 이면 None → 빈 배열(부분 성공 허용, 요약만 코어).
     """
-    fn.summary = summary.summary
+    # 자연어 의미를 기계적으로 복사하지 않는다. 위에서 두 필드가 모두 있는 결과만
+    # 통과시키며, 여기서는 공백 제거와 불변식 재검증만 수행한다.
+    summary_text, search_text = normalize_searchable_text(
+        summary.summary, summary.search_text
+    )
+    fn.summary = summary_text
     fn.stereotype = coerce_stereotype(summary.stereotype or "", strategy.name) or None
     fn.logical_name = summary.logical_name or None
-    fn.search_text = summary.search_text or None
+    fn.search_text = search_text
+    excerpt = source_cache.excerpt(
+        ctx.file_path, ctx.start_line, ctx.end_line
+    )
     fn.domain_terms = normalize_domain_terms(
         summary.domain_terms,
-        source_text="\n".join(filter(None, (fn.comment, fn.code_text))),
+        source_text=excerpt.raw_text,
+        numbered_source_text=excerpt.numbered_text,
         code_id=fn.id,
         component=_STEP,
     )
@@ -500,12 +501,13 @@ def _apply_node_analysis(
     constrain_tables_to_rw(
         fn.id, ctx.reads, ctx.writes, table, rules,
         allowed_columns_by_table=ctx.extra.get("ddl_columns_by_table"),
+        table_op=ctx.extra.get("table_op"),
     )
     fn.extra["table_insights"] = [t.model_dump() for t in table.table_insights] if table else []
     fn.extra["rules"] = [r.model_dump() for r in rules.rules] if rules else []   # examples 는 각 rule 하위 중첩
     fn.extra["questions"] = [q.model_dump() for q in rules.questions] if rules else []
     # ctx 에 부착 — 부모 배치가 compact_body·자식규칙으로 라이브 조회.
-    ctx.summary = summary.summary
+    ctx.summary = summary_text
     ctx.extra["rules"] = fn.extra["rules"]
     ctx.extra["questions"] = fn.extra["questions"]
     return fn

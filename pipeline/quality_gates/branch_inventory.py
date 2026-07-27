@@ -3,7 +3,7 @@
 게이트가 "그 규칙이 **어느 분기**에 근거하는가"를 물으려면 먼저 분기마다 (조건 코드값 ·
 효과)를 알아야 한다. 이 모듈은 그것만 만들고 판정은 하지 않는다.
 
-좌표 계약은 ``rules_fallback`` 과 같다: ``control_subtree`` 노드의 start/end 는 ``code_body``
+좌표 계약: ``control_subtree`` 노드의 start/end 는 ``code_body``
 기준 1-based 줄번호다(spec 069).
 """
 from __future__ import annotations
@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Sequence
 
-from pipeline.languages import source_lexicon
+from pipeline.languages import control_role_of, source_lexicon
 from pipeline.models.analysis_context import ControlSubtreeNode
 from pipeline.quality_gates.lexing import SplitSource, atoms, literal_values, split_source
 
@@ -50,6 +50,25 @@ class Branch:
             node = node.parent
         return chain
 
+    def prompt_role(self, lang: str) -> str:
+        """Return controller/decision/complement from AST role and source spelling.
+
+        Condition length and atom count are deliberately irrelevant.
+        """
+        role = control_role_of(self.ntype)
+        if role != "decision":
+            return role
+        head = self.condition.lstrip().lower()
+        keywords = source_lexicon(lang).get("complement_keywords") or ()
+        if any(
+            head == keyword.lower()
+            or head.startswith(f"{keyword.lower()}:")
+            or head.startswith(f"{keyword.lower()} ")
+            for keyword in keywords
+        ):
+            return "complement"
+        return "decision"
+
 
 @dataclass
 class BranchInventory:
@@ -60,6 +79,7 @@ class BranchInventory:
     all_branches: tuple[Branch, ...]
     callees: frozenset[str]
     source_values: frozenset[str]
+    line_offset: int = 0
 
     def dispatch_tables(self) -> list[dict[str, frozenset[str]]]:
         """SWITCH 마다 ``라벨 코드값 → 효과(호출 집합)`` 대응.
@@ -110,6 +130,7 @@ class BranchInventory:
 
     def at_line(self, line: int) -> "Branch | None":
         """그 줄에서 시작하는 분기. 없으면 그 줄을 품는 가장 안쪽 분기."""
+        line -= self.line_offset
         starting = [b for b in self.all_branches if b.start == line]
         if starting:
             return self._most_specific(starting)
@@ -145,13 +166,14 @@ class BranchInventory:
         for line in sorted(chosen):
             branch = chosen[line]
             depth = sum(1 for a in branch.ancestors() if a.start in chosen and chosen[a.start] is a)
+            role = branch.prompt_role(self.lang)
             condition = " ".join(branch.condition.split())
-            # 조건식에 **판정에 쓸 원자가 없으면** 여집합 분기다(`else`/`default`).
-            # 키워드 이름으로 판정하지 않는다 — 언어마다 다르고 그 순간 범용성이 깨진다.
-            # 원자 1개 이하 = 키워드 자신뿐이라는 뜻이다.
-            if len(atoms(branch.condition, self.lang)) <= 1:
+            if role == "complement":
                 condition = "(그 외 — 같은 층 다른 분기의 여집합)"
-            rows.append(f"{'  ' * depth}{line}: {branch.ntype} {condition}")
+            rows.append(
+                f"{'  ' * depth}{line + self.line_offset}: "
+                f"[{role}] {branch.ntype} {condition}"
+            )
         return "\n".join(rows) or "(분기 없음)"
 
     def best_match(self, values: set[str]) -> tuple[Branch | None, set[str]]:
@@ -245,6 +267,7 @@ def build_inventory(
     lang: str,
     split: SplitSource | None = None,
     declared_values: Sequence[str] = (),
+    line_offset: int = 0,
 ) -> BranchInventory:
     """분기 대장을 만든다. ``control_subtree`` 가 없으면 분기 0으로 본다.
 
@@ -286,4 +309,5 @@ def build_inventory(
         all_branches=tuple(all_branches),
         callees=_calls(split.live(), lang),
         source_values=frozenset(literal_values(split.live(), lang) | declared),
+        line_offset=line_offset,
     )

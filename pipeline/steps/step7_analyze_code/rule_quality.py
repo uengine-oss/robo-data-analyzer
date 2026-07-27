@@ -1,12 +1,7 @@
-"""결정론 rules/examples 품질검사 (spec 054 US3 / FR-017·FR-018) — LLM 미사용.
+"""결정론 rules/examples 품질 측정기 — 산출물은 수정하지 않는다.
 
-최초 "함수 전체" 분석 결과에 **반복·잘림** 신호가 있는지 판정한다. 이상이면 호출부(폴백)가
-AST 예산 분할 → 조각분석 → 병합으로 복구한다. 임계 시작값 근거는
-``specs/054-.../research.md §1`` (load_target_orders 88% 중복·24회 반복 등 보존 run).
-
-의미 중복(문장 표현이 다른 동일 의미)은 결정론 정규화만으로 완전 검출할 수 없다 —
-여기서는 **정규화 완전중복·반복 그룹·캡 도달**만 신뢰 신호로 쓰고, 나머지는 병합 LLM +
-재검사의 몫으로 남긴다(spec 054 Assumptions: "검증됨"과 "best-effort" 구분).
+최초 분석 결과에 반복·잘림 신호가 있는지 관측해 로그와 품질 플래그로 남긴다. 결과를
+다른 LLM에 보내 재작성·병합하거나 자동 중복 제거하지 않는다.
 """
 from __future__ import annotations
 
@@ -19,14 +14,14 @@ from pipeline.models.code_analysis_output import ExampleItem, RulesExamplesOutpu
 # ── 임계 시작값 (research.md §1) — 실측 후 조정. 이 파일이 단일 진실 ──
 DUP_RATIO_ANOMALY = 0.20       # 정규화 후 완전중복 Example 비율
 REPEAT_GROUP_ANOMALY = 3       # 같은 (given,when,then,tables) 반복 횟수
-EXAMPLE_CAP = 80               # code_analysis_output.RuleItem.examples max_length (도달=잘림 의심)
+EXAMPLE_CAP = 24               # code_analysis_output.RuleItem.examples max_length (도달=잘림 의심)
 
 _NON_WORD = re.compile(r"[^\w가-힣]", re.UNICODE)
 
 
 @dataclass
 class RuleQualityReport:
-    """결정론 품질검사 결과 — 폴백 트리거 판정과 로그/스트림용."""
+    """결정론 품질검사 결과 — 로그와 품질 플래그용."""
     is_anomaly: bool
     total_examples: int
     unique_examples: int
@@ -88,22 +83,3 @@ def check_rule_quality(rules_out: RulesExamplesOutput, code_body: str = "") -> R
         max_group=max_group, cap_reached=cap_reached,
         duplicate_rule_statements=dup_rule_stmts, reasons=reasons,
     )
-
-
-def deterministic_dedupe(rules_out: RulesExamplesOutput) -> RulesExamplesOutput:
-    """폴백 재검사도 실패했을 때 마지막 결정론 정리 — 완전중복 Example만 제거(FR-023).
-
-    의미 중복은 못 지운다(정규화 한계). 지울 수 있는 완전중복만 제거해 최소 정합성 확보.
-    각 Rule 안에서 정규화 키가 처음 등장한 것만 남긴다(순서 보존).
-    """
-    for rule in rules_out.rules:
-        seen: set[tuple] = set()
-        kept: list[ExampleItem] = []
-        for ex in rule.examples:
-            k = _example_key(ex)
-            if k in seen:
-                continue
-            seen.add(k)
-            kept.append(ex)
-        rule.examples = kept
-    return rules_out

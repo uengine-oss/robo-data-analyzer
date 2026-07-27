@@ -1,123 +1,59 @@
-## code_summary_batch — 배치 노드별 summary + stereotype + logical_name + search_text + domain_terms
+## DBMS 분할 1 — 배치 노드별 사용자 설명과 검색 의미.
 extends: _common
-max_tokens: 8000
+max_tokens: 6000
 shared_values:
   summary_contract: ../common/summary_contract.md
+  search_text_contract: ../common/search_text_contract.md
+  domain_terms_contract: ../common/domain_terms_contract.md
 user_template_specific: |
-  # [이 분할 고유 지침]
+  # [분할 계약: BatchSummaryOutput]
 
-  입력의 각 `### 노드 <key>`마다 `BatchSummaryItem`을 정확히 하나 반환한다.
-  `node_key`는 입력 키를 그대로 echo한다. 노드 누락·추가·병합을 금지한다.
-  각 항목은 `search_text`, `domain_terms`, `logical_name`, `summary`, `stereotype`만 작성한다.
+  입력의 각 `node_key`마다 `BatchSummaryItem` 하나를 정확히 출력한다:
+  `node_key`, `search_text`, `domain_terms`, `logical_name`, `summary`, `stereotype`.
+  Rule·Example·Question과 테이블·컬럼 설명은 만들지 않는다.
 
-  ## 노드별 출력 순서와 종료
-
-  1. 해당 노드 body만 한 번 읽는다.
-  2. `search_text` 1~2문장을 쓴다.
-  3. `domain_terms`를 0~10개 쓴 뒤 배열을 닫는다.
-  4. `logical_name`, 1~3문장 `summary`, `stereotype`을 각각 한 번 쓰고 다음 노드로 이동한다.
-  5. 완료한 노드로 돌아가 항목·문장을 추가하거나 반복하지 않는다.
-
-  ## search_text
-
-  이 노드를 구별하는 업무 조건·상태 전이·정책값·테이블 상호작용을 자연어 1~2문장으로
-  쓴다. 용어 목록은 금지한다.
-
-  **빈 값(`""`)은 본문으로만 판정한다.** 업무 분기·코드값 비교·테이블 접근이 본문에
-  하나도 없을 때(단순 COMMIT·대입·기술 위임)만 비운다. **노드 이름으로 판정하지 마라** —
-  이름에 호출·위임을 뜻하는 낱말이 있어도 본문에 업무 판단이 있으면 채운다.
-  규칙(rules)이 나올 만한 분기가 보이면 `search_text` 도 반드시 채운다.
-
-  ## domain_terms — ★ 노드마다 10개 절대 상한
-
-  - 노드별 허용 개수는 **0~10개**다. **10개는 목표가 아니라 마지노선**이다.
-  - 후보가 3개면 3개만 쓴다. 개수를 채우기 위한 생성은 실패다.
-  - 후보가 11개 이상이면 우선순위 상위 10개만 쓰고 10번째에서 배열을 닫는다.
-  - 같은 우선순위 후보끼리는 해당 노드 body에 먼저 등장한 순서로 선택한다.
-  - 다른 노드의 용어를 가져오지 않는다.
-
-  우선순위:
-
-  1. 외부 시스템·기관·망·프로토콜·공식 규격 고유명
-  2. 현업이 그대로 질문하는 낯선 업무 약어·업무어
-  3. 이름 붙은 업무 정책·상태 체계
-  4. 나머지 검색 연결 가치가 있는 고유 표제어
-
-  후보는 `term`이 해당 노드 body·설명 주석·업무 문자열에 연속된 그대로 존재하고,
-  코드와 독립된 현업 사전 표제어이며, 뜻도 그 노드에서 확인될 때만 허용한다.
-
-  금지:
-
-  - 변수·프로시저·상수·테이블·물리 컬럼명과 그 번역
-  - 해당 노드 body에 있더라도 상태·유형 등의 조회 키인 영문/숫자 코드값과
-    열거 리터럴. 코드가 가리키는 이름 붙은 업무 개념이 body에 별도로 쓰였을 때만 그 업무
-    명칭을 후보로 삼고, 식별용 값 자체는 쓰지 않는다.
-  - SQL/프로그래밍 용어와 기술 리턴·버퍼·길이
-  - 원문에 없는 합성어와 파생어
-  - 한 표제어에 `상세`, `코드`, `메시지`, `결과`를 반복 부착한 연쇄 생성
-  - 같은 개념의 중복·유사 변형
-
-  배열에 넣기 직전 겹치는 원문 구절을 비교한다.
-
-  - 원문에 `SMS 게이트웨이`처럼 완전한 업무 명칭이 있으면 검색 의미가 약한 부분 문자열
-    `SMS`만 잘라 쓰지 말고 완전한 명칭을 쓴다. 약어 자체가 원문에서 독립된 공식 표제어로
-    설명될 때만 둘을 별개 후보로 볼 수 있다.
-  - `W01`, `A17`, `ENC`, `EVT2025`처럼 대문자·숫자로 된 짧은 토큰은 주석에 반복되거나
-    기본값·분기값으로 중요해도 값 자체는 표제어가 아니다. 별도로 적힌 업무 명칭만 쓴다.
-  - 배열을 닫기 직전에 각 `term`을 검사한다. `^[A-Z0-9_*.-]{1,12}$` 모양의 ASCII 토큰은
-    원문이 외부 기관·망·프로토콜·공식 규격의 고유명이라고 명시한 경우가 아니면 삭제한다.
-    내부 포맷 표식·접두어·상태키·기본값은 예외가 아니다.
-    `ENC`, `HEX`, `TMP`, `BUF`처럼 인코딩·표현형식·임시값·버퍼를 나타내는 기술 표식도
-    제외한다. 대문자 약어는 원문이 외부 시스템·공식 규격·이름 붙은 업무 등급/분류라고
-    명시할 때만 예외적으로 허용한다.
-  - 원문에 그대로 있고 검색에 쓰이는 완전한 업무 명사는 더 일반적인 부분 문자열보다 우선한다.
-  - 노드 배열을 닫기 직전 ASCII 대문자 전용 항목마다 공식 명칭 예외의 원문 근거를 다시
-    확인하고, 입증하지 못한 기술 표식은 삭제한다.
-
-  ### 올바른 예시
-
-  노드 주석과 문자열에 공식 외부망명과 업무상태명이 실제로 있으면:
-
-  ```json
-  [
-    {"term":"<원문의 외부망명>","meaning":"<원문이 밝힌 뜻>"},
-    {"term":"<원문의 업무상태명>","meaning":"<원문이 밝힌 뜻>"}
-  ]
-  ```
-
-  2개에서 종료한다. 10개를 채우지 않는다.
-  후보가 없으면 `[]`가 정답이며, 채우기 위한 생성은 실패다.
-
-  `A17`, `W01`, `ENC`, `EVT2025`, `CHANNEL_X`처럼 업무 분기나 조회에 쓰이는 코드 리터럴만 있고 그
-  코드의 공식 업무 명칭이 해당 노드 body에 없다면 값 자체는 용어가 아니므로 `[]`를 유지한다.
-
-  ### 잘못된 예시 — 실제 장애 패턴
-
-  ```json
-  [
-    {"term":"업무 결과","meaning":"..."},
-    {"term":"업무 결과 상세","meaning":"..."},
-    {"term":"업무 결과 상세 코드","meaning":"..."},
-    {"term":"업무 결과 상세 메시지","meaning":"..."}
-  ]
-  ```
-
-  원문 표제어가 아니라 앞 항목을 늘려 만든 파생 체인이므로 금지한다.
-
-  ### 10개 경계 예시
-
-  실제 후보 12개면 우선순위 상위 10개만 선택하고 11·12번째는 쓰지 않는다.
-  같은 우선순위라면 해당 노드 body에 먼저 나온 것을 우선한다.
-  실제 후보 0개면 `[]`, 7개면 7개가 정답이다.
-
-  ## logical_name / summary / stereotype
-
-  - `logical_name`: 형제와 구별되는 업무 표시명 한 줄, 권장 22자 전후 체언형. 반복 금지.
+  summary:
   {summary_contract}
-  - `stereotype`: 아래 허용값 하나만 사용.
 
-  `ApplicationService`, `DomainService`, `Repository`, `Factory`, `Command`, `Query`,
-  `Validator`, `Translator`, `Adapter`, `Strategy`, `EventHandler`, `Scheduler`, `Helper`,
-  `Controller`, `Initializer`.
+  search_text:
+  {search_text_contract}
 
-  모든 입력 노드의 항목을 한 번씩 작성한 뒤 `nodes` 배열과 JSON을 즉시 닫는다.
+  같은 노드의 summary와 search_text는 같은 근거에서 각각 작성한다. 의미·핵심 용어·문장
+  일부가 겹치는 것은 정상이며 억지로 차이를 만들지 않는다.
+
+  - 잘못: 차이를 만들기 위해 search_text에 입력에 없는 필터·업무 목적을 추가
+  - 좋음: 둘 다 조회라는 핵심을 유지하되, summary는 사용자용 목적과 산출물을 설명하고
+    search_text는 근거에 실제로 있는 검색 가능한 대상·대표 필터를 포함
+  - 잘못: 같은 의미가 겹친다는 이유로 한쪽에서 대상 없음이나 반환 결과를 삭제
+  - 좋음: 핵심 결과는 양쪽에 필요하면 모두 보존
+
+  logical_name은 해당 노드가 직접 하는 일로 형제와 구별되는 짧은 표시명을 쓴다.
+  stereotype은 아래 ontology 값 중 현재 노드의 주동작에 맞는 하나만 정확히 선택한다:
+  {stereotype_options}
+
+  부수 SELECT·DML·검증 하나가 아니라 호출자가 관측하는 최종 책임으로 고른다.
+
+  - `DataQuery`: 상태 변경 없이 조회 결과를 반환하는 것이 주동작
+  - `DataMutator`: INSERT·UPDATE·DELETE로 상태를 바꾸는 것이 주동작
+  - `MetadataLookup`: 코드·마스터·설정 조회 자체가 주동작
+  - `Validator`: 허용 여부나 정합성 판정이 산출물
+  - `BatchProcessor`: 다수 행을 정기·일괄 단위로 처리
+  - `CursorLooper`: 커서 순회 자체가 골격이며 행별 처리를 위임
+  - 나머지 역할도 이름이 아니라 ontology 설명과 최종 효과로 대조
+
+  - 잘못: 검증 조건이 하나 있다는 이유로 조회 결과를 반환하는 노드를 `Validator`
+  - 좋음: 최종 산출물이 조회 데이터이면 `DataQuery`
+  - 잘못: 코드 테이블을 읽는다는 이유로 그 결과로 데이터를 갱신하는 노드를 `MetadataLookup`
+  - 좋음: 최종 관측 효과가 갱신이면 `DataMutator`
+
+  domain_terms:
+  {domain_terms_contract}
+
+  입력에 없는 node_key를 만들거나 형제 의미를 복사하지 않는다.
+
+  각 TARGET_NODE의 `[CONTROL_FLOW_INDEX]`에서 `[decision]`은 실제 판정,
+  `[complement]`는 같은 층의 나머지 경우, `[controller]`는 하위 결정을 묶는 문맥이다.
+  목록만 믿지 말고 같은 TARGET_NODE의 SOURCE와 함께 읽는다.
+
+  - 잘못된 예: `[controller] CASE`를 fallback 결과로 해석
+  - 좋은 예: `[decision]`/`[complement]` 항목과 SOURCE 본문 결과를 함께 요약

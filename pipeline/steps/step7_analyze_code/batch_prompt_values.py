@@ -1,6 +1,8 @@
 """Prompt values and node-key mapping for DBMS analysis batches."""
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Optional
 
 from graph.schema.graph_nodes import CodeNode
@@ -8,6 +10,8 @@ from pipeline.models.analysis_context import AnalysisContext, dump_external_evid
 from pipeline.steps.step7_analyze_code.batch_planner import Batch
 from pipeline.steps.step7_analyze_code.range_body import ancestor_context, body_for
 from pipeline.steps.step7_analyze_code.table_prompt_context import dump_table_refs
+from pipeline.steps.step7_analyze_code.control_prompt import control_index
+from pipeline.languages import lang_of
 from shared.files.cache import SourceFileCache
 
 
@@ -39,13 +43,27 @@ def _build_batch_values(
         key = f"{ctx.start_line}-{ctx.end_line}"
         key_to_id[key] = nid
         body = body_fn(ctx, contexts, cache)
+        fn = code_by_id[nid]
+        raw_body = cache.slice(ctx.file_path, ctx.start_line, ctx.end_line)
+        lang = lang_of(Path(ctx.file_path).suffix)
+        excerpt = cache.excerpt(ctx.file_path, ctx.start_line, ctx.end_line)
         blocks.append(
-            f"### 노드 {key}\n"
-            f"reads(JSON): {dump_table_refs(ctx.reads, table_descriptions)}\n"
-            f"writes(JSON): {dump_table_refs(ctx.writes, table_descriptions)}\n"
-            f"참조심볼(JSON): {dump_referenced_symbols(ctx.referenced_symbols)}\n"
-            f"외부증거(JSON): {dump_external_evidence(ctx.external_evidence)}\n"
-            f"body:\n```\n{body}\n```"
+            f"### [TARGET_NODE]\n"
+            f"node_key: {key}\n"
+            f"file: {ctx.file_path}\n"
+            f"source_range: {key}\n"
+            f"coordinate_system: {excerpt.coordinate_system}\n"
+            f"source_status: {excerpt.status}\n\n"
+            f"#### [DIRECT_EVIDENCE]\n"
+            f"reads_json: {dump_table_refs(ctx.reads, table_descriptions, direct_source=raw_body, lang=lang)}\n"
+            f"writes_json: {dump_table_refs(ctx.writes, table_descriptions, direct_source=raw_body, lang=lang)}\n"
+            f"authoritative_table_ops_json: "
+            f"{json.dumps(ctx.extra.get('table_op') or {}, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}\n"
+            f"referenced_symbols_json: {dump_referenced_symbols(ctx.referenced_symbols)}\n"
+            f"external_evidence_json: {dump_external_evidence(ctx.external_evidence)}\n\n"
+            f"#### [CONTROL_FLOW_INDEX]\n"
+            f"{control_index(fn, ctx, cache)}\n\n"
+            f"#### [SOURCE]\n```\n{body}\n```"
         )
 
     values = {

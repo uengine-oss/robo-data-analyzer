@@ -25,6 +25,8 @@ from typing import Literal, Optional
 from agents.contracts import DdlTransform, TableAccessPattern
 from graph.schema.graph_edges import ReadsWrites, derive_dml_type
 from graph.schema.graph_nodes import CodeNode, Table
+from pipeline.languages import NoSupportedSourceError, lang_of
+from pipeline.quality_gates.lexing import split_source_for_linking
 from shared.config.settings import SETTINGS
 from shared.events.runtime_logger import log_warning
 
@@ -200,7 +202,7 @@ def _c_sql_semantic_edges(
     targets remain reads.
     """
     edges: list[ReadsWrites] = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[str, str, str, str, int]] = set()
     for group in _c_literal_groups(text):
         content = "".join(text[token.content_start:token.content_end] for token in group)
         offsets = tuple(
@@ -230,7 +232,7 @@ def _c_sql_semantic_edges(
             )
             if caller_id is None or table_fqn is None:
                 continue
-            key = (caller_id, table_fqn, relation)
+            key = (caller_id, table_fqn, relation, str(src_file), line)
             if key in seen:
                 continue
             seen.add(key)
@@ -378,13 +380,22 @@ class RegexTableLinker:
                 )
                 continue
 
-            views = [_SourceView(text)]
+            try:
+                scan_text = split_source_for_linking(
+                    text, lang_of(src_file.suffix)
+                ).live()
+            except NoSupportedSourceError:
+                # 코드노드 locator가 지원 소스 밖 파일을 끝점으로 선택하지 않으므로, 알 수
+                # 없는 문법을 임의의 주석 규칙으로 훼손하지 않는다.
+                scan_text = text
+
+            views = [_SourceView(scan_text)]
             is_c_family = src_file.suffix.lower() in {
                 ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp",
             }
             if is_c_family:
-                views.extend(_c_adjacent_string_views(text))
-                views.extend(_c_nested_sql_views(text))
+                views.extend(_c_adjacent_string_views(scan_text))
+                views.extend(_c_nested_sql_views(scan_text))
             seen_sites: set[tuple[str, int, str, str]] = set()
             for pat, regex, op_lookup in compiled:
                 for view in views:
@@ -399,7 +410,7 @@ class RegexTableLinker:
                         if site in seen_sites:
                             continue
                         seen_sites.add(site)
-                        line = text[:entity_offset].count("\n") + 1
+                        line = scan_text[:entity_offset].count("\n") + 1
 
                         entity_complete = _entity_group_complete(view.text, m)
                         token_known = op_token in op_lookup
@@ -457,7 +468,7 @@ class RegexTableLinker:
 
             if is_c_family:
                 semantic_edges = _c_sql_semantic_edges(
-                    text, src_file, locator, table_lookup, ddl_transform,
+                    scan_text, src_file, locator, table_lookup, ddl_transform,
                 )
                 semantic_relations = {
                     (edge.source_id, edge.target_id, edge.relation)
@@ -476,12 +487,25 @@ class RegexTableLinker:
                     or (edge.source_id, edge.target_id, edge.relation) in semantic_relations
                 ]
                 existing = {
-                    (edge.source_id, edge.target_id, edge.relation)
+                    (
+                        edge.source_id,
+                        edge.target_id,
+                        edge.relation,
+                        edge.evidence_file,
+                        edge.evidence_line,
+                    )
                     for edge in outcome.edges
                 }
                 outcome.edges.extend(
                     edge for edge in semantic_edges
-                    if (edge.source_id, edge.target_id, edge.relation) not in existing
+                    if (
+                        edge.source_id,
+                        edge.target_id,
+                        edge.relation,
+                        edge.evidence_file,
+                        edge.evidence_line,
+                    )
+                    not in existing
                 )
         return outcome
 

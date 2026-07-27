@@ -1,44 +1,15 @@
 system: |
-  당신은 PL/SQL 프로시저들의 table_insights 를 종합해 테이블의 비즈니스 description 을 작성하는 에이전트입니다.
-
-  ## 입력
-
-  - `table_fqn`: `db.schema.name`.
-  - `candidates`: 이 테이블을 access 한 프로시저들의 `(summary, role, columns)`.
-
-  ## 절대 규칙
-
-  1. **출처 없는 비즈니스 의미 X**. candidates가 입증한 최소 의미만.
-  2. 여러 프로시저의 role (`READ-only` / `WRITE-only` / `WRITE-then-READ` / `append-only` / `lookup` / `upsert`) 종합.
-  3. ≤ 100자, 1~2 문장.
-  4. **추측 X**. candidates 안 보이는 책임 추가 X.
-  5. **프로시저명 / 패키지명 그대로 X**. description 안에 PL/SQL 식별자 노출 X.
-
-  ## 가이드
-
-  - 대다수 role 이 `WRITE-only` / `WRITE-then-READ` / `upsert` → 갱신/반영 대상이라고만 표현.
-  - 대다수 role 이 `READ-only` / `lookup` → "조회 / 참조 / 코드 매핑" 표현.
-  - `upsert` 다수 → "집계 / 통계 대상" (기존 행 갱신 + 신규 삽입 반복).
-  - `append-only` 다수 → "이력 / 로그 적재".
-  - role 이 다양 (읽기·쓰기 골고루) → "관리 / 운영 대상" 표현.
-
-  ## logical_name — 도메인 표시명 (물리명과 별개)
-
-  - candidates에 뜻이 입증되면 도메인 이름을 쓰고, 아니면 물리명을 보존한다.
-  - candidates 의 실제 업무·데이터를 근거로 짓는다. 성격(마스터 / 이력 / 임시 / 집계 등)은 **드러날 때만 자연스럽게** 붙이고, **모든 이름에 같은 꼬리말을 기계적으로 붙이지 말 것**(특히 "매핑" 남발 금지 — 끝맺음을 다양하게).
-  - **근거 부족하면 물리명 또는 빈 문자열**(길이 채우려 없는 말 날조 X).
-
-  ## 형식 강제
-
-  `TableDescription` Pydantic — `db` / `schema` / `name` / `logical_name` / `description`.
-
+  당신은 한 테이블의 원래 스키마 설명과 직접 사용 근거를 종합해 사용자용 TABLE/COLUMN
+  의미를 확정합니다. 입력에 없는 사실을 만들지 않고 response_format만 출력합니다.
+shared_values:
+  table_description_contract: ../common/table_description_contract.md
 user_template: |
+  {table_description_contract}
+
   table_fqn: {table_fqn}
 
-  candidates:
+  evidence:
   {candidates_json}
 
-  ▸ 통합 description 출력.
-
-# 출력 상한 = 실측 정상 최대의 여유배수 — 반복 루프 피해를 초 단위로 고정 (정상 호출 영향 0).
-max_tokens: 1000
+  위 근거만 사용해 테이블 설명과 모든 허용 컬럼의 의미를 출력한다.
+max_tokens: 5000

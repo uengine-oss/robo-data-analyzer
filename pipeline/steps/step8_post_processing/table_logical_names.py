@@ -22,3 +22,36 @@ def build_column_updates(
                 "logical_name": column_logicals.get(table_id, {}).get(name, ""),
             })
     return updates
+
+
+def build_consolidated_column_updates(
+    table_ids: list[str],
+    results: list[object],
+    allowed_names: Mapping[str, set[str]],
+) -> list[dict[str, str]]:
+    """테이블별 최종 LLM 응답에서 허용 컬럼만 한 번씩 업데이트한다.
+
+    의미 선택은 여러 후보와 원래 설명을 함께 본 테이블 통합 호출이 담당한다. 이 함수는
+    입력 허용 목록·중복만 결정론적으로 검증하며, 빠진 컬럼을 첫 후보나 sibling 값으로
+    채우지 않는다.
+    """
+    updates: list[dict[str, str]] = []
+    for table_id, result in zip(table_ids, results):
+        if result is None:
+            continue
+        seen: set[str] = set()
+        for column in getattr(result, "columns", ()) or ():
+            name = (getattr(column, "name", "") or "").strip()
+            if not name or name in seen or name not in allowed_names.get(table_id, set()):
+                continue
+            seen.add(name)
+            description = (getattr(column, "description", "") or "").strip()
+            logical_name = (getattr(column, "logical_name", "") or "").strip()
+            if not description and not logical_name:
+                continue
+            updates.append({
+                "id": fqn(table_id, name),
+                "analyzed_description": description,
+                "logical_name": logical_name,
+            })
+    return updates

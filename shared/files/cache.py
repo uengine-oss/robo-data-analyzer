@@ -14,6 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from shared.events.runtime_logger import log_warning
+from shared.files.source_excerpt import SourceExcerpt
 
 
 _LOG = "shared.files.cache"
@@ -76,6 +77,17 @@ class SourceFileCache:
             return ""
         end = end_line if end_line > 0 else len(lines)
         return "\n".join(lines[max(start_line - 1, 0):end])
+
+    def excerpt(self, file_path: str, start_line: int, end_line: int) -> SourceExcerpt:
+        """Return the single raw/numbered contract for an absolute source range."""
+        lines = self.lines(file_path)
+        return SourceExcerpt.from_lines(
+            file_path,
+            lines,
+            start_line,
+            end_line,
+            read_failed=file_path in self._read_errors,
+        )
 
 
 class SourceFileReadError(OSError):

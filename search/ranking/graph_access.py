@@ -42,7 +42,8 @@ def table_neighbors(session, code_id: str) -> list[dict]:
         "WHERE type(r) IN $rels AND t.id IS NOT NULL "
         "RETURN t.id AS id, elementId(t) AS eid, coalesce(t.name,'') AS name, "
         "coalesce(t.logical_name,'') AS logical_name, "
-        "coalesce(t.analyzed_description, t.description, '') AS summary, type(r) AS relation",
+        "CASE WHEN trim(coalesce(t.description,'')) <> '' THEN t.description "
+        "ELSE coalesce(t.analyzed_description,'') END AS summary, type(r) AS relation",
         id=code_id,
         rels=list(TABLE_RELATIONS),
         graph_owner=ANALYZER_GRAPH_OWNER,

@@ -8,7 +8,12 @@ _ROOT = Path(__file__).resolve().parents[3]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from pipeline.steps.step8_post_processing.table_logical_names import build_column_updates
+from types import SimpleNamespace as NS
+
+from pipeline.steps.step8_post_processing.table_logical_names import (
+    build_column_updates,
+    build_consolidated_column_updates,
+)
 import unittest
 
 
@@ -34,6 +39,24 @@ def test_description_and_logical_name_union_is_complete():
     assert {item["id"] for item in updates} == {
         "db:shipping.request_dtm", "db:shipping.ship_seq", "db:shipping.ship_status_cd",
     }
+
+
+def test_consolidated_result_rejects_unknown_and_duplicate_columns_without_fallback():
+    result = NS(columns=[
+        NS(name="status_cd", logical_name="처리상태", description="처리 상태 코드"),
+        NS(name="status_cd", logical_name="다른상태", description="중복 후보"),
+        NS(name="sibling_blob", logical_name="응답원문", description="다른 테이블 컬럼"),
+    ])
+    updates = build_consolidated_column_updates(
+        ["db:orders"],
+        [result],
+        {"db:orders": {"status_cd", "missing_col"}},
+    )
+    assert updates == [{
+        "id": "db:orders.status_cd",
+        "analyzed_description": "처리 상태 코드",
+        "logical_name": "처리상태",
+    }]
 
 
 if __name__ == "__main__":

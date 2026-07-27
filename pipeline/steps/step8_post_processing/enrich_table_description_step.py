@@ -11,13 +11,15 @@ LLM 호출 = 테이블당 1 회 (병렬, ``max_concurrency``).
 from __future__ import annotations
 
 import json
+import hashlib
 import time
 from collections import defaultdict
 from dataclasses import replace
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from langchain_core.runnables import RunnableConfig
+from pydantic import Field, create_model, model_validator
 
 from pipeline.execution.analysis_handoff import (
     POSTPROCESS_PRIORITY,
@@ -26,17 +28,21 @@ from pipeline.execution.analysis_handoff import (
 )
 from pipeline.execution.step_config import step_config
 from pipeline.execution.pause_controller import PauseController
+from pipeline.steps.step8_post_processing.handoff_skip import log_handoff_skip
 
 from llm.usage.cost_budget import BudgetExceededError
 from llm.fanout import gather_with_warmup, partition_llm_results
-from pipeline.models.code_analysis_output import TableDescription
+from pipeline.models.code_analysis_output import ColumnInsight, TableDescription
 from llm.runners.yaml_llm_runner import run_yaml_rule
 from shared.events.runtime_logger import log_error, log_info, log_warning
 from shared.events.processing_events import step_processing_scope, track_processing
 from graph.neo4j_client import Neo4jClient
 from graph.nodes.column import update_analyzed_descriptions as update_column_analyzed
 from graph.nodes.table import update_analyzed_descriptions as update_table_analyzed
-from pipeline.steps.step8_post_processing.table_logical_names import build_column_updates
+from graph.schema.node_ids import fqn
+from pipeline.steps.step8_post_processing.table_logical_names import (
+    build_consolidated_column_updates,
+)
 
 _STEP = "step8.enrich_table_description"
 
@@ -59,7 +65,7 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
     try:
         await handoff.analysis()
     except AnalysisHandoffAborted:
-        log_warning(_STEP, "analysis_aborted", "분석이 실패로 끝남 — 테이블 설명 skip")
+        log_handoff_skip(_STEP, "테이블 설명", pause)
         return {}
 
     code_nodes = handoff.merge(state.get("code_nodes", []))
@@ -68,12 +74,13 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
         return {}
     started = time.monotonic()
 
-    # table_fqn → [{code_summary, role, columns}, ...]
+    # table_fqn → [{usage_summary, role}, ...] — 함수 전체 summary를 각 테이블에 복사하지 않는다.
     table_candidates: dict[str, list[dict]] = defaultdict(list)
-    # table_fqn → {column_name: description (가장 명확한 1개)}
-    column_descriptions: dict[str, dict[str, str]] = defaultdict(dict)
-    # table_fqn → {column_name: logical_name (가장 명확한 1개)} — 컬럼 논리명(spec 028)
-    column_logicals: dict[str, dict[str, str]] = defaultdict(dict)
+    # table_fqn → column_name → 여러 코드노드 관점 후보. 첫 후보 승리(setdefault)를 금지하고
+    # 원래 DDL 설명과 함께 테이블 통합 호출이 의미를 확정한다.
+    column_candidates: dict[str, dict[str, list[dict[str, str]]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
 
     for fn in code_nodes:
         for insight in fn.extra.get("table_insights", []) or []:
@@ -81,35 +88,66 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
             if not table:
                 continue
             table_candidates[table].append({
-                "code_summary": fn.summary or fn.logical_name or fn.signature,
+                "usage_summary": (insight.get("usage_summary") or "").strip(),
                 "role": insight.get("role", ""),
-                "columns": insight.get("columns", []) or [],
             })
             for col in insight.get("columns", []) or []:
                 cname = col.get("name")
-                cdesc = col.get("description")
-                if cname and cdesc:
-                    column_descriptions[table].setdefault(cname, cdesc)
-                clog = col.get("logical_name")
-                if cname and clog:
-                    column_logicals[table].setdefault(cname, clog)
+                if not cname:
+                    continue
+                candidate = {
+                    "logical_name": (col.get("logical_name") or "").strip(),
+                    "description": (col.get("description") or "").strip(),
+                }
+                if candidate not in column_candidates[table][cname]:
+                    column_candidates[table][cname].append(candidate)
 
     if not table_candidates:
         log_info(_STEP, "skip", reason="no table_insights aggregated")
         return {}
 
+    source_columns_by_id = {column.id: column for column in state.get("columns", [])}
+    source_columns_by_table = _source_columns_by_table(state, source_columns_by_id)
+    allowed_column_names: dict[str, set[str]] = {}
+    prompt_evidence: dict[str, dict] = {}
+    for table, usages in table_candidates.items():
+        # DDL HAS_COLUMN이 최종 컬럼 집합의 단일 진실이다. step7 LLM 후보가 컬럼을
+        # 누락했다고 그 누락을 최종 prompt 입력으로 승격하지 않는다. DDL 관계가 없는
+        # 외부/카탈로그 테이블만 검증된 step7 후보를 보수적 fallback으로 사용한다.
+        source_columns = source_columns_by_table.get(table, [])
+        ordered_names = [column.name for column in source_columns]
+        if not ordered_names:
+            ordered_names = list(column_candidates.get(table, {}))
+        allowed_column_names[table] = set(ordered_names)
+        columns = []
+        for name in ordered_names:
+            source = source_columns_by_id.get(fqn(table, name))
+            columns.append({
+                "name": name,
+                "source_logical_name": getattr(source, "logical_name", "") if source else "",
+                "source_description": getattr(source, "description", "") if source else "",
+                "source_comment": getattr(source, "comment", "") if source else "",
+                "candidates": column_candidates.get(table, {}).get(name, []),
+            })
+        prompt_evidence[table] = {
+            "table_usages": usages,
+            "columns": columns,
+        }
+
     log_info(
         _STEP, "start",
         tables=len(table_candidates),
         code_insights=sum(len(v) for v in table_candidates.values()),
-        column_descriptions=sum(len(v) for v in column_descriptions.values()),
+        column_descriptions=sum(len(v) for v in column_candidates.values()),
     )
     prompts_dir = Path(strategy.prompts_dir)
     # run 공유 슬롯 — step7 과 같은 세마포어를 낮은 우선순위로 쓴다 (spec 096).
     slots = handoff.slots
 
-    async def _summarize_one(table_fqn: str, candidates: list[dict]) -> TableDescription:
+    async def _summarize_one(table_fqn: str, evidence: dict) -> TableDescription:
         """성공 시 TableDescription / 실패 시 raise. fail 정책은 메인이 책임 (단일 책임)."""
+        required_names = tuple(column["name"] for column in evidence.get("columns", []))
+        response_model = _table_description_response_model(required_names)
         async with track_processing("Table", table_fqn):
             async with slots.at(POSTPROCESS_PRIORITY):
                 return await run_yaml_rule(
@@ -117,9 +155,9 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
                     rule_name="table_description",
                     user_values={
                         "table_fqn": table_fqn,
-                        "candidates_json": json.dumps(candidates, ensure_ascii=False, indent=2),
+                        "candidates_json": json.dumps(evidence, ensure_ascii=False, indent=2),
                     },
-                    response_model=TableDescription,
+                    response_model=response_model,
                     budget=cost_budget,
                 )
 
@@ -128,7 +166,7 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
     table_fqns = list(table_candidates.keys())
     async def _run_fanout() -> list:
         return await gather_with_warmup(
-            [_summarize_one(t, table_candidates[t]) for t in table_fqns],
+            [_summarize_one(t, prompt_evidence[t]) for t in table_fqns],
             return_exceptions=True,
         )
 
@@ -147,11 +185,10 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
         matched = await update_table_analyzed(neo, table_updates)
         _warn_unmatched("테이블", table_updates, matched)
 
-    # 컬럼 논리명(spec 028)도 동반 SET — 빈값은 column.py SET_ANALYZED 가 미저장 처리.
-    # description 없이 logical_name만 반환된 컬럼도 보존한다. 종전에는
-    # column_descriptions를 반복해 이 경우 logical_name이 집계 단계에서 소실됐다.
-    column_updates = build_column_updates(
-        table_candidates, column_descriptions, column_logicals,
+    # 여러 함수 후보 중 첫 값이 아니라, 원래 schema 설명까지 함께 본 테이블별 통합 결과만
+    # 컬럼에 반영한다. 허용 목록 밖/중복은 결정론적으로 거부하고 누락을 복사로 채우지 않는다.
+    column_updates = build_consolidated_column_updates(
+        table_fqns, results, allowed_column_names,
     )
     if neo is not None and column_updates:
         matched = await update_column_analyzed(neo, column_updates)
@@ -173,6 +210,74 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
     return {"tables": updated_tables, "columns": updated_columns}
+
+
+def _source_columns_by_table(
+    state: dict,
+    source_columns_by_id: dict[str, object],
+) -> dict[str, list[object]]:
+    """HAS_COLUMN 순서대로 table_id → DDL Column 목록을 만든다.
+
+    Column id를 잘라 부모를 추측하지 않는다. 관계가 소유권의 단일 진실이며, 중복 엣지는
+    첫 항목만 보존한다.
+    """
+    result: dict[str, list[object]] = defaultdict(list)
+    seen: dict[str, set[str]] = defaultdict(set)
+    for edge in state.get("has_column_edges", []):
+        table_id = getattr(edge, "parent_id", "")
+        column_id = getattr(edge, "child_id", "")
+        column = source_columns_by_id.get(column_id)
+        if not table_id or column is None or column_id in seen[table_id]:
+            continue
+        seen[table_id].add(column_id)
+        result[table_id].append(column)
+    return dict(result)
+
+
+def _table_description_response_model(required_names: tuple[str, ...]):
+    """테이블별 허용 컬럼명과 정확 개수를 structured-output schema에 넣는다.
+
+    의미 판정은 LLM이 하되, DDL로 이미 확정된 이름·개수·비어 있지 않은 설명은 스키마가
+    보장한다. 누락을 sibling 후보 복사로 메우는 후처리는 없다.
+    """
+    fingerprint = hashlib.sha256("\0".join(required_names).encode("utf-8")).hexdigest()[:12]
+    if required_names:
+        allowed_name = Literal.__getitem__(required_names)
+        column_model = create_model(
+            f"GroundedColumn_{fingerprint}",
+            __base__=ColumnInsight,
+            name=(allowed_name, Field(..., description="DDL HAS_COLUMN 허용 이름 중 하나")),
+            logical_name=(str, Field(..., min_length=1, description="사용자용 컬럼 표시명")),
+            description=(str, Field(..., min_length=1, description="근거 기반 컬럼 의미")),
+        )
+        column_field = Field(
+            ...,
+            min_length=len(required_names),
+            max_length=len(required_names),
+            description="DDL 허용 컬럼을 누락·중복 없이 정확히 한 번씩 반환",
+        )
+    else:
+        column_model = ColumnInsight
+        column_field = Field(default_factory=list, max_length=0)
+
+    expected = frozenset(required_names)
+
+    def _exact_columns(self):
+        names = [column.name for column in self.columns]
+        if len(names) != len(set(names)) or set(names) != expected:
+            raise ValueError(
+                f"columns must match the DDL allowlist exactly: expected={sorted(expected)!r}"
+            )
+        return self
+
+    validator = model_validator(mode="after")(_exact_columns)
+    return create_model(
+        f"GroundedTableDescription_{fingerprint}",
+        __base__=TableDescription,
+        description=(str, Field(..., min_length=1, description="사용자용 테이블 의미")),
+        columns=(list[column_model], column_field),
+        __validators__={"_exact_columns": validator},
+    )
 
 
 def _apply_table_fail_policy(

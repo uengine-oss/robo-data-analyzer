@@ -1,97 +1,18 @@
-"""Framework/DBMS가 공유하는 summary↔RULE 책임 경계 품질 게이트."""
+"""Framework/DBMS가 공유하는 독립 summary/search_text 필수값 계약."""
 from __future__ import annotations
 
-import re
-from pathlib import Path
 
-from llm.runners.yaml_llm_runner import run_yaml_rule
-from llm.usage.cost_budget import BudgetExceededError
-from pipeline.models.code_analysis_output import SummaryRewriteOutput
-from llm.usage.cost_budget import CostBudget
-from shared.events.runtime_logger import log_info, log_warning
+def normalize_searchable_text(summary: str, search_text: str) -> tuple[str, str]:
+    """성공한 분석 노드가 사용자 설명과 검색 설명을 모두 갖게 한다.
 
-
-_PROMPTS = Path(__file__).resolve().parents[3] / "llm" / "prompts" / "quality"
-_RULE_MARKER = re.compile(
-    r"경우|이면|하면|실패|거부|초과|이하|이상|오류(?:가| 상황| 발생)|"
-    r"(?<![가-힣])(?:시|때)(?![가-힣])"
-)
-_POLICY_NUMBER = re.compile(r"(?<![A-Za-z가-힣])(?:-?\d[\d,.]*|[A-Z]+\d+)(?![A-Za-z가-힣])")
-# summary 스키마 상한과 같은 값(``_normalize_diet_summary`` 가 3줄에서 자른다).
-_MAX_SUMMARY_LINES = 3
-
-
-def summary_boundary_reasons(summary: str) -> list[str]:
-    """목적 요약에 정책 상세가 섞였다는 결정론 신호를 반환한다.
-
-    이 게이트가 막는 것은 **조건 서술**이지 분량이 아니다. 줄 수 상한은 스키마
-    (``1~3줄``)와 같아야 한다 — 더 좁게 잡으면 조건이 없는 정상 요약까지 재작성으로
-    끌고 가 업무 내용이 깎인다(실측: 416건 전부 1줄·중앙값 47자).
+    의미를 복사·추론하지 않고 공백 제거와 필수값 검증만 수행한다. 빈 필드는 structured
+    output 검증 또는 호출자의 재요청 경로로 돌려보낸다. 언어·프로젝트·도메인 식별자를
+    보지 않는 공통 계약이다.
     """
-    text = summary or ""
-    markers = _RULE_MARKER.findall(text)
-    reasons = []
-    if markers:
-        reasons.append("rule_marker")
-    if _POLICY_NUMBER.search(text):
-        reasons.append("policy_number_or_code")
-    if len([line for line in text.splitlines() if line.strip()]) > _MAX_SUMMARY_LINES:
-        reasons.append("multiple_lines")
-    return reasons
-
-
-async def enforce_summary_boundary(
-    *, summary: str, node_name: str, logical_name: str, search_text: str,
-    budget: CostBudget | None, audit_id: str,
-) -> str:
-    """위반 draft만 의미 재작성하고 재검증한다. 실패 시 원문을 보존하고 경고한다."""
-    reasons = summary_boundary_reasons(summary)
-    if not reasons:
-        return summary
-    draft = summary
-    for attempt in (1, 2):
-        try:
-            result = await run_yaml_rule(
-                prompts_dir=_PROMPTS,
-                rule_name="summary_rewrite",
-                user_values={
-                    "node_name": node_name,
-                    "logical_name": logical_name,
-                    "search_text": search_text,
-                    "draft_summary": draft,
-                },
-                response_model=SummaryRewriteOutput,
-                budget=budget,
-            )
-        except BudgetExceededError:
-            raise
-        except Exception as exc:  # 품질 보정 실패가 원래 분석 결과를 소실시키면 안 된다.
-            log_warning(
-                __name__, "summary_boundary_rewrite_failed",
-                f"summary 책임 경계 재작성 실패 — 원래 요약 보존: {type(exc).__name__}: {exc}",
-                code_id=audit_id, reasons=reasons, attempt=attempt,
-            )
-            return summary
-        draft = result.summary.strip()
-        remaining = summary_boundary_reasons(draft)
-        if not remaining:
-            log_info(
-                __name__, "summary_boundary_rewritten",
-                "규칙형 요약을 목적·효과 한 문장으로 재작성",
-                code_id=audit_id, reasons=reasons, attempt=attempt,
-            )
-            return draft
-        reasons = remaining
-    if reasons == ["rule_marker"]:
-        log_info(
-            __name__, "summary_boundary_reviewed",
-            "두 차례 의미 재작성 후 구체 정책 없이 조건 표지만 남은 목적 요약을 보존",
-            code_id=audit_id, reasons=reasons,
-        )
-        return draft
-    log_warning(
-        __name__, "summary_boundary_unresolved",
-        "두 차례 재작성 후에도 summary 책임 경계 위반 — 마지막 draft 보존",
-        code_id=audit_id, reasons=reasons,
-    )
-    return draft
+    normalized_summary = (summary or "").strip()
+    normalized_search = (search_text or "").strip()
+    if not normalized_summary:
+        raise ValueError("summary is empty")
+    if not normalized_search:
+        raise ValueError("search_text is empty")
+    return normalized_summary, normalized_search

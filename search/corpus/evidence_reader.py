@@ -12,31 +12,40 @@ from graph.ownership import ANALYZER_GRAPH_OWNER
 def read_rules(session, node_id: str) -> list[dict]:
     """코드 노드의 RULE → 소유 EXAMPLE → AFFECTS_TABLE 구조를 순서 보존해 반환한다."""
     rows = session.run(
-        "MATCH (x {id:$id, graph_owner:$graph_owner})-[:HAS_RULE]->"
+        "MATCH (x {id:$id, graph_owner:$graph_owner})-[hr:HAS_RULE]->"
         "(r:RULE {graph_owner:$graph_owner}) "
         "OPTIONAL MATCH (r)-[:HAS_EXAMPLE]->(e:EXAMPLE {graph_owner:$graph_owner}) "
-        "WHERE e.id STARTS WITH $prefix "
+        "WHERE CASE WHEN trim(coalesce(hr.occurrence_id,'')) <> '' "
+        "  THEN e.id STARTS WITH hr.occurrence_id + '::' "
+        "  ELSE e.id STARTS WITH $prefix END "
         "OPTIONAL MATCH (e)-[at:AFFECTS_TABLE]->(t:TABLE {graph_owner:$graph_owner}) "
-        "WITH r, e, collect(DISTINCT CASE WHEN t IS NULL THEN NULL "
+        "WITH hr, r, e, collect(DISTINCT CASE WHEN t IS NULL THEN NULL "
         "  ELSE {name: t.name, op: at.op} END) AS tbs "
-        "RETURN r.id AS rule_id, r.statement AS statement, e.id AS example_id, "
+        "RETURN r.id AS rule_id, hr.occurrence_id AS occurrence_id, "
+        "  coalesce(hr.ordinal,0) AS ordinal, r.statement AS statement, e.id AS example_id, "
         "  e.given AS given, e.when_ AS when_, e.then_ AS then_, "
         "  [x IN tbs WHERE x IS NOT NULL] AS tables "
-        "ORDER BY r.statement, size(e.id), e.id",
+        "ORDER BY ordinal, r.statement, size(e.id), e.id",
         id=node_id,
         prefix=f"{node_id}::",
         graph_owner=ANALYZER_GRAPH_OWNER,
     ).data()
     rules: list[dict] = []
     by_rule: dict[str, dict] = {}
+    example_ids: dict[str, set[str]] = {}
     for row in rows:
-        rule = by_rule.get(row["rule_id"])
+        occurrence_id = row.get("occurrence_id") or ""
+        group_key = occurrence_id or row["rule_id"]
+        rule = by_rule.get(group_key)
         if rule is None:
             rule = {"statement": row.get("statement") or "", "examples": []}
-            by_rule[row["rule_id"]] = rule
+            by_rule[group_key] = rule
+            example_ids[group_key] = set()
             rules.append(rule)
-        if row.get("example_id") is None:
+        example_id = row.get("example_id")
+        if example_id is None or example_id in example_ids[group_key]:
             continue
+        example_ids[group_key].add(example_id)
         rule["examples"].append({
             "given": row.get("given") or "",
             "when": row.get("when_") or "",
@@ -57,7 +66,9 @@ def read_columns(session, table_id: str) -> list[dict]:
         "RETURN c.id AS id, c.name AS name, coalesce(c.dtype,'') AS dtype, "
         "coalesce(c.is_primary_key,false) AS is_primary_key, "
         "coalesce(c.logical_name,'') AS logical_name, "
-        "coalesce(c.analyzed_description, c.description, c.comment, '') AS description "
+        "CASE WHEN trim(coalesce(c.description,'')) <> '' THEN c.description "
+        "WHEN trim(coalesce(c.analyzed_description,'')) <> '' THEN c.analyzed_description "
+        "ELSE '' END AS description "
         "ORDER BY c.id",
         id=table_id,
         graph_owner=ANALYZER_GRAPH_OWNER,

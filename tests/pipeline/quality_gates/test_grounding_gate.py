@@ -162,10 +162,10 @@ class ValueSetCheck(unittest.TestCase):
 
 
 class DelegationCheck(unittest.TestCase):
-    def test_branchless_caller_with_rules_is_flagged(self):
+    def test_branchless_caller_rule_is_not_rejected(self):
         inventory = build_inventory("rc = child_a(ctx);\nreturn rc;", [], "c")
         findings = check_grounding(_rules("업무 구분에 따라 하위 모듈에 위임한다"), inventory)
-        self.assertEqual([f.check for f in findings], ["delegation"])
+        self.assertEqual(findings, [])
 
     def test_branchless_and_callless_body_is_not_flagged(self):
         inventory = build_inventory("x = 1;\nreturn x;", [], "c")
@@ -354,3 +354,38 @@ class BranchIndexUniqueness(unittest.TestCase):
     def test_at_line_resolves_to_the_conditioned_branch(self):
         branch = self.inv.at_line(5)
         self.assertEqual(branch.cond_values, frozenset({"2"}))
+
+    def test_single_atom_if_is_a_decision_not_a_complement(self):
+        inv = build_inventory(
+            "if (enabled)\n{\n    run();\n}\n",
+            [ControlSubtreeNode(node_id="if", ntype="IF", start=1, end=4)],
+            "c",
+        )
+        row = inv.branch_index().splitlines()[0]
+        self.assertIn("[decision] IF", row)
+        self.assertIn("enabled", row)
+        self.assertNotIn("그 외", row)
+
+    def test_switch_is_controller_and_default_case_is_complement(self):
+        body = (
+            "switch (kind)\n{\n"
+            'case "A":\n    first();\n'
+            "default:\n    other();\n}\n"
+        )
+        tree = [
+            ControlSubtreeNode(
+                node_id="switch",
+                ntype="SWITCH",
+                start=1,
+                end=7,
+                children=[
+                    ControlSubtreeNode(node_id="a", ntype="CASE", start=3, end=4),
+                    ControlSubtreeNode(node_id="default", ntype="CASE", start=5, end=6),
+                ],
+            )
+        ]
+        rows = build_inventory(body, tree, "c").branch_index().splitlines()
+        self.assertIn("[controller] SWITCH", rows[0])
+        self.assertIn("[decision] CASE", rows[1])
+        self.assertIn("[complement] CASE", rows[2])
+        self.assertIn("그 외", rows[2])

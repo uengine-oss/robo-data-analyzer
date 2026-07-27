@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from typing import Any, Optional
+from shared.files.source_excerpt import number_text
 
 
 @dataclass(frozen=True)
@@ -73,9 +74,11 @@ class ExternalEvidenceContext:
             "matched_key": self.matched_key,
             "semantic_kind": self.semantic_kind,
             "provenance": self.provenance,
-            "text": self.text,
+            "numbered_text": number_text(self.text, self.start_line),
             "start_line": self.start_line,
             "end_line": self.end_line,
+            "coordinate_system": "absolute-file-line",
+            "evidence_scope": "linked-external-context",
             "content_hash": self.content_hash,
         }
 

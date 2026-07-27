@@ -1,6 +1,6 @@
 """HAS_RULE 엣지 — CodeNode → Rule.
 
-Rule 노드는 코드노드 간 공유(rule_hash)된다. 정체성 = (node, rule) — rule_hash가 노드당 유일.
+Rule 노드는 코드노드 간 공유(rule_hash)된다. 관계 정체성은 함수 안 발생 ID까지 포함한다.
 """
 from __future__ import annotations
 
@@ -15,7 +15,9 @@ _UPSERT_QUERY = f"""
 UNWIND $items AS item
 MATCH (node:ANALYZER_OWNED {{id: item.source_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 MATCH (r:RULE {{id: item.target_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-MERGE (node)-[rel:{HAS_RULE}]->(r)
+MERGE (node)-[rel:{HAS_RULE} {{occurrence_id: item.occurrence_id}}]->(r)
+SET rel.ordinal = item.ordinal,
+    rel.anchor_line = item.anchor_line
 REMOVE rel.coupled_domains
 """
 
@@ -26,6 +28,9 @@ async def upsert_has_rule(client: Neo4jClient, edges: Iterable[HasRule]) -> None
         {
             "source_id": e.source_id,
             "target_id": e.target_id,
+            "occurrence_id": e.occurrence_id,
+            "ordinal": e.ordinal,
+            "anchor_line": e.anchor_line,
         }
         for e in edges
     ]

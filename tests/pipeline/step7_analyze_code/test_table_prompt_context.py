@@ -9,7 +9,10 @@ _ROOT = Path(__file__).resolve().parents[3]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from pipeline.steps.step7_analyze_code.table_prompt_context import dump_table_refs
+from pipeline.steps.step7_analyze_code.table_prompt_context import (
+    direct_column_names,
+    dump_table_refs,
+)
 import unittest
 
 
@@ -44,14 +47,41 @@ def test_empty_and_multiple_table_sets_are_exact() -> None:
     assert [record["table_id"] for record in records] == ["db:orders", "db:shipping"]
 
 
+def test_direct_column_subset_uses_active_source_only() -> None:
+    context = {
+        "db:orders": {
+            "description": "주문",
+            "columns": ["order_id", "status", "unused_note"],
+        }
+    }
+    dumped = dump_table_refs(
+        ("db:orders",),
+        context,
+        direct_source=(
+            "-- unused_note is documentation only\n"
+            "SELECT order_id FROM orders WHERE status = 'OPEN'"
+        ),
+        lang="sql",
+    )
+    assert json.loads(dumped)[0]["columns"] == ["order_id", "status"]
+    assert direct_column_names(["id"], "userid = 1", "sql") == []
+
+
 def test_framework_and_dbms_use_the_same_serializer() -> None:
     framework = (_ROOT / "pipeline/steps/step7_analyze_code/three_split_llm_fanout.py").read_text(encoding="utf-8")
     # DBMS 프롬프트 조립은 batch_prompt_values 로 이사 (2026-07 리팩토링) — 계약 대상 갱신.
     dbms = (_ROOT / "pipeline/steps/step7_analyze_code/batch_prompt_values.py").read_text(encoding="utf-8")
-    assert '"reads": dump_table_refs(ctx.reads, table_descriptions)' in framework
-    assert '"writes": dump_table_refs(ctx.writes, table_descriptions)' in framework
-    assert "reads(JSON): {dump_table_refs(ctx.reads, table_descriptions)}" in dbms
-    assert "writes(JSON): {dump_table_refs(ctx.writes, table_descriptions)}" in dbms
+    assert '"reads": dump_table_refs(' in framework
+    assert '"writes": dump_table_refs(' in framework
+    assert "direct_source=raw_body, lang=lang" in framework
+    assert '"table_ops": json.dumps(' in framework
+    assert "reads_json: {dump_table_refs(ctx.reads, table_descriptions, direct_source=raw_body, lang=lang)}" in dbms
+    assert "writes_json: {dump_table_refs(ctx.writes, table_descriptions, direct_source=raw_body, lang=lang)}" in dbms
+    assert "authoritative_table_ops_json:" in dbms
+
+    common_prompt = (_ROOT / "llm/prompts/framework/_common.yaml").read_text(encoding="utf-8")
+    assert "authoritative_table_ops_json:" in common_prompt
+    assert "{table_ops}" in common_prompt
 
 
 if __name__ == "__main__":

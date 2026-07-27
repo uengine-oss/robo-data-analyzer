@@ -146,6 +146,37 @@ class CAdjacentSqlLiteralTests(unittest.TestCase):
             sorted((edge.relation, edge.target_id) for edge in outcome.edges),
         )
 
+    def test_commented_sql_is_not_linked_and_active_line_coordinate_is_preserved(self) -> None:
+        outcome = self._link(
+            'void load(void) {\n'
+            '  // db_query("SELECT id FROM orders");\n'
+            '  /* db_exec("UPDATE product_stock SET qty = 0"); */\n'
+            '  db_query("SELECT qty FROM order_item");\n'
+            '}\n'
+        )
+        self.assertEqual(
+            [("READS", "db:sample.order_item", 4)],
+            [(edge.relation, edge.target_id, edge.evidence_line) for edge in outcome.edges],
+        )
+
+    def test_repeated_accesses_keep_every_distinct_source_line(self) -> None:
+        outcome = self._link(
+            'void load(void) {\n'
+            '  db_query("SELECT id FROM orders");\n'
+            '  if (retry) {\n'
+            '    db_query("SELECT id FROM orders");\n'
+            '  }\n'
+            '}\n'
+        )
+        self.assertEqual(
+            [2, 4],
+            sorted(
+                edge.evidence_line
+                for edge in outcome.edges
+                if edge.target_id == "db:sample.orders"
+            ),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

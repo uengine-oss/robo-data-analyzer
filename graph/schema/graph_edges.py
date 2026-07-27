@@ -211,9 +211,16 @@ class InitBy:
 
 @dataclass(frozen=True)
 class HasRule:
-    """CodeNode → Rule. 정체성 = (source_id, target_id)."""
+    """CodeNode → shared Rule occurrence.
+
+    ``occurrence_id`` is function-scoped because the same statement can appear
+    more than once in one routine. The Rule node remains meaning-deduplicated.
+    """
     source_id: str
     target_id: str
+    occurrence_id: str = ""
+    ordinal: int = 0
+    anchor_line: int = 0
 
 
 @dataclass(frozen=True)

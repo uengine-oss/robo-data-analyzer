@@ -35,6 +35,9 @@ class Codebase:
     ddl_dir: Optional[Path] = None
     locale: str = "ko"
     datasource: Optional[str] = None
+    # 분석 실행 manifest가 "실제 분석 source"와 "그 source를 담은 corpus"를 구분하도록
+    # 호출 경계가 넘긴다. None은 API 등 기존 호출자의 하위호환이며 root를 사용한다.
+    corpus_root: Optional[Path] = None
 
 
 @dataclass(frozen=True)

@@ -126,7 +126,31 @@ class GraphDeltaContractTests(unittest.IsolatedAsyncioTestCase):
             "dml_type": "SELECT",
             "evidence_file": "orders.sql",
             "evidence_line": 42,
+            "evidence_lines": [42],
         })
+
+    async def test_has_rule_occurrence_identity_is_streamed(self) -> None:
+        stream = _CaptureStream()
+        await emit_edges(
+            stream,
+            [
+                HasRule(
+                    "function:1",
+                    "rule:1",
+                    occurrence_id="function:1::R0002",
+                    ordinal=2,
+                    anchor_line=19,
+                )
+            ],
+        )
+        self.assertEqual(
+            stream.events[0]["props"],
+            {
+                "occurrence_id": "function:1::R0002",
+                "ordinal": 2,
+                "anchor_line": 19,
+            },
+        )
 
     async def test_unsupported_and_blank_endpoint_edges_fail_closed(self) -> None:
         stream = _CaptureStream()

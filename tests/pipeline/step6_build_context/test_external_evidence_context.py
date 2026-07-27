@@ -150,19 +150,19 @@ class ExternalEvidenceContextTest(unittest.IsolatedAsyncioTestCase):
             framework_values = _build_user_values(
                 context, prompt_code, {code.id: context}, "", {}, {}, SourceFileCache(),
             )
-        batch_values, _ = _build_batch_values(
-            Batch(None, (code.id,)),
-            {code.id: context},
-            {code.id: code},
-            "",
-            {},
-            {},
-            SourceFileCache(),
-            body_fn=lambda *_: code.code_text,
-        )
+            batch_values, _ = _build_batch_values(
+                Batch(None, (code.id,)),
+                {code.id: context},
+                {code.id: prompt_code},
+                "",
+                {},
+                {},
+                SourceFileCache(),
+                body_fn=lambda *_: code.code_text,
+            )
 
         self.assertIn('"matched_key":"ORDER.API"', framework_values["external_evidence"])
-        self.assertIn('"text":"/orders"', framework_values["external_evidence"])
+        self.assertIn('"numbered_text":"2 | /orders"', framework_values["external_evidence"])
         self.assertNotIn("must-not-leak", framework_values["external_evidence"])
         self.assertIn('"matched_key":"ORDER.API"', batch_values["nodes"])
         self.assertNotIn("must-not-leak", batch_values["nodes"])

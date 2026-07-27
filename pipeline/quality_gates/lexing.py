@@ -41,21 +41,57 @@ class SplitSource:
 
 def split_source(text: str, lang: str) -> SplitSource:
     """주석·비활성 블록을 걷어내고 줄 정렬을 보존한 채 활성/비활성으로 가른다."""
+    return _split_source(text, lang, preserve_string_blocks=False)
+
+
+def split_source_for_linking(text: str, lang: str) -> SplitSource:
+    """R/W 등 소스 링킹용 활성 텍스트.
+
+    일반 품질 게이트는 Python 독스트링까지 비활성 증거로 취급하지만, 링커는 할당된
+    삼중따옴표 SQL 같은 실행 시 사용 문자열을 보존해야 한다. 따라서 인용부호로 시작하는
+    block 표기는 문자열로 보호하고, 실제 주석과 비활성 전처리 블록만 제거한다.
+    줄 수는 원문과 동일하므로 탐지 결과의 절대 파일 좌표가 유지된다.
+    """
+    return _split_source(text, lang, preserve_string_blocks=True)
+
+
+def _split_source(
+    text: str,
+    lang: str,
+    *,
+    preserve_string_blocks: bool,
+) -> SplitSource:
     lexicon = source_lexicon(lang)
     line_tokens: list[str] = list(lexicon.get("line") or [])
     block_pairs: list[tuple[str, str]] = [tuple(pair) for pair in (lexicon.get("block") or [])]
     quotes: set[str] = set(lexicon.get("string_quotes") or [])
+    string_block_pairs: list[tuple[str, str]] = []
+    if preserve_string_blocks:
+        string_block_pairs = [pair for pair in block_pairs if pair[0][:1] in quotes]
+        block_pairs = [pair for pair in block_pairs if pair not in string_block_pairs]
     inactive: list[str] = list(lexicon.get("inactive") or [])
 
     live_lines: list[str] = []
     dead_lines: list[str] = []
     open_block: tuple[str, str] | None = None
+    open_string_block: tuple[str, str] | None = None
 
     for raw in text.splitlines():
         live: list[str] = []
         dead: list[str] = []
         index, length, quote = 0, len(raw), ""
         while index < length:
+            if open_string_block is not None:
+                close = open_string_block[1]
+                found = raw.find(close, index)
+                if found < 0:
+                    live.append(raw[index:])
+                    index = length
+                else:
+                    live.append(raw[index:found + len(close)])
+                    index = found + len(close)
+                    open_string_block = None
+                continue
             if open_block is not None:
                 close = open_block[1]
                 found = raw.find(close, index)
@@ -87,6 +123,15 @@ def split_source(text: str, lang: str) -> SplitSource:
             if pair is not None:
                 open_block = pair
                 index += len(pair[0])
+                continue
+            string_pair = next(
+                (p for p in string_block_pairs if raw.startswith(p[0], index)),
+                None,
+            )
+            if string_pair is not None:
+                live.append(string_pair[0])
+                open_string_block = string_pair
+                index += len(string_pair[0])
                 continue
             if raw[index] in quotes:
                 quote = raw[index]

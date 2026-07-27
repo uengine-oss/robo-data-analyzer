@@ -3,12 +3,12 @@
 흐름 (수집·조립·확정은 결정론, 판단만 LLM — 헌법 I):
 1. 수집 — 노드별 ``CodeNode.domain_terms`` dict를 표제어 단위로 병합하며
    출처 노드를 기록한다.
-2. 문맥 조립 — 표제어마다 [별칭 후보(결정론 추림 — 닫힌 선택)] + [출처 노드들의
-   summary·search_text] + [그 노드들의 모듈 요약]을 묶는다. 출처 노드 상한 초과분은 컷하되
-   로그로 남긴다(조용한 절단 금지 — 헌법 IV).
+2. 문맥 조립 — 표제어마다 [별칭 후보(결정론 추림 — 닫힌 선택)] + [출처 노드의 원문
+   주석·활성 본문에서 표제어 주변 구절]을 묶는다. 다른 LLM 필드(summary/search/module)는
+   뜻의 증거로 재사용하지 않는다. 출처 노드 상한 초과분은 로그로 남긴다.
 3. AI 종합 — 용어당 1콜 병렬(``glossary_synthesis`` rule): 뜻 종합 + 별칭 후보 중
    같은 실체 표기 선택(aliases). 전체 목록 열린 나열은 반복 폭주를 유발해 폐기
-   (run9 실측). 실패 = 그 용어 원본 유지(개선 전용, 사전을 악화시킬 수 없음).
+   (run9 실측). 실패·근거 기각 = 그 용어를 최종 사전에 싣지 않는다.
 4. 수용(결정론) — evidence 가 입력 문맥의 실제 부분열이 아니면 종합 기각, aliases 는
    별칭 후보에 실재하는 표기만 인정(LLM 창작 원천 차단).
 5. 그룹 확정(결정론 union-find) — 대표 = 최다 표본 표제어, 나머지는 colloquial 로. 검색기
@@ -26,11 +26,12 @@ from langchain_core.runnables import RunnableConfig
 from pathlib import Path
 
 from pipeline.models.code_analysis_output import GlossarySynthesisOutput
-from graph.schema.graph_nodes import CodeNode, Module
+from graph.schema.graph_nodes import CodeNode
 from llm.usage.cost_budget import BudgetExceededError
 from llm.fanout import gather_with_warmup
 from llm.runners.yaml_llm_runner import run_yaml_rule
 from shared.events.runtime_logger import log_error, log_info, log_warning
+from shared.files.source_excerpt import number_text, raw_node_text
 from graph.neo4j_client import Neo4jClient
 from graph.ownership import ANALYZER_GRAPH_OWNER
 from pipeline.execution.analysis_handoff import (
@@ -40,12 +41,12 @@ from pipeline.execution.analysis_handoff import (
 )
 from pipeline.execution.step_config import step_config
 from pipeline.execution.pause_controller import PauseController
-
-from pipeline.steps.step8_post_processing.summarize_module_step import _match_code_to_modules
+from pipeline.steps.step8_post_processing.handoff_skip import log_handoff_skip
 
 _STEP = "step8.build_glossary"
 MAX_MEANINGS = 3      # 용어당 나란히 보존할 뜻 상한 (다의어 — 그 이상은 초기 등장 순)
 MAX_CTX_NODES = 6     # 종합 문맥에 넣을 출처 노드 상한 (초과분 컷은 로그)
+MAX_SOURCE_EXCERPT_CHARS = 1200
 
 _UPSERT_QUERY = f"""
 UNWIND $items AS item
@@ -78,28 +79,53 @@ def _collect_terms(code_nodes: list[CodeNode]) -> dict[str, dict]:
 
 # ── 2. 문맥 조립 (결정론) ─────────────────────────────────
 
-def _node_context(fn: CodeNode, module_summary: str) -> str:
-    parts = [f"[{fn.name}]"]
-    if fn.summary:
-        parts.append(fn.summary.replace("\n", " ").strip())
-    if fn.search_text:
-        parts.append(fn.search_text.replace("\n", " ").strip())
-    if module_summary:
-        parts.append(f"(모듈 요약) {module_summary}")
-    return "\n".join(parts)
+def _node_context(fn: CodeNode, term: str) -> str:
+    """원문에서 표제어 주변 구절만 잘라 glossary 근거로 제공한다.
+
+    summary/search/module 같은 생성 필드를 뜻 증거로 다시 쓰면 한 번의 환각이 사전에서
+    자기 자신을 증명한다. 그래서 source comment + code_text만 읽는다.
+    """
+    source = raw_node_text(fn)
+    if not source:
+        return f"[source {fn.file_path}:{fn.start_line}-{fn.end_line}]\n(원문 없음)"
+    lines = source.splitlines()
+    needle = term.casefold()
+    hits = [index for index, line in enumerate(lines) if needle in line.casefold()][:3]
+    windows: list[tuple[int, int]] = []
+    for index in hits or [0]:
+        start = max(0, index - 2)
+        end = min(len(lines), index + 3)
+        if windows and start <= windows[-1][1]:
+            windows[-1] = (windows[-1][0], max(windows[-1][1], end))
+        else:
+            windows.append((start, end))
+    blocks: list[str] = []
+    used = 0
+    for start, end in windows:
+        block = number_text("\n".join(lines[start:end]), fn.start_line + start)
+        remaining = MAX_SOURCE_EXCERPT_CHARS - used
+        if remaining <= 0:
+            break
+        blocks.append(block[:remaining])
+        used += len(block)
+    excerpt = "\n... [non-contiguous source lines omitted] ...\n".join(blocks)
+    comment = (getattr(fn, "comment", "") or "").strip()
+    comment_block = (
+        "\n[node_comment scope=non-executable-metadata coordinate_system=unavailable]\n"
+        f"{comment}"
+        if comment else ""
+    )
+    return (
+        f"[source file={fn.file_path} range={fn.start_line}-{fn.end_line} "
+        "coordinate_system=absolute-file-line]\n"
+        f"{excerpt}{comment_block}"
+    )
 
 
 def _build_contexts(
-    terms: dict[str, dict], code_nodes: list[CodeNode], modules: list[Module]
+    terms: dict[str, dict],
 ) -> dict[str, str]:
-    """표제어 → 종합 문맥 텍스트. 모듈 요약은 summarize_module 의 매칭 로직 재사용."""
-    fn_by_module = _match_code_to_modules(code_nodes, modules)
-    module_of: dict[str, str] = {}
-    for m in modules:
-        summary = (getattr(m, "summary", None) or "").replace("\n", " ").strip()[:300]
-        for fn in fn_by_module.get(m.id, []):
-            module_of[fn.id] = summary
-
+    """표제어 → 원문 근거 문맥. 생성된 다른 의미 필드는 포함하지 않는다."""
     contexts: dict[str, str] = {}
     cut = 0
     for key, slot in terms.items():
@@ -107,7 +133,9 @@ def _build_contexts(
         if len(src) > MAX_CTX_NODES:
             cut += 1
             src = src[:MAX_CTX_NODES]
-        contexts[key] = "\n".join(_node_context(fn, module_of.get(fn.id, "")) for fn in src)
+        contexts[key] = "\n".join(
+            _node_context(fn, slot["canonical"]) for fn in src
+        )
     if cut:
         log_info(_STEP, "context_cut", terms=cut, cap=MAX_CTX_NODES)
     return contexts
@@ -129,23 +157,24 @@ def _flat(s: str) -> str:
 
 
 def _alias_candidates(self_key: str, terms: dict[str, dict], cap: int = 30) -> list[str]:
-    """별칭 후보(결정론) — 정규화 후 포함 관계인 표기만, 근접 순 상위 cap.
+    """Return only exact normalized typography variants.
 
-    LLM에게 전체 표제어 대신 이 후보만 준다 — 별칭 출력이 후보의 부분집합이 되어
-    열린 나열 폭주(run9 실측: 유사 표기 5종 267회 반복·3만 토큰)가 구조적으로 불가능.
+    Substring overlap proves neither identity nor compatible entity kind. A
+    longer business phrase, SQL operation key, type, function, or table name
+    never becomes an alias merely because it contains a shorter spelling.
+    Uncertain terms stay separate.
     """
     base = _flat(terms[self_key]["canonical"])
-    hits: list[tuple[int, str]] = []
+    if len(base) < 3:
+        return []
+    hits: list[str] = []
     for k, v in terms.items():
         if k == self_key:
             continue
         other = _flat(v["canonical"])
-        if min(len(base), len(other)) < 3:
-            continue                       # 초단문 표기는 아무 데나 포함됨 — 후보 제외
-        if base in other or other in base:
-            hits.append((abs(len(other) - len(base)), v["canonical"]))
-    hits.sort()
-    return [c for _, c in hits[:cap]]
+        if base == other:
+            hits.append(v["canonical"])
+    return sorted(hits, key=str.casefold)[:cap]
 
 
 def _accept(
@@ -154,8 +183,9 @@ def _accept(
     """수용 규칙: evidence ⊂ 문맥 실문장, aliases ∈ 별칭 후보(자기 제외). 위반은 기각/정화."""
     if not (out.meaning or "").strip():
         return None
-    if _norm(out.evidence) and _norm(out.evidence) not in _norm(context):
-        return None                        # 근거를 지어냄 → 종합 기각(원본 유지)
+    evidence = _norm(out.evidence)
+    if not evidence or evidence not in _norm(context):
+        return None                        # 근거를 지어냄 → 종합 기각
     aliases = []
     for a in (out.aliases or "").split(","):
         a = a.strip()
@@ -194,11 +224,18 @@ def _union_groups(terms: dict[str, dict], accepted: dict[str, dict]) -> list[dic
 
     out: list[dict] = []
     for members in groups.values():
-        # 대표 = 표본(수집된 뜻 조각) 최다 — 코퍼스가 가장 많이 증언한 표기
-        rep = max(members, key=lambda k: (len(terms[k]["meanings"]), -members.index(k)))
+        # 최종 meaning은 glossary synthesis LLM의 근거 통과 결과만 사용한다. 거부/실패한
+        # 그룹을 domain_terms의 후보 meaning으로 채우면 서로 다른 의미 필드 복사가 된다.
+        accepted_members = [member for member in members if member in accepted]
+        if not accepted_members:
+            continue
+        # 대표 = 수용된 항목 중 표본 최다 — 코퍼스가 가장 많이 증언한 표기
+        rep = max(
+            accepted_members,
+            key=lambda k: (len(terms[k]["meanings"]), -members.index(k)),
+        )
         rep_slot = terms[rep]
-        res = accepted.get(rep)
-        meaning = res["meaning"] if res else " / ".join(rep_slot["meanings"][:MAX_MEANINGS])
+        meaning = accepted[rep]["meaning"]
         colloquial = [terms[m]["canonical"] for m in members if m != rep]
         # 일방 지목은 비파괴 병기 — 그룹 밖 표기를 검색 재료로만 싣는다
         for m in members:
@@ -225,15 +262,14 @@ async def build_glossary_step(state: dict, config: Optional[RunnableConfig] = No
     neo: Neo4jClient | None = cfg.get("neo_client")
     pause: PauseController = cfg.get("pause") or PauseController()
 
-    # 용어 조각(domain_terms)·요약·검색문은 전부 step7 #1 summary 산물이고, 문맥에 얹는
-    # 모듈 요약은 summarize_module 산물이다(spec 096). 두 인계를 기다린 뒤 시작하면
-    # 입력 집합이 종전과 같으면서 step7 의 빈 슬롯을 쓸 수 있다.
+    # 용어 후보는 step7 #1 산물이지만 최종 뜻의 증거는 원문만 사용한다. 전 대상 #1이
+    # 확정된 뒤 시작하면 후보 집합은 완전하고, 모듈 요약을 기다릴 이유는 없다.
     handoff = handoff_of(cfg)
     try:
-        modules: list[Module] = await handoff.modules() or state.get("modules", [])
+        await handoff.summaries()
         code_nodes: list[CodeNode] = handoff.merge(state.get("code_nodes", []))
     except AnalysisHandoffAborted:
-        log_warning(_STEP, "analysis_aborted", "분석이 실패로 끝남 — 용어사전 skip")
+        log_handoff_skip(_STEP, "용어사전", pause)
         return {}
     started = time.monotonic()
 
@@ -245,7 +281,7 @@ async def build_glossary_step(state: dict, config: Optional[RunnableConfig] = No
         log_warning(_STEP, "config_missing", "strategy/neo_client 누락 — GLOSSARY 저장 skip")
         return {}
 
-    contexts = _build_contexts(terms, code_nodes, modules)
+    contexts = _build_contexts(terms)
     # 용어별 별칭 후보 — 결정론 추림. LLM 은 이 안에서 고르기만 한다 (닫힌 선택).
     candidates_of = {k: _alias_candidates(k, terms) for k in terms}
 
@@ -292,7 +328,7 @@ async def build_glossary_step(state: dict, config: Optional[RunnableConfig] = No
         _, out = result
         res = _accept(out, contexts[key], {c.lower() for c in candidates_of[key]}, key)
         if res is None:
-            rejected += 1                  # 근거 불충분 → 원본 유지 (기각 자체는 정상 경로)
+            rejected += 1                  # 근거 불충분 → 최종 사전 제외 (기각 자체는 정상 경로)
             continue
         accepted[key] = res
 

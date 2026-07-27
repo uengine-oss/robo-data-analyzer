@@ -145,6 +145,7 @@ class Module:
     comment: str = ""                        # 모듈/파일 헤더 주석 (변경이력·작성자 노이즈 포함 — 원본)
     annotations: str = ""                    # 클래스 어노테이션 (Java @Annotation 등)
     code_text: str = ""                      # 원문 슬라이스 (step2 가 채움 — 라인 범위 기준)
+    raw_code_text: str = ""                  # 결정론 분석 전용 정확한 원문 (Neo4j 비저장)
 
     # 분석 결과 ────
     summary: str = ""                        # summarize_module 가 채움
@@ -170,6 +171,7 @@ class CodeNode:
 
     name: str = ""                           # antlr node.name (콜러블=루틴명 / 구문=빈값). 표시명.
     code_text: str = ""                      # 본문 원문 슬라이스 (step2 가 채움 — 라인 범위 기준)
+    raw_code_text: str = ""                  # 결정론 분석 전용 정확한 원문 (Neo4j 비저장)
 
     # 소속·트리 (참조 = 대상 노드의 id) ────
     owner_id: str = ""                       # 소속 Module 의 id (HAS_MEMBER 엣지 빌드 + 모듈 그룹핑용 — 노드 속성엔 안 박음)
@@ -226,6 +228,7 @@ class Variable:
     annotations: str = ""
     init_value: str = ""                     # 초기화식
     code_text: str = ""                      # 원문 슬라이스 (step2 가 채움 — 라인 범위 기준)
+    raw_code_text: str = ""                  # 결정론 분석 전용 정확한 원문 (Neo4j 비저장)
 
 
 @dataclass(frozen=True)
@@ -242,6 +245,7 @@ class Constant:
     var_type: str = ""
     comment: str = ""
     code_text: str = ""                      # 원문 슬라이스 (step2 가 채움 — 라인 범위 기준)
+    raw_code_text: str = ""                  # 결정론 분석 전용 정확한 원문 (Neo4j 비저장)
 
 
 @dataclass(frozen=True)
@@ -256,6 +260,7 @@ class DataType:
     label: str                               # Neo4j 라벨 = 자기 antlr type (필수, STRUCT / UNION / ENUM …)
     comment: str = ""
     code_text: str = ""                      # 원문 슬라이스 (step2 가 채움 — 라인 범위 기준)
+    raw_code_text: str = ""                  # 결정론 분석 전용 정확한 원문 (Neo4j 비저장)
 
 
 # ── Example Mapping 노드 (analyze_code 3분할 결과 → EM 빌더가 생성) ──
@@ -274,7 +279,7 @@ class Rule:
 class Example:
     """Rule 의 given/when/then 시나리오 (Example Mapping).
 
-    정체성 ``id`` = ``<function id>::<rule_hash>::<idx>``.
+    정체성 ``id`` = ``<function id>::R<ordinal>::<rule_hash>::<idx>``.
     """
     id: str
     given: str = ""                          # 자연어 한 줄 (진입 조건)

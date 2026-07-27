@@ -18,6 +18,7 @@ from llm.usage.cost_budget import BudgetExceededError, CostBudget
 from llm.configs.loader import load_llm_config
 from llm.runners.yaml_llm_runner import run_yaml_rule
 from shared.events.runtime_logger import log_error, log_warning
+from shared.files.source_excerpt import number_text
 
 # 출력 계약: 한 문장, 최대 120자 (초과분은 압축 목적상 결정론 절단).
 _MAX_ONE_LINER_CHARS = 120
@@ -50,6 +51,7 @@ async def compute_one_liner(
 
     # 작은 모델 결정 — llm_config 의 model_small 필드 (빈 값이면 model 사용)
     small_model = load_llm_config(SETTINGS.analysis_llm.config).resolve_small_model()
+    numbered_body = number_text(body_text, fn.start_line)
 
     try:
         # 평문 텍스트 모드 — 스칼라 1개 출력에 JSON 문법 강제를 걸면 공백 폭주가
@@ -60,7 +62,10 @@ async def compute_one_liner(
             user_values={
                 "id": fn.id,
                 "signature": fn.signature,
-                "code_body": body_text,
+                "source_file": fn.file_path,
+                "source_range": f"{fn.start_line}-{fn.end_line}",
+                "coordinate_system": "absolute-file-line",
+                "code_body": numbered_body,
             },
             response_model=None,
             budget=cost_budget,

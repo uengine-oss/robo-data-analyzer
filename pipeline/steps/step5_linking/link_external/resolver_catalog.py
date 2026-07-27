@@ -18,6 +18,7 @@ import re
 
 from graph.schema.graph_nodes import CodeNode
 from pipeline.steps.step5_linking.link_external.key_index import mask_comments_and_literals
+from shared.files.source_excerpt import raw_node_text
 
 
 MAX_PROMOTION_HOPS = 2                       # 콜체인 무한 추적 금지 — 여기서 끊는다
@@ -64,7 +65,7 @@ class CallSite:
 
 def parameter_names(node: CodeNode) -> list[str]:
     """선언부에서 파라미터 이름을 순서대로 뽑는다."""
-    head = node.signature or node.code_text.split("{", 1)[0]
+    head = node.signature or raw_node_text(node).split("{", 1)[0]
     match = _PARAMETERS.search(head)
     if not match:
         return []
@@ -77,6 +78,7 @@ def parameter_names(node: CodeNode) -> list[str]:
 
 def call_sites(
     masked: str, source: str, resolvers: dict[str, tuple[int, ...]], base_line: int,
+    own_name: str = "",
 ) -> list[CallSite]:
     """본문에서 카탈로그 호출을 찾아 키 인자 표현식을 뽑는다.
 
@@ -84,11 +86,20 @@ def call_sites(
     않기 위해서다. 인자 **표현식**은 같은 오프셋의 원문에서 읽는다. 마스킹이 길이를
     보존하므로 오프셋이 일치하며, 이렇게 해야 리터럴 값이 지워지지 않는다.
 
+    ``own_name`` 은 이 본문을 소유한 루틴의 이름이다. 승격된 래퍼는 **자기 선언부가 자기
+    이름의 호출처럼 보이므로**(``EJBLocalHome getLocalHome(String jndiName)``) 그 첫
+    등장을 건너뛴다. 루틴 노드의 범위는 선언부에서 시작하므로 첫 등장이 곧 선언부이고,
+    본문의 재귀 호출은 그 뒤에 오므로 살아남는다. 선언부를 호출로 세면 파라미터 이름이
+    맨이름인 언어에서 같은 이름의 상수로 해석돼 **오연결이 난다.**
+
     step2 의 ``call_sites`` 를 쓰지 않는 이유는 ``linker`` 의 docstring 에 적었다.
     """
     output: list[CallSite] = []
     for method, positions in resolvers.items():
-        for match in re.finditer(rf"(?<!\w){re.escape(method)}\s*\(", masked):
+        matches = list(re.finditer(rf"(?<!\w){re.escape(method)}\s*\(", masked))
+        if method == own_name and matches:
+            matches = matches[1:]
+        for match in matches:
             arguments = _arguments(source, match.end())
             if arguments is None:
                 continue
@@ -170,10 +181,11 @@ def _forwarded_positions(node: CodeNode, catalog: dict[str, tuple[int, ...]]) ->
     잇게 되어 한쪽이 반드시 틀린 연결이 된다.
     """
     names = parameter_names(node)
-    if not names or not node.code_text:
+    raw_code = raw_node_text(node)
+    if not names or not raw_code:
         return set()
-    body = mask_comments_and_literals(node.code_text)
-    sites = call_sites(body, node.code_text, catalog, node.start_line or 1)
+    body = mask_comments_and_literals(raw_code)
+    sites = call_sites(body, raw_code, catalog, node.start_line or 1, node.name or "")
     if len({site.offset for site in sites}) != 1:
         return set()
     positions: set[int] = set()

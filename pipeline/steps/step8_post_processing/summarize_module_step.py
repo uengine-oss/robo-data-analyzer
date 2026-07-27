@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import time
+import json
 from collections import defaultdict
 from dataclasses import replace
 from pathlib import Path
@@ -24,12 +25,14 @@ from pipeline.execution.analysis_handoff import (
 )
 from pipeline.execution.step_config import step_config
 from pipeline.execution.pause_controller import PauseController
+from pipeline.steps.step8_post_processing.handoff_skip import log_handoff_skip
 
 from graph.schema.graph_nodes import CodeNode, Module
 from shared.config.settings import SETTINGS
 from llm.usage.cost_budget import BudgetExceededError
 from llm.fanout import gather_with_warmup, partition_llm_results
 from pipeline.models.code_analysis_output import ModuleSummaryOutput
+from pipeline.languages import coerce_module_stereotype
 from llm.runners.yaml_llm_runner import run_yaml_rule
 from shared.events.runtime_logger import log_error, log_info, log_warning
 from shared.events.processing_events import step_processing_scope, track_processing
@@ -50,15 +53,15 @@ async def summarize_module_step(state: dict, config: Optional[RunnableConfig] = 
     # 이 step 이 읽는 것은 코드노드의 signature·summary·logical_name 뿐 — 전부 step7 의
     # #1 summary 에서 나온다(spec 096). 그래서 노드 전체 완료가 아니라 전 대상의 #1 확정을
     # 기다린다. 기다리는 동안 step7 이 슬롯을 쓰고, 열리는 즉시 남은 빈 슬롯을 채운다.
-    # 결과는 어떤 경로로 끝나든 인계한다 — 안 하면 용어사전이 영원히 기다린다.
+    # 결과는 어떤 경로로 끝나든 모듈 결과 채널에도 인계한다.
     handoff = handoff_of(cfg)
     try:
         result = await _summarize(state, handoff, strategy, cost_budget, neo, stream, pause)
     except AnalysisHandoffAborted:
-        log_warning(_STEP, "analysis_aborted", "분석이 실패로 끝남 — 모듈 요약 skip")
+        log_handoff_skip(_STEP, "모듈 요약", pause)
         return {}
     except BaseException as error:
-        # 실패한 요약을 인계하면 용어사전이 잘못된 문맥으로 392 콜을 쏜다. 원인을 넘긴다.
+        # 실패한 요약을 정상 결과처럼 인계하지 않고 채널 소비자에게 원인을 넘긴다.
         handoff.abort(error)
         raise
     if not handoff.modules_published:
@@ -85,8 +88,12 @@ async def _summarize(
     log_info(_STEP, "start", modules=len(modules), code_nodes=len(code_nodes),
              concurrency=SETTINGS.analysis_pipeline.max_concurrency)
 
-    # CodeNode → Module 매칭 (file_path + line range)
-    fn_by_module = _match_code_to_modules(code_nodes, modules)
+    # 모듈 설명의 근거는 step7 이 실제 의미 분석한 노드뿐이다. Framework 의 IF/CASE 같은
+    # 구조 노드는 그래프에는 남지만 summary 생산 대상이 아니며, DBMS range처럼 전략이
+    # 분석 대상으로 고른 노드는 그대로 포함한다. 소비자가 자체 라벨 목록을 만들지 않고
+    # step6/step7 과 같은 strategy.analysis_targets 단일 진실을 사용한다.
+    analyzed_code_nodes = _select_analyzed_code_nodes(strategy, code_nodes)
+    fn_by_module = _match_code_to_modules(analyzed_code_nodes, modules)
 
     prompts_dir = Path(strategy.prompts_dir)
     # run 공유 슬롯 — step7 과 같은 세마포어를 낮은 우선순위로 쓴다 (spec 096).
@@ -101,9 +108,29 @@ async def _summarize(
         members = fn_by_module.get(module.id, [])
         if not members:
             return module
-        member_text = "\n".join(
-            f"- {fn.signature}: {fn.summary or fn.logical_name or '(분석 전)'}"
-            for fn in members
+        missing = [fn.id for fn in members if not (fn.summary or "").strip()]
+        if missing:
+            log_warning(
+                _STEP,
+                "module_summary_missing_member_summary",
+                "멤버 summary 누락 — 다른 의미 필드로 대체하지 않고 모듈 요약을 생략",
+                module_id=module.id,
+                missing_ids=missing,
+            )
+            return module
+        member_text = json.dumps(
+            [
+                {
+                    "node_id": fn.id,
+                    "signature": fn.signature,
+                    "source_range": f"{fn.start_line}-{fn.end_line}",
+                    "evidence_scope": "analyzed-member-summary",
+                    "summary": fn.summary.strip(),
+                }
+                for fn in members
+            ],
+            ensure_ascii=False,
+            separators=(",", ":"),
         )
         async with track_processing("Module", module.id):
             async with slots.at(POSTPROCESS_PRIORITY):
@@ -123,7 +150,7 @@ async def _summarize(
         return replace(
             module,
             summary=result.summary,
-            stereotype=result.stereotype,
+            stereotype=coerce_module_stereotype(result.stereotype, strategy.name),
             logical_name=result.logical_name or None,
         )
 
@@ -137,7 +164,7 @@ async def _summarize(
     with step_processing_scope(_STEP, stream):
         results = await pause.run_restartable_during_pause(_run_fanout)
     updated = _apply_fail_policy(modules, results)
-    # 용어사전이 모듈 요약을 문맥으로 읽는다 — Neo4j 적재를 기다리지 않고 바로 인계한다.
+    # Neo4j 적재를 기다리지 않고 모듈 결과 채널에 바로 인계한다.
     handoff.publish_modules(updated)
 
     if neo is not None:
@@ -205,3 +232,12 @@ def _match_code_to_modules(
         if matched_id is not None:
             result[matched_id].append(fn)
     return result
+
+
+def _select_analyzed_code_nodes(
+    strategy,
+    code_nodes: list[CodeNode],
+) -> list[CodeNode]:
+    """step7 의미 분석 대상만 원래 순서대로 보존한다."""
+    target_ids = strategy.analysis_targets(code_nodes)
+    return [node for node in code_nodes if node.id in target_ids]

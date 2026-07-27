@@ -29,6 +29,12 @@ class RepetitionDetectorTest(unittest.TestCase):
         hit = _feed_all(RepetitionDetector(), "{" + " " * 5000)
         self.assertEqual(hit, 1)
 
+    def test_whitespace_flood_stops_before_the_general_period_window(self):
+        detector = RepetitionDetector()
+        hit = _feed_all(detector, "{" + " " * 700)
+        self.assertEqual(hit, 1)
+        self.assertLess(detector.chars_seen, detector.WINDOW)
+
     def test_short_unit_loop_triggers(self):
         # 사건 B 유형: 유사 별칭 조합의 정확 반복.
         unit = "주민일련번호, 주민번호 부분정보, 주민등록번호; "
@@ -67,10 +73,11 @@ class RepetitionDetectorTest(unittest.TestCase):
         )
         self.assertIsNone(_feed_all(RepetitionDetector(), text))
 
-    def test_below_window_never_triggers(self):
-        # 창(3,072자) 미만 출력은 검사 자체가 시작되지 않는다 — 한줄요약 등 원천 면제.
+    def test_below_window_non_whitespace_period_never_triggers(self):
+        # 일반 주기 검사는 창 미만에서 시작하지 않는다. 공백 폭주만 별도 조기 계약이다.
         detector = RepetitionDetector()
-        self.assertIsNone(_feed_all(detector, " " * (RepetitionDetector.WINDOW - 100)))
+        text = ("abcde" * RepetitionDetector.WINDOW)[: RepetitionDetector.WINDOW - 100]
+        self.assertIsNone(_feed_all(detector, text))
 
     def test_empty_feed_is_noop(self):
         detector = RepetitionDetector()

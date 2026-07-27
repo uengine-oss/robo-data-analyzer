@@ -1,166 +1,56 @@
-## code_table_insights — 분할 2: 테이블별 role + 컬럼 의미
-## 공통 system + user_template 입력값은 [[_common.yaml]] 가 단일 진실.
+## Framework 분할 2 — 현재 함수의 테이블별 직접 사용 의미.
 extends: _common
+max_tokens: 5000
 user_template_specific: |
-  # ════════════════════════════════════════════════════════════════
-  # [이 분할 고유 지침] — 분할 2: 테이블별 사용 양상 분석
-  # ════════════════════════════════════════════════════════════════
+  # [분할 계약: TableInsightsOutput]
 
-  ## 분할 책임 카드
+  `table_insights`만 출력한다. summary·이름·용어·Rule·Example·Question을 만들지 않는다.
+  각 항목은 입력 reads/writes에 있는 테이블 하나의 `table`, `role`, `usage_summary`,
+  `columns`만 가진다.
 
-  - **이 분할이 하는 일**: `table_insights` 배열 — `reads` / `writes` 의 각 테이블에 대해
-    이 함수에서의 사용 역할(`role`) + 주입된 DDL 전체 컬럼의 비즈니스 메타데이터(`columns`).
-  - **이 분할이 안 하는 일**: 함수 의미·역할(→분할 1) / 비즈니스 규칙·시나리오·질문(→분할 3)
-  - **출력 미리보기** (type + 값 예시):
-    ```
-    TableInsightsOutput {
-      table_insights: [
-        {
-          table: "db.schema.ORDER",                            // string
-          role: "WRITE-then-READ",                              // string (허용 풀 6개 중)
-          columns: [
-            { name: "ORDER_STATUS", logical_name: "주문상태", description: "주문 상태 코드" },
-            { name: "ORDER_ID",     logical_name: "주문번호", description: "주문 ID PK" }
-          ]
-        }
-      ]
-    }
-    ```
+  ## 테이블 경계
 
-  ---
+  `table`은 주입된 table_id를 글자 그대로 사용한다. 현재 함수가 직접 접근한 테이블만
+  출력하고 callee나 같은 함수의 다른 테이블 의미를 섞지 않는다.
 
-  ## 0. 작성 절대 원칙 — 모든 영역 공통
+  - 잘못: 함수가 A를 조회하고 B에 저장하므로 A 설명에도 B의 임시 적재 역할을 붙임
+  - 좋음: A에는 조회·판단 역할만, B에는 저장 역할만 각각 기록
 
-  ### 0.1 컬럼 그라운딩과 전수 coverage — 주입된 컬럼 목록 기준
-  각 `table_insights[*].table`은 `reads`/`writes` JSON의 `table_id` 중 하나를 **글자 그대로**
-  echo한다. 구분자·대소문자·접두어를 바꾸거나 마지막 이름만 골라 쓰지 않는다.
-  같은 JSON 원소의 `columns` 배열 = 그 테이블의 실제 컬럼(권위 출처).
-  출력 `columns`에는 이 허용 목록의 각 이름을 **입력 순서대로 정확히 한 번씩 전부** echo한다.
-  본문 등장 여부를 이유로 어떤 DDL 컬럼도 생략하지 않는다. 직접 SQL·구조체 멤버·대입·바인딩에
-  등장한 컬럼은 그 사용 맥락을 설명에 우선 반영하고, 미등장 컬럼은 테이블 설명·컬럼 이름·샘플
-  행에서 확인 가능한 최소 의미만 보수적으로 쓴다. 허용 목록에 없는 이름은 추측·생성하지 않는다.
-  목록이 없을 때만 `columns: []`다. 본문 이름으로 컬럼을 새로 만들지 않는다.
+  `role`은 직접 reads/writes에서 확인되는 READ/WRITE 조합을 설명한다. 허용값은
+  `READ-only`, `WRITE-only`, `WRITE-then-READ`, `append-only`, `lookup`, `upsert`이며
+  정확히 하나를 쓴다. 조회 결과를 판단에 쓰면 `lookup`, 그대로 반환하면 `READ-only`;
+  INSERT만 하면 이력성일 때 `append-only`, 아니면 `WRITE-only`; MERGE·충돌 갱신처럼
+  삽입과 갱신을 함께 보장할 때만 `upsert`다.
+  읽기만 주입됐으면 `READ-only`/`lookup`, 쓰기만 주입됐으면
+  `WRITE-only`/`append-only` 중에서 고른다. 읽기와 쓰기가 모두 주입된 경우에만
+  `WRITE-then-READ`를 쓴다. `upsert`는 입력의 권위 연산이 MERGE인 경우에만 쓴다.
+  `usage_summary`는 현재 함수가 바로 그 테이블에 수행하는 조회·쓰기와 그 결과가 현재
+  함수 판단·산출에 어떻게 쓰이는지를 한 줄로 쓴다.
 
-  ### 0.2 코드 식별자 X (description 자연어 한정 — [[_common]] 단계 1 참조)
-  `columns[*].name`은 입력 `columns` 허용 목록의 표기를 글자 그대로 echo한다. 본문의 대소문자·별칭으로
-  바꾸거나 축약하지 않는다. 단 `description` 자연어 한 줄에는
-  메서드명·setter·getter 같은 코드 토큰 박지 X.
+  - 잘못: “업무 처리에 사용되는 테이블”
+  - 좋음: “요청 식별자로 기존 배송 상태를 조회해 변경 가능 여부 판단에 사용”
+  - 잘못: reads에만 있는 테이블을 `WRITE-only`로 판정
+  - 좋음: 같은 근거에서 판정용 조회라면 `lookup`으로 판정
 
-  ### 0.3 body 주석 환각 차단 ([[_common]] 단계 7 참조)
-  본문 주석은 코드 변경 잔재로 실제 동작과 어긋날 수 있음. 컬럼 사용 역할 (`usage`)
-  결정 시 codebase_notes / 실제 SQL 위치 가 진실. 주석은 무시.
+  ## 컬럼
 
-  ### 0.4 빈값 규칙
-  - `reads` / `writes` 가 모두 비어있으면 `table_insights: []` (빈 배열 정답).
-  - 어떤 테이블이 `reads` / `writes` 에 있으면 본문 컬럼 등장 수와 무관하게 주입된 `columns`
-    허용 목록 전체를 출력한다. 허용 목록 자체가 비어 있을 때만 해당 엔트리는 `columns: []`다.
+  reads/writes의 해당 테이블에 주입된 `columns` 허용 목록을 입력 순서대로 정확히 한 번씩
+  모두 출력한다. 목록 밖 컬럼을 만들거나 본문 미등장을 이유로 누락하지 않는다. `name`은
+  입력 컬럼명을 정확히 echo한다. `logical_name`은 사용자 표시명, `description`은 source
+  설명과 이 함수의 직접 사용에서 확인되는 역할이다. 직접 사용이 없으면 source 설명을
+  보존하고, 그것도 없으면 물리 이름이 입증하는 최소 범위만 쓴다. 다른 컬럼 의미를 복사하지 않는다.
 
-  ---
+  - 잘못: `owner_ref`라는 이름만 보고 “소유자 이메일 주소”라고 추측
+  - 좋음: 입력 설명이 없으면 “소유자 참조값”처럼 현재 비교·조인 역할까지만 기술
+  - 잘못: 한 컬럼 후보를 같은 테이블의 모든 빈 컬럼에 복사
+  - 좋음: 각 컬럼의 직접 비교·저장·조회 근거를 독립적으로 작성
+  - 잘못: 현재 본문에 안 보인다는 이유로 주입된 컬럼을 누락
+  - 좋음: 허용 목록 전체를 반환하되 직접 근거가 적은 컬럼은 보수적으로 설명
 
-  ## [1] role — 테이블별 1개 분류
+  날짜와 일시, 암호화와 마스킹, 식별자와 연락처, 기관과 채널처럼 근거가 구별하는 개념을
+  임의로 좁히거나 넓히지 않는다.
 
-  이 함수가 해당 테이블을 어떻게 다루는지 한 단어로 분류. 허용 풀에서만 선택.
+  - 잘못: 날짜 필드를 일시로 확대하거나 암호화된 값을 마스킹 값으로 변경
+  - 좋음: 입력 근거의 정확한 범위와 보호 방식을 유지
 
-  ### 1.1 허용 풀 (6개)
-
-  - `READ-only`         — SELECT 만. 조회 후 분기 / 응답 조립.
-  - `WRITE-only`        — INSERT / UPDATE / DELETE 만. 후속 SELECT 없음.
-  - `WRITE-then-READ`   — 쓰고 같은 트랜잭션에서 다시 SELECT (시퀀스·자동컬럼 회수).
-  - `append-only`       — INSERT 만. 갱신·삭제 X (이력 / 로그 성격).
-  - `lookup`            — SELECT 후 코드 / 상태값을 결정에 씀 (단순 표시 X).
-  - `upsert`            — INSERT-or-UPDATE (MERGE / ON CONFLICT).
-
-  ### 1.2 role 결정 트리
-
-  ```
-  본문에 INSERT 만, 같은 테이블 UPDATE/DELETE 없음?
-    → 예 → append-only
-    → 아니오 → 다음
-  INSERT/UPDATE/DELETE 후 같은 트랜잭션에서 같은 테이블 SELECT?
-    → 예 → WRITE-then-READ
-    → 아니오 → 다음
-  INSERT-or-UPDATE 패턴 (MERGE / ON CONFLICT)?
-    → 예 → upsert
-    → 아니오 → 다음
-  SELECT 만 + 결과를 분기·계산·매핑에 사용?
-    → 예 → lookup
-    → 아니오 → 다음
-  SELECT 만 + 결과 그대로 반환?
-    → 예 → READ-only
-    → 아니오 → 다음
-  INSERT/UPDATE/DELETE 만 + 후속 SELECT 없음?
-    → 예 → WRITE-only
-  ```
-
-  ### 1.3 role 안티패턴 — 안티패턴/정답 쌍
-
-  - X: SELECT 한 번 + 반환 만 인데 `lookup` 박음 (분기 없음)
-    O: `READ-only`
-  - X: INSERT 만 있고 다시 안 읽는데 `WRITE-then-READ`
-    O: `append-only` (이력성) 또는 `WRITE-only`
-  - X: UPDATE 한 번 인데 `upsert` (MERGE 아님)
-    O: `WRITE-only`
-
-  ---
-
-  ## [2] columns — 테이블별 주입 DDL 컬럼 전부
-
-  입력 `columns` 허용 목록의 모든 컬럼을 정확히 한 번씩 반환한다(0.1 참조).
-  본문 미등장은 생략 사유가 아니며, 허용 목록 밖 컬럼 생성은 금지한다.
-
-  ### 2.1 의미 근거 우선순위
-
-  1. raw SQL 절·annotation·setter/getter·명시적 매핑에서 확인되는 실제 사용 맥락
-  2. 같은 JSON 원소의 테이블 `description`
-  3. `sample_rows`의 값 형태와 컬럼 이름이 직접 드러내는 최소 의미
-
-  3단계까지 봐도 코드값의 공식 의미·상태 전이·정책을 확인할 수 없으면 이를 창작하지 않는다.
-  대신 식별자/코드/금액/수량/일자/시각/여부/내용처럼 이름에서 직접 확인되는 보수적 역할만 쓴다.
-
-  ### 2.2 각 컬럼 필드 3개
-
-  - `name` — DDL 컬럼명 정확히 (예: `ORDER_STATUS`). 추측 X. 대소문자 본문대로.
-  - `logical_name` — 짧은 업무 표시명(논리명) 한 줄. 통상 2~10자 체언/명사형 (예: `ORDER_STATUS` → "주문상태").
-    1. 코드 식별자·DDL 타입·물리 컬럼명 그대로 X (예: "ORDER_STATUS"·"VARCHAR2" X)
-    2. 동어반복·문장형 X (짧은 이름만 — 설명은 description 담당)
-    3. 모든 주입 컬럼에 비어 있지 않은 표시명을 쓴다. 근거가 적으면 이름의 토큰을 보수적으로
-       풀어 `식별자`, `상태코드`, `등록일시`처럼 최소 역할만 표시하고 업무 의미를 창작하지 않는다.
-  - `description` — 비즈니스 의미 한 줄. **반드시 지킬 4가지**:
-    1. DDL 타입 X (`VARCHAR2(20)` 같은 정의 적지 X)
-    2. 메서드명 X (`getOrderStatus` 같은 코드 토큰 적지 X — 0.2 참조)
-    3. 동어반복 X ("주문상태를 저장하는 컬럼" 식 금지)
-    4. 모든 주입 컬럼에 비어 있지 않은 설명을 쓴다. 의미가 불명확하면 확인 가능한 최소 역할만
-       기재하고, 코드값의 뜻·정책·상태 전이를 추측하지 않는다.
-  - (컬럼 필드는 name·logical_name·description 셋 — 사용위치 `usage` 는 소비처 미사용이라 응답 스키마에서 제외.)
-
-  ### 2.3 description 좋은 예 (5가지 도메인)
-
-  - 결제: `STATUS` → "주문 상태 코드 ('PAID' = 결제완료 / 'CANCEL' = 취소 / 'PENDING' = 대기)"
-  - 안내: `ERR_MSG` → "고객 노출용 오류 안내 문구 (실패 분기에서만 갱신)"
-  - 정산: `SETTLE_DATE` → "정산일자 (YYYYMMDD, 마감 처리 후 확정)"
-  - 회원: `MEMBER_GRADE` → "회원 등급 ('VIP' / 'GOLD' / 'SILVER' / 'BRONZE')"
-  - 로그: `RESPONSE_CODE` → "외부 PG 응답 코드 ('0000' = 성공 / '0001' = 한도초과)"
-
-  ### 2.4 columns 안티패턴 — 안티패턴/정답 쌍
-
-  - X: description = "VARCHAR2(20) 컬럼" (DDL 타입)
-    O: description = "주문 상태 코드 ('PAID' / 'CANCEL' / 'PENDING')"
-  - X: description = "getOrderStatus 가 반환하는 값" (메서드명)
-    O: description = "주문 상태 코드"
-  - X: description = "주문 상태를 저장하는 컬럼" (동어반복)
-    O: description = "주문 상태 코드 — 결제 흐름 분기에 사용"
-  - X: SQL 에 안 등장했다는 이유로 주입 목록의 `CREATED_AT` 자체를 누락
-    O: `CREATED_AT`을 출력하고, 근거가 이름뿐이면 logical_name="생성일시",
-       description="레코드 생성 일시"처럼 최소 의미만 기재
-  - X: 주입 목록에 없는 `UPDATED_BY`를 관례상 있을 것이라 추가
-    O: 허용 목록 밖 컬럼은 출력하지 않음
-
-  # ════════════════════════════════════════════════════════════════
-  # [응답 형식 마무리]
-  # ════════════════════════════════════════════════════════════════
-
-  Pydantic 모델: **TableInsightsOutput** — `table_insights` 배열만 응답에 포함.
-  다른 필드는 다른 분할 책임.
-
-# 출력 상한 = 실측 정상 최대의 여유배수 — 반복 루프 피해를 초 단위로 고정 (정상 호출 영향 0).
-max_tokens: 6000
+  근거 없는 테이블·컬럼 항목으로 개수를 채우지 않는다.

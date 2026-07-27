@@ -5,6 +5,8 @@ Linking 결정론 단계 또는 Linking Agent가 생성. source MATCH는 라벨�
 """
 from __future__ import annotations
 
+import json
+from collections import defaultdict
 from typing import Iterable
 
 from graph.schema.graph_edges import ReadsWrites
@@ -22,7 +24,23 @@ MATCH (t:TABLE {{id: item.target_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 MERGE (node)-[r:{READS}]->(t)
 SET r.dml_type = item.dml_type,
     r.evidence_file = item.evidence_file,
-    r.evidence_line = item.evidence_line
+    r.evidence_line = item.evidence_line,
+    r.evidence_lines = reduce(
+      acc = coalesce(r.evidence_lines, []), value IN item.evidence_lines |
+      CASE WHEN value IN acc THEN acc ELSE acc + value END
+    ),
+    r.evidence_files = reduce(
+      acc = coalesce(r.evidence_files, []), value IN item.evidence_files |
+      CASE WHEN value IN acc THEN acc ELSE acc + value END
+    ),
+    r.dml_types = reduce(
+      acc = coalesce(r.dml_types, []), value IN item.dml_types |
+      CASE WHEN value IN acc THEN acc ELSE acc + value END
+    ),
+    r.evidence_locations = reduce(
+      acc = coalesce(r.evidence_locations, []), value IN item.evidence_locations |
+      CASE WHEN value IN acc THEN acc ELSE acc + value END
+    )
 """
 
 WRITES_QUERY = f"""
@@ -32,23 +50,70 @@ MATCH (t:TABLE {{id: item.target_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 MERGE (node)-[r:{WRITES}]->(t)
 SET r.dml_type = item.dml_type,
     r.evidence_file = item.evidence_file,
-    r.evidence_line = item.evidence_line
+    r.evidence_line = item.evidence_line,
+    r.evidence_lines = reduce(
+      acc = coalesce(r.evidence_lines, []), value IN item.evidence_lines |
+      CASE WHEN value IN acc THEN acc ELSE acc + value END
+    ),
+    r.evidence_files = reduce(
+      acc = coalesce(r.evidence_files, []), value IN item.evidence_files |
+      CASE WHEN value IN acc THEN acc ELSE acc + value END
+    ),
+    r.dml_types = reduce(
+      acc = coalesce(r.dml_types, []), value IN item.dml_types |
+      CASE WHEN value IN acc THEN acc ELSE acc + value END
+    ),
+    r.evidence_locations = reduce(
+      acc = coalesce(r.evidence_locations, []), value IN item.evidence_locations |
+      CASE WHEN value IN acc THEN acc ELSE acc + value END
+    )
 """
 
 
-def _to_item(e: ReadsWrites) -> dict:
-    return {
-        "source_id": e.source_id,
-        "target_id": e.target_id,
-        "dml_type": e.dml_type,
-        "evidence_file": e.evidence_file,
-        "evidence_line": e.evidence_line,
-    }
+def _to_items(edges: Iterable[ReadsWrites]) -> list[dict]:
+    """Group edge occurrences while retaining every exact source location."""
+    grouped: dict[tuple[str, str, str], list[ReadsWrites]] = defaultdict(list)
+    for edge in edges:
+        grouped[(edge.source_id, edge.target_id, edge.relation)].append(edge)
+
+    items: list[dict] = []
+    for (source_id, target_id, relation), occurrences in sorted(grouped.items()):
+        locations = sorted({
+            (edge.evidence_file, edge.evidence_line, edge.dml_type)
+            for edge in occurrences
+            if edge.evidence_file and edge.evidence_line > 0
+        })
+        first_file, first_line, first_dml = locations[0] if locations else ("", 0, "")
+        dml_types = sorted({edge.dml_type for edge in occurrences if edge.dml_type})
+        files = sorted({edge.evidence_file for edge in occurrences if edge.evidence_file})
+        lines = sorted({edge.evidence_line for edge in occurrences if edge.evidence_line > 0})
+        items.append({
+            "source_id": source_id,
+            "target_id": target_id,
+            "relation": relation,
+            "dml_type": first_dml or (dml_types[0] if dml_types else ""),
+            "evidence_file": first_file or (files[0] if files else ""),
+            "evidence_line": first_line or (lines[0] if lines else 0),
+            "evidence_lines": lines,
+            "evidence_files": files,
+            "dml_types": dml_types,
+            "evidence_locations": [
+                json.dumps(
+                    {"file": file, "line": line, "dml_type": dml_type},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                for file, line, dml_type in locations
+            ],
+        })
+    return items
 
 
 async def upsert_reads_writes(client: Neo4jClient, edges: Iterable[ReadsWrites]) -> None:
-    reads = [_to_item(e) for e in edges if e.relation == READS]
-    writes = [_to_item(e) for e in edges if e.relation == WRITES]
+    items = _to_items(edges)
+    reads = [item for item in items if item["relation"] == READS]
+    writes = [item for item in items if item["relation"] == WRITES]
     if reads:
         await client.run_batch_unwind(READS_QUERY, reads)
     if writes:

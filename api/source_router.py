@@ -44,11 +44,14 @@ async def get_source(
     if start_line > max(1, len(lines)):
         raise HTTPException(status_code=416, detail="start_line exceeds source length")
     end = min(end_line, len(lines)) if end_line > 0 else len(lines)
+    excerpt = cache.excerpt(str(resolved), start_line, end)
     return {
         "file_path": str(resolved),
-        "content": cache.slice(str(resolved), start_line, end_line),
+        "content": excerpt.numbered_text,
         "line_count": len(lines),
         "start_line": start_line,
         "end_line": end,
+        "coordinate_system": excerpt.coordinate_system,
+        "source_status": excerpt.status,
         "found": True,
     }

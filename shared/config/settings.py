@@ -357,7 +357,7 @@ def _resolve_run_output_dir() -> Path:
 
 @dataclass(frozen=True)
 class AnalysisRunOutputSettings:
-    """분석 산출물·LLM 프롬프트 캡처·검색 사용량의 생성 루트."""
+    """현행 분석 산출물 루트. 기본은 ``logs/``이며 실행 전에 초기화된다."""
 
     dir: Path = field(default_factory=_resolve_run_output_dir)
 

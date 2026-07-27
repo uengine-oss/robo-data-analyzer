@@ -41,6 +41,7 @@ from pipeline.execution.analysis_handoff import (
 )
 from pipeline.execution.step_config import step_config
 from pipeline.execution.pause_controller import PauseController
+from pipeline.steps.step8_post_processing.handoff_skip import log_handoff_skip
 
 
 _STEP = "step8.build_components"
@@ -77,7 +78,7 @@ async def build_components_step(state: dict, config: Optional[RunnableConfig] = 
     try:
         await handoff.summaries()
     except AnalysisHandoffAborted:
-        log_warning(_STEP, "analysis_aborted", "분석이 실패로 끝남 — 컴포넌트 군집 skip")
+        log_handoff_skip(_STEP, "컴포넌트 군집", pause)
         return {}
 
     code_nodes: list[CodeNode] = handoff.merge(state.get("code_nodes", []))
@@ -126,7 +127,7 @@ async def build_components_step(state: dict, config: Optional[RunnableConfig] = 
 
     with step_processing_scope(_STEP, stream):
         results = await pause.run_restartable_during_pause(_run_fanout)
-    names = _resolve_names(clusters, results, fn_by_id)   # component_id → name
+    names = _resolve_names(clusters, results)   # component_id → name
 
     # 3. 적재 — 각 멤버 FUNCTION 노드에 component_id/name 속성 SET (합성 노드/엣지 없음).
     items = [
@@ -189,9 +190,12 @@ def _cluster(code_nodes: list[CodeNode], calls: list[Calls]) -> list[tuple[str, 
 def _resolve_names(
     clusters: list[tuple[str, list[str]]],
     results: list,
-    fn_by_id: dict[str, CodeNode],
 ) -> dict[str, str]:
-    """component_id → 이름. LLM 실패 시 대표 코드노드 압축 표현으로 fallback, BudgetExceededError 는 전파."""
+    """component_id → 이름.
+
+    LLM 실패를 다른 자연어 필드 복사로 숨기지 않는다. 군집 멤버십은 유지하되 표시명은
+    빈 값으로 남기고 오류 로그가 재처리 대상을 식별한다. BudgetExceededError 는 전파한다.
+    """
     names: dict[str, str] = {}
     for (cid, members), result in zip(clusters, results):
         if isinstance(result, BudgetExceededError):
@@ -201,8 +205,7 @@ def _resolve_names(
                 "pipeline.steps.step8_post_processing.build_components_step",
                 "component_naming", result, component_id=cid,
             )
-            first = fn_by_id.get(members[0])
-            names[cid] = _headline(first) if first else cid
+            names[cid] = ""
         else:
             names[cid] = result
     return names

@@ -66,12 +66,15 @@ def constrain_tables_to_rw(
     속아 op 를 뒤바꾼 경우(예: SQL_KEY _u=UPDATE 인데 INSERT 로 서술) 이 권위값으로 교정한다.
     테이블 제한(spec 027)과 같은 원리 — 의미 판단은 결정론이 소유하고 LLM 창작을 덮지 않는다.
     """
-    allowed_exact = {str(t) for t in [*(reads or ()), *(writes or ())]}
+    read_exact = {str(t) for t in (reads or ())}
+    write_exact = {str(t) for t in (writes or ())}
+    allowed_exact = read_exact | write_exact
 
     def resolve(table: object) -> str | None:
         exact = str(table)
         return exact if exact in allowed_exact else None
     dropped = 0
+    role_dropped = 0
     op_corrected = 0
     off: set[str] = set()
     table_op = table_op or {}
@@ -81,7 +84,16 @@ def constrain_tables_to_rw(
         kept = []
         for ti in insights_out.table_insights:
             canonical = resolve(ti.table)
-            if canonical:
+            role = getattr(ti, "role", None)
+            if canonical and (
+                role is None
+                or _role_matches_direct_access(
+                    role,
+                    is_read=canonical in read_exact,
+                    is_write=canonical in write_exact,
+                    authoritative_op=table_op.get(canonical),
+                )
+            ):
                 ti.table = canonical
                 kept_table_ids.add(canonical)
                 _constrain_columns(
@@ -90,7 +102,21 @@ def constrain_tables_to_rw(
                 kept.append(ti)
             else:
                 dropped += 1
-                off.add(str(ti.table))
+                if canonical:
+                    role_dropped += 1
+                    log_warning(
+                        _STEP,
+                        "table_role_off_rw",
+                        "LLM table role이 직접 R/W 근거와 모순되어 insight 전체 기각",
+                        code_id=code_id,
+                        table=canonical,
+                        role=role,
+                        reads=canonical in read_exact,
+                        writes=canonical in write_exact,
+                        authoritative_op=table_op.get(canonical),
+                    )
+                else:
+                    off.add(str(ti.table))
         insights_out.table_insights = kept
 
     if insights_out is not None and allowed_exact:
@@ -129,26 +155,52 @@ def constrain_tables_to_rw(
         log_info(_STEP, "table_op_corrected",
                  f"권위 op(SQL_KEY 유래)로 affected_tables op 교정 {op_corrected}건",
                  code_id=code_id, corrected=op_corrected)
-    if dropped:
+    if off:
+        off_dropped = dropped - role_dropped
         # 표면화(Constitution IV) — 단 심각도는 사실에 맞춘다(FR-005).
         if not allowed_exact:
             # 직접 R/W 없는 디스패처: callee 테이블이 컨텍스트에 노출돼 생기는 예상된 드롭.
             # per-함수는 INFO(analyzer.log 추적용), run 집계는 flush 가 1줄로 표면화(노이즈 0).
             _drop_stats["funcs"] += 1
-            _drop_stats["count"] += dropped
+            _drop_stats["count"] += off_dropped
             log_info(
                 _STEP, "table_attr_off_rw",
-                f"디스패처(직접 R/W 없음) callee 테이블 귀속 {dropped}건 드롭: {sorted(off)[:8]}",
-                code_id=code_id, dropped=dropped,
+                f"디스패처(직접 R/W 없음) callee 테이블 귀속 {off_dropped}건 드롭: {sorted(off)[:8]}",
+                code_id=code_id, dropped=off_dropped,
             )
         else:
             # reads/writes 있는데 밖 테이블 = 진짜 오귀속 → 발생 즉시 WARNING(error.log).
             log_warning(
                 _STEP, "table_attr_off_rw",
-                f"reads/writes 밖 테이블 오귀속 {dropped}건 드롭: {sorted(off)[:8]}",
-                code_id=code_id, dropped=dropped, allowed=sorted(allowed_exact)[:8],
+                f"reads/writes 밖 테이블 오귀속 {off_dropped}건 드롭: {sorted(off)[:8]}",
+                code_id=code_id, dropped=off_dropped, allowed=sorted(allowed_exact)[:8],
             )
     return dropped
+
+
+def _role_matches_direct_access(
+    role: str,
+    *,
+    is_read: bool,
+    is_write: bool,
+    authoritative_op: str | None,
+) -> bool:
+    """폐쇄형 role이 결정론 R/W 방향과 모순되지 않는지만 검증한다.
+
+    ``lookup`` 대 ``READ-only`` 및 ``append-only`` 대 ``WRITE-only``처럼 업무 맥락이
+    필요한 하위 의미는 LLM이 소유한다. 이 함수는 그 값을 고쳐 쓰지 않고, 읽기 전용
+    근거에 쓰기 역할을 붙이는 식의 명백한 방향 모순만 기각한다. ``upsert``는 단일
+    결정론 MERGE 근거가 있을 때만 인정한다.
+    """
+    if role in {"READ-only", "lookup"}:
+        return is_read and not is_write
+    if role in {"WRITE-only", "append-only"}:
+        return is_write and not is_read
+    if role == "WRITE-then-READ":
+        return is_read and is_write
+    if role == "upsert":
+        return is_write and authoritative_op == "MERGE"
+    return False
 
 
 def _constrain_columns(

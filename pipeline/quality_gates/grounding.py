@@ -20,7 +20,7 @@ from pipeline.quality_gates.branch_inventory import BranchInventory
 _QUOTED = re.compile(r"['\"‘’“”]([^'\"‘’“”\n]{1,32})['\"‘’“”]")
 _NUMERIC = re.compile(r"\d+")
 
-CHECKS = ("delegation", "value_set", "anchor_values", "anchor_effect")
+CHECKS = ("value_set", "anchor_values", "anchor_effect")
 
 
 @dataclass(frozen=True)
@@ -90,23 +90,6 @@ def _conditions(rules_out: RulesExamplesOutput) -> list[tuple[str, str]]:
                 )
             )
     return items
-
-
-def _check_delegation(
-    rules_out: RulesExamplesOutput, inventory: BranchInventory
-) -> list[GroundingFinding]:
-    """분기 0 + 호출뿐인 위임 함수는 ``rules:[]`` 가 정답이다(프롬프트 §5)."""
-    if inventory.all_branches or not inventory.callees or not rules_out.rules:
-        return []
-    return [
-        GroundingFinding(
-            "delegation",
-            f"R{index}",
-            (),
-            f"분기 노드 0 · 호출 {len(inventory.callees)}개인 위임 함수인데 규칙을 만들었다",
-        )
-        for index in range(len(rules_out.rules))
-    ]
 
 
 def _check_value_set(
@@ -245,9 +228,6 @@ def check_grounding(
     """규칙·사례의 근거성 위반을 모은다. 산출물은 바꾸지 않는다."""
     if rules_out is None or not rules_out.rules:
         return []
-    delegation = _check_delegation(rules_out, inventory)
-    if delegation:
-        return delegation
     anchor = inventory.source_values
     findings: list[GroundingFinding] = []
     for scope, condition in _conditions(rules_out):

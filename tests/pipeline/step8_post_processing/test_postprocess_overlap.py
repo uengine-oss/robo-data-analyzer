@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import unittest
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 from unittest import mock
 
 from langchain_core.runnables import RunnableConfig
@@ -21,13 +21,17 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from pipeline.execution.analysis_handoff import AnalysisHandoff
 from pipeline.execution.langgraph_builder import build_langgraph_workflow
-from pipeline.steps.step8_post_processing.summarize_module_step import summarize_module_step
+from pipeline.steps.step8_post_processing.summarize_module_step import (
+    _select_analyzed_code_nodes,
+    summarize_module_step,
+)
 from shared.concurrency.priority_semaphore import PrioritySemaphore
 
 
 @dataclass
 class _Node:
     id: str
+    label: str = "FUNCTION"
     file_path: str = "m.c"
     start_line: int = 1
     end_line: int = 9
@@ -52,10 +56,24 @@ class _Module:
 @dataclass(frozen=True)
 class _Strategy:
     steps: tuple
+    name: str = "framework"
     prompts_dir: str = "llm/prompts/framework"
+    analysis_targets: Callable = lambda nodes: {
+        node.id for node in nodes if node.label == "FUNCTION"
+    }
 
 
 class PostprocessOverlapTest(unittest.IsolatedAsyncioTestCase):
+    def test_module_summary_uses_strategy_analysis_targets(self) -> None:
+        routine = _Node("code:f", label="FUNCTION")
+        control = _Node("code:f:IF@2", label="IF")
+        strategy = _Strategy(steps=())
+
+        self.assertEqual(
+            _select_analyzed_code_nodes(strategy, [routine, control]),
+            [routine],
+        )
+
     async def test_module_summary_starts_before_step7_finishes(self) -> None:
         handoff = AnalysisHandoff(PrioritySemaphore(8))
         timeline: list[str] = []

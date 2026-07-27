@@ -10,6 +10,7 @@ strategy 게이트: ``<prompts_dir>/module_pre_analysis.yaml`` 이 있는 strate
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -95,18 +96,23 @@ async def run_module_pre_analysis(
     return intents
 
 
-def _signatures_by_module(code_nodes: list[CodeNode]) -> dict[str, list[str]]:
-    """코드노드 signature 를 소속 module_id 로 그룹핑."""
-    out: dict[str, list[str]] = defaultdict(list)
+def _signatures_by_module(code_nodes: list[CodeNode]) -> dict[str, list[dict]]:
+    """코드노드 identity/signature/absolute range를 소속 module_id로 그룹핑."""
+    out: dict[str, list[dict]] = defaultdict(list)
     for fn in code_nodes:
         if fn.owner_id:
-            out[fn.owner_id].append(fn.signature)
+            out[fn.owner_id].append({
+                "node_id": fn.id,
+                "signature": fn.signature,
+                "source_range": f"{fn.start_line}-{fn.end_line}",
+                "label": fn.label,
+            })
     return out
 
 
 async def _analyze_module(
     module: Module,
-    signatures: list[str],
+    signatures: list[dict],
     strategy: Any,
     cost_budget: Optional[CostBudget],
     semaphore: asyncio.Semaphore,
@@ -119,6 +125,9 @@ async def _analyze_module(
                 rule_name=_RULE,
                 user_values={
                     "id": module.id,
+                    "source_file": module.file_path,
+                    "source_range": f"{module.start_line}-{module.end_line}",
+                    "coordinate_system": "absolute-file-line",
                     "module_header": _format_header(module),
                     "code_signatures": _format_signatures(signatures),
                 },
@@ -138,11 +147,16 @@ def _format_header(module: Module) -> str:
     return "\n".join(parts) if parts else "(헤더 주석 없음)"
 
 
-def _format_signatures(signatures: list[str]) -> str:
-    """코드노드 시그니처 목록 → LLM 입력 텍스트 (상한 적용)."""
+def _format_signatures(signatures: list[dict]) -> str:
+    """코드노드 identity/signature/range 목록 → compact JSON (상한 적용)."""
     if not signatures:
         return "(함수 없음)"
-    lines = [f"- {s}" for s in signatures[:_MAX_SIGNATURES]]
-    if len(signatures) > _MAX_SIGNATURES:
-        lines.append(f"... (외 {len(signatures) - _MAX_SIGNATURES}개)")
-    return "\n".join(lines)
+    return json.dumps(
+        {
+            "members": signatures[:_MAX_SIGNATURES],
+            "omitted_count": max(0, len(signatures) - _MAX_SIGNATURES),
+            "evidence_scope": "member-signature-only",
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )

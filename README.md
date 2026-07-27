@@ -59,14 +59,14 @@
 
 | 항목 | 내용 |
 |------|------|
-| **입력 대상(타겟)** | 레거시 **응용 코드**(Framework: 자바/C/파이썬/Go/TS 등) 또는 **DBMS**(Oracle PL/SQL 패키지) |
+| **입력 대상(타겟)** | 레거시 **응용 코드**(현재 지원: Java/C/Python) 또는 **DBMS**(SQL/PLSQL 계열) |
 | **누구를 위해** | 레거시를 인수해 **현대화·재구축·마이그레이션**해야 하는 아키텍트/개발자 (downstream: robo-architect 그래프 뷰어) |
-| **출력** | Neo4j 그래프(UPSERT) + `output/analysis/latest/artifacts/*.json` 5종 + `usage_summary.json` + `health_report.json` + NDJSON 스트림 |
+| **출력** | Neo4j 그래프(UPSERT) + 선택된 `<run-output>/`의 manifest·prompt/response·usage·health report + NDJSON 스트림 |
 | **엔진** | FastAPI + LangGraph StateGraph + LangChain/deepagents Agent |
 | **2개 Strategy** | `framework`(응용코드) / `dbms`(PL/SQL) — 확장자로 자동 감지, `--strategy`로 override |
 | **LLM 정책** | 모델+배포환경 1셋 = `llm/configs/<name>.yaml` 1개. `.env`의 `ROBO_LLM_CONFIG` 1줄로 전환 |
 | **결정론 우선** | DDL·AST 파싱 / 링킹 grep / 호출 분류 / Bottom-up DAG / 컴포넌트 군집 / 건강지표 = **LLM 0회**. LLM은 "의미"가 필요한 곳에만 |
-| **실행 단위** | `/robo/analyze` 1회 = LangGraph workflow 1회 = `Run` 1개. 매 Run 시작 시 Analyzer 소유 그래프 reset + `output/` rmtree |
+| **실행 단위** | `/robo/analyze` 1회 = LangGraph workflow 1회 = `Run` 1개. Analyzer 소유 그래프와 선택된 출력 루트를 reset |
 | **위치** | `d:/work/robo/project/robo-data-analyzer` (origin: `github.com/uengine-oss/robo-data-analyzer`) |
 
 > 더 깊은 영역 노트는 메모리(`[[manual_overview]]` · `[[manual_run]]`) 및 학습노트 참조.
@@ -186,9 +186,27 @@ python scripts/analyze_data_dir.py <project_name>
 
 # strategy 강제 override
 python scripts/analyze_data_dir.py <project_name> --strategy dbms
+
+# 데이터 이동/.env 수정 없이 전체 실행 입력 명시
+python scripts/analyze_data_dir.py \
+  --data-dir /corpora/example \
+  --strategy framework \
+  --database analysis \
+  --locale en-US \
+  --run-output /analysis-runs/project-check
+
+# 같은 계약을 재사용하는 profile (명시 CLI 인자가 profile보다 우선)
+python scripts/analyze_data_dir.py --profile /profiles/example.yaml
 ```
 
-인자: `target`(생략 시 source/ 전체) + `--strategy {framework,dbms}`(생략 시 자동 감지).
+프로필은 `data_dir`, `strategy`, `neo4j_database`, `locale`과 선택적인 `run_output`을 묶는
+경로 참조 YAML이며 데이터를 이동·복제하지 않는다. 우선순위는
+**명시 CLI > profile > 환경/기본값**이다.
+실행 전 같은 resolver가 `source`, `ddl`, strategy, database, locale, run output을 출력하고,
+잘못된 source·database·출력 경로는 Neo4j 변경이나 LLM 호출 전에 실패한다.
+
+인자: `target`(생략 시 source/ 전체), `--profile`, `--data-dir`,
+`--strategy {framework,dbms}`, `--database`, `--locale`, `--run-output`.
 NDJSON 스트림이 콘솔에 실시간 출력 (`[PHASE]` / `[TOOL ]` / `[TODO ]` / `[ERROR]` /
 `[WARN ]` / `[END  ]`). Windows cp949 콘솔 대응 — `sys.stdout.reconfigure(utf-8)` 자동.
 
@@ -426,7 +444,7 @@ catalog `sample-context` 엔드포인트로 테이블별 **실제 샘플 행**(�
   배치 UNWIND SET (멤버십 단일 진실). 그룹↔그룹 관계는 `CALLS`+`component_id` 로 온디맨드 파생.
 - **`health_metrics_step`** ★ (결정론·LLM 0) — `FUNCTION` 마다 `fan_in / fan_out / loc /
   in_cycle / table_coupling / god_flag / risk(low·medium·high)` 계산 → Neo4j SET +
-  `output/analysis/latest/health_report.json`(risk 분포 + top 20 위험 함수).
+  현재 `<run-output>/health_report.json`(risk 분포 + top 20 위험 함수).
   임계: LOC≥300 & fan_out≥15 → god_flag; in_cycle 또는 god_flag → high.
 - **`enrich_lineage_from_catalog_step`** (DBMS only) — catalog `/lineage` → `READS`/`WRITES`
   엣지 추가(매칭 실패 시 `__catalog__:<source>` 가상 노드).
@@ -437,28 +455,24 @@ catalog `sample-context` 엔드포인트로 테이블별 **실제 샘플 행**(�
 
 ## 6. 출력 / 산출물
 
-### 6.1 디렉토리 구조 — `ROBO_RUN_OUTPUT_DIR/` (기본 `./output`)
+### 6.1 디렉토리 구조 — `ROBO_RUN_OUTPUT_DIR/` (기본 `./logs`)
 
-매 run 시작 시 **`output/` 통째 rmtree** 후 재생성
-(`pipeline/execution/run_executor.py:_reset_run_output_root`).
+미지정 시 기존 `logs/`를 초기화해 갱신한다. 실행별 분리가 필요한 경우에만
+`--run-output <별도 경로>`를 명시하며, 지정한 경로 자체가 출력 루트다.
 
 ```
-output/
-├── analysis/latest/
-│   ├── analyzer.log               # INFO+ (ROBO_RUNTIME_EVENT_FILE_ENABLED=true 일 때)
-│   ├── error.log                  # WARNING+ — 사고 추적 전용
-│   ├── usage.jsonl                # 모든 LLM 호출 토큰/비용 NDJSON (agent + yaml_rule)
-│   ├── usage_summary.json         # usage.jsonl 집계 (total + per_agent_model)
-│   ├── health_report.json         # ★ 함수 건강지표 (risk 분포 + top 위험 함수)
-│   └── artifacts/
-│       ├── ast.json               # step1+2 (schema/table/column + function/module/… + 구조 엣지)
-│       ├── linking.json           # step5 (reads_writes + calls + unresolved + scan_result)
-│       ├── analysis_contexts.json # step6 (code_id → AnalysisContext)
-│       ├── analysis.json          # step7+8 (summary + rules/examples/questions; 컴포넌트는 FUNCTION.component_id 속성)
-│       │                          #   ★ 원문(code_text)은 안 담는다 — 원문의 집은 ast.json 하나 (spec 045)
-│       └── graph_extras.json      # 매핑 안 된 state 키 auto-dump (신규 키 누락 방지 catch-all)
-└── llm-prompts/latest/
-    └── ...                         # 룰별 LLM 입력 미리보기 (tracing)
+logs/
+├── .robo-data-analyzer-output
+├── manifest.json                  # corpus/source/DDL/strategy/locale/DB/prompt hash
+├── analyzer.log                   # INFO+ (파일 기록 활성 시)
+├── error.log                      # WARNING+
+├── usage.jsonl
+├── usage_summary.json
+├── health_report.json
+├── todos.jsonl
+├── tool_events.jsonl
+└── llm-prompts/
+    └── <rule>.json                # 실제 조립 prompt + raw/parsed response + cache 여부
 ```
 
 ### 6.2 NDJSON 스트림 이벤트 — `application/x-ndjson`
@@ -606,7 +620,7 @@ robo-data-analyzer/
 ### Runtime events / run output (`SETTINGS.observability`, `SETTINGS.run_output`)
 | 환경변수 | 기본 | 설명 |
 |-----|------|------|
-| `ROBO_RUN_OUTPUT_DIR` | `./output` | 통째 rmtree 후 재생성 |
+| `ROBO_RUN_OUTPUT_DIR` | `./logs` | 미지정 실행이 초기화·갱신하는 기본 출력 루트 |
 | `ROBO_RUNTIME_EVENT_FILE_ENABLED` | true | analyzer.log + error.log 파일 핸들러 (운영기 false 권장) |
 | `ROBO_RUNTIME_EVENT_LEVEL` | INFO | DEBUG/INFO/WARNING/ERROR (error.log 는 내부적으로 WARNING+ 강제) |
 
@@ -641,7 +655,8 @@ robo-data-analyzer/
 
 - **antlr JSON 디렉토리 없음** — `step2_load_ast` 가 `FileNotFoundError` raise.
   → `d:/work/robo/project/antlr-code-parser` 먼저 실행해 `data/analysis/` 채우기.
-- **`output/` 내용이 다음 run 에 사라짐** — 정상. `_reset_run_output_root` 가 매 run 통째 rmtree.
+- **이전 run 로그가 사라짐** — 기본 `logs/` 실행에서는 정상. 보존이 필요하면 실행 전에
+  `--run-output`으로 별도 경로를 명시한다.
 - **Analyzer 그래프가 매 run 비워짐** — 정상. `wipe_graph()`가 `graph_owner='analyzer'` 범위만
   `DETACH DELETE`한다. Data Fabric의 DataSource와 다른 서비스 소유 데이터는 보존된다.
 - **Scan Agent 가 도구 호출 안 함** — `submit_scan` 누락 시 raise. `agents/prompts/scan.md` 확인.

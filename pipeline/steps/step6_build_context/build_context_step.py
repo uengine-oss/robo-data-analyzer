@@ -21,6 +21,7 @@ from typing import Optional
 from langchain_core.runnables import RunnableConfig
 
 from shared.files.cache import SourceFileCache
+from shared.files.source_excerpt import raw_node_text
 from pipeline.execution.step_config import step_config
 
 from pipeline.steps.step6_build_context.large_code_one_liner import (
@@ -97,7 +98,9 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
         # 원문은 step2 가 이미 채웠다 (code_text) — 같은 (file,start,end) 를 여기서 다시
         # 잘라내지 않는다 (spec 046 FR-007: 슬라이싱 계산은 한 곳). 없을 때만 캐시에서 슬라이스
         # (code_text 가 빈 경우 = 소스 read 실패 — FR-004 가 이미 경고를 남겼다).
-        body_text = fn.code_text or body_cache.slice(fn.file_path, fn.start_line, fn.end_line)
+        body_text = raw_node_text(fn) or body_cache.slice(
+            fn.file_path, fn.start_line, fn.end_line
+        )
         ctx = AnalysisContext(
             id=fn.id,
             signature=fn.signature,
@@ -130,7 +133,7 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
     # 큰 코드노드만 one_liner 사전 압축 (LLM 1 회 — model_small).
     # 분석 대상 노드로 한정한다: one_liner 의 세 소비처(callee 요약·자식 치환·조상 골격)는
     # 모두 분석 컨텍스트에 있는 id 만 조회하므로, 대상 밖 노드의 one_liner 는 만들어도
-    # 읽힐 수 없다. 실측(SKT 44k): 큰 노드 335개 중 208개가 제어문이라 전량 사장됐다.
+    # 읽힐 수 없다. 대규모 코퍼스 실측: 큰 노드 335개 중 208개가 제어문이라 전량 사장됐다.
     #
     # 나아가 **읽힐 수 있는 자리에 있는지**까지 본다(_one_liner_readable_ids). 대상 노드라도
     # 세 소비처의 관문(부모-자식 관계·순환)에 걸리지 않으면 만들어도 사장된다.

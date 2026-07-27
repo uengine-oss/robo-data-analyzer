@@ -22,53 +22,31 @@
    나열형이 **마지막**이면 뒤에 쓸 게 없어 "끝"의 경계가 사라지고, 앞서 쓴 산문을 재조합하며
    무한 생성으로 샌다(실측: domain_terms 가 맨 끝일 때 load_pg_company 30k 토큰·255초 폭주).
    ``search_text`` 를 먼저 두는 이유 = 코드를 정독하는 작업이라 코드가 끝나면 자연히 멈춘다(무폭주 실적).
-2. **표제어 = 본문 실재 토큰만**: 코드에 그 글자 그대로 있는 식별자만. 조합어 창작 금지 →
-   후보가 유한해져 다 훑으면 자연히 멈춘다. 단 **뜻풀이에는 약어를 일반 업계 말로 풀어써야**
-   검색 다리가 놓인다(실측: 뜻이 "SK-VAN 등록 여부"뿐이면 "결제망" 질의가 못 찾음).
-3. **폴백**: 그래도 터지면 ``SummaryCoreOutput`` 축소 재호출로 노드 상실 0 + 로그 태그
-   ``search_field_overflow`` 로 표면화.
-4. **구조·상한**: 자유키 dict가 아닌 고정형 ``DomainTermItem`` 배열(0~10)을 사용한다.
+2. **표제어와 뜻 = 입력 증거에 실재**: 코드·주석·주입 원문에 그 글자와 뜻의 근거가 있어야
+   한다. 조합어·약어 원형·기관 정체를 업계 상식으로 창작하지 않는다. 뜻 근거가 없으면
+   용어 후보로 만들지 않아 후보 집합이 유한하게 끝난다.
+3. **구조·상한**: 자유키 dict가 아닌 고정형 ``DomainTermItem`` 배열(0~10)을 사용한다.
    10개는 목표가 아니라 절대 상한이다. 후보가 더 많으면 의미 우선순위 상위 10개만 선택한다.
    규칙별 출력 토큰 상한도 별도로 둔다.
 
 검증 규칙 (Pydantic validator):
-- ``summary`` = 마커 없는 1~3줄 짧은 요약 (spec 041 다이어트) — validator 는 거부가
-  아니라 **결정론 정규화**: 옛 ``[핵심]`` 마커는 벗기고, 3줄 초과분은 절단. 호출 재시도가
-  없는 구조라 거부는 곧 노드 분석 소실(실측: 다이어트 런에서 요약 7건 유실) — 편차는
-  흡수하고 마지노선은 기계가 보장한다. 세부 분기·코드값은 ``search_text`` 가 담당.
+- ``summary`` 내용은 후처리가 줄이거나 다시 쓰지 않는다. 옛 ``[핵심]`` 표시와 주변 공백만
+  제거하며, 길이와 책임 경계는 최초 생성 prompt가 담당한다.
 """
 from __future__ import annotations
 
-import re
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
-# 문장 끝 — 종결부호 뒤에 공백이나 문장 끝이 오는 자리에서만 끊는다. 숫자 뒤 마침표
-# (`10,000.` `v1.2`)는 소수점·판번호라 문장 경계가 아니다.
-_SENTENCE_END = re.compile(r"(?<!\d)[.!?](?=\s|$)")
-_MAX_SUMMARY_UNITS = 3
-
-
-def _clip_sentences(text: str, limit: int) -> str:
-    """앞에서부터 ``limit`` 문장만 남긴다. 종결부호가 없으면 원문 그대로."""
-    ends = [m.end() for m in _SENTENCE_END.finditer(text)]
-    return text if len(ends) <= limit else text[: ends[limit - 1]].strip()
-
-
-def _normalize_diet_summary(v: str) -> str:
-    """summary 다이어트 정규화 — 마커 제거 + 3줄·3문장 절단 (실패 없음).
-
-    줄 수만 세면 상한이 새어 나간다: 모델은 1~3문장을 **줄바꿈 없이** 한 줄로 쓰기 때문에
-    줄 기준으로는 언제나 1줄이다(실측: 한 줄짜리 1,027자 요약이 통과했다). 계약이 말하는
-    "1~3줄"의 실질은 문장 수이므로 둘 다 건다.
-    """
+def _normalize_summary_format(v: str) -> str:
+    """의미 내용은 보존하고 옛 표시 마커·빈 줄·주변 공백만 정리한다."""
     if not v:
         return v
     v = v.replace("[핵심]", " ").strip()
     lines = [ln.strip() for ln in v.splitlines() if ln.strip()]
-    return _clip_sentences("\n".join(lines[:_MAX_SUMMARY_UNITS]), _MAX_SUMMARY_UNITS)
+    return "\n".join(lines)
 
 
 # ── 3 분할 #1: code_summary ───────────────────────────
@@ -78,8 +56,9 @@ class SummaryOutput(BaseModel):
     """코드노드/range 의미 요약(1~3줄) + 검색 서술 + 메타.
 
     summary = 사람이 "뭘 하는 함수인지" 즉시 파악하는 짧은 요약(마커 없는 1~3줄) —
-    Bottom-up DAG 로 상위(caller/부모)에 전달된다. 분기·코드값·테이블 세부는
-    search_text(검색 전용, 프론트 비노출)가 누락 없이 담는다.
+    Bottom-up DAG 로 상위(caller/부모)에 전달된다. 핵심 책임을 규정하는 예외·대상 없음·
+    fallback은 사용자 수준으로 보존하고, 세부 조건·코드값·테이블 상호작용은 search_text가
+    검색 가능하게 담는다.
     """
     # ★ 필드 순서 = 폭주 방어 설계 (실측 근거):
     #   ① 나열형·개방형 필드는 앞에 — 마지막이면 "끝"의 경계가 없어 무한 생성으로 샌다
@@ -91,7 +70,7 @@ class SummaryOutput(BaseModel):
     #   ④ summary 는 최종 결론이라 뒤쪽. stereotype 은 닫힌 15지선다라 폭주 불가 → 맨 끝.
     search_text: str = Field(
         "",
-        description="검색 전용 서술 — 분기 조건·상태 전이·코드값·테이블 상호작용을 업무 어휘로 (프론트 비노출; 본문에 업무 판단이 하나도 없을 때만 빈 값, 함수 이름으로 판정 금지)",
+        description="검색 전용 서술 — 분석 대상 루틴은 모두 채움. 본문이 없으면 그 구조적 사실을 쓰고, 함수 이름으로 숨은 의미를 추측하지 않음",
     )
     domain_terms: list["DomainTermItem"] = Field(
         default_factory=list,
@@ -104,43 +83,34 @@ class SummaryOutput(BaseModel):
     )
     summary: str = Field(
         ...,
-        description="마커 없는 1~3줄 짧은 요약 (세부 분기·코드값은 search_text 책임)",
+        description="무엇을 왜 하고 무엇을 남기는지 설명하는 1~3문장 사용자 요약. 핵심 예외는 보존하고 세부 조건·코드값은 search_text 책임",
     )
     stereotype: str = Field("", description="ontology_roles.yaml 풀에서 선택")
 
     @field_validator("summary")
     @classmethod
     def _validate_summary_format(cls, v: str) -> str:
-        return _normalize_diet_summary(v)
+        return _normalize_summary_format(v)
 
-
-class SummaryCoreOutput(BaseModel):
-    """분할1 축소 폴백 — 검색 필드(search_text/domain_terms) 생성 중 출력 폭주로 본 호출이
-    실패했을 때, 핵심 3필드만으로 1회 재호출해 노드 상실을 막는다(전부 잃기 < 핵심 확보)."""
-    summary: str = Field(..., description="마커 없는 1~3줄 짧은 요약")
-    stereotype: str = Field("", description="ontology_roles.yaml 풀에서 선택")
-    logical_name: str = Field("", description="형제 함수와 구별되는 도메인 한 줄")
-
-    @field_validator("summary")
-    @classmethod
-    def _validate_summary_format(cls, v: str) -> str:
-        return _normalize_diet_summary(v)
-
-
-class SummaryRewriteOutput(BaseModel):
-    """규칙형 draft summary를 목적·효과 한 문장으로 바로잡는 품질 게이트 출력."""
-    summary: str = Field(..., description="조건·정책·실패·코드값 없는 목적과 주요 효과 한 문장")
-
-    @field_validator("summary")
-    @classmethod
-    def _validate_summary_format(cls, v: str) -> str:
-        return _normalize_diet_summary(v)
+    @model_validator(mode="after")
+    def _require_grounded_text(self) -> "SummaryOutput":
+        if not self.summary.strip():
+            raise ValueError("summary cannot be empty")
+        if not self.search_text.strip():
+            raise ValueError("search_text cannot be empty")
+        return self
 
 
 class DomainTermItem(BaseModel):
     """LLM 경계용 고정 키 구조. 내부에서는 검증 후 dict로 변환한다."""
     term: str = Field(..., min_length=1, max_length=60)
     meaning: str = Field(..., min_length=1, max_length=500)
+    evidence: str = Field(
+        ...,
+        min_length=1,
+        max_length=1000,
+        description="meaning 전체를 뒷받침하는 현재 대상 원문의 연속된 구절",
+    )
 
 
 # ── 3 분할 #2: code_table_insights ────────────────────
@@ -158,12 +128,24 @@ class ColumnInsight(BaseModel):
 
 
 class TableInsightItem(BaseModel):
-    """코드노드가 한 테이블에 대해 갖는 역할 + 컬럼 description."""
+    """코드노드가 한 테이블에 대해 갖는 직접 역할 + 컬럼 description."""
     table: str = Field(..., description="db.schema.table fqn 또는 table 이름")
-    role: str = Field(..., description="예: 'READ-only' / 'WRITE-then-READ' / 'WRITE-only'")
+    role: Literal[
+        "READ-only",
+        "WRITE-only",
+        "WRITE-then-READ",
+        "append-only",
+        "lookup",
+        "upsert",
+    ] = Field(..., description="직접 R/W로 확정하는 폐쇄형 테이블 접근 역할")
+    usage_summary: str = Field(
+        ...,
+        min_length=1,
+        description="현재 코드노드가 이 테이블에 직접 수행하는 조회·쓰기·판단 효과 한 줄. 다른 테이블 효과 금지",
+    )
     columns: list[ColumnInsight] = Field(
         default_factory=list,
-        description="이 함수 관점 컬럼 의미 (본문에 등장한 컬럼만)",
+        description="주입된 해당 테이블 허용 컬럼을 정확히 한 번씩 모두 반환한 함수 관점 의미",
     )
 
 
@@ -216,7 +198,7 @@ class RuleItem(BaseModel):
     )
     examples: list[ExampleItem] = Field(
         default_factory=list,
-        max_length=80,
+        max_length=24,
         description="이 규칙의 given/when/then 시나리오 (같은결과 변주만 1~2)",
     )
 
@@ -236,8 +218,10 @@ class RulesExamplesOutput(BaseModel):
 
     개수는 가치 결정 질문 (prompt §[1]) 통과한 것만. max_length 캡은 **비즈니스 규칙이 아니라
     provider 출력 폭주(수백 개) 안전망**이다 — "정상적으로 많은 것"을 막지 않는다(spec 054 FR-022).
-    실제 품질(반복·무근거·Rule 비매핑) 판정은 결정론 품질검사기(rule_quality)와 폴백이 전담한다.
-    examples 캡은 30→80 (관측 정상 범위 21~47 을 여유 있게 수용, 수백 개 폭주는 여전히 차단).
+    실제 품질(반복·무근거·Rule 비매핑) 판정은 결정론 품질검사기(rule_quality)가 관측한다.
+    공식 분석 실측의 규칙별 분포(p50=1, p90=2, p95=3, p99=6, max=19)를 근거로
+    examples 캡은 24다. 정상 관측 최대보다 여유를 두되 수십~수백 개 구조 반복은
+    응답 스키마 단계에서 조기에 차단한다.
     rules/questions 캡(30/15)은 개수 폭주가 관측된 적 없어 유지.
     """
     rules: list[RuleItem] = Field(default_factory=list, max_length=30)
@@ -261,7 +245,7 @@ class BatchSummaryItem(BaseModel):
     # ★ 필드 순서 = 폭주 방어 (SummaryOutput 주석 참조): 나열형 앞 → 닫힌 선택지 끝.
     search_text: str = Field(
         "",
-        description="검색 전용 서술 — 분기 조건·상태 전이·코드값·테이블 상호작용을 업무 어휘로 (프론트 비노출; 본문에 업무 판단이 하나도 없을 때만 빈 값, 함수 이름으로 판정 금지)",
+        description="검색 전용 서술 — 분석 대상 루틴은 모두 채움. 본문이 없으면 그 구조적 사실을 쓰고, 함수 이름으로 숨은 의미를 추측하지 않음",
     )
     domain_terms: list[DomainTermItem] = Field(
         default_factory=list,
@@ -269,13 +253,24 @@ class BatchSummaryItem(BaseModel):
         description="본문 실재 표제어와 업무 뜻의 구조화 목록 (0~10개; 10개는 목표가 아닌 절대 상한)",
     )
     logical_name: str = Field("", description="형제와 구별되는 도메인 한 줄 표시명")
-    summary: str = Field("", description="마커 없는 1~3줄 짧은 요약 (세부 분기·코드값은 search_text 책임)")
+    summary: str = Field(
+        "",
+        description="현재 노드의 목적·주요 처리·핵심 정상/예외 효과 1~3문장. 세부 조건·코드값은 search_text 책임",
+    )
     stereotype: str = Field("", description="ontology_roles.yaml 풀에서 선택 (없으면 빈 값)")
 
     @field_validator("summary")
     @classmethod
     def _validate_summary_format(cls, v: str) -> str:
-        return _normalize_diet_summary(v)
+        return _normalize_summary_format(v)
+
+    @model_validator(mode="after")
+    def _require_grounded_text(self) -> "BatchSummaryItem":
+        if not self.summary.strip():
+            raise ValueError("summary cannot be empty")
+        if not self.search_text.strip():
+            raise ValueError("search_text cannot be empty")
+        return self
 
 
 class BatchSummaryOutput(BaseModel):
@@ -315,7 +310,7 @@ class ModulePreAnalysisOutput(BaseModel):
     """
     intent: str = Field(
         "",
-        description="모듈 비즈니스 의도 1~3문장 (변경이력·작성자 노이즈 제거)",
+        description="헤더가 입증하는 현재 모듈 의도 0~2문장. 시그니처만으로 추측하지 않으며 근거 없으면 빈 문자열",
     )
 
 
@@ -334,8 +329,8 @@ class ModuleSummaryOutput(BaseModel):
 class GlossarySynthesisOutput(BaseModel):
     """용어 1개의 종합 결과 — 평탄 문자열 3필드(중첩·자유키 금지, 폭주 이력 준수).
 
-    수용은 결정론 검증이 한다: evidence 가 입력 문맥의 실제 부분열이 아니면 종합 기각
-    (기존 뜻 유지), aliases 는 전체 표제어 목록에 실재하는 것만 인정."""
+    수용은 결정론 검증이 한다: evidence 가 입력 문맥의 실제 부분열이 아니면 종합 기각해
+    최종 사전에서 제외하고, aliases 는 전체 표제어 목록에 실재하는 것만 인정."""
     meaning: str = Field(..., description="종합된 뜻 한 줄 — 제공된 문맥에 적힌 근거로만")
     aliases: str = Field("", description="같은 실체를 가리키는 다른 표제어들(쉼표구분, 목록에 실재하는 표기만, 없으면 빈 값)")
     evidence: str = Field("", description="뜻·변종 판단의 근거 문장(제공된 문맥에서 그대로 복사)")
@@ -362,6 +357,10 @@ class TableDescription(BaseModel):
     name: str
     logical_name: str = ""          # 짧은 도메인 표시명(물리명과 별개, 근거없으면 빈값) — spec 025
     description: str
+    columns: list[ColumnInsight] = Field(
+        default_factory=list,
+        description="입력 허용 컬럼별 통합 논리명·설명. 이름은 입력 컬럼을 정확히 한 번씩 보존",
+    )
 
 # (옛 ``TableDescriptionsOutput`` 삭제 — 참조 0건. 실제 response_model 은 단수형
 #  ``TableDescription`` (enrich_table_description_step). spec 046 FR-010.)

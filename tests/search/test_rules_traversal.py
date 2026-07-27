@@ -56,6 +56,29 @@ class RulesTraversalTest(unittest.TestCase):
         self.assertEqual(out[0]["examples"][1]["tables"], [])
         self.assertEqual(out[1]["examples"][0]["tables"], [{"name": "stock", "op": "UPDATE"}])
 
+    def test_same_shared_rule_is_grouped_by_occurrence_without_example_cross_product(self):
+        rows = [
+            {"rule_id": "shared", "occurrence_id": "fn::R0001", "ordinal": 1,
+             "statement": "S", "example_id": "fn::R0001::shared::1",
+             "given": "first", "when_": "w1", "then_": "t1", "tables": []},
+            {"rule_id": "shared", "occurrence_id": "fn::R0002", "ordinal": 2,
+             "statement": "S", "example_id": "fn::R0002::shared::1",
+             "given": "second", "when_": "w2", "then_": "t2", "tables": []},
+        ]
+        retriever = self._retriever(rows)
+        out = retriever._rules_for("fn")
+        self.assertEqual([rule["statement"] for rule in out], ["S", "S"])
+        self.assertEqual([rule["examples"][0]["given"] for rule in out], ["first", "second"])
+        self.assertIn("e.id STARTS WITH hr.occurrence_id + '::'", retriever.s.last_cypher)
+
+    def test_duplicate_join_row_does_not_duplicate_one_example(self):
+        row = {"rule_id": "shared", "occurrence_id": "fn::R0001", "ordinal": 1,
+               "statement": "S", "example_id": "fn::R0001::shared::1",
+               "given": "g", "when_": "w", "then_": "t", "tables": []}
+        out = self._retriever([row, dict(row)])._rules_for("fn")
+        self.assertEqual(len(out), 1)
+        self.assertEqual(len(out[0]["examples"]), 1)
+
     def test_scopes_examples_to_this_function_via_prefix(self):
         r = self._retriever([])
         r._rules_for("member.c::checkout")
@@ -64,7 +87,7 @@ class RulesTraversalTest(unittest.TestCase):
         self.assertEqual(r.s.last_params["id"], "member.c::checkout")
         self.assertIn("STARTS WITH $prefix", r.s.last_cypher)
         # idx 숫자 정렬 계약: '::10' 이 '::2' 앞에 오지 않도록 size(e.id) 선행 정렬이어야 한다.
-        self.assertIn("ORDER BY r.statement, size(e.id), e.id", r.s.last_cypher)
+        self.assertIn("ORDER BY ordinal, r.statement, size(e.id), e.id", r.s.last_cypher)
 
     def test_rule_without_examples_yields_empty_list(self):
         rows = [{"rule_id": "r1", "statement": "S1", "example_id": None,

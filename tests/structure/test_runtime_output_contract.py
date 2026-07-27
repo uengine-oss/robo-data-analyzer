@@ -24,7 +24,6 @@ REPO = Path(__file__).resolve().parents[2]
 
 class RuntimeOutputContractTest(unittest.TestCase):
     def test_default_setting_and_analysis_run_use_flat_logs_root(self) -> None:
-        # 사용자 지시(2026-07-22, spec 079): logs/ 는 계층 없이 run 산출물을 직접 담는다.
         with patch.dict(os.environ, {"ROBO_RUN_OUTPUT_DIR": "./logs"}, clear=False):
             settings = AnalysisRunOutputSettings()
         self.assertEqual(Path("./logs"), settings.dir)
@@ -32,19 +31,18 @@ class RuntimeOutputContractTest(unittest.TestCase):
         run = AnalysisRun.now(Codebase(root=REPO, strategy="framework"), settings.dir)
         self.assertEqual(Path("./logs"), run.run_dir)
 
-    def test_reset_creates_only_named_output_owners(self) -> None:
+    def test_reset_updates_the_selected_flat_output_root(self) -> None:
         with tempfile.TemporaryDirectory() as parent:
             root = Path(parent) / "logs"
             _reset_run_output_root(root)
             self.assertTrue((root / ".robo-data-analyzer-output").is_file())
             self.assertTrue((root / "llm-prompts").is_dir())
-            self.assertFalse((root / "analysis").exists())
-            self.assertFalse((root / "artifacts").exists())
+            sentinel = root / "stale.json"
+            sentinel.write_text("previous-run", encoding="utf-8")
 
-            sentinel = root / "stale.txt"
-            sentinel.write_text("stale", encoding="utf-8")
             _reset_run_output_root(root)
             self.assertFalse(sentinel.exists())
+            self.assertTrue((root / "llm-prompts").is_dir())
 
     def test_reset_refuses_nonempty_unowned_directory_without_deleting_it(self) -> None:
         with tempfile.TemporaryDirectory() as parent:
@@ -52,7 +50,6 @@ class RuntimeOutputContractTest(unittest.TestCase):
             root.mkdir()
             sentinel = root / "user-file.txt"
             sentinel.write_text("preserve", encoding="utf-8")
-
             with self.assertRaisesRegex(ValueError, "소유하지 않은"):
                 _reset_run_output_root(root)
 
@@ -66,7 +63,6 @@ class RuntimeOutputContractTest(unittest.TestCase):
             marker.write_text("another-owner\n", encoding="utf-8")
             sentinel = root / "result.json"
             sentinel.write_text("preserve", encoding="utf-8")
-
             with self.assertRaisesRegex(ValueError, "표식이 올바르지"):
                 _reset_run_output_root(root)
             self.assertEqual("preserve", sentinel.read_text(encoding="utf-8"))
@@ -85,7 +81,6 @@ class RuntimeOutputContractTest(unittest.TestCase):
             (root / "search").mkdir()
             sentinel = root / "analysis" / "latest" / "result.json"
             sentinel.write_text("preserve", encoding="utf-8")
-
             with self.assertRaisesRegex(ValueError, "소유하지 않은"):
                 _reset_run_output_root(root)
 

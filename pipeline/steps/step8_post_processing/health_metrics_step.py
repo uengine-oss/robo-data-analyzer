@@ -30,6 +30,7 @@ from shared.graphs.call_cycles import find_call_cycles
 from graph.schema.graph_edges import Calls, ReadsWrites
 from graph.schema.graph_nodes import CodeNode
 from shared.config.settings import SETTINGS
+from pipeline.execution.run_output_context import get_run_dir
 from shared.events.runtime_logger import log_info, log_warning
 from graph.neo4j_client import Neo4jClient
 from graph.ownership import ANALYZER_GRAPH_OWNER
@@ -182,7 +183,7 @@ def _risk_label(loc: int, fan_in: int, fan_out: int, in_cycle: bool,
 
 
 def _write_report(items: list[dict]) -> None:
-    """요약 리포트 → ``SETTINGS.run_output.dir/health_report.json`` (graceful).
+    """요약 리포트 → 선택된 run-output의 ``health_report.json`` (graceful).
 
     저장만으론 안 보이므로 사람·UI 가 볼 요약 산출 (소비처 확보). 적재 실패는 분석 흐름
     막지 X — 사유 명시 후 skip.
@@ -215,7 +216,7 @@ def _write_report(items: list[dict]) -> None:
         },
     }
     try:
-        path = SETTINGS.run_output.dir / "health_report.json"
+        path = get_run_dir(fallback=SETTINGS.run_output.dir) / "health_report.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         log_info(_STEP, "report", path=str(path))

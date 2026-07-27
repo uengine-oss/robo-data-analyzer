@@ -23,6 +23,7 @@ from pipeline.steps.step5_linking.link_external.resolver_catalog import (
     promote_wrappers,
 )
 from pipeline.steps.step5_linking.link_external.symbol_values import SymbolTable
+from shared.files.source_excerpt import raw_node_text
 from pipeline.steps.step5_linking.link_external.target_index import (
     MAX_VALUE_LENGTH,
     TargetIndex,
@@ -84,12 +85,15 @@ def link_external(
     used_keys: set[str] = set()
 
     for code in routines:
-        if not code.code_text:
+        raw_code = raw_node_text(code)
+        if not raw_code:
             continue
         source_file = _normalized(code.file_path)
-        masked = mask_comments_and_literals(code.code_text)
-        locals_here = SymbolTable.local_literal_values(code.code_text)
-        for site in call_sites(masked, code.code_text, catalog, code.start_line or 1):
+        masked = mask_comments_and_literals(raw_code)
+        locals_here = SymbolTable.local_literal_values(raw_code)
+        for site in call_sites(
+            masked, raw_code, catalog, code.start_line or 1, code.name or "",
+        ):
             value = _determined_value(site.expression, code, symbols, locals_here)
             if value is None:
                 dynamic += 1

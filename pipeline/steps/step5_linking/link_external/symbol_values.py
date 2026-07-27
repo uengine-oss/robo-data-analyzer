@@ -17,6 +17,7 @@ import re
 from graph.schema.graph_edges import InitBy, References
 from graph.schema.graph_nodes import Constant, Variable
 from pipeline.steps.step5_linking.link_external.key_index import quoted_literals
+from shared.files.source_excerpt import raw_node_text
 
 
 _MAX_FOLD_DEPTH = 4
@@ -37,7 +38,7 @@ def _immutable_variable(variable: Variable) -> bool:
     markers = f"{variable.label} {variable.annotations}".upper()
     if "FINAL" in markers or "IMMUTABLE" in markers or "CONSTANT" in markers:
         return True
-    return bool(re.search(r"\b(?:final|const)\b", variable.code_text, re.IGNORECASE))
+    return bool(re.search(r"\b(?:final|const)\b", raw_node_text(variable), re.IGNORECASE))
 
 
 def _operands(expression: str) -> list[str] | None:

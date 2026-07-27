@@ -104,9 +104,9 @@ class RunInitializationContractTest(unittest.IsolatedAsyncioTestCase):
             events.append("set_active")
             original_set_active(run_id, controller)
 
-        def fail_reset(_path: Path) -> None:
+        def fail_reset(_root: Path) -> None:
             events.append("reset")
-            raise OSError("reset unavailable")
+            raise OSError("output unavailable")
 
         def record_clear(run_id: str) -> None:
             events.append("clear")
@@ -117,7 +117,7 @@ class RunInitializationContractTest(unittest.IsolatedAsyncioTestCase):
             patch.object(run_executor, "_reset_run_output_root", side_effect=fail_reset),
             patch.object(run_executor, "clear_active_run", side_effect=record_clear),
         ):
-            with self.assertRaisesRegex(OSError, "reset unavailable"):
+            with self.assertRaisesRegex(OSError, "output unavailable"):
                 await run_executor.execute_run(
                     strategy=object(),
                     codebase=Codebase(root=Path("source"), strategy="framework"),

@@ -44,6 +44,13 @@ roles:
     java:    [IF, ELSE, LOOP, SWITCH, CASE, TRY, CATCH]   # parser JavaAstListener 구현(계약 §1)
     python:  [IF, ELSE, LOOP, TRY, CATCH]                 # SWITCH/CASE 없음, match 는 범위 밖(계약 §1)
 
+# Canonical parser control nodes have one language-neutral prompt role. A CASE
+# whose source spelling is a default label is refined by source_lexicon.
+control_roles:
+  controller: [SWITCH, TRY]
+  complement: [ELSE]
+  decision: [IF, LOOP, CASE, CATCH]
+
 # (옛 `paradigm:` 섹션 삭제 — ontology.paradigm() 만 읽던 죽은 데이터였고
 #  그 함수도 호출부 0건이라 함께 제거. spec 046 FR-010.)
 
@@ -73,6 +80,7 @@ source_lexicon:
     control_keywords: [if, else, for, while, do, switch, case, default, return, sizeof]
     case_label_end:   [":"]
     loop_header_parts: ";"
+    complement_keywords: [else, default]
   java:
     line:          ["//"]
     block:         [["/*", "*/"]]
@@ -83,6 +91,7 @@ source_lexicon:
                        finally, synchronized, throw, new, instanceof]
     case_label_end:   [":", "->"]
     loop_header_parts: ";"
+    complement_keywords: [else, default, finally]
   python:
     line:          ["#"]
     # 삼중따옴표는 문법상 문자열이지만 **실행 코드가 아니다**(독스트링). 활성으로 두면
@@ -96,6 +105,7 @@ source_lexicon:
                        match, case, assert, print]
     case_label_end:   [":"]
     loop_header_parts: ""
+    complement_keywords: [else, finally]
   sql:
     line:          ["--"]
     block:         [["/*", "*/"]]
@@ -106,6 +116,7 @@ source_lexicon:
                        return, exit, begin, end]
     case_label_end:   ["then", ":"]
     loop_header_parts: ""
+    complement_keywords: [else]
 
 # DBMS 플랫폼의 내장 패키지. 호출 텍스트의 식별자 한 세그먼트와 정확히
 # 일치할 때만 builtin 으로 분류한다. prefix 패턴은 application package 를
@@ -141,33 +152,64 @@ dbms_builtin_packages:
 # ───────────────────────────────────────────────
 framework:
   # OOP 일반 — Java / Kotlin / Python / Go / C++
-  - ApplicationService     # use case 진입점 (transaction boundary)
-  - DomainService          # 도메인 로직 (여러 entity 협력)
-  - Repository             # DB 접근 (READ/WRITE)
-  - Factory                # 객체 생성 책임
-  - Command                # 상태 변경 (WRITE)
-  - Query                  # 조회 (READ-only)
-  - Validator              # 입력 검증
-  - Translator             # 데이터 변환 / 매핑
-  - Adapter                # 외부 시스템 연결
-  - Strategy               # 알고리즘 추상화
-  - EventHandler           # 이벤트 / 메시지 처리
-  - Scheduler              # 시간 기반 작업
-  - Helper                 # 부수 유틸리티
-  - Controller             # HTTP / API 진입점
-  - Initializer            # 시작 시 1회 설정
+  ApplicationService: 외부 유스케이스의 진입점에서 여러 협력자를 조정하고 결과를 반환한다.
+  DomainService: 특정 객체 하나에 속하지 않는 응집된 도메인 규칙이나 정책을 수행한다.
+  Repository: 저장소 조회·저장·변경·삭제가 주된 책임이다.
+  Factory: 객체나 구성 결과의 생성·조립이 주된 책임이다.
+  Command: 호출 후 업무 상태를 변경하는 것이 주된 책임이다.
+  Query: 상태를 변경하지 않고 정보나 계산 결과를 반환하는 것이 주된 책임이다.
+  Validator: 입력·상태·계약의 허용 여부나 정합성을 판정하는 것이 주된 책임이다.
+  Translator: I/O 자체보다 표현 형식·모델·메시지 사이의 변환이나 매핑이 주된 책임이다.
+  Adapter: 외부 시스템·프로토콜·프레임워크 경계를 내부 호출 규약에 연결한다.
+  Strategy: 교체 가능한 알고리즘이나 정책 구현을 캡슐화한다.
+  EventHandler: 이벤트나 메시지를 수신하는 진입점에서 반응 처리를 시작한다.
+  Scheduler: 시간·주기 조건으로 작업을 시작하거나 예약한다.
+  Helper: 특정 상위 흐름에 종속된 좁은 보조 단계를 수행하며 독립된 범용 원시 연산은 아니다.
+  Router: 입력 유형·상태에 따라 처리 대상이나 경로를 선택해 전달한다.
+  Utility: 시간·검사합·초기화·정리처럼 시스템 자원이나 횡단 운영을 보조한다.
+  Util: 도메인 정책과 외부 I/O 없이 여러 곳에서 재사용 가능한 저수준 원시 연산을 수행한다.
+  Controller: HTTP·RPC·API 같은 외부 요청의 진입점에서 입력과 응답 흐름을 조정한다.
+  Initializer: 시작·로딩 시점에 한 번 수행되는 설정이나 상태 구성을 책임진다.
 
 dbms:
   # PL/SQL 전용
-  - DataMutator            # INSERT / UPDATE / DELETE 위주
-  - DataQuery              # SELECT 위주 (조회)
-  - BatchProcessor         # 야간 / 정기 배치
-  - Validator              # 데이터 검증 / 정합성 체크
-  - MetadataLookup         # 마스터 / 코드 테이블 조회
-  - EventTrigger           # 트리거 핸들러
-  - Aggregator             # 집계 / 요약
-  - ReportGenerator        # 리포트 생성
-  - DataMigrator           # 데이터 마이그레이션
-  - CursorLooper           # 커서 순회 처리
-  - PackageInitializer     # 패키지 초기화
-  - Helper                 # 부수 유틸리티
+  DataMutator: 데이터 삽입·변경·삭제가 주된 책임이다.
+  DataQuery: 데이터를 변경하지 않고 조회 결과를 반환하는 것이 주된 책임이다.
+  BatchProcessor: 다수 레코드를 정기·일괄 단위로 처리하는 것이 주된 책임이다.
+  Validator: 데이터 값·상태·관계의 정합성이나 허용 여부를 판정한다.
+  MetadataLookup: 코드·마스터·설정 등 참조 메타데이터 조회가 주된 책임이다.
+  EventTrigger: 데이터베이스 이벤트에 반응해 처리를 시작한다.
+  Aggregator: 여러 행이나 값을 집계·요약해 계산 결과를 만든다.
+  ReportGenerator: 조회·집계 결과를 사용자용 보고 형식으로 구성한다.
+  DataMigrator: 기존 데이터의 구조·값·저장 위치를 다른 형태로 이관한다.
+  CursorLooper: 커서나 결과 집합을 순회하며 행별 처리를 수행한다.
+  PackageInitializer: 패키지 로딩 시 한 번 수행되는 상태나 설정 구성을 책임진다.
+  Helper: 상위 프로시저 흐름에 종속된 좁은 보조 단계를 수행한다.
+
+# 모듈·파일·클래스 종합 역할. 함수 역할과 의미 축이 다르므로 별도 폐쇄 목록이지만,
+# prompt와 parser가 이 파일 하나를 함께 읽는다.
+module_framework:
+  - Module
+  - Service
+  - Repository
+  - Controller
+  - Util
+  - Config
+  - Scheduler
+  - Client
+  - Gateway
+  - Entity
+  - DTO
+  - DataStructure
+  - Enum
+
+module_dbms:
+  - BatchProcessing
+  - MetadataService
+  - TriggerLogic
+  - ReportGenerator
+  - DataMigration
+  - Validation
+  - Aggregation
+  - Cleanup
+  - Utility

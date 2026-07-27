@@ -10,8 +10,8 @@
    Agent multi-turn (Scan / Linking). 한 invoke 전체가 한 ``.json`` 에. 시스템 지시 1번
    + turns 배열 (turn-by-turn user/response/tool_calls) + totals 집계.
 
-``run`` 간 누적 X — ``output/`` 자체가 매 run rmtree
-(``run_executor._reset_run_output_root``).
+``run`` 간 누적 X — 선택된 ``<run-output>/llm-prompts``를 사용한다. 미지정 시 기존
+``logs/llm-prompts``이고, 별도 분리가 필요할 때만 CLI에서 다른 run-output을 명시한다.
 
 옛 ``log_rule_call(rule_name, NNN.json)`` 분산 적재 정책에서 변경 이유:
 - ``001.json`` ``002.json`` 분산 → 흐름 추적 어려움.
@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import contextvars
 import json
+import os
 import re
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -33,13 +35,17 @@ from typing import Any, Optional
 from shared.config.settings import SETTINGS
 from llm.messages import content_to_text
 from shared.events.runtime_logger import log_warning
+from pipeline.execution.run_output_context import get_run_dir
 
 _FILE_LOCK = threading.Lock()
+_ATOMIC_REPLACE_ATTEMPTS = 6
+_ATOMIC_REPLACE_BASE_DELAY_S = 0.01
 
 
 def _prompts_dir() -> Path:
-    # logs/ 바로 아래 (사용자 지시 2026-07-22: 계층 없이 로그·jsonl·llm-prompts 만).
-    return SETTINGS.run_output.dir / "llm-prompts"
+    # 분석 중에는 선택된 <run-output>/llm-prompts. 독립 프롬프트 도구는 기존 설정
+    # 루트를 fallback으로 사용한다.
+    return get_run_dir(fallback=SETTINGS.run_output.dir) / "llm-prompts"
 
 
 # ── yaml rule 단발 호출 적재 ──────────────────────────────────
@@ -168,13 +174,35 @@ def _sort_key_for_record(r: dict) -> tuple:
 
 
 def _write_json(path: Path, data: dict) -> None:
-    """같은 디렉토리의 임시 파일을 완성한 뒤 원자 교체한다."""
+    """고유 임시 파일을 닫은 뒤 원자 교체한다.
+
+    Windows에서는 바이러스 검사기나 로그 열람기가 대상 파일을 아주 짧게 열어 둔 동안
+    ``os.replace``가 ``PermissionError``를 낼 수 있다. 같은 run의 프롬프트 증거를
+    버리지 않도록 제한된 지수 백오프로 그 순간적인 공유 위반만 재시도한다.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = path.with_name(path.name + ".tmp")
-    temporary_path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    temporary_path.replace(path)
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as temporary_file:
+        json.dump(data, temporary_file, ensure_ascii=False, indent=2)
+        temporary_path = Path(temporary_file.name)
+
+    try:
+        for attempt in range(_ATOMIC_REPLACE_ATTEMPTS):
+            try:
+                os.replace(temporary_path, path)
+                return
+            except PermissionError:
+                if attempt + 1 == _ATOMIC_REPLACE_ATTEMPTS:
+                    raise
+                time.sleep(_ATOMIC_REPLACE_BASE_DELAY_S * (2**attempt))
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 # ── Agent multi-turn 적재 (contextvars 격리) ──────────────────
@@ -303,6 +331,11 @@ def _serialize_response(response: Any) -> dict:
             "tool_calls": tool_calls or [],
         }
     return {"raw": str(response)}
+
+
+def serialize_response(response: Any) -> dict:
+    """실제 모델 메시지의 content/tool_calls를 감사 로그용 JSON으로 보존한다."""
+    return _serialize_response(response)
 
 
 def _content_to_str(content: Any) -> str:

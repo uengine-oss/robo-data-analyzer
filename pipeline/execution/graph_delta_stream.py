@@ -95,6 +95,9 @@ def _edge_wire(edge) -> Optional[tuple[str, str, str, dict]]:
                     "dml_type": edge.dml_type,
                     "evidence_file": edge.evidence_file,
                     "evidence_line": edge.evidence_line,
+                    "evidence_lines": (
+                        [edge.evidence_line] if edge.evidence_line > 0 else []
+                    ),
                 }))
     if type(edge) is ge.Calls:
         raise GraphDeltaContractError(
@@ -113,6 +116,16 @@ def _edge_wire(edge) -> Optional[tuple[str, str, str, dict]]:
         }
     elif type(edge) is ge.References:
         props = {"evidence_line": edge.evidence_line}
+    elif type(edge) is ge.HasRule:
+        props = (
+            {
+                "occurrence_id": edge.occurrence_id,
+                "ordinal": edge.ordinal,
+                "anchor_line": edge.anchor_line,
+            }
+            if edge.occurrence_id
+            else {}
+        )
     elif type(edge) is ge.AffectsTable:
         props = {"op": edge.op}
     elif type(edge) is ge.ReferTo:

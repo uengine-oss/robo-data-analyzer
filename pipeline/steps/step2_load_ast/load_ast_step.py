@@ -48,11 +48,20 @@ def _with_code_text(nodes: list[_N], cache: SourceFileCache) -> list[_N]:
     규칙 하나: **파일·라인이 있으면 그 원문을 갖는다.** 노드 종류로 분기하지 않는다.
     ``end_line`` 0 = 파일 끝까지 (SourceFileCache.slice 규약).
     """
-    return [
-        replace(n, code_text=cache.slice(n.file_path, n.start_line, n.end_line))
-        if n.file_path and not n.code_text else n
-        for n in nodes
-    ]
+    result: list[_N] = []
+    for node in nodes:
+        if not node.file_path or getattr(node, "raw_code_text", ""):
+            result.append(node)
+            continue
+        excerpt = cache.excerpt(node.file_path, node.start_line, node.end_line)
+        result.append(
+            replace(
+                node,
+                raw_code_text=excerpt.raw_text,
+                code_text=excerpt.numbered_text,
+            )
+        )
+    return result
 
 
 def _assert_unique_ids(*node_lists: list) -> None:

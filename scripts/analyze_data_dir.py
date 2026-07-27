@@ -43,7 +43,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -58,20 +57,6 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-# ``--data-dir`` 는 SETTINGS 가 모듈 로드 시점에 ROBO_DATA_DIR 를 고정하기 때문에
-# 아래 본 임포트보다 먼저 env 로 반영해야 한다 (선처리 — 본 파서에도 help 용으로 재선언).
-# import 시 sys.argv 를 건드리는 부작용을 막기 위해 스크립트 실행일 때만 작동한다.
-if __name__ == "__main__":
-    _pre = argparse.ArgumentParser(add_help=False)
-    _pre.add_argument("--data-dir")
-    _pre_args, _ = _pre.parse_known_args()
-    if _pre_args.data_dir:
-        _data_dir = Path(_pre_args.data_dir)
-        if not _data_dir.is_dir():
-            print(f"ERROR: --data-dir 디렉토리 없음: {_data_dir}")
-            sys.exit(1)
-        os.environ["ROBO_DATA_DIR"] = str(_data_dir.resolve())
-
 from pipeline.strategies import get_pipeline
 from pipeline.languages import detect_strategy
 from pipeline.models.analysis_meta import AnalysisRun
@@ -79,6 +64,14 @@ from pipeline.models.analysis_meta import Codebase
 from shared.config.settings import SETTINGS
 from shared.events.ndjson_event_stream import NDJSONStream
 from pipeline.execution.run_executor import execute_run
+from pipeline.execution.analysis_profile import (
+    AnalysisProfile,
+    ResolvedAnalysisInputs,
+    load_analysis_profile,
+    preflight_lines,
+    resolve_analysis_inputs,
+)
+from graph.connection_context import Neo4jOverride, set_override
 
 
 async def _consume_stream(stream: NDJSONStream) -> None:
@@ -114,28 +107,39 @@ async def _consume_stream(stream: NDJSONStream) -> None:
             print(f"[{etype.upper()[:5]}] {text[:200]}")
 
 
-async def analyze_one(project_dir: Path, ddl_dir: Path | None, strategy: str) -> AnalysisRun:
+async def analyze_one(
+    project_dir: Path,
+    inputs: ResolvedAnalysisInputs,
+) -> AnalysisRun:
     """1 프로젝트 분석 + 결과 요약 출력."""
     print(f"\n{'='*60}")
     print(f"  project: {project_dir.name}")
     print(f"  root:    {project_dir}")
-    print(f"  ddl:     {ddl_dir or '(없음)'}")
-    print(f"  strategy: {strategy}")
+    print(f"  ddl:     {inputs.ddl_dir or '(없음)'}")
+    print(f"  strategy: {inputs.strategy}")
     print(f"{'='*60}\n")
 
-    pipeline = get_pipeline(strategy)
+    pipeline = get_pipeline(inputs.strategy)
     project = Codebase(
         root=project_dir,
-        strategy=strategy,  # type: ignore[arg-type]
-        ddl_dir=ddl_dir,
-        locale="ko",
+        strategy=inputs.strategy,  # type: ignore[arg-type]
+        ddl_dir=inputs.ddl_dir,
+        locale=inputs.locale,
         # CLI/테스트 전용: 어느 DB를 샘플링할지 환경변수로 받음(운영 HTTP는 AnalyzeRequest 입력).
         # 비어 있으면 None → 샘플 보강 skip.
         datasource=SETTINGS.catalog_api.test_datasource or None,
+        corpus_root=inputs.data_dir,
     )
 
     stream = NDJSONStream()
-    run_task = asyncio.create_task(execute_run(pipeline, project, stream=stream))
+    run_task = asyncio.create_task(
+        execute_run(
+            pipeline,
+            project,
+            stream=stream,
+            run_output_root=inputs.run_output,
+        )
+    )
     consume_task = asyncio.create_task(_consume_stream(stream))
 
     try:
@@ -160,18 +164,33 @@ async def analyze_one(project_dir: Path, ddl_dir: Path | None, strategy: str) ->
     return run
 
 
-async def main(target: str | None, strategy_override: str | None) -> None:
-    data_dir = SETTINGS.analysis_data.dir
+def _select_data_dir(
+    profile: AnalysisProfile | None,
+    explicit_data_dir: Path | None,
+) -> Path:
+    return (
+        explicit_data_dir
+        or (profile.data_dir if profile else None)
+        or SETTINGS.analysis_data.dir
+    ).expanduser().resolve()
+
+
+async def main(
+    target: str | None,
+    strategy_override: str | None,
+    *,
+    profile_path: Path | None = None,
+    data_dir_override: Path | None = None,
+    database_override: str | None = None,
+    locale_override: str | None = None,
+    run_output_override: Path | None = None,
+) -> None:
+    profile = load_analysis_profile(profile_path) if profile_path else None
+    data_dir = _select_data_dir(profile, data_dir_override)
     source_dir = data_dir / "source"
-    ddl_dir = data_dir / "ddl"
 
     if not source_dir.is_dir():
-        print(f"ERROR: source 디렉토리 없음: {source_dir}")
-        print(f"  ROBO_DATA_DIR = {data_dir}")
-        print("  ROBO_DATA_DIR/source/ 안에 분석 대상 프로젝트 디렉토리 두세요.")
-        return
-
-    ddl_path = ddl_dir if ddl_dir.is_dir() else None
+        raise ValueError(f"source directory not found: {source_dir}")
 
     # target 명시 → 1 프로젝트 / 미명시 → 모든 sub
     if target:
@@ -195,9 +214,38 @@ async def main(target: str | None, strategy_override: str | None) -> None:
             return
 
     for pd in targets:
-        strategy = strategy_override or detect_strategy(pd)
+        detected_strategy = (
+            None
+            if strategy_override or profile is not None
+            else detect_strategy(pd)
+        )
+        inputs = resolve_analysis_inputs(
+            profile=profile,
+            explicit_data_dir=data_dir_override,
+            explicit_strategy=strategy_override,
+            explicit_database=database_override,
+            explicit_locale=locale_override,
+            explicit_run_output=run_output_override,
+            default_data_dir=SETTINGS.analysis_data.dir,
+            default_database=SETTINGS.graph_database.database,
+            default_locale="ko",
+            default_run_output=SETTINGS.run_output.dir,
+            detected_strategy=detected_strategy,
+        )
+        print("\n=== Analysis preflight ===")
+        for line in preflight_lines(inputs):
+            print(f"  {line}")
+
+        # 기존 연결 설정(URI/user/password)은 유지하고 database만 run 입력으로 명시한다.
+        # contextvar라 이 분석 task에만 적용되며 SETTINGS/.env를 수정하지 않는다.
+        set_override(Neo4jOverride(
+            uri=SETTINGS.graph_database.uri,
+            user=SETTINGS.graph_database.user,
+            password=SETTINGS.graph_database.password,
+            database=inputs.neo4j_database,
+        ))
         try:
-            await analyze_one(pd, ddl_path, strategy)
+            await analyze_one(pd, inputs)
         except Exception as e:
             print(f"\n[FAIL] {pd.name}: {type(e).__name__}: {e}")
 
@@ -217,5 +265,29 @@ if __name__ == "__main__":
         help="코퍼스 루트 직접 지정 (source/ ddl/ analysis/ 구조). "
              "ROBO_DATA_DIR env 보다 우선 — .env 수정 없이 임의 코퍼스 실행.",
     )
+    parser.add_argument(
+        "--profile", type=Path,
+        help="분석 실행 프로필 YAML. 명시 CLI 인자가 프로필보다 우선.",
+    )
+    parser.add_argument(
+        "--database",
+        help="Neo4j database 명시 override (프로필/.env보다 우선, system 금지).",
+    )
+    parser.add_argument(
+        "--locale",
+        help="출력 언어 태그 (예: ko, en-US). 프로필/기본값보다 우선.",
+    )
+    parser.add_argument(
+        "--run-output", type=Path,
+        help="이번 실행의 출력 루트. 생략하면 기존 ./logs, 명시하면 해당 경로를 사용.",
+    )
     args = parser.parse_args()
-    asyncio.run(main(args.target, args.strategy))
+    asyncio.run(main(
+        args.target,
+        args.strategy,
+        profile_path=args.profile,
+        data_dir_override=Path(args.data_dir) if args.data_dir else None,
+        database_override=args.database,
+        locale_override=args.locale,
+        run_output_override=args.run_output,
+    ))

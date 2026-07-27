@@ -45,6 +45,7 @@ class RepetitionDetector:
     MAX_PERIOD = 512     # 허용 최대 주기 → 반복 횟수 W/p ≥ 6 자동 보장
     CHECK_EVERY = 128    # 검사 주기(신규 수신 자 수) — 검사 비용 억제
     TAIL_KEEP = 6144     # tail 보관 상한 (WINDOW 의 2배)
+    WHITESPACE_FLOOD = 512
 
     def __init__(self) -> None:
         self._tail = ""
@@ -57,6 +58,9 @@ class RepetitionDetector:
         self.chars_seen += len(text)
         self._tail = (self._tail + text)[-self.TAIL_KEEP:]
         self._pending += len(text)
+        trailing_whitespace = len(self._tail) - len(self._tail.rstrip())
+        if trailing_whitespace >= self.WHITESPACE_FLOOD:
+            return 1
         if self._pending < self.CHECK_EVERY or len(self._tail) < self.WINDOW:
             return None
         self._pending = 0

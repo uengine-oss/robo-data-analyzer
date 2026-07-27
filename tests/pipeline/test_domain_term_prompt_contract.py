@@ -15,9 +15,13 @@ SUMMARY_PROMPTS = (
 
 class DomainTermPromptContractTest(unittest.TestCase):
     def test_both_strategies_state_cap_not_target_and_priority_selection(self) -> None:
-        for path in SUMMARY_PROMPTS:
-            with self.subTest(path=path.name):
-                prompt = path.read_text(encoding="utf-8")
+        cases = (
+            (ROOT / "llm" / "prompts" / "framework", "code_summary"),
+            (ROOT / "llm" / "prompts" / "dbms", "code_summary_batch"),
+        )
+        for directory, rule_name in cases:
+            with self.subTest(rule=rule_name):
+                prompt = _load_rule(directory, rule_name)["static_values"]["domain_terms_contract"]
                 self.assertIn("0~10개", prompt)
                 self.assertIn("10개는 목표가 아니라 마지노선", prompt)
                 self.assertIn("상위 10개", prompt)
@@ -26,15 +30,22 @@ class DomainTermPromptContractTest(unittest.TestCase):
                 self.assertIn("먼저 등장", prompt)
 
     def test_both_strategies_include_normal_failure_and_boundary_examples(self) -> None:
-        for path in SUMMARY_PROMPTS:
-            with self.subTest(path=path.name):
-                prompt = path.read_text(encoding="utf-8")
+        cases = (
+            (ROOT / "llm" / "prompts" / "framework", "code_summary"),
+            (ROOT / "llm" / "prompts" / "dbms", "code_summary_batch"),
+        )
+        for directory, rule_name in cases:
+            with self.subTest(rule=rule_name):
+                prompt = _load_rule(directory, rule_name)["static_values"]["domain_terms_contract"]
                 self.assertIn("올바른 예시", prompt)
                 self.assertIn("잘못된 예시", prompt)
                 self.assertIn("10개 경계 예시", prompt)
                 self.assertIn("<원문의 외부망명>", prompt)
                 self.assertIn("업무 결과 상세 코드", prompt)
                 self.assertIn("후보가 없으면 `[]`", prompt)
+                self.assertIn("`evidence`", prompt)
+                self.assertIn("원문의 연속된 구절", prompt)
+                self.assertIn("뜻을 설명하는 구절이 없으면", prompt)
                 self.assertNotIn("SK-VAN", prompt)
                 self.assertNotIn("PG사", prompt)
 
@@ -52,18 +63,9 @@ class DomainTermPromptContractTest(unittest.TestCase):
                 for phrase in forbidden:
                     self.assertNotIn(phrase, text)
 
-    def test_core_fallback_forbids_search_fields_and_has_small_budget(self) -> None:
-        prompt = (ROOT / "llm" / "prompts" / "framework" / "code_summary_core.yaml").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("max_tokens: 600", prompt)
-        self.assertIn("`search_text`와 `domain_terms`는 절대 생성하지 않는다", prompt)
-        self.assertIn("즉시 JSON을 닫는다", prompt)
-
     def test_all_summary_variants_inject_one_shared_summary_rule_boundary(self) -> None:
         cases = (
             (ROOT / "llm" / "prompts" / "framework", "code_summary"),
-            (ROOT / "llm" / "prompts" / "framework", "code_summary_core"),
             (ROOT / "llm" / "prompts" / "dbms", "code_summary_batch"),
         )
         shared = (ROOT / "llm" / "prompts" / "common" / "summary_contract.md").read_text(
@@ -79,7 +81,8 @@ class DomainTermPromptContractTest(unittest.TestCase):
         shared = (ROOT / "llm" / "prompts" / "common" / "summary_contract.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("목적과 성공 시 남는 주요 효과", shared)
+        self.assertIn("무엇을 왜 하고 무엇을 남기는지", shared)
+        self.assertIn("핵심 예외·대상 없음·fallback·항상 정상 반환", shared)
         self.assertIn("`search_text`", shared)
         self.assertIn("`rules/examples`", shared)
         for strategy in ("framework", "dbms"):
@@ -87,7 +90,9 @@ class DomainTermPromptContractTest(unittest.TestCase):
                 common = (ROOT / "llm" / "prompts" / strategy / "_common.yaml").read_text(
                     encoding="utf-8"
                 )
-                self.assertIn("summary는 이 경로", common)
+                self.assertIn("summary", common)
+                self.assertIn("search_text", common)
+                self.assertRegex(common, r"(?:서로 다른 책임|목적과 표현 책임)")
                 self.assertNotIn("처리 축·대상·기준", common)
                 self.assertNotIn("집계·처리 축", common)
 

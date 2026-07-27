@@ -28,9 +28,11 @@ yaml 형식 (DRY — 분할 그룹의 KV 캐시 prefix 통일)::
     user_template_specific: |
       <이 분할 고유 user_template 지침>
 
-``extends`` 가 있으면 ``_common`` 의 ``system`` 을 그대로 + ``user_template_inputs`` 를
-prefix 로, ``user_template_specific`` 을 그 뒤에 붙여 최종 prompt 조립. 분할 그룹의
-system 본문은 글자 단위 동일이 강제됨 (KV 캐시 prefix 적중 보장). 자세한 원칙: [[kv-cache]].
+``extends`` 가 있으면 ``_common`` 의 ``system`` 을 그대로 두고, user 메시지는
+``user_template_specific``(rule 고정) → ``user_template_inputs``(공통 대상별 변동) →
+``user_template_evidence``(선택적인 rule 전용 고변동 증거) 순으로 조립한다. 가장 덜 변하는
+내용을 먼저 두어 같은 rule의 여러 대상 호출이 긴 고정 prefix를 재사용한다. 분할 그룹의
+system 본문은 글자 단위 동일이다. 자세한 원칙: [[kv-cache]].
 
 ``llm.with_structured_output(response_model, include_raw=True)`` 사용 →
 usage_metadata 동시 추출 + Pydantic 자동 파싱.
@@ -41,6 +43,7 @@ usage_metadata 동시 추출 + Pydantic 자동 파싱.
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 from typing import Optional, TypeVar
@@ -59,7 +62,8 @@ from shared.events.runtime_logger import log_info, log_warning
 from llm.filters import apply_cache_friendly_filters
 from llm import response_cache
 from llm.repetition_guard import RepetitionGuardCallback, RepetitionLoopAborted
-from llm.tracing import write_rule_record
+from llm.tracing import serialize_response, write_rule_record
+from pipeline.execution.run_output_context import get_response_locale, get_run_dir
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -68,11 +72,15 @@ T = TypeVar("T", bound=BaseModel)
 from llm.runners.prompt_rules import _load_rule
 from llm.runners.prompt_values import _extract_target_and_sort, _safe_format
 from llm.runners.invocation import _write_error_record
+from llm.runners.transport_retry import (
+    MAX_TRANSPORT_ATTEMPTS,
+    TRANSPORT_RETRY_DELAYS,
+    is_transient_transport_error,
+)
 
 def _resolve_usage_log_path() -> Path:
-    """``ENV.log.dir/analysis.run/latest/usage.jsonl`` — Agent 미들웨어와 동일 경로."""
-    # logs/ 바로 아래 (2026-07-22 평탄화 — 계층 없음)
-    return SETTINGS.run_output.dir / "usage.jsonl"
+    """현재 분석 run의 usage 장부. 독립 호출은 설정 루트를 fallback으로 쓴다."""
+    return get_run_dir(fallback=SETTINGS.run_output.dir) / "usage.jsonl"
 
 
 async def run_yaml_rule(
@@ -107,7 +115,11 @@ async def run_yaml_rule(
 
     user_content = _safe_format(
         user_template,
-        {**rule.get("static_values", {}), **user_values},
+        {
+            **rule.get("static_values", {}),
+            "response_locale": get_response_locale(),
+            **user_values,
+        },
     )
 
     # 현재 LLM config — provider 정보를 cache friendly filter 에 전달
@@ -141,6 +153,29 @@ async def run_yaml_rule(
             cost_budget=budget,
             response_cache_hit=True,
         )
+        target_id, sort_key = _extract_target_and_sort(user_values)
+        write_rule_record(
+            rule_name=rule_name,
+            target_id=target_id,
+            system_prompt=system_prompt,
+            user_content=user_content,
+            response={
+                "raw": None,
+                "parsed": (
+                    cached.model_dump() if hasattr(cached, "model_dump") else cached
+                ),
+            },
+            metadata={
+                "model": cache_model,
+                "response_cache_hit": True,
+                "latency_ms": lookup_ms,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cached_tokens": 0,
+                "cost_usd": 0.0,
+            },
+            sort_key=sort_key,
+        )
         log_info("llm.call", "cache_hit", agent=f"rule:{rule_name}", elapsed_ms=lookup_ms)
         return cached
     # 반복 폭주 실시간 차단(spec 080) — 감지기가 켜져 있으면 스트리밍 수신으로 전환.
@@ -172,21 +207,48 @@ async def run_yaml_rule(
 
     start = time.monotonic()
     log_info("llm.call", "start", agent=f"rule:{rule_name}")
-    try:
-        result = await runnable.ainvoke(messages, config=invoke_config)
-    except Exception as e:  # noqa: BLE001 — silent 차단 목적
-        elapsed_ms = int((time.monotonic() - start) * 1000)
-        # 폭주 차단은 오류가 아니라 방어 작동 — 별도 이벤트명으로 greppable 하게 남긴다.
-        event = "repetition_guard_abort" if isinstance(e, RepetitionLoopAborted) else "model_error"
-        log_warning(
-            "llm.runners.yaml_llm_runner",
-            event,
-            f"LLM 호출 중단 — {type(e).__name__}: {e}",
-            rule_name=rule_name,
-            elapsed_ms=elapsed_ms,
-        )
-        _write_error_record(rule_name, system_prompt, user_content, user_values, e, elapsed_ms)
-        raise
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            result = await runnable.ainvoke(messages, config=invoke_config)
+            break
+        except Exception as e:  # noqa: BLE001 — explicit retry/failure boundary
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            if is_transient_transport_error(e) and attempt < MAX_TRANSPORT_ATTEMPTS:
+                _write_error_record(
+                    rule_name, system_prompt, user_content, user_values, e, elapsed_ms
+                )
+                delay = TRANSPORT_RETRY_DELAYS[attempt - 1]
+                log_warning(
+                    "llm.runners.yaml_llm_runner",
+                    "transport_retry",
+                    "전송 실패로 동일 요청을 제한 재시도",
+                    rule_name=rule_name,
+                    attempt=attempt,
+                    next_attempt=attempt + 1,
+                    delay_sec=delay,
+                    error=f"{type(e).__name__}: {e}",
+                )
+                await asyncio.sleep(delay)
+                continue
+            event = (
+                "repetition_guard_abort"
+                if isinstance(e, RepetitionLoopAborted)
+                else "model_error"
+            )
+            log_warning(
+                "llm.runners.yaml_llm_runner",
+                event,
+                f"LLM 호출 중단 — {type(e).__name__}: {e}",
+                rule_name=rule_name,
+                attempts=attempt,
+                elapsed_ms=elapsed_ms,
+            )
+            _write_error_record(
+                rule_name, system_prompt, user_content, user_values, e, elapsed_ms
+            )
+            raise
     latency_ms = int((time.monotonic() - start) * 1000)
 
     if response_model is None:
@@ -262,6 +324,7 @@ async def run_yaml_rule(
             "output_tokens": record.output_tokens,
             "cached_tokens": record.cached_tokens,
             "cost_usd": cost,
+            "response_cache_hit": False,
         })
 
     # prompt + 응답 logs/llm-prompts/<rule_name>.json 적재.
@@ -274,7 +337,14 @@ async def run_yaml_rule(
             target_id=target_id,
             system_prompt=system_prompt,
             user_content=user_content,
-            response=parsed if parsed is not None else (raw_msg.content if raw_msg else ""),
+            response={
+                # 구조화 응답은 content가 비고 tool_calls에 실제 인자가 들어갈 수 있다.
+                # 둘 다 보존해야 parser 전 모델 응답과 parsed 결과를 구분해 감사할 수 있다.
+                "raw": serialize_response(raw_msg),
+                "parsed": (
+                    parsed.model_dump() if hasattr(parsed, "model_dump") else parsed
+                ),
+            },
             metadata=metadata,
             sort_key=sort_key,
         )
@@ -282,10 +352,13 @@ async def run_yaml_rule(
         log_warning(
             "llm.runners.yaml_llm_runner",
             "write_rule_record",
-            "프롬프트 로그 적재 실패 — 호출 자체는 성공 (디버깅 보조만 누락)",
+            "프롬프트 증거 적재 실패 — 증거 없는 분석을 막기 위해 호출 결과 기각",
             rule_name=rule_name,
             error=f"{type(e).__name__}: {e}",
         )
+        raise RuntimeError(
+            f"prompt evidence write failed for rule {rule_name!r}"
+        ) from e
 
     if parsed is None:
         raise RuntimeError(f"LLM 응답 파싱 실패: rule={rule_name}")

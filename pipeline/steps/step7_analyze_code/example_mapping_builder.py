@@ -69,20 +69,35 @@ def _collect_rules(
     fid: str, rules: list, result: ExampleMappingResult, rule_by_hash: dict[str, Rule],
 ) -> None:
     """rules → Rule 노드(공유) + HAS_RULE + 하위 examples(HAS_EXAMPLE·AFFECTS_TABLE)."""
+    ordinal = 0
     for r in rules:
         if not isinstance(r, dict):
             continue
         statement = (r.get("statement") or "").strip()
         if not statement:
             continue
+        ordinal += 1
         rh = rule_hash(statement)
+        occurrence_id = f"{fid}::R{ordinal:04d}"
         rule_by_hash.setdefault(rh, Rule(id=rh, statement=statement))
-        result.has_rule.append(HasRule(source_id=fid, target_id=rh))
-        _collect_examples(fid, rh, r.get("examples") or [], result)
+        result.has_rule.append(
+            HasRule(
+                source_id=fid,
+                target_id=rh,
+                occurrence_id=occurrence_id,
+                ordinal=ordinal,
+                anchor_line=max(0, int(r.get("anchor_line") or 0)),
+            )
+        )
+        _collect_examples(fid, occurrence_id, rh, r.get("examples") or [], result)
 
 
 def _collect_examples(
-    fid: str, rh: str, examples: list, result: ExampleMappingResult,
+    fid: str,
+    occurrence_id: str,
+    rh: str,
+    examples: list,
+    result: ExampleMappingResult,
 ) -> None:
     """rule 하위 examples → Example 노드 + HAS_EXAMPLE + AFFECTS_TABLE."""
     for idx, e in enumerate(examples, start=1):
@@ -93,7 +108,7 @@ def _collect_examples(
         then = (e.get("then") or "").strip()
         if not (given or when or then):
             continue
-        eid = f"{fid}::{rh}::{idx}"
+        eid = f"{occurrence_id}::{rh}::{idx}"
         result.examples.append(Example(id=eid, given=given, when=when, then=then))
         result.has_example.append(HasExample(source_id=rh, target_id=eid))
         _collect_affects_table(eid, e.get("affected_tables") or [], result)

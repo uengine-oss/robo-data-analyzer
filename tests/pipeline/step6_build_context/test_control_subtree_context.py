@@ -6,7 +6,6 @@ from pipeline.steps.step6_build_context.build_context_step import build_context_
 from pipeline.steps.step6_build_context.framework_context_builder import FrameworkContextBuilder
 from pipeline.steps.step6_build_context.control_subtree import build_control_subtrees
 from pipeline.steps.step7_analyze_code.framework_per_node import framework_analysis_targets
-from pipeline.steps.step7_analyze_code.rules_fallback import build_fragments
 
 
 def _node(node_id: str, label: str, start: int, end: int, parent_id: str | None) -> CodeNode:
@@ -55,7 +54,7 @@ class ControlSubtreeTest(unittest.TestCase):
 
 
 class ControlSubtreeWiringTest(unittest.IsolatedAsyncioTestCase):
-    async def test_attaches_only_to_routine_and_drives_nonempty_fragments(self):
+    async def test_attaches_only_to_routine(self):
         nodes = _tree()
         strategy = SimpleNamespace(
             context_builder=FrameworkContextBuilder(),
@@ -74,7 +73,3 @@ class ControlSubtreeWiringTest(unittest.IsolatedAsyncioTestCase):
             [("IF", 4, 21), ("LOOP", 26, 36)],
         )
         self.assertNotIn("control_subtree", contexts["fn:IF@103"].extra)
-        self.assertGreater(
-            len(build_fragments(nodes[0].code_text, subtree, budget_tokens=1)),
-            0,
-        )

@@ -108,6 +108,11 @@ _OPERATION_LABELS: dict[str, str] = {
     "round_start":        "  ⤷ 라운드 시작",
     "round_done":         "  ⤶ 라운드 완료",
     "round_stop":         "  ⊘ 라운드 종료",
+    "analysis_stopped":   "■ 사용자 중단",
+    "analysis_aborted":   "✗ 분석 실패",
+    "guardrail_applied":  "🛡 가드레일 적용",
+    "guardrail_observed": "🛡 가드레일 관측",
+    "recovery_started":   "↻ 복구 시작",
     "one_liner_start":    "  one-liner 시작",
     "one_liner_done":     "  one-liner 완료",
     "node_done":          "  ✓ 노드",
@@ -318,8 +323,8 @@ def attach_run_file_handlers(run_dir: Path) -> list[logging.FileHandler]:
 def detach_run_file_handlers(handlers: list[logging.FileHandler]) -> None:
     """``attach_run_file_handlers`` 가 반환한 핸들러들 remove + close.
 
-    ``finally`` 블록에서 호출 — close 안 하면 Windows 에서 stale fd 가 다음 run 의
-    ``rmtree`` (``_reset_latest_dirs``) 를 권한 오류로 실패시킴.
+    ``finally`` 블록에서 호출 — close 안 하면 Windows 에서 stale fd가 다음 run의
+    선택된 출력 루트 초기화를 권한 오류로 실패시킨다.
 
     빈 리스트 (file_enabled=False 였을 때) 는 no-op.
     """
