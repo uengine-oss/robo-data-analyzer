@@ -9,13 +9,15 @@ FROM python:3.12-slim
 WORKDIR /app
 
 # C 확장(leidenalg/igraph) 빌드용 — 설치 후 캐시 정리.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential \
-    && rm -rf /var/lib/apt/lists/*
-
 # 의존성 먼저(레이어 캐시).
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# The default Linux Torch wheel bundles CUDA libraries that this CPU-only
+# desktop stack cannot use. Pin the official CPU wheel first so
+# sentence-transformers reuses it instead of adding several gigabytes.
+RUN pip install --no-cache-dir \
+        --index-url https://download.pytorch.org/whl/cpu \
+        "torch==2.13.0+cpu" \
+    && pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
