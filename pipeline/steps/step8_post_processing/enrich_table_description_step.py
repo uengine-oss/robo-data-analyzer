@@ -43,6 +43,7 @@ from graph.schema.node_ids import fqn
 from pipeline.steps.step8_post_processing.table_logical_names import (
     build_consolidated_column_updates,
 )
+from pipeline.steps.step7_analyze_code.concern_retry import run_concern_with_retry
 
 _STEP = "step8.enrich_table_description"
 
@@ -69,8 +70,9 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
         return {}
 
     code_nodes = handoff.merge(state.get("code_nodes", []))
-    if not code_nodes:
-        log_info(_STEP, "skip", reason="no code_nodes")
+    source_tables = state.get("tables", [])
+    if not source_tables:
+        log_info(_STEP, "skip", reason="no parsed DDL tables")
         return {}
     started = time.monotonic()
 
@@ -102,22 +104,19 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
                 if candidate not in column_candidates[table][cname]:
                     column_candidates[table][cname].append(candidate)
 
-    if not table_candidates:
-        log_info(_STEP, "skip", reason="no table_insights aggregated")
-        return {}
-
     source_columns_by_id = {column.id: column for column in state.get("columns", [])}
     source_columns_by_table = _source_columns_by_table(state, source_columns_by_id)
+    source_tables_by_id = {table.id: table for table in source_tables}
+    table_fqns = _table_target_ids(source_tables)
+    direct_operations = _direct_operations_by_table(state)
     allowed_column_names: dict[str, set[str]] = {}
     prompt_evidence: dict[str, dict] = {}
-    for table, usages in table_candidates.items():
+    for table in table_fqns:
+        usages = table_candidates.get(table, [])
         # DDL HAS_COLUMN이 최종 컬럼 집합의 단일 진실이다. step7 LLM 후보가 컬럼을
-        # 누락했다고 그 누락을 최종 prompt 입력으로 승격하지 않는다. DDL 관계가 없는
-        # 외부/카탈로그 테이블만 검증된 step7 후보를 보수적 fallback으로 사용한다.
+        # 누락하거나 추가해도 최종 prompt의 컬럼 소유권을 바꾸지 않는다.
         source_columns = source_columns_by_table.get(table, [])
         ordered_names = [column.name for column in source_columns]
-        if not ordered_names:
-            ordered_names = list(column_candidates.get(table, {}))
         allowed_column_names[table] = set(ordered_names)
         columns = []
         for name in ordered_names:
@@ -130,13 +129,15 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
                 "candidates": column_candidates.get(table, {}).get(name, []),
             })
         prompt_evidence[table] = {
+            "table": _source_table_evidence(source_tables_by_id[table]),
             "table_usages": usages,
+            "direct_operations": direct_operations.get(table, []),
             "columns": columns,
         }
 
     log_info(
         _STEP, "start",
-        tables=len(table_candidates),
+        tables=len(table_fqns),
         code_insights=sum(len(v) for v in table_candidates.values()),
         column_descriptions=sum(len(v) for v in column_candidates.values()),
     )
@@ -145,25 +146,43 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
     slots = handoff.slots
 
     async def _summarize_one(table_fqn: str, evidence: dict) -> TableDescription:
-        """성공 시 TableDescription / 실패 시 raise. fail 정책은 메인이 책임 (단일 책임)."""
+        """동일 요청을 최대 두 번 시도하고 성공값 하나만 반환한다.
+
+        재시도는 스키마·전송·반복출력 실패에만 반응한다. 첫 응답을 재작성하거나 다른
+        의미 필드로 보정·병합하지 않는다. 두 번 모두 실패하면 기존 fan-out fail 정책이
+        해당 테이블을 명시적 실패로 남긴다.
+        """
         required_names = tuple(column["name"] for column in evidence.get("columns", []))
         response_model = _table_description_response_model(required_names)
-        async with track_processing("Table", table_fqn):
-            async with slots.at(POSTPROCESS_PRIORITY):
-                return await run_yaml_rule(
-                    prompts_dir=prompts_dir,
-                    rule_name="table_description",
-                    user_values={
-                        "table_fqn": table_fqn,
-                        "candidates_json": json.dumps(evidence, ensure_ascii=False, indent=2),
-                    },
-                    response_model=response_model,
-                    budget=cost_budget,
-                )
+
+        async def _call() -> TableDescription:
+            async with track_processing("Table", table_fqn):
+                async with slots.at(POSTPROCESS_PRIORITY):
+                    return await run_yaml_rule(
+                        prompts_dir=prompts_dir,
+                        rule_name="table_description",
+                        user_values={
+                            "table_fqn": table_fqn,
+                            "candidates_json": json.dumps(evidence, ensure_ascii=False, indent=2),
+                        },
+                        response_model=response_model,
+                        budget=cost_budget,
+                    )
+
+        attempt = await run_concern_with_retry(
+            component=_STEP,
+            concern="table_description",
+            target_id=table_fqn,
+            call=_call,
+        )
+        if attempt.succeeded:
+            assert attempt.value is not None
+            return attempt.value
+        assert attempt.error is not None
+        raise attempt.error
 
     # 첫 테이블 1건으로 prefix 캐시 워밍 → 나머지 병렬. fail 정책 = 개별 테이블 LLM 실패 시
     # 로그 + 결과 drop (분석 흐름 유지). BudgetExceededError 만 즉시 전파.
-    table_fqns = list(table_candidates.keys())
     async def _run_fanout() -> list:
         return await gather_with_warmup(
             [_summarize_one(t, prompt_evidence[t]) for t in table_fqns],
@@ -205,11 +224,65 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
 
     log_info(
         _STEP, "done",
-        tables=len(table_candidates),
+        tables=len(table_fqns),
         descriptions=len(table_updates), columns=len(column_updates),
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
     return {"tables": updated_tables, "columns": updated_columns}
+
+
+def _source_table_evidence(table: object) -> dict[str, str]:
+    """DDL 소유 테이블의 원래 의미 필드만 prompt evidence로 직렬화한다."""
+    return {
+        "source_logical_name": str(getattr(table, "logical_name", "") or ""),
+        "source_description": str(getattr(table, "description", "") or ""),
+        "source_comment": str(getattr(table, "comment", "") or ""),
+        "table_type": str(getattr(table, "table_type", "") or ""),
+    }
+
+
+def _table_target_ids(source_tables: list[object]) -> list[str]:
+    """parsed DDL 테이블 순서를 보존한 table-level 합성 대상 집합."""
+    return list(dict.fromkeys(str(getattr(table, "id")) for table in source_tables))
+
+
+def _direct_operations_by_table(state: dict) -> dict[str, list[dict]]:
+    """결정론 R/W 엣지를 테이블별 중복 없는 직접 사용 근거로 만든다."""
+    result: dict[str, list[dict]] = defaultdict(list)
+    seen: dict[str, set[tuple]] = defaultdict(set)
+    edges = sorted(
+        state.get("reads_writes_edges", []),
+        key=lambda edge: (
+            getattr(edge, "target_id", ""),
+            getattr(edge, "evidence_file", ""),
+            getattr(edge, "evidence_line", 0),
+            getattr(edge, "source_id", ""),
+            getattr(edge, "relation", ""),
+            getattr(edge, "dml_type", ""),
+        ),
+    )
+    for edge in edges:
+        table_id = getattr(edge, "target_id", "")
+        if not table_id:
+            continue
+        identity = (
+            getattr(edge, "source_id", ""),
+            getattr(edge, "relation", ""),
+            getattr(edge, "dml_type", ""),
+            getattr(edge, "evidence_file", ""),
+            getattr(edge, "evidence_line", 0),
+        )
+        if identity in seen[table_id]:
+            continue
+        seen[table_id].add(identity)
+        result[table_id].append({
+            "source_id": identity[0],
+            "relation": identity[1],
+            "dml_type": identity[2],
+            "evidence_file": identity[3],
+            "evidence_line": identity[4],
+        })
+    return dict(result)
 
 
 def _source_columns_by_table(

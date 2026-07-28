@@ -36,6 +36,7 @@ from pipeline.models.code_analysis_output import (
     BatchSummaryItem,
     BatchTableInsightsItem,
     BatchTableInsightsOutput,
+    require_unique_rule_occurrences,
     BatchSummaryOutput,
 )
 from graph.schema.graph_nodes import CodeNode
@@ -52,6 +53,10 @@ from shared.events.processing_events import track_processing
 from shared.files.cache import SourceFileCache
 from pipeline.execution.analysis_handoff import AnalysisHandoff
 from pipeline.execution.pause_controller import PauseController
+from pipeline.steps.step7_analyze_code.concern_retry import (
+    ConcernAttempt,
+    run_concern_with_retry,
+)
 
 _STEP = "step7.analyze_code.batch"
 
@@ -168,7 +173,7 @@ async def run_dbms_batch_analysis(
     handoff.expect(analysis_ids)
     # source_cache 는 caller(analyze_code_step)가 주입 — run 스코프 공유 (spec 046 FR-008).
     em_acc = ExampleMappingResult()
-    analyzed = failed = batch_count = 0
+    analyzed = partial = failed = batch_count = 0
 
     # Dataflow 스케줄 — 배치 의존(배치 밖 callee) 완료 즉시 투입 (framework 엔진과 동일).
     # 실패 배치의 노드도 의존 해소로 간주(라운드 방식과 동일 의미).
@@ -240,10 +245,12 @@ async def run_dbms_batch_analysis(
                     log_error(_STEP, "batch", result)
                 else:
                     for fn in result:              # 배치가 분석한 CodeNode 들
-                        handoff.publish_summary(fn)   # 결과 확정 — 후처리 인계
+                        if fn.summary:
+                            handoff.publish_summary(fn)   # summary 성공 노드만 후처리 인계
                         em = await _persist_and_emit_code(fn, neo, stream)
                         _accumulate_em(em_acc, em)
-                        analyzed += 1
+                        analyzed += int(bool(fn.summary))
+                        partial += int(bool((fn.extra or {}).get("partial")))
                 # 인계 해제는 **공개 뒤에** — 순서가 뒤집히면 게이트가 열린 뒤에 노드가
                 # 실려 후처리가 미완성 목록을 읽는다.
                 for node_id in batch_nodes[id(b)]:
@@ -268,7 +275,7 @@ async def run_dbms_batch_analysis(
     log_info(
         _STEP, "done",
         analysis_nodes=len(analysis_ids), batches=batch_count,
-        analyzed=analyzed, failed_batches=failed or None,
+        analyzed=analyzed, partial=partial or None, failed_batches=failed or None,
         unanalyzed=unanalyzed or None, in_cycle=len(cycles),
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
@@ -335,179 +342,312 @@ async def _analyze_batch(
     batch: Batch, contexts, code_by_id, strategy, cost_budget,
     codebase_notes, module_intents, table_descriptions, source_cache, rule_units, rule_gates,
 ) -> list[CodeNode]:
-    """배치 형제들을 1 LLM 콜로 분석 → node_key 분배. 누락 노드는 1회 미니 재요청 (누락 0 보장)."""
-    applied, missing = await _batch_call(
-        batch.parent_id, list(batch.node_ids), contexts, code_by_id, strategy,
-        cost_budget, codebase_notes, module_intents, table_descriptions, source_cache,
-        rule_units, rule_gates,
-    )
-    if missing:
-        # 미니 재요청 — 누락 노드만 다시 1콜 (단독 배치라 적중률 ↑). silent fail 금지.
-        retry, still = await _batch_call(
-            batch.parent_id, missing, contexts, code_by_id, strategy,
-            cost_budget, codebase_notes, module_intents, table_descriptions, source_cache,
-            rule_units, rule_gates,
-        )
-        applied.extend(retry)
-        if still:
-            log_warning(
-                _STEP, "missing_after_retry",
-                "미니 재요청 후에도 누락 — 그래프 노드는 유지(요약만 빈 채)",
-                parent=batch.parent_id, missing_count=len(still),
-            )
-    return applied
-
-
-async def _batch_call(
-    parent_id, node_ids, contexts, code_by_id, strategy, cost_budget,
-    codebase_notes, module_intents, table_descriptions, source_cache, rule_units, rule_gates,
-) -> tuple[list[CodeNode], list[str]]:
-    """그룹(node_ids)을 3 관심사 콜로 분석 → ``(적용된 CodeNode 들, 누락 node_id 들)``.
-
-    ①요약(전 노드) ②비즈로직(rule_units=원문 / rule_gates=골격 — 게이트 조건만) ③테이블(DML 노드만).
-    각 콜은 "한 관심사 × 노드 리스트" 평탄 출력 → 깊은 중첩 0(폭주 차단). node_key(줄범위)로 fan-in.
-    흐름: 요약 먼저(같은 배치 입력 prefix 를 cache 에 올림) → 비즈로직+테이블 동시(적중).
-    부분 성공 허용 — 비즈로직/테이블 한 조각 실패가 노드 폐기로 이어지지 않게(요약만 코어).
-    """
+    """배치 형제들을 관심사별로 분석하고 실패한 관심사·키만 한 번 재요청한다."""
     prompts_dir = Path(strategy.prompts_dir)
-    tmp = Batch(parent_id, tuple(node_ids))
-    user_values, key_to_id = _build_batch_values(
-        tmp, contexts, code_by_id, codebase_notes,
-        module_intents, table_descriptions, source_cache,
+    node_ids = list(batch.node_ids)
+
+    # Summary는 공통 prefix 워밍을 위해 먼저 끝낸다. 누락 키만 같은 Summary 계약으로
+    # 재요청하며, 성공한 Summary는 아래 어떤 호출도 다시 만들지 않는다.
+    summaries, summary_failed = await _collect_keyed_concern(
+        parent_id=batch.parent_id,
+        node_ids=node_ids,
+        concern="summary",
+        rule_name="code_summary_batch",
+        response_model=BatchSummaryOutput,
+        prompts_dir=prompts_dir,
+        contexts=contexts,
+        code_by_id=code_by_id,
+        cost_budget=cost_budget,
+        codebase_notes=codebase_notes,
+        module_intents=module_intents,
+        table_descriptions=table_descriptions,
+        source_cache=source_cache,
     )
 
-    # 분할 1 요약 — 먼저(코어 + cache 워밍). 실패하면 배치 전체 누락 처리(미니 재요청).
-    summary_out: BatchSummaryOutput = await run_yaml_rule(
-        prompts_dir=prompts_dir, rule_name="code_summary_batch",
-        user_values=user_values, response_model=BatchSummaryOutput, budget=cost_budget,
-    )
-    # 분할 3 비즈로직 — rule_units(예산 내 최고 조상) 노드만. 단위는 예산에 들어가므로
-    #   body_for 가 이미 원문(자식 서브트리 포함)을 줬다 = 1차 증거, 특수 입력 빌드 불필요.
-    #   단위 아래 노드는 규칙 X(단위가 흡수 — 파편·중복 차단). 배치에 단위가 일부만 있으면
-    #   그 부분집합으로만 rules 콜(같은 빌더 재사용).
-    # 분할 2 테이블 — DML 노드만.
     rule_ids = [nid for nid in node_ids if nid in rule_units]
     gate_ids = [nid for nid in node_ids if nid in rule_gates]
     dml_ids = [nid for nid in node_ids if contexts[nid].reads or contexts[nid].writes]
     tasks = {}
     if rule_ids:
-        rule_values = user_values
-        if len(rule_ids) != len(node_ids):
-            rule_values, _ = _build_batch_values(
-                Batch(parent_id, tuple(rule_ids)), contexts, code_by_id,
-                codebase_notes, module_intents, table_descriptions, source_cache,
-            )
-        tasks["rules"] = run_yaml_rule(
-            prompts_dir=prompts_dir, rule_name="code_rules_examples_batch",
-            user_values=rule_values, response_model=BatchRulesOutput, budget=cost_budget,
+        tasks["rules"] = _collect_keyed_concern(
+            parent_id=batch.parent_id,
+            node_ids=rule_ids,
+            concern="rules",
+            rule_name="code_rules_examples_batch",
+            response_model=BatchRulesOutput,
+            prompts_dir=prompts_dir,
+            contexts=contexts,
+            code_by_id=code_by_id,
+            cost_budget=cost_budget,
+            codebase_notes=codebase_notes,
+            module_intents=module_intents,
+            table_descriptions=table_descriptions,
+            source_cache=source_cache,
         )
     if gate_ids:
-        # 하강한 컨테이너 — 골격(자식 `....` 접힘)으로 자기 줄 게이트·선별 조건만 규칙화.
-        # 자식 내용은 각 단위가 담당하므로 골격엔 안 보임 = 내용 중복 원천 차단.
-        gate_values, _ = _build_batch_values(
-            Batch(parent_id, tuple(gate_ids)), contexts, code_by_id,
-            codebase_notes, module_intents, table_descriptions, source_cache,
+        tasks["gate_rules"] = _collect_keyed_concern(
+            parent_id=batch.parent_id,
+            node_ids=gate_ids,
+            concern="rules",
+            rule_name="code_gate_rules_batch",
+            response_model=BatchRulesOutput,
+            prompts_dir=prompts_dir,
+            contexts=contexts,
+            code_by_id=code_by_id,
+            cost_budget=cost_budget,
+            codebase_notes=codebase_notes,
+            module_intents=module_intents,
+            table_descriptions=table_descriptions,
+            source_cache=source_cache,
             body_fn=skeleton_body,
         )
-        tasks["gate_rules"] = run_yaml_rule(
-            prompts_dir=prompts_dir, rule_name="code_gate_rules_batch",
-            user_values=gate_values, response_model=BatchRulesOutput, budget=cost_budget,
-        )
     if dml_ids:
-        dml_values, _ = _build_batch_values(
-            Batch(parent_id, tuple(dml_ids)), contexts, code_by_id,
-            codebase_notes, module_intents, table_descriptions, source_cache,
-        )
-        tasks["table"] = run_yaml_rule(
-            prompts_dir=prompts_dir, rule_name="code_table_insights_batch",
-            user_values=dml_values, response_model=BatchTableInsightsOutput, budget=cost_budget,
+        tasks["insights"] = _collect_keyed_concern(
+            parent_id=batch.parent_id,
+            node_ids=dml_ids,
+            concern="insights",
+            rule_name="code_table_insights_batch",
+            response_model=BatchTableInsightsOutput,
+            prompts_dir=prompts_dir,
+            contexts=contexts,
+            code_by_id=code_by_id,
+            cost_budget=cost_budget,
+            codebase_notes=codebase_notes,
+            module_intents=module_intents,
+            table_descriptions=table_descriptions,
+            source_cache=source_cache,
         )
 
     results = await asyncio.gather(*tasks.values(), return_exceptions=True)
     done = dict(zip(tasks, results))
     for r in results:
         if isinstance(r, BudgetExceededError):
-            raise r        # 회로 차단기 — 즉시 전파 (절대원칙 #3)
+            raise r
+        if isinstance(r, BaseException):
+            raise r
 
-    summary_by_key = {s.node_key.strip(): s for s in summary_out.nodes}
-    rules_by_key = {**_by_key(done.get("rules")), **_by_key(done.get("gate_rules"))}  # 단위∩게이트 = ∅
-    table_by_key = _by_key(done.get("table"))
+    rules: dict[str, BatchRulesItem] = {}
+    rules_failed: set[str] = set()
+    for name in ("rules", "gate_rules"):
+        if name in done:
+            values, unresolved = done[name]
+            rules.update(values)
+            rules_failed.update(unresolved)
+    insights, insights_failed = done.get("insights", ({}, set()))
 
     applied: list[CodeNode] = []
-    missing: list[str] = []
-    for key, fid in key_to_id.items():
-        s = summary_by_key.get(key)
-        if s is None or not s.summary.strip() or not s.search_text.strip():
-            # 관측 가능한 설명이 전혀 없으면 임의 이름 추론으로 채우지 않고 호출자가
-            # 미니 재요청한다. 단순히 "의미 없음"으로 간주해 검색에서 빼지 않는다.
-            missing.append(fid)
-            continue
+    for fid in node_ids:
+        requested = {"summary"}
+        if fid in rule_units or fid in rule_gates:
+            requested.add("rules")
+        if fid in dml_ids:
+            requested.add("insights")
+        failed_parts = {
+            part for part, failed_ids in (
+                ("summary", summary_failed),
+                ("rules", rules_failed),
+                ("insights", insights_failed),
+            )
+            if fid in failed_ids
+        }
         applied.append(_apply_node_analysis(
-            s, rules_by_key.get(key), table_by_key.get(key),
-            code_by_id[fid], contexts[fid], strategy, source_cache,
+            summaries.get(fid),
+            rules.get(fid),
+            insights.get(fid),
+            code_by_id[fid],
+            contexts[fid],
+            strategy,
+            source_cache,
+            requested_parts=requested,
+            failed_parts=failed_parts,
         ))
-    return applied, missing
+    return applied
 
 
-def _by_key(result) -> dict:
-    """배치 분할 결과 → ``{node_key: item}``. 조각 실패/None 은 빈 dict(부분 성공 — 빈 결과 진행).
+async def _collect_keyed_concern(
+    *,
+    parent_id,
+    node_ids,
+    concern,
+    rule_name,
+    response_model,
+    prompts_dir,
+    contexts,
+    code_by_id,
+    cost_budget,
+    codebase_notes,
+    module_intents,
+    table_descriptions,
+    source_cache,
+    body_fn=None,
+) -> tuple[dict[str, Any], set[str]]:
+    """Preserve unique successes and retry only unresolved DBMS keys once."""
+    expected = _expected_keys(node_ids, contexts)
 
-    호출 안 한 분할(테이블 DML 0)은 None → 빈 dict(정상). 호출했는데 실패면 log_warning.
-    """
-    if result is None:
-        return {}
-    if isinstance(result, BaseException):
-        log_warning(
-            _STEP, "split_failed", "배치 분할 조각 실패 — 빈 결과로 진행",
-            error=f"{type(result).__name__}: {result}",
+    async def _request(ids, max_attempts):
+        async def _call():
+            kwargs = {"body_fn": body_fn} if body_fn is not None else {}
+            values, _ = _build_batch_values(
+                Batch(parent_id, tuple(ids)),
+                contexts,
+                code_by_id,
+                codebase_notes,
+                module_intents,
+                table_descriptions,
+                source_cache,
+                **kwargs,
+            )
+            return await run_yaml_rule(
+                prompts_dir=prompts_dir,
+                rule_name=rule_name,
+                user_values=values,
+                response_model=response_model,
+                budget=cost_budget,
+            )
+
+        return await run_concern_with_retry(
+            component=_STEP,
+            concern=concern,
+            target_id=parent_id or ids[0],
+            call=_call,
+            max_attempts=max_attempts,
         )
-        return {}
-    return {item.node_key.strip(): item for item in result.nodes}
+
+    first: ConcernAttempt = await _request(node_ids, 2)
+    if not first.succeeded:
+        return {}, set(node_ids)
+
+    accepted, unresolved = _partition_keyed_items(
+        first.value.nodes, expected, concern=concern, attempt=1,
+    )
+    if not unresolved:
+        return accepted, set()
+
+    retry_ids = [expected[key] for key in expected if expected[key] in unresolved]
+    retry: ConcernAttempt = await _request(retry_ids, 1)
+    if not retry.succeeded:
+        return accepted, unresolved
+
+    retry_expected = _expected_keys(retry_ids, contexts)
+    recovered, still = _partition_keyed_items(
+        retry.value.nodes, retry_expected, concern=concern, attempt=2,
+    )
+    accepted.update(recovered)
+    return accepted, still
+
+
+def _expected_keys(node_ids, contexts) -> dict[str, str]:
+    expected: dict[str, str] = {}
+    for nid in node_ids:
+        ctx = contexts[nid]
+        key = f"{ctx.start_line}-{ctx.end_line}"
+        if key in expected:
+            raise ValueError(
+                f"duplicate DBMS node_key {key!r}: {expected[key]!r}, {nid!r}"
+            )
+        expected[key] = nid
+    return expected
+
+
+def _partition_keyed_items(items, expected, *, concern: str, attempt: int):
+    """Accept exact unique keys; duplicate/missing keys remain unresolved."""
+    by_key: dict[str, list[Any]] = {}
+    unknown: list[str] = []
+    invalid: list[str] = []
+    for item in items:
+        key = item.node_key.strip()
+        if key not in expected:
+            unknown.append(key)
+            continue
+        if isinstance(item, BatchRulesItem):
+            try:
+                require_unique_rule_occurrences(item.rules)
+            except ValueError:
+                invalid.append(key)
+                continue
+        by_key.setdefault(key, []).append(item)
+
+    duplicates = sorted(key for key, values in by_key.items() if len(values) != 1)
+    accepted = {
+        expected[key]: values[0]
+        for key, values in by_key.items()
+        if len(values) == 1
+    }
+    unresolved = {
+        nid for key, nid in expected.items()
+        if key not in by_key or key in duplicates
+    }
+    if unknown or duplicates or invalid or unresolved:
+        log_warning(
+            _STEP,
+            "batch_key_contract",
+            "DBMS 배치 키 계약 불일치 — 정상 키는 보존하고 미해결 키만 재시도",
+            concern=concern,
+            attempt=attempt,
+            unknown_keys=sorted(set(unknown)) or None,
+            duplicate_keys=duplicates or None,
+            invalid_item_keys=sorted(set(invalid)) or None,
+            unresolved_ids=sorted(unresolved) or None,
+        )
+    return accepted, unresolved
 
 
 def _apply_node_analysis(
-    summary: BatchSummaryItem,
+    summary: Optional[BatchSummaryItem],
     rules: Optional[BatchRulesItem],
     table: Optional[BatchTableInsightsItem],
     fn: CodeNode,
     ctx: AnalysisContext,
     strategy: Any,
     source_cache: SourceFileCache,
+    *,
+    requested_parts: set[str],
+    failed_parts: set[str],
 ) -> CodeNode:
     """3 배치 분할 결과(요약/비즈로직/테이블) → CodeNode + ctx 반영 (three_split fan-in 동일).
 
     rules/table 은 조각 실패·비-DML 이면 None → 빈 배열(부분 성공 허용, 요약만 코어).
     """
-    # 자연어 의미를 기계적으로 복사하지 않는다. 위에서 두 필드가 모두 있는 결과만
-    # 통과시키며, 여기서는 공백 제거와 불변식 재검증만 수행한다.
-    summary_text, search_text = normalize_searchable_text(
-        summary.summary, summary.search_text
-    )
-    fn.summary = summary_text
-    fn.stereotype = coerce_stereotype(summary.stereotype or "", strategy.name) or None
-    fn.logical_name = summary.logical_name or None
-    fn.search_text = search_text
-    excerpt = source_cache.excerpt(
-        ctx.file_path, ctx.start_line, ctx.end_line
-    )
-    fn.domain_terms = normalize_domain_terms(
-        summary.domain_terms,
-        source_text=excerpt.raw_text,
-        numbered_source_text=excerpt.numbered_text,
-        code_id=fn.id,
-        component=_STEP,
-    )
+    if summary is not None:
+        summary_text, search_text = normalize_searchable_text(
+            summary.summary, summary.search_text
+        )
+        fn.summary = summary_text
+        fn.stereotype = coerce_stereotype(summary.stereotype or "", strategy.name) or None
+        fn.logical_name = summary.logical_name or None
+        fn.search_text = search_text
+        excerpt = source_cache.excerpt(
+            ctx.file_path, ctx.start_line, ctx.end_line
+        )
+        fn.domain_terms = normalize_domain_terms(
+            summary.domain_terms,
+            source_text=excerpt.raw_text,
+            numbered_source_text=excerpt.numbered_text,
+            code_id=fn.id,
+            component=_STEP,
+        )
+        ctx.summary = summary_text
     # spec 027: LLM 귀속 테이블을 결정론 reads/writes 로 제한 (callee 함수명 오귀속 차단).
     constrain_tables_to_rw(
         fn.id, ctx.reads, ctx.writes, table, rules,
         allowed_columns_by_table=ctx.extra.get("ddl_columns_by_table"),
         table_op=ctx.extra.get("table_op"),
     )
-    fn.extra["table_insights"] = [t.model_dump() for t in table.table_insights] if table else []
-    fn.extra["rules"] = [r.model_dump() for r in rules.rules] if rules else []   # examples 는 각 rule 하위 중첩
-    fn.extra["questions"] = [q.model_dump() for q in rules.questions] if rules else []
+    if "insights" in requested_parts:
+        fn.extra["table_insights"] = [
+            t.model_dump() for t in table.table_insights
+        ] if table else []
+    if "rules" in requested_parts:
+        fn.extra["rules"] = [r.model_dump() for r in rules.rules] if rules else []
+        fn.extra["questions"] = [q.model_dump() for q in rules.questions] if rules else []
+    if failed_parts:
+        fn.extra["partial"] = tuple(
+            part for part in ("summary", "rules", "insights") if part in failed_parts
+        )
+    else:
+        fn.extra.pop("partial", None)
     # ctx 에 부착 — 부모 배치가 compact_body·자식규칙으로 라이브 조회.
-    ctx.summary = summary_text
-    ctx.extra["rules"] = fn.extra["rules"]
-    ctx.extra["questions"] = fn.extra["questions"]
+    if "rules" in requested_parts:
+        ctx.extra["rules"] = fn.extra["rules"]
+        ctx.extra["questions"] = fn.extra["questions"]
     return fn

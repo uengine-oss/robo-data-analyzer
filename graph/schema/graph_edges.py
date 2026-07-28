@@ -228,6 +228,8 @@ class HasExample:
     """Rule → Example. source=rule, target=example."""
     source_id: str
     target_id: str
+    occurrence_id: str = ""
+    ordinal: int = 0
 
 
 @dataclass(frozen=True)

@@ -79,6 +79,7 @@ class BranchInventory:
     all_branches: tuple[Branch, ...]
     callees: frozenset[str]
     source_values: frozenset[str]
+    active_lines: frozenset[int]
     line_offset: int = 0
 
     def dispatch_tables(self) -> list[dict[str, frozenset[str]]]:
@@ -152,7 +153,7 @@ class BranchInventory:
         1. **줄번호 유일** — ``else if`` 는 ELSE 와 IF 가 같은 줄에서 시작한다. 둘 다 실으면
            그 줄을 지목했을 때 어느 분기인지 확정되지 않는다(실측 74건).
         2. **조건식 절단 금지** — 110자로 자르니 여러 줄에 걸친 값 열거의 뒷부분이 사라져
-           모델이 못 본 범위를 지어냈다(실측: `Bank_054` 의 과목코드 집합).
+           모델이 못 본 범위를 지어냈다(실측: 여러 줄에 걸친 열거형 코드 집합).
         3. **중첩 표시** — 부모·자식을 평면으로 나열하면 형제로 오해해 조건을 뒤집는다
            (실측: `cF10` 의 `cms_fb_req_yn` 안에 있는 `gc_send_ex_bank` 를 형제로 봄).
            들여쓰기로 소속을 드러내고, 조건식이 없는 분기(`else`)는 여집합임을 명시한다.
@@ -309,5 +310,10 @@ def build_inventory(
         all_branches=tuple(all_branches),
         callees=_calls(split.live(), lang),
         source_values=frozenset(literal_values(split.live(), lang) | declared),
+        active_lines=frozenset(
+            index + 1 + line_offset
+            for index, line in enumerate(split.live_lines)
+            if line.strip()
+        ),
         line_offset=line_offset,
     )

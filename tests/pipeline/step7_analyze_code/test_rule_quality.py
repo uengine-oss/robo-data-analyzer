@@ -18,7 +18,7 @@ def _ex(given, when="대상 판정", then="제외", tables=None):
 
 
 def _rule(stmt, examples):
-    return RuleItem(statement=stmt, examples=examples)
+    return RuleItem(statement=stmt, anchor_line=1, examples=examples)
 
 
 def test_clean_result_not_anomaly():

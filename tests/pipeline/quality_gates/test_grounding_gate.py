@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import unittest
+from pydantic import ValidationError
 
 from pipeline.models.analysis_context import ControlSubtreeNode
 from pipeline.models.code_analysis_output import ExampleItem, RuleItem, RulesExamplesOutput
@@ -15,7 +16,11 @@ from pipeline.quality_gates.lexing import literal_values, split_source
 
 def _rules(*statements: str) -> RulesExamplesOutput:
     return RulesExamplesOutput(
-        rules=[RuleItem(statement=s, examples=[ExampleItem(given=s, when="", then="")])
+        rules=[RuleItem(
+            statement=s,
+            anchor_line=1,
+            examples=[ExampleItem(given=s, when="", then="")],
+        )
                for s in statements],
         questions=[],
     )
@@ -283,10 +288,27 @@ class AnchorCheck(unittest.TestCase):
         # 3 은 IF(1-4) 안쪽 — 머리줄이 아니어도 그 분기로 해석한다(관대하게).
         self.assertEqual(check_grounding(self._rule("코드 '11' 이면 처리", 3), self._inv()), [])
 
-    def test_anchor_outside_every_branch_is_flagged(self):
+    def test_anchor_outside_source_is_flagged(self):
         findings = check_grounding(self._rule("코드 '11' 이면 처리", 999), self._inv())
         self.assertEqual([f.check for f in findings], ["anchor_values"])
         self.assertIn("999", findings[0].values)
+
+    def test_active_non_branch_line_is_valid_for_unconditional_rule(self):
+        self.assertEqual(check_grounding(self._rule("항상 결과를 설정한다", 3), self._inv()), [])
+
+    def test_unconditional_anchor_uses_absolute_line_offset_and_active_source_only(self):
+        inventory = build_inventory(
+            "// old return\nreturn 1;",
+            [],
+            "c",
+            line_offset=99,
+        )
+        self.assertEqual(
+            check_grounding(self._rule("항상 결과를 반환한다", 101), inventory),
+            [],
+        )
+        findings = check_grounding(self._rule("항상 결과를 반환한다", 100), inventory)
+        self.assertEqual(["anchor_values"], [finding.check for finding in findings])
 
     def test_sibling_condition_is_legitimate_vocabulary_for_else(self):
         # ELSE 는 형제 IF 조건의 부정으로 정의된다 — "'11' 이 아니면" 은 정상 서술이다
@@ -323,8 +345,9 @@ class AnchorCheck(unittest.TestCase):
         )
         self.assertEqual(findings, [])
 
-    def test_zero_anchor_is_not_judged(self):
-        self.assertEqual(check_grounding(self._rule("무조건 처리", 0), self._inv()), [])
+    def test_zero_anchor_is_rejected_before_grounding(self):
+        with self.assertRaises(ValidationError):
+            self._rule("무조건 처리", 0)
 
 
 class BranchIndexUniqueness(unittest.TestCase):

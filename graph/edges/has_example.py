@@ -12,11 +12,20 @@ _UPSERT_QUERY = f"""
 UNWIND $items AS item
 MATCH (r:RULE {{id: item.source_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 MATCH (e:EXAMPLE {{id: item.target_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-MERGE (r)-[:{HAS_EXAMPLE}]->(e)
+MERGE (r)-[rel:{HAS_EXAMPLE} {{occurrence_id: item.occurrence_id}}]->(e)
+SET rel.ordinal = item.ordinal
 """
 
 
 async def upsert_has_example(client: Neo4jClient, edges: Iterable[HasExample]) -> None:
     """Rule → Example 엣지."""
-    items = [{"source_id": e.source_id, "target_id": e.target_id} for e in edges]
+    items = [
+        {
+            "source_id": e.source_id,
+            "target_id": e.target_id,
+            "occurrence_id": e.occurrence_id,
+            "ordinal": e.ordinal,
+        }
+        for e in edges
+    ]
     await client.run_batch_unwind(_UPSERT_QUERY, items)

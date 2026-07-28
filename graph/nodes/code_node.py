@@ -72,6 +72,9 @@ def to_summary_item(fn: CodeNode) -> dict:
         # spec 054 FR-023: 폴백 재검사도 이상이면 "부분 결과 + 이상 플래그"를 함수 노드에 저장 —
         # 그래프에 남아야 소비자(UI/검색)가 신뢰도를 안다. 정상경로는 키 부재 → nonempty 가 제외.
         "rules_quality_flag": (fn.extra or {}).get("rules_quality_flag"),
+        # 의미를 채우는 필드가 아니라 3분할 전달 상태. 성공한 조각은 그대로 보존하고
+        # 재시도 소진 조각만 표시해 정상 빈 결과와 실패를 구분한다.
+        "analysis_partial": list((fn.extra or {}).get("partial") or ()),
     })
 
 
@@ -85,6 +88,9 @@ async def update_summaries(client: Neo4jClient, code_nodes: Iterable[CodeNode]) 
 
     stereotype 은 속성 + **라벨**로 부여(spec 033) — 소비처가 위치(labels[1:])로 역할 필터/색칠.
     """
-    analyzed = [f for f in code_nodes if f.summary is not None]
+    analyzed = [
+        f for f in code_nodes
+        if f.summary is not None or (f.extra or {}).get("partial")
+    ]
     await client.run_batch_unwind(SET_SUMMARY_QUERY, [to_summary_item(f) for f in analyzed])
     await apply_stereotype_labels(client, [(f.id, f.stereotype or "") for f in analyzed])

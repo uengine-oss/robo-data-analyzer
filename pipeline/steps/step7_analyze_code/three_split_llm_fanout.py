@@ -57,10 +57,14 @@ from pipeline.models.code_analysis_output import (
 )
 from llm.runners.yaml_llm_runner import run_yaml_rule
 from pipeline.steps.step7_analyze_code.domain_terms import normalize_domain_terms
-from shared.events.runtime_logger import log_error, log_warning
+from shared.events.runtime_logger import log_warning
 from shared.events.processing_events import track_processing
 from shared.files.cache import SourceFileCache
 from pipeline.steps.step7_analyze_code.control_prompt import control_index
+from pipeline.steps.step7_analyze_code.concern_retry import (
+    ConcernAttempt,
+    run_concern_with_retry,
+)
 
 _STEP = "step7.analyze_code.three_split"
 
@@ -102,7 +106,7 @@ async def run_summary(
         module_intents or {}, table_descriptions or {},
         source_cache or SourceFileCache(),
     )
-    try:
+    async def _call() -> SummaryOutput:
         async with track_processing("CodeNode", code_id, sub_action="warmup_summary"):
             return await run_yaml_rule(
                 prompts_dir=Path(strategy.prompts_dir),
@@ -111,11 +115,15 @@ async def run_summary(
                 response_model=SummaryOutput,
                 budget=cost_budget,
             )
-    except BudgetExceededError:
-        raise        # 회로 차단기 — 그대로 전파
-    except Exception as e:  # noqa: BLE001 — silent 차단 목적
-        log_error(_STEP, "warmup_summary_failed", e, code_id=code_id)
-        return None
+
+    return (
+        await run_concern_with_retry(
+            component=_STEP,
+            concern="summary",
+            target_id=code_id,
+            call=_call,
+        )
+    ).value
 
 
 async def analyze_code_three_split(
@@ -129,6 +137,7 @@ async def analyze_code_three_split(
     table_descriptions: Optional[dict[str, dict]] = None,
     source_cache: Optional[SourceFileCache] = None,
     precomputed_summary: Optional[SummaryOutput] = None,
+    precomputed_summary_supplied: bool = False,
     on_summary_ready: Optional[Callable[[str], None]] = None,
 ) -> Optional[CodeNode]:
     """코드노드 1개의 3 분할 분석 — 결과를 ``CodeNode`` 에 적용해 반환.
@@ -141,12 +150,15 @@ async def analyze_code_three_split(
         codebase_notes: ``ScanResult.codebase_notes`` — prefix 공유로 캐시 적중.
         module_intents: ``{module_id: intent}`` — module_pre_analysis(M9) 결과.
         table_descriptions: ``{table_fqn: DDL 설명}`` — reads/writes 렌더에 의미 부여.
-        precomputed_summary: Round 첫 코드노드의 워밍 결과. 있으면 #1 호출 skip.
+        precomputed_summary: Round 첫 코드노드의 워밍 결과.
+        precomputed_summary_supplied: 워밍 호출이 이미 끝났는지 표시. 워밍 실패(None)도
+            여기서 다시 호출하지 않아 concern 최대 2회 계약을 지킨다.
         on_summary_ready: summary 확정(경계 검사 후) 직후 호출되는 스케줄러 신호 —
             CALLS 의존 caller 를 #2/#3 완료를 기다리지 않고 조기 투입하게 한다.
 
     Returns:
-        summary/stereotype/logical_name 채워진 CodeNode. summary 실패 시 None.
+        성공한 분할만 반영한 CodeNode. summary가 소진 실패해도 다른 성공 분할은
+        보존하고 ``extra.partial``에 실패 관심사를 기록한다.
     """
     ctx = contexts.get(code_id)
     fn = code_by_id.get(code_id)
@@ -176,67 +188,74 @@ async def analyze_code_three_split(
             return await coro
 
     # Phase 1: summary — 자기 코드노드의 cache 만들기 (precomputed 있으면 skip).
-    if precomputed_summary is not None:
+    summary_error: Optional[Exception] = None
+    if precomputed_summary_supplied:
         summary_out = precomputed_summary
+        if summary_out is None:
+            summary_error = RuntimeError("precomputed summary attempts exhausted")
     else:
-        try:
-            summary_out = await _track_split(
+        summary_attempt = await run_concern_with_retry(
+            component=_STEP,
+            concern="summary",
+            target_id=code_id,
+            call=lambda: _track_split(
                 "split_summary",
                 run_yaml_rule(
                     prompts_dir=prompts_dir, rule_name="code_summary",
                     user_values=common, response_model=SummaryOutput, budget=cost_budget,
                 ),
-            )
-        except BudgetExceededError:
-            raise
-        except Exception as e:  # noqa: BLE001 — silent 차단
-            # 같은 의미 필드를 축소 prompt나 교정 LLM으로 다시 만들지 않는다. 최초 생성
-            # 실패를 명시적으로 남기고 이 노드는 미분석으로 처리한다.
-            log_error(_STEP, "summary_failed", e, code_id=code_id)
-            return None
+            ),
+        )
+        summary_out = summary_attempt.value
+        summary_error = summary_attempt.error
 
-    # "의미 없음"을 LLM이 자의적으로 판정해 검색에서 누락시키지 않는다. 의미를 기계가
-    # 복사하거나 추론하지 않고, 두 필드의 비어 있지 않음만 확인한다.
-    summary_out.summary, summary_out.search_text = normalize_searchable_text(
-        summary_out.summary, summary_out.search_text
-    )
-    # summary 최종값을 여기서 즉시 공개 — caller 의 callee_summaries 는 이 값 하나만 읽는다.
-    # #2/#3(rules·insights) 완료를 기다리게 하면 CALLS 의존 caller 가 그만큼 늦게 풀린다
-    # (실측: rules p95 85초). 값은 아래 fan-in 시점과 동일하므로 산출물 불변이다.
-    ctx.summary = summary_out.summary
-    # ★ #1 에서만 나오는 다섯 필드를 여기서 노드에 확정한다 (spec 096). 종전엔 같은 값을
-    #   아래 fan-in 지점에서 넣었다 — #2·#3 은 이 필드들을 건드리지 않으므로 값은 같고
-    #   시점만 앞당겨진다. 이 시점이 곧 후처리(모듈요약·컴포넌트명·용어사전)의 의존
-    #   해제 시점이다. 노드 완료를 기다리게 하면 그 차이만큼 GPU 슬롯이 빈다.
-    _apply_summary_fields(
-        fn,
-        summary_out,
-        common["raw_code_body"],
-        common["numbered_raw_code_body"],
-        strategy,
-    )
-    if on_summary_ready is not None:
-        on_summary_ready(code_id)
+    if summary_out is not None:
+        # "의미 없음"을 LLM이 자의적으로 판정해 검색에서 누락시키지 않는다. 의미를 기계가
+        # 복사하거나 추론하지 않고, 두 필드의 비어 있지 않음만 확인한다.
+        summary_out.summary, summary_out.search_text = normalize_searchable_text(
+            summary_out.summary, summary_out.search_text
+        )
+        # summary 최종값을 여기서 즉시 공개 — caller 의 callee_summaries 는 이 값 하나만 읽는다.
+        ctx.summary = summary_out.summary
+        _apply_summary_fields(
+            fn,
+            summary_out,
+            common["raw_code_body"],
+            common["numbered_raw_code_body"],
+            strategy,
+        )
+        if on_summary_ready is not None:
+            on_summary_ready(code_id)
 
     # Phase 2: rules + insights 동시 — 자기 코드노드 cache 적중 (#1 이 방금 올림).
     # 부분 성공 허용 — rules/insights 한 조각 실패가 코드노드 폐기로 이어지지 않게.
     # BudgetExceededError 만 즉시 전파 (회로 차단기 — 절대원칙 #3).
     # 두 split 은 코드노드 결과 합성 단위라 gather 가 자연 (라운드 단위 X — 그건 round 루프 영역).
     tasks = {
-        "rules": _track_split(
-            "split_rules",
-            run_yaml_rule(
-                prompts_dir=prompts_dir, rule_name="code_rules_examples",
-                user_values=rules_values, response_model=RulesExamplesOutput, budget=cost_budget,
+        "rules": run_concern_with_retry(
+            component=_STEP,
+            concern="rules",
+            target_id=code_id,
+            call=lambda: _track_split(
+                "split_rules",
+                run_yaml_rule(
+                    prompts_dir=prompts_dir, rule_name="code_rules_examples",
+                    user_values=rules_values, response_model=RulesExamplesOutput, budget=cost_budget,
+                ),
             ),
         ),
     }
     if ctx.reads or ctx.writes:
-        tasks["insights"] = _track_split(
-            "split_insights",
-            run_yaml_rule(
-                prompts_dir=prompts_dir, rule_name="code_table_insights",
-                user_values=common, response_model=TableInsightsOutput, budget=cost_budget,
+        tasks["insights"] = run_concern_with_retry(
+            component=_STEP,
+            concern="insights",
+            target_id=code_id,
+            call=lambda: _track_split(
+                "split_insights",
+                run_yaml_rule(
+                    prompts_dir=prompts_dir, rule_name="code_table_insights",
+                    user_values=common, response_model=TableInsightsOutput, budget=cost_budget,
+                ),
             ),
         )
 
@@ -247,8 +266,8 @@ async def analyze_code_three_split(
         if isinstance(result, BudgetExceededError):
             raise result
 
-    rules_out = _take(done, "rules", code_id)
-    insights_out = _take(done, "insights", code_id)  # 키 없으면 None
+    rules_out = _take_attempt(done, "rules", code_id)
+    insights_out = _take_attempt(done, "insights", code_id)  # 키 없으면 None
 
     # 품질 검사는 관측만 한다. 결과를 별도 LLM으로 재분석·병합하거나 결정론적으로
     # 고쳐 쓰지 않는다. 최초 rules 생성 결과가 단일 진실이다.
@@ -267,10 +286,15 @@ async def analyze_code_three_split(
             reasons=quality.reasons,
         )
 
-    # partial = 최초 분할 호출이 결과를 못 낸 경우. 다른 LLM으로 복구하지 않는다.
+    # partial = 동일 관심사 1회 재시도 뒤에도 결과를 못 낸 경우.
     partial_parts = tuple(
-        k for k in ("rules", "insights")
-        if k in tasks and isinstance(done[k], BaseException)
+        part
+        for part, failed in (
+            ("summary", summary_error is not None),
+            ("rules", _attempt_failed(done.get("rules"))),
+            ("insights", "insights" in tasks and _attempt_failed(done.get("insights"))),
+        )
+        if failed
     )
 
     # spec 027: LLM 귀속 테이블을 결정론 reads/writes 로 제한 (callee 함수명 오귀속 차단).
@@ -293,6 +317,8 @@ async def analyze_code_three_split(
     fn.extra["questions"] = [q.model_dump() for q in rules_out.questions] if rules_out else []
     if partial_parts:
         fn.extra["partial"] = partial_parts
+    else:
+        fn.extra.pop("partial", None)
     if quality_flag:
         fn.extra["rules_quality_flag"] = quality_flag
     if grounding_findings:
@@ -369,8 +395,14 @@ def _apply_summary_fields(
     )
 
 
-def _take(done: dict, key: str, code_id: str):
-    """gather(return_exceptions=True) 결과 1조각 → 성공이면 인스턴스, 실패면 None.
+def _attempt_failed(result) -> bool:
+    return isinstance(result, BaseException) or (
+        isinstance(result, ConcernAttempt) and not result.succeeded
+    )
+
+
+def _take_attempt(done: dict, key: str, code_id: str):
+    """gather 결과 1조각 → 성공이면 인스턴스, 소진 실패면 None.
 
     실패 시 log_warning + None (이 조각만 빈 결과로 진행, partial 마크). 키 자체가
     없으면(테이블 없어 #2 skip 등) silent None — 정상 흐름.
@@ -386,7 +418,9 @@ def _take(done: dict, key: str, code_id: str):
             error=f"{type(result).__name__}: {result}",
         )
         return None
-    return result
+    if not result.succeeded:
+        return None
+    return result.value
 
 
 def _build_user_values(

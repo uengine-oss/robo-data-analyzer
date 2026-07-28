@@ -28,6 +28,8 @@ Thumbs.db
 
 # Generated output — 매 run 마다 latest/ rmtree
 logs/
+run-output/
+tests/log/
 
 # 임시 파일
 *.tmp

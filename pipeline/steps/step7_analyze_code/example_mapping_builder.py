@@ -80,13 +80,22 @@ def _collect_rules(
         rh = rule_hash(statement)
         occurrence_id = f"{fid}::R{ordinal:04d}"
         rule_by_hash.setdefault(rh, Rule(id=rh, statement=statement))
+        anchor_line = r.get("anchor_line")
+        if (
+            isinstance(anchor_line, bool)
+            or not isinstance(anchor_line, int)
+            or anchor_line <= 0
+        ):
+            raise ValueError(
+                f"Rule occurrence requires a positive absolute anchor_line: {fid} R{ordinal}"
+            )
         result.has_rule.append(
             HasRule(
                 source_id=fid,
                 target_id=rh,
                 occurrence_id=occurrence_id,
                 ordinal=ordinal,
-                anchor_line=max(0, int(r.get("anchor_line") or 0)),
+                anchor_line=anchor_line,
             )
         )
         _collect_examples(fid, occurrence_id, rh, r.get("examples") or [], result)
@@ -110,7 +119,14 @@ def _collect_examples(
             continue
         eid = f"{occurrence_id}::{rh}::{idx}"
         result.examples.append(Example(id=eid, given=given, when=when, then=then))
-        result.has_example.append(HasExample(source_id=rh, target_id=eid))
+        result.has_example.append(
+            HasExample(
+                source_id=rh,
+                target_id=eid,
+                occurrence_id=occurrence_id,
+                ordinal=idx,
+            )
+        )
         _collect_affects_table(eid, e.get("affected_tables") or [], result)
 
 

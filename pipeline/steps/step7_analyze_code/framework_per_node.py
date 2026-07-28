@@ -202,9 +202,10 @@ async def run_framework_per_node_analysis(
                             _analyze_one(
                                 fn_id, contexts, code_by_id, strategy, cost_budget,
                                 semaphore, codebase_notes, module_intents, table_descriptions,
-                                source_cache,
-                                precomputed_summary=(first_summary if fn_id == warm_id else None),
-                                on_summary_ready=_mark_summary_ready,
+                            source_cache,
+                            precomputed_summary=(first_summary if fn_id == warm_id else None),
+                            precomputed_summary_supplied=(fn_id == warm_id),
+                            on_summary_ready=_mark_summary_ready,
                             ),
                         )
                     )
@@ -401,6 +402,7 @@ async def _analyze_one(
     table_descriptions: dict[str, dict],
     source_cache: SourceFileCache,
     precomputed_summary: Optional[SummaryOutput] = None,
+    precomputed_summary_supplied: bool = False,
     on_summary_ready=None,
 ):
     """코드노드 1개 분석 — track_processing 이 start/done/failed 자동 emit (stream 인자 chain X)."""
@@ -414,6 +416,7 @@ async def _analyze_one(
                 table_descriptions=table_descriptions,
                 source_cache=source_cache,
                 precomputed_summary=precomputed_summary,
+                precomputed_summary_supplied=precomputed_summary_supplied,
                 on_summary_ready=on_summary_ready,
             )
 

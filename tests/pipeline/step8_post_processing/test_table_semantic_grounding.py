@@ -17,11 +17,14 @@ from pipeline.models.code_analysis_output import (
 )
 from llm.runners.prompt_rules import _load_rule
 from pipeline.steps.step8_post_processing.enrich_table_description_step import (
+    _direct_operations_by_table,
+    _source_table_evidence,
     _source_columns_by_table,
+    _table_target_ids,
     _table_description_response_model,
 )
-from graph.schema.graph_edges import HasColumn
-from graph.schema.graph_nodes import Column
+from graph.schema.graph_edges import HasColumn, ReadsWrites
+from graph.schema.graph_nodes import Column, Table
 
 
 class TableSemanticGroundingTest(unittest.TestCase):
@@ -87,6 +90,55 @@ class TableSemanticGroundingTest(unittest.TestCase):
         )
         self.assertEqual(["order_id", "status_cd"], [column.name for column in got["db:orders"]])
 
+    def test_parsed_ddl_table_is_target_even_without_function_insight(self):
+        table = Table(
+            db="warehouse",
+            schema="public",
+            name="inventory",
+            description="현재 재고를 보관한다.",
+            comment="재고 원장",
+        )
+        self.assertEqual([table.id], _table_target_ids([table]))
+        self.assertEqual(
+            {
+                "source_logical_name": "",
+                "source_description": "현재 재고를 보관한다.",
+                "source_comment": "재고 원장",
+                "table_type": "TABLE",
+            },
+            _source_table_evidence(table),
+        )
+
+    def test_table_target_contract_is_domain_neutral(self):
+        tables = [
+            Table(db="shop", schema="public", name="orders"),
+            Table(db="library", schema="public", name="loans"),
+            Table(db="factory", schema="public", name="devices"),
+            Table(db="school", schema="public", name="courses"),
+        ]
+        self.assertEqual([table.id for table in tables], _table_target_ids(tables))
+
+    def test_direct_rw_evidence_is_deduplicated_and_keeps_absolute_line(self):
+        edge = ReadsWrites(
+            source_id="function:reserve",
+            target_id="db:warehouse.public.inventory",
+            relation="WRITES",
+            dml_type="UPDATE",
+            evidence_file="inventory_service.java",
+            evidence_line=42,
+        )
+        got = _direct_operations_by_table({"reads_writes_edges": [edge, edge]})
+        self.assertEqual(
+            [{
+                "source_id": "function:reserve",
+                "relation": "WRITES",
+                "dml_type": "UPDATE",
+                "evidence_file": "inventory_service.java",
+                "evidence_line": 42,
+            }],
+            got[edge.target_id],
+        )
+
     def test_table_description_returns_consolidated_columns(self):
         result = TableDescription(
             db="db",
@@ -130,6 +182,15 @@ class TableSemanticGroundingTest(unittest.TestCase):
                 self.assertIn("정확히 한 번", text)
                 self.assertIn("누락", text)
 
+    def test_column_contract_preserves_source_semantic_head_over_name_guess(self):
+        contract = (
+            _ROOT / "llm/prompts/common/table_description_contract.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("의미 중심어", contract)
+        self.assertIn("약어를 관례로 확장하지 않음", contract)
+        self.assertIn("사람 일련번호", contract)
+        self.assertIn("기관 지점 일련번호", contract)
+
     def test_step8_does_not_use_function_summary_or_first_column_candidate(self):
         source = (
             _ROOT
@@ -139,6 +200,11 @@ class TableSemanticGroundingTest(unittest.TestCase):
         self.assertNotIn("column_descriptions[table].setdefault", source)
         self.assertIn('insight.get("usage_summary")', source)
         self.assertIn("build_consolidated_column_updates", source)
+        self.assertIn("table_fqns = _table_target_ids(source_tables)", source)
+        self.assertIn("run_concern_with_retry(", source)
+        self.assertIn('concern="table_description"', source)
+        self.assertNotIn('reason="no table_insights aggregated"', source)
+        self.assertNotIn("ordered_names = list(column_candidates", source)
 
 
 if __name__ == "__main__":

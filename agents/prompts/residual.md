@@ -10,8 +10,9 @@
 
 ## 절대 규칙 — 이것을 어기면 안 됩니다
 
-1. **탐색·skill 매칭을 다시 하지 마라.** 프로젝트 성격·프레임워크·matched_skill 은
-   이미 정해져 user 메시지에 주어진다. 그것을 다시 판단하지 않는다.
+1. **탐색·skill 매칭을 다시 하지 마라.** 프로젝트 성격·프레임워크·matched_skill·DDL
+   테이블 목록·각 잔여의 줄번호 원문은 이미 user 메시지에 주어진다. 다른 파일이나 DDL을
+   찾지 않고 제공된 증거만 비교한다.
 2. **케이스를 하나씩 풀지 마라.** 당신은 케이스 하나하나의 답을 내는 게 아니라,
    여러 케이스를 한꺼번에 잡는 **공통 규칙(정규식)** 을 찾는다. 케이스 처리는 코드가 한다.
 3. **정규식은 검증 없이 출력 금지.** `verify_table_regex` 를 통과한 것만 담는다.
@@ -29,7 +30,7 @@
 - `ddl_tables` — 이 프로젝트의 DB 테이블 목록 (`verify_table_regex` 해소 기준)
 - `residual_cases` — 잔여 미해결 케이스 샘플. 각 케이스: `file` · `line` ·
   `call_text`(매칭된 호출 원문) · `source_id` · `attempted_patterns`(어떤 정규식이
-  어떻게 매칭됐고 왜 테이블을 못 찾았는지)
+  어떻게 매칭됐고 왜 테이블을 못 찾았는지) · `numbered_source_context`(절대 줄번호 원문)
 
 ---
 
@@ -42,8 +43,7 @@
 - 같은 wrapper / 매크로 이름인가?
 - `attempted_patterns` 의 `groups` 를 보라 — entity 가 너무 넓게(꼬리표까지) 잡혔나?
   op_token 이 엉뚱하게 잡혔나? DDL 이름과 규칙이 어긋났나?
-- 필요하면 `grep` · `read_file_range` 로 `file:line` 주변 원문을 직접 본다.
-  (단 — 프로젝트 전체를 새로 훑지 말 것. 잔여 케이스 주변만.)
+- 각 케이스의 `numbered_source_context`에서 호출 주변 원문을 확인한다.
 
 ### 2단계 — 공통 패턴을 정규식으로
 
@@ -58,8 +58,8 @@
 ### 3단계 — 검증
 
 `verify_table_regex(call_regex)` 로 **반드시** 확인한다. 결과 샘플에서 entity 가 DDL
-테이블명과 맞는지, op_token 이 의도한 동사·코드인지 본다. 안 맞으면 고쳐 다시 검증 —
-될 때까지.
+테이블명과 맞는지, op_token 이 의도한 동사·코드인지 본다. 안 맞으면 한 번 고쳐 다시
+검증한다. 그래도 공통 패턴이 입증되지 않으면 빈 패턴과 `no_pattern_reason`을 즉시 제출한다.
 
 ---
 
@@ -67,9 +67,6 @@
 
 | 도구 | 용도 |
 |---|---|
-| `grep(pattern, base, path_glob)` | 잔여 케이스 주변 원문 확인 |
-| `read_file_range(path, anchor)` | 케이스의 `file:line` 본문 정독 |
-| `read_file(path, max_lines)` | 짧은 파일 앞부분 확인 |
 | `verify_table_regex(call_regex)` | 정규식을 실제 소스에 검증 — 출력 전 필수 |
 
 ---

@@ -65,6 +65,9 @@ class LinkOutcome:
     """``RegexTableLinker.link`` 결과 — 엣지 + 미해결 + 검증용 매치 통계."""
     edges: list[ReadsWrites] = field(default_factory=list)
     unresolved: list[dict] = field(default_factory=list)
+    # 같은 소스 지점을 다른 패턴이 해소했는지 판별하는 내부 증거다.
+    # pattern ID는 의도적으로 제외한다.
+    resolved_sites: set[tuple[str, int, str]] = field(default_factory=set)
     matched_sites: int = 0              # entity 를 추출한 총 매치 수
     partial_entities: int = 0            # entity 앞뒤에 식별자 문자가 남은 부분 추출 수
     token_recognized: int = 0           # 그중 op_token 이 op_mappings 에 인식된 수
@@ -437,6 +440,7 @@ class RegexTableLinker:
                                 "case_id": f"{pat.id}:{src_file}:{line}",
                                 "file": str(src_file),
                                 "line": line,
+                                "evidence_offset": entity_offset,
                                 "call_text": m.group(0),
                                 "source_id": caller_id or "",
                                 "attempted_patterns": [{
@@ -465,6 +469,9 @@ class RegexTableLinker:
                             evidence_file=str(src_file),
                             evidence_line=line,
                         ))
+                        outcome.resolved_sites.add(
+                            (str(src_file), entity_offset, caller_id)
+                        )
 
             if is_c_family:
                 semantic_edges = _c_sql_semantic_edges(

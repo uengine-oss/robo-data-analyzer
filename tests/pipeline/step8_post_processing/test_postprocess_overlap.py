@@ -168,6 +168,46 @@ class PostprocessOverlapTest(unittest.IsolatedAsyncioTestCase):
                 timeout=5,
             )
 
+    async def test_module_summary_uses_available_members_when_one_summary_failed(self) -> None:
+        handoff = AnalysisHandoff(PrioritySemaphore(8))
+        available = _Node("code:ok", summary="검증된 멤버 요약")
+        missing = _Node("code:missing", summary=None)
+        handoff.expect([available.id, missing.id])
+        handoff.publish_summary(available)
+        handoff.publish_summary(missing)
+        handoff.resolve(available.id)
+        handoff.resolve(missing.id)
+        handoff.close()
+        seen: list[str] = []
+
+        async def fake_rule(**kwargs) -> object:
+            seen.append(kwargs["user_values"]["member_code_nodes"])
+            return mock.Mock(summary="가용 멤버 기반 요약", stereotype="Service", logical_name="모듈")
+
+        target = "pipeline.steps.step8_post_processing.summarize_module_step"
+        with mock.patch(f"{target}.run_yaml_rule", side_effect=fake_rule), \
+             mock.patch(f"{target}.upsert_modules", mock.AsyncMock()), \
+             mock.patch(f"{target}.emit_nodes", mock.AsyncMock()):
+            await summarize_module_step(
+                {
+                    "run": None,
+                    "modules": [_Module()],
+                    "code_nodes": [available, missing],
+                },
+                config={
+                    "configurable": {
+                        "strategy": _Strategy(steps=()),
+                        "analysis_handoff": handoff,
+                        "cost_budget": None,
+                        "neo_client": None,
+                    }
+                },
+            )
+
+        self.assertEqual(1, len(seen))
+        self.assertIn("검증된 멤버 요약", seen[0])
+        self.assertNotIn("code:missing", seen[0])
+
 
 if __name__ == "__main__":
     unittest.main()

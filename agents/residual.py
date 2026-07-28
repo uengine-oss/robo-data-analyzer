@@ -21,7 +21,6 @@ from typing import Callable, Optional
 
 from agents import AGENTS_PACKAGE_DIR
 from agents.contracts import DdlTransform, ResidualPatternResult, ScanResult
-from agents.tools.filesystem import make_filesystem_tools
 from agents.tools.validation import make_verify_table_regex_tool
 from pipeline.steps.step5_linking.link_tables.regex_table_linker import (
     RegexTableLinker,
@@ -35,6 +34,8 @@ from agents.runtime import (
     StructuredResponseMissingError,
     run_structured_agent,
 )
+from agents.middleware.call_limit import ModelCallLimitExceeded
+from shared.files.cache import SourceFileCache
 from shared.events.runtime_logger import log_info, log_warning
 
 # 로그 component — link_residual_patterns_step 과 동일 키. 루프는 그 step 의
@@ -112,14 +113,16 @@ async def run_residual_loop(
                 run_dir=run_dir, cost_budget=cost_budget, round_no=round_no,
                 stream_emit=stream_emit,
             )
-        except StructuredResponseMissingError:
-            # residual은 결정론 링킹 뒤의 선택적 보강이다. 최종 submit이
-            # 누락되면 검증 가능한 새 패턴은 0건이므로 기존 잔여를 보존한다.
+        except (StructuredResponseMissingError, ModelCallLimitExceeded) as error:
+            # residual은 결정론 링킹 뒤의 선택적 보강이다. 최종 submit 누락이나 호출
+            # 한도 소진은 검증 가능한 새 패턴 0건이라는 뜻이다. 폭주 Agent는 중단하되
+            # 이미 확정된 구조·R/W와 후속 의미 분석까지 fatal로 버리지 않는다.
             log_warning(
                 _STEP, "submit_missing",
-                "잔여 Agent가 최종 결과 도구를 호출하지 않아 새 패턴 없이 종료 — 기존 잔여 유지",
+                "잔여 Agent가 검증된 최종 결과를 내지 못해 새 패턴 없이 종료 — 기존 잔여 유지",
                 stream_emit=stream_emit,
                 round=round_no,
+                error=f"{type(error).__name__}: {error}",
             )
             break
         if not found.table_access_patterns:
@@ -150,23 +153,24 @@ async def run_residual_loop(
         )
         # 순-신규 엣지 = 재적용 결과 - 기준선 (결정론 단계가 이미 만든 엣지 제외).
         edges = [e for e in applied.edges if e not in baseline_edges]
-        next_fixable = [u for u in applied.unresolved if u.get("source_id")]
-
-        # 진전 = 케이스 ID 집합 변화로 측정 (카운트 비교는 해소·신규 동률 시 오판).
-        prev_ids = {c["case_id"] for c in fixable}
-        next_ids = {u["case_id"] for u in next_fixable}
-        resolved = prev_ids - next_ids
-        new_cases = next_ids - prev_ids
+        next_fixable = _remaining_original_cases(
+            fixable,
+            baseline_resolved_sites=getattr(baseline, "resolved_sites", set()),
+            applied_resolved_sites=getattr(applied, "resolved_sites", set()),
+            new_edges=edges,
+        )
+        resolved_count = len(fixable) - len(next_fixable)
         log_info(
             _STEP, "round_done", round=round_no,
             new_edges=len(edges), residual=len(next_fixable),
-            resolved=len(resolved), new=len(new_cases),
+            resolved=resolved_count, new=0,
         )
 
-        if not resolved and not new_cases:
-            # 케이스 집합 변화 0 — 진짜 진전 없음, 종료.
+        if resolved_count == 0:
+            # 재적용 중 생긴 다른 패턴의 미해결 후보는 원래 잔여 모집단이
+            # 아니다. 실제 원래 물리 지점이 해소되지 않았다면 종료한다.
             fixable = next_fixable
-            log_info(_STEP, "round_stop", round=round_no, reason="진전 없음 (케이스 변화 0)")
+            log_info(_STEP, "round_stop", round=round_no, reason="진전 없음 (원래 지점 해소 0)")
             break
         fixable = next_fixable
 
@@ -175,6 +179,50 @@ async def run_residual_loop(
         edges=edges, residual=truly_unresolved,
         rounds_used=round_no, patterns_found=len(extra_patterns),
     )
+
+
+def _remaining_original_cases(
+    original_cases: list[dict],
+    *,
+    baseline_resolved_sites: set[tuple[str, int, str]],
+    applied_resolved_sites: set[tuple[str, int, str]],
+    new_edges: list[ReadsWrites],
+) -> list[dict]:
+    """원래 잔여 모집단을 유지하고 증거가 생긴 물리 지점만 제거한다.
+
+    전체 패턴 재적용은 다른 pattern ID의 미해결 행을 새로 만들 수 있다.
+    그 행으로 원래 큐를 교체하면 잔여 수가 부풀기 때문에 절대 합치지
+    않는다. 새 실행은 절대 문자 offset으로 동일 지점을 판별하고, 구형
+    입력에는 file/line/source 좌표를 호환 경로로 사용한다.
+    """
+    newly_resolved_sites = applied_resolved_sites - baseline_resolved_sites
+    newly_resolved_lines = {
+        (edge.evidence_file, edge.evidence_line, edge.source_id)
+        for edge in new_edges
+        if edge.evidence_file is not None and edge.evidence_line is not None
+    }
+
+    remaining: list[dict] = []
+    for case in original_cases:
+        offset = case.get("evidence_offset")
+        exact_site = (
+            str(case.get("file") or ""),
+            offset,
+            str(case.get("source_id") or ""),
+        )
+        line_site = (
+            str(case.get("file") or ""),
+            case.get("line"),
+            str(case.get("source_id") or ""),
+        )
+        resolved = (
+            offset is not None and exact_site in newly_resolved_sites
+        ) or (
+            offset is None and line_site in newly_resolved_lines
+        )
+        if not resolved:
+            remaining.append(case)
+    return remaining
 
 
 async def _find_pattern(
@@ -196,17 +244,22 @@ async def _find_pattern(
     프롬프트로 재탐색·skill 매칭을 막는다. 도구는 코드 열람 + 정규식 검증만
     (skill 도구·graph 도구 없음 — 잔여 모드엔 불필요).
     """
-    tools = [
-        *make_filesystem_tools(project_root).values(),
-        make_verify_table_regex_tool(project_root, code_nodes, tables),
-    ]
+    # 각 케이스의 원문은 아래 user message에 절대 줄번호로 주입한다. 프로젝트 탐색
+    # 도구를 주면 이미 제공된 DDL을 source root에서 다시 찾다가 호출 한도를 소진할 수
+    # 있다. Agent 도구는 제안 정규식 검증 하나만 허용한다.
+    tools = [make_verify_table_regex_tool(project_root, code_nodes, tables)]
     return await run_structured_agent(
         agent_name="residual",
         invoke_id=f"round{round_no}",
         system_prompt=_RESIDUAL_PROMPT_PATH.read_text(encoding="utf-8"),
         tools=tools,
         response_format=ResidualPatternResult,
-        user_message=_build_residual_message(sample, scan, ddl_transform, tables),
+        user_message=_build_residual_message(
+            _samples_with_numbered_context(sample, project_root),
+            scan,
+            ddl_transform,
+            tables,
+        ),
         max_calls=SETTINGS.analysis_agents.residual_max_calls,
         run_dir=run_dir,
         cost_budget=cost_budget,
@@ -250,3 +303,33 @@ def _build_residual_message(
         "",
         "위 잔여의 공통 접근 패턴을 찾아 ResidualPatternResult 로 출력하라.",
     ])
+
+
+def _samples_with_numbered_context(
+    sample: list[dict],
+    project_root: Path,
+    *,
+    radius: int = 5,
+) -> list[dict]:
+    """잔여 케이스에 접근 가능한 SOURCE 주변 절대 줄번호를 붙인다."""
+    root = project_root.resolve()
+    cache = SourceFileCache()
+    enriched: list[dict] = []
+    for case in sample:
+        item = dict(case)
+        raw_path = Path(str(case.get("file") or ""))
+        path = (raw_path if raw_path.is_absolute() else root / raw_path).resolve()
+        try:
+            path.relative_to(root)
+        except ValueError:
+            item["source_context_status"] = "outside-project-root"
+            item["numbered_source_context"] = ""
+            enriched.append(item)
+            continue
+        line = max(int(case.get("line") or 1), 1)
+        excerpt = cache.excerpt(str(path), max(1, line - radius), line + radius)
+        item["source_context_status"] = excerpt.status
+        item["source_coordinate_system"] = excerpt.coordinate_system
+        item["numbered_source_context"] = excerpt.numbered_text
+        enriched.append(item)
+    return enriched

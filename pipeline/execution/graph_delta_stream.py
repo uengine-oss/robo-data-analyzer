@@ -38,6 +38,7 @@ _FIXED_NODE_LABEL: dict[type, str] = {
 # 프론트 표시에 쓰는 속성만 emit (caption·트리 라벨). 빈값은 nonempty가 제거.
 _DISPLAY_PROP_KEYS = (
     "name", "logical_name", "signature", "summary", "stereotype",
+    "analysis_partial",
     "file_path", "start_line", "end_line", "owner_id", "dtype",
     "statement", "given", "when", "then", "text", "reason",
     "keys", "semantic_kind", "provenance", "status", "category",
@@ -84,7 +85,10 @@ def _node_labels(node) -> list[str]:
 
 
 def _node_props(node) -> dict:
-    return nonempty({k: getattr(node, k, "") for k in _DISPLAY_PROP_KEYS})
+    props = {k: getattr(node, k, "") for k in _DISPLAY_PROP_KEYS}
+    if partial := (getattr(node, "extra", None) or {}).get("partial"):
+        props["analysis_partial"] = list(partial)
+    return nonempty(props)
 
 
 def _edge_wire(edge) -> Optional[tuple[str, str, str, dict]]:
@@ -122,6 +126,15 @@ def _edge_wire(edge) -> Optional[tuple[str, str, str, dict]]:
                 "occurrence_id": edge.occurrence_id,
                 "ordinal": edge.ordinal,
                 "anchor_line": edge.anchor_line,
+            }
+            if edge.occurrence_id
+            else {}
+        )
+    elif type(edge) is ge.HasExample:
+        props = (
+            {
+                "occurrence_id": edge.occurrence_id,
+                "ordinal": edge.ordinal,
             }
             if edge.occurrence_id
             else {}

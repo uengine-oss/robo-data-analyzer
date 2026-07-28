@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pydantic import ValidationError
 
 from graph.schema.graph_edges import (
-    Calls, HasChunk, HasRule, ReadsWrites, ReferTo, StatementNext,
+    Calls, HasChunk, HasExample, HasRule, ReadsWrites, ReferTo, StatementNext,
 )
 from graph.schema.graph_nodes import (
     Example, ExternalChunk, ProjectFile, Question, Rule,
@@ -149,6 +149,27 @@ class GraphDeltaContractTests(unittest.IsolatedAsyncioTestCase):
                 "occurrence_id": "function:1::R0002",
                 "ordinal": 2,
                 "anchor_line": 19,
+            },
+        )
+
+    async def test_has_example_occurrence_identity_is_streamed(self) -> None:
+        stream = _CaptureStream()
+        await emit_edges(
+            stream,
+            [
+                HasExample(
+                    source_id="rule:shared",
+                    target_id="function:1::R0002::example:1",
+                    occurrence_id="function:1::R0002",
+                    ordinal=1,
+                )
+            ],
+        )
+        self.assertEqual(
+            stream.events[-1]["props"],
+            {
+                "occurrence_id": "function:1::R0002",
+                "ordinal": 1,
             },
         )
 

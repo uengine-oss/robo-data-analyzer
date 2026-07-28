@@ -159,10 +159,14 @@ def _check_anchor(
         return []
     branch = inventory.at_line(line)
     if branch is None:
+        # 무조건 변환·위임·I/O·반환은 분기가 아니라 그 효과를 수행하는 활성 SOURCE 줄을
+        # 가리킨다. 의미를 추론하지 않고 실제 활성 좌표인지까지만 검증한다.
+        if line in inventory.active_lines:
+            return []
         return [
             GroundingFinding(
                 "anchor_values", f"R{rule_index}", (str(line),),
-                f"지목한 줄 {line} 에 분기가 없다",
+                f"지목한 줄 {line} 에 활성 소스 근거가 없다",
             )
         ]
 

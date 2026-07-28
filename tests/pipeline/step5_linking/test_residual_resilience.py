@@ -9,10 +9,14 @@ from agents.runtime import (
     StructuredResponseMissingError,
     run_structured_agent,
 )
+from agents.middleware.call_limit import ModelCallLimitExceeded
 from llm.usage.cost_budget import CostBudget
 from agents.residual import (
+    _remaining_original_cases,
+    _samples_with_numbered_context,
     run_residual_loop,
 )
+from graph.schema.graph_edges import ReadsWrites
 
 
 class _Result(BaseModel):
@@ -102,3 +106,78 @@ class ResidualResilienceTest(IsolatedAsyncioTestCase):
                     run_dir=Path("."),
                     cost_budget=CostBudget(limit_usd=1.0),
                 )
+
+    async def test_call_limit_keeps_residual_and_does_not_kill_pipeline(self) -> None:
+        case = _case()
+        baseline = SimpleNamespace(edges=[], unresolved=[])
+        with (
+            patch(
+                "agents.residual.RegexTableLinker.link",
+                new=AsyncMock(return_value=baseline),
+            ),
+            patch(
+                "agents.residual._find_pattern",
+                new=AsyncMock(side_effect=ModelCallLimitExceeded("residual", 15)),
+            ),
+        ):
+            outcome = await run_residual_loop(
+                unresolved_cases=[case],
+                scan_result={"confidence": 1.0, "evidence": "test"},
+                project_root=Path("."),
+                code_nodes=[],
+                tables=[],
+                run_dir=Path("."),
+                cost_budget=CostBudget(limit_usd=1.0),
+            )
+
+        self.assertEqual([case], outcome.residual)
+        self.assertEqual([], outcome.edges)
+
+    def test_residual_context_is_line_numbered_and_scoped(self) -> None:
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "sample.c"
+            source.write_text(
+                "\n".join(f"line {i}" for i in range(1, 12)),
+                encoding="utf-8",
+            )
+            case = {**_case(), "line": 6}
+            got = _samples_with_numbered_context([case], root, radius=2)[0]
+
+        self.assertEqual("absolute-file-line", got["source_coordinate_system"])
+        self.assertIn("4 | line 4", got["numbered_source_context"])
+        self.assertIn("6 | line 6", got["numbered_source_context"])
+        self.assertIn("8 | line 8", got["numbered_source_context"])
+
+    def test_reapplied_patterns_cannot_inflate_original_residual_population(self) -> None:
+        case = {**_case(), "evidence_offset": 12}
+
+        remaining = _remaining_original_cases(
+            [case],
+            baseline_resolved_sites=set(),
+            applied_resolved_sites=set(),
+            new_edges=[],
+        )
+
+        self.assertEqual([case], remaining)
+
+    def test_only_same_physical_site_with_new_edge_resolves_original_case(self) -> None:
+        case = {**_case(), "evidence_offset": 12}
+        edge = ReadsWrites(
+            source_id=case["source_id"],
+            target_id="table:T",
+            relation="READS",
+            evidence_file=case["file"],
+            evidence_line=case["line"],
+        )
+
+        remaining = _remaining_original_cases(
+            [case],
+            baseline_resolved_sites=set(),
+            applied_resolved_sites={(case["file"], 12, case["source_id"])},
+            new_edges=[edge],
+        )
+
+        self.assertEqual([], remaining)

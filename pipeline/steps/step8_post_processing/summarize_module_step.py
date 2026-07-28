@@ -108,15 +108,22 @@ async def _summarize(
         members = fn_by_module.get(module.id, [])
         if not members:
             return module
-        missing = [fn.id for fn in members if not (fn.summary or "").strip()]
+        analyzed_members = [
+            fn for fn in members if (fn.summary or "").strip()
+        ]
+        missing = [
+            fn.id for fn in members if not (fn.summary or "").strip()
+        ]
         if missing:
             log_warning(
                 _STEP,
                 "module_summary_missing_member_summary",
-                "멤버 summary 누락 — 다른 의미 필드로 대체하지 않고 모듈 요약을 생략",
+                "멤버 summary 누락 — 다른 의미 필드로 대체하지 않고 분석된 멤버만 종합",
                 module_id=module.id,
                 missing_ids=missing,
+                analyzed_members=len(analyzed_members),
             )
+        if not analyzed_members:
             return module
         member_text = json.dumps(
             [
@@ -127,7 +134,7 @@ async def _summarize(
                     "evidence_scope": "analyzed-member-summary",
                     "summary": fn.summary.strip(),
                 }
-                for fn in members
+                for fn in analyzed_members
             ],
             ensure_ascii=False,
             separators=(",", ":"),

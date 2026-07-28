@@ -193,8 +193,11 @@ class RuleItem(BaseModel):
     # 좌표라서 "코드 식별자 금지" 원칙과도 충돌하지 않는다. 이 값이 있어야 결정론 게이트가
     # "그 규칙이 말하는 분기"를 추정이 아니라 확정으로 잡는다(실측 8% → 92%).
     anchor_line: int = Field(
-        0, ge=0,
-        description="이 규칙을 결정하는 분기의 줄번호 ([분기 목록]에서 고른다). 분기 없으면 0",
+        ..., strict=True, gt=0,
+        description=(
+            "규칙을 직접 입증하는 절대 파일 줄번호. 조건 규칙은 결과를 선택하는 분기 줄, "
+            "무조건 규칙은 관측 가능한 효과를 수행하는 첫 활성 줄"
+        ),
     )
     examples: list[ExampleItem] = Field(
         default_factory=list,
@@ -211,6 +214,37 @@ class QuestionItem(BaseModel):
     """
     text: str = Field(..., description="한 줄 질문")
     reason: str = Field("", description="코드 근거 부재 사유")
+
+
+def require_unique_rule_occurrences(rules: list[RuleItem]) -> None:
+    """같은 근거에서 같은 시나리오를 반복한 모델 출력을 명시적으로 거부한다.
+
+    statement가 같아도 anchor가 다르면 서로 다른 소스 발생이므로 유지한다. 이 검증은 의미를
+    합치거나 고치지 않으며, 동일 routine item 안의 완전 중복만 실패시킨다.
+    """
+    seen: set[tuple] = set()
+    for rule in rules:
+        identity = (
+            rule.statement.strip(),
+            rule.anchor_line,
+            tuple(
+                (
+                    example.given.strip(),
+                    example.when.strip(),
+                    example.then.strip(),
+                    tuple(
+                        (affected.table.strip(), affected.op)
+                        for affected in example.affected_tables
+                    ),
+                )
+                for example in rule.examples
+            ),
+        )
+        if identity in seen:
+            raise ValueError(
+                "exact duplicate Rule occurrence: statement, anchor_line, and examples match"
+            )
+        seen.add(identity)
 
 
 class RulesExamplesOutput(BaseModel):
@@ -230,6 +264,11 @@ class RulesExamplesOutput(BaseModel):
         max_length=15,
         description="사람 검토 큐로 갈 질문 (text + reason)",
     )
+
+    @model_validator(mode="after")
+    def _reject_exact_duplicate_rules(self) -> "RulesExamplesOutput":
+        require_unique_rule_occurrences(self.rules)
+        return self
 
 
 # ── DBMS 배치 3분할 (🅕 — 같은 유효부모 형제 N 노드를 관심사별 1콜) ──
