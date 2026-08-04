@@ -38,11 +38,23 @@ Each cross-cutting fact has exactly one home: all `ROBO_*` environment config li
 
 ### IV. No Silent Failure (silent fail 금지)
 
-Every step failure MUST `log_error` + `stream.emit(error)` + `raise`. Returning a quietly
-empty result is forbidden (the unresolved-queue-emptied incident). Absent inputs that
-invalidate a phase (e.g. missing antlr AST dir) MUST raise an explicit error, not skip.
+Every **operational or deterministic-contract failure** that makes the phase unable to
+produce a trustworthy result MUST `log_error` + `stream.emit(error)` + `raise`. Returning a
+quietly empty result is forbidden (the unresolved-queue-emptied incident). Absent inputs that
+invalidate a phase (e.g. missing antlr AST dir), exhausted transport, missing audit evidence,
+budget overflow, and deterministic invariant violations are fatal.
 
-**Rationale**: a silent empty result looks like success and corrupts the graph downstream.
+An LLM candidate that fails schema, syntax, grounding, or semantic validation is a
+**quality finding, not an operational step failure**. The producer MUST preserve the exact
+target coordinates, candidate/evidence reference, and reasons; quarantine the unverified
+candidate from trusted downstream derivation; emit the finding to logs and run results; and
+continue independent work. It MUST NOT fabricate an empty success, silently drop the finding,
+retry content, or turn one bad candidate into a whole-run failure. Run completion MUST expose
+that findings exist.
+
+**Rationale**: both extremes corrupt truth. A silent empty result looks like success, while
+aborting a full rebuild for one model-quality defect destroys the evidence needed to measure
+and improve that defect and can make reanalysis impossible.
 
 ### V. KV-Cache-Friendly Prompts (KV 캐시 친화)
 
@@ -62,14 +74,26 @@ schemas caused repetition/whitespace blowups (2026-05-30 incident).
 
 **Rationale**: the schema is a guardrail, not a straitjacket; over-specification backfires.
 
-### VII. Submit-Tool Wrap for Agent Output (submit 도구 패턴)
+### VII. Structured Output Channels (구조화 출력 채널)
 
-Structured agent output MUST be forced via a `submit_*` tool wrap (`structured_agent.py`),
-NOT by passing `response_format` directly — the latter hangs under qwen + SGLang xgrammar
-masking. Agents finalize by calling their submit tool exactly once.
+**Agent** structured output MUST be forced via a `submit_*` tool wrap (`structured_agent.py`);
+agents finalize by calling their submit tool exactly once. **Simple (non-agent) calls** use
+`llm.with_structured_output(..., include_raw=True)`. The provider/deployment config owns the
+default channel, and an output-contract YAML MAY override it only with recorded wire and
+failure evidence. The resolved channel is part of the response-cache key. Provider adapters
+MUST receive a deep copy of the canonical schema because strict tool conversion may mutate it.
+Both channels fail closed through the same internal Pydantic validation and raw/usage evidence.
 
-**Rationale**: provider-specific grammar masking deadlocks; the submit-tool pattern is the
-portable way to guarantee a typed result.
+**Rationale**: the 2026-08-03 probe sanctioned `response_format json_schema strict` after
+grammar masking worked and the historical hang did not reproduce. A fresh production prompt
+on 2026-08-04 re-detected a narrower xgrammar deadlock: a quote intended as string content was
+accepted as the JSON closing quote, after which the model wanted literal whitespace while the
+grammar wanted a comma, so only structural whitespace repeated. The identical prompt/schema
+completed through strict function calling, but a real 24-row RULE tool schema was rejected as
+`Invalid grammar request`; therefore neither channel is universally correct. Spec 116 TA-58~62
+records the bounded probes and permits a rule-level override only for a schema shape actually
+proven on the current deployment. Schema-validation failures and repetition aborts MUST retain
+their raw/partial input and MUST NOT trigger content retries.
 
 ### VIII. Explicit Ownership and Dependency Direction (명시적 소유권과 의존 방향)
 
@@ -107,4 +131,7 @@ This constitution supersedes ad-hoc convention. New features go through
 verifying compliance with the principles above. A principle is amended only by editing this
 file and bumping the version, with the rationale recorded.
 
-**Version**: 1.2.0 | **Ratified**: 2026-06-15 | **Last Amended**: 2026-07-16
+**Version**: 1.3.2 | **Ratified**: 2026-06-15 | **Last Amended**: 2026-08-04
+(IV amended — distinguish fatal operational/deterministic-contract failures from surfaced,
+quarantined LLM quality findings so a bad candidate cannot masquerade as success or abort an
+otherwise auditable rebuild; VII remains as amended in 1.3.1; see spec 116 TA-77~80)
