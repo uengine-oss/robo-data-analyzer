@@ -7,7 +7,6 @@
 """
 from __future__ import annotations
 
-import re
 import time
 from pathlib import Path
 from typing import Optional
@@ -16,19 +15,20 @@ from langchain_core.runnables import RunnableConfig
 
 from pipeline.execution.step_config import step_config
 
-from agents.contracts import CallWrapper, DdlTransform, TableAccessPattern
 from agents.scan import run_scan_agent
-from agents.skills.catalog import FRAMEWORK_SKILLS_DIR, load_skill_contract
+from agents.contracts import ScanResult
+from agents.runtime import AgentModelOutputError
+
 from pipeline.steps.step4_scan_project.scanner_input_collector import (
     collect_scanner_input,
 )
 from llm.usage.cost_budget import CostBudget
-from agents.middleware.call_limit import ModelCallLimitExceeded
+from pipeline.execution.quality_finding_log import record_analysis_findings
+from pipeline.models.analysis_finding import AnalysisFinding
 from shared.events.runtime_logger import log_error, log_info, log_warning
 from pipeline.execution.graph_delta_stream import emit_message
 
 _STEP = "step4.scan"
-
 
 async def scan_codebase_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
     """Scan Agent 1회 invoke → ``state["scan_result"] = dict``."""
@@ -39,8 +39,7 @@ async def scan_codebase_step(state: dict, config: Optional[RunnableConfig] = Non
     stream = cfg.get("stream")
 
     if project is None or run is None or cost_budget is None:
-        log_warning(_STEP, "config_missing", "project/run/cost_budget 누락 — step skip")
-        return {"scan_result": {}}
+        raise RuntimeError("scan_codebase requires project, run, and cost_budget")
 
     project_root = Path(project.root)
     started = time.monotonic()
@@ -65,124 +64,47 @@ async def scan_codebase_step(state: dict, config: Optional[RunnableConfig] = Non
             tables=state.get("tables", []),
             stream_emit=stream.emit if stream is not None else None,
         )
-    except ModelCallLimitExceeded as e:
-        # scan 은 프로젝트당 1회 invoke — 호출 한도 소진 = 프로젝트 식별 실패.
-        # 빈 결과로 조용히 넘기지 않는다 (그러면 R/W 링킹이 통째로 빈 채 "성공"처럼
-        # 보임). 무엇을 해야 하는지 명확히 남기고 중단한다 (절대원칙 #3 — 조용한 실패 금지).
+    except AgentModelOutputError as error:
+        reason = f"{type(error).__name__}: {error}"
+        record_analysis_findings([AnalysisFinding(
+            concern="project_scan",
+            status="unavailable",
+            target_id=str(project_root),
+            reasons=(reason,),
+            evidence_rule="scan_agent",
+        )])
         log_error(
-            _STEP, "scan_call_limit_exceeded", e,
-            note="scan agent 가 LLM 호출 한도 소진 — 프로젝트 식별 실패. "
-                 "ROBO_AGENT_SCAN_MAX_CALLS 상향 또는 스캐너 입력·프로젝트 점검 필요",
+            _STEP, "scan_model_output_unavailable", error,
+            note="검증되지 않은 scan 후보는 적용하지 않고 downstream을 명시적 미가용 상태로 계속함",
         )
-        raise
+        result = ScanResult(
+            analysis_status="unavailable",
+            confidence=0.0,
+            evidence="scan model output unavailable; see run evidence",
+            evidence_locations=[],
+            no_match_reason=reason,
+        )
 
     result_dict = result.model_dump()
-    _apply_skill_contract(result_dict)
-    _warn_if_call_wrappers_missing(result_dict)
-    _remove_project_functions_from_framework_drop(
-        result_dict, state.get("code_nodes", []),
-    )
+    unavailable = result_dict.get("analysis_status") == "unavailable"
     emit_message(
         stream,
-        f"✅ 코드베이스 스캔 완료 — 패턴 {len(result_dict.get('table_access_patterns') or [])}",
+        ("⚠️ 코드베이스 스캔 미가용 — 검증되지 않은 패턴 0건 적용"
+         if unavailable else
+         f"✅ 코드베이스 스캔 완료 — 패턴 {len(result_dict.get('table_access_patterns') or [])}"),
     )
-    log_info(
-        _STEP, "done",
-        matched_skill=result_dict.get("matched_skill"),
-        confidence=result_dict.get("confidence"),
-        patterns=len(result_dict.get("table_access_patterns") or []),
-        elapsed_sec=f"{time.monotonic() - started:.2f}",
-    )
-    return {"scan_result": result_dict}
-
-
-def _apply_skill_contract(result_dict: dict) -> None:
-    """matched SKILL 의 YAML fence 계약을 결정론 주입한다 (spec 079).
-
-    SKILL.md 가 단일 진실 — fence 에 절이 있으면 Agent(LLM) 산출을 그 파싱값으로
-    덮어쓴다. 받아쓰기 누락·왜곡 사고를 원천 차단. fence 가 없거나 스킬 미매칭이면
-    기존 동작(LLM 산출 유지). pydantic 재검증으로 ScanResult 와 같은 형태를 보증한다.
-    깨진 fence 는 SkillCatalogError 그대로 전파 — 스킬 문서 결함은 여기서 멈춘다.
-    """
-    matched = result_dict.get("matched_skill")
-    if not matched:
-        return
-    contract = load_skill_contract(matched)
-    if not contract:
-        return
-    if "table_access_patterns" in contract:
-        result_dict["table_access_patterns"] = [
-            TableAccessPattern(**p).model_dump() for p in contract["table_access_patterns"]
-        ]
-    if "ddl_transform" in contract:
-        result_dict["ddl_transform"] = DdlTransform(**contract["ddl_transform"]).model_dump()
-    if "call_wrappers" in contract:
-        result_dict["call_wrappers"] = [
-            CallWrapper(**w).model_dump() for w in contract["call_wrappers"]
-        ]
-    log_info(
-        _STEP, "skill_contract_applied",
-        skill=matched, keys=sorted(contract),
-    )
-
-
-def _warn_if_call_wrappers_missing(result_dict: dict) -> None:
-    """matched_skill 의 SKILL contract 에 ``call_wrappers``가 있는데 Agent 가
-    ``call_wrappers`` 를 빈 배열로 넘겼으면 표면화 — silent skip 차단.
-
-    실측 사례: ``mpfm_dlcall("<모듈명>", ...)`` 11 건이 호출 그래프에서 사라진
-    사고 — SKILL 에 절은 있는데 Agent 가 ScanResult.call_wrappers 에 안 옮김 →
-    wrapper_patterns 빈 dict → wrapper 호출이 framework drop 으로 빠짐.
-    """
-    matched = result_dict.get("matched_skill")
-    if not matched or result_dict.get("call_wrappers"):
-        return        # SKILL 매칭 없음, 또는 Agent 가 옮겼음 — 정상
-    skill_path = FRAMEWORK_SKILLS_DIR / matched / "SKILL.md"
-    if not skill_path.is_file():
-        return
-    skill_text = skill_path.read_text(encoding="utf-8")
-    if not re.search(r"(?m)^call_wrappers:\s*\n\s+-\s+wrapper:", skill_text):
-        return        # SKILL 에 절 자체 없음 = 빈 배열이 정답
-    log_warning(
-        _STEP, "call_wrappers_missing_from_scan",
-        f"SKILL '{matched}' contract에 call_wrappers가 있으나 ScanResult.call_wrappers "
-        "빈 배열 — Agent 가 옮기지 않음. wrapper 호출이 framework drop 으로 빠져 "
-        "호출 그래프에서 손실 (mpfm_dlcall 류 모듈 간 의존 누락).",
-        skill=matched,
-    )
-
-
-def _remove_project_functions_from_framework_drop(
-    result_dict: dict, code_nodes: list,
-) -> None:
-    """프로젝트 함수와 정확히 겹치는 framework drop 항목을 제거한다.
-
-    실측 사례(2026-06-26): 스캔 에이전트가 ``framework_runtime_functions`` 에 프레임워크
-    런타임 함수(PFM_*/mpfm_*) 대신 프로젝트 업무 함수(a000_*/b000_*)를 채움 → 자기 함수
-    호출이 framework drop 으로 빠져 internal 호출 그래프가 붕괴(internal 54 같은 비정상).
-    이 둘은 상호 배타다. 정확 이름 교집합만 제거하며 glob 의미는 추정하지 않는다.
-    """
-    drop = result_dict.get("framework_runtime_functions") or []
-    if not drop or not code_nodes:
-        return
-    project_names: set[str] = set()
-    for fn in code_nodes:
-        name = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", None)
-        if name and str(name).strip():
-            project_names.add(str(name).strip())
-    # 글로브 메타문자가 있는 항목(PRINT_* 류)은 오탐 방지 위해 제외 — 정확 이름만 대조.
-    overlap = sorted(
-        d for d in drop
-        if not any(c in d for c in "*?[") and d in project_names
-    )
-    if overlap:
-        result_dict["framework_runtime_functions"] = [
-            item for item in drop if item not in set(overlap)
-        ]
+    fields = {
+        "matched_skill": result_dict.get("matched_skill"),
+        "confidence": result_dict.get("confidence"),
+        "patterns": len(result_dict.get("table_access_patterns") or []),
+        "elapsed_sec": f"{time.monotonic() - started:.2f}",
+    }
+    if unavailable:
         log_warning(
-            _STEP, "framework_drop_project_functions_removed",
-            f"framework_runtime_functions 에 프로젝트 자기 함수 {len(overlap)}건 혼입 "
-            f"(예: {', '.join(overlap[:8])}) — 정확 교집합을 드롭 목록에서 제거해 "
-            "프로젝트 호출 그래프를 보존했다.",
-            overlap_count=len(overlap),
+            _STEP, "unavailable",
+            "scan 모델 후보 미가용 — 검증되지 않은 패턴은 적용하지 않음",
+            **fields,
         )
+    else:
+        log_info(_STEP, "done", **fields)
+    return {"scan_result": result_dict}

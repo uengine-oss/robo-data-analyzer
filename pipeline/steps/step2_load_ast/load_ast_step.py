@@ -126,7 +126,9 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         return {}
 
     started = time.monotonic()
-    ast_dir, source_root = ast_and_source_roots(Path(project.root))
+    ast_dir, source_root = ast_and_source_roots(
+        Path(project.root), getattr(project, "corpus_root", None),
+    )
 
     if not ast_dir.is_dir():
         err = FileNotFoundError(
@@ -196,6 +198,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
     references, init_by = await link_references(
         code_nodes, variables, constants, import_refs, source_cache,
         checkpoint=pause.gate,
+        modules=modules,        # 상속 조상 매칭 (spec 111 — Java extends / Python bases)
     )
 
     await pause.gate()

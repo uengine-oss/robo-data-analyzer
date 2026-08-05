@@ -1,7 +1,7 @@
 """step7 dataflow 스케줄 계약 — 의존 종류별 해제 시점과 투입 우선순위.
 
-CALLS 의존은 callee 의 summary 확정 신호로 조기 해제되고(rules 완료 대기 X),
-PARENT_OF 의존은 자식 전체 완료를 기다린다. 투입 순서는 critical-path rank
+CALLS와 PARENT_OF 의존은 하위 summary 확정 신호로 조기 해제된다(rules 완료 대기 X).
+투입 순서는 critical-path rank
 내림차순이다. 전부 산출물 불변인 스케줄 결정이므로 여기서는 순서·해제 시점만 검증한다.
 """
 from __future__ import annotations
@@ -18,6 +18,11 @@ from pipeline.steps.step7_analyze_code.framework_per_node import (
     _dispatch_ranks,
     run_framework_per_node_analysis,
 )
+from pipeline.steps.step7_analyze_code.batch_analyze import _analyze_batch
+from pipeline.steps.step7_analyze_code.batch_planner import Batch
+from pipeline.models.analysis_context import AnalysisContext
+from pipeline.models.code_analysis_output import BatchSummaryItem
+from graph.schema.graph_nodes import CodeNode
 
 
 @dataclass
@@ -62,8 +67,7 @@ class DispatchRanksTest(unittest.TestCase):
             "big": _Node("big", 1, 500), "small": _Node("small", 1, 5),
         }
         summary_deps = _build_dependency_map([("a", "b"), ("b", "c")], contexts, {})
-        full_deps = {fid: set() for fid in contexts}
-        ranks = _dispatch_ranks(contexts, code_by_id, summary_deps, full_deps)
+        ranks = _dispatch_ranks(contexts, code_by_id, summary_deps)
         self.assertGreater(ranks["c"], ranks["b"])
         self.assertGreater(ranks["b"], ranks["a"])
         self.assertGreater(ranks["big"], ranks["small"])
@@ -127,6 +131,121 @@ class EarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
             "caller 가 callee 전체 완료까지 기다림 — 조기 해제가 작동하지 않음",
         )
         self.assertEqual(len(result["analysis_contexts"]), 2)
+
+    async def test_parent_starts_after_child_summary_not_full_completion(self):
+        """PARENT_OF uses the same summary-only release contract as CALLS."""
+        contexts = {"parent": _Ctx(), "child": _Ctx()}
+        code_by_id = {"parent": _Node("parent"), "child": _Node("child")}
+        parent_edge = mock.Mock(parent_id="parent", child_id="child")
+        state = {
+            "code_nodes": list(code_by_id.values()),
+            "calls_edges": [],
+            "parent_of_edges": [parent_edge],
+        }
+        events: list[str] = []
+        child_tail_hold = asyncio.Event()
+
+        async def _fake_three_split(code_id, contexts, code_by_id, strategy, **kwargs):
+            events.append(f"start:{code_id}")
+            contexts[code_id].summary = f"{code_id} summary"
+            on_summary_ready = kwargs.get("on_summary_ready")
+            if on_summary_ready is not None:
+                on_summary_ready(code_id)
+            events.append(f"summary:{code_id}")
+            if code_id == "child":
+                await child_tail_hold.wait()
+            events.append(f"done:{code_id}")
+            return code_by_id[code_id]
+
+        async def _fake_persist(result, neo, stream):
+            from pipeline.steps.step7_analyze_code.example_mapping_builder import (
+                ExampleMappingResult,
+            )
+            if result.id == "parent":
+                child_tail_hold.set()
+            return ExampleMappingResult()
+
+        target = "pipeline.steps.step7_analyze_code.framework_per_node"
+        with mock.patch(f"{target}.analyze_code_three_split", _fake_three_split), \
+             mock.patch(f"{target}.run_summary", mock.AsyncMock(return_value=None)), \
+             mock.patch(f"{target}._persist_and_emit_code", _fake_persist):
+            from pipeline.execution.pause_controller import PauseController
+            await run_framework_per_node_analysis(
+                state=state, contexts=contexts, code_by_id=code_by_id,
+                strategy=mock.Mock(prompts_dir="llm/prompts/framework", name="framework"),
+                cost_budget=None, neo=None, stream=None,
+                codebase_notes="", module_intents={}, table_descriptions={},
+                pause=PauseController(), source_cache=mock.Mock(),
+                handoff=AnalysisHandoff(PrioritySemaphore(64)),
+            )
+
+        self.assertLess(events.index("summary:child"), events.index("start:parent"))
+        self.assertLess(events.index("start:parent"), events.index("done:child"))
+
+
+class BatchEarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
+    async def test_dbms_summary_is_published_while_rule_concern_is_running(self):
+        node = CodeNode(
+            id="n", signature="n()", file_path="sample.sql",
+            start_line=1, end_line=3, label="PROCEDURE",
+        )
+        ctx = AnalysisContext(
+            id="n", signature="n()", file_path="sample.sql",
+            start_line=1, end_line=3,
+        )
+        summary_ready = asyncio.Event()
+        rule_hold = asyncio.Event()
+
+        async def _fake_collect(**kwargs):
+            if kwargs["concern"] == "summary":
+                return {
+                    "n": BatchSummaryItem(
+                        node_key="1-3", summary="업무 처리를 수행한다",
+                        stereotype="DataQuery", questions=[{
+                            "text": "상태 코드의 업무 의미는 무엇인가?",
+                            "reason": "제공 근거에 정의가 없다",
+                        }],
+                    )
+                }
+            await rule_hold.wait()
+            return {}
+
+        def _on_summaries_ready(node_ids):
+            self.assertEqual(["n"], node_ids)
+            summary_ready.set()
+
+        target = "pipeline.steps.step7_analyze_code.batch_analyze"
+        strategy = mock.Mock()
+        strategy.prompts_dir = "llm/prompts/dbms"
+        strategy.name = "dbms"
+        with mock.patch(f"{target}._collect_keyed_concern", _fake_collect):
+            task = asyncio.create_task(_analyze_batch(
+                Batch(parent_id=None, node_ids=("n",)),
+                {"n": ctx}, {"n": node},
+                strategy,
+                None, "", {}, {}, mock.Mock(), PrioritySemaphore(64),
+                {"n"}, set(), _on_summaries_ready,
+            ))
+            try:
+                ready_waiter = asyncio.create_task(summary_ready.wait())
+                finished, _ = await asyncio.wait(
+                    {task, ready_waiter}, timeout=1,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if task in finished:
+                    task.result()
+                self.assertIn(ready_waiter, finished, "summary-ready signal timed out")
+                self.assertEqual("업무 처리를 수행한다", node.summary)
+                self.assertEqual(
+                    "상태 코드의 업무 의미는 무엇인가?",
+                    node.extra["questions"][0]["text"],
+                )
+                self.assertFalse(task.done(), "Rule tail should still be running")
+            finally:
+                if 'ready_waiter' in locals() and not ready_waiter.done():
+                    ready_waiter.cancel()
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
 
 
 if __name__ == "__main__":

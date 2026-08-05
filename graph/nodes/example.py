@@ -1,7 +1,7 @@
-"""EXAMPLE 노드 Cypher — Rule 의 given/when/then 시나리오 (Example Mapping).
+"""EXAMPLE 노드 Cypher — Rule 검증 시나리오 (파이썬 leaf, spec 116).
 
-``when`` / ``then`` 은 Cypher 예약어 — Neo4j 속성명은 ``when_`` / ``then_`` 로 회피
-(dataclass 필드는 ``when`` / ``then``, upsert 가 매핑).
+속성명은 dataclass 필드 그대로(``kind``/``given``/``then``) — 옛 ``when_``/``then_``
+밑줄 회피는 "Cypher 예약어" 근거가 실측으로 부정되어 폐기했다.
 """
 from __future__ import annotations
 
@@ -15,21 +15,21 @@ _UPSERT_QUERY = f"""
 UNWIND $items AS item
 MERGE (e:EXAMPLE {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 SET e:ANALYZER_OWNED,
+    e.kind = item.kind,
     e.given = item.given,
-    e.when_ = item.when_,
-    e.then_ = item.then_,
+    e.then = item.then,
     e.graph_owner = '{ANALYZER_GRAPH_OWNER}'
 """
 
 
 async def upsert_examples(client: Neo4jClient, examples: Iterable[Example]) -> None:
-    """EXAMPLE 노드 MERGE."""
+    """EXAMPLE 노드 MERGE — given/then 은 파이썬 leaf 문자열 배열 + kind."""
     items = [
         {
             "id": e.id,
-            "given": e.given,
-            "when_": e.when,
-            "then_": e.then,
+            "kind": e.kind,
+            "given": list(e.given),
+            "then": list(e.then),
         }
         for e in examples
     ]

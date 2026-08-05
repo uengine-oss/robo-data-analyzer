@@ -6,17 +6,10 @@ import os
 from pathlib import Path
 
 from shared.files.paths import PathOutsideRoot, is_skipped, resolve_within
-from pipeline.languages import is_supported
+from pipeline.languages import external_file_categories, is_supported
 from pipeline.steps.step3_load_external.encoding_reader import is_binary_bytes
 from pipeline.steps.step3_load_external.parsers.document_adapters import DOCUMENT_ADAPTER_SUFFIXES
 from shared.files.cache import SourceFileCache, SourceFileReadError
-
-
-_CONFIG_SUFFIXES = frozenset({
-    ".json", ".jsonl", ".toml", ".ini", ".cfg", ".conf", ".properties",
-    ".env", ".csv", ".tsv", ".yaml", ".yml",
-})
-_DOCUMENT_SUFFIXES = frozenset({".md", ".markdown"}) | DOCUMENT_ADAPTER_SUFFIXES
 
 
 class InventorySecurityError(ValueError):
@@ -44,12 +37,10 @@ def _category(path: Path, raw: bytes) -> tuple[str, str, str]:
         return "binary", "unanalyzed", "binary_unanalyzed"
     if is_supported(suffix):
         return "source", "registered", ""
-    if suffix == ".xml":
-        return "artifact_xml", "registered", ""
-    if suffix in _CONFIG_SUFFIXES or path.name.lower().endswith(".env"):
-        return "config", "registered", ""
-    if suffix in _DOCUMENT_SUFFIXES:
-        return "document", "registered", ""
+    suffix_categories, name_categories = external_file_categories()
+    category = name_categories.get(path.name.lower()) or suffix_categories.get(suffix)
+    if category is not None:
+        return category, "registered", ""
     return "unknown", "unanalyzed", "unsupported_text_format"
 
 

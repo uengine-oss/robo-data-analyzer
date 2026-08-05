@@ -38,9 +38,10 @@ _FIXED_NODE_LABEL: dict[type, str] = {
 # 프론트 표시에 쓰는 속성만 emit (caption·트리 라벨). 빈값은 nonempty가 제거.
 _DISPLAY_PROP_KEYS = (
     "name", "logical_name", "signature", "summary", "stereotype",
-    "analysis_partial",
     "file_path", "start_line", "end_line", "owner_id", "dtype",
-    "statement", "given", "when", "then", "text", "reason",
+    # RULE/EXAMPLE 파이썬 leaf 계약 (spec 116)
+    "rule_id", "anchor_line", "cond", "nl", "kind",
+    "given", "when", "then", "text", "reason",
     "keys", "semantic_kind", "provenance", "status", "category",
 )
 
@@ -86,8 +87,6 @@ def _node_labels(node) -> list[str]:
 
 def _node_props(node) -> dict:
     props = {k: getattr(node, k, "") for k in _DISPLAY_PROP_KEYS}
-    if partial := (getattr(node, "extra", None) or {}).get("partial"):
-        props["analysis_partial"] = list(partial)
     return nonempty(props)
 
 
@@ -140,7 +139,11 @@ def _edge_wire(edge) -> Optional[tuple[str, str, str, dict]]:
             else {}
         )
     elif type(edge) is ge.AffectsTable:
-        props = {"op": edge.op}
+        props = {
+            "access": edge.access,
+            "op": edge.op,
+            "op_source": edge.op_source,
+        }
     elif type(edge) is ge.ReferTo:
         props = {
             "matched_key": edge.matched_key,

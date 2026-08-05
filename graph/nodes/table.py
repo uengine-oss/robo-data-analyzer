@@ -40,10 +40,17 @@ SET_ANALYZED_QUERY = f"""
 UNWIND $items AS item
 MATCH (t:TABLE {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 SET t.analyzed_description = item.analyzed_description,
-    t.logical_name = CASE WHEN coalesce(item.logical_name, '') <> ''
-                          THEN item.logical_name ELSE t.logical_name END,
-    t.description_source = CASE WHEN coalesce(t.description, '') = ''
-                                THEN 'code' ELSE t.description_source END
+    t.logical_name = item.logical_name,
+    t.description_source = CASE
+        WHEN coalesce(t.description, '') <> '' THEN t.description_source
+        WHEN coalesce(item.analyzed_description, '') <> '' THEN 'code'
+        ELSE '' END
+"""
+
+MATCH_ANALYZED_TARGETS_QUERY = f"""
+MATCH (t:TABLE {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+WHERE t.id IN $ids
+RETURN count(t) AS matched
 """
 
 
@@ -78,12 +85,9 @@ async def upsert_tables(client: Neo4jClient, tables: Iterable[Table]) -> None:
 
 
 async def update_analyzed_descriptions(client: Neo4jClient, updates: list[dict]) -> int:
-    """``[{"id", "analyzed_description"}]`` — 분석 합성 설명 일괄 SET. 반환=실제 매칭된 노드 수.
-    매칭 수 < 입력 수면 id 불일치로 유실(호출측이 표면화, spec 024)."""
-    await client.run_batch_unwind(SET_ANALYZED_QUERY, updates)
-    ids = [u["id"] for u in updates]
-    rows = await client.run_read_query(
-        "MATCH (t:TABLE {graph_owner: $graph_owner}) WHERE t.id IN $ids "
-        "RETURN count(t) AS matched",
-        {"ids": ids, "graph_owner": ANALYZER_GRAPH_OWNER})
-    return int(rows[0]["matched"]) if rows else 0
+    """분석 의미를 모든 TABLE 대상이 존재할 때만 원자적으로 SET한다."""
+    return await client.run_guarded_batch_unwind(
+        guard_query=MATCH_ANALYZED_TARGETS_QUERY,
+        write_query=SET_ANALYZED_QUERY,
+        items=updates,
+    )

@@ -1,7 +1,8 @@
 """antlr JSON AST → 코드 노드 + 분석 단서.
 
-antlr-parser 가 만든 ``data/analysis/target/<p>/*.json`` 트리만 읽는다 — 소스 재파싱 X.
-Framework / DBMS 공용 단일 reader (언어 해석은 ontology 가 흡수).
+antlr-parser 가 만든 ``data/analysis/<p>/*.json`` framework 트리만 읽는다 — 소스 재파싱 X.
+DBMS tree walk는 ``dbms_reader``가 소유하고, 두 reader의 노드 생성 규약은
+``node_builders``가 공유한다. 언어 역할 해석은 ontology가 흡수한다.
 
 생산물 (ParseResult):
 - Module / CodeNode / Package / Variable / Constant / DataType 노드
@@ -13,39 +14,19 @@ ontology ``role_of`` 는 분류 전용 — 어느 dataclass/엣지/internal 인�
 """
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from graph.schema.graph_edges import (
-    BelongsTo,
     HasMember,
     ParentOf,
-    StatementNext,
 )
-from graph.schema.graph_nodes import Constant, DataType, CodeNode, Module, Package, Variable
-from shared.config.settings import SETTINGS
-from pipeline.languages import ROUTINE_LABELS, role_of
-from pipeline.languages import DBMS_EXTS, EXT_TO_LANG
-from graph.schema.node_ids import child_id, code_file_id, code_ns_id, positioned
-from shared.events.runtime_logger import log_error, log_warning
-
-_COMPONENT = "pipeline.steps.step2_load_ast.antlr_json_reader"
-
-# DBMS 순수 선언 노드 — Variable 노드로 수집 (CodeNode 아님, 분석 제외).
-# ★ CURSOR 정의는 제외 — 쿼리 로직(선별 조건 = 비즈니스 규칙)을 담으므로 CodeNode 로 분석한다
-#   (자식 SELECT 요약 → 커서가 톱레벨 문장으로 규칙 추출). DECLARE(skip) 안이라 유효부모=루틴.
-_DBMS_VAR_TYPES: frozenset[str] = frozenset({
-    "PARAMETER", "VARIABLE", "PACKAGE_VARIABLE",
-})
-
-# (옛 ``_DBMS_EXTS`` / ``_ROUTINE_LABELS`` 삭제 — 각각 ``source_extension.DBMS_EXTS`` 와
-#  ``ontology.ROUTINE_LABELS`` 가 단일 정의처다. 종전엔 여기와 batch_analyze 가 목록을
-#  따로 들어 실제로 갈라졌다: batch_analyze 쪽엔 METHOD 가 빠져 있었다. spec 046 FR-003/FR-005.)
+from pipeline.languages import control_ownership_contracts, role_of
+from graph.schema.node_ids import child_id, code_ns_id, positioned
 
 
 from pipeline.steps.step2_load_ast.node_builders import (
-    ParseResult, _clean_signature, _derive_structure_edges, _file_module_id,
+    ParseResult, _derive_structure_edges, _file_module_id,
     _folder_package, _make_code_node, _make_constant, _make_data_type,
     _make_module, _make_variable, _node_id, _src_path, _unique_id,
 )
@@ -68,9 +49,7 @@ def _read_framework(
     ``FILE`` 자체가 모듈인 언어(c / python)는 file-level Module 을 만들고,
     Java 는 ``packageName`` 을 namespace 로 써서 CLASS 가 Module 이 된다.
     """
-    if lang == "c":
-        _normalize_c_switch_cases(raw)
-
+    _validate_control_ownership(raw, source_ref=str(json_path))
     result = ParseResult()
     src_path = _src_path(raw, source_root, json_path)
     rel = raw.get("filePath") or raw.get("fileName") or json_path.name
@@ -98,61 +77,53 @@ def _read_framework(
     return result
 
 
-def _normalize_c_switch_cases(node: dict) -> None:
-    """Repair parser CASE ownership to cover its statements until the next label.
+def _validate_control_ownership(root: dict, *, source_ref: str = "<AST>") -> None:
+    """Reject non-canonical parser ownership with an actionable source coordinate."""
+    contracts = control_ownership_contracts()
+    grouped_parent = {child: parent for parent, child in contracts.items()}
 
-    The C parser emits statements between labels as SWITCH children and may nest
-    stacked labels (``case X: default:``).  Flattening labels and deriving their
-    ranges from sibling boundaries preserves the source-level control tree used
-    by PARENT_OF and REFERENCES.
-    """
-    children = list(node.get("children") or [])
-    if node.get("type") == "SWITCH":
-        flattened: list[dict] = []
+    def visit(node: dict, parent_type: str | None = None) -> None:
+        node_type = str(node.get("type") or "")
+        expected_parent = grouped_parent.get(node_type)
+        if expected_parent is not None and parent_type != expected_parent:
+            raise ValueError(
+                f"parser control ownership invalid at {source_ref}: "
+                f"{node_type}@{node.get('startLine')} parent={parent_type!r}, "
+                f"expected={expected_parent!r}"
+            )
+        children = list(node.get("children") or ())
+        grouped_child = contracts.get(node_type)
+        if grouped_child is not None:
+            seen_group = False
+            groups: list[dict] = []
+            for child in children:
+                if child.get("type") == grouped_child:
+                    seen_group = True
+                    groups.append(child)
+                elif seen_group:
+                    raise ValueError(
+                        f"parser control ownership invalid at {source_ref}: "
+                        f"{node_type}@{node.get('startLine')} has "
+                        f"{child.get('type')}@{child.get('startLine')} "
+                        f"after first {grouped_child}"
+                    )
+            parent_end = int(node.get("endLine") or 0)
+            for index, group in enumerate(groups):
+                start = int(group.get("startLine") or 0)
+                end = int(group.get("endLine") or 0)
+                next_start = (
+                    int(groups[index + 1].get("startLine") or 0)
+                    if index + 1 < len(groups) else parent_end + 1
+                )
+                if start < 1 or end < start or (next_start > 0 and end >= next_start):
+                    raise ValueError(
+                        f"parser control range invalid at {source_ref}: {grouped_child} "
+                        f"start={start}, end={end}, next={next_start}"
+                    )
         for child in children:
-            if child.get("type") == "CASE":
-                flattened.extend(_flatten_c_case_labels(child))
-            else:
-                flattened.append(child)
-        children = []
-        active_case: dict | None = None
-        for child in flattened:
-            if child.get("type") == "CASE":
-                children.append(child)
-                active_case = child
-            elif active_case is None:
-                children.append(child)
-            else:
-                active_case.setdefault("children", []).append(child)
-        node["children"] = children
+            visit(child, node_type)
 
-        case_indexes = [i for i, child in enumerate(children) if child.get("type") == "CASE"]
-        switch_end = int(node.get("endLine") or 0)
-        for position, child_index in enumerate(case_indexes):
-            case = children[child_index]
-            if position + 1 < len(case_indexes):
-                next_case = children[case_indexes[position + 1]]
-                end_line = int(next_case.get("startLine") or 0) - 1
-            else:
-                end_line = switch_end
-            start_line = int(case.get("startLine") or 0)
-            case["endLine"] = max(start_line, end_line)
-
-    for child in children:
-        _normalize_c_switch_cases(child)
-
-
-def _flatten_c_case_labels(case: dict) -> list[dict]:
-    """Turn parser-nested stacked CASE labels into SWITCH-level siblings."""
-    own_children: list[dict] = []
-    nested: list[dict] = []
-    for child in case.get("children") or []:
-        (nested if child.get("type") == "CASE" else own_children).append(child)
-    case["children"] = own_children
-    result = [case]
-    for child in nested:
-        result.extend(_flatten_c_case_labels(child))
-    return result
+    visit(root)
 
 
 def _walk_framework(
@@ -167,9 +138,21 @@ def _walk_framework(
                              제어문을 지나쳐도 바뀌지 않는다 — 호출의 주어는 언제나 함수다.
     """
     for child in node.get("children") or []:
-        handler = _FW_DISPATCH.get(role_of(child.get("type", ""), ctx.lang))
+        child_type = child.get("type", "")
+        handler = _FW_DISPATCH.get(role_of(child_type, ctx.lang))
         if handler is not None:
             handler(child, ctx, module_id, parent_fid, owner_routine_id)
+            continue
+        # ontology 미등록 타입 — 조용히 버리면 서브트리째 증발한다(라벨 67행 소실 사고의
+        # 상위 원인 계열). 표면화용으로 기록하고, 자식으로 재귀해 내부의 아는 사실
+        # (호출·statement)은 같은 구조 부모/소유 routine 문맥으로 보존한다.
+        if child_type:
+            ctx.result.unknown_nodes.append({
+                "type": child_type,
+                "file": ctx.src_path,
+                "line": int(child.get("startLine") or 0),
+            })
+        _walk_framework(child, ctx, module_id, parent_fid, owner_routine_id)
 
 
 # ── role 별 핸들러 — 노드 1개 생성 + 필요 시 재귀 ──
@@ -221,6 +204,25 @@ def _fw_control(child: dict, ctx: _FwCtx, module_id: str,
     _walk_framework(child, ctx, module_id, cid, owner_routine_id)
 
 
+def _fw_statement(child: dict, ctx: _FwCtx, module_id: str,
+                  parent_fid: str | None, owner_routine_id: str | None) -> None:
+    """구조 statement(RETURN/THROW/RAISE/BREAK/CONTINUE/GOTO/ASSIGNMENT) → CodeNode.
+
+    parser spec 016 이 emit 한 leaf 사실이다. 제어 노드와 같은 id 규칙으로 보존하되
+    routine 이 아니므로 LLM 분석 대상에서 제외된다(ROUTINE_LABELS 단일 진실). 표현식
+    원문(expression/target/operator)은 ``_make_code_node`` 가 그대로 옮긴다 — analyzer 가
+    source 를 재파싱하지 않기 위한 정본이다. leaf 라 하강하지 않는다.
+    """
+    sl = int(child.get("startLine") or 0)
+    container = parent_fid if parent_fid is not None else module_id
+    sid = _unique_id(positioned(child_id(container, child.get("type", "")), sl), sl, ctx.seen)
+    ctx.result.code_nodes.append(_make_code_node(
+        child, sid, module_id, ctx.package, ctx.src_path, parent_fid,
+    ))
+    if parent_fid is not None:
+        ctx.result.parent_of_edges.append(ParentOf(parent_id=parent_fid, child_id=sid))
+
+
 def _fw_variable(child: dict, ctx: _FwCtx, module_id: str,
                  parent_fid: str | None, owner_routine_id: str | None) -> None:
     vid = _node_id(child, ctx, module_id)
@@ -265,6 +267,7 @@ _FW_DISPATCH = {
     "module":            _fw_module,
     "function":          _fw_code,
     "control_structure": _fw_control,
+    "statement":         _fw_statement,
     "variable":          _fw_variable,
     "constant":          _fw_constant,
     "data_type":         _fw_data_type,

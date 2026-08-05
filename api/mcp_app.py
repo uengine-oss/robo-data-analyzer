@@ -49,7 +49,7 @@ def _merge_rules(rules: list) -> list:
     return out
 
 
-_DROP_ALWAYS = ("search_text", "element_id")
+_DROP_ALWAYS = ("element_id",)
 _DROP_TABLE = _DROP_ALWAYS + ("stereotype", "writes", "reads", "calls")
 
 

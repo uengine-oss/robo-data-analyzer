@@ -25,7 +25,6 @@ from pipeline.execution.step_config import step_config
 
 # (dbms 엔진은 여기서 import 하지 않는다 — 전략이 주입한다(analysis_pipelines). 헌법 II.)
 from pipeline.steps.step7_analyze_code.module_pre_analysis import run_module_pre_analysis
-from pipeline.steps.step7_analyze_code.rw_table_filter import flush_drop_summary, reset_drop_stats
 from shared.events.runtime_logger import log_info
 from shared.events.ndjson_event_stream import NDJSONStream
 from shared.events.processing_events import step_processing_scope
@@ -39,7 +38,7 @@ def _build_table_contexts(
 ) -> dict[str, dict]:
     """정확한 table id를 설명·컬럼·샘플과 분리한 프롬프트 컨텍스트를 만든다.
 
-    step6(fetch_table_samples)가 채운 ``table_sample_data`` ({fqn:{sample_rows}})와 각
+    step1(discover_datasource)가 채운 ``table_sample_data`` ({fqn:{sample_rows}})와 각
     렌더러는 코드노드별 reads/writes만 골라 JSON으로 직렬화한다. table id와 설명을
     한 문자열로 합치지 않으므로 LLM이 긴 설명을 id 일부로 오인하지 않는다.
 
@@ -56,6 +55,7 @@ def _build_table_contexts(
         cols = list(columns_by_table.get(tid) or [])
         rows = (table_sample_data.get(tid) or {}).get("sample_rows") or []
         out[tid] = {
+            "name": t.name,
             "description": t.description or "",
             "columns": cols,
             "sample_rows": rows,
@@ -86,7 +86,7 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
     code_by_id = {f.id: f for f in code_node_list}
 
     # 테이블 fqn → DDL 설명 — 3분할 reads/writes 렌더에 의미 부여 (LLM 이 테이블 뜻을 앎).
-    # 테이블 "컨텍스트" = DDL 설명 + step6(fetch_table_samples)가 채운 실제 샘플행 합본.
+    # 테이블 "컨텍스트" = DDL 설명 + step1(discover_datasource)가 채운 실제 샘플행 합본.
     # 1채널(table_descriptions)로 흘려 공통 JSON 직렬화기가 코드노드별 reads/writes만 렌더한다.
     # 샘플은 토글 off / datasource 미지정 / 미매칭 시 없음 → 설명만(없으면 fqn 만).
     # spec 027: DDL 파싱 컬럼(결정론)을 테이블 fqn 별로 모아 컨텍스트에 주입.
@@ -116,18 +116,31 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
     scan_result = state.get("scan_result") or {}
     codebase_notes = scan_result.get("codebase_notes", "")
 
+    # SKILL 계약의 핸들러 마커(PFM_CATCH 류) — 분기표 [handler] 행의 원천 (spec 116).
+    # 언어 표가 아니라 프레임워크 계약이 소유하므로 ctx 를 통해 주입한다.
+    handler_markers = tuple(scan_result.get("handler_markers") or ())
+    if handler_markers:
+        for ctx in contexts.values():
+            ctx.extra["handler_markers"] = handler_markers
+
+    # SKILL 계약의 API 값 계약(mpfmdbio success_value 류) — rules 프롬프트의
+    # "소스만 봐서는 모르는 값 사실" 절 + 채점기 창작 검사 풀의 원천 (spec 116 §19).
+    api_contracts = tuple(scan_result.get("api_contracts") or ())
+    if api_contracts:
+        for ctx in contexts.values():
+            ctx.extra["api_contracts"] = api_contracts
+
     if not contexts:
         log_info(_STEP, "skip", reason="no analysis_contexts")
         handoff.close()   # 후처리가 영원히 기다리지 않게 — 조용한 교착 금지
         return {}
-
-    reset_drop_stats()  # 디스패처 테이블-드롭 run 집계 시작 (종료 시 flush 가 1줄 표면화)
 
     # 0. 모듈 사전분석 — 모듈당 LLM 1회로 헤더 주석 → 모듈 의도 (최대 2줄).
     # intent 는 코드노드 3분할 공통 context prefix 로만 사용 — 영구 그래프 속성 X.
     # module_pre_analysis 가 자체 step_processing_scope 진입 → 가시성 자동.
     module_intents = await run_module_pre_analysis(
         state.get("modules", []), code_node_list, strategy, cost_budget,
+        handoff.slots,
         stream=stream,
     )
 
@@ -155,5 +168,4 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
         raise
     finally:
         handoff.close()
-    flush_drop_summary()  # 디스패처 드롭 집계 1줄 표면화 (FR-005a)
     return result

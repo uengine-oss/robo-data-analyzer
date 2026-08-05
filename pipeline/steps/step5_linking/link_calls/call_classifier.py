@@ -27,7 +27,7 @@ from typing import Iterable, Optional
 
 from graph.schema.graph_edges import Calls
 from graph.schema.graph_nodes import CodeNode
-from pipeline.languages import EXT_TO_LANG
+from pipeline.languages import EXT_TO_LANG, statement_labels
 from shared.files.cache import SourceFileCache
 
 _STDLIB_DIR = Path(__file__).resolve().parent / "stdlib"
@@ -127,10 +127,14 @@ def classify_call_sites(
                   wrapper 호출은 라인 본문에서 인자 추출 후 분류 — 모듈 entry 루틴과
                   매치되면 internal, 아니면 external.
     """
-    defined_names = {(fn.name or "").strip() for fn in code_nodes if (fn.name or "").strip()}
+    # statement 노드(GOTO 라벨 등)는 호출 대상이 아니다 — `goto PFM_CATCH;` 의 GOTO
+    # 노드가 PFM_CATCH() 호출의 internal 대상으로 오해석되던 실측 결함(2026-08-05).
+    stmt_labels = statement_labels()
+    callables = [fn for fn in code_nodes if fn.label not in stmt_labels]
+    defined_names = {(fn.name or "").strip() for fn in callables if (fn.name or "").strip()}
     by_name: dict[str, list[str]] = defaultdict(list)
     module_of: dict[str, str] = {}
-    for fn in code_nodes:
+    for fn in callables:
         name = (fn.name or "").strip()
         if not name:
             continue

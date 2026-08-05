@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import json
 from typing import Iterable
 
 from graph.schema.graph_nodes import CodeNode
@@ -17,7 +18,6 @@ from graph.node_upsert import join_notes, nonempty, upsert_by_node_label
 from graph.ownership import ANALYZER_GRAPH_OWNER
 from graph.neo4j_client import Neo4jClient
 from graph.nodes.stereotype_label import apply_stereotype_labels
-from graph.schema.domain_terms import dump_domain_terms
 
 
 # MERGE 쿼리·라벨 그룹핑은 ``graph/node_upsert.py`` 단일 정의처 (spec 046 FR-004).
@@ -29,7 +29,8 @@ from graph.schema.domain_terms import dump_domain_terms
 SET_SUMMARY_QUERY = f"""
 UNWIND $items AS item
 MATCH (node:ANALYZER_OWNED {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-REMOVE node.domain_terms, node.domain_terms_json
+// 자동 용어 생성 폐기 전 graph 속성은 동일 노드 재분석에서도 남지 않게 제거한다.
+REMOVE node.domain_terms, node.domain_terms_json, node.logical_name
 SET node += item
 """
 
@@ -53,6 +54,11 @@ def to_item(fn: CodeNode) -> dict:
         "return_type": fn.return_type,
         "params": fn.params,
         "code_text": fn.code_text,
+        # 구조 statement/제어 조건 표현 원문 (parser spec 016) — 소비자가 소스를
+        # 재파싱하지 않도록 그래프에도 보존한다. 빈값은 nonempty 가 제외.
+        "expression": fn.expression,
+        "target": fn.target,
+        "operator": fn.operator,
         "notes": join_notes(fn.comment, fn.annotations),
     })
 
@@ -66,15 +72,22 @@ def to_summary_item(fn: CodeNode) -> dict:
         "id": fn.id,
         "summary": fn.summary,
         "stereotype": fn.stereotype,
-        "logical_name": fn.logical_name,
-        "search_text": fn.search_text,
-        "domain_terms_json": dump_domain_terms(fn.domain_terms) if fn.domain_terms else None,
         # spec 054 FR-023: 폴백 재검사도 이상이면 "부분 결과 + 이상 플래그"를 함수 노드에 저장 —
         # 그래프에 남아야 소비자(UI/검색)가 신뢰도를 안다. 정상경로는 키 부재 → nonempty 가 제외.
         "rules_quality_flag": (fn.extra or {}).get("rules_quality_flag"),
-        # 의미를 채우는 필드가 아니라 3분할 전달 상태. 성공한 조각은 그대로 보존하고
-        # 재시도 소진 조각만 표시해 정상 빈 결과와 실패를 구분한다.
-        "analysis_partial": list((fn.extra or {}).get("partial") or ()),
+        # 모델 품질 finding은 trusted RULE/EXAMPLE 노드가 아니다. CodeNode의 명시적
+        # 상태+JSON 증거로 보존해 검색/UI가 정상 완료와 구분하고 run 뒤 재검증할 수 있다.
+        "analysis_status": (fn.extra or {}).get("analysis_status"),
+        "analysis_findings_json": (
+            json.dumps(
+                (fn.extra or {}).get("analysis_findings"),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            if (fn.extra or {}).get("analysis_findings")
+            else None
+        ),
     })
 
 
@@ -90,7 +103,10 @@ async def update_summaries(client: Neo4jClient, code_nodes: Iterable[CodeNode]) 
     """
     analyzed = [
         f for f in code_nodes
-        if f.summary is not None or (f.extra or {}).get("partial")
+        if f.summary is not None or (f.extra or {}).get("analysis_status")
     ]
     await client.run_batch_unwind(SET_SUMMARY_QUERY, [to_summary_item(f) for f in analyzed])
-    await apply_stereotype_labels(client, [(f.id, f.stereotype or "") for f in analyzed])
+    await apply_stereotype_labels(
+        client,
+        [(f.id, f.stereotype or "") for f in analyzed if f.summary is not None],
+    )

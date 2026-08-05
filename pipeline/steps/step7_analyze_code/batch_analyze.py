@@ -24,39 +24,63 @@ from pipeline.steps.step7_analyze_code.analysis_order import bottom_up_rounds
 from pipeline.steps.step7_analyze_code.batch_planner import (
     Batch, build_effective_tree, plan_batches,
 )
-from pipeline.steps.step7_analyze_code.batch_prompt_values import _build_batch_values
+from pipeline.steps.step7_analyze_code.batch_prompt_values import (
+    _build_batch_values,
+    build_rule_batch_values,
+)
 from shared.graphs.call_cycles import find_call_cycles
 from pipeline.steps.step7_analyze_code.range_body import skeleton_body
-from pipeline.steps.step7_analyze_code.rw_table_filter import constrain_tables_to_rw
+from pipeline.steps.step7_analyze_code.rw_table_filter import (
+    serialize_rules,
+)
+from pipeline.steps.step7_analyze_code.control_prompt import build_control_inventory
+from pipeline.quality_gates.rule_grading import grade_rules, partition_rule_candidates
+from pipeline.quality_gates.rule_prompt_evidence import rule_evidence
 from pipeline.steps.step5_linking.link_calls.call_linker import routine_call_pairs
 from pipeline.models.analysis_context import AnalysisContext
+from pipeline.models.analysis_finding import AnalysisFinding
 from pipeline.models.code_analysis_output import (
     BatchRulesItem,
     BatchRulesOutput,
     BatchSummaryItem,
     BatchTableInsightsItem,
     BatchTableInsightsOutput,
-    require_unique_rule_occurrences,
     BatchSummaryOutput,
+    RulesExamplesOutput,
+)
+from pipeline.models.rule_response_schema import (
+    batch_rules_response_model,
+    normalize_batch_rules_response,
+)
+from pipeline.models.table_insight_response_schema import (
+    batch_table_insights_response_model,
+    normalize_batch_table_insights_response,
+)
+from pipeline.models.summary_response_schema import (
+    batch_summary_response_model,
+    normalize_batch_summary_response,
+)
+from pipeline.steps.step7_analyze_code.rule_row_batching import (
+    required_rule_rows,
+    rule_queue_priority,
+    SUMMARY_WAKE_PRIORITY,
 )
 from graph.schema.graph_nodes import CodeNode
 from shared.config.settings import SETTINGS
-from pipeline.steps.step7_analyze_code.domain_terms import normalize_domain_terms
-from pipeline.steps.step7_analyze_code.summary_quality import (
-    normalize_searchable_text,
+from pipeline.steps.step7_analyze_code.summary_quality import normalize_canonical_summary
+from pipeline.languages import (
+    ROUTINE_LABELS,
+    require_stereotype,
+    exclude_contradicted_stereotype,
 )
-from pipeline.languages import ROUTINE_LABELS, coerce_stereotype
-from llm.usage.cost_budget import BudgetExceededError
 from llm.runners.yaml_llm_runner import run_yaml_rule
-from shared.events.runtime_logger import log_error, log_info, log_warning
+from llm.runners.model_output_error import ModelOutputError
+from shared.events.runtime_logger import log_info, log_warning
 from shared.events.processing_events import track_processing
 from shared.files.cache import SourceFileCache
 from pipeline.execution.analysis_handoff import AnalysisHandoff
 from pipeline.execution.pause_controller import PauseController
-from pipeline.steps.step7_analyze_code.concern_retry import (
-    ConcernAttempt,
-    run_concern_with_retry,
-)
+from pipeline.steps.step7_analyze_code.quality_findings import apply_analysis_findings
 
 _STEP = "step7.analyze_code.batch"
 
@@ -166,17 +190,15 @@ async def run_dbms_batch_analysis(
     rule_units, rule_gates = _plan_rule_units(code_by_id, eff_children, token_of, SETTINGS.analysis_pipeline.batch_max_tokens)
     log_info(_STEP, "rule_units", units=len(rule_units), gates=len(rule_gates), analysis_nodes=len(analysis_ids))
 
-    # run 공유 슬롯 — 후처리와 같은 세마포어(spec 096). 총량은 종전과 같고 우선순위만 다르다.
-    # 배치 엔진은 형제를 한 콜로 묶으므로 summary 와 rules 가 동시에 확정된다 → 후처리 인계는
-    # 노드 완료 시점 하나뿐이다(per-node 엔진처럼 #1 을 앞당길 자리가 없다).
+    # run 공유 슬롯 — 후처리와 같은 세마포어(spec 096). 각 concern은 독립 호출이므로
+    # summary가 먼저 끝나는 즉시 후속 배치와 후처리에 공개한다.
     semaphore = handoff.slots
     handoff.expect(analysis_ids)
     # source_cache 는 caller(analyze_code_step)가 주입 — run 스코프 공유 (spec 046 FR-008).
     em_acc = ExampleMappingResult()
-    analyzed = partial = failed = batch_count = 0
+    analyzed = batch_count = 0
 
     # Dataflow 스케줄 — 배치 의존(배치 밖 callee) 완료 즉시 투입 (framework 엔진과 동일).
-    # 실패 배치의 노드도 의존 해소로 간주(라운드 방식과 동일 의미).
     all_batches: list = []
     batch_nodes: dict[int, set[str]] = {}
     for round_ids in rounds:
@@ -198,15 +220,25 @@ async def run_dbms_batch_analysis(
         own = batch_nodes[id(b)]
         batch_deps[id(b)] = set().union(*(node_deps.get(n, set()) for n in own)) - own
 
-    done_nodes: set[str] = set()
+    summary_done_nodes: set[str] = set()
+    summary_event = asyncio.Event()
     scheduled: set[int] = set()
     pending: dict[asyncio.Task, Any] = {}
     remaining_batches = {id(b): b for b in all_batches}
+
+    def _mark_summaries_ready(node_ids: list[str]) -> None:
+        for node_id in node_ids:
+            summary_done_nodes.add(node_id)
+            node = code_by_id[node_id]
+            if node.summary:
+                handoff.publish_summary(node)
+        summary_event.set()
+
     try:
         while remaining_batches:
             await pause.gate()
             ready = [b for bid, b in remaining_batches.items()
-                     if bid not in scheduled and batch_deps[bid] <= done_nodes]
+                     if bid not in scheduled and batch_deps[bid] <= summary_done_nodes]
             for b in ready:
                 task = asyncio.ensure_future(
                     _run_batch_with_ref(
@@ -214,7 +246,7 @@ async def run_dbms_batch_analysis(
                         _analyze_batch_guarded(
                             b, contexts, code_by_id, strategy, cost_budget,
                             codebase_notes, module_intents, table_descriptions, source_cache, semaphore,
-                            rule_units, rule_gates,
+                            rule_units, rule_gates, _mark_summaries_ready,
                         ),
                     )
                 )
@@ -226,7 +258,15 @@ async def run_dbms_batch_analysis(
                     "(의존 그래프 결함 의심)"
                 )
             pause.set_inflight(list(pending))
-            finished, _ = await asyncio.wait(set(pending), return_when=asyncio.FIRST_COMPLETED)
+            waker = asyncio.create_task(summary_event.wait())
+            try:
+                finished, _ = await asyncio.wait(
+                    {*pending, waker}, return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                waker.cancel()
+            summary_event.clear()
+            finished.discard(waker)
             for task in finished:
                 b = pending.pop(task)
                 if task.cancelled():
@@ -237,20 +277,15 @@ async def run_dbms_batch_analysis(
                     scheduled.discard(id(b))
                     continue
                 remaining_batches.pop(id(b), None)
-                done_nodes |= batch_nodes[id(b)]   # 실패여도 의존 해소 (기존 라운드 의미)
-                if isinstance(result, BudgetExceededError):
-                    raise result                   # 회로 차단기 즉시 전파
-                if isinstance(result, BaseException):
-                    failed += 1
-                    log_error(_STEP, "batch", result)
-                else:
-                    for fn in result:              # 배치가 분석한 CodeNode 들
-                        if fn.summary:
-                            handoff.publish_summary(fn)   # summary 성공 노드만 후처리 인계
-                        em = await _persist_and_emit_code(fn, neo, stream)
-                        _accumulate_em(em_acc, em)
-                        analyzed += int(bool(fn.summary))
-                        partial += int(bool((fn.extra or {}).get("partial")))
+                missing_release = batch_nodes[id(b)] - summary_done_nodes
+                if missing_release:
+                    raise RuntimeError(
+                        f"summary-ready 신호 누락: {sorted(missing_release)}"
+                    )
+                for fn in result:
+                    em = await _persist_and_emit_code(fn, neo, stream)
+                    _accumulate_em(em_acc, em)
+                    analyzed += int(bool(fn.summary))
                 # 인계 해제는 **공개 뒤에** — 순서가 뒤집히면 게이트가 열린 뒤에 노드가
                 # 실려 후처리가 미완성 목록을 읽는다.
                 for node_id in batch_nodes[id(b)]:
@@ -259,24 +294,18 @@ async def run_dbms_batch_analysis(
         # pause/stop/예산 차단/상위 취소 모두 coroutine finally까지 수거한 뒤 진행.
         await pause.cancel_and_wait(list(pending))
 
-    # 불변식 (spec 045 FR-008): ``failed`` 는 **배치** 단위라 노드 집계와 단위가 다르다.
-    # 분석 대상 노드 중 결과를 못 받은 노드는 summary 없이 남아 검색 코퍼스에서 빠진다
-    # → 노드 기준으로 직접 검산해 표면화한다 (조용한 유실 금지).
+    # 모든 배치는 fail-closed다. 정상 반환 뒤 summary가 빠졌다면 수집/적용 배선 결함이다.
     unanalyzed = len(analysis_ids) - analyzed
     if unanalyzed:
-        log_warning(
-            _STEP, "nodes_unanalyzed",
-            f"분석 대상 {len(analysis_ids)} 중 {unanalyzed}개가 결과 없이 남음 "
-            f"(실패 배치 {failed}건). summary 미부여 → 검색 코퍼스에서 제외된다.",
-            analysis_nodes=len(analysis_ids), analyzed=analyzed, unanalyzed=unanalyzed,
-            failed_batches=failed,
+        raise RuntimeError(
+            f"DBMS 분석 불변식 위반: targets={len(analysis_ids)}, "
+            f"summarized={analyzed}, missing={unanalyzed}"
         )
 
     log_info(
         _STEP, "done",
         analysis_nodes=len(analysis_ids), batches=batch_count,
-        analyzed=analyzed, partial=partial or None, failed_batches=failed or None,
-        unanalyzed=unanalyzed or None, in_cycle=len(cycles),
+        analyzed=analyzed, in_cycle=len(cycles),
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
     return {
@@ -313,7 +342,7 @@ def _apply_effective_tree(
 async def _run_batch_with_ref(batch: Batch, coro):
     """coro 결과를 ``(batch, result)`` 로 묶음 — ``as_completed`` 가 어느 배치인지 매칭 가능하게.
 
-    ``_analyze_batch_guarded`` 가 예외(취소 포함)를 값으로 반환하므로 여기선 그대로 전달.
+    예외는 값으로 바꾸지 않고 상위 step까지 전파한다.
     """
     return batch, await coro
 
@@ -321,135 +350,192 @@ async def _run_batch_with_ref(batch: Batch, coro):
 async def _analyze_batch_guarded(
     batch: Batch, contexts, code_by_id, strategy, cost_budget,
     codebase_notes, module_intents, table_descriptions, source_cache, semaphore,
-    rule_units: set[str], rule_gates: set[str],
+    rule_units: set[str], rule_gates: set[str], on_summaries_ready,
 ):
-    """배치 1개 분석 — 예외를 값으로 묶어 반환 (as_completed 매칭). 성공 시 CodeNode 리스트."""
+    """배치 1개 분석. 운영·결정론 실패만 상위 step까지 전파한다."""
     async with track_processing("Batch", batch.parent_id or batch.node_ids[0]):
-        async with semaphore:
-            try:
-                return await _analyze_batch(
-                    batch, contexts, code_by_id, strategy, cost_budget,
-                    codebase_notes, module_intents, table_descriptions, source_cache,
-                    rule_units, rule_gates,
-                )
-            except BudgetExceededError as e:
-                return e
-            except BaseException as e:  # noqa: BLE001 — 매칭 위해 값으로 반환
-                return e
+        return await _analyze_batch(
+            batch, contexts, code_by_id, strategy, cost_budget,
+            codebase_notes, module_intents, table_descriptions, source_cache,
+            semaphore, rule_units, rule_gates, on_summaries_ready,
+        )
 
 
 async def _analyze_batch(
     batch: Batch, contexts, code_by_id, strategy, cost_budget,
-    codebase_notes, module_intents, table_descriptions, source_cache, rule_units, rule_gates,
+    codebase_notes, module_intents, table_descriptions, source_cache, llm_slots,
+    rule_units, rule_gates, on_summaries_ready,
 ) -> list[CodeNode]:
-    """배치 형제들을 관심사별로 분석하고 실패한 관심사·키만 한 번 재요청한다."""
+    """배치 형제들을 관심사별로 한 번 분석하고 모델 품질 finding은 격리한다."""
     prompts_dir = Path(strategy.prompts_dir)
     node_ids = list(batch.node_ids)
 
-    # Summary는 공통 prefix 워밍을 위해 먼저 끝낸다. 누락 키만 같은 Summary 계약으로
-    # 재요청하며, 성공한 Summary는 아래 어떤 호출도 다시 만들지 않는다.
-    summaries, summary_failed = await _collect_keyed_concern(
-        parent_id=batch.parent_id,
-        node_ids=node_ids,
-        concern="summary",
-        rule_name="code_summary_batch",
-        response_model=BatchSummaryOutput,
-        prompts_dir=prompts_dir,
-        contexts=contexts,
-        code_by_id=code_by_id,
-        cost_budget=cost_budget,
-        codebase_notes=codebase_notes,
-        module_intents=module_intents,
-        table_descriptions=table_descriptions,
-        source_cache=source_cache,
-    )
-
+    pre_findings: dict[str, list[AnalysisFinding]] = {}
     rule_ids = [nid for nid in node_ids if nid in rule_units]
     gate_ids = [nid for nid in node_ids if nid in rule_gates]
     dml_ids = [nid for nid in node_ids if contexts[nid].reads or contexts[nid].writes]
     tasks = {}
+
+    async def _summary_concern():
+        try:
+            items = await _collect_keyed_concern(
+                parent_id=batch.parent_id,
+                node_ids=node_ids,
+                concern="summary",
+                rule_name="code_summary_batch",
+                response_model=BatchSummaryOutput,
+                prompts_dir=prompts_dir,
+                contexts=contexts,
+                code_by_id=code_by_id,
+                cost_budget=cost_budget,
+                codebase_notes=codebase_notes,
+                module_intents=module_intents,
+                table_descriptions=table_descriptions,
+                source_cache=source_cache,
+                llm_slots=llm_slots,
+                strategy_name=strategy.name,
+            )
+            findings = {}
+        except ModelOutputError as error:
+            items = {}
+            findings = {
+                node_id: [AnalysisFinding(
+                    concern="summary",
+                    status="unavailable",
+                    target_id=node_id,
+                    reasons=(str(error),),
+                    evidence_rule=error.rule_name,
+                )]
+                for node_id in node_ids
+            }
+        for node_id in node_ids:
+            summary = items.get(node_id)
+            if summary is None:
+                code_by_id[node_id].extra["questions"] = []
+            else:
+                contradiction = _apply_batch_summary(
+                    summary, code_by_id[node_id], contexts[node_id], strategy,
+                )
+                if contradiction is not None:
+                    findings.setdefault(node_id, []).append(contradiction)
+        on_summaries_ready(node_ids)
+        return items, findings
+
+    async def _rule_concern(ids, rule_name, *, body_fn=None):
+        kwargs = {"body_fn": body_fn} if body_fn is not None else {}
+        try:
+            items = await _collect_keyed_concern(
+                parent_id=batch.parent_id,
+                node_ids=ids,
+                concern="rules",
+                rule_name=rule_name,
+                response_model=BatchRulesOutput,
+                prompts_dir=prompts_dir,
+                contexts=contexts,
+                code_by_id=code_by_id,
+                cost_budget=cost_budget,
+                codebase_notes=codebase_notes,
+                module_intents=module_intents,
+                table_descriptions=table_descriptions,
+                source_cache=source_cache,
+                llm_slots=llm_slots,
+                strategy_name=strategy.name,
+                **kwargs,
+            )
+            return items, {}
+        except ModelOutputError as error:
+            findings: dict[str, list[AnalysisFinding]] = {}
+            gate_only = rule_name == "code_gate_rules_batch"
+            for node_id in ids:
+                inventory = build_control_inventory(
+                    code_by_id[node_id], contexts[node_id], source_cache,
+                )
+                findings[node_id] = [
+                    AnalysisFinding(
+                        concern="rules",
+                        status="unavailable",
+                        target_id=f"{node_id}::R{row}",
+                        coordinates=(row,),
+                        reasons=(str(error),),
+                        evidence_rule=error.rule_name,
+                    )
+                    for row in required_rule_rows(inventory, gate_only=gate_only)
+                ]
+            return {}, findings
+
+    tasks["summary"] = _summary_concern()
     if rule_ids:
-        tasks["rules"] = _collect_keyed_concern(
-            parent_id=batch.parent_id,
-            node_ids=rule_ids,
-            concern="rules",
-            rule_name="code_rules_examples_batch",
-            response_model=BatchRulesOutput,
-            prompts_dir=prompts_dir,
-            contexts=contexts,
-            code_by_id=code_by_id,
-            cost_budget=cost_budget,
-            codebase_notes=codebase_notes,
-            module_intents=module_intents,
-            table_descriptions=table_descriptions,
-            source_cache=source_cache,
-        )
+        tasks["rules"] = _rule_concern(rule_ids, "code_rules_examples_batch")
     if gate_ids:
-        tasks["gate_rules"] = _collect_keyed_concern(
-            parent_id=batch.parent_id,
-            node_ids=gate_ids,
-            concern="rules",
-            rule_name="code_gate_rules_batch",
-            response_model=BatchRulesOutput,
-            prompts_dir=prompts_dir,
-            contexts=contexts,
-            code_by_id=code_by_id,
-            cost_budget=cost_budget,
-            codebase_notes=codebase_notes,
-            module_intents=module_intents,
-            table_descriptions=table_descriptions,
-            source_cache=source_cache,
-            body_fn=skeleton_body,
+        tasks["gate_rules"] = _rule_concern(
+            gate_ids, "code_gate_rules_batch", body_fn=skeleton_body,
         )
     if dml_ids:
-        tasks["insights"] = _collect_keyed_concern(
-            parent_id=batch.parent_id,
-            node_ids=dml_ids,
-            concern="insights",
-            rule_name="code_table_insights_batch",
-            response_model=BatchTableInsightsOutput,
-            prompts_dir=prompts_dir,
-            contexts=contexts,
-            code_by_id=code_by_id,
-            cost_budget=cost_budget,
-            codebase_notes=codebase_notes,
-            module_intents=module_intents,
-            table_descriptions=table_descriptions,
-            source_cache=source_cache,
-        )
+        async def _insight_concern():
+            try:
+                items = await _collect_keyed_concern(
+                    parent_id=batch.parent_id,
+                    node_ids=dml_ids,
+                    concern="insights",
+                    rule_name="code_table_insights_batch",
+                    response_model=BatchTableInsightsOutput,
+                    prompts_dir=prompts_dir,
+                    contexts=contexts,
+                    code_by_id=code_by_id,
+                    cost_budget=cost_budget,
+                    codebase_notes=codebase_notes,
+                    module_intents=module_intents,
+                    table_descriptions=table_descriptions,
+                    source_cache=source_cache,
+                    llm_slots=llm_slots,
+                    strategy_name=strategy.name,
+                )
+                return items, {}
+            except ModelOutputError as error:
+                return {}, {
+                    node_id: [AnalysisFinding(
+                        concern="table_insights",
+                        status="unavailable",
+                        target_id=node_id,
+                        reasons=(str(error),),
+                        evidence_rule=error.rule_name,
+                    )]
+                    for node_id in dml_ids
+                }
 
-    results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+        tasks["insights"] = _insight_concern()
+
+    results = await asyncio.gather(*tasks.values())
     done = dict(zip(tasks, results))
-    for r in results:
-        if isinstance(r, BudgetExceededError):
-            raise r
-        if isinstance(r, BaseException):
-            raise r
+
+    summaries, summary_findings = done["summary"]
+    for node_id, findings in summary_findings.items():
+        pre_findings.setdefault(node_id, []).extend(findings)
 
     rules: dict[str, BatchRulesItem] = {}
-    rules_failed: set[str] = set()
+    rule_findings: dict[str, list[AnalysisFinding]] = {}
     for name in ("rules", "gate_rules"):
         if name in done:
-            values, unresolved = done[name]
-            rules.update(values)
-            rules_failed.update(unresolved)
-    insights, insights_failed = done.get("insights", ({}, set()))
+            items, findings = done[name]
+            rules.update(items)
+            for node_id, node_findings in findings.items():
+                rule_findings.setdefault(node_id, []).extend(node_findings)
+    if "insights" in done:
+        insights, insight_findings = done["insights"]
+        for node_id, findings in insight_findings.items():
+            pre_findings.setdefault(node_id, []).extend(findings)
+    else:
+        insights = {}
+    for node_id, findings in rule_findings.items():
+        pre_findings.setdefault(node_id, []).extend(findings)
 
     applied: list[CodeNode] = []
     for fid in node_ids:
-        requested = {"summary"}
+        requested: set[str] = set()
         if fid in rule_units or fid in rule_gates:
             requested.add("rules")
         if fid in dml_ids:
             requested.add("insights")
-        failed_parts = {
-            part for part, failed_ids in (
-                ("summary", summary_failed),
-                ("rules", rules_failed),
-                ("insights", insights_failed),
-            )
-            if fid in failed_ids
-        }
         applied.append(_apply_node_analysis(
             summaries.get(fid),
             rules.get(fid),
@@ -459,7 +545,8 @@ async def _analyze_batch(
             strategy,
             source_cache,
             requested_parts=requested,
-            failed_parts=failed_parts,
+            is_gate=fid in rule_gates,
+            pre_findings=pre_findings.get(fid, ()),
         ))
     return applied
 
@@ -479,61 +566,105 @@ async def _collect_keyed_concern(
     module_intents,
     table_descriptions,
     source_cache,
+    llm_slots,
+    strategy_name,
     body_fn=None,
-) -> tuple[dict[str, Any], set[str]]:
-    """Preserve unique successes and retry only unresolved DBMS keys once."""
+) -> dict[str, Any]:
+    """DBMS 키 봉투를 한 번 호출하고 결정론 키 불변식 위반은 실패시킨다."""
     expected = _expected_keys(node_ids, contexts)
-
-    async def _request(ids, max_attempts):
-        async def _call():
-            kwargs = {"body_fn": body_fn} if body_fn is not None else {}
-            values, _ = _build_batch_values(
-                Batch(parent_id, tuple(ids)),
-                contexts,
-                code_by_id,
-                codebase_notes,
-                module_intents,
-                table_descriptions,
-                source_cache,
-                **kwargs,
+    kwargs = {"body_fn": body_fn} if body_fn is not None else {}
+    values, _ = _build_batch_values(
+        Batch(parent_id, tuple(node_ids)), contexts, code_by_id, codebase_notes,
+        module_intents, table_descriptions, source_cache,
+        **kwargs,
+    )
+    rule_assignments = None
+    rule_evidences = None
+    rule_condition_sources = None
+    rule_effect_sources = None
+    insight_assignments = None
+    effective_response_model = response_model
+    if concern == "summary":
+        effective_response_model = batch_summary_response_model(
+            expected, strategy_name,
+        )
+    elif concern == "rules":
+        gate_only = rule_name == "code_gate_rules_batch"
+        rule_assignments = {}
+        rule_evidences = {}
+        rule_condition_sources = {}
+        rule_effect_sources = {}
+        for node_key, node_id in expected.items():
+            inventory = build_control_inventory(
+                code_by_id[node_id], contexts[node_id], source_cache,
             )
-            return await run_yaml_rule(
-                prompts_dir=prompts_dir,
-                rule_name=rule_name,
-                user_values=values,
-                response_model=response_model,
-                budget=cost_budget,
+            rule_assignments[node_key] = required_rule_rows(
+                inventory, gate_only=gate_only,
             )
-
-        return await run_concern_with_retry(
-            component=_STEP,
-            concern=concern,
-            target_id=parent_id or ids[0],
-            call=_call,
-            max_attempts=max_attempts,
+            evidence = rule_evidence(
+                inventory, rule_assignments[node_key],
+            )
+            rule_evidences[node_key] = evidence
+            rule_condition_sources[node_key] = evidence["conditions"]
+            rule_effect_sources[node_key] = evidence["effects"]
+        effective_response_model = batch_rules_response_model(rule_assignments)
+        values = build_rule_batch_values(
+            expected=expected,
+            assignments=rule_assignments,
+            evidences=rule_evidences,
+            contexts=contexts,
+            code_by_id=code_by_id,
+            table_descriptions=table_descriptions,
+        )
+    elif concern == "insights":
+        insight_assignments = {}
+        for node_key, node_id in expected.items():
+            ctx = contexts[node_id]
+            insight_assignments[node_key] = {
+                "reads": tuple(ctx.reads),
+                "writes": tuple(ctx.writes),
+                "table_ops": dict(ctx.extra.get("table_op") or {}),
+            }
+        effective_response_model = batch_table_insights_response_model(
+            insight_assignments
         )
 
-    first: ConcernAttempt = await _request(node_ids, 2)
-    if not first.succeeded:
-        return {}, set(node_ids)
-
+    # Summary alone unlocks bottom-up parents. Give it wake-up priority without changing
+    # the shared capacity; Rule/table work remains ahead of post-processing priority 1.
+    if concern == "summary":
+        queue_priority = SUMMARY_WAKE_PRIORITY
+    elif concern == "rules":
+        queue_priority = rule_queue_priority(sum(len(str(value)) for value in values.values()))
+    else:
+        queue_priority = 0
+    async with llm_slots.at(queue_priority):
+        output = await run_yaml_rule(
+            prompts_dir=prompts_dir,
+            rule_name=rule_name,
+            user_values=values,
+            response_model=effective_response_model,
+            budget=cost_budget,
+        )
+    if concern == "summary":
+        output = normalize_batch_summary_response(output, expected)
+    elif rule_assignments is not None:
+        output = normalize_batch_rules_response(
+            output,
+            rule_assignments,
+            rule_condition_sources,
+            rule_effect_sources,
+        )
+    elif insight_assignments is not None:
+        output = normalize_batch_table_insights_response(output, insight_assignments)
     accepted, unresolved = _partition_keyed_items(
-        first.value.nodes, expected, concern=concern, attempt=1,
+        output.nodes, expected, concern=concern,
     )
-    if not unresolved:
-        return accepted, set()
-
-    retry_ids = [expected[key] for key in expected if expected[key] in unresolved]
-    retry: ConcernAttempt = await _request(retry_ids, 1)
-    if not retry.succeeded:
-        return accepted, unresolved
-
-    retry_expected = _expected_keys(retry_ids, contexts)
-    recovered, still = _partition_keyed_items(
-        retry.value.nodes, retry_expected, concern=concern, attempt=2,
-    )
-    accepted.update(recovered)
-    return accepted, still
+    if unresolved:
+        raise ValueError(
+            f"DBMS {concern} 키 계약 실패 — target={parent_id or node_ids[0]}, "
+            f"unresolved={sorted(unresolved)}"
+        )
+    return accepted
 
 
 def _expected_keys(node_ids, contexts) -> dict[str, str]:
@@ -549,22 +680,15 @@ def _expected_keys(node_ids, contexts) -> dict[str, str]:
     return expected
 
 
-def _partition_keyed_items(items, expected, *, concern: str, attempt: int):
+def _partition_keyed_items(items, expected, *, concern: str):
     """Accept exact unique keys; duplicate/missing keys remain unresolved."""
     by_key: dict[str, list[Any]] = {}
     unknown: list[str] = []
-    invalid: list[str] = []
     for item in items:
         key = item.node_key.strip()
         if key not in expected:
             unknown.append(key)
             continue
-        if isinstance(item, BatchRulesItem):
-            try:
-                require_unique_rule_occurrences(item.rules)
-            except ValueError:
-                invalid.append(key)
-                continue
         by_key.setdefault(key, []).append(item)
 
     duplicates = sorted(key for key, values in by_key.items() if len(values) != 1)
@@ -577,19 +701,51 @@ def _partition_keyed_items(items, expected, *, concern: str, attempt: int):
         nid for key, nid in expected.items()
         if key not in by_key or key in duplicates
     }
-    if unknown or duplicates or invalid or unresolved:
+    if unknown or duplicates or unresolved:
         log_warning(
             _STEP,
             "batch_key_contract",
-            "DBMS 배치 키 계약 불일치 — 정상 키는 보존하고 미해결 키만 재시도",
+            "DBMS 배치 키 계약 불일치 — 호출을 실패 처리",
             concern=concern,
-            attempt=attempt,
             unknown_keys=sorted(set(unknown)) or None,
             duplicate_keys=duplicates or None,
-            invalid_item_keys=sorted(set(invalid)) or None,
             unresolved_ids=sorted(unresolved) or None,
         )
     return accepted, unresolved
+
+
+def _apply_batch_summary(
+    summary: BatchSummaryItem,
+    fn: CodeNode,
+    ctx: AnalysisContext,
+    strategy: Any,
+) -> AnalysisFinding | None:
+    """Publish the summary-owned fields without waiting for sibling concerns."""
+    summary_text = normalize_canonical_summary(summary.summary)
+    stereotype, violation = exclude_contradicted_stereotype(
+        require_stereotype(summary.stereotype, strategy.name),
+        has_writes=bool(ctx.writes),
+    )
+    if violation:
+        log_warning(
+            _STEP, "stereotype_contradiction",
+            "stereotype 이 결정론 쓰기 근거와 모순 — 빈 값으로 강제(사람 검토)",
+            code_id=fn.id, reason=violation,
+        )
+    fn.summary = summary_text
+    fn.stereotype = stereotype or None
+    fn.extra["questions"] = [q.model_dump() for q in summary.questions]
+    ctx.summary = summary_text
+    if not violation:
+        return None
+    return AnalysisFinding(
+        concern="stereotype",
+        status="rejected",
+        target_id=fn.id,
+        reasons=(violation,),
+        candidate={"stereotype": summary.stereotype},
+        evidence_rule="code_summary_batch",
+    )
 
 
 def _apply_node_analysis(
@@ -602,52 +758,77 @@ def _apply_node_analysis(
     source_cache: SourceFileCache,
     *,
     requested_parts: set[str],
-    failed_parts: set[str],
+    is_gate: bool = False,
+    pre_findings=(),
 ) -> CodeNode:
     """3 배치 분할 결과(요약/비즈로직/테이블) → CodeNode + ctx 반영 (three_split fan-in 동일).
 
-    rules/table 은 조각 실패·비-DML 이면 None → 빈 배열(부분 성공 허용, 요약만 코어).
+    rules/table 은 해당 관심사를 요청하지 않은 노드에서만 None이다.
     """
-    if summary is not None:
-        summary_text, search_text = normalize_searchable_text(
-            summary.summary, summary.search_text
-        )
-        fn.summary = summary_text
-        fn.stereotype = coerce_stereotype(summary.stereotype or "", strategy.name) or None
-        fn.logical_name = summary.logical_name or None
-        fn.search_text = search_text
-        excerpt = source_cache.excerpt(
-            ctx.file_path, ctx.start_line, ctx.end_line
-        )
-        fn.domain_terms = normalize_domain_terms(
-            summary.domain_terms,
-            source_text=excerpt.raw_text,
-            numbered_source_text=excerpt.numbered_text,
-            code_id=fn.id,
-            component=_STEP,
-        )
-        ctx.summary = summary_text
-    # spec 027: LLM 귀속 테이블을 결정론 reads/writes 로 제한 (callee 함수명 오귀속 차단).
-    constrain_tables_to_rw(
-        fn.id, ctx.reads, ctx.writes, table, rules,
-        allowed_columns_by_table=ctx.extra.get("ddl_columns_by_table"),
-        table_op=ctx.extra.get("table_op"),
-    )
+    findings = list(pre_findings)
+    if summary is None:
+        # Questions are summary-owned. A missing summary is already a visible finding,
+        # but downstream graph construction still requires an explicit empty collection.
+        fn.extra.setdefault("questions", [])
     if "insights" in requested_parts:
         fn.extra["table_insights"] = [
             t.model_dump() for t in table.table_insights
         ] if table else []
     if "rules" in requested_parts:
-        fn.extra["rules"] = [r.model_dump() for r in rules.rules] if rules else []
-        fn.extra["questions"] = [q.model_dump() for q in rules.questions] if rules else []
-    if failed_parts:
-        fn.extra["partial"] = tuple(
-            part for part in ("summary", "rules", "insights") if part in failed_parts
+        accepted_rules = []
+        inventory = build_control_inventory(fn, ctx, source_cache)
+        assigned = set(required_rule_rows(inventory, gate_only=is_gate))
+        if rules is not None:
+            # 분기표 대조 채점. 빈 rules도 의무 행 누락으로 검증하며 건너뛰지 않는다.
+            source_plain = source_cache.slice(
+                ctx.file_path, ctx.start_line, ctx.end_line
+            )
+            report = grade_rules(
+                RulesExamplesOutput(
+                    rules=rules.rules
+                ),
+                inventory,
+                source_plain,
+                assigned=assigned,
+                allowed_tables=set(ctx.reads) | set(ctx.writes),
+                read_tables=set(ctx.reads),
+                write_tables=set(ctx.writes),
+                table_ops=ctx.extra.get("table_op") or {},
+                require_exact_conditions=True,
+            )
+            accepted_rules, graded_findings = partition_rule_candidates(
+                RulesExamplesOutput(rules=rules.rules),
+                report,
+                assigned=assigned,
+                evidence_rule="code_gate_rules_batch" if is_gate else "code_rules_examples_batch",
+            )
+            findings.extend(graded_findings)
+        rule_finding_records = [
+            finding.to_dict() for finding in findings if finding.concern == "rules"
+        ]
+        fn.extra["rule_grading"] = {
+            "obligation_rows": len(assigned),
+            "accepted_rows": [rule.anchor_line for rule in accepted_rules],
+            "finding_rows": sorted({
+                row for item in rule_finding_records for row in item["coordinates"]
+            }),
+        }
+        serialized, unresolved_tables = serialize_rules(
+            accepted_rules,
+            fn.signature or fn.id,
+            ctx.reads,
+            ctx.writes,
+            ctx.extra.get("table_op"),
         )
-    else:
-        fn.extra.pop("partial", None)
+        fn.extra["rules"] = serialized
+        if unresolved_tables:
+            raise ValueError(
+                f"{fn.id}: then 테이블 효과가 결정론 R/W와 불일치: "
+                f"{sorted(set(unresolved_tables))[:8]}"
+            )
     # ctx 에 부착 — 부모 배치가 compact_body·자식규칙으로 라이브 조회.
     if "rules" in requested_parts:
         ctx.extra["rules"] = fn.extra["rules"]
         ctx.extra["questions"] = fn.extra["questions"]
+    apply_analysis_findings(fn, findings, component=_STEP)
     return fn

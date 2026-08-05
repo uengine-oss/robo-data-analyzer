@@ -257,6 +257,11 @@ def _handle_create(
     tkey = (schema_name, table_name)
     if tkey not in seen_tables:
         seen_tables.add(tkey)
+        # VIEW 정의 SELECT 원문 보관 (spec 112) — 종전엔 버리던 "뷰의 레시피".
+        # 기저 테이블 추적(뷰 펼치기)의 유일한 재료다. sqlglot expression 이 곧 정의.
+        view_definition = ""
+        if kind == "VIEW" and stmt.args.get("expression") is not None:
+            view_definition = stmt.args["expression"].sql()
         result.tables.append(Table(
             db=db,
             schema=schema_name,
@@ -265,6 +270,7 @@ def _handle_create(
             description_source=description_source,
             comment=raw_comment,
             table_type=kind,
+            view_definition=view_definition,
         ))
         if schema_name:
             result.belongs_to_edges.append(BelongsTo(

@@ -1,56 +1,17 @@
-## DBMS 분할 3 — 배치 노드별 관측 계약, 시나리오, 실제 정보 공백.
-extends: _common
-max_tokens: 16000
+## DBMS 분할 3 — 노드·분기 좌표별 구조화 Rule 생성.
+extends: _rule_common
+inherit_inputs: false
+max_tokens: 6000
 shared_values:
-  rule_evidence_contract: ../common/rule_evidence_contract.md
+  rule_leaf_contract: ../common/rule_leaf_contract.md
 user_template_specific: |
-  # [분할 계약: BatchRulesOutput]
+  # [분할 계약: AssignedBatchRulesOutput]
 
-  입력의 각 `node_key`마다 `BatchRulesItem` 하나를 정확히 출력한다. 각 항목은 `node_key`,
-  `rules`(하위 `examples` 포함), `questions`만 가진다. summary·이름·용어·테이블 설명은
-  만들지 않는다.
+  response_format의 모든 바깥 노드 좌표와 required `R<행>`을 정확히 한 번 만들고 각 행의
+  구조화된 `cond`, `then`과 의미 `nl`을 직접 채운다.
+  스키마는 좌표와 필드만 강제하며 답을 제공하지 않는다.
 
-  {rule_evidence_contract}
+  {rule_leaf_contract}
 
-  ## 노드별 출력 구조
-
-  ```
-  BatchRulesItem {
-    node_key: "<입력 줄범위 그대로>",
-    rules: [{
-      statement: "<조건 또는 적용범위>이면 <관측 결과>",
-      anchor_line: <규칙을 직접 입증하는 양의 절대 파일 줄번호>,
-      examples: [{given, when, then,
-                  affected_tables: [{table, op: READ|INSERT|UPDATE|DELETE|MERGE}]}]
-    }],
-    questions: [{text, reason}]
-  }
-  ```
-
-  ## DBMS 노드 적용 경계
-
-  공통 결정 절차를 각 `node_key`의 body에 독립 적용한다. 같은 TARGET_NODE의
-  `CONTROL_FLOW_INDEX`는 현재 body의 누락 검사표이고, `ancestor_context`는 바깥 도달 조건일
-  뿐 별도 Rule이 아니다. 한 node_key의 Rule 목록을 모두 확정한 뒤 Example을 작성하고 닫는다.
-  형제 의미를 되돌아와 복제하거나 합치지 않는다.
-
-  조건 Rule은 결과를 선택하는 현재 node_key의 CONTROL_FLOW_INDEX 절대 줄을 쓴다. 무조건
-  변환·위임·DML·상태 변경·반환 Rule은 현재 SOURCE에서 효과가 시작되는 양의 절대 줄을 쓴다.
-  `anchor_line: 0`, 상대 줄, 조상·형제 줄은 금지한다.
-
-  - 잘못: 형제 SELECT의 조건을 현재 UPDATE Rule로 복사하고 조상 줄을 anchor로 선택
-  - 좋음: 현재 UPDATE가 직접 정한 조건·효과만 쓰고 현재 node_key의 선택 줄을 anchor로 사용
-
-  ## affected_tables
-
-  현재 노드에 주입된 reads/writes와의 교집합만 사용한다. table ID는 입력 문자열 그대로
-  echo한다. 직접 R/W가 없으면 `[]`이며 조상·형제·호출 대상 테이블을 추가하지 않는다.
-
-  - 잘못: 같은 프로시저의 다른 노드가 쓰는 테이블을 현재 Example에 추가
-  - 좋음: 현재 노드 입력에 직접 연결된 테이블과 op만 기록
-
-  Question은 현재 body·CONTROL_FLOW_INDEX·심볼·직접 R/W·외부 증거에 답이 없고, 질문 없이
-  결과 의미를 만들 수 없을 때만 쓴다. 현재 코드가 의도인지 묻지 않는다.
-
-  - 잘못: 현재 body가 정상 반환하는데 그 반환이 의도인지 질문
-  - 좋음: 외부 상태값의 뜻이 모든 입력에서 빠졌고 뜻에 따라 결과 해석이 달라질 때만 질문
+user_template_evidence: |
+  {rule_nodes}

@@ -10,15 +10,21 @@
 - Mapper 인터페이스: ``@Mapper`` annotation 또는 ``SqlSession.selectOne(...)``
 - 호출 패턴: ``sqlSession.selectList("namespace.id", ...)`` / Mapper 메서드 직접 호출
 
-## 정규식 패턴
+## 접근 규칙 (DSL — spec 108)
 
-정규식의 `<op_token>` 그룹은 메서드명 **prefix** 만 잡는다 (뒤에 `\w*` 로 suffix 흘림).
-이렇게 해야 매치된 토큰이 `op_mappings` 의 token 과 정확히 일치한다.
+`op_prefixes` 는 메서드명 **prefix** 만 (suffix 는 코드가 흘림). sqlSession 규칙의
+entity 는 첫 문자열 인자(namespace.id), Mapper 규칙의 entity 는 리시버 이름
+(`orderMapper` → `order`). ※ 구판 mapper raw 정규식은 `<entity>` group 누락으로
+링킹 불가(죽은 규칙)였다 — 이사에서 교정.
 
 ```yaml
-table_access_patterns:
-  - id: mybatis_sqlsession
-    call_regex: 'sqlSession\.(?P<op_token>selectOne|selectList|insert|update|delete)\s*\(\s*"(?P<entity>[\w.]+)"'
+table_access_rules:
+  - kind: method_call
+    id: mybatis_sqlsession
+    receiver_name: sqlSession
+    entity_from: first_arg_string
+    first_arg_charset: '[\w.]'
+    op_prefixes: [selectOne, selectList, insert, update, delete]
     op_mappings:
       - {token: selectOne,  op: SELECT}
       - {token: selectList, op: SELECT}
@@ -26,8 +32,11 @@ table_access_patterns:
       - {token: update,     op: UPDATE}
       - {token: delete,     op: DELETE}
 
-  - id: mybatis_mapper_call
-    call_regex: '(\w+Mapper)\.(?P<op_token>select|find|insert|update|delete|count)\w*\s*\('
+  - kind: method_call
+    id: mybatis_mapper_call
+    receiver_suffix: Mapper
+    entity_from: receiver
+    op_prefixes: [select, find, insert, update, delete, count]
     op_mappings:
       - {token: select, op: SELECT}
       - {token: find,   op: SELECT}

@@ -1,6 +1,6 @@
 """HAS_RULE 엣지 — CodeNode → Rule.
 
-Rule 노드는 코드노드 간 공유(rule_hash)된다. 관계 정체성은 함수 안 발생 ID까지 포함한다.
+Rule 노드 id 는 ``<function id>::R<anchor>`` (anchor 좌표 정체성, spec 116) — 함수별 고유다.
 """
 from __future__ import annotations
 

@@ -41,7 +41,6 @@ ROBO_LLM_API_KEY=<secret>               # 비밀만 별도 (secret manager 친�
 provider: vllm                  # anthropic 외는 모두 OpenAI 호환 처리
 api_base: http://my-server:8000/v1
 model: Qwen/Qwen3-72B-Instruct
-model_small: ""                 # 작은 모델 안 쓰면 빈 값 (model 사용)
 max_tokens: 8192
 timeout_seconds: 300
 verify_ssl: true                # 사내 자체 인증서면 false
@@ -49,6 +48,7 @@ sampling:
   temperature: 0.0
   top_p: 1.0
 reasoning_effort: none          # none / low / medium / high
+structured_output_method: json_schema  # provider_default / json_schema / function_calling
 extra_body:                     # provider 비표준 인자 (없으면 {} )
   top_k: 20
   min_p: 0.0
@@ -69,13 +69,13 @@ ROBO_LLM_CONFIG=myco_vllm_qwen
 | `provider` | ✅ | `openai` / `anthropic` / `openrouter` / `sglang` / `vllm` / 자유 명명. ``anthropic`` 외는 모두 OpenAI 호환 처리. |
 | `api_base` | provider=anthropic 외 ✅ | LLM endpoint URL. anthropic 은 SDK default 사용. |
 | `model` | ✅ | 기본 모델 이름 (provider 형식 그대로). |
-| `model_small` | 옵션 | 작은 모델 (큰 함수 one_liner 등). 빈 값이면 `model` 사용. |
 | `max_tokens` | ✅ | 최대 output 토큰. |
 | `timeout_seconds` | ✅ | LLM 호출 타임아웃. |
 | `verify_ssl` | ✅ | SSL 검증 (사내 자체 인증서면 `false`). |
 | `sampling.temperature` | ✅ | 표준 sampling — 모든 provider 공통. |
 | `sampling.top_p` | ✅ | 표준 sampling — 모든 provider 공통. |
 | `reasoning_effort` | ✅ | `none` / `low` / `medium` / `high`. **cross-provider 추상화** — 코드가 provider 별 키로 자동 변환. |
+| `structured_output_method` | ✅ | 단순 호출의 provider 구조화 채널. 배포별 실측으로 `provider_default` / `json_schema` / `function_calling` 중 선택. |
 | `extra_body` | ✅ (비울 수 있음) | provider 비표준 인자 dict. `{}` 이면 미전달. |
 
 ## `reasoning_effort` cross-provider 매핑

@@ -1,7 +1,8 @@
 """검색 목록과 상세 조회가 공유하는 RULE/EXAMPLE/TABLE 근거 읽기.
 
-RULE은 statement 해시로 함수 간 공유되므로 Example id의 함수 prefix로 소유 범위를
-반드시 제한한다. MCP 목록과 node_detail이 같은 조립 규칙을 사용하도록 이 모듈만 진실로 둔다.
+RULE 은 anchor 좌표 정체성(``<function id>::R<anchor>``)이라 함수별 고유다(spec 116).
+AFFECTS_TABLE 은 규칙 단위 결정론 귀속. MCP 목록과 node_detail 이 같은 조립 규칙을
+사용하도록 이 모듈만 진실로 둔다.
 """
 from __future__ import annotations
 
@@ -10,35 +11,53 @@ from graph.ownership import ANALYZER_GRAPH_OWNER
 
 
 def read_rules(session, node_id: str) -> list[dict]:
-    """코드 노드의 RULE → 소유 EXAMPLE → AFFECTS_TABLE 구조를 순서 보존해 반환한다."""
+    """코드 노드의 RULE(leaf 계약) → EXAMPLE → 규칙 단위 AFFECTS_TABLE 을 순서 보존 반환."""
     rows = session.run(
         "MATCH (x {id:$id, graph_owner:$graph_owner})-[hr:HAS_RULE]->"
         "(r:RULE {graph_owner:$graph_owner}) "
+        "OPTIONAL MATCH (r)-[at:AFFECTS_TABLE]->(t:TABLE {graph_owner:$graph_owner}) "
+        "WITH hr, r, collect(DISTINCT CASE WHEN t IS NULL THEN NULL "
+        "  ELSE {name: t.name, access: at.access, op: at.op, op_source: at.op_source} END) AS tbs "
         "OPTIONAL MATCH (r)-[:HAS_EXAMPLE]->(e:EXAMPLE {graph_owner:$graph_owner}) "
-        "WHERE CASE WHEN trim(coalesce(hr.occurrence_id,'')) <> '' "
-        "  THEN e.id STARTS WITH hr.occurrence_id + '::' "
-        "  ELSE e.id STARTS WITH $prefix END "
-        "OPTIONAL MATCH (e)-[at:AFFECTS_TABLE]->(t:TABLE {graph_owner:$graph_owner}) "
-        "WITH hr, r, e, collect(DISTINCT CASE WHEN t IS NULL THEN NULL "
-        "  ELSE {name: t.name, op: at.op} END) AS tbs "
-        "RETURN r.id AS rule_id, hr.occurrence_id AS occurrence_id, "
-        "  coalesce(hr.ordinal,0) AS ordinal, r.statement AS statement, e.id AS example_id, "
-        "  e.given AS given, e.when_ AS when_, e.then_ AS then_, "
+        "RETURN r.id AS rule_node_id, r.rule_id AS rule_id, "
+        "  coalesce(hr.ordinal,0) AS ordinal, r.anchor_line AS anchor_line, "
+        "  r.cond AS cond, r.then AS effects, r.nl AS nl, r.when AS when, "
+        "  e.id AS example_id, e.kind AS kind, e.given AS given, e.then AS example_effects, "
         "  [x IN tbs WHERE x IS NOT NULL] AS tables "
-        "ORDER BY ordinal, r.statement, size(e.id), e.id",
+        "ORDER BY ordinal, anchor_line, size(coalesce(e.id,'')), e.id",
         id=node_id,
-        prefix=f"{node_id}::",
         graph_owner=ANALYZER_GRAPH_OWNER,
     ).data()
     rules: list[dict] = []
     by_rule: dict[str, dict] = {}
     example_ids: dict[str, set[str]] = {}
     for row in rows:
-        occurrence_id = row.get("occurrence_id") or ""
-        group_key = occurrence_id or row["rule_id"]
+        group_key = row["rule_node_id"]
         rule = by_rule.get(group_key)
         if rule is None:
-            rule = {"statement": row.get("statement") or "", "examples": []}
+            rule = {
+                "rule_id": row.get("rule_id") or "",
+                "anchor_line": row.get("anchor_line") or 0,
+                "cond": row.get("cond") or "",
+                "then": list(row.get("effects") or []),
+                "nl": row.get("nl") or "",
+                "when": row.get("when") or "",
+                "tables": [
+                    {
+                        **{"name": table["name"], "op": table.get("op") or ""},
+                        **(
+                            {"access": table.get("access")}
+                            if table.get("access") else {}
+                        ),
+                        **(
+                            {"op_source": table.get("op_source")}
+                            if table.get("op_source") else {}
+                        ),
+                    }
+                    for table in (row.get("tables") or []) if table.get("name")
+                ],
+                "examples": [],
+            }
             by_rule[group_key] = rule
             example_ids[group_key] = set()
             rules.append(rule)
@@ -47,13 +66,9 @@ def read_rules(session, node_id: str) -> list[dict]:
             continue
         example_ids[group_key].add(example_id)
         rule["examples"].append({
-            "given": row.get("given") or "",
-            "when": row.get("when_") or "",
-            "then": row.get("then_") or "",
-            "tables": [
-                {"name": table["name"], "op": table.get("op") or ""}
-                for table in (row.get("tables") or []) if table.get("name")
-            ],
+            "kind": row.get("kind") or "",
+            "given": list(row.get("given") or []),
+            "then": list(row.get("example_effects") or []),
         })
     return rules
 

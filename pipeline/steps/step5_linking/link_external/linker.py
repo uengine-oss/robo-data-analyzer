@@ -12,8 +12,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from graph.schema.graph_edges import InitBy, ReferTo, References
-from graph.schema.graph_nodes import CodeNode, Constant, ExternalChunk, ProjectFile, Variable
+from graph.schema.graph_edges import ReferTo, References
+from graph.schema.graph_nodes import CodeNode, Constant, ExternalChunk, ProjectFile
 from pipeline.steps.step5_linking.link_external.key_index import (
     mask_comments_and_literals,
     quoted_literals,
@@ -22,8 +22,9 @@ from pipeline.steps.step5_linking.link_external.resolver_catalog import (
     call_sites,
     promote_wrappers,
 )
-from pipeline.steps.step5_linking.link_external.symbol_values import SymbolTable
+from pipeline.steps.step5_linking.link_external.literal_constants import LiteralConstantIndex
 from shared.files.source_excerpt import raw_node_text
+from pipeline.languages import external_resolvers
 from pipeline.steps.step5_linking.link_external.target_index import (
     MAX_VALUE_LENGTH,
     TargetIndex,
@@ -52,18 +53,16 @@ def _normalized(path: str) -> str:
 def link_external(
     *,
     code_nodes: list[CodeNode],
-    variables: list[Variable],
     constants: list[Constant],
     chunks: list[ExternalChunk],
     routine_ids: set[str],
     project_files: list[ProjectFile] | None = None,
     references_edges: list[References] | None = None,
-    init_by_edges: list[InitBy] | None = None,
 ) -> LinkOutcome:
     """해석기 호출부에서 확정된 키를 주소성 있는 대상에 잇는다.
 
-    "이 루틴이 어느 상수를 쓰는가"는 step2 의 REFERENCES 를, "그 상수가 어느 상수에서
-    오는가"는 INIT_BY 를 그대로 쓴다 — 여기서 이름을 다시 찾지 않는다.
+    "이 루틴이 어느 리터럴 상수를 쓰는가"는 step2 의 REFERENCES 를 그대로 쓴다.
+    지역 대입이나 상수 연결식을 실행 결과처럼 접지 않는다.
 
     호출 탐지에만 step2 의 ``call_sites`` 를 쓰지 않는다. 실측 결과 그 목록은 단순
     ``obj.method()`` 일부만 담고 ``context.lookup(x)`` 처럼 캐스팅·체이닝이 붙은 호출은
@@ -71,7 +70,7 @@ def link_external(
     본문에서 직접 찾는다.
     """
     index = TargetIndex(chunks, project_files or [])
-    symbols = SymbolTable(variables, constants, references_edges, init_by_edges)
+    constants_by_routine = LiteralConstantIndex(constants, references_edges)
     routines = sorted(
         (node for node in code_nodes if node.id in routine_ids), key=lambda node: node.id,
     )
@@ -90,11 +89,10 @@ def link_external(
             continue
         source_file = _normalized(code.file_path)
         masked = mask_comments_and_literals(raw_code)
-        locals_here = SymbolTable.local_literal_values(raw_code)
         for site in call_sites(
             masked, raw_code, catalog, code.start_line or 1, code.name or "",
         ):
-            value = _determined_value(site.expression, code, symbols, locals_here)
+            value = _determined_value(site.expression, code, constants_by_routine)
             if value is None:
                 dynamic += 1
                 continue
@@ -125,12 +123,11 @@ def link_external(
 
 
 def _declared_names() -> frozenset[str]:
-    from pipeline.steps.step5_linking.link_external.resolver_catalog import DECLARED_RESOLVERS
-    return frozenset(DECLARED_RESOLVERS)
+    return frozenset(external_resolvers())
 
 
 def _determined_value(
-    expression: str, code: CodeNode, symbols: SymbolTable, locals_here: dict[str, str],
+    expression: str, code: CodeNode, constants: LiteralConstantIndex,
 ) -> str | None:
     """키 인자 표현식을 확정 문자열로. 확정 못 하면 None(동적)."""
     raw = expression.strip()
@@ -143,11 +140,7 @@ def _determined_value(
     name = _symbol_name(raw)
     if not name:
         return None
-    # 지역 선언이 우선한다 — 같은 이름의 상수보다 가까운 곳의 값이 실제 값이다.
-    if "." not in raw and name in locals_here:
-        return locals_here[name]
-    node_id = symbols.node_for(code.id, name)   # step2 REFERENCES 가 확정한 그 심볼
-    return None if node_id is None else symbols.value_of_node(node_id)
+    return constants.value_for(code.id, name)
 
 
 def _symbol_name(expression: str) -> str:

@@ -5,7 +5,6 @@
 - ``pipeline/steps/step7_analyze_code`` (code_summary / code_table_insights /
   code_rules_examples)
 - ``pipeline/steps/step8_post_processing`` (module_summary / table_description)
-- ``pipeline/steps/step6_build_context/large_code_one_liner``
 
 yaml 형식 (단순)::
 
@@ -34,8 +33,9 @@ yaml 형식 (DRY — 분할 그룹의 KV 캐시 prefix 통일)::
 내용부터 두어 같은 rule의 여러 대상 호출이 긴 prefix를 재사용한다. 분할 그룹의 system
 본문은 글자 단위 동일이다. 자세한 원칙: [[kv-cache]].
 
-``llm.with_structured_output(response_model, include_raw=True)`` 사용 →
-usage_metadata 동시 추출 + Pydantic 자동 파싱.
+실제 provider JSON Schema 호출·usage·내부 Pydantic 검증은
+``yaml_llm_runner.run_yaml_rule``이 소유한다. 이 모듈은 실패 시 partial raw와 prompt
+evidence를 보존하는 공용 경계만 소유한다.
 
 **Plan §4 M0 핵심**: Agent 외부 호출도 ``usage.jsonl`` 적재 (측정 사각지대 차단).
 ``CostTrackingMiddleware`` 와 같은 헬퍼 ``llm.usage.usage_jsonl_writer.persist_usage_and_charge_budget``
@@ -76,6 +76,9 @@ def _write_error_record(
     user_values: dict,
     error: BaseException,
     elapsed_ms: int,
+    response_schema: dict | None = None,
+    structured_output_method: str | None = None,
+    streamed_partial: str = "",
 ) -> None:
     """LLM 호출 실패 시에도 prompt + error 적재 — 사후 디버깅 (silent skip 차단).
 
@@ -86,7 +89,7 @@ def _write_error_record(
     ★ ``LengthFinishReasonError`` 는 ``completion`` 속성에 partial response 보유 —
     폭주 내용 (반복 패턴 / 쓸데없는 내용) 진단을 위해 추출 적재.
     """
-    partial_content = _extract_partial_content(error)
+    partial_content = _extract_partial_content(error) or streamed_partial
     try:
         target_id, sort_key = _extract_target_and_sort(user_values)
         write_rule_record(
@@ -99,8 +102,10 @@ def _write_error_record(
                 "error": f"{type(error).__name__}: {error}",
                 "latency_ms": elapsed_ms,
                 "partial_chars": len(partial_content) if partial_content else 0,
+                "structured_output_method": structured_output_method,
             },
             sort_key=sort_key,
+            response_schema=response_schema,
         )
     except Exception as e:  # noqa: BLE001 — graceful (이미 raise 직전)
         log_warning(
@@ -113,13 +118,46 @@ def _write_error_record(
 
 
 def _extract_partial_content(error: BaseException) -> str:
-    """``LengthFinishReasonError`` 의 ``completion`` 속성에서 partial response 추출.
+    """예외가 실어 온 partial response 를 추출한다 — 없으면 빈 문자열 (graceful).
 
-    OpenAI SDK 가 ``.parse()`` 안에서 raise — ``completion.choices[0].message.content`` 가
-    폭주 partial 본문. 그 외 예외는 빈 문자열 (graceful).
+    지원 경로 (spec 116 0단계 — 실패 시에도 raw 를 지우지 않는다):
+    - ``partial_text`` 속성: ``RepetitionLoopAborted`` 가 중단 시점까지의 수신 tail 을 실음.
+    - pydantic ``ValidationError``: 직접 adapter나 과거 evidence에서 예외의
+      ``errors()[*]['input']``에 실린 파싱 입력을 복원한다. 현행 yaml runner는 provider
+      JSON Schema 결과의 raw를 먼저 확보한 뒤 자체 Pydantic 검증 실패를 정상 record에
+      남기므로 이 예외 복원에 의존하지 않는다.
+    - ``completion`` 속성: OpenAI SDK ``LengthFinishReasonError`` 가
+      ``completion.choices[0].message.content`` 에 절단 본문을 실음.
 
     폭주 진단용 — 반복 패턴 / 쓸데없는 내용 / 무한 list 등을 사람·LLM 이 확인.
     """
+    partial_text = getattr(error, "partial_text", "")
+    if isinstance(partial_text, str) and partial_text:
+        return partial_text
+    errors_fn = getattr(error, "errors", None)
+    if callable(errors_fn):
+        try:
+            import json as _json
+
+            inputs = []
+            for item in errors_fn():
+                value = item.get("input")
+                if value is None:
+                    continue
+                inputs.append(
+                    value if isinstance(value, str)
+                    else _json.dumps(value, ensure_ascii=False, default=str)
+                )
+            if inputs:
+                # 같은 입력이 필드별로 반복 보고될 수 있어 첫 원문만 보존한다.
+                return inputs[0]
+        except Exception as extraction_error:  # noqa: BLE001 — 원 예외는 그대로 보존
+            log_warning(
+                "llm.runners.invocation",
+                "extract_validation_input_failed",
+                "검증 오류의 partial 입력 복원 실패 — 원 호출 오류는 그대로 전파",
+                error=f"{type(extraction_error).__name__}: {extraction_error}",
+            )
     completion = getattr(error, "completion", None)
     if completion is None:
         return ""

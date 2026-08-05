@@ -71,7 +71,9 @@ class GraphDeltaContractTests(unittest.IsolatedAsyncioTestCase):
     async def test_removed_coupled_domains_llm_field_is_rejected(self) -> None:
         with self.assertRaises(ValidationError):
             RuleItem.model_validate({
-                "statement": "재고가 없으면 주문을 거절한다",
+                "anchor_line": 1,
+                "cond": 'F("stock") == 0',
+                "then": [],
                 "coupled_domains": ["재고"],
                 "examples": [],
             })
@@ -95,17 +97,26 @@ class GraphDeltaContractTests(unittest.IsolatedAsyncioTestCase):
         stream = _CaptureStream()
 
         await emit_nodes(stream, [
-            Rule(id="rule:1", statement="재고가 부족하면 주문을 거절한다"),
-            Example(id="example:1", given="재고 0", when="주문", then="거절"),
+            Rule(
+                id="fn:1::R-19", rule_id="R-19", anchor_line=19,
+                cond='F("stock") == 0', then=('call("reject")',),
+                nl="재고가 부족하면 주문을 거절한다", when="order(itf)",
+            ),
+            Example(
+                id="fn:1::R-19::E1", kind="satisfy",
+                given=('F("stock") == 0',), then=('call("reject")',),
+            ),
             Question(id="question:1", text="재입고 예정인가?", reason="판단 근거"),
         ])
-        await emit_edges(stream, [HasRule("function:1", "rule:1")])
+        await emit_edges(stream, [HasRule("function:1", "fn:1::R-19")])
 
         self.assertEqual([event["label"] for event in stream.events[:3]], [
             "RULE", "EXAMPLE", "QUESTION",
         ])
-        self.assertEqual(stream.events[0]["props"]["statement"], "재고가 부족하면 주문을 거절한다")
-        self.assertEqual(stream.events[1]["props"]["then"], "거절")
+        self.assertEqual(stream.events[0]["props"]["nl"], "재고가 부족하면 주문을 거절한다")
+        self.assertEqual(stream.events[0]["props"]["anchor_line"], 19)
+        self.assertEqual(list(stream.events[0]["props"]["then"]), ['call("reject")'])
+        self.assertEqual(stream.events[1]["props"]["kind"], "satisfy")
         self.assertEqual(stream.events[2]["props"]["reason"], "판단 근거")
         self.assertEqual(stream.events[3]["props"], {})
 

@@ -19,3 +19,22 @@ class ScanConfidenceBoundsTests(unittest.TestCase):
         confidence, _ = _apply_verdict(verdict, [object()], None)
 
         self.assertEqual(0.5, confidence)
+
+    def test_proposed_rule_verification_failure_is_fatal(self) -> None:
+        verdict = PatternVerdict(
+            ok=False,
+            resolved_ratio=0.0,
+            summary="dead rule",
+            failed_rule_ids=("dead",),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "dead rule"):
+            _apply_verdict(verdict, [object()], None)
+
+    def test_explicit_no_rule_path_remains_non_fatal(self) -> None:
+        verdict = PatternVerdict(ok=False, resolved_ratio=0.0, summary="no rules")
+
+        confidence, reason = _apply_verdict(verdict, [], "no common access syntax")
+
+        self.assertEqual(0.1, confidence)
+        self.assertEqual("no common access syntax", reason)

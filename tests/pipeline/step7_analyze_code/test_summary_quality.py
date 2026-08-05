@@ -8,7 +8,7 @@ from pipeline.models.code_analysis_output import (
     BatchSummaryItem,
     SummaryOutput,
 )
-from pipeline.steps.step7_analyze_code.summary_quality import normalize_searchable_text
+from pipeline.steps.step7_analyze_code.summary_quality import normalize_canonical_summary
 
 
 class SummaryPreservationTest(unittest.TestCase):
@@ -16,7 +16,7 @@ class SummaryPreservationTest(unittest.TestCase):
 
     @staticmethod
     def _summary(text: str) -> str:
-        return SummaryOutput(search_text="검색 설명", summary=text, stereotype="").summary
+        return SummaryOutput(summary=text, stereotype="").summary
 
     def test_more_than_three_sentences_are_not_clipped(self):
         text = "첫째 문장이다. 둘째 문장이다. 셋째 문장이다. 넷째 문장이다."
@@ -41,24 +41,26 @@ class SummaryPreservationTest(unittest.TestCase):
         )
 
 
-class SearchableTextContractTest(unittest.TestCase):
-    def test_missing_search_text_is_rejected_without_copying_summary(self):
-        with self.assertRaisesRegex(ValueError, "search_text is empty"):
-            normalize_searchable_text("Serializes and forwards the payload.", "")
-
-    def test_missing_summary_is_rejected_without_copying_search_text(self):
+class CanonicalSummaryContractTest(unittest.TestCase):
+    def test_missing_summary_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "summary is empty"):
-            normalize_searchable_text("", "Déclare uniquement la signature.")
+            normalize_canonical_summary("")
 
-    def test_both_empty_are_rejected_instead_of_name_inference(self):
-        with self.assertRaisesRegex(ValueError, "summary is empty"):
-            normalize_searchable_text("", " ")
+    def test_one_summary_is_trimmed_without_rewriting(self):
+        self.assertEqual(
+            "Déclare la responsabilité.",
+            normalize_canonical_summary(" Déclare la responsabilité. "),
+        )
 
     def test_structured_models_reject_a_completely_empty_semantic_result(self):
         with self.assertRaises(ValidationError):
-            SummaryOutput(summary="", search_text="")
+            SummaryOutput(summary="")
         with self.assertRaises(ValidationError):
-            BatchSummaryItem(node_key="1-1", summary="", search_text="")
+            BatchSummaryItem(node_key="1-1", summary="")
+
+    def test_structured_models_have_one_meaning_field(self):
+        self.assertEqual("표시", SummaryOutput(summary="표시").summary)
+        self.assertEqual("표시", BatchSummaryItem(node_key="1-1", summary="표시").summary)
 
 
 if __name__ == "__main__":

@@ -3,16 +3,14 @@ system: |
   멤버 의미에 없는 사실을 만들지 않고 response_format만 출력합니다.
 shared_values:
   component_naming_contract: ../common/component_naming_contract.md
-user_template: |
+user_template_specific: |
   {component_naming_contract}
 
-  허용 stereotype:
-  {stereotype_options}
+  아래 멤버 근거만 종합해 ComponentNamingOutput을 작성한다.
 
+user_template_inputs: |
   component_id: {component_id}
 
   analyzed_members:
   {members}
-
-  멤버 근거만 종합해 ComponentNamingOutput을 작성한다.
-max_tokens: 500
+max_tokens: 200

@@ -71,6 +71,7 @@ class Table:
     comment: str = ""                        # -- /* */ 주석 원문 (COMMENT ON 없으면 description 출처)
     analyzed_description: str = ""           # 분석 LLM 합성 설명
     table_type: str = "TABLE"                # TABLE / VIEW / MATERIALIZED_VIEW
+    view_definition: str = ""                # VIEW 의 정의 SELECT 원문 (spec 112 뷰 펼치기 재료)
     # embed_step 이 채우는 의미 벡터. metadata={"vector": True} = 직렬화 소비자용
     # "dim 만 표시" 계약 표식.
     embedding: tuple[float, ...] = field(default=(), metadata={"vector": True})
@@ -184,12 +185,14 @@ class CodeNode:
     return_type: str = ""                    # 반환 타입
     params: str = ""                         # 파라미터 목록 텍스트
 
+    # 구조 statement 표현 (parser spec 016 — listener 가 소유한 원문) ────
+    expression: str = ""                     # RETURN/THROW/RAISE 식·제어 조건식 원문
+    target: str = ""                         # ASSIGNMENT 좌변(lvalue) 원문
+    operator: str = ""                       # ASSIGNMENT 연산자 원문 (=, +=, := …)
+
     # 분석 결과 (analyze_code 이 채움) ────
-    summary: Optional[str] = None            # 마커 없는 1~3줄 짧은 요약 (SummaryOutput 검증)
+    summary: Optional[str] = None            # 표시·검색·callee handoff 공용 canonical 의미 계약
     stereotype: Optional[str] = None         # ontology_roles.yaml 풀에서
-    logical_name: Optional[str] = None       # 짧은 도메인 토큰
-    search_text: Optional[str] = None        # 검색 전용 서술 (프론트 비노출 — 임베딩·검색 재료)
-    domain_terms: dict[str, str] = field(default_factory=dict)  # 검증된 표제어→뜻 (그래프에는 canonical JSON 저장)
     embedding: tuple[float, ...] = field(default=(), metadata={"vector": True})
 
     # strategy 별 확장 필드 (dict — 새 필드 추가 시 base 무변경) ────
@@ -267,24 +270,30 @@ class DataType:
 
 @dataclass(frozen=True)
 class Rule:
-    """비즈니스 규칙 — 같은 statement 는 코드노드 간 1 노드 공유.
+    """구조화 비즈니스 규칙 — JSON 봉투 + 파이썬 표현식 leaf (spec 116).
 
-    정체성 ``id`` = 정규화 statement MD5[:12]. Neo4j MERGE 가 id(=해시) 키로 자동 dedup.
+    정체성 ``id`` = ``<function id>::R<anchor>`` — anchor 가 파일 절대 줄이라 함수 내
+    유일하다(폐기된 statement 해시 공유 개념을 사용하지 않는다).
     """
-    id: str                                  # 정규화 statement MD5[:12] — Neo4j unique key
-    statement: str                           # 비즈니스 규칙 문장
+    id: str
+    rule_id: str = ""                        # "R-<anchor>"
+    anchor_line: int = 0                     # 절대 파일 줄 — 채점·배칭의 단일 좌표
+    cond: str = ""                           # 파이썬 불리언 표현식 leaf ("" = 무조건)
+    then: tuple[str, ...] = ()               # 파이썬 효과 호출문 목록 — 유일한 채점 대상
+    nl: str = ""                             # 사람용 한 문장 (표시 전용)
+    when: str = ""                           # 실행 가능 단위 심볼 — 코드가 채움
 
 
 @dataclass(frozen=True)
 class Example:
-    """Rule 의 given/when/then 시나리오 (Example Mapping).
+    """구조화 Rule 검증 시나리오 — 파이썬 leaf (spec 116).
 
-    정체성 ``id`` = ``<function id>::R<ordinal>::<rule_hash>::<idx>``.
+    정체성 ``id`` = ``<rule id>::E<idx>``. given/then 은 파이썬 leaf 목록.
     """
     id: str
-    given: str = ""                          # 자연어 한 줄 (진입 조건)
-    when: str = ""                           # 자연어 한 줄
-    then: str = ""                           # 자연어 한 줄 (결과)
+    kind: str = ""                           # satisfy
+    given: tuple[str, ...] = ()              # 파이썬 등식 목록
+    then: tuple[str, ...] = ()               # 효과 호출문 목록
 
 
 @dataclass(frozen=True)

@@ -26,9 +26,7 @@ WHERE n.graph_owner = '{ANALYZER_GRAPH_OWNER}'
 RETURN n.id AS id, coalesce(n.type, head(labels(n))) AS label,
        coalesce(n.name,'') AS name, n.summary AS summary,
        coalesce(n.code_text,'') AS code_text,
-       coalesce(n.search_text,'') AS search_text,
-       coalesce(n.stereotype,'') AS stereotype,
-       coalesce(n.logical_name,'') AS logical_name
+       coalesce(n.stereotype,'') AS stereotype
 ORDER BY id
 """
 _FAN_IN_QUERY = (f"MATCH (a {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}})-[:CALLS]->"
@@ -53,8 +51,7 @@ class Corpus:
         self.fan_in = fan_in
         self._vecs = vecs
         from rank_bm25 import BM25Okapi
-        texts = [f"{r['name']} {r.get('logical_name', '')} {r['summary']} {r.get('code_text', '')}"
-                 for r in rows]
+        texts = [(r.get("summary") or "").strip() for r in rows]
         self.bm25 = BM25Okapi([tokenize(t) for t in texts])
 
     def vectors(self):

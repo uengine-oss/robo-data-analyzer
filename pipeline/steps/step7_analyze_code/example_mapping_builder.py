@@ -3,20 +3,16 @@
 Framework / DBMS **공통 단일 빌더**. anchor 는 ``FUNCTION`` 하나.
 
 흐름: 분석된 CodeNode 들의 ``extra["rules" / "questions"]``
-→ Rule(공유)·Example·Question 노드 + HAS_RULE / HAS_EXAMPLE / HAS_QUESTION /
+→ Rule·Example·Question 노드 + HAS_RULE / HAS_EXAMPLE / HAS_QUESTION /
   AFFECTS_TABLE 엣지. 결정론 — LLM 0회.
 
-Rule 공유: 같은 statement 는 ``rule_hash`` 가 같아 1 노드 — 코드노드 간 규칙을 공유한다.
-examples 는 소속 rule 하위 중첩.
-
-응답 형식 단일 진실 ([[code_analysis_output]] RulesExamplesOutput):
-- rules:    {statement, examples:[{given, when, then, affected_tables}]}
-- questions:{text, reason}
+단일 transport 형식(spec 116): {rule_id, anchor_line, cond, then[], nl, when,
+examples[{kind, given[], then[]}], affected_tables[]} — Rule id = ``<fid>::R<anchor>``
+(파일 절대 줄이라 함수 내 유일). AFFECTS_TABLE 은 규칙 단위(then 결정론 귀속).
+형식이 아니면 **즉시 실패** — 조용히 RULE 0 개가 되는 상태를 금지한다.
 """
 from __future__ import annotations
 
-import hashlib
-import re
 from dataclasses import dataclass, field
 
 from graph.schema.graph_edges import (
@@ -40,109 +36,114 @@ class ExampleMappingResult:
     affects_table: list[AffectsTable] = field(default_factory=list)
 
 
-def rule_hash(statement: str) -> str:
-    """정규화 statement → MD5[:12]. 같은 의미 문장 = 같은 해시 (Rule 노드 공유)."""
-    normalized = re.sub(r"\s+", " ", (statement or "").lower().strip())
-    return hashlib.md5(normalized.encode("utf-8")).hexdigest()[:12]
-
-
 def build_example_mapping(code_nodes: list[CodeNode]) -> ExampleMappingResult:
     """분석된 CodeNode 들 → Example Mapping 노드·엣지 (결정론, LLM 0)."""
     result = ExampleMappingResult()
-    rule_by_hash: dict[str, Rule] = {}
     for fn in code_nodes:
-        _build_one(fn, result, rule_by_hash)
-    result.rules = list(rule_by_hash.values())
+        extra = fn.extra or {}
+        _collect_rules(fn.id, extra.get("rules") or [], result)
+        _collect_questions(fn.id, extra.get("questions") or [], result)
     return result
 
 
-def _build_one(
-    fn: CodeNode, result: ExampleMappingResult, rule_by_hash: dict[str, Rule],
-) -> None:
-    """코드노드 1개의 rules(하위 examples)/questions → 노드·엣지 누적."""
-    extra = fn.extra or {}
-    _collect_rules(fn.id, extra.get("rules") or [], result, rule_by_hash)
-    _collect_questions(fn.id, extra.get("questions") or [], result)
-
-
-def _collect_rules(
-    fid: str, rules: list, result: ExampleMappingResult, rule_by_hash: dict[str, Rule],
-) -> None:
-    """rules → Rule 노드(공유) + HAS_RULE + 하위 examples(HAS_EXAMPLE·AFFECTS_TABLE)."""
+def _collect_rules(fid: str, rules: list, result: ExampleMappingResult) -> None:
+    """rules → Rule 노드 + HAS_RULE + 하위 examples. 계약 형식이 아니면 즉시 실패."""
     ordinal = 0
     for r in rules:
         if not isinstance(r, dict):
-            continue
-        statement = (r.get("statement") or "").strip()
-        if not statement:
-            continue
-        ordinal += 1
-        rh = rule_hash(statement)
-        occurrence_id = f"{fid}::R{ordinal:04d}"
-        rule_by_hash.setdefault(rh, Rule(id=rh, statement=statement))
-        anchor_line = r.get("anchor_line")
-        if (
-            isinstance(anchor_line, bool)
-            or not isinstance(anchor_line, int)
-            or anchor_line <= 0
-        ):
+            raise TypeError(
+                f"rule transport entry must be an object for {fid}: {type(r).__name__}"
+            )
+        if not r.get("rule_id"):
             raise ValueError(
-                f"Rule occurrence requires a positive absolute anchor_line: {fid} R{ordinal}"
+                f"unknown rule transport shape for {fid}: keys={sorted(r)} — "
+                "structured rule_id 형식이 아님 (silent RULE 0 금지)"
             )
-        result.has_rule.append(
-            HasRule(
-                source_id=fid,
-                target_id=rh,
-                occurrence_id=occurrence_id,
-                ordinal=ordinal,
-                anchor_line=anchor_line,
-            )
-        )
-        _collect_examples(fid, occurrence_id, rh, r.get("examples") or [], result)
+        ordinal += 1
+        _collect_rule(fid, ordinal, r, result)
 
 
-def _collect_examples(
-    fid: str,
-    occurrence_id: str,
-    rh: str,
-    examples: list,
-    result: ExampleMappingResult,
+def _collect_rule(
+    fid: str, ordinal: int, r: dict, result: ExampleMappingResult,
 ) -> None:
-    """rule 하위 examples → Example 노드 + HAS_EXAMPLE + AFFECTS_TABLE."""
-    for idx, e in enumerate(examples, start=1):
-        if not isinstance(e, dict):
-            continue
-        given = (e.get("given") or "").strip()
-        when = (e.get("when") or "").strip()
-        then = (e.get("then") or "").strip()
-        if not (given or when or then):
-            continue
-        eid = f"{occurrence_id}::{rh}::{idx}"
-        result.examples.append(Example(id=eid, given=given, when=when, then=then))
-        result.has_example.append(
-            HasExample(
-                source_id=rh,
-                target_id=eid,
-                occurrence_id=occurrence_id,
-                ordinal=idx,
-            )
+    """구조화 규칙 1행 → Rule 노드(함수별 고유) + HAS_RULE + Example + 규칙 단위 AFFECTS."""
+    anchor_line = r.get("anchor_line")
+    if (
+        isinstance(anchor_line, bool)
+        or not isinstance(anchor_line, int)
+        or anchor_line <= 0
+    ):
+        raise ValueError(
+            f"structured rule requires positive anchor_line: {fid} {r.get('rule_id')!r}"
         )
-        _collect_affects_table(eid, e.get("affected_tables") or [], result)
+    rid = f"{fid}::{r['rule_id']}"
+    result.rules.append(Rule(
+        id=rid,
+        rule_id=str(r["rule_id"]),
+        anchor_line=anchor_line,
+        cond=str(r.get("cond") or ""),
+        then=tuple(str(s) for s in (r.get("then") or [])),
+        nl=str(r.get("nl") or ""),
+        when=str(r.get("when") or ""),
+    ))
+    result.has_rule.append(HasRule(
+        source_id=fid,
+        target_id=rid,
+        occurrence_id=rid,
+        ordinal=ordinal,
+        anchor_line=anchor_line,
+    ))
+    for idx, e in enumerate(r.get("examples") or [], start=1):
+        if not isinstance(e, dict):
+            raise TypeError(
+                f"example transport entry must be an object for {rid}: {type(e).__name__}"
+            )
+        given = tuple(str(x) for x in (e.get("given") or []))
+        then = tuple(str(x) for x in (e.get("then") or []))
+        if not (given or then):
+            raise ValueError(f"empty example transport for {rid} at ordinal {idx}")
+        eid = f"{rid}::E{idx}"
+        result.examples.append(Example(
+            id=eid, given=given, then=then, kind=str(e.get("kind") or ""),
+        ))
+        result.has_example.append(HasExample(
+            source_id=rid, target_id=eid, occurrence_id=rid, ordinal=idx,
+        ))
+    # 규칙 단위 결정론 귀속 — then 효과에서 코드가 만든 transport 를 그대로 검증 적재.
+    _collect_affects_table(rid, r.get("affected_tables") or [], result)
 
 
 def _collect_affects_table(
     eid: str, affected: list, result: ExampleMappingResult,
 ) -> None:
-    """affected_tables[] → AFFECTS_TABLE 엣지 (op enum 별)."""
+    """affected_tables[] → 규칙 단위 AFFECTS_TABLE 엣지. 불완전 transport는 즉시 실패한다."""
     for entry in affected:
         if not isinstance(entry, dict):
-            continue
+            raise ValueError("AFFECTS_TABLE entry must be an object")
         table = str(entry.get("table") or "").strip()
+        access = str(entry.get("access") or "").strip().upper()
         op = str(entry.get("op") or "").strip().upper()
-        if not table or not op:
-            continue
+        op_source = str(entry.get("op_source") or "").strip().upper()
+        if (
+            not table
+            or access not in {"READ", "WRITE", "READ_WRITE"}
+            or op not in {
+                "READ", "INSERT", "UPDATE", "DELETE", "MERGE", "TRUNCATE", "UNKNOWN",
+            }
+            or op_source not in {"SCANNER", "LLM_INFERRED", "UNRESOLVED"}
+        ):
+            raise ValueError(
+                f"incomplete AFFECTS_TABLE transport for {eid}: "
+                f"table={table!r}, access={access!r}, op={op!r}, op_source={op_source!r}"
+            )
         result.affects_table.append(
-            AffectsTable(source_id=eid, target_id=table, op=op)
+            AffectsTable(
+                source_id=eid,
+                target_id=table,
+                access=access,
+                op=op,
+                op_source=op_source,
+            )
         )
 
 
@@ -155,9 +156,12 @@ def _collect_questions(fid: str, questions: list, result: ExampleMappingResult) 
         elif isinstance(q, str):
             text, reason = q.strip(), ""
         else:
-            continue
+            raise TypeError(
+                f"question transport entry must be an object or string for {fid}: "
+                f"{type(q).__name__}"
+            )
         if not text:
-            continue
+            raise ValueError(f"empty question transport for {fid} at ordinal {idx}")
         qid = f"{fid}::Q{idx}"
         result.questions.append(Question(id=qid, text=text, reason=reason))
         result.has_question.append(HasQuestion(source_id=fid, target_id=qid))

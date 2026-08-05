@@ -21,40 +21,53 @@ from pathlib import Path
 from typing import Annotated, Callable, Optional, TypeVar
 
 from langchain.agents import create_agent
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.types import Command
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from agents.tools.messages import TOOL_MESSAGES
 from llm.usage.cost_budget import CostBudget
 from llm.client import build_llm_client
 from llm.repetition_guard import RepetitionGuardCallback
+from llm.runners.model_output_error import model_output_kind
 from agents.middleware.stack import build_standard_stack
+from agents.middleware.call_limit import ModelCallLimitExceeded
 from llm.tracing import begin_agent_invoke, end_agent_invoke
 from shared.config.settings import SETTINGS
-from shared.events.runtime_logger import log_warning
 
 _T = TypeVar("_T", bound=BaseModel)
 
 # Agent state 에 최종 인스턴스를 적재할 표준 키 — 호출자가 result[_STATE_KEY] 로 받음.
 _STATE_KEY = "structured_response"
 
-# 제출 도구 미호출로 끝난 invoke 의 총 시도 횟수(최초 1회 + 재시도). 실측 근거:
-# 같은 입력 9,176 토큰에서 모델이 도구 호출 대신 평문 20토큰을 내는 턴이 관측됐고
-# (2026-07-23 run14~16, 스트리밍 on/off 무관), 그 한 턴으로 12분짜리 run 전체가 죽었다.
-_MAX_SUBMIT_ATTEMPTS = 3
+class AgentModelOutputError(RuntimeError):
+    """Agent 모델이 usable submit 후보를 만들지 못함; 실행 배선 실패와 구분한다."""
 
-# 재시도 시 덧붙이는 고정 지시 — 문구가 고정이라 재현성을 깨지 않는다.
-_SUBMIT_NUDGE = (
-    "지금까지 관찰한 내용만으로 최종 결과를 제출하라. "
-    "설명이나 메모를 쓰지 말고 `{tool}` 도구를 정확히 한 번 호출하라. "
-    "확인하지 못한 항목은 비워 두고 제출한다."
-)
+    def __init__(self, message: str, *, kind: str = "schema") -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
-class StructuredResponseMissingError(ValueError):
+class StructuredResponseMissingError(AgentModelOutputError):
     """Agent가 최종 submit 도구 없이 종료해 구조화 결과가 없을 때 발생."""
+
+
+class StructuredResponseValidationError(AgentModelOutputError):
+    """Agent가 submit 도구를 호출했지만 payload가 출력 계약에 맞지 않을 때 발생."""
+
+
+class StructuredResponseStateError(RuntimeError):
+    """유효한 submit 호출 뒤 구조화 state가 사라진 내부 배선 오류."""
+
+
+def _field_default(field) -> object:
+    """Pydantic 필드의 실제 생략 계약을 동적 tool signature에 보존한다."""
+    if field.is_required():
+        return inspect.Parameter.empty
+    if field.default_factory is not None:
+        return field.default_factory()
+    return field.default
 
 
 def _wrap_pydantic_as_submit_tool(
@@ -105,7 +118,7 @@ def _wrap_pydantic_as_submit_tool(
                 name,
                 inspect.Parameter.KEYWORD_ONLY,
                 annotation=field.annotation,
-                default=(inspect.Parameter.empty if field.is_required() else field.default),
+                default=_field_default(field),
             )
         )
         annotations[name] = field.annotation
@@ -184,66 +197,60 @@ async def run_structured_agent(
     )
 
     # invoke 의 모든 turn 을 agent_<name>.json 에 누적. finally 로 finalize.
-    prompt_recording_started = False
-    try:
-        begin_agent_invoke(
-            agent_name=agent_name,
-            invoke_id=invoke_id,
-            system_prompt=system_prompt,
-        )
-        prompt_recording_started = True
-    except Exception as error:  # noqa: BLE001 — 보조 진단 실패는 Agent 결과를 바꾸지 않음
-        log_warning(
-            "agents.runtime",
-            "begin_prompt_recording",
-            "Agent prompt 기록 시작 실패 — Agent 실행은 계속",
-            agent=agent_name,
-            error=f"{type(error).__name__}: {error}",
-        )
+    begin_agent_invoke(
+        agent_name=agent_name,
+        invoke_id=invoke_id,
+        system_prompt=system_prompt,
+    )
     invoke_config = (
         {"callbacks": [RepetitionGuardCallback(f"agent:{agent_name}")]} if guard_on else None
     )
     submit_tool_name = f"submit_{agent_name}"
-    messages: list = [HumanMessage(content=user_message)]
-    instance = None
     try:
-        for attempt in range(1, _MAX_SUBMIT_ATTEMPTS + 1):
-            result = await agent.ainvoke({"messages": messages}, config=invoke_config)
-            instance = result.get(_STATE_KEY)
-            if isinstance(instance, response_format):
-                break
-            if attempt == _MAX_SUBMIT_ATTEMPTS:
-                break
-            # 약한 모델이 탐색만 하고 제출 도구를 건너뛴 턴 — 같은 대화에 결정론 지시 한 줄을
-            # 덧붙여 다시 태운다. 한 턴의 흔들림이 run 전체를 죽이지 않게 하는 최소 복구이며,
-            # 지시문이 고정이라 재현성을 깨지 않는다. 호출 총량은 max_calls 미들웨어가 막는다.
-            log_warning(
-                "agents.runtime",
-                "submit_tool_missing",
-                f"{submit_tool_name} 미호출로 invoke 종료 — 제출 지시 후 재시도 "
-                f"({attempt}/{_MAX_SUBMIT_ATTEMPTS})",
-                agent=agent_name,
+        try:
+            result = await agent.ainvoke(
+                {"messages": [HumanMessage(content=user_message)]}, config=invoke_config
             )
-            messages = list(result.get("messages") or messages)
-            messages.append(HumanMessage(content=_SUBMIT_NUDGE.format(tool=submit_tool_name)))
+        except Exception as error:
+            kind = model_output_kind(error)
+            if kind is not None or isinstance(error, ModelCallLimitExceeded):
+                raise AgentModelOutputError(
+                    f"agent '{agent_name}' usable submit 미산출: {type(error).__name__}: {error}",
+                    kind=kind or "call_limit",
+                ) from error
+            raise
     finally:
-        if prompt_recording_started:
-            try:
-                end_agent_invoke()
-            except Exception as error:  # noqa: BLE001 — 원래 Agent 결과/예외 보존
-                log_warning(
-                    "agents.runtime",
-                    "end_prompt_recording",
-                    "Agent prompt 기록 종료 실패 — Agent 결과는 보존",
-                    agent=agent_name,
-                    error=f"{type(error).__name__}: {error}",
-                )
+        end_agent_invoke()
 
+    instance = result.get(_STATE_KEY)
     if isinstance(instance, response_format):
         return instance
 
+    submit_calls = [
+        call
+        for message in result.get("messages", [])
+        if isinstance(message, AIMessage)
+        for call in message.tool_calls
+        if call.get("name") == submit_tool_name
+    ]
+    if submit_calls:
+        try:
+            response_format.model_validate(submit_calls[-1].get("args") or {})
+        except ValidationError as error:
+            coordinates = [
+                ".".join(str(part) for part in item["loc"])
+                for item in error.errors(include_input=False)
+            ]
+            raise StructuredResponseValidationError(
+                f"agent '{agent_name}' {submit_tool_name} payload schema 위반: "
+                f"{', '.join(coordinates)}"
+            ) from error
+        raise StructuredResponseStateError(
+            f"agent '{agent_name}' {submit_tool_name} payload는 유효하지만 "
+            f"'{_STATE_KEY}' state가 보존되지 않음"
+        )
+
     raise StructuredResponseMissingError(
         f"agent '{agent_name}' invoke 종료 — {submit_tool_name} 호출 누락 "
-        f"(제출 지시 재시도 {_MAX_SUBMIT_ATTEMPTS - 1}회 포함). "
         f"system prompt 의 '도구 호출 안내' 가 모델에게 명확히 전달됐는지 확인."
     )

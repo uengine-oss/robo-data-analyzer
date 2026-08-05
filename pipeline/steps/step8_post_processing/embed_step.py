@@ -1,8 +1,8 @@
 """embed_step — 분석 끝 임베딩 → Neo4j (코드노드 = 검색 강화텍스트 + :EMBEDDED + 벡터 인덱스).
 
 코드노드 임베딩 텍스트는 검색측과 **글자 단위 동일**한 ``search/corpus/embed_material.compose_embed_text``
-로 **그래프에서** 조성한다(요약만이 아니라 종류·역할·테이블관계·검색문장 — 검색이 성립하려면
-생성·검색이 같은 문장이어야 하므로 단일 진실). 파이프라인 끝이라 테이블 관계 엣지까지 완성돼 있다.
+로 **그래프에서** 조성한다. 의미 점수 재료는 canonical ``summary`` 하나이며 이름·관계는
+섞지 않는다.
 Table/Column 은 description 기반 현행 유지(검색 대상 아님 — :EMBEDDED 안 붙임).
 
 흐름:

@@ -74,6 +74,15 @@ from pipeline.execution.analysis_profile import (
 from graph.connection_context import Neo4jOverride, set_override
 
 
+class AnalysisBatchError(RuntimeError):
+    """하나 이상의 프로젝트 분석이 실패한 운영자 CLI 종료 상태."""
+
+    def __init__(self, failures: list[tuple[Path, Exception]]) -> None:
+        self.failures = failures
+        names = ", ".join(path.name for path, _ in failures)
+        super().__init__(f"analysis failed for {len(failures)} project(s): {names}")
+
+
 async def _consume_stream(stream: NDJSONStream) -> None:
     """NDJSON 스트림 실시간 출력 — 진행 상태 즉시 표시."""
     async for line in stream.iter():
@@ -197,8 +206,7 @@ async def main(
         project_dir = source_dir / target
         if not project_dir.is_dir():
             available = [p.name for p in source_dir.iterdir() if p.is_dir()]
-            print(f"ERROR: '{target}' 디렉토리 없음. 사용 가능: {available}")
-            return
+            raise ValueError(f"'{target}' 디렉토리 없음. 사용 가능: {available}")
         targets = [project_dir]
     else:
         subdirs = sorted(p for p in source_dir.iterdir() if p.is_dir())
@@ -210,9 +218,9 @@ async def main(
             # source/<name>/ 구조를 항상 가정하지 않는다.
             targets = [source_dir]
         else:
-            print(f"ERROR: source/ 가 비어 있음: {source_dir}")
-            return
+            raise ValueError(f"source/ 가 비어 있음: {source_dir}")
 
+    failures: list[tuple[Path, Exception]] = []
     for pd in targets:
         detected_strategy = (
             None
@@ -248,6 +256,10 @@ async def main(
             await analyze_one(pd, inputs)
         except Exception as e:
             print(f"\n[FAIL] {pd.name}: {type(e).__name__}: {e}")
+            failures.append((pd, e))
+
+    if failures:
+        raise AnalysisBatchError(failures)
 
 
 if __name__ == "__main__":
@@ -282,12 +294,16 @@ if __name__ == "__main__":
         help="이번 실행의 출력 루트. 생략하면 기존 ./logs, 명시하면 해당 경로를 사용.",
     )
     args = parser.parse_args()
-    asyncio.run(main(
-        args.target,
-        args.strategy,
-        profile_path=args.profile,
-        data_dir_override=Path(args.data_dir) if args.data_dir else None,
-        database_override=args.database,
-        locale_override=args.locale,
-        run_output_override=args.run_output,
-    ))
+    try:
+        asyncio.run(main(
+            args.target,
+            args.strategy,
+            profile_path=args.profile,
+            data_dir_override=Path(args.data_dir) if args.data_dir else None,
+            database_override=args.database,
+            locale_override=args.locale,
+            run_output_override=args.run_output,
+        ))
+    except AnalysisBatchError as error:
+        print(f"\n[FAIL] {error}", file=sys.stderr)
+        raise SystemExit(1) from error

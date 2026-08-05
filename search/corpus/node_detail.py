@@ -11,7 +11,7 @@ from search.corpus.evidence_reader import read_columns, read_rules
 from search.corpus.neo4j_reader import read_driver
 from graph.ownership import ANALYZER_GRAPH_OWNER
 
-_INTERNAL_PROPERTIES = {"embedding", "search_text", "graph_owner", "element_id"}
+_INTERNAL_PROPERTIES = {"embedding", "graph_owner", "element_id"}
 _SOURCE_PROPERTIES = {"file_path", "start_line", "end_line", "code_text"}
 _CODE_LABELS = {"FUNCTION", "PROCEDURE", "METHOD", "TRIGGER"}
 

@@ -111,7 +111,6 @@ class Retriever:
             "name": n.get("name") or n.get("label") or "Unknown",
             "label": n.get("label", ""), "stereotype": n.get("stereotype", ""),
             "summary": (n.get("summary") or "").replace("\n", " "),
-            "search_text": (n.get("search_text") or "").replace("\n", " "),
             "writes": sorted(set(rw.get("WRITES", []))),
             "reads": sorted(set(rw.get("READS", []) + rw.get("AFFECTS_TABLE", []))),
             "calls": calls,
@@ -130,7 +129,12 @@ class Retriever:
                  on_progress=None, meta: dict | None = None) -> list[dict]:
         if cfg.cluster_selection_mode == "global_anchor":
             return self._retrieve_global_anchors(query, cfg, pool_k, on_progress, meta)
-        return self._retrieve_legacy(query, cfg, pool_k, on_progress, meta)
+        if cfg.cluster_selection_mode == "legacy":
+            return self._retrieve_legacy(query, cfg, pool_k, on_progress, meta)
+        raise ValueError(
+            "cluster_selection_mode must be 'global_anchor' or 'legacy': "
+            f"{cfg.cluster_selection_mode!r}"
+        )
 
     def _retrieve_legacy(self, query: str, cfg: Config, pool_k: int,
                          on_progress=None, meta: dict | None = None) -> list[dict]:
@@ -432,6 +436,6 @@ class Retriever:
 
 def _has_novel_terms(base: list[dict], rw: dict) -> bool:
     """번역의 치환 표준어가 기존 결과(이름+요약)에 없는 새 어휘인가 — 병합 근거(novelty 게이트)."""
-    blob = " ".join((x["name"] + " " + x["summary"]).lower() for x in base)
+    blob = " ".join((x.get("summary") or "").lower() for x in base)
     subs = [(s.get("to") or "").strip().lower() for s in (rw.get("substitutions") or [])]
     return any(t and t not in blob for t in subs)

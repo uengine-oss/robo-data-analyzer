@@ -30,9 +30,10 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from graph.schema import graph_edges, graph_nodes
-from pipeline.models import analysis_context
+from pipeline.models import analysis_context, human_glossary
 from pipeline.models.analysis_meta import AnalysisRun
 from pipeline.models.analysis_meta import Codebase
+from pipeline.models.human_glossary import HumanGlossary, load_human_glossary
 from shared.config.settings import SETTINGS
 
 from llm import response_cache
@@ -77,7 +78,7 @@ def _state_msgpack_allowlist() -> tuple[type, ...]:
     """
     types = [
         obj
-        for mod in (graph_nodes, graph_edges)
+        for mod in (graph_nodes, graph_edges, human_glossary)
         for obj in vars(mod).values()
         if isinstance(obj, type) and dataclasses.is_dataclass(obj)
     ]
@@ -111,6 +112,7 @@ async def execute_run(
     run = AnalysisRun.now(codebase=codebase, run_output_root=run_output_root)
     pause = PauseController(stream)
 
+    llm_semaphore = None
     try:
         # 단일 활성 슬롯은 output reset/Neo4j wipe보다 먼저 선점한다. 두 번째 run이
         # 파괴 작업에 진입한 뒤 control 슬롯만 덮어쓰는 경쟁을 막는다.
@@ -133,10 +135,12 @@ async def execute_run(
     output_context_token = None
     locale_context_token = None
     try:
+        corpus_root = (codebase.corpus_root or codebase.root).resolve()
+        human_glossary = load_human_glossary(corpus_root)
         _reset_run_output_root(run_output_root)
         output_context_token = set_run_dir(run.run_dir)
         locale_context_token = set_response_locale(codebase.locale)
-        _write_initial_manifest(run, strategy)
+        _write_initial_manifest(run, strategy, human_glossary)
 
         # ── 파일 핸들러 attach (ROBO_RUNTIME_EVENT_FILE_ENABLED=true 일 때만) ──
         # analyzer.log (INFO+) + error.log (WARNING+) → tail -f 로 실시간 추적 가능.
@@ -206,6 +210,7 @@ async def execute_run(
                     "pause": pause,
                     "llm_semaphore": llm_semaphore,   # run 공유 동시성 한도 (총량 단일 진실)
                     "analysis_handoff": analysis_handoff,  # step7 분할 확정 → 후처리 인계
+                    "human_glossary": human_glossary,
                     # ★ run 스코프 소스 캐시 (spec 046 FR-008) — 파일당 디스크 read 1회.
                     #   종전엔 step 마다 새 인스턴스를 만들어 캐시가 무력화됐고, 같은 파일을
                     #   한 run 에서 5~8회 읽었다 (step2 안에서만 2회).
@@ -236,6 +241,7 @@ async def execute_run(
                     # — 선택된 logs 루트에는 로그·jsonl·llm-prompts만 둔다).
                     try:
                         _summarize_usage(run.run_dir)
+                        _summarize_analysis_findings(run.run_dir)
                         log_info("run", "failure_usage_summarized", run_dir=str(run.run_dir))
                     except Exception as artifact_error:
                         log_error(
@@ -251,15 +257,24 @@ async def execute_run(
 
             if not stopped:
                 _summarize_usage(run.run_dir)
+                quality_summary = _summarize_analysis_findings(run.run_dir)
 
                 if stream is not None:
-                    stream.emit({"type": "phase_event", "event": "complete", "run_id": run.run_id})
+                    stream.emit({
+                        "type": "phase_event",
+                        "event": "complete",
+                        "run_id": run.run_id,
+                        "quality_status": quality_summary["run_quality_status"],
+                        "analysis_findings": quality_summary["total"],
+                    })
 
                 log_info(
                     "run",
                     "complete",
                     run_id=run.run_id,
                     elapsed_sec=f"{time.monotonic() - run_started_at:.1f}",
+                    quality_status=quality_summary["run_quality_status"],
+                    analysis_findings=quality_summary["total"],
                 )
 
         finally:
@@ -275,6 +290,14 @@ async def execute_run(
         raise
     finally:
         clear_active_run(run.run_id)
+        if llm_semaphore is not None:
+            log_info(
+                "run", "llm_concurrency",
+                capacity=llm_semaphore.capacity,
+                peak_in_use=llm_semaphore.peak_in_use,
+                in_use_at_close=llm_semaphore.in_use,
+                waiting_at_close=llm_semaphore.waiting,
+            )
         # neo close 다음 — Windows fd 충돌 회피 위해 attach 의 역순.
         detach_run_file_handlers(file_handlers)
         if output_context_token is not None:
@@ -350,7 +373,9 @@ def _resolved_neo4j_database() -> str:
     )
 
 
-def _write_initial_manifest(run: AnalysisRun, strategy: Any) -> None:
+def _write_initial_manifest(
+    run: AnalysisRun, strategy: Any, human_glossary: HumanGlossary,
+) -> None:
     """그래프 변경/LLM 호출 전에 현행 실행의 입력 정체성과 prompt hash를 기록한다."""
     repository_root = Path(__file__).resolve().parents[2]
     strategy_prompts = Path(getattr(strategy, "prompts_dir", "llm/prompts"))
@@ -377,6 +402,7 @@ def _write_initial_manifest(run: AnalysisRun, strategy: Any) -> None:
         "run_dir": str(run.run_dir.resolve()),
         "llm_config": SETTINGS.analysis_llm.config,
         "prompt_tree_sha256": _prompt_tree_sha256(prompts_root),
+        "human_glossary": human_glossary.manifest_dict(corpus_root),
     }
     manifest_path = run.run_dir / "manifest.json"
     with manifest_path.open("x", encoding="utf-8") as file:
@@ -452,3 +478,56 @@ def _summarize_usage(run_dir: Path) -> None:
         hits=hits,
         rate=f"{(hits / calls * 100) if calls else 0:.1f}%",
     )
+
+
+def _summarize_analysis_findings(run_dir: Path) -> dict:
+    """Strictly aggregate the append-only quality ledger for run-level visibility."""
+    path = run_dir / "analysis-findings.jsonl"
+    counts = {
+        "total": 0,
+        "by_status": {},
+        "by_concern": {},
+        "affected_targets": 0,
+    }
+    targets: set[str] = set()
+    if path.exists():
+        with path.open("r", encoding="utf-8") as source:
+            for line_number, line in enumerate(source, start=1):
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError as error:
+                    raise ValueError(
+                        f"invalid analysis finding evidence at {path}:{line_number}: {error}"
+                    ) from error
+                if not isinstance(record, dict):
+                    raise ValueError(
+                        f"invalid analysis finding evidence at {path}:{line_number}: object required"
+                    )
+                status = str(record.get("status") or "")
+                concern = str(record.get("concern") or "")
+                target = str(record.get("target_id") or "")
+                if not status or not concern or not target:
+                    raise ValueError(
+                        f"invalid analysis finding evidence at {path}:{line_number}: "
+                        "status/concern/target_id required"
+                    )
+                counts["total"] += 1
+                counts["by_status"][status] = counts["by_status"].get(status, 0) + 1
+                counts["by_concern"][concern] = counts["by_concern"].get(concern, 0) + 1
+                targets.add(target)
+    counts["affected_targets"] = len(targets)
+    counts["run_quality_status"] = (
+        "completed_with_findings" if counts["total"] else "completed"
+    )
+    (run_dir / "analysis_findings_summary.json").write_text(
+        json.dumps(counts, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    log_info(
+        "run",
+        "analysis_findings_summarized",
+        total=counts["total"],
+        status=counts["run_quality_status"],
+        by_status=counts["by_status"] or None,
+    )
+    return counts

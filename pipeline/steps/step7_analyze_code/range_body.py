@@ -16,7 +16,6 @@ Framework 코드노드는 평면(자식 없음) — ``body_for`` 가 raw 본문 
 """
 from __future__ import annotations
 
-from pipeline.steps.step6_build_context.large_code_one_liner import estimate_tokens
 from pipeline.models.analysis_context import AnalysisContext
 from shared.config.settings import SETTINGS
 from shared.files.cache import SourceFileCache
@@ -162,15 +161,39 @@ def raw_body_for(
     return _raw_body(ctx, cache)
 
 
+def model_visible_raw_body(
+    ctx: AnalysisContext,
+    contexts: dict[str, AnalysisContext],
+    cache: SourceFileCache,
+) -> str:
+    """Raw source lines that remain visible when ``body_for`` compacts children.
+
+    Child summaries are contextual handoff, not direct source evidence for the
+    parent.  Blank the omitted physical lines while preserving absolute offsets
+    so candidate coordinates still point to the canonical source file.
+    """
+    raw = _raw_body(ctx, cache)
+    if not (
+        ctx.extra.get("child_ids")
+        and ctx.token_count > SETTINGS.analysis_pipeline.batch_max_tokens
+    ):
+        return raw
+    lines = raw.splitlines()
+    for child in _children(ctx, contexts):
+        start = max(child.start_line - ctx.start_line, 0)
+        stop = min(child.end_line - ctx.start_line + 1, len(lines))
+        for index in range(start, stop):
+            lines[index] = ""
+    return "\n".join(lines)
+
+
 def ancestor_context(
     ctx: AnalysisContext, contexts: dict[str, AnalysisContext], cache: SourceFileCache,
 ) -> str:
     """조상 range 들의 골격(skeleton) chain — root → 직속 부모. 자기 위치 파악용.
 
-    조상 skeleton 이 토큰 임계 초과 시 그 조상의 ``one_liner`` 로 대체
-    (one_liner 는 build_context_step 이 큰 코드노드에 대해 이미 산출 — 추가 LLM 0).
+    조상은 구조 좌표를 보존한 skeleton으로 전달한다. 자유형 의미 요약으로 대체하지 않는다.
     """
-    threshold = SETTINGS.analysis_pipeline.big_context_threshold_tokens
     chain: list[str] = []
     seen: set[str] = set()
     pid = ctx.extra.get("parent_id")
@@ -178,8 +201,6 @@ def ancestor_context(
         seen.add(pid)
         actx = contexts[pid]
         skel = skeleton_body(actx, contexts, cache)
-        if skel and estimate_tokens(skel) > threshold and actx.one_liner:
-            skel = actx.one_liner.strip()
         if skel:
             chain.append(f"[{actx.id}]\n{skel}")
         pid = actx.extra.get("parent_id")

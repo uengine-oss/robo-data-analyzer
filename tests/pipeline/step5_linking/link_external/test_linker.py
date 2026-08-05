@@ -72,7 +72,6 @@ class LinkerGoldTest(unittest.TestCase):
                     references.append(References(code.id, constant.id, 4))
                 outcome = link_external(
                     code_nodes=[code],
-                    variables=[],
                     constants=constants,
                     chunks=chunks,
                     routine_ids={code.id},
@@ -103,7 +102,7 @@ class LinkerGoldTest(unittest.TestCase):
             code_text='sql.selectOne("ORDER.API", id);', owner_id="code:shop:Svc",
         )
         outcome = link_external(
-            code_nodes=[code], variables=[], constants=[],
+            code_nodes=[code], constants=[],
             chunks=[derived], routine_ids={code.id},
         )
         self.assertEqual([], outcome.external_edges)
@@ -131,7 +130,7 @@ class LinkerGoldTest(unittest.TestCase):
             owner_id="code:shop:Svc",
         )
         outcome = link_external(
-            code_nodes=[code], variables=[], constants=[],
+            code_nodes=[code], constants=[],
             chunks=[chunk], routine_ids={code.id},
         )
         self.assertEqual(1, len(outcome.external_edges))
@@ -144,7 +143,7 @@ class LinkerGoldTest(unittest.TestCase):
             code_text='sql.selectOne(buildKey(), p);', owner_id="code:shop:Svc",
         )
         outcome = link_external(
-            code_nodes=[code], variables=[], constants=[],
+            code_nodes=[code], constants=[],
             chunks=_chunks_for({"ORDER.API": 1}), routine_ids={code.id},
         )
         self.assertEqual([], outcome.external_edges)

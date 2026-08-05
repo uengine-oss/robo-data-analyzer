@@ -2,19 +2,33 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import yaml
 
-from pipeline.languages import module_stereotype_prompt_options, stereotype_prompt_options
+from llm.runners.prompt_values import _safe_format
+from pipeline.execution.run_output_context import get_response_locale
+
+from pipeline.languages import (
+    module_stereotype_prompt_options,
+    stereotype_priority_text,
+    stereotype_prompt_options,
+)
 
 
 def _load_rule(prompts_dir: Path, rule_name: str) -> dict:
     """yaml 룰 로딩 + ``extends`` 처리 → ``{system, user_template, model}`` 반환.
 
-    ``extends: <name>`` 가 있으면 ``<name>.yaml`` 의 ``system`` 뒤에 분할별 고정 지침,
-    마지막에 변동 입력을 둔다. KV prefix 는 **변화율이 낮은 순서**여야 한다:
-    공통 system → 같은 rule 모든 호출에 고정인 specific → 프로젝트/대상별 inputs.
-    동적 입력을 고정 지침 앞에 두면 함수가 바뀔 때마다 그 뒤의 긴 지침까지 cache miss가
-    되므로 금지한다. ``model`` 은 분할 고유 > 공통 순으로 우선.
+    ``extends: <name>`` 가 있으면 ``<name>.yaml`` 의 byte-identical ``system`` 다음에
+    **분할별 고정 지침**, 공통 대상 입력, 분할별 고변동 증거 순으로 둔다.
+
+    KV prefix 캐시는 앞에서 처음 달라지는 지점까지만 재사용한다. 대상별 SOURCE를 고정 지침
+    앞에 두면 같은 rule의 수백 호출이 target_id에서 갈라져 긴 고정 지침을 매번 prefill한다.
+    같은 노드의 서로 다른 concern 2~3개가 입력을 공유하는 국소 이득보다, 같은 concern의 전체
+    대상이 고정 지침을 공유하는 전역 이득이 우선이다. 변동성이 큰 행 할당·분기 증거는 항상
+    맨 뒤에 둔다. 실제 서버 reuse와 벽시계 효과는 API input/cached_tokens가 아니라 서버 로그와
+    cold run으로 판정한다.
+
+    ``model`` 은 분할 고유 > 공통 순으로 우선.
     """
     rule = yaml.safe_load((prompts_dir / f"{rule_name}.yaml").read_text(encoding="utf-8"))
 
@@ -25,31 +39,89 @@ def _load_rule(prompts_dir: Path, rule_name: str) -> dict:
         if path != prompts_root and prompts_root not in path.parents:
             raise ValueError(f"shared prompt value escapes prompts root: {relative_path}")
         static_values[str(key)] = path.read_text(encoding="utf-8").strip()
-    rendered_templates = (
-        str(rule.get("user_template_specific", ""))
-        + str(rule.get("user_template", ""))
-    )
+    rendered_templates = "".join(str(rule.get(key, "")) for key in (
+        "user_template_specific",
+        "user_template_inputs",
+        "user_template_evidence",
+        "user_template",
+    ))
     if "{stereotype_options}" in rendered_templates:
         static_values["stereotype_options"] = stereotype_prompt_options(prompts_dir.name)
+    if "{stereotype_priority}" in rendered_templates:
+        static_values["stereotype_priority"] = stereotype_priority_text()
     if "{module_stereotype_options}" in rendered_templates:
         static_values["module_stereotype_options"] = module_stereotype_prompt_options(
             prompts_dir.name
         )
 
+    fixed_template = str(rule.get("user_template_specific", ""))
+    fixed_placeholders = set(re.findall(
+        r"\{([A-Za-z_][A-Za-z0-9_]*)\}", fixed_template
+    ))
+    volatile_in_fixed_prefix = fixed_placeholders - set(static_values)
+    if volatile_in_fixed_prefix:
+        raise ValueError(
+            "volatile placeholders must not appear in user_template_specific: "
+            f"{rule_name}: {sorted(volatile_in_fixed_prefix)}"
+        )
+
     extends = rule.get("extends")
     if extends is None:
+        split_keys = {
+            "user_template_specific",
+            "user_template_inputs",
+            "user_template_evidence",
+        } & set(rule)
+        if split_keys:
+            if "user_template" in rule:
+                raise ValueError(
+                    f"prompt mixes ordered sections with legacy user_template: {rule_name}"
+                )
+            rule["user_template"] = (
+                rule.get("user_template_specific", "")
+                + rule.get("user_template_inputs", "")
+                + rule.get("user_template_evidence", "")
+            )
         rule["static_values"] = static_values
         return rule
 
     common = yaml.safe_load((prompts_dir / f"{extends}.yaml").read_text(encoding="utf-8"))
+    inherit_inputs = rule.get("inherit_inputs", True)
+    if not isinstance(inherit_inputs, bool):
+        raise ValueError(f"inherit_inputs must be boolean: {rule_name}")
     return {
         "system": common.get("system", ""),
         "user_template": (
             rule.get("user_template_specific", "")
-            + common.get("user_template_inputs", "")
+            + (common.get("user_template_inputs", "") if inherit_inputs else "")
             + rule.get("user_template_evidence", "")
         ),
         "model": rule.get("model") or common.get("model"),
         "max_tokens": rule.get("max_tokens") or common.get("max_tokens"),
+        "wall_timeout_seconds": (
+            rule["wall_timeout_seconds"]
+            if "wall_timeout_seconds" in rule
+            else common.get("wall_timeout_seconds")
+        ),
+        "structured_output_method": (
+            rule.get("structured_output_method")
+            or common.get("structured_output_method")
+        ),
         "static_values": static_values,
     }
+
+
+def render_rule_user_content(rule: dict, user_values: dict) -> str:
+    """Render the exact user message used by the YAML runner.
+
+    Callers that schedule or split finite work may inspect its size without
+    maintaining a second, inevitably drifting approximation of the prompt.
+    """
+    return _safe_format(
+        str(rule.get("user_template", "")),
+        {
+            **rule.get("static_values", {}),
+            "response_locale": get_response_locale(),
+            **user_values,
+        },
+    )

@@ -3,7 +3,8 @@
 배경: 라벨=antlr 타입 단일(spec 019), stereotype=속성(spec 020) 이었으나, 소비처(프론트
 필터·색상, neo4j 쿼리)가 역할로 필터/색칠하기 쉽게 stereotype 을 **라벨**로 올린다.
 
-- stereotype 값 = ``ontology_roles.yaml`` 풀에서 검증된 값(``coerce_stereotype``) → 식별자
+- stereotype 값 = 동적 response schema와 ``require_stereotype``이
+  ``ontology_roles.yaml`` 풀에서 검증한 값 → 식별자
   형태(Service/Command/DataMutator…)라 라벨 안전. 추가 방어로 백틱(``:`X```) 사용.
 - ★무중단: 속성(``stereotype``)도 당분간 **유지**(노드패널·module_retriever 가 아직 읽음).
   소비처를 위치기반 라벨로 이관한 뒤 속성 제거(후속 spec, 회귀 0).

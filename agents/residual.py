@@ -1,15 +1,15 @@
-"""잔여 패턴 루프 — step5 결정론 R/W 링킹이 못 푼 테이블 케이스 처리.
+"""잔여 패턴 처리 — step5 결정론 R/W 링킹이 못 푼 테이블 케이스 처리.
 
-per-case 추적(에이전트를 케이스마다 1회 invoke)을 폐기하고 — 잔여 샘플에서
-공통 패턴을 찾아 코드가 일괄 적용하는 루프로 대체. 에이전트 호출 횟수가
-케이스 수가 아니라 "패턴 종류 수"에 비례한다.
+matched SKILL의 access/exclusion/DDL 계약은 문서 소유의 폐쇄 계약이므로 runtime에서
+확장하지 않고 잔여를 그대로 보존한다. unknown/custom 경로만 잔여 샘플에서 공통 패턴을
+strict schema로 한 번 제안받아 코드가 일괄 검증·적용한다.
 
 한 라운드:
-1. 잔여 샘플(~30) → 에이전트(scan 과 같은 헬퍼 + 잔여 전용 프롬프트)가 공통 패턴 발견.
-2. ``verify_table_patterns`` 로 코드 검증 — 통과 못하면 그 패턴 버리고 종료.
+1. 잔여 샘플(~30) → 단일 strict-schema LLM 호출이 공통 패턴/DDL 변환을 제안.
+2. ``verify_table_patterns`` 로 코드 검증 — 통과 못하면 내용 오류로 중단.
 3. 통과분을 패턴 집합에 추가 → 잔여 케이스 파일에 재적용 → 잔여·엣지 갱신.
 
-종료 = 잔여 0 / 패턴 못 찾음 / 검증 실패 / 진전 없음 / 반복 상한.
+종료 = 잔여 0 / 명시적 무패턴 / 진전 없음 / 반복 상한.
 끝내 못 푼 잔여는 정직하게 "미해결"로 돌려준다 (가짜 답 X).
 """
 from __future__ import annotations
@@ -17,11 +17,15 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional
 
 from agents import AGENTS_PACKAGE_DIR
-from agents.contracts import DdlTransform, ResidualPatternResult, ScanResult
-from agents.tools.validation import make_verify_table_regex_tool
+from agents.contracts import (
+    DdlTransform,
+    ResidualPatternResult,
+    ScanResult,
+    TableAccessPattern,
+)
+from agents.rule_compiler import compile_exclusion_rules
 from pipeline.steps.step5_linking.link_tables.regex_table_linker import (
     RegexTableLinker,
     verify_table_patterns,
@@ -30,11 +34,7 @@ from graph.schema.graph_edges import ReadsWrites
 from graph.schema.graph_nodes import CodeNode, Table
 from shared.config.settings import SETTINGS
 from llm.usage.cost_budget import CostBudget
-from agents.runtime import (
-    StructuredResponseMissingError,
-    run_structured_agent,
-)
-from agents.middleware.call_limit import ModelCallLimitExceeded
+from llm.runners.yaml_llm_runner import run_yaml_rule
 from shared.files.cache import SourceFileCache
 from shared.events.runtime_logger import log_info, log_warning
 
@@ -42,7 +42,12 @@ from shared.events.runtime_logger import log_info, log_warning
 # 구현부라 같은 키로 묶어야 analyzer.log 에서 한 단계 아래로 자연 정렬된다.
 _STEP = "step5.link_residual_patterns"
 
-_RESIDUAL_PROMPT_PATH = AGENTS_PACKAGE_DIR / "prompts" / "residual.md"
+_RESIDUAL_PROMPTS_DIR = AGENTS_PACKAGE_DIR / "prompts"
+_RESIDUAL_RULE = "residual"
+
+
+class ResidualPatternVerificationError(RuntimeError):
+    """LLM이 제안한 residual 규칙이 production 검증을 통과하지 못함."""
 
 
 @dataclass
@@ -57,24 +62,25 @@ class ResidualOutcome:
 async def run_residual_loop(
     *,
     unresolved_cases: list[dict],
-    scan_result: dict,
+    scan_result: ScanResult,
     project_root: Path,
     code_nodes: list[CodeNode],
     tables: list[Table],
-    run_dir: Path,
     cost_budget: CostBudget,
-    stream_emit: Optional[Callable[[dict], None]] = None,
 ) -> ResidualOutcome:
     """잔여 테이블 미해결 케이스 → 패턴 발견 루프 → 추가 R/W 엣지 + 최종 잔여."""
     if not unresolved_cases:
         return ResidualOutcome()
-    try:
-        scan = ScanResult.model_validate(scan_result)
-    except Exception as e:  # noqa: BLE001 — 파싱 실패 표면화 목적
-        log_warning(
-            _STEP, "scan_invalid",
-            "scan_result 파싱 실패 — 잔여 패턴 루프 건너뜀 (전체 미해결 유지)",
-            error=f"{type(e).__name__}: {e}",
+    scan = scan_result
+
+    if scan.matched_skill:
+        log_info(
+            _STEP,
+            "matched_skill_contract_closed",
+            skill=scan.matched_skill,
+            residual=len(unresolved_cases),
+            llm_calls=0,
+            reason="documented access/exclusion/DDL contract is authoritative",
         )
         return ResidualOutcome(residual=list(unresolved_cases))
 
@@ -85,6 +91,7 @@ async def run_residual_loop(
         return ResidualOutcome(residual=truly_unresolved)
 
     residual_files = {c["file"] for c in fixable}
+    exclusion_patterns = compile_exclusion_rules(scan.table_access_exclusion_rules)
 
     # 기준선 — 잔여 파일을 결정론(scan) 패턴만으로 스캔. 결정론 단계가 이미 만든 엣지.
     # 루프가 추가한 "순-신규" 엣지를 가려내는 기준 (재적용 결과에서 이 집합을 뺀다).
@@ -92,6 +99,7 @@ async def run_residual_loop(
         project_root=project_root, code_nodes=code_nodes, tables=tables,
         patterns=scan.table_access_patterns, ddl_transform=scan.ddl_transform,
         restrict_to_files=residual_files,
+        exclusion_patterns=exclusion_patterns,
     )
     baseline_edges = set(baseline.edges)
 
@@ -106,50 +114,57 @@ async def run_residual_loop(
         sample = fixable[: SETTINGS.analysis_pipeline.residual_sample_size]
         log_info(_STEP, "round_start", round=round_no, residual=len(fixable), sample=len(sample))
 
-        try:
-            found = await _find_pattern(
-                sample=sample, scan=scan, ddl_transform=ddl_transform,
-                project_root=project_root, code_nodes=code_nodes, tables=tables,
-                run_dir=run_dir, cost_budget=cost_budget, round_no=round_no,
-                stream_emit=stream_emit,
-            )
-        except (StructuredResponseMissingError, ModelCallLimitExceeded) as error:
-            # residual은 결정론 링킹 뒤의 선택적 보강이다. 최종 submit 누락이나 호출
-            # 한도 소진은 검증 가능한 새 패턴 0건이라는 뜻이다. 폭주 Agent는 중단하되
-            # 이미 확정된 구조·R/W와 후속 의미 분석까지 fatal로 버리지 않는다.
-            log_warning(
-                _STEP, "submit_missing",
-                "잔여 Agent가 검증된 최종 결과를 내지 못해 새 패턴 없이 종료 — 기존 잔여 유지",
-                stream_emit=stream_emit,
-                round=round_no,
-                error=f"{type(error).__name__}: {error}",
-            )
-            break
-        if not found.table_access_patterns:
+        found = await _find_pattern(
+            sample=sample, scan=scan, ddl_transform=ddl_transform,
+            project_root=project_root, tables=tables,
+            cost_budget=cost_budget, round_no=round_no,
+        )
+        if not found.table_access_patterns and found.ddl_transform_override is None:
             log_info(_STEP, "round_stop", round=round_no,
-                     reason=found.no_pattern_reason or "에이전트가 공통 패턴 못 찾음")
+                     reason=found.no_pattern_reason)
             break
 
-        # 코드 검증 — 검증 안 된 정규식은 안 쓴다. 잔여 파일 한정 (전체 재스캔 회피).
+        effective_transform = found.ddl_transform_override or ddl_transform
+        if (
+            not found.table_access_patterns
+            and found.ddl_transform_override == ddl_transform
+        ):
+            raise ResidualPatternVerificationError(
+                f"residual round {round_no} proposed an unchanged DDL transform"
+            )
+
+        verification_patterns = found.table_access_patterns or _attempted_patterns(
+            sample, [*scan.table_access_patterns, *extra_patterns]
+        )
+        if not verification_patterns:
+            raise ResidualPatternVerificationError(
+                f"residual round {round_no} transform proposal has no referenced active pattern"
+            )
+
+        # production 검증이 단일 진실이다. 실패 제안을 미해결 정상 결과로 바꾸지 않는다.
         verdict = await verify_table_patterns(
-            patterns=found.table_access_patterns, ddl_transform=found.ddl_transform,
+            patterns=verification_patterns, ddl_transform=effective_transform,
             project_root=project_root, code_nodes=code_nodes, tables=tables,
             restrict_to_files=residual_files,
+            exclusion_patterns=exclusion_patterns,
         )
         if not verdict.ok:
             log_warning(_STEP, "pattern_rejected",
-                        "잔여 패턴 검증 실패 — 채택 안 함, 루프 종료",
+                        "잔여 패턴 검증 실패 — 후보 격리 필요",
                         round=round_no, verdict=verdict.summary)
-            break
+            raise ResidualPatternVerificationError(
+                f"residual round {round_no} verification failed: {verdict.summary}"
+            )
 
         extra_patterns += found.table_access_patterns
-        ddl_transform = found.ddl_transform
+        ddl_transform = effective_transform
 
         # scan + 누적 extra 패턴을 잔여 파일에 재적용 → 엣지·잔여 갱신.
         applied = await RegexTableLinker().link(
             project_root=project_root, code_nodes=code_nodes, tables=tables,
             patterns=scan.table_access_patterns + extra_patterns,
             ddl_transform=ddl_transform, restrict_to_files=residual_files,
+            exclusion_patterns=exclusion_patterns,
         )
         # 순-신규 엣지 = 재적용 결과 - 기준선 (결정론 단계가 이미 만든 엣지 제외).
         edges = [e for e in applied.edges if e not in baseline_edges]
@@ -231,78 +246,97 @@ async def _find_pattern(
     scan: ScanResult,
     ddl_transform: DdlTransform,
     project_root: Path,
-    code_nodes: list[CodeNode],
     tables: list[Table],
-    run_dir: Path,
     cost_budget: CostBudget,
     round_no: int,
-    stream_emit: Optional[Callable[[dict], None]],
 ) -> ResidualPatternResult:
-    """잔여 샘플 1배치 → 에이전트가 공통 패턴 발견.
-
-    scan 과 같은 에이전트 헬퍼(``run_structured_agent``)를 쓰되 — 잔여 전용
-    프롬프트로 재탐색·skill 매칭을 막는다. 도구는 코드 열람 + 정규식 검증만
-    (skill 도구·graph 도구 없음 — 잔여 모드엔 불필요).
-    """
-    # 각 케이스의 원문은 아래 user message에 절대 줄번호로 주입한다. 프로젝트 탐색
-    # 도구를 주면 이미 제공된 DDL을 source root에서 다시 찾다가 호출 한도를 소진할 수
-    # 있다. Agent 도구는 제안 정규식 검증 하나만 허용한다.
-    tools = [make_verify_table_regex_tool(project_root, code_nodes, tables)]
-    return await run_structured_agent(
-        agent_name="residual",
-        invoke_id=f"round{round_no}",
-        system_prompt=_RESIDUAL_PROMPT_PATH.read_text(encoding="utf-8"),
-        tools=tools,
-        response_format=ResidualPatternResult,
-        user_message=_build_residual_message(
-            _samples_with_numbered_context(sample, project_root),
-            scan,
-            ddl_transform,
-            tables,
-        ),
-        max_calls=SETTINGS.analysis_agents.residual_max_calls,
-        run_dir=run_dir,
-        cost_budget=cost_budget,
-        stream_emit=stream_emit,
+    """잔여 샘플 1배치 → strict schema로 패턴/변환을 한 번 제안한다."""
+    values = _residual_prompt_values(
+        _samples_with_numbered_context(sample, project_root), scan, ddl_transform, tables,
+        round_no=round_no,
+    )
+    return await run_yaml_rule(
+        prompts_dir=_RESIDUAL_PROMPTS_DIR,
+        rule_name=_RESIDUAL_RULE,
+        user_values=values,
+        response_model=ResidualPatternResult,
+        budget=cost_budget,
     )
 
 
-def _build_residual_message(
-    sample: list[dict], scan: ScanResult, ddl_transform: DdlTransform, tables: list[Table],
-) -> str:
-    """잔여 샘플 + 이미 파악된 scan 맥락을 user 메시지로 직렬화 (재탐색 금지).
+def _residual_prompt_values(
+    sample: list[dict],
+    scan: ScanResult,
+    ddl_transform: DdlTransform,
+    tables: list[Table],
+    *,
+    round_no: int,
+) -> dict[str, str]:
+    """잔여 샘플과 확정 맥락을 YAML prompt placeholder로 직렬화한다.
 
-    KV 캐시 — 라운드 사이 prefix 적중 최대화 위해 [라운드 동일 영역] → [라운드 변동
-    영역] 순으로 배치. matched_skill / codebase_notes / framework_runtime_functions /
-    ddl_tables 는 라운드 사이 동일 → 앞. confirmed_patterns / current_ddl_transform /
-    residual_cases 는 라운드마다 변경 → 뒤.
+    YAML이 고정 영역→변동 영역 순서를 소유하므로 이 함수는 값만 만든다.
     """
-    ddl_tables = ", ".join(sorted(t.name for t in tables)) if tables else "(DDL 없음)"
-    confirmed = [p.call_regex for p in scan.table_access_patterns]
-    return "\n".join([
-        # ─── 라운드 사이 동일 (KV 캐시 적중 영역) ───
-        f"matched_skill: {scan.matched_skill or '(없음)'}",
-        "",
-        "codebase_notes:",
-        scan.codebase_notes or "(없음)",
-        "",
-        f"framework_runtime_functions: {', '.join(scan.framework_runtime_functions) or '(없음)'}",
-        "",
-        "ddl_tables (verify_table_regex 해소 기준):",
-        ddl_tables,
-        "",
-        # ─── 라운드 변동 (캐시 미스 시작) ───
-        "confirmed_patterns (결정론 단계가 이미 쓰는 정규식 — 이것과 겹치지 않는 새 패턴 필요):",
-        json.dumps(confirmed, ensure_ascii=False, indent=2),
-        "",
-        "current_ddl_transform (entity→DDL 변환 — 잔여가 안 풀리면 이 규칙 교정도 고려):",
-        json.dumps(ddl_transform.model_dump(), ensure_ascii=False),
-        "",
-        f"residual_cases ({len(sample)}건 — 이들의 공통 접근 패턴을 찾아라):",
-        json.dumps(sample, ensure_ascii=False, indent=2),
-        "",
-        "위 잔여의 공통 접근 패턴을 찾아 ResidualPatternResult 로 출력하라.",
-    ])
+    return {
+        "id": f"residual-round-{round_no}",
+        "matched_skill": scan.matched_skill or "(없음)",
+        "codebase_notes": scan.codebase_notes or "(없음)",
+        "framework_runtime_functions": (
+            ", ".join(scan.framework_runtime_functions) or "(없음)"
+        ),
+        "ddl_tables": ", ".join(sorted(t.name for t in tables)) or "(DDL 없음)",
+        "confirmed_patterns": json.dumps(
+            [p.model_dump() for p in scan.table_access_patterns],
+            ensure_ascii=False,
+            indent=2,
+        ),
+        "confirmed_exclusions": json.dumps(
+            [rule.model_dump() for rule in scan.table_access_exclusion_rules],
+            ensure_ascii=False,
+            indent=2,
+        ),
+        "current_ddl_transform": json.dumps(
+            ddl_transform.model_dump(), ensure_ascii=False
+        ),
+        "residual_cases": json.dumps(
+            [_prompt_case(case) for case in sample], ensure_ascii=False, indent=2
+        ),
+    }
+
+
+def _attempted_patterns(
+    sample: list[dict], active_patterns: list[TableAccessPattern],
+) -> list[TableAccessPattern]:
+    """변환-only 제안을 실제 잔여를 만든 활성 패턴에만 검증한다."""
+    attempted_ids = {
+        str(attempt.get("pattern_id") or "")
+        for case in sample
+        for attempt in (case.get("attempted_patterns") or [])
+        if attempt.get("pattern_id")
+    }
+    return [pattern for pattern in active_patterns if pattern.id in attempted_ids]
+
+
+def _prompt_case(case: dict) -> dict:
+    """반복 정규식 본문을 registry로 올리고 사례별 변동 증거만 남긴다."""
+    attempts = [
+        {
+            "pattern_id": attempt.get("pattern_id"),
+            "groups": attempt.get("groups") or {},
+            "ddl_lookup_result": attempt.get("ddl_lookup_result"),
+        }
+        for attempt in (case.get("attempted_patterns") or [])
+    ]
+    return {
+        "case_id": case.get("case_id"),
+        "file": case.get("file"),
+        "line": case.get("line"),
+        "call_text": case.get("call_text"),
+        "source_id": case.get("source_id"),
+        "attempted_patterns": attempts,
+        "source_context_status": case.get("source_context_status"),
+        "source_coordinate_system": case.get("source_coordinate_system"),
+        "numbered_source_context": case.get("numbered_source_context"),
+    }
 
 
 def _samples_with_numbered_context(

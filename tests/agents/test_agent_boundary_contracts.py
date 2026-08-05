@@ -9,7 +9,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from langchain.agents.middleware.types import ModelResponse
-from pydantic import BaseModel, ValidationError
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from pydantic import BaseModel, Field, ValidationError
 
 from agents.contracts import CallWrapper, DdlTransform, TableAccessPattern
 from agents.tools.inspection import SkillCatalogError, build_skill_catalog
@@ -17,7 +18,6 @@ from agents.tools.filesystem import make_filesystem_tools
 from llm import embedder
 from llm.client import build_llm_client
 from llm.configs.loader import _build_llm_config, load_llm_config
-from llm.fanout import LlmFanoutResultCountError, partition_llm_results
 from agents.middleware.call_limit import ModelCallLimitMiddleware
 from agents.middleware.cost_tracking import CostTrackingMiddleware
 from agents.middleware.todos import TodoTrackerMiddleware
@@ -25,8 +25,10 @@ from agents.middleware.tool_events import ToolEventEmitterMiddleware
 from llm.runners.yaml_llm_runner import run_yaml_rule
 from llm.runners.prompt_values import _extract_target_and_sort
 from agents.runtime import (
-    _MAX_SUBMIT_ATTEMPTS,
     StructuredResponseMissingError,
+    StructuredResponseStateError,
+    StructuredResponseValidationError,
+    _wrap_pydantic_as_submit_tool,
     run_structured_agent,
 )
 from llm import tracing
@@ -50,7 +52,59 @@ class _BoundaryResponse(BaseModel):
     value: str
 
 
+class _DefaultedBoundaryResponse(BaseModel):
+    value: str
+    optional_items: list[str] = Field(default_factory=list)
+
+
 class LlmBoundaryContractTest(unittest.TestCase):
+    def test_agent_transcript_preserves_first_human_then_only_new_tool_message(self) -> None:
+        usage = SimpleNamespace(
+            input_tokens=10, output_tokens=2, cached_tokens=0,
+        )
+        first_human = HumanMessage(content="initial structured input")
+        first_ai = AIMessage(content="", tool_calls=[])
+        tool_result = ToolMessage(content="tool evidence", tool_call_id="call-1")
+
+        with patch.object(tracing, "append_agent_turn") as append:
+            offset = tracing.append_conversation_turn(
+                request_messages=[first_human],
+                response_message=first_ai,
+                last_message_count=0,
+                model="m",
+                latency_ms=1,
+                cost_usd=0.0,
+                usage=usage,
+            )
+            next_offset = tracing.append_conversation_turn(
+                request_messages=[first_human, first_ai, tool_result],
+                response_message=AIMessage(content="done"),
+                last_message_count=offset,
+                model="m",
+                latency_ms=1,
+                cost_usd=0.0,
+                usage=usage,
+            )
+
+        self.assertEqual(2, offset)
+        self.assertEqual(4, next_offset)
+        first_record = append.call_args_list[0].kwargs["user_content"]
+        second_record = append.call_args_list[1].kwargs["user_content"]
+        self.assertIn("initial structured input", first_record)
+        self.assertNotIn("initial structured input", second_record)
+        self.assertIn("tool evidence", second_record)
+
+    def test_submit_tool_preserves_default_factory_as_optional_schema_field(self) -> None:
+        submit = _wrap_pydantic_as_submit_tool(
+            _DefaultedBoundaryResponse, tool_name="submit_boundary",
+        )
+
+        schema = submit.args_schema.model_json_schema()
+
+        self.assertIn("value", schema["required"])
+        self.assertNotIn("optional_items", schema["required"])
+        self.assertEqual([], schema["properties"]["optional_items"]["default"])
+
     def test_prompt_record_target_survives_runner_split(self) -> None:
         target_id, sort_key = _extract_target_and_sort(
             {"table_fqn": "db:RWIS.TABLE_A", "file_path": "a.sql", "start_line": 7}
@@ -59,36 +113,15 @@ class LlmBoundaryContractTest(unittest.TestCase):
         self.assertEqual(target_id, "db:RWIS.TABLE_A")
         self.assertEqual(sort_key, "a.sql:7")
 
-    def test_fanout_count_mismatch_is_rejected(self) -> None:
-        with self.assertRaises(LlmFanoutResultCountError):
-            partition_llm_results(
-                ["first", "second"],
-                ["only-result"],
-                component="test",
-                operation="partition",
-            )
-
-    def test_fanout_cancellation_is_never_dropped(self) -> None:
-        cancellation = asyncio.CancelledError()
-
-        with self.assertRaises(asyncio.CancelledError):
-            partition_llm_results(
-                ["cancelled-item"],
-                [cancellation],
-                component="test",
-                operation="partition",
-                on_failure="drop",
-            )
-
-    def test_unknown_fanout_failure_policy_is_rejected(self) -> None:
-        with self.assertRaises(ValueError):
-            partition_llm_results(
-                ["item"],
-                ["result"],
-                component="test",
-                operation="partition",
-                on_failure="typo",  # type: ignore[arg-type]
-            )
+    def test_component_and_glossary_calls_have_traceable_targets(self) -> None:
+        self.assertEqual(
+            ("COMPONENT:code:first", "COMPONENT:code:first"),
+            _extract_target_and_sort({"component_id": "COMPONENT:code:first"}),
+        )
+        self.assertEqual(
+            ("업무용어", "업무용어"),
+            _extract_target_and_sort({"term": "업무용어"}),
+        )
 
     def test_embedding_result_count_must_match_input_count(self) -> None:
         provider = embedder.SETTINGS.embedding.provider
@@ -105,6 +138,7 @@ class LlmBoundaryContractTest(unittest.TestCase):
 
         self.assertEqual(config.provider, "sglang")
         self.assertTrue(config.model)
+        self.assertEqual("json_schema", config.structured_output_method)
 
     def test_quoted_false_is_not_misread_as_true(self) -> None:
         with self.assertRaises(RuntimeError):
@@ -138,6 +172,18 @@ class LlmBoundaryContractTest(unittest.TestCase):
                     "model": "test-model",
                     "api_base": "https://provider.invalid/v1",
                     "reasoning_effort": "typo",
+                },
+                "test-config",
+            )
+
+    def test_unknown_structured_output_method_is_rejected(self) -> None:
+        with self.assertRaises(RuntimeError):
+            _build_llm_config(
+                {
+                    "provider": "openai",
+                    "model": "test-model",
+                    "api_base": "https://provider.invalid/v1",
+                    "structured_output_method": "maybe",
                 },
                 "test-config",
             )
@@ -335,7 +381,85 @@ class LlmBoundaryContractTest(unittest.TestCase):
 
 
 class AsyncLlmBoundaryContractTest(unittest.IsolatedAsyncioTestCase):
-    async def test_prompt_recording_failure_does_not_replace_agent_success(self) -> None:
+    async def test_submit_tool_validation_error_is_not_reported_as_missing_call(self) -> None:
+        invalid_submit = AIMessage(
+            content="",
+            tool_calls=[{
+                "name": "submit_boundary",
+                "args": {},
+                "id": "call-1",
+                "type": "tool_call",
+            }],
+        )
+        agent = SimpleNamespace(ainvoke=AsyncMock(return_value={"messages": [invalid_submit]}))
+        with (
+            patch("agents.runtime.build_llm_client", return_value=object()),
+            patch("agents.runtime.build_standard_stack", return_value=[]),
+            patch("agents.runtime.create_agent", return_value=agent),
+            patch("agents.runtime.begin_agent_invoke"),
+            patch("agents.runtime.end_agent_invoke"),
+        ):
+            with self.assertRaisesRegex(StructuredResponseValidationError, "value"):
+                await run_structured_agent(
+                    agent_name="boundary",
+                    invoke_id="run",
+                    system_prompt="submit when done",
+                    tools=[],
+                    response_format=_BoundaryResponse,
+                    user_message="inspect",
+                    max_calls=1,
+                    run_dir=Path("unused"),
+                    cost_budget=CostBudget(limit_usd=1.0),
+                )
+
+    async def test_valid_submit_without_state_is_reported_as_wiring_error(self) -> None:
+        valid_submit = AIMessage(
+            content="",
+            tool_calls=[{
+                "name": "submit_boundary",
+                "args": {"value": "ok"},
+                "id": "call-1",
+                "type": "tool_call",
+            }],
+        )
+        agent = SimpleNamespace(ainvoke=AsyncMock(return_value={"messages": [valid_submit]}))
+        with (
+            patch("agents.runtime.build_llm_client", return_value=object()),
+            patch("agents.runtime.build_standard_stack", return_value=[]),
+            patch("agents.runtime.create_agent", return_value=agent),
+            patch("agents.runtime.begin_agent_invoke"),
+            patch("agents.runtime.end_agent_invoke"),
+        ):
+            with self.assertRaises(StructuredResponseStateError):
+                await run_structured_agent(
+                    agent_name="boundary",
+                    invoke_id="run",
+                    system_prompt="submit when done",
+                    tools=[],
+                    response_format=_BoundaryResponse,
+                    user_message="inspect",
+                    max_calls=1,
+                    run_dir=Path("unused"),
+                    cost_budget=CostBudget(limit_usd=1.0),
+                )
+
+    async def test_tool_error_status_is_emitted_as_error_not_success(self) -> None:
+        middleware = ToolEventEmitterMiddleware("boundary", Path("unused"))
+        request = SimpleNamespace(
+            tool_call={"name": "submit_boundary", "args": {}, "id": "call-1"},
+        )
+        error_result = ToolMessage(
+            "schema invalid", name="submit_boundary", tool_call_id="call-1", status="error",
+        )
+        with patch.object(middleware, "_emit") as emit:
+            returned = await middleware.awrap_tool_call(
+                request, AsyncMock(return_value=error_result),
+            )
+
+        self.assertIs(returned, error_result)
+        self.assertEqual("tool_error", emit.call_args.args[0])
+
+    async def test_prompt_recording_failure_prevents_untraceable_agent_call(self) -> None:
         agent = SimpleNamespace(
             ainvoke=AsyncMock(
                 return_value={"structured_response": _BoundaryResponse(value="ok")}
@@ -351,29 +475,25 @@ class AsyncLlmBoundaryContractTest(unittest.IsolatedAsyncioTestCase):
             ),
             patch("agents.runtime.end_agent_invoke") as end_recording,
         ):
-            result = await run_structured_agent(
-                agent_name="boundary",
-                invoke_id="run",
-                system_prompt="submit when done",
-                tools=[],
-                response_format=_BoundaryResponse,
-                user_message="inspect",
-                max_calls=1,
-                run_dir=Path("unused"),
-                cost_budget=CostBudget(limit_usd=1.0),
-            )
+            with self.assertRaisesRegex(OSError, "diagnostic disk unavailable"):
+                await run_structured_agent(
+                    agent_name="boundary",
+                    invoke_id="run",
+                    system_prompt="submit when done",
+                    tools=[],
+                    response_format=_BoundaryResponse,
+                    user_message="inspect",
+                    max_calls=1,
+                    run_dir=Path("unused"),
+                    cost_budget=CostBudget(limit_usd=1.0),
+                )
 
-        self.assertEqual(result.value, "ok")
+        agent.ainvoke.assert_not_awaited()
         end_recording.assert_not_called()
 
-    async def test_missing_submit_tool_is_retried_with_a_fixed_instruction(self) -> None:
-        """제출 도구를 건너뛴 턴 하나로 run 전체가 죽지 않는다 (실측: run14~16 스캔 실패)."""
+    async def test_missing_submit_tool_fails_after_one_invoke(self) -> None:
         skipped = {"messages": [SimpleNamespace(content="후보만 메모하고 끝냄")]}
-        agent = SimpleNamespace(
-            ainvoke=AsyncMock(
-                side_effect=[skipped, {"structured_response": _BoundaryResponse(value="ok")}]
-            )
-        )
+        agent = SimpleNamespace(ainvoke=AsyncMock(return_value=skipped))
         with (
             patch("agents.runtime.build_llm_client", return_value=object()),
             patch("agents.runtime.build_standard_stack", return_value=[]),
@@ -381,24 +501,20 @@ class AsyncLlmBoundaryContractTest(unittest.IsolatedAsyncioTestCase):
             patch("agents.runtime.begin_agent_invoke"),
             patch("agents.runtime.end_agent_invoke"),
         ):
-            result = await run_structured_agent(
-                agent_name="boundary",
-                invoke_id="run",
-                system_prompt="submit when done",
-                tools=[],
-                response_format=_BoundaryResponse,
-                user_message="inspect",
-                max_calls=2,
-                run_dir=Path("unused"),
-                cost_budget=CostBudget(limit_usd=1.0),
-            )
+            with self.assertRaises(StructuredResponseMissingError):
+                await run_structured_agent(
+                    agent_name="boundary",
+                    invoke_id="run",
+                    system_prompt="submit when done",
+                    tools=[],
+                    response_format=_BoundaryResponse,
+                    user_message="inspect",
+                    max_calls=2,
+                    run_dir=Path("unused"),
+                    cost_budget=CostBudget(limit_usd=1.0),
+                )
 
-        self.assertEqual(result.value, "ok")
-        self.assertEqual(agent.ainvoke.await_count, 2)
-        # 재시도는 앞선 대화를 이어받고, 고정 지시 한 줄만 덧붙인다(재현성 유지).
-        retried = agent.ainvoke.await_args_list[1].args[0]["messages"]
-        self.assertEqual(len(retried), 2)
-        self.assertIn("submit_boundary", retried[-1].content)
+        self.assertEqual(agent.ainvoke.await_count, 1)
 
     async def test_persistent_missing_submit_still_fails_loudly(self) -> None:
         agent = SimpleNamespace(ainvoke=AsyncMock(return_value={"messages": []}))
@@ -421,7 +537,7 @@ class AsyncLlmBoundaryContractTest(unittest.IsolatedAsyncioTestCase):
                     run_dir=Path("unused"),
                     cost_budget=CostBudget(limit_usd=1.0),
                 )
-        self.assertEqual(agent.ainvoke.await_count, _MAX_SUBMIT_ATTEMPTS)
+        self.assertEqual(agent.ainvoke.await_count, 1)
 
     async def test_prompt_context_is_cleared_when_final_write_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -473,7 +589,9 @@ class AsyncLlmBoundaryContractTest(unittest.IsolatedAsyncioTestCase):
             with (
                 patch(
                     "llm.runners.yaml_llm_runner.load_llm_config",
-                    return_value=SimpleNamespace(provider="openai"),
+                    return_value=SimpleNamespace(
+                        provider="openai", structured_output_method="function_calling"
+                    ),
                 ),
                 patch(
                     "llm.runners.yaml_llm_runner.build_llm_client",
@@ -494,6 +612,7 @@ class AsyncLlmBoundaryContractTest(unittest.IsolatedAsyncioTestCase):
                     )
 
         error_record.assert_called_once()
+        self.assertEqual("function_calling", error_record.call_args.args[7])
 
     async def test_response_cache_hit_is_recorded_as_a_metered_call(self) -> None:
         """적중도 LLM 호출이다 — 적재를 건너뛰면 사용량 통계가 호출 수를 과소 보고한다.
@@ -513,7 +632,10 @@ class AsyncLlmBoundaryContractTest(unittest.IsolatedAsyncioTestCase):
             with (
                 patch(
                     "llm.runners.yaml_llm_runner.load_llm_config",
-                    return_value=SimpleNamespace(provider="openai", model="cfg-model"),
+                    return_value=SimpleNamespace(
+                        provider="openai", model="cfg-model",
+                        structured_output_method="function_calling",
+                    ),
                 ),
                 patch(
                     "llm.runners.yaml_llm_runner.response_cache.load",
@@ -543,6 +665,10 @@ class AsyncLlmBoundaryContractTest(unittest.IsolatedAsyncioTestCase):
                 {"value": "cached"}, evidence["response"]["parsed"],
             )
             self.assertTrue(evidence["metadata"]["response_cache_hit"])
+            self.assertEqual(
+                "function_calling",
+                evidence["metadata"]["structured_output_method"],
+            )
 
             lines = usage_path.read_text(encoding="utf-8").strip().splitlines()
             self.assertEqual(1, len(lines), "적중 1건에 usage 기록이 1줄이 아니다")

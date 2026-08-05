@@ -19,20 +19,8 @@ from dataclasses import dataclass
 from typing import Literal, Optional, Union
 
 
-# ── 공용 헬퍼 — dml_type 표준화 (정체성 외부) ────────────────
-
-def derive_dml_type(standard_op: Optional[str]) -> str:
-    """``standard_op`` (SELECT/INSERT/UPDATE/DELETE/MERGE) → ``dml_type`` 문자열.
-
-    None / 빈값 / 정규화 실패 시 빈 문자열. ReadsWrites 만드는 모든 지점이
-    공유 — 비표준 op 박는 사고 차단 (단일 진실).
-    """
-    if not standard_op:
-        return ""
-    v = standard_op.strip().upper()
-    if v in ("SELECT", "INSERT", "UPDATE", "DELETE", "MERGE"):
-        return v
-    return ""
+# dml_type 표준화는 ``pipeline.dml_semantics.dml_type_of`` — 의미표가 단일 진실 (spec 106).
+# 호출자 전원이 pipeline 계층이라 본체를 그쪽으로 이사했다 (graph→pipeline 역참조 방지).
 
 
 # ── 스키마 구조 엣지 (DDL 파싱에서만 생성) ──────────────────
@@ -80,7 +68,7 @@ class ReadsWrites:
 
     정체성 = (source_id, target_id, relation). dml_type 과 evidence_* 는 부속 메타 —
     같은 코드노드가 같은 테이블을 같은 동작으로 여러 라인에서 호출해도 그래프엔 1 엣지
-    (Neo4j MERGE 가 dedup). dml_type 은 ``derive_dml_type(standard_op)`` 헬퍼로 생성.
+    (Neo4j MERGE 가 dedup). dml_type 은 ``pipeline.dml_semantics.dml_type_of`` 로 생성.
     """
     source_id: str
     target_id: str
@@ -241,10 +229,12 @@ class HasQuestion:
 
 @dataclass(frozen=True)
 class AffectsTable:
-    """Example → Table. R/W 필터가 확정한 Table ID를 끝점까지 보존한다."""
+    """Example → Table. 최종 access/op/provenance를 끝점까지 보존한다."""
     source_id: str
     target_id: str
-    op: str
+    access: Literal["READ", "WRITE", "READ_WRITE"]
+    op: Literal["READ", "INSERT", "UPDATE", "DELETE", "MERGE", "TRUNCATE", "UNKNOWN"]
+    op_source: Literal["SCANNER", "LLM_INFERRED", "UNRESOLVED"]
 
 
 # ── External-file relationships (spec 078) ──────────────────────────

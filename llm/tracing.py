@@ -3,8 +3,8 @@
 두 진입점:
 
 1. ``write_rule_record(rule_name, ...)`` — yaml rule 단발 호출 (code_summary /
-   module_summary 등). 같은 ``<rule_name>.json`` 한 파일에 ``records`` 배열로
-   누적. ``sort_key`` (file:line / code_id) 로 자연 정렬 → 디버깅 시 소스 라인 순.
+   module_summary 등). 같은 ``<rule_name>.jsonl`` 에 호출당 한 줄을 append한다.
+   소비자는 ``load_rule_records`` 로 strict parse + ``sort_key`` 정렬한다.
 
 2. ``begin_agent_invoke`` / ``append_agent_turn`` / ``end_agent_invoke`` —
    Agent multi-turn (Scan / Linking). 한 invoke 전체가 한 ``.json`` 에. 시스템 지시 1번
@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import contextvars
+import hashlib
 import json
 import os
 import re
@@ -65,8 +66,9 @@ def write_rule_record(
     response: Any,
     metadata: dict | None = None,
     sort_key: Any = None,
+    response_schema: dict | None = None,
 ) -> None:
-    """yaml rule 호출 1회 적재 — ``<rule_name>.json`` 의 ``records`` 배열에 append.
+    """Append one complete YAML-rule record without rewriting prior evidence.
 
     파일 형식::
 
@@ -93,7 +95,7 @@ def write_rule_record(
         metadata: model / tokens / cached / latency_ms / cost_usd 등.
         sort_key: 정렬 키 (``file:line`` 형태 권장). None 이면 호출 순서.
     """
-    out_path = _prompts_dir() / f"{_sanitize_filename(rule_name)}.json"
+    out_path = _prompts_dir() / f"{_sanitize_filename(rule_name)}.jsonl"
     record = _build_record(
         target_id=target_id or "unknown",
         sort_key=sort_key,
@@ -101,40 +103,33 @@ def write_rule_record(
         user_content=user_content,
         response=response,
         metadata=metadata or {},
+        response_schema=response_schema,
     )
-
+    encoded = json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
     with _FILE_LOCK:
-        existing = _load_existing(out_path)
-        existing["rule_name"] = rule_name
-        existing["records"].append(record)
-        if any(r.get("sort_key") is not None for r in existing["records"]):
-            existing["records"].sort(key=_sort_key_for_record)
-        _write_json(out_path, existing)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with out_path.open("a", encoding="utf-8", newline="\n") as output:
+            output.write(encoded)
 
 
-def _load_existing(path: Path) -> dict:
-    """기존 파일 load. 없으면 빈 구조. 파싱 실패 시 빈 구조 (운영자가 raw 파일 직접 검토 가능하도록 백업)."""
-    if not path.exists():
-        return {"rule_name": "", "records": []}
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, dict) or not isinstance(data.get("records"), list):
-            raise json.JSONDecodeError("prompt record root must contain a records list", "", 0)
-        return data
-    except (OSError, json.JSONDecodeError):
-        # 손상된 JSON — 백업 후 빈 구조 (run 내 누적이라 손실 작음)
-        try:
-            path.rename(path.with_suffix(f".broken.{int(time.time())}"))
-        except OSError as backup_error:
-            log_warning(
-                "llm.tracing",
-                "backup_broken_prompt_log",
-                "손상된 프롬프트 로그 백업 실패 — 빈 구조로 계속",
-                path=str(path),
-                error=f"{type(backup_error).__name__}: {backup_error}",
-            )
-        return {"rule_name": "", "records": []}
+def load_rule_records(path: Path) -> list[dict]:
+    """Strictly load one canonical rule JSONL and return stable source order."""
+    records: list[dict] = []
+    with path.open("r", encoding="utf-8") as source:
+        for line_number, line in enumerate(source, start=1):
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise ValueError(
+                    f"invalid prompt evidence JSON at {path}:{line_number}: {error}"
+                ) from error
+            if not isinstance(record, dict):
+                raise ValueError(
+                    f"invalid prompt evidence record at {path}:{line_number}: object required"
+                )
+            records.append(record)
+    records.sort(key=_sort_key_for_record)
+    return records
 
 
 def _build_record(
@@ -144,6 +139,7 @@ def _build_record(
     user_content: str,
     response: Any,
     metadata: dict,
+    response_schema: dict | None,
 ) -> dict:
     """record 1개 직렬화 (Pydantic / dict / str 자동 처리)."""
     if hasattr(response, "model_dump"):
@@ -161,7 +157,21 @@ def _build_record(
         "system_prompt": system_prompt,
         "user_content": user_content,
         "response": response_data,
+        "response_schema": _schema_evidence(response_schema),
         "metadata": metadata,
+    }
+
+
+def _schema_evidence(schema: dict | None) -> dict | None:
+    if schema is None:
+        return None
+    canonical = json.dumps(
+        schema, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    return {
+        "sha256": hashlib.sha256(canonical).hexdigest(),
+        "bytes": len(canonical),
+        "schema": schema,
     }
 
 
@@ -169,8 +179,14 @@ def _sort_key_for_record(r: dict) -> tuple:
     """sort_key 정렬 — None 은 맨 뒤. 문자열은 자연 비교."""
     k = r.get("sort_key")
     if k is None:
-        return (1, "")
-    return (0, str(k))
+        return (1, 0, "")
+    if isinstance(k, bool):
+        return (0, 0, int(k))
+    if isinstance(k, (int, float)):
+        return (0, 0, k)
+    if isinstance(k, str):
+        return (0, 1, k)
+    return (0, 2, json.dumps(k, ensure_ascii=False, sort_keys=True))
 
 
 def _write_json(path: Path, data: dict) -> None:
@@ -382,7 +398,9 @@ def append_conversation_turn(
     """Append one new conversation turn and return the next message offset."""
     if not request_messages:
         return last_message_count
-    start = last_message_count if last_message_count > 0 else 1
+    # Agent system prompt는 request state 밖에서 별도 전달된다. 첫 state message는
+    # HumanMessage이므로 index 0부터 보존해야 최초 구조 입력이 사라지지 않는다.
+    start = last_message_count if last_message_count > 0 else 0
     new_messages = request_messages[start:]
     user_content = "\n\n".join(
         f"[{getattr(message, 'type', message.__class__.__name__)}]\n"

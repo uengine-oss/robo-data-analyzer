@@ -102,6 +102,42 @@ class Neo4jClient:
                     result = await session.run(query, items=items)
                     return await result.consume()
 
+    async def run_guarded_batch_unwind(
+        self,
+        *,
+        guard_query: str,
+        write_query: str,
+        items: list[dict],
+    ) -> int:
+        """Write one UNWIND batch only when every distinct input ID exists.
+
+        The guard and write share one managed transaction.  A missing graph
+        node raises before the write, so callers cannot persist a partial
+        semantic response and then merely report a lower match count.
+        """
+        if not items:
+            return 0
+        ids = [str(item.get("id") or "") for item in items]
+        if any(not node_id for node_id in ids):
+            raise ValueError("guarded batch update IDs must not be empty")
+        if len(ids) != len(set(ids)):
+            raise ValueError("guarded batch contains duplicate update IDs")
+
+        async def _write(transaction) -> int:
+            result = await transaction.run(guard_query, ids=ids)
+            record = await result.single(strict=True)
+            matched = int(record["matched"])
+            if matched != len(items):
+                raise ValueError(
+                    f"guarded batch matched {matched} of {len(items)} update IDs"
+                )
+            result = await transaction.run(write_query, items=items)
+            await result.consume()
+            return matched
+
+        async with self._driver.session(database=self._database) as session:
+            return await session.execute_write(_write)
+
     async def run_query(self, query: str, params: Optional[dict] = None) -> Any:
         """단발 쿼리 (인덱스 / 제약 / 1회성 lookup)."""
         async with self._driver.session(database=self._database) as session:

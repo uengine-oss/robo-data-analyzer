@@ -100,11 +100,14 @@ class LoadExternalStepTest(unittest.IsolatedAsyncioTestCase):
             )
 
     def test_both_strategies_parallelize_only_disjoint_step2_and_step3(self) -> None:
+        # superstep 멤버 3개의 state 키는 서로소다 — load_ast(code_nodes 등) /
+        # load_external(external_documents 등) / discover_datasource(tables·
+        # table_sample_data, spec 107 D3). 겹치면 LangGraph 병렬 병합이 비결정적이 된다.
         for strategy in (FRAMEWORK_PIPELINE, DBMS_PIPELINE):
             parallel = strategy.steps[1]
             self.assertIsInstance(parallel, tuple)
             self.assertEqual(
-                {"load_ast_step", "load_external_step"},
+                {"load_ast_step", "load_external_step", "discover_datasource_step"},
                 {step.__name__ for step in parallel},
             )
 

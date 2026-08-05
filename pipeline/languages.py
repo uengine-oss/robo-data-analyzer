@@ -1,8 +1,8 @@
 """지원 언어 정책의 단일 정의처.
 
 확장자, 분석 전략 감지, AST 역할과 stereotype 검증을 함께 소유한다. 세 기능은 모두
-``지원 언어가 무엇인가``라는 같은 변경 이유를 가지며 ``ontology_roles.yaml``을 인접 데이터로
-사용한다. antlr-parser가 실제로 emit하는 언어만 등록한다.
+``지원 언어가 무엇인가``라는 같은 변경 이유를 가지며 ``ontology_roles.yaml``을 데이터
+단일 진실로 사용한다. parser 지원과 lexing-only 지원은 서로 다른 능력이므로 분리한다.
 
 ★ 왜 단일 정의처여야 하나 (spec 046 FR-003 — 실제로 갈라져 있던 사고):
 ``strategy_detector`` 가 자기 목록(``.kt .go .ts .js .rb .rs .php .scala .cpp .hpp`` 포함
@@ -20,17 +20,79 @@ import yaml
 
 _ONTOLOGY_PATH = Path(__file__).resolve().parent / "ontology_roles.yaml"
 
-# ── Framework 소스: 확장자(점 없음) → 언어 ──
-# antlr-parser 가 emit 하고 ontology_roles.yaml 이 roles 를 아는 언어만.
-EXT_TO_LANG: dict[str, str] = {
-    "java": "java",
-    "c":    "c",
-    "h":    "c",
-    "py":   "python",
-}
 
-# ── DBMS 소스 확장자 (점 없음 — EXT_TO_LANG 과 표기 통일) ──
-DBMS_EXTS: frozenset[str] = frozenset({"sql", "pks", "pkb", "pls", "ddl"})
+@lru_cache(maxsize=1)
+def _load_ontology() -> dict:
+    """언어 정책 데이터를 한 번 로드한다."""
+    if not _ONTOLOGY_PATH.is_file():
+        raise FileNotFoundError(f"ontology_roles.yaml 없음: {_ONTOLOGY_PATH}")
+    data = yaml.safe_load(_ONTOLOGY_PATH.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or not data:
+        raise ValueError("ontology_roles.yaml 루트는 비어 있지 않은 mapping 이어야 한다")
+    return data
+
+
+def _extensions(section: dict, *, owner: str) -> dict[str, str]:
+    """언어→확장자 목록을 검증해 확장자→언어로 뒤집는다."""
+    result: dict[str, str] = {}
+    if not isinstance(section, dict):
+        raise ValueError(f"source_extensions.{owner} 는 mapping 이어야 한다")
+    for lang, extensions in section.items():
+        if not isinstance(extensions, list) or not extensions:
+            raise ValueError(
+                f"source_extensions.{owner}.{lang} 는 비어 있지 않은 list 여야 한다"
+            )
+        for raw in extensions:
+            ext = str(raw).strip().lower().lstrip(".")
+            if not ext or "." in ext:
+                raise ValueError(f"잘못된 소스 확장자: {raw!r} ({owner}.{lang})")
+            previous = result.get(ext)
+            if previous is not None:
+                raise ValueError(
+                    f"중복 소스 확장자: {ext!r} ({owner}.{previous}, {owner}.{lang})"
+                )
+            result[ext] = str(lang)
+    return result
+
+
+def _extension_registry() -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+    registry = _load_ontology().get("source_extensions") or {}
+    parser = registry.get("parser") or {}
+    framework = _extensions(parser.get("framework") or {}, owner="parser.framework")
+    dbms = _extensions(parser.get("dbms") or {}, owner="parser.dbms")
+    lexing_only = _extensions(
+        registry.get("lexing_only") or {}, owner="lexing_only"
+    )
+    owners: dict[str, str] = {}
+    for owner, mapping in (
+        ("parser.framework", framework),
+        ("parser.dbms", dbms),
+        ("lexing_only", lexing_only),
+    ):
+        for ext in mapping:
+            if ext in owners:
+                raise ValueError(
+                    f"중복 소스 확장자: {ext!r} ({owners[ext]}, {owner})"
+                )
+            owners[ext] = owner
+    lexicons = _load_ontology().get("source_lexicon") or {}
+    for lang in set(framework.values()) | set(dbms.values()) | set(lexing_only.values()):
+        if lang not in lexicons:
+            raise ValueError(
+                f"확장자에 연결된 source_lexicon 누락: {lang!r}"
+            )
+    return framework, dbms, lexing_only
+
+
+# 호환 공개 이름은 유지하되 값은 ontology 데이터에서 파생한다. AST reader 소비자는 parser
+# 지원 집합만 보고, 소스 링커의 lang_of는 lexing-only까지 포함한다.
+EXT_TO_LANG, _DBMS_EXT_TO_LANG, _LEXING_ONLY_EXT_TO_LANG = _extension_registry()
+DBMS_EXTS: frozenset[str] = frozenset(_DBMS_EXT_TO_LANG)
+_SOURCE_LANG_BY_EXT = {
+    **EXT_TO_LANG,
+    **_DBMS_EXT_TO_LANG,
+    **_LEXING_ONLY_EXT_TO_LANG,
+}
 
 
 # ── 파생 (점 있는 표기 — Path.suffix 비교용). 정의처는 위 두 개뿐이다. ──
@@ -75,14 +137,6 @@ def detect_strategy(project_dir: Path) -> Literal["framework", "dbms"]:
 ROUTINE_LABELS: frozenset[str] = frozenset({"FUNCTION", "PROCEDURE", "METHOD", "TRIGGER"})
 
 
-@lru_cache(maxsize=1)
-def _load_ontology() -> dict:
-    """언어 역할과 stereotype 풀을 한 번 로드한다."""
-    if not _ONTOLOGY_PATH.is_file():
-        raise FileNotFoundError(f"ontology_roles.yaml 없음: {_ONTOLOGY_PATH}")
-    return yaml.safe_load(_ONTOLOGY_PATH.read_text(encoding="utf-8")) or {}
-
-
 @lru_cache(maxsize=None)
 def role_of(node_type: str, lang: str) -> str | None:
     """ANTLR 노드 타입의 언어별 역할을 반환한다."""
@@ -92,10 +146,88 @@ def role_of(node_type: str, lang: str) -> str | None:
     return None
 
 
+SymbolKind = Literal["global", "field", "local", "parameter", "constant"]
+_SYMBOL_KINDS = frozenset(SymbolKind.__args__)
+
+
+@lru_cache(maxsize=None)
+def _symbol_kind_map(lang: str) -> dict[str, SymbolKind]:
+    """검증된 parser label → 언어 중립 심볼 scope."""
+    data = _load_ontology()
+    entries = (data.get("symbol_kinds") or {}).get(lang)
+    if not isinstance(entries, dict):
+        raise ValueError(f"symbol_kinds 에 {lang!r} 언어 분류가 없다")
+    result: dict[str, SymbolKind] = {}
+    for raw_kind, node_types in entries.items():
+        if raw_kind not in _SYMBOL_KINDS:
+            raise ValueError(f"지원하지 않는 symbol kind: {raw_kind!r} ({lang})")
+        if not isinstance(node_types, list) or not node_types:
+            raise ValueError(f"symbol_kinds.{lang}.{raw_kind} 는 비어 있지 않은 list 여야 한다")
+        for node_type in node_types:
+            key = str(node_type)
+            if key in result:
+                raise ValueError(f"중복 symbol label: {lang}.{key}")
+            result[key] = raw_kind
+
+    roles = data.get("roles") or {}
+    expected = set((roles.get("variable") or {}).get(lang) or ())
+    expected.update((roles.get("constant") or {}).get(lang) or ())
+    if set(result) != expected:
+        raise ValueError(
+            f"symbol_kinds.{lang} 과 roles variable/constant 불일치: "
+            f"missing={sorted(expected - set(result))}, extra={sorted(set(result) - expected)}"
+        )
+    return result
+
+
+def symbol_kind(node_type: str, lang: str) -> SymbolKind:
+    """ANTLR 선언 label의 범용 scope. 미등록 label은 추측하지 않고 실패한다."""
+    kind = _symbol_kind_map(lang).get(node_type)
+    if kind is None:
+        raise ValueError(f"미등록 symbol label: {lang}.{node_type}")
+    return kind
+
+
 @lru_cache(maxsize=1)
 def control_structure_labels() -> frozenset[str]:
     """Return every control-node label declared by the language ontology."""
     languages = (_load_ontology().get("roles") or {}).get("control_structure") or {}
+    return frozenset(
+        node_type
+        for node_types in languages.values()
+        for node_type in (node_types or [])
+    )
+
+
+@lru_cache(maxsize=1)
+def statement_effect_ops() -> dict[str, str]:
+    """ontology ``statement_effect_ops`` — statement 라벨 → Rule 직접 효과 op.
+
+    선언된 statement 는 branch_inventory 가 소유 행의 효과 보기로 노출한다.
+    어휘 정합(EFFECT_FUNCTIONS 부분집합)은 드리프트 테스트가 감시한다.
+    """
+    data = _load_ontology().get("statement_effect_ops") or {}
+    return {str(label): str(op) for label, op in data.items()}
+
+
+def unsupported_construct_patterns(lang: str) -> dict[str, str]:
+    """ontology ``unsupported_constructs`` — 결정론 해석 불가 구문의 kind → 정규식.
+
+    커버리지 잔차 감사가 장부로 센다. 값 추적을 흉내 내는 소비자는 금지다.
+    """
+    data = _load_ontology().get("unsupported_constructs") or {}
+    entries = data.get(lang) or {}
+    return {str(kind): str(pattern) for kind, pattern in entries.items()}
+
+
+def statement_labels() -> frozenset[str]:
+    """Return every structural-statement label declared by the language ontology.
+
+    parser spec 016 이 emit 하는 RETURN/THROW/RAISE/BREAK/CONTINUE/GOTO/ASSIGNMENT.
+    routine 도 branch 도 아니므로 LLM 분석 대상에서 제외되고, branch_inventory 가
+    종료행·반환식·대입의 AST 정본으로 소비한다.
+    """
+    languages = (_load_ontology().get("roles") or {}).get("statement") or {}
     return frozenset(
         node_type
         for node_types in languages.values()
@@ -112,19 +244,33 @@ def control_role_of(node_type: str) -> str:
     return "decision"
 
 
+@lru_cache(maxsize=1)
+def control_ownership_contracts() -> dict[str, str]:
+    """Return canonical controller→grouped-child ownership pairs."""
+    raw = _load_ontology().get("control_ownership") or {}
+    if not isinstance(raw, dict):
+        raise ValueError("control_ownership 는 mapping 이어야 한다")
+    result: dict[str, str] = {}
+    for controller, contract in raw.items():
+        if not isinstance(contract, dict) or not str(contract.get("grouped_child") or ""):
+            raise ValueError(f"control_ownership.{controller}.grouped_child 가 필요하다")
+        result[str(controller)] = str(contract["grouped_child"])
+    return result
+
+
 class UnknownSourceLexiconError(RuntimeError):
     """어휘 구문 표가 없는 언어 — 조용한 폴백 대신 명시적 실패."""
 
 
 def lang_of(path_suffix: str) -> str:
-    """``Path.suffix`` (예 ``".c"``) → 언어 키. DBMS 방언은 모두 ``sql`` 하나다."""
+    """``Path.suffix`` → lexing 언어 키(parser 미지원 별칭 포함)."""
     suffix = path_suffix.lower().lstrip(".")
-    if suffix in EXT_TO_LANG:
-        return EXT_TO_LANG[suffix]
-    if suffix in DBMS_EXTS:
-        return "sql"
+    lang = _SOURCE_LANG_BY_EXT.get(suffix)
+    if lang is not None:
+        return lang
     raise NoSupportedSourceError(
-        f"지원하지 않는 확장자: {path_suffix!r} — pipeline/languages.py 가 단일 정의처"
+        f"지원하지 않는 소스 어휘 확장자: {path_suffix!r} — "
+        "ontology_roles.yaml source_extensions 가 단일 정의처"
     )
 
 
@@ -139,6 +285,246 @@ def source_lexicon(lang: str) -> dict:
             f"(등록됨: {sorted(table)})"
         )
     return entry
+
+
+@lru_cache(maxsize=None)
+def complement_owner_types(lang: str) -> frozenset[str]:
+    """Canonical control types whose alternative arm may own a complement node.
+
+    The ownership is language syntax, not a heuristic over node names or source identifiers.
+    Every registered lexicon must declare it explicitly so a new language cannot silently
+    inherit C/Python behavior.
+    """
+    raw = source_lexicon(lang).get("complement_owner_types")
+    if not isinstance(raw, list):
+        raise ValueError(
+            f"source_lexicon.{lang}.complement_owner_types 는 list 여야 한다"
+        )
+    values = tuple(str(node_type).strip().upper() for node_type in raw)
+    if any(not value for value in values) or len(values) != len(set(values)):
+        raise ValueError(
+            f"잘못되거나 중복된 complement owner type: {lang}.{raw!r}"
+        )
+    unknown = set(values) - set(control_structure_labels())
+    if unknown:
+        raise ValueError(
+            f"미등록 complement owner type: {lang}.{sorted(unknown)}"
+        )
+    return frozenset(values)
+
+
+@lru_cache(maxsize=1)
+def _reference_import_profiles() -> dict[str, dict]:
+    """Validate language→module-ownership profiles against parser import roles."""
+    data = _load_ontology()
+    profiles = data.get("reference_imports") or {}
+    if not isinstance(profiles, dict):
+        raise ValueError("reference_imports 는 mapping 이어야 한다")
+    internal = (data.get("roles") or {}).get("internal") or {}
+    expected = {
+        str(lang)
+        for lang, labels in internal.items()
+        if {"IMPORT", "INCLUDE"} & set(labels or ())
+    }
+    actual = set(profiles)
+    if actual != expected:
+        raise ValueError(
+            "reference_imports 와 roles.internal import 언어 불일치: "
+            f"missing={sorted(expected - actual)}, extra={sorted(actual - expected)}"
+        )
+    for lang, profile in profiles.items():
+        if not isinstance(profile, dict) or not str(profile.get("resolver") or "").strip():
+            raise ValueError(f"reference_imports.{lang}.resolver 가 필요하다")
+        pattern = source_lexicon(str(lang)).get("identifier_pattern")
+        if not isinstance(pattern, str) or not pattern.strip():
+            raise ValueError(f"source_lexicon.{lang}.identifier_pattern 가 필요하다")
+    return profiles
+
+
+def reference_import_profile(lang: str) -> dict:
+    """Return the declared import ownership profile; never silently degrade."""
+    profile = _reference_import_profiles().get(lang)
+    if profile is None:
+        raise ValueError(
+            f"import 단서를 emit하는 미등록 언어: {lang!r} — "
+            "ontology_roles.yaml reference_imports에 resolver 계약이 필요하다"
+        )
+    return profile
+
+
+@lru_cache(maxsize=1)
+def _reference_inheritance_profiles() -> dict[str, dict]:
+    profiles = _load_ontology().get("reference_inheritance") or {}
+    if not isinstance(profiles, dict):
+        raise ValueError("reference_inheritance 는 mapping 이어야 한다")
+    known = set((_load_ontology().get("source_lexicon") or {}))
+    extra = set(profiles) - known
+    if extra:
+        raise ValueError(f"미등록 언어의 reference_inheritance: {sorted(extra)}")
+    for lang, profile in profiles.items():
+        if not isinstance(profile, dict) or not str(profile.get("pattern") or "").strip():
+            raise ValueError(f"reference_inheritance.{lang}.pattern 가 필요하다")
+    return profiles
+
+
+def reference_inheritance_profile(lang: str) -> dict | None:
+    """Return an explicitly declared inheritance grammar, or None for no such syntax."""
+    return _reference_inheritance_profiles().get(lang)
+
+
+def _external_linking_section() -> dict:
+    section = _load_ontology().get("external_linking")
+    if not isinstance(section, dict):
+        raise ValueError("external_linking 은 mapping 이어야 한다")
+    return section
+
+
+@lru_cache(maxsize=1)
+def external_resolvers() -> dict[str, tuple[int, ...]]:
+    """Return validated resolver name → zero-based address argument positions."""
+    raw = _external_linking_section().get("resolvers")
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError("external_linking.resolvers 는 비어 있지 않은 mapping 이어야 한다")
+    result: dict[str, tuple[int, ...]] = {}
+    for raw_name, raw_positions in raw.items():
+        name = str(raw_name).strip()
+        if not name or name != str(raw_name):
+            raise ValueError(f"잘못된 external resolver 이름: {raw_name!r}")
+        if not isinstance(raw_positions, list) or not raw_positions:
+            raise ValueError(f"external resolver 위치는 비어 있지 않은 list 여야 한다: {name}")
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0
+               for value in raw_positions):
+            raise ValueError(f"external resolver 위치는 0 이상의 정수여야 한다: {name}")
+        if len(raw_positions) != len(set(raw_positions)):
+            raise ValueError(f"중복 external resolver 위치: {name}")
+        result[name] = tuple(raw_positions)
+    return result
+
+
+def _external_name_map(key: str) -> dict[str, frozenset[str]]:
+    raw = _external_linking_section().get(key)
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError(f"external_linking.{key} 는 비어 있지 않은 mapping 이어야 한다")
+    result: dict[str, frozenset[str]] = {}
+    for raw_owner, raw_names in raw.items():
+        owner = str(raw_owner).strip().lower()
+        if not owner or not isinstance(raw_names, list) or not raw_names:
+            raise ValueError(f"external_linking.{key}.{raw_owner} 는 비어 있지 않은 list 여야 한다")
+        names = [str(value).strip().lower() for value in raw_names]
+        if any(not value for value in names) or len(names) != len(set(names)):
+            raise ValueError(f"external_linking.{key}.{raw_owner} 에 빈 값 또는 중복이 있다")
+        if owner in result:
+            raise ValueError(f"external_linking.{key} owner 중복: {owner}")
+        result[owner] = frozenset(names)
+    return result
+
+
+@lru_cache(maxsize=1)
+def external_addressable_attributes() -> dict[str, frozenset[str]]:
+    return _external_name_map("addressable_attributes")
+
+
+@lru_cache(maxsize=1)
+def external_addressable_child_text() -> dict[str, frozenset[str]]:
+    return _external_name_map("addressable_child_text")
+
+
+@lru_cache(maxsize=1)
+def external_addressable_kinds() -> frozenset[str]:
+    raw = _external_linking_section().get("addressable_kinds")
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("external_linking.addressable_kinds 는 비어 있지 않은 list 여야 한다")
+    values = [str(value).strip() for value in raw]
+    if any(not value for value in values) or len(values) != len(set(values)):
+        raise ValueError("external_linking.addressable_kinds 에 빈 값 또는 중복이 있다")
+    return frozenset(values)
+
+
+@lru_cache(maxsize=1)
+def scanner_hints() -> tuple[tuple[str, ...], dict[str, frozenset[str]]]:
+    """Return validated root manifests and category suffixes for Scan evidence."""
+    section = _load_ontology().get("scanner_hints")
+    if not isinstance(section, dict):
+        raise ValueError("scanner_hints 는 mapping 이어야 한다")
+    raw_manifests = section.get("manifests")
+    if not isinstance(raw_manifests, list) or not raw_manifests:
+        raise ValueError("scanner_hints.manifests 는 비어 있지 않은 list 여야 한다")
+    manifests = tuple(str(value).strip() for value in raw_manifests)
+    if (any(not value or Path(value).name != value for value in manifests)
+            or len(manifests) != len(set(manifests))):
+        raise ValueError("scanner_hints.manifests 는 중복 없는 루트 파일명이어야 한다")
+
+    raw_categories = section.get("categories")
+    if not isinstance(raw_categories, dict) or not raw_categories:
+        raise ValueError("scanner_hints.categories 는 비어 있지 않은 mapping 이어야 한다")
+    categories: dict[str, frozenset[str]] = {}
+    owners: dict[str, str] = {}
+    for raw_category, raw_extensions in raw_categories.items():
+        category = str(raw_category).strip()
+        if not category or not isinstance(raw_extensions, list) or not raw_extensions:
+            raise ValueError(f"scanner_hints.categories.{raw_category} 는 비어 있지 않은 list 여야 한다")
+        suffixes: set[str] = set()
+        for raw_extension in raw_extensions:
+            extension = str(raw_extension).strip().lower().lstrip(".")
+            if not extension or "." in extension:
+                raise ValueError(f"잘못된 scanner 확장자: {raw_extension!r}")
+            suffix = f".{extension}"
+            if suffix in suffixes:
+                raise ValueError(f"scanner category 내부 확장자 중복: {category}.{extension}")
+            previous = owners.get(suffix)
+            if previous is not None:
+                raise ValueError(f"scanner category 확장자 중복: {extension} ({previous}, {category})")
+            suffixes.add(suffix)
+            owners[suffix] = category
+        categories[category] = frozenset(suffixes)
+    return manifests, categories
+
+
+@lru_cache(maxsize=1)
+def external_file_categories() -> tuple[dict[str, str], dict[str, str]]:
+    """Return validated suffix/name → external text inventory categories."""
+    section = _load_ontology().get("external_file_categories")
+    if not isinstance(section, dict) or not section:
+        raise ValueError("external_file_categories 는 비어 있지 않은 mapping 이어야 한다")
+    allowed_categories = frozenset({"artifact_xml", "config", "document"})
+    suffix_categories: dict[str, str] = {}
+    name_categories: dict[str, str] = {}
+    for raw_category, raw_rules in section.items():
+        category = str(raw_category).strip()
+        if category not in allowed_categories or not isinstance(raw_rules, dict):
+            raise ValueError(f"지원하지 않는 external file category: {raw_category!r}")
+        raw_suffixes = raw_rules.get("suffixes")
+        raw_names = raw_rules.get("exact_names")
+        if not isinstance(raw_suffixes, list) or not isinstance(raw_names, list):
+            raise ValueError(
+                f"external_file_categories.{category} suffixes/exact_names 는 list 여야 한다"
+            )
+        if not raw_suffixes and not raw_names:
+            raise ValueError(f"external_file_categories.{category} 규칙이 비어 있다")
+        for raw_suffix in raw_suffixes:
+            normalized = str(raw_suffix).strip().lower().lstrip(".")
+            if not normalized or "." in normalized:
+                raise ValueError(f"잘못된 external file 확장자: {raw_suffix!r}")
+            suffix = f".{normalized}"
+            previous = suffix_categories.get(suffix)
+            if previous is not None:
+                raise ValueError(
+                    f"external file 확장자 중복: {suffix} ({previous}, {category})"
+                )
+            if suffix in FRAMEWORK_SUFFIXES or suffix in DBMS_SUFFIXES:
+                raise ValueError(f"source/external file 확장자 중복: {suffix}")
+            suffix_categories[suffix] = category
+        for raw_name in raw_names:
+            name = str(raw_name).strip().lower()
+            if not name or Path(name).name != name:
+                raise ValueError(f"잘못된 external file exact name: {raw_name!r}")
+            previous = name_categories.get(name)
+            if previous is not None:
+                raise ValueError(
+                    f"external file 이름 중복: {name} ({previous}, {category})"
+                )
+            name_categories[name] = category
+    return suffix_categories, name_categories
 
 
 @lru_cache(maxsize=1)
@@ -199,9 +585,38 @@ def is_valid_stereotype(stereotype: str, strategy: str) -> bool:
     return not stereotype or stereotype in _stereotype_pools().get(strategy, frozenset())
 
 
-def coerce_stereotype(stereotype: str, strategy: str) -> str:
-    """허용 목록 밖의 LLM stereotype을 빈 값으로 정규화한다."""
-    return stereotype if is_valid_stereotype(stereotype, strategy) else ""
+def require_stereotype(stereotype: str, strategy: str) -> str:
+    """Return one strategy-owned stereotype or fail without semantic erasure."""
+    if not stereotype or not is_valid_stereotype(stereotype, strategy):
+        raise ValueError(
+            f"invalid {strategy} stereotype: {stereotype!r}; "
+            f"allowed={list(stereotype_values(strategy))!r}"
+        )
+    return stereotype
+
+
+@lru_cache(maxsize=1)
+def _stereotype_rules() -> dict:
+    return _load_ontology().get("stereotype_rules") or {}
+
+
+def stereotype_priority_text() -> str:
+    """동점 해소 우선순위의 프롬프트 렌더 — 데이터(ontology)가 단일 정의처다."""
+    return " › ".join(str(v) for v in (_stereotype_rules().get("priority") or ()))
+
+
+def exclude_contradicted_stereotype(
+    stereotype: str, *, has_writes: bool
+) -> tuple[str, str | None]:
+    """결정론 근거와 모순인 stereotype 을 빈 값으로 강제한다 — (값, 위반사유).
+
+    실측(spec 116 7단계): 쓰기 근거가 있는 함수가 Query 류로 서술되는 오답은 의미
+    판단이 아니라 사실 모순이다 — 결정론이 기각하고 사람 검토로 표면화한다.
+    """
+    forbidden = set(_stereotype_rules().get("write_forbidden") or ())
+    if has_writes and stereotype in forbidden:
+        return "", f"{stereotype} 는 결정론 쓰기 근거와 모순 (write_forbidden)"
+    return stereotype, None
 
 
 @lru_cache(maxsize=1)
@@ -225,6 +640,12 @@ def module_stereotype_prompt_options(strategy: str) -> str:
     return ", ".join(f"`{value}`" for value in module_stereotype_values(strategy))
 
 
-def coerce_module_stereotype(stereotype: str, strategy: str) -> str:
+def require_module_stereotype(stereotype: str, strategy: str) -> str:
+    """Return one strategy-owned module stereotype or fail visibly."""
     allowed = frozenset(module_stereotype_values(strategy))
-    return stereotype if not stereotype or stereotype in allowed else ""
+    if not stereotype or stereotype not in allowed:
+        raise ValueError(
+            f"invalid {strategy} module stereotype: {stereotype!r}; "
+            f"allowed={list(module_stereotype_values(strategy))!r}"
+        )
+    return stereotype

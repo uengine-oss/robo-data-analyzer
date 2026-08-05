@@ -18,20 +18,20 @@ def _clusters() -> list:
     ]}
     anchor = {
         "id": "code:a.c:fa", "element_id": "e1", "name": "fa", "label": "FUNCTION",
-        "stereotype": "svc", "summary": "요약A", "search_text": "내부",
+        "stereotype": "svc", "summary": "요약A",
         "writes": ["orders"], "reads": [], "calls": ["fb"],
         "rules": [rule, rule_dup], "relevance": 0.9, "role": "anchor",
     }
     evidence = {
         "id": "code:a.c:fb", "element_id": "e2", "name": "fb", "label": "FUNCTION",
-        "stereotype": "", "summary": "요약B", "search_text": "내부",
+        "stereotype": "", "summary": "요약B",
         "writes": [], "reads": ["orders"], "calls": [], "rules": [dict(rule)],
         "relevance": 0.7, "role": "evidence",
         "evidence": [{"anchor_id": "code:a.c:fa", "relation": "CALLS", "direction": "out"}],
     }
     table = {
         "id": "db:orders", "element_id": "e3", "name": "주문", "physical_name": "orders",
-        "label": "TABLE", "stereotype": "", "summary": "주문 테이블", "search_text": "",
+        "label": "TABLE", "stereotype": "", "summary": "주문 테이블",
         "writes": [], "reads": [], "calls": [], "rules": [], "relevance": 0.9,
         "role": "evidence",
         "evidence": [{"anchor_id": "code:a.c:fa", "relation": "WRITES", "direction": "out"}],
@@ -50,7 +50,7 @@ class ListProfileTests(unittest.TestCase):
         return _list_clusters(_clusters(), _BY_ID)
 
     def test_list_has_no_detail_or_internal_fields(self):
-        forbidden = {"code_text", "columns", "search_text", "embedding", "element_id", "graph_owner"}
+        forbidden = {"code_text", "columns", "embedding", "element_id", "graph_owner"}
         for node in self._listed()[0]["nodes"]:
             self.assertFalse(forbidden & set(node))
 
@@ -80,7 +80,7 @@ class DetailPayloadTests(unittest.TestCase):
             [{"labels": ["FUNCTION", "EMBEDDED"], "props": {
                 "id": "code:a.c:fa", "name": "fa", "summary": "기능",
                 "file_path": "a.c", "start_line": 10, "end_line": 20,
-                "code_text": "int fa(){}", "embedding": [1.0], "search_text": "internal",
+                "code_text": "int fa(){}", "embedding": [1.0],
                 "graph_owner": "analyzer",
             }}],
             [{"type": "CALLS", "direction": "out", "other_id": "code:a.c:fa",
@@ -94,7 +94,7 @@ class DetailPayloadTests(unittest.TestCase):
         self.assertEqual("CALLS", node["relationships"][0]["type"])
         self.assertEqual("code:a.c:fa", node["relationships"][0]["node"]["id"])
         self.assertEqual([{"statement": "규칙", "examples": []}], node["rules"])
-        self.assertFalse({"embedding", "search_text", "graph_owner"} & set(node["properties"]))
+        self.assertFalse({"embedding", "graph_owner"} & set(node["properties"]))
 
     def test_table_has_explicit_unavailable_source_and_columns(self):
         payload = build_node_detail(

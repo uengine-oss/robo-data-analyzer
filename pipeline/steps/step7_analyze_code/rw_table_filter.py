@@ -1,237 +1,117 @@
-"""spec 027 — 테이블 귀속을 함수의 결정론 reads/writes 로 제한.
-
-LLM(code_table_insights·code_rules_examples)이 귀속한 테이블이 함수의 결정론
-``reads ∪ writes`` 집합 밖이면 드롭한다. 대표 오류: 디스패처 함수가 callee DBIO/호출
-함수명(예: ``e800_dbio_rltm_auth_hst_u0004``)을 테이블로 착각해 가짜 AFFECTS_TABLE /
-table_insights 를 만드는 것. reads/writes 가 비면(직접 DB 안 건드림) 모든 테이블 귀속을
-드롭한다. 드롭은 조용히 넘기지 않고 표면화한다(Constitution IV) — 단 심각도는 사실에
-맞춘다(FR-005): 디스패처(allowed 빔)의 예상 드롭은 per-함수 INFO + run 종료 시 집계 1줄
-(``flush_drop_summary``), 진짜 오귀속(allowed 있는데 밖 테이블)은 발생 즉시 WARNING.
-
-분류/매칭 알고리즘·스키마 불변 — LLM 출력의 노이즈만 제거(결정론 그라운딩).
-"""
+"""Derive RULE table effects from validated leaves and deterministic R/W."""
 from __future__ import annotations
 
 from typing import Iterable, Optional
 
-from shared.events.runtime_logger import log_info, log_warning
-
-_STEP = "step7.analyze_code.rw_filter"
-
-# run 단위 디스패처 드롭 집계 — step7이 reset/flush (analyzer = 단일 run).
-# 디스패처 예상 드롭을 per-함수 WARNING 으로 쌓으면 error.log 소음 → per-함수는 INFO
-# (analyzer.log 추적용)로만, run 종료 시 여기 집계를 1줄로 표면화한다(FR-005·FR-005a).
-_drop_stats = {"funcs": 0, "count": 0}
+from pipeline.quality_gates.evidence_matching import resolve_qualified_name
+from pipeline.quality_gates.example_synthesis import synthesize_examples
 
 
-def reset_drop_stats() -> None:
-    """step7 시작 시 — 디스패처 드롭 집계 초기화."""
-    _drop_stats["funcs"] = 0
-    _drop_stats["count"] = 0
+_READ_OP = "READ"
+_WRITE_OPS = {"INSERT", "UPDATE", "DELETE", "MERGE", "TRUNCATE"}
+_EXACT_OPS = {_READ_OP, *_WRITE_OPS}
 
 
-def flush_drop_summary() -> None:
-    """step7 종료 시 — 디스패처 예상 드롭을 error.log 1줄로 표면화 후 초기화.
-
-    per-함수 상세는 analyzer.log INFO 에 이미 있음(노이즈 0). 진짜 오귀속(allowed 비지
-    않은 드롭)은 발생 즉시 per-함수 WARNING 으로 따로 표면화됨 — 여기 집계 대상 아님.
-    """
-    if _drop_stats["count"]:
-        log_warning(
-            _STEP, "table_attr_off_rw_dispatcher",
-            f"직접 R/W 없는 디스패처의 callee 테이블 귀속 드롭 "
-            f"{_drop_stats['funcs']}함수 {_drop_stats['count']}건 (예상 동작 · 상세 analyzer.log)",
-            dispatcher_funcs=_drop_stats["funcs"], dropped=_drop_stats["count"],
-        )
-    reset_drop_stats()
+def _authoritative_op(value: object) -> str | None:
+    """Scanner 연산만 폐쇄형 최종값으로 승격한다."""
+    op = str(value or "").strip().upper()
+    if op == "SELECT":
+        op = _READ_OP
+    return op if op in _EXACT_OPS else None
 
 
-def constrain_tables_to_rw(
-    code_id: str,
+_THEN_EFFECT_OPS = {
+    "select": ("READ", "READ"),
+    "insert": ("WRITE", "INSERT"),
+    "update": ("WRITE", "UPDATE"),
+    "delete": ("WRITE", "DELETE"),
+    "upsert": ("WRITE", "MERGE"),
+}
+
+
+def rule_table_effects(
+    then_statements: Iterable[str],
     reads: Iterable[str],
     writes: Iterable[str],
-    insights_out: Optional[object] = None,   # TableInsightsOutput | None
-    rules_out: Optional[object] = None,       # RulesExamplesOutput | None
-    allowed_columns_by_table: Optional[dict[str, Iterable[str]]] = None,
-    table_op: Optional[dict[str, str]] = None,
-) -> int:
-    """LLM 귀속 테이블을 reads∪writes 정확 ID로 제한 — in-place 수정, 드롭 수 반환.
+    table_op: Optional[dict[str, str]],
+) -> tuple[list[dict], list[str]]:
+    """구조화 then 효과에서 규칙 단위 AFFECTS_TABLE transport를 결정론으로 만든다(spec 116).
 
-    - ``insights_out.table_insights[*].table``
-    - ``rules_out.rules[*].examples[*].affected_tables[*].table``
-    중 허용 집합 밖은 제거. reads/writes 비면 허용 집합도 비어 전부 드롭(디스패처).
-
-    ``table_op`` (spec 100): {table_id: 권위 op(READ/INSERT/UPDATE/DELETE/MERGE)}. 한
-    (함수,테이블)이 **단일 결정론 op** 일 때만 채워진다(모호하면 제외). LLM 이 낡은 주석에
-    속아 op 를 뒤바꾼 경우(예: SQL_KEY _u=UPDATE 인데 INSERT 로 서술) 이 권위값으로 교정한다.
-    테이블 제한(spec 027)과 같은 원리 — 의미 판단은 결정론이 소유하고 LLM 창작을 덮지 않는다.
+    LLM 은 테이블 후보를 별도 필드로 내지 않는다 — then 의
+    select/insert/update/delete/upsert("테이블") 호출이 유일한 출처이고, 귀속은 결정론
+    reads/writes 대조가 확정한다(spec 027 원칙 동일). 반환: (transport 목록,
+    미해석 테이블명 목록 — 호출측이 표면화).
     """
+    from pipeline.models.rule_expression import parse_effect
+
     read_exact = {str(t) for t in (reads or ())}
     write_exact = {str(t) for t in (writes or ())}
-    allowed_exact = read_exact | write_exact
-
-    def resolve(table: object) -> str | None:
-        exact = str(table)
-        return exact if exact in allowed_exact else None
-    dropped = 0
-    role_dropped = 0
-    op_corrected = 0
-    off: set[str] = set()
-    table_op = table_op or {}
-
-    kept_table_ids: set[str] = set()
-    if insights_out is not None and getattr(insights_out, "table_insights", None):
-        kept = []
-        for ti in insights_out.table_insights:
-            canonical = resolve(ti.table)
-            role = getattr(ti, "role", None)
-            if canonical and (
-                role is None
-                or _role_matches_direct_access(
-                    role,
-                    is_read=canonical in read_exact,
-                    is_write=canonical in write_exact,
-                    authoritative_op=table_op.get(canonical),
-                )
-            ):
-                ti.table = canonical
-                kept_table_ids.add(canonical)
-                _constrain_columns(
-                    code_id, ti, canonical, allowed_columns_by_table,
-                )
-                kept.append(ti)
-            else:
-                dropped += 1
-                if canonical:
-                    role_dropped += 1
-                    log_warning(
-                        _STEP,
-                        "table_role_off_rw",
-                        "LLM table role이 직접 R/W 근거와 모순되어 insight 전체 기각",
-                        code_id=code_id,
-                        table=canonical,
-                        role=role,
-                        reads=canonical in read_exact,
-                        writes=canonical in write_exact,
-                        authoritative_op=table_op.get(canonical),
-                    )
-                else:
-                    off.add(str(ti.table))
-        insights_out.table_insights = kept
-
-    if insights_out is not None and allowed_exact:
-        missing = sorted(allowed_exact - kept_table_ids)
-        if missing:
-            log_warning(
-                _STEP, "table_insight_missing",
-                f"LLM table_insights 누락 {len(missing)}건: {missing[:8]}",
-                code_id=code_id, missing=missing[:8],
-            )
-
-    if rules_out is not None and getattr(rules_out, "rules", None):
-        for rule in rules_out.rules:
-            for ex in getattr(rule, "examples", None) or []:
-                ats = getattr(ex, "affected_tables", None)
-                if not ats:
-                    continue
-                kept = []
-                for at in ats:
-                    canonical = resolve(at.table)
-                    if canonical:
-                        at.table = canonical
-                        # 권위 op 교정 — 단일 결정론 op 가 있고 LLM op 가 다르면 덮는다.
-                        auth = table_op.get(canonical)
-                        if auth and at.op != auth:
-                            at.op = auth
-                            op_corrected += 1
-                        kept.append(at)
-                    else:
-                        dropped += 1
-                        off.add(str(at.table))
-                ex.affected_tables = kept
-
-    if op_corrected:
-        # LLM op 오귀속을 권위 op 로 덮은 수 — 표면화(헌법 IV). 잦으면 프롬프트/입력 점검 신호.
-        log_info(_STEP, "table_op_corrected",
-                 f"권위 op(SQL_KEY 유래)로 affected_tables op 교정 {op_corrected}건",
-                 code_id=code_id, corrected=op_corrected)
-    if off:
-        off_dropped = dropped - role_dropped
-        # 표면화(Constitution IV) — 단 심각도는 사실에 맞춘다(FR-005).
-        if not allowed_exact:
-            # 직접 R/W 없는 디스패처: callee 테이블이 컨텍스트에 노출돼 생기는 예상된 드롭.
-            # per-함수는 INFO(analyzer.log 추적용), run 집계는 flush 가 1줄로 표면화(노이즈 0).
-            _drop_stats["funcs"] += 1
-            _drop_stats["count"] += off_dropped
-            log_info(
-                _STEP, "table_attr_off_rw",
-                f"디스패처(직접 R/W 없음) callee 테이블 귀속 {off_dropped}건 드롭: {sorted(off)[:8]}",
-                code_id=code_id, dropped=off_dropped,
-            )
-        else:
-            # reads/writes 있는데 밖 테이블 = 진짜 오귀속 → 발생 즉시 WARNING(error.log).
-            log_warning(
-                _STEP, "table_attr_off_rw",
-                f"reads/writes 밖 테이블 오귀속 {off_dropped}건 드롭: {sorted(off)[:8]}",
-                code_id=code_id, dropped=off_dropped, allowed=sorted(allowed_exact)[:8],
-            )
-    return dropped
+    authoritative = table_op or {}
+    effects: dict[tuple[str, str], dict] = {}
+    unresolved: list[str] = []
+    for statement in then_statements or ():
+        # 이 단계에는 채점 통과 규칙만 온다. parser 실패를 건너뛰면 의미 효과가 조용히
+        # 사라지므로 불변식 위반을 그대로 상위에 전파한다.
+        call = parse_effect(str(statement))
+        mapping = _THEN_EFFECT_OPS.get(call.func.id)
+        if mapping is None or not call.args:
+            continue
+        first = call.args[0]
+        name = first.value if hasattr(first, "value") and isinstance(
+            getattr(first, "value", None), str
+        ) else None
+        if not name:
+            continue
+        access, derived_op = mapping
+        pool = read_exact if access == "READ" else write_exact
+        table_id = resolve_qualified_name(name, pool)
+        if table_id is None:
+            # 모델 효과의 접근 방향과 다른 R/W 집합으로 재귀속하지 않는다.
+            unresolved.append(name)
+            continue
+        # 권위 op(SQL_KEY 유래)가 있으면 그것이 최종이다 — SELECT→READ 정규화 방어 포함.
+        authoritative_op = _authoritative_op(authoritative.get(table_id))
+        if authoritative_op and authoritative_op != derived_op:
+            unresolved.append(name)
+            continue
+        op = authoritative_op or derived_op
+        op_source = "SCANNER" if authoritative_op else "LLM_INFERRED"
+        effects[(table_id, op)] = {
+            "table": table_id, "access": access, "op": op, "op_source": op_source,
+        }
+    return list(effects.values()), unresolved
 
 
-def _role_matches_direct_access(
-    role: str,
-    *,
-    is_read: bool,
-    is_write: bool,
-    authoritative_op: str | None,
-) -> bool:
-    """폐쇄형 role이 결정론 R/W 방향과 모순되지 않는지만 검증한다.
+def serialize_rules(
+    rules: Iterable[object],
+    when_symbol: str,
+    reads: Iterable[str],
+    writes: Iterable[str],
+    table_op: Optional[dict[str, str]],
+) -> tuple[list[dict], list[str]]:
+    """채점 통과한 구조화 규칙들 → transport dict (enrichment 는 전부 코드가 채운다).
 
-    ``lookup`` 대 ``READ-only`` 및 ``append-only`` 대 ``WRITE-only``처럼 업무 맥락이
-    필요한 하위 의미는 LLM이 소유한다. 이 함수는 그 값을 고쳐 쓰지 않고, 읽기 전용
-    근거에 쓰기 역할을 붙이는 식의 명백한 방향 모순만 기각한다. ``upsert``는 단일
-    결정론 MERGE 근거가 있을 때만 인정한다.
+    rule_id = "R-"+anchor / when = 실행 가능 단위 심볼 / affected_tables = then 결정론
+    귀속. 반환: (직렬화 목록, 미해석 테이블명 목록).
     """
-    if role in {"READ-only", "lookup"}:
-        return is_read and not is_write
-    if role in {"WRITE-only", "append-only"}:
-        return is_write and not is_read
-    if role == "WRITE-then-READ":
-        return is_read and is_write
-    if role == "upsert":
-        return is_write and authoritative_op == "MERGE"
-    return False
-
-
-def _constrain_columns(
-    code_id: str,
-    table_insight: object,
-    table_id: str,
-    allowed_columns_by_table: Optional[dict[str, Iterable[str]]],
-) -> None:
-    """컬럼 출력을 해당 DDL 테이블의 실제 이름과 정확히 일치할 때만 유지한다."""
-    if allowed_columns_by_table is None:
-        return
-    allowed = {
-        str(name): str(name)
-        for name in allowed_columns_by_table.get(table_id, ())
-        if str(name).strip()
-    }
-    columns = list(getattr(table_insight, "columns", None) or [])
-    kept = []
-    rejected: list[str] = []
-    for column in columns:
-        raw = str(getattr(column, "name", ""))
-        canonical = allowed.get(raw)
-        if canonical:
-            column.name = canonical
-            kept.append(column)
-        else:
-            rejected.append(raw)
-    table_insight.columns = kept
-    if rejected:
-        log_warning(
-            _STEP, "column_off_ddl",
-            f"DDL allowlist 밖 컬럼 {len(rejected)}건 드롭: {rejected[:8]}",
-            code_id=code_id, table=table_id, rejected=rejected[:8],
-        )
+    serialized: list[dict] = []
+    unresolved_all: list[str] = []
+    rules = list(rules or ())
+    # 예시는 LLM 산출이 아니라 규칙에서 결정론 합성한다 (spec 116 §21, 헌법 I).
+    # 여집합(else_of) 해소에 형제 규칙이 필요하므로 함수·배치 단위로 한 번에 만든다.
+    examples_by_anchor = synthesize_examples(rules)
+    for rule in rules:
+        then = [str(s) for s in (getattr(rule, "then", None) or [])]
+        affected, unresolved = rule_table_effects(then, reads, writes, table_op)
+        unresolved_all.extend(unresolved)
+        serialized.append({
+            "rule_id": f"R-{rule.anchor_line}",
+            "anchor_line": rule.anchor_line,
+            "cond": rule.cond or "",
+            "then": then,
+            "nl": rule.nl,
+            "when": when_symbol,
+            "examples": examples_by_anchor.get(rule.anchor_line, []),
+            "affected_tables": affected,
+        })
+    return serialized, unresolved_all

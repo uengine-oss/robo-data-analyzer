@@ -72,6 +72,12 @@ class ToolEventEmitterMiddleware(AgentMiddleware):
             raise
 
         elapsed_ms = int((time.monotonic() - started) * 1000)
+        if isinstance(result, ToolMessage) and result.status == "error":
+            self._emit("tool_error", tool_name, args, elapsed_ms=elapsed_ms,
+                       error="tool returned error status",
+                       result_stats=_summarize_result(tool_name, result),
+                       result_content=_extract_content(result))
+            return result
         self._emit("tool_end", tool_name, args, elapsed_ms=elapsed_ms, error=None,
                    result_stats=_summarize_result(tool_name, result),
                    result_content=_extract_content(result))
@@ -101,6 +107,12 @@ class ToolEventEmitterMiddleware(AgentMiddleware):
             raise
 
         elapsed_ms = int((time.monotonic() - started) * 1000)
+        if isinstance(result, ToolMessage) and result.status == "error":
+            self._emit("tool_error", tool_name, args, elapsed_ms=elapsed_ms,
+                       error="tool returned error status",
+                       result_stats=_summarize_result(tool_name, result),
+                       result_content=_extract_content(result))
+            return result
         self._emit("tool_end", tool_name, args, elapsed_ms=elapsed_ms, error=None,
                    result_stats=_summarize_result(tool_name, result),
                    result_content=_extract_content(result))

@@ -1,0 +1,31 @@
+# DML 문법 의미표 — R/W 판정의 단일 진실 (spec 106).
+#
+# 표가 담는 것: 구문 데이터만 (키워드·relation·dml_type·감지 구문·대상 추출 구문).
+# 정규식 조립·판정 로직은 pipeline/dml_semantics.py 의 단일 빌더만 수행한다 (research D7).
+# 새 구문 지원 = 이 파일 수정뿐이어야 한다 (헌법 II·III).
+# 표 밖 DML 키워드 나열 금지 — specs/106-dml-semantics-table/contracts/dml-semantics-contract.md 계약 1.
+#
+# 필드 (data-model.md):
+#   키          : dml_type 값이자 기본 감지 키워드 (대문자)
+#   relation    : READS | WRITES (그 외 값 = 로딩 시 즉시 오류)
+#   dml_type    : 덮어쓰기. null = 빈 문자열 (WITH 현행 보존 — research D3)
+#   detect      : 감지 구문 목록 (기본 = 키 자체). CREATE 는 단독 감지 시
+#                 `CREATE OR REPLACE PROCEDURE` 헤더가 전부 오탐되므로 구문 단위 필수
+#   target_after: 이 구문 직후 식별자 = 대상 테이블 (WRITES 전용)
+
+core:
+  statements:
+    SELECT:   {relation: READS}
+    WITH:     {relation: READS, dml_type: null}          # 현행 보존 — research D3
+    INSERT:   {relation: WRITES, target_after: ["INSERT INTO"]}
+    UPDATE:   {relation: WRITES, target_after: ["UPDATE"]}
+    DELETE:   {relation: WRITES, target_after: ["DELETE FROM", "DELETE"]}  # FROM 생략형 — D4
+    MERGE:    {relation: WRITES, target_after: ["MERGE INTO"]}
+    TRUNCATE: {relation: WRITES, detect: ["TRUNCATE TABLE"], target_after: ["TRUNCATE TABLE"]}
+    CREATE:   {relation: WRITES, detect: ["CREATE TABLE"], target_after: ["CREATE TABLE"]}  # CTAS — D5
+  # 대상-직후 READS 추출 구문 (C 리터럴 SQL 경로). USING = MERGE 소스 — D6.
+  read_clauses: ["FROM", "JOIN", "USING"]
+
+# 방언 델타 — 코어와 같은 구조로 statements/read_clauses 추가·덮어쓰기.
+# 현재 필요 항목 0 (전부 코어). 예약 구조: {oracle: {statements: {...}}}
+dialects: {}

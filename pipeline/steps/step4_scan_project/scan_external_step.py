@@ -23,8 +23,11 @@ from graph.schema.graph_edges import HasChunk
 from graph.schema.graph_nodes import ExternalChunk, ProjectFile
 from shared.files.paths import resolve_within
 from agents.external import ExternalAgentRejected, run_external_agent
+from agents.runtime import AgentModelOutputError
 from agents.skills.catalog import EXTERNAL_SKILLS_DIR
 from pipeline.execution.graph_delta_stream import emit_edges, emit_message, emit_nodes
+from pipeline.execution.quality_finding_log import record_analysis_findings
+from pipeline.models.analysis_finding import AnalysisFinding
 from pipeline.execution.step_config import step_config
 from pipeline.steps.step3_load_external.chunk_builder import build_source_chunks
 from pipeline.steps.step3_load_external.encoding_reader import TextDecodeError, read_text
@@ -175,43 +178,38 @@ async def _learn_group_skill(
                           f"single {extension} file lacks enough repetition for intra-file held-out")
         train_samples, held_out_samples = [split[0]], [split[1]]
 
-    heldout_feedback = ""
     try:
-        # held-out 실패는 사유를 피드백으로 1회 재제안한다 — Agent 는 교정 기회만 얻는다.
-        for _held_out_attempt in range(2):
-            proposed = await run_external_agent(
-                extension=extension,
-                samples=train_samples,
-                negative_samples=negative_samples,
-                run_dir=run.run_dir,
-                cost_budget=cost_budget,
-                llm_semaphore=llm_semaphore,
-                pause=pause,
-                stream_emit=stream.emit if stream is not None else None,
-                initial_feedback=heldout_feedback,
-            )
-            try:
-                validated = validate_external_skill(
-                    proposed.skill, held_out_samples, negative_samples=negative_samples)
-            except ExternalSkillValidationError as error:
-                heldout_feedback = (
-                    f"held-out validation failed: {error} — 규칙이 관찰 파일에만 "
-                    "있는 접두/토큰을 리터럴로 고정하지 않았는지 점검하고, "
-                    "구조(문자 부류)로 일반화한 변형을 채택하라."
-                )
-                log_warning(_STEP, "held_out_retry", str(error), extension=extension)
-                continue
-            if extension:
-                persist_external_skill(validated.skill, skills_root)
-                loaded_skills.append(validated.skill)
-            else:
-                # 확장자 없는 파일용 skill 은 재사용 매칭 근거(확장자)가 없어 저장하지
-                # 않는다 — 와일드카드 재사용은 형식 납치 위험이 더 크다. run 내에서만 사용.
-                log_info(_STEP, "extensionless_skill_in_run_only", skill=validated.skill.name)
-            return validated, None
-    except ExternalAgentRejected as error:
+        proposed = await run_external_agent(
+            extension=extension,
+            samples=train_samples,
+            negative_samples=negative_samples,
+            run_dir=run.run_dir,
+            cost_budget=cost_budget,
+            llm_semaphore=llm_semaphore,
+            pause=pause,
+            stream_emit=stream.emit if stream is not None else None,
+        )
+        validated = validate_external_skill(
+            proposed.skill, held_out_samples, negative_samples=negative_samples
+        )
+        if extension:
+            persist_external_skill(validated.skill, skills_root)
+            loaded_skills.append(validated.skill)
+        else:
+            # 확장자 없는 파일용 skill 은 재사용 근거(확장자)가 없어 저장하지
+            # 않는다 — 와일드카드 재사용은 형식 납치 위험이 더 크다. run 내에서만 사용.
+            log_info(_STEP, "extensionless_skill_in_run_only", skill=validated.skill.name)
+        return validated, None
+    except (ExternalAgentRejected, ExternalSkillValidationError, AgentModelOutputError) as error:
+        status = "unavailable" if isinstance(error, AgentModelOutputError) else "rejected"
+        record_analysis_findings([AnalysisFinding(
+            concern="external_format",
+            status=status,
+            target_id=extension or "<extensionless>",
+            reasons=(f"{type(error).__name__}: {error}",),
+            evidence_rule="external_agent",
+        )])
         return None, ("pattern_rejected", str(error))
-    return None, ("pattern_rejected", heldout_feedback)
 
 
 async def scan_external_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:

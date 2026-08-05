@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from copy import deepcopy
 from pathlib import Path
 
 from pipeline.steps.step2_load_ast.framework_reader import _read_framework
@@ -16,21 +17,26 @@ class CSwitchCaseRangeTests(unittest.TestCase):
                 "children": [{
                     "type": "SWITCH", "startLine": 5, "endLine": 20,
                     "children": [
-                        {"type": "CASE", "startLine": 6, "endLine": 7, "children": []},
-                        {"type": "CASE", "startLine": 9, "endLine": 10, "children": []},
-                        {"type": "FUNCTION_CALL", "name": "work", "startLine": 11},
-                        {"type": "CASE", "startLine": 12, "endLine": 13, "children": []},
-                        {"type": "FUNCTION_CALL", "name": "more_work", "startLine": 14},
-                        {"type": "IF", "startLine": 15, "endLine": 16, "children": []},
-                        {"type": "CASE", "startLine": 18, "endLine": 20, "children": [{
-                            "type": "CASE", "startLine": 19, "endLine": 20,
-                            "children": [{"type": "FUNCTION_CALL", "name": "fallback", "startLine": 19}],
-                        }]},
+                        {"type": "CASE", "startLine": 6, "endLine": 8, "children": []},
+                        {"type": "CASE", "startLine": 9, "endLine": 11, "children": [
+                            {"type": "FUNCTION_CALL", "name": "work", "startLine": 11},
+                        ]},
+                        {"type": "CASE", "startLine": 12, "endLine": 17, "children": [
+                            {"type": "FUNCTION_CALL", "name": "more_work", "startLine": 14},
+                            {"type": "IF", "startLine": 15, "endLine": 16, "children": []},
+                        ]},
+                        {"type": "CASE", "startLine": 18, "endLine": 18, "children": []},
+                        {"type": "CASE", "startLine": 19, "endLine": 20, "children": [
+                            {"type": "FUNCTION_CALL", "name": "fallback", "startLine": 19},
+                        ]},
                     ],
                 }],
             }],
         }
-        return _read_framework(raw, "c", Path("."), Path("sample.c.json"))
+        before = deepcopy(raw)
+        result = _read_framework(raw, "c", Path("."), Path("sample.c.json"))
+        self.assertEqual(before, raw, "analyzer reader가 parser AST를 재작성하면 안 된다")
+        return result
 
     def test_cases_extend_to_next_label_and_stacked_labels_are_siblings(self) -> None:
         result = self._read()
@@ -54,6 +60,26 @@ class CSwitchCaseRangeTests(unittest.TestCase):
             {"work": routine.id, "more_work": routine.id, "fallback": routine.id},
             {site["call_text"]: site["caller_id"] for site in result.call_sites},
         )
+
+    def test_noncanonical_parser_ownership_is_rejected_not_repaired(self) -> None:
+        raw = {
+            "type": "FILE", "fileName": "sample.c", "filePath": "sample.c",
+            "children": [{
+                "type": "FUNCTION", "name": "f", "startLine": 1, "endLine": 8,
+                "children": [{
+                    "type": "SWITCH", "startLine": 2, "endLine": 7,
+                    "children": [
+                        {"type": "CASE", "startLine": 3, "endLine": 4, "children": []},
+                        {"type": "FUNCTION_CALL", "name": "work", "startLine": 5},
+                    ],
+                }],
+            }],
+        }
+        with self.assertRaisesRegex(
+            ValueError,
+            r"sample\.c\.json: SWITCH@2 has FUNCTION_CALL@5 after first CASE",
+        ):
+            _read_framework(raw, "c", Path("."), Path("sample.c.json"))
 
 
 if __name__ == "__main__":

@@ -1,13 +1,10 @@
 """Safe YAML prompt value assembly."""
 from __future__ import annotations
 
-import re
-
-
 # Prompt rules use different identifier names. Keep the precedence alongside the
 # extractor so the final-tree split cannot leave the helper without its data.
 _TARGET_ID_KEYS = (
-    "id", "table_fqn", "case_id", "name", "file",
+    "id", "component_id", "unit_id", "table_fqn", "case_id", "term", "name", "file",
 )
 
 def _safe_format(template: str, values: dict) -> str:
@@ -24,11 +21,32 @@ def _safe_format(template: str, values: dict) -> str:
     - ``{{`` → ``{`` (``}}`` → ``}``) escape 규칙은 그대로 작동 (yaml 작성자가
       의도한 literal brace 표기 보존).
     """
-    if values:
-        keys = "|".join(re.escape(k) for k in values)
-        pattern = re.compile(r"\{(" + keys + r")\}")
-        template = pattern.sub(lambda m: str(values[m.group(1)]), template)
-    return template.replace("{{", "{").replace("}}", "}")
+    # Render the template in one pass. Applying brace unescaping *after* value
+    # substitution corrupts injected JSON: every nested ``}}`` in the value loses
+    # a closing brace. Arbitrary evidence values are opaque to prompt assembly.
+    rendered: list[str] = []
+    index = 0
+    length = len(template)
+    while index < length:
+        if template.startswith("{{", index):
+            rendered.append("{")
+            index += 2
+            continue
+        if template.startswith("}}", index):
+            rendered.append("}")
+            index += 2
+            continue
+        if template[index] == "{":
+            closing = template.find("}", index + 1)
+            if closing >= 0:
+                key = template[index + 1 : closing]
+                if key in values:
+                    rendered.append(str(values[key]))
+                    index = closing + 1
+                    continue
+        rendered.append(template[index])
+        index += 1
+    return "".join(rendered)
 
 
 def _extract_target_and_sort(user_values: dict) -> tuple[str | None, str | None]:

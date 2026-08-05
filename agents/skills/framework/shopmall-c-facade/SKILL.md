@@ -12,18 +12,25 @@
 대안 순서를 바꾸거나, 이름을 정규화하지 않는다.
 
 ```yaml
-table_access_patterns:
-  - id: shopmall_sql_insert
-    call_regex: '(?P<op_token>INSERT)(?:\s|"\s*)+INTO(?:\s|"\s*)+(?P<entity>[A-Za-z_][A-Za-z0-9_]*)'
+table_access_rules:
+  - kind: sql_fragment
+    id: shopmall_sql_insert
+    keyword: INSERT
+    before_entity: INTO
     op_mappings: [{token: INSERT, op: INSERT}]
-  - id: shopmall_sql_update
-    call_regex: '(?P<op_token>UPDATE)(?:\s|"\s*)+(?P<entity>[A-Za-z_][A-Za-z0-9_]*)(?:\s|"\s*)+SET'
+  - kind: sql_fragment
+    id: shopmall_sql_update
+    keyword: UPDATE
+    after_entity: SET
     op_mappings: [{token: UPDATE, op: UPDATE}]
-  - id: shopmall_sql_delete
-    call_regex: '(?P<op_token>DELETE)(?:\s|"\s*)+FROM(?:\s|"\s*)+(?P<entity>[A-Za-z_][A-Za-z0-9_]*)'
+  - kind: sql_fragment
+    id: shopmall_sql_delete
+    keyword: DELETE
+    before_entity: FROM
     op_mappings: [{token: DELETE, op: DELETE}]
-  - id: shopmall_sql_select
-    call_regex: '(?P<op_token>FROM)(?:\s|"\s*)+(?P<entity>[A-Za-z_][A-Za-z0-9_]*)'
+  - kind: sql_fragment
+    id: shopmall_sql_select
+    keyword: FROM
     op_mappings: [{token: FROM, op: SELECT}]
 ddl_transform:
   ddl_naming_rule: as_is

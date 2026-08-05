@@ -3,17 +3,18 @@ system: |
   입력 멤버에 없는 사실을 만들지 않고 response_format만 출력합니다.
 shared_values:
   module_summary_contract: ../common/module_summary_contract.md
-user_template: |
+user_template_specific: |
   {module_summary_contract}
 
   허용 stereotype:
   {module_stereotype_options}
 
+  아래 멤버 근거만 종합해 ModuleSummaryOutput을 작성한다.
+
+user_template_inputs: |
   id: {id}
   name: {name}
 
   analyzed_members_json:
   {member_code_nodes}
-
-  멤버 근거만 종합해 ModuleSummaryOutput을 작성한다.
 max_tokens: 2000

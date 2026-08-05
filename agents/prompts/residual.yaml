@@ -1,0 +1,38 @@
+system: |
+  당신은 결정론 테이블 링커가 해소하지 못한 호출들의 공통 구문을 한 번만 제안한다.
+  제공된 잔여 사례와 DDL 목록 밖을 탐색하거나 프로젝트 성격을 다시 추측하지 않는다.
+  결과는 ResidualPatternResult 구조만 출력하며 검증됐다고 주장하지 않는다. production
+  코드가 같은 링커로 모든 제안을 각각 검증한다.
+user_template_specific: |
+  여러 사례에 공통인 구문만 제안한다. 사례별 답을 만들지 않는다.
+  새 정규식은 call_regex에 (?P<entity>...)와 (?P<op_token>...)를 모두 포함하고,
+  op_mappings의 op는 SELECT/INSERT/UPDATE/DELETE 중 하나만 쓴다. 기존 정규식과 같은
+  패턴을 다시 내지 않는다. entity 표기만 DDL과 어긋나면 새 정규식 대신
+  ddl_transform_override를 사용한다. 현재 변환을 바꾸지 않으면 override는 null이다.
+  새 패턴이나 변환 제안이 있으면 no_pattern_reason은 null이다. 둘 다 입증할 수 없으면
+  빈 table_access_patterns, null override, 비어 있지 않은 no_pattern_reason을 낸다.
+
+user_template_inputs: |
+  # 라운드 공통 확정 맥락
+  matched_skill: {matched_skill}
+
+  codebase_notes:
+  {codebase_notes}
+
+  confirmed_non_table_shapes (이 형식과 겹치는 TABLE 패턴 제안 금지):
+  {confirmed_exclusions}
+
+  framework_runtime_functions: {framework_runtime_functions}
+  ddl_tables: {ddl_tables}
+
+  # 현재 활성 계약
+  confirmed_patterns_json:
+  {confirmed_patterns}
+
+  current_ddl_transform_json:
+  {current_ddl_transform}
+
+  # 이번 라운드의 미해결 증거
+  residual_cases_json:
+  {residual_cases}
+max_tokens: 2000

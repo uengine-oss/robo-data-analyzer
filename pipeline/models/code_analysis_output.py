@@ -8,26 +8,11 @@
 - ``pipeline/steps/step8_post_processing``: ModuleSummaryOutput / TableDescription
 
 호출 모드 (단일 진실):
-``llm.with_structured_output(..., method="function_calling")`` 가 기본 — strict 미강제.
-단 SGLang + xgrammar 환경에서 자유 키 ``dict[str, str]`` 는 value 시작 토큰
-선택 실패 → 공백 무한 폭주 사고 발생 (2026-05-30 5차). 깊고 상한 없는
-``list[KeyValueItem]`` 도 같은 구조 반복 폭주 사고 (4차). 둘 다 schema 강제 부작용 —
-결론적으로 examples 의
-``given`` / ``then`` 은 **자연어 단일 문자열** 로 통합 (LLM 한테 가장 자유로운 출력 →
-폭주 메커니즘 자체 차단).
-
-나열형 필드(``domain_terms``) 폭주 방어 — 실측 근거로 확정한 3겹:
-1. **필드 순서**: 나열형·개방형은 앞, 닫힌 선택지는 끝
-   (``search_text`` → ``domain_terms`` → ``logical_name`` → ``summary`` → ``stereotype``).
-   나열형이 **마지막**이면 뒤에 쓸 게 없어 "끝"의 경계가 사라지고, 앞서 쓴 산문을 재조합하며
-   무한 생성으로 샌다(실측: domain_terms 가 맨 끝일 때 load_pg_company 30k 토큰·255초 폭주).
-   ``search_text`` 를 먼저 두는 이유 = 코드를 정독하는 작업이라 코드가 끝나면 자연히 멈춘다(무폭주 실적).
-2. **표제어와 뜻 = 입력 증거에 실재**: 코드·주석·주입 원문에 그 글자와 뜻의 근거가 있어야
-   한다. 조합어·약어 원형·기관 정체를 업계 상식으로 창작하지 않는다. 뜻 근거가 없으면
-   용어 후보로 만들지 않아 후보 집합이 유한하게 끝난다.
-3. **구조·상한**: 자유키 dict가 아닌 고정형 ``DomainTermItem`` 배열(0~10)을 사용한다.
-   10개는 목표가 아니라 절대 상한이다. 후보가 더 많으면 의미 우선순위 상위 10개만 선택한다.
-   규칙별 출력 토큰 상한도 별도로 둔다.
+runner가 이 모델의 canonical JSON Schema를 provider 구조화 출력에 전달하고, raw/usage를
+확보한 뒤 이 Pydantic 모델로 내부 의미 계약을 검증한다.
+자유 키와 깊고 상한 없는 반복 구조는 SGLang+xgrammar에서 반복 폭주를 일으켰다. 현재 wire는
+코드가 확정한 유한 좌표를 required key로 만들고 공통 leaf schema를 한 번만 참조한다. Example은
+모델 출력이 아니라 accepted Rule의 제한된 Python 표기에서 파생한다.
 
 검증 규칙 (Pydantic validator):
 - ``summary`` 내용은 후처리가 줄이거나 다시 쓰지 않는다. 옛 ``[핵심]`` 표시와 주변 공백만
@@ -35,9 +20,22 @@
 """
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
+
+from pipeline.models.rule_expression import (
+    EXAMPLE_LEAF_PATTERN,
+    NL_PATTERN,
+    RULE_LEAF_PATTERN,
+)
 
 
 def _normalize_summary_format(v: str) -> str:
@@ -53,39 +51,18 @@ def _normalize_summary_format(v: str) -> str:
 
 
 class SummaryOutput(BaseModel):
-    """코드노드/range 의미 요약(1~3줄) + 검색 서술 + 메타.
-
-    summary = 사람이 "뭘 하는 함수인지" 즉시 파악하는 짧은 요약(마커 없는 1~3줄) —
-    Bottom-up DAG 로 상위(caller/부모)에 전달된다. 핵심 책임을 규정하는 예외·대상 없음·
-    fallback은 사용자 수준으로 보존하고, 세부 조건·코드값·테이블 상호작용은 search_text가
-    검색 가능하게 담는다.
-    """
-    # ★ 필드 순서 = 폭주 방어 설계 (실측 근거):
-    #   ① 나열형·개방형 필드는 앞에 — 마지막이면 "끝"의 경계가 없어 무한 생성으로 샌다
-    #      (실측: domain_terms 가 맨 끝일 때 load_pg_company 30k 토큰 폭주).
-    #   ② search_text 가 먼저 — 코드를 정독하며 분기·식별자를 훑는 작업. 코드가 끝나면
-    #      쓸 게 없어 자연히 멈춘다(무폭주 실적).
-    #   ③ domain_terms 는 그 직후 — 방금 훑은 식별자가 눈앞에 있고, 뒤에 남은 필드가
-    #      "끝"의 경계가 되어준다.
-    #   ④ summary 는 최종 결론이라 뒤쪽. stereotype 은 닫힌 15지선다라 폭주 불가 → 맨 끝.
-    search_text: str = Field(
-        "",
-        description="검색 전용 서술 — 분석 대상 루틴은 모두 채움. 본문이 없으면 그 구조적 사실을 쓰고, 함수 이름으로 숨은 의미를 추측하지 않음",
-    )
-    domain_terms: list["DomainTermItem"] = Field(
-        default_factory=list,
-        max_length=10,
-        description="본문 실재 표제어와 업무 뜻의 구조화 목록 (0~10개; 10개는 목표가 아닌 절대 상한)",
-    )
-    logical_name: str = Field(
-        "",
-        description="형제 함수와 구별되는 도메인 한 줄 (코드 식별자 X — 프롬프트 [0] 지침)",
-    )
+    """모델이 소유하는 최소 의미 헤더; 구조 사실은 코드가 별도로 렌더링한다."""
     summary: str = Field(
         ...,
-        description="무엇을 왜 하고 무엇을 남기는지 설명하는 1~3문장 사용자 요약. 핵심 예외는 보존하고 세부 조건·코드값은 search_text 책임",
+        min_length=1,
+        description="대상의 최종 책임만 설명하는 purpose; 분기·코드값을 다시 쓰지 않음",
     )
     stereotype: str = Field("", description="ontology_roles.yaml 풀에서 선택")
+    questions: list["QuestionItem"] = Field(
+        default_factory=list,
+        max_length=15,
+        description="코드와 제공 근거만으로 답할 수 없는 실제 질문",
+    )
 
     @field_validator("summary")
     @classmethod
@@ -96,21 +73,7 @@ class SummaryOutput(BaseModel):
     def _require_grounded_text(self) -> "SummaryOutput":
         if not self.summary.strip():
             raise ValueError("summary cannot be empty")
-        if not self.search_text.strip():
-            raise ValueError("search_text cannot be empty")
         return self
-
-
-class DomainTermItem(BaseModel):
-    """LLM 경계용 고정 키 구조. 내부에서는 검증 후 dict로 변환한다."""
-    term: str = Field(..., min_length=1, max_length=60)
-    meaning: str = Field(..., min_length=1, max_length=500)
-    evidence: str = Field(
-        ...,
-        min_length=1,
-        max_length=1000,
-        description="meaning 전체를 뒷받침하는 현재 대상 원문의 연속된 구절",
-    )
 
 
 # ── 3 분할 #2: code_table_insights ────────────────────
@@ -122,6 +85,8 @@ class ColumnInsight(BaseModel):
     ``usage`` 는 생성돼도 소비 0(전수 grep 확정) → 응답 스키마에서 제외(불필요 토큰·폭주면적 차단).
     ``logical_name`` = 테이블 logical_name(spec 025) 미러 — 짧은 업무 표시명(spec 028).
     """
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(..., description="DDL 컬럼명 정확히 (추측 X)")
     logical_name: str = Field("", description="컬럼 도메인 표시명 한 줄 (코드 식별자·DDL 타입·동어반복 X)")
     description: str = Field("", description="비즈니스 의미 한 줄 (DDL 타입 X / 동어반복 X)")
@@ -129,11 +94,13 @@ class ColumnInsight(BaseModel):
 
 class TableInsightItem(BaseModel):
     """코드노드가 한 테이블에 대해 갖는 직접 역할 + 컬럼 description."""
+    model_config = ConfigDict(extra="forbid")
+
     table: str = Field(..., description="db.schema.table fqn 또는 table 이름")
     role: Literal[
         "READ-only",
         "WRITE-only",
-        "WRITE-then-READ",
+        "READ_WRITE",
         "append-only",
         "lookup",
         "upsert",
@@ -153,150 +120,99 @@ class TableInsightsOutput(BaseModel):
     table_insights: list[TableInsightItem] = Field(default_factory=list)
 
 
-# ── 3 분할 #3: code_rules_examples ────────────────────
+# ── 3 분할 #3: code_rules_examples — 구조화 파이썬 표현식 leaf (spec 116) ──
 
 
-class AffectedTable(BaseModel):
-    """이 시나리오에서 영향받는 테이블 1건 — AFFECTS_TABLE 엣지 단일 진실."""
-    table: str = Field(..., description="테이블 이름")
-    op: Literal["READ", "INSERT", "UPDATE", "DELETE", "MERGE"] = Field(
-        ...,
-        description="READ (SELECT) / INSERT / UPDATE / DELETE / MERGE",
-    )
+class QuestionItem(BaseModel):
+    """Meaning-critical missing context emitted only by the summary concern."""
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(..., description="한 줄 질문")
+    reason: str = Field(..., description="코드 근거 부재 사유")
+
+
+# ── 구조화 Rule·Example — JSON 봉투 + 파이썬 표현식 leaf (spec 116 3단계) ──
+#
+# 스키마는 **형태만** 강제한다(개행 금지·길이 상한 pattern = 문법 강제 디코딩의 끝 경계,
+# 헌법 VI 절제·폭주 방어). 파이썬 문법·어휘·분기표 의미 대조는 채점기(rule_grading)가
+# 한 번 수행한다. 위반 후보는 행 좌표가 있는 finding으로 격리하고 검증된 sibling은
+# 보존한다. 어휘·pattern의 정의처는 pipeline/models/rule_expression.py 하나다.
+
+_ExampleLeafStr = Annotated[str, StringConstraints(pattern=EXAMPLE_LEAF_PATTERN)]
+_RuleLeafStr = Annotated[str, StringConstraints(pattern=RULE_LEAF_PATTERN)]
 
 
 class ExampleItem(BaseModel):
-    """Rule 하위 given/when/then 시나리오 — Example Mapping 의 Example 노드 입력.
+    """Rule 검증 시나리오 — given/then 전부 파이썬 leaf (자연어 금지).
 
-    given/then 은 자유키 dict 폭주 차단 위해 자연어 단일 문자열. 소속 Rule 하위 중첩 —
-    참조 id 없이 구조로 연결.
+    **LLM 출력이 아니다.** 전체 run 실측에서 모델이 낸 예시의 71.9% 가 cond/then 의
+    기계적 재진술(새 정보 0)이었고 나머지도 여집합 부정이거나 창작이었다 — 헌법 I 에
+    따라 `quality_gates.example_synthesis` 가 결정론으로 만든다 (spec 116 §21).
+    이 모델은 그 산출물의 형태 계약이며 DBMS 배치 경로도 같은 것을 쓴다.
     """
-    given: str = Field("", description="진입 조건 한 줄 (확정된 코드 리터럴은 정확히 보존)")
-    when: str = Field("", description="트리거 한 줄 (메서드명·클래스명 X, 확정 리터럴 보존)")
-    then: str = Field("", description="결과 한 줄 (확정된 실제 코드값 보존, 불명확하면 추측 X)")
-    affected_tables: list[AffectedTable] = Field(
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["satisfy"]
+    given: list[_ExampleLeafStr] = Field(
         default_factory=list,
-        description="이 시나리오의 READ/WRITE 테이블 (op enum) — AFFECTS_TABLE 엣지 단일",
+        description="파이썬 등식 목록 — cond 를 만족시키는 한 경로",
+    )
+    then: list[_ExampleLeafStr] = Field(
+        default_factory=list, description="그때의 효과 호출문 목록"
     )
 
 
 class RuleItem(BaseModel):
-    """비즈니스 규칙 1개 + 그 시나리오 — Example Mapping 의 Rule 노드 입력.
+    """Canonical Rule after the outer required key restores its anchor coordinate."""
 
-    흐름(순서/분기)은 응답에서 뺀다: 순서=배열 순서, 분기 의미=statement 텍스트.
-    examples 는 소속 rule 하위 중첩(참조 id 폐기).
-    """
     model_config = ConfigDict(extra="forbid")
 
-    statement: str = Field(..., description="<조건>이면 <결과> — 코드 식별자 X")
-    # spec 102: 근거 인용. 줄번호 하나라 나열형 폭주와 무관하고(정수 1개), 도메인어가 아니라
-    # 좌표라서 "코드 식별자 금지" 원칙과도 충돌하지 않는다. 이 값이 있어야 결정론 게이트가
-    # "그 규칙이 말하는 분기"를 추정이 아니라 확정으로 잡는다(실측 8% → 92%).
     anchor_line: int = Field(
         ..., strict=True, gt=0,
-        description=(
-            "규칙을 직접 입증하는 절대 파일 줄번호. 조건 규칙은 결과를 선택하는 분기 줄, "
-            "무조건 규칙은 관측 가능한 효과를 수행하는 첫 활성 줄"
-        ),
+        description="분기표 행 번호 — wire의 R<행> key에서 코드가 복원",
     )
-    examples: list[ExampleItem] = Field(
-        default_factory=list,
-        max_length=24,
-        description="이 규칙의 given/when/then 시나리오 (같은결과 변주만 1~2)",
+    cond: _RuleLeafStr | None = Field(
+        None,
+        description='파이썬 불리언 표현식 leaf. 분기 아님(직선 코드)이면 null',
     )
-
-
-class QuestionItem(BaseModel):
-    """코드만으로 답 안 되는 모호점 — Example Mapping 의 Question 노드 입력.
-
-    Rule / Example 과 함께 Example Mapping 의 세 번째 축 — #3 분할(code_rules_examples)
-    이 함께 출력. 테이블 유무와 무관하므로 #2(table_insights) 가 아닌 #3 소속.
-    """
-    text: str = Field(..., description="한 줄 질문")
-    reason: str = Field("", description="코드 근거 부재 사유")
-
-
-def require_unique_rule_occurrences(rules: list[RuleItem]) -> None:
-    """같은 근거에서 같은 시나리오를 반복한 모델 출력을 명시적으로 거부한다.
-
-    statement가 같아도 anchor가 다르면 서로 다른 소스 발생이므로 유지한다. 이 검증은 의미를
-    합치거나 고치지 않으며, 동일 routine item 안의 완전 중복만 실패시킨다.
-    """
-    seen: set[tuple] = set()
-    for rule in rules:
-        identity = (
-            rule.statement.strip(),
-            rule.anchor_line,
-            tuple(
-                (
-                    example.given.strip(),
-                    example.when.strip(),
-                    example.then.strip(),
-                    tuple(
-                        (affected.table.strip(), affected.op)
-                        for affected in example.affected_tables
-                    ),
-                )
-                for example in rule.examples
-            ),
-        )
-        if identity in seen:
-            raise ValueError(
-                "exact duplicate Rule occurrence: statement, anchor_line, and examples match"
-            )
-        seen.add(identity)
+    then: list[_RuleLeafStr] = Field(
+        default_factory=list, description="효과 호출문 목록 — 유일한 채점 대상"
+    )
+    # examples 는 LLM 이 내지 않는다 — 결정론 합성 (spec 116 §21, 헌법 I).
+    # 개방형 자연어가 마지막이어도 NL_PATTERN 길이 상한이 결정론 끝 경계를 준다.
+    nl: str = Field(
+        "", pattern=NL_PATTERN, description="사람용 한국어 한 문장 — 표시 전용, 채점 제외"
+    )
 
 
 class RulesExamplesOutput(BaseModel):
-    """Rule(하위 Example 중첩) + Question 추출 결과.
+    """Rule 봉투 — 개수 상한 없음(유한성은 분기표 행수+토큰예산+반복가드가 보증)."""
 
-    개수는 가치 결정 질문 (prompt §[1]) 통과한 것만. max_length 캡은 **비즈니스 규칙이 아니라
-    provider 출력 폭주(수백 개) 안전망**이다 — "정상적으로 많은 것"을 막지 않는다(spec 054 FR-022).
-    실제 품질(반복·무근거·Rule 비매핑) 판정은 결정론 품질검사기(rule_quality)가 관측한다.
-    공식 분석 실측의 규칙별 분포(p50=1, p90=2, p95=3, p99=6, max=19)를 근거로
-    examples 캡은 24다. 정상 관측 최대보다 여유를 두되 수십~수백 개 구조 반복은
-    응답 스키마 단계에서 조기에 차단한다.
-    rules/questions 캡(30/15)은 개수 폭주가 관측된 적 없어 유지.
-    """
-    rules: list[RuleItem] = Field(default_factory=list, max_length=30)
-    questions: list[QuestionItem] = Field(
-        default_factory=list,
-        max_length=15,
-        description="사람 검토 큐로 갈 질문 (text + reason)",
-    )
-
-    @model_validator(mode="after")
-    def _reject_exact_duplicate_rules(self) -> "RulesExamplesOutput":
-        require_unique_rule_occurrences(self.rules)
-        return self
+    rules: list[RuleItem] = Field(default_factory=list)
 
 
 # ── DBMS 배치 3분할 (🅕 — 같은 유효부모 형제 N 노드를 관심사별 1콜) ──
 # 3관심사(요약/테이블/비즈니스로직)를 각각 배치(노드 리스트)로 호출 → 각 콜은
 # "한 관심사 × N 노드"의 평탄 리스트 = 깊은 중첩 0 (한 콜에 4중첩 합본 → 폭주 차단).
-# framework per-node 3분할과 동일 관심사·동일 항목(RuleItem/ExampleItem/QuestionItem/
+# framework per-node 3분할과 동일 관심사·동일 항목(RuleItem/
 # TableInsightItem 재사용), 다른 점은 노드 리스트로 묶어 던지는 것뿐. node_key(줄범위)로 분배.
 
 
 class BatchSummaryItem(BaseModel):
-    """배치 요약분할 — 노드 1개의 요약/식별 결과."""
+    """배치 노드의 최소 의미 헤더."""
     node_key: str = Field(..., description="입력 줄범위 '<start>-<end>' 그대로 echo")
-    # ★ 필드 순서 = 폭주 방어 (SummaryOutput 주석 참조): 나열형 앞 → 닫힌 선택지 끝.
-    search_text: str = Field(
-        "",
-        description="검색 전용 서술 — 분석 대상 루틴은 모두 채움. 본문이 없으면 그 구조적 사실을 쓰고, 함수 이름으로 숨은 의미를 추측하지 않음",
-    )
-    domain_terms: list[DomainTermItem] = Field(
-        default_factory=list,
-        max_length=10,
-        description="본문 실재 표제어와 업무 뜻의 구조화 목록 (0~10개; 10개는 목표가 아닌 절대 상한)",
-    )
-    logical_name: str = Field("", description="형제와 구별되는 도메인 한 줄 표시명")
     summary: str = Field(
-        "",
-        description="현재 노드의 목적·주요 처리·핵심 정상/예외 효과 1~3문장. 세부 조건·코드값은 search_text 책임",
+        ...,
+        min_length=1,
+        description="노드의 최종 책임만 설명하는 purpose; 분기·코드값을 다시 쓰지 않음",
     )
-    stereotype: str = Field("", description="ontology_roles.yaml 풀에서 선택 (없으면 빈 값)")
+    stereotype: str = Field("", description="ontology_roles.yaml 풀에서 선택")
+    questions: list[QuestionItem] = Field(
+        default_factory=list,
+        max_length=15,
+        description="코드와 제공 근거만으로 답할 수 없는 실제 질문",
+    )
 
     @field_validator("summary")
     @classmethod
@@ -307,21 +223,23 @@ class BatchSummaryItem(BaseModel):
     def _require_grounded_text(self) -> "BatchSummaryItem":
         if not self.summary.strip():
             raise ValueError("summary cannot be empty")
-        if not self.search_text.strip():
-            raise ValueError("search_text cannot be empty")
         return self
 
 
 class BatchSummaryOutput(BaseModel):
-    """요약 배치 결과 — 입력 노드와 1:1 (node_key 매칭). 누락은 호출자가 미니 재요청."""
+    """요약 배치 결과 — 입력 노드와 1:1; 키 불일치 후보는 concern finding으로 격리된다."""
     nodes: list[BatchSummaryItem] = Field(default_factory=list)
 
 
 class BatchRulesItem(BaseModel):
-    """배치 비즈니스로직 분할 — 노드 1개의 규칙(하위 예시 중첩)/질문."""
+    """배치 규칙 계약 — 노드 1개의 파이썬 leaf 규칙 (spec 116 5단계).
+
+    canonical 모델은 동적 required-key schema 검증 뒤의 정규화 결과만 받는다.
+    규칙 내용은 RuleItem(anchor 복창 + leaf)이며 상한은 없다 —
+    유한성은 분기표 행수+토큰예산+반복가드(결정 원장).
+    """
     node_key: str = Field(..., description="입력 줄범위 '<start>-<end>' 그대로 echo")
-    rules: list[RuleItem] = Field(default_factory=list, max_length=30)
-    questions: list[QuestionItem] = Field(default_factory=list, max_length=15)
+    rules: list[RuleItem] = Field(default_factory=list)
 
 
 class BatchRulesOutput(BaseModel):
@@ -347,8 +265,10 @@ class ModulePreAnalysisOutput(BaseModel):
     표시명(logical_name)은 여기서 만들지 X — 헤더 주석이 아니라 분석 결과에서
     도출해야 하므로 summarize_module 이 담당 (M11).
     """
+    model_config = ConfigDict(extra="forbid")
+
     intent: str = Field(
-        "",
+        ...,
         description="헤더가 입증하는 현재 모듈 의도 0~2문장. 시그니처만으로 추측하지 않으며 근거 없으면 빈 문자열",
     )
 
@@ -357,47 +277,34 @@ class ModulePreAnalysisOutput(BaseModel):
 
 
 class ModuleSummaryOutput(BaseModel):
-    summary: str = Field(..., description="모듈 전체 의미 (~2 단락)")
+    summary: str = Field(..., min_length=1, description="모듈 전체 의미 (~2 단락)")
     stereotype: str = Field("", description="예: 'Service' / 'Repository' / 'Controller'")
     logical_name: str = Field("", description="모듈 도메인 표시명 한 줄 (코드 식별자 X)")
-
-
-# ── 용어사전 종합 (build_glossary_step, spec 043) ─────────────
-
-
-class GlossarySynthesisOutput(BaseModel):
-    """용어 1개의 종합 결과 — 평탄 문자열 3필드(중첩·자유키 금지, 폭주 이력 준수).
-
-    수용은 결정론 검증이 한다: evidence 가 입력 문맥의 실제 부분열이 아니면 종합 기각해
-    최종 사전에서 제외하고, aliases 는 전체 표제어 목록에 실재하는 것만 인정."""
-    meaning: str = Field(..., description="종합된 뜻 한 줄 — 제공된 문맥에 적힌 근거로만")
-    aliases: str = Field("", description="같은 실체를 가리키는 다른 표제어들(쉼표구분, 목록에 실재하는 표기만, 없으면 빈 값)")
-    evidence: str = Field("", description="뜻·변종 판단의 근거 문장(제공된 문맥에서 그대로 복사)")
 
 
 # ── 컴포넌트 이름 (build_components_step) ─────────────────
 
 
 class ComponentNamingOutput(BaseModel):
-    """부품(코드노드 군집) 이름·설명 — 멤버 코드노드 요약 종합. 평탄 구조(자유키 dict X)."""
-    name: str = Field(..., description="부품 도메인 이름 한 줄 (코드 식별자 X)")
-    description: str = Field("", description="이 부품이 하는 일 한 줄 설명")
-    stereotype: str = Field("", description="역할 라벨 (예: Service/Repository/Batch — 없으면 빈 값)")
+    """코드노드 군집의 사용자용 이름. 실제 저장 경로가 소비하는 단일 출력."""
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(..., min_length=1, description="부품 도메인 이름 한 줄 (코드 식별자 X)")
 
 
 # ── 테이블 description 통합 (enrich_table_description_step) ──
 
 
 class TableDescription(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     db: str
     schema_: str = Field(..., alias="schema")
     name: str
-    logical_name: str = ""          # 짧은 도메인 표시명(물리명과 별개, 근거없으면 빈값) — spec 025
+    logical_name: str = Field(...)   # 짧은 도메인 표시명(물리명과 별개, 근거없으면 빈값) — spec 025
     description: str
     columns: list[ColumnInsight] = Field(
-        default_factory=list,
+        ...,
         description="입력 허용 컬럼별 통합 논리명·설명. 이름은 입력 컬럼을 정확히 한 번씩 보존",
     )
 

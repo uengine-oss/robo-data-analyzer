@@ -1,70 +1,33 @@
-## Framework 분할 3 — 관측 가능한 계약, 시나리오, 실제 정보 공백.
-extends: _common
-max_tokens: 12000
+## Framework 분할 3 — 분기 좌표별 구조화 Rule 생성.
+extends: _rule_common
+inherit_inputs: false
+max_tokens: 4000
 shared_values:
-  rule_evidence_contract: ../common/rule_evidence_contract.md
+  rule_leaf_contract: ../common/rule_leaf_contract.md
 user_template_specific: |
-  # [분할 계약: RulesExamplesOutput]
+  # [분할 계약: AssignedRulesOutput]
 
-  `rules`와 `questions`만 출력한다. 각 Rule의 `examples`는 그 Rule 아래에 둔다.
-  summary·이름·용어·테이블 설명을 만들지 않는다.
+  `rules`만 출력한다. response_format에 required인 각 `R<행>`을 정확히 한 번 만들고
+  각 행의 구조화된 `cond`, `then`과 의미 `nl`을 직접 채운다.
+  스키마는 좌표와 필드만 강제하며 답을 제공하지 않는다.
 
-  {rule_evidence_contract}
+  {rule_leaf_contract}
 
-  ## 출력 구조
-
-  ```
-  RulesExamplesOutput {
-    rules: [{
-      statement: "<조건 또는 적용범위>이면 <관측 결과>",
-      anchor_line: <규칙을 직접 입증하는 양의 절대 파일 줄번호>,
-      examples: [{
-        given: "<사전상태·입력>",
-        when: "<사용자·호출자의 한 행동>",
-        then: "<반환·상태·데이터·외부 I/O 결과>",
-        affected_tables: [{table: "<주입된 ID>", op: "READ|INSERT|UPDATE|DELETE|MERGE"}]
-      }]
-    }],
-    questions: [{text: "<필요한 외부 정보>", reason: "<입력에 답이 없는 이유>"}]
-  }
-  ```
-
-  ## Framework 적용 경계
-
-  공통 결정 절차를 현재 TARGET 하나에만 적용한다. `branch_index`는 SOURCE 누락 검사표이며,
-  `ancestor_context`는 바깥 도달 조건, `child_business_logic`은 압축된 자식 자리표시자일 뿐
-  별도 의미 생성 대상이 아니다. Rule 목록을 모두 확정한 뒤 Example을 작성한다.
-
-  조건 Rule은 결과를 선택하는 `branch_index`의 절대 파일 줄을 쓴다. 무조건 변환·위임·I/O·
-  상태 변경·반환 Rule은 SOURCE에서 그 효과를 직접 수행하는 첫 활성 절대 파일 줄을 쓴다.
-  `anchor_line: 0`과 다른 대상의 줄은 금지한다.
-
-  - 잘못: 자식 요약의 내부 검증을 부모 Rule로 복제하거나 가까운 무관한 줄을 anchor로 선택
-  - 좋음: 부모가 직접 선택한 호출·반환만 쓰고 그 선택 또는 효과의 양의 절대 줄을 anchor로 사용
-
-  ## affected_tables
-
-  각 항목은 현재 입력의 직접 reads/writes와 정확히 일치해야 한다. 테이블 ID를 그대로 echo하고
-  callee·형제의 테이블을 추가하지 않는다. 현재 직접 R/W가 없으면 `[]`다.
-
-  - 잘못: writes가 비었는데 callee의 저장 테이블을 부모 Example에 추가
-  - 좋음: 부모 affected_tables는 `[]`, 저장은 callee 소유 결과에만 기록
-
-  Question은 SOURCE·분기·심볼·직접 R/W·외부 증거·callee interface 어디에도 답이 없고,
-  질문 없이 결과 의미를 만들 수 없을 때만 쓴다. 현재 동작이 의도인지 묻지 않는다.
-
-  - 잘못: else가 현재 값을 반환하는데 그 반환이 의도인지 질문
-  - 좋음: 외부 상태값의 뜻이 모든 입력에서 빠졌고 뜻에 따라 결과 해석이 달라질 때만 질문
+  `conditions`와 행별 `when`은 그 행까지의 정확한 경로 조건이다. `source`가 있으면 해당 행의 직접
+  SOURCE다. 이 근거와 referenced symbol·callee summary·외부 계약을 함께 사용하되 같은 사실을
+  다른 표현으로 창작하지 않는다.
 
 user_template_evidence: |
-
-  # [Rule 전용 고변동 증거]
-
-  ancestor_context:
-  {ancestor_context}
-
-  child_business_logic:
-  {child_business_logic}
-
-  branch_index:
-  {branch_index}
+  response_locale: {response_locale}
+  target_id: {id}
+  signature: {signature}
+  referenced_symbols_json: {referenced_symbols}
+  external_evidence_json: {external_evidence}
+  reads_json: {reads}
+  writes_json: {writes}
+  authoritative_table_ops_json: {table_ops}
+  callee_summaries_json: {callee_summaries}
+  api_contracts_json: {api_contracts}
+  assigned_rows: {assigned_rows}
+  rule_evidence_json:
+  {rule_evidence}

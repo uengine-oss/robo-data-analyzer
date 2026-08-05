@@ -59,6 +59,9 @@ class ParseResult:
     statement_next_edges: list[StatementNext] = field(default_factory=list)  # 구문 → 다음 구문 (DBMS 실행 흐름)
     call_sites: list[dict] = field(default_factory=list)   # FUNCTION_CALL: {call_id, caller_id, call_text, file, line}
     import_refs: list[dict] = field(default_factory=list)  # INCLUDE/IMPORT: {name, file, line}
+    # ontology 미등록 타입: {type, file, line} — 조용한 서브트리 소실 금지(골키퍼 계약).
+    # reader 는 기록·자식 재귀만 하고, 표면화(log)는 dispatch 가 한다.
+    unknown_nodes: list[dict] = field(default_factory=list)
 
 
 # ── 파일 진입점 ───────────────────────────────────────────────
@@ -101,6 +104,10 @@ def _make_code_node(
         comment=node.get("comment") or "",
         return_type=node.get("returnType") or "",
         params=node.get("parameters") or "",
+        # 구조 statement/제어 조건 표현 — parser listener 가 소유한 원문 (spec 016).
+        expression=node.get("expression") or "",
+        target=node.get("target") or "",
+        operator=node.get("operator") or "",
     )
 
 

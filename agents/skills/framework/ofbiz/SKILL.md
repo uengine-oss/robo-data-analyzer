@@ -9,12 +9,18 @@
 - 핵심 wrapper: ``delegator.findOne(...)`` / ``delegator.findList(...)`` / ``delegator.store(...)``
 - Entity 정의: ``entitymodel.xml`` 의 ``<entity entity-name="..." table-name="...">``
 
-## 정규식 패턴
+## 접근 규칙 (DSL — spec 108)
+
+entity 는 첫 문자열 인자(엔티티명). 긴 prefix 우선 정렬은 코드가 보장한다
+(findOne 이 find 에 잡아먹히지 않음).
 
 ```yaml
-table_access_patterns:
-  - id: ofbiz_delegator
-    call_regex: 'delegator\.(?P<op_token>findOne|findByPrimaryKey|findList|findAll|find|create|store|remove|removeAll)\s*\(\s*"(?P<entity>\w+)"'
+table_access_rules:
+  - kind: method_call
+    id: ofbiz_delegator
+    receiver_name: delegator
+    entity_from: first_arg_string
+    op_prefixes: [findOne, findByPrimaryKey, findList, findAll, find, create, store, remove, removeAll]
     op_mappings:
       - {token: findOne,           op: SELECT}
       - {token: findByPrimaryKey,  op: SELECT}

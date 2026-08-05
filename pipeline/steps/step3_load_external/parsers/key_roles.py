@@ -9,60 +9,30 @@
 """
 from __future__ import annotations
 
-
-# 요소명 → 그 요소에서 주소가 되는 속성 이름들.
-_ADDRESSABLE_ATTRIBUTES: dict[str, frozenset[str]] = {
-    # Spring / 일반 DI 컨테이너
-    "bean": frozenset({"id"}),
-    "alias": frozenset({"alias"}),
-    # iBATIS / MyBatis 매퍼 — statement id 가 SQL 본문의 주소다
-    "select": frozenset({"id"}),
-    "insert": frozenset({"id"}),
-    "update": frozenset({"id"}),
-    "delete": frozenset({"id"}),
-    "statement": frozenset({"id"}),
-    "procedure": frozenset({"id"}),
-    "sql": frozenset({"id"}),
-    "resultmap": frozenset({"id"}),
-    "parametermap": frozenset({"id"}),
-    # 서비스 정의 — 코드가 이름으로 호출한다
-    "service": frozenset({"name"}),
-    "operation": frozenset({"name"}),
-}
-
-# 부모 요소명 → 그 아래에서 주소가 되는 **자식 요소의 텍스트**.
-# 같은 태그(`<ejb-name>`)라도 정의 자리(`<session>`)면 주소, 언급 자리(`<method>`)면 아니다.
-_ADDRESSABLE_CHILD_TEXT: dict[str, frozenset[str]] = {
-    # J2EE 배포서술자 — 빈 정의
-    "session": frozenset({"ejb-name"}),
-    "entity": frozenset({"ejb-name"}),
-    "message-driven": frozenset({"ejb-name"}),
-    # 서블릿 컨테이너 — 정의 자리
-    "servlet": frozenset({"servlet-name"}),
-    "filter": frozenset({"filter-name"}),
-    "listener": frozenset({"listener-class"}),
-}
-
-# 형식 자체가 "키=값 주소록"인 것들. 키 전부가 주소다.
-_ADDRESSABLE_KINDS: frozenset[str] = frozenset({
-    "properties_entry",
-    "ini_entry",
-})
+from pipeline.languages import (
+    external_addressable_attributes,
+    external_addressable_child_text,
+    external_addressable_kinds,
+)
 
 
 def is_addressable_attribute(element: str, attribute: str) -> bool:
     """``<element attribute="키">`` 의 키가 조회 주소인가."""
-    return attribute.lower() in _ADDRESSABLE_ATTRIBUTES.get(_local(element), frozenset())
+    return attribute.lower() in external_addressable_attributes().get(
+        _local(element), frozenset()
+    )
 
 
 def is_addressable_child_text(parent: str, child: str) -> bool:
     """``<parent><child>키</child></parent>`` 의 키가 조회 주소인가."""
-    return _local(child) in _ADDRESSABLE_CHILD_TEXT.get(_local(parent), frozenset())
+    return _local(child) in external_addressable_child_text().get(
+        _local(parent), frozenset()
+    )
 
 
 def is_addressable_kind(semantic_kind: str) -> bool:
     """형식 전체가 주소록인가 (properties·ini 등)."""
-    return semantic_kind in _ADDRESSABLE_KINDS
+    return semantic_kind in external_addressable_kinds()
 
 
 def _local(tag: str) -> str:

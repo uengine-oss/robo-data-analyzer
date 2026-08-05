@@ -3,13 +3,14 @@ system: |
   의미를 확정합니다. 입력에 없는 사실을 만들지 않고 response_format만 출력합니다.
 shared_values:
   table_description_contract: ../common/table_description_contract.md
-user_template: |
+user_template_specific: |
   {table_description_contract}
 
+  아래 근거만 사용해 테이블 설명과 모든 허용 컬럼의 의미를 출력한다.
+
+user_template_inputs: |
   table_fqn: {table_fqn}
 
   evidence:
   {candidates_json}
-
-  위 근거만 사용해 테이블 설명과 모든 허용 컬럼의 의미를 출력한다.
 max_tokens: 5000

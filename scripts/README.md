@@ -15,12 +15,15 @@ robo.cmd up analyzer
 | 표준 분석 | `analyze_data_dir.py` | 운영자 | API와 같은 분석 파이프라인의 공식 CLI |
 | CI 검증 | `check_byte_identical.py` | 개발자/CI | 프롬프트 prefix 캐시 계약 검증 |
 | 데이터 재생성 | `reembed_graph.py` | 운영자 | 전체 재분석 없이 검색 임베딩 재생성 |
-| 데이터 재생성 | `resynthesize_glossary.py` | 운영자 | 전체 재분석 없이 용어사전 재종합 |
 | 복구 | `reset_neo4j_schema.py` | 운영자 | 오염된 Neo4j 제약·인덱스 복구 |
 | 유지보수 | `refresh_pricing.py` | 개발자 | LLM 가격표 수동 갱신 절차 안내 |
+| 실호출 재현 | `send_real_prompt_to_gpu.py` | 개발자 | hash-pinned 실제 prompt/schema 단건 replay와 구조화 출력 진단 |
+| 의미검증 export | `export_semantic_review_packets.py` | 검증자 | 명시된 표본의 현재 `test` graph 결과를 검토 packet으로 export |
+| 의미검증 조인 | `build_semantic_verification_packets.py` | 검증자 | 명시 입력만 사용해 prompt→response→graph 증거를 hash-pinned packet으로 조인 |
+| 증거 도달 감사 | `audit_semantic_context_packets.py` | 검증자 | 언어 지식 없이 gold evidence 행의 prompt 도달 여부만 검사 |
+| 수동 GPU 대화 | `send_text_to_gpu.py` | 개발자 | workspace `gpu-chat.cmd`가 사용하는 최소 텍스트 클라이언트 |
 
 `reset_neo4j_schema.py`는 파괴적 복구 도구이므로 평상시 실행하지 않습니다.
-일회성 검증 스크립트는 저장소에 남기지 않습니다 — `specs/`와 `tests/`에도 두지
-않고, 세션 임시 영역에서 실행한 뒤 입력 데이터·절차·결과를 보고 문서에 전문
-기록하는 것으로 재현성을 보존합니다. `tests/`에는 재사용 가능한 자동 테스트만
-둡니다.
+일회성 벤치와 폐기 설계 probe는 저장소에 남기지 않습니다. 재사용 CLI는 입력을 명시적으로
+받고, 고객 원문을 내장하지 않으며, 결과를 지정 output/evidence 경로에만 씁니다.
+`tests/`에는 재사용 가능한 자동 회귀만 둡니다.

@@ -197,8 +197,8 @@ class ScanExternalStepTest(unittest.IsolatedAsyncioTestCase):
                     _config(root),
                 )
 
-            # held-out(뒷부분)에서 규칙이 죽으면 1회 재제안 후에도 실패 → 정직 거부.
-            self.assertEqual(2, invoke.await_count)
+            # held-out(뒷부분)에서 규칙이 죽으면 재제안 없이 정직 거부.
+            self.assertEqual(1, invoke.await_count)
             self.assertEqual([], result["external_chunks"])
             self.assertEqual("unanalyzed", result["project_files"][0].status)
             self.assertEqual("pattern_rejected", result["project_files"][0].reason)
@@ -245,6 +245,8 @@ class ScanExternalStepTest(unittest.IsolatedAsyncioTestCase):
                 key_group="key",
                 value_group="value",
             ),),
+            explanation="space-delimited key records",
+            provenance="test sample structure",
         )
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "source"
@@ -279,6 +281,8 @@ class ScanExternalStepTest(unittest.IsolatedAsyncioTestCase):
                 pattern=r"(?m)^(?P<key>[a-z]+\d+)\|\d+\|\w+$",
                 key_group="key",
             ),),
+            explanation="pipe-delimited table rows",
+            provenance="test sample structure",
         )
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "source"

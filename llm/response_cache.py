@@ -8,7 +8,7 @@
 2. **재실행 비용**: 코퍼스가 그대로면 LLM 콜이 0에 수렴한다. 코드 일부만 바뀌면 그 함수의
    프롬프트만 달라지므로 그 부분만 다시 부른다.
 
-키는 **모델에 실제로 보낸 것 전부**다(프롬프트 본문·모델·max_tokens·응답 스키마). 하나라도
+키는 **모델에 실제로 보낸 것 전부**다(프롬프트 본문·모델·max_tokens·구조화 채널·응답 스키마). 하나라도
 바뀌면 다른 키라서 **별도 무효화 로직이 필요 없다** — 프롬프트가 곧 키다.
 
 저장 위치는 코퍼스 옆(``ROBO_DATA_DIR/.llm-cache``)이다. 프롬프트가 코퍼스 내용을 품고
@@ -44,9 +44,15 @@ def make_key(
     user_content: str,
     model: str,
     max_tokens: Any,
+    structured_output_method: str,
     response_model: Optional[type[BaseModel]],
 ) -> str:
     """모델에 보낸 것 전부를 담은 해시 — 하나라도 다르면 다른 키가 된다."""
+    schema = (
+        response_model.model_json_schema()
+        if response_model is not None
+        else None
+    )
     payload = json.dumps(
         {
             "rule": rule_name,
@@ -54,7 +60,8 @@ def make_key(
             "user": user_content,
             "model": model,
             "max_tokens": max_tokens,
-            "schema": response_model.__name__ if response_model else None,
+            "structured_output_method": structured_output_method,
+            "schema": schema,
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -78,8 +85,14 @@ def load(key: str, response_model: Optional[type[BaseModel]]) -> Any:
         # 무해하므로(정리 우선순위만 부정확해진다) 조회를 막지 않는다.
         try:
             os.utime(path, None)
-        except OSError:
-            pass
+        except OSError as error:
+            log_warning(
+                _COMPONENT,
+                "cache_touch_failed",
+                "캐시 적중 파일의 최근 사용 시각 갱신 실패 — 값은 그대로 반환",
+                key=key,
+                error=f"{type(error).__name__}: {error}",
+            )
     except Exception as error:  # noqa: BLE001 — 캐시는 보조물
         log_warning(_COMPONENT, "cache_read_failed",
                     "캐시 항목을 읽지 못해 다시 호출한다",
@@ -127,13 +140,18 @@ def sweep() -> None:
     target = int(limit_bytes * 0.8)
     entries.sort(key=lambda item: item[1].st_mtime)  # 오래 안 쓴 것부터
     removed = removed_bytes = 0
+    failed = 0
+    first_error = None
     for path, stat in entries:
         if total <= target:
             break
         try:
             path.unlink()
-        except OSError:
-            continue  # 다른 프로세스가 먼저 지웠거나 잠겼다 — 다음 것으로
+        except OSError as error:
+            failed += 1
+            if first_error is None:
+                first_error = f"{type(error).__name__}: {error}"
+            continue  # 다음 항목은 독립적으로 정리할 수 있다.
         total -= stat.st_size
         removed += 1
         removed_bytes += stat.st_size
@@ -143,7 +161,18 @@ def sweep() -> None:
              deleted=removed,
              deleted_mb=f"{removed_bytes / 1024 / 1024:.1f}",
              remaining_mb=f"{total / 1024 / 1024:.1f}",
-             limit_mb=limit_mb)
+             limit_mb=limit_mb,
+             failed=failed,
+             first_error=first_error)
+    if failed:
+        log_warning(
+            _COMPONENT,
+            "cache_sweep_partial_failure",
+            "일부 캐시 항목 삭제 실패 — 남은 용량과 첫 오류를 기록한다",
+            failed=failed,
+            remaining_mb=f"{total / 1024 / 1024:.1f}",
+            first_error=first_error,
+        )
 
 
 def store(key: str, value: Any) -> None:

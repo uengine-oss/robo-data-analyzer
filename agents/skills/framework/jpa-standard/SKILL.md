@@ -10,15 +10,21 @@
 - Repository: `JpaRepository<T, ID>` / `CrudRepository`
 - 호출 패턴: `repository.findBy*(...)` / `save(...)` / `delete(...)`
 
-## 정규식 패턴
+## 접근 규칙 (DSL — spec 108)
 
-정규식의 `<op_token>` 그룹은 메서드명 **prefix** 만 잡는다 (뒤에 `\w*` 로 suffix 흘림).
-이렇게 해야 매치된 토큰이 `op_mappings` 의 token 과 정확히 일치한다.
+`op_prefixes` 는 메서드명 **prefix** 만 (suffix 는 코드가 흘림) — 매치 토큰이
+`op_mappings` 의 token 과 정확히 일치해야 한다. entity 는 리시버 이름에서
+(`orderItemRepository` → `orderItem` → ddl_transform 으로 ORDER_ITEM).
+※ 구판의 raw 정규식은 `<entity>` group 누락으로 링킹 불가(죽은 규칙)였다 — DSL 은
+named group 을 코드가 보장하므로 재발 불가 (spec 108 이사에서 교정).
 
 ```yaml
-table_access_patterns:
-  - id: jpa_repository_call
-    call_regex: '(\w+Repository)\.(?P<op_token>find|save|delete|update|exists|count)\w*\s*\('
+table_access_rules:
+  - kind: method_call
+    id: jpa_repository_call
+    receiver_suffix: Repository
+    entity_from: receiver
+    op_prefixes: [find, save, delete, update, exists, count]
     op_mappings:
       - {token: find,   op: SELECT}    # findOne / findAll / findByXxx 모두 prefix=find
       - {token: save,   op: INSERT}    # JPA save 는 새 row 또는 merge — 의미상 INSERT

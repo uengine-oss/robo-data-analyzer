@@ -17,19 +17,21 @@ from pipeline.steps.step5_linking.link_tables.regex_table_linker import (
 )
 from agents.contracts import DdlTransform
 import unittest
+from tests.unittest_function_cases import load_function_cases
 
 
 _SKILL = _ROOT / "agents" / "skills" / "framework" / "shopmall-c-facade" / "SKILL.md"
 
 
 def _patterns() -> dict[str, re.Pattern]:
+    # spec 108 — 스킬 fence 는 이제 DSL 규칙. 컴파일 경유로 같은 행동 코퍼스를 검증한다
+    # (원본 raw 정규식 시절의 회귀 케이스가 그대로 DSL 표현력 증명이 된다 — SC-001).
+    from agents.rule_compiler import compile_rules, parse_rule
     text = _SKILL.read_text(encoding="utf-8")
     block = text.split("```yaml", 1)[1].split("```", 1)[0]
     data = yaml.safe_load(block)
-    return {
-        item["id"]: re.compile(item["call_regex"])
-        for item in data["table_access_patterns"]
-    }
+    rules = [parse_rule(r) for r in data["table_access_rules"]]
+    return {p.id: re.compile(p.call_regex) for p in compile_rules(rules)}
 
 
 def test_adjacent_literals_are_matched_without_source_rewriting() -> None:
@@ -118,19 +120,5 @@ if __name__ == "__main__":
     print("[OK] shopmall skill SQL patterns: 6/6 passed")
 
 
-# ── 스위트 편입 브리지 (2026-07-22 테스트 정리) ──────────────────────────
-# 함수식 케이스는 unittest discover 에 수집되지 않아 스위트에서 실행되지 않는
-# 일회성이었다. 아래 브리지가 전 케이스를 스위트 회귀로 편입한다 (재사용 보장).
-class ModuleCasesSuiteBridge(unittest.TestCase):
-    def test_module_cases(self):
-        import asyncio
-        import inspect
-        cases = [(n, f) for n, f in sorted(globals().items())
-                 if n.startswith("test_") and inspect.isfunction(f)]
-        self.assertTrue(cases, "함수식 케이스가 없다")
-        for name, fn in cases:
-            with self.subTest(case=name):
-                if inspect.iscoroutinefunction(fn):
-                    asyncio.run(fn())
-                else:
-                    fn()
+def load_tests(_loader, standard_tests, _pattern):
+    return load_function_cases(standard_tests, globals())

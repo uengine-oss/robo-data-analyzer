@@ -15,6 +15,7 @@ from pipeline.execution.run_executor import (
 )
 from pipeline.execution.run_output_context import reset_run_dir, set_run_dir
 from pipeline.models.analysis_meta import AnalysisRun, Codebase
+from pipeline.models.human_glossary import load_human_glossary
 
 
 class ImmutableRunEvidenceTest(unittest.TestCase):
@@ -55,19 +56,57 @@ class ImmutableRunEvidenceTest(unittest.TestCase):
                         system_prompt="system",
                         user_content=f"user {index}",
                         response={"summary": f"result {index}"},
+                        response_schema={
+                            "type": "object",
+                            "properties": {"summary": {"type": "string"}},
+                            "required": ["summary"],
+                        },
                         sort_key=index,
                     )
 
                 with ThreadPoolExecutor(max_workers=16) as executor:
                     list(executor.map(write, range(64)))
 
-            prompt_log = root / "llm-prompts" / "parallel_contract.json"
-            records = json.loads(prompt_log.read_text(encoding="utf-8"))["records"]
+            prompt_log = root / "llm-prompts" / "parallel_contract.jsonl"
+            records = tracing.load_rule_records(prompt_log)
             self.assertEqual(64, len(records))
             self.assertEqual({f"code:{index}" for index in range(64)}, {
                 record["target_id"] for record in records
             })
-            self.assertEqual([], list(prompt_log.parent.glob("*.tmp")))
+            self.assertEqual(list(range(64)), [record["sort_key"] for record in records])
+            self.assertEqual(
+                {"summary"},
+                set(records[0]["response_schema"]["schema"]["properties"]),
+            )
+            self.assertRegex(records[0]["response_schema"]["sha256"], r"^[0-9a-f]{64}$")
+            self.assertGreater(records[0]["response_schema"]["bytes"], 0)
+
+    def test_prompt_append_does_not_read_or_rewrite_prior_records(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "llm-prompts"
+            old_loader = getattr(tracing, "_load_existing", lambda _path: None)
+            with (
+                patch.object(tracing, "_prompts_dir", return_value=root),
+                patch.object(
+                    tracing, "_load_existing", wraps=old_loader, create=True,
+                ) as old_load,
+            ):
+                for index in range(3):
+                    tracing.write_rule_record(
+                        "append_contract", f"code:{index}", "system", "user",
+                        {"summary": "result"}, sort_key=index,
+                    )
+            old_load.assert_not_called()
+            self.assertEqual(3, len(tracing.load_rule_records(
+                root / "append_contract.jsonl"
+            )))
+
+    def test_corrupt_prompt_line_fails_with_line_number(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "broken.jsonl"
+            path.write_text('{"target_id":"ok"}\n{"target_id":', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, r"broken\.jsonl:2"):
+                tracing.load_rule_records(path)
 
     def test_structured_raw_response_keeps_tool_call_arguments(self) -> None:
         response = SimpleNamespace(
@@ -78,7 +117,6 @@ class ImmutableRunEvidenceTest(unittest.TestCase):
                     "name": "SummaryOutput",
                     "args": {
                         "summary": "Declares an interface.",
-                        "search_text": "Declares a bodyless interface signature.",
                     },
                 }
             ],
@@ -109,6 +147,7 @@ class ImmutableRunEvidenceTest(unittest.TestCase):
                 _write_initial_manifest(
                     run,
                     SimpleNamespace(prompts_dir="llm/prompts/framework"),
+                    load_human_glossary(corpus),
                 )
                 tracing.write_rule_record(
                     rule_name="generic_contract",
@@ -125,11 +164,18 @@ class ImmutableRunEvidenceTest(unittest.TestCase):
             self.assertEqual(str(corpus.resolve()), manifest["corpus_root"])
             self.assertEqual("en-US", manifest["locale"])
             self.assertRegex(manifest["prompt_tree_sha256"], r"^[0-9a-f]{64}$")
+            self.assertEqual({
+                "supplied": False,
+                "source": "analysis/glossary.yaml",
+                "schema_version": None,
+                "sha256": None,
+                "term_count": 0,
+            }, manifest["human_glossary"])
             self.assertEqual(root, run.run_dir)
-            prompt_log = root / "llm-prompts" / "generic_contract.json"
-            self.assertEqual("code:sample", json.loads(
-                prompt_log.read_text(encoding="utf-8")
-            )["records"][0]["target_id"])
+            prompt_log = root / "llm-prompts" / "generic_contract.jsonl"
+            self.assertEqual(
+                "code:sample", tracing.load_rule_records(prompt_log)[0]["target_id"]
+            )
 
 
 if __name__ == "__main__":

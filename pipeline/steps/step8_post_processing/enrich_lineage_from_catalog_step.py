@@ -20,7 +20,8 @@ from langchain_core.runnables import RunnableConfig
 
 from pipeline.execution.step_config import step_config
 
-from graph.schema.graph_edges import ReadsWrites, derive_dml_type, normalize_relation
+from graph.schema.graph_edges import ReadsWrites, normalize_relation
+from pipeline.dml_semantics import dml_type_of
 from integrations.catalog import catalog_base_url_or_skip, get_catalog_json
 from shared.config.settings import SETTINGS
 from shared.events.runtime_logger import log_info, log_warning
@@ -78,7 +79,7 @@ async def enrich_lineage_from_catalog_step(state: dict, config: Optional[Runnabl
             source_id=fn_id,
             target_id=table_fqn,
             relation=relation,
-            dml_type=derive_dml_type(flow.get("dml_type")),
+            dml_type=dml_type_of(flow.get("dml_type")),
             evidence_file=str(source or "catalog"),
             evidence_line=0,
         ))

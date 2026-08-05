@@ -1,27 +1,16 @@
-## DBMS 하강 컨테이너 — 접힌 자식 내용이 아니라 현재 골격의 게이트 조건만 추출.
-extends: _common
-max_tokens: 6000
+## DBMS gate 분할 — 현재 gate 행의 구조화 Rule 생성.
+extends: _rule_common
+inherit_inputs: false
+max_tokens: 3000
 shared_values:
-  rule_evidence_contract: ../common/rule_evidence_contract.md
+  rule_leaf_contract: ../common/rule_leaf_contract.md
 user_template_specific: |
-  # [분할 계약: BatchRulesOutput — gate only]
+  response_format의 모든 바깥 노드 좌표와 required `R<행>`을 정확히 한 번 만들고 각 행의
+  구조화된 `cond`, `then`과 의미 `nl`을 직접 채운다. 접힌 자식의 조회·갱신·오류를 현재 gate의
+  직접 효과로 복사하지 않는다.
+  스키마는 좌표와 필드만 강제하며 답을 제공하지 않는다.
 
-  입력의 각 `node_key`마다 `BatchRulesItem` 하나를 출력한다. body의 접힌 자식 내용은 다른
-  분석 단위가 담당하므로 복원하거나 추측하지 않는다. 현재 골격이 자식 실행 여부·대상 선택·
-  반복 범위를 결정하는 관측 가능한 게이트일 때만 Rule과 Example을 만든다.
+  {rule_leaf_contract}
 
-  {rule_evidence_contract}
-
-  - 잘못: 접힌 자식이 할 것으로 보이는 조회·갱신·오류 사례를 현재 노드에 생성
-  - 좋음: 현재 조건이 어떤 입력에서 자식 경로를 선택하거나 건너뛰는지만 기록
-  - 잘못: 단순 블록 컨테이너인데 개수를 채우려고 Rule 생성
-  - 좋음: 자체 게이트가 없으면 `rules:[]`, `questions:[]`
-
-  조건의 부정·AND/OR·경계·else/default 여집합과 리터럴 표기를 그대로 보존한다.
-  서로 다른 선택·건너뜀 결과를 “조건에 따라 자식을 처리한다”로 합치지 않는다. Rule마다
-  대표 Example 1개를 두며 별도 경계/fallback 결과가 있을 때만 2개까지 둔다.
-  affected_tables는 현재 노드에 직접 주입된 R/W만 사용하며 없으면 `[]`다.
-  questions는 게이트 해석에 필요한 외부 정의가 모든 입력에 없을 때만 만들고, 현재 조건과
-  else/default가 답이면 만들지 않는다.
-
-  출력 필드는 `node_key`, `rules`(하위 examples), `questions`뿐이다.
+user_template_evidence: |
+  {rule_nodes}

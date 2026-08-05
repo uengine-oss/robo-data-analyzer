@@ -168,7 +168,7 @@ class PostprocessOverlapTest(unittest.IsolatedAsyncioTestCase):
                 timeout=5,
             )
 
-    async def test_module_summary_uses_available_members_when_one_summary_failed(self) -> None:
+    async def test_module_summary_is_quarantined_when_member_summary_is_missing(self) -> None:
         handoff = AnalysisHandoff(PrioritySemaphore(8))
         available = _Node("code:ok", summary="검증된 멤버 요약")
         missing = _Node("code:missing", summary=None)
@@ -188,7 +188,7 @@ class PostprocessOverlapTest(unittest.IsolatedAsyncioTestCase):
         with mock.patch(f"{target}.run_yaml_rule", side_effect=fake_rule), \
              mock.patch(f"{target}.upsert_modules", mock.AsyncMock()), \
              mock.patch(f"{target}.emit_nodes", mock.AsyncMock()):
-            await summarize_module_step(
+            result = await summarize_module_step(
                 {
                     "run": None,
                     "modules": [_Module()],
@@ -204,9 +204,8 @@ class PostprocessOverlapTest(unittest.IsolatedAsyncioTestCase):
                 },
             )
 
-        self.assertEqual(1, len(seen))
-        self.assertIn("검증된 멤버 요약", seen[0])
-        self.assertNotIn("code:missing", seen[0])
+        self.assertEqual([], seen)
+        self.assertIsNone(result["modules"][0].summary)
 
 
 if __name__ == "__main__":

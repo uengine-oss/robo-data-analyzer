@@ -1,4 +1,4 @@
-"""Generated semantic fields never fill one another when an LLM output is missing."""
+"""One canonical summary stays isolated from unrelated generated fields."""
 from __future__ import annotations
 
 import ast
@@ -16,12 +16,16 @@ from pipeline.models.code_analysis_output import (
     BatchSummaryItem,
     SummaryOutput,
 )
-from pipeline.steps.step7_analyze_code.range_body import compact_body
-from pipeline.steps.step7_analyze_code.summary_quality import normalize_searchable_text
+from pipeline.steps.step7_analyze_code.range_body import (
+    ancestor_context,
+    compact_body,
+    model_visible_raw_body,
+)
+from pipeline.steps.step7_analyze_code.summary_quality import normalize_canonical_summary
 from pipeline.steps.step7_analyze_code.three_split_llm_fanout import (
     _format_callee_summaries,
+    _grounded_external_values,
 )
-from pipeline.steps.step8_post_processing.build_glossary_step import _union_groups
 from pipeline.steps.step8_post_processing.embed_step import (
     _collect_column_texts,
     _collect_table_texts,
@@ -32,7 +36,6 @@ from shared.files.cache import SourceFileCache
 ROOT = Path(__file__).resolve().parents[3]
 GENERATED_FIELDS = {
     "summary",
-    "search_text",
     "logical_name",
     "meaning",
     "rules",
@@ -73,18 +76,13 @@ def _target_field(node: ast.AST) -> str | None:
     return None
 
 
-class RequiredIndependentOutputTest(unittest.TestCase):
-    def test_summary_models_reject_each_missing_required_field(self) -> None:
+class RequiredMeaningOutputTest(unittest.TestCase):
+    def test_summary_models_reject_missing_meaning(self) -> None:
         cases = (
-            (SummaryOutput, {"summary": "사용자 요청을 검증한다.", "search_text": ""}),
-            (SummaryOutput, {"summary": "", "search_text": "요청 검증 루틴"}),
+            (SummaryOutput, {"summary": ""}),
             (
                 BatchSummaryItem,
-                {"node_key": "1-2", "summary": "레코드를 저장한다.", "search_text": ""},
-            ),
-            (
-                BatchSummaryItem,
-                {"node_key": "1-2", "summary": "", "search_text": "레코드 저장 루틴"},
+                {"node_key": "1-2", "summary": ""},
             ),
         )
         for model, values in cases:
@@ -92,15 +90,10 @@ class RequiredIndependentOutputTest(unittest.TestCase):
                 with self.assertRaises(ValidationError):
                     model(**values)
 
-    def test_normalizer_strips_but_never_copies(self) -> None:
-        self.assertEqual(
-            ("사용자용 요약", "검색용 설명"),
-            normalize_searchable_text(" 사용자용 요약 ", " 검색용 설명 "),
-        )
-        with self.assertRaisesRegex(ValueError, "search_text"):
-            normalize_searchable_text("사용자용 요약", "")
+    def test_normalizer_strips_and_preserves_canonical_summary(self) -> None:
+        self.assertEqual("사용자 표시", normalize_canonical_summary(" 사용자 표시 "))
         with self.assertRaisesRegex(ValueError, "summary"):
-            normalize_searchable_text("", "검색용 설명")
+            normalize_canonical_summary("")
 
 
 class DownstreamEvidenceIndependenceTest(unittest.TestCase):
@@ -122,44 +115,158 @@ class DownstreamEvidenceIndependenceTest(unittest.TestCase):
                 file_path=str(source),
                 start_line=2,
                 end_line=4,
-                one_liner="조건을 검사한다",
                 summary=None,
             )
             with self.assertRaisesRegex(ValueError, "without LLM summary"):
                 compact_body(parent, {"parent": parent, "child": child}, SourceFileCache())
 
-    def test_missing_callee_summary_is_not_replaced_by_one_liner(self) -> None:
+    def test_missing_callee_summary_is_omitted(self) -> None:
         caller = AnalysisContext(
             id="caller", signature="caller", file_path="x", start_line=1, end_line=1,
             callees=("callee",),
         )
         callee = AnalysisContext(
             id="callee", signature="callee", file_path="x", start_line=1, end_line=1,
-            one_liner="대체하면 안 되는 압축문", summary=None,
+            summary=None,
         )
         self.assertEqual("(없음)", _format_callee_summaries(caller, {"callee": callee}))
 
-    def test_rejected_glossary_synthesis_does_not_copy_candidate_meaning(self) -> None:
-        terms = {
-            "record": {
-                "canonical": "Record",
-                "meanings": ["입력 단계에서 수집된 후보 뜻"],
-            }
-        }
-        self.assertEqual([], _union_groups(terms, accepted={}))
-        self.assertEqual(
-            "근거가 통과한 LLM 종합 뜻",
-            _union_groups(
-                terms,
-                accepted={
-                    "record": {
-                        "meaning": "근거가 통과한 LLM 종합 뜻",
-                        "aliases": [],
-                    }
-                },
-            )[0]["meaning"],
-        )
+    def test_ancestor_context_preserves_structural_skeleton(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "sample.sql"
+            source.write_text(
+                "BEGIN\nIF account_is_locked THEN NULL; END IF;\nEND;\n",
+                encoding="utf-8",
+            )
+            parent = AnalysisContext(
+                id="parent",
+                signature="parent",
+                file_path=str(source),
+                start_line=1,
+                end_line=3,
+                extra={"child_ids": ("child",)},
+            )
+            child = AnalysisContext(
+                id="child",
+                signature="child",
+                file_path=str(source),
+                start_line=2,
+                end_line=2,
+                extra={"parent_id": "parent"},
+            )
 
+            rendered = ancestor_context(
+                child,
+                {"parent": parent, "child": child},
+                SourceFileCache(),
+            )
+
+            self.assertIn("BEGIN", rendered)
+            self.assertIn("OMITTED_CHILD child_range=2-2", rendered)
+            self.assertIn("END;", rendered)
+
+    def test_model_visible_raw_body_blanks_compacted_child_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "sample.sql"
+            source.write_text(
+                "BEGIN\nCHILD_SECRET\nchild_work;\nEND CHILD\nEND;\n",
+                encoding="utf-8",
+            )
+            parent = AnalysisContext(
+                id="parent",
+                signature="parent",
+                file_path=str(source),
+                start_line=1,
+                end_line=5,
+                token_count=10**9,
+                extra={"child_ids": ("child",)},
+            )
+            child = AnalysisContext(
+                id="child",
+                signature="child",
+                file_path=str(source),
+                start_line=2,
+                end_line=4,
+                summary="child summary",
+            )
+
+            visible = model_visible_raw_body(
+                parent,
+                {"parent": parent, "child": child},
+                SourceFileCache(),
+            )
+            lines = visible.splitlines()
+
+            self.assertEqual(5, len(lines))
+            self.assertEqual("BEGIN", lines[0])
+            self.assertEqual(["", "", ""], lines[1:4])
+            self.assertEqual("END;", lines[4])
+            self.assertNotIn("CHILD_SECRET", visible)
+
+    def test_callee_handoff_uses_canonical_summary(self) -> None:
+        caller = AnalysisContext(
+            id="caller", signature="caller", file_path="x", start_line=1, end_line=1,
+            callees=("callee",),
+        )
+        callee = AnalysisContext(
+            id="callee", signature="callee", file_path="x", start_line=1, end_line=1,
+            summary="상태 코드와 테이블을 포함한 canonical 요약",
+        )
+        rendered = _format_callee_summaries(caller, {"callee": callee})
+        self.assertIn("상태 코드와 테이블을 포함한 canonical 요약", rendered)
+        self.assertIn('"summary":', rendered)
+
+    def test_callee_return_expressions_do_not_repeat_in_prompt(self) -> None:
+        caller = AnalysisContext(
+            id="caller", signature="caller", file_path="x", start_line=1, end_line=1,
+            callees=("callee",),
+        )
+        callee = AnalysisContext(
+            id="callee", signature="callee", file_path="x", start_line=1, end_line=1,
+            summary="검색 근거",
+            extra={"return_expressions": ["RC_ERR", "RC_NRM"]},
+        )
+        rendered = _format_callee_summaries(caller, {"callee": callee})
+        self.assertNotIn("returns", rendered)
+        self.assertNotIn("RC_ERR", rendered)
+
+    def test_grounded_external_values_match_rendered_non_callee_evidence(self) -> None:
+        # Canonical callee summary is the only callee payload. Hidden return lists must not
+        # widen the grader's value pool beyond evidence the model actually received.
+        caller = AnalysisContext(
+            id="caller", signature="caller", file_path="x", start_line=1, end_line=1,
+            callees=("callee",),
+            extra={"api_contracts": (
+                {"name": "mpfmdbio", "arg_roles": {0: "sql_key"},
+                 "success_value": "RC_NRM"},
+            )},
+        )
+        callee = AnalysisContext(
+            id="callee", signature="callee", file_path="x", start_line=1, end_line=1,
+            summary="검색 근거",
+            extra={"return_expressions": ["RC_ERR"]},
+        )
+        facts = _grounded_external_values(caller, {"callee": callee})
+        self.assertEqual(frozenset({"RC_NRM"}), facts)
+
+    def test_hidden_callee_return_values_do_not_join_pool(self) -> None:
+        caller = AnalysisContext(
+            id="caller", signature="caller", file_path="x", start_line=1, end_line=1,
+            callees=("callee",),
+        )
+        callee = AnalysisContext(
+            id="callee", signature="callee", file_path="x", start_line=1, end_line=1,
+            summary="검색 근거",
+            extra={"return_expressions": ['"00"']},
+        )
+        facts = _grounded_external_values(caller, {"callee": callee})
+        self.assertEqual(frozenset(), facts)
+
+    def test_grounded_external_values_empty_without_evidence(self) -> None:
+        caller = AnalysisContext(
+            id="caller", signature="caller", file_path="x", start_line=1, end_line=1,
+        )
+        self.assertEqual(frozenset(), _grounded_external_values(caller, {}))
 
 class SourceDescriptionExceptionTest(unittest.TestCase):
     def test_table_source_description_precedes_analyzed_description(self) -> None:
@@ -206,6 +313,12 @@ class SourceDescriptionExceptionTest(unittest.TestCase):
 
 
 class StaticSemanticCopyAuditTest(unittest.TestCase):
+    def test_semantic_review_exporter_uses_only_canonical_summary(self) -> None:
+        source = (
+            ROOT / "scripts" / "export_semantic_review_packets.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("search_text", source)
+
     def test_step7_has_no_secondary_semantic_rewrite(self) -> None:
         step7 = ROOT / "pipeline" / "steps" / "step7_analyze_code"
         source = "\n".join(
@@ -274,8 +387,8 @@ class StaticSemanticCopyAuditTest(unittest.TestCase):
                             )
                 text = path.read_text(encoding="utf-8")
                 direct_copy = re.compile(
-                    r"(?m)^\s*(?:\w+\.)?(summary|search_text|logical_name|meaning)"
-                    r"\s*=\s*(summary|search_text|logical_name|one_liner|meaning)\s*(?:#.*)?$"
+                    r"(?m)^\s*(?:\w+\.)?(summary|logical_name|meaning)"
+                    r"\s*=\s*(summary|logical_name|meaning)\s*(?:#.*)?$"
                 )
                 for match in direct_copy.finditer(text):
                     if match.group(1) != match.group(2):

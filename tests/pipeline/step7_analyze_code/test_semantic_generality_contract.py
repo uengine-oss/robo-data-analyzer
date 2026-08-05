@@ -9,8 +9,8 @@ from llm.runners.prompt_rules import _load_rule
 from llm.runners.prompt_values import _safe_format
 from pipeline.models.code_analysis_output import ExampleItem, RuleItem, RulesExamplesOutput
 from pipeline.languages import (
-    coerce_stereotype,
     module_stereotype_prompt_options,
+    require_stereotype,
     stereotype_prompt_options,
     stereotype_values,
 )
@@ -76,12 +76,15 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
                 self.assertIn("coordinate_system: absolute-file-line", rendered)
                 self.assertIn("잘못:", rendered)
                 self.assertIn("좋음:", rendered)
-                self.assertIn("분석 대상으로 제공된 모든 루틴은 `search_text`를 채운다", rendered)
-                self.assertIn("본문 없이 호출 규약과 반환 형식만 선언한다", rendered)
+                self.assertIn("`summary`", rendered)
+                self.assertIn("`stereotype`", rendered)
+                self.assertIn("questions", rendered)
+                self.assertNotIn("`domain_terms`", rendered)
+                self.assertNotIn("`logical_name`", rendered)
                 contracts.append(rendered.replace(body, "<BODY>").replace(locale, "<LOCALE>"))
         self.assertEqual(1, len(set(contracts)))
 
-    def test_sql_batch_uses_same_search_contract_and_dbms_ontology(self) -> None:
+    def test_sql_batch_uses_same_single_meaning_contract_and_dbms_ontology(self) -> None:
         rule = _load_rule(ROOT / "llm" / "prompts" / "dbms", "code_summary_batch")
         body = "BEGIN SELECT state INTO v_state FROM records WHERE id = p_id; END;"
         rendered = _safe_format(
@@ -126,45 +129,62 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
                 for value in values:
                     self.assertRegex(rendered, rf"(?m)^- `{re.escape(value)}`: .+")
                 for value in values:
-                    self.assertEqual(value, coerce_stereotype(value, strategy))
-                self.assertEqual("", coerce_stereotype("CorpusSpecificRole", strategy))
+                    self.assertEqual(value, require_stereotype(value, strategy))
+                with self.assertRaises(ValueError):
+                    require_stereotype("CorpusSpecificRole", strategy)
 
         self.assertTrue({"Router", "Utility", "Util"} <= set(stereotype_values("framework")))
 
-    def test_rule_risk_contract_is_one_shared_good_bad_source(self) -> None:
-        framework = _load_rule(
-            ROOT / "llm" / "prompts" / "framework", "code_rules_examples"
-        )["static_values"]["rule_evidence_contract"]
-        dbms = _load_rule(
-            ROOT / "llm" / "prompts" / "dbms", "code_rules_examples_batch"
-        )["static_values"]["rule_evidence_contract"]
-        self.assertEqual(framework, dbms)
-        for required in (
-            "조건 방향과 범위 보존",
-            "종료 계약 분리",
-            "활성 코드만 사실",
-            "호출·필드 소유권 보존",
-            "값과 fallback 회계",
-            "종료 전에 실제 수행된 효과만 서술",
-            "QUESTION은 실제 공백만",
-            "지원되지 않은 추가 의미 금지",
-            "연산 범위와 결과 종류 보존",
-            "같은 효과 값은 완전하게 그룹화",
-            "숫자 결과는 SOURCE 연산으로 검산",
-            "모든 Rule은 양의 절대 근거 줄",
-            "구조 인덱스 회수와 압축 금지",
-            "Example 수와 길이",
-            "관측 계약별 Rule 목록을 완성한다",
-            "Rule로 합치지 않는다",
-            "외부 결과로 이어지는 데이터 조립",
-            "성공·무변경·실패 후 계속",
-            "여러 독립 단계나 서로 다른 분기를 한 개의 “전체 처리” Rule로 압축하지 않는다",
-            "반환 객체, 출력 파라미터, 저장 레코드, 메시지, 조회 키, 외부 호출 인자",
-            "셋 중 하나 이상 있으면 다음 단계로 진행",
-            "잘못:",
-            "좋음:",
+    def test_each_rule_places_fixed_contract_before_variable_target_input(self) -> None:
+        # RadixAttention은 첫 변동 지점까지만 재사용한다. 같은 concern의 모든 대상이 긴 고정
+        # 계약을 공유하도록 분할 계약을 TARGET/SOURCE보다 앞에 두고, 행 증거는 맨 뒤에 둔다.
+        for strategy, names in (
+            ("framework", ("code_summary", "code_table_insights")),
+            ("dbms", ("code_summary_batch", "code_table_insights_batch")),
         ):
-            self.assertIn(required, framework)
+            for name in names:
+                with self.subTest(strategy=strategy, name=name):
+                    template = _load_rule(
+                        ROOT / "llm" / "prompts" / strategy, name
+                    )["user_template"]
+                    self.assertTrue(template.lstrip().startswith("# [분할 계약:"))
+                    target_marker = (
+                        "## [TARGET_BATCH]" if strategy == "dbms" else "## [TARGET]"
+                    )
+                    source_marker = (
+                        "## [TARGET_NODES]" if strategy == "dbms" else "## [SOURCE]"
+                    )
+                    self.assertLess(template.index("# [분할 계약:"), template.index(target_marker))
+                    self.assertLess(template.index(target_marker), template.index(source_marker))
+
+        rules = _load_rule(
+            ROOT / "llm" / "prompts" / "framework", "code_rules_examples"
+        )["user_template"]
+        self.assertNotIn("{code_body}", rules)
+        self.assertIn("{referenced_symbols}", rules)
+        self.assertIn("{external_evidence}", rules)
+        self.assertIn("{callee_summaries}", rules)
+        self.assertLess(rules.index("{referenced_symbols}"), rules.index("{assigned_rows}"))
+
+    def test_rule_risk_contract_is_one_shared_good_bad_source(self) -> None:
+        # 모든 전략은 같은 cond/then/nl 출력 계약을 사용하며 모델이 값을 채운다.
+        prompts = (
+            _load_rule(ROOT / "llm" / "prompts" / "framework", "code_rules_examples"),
+            _load_rule(ROOT / "llm" / "prompts" / "dbms", "code_rules_examples_batch"),
+            _load_rule(ROOT / "llm" / "prompts" / "dbms", "code_gate_rules_batch"),
+        )
+        contracts = []
+        for prompt in prompts:
+            text = prompt["user_template"]
+            for field in ("`cond`", "`then`", "`nl`"):
+                self.assertIn(field, text)
+            self.assertIn("스키마는 좌표와 필드만 강제하며 답을 제공하지 않는다", text)
+            self.assertIn("rule_leaf_contract", prompt["static_values"])
+            self.assertIn("{rule_leaf_contract}", text)
+            self.assertNotIn("그대로 출력", text)
+            self.assertNotIn("anchor_line: <", text)
+            contracts.append(prompt["static_values"]["rule_leaf_contract"])
+        self.assertEqual(1, len(set(contracts)))
 
     def test_rule_anchor_contract_is_identical_for_unrelated_languages_and_domains(self) -> None:
         fixtures = (
@@ -177,66 +197,60 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
             with self.subTest(language=language):
                 parsed = RulesExamplesOutput(rules=[
                     RuleItem(
-                        statement=f"{statement}을 처리하면 결과를 반환한다.",
                         anchor_line=line,
-                        examples=[
-                            ExampleItem(
-                                given=f"{statement} 입력",
-                                when="처리를 요청",
-                                then="결과를 반환",
-                            )
-                        ],
+                        cond='F("req_cd") == "01"',
+                        then=['ret("0")'],
+                        nl=f"{statement}을 처리하면 결과를 반환한다.",
                     )
                 ])
                 self.assertEqual(line, parsed.rules[0].anchor_line)
 
+        # anchor는 required R<행> 키로 강제하고, 각 키 안의 cond/then/nl도 모델이
+        # 닫힌 response_format에 맞춰 모두 출력한다.
         for strategy, rule_name in (
             ("framework", "code_rules_examples"),
             ("dbms", "code_rules_examples_batch"),
+            ("dbms", "code_gate_rules_batch"),
         ):
             text = _load_rule(
-                ROOT / "llm" / "prompts" / strategy,
-                rule_name,
+                ROOT / "llm" / "prompts" / strategy, rule_name
             )["user_template"]
-            with self.subTest(strategy=strategy):
-                self.assertIn("양의 절대 파일 줄번호", text)
-                self.assertIn("anchor_line: 0", text)
-                self.assertIn("잘못", text)
-                self.assertIn("좋음", text)
+            with self.subTest(strategy=strategy, rule=rule_name):
+                self.assertIn("R<행>", text)
+                for field in ("`cond`", "`then`", "`nl`"):
+                    self.assertIn(field, text)
+                self.assertIn("답을 제공하지 않는다", text)
+                self.assertNotIn("anchor_line: <", text)
 
-    def test_framework_rule_checklist_is_the_last_volatile_evidence(self) -> None:
+    def test_framework_rule_prompt_keeps_only_direct_row_evidence(self) -> None:
         rule = _load_rule(
             ROOT / "llm" / "prompts" / "framework", "code_rules_examples"
         )
         text = rule["user_template"]
-        self.assertLess(text.index("child_business_logic:"), text.index("branch_index:"))
-        self.assertEqual("branch_index:\n{branch_index}", text.rstrip().split(
-            "# [Rule 전용 고변동 증거]", 1
-        )[1].strip().split("\n\n")[-1])
+        # 고정 의미 문맥 → 이번 할당 → 행별 직접 증거 순이다. 자식 Rule을
+        # 다시 복사하면 부모가 자식 의미를 소유하고 summary-only 해제를 막는다.
+        self.assertLess(
+            text.index("referenced_symbols_json:"), text.index("assigned_rows:"),
+        )
+        self.assertLess(text.index("assigned_rows:"), text.index("rule_evidence_json:"))
+        self.assertNotIn("child_business_logic", text)
+        self.assertNotIn("제출 직전 완전성 감사", text)
+        self.assertIn("{assigned_rows}", text)
 
     def test_framework_stereotype_rubric_covers_residual_role_boundaries(self) -> None:
         text = _load_rule(
             ROOT / "llm" / "prompts" / "framework",
             "code_summary",
         )["user_template"]
-        for role in (
-            "Initializer",
-            "Util",
-            "Utility",
-            "Helper",
-            "Adapter",
-            "Query",
-            "Validator",
-            "Router",
-            "ApplicationService",
-        ):
+        for role in ("Util", "Utility", "Helper", "Adapter", "Query",
+                     "Validator", "Router", "ApplicationService"):
             with self.subTest(role=role):
                 self.assertIn(f"`{role}`", text)
         for decision_boundary in (
-            "로컬 변수, 작업 버퍼, 출력 파라미터, 반환 객체에 값을 쓰는 것은 그 자체로 업무 상태",
-            "외부 상태를 바꾸지 않으면 `Query`",
-            "단순히 외부 조회를 호출하거나 반환값을 전달하는 것만으로는 Adapter가 아니다",
-            "최종 산출물이 하나의 허용/거절·정합성 판정이면 Validator",
+            "출력 파라미터나 반환 객체를 채워도",
+            "정보가 최종 산출물이면",
+            "외부 호출 한 번이나 반환값 전달만으로 `Adapter`가 아니다",
+            "같은 허용/거절·정합성 판정을 만들면 `Validator`",
             "서로 다른 업무 단계",
             "저수준 자료구조·문자열 원시 연산은 `Util`",
         ):
@@ -258,6 +272,19 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
             rule["user_template"].index("module_header_metadata:"),
         )
 
+    def test_table_description_preserves_authoritative_semantic_head(self) -> None:
+        contract = (
+            ROOT / "llm" / "prompts" / "common" / "table_description_contract.md"
+        ).read_text(encoding="utf-8")
+        for required in (
+            "중심 명사와 수식어",
+            "source의 업무 명사구를 그대로 재사용",
+            "사람/계정/기관/지점",
+            "원장등록/신청가능",
+            "후보를 버리며 둘을 “또는”으로 합쳐",
+        ):
+            self.assertIn(required, contract)
+
     def test_component_naming_contract_is_shared_and_closed(self) -> None:
         rendered = []
         contracts = []
@@ -274,9 +301,10 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
                     "members": "- 요청 검증\n- 요청 접수",
                 },
             )
-            self.assertIn(stereotype_prompt_options(strategy), text)
             self.assertIn("잘못:", text)
             self.assertIn("좋음:", text)
+            self.assertIn("ComponentNamingOutput.name", text)
+            self.assertNotIn("허용 stereotype:", text)
             rendered.append(text)
         self.assertEqual(contracts[0], contracts[1])
 
@@ -305,21 +333,15 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
         cases = (
             ("framework", "code_summary"),
             ("framework", "code_table_insights"),
-            ("framework", "code_rules_examples"),
             ("framework", "module_pre_analysis"),
             ("framework", "module_summary"),
             ("framework", "component_naming"),
             ("framework", "table_description"),
-            ("framework", "glossary_synthesis"),
             ("dbms", "code_summary_batch"),
             ("dbms", "code_table_insights_batch"),
-            ("dbms", "code_rules_examples_batch"),
-            ("dbms", "code_gate_rules_batch"),
             ("dbms", "module_summary"),
             ("dbms", "component_naming"),
             ("dbms", "table_description"),
-            ("dbms", "glossary_synthesis"),
-            ("common", "large_code_one_liner"),
         )
         for strategy, rule_name in cases:
             rule = _load_rule(ROOT / "llm" / "prompts" / strategy, rule_name)
@@ -331,37 +353,25 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
                 self.assertRegex(text, r"(?:좋음|좋은|올바른|정상:)")
 
     def test_rule_inventory_is_not_compressed_to_reduce_examples(self) -> None:
-        common = (
-            ROOT
-            / "llm"
-            / "prompts"
-            / "common"
-            / "rule_evidence_contract.md"
-        ).read_text(encoding="utf-8")
-        self.assertIn(
-            "먼저 Example 수를 전혀 고려하지 않고 관측 계약별 Rule 목록을 완성한다",
-            common,
+        # 폐기된 자연어 위험 계약(rule_evidence_contract.md)은 소비자 0으로 삭제됐다 —
+        # 파일이 되살아나면 죽은 데이터 재유입이므로 부재를 게이트로 단언한다.
+        self.assertFalse(
+            (ROOT / "llm" / "prompts" / "common" / "rule_evidence_contract.md").exists()
         )
-        self.assertIn(
-            "Example 수를 줄이기 위해 서로 다른 조건·결과·예외를 한 Rule로 합치지 않는다",
-            common,
-        )
-        self.assertNotIn("별도 경계나 fallback이 있을 때만\n2개까지", common)
 
+        # 유한성·완전성은 required R<행> object key와 inventory 뺄셈이 강제한다.
         for strategy, rule_name in (
             ("framework", "code_rules_examples"),
             ("dbms", "code_rules_examples_batch"),
         ):
-            rule = _load_rule(
-                ROOT / "llm" / "prompts" / strategy,
-                rule_name,
-            )
-            text = rule["user_template"] + "\n".join(
-                rule["static_values"].values()
-            )
+            rule = _load_rule(ROOT / "llm" / "prompts" / strategy, rule_name)
+            text = rule["user_template"] + "\n".join(rule["static_values"].values())
             with self.subTest(strategy=strategy):
-                self.assertIn("Rule 목록을 모두 확정한 뒤", text)
-                self.assertIn("Example 수를 줄이", text)
+                self.assertIn("required", text)
+                self.assertIn("R<행>", text)
+                self.assertIn("`nl`", text)
+                self.assertIn("Rule leaf 계약", text)
+                self.assertEqual(1, text.count("Rule leaf 계약"))
 
     def test_semantic_logic_has_no_corpus_specific_condition(self) -> None:
         forbidden_branch = re.compile(
@@ -376,7 +386,7 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
             with self.subTest(path=path.name):
                 self.assertIsNone(forbidden_branch.search(path.read_text(encoding="utf-8")))
 
-    def test_component_failure_does_not_copy_another_semantic_field(self) -> None:
+    def test_component_failure_has_no_empty_name_fallback(self) -> None:
         source = (
             ROOT
             / "pipeline"
@@ -384,9 +394,9 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
             / "step8_post_processing"
             / "build_components_step.py"
         ).read_text(encoding="utf-8")
-        failure_branch = source[source.index("if isinstance(result, BaseException):"):]
-        self.assertIn('names[cid] = ""', failure_branch)
-        self.assertNotIn("names[cid] = _headline", failure_branch)
+        self.assertNotIn("return_exceptions=True", source)
+        self.assertNotIn('names[cid] = ""', source)
+        self.assertNotIn("isinstance(result, BaseException)", source)
 
 
 if __name__ == "__main__":

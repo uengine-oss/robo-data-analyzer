@@ -1,35 +1,27 @@
-## DBMS 분할 1 — 배치 노드별 사용자 설명과 검색 의미.
+## DBMS 분할 1 — 배치 노드별 구조 템플릿의 최소 의미 헤더.
 extends: _common
 max_tokens: 6000
 shared_values:
   summary_contract: ../common/summary_contract.md
-  search_text_contract: ../common/search_text_contract.md
-  domain_terms_contract: ../common/domain_terms_contract.md
 user_template_specific: |
   # [분할 계약: BatchSummaryOutput]
 
-  입력의 각 `node_key`마다 `BatchSummaryItem` 하나를 정확히 출력한다:
-  `node_key`, `search_text`, `domain_terms`, `logical_name`, `summary`, `stereotype`.
+  입력의 각 `node_key`마다 값 하나를 정확히 출력한다. 바깥 key가 좌표이므로 값 안에서
+  `node_key`를 반복하지 않고 `summary`, `stereotype`, `questions`만 쓴다.
   Rule·Example·Question과 테이블·컬럼 설명은 만들지 않는다.
 
   summary:
   {summary_contract}
 
-  search_text:
-  {search_text_contract}
+  questions는 코드와 제공 근거만으로 답할 수 없는 실제 질문만 `text`와 `reason`으로 쓴다.
+  모호함이 없으면 빈 배열이다.
 
-  같은 노드의 summary와 search_text는 같은 근거에서 각각 작성한다. 의미·핵심 용어·문장
-  일부가 겹치는 것은 정상이며 억지로 차이를 만들지 않는다.
-
-  - 잘못: 차이를 만들기 위해 search_text에 입력에 없는 필터·업무 목적을 추가
-  - 좋음: 둘 다 조회라는 핵심을 유지하되, summary는 사용자용 목적과 산출물을 설명하고
-    search_text는 근거에 실제로 있는 검색 가능한 대상·대표 필터를 포함
-  - 잘못: 같은 의미가 겹친다는 이유로 한쪽에서 대상 없음이나 반환 결과를 삭제
-  - 좋음: 핵심 결과는 양쪽에 필요하면 모두 보존
-
-  logical_name은 해당 노드가 직접 하는 일로 형제와 구별되는 짧은 표시명을 쓴다.
   stereotype은 아래 ontology 값 중 현재 노드의 주동작에 맞는 하나만 정확히 선택한다:
   {stereotype_options}
+
+  둘 이상의 정의가 동시에 성립하면 다음 우선순위의 상위를 고른다(데이터 정본):
+  {stereotype_priority}
+  결정론 쓰기(writes) 근거가 있는 노드는 조회 계열을 고를 수 없다.
 
   부수 SELECT·DML·검증 하나가 아니라 호출자가 관측하는 최종 책임으로 고른다.
 
@@ -45,9 +37,6 @@ user_template_specific: |
   - 좋음: 최종 산출물이 조회 데이터이면 `DataQuery`
   - 잘못: 코드 테이블을 읽는다는 이유로 그 결과로 데이터를 갱신하는 노드를 `MetadataLookup`
   - 좋음: 최종 관측 효과가 갱신이면 `DataMutator`
-
-  domain_terms:
-  {domain_terms_contract}
 
   입력에 없는 node_key를 만들거나 형제 의미를 복사하지 않는다.
 

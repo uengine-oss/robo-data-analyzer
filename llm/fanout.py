@@ -13,17 +13,10 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Callable, Iterable, Literal, Optional
-
-from llm.usage.cost_budget import BudgetExceededError
-from shared.events.runtime_logger import log_error
+from typing import Iterable
 
 
-class LlmFanoutResultCountError(ValueError):
-    """fan-out 입력 수와 반환 결과 수가 달라 결과를 안전하게 대응할 수 없다."""
-
-
-async def gather_with_warmup(coros: Iterable, *, return_exceptions: bool = False) -> list:
+async def gather_with_warmup(coros: Iterable) -> list:
     """첫 1건으로 prefix 캐시를 데운 뒤 나머지를 병렬 실행 → 결과 list.
 
     ``coros`` 는 prefix 를 공유하는 LLM 작업들 (보통 같은 yaml rule 을 여러 대상에
@@ -31,94 +24,32 @@ async def gather_with_warmup(coros: Iterable, *, return_exceptions: bool = False
     나머지 병렬 작업이 그 캐시에 적중한다.
 
     동시성 상한은 각 coro 안의 ``Semaphore`` 가 책임진다 (이 헬퍼는 워밍 순서만 관여).
-    반환·``return_exceptions`` 의미는 ``asyncio.gather`` 와 같다 (결과 순서 = 입력 순서).
+    결과 순서는 입력 순서와 같다. 하나라도 실패하면 예외를 즉시 전파한다.
     """
     coros = list(coros)
     if not coros:
         return []
 
     # 워밍 — 첫 1건 단독 실행 (공유 prefix 를 캐시에 올림).
-    if return_exceptions:
-        try:
-            first = await coros[0]
-        except asyncio.CancelledError:
-            # asyncio.gather(return_exceptions=True)도 *부모 task* 취소는 전파한다.
-            # 직접 await하는 warm-up 1건도 같은 계약이어야 pause/stop이 즉시 먹힌다.
-            for c in coros[1:]:
-                c.close()
-            raise
-        except BaseException as exc:  # noqa: BLE001 — gather(return_exceptions=True) 동형
-            first = exc
-    else:
-        try:
-            first = await coros[0]
-        except BaseException:
-            # 첫 작업 실패 전파 — 아직 안 돌린 나머지 coro 는 닫아 RuntimeWarning 방지.
-            for c in coros[1:]:
-                c.close()
-            raise
+    try:
+        first = await coros[0]
+    except BaseException:
+        # 첫 작업 실패 전파 — 아직 안 돌린 나머지 coro 는 닫아 RuntimeWarning 방지.
+        for coro in coros[1:]:
+            coro.close()
+        raise
 
     if len(coros) == 1:
         return [first]
 
     # 나머지 병렬 — 데워진 캐시에 적중.
-    rest = await asyncio.gather(*coros[1:], return_exceptions=return_exceptions)
+    tasks = [asyncio.create_task(coro) for coro in coros[1:]]
+    try:
+        rest = await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
     return [first, *rest]
-
-
-def partition_llm_results(
-    items: list,
-    results: list,
-    *,
-    component: str,
-    operation: str,
-    id_of: Optional[Callable[[Any], str]] = None,
-    on_failure: Literal["drop", "keep", "none"] = "drop",
-) -> tuple[list, int]:
-    """fan-out 결과에 **fail 정책**을 적용 — 단일 정의처 (spec 046 FR-011).
-
-    ``gather_with_warmup(..., return_exceptions=True)`` 의 결과에는 성공값과 예외가 섞여 있다.
-    그 분류 규칙은 어디서나 같다:
-
-    1. ``BudgetExceededError`` → **즉시 raise** (헌법의 회로 차단기 — "$400 사고" 방지).
-    2. 그 외 예외 → ``log_error`` + 실패 집계 (조용한 삼킴 금지, 헌법 IV).
-    3. 성공 → 결과 사용.
-
-    이 3줄이 step5·6·7 여러 곳에 복붙돼 있었다. 한 곳으로 모은다.
-
-    Args:
-        items: 입력 항목들 (결과와 **같은 순서·같은 길이**).
-        results: ``return_exceptions=True`` fan-out 결과.
-        component / operation: 로그 좌표.
-        id_of: 실패 로그에 남길 항목 식별자 추출기 (없으면 생략).
-        on_failure: 실패 항목의 처리 —
-            ``"drop"`` 제외 / ``"keep"`` 원본 항목 유지(분석 흐름 보존) / ``"none"`` None 자리표시.
-
-    Returns:
-        ``(values, failed_count)``. ``on_failure`` 가 ``"keep"``/``"none"`` 이면
-        ``len(values) == len(items)`` 가 보장된다 (자리 보존).
-    """
-    values: list = []
-    failed = 0
-    if on_failure not in {"drop", "keep", "none"}:
-        raise ValueError(f"unknown LLM fan-out failure policy: {on_failure!r}")
-    if len(items) != len(results):
-        raise LlmFanoutResultCountError(
-            f"LLM fan-out item/result count mismatch: items={len(items)} results={len(results)}"
-        )
-    for item, result in zip(items, results):
-        if isinstance(result, asyncio.CancelledError):
-            raise result
-        if isinstance(result, BudgetExceededError):
-            raise result                       # 회로 차단기 — 상위로 그대로 전파
-        if isinstance(result, BaseException):
-            failed += 1
-            ctx = {"item_id": id_of(item)} if id_of else {}
-            log_error(component, operation, result, **ctx)
-            if on_failure == "keep":
-                values.append(item)
-            elif on_failure == "none":
-                values.append(None)
-            continue
-        values.append(result)
-    return values, failed

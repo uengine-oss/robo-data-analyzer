@@ -17,36 +17,12 @@ from dataclasses import dataclass
 import re
 
 from graph.schema.graph_nodes import CodeNode
+from pipeline.languages import external_resolvers
 from pipeline.steps.step5_linking.link_external.key_index import mask_comments_and_literals
 from shared.files.source_excerpt import raw_node_text
 
 
 MAX_PROMOTION_HOPS = 2                       # 콜체인 무한 추적 금지 — 여기서 끊는다
-
-# 메서드 이름 → 키가 오는 인자 위치들. 수신자 타입은 보지 않는다(타입 정보가 없다) —
-# 대신 조각의 주소성이 2차 방어를 한다.
-DECLARED_RESOLVERS: dict[str, tuple[int, ...]] = {
-    # ── 런타임 I/O 프리미티브: 파일이 코드로 들어오는 유일한 통로 ──
-    "fopen": (0,),                           # C
-    "open": (0,),                            # C / Python
-    "getResourceAsStream": (0,),             # Java
-    "getResource": (0,),
-    "FOPEN": (0, 1),                         # PL/SQL UTL_FILE (디렉터리 별칭, 파일명)
-    # ── 프레임워크가 대신 읽어둔 것을 키로 꺼내는 API ──
-    "lookup": (0,),                          # JNDI
-    "getBean": (0,),                         # Spring
-    "getString": (0,),                       # ResourceBundle
-    "selectOne": (0,),                       # MyBatis / iBATIS
-    "selectList": (0,),
-    "queryForObject": (0,),
-    "queryForList": (0,),
-    "insert": (0,),
-    "update": (0,),
-    "delete": (0,),
-    "runSync": (0,),                         # ofbiz 서비스 디스패처
-    "runSyncIgnore": (0,),
-    "runAsync": (0,),
-}
 
 _PARAMETERS = re.compile(r"\(([^)]*)\)")
 _TRAILING_NAME = re.compile(r"([A-Za-z_]\w*)\s*$")
@@ -147,7 +123,7 @@ def promote_wrappers(routines: list[CodeNode]) -> dict[str, tuple[int, ...]]:
     하나라도 아니면 그 이름은 폐기한다 — ``getString`` 처럼 한쪽은 리소스 조회이고
     다른 쪽은 행 값 꺼내기인 이름이 섞이는 것을 막는다.
     """
-    catalog = dict(DECLARED_RESOLVERS)
+    catalog = dict(external_resolvers())
     for _hop in range(MAX_PROMOTION_HOPS):
         qualified: dict[str, set[int]] = {}
         seen_names: set[str] = set()

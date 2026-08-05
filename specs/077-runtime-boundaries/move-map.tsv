@@ -12,7 +12,7 @@ llm/agents/skill_catalog.py	agents/skills/catalog.py	Agent skill catalog
 llm/agents/tool_messages.py	agents/tools/messages.py	Agent tool messages
 llm/agents/scan_agent_system.md	agents/prompts/scan.md	scan Agent prompt
 llm/prompts/external/system.md	agents/prompts/external.md	external-format Agent prompt
-llm/agents/residual_pattern_system.md	agents/prompts/residual.md	residual-pattern Agent prompt
+llm/agents/residual_pattern_system.md	agents/prompts/residual.yaml	residual strict-schema proposal prompt
 llm/runners/structured_agent.py	agents/runtime.py	structured Agent runtime
 llm/middleware/cache_friendly_order.py	agents/middleware/cache_friendly_order.py	Agent message-order middleware
 llm/middleware/call_limit.py	agents/middleware/call_limit.py	Agent call-limit middleware
@@ -31,4 +31,4 @@ llm/llm_config_loader.py	llm/configs/loader.py	LLM configuration loader
 llm/llm_client.py	llm/client.py	LLM client
 llm/llm_fanout.py	llm/fanout.py	LLM fanout
 llm/message_content.py	llm/messages.py	LLM message normalization
-llm/prompts/_shared/summary_contract.md	llm/prompts/common/summary_contract.md	common direct-LLM prompt contract
+llm/prompts/_shared/summary_contract.md	-	retired duplicate meaning contract; search_text_contract owns display and search

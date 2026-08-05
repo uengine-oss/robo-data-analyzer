@@ -84,11 +84,8 @@ def _structural(corpus, query: str, k: int) -> list[tuple[str, float]]:
     toks = set(t for t in tokenize(query) if len(t) >= 2)
     hits: list[tuple[str, float]] = []
     for c in corpus.rows:
-        name = (c["name"] or "").lower()
-        summ = (c["summary"] or "").lower()
-        code = (c.get("code_text") or "").lower()
-        sc = sum(1 for t in toks if t in name) * 3 + sum(1 for t in toks if t in summ) \
-            + sum(1 for t in toks if t in code) * 2
+        summary = (c.get("summary") or "").lower()
+        sc = sum(1 for t in toks if t in summary)
         if sc > 0:
             hits.append((c["id"], float(sc)))
     hits.sort(key=lambda x: -x[1])

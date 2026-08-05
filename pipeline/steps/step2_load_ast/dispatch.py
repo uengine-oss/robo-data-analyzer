@@ -48,8 +48,15 @@ from pipeline.steps.step2_load_ast.node_builders import ParseResult
 from pipeline.steps.step2_load_ast.framework_reader import _read_framework
 from pipeline.steps.step2_load_ast.dbms_reader import _read_dbms
 
-def ast_and_source_roots(source_path: Path) -> tuple[Path, Path]:
+def ast_and_source_roots(
+    source_path: Path,
+    corpus_root: Path | None = None,
+) -> tuple[Path, Path]:
     """``project.root`` → ``(AST 루트, 소스 루트)``.
+
+    ``corpus_root``가 있으면 그 실행의 source/AST가 반드시 같은 corpus에 속하며,
+    없을 때만 설정의 canonical data root를 사용한다. 명시한 corpus 밖 source는 서로 다른
+    실행의 source와 AST를 섞지 않도록 실패시킨다.
 
     소스 루트 = AST 의 ``filePath`` 가 상대로 매달린 **antlr 파싱 base** (``_src_path``
     가 ``source_root / filePath`` 로 원문 슬라이싱). 이 데이터 규약(``data/source/<project>``
@@ -58,15 +65,24 @@ def ast_and_source_roots(source_path: Path) -> tuple[Path, Path]:
       AST=``data/analysis`` 전체.
     - ``project.root == data/source/<project>`` (CLI 단일 대상) → 소스루트=``data/source``
       (base 복원 — 이중경로 차단), AST=``data/analysis/<project>`` 로 스코프(그 프로젝트만).
-    - ``data/source`` 밖 (Electron 경로모드, 사용자가 고른 로컬 폴더) → 소스루트=그 폴더,
-      AST=``data/analysis`` 전체 (antlr 가 그 구조로 미러).
+    - 설정의 canonical corpus를 쓰는 호출에서만 ``data/source`` 밖 Electron 경로모드를
+      허용한다. 이때 소스루트=선택 폴더, AST=canonical ``data/analysis`` 전체다.
     """
-    analysis_root = SETTINGS.analysis_data.dir / "analysis"
-    source_base = (SETTINGS.analysis_data.dir / "source").resolve()
+    data_root = (
+        Path(corpus_root).expanduser().resolve()
+        if corpus_root is not None
+        else SETTINGS.analysis_data.dir.resolve()
+    )
+    analysis_root = data_root / "analysis"
+    source_base = (data_root / "source").resolve()
     root = source_path.resolve()
     try:
         rel = root.relative_to(source_base)
     except ValueError:
+        if corpus_root is not None:
+            raise ValueError(
+                f"source가 명시 corpus_root 밖에 있다: source={root}, corpus={data_root}"
+            )
         return analysis_root, root           # 경로모드 — base = 고른 폴더 그대로
     if rel == Path("."):
         return analysis_root, source_base    # 업로드·일괄 — 전체
@@ -115,7 +131,18 @@ def read_antlr_json(json_path: Path, source_root: Path) -> ParseResult:
         )
         return ParseResult()
 
-    return _read_framework(raw, lang, source_root, json_path)
+    result = _read_framework(raw, lang, source_root, json_path)
+    if result.unknown_nodes:
+        counts: dict[str, int] = {}
+        for unknown in result.unknown_nodes:
+            counts[unknown["type"]] = counts.get(unknown["type"], 0) + 1
+        log_warning(
+            _COMPONENT, "unknown_node_types",
+            "ontology 미등록 AST 타입 — 자식 사실은 보존했고 타입 분류는 지원 한계",
+            json_path=str(json_path), lang=lang, counts=counts,
+            samples=[f"{u['type']}@{u['line']}" for u in result.unknown_nodes[:5]],
+        )
+    return result
 
 
 # ── Framework (java / c / python) ─────────────────────────────

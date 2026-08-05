@@ -1,6 +1,7 @@
 from graph.schema.graph_nodes import CodeNode
 from pipeline.steps.step5_linking.link_calls.call_classifier import classify_call_sites
 import unittest
+from tests.unittest_function_cases import load_function_cases
 
 
 def _fn(node_id: str, name: str, owner_id: str) -> CodeNode:
@@ -59,19 +60,25 @@ def test_direct_self_call_carries_explicit_recursive_intent() -> None:
     assert result.edges[0].recursive is True
 
 
-# ── 스위트 편입 브리지 (2026-07-22 테스트 정리) ──────────────────────────
-# 함수식 케이스는 unittest discover 에 수집되지 않아 스위트에서 실행되지 않는
-# 일회성이었다. 아래 브리지가 전 케이스를 스위트 회귀로 편입한다 (재사용 보장).
-class ModuleCasesSuiteBridge(unittest.TestCase):
-    def test_module_cases(self):
-        import asyncio
-        import inspect
-        cases = [(n, f) for n, f in sorted(globals().items())
-                 if n.startswith("test_") and inspect.isfunction(f)]
-        self.assertTrue(cases, "함수식 케이스가 없다")
-        for name, fn in cases:
-            with self.subTest(case=name):
-                if inspect.iscoroutinefunction(fn):
-                    asyncio.run(fn())
-                else:
-                    fn()
+def test_goto_label_statement_node_is_not_an_internal_callee() -> None:
+    # framework 실측(2026-08-05): `goto PFM_CATCH;` 의 GOTO statement 노드가
+    # code_nodes 에 합류하면서 PFM_CATCH() 호출이 GOTO 노드로 internal 링크됐다.
+    # 기준선 동작 = framework drop. statement 노드는 호출 대상 해석에서 제외한다.
+    caller = _fn("code:mall/a.c:caller", "caller", "code:mall/a.c")
+    goto_label = CodeNode(
+        id="code:mall/a.c:caller:GOTO@305", name="PFM_CATCH",
+        owner_id="code:mall/a.c", signature="goto PFM_CATCH",
+        file_path="a.c", start_line=305, end_line=305, label="GOTO",
+    )
+    result = classify_call_sites(
+        [{"caller_id": caller.id, "call_text": "PFM_CATCH",
+          "file": caller.file_path, "line": 10}],
+        [caller, goto_label],
+        framework_names=frozenset({"PFM_*"}),
+    )
+    assert result.edges == []
+    assert result.dropped_framework == 1
+
+
+def load_tests(_loader, standard_tests, _pattern):
+    return load_function_cases(standard_tests, globals())

@@ -6,9 +6,8 @@
 1. 호출 그래프 (CALLS + PARENT_OF) → ``find_call_cycles`` → cycle 식별 (Tarjan SCC).
 2. 의존 그래프(callee→caller) 구성 — dataflow 스케줄 (spec 079, 라운드 배리어 제거):
    의존이 풀린 코드노드부터 즉시 분석, 끝나는 순서대로 즉시 Neo4j 영속화 + NDJSON emit.
-   의존 해제 시점은 종류별로 다르다 — CALLS 의존은 callee 의 summary 확정 신호로
-   조기 해제(caller 프롬프트는 summary 한 줄만 읽음), PARENT_OF 의존은 자식의
-   rules·questions 까지 필요해 전체 완료를 기다린다. 투입 순서는 critical-path
+   CALLS와 PARENT_OF 모두 하위 summary 확정 신호로 조기 해제한다. Rule/table 완료는
+   상위 입력 계약이 아니다. 투입 순서는 critical-path
    rank 내림차순(긴 사슬·큰 노드 우선) — 전부 산출물 불변인 스케줄 결정이다.
 3. 각 코드노드 = ``analyze_code_three_split`` (3 분할 fan-out, RadixAttention 95%+).
 
@@ -37,6 +36,7 @@ from shared.config.settings import SETTINGS
 from pipeline.steps.step7_analyze_code.example_mapping_builder import ExampleMappingResult
 from llm.usage.cost_budget import BudgetExceededError
 from pipeline.models.code_analysis_output import SummaryOutput
+from llm.runners.model_output_error import ModelOutputError
 from pipeline.languages import ROUTINE_LABELS
 from shared.events.runtime_logger import log_error, log_info, log_warning
 from shared.events.ndjson_event_stream import NDJSONStream
@@ -79,8 +79,7 @@ async def run_framework_per_node_analysis(
     ``run_dbms_batch_analysis`` 와 **동일 시그니처** — 전략이 둘 중 하나를 주입한다
     (``Strategy.code_analyzer``). 호출부(``analyze_code_step``)는 어느 쪽인지 모른다.
 
-    caller 가 ``step_processing_scope`` 진입 + ``flush_drop_summary`` + ``handoff`` 종료를
-    책임진다.
+    caller가 ``step_processing_scope`` 진입과 ``handoff`` 종료를 책임진다.
     """
     started = time.monotonic()
 
@@ -115,17 +114,15 @@ async def run_framework_per_node_analysis(
         if fn_id in contexts:
             contexts[fn_id].is_in_cycle = True
 
-    # 2. 의존 그래프 — 의존 종류에 따라 해제 시점이 다르다 (SCC 내부 의존은 끊음).
-    #    CALLS: caller 의 프롬프트는 callee 의 summary 한 줄만 읽는다 → summary 확정 즉시 해제.
-    #    PARENT_OF: 부모의 #3 분할은 자식 rules·questions 를 읽는다 → 전체 완료까지 대기.
-    summary_deps = _build_dependency_map(call_edges, contexts, cycles)
-    full_deps = _build_dependency_map(parent_edges, contexts, cycles)
-    ranks = _dispatch_ranks(contexts, code_by_id, summary_deps, full_deps)
+    # 2. 의존 그래프 — CALLS/PARENT_OF 모두 summary 확정 즉시 해제한다.
+    # CALLS and PARENT_OF both consume only the dependency's canonical summary.
+    # Rule/table completion is not a scheduling dependency.
+    summary_deps = _build_dependency_map(call_edges + parent_edges, contexts, cycles)
+    ranks = _dispatch_ranks(contexts, code_by_id, summary_deps)
     log_info(
         _STEP, "start",
         code_nodes=len(contexts),
         summary_dep_edges=sum(len(s) for s in summary_deps.values()),
-        full_dep_edges=sum(len(s) for s in full_deps.values()),
         in_cycle=len(cycles),
         concurrency=SETTINGS.analysis_pipeline.max_concurrency,
     )
@@ -133,7 +130,7 @@ async def run_framework_per_node_analysis(
     # 3. Dataflow 병렬 분석 — 의존 완료 즉시 투입. 결과는 코드노드 단위 즉시 영속화 + emit.
     # Example Mapping 9 종 (Rule/Example/Question + 6 엣지) 은 코드노드 단위로 만들어져
     # round 끝까지 누적 → step 마지막에 state 로 반영. Neo4j MERGE 가 정체성 키
-    # (rule_hash / example_id / question_id) 로 자동 dedup — state list 는 raw 그대로.
+    # (rule/example/question id) 로 자동 dedup — state list 는 raw 그대로.
     # run 공유 슬롯 — 후처리와 **같은 세마포어**를 쓴다(spec 096). step7 은 우선순위 0
     # 이라 후처리보다 항상 먼저 슬롯을 잡는다. 총량은 종전과 같다(값 = max_concurrency).
     semaphore = handoff.slots
@@ -144,8 +141,8 @@ async def run_framework_per_node_analysis(
     async def _run_dataflow() -> tuple[int, int, int]:
         """의존 완료 즉시 투입하는 dataflow 스케줄 — 라운드 배리어의 꼬리 유휴 제거.
 
-        CALLS 의존은 callee 의 summary 확정 신호(``on_summary_ready``)로 조기 해제하고,
-        PARENT_OF 의존만 전체 완료를 기다린다. 투입 순서는 ``ranks`` 내림차순 —
+        CALLS/PARENT_OF 의존은 하위 summary 확정 신호(``on_summary_ready``)로 조기 해제한다.
+        투입 순서는 ``ranks`` 내림차순 —
         긴 의존 사슬·큰 노드를 먼저 넣어 종반 꼬리 유휴를 줄인다(산출물 불변).
         취소된 노드만 재투입, ``analyzed+failed+skipped = code_nodes`` 등식 유지(FR-008).
         """
@@ -158,7 +155,7 @@ async def run_framework_per_node_analysis(
         pending: dict[asyncio.Task, str] = {}
         summary_event = asyncio.Event()
         warm_id: Optional[str] = None
-        first_summary: Optional[SummaryOutput] = None
+        first_summary: Optional[SummaryOutput | ModelOutputError] = None
 
         def _mark_summary_ready(fid: str) -> None:
             summary_done.add(fid)
@@ -174,7 +171,7 @@ async def run_framework_per_node_analysis(
                 (
                     fid for fid in contexts
                     if fid not in done and fid not in scheduled
-                    and summary_deps[fid] <= summary_done and full_deps[fid] <= done
+                    and summary_deps[fid] <= summary_done
                 ),
                 key=lambda fid: ranks[fid],
                 reverse=True,
@@ -192,6 +189,7 @@ async def run_framework_per_node_analysis(
                         lambda: run_summary(
                             warm_id, contexts, code_by_id, strategy, cost_budget,
                             codebase_notes, module_intents, table_descriptions, source_cache,
+                            llm_slots=semaphore,
                         )
                     )
 
@@ -239,24 +237,18 @@ async def run_framework_per_node_analysis(
                     if isinstance(r, asyncio.CancelledError):
                         scheduled.discard(fn_id)  # 〃
                         continue
-                    done.add(fn_id)               # 성공·분석실패·None = 처리 완료 (재시도 X)
-                    summary_done.add(fn_id)       # 실패·스킵 노드도 caller 를 막지 않는다
-                    handoff.resolve(fn_id)        # 후처리 대기에서도 빼야 게이트가 열린다
                     if isinstance(r, BudgetExceededError):
                         raise r                   # 절대원칙 #3 — 회로 차단기 즉시 전파
                     if isinstance(r, BaseException):
-                        failed_count += 1
                         log_error(_STEP, "node_analysis", r, code_id=fn_id)
-                        continue
+                        raise r
                     if r is None:
-                        # LLM 이 결과를 못 냄 — 어디에도 안 세면 조용히 실종된다 (FR-008).
-                        skipped_count += 1
-                        log_warning(
-                            _STEP, "node_skipped",
-                            "코드노드가 분석 결과 없이 종료 — summary 미부여 → 검색 코퍼스에서 제외된다.",
-                            code_id=fn_id,
+                        raise RuntimeError(
+                            f"{fn_id}: 분석기가 예외 없이 None을 반환함 — 계약 위반"
                         )
-                        continue
+                    done.add(fn_id)
+                    summary_done.add(fn_id)
+                    handoff.resolve(fn_id)
                     em = await _persist_and_emit_code(r, neo, stream)
                     _accumulate_em(em_acc, em)
                     analyzed_count += 1
@@ -265,7 +257,7 @@ async def run_framework_per_node_analysis(
             await pause.cancel_and_wait(list(pending))
         return analyzed_count, failed_count, skipped_count
 
-    # step_processing_scope / flush_drop_summary 는 caller(analyze_code_step) 책임 —
+    # step_processing_scope는 caller(analyze_code_step) 책임 —
     # dbms 엔진과 대칭(둘 다 caller 가 감싼다). 여기서 또 진입하면 중첩된다.
     total_analyzed, total_failed, total_skipped = await _run_dataflow()
 
@@ -318,7 +310,6 @@ def _dispatch_ranks(
     contexts: dict,
     code_by_id: dict,
     summary_deps: dict[str, set[str]],
-    full_deps: dict[str, set[str]],
 ) -> dict[str, int]:
     """투입 우선순위 — 자기 비용(줄 수) + 나를 기다리는 사슬의 최대 rank (critical path).
 
@@ -333,10 +324,9 @@ def _dispatch_ranks(
         return max(1, end - start)
 
     waiters: dict[str, list[str]] = {fid: [] for fid in contexts}
-    for deps in (summary_deps, full_deps):
-        for waiter, needed in deps.items():
-            for dep in needed:
-                waiters[dep].append(waiter)
+    for waiter, needed in summary_deps.items():
+        for dep in needed:
+            waiters[dep].append(waiter)
 
     # 나를 기다리는 노드(waiter)들이 전부 rank 된 뒤에 내 rank 확정 — Kahn 위상 처리.
     unranked_waiters = {fid: len(waiters[fid]) for fid in contexts}
@@ -345,7 +335,7 @@ def _dispatch_ranks(
     while queue:
         fid = queue.pop()
         ranks[fid] = _cost(fid) + max((ranks[w] for w in waiters[fid]), default=0)
-        for dep in summary_deps[fid] | full_deps[fid]:
+        for dep in summary_deps[fid]:
             unranked_waiters[dep] -= 1
             if unranked_waiters[dep] == 0:
                 queue.append(dep)
@@ -365,8 +355,8 @@ def _dispatch_ranks(
 def _accumulate_em(acc: ExampleMappingResult, em: ExampleMappingResult) -> None:
     """코드노드 단위 ``ExampleMappingResult`` 를 round 누적 결과에 합친다.
 
-    중복 제거는 Neo4j MERGE 가 정체성 키(rule_hash 등)로 자동 처리 — state 는 단순 extend.
-    Rule 노드는 ``rule_hash`` 키로 코드노드 간 공유 (같은 statement = 같은 노드).
+    중복 제거는 Neo4j MERGE 가 정체성 키(각 노드 id)로 자동 처리 — state 는 단순 extend.
+    Rule 노드 id 는 ``<function id>::R<anchor>`` (anchor 좌표 정체성, spec 116).
 
     새 필드 추가 시 ``ExampleMappingResult`` 의 list 필드면 자동 누적 — dataclass 의
     ``fields`` 가 단일 진실.
@@ -401,24 +391,24 @@ async def _analyze_one(
     module_intents: dict[str, str],
     table_descriptions: dict[str, dict],
     source_cache: SourceFileCache,
-    precomputed_summary: Optional[SummaryOutput] = None,
+    precomputed_summary: Optional[SummaryOutput | ModelOutputError] = None,
     precomputed_summary_supplied: bool = False,
     on_summary_ready=None,
 ):
     """코드노드 1개 분석 — track_processing 이 start/done/failed 자동 emit (stream 인자 chain X)."""
     async with track_processing("CodeNode", fn_id):
-        async with semaphore:
-            return await analyze_code_three_split(
-                fn_id, contexts, code_by_id, strategy,
-                cost_budget=cost_budget,
-                codebase_notes=codebase_notes,
-                module_intents=module_intents,
-                table_descriptions=table_descriptions,
-                source_cache=source_cache,
-                precomputed_summary=precomputed_summary,
-                precomputed_summary_supplied=precomputed_summary_supplied,
-                on_summary_ready=on_summary_ready,
-            )
+        return await analyze_code_three_split(
+            fn_id, contexts, code_by_id, strategy,
+            cost_budget=cost_budget,
+            codebase_notes=codebase_notes,
+            module_intents=module_intents,
+            table_descriptions=table_descriptions,
+            source_cache=source_cache,
+            precomputed_summary=precomputed_summary,
+            precomputed_summary_supplied=precomputed_summary_supplied,
+            on_summary_ready=on_summary_ready,
+            llm_slots=semaphore,
+        )
 
 
 # ─── 코드노드 분석 결과 영속화 + 스트림 ────────────────────────────

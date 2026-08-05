@@ -29,12 +29,15 @@ from pipeline.steps.step8_post_processing.handoff_skip import log_handoff_skip
 
 from graph.schema.graph_nodes import CodeNode, Module
 from shared.config.settings import SETTINGS
-from llm.usage.cost_budget import BudgetExceededError
-from llm.fanout import gather_with_warmup, partition_llm_results
+from llm.fanout import gather_with_warmup
 from pipeline.models.code_analysis_output import ModuleSummaryOutput
-from pipeline.languages import coerce_module_stereotype
+from pipeline.models.module_summary_response_schema import module_summary_response_model
+from pipeline.languages import require_module_stereotype
 from llm.runners.yaml_llm_runner import run_yaml_rule
-from shared.events.runtime_logger import log_error, log_info, log_warning
+from llm.runners.model_output_error import ModelOutputError
+from pipeline.models.analysis_finding import AnalysisFinding
+from pipeline.execution.quality_finding_log import record_analysis_findings
+from shared.events.runtime_logger import log_info, log_warning
 from shared.events.processing_events import step_processing_scope, track_processing
 from graph.neo4j_client import Neo4jClient
 from graph.nodes.module import upsert_modules
@@ -50,8 +53,8 @@ async def summarize_module_step(state: dict, config: Optional[RunnableConfig] = 
     neo: Neo4jClient | None = cfg.get("neo_client")
     stream = cfg.get("stream")
     pause: PauseController = cfg.get("pause") or PauseController()
-    # 이 step 이 읽는 것은 코드노드의 signature·summary·logical_name 뿐 — 전부 step7 의
-    # #1 summary 에서 나온다(spec 096). 그래서 노드 전체 완료가 아니라 전 대상의 #1 확정을
+    # 이 step 이 읽는 것은 코드노드의 signature·canonical summary뿐이다. 그래서 노드
+    # 전체 완료가 아니라 전 대상의 #1 확정을
     # 기다린다. 기다리는 동안 step7 이 슬롯을 쓰고, 열리는 즉시 남은 빈 슬롯을 채운다.
     # 결과는 어떤 경로로 끝나든 모듈 결과 채널에도 인계한다.
     handoff = handoff_of(cfg)
@@ -100,11 +103,7 @@ async def _summarize(
     slots = handoff.slots
 
     async def _summarize_one(module: Module) -> Module:
-        """성공 시 새 module / 실패 시 raise (BudgetExceededError 또는 LLM 예외).
-
-        fail 정책 처리 (log + 원본 반환) 는 메인 루틴이 책임 — _summarize_one 은
-        성공 경로만 책임 (단일 책임).
-        """
+        """멤버가 있으면 새 module을 반환하고, 의미 실패는 그대로 전파한다."""
         members = fn_by_module.get(module.id, [])
         if not members:
             return module
@@ -115,14 +114,20 @@ async def _summarize(
             fn.id for fn in members if not (fn.summary or "").strip()
         ]
         if missing:
-            log_warning(
-                _STEP,
-                "module_summary_missing_member_summary",
-                "멤버 summary 누락 — 다른 의미 필드로 대체하지 않고 분석된 멤버만 종합",
-                module_id=module.id,
-                missing_ids=missing,
-                analyzed_members=len(analyzed_members),
+            finding = AnalysisFinding(
+                concern="module_summary",
+                status="unavailable",
+                target_id=module.id,
+                reasons=(f"멤버 summary 누락 — 부분 모듈 요약 금지: {missing}",),
+                evidence_rule="module_summary",
             )
+            record_analysis_findings([finding])
+            log_warning(
+                _STEP, "quality_finding",
+                "멤버 품질 finding 때문에 모듈 요약 후보를 만들지 않고 원본 모듈을 보존함",
+                module_id=module.id, missing_count=len(missing),
+            )
+            return module
         if not analyzed_members:
             return module
         member_text = json.dumps(
@@ -139,38 +144,54 @@ async def _summarize(
             ensure_ascii=False,
             separators=(",", ":"),
         )
-        async with track_processing("Module", module.id):
-            async with slots.at(POSTPROCESS_PRIORITY):
-                result: ModuleSummaryOutput = await run_yaml_rule(
-                    prompts_dir=prompts_dir,
-                    rule_name="module_summary",
-                    user_values={
-                        "id": module.id,
-                        "name": module.name,
-                        "member_code_nodes": member_text,
-                    },
-                    response_model=ModuleSummaryOutput,
-                    budget=cost_budget,
-                )
+        try:
+            async with track_processing("Module", module.id):
+                async with slots.at(POSTPROCESS_PRIORITY):
+                    result: ModuleSummaryOutput = await run_yaml_rule(
+                        prompts_dir=prompts_dir,
+                        rule_name="module_summary",
+                        user_values={
+                            "id": module.id,
+                            "name": module.name,
+                            "member_code_nodes": member_text,
+                        },
+                        response_model=module_summary_response_model(strategy.name),
+                        budget=cost_budget,
+                    )
+        except ModelOutputError as error:
+            finding = AnalysisFinding(
+                concern="module_summary",
+                status="unavailable",
+                target_id=module.id,
+                reasons=(str(error),),
+                evidence_rule=error.rule_name,
+            )
+            record_analysis_findings([finding])
+            log_warning(
+                _STEP, "quality_finding",
+                "모듈 요약 모델 후보를 검증할 수 없어 원본 모듈을 보존함",
+                module_id=module.id, error=str(error),
+            )
+            return module
         # replace — label / comment / annotations 등 원본 필드 보존, 분석분만 갱신.
         # logical_name 은 여기서 채움 — 헤더 임시 정보가 아니라 멤버 분석 종합에서 도출.
         return replace(
             module,
             summary=result.summary,
-            stereotype=coerce_module_stereotype(result.stereotype, strategy.name),
+            stereotype=require_module_stereotype(result.stereotype, strategy.name),
             logical_name=result.logical_name or None,
         )
 
-    # 첫 모듈 1건으로 prefix 캐시 워밍 → 나머지 병렬. fail 정책 = 개별 모듈 LLM 실패 시
-    # 로그 + 원본 module 반환 (분석 흐름 유지). BudgetExceededError 만 즉시 전파.
+    # 첫 모듈 1건으로 prefix 캐시 워밍 → 나머지 병렬. 의미 실패는 원본 모듈로
+    # 바꾸지 않고 상위 step까지 전파한다.
     async def _run_fanout() -> list:
         return await gather_with_warmup(
-            [_summarize_one(m) for m in modules], return_exceptions=True,
+            [_summarize_one(m) for m in modules],
         )
 
     with step_processing_scope(_STEP, stream):
         results = await pause.run_restartable_during_pause(_run_fanout)
-    updated = _apply_fail_policy(modules, results)
+    updated = results
     # Neo4j 적재를 기다리지 않고 모듈 결과 채널에 바로 인계한다.
     handoff.publish_modules(updated)
 
@@ -185,23 +206,6 @@ async def _summarize(
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
     return {"modules": updated}
-
-
-def _apply_fail_policy(modules: list[Module], results: list) -> list[Module]:
-    """fan-out 결과에 fail 정책 적용 — 예외면 원본 module + log, BudgetExceededError 는 raise.
-
-    분류 규칙 자체는 ``partition_llm_results`` 단일 정의처가 갖는다 (spec 046 FR-011).
-    여기 정책 = ``on_failure="keep"`` — 요약 실패한 모듈은 **원본 그대로** 유지해 분석 흐름을
-    끊지 않는다 (모듈이 리스트에서 사라지면 후속 step·artifact 가 노드를 잃는다).
-    """
-    updated, _failed = partition_llm_results(
-        modules, results,
-        component="pipeline.steps.step8_post_processing.summarize_module_step",
-        operation="module_summary",
-        id_of=lambda m: m.id,
-        on_failure="keep",
-    )
-    return updated
 
 
 def _match_code_to_modules(

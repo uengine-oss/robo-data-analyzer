@@ -40,7 +40,8 @@ class PostProcessingAndSearchOwnerScopeTest(unittest.TestCase):
 
     def test_search_material_and_vector_queries_are_owner_scoped(self) -> None:
         self.assertIn("n.graph_owner", FETCH_MATERIAL)
-        self.assertIn("t:TABLE {graph_owner:", FETCH_MATERIAL)
+        # Semantic material is code-node summary only, so it must not traverse TABLE at all.
+        self.assertNotIn(":TABLE", FETCH_MATERIAL)
         self.assertIn("n.graph_owner", _CORPUS_QUERY)
         self.assertEqual(2, _FAN_IN_QUERY.count("graph_owner"))
         self.assertIn("node.graph_owner = $graph_owner", _QUERY_NODES)
@@ -55,7 +56,6 @@ class PostProcessingAndSearchOwnerScopeTest(unittest.TestCase):
                 "search/ranking/graph_access.py",
                 "search/query/glossary.py",
                 "scripts/reembed_graph.py",
-                "scripts/resynthesize_glossary.py",
             )
         )
 

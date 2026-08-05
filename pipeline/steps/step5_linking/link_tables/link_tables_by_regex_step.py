@@ -15,8 +15,10 @@ from langchain_core.runnables import RunnableConfig
 
 from pipeline.execution.step_config import step_config
 
-from agents.contracts import ScanResult
+from agents.rule_compiler import compile_exclusion_rules, split_rules
+from pipeline.steps.step4_scan_project.scan_result_contract import require_scan_result
 from pipeline.steps.step5_linking.link_tables.regex_table_linker import RegexTableLinker
+from pipeline.steps.step5_linking.link_tables.view_expansion import expand_view_edges
 from shared.events.runtime_logger import log_info, log_warning
 from graph.edges.reads_writes import upsert_reads_writes
 from graph.neo4j_client import Neo4jClient
@@ -34,19 +36,21 @@ async def link_deterministic_step(state: dict, config: Optional[RunnableConfig] 
         log_warning(_STEP, "config_missing", "project 누락 — step skip")
         return {}
 
-    scan = _load_scan(state)
-    if scan is None:
-        log_info(_STEP, "skip", reason="scan_result 없음/검증 실패")
-        return {"reads_writes_edges": [], "unresolved_cases": []}
+    scan = require_scan_result(state)
 
     code_nodes_in = state.get("code_nodes") or []
     tables_in = state.get("tables") or []
     patterns = scan.table_access_patterns
+    # embedded_sql 규칙 (spec 115) — 정규식으로 컴파일되지 않는 울타리 블록.
+    # 링커가 블록을 추출해 DML 의미표로 직접 판정한다.
+    _, embedded = split_rules(list(scan.table_access_rules))
+    exclusions = compile_exclusion_rules(scan.table_access_exclusion_rules)
     started = time.monotonic()
     log_info(
         _STEP, "start",
         root=str(project.root),
-        patterns=len(patterns), code_nodes=len(code_nodes_in), tables=len(tables_in),
+        patterns=len(patterns), embedded_rules=len(embedded), exclusions=len(exclusions),
+        code_nodes=len(code_nodes_in), tables=len(tables_in),
     )
 
     outcome = await RegexTableLinker().link(
@@ -55,7 +59,15 @@ async def link_deterministic_step(state: dict, config: Optional[RunnableConfig] 
         tables=tables_in,
         patterns=patterns,
         ddl_transform=scan.ddl_transform,
+        embedded_rules=embedded,
+        exclusion_patterns=exclusions,
     )
+
+    # 뷰 펼치기 (spec 112) — VIEW 엣지에 기저 테이블 엣지 추가 (원본 유지).
+    view_edges = expand_view_edges(outcome.edges, tables_in)
+    if view_edges:
+        log_info(_STEP, "view_expansion", added=len(view_edges))
+        outcome.edges.extend(view_edges)
 
     # raw 중복 (같은 코드노드·테이블·동작을 여러 라인에서 매칭) 은 Neo4j MERGE 가 자동
     # dedup — state 의 list 는 raw 그대로. 다른 step 이 set 으로 변환해 사용.
@@ -94,22 +106,3 @@ async def link_deterministic_step(state: dict, config: Optional[RunnableConfig] 
         "reads_writes_edges": outcome.edges,
         "unresolved_cases": outcome.unresolved,
     }
-
-
-def _load_scan(state: dict) -> Optional[ScanResult]:
-    """``state['scan_result']`` (dict) → ``ScanResult``. 없거나 파싱 실패면 None.
-
-    ScanResult 검증을 여기서 — RegexTableLinker 는 타입 보장된 입력만 받는다.
-    """
-    raw = state.get("scan_result")
-    if not raw:
-        return None
-    try:
-        return ScanResult.model_validate(raw)
-    except Exception as e:  # noqa: BLE001 — 검증 실패 표면화 목적
-        log_warning(
-            _STEP, "validate_scan",
-            "scan_result 파싱 실패 — 결정론 링킹 건너뜀 (전체 unresolved 처리됨)",
-            error=f"{type(e).__name__}: {e}",
-        )
-        return None

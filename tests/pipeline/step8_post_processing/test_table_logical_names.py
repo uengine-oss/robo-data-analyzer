@@ -15,6 +15,15 @@ from pipeline.steps.step8_post_processing.table_logical_names import (
     build_consolidated_column_updates,
 )
 import unittest
+from tests.unittest_function_cases import load_function_cases
+
+
+def _assert_value_error(call) -> None:
+    try:
+        call()
+    except ValueError:
+        return
+    raise AssertionError("expected ValueError")
 
 
 def test_logical_name_without_description_is_preserved():
@@ -41,22 +50,52 @@ def test_description_and_logical_name_union_is_complete():
     }
 
 
-def test_consolidated_result_rejects_unknown_and_duplicate_columns_without_fallback():
+def test_consolidated_result_requires_exact_column_set():
     result = NS(columns=[
         NS(name="status_cd", logical_name="처리상태", description="처리 상태 코드"),
-        NS(name="status_cd", logical_name="다른상태", description="중복 후보"),
-        NS(name="sibling_blob", logical_name="응답원문", description="다른 테이블 컬럼"),
+        NS(name="missing_col", logical_name="누락컬럼", description="누락 컬럼 설명"),
     ])
     updates = build_consolidated_column_updates(
         ["db:orders"],
         [result],
         {"db:orders": {"status_cd", "missing_col"}},
     )
-    assert updates == [{
-        "id": "db:orders.status_cd",
-        "analyzed_description": "처리 상태 코드",
-        "logical_name": "처리상태",
+    assert {item["id"] for item in updates} == {
+        "db:orders.status_cd", "db:orders.missing_col",
+    }
+
+    blank = build_consolidated_column_updates(
+        ["db:unknown"],
+        [NS(columns=[NS(name="opaque", logical_name="", description="")])],
+        {"db:unknown": {"opaque"}},
+    )
+    assert blank == [{
+        "id": "db:unknown.opaque", "logical_name": "", "analyzed_description": "",
     }]
+
+
+def test_consolidated_result_rejects_unknown_duplicate_missing_and_empty_values():
+    result = NS(columns=[
+        NS(name="status_cd", logical_name="처리상태", description="처리 상태 코드"),
+        NS(name="status_cd", logical_name="다른상태", description="중복 후보"),
+        NS(name="sibling_blob", logical_name="응답원문", description="다른 테이블 컬럼"),
+    ])
+    _assert_value_error(lambda: build_consolidated_column_updates(
+            ["db:orders"],
+            [result],
+            {"db:orders": {"status_cd", "missing_col"}},
+        ))
+
+    for invalid_results in (
+        [],
+        [None],
+    ):
+        _assert_value_error(lambda invalid_results=invalid_results:
+                build_consolidated_column_updates(
+                    ["db:orders"],
+                    invalid_results,
+                    {"db:orders": {"status_cd"}},
+                ))
 
 
 if __name__ == "__main__":
@@ -65,19 +104,5 @@ if __name__ == "__main__":
     print("[OK] table_logical_names: 2/2 passed")
 
 
-# ── 스위트 편입 브리지 (2026-07-22 테스트 정리) ──────────────────────────
-# 함수식 케이스는 unittest discover 에 수집되지 않아 스위트에서 실행되지 않는
-# 일회성이었다. 아래 브리지가 전 케이스를 스위트 회귀로 편입한다 (재사용 보장).
-class ModuleCasesSuiteBridge(unittest.TestCase):
-    def test_module_cases(self):
-        import asyncio
-        import inspect
-        cases = [(n, f) for n, f in sorted(globals().items())
-                 if n.startswith("test_") and inspect.isfunction(f)]
-        self.assertTrue(cases, "함수식 케이스가 없다")
-        for name, fn in cases:
-            with self.subTest(case=name):
-                if inspect.iscoroutinefunction(fn):
-                    asyncio.run(fn())
-                else:
-                    fn()
+def load_tests(_loader, standard_tests, _pattern):
+    return load_function_cases(standard_tests, globals())

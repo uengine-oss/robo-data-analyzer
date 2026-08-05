@@ -25,6 +25,7 @@ from typing import Any, Callable
 
 # 공통 step (양쪽 다 씀)
 from pipeline.steps.step1_parse_ddl.parse_ddl_step import parse_ddl_step
+from pipeline.steps.step1_parse_ddl.discover_datasource_step import discover_datasource_step
 from pipeline.steps.step2_load_ast.load_ast_step import load_ast_step
 from pipeline.steps.step3_load_external.load_external_step import load_external_step
 from pipeline.steps.step5_linking.link_tables.link_tables_by_regex_step import (
@@ -33,7 +34,6 @@ from pipeline.steps.step5_linking.link_tables.link_tables_by_regex_step import (
 from pipeline.steps.step5_linking.link_external.link_external_step import link_external_step
 from pipeline.steps.step6_build_context.build_context_step import build_context_step
 from pipeline.steps.step6_build_context.framework_context_builder import FrameworkContextBuilder
-from pipeline.steps.step6_build_context.fetch_table_samples_step import fetch_table_samples_step
 from pipeline.steps.step7_analyze_code.step_entry import analyze_code_step
 from pipeline.steps.step7_analyze_code.framework_per_node import (
     framework_analysis_targets,
@@ -111,14 +111,17 @@ FRAMEWORK_PIPELINE = Strategy(
     prompts_dir="llm/prompts/framework",
     steps=(
         parse_ddl_step,
-        (load_ast_step, load_external_step),
+        # discover: 단어장 이원화(DDL ∪ 실DB) + 샘플 수집 통합 — 데이터소스 HTTP 접점은
+        # 이 step 한 곳 (spec 107, 구 step6 fetch_table_samples 흡수). tables 키는 이
+        # step 만 쓰므로 load_ast 와 병렬 안전.
+        (load_ast_step, load_external_step, discover_datasource_step),
         scan_codebase_step,                # ★ Framework 만 — Scan Agent 1회
         scan_external_step,                # unknown text만 — external skill reload/agent
         link_deterministic_step,
         link_calls_by_name_step,              # ★ Framework 만 — 결정론 Call 분류 + wrapper 통합 (LLM 0)
         link_residual_patterns_step,          # ★ Framework 만 — 잔여 패턴 루프 (테이블 미해결)
         link_external_step,                   # 외부 파일 key/FQN/SQL→DDL 결정론 연결
-        (build_context_step, fetch_table_samples_step),   # 독립 — HTTP 지연 은닉
+        build_context_step,
 
         # ★ 후처리는 step7 과 **같은 superstep**에서 돈다 (spec 096). 노드 간 배리어를 두면
         #   후처리가 step7 의 마지막 콜까지 기다리는데, 실제로 후처리가 읽는 값은 step7 의
@@ -129,7 +132,7 @@ FRAMEWORK_PIPELINE = Strategy(
             analyze_code_step,
             summarize_module_step,            # 게이트: 전 노드 #1 summary
             build_components_step,            # 게이트: 전 노드 #1 summary (Leiden + 병렬 naming)
-            build_glossary_step,              # 게이트: 모듈 요약 (spec 043)
+            build_glossary_step,              # 사람 제공 glossary 독립 적재
             enrich_table_description_step,    # 게이트: 전 노드 완료 (insights 가 rules 와 함께 확정)
             health_metrics_step,              # 게이트 없음 — 결정론 그래프(step2·5)만 읽는다
         ),
@@ -150,7 +153,8 @@ DBMS_PIPELINE = Strategy(
     prompts_dir="llm/prompts/dbms",
     steps=(
         parse_ddl_step,
-        (load_ast_step, load_external_step),
+        # discover: 단어장 이원화 + 샘플 수집 통합 — Framework 와 동일 선언 (spec 107).
+        (load_ast_step, load_external_step, discover_datasource_step),
         scan_external_step,                # unknown text만 — external skill reload/agent
         # scan_codebase_step 없음 — DBMS 는 Scan Agent 안 씀 (Plan §6)
         link_dbms_tables_step,                # ★ DBMS 만 — DML range → DDL 테이블 결정론 매칭 (LLM 0)
@@ -159,7 +163,7 @@ DBMS_PIPELINE = Strategy(
         link_calls_by_ast_step,               # ★ DBMS 만 — AST CALL 노드 분류 (빌트인·자기루프 드롭)
         # 잔여 패턴 루프 없음 — DBMS 는 에이전트 링킹을 안 씀
         link_external_step,                   # 외부 파일 key/FQN/SQL→DDL 결정론 연결
-        (build_context_step, fetch_table_samples_step),   # 독립 — HTTP 지연 은닉
+        build_context_step,
 
         # ★ Framework 와 같은 겹치기 (spec 096) — 각 step 이 ``AnalysisHandoff`` 로 자기
         #   의존 해제를 기다린다. DBMS 배치 엔진은 summary 와 rules 가 한 콜에서 같이
@@ -168,7 +172,7 @@ DBMS_PIPELINE = Strategy(
             analyze_code_step,
             summarize_module_step,            # 게이트: 전 노드 요약
             build_components_step,            # 게이트: 전 노드 요약
-            build_glossary_step,              # 게이트: 모듈 요약 (spec 043)
+            build_glossary_step,              # 사람 제공 glossary 독립 적재
             enrich_table_description_step,    # 게이트: 전 노드 완료
             enrich_lineage_from_catalog_step, # ★ DBMS 만 — catalog lineage (HTTP, step7 무관)
             health_metrics_step,              # 게이트 없음 — 결정론 그래프(step2·5)만 읽는다

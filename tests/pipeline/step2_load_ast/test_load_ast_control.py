@@ -11,11 +11,32 @@ from graph.schema.graph_nodes import CodeNode
 from pipeline.execution.pause_controller import PauseController, RunStopped
 from pipeline.steps.step2_load_ast.node_builders import ParseResult
 from pipeline.steps.step2_load_ast import load_ast_step as subject
+from pipeline.steps.step2_load_ast.dispatch import ast_and_source_roots
 from pipeline.steps.step2_load_ast.token_matcher import link_references
 from pipeline.steps.step2_load_ast.import_scopes import _build_scopes
+from pipeline.steps.step2_load_ast.dbms_reader import _read_dbms
 
 
 class LoadAstControlTest(unittest.IsolatedAsyncioTestCase):
+    def test_explicit_corpus_root_owns_source_and_ast_roots(self):
+        with tempfile.TemporaryDirectory() as temp:
+            corpus = Path(temp) / "corpus"
+            project = corpus / "source" / "project"
+            project.mkdir(parents=True)
+            self.assertEqual(
+                (corpus / "analysis" / "project", corpus / "source"),
+                ast_and_source_roots(project, corpus),
+            )
+
+    def test_explicit_corpus_rejects_cross_corpus_source(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            corpus = root / "corpus"
+            foreign = root / "foreign" / "source"
+            foreign.mkdir(parents=True)
+            with self.assertRaisesRegex(ValueError, "corpus_root 밖"):
+                ast_and_source_roots(foreign, corpus)
+
     async def test_split_import_scope_retains_language_resolution(self):
         scopes = _build_scopes(
             [{"name": '"shopmall.h"', "file": "order.c"}],
@@ -110,6 +131,27 @@ class LoadAstControlTest(unittest.IsolatedAsyncioTestCase):
                 [], [], [], checkpoint=stop_during_linking,
             )
         self.assertEqual(checkpoints, 2)
+
+    async def test_dbms_declaration_roles_come_from_ontology(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw = {
+                "type": "FILE", "fileName": "pkg.sql", "filePath": "pkg.sql",
+                "children": [
+                    {"type": "PARAMETER", "name": "p_id", "startLine": 1},
+                    {"type": "VARIABLE", "name": "v_id", "startLine": 2},
+                    {"type": "PACKAGE_VARIABLE", "name": "g_id", "startLine": 3},
+                    {"type": "CONSTANT_FIELD", "name": "MAX_ID", "startLine": 4},
+                ],
+            }
+            result = _read_dbms(raw, root, root / "pkg.json")
+
+        self.assertEqual(
+            {node.label for node in result.variables},
+            {"PARAMETER", "VARIABLE", "PACKAGE_VARIABLE"},
+        )
+        self.assertEqual([node.label for node in result.constants], ["CONSTANT_FIELD"])
+        self.assertEqual(result.code_nodes, [])
 
 
 if __name__ == "__main__":

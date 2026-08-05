@@ -126,15 +126,15 @@ class WorkflowState(TypedDict, total=False):
     # ── step6_build_context 결과 ──────────────────
     analysis_contexts: dict[str, AnalysisContext]   # code_id → ctx
 
-    # ── step6 데이터 준비 (fetch_table_samples — 옵션·전략독립) ───
+    # ── 데이터소스 발견 산출 (step1 discover_datasource — 옵션·전략독립, spec 107) ───
     # catalog sample-context로 받은 테이블별 실제 샘플행 — step7 분석 입력값.
     # {table_fqn: {columns, sample_rows}}. 토글 off / datasource 미지정 / 미매칭 → 키 없음.
     table_sample_data: dict[str, dict]
 
     # ── step7 Example Mapping 결과 (analyze_code 함수 단위 누적) ──
     # 비즈니스 로직 3가지 (rules/examples/questions) + 관련 엣지 6종.
-    # Rule 노드는 rule_hash 가 정체성 식별자 — 같은 statement 코드노드 간 공유.
-    # 중복은 Neo4j MERGE Cypher 가 dedup (rule_hash / example_id / question_id 키).
+    # Rule 노드 id = "<function id>::R<anchor>" (anchor 좌표 정체성, spec 116).
+    # 중복은 Neo4j MERGE Cypher 가 id 키로 dedup (rule / example / question 공통).
     rules: list[Rule]
     examples: list[Example]
     questions: list[Question]

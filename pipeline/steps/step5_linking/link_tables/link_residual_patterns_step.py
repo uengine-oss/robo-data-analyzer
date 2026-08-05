@@ -17,9 +17,15 @@ from langchain_core.runnables import RunnableConfig
 from pipeline.execution.step_config import step_config
 
 from agents.residual import (
+    ResidualOutcome,
+    ResidualPatternVerificationError,
     run_residual_loop,
 )
-from shared.events.runtime_logger import log_info, log_warning
+from agents.runtime import AgentModelOutputError
+from pipeline.execution.quality_finding_log import record_analysis_findings
+from pipeline.models.analysis_finding import AnalysisFinding
+from pipeline.steps.step4_scan_project.scan_result_contract import require_scan_result
+from shared.events.runtime_logger import log_info
 from graph.edges.reads_writes import upsert_reads_writes
 from graph.neo4j_client import Neo4jClient
 from pipeline.execution.graph_delta_stream import emit_edges, emit_message
@@ -31,7 +37,6 @@ async def link_residual_patterns_step(state: dict, config: Optional[RunnableConf
     """잔여 미해결 케이스 → 패턴 루프 → 추가 ``ReadsWrites`` 엣지 + 최종 잔여."""
     cfg = step_config(config)
     project = cfg.get("codebase")
-    run = cfg.get("run")
     cost_budget = cfg.get("cost_budget")
     stream = cfg.get("stream")
     neo: Neo4jClient | None = cfg.get("neo_client")
@@ -40,26 +45,41 @@ async def link_residual_patterns_step(state: dict, config: Optional[RunnableConf
     if not unresolved:
         log_info(_STEP, "skip", reason="잔여 미해결 케이스 없음")
         return {}
-    if project is None or run is None or cost_budget is None:
-        log_warning(
-            _STEP, "config_missing",
-            "project/run/cost_budget 누락 — step skip", unresolved=len(unresolved),
+    if project is None or cost_budget is None:
+        raise RuntimeError(
+            "link_residual_patterns requires project and cost_budget"
         )
-        return {}
+    scan_result = require_scan_result(state)
 
     started = time.monotonic()
     log_info(_STEP, "start", cases=len(unresolved))
 
-    outcome = await run_residual_loop(
-        unresolved_cases=unresolved,
-        scan_result=state.get("scan_result") or {},
-        project_root=project.root,
-        code_nodes=state.get("code_nodes") or [],
-        tables=state.get("tables") or [],
-        run_dir=run.run_dir,
-        cost_budget=cost_budget,
-        stream_emit=stream.emit if stream is not None else None,
-    )
+    try:
+        outcome = await run_residual_loop(
+            unresolved_cases=unresolved,
+            scan_result=scan_result,
+            project_root=project.root,
+            code_nodes=state.get("code_nodes") or [],
+            tables=state.get("tables") or [],
+            cost_budget=cost_budget,
+        )
+    except (AgentModelOutputError, ResidualPatternVerificationError) as error:
+        status = "unavailable" if isinstance(error, AgentModelOutputError) else "rejected"
+        record_analysis_findings([AnalysisFinding(
+            concern="residual_table_linking",
+            status=status,
+            target_id="unresolved_cases",
+            reasons=(f"{type(error).__name__}: {error}",),
+            evidence_rule="residual_agent",
+        )])
+        log_info(
+            _STEP,
+            "candidate_quarantined",
+            status=status,
+            residual=len(unresolved),
+            reason=f"{type(error).__name__}: {error}",
+        )
+        outcome = ResidualOutcome(edges=[], residual=list(unresolved))
 
     if neo is not None and outcome.edges:
         await upsert_reads_writes(neo, outcome.edges)

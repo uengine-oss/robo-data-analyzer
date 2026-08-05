@@ -1,8 +1,11 @@
 """REFERENCES/INIT_BY → Rule/Example용 구조화 값 근거."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from pipeline.models.analysis_context import ReferencedSymbolContext
 from graph.schema.graph_nodes import Constant, Variable
+from pipeline.languages import lang_of, symbol_kind
 
 
 def _build_reference_context(state: dict) -> dict[str, list[ReferencedSymbolContext]]:
@@ -44,7 +47,7 @@ def _build_symbol(
         symbol = ReferencedSymbolContext(
             id=constant.id,
             name=constant.name,
-            kind="constant",
+            kind=symbol_kind(constant.label, lang_of(Path(constant.file_path).suffix)),
             data_type=constant.var_type,
             declared_value=constant.value,
             value_semantics="immutable_constant",
@@ -56,7 +59,7 @@ def _build_symbol(
         symbol = ReferencedSymbolContext(
             id=variable.id,
             name=variable.name,
-            kind="variable",
+            kind=symbol_kind(variable.label, lang_of(Path(variable.file_path).suffix)),
             data_type=variable.var_type,
             declared_value=variable.init_value,
             value_semantics="declaration_initializer" if variable.init_value else "mutable_variable",

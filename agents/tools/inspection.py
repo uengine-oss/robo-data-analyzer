@@ -23,6 +23,7 @@ from langchain.tools import tool
 
 from shared.files.paths import PathOutsideRoot, resolve_within
 from graph.schema.graph_nodes import CodeNode
+from pipeline.languages import statement_labels
 from agents.skills.catalog import FRAMEWORK_SKILLS_DIR, SkillCatalogError, build_skill_catalog
 
 # agents/skills/ 경로
@@ -38,7 +39,12 @@ def make_list_code_nodes(code_nodes: list[CodeNode]):
     파일/JSON 을 안 읽고 그 데이터를 file 별로 걸러줄 뿐.
     """
     by_file: dict[str, list[CodeNode]] = {}
+    stmt_labels = statement_labels()
     for fn in code_nodes:
+        # statement 노드(RETURN/ASSIGNMENT/GOTO 등)는 목록 대상이 아니다 — 대형
+        # 파일에서 _MAX_FUNCTIONS 상한을 statement 가 밀어내 루틴이 가려진다.
+        if fn.label in stmt_labels:
+            continue
         by_file.setdefault(str(Path(fn.file_path).resolve()), []).append(fn)
 
     @tool

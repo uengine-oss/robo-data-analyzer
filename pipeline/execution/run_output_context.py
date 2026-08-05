@@ -36,6 +36,11 @@ def get_run_dir(*, fallback: Path | None = None) -> Path:
     raise RuntimeError("analysis run output context is not set")
 
 
+def active_run_dir() -> Path | None:
+    """현재 활성 분석 run의 출력 루트. 독립 호출·단위 테스트면 ``None``."""
+    return _run_dir.get()
+
+
 def set_response_locale(locale: str) -> contextvars.Token:
     if not isinstance(locale, str) or not locale.strip():
         raise ValueError("response locale must be a non-blank string")

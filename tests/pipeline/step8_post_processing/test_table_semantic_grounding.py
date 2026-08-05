@@ -22,6 +22,7 @@ from pipeline.steps.step8_post_processing.enrich_table_description_step import (
     _source_columns_by_table,
     _table_target_ids,
     _table_description_response_model,
+    _replace_by_id,
 )
 from graph.schema.graph_edges import HasColumn, ReadsWrites
 from graph.schema.graph_nodes import Column, Table
@@ -47,11 +48,21 @@ class TableSemanticGroundingTest(unittest.TestCase):
             )
 
     def test_final_table_schema_requires_every_ddl_column_once(self):
-        model = _table_description_response_model(("order_id", "status_cd"))
+        model = _table_description_response_model({
+            "table": {
+                "db": "db", "schema": "public", "name": "orders",
+                "source_logical_name": "", "source_description": "", "source_comment": "",
+            },
+            "columns": [
+                {"name": "order_id", "source_logical_name": "", "source_description": "", "source_comment": ""},
+                {"name": "status_cd", "source_logical_name": "", "source_description": "", "source_comment": ""},
+            ],
+        })
         valid = {
             "db": "db",
             "schema": "public",
             "name": "orders",
+            "logical_name": "",
             "description": "주문 처리 상태를 보관한다.",
             "columns": [
                 {
@@ -67,6 +78,16 @@ class TableSemanticGroundingTest(unittest.TestCase):
             ],
         }
         self.assertEqual(2, len(model.model_validate(valid).columns))
+        unknown = {
+            **valid,
+            "logical_name": "",
+            "description": "",
+            "columns": [
+                {**column, "logical_name": "", "description": ""}
+                for column in valid["columns"]
+            ],
+        }
+        self.assertEqual("", model.model_validate(unknown).columns[0].logical_name)
         with self.assertRaises(ValidationError):
             model.model_validate({**valid, "columns": valid["columns"][:1]})
         with self.assertRaises(ValidationError):
@@ -101,6 +122,9 @@ class TableSemanticGroundingTest(unittest.TestCase):
         self.assertEqual([table.id], _table_target_ids([table]))
         self.assertEqual(
             {
+                "db": "warehouse",
+                "schema": "public",
+                "name": "inventory",
                 "source_logical_name": "",
                 "source_description": "현재 재고를 보관한다.",
                 "source_comment": "재고 원장",
@@ -156,6 +180,27 @@ class TableSemanticGroundingTest(unittest.TestCase):
         )
         self.assertEqual(result.columns[0].name, "status_cd")
 
+    def test_state_replacement_preserves_unavailable_targets_and_rejects_unknown_ids(self):
+        table = Table(
+            db="db", schema="public", name="orders",
+            logical_name="stale", analyzed_description="stale",
+        )
+        replaced = _replace_by_id(
+            [table],
+            [{"id": table.id, "logical_name": "", "analyzed_description": ""}],
+            "logical_name", "analyzed_description",
+        )
+        self.assertEqual("", replaced[0].logical_name)
+        self.assertEqual("", replaced[0].analyzed_description)
+        untouched = _replace_by_id([table], [], "logical_name", "analyzed_description")
+        self.assertIs(table, untouched[0])
+        with self.assertRaisesRegex(ValueError, "unknown IDs"):
+            _replace_by_id(
+                [table],
+                [{"id": "db:public.unknown", "logical_name": "", "analyzed_description": ""}],
+                "logical_name", "analyzed_description",
+            )
+
     def test_both_strategies_pair_bad_and_good_sibling_examples(self):
         prompts = [
             (_ROOT / "llm/prompts/framework", "code_table_insights"),
@@ -171,16 +216,15 @@ class TableSemanticGroundingTest(unittest.TestCase):
                 self.assertIn("잘못", text)
                 self.assertIn("좋음", text)
 
-    def test_table_insight_requires_every_injected_column_once(self):
+    def test_table_insight_forbids_unproven_columns(self):
         for directory, rule_name in (
             (_ROOT / "llm/prompts/framework", "code_table_insights"),
             (_ROOT / "llm/prompts/dbms", "code_table_insights_batch"),
         ):
             text = _load_rule(directory, rule_name)["user_template"]
             with self.subTest(rule=rule_name):
-                self.assertIn("허용 목록", text)
-                self.assertIn("정확히 한 번", text)
-                self.assertIn("누락", text)
+                self.assertIn("컬럼 필드는 출력하지 않는다", text)
+                self.assertIn("추측하지 않는다", text)
 
     def test_column_contract_preserves_source_semantic_head_over_name_guess(self):
         contract = (
@@ -190,6 +234,41 @@ class TableSemanticGroundingTest(unittest.TestCase):
         self.assertIn("약어를 관례로 확장하지 않음", contract)
         self.assertIn("사람 일련번호", contract)
         self.assertIn("기관 지점 일련번호", contract)
+
+    def test_source_column_meaning_is_schema_constant_not_posthoc_fallback(self):
+        evidence = {
+            "table": {
+                "db": "db", "schema": "", "name": "auth",
+                "source_logical_name": "", "source_description": "인증 이력", "source_comment": "",
+            },
+            "columns": [{
+                "name": "drw_bank_ctz_num_pinf",
+                "source_logical_name": "주민 부분정보",
+                "source_description": "출금은행 주민 부분정보 (암호화)",
+                "source_comment": "",
+            }],
+        }
+        model = _table_description_response_model(evidence)
+        valid = {
+            "db": "db", "schema": "", "name": "auth",
+            "logical_name": "인증 이력",
+            "description": "인증 이력",
+            "columns": [{
+                "name": "drw_bank_ctz_num_pinf",
+                "logical_name": "주민 부분정보",
+                "description": "출금은행 주민 부분정보 (암호화)",
+            }],
+        }
+        parsed = model.model_validate(valid)
+        self.assertEqual(
+            "출금은행 주민 부분정보 (암호화)", parsed.columns[0].description,
+        )
+        changed = {**valid, "columns": [{
+            **valid["columns"][0],
+            "description": "출금 은행 계좌 번호의 일부 정보로 저장됩니다.",
+        }]}
+        with self.assertRaises(ValidationError):
+            model.model_validate(changed)
 
     def test_step8_does_not_use_function_summary_or_first_column_candidate(self):
         source = (
@@ -201,8 +280,8 @@ class TableSemanticGroundingTest(unittest.TestCase):
         self.assertIn('insight.get("usage_summary")', source)
         self.assertIn("build_consolidated_column_updates", source)
         self.assertIn("table_fqns = _table_target_ids(source_tables)", source)
-        self.assertIn("run_concern_with_retry(", source)
-        self.assertIn('concern="table_description"', source)
+        self.assertNotIn("run_concern_with_retry(", source)
+        self.assertIn('rule_name="table_description"', source)
         self.assertNotIn('reason="no table_insights aggregated"', source)
         self.assertNotIn("ordered_names = list(column_candidates", source)
 

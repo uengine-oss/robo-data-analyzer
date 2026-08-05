@@ -12,7 +12,7 @@ from search.ranking.retriever import Retriever
 def _candidate(cid: str, relevance: float) -> dict:
     return {
         "id": cid, "name": cid, "label": "FUNCTION", "stereotype": "",
-        "summary": cid, "search_text": "", "writes": [], "reads": [], "calls": [],
+        "summary": cid, "writes": [], "reads": [], "calls": [],
         "relevance": relevance, "role": "core",
     }
 
@@ -20,7 +20,7 @@ def _candidate(cid: str, relevance: float) -> dict:
 class _Corpus:
     by_id = {
         cid: {"id": cid, "name": cid, "label": "FUNCTION", "summary": cid,
-              "stereotype": "", "search_text": ""}
+              "stereotype": ""}
         for cid in ("a", "b", "c", "d", "x")
     }
     fan_in = {}
@@ -78,6 +78,10 @@ class _Retriever(Retriever):
 class GlobalAnchorTests(unittest.TestCase):
     def setUp(self):
         _Retriever.assert_expand_flags = []
+
+    def test_unknown_selection_mode_fails_instead_of_silent_legacy_fallback(self):
+        with self.assertRaisesRegex(ValueError, "cluster_selection_mode"):
+            _Retriever().retrieve("query", Config(cluster_selection_mode="typo"))
 
     @patch("search.ranking.retriever.embedder.encode_texts", return_value=[[1.0]])
     def test_three_anchors_then_one_hop_code_and_table_evidence(self, _encode):

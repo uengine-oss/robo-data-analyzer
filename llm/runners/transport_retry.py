@@ -10,6 +10,7 @@ _TRANSIENT_NAMES = frozenset({
     "ConnectTimeout",
     "ReadError",
     "ReadTimeout",
+    "StreamChunkTimeoutError",
     "RemoteProtocolError",
     "PoolTimeout",
     "RateLimitError",
@@ -19,7 +20,7 @@ _TRANSIENT_NAMES = frozenset({
 
 
 def is_transient_transport_error(error: BaseException) -> bool:
-    """Retry only transport, rate-limit, and server failures."""
+    """Retry only transport, stream-idle, rate-limit, and server failures."""
     if type(error).__name__ in _TRANSIENT_NAMES:
         return True
     status = getattr(error, "status_code", None)

@@ -63,6 +63,7 @@ def _split_source(
 ) -> SplitSource:
     lexicon = source_lexicon(lang)
     line_tokens: list[str] = list(lexicon.get("line") or [])
+    line_regexes = [re.compile(pattern) for pattern in (lexicon.get("line_regex") or [])]
     block_pairs: list[tuple[str, str]] = [tuple(pair) for pair in (lexicon.get("block") or [])]
     quotes: set[str] = set(lexicon.get("string_quotes") or [])
     string_block_pairs: list[tuple[str, str]] = []
@@ -77,6 +78,10 @@ def _split_source(
     open_string_block: tuple[str, str] | None = None
 
     for raw in text.splitlines():
+        if any(pattern.match(raw) for pattern in line_regexes):
+            live_lines.append("")
+            dead_lines.append(raw)
+            continue
         live: list[str] = []
         dead: list[str] = []
         index, length, quote = 0, len(raw), ""
@@ -190,3 +195,16 @@ def literal_values(text: str, lang: str) -> set[str]:
 def atoms(text: str, lang: str) -> set[str]:
     """소스의 대조 원자 — 식별자 + 코드값 리터럴(소문자 정규화)."""
     return {m.group(0).lower() for m in _IDENT.finditer(text)} | literal_values(text, lang)
+
+
+def without_string_literals(text: str, lang: str) -> str:
+    """문자열 구간을 공백으로 바꾼 구조 판정용 뷰.
+
+    대입 연산자나 괄호를 문자열 내용에서 세지 않도록 하는 범용 lexing 책임이다.
+    언어별 인용부호는 ``source_lexicon`` 데이터에서만 받는다.
+    """
+    cleaned = text
+    for quote in source_lexicon(lang).get("string_quotes") or ():
+        escaped = re.escape(str(quote))
+        cleaned = re.sub(rf"{escaped}[^{escaped}\\\n]*{escaped}", " ", cleaned)
+    return cleaned

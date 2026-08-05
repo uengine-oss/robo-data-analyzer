@@ -1,0 +1,293 @@
+# -*- coding: utf-8 -*-
+"""규칙 행 배칭은 content 재요청 없이 trusted 행과 품질 finding을 분리한다."""
+from __future__ import annotations
+
+import asyncio
+import unittest
+
+from llm.runners.model_output_error import ModelOutputError
+
+from pipeline.models.analysis_context import ControlSubtreeNode, StatementFact
+from pipeline.models.code_analysis_output import RulesExamplesOutput, RuleItem
+from pipeline.quality_gates.branch_inventory import build_inventory
+from pipeline.quality_gates.rule_prompt_evidence import (
+    expected_rule_condition,
+    rule_evidence,
+)
+from pipeline.steps.step7_analyze_code.rule_row_batching import (
+    DEFAULT_ROWS_PER_CALL,
+    MAX_RULE_OUTPUT_REFERENCES,
+    SUMMARY_WAKE_PRIORITY,
+    collect_rules_by_rows,
+    plan_batches,
+    rule_queue_priority,
+)
+
+SOURCE = (
+    'if (a == "1")\n{\n  x();\n}\n'
+    'else if (a == "2")\n{\n  y();\n}\n'
+    "else\n{\n  z();\n}\n"
+)
+IF2 = ControlSubtreeNode(
+    node_id="if2", ntype="IF", start=5, end=12, expression='a == "2"',
+    children=[ControlSubtreeNode(node_id="el2", ntype="ELSE", start=9, end=12)],
+)
+TREE = [ControlSubtreeNode(
+    node_id="if1", ntype="IF", start=1, end=12, expression='a == "1"',
+    children=[ControlSubtreeNode(
+        node_id="el1", ntype="ELSE", start=5, end=12, children=[IF2],
+    )],
+)]
+
+
+def _inventory():
+    # parser AST 계약 (spec 016): 조건은 expression, 호출은 call_lines 로 온다.
+    return build_inventory(
+        SOURCE, TREE, "c", statements=(),
+        call_lines=((3, "x"), (7, "y"), (11, "z")),
+    )
+
+
+def _good(anchor):
+    calls = {1: 'call("x")', 5: 'call("y")', 9: 'call("z")'}
+    return RuleItem(
+        anchor_line=anchor,
+        cond=expected_rule_condition(_inventory(), anchor),
+        then=[calls[anchor]],
+    )
+
+
+class BatchingContract(unittest.TestCase):
+    def test_default_row_count_matches_measured_microbatch_boundary(self):
+        self.assertEqual(8, DEFAULT_ROWS_PER_CALL)
+
+    def test_oversize_response_shape_uses_real_evidence_not_table_row_keys(self):
+        class DirectHeavyInventory:
+            lang = "c"
+
+            @staticmethod
+            def table_rows():
+                # Product table rows do not contain derived ``when``/``direct``.
+                return [
+                    {"line": line, "role": "entry"}
+                    for line in range(1, 6)
+                ]
+
+            @staticmethod
+            def direct_evidence(line):
+                return "", frozenset(), tuple(
+                    (f"row{line}_target{index}", str(index))
+                    for index in range(10)
+                )
+
+            @staticmethod
+            def direct_callees(_line):
+                return set()
+
+            @staticmethod
+            def direct_statement_effects(_line):
+                return ()
+
+        inventory = DirectHeavyInventory()
+
+        batches = plan_batches(inventory)
+
+        self.assertEqual([[1, 2, 3, 4], [5]], batches)
+        self.assertEqual(48, MAX_RULE_OUTPUT_REFERENCES)
+
+    def test_output_bound_rejects_invalid_configuration(self):
+        with self.assertRaises(ValueError):
+            plan_batches(_inventory(), max_output_references=0)
+
+    def test_rule_lpt_priority_never_overtakes_summary(self):
+        small = rule_queue_priority(100)
+        large = rule_queue_priority(1_000)
+        self.assertLess(large, small)
+        self.assertLess(SUMMARY_WAKE_PRIORITY, large)
+        with self.assertRaises(ValueError):
+            rule_queue_priority(-1)
+
+    def test_nested_branch_rows_own_only_direct_callees(self):
+        rows = {row["line"]: row for row in _inventory().table_rows()}
+        self.assertEqual(["x"], rows[1]["callees"])
+        self.assertEqual(["y"], rows[5]["callees"])
+        self.assertEqual(["z"], rows[9]["callees"])
+
+    def test_prompt_evidence_names_direct_facts_once_and_rows_use_refs(self):
+        evidence = rule_evidence(_inventory(), [1, 5, 9])
+
+        self.assertEqual(["C1"], evidence["rows"]["R1"]["when"])
+        self.assertEqual(["!C1", "C5"], evidence["rows"]["R5"]["when"])
+        self.assertEqual(["!C5", "!C1"], evidence["rows"]["R9"]["when"])
+        self.assertEqual(["E1"], evidence["rows"]["R1"]["direct"])
+        self.assertEqual("x", evidence["effects"]["E1"]["target"])
+
+    def test_prompt_evidence_deduplicates_repeated_direct_assignment_refs(self):
+        class RepeatedAssignmentInventory:
+            lang = "c"
+
+            @staticmethod
+            def table_rows():
+                return [{"line": 1, "role": "entry"}]
+
+            @staticmethod
+            def direct_evidence(_line):
+                return "x = 1; x = 1;", set(), [("x", "1"), ("x", "1")]
+
+            @staticmethod
+            def direct_callees(_line):
+                return set()
+
+            @staticmethod
+            def direct_statement_effects(_line):
+                return ()
+
+        evidence = rule_evidence(RepeatedAssignmentInventory(), [1])
+        self.assertEqual(["E1"], evidence["rows"]["R1"]["direct"])
+        self.assertEqual(1, len(evidence["effects"]))
+
+    def test_plan_batches_covers_obligation_rows_only(self):
+        self.assertEqual([[1, 5], [9]], plan_batches(_inventory(), rows_per_call=2))
+
+    def test_valid_batches_are_collected_once(self):
+        seen = []
+
+        async def invoke(rows):
+            seen.append(tuple(rows))
+            return RulesExamplesOutput(rules=[_good(line) for line in rows])
+
+        collection = asyncio.run(collect_rules_by_rows(
+            invoke=invoke, inventory=_inventory(), target_scope="fn", source=SOURCE, rows_per_call=2,
+        ))
+        self.assertEqual([(1, 5), (9,)], sorted(seen))
+        self.assertEqual([1, 5, 9], [rule.anchor_line for rule in collection.rules])
+        self.assertEqual([], collection.findings)
+        self.assertEqual(2, collection.calls)
+
+    def test_content_rejection_is_quarantined_after_one_call_with_row_reason(self):
+        calls = 0
+
+        async def invoke(rows):
+            nonlocal calls
+            calls += 1
+            return RulesExamplesOutput(rules=[
+                RuleItem(anchor_line=line, cond='F("a") == "99"', then=[])
+                for line in rows
+            ])
+
+        collection = asyncio.run(collect_rules_by_rows(
+            invoke=invoke, inventory=_inventory(), target_scope="fn", source=SOURCE, rows_per_call=10,
+        ))
+        self.assertEqual(1, calls)
+        self.assertEqual([], collection.rules)
+        self.assertEqual({"rejected"}, {finding.status for finding in collection.findings})
+        self.assertEqual(
+            {"fn::R-1", "fn::R-5", "fn::R-9"},
+            {finding.target_id for finding in collection.findings},
+        )
+        self.assertTrue(
+            any("창작" in reason for finding in collection.findings for reason in finding.reasons)
+        )
+
+    def test_missing_row_is_unavailable_while_valid_sibling_survives(self):
+        async def invoke(rows):
+            return RulesExamplesOutput(rules=[_good(rows[0])])
+
+        collection = asyncio.run(collect_rules_by_rows(
+            invoke=invoke, inventory=_inventory(), target_scope="fn", source=SOURCE, rows_per_call=10,
+        ))
+        self.assertEqual([1], [rule.anchor_line for rule in collection.rules])
+        unavailable = {
+            finding.coordinates[0]
+            for finding in collection.findings if finding.status == "unavailable"
+        }
+        self.assertEqual({5, 9}, unavailable)
+
+    def test_one_bad_leaf_is_quarantined_without_closing_the_batch(self):
+        calls = 0
+
+        async def invoke(rows):
+            nonlocal calls
+            calls += 1
+            bad = RuleItem.model_construct(
+                anchor_line=rows[0], cond="a\nb", then=[], nl="bad",
+            )
+            good = [_good(line) for line in rows[1:]]
+            return RulesExamplesOutput.model_construct(
+                rules=[bad, *good],
+            )
+
+        result = asyncio.run(collect_rules_by_rows(
+            invoke=invoke, inventory=_inventory(), target_scope="fn", source=SOURCE,
+        ))
+        self.assertEqual(1, calls)
+        self.assertEqual([5, 9], [rule.anchor_line for rule in result.rules])
+        self.assertEqual(
+            [(1,)],
+            [finding.coordinates for finding in result.findings
+             if finding.status == "rejected"],
+        )
+
+    def test_runner_exception_propagates_without_second_layer_retry(self):
+        calls = 0
+
+        async def invoke(rows):
+            nonlocal calls
+            calls += 1
+            raise RuntimeError("transport attempts exhausted")
+
+        with self.assertRaisesRegex(RuntimeError, "transport attempts exhausted"):
+            asyncio.run(collect_rules_by_rows(
+                invoke=invoke, inventory=_inventory(), target_scope="fn", source=SOURCE,
+            ))
+        self.assertEqual(1, calls)
+
+    def test_model_output_failure_marks_batch_unavailable_and_other_batch_continues(self):
+        calls = []
+
+        async def invoke(rows):
+            calls.append(tuple(rows))
+            if 1 in rows:
+                raise ModelOutputError(
+                    rule_name="code_rules_examples",
+                    kind="repetition",
+                    detail="loop",
+                    original_type="RepetitionLoopAborted",
+                )
+            return RulesExamplesOutput(rules=[_good(line) for line in rows])
+
+        collection = asyncio.run(collect_rules_by_rows(
+            invoke=invoke, inventory=_inventory(), target_scope="fn", source=SOURCE, rows_per_call=1,
+        ))
+        self.assertEqual([(1,), (5,), (9,)], sorted(calls))
+        self.assertEqual([5, 9], [rule.anchor_line for rule in collection.rules])
+        self.assertEqual(
+            [(1,)],
+            [finding.coordinates for finding in collection.findings
+             if finding.status == "unavailable"],
+        )
+
+    def test_batches_run_concurrently(self):
+        first_started = asyncio.Event()
+        inflight = 0
+        peak = 0
+
+        async def invoke(rows):
+            nonlocal inflight, peak
+            inflight += 1
+            peak = max(peak, inflight)
+            if not first_started.is_set():
+                first_started.set()
+                await asyncio.sleep(0.05)
+            inflight -= 1
+            return RulesExamplesOutput(rules=[_good(line) for line in rows])
+
+        collection = asyncio.run(collect_rules_by_rows(
+            invoke=invoke, inventory=_inventory(), target_scope="fn", source=SOURCE, rows_per_call=1,
+        ))
+        self.assertGreaterEqual(peak, 2)
+        self.assertEqual([1, 5, 9], [rule.anchor_line for rule in collection.rules])
+
+
+if __name__ == "__main__":
+    unittest.main()

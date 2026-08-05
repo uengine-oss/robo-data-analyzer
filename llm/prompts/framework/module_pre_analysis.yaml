@@ -3,9 +3,12 @@ system: |
   시그니처만으로 업무 의미를 추측하지 않고 response_format만 출력합니다.
 shared_values:
   module_intent_contract: ../common/module_intent_contract.md
-user_template: |
+user_template_specific: |
   {module_intent_contract}
 
+  아래 증거가 입증하는 현재 의도만 ModulePreAnalysisOutput으로 작성한다.
+
+user_template_inputs: |
   id: {id}
   file: {source_file}
   source_range: {source_range}
@@ -16,6 +19,4 @@ user_template: |
 
   member_signatures_json:
   {code_signatures}
-
-  증거가 입증하는 현재 의도만 ModulePreAnalysisOutput으로 작성한다.
 max_tokens: 500

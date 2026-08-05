@@ -80,3 +80,31 @@ async def post_sample_context(
             f"catalog sample-context non-200 응답 — url={url} status={resp.status_code}"
         )
     return resp.json()
+
+
+async def get_table_discovery(
+    http: httpx.AsyncClient,
+    base_url: str,
+    datasource: str,
+    *,
+    sample_limit: int = 5,
+    max_tables: int = 1000,
+) -> Optional[dict[str, Any]]:
+    """catalog ``GET /tables/discovery`` — datasource 실제 테이블·컬럼·샘플 열거.
+
+    단어장 이원화(DDL ∪ 실DB) 계약: specs/107-datasource-table-discovery/contracts/.
+    404 = datasource 미등록 → None (호출 step 이 경고 후 DDL 단어장으로 계속).
+    그 외 non-200 → RuntimeError (catalog 활성 상태의 실패 = 심각, 조용히 묻지 X).
+    """
+    url = (
+        f"{base_url}/tables/discovery"
+        f"?datasource={datasource}&sample_limit={sample_limit}&max_tables={max_tables}"
+    )
+    resp = await http.get(url)
+    if resp.status_code == 404:
+        return None
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"catalog discovery non-200 응답 — url={url} status={resp.status_code}"
+        )
+    return resp.json()

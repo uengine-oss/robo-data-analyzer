@@ -23,6 +23,9 @@ import yaml
 _CONFIGS_DIR = Path(__file__).resolve().parent
 _CONFIG_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 _REASONING_EFFORTS = frozenset({"", "none", "low", "medium", "high"})
+_STRUCTURED_OUTPUT_METHODS = frozenset({
+    "provider_default", "json_schema", "function_calling",
+})
 
 
 def _require_string(raw: dict, field_name: str, source: str, *, default: str | None = None) -> str:
@@ -76,9 +79,6 @@ class LLMConfig:
     # provider=anthropic 외 필수 (anthropic 은 SDK default endpoint 사용)
     api_base: str = ""
 
-    # 비용 절감용 작은 모델 — 빈 값이면 model 사용
-    model_small: str = ""
-
     # 토큰 / 타임아웃 / SSL
     max_tokens: int = 8192
     timeout_seconds: int = 300
@@ -90,13 +90,11 @@ class LLMConfig:
     # cross-provider reasoning 추상화: none / low / medium / high / 빈 값
     reasoning_effort: str = "none"
 
+    # provider/배포별 simple-call 구조화 채널. 언어·rule 로직과 분리한다.
+    structured_output_method: str = "provider_default"
+
     # provider 비표준 인자 (SGLang / vLLM 등) — ChatOpenAI 의 extra_body 인자로 전달
     extra_body: dict[str, Any] = field(default_factory=dict)
-
-    def resolve_small_model(self) -> str:
-        """``model_small`` 비어있으면 ``model`` 로 fallback."""
-        return self.model_small or self.model
-
 
 # ─────────────────────────────────────────────────────────────
 # 로딩
@@ -151,7 +149,6 @@ def _build_llm_config(raw: dict, source: str) -> LLMConfig:
     provider = _require_string(raw, "provider", source).lower()
     model = _require_string(raw, "model", source)
     api_base = _require_string(raw, "api_base", source, default="")
-    model_small = _require_string(raw, "model_small", source, default="")
     if not provider or not model:
         raise RuntimeError(f"provider and model must be nonempty strings in {source}")
 
@@ -188,12 +185,19 @@ def _build_llm_config(raw: dict, source: str) -> LLMConfig:
     if reasoning_effort not in _REASONING_EFFORTS:
         allowed = ", ".join(sorted(_REASONING_EFFORTS - {""}))
         raise RuntimeError(f"reasoning_effort must be blank or one of {allowed} in {source}")
+    structured_output_method = _require_string(
+        raw, "structured_output_method", source, default="provider_default",
+    ).lower()
+    if structured_output_method not in _STRUCTURED_OUTPUT_METHODS:
+        allowed = ", ".join(sorted(_STRUCTURED_OUTPUT_METHODS))
+        raise RuntimeError(
+            f"structured_output_method must be one of {allowed} in {source}"
+        )
 
     return LLMConfig(
         provider=provider,
         model=model,
         api_base=api_base,
-        model_small=model_small,
         max_tokens=max_tokens,
         timeout_seconds=timeout_seconds,
         verify_ssl=verify_ssl,
@@ -202,5 +206,6 @@ def _build_llm_config(raw: dict, source: str) -> LLMConfig:
             top_p=top_p,
         ),
         reasoning_effort=reasoning_effort,
+        structured_output_method=structured_output_method,
         extra_body=dict(extra_body),
     )

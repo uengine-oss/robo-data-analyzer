@@ -1,53 +1,19 @@
-"""spec 101 근거성 게이트 — 결정론 판정 계약.
+"""분기표(정답지)·lexing 결정론 계약 — 조건값 축·행 선택·종료문·수치 병기.
 
-실패 계약을 함께 단언한다: 잘린 조건식·주석 오인·동일 효과 라벨 묶음은 **위반이 아니다**.
+폐기된 근거성 게이트(grounding)는 행 채점(rule_grading)으로 대체돼 삭제됐다 —
+여기 남은 것은 분기표와 lexing 이 소유한 계약뿐이다.
+
+spec 016 전환: 조건·종료문·대입·호출의 생산자는 parser AST 다. fixture 는
+``ControlSubtreeNode.expression``·``StatementFact``·``call_lines`` 로 그 계약을
+그대로 제공하며, analyzer 는 source 를 재탐색하지 않는다.
 """
 from __future__ import annotations
 
 import unittest
-from pydantic import ValidationError
 
-from pipeline.models.analysis_context import ControlSubtreeNode
-from pipeline.models.code_analysis_output import ExampleItem, RuleItem, RulesExamplesOutput
-from pipeline.quality_gates.branch_inventory import build_inventory, condition_text
-from pipeline.quality_gates.grounding import check_grounding, code_values, fabricated_values
+from pipeline.models.analysis_context import ControlSubtreeNode, StatementFact
+from pipeline.quality_gates.branch_inventory import build_inventory
 from pipeline.quality_gates.lexing import literal_values, split_source
-
-
-def _rules(*statements: str) -> RulesExamplesOutput:
-    return RulesExamplesOutput(
-        rules=[RuleItem(
-            statement=s,
-            anchor_line=1,
-            examples=[ExampleItem(given=s, when="", then="")],
-        )
-               for s in statements],
-        questions=[],
-    )
-
-
-SWITCH_BODY = """
-switch (code)
-{
-case 11:
-    handle_apply(ctx);
-    break;
-case 14:
-    handle_apply(ctx);
-    break;
-case 21:
-    handle_cancel(ctx);
-    break;
-}
-""".strip("\n")
-
-SWITCH_TREE = [
-    ControlSubtreeNode(node_id="sw", ntype="SWITCH", start=1, end=13, children=[
-        ControlSubtreeNode(node_id="c11", ntype="CASE", start=3, end=5),
-        ControlSubtreeNode(node_id="c14", ntype="CASE", start=6, end=8),
-        ControlSubtreeNode(node_id="c21", ntype="CASE", start=9, end=11),
-    ]),
-]
 
 
 class LexingContract(unittest.TestCase):
@@ -91,18 +57,26 @@ class ConditionValueAxis(unittest.TestCase):
     """조건 코드값 = 그 분기가 **판정하는 업무 값**. 반복 제어·이름은 값이 아니다."""
 
     @staticmethod
-    def _values(body: str, ntype: str, lang: str = "c") -> set[str]:
+    def _values(body: str, ntype: str, expression: str, lang: str = "c") -> set[str]:
         node = ControlSubtreeNode(
-            node_id="n", ntype=ntype, start=1, end=len(body.splitlines()), children=[])
-        return set(build_inventory(body, [node], lang).all_branches[0].cond_values)
+            node_id="n", ntype=ntype, start=1, end=len(body.splitlines()),
+            children=[], expression=expression)
+        inventory = build_inventory(body, [node], lang, statements=())
+        return set(inventory.all_branches[0].cond_values)
 
     def test_counted_loop_header_keeps_only_the_test_clause(self):
-        """`for (i = 0; i < 11; i++)` 의 0·11 은 반복 제어다. 담기지 않아도 누락이 아니다."""
-        self.assertEqual(self._values("for (li = 0; li <= 10; li++)\n{\n}", "LOOP"), {"10"})
+        """parser LOOP expression 은 판정절만이다 — `for` 의 0 초기값은 오지 않는다."""
+        self.assertEqual(
+            self._values("for (li = 0; li <= 10; li++)\n{\n}", "LOOP", "li <= 10"),
+            {"10"},
+        )
 
     def test_language_without_counted_loop_syntax_keeps_condition(self):
-        self.assertEqual(self._values('while status != "DONE"\n    pass', "LOOP", "python"),
-                         {"done"})
+        self.assertEqual(
+            self._values('while status != "DONE"\n    pass', "LOOP",
+                         'status != "DONE"', "python"),
+            {"done"},
+        )
 
     def test_quoted_symbol_name_is_not_a_code_value(self):
         """호출 대상·함수 이름 문자열은 도메인 코드값이 아니다 — 본문 식별자로 판정한다.
@@ -111,74 +85,49 @@ class ConditionValueAxis(unittest.TestCase):
         """
         body = ('if (strncmp("ordf_chk_iden_numb", itf->in.id, LEN) == 0)\n'
                 '{\n    ordf_chk_iden_numb(itf);\n}')
-        self.assertEqual(self._values(body, "IF"), {"0"})
+        expression = 'strncmp("ordf_chk_iden_numb", itf->in.id, LEN) == 0'
+        self.assertEqual(self._values(body, "IF", expression), {"0"})
 
     def test_domain_literal_survives_next_to_a_symbol_name(self):
         body = 'if (strncmp(itf->in.chg_rsn_cd, "08", LEN) == 0)\n{\n    run();\n}'
-        self.assertIn("08", self._values(body, "IF"))
+        expression = 'strncmp(itf->in.chg_rsn_cd, "08", LEN) == 0'
+        self.assertIn("08", self._values(body, "IF", expression))
 
     def test_declared_constants_outside_the_body_count_as_source(self):
         """본문 밖 `#define` 상수는 프롬프트가 증거 2순위로 주는 값이다 — 앵커에 포함한다."""
         body = 'if (rc != OK)\n{\n    put(DOCU_RCV);\n}'
-        inv = build_inventory(body, [], "c", declared_values=['"ZAPAE0021"'])
+        inv = build_inventory(
+            body, [], "c", statements=(), declared_values=['"ZAPAE0021"'],
+        )
+        # 배선 계약(2026-08-03 실측 갭 수리): 생산 경로 build_control_inventory 가
+        # ctx.referenced_symbols 의 immutable_constant 선언값을 실제로 전달하는지는
+        # tests/pipeline/step7_analyze_code/test_control_prompt_declared_values.py 가 고정.
         self.assertIn("zapae0021", inv.source_values)
-        plain = build_inventory(body, [], "c")
+        plain = build_inventory(body, [], "c", statements=())
         self.assertNotIn("zapae0021", plain.source_values)
 
 
-class ConditionExtraction(unittest.TestCase):
-    def test_multiline_condition_is_not_cut_by_line_count(self):
+class ConditionConsumption(unittest.TestCase):
+    """조건식은 parser 가 소유한다(spec 016) — 여러 줄 조건도 expression 하나로 온다."""
+
+    def test_multiline_condition_expression_keeps_every_literal(self):
         body = 'if (eq(a,"11") ||\n    eq(a,"12") ||\n    eq(a,"13"))\n{\n    run();\n}'
-        self.assertEqual(literal_values(condition_text(body, "IF", "c"), "c"), {"11", "12", "13"})
-
-    def test_case_label_end_token_comes_from_the_table(self):
-        self.assertEqual(condition_text("case 21:\n    run();", "CASE", "c").strip(), "case 21")
-        # sql 은 콜론이 아니라 THEN 으로 라벨이 끝난다 — 표가 바뀌면 판정도 따라간다
+        expression = 'eq(a,"11") ||\n    eq(a,"12") ||\n    eq(a,"13")'
+        node = ControlSubtreeNode("if", "IF", 1, 6, expression=expression)
+        inventory = build_inventory(body, [node], "c", statements=())
         self.assertEqual(
-            condition_text("WHEN '21' THEN\n    run();", "CASE", "sql").strip(), "WHEN '21'"
+            inventory.all_branches[0].cond_values, frozenset({"11", "12", "13"}),
         )
 
-
-class ValueSetCheck(unittest.TestCase):
-    def setUp(self):
-        self.inventory = build_inventory(SWITCH_BODY, SWITCH_TREE, "c")
-
-    def test_same_effect_labels_grouped_together_is_not_a_violation(self):
-        findings = check_grounding(_rules("코드 '11' 또는 '14' 이면 신청 처리한다"), self.inventory)
-        self.assertEqual(findings, [])
-
-    def test_labels_with_different_effects_merged_into_one_item_is_flagged(self):
-        findings = check_grounding(_rules("코드 '11' 또는 '21' 이면 처리한다"), self.inventory)
-        self.assertTrue(any(f.check == "value_set" for f in findings))
-        self.assertIn("11", findings[0].values)
-
-    def test_fabricated_code_value_is_flagged(self):
-        body = 'if (eq(a,"11") || eq(a,"13") || eq(a,"21"))\n{\n    run();\n}'
-        tree = [ControlSubtreeNode(node_id="if", ntype="IF", start=1, end=4)]
-        findings = check_grounding(
-            _rules("코드가 '11','13','21','12' 중 하나이면 갱신한다"),
-            build_inventory(body, tree, "c"),
-        )
-        self.assertTrue(findings)
-        self.assertEqual(findings[0].values, ("12",))
-
-    def test_single_code_value_is_never_enough_to_judge(self):
-        self.assertEqual(check_grounding(_rules("코드가 '11' 이면 처리"), self.inventory), [])
-
-
-class DelegationCheck(unittest.TestCase):
-    def test_branchless_caller_rule_is_not_rejected(self):
-        inventory = build_inventory("rc = child_a(ctx);\nreturn rc;", [], "c")
-        findings = check_grounding(_rules("업무 구분에 따라 하위 모듈에 위임한다"), inventory)
-        self.assertEqual(findings, [])
-
-    def test_branchless_and_callless_body_is_not_flagged(self):
-        inventory = build_inventory("x = 1;\nreturn x;", [], "c")
-        self.assertEqual(check_grounding(_rules("무언가 한다"), inventory), [])
-
-    def test_empty_rules_produce_no_findings(self):
-        inventory = build_inventory("rc = child_a(ctx);", [], "c")
-        self.assertEqual(check_grounding(RulesExamplesOutput(), inventory), [])
+    def test_case_label_expression_is_the_condition(self):
+        body = "case 21:\n    run();"
+        node = ControlSubtreeNode("case", "CASE", 1, 2, expression="21")
+        inventory = build_inventory(body, [node], "c", statements=())
+        self.assertEqual(inventory.all_branches[0].cond_values, frozenset({"21"}))
+        sql_body = "WHEN '21' THEN\n    run();"
+        sql_node = ControlSubtreeNode("when", "CASE", 1, 2, expression="'21'")
+        sql_inventory = build_inventory(sql_body, [sql_node], "sql", statements=())
+        self.assertEqual(sql_inventory.all_branches[0].cond_values, frozenset({"21"}))
 
 
 class LanguageIndependence(unittest.TestCase):
@@ -188,15 +137,21 @@ class LanguageIndependence(unittest.TestCase):
     "판정 경로가 언어에 걸려 죽지 않는다"까지다.
     """
 
-    JAVA = 'if (code.equals("11") || code.equals("14")) {\n    apply();\n}'
-    PYTHON = 'if code == "11" or code == "14":\n    apply()'
-    SQL = "IF v_code = '11' OR v_code = '14' THEN\n    apply();\nEND IF;"
+    CASES = (
+        ("java", 'if (code.equals("11") || code.equals("14")) {\n    apply();\n}',
+         'code.equals("11") || code.equals("14")'),
+        ("python", 'if code == "11" or code == "14":\n    apply()',
+         'code == "11" or code == "14"'),
+        ("sql", "IF v_code = '11' OR v_code = '14' THEN\n    apply();\nEND IF;",
+         "v_code = '11' OR v_code = '14'"),
+    )
 
     def test_condition_literals_are_read_in_every_language(self):
-        for lang, body in (("java", self.JAVA), ("python", self.PYTHON), ("sql", self.SQL)):
+        for lang, body, expression in self.CASES:
             with self.subTest(lang=lang):
-                tree = [ControlSubtreeNode(node_id="if", ntype="IF", start=1, end=3)]
-                inventory = build_inventory(body, tree, lang)
+                tree = [ControlSubtreeNode(node_id="if", ntype="IF", start=1, end=3,
+                                           expression=expression)]
+                inventory = build_inventory(body, tree, lang, statements=())
                 self.assertEqual(inventory.all_branches[0].cond_values, frozenset({"11", "14"}))
 
     def test_python_docstring_is_not_live_code(self):
@@ -223,131 +178,17 @@ class LanguageIndependence(unittest.TestCase):
         self.assertNotIn("dead", split_source("live()\n# dead()", "python").live())
         self.assertNotIn("dead", split_source("live();\n-- dead();", "sql").live())
 
-    def test_fabricated_value_is_flagged_in_java_and_python(self):
-        for lang, body in (("java", self.JAVA), ("python", self.PYTHON)):
-            with self.subTest(lang=lang):
-                tree = [ControlSubtreeNode(node_id="if", ntype="IF", start=1, end=3)]
-                findings = check_grounding(
-                    _rules("코드가 '11','14','99' 중 하나이면 처리한다"),
-                    build_inventory(body, tree, lang),
-                )
-                self.assertTrue(findings, f"{lang} 에서 판정이 안 났다")
-                self.assertEqual(findings[0].values, ("99",))
-
     def test_unregistered_language_fails_loudly_instead_of_passing_silently(self):
         from pipeline.languages import UnknownSourceLexiconError
 
         with self.assertRaises(UnknownSourceLexiconError):
-            split_source("x = 1", "cobol")
+            split_source("x = 1", "unregistered_test_language")
 
+    def test_complement_ownership_is_language_data_not_a_global_loop_heuristic(self):
+        from pipeline.languages import complement_owner_types
 
-class OutputValueExtraction(unittest.TestCase):
-    """코드값 인정은 **그 run 의 소스에 실재하는가**로만 판정한다 — 산문 언어를 모른다."""
-
-    def test_every_candidate_needs_the_run_s_own_anchor(self):
-        self.assertEqual(code_values("과목코드가 101 이면"), set())
-        self.assertEqual(code_values("과목코드가 101 이면", frozenset({"101"})), {"101"})
-
-    def test_prose_in_quotes_is_rejected_in_any_language(self):
-        for prose in ("'간편결제' 이면", "'refund request' then", "'払い戻し' の場合"):
-            with self.subTest(prose=prose):
-                self.assertEqual(code_values(prose, frozenset({"01", "02"})), set())
-
-    def test_fabrication_needs_shape_agreement_not_a_language_rule(self):
-        anchor = frozenset({"11", "13", "21"})
-        # 같은 모양(2자리)이라 집합의 일원 행세 → 날조로 본다
-        self.assertEqual(fabricated_values("'11','13','12'", anchor, {"d2"}), {"12"})
-        # 산문 인용구는 그 모양 집합에 없다 → 조용히 무시
-        self.assertEqual(fabricated_values("'11','간편결제'", anchor, {"d2"}), set())
-
-
-if __name__ == "__main__":
-    unittest.main()
-
-
-class AnchorCheck(unittest.TestCase):
-    """규칙이 스스로 지목한 분기에 대고 검증한다 (spec 102)."""
-
-    BODY = ('if (eq(a,"11"))\n{\n    set(dst,"0000");\n}\n'
-            'else\n{\n    set(dst,"9999");\n}')
-    TREE = [
-        ControlSubtreeNode(node_id="if", ntype="IF", start=1, end=4),
-        ControlSubtreeNode(node_id="el", ntype="ELSE", start=5, end=7),
-    ]
-
-    def _inv(self):
-        return build_inventory(self.BODY, self.TREE, "c")
-
-    def _rule(self, statement, line, then=""):
-        return RulesExamplesOutput(rules=[RuleItem(
-            statement=statement, anchor_line=line,
-            examples=[ExampleItem(given="", when="", then=then)],
-        )])
-
-    def test_line_inside_a_branch_resolves_to_that_branch(self):
-        # 3 은 IF(1-4) 안쪽 — 머리줄이 아니어도 그 분기로 해석한다(관대하게).
-        self.assertEqual(check_grounding(self._rule("코드 '11' 이면 처리", 3), self._inv()), [])
-
-    def test_anchor_outside_source_is_flagged(self):
-        findings = check_grounding(self._rule("코드 '11' 이면 처리", 999), self._inv())
-        self.assertEqual([f.check for f in findings], ["anchor_values"])
-        self.assertIn("999", findings[0].values)
-
-    def test_active_non_branch_line_is_valid_for_unconditional_rule(self):
-        self.assertEqual(check_grounding(self._rule("항상 결과를 설정한다", 3), self._inv()), [])
-
-    def test_unconditional_anchor_uses_absolute_line_offset_and_active_source_only(self):
-        inventory = build_inventory(
-            "// old return\nreturn 1;",
-            [],
-            "c",
-            line_offset=99,
-        )
-        self.assertEqual(
-            check_grounding(self._rule("항상 결과를 반환한다", 101), inventory),
-            [],
-        )
-        findings = check_grounding(self._rule("항상 결과를 반환한다", 100), inventory)
-        self.assertEqual(["anchor_values"], [finding.check for finding in findings])
-
-    def test_sibling_condition_is_legitimate_vocabulary_for_else(self):
-        # ELSE 는 형제 IF 조건의 부정으로 정의된다 — "'11' 이 아니면" 은 정상 서술이다
-        self.assertEqual(check_grounding(self._rule("코드 '11' 이면 처리", 5), self._inv()), [])
-
-    def test_value_from_an_unrelated_branch_is_flagged(self):
-        # '9999' 는 소스에 있지만 ELSE 의 **결과값**이다 — IF 의 조건인 양 쓰면 위반
-        findings = check_grounding(self._rule("코드 '9999' 이면 처리", 1), self._inv())
-        self.assertEqual([f.check for f in findings], ["anchor_values"])
-        self.assertEqual(findings[0].values, ("9999",))
-
-    def test_absent_but_same_shaped_value_is_treated_as_fabricated(self):
-        # '77' 은 소스에 없지만 지목 분기 조건('11')과 같은 모양이라 그 자리에 지어낸 값이다
-        findings = check_grounding(self._rule("코드 '77' 이면 처리", 1), self._inv())
-        self.assertEqual([f.check for f in findings], ["anchor_values"])
-        self.assertEqual(findings[0].values, ("77",))
-
-    def test_prose_in_quotes_is_still_ignored(self):
-        # 모양이 달라 조건값 자리로 볼 수 없다 — 산문 언어를 몰라도 걸러진다
-        self.assertEqual(
-            check_grounding(self._rule("'간편결제 신청' 이면 처리", 1), self._inv()), []
-        )
-
-    def test_result_the_anchored_branch_never_produces_is_flagged(self):
-        findings = check_grounding(
-            self._rule("코드 '11' 이면 처리", 1, then="결과코드 '9999' 를 설정한다"), self._inv()
-        )
-        self.assertEqual([f.check for f in findings], ["anchor_effect"])
-        self.assertEqual(findings[0].values, ("9999",))
-
-    def test_correct_anchor_produces_no_finding(self):
-        findings = check_grounding(
-            self._rule("코드 '11' 이면 처리", 1, then="결과코드 '0000' 을 설정한다"), self._inv()
-        )
-        self.assertEqual(findings, [])
-
-    def test_zero_anchor_is_rejected_before_grounding(self):
-        with self.assertRaises(ValidationError):
-            self._rule("무조건 처리", 0)
+        self.assertEqual(frozenset({"IF"}), complement_owner_types("c"))
+        self.assertEqual(frozenset({"IF", "LOOP"}), complement_owner_types("python"))
 
 
 class BranchIndexUniqueness(unittest.TestCase):
@@ -356,14 +197,16 @@ class BranchIndexUniqueness(unittest.TestCase):
     BODY = ('if (a == "1")\n{\n    x();\n}\nelse if (a == "2")\n{\n    y();\n}\n')
     # else if → ELSE 와 IF 가 같은 줄(5)에서 시작한다
     TREE = [
-        ControlSubtreeNode(node_id="if1", ntype="IF", start=1, end=4),
+        ControlSubtreeNode(node_id="if1", ntype="IF", start=1, end=4,
+                           expression='a == "1"'),
         ControlSubtreeNode(node_id="el", ntype="ELSE", start=5, end=8, children=[
-            ControlSubtreeNode(node_id="if2", ntype="IF", start=5, end=8),
+            ControlSubtreeNode(node_id="if2", ntype="IF", start=5, end=8,
+                               expression='a == "2"'),
         ]),
     ]
 
     def setUp(self):
-        self.inv = build_inventory(self.BODY, self.TREE, "c")
+        self.inv = build_inventory(self.BODY, self.TREE, "c", statements=())
 
     def test_line_numbers_are_unique(self):
         lines = [row.split(":")[0] for row in self.inv.branch_index().splitlines()]
@@ -381,8 +224,10 @@ class BranchIndexUniqueness(unittest.TestCase):
     def test_single_atom_if_is_a_decision_not_a_complement(self):
         inv = build_inventory(
             "if (enabled)\n{\n    run();\n}\n",
-            [ControlSubtreeNode(node_id="if", ntype="IF", start=1, end=4)],
+            [ControlSubtreeNode(node_id="if", ntype="IF", start=1, end=4,
+                                expression="enabled")],
             "c",
+            statements=(),
         )
         row = inv.branch_index().splitlines()[0]
         self.assertIn("[decision] IF", row)
@@ -401,14 +246,259 @@ class BranchIndexUniqueness(unittest.TestCase):
                 ntype="SWITCH",
                 start=1,
                 end=7,
+                expression="kind",
                 children=[
-                    ControlSubtreeNode(node_id="a", ntype="CASE", start=3, end=4),
+                    ControlSubtreeNode(node_id="a", ntype="CASE", start=3, end=4,
+                                       expression='"A"'),
+                    # grammar 사실: caseless 라벨(default)은 expression 이 없다.
                     ControlSubtreeNode(node_id="default", ntype="CASE", start=5, end=6),
                 ],
             )
         ]
-        rows = build_inventory(body, tree, "c").branch_index().splitlines()
+        rows = build_inventory(body, tree, "c", statements=()).branch_index().splitlines()
         self.assertIn("[controller] SWITCH", rows[0])
         self.assertIn("[decision] CASE", rows[1])
         self.assertIn("[complement] CASE", rows[2])
         self.assertIn("그 외", rows[2])
+
+    def test_nested_else_negates_direct_decision_and_keeps_outer_holding(self):
+        # if A { if B {} else {} } — 안쪽 else 는 B 의 부정이면서 A 는 **성립**(본문 중첩).
+        body = (
+            "if (outer)\n{\n"
+            "  if (inner)\n  {\n    first();\n  }\n"
+            "  else\n  {\n    second();\n  }\n"
+            "}\n"
+        )
+        inner = ControlSubtreeNode(
+            node_id="inner",
+            ntype="IF",
+            start=3,
+            end=10,
+            expression="inner",
+            children=[
+                ControlSubtreeNode(
+                    node_id="inner_else",
+                    ntype="ELSE",
+                    start=7,
+                    end=10,
+                )
+            ],
+        )
+        tree = [
+            ControlSubtreeNode(
+                node_id="outer",
+                ntype="IF",
+                start=1,
+                end=11,
+                expression="outer",
+                children=[inner],
+            )
+        ]
+        rows = build_inventory(body, tree, "c", statements=()).branch_index().splitlines()
+        complement = next(row for row in rows if "[complement]" in row)
+        self.assertIn("직접 decision @3의 부정", complement)
+        self.assertIn("외곽 @1 성립", complement)
+
+    def test_parent_if_owns_else_even_when_its_body_contains_a_later_loop(self):
+        # 실제 Check_Sum32 parser 형상: IF.children == [LOOP, ELSE(IF ...)].
+        # LOOP는 ELSE의 선행 형제일 뿐 소유자가 아니다.
+        body = (
+            "if (flag == 1)\n{\n"
+            "  for (i = 0; i < 3; i++)\n  {\n    first();\n  }\n"
+            "}\nelse if (flag == 2)\n{\n  second();\n}\n"
+        )
+        outer = ControlSubtreeNode(
+            node_id="outer",
+            ntype="IF",
+            start=1,
+            end=11,
+            expression="flag == 1",
+            children=[
+                ControlSubtreeNode("loop", "LOOP", 3, 6, expression="i < 3"),
+                ControlSubtreeNode(
+                    "outer_else", "ELSE", 8, 11,
+                    children=[ControlSubtreeNode("inner", "IF", 8, 11,
+                                                 expression="flag == 2")],
+                ),
+            ],
+        )
+        inv = build_inventory(body, [outer], "c", statements=())
+        complement = next(branch for branch in inv.all_branches if branch.ntype == "ELSE")
+        self.assertIs(inv.all_branches[0], inv.paired_decision(complement))
+
+    def test_python_loop_else_is_owned_by_its_loop_via_ontology(self):
+        body = "for item in items:\n    use(item)\nelse:\n    empty()\n"
+        loop = ControlSubtreeNode(
+            "loop", "LOOP", 1, 4, expression="item in items",
+            children=[ControlSubtreeNode("loop_else", "ELSE", 3, 4)],
+        )
+        inv = build_inventory(body, [loop], "python", statements=())
+        complement = next(branch for branch in inv.all_branches if branch.ntype == "ELSE")
+        self.assertIs(inv.all_branches[0], inv.paired_decision(complement))
+
+    def test_else_if_chain_final_else_negates_every_outer_decision(self):
+        # if A ... else if B ... else — 마지막 else 는 A·B **모두의 부정**이다.
+        # "외곽 조건도 상속"으로 쓰면 정반대다 (spec 116 1단계 — 실측 결함 수리).
+        body = (
+            'if (a == "1")\n{\n  x();\n}\n'
+            'else if (a == "2")\n{\n  y();\n}\n'
+            "else\n{\n  z();\n}\n"
+        )
+        if2 = ControlSubtreeNode(
+            node_id="if2",
+            ntype="IF",
+            start=5,
+            end=12,
+            expression='a == "2"',
+            children=[
+                ControlSubtreeNode(node_id="el2", ntype="ELSE", start=9, end=12)
+            ],
+        )
+        tree = [
+            ControlSubtreeNode(
+                node_id="if1",
+                ntype="IF",
+                start=1,
+                end=12,
+                expression='a == "1"',
+                children=[
+                    ControlSubtreeNode(
+                        node_id="el1", ntype="ELSE", start=5, end=12, children=[if2]
+                    )
+                ],
+            )
+        ]
+        rows = build_inventory(body, tree, "c", statements=()).branch_index().splitlines()
+        complement = next(row for row in rows if "[complement]" in row)
+        self.assertTrue(complement.strip().startswith("9:"), complement)
+        self.assertIn("직접 decision @5의 부정", complement)
+        self.assertIn("외곽 @1 부정", complement)
+        self.assertNotIn("성립", complement)
+        self.assertNotIn("상속", complement)
+
+    def test_switch_default_complement_points_at_its_switch_not_outer_decision(self):
+        # if(A) { switch(k) { case..: default: } } — default 는 SWITCH 의 여집합이며
+        # 외곽 if(A) 는 성립이다. 이전 표기는 외곽 decision 을 "직접 대응"으로 오지목했다.
+        body = (
+            "if (mode)\n{\n"
+            "  switch (kind)\n  {\n"
+            '  case "A":\n    first();\n'
+            "  default:\n    other();\n  }\n"
+            "}\n"
+        )
+        tree = [
+            ControlSubtreeNode(
+                node_id="if",
+                ntype="IF",
+                start=1,
+                end=10,
+                expression="mode",
+                children=[
+                    ControlSubtreeNode(
+                        node_id="switch",
+                        ntype="SWITCH",
+                        start=3,
+                        end=9,
+                        expression="kind",
+                        children=[
+                            ControlSubtreeNode(node_id="a", ntype="CASE", start=5, end=6,
+                                               expression='"A"'),
+                            ControlSubtreeNode(node_id="d", ntype="CASE", start=7, end=8),
+                        ],
+                    )
+                ],
+            )
+        ]
+        rows = build_inventory(body, tree, "c", statements=()).branch_index().splitlines()
+        complement = next(row for row in rows if "[complement]" in row)
+        self.assertIn("SWITCH@3의 다른 분기 모두 불성립", complement)
+        self.assertIn("외곽 @1 성립", complement)
+
+
+class TerminationRows(unittest.TestCase):
+    """종료문·핸들러 행 — 종료 계약이 행이어야 절단·누락이 뺄셈으로 드러난다 (spec 116).
+
+    행의 원천은 parser AST 다: [exit] 는 RETURN/THROW/RAISE StatementFact,
+    [handler] 는 SKILL 마커와 일치하는 FUNCTION_CALL 좌표(call_lines)다.
+    """
+
+    def test_return_fact_becomes_exit_row(self):
+        body = 'if (bad)\n{\n  rc = -1;\n}\nreturn rc;\n'
+        tree = [ControlSubtreeNode(node_id="if", ntype="IF", start=1, end=4,
+                                   expression="bad")]
+        inv = build_inventory(
+            body, tree, "c",
+            statements=(StatementFact("r5", "RETURN", 5, 5, expression="rc"),),
+        )
+        rows = inv.branch_index().splitlines()
+        exit_row = next(row for row in rows if "[exit]" in row)
+        self.assertTrue(exit_row.startswith("5:"), exit_row)
+        self.assertIn("return rc", exit_row)
+
+    def test_handler_marker_becomes_handler_row(self):
+        # 핸들러 마커는 언어 표가 아니라 프레임워크 SKILL 계약이 주입한다(오염 금지).
+        body = "do_work();\nPFM_CATCH();\nreturn RC_ERR;\n"
+        inv = build_inventory(
+            body, [], "c", handler_markers=("PFM_CATCH",),
+            statements=(StatementFact("r3", "RETURN", 3, 3, expression="RC_ERR"),),
+            call_lines=((1, "do_work"), (2, "PFM_CATCH")),
+        )
+        rows = inv.branch_index().splitlines()
+        self.assertTrue(any(row.startswith("2: [handler] PFM_CATCH") for row in rows), rows)
+        self.assertTrue(any(row.startswith("3: [exit] return RC_ERR") for row in rows), rows)
+
+    def test_handler_marker_without_injection_is_not_a_row(self):
+        # 마커 미주입(스킬 미매칭 프로젝트) — 프레임워크 지식이 어디에도 굳어 있지 않다.
+        body = "do_work();\nPFM_CATCH();\nreturn RC_ERR;\n"
+        inv = build_inventory(
+            body, [], "c",
+            statements=(StatementFact("r3", "RETURN", 3, 3, expression="RC_ERR"),),
+            call_lines=((1, "do_work"), (2, "PFM_CATCH")),
+        )
+        rows = inv.branch_index().splitlines()
+        self.assertFalse(any("[handler]" in row for row in rows), rows)
+        self.assertTrue(any(row.startswith("3: [exit] return RC_ERR") for row in rows), rows)
+
+    def test_return_on_a_branch_line_does_not_duplicate_the_row(self):
+        # `if (x) return -1;` — 그 줄은 분기 행이 대표한다(줄번호 유일).
+        body = "if (x) return -1;\nreturn 0;\n"
+        tree = [ControlSubtreeNode(node_id="if", ntype="IF", start=1, end=1,
+                                   expression="x")]
+        inv = build_inventory(
+            body, tree, "c",
+            statements=(
+                StatementFact("r1", "RETURN", 1, 1, expression="-1"),
+                StatementFact("r2", "RETURN", 2, 2, expression="0"),
+            ),
+        )
+        rows = inv.branch_index().splitlines()
+        lines = [row.strip().split(":")[0] for row in rows]
+        self.assertEqual(len(lines), len(set(lines)), rows)
+        self.assertTrue(any(row.startswith("2: [exit]") for row in rows), rows)
+
+    def test_commented_return_has_no_ast_fact_and_no_row(self):
+        # 주석 처리된 return 은 parser 가 emit 하지 않는다 — 행의 원천이 AST 라는 계약.
+        body = "// return 1;\nreturn 2;\n"
+        inv = build_inventory(
+            body, [], "c",
+            statements=(StatementFact("r2", "RETURN", 2, 2, expression="2"),),
+        )
+        rows = inv.branch_index().splitlines()
+        self.assertTrue(rows[0].startswith("2: [exit]"), rows)
+        self.assertEqual(1, sum(1 for row in rows if "[exit]" in row))
+
+
+class EntryRow(unittest.TestCase):
+    """[entry] 행 — 분기 밖 최상위 효과의 무조건 계약 좌표 (when=함수 실행)."""
+
+    def test_linear_function_gets_one_entry_row(self):
+        inv = build_inventory(
+            'strncpy(dst, src, LEN);\nsprintf(msg, "x");\n', [], "c",
+            statements=(),
+            call_lines=((1, "strncpy"), (2, "sprintf")),
+        )
+        entries = [row for row in inv.table_rows() if row["role"] == "entry"]
+        self.assertEqual([{"line": 1, "role": "entry"}], entries)
+        self.assertTrue(
+            any(row.startswith("1: [entry]") for row in inv.branch_index().splitlines())
+        )

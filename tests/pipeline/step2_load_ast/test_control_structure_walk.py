@@ -12,6 +12,7 @@ from pathlib import Path
 from pipeline.steps.step2_load_ast.framework_reader import _read_framework
 from pipeline.languages import ROUTINE_LABELS
 import unittest
+from tests.unittest_function_cases import load_function_cases
 
 
 def _sample_raw() -> dict:
@@ -87,28 +88,13 @@ def test_control_nodes_excluded_from_analysis_targets():
 
 def test_control_nodes_have_no_llm_fields():
     r = _read()
-    # 구조 노드는 결정론 필드만 — summary/domain_terms 등 LLM 산물은 비어야 한다.
+    # 구조 노드는 결정론 필드만 — summary 등 LLM 산물은 비어야 한다.
     for n in r.code_nodes:
         if n.label in ("IF", "ELSE", "LOOP"):
             assert n.summary is None
-            assert not n.domain_terms
             assert n.stereotype is None
             assert n.owner_id  # 소속은 채워짐(결정론)
 
 
-# ── 스위트 편입 브리지 (2026-07-22 테스트 정리) ──────────────────────────
-# 함수식 케이스는 unittest discover 에 수집되지 않아 스위트에서 실행되지 않는
-# 일회성이었다. 아래 브리지가 전 케이스를 스위트 회귀로 편입한다 (재사용 보장).
-class ModuleCasesSuiteBridge(unittest.TestCase):
-    def test_module_cases(self):
-        import asyncio
-        import inspect
-        cases = [(n, f) for n, f in sorted(globals().items())
-                 if n.startswith("test_") and inspect.isfunction(f)]
-        self.assertTrue(cases, "함수식 케이스가 없다")
-        for name, fn in cases:
-            with self.subTest(case=name):
-                if inspect.iscoroutinefunction(fn):
-                    asyncio.run(fn())
-                else:
-                    fn()
+def load_tests(_loader, standard_tests, _pattern):
+    return load_function_cases(standard_tests, globals())

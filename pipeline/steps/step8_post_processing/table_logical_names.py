@@ -29,26 +29,35 @@ def build_consolidated_column_updates(
     results: list[object],
     allowed_names: Mapping[str, set[str]],
 ) -> list[dict[str, str]]:
-    """테이블별 최종 LLM 응답에서 허용 컬럼만 한 번씩 업데이트한다.
+    """테이블별 최종 LLM 응답을 DDL 컬럼 집합과 정확히 대조한다.
 
     의미 선택은 여러 후보와 원래 설명을 함께 본 테이블 통합 호출이 담당한다. 이 함수는
-    입력 허용 목록·중복만 결정론적으로 검증하며, 빠진 컬럼을 첫 후보나 sibling 값으로
-    채우지 않는다.
+    동적 schema 뒤에서도 None·누락·중복·과잉·빈 의미를 부분 성공으로 바꾸지 않는다.
     """
+    if len(results) != len(table_ids):
+        raise ValueError(
+            f"table description result count mismatch: expected={len(table_ids)} "
+            f"actual={len(results)}"
+        )
     updates: list[dict[str, str]] = []
     for table_id, result in zip(table_ids, results):
         if result is None:
-            continue
-        seen: set[str] = set()
-        for column in getattr(result, "columns", ()) or ():
-            name = (getattr(column, "name", "") or "").strip()
-            if not name or name in seen or name not in allowed_names.get(table_id, set()):
-                continue
-            seen.add(name)
+            raise ValueError(f"table description result is missing: table={table_id!r}")
+        columns = list(getattr(result, "columns", ()) or ())
+        names = [(getattr(column, "name", "") or "").strip() for column in columns]
+        expected = set(allowed_names.get(table_id, set()))
+        if any(not name for name in names):
+            raise ValueError(f"table description contains an empty column name: {table_id!r}")
+        if len(names) != len(set(names)):
+            raise ValueError(f"table description contains duplicate columns: {table_id!r}")
+        if set(names) != expected:
+            raise ValueError(
+                f"table description columns must match DDL exactly: table={table_id!r} "
+                f"expected={sorted(expected)!r} actual={sorted(names)!r}"
+            )
+        for column, name in zip(columns, names):
             description = (getattr(column, "description", "") or "").strip()
             logical_name = (getattr(column, "logical_name", "") or "").strip()
-            if not description and not logical_name:
-                continue
             updates.append({
                 "id": fqn(table_id, name),
                 "analyzed_description": description,

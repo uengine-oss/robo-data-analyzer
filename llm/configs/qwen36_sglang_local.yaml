@@ -14,7 +14,6 @@ api_base: http://ai-server.dream-flow.com:30000/v1
 model: frentis-ai-model
 
 # 비용 절감용 작은 모델 — 안 박으면 model 사용 (같은 endpoint 라 동일 모델)
-model_small: ""
 
 # 토큰 / 타임아웃
 # max_tokens = 비상 브레이크일 뿐 — 길이 제어 수단 X.
@@ -39,6 +38,9 @@ sampling:
 # 운영자가 ``extra_body`` 에 명시 박아야 함 (자동 주입 X — provider 별 분기 사고 차단).
 # Plan §3.4 — 운영기는 "none" 으로 토큰/비용 폭증 방지.
 reasoning_effort: none
+
+# 배포 기본. 특정 출력 계약의 검증된 override는 해당 prompt YAML이 소유한다.
+structured_output_method: json_schema
 
 # SGLang 비표준 인자 — ChatOpenAI 의 extra_body 로 전달.
 # ``chat_template_kwargs.enable_thinking: false`` = qwen3.6 thinking mode 끄기 (reasoning none 효과).

@@ -16,7 +16,6 @@ api_base: https://api.openai.com/v1
 model: gpt-5.4-mini
 
 # 비용 절감용 작은 모델 — 안 박으면 model 사용
-model_small: ""
 
 # 토큰 / 타임아웃
 max_tokens: 128000
@@ -32,3 +31,4 @@ sampling:
 # gpt-5.4-mini reasoning_effort 지원값 = none | low | medium | high | xhigh.
 # none = reasoning chain 생성 X → 비용·latency 최소. 검색 심판엔 none 충분.
 reasoning_effort: none
+structured_output_method: json_schema

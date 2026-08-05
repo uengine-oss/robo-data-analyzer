@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import tempfile
 import unittest
@@ -61,14 +61,17 @@ class SourceExcerptContractTest(unittest.TestCase):
             rendered = body_for(ctx, {"fn": ctx}, SourceFileCache())
             inventory = build_inventory(
                 "\n".join(lines[99:104]),
-                [ControlSubtreeNode("if", "IF", 2, 4)],
+                [ControlSubtreeNode("if", "IF", 2, 4, expression="flag")],
                 "c",
+                statements=(),
                 line_offset=99,
             )
 
             self.assertIn("100 | int run(void)", rendered)
             self.assertIn("101 | if (flag)", rendered)
-            self.assertTrue(inventory.branch_index().startswith("101:"))
+            rows = inventory.branch_index().splitlines()
+            # `int run(void) {` 는 선언 줄 — 효과문이 아니므로 [entry] 행이 생기지 않는다
+            self.assertTrue(rows[0].startswith("101:"), rows)
             self.assertIsNotNone(inventory.at_line(101))
 
     def test_compaction_marks_child_summary_and_keeps_child_range(self) -> None:

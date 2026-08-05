@@ -11,7 +11,6 @@ def table_row(table: dict, anchor_id: str, anchor_relevance: float) -> dict:
         "label": "TABLE",
         "stereotype": "",
         "summary": (table.get("summary") or "").replace("\n", " "),
-        "search_text": "",
         "writes": [],
         "reads": [],
         "calls": [],

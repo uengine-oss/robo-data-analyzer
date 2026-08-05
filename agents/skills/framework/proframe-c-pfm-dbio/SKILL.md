@@ -12,54 +12,104 @@
 
 ## SQL_KEY 명명 컨벤션
 
-ProFrame SQL_KEY 는 두 형식이 존재한다:
+ProFrame SQL_KEY 에서 TABLE R/W로 해석할 수 있는 형식과 다른 DB 객체 형식을 구분한다:
 
 1. **본 테이블 R/W** — ``<table>_<op><nnnn>``
    - 예: ``zpay_ap_rltm_auth_hst_i0002`` (테이블=``zpay_ap_rltm_auth_hst``, op=``i`` INSERT)
    - 예: ``zord_jncard_s0011`` (테이블=``zord_jncard``, op=``s`` SELECT)
    - 본 테이블의 일반 데이터 R/W 가 여기 해당.
 
-2. **시퀀스 채번 wrapper** — ``<table>_s_<op><nnnn>``
-   - 예: ``zpay_ap_auth_req_tmp_s_s0001`` (테이블=``zpay_ap_auth_req_tmp``, 시퀀스 채번)
+2. **시퀀스 채번 wrapper** — ``<sequence-key>_s_<op><nnnn>``
+   - 예: ``zpay_ap_auth_req_tmp_s_s0001`` (시퀀스 DB 객체 채번)
    - 중간 ``_s`` 는 Oracle ``SEQUENCE`` 객체 호출 wrapper 표시.
    - 그 다음 INSERT (``<table>_i<nnnn>``) 의 PK 로 쓸 유일 번호 받아오는 SELECT.
    - 코드 단서: 헤더/구조체 주석에 "BANK SEQ", 에러 메시지에 "BANK SEQ 조회중 에러".
 
-### 시퀀스 매핑 — 본 테이블 READ 로 단일화 (영역 결정)
+### 시퀀스는 TABLE 관계에서 제외
 
-시퀀스는 본 테이블이 아닌 별도 DB 객체이지만, **본 테이블의 READ 엣지로 단일화**해
-그래프에 박는다.
+시퀀스는 TABLE이 아닌 별도 DB 객체다. 현재 그래프가 ``SEQUENCE`` 노드를 모델링하지 않으므로
+이 key에서 TABLE READ/WRITE 엣지를 만들지 않는다. 같은 함수의 실제 TABLE INSERT/UPDATE는
+본 R/W 형식의 별도 key가 근거다. 이름이 우연히 DDL TABLE과 같아도 시퀀스 key를 TABLE로
+투영하지 않는다.
 
-- 이유: 시퀀스 채번은 그 다음 INSERT 와 한 묶음 행위. 그 함수가 그 테이블 작업한다는
-  사실은 시퀀스만 봐도 보존됨.
-- 별도 ``SEQUENCE`` 노드는 안 만든다 — 분석 가치 대비 영역 폭증 (DDL parser·온톨로지·
-  다운스트림 동시 손봐야). 필요해지면 별건으로 추가.
-- 시퀀스 wrapper 의 op 는 항상 ``s`` (SELECT) → 그래프엔 READS 엣지 (코드가 자동 매핑).
+## 접근 규칙 (DSL — spec 108)
 
-## 정규식 패턴
-
-두 변종을 정규식 2개로 분리한다 — 의미가 다르므로 매칭 의도를 식별자(``id``)에 명시.
-본 R/W 정규식은 ``lookbehind (?<!_s)`` 로 시퀀스 변종을 거부 (entity 가 ``_s`` 로
-끝나는 잘못된 매치 차단). 시퀀스 정규식은 ``_s_`` 중간 토큰을 명시 요구.
+TABLE R/W 규칙은 ``entity_not_ending: "_s"`` 로 시퀀스 변종을 거부한다(entity가 ``_s``로
+끝나는 잘못된 매치 차단). 시퀀스는 TABLE 접근 규칙에 넣지 않는다. 정규식은 코드가
+규칙에서 기계 생성한다 — 직접 쓰지 말 것.
 
 ```yaml
-table_access_patterns:
-  - id: proframe_mpfmdbio              # 본 테이블 R/W — 시퀀스 변종 거부 (lookbehind)
-    call_regex: 'mpfmdbio\s*\(\s*"(?P<entity>[A-Za-z0-9_]+?)(?<!_s)_(?P<op_token>[siud])\d{4}"'
+table_access_rules:
+  - kind: wrapper_key
+    id: proframe_mpfmdbio              # 본 테이블 R/W — 시퀀스 변종 거부
+    wrapper: mpfmdbio
+    separator: "_"
+    op_tokens: [s, i, u, d]
+    suffix_digits: 4
+    entity_not_ending: "_s"
     op_mappings:
       - {token: s, op: SELECT}
       - {token: i, op: INSERT}
       - {token: u, op: UPDATE}
       - {token: d, op: DELETE}
-
-  - id: proframe_mpfmdbio_seq          # 시퀀스 채번 wrapper — 본 테이블 READ 로 단일화
-    call_regex: 'mpfmdbio\s*\(\s*"(?P<entity>[A-Za-z0-9_]+?)_s_(?P<op_token>[siud])\d{4}"'
-    op_mappings:
-      - {token: s, op: SELECT}        # 시퀀스 호출은 항상 SELECT (코드가 READ 로 자동 매핑)
-
+table_access_exclusion_rules:
+  - kind: wrapper_key
+    id: proframe_mpfmdbio_sequence
+    wrapper: mpfmdbio
+    entity_suffix: "_s"
+    separator: "_"
+    op_tokens: [s, i, u, d]
+    suffix_digits: 4
 ddl_transform:
   ddl_naming_rule: as_is        # entity 가 이미 DDL 테이블명 형식
   fallback_prefixes: []
+
+# 분기표 [handler] 행 — 예외 핸들러 진입 라벨 (spec 116). try/catch 대신 쓰는 매크로.
+handler_markers:
+  - PFM_CATCH
+
+# 값·객체 추적용 API 계약 (spec 116 2단계) — 문서로 보증되는 사실만, 추측 금지.
+# arg_roles 의 키는 0-based 인자 위치. 채점기가 via_call·효과 대조에 사용한다.
+api_contracts:
+  - name: mpfmdbio
+    arg_roles:
+      0: sql_key            # 첫 인자 = SQL_KEY (테이블·op 결정 — 위 명명 컨벤션)
+    success_value: RC_NRM   # PFM_TRY(expr) 가 RC_NRM 비교로 성공을 판정
+  - name: mpfm_dlcall
+    arg_roles:
+      0: callee_module      # 첫 인자 문자열 = 실제 호출 대상 모듈
+
+framework_runtime_functions:
+  - PFM_TRY
+  - PFM_TRYNJ
+  - PFM_CATCH
+  - PFM_MSGE
+  - PFM_ERRC
+  - PFM_ERRS
+  - PFM_DBG
+  - mpfmdbio
+  - mpfmdbio_errno
+  - mpfmdbio_errstr
+  - mpfmdbio_reccnt
+  - mpfmdbio_free_blob
+  - mpfmdbio_alloc_blob
+  - mpfmdbio_write_blob
+  - mpfm_isspnull
+  - mpfm_isnull
+  - mpfm_trim
+  - mpfm_dlcall
+  - mpfm_get_date_time
+  - mpfm_get_date_utime
+  - PRINT_*
+
+codebase_notes: >-
+  ProFrame C 프로젝트. mpfmdbio wrapper의 첫 인자는 SQL_KEY다. TABLE R/W key는
+  <table>_<op><nnnn>이고 시퀀스 객체 key는 <sequence-key>_s_<op><nnnn>다.
+  SQL_KEY <op>의 s/i/u/d가 SELECT/INSERT/UPDATE/DELETE를 결정하고 코드 주석과
+  어긋나면 SQL_KEY가 진실이다. 시퀀스 객체 key는 TABLE R/W 관계로 만들지 않는다.
+  mpfm_dlcall의 첫 문자열 인자는 호출 대상 모듈이다. PFM_TRY(expr)는 expr 결과가
+  RC_NRM이 아니면 현재 함수의 PFM_CATCH로 제어를 넘기며, 정확한 최종 반환·복구
+  효과는 활성 PFM_CATCH 본문으로 확정한다.
 ```
 
 ## 호출 wrapper (인자가 실제 호출 대상)
@@ -98,11 +148,15 @@ ProFrame 의 런타임·매크로 함수. 업무 로직이 아니므로 호출 �
 ## codebase_notes 예시
 
 > ProFrame C 프로젝트. ``mpfmdbio`` wrapper 로 모든 DB 접근.
-> SQL_KEY 두 형식 — 본 R/W ``<table>_<op><nnnn>``, 시퀀스 채번 ``<table>_s_<op><nnnn>``.
+> SQL_KEY 두 형식 — 본 R/W ``<table>_<op><nnnn>``, 시퀀스 객체
+> ``<sequence-key>_s_<op><nnnn>``.
 > 첫 인자가 곧 SQL_KEY. 회사 표준이라 추가 변환 없이 entity = TABLE.
 > **SQL_KEY 의 ``<op>``: s=SELECT, i=INSERT, u=UPDATE, d=DELETE — 함수의 DB 작업 종류 결정**
 > (예: ``..._s0024`` = SELECT, ``..._i0002`` = INSERT). 코드 주석이 op 와 어긋나면 SQL_KEY 가 진실.
-> 시퀀스 채번은 본 테이블 READ 로 단일화 (별도 SEQUENCE 노드 없음).
+> 시퀀스 객체 key는 TABLE R/W 관계로 만들지 않는다(현재 별도 SEQUENCE 노드는 없음).
+> ``PFM_TRY(expr)``는 `expr` 결과가 ``RC_NRM``이 아니면 현재 함수의 ``PFM_CATCH``로
+> 제어를 넘긴다. 정확한 최종 반환·복구 효과는 해당 함수의 활성 ``PFM_CATCH`` 본문으로
+> 확정하며, 호출 실패 뒤 정상 흐름이 계속된다고 해석하지 않는다.
 
 ## 한계
 

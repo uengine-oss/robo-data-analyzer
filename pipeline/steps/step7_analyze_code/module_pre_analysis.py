@@ -9,7 +9,6 @@ strategy 게이트: ``<prompts_dir>/module_pre_analysis.yaml`` 이 있는 strate
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import time
 from collections import defaultdict
@@ -18,11 +17,15 @@ from typing import Any, Optional
 
 from pipeline.models.code_analysis_output import ModulePreAnalysisOutput
 from graph.schema.graph_nodes import CodeNode, Module
-from shared.config.settings import SETTINGS
-from llm.usage.cost_budget import BudgetExceededError, CostBudget
+from pipeline.languages import statement_labels
+from shared.concurrency.priority_semaphore import PrioritySemaphore
+from llm.usage.cost_budget import CostBudget
 from llm.fanout import gather_with_warmup
 from llm.runners.yaml_llm_runner import run_yaml_rule
-from shared.events.runtime_logger import log_error, log_info
+from llm.runners.model_output_error import ModelOutputError
+from pipeline.models.analysis_finding import AnalysisFinding
+from pipeline.execution.quality_finding_log import record_analysis_findings
+from shared.events.runtime_logger import log_info, log_warning
 from shared.events.ndjson_event_stream import NDJSONStream
 from shared.events.processing_events import step_processing_scope, track_processing
 
@@ -36,6 +39,7 @@ async def run_module_pre_analysis(
     code_nodes: list[CodeNode],
     strategy: Any,
     cost_budget: Optional[CostBudget],
+    llm_slots: PrioritySemaphore,
     stream: Optional[NDJSONStream] = None,
 ) -> dict[str, str]:
     """모듈마다 LLM 1회 → ``{module_id: intent}``.
@@ -64,33 +68,26 @@ async def run_module_pre_analysis(
         log_info(_STEP, "skip", reason="no header/signatures", modules=len(modules))
         return {}
 
-    log_info(_STEP, "start", modules=len(targets), concurrency=SETTINGS.analysis_pipeline.max_concurrency)
+    log_info(_STEP, "start", modules=len(targets), concurrency=llm_slots.capacity)
 
-    semaphore = asyncio.Semaphore(SETTINGS.analysis_pipeline.max_concurrency)
     with step_processing_scope(_STEP, stream):
         results = await gather_with_warmup(
             (
-                _analyze_module(m, sigs_by_module.get(m.id, []), strategy, cost_budget, semaphore)
+                _analyze_module(
+                    m, sigs_by_module.get(m.id, []), strategy, cost_budget, llm_slots,
+                )
                 for m in targets
             ),
-            return_exceptions=True,
         )
 
     intents: dict[str, str] = {}
-    failed = 0
     for module, r in zip(targets, results):
-        if isinstance(r, BudgetExceededError):
-            raise r
-        if isinstance(r, BaseException):
-            failed += 1
-            log_error(_STEP, "analyze_module", r, module_id=module.id)
-            continue
         if r:
             intents[module.id] = r
 
     log_info(
         _STEP, "done",
-        modules=len(targets), with_intent=len(intents), failed=failed or None,
+        modules=len(targets), with_intent=len(intents),
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
     return intents
@@ -99,7 +96,12 @@ async def run_module_pre_analysis(
 def _signatures_by_module(code_nodes: list[CodeNode]) -> dict[str, list[dict]]:
     """코드노드 identity/signature/absolute range를 소속 module_id로 그룹핑."""
     out: dict[str, list[dict]] = defaultdict(list)
+    stmt_labels = statement_labels()
     for fn in code_nodes:
+        # statement 노드는 LLM 분석 대상이 아니다(_fw_statement 계약) — 모듈 프롬프트에
+        # 수천 개의 RETURN/ASSIGNMENT 행이 실리는 것을 막는다.
+        if fn.label in stmt_labels:
+            continue
         if fn.owner_id:
             out[fn.owner_id].append({
                 "node_id": fn.id,
@@ -115,25 +117,41 @@ async def _analyze_module(
     signatures: list[dict],
     strategy: Any,
     cost_budget: Optional[CostBudget],
-    semaphore: asyncio.Semaphore,
+    llm_slots: PrioritySemaphore,
 ) -> str:
     """모듈 1개 LLM 호출 → intent. track_processing 이 start/done/failed 자동 emit."""
-    async with track_processing("Module", module.id, sub_action="pre_analysis"):
-        async with semaphore:
-            result: ModulePreAnalysisOutput = await run_yaml_rule(
-                prompts_dir=Path(strategy.prompts_dir),
-                rule_name=_RULE,
-                user_values={
-                    "id": module.id,
-                    "source_file": module.file_path,
-                    "source_range": f"{module.start_line}-{module.end_line}",
-                    "coordinate_system": "absolute-file-line",
-                    "module_header": _format_header(module),
-                    "code_signatures": _format_signatures(signatures),
-                },
-                response_model=ModulePreAnalysisOutput,
-                budget=cost_budget,
-            )
+    try:
+        async with track_processing("Module", module.id, sub_action="pre_analysis"):
+            async with llm_slots:
+                result: ModulePreAnalysisOutput = await run_yaml_rule(
+                    prompts_dir=Path(strategy.prompts_dir),
+                    rule_name=_RULE,
+                    user_values={
+                        "id": module.id,
+                        "source_file": module.file_path,
+                        "source_range": f"{module.start_line}-{module.end_line}",
+                        "coordinate_system": "absolute-file-line",
+                        "module_header": _format_header(module),
+                        "code_signatures": _format_signatures(signatures),
+                    },
+                    response_model=ModulePreAnalysisOutput,
+                    budget=cost_budget,
+                )
+    except ModelOutputError as error:
+        finding = AnalysisFinding(
+            concern="module_pre_analysis",
+            status="unavailable",
+            target_id=module.id,
+            reasons=(str(error),),
+            evidence_rule=error.rule_name,
+        )
+        record_analysis_findings([finding])
+        log_warning(
+            _STEP, "quality_finding",
+            "모듈 사전 의도를 검증할 수 없어 이 입력만 격리하고 코드 분석을 계속함",
+            module_id=module.id, error=str(error),
+        )
+        return ""
     return result.intent.strip()
 
 

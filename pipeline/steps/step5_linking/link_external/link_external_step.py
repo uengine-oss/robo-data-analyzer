@@ -40,13 +40,11 @@ async def link_external_step(state: dict, config: Optional[RunnableConfig] = Non
         }
         outcome = link_external(
             code_nodes=code_nodes,
-            variables=state.get("variables") or [],
             constants=state.get("constants") or [],
             chunks=state.get("external_chunks") or [],
             routine_ids=routine_ids,
             project_files=state.get("project_files") or [],
             references_edges=state.get("references_edges") or [],
-            init_by_edges=state.get("init_by_edges") or [],
         )
     await gate()
     if neo is not None:

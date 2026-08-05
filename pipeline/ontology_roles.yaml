@@ -1,6 +1,7 @@
-# 온톨로지 — 언어별 antlr node type 분류 + stereotype 풀.
+# 온톨로지 — 소스 확장자·언어별 구문·antlr node type 분류 + stereotype 풀.
 #
-# roles     : antlr node type → 역할 (Framework 전용 — java/c/python).
+# source_extensions: parser 지원 확장자와 lexing-only 확장자의 분리된 단일 진실.
+# roles     : antlr node type → 역할 (parser 출력의 언어별 구조 분류).
 #             pipeline/languages.py 의 role_of 가 읽음 (분류 전용 — 라벨엔 안 씀).
 # paradigm  : 언어 → oop / procedural.
 # framework / dbms : LLM stereotype 풀 — 풀에 없는 값은 빈 문자열로 강제(환각 차단).
@@ -9,6 +10,21 @@
 #   dataclass / 어느 엣지 / internal(노드X)"를 정하는 분류 전용 — 라벨 결정엔 안 쓴다.
 # ※ 실제 antlr-parser 출력 기준. Java 는 CONSTRUCTOR/ENUM/RECORD 안 박음,
 #   함수 내 지역변수 안 박음, PARAMETER 안 박음(시그니처 텍스트만).
+
+# parser는 실제 AST reader가 지원하는 확장자만 선언한다. lexing_only는 parser 지원을
+# 주장하지 않지만, 이미 존재하는 CodeNode의 주석/문자열을 링커가 안전하게 가를 때 쓴다.
+# 새 확장자는 코드 분기 대신 이 표와 source_lexicon을 함께 추가한다.
+source_extensions:
+  parser:
+    framework:
+      java: [java]
+      c: [c, h]
+      python: [py]
+    dbms:
+      sql: [sql, pks, pkb, pls, ddl]
+  lexing_only:
+    c: [pc]
+    cobol: [cbl, cob, cpy]
 
 # ───────────────────────────────────────────────
 # 1. roles — node type → 역할 (Framework)
@@ -28,10 +44,12 @@ roles:
     java:    [FIELD]
     c:       [FIELD, MEMBER, GLOBAL_VARIABLE]
     python:  [FIELD, VARIABLE]
+    sql:     [PARAMETER, VARIABLE, PACKAGE_VARIABLE]
   constant:                  # 역할=상수. 라벨=CONSTANT_FIELD/DEFINE
     java:    [CONSTANT_FIELD]
     c:       [DEFINE, CONSTANT_FIELD]
     python:  [CONSTANT_FIELD]
+    sql:     [CONSTANT_FIELD]
   internal:                  # Neo4j 노드 X — 분석 흐름 단서 (호출/import/파일컨테이너)
     java:    [FILE, FUNCTION_CALL, NEW_INSTANCE, IMPORT]
     c:       [FUNCTION_CALL, INCLUDE, TYPEDEF, ENUM_CONSTANT]
@@ -41,15 +59,71 @@ roles:
                              # LLM 분석 대상에서 제외된다(ROUTINE_LABELS 단일 진실). 폴백 분할용.
                              # CALLS/READS/WRITES 는 이 노드가 아니라 소유 routine 에 귀속(reader).
     c:       [IF, ELSE, LOOP, SWITCH, CASE]
-    java:    [IF, ELSE, LOOP, SWITCH, CASE, TRY, CATCH]   # parser JavaAstListener 구현(계약 §1)
-    python:  [IF, ELSE, LOOP, TRY, CATCH]                 # SWITCH/CASE 없음, match 는 범위 밖(계약 §1)
+    java:    [IF, ELSE, LOOP, SWITCH, CASE, TRY, CATCH, FINALLY]  # FINALLY: 2026-08-05 emit 추가
+    python:  [IF, ELSE, LOOP, TRY, CATCH, WITH]           # WITH: 2026-08-05 emit 추가. SWITCH/CASE 없음, match 는 범위 밖(계약 §1)
+  statement:                 # 구조 statement (parser spec 016 emit — RETURN/대입/종료 이동).
+                             # 그래프에 CodeNode 로 보존(routine 아님 — LLM 분석 제외)하고
+                             # branch_inventory 가 종료행·반환식·대입·entry 의 AST 정본으로 소비.
+    c:       [RETURN, BREAK, CONTINUE, GOTO, ASSIGNMENT]
+    java:    [RETURN, THROW, BREAK, CONTINUE, ASSIGNMENT]
+    python:  [RETURN, RAISE, BREAK, CONTINUE, ASSIGNMENT, YIELD]
+
+# statement 라벨 → Rule 직접 효과 op (rule_expression.EFFECT_FUNCTIONS 의 부분집합 —
+# 드리프트 테스트가 감시). 여기 선언된 statement 는 소유 행의 효과 보기로 노출된다
+# (target = statement 대상: GOTO 는 라벨명). 새 구문 편입 = 데이터 1줄, 코드 분기 0.
+# 실측 근거: `if (...) goto PFM_CATCH;` 분기는 점프가 유일한 효과인데 보기가 비어
+# 모델이 고를 사실이 없었다(2026-08-05 framework corpus).
+statement_effect_ops:
+  GOTO: jump
+
+# 결정론 해석이 원리상 불가한 구문 — 값 추적을 흉내 내지 않는다(폐기 확정 설계).
+# 커버리지 잔차 감사가 장부로 세어 표면화한다(kind → live 소스 정규식). 새 종류 = 데이터 1줄.
+unsupported_constructs:
+  c:
+    dynamic_call: '\(\s*\*\s*[A-Za-z_][A-Za-z0-9_]*\s*\)\s*\('
+    # C 의 멤버 접근 호출은 함수 포인터 디스패치다. parser 가 name 만 남기고 수신자를
+    # 버려 정적 호출로 위장되므로(사용자 지적 2026-08-05) 장부로 표면화한다.
+    # Java/Python 의 멤버 호출은 정상 관례라 등록하지 않는다.
+    member_fn_call: '(?:->|\.)\s*[A-Za-z_][A-Za-z0-9_]*\s*\('
+    nonlocal_jump: '\b(?:setjmp|longjmp)\s*\('
+  java:
+    reflection_call: '\b(?:Class\.forName|\.getMethod\s*\(|\.invoke\s*\()'
+  python:
+    dynamic_attribute_call: '\bgetattr\s*\('
 
 # Canonical parser control nodes have one language-neutral prompt role. A CASE
 # whose source spelling is a default label is refined by source_lexicon.
 control_roles:
-  controller: [SWITCH, TRY]
+  controller: [SWITCH, TRY, WITH]      # WITH: 감싸는 자원 블록 — 자원 식은 문맥, 조건 아님
   complement: [ELSE]
-  decision: [IF, LOOP, CASE, CATCH]
+  decision: [IF, LOOP, CASE, CATCH, FINALLY]  # FINALLY: 조건 없는 decision — 경로 항 없음(회귀 5호 계약)
+
+# 그룹 라벨 이후의 statement는 해당 라벨이 소유해야 한다. parser가 이 canonical ownership을
+# 못 만들면 analyzer가 언어별로 수선하지 않고 명시 실패해 생산자 재생성을 요구한다.
+control_ownership:
+  SWITCH:
+    grouped_child: CASE
+
+# 참조 심볼을 prompt에 전달할 때의 언어 중립 scope. parser label의 의미는 언어마다
+# 다를 수 있으므로 코드 if/set이 아니라 이 표가 소유한다. 각 언어의 roles.variable /
+# roles.constant label은 아래에서 정확히 한 번 모두 분류되어야 한다.
+symbol_kinds:
+  c:
+    global: [GLOBAL_VARIABLE]
+    field: [FIELD, MEMBER]
+    constant: [DEFINE, CONSTANT_FIELD]
+  java:
+    field: [FIELD]
+    constant: [CONSTANT_FIELD]
+  python:
+    global: [VARIABLE]
+    field: [FIELD]
+    constant: [CONSTANT_FIELD]
+  sql:
+    global: [PACKAGE_VARIABLE]
+    local: [VARIABLE]
+    parameter: [PARAMETER]
+    constant: [CONSTANT_FIELD]
 
 # (옛 `paradigm:` 섹션 삭제 — ontology.paradigm() 만 읽던 죽은 데이터였고
 #  그 함수도 호출부 0건이라 함께 제거. spec 046 FR-010.)
@@ -61,27 +135,37 @@ control_roles:
 # **구문 표(데이터)** 만 여기서 받는다. 새 언어 = 아래 표 한 줄.
 # 분기 노드 타입은 위 roles.control_structure 가 단일 정의처다(여기에 중복 정의 금지).
 #   line             : 줄 주석 시작 토큰
+#   line_regex       : 줄 전체가 주석인 위치 의존 문법(예: COBOL 고정형 7열 indicator)
 #   block            : [열림, 닫힘] 블록 주석 쌍
 #   string_quotes    : 문자열/문자 리터럴 인용부호 (주석 판정에서 보호할 구간)
 #   inactive         : 컴파일에서 빠지는 블록 [열림, 중첩열림, 닫힘] 정규식
 #   case_fallthrough : 본문 없는 CASE 가 다음 CASE 의 효과를 공유하는가
 #   control_keywords : `이름(` 형태지만 호출이 아닌 예약어 (호출 집합에서 제외)
-#   case_label_end   : CASE 라벨이 끝나는 토큰 (라벨과 본문을 가르는 자리)
-#   loop_header_parts: 계수형 반복문 머리(`for (초기화; 조건; 증감)`)를 가르는 구분자.
-#                      초기화·증감의 리터럴은 **반복 제어**이지 도메인 코드값이 아니다.
-#                      그 문법이 없는 언어는 빈 문자열.
+#   octal_case_labels: CASE 라벨의 0 접두 정수를 8진으로 읽는 언어 — 분기표가 수치
+#                      병기(canonical)를 만들어 `case 02` ↔ `== 2` 대조를 가능하게 한다.
+#   complement_owner_types: ELSE 같은 여집합 노드가 부정할 수 있는 canonical 제어
+#                      노드 타입. 구조 부모가 허용 타입이면 부모가 소유자이고, 부모가
+#                      없거나 비허용일 때만 평면 형상의 가장 가까운 선행 허용 타입을 쓴다.
+#                      이 표가 없거나 타입이 틀리면 추측하지 않고 실패한다.
+# 종료문·반환식·대입쌍·CASE 라벨·반복문 머리·조건 괄호는 **parser AST 가 소유**한다
+# (spec 016 구조 구문 계약). analyzer 는 좌표와 expression 을 소비만 하며 원문을
+# 정규식·첫 토큰으로 재탐색하지 않는다 — 그래서 그 어휘 키들은 이 표에서 삭제됐다.
 source_lexicon:
   c:
+    identifier_pattern: '[^\W\d]\w*'
     line:          ["//"]
     block:         [["/*", "*/"]]
     string_quotes: ["\"", "'"]
     inactive:      ['^#\s*if\s+0\b', '^#\s*if', '^#\s*endif']
+    # 컴파일러가 인접 문자열 리터럴("a" "b")을 이어붙이는 언어 — 링킹이 이어붙인
+    # 논리 문자열 뷰를 추가로 스캔한다 (regex_table_linker, spec 108 감시항목 표화).
+    adjacent_string_concat: true
     case_fallthrough: true
     control_keywords: [if, else, for, while, do, switch, case, default, return, sizeof]
-    case_label_end:   [":"]
-    loop_header_parts: ";"
-    complement_keywords: [else, default]
+    complement_owner_types: [IF]
+    octal_case_labels: true
   java:
+    identifier_pattern: '(?:[^\W\d]|\$)(?:\w|\$)*'
     line:          ["//"]
     block:         [["/*", "*/"]]
     string_quotes: ["\"", "'"]
@@ -89,10 +173,10 @@ source_lexicon:
     case_fallthrough: true
     control_keywords: [if, else, for, while, do, switch, case, default, return, try, catch,
                        finally, synchronized, throw, new, instanceof]
-    case_label_end:   [":", "->"]
-    loop_header_parts: ";"
-    complement_keywords: [else, default, finally]
+    complement_owner_types: [IF]
+    octal_case_labels: true
   python:
+    identifier_pattern: '[^\W\d]\w*'
     line:          ["#"]
     # 삼중따옴표는 문법상 문자열이지만 **실행 코드가 아니다**(독스트링). 활성으로 두면
     # 그 안의 산문·예시 SQL 이 "코드에 있는 값"으로 둔갑해 근거성 판정이 무너진다.
@@ -102,11 +186,12 @@ source_lexicon:
     inactive:      []
     case_fallthrough: false
     control_keywords: [if, elif, else, for, while, try, except, finally, with, return,
-                       match, case, assert, print]
-    case_label_end:   [":"]
-    loop_header_parts: ""
-    complement_keywords: [else, finally]
+                       match, case, assert, print, def, class, lambda]
+    # Python for/while-else 는 LOOP가 실제 소유자이므로 일반 if-else와 함께 선언한다.
+    complement_owner_types: [IF, LOOP]
+    octal_case_labels: false
   sql:
+    identifier_pattern: '[^\W\d]\w*'
     line:          ["--"]
     block:         [["/*", "*/"]]
     string_quotes: ["'", "\""]
@@ -114,9 +199,133 @@ source_lexicon:
     case_fallthrough: false
     control_keywords: [if, elsif, elseif, else, loop, while, for, case, when, then,
                        return, exit, begin, end]
-    case_label_end:   ["then", ":"]
-    loop_header_parts: ""
-    complement_keywords: [else]
+    complement_owner_types: [IF]
+    octal_case_labels: false
+  cobol:
+    identifier_pattern: '[^\W\d][\w-]*'
+    line:          ["*>"]
+    line_regex:    ['^.{6}[*/]']
+    block:         []
+    string_quotes: ["\"", "'"]
+    inactive:      []
+    case_fallthrough: false
+    control_keywords: []
+    complement_owner_types: []
+    octal_case_labels: false
+
+# 모듈 경계 REFERENCES/INIT_BY를 위한 import 소유권 해석. analyzer 코드는 언어명을
+# 분기하지 않고 resolver의 범용 소유권 모델만 실행한다. roles.internal에 IMPORT/INCLUDE를
+# 선언한 모든 언어는 여기 정확히 한 항목이 있어야 하며, 누락은 시작 시 명시 실패한다.
+reference_imports:
+  c:
+    resolver: local_file
+    local_path_pattern: '^"(?P<path>[^"]+)"'
+  java:
+    resolver: namespace
+    separator: '.'
+    static_prefix: static
+    wildcard_suffix: '.*'
+  python:
+    resolver: module_path
+    separator: '.'
+    alias_keyword: as
+    list_separator: ','
+    file_extension: py
+    from_pattern: '^from\s+(?P<relative>\.*)(?P<module>[\w.]*)\s+import\s+(?P<members>.+)$'
+
+# 상속은 import 유무와 다른 능력이다. 선언 문법만 데이터로 두고, 부모 해소는 같은 파일과
+# 위 import 소유권 신호의 단독 후보만 사용한다. 미등록 언어는 상속 해석을 주장하지 않는다.
+reference_inheritance:
+  java:
+    separator: '.'
+    pattern: '\b(?:extends|implements)\s+(?P<parents>[\w.,\s]+?)(?:\{|$)'
+    parent_separator: ','
+    generic_open: '<'
+    ignored_parents: []
+  python:
+    separator: '.'
+    pattern: '^\s*class\s+\w+\s*\((?P<parents>[^)]*)\)'
+    parent_separator: ','
+    generic_open: ''
+    ignored_parents: [object]
+
+# 외부 산출물 연결의 구조 지식. 코드에는 이름·형식별 분기를 두지 않는다.
+# resolver 값은 외부 주소 key가 들어오는 0-based 인자 위치다.
+external_linking:
+  resolvers:
+    fopen: [0]
+    open: [0]
+    getResourceAsStream: [0]
+    getResource: [0]
+    FOPEN: [0, 1]
+    lookup: [0]
+    getBean: [0]
+    getString: [0]
+    selectOne: [0]
+    selectList: [0]
+    queryForObject: [0]
+    queryForList: [0]
+    insert: [0]
+    update: [0]
+    delete: [0]
+    runSync: [0]
+    runSyncIgnore: [0]
+    runAsync: [0]
+  addressable_attributes:
+    bean: [id]
+    alias: [alias]
+    select: [id]
+    insert: [id]
+    update: [id]
+    delete: [id]
+    statement: [id]
+    procedure: [id]
+    sql: [id]
+    resultmap: [id]
+    parametermap: [id]
+    service: [name]
+    operation: [name]
+  addressable_child_text:
+    session: [ejb-name]
+    entity: [ejb-name]
+    message-driven: [ejb-name]
+    servlet: [servlet-name]
+    filter: [filter-name]
+    listener: [listener-class]
+  addressable_kinds: [properties_entry, ini_entry]
+
+# Scan Agent 탐색 힌트의 형식 표. 파일명·확장자 추가는 이 데이터만 바꾼다.
+scanner_hints:
+  manifests:
+    - pom.xml
+    - build.gradle
+    - build.gradle.kts
+    - package.json
+    - pyproject.toml
+    - setup.py
+    - requirements.txt
+    - Cargo.toml
+    - go.mod
+    - Makefile
+    - CMakeLists.txt
+  categories:
+    SQL: [sql, ddl]
+    Entity: [java, kt]
+    Config: [xml, yaml, yml, properties, toml, ini]
+    DOCS: [md, rst, txt]
+
+# 외부 프로젝트의 일반 text 파일 분류. 실제 binary document parser 보유 여부는 adapter
+# registry가 소유하며, 여기에는 parser 코드 없이 확장 가능한 inventory category만 둔다.
+external_file_categories:
+  artifact_xml:
+    suffixes: [xml]
+    exact_names: []
+  config:
+    suffixes: [json, jsonl, toml, ini, cfg, conf, properties, env, csv, tsv, yaml, yml]
+    exact_names: []
+  document:
+    suffixes: [md, markdown]
+    exact_names: []
 
 # DBMS 플랫폼의 내장 패키지. 호출 텍스트의 식별자 한 세그먼트와 정확히
 # 일치할 때만 builtin 으로 분류한다. prefix 패턴은 application package 를
@@ -150,6 +359,15 @@ dbms_builtin_packages:
 # 3. stereotype 풀 — analyze_function 의 SummaryOutput.stereotype 검증.
 #    LLM 이 자유롭게 작성 X. 이 풀에서만 선택. 풀에 없으면 빈 문자열로 강제.
 # ───────────────────────────────────────────────
+
+# stereotype 결정 보조 (spec 116 7단계) — 정의 중복으로 정답이 미결정일 때의 계약.
+#   priority       : 복수 정의가 동시에 성립할 때의 동점 해소 순서(상위 우선) —
+#                    프롬프트에 데이터로 주입된다({stereotype_priority}).
+#   write_forbidden: 결정론 쓰기(writes) 근거가 있는 함수에 붙을 수 없는 값 —
+#                    위반은 빈 값으로 강제하고 표면화한다(사람 검토).
+stereotype_rules:
+  priority: [Command, Adapter, Query, Validator, Translator, Helper]
+  write_forbidden: [Query, DataQuery, MetadataLookup]
 framework:
   # OOP 일반 — Java / Kotlin / Python / Go / C++
   ApplicationService: 외부 유스케이스의 진입점에서 여러 협력자를 조정하고 결과를 반환한다.

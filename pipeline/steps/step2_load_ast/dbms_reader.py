@@ -32,13 +32,6 @@ from shared.events.runtime_logger import log_error, log_warning
 
 _COMPONENT = "pipeline.steps.step2_load_ast.antlr_json_reader"
 
-# DBMS 순수 선언 노드 — Variable 노드로 수집 (CodeNode 아님, 분석 제외).
-# ★ CURSOR 정의는 제외 — 쿼리 로직(선별 조건 = 비즈니스 규칙)을 담으므로 CodeNode 로 분석한다
-#   (자식 SELECT 요약 → 커서가 톱레벨 문장으로 규칙 추출). DECLARE(skip) 안이라 유효부모=루틴.
-_DBMS_VAR_TYPES: frozenset[str] = frozenset({
-    "PARAMETER", "VARIABLE", "PACKAGE_VARIABLE",
-})
-
 # (옛 ``_DBMS_EXTS`` / ``_ROUTINE_LABELS`` 삭제 — 각각 ``source_extension.DBMS_EXTS`` 와
 #  ``ontology.ROUTINE_LABELS`` 가 단일 정의처다. 종전엔 여기와 batch_analyze 가 목록을
 #  따로 들어 실제로 갈라졌다: batch_analyze 쪽엔 METHOD 가 빠져 있었다. spec 046 FR-003/FR-005.)
@@ -120,9 +113,10 @@ def _walk_dbms(node: dict, ctx: _DbmsCtx, parent_id: str | None) -> str | None:
       제외(누락 0). 노드 종류는 antlr type 그대로 primary 라벨.
     """
     ntype = node.get("type", "")
+    role = role_of(ntype, "sql")
 
     # 변수·상수 id = <파일 모듈>:<이름> — Framework 와 동일 규칙 (spec 047).
-    if ntype in _DBMS_VAR_TYPES:
+    if role == "variable":
         vid = _unique_id(
             child_id(ctx.module_id, node.get("name") or ntype),
             int(node.get("startLine") or 0), ctx.seen,
@@ -130,7 +124,7 @@ def _walk_dbms(node: dict, ctx: _DbmsCtx, parent_id: str | None) -> str | None:
         ctx.result.variables.append(_make_variable(node, vid, ctx.module_id, ctx.src_path))
         return None
 
-    if ntype == "CONSTANT_FIELD":
+    if role == "constant":
         cid = _unique_id(
             child_id(ctx.module_id, node.get("name") or ntype),
             int(node.get("startLine") or 0), ctx.seen,

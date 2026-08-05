@@ -13,6 +13,20 @@ from shared.concurrency.priority_semaphore import PrioritySemaphore
 
 
 class PrioritySemaphoreTest(unittest.IsolatedAsyncioTestCase):
+    async def test_observability_counts_only_granted_slots(self) -> None:
+        sem = PrioritySemaphore(1)
+        await sem.acquire()
+        waiter = asyncio.create_task(sem.acquire())
+        await asyncio.sleep(0)
+        self.assertEqual((1, 1, 1, 1), (
+            sem.capacity, sem.in_use, sem.peak_in_use, sem.waiting,
+        ))
+        sem.release()
+        await waiter
+        self.assertEqual((1, 1, 0), (sem.in_use, sem.peak_in_use, sem.waiting))
+        sem.release()
+        self.assertEqual((0, 1, 1), (sem.in_use, sem.peak_in_use, sem.free))
+
     async def test_never_exceeds_total_slots(self) -> None:
         sem = PrioritySemaphore(3)
         live = 0

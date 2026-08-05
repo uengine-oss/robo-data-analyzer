@@ -10,10 +10,10 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from pipeline.steps.step7_analyze_code.table_prompt_context import (
-    direct_column_names,
     dump_table_refs,
 )
 import unittest
+from tests.unittest_function_cases import load_function_cases
 
 
 def test_table_id_is_separate_from_description_and_columns() -> None:
@@ -47,7 +47,7 @@ def test_empty_and_multiple_table_sets_are_exact() -> None:
     assert [record["table_id"] for record in records] == ["db:orders", "db:shipping"]
 
 
-def test_direct_column_subset_uses_active_source_only() -> None:
+def test_code_node_prompt_omits_unowned_columns_without_name_inference() -> None:
     context = {
         "db:orders": {
             "description": "주문",
@@ -57,14 +57,9 @@ def test_direct_column_subset_uses_active_source_only() -> None:
     dumped = dump_table_refs(
         ("db:orders",),
         context,
-        direct_source=(
-            "-- unused_note is documentation only\n"
-            "SELECT order_id FROM orders WHERE status = 'OPEN'"
-        ),
-        lang="sql",
+        include_columns=False,
     )
-    assert json.loads(dumped)[0]["columns"] == ["order_id", "status"]
-    assert direct_column_names(["id"], "userid = 1", "sql") == []
+    assert json.loads(dumped)[0]["columns"] == []
 
 
 def test_framework_and_dbms_use_the_same_serializer() -> None:
@@ -73,10 +68,10 @@ def test_framework_and_dbms_use_the_same_serializer() -> None:
     dbms = (_ROOT / "pipeline/steps/step7_analyze_code/batch_prompt_values.py").read_text(encoding="utf-8")
     assert '"reads": dump_table_refs(' in framework
     assert '"writes": dump_table_refs(' in framework
-    assert "direct_source=raw_body, lang=lang" in framework
+    assert "include_columns=False" in framework
     assert '"table_ops": json.dumps(' in framework
-    assert "reads_json: {dump_table_refs(ctx.reads, table_descriptions, direct_source=raw_body, lang=lang)}" in dbms
-    assert "writes_json: {dump_table_refs(ctx.writes, table_descriptions, direct_source=raw_body, lang=lang)}" in dbms
+    assert "reads_json: {dump_table_refs(ctx.reads, table_descriptions, include_columns=False)}" in dbms
+    assert "writes_json: {dump_table_refs(ctx.writes, table_descriptions, include_columns=False)}" in dbms
     assert "authoritative_table_ops_json:" in dbms
 
     common_prompt = (_ROOT / "llm/prompts/framework/_common.yaml").read_text(encoding="utf-8")
@@ -91,19 +86,5 @@ if __name__ == "__main__":
     print("[OK] table prompt context: 3/3 passed")
 
 
-# ── 스위트 편입 브리지 (2026-07-22 테스트 정리) ──────────────────────────
-# 함수식 케이스는 unittest discover 에 수집되지 않아 스위트에서 실행되지 않는
-# 일회성이었다. 아래 브리지가 전 케이스를 스위트 회귀로 편입한다 (재사용 보장).
-class ModuleCasesSuiteBridge(unittest.TestCase):
-    def test_module_cases(self):
-        import asyncio
-        import inspect
-        cases = [(n, f) for n, f in sorted(globals().items())
-                 if n.startswith("test_") and inspect.isfunction(f)]
-        self.assertTrue(cases, "함수식 케이스가 없다")
-        for name, fn in cases:
-            with self.subTest(case=name):
-                if inspect.iscoroutinefunction(fn):
-                    asyncio.run(fn())
-                else:
-                    fn()
+def load_tests(_loader, standard_tests, _pattern):
+    return load_function_cases(standard_tests, globals())

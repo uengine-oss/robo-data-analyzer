@@ -13,16 +13,21 @@ if str(_ROOT) not in sys.path:
 from pipeline.steps.step6_build_context.referenced_symbols import _build_reference_context
 from pipeline.models.analysis_context import ReferencedSymbolContext, dump_referenced_symbols
 import unittest
+from tests.unittest_function_cases import load_function_cases
 
 
 def _state():
     constants = [
-        NS(id="c.max", name="MAX_DAILY_AUTH", var_type="int", value="3"),
-        NS(id="c.status", name="DEFAULT_STATUS", var_type="char*", value='"PAID"'),
-        NS(id="c.van", name="DEFAULT_VAN", var_type="char*", value='"SK-VAN"'),
+        NS(id="c.max", name="MAX_DAILY_AUTH", var_type="int", value="3",
+           label="DEFINE", file_path="sample.c"),
+        NS(id="c.status", name="DEFAULT_STATUS", var_type="char*", value='"PAID"',
+           label="DEFINE", file_path="sample.c"),
+        NS(id="c.van", name="DEFAULT_VAN", var_type="char*", value='"SK-VAN"',
+           label="DEFINE", file_path="sample.c"),
     ]
     variables = [
-        NS(id="v.status", name="status", var_type="char*", init_value="DEFAULT_STATUS"),
+        NS(id="v.status", name="status", var_type="char*", init_value="DEFAULT_STATUS",
+           label="GLOBAL_VARIABLE", file_path="sample.c"),
     ]
     return {
         "constants": constants,
@@ -43,8 +48,10 @@ def test_exact_values_and_all_init_sources_survive_json():
     default_status = next(item for item in payload if item["name"] == "DEFAULT_STATUS")
     default_van = next(item for item in payload if item["name"] == "DEFAULT_VAN")
     assert constant["declared_value"] == "3"
+    assert constant["kind"] == "constant"
     assert constant["value_semantics"] == "immutable_constant"
     assert variable["declared_value"] == "DEFAULT_STATUS"
+    assert variable["kind"] == "global"
     assert variable["value_semantics"] == "declaration_initializer"
     assert variable["initialization_sources"] == ["DEFAULT_STATUS", "DEFAULT_VAN"]
     assert default_status["declared_value"] == '"PAID"'
@@ -72,6 +79,20 @@ def test_framework_and_dbms_consumers_use_same_json_contract():
     assert legacy_join not in dbms
 
 
+def test_symbol_kinds_are_ontology_driven_across_supported_parsers():
+    from pipeline.languages import symbol_kind
+
+    assert symbol_kind("GLOBAL_VARIABLE", "c") == "global"
+    assert symbol_kind("MEMBER", "c") == "field"
+    assert symbol_kind("FIELD", "java") == "field"
+    assert symbol_kind("VARIABLE", "python") == "global"
+    assert symbol_kind("PARAMETER", "sql") == "parameter"
+    assert symbol_kind("VARIABLE", "sql") == "local"
+    assert symbol_kind("PACKAGE_VARIABLE", "sql") == "global"
+    with unittest.TestCase().assertRaises(ValueError):
+        symbol_kind("UNREGISTERED", "c")
+
+
 if __name__ == "__main__":
     test_exact_values_and_all_init_sources_survive_json()
     test_unicode_quotes_and_commas_are_valid_json()
@@ -79,19 +100,5 @@ if __name__ == "__main__":
     print("[OK] structured_referenced_symbols: 3/3 passed")
 
 
-# ── 스위트 편입 브리지 (2026-07-22 테스트 정리) ──────────────────────────
-# 함수식 케이스는 unittest discover 에 수집되지 않아 스위트에서 실행되지 않는
-# 일회성이었다. 아래 브리지가 전 케이스를 스위트 회귀로 편입한다 (재사용 보장).
-class ModuleCasesSuiteBridge(unittest.TestCase):
-    def test_module_cases(self):
-        import asyncio
-        import inspect
-        cases = [(n, f) for n, f in sorted(globals().items())
-                 if n.startswith("test_") and inspect.isfunction(f)]
-        self.assertTrue(cases, "함수식 케이스가 없다")
-        for name, fn in cases:
-            with self.subTest(case=name):
-                if inspect.iscoroutinefunction(fn):
-                    asyncio.run(fn())
-                else:
-                    fn()
+def load_tests(_loader, standard_tests, _pattern):
+    return load_function_cases(standard_tests, globals())

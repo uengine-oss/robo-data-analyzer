@@ -1,28 +1,19 @@
 """3 분할 fan-out 헬퍼 — ``analyze_code_step`` 이 코드노드당 1 회 호출.
 
 코드노드 1개당 LLM 호출 (병렬, 2~3 번):
-- ``code_summary``        → summary + stereotype + logical_name (항상)
-- ``code_rules_examples`` → rules + examples + questions (항상 — framework 는 함수 단위)
+- ``code_summary``        → canonical summary + stereotype + questions (항상)
+- ``code_rules_examples`` → branch-coordinate rules (항상 — framework 는 함수 단위)
 - ``code_table_insights`` → table_insights (R/W 테이블 있을 때만 — 없으면 skip)
 
-**3분할 입력 구조** = [공통 context] + [#3 전용]:
-- [공통] = 본문 + module_intent + codebase_notes + callee + reads/writes + 참조심볼
-  + 청크 + 조상 골격. #1/#2/#3 동일 → RadixAttention prefix 캐시 적중.
-- [#3 전용] = 자식 range 의 비즈니스 규칙(rules·questions). 규칙 분할에만 append —
-  #1/#2 엔 무관(토큰 낭비)이라 안 넣음.
+각 concern은 필요한 증거만 받는다. Rule은 행별 직접 증거와 callee summary를 받고,
+자식 Rule·question을 부모 입력에 다시 복사하지 않는다.
 
-**KV 캐시 흐름** (사용자 원칙):
-같은 코드노드의 3분할은 입력값이 거의 동일. #1 (summary) 가 먼저 끝나면 LLM 서버
-prefix cache 에 [system 공통지침 + user 입력값] 올라감. 그 후 #2 (rules) + #3
-(insights) 가 동시 발사돼도 둘 다 그 cache 적중 (cache 는 한 번 올리면 동시 다중
-호출이 다 적중 가능).
-
-→ ``await run_summary`` → ``asyncio.gather(rules, insights)`` 순서면 충분.
-   gather_with_warmup 같은 별도 워밍 헬퍼 불필요 (await 자체가 순서 강제).
-
-**Round 단위 워밍**: ``analyze_code_step`` 가 Round 첫 코드노드의 ``run_summary``
-만 단독 선호출 → 공통지침 cache 만들기. 그 후 모든 코드노드 풀어놓음 (각자 자기
-#1 → #2 #3 흐름). 첫 코드노드는 ``precomputed_summary`` 로 #1 중복 호출 방지.
+**KV 캐시 흐름**:
+서버 KV cache는 동작하지만 API cached-token 필드는 0만 보고한다. 저장 prompt의 실제
+바이트를 대조하면 세 concern은 공통 system prefix만 공유하고 user prompt는 concern별로
+갈라진다. 따라서 첫 summary 한 번으로 전역 system prefix를 워밍하되, 이후 코드노드에서
+summary를 기다려도 node-specific prefix는 늘지 않는다. 각 노드의 summary/rules/insights는
+동시에 시작하고, summary가 끝나는 즉시 caller 의존만 조기 해제한다.
 
 DBMS 부모 range 는 본문이 ``compact_body`` (자식 구간 → 자식 summary 치환) — 자식이
 먼저 분석되어 그 결과가 부모 입력으로 합류. Framework 는 평면이라 raw 본문.
@@ -33,38 +24,60 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from pipeline.steps.step7_analyze_code.range_body import ancestor_context, body_for, raw_body_for
-from pipeline.steps.step7_analyze_code.rule_quality import check_rule_quality
-from pipeline.steps.step7_analyze_code.rw_table_filter import constrain_tables_to_rw
-from pipeline.steps.step7_analyze_code.table_prompt_context import dump_table_refs
-from pipeline.steps.step7_analyze_code.summary_quality import (
-    normalize_searchable_text,
+from pipeline.steps.step7_analyze_code.range_body import (
+    ancestor_context,
+    body_for,
+    raw_body_for,
 )
+from pipeline.steps.step7_analyze_code.rw_table_filter import (
+    serialize_rules,
+)
+from pipeline.steps.step7_analyze_code.table_prompt_context import dump_table_refs
+from pipeline.quality_gates.coverage_residue import coverage_residue
+from pipeline.steps.step7_analyze_code.summary_quality import normalize_canonical_summary
 from pipeline.models.analysis_context import AnalysisContext, dump_external_evidence, dump_referenced_symbols
-from pipeline.quality_gates.branch_inventory import build_inventory
-from pipeline.quality_gates.grounding import check_grounding
+from pipeline.models.analysis_finding import AnalysisFinding
 from graph.schema.graph_nodes import CodeNode
-from pipeline.languages import NoSupportedSourceError, coerce_stereotype, lang_of
-from llm.usage.cost_budget import BudgetExceededError, CostBudget
+from pipeline.languages import (
+    exclude_contradicted_stereotype,
+    require_stereotype,
+)
+from llm.usage.cost_budget import CostBudget
 from pipeline.models.code_analysis_output import (
     RulesExamplesOutput,
     SummaryOutput,
-    TableInsightsOutput,
+)
+from pipeline.models.rule_response_schema import (
+    normalize_rules_response,
+    rules_response_model,
+)
+from pipeline.models.summary_response_schema import (
+    normalize_summary_response,
+    summary_response_model,
+)
+from pipeline.models.table_insight_response_schema import (
+    normalize_table_insights_response,
+    table_insights_response_model,
+)
+from pipeline.steps.step7_analyze_code.rule_row_batching import (
+    collect_rules_by_rows,
+    plan_batches,
+    rule_queue_priority,
+    SUMMARY_WAKE_PRIORITY,
 )
 from llm.runners.yaml_llm_runner import run_yaml_rule
-from pipeline.steps.step7_analyze_code.domain_terms import normalize_domain_terms
+from llm.runners.model_output_error import ModelOutputError
 from shared.events.runtime_logger import log_warning
 from shared.events.processing_events import track_processing
 from shared.files.cache import SourceFileCache
-from pipeline.steps.step7_analyze_code.control_prompt import control_index
-from pipeline.steps.step7_analyze_code.concern_retry import (
-    ConcernAttempt,
-    run_concern_with_retry,
-)
+from shared.concurrency.priority_semaphore import PrioritySemaphore
+from pipeline.steps.step7_analyze_code.control_prompt import build_control_inventory
+from pipeline.execution.run_output_context import active_run_dir
+from pipeline.steps.step7_analyze_code.quality_findings import apply_analysis_findings
+from pipeline.quality_gates.rule_prompt_evidence import rule_evidence
 
 _STEP = "step7.analyze_code.three_split"
 
@@ -79,7 +92,8 @@ async def run_summary(
     module_intents: Optional[dict[str, str]] = None,
     table_descriptions: Optional[dict[str, dict]] = None,
     source_cache: Optional[SourceFileCache] = None,
-) -> Optional[SummaryOutput]:
+    llm_slots: Optional[PrioritySemaphore] = None,
+) -> SummaryOutput | ModelOutputError:
     """#1 summary 단독 호출 — Round 첫 코드노드의 cache 워밍용.
 
     ``analyze_code_step`` 가 Round 시작 시 첫 코드노드에 대해 호출 → cache 에
@@ -88,9 +102,10 @@ async def run_summary(
 
     track_processing 이 start/done/failed 자동 emit (stream 인자 chain X).
 
-    Returns:
-        SummaryOutput. 실패 시 None (BudgetExceededError 만 raise).
+    실패는 runner가 원인·prompt를 기록한 뒤 그대로 전파한다.
     """
+    if llm_slots is None:
+        raise ValueError("run_summary requires the run-scoped LLM semaphore")
     ctx = contexts.get(code_id)
     fn = code_by_id.get(code_id)
     if ctx is None or fn is None:
@@ -99,31 +114,32 @@ async def run_summary(
             "워밍 요약 입력 부재 — 이 Round 는 캐시 프리픽스 워밍 없이 진행한다.",
             code_id=code_id, ctx_missing=ctx is None, node_missing=fn is None,
         )
-        return None
+        raise KeyError(
+            f"summary 입력 누락: code_id={code_id!r}, "
+            f"ctx_missing={ctx is None}, node_missing={fn is None}"
+        )
 
-    common = _build_user_values(
+    common, _inventory = _build_user_values(
         ctx, fn, contexts, codebase_notes,
         module_intents or {}, table_descriptions or {},
         source_cache or SourceFileCache(),
     )
     async def _call() -> SummaryOutput:
         async with track_processing("CodeNode", code_id, sub_action="warmup_summary"):
-            return await run_yaml_rule(
-                prompts_dir=Path(strategy.prompts_dir),
-                rule_name="code_summary",
-                user_values=common,
-                response_model=SummaryOutput,
-                budget=cost_budget,
-            )
+            async with llm_slots:
+                output = await run_yaml_rule(
+                    prompts_dir=Path(strategy.prompts_dir),
+                    rule_name="code_summary",
+                    user_values=common,
+                    response_model=summary_response_model(strategy.name),
+                    budget=cost_budget,
+                )
+                return normalize_summary_response(output)
 
-    return (
-        await run_concern_with_retry(
-            component=_STEP,
-            concern="summary",
-            target_id=code_id,
-            call=_call,
-        )
-    ).value
+    try:
+        return await _call()
+    except ModelOutputError as error:
+        return error
 
 
 async def analyze_code_three_split(
@@ -136,15 +152,16 @@ async def analyze_code_three_split(
     module_intents: Optional[dict[str, str]] = None,
     table_descriptions: Optional[dict[str, dict]] = None,
     source_cache: Optional[SourceFileCache] = None,
-    precomputed_summary: Optional[SummaryOutput] = None,
+    precomputed_summary: Optional[SummaryOutput | ModelOutputError] = None,
     precomputed_summary_supplied: bool = False,
     on_summary_ready: Optional[Callable[[str], None]] = None,
-) -> Optional[CodeNode]:
+    llm_slots: Optional[PrioritySemaphore] = None,
+) -> CodeNode:
     """코드노드 1개의 3 분할 분석 — 결과를 ``CodeNode`` 에 적용해 반환.
 
-    흐름: #1 summary → (#2 rules + #3 insights 동시). #1 이 cache 에 자기 코드노드
-    입력값을 올린 후 #2 #3 가 그 cache 적중. ``precomputed_summary`` 가 있으면
-    #1 재호출 안 함 (Round 첫 코드노드의 워밍 결과 재사용).
+    흐름: #1 summary + #2 rules + #3 insights 동시. ``precomputed_summary`` 가 있으면
+    #1만 재호출하지 않는다. 확정된 callee summary는 공통 입력에 남지만 현재 노드
+    summary 결과를 rules에 다시 주입하지 않아 concern 간 순환 의존을 만들지 않는다.
 
     Args:
         codebase_notes: ``ScanResult.codebase_notes`` — prefix 공유로 캐시 적중.
@@ -157,9 +174,10 @@ async def analyze_code_three_split(
             CALLS 의존 caller 를 #2/#3 완료를 기다리지 않고 조기 투입하게 한다.
 
     Returns:
-        성공한 분할만 반영한 CodeNode. summary가 소진 실패해도 다른 성공 분할은
-        보존하고 ``extra.partial``에 실패 관심사를 기록한다.
+        검증된 관심사는 보존하고 모델 내용/schema 실패 관심사는 finding으로 격리한 CodeNode.
     """
+    if llm_slots is None:
+        raise ValueError("analyze_code_three_split requires the run-scoped LLM semaphore")
     ctx = contexts.get(code_id)
     fn = code_by_id.get(code_id)
     if ctx is None or fn is None:
@@ -170,257 +188,244 @@ async def analyze_code_three_split(
             "코드노드 분석 입력 부재 — 이 노드는 summary 없이 남는다(검색 코퍼스 제외).",
             code_id=code_id, ctx_missing=ctx is None, node_missing=fn is None,
         )
-        return None
+        raise KeyError(
+            f"analysis 입력 누락: code_id={code_id!r}, "
+            f"ctx_missing={ctx is None}, node_missing={fn is None}"
+        )
 
-    # [공통 context] — 3분할 동일 (캐시되는 prefix).
-    common = _build_user_values(
+    # 대상 사실의 한 정의처. 각 concern template은 여기서 자기 책임 필드만 선택하며 Rule은
+    # raw SOURCE 대신 compact 행 evidence를 사용한다. inventory는 배칭·채점의 구조 정답지다.
+    common, inventory = _build_user_values(
         ctx, fn, contexts, codebase_notes,
         module_intents or {}, table_descriptions or {},
         source_cache or SourceFileCache(),
     )
-    # [#3 전용] — 자식 range 의 비즈니스 규칙을 규칙 분할에만 append.
-    rules_values = {**common, "child_business_logic": _format_child_business_logic(ctx, contexts)}
+    rules_values = common
     prompts_dir = Path(strategy.prompts_dir)
 
     # split 단위 wrapper — code_id 캡처 closure (응집 ★).
-    async def _track_split(sub_action: str, coro):
+    async def _track_split(sub_action: str, invoke, *, priority: int = 0):
         async with track_processing("CodeNode", code_id, sub_action=sub_action):
-            return await coro
+            async with llm_slots.at(priority):
+                return await invoke()
 
-    # Phase 1: summary — 자기 코드노드의 cache 만들기 (precomputed 있으면 skip).
-    summary_error: Optional[Exception] = None
-    if precomputed_summary_supplied:
-        summary_out = precomputed_summary
-        if summary_out is None:
-            summary_error = RuntimeError("precomputed summary attempts exhausted")
-    else:
-        summary_attempt = await run_concern_with_retry(
-            component=_STEP,
-            concern="summary",
-            target_id=code_id,
-            call=lambda: _track_split(
-                "split_summary",
-                run_yaml_rule(
-                    prompts_dir=prompts_dir, rule_name="code_summary",
-                    user_values=common, response_model=SummaryOutput, budget=cost_budget,
-                ),
-            ),
-        )
-        summary_out = summary_attempt.value
-        summary_error = summary_attempt.error
+    # Server logs confirm KV caching, but recorded prompt bytes show that summary/rules
+    # share only the global system prompt; their user prompts diverge after 3 chars.
+    # The one global warmup remains, while per-node concerns can start independently.
+    async def _collect_summary():
+        if precomputed_summary_supplied:
+            summary_out = precomputed_summary
+            if summary_out is None:
+                raise RuntimeError(f"precomputed summary missing: {code_id}")
+        else:
+            try:
+                dynamic_summary = await _track_split(
+                    "split_summary",
+                    lambda: run_yaml_rule(
+                        prompts_dir=prompts_dir, rule_name="code_summary",
+                        user_values=common,
+                        response_model=summary_response_model(strategy.name),
+                        budget=cost_budget,
+                    ),
+                    priority=SUMMARY_WAKE_PRIORITY,
+                )
+                summary_out = normalize_summary_response(dynamic_summary)
+            except ModelOutputError as error:
+                summary_out = error
 
-    if summary_out is not None:
-        # "의미 없음"을 LLM이 자의적으로 판정해 검색에서 누락시키지 않는다. 의미를 기계가
-        # 복사하거나 추론하지 않고, 두 필드의 비어 있지 않음만 확인한다.
-        summary_out.summary, summary_out.search_text = normalize_searchable_text(
-            summary_out.summary, summary_out.search_text
-        )
-        # summary 최종값을 여기서 즉시 공개 — caller 의 callee_summaries 는 이 값 하나만 읽는다.
-        ctx.summary = summary_out.summary
-        _apply_summary_fields(
-            fn,
-            summary_out,
-            common["raw_code_body"],
-            common["numbered_raw_code_body"],
-            strategy,
-        )
+        findings: list[AnalysisFinding] = []
+        if isinstance(summary_out, ModelOutputError):
+            fn.extra["questions"] = []
+            findings.append(AnalysisFinding(
+                concern="summary",
+                status="unavailable",
+                target_id=code_id,
+                reasons=(str(summary_out),),
+                evidence_rule=summary_out.rule_name,
+            ))
+        else:
+            summary_out.summary = normalize_canonical_summary(summary_out.summary)
+            contradiction = _apply_summary_fields(fn, ctx, summary_out, strategy)
+            if contradiction is not None:
+                findings.append(contradiction)
+            ctx.summary = summary_out.summary
         if on_summary_ready is not None:
             on_summary_ready(code_id)
+        return findings
 
-    # Phase 2: rules + insights 동시 — 자기 코드노드 cache 적중 (#1 이 방금 올림).
-    # 부분 성공 허용 — rules/insights 한 조각 실패가 코드노드 폐기로 이어지지 않게.
-    # BudgetExceededError 만 즉시 전파 (회로 차단기 — 절대원칙 #3).
-    # 두 split 은 코드노드 결과 합성 단위라 gather 가 자연 (라운드 단위 X — 그건 round 루프 영역).
-    tasks = {
-        "rules": run_concern_with_retry(
-            component=_STEP,
-            concern="rules",
-            target_id=code_id,
-            call=lambda: _track_split(
-                "split_rules",
-                run_yaml_rule(
-                    prompts_dir=prompts_dir, rule_name="code_rules_examples",
-                    user_values=rules_values, response_model=RulesExamplesOutput, budget=cost_budget,
-                ),
+    def _rule_values(rows):
+        evidence = rule_evidence(inventory, rows)
+        evidence_json = json.dumps(
+            evidence, ensure_ascii=False, separators=(",", ":"),
+        )
+        values = {
+            **rules_values,
+            "assigned_rows": ", ".join(map(str, rows)),
+            "rule_evidence": evidence_json,
+        }
+        return evidence, evidence_json, values
+
+    async def _invoke_rules(rows):
+        evidence, _evidence_json, values = _rule_values(rows)
+        output = await _track_split(
+            "split_rules",
+            lambda: run_yaml_rule(
+                prompts_dir=prompts_dir, rule_name="code_rules_examples",
+                user_values=values,
+                response_model=rules_response_model(rows),
+                budget=cost_budget,
             ),
-        ),
+            priority=rule_queue_priority(len(_evidence_json)),
+        )
+        return normalize_rules_response(
+            output,
+            rows,
+            evidence.get("conditions", {}),
+            evidence.get("effects", {}),
+        )
+
+    async def _collect_rules():
+        return await collect_rules_by_rows(
+            invoke=_invoke_rules,
+            inventory=inventory,
+            target_scope=code_id,
+            source=common["raw_code_body"],
+            # 주입한 근거(callee 반환 표현식·API 계약값)를 창작 검사 풀에
+            # 합류 — 모델에게 준 증거를 창작으로 오탐하지 않게 (spec 116 §19).
+            extra_values=sorted(_grounded_external_values(ctx, contexts)),
+            allowed_tables=sorted(set(ctx.reads) | set(ctx.writes)),
+            read_tables=sorted(set(ctx.reads)),
+            write_tables=sorted(set(ctx.writes)),
+            table_ops=ctx.extra.get("table_op") or {},
+        )
+
+    gather_map: dict[str, Any] = {
+        "summary": _collect_summary(),
+        "rules": _collect_rules(),
     }
     if ctx.reads or ctx.writes:
-        tasks["insights"] = run_concern_with_retry(
-            component=_STEP,
-            concern="insights",
+        insight_model = table_insights_response_model(
+            ctx.reads, ctx.writes, ctx.extra.get("table_op") or {},
+        )
+        async def _collect_insights():
+            try:
+                output = await _track_split(
+                    "split_insights",
+                    lambda: run_yaml_rule(
+                        prompts_dir=prompts_dir, rule_name="code_table_insights",
+                        user_values=common, response_model=insight_model, budget=cost_budget,
+                    ),
+                )
+                return output, None
+            except ModelOutputError as error:
+                return None, error
+
+        gather_map["insights"] = _collect_insights()
+
+    gather_tasks = {
+        name: asyncio.create_task(coroutine)
+        for name, coroutine in gather_map.items()
+    }
+    try:
+        results = await asyncio.gather(*gather_tasks.values())
+    except BaseException:
+        # One internal invariant must not leave sibling model calls running after the
+        # node itself has failed or the run was cancelled.
+        for task in gather_tasks.values():
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*gather_tasks.values(), return_exceptions=True)
+        raise
+    done = dict(zip(gather_tasks, results))
+    quality_findings: list[AnalysisFinding] = done["summary"]
+    collection = done.get("rules")
+    insights_result = done.get("insights")
+    insights_out = insights_result[0] if insights_result is not None else None
+    if insights_result is not None and insights_result[1] is not None:
+        error = insights_result[1]
+        quality_findings.append(AnalysisFinding(
+            concern="table_insights",
+            status="unavailable",
             target_id=code_id,
-            call=lambda: _track_split(
-                "split_insights",
-                run_yaml_rule(
-                    prompts_dir=prompts_dir, rule_name="code_table_insights",
-                    user_values=common, response_model=TableInsightsOutput, budget=cost_budget,
-                ),
-            ),
+            reasons=(str(error),),
+            evidence_rule=error.rule_name,
+        ))
+    if insights_out is not None:
+        insights_out = normalize_table_insights_response(
+            insights_out, ctx.reads, ctx.writes,
         )
 
-    results = await asyncio.gather(*tasks.values(), return_exceptions=True)
-    done = dict(zip(tasks, results))
+    obligation_rows = sum(len(batch) for batch in plan_batches(inventory))
 
-    for result in results:
-        if isinstance(result, BudgetExceededError):
-            raise result
-
-    rules_out = _take_attempt(done, "rules", code_id)
-    insights_out = _take_attempt(done, "insights", code_id)  # 키 없으면 None
-
-    # 품질 검사는 관측만 한다. 결과를 별도 LLM으로 재분석·병합하거나 결정론적으로
-    # 고쳐 쓰지 않는다. 최초 rules 생성 결과가 단일 진실이다.
-    quality_flag: Optional[str] = None
-    quality = (
-        check_rule_quality(rules_out, common["raw_code_body"])
-        if rules_out is not None else None
-    )
-    if quality is not None and quality.is_anomaly:
-        quality_flag = "rules_quality_anomaly"
-        log_warning(
-            _STEP,
-            "rules_quality_observed",
-            "규칙 품질 이상을 관측했지만 산출물은 재작성하지 않음",
-            code_id=code_id,
-            reasons=quality.reasons,
-        )
-
-    # partial = 동일 관심사 1회 재시도 뒤에도 결과를 못 낸 경우.
-    partial_parts = tuple(
-        part
-        for part, failed in (
-            ("summary", summary_error is not None),
-            ("rules", _attempt_failed(done.get("rules"))),
-            ("insights", "insights" in tasks and _attempt_failed(done.get("insights"))),
-        )
-        if failed
-    )
-
-    # spec 027: LLM 귀속 테이블을 결정론 reads/writes 로 제한 (callee 함수명 오귀속 차단).
-    constrain_tables_to_rw(
-        code_id, ctx.reads, ctx.writes, insights_out, rules_out,
-        allowed_columns_by_table=ctx.extra.get("ddl_columns_by_table"),
-        table_op=ctx.extra.get("table_op"),
-    )
-
-    # spec 101: 근거성 게이트 — 측정 전용. 산출물을 바꾸지 않고 findings 만 남긴다.
-    grounding_findings = _measure_grounding(
-        fn, ctx, common["raw_code_body"], rules_out
-    )
-
-    # fan-in 머지 → CodeNode 에 적용 (#1 유래 다섯 필드는 Phase 1 에서 이미 확정됐다).
+    # fan-in 머지 → CodeNode 에 적용 (#1 의미 + 결정론 검색 필드는 이미 확정됐다).
+    # 자연어 규칙 시절의 품질·근거성 사후 관측은 은퇴 — 결정론 채점(grade_rules)이
+    # 생성 시점에 행 단위로 대체했다(spec 116).
     fn.extra["table_insights"] = (
         [t.model_dump() for t in insights_out.table_insights] if insights_out else []
     )
-    fn.extra["rules"] = [r.model_dump() for r in rules_out.rules] if rules_out else []   # examples 는 각 rule 하위 중첩
-    fn.extra["questions"] = [q.model_dump() for q in rules_out.questions] if rules_out else []
-    if partial_parts:
-        fn.extra["partial"] = partial_parts
-    else:
-        fn.extra.pop("partial", None)
-    if quality_flag:
-        fn.extra["rules_quality_flag"] = quality_flag
-    if grounding_findings:
-        fn.extra["grounding_findings"] = [f.as_dict() for f in grounding_findings]
-        # 측정값은 **보여야** 측정이다. 계산만 하고 버리면 죽은 데이터다.
-        log_warning(
-            _STEP, "guardrail_observed",
-            "근거성 가드레일이 규칙·사례와 근거 분기의 불일치를 관측 "
-            "(측정 전용 — 산출물 변경 없음)",
-            code_id=fn.id,
-            guardrail="grounding",
-            counts=dict(Counter(f.check for f in grounding_findings)),
-            findings=[f.as_dict() for f in grounding_findings],
+    serialized, unresolved_tables = serialize_rules(
+        collection.rules, fn.signature or fn.id, ctx.reads, ctx.writes,
+        ctx.extra.get("table_op"),
+    )
+    fn.extra["rules"] = serialized
+    quality_findings.extend(collection.findings)
+    finding_records = [finding.to_dict() for finding in quality_findings]
+    apply_analysis_findings(fn, quality_findings, component=_STEP)
+    fn.extra["rule_grading"] = {
+        "obligation_rows": obligation_rows,
+        "accepted_rows": [rule.anchor_line for rule in collection.rules],
+        "finding_rows": sorted({
+            row for item in finding_records for row in item["coordinates"]
+        }),
+        "calls": collection.calls,
+    }
+    if unresolved_tables:
+        raise ValueError(
+            f"{code_id}: then 테이블 효과가 결정론 R/W와 불일치: "
+            f"{sorted(set(unresolved_tables))[:8]}"
         )
-
     # ctx 에 나머지 분석 결과 부착 — 부모(PARENT_OF)의 #3 분할 입력.
-    # (summary 는 위 Phase 1 종료 시점에 이미 공개됨 — CALLS 의존 조기 해제.)
+    # (summary 는 자기 concern 완료 시 즉시 공개됨 — CALLS 의존 조기 해제.)
     ctx.extra["rules"] = fn.extra["rules"]
     ctx.extra["questions"] = fn.extra["questions"]
     return fn
 
 
-def _measure_grounding(
-    fn: CodeNode, ctx: AnalysisContext, code_body: str, rules_out: Optional[RulesExamplesOutput]
-) -> list:
-    """근거성 게이트를 **측정 전용**으로 돌린다 (spec 101).
-
-    게이트 실패가 분석을 죽이면 안 된다 — 측정은 부가 관측이고 산출물은 이미 확정됐다.
-    다만 조용히 삼키지도 않는다(절대원칙 #3): 실패는 경고로 표면화하고 findings 만 비운다.
-    """
-    if rules_out is None or not rules_out.rules:
-        return []
-    try:
-        inventory = build_inventory(
-            code_body, ctx.extra.get("control_subtree"), lang_of(Path(fn.file_path).suffix),
-            declared_values=[s.declared_value for s in ctx.referenced_symbols],
-            line_offset=max(fn.start_line - 1, 0),
-        )
-        return check_grounding(rules_out, inventory)
-    except NoSupportedSourceError:
-        return []          # 게이트 밖 언어 — 관측 대상이 아니다
-    except Exception as error:  # noqa: BLE001 — 관측 실패가 분석을 죽이지 않게
-        log_warning(
-            _STEP, "grounding_gate_failed",
-            "근거성 게이트 측정 실패 — 분석 산출물은 영향 없음",
-            code_id=fn.id, error=repr(error),
-        )
-        return []
-
-
 def _apply_summary_fields(
     fn: CodeNode,
+    ctx: AnalysisContext,
     summary_out: SummaryOutput,
-    code_body: str,
-    numbered_code_body: str,
     strategy: Any,
-) -> None:
+) -> AnalysisFinding | None:
     """#1 summary 에서만 나오는 코드노드 필드를 확정한다 (spec 096).
 
-    #2(insights)·#3(rules)는 이 다섯 필드를 읽지도 쓰지도 않는다. 그래서 노드 완료가
+    #2(insights)·#3(rules)는 이 의미/검색 필드를 읽지도 쓰지도 않는다. 그래서 노드 완료가
     아니라 #1 확정 시점에 넣어도 값이 같고, 후처리는 그만큼 일찍 시작할 수 있다.
     stereotype 은 ontology_roles.yaml 풀과 검증 (없으면 빈 문자열로 강제).
     """
-    fn.summary = summary_out.summary
-    fn.stereotype = coerce_stereotype(summary_out.stereotype or "", strategy.name) or None
-    fn.logical_name = summary_out.logical_name or None
-    fn.search_text = summary_out.search_text or None
-    fn.domain_terms = normalize_domain_terms(
-        summary_out.domain_terms,
-        source_text=code_body,
-        numbered_source_text=numbered_code_body,
-        code_id=fn.id,
-        component=_STEP,
+    stereotype, violation = exclude_contradicted_stereotype(
+        require_stereotype(summary_out.stereotype, strategy.name),
+        has_writes=bool(ctx.writes),
     )
-
-
-def _attempt_failed(result) -> bool:
-    return isinstance(result, BaseException) or (
-        isinstance(result, ConcernAttempt) and not result.succeeded
-    )
-
-
-def _take_attempt(done: dict, key: str, code_id: str):
-    """gather 결과 1조각 → 성공이면 인스턴스, 소진 실패면 None.
-
-    실패 시 log_warning + None (이 조각만 빈 결과로 진행, partial 마크). 키 자체가
-    없으면(테이블 없어 #2 skip 등) silent None — 정상 흐름.
-    """
-    if key not in done:
-        return None
-    result = done[key]
-    if isinstance(result, BaseException):
+    if violation:
         log_warning(
-            _STEP, f"{key}_failed",
-            f"{key} 조각 실패 — 빈 결과로 진행 (partial 마크)",
-            code_id=code_id,
-            error=f"{type(result).__name__}: {result}",
+            _STEP, "stereotype_contradiction",
+            "stereotype 이 결정론 쓰기 근거와 모순 — 빈 값으로 강제(사람 검토)",
+            code_id=fn.id, reason=violation,
         )
+    fn.summary = summary_out.summary
+    fn.stereotype = stereotype or None
+    fn.extra["questions"] = [q.model_dump() for q in summary_out.questions]
+    if not violation:
         return None
-    if not result.succeeded:
-        return None
-    return result.value
+    return AnalysisFinding(
+        concern="stereotype",
+        status="rejected",
+        target_id=fn.id,
+        reasons=(violation,),
+        candidate={"stereotype": summary_out.stereotype},
+        evidence_rule="code_summary",
+    )
 
 
 def _build_user_values(
@@ -431,18 +436,25 @@ def _build_user_values(
     module_intents: dict[str, str],
     table_descriptions: dict[str, dict],
     cache: SourceFileCache,
-) -> dict:
-    """3 yaml 공통 ``user_template`` 의 치환 값 ([공통 context]).
+) -> tuple[dict, object]:
+    """3 yaml 공통 ``user_template`` 의 치환 값 ([공통 context]) + 분기 대장.
 
     DBMS 부모 range 는 ``code_body`` 가 compact (자식 구간 → 자식 summary 치환).
     ``ancestor_context`` 는 조상 range 골격 (Framework 는 평면이라 "(없음)").
     ``reads`` / ``writes`` 는 테이블 fqn + DDL 설명 — LLM 이 테이블 의미를 알고 분석.
+
+    분기 대장(BranchInventory)은 프롬프트 branch_index 와 행 채점·배칭이 **같은
+    정의처**를 공유해야 하므로 여기서 1회 만들어 함께 돌려준다 (spec 116).
     """
     excerpt = cache.excerpt(ctx.file_path, ctx.start_line, ctx.end_line)
     raw_body = raw_body_for(ctx, contexts, cache)
     prompt_body = body_for(ctx, contexts, cache)
-    lang = lang_of(Path(fn.file_path).suffix)
-    return {
+    inventory = build_control_inventory(fn, ctx, cache)
+    # 상태 추적 없이 소스에 직접 쓰인 반환 표현식만 bottom-up 인터페이스로 전달한다.
+    ctx.extra["return_expressions"] = sorted(inventory.return_expressions)
+    _persist_branch_table(fn, inventory)
+    _persist_coverage(fn, inventory)
+    values = {
         "id": fn.id,
         "signature": fn.signature,
         "code_body": prompt_body,
@@ -458,12 +470,8 @@ def _build_user_values(
         "external_evidence": dump_external_evidence(ctx.external_evidence),
         "callee_summaries": _format_callee_summaries(ctx, contexts),
         "ancestor_context": ancestor_context(ctx, contexts, cache),
-        "reads": dump_table_refs(
-            ctx.reads, table_descriptions, direct_source=raw_body, lang=lang
-        ),
-        "writes": dump_table_refs(
-            ctx.writes, table_descriptions, direct_source=raw_body, lang=lang
-        ),
+        "reads": dump_table_refs(ctx.reads, table_descriptions, include_columns=False),
+        "writes": dump_table_refs(ctx.writes, table_descriptions, include_columns=False),
         "table_ops": json.dumps(
             ctx.extra.get("table_op") or {},
             ensure_ascii=False,
@@ -471,77 +479,114 @@ def _build_user_values(
             separators=(",", ":"),
         ),
         # spec 102: 규칙이 고를 수 있는 근거 분기 후보. 분할 3 템플릿만 참조한다.
-        "branch_index": _branch_index(fn, ctx, cache),
+        "branch_index": inventory.branch_index(),
+        # spec 116 §19: SKILL 문서 보증 API 값 계약 — 분할 3 템플릿만 참조한다.
+        "api_contracts": (
+            json.dumps(
+                [dict(contract) for contract in ctx.extra["api_contracts"]],
+                ensure_ascii=False, separators=(",", ":"),
+            )
+            if ctx.extra.get("api_contracts") else "(없음)"
+        ),
     }
+    return values, inventory
 
 
-def _branch_index(fn: CodeNode, ctx: AnalysisContext, cache: SourceFileCache) -> str:
-    """``줄번호: 조건식`` 목록. 게이트가 쓰는 분기 대장과 **같은 정의처**에서 만든다."""
-    return control_index(fn, ctx, cache)
+def _persist_branch_table(fn: CodeNode, inventory) -> None:
+    """활성 분석 run에만 분기표 정답지를 기록한다.
+
+    독립 단위 호출에는 run 산출물 소유권이 없으므로 기본 ``logs/``로 fallback하지 않는다.
+    """
+    run_dir = active_run_dir()
+    if run_dir is None:
+        return
+    directory = run_dir / "branch-tables"
+    directory.mkdir(parents=True, exist_ok=True)
+    safe_name = "".join(
+        ch if ch.isalnum() or ch in "._-" else "_" for ch in fn.id
+    )
+    (directory / f"{safe_name}.json").write_text(
+        json.dumps(inventory.table_rows(), ensure_ascii=False, indent=1),
+        encoding="utf-8",
+    )
 
 
-def _format_callee_summaries(
+def _persist_coverage(fn: CodeNode, inventory) -> None:
+    """커버리지 잔차 감사(골키퍼 그물2)를 run 산출물로 기록한다.
+
+    함수별 잔차·위험구문 장부는 `scripts/audit_coverage.py` 가 corpus 단위로 집계한다.
+    분기표와 같은 소유권 규칙 — 활성 run 이 없으면 기록하지 않는다.
+    """
+    run_dir = active_run_dir()
+    if run_dir is None:
+        return
+    directory = run_dir / "coverage"
+    directory.mkdir(parents=True, exist_ok=True)
+    safe_name = "".join(
+        ch if ch.isalnum() or ch in "._-" else "_" for ch in fn.id
+    )
+    report = coverage_residue(inventory)
+    report["function"] = fn.id
+    (directory / f"{safe_name}.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=1),
+        encoding="utf-8",
+    )
+
+
+def _callee_interface_items(
     ctx: AnalysisContext,
     contexts: dict[str, AnalysisContext],
-) -> str:
-    """``callee_id`` → callee.summary 텍스트 포맷.
+) -> list[dict]:
+    """Canonical callee summaries used by display/search/bottom-up exactly once.
 
-    Bottom-up DAG 진행 중이면 callee summary 가 ``contexts`` 에 있음.
+    Bottom-up DAG 진행 중이면 callee summary가 ``contexts``에 있음.
     아직 없으면(cycle 내부·분석 실패) 다른 의미 필드로 대신하지 않고 목록에서 제외한다.
     """
-    if not ctx.callees:
-        return "(없음)"
-    items = []
+    items: list[dict] = []
     for callee_id in ctx.callees:
         c = contexts.get(callee_id)
         if c is None:
             continue
         text = (c.summary or "").strip()
         if text:
-            items.append({
-                "callee_id": callee_id,
-                "scope": "callee-interface-only",
-                "summary": text,
-            })
+            items.append({"callee_id": callee_id, "summary": text})
+    return items
+
+
+def _grounded_external_values(
+    ctx: AnalysisContext,
+    contexts: dict[str, AnalysisContext],
+) -> frozenset[str]:
+    """프롬프트의 외부 근거 값 집합 — 채점기 창작 검사 풀 확장분.
+
+    렌더(_callee_interface_items·api_contracts)와 같은 데이터에서 뽑는다. 필드 원문
+    (F() 검사)은 여기 넣지 않는다 — callee 동작 복사 금지 계약은 채점기가 계속 강제.
+    """
+    facts: set[str] = set()
+
+    def add(value: str) -> None:
+        facts.add(value)
+        # C 원문 인용은 따옴표째 온다(`"00"`) — 모델은 값 글자("00")로 쓰므로
+        # 짝이 맞는 인용부호를 벗긴 표기도 같은 증거로 인정한다.
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            facts.add(value[1:-1])
+
+    for contract in ctx.extra.get("api_contracts") or ():
+        success_value = contract.get("success_value")
+        if success_value:
+            add(success_value)
+    return frozenset(facts)
+
+
+def _format_callee_summaries(
+    ctx: AnalysisContext,
+    contexts: dict[str, AnalysisContext],
+) -> str:
+    """Render each available callee canonical summary exactly once."""
+    if not ctx.callees:
+        return "(없음)"
+    items = _callee_interface_items(ctx, contexts)
     return (
         json.dumps(items, ensure_ascii=False, separators=(",", ":"))
         if items else "(없음)"
     )
-
-
-def _format_child_business_logic(
-    ctx: AnalysisContext,
-    contexts: dict[str, AnalysisContext],
-) -> str:
-    """자식 range 들의 rules + questions → #3 규칙 분할 전용 입력.
-
-    Bottom-up 으로 자식이 먼저 분석돼 ``ctx.extra["rules"]`` 가 채워짐. 부모는 이 규칙을
-    자기 분기 조건으로 감싸 강화 (자식 규칙 재추출 X). 자식 없으면 "(없음)".
-    """
-    child_ids = ctx.extra.get("child_ids", ())
-    if not child_ids:
-        return "(없음)"
-    rules: list = []
-    questions: list = []
-    for cid in child_ids:
-        c = contexts.get(cid)
-        if c is None:
-            continue
-        rules.extend(c.extra.get("rules", ()))
-        questions.extend(c.extra.get("questions", ()))
-    if not rules and not questions:
-        return "(없음)"
-    parts: list[str] = []
-    if rules:
-        parts.append("[자식 규칙]")
-        for r in rules:
-            stmt = r.get("statement", "") if isinstance(r, dict) else str(r)
-            if stmt:
-                parts.append(f"- {stmt}")
-    if questions:
-        parts.append("[자식 질문]")
-        for q in questions:
-            text = q if isinstance(q, str) else q.get("text", "")
-            if text:
-                parts.append(f"- {text}")
-    return "\n".join(parts)

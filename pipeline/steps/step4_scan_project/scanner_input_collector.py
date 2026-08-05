@@ -15,32 +15,7 @@ from __future__ import annotations
 from collections import Counter
 from pathlib import Path
 
-from shared.events.runtime_logger import log_warning
-
-
-# 매니페스트 우선순위 — 발견된 첫 1개의 앞 60줄을 단서로 제공
-_MANIFEST_FILES = [
-    "pom.xml",
-    "build.gradle",
-    "build.gradle.kts",
-    "package.json",
-    "pyproject.toml",
-    "setup.py",
-    "requirements.txt",
-    "Cargo.toml",
-    "go.mod",
-    "Makefile",
-    "CMakeLists.txt",
-]
-
-
-# 카테고리별 확장자 — Scan Agent 가 "어느 영역의 파일이 어디 있는지" 빠른 파악
-_CATEGORY_EXTENSIONS = {
-    "SQL":    {".sql", ".ddl"},
-    "Entity": {".java", ".kt"},       # JPA Entity / Kotlin data class 자주 등장
-    "Config": {".xml", ".yaml", ".yml", ".properties", ".toml", ".ini"},
-    "DOCS":   {".md", ".rst", ".txt"},
-}
+from pipeline.languages import scanner_hints
 
 
 def collect_scanner_input(project_root: Path) -> dict:
@@ -55,7 +30,8 @@ def collect_scanner_input(project_root: Path) -> dict:
         }
     """
     ext_counter: Counter = Counter()
-    categories: dict[str, list[str]] = {k: [] for k in _CATEGORY_EXTENSIONS}
+    manifests, category_extensions = scanner_hints()
+    categories: dict[str, list[str]] = {k: [] for k in category_extensions}
 
     for f in sorted(project_root.rglob("*")):
         if not f.is_file():
@@ -63,28 +39,17 @@ def collect_scanner_input(project_root: Path) -> dict:
         ext = f.suffix.lower()
         if ext:
             ext_counter[ext.lstrip(".")] += 1
-        for cat, exts in _CATEGORY_EXTENSIONS.items():
+        for cat, exts in category_extensions.items():
             if ext in exts and len(categories[cat]) < 50:
                 categories[cat].append(str(f.relative_to(project_root)))
 
     # 매니페스트 앞 60줄
     manifest_content = ""
-    for m in _MANIFEST_FILES:
+    for m in manifests:
         m_path = project_root / m
         if m_path.is_file():
-            try:
-                lines = m_path.read_text(encoding="utf-8", errors="ignore").splitlines()
-                manifest_content = "\n".join(lines[:60])
-            except OSError as e:
-                # 매니페스트 못 읽음 → Scan Agent 가 단서 X. 명시 로깅 (다음 매니페스트 시도 없음 — break).
-                log_warning(
-                    "pipeline.steps.step4_scan_project.scanner_input_collector",
-                    "read_manifest",
-                    "매니페스트 파일 읽기 실패 — Scan Agent 가 manifest_content 없이 분석",
-                    manifest=m,
-                    path=str(m_path),
-                    error=f"{type(e).__name__}: {e}",
-                )
+            lines = m_path.read_text(encoding="utf-8").splitlines()
+            manifest_content = "\n".join(lines[:60])
             break
 
     return {

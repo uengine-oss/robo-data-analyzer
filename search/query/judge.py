@@ -5,16 +5,12 @@
 """
 from __future__ import annotations
 
-import os
-
 from search.query import query_llm
 
-# 판정 재료 통일(spec 009) — 심판이 임베딩·CE와 같은 재료(요약+search_text)를 봄. 기본 on(게이트 승자).
-_SEM_UNIFIED = os.environ.get("ROBO_SEM_UNIFIED", "1") == "1"
 _cache: dict = {}
 
 _SYSTEM = """너는 레거시 코드 검색 결과의 심판이다. 사용자의 요구사항/질의와, 검색이 반환한
-코드 노드 목록(이름·역할·요약)이 주어진다. **요구사항과 실제로 관련된 노드만** 골라라.
+코드 노드별 검색 근거가 주어진다. **요구사항과 실제로 관련된 노드만** 골라라.
 
 [규칙]
 - 표면 단어만 겹치고 업무 의미가 다른 노드는 제외한다.
@@ -34,10 +30,7 @@ def judge(query: str, nodes: list[dict]) -> set[int] | None:
         return set()
 
     def _line(i: int, n: dict) -> str:
-        body = (n.get("summary") or "").strip()
-        if _SEM_UNIFIED and (n.get("search_text") or "").strip():
-            body += " / " + n["search_text"].strip()
-        return f"{i + 1}. {n['name']} [{n.get('stereotype') or n.get('label', '')}] {body}"
+        return f"{i + 1}. {(n.get('summary') or '').strip()}"
 
     lines = [_line(i, n) for i, n in enumerate(nodes)]
     prompt = (f"[요구사항]\n{query}\n\n[검색 결과 노드] (번호 1~{len(nodes)})\n"

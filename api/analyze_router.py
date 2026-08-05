@@ -93,6 +93,7 @@ async def analyze(req: AnalyzeRequest, request: Request) -> StreamingResponse:
         ddl_dir=SETTINGS.analysis_data.dir / "ddl",
         locale=req.locale,
         datasource=req.datasource,
+        corpus_root=SETTINGS.analysis_data.dir,
     )
 
     stream = NDJSONStream()

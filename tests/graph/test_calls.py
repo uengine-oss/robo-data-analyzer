@@ -2,6 +2,7 @@
 
 import asyncio
 import unittest
+from tests.unittest_function_cases import load_function_cases
 
 from graph.schema.graph_edges import Calls
 from graph.edges.calls import (
@@ -128,3 +129,5 @@ class CallsContractTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+def load_tests(_loader, standard_tests, _pattern):
+    return load_function_cases(standard_tests, globals())

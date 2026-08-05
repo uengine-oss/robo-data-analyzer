@@ -46,8 +46,7 @@ def build_llm_client(
     """``llm/configs/<ROBO_LLM_CONFIG>.yaml`` 기반 LangChain 클라이언트 생성.
 
     Args:
-        model: 모델 이름 override (기본 ``cfg.model``). 작은 모델 호출 시
-            ``cfg.resolve_small_model()`` 결과 전달 가능.
+        model: 모델 이름 override (기본 ``cfg.model``).
         temperature: temperature override (기본 ``cfg.sampling.temperature``).
         max_tokens: max_tokens override (기본 ``cfg.max_tokens``).
         streaming: True 면 ainvoke 도 내부적으로 스트리밍 수신·집계한다 — 반복 폭주

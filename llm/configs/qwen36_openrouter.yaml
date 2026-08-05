@@ -12,7 +12,6 @@ api_base: https://openrouter.ai/api/v1
 model: qwen/qwen3.6-35b-a3b
 
 # 비용 절감용 작은 모델 — 안 박으면 model 사용
-model_small: ""
 
 # 토큰 / 타임아웃
 max_tokens: 128000
@@ -28,6 +27,7 @@ sampling:
 # reasoning 끔 — OpenRouter 가 reasoning_effort=none 을 그대로 전달.
 # Qwen3.6 의 thinking mode default ON → 끄는 게 운영기 정책.
 reasoning_effort: none
+structured_output_method: json_schema
 
 # OpenRouter 비표준 옵션 (OpenAI 표준 외 — extra_body 로만 전달).
 #

@@ -10,24 +10,26 @@
 - 호출 패턴: ``EntityHome.findByPrimaryKey(...)`` / ``create(...)`` / ``remove()``
 - getter/setter 가 DB 컬럼 직접 매핑
 
-## 정규식 패턴
+## 접근 규칙 (DSL — spec 108)
 
-정규식의 `<op_token>` 그룹은 메서드명 **prefix** 만 잡는다 (뒤에 `\w*` 로 suffix 흘림).
-이렇게 해야 매치된 토큰이 `op_mappings` 의 token 과 정확히 일치한다.
+`op_prefixes` 는 메서드명 **prefix** 만 (suffix 는 코드가 흘림). entity 는 리시버
+이름에서 (`orderHome` → `order` → ddl_transform).
+※ 구판 raw 정규식은 `<entity>` group 누락으로 링킹 불가(죽은 규칙)였다 — 이사에서 교정.
+※ 구판의 ``ejb_cmp_setter``(``.setXxx(`` → UPDATE) 규칙은 **제거**했다: 리시버가 엔티티
+인스턴스 변수명이라 정적으로 테이블을 알 수 없어(entity 원천 부재) 어떤 표현으로도
+엣지를 만들 수 없는 원천 무효 규칙이었다. setter 유래 UPDATE 는 unresolved 큐가 담당.
 
 ```yaml
-table_access_patterns:
-  - id: ejb_cmp_home
-    call_regex: '(\w+Home)\.(?P<op_token>find|create|remove)\w*\s*\('
+table_access_rules:
+  - kind: method_call
+    id: ejb_cmp_home
+    receiver_suffix: Home
+    entity_from: receiver
+    op_prefixes: [find, create, remove]
     op_mappings:
       - {token: find,   op: SELECT}      # findByPrimaryKey / findByXxx / findAll 모두 prefix=find
       - {token: create, op: INSERT}
       - {token: remove, op: DELETE}
-
-  - id: ejb_cmp_setter
-    call_regex: '\.(?P<op_token>set)[A-Z]\w+\s*\('
-    op_mappings:
-      - {token: set, op: UPDATE}            # setter 호출은 CMP UPDATE 트리거
 
 ddl_transform:
   ddl_naming_rule: camel_to_snake_upper

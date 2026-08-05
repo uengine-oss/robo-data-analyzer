@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Optional
 
 from graph.schema.graph_nodes import CodeNode
@@ -10,8 +9,7 @@ from pipeline.models.analysis_context import AnalysisContext, dump_external_evid
 from pipeline.steps.step7_analyze_code.batch_planner import Batch
 from pipeline.steps.step7_analyze_code.range_body import ancestor_context, body_for
 from pipeline.steps.step7_analyze_code.table_prompt_context import dump_table_refs
-from pipeline.steps.step7_analyze_code.control_prompt import control_index
-from pipeline.languages import lang_of
+from pipeline.steps.step7_analyze_code.control_prompt import build_control_inventory
 from shared.files.cache import SourceFileCache
 
 
@@ -44,9 +42,18 @@ def _build_batch_values(
         key_to_id[key] = nid
         body = body_fn(ctx, contexts, cache)
         fn = code_by_id[nid]
-        raw_body = cache.slice(ctx.file_path, ctx.start_line, ctx.end_line)
-        lang = lang_of(Path(ctx.file_path).suffix)
+        inventory = build_control_inventory(fn, ctx, cache)
+        ctx.extra["return_expressions"] = sorted(inventory.return_expressions)
         excerpt = cache.excerpt(ctx.file_path, ctx.start_line, ctx.end_line)
+        callee_summaries = []
+        for callee_id in sorted(ctx.callees):
+            callee = contexts.get(callee_id)
+            if callee is None or not (callee.summary or "").strip():
+                continue
+            callee_summaries.append({
+                "callee_id": callee_id,
+                "summary": callee.summary.strip(),
+            })
         blocks.append(
             f"### [TARGET_NODE]\n"
             f"node_key: {key}\n"
@@ -55,17 +62,20 @@ def _build_batch_values(
             f"coordinate_system: {excerpt.coordinate_system}\n"
             f"source_status: {excerpt.status}\n\n"
             f"#### [DIRECT_EVIDENCE]\n"
-            f"reads_json: {dump_table_refs(ctx.reads, table_descriptions, direct_source=raw_body, lang=lang)}\n"
-            f"writes_json: {dump_table_refs(ctx.writes, table_descriptions, direct_source=raw_body, lang=lang)}\n"
+            f"reads_json: {dump_table_refs(ctx.reads, table_descriptions, include_columns=False)}\n"
+            f"writes_json: {dump_table_refs(ctx.writes, table_descriptions, include_columns=False)}\n"
             f"authoritative_table_ops_json: "
             f"{json.dumps(ctx.extra.get('table_op') or {}, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}\n"
             f"referenced_symbols_json: {dump_referenced_symbols(ctx.referenced_symbols)}\n"
             f"external_evidence_json: {dump_external_evidence(ctx.external_evidence)}\n\n"
+            f"callee_summaries_json: "
+            f"{json.dumps(callee_summaries, ensure_ascii=False, separators=(',', ':'))}\n"
+            f"api_contracts_json: "
+            f"{json.dumps([dict(item) for item in ctx.extra.get('api_contracts') or ()], ensure_ascii=False, separators=(',', ':'))}\n\n"
             f"#### [CONTROL_FLOW_INDEX]\n"
-            f"{control_index(fn, ctx, cache)}\n\n"
+            f"{inventory.branch_index()}\n\n"
             f"#### [SOURCE]\n```\n{body}\n```"
         )
-
     values = {
         "unit_id": root.id if root else first_ctx.id,
         "unit_signature": root.signature if root else first_ctx.signature,
@@ -77,6 +87,56 @@ def _build_batch_values(
         "nodes": "\n\n".join(blocks),
     }
     return values, key_to_id
+
+
+def build_rule_batch_values(
+    *,
+    expected: dict[str, str],
+    assignments: dict[str, tuple[int, ...] | list[int]],
+    evidences: dict[str, dict[str, object]],
+    contexts: dict[str, AnalysisContext],
+    code_by_id: dict[str, CodeNode],
+    table_descriptions: dict[str, dict],
+) -> dict[str, str]:
+    """Render only evidence consumed by the DBMS Rule contract.
+
+    Summary, ancestor prose, control indexes and full node SOURCE were previously repeated in
+    every concern.  Rule rows already have exact active source in ``rule_evidence_json``; only
+    facts outside that row source are added here.
+    """
+    blocks: list[str] = []
+    for node_key, node_id in expected.items():
+        ctx = contexts[node_id]
+        fn = code_by_id[node_id]
+        callee_summaries = []
+        for callee_id in sorted(ctx.callees):
+            callee = contexts.get(callee_id)
+            if callee is None or not (callee.summary or "").strip():
+                continue
+            callee_summaries.append({
+                "callee_id": callee_id,
+                "summary": callee.summary.strip(),
+            })
+        rows = tuple(int(row) for row in assignments[node_key])
+        blocks.append(
+            f"### [RULE_TARGET {node_key}]\n"
+            f"target_id: {node_id}\n"
+            f"signature: {fn.signature}\n"
+            f"assigned_rows: {','.join(map(str, rows))}\n"
+            f"reads_json: {dump_table_refs(ctx.reads, table_descriptions, include_columns=False)}\n"
+            f"writes_json: {dump_table_refs(ctx.writes, table_descriptions, include_columns=False)}\n"
+            f"authoritative_table_ops_json: "
+            f"{json.dumps(ctx.extra.get('table_op') or {}, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}\n"
+            f"referenced_symbols_json: {dump_referenced_symbols(ctx.referenced_symbols)}\n"
+            f"external_evidence_json: {dump_external_evidence(ctx.external_evidence)}\n"
+            f"callee_summaries_json: "
+            f"{json.dumps(callee_summaries, ensure_ascii=False, separators=(',', ':'))}\n"
+            f"api_contracts_json: "
+            f"{json.dumps([dict(item) for item in ctx.extra.get('api_contracts') or ()], ensure_ascii=False, separators=(',', ':'))}\n"
+            f"rule_evidence_json: "
+            f"{json.dumps(evidences[node_key], ensure_ascii=False, separators=(',', ':'))}"
+        )
+    return {"rule_nodes": "\n\n".join(blocks)}
 
 
 def _root_code_node(

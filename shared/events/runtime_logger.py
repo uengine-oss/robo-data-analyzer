@@ -69,7 +69,7 @@ _COMPONENT_LABELS: dict[str, str] = {
     "step5.link_residual_patterns": "5️⃣ ③잔여 패턴 루프",
     "step5.link_external":       "5️⃣  외부 파일 연결",
     "step6.build_context":       "6️⃣  분석 컨텍스트",
-    "step6.fetch_table_samples": "6️⃣  catalog 샘플",
+    "step1.discover_datasource": "1️⃣  데이터소스 발견",
     "step7.analyze_code":    "7️⃣  코드노드 분석",
     "step8.summarize_module":    "8️⃣  모듈 요약",
     "step8.enrich_table_description": "8️⃣  테이블 설명",

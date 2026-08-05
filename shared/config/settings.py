@@ -187,9 +187,8 @@ class LlmResponseCacheSettings:
 
 @dataclass(frozen=True)
 class AnalysisAgentSettings:
-    """ROBO_AGENT_* — Scan Agent / 잔여 패턴 에이전트 호출 한도 + 검증 임계."""
+    """ROBO_AGENT_* — 도구형 Agent 호출 한도와 검증 임계."""
     scan_max_calls: int = field(default_factory=lambda: _getenv_int("ROBO_AGENT_SCAN_MAX_CALLS", 30))
-    residual_max_calls: int = field(default_factory=lambda: _getenv_int("ROBO_AGENT_RESIDUAL_MAX_CALLS", 15))
     context_editing_trigger_tokens: int = field(
         default_factory=lambda: _getenv_int("ROBO_AGENT_CONTEXT_EDITING_TRIGGER_TOKENS", 80000)
     )
@@ -198,10 +197,29 @@ class AnalysisAgentSettings:
     scan_regex_min_op_ratio: float = field(
         default_factory=lambda: _getenv_float("ROBO_AGENT_SCAN_REGEX_MIN_OP_RATIO", 0.5)
     )
+    # 검문소 3지표 (spec 114) — 완전한 entity 매치인데 단어장(DDL∪실DB)에 없는 비율 상한.
+    # 넘으면 "넓게 오탐하는 규칙"으로 탈락 (운 좋은 엣지 1개 통과 차단).
+    scan_regex_max_contradiction_ratio: float = field(
+        default_factory=lambda: _getenv_float("ROBO_AGENT_SCAN_REGEX_MAX_CONTRADICTION_RATIO", 0.8)
+    )
+    # entity 가 단어장에서 복수 해석(fallback prefix 등)되는 매치 비율 상한.
+    scan_regex_max_ambiguity_ratio: float = field(
+        default_factory=lambda: _getenv_float("ROBO_AGENT_SCAN_REGEX_MAX_AMBIGUITY_RATIO", 0.2)
+    )
+    # external 호출 LLM 재검증 (spec 113) — 가짜 외부 호출(미제공 헤더 매크로 등) 필터.
+    call_review_enabled: bool = field(
+        default_factory=lambda: _getenv_bool("ROBO_AGENT_CALL_REVIEW_ENABLED", True)
+    )
+    call_review_max_calls: int = field(
+        default_factory=lambda: _getenv_int("ROBO_AGENT_CALL_REVIEW_MAX_CALLS", 3)
+    )
+    # LLM 드롭 판정의 상한 — 초과 시 전체 무시 (과도 드롭 = 환각 신호).
+    call_review_max_drop_ratio: float = field(
+        default_factory=lambda: _getenv_float("ROBO_AGENT_CALL_REVIEW_MAX_DROP_RATIO", 0.5)
+    )
 
     def __post_init__(self) -> None:
         _require_positive_int("AnalysisAgentSettings.scan_max_calls", self.scan_max_calls)
-        _require_positive_int("AnalysisAgentSettings.residual_max_calls", self.residual_max_calls)
         _require_positive_int(
             "AnalysisAgentSettings.context_editing_trigger_tokens",
             self.context_editing_trigger_tokens,
@@ -214,6 +232,11 @@ class AnalysisAgentSettings:
         )
         if self.scan_regex_min_op_ratio > 1:
             raise ValueError("AnalysisAgentSettings.scan_regex_min_op_ratio must be <= 1")
+        for name in ("scan_regex_max_contradiction_ratio", "scan_regex_max_ambiguity_ratio"):
+            value = getattr(self, name)
+            _require_finite_number(f"AnalysisAgentSettings.{name}", value, minimum=0, inclusive=True)
+            if value > 1:
+                raise ValueError(f"AnalysisAgentSettings.{name} must be <= 1")
 
 
 @dataclass(frozen=True)

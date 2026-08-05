@@ -7,9 +7,9 @@
   작성·검증해 ``ScanResult`` 를 출력한다. 별도 결정 LLM 없음 — 정규식 같은
   구조물은 검증 도구를 가진 에이전트만 만들 수 있다 (탐색/결정 분리 시 검증된
   정규식이 전달 스키마에서 증발 — 과거 버그).
-- skill 은 식별 단서와 ``ScanResult contract``를 가진 문서다. 에이전트가
-  ``read_skill``로 읽고, 매칭 시 contract 필드를 변경 없이 ``ScanResult``로 옮긴다.
-  코드는 skill 을 파싱하지 않으며 실제 소스 검증으로 부분 추출·미해소를 거부한다.
+- skill 은 식별 단서와 ``ScanResult contract``를 가진 문서다. 에이전트는 실제 코드와
+  맞는 skill 이름만 선택하고, 코드는 원문 contract를 직접 hydrate한 뒤 실제 소스 검증으로
+  부분 추출·미해소를 거부한다. 결정론 계약을 LLM이 다시 받아쓰지 않는다.
 - 출력 후 코드가 마무리(``_finalize``): 에이전트가 채운 정규식을 ``verify_table_patterns``
   로 결정론 검증해 confidence 산정 — 검증 안 된 정규식은 링킹에 안 넘긴다.
 - ``response_format=ScanResult`` Pydantic 강제.
@@ -18,36 +18,73 @@
 """
 from __future__ import annotations
 
+import fnmatch
 import html
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
 from agents import AGENTS_PACKAGE_DIR
-from agents.contracts import ScanResult
+from agents.contracts import (
+    ApiContract,
+    CallWrapper,
+    DdlTransform,
+    ScanResult,
+    TableAccessPattern,
+)
+from agents.rule_compiler import (
+    compile_exclusion_rules,
+    compile_rules,
+    parse_exclusion_rule,
+    parse_rule,
+    split_rules,
+)
 from agents.tools.inspection import (
     build_skill_catalog,
     list_skills,
     make_list_code_nodes,
     read_skill,
 )
-from agents.skills.catalog import FRAMEWORK_SKILLS_DIR
+from agents.skills.catalog import FRAMEWORK_SKILLS_DIR, load_skill_contract
 from agents.tools.filesystem import make_filesystem_tools
 from agents.tools.validation import make_verify_table_regex_tool
 from pipeline.steps.step5_linking.link_tables.regex_table_linker import (
     PatternVerdict,
+    PreparedLinkSources,
+    prepare_link_sources,
     verify_table_patterns,
 )
 from graph.schema.graph_nodes import CodeNode, Table
+from pipeline.languages import ROUTINE_LABELS
 from shared.config.settings import SETTINGS
 from llm.usage.cost_budget import CostBudget
-from agents.runtime import run_structured_agent
+from agents.runtime import AgentModelOutputError, run_structured_agent
 from shared.events.runtime_logger import log_info, log_warning
 
 _STEP = "step4.scan"
 
 # 시스템 프롬프트 위치 — byte-identical 보존 (CI 검증 대상)
 _SYSTEM_PROMPT_PATH = AGENTS_PACKAGE_DIR / "prompts" / "scan.md"
+
+
+class SkillSelectionAmbiguityError(RuntimeError):
+    """More than one registered SKILL passed the same production contract."""
+
+
+class ScanCandidateRejected(AgentModelOutputError):
+    """Scan Agent 후보가 결정론 source/DDL 검증을 통과하지 못함."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, kind="semantic")
+
+
+@dataclass(frozen=True)
+class _VerifiedSkillCandidate:
+    draft: ScanResult
+    merged_patterns: list[TableAccessPattern]
+    embedded_rules: list
+    verdict: PatternVerdict
 
 
 def _build_scan_tools(
@@ -92,6 +129,11 @@ async def run_scan_agent(
     Returns:
         ``ScanResult`` — ``table_access_patterns`` 는 검증 통과분만 채워진다.
     """
+    known = await _select_verified_skill(project_root, code_nodes, tables)
+    if known is not None:
+        return known
+
+    log_info(_STEP, "known_skill_not_found", action="unknown/custom Agent 탐색")
     draft = await _run_agent(
         project_root=project_root,
         scanner_input=scanner_input,
@@ -101,7 +143,153 @@ async def run_scan_agent(
         tables=tables,
         stream_emit=stream_emit,
     )
-    return await _finalize(draft, project_root, code_nodes, tables)
+    try:
+        hydrated = _hydrate_skill_contract(draft)
+    except ValueError as error:
+        raise ScanCandidateRejected(str(error)) from error
+    return await _finalize(hydrated, project_root, code_nodes, tables)
+
+
+def _hydrate_skill_contract(draft: ScanResult) -> ScanResult:
+    """매칭된 SKILL 원문 계약을 검증 전에 ScanResult에 결정론 주입한다.
+
+    LLM은 어떤 SKILL이 실제 코드와 맞는지만 판단한다. 문서에 이미 있는 규칙·wrapper·
+    런타임 계약을 다시 받아쓰게 하지 않으며, 이 함수가 만든 최종값을 ``_finalize``가
+    실제 소스/DDL에 검증한다.
+    """
+    matched = draft.matched_skill
+    if not matched:
+        return draft
+    contract = load_skill_contract(matched)
+    if not contract:
+        raise ValueError(f"matched SKILL에 ScanResult contract가 없음: {matched}")
+
+    data = draft.model_dump()
+    data.update(_skill_owned_values(contract))
+    log_info(_STEP, "skill_contract_hydrated", skill=matched, keys=sorted(contract))
+    return ScanResult.model_validate(data)
+
+
+def _skill_owned_values(contract: dict) -> dict:
+    """Parse every SKILL-owned field, making absent keys explicit defaults."""
+    return {
+        "table_access_rules": [
+            parse_rule(raw) for raw in contract.get("table_access_rules") or []
+        ],
+        "table_access_patterns": [
+            TableAccessPattern(**raw)
+            for raw in contract.get("table_access_patterns") or []
+        ],
+        "table_access_exclusion_rules": [
+            parse_exclusion_rule(raw)
+            for raw in contract.get("table_access_exclusion_rules") or []
+        ],
+        "ddl_transform": DdlTransform(**(
+            contract.get("ddl_transform") or {"ddl_naming_rule": "as_is"}
+        )),
+        "call_wrappers": [
+            CallWrapper(**raw) for raw in contract.get("call_wrappers") or []
+        ],
+        "framework_runtime_functions": [
+            str(name) for name in contract.get("framework_runtime_functions") or []
+        ],
+        "handler_markers": [
+            str(name) for name in contract.get("handler_markers") or []
+        ],
+        "api_contracts": [
+            ApiContract(**raw) for raw in contract.get("api_contracts") or []
+        ],
+        "codebase_notes": str(contract.get("codebase_notes") or "").strip(),
+    }
+
+
+def _iter_skill_contracts() -> list[tuple[str, dict]]:
+    """Return registered framework contracts in stable order."""
+    if not FRAMEWORK_SKILLS_DIR.is_dir():
+        return []
+    return [
+        (directory.name, load_skill_contract(directory.name))
+        for directory in sorted(FRAMEWORK_SKILLS_DIR.iterdir(), key=lambda path: path.name)
+        if directory.is_dir()
+        and not directory.name.startswith("_")
+        and directory.name != "templates"
+        and (directory / "SKILL.md").is_file()
+    ]
+
+
+async def _select_verified_skill(
+    project_root: Path,
+    code_nodes: list[CodeNode],
+    tables: list[Table],
+) -> ScanResult | None:
+    """Select one registered SKILL using its production source/DDL contract."""
+    candidates: list[_VerifiedSkillCandidate] = []
+    prepared_sources: PreparedLinkSources | None = None
+    for skill_name, contract in _iter_skill_contracts():
+        if not contract:
+            continue
+        owned = _skill_owned_values(contract)
+        compilable, embedded = split_rules(owned["table_access_rules"])
+        merged_patterns = compile_rules(compilable) + owned["table_access_patterns"]
+        exclusion_patterns = compile_exclusion_rules(
+            owned["table_access_exclusion_rules"]
+        )
+        if not merged_patterns and not embedded:
+            continue
+        if prepared_sources is None:
+            prepared_sources = prepare_link_sources(project_root, code_nodes)
+        verdict = await verify_table_patterns(
+            patterns=merged_patterns,
+            exclusion_patterns=exclusion_patterns,
+            ddl_transform=owned["ddl_transform"],
+            project_root=project_root,
+            code_nodes=code_nodes,
+            tables=tables,
+            embedded_rules=embedded,
+            prepared_sources=prepared_sources,
+        )
+        evidence_locations = list(dict.fromkeys(verdict.evidence_locations))
+        if not verdict.ok or len(evidence_locations) < 3:
+            continue
+        validate_framework_runtime_contract(
+            owned["framework_runtime_functions"], code_nodes,
+        )
+        draft = ScanResult(
+            matched_skill=skill_name,
+            confidence=0.5,
+            evidence="registered SKILL production contract verified against source and DDL",
+            evidence_locations=evidence_locations,
+            **owned,
+        )
+        candidates.append(_VerifiedSkillCandidate(
+            draft=draft,
+            merged_patterns=merged_patterns,
+            embedded_rules=embedded,
+            verdict=verdict,
+        ))
+
+    if len(candidates) > 1:
+        names = ", ".join(candidate.draft.matched_skill or "" for candidate in candidates)
+        raise SkillSelectionAmbiguityError(
+            "multiple registered SKILL contracts verified: " + names
+        )
+    if not candidates:
+        return None
+
+    selected = candidates[0]
+    log_info(
+        _STEP,
+        "known_skill_selected",
+        skill=selected.draft.matched_skill,
+        evidence_locations=len(selected.draft.evidence_locations),
+        llm_calls=0,
+    )
+    return _complete_finalization(
+        selected.draft,
+        selected.merged_patterns,
+        selected.verdict,
+        embedded_rules=selected.embedded_rules,
+    )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -148,50 +336,111 @@ async def _finalize(
     code_nodes: list[CodeNode],
     tables: list[Table],
 ) -> ScanResult:
-    """에이전트 draft → 결정론 검증 → 최종 ``ScanResult``.
+    """에이전트 draft → 규칙 컴파일 합류 → 결정론 검증 → 최종 ``ScanResult``.
 
-    정규식은 skill 매칭이든 직접 작성이든 에이전트가 draft 에 직접 채운다 (매칭된 skill은
-    ``ScanResult contract``를 변경 없이 복사). 코드는 ``verify_table_patterns`` 로 검증만 —
-    통과 못 하면 ``_apply_verdict`` 가 ``no_match_reason`` 으로 표면화한다.
+    DSL 규칙(``table_access_rules``)은 여기서 코드가 ``call_regex`` 로 컴파일해 raw 패턴
+    목록에 합류시킨다 (spec 108 — named group 구조 보장, 검증 관문은 하나).
+    코드는 ``verify_table_patterns`` 로 검증만 한다. 제안한 규칙 하나라도 실패하면
+    ``_apply_verdict`` 가 전체 응답을 거절한다. 컴파일/내용 실패는 즉시 raise한다.
     """
+    try:
+        compilable, embedded = split_rules(draft.table_access_rules)
+        merged_patterns = compile_rules(compilable) + draft.table_access_patterns
+        exclusion_patterns = compile_exclusion_rules(draft.table_access_exclusion_rules)
+        validate_framework_runtime_contract(
+            draft.framework_runtime_functions, code_nodes,
+        )
+    except ValueError as error:
+        raise ScanCandidateRejected(str(error)) from error
     verdict = await verify_table_patterns(
-        patterns=draft.table_access_patterns,
+        patterns=merged_patterns,
+        exclusion_patterns=exclusion_patterns,
         ddl_transform=draft.ddl_transform,
         project_root=project_root,
         code_nodes=code_nodes,
         tables=tables,
+        embedded_rules=embedded,
     )
+    return _complete_finalization(
+        draft, merged_patterns, verdict, embedded_rules=embedded,
+    )
+
+
+def _complete_finalization(
+    draft: ScanResult,
+    merged_patterns: list[TableAccessPattern],
+    verdict: PatternVerdict,
+    *,
+    embedded_rules: list | tuple = (),
+) -> ScanResult:
+    """Apply one already-produced verdict without rescanning source files."""
+    if verdict.failed_exclusion_ids:
+        raise ScanCandidateRejected(
+            "table access exclusion verification failed: " + verdict.summary
+        )
     confidence, no_match_reason = _apply_verdict(
-        verdict, draft.table_access_patterns, draft.no_match_reason,
+        verdict, [*merged_patterns, *embedded_rules], draft.no_match_reason,
     )
 
     # codebase_notes — HTML entity (&lt; / &gt; / &amp;) 가 박힌 채 나오면 코드노드 분석
     # LLM 이 그대로 prefix 로 받음. unescape 로 영구 차단 (모든 SKILL 적용).
-    return ScanResult(
-        matched_skill=draft.matched_skill,
-        confidence=confidence,
-        evidence=draft.evidence,
-        evidence_locations=draft.evidence_locations,
-        table_access_patterns=draft.table_access_patterns,
-        ddl_transform=draft.ddl_transform,
-        codebase_notes=html.unescape(draft.codebase_notes or ""),
-        framework_runtime_functions=draft.framework_runtime_functions,
-        call_wrappers=draft.call_wrappers,
-        no_match_reason=no_match_reason,
-    )
+    # Copy the complete validated contract, then replace only fields finalized
+    # here. A handwritten constructor previously dropped hydrated handler/API
+    # facts whenever ScanResult gained or retained fields not listed here.
+    data = draft.model_dump()
+    data.update({
+        "confidence": confidence,
+        "table_access_patterns": [pattern.model_dump() for pattern in merged_patterns],
+        "codebase_notes": html.unescape(draft.codebase_notes or ""),
+        "no_match_reason": no_match_reason,
+    })
+    return ScanResult.model_validate(data)
+
+
+def validate_framework_runtime_contract(
+    patterns: list[str], code_nodes: list[CodeNode],
+) -> None:
+    """Reject runtime-drop patterns that claim a workspace-defined routine.
+
+    루틴 정의(``ROUTINE_LABELS``)만 충돌 후보다. AST statement 노드의 name 은 루틴이
+    아니다 — `goto PFM_CATCH;` 의 GOTO 라벨 이름이 skill 런타임 함수 선언과 거짓
+    충돌해 run 전체가 fatal 나던 실측 결함(framework corpus, 2026-08-05).
+    """
+    def _field(node, key: str) -> str:
+        value = node.get(key) if isinstance(node, dict) else getattr(node, key, "")
+        return str(value or "").strip()
+
+    names = sorted({
+        _field(node, "name")
+        for node in code_nodes
+        if _field(node, "name") and _field(node, "label") in ROUTINE_LABELS
+    })
+    conflicts = sorted({
+        (pattern, name)
+        for pattern in patterns
+        for name in names
+        if fnmatch.fnmatchcase(name, pattern)
+    })
+    if conflicts:
+        detail = ", ".join(
+            f"{pattern!r}->{name!r}" for pattern, name in conflicts[:20]
+        )
+        raise ValueError(
+            "framework_runtime_functions conflicts with project routines: " + detail
+        )
 
 
 def _apply_verdict(
     verdict: PatternVerdict,
-    patterns: list,
+    access_rules: list,
     no_match_reason: Optional[str],
 ) -> tuple[float, Optional[str]]:
-    """검증 결과 → (confidence, no_match_reason). 실패는 ``log_warning`` 으로 표면화.
+    """검증 결과 → (confidence, no_match_reason). 제안 내용 실패는 즉시 거절한다.
 
     confidence 는 추측이 아니라 측정값 — 검증 통과 시 테이블 해소율 기반.
     """
-    if not patterns:
-        # 정규식 자체가 없음 — 에이전트가 SKILL 도 못 찾고 작성도 못 함.
+    if not access_rules:
+        # 명시적 무패턴은 허용하지만 사유는 ScanResult schema가 강제한다.
         log_warning(
             _STEP, "no_patterns",
             "table_access_patterns 가 비어 있음 — 결정론 R/W 링킹 불가",
@@ -208,14 +457,13 @@ def _apply_verdict(
         confidence = min(1.0, max(0.5, round(verdict.resolved_ratio, 2)))
         return confidence, no_match_reason
 
-    # 검증 실패 — 정규식이 소스/DDL 과 안 맞음. 표면화.
+    # 검증 실패 패턴을 downstream에 보내면 검증이 경고로 전락한다.
     log_warning(
         _STEP, "patterns_verify_failed",
         "table_access_patterns 검증 실패 — 정규식이 소스/DDL 과 안 맞음",
         verdict=verdict.summary,
     )
-    reason = ((no_match_reason or "") + f" [검증실패: {verdict.summary}]").strip()
-    return 0.2, reason
+    raise ScanCandidateRejected(f"table access rule verification failed: {verdict.summary}")
 
 
 # ─────────────────────────────────────────────────────────────

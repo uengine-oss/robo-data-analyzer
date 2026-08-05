@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class StrictAgentOutput(BaseModel):
@@ -84,6 +84,117 @@ class TableAccessPattern(StrictAgentOutput):
     op_mappings: list[OpMapping] = Field(...)
 
 
+class TableAccessExclusionPattern(StrictAgentOutput):
+    """A source pattern that is known not to represent a TABLE access.
+
+    Exclusions never carry operation mappings and can never create graph edges.
+    They only define physical source regions that TABLE rules must not claim.
+    """
+
+    id: str = Field(..., min_length=1, description="exclusion pattern identifier")
+    call_regex: str = Field(..., min_length=1, description="compiled source shape")
+
+
+# ── wrapper 규칙 DSL (spec 108/115) — 닫힌 템플릿 4종. 조합 문법 금지 ──
+#
+# 에이전트는 빈칸(필드)만 채우고, 정규식은 ``agents/rule_compiler.py`` 가 기계 생성한다
+# → <entity>·<op_token> named group 이 구조상 보장돼 "죽은 규칙"(entity 누락)이 재발 불가.
+# 4종에 안 들어가는 커스텀만 raw ``TableAccessPattern`` 탈출구 사용 (동일 검증 관문).
+# 새 템플릿 종류 추가는 별도 spec 으로만 (미니 언어 방지 — 108 D1).
+
+
+class WrapperKeyRule(StrictAgentOutput):
+    """wrapper 함수의 문자열 키 인자 안에 테이블·op 가 인코딩된 형태.
+
+    예: ``db_call("orders_read001", ...)``
+    → wrapper="db_call", separator="_", op_tokens=["read","write"], suffix_digits=3
+    """
+    kind: Literal["wrapper_key"] = "wrapper_key"
+    id: str = Field(..., description="패턴 식별자")
+    wrapper: str = Field(..., description="wrapper 함수 이름")
+    separator: str = Field("_", description="entity 와 op 사이 리터럴")
+    op_tokens: list[str] = Field(..., description="op 토큰 문자들/문자열들")
+    suffix_digits: int = Field(0, ge=0, le=8, description="op 뒤 숫자 자릿수. 0=없음")
+    entity_not_ending: str = Field(
+        "", description="entity 가 이 접미사로 끝나면 거부"
+    )
+    op_mappings: list[OpMapping] = Field(...)
+
+
+class WrapperKeyExclusionRule(StrictAgentOutput):
+    """A wrapper-key shape owned by a non-TABLE database object.
+
+    Example shape: ``db_call("<entity><entity_suffix>_<op><digits>")``.
+    The suffix is data supplied by the matched SKILL; generic code does not
+    assign object meaning to any particular spelling.
+    """
+
+    kind: Literal["wrapper_key"] = "wrapper_key"
+    id: str = Field(..., min_length=1, description="exclusion rule identifier")
+    wrapper: str = Field(..., min_length=1, description="wrapper function name")
+    entity_suffix: str = Field(..., min_length=1, description="non-TABLE entity marker")
+    separator: str = Field("_", min_length=1, description="suffix/op separator")
+    op_tokens: list[str] = Field(..., min_length=1, description="raw operation tokens")
+    suffix_digits: int = Field(0, ge=0, le=8, description="digits following the op token")
+
+
+class MethodCallRule(StrictAgentOutput):
+    """리시버.메서드(…) 호출 형태 — entity 는 리시버 이름 또는 첫 문자열 인자.
+
+    예: ``orderRepository.findByX(...)`` → receiver_suffix="Repository",
+        entity_from="receiver", op_prefixes=["find","save",...]
+    예: ``sqlSession.selectOne("Order.findById", ...)`` → receiver_name="sqlSession",
+        entity_from="first_arg_string"
+    """
+    kind: Literal["method_call"] = "method_call"
+    id: str = Field(..., description="패턴 식별자")
+    receiver_suffix: str = Field(
+        "", description="리시버 이름 접미사 (예: 'Repository' — entity_from=receiver 전용)"
+    )
+    receiver_name: str = Field(
+        "", description="고정 리시버 이름 (예: 'sqlSession' / 'delegator')"
+    )
+    op_prefixes: list[str] = Field(..., description="메서드명 prefix 목록 (예: ['find','save'])")
+    entity_from: Literal["receiver", "first_arg_string"] = Field(...)
+    first_arg_charset: str = Field(
+        r"\w", description="첫 인자 entity 문자클래스 (예: '\\w' / '[\\w.]' 의 내용부)"
+    )
+    op_mappings: list[OpMapping] = Field(...)
+
+
+class SqlFragmentRule(StrictAgentOutput):
+    """소스 문자열 속 SQL 조각 — C 문자열 개행 이음(``"..." "..."``)을 허용하는 매치.
+
+    예: ``INSERT INTO 테이블`` / ``UPDATE 테이블 SET`` / ``FROM 테이블``.
+    keyword 자체가 op_token 이 된다.
+    """
+    kind: Literal["sql_fragment"] = "sql_fragment"
+    id: str = Field(..., description="패턴 식별자")
+    keyword: str = Field(..., description="선두 SQL 키워드 = op_token (예: 'INSERT')")
+    before_entity: str = Field("", description="entity 직전 리터럴 (예: 'INTO' / 'FROM'). ''=없음")
+    after_entity: str = Field("", description="entity 직후 리터럴 (예: 'SET'). ''=없음")
+    op_mappings: list[OpMapping] = Field(...)
+
+
+class EmbeddedSqlRule(StrictAgentOutput):
+    """구분자(울타리)로 둘러싸인 SQL 블록 — Pro*C/COBOL/ABAP 류 임베디드 SQL (spec 115).
+
+    예: ``EXEC SQL UPDATE orders SET ... END-EXEC``
+    → delimiter_start="EXEC SQL", delimiter_end="END-EXEC"
+
+    op_mappings 가 없다 — 블록 안은 진짜 SQL 이므로 relation/dml_type 판정을
+    **DML 의미표(pipeline/dml_semantics.yaml)가 그대로** 수행한다 (R/W 로직 중복 0).
+    """
+    kind: Literal["embedded_sql"] = "embedded_sql"
+    id: str = Field(..., description="패턴 식별자")
+    delimiter_start: str = Field(..., description="블록 시작 구분자 (예: 'EXEC SQL')")
+    delimiter_end: str = Field(..., description="블록 끝 구분자 (예: 'END-EXEC' / ';')")
+
+
+TableAccessRule = WrapperKeyRule | MethodCallRule | SqlFragmentRule | EmbeddedSqlRule
+TableAccessExclusionRule = WrapperKeyExclusionRule
+
+
 class DdlTransform(StrictAgentOutput):
     """엔티티 이름 → DDL 테이블 이름 변환 규칙."""
     ddl_naming_rule: Literal["as_is", "camel_to_snake_upper", "snake_to_camel"] = Field(
@@ -136,15 +247,49 @@ class CallWrapper(StrictAgentOutput):
     )
 
 
+class ApiContract(StrictAgentOutput):
+    """프레임워크 API 의 문서 보증 값 계약 (spec 116 §19 — SKILL fence 전용).
+
+    SKILL 카드 ``api_contracts`` fence 를 그대로 옮겨 담는다 — 추측으로 채우지 않는다.
+    rules 프롬프트에 "소스만 봐서는 모르는 값 사실"(성공 판정값·인자 역할)로 주입되고,
+    그 값 문자열은 채점기 창작 검사 풀에 합류한다.
+    """
+    name: str = Field(..., description="API/매크로 이름 (예: mpfmdbio)")
+    arg_roles: dict[int, str] = Field(
+        default_factory=dict,
+        description="0-based 인자 위치 → 역할 이름 (예: {0: 'sql_key'})",
+    )
+    success_value: Optional[str] = Field(
+        None, description="성공 판정에 쓰이는 값 원문 (예: SUCCESS_CODE). 문서 보증만."
+    )
+
+
 class ScanResult(StrictAgentOutput):
     """Scan Agent 1회 invoke 의 최종 출력."""
+    analysis_status: Literal["completed", "unavailable"] = "completed"
     matched_skill: Optional[str] = Field(None, description="매칭된 SKILL 이름 또는 null")
     confidence: float = Field(..., ge=0.0, le=1.0)
     evidence: str = Field(..., description="자연어 단서")
     evidence_locations: list[str] = Field(default_factory=list, description="['path:line', ...]")
 
-    # 결정론 grep 용
+    # 결정론 grep 용 — 구조화 규칙(DSL, 우선) + raw 정규식(탈출구, 4종 템플릿 불가 시만).
+    # 규칙은 코드(_finalize)가 컴파일해 patterns 에 합류 — 검증·링킹 관문은 하나 (spec 108).
+    table_access_rules: list[
+        WrapperKeyRule | MethodCallRule | SqlFragmentRule | EmbeddedSqlRule
+    ] = Field(
+        default_factory=list,
+        description=(
+            "구조화 접근 규칙 (kind=wrapper_key|method_call|sql_fragment|embedded_sql). DSL 우선"
+        ),
+    )
     table_access_patterns: list[TableAccessPattern] = Field(default_factory=list)
+    table_access_exclusion_rules: list[WrapperKeyExclusionRule] = Field(
+        default_factory=list,
+        description=(
+            "SKILL/source-grounded non-TABLE source shapes. These never create edges and "
+            "reject overlapping TABLE patterns."
+        ),
+    )
     ddl_transform: DdlTransform = Field(
         default_factory=lambda: DdlTransform(ddl_naming_rule="as_is")
     )
@@ -165,6 +310,26 @@ class ScanResult(StrictAgentOutput):
         ),
     )
 
+    # 분기표 종료문 행용 — 예외 핸들러 진입 라벨/매크로 (spec 116 1단계 [handler] 행).
+    # SKILL fence 계약이 있으면 그 값으로 결정론 덮어쓰기 — 추측으로 채우지 않는다.
+    handler_markers: list[str] = Field(
+        default_factory=list,
+        description=(
+            "예외 핸들러 진입 라벨/매크로 이름 (프레임워크 문서로 보증되는 것만, "
+            "예: try/catch 를 대신하는 매크로). 확실하지 않으면 빈 배열."
+        ),
+    )
+
+    # 값 사실 주입용 — 프레임워크 API 의 문서 보증 값 계약 (spec 116 §19).
+    # SKILL fence 계약이 있으면 그 값으로 결정론 덮어쓰기 — 추측으로 채우지 않는다.
+    api_contracts: list[ApiContract] = Field(
+        default_factory=list,
+        description=(
+            "프레임워크 API 값 계약 (SKILL 문서로 보증되는 것만 — sql_key 인자 위치, "
+            "성공 판정값 등). 확실하지 않으면 빈 배열."
+        ),
+    )
+
     # 호출 분류용 — 프레임워크/런타임 루틴 이름 (skill 문서에서 읽음). 호출 그래프에서 드롭.
     framework_runtime_functions: list[str] = Field(
         default_factory=list,
@@ -177,6 +342,36 @@ class ScanResult(StrictAgentOutput):
 
     no_match_reason: Optional[str] = None
 
+    @model_validator(mode="after")
+    def validate_scan_evidence_and_fallback(self) -> "ScanResult":
+        if self.analysis_status == "unavailable":
+            if (
+                self.matched_skill is not None
+                or self.table_access_rules
+                or self.table_access_patterns
+                or self.table_access_exclusion_rules
+            ):
+                raise ValueError("unavailable scan은 검증되지 않은 규칙/skill을 포함할 수 없음")
+            if not (self.no_match_reason or "").strip():
+                raise ValueError("unavailable scan은 no_match_reason이 필수")
+            return self
+        if len(self.evidence_locations) < 3:
+            raise ValueError("evidence_locations는 실제 path:line 근거가 3개 이상이어야 함")
+        if self.matched_skill is None and self.table_access_exclusion_rules:
+            raise ValueError(
+                "table_access_exclusion_rules는 검토 가능한 matched SKILL 계약에서만 허용"
+            )
+        if (
+            self.matched_skill is None
+            and not self.table_access_rules
+            and not self.table_access_patterns
+            and not (self.no_match_reason or "").strip()
+        ):
+            raise ValueError(
+                "SKILL 미매칭인데 table access 규칙/패턴이 없으면 no_match_reason 필수"
+            )
+        return self
+
 
 # ═══════════════════════════════════════════════════════════════
 # 잔여 패턴 루프 출력
@@ -187,22 +382,50 @@ class ScanResult(StrictAgentOutput):
 # 라운드에서 에이전트가 발견한 패턴이다.
 
 
+class CallDropVerdict(StrictAgentOutput):
+    """가짜 외부 호출 1건의 드롭 판정 (spec 113)."""
+    callee: str = Field(..., description="드롭할 external 콜리 이름 — 목록에 있는 이름 그대로")
+    reason: str = Field(..., description="왜 실제 호출이 아닌가 1문장 (로그 매크로/키워드 오인 등)")
+
+
+class ExternalCallReview(StrictAgentOutput):
+    """external 호출 재검증 출력 (spec 113) — 확실한 가짜만 드롭, 불확실은 유지.
+
+    결정론 게이트가 후처리: 프로젝트 정의 루틴은 절대 드롭 불가, 드롭 비율 상한 초과 시
+    전체 무시(환각 신호), 목록 밖 이름 무시.
+    """
+    drops: list[CallDropVerdict] = Field(
+        ...,
+        description="실제 호출이 아니라고 확신하는 external 이름만. 불확실하면 넣지 말 것",
+    )
+
+
 class ResidualPatternResult(StrictAgentOutput):
-    """잔여 패턴 루프 — 에이전트 1라운드의 출력.
+    """잔여 패턴 루프 — 단일 구조화 제안의 출력.
 
     잔여 미해결 테이블 케이스 샘플에서 발견한 공통 접근 패턴. ``ScanResult`` 와
-    구성 요소(``TableAccessPattern`` / ``DdlTransform``)는 공유하되 — 잔여 모드는
-    skill 매칭·codebase 서술이 없으므로 필드를 분리해 별도 모델로 둔다.
+    구성 요소(``TableAccessPattern`` / ``DdlTransform``)는 공유하되, 기존 변환을 그대로
+    복사하지 않고 바꿀 때만 override를 낸다.
     """
     table_access_patterns: list[TableAccessPattern] = Field(
-        default_factory=list,
-        description="잔여 케이스의 공통 접근 패턴 (verify_table_regex 통과분)",
+        ...,
+        description="잔여 케이스의 새 공통 접근 패턴. production 코드가 검증한다",
     )
-    ddl_transform: DdlTransform = Field(
-        default_factory=lambda: DdlTransform(ddl_naming_rule="as_is"),
-        description="잔여 케이스에 맞는 entity→DDL 테이블명 변환 규칙",
+    ddl_transform_override: Optional[DdlTransform] = Field(
+        ...,
+        description="현재 entity→DDL 변환을 바꿔야 할 때만 새 전체 값, 아니면 null",
     )
     no_pattern_reason: Optional[str] = Field(
-        None, description="공통 패턴을 못 찾았으면 사유. 찾았으면 null",
+        ...,
+        description="패턴/변환 제안이 모두 없을 때의 비어 있지 않은 사유, 제안 시 null",
     )
-    notes: str = Field("", description="추적 흐름·의심 패턴 등 자유 서술 (사람 검토용)")
+
+    @model_validator(mode="after")
+    def validate_proposal_or_reason(self) -> "ResidualPatternResult":
+        has_proposal = bool(self.table_access_patterns) or self.ddl_transform_override is not None
+        reason = (self.no_pattern_reason or "").strip()
+        if has_proposal and self.no_pattern_reason is not None:
+            raise ValueError("패턴/변환을 제안했으면 no_pattern_reason은 null이어야 함")
+        if not has_proposal and not reason:
+            raise ValueError("패턴/변환 제안이 없으면 no_pattern_reason이 필수")
+        return self

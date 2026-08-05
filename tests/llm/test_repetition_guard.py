@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 
 from llm.repetition_guard import (
     RepetitionDetector,
@@ -31,9 +32,45 @@ class RepetitionDetectorTest(unittest.TestCase):
 
     def test_whitespace_flood_stops_before_the_general_period_window(self):
         detector = RepetitionDetector()
-        hit = _feed_all(detector, "{" + " " * 700)
+        hit = _feed_all(detector, "{" + " " * 128, chunk_size=8)
         self.assertEqual(hit, 1)
+        # 스트리밍 청크 안에서는 최대 chunk_size-1자만큼 임계값을 넘길 수 있다.
+        self.assertLessEqual(
+            detector.chars_seen,
+            1 + detector.WHITESPACE_FLOOD + 7,
+        )
         self.assertLess(detector.chars_seen, detector.WINDOW)
+
+    def test_normal_json_formatting_whitespace_does_not_trigger(self):
+        detector = RepetitionDetector()
+        text = '{\n  "rules": [\n    {"statement": "정상", "examples": []}\n  ]\n}'
+        self.assertIsNone(_feed_all(detector, text, chunk_size=3))
+
+    def test_nested_json_indentation_below_tight_boundary_does_not_trigger(self):
+        detector = RepetitionDetector()
+        indent = " " * (detector.WHITESPACE_FLOOD - 1)
+        text = '{\n' + indent + '"rules": []\n}'
+        self.assertIsNone(_feed_all(detector, text, chunk_size=5))
+
+    def test_post_root_whitespace_stops_at_tight_boundary(self):
+        detector = RepetitionDetector()
+        hit = _feed_all(
+            detector,
+            '{"rules":[]}' + " " * detector.POST_ROOT_WHITESPACE_FLOOD,
+            chunk_size=1,
+        )
+        self.assertEqual(hit, 1)
+        self.assertLess(detector.chars_seen, detector.WHITESPACE_FLOOD)
+
+    def test_whitespace_inside_json_string_is_not_a_flood(self):
+        detector = RepetitionDetector()
+        text = '{"value":"' + " " * (detector.WHITESPACE_FLOOD + 16) + '"}'
+        self.assertIsNone(_feed_all(detector, text, chunk_size=7))
+
+    def test_braces_and_escapes_inside_string_do_not_close_root(self):
+        detector = RepetitionDetector()
+        text = '{"value":"escaped \\\\\" } ] still text"}'
+        self.assertIsNone(_feed_all(detector, text, chunk_size=2))
 
     def test_short_unit_loop_triggers(self):
         # 사건 B 유형: 유사 별칭 조합의 정확 반복.
@@ -101,3 +138,39 @@ class RepetitionGuardCallbackTest(unittest.IsolatedAsyncioTestCase):
         for i in range(200):
             await guard.on_llm_new_token(f"서로 다른 토큰 {i} ")
         self.assertGreater(guard.detector.chars_seen, 0)
+
+    async def test_abort_carries_partial_text_for_diagnosis(self):
+        # spec 116 0단계: 중단 예외가 수신 tail 을 실어야 에러 기록이 response=None 으로
+        # 남지 않는다. 폭주 내용(반복 패턴)이 partial 에 실제로 보여야 한다.
+        guard = RepetitionGuardCallback("rule:test")
+        with self.assertRaises(RepetitionLoopAborted) as ctx:
+            await guard.on_llm_new_token('{"k": "v"')
+            for _ in range(200):
+                await guard.on_llm_new_token(" " * 64)
+        self.assertTrue(ctx.exception.partial_text)
+        self.assertIn('{"k": "v"', ctx.exception.partial_text)
+
+    async def test_tool_call_argument_deltas_are_guarded(self):
+        guard = RepetitionGuardCallback("rule:tool")
+        with self.assertRaises(RepetitionLoopAborted) as ctx:
+            for _ in range(200):
+                chunk = SimpleNamespace(
+                    text="",
+                    message=SimpleNamespace(
+                        tool_call_chunks=[{"args": " " * 64}],
+                        additional_kwargs={},
+                    ),
+                )
+                await guard.on_llm_new_token("", chunk=chunk)
+        self.assertEqual(1, ctx.exception.period)
+        self.assertGreaterEqual(ctx.exception.chars_seen, 32)
+
+    async def test_direct_ai_chunk_tool_arguments_are_guarded(self):
+        guard = RepetitionGuardCallback("rule:tool-direct")
+        chunk = SimpleNamespace(
+            text="",
+            tool_call_chunks=[{"args": '{"value":"ok"}'}],
+            additional_kwargs={},
+        )
+        await guard.on_llm_new_token("", chunk=chunk)
+        self.assertIn('{"value":"ok"}', guard.detector.tail_text)

@@ -2,8 +2,8 @@
 
 robo 가 이미 만든 호출그래프(state 의 `code_nodes`/`calls_edges`)만으로:
 1. **나누기(결정론, LLM 0):** 내부 호출 그래프에 Leiden 군집화 → 코드노드들을 군집(부품)으로.
-2. **이름(LLM, 군집당 1콜·전부 병렬):** 멤버 코드노드의 한 줄 압축 표현(logical_name
-   우선, 없으면 요약 첫 줄)만 모아 → `run_yaml_rule("component_naming")` 로 이름 생성.
+2. **이름(LLM, 군집당 1콜·전부 병렬):** 멤버 코드노드의 canonical summary 첫 줄만
+   모아 → `run_yaml_rule("component_naming")` 로 이름 생성.
 3. **적재:** 각 멤버 FUNCTION 노드에 `component_id`·`component_name` 속성을 SET
    (health_metrics 와 동일한 배치 UNWIND SET 패턴).
 
@@ -27,10 +27,12 @@ from pipeline.models.code_analysis_output import ComponentNamingOutput
 from graph.schema.graph_edges import Calls
 from graph.schema.graph_nodes import CodeNode
 from shared.config.settings import SETTINGS
-from llm.usage.cost_budget import BudgetExceededError
 from llm.fanout import gather_with_warmup
 from llm.runners.yaml_llm_runner import run_yaml_rule
-from shared.events.runtime_logger import log_error, log_info, log_warning
+from llm.runners.model_output_error import ModelOutputError
+from pipeline.models.analysis_finding import AnalysisFinding
+from pipeline.execution.quality_finding_log import record_analysis_findings
+from shared.events.runtime_logger import log_info, log_warning
 from shared.events.processing_events import step_processing_scope, track_processing
 from graph.neo4j_client import Neo4jClient
 from graph.ownership import ANALYZER_GRAPH_OWNER
@@ -72,8 +74,8 @@ async def build_components_step(state: dict, config: Optional[RunnableConfig] = 
         log_warning(_STEP, "config_missing", "strategy 누락 — step skip")
         return {}
 
-    # 군집은 결정론 호출그래프(step5)로 만들고, 이름은 코드노드의 logical_name·summary
-    # 한 줄만 읽는다 — 둘 다 step7 #1 summary 산물이다(spec 096). rules·insights 는 안 읽는다.
+    # 군집은 결정론 호출그래프(step5)로 만들고, 이름은 코드노드의 canonical summary
+    # 한 줄만 읽는다. rules·insights 는 안 읽는다.
     handoff = handoff_of(cfg)
     try:
         await handoff.summaries()
@@ -102,32 +104,48 @@ async def build_components_step(state: dict, config: Optional[RunnableConfig] = 
     slots = handoff.slots
     fn_by_id = {f.id: f for f in code_nodes}
 
-    async def _name_one(component_id: str, members: list[str]) -> str:
+    async def _name_one(component_id: str, members: list[str]) -> str | None:
         member_fns = [fn_by_id[m] for m in members if m in fn_by_id]
         lines = [f"- {_headline(fn)}" for fn in member_fns[:NAME_MAX_MEMBERS]]
         extra = len(member_fns) - len(lines)
         if extra > 0:
             lines.append(f"- (외 {extra}개 함수)")
         members_text = "\n".join(lines)
-        async with track_processing("Component", component_id):
-            async with slots.at(POSTPROCESS_PRIORITY):
-                result: ComponentNamingOutput = await run_yaml_rule(
-                    prompts_dir=prompts_dir,
-                    rule_name="component_naming",
-                    user_values={"component_id": component_id, "members": members_text},
-                    response_model=ComponentNamingOutput,
-                    budget=cost_budget,
-                )
+        try:
+            async with track_processing("Component", component_id):
+                async with slots.at(POSTPROCESS_PRIORITY):
+                    result: ComponentNamingOutput = await run_yaml_rule(
+                        prompts_dir=prompts_dir,
+                        rule_name="component_naming",
+                        user_values={"component_id": component_id, "members": members_text},
+                        response_model=ComponentNamingOutput,
+                        budget=cost_budget,
+                    )
+        except ModelOutputError as error:
+            finding = AnalysisFinding(
+                concern="component_name",
+                status="unavailable",
+                target_id=component_id,
+                reasons=(str(error),),
+                evidence_rule=error.rule_name,
+            )
+            record_analysis_findings([finding])
+            log_warning(
+                _STEP, "quality_finding",
+                "컴포넌트 이름 후보를 검증할 수 없어 결정론 component_id만 보존함",
+                component_id=component_id, error=str(error),
+            )
+            return None
         return result.name
 
     async def _run_fanout() -> list:
         return await gather_with_warmup(
-            [_name_one(cid, members) for cid, members in clusters], return_exceptions=True,
+            [_name_one(cid, members) for cid, members in clusters],
         )
 
     with step_processing_scope(_STEP, stream):
         results = await pause.run_restartable_during_pause(_run_fanout)
-    names = _resolve_names(clusters, results)   # component_id → name
+    names = {cid: name for (cid, _members), name in zip(clusters, results)}
 
     # 3. 적재 — 각 멤버 FUNCTION 노드에 component_id/name 속성 SET (합성 노드/엣지 없음).
     items = [
@@ -155,9 +173,22 @@ def _cluster(code_nodes: list[CodeNode], calls: list[Calls]) -> list[tuple[str, 
     Leiden(leidenalg/igraph)은 여기서 lazy import — 미설치면 명시 에러(설치 안내).
     component_id = 멤버 정렬 첫 code_id 기반 → 같은 그래프 재분석 시 안정 키.
     """
-    ids = [f.id for f in code_nodes]
+    # Reusable primitive/system utilities are cross-cutting graph bridges, not
+    # business component members.  Letting them participate in an undirected
+    # Leiden graph merges otherwise unrelated domains through string/time
+    # helpers.  Keep their CALLS edges in the graph, but exclude them only from
+    # the derived component partition.
+    ids = [
+        f.id for f in code_nodes
+        if str(getattr(f, "stereotype", "") or "") not in {"Util", "Utility"}
+    ]
+    eligible = set(ids)
     # CALL→대상 저장을 루틴쌍으로 해소(단일 해소기). 군집에 자기루프는 무의미 → 제외.
-    edges = [(a, b) for a, b in routine_call_pairs(code_nodes, calls) if a != b]
+    edges = [
+        (a, b)
+        for a, b in routine_call_pairs(code_nodes, calls)
+        if a != b and a in eligible and b in eligible
+    ]
     if not edges:
         return []
 
@@ -187,39 +218,13 @@ def _cluster(code_nodes: list[CodeNode], calls: list[Calls]) -> list[tuple[str, 
     return out
 
 
-def _resolve_names(
-    clusters: list[tuple[str, list[str]]],
-    results: list,
-) -> dict[str, str]:
-    """component_id → 이름.
-
-    LLM 실패를 다른 자연어 필드 복사로 숨기지 않는다. 군집 멤버십은 유지하되 표시명은
-    빈 값으로 남기고 오류 로그가 재처리 대상을 식별한다. BudgetExceededError 는 전파한다.
-    """
-    names: dict[str, str] = {}
-    for (cid, members), result in zip(clusters, results):
-        if isinstance(result, BudgetExceededError):
-            raise result
-        if isinstance(result, BaseException):
-            log_error(
-                "pipeline.steps.step8_post_processing.build_components_step",
-                "component_naming", result, component_id=cid,
-            )
-            names[cid] = ""
-        else:
-            names[cid] = result
-    return names
-
-
 def _headline(fn: Optional[CodeNode]) -> str:
-    """코드노드의 압축 표현 — logical_name 우선, 없으면 summary 첫 줄.
+    """코드노드의 압축 표현 — canonical summary 첫 줄.
 
     군집 이름 입력은 노드당 한 줄만 → 멤버 많아도 토큰 안전.
     """
     if fn is None:
         return ""
-    if fn.logical_name:
-        return fn.logical_name
     summary = fn.summary or ""
     for line in summary.splitlines():
         line = line.strip()

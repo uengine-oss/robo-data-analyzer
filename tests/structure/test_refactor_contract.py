@@ -31,13 +31,11 @@ class RefactorContractTest(unittest.TestCase):
         self.assertEqual((REPO.parent / "data").resolve(), _DEFAULT_DATA_DIR.resolve())
 
     def test_pipeline_llm_asset_paths_survive_moves(self) -> None:
-        from agents.residual import _RESIDUAL_PROMPT_PATH
+        from agents.residual import _RESIDUAL_PROMPTS_DIR, _RESIDUAL_RULE
         from agents.scan import _SYSTEM_PROMPT_PATH
-        from pipeline.steps.step6_build_context.large_code_one_liner import _PROMPTS_COMMON
 
         self.assertTrue(_SYSTEM_PROMPT_PATH.is_file())
-        self.assertTrue(_RESIDUAL_PROMPT_PATH.is_file())
-        self.assertTrue((_PROMPTS_COMMON / "large_code_one_liner.yaml").is_file())
+        self.assertTrue((_RESIDUAL_PROMPTS_DIR / f"{_RESIDUAL_RULE}.yaml").is_file())
 
     def test_frozen_baseline_has_503_unique_paths(self) -> None:
         lines = (SPEC / "audit-baseline.txt").read_text(encoding="utf-8").splitlines()

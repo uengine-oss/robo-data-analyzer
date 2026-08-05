@@ -46,7 +46,18 @@ def build_skill_catalog(skills_dir: Path, *, prefix: str = "") -> str:
 _YAML_FENCE_RE = re.compile(r"```yaml\s*\n(.*?)```", re.DOTALL)
 
 # ScanResult 로 주입하는 계약 키 (fence 에 존재하는 것만 담는다).
-SKILL_CONTRACT_KEYS = ("table_access_patterns", "ddl_transform", "call_wrappers")
+# table_access_rules = 구조화 DSL (spec 108, 우선) / table_access_patterns = raw 탈출구.
+SKILL_CONTRACT_KEYS = (
+    "table_access_rules",
+    "table_access_exclusion_rules",
+    "table_access_patterns",
+    "ddl_transform",
+    "call_wrappers",
+    "framework_runtime_functions",
+    "handler_markers",
+    "api_contracts",
+    "codebase_notes",
+)
 
 
 def load_skill_contract(

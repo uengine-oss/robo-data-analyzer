@@ -28,7 +28,10 @@ class PrioritySemaphore:
     def __init__(self, value: int) -> None:
         if value < 1:
             raise ValueError(f"PrioritySemaphore value must be >= 1; got {value}")
+        self._capacity = value
         self._value = value
+        self._in_use = 0
+        self._peak_in_use = 0
         self._waiters: list[tuple[int, int, asyncio.Future]] = []
         self._seq = itertools.count()
 
@@ -37,9 +40,29 @@ class PrioritySemaphore:
         """지금 남은 슬롯 수 — 관측용(대기자 수는 포함하지 않는다)."""
         return self._value
 
+    @property
+    def in_use(self) -> int:
+        """현재 실제로 발급된 슬롯 수(대기자는 제외)."""
+        return self._in_use
+
+    @property
+    def peak_in_use(self) -> int:
+        """생성 이후 실제 동시 점유의 최댓값."""
+        return self._peak_in_use
+
+    @property
+    def capacity(self) -> int:
+        return self._capacity
+
+    @property
+    def waiting(self) -> int:
+        return sum(1 for _, _, future in self._waiters if not future.cancelled())
+
     async def acquire(self, priority: int = 0) -> None:
         if self._value > 0 and not self._waiters:
             self._value -= 1
+            self._in_use += 1
+            self._peak_in_use = max(self._peak_in_use, self._in_use)
             return
         # 슬롯이 있어도 **대기자가 있으면 줄을 선다** — 뒤늦게 온 낮은 우선순위가
         # 새치기해 높은 우선순위 대기자를 굶기지 않게(그리고 순서 계약을 지키게).
@@ -63,6 +86,9 @@ class PrioritySemaphore:
                 continue          # 취소된 대기자는 건너뛴다 (슬롯은 다음 사람에게)
             future.set_result(True)
             return
+        if self._in_use < 1:
+            raise RuntimeError("PrioritySemaphore released without an acquired slot")
+        self._in_use -= 1
         self._value += 1
 
     def _drop(self, future: asyncio.Future) -> None:

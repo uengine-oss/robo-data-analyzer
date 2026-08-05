@@ -2,7 +2,8 @@
 
 **최종 갱신**: 2026-08-05
 
-**대상 저장소**: `D:\work\robo\project\robo-data-analyzer`
+**대상 저장소**: `D:\work\robo\project\robo-data-analyzer`, 구조 구문 생산자는
+`D:\work\robo\project\antlr-code-parser`
 
 **사용자 진입 경로**: `D:\work\robo\docs\핸드오프\분석시간-정확도-검증-정본`
 
@@ -16,13 +17,15 @@
 
 1. 프로젝트 메모리 원문: `principles.md`, `manual.md`, `speckit.md`
 2. `.specify/memory/constitution.md` — 현재 버전 1.3.2
-3. 이 문서
+3. **[08-단일인계-정본.md](08-단일인계-정본.md) — 현재 세션 인계의 단일 진입점(최우선)**
+4. 이 문서
 4. [01-절대계약과-금지.md](01-절대계약과-금지.md)
 5. [02-현재설계와-책임경계.md](02-현재설계와-책임경계.md)
 6. [03-성능실측과-원인.md](03-성능실측과-원인.md)
 7. [04-검증방법.md](04-검증방법.md)
 8. [05-spec116-정정표.md](05-spec116-정정표.md)
 9. [06-재개절차와-현재상태.md](06-재개절차와-현재상태.md)
+10. [07-AST-구조사실-생산자계약.md](07-AST-구조사실-생산자계약.md)
 
 spec 116의 `spec.md`, `plan.md`, `tasks.md`도 읽되, 과거 단계의 설명을 현재 설계 지시로
 해석하지 않는다. 충돌 여부는 `05-spec116-정정표.md`에서 먼저 확인한다.
@@ -53,6 +56,10 @@ spec 116의 `spec.md`, `plan.md`, `tasks.md`도 읽되, 과거 단계의 설명�
 - 현재 `summary_contract.md`는 purpose-only인데 생산 summary 하나가 사람 표시·검색·
   bottom-up 전달을 모두 맡는다. 중요한 효과·상태·테이블·반환 의미가 소실될 위험이 있어
   해결 전 항목이다(TA-144).
+- 새로 확인된 구조 결함: 현재 Framework AST JSON은 RETURN 노드를 내보내지 않으며 analyzer가
+  함수 원문에서 첫 토큰·정규식으로 RETURN/CALL/ASSIGNMENT 일부를 다시 찾는다. parser grammar가
+  아는 구문은 `antlr-code-parser` listener/AST JSON이 생산하고 analyzer는 소비·검증만 해야 한다.
+  범위와 전환 게이트는 `07-AST-구조사실-생산자계약.md`와 TA-151을 따른다.
 
 ## 완료로 착각하면 안 되는 것
 
@@ -62,12 +69,13 @@ spec 116의 `spec.md`, `plan.md`, `tasks.md`도 읽되, 과거 단계의 설명�
 - 논리 입력 토큰 합계가 줄었다고 KV 캐시 적중을 증명할 수 없다.
 - 모든 행 키가 required라고 해서 cond/then 참조가 evidence별 enum으로 닫힌 것은 아니다.
 - guardrail 위반 후보는 모델 품질 finding이지 전체 run 실패가 아니다.
+- AST로 제공 가능한 구조 구문을 analyzer 정규식으로 찾는 것은 범용 구현이 아니다.
 
 ## 이 폴더 갱신 규칙
 
 - 세션 시작 시 `06-재개절차와-현재상태.md`의 HEAD/status/test/run 값을 현재 실행으로 갱신한다.
 - 새 실측은 `03-성능실측과-원인.md`에 원본 run id와 함께 추가한다.
-- 설계가 바뀌면 `01`, `02`, `05`를 같은 변경에서 함께 고친다.
+- 설계가 바뀌면 `01`, `02`, `05`, 필요 시 `07`을 같은 변경에서 함께 고친다.
 - 검증 범위나 정답지가 바뀌면 `04`와 `tasks.md`를 함께 고친다.
 - 확정·반증·미검증을 구분한다. 추정은 결론란에 쓰지 않는다.
 - 고객 원문·키·`.env`·evidence 원문은 이 폴더에 복사하지 않는다.

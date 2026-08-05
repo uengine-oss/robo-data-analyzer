@@ -11,6 +11,28 @@ from llm.fanout import gather_with_warmup
 
 
 class PauseControllerContractTest(unittest.IsolatedAsyncioTestCase):
+    async def test_warmup_fanout_failure_cancels_and_collects_siblings(self) -> None:
+        sibling_started = asyncio.Event()
+        sibling_cleaned = asyncio.Event()
+
+        async def warmup() -> str:
+            return "warm"
+
+        async def fail() -> None:
+            await sibling_started.wait()
+            raise RuntimeError("semantic failure")
+
+        async def sibling() -> None:
+            try:
+                sibling_started.set()
+                await asyncio.Event().wait()
+            finally:
+                sibling_cleaned.set()
+
+        with self.assertRaisesRegex(RuntimeError, "semantic failure"):
+            await gather_with_warmup([warmup(), fail(), sibling()])
+        self.assertTrue(sibling_cleaned.is_set())
+
     async def test_stop_interrupts_warmup_fanout_and_collects_children(self) -> None:
         pause = PauseController()
         started = asyncio.Event()
@@ -24,9 +46,7 @@ class PauseControllerContractTest(unittest.IsolatedAsyncioTestCase):
                 cleaned.set()
 
         async def operation() -> list:
-            return await gather_with_warmup(
-                [blocking(), asyncio.Event().wait()], return_exceptions=True,
-            )
+            return await gather_with_warmup([blocking(), asyncio.Event().wait()])
 
         runner = asyncio.create_task(pause.run_restartable_during_pause(operation))
         await started.wait()
@@ -129,7 +149,6 @@ class PauseControllerContractTest(unittest.IsolatedAsyncioTestCase):
     def test_all_step7_item_fanouts_are_restartable_and_stop_responsive(self) -> None:
         repository_root = Path(__file__).resolve().parents[3]
         for relative_path in (
-            "pipeline/steps/step8_post_processing/build_glossary_step.py",
             "pipeline/steps/step8_post_processing/enrich_table_description_step.py",
             "pipeline/steps/step8_post_processing/build_components_step.py",
             "pipeline/steps/step8_post_processing/summarize_module_step.py",

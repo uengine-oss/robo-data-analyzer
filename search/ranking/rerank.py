@@ -2,21 +2,18 @@
 
 (질의, passage) 쌍을 bge-reranker 가 직접 채점(sigmoid 확률 0..1). 결정론이라 프로세스 내
 메모리 캐시(같은 질의 재요청 시 재사용). CE 모델은 DB 무관 → 프로세스 1회 로드.
-판정 재료 통일(spec 009): passage 에 search_text 병기(``ROBO_SEM_UNIFIED``, 기본 on — 게이트 승자).
+판정 재료는 canonical ``summary`` 단일 필드다.
 """
 from __future__ import annotations
 
 import hashlib
 import json
-import os
 from pathlib import Path
 
 from shared.events.runtime_logger import log_warning
 
 
 _LOG = "search.ranking.rerank"
-
-_SEM_UNIFIED = os.environ.get("ROBO_SEM_UNIFIED", "1") == "1"
 
 _ce_cache: dict = {}
 # CE 점수 = 결정론(같은 model·질의·passage → 항상 같은 점수) → 디스크 캐시로 재측정·반복질의 0초.
@@ -96,16 +93,5 @@ def predict_cached(model_name: str, pairs: list[tuple[str, str]]) -> list[float]
 
 
 def passage(n: dict) -> str:
-    """CE 입력 = 타입 + 이름/논리명 + 요약 + 역할 + (통일 시) search_text. 임베딩과 같은 재료.
-    길이 상한 없음 — 자르면 잘린 사실이 채점에서 사라진다."""
-    name = n.get("name") or n.get("logical_name") or ""
-    stereo = n.get("stereotype") or ""
-    parts = [f"[{n.get('label', '')}]"]
-    if name:
-        parts.append(name)
-    parts.append(n.get("summary", ""))
-    if stereo:
-        parts.append(f"(역할:{stereo})")
-    if _SEM_UNIFIED and (n.get("search_text") or "").strip():
-        parts.append("검색: " + n["search_text"].replace("\n", " ").strip())
-    return " ".join(parts).strip()
+    """CE input is the canonical summary; display metadata is not appended."""
+    return (n.get("summary") or "").replace("\n", " ").strip()

@@ -61,10 +61,10 @@ class ExternalSkill(BaseModel):
 
     name: str
     extensions: tuple[str, ...]
-    content_signatures: tuple[Annotated[str, Field(min_length=1, max_length=120)], ...] = ()
+    content_signatures: tuple[Annotated[str, Field(min_length=1, max_length=120)], ...] = Field(...)
     rules: tuple[ExternalExtractionRule, ...]
-    explanation: Annotated[str, Field(max_length=500)] = ""
-    provenance: Annotated[str, Field(max_length=500)] = ""
+    explanation: Annotated[str, Field(max_length=500)] = Field(...)
+    provenance: Annotated[str, Field(max_length=500)] = Field(...)
 
     @field_validator("name")
     @classmethod
