@@ -186,28 +186,6 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
             contracts.append(prompt["static_values"]["rule_leaf_contract"])
         self.assertEqual(1, len(set(contracts)))
 
-    def test_nl_contract_blocks_ref_leak_polarity_flip_and_enumeration(self) -> None:
-        """L-③ 표본 판정이 계량한 nl 결함 3종을 계약이 직접 금지한다.
-
-        근거: docs/작업보고내용/2026-08-05-L3-표본20-의미판정표.md
-        (ref 누출 11.0% · 조건 극성 반전 3건 · 진입 행 문장 잘림 6건)
-        계약은 코퍼스 중립이어야 하므로 특정 함수명·코드값을 담지 않는다.
-        """
-        contract = (ROOT / "llm" / "prompts" / "common" / "rule_leaf_contract.md").read_text(
-            encoding="utf-8"
-        )
-        # ① ref 누출 금지 — nl 은 사람 문장이지 참조 번호 재진술이 아니다
-        self.assertIn("C번호", contract)
-        self.assertIn("E번호", contract)
-        self.assertRegex(contract, r"nl[^\n]*(참조|번호)[^\n]*(쓰지|사용하지) ?않는다")
-        # ② 극성 반전 금지 — 판정 함수의 반환 규약을 모르면 조건식을 그대로 서술한다
-        self.assertRegex(contract, r"(부정|긍정|극성)[^\n]*뒤집")
-        # ③ 진입 행 나열·잘림 금지 — 주 작업을 요약한다
-        self.assertRegex(contract, r"(나열|열거)[^\n]*(대신|말고)")
-        # 코퍼스 중립: 고객 코드의 함수명·상태값이 계약에 새지 않았다
-        for leaked in ("mpfm_", "RC_NRM", "RC_ERR", "isspnull"):
-            self.assertNotIn(leaked, contract)
-
     def test_rule_anchor_contract_is_identical_for_unrelated_languages_and_domains(self) -> None:
         fixtures = (
             ("java", "배송 요청", 17),

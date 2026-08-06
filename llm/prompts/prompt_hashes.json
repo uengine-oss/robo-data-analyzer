@@ -2,7 +2,7 @@
   "prompts/common/component_naming_contract.md": "afb6b56e4cbddcb1d0f1f0aef957d2049fd487a8c2684a8e84e92f9db8c0cacd",
   "prompts/common/module_intent_contract.md": "1583d2c1d3048709b7fef59c6939e54ad3d8cefb4a8643627b6d4771b4f68b3f",
   "prompts/common/module_summary_contract.md": "d5e3301d2971d73dc274e9288533ef2d3642150eda0bb205c06460142aa38faf",
-  "prompts/common/rule_leaf_contract.md": "ffc6de1f8e9be4c8a9249df76ac9b060cb1da27c982b4b30420795dfc22b7450",
+  "prompts/common/rule_leaf_contract.md": "b3081e6549129d90573bb29a9a3b0ba79203bf2fc740ab93f621c71df751014b",
   "prompts/common/summary_contract.md": "6615e4cd76d6630f221472c23021d1690d750515d72dd0621730ccebf28b1b51",
   "prompts/common/table_description_contract.md": "d5662e7a537e0c7a216308b88df945b9c8ab512099298b3ade297c574e10b5cf",
   "prompts/dbms/_common.yaml": "cd542f1deb8e31ea849cfdf3b9ca5fdfcb3796ad4109907e2f1173d730255725",
