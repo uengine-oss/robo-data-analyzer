@@ -26,12 +26,29 @@
    파싱 탈락분 선별 재요청·정규형/심볼 채점기 상설
 5. 미달 시 병기 또는 보류 — 결론은 측정이 낸다.
 
+## 이 브랜치는 열려 있다 (닫히지 않았음)
+
+main 트랙(TA-151 + 정확도 증명)은 2026-08-05 L 완료로 닫혔지만, **이 브랜치는 진행 중**이다.
+닫으려면 위 "다음 순서" 1~4를 수행해 기준 통과 여부를 판정해야 한다.
+결론은 측정이 내며, 미달이면 병기 또는 보류로 종결하는 것도 정상적인 닫힘이다.
+
 ## 파일
 
+**최종 후보 노선 (권장 재개 지점)**
 - `run_gwt_semantic{,_v2}.py` — 운영 record 증거 동봉 + given/then 의미 파이썬 추출 (v2 = 지침 보강판)
 - `score_gwt_semantic.py <결과파일>` — 골든셋 정규형/심볼 결정론 채점 + 판정표
 - `golden_rel.py` — rel(then) 골든셋 파일럿 채점기
 - `run_rel_wire_20.py` / `score_rel_wire_20.py` — 13차(표본 20 × 운영 프롬프트 × nl→rel) 실측
-- `RESULTS.md` — 실측 1~15차 전체 원장 (원자료 jsonl 은 `_runs/ast-contract-20260805/notation_ab/`)
+
+**기각된 노선의 실측 (재시도 방지용 증거 — 다시 열지 말 것)**
+- `run_blind_test.py` / `score_blind_test.py` — 1차: 표기법 blind(fUML·KDM·OCL·SBVR·DMN·DRL·Gherkin·
+  파이썬·LLVM) + LLM 값 실행. 표준 표기 환각·값 실행 오답 확인
+- `run_semantic_tri.py` / `score_semantic_tri.py` — 8차: 파이썬/OCL/FEEL 3종 × 출력 강제
+- `run_relation_python.py` / `run_relation_real.py` / `score_relation_real.py` /
+  `rescore_relation_normalized.py` — 10·11차: 관계 등식 노선(후처리 2규칙으로 형식 99~100%)
+- `run_semantic_closed.py` — 9차: 닫힌 어휘 변형(의도 이탈로 기각)
+
+**원장**
+- `RESULTS.md` — 실측 1~15차 전체 (원자료 jsonl 은 `_runs/ast-contract-20260805/notation_ab/` — gitignore)
 
 전 실측의 원자료·전체 맥락: 08 핸드오프(`docs/handovers/analysis-performance-validation-canonical/08-단일인계-정본.md`) §12.
