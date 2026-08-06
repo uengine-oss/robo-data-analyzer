@@ -368,7 +368,21 @@ class BranchInventory:
                     # 형제 형상 else 를 경유 — 그 짝 decision 은 부정이다
                     outer.append((paired, "negated"))
             current = ancestor
-        return {"controller": controller, "direct": direct, "outer": outer}
+        # controller 형상(switch default 등)의 도달 조건은 주제식의 부정이 아니라
+        # **형제 판정 전부의 불성립**이다. 주제식을 부정하면 의미가 어긋난다(L-③ 실측).
+        siblings = [
+            child
+            for child in (controller.children if controller is not None else ())
+            if child is not branch
+            and child.prompt_role() == "decision"
+            and child.condition.strip()
+        ]
+        return {
+            "controller": controller,
+            "direct": direct,
+            "outer": outer,
+            "siblings": siblings,
+        }
 
     def _complement_text(self, context: dict) -> str:
         state_word = {"negated": "부정", "holding": "성립"}
@@ -505,6 +519,10 @@ class BranchInventory:
                         if context["direct"] is not None
                         else None
                     ),
+                    "siblings": [
+                        sibling.start + self.line_offset
+                        for sibling in context["siblings"]
+                    ],
                     "outer": [
                         {"line": ancestor.start + self.line_offset, "state": state}
                         for ancestor, state in context["outer"]

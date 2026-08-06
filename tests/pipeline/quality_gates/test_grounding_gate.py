@@ -261,6 +261,53 @@ class BranchIndexUniqueness(unittest.TestCase):
         self.assertIn("[complement] CASE", rows[2])
         self.assertIn("그 외", rows[2])
 
+    def test_switch_default_path_negates_sibling_cases_not_the_subject(self):
+        """default 도달 조건은 '주제식의 부정'이 아니라 '형제 case 전부 불성립'이다.
+
+        실측 결함(L-③ 판정, 08 §20 ⑥): controller(주제식 `kind`)를 부정해
+        `not (F("kind"))` 로 렌더되어 의미가 어긋났다. 올바른 경로는 각 case 라벨의 부정이다.
+        """
+        from pipeline.quality_gates.rule_prompt_evidence import rule_evidence
+
+        body = (
+            "switch (kind)\n{\n"
+            'case "A":\n    first();\n'
+            'case "B":\n    second();\n'
+            "default:\n    other();\n}\n"
+        )
+        tree = [
+            ControlSubtreeNode(
+                node_id="switch", ntype="SWITCH", start=1, end=9, expression="kind",
+                children=[
+                    ControlSubtreeNode(node_id="a", ntype="CASE", start=3, end=4,
+                                       expression='"A"'),
+                    ControlSubtreeNode(node_id="b", ntype="CASE", start=5, end=6,
+                                       expression='"B"'),
+                    ControlSubtreeNode(node_id="default", ntype="CASE", start=7, end=8),
+                ],
+            )
+        ]
+        inventory = build_inventory(body, tree, "c", statements=())
+        complement = next(
+            r for r in inventory.table_rows() if r.get("role") == "complement"
+        )
+        evidence = rule_evidence(inventory, [int(complement["line"])])
+        when = evidence["rows"][f"R{complement['line']}"]["when"]
+        conditions = evidence["conditions"]
+
+        subject_refs = [
+            ref for ref in when
+            if conditions.get(ref.lstrip("!"), "").strip() == "kind"
+        ]
+        self.assertEqual(
+            [], subject_refs,
+            "default 경로가 주제식(kind)을 부정하면 안 된다 — 형제 case 를 부정해야 한다",
+        )
+        negated_labels = {
+            conditions[ref.lstrip("!")] for ref in when if ref.startswith("!")
+        }
+        self.assertEqual({'"A"', '"B"'}, negated_labels)
+
     def test_nested_else_negates_direct_decision_and_keeps_outer_holding(self):
         # if A { if B {} else {} } — 안쪽 else 는 B 의 부정이면서 A 는 **성립**(본문 중첩).
         body = (

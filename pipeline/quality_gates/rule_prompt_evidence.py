@@ -72,9 +72,16 @@ def _condition_path(
     elif role == "complement":
         context = row.get("complement_of")
         if isinstance(context, Mapping):
-            reference = context.get("direct_negated") or context.get("controller")
-            if isinstance(reference, int):
-                references[reference] = False
+            direct = context.get("direct_negated")
+            if isinstance(direct, int):
+                references[direct] = False
+            else:
+                # controller 형상(switch default 등): 도달 조건은 주제식의 부정이 아니라
+                # 형제 판정 전부의 불성립이다. 형제가 없으면 자기 항을 만들지 않는다
+                # (조건 없는 decision 과 같은 계약 — 조건을 창작하지 않는다).
+                for sibling in context.get("siblings") or ():
+                    if isinstance(sibling, int) and _has_condition(inventory, sibling):
+                        references[sibling] = False
             for outer in context.get("outer") or ():
                 if not isinstance(outer, Mapping) or not isinstance(
                     outer.get("line"), int
