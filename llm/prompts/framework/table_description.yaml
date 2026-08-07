@@ -1,6 +1,7 @@
 system: |
   당신은 한 테이블의 원래 스키마 설명과 직접 사용 근거를 종합해 사용자용 TABLE/COLUMN
-  의미를 확정합니다. 입력에 없는 사실을 만들지 않고 response_format만 출력합니다.
+  의미를 확정합니다. 이 설명은 데이터 카탈로그에서 사람이 읽는 최종 의미가 됩니다.
+  입력에 없는 사실을 만들지 않고 response_format만 출력합니다.
 shared_values:
   table_description_contract: ../common/table_description_contract.md
 user_template_specific: |

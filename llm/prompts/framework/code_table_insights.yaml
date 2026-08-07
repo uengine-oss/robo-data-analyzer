@@ -4,41 +4,63 @@ max_tokens: 5000
 user_template_specific: |
   # [분할 계약: TableInsightsOutput]
 
-  `table_insights`만 출력한다. summary·이름·용어·Rule·Example·Question을 만들지 않는다.
+  이 요청은 `table_insights`만 출력한다. summary·이름·용어·Rule·Example·Question은 다른
+  요청의 몫이므로 만들지 않는다.
   `table_insights`는 배열이 아니라 입력 reads/writes의 exact `table_id`를 key로 쓰는
-  객체다. schema에 required로 주어진 모든 key를 정확히 한 번 채운다. 바깥 key가 table 좌표이므로
-  값 안에서 table을 반복하지 않고 `role`, `usage_summary`만 쓴다.
+  객체다. schema에 required로 주어진 모든 key를 정확히 한 번 채운다. 바깥 key가 table
+  좌표이므로 값 안에서 table을 반복하지 않고 `role`, `usage_summary`만 쓴다.
+  아래 절은 각각 자기 절이 명시한 필드에만 적용된다.
 
-  ## 테이블 경계
+  ## 소유권 — 어느 테이블에 무엇을 쓰는가
 
   현재 함수가 직접 접근한 table_id key만 출력하고 callee나 같은 함수의 다른 테이블 의미를
-  섞지 않는다.
+  섞지 않는다. 근거 없는 테이블 항목으로 개수를 채우지 않으며, schema의 table key를
+  누락하거나 입력 밖 key를 추가하지 않는다.
 
-  - 잘못: 함수가 A를 조회하고 B에 저장하므로 A 설명에도 B의 임시 적재 역할을 붙임
-  - 좋음: A에는 조회·판단 역할만, B에는 저장 역할만 각각 기록
+  예시 — 함수가 배송상태 테이블을 조회하고 배송이력 테이블에 저장할 때, 배송상태 쪽 출력:
 
-  `role`은 직접 reads/writes에서 확인되는 READ/WRITE 조합을 설명한다. 허용값은
-  `READ-only`, `WRITE-only`, `READ_WRITE`, `append-only`, `lookup`, `upsert`이며
-  정확히 하나를 쓴다. 조회 결과를 판단에 쓰면 `lookup`, 그대로 반환하면 `READ-only`;
-  INSERT만 하면 이력성일 때 `append-only`, 아니면 `WRITE-only`; MERGE·충돌 갱신처럼
-  삽입과 갱신을 함께 보장할 때만 `upsert`다.
-  읽기만 주입됐으면 `READ-only`/`lookup`, 쓰기만 주입됐으면
-  `WRITE-only`/`append-only` 중에서 고른다. 읽기와 쓰기가 모두 주입된 경우에만
-  `READ_WRITE`를 쓴다. `upsert`는 입력의 권위 연산이 MERGE인 경우에만 쓴다.
-  `usage_summary`는 현재 함수가 바로 그 테이블에 수행하는 조회·쓰기와 그 결과가 현재
-  함수 판단·산출에 어떻게 쓰이는지를 한 줄로 쓴다.
+  - 잘못: `usage_summary: "배송 상태를 조회하고 요청 원문을 이력으로 저장"` — 이력
+    테이블의 역할이 섞였다
+  - 좋음: `usage_summary: "요청 식별자로 현재 배송 상태를 조회해 변경 가능 여부 판단에 사용"`
 
-  - 잘못: “업무 처리에 사용되는 테이블”
-  - 좋음: “요청 식별자로 기존 배송 상태를 조회해 변경 가능 여부 판단에 사용”
+  ## `role` — 접근 유형 분류
+
+  이 절은 `role` 필드에만 적용된다.
+
+  직접 reads/writes에서 확인되는 READ/WRITE 조합을 허용값
+  `READ-only`, `WRITE-only`, `READ_WRITE`, `append-only`, `lookup`, `upsert` 중
+  정확히 하나로 분류한다.
+
+  판정 절차:
+  1. 읽기만 주입됐으면 `READ-only`/`lookup` 중에서 고른다 — 조회 결과를 판단에 쓰면
+     `lookup`, 그대로 반환하면 `READ-only`.
+  2. 쓰기만 주입됐으면 `WRITE-only`/`append-only` 중에서 고른다 — INSERT만 하고
+     이력성이면 `append-only`, 아니면 `WRITE-only`.
+  3. 읽기와 쓰기가 모두 주입된 경우에만 `READ_WRITE`를 쓴다.
+  4. `upsert`는 입력의 권위 연산이 MERGE인 경우에만 쓴다.
+
   - 잘못: reads에만 있는 테이블을 `WRITE-only`로 판정
   - 좋음: 같은 근거에서 판정용 조회라면 `lookup`으로 판정
 
-  ## 컬럼
+  ## `usage_summary` — 사용 설명
+
+  이 절은 `usage_summary` 필드에만 적용된다.
+
+  현재 함수가 바로 그 테이블에 수행하는 조회·쓰기와 그 결과가 현재 함수의 판단·산출에
+  어떻게 쓰이는지를 한 줄로 쓴다.
+
+  - 잘못: "업무 처리에 사용되는 테이블" — 어느 테이블에나 붙는 문장은 설명이 아니다.
+  - 좋음: "요청 식별자로 기존 배송 상태를 조회해 변경 가능 여부 판단에 사용"
+
+  ## 컬럼 — 출력하지 않는 것
 
   현재 결정론 입력에는 code-node→column 관계가 없으므로 컬럼 필드는 출력하지 않는다.
   본문 식별자나 table/구조체 이름 유사도로 컬럼을 추측하지 않는다.
   전체 DDL 컬럼의 설명·논리명은 후속 table 통합 단계가 DDL `HAS_COLUMN` 관계에서 별도로
   생성한다.
 
-  근거 없는 테이블·컬럼 항목으로 개수를 채우지 않는다. schema의 table key를 누락하거나
-  입력 밖 key를 추가하지 않는다.
+  ## 내보내기 전 자기 점검
+
+  - required table key를 전부, 입력 밖 key 없이 채웠는가
+  - 각 role이 주입된 reads/writes 방향과 맞는가
+  - 각 usage_summary가 그 테이블에만 해당하는 내용인가

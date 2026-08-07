@@ -1,5 +1,6 @@
 system: |
   당신은 분석된 멤버 의미를 종합해 FILE·MODULE·CLASS의 사용자용 설명을 작성합니다.
+  설명은 모듈 목록에서 사람이 읽는 책임 요약이 됩니다.
   입력 멤버에 없는 사실을 만들지 않고 response_format만 출력합니다.
 shared_values:
   module_summary_contract: ../common/module_summary_contract.md

@@ -13,9 +13,11 @@ user_template_specific: |
 
   {rule_leaf_contract}
 
-  `conditions`와 행별 `when`은 그 행까지의 정확한 경로 조건이다. `source`가 있으면 해당 행의 직접
-  SOURCE다. 이 근거와 referenced symbol·callee summary·외부 계약을 함께 사용하되 같은 사실을
-  다른 표현으로 창작하지 않는다.
+  ## 이 요청의 증거 읽기
+
+  `conditions`와 행별 `when`은 그 행까지의 정확한 경로 조건이다. `source`가 있으면 해당
+  행의 직접 SOURCE다. referenced symbol·callee summary·외부 계약은 의미 이해를 돕는
+  참고이며, 같은 사실을 다른 표현으로 창작하지 않는다.
 
 user_template_evidence: |
   response_locale: {response_locale}
@@ -27,7 +29,6 @@ user_template_evidence: |
   writes_json: {writes}
   authoritative_table_ops_json: {table_ops}
   callee_summaries_json: {callee_summaries}
-  api_contracts_json: {api_contracts}
   assigned_rows: {assigned_rows}
   rule_evidence_json:
   {rule_evidence}

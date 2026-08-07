@@ -230,9 +230,11 @@ class TableSemanticGroundingTest(unittest.TestCase):
         contract = (
             _ROOT / "llm/prompts/common/table_description_contract.md"
         ).read_text(encoding="utf-8")
-        self.assertIn("의미 중심어", contract)
-        self.assertIn("약어를 관례로 확장하지 않음", contract)
-        self.assertIn("사람 일련번호", contract)
+        # 2026-08-07 계약 개편 — 같은 의미(“source가 구별한 중심 개념을 물리명 추측으로
+        # 바꾸지 않는다”)를 실물 입력→출력 예시로 표현한다. 문구 앵커를 새 원문에 맞춘다.
+        self.assertIn("중심 명사와 수식어", contract)
+        self.assertIn("업무 명사구를 그대로 재사용", contract)
+        self.assertIn("고객 일련번호", contract)
         self.assertIn("기관 지점 일련번호", contract)
 
     def test_source_column_meaning_is_schema_constant_not_posthoc_fallback(self):

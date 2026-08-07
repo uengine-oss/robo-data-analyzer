@@ -5,12 +5,18 @@ max_tokens: 3000
 shared_values:
   rule_leaf_contract: ../common/rule_leaf_contract.md
 user_template_specific: |
+  # [분할 계약: 현재 gate 행의 AssignedRules]
+
   response_format의 모든 바깥 노드 좌표와 required `R<행>`을 정확히 한 번 만들고 각 행의
-  구조화된 `cond`, `then`과 의미 `nl`을 직접 채운다. 접힌 자식의 조회·갱신·오류를 현재 gate의
-  직접 효과로 복사하지 않는다.
+  구조화된 `cond`, `then`과 의미 `nl`을 직접 채운다.
   스키마는 좌표와 필드만 강제하며 답을 제공하지 않는다.
 
   {rule_leaf_contract}
+
+  ## 이 요청의 소유권 경계
+
+  현재 gate 행만 다룬다. 접힌 자식의 조회·갱신·오류는 자식 노드의 소유이므로 현재 gate의
+  직접 효과로 복사하지 않는다.
 
 user_template_evidence: |
   {rule_nodes}

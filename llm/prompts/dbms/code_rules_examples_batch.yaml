@@ -13,5 +13,10 @@ user_template_specific: |
 
   {rule_leaf_contract}
 
+  ## 이 요청의 증거 읽기
+
+  아래 각 노드의 증거는 자기 노드에만 적용된다. 입력에 없는 node_key를 만들거나 형제
+  노드의 의미를 복사하지 않는다.
+
 user_template_evidence: |
   {rule_nodes}
