@@ -62,15 +62,26 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
     # code_id → reads/writes/callers/callees 집계 (sorted tuple 강제 — 캐시 친화)
     reads_by_fn: dict[str, set[str]] = {}
     writes_by_fn: dict[str, set[str]] = {}
-    # (fn, table) → 결정론 dml_type 집합. SQL_KEY 접미(_i/_u/_d 등)에서 나온 권위 op 다
-    # (spec 100). 뒤에서 "단일 op" 만 골라 LLM 의 op 오귀속(예: _u 인데 INSERT)을 교정한다.
-    op_by_fn: dict[str, dict[str, set[str]]] = {}
+    # 권위 table op 의 재료 — **관계가 op 를 결정한다**. 엣지의 dml_type 은 그 구문의
+    # 사실이라(INSERT…SELECT 의 읽기 테이블, 트리거 헤더 `AFTER INSERT ON T` 의 대상
+    # 테이블도 구문 dml 은 INSERT) READS 엣지의 dml 을 테이블 op 로 승격하면 읽기
+    # 테이블이 쓰기 op 를 얻어 스키마 소유권 검사와 충돌한다(2026-08-07 rwis 실측 fatal).
+    # 따라서 WRITES 엣지의 dml 만 op 후보로 모으고, 읽기 테이블은 READ 로 확정한다.
+    write_ops_by_fn: dict[str, dict[str, set[str]]] = {}
+    read_dml_tables_by_fn: dict[str, set[str]] = {}
     for e in rw_edges:
-        bucket = reads_by_fn if e.relation == "READS" else writes_by_fn
+        is_read = e.relation == "READS"
+        bucket = reads_by_fn if is_read else writes_by_fn
         bucket.setdefault(e.source_id, set()).add(e.target_id)
         dml = getattr(e, "dml_type", "") or ""
-        if dml:
-            op_by_fn.setdefault(e.source_id, {}).setdefault(e.target_id, set()).add(dml)
+        if not dml:
+            continue
+        if is_read:
+            read_dml_tables_by_fn.setdefault(e.source_id, set()).add(e.target_id)
+        else:
+            write_ops_by_fn.setdefault(e.source_id, {}).setdefault(
+                e.target_id, set()
+            ).add(dml)
 
     callers_by_fn: dict[str, set[str]] = {}
     callees_by_fn: dict[str, set[str]] = {}
@@ -135,14 +146,18 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
         # "없음"이 사실이므로 빈 튜플을 명시 제공한다(source 재탐색 금지).
         ctx.extra["ast_statements"] = tuple(statement_facts.get(fn.id, ()))
         ctx.extra["ast_call_lines"] = tuple(call_lines_by_fn.get(fn.id, ()))
-        # 권위 op 맵 — 한 (fn,table) 이 **단일 dml_type** 일 때만(모호하면 제외). LLM 이
-        # 낡은 주석에 속아 op 를 뒤바꾸는 환각(감사 최대 결함)을 결정론으로 교정하는 근거.
-        # SELECT → 폐쇄형 op "READ" 로 정규화(AFFECTS_TABLE 계약), 나머지는 그대로.
-        fn_ops = op_by_fn.get(fn.id, {})
+        # 권위 op 맵 — LLM 이 낡은 주석에 속아 op 를 뒤바꾸는 환각(감사 최대 결함)을
+        # 결정론으로 교정하는 근거. 쓰기 테이블은 **단일 write dml** 일 때만 그 op
+        # (모호하면 제외 — READ 로 격하하지 않는다), 쓰기 dml 이 없는 읽기 테이블은
+        # 폐쇄형 op "READ"(AFFECTS_TABLE 계약)로 확정한다.
+        fn_write_ops = write_ops_by_fn.get(fn.id, {})
         table_op = {
-            table: ("READ" if next(iter(ops)) == "SELECT" else next(iter(ops)))
-            for table, ops in fn_ops.items() if len(ops) == 1
+            table: next(iter(ops))
+            for table, ops in fn_write_ops.items() if len(ops) == 1
         }
+        for table in read_dml_tables_by_fn.get(fn.id, ()):
+            if table not in fn_write_ops:
+                table_op[table] = "READ"
         if table_op:
             ctx.extra["table_op"] = table_op
         contexts[fn.id] = ctx
