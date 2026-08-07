@@ -23,26 +23,32 @@ REPO = Path(__file__).resolve().parents[2]
 
 
 class RuntimeOutputContractTest(unittest.TestCase):
-    def test_default_setting_and_analysis_run_use_flat_logs_root(self) -> None:
+    def test_default_setting_and_analysis_run_use_per_run_directory(self) -> None:
+        # 2026-08-07 개편: 루트는 logs 그대로, 산출물은 logs/<run_id>/ 에 격리된다.
+        # run 끼리 서로의 증거를 지우지 않아야 전후 비교가 백업 없이 성립한다.
         with patch.dict(os.environ, {"ROBO_RUN_OUTPUT_DIR": "./logs"}, clear=False):
             settings = AnalysisRunOutputSettings()
         self.assertEqual(Path("./logs"), settings.dir)
 
         run = AnalysisRun.now(Codebase(root=REPO, strategy="framework"), settings.dir)
-        self.assertEqual(Path("./logs"), run.run_dir)
+        self.assertEqual(Path("./logs") / run.run_id, run.run_dir)
 
-    def test_reset_updates_the_selected_flat_output_root(self) -> None:
+    def test_reset_prepares_run_directory_under_owned_root(self) -> None:
         with tempfile.TemporaryDirectory() as parent:
             root = Path(parent) / "logs"
-            _reset_run_output_root(root)
+            run = AnalysisRun.now(Codebase(root=REPO, strategy="framework"), root)
+            _reset_run_output_root(root, run.run_dir)
             self.assertTrue((root / ".robo-data-analyzer-output").is_file())
-            self.assertTrue((root / "llm-prompts").is_dir())
+            self.assertTrue((run.run_dir / "llm-prompts").is_dir())
+
+            # 개편 전 평면 산출물은 소유 표식 아래에서 제거된다 — run 폴더는 보존.
             sentinel = root / "stale.json"
             sentinel.write_text("previous-run", encoding="utf-8")
-
-            _reset_run_output_root(root)
+            second = AnalysisRun.now(Codebase(root=REPO, strategy="framework"), root)
+            _reset_run_output_root(root, second.run_dir)
             self.assertFalse(sentinel.exists())
-            self.assertTrue((root / "llm-prompts").is_dir())
+            self.assertTrue(run.run_dir.is_dir())
+            self.assertTrue((second.run_dir / "llm-prompts").is_dir())
 
     def test_reset_refuses_nonempty_unowned_directory_without_deleting_it(self) -> None:
         with tempfile.TemporaryDirectory() as parent:

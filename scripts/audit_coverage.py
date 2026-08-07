@@ -1,6 +1,8 @@
 """커버리지 잔차 감사 집계 (골키퍼 그물2) — run 산출물 `coverage/*.json` 전수 요약.
 
-사용: .venv\\Scripts\\python.exe scripts\\audit_coverage.py [run_dir=logs]
+사용: .venv\\Scripts\\python.exe scripts\\audit_coverage.py [run_dir=최신 run]
+
+인자를 생략하면 `logs/` 아래 최신 run 폴더(run_id 이름)를 자동 선택한다.
 
 함수별 잔차를 shape(구문 모양)로 묶어 "어떤 미지 구문이 몇 곳에서 안 덮였는가"를
 corpus 단위로 보여준다. 위험 구문(unsupported_constructs) 장부도 함께 집계한다.
@@ -9,13 +11,26 @@ corpus 단위로 보여준다. 위험 구문(unsupported_constructs) 장부도 �
 from __future__ import annotations
 
 import json
+import re
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
+_RUN_DIR_NAME = re.compile(r"^\d{8}_\d{6}_[0-9a-f]{12}$")
+
+
+def _latest_run_dir(root: Path) -> Path:
+    runs = sorted(
+        entry for entry in root.iterdir()
+        if entry.is_dir() and _RUN_DIR_NAME.match(entry.name)
+    ) if root.is_dir() else []
+    if not runs:
+        raise SystemExit(f"run 폴더가 없다: {root} — 분석 run 이후에 실행하라")
+    return runs[-1]
+
 
 def main() -> int:
-    run_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("logs")
+    run_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else _latest_run_dir(Path("logs"))
     coverage_dir = run_dir / "coverage"
     files = sorted(coverage_dir.glob("*.json"))
     if not files:

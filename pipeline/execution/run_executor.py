@@ -20,6 +20,8 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import os
+import re
 import shutil
 import time
 from collections import defaultdict
@@ -137,7 +139,7 @@ async def execute_run(
     try:
         corpus_root = (codebase.corpus_root or codebase.root).resolve()
         human_glossary = load_human_glossary(corpus_root)
-        _reset_run_output_root(run_output_root)
+        _reset_run_output_root(run_output_root, run.run_dir)
         output_context_token = set_run_dir(run.run_dir)
         locale_context_token = set_response_locale(codebase.locale)
         _write_initial_manifest(run, strategy, human_glossary)
@@ -310,11 +312,28 @@ async def execute_run(
     return run
 
 
-def _reset_run_output_root(run_output_root: Path) -> None:
-    """Analyzer가 소유한 선택된 실행 결과 루트만 초기화한다.
+def _run_retention() -> int:
+    """보존할 run 폴더 수 (새 run 포함). 직전 run 이 남아야 백업 없이 전후 비교가 된다."""
+    raw = os.environ.get("ROBO_RUN_RETENTION", "2").strip()
+    try:
+        retention = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"ROBO_RUN_RETENTION must be an integer >= 1; got {raw!r}") from exc
+    if retention < 1:
+        raise ValueError(f"ROBO_RUN_RETENTION must be >= 1; got {retention}")
+    return retention
 
-    기본값은 기존 ``logs/``다. ``--run-output``이 명시된 경우에만 그 경로를 같은
-    계약으로 사용한다. 자동 하위 run 디렉터리나 백업은 만들지 않는다.
+
+_RUN_DIR_NAME = re.compile(r"^\d{8}_\d{6}_[0-9a-f]{12}$")
+
+
+def _reset_run_output_root(run_output_root: Path, run_dir: Path | None = None) -> None:
+    """Analyzer가 소유한 실행 결과 루트 아래에 새 run 폴더를 준비한다.
+
+    루트는 컨테이너다 — 통째로 지우지 않는다. run 은 ``root/<run_id>/`` 자기 폴더에만
+    쓰며, 보존 개수(``ROBO_RUN_RETENTION``, 기본 2 = 새 run + 직전 run)를 넘는 가장
+    오래된 run 폴더만 정리한다. 직전 run 의 record 가 남아야 전후 비교가 백업 없이
+    성립한다(2026-08-07 구조 개편).
     """
     if not isinstance(run_output_root, Path):
         raise ValueError(f"run_output_root must be a Path; got {run_output_root!r}")
@@ -339,13 +358,41 @@ def _reset_run_output_root(run_output_root: Path) -> None:
             raise ValueError(f"실행 결과 소유권 표식을 읽을 수 없습니다: {marker}") from exc
         if marker_content != _RUN_OUTPUT_OWNER_MARKER_CONTENT:
             raise ValueError(f"실행 결과 소유권 표식이 올바르지 않습니다: {marker}")
-        # 정리에 실패한 옛 로그를 새 run의 결과로 오인하지 않도록 오류를 전파한다.
-        shutil.rmtree(root)
+        # 구조 개편 전의 평면 산출물(루트 직속 파일·run 형식이 아닌 폴더)은 소유
+        # 표식이 증명하는 우리 산출물이므로 제거한다 — 옛 로그를 새 run 결과로
+        # 오인하지 않기 위한 같은 계약의 연속이다.
+        for entry in root.iterdir():
+            if entry == marker:
+                continue
+            if entry.is_dir() and _RUN_DIR_NAME.match(entry.name):
+                continue
+            if entry.is_dir():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
 
     root.mkdir(parents=True, exist_ok=True)
     marker = root / _RUN_OUTPUT_OWNER_MARKER
     marker.write_text(_RUN_OUTPUT_OWNER_MARKER_CONTENT, encoding="utf-8")
-    (root / "llm-prompts").mkdir(parents=True, exist_ok=True)
+
+    # 보존 개수 초과분 정리 — 새 run 폴더 몫 1개를 남기고 오래된 순으로 지운다.
+    # 이름의 시각 접두사가 같은(같은 초) run 은 생성 시각으로 순서를 가른다.
+    existing = sorted(
+        (entry for entry in root.iterdir()
+         if entry.is_dir() and _RUN_DIR_NAME.match(entry.name)),
+        key=lambda entry: (entry.name[:15], entry.stat().st_ctime_ns),
+    )
+    for stale in existing[: max(0, len(existing) - (_run_retention() - 1))]:
+        shutil.rmtree(stale)
+
+    if run_dir is not None:
+        resolved_run_dir = run_dir.resolve()
+        if resolved_run_dir.parent != root:
+            raise ValueError(
+                f"run 폴더는 실행 결과 루트 바로 아래여야 합니다: {resolved_run_dir}"
+            )
+        resolved_run_dir.mkdir(parents=True, exist_ok=False)
+        (resolved_run_dir / "llm-prompts").mkdir(parents=True, exist_ok=True)
 
 
 def _prompt_tree_sha256(prompts_root: Path) -> str:

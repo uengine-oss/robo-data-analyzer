@@ -426,7 +426,7 @@ async def run_yaml_rule(
             "response_cache_hit": False,
         })
 
-    # prompt + 응답 logs/llm-prompts/<rule_name>.jsonl 적재.
+    # prompt + 응답 <run_dir>/llm-prompts/<rule_name>.jsonl 적재.
     # 호출당 한 줄 append; stable source 정렬은 공용 reader가 read-time에 수행한다.
     # 로깅 실패는 분석 자체 막지 X (graceful) — silent skip 금지, 사유 명시.
     try:

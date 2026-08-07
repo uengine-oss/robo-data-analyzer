@@ -51,11 +51,16 @@ class AnalysisRun:
 
     @classmethod
     def now(cls, codebase: Codebase, run_output_root: Path) -> "AnalysisRun":
-        """현재 UTC 시각으로 새 실행 메타를 만든다."""
+        """현재 UTC 시각으로 새 실행 메타를 만든다.
+
+        산출물은 루트 바로 아래가 아니라 ``root/<run_id>/`` 에 격리된다. run 끼리
+        서로의 증거를 지우지 않아야 전후 비교가 백업 없이 성립한다.
+        """
         now = datetime.now(timezone.utc)
+        run_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:12]}"
         return cls(
-            run_id=f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:12]}",
+            run_id=run_id,
             codebase=codebase,
             started_at=now,
-            run_dir=run_output_root,
+            run_dir=run_output_root / run_id,
         )

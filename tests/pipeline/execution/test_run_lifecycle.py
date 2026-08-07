@@ -104,7 +104,7 @@ class RunInitializationContractTest(unittest.IsolatedAsyncioTestCase):
             events.append("set_active")
             original_set_active(run_id, controller)
 
-        def fail_reset(_root: Path) -> None:
+        def fail_reset(_root: Path, _run_dir: Path | None = None) -> None:
             events.append("reset")
             raise OSError("output unavailable")
 

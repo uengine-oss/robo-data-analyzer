@@ -141,7 +141,7 @@ class ImmutableRunEvidenceTest(unittest.TestCase):
                 locale="en-US",
             )
             run = AnalysisRun.now(codebase, root)
-            _reset_run_output_root(root)
+            _reset_run_output_root(root, run.run_dir)
             token = set_run_dir(run.run_dir)
             try:
                 _write_initial_manifest(
@@ -171,11 +171,82 @@ class ImmutableRunEvidenceTest(unittest.TestCase):
                 "sha256": None,
                 "term_count": 0,
             }, manifest["human_glossary"])
-            self.assertEqual(root, run.run_dir)
-            prompt_log = root / "llm-prompts" / "generic_contract.jsonl"
+            # run 산출물은 루트가 아니라 root/<run_id>/ 에 격리된다 (2026-08-07 개편).
+            self.assertEqual(root / run.run_id, run.run_dir)
+            prompt_log = run.run_dir / "llm-prompts" / "generic_contract.jsonl"
             self.assertEqual(
                 "code:sample", tracing.load_rule_records(prompt_log)[0]["target_id"]
             )
+
+    def test_previous_run_survives_and_retention_prunes_oldest(self) -> None:
+        """새 run 은 직전 run 의 증거를 지우지 않는다 — 보존 개수 초과분만 정리한다."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "runs"
+            corpus = Path(temporary_directory) / "corpus"
+            (corpus / "source").mkdir(parents=True)
+            codebase = Codebase(
+                root=corpus / "source", corpus_root=corpus,
+                strategy="framework", locale="ko",
+            )
+
+            first = AnalysisRun.now(codebase, root)
+            _reset_run_output_root(root, first.run_dir)
+            evidence = first.run_dir / "llm-prompts" / "rules.jsonl"
+            evidence.write_text('{"target_id": "code:first"}\n', encoding="utf-8")
+
+            second = AnalysisRun.now(codebase, root)
+            _reset_run_output_root(root, second.run_dir)
+            self.assertTrue(
+                evidence.exists(),
+                "직전 run 의 record 가 새 run 시작으로 지워지면 전후 비교가 불가능하다",
+            )
+
+            third = AnalysisRun.now(codebase, root)
+            _reset_run_output_root(root, third.run_dir)  # 기본 보존 2 → 첫 run 정리
+            self.assertFalse(first.run_dir.exists(), "보존 개수 초과분은 정리된다")
+            self.assertTrue(second.run_dir.exists())
+            self.assertTrue(third.run_dir.exists())
+
+    def test_legacy_flat_artifacts_are_cleared_but_run_dirs_kept(self) -> None:
+        """개편 전 평면 산출물은 소유 표식 아래에서만 제거되고 run 폴더는 보존된다."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "runs"
+            corpus = Path(temporary_directory) / "corpus"
+            (corpus / "source").mkdir(parents=True)
+            codebase = Codebase(
+                root=corpus / "source", corpus_root=corpus,
+                strategy="framework", locale="ko",
+            )
+            root.mkdir(parents=True)
+            (root / ".robo-data-analyzer-output").write_text(
+                "robo-data-analyzer\n", encoding="utf-8"
+            )
+            (root / "analyzer.log").write_text("legacy", encoding="utf-8")
+            (root / "llm-prompts").mkdir()
+
+            run = AnalysisRun.now(codebase, root)
+            _reset_run_output_root(root, run.run_dir)
+            self.assertFalse((root / "analyzer.log").exists())
+            self.assertFalse((root / "llm-prompts").exists())
+            self.assertTrue(run.run_dir.is_dir())
+
+    def test_unowned_nonempty_root_is_refused(self) -> None:
+        """소유 표식 없는 비어 있지 않은 루트는 어떤 정리도 하지 않고 실패한다."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "runs"
+            corpus = Path(temporary_directory) / "corpus"
+            (corpus / "source").mkdir(parents=True)
+            codebase = Codebase(
+                root=corpus / "source", corpus_root=corpus,
+                strategy="framework", locale="ko",
+            )
+            root.mkdir(parents=True)
+            (root / "user-file.txt").write_text("keep me", encoding="utf-8")
+
+            run = AnalysisRun.now(codebase, root)
+            with self.assertRaises(ValueError):
+                _reset_run_output_root(root, run.run_dir)
+            self.assertTrue((root / "user-file.txt").exists())
 
 
 if __name__ == "__main__":

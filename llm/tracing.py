@@ -11,7 +11,7 @@
    + turns 배열 (turn-by-turn user/response/tool_calls) + totals 집계.
 
 ``run`` 간 누적 X — 선택된 ``<run-output>/llm-prompts``를 사용한다. 미지정 시 기존
-``logs/llm-prompts``이고, 별도 분리가 필요할 때만 CLI에서 다른 run-output을 명시한다.
+``logs/<run_id>/llm-prompts``이고, 별도 분리가 필요할 때만 CLI에서 다른 run-output을 명시한다.
 
 옛 ``log_rule_call(rule_name, NNN.json)`` 분산 적재 정책에서 변경 이유:
 - ``001.json`` ``002.json`` 분산 → 흐름 추적 어려움.
