@@ -22,9 +22,10 @@ regex or graph algorithm suffices is a defect, not a feature.
 ### II. Zero-Branch Strategy Pattern (분기 0)
 
 Pipeline variants (`framework` / `dbms`) are expressed by **declaring** a `Strategy(steps=…)`
-in `pipeline/analysis_pipelines.py`. `pipeline/execution/langgraph_builder.py` assembles the LangGraph StateGraph with **no
-strategy `if` branches**. A step tuple = a parallel superstep group. Adding a new strategy
-MUST touch exactly one place (the declaration) and zero control-flow branches.
+in `pipeline/strategies.py`. `pipeline/execution/langgraph_builder.py` assembles the LangGraph
+StateGraph with **no strategy `if` branches**. A step tuple = a parallel superstep group.
+Adding a new strategy MUST touch exactly one place (the declaration) and zero control-flow
+branches.
 
 **Rationale**: branching logic scattered across steps is where divergence bugs breed.
 
@@ -105,6 +106,50 @@ helper. Shared behavior belongs in the narrowest stable owner with all consumers
 **Rationale**: explicit ownership prevents generic shared dumping grounds, circular dependencies,
 duplicate truths, and refactors that only make the directory tree cosmetically smaller.
 
+### IX. Three-Layer Verification (3층 검증 의무)
+
+An analysis result is "verified" only when **all three layers** have run and been reported.
+No layer substitutes for another.
+
+1. **Automated tests** — unit/contract suites and prompt byte identity.
+2. **Deterministic answer-key comparison** — the answer already lives in the request. Row
+   obligation accounting (`rows = trusted + findings + unavailable`, zero residual), CALL /
+   R-W / RETURN occurrence keys, Rule↔branch-table subtraction (refs must exist in *that*
+   request's evidence), and EXAMPLE derivation equivalence.
+3. **Direct semantic adjudication by the main agent** — a pre-frozen stratified sample of
+   code nodes plus **every** table, judging information sufficiency first, then meaning.
+   A separate LLM judge is forbidden: a verifier that shares the model's limits is not a verifier.
+
+Any axis not measured MUST be reported as `미검증`, never folded into a pass. Passing tests
+is not evidence of semantic accuracy. Procedure detail lives in
+`docs/handovers/analysis-performance-validation-canonical/04-검증방법.md`, which this
+principle makes binding rather than advisory.
+
+**Rationale**: on 2026-08-07 a prompt overhaul was declared "all axes passed" after only
+layer 1 and part of layer 2 had run; four answer-key comparisons and the entire semantic
+layer were never executed. The procedure existed and was simply not read, because nothing
+required it.
+
+### X. Root-Cause Order (원인 추적 순서)
+
+When a result looks wrong, start from **one wrong coordinate**, never from an aggregate
+statistic, and walk the production chain **front to back**:
+
+`source → parser AST → deterministic assembly → the prompt actually sent → information
+sufficiency → grader/answer-key → model & prompt`
+
+The model is the **last** suspect. Information sufficiency is judged before blame: if the
+main agent cannot determine the answer from what the model received, that is `needs_context`
+and the defect is upstream (evidence production), not the model. Failures are grouped by
+common cause and fixed **generically once**, then re-checked with a fixed replay; sample-specific
+answers MUST NOT be hardcoded.
+
+**Rationale**: measured both ways in one session. A trigger-header fatal was traced to
+deterministic assembly (statement dml promoted to table op) — the model was never involved.
+The nl reference-number leak was traced to the prompt contract defining `nl` as a restatement
+of fields the model had just filled. Starting at the statistic would have produced a wording
+patch for both.
+
 ## Cross-Service Contracts
 
 The analyzer is one service in a pipeline. Its boundaries (and therefore the only things that
@@ -131,7 +176,9 @@ This constitution supersedes ad-hoc convention. New features go through
 verifying compliance with the principles above. A principle is amended only by editing this
 file and bumping the version, with the rationale recorded.
 
-**Version**: 1.3.2 | **Ratified**: 2026-06-15 | **Last Amended**: 2026-08-04
-(IV amended — distinguish fatal operational/deterministic-contract failures from surfaced,
+**Version**: 1.4.0 | **Ratified**: 2026-06-15 | **Last Amended**: 2026-08-07
+(1.4.0 — IX and X added: three-layer verification made binding and root-cause order fixed,
+after a session declared a prompt overhaul "passed" with two of three layers unrun. 1.3.2 —
+IV amended to distinguish fatal operational/deterministic-contract failures from surfaced,
 quarantined LLM quality findings so a bad candidate cannot masquerade as success or abort an
 otherwise auditable rebuild; VII remains as amended in 1.3.1; see spec 116 TA-77~80)
