@@ -28,6 +28,22 @@ from pipeline.execution.graph_delta_stream import emit_edges, emit_message, emit
 _STEP = "step1.parse_ddl"
 
 
+def _ensure_unique_table_ids(table_files_by_id: dict[str, list[str]]) -> None:
+    """파일 사이 같은 table ID 재정의를 좌표와 함께 즉시 실패로 표면화한다."""
+    duplicated = sorted(
+        tid for tid, files in table_files_by_id.items() if len(files) > 1
+    )
+    if duplicated:
+        shown = ", ".join(
+            f"{tid} ({' · '.join(table_files_by_id[tid])})" for tid in duplicated[:5]
+        )
+        raise ValueError(
+            f"DDL 파일 사이에 같은 테이블이 {len(duplicated)}개 재정의됨 — "
+            f"어느 정의가 진실인지 결정할 수 없다: {shown}"
+            + (" …" if len(duplicated) > 5 else "")
+        )
+
+
 async def parse_ddl_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
     """DDL 파일 디렉토리 → 노드/엣지 → Neo4j + state 누적.
 
@@ -53,6 +69,7 @@ async def parse_ddl_step(state: dict, config: Optional[RunnableConfig] = None) -
 
     schemas, tables, columns = [], [], []
     has_cols, belongs, fks = [], [], []
+    table_files_by_id: dict[str, list[str]] = {}
 
     for sql_file in sql_files:
         parse_started = time.monotonic()
@@ -64,12 +81,19 @@ async def parse_ddl_step(state: dict, config: Optional[RunnableConfig] = None) -
         has_cols.extend(result.has_column_edges)
         belongs.extend(result.belongs_to_edges)
         fks.extend(result.fk_edges)
+        for table in result.tables:
+            table_files_by_id.setdefault(table.id, []).append(sql_file.name)
         log_info(
             _STEP, "parsed",
             file=sql_file.name,
             tables=len(result.tables), columns=len(result.columns),
             elapsed_sec=f"{time.monotonic() - parse_started:.2f}",
         )
+
+    # 파일 사이 중복 테이블 정의는 스키마 모호성이다 — 여기서 좌표와 함께 즉시 실패한다.
+    # (파일 안 중복은 parse_ddl_file 이 dedupe. 늦게 두면 LLM 소비 후 step8 에서야
+    # duplicate IDs 로 터진다 — 2026-08-07 rwis 실측.)
+    _ensure_unique_table_ids(table_files_by_id)
 
     # Neo4j 업서트 (UNWIND 배치). 노드는 라벨이 달라 동시쓰기 안전 → 병렬.
     # 엣지는 노드 선행 필요 + 같은 노드 락 경합 가능 → 순차 (hang 위치 추적 겸).
