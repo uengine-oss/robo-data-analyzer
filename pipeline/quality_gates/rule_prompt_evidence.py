@@ -12,22 +12,23 @@ from pipeline.quality_gates.branch_inventory import BranchInventory
 
 
 def render_condition_refs(
-    terms: Sequence[str | Mapping[str, object] | object],
+    terms: Sequence[str],
     condition_sources: Mapping[str, str],
 ) -> str | None:
-    """Render structured model selections without interpreting source syntax."""
+    """Render structured model selections without interpreting source syntax.
+
+    ref 정규식은 모양만 닫혀 있어 증거에 없는 번호도 통과한다. 그 번호를 원문 자리에
+    그대로 넣으면 ``F("C7")`` 이 되어 "원문이 C7 인 조건"과 구별되지 않는다. 효과 축의
+    ``invalid_effect(...)`` 와 같은 계약으로 표면화하고 원문 후보를 보존한다.
+    """
     clauses: list[str] = []
     for term in terms:
-        if isinstance(term, str):
-            holds = not term.startswith("!")
-            ref = term[1:] if not holds else term
-        elif isinstance(term, Mapping):
-            ref = str(term.get("ref") or "")
-            holds = bool(term.get("holds"))
-        else:
-            ref = str(getattr(term, "ref", ""))
-            holds = bool(getattr(term, "holds", False))
-        source = condition_sources.get(ref, ref)
+        holds = not term.startswith("!")
+        ref = term if holds else term[1:]
+        source = condition_sources.get(ref)
+        if source is None:
+            clauses.append(f"invalid_condition({json.dumps(term, ensure_ascii=False)})")
+            continue
         atom = f"F({json.dumps(source, ensure_ascii=False)})"
         clauses.append(atom if holds else f"not ({atom})")
     return " and ".join(clauses) or None

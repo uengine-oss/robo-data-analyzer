@@ -462,6 +462,50 @@ class BranchIndexUniqueness(unittest.TestCase):
         self.assertIn("외곽 @1 성립", complement)
 
 
+class ConditionRefRendering(unittest.TestCase):
+    """모델이 고른 조건 ref → canonical 표기 렌더의 실패 계약.
+
+    ref 정규식은 모양만 닫혀 있어(`^!?C[1-9][0-9]*$`) 증거에 없는 번호도 통과한다.
+    그때 번호를 원문으로 둔갑시키면 정상 조건과 구별되지 않는다 — 효과 축이
+    `invalid_effect(...)` 로 표면화하는 것과 같은 계약을 조건 축에도 요구한다.
+    """
+
+    def test_ref_absent_from_evidence_is_surfaced_not_fabricated(self):
+        from pipeline.quality_gates.rule_prompt_evidence import render_condition_refs
+
+        rendered = render_condition_refs(["C7"], {})
+
+        self.assertNotIn(
+            'F("C7")', rendered or "",
+            "증거에 없는 ref 를 원문으로 둔갑시키면 안 된다",
+        )
+        self.assertIn("invalid_condition", rendered or "")
+        self.assertIn("C7", rendered or "", "원문 후보는 보존해야 사후 판정이 된다")
+
+    def test_invalid_condition_marker_is_outside_the_cond_vocabulary(self):
+        """표식은 채점 어휘 밖이어야 행이 실제로 격리된다."""
+        from pipeline.models.rule_expression import COND_HELPERS, parse_condition
+        from pipeline.models.rule_expression import condition_call_names
+        from pipeline.quality_gates.rule_prompt_evidence import render_condition_refs
+
+        rendered = render_condition_refs(["!C7"], {"C9": "rc == 0"})
+        names = condition_call_names(parse_condition(rendered))
+
+        self.assertTrue(
+            names - set(COND_HELPERS),
+            "표식이 허용 어휘 안에 있으면 채점기가 통과시켜 버린다",
+        )
+
+    def test_known_refs_still_render_polarity_and_exact_source(self):
+        from pipeline.quality_gates.rule_prompt_evidence import render_condition_refs
+
+        rendered = render_condition_refs(
+            ["C1", "!C2"], {"C1": "rc == RC_NRM", "C2": "len > 0"},
+        )
+
+        self.assertEqual('F("rc == RC_NRM") and not (F("len > 0"))', rendered)
+
+
 class TerminationRows(unittest.TestCase):
     """종료문·핸들러 행 — 종료 계약이 행이어야 절단·누락이 뺄셈으로 드러난다 (spec 116).
 

@@ -26,6 +26,7 @@ from pipeline.models.rule_expression import (
     COND_HELPERS,
     LeafSyntaxError,
     LeafVocabularyError,
+    condition_call_names,
     parse_condition,
     parse_effect,
 )
@@ -803,12 +804,7 @@ def _grade_rule_content(
                 verdict.reasons.append(
                     "cond는 collection이 아니라 단일 Python boolean 표현식이어야 함"
                 )
-            names = {
-                node.func.id
-                for node in ast.walk(tree)
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-            }
-            outside = names - set(COND_HELPERS)
+            outside = condition_call_names(tree) - set(COND_HELPERS)
             if outside:
                 verdict.reasons.append(
                     f"cond 어휘 밖 함수 {sorted(outside)} — 허용: {list(COND_HELPERS)}"
