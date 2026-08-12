@@ -206,7 +206,7 @@ def _fw_control(child: dict, ctx: _FwCtx, module_id: str,
 
 def _fw_statement(child: dict, ctx: _FwCtx, module_id: str,
                   parent_fid: str | None, owner_routine_id: str | None) -> None:
-    """구조 statement(RETURN/THROW/RAISE/BREAK/CONTINUE/GOTO/ASSIGNMENT) → CodeNode.
+    """구조 statement(RETURN/THROW/RAISE/BREAK/CONTINUE/GOTO/LABEL/ASSIGNMENT) → CodeNode.
 
     parser spec 016 이 emit 한 leaf 사실이다. 제어 노드와 같은 id 규칙으로 보존하되
     routine 이 아니므로 LLM 분석 대상에서 제외된다(ROUTINE_LABELS 단일 진실). 표현식

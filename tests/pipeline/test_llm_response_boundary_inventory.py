@@ -40,9 +40,13 @@ def _assert_closed_required(
     required: set[str],
 ) -> None:
     schema = model.model_json_schema()
-    case.assertEqual(required, set(schema.get("required", ())))
-    case.assertEqual(required, set(schema.get("properties", {})))
-    case.assertFalse(schema.get("additionalProperties", True))
+    variants = schema.get("oneOf") or (schema,)
+    for variant in variants:
+        if "$ref" in variant:
+            variant = schema["$defs"][variant["$ref"].rsplit("/", 1)[-1]]
+        case.assertEqual(required, set(variant.get("required", ())))
+        case.assertEqual(required, set(variant.get("properties", {})))
+        case.assertFalse(variant.get("additionalProperties", True))
 
 
 class LlmResponseBoundaryInventoryTest(unittest.TestCase):
@@ -83,11 +87,7 @@ class LlmResponseBoundaryInventoryTest(unittest.TestCase):
         boundaries = (
             (
                 summary_response_model("framework"),
-                {
-                    "summary",
-                    "stereotype",
-                    "questions",
-                },
+                {"result"},
             ),
             (
                 batch_summary_response_model(("1-2",), "dbms"),
@@ -120,32 +120,28 @@ class LlmResponseBoundaryInventoryTest(unittest.TestCase):
                     "table": {"db": "db", "schema": "public", "name": "orders"},
                     "columns": [],
                 }),
-                {"db", "schema", "name", "logical_name", "description", "columns"},
+                {
+                    "db", "schema", "name", "meaning", "columns",
+                },
             ),
         )
         for model, required in boundaries:
             with self.subTest(model=model.__name__):
                 _assert_closed_required(self, model, required)
 
-    def test_rule_cond_then_extra_and_narrative_are_required_but_model_owned(self) -> None:
+    def test_rule_narrative_is_the_only_model_owned_leaf(self) -> None:
         model = rules_response_model([7])
-        valid = {
-            "rules": {"R7": {
-                "cond": ["C7"],
-                "then": ["E1"],
-                "extra": [],
-                "nl": "",
-            }},
-        }
+        valid = {"rules": {"R7": {"nl": "근거 행의 업무 의미"}}}
         model.model_validate(valid)
         with self.assertRaises(ValidationError):
             model.model_validate({"rules": {"R7": {}}})
-        model.model_validate({
-            "rules": {"R7": {
-                "nl": "다른 근거 규칙", "cond": [], "then": [], "extra": [],
-            }},
-        })
-        model.model_validate({"rules": valid["rules"]})
+        for structural_field, value in (
+            ("cond", ["C7"]), ("then", ["E1"]), ("extra", []),
+        ):
+            with self.subTest(field=structural_field), self.assertRaises(ValidationError):
+                model.model_validate({
+                    "rules": {"R7": {"nl": "근거 행의 업무 의미", structural_field: value}},
+                })
         with self.assertRaises(ValidationError):
             model.model_validate({**valid, "unexpected": "value"})
 
@@ -158,8 +154,12 @@ class LlmResponseBoundaryInventoryTest(unittest.TestCase):
             "db": "db",
             "schema": "public",
             "name": "orders",
-            "logical_name": "",
-            "description": "주문 정보",
+            "meaning": {
+                "logical_name": "",
+                "description": "",
+                "evidence_status": "insufficient",
+                "missing_context": ["테이블 업무 의미 근거"],
+            },
             "columns": [],
         }
         model.model_validate(valid)

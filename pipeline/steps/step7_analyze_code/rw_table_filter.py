@@ -1,10 +1,11 @@
 """Derive RULE table effects from validated leaves and deterministic R/W."""
 from __future__ import annotations
 
-from typing import Iterable, Optional
+from typing import Iterable, Mapping, Optional
 
 from pipeline.quality_gates.evidence_matching import resolve_qualified_name
 from pipeline.quality_gates.example_synthesis import synthesize_examples
+from pipeline.models.data_object_usage import is_object_reference_id
 
 
 _READ_OP = "READ"
@@ -34,6 +35,7 @@ def rule_table_effects(
     reads: Iterable[str],
     writes: Iterable[str],
     table_op: Optional[dict[str, str]],
+    table_aliases: Mapping[str, str] | None = None,
 ) -> tuple[list[dict], list[str]]:
     """구조화 then 효과에서 규칙 단위 AFFECTS_TABLE transport를 결정론으로 만든다(spec 116).
 
@@ -64,10 +66,15 @@ def rule_table_effects(
             continue
         access, derived_op = mapping
         pool = read_exact if access == "READ" else write_exact
-        table_id = resolve_qualified_name(name, pool)
+        table_id = resolve_qualified_name(name, pool, table_aliases)
         if table_id is None:
             # 모델 효과의 접근 방향과 다른 R/W 집합으로 재귀속하지 않는다.
             unresolved.append(name)
+            continue
+        # AFFECTS_TABLE is a confirmed TABLE-only downstream contract. The exact source access
+        # remains preserved as CodeNode READS/WRITES → OBJECT_REFERENCE; do not manufacture a
+        # Table effect edge or turn an expected unresolved identity into a whole-run failure.
+        if is_object_reference_id(table_id):
             continue
         # 권위 op(SQL_KEY 유래)가 있으면 그것이 최종이다 — SELECT→READ 정규화 방어 포함.
         authoritative_op = _authoritative_op(authoritative.get(table_id))
@@ -88,6 +95,7 @@ def serialize_rules(
     reads: Iterable[str],
     writes: Iterable[str],
     table_op: Optional[dict[str, str]],
+    table_aliases: Mapping[str, str] | None = None,
 ) -> tuple[list[dict], list[str]]:
     """채점 통과한 구조화 규칙들 → transport dict (enrichment 는 전부 코드가 채운다).
 
@@ -102,7 +110,9 @@ def serialize_rules(
     examples_by_anchor = synthesize_examples(rules)
     for rule in rules:
         then = [str(s) for s in (getattr(rule, "then", None) or [])]
-        affected, unresolved = rule_table_effects(then, reads, writes, table_op)
+        affected, unresolved = rule_table_effects(
+            then, reads, writes, table_op, table_aliases,
+        )
         unresolved_all.extend(unresolved)
         serialized.append({
             "rule_id": f"R-{rule.anchor_line}",

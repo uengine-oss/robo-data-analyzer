@@ -34,6 +34,27 @@ def render_condition_refs(
     return " and ".join(clauses) or None
 
 
+def render_row_condition(
+    row: Mapping[str, object],
+    condition_sources: Mapping[str, str],
+) -> str | None:
+    """Materialize the exact structural condition for one evidence row."""
+    base = render_condition_refs(row.get("when") or (), condition_sources)
+    after = str(row.get("after_control") or "").strip()
+    sequence = (
+        f"after_control({json.dumps(after, ensure_ascii=False)})"
+        if after else None
+    )
+    label = str(row.get("at_label") or "").strip()
+    label_entry = (
+        f"at_label({json.dumps(label, ensure_ascii=False)})"
+        if label else None
+    )
+    return " and ".join(
+        part for part in (base, sequence, label_entry) if part
+    ) or None
+
+
 def _has_condition(inventory: BranchInventory, line: int) -> bool:
     """조건 원문이 실재하는 분기인가 — 판정절 없는 노드(`for(;;)` 등)는 False.
 
@@ -52,15 +73,20 @@ def _condition_path(
     """Return source-condition coordinates and whether each must hold."""
     role = str(row.get("role") or "")
     references: dict[int, bool] = {}
-    if role == "decision":
+    # handler 행은 두 형상으로 온다: skill 이 선언한 마커 줄(framework — 소유 branch 가
+    # 없다)과 AST 핸들러 노드(PL/SQL EXCEPTION 섹션). 후자는 바깥 분기 안에 들어 있을 수
+    # 있으므로 decision 과 **같은 조상 경로**를 갖는다 — 자기 항은 조건이 없어 붙지 않는다.
+    if role in ("decision", "handler"):
         branch = inventory.at_line(int(row["line"]))
         if branch is None:
-            raise ValueError(f"decision row has no branch owner: {row['line']}")
+            if role == "decision":
+                raise ValueError(f"decision row has no branch owner: {row['line']}")
+            return []
         for ancestor in reversed(branch.ancestors()):
             ancestor_role = ancestor.prompt_role()
             line = ancestor.start + inventory.line_offset
             if ancestor_role == "decision":
-                if _has_condition(inventory, line):
+                if _has_condition(inventory, line) and ancestor.condition_timing != "post":
                     references[line] = True
             elif ancestor_role == "complement":
                 paired = inventory.paired_decision(ancestor)
@@ -68,7 +94,7 @@ def _condition_path(
                     paired_line = paired.start + inventory.line_offset
                     references.pop(paired_line, None)
                     references[paired_line] = False
-        if _has_condition(inventory, int(row["line"])):
+        if _has_condition(inventory, int(row["line"])) and branch.condition_timing != "post":
             references[int(row["line"])] = True
     elif role == "complement":
         context = row.get("complement_of")
@@ -95,7 +121,45 @@ def _condition_path(
                     ):
                         continue
                     references[int(outer["line"])] = state != "negated"
-    return list(references.items())
+    elif role == "continuation":
+        anchor = row.get("path_anchor_line")
+        if isinstance(anchor, int):
+            owner = next(
+                (
+                    candidate for candidate in inventory.table_rows()
+                    if candidate.get("line") == anchor
+                    and candidate.get("role") != "continuation"
+                ),
+                None,
+            )
+            if owner is None:
+                raise ValueError(
+                    f"continuation path owner missing: {row.get('line')} -> {anchor}"
+                )
+            references.update(_condition_path(inventory, owner))
+        fallthrough = row.get("fallthrough_false_of")
+        if isinstance(fallthrough, int) and _has_condition(inventory, fallthrough):
+            references[fallthrough] = False
+        for guard in row.get("sequence_guard_lines") or ():
+            if isinstance(guard, int) and _has_condition(inventory, guard):
+                references[guard] = False
+
+    # 평면 대안 절 사슬 보정 (spec 118 §2.3). 자기와 조상 각각에 대해, 그것이 대안 절이면
+    # 부모 판정과 앞선 형제 대안 절을 **부정**으로 확정한다. 위 계산이 부모 조건을
+    # "성립"으로 상속했다면 여기서 뒤집힌다 — 좌표(키) 순서는 그대로라 표기만 정정된다.
+    # 대안 절 타입이 없는 언어(C/Java/Python)는 이 루프가 아무것도 하지 않는다.
+    owner = inventory.at_line(int(row["line"]))
+    if owner is not None:
+        for node in [owner, *owner.ancestors()]:
+            for guard in node.sequence_guard_lines:
+                guard_line = guard + inventory.line_offset
+                if _has_condition(inventory, guard_line):
+                    references[guard_line] = False
+            for arm in inventory.negated_arms(node):
+                arm_line = arm.start + inventory.line_offset
+                if _has_condition(inventory, arm_line):
+                    references[arm_line] = False
+    return sorted(references.items())
 
 
 def _condition_source(
@@ -172,7 +236,7 @@ def rule_evidence(
         # 효과인 분기도 고를 사실을 갖게 한다(2026-08-05 framework 실측).
         direct_effects.extend(
             effect_ref({
-                "op": op, "target": target,
+                "op": op, "target": target or None,
                 "value": None, "from_source": None,
             })
             for op, target in inventory.direct_statement_effects(line)
@@ -188,6 +252,32 @@ def rule_evidence(
                 for reference, required in path
             ],
         }
+        # ``when`` is the complete parser-owned path used to materialize graph ``cond``.
+        # It is not a request to spell every ancestor guard out in prose.  Expose the
+        # one coordinate that distinguishes this branch separately so the model can
+        # keep the narrative readable without losing the full structural condition.
+        # A continuation has no new branch condition of its own: every ``when`` term
+        # is inherited reachability and its narrative must prioritize ``direct``.
+        item["narrative_focus"] = (
+            []
+            if str(row.get("role") or "") == "continuation"
+            else item["when"][-1:]
+        )
+        if inventory.has_nested_control(line):
+            item["nested_control"] = True
+        if str(row.get("role") or "") == "continuation":
+            item["after_control"] = str(row.get("after_control") or "")
+            item["at_label"] = str(row.get("at_label") or "")
+            if row.get("unresolved_reachability"):
+                item["unresolved_reachability"] = True
+        owner = inventory.at_line(line)
+        if (
+            owner is not None
+            and owner.start + inventory.line_offset == line
+            and owner.condition_timing == "post"
+            and owner.condition.strip()
+        ):
+            item["post_condition"] = owner.condition.strip()
         if direct_effects:
             item["direct"] = direct_effects
         source = direct_source.strip()
@@ -202,7 +292,7 @@ def expected_rule_condition(inventory: BranchInventory, line: int) -> str | None
     """Return the exact structural path condition for one required row."""
     payload = rule_evidence(inventory, (line,))
     row = payload["rows"][f"R{line}"]
-    return render_condition_refs(row["when"], payload["conditions"])
+    return render_row_condition(row, payload["conditions"])
 
 
 def rule_evidence_json(inventory: BranchInventory, rows: Sequence[int]) -> str:

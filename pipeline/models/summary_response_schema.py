@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterable
-from typing import Literal
+from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
@@ -22,22 +22,43 @@ def _fingerprint(value: object) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
 
 
-def _required_wire_fields(strategy: str) -> dict[str, tuple[object, object]]:
-    stereotype_type = Literal.__getitem__(stereotype_values(strategy))
-    return {
-        "summary": (
-            str,
-            Field(..., min_length=1, description=SummaryOutput.model_fields["summary"].description),
-        ),
-        "stereotype": (
-            stereotype_type,
-            Field(..., description=SummaryOutput.model_fields["stereotype"].description),
-        ),
+def _wire_item_type(strategy: str, fingerprint: str) -> object:
+    """Encode the cross-field evidence contract in provider-visible JSON Schema."""
+    stereotype_type = Literal.__getitem__(tuple(stereotype_values(strategy)))
+    common = {
         "questions": (
             list[QuestionItem],
             Field(..., max_length=15, description=SummaryOutput.model_fields["questions"].description),
         ),
     }
+    sufficient = create_model(
+        f"SufficientSemanticHeader_{fingerprint}",
+        __config__=ConfigDict(extra="forbid"),
+        summary=(str, Field(..., min_length=1, description=SummaryOutput.model_fields["summary"].description)),
+        stereotype=(stereotype_type, Field(..., description=SummaryOutput.model_fields["stereotype"].description)),
+        evidence_status=(Literal["sufficient"], Field(...)),
+        missing_context=(list[str], Field(..., max_length=0)),
+        **common,
+    )
+    partial = create_model(
+        f"PartialSemanticHeader_{fingerprint}",
+        __config__=ConfigDict(extra="forbid"),
+        summary=(str, Field(..., min_length=1, description=SummaryOutput.model_fields["summary"].description)),
+        stereotype=(stereotype_type, Field(..., description=SummaryOutput.model_fields["stereotype"].description)),
+        evidence_status=(Literal["partial"], Field(...)),
+        missing_context=(list[str], Field(..., min_length=1, max_length=8)),
+        **common,
+    )
+    insufficient = create_model(
+        f"InsufficientSemanticHeader_{fingerprint}",
+        __config__=ConfigDict(extra="forbid"),
+        summary=(Literal[""], Field(..., description=SummaryOutput.model_fields["summary"].description)),
+        stereotype=(Literal[""], Field(..., description=SummaryOutput.model_fields["stereotype"].description)),
+        evidence_status=(Literal["insufficient"], Field(...)),
+        missing_context=(list[str], Field(..., min_length=1, max_length=8)),
+        **common,
+    )
+    return Annotated[Union[sufficient, partial, insufficient], Field(discriminator="evidence_status")]
 
 
 def summary_response_model(strategy: str) -> type[BaseModel]:
@@ -45,15 +66,17 @@ def summary_response_model(strategy: str) -> type[BaseModel]:
     return create_model(
         f"ClosedSemanticHeader_{fingerprint}",
         __config__=ConfigDict(extra="forbid"),
-        **_required_wire_fields(strategy),
+        result=(_wire_item_type(strategy, fingerprint), Field(...)),
     )
 
 
 def normalize_summary_response(output: BaseModel) -> SummaryOutput:
-    values = output.model_dump()
+    values = output.result.model_dump()
     return SummaryOutput(
         summary=values["summary"],
         stereotype=values["stereotype"],
+        evidence_status=values["evidence_status"],
+        missing_context=values["missing_context"],
         questions=values["questions"],
     )
 
@@ -67,11 +90,7 @@ def batch_summary_response_model(node_keys: Iterable[str], strategy: str) -> typ
         "node_keys": keys,
         "fields": "semantic-header",
     })
-    item_model = create_model(
-        f"ClosedBatchSemanticHeaderItem_{fingerprint}",
-        __config__=ConfigDict(extra="forbid"),
-        **_required_wire_fields(strategy),
-    )
+    item_model = _wire_item_type(strategy, fingerprint)
     node_fields = {
         node_key: (item_model, Field(...))
         for node_key in keys
@@ -98,6 +117,8 @@ def normalize_batch_summary_response(
             node_key=str(key),
             summary=values["summary"],
             stereotype=values["stereotype"],
+            evidence_status=values["evidence_status"],
+            missing_context=values["missing_context"],
             questions=values["questions"],
         ))
     return BatchSummaryOutput(nodes=nodes)

@@ -64,6 +64,51 @@ class DbmsCallLinkerTest(unittest.TestCase):
         self.assertEqual([edge.scope for edge in edges], ["external", "external"])
         self.assertEqual([edge.callee_id for edge in edges], ["RUN", "SYS_TIME"])
 
+    def test_remote_call_preserves_link_identity_without_inventing_local_schema(self) -> None:
+        nodes = [
+            _node("routine:caller", "CALLER", label="PROCEDURE"),
+            _node(
+                "call:remote",
+                "KWMS_DATE_CHANGE@DAON",
+                label="CALL",
+                parent_id="routine:caller",
+            ),
+            _node(
+                "call:remote-builtin-name",
+                "DBMS_OUTPUT.PUT_LINE@DAON",
+                label="CALL",
+                parent_id="routine:caller",
+            ),
+        ]
+
+        edges = asyncio.run(CallLinker().link(nodes))
+
+        self.assertEqual([edge.scope for edge in edges], ["external", "external"])
+        self.assertEqual(
+            [edge.callee_id for edge in edges],
+            ["KWMS_DATE_CHANGE@DAON", "PUT_LINE@DAON"],
+        )
+        self.assertEqual([edge.callee_package for edge in edges], ["", ""])
+        self.assertEqual(
+            [edge.callee_name for edge in edges],
+            ["KWMS_DATE_CHANGE@DAON", "PUT_LINE@DAON"],
+        )
+
+    def test_at_inside_quoted_identifier_is_not_a_database_link(self) -> None:
+        nodes = [
+            _node("routine:caller", "CALLER", label="PROCEDURE"),
+            _node(
+                "call:quoted",
+                '"LOCAL@NAME"',
+                label="CALL",
+                parent_id="routine:caller",
+            ),
+        ]
+
+        edge = asyncio.run(CallLinker().link(nodes))[0]
+
+        self.assertEqual(edge.callee_package, "APP")
+
 
 if __name__ == "__main__":
     unittest.main()

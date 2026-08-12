@@ -1,0 +1,44 @@
+{
+  "schema_version": "1.0.0",
+  "scope": "20 pre-sealed shopmall functions, 77 immutable B evidence records, three A repeats",
+  "analyzer_run_used": false,
+  "graph_write_used": false,
+  "requests": 231,
+  "successful_requests": 227,
+  "transport_or_json_failures": 4,
+  "expected_rows_across_repeats": 1557,
+  "rows_in_successful_json": 1527,
+  "rows_with_python_parseable_given_and_then": 1267,
+  "row_python_parse_rate_of_successful_json": 0.8297,
+  "fully_parseable_records": 127,
+  "successful_records": 227,
+  "fully_parseable_record_rate": 0.5595,
+  "complete_three_repeat_record_groups": 75,
+  "byte_identical_three_repeat_groups": 34,
+  "strict_repeat_identity_rate_of_complete_groups": 0.4533,
+  "model_status_counts": {
+    "exact": 1406,
+    "needs_context": 115,
+    "unreachable": 6
+  },
+  "measured_cost_by_repeat": [
+    {"repeat":1,"request_bytes":1326911,"successful_requests":75,"input_tokens":330107,"output_tokens":37334,"sum_latency_ms":1927655},
+    {"repeat":2,"request_bytes":1326911,"successful_requests":76,"input_tokens":336597,"output_tokens":37906,"sum_latency_ms":1804390},
+    {"repeat":3,"request_bytes":1326911,"successful_requests":76,"input_tokens":336597,"output_tokens":38352,"sum_latency_ms":1823320}
+  ],
+  "wall_seconds_for_all_repeats_at_16_workers": 360.6,
+  "observed_failure_classes": [
+    "C negation remained as ! and failed Python parsing",
+    "pointer dereference, address-of and C casts remained in relations",
+    "long source calls were truncated into invalid expressions",
+    "exact rows sometimes emitted an empty then_relation",
+    "same mutable variable at different condition coordinates was collapsed into a false contradiction",
+    "JSON-schema transport still produced four JSON decode failures"
+  ],
+  "false_unreachable_coordinates": [
+    "shipping_request:R967 (rc is reassigned between the two tests)",
+    "member_authenticate:R730 (rc changes from decrypt result to SMS result)"
+  ],
+  "conclusion": "A remains KEEP/experimental. It is not safe as the baseline: schema row coverage was strong after successful JSON, but Python syntax, repeat identity and temporal def-use semantics were not guaranteed. Invalid or temporally ambiguous relations must fail closed rather than enter the graph.",
+  "non_generalization": "These figures cover only the sealed 20 functions and do not establish meaning accuracy for all 1609 RULE rows."
+}

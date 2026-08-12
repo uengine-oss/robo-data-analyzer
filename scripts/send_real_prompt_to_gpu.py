@@ -10,6 +10,9 @@
    프롬프트 전문**을 실제 호출 경로 그대로 재전송하고 공백 폭주를 관측 (절차 4단계의
    단건 재현). 합성 예제가 아니라 파이프라인이 보낸 것과 동일한 시스템·유저 메시지,
    동일 Pydantic 스키마, 동일 sampling/extra_body, 동일 폭주 가드를 사용한다.
+   ``--current-contract``를 주면 저장된 가변 INPUT은 byte 그대로 두고 해당 rule의 현재 고정
+   지시 prefix만 메모리에서 교체한다. ``--current-summary-contract``는 과거 summary wire schema
+   이관을 위한 호환 옵션이다.
 
 실제 호출 경로 재사용 범위 — ``run_yaml_rule`` 의 전송 구간과 글자 단위 동일:
 ``build_llm_client(streaming=...)`` → provider canonical JSON Schema 구조화 출력 →
@@ -36,6 +39,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -53,6 +57,8 @@ from shared.config.settings import SETTINGS
 from llm.client import build_llm_client
 from llm.configs.loader import load_llm_config
 from llm.filters import apply_cache_friendly_filters
+from llm.runners.prompt_rules import _load_rule
+from llm.runners.prompt_values import _safe_format
 from llm.repetition_guard import RepetitionGuardCallback, RepetitionLoopAborted
 from llm.structured_output import bind_structured_output
 from llm.tracing import load_rule_records
@@ -195,6 +201,12 @@ def _report_whitespace(stats: dict[str, Any]) -> None:
     print("─" * 66)
 
 
+def _format_parsed_payload(parsed: Any) -> str:
+    """Render a validated diagnostic payload without losing non-ASCII text."""
+    dump = parsed.model_dump() if hasattr(parsed, "model_dump") else parsed
+    return json.dumps(dump, ensure_ascii=False, indent=2)
+
+
 async def _send(
     system_prompt: str,
     user_content: str,
@@ -299,6 +311,8 @@ async def _send(
     if parsed is not None:
         dump = parsed.model_dump() if hasattr(parsed, "model_dump") else parsed
         print(f"  파싱 결과 키: {list(dump)[:10] if isinstance(dump, dict) else type(dump).__name__}")
+        print("  파싱 결과:")
+        print(_format_parsed_payload(parsed))
     elif structured:
         print("  ⚠ 스키마 파싱 실패 (parsed=None) — raw 원문을 직접 확인할 것")
     return raw_text
@@ -400,6 +414,48 @@ def _validate_raw_against_schema(raw_text: str, schema: dict) -> dict:
     return payload
 
 
+def _select_replay_record(
+    records: list[dict],
+    *,
+    target: str | None,
+    node_key: str | None,
+    index: int,
+) -> dict:
+    """Select one replay record; semantic selectors must be unambiguous."""
+    if target or node_key:
+        matched = records
+        if target:
+            matched = [
+                record for record in matched
+                if target in (record.get("target_id") or "")
+            ]
+        if node_key:
+            narrowed: list[dict] = []
+            for record in matched:
+                user_content = record.get("user_content") or ""
+                key_match = re.search(
+                    r"^required_node_keys:\s*([^\r\n]+)$",
+                    user_content,
+                    flags=re.MULTILINE,
+                )
+                keys = {
+                    value.strip()
+                    for value in key_match.group(1).split(",")
+                } if key_match else set()
+                if node_key in keys:
+                    narrowed.append(record)
+            matched = narrowed
+        if len(matched) != 1:
+            raise SystemExit(
+                "replay semantic selector 결과가 유일하지 않음: "
+                f"{len(matched)}건 (target={target!r}, node_key={node_key!r})"
+            )
+        return matched[0]
+    if not (0 <= index < len(records)):
+        raise SystemExit(f"index {index} 범위 밖 (records {len(records)}건)")
+    return records[index]
+
+
 def cmd_replay(args: argparse.Namespace) -> None:
     """실행 기록의 실제 프롬프트 1건을 실제 호출 경로로 재전송 — 절차 4단계 단건판."""
     record_path = Path(args.run_dir) / "llm-prompts" / f"{args.rule}.jsonl"
@@ -409,22 +465,80 @@ def cmd_replay(args: argparse.Namespace) -> None:
     if not records:
         raise SystemExit(f"records 비어 있음: {record_path}")
 
-    if args.target:
-        matched = [r for r in records if args.target in (r.get("target_id") or "")]
-        if not matched:
-            raise SystemExit(f"target_id 에 {args.target!r} 를 포함하는 record 없음")
-        record = matched[0]
-    else:
-        if not (0 <= args.index < len(records)):
-            raise SystemExit(f"index {args.index} 범위 밖 (records {len(records)}건)")
-        record = records[args.index]
+    record = _select_replay_record(
+        records,
+        target=args.target,
+        node_key=args.node_key,
+        index=args.index,
+    )
 
     system_prompt = record.get("system_prompt") or ""
     user_content = record.get("user_content") or ""
     if not system_prompt or not user_content:
         raise SystemExit("record 에 system_prompt/user_content 전문이 없음 — 다른 rule/record 선택")
 
-    response_schema = None if args.no_schema else _recorded_response_schema(record)
+    if args.current_contract and args.current_summary_contract:
+        raise SystemExit("--current-contract와 --current-summary-contract는 함께 쓸 수 없음")
+    if args.current_contract:
+        current_fixed = _current_fixed_contract(args.rule)
+        recorded_sha256 = hashlib.sha256(user_content.encode("utf-8")).hexdigest()
+        user_content = _replace_recorded_fixed_contract(user_content, current_fixed)
+        user_content = _upgrade_recorded_input_markers(user_content)
+        current_sha256 = hashlib.sha256(user_content.encode("utf-8")).hexdigest()
+        print(
+            "고정 지시 prefix 제한 교체: "
+            f"recorded_user_sha256={recorded_sha256} "
+            f"replay_user_sha256={current_sha256}"
+        )
+
+    if args.current_summary_contract:
+        current_contract = (
+            REPO_ROOT / "llm" / "prompts" / "common" / "summary_contract.md"
+        ).read_text(encoding="utf-8")
+        recorded_sha256 = hashlib.sha256(user_content.encode("utf-8")).hexdigest()
+        user_content = _replace_recorded_summary_contract(
+            user_content, current_contract,
+        )
+        if args.rule == "code_summary":
+            user_content = _replace_framework_summary_envelope(user_content)
+        current_sha256 = hashlib.sha256(user_content.encode("utf-8")).hexdigest()
+        print(
+            "summary 계약 제한 교체: "
+            f"recorded_user_sha256={recorded_sha256} "
+            f"replay_user_sha256={current_sha256}"
+        )
+
+    if args.project_source_literals:
+        from pipeline.steps.step7_analyze_code.model_source_projection import (
+            project_model_source_literals,
+        )
+
+        source_pattern = re.compile(
+            r"(## \[SOURCE\][\s\S]*?```\r?\n)([\s\S]*?)(\r?\n```)",
+        )
+        projected_count = 0
+
+        def _project(match: re.Match[str]) -> str:
+            nonlocal projected_count
+            projected_count += 1
+            return (
+                match.group(1)
+                + project_model_source_literals(match.group(2))
+                + match.group(3)
+            )
+
+        user_content = source_pattern.sub(_project, user_content)
+        if projected_count == 0:
+            raise SystemExit("projection할 [SOURCE] fenced block이 없음")
+        print(f"SOURCE 리터럴 투영: {projected_count}개 fenced block")
+
+    response_schema = None if args.no_schema else (
+        _current_summary_response_schema(args.rule, user_content)
+        if args.current_summary_contract
+        else _current_contract_response_schema(args.rule, record)
+        if args.current_contract
+        else _recorded_response_schema(record)
+    )
     structured_method = _resolve_replay_method(
         record, override=args.method, no_schema=args.no_schema,
     )
@@ -450,7 +564,16 @@ def cmd_replay(args: argparse.Namespace) -> None:
         )
     )
     if args.no_schema and raw_text:
-        _validate_raw_against_schema(raw_text, _recorded_response_schema(record))
+        try:
+            _validate_raw_against_schema(raw_text, _recorded_response_schema(record))
+        except SystemExit:
+            # Unconstrained diagnostics exist to expose the provider's exact failure
+            # shape.  Hiding the payload here made a malformed JSON result
+            # indistinguishable from a prompt/content problem.
+            print("── raw response (schema validation failed) " + "─" * 24)
+            print(raw_text)
+            print("─" * 66)
+            raise
         print("  client-side recorded schema 검증: 통과")
 
 
@@ -467,6 +590,186 @@ def _recorded_response_schema(record: dict) -> dict:
     if evidence.get("sha256") != actual_sha256 or evidence.get("bytes") != len(canonical):
         raise SystemExit("record response_schema fingerprint/bytes 불일치")
     return schema
+
+
+def _current_contract_response_schema(rule: str, record: dict) -> dict:
+    """Align a fixed-prefix replay with current wire changes for supported concerns."""
+    recorded = _recorded_response_schema(record)
+    if rule not in {"code_table_insights", "code_table_insights_batch"}:
+        return recorded
+    # Column meaning moved to the final TABLE/COLUMN concern.  Dynamic node/table keys and
+    # closed role enums stay byte-for-byte from the record; only the retired intermediate
+    # ``columns`` field and its now-unreferenced map definitions are removed.
+    current = json.loads(json.dumps(recorded))
+    definitions = current.get("$defs") or {}
+    changed = 0
+    for definition in definitions.values():
+        title = str(definition.get("title") or "")
+        if not title.startswith("AssignedTableInsightValue_"):
+            continue
+        properties = definition.get("properties") or {}
+        if "columns" in properties:
+            properties.pop("columns")
+            definition["required"] = [
+                key for key in definition.get("required", []) if key != "columns"
+            ]
+            changed += 1
+    for name in list(definitions):
+        if name.startswith("AssignedColumnUsageMap_"):
+            definitions.pop(name)
+    if changed == 0:
+        raise SystemExit("recorded TABLE usage schema에서 교체할 columns 필드를 찾지 못함")
+    jsonschema.Draft202012Validator.check_schema(current)
+    return current
+
+
+def _current_fixed_contract(rule_name: str) -> str:
+    """Render the current rule-owned fixed prefix without touching volatile INPUT."""
+    candidates: list[str] = []
+    for strategy in ("framework", "dbms"):
+        prompts_dir = REPO_ROOT / "llm" / "prompts" / strategy
+        if not (prompts_dir / f"{rule_name}.yaml").is_file():
+            continue
+        rule = _load_rule(prompts_dir, rule_name)
+        template = str(rule.get("user_template") or "")
+        match = re.search(r"(?m)^# \[INPUT[^\r\n]*\]\r?$", template)
+        if match is None or re.search(
+            r"(?m)^# \[INPUT[^\r\n]*\]\r?$", template[match.end():],
+        ):
+            raise SystemExit(f"현재 {strategy}/{rule_name} INPUT 경계가 정확히 1개가 아님")
+        candidates.append(_safe_format(template[:match.start()], rule.get("static_values") or {}))
+    if not candidates:
+        raise SystemExit(f"현재 prompt rule을 찾지 못함: {rule_name}")
+    if any(candidate != candidates[0] for candidate in candidates[1:]):
+        raise SystemExit(
+            f"framework/dbms의 {rule_name} 고정 계약이 다름 — strategy가 유일한 rule로 replay할 것"
+        )
+    return candidates[0]
+
+
+def _replace_recorded_fixed_contract(
+    recorded_user_content: str,
+    current_fixed_contract: str,
+) -> str:
+    """Replace only the rule-fixed prefix and preserve recorded volatile evidence bytes."""
+    matches = list(re.finditer(
+        r"(?m)^# \[INPUT[^\r\n]*\]\r?$", recorded_user_content,
+    ))
+    if len(matches) != 1:
+        raise SystemExit("recorded user prompt의 INPUT 경계가 정확히 1개가 아님")
+    if not current_fixed_contract.strip() or re.search(
+        r"(?m)^# \[INPUT[^\r\n]*\]\r?$", current_fixed_contract,
+    ):
+        raise SystemExit("current fixed contract가 비었거나 INPUT을 포함함")
+    return current_fixed_contract + recorded_user_content[matches[0].start():]
+
+
+def _upgrade_recorded_input_markers(user_content: str) -> str:
+    """Upgrade deterministic evidence markers when replaying the current contract.
+
+    Fixed-prefix replacement preserves recorded target evidence. Marker syntax is also part of
+    the producer/consumer contract, so an old child summary must not keep masquerading as source
+    after production marks that same payload as a non-source candidate.
+    """
+    return re.sub(
+        r"\[CONTEXT_SUMMARY child_range=([^\s\]]+) ",
+        r"[CHILD_SUMMARY_CANDIDATE child_range=\1 authority=non_source ",
+        user_content,
+    )
+
+
+def _current_summary_response_schema(rule: str, user_content: str) -> dict:
+    """Build the current summary schema while keeping replay evidence fixed.
+
+    The current contract owns new sufficiency fields, so combining it with the
+    historical schema would create an impossible prompt/schema pair.  Only the
+    summary boundary is supported; every other concern must keep its recorded
+    integrity-checked schema.
+    """
+    from pipeline.models.summary_response_schema import (
+        batch_summary_response_model,
+        summary_response_model,
+    )
+
+    if rule == "code_summary":
+        return summary_response_model("framework").model_json_schema()
+    if rule == "code_summary_batch":
+        key_match = re.search(
+            r"^required_node_keys:\s*([^\r\n]+)$",
+            user_content,
+            flags=re.MULTILINE,
+        )
+        if key_match is None:
+            raise SystemExit("현재 DBMS summary schema에 필요한 required_node_keys가 없음")
+        keys = tuple(
+            value.strip() for value in key_match.group(1).split(",") if value.strip()
+        )
+        if not keys or len(keys) != len(set(keys)):
+            raise SystemExit("required_node_keys가 비었거나 중복됨")
+        return batch_summary_response_model(keys, "dbms").model_json_schema()
+    raise SystemExit(
+        "--current-summary-contract는 code_summary/code_summary_batch만 지원함"
+    )
+
+
+def _replace_recorded_summary_contract(
+    recorded_user_content: str,
+    current_contract: str,
+) -> str:
+    """Replace exactly one recorded summary section without mutating evidence."""
+    historical_headings = (
+        "## summary — 목적 헤더 계약",
+        "## summary + evidence_status + missing_context — 전체 흐름 의미 계약",
+        "## [INPUT GUIDE — 각 값의 뜻·권한·허용 판정]",
+    )
+    current_heading = historical_headings[-1]
+    next_headings = (
+        "\n## stereotype — 역할 분류 계약",
+        "\n## [DECISION — stereotype 역할 분류]",
+    )
+    current = current_contract.strip()
+    if not current.startswith(current_heading) or current.count(current_heading) != 1:
+        raise SystemExit("current summary contract heading이 정확하지 않음")
+    if any(heading in current for heading in next_headings):
+        raise SystemExit("current summary contract가 다음 concern 절까지 포함함")
+    candidates = [
+        heading for heading in historical_headings
+        if recorded_user_content.count(heading) == 1
+    ]
+    if len(candidates) != 1:
+        raise SystemExit("recorded summary contract heading이 정확히 1개가 아님")
+    recorded_heading = candidates[0]
+    start = recorded_user_content.index(recorded_heading)
+    boundaries = [
+        position for heading in next_headings
+        if (position := recorded_user_content.find(
+            heading, start + len(recorded_heading)
+        )) >= 0
+    ]
+    if not boundaries:
+        raise SystemExit("recorded summary contract의 stereotype 경계를 찾지 못함")
+    end = min(boundaries)
+    return recorded_user_content[:start] + current + "\n" + recorded_user_content[end:]
+
+
+def _replace_framework_summary_envelope(user_content: str) -> str:
+    """Align a historical single-summary replay with the current wire envelope."""
+    old = "이 요청은 `summary`, `stereotype`, `questions` 세 필드만 출력한다."
+    new = (
+        "이 요청은 최상위 `result` 하나를 출력하고, 그 안에 `summary`, `stereotype`, "
+        "`evidence_status`, `missing_context`, `questions` 다섯 필드만 출력한다."
+    )
+    old_count = user_content.count(old)
+    current_prefix = "이 요청은 최상위 `result` 하나를 출력하고"
+    current_suffix = "`missing_context`, `questions` 다섯 필드만 출력한다."
+    current_count = min(
+        user_content.count(current_prefix), user_content.count(current_suffix),
+    )
+    if old_count == 1 and current_count == 0:
+        return user_content.replace(old, new, 1)
+    if old_count == 0 and current_count == 1:
+        return user_content
+    raise SystemExit("recorded Framework summary 출력 envelope 문구가 정확히 1개가 아님")
 
 
 def _resolve_replay_method(
@@ -507,10 +810,26 @@ def main() -> None:
     p_replay.add_argument("--rule", required=True, help="recorded rule 이름")
     p_replay.add_argument("--index", type=int, default=0, help="records 배열 인덱스 (기본 0)")
     p_replay.add_argument("--target", help="target_id 부분 일치로 record 선택 (index 대신)")
+    p_replay.add_argument(
+        "--node-key",
+        help="required_node_keys의 정확한 key로 record를 좁힘 (--target과 조합 권장)",
+    )
     p_replay.add_argument("--max-tokens", type=int, default=None,
                           help="비상 브레이크 override (기본 config yaml 값)")
     p_replay.add_argument("--no-schema", action="store_true",
                           help="constrained JSON 없이 raw 재전송 (문법 제약 효과 분리용)")
+    p_replay.add_argument(
+        "--current-summary-contract", action="store_true",
+        help="저장 user prompt의 summary 계약과 응답 schema만 현재 계약으로 교체",
+    )
+    p_replay.add_argument(
+        "--current-contract", action="store_true",
+        help="저장 가변 INPUT은 유지하고 해당 rule의 현재 고정 지시 prefix만 교체",
+    )
+    p_replay.add_argument(
+        "--project-source-literals", action="store_true",
+        help="저장 [SOURCE] code fence에 현재 JSON-safe 리터럴 투영을 적용",
+    )
     p_replay.add_argument(
         "--method", choices=("json_schema", "function_calling"),
         default=None, help="recorded provider 강제 방식 override (기본: record metadata)",

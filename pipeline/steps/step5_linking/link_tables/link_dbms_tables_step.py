@@ -19,28 +19,30 @@ from __future__ import annotations
 
 import re
 import time
+from dataclasses import replace
 from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
 from shared.files.cache import SourceFileCache
 from pipeline.dml_semantics import dml_semantics
+from pipeline.languages import ROUTINE_LABELS
 from pipeline.steps.step5_linking.link_tables.view_expansion import expand_view_edges
 from pipeline.execution.step_config import step_config
 
 from graph.schema.graph_edges import ReadsWrites
-from graph.schema.graph_nodes import CodeNode, Table
+from graph.schema.graph_nodes import CodeNode, ObjectReference, Table
+from graph.nodes.object_reference import upsert_object_references
+from pipeline.models.data_object_usage import DataObjectUsageEvidence, object_reference_id
 from shared.events.runtime_logger import log_info
 from graph.edges.reads_writes import upsert_reads_writes
 from graph.neo4j_client import Neo4jClient
-from pipeline.execution.graph_delta_stream import emit_edges, emit_message
+from pipeline.execution.graph_delta_stream import emit_edges, emit_message, emit_nodes
 
 _STEP = "step5.link_dbms_tables"
 
 # 주석 제거 (-- 라인 / /* */ 블록) — 주석 속 테이블명 오매칭 방지.
 _COMMENT_RE = re.compile(r"--[^\n]*|/\*.*?\*/", re.DOTALL)
-
-
 async def link_dbms_tables_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
     """DBMS DML range → DDL 테이블 결정론 매칭 → ``ReadsWrites`` 엣지 (모든 노드 자기 줄)."""
     cfg = step_config(config)
@@ -48,26 +50,35 @@ async def link_dbms_tables_step(state: dict, config: Optional[RunnableConfig] = 
 
     code_nodes: list[CodeNode] = state.get("code_nodes") or []
     tables: list[Table] = state.get("tables") or []
-    if not code_nodes or not tables:
-        log_info(_STEP, "skip", reason="no code_nodes or no DDL tables")
+    if not code_nodes:
+        log_info(_STEP, "skip", reason="no code_nodes")
         return {}
 
     started = time.monotonic()
     log_info(_STEP, "start", code_nodes=len(code_nodes), tables=len(tables))
     # run 스코프 공유 캐시 (executor 주입) — 파일당 read 1회 (spec 046 FR-008).
     source_cache: SourceFileCache = cfg.get("source_cache") or SourceFileCache()
-    edges = _link(code_nodes, tables, state.get("parent_of_edges") or [], source_cache)
+    datasource = (getattr(cfg.get("codebase"), "datasource", None) or "").strip()
+    edges = _link(
+        code_nodes, tables, state.get("parent_of_edges") or [], source_cache,
+        datasource=datasource,
+    )
+    object_references = _unresolved_object_references(code_nodes, datasource)
     # 뷰 펼치기 (spec 112) — VIEW 엣지에 기저 테이블 엣지 추가 (원본 유지).
     view_edges = expand_view_edges(edges, tables)
     if view_edges:
         log_info(_STEP, "view_expansion", added=len(view_edges))
         edges = edges + view_edges
 
-    if neo is not None and edges:
-        await upsert_reads_writes(neo, edges)
+    if neo is not None:
+        if object_references:
+            await upsert_object_references(neo, object_references)
+        if edges:
+            await upsert_reads_writes(neo, edges)
 
     # 라이브 스트림 — R/W 링킹 결과를 step 완료 즉시 화면으로(관계 수 0 탈출).
     stream = cfg.get("stream")
+    await emit_nodes(stream, object_references)
     await emit_edges(stream, edges)
     emit_message(stream, f"✅ 테이블 읽기/쓰기 링킹 완료 — {len(edges)}건")
 
@@ -76,22 +87,23 @@ async def link_dbms_tables_step(state: dict, config: Optional[RunnableConfig] = 
         reads_writes_edges=len(edges),
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
-    return {"reads_writes_edges": edges}
+    return {"reads_writes_edges": edges, "object_references": object_references}
 
 
 def _link(
     code_nodes: list[CodeNode], tables: list[Table], parent_of_edges: list,
-    file_cache: SourceFileCache,
+    file_cache: SourceFileCache, *, datasource: str = "",
 ) -> list[ReadsWrites]:
     """모든 노드의 자기 줄(자기 범위 − 자식 줄범위) 에서 DDL 테이블명 검색 → ReadsWrites."""
     name_to_id = {t.name.upper(): t.id for t in tables}
-    if not name_to_id:
-        return []
+    tables_by_name: dict[str, list[Table]] = {}
+    for table in tables:
+        tables_by_name.setdefault(table.name.upper(), []).append(table)
     # 긴 이름 우선 — 부분매칭 방지. 단어경계.
     table_re = re.compile(
         r"\b(" + "|".join(re.escape(n) for n in sorted(name_to_id, key=len, reverse=True)) + r")\b",
         re.IGNORECASE,
-    )
+    ) if name_to_id else None
     # 각 노드의 직속 자식 줄범위 — 자기 줄 = 자기 범위에서 이 구간들을 뺀 나머지.
     # parent_of_edges 는 "스킵 대상" 이 아니라 "자기 줄 계산용" 으로만 쓴다.
     fn_by_id = {fn.id: fn for fn in code_nodes}
@@ -106,8 +118,62 @@ def _link(
     edges: list[ReadsWrites] = []
     seen: set[tuple[str, str, str]] = set()
     semantics = dml_semantics()
+    table_by_id = {table.id: table for table in tables}
 
     for fn in code_nodes:
+        # DBMS reader 계약: 루틴은 선언 컨테이너이고 DML은 별도 CodeNode다. 루틴 root를
+        # 재스캔하면 AFTER INSERT ON 같은 trigger event clause를 실행 SQL로 오인하고,
+        # 하위 DML 누락도 숨긴다. 실제 statement 노드만 단일 경로로 링크한다.
+        if fn.label in ROUTINE_LABELS:
+            continue
+        if fn.extra.get("data_object_evidence_version"):
+            resolved_usages: list[DataObjectUsageEvidence] = []
+            unresolved_usages: list[DataObjectUsageEvidence] = []
+            for usage in fn.extra.get("data_object_usages") or ():
+                scoped_usage = replace(usage, datasource=datasource)
+                table = table_by_id.get(scoped_usage.table_id) \
+                    if scoped_usage.resolution == "exact" and scoped_usage.table_id else None
+                if table is None:
+                    table = _resolve_ast_usage(scoped_usage, tables_by_name)
+                if table is None:
+                    resolved_usages.append(scoped_usage)
+                    unresolved_usages.append(scoped_usage)
+                    relation = "READS" if scoped_usage.access == "READ" else "WRITES"
+                    target_id = object_reference_id(datasource, scoped_usage)
+                    key = (fn.id, target_id, relation)
+                    if key not in seen:
+                        seen.add(key)
+                        edges.append(ReadsWrites(
+                            source_id=fn.id,
+                            target_id=target_id,
+                            relation=relation,
+                            dml_type=semantics.dml_type_of(fn.label),
+                            evidence_file=scoped_usage.evidence_file,
+                            evidence_line=scoped_usage.evidence_line,
+                        ))
+                    continue
+                resolved = scoped_usage.resolved(table.id)
+                resolved_usages.append(resolved)
+                relation = "READS" if scoped_usage.access == "READ" else "WRITES"
+                key = (fn.id, table.id, relation)
+                if key in seen:
+                    continue
+                seen.add(key)
+                edges.append(ReadsWrites(
+                    source_id=fn.id,
+                    target_id=table.id,
+                    relation=relation,
+                    dml_type=semantics.dml_type_of(fn.label),
+                    evidence_file=scoped_usage.evidence_file,
+                    evidence_line=scoped_usage.evidence_line,
+                ))
+            fn.extra["data_object_usages"] = tuple(resolved_usages)
+            fn.extra["unresolved_data_object_usages"] = tuple(unresolved_usages)
+            # Versioned parser evidence is complete for this grammar node. Never mix it with
+            # the legacy bare-name source scanner, including when the exact result is empty.
+            continue
+        if table_re is None:
+            continue
         body = _COMMENT_RE.sub(
             " ", _own_body(fn, child_ranges.get(fn.id, ()), file_cache),
         )
@@ -139,6 +205,44 @@ def _link(
                 evidence_line=fn.start_line,
             ))
     return edges
+
+
+def _unresolved_object_references(
+    code_nodes: list[CodeNode], datasource: str,
+) -> list[ObjectReference]:
+    by_id: dict[str, ObjectReference] = {}
+    for node in code_nodes:
+        for usage in node.extra.get("unresolved_data_object_usages") or ():
+            node_id = object_reference_id(datasource, usage)
+            by_id.setdefault(node_id, ObjectReference(
+                id=node_id,
+                datasource=datasource,
+                raw_reference=usage.raw_reference,
+                schema=usage.schema,
+                name=usage.name,
+                database_link=usage.database_link,
+            ))
+    return [by_id[node_id] for node_id in sorted(by_id)]
+
+
+def _resolve_ast_usage(
+    usage: DataObjectUsageEvidence,
+    tables_by_name: dict[str, list[Table]],
+) -> Table | None:
+    """Resolve only identities proven exact by the parser and local DDL set.
+
+    A database link names a remote namespace that the local DDL datasource cannot prove. Bare
+    names bind only when unique; schema-qualified names require an exact schema match.
+    """
+    if usage.database_link:
+        return None
+    candidates = list(tables_by_name.get(usage.name.upper(), ()))
+    if usage.schema:
+        candidates = [
+            table for table in candidates
+            if table.schema.upper() == usage.schema.upper()
+        ]
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def _own_body(fn: CodeNode, child_ranges, file_cache: SourceFileCache) -> str:

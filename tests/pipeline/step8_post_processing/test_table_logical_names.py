@@ -66,11 +66,16 @@ def test_consolidated_result_requires_exact_column_set():
 
     blank = build_consolidated_column_updates(
         ["db:unknown"],
-        [NS(columns=[NS(name="opaque", logical_name="", description="")])],
+        [NS(columns=[NS(
+            name="opaque", logical_name="", description="",
+            evidence_status="insufficient", missing_context=["컬럼 업무 의미 근거"],
+        )])],
         {"db:unknown": {"opaque"}},
     )
     assert blank == [{
         "id": "db:unknown.opaque", "logical_name": "", "analyzed_description": "",
+        "semantic_evidence_status": "insufficient",
+        "semantic_missing_context": ("컬럼 업무 의미 근거",),
     }]
 
 

@@ -5,9 +5,10 @@
 """
 from __future__ import annotations
 
+import json
 from typing import Any
 
-from search.corpus.evidence_reader import read_columns, read_rules
+from search.corpus.evidence_reader import compact_rules, read_columns, read_rules
 from search.corpus.neo4j_reader import read_driver
 from graph.ownership import ANALYZER_GRAPH_OWNER
 
@@ -23,6 +24,29 @@ def _error(code: str, message: str) -> dict:
 def _public_properties(properties: dict[str, Any]) -> dict[str, Any]:
     hidden = _INTERNAL_PROPERTIES | _SOURCE_PROPERTIES | {"id", "name"}
     return {key: value for key, value in properties.items() if key not in hidden}
+
+
+def _json_string_list(value: Any) -> list[str]:
+    """Decode one persisted missing-context field without inventing evidence."""
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    if not isinstance(value, str) or not value.strip():
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(item) for item in parsed if str(item).strip()]
+
+
+def _semantic_description(properties: dict[str, Any]) -> str:
+    """Return persisted source text first, then Analyzer semantic text."""
+    source_description = str(properties.get("description") or "").strip()
+    if source_description:
+        return source_description
+    return str(properties.get("analyzed_description") or "").strip()
 
 
 def build_node_detail(
@@ -102,7 +126,115 @@ def build_node_detail(
     }}
 
 
-def read_node_detail(node_id: str) -> dict:
+def build_gwt_detail(detail: dict, table_contexts: list[dict]) -> dict:
+    """Project the validated full reader result into Architect's compact evidence view."""
+    if "error" in detail:
+        return detail
+    node = detail["node"]
+    props = node.get("properties") or {}
+    source = node.get("source") or {}
+    calls = []
+    for relationship in node.get("relationships") or []:
+        if relationship.get("type") != "CALLS":
+            continue
+        other = relationship.get("node") or {}
+        calls.append({
+            "direction": relationship.get("direction") or "",
+            "id": other.get("id") or "",
+            "name": other.get("name") or "",
+            "labels": list(other.get("labels") or []),
+        })
+    return {"node": {
+        "id": node.get("id") or "",
+        "labels": list(node.get("labels") or []),
+        "name": node.get("name") or "",
+        "logical_name": props.get("logical_name") or "",
+        "summary": props.get("summary") or "",
+        "stereotype": props.get("stereotype") or "",
+        "summary_evidence_status": props.get("summary_evidence_status") or "",
+        "summary_missing_context": _json_string_list(
+            props.get("summary_missing_context_json")
+        ),
+        "description": _semantic_description(props),
+        "evidence_status": props.get("semantic_evidence_status") or "",
+        "missing_context": _json_string_list(
+            props.get("semantic_missing_context")
+        ),
+        "source": {
+            "file_path": source.get("file_path"),
+            "start_line": source.get("start_line"),
+            "end_line": source.get("end_line"),
+        },
+        "rules": compact_rules(node.get("rules") or []),
+        "calls": calls,
+        "tables": table_contexts,
+    }}
+
+
+def _sample_snapshot(properties: dict, table_id: str) -> dict:
+    raw = properties.get("sample_snapshot_json")
+    if raw in (None, ""):
+        return {"columns": [], "sample_rows": []}
+    try:
+        value = json.loads(raw)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid sample snapshot for {table_id}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"invalid sample snapshot for {table_id}")
+    return {
+        "columns": list(value.get("columns") or []),
+        "sample_rows": list(value.get("sample_rows") or []),
+    }
+
+
+def _table_context(
+    session, table_id: str, name: str, access: list[str], properties: dict | None = None,
+) -> dict:
+    props = properties
+    if props is None:
+        rows = session.run(
+            "MATCH (t:TABLE {id:$id, graph_owner:$graph_owner}) "
+            "RETURN properties(t) AS props",
+            id=table_id,
+            graph_owner=ANALYZER_GRAPH_OWNER,
+        ).data()
+        props = dict(rows[0].get("props") or {}) if len(rows) == 1 else {}
+    sample = _sample_snapshot(props, table_id)
+    return {
+        "id": table_id,
+        "name": name or props.get("name") or "",
+        "access": sorted(set(access)),
+        "evidence_status": props.get("semantic_evidence_status") or "",
+        "missing_context": _json_string_list(
+            props.get("semantic_missing_context")
+        ),
+        "columns": read_columns(session, table_id),
+        "sample": sample,
+    }
+
+
+def _related_table_contexts(session, relationships: list[dict]) -> list[dict]:
+    grouped: dict[str, dict] = {}
+    for relationship in relationships:
+        rel_type = str(relationship.get("type") or "")
+        if rel_type not in {"READS", "WRITES"}:
+            continue
+        if "TABLE" not in set(relationship.get("other_labels") or []):
+            continue
+        table_id = str(relationship.get("other_id") or "")
+        if not table_id:
+            continue
+        item = grouped.setdefault(table_id, {
+            "name": relationship.get("other_name") or "", "access": [],
+        })
+        item["access"].append("READ" if rel_type == "READS" else "WRITE")
+    return [
+        _table_context(session, table_id, item["name"], item["access"])
+        for table_id, item in sorted(grouped.items())
+    ]
+
+
+def read_node_detail(node_id: str, *, view: str = "full") -> dict:
     """현재 요청 DB에서 node id 하나를 읽는다. 부재·중복·불완전 소스는 명시 오류다."""
     requested_id = (node_id or "").strip()
     if not requested_id:
@@ -134,12 +266,26 @@ def read_node_detail(node_id: str) -> dict:
             labels = set(node_rows[0].get("labels") or [])
             rules = read_rules(session, requested_id)
             columns = read_columns(session, requested_id) if "TABLE" in labels else []
-            return build_node_detail(
+            detail = build_node_detail(
                 node_rows,
                 relationships,
                 rules,
                 columns,
                 node_id=requested_id,
             )
+            if view == "full" or "error" in detail:
+                return detail
+            try:
+                if "TABLE" in labels:
+                    props = dict(node_rows[0].get("props") or {})
+                    tables = [_table_context(
+                        session, requested_id, str(props.get("name") or ""),
+                        [], properties=props,
+                    )]
+                else:
+                    tables = _related_table_contexts(session, relationships)
+            except ValueError as exc:
+                return _error("SAMPLE_SNAPSHOT_INVALID", str(exc))
+            return build_gwt_detail(detail, tables)
     finally:
         driver.close()

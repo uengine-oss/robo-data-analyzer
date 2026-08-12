@@ -1,15 +1,48 @@
 ## Framework 분할 2 — 현재 함수의 테이블별 직접 사용 의미.
 extends: _common
+inherit_inputs: false
 max_tokens: 5000
 user_template_specific: |
-  # [분할 계약: TableInsightsOutput]
+  # [TASK — TARGET이 직접 사용한 TABLE 역할]
+
+  목표는 TARGET SOURCE가 **직접** 접근한 각 exact table의 사용 역할만 설명하는 것이다.
+  함수 전체 summary나 callee·COLUMN 의미를 만들지 않는다. COLUMN은 결정론 좌표를 원문과 함께
+  받는 최종 TABLE/COLUMN 요청에서 한 번만 생성한다.
+
+  ## [OUTPUT CONTRACT — TableInsightsOutput]
 
   이 요청은 `table_insights`만 출력한다. summary·이름·용어·Rule·Example·Question은 다른
   요청의 몫이므로 만들지 않는다.
-  `table_insights`는 배열이 아니라 입력 reads/writes의 exact `table_id`를 key로 쓰는
+  `table_insights`는 배열이 아니라 입력 direct reads/writes의 exact `table_id`를 key로 쓰는
   객체다. schema에 required로 주어진 모든 key를 정확히 한 번 채운다. 바깥 key가 table
   좌표이므로 값 안에서 table을 반복하지 않고 `role`, `usage_summary`만 쓴다.
   아래 절은 각각 자기 절이 명시한 필드에만 적용된다.
+
+  ## [INPUT GUIDE — 각 값의 뜻·권한·허용 판정]
+
+  - `TABLE_USAGE_TARGET`은 이번 출력의 유일한 소유자다.
+  - `SOURCE`는 직접 동작·조건·순서의 최우선 근거다. `source_status`가 available이 아니면
+    정상 원문처럼 추측해 채우지 않는다.
+  - `direct_reads_json`/`direct_writes_json`은 TARGET에서 exact source edge로 확인된 방향이며
+    출력 table key와 `role`의 허용 범위를 정한다. effective/ancestor/callee 접근이 아니다.
+  - `direct_table_operations_json`은 exact table의 SELECT/INSERT/UPDATE/DELETE/MERGE 같은
+    구조 연산이다. `role`과 동작 동사를 고르는 데만 사용한다.
+  - `direct_data_object_usages_json`은 `TARGET_ACCESSES_DATA_OBJECT` 관계와 source 좌표,
+    alias, qualified column, exact/unresolved 상태를 잇는다. unresolved 객체를 exact table에
+    귀속하지 않는다.
+  - `column_usage_candidates_json`은 table→column→source line의 결정론 소유권이다. 여기에
+    없는 column을 이름 유사도로 추가하지 않는다.
+  - symbol definition/external context는 각각 `TARGET_REFERENCES_DEFINITION`과
+    `TARGET_REFER_TO_EXTERNAL_CHUNK` 관계로 SOURCE 식별자의 입증된 뜻을 설명하는 보조 근거다.
+    table 소유권이나 접근 방향을 바꾸지 못한다.
+  - `[]`/`{}`는 해당 direct 근거가 없다는 뜻이다. schema required key를 상식으로 채우지 않는다.
+
+  ## [DECISION PROCEDURE]
+
+  1. direct read/write key로 출력할 table과 허용 role을 고정한다.
+  2. SOURCE와 direct operation으로 각 table의 실제 동작·조건·결과 사용처를 찾는다.
+  3. data-object/column relation의 table_id·좌표와 일치하는 근거만 연결한다.
+  4. 각 table에 입증된 한 문장만 쓰고 다른 table·callee 의미가 섞이지 않았는지 확인한다.
 
   ## 소유권 — 어느 테이블에 무엇을 쓰는가
 
@@ -17,17 +50,16 @@ user_template_specific: |
   섞지 않는다. 근거 없는 테이블 항목으로 개수를 채우지 않으며, schema의 table key를
   누락하거나 입력 밖 key를 추가하지 않는다.
 
-  예시 — 함수가 배송상태 테이블을 조회하고 배송이력 테이블에 저장할 때, 배송상태 쪽 출력:
+  예시 — 함수가 테이블 A를 조회하고 테이블 B에 저장할 때, 테이블 A 쪽 출력:
 
-  - 잘못: `usage_summary: "배송 상태를 조회하고 요청 원문을 이력으로 저장"` — 이력
-    테이블의 역할이 섞였다
-  - 좋음: `usage_summary: "요청 식별자로 현재 배송 상태를 조회해 변경 가능 여부 판단에 사용"`
+  - 잘못: A의 usage_summary에 B의 저장 대상·쓰기 결과를 함께 넣음
+  - 좋음: A의 SOURCE에 직접 있는 조회 대상·조건과 그 결과의 현재 함수 내 용도만 서술
 
   ## `role` — 접근 유형 분류
 
   이 절은 `role` 필드에만 적용된다.
 
-  직접 reads/writes에서 확인되는 READ/WRITE 조합을 허용값
+  `direct_reads_json`/`direct_writes_json`에서 확인되는 READ/WRITE 조합을 허용값
   `READ-only`, `WRITE-only`, `READ_WRITE`, `append-only`, `lookup`, `upsert` 중
   정확히 하나로 분류한다.
 
@@ -46,21 +78,65 @@ user_template_specific: |
 
   이 절은 `usage_summary` 필드에만 적용된다.
 
-  현재 함수가 바로 그 테이블에 수행하는 조회·쓰기와 그 결과가 현재 함수의 판단·산출에
-  어떻게 쓰이는지를 한 줄로 쓴다.
+  현재 함수가 바로 그 테이블에 수행하는 조회·쓰기와, **같은 SOURCE 범위 안에서 보이는
+  경우에만** 그 결과가 현재 함수의 판단·산출에 어떻게 쓰이는지를 한 줄로 쓴다. SOURCE가
+  직접 사용처를 보여 주지 않으면 접근 동작·대상·조건까지만 쓰고 후속 저장·반환을 만들지 않는다.
 
   - 잘못: "업무 처리에 사용되는 테이블" — 어느 테이블에나 붙는 문장은 설명이 아니다.
-  - 좋음: "요청 식별자로 기존 배송 상태를 조회해 변경 가능 여부 판단에 사용"
+  - 좋음: 현재 table의 직접 연산 동사·대상·조건을 SOURCE에 맞춰 구체화
+  - 잘못: 조회만 보이는 SOURCE에 후속 저장이나 반환을 덧붙임
+  - 좋음: 같은 SOURCE가 보여 주는 조회·조건·직접 소비까지만 설명
+  - `WRITE-only`/`append-only`이면 저장·추가·갱신을 말하고 조회·판정으로 바꾸지 않는다.
+    `READ-only`/`lookup`이면 조회한 값·조건과 사용처를 말하며 다른 테이블의 쓰기를 넣지 않는다.
+  - 위 예시 문구나 일반적인 업무 문장을 출력에 복사하지 않는다. SOURCE와
+    `direct_table_operations_json`에서 현재 table에 입증된 말만 쓴다.
 
-  ## 컬럼 — 출력하지 않는 것
-
-  현재 결정론 입력에는 code-node→column 관계가 없으므로 컬럼 필드는 출력하지 않는다.
-  본문 식별자나 table/구조체 이름 유사도로 컬럼을 추측하지 않는다.
-  전체 DDL 컬럼의 설명·논리명은 후속 table 통합 단계가 DDL `HAS_COLUMN` 관계에서 별도로
-  생성한다.
-
-  ## 내보내기 전 자기 점검
+  ## [SELF CHECK]
 
   - required table key를 전부, 입력 밖 key 없이 채웠는가
-  - 각 role이 주입된 reads/writes 방향과 맞는가
+  - 각 role이 주입된 direct reads/writes 방향과 맞는가
   - 각 usage_summary가 그 테이블에만 해당하는 내용인가
+  - COLUMN 의미나 `columns` 필드를 중복 생성하지 않았는가
+user_template_evidence: |
+  # [INPUT — TABLE usage evidence packet]
+
+  response_locale: {response_locale}
+  자연어는 이 언어로 작성한다. 원문 리터럴·ID·테이블 식별자는 번역하지 않는다.
+
+  ## [TABLE_USAGE_TARGET]
+  target_id: {id}
+  signature: {signature}
+  file: {source_file}
+  source_range: {source_range}
+  coordinate_system: {coordinate_system}
+  source_status: {source_status}
+
+  ## [EXACT_DIRECT_TABLE_EVIDENCE]
+  direct_reads_json:
+  {direct_reads}
+
+  direct_writes_json:
+  {direct_writes}
+
+  direct_table_operations_json:
+  {table_ops}
+
+  direct_data_object_usages_json:
+  {data_object_usages}
+
+  column_usage_candidates_json:
+  {column_usage_candidates}
+
+  target_referenced_symbol_definitions_json:
+  {referenced_symbols}
+
+  target_linked_external_context_json:
+  {external_evidence}
+
+  ## [SOURCE]
+  각 접두사는 절대 파일 줄번호다. 접두사 숫자와 `|`는 소스 코드가 아니다.
+  `[QUOTED_LITERAL value=...]`는 응답 JSON과 충돌하는 따옴표·escape 구분자만 제거한
+  결정론 투영이며 value 철자와 절대 줄 좌표는 원본 source와 같다.
+  ```
+  {code_body}
+  ```

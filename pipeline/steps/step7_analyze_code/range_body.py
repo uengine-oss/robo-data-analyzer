@@ -16,6 +16,8 @@ Framework 코드노드는 평면(자식 없음) — ``body_for`` 가 raw 본문 
 """
 from __future__ import annotations
 
+import json
+
 from pipeline.models.analysis_context import AnalysisContext
 from shared.config.settings import SETTINGS
 from shared.files.cache import SourceFileCache
@@ -37,9 +39,25 @@ def _raw_body(ctx: AnalysisContext, cache: SourceFileCache) -> str:
 def compact_body(
     ctx: AnalysisContext, contexts: dict[str, AnalysisContext], cache: SourceFileCache,
 ) -> str:
-    """부모 본문 — 자식 구간을 ``[범위] 자식 summary`` 로 치환 (분석 입력용)."""
+    """부모 본문 — 자식 모델 요약은 비권위 후보로 표시하고, 그 밖은 원문으로 보존한다."""
     children = _children(ctx, contexts)
     if not children:
+        return cache.excerpt(ctx.file_path, ctx.start_line, ctx.end_line).numbered_text
+
+    # 빈 summary의 기본 의미는 scheduling/분석 불변식 위반이다. 품질 경계가
+    # 명시적으로 rejected로 표시한 자식만 예외이며, 그 구간은 치환하지 않아 아래
+    # _transform_numbered가 정확한 원문과 절대 줄 좌표를 그대로 내보낸다.
+    for child in children:
+        if not (child.summary or "").strip() and (
+            child.extra.get("summary_status") not in {"rejected", "needs_context"}
+        ):
+            raise ValueError(
+                f"cannot compact child without LLM summary: {child.id}"
+            )
+    summarized_children = [
+        child for child in children if (child.summary or "").strip()
+    ]
+    if not summarized_children:
         return cache.excerpt(ctx.file_path, ctx.start_line, ctx.end_line).numbered_text
 
     def _ph(child: AnalysisContext) -> str:
@@ -52,12 +70,16 @@ def compact_body(
             )
         label = child.extra.get("label", "")
         tag = f"{label}: " if label else ""
+        status = child.extra.get("summary_evidence_status") or "sufficient"
+        missing = child.extra.get("summary_missing_context") or ()
+        missing_json = json.dumps(list(missing), ensure_ascii=False, separators=(",", ":"))
         return (
-            f"[CONTEXT_SUMMARY child_range={child.start_line}-{child.end_line}] "
-            f"{tag}{text}"
+            f"[CHILD_SUMMARY_CANDIDATE child_range={child.start_line}-{child.end_line} "
+            f"authority=non_source evidence_status={status} "
+            f"missing_context={missing_json}] {tag}{text}"
         )
 
-    return _transform_numbered(ctx, children, _ph, cache)
+    return _transform_numbered(ctx, summarized_children, _ph, cache)
 
 
 def _transform_numbered(
@@ -149,7 +171,11 @@ def body_for(
     단일 원리(모든 분할 공통): 요약 치환은 손실 압축이라 예산 초과(거대 컨테이너)에서만
     쓴다. 중소 부모까지 원문 승격 → 값 집합·매핑·보정 로직이 전달 게임 없이 직달.
     """
-    if ctx.extra.get("child_ids") and ctx.token_count > SETTINGS.analysis_pipeline.batch_max_tokens:
+    if (
+        ctx.extra.get("child_ids")
+        and ctx.token_count
+        > SETTINGS.analysis_pipeline.source_compaction_threshold_tokens
+    ):
         return compact_body(ctx, contexts, cache)
     return cache.excerpt(ctx.file_path, ctx.start_line, ctx.end_line).numbered_text
 
@@ -175,7 +201,8 @@ def model_visible_raw_body(
     raw = _raw_body(ctx, cache)
     if not (
         ctx.extra.get("child_ids")
-        and ctx.token_count > SETTINGS.analysis_pipeline.batch_max_tokens
+        and ctx.token_count
+        > SETTINGS.analysis_pipeline.source_compaction_threshold_tokens
     ):
         return raw
     lines = raw.splitlines()

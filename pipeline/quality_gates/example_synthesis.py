@@ -202,7 +202,10 @@ def synthesize_examples(rules) -> dict[int, list[dict]]:
     for rule in rules or ():
         anchor = rule.anchor_line
         cond = (rule.cond or "").strip()
-        if not cond:
+        effects = [str(effect) for effect in (rule.then or ())]
+        # An Example must demonstrate an observable rule effect. A condition-only row is still
+        # a valid RULE/control fact, but an empty outcome creates a misleading scenario node.
+        if not cond or not effects:
             synthesized[anchor] = []
             continue
         try:
@@ -220,7 +223,6 @@ def synthesize_examples(rules) -> dict[int, list[dict]]:
         if not terms:
             synthesized[anchor] = []
             continue
-        effects = [str(effect) for effect in (rule.then or ())]
         synthesized[anchor] = [
             {"kind": "satisfy", "given": terms, "then": effects},
         ]

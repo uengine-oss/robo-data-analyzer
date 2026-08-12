@@ -294,6 +294,14 @@ class AnalysisPipelineSettings:
     # DBMS step7 배치(🅕) — 같은 부모 형제를 한 LLM 콜로 묶을 때의 입력 토큰 상한.
     # 작게(기본 1500) 잡아 출력 폭주 차단 — 한 노드가 이 한도 초과면 단독 배치.
     batch_max_tokens: int = field(default_factory=lambda: _getenv_int("ROBO_PIPELINE_BATCH_MAX_TOKENS", 1500))
+    # 부모 SOURCE의 자식 원문을 모델 요약으로 치환하는 별도 상한. 배치 묶음 상한과
+    # 의미 손실 압축 상한은 목적이 다르다. 둘을 1500으로 공유하면 모델 context에 충분히
+    # 들어가는 중간 크기 루틴도 하위 LLM 문장으로 대체되어 오류가 상위로 전파된다.
+    source_compaction_threshold_tokens: int = field(
+        default_factory=lambda: _getenv_int(
+            "ROBO_PIPELINE_SOURCE_COMPACTION_THRESHOLD_TOKENS", 12000,
+        )
+    )
     # 임베딩 step on/off — Framework/DBMS 공통. 기본 ON (운영=full 동작).
     # 테스트/디버그 시 .env 로 off (느린 모델 로드 회피).
     # 모델 자체는 LLM 영역 (llm/embedder.py) 책임 — analysis_pipeline 설정에는 두지 않는다.
@@ -306,6 +314,7 @@ class AnalysisPipelineSettings:
             "residual_sample_size",
             "residual_max_rounds",
             "batch_max_tokens",
+            "source_compaction_threshold_tokens",
         ):
             _require_positive_int(f"AnalysisPipelineSettings.{name}", getattr(self, name))
 

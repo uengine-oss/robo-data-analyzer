@@ -1,16 +1,52 @@
 ## DBMS 분할 2 — 배치 노드별 테이블 직접 사용 의미.
 extends: _common
-max_tokens: 10000
+inherit_inputs: false
+max_tokens: 2000
+# json_schema+xgrammar가 작은 배치에서도 객체 닫기 전 공백을 무한 생성한 실제 좌표가 있었다.
+# 동일 저장 prompt/schema의 strict function tool replay는 두 좌표 모두 즉시 완결됐다.
+structured_output_method: function_calling
 user_template_specific: |
-  # [분할 계약: BatchTableInsightsOutput]
+  # [TASK — 각 TARGET_NODE가 직접 사용한 TABLE 역할]
+
+  목표는 각 TARGET_NODE SOURCE가 **직접** 접근한 exact table의 사용 역할만 노드별로 설명하는
+  것이다. procedure 전체 summary나 조상·형제·callee·COLUMN 의미를 만들지 않는다. COLUMN은
+  결정론 좌표를 원문과 함께 받는 최종 TABLE/COLUMN 요청에서 한 번만 생성한다.
+
+  ## [OUTPUT CONTRACT — BatchTableInsightsOutput]
 
   `nodes`는 배열이 아니라 입력의 각 DML `node_key`를 key로 쓰는 객체다. schema에 required로
   주어진 모든 node key를 정확히 한 번 채운다. 바깥 key가 좌표이므로 값 안에서 `node_key`를
   반복하지 않고 `table_insights`만 가진다.
-  `table_insights`도 배열이 아니라 해당 노드 reads/writes의 exact `table_id`를 key로 쓰는
+  `table_insights`도 배열이 아니라 해당 노드 direct reads/writes의 exact `table_id`를 key로 쓰는
   객체이며, 각 값은 `role`, `usage_summary`만 포함한다. 바깥 table_id key를 값 안에서
   반복하지 않는다. summary·이름·용어·Rule·Example·Question은 다른 요청의 몫이므로 만들지
   않는다. 아래 절은 각각 자기 절이 명시한 필드에만 적용된다.
+
+  ## [INPUT GUIDE — 각 값의 뜻·권한·허용 판정]
+
+  - `TABLE_USAGE_TARGET`의 node_key/target_id가 각 출력의 유일한 소유 범위다.
+  - `SOURCE`의 일반 줄은 그 노드의 직접 동작·조건·순서의 최우선 근거다. `source_status`가
+    available이 아니면 정상 원문처럼 추측해 채우지 않는다.
+    `[CHILD_SUMMARY_CANDIDATE ... authority=non_source]`는 긴 자식 구간의 이전 모델 요약이며
+    원문이나 현재 노드의 직접 근거가 아니다. 후보의 조건·TABLE 효과를 현재 노드로 복사하지 않는다.
+  - `ast_type`/`ast_expression`/`ast_target`/`ast_operator`는 parser가 현재 node에 부여한
+    구조 사실이며 SOURCE의 DML 대상·식·연산을 확인하는 데만 쓴다.
+  - `direct_reads_json`/`direct_writes_json`은 exact source edge로 확인된 방향이며 출력 table
+    key와 `role`의 허용 범위를 정한다. effective procedure/ancestor/callee 접근이 아니다.
+  - `direct_table_operations_json`은 exact table의 구조 연산, `direct_data_object_usages_json`은
+    `TARGET_ACCESSES_DATA_OBJECT` 관계와 source 좌표·alias·qualified column·resolution을 잇는다.
+  - `column_usage_candidates_json`은 table→column→source line의 결정론 소유권이다.
+  - symbol definition/external context는 각각 `TARGET_REFERENCES_DEFINITION`과
+    `TARGET_REFER_TO_EXTERNAL_CHUNK` 관계로 SOURCE 식별자의 입증된 뜻만 보조하며 table 소유권·
+    접근 방향을 바꾸지 못한다.
+  - `[]`/`{}`는 해당 direct 근거가 없다는 뜻이다. 다른 노드나 이름 상식으로 채우지 않는다.
+
+  ## [DECISION PROCEDURE]
+
+  1. node_key별 direct read/write key로 출력할 table과 허용 role을 고정한다.
+  2. 같은 노드 SOURCE와 direct operation으로 table의 실제 동작·조건·결과 사용처를 찾는다.
+  3. data-object/column relation의 table_id·source_id·좌표가 맞는 근거만 연결한다.
+  4. 각 table에 입증된 한 문장만 쓰고 노드·테이블 소유권 누출을 검사한다.
 
   ## 소유권 — 어느 노드가 어느 테이블을 소유하는가
 
@@ -18,11 +54,10 @@ user_template_specific: |
   조상·형제·callee 테이블을 추가하지 않는다. 한 노드가 여러 테이블을 쓰면 각 테이블의
   직접 역할을 분리한다. 입력에 없는 node_key·테이블·컬럼을 만들지 않는다.
 
-  예시 — 한 노드가 대상 테이블을 조회하고 이력 테이블에 저장할 때, 대상 테이블 쪽 출력:
+  예시 — 한 노드가 테이블 A를 조회하고 테이블 B에 저장할 때, 테이블 A 쪽 출력:
 
-  - 잘못: `usage_summary: "대상 상태를 조회하고 처리 결과를 이력으로 저장"` — 이력
-    테이블의 역할이 섞였다
-  - 좋음: `usage_summary: "처리 대상의 현재 상태를 조회해 갱신 여부 결정에 사용"`
+  - 잘못: A의 usage_summary에 B의 저장 대상·쓰기 결과를 함께 넣음
+  - 좋음: A의 SOURCE에 직접 있는 조회 대상·조건과 그 결과의 현재 노드 내 용도만 서술
 
   ## `role` — 접근 유형 분류
 
@@ -47,20 +82,45 @@ user_template_specific: |
 
   이 절은 `usage_summary` 필드에만 적용된다.
 
-  이 노드가 해당 테이블에 한 일과 그 결과가 판단·반환·후속 DML에 어떻게 쓰이는지를
-  한 줄로 설명한다.
+  이 노드가 해당 테이블에 직접 한 일과, **같은 SOURCE 범위 안에서 보이는 경우에만** 그
+  결과의 판단·반환·다음 연산 사용처를 한 줄로 설명한다. 현재 SOURCE가 SELECT projection만
+  보여 주면 projection 또는 결과 집합 구성까지만 쓴다. INSERT/UPDATE/DELETE/MERGE나 후속
+  소비가 SOURCE에 없으면 `후속 DML`, 저장, 반환이라고 만들지 않는다.
+
+  `direct_data_object_usages_json`에 `resolution=exact`인 현재 table의 alias와
+  `qualified_columns`가 있으면 그 소유권을 결정론 사실로 사용한다. 다른 table의 alias·컬럼을
+  현재 table 설명에 섞지 않는다. `resolution=unresolved`인 객체는 exact table에 임의로
+  귀속하지 않는다.
 
   - 잘못: "프로시저에서 사용하는 테이블" — 어느 테이블에나 붙는 문장은 설명이 아니다.
-  - 좋음: "처리 대상의 현재 상태를 조회해 갱신 여부를 결정"
+  - 좋음: 현재 table의 직접 연산 동사·대상·조건을 SOURCE에 맞춰 구체화
+  - 잘못: SELECT projection만 있는 SOURCE를 보고 "후속 DML에 사용"이라고 보이지 않는 소비를 추가
+  - 좋음: 같은 SOURCE가 보여 주는 컬럼 projection과 filter까지만 설명
+  - `WRITE-only`/`append-only`이면 저장·추가·갱신을 말하고 조회·판정으로 바꾸지 않는다.
+    `READ-only`/`lookup`이면 조회한 값·조건과 사용처를 말하며 다른 테이블의 쓰기를 넣지 않는다.
+  - 위 예시 문구나 일반적인 업무 문장을 출력에 복사하지 않는다. SOURCE와
+    `direct_table_operations_json`에서 현재 table에 입증된 말만 쓴다.
 
-  ## 컬럼 — 출력하지 않는 것
-
-  현재 결정론 입력에는 node→column 관계가 없으므로 컬럼 필드는 출력하지 않는다. SQL
-  식별자나 이름 유사도로 컬럼 소유권을 추측하지 않는다. 전체 DDL 컬럼의 설명·논리명은
-  후속 table 통합 단계가 DDL `HAS_COLUMN` 관계에서 별도로 생성한다.
-
-  ## 내보내기 전 자기 점검
+  ## [SELF CHECK]
 
   - required node key와 그 안의 table key를 전부, 입력 밖 key 없이 채웠는가
-  - 각 role이 주입된 reads/writes 방향과 맞는가
+  - 각 role이 주입된 direct reads/writes 방향과 맞는가
   - 각 usage_summary가 그 노드·그 테이블에만 해당하는 내용인가
+  - COLUMN 의미나 `columns` 필드를 중복 생성하지 않았는가
+user_template_evidence: |
+  # [INPUT — BATCH TABLE usage evidence packet]
+
+  response_locale: {response_locale}
+  자연어는 이 언어로 작성한다. 원문 리터럴·ID·테이블 식별자는 번역하지 않는다.
+
+  ## [TARGET_BATCH]
+  procedure_id: {unit_id}
+  signature: {unit_signature}
+  node_count: {node_count}
+  required_node_keys: {node_keys}
+  coordinate_system: absolute-file-line
+
+  ## [TABLE_USAGE_TARGETS]
+  각 SOURCE의 `[QUOTED_LITERAL value=...]`는 따옴표·escape 구분자만 제거한 결정론
+  투영이며 value 철자와 절대 줄 좌표는 원본 source와 같다.
+  {table_usage_nodes}

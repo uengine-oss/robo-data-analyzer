@@ -8,6 +8,11 @@ import unittest
 
 from pipeline.models.analysis_context import ControlSubtreeNode, StatementFact
 from pipeline.quality_gates.branch_inventory import build_inventory
+from pipeline.quality_gates.rule_prompt_evidence import (
+    expected_rule_condition,
+    rule_evidence,
+)
+from pipeline.steps.step7_analyze_code.rule_row_batching import required_rule_rows
 
 _SOURCE = "\n".join([
     "long f(long x) {",          # 1
@@ -66,6 +71,43 @@ class BranchInventoryAstContractTest(unittest.TestCase):
         self.assertEqual(frozenset({"rc + 1"}), branch.return_expressions)
         self.assertEqual(frozenset(), branch.callees)
 
+    def test_prompt_index_exposes_implicit_false_as_normal_flow(self):
+        row = next(
+            line for line in self._build().branch_index().splitlines()
+            if line.startswith("4:")
+        )
+        self.assertIn("[implicit_false]", row)
+        self.assertIn("handler 진입 아님", row)
+
+    def test_explicit_else_suppresses_implicit_false_marker(self):
+        source = "\n".join((
+            "int f(int x) {", "if (x) {", "work();", "} else {",
+            "fallback();", "}", "}",
+        ))
+        tree = [ControlSubtreeNode(
+            "if@2", "IF", 2, 6, expression="x",
+            children=[ControlSubtreeNode("else@4", "ELSE", 4, 6)],
+        )]
+        index = build_inventory(
+            source, tree, "c", statements=(),
+            call_lines=((3, "work"), (5, "fallback")),
+        ).branch_index()
+        decision = next(line for line in index.splitlines() if "[decision]" in line)
+        self.assertNotIn("[implicit_false]", decision)
+
+    def test_prompt_index_marks_handler_as_error_only(self):
+        source = "\n".join((
+            "BEGIN", "  work;", "EXCEPTION", "  WHEN OTHERS THEN", "  log;", "END;",
+        ))
+        tree = [
+            ControlSubtreeNode("try@1", "TRY", 1, 6),
+            ControlSubtreeNode("exception@3", "EXCEPTION", 3, 6),
+        ]
+        index = build_inventory(source, tree, "sql", statements=()).branch_index()
+        handler = next(line for line in index.splitlines() if "[handler]" in line)
+        self.assertIn("[error_only]", handler)
+        self.assertIn("조건 거짓으로 진입하지 않음", handler)
+
     def test_entry_owns_top_level_assignment_and_call(self):
         inventory = self._build()
         self.assertEqual(3, inventory.entry_line)
@@ -79,6 +121,168 @@ class BranchInventoryAstContractTest(unittest.TestCase):
         _source, returns, assignments = inventory.direct_evidence(10)
         self.assertEqual(frozenset({"0"}), returns)
         self.assertEqual((), assignments)
+
+    def test_effects_after_controls_get_separate_coordinate_owned_rows(self):
+        source = "\n".join([
+            "int f(int flag, int deny) {",  # 1
+            "  result = 0;",                # 2 entry prefix
+            "  if (flag) {",                # 3 parent
+            "    if (deny) return -1;",     # 4 terminating child
+            "    result = 1;",              # 5 parent continuation
+            "  }",                          # 6
+            "  audit();",                   # 7 routine continuation
+            "  return 0;",                  # 8 top-level exit
+            "}",                             # 9
+        ])
+        tree = [ControlSubtreeNode(
+            "if@3", "IF", 3, 6, expression="flag",
+            children=[ControlSubtreeNode(
+                "if@4", "IF", 4, 4, expression="deny",
+            )],
+        )]
+        inventory = build_inventory(
+            source, tree, "c",
+            statements=(
+                StatementFact("a2", "ASSIGNMENT", 2, 2,
+                              expression="0", target="result", operator="="),
+                StatementFact("r4", "RETURN", 4, 4, expression="-1"),
+                StatementFact("a5", "ASSIGNMENT", 5, 5,
+                              expression="1", target="result", operator="="),
+                StatementFact("r8", "RETURN", 8, 8, expression="0"),
+            ),
+            call_lines=((7, "audit"),),
+        )
+
+        self.assertEqual(2, inventory.entry_line)
+        self.assertEqual((('result', '0'),), inventory.direct_evidence(2)[2])
+        self.assertNotIn("audit", inventory.direct_callees(2))
+        rows = {row["line"]: row for row in inventory.table_rows()}
+        self.assertEqual("continuation", rows[5]["role"])
+        self.assertEqual("", rows[5]["after_control"])
+        self.assertEqual(4, rows[5]["fallthrough_false_of"])
+        self.assertEqual("continuation", rows[7]["role"])
+        self.assertEqual("IF@3", rows[7]["after_control"])
+        self.assertEqual((('result', '1'),), inventory.direct_evidence(5)[2])
+        self.assertEqual(frozenset({"audit"}), inventory.direct_callees(7))
+        self.assertEqual(
+            'F("flag") and not (F("deny"))',
+            expected_rule_condition(inventory, 5),
+        )
+        self.assertEqual(
+            'after_control("IF@3")', expected_rule_condition(inventory, 7),
+        )
+        self.assertTrue({2, 3, 4, 5, 7, 8}.issubset(required_rule_rows(inventory)))
+        evidence = rule_evidence(inventory, (5, 7))
+        self.assertEqual("", evidence["rows"]["R5"]["after_control"])
+        self.assertEqual("IF@3", evidence["rows"]["R7"]["after_control"])
+        self.assertEqual([], evidence["rows"]["R5"]["narrative_focus"])
+        self.assertEqual([], evidence["rows"]["R7"]["narrative_focus"])
+
+    def test_static_goto_target_splits_sequence_at_parser_label(self):
+        source = "\n".join([
+            "state = 0;",                 # 1 entry
+            "if (skip) { goto done; }",   # 2 decision + jump
+            "state = 1;",                 # 3 normal fall-through only
+            "done:",                      # 4 static join coordinate
+            "audit();",                   # 5 normal or goto predecessor
+        ])
+        inventory = build_inventory(
+            source,
+            [ControlSubtreeNode(
+                "if@2", "IF", 2, 2, expression="skip",
+            )],
+            "c",
+            statements=(
+                StatementFact("a1", "ASSIGNMENT", 1, 1,
+                              expression="0", target="state", operator="="),
+                StatementFact("g2", "GOTO", 2, 2, target="done"),
+                StatementFact("a3", "ASSIGNMENT", 3, 3,
+                              expression="1", target="state", operator="="),
+                StatementFact("l4", "LABEL", 4, 4, target="done"),
+            ),
+            call_lines=((5, "audit"),),
+        )
+
+        rows = {row["line"]: row for row in inventory.table_rows()}
+        self.assertEqual("", rows[3]["after_control"])
+        self.assertEqual(2, rows[3]["fallthrough_false_of"])
+        self.assertEqual(
+            'not (F("skip"))', expected_rule_condition(inventory, 3),
+        )
+        self.assertEqual("", rows[3]["at_label"])
+        self.assertEqual("done@4", rows[4]["at_label"])
+        self.assertEqual("", rows[4]["after_control"])
+        self.assertFalse(rows[4]["unresolved_reachability"])
+        self.assertEqual((('state', '1'),), inventory.direct_evidence(3)[2])
+        self.assertEqual(frozenset({"audit"}), inventory.direct_callees(4))
+        self.assertEqual(
+            'at_label("done@4")', expected_rule_condition(inventory, 4),
+        )
+        evidence = rule_evidence(inventory, (3, 4))
+        self.assertEqual("done@4", evidence["rows"]["R4"]["at_label"])
+        self.assertNotIn("audit", evidence["rows"]["R3"].get("source", ""))
+
+    def test_unconditional_continue_makes_following_path_the_guard_complement(self):
+        source = "\n".join([
+            "while (again) {",            # 1
+            "  if (skip) { continue; }",  # 2
+            "  work();",                  # 3
+            "}",                           # 4
+        ])
+        inventory = build_inventory(
+            source,
+            [ControlSubtreeNode(
+                "loop@1", "LOOP", 1, 4, expression="again",
+                children=[ControlSubtreeNode(
+                    "if@2", "IF", 2, 2, expression="skip",
+                )],
+            )],
+            "c",
+            statements=(
+                StatementFact("c2", "CONTINUE", 2, 2, target="continue"),
+            ),
+            call_lines=((3, "work"),),
+        )
+
+        rows = {row["line"]: row for row in inventory.table_rows()}
+        self.assertEqual(2, rows[3]["fallthrough_false_of"])
+        self.assertEqual("", rows[3]["after_control"])
+        self.assertFalse(rows[3]["unresolved_reachability"])
+        self.assertEqual(
+            'F("again") and not (F("skip"))',
+            expected_rule_condition(inventory, 3),
+        )
+        evidence = rule_evidence(inventory, (2, 3))
+        self.assertEqual(["C2"], evidence["rows"]["R2"]["narrative_focus"])
+        self.assertEqual([], evidence["rows"]["R3"]["narrative_focus"])
+        jump = [
+            item for item in evidence["effects"].values()
+            if item.get("op") == "jump"
+        ]
+        self.assertEqual(["continue"], [item["target"] for item in jump])
+
+    def test_compound_assignment_preserves_read_modify_write_meaning(self):
+        inventory = build_inventory(
+            "disc += 2000;\nflags |= MASK;\n",
+            [],
+            "c",
+            statements=(
+                StatementFact(
+                    "a1", "ASSIGNMENT", 1, 1,
+                    expression="2000", target="disc", operator="+=",
+                ),
+                StatementFact(
+                    "a2", "ASSIGNMENT", 2, 2,
+                    expression="MASK", target="flags", operator="|=",
+                ),
+            ),
+            call_lines=(),
+        )
+        _source, _returns, assignments = inventory.direct_evidence(1)
+        self.assertEqual(
+            (("disc", "(disc) + (2000)"), ("flags", "(flags) | (MASK)")),
+            assignments,
+        )
 
     def test_java_python_sql_ast_paths(self):
         # 04 §3.3.1-5: 지원 언어별 fixture 없이 legacy 를 삭제하지 않는다.
@@ -98,7 +302,8 @@ class BranchInventoryAstContractTest(unittest.TestCase):
         self.assertEqual(
             frozenset({"x + 1"}), java.at_line(2).return_expressions,
             "분기 안 return 귀속 (java)")
-        self.assertIn("new IllegalStateException(x)", java.return_expressions)
+        self.assertNotIn("new IllegalStateException(x)", java.return_expressions)
+        self.assertEqual((("raise_error", ""),), java.direct_statement_effects(5))
 
         python = build_inventory(
             "def f(x):\n    if x > 0:\n        return x + 1\n    raise ValueError(x)\n",
@@ -112,6 +317,8 @@ class BranchInventoryAstContractTest(unittest.TestCase):
         )
         self.assertEqual({3, 4}, {l for l, k, _ in python.termination_rows if k == "exit"})
         self.assertEqual(frozenset({"x + 1"}), python.at_line(2).return_expressions)
+        self.assertNotIn("ValueError(x)", python.return_expressions)
+        self.assertEqual((("raise_error", ""),), python.direct_statement_effects(4))
 
         sql = build_inventory(
             "BEGIN\n  IF p_id > 0 THEN\n    v_st := 'OK';\n    RETURN 'OK';\n"
@@ -142,13 +349,17 @@ class BranchInventoryAstContractTest(unittest.TestCase):
 class FinallyWithConsumptionTest(unittest.TestCase):
     """FW 타언어 내부 노드의 analyzer 소비 준비 (사용자 지시 2026-08-05 — 실기동 검증은 C만).
 
-    - java FINALLY = 조건 없는 decision: "도달하면 항상 실행" — 조건 항 없이 조상
-      경로만 갖는 행(회귀 5호의 조건 없는 decision 계약 재사용, 창작 0).
+    - java FINALLY = "도달하면 항상 실행" — 조건 항 없이 조상 경로만 갖는 행(회귀 5호
+      계약, 창작 0). **2026-08-08(spec 118 §2.1) 정정**: 이 행의 role 은 종전 ``decision``
+      이었는데, 채점기(`rule_grading.py` decision 행은 cond 필수)와 정면으로 모순이었다 —
+      Java 코퍼스가 들어오면 모든 FINALLY 가 finding 이 된다. 조건이 없다는 사실은
+      그대로 두고 role 만 ``controller`` 로 내린다. **증거(`when: []`)는 불변**이며
+      달라지는 것은 없는 조건을 요구하지 않는다는 점뿐이다.
     - python WITH = controller: TRY 와 같은 감싸는 구조 — 자원 식은 SWITCH 스위치식처럼
       문맥으로만 실리고 조건 경로를 오염하지 않는다.
     """
 
-    def test_java_finally_is_conditionless_decision_row(self):
+    def test_java_finally_is_conditionless_row_without_condition_demand(self):
         from pipeline.quality_gates.rule_prompt_evidence import rule_evidence
         source = "\n".join([
             "void f() {",                 # 1
@@ -178,10 +389,11 @@ class FinallyWithConsumptionTest(unittest.TestCase):
             call_lines=((3, "a"), (9, "close")),
         )
         rows = {r["line"]: r for r in inventory.table_rows()}
-        self.assertEqual("decision", rows[8]["role"])
+        self.assertEqual("controller", rows[8]["role"])
         self.assertEqual("", rows[8]["condition"])
         payload = rule_evidence(inventory, (8,))
         self.assertEqual([], payload["rows"]["R8"]["when"])
+        self.assertEqual([], payload["rows"]["R8"]["narrative_focus"])
 
     def test_python_with_is_controller_row(self):
         source = "\n".join([

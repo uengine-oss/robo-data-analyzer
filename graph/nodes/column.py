@@ -39,6 +39,8 @@ UNWIND $items AS item
 MATCH (c:COLUMN {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 SET c.analyzed_description = item.analyzed_description,
     c.logical_name = item.logical_name,
+    c.semantic_evidence_status = item.semantic_evidence_status,
+    c.semantic_missing_context = item.semantic_missing_context,
     c.description_source = CASE
         WHEN coalesce(c.description, '') <> '' THEN c.description_source
         WHEN coalesce(item.analyzed_description, '') <> '' THEN 'code'

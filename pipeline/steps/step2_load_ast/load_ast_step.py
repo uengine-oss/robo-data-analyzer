@@ -42,6 +42,11 @@ _STEP = "step2.load_ast"
 _N = TypeVar("_N")
 
 
+def ast_json_paths(ast_root: Path) -> list[Path]:
+    """Return every parser artifact using the production recursive boundary."""
+    return sorted(path for path in ast_root.rglob("*.json") if path.is_file())
+
+
 def _with_code_text(nodes: list[_N], cache: SourceFileCache) -> list[_N]:
     """라인 범위가 있는 노드에 원문 슬라이스를 붙인다 (frozen dataclass → replace).
 
@@ -148,9 +153,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
     await pause.gate()
     # 파일 순차 유지 — 제어 계약(정지 시 다음 파일을 읽지 않음)이 파일 단위 gate 를
     # 요구한다. 이 단계의 시간 지배는 파싱이 아니라 Neo4j 업서트다.
-    for json_path in sorted(ast_dir.rglob("*.json")):
-        if not json_path.is_file():
-            continue
+    for json_path in ast_json_paths(ast_dir):
         result = read_antlr_json(json_path, source_root)
         code_nodes.extend(result.code_nodes)
         modules.extend(result.modules)

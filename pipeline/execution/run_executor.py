@@ -139,7 +139,7 @@ async def execute_run(
     try:
         corpus_root = (codebase.corpus_root or codebase.root).resolve()
         human_glossary = load_human_glossary(corpus_root)
-        _reset_run_output_root(run_output_root, run.run_dir)
+        _reset_run_output_root(run_output_root, run.run_dir, strategy)
         output_context_token = set_run_dir(run.run_dir)
         locale_context_token = set_response_locale(codebase.locale)
         _write_initial_manifest(run, strategy, human_glossary)
@@ -325,9 +325,28 @@ def _run_retention() -> int:
 
 
 _RUN_DIR_NAME = re.compile(r"^\d{8}_\d{6}_[0-9a-f]{12}$")
+# manifest 를 읽을 수 없는 run(중단·구버전)의 보존 그룹. 조용히 버리지 않고 자기 그룹에서
+# 같은 규칙으로 보존된다.
+_UNKNOWN_RUN_STRATEGY = "unknown"
 
 
-def _reset_run_output_root(run_output_root: Path, run_dir: Path | None = None) -> None:
+def _run_strategy(run_dir: Path) -> str:
+    """run 폴더의 전략 이름 — 보존을 전략별로 세기 위한 분류 키."""
+    manifest = run_dir / "manifest.json"
+    try:
+        return str(
+            json.loads(manifest.read_text(encoding="utf-8")).get("strategy")
+            or _UNKNOWN_RUN_STRATEGY
+        )
+    except (OSError, ValueError):
+        return _UNKNOWN_RUN_STRATEGY
+
+
+def _reset_run_output_root(
+    run_output_root: Path,
+    run_dir: Path | None = None,
+    strategy: object | None = None,
+) -> None:
     """Analyzer가 소유한 실행 결과 루트 아래에 새 run 폴더를 준비한다.
 
     루트는 컨테이너다 — 통째로 지우지 않는다. run 은 ``root/<run_id>/`` 자기 폴더에만
@@ -375,15 +394,28 @@ def _reset_run_output_root(run_output_root: Path, run_dir: Path | None = None) -
     marker = root / _RUN_OUTPUT_OWNER_MARKER
     marker.write_text(_RUN_OUTPUT_OWNER_MARKER_CONTENT, encoding="utf-8")
 
-    # 보존 개수 초과분 정리 — 새 run 폴더 몫 1개를 남기고 오래된 순으로 지운다.
-    # 이름의 시각 접두사가 같은(같은 초) run 은 생성 시각으로 순서를 가른다.
-    existing = sorted(
+    # 보존 개수 초과분 정리 — **전략별로** 센다. 이름의 시각 접두사가 같은(같은 초) run 은
+    # 생성 시각으로 순서를 가른다.
+    #
+    # 종전에는 전략을 구분하지 않고 세어, 전략을 번갈아 돌리면 다른 전략의 기준 run 이
+    # 밀려 나갔다 — 2026-08-08 에 실제로 framework 판정 기준 run 이 DBMS run 두 번에
+    # 밀려 삭제됐고 저장 프롬프트(제한 replay 재료, 04 §5-1)를 잃었다. 이 보존 정책의
+    # 선언된 목적이 "직전 run 이 남아야 백업 없이 전후 비교가 성립한다" 인 이상,
+    # 비교 상대는 **같은 전략의 직전 run** 이다.
+    retention = _run_retention()
+    grouped: dict[str, list[Path]] = {}
+    for entry in sorted(
         (entry for entry in root.iterdir()
          if entry.is_dir() and _RUN_DIR_NAME.match(entry.name)),
         key=lambda entry: (entry.name[:15], entry.stat().st_ctime_ns),
-    )
-    for stale in existing[: max(0, len(existing) - (_run_retention() - 1))]:
-        shutil.rmtree(stale)
+    ):
+        grouped.setdefault(_run_strategy(entry), []).append(entry)
+    incoming = getattr(strategy, "name", "") or _UNKNOWN_RUN_STRATEGY
+    for name, runs in grouped.items():
+        # 새 run 몫 1개는 자기 전략 그룹에서만 비운다.
+        keep = retention - 1 if name == incoming else retention
+        for stale in runs[: max(0, len(runs) - keep)]:
+            shutil.rmtree(stale)
 
     if run_dir is not None:
         resolved_run_dir = run_dir.resolve()

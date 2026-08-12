@@ -5,30 +5,25 @@ max_tokens: 4000
 shared_values:
   rule_leaf_contract: ../common/rule_leaf_contract.md
 user_template_specific: |
-  # [분할 계약: AssignedRulesOutput]
+  # [TASK — 각 분기 행의 사람이 읽는 Rule 의미]
 
-  `rules`만 출력한다. response_format에 required인 각 `R<행>`을 정확히 한 번 만들고
-  각 행의 구조화된 `cond`, `then`과 의미 `nl`을 직접 채운다.
-  스키마는 좌표와 필드만 강제하며 답을 제공하지 않는다.
+  목표는 parser가 이미 확정한 각 required 행의 조건 경로와 직접 효과를, 소유권을 바꾸지 않고
+  사람이 이해하는 `nl` 한 문장으로 옮기는 것이다.
 
   {rule_leaf_contract}
 
-  ## 이 요청의 증거 읽기
-
-  `conditions`와 행별 `when`은 그 행까지의 정확한 경로 조건이다. `source`가 있으면 해당
-  행의 직접 SOURCE다. referenced symbol·callee summary·외부 계약은 의미 이해를 돕는
-  참고이며, 같은 사실을 다른 표현으로 창작하지 않는다.
-
 user_template_evidence: |
+  # [INPUT — RULE evidence packet]
+
   response_locale: {response_locale}
   target_id: {id}
   signature: {signature}
-  referenced_symbols_json: {referenced_symbols}
-  external_evidence_json: {external_evidence}
-  reads_json: {reads}
-  writes_json: {writes}
-  authoritative_table_ops_json: {table_ops}
-  callee_summaries_json: {callee_summaries}
+  target_referenced_symbol_definitions_json: {referenced_symbols}
+  target_linked_external_context_json: {external_evidence}
+  owner_effective_reads_json: {reads}
+  owner_effective_writes_json: {writes}
+  owner_linked_table_operations_json: {table_ops}
+  callee_interfaces_json: {callee_summaries}
   assigned_rows: {assigned_rows}
   rule_evidence_json:
   {rule_evidence}

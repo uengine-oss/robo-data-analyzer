@@ -207,6 +207,50 @@ class ImmutableRunEvidenceTest(unittest.TestCase):
             self.assertTrue(second.run_dir.exists())
             self.assertTrue(third.run_dir.exists())
 
+    def test_retention_counts_per_strategy(self) -> None:
+        """다른 전략의 기준 run 은 이 전략의 재실행에 밀려나지 않는다.
+
+        보존 정책의 선언된 목적이 "직전 run 이 남아야 백업 없이 전후 비교가 성립한다"
+        인 이상, 비교 상대는 **같은 전략의 직전 run** 이다. 종전에는 전략을 구분하지 않고
+        세어 2026-08-08 에 framework 판정 기준 run 이 DBMS run 두 번에 밀려 삭제됐고
+        저장 프롬프트(제한 replay 재료, 04 §5-1)를 잃었다.
+        """
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "runs"
+            corpus = Path(temporary_directory) / "corpus"
+            (corpus / "source").mkdir(parents=True)
+            codebase = Codebase(
+                root=corpus / "source", corpus_root=corpus,
+                strategy="framework", locale="ko",
+            )
+            framework = SimpleNamespace(name="framework")
+            dbms = SimpleNamespace(name="dbms")
+
+            baseline = AnalysisRun.now(codebase, root)
+            _reset_run_output_root(root, baseline.run_dir, framework)
+            baseline.run_dir.mkdir(parents=True, exist_ok=True)
+            (baseline.run_dir / "manifest.json").write_text(
+                '{"strategy": "framework"}', encoding="utf-8",
+            )
+
+            kept = []
+            for _ in range(3):
+                run = AnalysisRun.now(codebase, root)
+                _reset_run_output_root(root, run.run_dir, dbms)
+                run.run_dir.mkdir(parents=True, exist_ok=True)
+                (run.run_dir / "manifest.json").write_text(
+                    '{"strategy": "dbms"}', encoding="utf-8",
+                )
+                kept.append(run.run_dir)
+
+            self.assertTrue(
+                baseline.run_dir.exists(),
+                "다른 전략의 기준 run 이 삭제되면 그 전략의 전후 비교 재료를 잃는다",
+            )
+            self.assertFalse(kept[0].exists(), "같은 전략 안에서는 보존 개수를 지킨다")
+            self.assertTrue(kept[1].exists())
+            self.assertTrue(kept[2].exists())
+
     def test_legacy_flat_artifacts_are_cleared_but_run_dirs_kept(self) -> None:
         """개편 전 평면 산출물은 소유 표식 아래에서만 제거되고 run 폴더는 보존된다."""
         with tempfile.TemporaryDirectory() as temporary_directory:

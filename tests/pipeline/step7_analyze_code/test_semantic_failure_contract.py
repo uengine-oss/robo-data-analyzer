@@ -11,7 +11,11 @@ from unittest.mock import AsyncMock, patch
 from pydantic import ValidationError
 
 from graph.schema.graph_nodes import CodeNode
-from pipeline.models.analysis_context import AnalysisContext, StatementFact
+from pipeline.models.analysis_context import (
+    AnalysisContext,
+    ReferencedSymbolContext,
+    StatementFact,
+)
 from pipeline.models.code_analysis_output import (
     BatchRulesItem,
     BatchSummaryItem,
@@ -24,6 +28,8 @@ from pipeline.steps.step7_analyze_code.batch_analyze import (
     _apply_batch_summary,
     _apply_node_analysis,
     _collect_keyed_concern,
+    _direct_table_node_ids,
+    _is_summary_terminal,
     _partition_keyed_items,
 )
 from pipeline.steps.step7_analyze_code.three_split_llm_fanout import analyze_code_three_split
@@ -34,13 +40,138 @@ from llm.runners.model_output_error import ModelOutputError
 
 
 class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
+    def test_insufficient_dbms_summary_is_not_published(self) -> None:
+        node = CodeNode(
+            id="fn", name="work", signature="work()", file_path="x.sql",
+            start_line=1, end_line=1, label="PROCEDURE", summary="stale",
+            stereotype="Helper",
+        )
+        context = AnalysisContext(
+            id="fn", signature="work()", file_path="x.sql",
+            start_line=1, end_line=1, summary="stale",
+        )
+        output = BatchSummaryItem(
+            node_key="1-1", summary="", stereotype="",
+            evidence_status="insufficient",
+            missing_context=["호출 대상 계약 원문"], questions=[],
+        )
+
+        finding = _apply_batch_summary(
+            output, node, context, SimpleNamespace(name="dbms"), {"fn": context},
+        )
+
+        self.assertEqual("unverified", finding.status)
+        self.assertIsNone(node.summary)
+        self.assertIsNone(node.stereotype)
+        self.assertEqual("", context.summary)
+        self.assertEqual("needs_context", context.extra["summary_status"])
+        self.assertEqual(
+            ["호출 대상 계약 원문"], node.extra["summary_missing_context"],
+        )
+
+    def test_table_insight_schedules_only_direct_rw_owner(self) -> None:
+        routine = AnalysisContext(
+            id="routine", signature="p", file_path="p.sql",
+            start_line=1, end_line=20,
+            reads=("db:T",),
+        )
+        select = AnalysisContext(
+            id="select", signature="SELECT", file_path="p.sql",
+            start_line=5, end_line=5,
+            reads=("db:T",), direct_reads=("db:T",),
+        )
+
+        self.assertEqual(
+            ["select"],
+            _direct_table_node_ids(
+                ["routine", "select"],
+                {"routine": routine, "select": select},
+            ),
+        )
+
+    def test_only_trusted_or_explicitly_rejected_summary_is_terminal(self) -> None:
+        node = CodeNode(
+            id="fn", name="fn", signature="fn", file_path="x.sql",
+            start_line=1, end_line=1, label="FUNCTION",
+        )
+        context = AnalysisContext(
+            id="fn", signature="fn", file_path="x.sql",
+            start_line=1, end_line=1,
+        )
+        self.assertFalse(_is_summary_terminal(node, context))
+        context.extra["summary_status"] = "unavailable"
+        self.assertFalse(_is_summary_terminal(node, context))
+        context.extra["summary_status"] = "rejected"
+        self.assertTrue(_is_summary_terminal(node, context))
+        context.extra.clear()
+        node.summary = "검증된 요약"
+        self.assertTrue(_is_summary_terminal(node, context))
+
+    def test_rule_serialization_uses_owning_routine_table_scope(self) -> None:
+        routine = CodeNode(
+            id="routine", name="p", signature="p", file_path="p.sql",
+            start_line=1, end_line=40, label="FUNCTION",
+        )
+        child = CodeNode(
+            id="child", name="assignment", signature="assignment",
+            file_path="p.sql", start_line=28, end_line=28,
+            label="ASSIGNMENT", parent_id=routine.id,
+        )
+        routine_ctx = AnalysisContext(
+            id=routine.id, signature="p", file_path="p.sql",
+            start_line=1, end_line=40,
+            reads=("db:RDITAG_TB",),
+            extra={"table_op": {"db:RDITAG_TB": "READ"}},
+        )
+        child_ctx = AnalysisContext(
+            id=child.id, signature="assignment", file_path="p.sql",
+            start_line=28, end_line=28,
+            extra={"rule_rows": (28,)},
+        )
+        accepted = RuleItem(
+            anchor_line=28, cond=None,
+            then=['select("RDITAG_TB")'], nl="RDITAG_TB를 조회한다.",
+        )
+        with (
+            patch(
+                "pipeline.steps.step7_analyze_code.batch_analyze.routine_inventory",
+                return_value=(routine, object()),
+            ),
+            patch(
+                "pipeline.steps.step7_analyze_code.batch_analyze.grade_rules",
+                return_value=object(),
+            ),
+            patch(
+                "pipeline.steps.step7_analyze_code.batch_analyze.partition_rule_candidates",
+                return_value=([accepted], []),
+            ),
+            patch(
+                "pipeline.steps.step7_analyze_code.batch_analyze.serialize_rules",
+                return_value=([], []),
+            ) as serialize,
+        ):
+            _apply_node_analysis(
+                None, BatchRulesItem(node_key="28-28", rules=[]), None,
+                child, child_ctx, SimpleNamespace(name="dbms"),
+                SourceFileCache(),
+                contexts={routine.id: routine_ctx, child.id: child_ctx},
+                code_by_id={routine.id: routine, child.id: child},
+                requested_parts={"rules"},
+            )
+
+        self.assertEqual(("db:RDITAG_TB",), serialize.call_args.args[2])
+        self.assertEqual((), serialize.call_args.args[3])
+        self.assertEqual(
+            {"db:RDITAG_TB": "READ"}, serialize.call_args.args[4],
+        )
+
     def test_duplicate_and_unknown_keys_leave_expected_ids_unresolved(self) -> None:
         expected = {"1-2": "a", "3-4": "b"}
         items = [
-            BatchSummaryItem(node_key="1-2", summary="a1"),
-            BatchSummaryItem(node_key="1-2", summary="a2"),
-            BatchSummaryItem(node_key="3-4", summary="b"),
-            BatchSummaryItem(node_key="9-9", summary="unknown"),
+            BatchSummaryItem(node_key="1-2", summary="a1", stereotype="Helper", evidence_status="sufficient"),
+            BatchSummaryItem(node_key="1-2", summary="a2", stereotype="Helper", evidence_status="sufficient"),
+            BatchSummaryItem(node_key="3-4", summary="b", stereotype="Helper", evidence_status="sufficient"),
+            BatchSummaryItem(node_key="9-9", summary="unknown", stereotype="Helper", evidence_status="sufficient"),
         ]
         accepted, unresolved = _partition_keyed_items(
             items, expected, concern="summary",
@@ -73,6 +204,8 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
                         "node_key": "1-2",
                         "summary": "a",
                         "stereotype": "Helper",
+                        "evidence_status": "sufficient",
+                        "missing_context": [],
                         "questions": [],
                     },
                 },
@@ -123,6 +256,8 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
                 )]},
             )
             context.extra.setdefault("ast_statements", ())
+            # spec 117 — 채점이 기대하는 의무 행은 run 시작 때 배분된 값이다.
+            context.extra["rule_rows"] = (1,)
             _apply_node_analysis(
                 None,
                 BatchRulesItem(node_key="1-4", rules=[]),
@@ -131,6 +266,8 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
                 context,
                 SimpleNamespace(name="dbms"),
                 SourceFileCache(),
+                contexts={"fn": context},
+                code_by_id={"fn": node},
                 requested_parts={"rules"},
             )
             self.assertEqual([], node.extra["rules"])
@@ -155,17 +292,175 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
             context.extra.setdefault("ast_statements", ())
             output = BatchSummaryItem.model_construct(
                 node_key="1-1", summary="after",
-                stereotype="InventedRole", questions=[],
+                stereotype="InventedRole", evidence_status="sufficient",
+                missing_context=[], questions=[],
             )
             with self.assertRaisesRegex(ValueError, "invalid dbms stereotype"):
                 _apply_batch_summary(
                     output, node, context, SimpleNamespace(name="dbms"),
+                    {"fn": context},
                 )
         self.assertEqual(("before", None), (node.summary, node.stereotype))
         self.assertEqual("context before", context.summary)
 
+    async def test_exact_callee_copy_is_not_published_by_dbms(self) -> None:
+        node = CodeNode(
+            id="caller", name="caller", signature="caller()", file_path="x.sql",
+            start_line=1, end_line=1, label="PROCEDURE",
+        )
+        context = AnalysisContext(
+            id="caller", signature="caller()", file_path="x.sql",
+            start_line=1, end_line=1, callees=("callee",),
+        )
+        callee = AnalysisContext(
+            id="callee", signature="callee()", file_path="x.sql",
+            start_line=2, end_line=2, summary="계좌번호 정합성을 검증한다.",
+        )
+        output = BatchSummaryItem(
+            node_key="1-1",
+            summary="계좌번호 정합성을 검증한다.",
+            stereotype="Helper",
+            evidence_status="sufficient",
+            missing_context=[],
+            questions=[],
+        )
+
+        finding = _apply_batch_summary(
+            output, node, context, SimpleNamespace(name="dbms"),
+            {"caller": context, "callee": callee},
+        )
+
+        self.assertIsNotNone(finding)
+        self.assertEqual("summary", finding.concern)
+        self.assertEqual("rejected", finding.status)
+        self.assertIsNone(node.summary)
+        self.assertIsNone(node.stereotype)
+        self.assertEqual([], node.extra["questions"])
+        self.assertEqual("", context.summary)
+        self.assertEqual("rejected", context.extra["summary_status"])
+
+    async def test_explicit_comparison_operand_substitution_is_not_published(self) -> None:
+        node = CodeNode(
+            id="routine", name="routine", signature="routine(IN_TAGSN)",
+            file_path="x.sql", start_line=1, end_line=2, label="PROCEDURE",
+        )
+        context = AnalysisContext(
+            id="routine", signature="routine(IN_TAGSN)", file_path="x.sql",
+            start_line=1, end_line=2,
+            referenced_symbols=(
+                ReferencedSymbolContext(
+                    id="parameter", name="IN_TAGSN", kind="parameter",
+                ),
+                ReferencedSymbolContext(
+                    id="count", name="TAG_CNT", kind="local",
+                ),
+            ),
+        )
+        output = BatchSummaryItem(
+            node_key="1-2",
+            summary="대상이 존재하고(IN_TAGSN >= 1) 후속 작업을 수행한다.",
+            stereotype="Helper", evidence_status="sufficient",
+            missing_context=[], questions=[],
+        )
+
+        finding = _apply_batch_summary(
+            output, node, context, SimpleNamespace(name="dbms"),
+            {"routine": context}, evidence_text="IF TAG_CNT >= 1 THEN",
+        )
+
+        self.assertIsNotNone(finding)
+        self.assertEqual("rejected", finding.status)
+        self.assertIn("IN_TAGSN >= 1", finding.reasons[0])
+        self.assertIsNone(node.summary)
+        self.assertEqual("", context.summary)
+        self.assertEqual("rejected", context.extra["summary_status"])
+
 
 class FrameworkFailureContractTest(unittest.IsolatedAsyncioTestCase):
+    async def test_insufficient_framework_summary_is_not_published(self) -> None:
+        node = CodeNode(
+            id="fn", name="work", signature="work()", file_path="x.py",
+            start_line=1, end_line=1, label="FUNCTION", summary="stale",
+            stereotype="Helper",
+        )
+        context = AnalysisContext(
+            id="fn", signature="work()", file_path="x.py",
+            start_line=1, end_line=1, summary="stale",
+        )
+        context.extra["ast_statements"] = ()
+        output = SummaryOutput(
+            summary="", stereotype="", evidence_status="insufficient",
+            missing_context=["함수 본문"], questions=[],
+        )
+
+        result = await analyze_code_three_split(
+            "fn", {"fn": context}, {"fn": node},
+            SimpleNamespace(name="framework", prompts_dir="."),
+            source_cache=SourceFileCache(), precomputed_summary=output,
+            precomputed_summary_supplied=True,
+            llm_slots=PrioritySemaphore(1),
+        )
+
+        self.assertIs(result, node)
+        self.assertIsNone(node.summary)
+        self.assertIsNone(node.stereotype)
+        self.assertEqual("", context.summary)
+        self.assertEqual("needs_context", context.extra["summary_status"])
+        self.assertEqual("unverified", node.extra["analysis_findings"][0]["status"])
+
+    async def test_exact_callee_copy_is_not_published_by_framework(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "sample.c"
+            source.write_text("return 0;\n", encoding="utf-8")
+            node = CodeNode(
+                id="caller", name="caller", signature="caller()",
+                file_path=str(source), start_line=1, end_line=1,
+                label="FUNCTION",
+            )
+            context = AnalysisContext(
+                id="caller", signature="caller()", file_path=str(source),
+                start_line=1, end_line=1, callees=("callee",),
+            )
+            context.extra.setdefault("ast_statements", ())
+            callee = AnalysisContext(
+                id="callee", signature="callee()", file_path=str(source),
+                start_line=1, end_line=1,
+                summary="계좌번호 정합성을 검증한다.",
+            )
+            output = SummaryOutput(
+                summary="계좌번호 정합성을 검증한다.",
+                stereotype="Helper",
+                evidence_status="sufficient",
+                missing_context=[],
+                questions=[],
+            )
+
+            async def no_rules(*, response_model, **_kwargs):
+                return response_model.model_validate({"rules": []})
+
+            with patch(
+                "pipeline.steps.step7_analyze_code.three_split_llm_fanout.run_yaml_rule",
+                side_effect=no_rules,
+            ):
+                result = await analyze_code_three_split(
+                    "caller", {"caller": context, "callee": callee},
+                    {"caller": node},
+                    SimpleNamespace(name="framework", prompts_dir="."),
+                    source_cache=SourceFileCache(),
+                    precomputed_summary=output,
+                    precomputed_summary_supplied=True,
+                    llm_slots=PrioritySemaphore(1),
+                )
+
+        self.assertIs(result, node)
+        self.assertIsNone(node.summary)
+        self.assertIsNone(node.stereotype)
+        self.assertEqual([], node.extra["questions"])
+        self.assertEqual("", context.summary)
+        self.assertEqual("completed_with_findings", node.extra["analysis_status"])
+        self.assertEqual("summary", node.extra["analysis_findings"][0]["concern"])
+        self.assertEqual("rejected", node.extra["analysis_findings"][0]["status"])
+
     async def test_model_output_failures_become_visible_findings_and_run_continues(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             source = Path(temp) / "sample.c"
@@ -229,7 +524,8 @@ class FrameworkFailureContractTest(unittest.IsolatedAsyncioTestCase):
             )
             context.extra.setdefault("ast_statements", ())
             output = SummaryOutput.model_construct(
-                summary="after", stereotype="InventedRole", questions=[],
+                summary="after", stereotype="InventedRole",
+                evidence_status="sufficient", missing_context=[], questions=[],
             )
             with self.assertRaisesRegex(ValueError, "invalid framework stereotype"):
                 await analyze_code_three_split(
@@ -291,9 +587,13 @@ class FrameworkFailureContractTest(unittest.IsolatedAsyncioTestCase):
                 calls.append(rule_name)
                 if rule_name == "code_summary":
                     return response_model.model_validate({
-                        "summary": "작업을 수행해 그 결과를 호출자에게 반환한다.",
-                        "stereotype": "Helper",
-                        "questions": [],
+                        "result": {
+                            "summary": "작업을 수행해 그 결과를 호출자에게 반환한다.",
+                            "stereotype": "Helper",
+                            "evidence_status": "sufficient",
+                            "missing_context": [],
+                            "questions": [],
+                        },
                     })
                 raise ValueError("rules invalid")
 

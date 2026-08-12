@@ -55,7 +55,7 @@ class _RecordingClient:
         self.calls.append((query, params))
 
 
-async def test_wipe_graph_is_owner_scoped() -> None:
+async def _verify_wipe_graph_is_owner_scoped() -> None:
     client = _RecordingClient()
     await wipe_graph(client)  # type: ignore[arg-type]
 
@@ -80,9 +80,13 @@ async def test_wipe_graph_is_owner_scoped() -> None:
     assert "DataSource" not in query
 
 
+def test_wipe_graph_is_owner_scoped() -> None:
+    asyncio.run(_verify_wipe_graph_is_owner_scoped())
+
+
 if __name__ == "__main__":
     test_every_node_creation_query_stamps_analyzer_owner()
-    asyncio.run(test_wipe_graph_is_owner_scoped())
+    test_wipe_graph_is_owner_scoped()
     print("[OK] analyzer graph ownership")
 
 

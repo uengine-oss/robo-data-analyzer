@@ -56,9 +56,10 @@ class Schema:
 class Table:
     """DB 테이블.
 
-    DDL 파싱에서만 생성 (Plan §3.1: DDL = 진실 기준). 이후 단계는 R/W 엣지만 추가.
+    DDL 파싱 또는 Catalog exact resolver에서 생성한다. Catalog 경로는 실제 metadata로
+    확정된 객체만 만들며 unresolved reference는 별도 OBJECT_REFERENCE로 보존한다.
 
-    description       = ``COMMENT ON`` 우선·없으면 ``--`` 주석 / 카탈로그 (출처 = description_source).
+    description       = 정식 ``COMMENT ON`` / 카탈로그 (출처 = description_source).
     comment           = 테이블 위 ``--`` / ``/* */`` 주석 원문 — 항상 보존 (분석 입력 단서).
     analyzed_description = analyze_code 3분할이 합성한 설명 (분석 결과, 항상 덮어씀).
     """
@@ -70,6 +71,8 @@ class Table:
     description_source: str = ""             # "ddl" / "code" / "catalog" / "" — 유효 설명이 어느 칸인지
     comment: str = ""                        # -- /* */ 주석 원문 (COMMENT ON 없으면 description 출처)
     analyzed_description: str = ""           # 분석 LLM 합성 설명
+    semantic_evidence_status: str = ""        # sufficient / partial / insufficient
+    semantic_missing_context: tuple[str, ...] = ()
     table_type: str = "TABLE"                # TABLE / VIEW / MATERIALIZED_VIEW
     view_definition: str = ""                # VIEW 의 정의 SELECT 원문 (spec 112 뷰 펼치기 재료)
     # embed_step 이 채우는 의미 벡터. metadata={"vector": True} = 직렬화 소비자용
@@ -86,12 +89,25 @@ class Table:
 
 
 @dataclass(frozen=True)
+class ObjectReference:
+    """Unresolved physical data-object identity preserved without guessed TABLE binding."""
+    id: str
+    datasource: str
+    raw_reference: str
+    name: str
+    schema: str = ""
+    database_link: str = ""
+    status: str = "unresolved"
+
+
+@dataclass(frozen=True)
 class Column:
     """DB 컬럼.
 
-    DDL 파싱에서만 생성. ``id`` = ``"<db>.<schema>.<table>.<column>"`` — Neo4j unique key.
+    DDL 파싱 또는 Catalog exact resolver에서 생성한다.
+    ``id`` = ``"<db>.<schema>.<table>.<column>"`` — Neo4j unique key.
 
-    description       = ``COMMENT ON`` 우선·없으면 ``--`` 주석 1차 설명 (출처 = description_source).
+    description       = 정식 ``COMMENT ON`` 1차 설명 (출처 = description_source).
     comment           = 컬럼 옆 ``--`` / ``/* */`` 주석 원문 — 항상 보존 (분석 입력 단서).
     analyzed_description = analyze_code 3분할 tableInsights 가 합성한 설명.
     """
@@ -108,6 +124,8 @@ class Column:
     description_source: str = ""             # "ddl" / "code" / "catalog" / "" — 유효 설명이 어느 칸인지
     comment: str = ""                        # -- /* */ 주석 원문 (COMMENT ON 없으면 description 출처)
     analyzed_description: str = ""           # 분석 LLM 합성 설명
+    semantic_evidence_status: str = ""        # sufficient / partial / insufficient
+    semantic_missing_context: tuple[str, ...] = ()
     embedding: tuple[float, ...] = field(default=(), metadata={"vector": True})
 
 
@@ -187,6 +205,7 @@ class CodeNode:
 
     # 구조 statement 표현 (parser spec 016 — listener 가 소유한 원문) ────
     expression: str = ""                     # RETURN/THROW/RAISE 식·제어 조건식 원문
+    condition_timing: str = ""               # 제어 조건 평가 시점: 빈값/pre 또는 post(do-while)
     target: str = ""                         # ASSIGNMENT 좌변(lvalue) 원문
     operator: str = ""                       # ASSIGNMENT 연산자 원문 (=, +=, := …)
 

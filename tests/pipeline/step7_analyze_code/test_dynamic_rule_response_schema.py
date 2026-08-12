@@ -11,6 +11,7 @@ from unittest.mock import patch
 from pydantic import ValidationError
 
 from pipeline.models.rule_response_schema import (
+    RULE_NL_MAX_LENGTH,
     batch_rules_response_model,
     normalize_batch_rules_response,
     normalize_rules_response,
@@ -28,13 +29,8 @@ from shared.files.cache import SourceFileCache
 from shared.concurrency.priority_semaphore import PrioritySemaphore
 
 
-def _rule(*, cond=None, then=None, extra=None, text: str = "") -> dict:
-    return {
-        "cond": list(cond or ()),
-        "then": list(then or ()),
-        "extra": list(extra or ()),
-        "nl": text,
-    }
+def _rule(*, text: str = "") -> dict:
+    return {"nl": text}
 
 
 def _effect(op: str, *, target=None, value=None, from_source=None) -> dict:
@@ -45,12 +41,7 @@ def _effect(op: str, *, target=None, value=None, from_source=None) -> dict:
 
 
 def _model_rule_payload(text: str) -> dict:
-    return {
-        "cond": ["C1"],
-        "then": [],
-        "extra": [],
-        "nl": text,
-    }
+    return {"nl": text}
 
 
 def _return_inventory(*lines: int, lang: str = "c") -> BranchInventory:
@@ -74,20 +65,35 @@ def _return_inventory(*lines: int, lang: str = "c") -> BranchInventory:
 
 
 class FrameworkAssignedSchemaTest(unittest.TestCase):
+    def test_rule_narrative_has_room_for_complete_sentence_but_keeps_a_bound(self):
+        model = rules_response_model([5])
+        model.model_validate({"rules": {"R5": _rule(text="가" * 301)}})
+        with self.assertRaises(ValidationError):
+            model.model_validate({
+                "rules": {"R5": _rule(text="가" * (RULE_NL_MAX_LENGTH + 1))},
+            })
+
     def test_required_keys_model_owned_leaves_and_canonical_conversion(self):
         model = rules_response_model([5, 9])
         parsed = model.model_validate({
             "rules": {
-                "R5": _rule(then=["E1"]),
-                "R9": _rule(then=["E2"]),
+                "R5": _rule(text="5를 반환한다"),
+                "R9": _rule(text="9를 반환한다"),
             },
         })
         canonical = normalize_rules_response(
             parsed,
             [5, 9],
-            effect_sources={
-                "E1": _effect("ret", value="5", from_source=True),
-                "E2": _effect("ret", value="9", from_source=True),
+            {
+                "conditions": {},
+                "rows": {
+                    "R5": {"when": [], "direct": ["E1"]},
+                    "R9": {"when": [], "direct": ["E2"]},
+                },
+                "effects": {
+                    "E1": _effect("ret", value="5", from_source=True),
+                    "E2": _effect("ret", value="9", from_source=True),
+                },
             },
         )
         self.assertEqual([5, 9], [rule.anchor_line for rule in canonical.rules])
@@ -97,40 +103,42 @@ class FrameworkAssignedSchemaTest(unittest.TestCase):
         )
 
         invalid = (
-            {"rules": {"R5": _rule(then=["E1"])}},
+            {"rules": {"R5": _rule()}},
             {"rules": {
-                "R5": _rule(then=["E1"]),
-                "R9": _rule(then=["E2"]),
+                "R5": _rule(),
+                "R9": _rule(),
                 "R10": _rule(),
             }},
             {"rules": {
-                "R5": {"then": "E1", "nl": ""},
-                "R9": _rule(then=["E2"]),
+                "R5": {"then": ["E1"], "nl": ""},
+                "R9": _rule(),
             }},
             {"rules": {
-                "R5": {key: value for key, value in _rule(then=["E1"]).items()
-                       if key != "extra"},
-                "R9": _rule(then=["E2"]),
+                "R5": {},
+                "R9": _rule(),
             }},
         )
         for payload in invalid:
             with self.subTest(payload=payload), self.assertRaises(ValidationError):
                 model.model_validate(payload)
 
-    def test_invalid_effect_positions_quarantine_only_that_row(self):
+    def test_invalid_parser_effect_positions_quarantine_only_that_row(self):
         model = rules_response_model([5, 9])
         parsed = model.model_validate({
-            "rules": {
-                "R5": _rule(extra=[
-                    _effect("select", target="db:orders", value="unexpected"),
-                ]),
-                "R9": _rule(extra=[
-                    _effect("select", target="db:orders"),
-                ]),
-            },
+            "rules": {"R5": _rule(), "R9": _rule()},
         })
 
-        canonical = normalize_rules_response(parsed, [5, 9])
+        canonical = normalize_rules_response(parsed, [5, 9], {
+            "conditions": {},
+            "rows": {
+                "R5": {"when": [], "direct": ["E1"]},
+                "R9": {"when": [], "direct": ["E2"]},
+            },
+            "effects": {
+                "E1": _effect("select", target="db:orders", value="unexpected"),
+                "E2": _effect("select", target="db:orders"),
+            },
+        })
 
         self.assertTrue(canonical.rules[0].then[0].startswith("invalid_effect("))
         self.assertEqual(['select("db:orders")'], canonical.rules[1].then)
@@ -138,17 +146,82 @@ class FrameworkAssignedSchemaTest(unittest.TestCase):
     def test_compact_direct_effect_ref_round_trips_without_model_repetition(self):
         model = rules_response_model([5])
         parsed = model.model_validate({
-            "rules": {"R5": _rule(cond=["!C1"], then=["E1"])},
+            "rules": {"R5": _rule(text="오류를 반환한다")},
         })
         canonical = normalize_rules_response(
             parsed,
             [5],
-            {"C1": '(status == "A")'},
-            {"E1": _effect("ret", value="RC_ERR", from_source=True)},
+            {
+                "conditions": {"C1": '(status == "A")'},
+                "rows": {"R5": {"when": ["!C1"], "direct": ["E1"]}},
+                "effects": {
+                    "E1": _effect("ret", value="RC_ERR", from_source=True),
+                },
+            },
         )
 
         self.assertEqual('not (F("(status == \\"A\\")"))', canonical.rules[0].cond)
         self.assertEqual(['ret(F("RC_ERR"))'], canonical.rules[0].then)
+
+    def test_continuation_coordinate_is_materialized_without_model_rewrite(self):
+        model = rules_response_model([12])
+        parsed = model.model_validate({
+            "rules": {"R12": _rule(text="앞선 분기 뒤 감사 로그를 남긴다")},
+        })
+        canonical = normalize_rules_response(parsed, [12], {
+            "conditions": {"C3": "flag"},
+            "rows": {"R12": {
+                "when": ["C3"],
+                "after_control": "IF@8",
+                "direct": ["E1"],
+            }},
+            "effects": {"E1": _effect("call", target="audit")},
+        })
+        self.assertEqual(
+            'F("flag") and after_control("IF@8")',
+            canonical.rules[0].cond,
+        )
+        self.assertEqual(['call("audit")'], canonical.rules[0].then)
+
+    def test_private_reference_leak_is_replaced_with_grounded_evidence(self):
+        model = rules_response_model([538])
+        parsed = model.model_validate({
+            "rules": {"R538": _rule(
+                text="조건 C471과 C527이 모두 성립하지 않을 때 E1과 E2를 수행한다",
+            )},
+        })
+        canonical = normalize_rules_response(parsed, [538], {
+            "conditions": {
+                "C471": "pay_status == PAID",
+                "C527": "audit_disabled == 1",
+            },
+            "rows": {"R538": {
+                "when": ["!C471", "!C527"], "direct": ["E1", "E2"],
+            }},
+            "effects": {
+                "E1": _effect("call", target="audit_log"),
+                "E2": _effect("call", target="debug_log"),
+            },
+        })
+        narrative = canonical.rules[0].nl
+        self.assertNotIn("C471", narrative)
+        self.assertNotIn("C527", narrative)
+        self.assertNotIn("E1", narrative)
+        self.assertNotIn("E2", narrative)
+        self.assertIn("pay_status == PAID", narrative)
+        self.assertIn('call("audit_log")', narrative)
+
+    def test_ambiguous_single_business_code_is_not_rewritten(self):
+        model = rules_response_model([5])
+        parsed = model.model_validate({
+            "rules": {"R5": _rule(text="상태 C3이면 주문을 확인한다")},
+        })
+        canonical = normalize_rules_response(parsed, [5], {
+            "conditions": {"C3": "status == C3"},
+            "rows": {"R5": {"when": ["C3"], "direct": []}},
+            "effects": {},
+        })
+        self.assertEqual("상태 C3이면 주문을 확인한다", canonical.rules[0].nl)
 
 
 class DbmsAssignedSchemaTest(unittest.TestCase):
@@ -166,7 +239,13 @@ class DbmsAssignedSchemaTest(unittest.TestCase):
                 "5-5": {"rules": {}},
             },
         })
-        canonical = normalize_batch_rules_response(parsed, assignments)
+        canonical = normalize_batch_rules_response(parsed, assignments, {
+            "1-2": {
+                "conditions": {}, "effects": {},
+                "rows": {"R1": {"when": []}, "R2": {"when": []}},
+            },
+            "5-5": {"conditions": {}, "effects": {}, "rows": {}},
+        })
         self.assertEqual([[1, 2], []], [
             [rule.anchor_line for rule in node.rules] for node in canonical.nodes
         ])
@@ -196,7 +275,7 @@ class WiringTest(unittest.IsolatedAsyncioTestCase):
             context = AnalysisContext(
                 id="fn", signature="work()", file_path=str(source),
                 start_line=1, end_line=4,
-                reads=["db:orders"],
+                reads=["db:orders"], direct_reads=["db:orders"],
                 extra={"control_subtree": [ControlSubtreeNode(
                     node_id="if", ntype="IF", start=1, end=4, expression='flag == "1"',
                 )], "table_op": {"db:orders": "SELECT"}},
@@ -208,12 +287,16 @@ class WiringTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(0, slots.free, "framework LLM call must own one run slot")
                 if rule_name == "code_summary":
                     return response_model.model_validate({
-                        "summary": "flag가 1이면 주문을 조회하고 처리 결과를 반환한다.",
-                        "stereotype": "Validator",
-                        "questions": [{
-                            "text": "flag 1의 업무 의미는 무엇인가?",
-                            "reason": "제공 근거에 상태 정의가 없다",
-                        }],
+                        "result": {
+                            "summary": "flag가 1이면 주문을 조회하고 처리 결과를 반환한다.",
+                            "stereotype": "Validator",
+                            "evidence_status": "sufficient",
+                            "missing_context": [],
+                            "questions": [{
+                                "text": "flag 1의 업무 의미는 무엇인가?",
+                                "reason": "제공 근거에 상태 정의가 없다",
+                            }],
+                        },
                     })
                 if rule_name == "code_table_insights":
                     return response_model.model_validate({
@@ -267,7 +350,8 @@ class WiringTest(unittest.IsolatedAsyncioTestCase):
             )
             context = AnalysisContext(
                 id="fn", signature="work()", file_path=str(source),
-                start_line=1, end_line=4, reads=["db:orders"],
+                start_line=1, end_line=4,
+                reads=["db:orders"], direct_reads=["db:orders"],
                 extra={
                     "control_subtree": [ControlSubtreeNode(
                         node_id="if", ntype="IF", start=1, end=4, expression='flag == "1"',
@@ -286,9 +370,13 @@ class WiringTest(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(all_started.wait(), timeout=0.5)
                 if rule_name == "code_summary":
                     return response_model.model_validate({
-                        "summary": "flag가 1이면 주문을 조회하고 처리 결과를 반환한다.",
-                        "stereotype": "Validator",
-                        "questions": [],
+                        "result": {
+                            "summary": "flag가 1이면 주문을 조회하고 처리 결과를 반환한다.",
+                            "stereotype": "Validator",
+                            "evidence_status": "sufficient",
+                            "missing_context": [],
+                            "questions": [],
+                        },
                     })
                 if rule_name == "code_table_insights":
                     return response_model.model_validate({
@@ -321,18 +409,29 @@ class WiringTest(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as temp:
             source = Path(temp) / "sample.sql"
             source.write_text("IF flag = 1 THEN\n  NULL;\nEND IF;\n", encoding="utf-8")
+            # spec 117 — DBMS rule 대상은 루틴의 하위 노드이고, 분기표는 **소유 루틴**이
+            # 만든다. 배분된 행(ctx.extra["rule_rows"])이 스키마의 required 키가 된다.
+            routine = CodeNode(
+                id="p", name="p", signature="p", file_path=str(source),
+                start_line=1, end_line=3, label="PROCEDURE",
+            )
             node = CodeNode(
                 id="a", name="if", signature="if", file_path=str(source),
-                start_line=1, end_line=3, label="IF",
+                start_line=1, end_line=3, label="IF", parent_id="p",
             )
-            context = AnalysisContext(
-                id="a", signature="if", file_path=str(source),
+            routine_context = AnalysisContext(
+                id="p", signature="p", file_path=str(source),
                 start_line=1, end_line=3,
                 extra={"control_subtree": [ControlSubtreeNode(
                     node_id="if", ntype="IF", start=1, end=3, expression='flag == "1"',
                 )]},
             )
-            context.extra.setdefault("ast_statements", ())
+            routine_context.extra.setdefault("ast_statements", ())
+            context = AnalysisContext(
+                id="a", signature="if", file_path=str(source),
+                start_line=1, end_line=3,
+                extra={"rule_rows": (1,)},
+            )
             slots = PrioritySemaphore(1)
 
             async def fake_rule(*, response_model, **_kwargs):
@@ -362,8 +461,8 @@ class WiringTest(unittest.IsolatedAsyncioTestCase):
                     rule_name="code_rules_examples_batch",
                     response_model=object,
                     prompts_dir=Path("."),
-                    contexts={"a": context},
-                    code_by_id={"a": node},
+                    contexts={"a": context, "p": routine_context},
+                    code_by_id={"a": node, "p": routine},
                     cost_budget=None,
                     codebase_notes="",
                     module_intents={},

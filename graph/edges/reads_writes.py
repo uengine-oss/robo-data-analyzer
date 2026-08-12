@@ -20,7 +20,8 @@ from graph.schema.rel_types import READS, WRITES
 READS_QUERY = f"""
 UNWIND $items AS item
 MATCH (node:ANALYZER_OWNED {{id: item.source_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-MATCH (t:TABLE {{id: item.target_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (t:ANALYZER_OWNED {{id: item.target_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+WHERE t:TABLE OR t:OBJECT_REFERENCE
 MERGE (node)-[r:{READS}]->(t)
 SET r.dml_type = item.dml_type,
     r.evidence_file = item.evidence_file,
@@ -46,7 +47,8 @@ SET r.dml_type = item.dml_type,
 WRITES_QUERY = f"""
 UNWIND $items AS item
 MATCH (node:ANALYZER_OWNED {{id: item.source_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-MATCH (t:TABLE {{id: item.target_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (t:ANALYZER_OWNED {{id: item.target_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+WHERE t:TABLE OR t:OBJECT_REFERENCE
 MERGE (node)-[r:{WRITES}]->(t)
 SET r.dml_type = item.dml_type,
     r.evidence_file = item.evidence_file,

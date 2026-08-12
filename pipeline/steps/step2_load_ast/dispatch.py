@@ -120,7 +120,12 @@ def read_antlr_json(json_path: Path, source_root: Path) -> ParseResult:
     ext = Path(file_name).suffix.lstrip(".").lower()
 
     if ext in DBMS_EXTS:
-        return _read_dbms(raw, source_root, json_path)
+        result = _read_dbms(raw, source_root, json_path)
+        source_language = _parser_source_language(raw, source_root)
+        for node in result.code_nodes:
+            if source_language:
+                node.extra["source_language"] = source_language
+        return result
 
     lang = EXT_TO_LANG.get(ext)
     if lang is None:
@@ -143,6 +148,63 @@ def read_antlr_json(json_path: Path, source_root: Path) -> ParseResult:
             samples=[f"{u['type']}@{u['line']}" for u in result.unknown_nodes[:5]],
         )
     return result
+
+
+def _parser_source_language(raw: dict, source_root: Path) -> str:
+    """Read the parser-owned SQL dialect from its immutable diagnostic sidecar.
+
+    ``.sql`` is shared by Oracle and PostgreSQL. Guessing here would duplicate the parser's
+    routing and can silently assign a procedural variable as a physical column. The parser
+    already records its selected ``language`` beside every AST, so consume that fact and fail
+    closed when the sidecar is absent or inconsistent.
+    """
+    file_path = str(raw.get("filePath") or "").strip().replace("\\", "/")
+    if not file_path:
+        return ""
+    diagnostics_root = (source_root.parent / "diagnostics").resolve()
+    diagnostic_path = (diagnostics_root / f"{file_path}.parse.json").resolve()
+    try:
+        diagnostic_path.relative_to(diagnostics_root)
+    except ValueError:
+        log_warning(
+            _COMPONENT,
+            "parser_diagnostic_outside_root",
+            "parser diagnostic 경로가 corpus diagnostics 밖을 가리켜 방언 근거를 폐기",
+            file_path=file_path,
+        )
+        return ""
+    if not diagnostic_path.is_file():
+        log_warning(
+            _COMPONENT,
+            "parser_diagnostic_missing",
+            "공유 .sql 방언을 확정할 parser diagnostic이 없어 방언 의존 근거를 비활성화",
+            diagnostic_path=str(diagnostic_path),
+        )
+        return ""
+    try:
+        diagnostic = json.loads(diagnostic_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        log_warning(
+            _COMPONENT,
+            "parser_diagnostic_invalid",
+            f"parser diagnostic을 읽지 못해 방언 의존 근거를 비활성화: {error}",
+            diagnostic_path=str(diagnostic_path),
+        )
+        return ""
+    diagnostic_source = str(diagnostic.get("sourcePath") or "").replace("\\", "/")
+    language = str(diagnostic.get("language") or "").strip().casefold()
+    if diagnostic_source != file_path or language not in {"oracle", "postgresql"}:
+        log_warning(
+            _COMPONENT,
+            "parser_diagnostic_mismatch",
+            "parser diagnostic의 sourcePath/language가 AST와 일치하지 않아 방언 근거를 폐기",
+            diagnostic_path=str(diagnostic_path),
+            ast_source=file_path,
+            diagnostic_source=diagnostic_source,
+            language=language,
+        )
+        return ""
+    return language
 
 
 # ── Framework (java / c / python) ─────────────────────────────

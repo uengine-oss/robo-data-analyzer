@@ -7,11 +7,11 @@ shared_values:
 user_template_specific: |
   {table_description_contract}
 
-  아래 근거만 사용해 테이블 설명과 모든 허용 컬럼의 의미를 출력한다.
-
 user_template_inputs: |
+  # [INPUT — TABLE/COLUMN evidence packet]
+
   table_fqn: {table_fqn}
 
-  evidence:
+  table_column_evidence_json:
   {candidates_json}
 max_tokens: 5000

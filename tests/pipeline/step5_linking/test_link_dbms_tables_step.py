@@ -10,19 +10,21 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from graph.schema.graph_edges import ParentOf
 from graph.schema.graph_nodes import CodeNode, Table
 from shared.files.cache import SourceFileCache
 from pipeline.steps.step5_linking.link_tables.link_dbms_tables_step import _link
+from pipeline.models.data_object_usage import DataObjectUsageEvidence, QualifiedColumnUsage
 
 
-def _procedure(node_id: str, file_path: str, start_line: int, end_line: int) -> CodeNode:
+def _statement(node_id: str, file_path: str, start_line: int, end_line: int) -> CodeNode:
     return CodeNode(
         id=node_id,
         signature=node_id,
         file_path=file_path,
         start_line=start_line,
         end_line=end_line,
-        label="PROCEDURE",
+        label="INSERT",
         name=node_id,
     )
 
@@ -33,17 +35,14 @@ class LinkDbmsTablesTest(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.source = Path(self._tmp.name) / "load_orders.sql"
         self.source.write_text(
-            "PROCEDURE load_orders IS\n"
-            "BEGIN\n"
-            "  INSERT INTO ORDER_ITEM SELECT * FROM ORDERS;\n"
-            "END;\n",
+            "INSERT INTO ORDER_ITEM SELECT * FROM ORDERS;\n",
             encoding="utf-8",
         )
         self.tables = [
             Table(db="shop", schema="PUBLIC", name="ORDERS"),
             Table(db="shop", schema="PUBLIC", name="ORDER_ITEM"),
         ]
-        self.nodes = [_procedure("proc:load_orders", str(self.source), 1, 4)]
+        self.nodes = [_statement("insert:load_orders", str(self.source), 1, 1)]
 
     def test_links_reads_and_writes_from_own_lines(self) -> None:
         """정상: 자기 줄의 INSERT 대상은 WRITES, FROM 대상은 READS."""
@@ -61,11 +60,152 @@ class LinkDbmsTablesTest(unittest.TestCase):
         _link(self.nodes, self.tables, [], cache)
 
         # 넘긴 캐시에 이 파일이 적재됐어야 한다 = 별도 캐시를 새로 만들지 않았다는 증거.
-        self.assertEqual(cache.lines(str(self.source))[2].strip().split()[0], "INSERT")
+        self.assertEqual(cache.lines(str(self.source))[0].strip().split()[0], "INSERT")
 
     def test_no_ddl_tables_returns_no_edges(self) -> None:
         """경계: DDL 테이블이 없으면 빈 결과."""
         self.assertEqual(_link(self.nodes, [], [], SourceFileCache()), [])
+
+    def test_no_ddl_tables_preserves_versioned_reference_as_object_reference_edge(self) -> None:
+        node = self.nodes[0]
+        node.extra["data_object_evidence_version"] = 1
+        node.extra["data_object_usages"] = (DataObjectUsageEvidence(
+            source_id=node.id, raw_reference="ORDERS@REMOTE", name="ORDERS",
+            database_link="REMOTE", access="READ", evidence_file=str(self.source),
+            evidence_line=1,
+        ),)
+
+        edges = _link([node], [], [], SourceFileCache(), datasource="shop")
+
+        self.assertEqual(len(edges), 1)
+        self.assertEqual(edges[0].relation, "READS")
+        self.assertTrue(edges[0].target_id.startswith("object-ref:"))
+
+    def test_versioned_ast_evidence_resolves_schema_and_preserves_alias_columns(self) -> None:
+        node = self.nodes[0]
+        node.extra["data_object_evidence_version"] = 1
+        node.extra["data_object_usages"] = (
+            DataObjectUsageEvidence(
+                source_id=node.id, raw_reference="PUBLIC.ORDERS", schema="PUBLIC",
+                name="ORDERS", alias="O", access="READ", evidence_file=str(self.source),
+                evidence_line=1, qualified_columns=(QualifiedColumnUsage(
+                    raw_reference="O.ORDER_ID", qualifier="O", name="ORDER_ID", evidence_line=1,
+                ),),
+            ),
+            DataObjectUsageEvidence(
+                source_id=node.id, raw_reference="PUBLIC.ORDER_ITEM", schema="PUBLIC",
+                name="ORDER_ITEM", alias="I", access="WRITE", evidence_file=str(self.source),
+                evidence_line=1,
+            ),
+        )
+
+        edges = _link([node], self.tables, [], SourceFileCache(), datasource="shop")
+
+        self.assertEqual(
+            [(edge.target_id, edge.relation) for edge in edges],
+            [(self.tables[0].id, "READS"), (self.tables[1].id, "WRITES")],
+        )
+        usages = node.extra["data_object_usages"]
+        self.assertEqual([usage.resolution for usage in usages], ["exact", "exact"])
+        self.assertEqual([usage.datasource for usage in usages], ["shop", "shop"])
+        self.assertEqual(usages[0].qualified_columns[0].name, "ORDER_ID")
+
+    def test_versioned_evidence_does_not_guess_ambiguous_or_database_linked_objects(self) -> None:
+        node = self.nodes[0]
+        node.extra["data_object_evidence_version"] = 1
+        node.extra["data_object_usages"] = (
+            DataObjectUsageEvidence(
+                source_id=node.id, raw_reference="ORDERS", name="ORDERS", access="READ",
+                evidence_file=str(self.source), evidence_line=1,
+            ),
+            DataObjectUsageEvidence(
+                source_id=node.id, raw_reference="ORDER_ITEM@REMOTE", name="ORDER_ITEM",
+                database_link="REMOTE", access="WRITE", evidence_file=str(self.source),
+                evidence_line=1,
+            ),
+        )
+        ambiguous = self.tables + [Table(db="shop", schema="TENANT2", name="ORDERS")]
+
+        edges = _link([node], ambiguous, [], SourceFileCache())
+
+        self.assertEqual(len(edges), 2)
+        self.assertTrue(all(edge.target_id.startswith("object-ref:") for edge in edges))
+        self.assertEqual(
+            [usage.raw_reference for usage in node.extra["unresolved_data_object_usages"]],
+            ["ORDERS", "ORDER_ITEM@REMOTE"],
+        )
+
+    def test_trigger_event_header_is_not_an_executable_insert(self) -> None:
+        """트리거 선언의 AFTER INSERT ON 대상은 READS가 아니다."""
+        self.source.write_text(
+            "CREATE OR REPLACE TRIGGER RWIS.TRG_INS_RDITAG_TB\n"
+            "AFTER INSERT\n"
+            "ON RDITAG_TB\n"
+            "FOR EACH ROW\n"
+            "BEGIN\n"
+            "  INSERT INTO TMP_INS_TRAN2FA_RDITAG_TB VALUES (:NEW.TAGSN);\n"
+            "END;\n",
+            encoding="utf-8",
+        )
+        trigger = CodeNode(
+            id="trigger:rditag",
+            signature="TRG_INS_RDITAG_TB",
+            file_path=str(self.source),
+            start_line=1,
+            end_line=7,
+            label="TRIGGER",
+            name="TRG_INS_RDITAG_TB",
+        )
+        insert = CodeNode(
+            id="trigger:rditag:insert@6",
+            signature="INSERT",
+            file_path=str(self.source),
+            start_line=6,
+            end_line=6,
+            label="INSERT",
+            name="INSERT",
+        )
+        tables = [
+            Table(db="rwis", schema="RWIS", name="RDITAG_TB"),
+            Table(db="rwis", schema="RWIS", name="TMP_INS_TRAN2FA_RDITAG_TB"),
+        ]
+
+        edges = _link(
+            [trigger, insert],
+            tables,
+            [ParentOf(parent_id=trigger.id, child_id=insert.id)],
+            SourceFileCache(),
+        )
+
+        self.assertEqual(
+            [(edge.source_id, edge.target_id, edge.relation, edge.dml_type)
+             for edge in edges],
+            [(insert.id, tables[1].id, "WRITES", "INSERT")],
+        )
+
+    def test_routine_container_is_not_a_dml_fallback(self) -> None:
+        """하위 DML 누락을 루틴 재스캔으로 숨기지 않는다 — parser 계약 위반은 별도 축이다."""
+        self.source.write_text(
+            "CREATE OR REPLACE PROCEDURE P IS\n"
+            "BEGIN\n"
+            "  INSERT INTO ORDER_ITEM SELECT * FROM ORDERS;\n"
+            "END;\n",
+            encoding="utf-8",
+        )
+        routine = CodeNode(
+            id="procedure:p",
+            signature="P",
+            file_path=str(self.source),
+            start_line=1,
+            end_line=4,
+            label="PROCEDURE",
+            name="P",
+        )
+
+        self.assertEqual(
+            _link([routine], self.tables, [], SourceFileCache()),
+            [],
+        )
 
 
 if __name__ == "__main__":

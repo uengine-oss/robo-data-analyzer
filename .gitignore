@@ -28,6 +28,7 @@ Thumbs.db
 
 # Generated output — 매 run 마다 latest/ rmtree
 logs/
+logs-*/
 run-output/
 _runs/
 tests/log/

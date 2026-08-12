@@ -3,7 +3,7 @@
 순서:
 0. 모듈 사전분석 (Framework 전용) — 모듈마다 LLM 1회로 헤더 주석 → 모듈 의도.
    결과 ``module_intent`` 는 아래 코드노드 분석의 3분할 공통 context 에 주입.
-1. 호출 그래프 (CALLS + PARENT_OF) → ``find_call_cycles`` → cycle 식별 (Tarjan SCC).
+1. prompt 수신자 ``ctx.callees`` + PARENT_OF → 공용 summary 의존 계획.
 2. 의존 그래프(callee→caller) 구성 — dataflow 스케줄 (spec 079, 라운드 배리어 제거):
    의존이 풀린 코드노드부터 즉시 분석, 끝나는 순서대로 즉시 Neo4j 영속화 + NDJSON emit.
    CALLS와 PARENT_OF 모두 하위 summary 확정 신호로 조기 해제한다. Rule/table 완료는
@@ -11,7 +11,7 @@
    rank 내림차순(긴 사슬·큰 노드 우선) — 전부 산출물 불변인 스케줄 결정이다.
 3. 각 코드노드 = ``analyze_code_three_split`` (3 분할 fan-out, RadixAttention 95%+).
 
-cycle 내부 코드노드 → callee summary 없이 분석 (``is_in_cycle=True`` 메타).
+결합 SCC 내부 코드노드 → 순환 callee summary 없이 분석 (``is_in_cycle=True`` 메타).
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from pipeline.execution.analysis_handoff import AnalysisHandoff
 from pipeline.execution.pause_controller import PauseController
 
 # (dbms 엔진은 여기서 import 하지 않는다 — 전략이 주입한다(analysis_pipelines). 헌법 II.)
-from shared.graphs.call_cycles import find_call_cycles
+from pipeline.steps.step7_analyze_code.analysis_order import plan_summary_dependencies
 from pipeline.steps.step7_analyze_code.three_split_llm_fanout import (
     analyze_code_three_split,
     run_summary,
@@ -94,36 +94,31 @@ async def run_framework_per_node_analysis(
         log_info(_STEP, "analysis_target_filter",
                  routines=len(contexts), excluded_structural=len(non_routine))
 
-    # 1. cycle 식별 (CALLS + PARENT_OF 둘 다) — Framework per-node 경로.
-    #    all_ids 가 routine 뿐이라 제어문 PARENT_OF 는 endpoint 가 all_ids 밖 → 순서 계산에 오염 X.
+    # 1. summary 의존 계획(ctx.callees + PARENT_OF) — 두 엔진의 단일 계약.
+    #    all_ids 가 routine 뿐이라 제어문 PARENT_OF 는 endpoint 가 contexts 밖 → 계획에서 제외된다.
     #    (주의: 제어문 아래 중첩 함수(Python nested def 등)의 함수→함수 순서는 제어문이 끊는다.
     #     C 는 중첩 함수가 없어 무영향 — Java/Python 확장 시 routine 투과 containment 재검토.)
-    call_edges: list[tuple[str, str]] = [
-        (e.caller_id, e.callee_id)
-        for e in state.get("calls_edges", [])
-    ]
     parent_edges: list[tuple[str, str]] = [
         (e.parent_id, e.child_id)
         for e in state.get("parent_of_edges", [])
     ]
-    all_ids = list(contexts.keys())
-    cycles = find_call_cycles(call_edges + parent_edges, all_ids)
+    dependency_plan = plan_summary_dependencies(contexts, parent_edges)
 
     # cycle 메타 ctx 에 부착
-    for fn_id in cycles:
+    for fn_id in dependency_plan.cycle_nodes:
         if fn_id in contexts:
             contexts[fn_id].is_in_cycle = True
 
     # 2. 의존 그래프 — CALLS/PARENT_OF 모두 summary 확정 즉시 해제한다.
     # CALLS and PARENT_OF both consume only the dependency's canonical summary.
     # Rule/table completion is not a scheduling dependency.
-    summary_deps = _build_dependency_map(call_edges + parent_edges, contexts, cycles)
+    summary_deps = _build_dependency_map(dependency_plan.schedule_edges, contexts)
     ranks = _dispatch_ranks(contexts, code_by_id, summary_deps)
     log_info(
         _STEP, "start",
         code_nodes=len(contexts),
         summary_dep_edges=sum(len(s) for s in summary_deps.values()),
-        in_cycle=len(cycles),
+        in_cycle=len(dependency_plan.cycle_nodes),
         concurrency=SETTINGS.analysis_pipeline.max_concurrency,
     )
 
@@ -273,7 +268,8 @@ async def run_framework_per_node_analysis(
     log_info(
         _STEP, "done",
         code_nodes=len(contexts), analyzed=total_analyzed,
-        failed=total_failed or None, skipped=total_skipped or None, in_cycle=len(cycles),
+        failed=total_failed or None, skipped=total_skipped or None,
+        in_cycle=len(dependency_plan.cycle_nodes),
         rules=len(em_acc.rules), examples=len(em_acc.examples), questions=len(em_acc.questions),
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
@@ -295,13 +291,11 @@ async def run_framework_per_node_analysis(
 def _build_dependency_map(
     edge_pairs: list[tuple[str, str]],
     contexts: dict,
-    cycles: dict[str, str],
 ) -> dict[str, set[str]]:
-    """의존 맵 — a 가 b 를 기다린다(a→b). contexts 밖·자기자신·같은 SCC 의존은 제외."""
+    """Plan의 DAG를 waiter→needed map으로 바꾼다. contexts 밖·자기자신은 제외."""
     deps: dict[str, set[str]] = {fid: set() for fid in contexts}
     for a, b in edge_pairs:
-        if (a in contexts and b in contexts and a != b
-                and cycles.get(a, a) != cycles.get(b, b)):
+        if a in contexts and b in contexts and a != b:
             deps[a].add(b)
     return deps
 

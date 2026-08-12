@@ -35,6 +35,8 @@ class _Node:
 
 @dataclass
 class _Ctx:
+    id: str
+    callees: tuple[str, ...] = ()
     summary: str | None = None
     is_in_cycle: bool = False
     extra: dict = field(default_factory=dict)
@@ -47,26 +49,25 @@ class _CallEdge:
 
 
 class DependencyMapTest(unittest.TestCase):
-    def test_excludes_outside_self_and_same_scc(self):
-        contexts = {"a": _Ctx(), "b": _Ctx(), "c": _Ctx()}
-        cycles = {"b": "scc1", "c": "scc1"}   # b·c 는 같은 SCC
+    def test_excludes_outside_and_self(self):
+        contexts = {key: _Ctx(key) for key in ("a", "b", "c")}
         deps = _build_dependency_map(
-            [("a", "b"), ("a", "a"), ("a", "외부"), ("b", "c")], contexts, cycles
+            [("a", "b"), ("a", "a"), ("a", "외부"), ("b", "c")], contexts
         )
         self.assertEqual(deps["a"], {"b"})     # 정상 의존만
-        self.assertEqual(deps["b"], set())     # 같은 SCC 내부 의존은 끊김
+        self.assertEqual(deps["b"], {"c"})
         self.assertEqual(deps["c"], set())
 
 
 class DispatchRanksTest(unittest.TestCase):
     def test_chain_bottom_ranks_higher_and_size_breaks_ties(self):
         # a → b → c 사슬: 아래쪽(c)이 최우선. 독립 노드는 크기가 큰 쪽이 우선.
-        contexts = {k: _Ctx() for k in ("a", "b", "c", "big", "small")}
+        contexts = {k: _Ctx(k) for k in ("a", "b", "c", "big", "small")}
         code_by_id = {
             "a": _Node("a"), "b": _Node("b"), "c": _Node("c"),
             "big": _Node("big", 1, 500), "small": _Node("small", 1, 5),
         }
-        summary_deps = _build_dependency_map([("a", "b"), ("b", "c")], contexts, {})
+        summary_deps = _build_dependency_map([("a", "b"), ("b", "c")], contexts)
         ranks = _dispatch_ranks(contexts, code_by_id, summary_deps)
         self.assertGreater(ranks["c"], ranks["b"])
         self.assertGreater(ranks["b"], ranks["a"])
@@ -76,7 +77,10 @@ class DispatchRanksTest(unittest.TestCase):
 class EarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
     async def test_caller_starts_after_callee_summary_not_full_completion(self):
         """caller(CALLS 의존)는 callee 의 rules 완료가 아니라 summary 확정에 풀린다."""
-        contexts = {"caller": _Ctx(), "callee": _Ctx()}
+        contexts = {
+            "caller": _Ctx("caller", callees=("callee",)),
+            "callee": _Ctx("callee"),
+        }
         code_by_id = {"caller": _Node("caller"), "callee": _Node("callee")}
         state = {
             "code_nodes": list(code_by_id.values()),
@@ -134,7 +138,7 @@ class EarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_parent_starts_after_child_summary_not_full_completion(self):
         """PARENT_OF uses the same summary-only release contract as CALLS."""
-        contexts = {"parent": _Ctx(), "child": _Ctx()}
+        contexts = {"parent": _Ctx("parent"), "child": _Ctx("child")}
         code_by_id = {"parent": _Node("parent"), "child": _Node("child")}
         parent_edge = mock.Mock(parent_id="parent", child_id="child")
         state = {
@@ -201,7 +205,8 @@ class BatchEarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
                 return {
                     "n": BatchSummaryItem(
                         node_key="1-3", summary="업무 처리를 수행한다",
-                        stereotype="DataQuery", questions=[{
+                        stereotype="DataQuery", evidence_status="partial",
+                        missing_context=["상태 코드 정의"], questions=[{
                             "text": "상태 코드의 업무 의미는 무엇인가?",
                             "reason": "제공 근거에 정의가 없다",
                         }],

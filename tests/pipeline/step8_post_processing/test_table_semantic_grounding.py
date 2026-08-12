@@ -12,20 +12,45 @@ if str(_ROOT) not in sys.path:
 
 from pipeline.models.code_analysis_output import (
     ColumnInsight,
+    GroundedColumnDescription,
     TableDescription,
     TableInsightItem,
 )
 from llm.runners.prompt_rules import _load_rule
 from pipeline.steps.step8_post_processing.enrich_table_description_step import (
     _direct_operations_by_table,
+    _collect_usage_candidates,
+    _focus_column_candidates,
     _source_table_evidence,
     _source_columns_by_table,
     _table_target_ids,
     _table_description_response_model,
+    _normalize_table_description_response,
     _replace_by_id,
 )
 from graph.schema.graph_edges import HasColumn, ReadsWrites
 from graph.schema.graph_nodes import Column, Table
+
+
+def _wire(payload: dict) -> dict:
+    semantic_keys = ("logical_name", "description", "evidence_status", "missing_context")
+    return {
+        "db": payload["db"],
+        "schema": payload["schema"],
+        "name": payload["name"],
+        "meaning": {key: payload[key] for key in semantic_keys},
+        "columns": [
+            {
+                "name": column["name"],
+                "meaning": {key: column[key] for key in semantic_keys},
+            }
+            for column in payload["columns"]
+        ],
+    }
+
+
+def _parse(model, payload: dict) -> TableDescription:
+    return _normalize_table_description_response(model.model_validate(_wire(payload)))
 
 
 class TableSemanticGroundingTest(unittest.TestCase):
@@ -37,6 +62,57 @@ class TableSemanticGroundingTest(unittest.TestCase):
             columns=[],
         )
         self.assertEqual(item.usage_summary, "주문 상태를 조회해 후속 처리를 결정한다.")
+
+    def test_column_usage_reaches_final_candidate_with_full_provenance(self):
+        node = type("Node", (), {
+            "id": "code:orders.sql:SELECT@4",
+            "extra": {"table_insights": [{
+                "table": "db:orders",
+                "role": "lookup",
+                "usage_summary": "처리 대상을 조회한다.",
+                "columns": [{
+                    "name": "STATUS",
+                    "usage_summary": "",
+                    "ownership": "sole_direct_table",
+                    "evidence_lines": [4],
+                    "source_lines": [{"line": 4, "text": "WHERE STATUS = 'P'"}],
+                }],
+            }]},
+        })()
+
+        tables, columns = _collect_usage_candidates([node])
+
+        self.assertEqual("처리 대상을 조회한다.", tables["db:orders"][0]["usage_summary"])
+        candidate = columns["db:orders"]["STATUS"][0]
+        self.assertEqual(node.id, candidate["source_id"])
+        self.assertEqual([4], candidate["evidence_lines"])
+        self.assertEqual("WHERE STATUS = 'P'", candidate["source_lines"][0]["text"])
+        self.assertNotIn("usage_summary", candidate)
+
+    def test_column_prompt_focus_masks_sibling_identifiers_but_keeps_literals(self):
+        focused = _focus_column_candidates(
+            [{
+                "relation": "CODE_NODE_USES_COLUMN",
+                "source_id": "select:9",
+                "ownership": "derived_output_unique",
+                "evidence_lines": [9],
+                "source_lines": [{
+                    "line": 9,
+                    "text": "SUM(A.COM_UNIT * DECODE(COMPUTE, '+', 1, '-', -1)) -- old COMPUTE",
+                    "source_id": "select:9",
+                    "ownership": "derived_output_unique",
+                }],
+            }],
+            target_name="COM_UNIT",
+            allowed_names=["COM_UNIT", "COMPUTE", "TAGSN"],
+        )
+        line = focused[0]["source_lines"][0]
+        self.assertNotIn("text", line)
+        self.assertEqual(
+            "SUM(A.[TARGET_COLUMN] * DECODE([OTHER_COLUMN], '+', 1, '-', -1))",
+            line["focus_text"],
+        )
+        self.assertEqual(9, line["line"])
 
     def test_table_role_is_a_closed_contract(self):
         with self.assertRaises(ValidationError):
@@ -58,43 +134,75 @@ class TableSemanticGroundingTest(unittest.TestCase):
                 {"name": "status_cd", "source_logical_name": "", "source_description": "", "source_comment": ""},
             ],
         })
-        valid = {
+        ungrounded = {
             "db": "db",
             "schema": "public",
             "name": "orders",
             "logical_name": "",
             "description": "주문 처리 상태를 보관한다.",
+            "evidence_status": "insufficient",
+            "missing_context": ["업무 의미를 입증할 코드 또는 주석"],
             "columns": [
                 {
                     "name": "order_id",
                     "logical_name": "주문식별자",
                     "description": "주문을 구별하는 값",
+                    "evidence_status": "insufficient",
+                    "missing_context": ["컬럼 업무 의미 근거"],
                 },
                 {
                     "name": "status_cd",
                     "logical_name": "처리상태",
                     "description": "주문 처리 상태",
+                    "evidence_status": "insufficient",
+                    "missing_context": ["컬럼 업무 의미 근거"],
                 },
             ],
         }
-        self.assertEqual(2, len(model.model_validate(valid).columns))
         unknown = {
-            **valid,
+            **ungrounded,
             "logical_name": "",
             "description": "",
             "columns": [
                 {**column, "logical_name": "", "description": ""}
-                for column in valid["columns"]
+                for column in ungrounded["columns"]
             ],
         }
-        self.assertEqual("", model.model_validate(unknown).columns[0].logical_name)
+        self.assertEqual("", _parse(model, unknown).columns[0].logical_name)
         with self.assertRaises(ValidationError):
-            model.model_validate({**valid, "columns": valid["columns"][:1]})
+            model.model_validate(_wire(ungrounded))
         with self.assertRaises(ValidationError):
-            model.model_validate({
-                **valid,
-                "columns": [valid["columns"][0], valid["columns"][0]],
-            })
+            model.model_validate(_wire({**unknown, "columns": unknown["columns"][:1]}))
+        with self.assertRaises(ValidationError):
+            model.model_validate(_wire({
+                **unknown,
+                "columns": [unknown["columns"][0], unknown["columns"][0]],
+            }))
+
+    def test_column_candidate_does_not_license_table_invention(self):
+        model = _table_description_response_model({
+            "table": {
+                "db": "db", "schema": "public", "name": "orders",
+                "source_logical_name": "", "source_description": "", "source_comment": "",
+            },
+            "columns": [{
+                "name": "status_cd", "source_logical_name": "",
+                "source_description": "", "source_comment": "",
+                "candidates": [{"logical_name": "처리상태", "description": "주문 처리 상태"}],
+            }],
+        })
+        parsed = _parse(model, {
+            "db": "db", "schema": "public", "name": "orders",
+            "logical_name": "", "description": "",
+            "evidence_status": "insufficient",
+            "missing_context": ["테이블 역할을 입증할 직접 사용 또는 설명"],
+            "columns": [{
+                "name": "status_cd", "logical_name": "처리상태",
+                "description": "주문 처리 상태",
+                "evidence_status": "sufficient", "missing_context": [],
+            }],
+        })
+        self.assertEqual("처리상태", parsed.columns[0].logical_name)
 
     def test_final_column_ownership_uses_has_column_edges(self):
         first = Column(id="db:orders.order_id", name="order_id", dtype="VARCHAR")
@@ -111,7 +219,7 @@ class TableSemanticGroundingTest(unittest.TestCase):
         )
         self.assertEqual(["order_id", "status_cd"], [column.name for column in got["db:orders"]])
 
-    def test_parsed_ddl_table_is_target_even_without_function_insight(self):
+    def test_only_deterministically_accessed_ddl_table_is_target(self):
         table = Table(
             db="warehouse",
             schema="public",
@@ -119,7 +227,8 @@ class TableSemanticGroundingTest(unittest.TestCase):
             description="현재 재고를 보관한다.",
             comment="재고 원장",
         )
-        self.assertEqual([table.id], _table_target_ids([table]))
+        self.assertEqual([], _table_target_ids([table], {}))
+        self.assertEqual([table.id], _table_target_ids([table], {table.id: [{}]}))
         self.assertEqual(
             {
                 "db": "warehouse",
@@ -140,7 +249,67 @@ class TableSemanticGroundingTest(unittest.TestCase):
             Table(db="factory", schema="public", name="devices"),
             Table(db="school", schema="public", name="courses"),
         ]
-        self.assertEqual([table.id for table in tables], _table_target_ids(tables))
+        accessed = {tables[1].id: [{}], tables[3].id: [{}]}
+        self.assertEqual([tables[1].id, tables[3].id], _table_target_ids(tables, accessed))
+
+    def test_provenance_comment_is_not_semantic_evidence(self):
+        model = _table_description_response_model({
+            "table": {
+                "db": "db", "schema": "", "name": "orders",
+                "source_logical_name": "", "source_description": "",
+                "source_comment": "Source references: ORDERS Operations: READ",
+            },
+            "columns": [{
+                "name": "status_cd", "source_logical_name": "",
+                "source_description": "", "source_comment": "AMBIGUOUS_SOURCE",
+            }],
+        })
+        parsed = _parse(model, {
+            "db": "db", "schema": "", "name": "orders",
+            "logical_name": "", "description": "",
+            "evidence_status": "insufficient",
+            "missing_context": ["테이블 업무 의미를 입증할 직접 사용 또는 설명"],
+            "columns": [{
+                "name": "status_cd", "logical_name": "", "description": "",
+                "evidence_status": "insufficient",
+                "missing_context": ["컬럼 의미를 입증할 근거"],
+            }],
+        })
+        self.assertEqual("", parsed.description)
+        self.assertEqual("", parsed.columns[0].description)
+
+    def test_usage_evidence_can_honestly_end_as_insufficient(self):
+        evidence = {
+            "table": {"db": "db", "schema": "", "name": "copy_log"},
+            "table_usages": [{"role": "READ-only", "usage_summary": "값을 복사한다"}],
+            "columns": [{
+                "name": "OPAQUE_VAL",
+                "candidates": [{"usage_summary": "다른 행으로 값을 복사한다"}],
+            }],
+        }
+        model = _table_description_response_model(evidence)
+        parsed = _parse(model, {
+            "db": "db", "schema": "", "name": "copy_log",
+            "logical_name": "", "description": "",
+            "evidence_status": "insufficient",
+            "missing_context": ["테이블의 업무 역할을 설명하는 DDL comment"],
+            "columns": [{
+                "name": "OPAQUE_VAL", "logical_name": "", "description": "",
+                "evidence_status": "insufficient",
+                "missing_context": ["복사되는 값의 업무 정의"],
+            }],
+        })
+        self.assertEqual("insufficient", parsed.evidence_status)
+        self.assertEqual("insufficient", parsed.columns[0].evidence_status)
+
+        schema = model.model_json_schema()
+        self.assertIn("properties", schema, "provider tool conversion needs a root object")
+        self.assertEqual(3, len(schema["properties"]["meaning"]["oneOf"]),
+                         "table state machine is provider-visible")
+        column_ref = schema["properties"]["columns"]["items"]["$ref"]
+        column_schema = schema["$defs"][column_ref.rsplit("/", 1)[-1]]
+        self.assertEqual(3, len(column_schema["properties"]["meaning"]["oneOf"]),
+                         "column state machine is provider-visible")
 
     def test_direct_rw_evidence_is_deduplicated_and_keeps_absolute_line(self):
         edge = ReadsWrites(
@@ -170,11 +339,15 @@ class TableSemanticGroundingTest(unittest.TestCase):
             name="orders",
             logical_name="주문 처리 기준",
             description="주문 상태와 처리 기준을 조회하는 데이터.",
+            evidence_status="sufficient",
+            missing_context=[],
             columns=[
-                ColumnInsight(
+                GroundedColumnDescription(
                     name="status_cd",
                     logical_name="주문상태",
                     description="주문 처리 상태 코드",
+                    evidence_status="sufficient",
+                    missing_context=[],
                 )
             ],
         )
@@ -216,15 +389,28 @@ class TableSemanticGroundingTest(unittest.TestCase):
                 self.assertIn("잘못", text)
                 self.assertIn("좋음", text)
 
-    def test_table_insight_forbids_unproven_columns(self):
+    def test_table_insight_passes_column_coordinates_without_generating_meaning(self):
         for directory, rule_name in (
             (_ROOT / "llm/prompts/framework", "code_table_insights"),
             (_ROOT / "llm/prompts/dbms", "code_table_insights_batch"),
         ):
             text = _load_rule(directory, rule_name)["user_template"]
             with self.subTest(rule=rule_name):
-                self.assertIn("컬럼 필드는 출력하지 않는다", text)
-                self.assertIn("추측하지 않는다", text)
+                self.assertIn("column_usage_candidates", text)
+                self.assertIn("한 번만 생성", text)
+                self.assertIn("`columns` 필드를 중복 생성하지", text)
+
+    def test_table_insight_does_not_offer_copyable_generic_good_sentence(self):
+        anchor = "처리 대상의 현재 상태를 조회해 갱신 여부"
+        for directory, rule_name in (
+            (_ROOT / "llm/prompts/framework", "code_table_insights"),
+            (_ROOT / "llm/prompts/dbms", "code_table_insights_batch"),
+        ):
+            text = _load_rule(directory, rule_name)["user_template"]
+            with self.subTest(rule=rule_name):
+                self.assertNotIn(anchor, text)
+                self.assertIn("직접 연산", text)
+                self.assertIn("예시 문구", text)
 
     def test_column_contract_preserves_source_semantic_head_over_name_guess(self):
         contract = (
@@ -255,13 +441,15 @@ class TableSemanticGroundingTest(unittest.TestCase):
             "db": "db", "schema": "", "name": "auth",
             "logical_name": "인증 이력",
             "description": "인증 이력",
+            "evidence_status": "sufficient", "missing_context": [],
             "columns": [{
                 "name": "drw_bank_ctz_num_pinf",
                 "logical_name": "주민 부분정보",
                 "description": "출금은행 주민 부분정보 (암호화)",
+                "evidence_status": "sufficient", "missing_context": [],
             }],
         }
-        parsed = model.model_validate(valid)
+        parsed = _parse(model, valid)
         self.assertEqual(
             "출금은행 주민 부분정보 (암호화)", parsed.columns[0].description,
         )
@@ -270,7 +458,7 @@ class TableSemanticGroundingTest(unittest.TestCase):
             "description": "출금 은행 계좌 번호의 일부 정보로 저장됩니다.",
         }]}
         with self.assertRaises(ValidationError):
-            model.model_validate(changed)
+            model.model_validate(_wire(changed))
 
     def test_step8_does_not_use_function_summary_or_first_column_candidate(self):
         source = (
@@ -281,7 +469,7 @@ class TableSemanticGroundingTest(unittest.TestCase):
         self.assertNotIn("column_descriptions[table].setdefault", source)
         self.assertIn('insight.get("usage_summary")', source)
         self.assertIn("build_consolidated_column_updates", source)
-        self.assertIn("table_fqns = _table_target_ids(source_tables)", source)
+        self.assertIn("table_fqns = _table_target_ids(source_tables, direct_operations)", source)
         self.assertNotIn("run_concern_with_retry(", source)
         self.assertIn('rule_name="table_description"', source)
         self.assertNotIn('reason="no table_insights aggregated"', source)

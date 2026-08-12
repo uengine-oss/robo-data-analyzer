@@ -30,7 +30,9 @@ SET_SUMMARY_QUERY = f"""
 UNWIND $items AS item
 MATCH (node:ANALYZER_OWNED {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 // 자동 용어 생성 폐기 전 graph 속성은 동일 노드 재분석에서도 남지 않게 제거한다.
-REMOVE node.domain_terms, node.domain_terms_json, node.logical_name
+REMOVE node.domain_terms, node.domain_terms_json, node.logical_name,
+       node.summary, node.stereotype, node.summary_evidence_status,
+       node.summary_missing_context_json
 SET node += item
 """
 
@@ -57,6 +59,7 @@ def to_item(fn: CodeNode) -> dict:
         # 구조 statement/제어 조건 표현 원문 (parser spec 016) — 소비자가 소스를
         # 재파싱하지 않도록 그래프에도 보존한다. 빈값은 nonempty 가 제외.
         "expression": fn.expression,
+        "condition_timing": fn.condition_timing,
         "target": fn.target,
         "operator": fn.operator,
         "notes": join_notes(fn.comment, fn.annotations),
@@ -72,6 +75,16 @@ def to_summary_item(fn: CodeNode) -> dict:
         "id": fn.id,
         "summary": fn.summary,
         "stereotype": fn.stereotype,
+        "summary_evidence_status": (fn.extra or {}).get("summary_evidence_status"),
+        "summary_missing_context_json": (
+            json.dumps(
+                (fn.extra or {}).get("summary_missing_context"),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            if (fn.extra or {}).get("summary_missing_context")
+            else None
+        ),
         # spec 054 FR-023: 폴백 재검사도 이상이면 "부분 결과 + 이상 플래그"를 함수 노드에 저장 —
         # 그래프에 남아야 소비자(UI/검색)가 신뢰도를 안다. 정상경로는 키 부재 → nonempty 가 제외.
         "rules_quality_flag": (fn.extra or {}).get("rules_quality_flag"),
@@ -103,10 +116,14 @@ async def update_summaries(client: Neo4jClient, code_nodes: Iterable[CodeNode]) 
     """
     analyzed = [
         f for f in code_nodes
-        if f.summary is not None or (f.extra or {}).get("analysis_status")
+        if (
+            f.summary is not None
+            or (f.extra or {}).get("analysis_status")
+            or (f.extra or {}).get("summary_evidence_status")
+        )
     ]
     await client.run_batch_unwind(SET_SUMMARY_QUERY, [to_summary_item(f) for f in analyzed])
     await apply_stereotype_labels(
         client,
-        [(f.id, f.stereotype or "") for f in analyzed if f.summary is not None],
+        [(f.id, f.stereotype or "") for f in analyzed],
     )

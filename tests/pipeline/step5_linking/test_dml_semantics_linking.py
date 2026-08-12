@@ -39,7 +39,12 @@ class DbmsSemanticsLinkingTest(unittest.TestCase):
         src.write_text(sql, encoding="utf-8")
         tables = [Table(db="d", schema="S", name=n) for n in table_names]
         n_lines = sql.count("\n") + 1
-        edges = _link([_node("p:1", str(src), 1, n_lines)], tables, [], SourceFileCache())
+        edges = _link(
+            [_node("dml:1", str(src), 1, n_lines, label="DML")],
+            tables,
+            [],
+            SourceFileCache(),
+        )
         return {t.name: t.id for t in tables}, edges
 
     # ── US1: TRUNCATE (AS 1~3) ──
@@ -161,7 +166,12 @@ class CSemanticParityTest(unittest.TestCase):
         tables = [Table(db="d", schema="S", name=n) for n in ("T_DST", "T_SRC")]
         dbms = {
             e.target_id.rsplit(".", 1)[-1]: e.relation
-            for e in _link([_node("p:1", str(src), 1, 1)], tables, [], SourceFileCache())
+            for e in _link(
+                [_node("merge:1", str(src), 1, 1, label="MERGE")],
+                tables,
+                [],
+                SourceFileCache(),
+            )
         }
         # C 경로
         lookup, c_edges = self._run_c(f'void f(void) {{ run("{sql}"); }}\n', ["T_DST", "T_SRC"])

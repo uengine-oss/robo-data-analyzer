@@ -10,6 +10,27 @@ from graph.schema.rel_types import HAS_COLUMN
 from graph.ownership import ANALYZER_GRAPH_OWNER
 
 
+def compact_rules(rules: list[dict]) -> list[dict]:
+    """Architect 선택/GWT가 공유하는 최소 RULE 좌표·의미·테이블 projection."""
+    out: list[dict] = []
+    seen: set[tuple[int, str]] = set()
+    for rule in rules or []:
+        line = int(rule.get("anchor_line") or 0)
+        text = str(rule.get("nl") or "").strip()
+        if line <= 0 or not text:
+            continue
+        key = (line, text)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "line": line,
+            "text": text,
+            "tables": list(rule.get("tables") or []),
+        })
+    return out
+
+
 def read_rules(session, node_id: str) -> list[dict]:
     """코드 노드의 RULE(leaf 계약) → EXAMPLE → 규칙 단위 AFFECTS_TABLE 을 순서 보존 반환."""
     rows = session.run(
@@ -81,6 +102,8 @@ def read_columns(session, table_id: str) -> list[dict]:
         "RETURN c.id AS id, c.name AS name, coalesce(c.dtype,'') AS dtype, "
         "coalesce(c.is_primary_key,false) AS is_primary_key, "
         "coalesce(c.logical_name,'') AS logical_name, "
+        "coalesce(c.semantic_evidence_status,'') AS evidence_status, "
+        "coalesce(c.semantic_missing_context,[]) AS missing_context, "
         "CASE WHEN trim(coalesce(c.description,'')) <> '' THEN c.description "
         "WHEN trim(coalesce(c.analyzed_description,'')) <> '' THEN c.analyzed_description "
         "ELSE '' END AS description "

@@ -1,4 +1,4 @@
-## Framework summary/table shared evidence envelope.
+## Framework summary evidence envelope. Table usage has an exact-direct projection.
 wall_timeout_seconds: 210
 system: |
   당신은 TARGET 코드의 의미를 활성 근거에서 추출하는 분석가입니다. 출력은 원문을 읽지 않는
@@ -13,7 +13,7 @@ system: |
   마십시오.
 
 user_template_inputs: |
-  # [구조화된 대상 입력 — 아래로 갈수록 변동성이 큼]
+  # [INPUT — SUMMARY evidence packet; 아래로 갈수록 변동성이 큼]
 
   response_locale: {response_locale}
   자연어는 이 언어로 작성한다. 원문 리터럴·ID·테이블 식별자는 번역하지 않는다.
@@ -26,20 +26,23 @@ user_template_inputs: |
   coordinate_system: {coordinate_system}
   source_status: {source_status}
 
-  ## [DIRECT_EVIDENCE]
-  reads_json:
+  ## [EFFECTIVE_FLOW_EVIDENCE]
+  effective_reads_json:
   {reads}
 
-  writes_json:
+  effective_writes_json:
   {writes}
 
-  authoritative_table_ops_json:
+  linked_table_operations_json:
   {table_ops}
 
-  referenced_symbols_json:
+  direct_data_object_usages_json:
+  {data_object_usages}
+
+  target_referenced_symbol_definitions_json:
   {referenced_symbols}
 
-  external_evidence_json:
+  target_linked_external_context_json:
   {external_evidence}
 
   ## [SURROUNDING_CONTEXT — NOT TARGET BEHAVIOR]
@@ -49,11 +52,13 @@ user_template_inputs: |
   module_intent:
   {module_intent}
 
-  ## [CALLEE_INTERFACE — NOT CALLEE IMPLEMENTATION]
+  ## [CALLEE_INTERFACES — NOT CALLEE IMPLEMENTATION]
   {callee_summaries}
 
   ## [SOURCE]
   각 접두사는 절대 파일 줄번호다. 접두사 숫자와 `|`는 소스 코드가 아니다.
+  `[QUOTED_LITERAL value=...]`는 응답 JSON과 충돌하는 따옴표·escape 구분자만 제거한
+  결정론 투영이다. value의 철자와 절대 줄 좌표는 원본 source와 같다.
   ```
   {code_body}
   ```

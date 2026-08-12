@@ -21,6 +21,7 @@ from mcp.server.fastmcp import FastMCP
 
 from shared.config.settings import SETTINGS
 from graph.connection_context import Neo4jOverride, set_override
+from search.corpus.evidence_reader import compact_rules
 
 mcp = FastMCP(
     "robo-cluster",
@@ -31,22 +32,6 @@ mcp = FastMCP(
     stateless_http=True,
     streamable_http_path="/",   # mount 지점(/robo/mcp)이 곧 엔드포인트
 )
-
-
-def _merge_rules(rules: list) -> list:
-    """동일 statement rule 병합 — examples 는 순서 보존 합집합 (spec 057 D6, 방어적)."""
-    out: list[dict] = []
-    by_stmt: dict[str, dict] = {}
-    for r in rules or []:
-        stmt = r.get("statement", "")
-        cur = by_stmt.get(stmt)
-        if cur is None:
-            cur = {"statement": stmt, "examples": list(r.get("examples") or [])}
-            by_stmt[stmt] = cur
-            out.append(cur)
-        else:
-            cur["examples"].extend(r.get("examples") or [])
-    return out
 
 
 _DROP_ALWAYS = ("element_id",)
@@ -65,7 +50,7 @@ def _list_clusters(clusters: list, by_id: dict) -> list:
             else:
                 m = {k: v for k, v in n.items() if k not in _DROP_ALWAYS}
                 m["logical_name"] = meta.get("logical_name", "")
-                m["rules"] = _merge_rules(m.get("rules")) if n.get("role") == "anchor" else []
+                m["rules"] = compact_rules(m.get("rules")) if n.get("role") == "anchor" else []
             nodes.append(m)
         listed.append({"score": c.get("score"), "nodes": nodes})
     return listed
@@ -118,20 +103,26 @@ async def cluster_retrieve(
 
 
 @mcp.tool()
-async def node_detail(node_id: str, database: Optional[str] = None) -> str:
+async def node_detail(
+    node_id: str, database: Optional[str] = None, view: str = "full",
+) -> str:
     """선택한 레거시 노드 ID의 원문 코드·라인·관계·규칙·컬럼을 조회한다.
 
     Args:
         node_id: ``cluster_retrieve`` 목록에서 선택한 노드 ID.
         database: 검색과 같은 Neo4j DB 이름. 생략 시 서버 기본 DB.
+        view: ``full``은 원문 포함 상세, ``gwt``는 좌표·호출·테이블·컬럼·샘플 압축 보기.
     """
     requested_id = (node_id or "").strip()
     if not requested_id:
         return _json({"error": {"code": "EMPTY_ID", "message": "node_id is required"}})
+    requested_view = (view or "").strip().lower()
+    if requested_view not in {"full", "gwt"}:
+        return _json({"error": {"code": "INVALID_VIEW", "message": "view must be full or gwt"}})
 
     def _run() -> dict:
         _select_database(database)
         from search.corpus.node_detail import read_node_detail
-        return read_node_detail(requested_id)
+        return read_node_detail(requested_id, view=requested_view)
 
     return _json(await asyncio.to_thread(_run))

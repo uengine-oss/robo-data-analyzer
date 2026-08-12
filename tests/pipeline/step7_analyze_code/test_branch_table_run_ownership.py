@@ -11,7 +11,10 @@ from unittest.mock import patch
 from graph.schema.graph_nodes import CodeNode
 from pipeline.execution.run_output_context import reset_run_dir, set_run_dir
 from pipeline.quality_gates.branch_inventory import build_inventory
-from pipeline.steps.step7_analyze_code.three_split_llm_fanout import _persist_branch_table
+from pipeline.steps.step7_analyze_code.branch_audit import (
+    persist_branch_table,
+    persist_routine_audits,
+)
 
 
 def _node() -> CodeNode:
@@ -24,7 +27,7 @@ def _node() -> CodeNode:
 class BranchTableRunOwnership(unittest.TestCase):
     def test_without_active_run_no_directory_is_created(self) -> None:
         with patch("pathlib.Path.mkdir") as mkdir:
-            _persist_branch_table(_node(), build_inventory("return 0;", (), "c", statements=()))
+            persist_branch_table(_node(), build_inventory("return 0;", (), "c", statements=()))
         mkdir.assert_not_called()
 
     def test_active_run_receives_branch_table(self) -> None:
@@ -32,7 +35,7 @@ class BranchTableRunOwnership(unittest.TestCase):
             root = Path(temp)
             token = set_run_dir(root)
             try:
-                _persist_branch_table(_node(), build_inventory("return 0;", (), "c", statements=()))
+                persist_branch_table(_node(), build_inventory("return 0;", (), "c", statements=()))
             finally:
                 reset_run_dir(token)
             output = root / "branch-tables" / "code_sample.fn.json"
@@ -47,11 +50,49 @@ class BranchTableRunOwnership(unittest.TestCase):
                     patch("pathlib.Path.write_text", side_effect=PermissionError("denied")),
                     self.assertRaisesRegex(PermissionError, "denied"),
                 ):
-                    _persist_branch_table(
+                    persist_branch_table(
                         _node(), build_inventory("return 0;", (), "c", statements=())
                     )
             finally:
                 reset_run_dir(token)
+
+
+class DbmsRoutineAudits(unittest.TestCase):
+    """spec 117 — DBMS 도 분기표를 남긴다. 기록 단위는 **루틴당 한 파일**이다.
+
+    종전에는 이 기록이 framework 엔진에만 있어 `judge_run [A]` 가 DBMS 에서 항상 0 이었다
+    (제품 결함이 아니라 측정 부재 — 헌법 IX 2층이 성립하지 않던 원인).
+    """
+
+    def test_one_file_per_routine_not_per_batch_node(self) -> None:
+        routine = CodeNode(
+            id="code:p.sql:p@1", name="p", signature="p", file_path="p.sql",
+            start_line=1, end_line=3, label="PROCEDURE",
+        )
+        inventory = build_inventory("return 0;", (), "sql", statements=())
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            token = set_run_dir(root)
+            try:
+                written = persist_routine_audits(
+                    {routine.id: inventory}, {routine.id: routine},
+                )
+            finally:
+                reset_run_dir(token)
+            self.assertEqual([routine.id], written)
+            tables = list((root / "branch-tables").glob("*.json"))
+            coverage = list((root / "coverage").glob("*.json"))
+            self.assertEqual(1, len(tables), "루틴 하나에 파일 하나여야 회계가 맞는다")
+            self.assertEqual(1, len(coverage))
+            self.assertIsInstance(
+                json.loads(tables[0].read_text(encoding="utf-8")), list,
+            )
+
+    def test_missing_routine_fails_with_coordinates(self) -> None:
+        inventory = build_inventory("return 0;", (), "sql", statements=())
+        with self.assertRaises(ValueError) as caught:
+            persist_routine_audits({"code:missing@1": inventory}, {})
+        self.assertIn("code:missing@1", str(caught.exception))
 
 
 if __name__ == "__main__":

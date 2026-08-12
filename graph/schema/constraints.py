@@ -27,6 +27,8 @@ CONSTRAINTS: list[str] = [
     "FOR (s:SCHEMA) REQUIRE s.id IS UNIQUE",
     "CREATE CONSTRAINT uniq_table IF NOT EXISTS "
     "FOR (t:TABLE) REQUIRE t.id IS UNIQUE",
+    "CREATE CONSTRAINT uniq_object_reference IF NOT EXISTS "
+    "FOR (n:OBJECT_REFERENCE) REQUIRE n.id IS UNIQUE",
     "CREATE CONSTRAINT uniq_column IF NOT EXISTS "
     "FOR (c:COLUMN) REQUIRE c.id IS UNIQUE",
     "CREATE CONSTRAINT uniq_package IF NOT EXISTS "
@@ -58,7 +60,7 @@ INDEXES: list[str] = [
 # 지울 수 있도록 legacy 데이터 라벨로만 유지한다 (active producer/consumer 아님).
 LEGACY_ANALYZER_STABLE_LABELS: tuple[str, ...] = (
     "COLUMN", "EMBED_META", "EXAMPLE", "GLOSSARY", "PACKAGE",
-    "QUESTION", "RULE", "SCHEMA", "TABLE",
+    "QUESTION", "RULE", "SCHEMA", "TABLE", "OBJECT_REFERENCE",
     "PROJECT_FILE", "EXTERNAL_CHUNK",
     "SQL_STATEMENT", "CONFIG_SECTION", "ARTIFACT_CHUNK", "CHUNK",
     "DOCUMENT", "DOC_SECTION", "DOC_CHUNK", "UNRESOLVED_REF", "CANDIDATE_LINK",

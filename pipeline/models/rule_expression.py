@@ -16,15 +16,18 @@ from __future__ import annotations
 import ast
 
 # then 효과 호출문의 닫힌 어휘 — 이 밖의 최상위 호출은 채점기가 거절한다.
-# jump: 제어 이동(goto 류) — 대상은 라벨명. ontology statement_effect_ops 가 생산을 선언한다.
+# jump: 이름 있는 제어 이동(goto 류), exit_loop/commit/rollback: target 없는 control.
+# ontology statement_effect_ops 가 생산을 선언한다.
 EFFECT_FUNCTIONS: tuple[str, ...] = (
-    "call", "ret", "set", "raise_error", "jump",
+    "call", "ret", "set", "raise_error", "jump", "exit_loop", "commit", "rollback",
     "select", "insert", "update", "delete", "upsert",
 )
 
 # cond 안의 기본 도우미 호출. ontology가 source 의미와 AST 동등성을 증명한 canonical
 # intrinsic(예: strlen → len)은 채점기가 실행별로 이 집합에 더한다.
-COND_HELPERS: tuple[str, ...] = ("F", "else_of", "len")
+COND_HELPERS: tuple[str, ...] = (
+    "F", "else_of", "after_control", "at_label", "len",
+)
 
 # 문자열 leaf 의 형태 제약 — 개행 금지 + 길이 상한 = 문법 강제 디코딩의 끝 경계.
 # Rule cond/then are model outputs constrained to grounded structural spellings. Source
@@ -34,7 +37,10 @@ RULE_LEAF_PATTERN = r"^[^\n]+$"
 EXAMPLE_LEAF_MAX_CHARS = 500
 EXAMPLE_LEAF_PATTERN = rf"^[^\n]{{1,{EXAMPLE_LEAF_MAX_CHARS}}}$"
 # nl(사람용 표시 전용)의 형태 제약 — 개방형 필드가 마지막에 와도 끝 경계가 있다.
-NL_PATTERN = r"^[^\n]{0,300}$"
+# 300자는 깊은 구조 경로를 잘못 나열한 한 응답에서 현재 직접 효과까지 잘라 의미를
+# 손상시켰다. 평상시 prompt 목표는 240자지만, 완결 문장을 보존할 안전 상한은 분리한다.
+NL_MAX_CHARS = 600
+NL_PATTERN = rf"^[^\n]{{0,{NL_MAX_CHARS}}}$"
 
 
 class LeafSyntaxError(ValueError):
@@ -129,6 +135,9 @@ def _validate_effect_arguments(node: ast.Call, statement: str) -> None:
         # 포맷 문자열뿐인 경우가 있어 텍스트 인자는 요약·창작을 강요한다.
         valid = not args
         expected = "raise_error()"
+    elif name in {"exit_loop", "commit", "rollback"}:
+        valid = not args
+        expected = f"{name}()"
     else:  # select / insert / update / delete / upsert
         valid = len(args) == 1 and _is_string(args[0])
         expected = f'{name}("테이블")'

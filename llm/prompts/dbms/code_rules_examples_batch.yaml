@@ -5,18 +5,15 @@ max_tokens: 6000
 shared_values:
   rule_leaf_contract: ../common/rule_leaf_contract.md
 user_template_specific: |
-  # [분할 계약: AssignedBatchRulesOutput]
+  # [TASK — 각 노드·분기 행의 사람이 읽는 Rule 의미]
 
-  response_format의 모든 바깥 노드 좌표와 required `R<행>`을 정확히 한 번 만들고 각 행의
-  구조화된 `cond`, `then`과 의미 `nl`을 직접 채운다.
-  스키마는 좌표와 필드만 강제하며 답을 제공하지 않는다.
+  목표는 parser가 이미 확정한 각 required 행의 조건 경로와 직접 효과를, 노드·행 소유권을
+  바꾸지 않고 사람이 이해하는 `nl` 한 문장으로 옮기는 것이다. 각 evidence packet은 자기
+  node_key에만 적용하며 입력에 없는 형제 node의 의미를 복사하지 않는다.
 
   {rule_leaf_contract}
 
-  ## 이 요청의 증거 읽기
-
-  아래 각 노드의 증거는 자기 노드에만 적용된다. 입력에 없는 node_key를 만들거나 형제
-  노드의 의미를 복사하지 않는다.
-
 user_template_evidence: |
+  # [INPUT — BATCH RULE evidence packets]
+
   {rule_nodes}

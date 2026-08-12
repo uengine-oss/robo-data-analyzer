@@ -4,9 +4,9 @@ CREATE TABLE / VIEW / ALTER TABLE ... FK 등을 파싱해
 ``(Schema, Table, Column, Fk, HasColumn, BelongsTo)`` 튜플 반환.
 
 DDL = 구조의 진실 기준 (plan §3.1) — 컬럼 타입·제약·기본값·FK·설명을 결정론 추출:
-- description = ``COMMENT ON`` (정규식) 우선, 없으면 ``--`` / ``/* */`` 주석 —
-  둘 다 ``description_source`` = "ddl" (DDL 파일 출처).
-- ``--`` / ``/* */`` 원문은 Table/Column.comment 에 항상 보존 (분석 입력 단서).
+- description = 정식 ``COMMENT ON``만 사용하며 ``description_source`` = "ddl".
+- ``--`` / ``/* */`` 원문은 Table/Column.comment 에 보존하되 권위 description으로
+  승격하지 않는다. 일반 주석에는 생성 provenance·운영 메모·낡은 설명이 섞일 수 있다.
 - ``CREATE SCHEMA`` / ``SET search_path`` → 스키마 인식 (비수식 테이블에 스키마·fqn 부여).
 - Oracle 물리옵션(TABLESPACE/STORAGE/…)·``VARCHAR2(n BYTE)``·``/`` 종결자 → 정규화 후 파싱.
 - 제약(PK/UNIQUE/NOT NULL) — 컬럼 레벨 + 테이블 레벨 ``PRIMARY KEY`` 둘 다.
@@ -143,15 +143,14 @@ def _join_comments(comments: list[str] | None) -> str:
 
 
 def _resolve_description(formal: str, raw_comment: str) -> tuple[str, str]:
-    """description + 출처 결정 — ``COMMENT ON`` 우선, 없으면 ``--`` 주석.
+    """정식 ``COMMENT ON``만 권위 description으로 인정한다.
 
     Returns ``(description, description_source)``:
-    - ``COMMENT ON`` 또는 ``--`` 주석에서 왔으면 → ``(..., "ddl")``
-    - 둘 다 없으면 → ``("", "")``
-
-    COMMENT ON 이든 ``--`` 든 DDL 파일에서 온 설명이라 출처는 동일하게 "ddl".
+    일반 주석은 별도 ``comment`` 필드에 이미 보존된다. provenance나 활성 코드와 충돌하는
+    주석을 schema const로 승격하지 않기 위해 여기서는 fallback으로 쓰지 않는다.
     """
-    description = formal or raw_comment
+    del raw_comment
+    description = formal
     return description, ("ddl" if description else "")
 
 
@@ -249,7 +248,7 @@ def _handle_create(
         seen_schemas.add(schema_name)
         result.schemas.append(Schema(db=db, name=schema_name))
 
-    # Table — description = COMMENT ON 우선, 없으면 -- 주석 (출처는 description_source).
+    # Table — 정식 COMMENT ON만 description. 일반 주석은 comment에만 보존한다.
     raw_comment = _join_comments(stmt.comments)
     description, description_source = _resolve_description(
         table_comments.get(table_name.lower(), ""), raw_comment,

@@ -41,6 +41,7 @@ class CallLinker:
                 continue
 
             simple = _proc_name(callee_raw)
+            database_link = _database_link(callee_raw)
             internal_id = roots_by_name.get(simple)
             # 수식 없는 application 루틴은 vendor처럼 보이는 이름이라도 내부 정의가
             # 진실이다. 수식 호출은 정확한 builtin package 판정을 먼저 적용한다.
@@ -51,7 +52,7 @@ class CallLinker:
                     scope="internal",
                 ))
                 continue
-            if _is_builtin_package_call(callee_raw):
+            if not database_link and _is_builtin_package_call(callee_raw):
                 continue
             if internal_id is not None:
                 edges.append(Calls(
@@ -63,7 +64,13 @@ class CallLinker:
                 # external = 분석대상 밖 실 프로시저. 스키마 = 호출 수식어(SCH.PROC) 또는
                 # bare 면 호출자(루트 루틴) 자기 스키마. upsert_calls 가 stub 생성.
                 root = fn_by_id.get(_root_of(fn, fn_by_id))
-                schema = _qualifier(callee_raw) or (getattr(root, "package", "") or "")
+                # A remote routine is not owned by the caller's local schema. Runtime remote
+                # metadata is unresolved unless a provider confirms it; preserve the explicit
+                # `@dblink` in the callee identity and leave package empty instead of inventing
+                # local ownership.
+                schema = "" if database_link else (
+                    _qualifier(callee_raw) or (getattr(root, "package", "") or "")
+                )
                 edges.append(Calls(
                     caller_id=fn.id,
                     callee_id=simple,
@@ -108,6 +115,25 @@ def _qualifier(text: str) -> str:
     if "." in token:
         return token.rsplit(".", 1)[0].strip('"').upper()
     return ""
+
+
+def _database_link(text: str) -> str:
+    """Return an explicit DBLINK outside quoted identifiers, otherwise ``''``."""
+    head = text.split("(", 1)[0].strip()
+    quoted = False
+    at = -1
+    index = 0
+    while index < len(head):
+        char = head[index]
+        if char == '"':
+            if quoted and index + 1 < len(head) and head[index + 1] == '"':
+                index += 2
+                continue
+            quoted = not quoted
+        elif char == "@" and not quoted:
+            at = index
+        index += 1
+    return head[at + 1:].strip().strip('"').upper() if at >= 0 else ""
 
 
 def _is_builtin_package_call(text: str) -> bool:

@@ -21,6 +21,11 @@ def _rule(anchor, cond, then=()):
 class SynthesisTable(unittest.TestCase):
     """표기는 ``ast.unparse`` 정규형(따옴표 통일)이고 F() 안 원문은 보존된다."""
 
+    def test_condition_without_effect_does_not_create_empty_outcome_example(self):
+        self.assertEqual({7: []}, synthesize_examples([
+            _rule(7, 'F("flag") == "Y"', []),
+        ]))
+
     def test_and_condition_expands_every_term(self):
         rules = [_rule(1, 'F("a") == "01" and F("b") != "Z"', ['ret("RC_ERR")'])]
         got = synthesize_examples(rules)[1]
@@ -55,8 +60,8 @@ class SynthesisTable(unittest.TestCase):
         # NOT(A and B) 를 (not A and not B) 로 접으면 정반대 분기가 나온다(합성 검수
         # 에서 실제로 잡은 결함 — 524 가 'bank == 03' 을 내놓았다).
         rules = [
-            _rule(512, 'F("bank") == "03"', []),
-            _rule(518, 'else_of("IF@512") and F("bank") == "71"', []),
+            _rule(512, 'F("bank") == "03"', ['ret("RC_03")']),
+            _rule(518, 'else_of("IF@512") and F("bank") == "71"', ['ret("RC_71")']),
             _rule(524, 'else_of("IF@518")', ['ret("RC_ERR")']),
         ]
         synthesized = synthesize_examples(rules)
@@ -94,7 +99,7 @@ class SynthesisTable(unittest.TestCase):
         for anchor in range(1, 41):
             inherited = [f'else_of("IF@{line}")' for line in range(1, anchor)]
             cond = " and ".join([*inherited, f'F("code") == {anchor}'])
-            rules.append(_rule(anchor, cond, []))
+            rules.append(_rule(anchor, cond, [f'ret("RC_{anchor}")']))
 
         original = example_synthesis._resolved_tree
         with patch.object(
@@ -133,7 +138,7 @@ class SynthesisStaysInsideLeafContract(unittest.TestCase):
 
     def test_long_but_valid_satisfying_leaf_is_not_truncated(self):
         cond = 'F("%s") == "03"' % ("x" * 466)
-        got = synthesize_examples([_rule(1, cond, [])])[1]
+        got = synthesize_examples([_rule(1, cond, ['ret("RC")'])])[1]
         self.assertEqual(["satisfy"], [example["kind"] for example in got])
 
 

@@ -7,15 +7,21 @@ structured_output_method: function_calling
 shared_values:
   summary_contract: ../common/summary_contract.md
 user_template_specific: |
-  # [분할 계약: SummaryOutput]
+  # [TASK — TARGET의 전체 실행 의미와 충분성 판정]
 
-  이 요청은 `summary`, `stereotype`, `questions` 세 필드만 출력한다.
+  목표는 TARGET SOURCE 전체의 입력→검증→조건별 처리→CALL/RW→반환·상태 변화를 사람이
+  이해하는 자연어로 만들고, 현재 근거의 충분성과 역할을 함께 판정하는 것이다.
+
+  ## [OUTPUT CONTRACT — SummaryOutput]
+
+  이 요청은 최상위 `result` 하나를 출력하고, 그 안에 `summary`, `stereotype`,
+  `evidence_status`, `missing_context`, `questions` 다섯 필드만 출력한다.
   Rule·Example과 테이블·컬럼 설명은 다른 요청의 몫이므로 만들지 않는다.
   아래 절은 각각 자기 절이 명시한 필드에만 적용된다.
 
   {summary_contract}
 
-  ## stereotype — 역할 분류 계약
+  ## [DECISION — stereotype 역할 분류]
 
   이 절은 `stereotype` 필드에만 적용된다.
 
@@ -46,6 +52,8 @@ user_template_specific: |
     서로 다른 업무 단계를 조정해 하나의 유스케이스를 완성할 때만 선택한다.
   - 저수준 자료구조·문자열 원시 연산은 `Util`, 시간·환경 정리 같은 횡단 시스템 기능은
     `Utility`, 한 상위 작업에 종속된 좁은 단계는 `Helper`다.
+    문자열의 비어 있음·길이·복사처럼 호출자 업무와 무관하게 재사용되는 저수준 판정·연산은
+    구현이 짧거나 다른 함수에서 보조적으로 호출되어도 `Helper`가 아니라 `Util`이다.
 
   예시:
 
@@ -58,7 +66,7 @@ user_template_specific: |
   - 좋음: 입력을 암호화해 조회 키로 쓰고 SELECT 결과와 대상 없음 상태를 반환할 뿐 저장·
     전송·외부 상태 변경이 없으면 `Query`다. 암호화 호출 자체는 `Command` 근거가 아니다.
 
-  ## questions — 미해결 질문 계약
+  ## [DECISION — questions 미해결 질문]
 
   이 절은 `questions` 필드에만 적용된다.
 
@@ -69,19 +77,28 @@ user_template_specific: |
     질문 없이 통과 — 이름 번역은 의미가 아니다.
   - 좋음: 본문이 주문 필수값을 검사하면 summary는 "주문 필수정보 검증", 질문은 빈 배열.
 
-  ## 내보내기 전 자기 점검
+  ## [SELF CHECK]
 
-  - summary가 구현 나열이 아니라 최종 목적인가
+  - summary가 TARGET SOURCE 전체의 조건별 실제 흐름인가
+  - 조건 범위·극성·대상·결과·순서를 확대·축소·반전하지 않았는가
+  - summary에 쓴 모든 코드식 비교의 좌변 식별자·연산자·우변이 SOURCE/제어 구조와 같은가
+  - ELSE 없는 조건의 거짓 경로를 exception/rollback/error return과 잘못 합치지 않았는가
+  - 서로 다른 원인/결과를 `A or B → X or Y`로 뭉개거나 중첩 catch를 바깥 catch로 재전파하지 않았는가
+  - 주석 처리된 옛 동작이나 이름에서 추측한 업무 뜻을 넣지 않았는가
+  - evidence_status와 missing_context가 입력 충분성을 정직하게 드러내는가
+  - 부족한 근거를 창작 대신 missing_context로 드러냈는가
   - stereotype이 목록의 값 그대로이고, 최종 관측 책임과 맞는가
   - questions가 추측으로 답할 수 있는 질문을 담고 있지 않은가
-  - 세 필드를 각각 정확히 한 번 작성했는가
+  - 최상위 `result`와 그 안의 다섯 필드를 각각 정확히 한 번 작성했는가
 
 user_template_evidence: |
   # [Summary 전용 제어 구조]
 
   아래 목록은 원문의 제어 구조를 읽기 쉽게 표시한 보조 인덱스다. `[decision]`은 실제
   판정, `[complement]`는 같은 층의 나머지 경우, `[controller]`는 하위 결정을 묶는
-  문맥이며 그 자체를 별도 결과로 만들지 않는다. 반드시 원문 SOURCE와 함께 확인한다.
+  문맥이며 그 자체를 별도 결과로 만들지 않는다. `[implicit_false]`는 명시적 대안 절이
+  없는 판정의 정상 거짓 경로이고, `[error_only]`는 실행 중 오류로만 들어가는 handler다.
+  반드시 원문 SOURCE와 함께 확인하고 이 두 경로를 서로 연결하지 않는다.
 
   - 잘못된 예: `[controller] SWITCH` 한 줄만 보고 "기타 경우를 처리한다"고 요약
   - 좋은 예: `[decision] CASE`들과 각 본문의 결과를 읽어 실제 선택 결과를 요약

@@ -16,12 +16,34 @@ def build_control_subtrees(
     The reader already persists structural identity and absolute source ranges.
     This boundary converts only coordinates: a control at the routine's first
     physical line becomes line 1 in the routine ``code_text`` contract.
+
+    소유자는 **가장 가까운 제어 조상, 없으면 소유 routine** 이다 — 사이에 낀 비제어 구조
+    노드(PL/SQL ``TRIGGER_BLOCK``·``DECLARE``)는 건너뛴다. 종전에는 ``parent_id`` 를 직접
+    키로 써서 ``build_statement_facts`` 와 **같은 트리를 다르게 읽었고**, 그 결과 rwis 트리거
+    ``TRG_INS_RDITAG_TB`` 는 IF 2개를 가지고도 분기표가 비어 규칙 0건으로 조용히 통과했다
+    (2026-08-08 실측, 헌법 IV — spec 118).
     """
     controls = control_structure_labels()
+    by_id = {node.id: node for node in code_nodes}
+
+    def control_owner(node: CodeNode) -> CodeNode | None:
+        current = node
+        while current.parent_id is not None:
+            parent = by_id.get(current.parent_id)
+            if parent is None:
+                return None
+            if parent.label in controls or parent.label in ROUTINE_LABELS:
+                return parent
+            current = parent
+        return None
+
     children_by_parent: dict[str, list[CodeNode]] = defaultdict(list)
     for node in code_nodes:
-        if node.label in controls and node.parent_id:
-            children_by_parent[node.parent_id].append(node)
+        if node.label not in controls:
+            continue
+        owner = control_owner(node)
+        if owner is not None:
+            children_by_parent[owner.id].append(node)
     for children in children_by_parent.values():
         children.sort(key=lambda node: (node.start_line, node.end_line, node.id))
 
@@ -41,6 +63,7 @@ def build_control_subtrees(
             end=end,
             children=[convert(child, routine) for child in children_by_parent.get(node.id, ())],
             expression=node.expression,
+            condition_timing=node.condition_timing,
         )
 
     result: dict[str, list[ControlSubtreeNode]] = {}
@@ -100,6 +123,9 @@ def build_statement_facts(
                 f"statement={node.id!r} [{node.start_line},{node.end_line}] "
                 f"routine={routine.id!r} [{routine.start_line},{routine.end_line}]"
             )
+        statement_target = node.target or node.name or None
+        if statement_target is None and node.label in {"BREAK", "CONTINUE"}:
+            statement_target = node.label.lower()
         result[routine.id].append(StatementFact(
             node_id=node.id,
             label=node.label,
@@ -108,7 +134,7 @@ def build_statement_facts(
             expression=node.expression,
             # GOTO 류의 대상(라벨)은 parser 가 name 에 싣는다 — 효과 대상은 target 로
             # 정규화한다(statement_effect_ops 소비 계약). 대입은 target 이 이미 있다.
-            target=node.target or node.name or None,
+            target=statement_target,
             operator=node.operator,
         ))
     routines_by_file: dict[str, list[CodeNode]] = defaultdict(list)

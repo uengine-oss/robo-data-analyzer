@@ -49,6 +49,130 @@ class JumpVocabularyTest(unittest.TestCase):
         self.assertEqual('jump("PFM_CATCH")', _render_effect(effect))
 
 
+class TransactionEffectTest(unittest.TestCase):
+    def test_transaction_effects_are_targetless_closed_vocabulary(self):
+        self.assertEqual("commit", statement_effect_ops().get("COMMIT"))
+        self.assertEqual("rollback", statement_effect_ops().get("ROLLBACK"))
+        self.assertEqual("commit", parse_effect("commit()").func.id)
+        self.assertEqual("rollback", parse_effect("rollback()").func.id)
+        with self.assertRaises(LeafVocabularyError):
+            parse_effect('rollback("transaction")')
+        self.assertEqual(
+            "rollback()",
+            _render_effect(AssignedEffect(
+                op="rollback", target=None, value=None, from_source=None,
+            )),
+        )
+
+    def test_exception_row_keeps_rollback_as_direct_effect(self):
+        source = "\n".join([
+            "BEGIN",                       # 1
+            "  UPDATE T SET V = 1;",       # 2
+            "EXCEPTION",                   # 3
+            "  WHEN OTHERS THEN",          # 4
+            "    DBMS_OUTPUT.PUT_LINE('x');",  # 5
+            "    ROLLBACK;",               # 6
+            "END;",                        # 7
+        ])
+        tree = [ControlSubtreeNode(
+            node_id="exception@3", ntype="EXCEPTION", start=3, end=6,
+        )]
+        inventory = build_inventory(
+            source, tree, "sql",
+            statements=(StatementFact("rb6", "ROLLBACK", 6, 6),),
+            call_lines=((5, "dbms_output.put_line"),),
+        )
+        payload = rule_evidence(inventory, (3,))
+        direct = payload["rows"]["R3"].get("direct") or []
+        rendered = [
+            _render_effect(AssignedEffect.model_validate(payload["effects"][ref]))
+            for ref in direct
+        ]
+        self.assertIn("rollback()", rendered, payload)
+
+
+class LoopExitEffectTest(unittest.TestCase):
+    def test_exit_when_row_keeps_targetless_loop_exit_effect(self):
+        self.assertEqual("exit_loop", statement_effect_ops().get("EXIT"))
+        self.assertEqual("exit_loop", parse_effect("exit_loop()").func.id)
+        source = "LOOP\n  EXIT WHEN C_DATA%NOTFOUND;\nEND LOOP;"
+        tree = [ControlSubtreeNode(
+            node_id="exit@2", ntype="EXIT", start=2, end=2,
+            expression="C_DATA%NOTFOUND",
+        )]
+        inventory = build_inventory(
+            source, tree, "sql",
+            statements=(StatementFact("exit@2", "EXIT", 2, 2),),
+        )
+        payload = rule_evidence(inventory, (2,))
+        direct = payload["rows"]["R2"].get("direct") or []
+        rendered = [
+            _render_effect(AssignedEffect.model_validate(payload["effects"][ref]))
+            for ref in direct
+        ]
+        self.assertEqual(["exit_loop()"], rendered)
+
+
+class FunctionExitEffectTest(unittest.TestCase):
+    def test_valued_return_is_not_duplicated_as_targetless_ret(self):
+        inventory = build_inventory(
+            "int f(void) {\n  return RET_OK;\n}",
+            (),
+            "c",
+            statements=(StatementFact(
+                "return@2", "RETURN", 2, 2, expression="RET_OK",
+            ),),
+        )
+        payload = rule_evidence(inventory, (2,))
+        direct = payload["rows"]["R2"].get("direct") or []
+        rendered = [
+            _render_effect(AssignedEffect.model_validate(payload["effects"][ref]))
+            for ref in direct
+        ]
+        self.assertEqual(['ret(F("RET_OK"))'], rendered)
+
+    def test_void_return_is_a_targetless_ret_effect(self):
+        self.assertEqual("ret", statement_effect_ops().get("RETURN"))
+        inventory = build_inventory(
+            "void f(int bad) {\n  if (bad) return;\n}",
+            (ControlSubtreeNode(
+                node_id="if@2", ntype="IF", start=2, end=2, expression="bad",
+            ),),
+            "c",
+            statements=(StatementFact("return@2", "RETURN", 2, 2),),
+        )
+        payload = rule_evidence(inventory, (2,))
+        direct = payload["rows"]["R2"].get("direct") or []
+        rendered = [
+            _render_effect(AssignedEffect.model_validate(payload["effects"][ref]))
+            for ref in direct
+        ]
+        self.assertEqual(["ret(None)"], rendered)
+        self.assertEqual("ret", parse_effect("ret(None)").func.id)
+
+    def test_throw_and_raise_are_not_misreported_as_return_values(self):
+        self.assertEqual("raise_error", statement_effect_ops().get("THROW"))
+        self.assertEqual("raise_error", statement_effect_ops().get("RAISE"))
+        inventory = build_inventory(
+            "void f(int bad) {\n  if (bad) throw Failure();\n}",
+            (ControlSubtreeNode(
+                node_id="if@2", ntype="IF", start=2, end=2, expression="bad",
+            ),),
+            "java",
+            statements=(StatementFact(
+                "throw@2", "THROW", 2, 2, expression="new Failure()",
+            ),),
+        )
+        payload = rule_evidence(inventory, (2,))
+        direct = payload["rows"]["R2"].get("direct") or []
+        rendered = [
+            _render_effect(AssignedEffect.model_validate(payload["effects"][ref]))
+            for ref in direct
+        ]
+        self.assertEqual(["raise_error()"], rendered)
+        self.assertNotIn("new Failure()", inventory.return_expressions)
+
+
 class JumpEvidenceTest(unittest.TestCase):
     SOURCE = "\n".join([
         "long f(long rc) {",           # 1

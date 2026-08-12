@@ -21,6 +21,7 @@ from pipeline.steps.step6_build_context.framework_context_builder import (
 from pipeline.steps.step7_analyze_code.framework_per_node import (
     framework_analysis_targets,
 )
+from pipeline.models.data_object_usage import DataObjectUsageEvidence, object_reference_id
 
 
 def _routine(node_id: str) -> CodeNode:
@@ -32,10 +33,13 @@ def _routine(node_id: str) -> CodeNode:
     )
 
 
-def _edge(relation: str, table: str, dml: str) -> ReadsWrites:
+def _edge(
+    relation: str, table: str, dml: str, *, source_id: str = "fn",
+    evidence_line: int = 1,
+) -> ReadsWrites:
     return ReadsWrites(
-        source_id="fn", target_id=table, relation=relation, dml_type=dml,
-        evidence_file="sample.sql", evidence_line=1,
+        source_id=source_id, target_id=table, relation=relation, dml_type=dml,
+        evidence_file="sample.sql", evidence_line=evidence_line,
     )
 
 
@@ -78,6 +82,140 @@ class AuthoritativeTableOpTest(unittest.IsolatedAsyncioTestCase):
             _edge("WRITES", "db:S.T", "UPDATE"),
         ])
         self.assertEqual({}, table_op)
+
+    async def test_child_statement_rw_is_aggregated_to_owning_routine(self):
+        routine = _routine("fn")
+        select = CodeNode(
+            id="select", signature="SELECT", file_path="sample.sql",
+            start_line=3, end_line=3, label="SELECT", name="SELECT",
+            code_text="SELECT value FROM RDITAG_TB", owner_id="sample.sql",
+            parent_id=routine.id,
+        )
+        strategy = SimpleNamespace(
+            context_builder=FrameworkContextBuilder(),
+            analysis_targets=framework_analysis_targets,
+        )
+        result = await build_context_step(
+            {
+                "code_nodes": [routine, select],
+                "reads_writes_edges": [
+                    _edge(
+                        "READS", "db:RDITAG_TB", "SELECT",
+                        source_id=select.id, evidence_line=3,
+                    ),
+                ],
+            },
+            {"configurable": {"strategy": strategy}},
+        )
+        contexts = result["analysis_contexts"]
+        self.assertEqual(("db:RDITAG_TB",), contexts[select.id].reads)
+        self.assertEqual(("db:RDITAG_TB",), contexts[routine.id].reads)
+        self.assertEqual(("db:RDITAG_TB",), contexts[select.id].direct_reads)
+        self.assertEqual((), contexts[routine.id].direct_reads)
+        self.assertEqual(
+            ((3, "select", "RDITAG_TB"),),
+            contexts[routine.id].extra["ast_table_ops"],
+        )
+
+    async def test_framework_routine_rw_does_not_become_dml_rule_effect(self):
+        """루틴에 붙은 framework R/W는 관계 근거이며 AST DML 행이 아니다."""
+        routine = _routine("fn")
+        strategy = SimpleNamespace(
+            context_builder=FrameworkContextBuilder(),
+            analysis_targets=framework_analysis_targets,
+        )
+        result = await build_context_step(
+            {
+                "code_nodes": [routine],
+                "reads_writes_edges": [
+                    _edge("READS", "db:COMM_CODE", "SELECT", evidence_line=6),
+                ],
+            },
+            {"configurable": {"strategy": strategy}},
+        )
+        context = result["analysis_contexts"][routine.id]
+        self.assertEqual(("db:COMM_CODE",), context.reads)
+        self.assertNotIn("ast_table_ops", context.extra)
+        usages = context.extra["data_object_usages"]
+        self.assertEqual(1, len(usages))
+        self.assertEqual(
+            ("db:COMM_CODE", "READ", "linked_edges", "exact"),
+            (usages[0].table_id, usages[0].access, usages[0].producer, usages[0].resolution),
+        )
+        self.assertEqual(6, usages[0].evidence_line)
+
+    async def test_dml_evidence_outside_owner_fails_loudly(self):
+        routine = _routine("fn")
+        select = CodeNode(
+            id="select", signature="SELECT", file_path="sample.sql",
+            start_line=3, end_line=3, label="SELECT", name="SELECT",
+            code_text="SELECT value FROM T", owner_id="sample.sql",
+            parent_id=routine.id,
+        )
+        strategy = SimpleNamespace(
+            context_builder=FrameworkContextBuilder(),
+            analysis_targets=framework_analysis_targets,
+        )
+        with self.assertRaisesRegex(ValueError, "소유 routine 범위 밖"):
+            await build_context_step(
+                {
+                    "code_nodes": [routine, select],
+                    "reads_writes_edges": [
+                        _edge(
+                            "READS", "db:T", "SELECT",
+                            source_id=select.id, evidence_line=20,
+                        ),
+                    ],
+                },
+                {"configurable": {"strategy": strategy}},
+            )
+
+    async def test_unresolved_object_uses_raw_reference_in_rule_evidence_and_id_alias(self):
+        routine = _routine("fn")
+        insert = CodeNode(
+            id="insert", signature="INSERT", file_path="sample.sql",
+            start_line=3, end_line=3, label="INSERT", name="INSERT",
+            code_text="INSERT INTO ORDERS@REMOTE VALUES (1)", owner_id="sample.sql",
+            parent_id=routine.id,
+        )
+        usage = DataObjectUsageEvidence(
+            source_id=insert.id, raw_reference="ORDERS@REMOTE", name="ORDERS",
+            database_link="REMOTE", access="WRITE", evidence_file="sample.sql",
+            evidence_line=3, datasource="shop",
+        )
+        insert.extra["data_object_evidence_version"] = 1
+        insert.extra["data_object_usages"] = (usage,)
+        target_id = object_reference_id("shop", usage)
+        strategy = SimpleNamespace(
+            context_builder=FrameworkContextBuilder(),
+            analysis_targets=framework_analysis_targets,
+        )
+
+        result = await build_context_step(
+            {
+                "code_nodes": [routine, insert],
+                "reads_writes_edges": [
+                    _edge(
+                        "WRITES", target_id, "INSERT",
+                        source_id=insert.id, evidence_line=3,
+                    ),
+                ],
+            },
+            {"configurable": {
+                "strategy": strategy,
+                "codebase": SimpleNamespace(datasource="shop"),
+            }},
+        )
+
+        routine_context = result["analysis_contexts"][routine.id]
+        self.assertEqual(
+            ((3, "insert", "ORDERS@REMOTE"),),
+            routine_context.extra["ast_table_ops"],
+        )
+        self.assertEqual(
+            target_id,
+            routine_context.extra["table_identity_aliases"]["ORDERS@REMOTE"],
+        )
 
 
 if __name__ == "__main__":

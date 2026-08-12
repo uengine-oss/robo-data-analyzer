@@ -3,12 +3,12 @@
 순서:
 0. 모듈 사전분석 (Framework 전용) — 모듈마다 LLM 1회로 헤더 주석 → 모듈 의도.
    결과 ``module_intent`` 는 아래 코드노드 분석의 3분할 공통 context 에 주입.
-1. 호출 그래프 (CALLS + PARENT_OF) → ``find_call_cycles`` → cycle 식별 (Tarjan SCC).
+1. prompt 수신자 ``ctx.callees`` + PARENT_OF → 공용 summary 의존 계획.
 2. dataflow 스케줄링 — callee 의존이 풀린 코드노드부터 즉시 분석 (라운드 배리어 없음),
    끝나는 순서대로 즉시 Neo4j 영속화 + NDJSON emit.
 3. 각 코드노드 = ``analyze_code_three_split`` (3 분할 fan-out, RadixAttention 95%+).
 
-cycle 내부 코드노드 → callee summary 없이 분석 (``is_in_cycle=True`` 메타).
+결합 SCC 내부 코드노드 → 순환 callee summary 없이 분석 (``is_in_cycle=True`` 메타).
 """
 from __future__ import annotations
 
@@ -25,6 +25,9 @@ from pipeline.execution.step_config import step_config
 
 # (dbms 엔진은 여기서 import 하지 않는다 — 전략이 주입한다(analysis_pipelines). 헌법 II.)
 from pipeline.steps.step7_analyze_code.module_pre_analysis import run_module_pre_analysis
+from pipeline.steps.step7_analyze_code.column_usage_projection import (
+    build_column_usage_projections,
+)
 from shared.events.runtime_logger import log_info
 from shared.events.ndjson_event_stream import NDJSONStream
 from shared.events.processing_events import step_processing_scope
@@ -153,6 +156,14 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
     #   contexts 전체, dbms 는 skip-투명 유효트리.
     # run 스코프 공유 소스 캐시 (executor 주입) — 없으면 단독 생성(CLI/테스트 경로). FR-008.
     source_cache = cfg.get("source_cache") or SourceFileCache()
+    column_usage_projections = build_column_usage_projections(
+        contexts,
+        code_by_id,
+        strategy_name=strategy.name,
+        source_cache=source_cache,
+    )
+    for node_id, ctx in contexts.items():
+        ctx.extra["column_usage_candidates"] = column_usage_projections.get(node_id, {})
 
     # 인계 채널은 **어떤 경로로 빠져나가든** 반드시 닫는다. 안 닫으면 같은 superstep 의
     # 후처리가 게이트에서 영원히 대기해 run 이 끝나지 않는다 (조용한 교착 금지).

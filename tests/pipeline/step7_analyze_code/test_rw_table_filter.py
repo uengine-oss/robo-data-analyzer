@@ -47,6 +47,16 @@ class RuleTableEffectsTest(unittest.TestCase):
         self.assertEqual([], effects)
         self.assertEqual(["ghost"], unresolved)
 
+    def test_exact_source_alias_resolves_to_unresolved_object_reference_id(self):
+        target = "object-ref:0123456789"
+        effects, unresolved = rule_table_effects(
+            ['insert("ORDERS@REMOTE")'],
+            reads=[], writes=[target], table_op={target: "INSERT"},
+            table_aliases={"ORDERS@REMOTE": target},
+        )
+        self.assertEqual([], unresolved)
+        self.assertEqual([], effects)
+
     def test_invalid_effect_is_not_swallowed(self):
         with self.assertRaises(ValueError):
             rule_table_effects(

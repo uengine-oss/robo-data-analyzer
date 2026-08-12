@@ -26,6 +26,7 @@ from typing import Any, Callable
 # 공통 step (양쪽 다 씀)
 from pipeline.steps.step1_parse_ddl.parse_ddl_step import parse_ddl_step
 from pipeline.steps.step1_parse_ddl.discover_datasource_step import discover_datasource_step
+from pipeline.steps.step1_parse_ddl.resolve_data_objects_step import resolve_data_objects_step
 from pipeline.steps.step2_load_ast.load_ast_step import load_ast_step
 from pipeline.steps.step3_load_external.load_external_step import load_external_step
 from pipeline.steps.step5_linking.link_tables.link_tables_by_regex_step import (
@@ -153,8 +154,10 @@ DBMS_PIPELINE = Strategy(
     prompts_dir="llm/prompts/dbms",
     steps=(
         parse_ddl_step,
-        # discover: 단어장 이원화 + 샘플 수집 통합 — Framework 와 동일 선언 (spec 107).
-        (load_ast_step, load_external_step, discover_datasource_step),
+        (load_ast_step, load_external_step),
+        # parser object evidence dedup → Catalog/Fabric exact batch → confirmed sample.
+        # 전체 datasource eager discovery는 DBMS production 경로에서 제거한다(spec 126).
+        resolve_data_objects_step,
         scan_external_step,                # unknown text만 — external skill reload/agent
         # scan_codebase_step 없음 — DBMS 는 Scan Agent 안 씀 (Plan §6)
         link_dbms_tables_step,                # ★ DBMS 만 — DML range → DDL 테이블 결정론 매칭 (LLM 0)

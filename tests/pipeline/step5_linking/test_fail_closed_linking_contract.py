@@ -7,7 +7,7 @@ from agents import call_review
 from graph.schema.graph_edges import Calls
 from graph.schema.graph_nodes import CodeNode
 from llm.usage.cost_budget import CostBudget
-from agents.contracts import DdlTransform, TableAccessPattern
+from agents.contracts import DdlTransform, OpMapping, TableAccessPattern
 from pipeline.steps.step4_scan_project.scan_result_contract import (
     ScanResultContractError,
     require_scan_result,
@@ -108,7 +108,6 @@ class RegexTableLinkerFailureTest(unittest.IsolatedAsyncioTestCase):
                 ddl_transform=DdlTransform(ddl_naming_rule="as_is"),
             )
         self.assertEqual([], outcome.edges)
-
 
 if __name__ == "__main__":
     unittest.main()

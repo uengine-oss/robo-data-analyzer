@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Sequence
 
 from pipeline.languages import (
+    alternative_clause_types,
     complement_owner_types,
     control_role_of,
     source_lexicon,
@@ -60,6 +61,7 @@ class Branch:
     end: int
     parent: "Branch | None"
     condition: str = ""
+    condition_timing: str = ""
     cond_values: frozenset[str] = frozenset()
     callees: frozenset[str] = frozenset()
     # 그 분기가 **만들어내는 것** — 본문에 등장하는 원자 전부(대입값·호출·반환 상수).
@@ -71,6 +73,8 @@ class Branch:
     assignment_pairs: tuple[tuple[str, str], ...] = ()
     # ontology statement_effect_ops 가 선언한 statement 효과 (op, 대상) — 예: GOTO 점프.
     statement_effects: tuple[tuple[str, str], ...] = ()
+    direct_terminates: bool = False
+    sequence_guard_lines: tuple[int, ...] = ()
     children: list["Branch"] = field(default_factory=list)
 
     def ancestors(self) -> list["Branch"]:
@@ -84,6 +88,12 @@ class Branch:
         """Return controller/decision/complement from AST role and source spelling.
 
         Condition length and atom count are deliberately irrelevant.
+
+        ``control_roles`` 는 **의미 축**만 선언한다(decision = 조건으로 갈리는 자리).
+        조건이 실제로 있는지는 데이터가 아니라 노드의 사실이므로, 조건이 빈 decision 은
+        약속할 조건이 없어 ``controller`` 로 내린다 (spec 118 §2.1). 언어별 특례가 아니라
+        규칙 하나다 — 같은 결함이 sql ``LOOP``·c ``for(;;)``·java ``FINALLY`` 에 함께 있었다
+        (실측: DBMS findings 5 + framework findings 1 이 전부 이 사유였다).
         """
         role = control_role_of(self.ntype)
         if role != "decision":
@@ -91,7 +101,44 @@ class Branch:
         # grammar 사실: caseless 라벨(default)만 expression 이 없다 (spec 016).
         if self.ntype.upper() == "CASE" and not self.condition.strip():
             return "complement"
+        if not self.condition.strip():
+            return "controller"
         return "decision"
+
+
+@dataclass(frozen=True)
+class EffectRegion:
+    """One linear direct-effect region between two sibling controls.
+
+    A routine/branch row may own only its first linear region.  Every later region is
+    anchored separately so effects from different execution times can never be folded
+    into one entry/controller Rule.
+    """
+
+    start: int
+    end: int
+    source: str
+    return_expressions: frozenset[str]
+    assignment_pairs: tuple[tuple[str, str], ...]
+    callees: frozenset[str]
+    statement_effects: tuple[tuple[str, str], ...]
+    path_anchor: int | None
+    after_control: str
+    at_label: str = ""
+    fallthrough_false_of: int | None = None
+    sequence_guard_lines: tuple[int, ...] = ()
+    terminates: bool = False
+    unresolved_reachability: bool = False
+
+
+@dataclass(frozen=True)
+class _LinearRegion:
+    """A raw sequence range, optionally entered at an exact parser LABEL."""
+
+    start: int
+    end: int
+    preceding: Branch | None
+    entry_label: StatementFact | None = None
 
 
 @dataclass
@@ -122,21 +169,23 @@ class BranchInventory:
     source_lines: tuple[str, ...] = ()
     # parser AST statement 계약 (spec 016) — 행별 직접 증거의 유일한 원천.
     ast_statements: tuple[StatementFact, ...] = ()
+    # DBMS DML 효과 좌표 (routine 상대 줄, op, 테이블) — step5 링커 정본 (spec 119).
+    # framework 는 제공하지 않으므로 빈 튜플이고 증거가 달라지지 않는다.
+    ast_table_ops: tuple[tuple[int, str, str], ...] = ()
     ast_call_lines: tuple[tuple[int, str], ...] = ()
+    entry_region: EffectRegion | None = None
+    continuation_regions: tuple[EffectRegion, ...] = ()
+
+    def continuation_at(self, absolute_line: int) -> EffectRegion | None:
+        relative = absolute_line - self.line_offset
+        return next(
+            (region for region in self.continuation_regions if region.start == relative),
+            None,
+        )
 
     def _entry_direct_source(self) -> str:
-        """Return every top-level effect line owned by the single entry obligation."""
-        if self.entry_line is None:
-            return ""
-        termination_lines = {line for line, _, _ in self.termination_rows}
-        lines = []
-        for line, source in enumerate(self.source_lines, start=1):
-            if line < self.entry_line or line in termination_lines:
-                continue
-            if any(branch.start <= line <= branch.end for branch in self.all_branches):
-                continue
-            lines.append(source)
-        return "\n".join(lines)
+        """Return only the first pre-control linear region owned by entry."""
+        return self.entry_region.source if self.entry_region is not None else ""
 
     def direct_evidence(
         self, absolute_line: int,
@@ -147,29 +196,17 @@ class BranchInventory:
         if branch is not None and branch.start == relative:
             return branch.direct_source, branch.return_expressions, branch.assignment_pairs
         if self.entry_line is not None and relative == self.entry_line:
-            # entry 행은 분기 밖·종료문 밖 최상위 효과만 소유한다.
-            source = self._entry_direct_source()
-            branch_ranges = [(b.start, b.end) for b in self.all_branches]
-            termination_lines = {line for line, _, _ in self.termination_rows}
-
-            def entry_owned(line: int) -> bool:
-                return line not in termination_lines and not any(
-                    s <= line <= e for s, e in branch_ranges
-                )
-
-            returns = frozenset(
-                " ".join(fact.expression.split())
-                for fact in self.ast_statements
-                if fact.label in _AST_EXIT_LABELS and fact.expression
-                and entry_owned(fact.start)
+            region = self.entry_region
+            if region is None:
+                raise ValueError(f"entry region missing at line {absolute_line}")
+            return region.source, region.return_expressions, region.assignment_pairs
+        continuation = self.continuation_at(absolute_line)
+        if continuation is not None:
+            return (
+                continuation.source,
+                continuation.return_expressions,
+                continuation.assignment_pairs,
             )
-            assignments = tuple(
-                (" ".join(fact.target.split()), " ".join(fact.expression.split()))
-                for fact in self.ast_statements
-                if fact.label == _AST_ASSIGN_LABEL and fact.target and fact.expression
-                and entry_owned(fact.start)
-            )
-            return source, returns, assignments
         if 1 <= relative <= len(self.source_lines):
             line = self.source_lines[relative - 1]
             returns, assignments, _calls_found, _effects = _ast_line_facts(
@@ -186,28 +223,25 @@ class BranchInventory:
         분기 행은 자기 범위(자식 제외), entry 행은 분기 밖·종료문 밖 최상위,
         그 외 행은 자기 줄의 효과만 소유한다(direct_callees 와 같은 소유 규칙).
         """
-        effect_ops = statement_effect_ops()
-        if not effect_ops:
-            return ()
         relative = absolute_line - self.line_offset
         branch = self.at_line(absolute_line)
         if branch is not None and branch.start == relative:
             return branch.statement_effects
         if self.entry_line is not None and relative == self.entry_line:
-            branch_ranges = [(b.start, b.end) for b in self.all_branches]
-            termination_lines = {line for line, _, _ in self.termination_rows}
-            return tuple(
-                (effect_ops[fact.label], " ".join(fact.target.split()))
-                for fact in self.ast_statements
-                if fact.label in effect_ops and fact.target
-                and fact.start not in termination_lines
-                and not any(s <= fact.start <= e for s, e in branch_ranges)
-            )
-        return tuple(
-            (effect_ops[fact.label], " ".join(fact.target.split()))
-            for fact in self.ast_statements
-            if fact.label in effect_ops and fact.target and fact.start == relative
+            if self.entry_region is None:
+                raise ValueError(f"entry region missing at line {absolute_line}")
+            return self.entry_region.statement_effects
+        continuation = self.continuation_at(absolute_line)
+        if continuation is not None:
+            return continuation.statement_effects
+        _returns, _assignments, _calls, effects = _ast_line_facts(
+            self.ast_statements,
+            self.ast_call_lines,
+            relative,
+            relative,
+            table_ops=self.ast_table_ops,
         )
+        return effects
 
     def direct_callees(self, absolute_line: int) -> frozenset[str]:
         """Return calls owned by one row, including the synthesized entry row."""
@@ -216,14 +250,12 @@ class BranchInventory:
         if branch is not None and branch.start == relative:
             return branch.callees
         if self.entry_line is not None and relative == self.entry_line:
-            branch_ranges = [(b.start, b.end) for b in self.all_branches]
-            termination_lines = {line for line, _, _ in self.termination_rows}
-            return frozenset(
-                name.lower()
-                for line, name in self.ast_call_lines
-                if line not in termination_lines
-                and not any(s <= line <= e for s, e in branch_ranges)
-            )
+            if self.entry_region is None:
+                raise ValueError(f"entry region missing at line {absolute_line}")
+            return self.entry_region.callees
+        continuation = self.continuation_at(absolute_line)
+        if continuation is not None:
+            return continuation.callees
         return frozenset(
             name.lower() for line, name in self.ast_call_lines if line == relative
         )
@@ -291,6 +323,22 @@ class BranchInventory:
             found |= self.reachable_effects(child)
         return frozenset(found)
 
+    def has_nested_control(self, absolute_line: int) -> bool:
+        """Return whether the row delegates behavior to nested control nodes.
+
+        Direct rule evidence intentionally excludes child ranges so one effect has one
+        owner.  Human NL still needs to distinguish an actually empty leaf from a
+        controller whose effects are described by child rows.  This exposes only that
+        structural boolean; it never copies child conditions or effects upward.
+        """
+        if self.continuation_at(absolute_line) is not None:
+            return False
+        relative = absolute_line - self.line_offset
+        branch = self.at_line(absolute_line)
+        return bool(
+            branch is not None and branch.start == relative and branch.children
+        )
+
     def _chosen_by_line(self) -> dict[int, Branch]:
         by_line: dict[int, list[Branch]] = {}
         for branch in self.all_branches:
@@ -326,6 +374,33 @@ class BranchInventory:
     def paired_decision(self, branch: Branch) -> "Branch | None":
         """Public complement-to-decision ownership used by deterministic materializers."""
         return self._paired_decision(branch)
+
+    def negated_arms(self, branch: Branch) -> list[Branch]:
+        """이 노드가 **대안 절**일 때, 도달하려면 부정돼야 하는 같은 층 판정들 (spec 118 §2.3).
+
+        평면 형상(PL/SQL `IF … ELSIF … ELSE`)에서 `ELSIF`/`ELSE` 는 부모 `IF` 의 본문이
+        아니라 **대안**이다. 따라서 부모 판정과 자기보다 앞선 대안 절 전부가 부정이어야
+        도달한다. 이 사실이 없으면 조상 조건이 "성립"으로 상속돼 경로가 정반대가 된다
+        (실측: `FN_EDIT_YN.sql:41` 이 `["C35","C41"]`, 옳게는 `["!C35","C41"]`).
+
+        중첩 형상(C/Java/Python 의 `else { if … }`)은 대안 절 타입이 빈 목록이라 이
+        경로를 타지 않으며 기존 조상 사슬 계산이 그대로 담당한다.
+        """
+        types = alternative_clause_types(self.lang)
+        if not types or branch.ntype.upper() not in types:
+            return []
+        parent = branch.parent
+        if parent is None or parent.prompt_role() != "decision":
+            return []
+        arms = [parent]
+        arms.extend(
+            sibling
+            for sibling in parent.children
+            if sibling is not branch
+            and sibling.start < branch.start
+            and sibling.ntype.upper() in types
+        )
+        return arms
 
     def _complement_context(
         self, branch: Branch, chosen: dict[int, Branch]
@@ -426,6 +501,25 @@ class BranchInventory:
             if branch.start <= line <= branch.end and chosen.get(branch.start) is branch
         )
 
+    def _has_explicit_alternative(self, branch: Branch) -> bool:
+        """Whether parser structure supplies an ELSE/default-style arm."""
+
+        alternative_types = alternative_clause_types(self.lang)
+        for candidate in self.all_branches:
+            if candidate is branch:
+                continue
+            if (
+                candidate.parent is branch
+                and candidate.ntype.upper() in alternative_types
+            ):
+                return True
+            if (
+                candidate.prompt_role() == "complement"
+                and self._paired_decision(candidate) is branch
+            ):
+                return True
+        return False
+
     def branch_index(self) -> str:
         """LLM 에게 보여줄 분기 목록 — 고를 수 있는 후보를 못 박는다.
 
@@ -458,6 +552,21 @@ class BranchInventory:
                 if canon_pairs:
                     notes = ", ".join(f"{raw}={canon}" for raw, canon in canon_pairs)
                     condition += f" (수치 {notes})"
+            if (
+                role == "decision"
+                and branch.ntype.upper() in complement_owner_types(self.lang)
+                and not self._has_explicit_alternative(branch)
+            ):
+                condition += (
+                    f" | [implicit_false] 명시적 대안 절 없음: 조건이 거짓이면 "
+                    f"@{branch.start + self.line_offset}-{branch.end + self.line_offset} "
+                    "본문을 건너뛰고 정상 진행(handler 진입 아님)"
+                )
+            if role == "handler":
+                condition += (
+                    " | [error_only] 이 handler는 실행 중 오류로만 진입; "
+                    "정상 흐름이나 앞선 조건 거짓으로 진입하지 않음"
+                )
             rows_by_line[line] = (
                 f"{'  ' * depth}{line + self.line_offset}: "
                 f"[{role}] {branch.ntype} {condition}"
@@ -473,6 +582,17 @@ class BranchInventory:
             rows_by_line[self.entry_line] = (
                 f"{self.entry_line + self.line_offset}: [entry] "
                 "(분기 밖 직접 효과 — 도달하면 항상 실행)"
+            )
+        for region in self.continuation_regions:
+            line = region.start
+            if line in rows_by_line:
+                if any(term_line == line for term_line, _kind, _text in self.termination_rows):
+                    rows_by_line.pop(line)
+                else:
+                    raise ValueError(f"continuation row collides with branch row: {line}")
+            rows_by_line[line] = (
+                f"{line + self.line_offset}: [continuation] "
+                f"{region.at_label or region.after_control} 구조 좌표에 도달한 직접 효과"
             )
         return (
             "\n".join(rows_by_line[line] for line in sorted(rows_by_line))
@@ -496,6 +616,7 @@ class BranchInventory:
                 "role": role,
                 "ntype": branch.ntype,
                 "condition": " ".join(branch.condition.split()),
+                "condition_timing": branch.condition_timing or "pre",
                 # parser LOOP expression 은 이미 판정절만이라(spec 016) 조건과 동일하다.
                 # 키는 소비자(rule_prompt_evidence) 계약 보존을 위해 유지한다.
                 "test_condition": " ".join(branch.condition.split()),
@@ -531,8 +652,30 @@ class BranchInventory:
             rows.append(row)
         if self.entry_line is not None and self.entry_line not in chosen:
             rows.append({"line": self.entry_line + self.line_offset, "role": "entry"})
+        for region in self.continuation_regions:
+            rows.append({
+                "line": region.start + self.line_offset,
+                "end_line": region.end + self.line_offset,
+                "role": "continuation",
+                "path_anchor_line": (
+                    region.path_anchor + self.line_offset
+                    if region.path_anchor is not None else None
+                ),
+                "after_control": region.after_control,
+                "at_label": region.at_label,
+                "fallthrough_false_of": (
+                    region.fallthrough_false_of + self.line_offset
+                    if region.fallthrough_false_of is not None else None
+                ),
+                "sequence_guard_lines": [
+                    line + self.line_offset for line in region.sequence_guard_lines
+                ],
+                "unresolved_reachability": region.unresolved_reachability,
+            })
         for line, kind, text in self.termination_rows:
-            if line in chosen:
+            if line in chosen or any(
+                region.start == line for region in self.continuation_regions
+            ):
                 continue
             rows.append({
                 "line": line + self.line_offset,
@@ -586,6 +729,32 @@ def _calls(text: str, lang: str) -> frozenset[str]:
 # 소유하고, 여기는 언어 중립 canonical 라벨만 안다.
 _AST_EXIT_LABELS = frozenset({"RETURN", "THROW", "RAISE"})
 _AST_ASSIGN_LABEL = "ASSIGNMENT"
+_SIMPLE_ASSIGN_OPERATORS = frozenset({"", "=", ":="})
+_COMPOUND_ASSIGN_OPERATORS = {
+    "+=": "+", "-=": "-", "*=": "*", "/=": "/", "%=": "%",
+    "&=": "&", "|=": "|", "^=": "^", "<<=": "<<", ">>=": ">>",
+    "**=": "**", "//=": "//", "@=": "@",
+}
+
+
+def _assignment_pair(fact: StatementFact) -> tuple[str, str]:
+    """Preserve compound-assignment meaning in the canonical set effect.
+
+    Parser evidence stores the RHS separately from the assignment operator.  Treating
+    ``disc += 2000`` as ``disc = 2000`` silently changes business meaning, so the
+    deterministic boundary expands only the grammar-defined compound operator.
+    """
+    target = " ".join(fact.target.split())
+    expression = " ".join(fact.expression.split())
+    operator = (fact.operator or "").strip()
+    if operator in _SIMPLE_ASSIGN_OPERATORS:
+        return target, expression
+    binary = _COMPOUND_ASSIGN_OPERATORS.get(operator)
+    if binary is None:
+        raise ValueError(
+            f"unsupported assignment operator {operator!r}: {fact.node_id}"
+        )
+    return target, f"({target}) {binary} ({expression})"
 
 
 def _handler_label_lines(
@@ -645,6 +814,7 @@ def _ast_line_facts(
     start: int,
     end: int,
     exclude: Sequence[tuple[int, int]] = (),
+    table_ops: Sequence[tuple[int, str, str]] = (),
 ) -> tuple[
     frozenset[str],
     tuple[tuple[str, str], ...],
@@ -658,10 +828,10 @@ def _ast_line_facts(
     returns = frozenset(
         " ".join(fact.expression.split())
         for fact in statements
-        if fact.label in _AST_EXIT_LABELS and fact.expression and owned(fact.start)
+        if fact.label == "RETURN" and fact.expression and owned(fact.start)
     )
     assignments = tuple(
-        (" ".join(fact.target.split()), " ".join(fact.expression.split()))
+        _assignment_pair(fact)
         for fact in statements
         if fact.label == _AST_ASSIGN_LABEL and fact.target and fact.expression
         and owned(fact.start)
@@ -671,11 +841,17 @@ def _ast_line_facts(
     )
     effect_ops = statement_effect_ops()
     effects = tuple(
-        (effect_ops[fact.label], " ".join(fact.target.split()))
+        (effect_ops[fact.label], " ".join((fact.target or "").split()))
         for fact in statements
-        if fact.label in effect_ops and fact.target and owned(fact.start)
+        if fact.label in effect_ops and owned(fact.start)
+        and not (fact.label == "RETURN" and fact.expression)
     )
-    return returns, assignments, calls, effects
+    # DBMS DML 효과 (spec 119) — step5 링커가 이미 결정론으로 만든 (줄, op, 테이블).
+    # statement 효과와 같은 (op, 대상) 모양이라 렌더·채점 경로를 그대로 공유한다.
+    effects += tuple(
+        (op, table) for line, op, table in table_ops if owned(line)
+    )
+    return returns, assignments, calls, tuple(dict.fromkeys(effects))
 
 
 def _ast_entry_line(
@@ -683,18 +859,233 @@ def _ast_entry_line(
     call_lines: Sequence[tuple[int, str]],
     branches: Sequence[Branch],
     termination_rows: Sequence[tuple[int, str, str]],
+    table_ops: Sequence[tuple[int, str, str]] = (),
 ) -> "int | None":
-    """분기 밖 최상위 효과문(대입 또는 호출 statement)의 첫 줄 — AST 정본."""
+    """분기 밖 최상위 효과문(대입·호출·DML)의 첫 줄 — AST/링커 정본.
+
+    DBMS 는 최상위 효과가 대입이 아니라 DML 인 경우가 흔하다(rwis 트리거의 본문 첫 줄이
+    ``INSERT INTO …``). DML 을 후보에서 빼면 그 효과를 약속할 행이 사라진다(spec 119).
+    """
     termination_lines = {line for line, _, _ in termination_rows}
     candidates = [
         fact.start for fact in statements if fact.label == _AST_ASSIGN_LABEL
-    ] + [line for line, _ in call_lines]
+    ] + [line for line, _ in call_lines] + [line for line, _op, _t in table_ops]
     effect_lines = sorted(
         line for line in candidates
         if line not in termination_lines
         and not any(branch.start <= line <= branch.end for branch in branches)
     )
     return effect_lines[0] if effect_lines else None
+
+
+def _linear_ranges(
+    start: int,
+    end: int,
+    children: Sequence[Branch],
+) -> list[_LinearRegion]:
+    """Split one owner range at immediate child controls.
+
+    The third item is the child control that must complete before the region can run.
+    It is deliberately a coordinate fact, not an inferred business predicate.
+    """
+    ranges: list[_LinearRegion] = []
+    cursor = start
+    preceding: Branch | None = None
+    for child in sorted(children, key=lambda item: (item.start, item.end, item.node_id)):
+        if cursor <= child.start - 1:
+            ranges.append(_LinearRegion(cursor, child.start - 1, preceding))
+        cursor = max(cursor, child.end + 1)
+        preceding = child
+    if cursor <= end:
+        ranges.append(_LinearRegion(cursor, end, preceding))
+    return ranges
+
+
+def _split_at_labels(
+    ranges: Sequence[_LinearRegion],
+    statements: Sequence[StatementFact],
+) -> list[_LinearRegion]:
+    """Split linear ownership at parser-proven named labels.
+
+    A label has both normal fall-through and GOTO predecessors.  Effects before it must
+    therefore never be folded into effects reached at the label.  This is a coordinate
+    split only; no path predicate is inferred.
+    """
+    labels = sorted(
+        (fact for fact in statements if fact.label == "LABEL" and fact.target),
+        key=lambda fact: (fact.start, fact.end, str(fact.target)),
+    )
+    result: list[_LinearRegion] = []
+    for region in ranges:
+        owned = [
+            fact for fact in labels
+            if region.start <= fact.start <= region.end
+        ]
+        if not owned:
+            result.append(region)
+            continue
+        cursor = region.start
+        for index, label in enumerate(owned):
+            if cursor < label.start:
+                result.append(_LinearRegion(
+                    cursor, label.start - 1, region.preceding,
+                ))
+            next_start = (
+                owned[index + 1].start if index + 1 < len(owned) else region.end + 1
+            )
+            result.append(_LinearRegion(
+                label.start, next_start - 1, None, label,
+            ))
+            cursor = next_start
+    return result
+
+
+def _sequence_guards_before(
+    children: Sequence[Branch],
+    coordinate: int,
+    join_label_lines: Sequence[int],
+) -> tuple[int, ...]:
+    """Return prior sibling decisions whose true arm cannot fall through.
+
+    Only parser-proven direct transfer (return/throw/raise/break/continue/goto) is
+    used.  A named GOTO join resets earlier guards because both the normal and jump
+    predecessors meet there.
+    """
+    labels = sorted(line for line in join_label_lines if line <= coordinate)
+    guards: list[int] = []
+    cursor = 0
+
+    def reset_through(stop: int) -> None:
+        nonlocal cursor
+        if any(cursor <= line <= stop for line in labels):
+            guards.clear()
+        cursor = max(cursor, stop + 1)
+
+    for child in sorted(children, key=lambda item: (item.start, item.end, item.node_id)):
+        if child.start >= coordinate:
+            break
+        reset_through(child.start)
+        if (
+            child.end < coordinate
+            and child.direct_terminates
+            and child.prompt_role() == "decision"
+            and child.condition.strip()
+        ):
+            guards.append(child.start)
+        cursor = max(cursor, child.end + 1)
+    reset_through(coordinate)
+    return tuple(dict.fromkeys(guards))
+
+
+def _build_effect_region(
+    *,
+    start: int,
+    end: int,
+    owner: Branch | None,
+    preceding: Branch | None,
+    split: SplitSource,
+    statements: Sequence[StatementFact],
+    call_lines: Sequence[tuple[int, str]],
+    table_ops: Sequence[tuple[int, str, str]],
+    termination_rows: Sequence[tuple[int, str, str]],
+    lang: str,
+    line_offset: int,
+    entry_label: StatementFact | None,
+    unresolved_reachability: bool,
+    sequence_guard_lines: Sequence[int] = (),
+) -> EffectRegion:
+    """Materialize one exact linear source/effect region."""
+    termination_lines = {
+        line for line, _kind, _text in termination_rows
+        if owner is None and start <= line <= end
+    }
+    exclusions = tuple((line, line) for line in sorted(termination_lines))
+    returns, assignments, calls, effects = _ast_line_facts(
+        statements,
+        call_lines,
+        start,
+        end,
+        exclusions,
+        table_ops,
+    )
+    if owner is not None and start == owner.start:
+        calls = calls - _calls(owner.condition, lang)
+    source = "\n".join(
+        line
+        for number, line in enumerate(
+            split.live_lines[start - 1 : end], start=start,
+        )
+        if number not in termination_lines
+    )
+    condition_calls = _calls(owner.condition, lang) if owner is not None else frozenset()
+    effect_labels = set(statement_effect_ops()) | {_AST_ASSIGN_LABEL, *_AST_EXIT_LABELS}
+    effect_lines = [
+        fact.start
+        for fact in statements
+        if start <= fact.start <= end
+        and fact.start not in termination_lines
+        and fact.label in effect_labels
+    ]
+    effect_lines.extend(
+        line for line, name in call_lines
+        if start <= line <= end
+        and line not in termination_lines
+        and not (owner is not None and line == owner.start and name.lower() in condition_calls)
+    )
+    effect_lines.extend(
+        line for line, _op, _table in table_ops
+        if start <= line <= end and line not in termination_lines
+    )
+    anchor = entry_label.start if entry_label is not None else (
+        min(effect_lines) if effect_lines else start
+    )
+    direct_jump = bool(
+        preceding is not None
+        and preceding.direct_terminates
+    )
+    terminates = bool(
+        any(
+            fact.label in _AST_EXIT_LABELS and start <= fact.start <= end
+            and not any(s <= fact.start <= e for s, e in exclusions)
+            for fact in statements
+        )
+        or any(op == "jump" for op, _target in effects)
+    )
+    return EffectRegion(
+        start=anchor,
+        end=end,
+        source=source,
+        return_expressions=returns,
+        assignment_pairs=assignments,
+        callees=calls,
+        statement_effects=effects,
+        path_anchor=owner.start if owner is not None else None,
+        after_control=(
+            f"{preceding.ntype}@{preceding.start + line_offset}"
+            if preceding is not None and not direct_jump else ""
+        ),
+        at_label=(
+            f"{entry_label.target}@{entry_label.start + line_offset}"
+            if entry_label is not None else ""
+        ),
+        fallthrough_false_of=(
+            preceding.start
+            if preceding is not None and direct_jump and entry_label is None
+            else None
+        ),
+        sequence_guard_lines=tuple(sequence_guard_lines),
+        terminates=terminates,
+        unresolved_reachability=unresolved_reachability,
+    )
+
+
+def _region_has_effect(region: EffectRegion) -> bool:
+    return bool(
+        region.return_expressions
+        or region.assignment_pairs
+        or region.callees
+        or region.statement_effects
+    )
 
 
 def build_inventory(
@@ -704,6 +1095,7 @@ def build_inventory(
     *,
     statements: Sequence[StatementFact],
     call_lines: Sequence[tuple[int, str]] = (),
+    table_ops: Sequence[tuple[int, str, str]] = (),
     split: SplitSource | None = None,
     declared_values: Sequence[str] = (),
     line_offset: int = 0,
@@ -736,6 +1128,10 @@ def build_inventory(
     ast_calls: tuple[tuple[int, str], ...] = tuple(
         (line, name) for line, name in call_lines if _live_line(line)
     )
+    # DML 효과 좌표도 같은 live/blank 경계를 공유한다 — 비활성 구간의 DML 은 의무가 아니다.
+    ast_table_ops: tuple[tuple[int, str, str], ...] = tuple(
+        (line, op, table) for line, op, table in table_ops if _live_line(line)
+    )
     all_branches: list[Branch] = []
 
     def convert(node: ControlSubtreeNode, parent: Branch | None) -> Branch | None:
@@ -766,6 +1162,7 @@ def build_inventory(
         # 이름만 제외한다(소스 재탐색 아님).
         returns, assignments, call_names, statement_effects = _ast_line_facts(
             ast_statements, ast_calls, node.start, node.end, child_ranges,
+            ast_table_ops,
         )
         branch = Branch(
             node_id=node.node_id,
@@ -774,6 +1171,7 @@ def build_inventory(
             end=node.end,
             parent=parent,
             condition=condition,
+            condition_timing=node.condition_timing,
             cond_values=frozenset(cond_values),
             callees=call_names - _calls(condition, lang),
             effect_atoms=frozenset(atoms(direct_body, lang)),
@@ -804,9 +1202,135 @@ def build_inventory(
     function_returns = frozenset(
         " ".join(fact.expression.split())
         for fact in ast_statements
-        if fact.label in _AST_EXIT_LABELS and fact.expression
+        if fact.label == "RETURN" and fact.expression
     )
-    entry = _ast_entry_line(ast_statements, ast_calls, all_branches, termination)
+    # Direct effects are owned by linear sequence regions, not by a whole routine/branch.
+    # This prevents one entry/controller Rule from merging effects that occur before and
+    # after nested controls (spec 128).
+    effect_ops = statement_effect_ops()
+    labels_by_name: dict[str, list[StatementFact]] = {}
+    for fact in ast_statements:
+        if fact.label == "LABEL" and fact.target:
+            labels_by_name.setdefault(str(fact.target), []).append(fact)
+    unresolved_jump = any(
+        fact.label == "GOTO"
+        and len(labels_by_name.get(str(fact.target or ""), ())) != 1
+        for fact in ast_statements
+    )
+    goto_targets = {
+        str(fact.target) for fact in ast_statements
+        if fact.label == "GOTO" and fact.target
+    }
+    join_label_lines = tuple(
+        fact.start for fact in ast_statements
+        if fact.label == "LABEL" and str(fact.target or "") in goto_targets
+    )
+    chosen_by_line: dict[int, list[Branch]] = {}
+    for branch in all_branches:
+        chosen_by_line.setdefault(branch.start, []).append(branch)
+    chosen_ids = {
+        BranchInventory._most_specific(group).node_id
+        for group in chosen_by_line.values()
+    }
+    continuations: list[EffectRegion] = []
+    ranges_by_branch: dict[str, list[_LinearRegion]] = {}
+    # First materialize every controller's own prefix.  Continuation fall-through
+    # depends on whether the preceding child ends in a direct jump, so all children
+    # must have their facts before any continuation is built.
+    for branch in all_branches:
+        ranges = _split_at_labels(
+            _linear_ranges(branch.start, branch.end, branch.children),
+            ast_statements,
+        )
+        ranges_by_branch[branch.node_id] = ranges
+        first = (
+            _build_effect_region(
+                start=ranges[0].start, end=ranges[0].end, owner=branch,
+                preceding=ranges[0].preceding, split=split, statements=ast_statements,
+                call_lines=ast_calls, table_ops=ast_table_ops,
+                termination_rows=termination, lang=lang, line_offset=line_offset,
+                entry_label=ranges[0].entry_label,
+                unresolved_reachability=unresolved_jump,
+            )
+            if ranges else None
+        )
+        branch.direct_source = first.source if first is not None else ""
+        branch.return_expressions = (
+            first.return_expressions if first is not None else frozenset()
+        )
+        branch.assignment_pairs = first.assignment_pairs if first is not None else ()
+        branch.callees = first.callees if first is not None else frozenset()
+        branch.statement_effects = first.statement_effects if first is not None else ()
+        branch.direct_terminates = first.terminates if first is not None else False
+        branch.effect_atoms = frozenset(
+            atoms(branch.direct_source, lang) if branch.direct_source else ()
+        )
+
+    def assign_sequence_guards(children: Sequence[Branch]) -> None:
+        for child in children:
+            child.sequence_guard_lines = _sequence_guards_before(
+                children, child.start, join_label_lines,
+            )
+            assign_sequence_guards(child.children)
+
+    assign_sequence_guards(roots)
+
+    for branch in all_branches:
+        if branch.node_id not in chosen_ids:
+            continue
+        ranges = ranges_by_branch[branch.node_id]
+        for sequence in ranges[1:]:
+            region = _build_effect_region(
+                start=sequence.start, end=sequence.end, owner=branch,
+                preceding=sequence.preceding, split=split, statements=ast_statements,
+                call_lines=ast_calls, table_ops=ast_table_ops,
+                termination_rows=termination, lang=lang, line_offset=line_offset,
+                entry_label=sequence.entry_label,
+                unresolved_reachability=unresolved_jump,
+                sequence_guard_lines=_sequence_guards_before(
+                    branch.children, sequence.start, join_label_lines,
+                ),
+            )
+            if _region_has_effect(region):
+                continuations.append(region)
+
+    routine_ranges = _split_at_labels(
+        _linear_ranges(1, len(split.live_lines), roots),
+        ast_statements,
+    )
+    entry_region: EffectRegion | None = None
+    if routine_ranges:
+        first_sequence = routine_ranges[0]
+        first_region = _build_effect_region(
+            start=first_sequence.start, end=first_sequence.end, owner=None,
+            preceding=first_sequence.preceding, split=split, statements=ast_statements,
+            call_lines=ast_calls, table_ops=ast_table_ops,
+            termination_rows=termination, lang=lang, line_offset=line_offset,
+            entry_label=first_sequence.entry_label,
+            unresolved_reachability=unresolved_jump,
+            sequence_guard_lines=_sequence_guards_before(
+                roots, first_sequence.start, join_label_lines,
+            ),
+        )
+        if _region_has_effect(first_region) and first_sequence.entry_label is None:
+            entry_region = first_region
+        elif _region_has_effect(first_region):
+            continuations.append(first_region)
+        for sequence in routine_ranges[1:]:
+            region = _build_effect_region(
+                start=sequence.start, end=sequence.end, owner=None,
+                preceding=sequence.preceding, split=split, statements=ast_statements,
+                call_lines=ast_calls, table_ops=ast_table_ops,
+                termination_rows=termination, lang=lang, line_offset=line_offset,
+                entry_label=sequence.entry_label,
+                unresolved_reachability=unresolved_jump,
+                sequence_guard_lines=_sequence_guards_before(
+                    roots, sequence.start, join_label_lines,
+                ),
+            )
+            if _region_has_effect(region):
+                continuations.append(region)
+    entry = entry_region.start if entry_region is not None else None
     function_callees = frozenset(name.lower() for _line, name in ast_calls)
     return BranchInventory(
         lang=lang,
@@ -829,4 +1353,9 @@ def build_inventory(
         source_lines=tuple(split.live_lines),
         ast_statements=ast_statements,
         ast_call_lines=ast_calls,
+        ast_table_ops=ast_table_ops,
+        entry_region=entry_region,
+        continuation_regions=tuple(sorted(
+            continuations, key=lambda region: (region.start, region.end),
+        )),
     )

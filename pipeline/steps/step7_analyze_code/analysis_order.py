@@ -1,94 +1,144 @@
-"""Bottom-up DAG 분석 순서 결정 (leaf → root Round 별 정렬).
+"""Prompt summary 의존 계획과 leaf → root 분석 순서.
 
-원리:
-- leaf 코드노드 (callee 없음) 가 Round 1.
-- Round 1 코드노드만 callee 로 가진 코드노드가 Round 2.
-- 위로 올라가며 Round 증가.
-- cycle 내부 코드노드는 ``call_cycles`` 로 식별 → 한 Round 에 모아 분석.
-
-같은 Round 코드노드들은 병렬 분석 가능. Round 간은 순차 (caller 가 callee summary 필요).
+두 step7 엔진은 prompt를 실제로 받는 ``AnalysisContext``의 ``callees``와
+구조적 parent→child 의존을 이 모듈에서 한 번만 합친다. 결합 SCC에서는 선행
+제공이 불가능한 call-summary 엣지만 억제하고, 구조적 child-summary 순서는
+보존한다. 그 결과인 비순환 ``schedule_edges``만 bottom-up 정렬한다.
 """
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Iterable
+from dataclasses import dataclass
+from typing import Iterable, Mapping
 
+from pipeline.models.analysis_context import AnalysisContext
+from shared.graphs.call_cycles import find_call_cycles
 from shared.events.runtime_logger import log_warning
+
+
+@dataclass(frozen=True)
+class SummaryDependencyPlan:
+    """One deterministic contract shared by both step7 analysis engines.
+
+    ``call_edges`` comes only from the prompt receiver's ``ctx.callees``.
+    ``structural_edges`` carries child-summary handoff.  A summary dependency SCC
+    means no member can provide its callee summary first, so only call edges inside
+    that SCC are suppressed; structural child-before-parent ordering remains.
+    """
+
+    call_edges: tuple[tuple[str, str], ...]
+    structural_edges: tuple[tuple[str, str], ...]
+    schedule_edges: tuple[tuple[str, str], ...]
+    suppressed_call_edges: tuple[tuple[str, str], ...]
+    cycle_nodes: frozenset[str]
+
+
+def plan_summary_dependencies(
+    contexts: Mapping[str, AnalysisContext],
+    structural_edges: Iterable[tuple[str, str]],
+) -> SummaryDependencyPlan:
+    """Build the exact dependency graph consumed by summary scheduling.
+
+    The context mapping is the prompt-input contract, so a call target outside it
+    (external or not analyzed) is not a summary dependency.  Cyclic call summaries
+    are unavailable by definition.  Removing structural edges to break those cycles
+    would let a parent run before its child and can make compact-body assembly read a
+    missing summary, therefore only same-SCC call edges are removed.
+    """
+    nodes = set(contexts)
+    mismatches = sorted(
+        (key, ctx.id) for key, ctx in contexts.items() if key != ctx.id
+    )
+    if mismatches:
+        raise ValueError(f"context key/id mismatch: {mismatches[:10]}")
+
+    normalized_structural = tuple(sorted({
+        (parent, child)
+        for parent, child in structural_edges
+        if parent in nodes and child in nodes
+    }))
+    call_edges = tuple(sorted({
+        (context_id, callee_id)
+        for context_id, ctx in contexts.items()
+        for callee_id in ctx.callees
+        if callee_id in nodes
+    }))
+
+    combined = (*normalized_structural, *call_edges)
+    cycle_groups = find_call_cycles(combined, nodes)
+    suppressed = tuple(
+        edge for edge in call_edges
+        if edge[0] in cycle_groups
+        and cycle_groups.get(edge[0]) == cycle_groups.get(edge[1])
+    )
+    suppressed_set = set(suppressed)
+    schedule_edges = tuple(sorted({
+        *normalized_structural,
+        *(edge for edge in call_edges if edge not in suppressed_set),
+    }))
+
+    remaining_cycles = find_call_cycles(schedule_edges, nodes)
+    if remaining_cycles:
+        raise ValueError(
+            "structural summary dependency cycle remains after suppressing "
+            f"cyclic call edges: {sorted(remaining_cycles)[:10]}"
+        )
+
+    return SummaryDependencyPlan(
+        call_edges=call_edges,
+        structural_edges=normalized_structural,
+        schedule_edges=schedule_edges,
+        suppressed_call_edges=suppressed,
+        cycle_nodes=frozenset(cycle_groups),
+    )
 
 
 def bottom_up_rounds(
     edges: Iterable[tuple[str, str]],
     all_nodes: Iterable[str],
-    cycles: dict[str, str] | None = None,
 ) -> list[list[str]]:
-    """호출 그래프 → Bottom-up Round 별 정렬.
+    """이미 계획된 비순환 summary 의존을 Bottom-up Round로 정렬.
 
     Args:
         edges: ``(caller_id, callee_id)`` tuples.
                CALLS 와 PARENT_OF 모두 같은 형식 — 알고리즘 무관.
         all_nodes: 전체 ``code_id`` 집합 (callee 없는 leaf 도 포함).
-        cycles: ``code_id`` → ``cycle_group_id`` mapping (``call_cycles`` 결과).
-                같은 cycle_group 의 코드노드들은 한 SCC 로 묶어 같은 Round 에 배치.
-
     Returns:
         Round 리스트. 각 원소는 그 Round 의 code_id list (sorted 고정).
         ``Round[0]`` = leaf, ``Round[-1]`` = root.
-
-    Note: cycle 내부 코드노드는 callee summary 없이 분석 (호출자가 ``is_in_cycle=True``
-          메타 박음).
     """
-    cycles = cycles or {}
     nodes = set(all_nodes)
 
-    # cycle 묶음: cycle_group_id → 그 그룹의 코드노드 set
-    # cycle 그룹은 SCC 단위로 한 가상 노드로 취급해 위상 정렬.
-    group_of: dict[str, str] = {}    # code_id → group_id (cycle 또는 자기자신)
-    for fn in nodes:
-        group_of[fn] = cycles.get(fn, fn)
-
-    group_members: dict[str, set[str]] = defaultdict(set)
-    for fn, gid in group_of.items():
-        group_members[gid].add(fn)
-
-    # 그룹 단위 그래프 (cycle 내부 엣지는 제거 — 위상 정렬 가능하게)
     # 외부 callee (분석 영역 밖 — 프레임워크/런타임 코드노드 등) 는 의존성 아님 → 무시.
-    # 무시 안 하면 children 카운트에 외부 노드가 박혀 pending 이 영원히 0 으로
-    # 안 떨어짐 → 모든 코드노드 라운드 미배치 (call_cycles.py 와 동일 필터링 패턴).
+    # plan_summary_dependencies 사용자는 이미 필터링되지만 함수 자체도 안전하게 유지한다.
     children: dict[str, set[str]] = defaultdict(set)
     parents: dict[str, set[str]] = defaultdict(set)
     for caller, callee in edges:
-        g_caller = group_of.get(caller)
-        g_callee = group_of.get(callee)
-        if g_caller is None or g_callee is None:
+        if caller not in nodes or callee not in nodes:
             continue  # 외부 노드 — 분석 영역 밖
-        if g_caller == g_callee:
-            continue  # cycle 내부 — 같은 그룹
-        children[g_caller].add(g_callee)
-        parents[g_callee].add(g_caller)
+        children[caller].add(callee)
+        parents[callee].add(caller)
 
     # Kahn 알고리즘 — leaf 부터 Round 별 추출
-    pending = {g: len(children[g]) for g in group_members}
+    pending = {node: len(children[node]) for node in nodes}
     rounds: list[list[str]] = []
     while True:
-        ready = sorted(g for g, n in pending.items() if n == 0)
+        ready = sorted(node for node, count in pending.items() if count == 0)
         if not ready:
             break
-        # 이번 Round 에 들어갈 code_id 들 (그룹 전개 + sorted 고정)
-        members = sorted(fn for g in ready for fn in group_members[g])
-        rounds.append(members)
-        for g in ready:
-            pending.pop(g)
-            for p in parents[g]:
+        rounds.append(ready)
+        for node in ready:
+            pending.pop(node)
+            for p in parents[node]:
                 if p in pending:
                     pending[p] -= 1
 
-    # pending 잔여 = 위상 정렬에 안 들어간 그룹 — 라운드 미배치로 분석에서 누락된다.
-    # SCC 가 정상이면 발생 X — 조용히 빠뜨리지 않게 표면화 (절대원칙 #3).
+    # pending 잔여 = 계획되지 않은 cycle. 조용히 분석에서 누락시키지 않는다.
     if pending:
-        leftover = sorted(fn for g in pending for fn in group_members[g])
+        leftover = sorted(pending)
         log_warning(
             "step7.analyze_code", "bottom_up_rounds",
-            "위상 정렬 누락 함수 — 라운드 미배치로 분석에서 빠짐 (cycle 식별 누락 의심)",
+            "위상 정렬 누락 함수 — summary dependency 계획에서 cycle 억제 누락 의심",
             count=len(leftover), sample=leftover[:10],
         )
     return rounds

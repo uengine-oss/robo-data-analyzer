@@ -29,6 +29,7 @@ from pipeline.languages import ROUTINE_LABELS, role_of
 from pipeline.languages import DBMS_EXTS, EXT_TO_LANG
 from graph.schema.node_ids import child_id, code_file_id, code_ns_id, positioned
 from shared.events.runtime_logger import log_error, log_warning
+from pipeline.models.data_object_usage import usages_from_parser_ast
 
 _COMPONENT = "pipeline.steps.step2_load_ast.antlr_json_reader"
 
@@ -88,7 +89,7 @@ def _make_code_node(
     ``package_id`` (소속 폴더 id) → ``package`` (external 호출 스키마 귀속, call_linker).
     """
     sl = int(node.get("startLine") or 0)
-    return CodeNode(
+    code_node = CodeNode(
         id=fid,
         name=node.get("name") or "",          # 표시명 (구문은 "" — 라벨[라인]으로 표시)
         label=node["type"],
@@ -106,9 +107,27 @@ def _make_code_node(
         params=node.get("parameters") or "",
         # 구조 statement/제어 조건 표현 — parser listener 가 소유한 원문 (spec 016).
         expression=node.get("expression") or "",
+        condition_timing=node.get("conditionTiming") or "",
         target=node.get("target") or "",
         operator=node.get("operator") or "",
     )
+    evidence_version = int(node.get("dataObjectEvidenceVersion") or 0)
+    if evidence_version not in (0, 1):
+        raise ValueError(
+            f"unsupported dataObjectEvidenceVersion={evidence_version} "
+            f"at {src_path}:{sl}"
+        )
+    if evidence_version:
+        usages, unresolved_columns = usages_from_parser_ast(
+            source_id=fid,
+            evidence_file=src_path,
+            references=node.get("dataObjectReferences") or (),
+            qualified_columns=node.get("qualifiedColumnReferences") or (),
+        )
+        code_node.extra["data_object_evidence_version"] = evidence_version
+        code_node.extra["data_object_usages"] = usages
+        code_node.extra["unresolved_qualified_columns"] = unresolved_columns
+    return code_node
 
 
 def _make_variable(

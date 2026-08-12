@@ -74,6 +74,12 @@ class BatchingContract(unittest.TestCase):
                 ]
 
             @staticmethod
+            def at_line(_line):
+                # 이 대역에는 분기 노드가 없다 — 소비자 계약(spec 118 대안 절 보정)이
+                # 소유 branch 를 묻기 때문에 "없음"을 명시한다.
+                return None
+
+            @staticmethod
             def direct_evidence(line):
                 return "", frozenset(), tuple(
                     (f"row{line}_target{index}", str(index))
@@ -87,6 +93,10 @@ class BatchingContract(unittest.TestCase):
             @staticmethod
             def direct_statement_effects(_line):
                 return ()
+
+            @staticmethod
+            def has_nested_control(_line):
+                return False
 
         inventory = DirectHeavyInventory()
 
@@ -118,7 +128,7 @@ class BatchingContract(unittest.TestCase):
 
         self.assertEqual(["C1"], evidence["rows"]["R1"]["when"])
         self.assertEqual(["!C1", "C5"], evidence["rows"]["R5"]["when"])
-        self.assertEqual(["!C5", "!C1"], evidence["rows"]["R9"]["when"])
+        self.assertEqual(["!C1", "!C5"], evidence["rows"]["R9"]["when"])
         self.assertEqual(["E1"], evidence["rows"]["R1"]["direct"])
         self.assertEqual("x", evidence["effects"]["E1"]["target"])
 
@@ -129,6 +139,10 @@ class BatchingContract(unittest.TestCase):
             @staticmethod
             def table_rows():
                 return [{"line": 1, "role": "entry"}]
+
+            @staticmethod
+            def at_line(_line):
+                return None      # 분기 없음 — spec 118 대안 절 보정의 소비자 계약
 
             @staticmethod
             def direct_evidence(_line):
@@ -142,12 +156,65 @@ class BatchingContract(unittest.TestCase):
             def direct_statement_effects(_line):
                 return ()
 
+            @staticmethod
+            def has_nested_control(_line):
+                return False
+
         evidence = rule_evidence(RepeatedAssignmentInventory(), [1])
         self.assertEqual(["E1"], evidence["rows"]["R1"]["direct"])
         self.assertEqual(1, len(evidence["effects"]))
 
+    def test_post_test_loop_condition_is_not_a_body_precondition(self):
+        source = "do {\n  x = 1;\n  if (flag) { y = 2; }\n} while (again);\n"
+        tree = [ControlSubtreeNode(
+            node_id="do", ntype="LOOP", start=1, end=4, expression="again",
+            condition_timing="post",
+            children=[ControlSubtreeNode(
+                node_id="if", ntype="IF", start=3, end=3, expression="flag",
+            )],
+        )]
+        inventory = build_inventory(
+            source, tree, "c",
+            statements=(
+                StatementFact("s2", "ASSIGNMENT", 2, 2, expression="1", target="x", operator="="),
+                StatementFact("s3", "ASSIGNMENT", 3, 3, expression="2", target="y", operator="="),
+            ),
+        )
+
+        evidence = rule_evidence(inventory, [1, 3])
+
+        self.assertEqual([], evidence["rows"]["R1"]["when"])
+        self.assertEqual("again", evidence["rows"]["R1"]["post_condition"])
+        self.assertEqual(["C3"], evidence["rows"]["R3"]["when"])
+        self.assertEqual("flag", evidence["conditions"]["C3"])
+
     def test_plan_batches_covers_obligation_rows_only(self):
-        self.assertEqual([[1, 5], [9]], plan_batches(_inventory(), rows_per_call=2))
+        self.assertEqual([[1], [5, 9]], plan_batches(_inventory(), rows_per_call=2))
+
+    def test_small_parent_and_child_subtree_are_not_split_at_batch_boundary(self):
+        source = "\n".join([
+            "a = 0;", "b = 0;", "c = 0;", "d = 0;", "e = 0;", "f = 0;", "g = 0;",
+            "if (start > 0) {", "  for (i = 0; i < n; i++) { x = i; }", "}",
+        ])
+        tree = [ControlSubtreeNode(
+            node_id="if", ntype="IF", start=8, end=10, expression="start > 0",
+            children=[ControlSubtreeNode(
+                node_id="loop", ntype="LOOP", start=9, end=9, expression="i < n",
+            )],
+        )]
+        statements = tuple(
+            StatementFact(f"s{line}", "ASSIGNMENT", line, line,
+                          expression="0", target=chr(96 + line), operator="=")
+            for line in range(1, 8)
+        ) + (
+            StatementFact("s9", "ASSIGNMENT", 9, 9,
+                          expression="i", target="x", operator="="),
+        )
+        inventory = build_inventory(source, tree, "c", statements=statements)
+
+        batches = plan_batches(inventory, rows_per_call=2)
+
+        self.assertIn([8, 9], batches)
 
     def test_valid_batches_are_collected_once(self):
         seen = []
@@ -159,7 +226,7 @@ class BatchingContract(unittest.TestCase):
         collection = asyncio.run(collect_rules_by_rows(
             invoke=invoke, inventory=_inventory(), target_scope="fn", source=SOURCE, rows_per_call=2,
         ))
-        self.assertEqual([(1, 5), (9,)], sorted(seen))
+        self.assertEqual([(1,), (5, 9)], sorted(seen))
         self.assertEqual([1, 5, 9], [rule.anchor_line for rule in collection.rules])
         self.assertEqual([], collection.findings)
         self.assertEqual(2, collection.calls)

@@ -119,6 +119,26 @@ class ConditionlessLoopEvidence(unittest.TestCase):
 
 
 class CleanOutputPasses(unittest.TestCase):
+    def test_void_return_is_accepted_as_a_direct_targetless_effect(self):
+        source = "void f(int bad) {\n  if (bad) return;\n}"
+        inventory = build_inventory(
+            source,
+            (ControlSubtreeNode(
+                node_id="if@2", ntype="IF", start=2, end=2, expression="bad",
+            ),),
+            "c",
+            statements=(StatementFact("return@2", "RETURN", 2, 2),),
+        )
+        report = grade_rules(
+            RulesExamplesOutput(rules=[
+                _rule(2, 'F("bad")', ["ret(None)"]),
+            ]),
+            inventory,
+            source,
+            assigned=(2,),
+        )
+        self.assertEqual([], report.rejected, [v.reasons for v in report.verdicts])
+
     def test_correct_rules_have_no_rejection(self):
         report = _grade([
             _rule(1, 'F("strncmp(gc_Bank_Cd, \\"03\\", LEN_BANK)") == 0',
@@ -553,6 +573,25 @@ class SourceIntrinsicGroundingBoundary(unittest.TestCase):
             source,
         )
         self.assertTrue(any("cond가 null" in reason for reason in report.verdicts[0].reasons))
+
+    def test_post_test_loop_body_has_no_precondition(self):
+        source = "do {\n    work();\n} while (again);\n"
+        inventory = build_inventory(
+            source,
+            [ControlSubtreeNode(
+                node_id="do", ntype="LOOP", start=1, end=3,
+                expression="again", condition_timing="post",
+            )],
+            "c",
+            statements=(),
+            call_lines=((2, "work"),),
+        )
+        report = grade_rules(
+            RulesExamplesOutput(rules=[_rule(1, None, ['call("work")'])]),
+            inventory,
+            source,
+        )
+        self.assertTrue(report.verdicts[0].accepted, report.verdicts[0].reasons)
 
     def test_entry_effect_cannot_be_empty(self):
         source = "ix = 0;\nreturn ix;\n"

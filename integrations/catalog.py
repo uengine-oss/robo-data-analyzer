@@ -108,3 +108,32 @@ async def get_table_discovery(
             f"catalog discovery non-200 응답 — url={url} status={resp.status_code}"
         )
     return resp.json()
+
+
+async def post_object_resolution_context(
+    http: httpx.AsyncClient,
+    base_url: str,
+    datasource: str,
+    references: list[dict[str, Any]],
+    *,
+    sample_limit: int = 5,
+) -> Optional[dict[str, Any]]:
+    """Catalog exact object resolver batch. 404 datasource is the only nullable outcome."""
+    if not references:
+        return {"datasource": datasource, "results": [], "metrics": {}}
+    url = f"{base_url}/tables/resolve-context"
+    resp = await http.post(url, json={
+        "datasource": datasource,
+        "references": references,
+        "sample_limit": sample_limit,
+    })
+    if resp.status_code == 404:
+        return None
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"catalog object resolution non-200 응답 — url={url} status={resp.status_code}"
+        )
+    payload = resp.json()
+    if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
+        raise ValueError("catalog object resolution response is malformed")
+    return payload

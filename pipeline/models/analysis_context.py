@@ -8,9 +8,11 @@
 - strategy 별 확장은 ``extra: dict[str, Any]`` 로 — dataclass 계승 X.
 - 큰 본문은 구조적 자식 치환과 배치 예산으로 다룬다. 자유형 요약으로 원문 구조를 대체하지 않는다.
 
-**Framework vs DBMS 컨텍스트 구성 차이** — 같은 dataclass 가 양쪽을 흡수:
-- Framework: ``callees`` (호출 그래프) — Bottom-up DAG 로 callee summary 라이브 조회.
-- DBMS: effective parent/child tree metadata is assembled in step 6.
+**Framework vs DBMS의 동일한 summary 수신 계약**:
+- ``callees``는 이 컨텍스트가 받을 callee summary의 직접 대상이다.
+- Framework에서는 routine context가 routine callee를 가진다.
+- DBMS에서는 실제 prompt 수신자인 CALL context가 routine callee를 가진다.
+- DBMS effective parent/child tree metadata는 별도의 구조 summary 의존으로 합쳐진다.
 
 사용 흐름
 ─────────
@@ -45,6 +47,7 @@ class ReferencedSymbolContext:
 
     def as_prompt_dict(self) -> dict:
         return {
+            "relation": "TARGET_REFERENCES_DEFINITION",
             "id": self.id,
             "name": self.name,
             "kind": self.kind,
@@ -71,6 +74,7 @@ class ExternalEvidenceContext:
 
     def as_prompt_dict(self) -> dict:
         return {
+            "relation": "TARGET_REFER_TO_EXTERNAL_CHUNK",
             "id": self.id,
             "file_path": self.file_path,
             "matched_key": self.matched_key,
@@ -97,13 +101,15 @@ class ControlSubtreeNode:
     # parser 가 소유한 조건식 원문 (spec 016 FR-003). 빈 문자열이면 그 grammar 가
     # 조건을 두지 않는 노드(ELSE/default 등)다. analyzer 는 괄호 짝을 재파싱하지 않는다.
     expression: str = ""
+    # parser grammar fact. Empty is backward-compatible pre-test; ``post`` is do-while.
+    condition_timing: str = ""
 
 
 @dataclass(frozen=True)
 class StatementFact:
     """Routine-relative structural statement owned by the parser AST (spec 016).
 
-    RETURN/THROW/RAISE/BREAK/CONTINUE/GOTO/ASSIGNMENT 의 좌표와 표현 원문.
+    RETURN/THROW/RAISE/BREAK/CONTINUE/GOTO/LABEL/ASSIGNMENT 의 좌표와 표현 원문.
     branch_inventory 가 종료행·반환식·대입·entry 의 정본으로 소비하며, analyzer 는
     이 사실을 source 정규식으로 재탐색하지 않는다.
     """
@@ -156,8 +162,13 @@ class AnalysisContext:
 
     # Linking 결과 (stage1 / stage2 / stage3 가 채움) ────────
     # tuple + sorted 고정 → set/dict iteration 비결정성 차단 (캐시 친화)
-    reads: tuple[str, ...] = ()              # Table fqn 들
-    writes: tuple[str, ...] = ()             # Table fqn 들
+    # effective R/W: DBMS 루틴은 자기 자손 statement의 R/W를 포함한다. summary와
+    # RULE 허용 범위가 사용한다. direct R/W는 정확히 이 node id가 source인 그래프 엣지로,
+    # table-insight처럼 현재 node의 직접 동작만 설명하는 concern이 사용한다.
+    reads: tuple[str, ...] = ()              # effective Table fqn 들
+    writes: tuple[str, ...] = ()             # effective Table fqn 들
+    direct_reads: tuple[str, ...] = ()       # exact-source READS Table fqn 들
+    direct_writes: tuple[str, ...] = ()      # exact-source WRITES Table fqn 들
     callers: tuple[str, ...] = ()            # caller id 들
     callees: tuple[str, ...] = ()            # callee id 들
 
@@ -171,8 +182,8 @@ class AnalysisContext:
     # 의미 분석 결과 (analyze_code_step 이 채움) ──────────────
     summary: Optional[str] = None            # 사람이 읽는 표시용 의미 설명
 
-    # Bottom-up DAG 메타 (call_cycles 가 채움) ──────────────
-    is_in_cycle: bool = False                # SCC cycle 내부 → callee summary 없이 분석
+    # Bottom-up summary dependency 메타 ───────────────────
+    is_in_cycle: bool = False                # 결합 SCC 내부 → 순환 callee summary 없이 분석
 
     # strategy 별 확장 (자유 dict — 새 필드 추가 시 base 무변경) ────
     extra: dict[str, Any] = field(default_factory=dict)

@@ -100,16 +100,20 @@ class LoadExternalStepTest(unittest.IsolatedAsyncioTestCase):
             )
 
     def test_both_strategies_parallelize_only_disjoint_step2_and_step3(self) -> None:
-        # superstep 멤버 3개의 state 키는 서로소다 — load_ast(code_nodes 등) /
-        # load_external(external_documents 등) / discover_datasource(tables·
-        # table_sample_data, spec 107 D3). 겹치면 LangGraph 병렬 병합이 비결정적이 된다.
-        for strategy in (FRAMEWORK_PIPELINE, DBMS_PIPELINE):
-            parallel = strategy.steps[1]
-            self.assertIsInstance(parallel, tuple)
-            self.assertEqual(
-                {"load_ast_step", "load_external_step", "discover_datasource_step"},
-                {step.__name__ for step in parallel},
-            )
+        # Framework legacy discovery는 AST와 독립이라 3-way 병렬이다. DBMS spec126은
+        # AST object evidence가 resolver 입력이므로 load_ast/load_external만 병렬이고,
+        # resolve_data_objects_step은 그 다음 barrier에서 실행돼야 한다.
+        framework_parallel = FRAMEWORK_PIPELINE.steps[1]
+        self.assertEqual(
+            {"load_ast_step", "load_external_step", "discover_datasource_step"},
+            {step.__name__ for step in framework_parallel},
+        )
+        dbms_parallel = DBMS_PIPELINE.steps[1]
+        self.assertEqual(
+            {"load_ast_step", "load_external_step"},
+            {step.__name__ for step in dbms_parallel},
+        )
+        self.assertEqual("resolve_data_objects_step", DBMS_PIPELINE.steps[2].__name__)
 
 
 if __name__ == "__main__":

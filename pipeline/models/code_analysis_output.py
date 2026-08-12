@@ -49,15 +49,51 @@ def _normalize_summary_format(v: str) -> str:
 
 # ── 3 분할 #1: code_summary ───────────────────────────
 
+EvidenceStatus = Literal["sufficient", "partial", "insufficient"]
+
+
+def _validate_evidence_state(
+    *, summary: str, stereotype: str, evidence_status: EvidenceStatus,
+    missing_context: list[str],
+) -> None:
+    """Keep prompt, wire schema and every consumer on one no-fabrication contract."""
+    has_summary = bool(summary.strip())
+    has_stereotype = bool(stereotype.strip())
+    has_missing = bool(missing_context)
+    if evidence_status == "sufficient":
+        if not has_summary or not has_stereotype or has_missing:
+            raise ValueError(
+                "sufficient requires summary+stereotype and empty missing_context"
+            )
+    elif evidence_status == "partial":
+        if not has_summary or not has_stereotype or not has_missing:
+            raise ValueError(
+                "partial requires grounded summary+stereotype and missing_context"
+            )
+    elif has_summary or has_stereotype or not has_missing:
+        raise ValueError(
+            "insufficient requires empty summary+stereotype and non-empty missing_context"
+        )
+
 
 class SummaryOutput(BaseModel):
-    """모델이 소유하는 최소 의미 헤더; 구조 사실은 코드가 별도로 렌더링한다."""
+    """모델이 소유하는 전체 흐름 요약과 입력 충분성 판정."""
     summary: str = Field(
         ...,
-        min_length=1,
-        description="대상의 최종 책임만 설명하는 purpose; 분기·코드값을 다시 쓰지 않음",
+        description=(
+            "입력·검증·주요 조건별 처리·CALL/RW·반환/상태 변화의 사람이 읽는 전체 흐름; "
+            "insufficient이면 빈 문자열"
+        ),
     )
     stereotype: str = Field("", description="ontology_roles.yaml 풀에서 선택")
+    evidence_status: EvidenceStatus = Field(
+        ..., description="현재 입력만으로 전체 의미를 확정할 수 있는 정도",
+    )
+    missing_context: list[str] = Field(
+        default_factory=list,
+        max_length=8,
+        description="partial/insufficient 판단을 해소하는 데 필요한 구체적 근거",
+    )
     questions: list["QuestionItem"] = Field(
         default_factory=list,
         max_length=15,
@@ -71,29 +107,72 @@ class SummaryOutput(BaseModel):
 
     @model_validator(mode="after")
     def _require_grounded_text(self) -> "SummaryOutput":
-        if not self.summary.strip():
-            raise ValueError("summary cannot be empty")
+        _validate_evidence_state(
+            summary=self.summary,
+            stereotype=self.stereotype,
+            evidence_status=self.evidence_status,
+            missing_context=self.missing_context,
+        )
         return self
 
 
 # ── 3 분할 #2: code_table_insights ────────────────────
 
 
-class ColumnInsight(BaseModel):
-    """코드노드 관점 컬럼 의미 1건 — 소비처(enrich_table_description)가 name·logical_name·description 사용.
+class ColumnUsageSourceLine(BaseModel):
+    """Deterministically selected absolute source line for one column use."""
 
-    ``usage`` 는 생성돼도 소비 0(전수 grep 확정) → 응답 스키마에서 제외(불필요 토큰·폭주면적 차단).
-    ``logical_name`` = 테이블 logical_name(spec 025) 미러 — 짧은 업무 표시명(spec 028).
+    model_config = ConfigDict(extra="forbid")
+
+    line: int = Field(..., gt=0)
+    text: str = Field(..., min_length=1)
+    source_id: str = Field("", description="이 줄을 문법적으로 소유한 full code node id")
+    ownership: str = Field("", description="qualified/lexical/derived def-use 근거 종류")
+
+
+class ColumnInsight(BaseModel):
+    """Deterministic code-node → physical-column coordinate evidence.
+
+    Column meaning is generated only once by the final TABLE/COLUMN concern.  The intermediate
+    table-use model never writes ``usage_summary``; identity, ownership, coordinates and source
+    lines are attached by the deterministic response normalizer.
     """
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(..., description="DDL 컬럼명 정확히 (추측 X)")
-    logical_name: str = Field("", description="컬럼 도메인 표시명 한 줄 (코드 식별자·DDL 타입·동어반복 X)")
-    description: str = Field("", description="비즈니스 의미 한 줄 (DDL 타입 X / 동어반복 X)")
+    name: str = Field(..., min_length=1, description="DDL 컬럼명 정확히")
+    usage_summary: str = Field(
+        "",
+        description="호환 필드. 중간 단계에서는 비우고 최종 TABLE/COLUMN 모델이 원문에서 의미 생성",
+    )
+    ownership: Literal["qualified", "sole_direct_table", "ddl_unique_in_scope"]
+    evidence_lines: list[int] = Field(..., min_length=1)
+    source_lines: list[ColumnUsageSourceLine] = Field(..., min_length=1)
+
+
+class GroundedColumnDescription(BaseModel):
+    """Final catalog column meaning with an explicit evidence-sufficiency outcome."""
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    logical_name: str = ""
+    description: str = ""
+    evidence_status: EvidenceStatus
+    missing_context: list[str] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode="after")
+    def _validate_evidence_state(self) -> "GroundedColumnDescription":
+        has_meaning = bool(self.logical_name.strip() or self.description.strip())
+        if self.evidence_status == "sufficient" and (not has_meaning or self.missing_context):
+            raise ValueError("sufficient column meaning requires evidence text and no missing_context")
+        if self.evidence_status == "partial" and (not has_meaning or not self.missing_context):
+            raise ValueError("partial column meaning requires evidence text and missing_context")
+        if self.evidence_status == "insufficient" and (has_meaning or not self.missing_context):
+            raise ValueError("insufficient column meaning must stay empty and name missing context")
+        return self
 
 
 class TableInsightItem(BaseModel):
-    """코드노드가 한 테이블에 대해 갖는 직접 역할 + 컬럼 description."""
+    """코드노드가 한 테이블에 대해 갖는 직접 역할 + 결정론 컬럼 좌표."""
     model_config = ConfigDict(extra="forbid")
 
     table: str = Field(..., description="db.schema.table fqn 또는 table 이름")
@@ -112,7 +191,7 @@ class TableInsightItem(BaseModel):
     )
     columns: list[ColumnInsight] = Field(
         default_factory=list,
-        description="주입된 해당 테이블 허용 컬럼을 정확히 한 번씩 모두 반환한 함수 관점 의미",
+        description="LLM 의미가 아닌 주입된 해당 테이블 컬럼의 결정론 좌표 근거",
     )
 
 
@@ -200,14 +279,21 @@ class RulesExamplesOutput(BaseModel):
 
 
 class BatchSummaryItem(BaseModel):
-    """배치 노드의 최소 의미 헤더."""
+    """배치 노드의 전체 흐름 요약과 입력 충분성 판정."""
     node_key: str = Field(..., description="입력 줄범위 '<start>-<end>' 그대로 echo")
     summary: str = Field(
         ...,
-        min_length=1,
-        description="노드의 최종 책임만 설명하는 purpose; 분기·코드값을 다시 쓰지 않음",
+        description=SummaryOutput.model_fields["summary"].description,
     )
     stereotype: str = Field("", description="ontology_roles.yaml 풀에서 선택")
+    evidence_status: EvidenceStatus = Field(
+        ..., description=SummaryOutput.model_fields["evidence_status"].description,
+    )
+    missing_context: list[str] = Field(
+        default_factory=list,
+        max_length=8,
+        description=SummaryOutput.model_fields["missing_context"].description,
+    )
     questions: list[QuestionItem] = Field(
         default_factory=list,
         max_length=15,
@@ -221,8 +307,12 @@ class BatchSummaryItem(BaseModel):
 
     @model_validator(mode="after")
     def _require_grounded_text(self) -> "BatchSummaryItem":
-        if not self.summary.strip():
-            raise ValueError("summary cannot be empty")
+        _validate_evidence_state(
+            summary=self.summary,
+            stereotype=self.stereotype,
+            evidence_status=self.evidence_status,
+            missing_context=self.missing_context,
+        )
         return self
 
 
@@ -303,10 +393,23 @@ class TableDescription(BaseModel):
     name: str
     logical_name: str = Field(...)   # 짧은 도메인 표시명(물리명과 별개, 근거없으면 빈값) — spec 025
     description: str
-    columns: list[ColumnInsight] = Field(
+    evidence_status: EvidenceStatus
+    missing_context: list[str] = Field(default_factory=list, max_length=8)
+    columns: list[GroundedColumnDescription] = Field(
         ...,
         description="입력 허용 컬럼별 통합 논리명·설명. 이름은 입력 컬럼을 정확히 한 번씩 보존",
     )
+
+    @model_validator(mode="after")
+    def _validate_evidence_state(self) -> "TableDescription":
+        has_meaning = bool(self.logical_name.strip() or self.description.strip())
+        if self.evidence_status == "sufficient" and (not has_meaning or self.missing_context):
+            raise ValueError("sufficient table meaning requires evidence text and no missing_context")
+        if self.evidence_status == "partial" and (not has_meaning or not self.missing_context):
+            raise ValueError("partial table meaning requires evidence text and missing_context")
+        if self.evidence_status == "insufficient" and (has_meaning or not self.missing_context):
+            raise ValueError("insufficient table meaning must stay empty and name missing context")
+        return self
 
 # (옛 ``TableDescriptionsOutput`` 삭제 — 참조 0건. 실제 response_model 은 단수형
 #  ``TableDescription`` (enrich_table_description_step). spec 046 FR-010.)

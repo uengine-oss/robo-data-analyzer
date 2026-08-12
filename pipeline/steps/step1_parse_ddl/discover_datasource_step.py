@@ -21,7 +21,7 @@ from langchain_core.runnables import RunnableConfig
 from graph.edges.has_column import upsert_has_column
 from graph.neo4j_client import Neo4jClient
 from graph.nodes.column import upsert_columns
-from graph.nodes.table import upsert_tables
+from graph.nodes.table import upsert_tables, update_sample_snapshots
 from graph.schema.graph_edges import HasColumn
 from graph.schema.graph_nodes import Column, Table
 from integrations.catalog import catalog_base_url_or_skip, get_table_discovery
@@ -90,6 +90,9 @@ async def discover_datasource_step(state: dict, config: Optional[RunnableConfig]
             await upsert_columns(neo, new_columns)
         if new_edges:
             await upsert_has_column(neo, new_edges)
+        # discovery가 이미 읽은 최대 5행을 같은 분석 그래프에 한 번만 고정한다.
+        # Architect/MCP 조회 때 실DB를 다시 접속하지 않아 지연과 부하가 늘지 않는다.
+        await update_sample_snapshots(neo, sample_data)
 
     emit_message(
         stream,

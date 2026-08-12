@@ -49,9 +49,12 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
                 "module_intent": "",
                 "reads": "[]",
                 "writes": "[]",
+                "table_ops": "{}",
+                "data_object_usages": "[]",
                 "referenced_symbols": "[]",
                 "external_evidence": "[]",
                 "callee_summaries": "[]",
+                "branch_index": "(없음)",
                 "id": "code:generic:target",
                 "signature": "target",
                 "code_body": body,
@@ -70,9 +73,9 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
                 self.assertIn(body, rendered)
                 self.assertIn(f"response_locale: {locale}", rendered)
                 self.assertIn("## [TARGET]", rendered)
-                self.assertIn("## [DIRECT_EVIDENCE]", rendered)
+                self.assertIn("## [EFFECTIVE_FLOW_EVIDENCE]", rendered)
                 self.assertIn("## [SURROUNDING_CONTEXT — NOT TARGET BEHAVIOR]", rendered)
-                self.assertIn("## [CALLEE_INTERFACE — NOT CALLEE IMPLEMENTATION]", rendered)
+                self.assertIn("## [CALLEE_INTERFACES — NOT CALLEE IMPLEMENTATION]", rendered)
                 self.assertIn("coordinate_system: absolute-file-line", rendered)
                 self.assertIn("잘못:", rendered)
                 self.assertIn("좋음:", rendered)
@@ -144,18 +147,37 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
         ):
             for name in names:
                 with self.subTest(strategy=strategy, name=name):
-                    template = _load_rule(
+                    loaded = _load_rule(
                         ROOT / "llm" / "prompts" / strategy, name
-                    )["user_template"]
-                    self.assertTrue(template.lstrip().startswith("# [분할 계약:"))
+                    )
+                    template = loaded["user_template"]
+                    expanded = template
+                    for key, value in loaded["static_values"].items():
+                        expanded = expanded.replace("{" + key + "}", value)
+                    self.assertTrue(template.lstrip().startswith("# [TASK"))
                     target_marker = (
-                        "## [TARGET_BATCH]" if strategy == "dbms" else "## [TARGET]"
+                        "## [TARGET_BATCH]"
+                        if strategy == "dbms"
+                        else (
+                            "## [TABLE_USAGE_TARGET]"
+                            if name == "code_table_insights"
+                            else "## [TARGET]"
+                        )
                     )
                     source_marker = (
-                        "## [TARGET_NODES]" if strategy == "dbms" else "## [SOURCE]"
+                        "## [TABLE_USAGE_TARGETS]"
+                        if name == "code_table_insights_batch"
+                        else (
+                            "## [TARGET_NODES]" if strategy == "dbms" else "## [SOURCE]"
+                        )
                     )
-                    self.assertLess(template.index("# [분할 계약:"), template.index(target_marker))
+                    self.assertLess(template.index("# [TASK"), template.index(target_marker))
                     self.assertLess(template.index(target_marker), template.index(source_marker))
+                    for contract_marker in (
+                        "[OUTPUT CONTRACT", "[INPUT GUIDE", "[DECISION", "[SELF CHECK]",
+                    ):
+                        self.assertIn(contract_marker, expanded)
+                    self.assertLess(template.index("# [TASK"), template.index("# [INPUT"))
 
         rules = _load_rule(
             ROOT / "llm" / "prompts" / "framework", "code_rules_examples"
@@ -167,7 +189,7 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
         self.assertLess(rules.index("{referenced_symbols}"), rules.index("{assigned_rows}"))
 
     def test_rule_risk_contract_is_one_shared_good_bad_source(self) -> None:
-        # 모든 전략은 같은 cond/then/nl 출력 계약을 사용하며 모델이 값을 채운다.
+        # 모든 전략은 같은 NL-only 출력 계약을 사용하고 구조는 parser 증거가 채운다.
         prompts = (
             _load_rule(ROOT / "llm" / "prompts" / "framework", "code_rules_examples"),
             _load_rule(ROOT / "llm" / "prompts" / "dbms", "code_rules_examples_batch"),
@@ -175,12 +197,15 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
         )
         contracts = []
         for prompt in prompts:
-            text = prompt["user_template"]
-            for field in ("`cond`", "`then`", "`nl`"):
-                self.assertIn(field, text)
-            self.assertIn("스키마는 좌표와 필드만 강제하며 답을 제공하지 않는다", text)
+            raw_template = prompt["user_template"]
+            text = raw_template.replace(
+                "{rule_leaf_contract}", prompt["static_values"]["rule_leaf_contract"],
+            )
+            self.assertIn("`nl`", text)
+            self.assertIn("같은 parser", text)
+            self.assertNotIn("구조화된 `cond`, `then`", text)
             self.assertIn("rule_leaf_contract", prompt["static_values"])
-            self.assertIn("{rule_leaf_contract}", text)
+            self.assertIn("{rule_leaf_contract}", raw_template)
             self.assertNotIn("그대로 출력", text)
             self.assertNotIn("anchor_line: <", text)
             contracts.append(prompt["static_values"]["rule_leaf_contract"])
@@ -205,21 +230,24 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
                 ])
                 self.assertEqual(line, parsed.rules[0].anchor_line)
 
-        # anchor는 required R<행> 키로 강제하고, 각 키 안의 cond/then/nl도 모델이
-        # 닫힌 response_format에 맞춰 모두 출력한다.
+        # anchor는 required R<행> 키로 강제하고, 모델은 nl만 출력한다.
+        # cond/then은 parser 증거에서 단일 정규화 경계가 결합한다.
         for strategy, rule_name in (
             ("framework", "code_rules_examples"),
             ("dbms", "code_rules_examples_batch"),
             ("dbms", "code_gate_rules_batch"),
         ):
-            text = _load_rule(
+            prompt = _load_rule(
                 ROOT / "llm" / "prompts" / strategy, rule_name
-            )["user_template"]
+            )
+            text = prompt["user_template"].replace(
+                "{rule_leaf_contract}", prompt["static_values"]["rule_leaf_contract"],
+            )
             with self.subTest(strategy=strategy, rule=rule_name):
                 self.assertIn("R<행>", text)
-                for field in ("`cond`", "`then`", "`nl`"):
-                    self.assertIn(field, text)
-                self.assertIn("답을 제공하지 않는다", text)
+                self.assertIn("`nl`", text)
+                self.assertIn("같은 parser", text)
+                self.assertNotIn("구조화된 `cond`, `then`", text)
                 self.assertNotIn("anchor_line: <", text)
 
     def test_framework_rule_prompt_keeps_only_direct_row_evidence(self) -> None:
@@ -230,7 +258,7 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
         # 고정 의미 문맥 → 이번 할당 → 행별 직접 증거 순이다. 자식 Rule을
         # 다시 복사하면 부모가 자식 의미를 소유하고 summary-only 해제를 막는다.
         self.assertLess(
-            text.index("referenced_symbols_json:"), text.index("assigned_rows:"),
+            text.index("target_referenced_symbol_definitions_json:"), text.index("assigned_rows:"),
         )
         self.assertLess(text.index("assigned_rows:"), text.index("rule_evidence_json:"))
         self.assertNotIn("child_business_logic", text)

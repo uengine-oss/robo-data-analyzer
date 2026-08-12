@@ -1,0 +1,239 @@
+{
+  "schema_version": "1.0.0",
+  "authored_after_selection_before_selected_llm_review": true,
+  "truth_basis": [
+    "sealed shopmall source slices listed in semantic-sample-20.json",
+    "pre-existing shopmall quality-expectations.json for structural CALL/RW/control only"
+  ],
+  "scope_note": "These judgments cover only the 20 sealed functions and listed behavior cases; they do not generalize to all 1609 RULE rows.",
+  "functions": [
+    {
+      "function": "checkout_process",
+      "source": "order/order.c:86-640",
+      "cases": [
+        {"lines":"126-135","expect":"null out_order_id or non-positive member_id returns RET_INVALID; a non-null output is initialized to 0"},
+        {"lines":"148-199","expect":"authentication failure maps RET_LIMIT to RET_LIMIT, RET_DENIED to RET_DENIED, other failures to RET_FAIL; a second daily-count check blocks count above DAILY_AUTH_LIMIT"},
+        {"lines":"227-280","expect":"empty/invalid cart or failed/insufficient representative stock prevents checkout before order creation"},
+        {"lines":"287-330","expect":"non-positive cart total, invalid representative price, failed limit validation, or non-positive recalculated amount aborts with the source-specific code"},
+        {"lines":"338-390","expect":"orders is inserted in receive state, then stock is reserved and order items are created; failures call rollback_order with the corresponding reason"},
+        {"lines":"407-451","expect":"negative shipping fee falls back to BASE_SHIP_FEE; grade policy Y or order amount at least FREE_SHIP_AMOUNT makes it zero; otherwise a delegated zero is forced back to the base fee"},
+        {"lines":"459-490","expect":"usable points are capped at pay_amount and ignored below MIN_USE_POINT; failed point_use becomes non-fatal no-use; pay_amount is never left negative"},
+        {"lines":"499-549","expect":"VIP uses easy payment and others card; payment failure rolls back and marks the order error; paid-state update failure calls payment_cancel then rolls back"},
+        {"lines":"568-599","expect":"missing address or shipping failure leaves a paid order for later handling; successful shipping advances the order to ready"},
+        {"lines":"607-639","expect":"cart_clear failure falls back to direct DELETE; commit failure rolls back and fails; point earning after commit is non-fatal; success sets out_order_id and returns RET_OK"}
+      ]
+    },
+    {
+      "function": "member_authenticate",
+      "source": "member/member.c:578-883",
+      "cases": [
+        {"lines":"595-620","expect":"invalid member_id or auth_type outside 1,2,3 sets AUTH_RSLT_MISS when possible and returns RET_INVALID"},
+        {"lines":"645-697","expect":"missing member returns RET_NOT_FOUND, load error RET_FAIL, withdrawn member RET_DENIED after recording a try, daily limit sets AUTH_RSLT_OVER and returns RET_LIMIT"},
+        {"lines":"704-735","expect":"mobile auth requires stored/decryptable non-empty mobile; SMS send failure is explicitly non-fatal"},
+        {"lines":"738-754","expect":"email auth succeeds only for a non-empty address containing @"},
+        {"lines":"756-776","expect":"simple auth treats nested_depth above 3 as expired and a negative dispatch token result as mismatch"},
+        {"lines":"780-803","expect":"only successful mobile auth attempts the member last-login UPDATE"},
+        {"lines":"835-845","expect":"authentication history is attempted for every final result and history failure does not change that result"},
+        {"lines":"848-881","expect":"AUTH_RSLT_OK returns RET_OK, MISS/EXPIRE return RET_FAIL, OVER returns RET_LIMIT, and result_code_out receives the final code when non-null"}
+      ]
+    },
+    {
+      "function": "payment_authorize",
+      "source": "payment/payment.c:772-1115",
+      "cases": [
+        {"lines":"803-817","expect":"invalid order, non-positive amount, or null approval output returns RET_INVALID"},
+        {"lines":"829-872","expect":"missing order returns RET_NOT_FOUND; only receive-state orders proceed; paid is RET_DUP, cancelled/other states RET_DENIED, and amount mismatch RET_INVALID"},
+        {"lines":"875-892","expect":"amount above PAY_REAUTH_AMOUNT requires member reauthentication and failure returns RET_DENIED"},
+        {"lines":"897-943","expect":"card/easy paths fall back to the literal test card when lookup fails; point-only checks balance and point_use, but the sealed code still falls through to the later common PG path"},
+        {"lines":"948-997","expect":"missing PG configuration fails; PG-forced reauth is honored; PG limit maps to RET_LIMIT and other approval failures record failure history then RET_FAIL"},
+        {"lines":"1015-1031","expect":"virtual-account success records payment, returns the approval number, commits, and does not update paid order/settlement/points in this call"},
+        {"lines":"1034-1080","expect":"normal success requires payment record and paid-order update; settlement and point-earn failures are warnings and do not revoke payment success"},
+        {"lines":"1083-1114","expect":"success-history failure is non-fatal, approval output is set, but commit failure rolls back and returns RET_FAIL"}
+      ]
+    },
+    {
+      "function": "shipping_request",
+      "source": "delivery/shipping.c:843-1114",
+      "cases": [
+        {"lines":"877-915","expect":"invalid order/address/required address fields, delivery-company selection failure, or mobile/address encryption failure aborts before shipping persistence"},
+        {"lines":"918-990","expect":"missing shipping row is inserted with a new sequence; an existing shipped row returns RET_DUP; an existing unshipped row reuses its sequence and is updated"},
+        {"lines":"993-1012","expect":"initial trace failure is non-fatal; courier failure adds a return trace, rolls back, and returns RET_FAIL"},
+        {"lines":"1015-1048","expect":"missing invoice uses TMP plus shipping_seq; invoice encryption failure stores an empty encrypted value, while invoice UPDATE failure is fatal"},
+        {"lines":"1051-1072","expect":"gather/trunk/out traces are created; stock deduction and order-shipping update are both fatal on failure"},
+        {"lines":"1075-1087","expect":"SMS failure is non-fatal; commit failure rolls back and fails"},
+        {"lines":"1090-1113","expect":"channel Q additionally marks done and dispatches review_point notify; notify failure is non-fatal; function returns RET_OK"}
+      ]
+    },
+    {
+      "function": "promotion_apply_coupon",
+      "source": "payment/promotion.c:627-855",
+      "cases": [
+        {"lines":"647-683","expect":"discount_out is zeroed when present; validation failure is returned unchanged after a best-effort failure-history insert"},
+        {"lines":"686-717","expect":"missing order returns RET_NOT_FOUND, query error RET_FAIL, and failed grade lookup falls back to G0"},
+        {"lines":"721-755","expect":"VIP-only policy N denies; absent policy permits only G4/G5; policy query error logs and proceeds"},
+        {"lines":"759-770","expect":"zero discount without free-shipping returns RET_DENIED for DENY/GRADE last errors and RET_INVALID otherwise"},
+        {"lines":"773-796","expect":"negative orders update fails and zero affected rows is treated as a concurrent RET_DUP"},
+        {"lines":"799-843","expect":"recalc dispatch failure and promo-point failure are non-fatal after coupon persistence; undocumented/event coupons attempt promo points"},
+        {"lines":"847-854","expect":"success writes disc to discount_out when present and returns RET_OK"}
+      ]
+    },
+    {
+      "function": "review_register",
+      "source": "member/review_point.c:720-952",
+      "cases": [
+        {"lines":"747-766","expect":"member/order/product validity and rating range 1..5 are mandatory"},
+        {"lines":"776-794","expect":"not-purchased returns RET_DENIED, missing order/item RET_NOT_FOUND, and other purchase-check error RET_FAIL"},
+        {"lines":"797-817","expect":"duplicate-check query error fails and an existing same member/order/product review returns RET_DUP"},
+        {"lines":"823-845","expect":"missing product name does not block registration; rating <=2 maps content flag 07, rating 3 maps 03, and ratings 4..5 map 05"},
+        {"lines":"847-878","expect":"sequence or review insert failure returns RET_FAIL; a successful insert establishes a positive review_id"},
+        {"lines":"880-929","expect":"rating update failure and review point earning failure are non-fatal; earning uses buy_amount/10 only when buy_amount is positive"},
+        {"lines":"935-951","expect":"commit failure rolls back and returns RET_FAIL; otherwise the positive review_id is returned"}
+      ]
+    },
+    {
+      "function": "inventory_stocktake",
+      "source": "inventory/inventory.c:787-1025",
+      "cases": [
+        {"lines":"817-827","expect":"empty warehouse means all warehouses; a non-empty invalid warehouse returns RET_INVALID"},
+        {"lines":"841-870","expect":"no stock rows is a successful empty run; opening-query failure returns RET_FAIL"},
+        {"lines":"884-910","expect":"real_qty defaults to book avail_qty; successful count dispatch with positive hold subtracts hold_qty/SAFE_MARGIN and floors at zero; dispatch failure leaves no difference"},
+        {"lines":"912-969","expect":"RET_OK difference does nothing, RET_DUP auto-adjusts without audit, RET_LIMIT audits and auto-adjusts, RET_DENIED audits for manual review without adjustment, other results increment errors"},
+        {"lines":"989-1003","expect":"the million-row cap breaks the loop; a negative fetch result is counted as an error after partial processing"},
+        {"lines":"1019-1024","expect":"any accumulated error returns RET_FAIL; hard manual-review differences alone still return RET_OK"}
+      ]
+    },
+    {
+      "function": "settlement_daily_batch",
+      "source": "payment/settlement.c:757-958",
+      "cases": [
+        {"lines":"787-817","expect":"settle_dt must be non-empty and LEN_DATE; load failure rolls back and fails, while no targets returns RET_OK"},
+        {"lines":"834-879","expect":"invalid order ids, missing payments, non-target results, and non-positive amounts are skipped; payment query errors increment errors"},
+        {"lines":"881-900","expect":"positive point use plus positive pay amount classifies MIX; due to the earlier non-positive guard the POINT branch is unreachable in this function; otherwise CARD"},
+        {"lines":"902-921","expect":"negative settlement amount is floored to zero; upsert OK increments ok and pending, DUP skips, other failure increments errors"},
+        {"lines":"923-940","expect":"interim commits occur at STL_BATCH_UNIT and remaining pending work is committed after the loop"},
+        {"lines":"943-957","expect":"the sealed function returns RET_OK even when err_cnt is positive, explicitly treating errors as partial success"}
+      ]
+    },
+    {
+      "function": "validate_coupon",
+      "source": "payment/promotion.c:66-210",
+      "cases": [
+        {"lines":"80-97","expect":"flag_out is initialized to zero; empty coupon or non-positive order id returns RET_INVALID"},
+        {"lines":"102-133","expect":"missing order returns RET_NOT_FOUND, query error RET_FAIL, and any existing coupon including the same coupon returns RET_DUP"},
+        {"lines":"136-156","expect":"cancelled, error, or done orders are denied; shipping state logs but continues"},
+        {"lines":"159-193","expect":"VIP15 sets VIP-only, free-ship sets free-shipping, XMAS/EVT0722 set undocumented; unknown code is accepted only when get_code_name supplies a non-empty name, then marked undocumented"},
+        {"lines":"195-209","expect":"any non-OK period check returns RET_DENIED; success publishes flags and returns RET_OK"}
+      ]
+    },
+    {
+      "function": "payment_cancel",
+      "source": "payment/payment.c:1123-1354",
+      "cases": [
+        {"lines":"1147-1171","expect":"invalid order returns RET_INVALID, missing payment RET_NOT_FOUND, and payment query error RET_FAIL"},
+        {"lines":"1174-1196","expect":"done proceeds, already-cancelled returns RET_DUP, wait skips PG later, partial proceeds with warning, and unknown status returns RET_DENIED"},
+        {"lines":"1198-1221","expect":"non-wait payments require successful PG communication and a non-denied response; failures return RET_FAIL"},
+        {"lines":"1223-1259","expect":"payment and orders cancellation updates are mandatory and roll back on failure"},
+        {"lines":"1261-1288","expect":"settlement cancellation uses negative paid_amount when a sequence exists; sequence or insert failure is non-fatal"},
+        {"lines":"1290-1329","expect":"earned points are clawed back through negative history and member balance subtraction when sequences permit; failures are warnings"},
+        {"lines":"1331-1353","expect":"cancellation history is best-effort; commit failure rolls back and fails, otherwise RET_OK"}
+      ]
+    },
+    {
+      "function": "cart_add_item",
+      "source": "order/cart.c:281-482",
+      "cases": [
+        {"lines":"308-340","expect":"invalid member/product/qty returns RET_INVALID and request qty above MAX_CART_ITEM returns RET_LIMIT"},
+        {"lines":"347-355","expect":"non-displayable or display lookup failure returns RET_DENIED"},
+        {"lines":"365-407","expect":"missing stock row or insufficient avail-hold returns RET_LIMIT; query error RET_FAIL; negative avail/hold are normalized to zero"},
+        {"lines":"414-449","expect":"line-count failure returns RET_FAIL; at the line limit only a genuinely new product line is rejected"},
+        {"lines":"455-480","expect":"successful upsert requires successful commit; duplicate/other upsert failures roll back and return RET_FAIL; only the successful path returns RET_OK"}
+      ]
+    },
+    {
+      "function": "apply_point_balance",
+      "source": "member/review_point.c:529-708",
+      "cases": [
+        {"lines":"555-586","expect":"member, point type, and positive amount are required; EARN/REVERT add and USE/EXPIRE subtract; unknown type is invalid"},
+        {"lines":"591-609","expect":"missing member returns RET_NOT_FOUND and member-query error RET_FAIL"},
+        {"lines":"611-625","expect":"withdrawn members cannot earn/revert but may use/expire for balance cleanup"},
+        {"lines":"627-641","expect":"subtracting more than current balance returns RET_DENIED; otherwise new_balance equals current minus or plus amount"},
+        {"lines":"643-677","expect":"history sequence and insert must succeed with a positive affected count"},
+        {"lines":"679-707","expect":"member balance update must affect a row; success records the exact new balance and returns RET_OK"}
+      ]
+    },
+    {
+      "function": "calc_member_grade",
+      "source": "member/member.c:344-455",
+      "cases": [
+        {"lines":"356-384","expect":"outputs are initialized; negative and under 100000 map G1, then thresholds 500000/G2, 1000000/G3, 3000000/G4, otherwise G5"},
+        {"lines":"386-408","expect":"hardcoded rates are G1 0.5, G2 1, G3 2, G4 3, G5 5"},
+        {"lines":"410-440","expect":"a successful positive policy rate overrides the hardcoded rate; non-positive, not-found, or query error preserves it"},
+        {"lines":"443-454","expect":"non-null outputs receive final grade/rate and the function always returns RET_OK"}
+      ]
+    },
+    {
+      "function": "validate_transition",
+      "source": "delivery/shipping.c:116-176",
+      "cases": [
+        {"lines":"118-136","expect":"empty states are invalid, same state is idempotently OK, DONE/RETURN current states are terminal and denied, and next RETURN is otherwise allowed"},
+        {"lines":"140-152","expect":"RECV to GATHER is normal; RECV to OUT is allowed only on channel Q; other RECV transitions are invalid"},
+        {"lines":"153-170","expect":"only GATHER->TRUNK, TRUNK->OUT, and OUT->DONE are normal"},
+        {"lines":"171-174","expect":"unknown current state is audited and returns RET_INVALID"}
+      ]
+    },
+    {
+      "function": "cart_calc_total",
+      "source": "order/cart.c:492-666",
+      "cases": [
+        {"lines":"521-541","expect":"invalid member or row-load failure returns RET_FAIL; zero selected rows returns zero"},
+        {"lines":"549-592","expect":"vanished row ends the loop; query error fails; non-selected, empty product, or non-positive qty rows are skipped"},
+        {"lines":"594-640","expect":"catalog price is preferred; non-positive catalog price falls back to PRODUCT; missing product skips, query error fails, and negative DB price is floored to zero"},
+        {"lines":"643-665","expect":"line amount is qty times unit price, negative line amount is floored to zero, and total accumulates and is returned"}
+      ]
+    },
+    {
+      "function": "create_order_items",
+      "source": "order/order.c:991-1100",
+      "cases": [
+        {"lines":"999-1026","expect":"output count is initialized; invalid ids return RET_INVALID; no cart returns RET_NOT_FOUND; query error RET_FAIL; cart count is truncated to MAX_ORDER_ITEM"},
+        {"lines":"1028-1063","expect":"individual cart fetch failures, empty product, non-positive qty, or non-positive price skip that row rather than failing all"},
+        {"lines":"1064-1086","expect":"sequence failure or order_item insert failure aborts with RET_FAIL; each success increments made"},
+        {"lines":"1089-1099","expect":"zero created items returns RET_FAIL; otherwise item_cnt_out receives made and RET_OK is returned"}
+      ]
+    },
+    {
+      "function": "db_commit",
+      "source": "util/common_util.c:124-128",
+      "cases": [
+        {"lines":"124-128","expect":"logs COMMIT and unconditionally returns RET_OK; it has no domain read/write semantics"}
+      ]
+    },
+    {
+      "function": "local_trim",
+      "source": "inventory/catalog.c:63-99",
+      "cases": [
+        {"lines":"69-75","expect":"null or empty input returns without mutation"},
+        {"lines":"76-85","expect":"trailing spaces, tabs, newline, and carriage return are removed"},
+        {"lines":"86-98","expect":"leading spaces and tabs are removed by shifting the remaining string; internal whitespace is preserved"}
+      ]
+    },
+    {
+      "function": "next_ship_status",
+      "source": "delivery/shipping.c:184-225",
+      "cases": [
+        {"lines":"188-197","expect":"null output returns RET_INVALID; empty current state sets RECV and returns RET_OK"},
+        {"lines":"203-214","expect":"RECV->GATHER, GATHER->TRUNK, TRUNK->OUT, and OUT->DONE"},
+        {"lines":"215-224","expect":"DONE and RETURN have no next state and return RET_NOT_FOUND; unknown state returns RET_INVALID"}
+      ]
+    },
+    {
+      "function": "calc_earn_rate",
+      "source": "member/review_point.c:348-398",
+      "cases": [
+        {"lines":"359-368","expect":"empty grade immediately returns EARN_RATE_G1; non-empty grade performs a code-name lookup"},
+        {"lines":"370-385","expect":"G1/G2/G3/G4/G5 map respectively to EARN_RATE_G1/G2/G3/G4/G5"},
+        {"lines":"386-397","expect":"unknown grade audits and falls back to EARN_RATE_G1"}
+      ]
+    }
+  ]
+}

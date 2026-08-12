@@ -101,9 +101,45 @@ class SourceExcerptContractTest(unittest.TestCase):
                 parent, {"parent": parent, "child": child}, SourceFileCache()
             )
 
-            self.assertIn("2-4 | [CONTEXT_SUMMARY child_range=2-4]", rendered)
+            self.assertIn(
+                "2-4 | [CHILD_SUMMARY_CANDIDATE child_range=2-4 "
+                "authority=non_source evidence_status=sufficient missing_context=[]]",
+                rendered,
+            )
             self.assertIn("1 | BEGIN", rendered)
             self.assertIn("5 | END;", rendered)
+
+    def test_body_compaction_does_not_reuse_batch_packing_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "sample.sql"
+            source.write_text(
+                "BEGIN\nIF value <> 'D' THEN\nflag := 'Y';\nEND IF;\nEND;",
+                encoding="utf-8",
+            )
+            parent = AnalysisContext(
+                id="parent",
+                signature="parent",
+                file_path=str(source),
+                start_line=1,
+                end_line=5,
+                token_count=2_000,
+                extra={"child_ids": ("child",)},
+            )
+            child = AnalysisContext(
+                id="child",
+                signature="child",
+                file_path=str(source),
+                start_line=2,
+                end_line=4,
+                summary="value가 D이면 flag를 Y로 설정한다.",
+            )
+
+            rendered = body_for(
+                parent, {"parent": parent, "child": child}, SourceFileCache(),
+            )
+
+            self.assertIn("value <> 'D'", rendered)
+            self.assertNotIn("CHILD_SUMMARY_CANDIDATE", rendered)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ analyzed_description = analyze_code 3분할 합성 설명 (enrich step 이 SET).
 """
 from __future__ import annotations
 
+import json
 from typing import Iterable
 
 from graph.schema.graph_nodes import Table
@@ -41,6 +42,8 @@ UNWIND $items AS item
 MATCH (t:TABLE {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 SET t.analyzed_description = item.analyzed_description,
     t.logical_name = item.logical_name,
+    t.semantic_evidence_status = item.semantic_evidence_status,
+    t.semantic_missing_context = item.semantic_missing_context,
     t.description_source = CASE
         WHEN coalesce(t.description, '') <> '' THEN t.description_source
         WHEN coalesce(item.analyzed_description, '') <> '' THEN 'code'
@@ -48,6 +51,19 @@ SET t.analyzed_description = item.analyzed_description,
 """
 
 MATCH_ANALYZED_TARGETS_QUERY = f"""
+MATCH (t:TABLE {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+WHERE t.id IN $ids
+RETURN count(t) AS matched
+"""
+
+SET_SAMPLE_SNAPSHOT_QUERY = f"""
+UNWIND $items AS item
+MATCH (t:TABLE {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+SET t.sample_snapshot_json = item.sample_snapshot_json,
+    t.sample_snapshot_source = 'datasource'
+"""
+
+MATCH_SAMPLE_TARGETS_QUERY = f"""
 MATCH (t:TABLE {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
 WHERE t.id IN $ids
 RETURN count(t) AS matched
@@ -90,4 +106,26 @@ async def update_analyzed_descriptions(client: Neo4jClient, updates: list[dict])
         guard_query=MATCH_ANALYZED_TARGETS_QUERY,
         write_query=SET_ANALYZED_QUERY,
         items=updates,
+    )
+
+
+async def update_sample_snapshots(
+    client: Neo4jClient, snapshots: dict[str, dict],
+) -> int:
+    """Persist the already-read analysis sample once; Architect never re-queries the DB."""
+    items = [
+        {
+            "id": table_id,
+            "sample_snapshot_json": json.dumps(
+                payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+            ),
+        }
+        for table_id, payload in sorted(snapshots.items())
+    ]
+    if not items:
+        return 0
+    return await client.run_guarded_batch_unwind(
+        guard_query=MATCH_SAMPLE_TARGETS_QUERY,
+        write_query=SET_SAMPLE_SNAPSHOT_QUERY,
+        items=items,
     )

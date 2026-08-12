@@ -210,6 +210,34 @@ def statement_effect_ops() -> dict[str, str]:
     return {str(label): str(op) for label, op in data.items()}
 
 
+@lru_cache(maxsize=1)
+def dml_effect_ops() -> dict[str, str]:
+    """ontology ``dml_effect_ops`` — DML 구문 종류 → Rule 직접 효과 op (spec 119).
+
+    step5 링커가 DML 노드마다 만든 (테이블, dml_type) 사실을 rule 효과 어휘로 옮기는
+    유일한 지점이다. 미선언 dml_type 의 처리는 **소비자가 좌표와 함께 실패**한다 —
+    조용히 버리면 업무 효과가 소리 없이 사라진다(헌법 IV).
+    """
+    data = _load_ontology().get("dml_effect_ops") or {}
+    return {str(dml_type).upper(): str(op) for dml_type, op in data.items()}
+
+
+@lru_cache(maxsize=1)
+def callsite_labels() -> frozenset[str]:
+    """ontology ``callsite_labels`` — rule 증거의 호출 좌표를 제공하는 CodeNode 라벨.
+
+    framework 는 parser 가 호출을 노드가 아닌 call_site 로 내보내므로 이 집합이 비어 있고,
+    DBMS 는 ``CALL`` 이 실제 CodeNode 다. 모든 언어 값의 합집합을 돌려준다 —
+    소비자는 언어를 분기하지 않는다(spec 119).
+    """
+    languages = _load_ontology().get("callsite_labels") or {}
+    return frozenset(
+        str(label)
+        for labels in languages.values()
+        for label in (labels or [])
+    )
+
+
 def unsupported_construct_patterns(lang: str) -> dict[str, str]:
     """ontology ``unsupported_constructs`` — 결정론 해석 불가 구문의 kind → 정규식.
 
@@ -223,7 +251,7 @@ def unsupported_construct_patterns(lang: str) -> dict[str, str]:
 def statement_labels() -> frozenset[str]:
     """Return every structural-statement label declared by the language ontology.
 
-    parser spec 016 이 emit 하는 RETURN/THROW/RAISE/BREAK/CONTINUE/GOTO/ASSIGNMENT.
+    parser spec 016 이 emit 하는 RETURN/THROW/RAISE/BREAK/CONTINUE/GOTO/LABEL/ASSIGNMENT.
     routine 도 branch 도 아니므로 LLM 분석 대상에서 제외되고, branch_inventory 가
     종료행·반환식·대입의 AST 정본으로 소비한다.
     """
@@ -309,6 +337,33 @@ def complement_owner_types(lang: str) -> frozenset[str]:
     if unknown:
         raise ValueError(
             f"미등록 complement owner type: {lang}.{sorted(unknown)}"
+        )
+    return frozenset(values)
+
+
+@lru_cache(maxsize=None)
+def alternative_clause_types(lang: str) -> frozenset[str]:
+    """부모 판정의 **본문이 아니라 대안 절**인 canonical 제어 타입 (spec 118 §2.3).
+
+    PL/SQL parser 는 ``ELSIF``/``ELSE`` 를 ``IF`` 의 자식으로 낸다(평면 형상). 이 사실이
+    없으면 조상 사슬이 부모 조건을 "성립"으로 상속해 경로가 정반대가 된다
+    (실측: `FN_EDIT_YN.sql:41,50,52`). C/Java/Python 은 ``else { if … }`` 중첩이라
+    빈 목록이며, 빈 목록은 "해당 없음"의 **명시**다 — 미선언은 실패다.
+    """
+    raw = source_lexicon(lang).get("alternative_clause_types")
+    if not isinstance(raw, list):
+        raise ValueError(
+            f"source_lexicon.{lang}.alternative_clause_types 는 list 여야 한다"
+        )
+    values = tuple(str(node_type).strip().upper() for node_type in raw)
+    if any(not value for value in values) or len(values) != len(set(values)):
+        raise ValueError(
+            f"잘못되거나 중복된 alternative clause type: {lang}.{raw!r}"
+        )
+    unknown = set(values) - set(control_structure_labels())
+    if unknown:
+        raise ValueError(
+            f"미등록 alternative clause type: {lang}.{sorted(unknown)}"
         )
     return frozenset(values)
 

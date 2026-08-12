@@ -55,6 +55,7 @@ from graph.schema.graph_nodes import (
     Rule,
     Schema,
     Table,
+    ObjectReference,
     Variable,
     ExternalChunk,
     ProjectFile,
@@ -79,6 +80,7 @@ class WorkflowState(TypedDict, total=False):
     # ── step1_parse_ddl 결과 ──────────────────────
     schemas: list[Schema]
     tables: list[Table]
+    object_references: list[ObjectReference]
     columns: list[Column]
     has_column_edges: list[HasColumn]
     # BELONGS_TO 는 두 step 이 누적: step1(Table→Schema) + step2(그릇 FILE/CLASS→Package).
@@ -130,6 +132,7 @@ class WorkflowState(TypedDict, total=False):
     # catalog sample-context로 받은 테이블별 실제 샘플행 — step7 분석 입력값.
     # {table_fqn: {columns, sample_rows}}. 토글 off / datasource 미지정 / 미매칭 → 키 없음.
     table_sample_data: dict[str, dict]
+    data_object_resolution_metrics: dict[str, int | float]
 
     # ── step7 Example Mapping 결과 (analyze_code 함수 단위 누적) ──
     # 비즈니스 로직 3가지 (rules/examples/questions) + 관련 엣지 6종.

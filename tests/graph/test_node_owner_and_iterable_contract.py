@@ -5,13 +5,60 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from graph.nodes.module import upsert_modules
-from graph.schema.graph_nodes import Module
+from graph.nodes.code_node import update_summaries
+from graph.nodes.stereotype_label import apply_stereotype_labels
+from graph.schema.graph_nodes import CodeNode, Module
 
 
 GRAPH_DIRECTORY = Path(__file__).resolve().parents[2] / "graph"
 
 
 class NodeOwnerAndIterableContractTest(unittest.IsolatedAsyncioTestCase):
+    async def test_stereotype_replacement_clears_stale_labels_even_for_empty_role(self) -> None:
+        client = AsyncMock()
+
+        await apply_stereotype_labels(
+            client, [("a", "Query"), ("b", ""), ("a", "Command")]
+        )
+
+        self.assertEqual(2, client.run_batch_unwind.await_count)
+        set_query, set_items = client.run_batch_unwind.await_args_list[0].args
+        self.assertIn("REMOVE", set_query)
+        self.assertIn("SET node:`COMMAND`", set_query)
+        self.assertNotIn("SET node:`QUERY`", set_query)
+        self.assertEqual([{"id": "a"}], set_items)
+        clear_query, clear_items = client.run_batch_unwind.await_args_list[1].args
+        self.assertIn("REMOVE", clear_query)
+        self.assertNotIn("SET node:", clear_query)
+        self.assertEqual([{"id": "b"}], clear_items)
+
+    async def test_insufficient_summary_clears_stale_summary_and_role(self) -> None:
+        node = CodeNode(
+            id="code:insufficient",
+            signature="f()",
+            file_path="sample.py",
+            start_line=1,
+            end_line=1,
+            label="FUNCTION",
+            extra={
+                "summary_evidence_status": "insufficient",
+                "summary_missing_context": ["runtime dispatch target"],
+            },
+        )
+        client = AsyncMock()
+
+        await update_summaries(client, [node])
+
+        self.assertEqual(2, client.run_batch_unwind.await_count)
+        summary_query, summary_items = client.run_batch_unwind.await_args_list[0].args
+        self.assertIn("REMOVE node.domain_terms", summary_query)
+        self.assertIn("node.summary_evidence_status", summary_query)
+        self.assertEqual("insufficient", summary_items[0]["summary_evidence_status"])
+        self.assertNotIn("summary", summary_items[0])
+        clear_query, clear_items = client.run_batch_unwind.await_args_list[1].args
+        self.assertIn("REMOVE", clear_query)
+        self.assertEqual([{"id": node.id}], clear_items)
+
     def test_node_identity_queries_include_analyzer_owner(self) -> None:
         violations: list[str] = []
         candidates = [GRAPH_DIRECTORY / "node_upsert.py", *sorted((GRAPH_DIRECTORY / "nodes").glob("*.py"))]

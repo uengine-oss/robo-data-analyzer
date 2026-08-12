@@ -83,6 +83,37 @@ class FrameworkTableInsightSchemaTest(unittest.TestCase):
                 "table_insights": {"db:t": _item("append-only")}
             })
 
+    def test_column_coordinates_bypass_intermediate_llm_and_are_normalized(self):
+        assignments = {
+            "db:orders": {
+                "STATUS": {
+                    "ownership": "sole_direct_table",
+                    "evidence_lines": [4],
+                    "source_lines": [{"line": 4, "text": "WHERE STATUS = 'P'"}],
+                },
+            },
+        }
+        model = table_insights_response_model(
+            ("db:orders",), (), {"db:orders": "SELECT"}, assignments,
+        )
+        parsed = model.model_validate({
+            "table_insights": {"db:orders": _item("READ-only")},
+        })
+        canonical = normalize_table_insights_response(
+            parsed, ("db:orders",), (), assignments,
+        )
+        column = canonical.table_insights[0].columns[0]
+        self.assertEqual("STATUS", column.name)
+        self.assertEqual([4], column.evidence_lines)
+        self.assertEqual("", column.usage_summary)
+        with self.assertRaises(ValidationError):
+            model.model_validate({
+                "table_insights": {"db:orders": {
+                    **_item("READ-only"),
+                    "columns": {"STATUS": "중간 의미를 만들면 안 된다."},
+                }},
+            })
+
 
 class DbmsTableInsightSchemaTest(unittest.TestCase):
     def test_node_and_table_keys_are_both_required(self):
@@ -138,7 +169,7 @@ class DbmsTableInsightWiringTest(unittest.IsolatedAsyncioTestCase):
             context = AnalysisContext(
                 id="node", signature="update", file_path=str(source),
                 start_line=1, end_line=1,
-                writes=["db:orders"],
+                writes=["db:orders"], direct_writes=["db:orders"],
                 extra={"table_op": {"db:orders": "UPDATE"}},
             )
             slots = PrioritySemaphore(1)

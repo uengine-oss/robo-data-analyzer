@@ -109,7 +109,13 @@ class ParsingErrorEvidenceTest(unittest.IsolatedAsyncioTestCase):
 
 
 class ProviderSchemaBoundaryTest(unittest.IsolatedAsyncioTestCase):
-    async def _invoke(self, parsed: object, *, raw_content: str | None = None):
+    async def _invoke(
+        self,
+        parsed: object,
+        *,
+        raw_content: str | None = None,
+        parsing_error: Exception | None = None,
+    ):
         temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(temporary_directory.cleanup)
         prompts_dir = Path(temporary_directory.name)
@@ -124,7 +130,7 @@ class ProviderSchemaBoundaryTest(unittest.IsolatedAsyncioTestCase):
             ainvoke=AsyncMock(return_value={
                 "raw": raw_msg,
                 "parsed": parsed,
-                "parsing_error": None,
+                "parsing_error": parsing_error,
             })
         )
         with_structured_output = MagicMock(return_value=structured_model)
@@ -223,6 +229,25 @@ class ProviderSchemaBoundaryTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(evidence["response"]["raw"])
         self.assertIsNone(evidence["response"]["parsed"])
         self.assertIn("JSONDecodeError", evidence["metadata"]["parsing_error"])
+
+    async def test_nonstandard_code_escape_is_repaired_without_changing_text(self) -> None:
+        prompts_dir, _boundary, record = await self._invoke(
+            None,
+            raw_content=r'''{"value": "source literal '\0'"}''',
+            parsing_error=ValueError("provider rejected invalid JSON escape"),
+        )
+
+        result = await run_yaml_rule(
+            prompts_dir=prompts_dir,
+            rule_name="boundary",
+            user_values={"value": "input"},
+            response_model=_Response,
+        )
+
+        self.assertEqual(r"source literal '\0'", result.value)
+        evidence = record.call_args.kwargs
+        self.assertEqual(r"source literal '\0'", evidence["response"]["parsed"]["value"])
+        self.assertTrue(evidence["metadata"]["json_escape_repaired"])
 
 
 class RealChainJsonSchemaBoundaryProof(unittest.IsolatedAsyncioTestCase):

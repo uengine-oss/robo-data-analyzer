@@ -2,8 +2,8 @@
 
 The deterministic R/W linker owns which tables a code node accesses.  The LLM
 may describe that use, but it may not add, omit, or reassign table coordinates.
-Column-level ownership is not present in the current linker contract, so this
-schema does not manufacture it from source names.
+Column identity and coordinates come from the deterministic projection and bypass this
+intermediate LLM.  Column meaning is generated once by the final TABLE/COLUMN concern.
 """
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, create_model
 from pipeline.models.code_analysis_output import (
     BatchTableInsightsItem,
     BatchTableInsightsOutput,
+    ColumnInsight,
     TableInsightItem,
     TableInsightsOutput,
 )
@@ -70,6 +71,7 @@ def _table_map_model(
     reads: Iterable[str],
     writes: Iterable[str],
     table_ops: Mapping[str, object],
+    column_assignments: Mapping[str, Mapping[str, object]],
     fingerprint: str,
 ) -> tuple[type[BaseModel], tuple[str, ...]]:
     reads = tuple(str(value) for value in (reads or ()))
@@ -78,24 +80,23 @@ def _table_map_model(
     read_tables = set(reads)
     write_tables = set(writes)
     fields = {}
-    wire_models: dict[tuple[str, ...], type[BaseModel]] = {}
     for table_id in tables:
+        columns = column_assignments.get(table_id, {}) or {}
+        if any(not str(column_name) for column_name in columns):
+            raise ValueError(f"column assignment name must not be empty: {table_id!r}")
         roles = _roles_for(
             table_id,
             read_tables=read_tables,
             write_tables=write_tables,
             table_ops=table_ops,
         )
-        item_model = wire_models.get(roles)
-        if item_model is None:
-            role_type = Literal.__getitem__(roles)
-            item_model = create_model(
-                f"AssignedTableInsightValue_{fingerprint}_{_fingerprint(roles)}",
-                __config__=ConfigDict(extra="forbid"),
-                role=(role_type, Field(...)),
-                usage_summary=(str, Field(..., min_length=1)),
-            )
-            wire_models[roles] = item_model
+        role_type = Literal.__getitem__(roles)
+        item_model = create_model(
+            f"AssignedTableInsightValue_{fingerprint}_{_fingerprint((table_id, roles))}",
+            __config__=ConfigDict(extra="forbid"),
+            role=(role_type, Field(...)),
+            usage_summary=(str, Field(..., min_length=1)),
+        )
         fields[table_id] = (item_model, Field(...))
     return create_model(
         f"AssignedTableInsightMap_{fingerprint}",
@@ -108,17 +109,22 @@ def table_insights_response_model(
     reads: Iterable[str],
     writes: Iterable[str],
     table_ops: Mapping[str, object] | None = None,
+    column_assignments: Mapping[str, Mapping[str, object]] | None = None,
 ) -> type[BaseModel]:
     """Build one closed, required-key schema for a framework code node."""
     reads = tuple(str(value) for value in (reads or ()))
     writes = tuple(str(value) for value in (writes or ()))
     table_ops = table_ops or {}
+    column_assignments = column_assignments or {}
     fingerprint = _fingerprint({
         "reads": reads,
         "writes": writes,
         "table_ops": dict(table_ops),
+        "column_assignments": column_assignments,
     })
-    table_map, _ = _table_map_model(reads, writes, table_ops, fingerprint)
+    table_map, _ = _table_map_model(
+        reads, writes, table_ops, column_assignments, fingerprint,
+    )
     return create_model(
         f"AssignedTableInsightsOutput_{fingerprint}",
         __config__=ConfigDict(extra="forbid"),
@@ -130,14 +136,28 @@ def normalize_table_insights_response(
     output: BaseModel,
     reads: Iterable[str],
     writes: Iterable[str],
+    column_assignments: Mapping[str, Mapping[str, object]] | None = None,
 ) -> TableInsightsOutput:
     """Convert a validated fixed-key response to the canonical list model."""
     tables = _ordered_tables(reads, writes)
+    column_assignments = column_assignments or {}
     return TableInsightsOutput(table_insights=[
         TableInsightItem(
             table=table_id,
-            columns=[],
-            **getattr(output.table_insights, table_id).model_dump(),
+            role=getattr(output.table_insights, table_id).role,
+            usage_summary=getattr(output.table_insights, table_id).usage_summary,
+            columns=[
+                ColumnInsight(
+                    name=column_name,
+                    usage_summary="",
+                    ownership=str(evidence["ownership"]),
+                    evidence_lines=list(evidence["evidence_lines"]),
+                    source_lines=list(evidence["source_lines"]),
+                )
+                for column_name, evidence in (
+                    column_assignments.get(table_id, {}) or {}
+                ).items()
+            ],
         )
         for table_id in tables
     ])
@@ -158,10 +178,12 @@ def batch_table_insights_response_model(
         reads = tuple(str(value) for value in assignment.get("reads", ()) or ())
         writes = tuple(str(value) for value in assignment.get("writes", ()) or ())
         table_ops = assignment.get("table_ops", {}) or {}
+        column_assignments = assignment.get("columns", {}) or {}
         table_map, _ = _table_map_model(
             reads,
             writes,
             table_ops,
+            column_assignments,
             f"{fingerprint}_{_fingerprint(node_key)}",
         )
         item_model = create_model(
@@ -194,6 +216,7 @@ def normalize_batch_table_insights_response(
             item,
             assignment.get("reads", ()) or (),
             assignment.get("writes", ()) or (),
+            assignment.get("columns", {}) or {},
         )
         nodes.append(BatchTableInsightsItem(
             node_key=node_key,

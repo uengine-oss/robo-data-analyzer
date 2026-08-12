@@ -89,6 +89,45 @@ def _resolve_usage_log_path() -> Path:
     return get_run_dir(fallback=SETTINGS.run_output.dir) / "usage.jsonl"
 
 
+def _repair_invalid_json_string_escapes(content: str) -> str:
+    """Escape only non-JSON backslashes occurring inside JSON strings.
+
+    Code-oriented narratives legitimately contain source spellings such as ``\\0``.
+    A model can copy that spelling into a JSON string without doubling the slash even
+    under a provider schema.  The bytes then contain the intended text but are not
+    valid JSON.  Doubling only escape prefixes that JSON does not define preserves the
+    literal text; it does not complete truncated JSON or alter valid escapes.
+    """
+    output: list[str] = []
+    in_string = False
+    index = 0
+    while index < len(content):
+        char = content[index]
+        if not in_string:
+            output.append(char)
+            if char == '"':
+                in_string = True
+            index += 1
+            continue
+        if char == '"':
+            output.append(char)
+            in_string = False
+            index += 1
+            continue
+        if char != "\\" or index + 1 >= len(content):
+            output.append(char)
+            index += 1
+            continue
+        following = content[index + 1]
+        if following in '"\\/bfnrtu':
+            output.extend((char, following))
+            index += 2
+            continue
+        output.append("\\\\")
+        index += 1
+    return "".join(output)
+
+
 async def run_yaml_rule(
     prompts_dir: Path,
     rule_name: str,
@@ -324,6 +363,7 @@ async def run_yaml_rule(
             raise
     latency_ms = int((time.monotonic() - start) * 1000)
 
+    json_escape_repaired = False
     if response_model is None:
         raw_msg, parsed, parsing_error = result, result.content, None
     else:
@@ -333,20 +373,38 @@ async def run_yaml_rule(
         # 이 사유를 기록·전파하지 않으면 실패 record 가 성공 모양(parsed=None)이 되고,
         # 재시도 계층은 무엇이 틀렸는지 모른 채 동일 요청만 반복한다(spec 116 0단계).
         parsing_error = result.get("parsing_error")
-        if parsing_error is None:
-            try:
-                raw_content = getattr(raw_msg, "content", None)
-                if isinstance(raw_content, str) and raw_content.strip():
+        try:
+            raw_content = getattr(raw_msg, "content", None)
+            if isinstance(raw_content, str) and raw_content.strip():
+                try:
                     complete_payload = json.loads(raw_content)
-                    if complete_payload != parsed:
-                        raise ValueError(
-                            "provider parsed payload differs from complete raw JSON"
-                        )
-                    parsed = complete_payload
-                parsed = response_model.model_validate(parsed)
-            except (json.JSONDecodeError, ValidationError, ValueError) as error:
-                parsed = None
-                parsing_error = error
+                except json.JSONDecodeError:
+                    repaired_content = _repair_invalid_json_string_escapes(raw_content)
+                    if repaired_content == raw_content:
+                        if parsing_error is not None:
+                            raise parsing_error
+                        raise
+                    try:
+                        complete_payload = json.loads(repaired_content)
+                    except json.JSONDecodeError:
+                        if parsing_error is not None:
+                            raise parsing_error
+                        raise
+                    json_escape_repaired = True
+                if parsed is not None and complete_payload != parsed:
+                    raise ValueError(
+                        "provider parsed payload differs from complete raw JSON"
+                    )
+                parsed = complete_payload
+                parsing_error = None
+            elif parsing_error is not None:
+                raise parsing_error
+            if parsed is None:
+                raise ValueError("parsed payload is missing")
+            parsed = response_model.model_validate(parsed)
+        except (json.JSONDecodeError, ValidationError, ValueError) as error:
+            parsed = None
+            parsing_error = error
 
     if raw_msg is None:
         error = UnmeteredLlmCallError(
@@ -372,6 +430,8 @@ async def run_yaml_rule(
             structured_output_method if response_schema is not None else None
         ),
     }
+    if json_escape_repaired:
+        metadata["json_escape_repaired"] = True
     if parsing_error is not None:
         metadata["parsing_error"] = f"{type(parsing_error).__name__}: {parsing_error}"
     if raw_msg is not None:

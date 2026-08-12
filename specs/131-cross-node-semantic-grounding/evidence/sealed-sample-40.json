@@ -1,0 +1,492 @@
+{
+  "schema_version": "1.0.0",
+  "seed": "spec131-cross-node-semantic-v1",
+  "selection_contract": "IDs/owners/coordinates only; no summary, NL, example, table, or column semantic output was read by the selector",
+  "quotas": {
+    "function_summary": {
+      "shopmallseq": 4,
+      "rwisverify": 4
+    },
+    "rule": {
+      "shopmallseq": 5,
+      "rwisverify": 5
+    },
+    "example": {
+      "shopmallseq": 4,
+      "rwisverify": 4
+    },
+    "table": {
+      "shopmallseq": 3,
+      "rwisverify": 3
+    },
+    "column": {
+      "shopmallseq": 4,
+      "rwisverify": 4
+    }
+  },
+  "populations": {
+    "function_summary": {
+      "shopmallseq": 124,
+      "rwisverify": 8
+    },
+    "rule": {
+      "shopmallseq": 2046,
+      "rwisverify": 67
+    },
+    "example": {
+      "shopmallseq": 1847,
+      "rwisverify": 44
+    },
+    "table": {
+      "shopmallseq": 22,
+      "rwisverify": 16
+    },
+    "column": {
+      "shopmallseq": 153,
+      "rwisverify": 122
+    }
+  },
+  "selected_total": 40,
+  "selected": [
+    {
+      "sample_key": "shopmallseq:function_summary:code:shop_mall/inventory/catalog.c:load_stock_row",
+      "database": "shopmallseq",
+      "category": "function_summary",
+      "id": "code:shop_mall/inventory/catalog.c:load_stock_row",
+      "owner_id": "code:shop_mall/inventory/catalog.c",
+      "rule_id": null,
+      "source_file": "D:\\work\\robo\\project\\data\\source\\shop_mall\\inventory\\catalog.c",
+      "source_line": 130,
+      "selection_rank": "00eaff830c2d5f9dfd3dd9f8832c04fd181ef5bac3b1b09ee76cf521a6aceb0f"
+    },
+    {
+      "sample_key": "shopmallseq:function_summary:code:shop_mall/payment/settlement.c:settlement_close",
+      "database": "shopmallseq",
+      "category": "function_summary",
+      "id": "code:shop_mall/payment/settlement.c:settlement_close",
+      "owner_id": "code:shop_mall/payment/settlement.c",
+      "rule_id": null,
+      "source_file": "D:\\work\\robo\\project\\data\\source\\shop_mall\\payment\\settlement.c",
+      "source_line": 1128,
+      "selection_rank": "022cd1c4ebed8039c24e529d750f507c52760901b920ef122d32bf876c121b55"
+    },
+    {
+      "sample_key": "shopmallseq:function_summary:code:shop_mall/payment/settlement.c:load_target_orders",
+      "database": "shopmallseq",
+      "category": "function_summary",
+      "id": "code:shop_mall/payment/settlement.c:load_target_orders",
+      "owner_id": "code:shop_mall/payment/settlement.c",
+      "rule_id": null,
+      "source_file": "D:\\work\\robo\\project\\data\\source\\shop_mall\\payment\\settlement.c",
+      "source_line": 246,
+      "selection_rank": "02db607ed8481c94420b78bdfb69d0b1a1cbda67dcd54750753c09e896d10344"
+    },
+    {
+      "sample_key": "shopmallseq:function_summary:code:shop_mall/payment/promotion.c:promotion_apply_coupon",
+      "database": "shopmallseq",
+      "category": "function_summary",
+      "id": "code:shop_mall/payment/promotion.c:promotion_apply_coupon",
+      "owner_id": "code:shop_mall/payment/promotion.c",
+      "rule_id": null,
+      "source_file": "D:\\work\\robo\\project\\data\\source\\shop_mall\\payment\\promotion.c",
+      "source_line": 627,
+      "selection_rank": "0454bb2811bfef482bb2459d6c70fbc0d366cfa62b5d2674ca2c25ec19a7df87"
+    },
+    {
+      "sample_key": "rwisverify:function_summary:code:PRC_CALC_RDD01DD_B2EN2_TEST.sql:PRC_CALC_RDD01DD_B2EN2_TEST@1",
+      "database": "rwisverify",
+      "category": "function_summary",
+      "id": "code:PRC_CALC_RDD01DD_B2EN2_TEST.sql:PRC_CALC_RDD01DD_B2EN2_TEST@1",
+      "owner_id": "code:PRC_CALC_RDD01DD_B2EN2_TEST.sql",
+      "rule_id": null,
+      "source_file": "D:\\work\\robo\\project\\data\\source\\PRC_CALC_RDD01DD_B2EN2_TEST.sql",
+      "source_line": 1,
+      "selection_rank": "0bb8e0d09e78bfc4fc97cf7ec29825831ab0646b931c7bbe491fddfe738afde5"
+    },
+    {
+      "sample_key": "rwisverify:function_summary:code:PRC_DATA_ANALYSYS_TEST2.sql:PRC_DATA_ANALYSYS_TEST2@1",
+      "database": "rwisverify",
+      "category": "function_summary",
+      "id": "code:PRC_DATA_ANALYSYS_TEST2.sql:PRC_DATA_ANALYSYS_TEST2@1",
+      "owner_id": "code:PRC_DATA_ANALYSYS_TEST2.sql",
+      "rule_id": null,
+      "source_file": "D:\\work\\robo\\project\\data\\source\\PRC_DATA_ANALYSYS_TEST2.sql",
+      "source_line": 1,
+      "selection_rank": "0fe1342248d0ca32d8861f1fcaff08edf7a1fe8e8689e3a5004dec808de084d3"
+    },
+    {
+      "sample_key": "rwisverify:function_summary:code:FN_EDIT_YN.sql:FN_EDIT_YN@1",
+      "database": "rwisverify",
+      "category": "function_summary",
+      "id": "code:FN_EDIT_YN.sql:FN_EDIT_YN@1",
+      "owner_id": "code:FN_EDIT_YN.sql",
+      "rule_id": null,
+      "source_file": "D:\\work\\robo\\project\\data\\source\\FN_EDIT_YN.sql",
+      "source_line": 1,
+      "selection_rank": "2140db859945b68027241392d8dd506e3fe53d4d8499c7da3045565cdfd33c41"
+    },
+    {
+      "sample_key": "rwisverify:function_summary:code:PRC_INSERT_RDD01DD_TB2.sql:PRC_INSERT_RDD01DD_TB2@1",
+      "database": "rwisverify",
+      "category": "function_summary",
+      "id": "code:PRC_INSERT_RDD01DD_TB2.sql:PRC_INSERT_RDD01DD_TB2@1",
+      "owner_id": "code:PRC_INSERT_RDD01DD_TB2.sql",
+      "rule_id": null,
+      "source_file": "D:\\work\\robo\\project\\data\\source\\PRC_INSERT_RDD01DD_TB2.sql",
+      "source_line": 1,
+      "selection_rank": "293e14edced9bc4da3364ae510640da009a1ff14e7b52f9ded40f31ae19fdcf0"
+    },
+    {
+      "sample_key": "shopmallseq:rule:code:shop_mall/inventory/inventory.c:is_valid_wh::R-105",
+      "database": "shopmallseq",
+      "category": "rule",
+      "id": "code:shop_mall/inventory/inventory.c:is_valid_wh::R-105",
+      "owner_id": "code:shop_mall/inventory/inventory.c:is_valid_wh",
+      "rule_id": null,
+      "source_file": "D:\\work\\robo\\project\\data\\source\\shop_mall\\inventory\\inventory.c",
+      "source_line": 105,
+      "selection_rank": "0025a268a00b82a0a536131e046bad7476005cf221efa0994bb902d4981fb447"
+    },
+    {
+      "sample_key": "shopmallseq:rule:code:shop_mall/payment/payment.c:load_pg_company::R-103",
+      "database": "shopmallseq",
+      "category": "rule",
+      "id": "code:shop_mall/payment/payment.c:load_pg_company::R-103",
+      "owner_id": "code:shop_mall/payment/payment.c:load_pg_company",
+      "rule_id": null,
+      "source_file": "D:\\work\\robo\\project\\data\\source\\shop_mall\\payment\\payment.c",
+      "source_line": 103,
+      "selection_rank": "00485a2adc5e692a1d527b3268cb7366c645658c18e49814eca6ab07f249defc"
+    },
+    {
+      "sample_key": "shopmallseq:rule:code:shop_mall/inventory/inventory.c:inventory_inbound::R-447",
+      "database": "shopmallseq",
+      "category": "rule",
+      "id": "code:shop_mall/inventory/inventory.c:inventory_inbound::R-447",
+      "owner_id": "code:shop_mall/inventory/inventory.c:inventory_inbound",
+      "rule_id": null,
+      "source_file": "D:\\work\\robo\\project\\data\\source\\shop_mall\\inventory\\inventory.c",
+      "source_line": 447,
+      "selection_rank": "00838c863ec8a6f53ba844f50ed405cf106a194e2045f67a54d92bd8370ea296"
+    },
+    {
+      "sample_key": "shopmallseq:rule:code:shop_mall/member/review_point.c:review_register::R-917",
+      "database": "shopmallseq",
+      "category": "rule",
+      "id": "code:shop_mall/member/review_point.c:review_register::R-917",
+      "owner_id": "code:shop_mall/member/review_point.c:review_register",
+      "rule_id": null,
+      "source_file": "D:\\work\\robo\\project\\data\\source\\shop_mall\\member\\review_point.c",
+      "source_line": 917,
+      "selection_rank": "0085e3d08041a4e3b882a62acefc494b9cbe0605611abf674b14be6d8919204b"
+    },
+    {
+      "sample_key": "shopmallseq:rule:code:shop_mall/order/cart.c:cart_add_item::R-324",
+      "database": "shopmallseq",
+      "category": "rule",
+      "id": "code:shop_mall/order/cart.c:cart_add_item::R-324",
+      "owner_id": "code:shop_mall/order/cart.c:cart_add_item",
+      "rule_id": null,
+      "source_file": "D:\\work\\robo\\project\\data\\source\\shop_mall\\order\\cart.c",
+      "source_line": 324,
+      "selection_rank": "008dbf1490346111f45ea762c1da867b04ac18da375f6b0a37d412065db7c7e9"
+    },
+    {
+      "sample_key": "rwisverify:rule:code:FN_EDIT_YN.sql:FN_EDIT_YN@1:IF@35::R-42",
+      "database": "rwisverify",
+      "category": "rule",
+      "id": "code:FN_EDIT_YN.sql:FN_EDIT_YN@1:IF@35::R-42",
+      "owner_id": "code:FN_EDIT_YN.sql:FN_EDIT_YN@1:IF@35",
+      "rule_id": null,
+      "source_file": "D:\\work\\robo\\project\\data\\source\\FN_EDIT_YN.sql",
+      "source_line": 42,
+      "selection_rank": "0d1fee9ff0b1b6dcb9bee244d4fc07f0f18c3c2ac0dbfe2fe356654ea5dd1d27"
+    },
+    {
+      "sample_key": "rwisverify:rule:code:FN_EDIT_YN.sql:FN_EDIT_YN@1:ASSIGNMENT@28::R-28",
+      "database": "rwisverify",
+      "category": "rule",
+      "id": "code:FN_EDIT_YN.sql:FN_EDIT_YN@1:ASSIGNMENT@28::R-28",
+      "owner_id": "code:FN_EDIT_YN.sql:FN_EDIT_YN@1:ASSIGNMENT@28",
+      "rule_id": null,
+      "source_file": "D:\\work\\robo\\project\\data\\source\\FN_EDIT_YN.sql",
+      "source_line": 28,
+      "selection_rank": "11d37efa74a41d2a57a4a5b3b528f8cbb0bc8b99b58bdb2f498ad85cfd865775"
+    },
+    {
+      "sample_key": "rwisverify:rule:code:PRC_CALC_RDD01DD_B2EN2_TEST.sql:PRC_CALC_RDD01DD_B2EN2_TEST@1:EXCEPTION@303::R-303",
+      "database": "rwisverify",
+      "category": "rule",
+      "id": "code:PRC_CALC_RDD01DD_B2EN2_TEST.sql:PRC_CALC_RDD01DD_B2EN2_TEST@1:EXCEPTION@303::R-303",
+      "owner_id": "code:PRC_CALC_RDD01DD_B2EN2_TEST.sql:PRC_CALC_RDD01DD_B2EN2_TEST@1:EXCEPTION@303",
+      "rule_id": null,
+      "source_file": "D:\\work\\robo\\project\\data\\source\\PRC_CALC_RDD01DD_B2EN2_TEST.sql",
+      "source_line": 303,
+      "selection_rank": "1a114d27285d142ce25ddf0badb5a5e1d420d1ea658617022c1c0161abce9162"
+    },
+    {
+      "sample_key": "rwisverify:rule:code:PRC_INSERT_RDD01DD_TB_WATERSUISUL.sql:PRC_INSERT_RDD01DD_TB_WATERSUISUL@1::R-13",
+      "database": "rwisverify",
+      "category": "rule",
+      "id": "code:PRC_INSERT_RDD01DD_TB_WATERSUISUL.sql:PRC_INSERT_RDD01DD_TB_WATERSUISUL@1::R-13",
+      "owner_id": "code:PRC_INSERT_RDD01DD_TB_WATERSUISUL.sql:PRC_INSERT_RDD01DD_TB_WATERSUISUL@1",
+      "rule_id": null,
+      "source_file": "D:\\work\\robo\\project\\data\\source\\PRC_INSERT_RDD01DD_TB_WATERSUISUL.sql",
+      "source_line": 13,
+      "selection_rank": "1fc9cc3f6fa16ca6f230295d93ed63abe1caf02514b4a4cfe03014238a456bc9"
+    },
+    {
+      "sample_key": "rwisverify:rule:code:PRC_DATA_ANALYSYS_TEST2.sql:PRC_DATA_ANALYSYS_TEST2@1:LOOP@131::R-215",
+      "database": "rwisverify",
+      "category": "rule",
+      "id": "code:PRC_DATA_ANALYSYS_TEST2.sql:PRC_DATA_ANALYSYS_TEST2@1:LOOP@131::R-215",
+      "owner_id": "code:PRC_DATA_ANALYSYS_TEST2.sql:PRC_DATA_ANALYSYS_TEST2@1:LOOP@131",
+      "rule_id": null,
+      "source_file": "D:\\work\\robo\\project\\data\\source\\PRC_DATA_ANALYSYS_TEST2.sql",
+      "source_line": 215,
+      "selection_rank": "275bfba02746cb74141fd57ff146c59e4d2579c34d2c1ef6797a2dae97051875"
+    },
+    {
+      "sample_key": "shopmallseq:example:code:shop_mall/delivery/shipping.c:pick_delivery_co::R-438::E1",
+      "database": "shopmallseq",
+      "category": "example",
+      "id": "code:shop_mall/delivery/shipping.c:pick_delivery_co::R-438::E1",
+      "owner_id": "code:shop_mall/delivery/shipping.c:pick_delivery_co",
+      "rule_id": "code:shop_mall/delivery/shipping.c:pick_delivery_co::R-438",
+      "source_file": "D:\\work\\robo\\project\\data\\source\\shop_mall\\delivery\\shipping.c",
+      "source_line": 438,
+      "selection_rank": "0039ae907ff46aea3cd5f4b2b8a872032db357463327e7b765745f2ac8944b41"
+    },
+    {
+      "sample_key": "shopmallseq:example:code:shop_mall/payment/promotion.c:promotion_apply_coupon::R-705::E1",
+      "database": "shopmallseq",
+      "category": "example",
+      "id": "code:shop_mall/payment/promotion.c:promotion_apply_coupon::R-705::E1",
+      "owner_id": "code:shop_mall/payment/promotion.c:promotion_apply_coupon",
+      "rule_id": "code:shop_mall/payment/promotion.c:promotion_apply_coupon::R-705",
+      "source_file": "D:\\work\\robo\\project\\data\\source\\shop_mall\\payment\\promotion.c",
+      "source_line": 705,
+      "selection_rank": "0077861e4d12b038efa868a42e6abf72ceae9e2eb6c841f7f16fbce362354deb"
+    },
+    {
+      "sample_key": "shopmallseq:example:code:shop_mall/payment/payment.c:update_order_paid::R-527::E1",
+      "database": "shopmallseq",
+      "category": "example",
+      "id": "code:shop_mall/payment/payment.c:update_order_paid::R-527::E1",
+      "owner_id": "code:shop_mall/payment/payment.c:update_order_paid",
+      "rule_id": "code:shop_mall/payment/payment.c:update_order_paid::R-527",
+      "source_file": "D:\\work\\robo\\project\\data\\source\\shop_mall\\payment\\payment.c",
+      "source_line": 527,
+      "selection_rank": "00aa872b8dcb965dc5be11ce4eaca05aba8c54342febf74bcb6ba21a9ff57db8"
+    },
+    {
+      "sample_key": "shopmallseq:example:code:shop_mall/order/cart.c:cart_calc_total::R-617::E1",
+      "database": "shopmallseq",
+      "category": "example",
+      "id": "code:shop_mall/order/cart.c:cart_calc_total::R-617::E1",
+      "owner_id": "code:shop_mall/order/cart.c:cart_calc_total",
+      "rule_id": "code:shop_mall/order/cart.c:cart_calc_total::R-617",
+      "source_file": "D:\\work\\robo\\project\\data\\source\\shop_mall\\order\\cart.c",
+      "source_line": 617,
+      "selection_rank": "00cb76aeed97b392ba2d6e3093fd02277c709d3c52feef59e92bbcd873b22a0c"
+    },
+    {
+      "sample_key": "rwisverify:example:code:PRC_4RVR_SUPPLY_CALC_debug.sql:\"PRC_4RVR_SUPPLY_CALC_debug\"@1:TRY@72:TRY@138:LOOP@140::R-153::E1",
+      "database": "rwisverify",
+      "category": "example",
+      "id": "code:PRC_4RVR_SUPPLY_CALC_debug.sql:\"PRC_4RVR_SUPPLY_CALC_debug\"@1:TRY@72:TRY@138:LOOP@140::R-153::E1",
+      "owner_id": "code:PRC_4RVR_SUPPLY_CALC_debug.sql:\"PRC_4RVR_SUPPLY_CALC_debug\"@1:TRY@72:TRY@138:LOOP@140",
+      "rule_id": "code:PRC_4RVR_SUPPLY_CALC_debug.sql:\"PRC_4RVR_SUPPLY_CALC_debug\"@1:TRY@72:TRY@138:LOOP@140::R-153",
+      "source_file": "D:\\work\\robo\\project\\data\\source\\PRC_4RVR_SUPPLY_CALC_debug.sql",
+      "source_line": 153,
+      "selection_rank": "06817b2a23732f9b6e561cb60cd4484318f3a551bd9236e674671575b48ad55e"
+    },
+    {
+      "sample_key": "rwisverify:example:code:PRC_4RVR_SUPPLY_CALC_debug.sql:\"PRC_4RVR_SUPPLY_CALC_debug\"@1:TRY@72:TRY@138:LOOP@140::R-147::E1",
+      "database": "rwisverify",
+      "category": "example",
+      "id": "code:PRC_4RVR_SUPPLY_CALC_debug.sql:\"PRC_4RVR_SUPPLY_CALC_debug\"@1:TRY@72:TRY@138:LOOP@140::R-147::E1",
+      "owner_id": "code:PRC_4RVR_SUPPLY_CALC_debug.sql:\"PRC_4RVR_SUPPLY_CALC_debug\"@1:TRY@72:TRY@138:LOOP@140",
+      "rule_id": "code:PRC_4RVR_SUPPLY_CALC_debug.sql:\"PRC_4RVR_SUPPLY_CALC_debug\"@1:TRY@72:TRY@138:LOOP@140::R-147",
+      "source_file": "D:\\work\\robo\\project\\data\\source\\PRC_4RVR_SUPPLY_CALC_debug.sql",
+      "source_line": 147,
+      "selection_rank": "0ac3f2c6e30676949d268afbadcef9769bc7dfe6a4a79f399419ae6e9aa1c354"
+    },
+    {
+      "sample_key": "rwisverify:example:code:PRC_4RVR_SUPPLY_CALC_debug.sql:\"PRC_4RVR_SUPPLY_CALC_debug\"@1:TRY@72:TRY@75:LOOP@78::R-84::E1",
+      "database": "rwisverify",
+      "category": "example",
+      "id": "code:PRC_4RVR_SUPPLY_CALC_debug.sql:\"PRC_4RVR_SUPPLY_CALC_debug\"@1:TRY@72:TRY@75:LOOP@78::R-84::E1",
+      "owner_id": "code:PRC_4RVR_SUPPLY_CALC_debug.sql:\"PRC_4RVR_SUPPLY_CALC_debug\"@1:TRY@72:TRY@75:LOOP@78",
+      "rule_id": "code:PRC_4RVR_SUPPLY_CALC_debug.sql:\"PRC_4RVR_SUPPLY_CALC_debug\"@1:TRY@72:TRY@75:LOOP@78::R-84",
+      "source_file": "D:\\work\\robo\\project\\data\\source\\PRC_4RVR_SUPPLY_CALC_debug.sql",
+      "source_line": 84,
+      "selection_rank": "0aef38dbea6cf26144c7755223502ba8b50c7dedeaffa3c6bd6e6874b8879d7c"
+    },
+    {
+      "sample_key": "rwisverify:example:code:PRC_CALC_RDD01DD_B2EN2_TEST.sql:PRC_CALC_RDD01DD_B2EN2_TEST@1:IF@25:EXCEPTION@295::R-295::E1",
+      "database": "rwisverify",
+      "category": "example",
+      "id": "code:PRC_CALC_RDD01DD_B2EN2_TEST.sql:PRC_CALC_RDD01DD_B2EN2_TEST@1:IF@25:EXCEPTION@295::R-295::E1",
+      "owner_id": "code:PRC_CALC_RDD01DD_B2EN2_TEST.sql:PRC_CALC_RDD01DD_B2EN2_TEST@1:IF@25:EXCEPTION@295",
+      "rule_id": "code:PRC_CALC_RDD01DD_B2EN2_TEST.sql:PRC_CALC_RDD01DD_B2EN2_TEST@1:IF@25:EXCEPTION@295::R-295",
+      "source_file": "D:\\work\\robo\\project\\data\\source\\PRC_CALC_RDD01DD_B2EN2_TEST.sql",
+      "source_line": 295,
+      "selection_rank": "130f9d184e75f4c73b29cec53acbb2478aae868b9d4ac3bbbddd06693634da01"
+    },
+    {
+      "sample_key": "shopmallseq:table:db:order_item",
+      "database": "shopmallseq",
+      "category": "table",
+      "id": "db:order_item",
+      "owner_id": null,
+      "rule_id": null,
+      "source_file": null,
+      "source_line": null,
+      "selection_rank": "13ddcb3e1db085856f8f79255c197616f1e7ca1566f1a73671df9b404f61585f"
+    },
+    {
+      "sample_key": "shopmallseq:table:db:shipping",
+      "database": "shopmallseq",
+      "category": "table",
+      "id": "db:shipping",
+      "owner_id": null,
+      "rule_id": null,
+      "source_file": null,
+      "source_line": null,
+      "selection_rank": "28cd02a4cccf2dfd62ae27cf3b9463c573b19884da93cb0e0ac9e7a41679d72a"
+    },
+    {
+      "sample_key": "shopmallseq:table:db:comm_code",
+      "database": "shopmallseq",
+      "category": "table",
+      "id": "db:comm_code",
+      "owner_id": null,
+      "rule_id": null,
+      "source_file": null,
+      "source_line": null,
+      "selection_rank": "3986a19eceda8a8bb5640be5667388b7acaedd9de6ec185223b010d0d6456a78"
+    },
+    {
+      "sample_key": "rwisverify:table:db:TMP_INS_TRAN2FA_RDITAG_TB",
+      "database": "rwisverify",
+      "category": "table",
+      "id": "db:TMP_INS_TRAN2FA_RDITAG_TB",
+      "owner_id": null,
+      "rule_id": null,
+      "source_file": null,
+      "source_line": null,
+      "selection_rank": "0dad0324501ab84c3cbd6491b485b62e3b9c33dd647083643dffc7931a23b5a0"
+    },
+    {
+      "sample_key": "rwisverify:table:db:RDITAGFRD_TB",
+      "database": "rwisverify",
+      "category": "table",
+      "id": "db:RDITAGFRD_TB",
+      "owner_id": null,
+      "rule_id": null,
+      "source_file": null,
+      "source_line": null,
+      "selection_rank": "23bb4c95230f7ab3f2838d0fd0f0edf89097a74a876f74c9e5d40416b656121b"
+    },
+    {
+      "sample_key": "rwisverify:table:db:DEBUGMSG_TB",
+      "database": "rwisverify",
+      "category": "table",
+      "id": "db:DEBUGMSG_TB",
+      "owner_id": null,
+      "rule_id": null,
+      "source_file": null,
+      "source_line": null,
+      "selection_rank": "258123a361210a7c1d757324ffbd384a3c3522db434c4c3bc764181b386950f7"
+    },
+    {
+      "sample_key": "shopmallseq:column:db:comm_code.code_group",
+      "database": "shopmallseq",
+      "category": "column",
+      "id": "db:comm_code.code_group",
+      "owner_id": "db:comm_code",
+      "rule_id": null,
+      "source_file": null,
+      "source_line": null,
+      "selection_rank": "01679cc3f5a96be6df717327184cbf375a9deb1e2027475d0458c40ee752e7e5"
+    },
+    {
+      "sample_key": "shopmallseq:column:db:member.point_balance",
+      "database": "shopmallseq",
+      "category": "column",
+      "id": "db:member.point_balance",
+      "owner_id": "db:member",
+      "rule_id": null,
+      "source_file": null,
+      "source_line": null,
+      "selection_rank": "050ba2c1e4d6027928d44827a6446f30fb59e75f733d2aa59f32e112cf869fa3"
+    },
+    {
+      "sample_key": "shopmallseq:column:db:payment.card_no_enc",
+      "database": "shopmallseq",
+      "category": "column",
+      "id": "db:payment.card_no_enc",
+      "owner_id": "db:payment",
+      "rule_id": null,
+      "source_file": null,
+      "source_line": null,
+      "selection_rank": "06b6ec9c117f6ac02512a1ed085e2ccb6d2be9ab410515c1c30dfb51e6521dc7"
+    },
+    {
+      "sample_key": "shopmallseq:column:db:member.grade_code",
+      "database": "shopmallseq",
+      "category": "column",
+      "id": "db:member.grade_code",
+      "owner_id": "db:member",
+      "rule_id": null,
+      "source_file": null,
+      "source_line": null,
+      "selection_rank": "071209eeedf192cc7d9529c6eb58d6ee48a187994a01f1700a98696dad0bf12b"
+    },
+    {
+      "sample_key": "rwisverify:column:db:CALC_RDF01HH_TRNS_TB.COMPUTE",
+      "database": "rwisverify",
+      "category": "column",
+      "id": "db:CALC_RDF01HH_TRNS_TB.COMPUTE",
+      "owner_id": "db:CALC_RDF01HH_TRNS_TB",
+      "rule_id": null,
+      "source_file": null,
+      "source_line": null,
+      "selection_rank": "0028f9174d5f8b59eaba543a0f70c40169266f032d5aee340ddc7dbbc6d5212a"
+    },
+    {
+      "sample_key": "rwisverify:column:db:RDITAG_TB.ADBA_VAL",
+      "database": "rwisverify",
+      "category": "column",
+      "id": "db:RDITAG_TB.ADBA_VAL",
+      "owner_id": "db:RDITAG_TB",
+      "rule_id": null,
+      "source_file": null,
+      "source_line": null,
+      "selection_rank": "0098b182255f4b40936ede35c98c2a28295d6ee77075e7c95a4b7ba59bb9c997"
+    },
+    {
+      "sample_key": "rwisverify:column:db:RDF01HH_TB.ETC",
+      "database": "rwisverify",
+      "category": "column",
+      "id": "db:RDF01HH_TB.ETC",
+      "owner_id": "db:RDF01HH_TB",
+      "rule_id": null,
+      "source_file": null,
+      "source_line": null,
+      "selection_rank": "0580e6e7e21d97097a1edf9866a0c8e39b6fa5d321e4ee65f910522d6e5b1424"
+    },
+    {
+      "sample_key": "rwisverify:column:db:CALC_RDF01HH_TRNS_TB.TAGSN",
+      "database": "rwisverify",
+      "category": "column",
+      "id": "db:CALC_RDF01HH_TRNS_TB.TAGSN",
+      "owner_id": "db:CALC_RDF01HH_TRNS_TB",
+      "rule_id": null,
+      "source_file": null,
+      "source_line": null,
+      "selection_rank": "05fb06ba5d510577c68e4048bba9aed672a617944286998a0200023cb6a77fb8"
+    }
+  ]
+}

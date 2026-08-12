@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Mapping
 
 from graph.schema.graph_nodes import CodeNode
 from pipeline.languages import lang_of
 from pipeline.models.analysis_context import AnalysisContext
 from pipeline.quality_gates.branch_inventory import BranchInventory, build_inventory
+from pipeline.steps.step7_analyze_code.rule_row_ownership import owning_routine
 from shared.files.cache import SourceFileCache
 
 
@@ -42,7 +44,32 @@ def build_control_inventory(
         ),
         statements=statements,
         call_lines=ctx.extra.get("ast_call_lines") or (),
+        # DBMS DML 효과 좌표 (spec 119). framework 는 키가 없어 빈 튜플이다.
+        table_ops=ctx.extra.get("ast_table_ops") or (),
     )
+
+
+def routine_inventory(
+    fn: CodeNode,
+    contexts: Mapping[str, AnalysisContext],
+    code_by_id: Mapping[str, CodeNode],
+    cache: SourceFileCache,
+) -> tuple[CodeNode, BranchInventory]:
+    """rule 의무의 실제 소유자(루틴)와 그 분기표 (spec 117).
+
+    statement/control 사실의 생산자가 루틴 id 로만 집계하므로, 배치 노드가 루틴이 아니면
+    자기 좌표로 분기표를 만들 수 없다. 소유 루틴으로 올라가 한 번 만들고, 행 배분은
+    ``rule_row_ownership`` 이 소유한다.
+
+    framework 는 분석 대상이 루틴뿐이라 소유 루틴 = 자기 자신이고 결과가 달라지지 않는다.
+    """
+    routine = owning_routine(fn, code_by_id)
+    routine_ctx = contexts.get(routine.id)
+    if routine_ctx is None:
+        raise ValueError(
+            f"소유 routine 의 분석 컨텍스트가 없다: {fn.id!r} → {routine.id!r}"
+        )
+    return routine, build_control_inventory(routine, routine_ctx, cache)
 
 
 def control_index(

@@ -1,0 +1,100 @@
+from pathlib import Path
+
+import json
+
+from scripts.evidence_preflight import _Corpus, _resolved_rows, _stored_rows
+from pipeline.steps.step2_load_ast.load_ast_step import ast_json_paths
+
+
+def test_preflight_imports_only_current_production_contracts() -> None:
+    assert _Corpus.__name__ == "_Corpus"
+
+
+def test_resolved_rows_compare_effect_payload_not_local_reference_names() -> None:
+    valued = _resolved_rows({
+        "conditions": {},
+        "effects": {"E1": {
+            "op": "ret", "target": None, "value": "RET_OK", "from_source": True,
+        }},
+        "rows": {"R7": {"role": "exit", "when": [], "direct": ["E1"]}},
+    })
+    duplicated = _resolved_rows({
+        "conditions": {},
+        "effects": {
+            "E8": {"op": "ret", "target": None, "value": "RET_OK", "from_source": True},
+            "E9": {"op": "ret", "target": None, "value": None, "from_source": None},
+        },
+        "rows": {"R7": {"role": "exit", "when": [], "direct": ["E8", "E9"]}},
+    })
+    assert valued != duplicated
+
+
+def test_ast_json_paths_includes_nested_target_artifacts(tmp_path: Path) -> None:
+    root_artifact = tmp_path / "root.json"
+    nested_artifact = tmp_path / "shop_mall" / "order" / "order.json"
+    ignored_file = tmp_path / "shop_mall" / "order" / "notes.txt"
+    nested_artifact.parent.mkdir(parents=True)
+    root_artifact.write_text("{}", encoding="utf-8")
+    nested_artifact.write_text("{}", encoding="utf-8")
+    ignored_file.write_text("not an artifact", encoding="utf-8")
+
+    assert ast_json_paths(tmp_path) == [
+        root_artifact,
+        nested_artifact,
+    ]
+
+
+def test_stored_batch_rule_rows_are_grouped_by_explicit_owner(tmp_path: Path) -> None:
+    prompt_dir = tmp_path / "llm-prompts"
+    prompt_dir.mkdir()
+    packets = []
+    for key, node, owner, row in (
+        ("10-10", "code:p.sql:r@1:CALL@10", "code:p.sql:r@1", 10),
+        ("20-20", "code:p.sql:s@1:CALL@20", "code:p.sql:s@1", 20),
+    ):
+        evidence = {
+            "conditions": {},
+            "effects": {"E1": {"op": "call", "target": "x"}},
+            "rows": {f"R{row}": {"role": "statement", "when": [], "direct": ["E1"]}},
+        }
+        packets.append(
+            f"### [RULE_TARGET {key}]\n"
+            f"target_id: {node}\nowner_id: {owner}\n"
+            f"rule_evidence_json: {json.dumps(evidence, separators=(',', ':'))}"
+        )
+    record = {"target_id": "batch:multiple-rule-owners", "user_content": "\n\n".join(packets)}
+    (prompt_dir / "code_rules_examples_batch.jsonl").write_text(
+        json.dumps(record) + "\n", encoding="utf-8",
+    )
+
+    stored = _stored_rows(tmp_path)
+
+    assert set(stored) == {"code:p.sql:r@1", "code:p.sql:s@1"}
+    assert set(stored["code:p.sql:r@1"]) == {"R10"}
+    assert set(stored["code:p.sql:s@1"]) == {"R20"}
+
+
+def test_stored_rows_include_gate_and_non_gate_prompt_families(tmp_path: Path) -> None:
+    prompt_dir = tmp_path / "llm-prompts"
+    prompt_dir.mkdir()
+    for filename, row in (
+        ("code_gate_rules_batch.jsonl", 11),
+        ("code_rules_examples_batch.jsonl", 22),
+    ):
+        evidence = {
+            "conditions": {},
+            "effects": {},
+            "rows": {f"R{row}": {"role": "decision", "when": [], "direct": []}},
+        }
+        record = {
+            "target_id": "code:p.sql:r@1",
+            "user_content": "rule_evidence_json: "
+            + json.dumps(evidence, separators=(",", ":")),
+        }
+        (prompt_dir / filename).write_text(
+            json.dumps(record) + "\n", encoding="utf-8",
+        )
+
+    stored = _stored_rows(tmp_path)
+
+    assert set(stored["code:p.sql:r@1"]) == {"R11", "R22"}

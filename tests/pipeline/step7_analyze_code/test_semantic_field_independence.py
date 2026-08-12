@@ -120,6 +120,30 @@ class DownstreamEvidenceIndependenceTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "without LLM summary"):
                 compact_body(parent, {"parent": parent, "child": child}, SourceFileCache())
 
+    def test_rejected_child_keeps_exact_source_in_compaction(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "sample.sql"
+            source.write_text(
+                "BEGIN\nCALL child_proc();\nEND;\n", encoding="utf-8",
+            )
+            parent = AnalysisContext(
+                id="parent", signature="parent", file_path=str(source),
+                start_line=1, end_line=3,
+                extra={"child_ids": ("child",)},
+            )
+            child = AnalysisContext(
+                id="child", signature="child", file_path=str(source),
+                start_line=2, end_line=2, summary=None,
+                extra={"summary_status": "rejected"},
+            )
+
+            rendered = compact_body(
+                parent, {"parent": parent, "child": child}, SourceFileCache(),
+            )
+
+            self.assertIn("2 | CALL child_proc();", rendered)
+            self.assertNotIn("CONTEXT_SUMMARY", rendered)
+
     def test_missing_callee_summary_is_omitted(self) -> None:
         caller = AnalysisContext(
             id="caller", signature="caller", file_path="x", start_line=1, end_line=1,

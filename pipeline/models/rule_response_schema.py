@@ -1,9 +1,9 @@
-"""Dynamic closed schemas for model-owned branch Rule meaning.
+"""Dynamic closed schemas for model-owned branch Rule narrative.
 
-The wire contract never asks a weak model to hand-write Python syntax.  The model owns
-condition references, polarity, effects, and narrative; deterministic code only renders
-that structured answer into the canonical Python Rule notation used by validators and
-graph consumers.
+The parser-owned evidence already fixes each row's control path and direct effects.
+The model therefore owns only the human business narrative; one deterministic boundary
+materializes ``cond`` and ``then`` from that same evidence for validators and graph
+consumers.
 """
 from __future__ import annotations
 
@@ -20,12 +20,14 @@ from pipeline.models.code_analysis_output import (
     RuleItem,
     RulesExamplesOutput,
 )
-from pipeline.models.rule_expression import NL_PATTERN
-from pipeline.quality_gates.rule_prompt_evidence import render_condition_refs
+from pipeline.models.rule_expression import NL_MAX_CHARS, NL_PATTERN
+from pipeline.quality_gates.nl_reference_safety import replace_leaked_references
+from pipeline.quality_gates.rule_prompt_evidence import render_row_condition
 
 
 ConditionRef = Annotated[str, Field(pattern=r"^!?C[1-9][0-9]*$")]
 EffectRef = Annotated[str, Field(pattern=r"^E[1-9][0-9]*$")]
+RULE_NL_MAX_LENGTH = NL_MAX_CHARS
 
 
 class AssignedEffect(BaseModel):
@@ -34,7 +36,7 @@ class AssignedEffect(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     op: Literal[
-        "call", "ret", "set", "raise_error", "jump",
+        "call", "ret", "set", "raise_error", "jump", "exit_loop", "commit", "rollback",
         "select", "insert", "update", "delete", "upsert",
     ]
     target: str | None = Field(...)
@@ -58,25 +60,10 @@ class AssignedRuleLeaf(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    cond: list[ConditionRef] = Field(
-        ...,
-        description="model-selected condition refs and polarity; empty means unconditional",
-    )
-    then: list[EffectRef] = Field(
-        ...,
-        description="model-selected direct evidence effect refs",
-    )
-    extra: list[AssignedExtraEffect] = Field(
-        ...,
-        description=(
-            "rare source-grounded semantic effects absent from the direct evidence "
-            "catalog; normally empty"
-        ),
-    )
     nl: str = Field(
         ...,
         pattern=NL_PATTERN,
-        max_length=300,
+        max_length=RULE_NL_MAX_LENGTH,
         description="human business meaning",
     )
 
@@ -122,28 +109,28 @@ def rules_response_model(rows: Sequence[int]) -> type[BaseModel]:
 def normalize_rules_response(
     output: BaseModel,
     rows: Sequence[int],
-    condition_sources: Mapping[str, str] | None = None,
-    effect_sources: Mapping[str, Mapping[str, object]] | None = None,
+    evidence: Mapping[str, object],
 ) -> RulesExamplesOutput:
-    """Render validated model meaning into canonical Python Rule notation."""
+    """Bind model narrative to parser-owned conditions and direct effects."""
     assigned = _assigned_rows(rows)
-    sources = condition_sources or {}
-    effects = effect_sources or {}
+    conditions, effects, evidence_rows = _evidence_maps(evidence)
     return RulesExamplesOutput(
         rules=[
             RuleItem.model_construct(
                 anchor_line=row,
-                cond=render_condition_refs(
-                    getattr(output.rules, f"R{row}").cond, sources,
+                cond=render_row_condition(
+                    _evidence_row(evidence_rows, row), conditions,
                 ),
                 then=[
                     _render_selected_effect(effect, effects)
-                    for effect in getattr(output.rules, f"R{row}").then
-                ] + [
-                    _render_selected_effect(effect, effects)
-                    for effect in getattr(output.rules, f"R{row}").extra
+                    for effect in (_evidence_row(evidence_rows, row).get("direct") or ())
                 ],
-                nl=getattr(output.rules, f"R{row}").nl,
+                nl=_ground_narrative_references(
+                    getattr(output.rules, f"R{row}").nl,
+                    _evidence_row(evidence_rows, row),
+                    conditions,
+                    effects,
+                ),
             )
             for row in assigned
         ],
@@ -197,35 +184,33 @@ def batch_rules_response_model(
 def normalize_batch_rules_response(
     output: BaseModel,
     assignments: Mapping[str, Sequence[int]],
-    condition_sources: Mapping[str, Mapping[str, str]] | None = None,
-    effect_sources: Mapping[str, Mapping[str, Mapping[str, object]]] | None = None,
+    evidences: Mapping[str, Mapping[str, object]],
 ) -> BatchRulesOutput:
-    """Convert DBMS fixed-key leaves without deterministic substitution."""
+    """Bind every DBMS narrative leaf to its node's parser-owned evidence."""
     nodes: list[BatchRulesItem] = []
-    sources_by_node = condition_sources or {}
-    effects_by_node = effect_sources or {}
     for node_key, rows in assignments.items():
         item = getattr(output.nodes, node_key)
         assigned = _assigned_rows(rows) if rows else ()
+        evidence = evidences.get(node_key)
+        if evidence is None:
+            raise ValueError(f"rule evidence missing for node: {node_key!r}")
+        conditions, effects, evidence_rows = _evidence_maps(evidence)
         rules = [
             RuleItem.model_construct(
                 anchor_line=row,
-                cond=render_condition_refs(
-                    getattr(item.rules, f"R{row}").cond,
-                    sources_by_node.get(node_key, {}),
+                cond=render_row_condition(
+                    _evidence_row(evidence_rows, row), conditions,
                 ),
                 then=[
-                    _render_selected_effect(
-                        effect, effects_by_node.get(node_key, {}),
-                    )
-                    for effect in getattr(item.rules, f"R{row}").then
-                ] + [
-                    _render_selected_effect(
-                        effect, effects_by_node.get(node_key, {}),
-                    )
-                    for effect in getattr(item.rules, f"R{row}").extra
+                    _render_selected_effect(effect, effects)
+                    for effect in (_evidence_row(evidence_rows, row).get("direct") or ())
                 ],
-                nl=getattr(item.rules, f"R{row}").nl,
+                nl=_ground_narrative_references(
+                    getattr(item.rules, f"R{row}").nl,
+                    _evidence_row(evidence_rows, row),
+                    conditions,
+                    effects,
+                ),
             )
             for row in assigned
         ]
@@ -233,8 +218,49 @@ def normalize_batch_rules_response(
     return BatchRulesOutput(nodes=nodes)
 
 
+def _evidence_maps(
+    evidence: Mapping[str, object],
+) -> tuple[Mapping[str, str], Mapping[str, Mapping[str, object]], Mapping[str, object]]:
+    conditions = evidence.get("conditions")
+    effects = evidence.get("effects")
+    rows = evidence.get("rows")
+    if not isinstance(conditions, Mapping) or not isinstance(effects, Mapping) or not isinstance(rows, Mapping):
+        raise ValueError("rule evidence requires conditions, effects, and rows maps")
+    return conditions, effects, rows
+
+
+def _evidence_row(rows: Mapping[str, object], row: int) -> Mapping[str, object]:
+    item = rows.get(f"R{row}")
+    if not isinstance(item, Mapping):
+        raise ValueError(f"rule evidence row missing: R{row}")
+    return item
+
+
 def _quoted(value: str) -> str:
     return json.dumps(str(value), ensure_ascii=False)
+
+
+def _ground_narrative_references(
+    narrative: str,
+    row: Mapping[str, object],
+    conditions: Mapping[str, str],
+    effects: Mapping[str, Mapping[str, object]],
+) -> str:
+    """Replace leaked private coordinates with their exact parser-owned evidence."""
+    def grounded(reference: str) -> str:
+        if reference.startswith("C"):
+            source = conditions.get(reference)
+            return f"({source})" if source is not None else reference
+        if reference.startswith("E"):
+            return _render_selected_effect(reference, effects)
+        return reference
+
+    result = replace_leaked_references(narrative, row, grounded)
+    if len(result) > RULE_NL_MAX_LENGTH:
+        # Truncation would change meaning.  Keep the schema-validated original and let
+        # the judge surface the coordinate leak instead of silently corrupting prose.
+        return narrative
+    return result
 
 
 def _render_selected_effect(
@@ -258,6 +284,8 @@ def _render_effect(effect: AssignedEffect | AssignedExtraEffect) -> str:
     if effect.op == "jump":
         return f"jump({_quoted(effect.target)})"
     if effect.op == "ret":
+        if effect.value is None:
+            return "ret(None)"
         value = (
             f"F({_quoted(effect.value)})"
             if effect.from_source else _quoted(effect.value)
@@ -271,6 +299,8 @@ def _render_effect(effect: AssignedEffect | AssignedExtraEffect) -> str:
         return f"set(F({_quoted(effect.target)}), {value})"
     if effect.op == "raise_error":
         return "raise_error()"
+    if effect.op in {"exit_loop", "commit", "rollback"}:
+        return f"{effect.op}()"
     if effect.op in {"select", "insert", "update", "delete", "upsert"}:
         return f"{effect.op}({_quoted(effect.target)})"
     raise TypeError(f"unsupported assigned effect: {type(effect).__name__}")
@@ -280,7 +310,10 @@ def _effect_positions_valid(effect: AssignedEffect | AssignedExtraEffect) -> boo
     if effect.op == "set":
         return bool(effect.target) and bool(effect.value) and effect.from_source is not None
     if effect.op == "ret":
-        return effect.target is None and bool(effect.value) and effect.from_source is not None
+        return effect.target is None and (
+            (bool(effect.value) and effect.from_source is not None)
+            or (effect.value is None and effect.from_source is None)
+        )
     if effect.op in {"call", "jump", "select", "insert", "update", "delete", "upsert"}:
         return bool(effect.target) and effect.value is None and effect.from_source is None
     return effect.target is None and effect.value is None and effect.from_source is None

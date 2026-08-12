@@ -26,6 +26,7 @@ from graph.node_upsert import nonempty
 # label 필드 없는 노드 종류의 고정 라벨 (나머지는 node.label = antlr type).
 _FIXED_NODE_LABEL: dict[type, str] = {
     gn.Table: "TABLE",
+    gn.ObjectReference: "OBJECT_REFERENCE",
     gn.Column: "COLUMN",
     gn.Package: "PACKAGE",
     gn.Schema: "SCHEMA",
@@ -43,6 +44,7 @@ _DISPLAY_PROP_KEYS = (
     "rule_id", "anchor_line", "cond", "nl", "kind",
     "given", "when", "then", "text", "reason",
     "keys", "semantic_kind", "provenance", "status", "category",
+    "raw_reference", "schema", "database_link", "datasource",
 )
 
 # 관계 dataclass → (rel_type, from 필드, to 필드). ReadsWrites는 relation 필드가 동적 → 별도.

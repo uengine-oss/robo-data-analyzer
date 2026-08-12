@@ -36,8 +36,13 @@ from pipeline.steps.step7_analyze_code.rw_table_filter import (
     serialize_rules,
 )
 from pipeline.steps.step7_analyze_code.table_prompt_context import dump_table_refs
-from pipeline.quality_gates.coverage_residue import coverage_residue
-from pipeline.steps.step7_analyze_code.summary_quality import normalize_canonical_summary
+from pipeline.models.data_object_usage import dump_data_object_usages, exact_direct_table_ids
+from pipeline.steps.step7_analyze_code.summary_quality import (
+    copied_callee_summary_id,
+    missing_structural_summary_identities,
+    normalize_canonical_summary,
+    unsupported_code_comparison_claims,
+)
 from pipeline.models.analysis_context import AnalysisContext, dump_external_evidence, dump_referenced_symbols
 from pipeline.models.analysis_finding import AnalysisFinding
 from graph.schema.graph_nodes import CodeNode
@@ -75,7 +80,13 @@ from shared.events.processing_events import track_processing
 from shared.files.cache import SourceFileCache
 from shared.concurrency.priority_semaphore import PrioritySemaphore
 from pipeline.steps.step7_analyze_code.control_prompt import build_control_inventory
-from pipeline.execution.run_output_context import active_run_dir
+from pipeline.steps.step7_analyze_code.model_source_projection import (
+    project_model_source_literals,
+)
+from pipeline.steps.step7_analyze_code.branch_audit import (
+    persist_branch_table,
+    persist_coverage,
+)
 from pipeline.steps.step7_analyze_code.quality_findings import apply_analysis_findings
 from pipeline.quality_gates.rule_prompt_evidence import rule_evidence
 
@@ -244,11 +255,131 @@ async def analyze_code_three_split(
                 evidence_rule=summary_out.rule_name,
             ))
         else:
+            fn.extra["summary_evidence_status"] = summary_out.evidence_status
+            fn.extra["summary_missing_context"] = list(summary_out.missing_context)
+            ctx.extra["summary_evidence_status"] = summary_out.evidence_status
+            ctx.extra["summary_missing_context"] = list(summary_out.missing_context)
+            if summary_out.evidence_status == "insufficient":
+                fn.summary = None
+                fn.stereotype = None
+                fn.extra["questions"] = [q.model_dump() for q in summary_out.questions]
+                ctx.summary = ""
+                ctx.extra["summary_status"] = "needs_context"
+                findings.append(AnalysisFinding(
+                    concern="summary",
+                    status="unverified",
+                    target_id=code_id,
+                    reasons=tuple(summary_out.missing_context),
+                    candidate=summary_out.model_dump(),
+                    evidence_rule="code_summary",
+                ))
+                if on_summary_ready is not None:
+                    on_summary_ready(code_id)
+                return findings
             summary_out.summary = normalize_canonical_summary(summary_out.summary)
-            contradiction = _apply_summary_fields(fn, ctx, summary_out, strategy)
-            if contradiction is not None:
-                findings.append(contradiction)
-            ctx.summary = summary_out.summary
+            callee_items = _callee_interface_items(ctx, contexts)
+            copied_from = copied_callee_summary_id(
+                summary_out.summary,
+                (
+                    (item["callee_id"], item["summary"])
+                    for item in callee_items
+                ),
+            )
+            if copied_from is not None:
+                # Keep the rejected candidate in the finding, but never publish it
+                # to display/search or to a caller's callee-summary input.
+                fn.summary = None
+                fn.stereotype = None
+                fn.extra["questions"] = []
+                ctx.summary = ""
+                ctx.extra["summary_status"] = "rejected"
+                findings.append(AnalysisFinding(
+                    concern="summary",
+                    status="rejected",
+                    target_id=code_id,
+                    reasons=(
+                        "summary가 직접 callee canonical summary와 동일하여 "
+                        "현재 대상의 책임을 소유하지 않음",
+                    ),
+                    candidate={
+                        "summary": summary_out.summary,
+                        "copied_callee_id": copied_from,
+                    },
+                    evidence_rule="code_summary",
+                ))
+            else:
+                missing_identities = missing_structural_summary_identities(
+                    summary_out.summary, fn,
+                )
+                if missing_identities:
+                    fn.summary = None
+                    fn.stereotype = None
+                    fn.extra["questions"] = []
+                    ctx.summary = ""
+                    ctx.extra["summary_status"] = "rejected"
+                    findings.append(AnalysisFinding(
+                        concern="summary",
+                        status="rejected",
+                        target_id=code_id,
+                        reasons=(
+                            "summary omitted direct AST physical identities: "
+                            + ", ".join(missing_identities),
+                        ),
+                        candidate={
+                            "summary": summary_out.summary,
+                            "missing_structural_identities": list(missing_identities),
+                        },
+                        evidence_rule="code_summary",
+                    ))
+                else:
+                    unsupported_comparisons = unsupported_code_comparison_claims(
+                        summary_out.summary,
+                        "\n".join((
+                            common["raw_code_body"],
+                            common["branch_index"],
+                            fn.expression or "",
+                        )),
+                        ctx.referenced_symbols,
+                    )
+                    if unsupported_comparisons:
+                        fn.summary = None
+                        fn.stereotype = None
+                        fn.extra["questions"] = []
+                        ctx.summary = ""
+                        ctx.extra["summary_status"] = "rejected"
+                        findings.append(AnalysisFinding(
+                            concern="summary",
+                            status="rejected",
+                            target_id=code_id,
+                            reasons=(
+                                "summary changed explicit comparison operands: "
+                                + "; ".join(unsupported_comparisons),
+                            ),
+                            candidate={
+                                "summary": summary_out.summary,
+                                "unsupported_code_comparisons": list(
+                                    unsupported_comparisons
+                                ),
+                            },
+                            evidence_rule="code_summary",
+                        ))
+                    else:
+                        contradiction = _apply_summary_fields(fn, ctx, summary_out, strategy)
+                        if contradiction is not None:
+                            findings.append(contradiction)
+                        ctx.summary = summary_out.summary
+                        ctx.extra["summary_status"] = (
+                            "partial" if summary_out.evidence_status == "partial" else "accepted"
+                        )
+                        if summary_out.evidence_status == "partial":
+                            findings.append(AnalysisFinding(
+                                concern="summary",
+                                status="unverified",
+                                target_id=code_id,
+                                reasons=tuple(summary_out.missing_context),
+                                candidate=summary_out.model_dump(),
+                                evidence_rule="code_summary",
+                            ))
         if on_summary_ready is not None:
             on_summary_ready(code_id)
         return findings
@@ -280,8 +411,7 @@ async def analyze_code_three_split(
         return normalize_rules_response(
             output,
             rows,
-            evidence.get("conditions", {}),
-            evidence.get("effects", {}),
+            evidence,
         )
 
     async def _collect_rules():
@@ -297,15 +427,21 @@ async def analyze_code_three_split(
             read_tables=sorted(set(ctx.reads)),
             write_tables=sorted(set(ctx.writes)),
             table_ops=ctx.extra.get("table_op") or {},
+            table_aliases=ctx.extra.get("table_identity_aliases") or {},
         )
 
     gather_map: dict[str, Any] = {
         "summary": _collect_summary(),
         "rules": _collect_rules(),
     }
-    if ctx.reads or ctx.writes:
+    insight_reads = exact_direct_table_ids(ctx, "READ")
+    insight_writes = exact_direct_table_ids(ctx, "WRITE")
+    if insight_reads or insight_writes:
         insight_model = table_insights_response_model(
-            ctx.reads, ctx.writes, ctx.extra.get("table_op") or {},
+            insight_reads,
+            insight_writes,
+            ctx.extra.get("table_op") or {},
+            ctx.extra.get("column_usage_candidates") or {},
         )
         async def _collect_insights():
             try:
@@ -352,7 +488,10 @@ async def analyze_code_three_split(
         ))
     if insights_out is not None:
         insights_out = normalize_table_insights_response(
-            insights_out, ctx.reads, ctx.writes,
+            insights_out,
+            insight_reads,
+            insight_writes,
+            ctx.extra.get("column_usage_candidates") or {},
         )
 
     obligation_rows = sum(len(batch) for batch in plan_batches(inventory))
@@ -365,7 +504,7 @@ async def analyze_code_three_split(
     )
     serialized, unresolved_tables = serialize_rules(
         collection.rules, fn.signature or fn.id, ctx.reads, ctx.writes,
-        ctx.extra.get("table_op"),
+        ctx.extra.get("table_op"), ctx.extra.get("table_identity_aliases") or {},
     )
     fn.extra["rules"] = serialized
     quality_findings.extend(collection.findings)
@@ -416,6 +555,8 @@ def _apply_summary_fields(
     fn.summary = summary_out.summary
     fn.stereotype = stereotype or None
     fn.extra["questions"] = [q.model_dump() for q in summary_out.questions]
+    fn.extra["summary_evidence_status"] = summary_out.evidence_status
+    fn.extra["summary_missing_context"] = list(summary_out.missing_context)
     if not violation:
         return None
     return AnalysisFinding(
@@ -448,12 +589,12 @@ def _build_user_values(
     """
     excerpt = cache.excerpt(ctx.file_path, ctx.start_line, ctx.end_line)
     raw_body = raw_body_for(ctx, contexts, cache)
-    prompt_body = body_for(ctx, contexts, cache)
+    prompt_body = project_model_source_literals(body_for(ctx, contexts, cache))
     inventory = build_control_inventory(fn, ctx, cache)
     # 상태 추적 없이 소스에 직접 쓰인 반환 표현식만 bottom-up 인터페이스로 전달한다.
     ctx.extra["return_expressions"] = sorted(inventory.return_expressions)
-    _persist_branch_table(fn, inventory)
-    _persist_coverage(fn, inventory)
+    persist_branch_table(fn, inventory)
+    persist_coverage(fn, inventory)
     values = {
         "id": fn.id,
         "signature": fn.signature,
@@ -472,14 +613,33 @@ def _build_user_values(
         "ancestor_context": ancestor_context(ctx, contexts, cache),
         "reads": dump_table_refs(ctx.reads, table_descriptions, include_columns=False),
         "writes": dump_table_refs(ctx.writes, table_descriptions, include_columns=False),
+        "direct_reads": dump_table_refs(
+            exact_direct_table_ids(ctx, "READ"),
+            table_descriptions,
+            include_columns=False,
+        ),
+        "direct_writes": dump_table_refs(
+            exact_direct_table_ids(ctx, "WRITE"),
+            table_descriptions,
+            include_columns=False,
+        ),
         "table_ops": json.dumps(
             ctx.extra.get("table_op") or {},
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
         ),
+        "data_object_usages": dump_data_object_usages(
+            ctx.extra.get("data_object_usages") or ()
+        ),
+        "column_usage_candidates": json.dumps(
+            ctx.extra.get("column_usage_candidates") or {},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
         # spec 102: 규칙이 고를 수 있는 근거 분기 후보. 분할 3 템플릿만 참조한다.
-        "branch_index": inventory.branch_index(),
+        "branch_index": project_model_source_literals(inventory.branch_index()),
         # spec 116 §19: SKILL 문서 보증 API 값 계약 — 분할 3 템플릿만 참조한다.
         "api_contracts": (
             json.dumps(
@@ -490,47 +650,6 @@ def _build_user_values(
         ),
     }
     return values, inventory
-
-
-def _persist_branch_table(fn: CodeNode, inventory) -> None:
-    """활성 분석 run에만 분기표 정답지를 기록한다.
-
-    독립 단위 호출에는 run 산출물 소유권이 없으므로 기본 ``logs/``로 fallback하지 않는다.
-    """
-    run_dir = active_run_dir()
-    if run_dir is None:
-        return
-    directory = run_dir / "branch-tables"
-    directory.mkdir(parents=True, exist_ok=True)
-    safe_name = "".join(
-        ch if ch.isalnum() or ch in "._-" else "_" for ch in fn.id
-    )
-    (directory / f"{safe_name}.json").write_text(
-        json.dumps(inventory.table_rows(), ensure_ascii=False, indent=1),
-        encoding="utf-8",
-    )
-
-
-def _persist_coverage(fn: CodeNode, inventory) -> None:
-    """커버리지 잔차 감사(골키퍼 그물2)를 run 산출물로 기록한다.
-
-    함수별 잔차·위험구문 장부는 `scripts/audit_coverage.py` 가 corpus 단위로 집계한다.
-    분기표와 같은 소유권 규칙 — 활성 run 이 없으면 기록하지 않는다.
-    """
-    run_dir = active_run_dir()
-    if run_dir is None:
-        return
-    directory = run_dir / "coverage"
-    directory.mkdir(parents=True, exist_ok=True)
-    safe_name = "".join(
-        ch if ch.isalnum() or ch in "._-" else "_" for ch in fn.id
-    )
-    report = coverage_residue(inventory)
-    report["function"] = fn.id
-    (directory / f"{safe_name}.json").write_text(
-        json.dumps(report, ensure_ascii=False, indent=1),
-        encoding="utf-8",
-    )
 
 
 def _callee_interface_items(
@@ -549,7 +668,13 @@ def _callee_interface_items(
             continue
         text = (c.summary or "").strip()
         if text:
-            items.append({"callee_id": callee_id, "summary": text})
+            items.append({
+                "relation": "TARGET_CALLS_CALLEE",
+                "callee_id": callee_id,
+                "summary": text,
+                "evidence_status": c.extra.get("summary_evidence_status") or "sufficient",
+                "missing_context": list(c.extra.get("summary_missing_context") or ()),
+            })
     return items
 
 

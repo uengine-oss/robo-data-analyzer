@@ -5,15 +5,19 @@ import asyncio
 import json
 import unittest
 
-from api.mcp_app import _list_clusters, cluster_retrieve
-from search.corpus.node_detail import build_node_detail
+from api.mcp_app import _list_clusters, cluster_retrieve, node_detail
+from search.corpus.node_detail import build_gwt_detail, build_node_detail
 
 
 def _clusters() -> list:
-    rule = {"statement": "재고 부족 시 거절", "examples": [
+    rule = {"anchor_line": 17, "nl": "재고 부족 시 거절한다", "tables": [
+        {"name": "orders", "op": "READ"},
+    ], "examples": [
         {"given": "g1", "when": "w1", "then": "t1", "tables": [{"name": "orders", "op": "R"}]},
     ]}
-    rule_dup = {"statement": "재고 부족 시 거절", "examples": [
+    rule_dup = {"anchor_line": 17, "nl": "재고 부족 시 거절한다", "tables": [
+        {"name": "orders", "op": "READ"},
+    ], "examples": [
         {"given": "g2", "when": "w2", "then": "t2", "tables": []},
     ]}
     anchor = {
@@ -61,7 +65,11 @@ class ListProfileTests(unittest.TestCase):
         table = nodes[2]
         self.assertEqual("code:a.c:fa", anchor["id"])
         self.assertEqual("기능A", anchor["logical_name"])
-        self.assertEqual(["g1", "g2"], [x["given"] for x in anchor["rules"][0]["examples"]])
+        self.assertEqual([{
+            "line": 17,
+            "text": "재고 부족 시 거절한다",
+            "tables": [{"name": "orders", "op": "READ"}],
+        }], anchor["rules"])
         self.assertEqual([], evidence["rules"])
         self.assertEqual("CALLS", evidence["evidence"][0]["relation"])
         self.assertEqual("orders", table["physical_name"])
@@ -104,6 +112,82 @@ class DetailPayloadTests(unittest.TestCase):
         self.assertEqual({"available": False, "file_path": None, "start_line": None,
                           "end_line": None, "code_text": None}, payload["node"]["source"])
         self.assertEqual("order_id", payload["node"]["columns"][0]["name"])
+
+    def test_gwt_view_removes_source_body_and_keeps_calls_tables_samples(self):
+        full = build_node_detail(
+            [{"labels": ["FUNCTION"], "props": {
+                "id": "code:a.c:fa", "name": "fa", "summary": "주문을 처리한다",
+                "logical_name": "주문 처리", "stereotype": "Service",
+                "summary_evidence_status": "partial",
+                "summary_missing_context_json": '["외부 결제 계약"]',
+                "file_path": "a.c", "start_line": 10, "end_line": 20,
+                "code_text": "int fa(){ /* long body */ }",
+            }}],
+            [{"type": "CALLS", "direction": "out", "other_id": "code:a.c:fb",
+              "other_name": "fb", "other_labels": ["FUNCTION"], "properties": {}}],
+            [{"anchor_line": 12, "nl": "결제 상태를 확인한다", "tables": [
+                {"name": "orders", "op": "select"},
+            ]}], [],
+        )
+        compact = build_gwt_detail(full, [{
+            "id": "db:orders", "name": "orders", "access": ["READ"],
+            "evidence_status": "sufficient", "missing_context": [],
+            "columns": [{"name": "status", "dtype": "TEXT"}],
+            "sample": {"columns": [{"name": "status"}],
+                       "sample_rows": [{"status": "PAID"}]},
+        }])
+        node = compact["node"]
+        self.assertNotIn("code_text", json.dumps(compact, ensure_ascii=False))
+        self.assertEqual({"file_path": "a.c", "start_line": 10, "end_line": 20},
+                         node["source"])
+        self.assertEqual("code:a.c:fb", node["calls"][0]["id"])
+        self.assertEqual("partial", node["summary_evidence_status"])
+        self.assertEqual(["외부 결제 계약"], node["summary_missing_context"])
+        self.assertEqual([{
+            "line": 12,
+            "text": "결제 상태를 확인한다",
+            "tables": [{"name": "orders", "op": "select"}],
+        }], node["rules"])
+        self.assertEqual("PAID", node["tables"][0]["sample"]["sample_rows"][0]["status"])
+
+    def test_gwt_view_exposes_direct_table_and_column_semantic_evidence(self):
+        for label, node_id, description, status, missing_context in [
+            ("TABLE", "db:orders", "주문 처리에서 조회하고 갱신하는 저장소", "sufficient", []),
+            ("COLUMN", "db:orders.etc", "", "insufficient", ["DDL comment", "code usage"]),
+        ]:
+            with self.subTest(label=label):
+                full = build_node_detail(
+                    [{"labels": [label], "props": {
+                        "id": node_id,
+                        "name": node_id.rsplit(".", 1)[-1],
+                        "analyzed_description": description,
+                        "semantic_evidence_status": status,
+                        "semantic_missing_context": missing_context,
+                    }}],
+                    [], [], [],
+                )
+                node = build_gwt_detail(full, [])["node"]
+                self.assertEqual(description, node["description"])
+                self.assertEqual(status, node["evidence_status"])
+                self.assertEqual(missing_context, node["missing_context"])
+
+    def test_gwt_semantic_description_preserves_source_authority(self):
+        full = build_node_detail(
+            [{"labels": ["COLUMN"], "props": {
+                "id": "db:orders.status", "name": "status",
+                "description": "DDL comment description",
+                "analyzed_description": "Analyzer description",
+            }}],
+            [], [], [],
+        )
+        self.assertEqual(
+            "DDL comment description",
+            build_gwt_detail(full, [])["node"]["description"],
+        )
+
+    def test_invalid_view_is_explicit(self):
+        out = asyncio.run(node_detail(node_id="x", view="wide"))
+        self.assertEqual("INVALID_VIEW", json.loads(out)["error"]["code"])
 
     def test_empty_missing_duplicate_and_incomplete_source_are_explicit(self):
         self.assertEqual("EMPTY_ID", build_node_detail([], [], [], [], node_id="")["error"]["code"])

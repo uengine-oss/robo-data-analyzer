@@ -7,9 +7,18 @@ from typing import Optional
 from graph.schema.graph_nodes import CodeNode
 from pipeline.models.analysis_context import AnalysisContext, dump_external_evidence, dump_referenced_symbols
 from pipeline.steps.step7_analyze_code.batch_planner import Batch
-from pipeline.steps.step7_analyze_code.range_body import ancestor_context, body_for
+from pipeline.steps.step7_analyze_code.range_body import (
+    ancestor_context,
+    body_for,
+    model_visible_raw_body,
+)
 from pipeline.steps.step7_analyze_code.table_prompt_context import dump_table_refs
 from pipeline.steps.step7_analyze_code.control_prompt import build_control_inventory
+from pipeline.steps.step7_analyze_code.model_source_projection import (
+    project_model_source_literals,
+)
+from pipeline.models.data_object_usage import dump_data_object_usages, exact_direct_table_ids
+from pipeline.steps.step7_analyze_code.batch_node_identity import batch_node_keys
 from shared.files.cache import SourceFileCache
 
 
@@ -22,6 +31,8 @@ def _build_batch_values(
     table_descriptions: dict[str, dict],
     cache: SourceFileCache,
     body_fn=body_for,
+    *,
+    include_column_usage: bool = False,
 ) -> tuple[dict, dict[str, str]]:
     """배치 → batch yaml user_values + ``node_key -> code_id`` 매핑.
 
@@ -35,14 +46,23 @@ def _build_batch_values(
     ancestor = ancestor_context(first_ctx, contexts, cache) if parent_ctx is not None else "(없음)"
 
     blocks: list[str] = []
-    key_to_id: dict[str, str] = {}
+    key_to_id = batch_node_keys(batch.node_ids, contexts)
+    id_to_key = {node_id: key for key, node_id in key_to_id.items()}
     for nid in batch.node_ids:
         ctx = contexts[nid]
-        key = f"{ctx.start_line}-{ctx.end_line}"
-        key_to_id[key] = nid
-        body = body_fn(ctx, contexts, cache)
+        key = id_to_key[nid]
+        body = project_model_source_literals(body_fn(ctx, contexts, cache))
         fn = code_by_id[nid]
         inventory = build_control_inventory(fn, ctx, cache)
+        branch_index = inventory.branch_index()
+        # The validator sees the same authoritative comparison-bearing inputs as
+        # the model. Keep this beside prompt assembly so later consumers cannot
+        # accidentally validate against hidden compacted child source.
+        ctx.extra["summary_comparison_evidence"] = "\n".join((
+            model_visible_raw_body(ctx, contexts, cache),
+            branch_index,
+            fn.expression or "",
+        ))
         ctx.extra["return_expressions"] = sorted(inventory.return_expressions)
         excerpt = cache.excerpt(ctx.file_path, ctx.start_line, ctx.end_line)
         callee_summaries = []
@@ -51,29 +71,51 @@ def _build_batch_values(
             if callee is None or not (callee.summary or "").strip():
                 continue
             callee_summaries.append({
+                "relation": "TARGET_CALLS_CALLEE",
                 "callee_id": callee_id,
                 "summary": callee.summary.strip(),
+                "evidence_status": callee.extra.get("summary_evidence_status") or "sufficient",
+                "missing_context": list(callee.extra.get("summary_missing_context") or ()),
             })
+        column_usage_block = (
+            "column_usage_candidates_json: "
+            + json.dumps(
+                ctx.extra.get("column_usage_candidates") or {},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+            if include_column_usage else ""
+        )
         blocks.append(
             f"### [TARGET_NODE]\n"
             f"node_key: {key}\n"
+            f"target_id: {nid}\n"
             f"file: {ctx.file_path}\n"
-            f"source_range: {key}\n"
+            f"source_range: {ctx.start_line}-{ctx.end_line}\n"
             f"coordinate_system: {excerpt.coordinate_system}\n"
             f"source_status: {excerpt.status}\n\n"
-            f"#### [DIRECT_EVIDENCE]\n"
-            f"reads_json: {dump_table_refs(ctx.reads, table_descriptions, include_columns=False)}\n"
-            f"writes_json: {dump_table_refs(ctx.writes, table_descriptions, include_columns=False)}\n"
-            f"authoritative_table_ops_json: "
+            f"#### [EFFECTIVE_FLOW_EVIDENCE]\n"
+            f"ast_type: {fn.label}\n"
+            f"ast_expression: {fn.expression}\n"
+            f"ast_target: {fn.target}\n"
+            f"ast_operator: {fn.operator}\n"
+            f"call_target: {fn.name if fn.label == 'CALL' else ''}\n"
+            f"effective_reads_json: {dump_table_refs(ctx.reads, table_descriptions, include_columns=False)}\n"
+            f"effective_writes_json: {dump_table_refs(ctx.writes, table_descriptions, include_columns=False)}\n"
+            f"linked_table_operations_json: "
             f"{json.dumps(ctx.extra.get('table_op') or {}, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}\n"
-            f"referenced_symbols_json: {dump_referenced_symbols(ctx.referenced_symbols)}\n"
-            f"external_evidence_json: {dump_external_evidence(ctx.external_evidence)}\n\n"
-            f"callee_summaries_json: "
+            f"direct_data_object_usages_json: {dump_data_object_usages(ctx.extra.get('data_object_usages') or ())}\n"
+            f"{column_usage_block}"
+            f"target_referenced_symbol_definitions_json: {dump_referenced_symbols(ctx.referenced_symbols)}\n"
+            f"target_linked_external_context_json: {dump_external_evidence(ctx.external_evidence)}\n\n"
+            f"callee_interfaces_json: "
             f"{json.dumps(callee_summaries, ensure_ascii=False, separators=(',', ':'))}\n"
             f"api_contracts_json: "
             f"{json.dumps([dict(item) for item in ctx.extra.get('api_contracts') or ()], ensure_ascii=False, separators=(',', ':'))}\n\n"
             f"#### [CONTROL_FLOW_INDEX]\n"
-            f"{inventory.branch_index()}\n\n"
+            f"{project_model_source_literals(branch_index)}\n\n"
             f"#### [SOURCE]\n```\n{body}\n```"
         )
     values = {
@@ -94,6 +136,7 @@ def build_rule_batch_values(
     expected: dict[str, str],
     assignments: dict[str, tuple[int, ...] | list[int]],
     evidences: dict[str, dict[str, object]],
+    owner_ids: dict[str, str],
     contexts: dict[str, AnalysisContext],
     code_by_id: dict[str, CodeNode],
     table_descriptions: dict[str, dict],
@@ -107,6 +150,9 @@ def build_rule_batch_values(
     blocks: list[str] = []
     for node_key, node_id in expected.items():
         ctx = contexts[node_id]
+        # RULE 행의 좌표계는 배분받은 하강 노드가 아니라 분기표 소유 루틴이다
+        # (spec 117). 행 증거·채점·직렬화와 같은 허용 R/W를 prompt에도 제공한다.
+        owner_ctx = contexts[owner_ids[node_key]]
         fn = code_by_id[node_id]
         callee_summaries = []
         for callee_id in sorted(ctx.callees):
@@ -114,29 +160,107 @@ def build_rule_batch_values(
             if callee is None or not (callee.summary or "").strip():
                 continue
             callee_summaries.append({
+                "relation": "TARGET_CALLS_CALLEE",
                 "callee_id": callee_id,
                 "summary": callee.summary.strip(),
+                "evidence_status": callee.extra.get("summary_evidence_status") or "sufficient",
+                "missing_context": list(callee.extra.get("summary_missing_context") or ()),
             })
         rows = tuple(int(row) for row in assignments[node_key])
         blocks.append(
             f"### [RULE_TARGET {node_key}]\n"
             f"target_id: {node_id}\n"
+            f"owner_id: {owner_ids[node_key]}\n"
             f"signature: {fn.signature}\n"
             f"assigned_rows: {','.join(map(str, rows))}\n"
-            f"reads_json: {dump_table_refs(ctx.reads, table_descriptions, include_columns=False)}\n"
-            f"writes_json: {dump_table_refs(ctx.writes, table_descriptions, include_columns=False)}\n"
-            f"authoritative_table_ops_json: "
-            f"{json.dumps(ctx.extra.get('table_op') or {}, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}\n"
-            f"referenced_symbols_json: {dump_referenced_symbols(ctx.referenced_symbols)}\n"
-            f"external_evidence_json: {dump_external_evidence(ctx.external_evidence)}\n"
-            f"callee_summaries_json: "
+            f"owner_effective_reads_json: {dump_table_refs(owner_ctx.reads, table_descriptions, include_columns=False)}\n"
+            f"owner_effective_writes_json: {dump_table_refs(owner_ctx.writes, table_descriptions, include_columns=False)}\n"
+            f"owner_linked_table_operations_json: "
+            f"{json.dumps(owner_ctx.extra.get('table_op') or {}, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}\n"
+            f"target_referenced_symbol_definitions_json: {dump_referenced_symbols(ctx.referenced_symbols)}\n"
+            f"target_linked_external_context_json: {dump_external_evidence(ctx.external_evidence)}\n"
+            f"callee_interfaces_json: "
             f"{json.dumps(callee_summaries, ensure_ascii=False, separators=(',', ':'))}\n"
             f"api_contracts_json: "
             f"{json.dumps([dict(item) for item in ctx.extra.get('api_contracts') or ()], ensure_ascii=False, separators=(',', ':'))}\n"
             f"rule_evidence_json: "
             f"{json.dumps(evidences[node_key], ensure_ascii=False, separators=(',', ':'))}"
         )
-    return {"rule_nodes": "\n\n".join(blocks)}
+    unique_owners = tuple(dict.fromkeys(owner_ids.values()))
+    return {
+        # Runner trace identity is not part of the rendered prompt, but actual jsonl must never
+        # say target=unknown.  The block-level owner_id remains the checker source when a batch
+        # ever spans more than one routine.
+        "unit_id": unique_owners[0] if len(unique_owners) == 1 else "batch:multiple-rule-owners",
+        "rule_nodes": "\n\n".join(blocks),
+    }
+
+
+def build_table_insight_batch_values(
+    *,
+    batch: Batch,
+    contexts: dict[str, AnalysisContext],
+    code_by_id: dict[str, CodeNode],
+    table_descriptions: dict[str, dict],
+    cache: SourceFileCache,
+) -> dict[str, str]:
+    """Project only exact direct table evidence for the DBMS table concern.
+
+    Summary needs effective descendant flow and surrounding context.  A table-usage item owns
+    only the current node's direct access, so sharing the generic summary packet made the model
+    infer whether ``reads``/``writes`` were direct.  This projection makes that scope explicit
+    and omits ancestor, callee, control-index, and codebase payload that cannot establish direct
+    table ownership.
+    """
+    first_ctx = contexts[batch.node_ids[0]]
+    root = _root_code_node(batch.node_ids[0], contexts, code_by_id)
+    key_to_id = batch_node_keys(batch.node_ids, contexts)
+    id_to_key = {node_id: key for key, node_id in key_to_id.items()}
+    blocks: list[str] = []
+    for node_id in batch.node_ids:
+        context = contexts[node_id]
+        node = code_by_id[node_id]
+        excerpt = cache.excerpt(
+            context.file_path, context.start_line, context.end_line,
+        )
+        blocks.append(
+            "### [TABLE_USAGE_TARGET]\n"
+            f"node_key: {id_to_key[node_id]}\n"
+            f"target_id: {node_id}\n"
+            f"file: {context.file_path}\n"
+            f"source_range: {context.start_line}-{context.end_line}\n"
+            f"coordinate_system: {excerpt.coordinate_system}\n"
+            f"source_status: {excerpt.status}\n\n"
+            "#### [EXACT_DIRECT_TABLE_EVIDENCE]\n"
+            f"ast_type: {node.label}\n"
+            f"ast_expression: {node.expression}\n"
+            f"ast_target: {node.target}\n"
+            f"ast_operator: {node.operator}\n"
+            f"direct_reads_json: "
+            f"{dump_table_refs(exact_direct_table_ids(context, 'READ'), table_descriptions, include_columns=False)}\n"
+            f"direct_writes_json: "
+            f"{dump_table_refs(exact_direct_table_ids(context, 'WRITE'), table_descriptions, include_columns=False)}\n"
+            f"direct_table_operations_json: "
+            f"{json.dumps(context.extra.get('table_op') or {}, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}\n"
+            f"direct_data_object_usages_json: "
+            f"{dump_data_object_usages(context.extra.get('data_object_usages') or ())}\n"
+            f"column_usage_candidates_json: "
+            f"{json.dumps(context.extra.get('column_usage_candidates') or {}, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}\n"
+            f"target_referenced_symbol_definitions_json: "
+            f"{dump_referenced_symbols(context.referenced_symbols)}\n"
+            f"target_linked_external_context_json: "
+            f"{dump_external_evidence(context.external_evidence)}\n\n"
+            "#### [SOURCE]\n"
+            "각 접두사는 절대 파일 줄번호다. 접두사 숫자와 `|`는 소스 코드가 아니다.\n"
+            f"```\n{body_for(context, contexts, cache)}\n```"
+        )
+    return {
+        "unit_id": root.id if root else first_ctx.id,
+        "unit_signature": root.signature if root else first_ctx.signature,
+        "node_count": str(len(batch.node_ids)),
+        "node_keys": ", ".join(key_to_id),
+        "table_usage_nodes": "\n\n".join(blocks),
+    }
 
 
 def _root_code_node(

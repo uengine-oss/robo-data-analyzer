@@ -62,5 +62,9 @@ def build_consolidated_column_updates(
                 "id": fqn(table_id, name),
                 "analyzed_description": description,
                 "logical_name": logical_name,
+                "semantic_evidence_status": getattr(column, "evidence_status", ""),
+                "semantic_missing_context": tuple(
+                    getattr(column, "missing_context", ()) or ()
+                ),
             })
     return updates

@@ -73,19 +73,47 @@ def plan_batches(
         )
 
     obligation = required_rule_rows(inventory)
+    rows_by_line = {int(row["line"]): row for row in inventory.table_rows()}
+
+    # A small controller subtree is one semantic packet.  Splitting its parent from
+    # its child rows made the model fold an initializer across an unseen child loop
+    # (shopmall local_trim R91/R93).  Group only when the complete subtree already
+    # satisfies both measured bounds; large trees remain splittable and no child
+    # evidence is copied into the parent row.
+    groups: list[list[int]] = []
+    index = 0
+    while index < len(obligation):
+        line = obligation[index]
+        row = rows_by_line[line]
+        end_line = int(row.get("end_line") or line)
+        group = [line]
+        if inventory.has_nested_control(line):
+            candidate = [
+                item for item in obligation[index:]
+                if item <= end_line
+            ]
+            if (
+                len(candidate) <= rows_per_call
+                and output_references(candidate) <= max_output_references
+            ):
+                group = candidate
+        groups.append(group)
+        index += len(group)
+
     batches: list[list[int]] = []
-    start = 0
-    while start < len(obligation):
-        batch = obligation[start:start + rows_per_call]
-        while (
-            len(batch) > 1
-            and output_references(batch) > max_output_references
+    batch: list[int] = []
+    for group in groups:
+        candidate = [*batch, *group]
+        if batch and (
+            len(candidate) > rows_per_call
+            or output_references(candidate) > max_output_references
         ):
-            # Keep the largest safe prefix.  Dropping one row at a time minimizes
-            # duplicated fixed context while still enforcing the response bound.
-            batch = batch[:-1]
+            batches.append(batch)
+            batch = list(group)
+        else:
+            batch = candidate
+    if batch:
         batches.append(batch)
-        start += len(batch)
     return batches
 
 
@@ -101,7 +129,7 @@ def required_rule_rows(
     return [
         row["line"]
         for row in inventory.table_rows()
-        if row["role"] in ("decision", "complement", "entry")
+        if row["role"] in ("decision", "complement", "entry", "continuation")
         or (row["role"] in ("exit", "handler") and not row.get("in_branch"))
     ]
 
@@ -118,6 +146,7 @@ async def collect_rules_by_rows(
     read_tables: Sequence[str] | None = None,
     write_tables: Sequence[str] | None = None,
     table_ops: dict[str, str] | None = None,
+    table_aliases: dict[str, str] | None = None,
 ) -> RowCollection:
     """모든 배치를 병렬로 한 번 호출하고 검증된 행과 findings를 분리한다."""
     if not target_scope.strip():
@@ -155,6 +184,7 @@ async def collect_rules_by_rows(
             read_tables=read_tables,
             write_tables=write_tables,
             table_ops=table_ops,
+            table_aliases=table_aliases,
             require_exact_conditions=True,
         )
         accepted, findings = partition_rule_candidates(

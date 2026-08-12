@@ -38,6 +38,7 @@ from pipeline.quality_gates.evidence_matching import (
 )
 
 _ELSE_REF = re.compile(r"^[A-Z_]+@(\d+)$")
+_CONTROL_REF = re.compile(r"^[A-Z_]+@(\d+)$")
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # 소수 포함 — `v_rate := 0.8` 의 0.8 을 0/8 로 쪼개 창작으로 오판하지 않게 (sql 시료 실측).
 _NUMBER = re.compile(r"\b\d+(?:\.\d+)?\b")
@@ -342,6 +343,7 @@ def _check_leaf_tree(
     read_tables: set[str] | None,
     write_tables: set[str] | None,
     table_ops: dict[str, str] | None,
+    table_aliases: dict[str, str] | None,
     return_values: set[str],
     inventory_fragments: set[str],
     reasons: list[str],
@@ -390,6 +392,28 @@ def _check_leaf_tree(
                         )
                 else:
                     reasons.append("else_of 인자는 행 참조 문자열 1개여야 함")
+            elif name in ("after_control", "at_label"):
+                if (
+                    len(node.args) == 1
+                    and isinstance(node.args[0], ast.Constant)
+                    and isinstance(node.args[0].value, str)
+                ):
+                    reference = node.args[0].value
+                    matched = _CONTROL_REF.match(reference)
+                    if not matched:
+                        reasons.append(
+                            f"{name} 참조 형식 위반: {reference!r} "
+                            "(예: IF@512)"
+                        )
+                    elif int(matched.group(1)) not in table_lines:
+                        reasons.append(
+                            f"{name} 이 분기표에 없는 구조행을 참조: "
+                            f"{reference!r}"
+                        )
+                else:
+                    reasons.append(
+                        f"{name} 인자는 구조행 참조 문자열 1개여야 함"
+                    )
 
     # 특수 의미 인자는 일반 값 풀이 아니라 각 결정론 증거와 대조한다.
     excluded: set[int] = set()
@@ -397,7 +421,7 @@ def _check_leaf_tree(
         if (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
-            and node.func.id in ("F", "else_of")
+            and node.func.id in ("F", "else_of", "after_control", "at_label")
             and node.args
         ):
             excluded.add(id(node.args[0]))
@@ -413,7 +437,9 @@ def _check_leaf_tree(
             first_value, str
         ):
             excluded.add(id(first))
-            resolved_table = resolve_qualified_name(first_value, allowed_tables)
+            resolved_table = resolve_qualified_name(
+                first_value, allowed_tables, table_aliases,
+            )
             if resolved_table is None:
                 reasons.append(
                     f"{effect} 테이블이 결정론 R/W 집합에 없음: {first_value!r}"
@@ -422,7 +448,9 @@ def _check_leaf_tree(
                 direction_pool = read_tables if effect == "select" else write_tables
                 if (
                     direction_pool is not None
-                    and resolve_qualified_name(first_value, direction_pool) is None
+                    and resolve_qualified_name(
+                        first_value, direction_pool, table_aliases,
+                    ) is None
                 ):
                     direction = "READ" if effect == "select" else "WRITE"
                     reasons.append(
@@ -494,6 +522,7 @@ def grade_rules(
     read_tables: Iterable[str] | None = None,
     write_tables: Iterable[str] | None = None,
     table_ops: dict[str, str] | None = None,
+    table_aliases: dict[str, str] | None = None,
     require_exact_conditions: bool = False,
 ) -> GradeReport:
     """행 단위 채점. ``assigned`` 는 배칭 시 이번 호출의 할당 행(절대 줄) 집합.
@@ -506,7 +535,7 @@ def grade_rules(
     rule_rows = {
         row["line"]
         for row in rows
-        if row["role"] in ("decision", "complement", "entry")
+        if row["role"] in ("decision", "complement", "entry", "continuation")
         or (row["role"] in ("exit", "handler") and not row.get("in_branch"))
     }
     # 분기 안 종료문 행 — anchor 로는 정당하지만 규칙 의무(누락 뺄셈 대상)는 아니다.
@@ -547,15 +576,26 @@ def grade_rules(
 
         if source_row is not None:
             role = source_row.get("role")
-            if role in ("decision", "complement") and not rule.cond:
+            owner = inventory.at_line(anchor)
+            is_post_test = (
+                role == "decision"
+                and owner is not None
+                and owner.condition_timing == "post"
+            )
+            if role in ("decision", "complement") and not rule.cond and not is_post_test:
                 verdict.reasons.append(f"{role} 행은 cond가 null일 수 없음")
             # A handler marker identifies entry into an exception block; the marker
             # itself is not necessarily an executable effect.  Requiring ``then``
             # here rejected correct model output such as "예외 처리 블록 진입".
             # Entry/exit rows, unlike handler markers, are created from direct
             # executable statements and still require their direct effect.
-            if role in ("entry", "exit") and not rule.then:
+            if role in ("entry", "continuation", "exit") and not rule.then:
                 verdict.reasons.append(f"{role} 행은 직접 효과 then이 비어 있을 수 없음")
+            if role == "continuation" and source_row.get("unresolved_reachability"):
+                verdict.findings.append(
+                    "비구조 jump가 있는 routine의 continuation 도달성은 "
+                    "구조 좌표만으로 완전 증명할 수 없음"
+                )
             if require_exact_conditions:
                 expected_cond = expected_rule_condition(inventory, anchor)
                 if expected_cond is None:
@@ -587,6 +627,7 @@ def grade_rules(
             read_tables=read_names,
             write_tables=write_names,
             table_ops=table_ops,
+            table_aliases=table_aliases,
             return_values=return_values,
             inventory_fragments=inventory_fragments,
         )
@@ -719,6 +760,10 @@ def _compare_then_with_direct_effects(
     if source_row is None:
         return
     direct_source, returns, assignments = inventory.direct_evidence(rule.anchor_line)
+    targetless_ret = any(
+        op == "ret" and not target
+        for op, target in inventory.direct_statement_effects(rule.anchor_line)
+    )
     parsed: list[ast.Call] = []
     for statement in rule.then:
         try:
@@ -727,9 +772,16 @@ def _compare_then_with_direct_effects(
             continue
 
     ret_calls = [call for call in parsed if call.func.id == "ret"]
-    if returns and not ret_calls:
+    if (returns or targetless_ret) and not ret_calls:
         verdict.reasons.append("이 행의 직접 return 효과가 then에서 누락됨")
     for call in ret_calls:
+        is_targetless = (
+            bool(call.args)
+            and isinstance(call.args[0], ast.Constant)
+            and call.args[0].value is None
+        )
+        if is_targetless and targetless_ret:
+            continue
         if not returns:
             verdict.reasons.append("ret 효과가 이 행의 직접 source에 없음")
         elif not any(_effect_value_matches(call.args[0], value) for value in returns):
@@ -788,6 +840,7 @@ def _grade_rule_content(
     read_tables: set[str] | None,
     write_tables: set[str] | None,
     table_ops: dict[str, str] | None,
+    table_aliases: dict[str, str] | None,
     return_values: set[str],
     inventory_fragments: set[str],
 ) -> None:
@@ -814,6 +867,7 @@ def _grade_rule_content(
                 table_lines=table_lines, callees=callees,
                 allowed_tables=allowed_tables, read_tables=read_tables,
                 write_tables=write_tables, table_ops=table_ops,
+                table_aliases=table_aliases,
                 return_values=return_values,
                 inventory_fragments=inventory_fragments,
                 reasons=verdict.reasons,
@@ -828,6 +882,7 @@ def _grade_rule_content(
                 table_lines=table_lines, callees=callees,
                 allowed_tables=allowed_tables, read_tables=read_tables,
                 write_tables=write_tables, table_ops=table_ops,
+                table_aliases=table_aliases,
                 return_values=return_values,
                 inventory_fragments=inventory_fragments,
                 reasons=verdict.reasons,
