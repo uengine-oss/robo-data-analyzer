@@ -2,10 +2,10 @@
 
 검증일: 2026-08-12  
 봉인 목록: `sealed-sample-40.json`  
-Framework DB/run: `spec131fw1520260812` /
-`D:\work\robo\_runs\spec131-analyzer-framework-final15-20260812\20260811_164023_345a04a01811`  
-DBMS DB/run: `spec131db920260812` /
-`D:\work\robo\_runs\spec131-analyzer-dbms-final9-20260812\20260811_160854_56418de412d9`
+Framework DB: `spec131fw1520260812`  
+DBMS DB: `spec131db920260812`  
+대용량 임시 run output은 검증 종료 후 정리했다. 이 직접 판정표와 보고용 최소 사본
+`D:\work\robo\docs\작업보고내용\2026-08-12-evidence\analyzer-semantic-review-40.md`만 보존한다.
 
 이 문서는 같은 사전 봉인 표본의 수정 후 graph 값을 source, actual prompt, raw/parsed, 저장 결과와
 직접 대조한 증거다. 별도 LLM judge를 쓰지 않았다.

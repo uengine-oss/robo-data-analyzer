@@ -145,17 +145,19 @@ source → parser AST → Analyzer context/결정론 조립
 ### 5.1 최종 격리 run
 
 - Framework DB: `spec131fw1520260812`
-- Framework run: `D:\work\robo\_runs\spec131-analyzer-framework-final15-20260812\20260811_164023_345a04a01811`
+- Framework run의 대용량 임시 output은 검증 종료 후 정리했다. 직접 판정은
+  `evidence/semantic-review-40.md`와 보고용 최소 사본에 보존한다.
 - Framework: SUMMARY 124, RULE 2,049, EXAMPLE 1,747, TABLE 22, COLUMN 153,
   finding 0, duplicate coordinate 0, structural preflight diff 0.
 - Framework COLUMN: sufficient 146, partial 5, insufficient 2, empty 2, missing_context 7.
 - DBMS DB: `spec131db920260812`
-- DBMS run: `D:\work\robo\_runs\spec131-analyzer-dbms-final9-20260812\20260811_160854_56418de412d9`
+- DBMS run의 대용량 임시 output은 검증 종료 후 정리했다. 최종 수치와 직접 판정은
+  `evidence/semantic-review-40.md`가 소유한다.
 - DBMS: SUMMARY 479, graph RULE 68, TABLE 16, COLUMN 122, EXAMPLE 39, finding 0.
 - DBMS COLUMN: sufficient 37, partial 7, insufficient 78, empty 85.
 
-실패한 Framework final12 output은 사용자 증거로 보존한다. 원인은 CLI가 존재하지 않는 DB를
-자동 생성하지 않는다는 preflight 경계였고 제품 의미 실행 전 중단됐다.
+실패한 Framework final12의 원인은 CLI가 존재하지 않는 DB를 자동 생성하지 않는다는 preflight
+경계였고 제품 의미 실행 전 중단됐다. 원인 기록만 유지하고 임시 output은 정리했다.
 
 ### 5.2 봉인40 직접 판정
 
@@ -196,7 +198,7 @@ source → parser AST → Analyzer context/결정론 조립
 - 구조 preflight: `scripts/preflight_structural_obligations.py`
 - run judge: `scripts/judge_run.py`
 - prompt 원장 검사: `scripts/check_byte_identical.py`
-- MCP projection probe logs: `D:\work\robo\_runs\spec131-mcp-projection-probe-20260812`
+- MCP projection probe 결과: 이 HANDOFF의 5.4 판정에 반영했으며 임시 logs는 정리했다.
 
 ## 7. 현재 상태와 다음 행동
 
@@ -219,11 +221,12 @@ Architect spec055는 Analyzer 최종 보존 DB를 read-only API로 열고, 별�
 - Architect 구현/검증 커밋: `bf4ded37b09753d1159c430e1215c8fbe1b1ea60` (`main`, origin push 완료).
 
 새 공통 결함, 표본 확대, 다른 언어 검증 요구가 없다면 Analyzer나 Architect를 다시 실행하지 않는다.
-Architect 상세 증거는 `robo-architect/specs/055-grounded-gwt-context/verification.md`와 다음 보존
-output root가 소유한다.
+Architect 상세 증거는 `robo-architect/specs/055-grounded-gwt-context/verification.md`와 다음 최소
+보존 파일이 소유한다.
 
-- `D:\work\robo\_runs\spec055-strategy-b-20260812\architect\B-final15-simplified-final6`
-- `D:\work\robo\_runs\spec055-strategy-b-20260812\architect\B-final15-detailed-tactical-final4`
+- `D:\work\robo\docs\작업보고내용\2026-08-12-evidence\architect\simplified-proposal-final.json`
+- `D:\work\robo\docs\작업보고내용\2026-08-12-evidence\architect\detailed-proposal-final.json`
+- 같은 폴더의 `simplified-manifest.json`, `detailed-manifest.json`
 
 ## 8. 종료 환경
 
