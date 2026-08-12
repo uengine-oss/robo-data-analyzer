@@ -31,7 +31,14 @@ from graph.schema.graph_nodes import CodeNode, Module
 from shared.config.settings import SETTINGS
 from llm.fanout import gather_with_warmup
 from pipeline.models.code_analysis_output import ModuleSummaryOutput
-from pipeline.models.module_summary_response_schema import module_summary_response_model
+from pipeline.models.aggregate_semantic_frame import (
+    aggregate_response_model,
+    aggregate_slot_meaning,
+    build_aggregate_semantic_plan,
+    normalize_aggregate_response,
+)
+from pipeline.languages import module_stereotype_values
+from pipeline.models.semantic_frame import SemanticFrame, profile_prompt_json, slot_specs_json
 from pipeline.languages import require_module_stereotype
 from llm.runners.yaml_llm_runner import run_yaml_rule
 from llm.runners.model_output_error import ModelOutputError
@@ -107,11 +114,9 @@ async def _summarize(
         members = fn_by_module.get(module.id, [])
         if not members:
             return module
-        analyzed_members = [
-            fn for fn in members if (fn.summary or "").strip()
-        ]
+        analyzed_members = [fn for fn in members if _member_frame_payload(fn)]
         missing = [
-            fn.id for fn in members if not (fn.summary or "").strip()
+            fn.id for fn in members if not _member_frame_payload(fn)
         ]
         if missing:
             finding = AnalysisFinding(
@@ -130,17 +135,23 @@ async def _summarize(
             return module
         if not analyzed_members:
             return module
+        member_frames = [
+            SemanticFrame.model_validate(_member_frame_payload(fn))
+            for fn in analyzed_members
+        ]
+        profile, specs = build_aggregate_semantic_plan(
+            target_id=module.id,
+            target_type=module.label,
+            owner_id=module.id,
+            file=module.file_path,
+            start_line=module.start_line,
+            end_line=module.end_line,
+            family="MODULE",
+            member_frames=member_frames,
+            include_responsibility=True,
+        )
         member_text = json.dumps(
-            [
-                {
-                    "node_id": fn.id,
-                    "signature": fn.signature,
-                    "source_range": f"{fn.start_line}-{fn.end_line}",
-                    "evidence_scope": "analyzed-member-summary",
-                    "summary": fn.summary.strip(),
-                }
-                for fn in analyzed_members
-            ],
+            [frame.model_dump(mode="json", by_alias=True) for frame in member_frames],
             ensure_ascii=False,
             separators=(",", ":"),
         )
@@ -154,8 +165,14 @@ async def _summarize(
                             "id": module.id,
                             "name": module.name,
                             "member_code_nodes": member_text,
+                            "structural_profile": profile_prompt_json(profile),
+                            "applicable_slots": slot_specs_json(specs),
                         },
-                        response_model=module_summary_response_model(strategy.name),
+                        response_model=aggregate_response_model(
+                            f"ModuleFrameOutput_{strategy.name}",
+                            specs,
+                            stereotype_values=module_stereotype_values(strategy.name),
+                        ),
                         budget=cost_budget,
                     )
         except ModelOutputError as error:
@@ -175,11 +192,14 @@ async def _summarize(
             return module
         # replace — label / comment / annotations 등 원본 필드 보존, 분석분만 갱신.
         # logical_name 은 여기서 채움 — 헤더 임시 정보가 아니라 멤버 분석 종합에서 도출.
+        frame = normalize_aggregate_response(result, profile, specs)
         return replace(
             module,
-            summary=result.summary,
+            summary=aggregate_slot_meaning(frame, "RESPONSIBILITY"),
             stereotype=require_module_stereotype(result.stereotype, strategy.name),
-            logical_name=result.logical_name or None,
+            logical_name=aggregate_slot_meaning(frame, "DISPLAY_NAME") or None,
+            semantic_frame_schema=frame.schema_version,
+            semantic_frame_json=frame.canonical_json(),
         )
 
     # 첫 모듈 1건으로 prefix 캐시 워밍 → 나머지 병렬. 의미 실패는 원본 모듈로
@@ -252,3 +272,8 @@ def _select_analyzed_code_nodes(
     """step7 의미 분석 대상만 원래 순서대로 보존한다."""
     target_ids = strategy.analysis_targets(code_nodes)
     return [node for node in code_nodes if node.id in target_ids]
+
+
+def _member_frame_payload(node: CodeNode) -> object | None:
+    extra = node.extra or {}
+    return extra.get("semantic_frame") or extra.get("_summary_semantic_frame")

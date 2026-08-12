@@ -19,6 +19,7 @@ from pipeline.models.rule_response_schema import (
 )
 from graph.schema.graph_nodes import CodeNode
 from pipeline.models.analysis_context import AnalysisContext, ControlSubtreeNode
+from pipeline.models.data_object_usage import DataObjectUsageEvidence
 from pipeline.models.code_analysis_output import SummaryOutput
 from pipeline.quality_gates.branch_inventory import BranchInventory
 from pipeline.steps.step7_analyze_code.batch_analyze import _collect_keyed_concern
@@ -42,6 +43,54 @@ def _effect(op: str, *, target=None, value=None, from_source=None) -> dict:
 
 def _model_rule_payload(text: str) -> dict:
     return {"nl": text}
+
+
+def _frame_payload(
+    response_model,
+    *,
+    meaning: str,
+    stereotype: str,
+    responsibility_missing: str = "",
+) -> dict:
+    slots_type = response_model.model_fields["slots"].annotation
+    slots = {}
+    for key in slots_type.model_fields:
+        is_responsibility = ":FUNCTION:RESPONSIBILITY:" in key
+        partial = is_responsibility and bool(responsibility_missing)
+        slots[key] = {
+            "meaning": meaning,
+            "status": "partial" if partial else "sufficient",
+            "missing_context": [responsibility_missing] if partial else [],
+        }
+    return {"slots": slots, "stereotype": stereotype}
+
+
+def _rule_frame_payload(response_model, *, meaning: str) -> dict:
+    slots_type = response_model.model_fields["slots"].annotation
+    return {"slots": {
+        key: {
+            "meaning": meaning,
+            "status": "sufficient",
+            "missing_context": [],
+        }
+        for key in slots_type.model_fields
+    }}
+
+
+def _table_frame_payload(response_model, *, meaning: str, role: str) -> dict:
+    slots_type = response_model.model_fields["slots"].annotation
+    roles_type = response_model.model_fields["table_roles"].annotation
+    return {
+        "slots": {
+            key: {
+                "meaning": meaning,
+                "status": "sufficient",
+                "missing_context": [],
+            }
+            for key in slots_type.model_fields
+        },
+        "table_roles": {key: role for key in roles_type.model_fields},
+    }
 
 
 def _return_inventory(*lines: int, lang: str = "c") -> BranchInventory:
@@ -278,7 +327,12 @@ class WiringTest(unittest.IsolatedAsyncioTestCase):
                 reads=["db:orders"], direct_reads=["db:orders"],
                 extra={"control_subtree": [ControlSubtreeNode(
                     node_id="if", ntype="IF", start=1, end=4, expression='flag == "1"',
-                )], "table_op": {"db:orders": "SELECT"}},
+                )], "table_op": {"db:orders": "SELECT"},
+                    "data_object_usages": (DataObjectUsageEvidence(
+                        source_id="fn", raw_reference="orders", name="orders",
+                        access="READ", evidence_file=str(source), evidence_line=1,
+                        table_id="db:orders", resolution="exact",
+                    ),)},
             )
             context.extra.setdefault("ast_statements", ())
             slots = PrioritySemaphore(1)
@@ -286,32 +340,21 @@ class WiringTest(unittest.IsolatedAsyncioTestCase):
             async def fake_rule(*, rule_name, response_model, **_kwargs):
                 self.assertEqual(0, slots.free, "framework LLM call must own one run slot")
                 if rule_name == "code_summary":
-                    return response_model.model_validate({
-                        "result": {
-                            "summary": "flag가 1이면 주문을 조회하고 처리 결과를 반환한다.",
-                            "stereotype": "Validator",
-                            "evidence_status": "sufficient",
-                            "missing_context": [],
-                            "questions": [{
-                                "text": "flag 1의 업무 의미는 무엇인가?",
-                                "reason": "제공 근거에 상태 정의가 없다",
-                            }],
-                        },
-                    })
+                    return response_model.model_validate(_frame_payload(
+                        response_model,
+                        meaning="flag가 1이면 주문을 조회하고 처리 결과를 반환한다.",
+                        stereotype="Validator",
+                        responsibility_missing="flag 1의 업무 의미는 무엇인가?",
+                    ))
                 if rule_name == "code_table_insights":
-                    return response_model.model_validate({
-                        "table_insights": {
-                            "db:orders": {
-                                "role": "lookup",
-                                "usage_summary": "조건 판단에 필요한 주문을 조회한다.",
-                            }
-                        }
-                    })
-                return response_model.model_validate({
-                    "rules": {"R1": {
-                        **_model_rule_payload("flag가 1이면 처리한다"),
-                    }},
-                })
+                    return response_model.model_validate(_table_frame_payload(
+                        response_model,
+                        meaning="조건 판단에 필요한 주문을 조회한다.",
+                        role="lookup",
+                    ))
+                return response_model.model_validate(_rule_frame_payload(
+                    response_model, meaning="flag가 1이면 처리한다",
+                ))
 
             with patch(
                 "pipeline.steps.step7_analyze_code.three_split_llm_fanout.run_yaml_rule",
@@ -357,6 +400,11 @@ class WiringTest(unittest.IsolatedAsyncioTestCase):
                         node_id="if", ntype="IF", start=1, end=4, expression='flag == "1"',
                     )],
                     "table_op": {"db:orders": "SELECT"},
+                    "data_object_usages": (DataObjectUsageEvidence(
+                        source_id="fn", raw_reference="orders", name="orders",
+                        access="READ", evidence_file=str(source), evidence_line=1,
+                        table_id="db:orders", resolution="exact",
+                    ),),
                 },
             )
             context.extra.setdefault("ast_statements", ())
@@ -369,27 +417,18 @@ class WiringTest(unittest.IsolatedAsyncioTestCase):
                     all_started.set()
                 await asyncio.wait_for(all_started.wait(), timeout=0.5)
                 if rule_name == "code_summary":
-                    return response_model.model_validate({
-                        "result": {
-                            "summary": "flag가 1이면 주문을 조회하고 처리 결과를 반환한다.",
-                            "stereotype": "Validator",
-                            "evidence_status": "sufficient",
-                            "missing_context": [],
-                            "questions": [],
-                        },
-                    })
+                    return response_model.model_validate(_frame_payload(
+                        response_model,
+                        meaning="flag가 1이면 주문을 조회하고 처리 결과를 반환한다.",
+                        stereotype="Validator",
+                    ))
                 if rule_name == "code_table_insights":
-                    return response_model.model_validate({
-                        "table_insights": {"db:orders": {
-                            "role": "lookup",
-                            "usage_summary": "주문을 조회한다.",
-                        }},
-                    })
-                return response_model.model_validate({
-                    "rules": {"R1": {
-                        **_model_rule_payload("flag가 1이면 처리한다"),
-                    }},
-                })
+                    return response_model.model_validate(_table_frame_payload(
+                        response_model, meaning="주문을 조회한다.", role="lookup",
+                    ))
+                return response_model.model_validate(_rule_frame_payload(
+                    response_model, meaning="flag가 1이면 처리한다",
+                ))
 
             with patch(
                 "pipeline.steps.step7_analyze_code.three_split_llm_fanout.run_yaml_rule",
@@ -432,23 +471,21 @@ class WiringTest(unittest.IsolatedAsyncioTestCase):
                 start_line=1, end_line=3,
                 extra={"rule_rows": (1,)},
             )
+            context.extra.setdefault("ast_statements", ())
             slots = PrioritySemaphore(1)
 
             async def fake_rule(*, response_model, **_kwargs):
                 self.assertEqual(0, slots.free, "DBMS LLM call must own one run slot")
+                item_type = response_model.model_fields["nodes"].annotation.model_fields[
+                    "1-3"
+                ].annotation
                 return response_model.model_validate({
-                    "nodes": {"1-3": {
-                        "rules": {"R1": {
-                            **_model_rule_payload("flag가 1인 경로다"),
-                        }},
-                    }},
+                    "nodes": {"1-3": _rule_frame_payload(
+                        item_type, meaning="flag가 1인 경로다",
+                    )},
                 })
 
             with (
-                patch(
-                    "pipeline.steps.step7_analyze_code.batch_analyze._build_batch_values",
-                    return_value=({"unit_id": "unit"}, {}),
-                ),
                 patch(
                     "pipeline.steps.step7_analyze_code.batch_analyze.run_yaml_rule",
                     side_effect=fake_rule,

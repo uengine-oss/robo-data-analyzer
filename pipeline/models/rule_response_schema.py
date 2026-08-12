@@ -23,6 +23,14 @@ from pipeline.models.code_analysis_output import (
 from pipeline.models.rule_expression import NL_MAX_CHARS, NL_PATTERN
 from pipeline.quality_gates.nl_reference_safety import replace_leaked_references
 from pipeline.quality_gates.rule_prompt_evidence import render_row_condition
+from pipeline.models.semantic_frame import (
+    SlotSpec,
+    StructuralProfile,
+    normalize_semantic_frame_response,
+    semantic_frame_response_model,
+    stable_digest,
+)
+from pipeline.models.semantic_frame_projection import project_rule_narrative
 
 
 ConditionRef = Annotated[str, Field(pattern=r"^!?C[1-9][0-9]*$")]
@@ -317,3 +325,92 @@ def _effect_positions_valid(effect: AssignedEffect | AssignedExtraEffect) -> boo
     if effect.op in {"call", "jump", "select", "insert", "update", "delete", "upsert"}:
         return bool(effect.target) and effect.value is None and effect.from_source is None
     return effect.target is None and effect.value is None and effect.from_source is None
+
+
+def frame_rules_response_model(slot_specs: Sequence[SlotSpec]) -> type[BaseModel]:
+    """Require every rule-owned semantic slot and expose no coordinate leaf fields."""
+    return semantic_frame_response_model(slot_specs)
+
+
+def normalize_frame_rules_response(
+    output: BaseModel,
+    profile: StructuralProfile,
+    slot_specs: Sequence[SlotSpec],
+    rows: Sequence[int],
+    evidence: Mapping[str, object],
+) -> RulesExamplesOutput:
+    assigned = _assigned_rows(rows)
+    frame = normalize_semantic_frame_response(output, profile, slot_specs)
+    conditions, effects, evidence_rows = _evidence_maps(evidence)
+    rules: list[RuleItem] = []
+    for row in assigned:
+        row_evidence = _evidence_row(evidence_rows, row)
+        raw_narrative = project_rule_narrative(frame, row)
+        narrative = _ground_narrative_references(
+            raw_narrative, row_evidence, conditions, effects,
+        )
+        rules.append(RuleItem.model_construct(
+            anchor_line=row,
+            cond=render_row_condition(row_evidence, conditions),
+            then=[
+                _render_selected_effect(effect, effects)
+                for effect in (row_evidence.get("direct") or ())
+            ],
+            nl=narrative,
+        ))
+    return RulesExamplesOutput(rules=rules, semantic_frame=frame)
+
+
+def batch_frame_rules_response_model(
+    assignments: Mapping[str, tuple[StructuralProfile, tuple[SlotSpec, ...]]],
+) -> type[BaseModel]:
+    if not assignments:
+        raise ValueError("frame rule assignments must not be empty")
+    fingerprint = stable_digest({
+        key: [spec.model_dump(mode="json") for spec in specs]
+        for key, (_profile, specs) in assignments.items()
+    })
+    fields = {}
+    for node_key, (_profile, specs) in assignments.items():
+        slot_model = semantic_frame_response_model(specs)
+        slots_type = slot_model.model_fields["slots"].annotation
+        item_model = create_model(
+            f"AssignedFrameRuleItem_{fingerprint}_{stable_digest(node_key)}",
+            __config__=ConfigDict(extra="forbid"),
+            slots=(slots_type, Field(...)),
+        )
+        fields[node_key] = (item_model, Field(...))
+    nodes_model = create_model(
+        f"AssignedFrameRuleMap_{fingerprint}",
+        __config__=ConfigDict(extra="forbid"),
+        **fields,
+    )
+    return create_model(
+        f"AssignedBatchFrameRules_{fingerprint}",
+        __config__=ConfigDict(extra="forbid"),
+        nodes=(nodes_model, Field(...)),
+    )
+
+
+def normalize_batch_frame_rules_response(
+    output: BaseModel,
+    assignments: Mapping[str, tuple[StructuralProfile, tuple[SlotSpec, ...]]],
+    rows_by_node: Mapping[str, Sequence[int]],
+    evidences: Mapping[str, Mapping[str, object]],
+) -> BatchRulesOutput:
+    nodes: list[BatchRulesItem] = []
+    for node_key, (profile, specs) in assignments.items():
+        item = getattr(output.nodes, node_key)
+        normalized = normalize_frame_rules_response(
+            item,
+            profile,
+            specs,
+            rows_by_node[node_key],
+            evidences[node_key],
+        )
+        nodes.append(BatchRulesItem(
+            node_key=node_key,
+            rules=normalized.rules,
+            semantic_frame=normalized.semantic_frame,
+        ))
+    return BatchRulesOutput(nodes=nodes)

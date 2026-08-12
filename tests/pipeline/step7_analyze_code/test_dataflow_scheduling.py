@@ -23,6 +23,7 @@ from pipeline.steps.step7_analyze_code.batch_planner import Batch
 from pipeline.models.analysis_context import AnalysisContext
 from pipeline.models.code_analysis_output import BatchSummaryItem
 from graph.schema.graph_nodes import CodeNode
+from tests.pipeline.semantic_frame_fixtures import semantic_frame_for_node
 
 
 @dataclass
@@ -210,6 +211,10 @@ class BatchEarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
                             "text": "상태 코드의 업무 의미는 무엇인가?",
                             "reason": "제공 근거에 정의가 없다",
                         }],
+                        semantic_frame=semantic_frame_for_node(
+                            node, meaning="업무 처리를 수행한다",
+                            status="partial", missing_context=["상태 코드 정의"],
+                        ),
                     )
                 }
             await rule_hold.wait()

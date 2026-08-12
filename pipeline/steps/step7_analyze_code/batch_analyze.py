@@ -59,16 +59,16 @@ from pipeline.models.code_analysis_output import (
     RulesExamplesOutput,
 )
 from pipeline.models.rule_response_schema import (
-    batch_rules_response_model,
-    normalize_batch_rules_response,
+    batch_frame_rules_response_model,
+    normalize_batch_frame_rules_response,
 )
 from pipeline.models.table_insight_response_schema import (
-    batch_table_insights_response_model,
-    normalize_batch_table_insights_response,
+    batch_frame_table_insights_response_model,
+    normalize_batch_frame_table_insights_response,
 )
 from pipeline.models.summary_response_schema import (
-    batch_summary_response_model,
-    normalize_batch_summary_response,
+    batch_frame_summary_response_model,
+    normalize_batch_frame_summary_response,
 )
 from pipeline.steps.step7_analyze_code.rule_row_batching import (
     rule_queue_priority,
@@ -95,6 +95,8 @@ from shared.files.cache import SourceFileCache
 from pipeline.execution.analysis_handoff import AnalysisHandoff
 from pipeline.execution.pause_controller import PauseController
 from pipeline.steps.step7_analyze_code.quality_findings import apply_analysis_findings
+from pipeline.steps.step7_analyze_code.semantic_frame_planner import rule_slot_specs
+from pipeline.models.semantic_frame import merge_semantic_frames
 
 _STEP = "step7.analyze_code.batch"
 
@@ -670,11 +672,19 @@ async def _collect_keyed_concern(
     rule_assignments = None
     rule_evidences = None
     rule_owner_ids = None
+    rule_frame_assignments = None
     insight_assignments = None
     effective_response_model = response_model
     if concern == "summary":
-        effective_response_model = batch_summary_response_model(
-            expected, strategy_name,
+        frame_assignments = {
+            node_key: (
+                contexts[node_id].extra["_semantic_frame_plan"][0],
+                contexts[node_id].extra["_semantic_frame_plan"][2]["summary"],
+            )
+            for node_key, node_id in expected.items()
+        }
+        effective_response_model = batch_frame_summary_response_model(
+            strategy_name, frame_assignments,
         )
     elif concern == "rules":
         rule_assignments = {}
@@ -696,7 +706,20 @@ async def _collect_keyed_concern(
                 inventory, rule_assignments[node_key],
             )
             rule_evidences[node_key] = evidence
-        effective_response_model = batch_rules_response_model(rule_assignments)
+        rule_frame_assignments = {}
+        for node_key, node_id in expected.items():
+            profile, _all_specs, concerns = contexts[node_id].extra[
+                "_semantic_frame_plan"
+            ]
+            rule_frame_assignments[node_key] = (
+                profile,
+                rule_slot_specs(
+                    profile, concerns["rules"], rule_assignments[node_key],
+                ),
+            )
+        effective_response_model = batch_frame_rules_response_model(
+            rule_frame_assignments
+        )
         values = build_rule_batch_values(
             expected=expected,
             assignments=rule_assignments,
@@ -705,18 +728,21 @@ async def _collect_keyed_concern(
             contexts=contexts,
             code_by_id=code_by_id,
             table_descriptions=table_descriptions,
+            frame_assignments=rule_frame_assignments,
         )
     elif concern == "insights":
         insight_assignments = {}
         for node_key, node_id in expected.items():
             ctx = contexts[node_id]
             insight_assignments[node_key] = {
+                "profile": ctx.extra["_semantic_frame_plan"][0],
+                "slot_specs": ctx.extra["_semantic_frame_plan"][2]["insights"],
                 "reads": exact_direct_table_ids(ctx, "READ"),
                 "writes": exact_direct_table_ids(ctx, "WRITE"),
                 "table_ops": dict(ctx.extra.get("table_op") or {}),
                 "columns": dict(ctx.extra.get("column_usage_candidates") or {}),
             }
-        effective_response_model = batch_table_insights_response_model(
+        effective_response_model = batch_frame_table_insights_response_model(
             insight_assignments
         )
         values = build_table_insight_batch_values(
@@ -744,15 +770,18 @@ async def _collect_keyed_concern(
             budget=cost_budget,
         )
     if concern == "summary":
-        output = normalize_batch_summary_response(output, expected)
+        output = normalize_batch_frame_summary_response(output, frame_assignments)
     elif rule_assignments is not None:
-        output = normalize_batch_rules_response(
+        output = normalize_batch_frame_rules_response(
             output,
+            rule_frame_assignments,
             rule_assignments,
             rule_evidences,
         )
     elif insight_assignments is not None:
-        output = normalize_batch_table_insights_response(output, insight_assignments)
+        output = normalize_batch_frame_table_insights_response(
+            output, insight_assignments,
+        )
     accepted, unresolved = _partition_keyed_items(
         output.nodes, expected, concern=concern,
     )
@@ -812,6 +841,11 @@ def _apply_batch_summary(
     evidence_text: str = "",
 ) -> AnalysisFinding | None:
     """Publish the summary-owned fields without waiting for sibling concerns."""
+    frame = summary.semantic_frame
+    if frame is None:
+        raise ValueError(f"frame-first batch summary is missing semantic frame: {fn.id}")
+    fn.extra["_summary_semantic_frame"] = frame
+    ctx.extra["_summary_semantic_frame"] = frame
     fn.extra["summary_evidence_status"] = summary.evidence_status
     fn.extra["summary_missing_context"] = list(summary.missing_context)
     ctx.extra["summary_evidence_status"] = summary.evidence_status
@@ -847,6 +881,7 @@ def _apply_batch_summary(
         # 부모 compact_body가 아직 미분석인 race와 명시적 품질 거절을 구분한다.
         # 거절 후보를 전달하지 않고 해당 child 원문만 1차 증거로 보존한다.
         ctx.extra["summary_status"] = "rejected"
+        _discard_batch_summary_semantic_frame(fn, ctx)
         return AnalysisFinding(
             concern="summary",
             status="rejected",
@@ -868,6 +903,7 @@ def _apply_batch_summary(
         fn.extra["questions"] = []
         ctx.summary = ""
         ctx.extra["summary_status"] = "rejected"
+        _discard_batch_summary_semantic_frame(fn, ctx)
         return AnalysisFinding(
             concern="summary",
             status="rejected",
@@ -891,6 +927,7 @@ def _apply_batch_summary(
         fn.extra["questions"] = []
         ctx.summary = ""
         ctx.extra["summary_status"] = "rejected"
+        _discard_batch_summary_semantic_frame(fn, ctx)
         return AnalysisFinding(
             concern="summary",
             status="rejected",
@@ -946,6 +983,13 @@ def _apply_batch_summary(
     )
 
 
+def _discard_batch_summary_semantic_frame(
+    fn: CodeNode, ctx: AnalysisContext,
+) -> None:
+    fn.extra.pop("_summary_semantic_frame", None)
+    ctx.extra.pop("_summary_semantic_frame", None)
+
+
 def _apply_node_analysis(
     summary: Optional[BatchSummaryItem],
     rules: Optional[BatchRulesItem],
@@ -974,6 +1018,9 @@ def _apply_node_analysis(
         fn.extra["table_insights"] = [
             t.model_dump() for t in table.table_insights
         ] if table else []
+        fn.extra["_insight_semantic_frame"] = (
+            table.semantic_frame if table else None
+        )
     if "rules" in requested_parts:
         accepted_rules = []
         # 채점도 프롬프트와 **같은 분기표·같은 행**을 봐야 한다 (spec 117 §3, 헌법 III).
@@ -982,6 +1029,9 @@ def _apply_node_analysis(
         routine_ctx = contexts[routine.id]
         assigned = set(ctx.extra.get("rule_rows") or ())
         if rules is not None:
+            if rules.semantic_frame is None:
+                raise ValueError(f"frame-first DBMS rules missing semantic frame: {fn.id}")
+            fn.extra["_rule_semantic_frame"] = rules.semantic_frame
             # 분기표 대조 채점. 빈 rules도 의무 행 누락으로 검증하며 건너뛰지 않는다.
             # 좌표계는 분기표와 같은 **루틴** 범위다.
             source_plain = source_cache.slice(
@@ -1036,9 +1086,46 @@ def _apply_node_analysis(
                 f"{fn.id}: then 테이블 효과가 결정론 R/W와 불일치: "
                 f"{sorted(set(unresolved_tables))[:8]}"
             )
+    try:
+        _finalize_batch_semantic_frame(fn, ctx, rules, table)
+    except ValueError as error:
+        findings.append(AnalysisFinding(
+            concern="semantic_frame",
+            status="rejected",
+            target_id=fn.id,
+            reasons=(str(error),),
+            evidence_rule="semantic-frame/v1",
+        ))
+        fn.extra.pop("semantic_frame", None)
+        fn.extra.pop("semantic_frame_schema", None)
+        ctx.extra.pop("semantic_frame", None)
+        ctx.extra.pop("semantic_frame_schema", None)
     # ctx 에 부착 — 부모 배치가 compact_body·자식규칙으로 라이브 조회.
     if "rules" in requested_parts:
         ctx.extra["rules"] = fn.extra["rules"]
         ctx.extra["questions"] = fn.extra["questions"]
     apply_analysis_findings(fn, findings, component=_STEP)
     return fn
+
+
+def _finalize_batch_semantic_frame(
+    fn: CodeNode,
+    ctx: AnalysisContext,
+    rules: BatchRulesItem | None,
+    table: BatchTableInsightsItem | None,
+) -> None:
+    plan = ctx.extra.get("_semantic_frame_plan")
+    if plan is None:
+        raise ValueError(f"semantic frame plan missing: {fn.id}")
+    _profile, all_specs, _concerns = plan
+    merged = merge_semantic_frames(
+        fn.extra.get("_summary_semantic_frame"),
+        rules.semantic_frame if rules is not None else None,
+        table.semantic_frame if table is not None else None,
+        required_slot_ids=(spec.slot_id for spec in all_specs),
+    )
+    payload = merged.model_dump(mode="json", by_alias=True)
+    fn.extra["semantic_frame_schema"] = merged.schema_version
+    fn.extra["semantic_frame"] = payload
+    ctx.extra["semantic_frame_schema"] = merged.schema_version
+    ctx.extra["semantic_frame"] = payload

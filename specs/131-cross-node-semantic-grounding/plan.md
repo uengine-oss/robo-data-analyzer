@@ -1,36 +1,34 @@
-# Implementation Plan
+# Implementation Plan: Dynamic Semantic Frame
 
-현재 상세 계약과 종료 상태는 `HANDOFF.md`가 소유한다. 아래 구현·검증 단계는 모두 완료됐다.
+상세 현재 상태는 `HANDOFF.md`, 요구 계약은 `spec.md`, 실행 체크포인트는 `tasks.md`가 소유한다.
 
-1. SUMMARY·RULE·EXAMPLE·TABLE·COLUMN의 필수/선택/노이즈 입력과 actual prompt,
-   validator, graph/API/MCP 소비자를 inventory한다.
-2. empty/partial/insufficient/missing_context/finding 모집단을 전수 회계하고 봉인40을
-   source→AST→actual prompt→raw/parsed→validator→graph로 join한다.
-3. 배치 상한과 source 의미 상한을 분리하고 full node ID를 의미 identity로 고정한다.
-4. 결정론 구조 사실과 GPU 업무 의미를 분리하며 자연어 의미 이중 생산자를 제거한다.
-5. SUMMARY effective evidence, RULE 구조·direct effect, TABLE direct usage, COLUMN별 usage를
-   concern별 projection으로 전달한다.
-6. Task/Input authority/relation/Decision/Output/Examples/Self Check 순서로 prompt를 재구성하고
-   실제 저장 packet과 byte hash로 검증한다.
-7. 공통 schema/normalizer/validator/storage/consumer 결함을 범용 수정하고 반대 fixture로 반증한다.
-8. preflight 뒤 Framework·DBMS를 새 격리 DB와 별도 output root에 최소 재분석한다.
-9. 동일 봉인40을 직접 재판정하고 전체 회귀, prompt byte, graph/API/MCP 전달을 검증한다.
-10. 현재 정본·tasks·evidence를 결과로 교체하고 Analyzer를 닫는다.
+1. 모든 Framework/DBMS 자연어 의미 생산자, 현재 response schema, normalizer, validator, 저장 필드,
+   graph/API/MCP projection, Architect 소비자를 한 번 전수 inventory해 재사용 가능한 단일 영향표로 만든다.
+2. 전략별 AST를 공통 structural role과 stable evidence ID로 바꾸는 `StructuralProfile`을 설계한다.
+3. 실제 target type과 존재하는 children/evidence만 보고 shallow/bounded slot을 만드는 frame planner와
+   canonical `semantic-frame/v1` wire를 고정한다.
+4. prompt를 stable instruction prefix + dynamic structural/frame suffix로 구성하고, LLM은 의미/status/
+   missing context만 채우게 한다.
+5. SUMMARY, RULE, EXAMPLE, CALL meaning, TABLE/COLUMN, MODULE/logical name 생산자를 frame-first로
+   전환하고 기존 문자열은 projection으로만 만든다.
+6. schema/normalizer/grounding/completeness validator와 population inventory를 전환한다.
+7. graph/storage/API/MCP를 frame 정본과 deduplicated Architect projection으로 전환한다.
+8. 폐기된 complete-source GWT WIP를 제거·적응하고 Architect Simplified/Detailed 소비자를 같은 계약으로
+   동기화한다.
+9. Framework/DBMS 반대 fixture와 schema 크기·출력량·반복·prefix는 변경 묶음별 한 번 검증하고,
+   전체 생산자·소비자 정합 후 전체 자동 회귀를 한 번 수행한다.
+10. preflight 뒤 새 격리 DB/output root에서 최소 actual Analyzer 실행과 봉인 직접 판정을 수행한다.
+11. Analyzer 합격 뒤 Architect 실제 두 경로를 최소 실행해 GWT/evidence refs를 원문과 대조한다.
+12. HANDOFF·작업보고를 결과로 교체하고 불필요한 임시 실행물만 정리한 뒤 요청 범위만 commit/push한다.
 
 ## Constitution Check
 
-- I: 구조 사실은 결정론, 업무 의미만 GPU가 소유한다.
-- IV: silent blank와 정상 needs_context를 구별하고 좌표·raw evidence를 보존한다.
-- V/VI/VII: byte-identical prefix, 최소 schema, proven structured channel을 유지한다.
-- IX/X: source→actual prompt→checker→model 순서와 3층 검증을 끝까지 집행한다.
-- Cost & Safety: 사용자 WIP·기본 DB·보존 logs를 건드리지 않고 새 격리 DB/output root만 쓴다.
+- I/VI: 구조와 applicable slot은 결정론, 업무 의미는 LLM이며 frame은 shallow/bounded다.
+- III: semantic frame이 의미 단일 진실이고 legacy 문자열은 projection이다.
+- IV: 누락/grounding 실패는 finding으로 보존하고 조용한 빈 성공을 금지한다.
+- V/VII: byte-identical prefix와 검증된 structured channel을 유지한다.
+- IX/X: 3층 검증과 source부터 시작하는 원인 추적을 수행한다.
+- II/Cost: Framework/DBMS strategy와 병렬 엔진을 보존하고 새 격리 DB/output만 사용한다.
 
-## 완료 결과
-
-- 봉인40: `39/40=97.5%`, fabrication 0, contradiction 0.
-- 전체 회귀: `1062 passed, 5 skipped, 388 subtests`.
-- prompt hash: `28/28 OK`.
-- Framework/DBMS finding 0, 구조 preflight diff 0.
-- TABLE/COLUMN semantic description과 evidence status가 graph→API/MCP까지 실제 전달됨.
-
-다음 단계는 이 plan의 연장이 아니라 spec125/Architect spec055의 별도 검증이다.
+12단계까지 구현·실제 실행·검증을 완료했다. 최종 증거는
+`evidence/actual-validation-20260812.md`가 소유한다.

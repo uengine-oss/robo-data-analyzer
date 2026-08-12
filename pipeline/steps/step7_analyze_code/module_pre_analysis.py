@@ -16,6 +16,13 @@ from pathlib import Path
 from typing import Any, Optional
 
 from pipeline.models.code_analysis_output import ModulePreAnalysisOutput
+from pipeline.models.aggregate_semantic_frame import (
+    aggregate_response_model,
+    aggregate_slot_meaning,
+    build_aggregate_semantic_plan,
+    normalize_aggregate_response,
+)
+from pipeline.models.semantic_frame import profile_prompt_json, slot_specs_json
 from graph.schema.graph_nodes import CodeNode, Module
 from pipeline.languages import statement_labels
 from shared.concurrency.priority_semaphore import PrioritySemaphore
@@ -120,10 +127,23 @@ async def _analyze_module(
     llm_slots: PrioritySemaphore,
 ) -> str:
     """모듈 1개 LLM 호출 → intent. track_processing 이 start/done/failed 자동 emit."""
+    profile, specs = build_aggregate_semantic_plan(
+        target_id=module.id,
+        target_type=module.label,
+        owner_id=module.id,
+        file=module.file_path,
+        start_line=module.start_line,
+        end_line=module.end_line,
+        family="MODULE",
+        member_frames=(),
+        include_responsibility=False,
+        roles=("INTENT",),
+        comment_ref="module-header" if module.comment or module.annotations else "",
+    )
     try:
         async with track_processing("Module", module.id, sub_action="pre_analysis"):
             async with llm_slots:
-                result: ModulePreAnalysisOutput = await run_yaml_rule(
+                wire = await run_yaml_rule(
                     prompts_dir=Path(strategy.prompts_dir),
                     rule_name=_RULE,
                     user_values={
@@ -133,8 +153,12 @@ async def _analyze_module(
                         "coordinate_system": "absolute-file-line",
                         "module_header": _format_header(module),
                         "code_signatures": _format_signatures(signatures),
+                        "structural_profile": profile_prompt_json(profile),
+                        "applicable_slots": slot_specs_json(specs),
                     },
-                    response_model=ModulePreAnalysisOutput,
+                    response_model=aggregate_response_model(
+                        "ModuleIntentFrameOutput", specs,
+                    ),
                     budget=cost_budget,
                 )
     except ModelOutputError as error:
@@ -152,7 +176,8 @@ async def _analyze_module(
             module_id=module.id, error=str(error),
         )
         return ""
-    return result.intent.strip()
+    frame = normalize_aggregate_response(wire, profile, specs)
+    return aggregate_slot_meaning(frame, "INTENT").strip()
 
 
 def _format_header(module: Module) -> str:

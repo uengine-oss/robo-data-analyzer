@@ -67,13 +67,23 @@ via `extends`. Prompt files are SHA256-pinned in `llm/prompts/prompt_hashes.json
 **Rationale**: a one-character diff in a shared system prompt silently destroys cache reuse
 and inflates cost/latency.
 
-### VI. Schema Restraint on LLM Output (출력 스키마 절제)
+### VI. Bounded Semantic Frames (제한된 의미 프레임)
 
-Forced output schemas MUST stay minimal. Free-form natural-language fields (e.g. Example
-Mapping `given/when/then`) are single strings, NOT nested/repeated structures — over-constrained
-schemas caused repetition/whitespace blowups (2026-05-30 incident).
+Forced output schemas MUST stay shallow, bounded, and derived from the target's actual structural
+obligations. Deterministic code owns target type, child/evidence IDs, coordinates, ownership,
+conditions, CALL/RW, data-object identity, order, and the list of meaning slots that are applicable.
+The LLM fills only the natural-language meaning and sufficiency values for those preassigned slots.
 
-**Rationale**: the schema is a guardrail, not a straitjacket; over-specification backfires.
+A single unconstrained paragraph is forbidden when omission of distinct obligations cannot be
+validated. A giant universal, recursive, or unbounded repeated schema is also forbidden. Frame
+families MUST include only slots supported by the actual AST/evidence and MUST be partitioned or
+flattened when grammar size or repetition grows. Display/search summaries MAY be projections of the
+canonical frame, but MUST NOT become a second semantic producer.
+
+**Rationale**: the 2026-05-30 incident proved that deeply nested/repeated schemas can cause
+repetition and whitespace blowups. The 2026-08-12 semantic audit also proved that one free summary
+string cannot expose missing decisions, outcomes, call purposes, or transaction effects. A bounded
+dynamic frame preserves both completeness validation and output stability.
 
 ### VII. Structured Output Channels (구조화 출력 채널)
 
@@ -156,6 +166,10 @@ The analyzer is one service in a pipeline. Its boundaries (and therefore the onl
 ripple to other services when changed) are:
 
 - **↔ Catalog service**: HTTP `sample-context` and `/lineage` endpoints.
+- **→ Architect service**: read-only MCP semantic-frame projection. Normal Architect generation
+  consumes Analyzer-owned structured meaning, structural facts, evidence IDs, coordinates, and
+  sufficiency state. Complete source bodies are audit/debug material, not the normal generation
+  packet.
 
 A spec change that does NOT touch a contract is internal (no cross-service impact). A spec
 change that touches a contract MUST flag the affected downstream service.
@@ -176,8 +190,11 @@ This constitution supersedes ad-hoc convention. New features go through
 verifying compliance with the principles above. A principle is amended only by editing this
 file and bumping the version, with the rationale recorded.
 
-**Version**: 1.4.0 | **Ratified**: 2026-06-15 | **Last Amended**: 2026-08-07
-(1.4.0 — IX and X added: three-layer verification made binding and root-cause order fixed,
+**Version**: 1.5.0 | **Ratified**: 2026-06-15 | **Last Amended**: 2026-08-12
+(1.5.0 — VI replaced the single-free-string rule with bounded dynamic semantic frames and the
+Analyzer→Architect semantic-frame boundary was made explicit. Complete source remains authoritative
+inside Analyzer analysis and for audit, but is not a normal Architect generation payload. 1.4.0 —
+IX and X added: three-layer verification made binding and root-cause order fixed,
 after a session declared a prompt overhaul "passed" with two of three layers unrun. 1.3.2 —
 IV amended to distinguish fatal operational/deterministic-contract failures from surfaced,
 quarantined LLM quality findings so a bad candidate cannot masquerade as success or abort an

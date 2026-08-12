@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
@@ -15,6 +15,14 @@ from pipeline.models.code_analysis_output import (
     QuestionItem,
     SummaryOutput,
 )
+from pipeline.models.semantic_frame import (
+    SlotSpec,
+    StructuralProfile,
+    normalize_semantic_frame_response,
+    semantic_frame_response_model,
+    stable_digest,
+)
+from pipeline.models.semantic_frame_projection import project_summary
 
 
 def _fingerprint(value: object) -> str:
@@ -120,5 +128,93 @@ def normalize_batch_summary_response(
             evidence_status=values["evidence_status"],
             missing_context=values["missing_context"],
             questions=values["questions"],
+        ))
+    return BatchSummaryOutput(nodes=nodes)
+
+
+def frame_summary_response_model(
+    strategy: str,
+    slot_specs: Iterable[SlotSpec],
+) -> type[BaseModel]:
+    """Closed summary concern: assigned slot leaves plus a closed role classification."""
+    specs = tuple(slot_specs)
+    slot_model = semantic_frame_response_model(specs)
+    slots_type = slot_model.model_fields["slots"].annotation
+    stereotype_type = Literal.__getitem__(tuple(stereotype_values(strategy)))
+    fingerprint = stable_digest({
+        "strategy": strategy,
+        "slots": [spec.model_dump(mode="json") for spec in specs],
+        "concern": "frame-summary",
+    })
+    return create_model(
+        f"AssignedFrameSummary_{fingerprint}",
+        __config__=ConfigDict(extra="forbid"),
+        slots=(slots_type, Field(...)),
+        stereotype=(stereotype_type, Field(...)),
+    )
+
+
+def normalize_frame_summary_response(
+    output: BaseModel,
+    profile: StructuralProfile,
+    slot_specs: Iterable[SlotSpec],
+) -> SummaryOutput:
+    frame = normalize_semantic_frame_response(output, profile, slot_specs)
+    return project_summary(frame, stereotype=str(output.stereotype))
+
+
+def batch_frame_summary_response_model(
+    strategy: str,
+    assignments: Mapping[str, tuple[StructuralProfile, tuple[SlotSpec, ...]]],
+) -> type[BaseModel]:
+    if not assignments:
+        raise ValueError("frame summary batch assignments must not be empty")
+    stereotype_type = Literal.__getitem__(tuple(stereotype_values(strategy)))
+    fingerprint = stable_digest({
+        "strategy": strategy,
+        "assignments": {
+            key: [spec.model_dump(mode="json") for spec in specs]
+            for key, (_profile, specs) in assignments.items()
+        },
+    })
+    fields = {}
+    for node_key, (_profile, specs) in assignments.items():
+        slot_model = semantic_frame_response_model(specs)
+        slots_type = slot_model.model_fields["slots"].annotation
+        item_model = create_model(
+            f"AssignedFrameSummaryItem_{fingerprint}_{stable_digest(node_key)}",
+            __config__=ConfigDict(extra="forbid"),
+            slots=(slots_type, Field(...)),
+            stereotype=(stereotype_type, Field(...)),
+        )
+        fields[node_key] = (item_model, Field(...))
+    nodes_model = create_model(
+        f"AssignedFrameSummaryMap_{fingerprint}",
+        __config__=ConfigDict(extra="forbid"),
+        **fields,
+    )
+    return create_model(
+        f"AssignedBatchFrameSummary_{fingerprint}",
+        __config__=ConfigDict(extra="forbid"),
+        nodes=(nodes_model, Field(...)),
+    )
+
+
+def normalize_batch_frame_summary_response(
+    output: BaseModel,
+    assignments: Mapping[str, tuple[StructuralProfile, tuple[SlotSpec, ...]]],
+) -> BatchSummaryOutput:
+    nodes: list[BatchSummaryItem] = []
+    for node_key, (profile, specs) in assignments.items():
+        item = getattr(output.nodes, node_key)
+        projected = normalize_frame_summary_response(item, profile, specs)
+        nodes.append(BatchSummaryItem(
+            node_key=node_key,
+            summary=projected.summary,
+            stereotype=projected.stereotype,
+            evidence_status=projected.evidence_status,
+            missing_context=projected.missing_context,
+            questions=projected.questions,
+            semantic_frame=projected.semantic_frame,
         ))
     return BatchSummaryOutput(nodes=nodes)

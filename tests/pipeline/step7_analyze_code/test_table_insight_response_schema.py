@@ -16,6 +16,7 @@ from pipeline.models.table_insight_response_schema import (
 )
 from graph.schema.graph_nodes import CodeNode
 from pipeline.models.analysis_context import AnalysisContext
+from pipeline.models.data_object_usage import DataObjectUsageEvidence
 from pipeline.steps.step7_analyze_code.batch_analyze import _collect_keyed_concern
 from shared.concurrency.priority_semaphore import PrioritySemaphore
 from shared.files.cache import SourceFileCache
@@ -170,27 +171,41 @@ class DbmsTableInsightWiringTest(unittest.IsolatedAsyncioTestCase):
                 id="node", signature="update", file_path=str(source),
                 start_line=1, end_line=1,
                 writes=["db:orders"], direct_writes=["db:orders"],
-                extra={"table_op": {"db:orders": "UPDATE"}},
+                extra={
+                    "table_op": {"db:orders": "UPDATE"},
+                    "ast_statements": (),
+                    "data_object_usages": (DataObjectUsageEvidence(
+                        source_id="node", raw_reference="orders", name="orders",
+                        access="WRITE", evidence_file=str(source), evidence_line=1,
+                        table_id="db:orders", resolution="exact",
+                    ),),
+                },
             )
             slots = PrioritySemaphore(1)
 
             async def fake_rule(*, response_model, **_kwargs):
                 self.assertEqual(0, slots.free)
+                item_type = response_model.model_fields["nodes"].annotation.model_fields[
+                    "1-1"
+                ].annotation
+                slots_type = item_type.model_fields["slots"].annotation
                 return response_model.model_validate({
                     "nodes": {
                         "1-1": {
-                            "table_insights": {
-                                "db:orders": _item("WRITE-only"),
+                            "slots": {
+                                key: {
+                                    "meaning": "orders 상태를 갱신한다.",
+                                    "status": "sufficient",
+                                    "missing_context": [],
+                                }
+                                for key in slots_type.model_fields
                             },
+                            "table_roles": {"db:orders": "WRITE-only"},
                         }
                     }
                 })
 
             with (
-                patch(
-                    "pipeline.steps.step7_analyze_code.batch_analyze._build_batch_values",
-                    return_value=({"unit_id": "unit"}, {}),
-                ),
                 patch(
                     "pipeline.steps.step7_analyze_code.batch_analyze.run_yaml_rule",
                     side_effect=fake_rule,

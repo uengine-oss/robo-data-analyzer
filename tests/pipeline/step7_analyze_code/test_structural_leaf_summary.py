@@ -10,6 +10,7 @@ from pipeline.models.code_analysis_output import BatchSummaryItem
 from pipeline.steps.step7_analyze_code.batch_analyze import _analyze_batch
 from pipeline.steps.step7_analyze_code.batch_planner import Batch
 from shared.concurrency.priority_semaphore import PrioritySemaphore
+from tests.pipeline.semantic_frame_fixtures import semantic_frame_for_node
 
 
 def _node(label: str, line: int, *, expression: str = "", name: str = "") -> CodeNode:
@@ -48,6 +49,9 @@ class StructuralLeafSummaryTest(unittest.IsolatedAsyncioTestCase):
                     evidence_status="sufficient",
                     missing_context=[],
                     questions=[],
+                    semantic_frame=semantic_frame_for_node(
+                        code_by_id[node_id], meaning=f"{node_id}의 직접 동작을 수행한다",
+                    ),
                 )
                 for node_id in kwargs["node_ids"]
             }

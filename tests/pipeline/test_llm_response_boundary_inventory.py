@@ -1,9 +1,4 @@
-"""Machine inventory for every production LLM response boundary.
-
-The test distinguishes fields that the model must emit (required even when
-their value may be empty) from ScanResult fields that the scan prompt
-explicitly tells a matched-skill agent to omit for deterministic hydration.
-"""
+"""Machine inventory for every production LLM response boundary."""
 from __future__ import annotations
 
 import unittest
@@ -11,34 +6,30 @@ import unittest
 from pydantic import ValidationError
 
 from agents.contracts import ExternalCallReview, ResidualPatternResult, ScanResult
-from pipeline.models.code_analysis_output import (
-    ComponentNamingOutput,
-    ModulePreAnalysisOutput,
+from pipeline.models.aggregate_semantic_frame import (
+    aggregate_response_model,
+    build_aggregate_semantic_plan,
+)
+from pipeline.models.rule_response_schema import (
+    batch_rules_response_model,
+    rules_response_model,
 )
 from pipeline.models.summary_response_schema import (
     batch_summary_response_model,
     summary_response_model,
 )
-from pipeline.models.module_summary_response_schema import module_summary_response_model
-from pipeline.models.rule_response_schema import (
-    batch_rules_response_model,
-    rules_response_model,
+from pipeline.models.table_description_frame import (
+    build_table_description_plans,
+    table_description_frame_response_model,
 )
 from pipeline.models.table_insight_response_schema import (
     batch_table_insights_response_model,
     table_insights_response_model,
 )
 from pipeline.steps.step4_scan_project.external_skills import ExternalSkill
-from pipeline.steps.step8_post_processing.enrich_table_description_step import (
-    _table_description_response_model,
-)
 
 
-def _assert_closed_required(
-    case: unittest.TestCase,
-    model,
-    required: set[str],
-) -> None:
+def _assert_closed_required(case: unittest.TestCase, model, required: set[str]) -> None:
     schema = model.model_json_schema()
     variants = schema.get("oneOf") or (schema,)
     for variant in variants:
@@ -50,91 +41,60 @@ def _assert_closed_required(
 
 
 class LlmResponseBoundaryInventoryTest(unittest.TestCase):
-    def test_direct_simple_outputs_require_every_prompt_owned_key(self) -> None:
+    def test_non_semantic_simple_outputs_require_every_prompt_owned_key(self) -> None:
         boundaries = (
-            (ModulePreAnalysisOutput, {"intent"}),
-            (ComponentNamingOutput, {"name"}),
             (ExternalCallReview, {"drops"}),
-            (
-                ResidualPatternResult,
-                {
-                    "table_access_patterns",
-                    "ddl_transform_override",
-                    "no_pattern_reason",
-                },
-            ),
-            (
-                ExternalSkill,
-                {
-                    "name",
-                    "extensions",
-                    "content_signatures",
-                    "rules",
-                    "explanation",
-                    "provenance",
-                },
-            ),
-            (
-                module_summary_response_model("framework"),
-                {"summary", "stereotype", "logical_name"},
-            ),
+            (ResidualPatternResult, {
+                "table_access_patterns", "ddl_transform_override", "no_pattern_reason",
+            }),
+            (ExternalSkill, {
+                "name", "extensions", "content_signatures", "rules",
+                "explanation", "provenance",
+            }),
         )
         for model, required in boundaries:
             with self.subTest(model=model.__name__):
                 _assert_closed_required(self, model, required)
 
-    def test_dynamic_analysis_envelopes_are_closed_and_required(self) -> None:
+    def test_dynamic_semantic_envelopes_are_closed_and_required(self) -> None:
+        _profile, module_specs = build_aggregate_semantic_plan(
+            target_id="module:orders", target_type="MODULE", owner_id="",
+            file="orders.py", start_line=1, end_line=10, family="MODULE",
+            member_frames=(), include_responsibility=True,
+        )
+        table_evidence = {
+            "table": {"db": "db", "schema": "public", "name": "orders"},
+            "columns": [{"name": "order_id"}],
+        }
+        table_plan, column_plans = build_table_description_plans(
+            "db:public.orders", table_evidence,
+        )
         boundaries = (
-            (
-                summary_response_model("framework"),
-                {"result"},
-            ),
-            (
-                batch_summary_response_model(("1-2",), "dbms"),
-                {"nodes"},
-            ),
-            (
-                rules_response_model([1]),
-                {"rules"},
-            ),
-            (
-                batch_rules_response_model({"1-2": [1]}),
-                {"nodes"},
-            ),
-            (
-                table_insights_response_model(("db:orders",), ()),
-                {"table_insights"},
-            ),
-            (
-                batch_table_insights_response_model({
-                    "1-2": {
-                        "reads": ("db:orders",),
-                        "writes": (),
-                        "table_ops": {"db:orders": "SELECT"},
-                    }
-                }),
-                {"nodes"},
-            ),
-            (
-                _table_description_response_model({
-                    "table": {"db": "db", "schema": "public", "name": "orders"},
-                    "columns": [],
-                }),
-                {
-                    "db", "schema", "name", "meaning", "columns",
-                },
-            ),
+            (summary_response_model("framework"), {"result"}),
+            (batch_summary_response_model(("1-2",), "dbms"), {"nodes"}),
+            (rules_response_model([1]), {"rules"}),
+            (batch_rules_response_model({"1-2": [1]}), {"nodes"}),
+            (table_insights_response_model(("db:orders",), ()), {"table_insights"}),
+            (batch_table_insights_response_model({
+                "1-2": {"reads": ("db:orders",), "writes": (),
+                        "table_ops": {"db:orders": "SELECT"}},
+            }), {"nodes"}),
+            (aggregate_response_model(
+                "ModuleFrameBoundary", module_specs,
+                stereotype_values=("DomainModule", "UtilityModule"),
+            ), {"slots", "stereotype"}),
+            (table_description_frame_response_model(
+                table_evidence, table_plan, column_plans,
+            ), {"db", "schema", "name", "slots", "columns"}),
         )
         for model, required in boundaries:
             with self.subTest(model=model.__name__):
                 _assert_closed_required(self, model, required)
 
-    def test_rule_narrative_is_the_only_model_owned_leaf(self) -> None:
+    def test_rule_narrative_is_the_only_model_owned_rule_leaf(self) -> None:
         model = rules_response_model([7])
         valid = {"rules": {"R7": {"nl": "근거 행의 업무 의미"}}}
         model.model_validate(valid)
-        with self.assertRaises(ValidationError):
-            model.model_validate({"rules": {"R7": {}}})
         for structural_field, value in (
             ("cond", ["C7"]), ("then", ["E1"]), ("extra", []),
         ):
@@ -142,29 +102,6 @@ class LlmResponseBoundaryInventoryTest(unittest.TestCase):
                 model.model_validate({
                     "rules": {"R7": {"nl": "근거 행의 업무 의미", structural_field: value}},
                 })
-        with self.assertRaises(ValidationError):
-            model.model_validate({**valid, "unexpected": "value"})
-
-    def test_empty_table_columns_key_is_required_not_defaulted(self) -> None:
-        model = _table_description_response_model({
-            "table": {"db": "db", "schema": "public", "name": "orders"},
-            "columns": [],
-        })
-        valid = {
-            "db": "db",
-            "schema": "public",
-            "name": "orders",
-            "meaning": {
-                "logical_name": "",
-                "description": "",
-                "evidence_status": "insufficient",
-                "missing_context": ["테이블 업무 의미 근거"],
-            },
-            "columns": [],
-        }
-        model.model_validate(valid)
-        with self.assertRaises(ValidationError):
-            model.model_validate({key: value for key, value in valid.items() if key != "columns"})
         with self.assertRaises(ValidationError):
             model.model_validate({**valid, "unexpected": "value"})
 

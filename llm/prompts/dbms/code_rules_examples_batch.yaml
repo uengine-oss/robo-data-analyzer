@@ -8,7 +8,7 @@ user_template_specific: |
   # [TASK — 각 노드·분기 행의 사람이 읽는 Rule 의미]
 
   목표는 parser가 이미 확정한 각 required 행의 조건 경로와 직접 효과를, 노드·행 소유권을
-  바꾸지 않고 사람이 이해하는 `nl` 한 문장으로 옮기는 것이다. 각 evidence packet은 자기
+  바꾸지 않고 semantic slot meaning으로 채우는 것이다. 각 evidence packet은 자기
   node_key에만 적용하며 입력에 없는 형제 node의 의미를 복사하지 않는다.
 
   {rule_leaf_contract}

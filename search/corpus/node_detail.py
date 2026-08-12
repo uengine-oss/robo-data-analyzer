@@ -8,9 +8,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from search.corpus.evidence_reader import compact_rules, read_columns, read_rules
+from search.corpus.evidence_reader import compact_rules, gwt_rules, read_columns, read_rules
 from search.corpus.neo4j_reader import read_driver
 from graph.ownership import ANALYZER_GRAPH_OWNER
+from pipeline.models.semantic_frame import SemanticFrame
 
 _INTERNAL_PROPERTIES = {"embedding", "graph_owner", "element_id"}
 _SOURCE_PROPERTIES = {"file_path", "start_line", "end_line", "code_text"}
@@ -56,6 +57,7 @@ def build_node_detail(
     columns: list[dict],
     *,
     node_id: str | None = None,
+    require_complete_source: bool = True,
 ) -> dict:
     """조회 행을 공개 계약으로 직렬화한다. 테스트와 live reader가 같은 검사를 쓴다."""
     requested_id = (node_id or "").strip()
@@ -86,9 +88,9 @@ def build_node_detail(
             and source_values["end_line"] >= source_values["start_line"]
             and bool(source_values["code_text"])
         )
-        if not complete:
+        if require_complete_source and not complete:
             return _error("SOURCE_INCOMPLETE", "code node source coordinates or text are incomplete")
-        source = {"available": True, **source_values}
+        source = {"available": complete, **source_values}
     else:
         source = {
             "available": False,
@@ -100,6 +102,12 @@ def build_node_detail(
 
     public_relationships = []
     for relationship in relationships:
+        other_properties = dict(relationship.get("other_properties") or {})
+        related_source = None
+        if relationship.get("type") == "REFERENCES":
+            related_source = {
+                key: other_properties.get(key) for key in _SOURCE_PROPERTIES
+            }
         public_relationships.append({
             "type": relationship.get("type") or "",
             "direction": relationship.get("direction") or "",
@@ -107,6 +115,8 @@ def build_node_detail(
                 "id": relationship.get("other_id") or "",
                 "name": relationship.get("other_name") or "",
                 "labels": sorted(set(relationship.get("other_labels") or [])),
+                "properties": _public_properties(other_properties),
+                **({"source": related_source} if related_source is not None else {}),
             },
             "properties": {
                 key: value for key, value in (relationship.get("properties") or {}).items()
@@ -127,47 +137,82 @@ def build_node_detail(
 
 
 def build_gwt_detail(detail: dict, table_contexts: list[dict]) -> dict:
-    """Project the validated full reader result into Architect's compact evidence view."""
+    """Project one node into the source-free Architect semantic-frame packet.
+
+    The historical function name remains an internal compatibility symbol.  The wire
+    schema is semantic-frame-packet/v1; complete source and source hashes are excluded.
+    """
     if "error" in detail:
         return detail
     node = detail["node"]
     props = node.get("properties") or {}
-    source = node.get("source") or {}
     calls = []
+    symbols = []
     for relationship in node.get("relationships") or []:
-        if relationship.get("type") != "CALLS":
-            continue
         other = relationship.get("node") or {}
-        calls.append({
-            "direction": relationship.get("direction") or "",
-            "id": other.get("id") or "",
-            "name": other.get("name") or "",
-            "labels": list(other.get("labels") or []),
-        })
-    return {"node": {
+        if (relationship.get("type") == "CALLS"
+                and relationship.get("direction") == "out"):
+            target_id = other.get("id") or ""
+            direction = "out"
+            calls.append({
+                "evidence_id": (
+                    f"{node.get('id') or ''}::call::{direction}::{target_id}"
+                ),
+                "direction": direction,
+                "id": target_id,
+                "name": other.get("name") or "",
+                "labels": list(other.get("labels") or []),
+            })
+        elif relationship.get("type") == "REFERENCES" and relationship.get("direction") == "out":
+            target_id = other.get("id") or ""
+            reference_line = (relationship.get("properties") or {}).get("evidence_line")
+            symbols.append({
+                "evidence_id": (
+                    f"{node.get('id') or ''}::symbol::{target_id}::{reference_line or 0}"
+                ),
+                "relation": "TARGET_REFERENCES_DEFINITION",
+                "id": target_id,
+                "name": other.get("name") or "",
+                "labels": list(other.get("labels") or []),
+                "definition": dict(other.get("properties") or {}),
+                "reference_line": reference_line,
+            })
+    raw_frame = props.get("semantic_frame_json")
+    if not isinstance(raw_frame, str) or not raw_frame.strip():
+        return _error(
+            "SEMANTIC_FRAME_UNAVAILABLE",
+            "validated semantic frame is unavailable for this node",
+        )
+    try:
+        frame = SemanticFrame.model_validate(json.loads(raw_frame))
+    except (json.JSONDecodeError, ValueError, TypeError) as exc:
+        return _error("SEMANTIC_FRAME_INVALID", str(exc))
+    structured_rules = gwt_rules(node.get("rules") or [], node_id=str(node.get("id") or ""))
+    return {"schema_version": "semantic-frame-packet/v1", "node": {
         "id": node.get("id") or "",
         "labels": list(node.get("labels") or []),
         "name": node.get("name") or "",
-        "logical_name": props.get("logical_name") or "",
-        "summary": props.get("summary") or "",
-        "stereotype": props.get("stereotype") or "",
-        "summary_evidence_status": props.get("summary_evidence_status") or "",
-        "summary_missing_context": _json_string_list(
-            props.get("summary_missing_context_json")
-        ),
-        "description": _semantic_description(props),
-        "evidence_status": props.get("semantic_evidence_status") or "",
-        "missing_context": _json_string_list(
-            props.get("semantic_missing_context")
-        ),
-        "source": {
-            "file_path": source.get("file_path"),
-            "start_line": source.get("start_line"),
-            "end_line": source.get("end_line"),
+        "semantic_frame": frame.model_dump(mode="json", by_alias=True),
+        "rule_examples": [
+            {
+                "anchor_line": rule["line"],
+                "examples": rule["examples"],
+            }
+            for rule in structured_rules if rule.get("examples")
+        ],
+        "linked_context": {
+            "callees": calls,
+            "symbols": symbols,
+            "data_objects": [
+            {
+                "evidence_id": (
+                    f"{node.get('id') or ''}::table::{table.get('id') or ''}"
+                ),
+                **table,
+            }
+            for table in table_contexts
+            ],
         },
-        "rules": compact_rules(node.get("rules") or []),
-        "calls": calls,
-        "tables": table_contexts,
     }}
 
 
@@ -200,6 +245,11 @@ def _table_context(
         ).data()
         props = dict(rows[0].get("props") or {}) if len(rows) == 1 else {}
     sample = _sample_snapshot(props, table_id)
+    table_frame = _optional_semantic_frame(props.get("semantic_frame_json"))
+    columns = read_columns(session, table_id)
+    for column in columns:
+        raw = column.pop("semantic_frame_json", "")
+        column["semantic_frame"] = _optional_semantic_frame(raw)
     return {
         "id": table_id,
         "name": name or props.get("name") or "",
@@ -208,9 +258,21 @@ def _table_context(
         "missing_context": _json_string_list(
             props.get("semantic_missing_context")
         ),
-        "columns": read_columns(session, table_id),
+        "semantic_frame": table_frame,
+        "columns": columns,
         "sample": sample,
     }
+
+
+def _optional_semantic_frame(value: Any) -> dict | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return SemanticFrame.model_validate(json.loads(value)).model_dump(
+            mode="json", by_alias=True,
+        )
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return None
 
 
 def _related_table_contexts(session, relationships: list[dict]) -> list[dict]:
@@ -258,7 +320,8 @@ def read_node_detail(node_id: str, *, view: str = "full") -> dict:
                 "RETURN type(r) AS type, "
                 "CASE WHEN startNode(r) = n THEN 'out' ELSE 'in' END AS direction, "
                 "coalesce(other.id,'') AS other_id, coalesce(other.name,'') AS other_name, "
-                "labels(other) AS other_labels, properties(r) AS properties "
+                "labels(other) AS other_labels, properties(other) AS other_properties, "
+                "properties(r) AS properties "
                 "ORDER BY type, direction, other_id",
                 id=requested_id,
                 graph_owner=ANALYZER_GRAPH_OWNER,
@@ -272,6 +335,7 @@ def read_node_detail(node_id: str, *, view: str = "full") -> dict:
                 rules,
                 columns,
                 node_id=requested_id,
+                require_complete_source=view == "full",
             )
             if view == "full" or "error" in detail:
                 return detail

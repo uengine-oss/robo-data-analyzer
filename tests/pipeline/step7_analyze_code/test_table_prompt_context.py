@@ -26,6 +26,9 @@ from pipeline.steps.step7_analyze_code.batch_prompt_values import (
     build_rule_batch_values,
     build_table_insight_batch_values,
 )
+from pipeline.steps.step7_analyze_code.semantic_frame_planner import (
+    build_code_semantic_plan,
+)
 from pipeline.steps.step7_analyze_code.batch_planner import Batch
 from shared.files.cache import SourceFileCache
 import unittest
@@ -267,6 +270,11 @@ def test_dbms_rule_prompt_uses_routine_table_scope_for_owned_row() -> None:
         contexts=contexts,
         code_by_id=code_by_id,
         table_descriptions={"db:RDITAG_TB": {}},
+        frame_assignments={
+            "28-28": build_code_semantic_plan(
+                code_by_id[child_id], contexts[child_id],
+            )
+        },
     )
     assert '"table_id":"db:RDITAG_TB"' in values["rule_nodes"]
     assert values["unit_id"] == routine_id

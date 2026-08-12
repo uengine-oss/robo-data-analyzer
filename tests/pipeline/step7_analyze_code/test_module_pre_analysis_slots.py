@@ -8,9 +8,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from graph.schema.graph_nodes import Module
-from pipeline.models.code_analysis_output import ModulePreAnalysisOutput
 from pipeline.steps.step7_analyze_code.module_pre_analysis import run_module_pre_analysis
 from shared.concurrency.priority_semaphore import PrioritySemaphore
+from tests.pipeline.semantic_frame_fixtures import frame_wire_for_response_model
 
 
 class ModulePreAnalysisSlotTest(unittest.IsolatedAsyncioTestCase):
@@ -26,7 +26,11 @@ class ModulePreAnalysisSlotTest(unittest.IsolatedAsyncioTestCase):
             )
             slots = PrioritySemaphore(1)
             await slots.acquire()
-            invoke = AsyncMock(return_value=ModulePreAnalysisOutput(intent="purpose"))
+            async def _invoke(**kwargs):
+                return frame_wire_for_response_model(
+                    kwargs["response_model"], meaning="purpose",
+                )
+            invoke = AsyncMock(side_effect=_invoke)
             with patch(
                 "pipeline.steps.step7_analyze_code.module_pre_analysis.run_yaml_rule",
                 new=invoke,

@@ -31,6 +31,47 @@ def compact_rules(rules: list[dict]) -> list[dict]:
     return out
 
 
+def gwt_rules(rules: list[dict], *, node_id: str) -> list[dict]:
+    """Preserve the analyzed Rule contract for downstream semantic decisions.
+
+    ``compact_rules`` is intentionally a search-list projection.  Architect GWT
+    generation is a semantic consumer and must receive the parser/validator-backed
+    condition/effect structure in addition to the model-owned Korean narrative.
+    """
+    out: list[dict] = []
+    seen: set[tuple[int, str]] = set()
+    for rule in rules or []:
+        line = int(rule.get("anchor_line") or 0)
+        narrative = str(rule.get("nl") or "").strip()
+        if line <= 0:
+            continue
+        rule_id = str(rule.get("rule_id") or f"R-{line}")
+        key = (line, rule_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "evidence_id": f"{node_id}::{rule_id}",
+            "rule_id": rule_id,
+            "line": line,
+            "condition": str(rule.get("cond") or ""),
+            "effects": list(rule.get("then") or []),
+            "when": str(rule.get("when") or ""),
+            "narrative": {
+                "text": narrative,
+                "authority": "analyzer_llm",
+                "role": "human_readable_explanation",
+            },
+            "examples": list(rule.get("examples") or []),
+            "tables": list(rule.get("tables") or []),
+            "source_anchor": {
+                "line": line,
+                "coordinate_system": "absolute-file-line",
+            },
+        })
+    return out
+
+
 def read_rules(session, node_id: str) -> list[dict]:
     """코드 노드의 RULE(leaf 계약) → EXAMPLE → 규칙 단위 AFFECTS_TABLE 을 순서 보존 반환."""
     rows = session.run(
@@ -104,6 +145,7 @@ def read_columns(session, table_id: str) -> list[dict]:
         "coalesce(c.logical_name,'') AS logical_name, "
         "coalesce(c.semantic_evidence_status,'') AS evidence_status, "
         "coalesce(c.semantic_missing_context,[]) AS missing_context, "
+        "coalesce(c.semantic_frame_json,'') AS semantic_frame_json, "
         "CASE WHEN trim(coalesce(c.description,'')) <> '' THEN c.description "
         "WHEN trim(coalesce(c.analyzed_description,'')) <> '' THEN c.analyzed_description "
         "ELSE '' END AS description "

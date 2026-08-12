@@ -8,11 +8,12 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Awaitable, Callable, Sequence
 
 from pipeline.models.code_analysis_output import RulesExamplesOutput, RuleItem
 from pipeline.models.analysis_finding import AnalysisFinding
+from pipeline.models.semantic_frame import SemanticFrame
 from pipeline.quality_gates.branch_inventory import BranchInventory
 from pipeline.quality_gates.rule_grading import grade_rules, partition_rule_candidates
 from pipeline.quality_gates.rule_prompt_evidence import rule_evidence
@@ -47,6 +48,7 @@ class RowCollection:
     rules: list[RuleItem]
     findings: list[AnalysisFinding]
     calls: int = 0
+    semantic_frames: list[SemanticFrame] = field(default_factory=list)
 
 
 def plan_batches(
@@ -173,7 +175,7 @@ async def collect_rules_by_rows(
                 )
                 for row in batch
             ]
-            return [], findings
+            return [], findings, None
         report = grade_rules(
             output,
             inventory,
@@ -193,7 +195,7 @@ async def collect_rules_by_rows(
             assigned=set(batch),
             evidence_rule="code_rules_examples",
         )
-        return accepted, [scoped(finding) for finding in findings]
+        return accepted, [scoped(finding) for finding in findings], output.semantic_frame
 
     batches = plan_batches(
         inventory,
@@ -202,10 +204,14 @@ async def collect_rules_by_rows(
     if not batches:
         return RowCollection(rules=[], findings=[], calls=0)
     results = await asyncio.gather(*(run_batch(batch) for batch in batches))
-    rules = [rule for batch_rules, _ in results for rule in batch_rules]
-    findings = [finding for _, batch_findings in results for finding in batch_findings]
+    rules = [rule for batch_rules, _, _frame in results for rule in batch_rules]
+    findings = [
+        finding for _, batch_findings, _frame in results for finding in batch_findings
+    ]
+    semantic_frames = [frame for _, _, frame in results if frame is not None]
     rules.sort(key=lambda rule: rule.anchor_line)
     findings.sort(key=lambda finding: (finding.coordinates, finding.status, finding.target_id))
     return RowCollection(
-        rules=rules, findings=findings, calls=len(batches)
+        rules=rules, findings=findings, calls=len(batches),
+        semantic_frames=semantic_frames,
     )

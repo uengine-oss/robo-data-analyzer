@@ -8,7 +8,7 @@ user_template_specific: |
   # [TASK — 현재 gate 행의 사람이 읽는 Rule 의미]
 
   목표는 parser가 이미 확정한 현재 gate 행의 조건 경로와 직접 효과를, 자식 소유권을
-  가져오지 않고 사람이 이해하는 `nl` 한 문장으로 옮기는 것이다. 접힌 자식의 조회·갱신·
+  가져오지 않고 semantic slot meaning으로 채우는 것이다. 접힌 자식의 조회·갱신·
   오류는 자식 node 소유이므로 현재 gate의 직접 효과로 복사하지 않는다.
 
   {rule_leaf_contract}

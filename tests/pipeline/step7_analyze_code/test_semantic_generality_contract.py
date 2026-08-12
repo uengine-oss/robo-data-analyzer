@@ -62,6 +62,8 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
                 "source_range": "1-1",
                 "source_status": "available",
                 "coordinate_system": "absolute-file-line",
+                "structural_profile": "{}",
+                "applicable_slots": "[]",
             },
         )
 
@@ -79,9 +81,9 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
                 self.assertIn("coordinate_system: absolute-file-line", rendered)
                 self.assertIn("잘못:", rendered)
                 self.assertIn("좋음:", rendered)
-                self.assertIn("`summary`", rendered)
+                self.assertIn("`slots`", rendered)
                 self.assertIn("`stereotype`", rendered)
-                self.assertIn("questions", rendered)
+                self.assertIn("missing_context", rendered)
                 self.assertNotIn("`domain_terms`", rendered)
                 self.assertNotIn("`logical_name`", rendered)
                 contracts.append(rendered.replace(body, "<BODY>").replace(locale, "<LOCALE>"))
@@ -155,24 +157,7 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
                     for key, value in loaded["static_values"].items():
                         expanded = expanded.replace("{" + key + "}", value)
                     self.assertTrue(template.lstrip().startswith("# [TASK"))
-                    target_marker = (
-                        "## [TARGET_BATCH]"
-                        if strategy == "dbms"
-                        else (
-                            "## [TABLE_USAGE_TARGET]"
-                            if name == "code_table_insights"
-                            else "## [TARGET]"
-                        )
-                    )
-                    source_marker = (
-                        "## [TABLE_USAGE_TARGETS]"
-                        if name == "code_table_insights_batch"
-                        else (
-                            "## [TARGET_NODES]" if strategy == "dbms" else "## [SOURCE]"
-                        )
-                    )
-                    self.assertLess(template.index("# [TASK"), template.index(target_marker))
-                    self.assertLess(template.index(target_marker), template.index(source_marker))
+                    self.assertLess(template.index("# [TASK"), template.index("# [INPUT"))
                     for contract_marker in (
                         "[OUTPUT CONTRACT", "[INPUT GUIDE", "[DECISION", "[SELF CHECK]",
                     ):
@@ -201,8 +186,8 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
             text = raw_template.replace(
                 "{rule_leaf_contract}", prompt["static_values"]["rule_leaf_contract"],
             )
-            self.assertIn("`nl`", text)
-            self.assertIn("같은 parser", text)
+            self.assertIn("`slots`", text)
+            self.assertIn("parser", text)
             self.assertNotIn("구조화된 `cond`, `then`", text)
             self.assertIn("rule_leaf_contract", prompt["static_values"])
             self.assertIn("{rule_leaf_contract}", raw_template)
@@ -244,9 +229,9 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
                 "{rule_leaf_contract}", prompt["static_values"]["rule_leaf_contract"],
             )
             with self.subTest(strategy=strategy, rule=rule_name):
-                self.assertIn("R<행>", text)
-                self.assertIn("`nl`", text)
-                self.assertIn("같은 parser", text)
+                self.assertIn("required", text)
+                self.assertIn("`slots`", text)
+                self.assertIn("parser", text)
                 self.assertNotIn("구조화된 `cond`, `then`", text)
                 self.assertNotIn("anchor_line: <", text)
 
@@ -275,12 +260,11 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
             with self.subTest(role=role):
                 self.assertIn(f"`{role}`", text)
         for decision_boundary in (
-            "출력 파라미터나 반환 객체를 채워도",
-            "정보가 최종 산출물이면",
-            "외부 호출 한 번이나 반환값 전달만으로 `Adapter`가 아니다",
-            "같은 허용/거절·정합성 판정을 만들면 `Validator`",
-            "서로 다른 업무 단계",
-            "저수준 자료구조·문자열 원시 연산은 `Util`",
+            "정보가 산출물이면 `Query`",
+            "I/O 계약을 다른 모듈 계약으로 변환",
+            "직접 검사 종합은 `Validator`",
+            "여러 업무 단계를 조정",
+            "저수준 자료구조·문자열 연산은 `Util`",
         ):
             with self.subTest(boundary=decision_boundary):
                 self.assertIn(decision_boundary, text)
@@ -289,14 +273,13 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
         rule = _load_rule(
             ROOT / "llm" / "prompts" / "framework", "module_pre_analysis"
         )
-        contract = rule["static_values"]["module_intent_contract"]
-        self.assertIn("시그니처는", contract)
-        self.assertIn("보조 증거", contract)
-        self.assertIn("빈 문자열", contract)
+        contract = rule["static_values"]["semantic_frame_contract"]
+        self.assertIn("MODULE.RESPONSIBILITY/DISPLAY_NAME/INTENT", contract)
+        self.assertIn("insufficient", contract)
         self.assertIn("잘못:", contract)
         self.assertIn("좋음:", contract)
         self.assertLess(
-            rule["user_template"].index("{module_intent_contract}"),
+            rule["user_template"].index("{semantic_frame_contract}"),
             rule["user_template"].index("module_header_metadata:"),
         )
 
@@ -320,18 +303,20 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
             rule = _load_rule(
                 ROOT / "llm" / "prompts" / strategy, "component_naming"
             )
-            contracts.append(rule["static_values"]["component_naming_contract"])
+            contracts.append(rule["static_values"]["semantic_frame_contract"])
             text = _safe_format(
                 rule["user_template"],
                 {
                     **rule["static_values"],
                     "component_id": "component:generic",
                     "members": "- 요청 검증\n- 요청 접수",
+                    "structural_profile": "{}",
+                    "applicable_slots": "[]",
                 },
             )
             self.assertIn("잘못:", text)
             self.assertIn("좋음:", text)
-            self.assertIn("ComponentNamingOutput.name", text)
+            self.assertIn("COMPONENT.DISPLAY_NAME", text)
             self.assertNotIn("허용 stereotype:", text)
             rendered.append(text)
         self.assertEqual(contracts[0], contracts[1])
@@ -346,6 +331,8 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
                     "id": "module:generic",
                     "name": "generic",
                     "member_code_nodes": "- 요청을 검증한다.",
+                    "structural_profile": "{}",
+                    "applicable_slots": "[]",
                 },
             )
             self.assertIn(module_stereotype_prompt_options(strategy), rendered)
@@ -396,10 +383,9 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
             text = rule["user_template"] + "\n".join(rule["static_values"].values())
             with self.subTest(strategy=strategy):
                 self.assertIn("required", text)
-                self.assertIn("R<행>", text)
-                self.assertIn("`nl`", text)
-                self.assertIn("Rule leaf 계약", text)
-                self.assertEqual(1, text.count("Rule leaf 계약"))
+                self.assertIn("required", text)
+                self.assertIn("`slots`", text)
+                self.assertIn("semantic slot", text)
 
     def test_semantic_logic_has_no_corpus_specific_condition(self) -> None:
         forbidden_branch = re.compile(

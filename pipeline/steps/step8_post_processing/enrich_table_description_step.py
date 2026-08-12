@@ -11,15 +11,13 @@ LLM 호출 = 테이블당 1 회 (병렬, ``max_concurrency``).
 from __future__ import annotations
 
 import json
-import hashlib
 import time
 from collections import defaultdict
 from dataclasses import replace
 from pathlib import Path
-from typing import Annotated, Literal, Optional, Union
+from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
-from pydantic import ConfigDict, Field, create_model, model_validator
 
 from pipeline.execution.analysis_handoff import (
     POSTPROCESS_PRIORITY,
@@ -31,10 +29,13 @@ from pipeline.execution.pause_controller import PauseController
 from pipeline.steps.step8_post_processing.handoff_skip import log_handoff_skip
 
 from llm.fanout import gather_with_warmup
-from pipeline.models.code_analysis_output import (
-    GroundedColumnDescription,
-    TableDescription,
+from pipeline.models.code_analysis_output import TableDescription
+from pipeline.models.table_description_frame import (
+    build_table_description_plans,
+    normalize_table_description_frame_response,
+    table_description_frame_response_model,
 )
+from pipeline.models.semantic_frame import profile_prompt_json, slot_specs_json
 from llm.runners.yaml_llm_runner import run_yaml_rule
 from llm.runners.model_output_error import ModelOutputError
 from pipeline.models.analysis_finding import AnalysisFinding
@@ -140,7 +141,10 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
         table_fqn: str, evidence: dict,
     ) -> TableDescription | ModelOutputError:
         """테이블 의미를 한 번 요청한다. transport 재시도는 runner만 소유한다."""
-        response_model = _table_description_response_model(evidence)
+        table_plan, column_plans = build_table_description_plans(table_fqn, evidence)
+        response_model = table_description_frame_response_model(
+            evidence, table_plan, column_plans,
+        )
 
         async def _call() -> TableDescription:
             async with track_processing("Table", table_fqn):
@@ -151,6 +155,24 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
                         user_values={
                             "table_fqn": table_fqn,
                             "candidates_json": json.dumps(evidence, ensure_ascii=False, indent=2),
+                            "table_structural_profile": profile_prompt_json(table_plan[0]),
+                            "table_applicable_slots": slot_specs_json(table_plan[1]),
+                            "column_frame_assignments": json.dumps(
+                                {
+                                    name: {
+                                        "structural_profile": profile.model_dump(
+                                            mode="json", by_alias=True,
+                                        ),
+                                        "applicable_slots": [
+                                            spec.model_dump(mode="json") for spec in specs
+                                        ],
+                                    }
+                                    for name, (profile, specs) in column_plans.items()
+                                },
+                                ensure_ascii=False,
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            ),
                         },
                         response_model=response_model,
                         budget=cost_budget,
@@ -158,7 +180,9 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
 
         try:
             wire = await _call()
-            return _normalize_table_description_response(wire)
+            return normalize_table_description_frame_response(
+                wire, table_plan, column_plans,
+            )
         except ModelOutputError as error:
             return error
 
@@ -203,6 +227,8 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
             "analyzed_description": r.description,
             "semantic_evidence_status": r.evidence_status,
             "semantic_missing_context": tuple(r.missing_context),
+            "semantic_frame_schema": r.semantic_frame.schema_version,
+            "semantic_frame_json": r.semantic_frame.canonical_json(),
         }
         for table_fqn, r in successful
     ]
@@ -216,6 +242,15 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
         [result for _, result in successful],
         allowed_column_names,
     )
+    column_frames = {
+        fqn(table_fqn, name): frame
+        for table_fqn, result in successful
+        for name, frame in result.column_semantic_frames.items()
+    }
+    for update in column_updates:
+        frame = column_frames[update["id"]]
+        update["semantic_frame_schema"] = frame.schema_version
+        update["semantic_frame_json"] = frame.canonical_json()
     if neo is not None and column_updates:
         await update_column_analyzed(neo, column_updates)
 
@@ -224,10 +259,12 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
     updated_tables = _replace_by_id(
         state.get("tables", []), table_updates, "analyzed_description", "logical_name",
         "semantic_evidence_status", "semantic_missing_context",
+        "semantic_frame_schema", "semantic_frame_json",
     )
     updated_columns = _replace_by_id(
         state.get("columns", []), column_updates, "analyzed_description", "logical_name",
         "semantic_evidence_status", "semantic_missing_context",
+        "semantic_frame_schema", "semantic_frame_json",
     )
 
     log_info(
@@ -465,191 +502,6 @@ def _source_columns_by_table(
         seen[table_id].add(column_id)
         result[table_id].append(column)
     return dict(result)
-
-
-def _meaning_wire_type(
-    *,
-    fingerprint: str,
-    source_logical: str,
-    source_description: str,
-    has_semantic_evidence: bool,
-):
-    """Provider-visible semantic state with no invalid cross-field combination."""
-    logical_type = (
-        Literal.__getitem__((source_logical,)) if source_logical else str
-    )
-    description_type = (
-        Literal.__getitem__((source_description,)) if source_description else str
-    )
-
-    def branch(status: str, *, missing: bool):
-        return create_model(
-            f"Meaning_{status}_{fingerprint}",
-            __config__=ConfigDict(extra="forbid"),
-            logical_name=(logical_type, Field(...)),
-            description=(
-                description_type,
-                Field(...) if source_description else Field(..., min_length=1),
-            ),
-            evidence_status=(Literal.__getitem__((status,)), Field(...)),
-            missing_context=(
-                list[str],
-                Field(..., min_length=1, max_length=8)
-                if missing else Field(..., max_length=0),
-            ),
-        )
-
-    insufficient = create_model(
-        f"Meaning_insufficient_{fingerprint}",
-        __config__=ConfigDict(extra="forbid"),
-        logical_name=(Literal.__getitem__(("",)), Field(...)),
-        description=(Literal.__getitem__(("",)), Field(...)),
-        evidence_status=(Literal.__getitem__(("insufficient",)), Field(...)),
-        missing_context=(list[str], Field(..., min_length=1, max_length=8)),
-    )
-    if not has_semantic_evidence:
-        return insufficient
-    choices = [
-        branch("sufficient", missing=False),
-        branch("partial", missing=True),
-    ]
-    if not source_logical and not source_description:
-        choices.append(insufficient)
-    return Annotated[
-        Union.__getitem__(tuple(choices)),
-        Field(discriminator="evidence_status"),
-    ]
-
-
-def _table_description_response_model(evidence: dict):
-    """Build a compact exact-identity wire schema with nested semantic states."""
-    table = evidence.get("table") or {}
-    column_evidence = list(evidence.get("columns") or ())
-    required_names = tuple(str(column.get("name") or "") for column in column_evidence)
-    if any(not name for name in required_names):
-        raise ValueError("source column names must not be empty")
-    fingerprint = hashlib.sha256(
-        json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
-            "utf-8"
-        )
-    ).hexdigest()[:12]
-
-    column_models = []
-    for column in column_evidence:
-        name = str(column["name"])
-        suffix = hashlib.sha256(name.encode("utf-8")).hexdigest()[:8]
-        source_logical = str(column.get("source_logical_name") or "").strip()
-        source_description = str(column.get("source_description") or "").strip()
-        source_comment = str(column.get("source_comment") or "").strip()
-        comment_is_evidence = bool(source_comment) and source_comment not in {
-            "AMBIGUOUS_SOURCE",
-        } and not source_comment.startswith(("Source references:", "Operations:"))
-        has_semantic_evidence = bool(
-            source_logical
-            or source_description
-            or column.get("candidates")
-            or comment_is_evidence
-        )
-        column_models.append(create_model(
-            f"GroundedColumnWire_{fingerprint}_{suffix}",
-            __config__=ConfigDict(extra="forbid"),
-            name=(Literal.__getitem__((name,)), Field(...)),
-            meaning=(
-                _meaning_wire_type(
-                    fingerprint=f"{fingerprint}_{suffix}",
-                    source_logical=source_logical,
-                    source_description=source_description,
-                    has_semantic_evidence=has_semantic_evidence,
-                ),
-                Field(...),
-            ),
-        ))
-    if column_models:
-        column_model = (
-            column_models[0]
-            if len(column_models) == 1
-            else Union.__getitem__(tuple(column_models))
-        )
-        column_field = Field(
-            ...,
-            min_length=len(required_names),
-            max_length=len(required_names),
-            description="DDL 허용 컬럼을 누락·중복 없이 정확히 한 번씩 반환",
-        )
-    else:
-        column_model = dict[str, object]
-        column_field = Field(..., max_length=0)
-
-    expected = frozenset(required_names)
-
-    def _exact_columns(self):
-        names = [column.name for column in self.columns]
-        if len(names) != len(set(names)) or set(names) != expected:
-            raise ValueError(
-                f"columns must match the DDL allowlist exactly: expected={sorted(expected)!r}"
-            )
-        return self
-
-    source_table_logical = str(table.get("source_logical_name") or "").strip()
-    source_table_description = str(table.get("source_description") or "").strip()
-    source_table_comment = str(table.get("source_comment") or "").strip()
-    comment_is_evidence = bool(source_table_comment) and not source_table_comment.startswith((
-        "Source references:", "Operations:", "RWIS inferred",
-    ))
-    has_table_evidence = bool(
-        source_table_logical
-        or source_table_description
-        or comment_is_evidence
-        or evidence.get("table_usages")
-    )
-    validator = model_validator(mode="after")(_exact_columns)
-    return create_model(
-        f"GroundedTableDescriptionWire_{fingerprint}",
-        __config__=ConfigDict(populate_by_name=True, extra="forbid"),
-        db=(Literal.__getitem__((str(table.get("db") or ""),)), Field(...)),
-        schema_=(
-            Literal.__getitem__((str(table.get("schema") or ""),)),
-            Field(..., alias="schema"),
-        ),
-        name=(Literal.__getitem__((str(table.get("name") or ""),)), Field(...)),
-        meaning=(
-            _meaning_wire_type(
-                fingerprint=f"{fingerprint}_table",
-                source_logical=source_table_logical,
-                source_description=source_table_description,
-                has_semantic_evidence=has_table_evidence,
-            ),
-            Field(...),
-        ),
-        columns=(list[column_model], column_field),
-        __validators__={"_exact_columns": validator},
-    )
-
-
-def _normalize_table_description_response(output: object) -> TableDescription:
-    """Convert the provider wire envelope to the canonical storage model."""
-    table_semantics = getattr(output, "meaning")
-    return TableDescription(
-        db=output.db,
-        schema=output.schema_,
-        name=output.name,
-        logical_name=table_semantics.logical_name,
-        description=table_semantics.description,
-        evidence_status=table_semantics.evidence_status,
-        missing_context=table_semantics.missing_context,
-        columns=[_normalize_column_description(column) for column in output.columns],
-    )
-
-
-def _normalize_column_description(output: object) -> GroundedColumnDescription:
-    column_semantics = getattr(output, "meaning")
-    return GroundedColumnDescription(
-        name=output.name,
-        logical_name=column_semantics.logical_name,
-        description=column_semantics.description,
-        evidence_status=column_semantics.evidence_status,
-        missing_context=column_semantics.missing_context,
-    )
 
 
 def _replace_by_id(nodes: list, updates: list[dict], *attrs: str) -> list:

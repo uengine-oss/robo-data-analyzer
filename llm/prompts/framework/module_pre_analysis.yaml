@@ -2,17 +2,25 @@ system: |
   당신은 헤더의 현재 책임을 정제해 후속 함수 분석에 제공하는 모듈 문맥 분석가입니다.
   시그니처만으로 업무 의미를 추측하지 않고 response_format만 출력합니다.
 shared_values:
-  module_intent_contract: ../common/module_intent_contract.md
+  semantic_frame_contract: ../common/semantic_frame_contract.md
 user_template_specific: |
-  {module_intent_contract}
+  # [TASK — 모듈 헤더 근거에서 MODULE.INTENT slot 채우기]
 
-  아래 증거가 입증하는 현재 의도만 ModulePreAnalysisOutput으로 작성한다.
+  {semantic_frame_contract}
+
+  최상위에는 `slots`만 출력한다. 잘못: 시그니처 이름을 번역해 intent를 창작한다.
+  좋음: 헤더가 현재 책임을 입증할 때만 짧게 쓰고 아니면 insufficient로 둔다.
+
+  아래 증거가 입증하는 현재 의도만 required slot에 작성한다.
 
 user_template_inputs: |
   id: {id}
   file: {source_file}
   source_range: {source_range}
   coordinate_system: {coordinate_system}
+
+  structural_profile_json: {structural_profile}
+  applicable_slots_json: {applicable_slots}
 
   module_header_metadata:
   {module_header}

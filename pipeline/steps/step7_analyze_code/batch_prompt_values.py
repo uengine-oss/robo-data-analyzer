@@ -13,12 +13,21 @@ from pipeline.steps.step7_analyze_code.range_body import (
     model_visible_raw_body,
 )
 from pipeline.steps.step7_analyze_code.table_prompt_context import dump_table_refs
-from pipeline.steps.step7_analyze_code.control_prompt import build_control_inventory
+from pipeline.steps.step7_analyze_code.control_prompt import (
+    build_control_inventory,
+    routine_inventory,
+)
 from pipeline.steps.step7_analyze_code.model_source_projection import (
     project_model_source_literals,
 )
 from pipeline.models.data_object_usage import dump_data_object_usages, exact_direct_table_ids
+from pipeline.models.semantic_frame import profile_prompt_json, slot_specs_json
+from pipeline.steps.step7_analyze_code.semantic_frame_planner import (
+    build_code_semantic_plan,
+    semantic_concern_slots,
+)
 from pipeline.steps.step7_analyze_code.batch_node_identity import batch_node_keys
+from pipeline.languages import ROUTINE_LABELS
 from shared.files.cache import SourceFileCache
 
 
@@ -54,6 +63,28 @@ def _build_batch_values(
         body = project_model_source_literals(body_fn(ctx, contexts, cache))
         fn = code_by_id[nid]
         inventory = build_control_inventory(fn, ctx, cache)
+        if fn.label in ROUTINE_LABELS or "rule_rows" not in ctx.extra:
+            routine, semantic_inventory = fn, inventory
+        else:
+            routine, semantic_inventory = routine_inventory(
+                fn, contexts, code_by_id, cache,
+            )
+        assigned_rows = ctx.extra.get("rule_rows")
+        profile, slot_specs = build_code_semantic_plan(
+            fn,
+            ctx,
+            inventory=semantic_inventory,
+            # The batch scheduler is the authority for rule ownership.  A root
+            # routine must not require slots that were delegated to child-node
+            # batches, just as a child must not claim its siblings' rows.
+            rule_rows=tuple(assigned_rows or ()),
+            rule_owner_id=routine.id,
+            child_nodes=(
+                node for node in code_by_id.values() if node.parent_id == fn.id
+            ),
+        )
+        concerns = semantic_concern_slots(slot_specs)
+        ctx.extra["_semantic_frame_plan"] = (profile, slot_specs, concerns)
         branch_index = inventory.branch_index()
         # The validator sees the same authoritative comparison-bearing inputs as
         # the model. Keep this beside prompt assembly so later consumers cannot
@@ -96,6 +127,8 @@ def _build_batch_values(
             f"source_range: {ctx.start_line}-{ctx.end_line}\n"
             f"coordinate_system: {excerpt.coordinate_system}\n"
             f"source_status: {excerpt.status}\n\n"
+            f"#### [STRUCTURAL_PROFILE]\n{profile_prompt_json(profile)}\n\n"
+            f"#### [APPLICABLE_SLOTS]\n{slot_specs_json(concerns['summary'])}\n\n"
             f"#### [EFFECTIVE_FLOW_EVIDENCE]\n"
             f"ast_type: {fn.label}\n"
             f"ast_expression: {fn.expression}\n"
@@ -140,6 +173,7 @@ def build_rule_batch_values(
     contexts: dict[str, AnalysisContext],
     code_by_id: dict[str, CodeNode],
     table_descriptions: dict[str, dict],
+    frame_assignments: dict[str, tuple[object, tuple[object, ...]]],
 ) -> dict[str, str]:
     """Render only evidence consumed by the DBMS Rule contract.
 
@@ -167,12 +201,15 @@ def build_rule_batch_values(
                 "missing_context": list(callee.extra.get("summary_missing_context") or ()),
             })
         rows = tuple(int(row) for row in assignments[node_key])
+        profile, slot_specs = frame_assignments[node_key]
         blocks.append(
             f"### [RULE_TARGET {node_key}]\n"
             f"target_id: {node_id}\n"
             f"owner_id: {owner_ids[node_key]}\n"
             f"signature: {fn.signature}\n"
             f"assigned_rows: {','.join(map(str, rows))}\n"
+            f"structural_profile_json: {profile_prompt_json(profile)}\n"
+            f"applicable_slots_json: {slot_specs_json(slot_specs)}\n"
             f"owner_effective_reads_json: {dump_table_refs(owner_ctx.reads, table_descriptions, include_columns=False)}\n"
             f"owner_effective_writes_json: {dump_table_refs(owner_ctx.writes, table_descriptions, include_columns=False)}\n"
             f"owner_linked_table_operations_json: "
@@ -223,6 +260,7 @@ def build_table_insight_batch_values(
         excerpt = cache.excerpt(
             context.file_path, context.start_line, context.end_line,
         )
+        profile, _all_specs, concerns = context.extra["_semantic_frame_plan"]
         blocks.append(
             "### [TABLE_USAGE_TARGET]\n"
             f"node_key: {id_to_key[node_id]}\n"
@@ -231,6 +269,8 @@ def build_table_insight_batch_values(
             f"source_range: {context.start_line}-{context.end_line}\n"
             f"coordinate_system: {excerpt.coordinate_system}\n"
             f"source_status: {excerpt.status}\n\n"
+            f"structural_profile_json: {profile_prompt_json(profile)}\n"
+            f"applicable_slots_json: {slot_specs_json(concerns['insights'])}\n\n"
             "#### [EXACT_DIRECT_TABLE_EVIDENCE]\n"
             f"ast_type: {node.label}\n"
             f"ast_expression: {node.expression}\n"

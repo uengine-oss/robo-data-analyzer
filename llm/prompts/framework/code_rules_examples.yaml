@@ -8,7 +8,7 @@ user_template_specific: |
   # [TASK — 각 분기 행의 사람이 읽는 Rule 의미]
 
   목표는 parser가 이미 확정한 각 required 행의 조건 경로와 직접 효과를, 소유권을 바꾸지 않고
-  사람이 이해하는 `nl` 한 문장으로 옮기는 것이다.
+  행별 semantic slot meaning으로 채우는 것이다.
 
   {rule_leaf_contract}
 
@@ -18,6 +18,8 @@ user_template_evidence: |
   response_locale: {response_locale}
   target_id: {id}
   signature: {signature}
+  structural_profile_json: {structural_profile}
+  applicable_slots_json: {applicable_slots}
   target_referenced_symbol_definitions_json: {referenced_symbols}
   target_linked_external_context_json: {external_evidence}
   owner_effective_reads_json: {reads}

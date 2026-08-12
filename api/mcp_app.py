@@ -4,8 +4,10 @@ FastMCP(streamable-http, stateless)를 FastAPI `/robo/mcp` 에 mount. 도구 = R
 검색 코어**(`search.ranking.retriever`) 호출 — 알고리즘 사본 0(SC-005). MCP 는 최종 결과만 반환
 (진행 스트림은 프론트 REST 전용 — 사용자 합의).
 
-spec 060: ``cluster_retrieve``는 선택용 목록만, ``node_detail``은 선택한 ID의 원문·라인·
-관계·컬럼을 반환한다. 두 도구 모두 **compact 비이스케이프 JSON 텍스트** 한 벌을 반환한다.
+spec 060/131: ``cluster_retrieve``는 선택용 목록만, ``node_detail`` 기본 보기는 선택한
+ID의 검증된 semantic frame과 ID-deduplicated linked context를 반환한다. 원문은 감사용
+``full`` 보기에서만 명시적으로 조회한다. 두 도구 모두 **compact 비이스케이프 JSON 텍스트**
+한 벌을 반환한다.
 dict 반환 시 MCP SDK가 escape+indent 텍스트화·structuredContent 이중 전송으로 2.1배
 부풀리므로 문자열 반환은 전송 계약이다.
 
@@ -27,7 +29,8 @@ mcp = FastMCP(
     "robo-cluster",
     instructions=(
         "레거시 코드그래프 의미검색. cluster_retrieve로 관련 노드 목록과 규칙 근거를 먼저 "
-        "찾고, 필요한 ID만 node_detail로 원문 코드·라인·관계·컬럼을 조회한다."
+        "찾고, 필요한 ID만 node_detail의 frame 보기로 semantic frame과 관계 근거를 조회한다. "
+        "정상 생성에서 full 원문 보기를 사용하지 않는다."
     ),
     stateless_http=True,
     streamable_http_path="/",   # mount 지점(/robo/mcp)이 곧 엔드포인트
@@ -57,14 +60,14 @@ def _list_clusters(clusters: list, by_id: dict) -> list:
 
 
 def _select_database(database: Optional[str]) -> None:
-    """MCP 헤더가 없을 때 요청 인자로 DB를 고른다. 미지정은 서버 SETTINGS 기본값을 쓴다."""
-    if database:
-        set_override(Neo4jOverride(
-            uri=SETTINGS.graph_database.uri,
-            user=SETTINGS.graph_database.user,
-            password=SETTINGS.graph_database.password,
-            database=database,
-        ))
+    """요청 DB를 고르되 미지정 호출이 직전 요청의 override를 상속하지 않게 한다."""
+    selected = (database or SETTINGS.graph_database.database).strip()
+    set_override(Neo4jOverride(
+        uri=SETTINGS.graph_database.uri,
+        user=SETTINGS.graph_database.user,
+        password=SETTINGS.graph_database.password,
+        database=selected,
+    ))
 
 
 def _json(payload: dict) -> str:
@@ -79,7 +82,8 @@ async def cluster_retrieve(
 
     Args:
         query: 자연어 요구사항 (예: "주문 처리 시 재고 상태 변화").
-        database: 검색할 Neo4j DB 이름 (생략 시 서버 기본 DB — 모르면 생략).
+        database: 운영자가 지정한 Neo4j DB 이름. 프로젝트/코퍼스 이름을 추측해 넣지 말고,
+            지정받지 않았으면 생략한다(서버 기본 DB 사용).
     """
     q = (query or "").strip()
     if not q:
@@ -104,25 +108,30 @@ async def cluster_retrieve(
 
 @mcp.tool()
 async def node_detail(
-    node_id: str, database: Optional[str] = None, view: str = "full",
+    node_id: str, database: Optional[str] = None, view: str = "frame",
 ) -> str:
-    """선택한 레거시 노드 ID의 원문 코드·라인·관계·규칙·컬럼을 조회한다.
+    """선택한 노드의 검증된 semantic frame과 연결 근거를 조회한다.
 
     Args:
         node_id: ``cluster_retrieve`` 목록에서 선택한 노드 ID.
-        database: 검색과 같은 Neo4j DB 이름. 생략 시 서버 기본 DB.
-        view: ``full``은 원문 포함 상세, ``gwt``는 좌표·호출·테이블·컬럼·샘플 압축 보기.
+        database: 검색과 같은 운영자 지정 Neo4j DB 이름. 프로젝트/코퍼스 이름을 추측해
+            넣지 말고, 지정받지 않았으면 생략한다(서버 기본 DB 사용).
+        view: ``frame``은 Architect 정상 생성용 source-free 의미 프레임 보기다.
+            ``full``은 사람의 감사·결함 추적용 원문 상세다. ``gwt``는 ``frame``의 폐기 전 별칭이다.
     """
     requested_id = (node_id or "").strip()
     if not requested_id:
         return _json({"error": {"code": "EMPTY_ID", "message": "node_id is required"}})
     requested_view = (view or "").strip().lower()
-    if requested_view not in {"full", "gwt"}:
-        return _json({"error": {"code": "INVALID_VIEW", "message": "view must be full or gwt"}})
+    if requested_view not in {"full", "frame", "gwt"}:
+        return _json({"error": {"code": "INVALID_VIEW", "message": "view must be frame or full"}})
 
     def _run() -> dict:
         _select_database(database)
         from search.corpus.node_detail import read_node_detail
-        return read_node_detail(requested_id, view=requested_view)
+        return read_node_detail(
+            requested_id,
+            view="frame" if requested_view == "gwt" else requested_view,
+        )
 
     return _json(await asyncio.to_thread(_run))

@@ -36,6 +36,7 @@ from pipeline.models.rule_expression import (
     NL_PATTERN,
     RULE_LEAF_PATTERN,
 )
+from pipeline.models.semantic_frame import SemanticFrame
 
 
 def _normalize_summary_format(v: str) -> str:
@@ -99,6 +100,7 @@ class SummaryOutput(BaseModel):
         max_length=15,
         description="코드와 제공 근거만으로 답할 수 없는 실제 질문",
     )
+    semantic_frame: SemanticFrame | None = Field(default=None, exclude=True)
 
     @field_validator("summary")
     @classmethod
@@ -158,6 +160,7 @@ class GroundedColumnDescription(BaseModel):
     description: str = ""
     evidence_status: EvidenceStatus
     missing_context: list[str] = Field(default_factory=list, max_length=8)
+    semantic_frame: SemanticFrame | None = Field(default=None, exclude=True)
 
     @model_validator(mode="after")
     def _validate_evidence_state(self) -> "GroundedColumnDescription":
@@ -197,6 +200,7 @@ class TableInsightItem(BaseModel):
 
 class TableInsightsOutput(BaseModel):
     table_insights: list[TableInsightItem] = Field(default_factory=list)
+    semantic_frame: SemanticFrame | None = Field(default=None, exclude=True)
 
 
 # ── 3 분할 #3: code_rules_examples — 구조화 파이썬 표현식 leaf (spec 116) ──
@@ -269,6 +273,7 @@ class RulesExamplesOutput(BaseModel):
     """Rule 봉투 — 개수 상한 없음(유한성은 분기표 행수+토큰예산+반복가드가 보증)."""
 
     rules: list[RuleItem] = Field(default_factory=list)
+    semantic_frame: SemanticFrame | None = Field(default=None, exclude=True)
 
 
 # ── DBMS 배치 3분할 (🅕 — 같은 유효부모 형제 N 노드를 관심사별 1콜) ──
@@ -299,6 +304,7 @@ class BatchSummaryItem(BaseModel):
         max_length=15,
         description="코드와 제공 근거만으로 답할 수 없는 실제 질문",
     )
+    semantic_frame: SemanticFrame | None = Field(default=None, exclude=True)
 
     @field_validator("summary")
     @classmethod
@@ -330,6 +336,7 @@ class BatchRulesItem(BaseModel):
     """
     node_key: str = Field(..., description="입력 줄범위 '<start>-<end>' 그대로 echo")
     rules: list[RuleItem] = Field(default_factory=list)
+    semantic_frame: SemanticFrame | None = Field(default=None, exclude=True)
 
 
 class BatchRulesOutput(BaseModel):
@@ -340,6 +347,7 @@ class BatchTableInsightsItem(BaseModel):
     """배치 테이블 분할 — 노드 1개의 테이블 인사이트 (DML 노드만 대상)."""
     node_key: str = Field(..., description="입력 줄범위 '<start>-<end>' 그대로 echo")
     table_insights: list[TableInsightItem] = Field(default_factory=list)
+    semantic_frame: SemanticFrame | None = Field(default=None, exclude=True)
 
 
 class BatchTableInsightsOutput(BaseModel):
@@ -370,6 +378,7 @@ class ModuleSummaryOutput(BaseModel):
     summary: str = Field(..., min_length=1, description="모듈 전체 의미 (~2 단락)")
     stereotype: str = Field("", description="예: 'Service' / 'Repository' / 'Controller'")
     logical_name: str = Field("", description="모듈 도메인 표시명 한 줄 (코드 식별자 X)")
+    semantic_frame: SemanticFrame | None = Field(default=None, exclude=True)
 
 
 # ── 컴포넌트 이름 (build_components_step) ─────────────────
@@ -380,6 +389,7 @@ class ComponentNamingOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(..., min_length=1, description="부품 도메인 이름 한 줄 (코드 식별자 X)")
+    semantic_frame: SemanticFrame | None = Field(default=None, exclude=True)
 
 
 # ── 테이블 description 통합 (enrich_table_description_step) ──
@@ -399,6 +409,9 @@ class TableDescription(BaseModel):
         ...,
         description="입력 허용 컬럼별 통합 논리명·설명. 이름은 입력 컬럼을 정확히 한 번씩 보존",
     )
+    semantic_frame: SemanticFrame | None = Field(default=None, exclude=True)
+    column_semantic_frames: dict[str, SemanticFrame] = Field(default_factory=dict, exclude=True)
+    semantic_frame: SemanticFrame | None = Field(default=None, exclude=True)
 
     @model_validator(mode="after")
     def _validate_evidence_state(self) -> "TableDescription":

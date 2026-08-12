@@ -41,6 +41,8 @@ SET c.analyzed_description = item.analyzed_description,
     c.logical_name = item.logical_name,
     c.semantic_evidence_status = item.semantic_evidence_status,
     c.semantic_missing_context = item.semantic_missing_context,
+    c.semantic_frame_schema = item.semantic_frame_schema,
+    c.semantic_frame_json = item.semantic_frame_json,
     c.description_source = CASE
         WHEN coalesce(c.description, '') <> '' THEN c.description_source
         WHEN coalesce(item.analyzed_description, '') <> '' THEN 'code'

@@ -32,11 +32,103 @@ from pipeline.steps.step7_analyze_code.batch_analyze import (
     _is_summary_terminal,
     _partition_keyed_items,
 )
+from pipeline.models.semantic_frame import (
+    normalize_semantic_frame_response,
+    semantic_frame_response_model,
+)
+from pipeline.models.semantic_frame_projection import project_summary
+from pipeline.steps.step7_analyze_code.semantic_frame_planner import (
+    build_code_semantic_plan,
+    semantic_concern_slots,
+)
 from pipeline.steps.step7_analyze_code.three_split_llm_fanout import analyze_code_three_split
 from shared.files.cache import SourceFileCache
 from shared.concurrency.priority_semaphore import PrioritySemaphore
 from pipeline.models.analysis_context import ControlSubtreeNode
 from llm.runners.model_output_error import ModelOutputError
+
+
+def _frame_summary(
+    node: CodeNode,
+    context: AnalysisContext,
+    *,
+    summary: str,
+    stereotype: str,
+    status: str = "sufficient",
+    missing: list[str] | None = None,
+) -> SummaryOutput:
+    profile, specs = build_code_semantic_plan(node, context)
+    model = semantic_frame_response_model(specs)
+    missing = list(missing or [])
+    parsed = model.model_validate({
+        "slots": {
+            spec.slot_id: {
+                "meaning": summary if status != "insufficient" else "",
+                "status": status,
+                "missing_context": missing,
+            }
+            for spec in specs
+        },
+    })
+    frame = normalize_semantic_frame_response(parsed, profile, specs)
+    return project_summary(frame, stereotype=stereotype)
+
+
+def _semantic_frame(
+    node: CodeNode,
+    context: AnalysisContext,
+    *,
+    meaning: str = "구조 근거에 따른 동작",
+):
+    profile, specs = build_code_semantic_plan(node, context)
+    model = semantic_frame_response_model(specs)
+    parsed = model.model_validate({"slots": {
+        spec.slot_id: {
+            "meaning": meaning,
+            "status": "sufficient",
+            "missing_context": [],
+        }
+        for spec in specs
+    }})
+    return normalize_semantic_frame_response(parsed, profile, specs)
+
+
+def _batch_frame_summary(
+    node_key: str,
+    node: CodeNode,
+    context: AnalysisContext,
+    **kwargs,
+) -> BatchSummaryItem:
+    summary = _frame_summary(node, context, **kwargs)
+    return BatchSummaryItem(
+        node_key=node_key,
+        summary=summary.summary,
+        stereotype=summary.stereotype,
+        evidence_status=summary.evidence_status,
+        missing_context=summary.missing_context,
+        questions=summary.questions,
+        semantic_frame=summary.semantic_frame,
+    )
+
+
+def _frame_wire_payload(
+    response_model,
+    *,
+    meaning: str,
+    stereotype: str,
+) -> dict:
+    slots_type = response_model.model_fields["slots"].annotation
+    return {
+        "slots": {
+            key: {
+                "meaning": meaning,
+                "status": "sufficient",
+                "missing_context": [],
+            }
+            for key in slots_type.model_fields
+        },
+        "stereotype": stereotype,
+    }
 
 
 class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
@@ -50,10 +142,11 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
             id="fn", signature="work()", file_path="x.sql",
             start_line=1, end_line=1, summary="stale",
         )
-        output = BatchSummaryItem(
-            node_key="1-1", summary="", stereotype="",
-            evidence_status="insufficient",
-            missing_context=["호출 대상 계약 원문"], questions=[],
+        context.extra["ast_statements"] = ()
+        output = _batch_frame_summary(
+            "1-1", node, context,
+            summary="", stereotype="", status="insufficient",
+            missing=["호출 대상 계약 원문"],
         )
 
         finding = _apply_batch_summary(
@@ -151,7 +244,10 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
             ) as serialize,
         ):
             _apply_node_analysis(
-                None, BatchRulesItem(node_key="28-28", rules=[]), None,
+                None, BatchRulesItem(
+                    node_key="28-28", rules=[],
+                    semantic_frame=_semantic_frame(child, child_ctx),
+                ), None,
                 child, child_ctx, SimpleNamespace(name="dbms"),
                 SourceFileCache(),
                 contexts={routine.id: routine_ctx, child.id: child_ctx},
@@ -194,20 +290,32 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_missing_key_fails_in_schema_after_one_model_call(self) -> None:
         contexts = {
-            "a": SimpleNamespace(start_line=1, end_line=2),
-            "b": SimpleNamespace(start_line=3, end_line=4),
+            "a": AnalysisContext(id="a", signature="a", file_path="x.sql", start_line=1, end_line=2),
+            "b": AnalysisContext(id="b", signature="b", file_path="x.sql", start_line=3, end_line=4),
         }
+        code_by_id = {
+            node_id: CodeNode(
+                id=node_id, signature=node_id, file_path="x.sql",
+                start_line=context.start_line, end_line=context.end_line,
+                label="PROCEDURE",
+            )
+            for node_id, context in contexts.items()
+        }
+        for node_id, context in contexts.items():
+            context.extra["ast_statements"] = ()
+            profile, specs = build_code_semantic_plan(
+                code_by_id[node_id], context,
+            )
+            context.extra["_semantic_frame_plan"] = (
+                profile, specs, semantic_concern_slots(specs),
+            )
         async def invalid_output(*, response_model, **_kwargs):
+            item_type = response_model.model_fields["nodes"].annotation.model_fields["1-2"].annotation
             return response_model.model_validate({
                 "nodes": {
-                    "1-2": {
-                        "node_key": "1-2",
-                        "summary": "a",
-                        "stereotype": "Helper",
-                        "evidence_status": "sufficient",
-                        "missing_context": [],
-                        "questions": [],
-                    },
+                    "1-2": _frame_wire_payload(
+                        item_type, meaning="a", stereotype="Helper",
+                    ),
                 },
             })
         with (
@@ -229,7 +337,7 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
                     response_model=BatchSummaryOutput,
                     prompts_dir=Path("."),
                     contexts=contexts,
-                    code_by_id={},
+                    code_by_id=code_by_id,
                     cost_budget=None,
                     codebase_notes="",
                     module_intents={},
@@ -260,7 +368,10 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
             context.extra["rule_rows"] = (1,)
             _apply_node_analysis(
                 None,
-                BatchRulesItem(node_key="1-4", rules=[]),
+                BatchRulesItem(
+                    node_key="1-4", rules=[],
+                    semantic_frame=_semantic_frame(node, context),
+                ),
                 None,
                 node,
                 context,
@@ -290,10 +401,15 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
                 summary="context before",
             )
             context.extra.setdefault("ast_statements", ())
+            framed = _batch_frame_summary(
+                "1-1", node, context, summary="after", stereotype="Helper",
+            )
             output = BatchSummaryItem.model_construct(
-                node_key="1-1", summary="after",
-                stereotype="InventedRole", evidence_status="sufficient",
-                missing_context=[], questions=[],
+                **{
+                    **framed.model_dump(exclude={"semantic_frame"}),
+                    "stereotype": "InventedRole",
+                    "semantic_frame": framed.semantic_frame,
+                },
             )
             with self.assertRaisesRegex(ValueError, "invalid dbms stereotype"):
                 _apply_batch_summary(
@@ -316,13 +432,10 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
             id="callee", signature="callee()", file_path="x.sql",
             start_line=2, end_line=2, summary="계좌번호 정합성을 검증한다.",
         )
-        output = BatchSummaryItem(
-            node_key="1-1",
-            summary="계좌번호 정합성을 검증한다.",
-            stereotype="Helper",
-            evidence_status="sufficient",
-            missing_context=[],
-            questions=[],
+        context.extra["ast_statements"] = ()
+        output = _batch_frame_summary(
+            "1-1", node, context,
+            summary="계좌번호 정합성을 검증한다.", stereotype="Helper",
         )
 
         finding = _apply_batch_summary(
@@ -356,11 +469,11 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
                 ),
             ),
         )
-        output = BatchSummaryItem(
-            node_key="1-2",
+        context.extra["ast_statements"] = ()
+        output = _batch_frame_summary(
+            "1-2", node, context,
             summary="대상이 존재하고(IN_TAGSN >= 1) 후속 작업을 수행한다.",
-            stereotype="Helper", evidence_status="sufficient",
-            missing_context=[], questions=[],
+            stereotype="Helper",
         )
 
         finding = _apply_batch_summary(
@@ -388,9 +501,9 @@ class FrameworkFailureContractTest(unittest.IsolatedAsyncioTestCase):
             start_line=1, end_line=1, summary="stale",
         )
         context.extra["ast_statements"] = ()
-        output = SummaryOutput(
-            summary="", stereotype="", evidence_status="insufficient",
-            missing_context=["함수 본문"], questions=[],
+        output = _frame_summary(
+            node, context, summary="", stereotype="", status="insufficient",
+            missing=["함수 본문"],
         )
 
         result = await analyze_code_three_split(
@@ -427,12 +540,9 @@ class FrameworkFailureContractTest(unittest.IsolatedAsyncioTestCase):
                 start_line=1, end_line=1,
                 summary="계좌번호 정합성을 검증한다.",
             )
-            output = SummaryOutput(
-                summary="계좌번호 정합성을 검증한다.",
-                stereotype="Helper",
-                evidence_status="sufficient",
-                missing_context=[],
-                questions=[],
+            output = _frame_summary(
+                node, context,
+                summary="계좌번호 정합성을 검증한다.", stereotype="Helper",
             )
 
             async def no_rules(*, response_model, **_kwargs):
@@ -504,7 +614,7 @@ class FrameworkFailureContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([], node.extra["rules"])
         self.assertEqual("completed_with_findings", node.extra["analysis_status"])
         self.assertEqual(
-            {"summary", "rules"},
+            {"summary", "rules", "semantic_frame"},
             {finding["concern"] for finding in node.extra["analysis_findings"]},
         )
 
@@ -523,9 +633,15 @@ class FrameworkFailureContractTest(unittest.IsolatedAsyncioTestCase):
                 summary="context before",
             )
             context.extra.setdefault("ast_statements", ())
+            framed = _frame_summary(
+                node, context, summary="after", stereotype="Helper",
+            )
             output = SummaryOutput.model_construct(
-                summary="after", stereotype="InventedRole",
-                evidence_status="sufficient", missing_context=[], questions=[],
+                **{
+                    **framed.model_dump(exclude={"semantic_frame"}),
+                    "stereotype": "InventedRole",
+                    "semantic_frame": framed.semantic_frame,
+                },
             )
             with self.assertRaisesRegex(ValueError, "invalid framework stereotype"):
                 await analyze_code_three_split(
@@ -586,15 +702,11 @@ class FrameworkFailureContractTest(unittest.IsolatedAsyncioTestCase):
             async def fake_rule(*, rule_name, response_model, **_kwargs):
                 calls.append(rule_name)
                 if rule_name == "code_summary":
-                    return response_model.model_validate({
-                        "result": {
-                            "summary": "작업을 수행해 그 결과를 호출자에게 반환한다.",
-                            "stereotype": "Helper",
-                            "evidence_status": "sufficient",
-                            "missing_context": [],
-                            "questions": [],
-                        },
-                    })
+                    return response_model.model_validate(_frame_wire_payload(
+                        response_model,
+                        meaning="작업을 수행해 그 결과를 호출자에게 반환한다.",
+                        stereotype="Helper",
+                    ))
                 raise ValueError("rules invalid")
 
             with patch(

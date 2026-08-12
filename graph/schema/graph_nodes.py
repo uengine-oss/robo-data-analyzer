@@ -73,6 +73,8 @@ class Table:
     analyzed_description: str = ""           # 분석 LLM 합성 설명
     semantic_evidence_status: str = ""        # sufficient / partial / insufficient
     semantic_missing_context: tuple[str, ...] = ()
+    semantic_frame_schema: str = ""
+    semantic_frame_json: str = ""
     table_type: str = "TABLE"                # TABLE / VIEW / MATERIALIZED_VIEW
     view_definition: str = ""                # VIEW 의 정의 SELECT 원문 (spec 112 뷰 펼치기 재료)
     # embed_step 이 채우는 의미 벡터. metadata={"vector": True} = 직렬화 소비자용
@@ -126,6 +128,8 @@ class Column:
     analyzed_description: str = ""           # 분석 LLM 합성 설명
     semantic_evidence_status: str = ""        # sufficient / partial / insufficient
     semantic_missing_context: tuple[str, ...] = ()
+    semantic_frame_schema: str = ""
+    semantic_frame_json: str = ""
     embedding: tuple[float, ...] = field(default=(), metadata={"vector": True})
 
 
@@ -170,6 +174,8 @@ class Module:
     summary: str = ""                        # summarize_module 가 채움
     stereotype: str = ""                     # summarize_module 가 채움 (CodeNode.stereotype 과 명칭 통일)
     logical_name: Optional[str] = None       # 짧은 도메인 표시명 — summarize_module 가 채움
+    semantic_frame_schema: str = ""
+    semantic_frame_json: str = ""
 
 
 @dataclass

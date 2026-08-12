@@ -17,6 +17,7 @@ robo 가 이미 만든 호출그래프(state 의 `code_nodes`/`calls_edges`)만�
 from __future__ import annotations
 
 import time
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -24,6 +25,13 @@ from langchain_core.runnables import RunnableConfig
 
 from pipeline.steps.step5_linking.link_calls.call_linker import routine_call_pairs
 from pipeline.models.code_analysis_output import ComponentNamingOutput
+from pipeline.models.aggregate_semantic_frame import (
+    aggregate_response_model,
+    aggregate_slot_meaning,
+    build_aggregate_semantic_plan,
+    normalize_aggregate_response,
+)
+from pipeline.models.semantic_frame import SemanticFrame, profile_prompt_json, slot_specs_json
 from graph.schema.graph_edges import Calls
 from graph.schema.graph_nodes import CodeNode
 from shared.config.settings import SETTINGS
@@ -104,21 +112,49 @@ async def build_components_step(state: dict, config: Optional[RunnableConfig] = 
     slots = handoff.slots
     fn_by_id = {f.id: f for f in code_nodes}
 
-    async def _name_one(component_id: str, members: list[str]) -> str | None:
+    async def _name_one(component_id: str, members: list[str]) -> ComponentNamingOutput | None:
         member_fns = [fn_by_id[m] for m in members if m in fn_by_id]
-        lines = [f"- {_headline(fn)}" for fn in member_fns[:NAME_MAX_MEMBERS]]
-        extra = len(member_fns) - len(lines)
-        if extra > 0:
-            lines.append(f"- (외 {extra}개 함수)")
-        members_text = "\n".join(lines)
+        member_frames = [
+            SemanticFrame.model_validate(
+                fn.extra.get("semantic_frame") or fn.extra.get("_summary_semantic_frame")
+            )
+            for fn in member_fns
+            if (fn.extra or {}).get("semantic_frame")
+            or (fn.extra or {}).get("_summary_semantic_frame")
+        ]
+        if len(member_frames) != len(member_fns):
+            return None
+        profile, specs = build_aggregate_semantic_plan(
+            target_id=component_id,
+            target_type="COMPONENT",
+            owner_id=component_id,
+            file="(derived-call-graph)",
+            start_line=0,
+            end_line=0,
+            family="COMPONENT",
+            member_frames=member_frames[:NAME_MAX_MEMBERS],
+            include_responsibility=False,
+        )
+        members_text = json.dumps(
+            [frame.model_dump(mode="json", by_alias=True) for frame in member_frames[:NAME_MAX_MEMBERS]],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
         try:
             async with track_processing("Component", component_id):
                 async with slots.at(POSTPROCESS_PRIORITY):
-                    result: ComponentNamingOutput = await run_yaml_rule(
+                    wire = await run_yaml_rule(
                         prompts_dir=prompts_dir,
                         rule_name="component_naming",
-                        user_values={"component_id": component_id, "members": members_text},
-                        response_model=ComponentNamingOutput,
+                        user_values={
+                            "component_id": component_id,
+                            "members": members_text,
+                            "structural_profile": profile_prompt_json(profile),
+                            "applicable_slots": slot_specs_json(specs),
+                        },
+                        response_model=aggregate_response_model(
+                            "ComponentFrameOutput", specs,
+                        ),
                         budget=cost_budget,
                     )
         except ModelOutputError as error:
@@ -136,7 +172,11 @@ async def build_components_step(state: dict, config: Optional[RunnableConfig] = 
                 component_id=component_id, error=str(error),
             )
             return None
-        return result.name
+        frame = normalize_aggregate_response(wire, profile, specs)
+        return ComponentNamingOutput(
+            name=aggregate_slot_meaning(frame, "DISPLAY_NAME"),
+            semantic_frame=frame,
+        )
 
     async def _run_fanout() -> list:
         return await gather_with_warmup(
@@ -145,7 +185,15 @@ async def build_components_step(state: dict, config: Optional[RunnableConfig] = 
 
     with step_processing_scope(_STEP, stream):
         results = await pause.run_restartable_during_pause(_run_fanout)
-    names = {cid: name for (cid, _members), name in zip(clusters, results)}
+    names = {
+        cid: (result.name if result is not None else None)
+        for (cid, _members), result in zip(clusters, results)
+    }
+    component_frames = {
+        cid: result.semantic_frame.model_dump(mode="json", by_alias=True)
+        for (cid, _members), result in zip(clusters, results)
+        if result is not None and result.semantic_frame is not None
+    }
 
     # 3. 적재 — 각 멤버 FUNCTION 노드에 component_id/name 속성 SET (합성 노드/엣지 없음).
     items = [
@@ -164,7 +212,7 @@ async def build_components_step(state: dict, config: Optional[RunnableConfig] = 
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
     # 합성 노드/엣지를 state 에 남기지 않는다 — 멤버십은 FUNCTION.component_id 가 단일 진실.
-    return {}
+    return {"component_semantic_frames": component_frames}
 
 
 def _cluster(code_nodes: list[CodeNode], calls: list[Calls]) -> list[tuple[str, list[str]]]:

@@ -158,7 +158,8 @@ new contract
         self.assertNotIn("old fixed", replaced)
 
         current = _current_fixed_contract("code_table_insights_batch")
-        self.assertIn("한 번만 생성", current)
+        self.assertIn("APPLICABLE_SLOTS", current)
+        self.assertIn("exact required key", current)
         self.assertNotIn("# [INPUT —", current)
 
     def test_current_contract_upgrades_child_summary_authority_marker(self) -> None:

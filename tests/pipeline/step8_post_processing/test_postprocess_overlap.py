@@ -26,6 +26,10 @@ from pipeline.steps.step8_post_processing.summarize_module_step import (
     summarize_module_step,
 )
 from shared.concurrency.priority_semaphore import PrioritySemaphore
+from tests.pipeline.semantic_frame_fixtures import (
+    frame_wire_for_response_model,
+    semantic_frame_for_node,
+)
 
 
 @dataclass
@@ -48,9 +52,12 @@ class _Module:
     file_path: str = "m.c"
     start_line: int = 0
     end_line: int = 0
+    label: str = "FILE"
     summary: Optional[str] = None
     stereotype: Optional[str] = None
     logical_name: Optional[str] = None
+    semantic_frame_schema: str = ""
+    semantic_frame_json: str = ""
 
 
 @dataclass(frozen=True)
@@ -85,6 +92,9 @@ class PostprocessOverlapTest(unittest.IsolatedAsyncioTestCase):
             handoff.expect(["code:f"])
             node.summary = "확정된 요약"
             node.logical_name = "확정된 논리명"
+            node.extra["_summary_semantic_frame"] = semantic_frame_for_node(
+                node, meaning="확정된 요약",
+            )
             handoff.publish_summary(node)
             timeline.append("step7:summary_published")
             await asyncio.sleep(0.05)          # 남은 rules 콜(기준선 100초 구간)
@@ -103,7 +113,9 @@ class PostprocessOverlapTest(unittest.IsolatedAsyncioTestCase):
                 step7_done.is_set(),
                 "후처리 LLM 콜이 step7 완료 뒤에야 나갔다 — 겹치지 않았다",
             )
-            return mock.Mock(summary="모듈 요약", stereotype="Service", logical_name="모듈")
+            return frame_wire_for_response_model(
+                kwargs["response_model"], meaning="모듈 요약", stereotype="Service",
+            )
 
         state = {
             "run": None,
@@ -171,6 +183,9 @@ class PostprocessOverlapTest(unittest.IsolatedAsyncioTestCase):
     async def test_module_summary_is_quarantined_when_member_summary_is_missing(self) -> None:
         handoff = AnalysisHandoff(PrioritySemaphore(8))
         available = _Node("code:ok", summary="검증된 멤버 요약")
+        available.extra["_summary_semantic_frame"] = semantic_frame_for_node(
+            available, meaning="검증된 멤버 요약",
+        )
         missing = _Node("code:missing", summary=None)
         handoff.expect([available.id, missing.id])
         handoff.publish_summary(available)

@@ -56,20 +56,31 @@ from pipeline.models.code_analysis_output import (
     SummaryOutput,
 )
 from pipeline.models.rule_response_schema import (
-    normalize_rules_response,
-    rules_response_model,
+    frame_rules_response_model,
+    normalize_frame_rules_response,
 )
 from pipeline.models.summary_response_schema import (
-    normalize_summary_response,
-    summary_response_model,
+    frame_summary_response_model,
+    normalize_frame_summary_response,
+)
+from pipeline.models.semantic_frame import (
+    merge_semantic_frames,
+    profile_prompt_json,
+    slot_specs_json,
+)
+from pipeline.steps.step7_analyze_code.semantic_frame_planner import (
+    build_code_semantic_plan,
+    rule_slot_specs,
+    semantic_concern_slots,
 )
 from pipeline.models.table_insight_response_schema import (
-    normalize_table_insights_response,
-    table_insights_response_model,
+    frame_table_insights_response_model,
+    normalize_frame_table_insights_response,
 )
 from pipeline.steps.step7_analyze_code.rule_row_batching import (
     collect_rules_by_rows,
     plan_batches,
+    required_rule_rows,
     rule_queue_priority,
     SUMMARY_WAKE_PRIORITY,
 )
@@ -131,21 +142,23 @@ async def run_summary(
         )
 
     common, _inventory = _build_user_values(
-        ctx, fn, contexts, codebase_notes,
+        ctx, fn, contexts, code_by_id, codebase_notes,
         module_intents or {}, table_descriptions or {},
         source_cache or SourceFileCache(),
     )
     async def _call() -> SummaryOutput:
         async with track_processing("CodeNode", code_id, sub_action="warmup_summary"):
             async with llm_slots:
+                profile, _all_specs, concerns = ctx.extra["_semantic_frame_plan"]
+                slot_specs = concerns["summary"]
                 output = await run_yaml_rule(
                     prompts_dir=Path(strategy.prompts_dir),
                     rule_name="code_summary",
                     user_values=common,
-                    response_model=summary_response_model(strategy.name),
+                    response_model=frame_summary_response_model(strategy.name, slot_specs),
                     budget=cost_budget,
                 )
-                return normalize_summary_response(output)
+                return normalize_frame_summary_response(output, profile, slot_specs)
 
     try:
         return await _call()
@@ -207,7 +220,7 @@ async def analyze_code_three_split(
     # 대상 사실의 한 정의처. 각 concern template은 여기서 자기 책임 필드만 선택하며 Rule은
     # raw SOURCE 대신 compact 행 evidence를 사용한다. inventory는 배칭·채점의 구조 정답지다.
     common, inventory = _build_user_values(
-        ctx, fn, contexts, codebase_notes,
+        ctx, fn, contexts, code_by_id, codebase_notes,
         module_intents or {}, table_descriptions or {},
         source_cache or SourceFileCache(),
     )
@@ -230,17 +243,21 @@ async def analyze_code_three_split(
                 raise RuntimeError(f"precomputed summary missing: {code_id}")
         else:
             try:
+                profile, _all_specs, concerns = ctx.extra["_semantic_frame_plan"]
+                slot_specs = concerns["summary"]
                 dynamic_summary = await _track_split(
                     "split_summary",
                     lambda: run_yaml_rule(
                         prompts_dir=prompts_dir, rule_name="code_summary",
                         user_values=common,
-                        response_model=summary_response_model(strategy.name),
+                        response_model=frame_summary_response_model(strategy.name, slot_specs),
                         budget=cost_budget,
                     ),
                     priority=SUMMARY_WAKE_PRIORITY,
                 )
-                summary_out = normalize_summary_response(dynamic_summary)
+                summary_out = normalize_frame_summary_response(
+                    dynamic_summary, profile, slot_specs,
+                )
             except ModelOutputError as error:
                 summary_out = error
 
@@ -255,6 +272,7 @@ async def analyze_code_three_split(
                 evidence_rule=summary_out.rule_name,
             ))
         else:
+            _publish_semantic_frame(fn, ctx, summary_out)
             fn.extra["summary_evidence_status"] = summary_out.evidence_status
             fn.extra["summary_missing_context"] = list(summary_out.missing_context)
             ctx.extra["summary_evidence_status"] = summary_out.evidence_status
@@ -293,6 +311,7 @@ async def analyze_code_three_split(
                 fn.extra["questions"] = []
                 ctx.summary = ""
                 ctx.extra["summary_status"] = "rejected"
+                _discard_summary_semantic_frame(fn, ctx)
                 findings.append(AnalysisFinding(
                     concern="summary",
                     status="rejected",
@@ -317,6 +336,7 @@ async def analyze_code_three_split(
                     fn.extra["questions"] = []
                     ctx.summary = ""
                     ctx.extra["summary_status"] = "rejected"
+                    _discard_summary_semantic_frame(fn, ctx)
                     findings.append(AnalysisFinding(
                         concern="summary",
                         status="rejected",
@@ -347,6 +367,7 @@ async def analyze_code_three_split(
                         fn.extra["questions"] = []
                         ctx.summary = ""
                         ctx.extra["summary_status"] = "rejected"
+                        _discard_summary_semantic_frame(fn, ctx)
                         findings.append(AnalysisFinding(
                             concern="summary",
                             status="rejected",
@@ -389,27 +410,33 @@ async def analyze_code_three_split(
         evidence_json = json.dumps(
             evidence, ensure_ascii=False, separators=(",", ":"),
         )
+        profile, _all_specs, concerns = ctx.extra["_semantic_frame_plan"]
+        assigned_specs = rule_slot_specs(profile, concerns["rules"], rows)
         values = {
             **rules_values,
             "assigned_rows": ", ".join(map(str, rows)),
             "rule_evidence": evidence_json,
+            "structural_profile": profile_prompt_json(profile),
+            "applicable_slots": slot_specs_json(assigned_specs),
         }
-        return evidence, evidence_json, values
+        return evidence, evidence_json, values, profile, assigned_specs
 
     async def _invoke_rules(rows):
-        evidence, _evidence_json, values = _rule_values(rows)
+        evidence, _evidence_json, values, profile, assigned_specs = _rule_values(rows)
         output = await _track_split(
             "split_rules",
             lambda: run_yaml_rule(
                 prompts_dir=prompts_dir, rule_name="code_rules_examples",
                 user_values=values,
-                response_model=rules_response_model(rows),
+                response_model=frame_rules_response_model(assigned_specs),
                 budget=cost_budget,
             ),
             priority=rule_queue_priority(len(_evidence_json)),
         )
-        return normalize_rules_response(
+        return normalize_frame_rules_response(
             output,
+            profile,
+            assigned_specs,
             rows,
             evidence,
         )
@@ -437,11 +464,14 @@ async def analyze_code_three_split(
     insight_reads = exact_direct_table_ids(ctx, "READ")
     insight_writes = exact_direct_table_ids(ctx, "WRITE")
     if insight_reads or insight_writes:
-        insight_model = table_insights_response_model(
+        profile, _all_specs, concerns = ctx.extra["_semantic_frame_plan"]
+        insight_specs = concerns["insights"]
+        insight_model = frame_table_insights_response_model(
+            profile,
+            insight_specs,
             insight_reads,
             insight_writes,
             ctx.extra.get("table_op") or {},
-            ctx.extra.get("column_usage_candidates") or {},
         )
         async def _collect_insights():
             try:
@@ -487,8 +517,10 @@ async def analyze_code_three_split(
             evidence_rule=error.rule_name,
         ))
     if insights_out is not None:
-        insights_out = normalize_table_insights_response(
+        insights_out = normalize_frame_table_insights_response(
             insights_out,
+            profile,
+            insight_specs,
             insight_reads,
             insight_writes,
             ctx.extra.get("column_usage_candidates") or {},
@@ -502,12 +534,30 @@ async def analyze_code_three_split(
     fn.extra["table_insights"] = (
         [t.model_dump() for t in insights_out.table_insights] if insights_out else []
     )
+    fn.extra["_insight_semantic_frame"] = (
+        insights_out.semantic_frame if insights_out else None
+    )
     serialized, unresolved_tables = serialize_rules(
         collection.rules, fn.signature or fn.id, ctx.reads, ctx.writes,
         ctx.extra.get("table_op"), ctx.extra.get("table_identity_aliases") or {},
     )
     fn.extra["rules"] = serialized
+    fn.extra["_rule_semantic_frames"] = list(collection.semantic_frames)
     quality_findings.extend(collection.findings)
+    try:
+        _finalize_semantic_frame(fn, ctx, collection, insights_out)
+    except ValueError as error:
+        quality_findings.append(AnalysisFinding(
+            concern="semantic_frame",
+            status="rejected",
+            target_id=code_id,
+            reasons=(str(error),),
+            evidence_rule="semantic-frame/v1",
+        ))
+        fn.extra.pop("semantic_frame", None)
+        fn.extra.pop("semantic_frame_schema", None)
+        ctx.extra.pop("semantic_frame", None)
+        ctx.extra.pop("semantic_frame_schema", None)
     finding_records = [finding.to_dict() for finding in quality_findings]
     apply_analysis_findings(fn, quality_findings, component=_STEP)
     fn.extra["rule_grading"] = {
@@ -569,10 +619,53 @@ def _apply_summary_fields(
     )
 
 
+def _publish_semantic_frame(
+    fn: CodeNode,
+    ctx: AnalysisContext,
+    summary_out: SummaryOutput,
+) -> None:
+    frame = summary_out.semantic_frame
+    if frame is None:
+        raise ValueError(f"frame-first summary is missing semantic frame: {fn.id}")
+    fn.extra["_summary_semantic_frame"] = frame
+    ctx.extra["_summary_semantic_frame"] = frame
+
+
+def _discard_summary_semantic_frame(fn: CodeNode, ctx: AnalysisContext) -> None:
+    fn.extra.pop("_summary_semantic_frame", None)
+    ctx.extra.pop("_summary_semantic_frame", None)
+
+
+def _finalize_semantic_frame(
+    fn: CodeNode,
+    ctx: AnalysisContext,
+    collection: object,
+    insights_out: object | None,
+) -> None:
+    plan = ctx.extra.get("_semantic_frame_plan")
+    if plan is None:
+        raise ValueError(f"semantic frame plan missing: {fn.id}")
+    _profile, all_specs, _concerns = plan
+    frames = [fn.extra.get("_summary_semantic_frame")]
+    frames.extend(getattr(collection, "semantic_frames", ()) or ())
+    if insights_out is not None:
+        frames.append(getattr(insights_out, "semantic_frame", None))
+    merged = merge_semantic_frames(
+        *frames,
+        required_slot_ids=(spec.slot_id for spec in all_specs),
+    )
+    payload = merged.model_dump(mode="json", by_alias=True)
+    fn.extra["semantic_frame_schema"] = merged.schema_version
+    fn.extra["semantic_frame"] = payload
+    ctx.extra["semantic_frame_schema"] = merged.schema_version
+    ctx.extra["semantic_frame"] = payload
+
+
 def _build_user_values(
     ctx: AnalysisContext,
     fn: CodeNode,
     contexts: dict[str, AnalysisContext],
+    code_by_id: dict[str, CodeNode],
     codebase_notes: str,
     module_intents: dict[str, str],
     table_descriptions: dict[str, dict],
@@ -595,6 +688,18 @@ def _build_user_values(
     ctx.extra["return_expressions"] = sorted(inventory.return_expressions)
     persist_branch_table(fn, inventory)
     persist_coverage(fn, inventory)
+    profile, slot_specs = build_code_semantic_plan(
+        fn,
+        ctx,
+        inventory=inventory,
+        rule_rows=required_rule_rows(inventory),
+        rule_owner_id=fn.id,
+        child_nodes=(
+            node for node in code_by_id.values() if node.parent_id == fn.id
+        ),
+    )
+    concerns = semantic_concern_slots(slot_specs)
+    ctx.extra["_semantic_frame_plan"] = (profile, slot_specs, concerns)
     values = {
         "id": fn.id,
         "signature": fn.signature,
@@ -638,6 +743,8 @@ def _build_user_values(
             sort_keys=True,
             separators=(",", ":"),
         ),
+        "structural_profile": profile_prompt_json(profile),
+        "applicable_slots": slot_specs_json(concerns["summary"]),
         # spec 102: 규칙이 고를 수 있는 근거 분기 후보. 분할 3 템플릿만 참조한다.
         "branch_index": project_model_source_literals(inventory.branch_index()),
         # spec 116 §19: SKILL 문서 보증 API 값 계약 — 분할 3 템플릿만 참조한다.

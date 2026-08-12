@@ -1,99 +1,45 @@
-## DBMS 분할 1 — 배치 노드별 구조 템플릿의 최소 의미 헤더.
+## DBMS 분할 1 — node별 bounded dynamic semantic frame + 역할 분류.
 extends: _common
 max_tokens: 6000
 shared_values:
-  summary_contract: ../common/summary_contract.md
+  semantic_frame_contract: ../common/semantic_frame_contract.md
 user_template_specific: |
-  # [TASK — 각 TARGET_NODE의 전체 실행 의미와 충분성 판정]
+  # [TASK — 각 TARGET_NODE의 applicable semantic slot 의미와 충분성]
 
-  목표는 각 TARGET_NODE SOURCE 전체의 입력→검증→조건별 처리→CALL/RW→반환·상태 변화를
-  사람이 이해하는 자연어로 만들고, 현재 근거의 충분성과 역할을 노드별로 판정하는 것이다.
+  각 node의 parser/linker가 지정한 slot에 그 node가 직접 소유한 입증된 의미만 채운다.
+  자유형 summary·question·Rule·TABLE/COLUMN 설명은 별도로 만들지 않는다. legacy 필드는
+  검증된 frame에서 시스템이 투영한다.
 
-  ## [OUTPUT CONTRACT — BatchSummaryOutput]
+  {semantic_frame_contract}
 
-  입력의 각 `node_key`마다 값 하나를 정확히 출력한다. 바깥 key가 좌표이므로 값 안에서
-  `node_key`를 반복하지 않고 `summary`, `stereotype`, `evidence_status`,
-  `missing_context`, `questions`만 쓴다.
-  Rule·Example과 테이블·컬럼 설명은 다른 요청의 몫이므로 만들지 않는다.
-  입력에 없는 node_key를 만들거나 형제 노드의 의미를 복사하지 않는다.
-  아래 절은 각각 자기 절이 명시한 필드에만 적용된다.
+  ## [OUTPUT CONTRACT — batch frame summary concern]
 
-  {summary_contract}
+  최상위 `nodes`는 입력의 exact `node_key`를 required key로 갖는다. 각 node 값은 `slots`,
+  `stereotype`만 갖고, `slots`는 그 node의 `APPLICABLE_SLOTS` exact key map이다.
 
   ## [DECISION — stereotype 역할 분류]
 
-  이 절은 `stereotype` 필드에만 적용된다.
-
-  아래 ontology 값 중 현재 노드의 주동작에 맞는 하나만 글자 그대로 선택한다:
+  아래 ontology 값 중 node의 최종 관측 책임에 맞는 하나만 선택한다:
   {stereotype_options}
 
-  선택 절차:
-  1. 부수 SELECT·DML·검증 하나가 아니라 호출자가 관측하는 최종 책임을 먼저 정한다.
-  2. 위 목록의 정의를 단일 진실로 그 책임과 대조한다. 이름이 아니라 ontology 설명과
-     최종 효과로 판정한다.
-  3. 둘 이상의 정의가 동시에 성립하면 다음 우선순위의 상위를 고른다(데이터 정본):
+  둘 이상이면 다음 우선순위를 적용한다:
   {stereotype_priority}
-  4. 결정론 쓰기(writes) 근거가 있는 노드는 조회 계열을 고를 수 없다.
 
-  자주 갈리는 경계는 다음과 같이 판정한다:
+  - 부수 SELECT·DML·검증 하나가 아니라 node 범위의 최종 책임을 본다.
+  - 상태 변경 없는 조회 결과가 산출물이면 `DataQuery`, DML 상태 변경이면 `DataMutator`다.
+  - 코드·마스터·설정 조회 자체가 목적이면 `MetadataLookup`, 허용/정합 판정이면 `Validator`다.
+  - 다수 행 일괄 처리가 골격이면 `BatchProcessor`, 커서 순회·행별 위임이 골격이면 `CursorLooper`다.
+  - 결정론 writes가 있는 node에 조회 전용 역할을 선택하지 않는다.
 
-  - `DataQuery`: 상태 변경 없이 조회 결과를 반환하는 것이 주동작
-  - `DataMutator`: INSERT·UPDATE·DELETE로 상태를 바꾸는 것이 주동작
-  - `MetadataLookup`: 코드·마스터·설정 조회 자체가 주동작
-  - `Validator`: 허용 여부나 정합성 판정이 산출물
-  - `BatchProcessor`: 다수 행을 정기·일괄 단위로 처리
-  - `CursorLooper`: 커서 순회 자체가 골격이며 행별 처리를 위임
+  ## [DBMS STRUCTURE GUIDE]
 
-  예시:
-
-  - 잘못: 검증 조건이 하나 있다는 이유로 조회 결과를 반환하는 노드를 `Validator`
-  - 좋음: 최종 산출물이 조회 데이터이면 `DataQuery`
-  - 잘못: 코드 테이블을 읽는다는 이유로 그 결과로 데이터를 갱신하는 노드를 `MetadataLookup`
-  - 좋음: 최종 관측 효과가 갱신이면 `DataMutator`
-
-  ## [DECISION — questions 미해결 질문]
-
-  이 절은 `questions` 필드에만 적용된다.
-
-  코드와 제공 근거만으로 답할 수 없는 실제 질문만 `text`와 `reason`으로 쓴다.
-  모호함이 없으면 빈 배열이다. 코드값의 뜻을 묻기 위해 추측 답을 만들지 않는다.
-
-  ## [INPUT GUIDE — DBMS node 구조와 제어 인덱스]
-
-  각 TARGET_NODE의 `ast_type`/`ast_expression`/`ast_target`/`ast_operator`/`call_target`은
-  parser가 현재 node에 부여한 구조 사실이다. SOURCE와 모순되지 않는 범위에서 직접 CALL·대입·
-  반환·EXIT의 대상과 표현을 보존하는 데 쓴다.
-
-  `api_contracts_json`은 현재 node에 명시적으로 연결된 API 인자·결과값 계약이다. SOURCE의 실제
-  호출과 연결될 때 값의 역할을 이해하는 데만 쓰며, 계약이 있다는 사실만으로 호출·성공을 만들지
-  않는다. `ancestor_context`는 현재 node가 놓인 조상 골격이며 조상의 효과를 현재 node 소유로
-  복사하지 않는다.
-
-  각 TARGET_NODE의 `[CONTROL_FLOW_INDEX]`에서 `[decision]`은 실제 판정,
-  `[complement]`는 같은 층의 나머지 경우, `[controller]`는 하위 결정을 묶는 문맥이다.
-  `[implicit_false]`는 명시적 대안 절이 없는 판정의 정상 거짓 경로이고, `[error_only]`는
-  실제 실행 중 오류로만 들어가는 handler 경계다. 목록만 믿지 말고 같은 TARGET_NODE의
-  SOURCE와 함께 읽으며 이 두 경로를 서로 연결하지 않는다.
-
-  긴 부모 SOURCE의 `[CHILD_SUMMARY_CANDIDATE ... authority=non_source]`는 해당 자식 구간을
-  줄이기 위한 이전 모델 출력이다. 원문이나 정답이 아니므로 조건식·비교 방향·극성을 여기서
-  복사하지 않는다. 후보는 자식 효과의 누락 점검에만 쓰고, 조건은 CONTROL_FLOW_INDEX의 exact
-  `=`, `<>`, `IN`, `NOT IN`, `AND`, `OR`를 다시 읽어 자연어로 만든다.
-
-  - 잘못된 예: `[controller] CASE`를 fallback 결과로 해석
-  - 좋은 예: `[decision]`/`[complement]` 항목과 SOURCE 본문 결과를 함께 요약
+  각 TARGET_NODE의 `STRUCTURAL_PROFILE`과 `APPLICABLE_SLOTS`가 유일한 ID/slot 정본이다.
+  `ast_type/expression/target/operator/call_target`, CONTROL_FLOW_INDEX, SOURCE는 그 refs의 의미를
+  판정하는 내부 근거다. 조상·형제·callee 효과를 현재 node로 복사하지 않는다.
+  CHILD_SUMMARY_CANDIDATE는 원문이 아니며 조건·극성은 CONTROL_FLOW_INDEX를 따른다.
 
   ## [SELF CHECK]
 
-  - 모든 required node_key를 정확히 한 번씩 채웠는가
-  - 각 summary가 그 노드 SOURCE 전체의 조건별 실제 흐름인가 (형제 의미 복사 없음)
-  - 조건 범위·극성·대상·결과·순서를 확대·축소·반전하지 않았는가
-  - 주석 처리된 옛 동작이나 이름에서 추측한 업무 뜻을 넣지 않았는가
-  - CHILD_SUMMARY_CANDIDATE를 원문으로 취급하지 않고 모든 조건 연산자를 CONTROL_FLOW_INDEX와 대조했는가
-  - summary에 쓴 모든 코드식 비교의 좌변 식별자·연산자·우변이 SOURCE/CONTROL_FLOW_INDEX와 같은가
-  - ELSE 없는 조건의 거짓 경로를 EXCEPTION/rollback/오류 반환과 잘못 합치지 않았는가
-  - 서로 다른 원인/결과를 `A 또는 B → X 또는 Y`로 뭉개거나 중첩 예외를 바깥 예외로 재전파하지 않았는가
-  - evidence_status와 missing_context가 입력 충분성을 정직하게 드러내는가
-  - 부족한 근거를 창작 대신 missing_context로 드러냈는가
-  - 각 stereotype이 목록의 값 그대로인가
-  - questions가 제공 근거로 답할 수 없는 실제 질문만 담는가
+  - required node_key와 각 node의 required slot을 전부 정확히 한 번 썼는가
+  - 각 slot meaning이 그 node와 evidence refs에만 속하는가
+  - 최상위 node 값에 `slots`, `stereotype` 외 필드를 만들지 않았는가

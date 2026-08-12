@@ -3,14 +3,23 @@ system: |
   의미를 확정합니다. 이 설명은 데이터 카탈로그에서 사람이 읽는 최종 의미가 됩니다.
   입력에 없는 사실을 만들지 않고 response_format만 출력합니다.
 shared_values:
-  table_description_contract: ../common/table_description_contract.md
+  semantic_frame_contract: ../common/semantic_frame_contract.md
 user_template_specific: |
-  {table_description_contract}
+  # [TASK — TABLE/COLUMN dynamic semantic slots]
+
+  {semantic_frame_contract}
+
+  최상위 exact TABLE `slots`와 각 COLUMN의 exact `slots`만 의미로 채운다.
+  `db`, `schema`, `name`, column `name`은 response_format literal을 그대로 echo한다.
 
 user_template_inputs: |
   # [INPUT — TABLE/COLUMN evidence packet]
 
   table_fqn: {table_fqn}
+
+  table_structural_profile_json: {table_structural_profile}
+  table_applicable_slots_json: {table_applicable_slots}
+  column_frame_assignments_json: {column_frame_assignments}
 
   table_column_evidence_json:
   {candidates_json}

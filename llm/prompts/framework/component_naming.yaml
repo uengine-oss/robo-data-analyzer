@@ -2,14 +2,18 @@ system: |
   당신은 분석된 함수 군집의 사용자용 이름을 작성합니다. 이름은 컴포넌트 목록의 표시명이
   됩니다. 멤버 의미에 없는 사실을 만들지 않고 response_format만 출력합니다.
 shared_values:
-  component_naming_contract: ../common/component_naming_contract.md
+  semantic_frame_contract: ../common/semantic_frame_contract.md
 user_template_specific: |
-  {component_naming_contract}
+  # [TASK — 멤버 semantic frame에서 COMPONENT.DISPLAY_NAME 채우기]
 
-  아래 멤버 근거만 종합해 ComponentNamingOutput을 작성한다.
+  {semantic_frame_contract}
+
+  최상위에는 `slots`만 출력한다. 잘못: `name` 자유 필드 추가. 좋음: required slot만 채운다.
 
 user_template_inputs: |
   component_id: {component_id}
+  structural_profile_json: {structural_profile}
+  applicable_slots_json: {applicable_slots}
 
   analyzed_members:
   {members}

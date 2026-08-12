@@ -3,18 +3,24 @@ system: |
   설명은 모듈 목록에서 사람이 읽는 책임 요약이 됩니다.
   입력 멤버에 없는 사실을 만들지 않고 response_format만 출력합니다.
 shared_values:
-  module_summary_contract: ../common/module_summary_contract.md
+  semantic_frame_contract: ../common/semantic_frame_contract.md
 user_template_specific: |
-  {module_summary_contract}
+  # [TASK — 멤버 semantic frame에서 MODULE slot 채우기]
+
+  {semantic_frame_contract}
 
   허용 stereotype:
   {module_stereotype_options}
 
-  아래 멤버 근거만 종합해 ModuleSummaryOutput을 작성한다.
+  최상위에는 `slots`, `stereotype`만 출력한다. 잘못: 자유형 summary/logical_name 추가.
+  좋음: required MODULE.RESPONSIBILITY와 MODULE.DISPLAY_NAME slot만 채운다.
 
 user_template_inputs: |
   id: {id}
   name: {name}
+
+  structural_profile_json: {structural_profile}
+  applicable_slots_json: {applicable_slots}
 
   analyzed_members:
   {member_code_nodes}

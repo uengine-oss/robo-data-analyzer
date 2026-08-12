@@ -33,6 +33,8 @@ def to_item(mod: Module) -> dict:
         "summary": mod.summary,
         "stereotype": mod.stereotype,
         "logical_name": mod.logical_name,
+        "semantic_frame_schema": mod.semantic_frame_schema,
+        "semantic_frame_json": mod.semantic_frame_json,
     })
 
 

@@ -32,7 +32,8 @@ MATCH (node:ANALYZER_OWNED {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}
 // 자동 용어 생성 폐기 전 graph 속성은 동일 노드 재분석에서도 남지 않게 제거한다.
 REMOVE node.domain_terms, node.domain_terms_json, node.logical_name,
        node.summary, node.stereotype, node.summary_evidence_status,
-       node.summary_missing_context_json
+       node.summary_missing_context_json, node.semantic_frame_schema,
+       node.semantic_frame_json
 SET node += item
 """
 
@@ -99,6 +100,17 @@ def to_summary_item(fn: CodeNode) -> dict:
                 separators=(",", ":"),
             )
             if (fn.extra or {}).get("analysis_findings")
+            else None
+        ),
+        "semantic_frame_schema": (fn.extra or {}).get("semantic_frame_schema"),
+        "semantic_frame_json": (
+            json.dumps(
+                (fn.extra or {}).get("semantic_frame"),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            if (fn.extra or {}).get("semantic_frame")
             else None
         ),
     })
