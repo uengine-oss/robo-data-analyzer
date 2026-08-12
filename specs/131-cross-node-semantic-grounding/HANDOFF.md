@@ -200,28 +200,42 @@ source → parser AST → Analyzer context/결정론 조립
 
 ## 7. 현재 상태와 다음 행동
 
-Analyzer 의미 생성 계약은 현재 합격선에서 닫혔다. 새 공통 결함이나 새로운 요구가 없다면
-Analyzer를 다시 실행하지 않는다. 다음 별도 작업은 spec125/Architect spec055에서 동일 요구사항과
-동일 legacy evidence로 Simplified/Detailed를 검증하는 것이다.
+Analyzer 의미 생성 계약과 Architect Strategy B 소비 계약은 현재 표본에서 모두 닫혔다.
+Architect spec055는 Analyzer 최종 보존 DB를 read-only API로 열고, 별도 Architect DB
+`spec055b20260812`에서 실제 Simplified/Detailed 경로를 검증했다.
 
-Architect 후속 실행 시 다음을 지킨다.
+- 공용 evidence packet은 이전 단계가 실제 성공 저장한 `node_detail(view="gwt")` 중 nodeId별 가장
+  풍부한 한 건을 중복 제거해 Plan/Define/Tactical에 전달한다. 업무 의미를 결정론 코드로 만들지 않는다.
+- packet은 세 함수 기준 40,433 bytes, RULE 118, CALL/RW 65, TABLE 3, COLUMN 27을 보존했다.
+  실제 sample row는 이 payload에 0개였고 값을 만들지 않았다.
+- Simplified `PRO-004`: Command 3, GWT 9, 함수 3/3, Plan 296.242초.
+- Detailed `PRO-003`: Command 3, GWT 12, 함수 3/3, Tactical 165.962초; consolidate 전후 12/12 보존.
+- 21 GWT 직접 source 대조에서 fabrication 0, contradiction 0. 이 수치는 세 함수 표본에만 적용한다.
+- 후속 단계의 동일 nodeId MCP 재조회는 0회였고 저장 provenance를 재사용했다.
+- RULE ref는 별도 DB 경계에서도 `parentId`, 실제 source file/rule line, statement,
+  `coordinateOnly:true`로 보존되고 직접 TABLE READ refs도 유지된다.
+- `accept/apply`는 0회다.
+- Architect 전체 회귀: `1362 passed, 2 skipped, 3 warnings`.
+- Architect 구현/검증 커밋: `bf4ded37b09753d1159c430e1215c8fbe1b1ea60` (`main`, origin push 완료).
 
-1. Analyzer 15502의 실제 process 환경과 DB를 확인한다.
-2. architect-api process에 `ROBO_CLUSTER_MCP_URL=http://127.0.0.1:15502/robo/mcp`를 주입한다.
-3. Simplified는 `Proposal → intent → submit → plan`, Detailed는
-   `scope → 단계계획 → 6단계 → consolidate` 실제 경로를 사용한다.
-4. `search → node_detail(view=gwt)` 호출과 RULE/CALL/RW/TABLE/COLUMN/sample/legacyRefs 전달을
-   actual logs에서 확인한다.
-5. `accept/apply`는 호출하지 않는다.
+새 공통 결함, 표본 확대, 다른 언어 검증 요구가 없다면 Analyzer나 Architect를 다시 실행하지 않는다.
+Architect 상세 증거는 `robo-architect/specs/055-grounded-gwt-context/verification.md`와 다음 보존
+output root가 소유한다.
+
+- `D:\work\robo\_runs\spec055-strategy-b-20260812\architect\B-final15-simplified-final6`
+- `D:\work\robo\_runs\spec055-strategy-b-20260812\architect\B-final15-detailed-tactical-final4`
 
 ## 8. 종료 환경
 
-- Analyzer HEAD 측정값: `19e12641505db7ac523a530a70d98b69df2ebb24` (`main`).
+- Analyzer 구현 기준점: `d4986087100275adf40f4150ed86bc82e6dc2892`; 이 HANDOFF 상태 교체도
+  `main`/origin에 함께 반영한다.
 - Analyzer `.env`: `ROBO_NEO4J_DATABASE=neo4j`; 변경하지 않았다.
-- 기존 dirty WIP와 모든 보존 DB/run log를 유지했다.
-- 최종 임시 Analyzer/MCP listener 15502는 종료했다.
-- parser 8401과 Neo4j 7687은 기존 서비스로 유지한다. Architect 관련 15503/8404는 실행하지 않는다.
-- 커밋·푸시·accept/apply는 수행하지 않았다.
+- 기존 사용자 WIP와 모든 보존 DB/run log를 유지했다. 기본 DB를 초기화하거나 기존 격리 DB를
+  덮어쓰지 않았다.
+- 검증을 위해 시작한 Architect 8501, Analyzer 15502, Neo4j 7474/7687, Docker Desktop은 종료했다.
+  종료 실측에서 8401도 listener가 없었다.
+- Analyzer/Parser/Architect의 기존 WIP와 최종 Architect 변경은 각각 commit/push했고 remote divergence는
+  0/0으로 확인했다. `accept/apply`는 수행하지 않았다.
 
 ## 9. 종료 판정
 
@@ -230,4 +244,6 @@ Architect 후속 실행 시 다음을 지킨다.
 - 봉인40: 97.5%, fabrication 0, contradiction 0.
 - 전체 회귀와 prompt byte: 통과.
 - graph→API/MCP 의미·근거 상태 전달: 실제 응답 통과.
+- Architect Simplified/Detailed 소비·GWT 생성·RULE/TABLE 좌표 운반: 세 함수 표본 통과.
+- Architect 최종 GWT: 21/21 직접 source 정합, fabrication 0, contradiction 0.
 - 측정하지 않은 전체 언어·전체 DBMS 의미 정확도는 주장하지 않는다.
