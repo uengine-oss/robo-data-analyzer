@@ -75,7 +75,11 @@ data object를 ID 기반으로 전달하며 complete source body/hash나 새 sou
 3. 사람 의미 판정: 실제 C/SQL, 저장 frame, 최종 Simplified/Detailed GWT를 나란히 읽어 누락·창작·모순을
    판정했다. 표본의 목표 의미는 6/6 일치, fabrication 0, contradiction 0이다.
 
-## 재현 위치
+## 검증 당시 위치와 정리 상태
+
+아래 경로와 `semframe*20260812` 격리 DB 6개는 검증 증거를 이 문서에 확정하고 커밋한 뒤
+2026-08-12에 정리했다. 실행 폴더는 Windows 휴지통으로 이동했으며, 기본 DB와 기본 서비스는
+건드리지 않았다.
 
 - Framework run: `D:\work\robo\_runs\semantic-frame-20260812-actual\framework-runs-fixed\20260812_120338_1bc324a22d80`
 - DBMS run: `D:\work\robo\_runs\semantic-frame-20260812-actual\dbms-runs-final\20260812_120541_684ac64e5e92`
