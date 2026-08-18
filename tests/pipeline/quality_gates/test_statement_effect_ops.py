@@ -192,6 +192,7 @@ class JumpEvidenceTest(unittest.TestCase):
     STATEMENTS = (
         StatementFact("g3", "GOTO", 3, 3, target="PFM_CATCH"),
         StatementFact("r5", "RETURN", 5, 5, expression="RC_NRM"),
+        StatementFact("l6", "LABEL", 6, 6, target="PFM_CATCH"),
         StatementFact("r7", "RETURN", 7, 7, expression="RC_ERR"),
     )
 

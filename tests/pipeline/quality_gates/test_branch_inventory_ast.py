@@ -222,6 +222,47 @@ class BranchInventoryAstContractTest(unittest.TestCase):
         self.assertEqual("done@4", evidence["rows"]["R4"]["at_label"])
         self.assertNotIn("audit", evidence["rows"]["R3"].get("source", ""))
 
+    def test_active_named_goto_without_parser_label_is_fatal(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            r"static jump target contract failed.*GOTO@2.*done.*LABEL count=0",
+        ):
+            build_inventory(
+                "if (skip) { goto done; }\nreturn 0;",
+                [ControlSubtreeNode(
+                    "if@1", "IF", 1, 1, expression="skip",
+                )],
+                "c",
+                statements=(
+                    StatementFact("g2", "GOTO", 2, 2, target="done"),
+                    StatementFact("r2", "RETURN", 2, 2, expression="0"),
+                ),
+            )
+
+    def test_active_named_goto_with_duplicate_parser_labels_is_fatal(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            r"static jump target contract failed.*GOTO@1.*done.*LABEL count=2",
+        ):
+            build_inventory(
+                "goto done;\ndone:\ndone:", [], "c",
+                statements=(
+                    StatementFact("g1", "GOTO", 1, 1, target="done"),
+                    StatementFact("l2", "LABEL", 2, 2, target="done"),
+                    StatementFact("l3", "LABEL", 3, 3, target="done"),
+                ),
+            )
+
+    def test_active_goto_with_blank_parser_target_is_fatal(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            r"static jump target contract failed.*GOTO@1.*target=''",
+        ):
+            build_inventory(
+                "goto missing;", [], "c",
+                statements=(StatementFact("g1", "GOTO", 1, 1, target=""),),
+            )
+
     def test_unconditional_continue_makes_following_path_the_guard_complement(self):
         source = "\n".join([
             "while (again) {",            # 1

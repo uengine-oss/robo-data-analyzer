@@ -12,12 +12,15 @@
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
 from shared.config.settings import SETTINGS
 from shared.files.cache import SourceFileCache
+from pipeline.languages import ROUTINE_LABELS, lang_of
+from pipeline.quality_gates.branch_inventory import validate_static_jump_targets
 from pipeline.execution.analysis_handoff import AnalysisHandoff, analysis_llm_slots
 from pipeline.execution.pause_controller import NULL_PAUSE, PauseController
 from pipeline.execution.step_config import step_config
@@ -33,6 +36,35 @@ from shared.events.processing_events import step_processing_scope
 from graph.neo4j_client import Neo4jClient
 
 _STEP = "step7.analyze_code"
+
+
+def _validate_structural_ast_contract(
+    contexts: dict,
+    code_by_id: dict,
+    source_cache: SourceFileCache,
+) -> None:
+    """Reject stale routine statement AST before the first semantic model call."""
+    for node_id, node in code_by_id.items():
+        if node.label not in ROUTINE_LABELS:
+            continue
+        ctx = contexts.get(node_id)
+        if ctx is None:
+            raise ValueError(f"routine analysis context missing: {node_id!r}")
+        statements = ctx.extra.get("ast_statements")
+        if statements is None:
+            raise ValueError(
+                f"ast_statements missing for {node_id!r} — parser-owned "
+                "structural contract cannot be preflighted"
+            )
+        source = source_cache.slice(ctx.file_path, ctx.start_line, ctx.end_line)
+        validate_static_jump_targets(
+            source,
+            lang_of(Path(node.file_path).suffix),
+            tuple(statements),
+            line_offset=max(node.start_line - 1, 0),
+            target_id=node.id,
+            source_ref=ctx.file_path,
+        )
 
 
 def _build_table_contexts(
@@ -137,6 +169,12 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
         handoff.close()   # 후처리가 영원히 기다리지 않게 — 조용한 교착 금지
         return {}
 
+    # The parser owns named GOTO and LABEL facts.  Validate the complete routine AST before
+    # module pre-analysis so a stale AST cannot spend GPU time and fail much later in Rule
+    # materialization.
+    source_cache = cfg.get("source_cache") or SourceFileCache()
+    _validate_structural_ast_contract(contexts, code_by_id, source_cache)
+
     # 0. 모듈 사전분석 — 모듈당 LLM 1회로 헤더 주석 → 모듈 의도 (최대 2줄).
     # intent 는 코드노드 3분할 공통 context prefix 로만 사용 — 영구 그래프 속성 X.
     # module_pre_analysis 가 자체 step_processing_scope 진입 → 가시성 자동.
@@ -154,7 +192,6 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
     #   두 엔진은 **유지**한다 (FR-002): 노드 우주 정의가 실제로 다르다 — framework 는
     #   contexts 전체, dbms 는 skip-투명 유효트리.
     # run 스코프 공유 소스 캐시 (executor 주입) — 없으면 단독 생성(CLI/테스트 경로). FR-008.
-    source_cache = cfg.get("source_cache") or SourceFileCache()
     column_usage_projections = build_column_usage_projections(
         contexts,
         code_by_id,

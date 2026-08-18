@@ -1,0 +1,86 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+from graph.schema.graph_nodes import CodeNode
+from pipeline.models.analysis_context import AnalysisContext, StatementFact
+from pipeline.steps.step7_analyze_code.step_entry import analyze_code_step
+from scripts.evidence_preflight import _Corpus
+from shared.files.cache import SourceFileCache
+
+
+class StaticJumpPreflightTest(unittest.IsolatedAsyncioTestCase):
+    async def test_stale_goto_ast_fails_before_module_llm(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "sample.c"
+            source.write_text("goto done;\ndone:\n", encoding="utf-8")
+            node = CodeNode(
+                id="code:sample.c:f", name="f", signature="f()",
+                file_path=str(source), start_line=1, end_line=2,
+                label="FUNCTION",
+            )
+            context = AnalysisContext(
+                id=node.id, signature=node.signature, file_path=node.file_path,
+                start_line=1, end_line=2,
+            )
+            context.extra["ast_statements"] = (
+                StatementFact("goto", "GOTO", 1, 1, target="done"),
+            )
+
+            with patch(
+                "pipeline.steps.step7_analyze_code.step_entry.run_module_pre_analysis",
+                new_callable=AsyncMock,
+            ) as module_llm:
+                with self.assertRaisesRegex(
+                    ValueError,
+                    r"static jump target contract failed.*code:sample.c:f.*GOTO@1",
+                ):
+                    await analyze_code_step(
+                        {
+                            "analysis_contexts": {node.id: context},
+                            "code_nodes": [node],
+                            "tables": [],
+                            "columns": [],
+                            "has_column_edges": [],
+                            "modules": [],
+                        },
+                        {"configurable": {
+                            "strategy": SimpleNamespace(name="framework"),
+                        }},
+                    )
+
+            module_llm.assert_not_awaited()
+
+    async def test_standalone_preflight_uses_the_same_jump_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "sample.c"
+            source.write_text("goto done;\ndone:\n", encoding="utf-8")
+            routine = CodeNode(
+                id="code:sample.c:f", name="f", signature="f()",
+                file_path=str(source), start_line=1, end_line=2,
+                label="FUNCTION",
+            )
+            goto = CodeNode(
+                id="code:sample.c:f:GOTO@1", name="done", signature="",
+                file_path=str(source), start_line=1, end_line=1,
+                label="GOTO", parent_id=routine.id,
+            )
+            corpus = object.__new__(_Corpus)
+            corpus.nodes = [routine, goto]
+            corpus.variables = []
+            corpus.constants = []
+            corpus.cache = SourceFileCache()
+
+            with self.assertRaisesRegex(
+                ValueError,
+                r"static jump target contract failed.*code:sample.c:f.*GOTO@1",
+            ):
+                corpus.static_jump_summary()
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -37,8 +37,11 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from graph.schema.graph_nodes import CodeNode
-from pipeline.languages import ROUTINE_LABELS, callsite_labels, detect_strategy
-from pipeline.quality_gates.branch_inventory import build_inventory
+from pipeline.languages import ROUTINE_LABELS, callsite_labels, detect_strategy, lang_of
+from pipeline.quality_gates.branch_inventory import (
+    build_inventory,
+    validate_static_jump_targets,
+)
 from pipeline.quality_gates.rule_prompt_evidence import rule_evidence
 from pipeline.steps.step1_parse_ddl.ddl_parser import parse_ddl_file
 from pipeline.steps.step2_load_ast.dbms_reader import _read_dbms
@@ -173,7 +176,7 @@ class _Corpus:
                 continue
             inventory = build_inventory(
                 self.cache.slice(fn.file_path, fn.start_line, fn.end_line),
-                subtrees.get(fn.id), self.lang,
+                subtrees.get(fn.id), lang_of(Path(fn.file_path).suffix),
                 line_offset=max(fn.start_line - 1, 0),
                 handler_markers=markers,
                 statements=tuple(facts.get(fn.id, ())),
@@ -186,6 +189,35 @@ class _Corpus:
                 continue
             out[fn.id] = rule_evidence(inventory, tuple(rows))
         return out
+
+    def static_jump_summary(self) -> dict[str, int]:
+        """Validate and count parser-owned active named jumps before other evidence."""
+        facts = build_statement_facts(self.nodes, self.variables, self.constants)
+        gotos = 0
+        labels: set[tuple[str, str, int]] = set()
+        routines = 0
+        for fn in self.nodes:
+            if fn.label not in ROUTINE_LABELS:
+                continue
+            routines += 1
+            resolutions = validate_static_jump_targets(
+                self.cache.slice(fn.file_path, fn.start_line, fn.end_line),
+                lang_of(Path(fn.file_path).suffix),
+                tuple(facts.get(fn.id, ())),
+                line_offset=max(fn.start_line - 1, 0),
+                target_id=fn.id,
+                source_ref=fn.file_path,
+            )
+            gotos += len(resolutions)
+            labels.update(
+                (fn.id, resolution.target, resolution.label_line)
+                for resolution in resolutions
+            )
+        return {
+            "routines": routines,
+            "resolved_gotos": gotos,
+            "target_labels": len(labels),
+        }
 
     def dbms_summary_dependencies(self) -> dict[str, object]:
         """Reproduce DBMS CALL summary ownership and rounds without a run."""
@@ -305,6 +337,13 @@ class _Corpus:
 
 def _measure(data_dir: Path) -> None:
     corpus = _Corpus(data_dir)
+    jump_summary = corpus.static_jump_summary()
+    print("=" * 72)
+    print(
+        "[static-jump] routines "
+        f"{jump_summary['routines']} · resolved GOTO {jump_summary['resolved_gotos']} · "
+        f"target LABEL {jump_summary['target_labels']} · missing/duplicate 0"
+    )
     evidence = corpus.evidence()
     roles, roles_direct = Counter(), Counter()
     empty_routines = []
@@ -320,7 +359,6 @@ def _measure(data_dir: Path) -> None:
                 nested_without_direct.append((routine_id, row_key))
     total = sum(roles.values())
     direct = sum(roles_direct.values())
-    print("=" * 72)
     print(f"corpus: {data_dir}  strategy={corpus.strategy}  루틴 {len(evidence)}")
     print(f"[의무] {total} 행 · 효과 증거 보유 {direct} "
           f"({direct / total * 100:.0f}%)" if total else "[의무] 0 행")

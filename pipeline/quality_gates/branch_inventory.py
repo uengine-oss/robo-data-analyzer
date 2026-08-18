@@ -33,6 +33,84 @@ _OCTAL = re.compile(r"^0[0-7]+$")
 _HEX = re.compile(r"^0[xX][0-9A-Fa-f]+$")
 
 
+@dataclass(frozen=True)
+class StaticJumpResolution:
+    """One parser-proven named jump and its unique target coordinate."""
+
+    goto_line: int
+    target: str
+    label_line: int
+
+
+def _active_statement_facts(
+    code_body: str,
+    lang: str,
+    statements: Sequence[StatementFact],
+    split: SplitSource | None = None,
+) -> tuple[StatementFact, ...]:
+    """Apply the same inactive-source boundary to every structural statement."""
+    split = split or split_source(code_body, lang)
+
+    def live(line: int) -> bool:
+        index = line - 1
+        return 0 <= index < len(split.live_lines) and bool(split.live_lines[index].strip())
+
+    return tuple(fact for fact in statements if live(fact.start))
+
+
+def validate_static_jump_targets(
+    code_body: str,
+    lang: str,
+    statements: Sequence[StatementFact],
+    *,
+    split: SplitSource | None = None,
+    line_offset: int = 0,
+    target_id: str = "",
+    source_ref: str = "",
+) -> tuple[StaticJumpResolution, ...]:
+    """Require every active named GOTO to resolve to one active parser LABEL.
+
+    The parser owns both facts.  Recovering a missing label from source text would create a
+    second structural producer and hide stale AST, so missing, blank, and duplicate targets
+    are deterministic contract failures before any semantic model call.
+    """
+    active = _active_statement_facts(code_body, lang, statements, split)
+    labels: dict[str, list[StatementFact]] = {}
+    for fact in active:
+        if fact.label == "LABEL" and fact.target:
+            labels.setdefault(str(fact.target), []).append(fact)
+    resolutions: list[StaticJumpResolution] = []
+    defects: list[str] = []
+    for fact in active:
+        if fact.label != "GOTO":
+            continue
+        target = str(fact.target or "").strip()
+        matches = labels.get(target, ()) if target else ()
+        absolute_goto = fact.start + line_offset
+        if not target or len(matches) != 1:
+            defects.append(
+                f"GOTO@{absolute_goto} target={target!r} LABEL count={len(matches)}"
+            )
+            continue
+        resolutions.append(StaticJumpResolution(
+            goto_line=absolute_goto,
+            target=target,
+            label_line=matches[0].start + line_offset,
+        ))
+    if defects:
+        scope_parts = []
+        if target_id:
+            scope_parts.append(f"target={target_id}")
+        if source_ref:
+            scope_parts.append(f"source={source_ref}")
+        scope = (" " + " ".join(scope_parts)) if scope_parts else ""
+        raise ValueError(
+            "static jump target contract failed:"
+            f"{scope}; " + "; ".join(defects)
+        )
+    return tuple(resolutions)
+
+
 def canonical_numeric(value: str) -> str | None:
     """C 계열 0 접두 정수의 십진 등가 — 다르면 십진 문자열, 아니면 None.
 
@@ -1198,8 +1276,13 @@ def build_inventory(
     # 전처리 비활성 구간(#if 0 등)의 statement/call 은 실행 의무가 아니다 — 분기(convert)
     # 와 같은 live/blank 판정 경계를 공유한다(framework 실측: zapamcom10110.c 1282~1353
     # `#if 0` 블록의 return 이 [exit] 행으로 승격되던 결함).
-    ast_statements: tuple[StatementFact, ...] = tuple(
-        fact for fact in statements if _live_line(fact.start)
+    ast_statements = _active_statement_facts(code_body, lang, statements, split)
+    validate_static_jump_targets(
+        code_body,
+        lang,
+        ast_statements,
+        split=split,
+        line_offset=line_offset,
     )
     ast_calls: tuple[tuple[int, str], ...] = tuple(
         (line, name) for line, name in call_lines if _live_line(line)
