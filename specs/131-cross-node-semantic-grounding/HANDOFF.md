@@ -32,8 +32,17 @@
   `zapamcom10100.c:b000_main_proc`의 `GOTO@305/321/335 PFM_CATCH → LABEL count=0`으로
   정확히 실패했다. 즉 stale AST를 늦은 Rule 단계가 아니라 입력 관문에서 잡는 계약이 실제 corpus에서도
   작동한다. Analyzer 회귀는 `1,037 tests, 5 skipped`, prompt ledger는 `23/23`이다.
-- 현재 다음 순서는 parser 전체 회귀 → APAS 23 AST 재생성 → old/new node·좌표·구조 vocabulary와
-  active GOTO→LABEL delta 전수 감사 → preflight 통과 → 새 full cold run이다.
+- 최신 parser `4b849f1`로 APAS 23개를 다시 파싱했다. stream은 EXACT 23, recovered/partial/
+  unresolved/failed 0, AST 23, source 44,143행이다. source 23개 hash/bytes mismatch는 0이다.
+  구 AST의 stable node 20,878개는 삭제·속성변경 0이고, 신규 `LABEL` 67개와 standalone postfix
+  update `ASSIGNMENT` 2개만 늘었다. source named label 67/67, missing/extra 0이며 GOTO 5개는
+  같은 routine target LABEL 정확히 1개에 전부 해소됐다. 상세 전수 delta는
+  `evidence/apas-ast-regeneration-20260819.md`가 소유한다.
+- parser 전체 회귀는 154 tests, failure/error 0, skipped 8이다. 새 AST에 대한 Analyzer preflight는
+  routine 416, resolved GOTO 5, missing/duplicate 0, Rule obligation 4,810, evidence 4,202(87%)로
+  통과했다. 검증용 parser 8401만 종료했고 기존 Analyzer 15502와 Neo4j 7687은 유지했다.
+- 따라서 T131-31은 완료다. 현재 다음 순서는 Analyzer 전체 회귀·prompt ledger와 actual 실행 환경을
+  다시 고정한 뒤 T131-37 concern/scheduling 측정 및 새 APAS full cold run으로 넘어가는 것이다.
 - 사용자가 Framework는 함수 단위, DBMS는 effective AST의 모든 입력 노드 단위라고 정정했다.
   TABLE/COLUMN·RULE·EXAMPLE은 공통 산출물이며 EXAMPLE은 accepted Rule에서 결정론 합성한다.
 - 2026-08-18 당시 APAS 23파일을 EXACT라 기록했으나 위 2026-08-19 정정으로 폐기됐다.

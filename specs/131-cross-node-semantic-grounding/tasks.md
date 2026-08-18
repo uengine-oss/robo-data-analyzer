@@ -32,9 +32,10 @@
 
 ## 2026-08-18 APAS 재개
 
-- [ ] T131-31 최신 parser로 APAS 23파일 AST를 재생성하고 old/new node·좌표·구조 vocabulary delta와
+- [x] T131-31 최신 parser로 APAS 23파일 AST를 재생성하고 old/new node·좌표·구조 vocabulary delta와
   active named GOTO→LABEL exact 해소를 전수 감사. 2026-08-18 완료 표시는 저장 AST가 LABEL을 누락한
-  사실을 놓친 오판이므로 재개
+  사실을 놓친 오판이므로 재개. 2026-08-19 source hash mismatch 0, 기존 stable node 삭제/변경 0,
+  신규 LABEL 67 + postfix ASSIGNMENT 2, GOTO 5/5 exact 해소, parser 154/0/0과 Analyzer preflight 통과
 - [x] T131-32 중단 actual run에서 summary 741요청·5,293 slot 중 CALL.PURPOSE 4,349개와
   deadline/repetition retry 0을 실측해 원인을 owner 생산자로 확정
 - [x] T131-33 Framework CALL occurrence를 evidence-only로 되돌리고 DBMS CALL CodeNode만
