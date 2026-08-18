@@ -27,7 +27,7 @@ from llm.runners.model_output_error import ModelOutputError
 # describes request cost.  Pack by the exact compact evidence and forced schema size;
 # this row limit is only a last-resort guard against an unmodelled cost axis.
 DEFAULT_ROWS_PER_CALL = 24
-MAX_RULE_SEMANTIC_SLOTS = 14
+MAX_RULE_SEMANTIC_SLOTS = 12
 MAX_RULE_EVIDENCE_CHARS = 16_000
 MAX_RULE_EVIDENCE_REFERENCES = 64
 SUMMARY_WAKE_PRIORITY = -10_000_000

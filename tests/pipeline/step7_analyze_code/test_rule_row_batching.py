@@ -64,7 +64,7 @@ def _good(anchor):
 class BatchingContract(unittest.TestCase):
     def test_default_row_count_is_only_a_hard_guard_after_cost_based_packing(self):
         self.assertEqual(24, DEFAULT_ROWS_PER_CALL)
-        self.assertEqual(14, MAX_RULE_SEMANTIC_SLOTS)
+        self.assertEqual(12, MAX_RULE_SEMANTIC_SLOTS)
         self.assertEqual(16_000, MAX_RULE_EVIDENCE_CHARS)
         self.assertEqual(64, MAX_RULE_EVIDENCE_REFERENCES)
 
