@@ -13,8 +13,11 @@ from dataclasses import dataclass, field
 from pipeline.execution.analysis_handoff import (
     AnalysisHandoff,
     AnalysisHandoffAborted,
+    RULES_LANE,
+    analysis_llm_slots,
     handoff_of,
 )
+from shared.config.settings import SETTINGS
 from shared.concurrency.priority_semaphore import PrioritySemaphore
 
 
@@ -122,6 +125,23 @@ class StandaloneTest(unittest.IsolatedAsyncioTestCase):
     async def test_configured_channel_is_returned_as_is(self) -> None:
         h = _handoff()
         self.assertIs(handoff_of({"analysis_handoff": h}), h)
+
+
+class SharedLlmAdmissionTest(unittest.TestCase):
+    def test_llm_admission_is_bounded_independently_from_node_preparation(self) -> None:
+        slots = analysis_llm_slots()
+        self.assertEqual(
+            slots.capacity,
+            min(
+                SETTINGS.analysis_pipeline.max_concurrency,
+                SETTINGS.analysis_pipeline.llm_max_concurrency,
+            ),
+        )
+        self.assertLessEqual(
+            SETTINGS.analysis_pipeline.rule_max_concurrency,
+            slots.capacity,
+        )
+        self.assertEqual(slots.in_use_for(RULES_LANE), 0)
 
 
 if __name__ == "__main__":

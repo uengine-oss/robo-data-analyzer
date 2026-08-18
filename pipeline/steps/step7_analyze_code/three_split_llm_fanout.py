@@ -371,8 +371,6 @@ async def analyze_code_three_split(
                     waiting_before=waiting_before,
                     slots_in_use=llm_slots.in_use,
                     lane_slots_in_use=llm_slots.in_use_for(lane),
-                    admission_units_used=llm_slots.used_capacity,
-                    admission_unit_cost=llm_slots.cost_for(lane),
                     slots_capacity=llm_slots.capacity,
                 )
                 return await invoke()

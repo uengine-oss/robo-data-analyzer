@@ -202,43 +202,6 @@ class PrioritySemaphoreTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "lane_caps"):
             PrioritySemaphore(2, lane_caps={"rules": 3})
 
-    async def test_lane_costs_bound_mixed_generation_capacity(self) -> None:
-        sem = PrioritySemaphore(
-            8,
-            fair_weights={"summary": 2, "rules": 1},
-            lane_costs={"summary": 2, "rules": 4},
-        )
-        release_rules = asyncio.Event()
-
-        async def rule_worker() -> None:
-            async with sem.at(0, "rules"):
-                await release_rules.wait()
-
-        async def summary_worker() -> None:
-            async with sem.at(0, "summary"):
-                return
-
-        rules = [asyncio.create_task(rule_worker()) for _ in range(2)]
-        await asyncio.sleep(0)
-        self.assertEqual(sem.in_use, 2)
-        self.assertEqual(sem.used_capacity, 8)
-        self.assertEqual(sem.free, 0)
-        self.assertEqual(sem.cost_for("rules"), 4)
-
-        summary = asyncio.create_task(summary_worker())
-        await asyncio.sleep(0)
-        self.assertFalse(summary.done())
-        release_rules.set()
-        await asyncio.gather(*rules, summary)
-        self.assertEqual(sem.in_use, 0)
-        self.assertEqual(sem.used_capacity, 0)
-        self.assertEqual(sem.free, 8)
-
-    def test_lane_cost_must_fit_total_capacity(self) -> None:
-        with self.assertRaisesRegex(ValueError, "lane_costs"):
-            PrioritySemaphore(2, lane_costs={"rules": 3})
-
-
 async def _hold(sem: PrioritySemaphore, priority: int) -> None:
     async with sem.at(priority):
         await asyncio.sleep(0)

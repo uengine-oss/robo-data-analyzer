@@ -29,7 +29,6 @@ class _Waiter:
     seq: int
     future: asyncio.Future = field(compare=False)
     lane: str = field(default="default", compare=False)
-    permits: int = field(default=1, compare=False)
     bypasses: int = field(default=0, compare=False)
 
 
@@ -48,7 +47,6 @@ class PrioritySemaphore:
         *,
         fair_weights: Optional[Mapping[str, int]] = None,
         lane_caps: Optional[Mapping[str, int]] = None,
-        lane_costs: Optional[Mapping[str, int]] = None,
     ) -> None:
         if value < 1:
             raise ValueError(f"PrioritySemaphore value must be >= 1; got {value}")
@@ -70,14 +68,6 @@ class PrioritySemaphore:
                 "lane_caps require non-empty lanes and values between 1 and capacity"
             )
         self._lane_in_use: dict[str, int] = {}
-        self._lane_costs = dict(lane_costs or {})
-        if any(
-            not lane or cost < 1 or cost > value
-            for lane, cost in self._lane_costs.items()
-        ):
-            raise ValueError(
-                "lane_costs require non-empty lanes and values between 1 and capacity"
-            )
         self._lane_current: dict[str, int] = {
             lane: 0 for lane in self._fair_weights
         }
@@ -97,15 +87,6 @@ class PrioritySemaphore:
         return self._lane_in_use.get(lane or "default", 0)
 
     @property
-    def used_capacity(self) -> int:
-        """Return occupied admission units; one request may consume multiple units."""
-        return self._capacity - self._value
-
-    def cost_for(self, lane: str) -> int:
-        """Return the configured admission-unit cost for a lane."""
-        return self._lane_cost(lane or "default")
-
-    @property
     def peak_in_use(self) -> int:
         """생성 이후 실제 동시 점유의 최댓값."""
         return self._peak_in_use
@@ -120,18 +101,16 @@ class PrioritySemaphore:
 
     async def acquire(self, priority: int = 0, lane: Optional[str] = None) -> None:
         selected_lane = lane or "default"
-        permits = self._lane_cost(selected_lane)
         if (
-            self._value >= permits
+            self._value > 0
             and not any(
                 not waiter.future.cancelled()
                 and self._lane_has_capacity(waiter.lane)
-                and waiter.permits <= self._value
                 for waiter in self._waiters
             )
             and self._lane_has_capacity(selected_lane)
         ):
-            self._value -= permits
+            self._value -= 1
             self._grant(selected_lane)
             return
         # 슬롯이 있어도 **대기자가 있으면 줄을 선다** — 뒤늦게 온 낮은 우선순위가
@@ -144,7 +123,6 @@ class PrioritySemaphore:
                 seq=next(self._seq),
                 future=future,
                 lane=selected_lane,
-                permits=permits,
             ),
         )
         try:
@@ -164,17 +142,12 @@ class PrioritySemaphore:
             raise RuntimeError("PrioritySemaphore released without an acquired slot")
         self._in_use -= 1
         self._lane_in_use[selected_lane] -= 1
-        self._value += self._lane_cost(selected_lane)
-        self._wake_waiters()
-
-    def _wake_waiters(self) -> None:
-        while True:
-            waiter = self._pop_next_waiter()
-            if waiter is None:
-                return
-            self._value -= waiter.permits
-            self._grant(waiter.lane)
-            waiter.future.set_result(True)
+        waiter = self._pop_next_waiter()
+        if waiter is None:
+            self._value += 1
+            return
+        self._grant(waiter.lane)
+        waiter.future.set_result(True)
 
     def _grant(self, lane: str) -> None:
         self._in_use += 1
@@ -184,9 +157,6 @@ class PrioritySemaphore:
     def _lane_has_capacity(self, lane: str) -> bool:
         cap = self._lane_caps.get(lane)
         return cap is None or self._lane_in_use.get(lane, 0) < cap
-
-    def _lane_cost(self, lane: str) -> int:
-        return self._lane_costs.get(lane, 1)
 
     def _drop(self, future: asyncio.Future) -> None:
         """취소된 대기자를 힙에서 제거 — 힙이 죽은 항목으로 자라지 않게."""
@@ -199,7 +169,6 @@ class PrioritySemaphore:
         eligible = [
             waiter for waiter in self._waiters
             if self._lane_has_capacity(waiter.lane)
-            and waiter.permits <= self._value
         ]
         if not eligible:
             return None

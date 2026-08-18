@@ -786,10 +786,8 @@ async def _collect_keyed_concern(
             payload_chars=payload_chars,
             queue_wait_ms=round((time.monotonic() - queued_at) * 1000, 3),
             waiting_before=waiting_before,
-                slots_in_use=llm_slots.in_use,
-                admission_units_used=llm_slots.used_capacity,
-                admission_unit_cost=llm_slots.cost_for(queue_lane),
-                slots_capacity=llm_slots.capacity,
+            slots_in_use=llm_slots.in_use,
+            slots_capacity=llm_slots.capacity,
         )
         output = await run_yaml_rule(
             prompts_dir=prompts_dir,

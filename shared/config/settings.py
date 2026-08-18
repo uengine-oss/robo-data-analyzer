@@ -284,6 +284,11 @@ class AnalysisPipelineSettings:
     """ROBO_PIPELINE_* — 동시성 / 배치 / 큰 코드노드 임계."""
     # 기본 64 = GPU 서버 동시 요청 상한 (sglang max_running_requests 실측).
     max_concurrency: int = field(default_factory=lambda: _getenv_int("ROBO_PIPELINE_MAX_CONCURRENCY", 64))
+    # Code-node preparation can remain wide while the current GPU admits only the
+    # measured number of simultaneous generation requests.
+    llm_max_concurrency: int = field(
+        default_factory=lambda: _getenv_int("ROBO_PIPELINE_LLM_MAX_CONCURRENCY", 32)
+    )
     # Output-heavy Rule calls saturate the current GPU before the shared pool does.
     # Keep other lanes on the global pool while bounding only Rule in-flight work.
     rule_max_concurrency: int = field(
@@ -315,6 +320,7 @@ class AnalysisPipelineSettings:
     def __post_init__(self) -> None:
         for name in (
             "max_concurrency",
+            "llm_max_concurrency",
             "rule_max_concurrency",
             "big_context_threshold_tokens",
             "residual_sample_size",
