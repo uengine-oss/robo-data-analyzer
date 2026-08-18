@@ -60,3 +60,10 @@
 18. 전체 자동 회귀와 prompt hash, 실제 APAS cold 전체 run, 3층 검증, Stage 8 delta를 수행한다.
 19. Analyzer 합격 후 작은 실제 MCP 질의만 Architect Opus 5 high/no-Fable 경로에 전달해 legacy 있음/없음
     GWT를 검증하고, 작업보고·commit/push·임시 자원 정리를 완료한다.
+20. APAS cold 실패의 첫 좌표에서 source GOTO→저장 AST→branch inventory→grader를 역추적하고,
+    모든 routine의 active named jump target exact 해소를 module pre-analysis 전 공통 계약으로 승격한다.
+21. 공통 Rule 물질화기가 fatal deterministic defect와 quarantined unverified finding을 한 번만 분류하게
+    하고, Framework/DBMS 적용 경계는 그 결과를 재채점 없이 소비하며 exact row accounting만 확인한다.
+22. deterministic Rule audit에 routine row→graph owner를 기록하고 `judge_run.py`가 finding 좌표를
+    빼서 trusted graph를 대조하도록 고친 뒤, parser 회귀→APAS 23 AST 재생성→old/new vocabulary·좌표·
+    jump 해소 delta→preflight 순으로 GPU 이전 게이트를 닫는다.

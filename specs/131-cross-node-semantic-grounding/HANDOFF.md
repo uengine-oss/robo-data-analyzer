@@ -9,9 +9,34 @@
 
 ## 2026-08-18 현재 상태 — 이 절이 아래 2026-08-12 완료 snapshot보다 우선
 
+- **2026-08-19 정정**: 아래의 “최신 parser AST의 APAS 23파일 EXACT”와 T131-31 완료 표시는
+  불완전한 감사 결과였다. 실제 `zapamcom10101.c:b000_main_proc`에는
+  `GOTO PFM_CATCH`가 182·201행, named label `PFM_CATCH:`가 232행에 있지만 보존 AST에는
+  GOTO만 있고 LABEL이 없다. AST 최종 시각은 2026-08-07이고, 현재 parser의 LABEL 생산
+  commit `4b849f1`은 2026-08-12다. 이전 감사가 node/좌표 delta만 보고 구조 vocabulary와
+  정적 jump target 해소를 검사하지 않아 stale AST를 최신으로 오판했다.
+- 위 stale AST 때문에 실제 APAS cold run `20260818_212216_8dde28d3420e`은 약 367초에
+  `R176/R209 continuation unresolved_reachability`로 종료됐다. 이것은 모델·배치·대상 크기
+  문제가 아니라 parser→AST 계약 입력 결함이다. 부분 graph와 이 run의 성공 수치는 폐기한다.
+- 추가로 공통 `materialize_and_validate_rules`가 `unverified` quality finding까지 결정론 불변식
+  실패로 올리고, DBMS `_apply_node_analysis`가 이미 검증한 Rule을 다시 채점해 같은 정책을
+  중복 적용한다. 헌법 IV에 따라 rejected/unavailable·회계 잔차는 fatal, unverified는 exact
+  owner/row finding으로 격리하고 trusted Rule/Example에서는 제외한 채 독립 분석을 계속해야 한다.
+- pre-LLM named GOTO→LABEL exact 계약, Rule 검증·finding 회계 단일화, 영구 audit의
+  routine row→실제 graph owner 매핑과 judge trusted/finding 뺄셈을 구현했다. 제품과 상설
+  `evidence_preflight.py`가 같은 validator를 쓰며 missing/duplicate/blank target은 fatal이다.
+  `unverified`는 `owner::R-line` finding으로 격리되고 sibling Rule은 trusted로 남으며,
+  DBMS 적용 단계는 이미 검증된 Rule을 다시 채점하지 않는다. 역사 audit의 `row_owners` 부재와
+  옛 unscoped finding도 읽기 호환을 유지한다.
+- 실제 보존 APAS에 상설 preflight를 다시 실행하자 6.7초 안에 첫 GPU 호출 없이
+  `zapamcom10100.c:b000_main_proc`의 `GOTO@305/321/335 PFM_CATCH → LABEL count=0`으로
+  정확히 실패했다. 즉 stale AST를 늦은 Rule 단계가 아니라 입력 관문에서 잡는 계약이 실제 corpus에서도
+  작동한다. Analyzer 회귀는 `1,037 tests, 5 skipped`, prompt ledger는 `23/23`이다.
+- 현재 다음 순서는 parser 전체 회귀 → APAS 23 AST 재생성 → old/new node·좌표·구조 vocabulary와
+  active GOTO→LABEL delta 전수 감사 → preflight 통과 → 새 full cold run이다.
 - 사용자가 Framework는 함수 단위, DBMS는 effective AST의 모든 입력 노드 단위라고 정정했다.
   TABLE/COLUMN·RULE·EXAMPLE은 공통 산출물이며 EXAMPLE은 accepted Rule에서 결정론 합성한다.
-- 최신 parser AST의 APAS 23파일은 EXACT이며 기존 좌표 누락 0이다. parser source는 변경하지 않았다.
+- 2026-08-18 당시 APAS 23파일을 EXACT라 기록했으나 위 2026-08-19 정정으로 폐기됐다.
 - 첫 전체 run은 DB 생성 전 실패 1회 후 시작됐고, 19.6분 시점에도 summary만 진행돼 폐기했다.
   저장 prompt 741건/5,293 slot 중 Framework 내부 CALL occurrence의 `CALL.PURPOSE`가 4,349개였다.
   deadline/repetition/동일 request retry는 모두 0이므로 지연 원인은 retry가 아니라 잘못된 의미 owner와

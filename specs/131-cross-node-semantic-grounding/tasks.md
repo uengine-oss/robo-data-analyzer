@@ -32,7 +32,9 @@
 
 ## 2026-08-18 APAS 재개
 
-- [x] T131-31 최신 parser AST로 APAS 23파일 EXACT를 재생성하고 old/new node·좌표 delta를 감사
+- [ ] T131-31 최신 parser로 APAS 23파일 AST를 재생성하고 old/new node·좌표·구조 vocabulary delta와
+  active named GOTO→LABEL exact 해소를 전수 감사. 2026-08-18 완료 표시는 저장 AST가 LABEL을 누락한
+  사실을 놓친 오판이므로 재개
 - [x] T131-32 중단 actual run에서 summary 741요청·5,293 slot 중 CALL.PURPOSE 4,349개와
   deadline/repetition retry 0을 실측해 원인을 owner 생산자로 확정
 - [x] T131-33 Framework CALL occurrence를 evidence-only로 되돌리고 DBMS CALL CodeNode만
@@ -57,6 +59,12 @@
   prompt 23/23,
   Architect 집중 62 및 전체 1,383 tests/2 skipped로 검증
 - [ ] T131-37 APAS 봉인 slice에서 concern/scheduling 후보를 calls/tokens/cache/latency/accuracy로 비교·채택
+- [x] T131-37a module/summary GPU 호출 전 static named jump target preflight를 제품·상설 preflight에
+  같은 함수로 구현하고 missing/duplicate/blank target 반대 fixture와 resolved fixture를 검증
+- [x] T131-37b 공통 deterministic Rule 경계에서 rejected/unavailable/회계 잔차만 fatal로 유지하고
+  unverified를 scoped finding으로 격리. DBMS 이중 채점을 제거하고 FW/DBMS trusted+finding 회계 검증
+- [x] T131-37c Rule audit에 routine row→실제 graph owner를 보존하고 judge_run의 obligation/trusted/
+  finding/unavailable 잔차와 graph 기대 trusted row를 전수 대조
 - [ ] T131-38 채택 구조의 정상·실패·경계·중복·순서·취소/종료 회귀 및 전체 자동 테스트
 - [ ] T131-39 새 격리 DB의 실제 APAS 전체 cold run, judge_run+graph, 봉인 30~40 의미 직접 판정
 - [ ] T131-40 작은 실제 MCP 질의→Architect Opus 5 GWT, Analyzer optional 두 경로 검증

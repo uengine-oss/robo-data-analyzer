@@ -93,6 +93,15 @@ ID 기준으로 중복 제거해 소비하며 정상 생성 경로에서 레거�
     보존한다. callee/table의 의미는 각 원래 semantic slot을 ID로 참조하며 Rule 문장에 복사하지 않는다.
 19. library return/sentinel, opaque identifier, target 이름을 Rule 문장으로 번역하지 않는다. 의미가
     필요한 최종 소비자는 함수 summary와 callee/table/column claim을 RULE 구조 evidence와 함께 사용한다.
+20. parser가 생산한 active named `GOTO`는 같은 routine의 active `LABEL` exactly one과 해소돼야 한다.
+    누락·중복·빈 target은 stale/불완전 AST라는 결정론 계약 실패이며 module/summary 등 첫 GPU 호출 전에
+    파일·routine·GOTO 절대행·target을 포함해 종료한다. Analyzer source 정규식으로 LABEL을 복원하지 않는다.
+21. 결정론 Rule 물질화의 단일 검증 경계는 rejected/unavailable과 assigned-row 회계 잔차를 fatal로,
+    `unverified` 의미 품질 finding을 좌표별 격리로 분류한다. unverified row는 trusted Rule/Example에
+    들어가지 않지만 다른 row와 다른 node 분석은 계속하며 DBMS 적용 단계에서 같은 Rule을 재채점하지 않는다.
+22. Rule 영구 감사는 routine 전체 obligation뿐 아니라 각 row의 실제 graph owner를 보존한다. 상설
+    `judge_run.py`는 `obligation = trusted + rejected/unverified + unavailable`, 중복·잔차 0을 전수 판정하고,
+    graph 구조 기대값에서는 finding row를 제외한다. routine owner와 DBMS child owner를 혼동하지 않는다.
 
 ## 폐기된 요구
 
