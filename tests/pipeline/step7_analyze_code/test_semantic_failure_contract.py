@@ -35,6 +35,7 @@ from pipeline.steps.step7_analyze_code.batch_analyze import (
 from pipeline.models.semantic_frame import (
     normalize_semantic_frame_response,
     semantic_frame_response_model,
+    semantic_slot_wire_ids,
 )
 from pipeline.models.semantic_frame_projection import project_summary
 from pipeline.steps.step7_analyze_code.semantic_frame_planner import (
@@ -62,12 +63,12 @@ def _frame_summary(
     missing = list(missing or [])
     parsed = model.model_validate({
         "slots": {
-            spec.slot_id: {
+                wire_id: {
                 "meaning": summary if status != "insufficient" else "",
                 "status": status,
                 "missing_context": missing,
             }
-            for spec in specs
+                for spec, wire_id in zip(specs, semantic_slot_wire_ids(specs), strict=True)
         },
     })
     frame = normalize_semantic_frame_response(parsed, profile, specs)
@@ -83,12 +84,12 @@ def _semantic_frame(
     profile, specs = build_code_semantic_plan(node, context)
     model = semantic_frame_response_model(specs)
     parsed = model.model_validate({"slots": {
-        spec.slot_id: {
+        wire_id: {
             "meaning": meaning,
             "status": "sufficient",
             "missing_context": [],
         }
-        for spec in specs
+        for spec, wire_id in zip(specs, semantic_slot_wire_ids(specs), strict=True)
     }})
     return normalize_semantic_frame_response(parsed, profile, specs)
 

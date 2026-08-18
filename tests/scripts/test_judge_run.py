@@ -179,6 +179,31 @@ class JudgeRunDbmsIdentityTest(unittest.TestCase):
                 axes["WRITES"],
             )
 
+    def test_routine_quality_facts_work_without_optional_functions_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            payloads = {
+                "routines.json": [{
+                    "file": "source/order/cart.c",
+                    "name": "cart_clear",
+                    "kind": "FUNCTION",
+                    "quality_facts": {"reads": ["cart"], "writes": ["audit_log"]},
+                }],
+                "tables.json": [
+                    {"name": "CART", "columns": []},
+                    {"name": "AUDIT_LOG", "columns": []},
+                ],
+                "relationships.json": {"CALLS": []},
+            }
+            for name, payload in payloads.items():
+                (root / name).write_text(json.dumps(payload), encoding="utf-8")
+
+            axes = load_gold_axes(root)
+
+            routine = ("order/cart.c", "cart_clear")
+            self.assertEqual({(routine, "cart")}, axes["READS"])
+            self.assertEqual({(routine, "audit_log")}, axes["WRITES"])
+
 
 if __name__ == "__main__":
     unittest.main()

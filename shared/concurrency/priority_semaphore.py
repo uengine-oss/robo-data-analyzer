@@ -19,21 +19,48 @@ from __future__ import annotations
 import asyncio
 import heapq
 import itertools
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Mapping, Optional
+
+
+@dataclass(order=True)
+class _Waiter:
+    priority: int
+    seq: int
+    future: asyncio.Future = field(compare=False)
+    lane: str = field(default="default", compare=False)
+    bypasses: int = field(default=0, compare=False)
 
 
 class PrioritySemaphore:
-    """총량 ``value`` 고정. 대기자는 ``(priority, 도착순)`` 오름차순으로 깨운다."""
+    """Fixed-capacity priority queue with optional work-conserving fair lanes.
 
-    def __init__(self, value: int) -> None:
+    Without ``fair_weights``, fresh waiters keep ``priority, FIFO`` order and a waiter
+    owns the next slot after ``capacity`` bypasses. With weights, smooth weighted
+    round-robin chooses an active lane and priority/FIFO chooses inside it. Weights are
+    contention shares, never reservations, so idle lanes lend all capacity.
+    """
+
+    def __init__(
+        self,
+        value: int,
+        *,
+        fair_weights: Optional[Mapping[str, int]] = None,
+    ) -> None:
         if value < 1:
             raise ValueError(f"PrioritySemaphore value must be >= 1; got {value}")
         self._capacity = value
         self._value = value
         self._in_use = 0
         self._peak_in_use = 0
-        self._waiters: list[tuple[int, int, asyncio.Future]] = []
+        self._waiters: list[_Waiter] = []
         self._seq = itertools.count()
+        self._fair_weights = dict(fair_weights or {})
+        if any(not lane or weight < 1 for lane, weight in self._fair_weights.items()):
+            raise ValueError("fair_weights require non-empty lanes and weights >= 1")
+        self._lane_current: dict[str, int] = {
+            lane: 0 for lane in self._fair_weights
+        }
 
     @property
     def free(self) -> int:
@@ -56,9 +83,9 @@ class PrioritySemaphore:
 
     @property
     def waiting(self) -> int:
-        return sum(1 for _, _, future in self._waiters if not future.cancelled())
+        return sum(1 for waiter in self._waiters if not waiter.future.cancelled())
 
-    async def acquire(self, priority: int = 0) -> None:
+    async def acquire(self, priority: int = 0, lane: Optional[str] = None) -> None:
         if self._value > 0 and not self._waiters:
             self._value -= 1
             self._in_use += 1
@@ -67,7 +94,15 @@ class PrioritySemaphore:
         # 슬롯이 있어도 **대기자가 있으면 줄을 선다** — 뒤늦게 온 낮은 우선순위가
         # 새치기해 높은 우선순위 대기자를 굶기지 않게(그리고 순서 계약을 지키게).
         future: asyncio.Future = asyncio.get_running_loop().create_future()
-        heapq.heappush(self._waiters, (priority, next(self._seq), future))
+        heapq.heappush(
+            self._waiters,
+            _Waiter(
+                priority=priority,
+                seq=next(self._seq),
+                future=future,
+                lane=lane or "default",
+            ),
+        )
         try:
             await future
         except asyncio.CancelledError:
@@ -80,11 +115,9 @@ class PrioritySemaphore:
 
     def release(self) -> None:
         """슬롯 1개 반납 — 대기자가 있으면 그중 최우선에게 바로 넘긴다."""
-        while self._waiters:
-            _priority, _seq, future = heapq.heappop(self._waiters)
-            if future.cancelled():
-                continue          # 취소된 대기자는 건너뛴다 (슬롯은 다음 사람에게)
-            future.set_result(True)
+        waiter = self._pop_next_waiter()
+        if waiter is not None:
+            waiter.future.set_result(True)
             return
         if self._in_use < 1:
             raise RuntimeError("PrioritySemaphore released without an acquired slot")
@@ -93,12 +126,70 @@ class PrioritySemaphore:
 
     def _drop(self, future: asyncio.Future) -> None:
         """취소된 대기자를 힙에서 제거 — 힙이 죽은 항목으로 자라지 않게."""
-        self._waiters = [w for w in self._waiters if w[2] is not future]
+        self._waiters = [w for w in self._waiters if w.future is not future]
         heapq.heapify(self._waiters)
 
-    def at(self, priority: int) -> "_PrioritySlot":
+    def _pop_next_waiter(self) -> Optional[_Waiter]:
+        """Choose strict priority unless a waiter reached the overtaking bound."""
+        self._waiters = [w for w in self._waiters if not w.future.cancelled()]
+        if not self._waiters:
+            return None
+        heapq.heapify(self._waiters)
+
+        if self._fair_weights:
+            return self._pop_weighted_waiter()
+
+        bounded = [w for w in self._waiters if w.bypasses >= self._capacity]
+        if bounded:
+            selected = min(bounded, key=lambda w: (-w.bypasses, w.seq))
+            self._waiters.remove(selected)
+            heapq.heapify(self._waiters)
+        else:
+            selected = heapq.heappop(self._waiters)
+
+        for waiting in self._waiters:
+            waiting.bypasses += 1
+        return selected
+
+    def _pop_weighted_waiter(self) -> _Waiter:
+        """Smooth weighted round-robin across active lanes, priority/FIFO within one.
+
+        Inactive lanes receive no credit, so a lane cannot accumulate an unbounded
+        burst while idle. Unknown lanes use weight 1. If only one lane is active it
+        borrows every slot; capacity is never reserved or left idle.
+        """
+        active_lanes = {waiter.lane for waiter in self._waiters}
+        for lane in list(self._lane_current):
+            if lane not in active_lanes:
+                self._lane_current[lane] = 0
+
+        total_weight = 0
+        for lane in active_lanes:
+            weight = self._fair_weights.get(lane, 1)
+            total_weight += weight
+            self._lane_current[lane] = self._lane_current.get(lane, 0) + weight
+
+        configured_order = {lane: index for index, lane in enumerate(self._fair_weights)}
+        selected_lane = min(
+            active_lanes,
+            key=lambda lane: (
+                -self._lane_current[lane],
+                configured_order.get(lane, len(configured_order)),
+                lane,
+            ),
+        )
+        self._lane_current[selected_lane] -= total_weight
+        selected = min(
+            (waiter for waiter in self._waiters if waiter.lane == selected_lane),
+            key=lambda waiter: (waiter.priority, waiter.seq),
+        )
+        self._waiters.remove(selected)
+        heapq.heapify(self._waiters)
+        return selected
+
+    def at(self, priority: int, lane: Optional[str] = None) -> "_PrioritySlot":
         """``async with sem.at(1):`` — 명시 우선순위로 슬롯 1개."""
-        return _PrioritySlot(self, priority)
+        return _PrioritySlot(self, priority, lane)
 
     async def __aenter__(self) -> "PrioritySemaphore":
         await self.acquire(0)
@@ -111,14 +202,20 @@ class PrioritySemaphore:
 class _PrioritySlot:
     """``PrioritySemaphore.at(p)`` 가 돌려주는 1회용 컨텍스트 매니저."""
 
-    __slots__ = ("_sem", "_priority")
+    __slots__ = ("_sem", "_priority", "_lane")
 
-    def __init__(self, sem: PrioritySemaphore, priority: int) -> None:
+    def __init__(
+        self,
+        sem: PrioritySemaphore,
+        priority: int,
+        lane: Optional[str],
+    ) -> None:
         self._sem = sem
         self._priority = priority
+        self._lane = lane
 
     async def __aenter__(self) -> PrioritySemaphore:
-        await self._sem.acquire(self._priority)
+        await self._sem.acquire(self._priority, self._lane)
         return self._sem
 
     async def __aexit__(self, *exc_info) -> None:

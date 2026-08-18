@@ -265,7 +265,25 @@ def rule_evidence(
         )
         if inventory.has_nested_control(line):
             item["nested_control"] = True
-        if str(row.get("role") or "") == "continuation":
+            owner = inventory.at_line(line)
+            if owner is not None:
+                # The parent row owns only the transition into its immediate child
+                # controls.  Their coordinates/conditions explain that boundary
+                # without copying any child action into the parent Rule.
+                item["nested_children"] = [
+                    {
+                        "node_id": child.node_id,
+                        "type": child.ntype,
+                        "start_line": child.start + inventory.line_offset,
+                        "end_line": child.end + inventory.line_offset,
+                        "condition": child.condition,
+                        "condition_timing": child.condition_timing,
+                    }
+                    for child in owner.children
+                ]
+        if row.get("fallthrough_to") is not None:
+            item["fallthrough_to"] = int(row["fallthrough_to"])
+        if str(row.get("role") or "") in {"continuation", "handler"}:
             item["after_control"] = str(row.get("after_control") or "")
             item["at_label"] = str(row.get("at_label") or "")
             if row.get("unresolved_reachability"):

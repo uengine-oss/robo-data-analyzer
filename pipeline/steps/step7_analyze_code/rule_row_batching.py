@@ -30,6 +30,60 @@ SUMMARY_WAKE_PRIORITY = -10_000_000
 RowInvoke = Callable[[Sequence[int]], Awaitable[RulesExamplesOutput]]
 
 
+def _semantic_rule_findings(
+    frame: SemanticFrame | None,
+    *,
+    target_scope: str,
+) -> tuple[list[AnalysisFinding], set[int]]:
+    """Surface every non-sufficient rule slot and quarantine its legacy Rule row."""
+    if frame is None:
+        return [], set()
+    by_line: dict[int, list[object]] = {}
+    for slot in frame.slots.values():
+        if slot.status == "sufficient":
+            continue
+        anchors = {
+            int(fact.attributes["anchor_line"])
+            for ref in slot.evidence_refs
+            if (fact := frame.profile.evidence[ref]).kind == "RULE"
+            and fact.attributes.get("anchor_line") is not None
+        }
+        if len(anchors) != 1:
+            raise ValueError(
+                f"non-sufficient rule slot lacks one anchor: {slot.slot_id}"
+            )
+        by_line.setdefault(next(iter(anchors)), []).append(slot)
+    findings = [
+        AnalysisFinding(
+            concern="rules",
+            status="unverified",
+            target_id=f"{target_scope}::R-{line}",
+            coordinates=(line,),
+            reasons=tuple(
+                dict.fromkeys(
+                    f"{slot.family}.{slot.role}={slot.status}: {missing}"
+                    for slot in slots
+                    for missing in (slot.missing_context or ("근거 불충분",))
+                )
+            ),
+            candidate={
+                "semantic_slots": [
+                    {
+                        "slot_id": slot.slot_id,
+                        "status": slot.status,
+                        "meaning": slot.meaning,
+                        "missing_context": list(slot.missing_context),
+                    }
+                    for slot in slots
+                ],
+            },
+            evidence_rule="code_rules_examples",
+        )
+        for line, slots in sorted(by_line.items())
+    ]
+    return findings, set(by_line)
+
+
 def rule_queue_priority(payload_chars: int) -> int:
     """Schedule larger finite Rule jobs first while summaries always stay first.
 
@@ -164,6 +218,24 @@ async def collect_rules_by_rows(
         try:
             output = await invoke(batch)
         except ModelOutputError as error:
+            # A deadline can be caused by the amount of required structured meaning in
+            # this row set.  A repetition abort can likewise be caused by one row
+            # poisoning a multi-row forced response.  Do not retry identical content:
+            # bisect the required rows so every smaller response has a different
+            # schema/evidence packet and remains independently gradeable.  A failing
+            # singleton is still recorded as unavailable instead of being hidden.
+            if error.kind in {"deadline", "repetition"} and len(batch) > 1:
+                midpoint = len(batch) // 2
+                left, right = await asyncio.gather(
+                    run_batch(batch[:midpoint]),
+                    run_batch(batch[midpoint:]),
+                )
+                return (
+                    [*left[0], *right[0]],
+                    [*left[1], *right[1]],
+                    [*left[2], *right[2]],
+                    1 + left[3] + right[3],
+                )
             findings = [
                 AnalysisFinding(
                     concern="rules",
@@ -175,7 +247,7 @@ async def collect_rules_by_rows(
                 )
                 for row in batch
             ]
-            return [], findings, None
+            return [], findings, [], 1
         report = grade_rules(
             output,
             inventory,
@@ -195,7 +267,17 @@ async def collect_rules_by_rows(
             assigned=set(batch),
             evidence_rule="code_rules_examples",
         )
-        return accepted, [scoped(finding) for finding in findings], output.semantic_frame
+        frame = output.semantic_frame
+        semantic_findings, untrusted_rows = _semantic_rule_findings(
+            frame, target_scope=target_scope,
+        )
+        if untrusted_rows:
+            accepted = [
+                rule for rule in accepted if rule.anchor_line not in untrusted_rows
+            ]
+        findings.extend(semantic_findings)
+        frames = [frame] if frame is not None else []
+        return accepted, [scoped(finding) for finding in findings], frames, 1
 
     batches = plan_batches(
         inventory,
@@ -204,14 +286,18 @@ async def collect_rules_by_rows(
     if not batches:
         return RowCollection(rules=[], findings=[], calls=0)
     results = await asyncio.gather(*(run_batch(batch) for batch in batches))
-    rules = [rule for batch_rules, _, _frame in results for rule in batch_rules]
+    rules = [rule for batch_rules, _, _frames, _calls in results for rule in batch_rules]
     findings = [
-        finding for _, batch_findings, _frame in results for finding in batch_findings
+        finding for _, batch_findings, _frames, _calls in results
+        for finding in batch_findings
     ]
-    semantic_frames = [frame for _, _, frame in results if frame is not None]
+    semantic_frames = [
+        frame for _, _, batch_frames, _calls in results for frame in batch_frames
+    ]
     rules.sort(key=lambda rule: rule.anchor_line)
     findings.sort(key=lambda finding: (finding.coordinates, finding.status, finding.target_id))
     return RowCollection(
-        rules=rules, findings=findings, calls=len(batches),
+        rules=rules, findings=findings,
+        calls=sum(batch_calls for _, _, _, batch_calls in results),
         semantic_frames=semantic_frames,
     )

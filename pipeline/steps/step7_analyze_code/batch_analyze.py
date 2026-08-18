@@ -92,7 +92,12 @@ from llm.runners.model_output_error import ModelOutputError
 from shared.events.runtime_logger import log_info, log_warning
 from shared.events.processing_events import track_processing
 from shared.files.cache import SourceFileCache
-from pipeline.execution.analysis_handoff import AnalysisHandoff
+from pipeline.execution.analysis_handoff import (
+    AnalysisHandoff,
+    INSIGHTS_LANE,
+    RULES_LANE,
+    SUMMARY_LANE,
+)
 from pipeline.execution.pause_controller import PauseController
 from pipeline.steps.step7_analyze_code.quality_findings import apply_analysis_findings
 from pipeline.steps.step7_analyze_code.semantic_frame_planner import rule_slot_specs
@@ -761,7 +766,29 @@ async def _collect_keyed_concern(
         queue_priority = rule_queue_priority(sum(len(str(value)) for value in values.values()))
     else:
         queue_priority = 0
-    async with llm_slots.at(queue_priority):
+    queued_at = time.monotonic()
+    waiting_before = llm_slots.waiting
+    payload_chars = sum(len(str(value)) for value in values.values())
+    queue_lane = {
+        "summary": SUMMARY_LANE,
+        "rules": RULES_LANE,
+        "insights": INSIGHTS_LANE,
+    }[concern]
+    async with llm_slots.at(queue_priority, queue_lane):
+        log_info(
+            _STEP,
+            "llm_slot_acquired",
+            concern=concern,
+            lane=queue_lane,
+            parent_id=parent_id,
+            node_count=len(node_ids),
+            priority=queue_priority,
+            payload_chars=payload_chars,
+            queue_wait_ms=round((time.monotonic() - queued_at) * 1000, 3),
+            waiting_before=waiting_before,
+            slots_in_use=llm_slots.in_use,
+            slots_capacity=llm_slots.capacity,
+        )
         output = await run_yaml_rule(
             prompts_dir=prompts_dir,
             rule_name=rule_name,

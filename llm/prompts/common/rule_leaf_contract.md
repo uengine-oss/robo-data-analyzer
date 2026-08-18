@@ -10,10 +10,10 @@
 
 ## [INPUT GUIDE]
 
-- `structural_profile_json`은 target과 RULE/control evidence의 읽기 전용 정본이다.
-- `applicable_slots_json`은 이번 행 묶음에서 답할 exact slot과 허용 evidence refs다.
+- `applicable_slots_json`은 이번 행 묶음에서 답할 request-local slot, parser anchor, 의미 역할이다.
 - `rule_evidence_json`의 `conditions`는 parser 판정식, `effects`는 직접 동작, `rows`는
-  R행별 exact `when`, `narrative_focus`, `direct`, active source다.
+  R행별 exact `when`, `narrative_focus`, `direct`, active source다. `nested_children`은
+  부모가 진입하는 직계 자식 CONTROL 좌표·조건이며 자식 효과가 아니다.
 - owner effective R/W는 허용 table 범위다. 현재 행의 직접 효과는 row의 `direct`만 소유한다.
 - symbol/callee/external/API 계약은 현재 row source와 연결될 때만 뜻을 보조한다.
 - callee 내부·형제·자식 효과를 현재 행으로 복사하지 않는다.
@@ -25,7 +25,13 @@
 - `LOOP.ITERATION_TARGET/PER_ITEM_ACTION/TERMINATION`: 반복 대상·매회 동작·종료를 분리한다.
 - `EXCEPTION.FAILURE/HANDLING/PROPAGATION`: 실패 계기·가장 가까운 처리·명시적 전파를 분리한다.
 - `STATEMENT.DIRECT_ACTION`: entry/continuation/exit/complement 좌표의 직접 동작만 쓴다.
-- `direct`가 없고 nested control만 있으면 자식 로직을 평가한다는 경계까지만 쓴다.
+- `direct`가 없고 `nested_control=true`이면 이 행의 완전한 결과는 자식 제어로 진입해
+  자식 행들이 판정·효과를 소유한다는 구조 경계다. 자식 효과를 복사하지 않으며, 그 이유만으로
+  partial/insufficient로 낮추지 않는다.
+- `fallthrough_to`가 있으면 이 행의 직접 결과는 지정된 다음 CASE 좌표로 이어지는 것이다.
+  다음 CASE의 효과를 현재 행의 효과로 복사하지 않으며, 그 구조 관계 자체는 sufficient 근거다.
+- handler의 `source_refs`/`at_label` 뒤에 RETURN·THROW가 연결되면 그 명시적 처리 결과와
+  전파 여부를 보존한다. 라벨 이름만 보고 보이지 않는 처리를 만들지 않는다.
 - post-condition은 본문 실행 뒤 판정이며 진입 전 조건으로 바꾸지 않는다.
 - continuation은 앞선 제어 뒤 이 좌표에 도달한 시점이며 entry로 부르지 않는다.
 

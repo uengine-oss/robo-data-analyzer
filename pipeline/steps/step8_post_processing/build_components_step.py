@@ -26,10 +26,12 @@ from langchain_core.runnables import RunnableConfig
 from pipeline.steps.step5_linking.link_calls.call_linker import routine_call_pairs
 from pipeline.models.code_analysis_output import ComponentNamingOutput
 from pipeline.models.aggregate_semantic_frame import (
+    aggregate_member_payloads,
     aggregate_response_model,
     aggregate_slot_meaning,
     build_aggregate_semantic_plan,
     normalize_aggregate_response,
+    sealed_summary_frame_payload,
 )
 from pipeline.models.semantic_frame import SemanticFrame, profile_prompt_json, slot_specs_json
 from graph.schema.graph_edges import Calls
@@ -46,6 +48,7 @@ from graph.neo4j_client import Neo4jClient
 from graph.ownership import ANALYZER_GRAPH_OWNER
 from pipeline.execution.analysis_handoff import (
     POSTPROCESS_PRIORITY,
+    POSTPROCESS_LANE,
     AnalysisHandoffAborted,
     handoff_of,
 )
@@ -58,7 +61,6 @@ _STEP = "step8.build_components"
 
 # 군집/이름 파라미터 (튜닝 가능).
 MIN_COMPONENT_SIZE = 2     # 멤버 1개(고립 코드노드)는 군집으로 X (노이즈 차단)
-NAME_MAX_MEMBERS = 40      # 이름 입력에 넣을 멤버 압축 줄 상한 (토큰 안전)
 LEIDEN_SEED = 42           # 결정론 — 같은 그래프 → 같은 군집
 
 # 멤버 FUNCTION 노드에 군집 멤버십을 속성으로 SET (합성 노드 없음). health_metrics 와 동일 패턴.
@@ -114,13 +116,15 @@ async def build_components_step(state: dict, config: Optional[RunnableConfig] = 
 
     async def _name_one(component_id: str, members: list[str]) -> ComponentNamingOutput | None:
         member_fns = [fn_by_id[m] for m in members if m in fn_by_id]
+        # This step is released by the summary handoff.  Always consume that sealed
+        # snapshot; ``semantic_frame`` may already contain Rule/table slots for faster
+        # siblings and would make input depend on completion timing.
         member_frames = [
             SemanticFrame.model_validate(
-                fn.extra.get("semantic_frame") or fn.extra.get("_summary_semantic_frame")
+                sealed_summary_frame_payload(fn)
             )
             for fn in member_fns
-            if (fn.extra or {}).get("semantic_frame")
-            or (fn.extra or {}).get("_summary_semantic_frame")
+            if sealed_summary_frame_payload(fn)
         ]
         if len(member_frames) != len(member_fns):
             return None
@@ -132,24 +136,27 @@ async def build_components_step(state: dict, config: Optional[RunnableConfig] = 
             start_line=0,
             end_line=0,
             family="COMPONENT",
-            member_frames=member_frames[:NAME_MAX_MEMBERS],
+            member_frames=member_frames,
             include_responsibility=False,
+            member_roles=("RESPONSIBILITY",),
         )
         members_text = json.dumps(
-            [frame.model_dump(mode="json", by_alias=True) for frame in member_frames[:NAME_MAX_MEMBERS]],
+            aggregate_member_payloads(
+                member_frames, roles=("RESPONSIBILITY",),
+            ),
             ensure_ascii=False,
             separators=(",", ":"),
         )
         try:
             async with track_processing("Component", component_id):
-                async with slots.at(POSTPROCESS_PRIORITY):
+                async with slots.at(POSTPROCESS_PRIORITY, POSTPROCESS_LANE):
                     wire = await run_yaml_rule(
                         prompts_dir=prompts_dir,
                         rule_name="component_naming",
                         user_values={
                             "component_id": component_id,
                             "members": members_text,
-                            "structural_profile": profile_prompt_json(profile),
+                            "structural_profile": profile_prompt_json(profile, specs),
                             "applicable_slots": slot_specs_json(specs),
                         },
                         response_model=aggregate_response_model(

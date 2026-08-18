@@ -30,6 +30,29 @@ from shared.concurrency.priority_semaphore import PrioritySemaphore
 # 슬롯 우선순위 — 낮을수록 먼저. step7 이 임계경로라 항상 앞선다.
 STEP7_PRIORITY = 0
 POSTPROCESS_PRIORITY = 1
+SUMMARY_LANE = "summary"
+RULES_LANE = "rules"
+INSIGHTS_LANE = "insights"
+POSTPROCESS_LANE = "postprocess"
+
+# Smooth weighted fairness protects dependency-unlocking summaries without starving
+# evidence-heavy Rule work or the post-processing that overlaps Step 7. These are
+# shares under contention, not reservations: an idle lane lends all capacity.
+ANALYSIS_LLM_LANE_WEIGHTS = {
+    SUMMARY_LANE: 4,
+    RULES_LANE: 3,
+    INSIGHTS_LANE: 1,
+    POSTPROCESS_LANE: 1,
+}
+
+
+def analysis_llm_slots() -> PrioritySemaphore:
+    from shared.config.settings import SETTINGS
+
+    return PrioritySemaphore(
+        SETTINGS.analysis_pipeline.max_concurrency,
+        fair_weights=ANALYSIS_LLM_LANE_WEIGHTS,
+    )
 
 
 class AnalysisHandoffAborted(RuntimeError):
@@ -42,12 +65,10 @@ def handoff_of(cfg: dict) -> "AnalysisHandoff":
     단독 호출·테스트처럼 step7 과 겹칠 상대가 없는 실행에서 게이트가 교착이 되면 안 된다.
     그런 실행은 이미 step7 이 끝난 뒤에 후처리를 부르는 것이므로 "전부 준비됨"이 참이다.
     """
-    from shared.config.settings import SETTINGS   # 지연 import — 설정 로딩 순환 회피
-
     existing = cfg.get("analysis_handoff")
     if existing is not None:
         return existing
-    opened = AnalysisHandoff(PrioritySemaphore(SETTINGS.analysis_pipeline.max_concurrency))
+    opened = AnalysisHandoff(analysis_llm_slots())
     opened.close()
     opened.publish_modules([])   # 소비자는 빈 목록을 보고 state 의 모듈로 폴백한다
     return opened

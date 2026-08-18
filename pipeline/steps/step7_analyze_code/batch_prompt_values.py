@@ -24,6 +24,7 @@ from pipeline.models.data_object_usage import dump_data_object_usages, exact_dir
 from pipeline.models.semantic_frame import profile_prompt_json, slot_specs_json
 from pipeline.steps.step7_analyze_code.semantic_frame_planner import (
     build_code_semantic_plan,
+    rule_slot_specs_json,
     semantic_concern_slots,
 )
 from pipeline.steps.step7_analyze_code.batch_node_identity import batch_node_keys
@@ -127,7 +128,7 @@ def _build_batch_values(
             f"source_range: {ctx.start_line}-{ctx.end_line}\n"
             f"coordinate_system: {excerpt.coordinate_system}\n"
             f"source_status: {excerpt.status}\n\n"
-            f"#### [STRUCTURAL_PROFILE]\n{profile_prompt_json(profile)}\n\n"
+            f"#### [STRUCTURAL_PROFILE]\n{profile_prompt_json(profile, concerns['summary'])}\n\n"
             f"#### [APPLICABLE_SLOTS]\n{slot_specs_json(concerns['summary'])}\n\n"
             f"#### [EFFECTIVE_FLOW_EVIDENCE]\n"
             f"ast_type: {fn.label}\n"
@@ -208,8 +209,7 @@ def build_rule_batch_values(
             f"owner_id: {owner_ids[node_key]}\n"
             f"signature: {fn.signature}\n"
             f"assigned_rows: {','.join(map(str, rows))}\n"
-            f"structural_profile_json: {profile_prompt_json(profile)}\n"
-            f"applicable_slots_json: {slot_specs_json(slot_specs)}\n"
+            f"applicable_slots_json: {rule_slot_specs_json(profile, slot_specs, assigned_rows=rows)}\n"
             f"owner_effective_reads_json: {dump_table_refs(owner_ctx.reads, table_descriptions, include_columns=False)}\n"
             f"owner_effective_writes_json: {dump_table_refs(owner_ctx.writes, table_descriptions, include_columns=False)}\n"
             f"owner_linked_table_operations_json: "
@@ -269,7 +269,7 @@ def build_table_insight_batch_values(
             f"source_range: {context.start_line}-{context.end_line}\n"
             f"coordinate_system: {excerpt.coordinate_system}\n"
             f"source_status: {excerpt.status}\n\n"
-            f"structural_profile_json: {profile_prompt_json(profile)}\n"
+            f"structural_profile_json: {profile_prompt_json(profile, concerns['insights'])}\n"
             f"applicable_slots_json: {slot_specs_json(concerns['insights'])}\n\n"
             "#### [EXACT_DIRECT_TABLE_EVIDENCE]\n"
             f"ast_type: {node.label}\n"

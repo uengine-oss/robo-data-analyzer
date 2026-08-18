@@ -9,6 +9,7 @@ from pipeline.models.semantic_frame import (
     SemanticFrame,
     normalize_semantic_frame_response,
     semantic_frame_response_model,
+    semantic_slot_wire_ids,
 )
 from pipeline.steps.step7_analyze_code.semantic_frame_planner import build_code_semantic_plan
 
@@ -41,12 +42,12 @@ def semantic_frame_for_node(
     wire_model = semantic_frame_response_model(specs)
     missing = list(missing_context or ([] if status == "sufficient" else ["추가 근거"]))
     parsed = wire_model.model_validate({"slots": {
-        spec.slot_id: {
+        wire_id: {
             "meaning": "" if status == "insufficient" else meaning,
             "status": status,
             "missing_context": missing,
         }
-        for spec in specs
+        for spec, wire_id in zip(specs, semantic_slot_wire_ids(specs), strict=True)
     }})
     return normalize_semantic_frame_response(parsed, profile, specs)
 

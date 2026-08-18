@@ -14,6 +14,7 @@ from pipeline.models.table_description_frame import (
     normalize_table_description_frame_response,
     table_description_frame_response_model,
 )
+from pipeline.models.semantic_frame import semantic_slot_wire_ids
 from pipeline.steps.step8_post_processing.enrich_table_description_step import (
     _collect_usage_candidates,
     _direct_operations_by_table,
@@ -61,12 +62,14 @@ def _wire(evidence: dict, *, unknown_column: bool = False) -> tuple[object, obje
 
     def leaves(specs, prefix: str, insufficient: bool = False) -> dict:
         return {
-            spec.slot_id: {
+            wire_id: {
                 "meaning": "" if insufficient else f"{prefix} {spec.role}",
                 "status": "insufficient" if insufficient else "sufficient",
                 "missing_context": ["업무 정의 근거"] if insufficient else [],
             }
-            for spec in specs
+            for wire_id, spec in zip(
+                semantic_slot_wire_ids(specs), specs, strict=True,
+            )
         }
 
     payload = {

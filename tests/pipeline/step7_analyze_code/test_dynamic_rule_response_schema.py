@@ -53,9 +53,13 @@ def _frame_payload(
     responsibility_missing: str = "",
 ) -> dict:
     slots_type = response_model.model_fields["slots"].annotation
+    bindings = dict(response_model.__semantic_slot_bindings__)
     slots = {}
     for key in slots_type.model_fields:
-        is_responsibility = ":FUNCTION:RESPONSIBILITY:" in key
+        spec = bindings[key]
+        is_responsibility = (
+            spec.family == "FUNCTION" and spec.role == "RESPONSIBILITY"
+        )
         partial = is_responsibility and bool(responsibility_missing)
         slots[key] = {
             "meaning": meaning,

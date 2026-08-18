@@ -1,7 +1,7 @@
 ## [OUTPUT CONTRACT — assigned semantic slot leaves]
 
-- response_format의 `slots`에 required로 지정된 slot key를 정확히 한 번 모두 채운다.
-- 각 slot 값은 `meaning`, `status`, `missing_context`만 가진다. slot ID, family, role,
+- response_format의 `slots`에 required로 지정된 request-local `wire_id` key를 정확히 한 번 모두 채운다.
+- 각 slot 값은 `meaning`, `status`, `missing_context`만 가진다. canonical slot ID, family, role,
   target/evidence refs, 좌표, 조건, callee, table identity는 코드가 이미 소유하므로 출력하지 않는다.
 - `sufficient`: meaning non-empty + missing_context 빈 배열
 - `partial`: 현재 근거로 확정한 meaning non-empty + 부족한 근거 1~8개
@@ -25,7 +25,7 @@
 
 ## [DECISION PROCEDURE]
 
-1. slot key를 고정하고 `family.role`이 묻는 의미만 확인한다.
+1. `wire_id` key를 고정하고 같은 APPLICABLE_SLOTS 항목의 `family.role`이 묻는 의미만 확인한다.
 2. slot의 `evidence_refs`를 profile의 exact fact에 연결한다.
 3. 같은 좌표의 SOURCE에서 조건·호출·대입·반환·R/W와 순서를 확인한다.
 4. 입력이 입증한 의미만 짧고 구체적으로 쓰고, 부족하면 status/missing_context로 드러낸다.
@@ -36,8 +36,9 @@
 - `FUNCTION.RESPONSIBILITY`: 호출자가 관측하는 target의 전체 책임. 이름 번역이나 제목 한 줄이
   아니라 입력→주요 처리→외부 효과/결과의 경계를 말한다.
 - `FUNCTION.INPUT_ROLE`: 입력값이 target에서 맡는 입증된 역할. 식별자 모양으로 업무 뜻을 만들지 않는다.
-- `FUNCTION.ORDERED_FLOW`: 결과를 바꾸는 주요 검증·분기·CALL/RW·반환 순서. 한 줄씩 번역하지
-  말고 서로 다른 원인과 결과를 정확히 연결한다.
+- 전체 흐름 순서는 `STRUCTURAL_PROFILE.ordered_flow`가 소유한다. exact 구조 의미는 각 profile
+  fact의 속성에 있고, 추가 자연어 의미가 적용된 fact만 해당 family slot에서 채운다. 전체 흐름을
+  별도 장문 slot으로 복제하지 않는다.
 - `FUNCTION.RESULT`: 반환, 출력 구조, 외부 상태 변화 중 target이 실제 보장하는 결과.
 - `STATEMENT.DIRECT_ACTION`: 이 구조 문장이 직접 하는 한 동작만 쓴다. 부모 업무 목적을 붙이지 않는다.
 - `DECISION.ROLE`: 무엇을 어떤 조건으로 가르는 판정인지 쓴다.

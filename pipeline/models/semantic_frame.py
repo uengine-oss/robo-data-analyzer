@@ -55,6 +55,7 @@ _ALLOWED_EVIDENCE_ATTRIBUTES: dict[str, frozenset[str]] = {
     "RULE": frozenset({
         "anchor_line", "role", "condition", "effects", "when", "source_refs",
         "type", "condition_timing", "complement_of", "implicit_false",
+        "nested_control", "fallthrough_to", "at_label", "after_control",
     }),
     "TABLE": frozenset({
         "table_id", "db", "schema", "name", "source_description", "sample_refs",
@@ -278,25 +279,45 @@ def _wire_slot_type(fingerprint: str) -> object:
     return SlotValue
 
 
-def semantic_frame_response_model(slot_specs: Iterable[SlotSpec]) -> type[BaseModel]:
+def semantic_slot_wire_ids(slot_specs: Iterable[SlotSpec]) -> tuple[str, ...]:
+    """Return request-local compact keys for an exact ordered slot assignment.
+
+    Canonical ``SL:...`` identifiers belong to the Analyzer frame, graph and MCP
+    boundaries.  Echoing them through every constrained model response wastes decode
+    tokens and made the dynamic frame materially slower than the legacy pipeline.  The
+    provider only needs an unambiguous key inside one request, so the wire uses bounded
+    ``S0..Sn`` keys and the normalizer restores the canonical identifiers by this exact
+    assignment.  The closed response model still rejects missing, duplicate and extra
+    values; no response order is trusted.
+    """
     specs = tuple(slot_specs)
     if not specs or len({spec.slot_id for spec in specs}) != len(specs):
         raise ValueError("semantic frame slot specs must be non-empty and unique")
+    return tuple(f"S{index}" for index in range(len(specs)))
+
+
+def semantic_frame_response_model(slot_specs: Iterable[SlotSpec]) -> type[BaseModel]:
+    specs = tuple(slot_specs)
+    wire_ids = semantic_slot_wire_ids(specs)
     fingerprint = stable_digest([spec.model_dump(mode="json") for spec in specs])
     fields = {
-        spec.slot_id: (_wire_slot_type(fingerprint), Field(...))
-        for spec in specs
+        wire_id: (_wire_slot_type(fingerprint), Field(...))
+        for wire_id in wire_ids
     }
     slots_model = create_model(
         f"AssignedSemanticSlotMap_{fingerprint}",
         __config__=ConfigDict(extra="forbid"),
         **fields,
     )
-    return create_model(
+    model = create_model(
         f"AssignedSemanticFrameOutput_{fingerprint}",
         __config__=ConfigDict(extra="forbid"),
         slots=(slots_model, Field(...)),
     )
+    # Runtime-only diagnostics/test metadata.  This is deliberately absent from the
+    # provider schema and therefore cannot increase prompt or decode size.
+    model.__semantic_slot_bindings__ = tuple(zip(wire_ids, specs, strict=True))
+    return model
 
 
 def normalize_semantic_frame_response(
@@ -305,18 +326,19 @@ def normalize_semantic_frame_response(
     slot_specs: Iterable[SlotSpec],
 ) -> SemanticFrame:
     specs = tuple(slot_specs)
+    wire_ids = semantic_slot_wire_ids(specs)
     evidence_ids = set(profile.evidence)
     target_ref = evidence_id(profile.target.id, "TARGET", 0)
     if target_ref not in evidence_ids:
         raise ValueError("profile target evidence is missing")
     slots: dict[str, SemanticSlot] = {}
-    for spec in specs:
+    for spec, wire_id in zip(specs, wire_ids, strict=True):
         if spec.target_ref != target_ref:
             raise ValueError(f"slot target_ref differs from canonical target: {spec.slot_id}")
         missing = set(spec.evidence_refs) - evidence_ids
         if missing:
             raise ValueError(f"slot spec references unknown evidence: {sorted(missing)}")
-        leaf = getattr(output.slots, spec.slot_id)
+        leaf = getattr(output.slots, wire_id)
         slots[spec.slot_id] = SemanticSlot(
             slot_id=spec.slot_id,
             family=spec.family,
@@ -335,12 +357,58 @@ def normalize_semantic_frame_response(
 
 
 def slot_specs_json(slot_specs: Iterable[SlotSpec]) -> str:
-    return _canonical([spec.model_dump(mode="json") for spec in slot_specs])
+    specs = tuple(slot_specs)
+    wire_ids = semantic_slot_wire_ids(specs)
+    return _canonical([
+        {
+            "wire_id": wire_id,
+            "family": spec.family,
+            "role": spec.role,
+            "target_ref": spec.target_ref,
+            "evidence_refs": spec.evidence_refs,
+        }
+        for spec, wire_id in zip(specs, wire_ids, strict=True)
+    ])
 
 
-def profile_prompt_json(profile: StructuralProfile) -> str:
-    """Bounded JSON for Analyzer-internal prompting; never includes source bodies."""
-    return _canonical(profile.model_dump(mode="json", by_alias=True))
+def profile_prompt_json(
+    profile: StructuralProfile,
+    slot_specs: Iterable[SlotSpec] | None = None,
+) -> str:
+    """Render the evidence closure for one concern, not the whole target graph.
+
+    The canonical frame retains the complete deterministic profile.  An individual model
+    call only needs facts reachable from the slots assigned to that concern; repeating every
+    child, rule, call and symbol in every concern made large real routines exceed provider
+    context limits before inference began.
+    """
+    if slot_specs is None:
+        prompt_profile = profile
+    else:
+        specs = tuple(slot_specs)
+        refs = {
+            ref
+            for spec in specs
+            for ref in (spec.target_ref, *spec.evidence_refs)
+        }
+        if not refs:
+            refs = {
+                ref for ref, fact in profile.evidence.items() if fact.kind == "TARGET"
+            }
+        evidence = {
+            ref: fact for ref, fact in profile.evidence.items() if ref in refs
+        }
+        prompt_profile = StructuralProfile(
+            target=profile.target,
+            evidence=evidence,
+            child_refs=[ref for ref in profile.child_refs if ref in evidence],
+            ordered_flow=[ref for ref in profile.ordered_flow if ref in evidence],
+            callee_refs=[ref for ref in profile.callee_refs if ref in evidence],
+            data_object_refs=[ref for ref in profile.data_object_refs if ref in evidence],
+            symbol_refs=[ref for ref in profile.symbol_refs if ref in evidence],
+            unsupported=profile.unsupported,
+        )
+    return _canonical(prompt_profile.model_dump(mode="json", by_alias=True))
 
 
 def merge_semantic_frames(

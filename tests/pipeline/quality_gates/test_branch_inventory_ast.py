@@ -472,6 +472,7 @@ class LabelHandlerRowTest(unittest.TestCase):
     ])
     STATEMENTS = (
         StatementFact("r3", "RETURN", 3, 3, expression="0"),
+        StatementFact("l4", "LABEL", 4, 4, target="PFM_CATCH"),
         StatementFact("r5", "RETURN", 5, 5, expression="1"),
     )
 
@@ -481,7 +482,11 @@ class LabelHandlerRowTest(unittest.TestCase):
             statements=self.STATEMENTS, call_lines=((2, "a"),),
         )
         rows = {line: kind for line, kind, _ in inventory.termination_rows}
-        self.assertEqual({3: "exit", 4: "handler", 5: "exit"}, rows)
+        self.assertEqual({3: "exit", 4: "handler"}, rows)
+        table = {row["line"]: row for row in inventory.table_rows()}
+        self.assertEqual("handler", table[4]["role"])
+        self.assertEqual(frozenset({"1"}), inventory.direct_evidence(4)[1])
+        self.assertEqual((5,), inventory.direct_evidence_lines(4))
 
     def test_inactive_label_is_not_a_handler_row(self):
         source = self.SOURCE.replace("PFM_CATCH:", "#if 0\nPFM_CATCH:\n#endif")
@@ -489,12 +494,63 @@ class LabelHandlerRowTest(unittest.TestCase):
             source, [], "c", handler_markers=("PFM_CATCH",),
             statements=(
                 StatementFact("r3", "RETURN", 3, 3, expression="0"),
+                StatementFact("l5", "LABEL", 5, 5, target="PFM_CATCH"),
                 StatementFact("r7", "RETURN", 7, 7, expression="1"),
             ),
             call_lines=((2, "a"),),
         )
         self.assertEqual(
             [], [line for line, kind, _ in inventory.termination_rows if kind == "handler"])
+
+    def test_source_spelling_without_parser_label_is_not_reparsed(self):
+        inventory = build_inventory(
+            self.SOURCE, [], "c", handler_markers=("PFM_CATCH",),
+            statements=(
+                StatementFact("r3", "RETURN", 3, 3, expression="0"),
+                StatementFact("r5", "RETURN", 5, 5, expression="1"),
+            ),
+            call_lines=((2, "a"),),
+        )
+        self.assertEqual(
+            [], [line for line, kind, _ in inventory.termination_rows if kind == "handler"],
+        )
+
+
+class ConsecutiveCaseLabelTest(unittest.TestCase):
+    def test_empty_case_points_to_next_case_without_copying_its_effects(self):
+        source = "\n".join([
+            "switch (rc) {",       # 1
+            "case RC_NFD:",        # 2
+            "case RC_NRM:",        # 3
+            "  break;",            # 4
+            "default:",            # 5
+            "  return RC_ERR;",    # 6
+            "}",                    # 7
+        ])
+        tree = [ControlSubtreeNode(
+            "switch@1", "SWITCH", 1, 7, expression="rc",
+            children=[
+                ControlSubtreeNode("case@2", "CASE", 2, 2, expression="RC_NFD"),
+                ControlSubtreeNode("case@3", "CASE", 3, 4, expression="RC_NRM"),
+                ControlSubtreeNode("case@5", "CASE", 5, 6, expression=""),
+            ],
+        )]
+        inventory = build_inventory(
+            source, tree, "c",
+            statements=(
+                StatementFact("b4", "BREAK", 4, 4, target="break"),
+                StatementFact("r6", "RETURN", 6, 6, expression="RC_ERR"),
+            ),
+            call_lines=(),
+        )
+
+        rows = {row["line"]: row for row in inventory.table_rows()}
+        self.assertEqual(3, rows[2]["fallthrough_to"])
+        self.assertNotIn("fallthrough_to", rows[3])
+        self.assertEqual((), inventory.direct_evidence_lines(2))
+        evidence = rule_evidence(inventory, (2, 3))
+        self.assertEqual(3, evidence["rows"]["R2"]["fallthrough_to"])
+        self.assertNotIn("direct", evidence["rows"]["R2"])
 
 
 class InactiveRegionStatementFactTest(unittest.TestCase):

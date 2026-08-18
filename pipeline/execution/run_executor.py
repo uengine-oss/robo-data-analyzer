@@ -51,8 +51,7 @@ from graph.neo4j_client import Neo4jClient
 from graph.schema.constraints import ensure_schema, wipe_graph
 from graph.connection_context import get_override
 from shared.files.cache import SourceFileCache
-from shared.concurrency.priority_semaphore import PrioritySemaphore
-from pipeline.execution.analysis_handoff import AnalysisHandoff
+from pipeline.execution.analysis_handoff import AnalysisHandoff, analysis_llm_slots
 from pipeline.execution.langgraph_builder import build_langgraph_workflow
 from pipeline.execution.pause_controller import PauseController
 from pipeline.execution.run_registry import clear as clear_active_run
@@ -191,9 +190,9 @@ async def execute_run(
 
             # run 전체가 공유하는 **단 하나의** LLM 슬롯 (spec 096). step 마다 따로 만들면
             # 동시 실행 시 N 배가 한 서버로 몰려 과부하 — 실측으로 닫힌 길이다.
-            # 우선순위 세마포어인 이유: step7 과 후처리가 이제 같은 superstep 에서 겹치므로
-            # 총량은 그대로 두되 임계경로(step7)가 항상 먼저 슬롯을 잡아야 한다.
-            llm_semaphore = PrioritySemaphore(SETTINGS.analysis_pipeline.max_concurrency)
+            # Step 7과 후처리가 같은 superstep에서 겹친다. 총량은 고정하고
+            # 의존성 Summary/Rule/TABLE/후처리를 공정 차선으로 스케줄한다.
+            llm_semaphore = analysis_llm_slots()
             # step7 → 후처리 인계 채널 — 분할이 확정된 시점을 후처리에 알려 배리어를 없앤다.
             analysis_handoff = AnalysisHandoff(llm_semaphore)
 

@@ -26,6 +26,7 @@ from pipeline.models.rule_expression import (
     COND_HELPERS,
     LeafSyntaxError,
     LeafVocabularyError,
+    NL_MAX_CHARS,
     condition_call_names,
     parse_condition,
     parse_effect,
@@ -848,8 +849,10 @@ def _grade_rule_content(
         verdict.reasons.append("cond는 한 줄 Python 표현식이어야 함")
     if any("\n" in statement for statement in rule.then):
         verdict.reasons.append("then 효과는 각각 한 줄 Python 표현식이어야 함")
-    if "\n" in rule.nl or len(rule.nl) > 300:
-        verdict.reasons.append("nl은 개행 없는 300자 이하 한 문장이어야 함")
+    if "\n" in rule.nl or len(rule.nl) > NL_MAX_CHARS:
+        verdict.reasons.append(
+            f"nl은 개행 없는 {NL_MAX_CHARS}자 이하 한 문장이어야 함"
+        )
     if rule.cond:
         try:
             tree = parse_condition(rule.cond)

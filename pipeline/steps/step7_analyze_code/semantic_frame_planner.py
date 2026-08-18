@@ -1,13 +1,14 @@
 """Project existing parser/linker facts into bounded semantic frame slots."""
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Mapping
 from typing import Any
 
 from graph.schema.graph_nodes import CodeNode
 from pipeline.models.analysis_context import AnalysisContext, StatementFact
 from pipeline.models.data_object_usage import DataObjectUsageEvidence
-from pipeline.languages import control_structure_labels
+from pipeline.languages import callsite_labels, control_structure_labels
 from pipeline.models.semantic_frame import (
     EvidenceFact,
     SlotSpec,
@@ -16,6 +17,7 @@ from pipeline.models.semantic_frame import (
     evidence_id,
     slot_id,
     stable_digest,
+    semantic_slot_wire_ids,
 )
 from pipeline.quality_gates.branch_inventory import BranchInventory
 
@@ -216,15 +218,6 @@ def build_code_semantic_plan(
         call_refs_by_line.setdefault(absolute_line, []).append(ref)
         callee_refs.append(ref)
         ordered.append(ref)
-        _add_slot(
-            slots,
-            target_id=fn.id,
-            family="CALL",
-            role="PURPOSE",
-            anchor={"line": absolute_line, "call": call_name},
-            target_ref=target_ref,
-            evidence_refs=(target_ref, ref),
-        )
 
     # Linked callee identities are target-level facts because the current common context
     # does not assign every edge to an exact source occurrence.  Never guess that mapping.
@@ -343,6 +336,50 @@ def build_code_semantic_plan(
                 {"op": op, "target": target}
                 for op, target in inventory.direct_statement_effects(line)
             ]
+            owned_lines = set(inventory.direct_evidence_lines(line))
+            owned_statement_refs = tuple(
+                item for item in statement_refs if item[2] in owned_lines
+            )
+            direct_refs = tuple(
+                ref for _statement, ref, _start, _end in owned_statement_refs
+            ) + tuple(
+                ref
+                for owned_line in sorted(owned_lines)
+                for ref in call_refs_by_line.get(owned_line, ())
+            )
+            # A controller with no direct statement still has one exact outcome:
+            # control enters its immediate parser-owned child branches.  Preserve
+            # child ownership by projecting only child CONTROL coordinates and
+            # conditions here; never copy their statements/calls/effects upward.
+            nested_control_refs: tuple[str, ...] = ()
+            if branch is not None and row.get("nested_control"):
+                nested_control_refs = tuple(
+                    _add_fact(evidence, _fact(
+                        target_id=fn.id,
+                        kind="CONTROL",
+                        identity={
+                            "nested_child": child.node_id,
+                            "parent": branch.node_id,
+                        },
+                        owner_id=rule_owner_id or owner_id,
+                        file=fn.file_path,
+                        start_line=child.start + inventory.line_offset,
+                        end_line=child.end + inventory.line_offset,
+                        attributes={
+                            "node_id": child.node_id,
+                            "type": child.ntype,
+                            "role": "nested_child",
+                            "condition": child.condition,
+                            "condition_timing": child.condition_timing,
+                            "parent_ref": branch.node_id,
+                            "complement_of": None,
+                            "implicit_false": False,
+                        },
+                    ))
+                    for child in branch.children
+                )
+                ordered.extend(nested_control_refs)
+            supporting_refs = (*direct_refs, *nested_control_refs)
             ref = _add_fact(evidence, _fact(
                 target_id=fn.id,
                 kind="RULE",
@@ -357,11 +394,15 @@ def build_code_semantic_plan(
                     "condition": condition,
                     "effects": effects,
                     "when": [],
-                    "source_refs": [],
+                    "source_refs": list(dict.fromkeys(supporting_refs)),
                     "type": str(row.get("ntype") or ""),
                     "condition_timing": str(row.get("condition_timing") or ""),
                     "complement_of": row.get("complement_of"),
                     "implicit_false": bool("implicit_false" in condition),
+                    "nested_control": bool(row.get("nested_control")),
+                    "fallthrough_to": row.get("fallthrough_to"),
+                    "at_label": str(row.get("at_label") or ""),
+                    "after_control": str(row.get("after_control") or ""),
                 },
             ))
             rule_refs.append(ref)
@@ -373,7 +414,8 @@ def build_code_semantic_plan(
                 row=row,
                 branch=branch,
                 rule_ref=ref,
-                statement_refs=statement_refs,
+                statement_refs=owned_statement_refs,
+                direct_refs=supporting_refs,
             )
 
     ordered = sorted(
@@ -388,7 +430,6 @@ def build_code_semantic_plan(
 
     is_routine = fn.label in {"FUNCTION", "PROCEDURE", "METHOD", "TRIGGER"}
     if is_routine:
-        all_direct = tuple(dict.fromkeys((target_ref, *ordered, *rule_refs, *data_refs)))
         _add_slot(
             slots,
             target_id=fn.id,
@@ -396,7 +437,10 @@ def build_code_semantic_plan(
             role="RESPONSIBILITY",
             anchor="TARGET",
             target_ref=target_ref,
-            evidence_refs=all_direct,
+            # TARGET spans the exact routine range.  Fine-grained CALL/RULE/DATA slots
+            # retain their own coordinates; repeating all of them here is duplicate
+            # lineage and makes the dynamic assignment unbounded on real routines.
+            evidence_refs=(target_ref,),
         )
         if fn.params.strip() or any(symbol.kind == "parameter" for symbol in ctx.referenced_symbols):
             _add_slot(
@@ -422,19 +466,21 @@ def build_code_semantic_plan(
                 target_ref=target_ref,
                 evidence_refs=(target_ref, *return_refs),
             )
-        flow_refs = tuple(dict.fromkeys(ordered))
-        if len(flow_refs) >= 2:
-            _add_slot(
-                slots,
-                target_id=fn.id,
-                family="FUNCTION",
-                role="ORDERED_FLOW",
-                anchor="TARGET",
-                target_ref=target_ref,
-                evidence_refs=(target_ref, *flow_refs),
-            )
+    elif fn.label in callsite_labels():
+        # Framework FUNCTION_CALL values are occurrences owned by their routine and stay
+        # as exact structural evidence above.  DBMS CALL is an actual analysis CodeNode,
+        # so only that target owns a CALL meaning.  Treating every Framework occurrence
+        # as a prose owner inflated one APAS run by 4,349 low-level CALL.PURPOSE slots.
+        _add_slot(
+            slots,
+            target_id=fn.id,
+            family="CALL",
+            role="PURPOSE",
+            anchor="TARGET",
+            target_ref=target_ref,
+            evidence_refs=(target_ref,),
+        )
     else:
-        direct = tuple(dict.fromkeys((target_ref, *ordered, *rule_refs, *data_refs)))
         _add_slot(
             slots,
             target_id=fn.id,
@@ -442,7 +488,7 @@ def build_code_semantic_plan(
             role="DIRECT_ACTION",
             anchor="TARGET",
             target_ref=target_ref,
-            evidence_refs=direct,
+            evidence_refs=(target_ref,),
         )
 
     profile = StructuralProfile(
@@ -521,6 +567,48 @@ def slot_rule_anchor(profile: StructuralProfile, spec: SlotSpec) -> int | None:
     return next(iter(anchors), None)
 
 
+def rule_slot_specs_json(
+    profile: StructuralProfile,
+    slot_specs: Iterable[SlotSpec],
+    *,
+    assigned_rows: Iterable[int] = (),
+) -> str:
+    """Render the minimal request-local Rule assignment.
+
+    Canonical evidence IDs remain in ``SlotSpec`` and are restored after the model
+    returns.  The Rule model only needs to know which wire slot belongs to which
+    parser-owned anchor and semantic role; exact conditions/effects/source are already
+    supplied once by ``rule_evidence_json``.
+    """
+    specs = tuple(slot_specs)
+    assigned = tuple(dict.fromkeys(int(row) for row in assigned_rows))
+    wire_ids = semantic_slot_wire_ids(specs)
+    payload: list[dict[str, object]] = []
+    for spec, wire_id in zip(specs, wire_ids, strict=True):
+        anchor = slot_rule_anchor(profile, spec)
+        if anchor is None:
+            # DBMS owns semantics at every effective AST node.  A statement node's
+            # slot therefore references its TARGET/STATEMENT facts rather than a
+            # synthetic RULE fact, while the surrounding routine inventory still
+            # assigns the exact row.  Preserve that ownership instead of fabricating
+            # a Rule fact solely for prompt transport.
+            if profile.target.start_line in assigned:
+                anchor = profile.target.start_line
+            elif len(assigned) == 1:
+                anchor = assigned[0]
+            else:
+                raise ValueError(
+                    f"Rule slot lacks one unambiguous assigned row: {spec.slot_id}"
+                )
+        payload.append({
+            "wire_id": wire_id,
+            "anchor_line": anchor,
+            "family": spec.family,
+            "role": spec.role,
+        })
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
 def _statement_effects(statement: StatementFact) -> list[dict[str, str]]:
     if statement.label == "ASSIGNMENT":
         return [{
@@ -551,15 +639,12 @@ def _control_slots(
     branch: object | None,
     rule_ref: str,
     statement_refs: Iterable[tuple[StatementFact, str, int, int]],
+    direct_refs: Iterable[str],
 ) -> None:
     line = int(row["line"])
     role = str(row.get("role") or "")
     ntype = str(row.get("ntype") or "").upper()
-    owned_statements = tuple(
-        ref for _statement, ref, start, end in statement_refs
-        if start <= line <= end
-    )
-    refs = (target_ref, rule_ref, *owned_statements)
+    refs = (target_ref, rule_ref, *tuple(direct_refs))
     direct_terminates = bool(getattr(branch, "direct_terminates", False))
 
     if role == "handler" or ntype in {"CATCH", "EXCEPTION"}:
@@ -573,8 +658,7 @@ def _control_slots(
         )
         if direct_terminates or any(
             statement.label in {"THROW", "RAISE", "RETURN", "GOTO"}
-            for statement, _ref, start, end in statement_refs
-            if start <= line <= end
+            for statement, _ref, _start, _end in statement_refs
         ):
             _add_slot(
                 slots, target_id=target_id, family="EXCEPTION", role="PROPAGATION",
@@ -595,8 +679,7 @@ def _control_slots(
         )
         if str(row.get("condition_timing") or "") or direct_terminates or any(
             statement.label in {"BREAK", "RETURN", "EXIT"}
-            for statement, _ref, start, end in statement_refs
-            if start <= line <= end
+            for statement, _ref, _start, _end in statement_refs
         ):
             _add_slot(
                 slots, target_id=target_id, family="LOOP", role="TERMINATION",

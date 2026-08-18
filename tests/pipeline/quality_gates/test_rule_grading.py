@@ -18,6 +18,7 @@ from pipeline.models.code_analysis_output import (
     RulesExamplesOutput,
     RuleItem,
 )
+from pipeline.models.rule_expression import NL_MAX_CHARS
 from pipeline.quality_gates.branch_inventory import build_inventory
 from pipeline.quality_gates.rule_prompt_evidence import expected_rule_condition
 from pipeline.quality_gates.rule_grading import (
@@ -209,6 +210,22 @@ class ExactStructuralConditionContract(unittest.TestCase):
             "정확한 구조 경로" in reason
             for reason in rejected.verdicts[0].reasons
         ))
+
+
+class NarrativeLengthContract(unittest.TestCase):
+    def test_grader_uses_the_same_limit_as_the_response_schema(self):
+        narrative = "가" * NL_MAX_CHARS
+        report = grade_rules(
+            RulesExamplesOutput(rules=[_rule(1, None, [], narrative)]),
+            _inventory(),
+            SOURCE,
+            assigned={1},
+        )
+
+        self.assertFalse(any(
+            "자 이하 한 문장" in reason
+            for reason in report.verdicts[0].reasons
+        ), report.verdicts[0].reasons)
 
 
 class InjectedDefectsAreCaught(unittest.TestCase):

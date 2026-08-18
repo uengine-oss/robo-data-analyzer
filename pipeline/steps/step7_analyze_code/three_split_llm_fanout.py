@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -61,16 +62,18 @@ from pipeline.models.rule_response_schema import (
 )
 from pipeline.models.summary_response_schema import (
     frame_summary_response_model,
-    normalize_frame_summary_response,
 )
 from pipeline.models.semantic_frame import (
     merge_semantic_frames,
+    normalize_semantic_frame_response,
     profile_prompt_json,
     slot_specs_json,
 )
+from pipeline.models.semantic_frame_projection import project_summary
 from pipeline.steps.step7_analyze_code.semantic_frame_planner import (
     build_code_semantic_plan,
     rule_slot_specs,
+    rule_slot_specs_json,
     semantic_concern_slots,
 )
 from pipeline.models.table_insight_response_schema import (
@@ -86,10 +89,15 @@ from pipeline.steps.step7_analyze_code.rule_row_batching import (
 )
 from llm.runners.yaml_llm_runner import run_yaml_rule
 from llm.runners.model_output_error import ModelOutputError
-from shared.events.runtime_logger import log_warning
+from shared.events.runtime_logger import log_info, log_warning
 from shared.events.processing_events import track_processing
 from shared.files.cache import SourceFileCache
 from shared.concurrency.priority_semaphore import PrioritySemaphore
+from pipeline.execution.analysis_handoff import (
+    INSIGHTS_LANE,
+    RULES_LANE,
+    SUMMARY_LANE,
+)
 from pipeline.steps.step7_analyze_code.control_prompt import build_control_inventory
 from pipeline.steps.step7_analyze_code.model_source_projection import (
     project_model_source_literals,
@@ -102,6 +110,100 @@ from pipeline.steps.step7_analyze_code.quality_findings import apply_analysis_fi
 from pipeline.quality_gates.rule_prompt_evidence import rule_evidence
 
 _STEP = "step7.analyze_code.three_split"
+_MAX_TARGET_SUMMARY_SLOTS = 3
+
+
+def _summary_slot_batches(slot_specs):
+    """Return the single target-owned summary assignment.
+
+    A Framework routine owns only responsibility/input/result and a DBMS statement or
+    CALL target owns one direct meaning.  RULE, data-object and nested occurrence meaning
+    belong to their own concerns.  More than three summary slots is therefore a producer
+    ownership regression, not a reason to hide the expansion behind micro-batching.
+    """
+    specs = tuple(slot_specs)
+    if not specs:
+        raise ValueError("summary concern requires at least one semantic slot")
+    primary = tuple(spec for spec in specs if spec.family in {"FUNCTION", "STATEMENT"})
+    remaining = tuple(spec for spec in specs if spec not in primary)
+    ordered = (*primary, *remaining)
+    if len(ordered) > _MAX_TARGET_SUMMARY_SLOTS:
+        raise ValueError(
+            "summary concern exceeded target-owned semantic boundary: "
+            f"{len(ordered)} > {_MAX_TARGET_SUMMARY_SLOTS}"
+        )
+    batches = (tuple(ordered),)
+    assigned = [spec.slot_id for spec in ordered]
+    if len(assigned) != len(set(assigned)) or set(assigned) != {
+        spec.slot_id for spec in specs
+    }:
+        raise ValueError("summary slot batching lost or duplicated a slot")
+    return batches
+
+
+async def _run_bounded_frame_summary(
+    *, profile, slot_specs, strategy_name: str, common: dict, invoke,
+) -> SummaryOutput:
+    stereotype_owners = tuple(
+        spec for spec in slot_specs
+        if spec.family == "FUNCTION" and spec.role == "RESPONSIBILITY"
+    )
+    if len(stereotype_owners) != 1:
+        raise ValueError(
+            "summary stereotype requires exactly one FUNCTION.RESPONSIBILITY owner"
+        )
+    stereotype_owner_id = stereotype_owners[0].slot_id
+
+    async def _collect(batch_specs, batch_label):
+        owns_stereotype = any(
+            spec.slot_id == stereotype_owner_id for spec in batch_specs
+        )
+        values = {
+            **common,
+            "structural_profile": profile_prompt_json(profile, batch_specs),
+            "applicable_slots": slot_specs_json(batch_specs),
+        }
+        try:
+            output = await invoke(
+                values,
+                frame_summary_response_model(
+                    strategy_name,
+                    batch_specs,
+                    include_stereotype=owns_stereotype,
+                ),
+                batch_label,
+            )
+        except ModelOutputError as error:
+            # A deadline after partial generation is not safe to retry unchanged.  A
+            # repetition abort can also be isolated to one slot in a multi-slot forced
+            # response.  Splitting changes both the required schema and prompt evidence
+            # closure, so each smaller request is independently validated.  A failing
+            # singleton remains an explicit model-output failure.
+            if error.kind not in {"deadline", "repetition"} or len(batch_specs) == 1:
+                raise
+            midpoint = len(batch_specs) // 2
+            return (
+                *await _collect(batch_specs[:midpoint], f"{batch_label}a"),
+                *await _collect(batch_specs[midpoint:], f"{batch_label}b"),
+            )
+        frame = normalize_semantic_frame_response(output, profile, batch_specs)
+        return ((frame, str(getattr(output, "stereotype", ""))),)
+
+    collected = []
+    for batch_index, batch_specs in enumerate(_summary_slot_batches(slot_specs), start=1):
+        collected.extend(await _collect(batch_specs, str(batch_index)))
+    frames = [frame for frame, _stereotype in collected]
+    stereotypes = [value for _frame, value in collected if value]
+    if len(stereotypes) != 1:
+        raise ValueError(
+            "summary stereotype must be produced exactly once across slot batches"
+        )
+    stereotype = stereotypes[0]
+    merged = merge_semantic_frames(
+        *frames,
+        required_slot_ids=(spec.slot_id for spec in slot_specs),
+    )
+    return project_summary(merged, stereotype=stereotype)
 
 
 async def run_summary(
@@ -148,17 +250,26 @@ async def run_summary(
     )
     async def _call() -> SummaryOutput:
         async with track_processing("CodeNode", code_id, sub_action="warmup_summary"):
-            async with llm_slots:
-                profile, _all_specs, concerns = ctx.extra["_semantic_frame_plan"]
-                slot_specs = concerns["summary"]
-                output = await run_yaml_rule(
-                    prompts_dir=Path(strategy.prompts_dir),
-                    rule_name="code_summary",
-                    user_values=common,
-                    response_model=frame_summary_response_model(strategy.name, slot_specs),
-                    budget=cost_budget,
-                )
-                return normalize_frame_summary_response(output, profile, slot_specs)
+            profile, _all_specs, concerns = ctx.extra["_semantic_frame_plan"]
+            slot_specs = concerns["summary"]
+
+            async def _invoke(values, response_model, _batch_label):
+                async with llm_slots.at(SUMMARY_WAKE_PRIORITY, SUMMARY_LANE):
+                    return await run_yaml_rule(
+                        prompts_dir=Path(strategy.prompts_dir),
+                        rule_name="code_summary",
+                        user_values=values,
+                        response_model=response_model,
+                        budget=cost_budget,
+                    )
+
+            return await _run_bounded_frame_summary(
+                profile=profile,
+                slot_specs=slot_specs,
+                strategy_name=strategy.name,
+                common=common,
+                invoke=_invoke,
+            )
 
     try:
         return await _call()
@@ -224,13 +335,43 @@ async def analyze_code_three_split(
         module_intents or {}, table_descriptions or {},
         source_cache or SourceFileCache(),
     )
-    rules_values = common
+    # Rule prompts consume row-owned facts only.  Keeping the summary/table/source
+    # packet here repeated tens of thousands of unused characters per row batch.
+    rules_values = {
+        key: common[key]
+        for key in (
+            "id", "signature", "referenced_symbols", "external_evidence",
+            "reads", "writes", "table_ops", "callee_summaries",
+        )
+    }
     prompts_dir = Path(strategy.prompts_dir)
 
     # split 단위 wrapper — code_id 캡처 closure (응집 ★).
-    async def _track_split(sub_action: str, invoke, *, priority: int = 0):
+    async def _track_split(
+        sub_action: str,
+        invoke,
+        *,
+        priority: int = 0,
+        lane: str,
+        payload_chars: int = 0,
+    ):
         async with track_processing("CodeNode", code_id, sub_action=sub_action):
-            async with llm_slots.at(priority):
+            queued_at = time.monotonic()
+            waiting_before = llm_slots.waiting
+            async with llm_slots.at(priority, lane):
+                log_info(
+                    _STEP,
+                    "llm_slot_acquired",
+                    code_id=code_id,
+                    concern=sub_action,
+                    lane=lane,
+                    priority=priority,
+                    payload_chars=payload_chars,
+                    queue_wait_ms=round((time.monotonic() - queued_at) * 1000, 3),
+                    waiting_before=waiting_before,
+                    slots_in_use=llm_slots.in_use,
+                    slots_capacity=llm_slots.capacity,
+                )
                 return await invoke()
 
     # Server logs confirm KV caching, but recorded prompt bytes show that summary/rules
@@ -245,18 +386,27 @@ async def analyze_code_three_split(
             try:
                 profile, _all_specs, concerns = ctx.extra["_semantic_frame_plan"]
                 slot_specs = concerns["summary"]
-                dynamic_summary = await _track_split(
-                    "split_summary",
-                    lambda: run_yaml_rule(
-                        prompts_dir=prompts_dir, rule_name="code_summary",
-                        user_values=common,
-                        response_model=frame_summary_response_model(strategy.name, slot_specs),
-                        budget=cost_budget,
-                    ),
-                    priority=SUMMARY_WAKE_PRIORITY,
-                )
-                summary_out = normalize_frame_summary_response(
-                    dynamic_summary, profile, slot_specs,
+                async def _invoke(values, response_model, batch_label):
+                    return await _track_split(
+                        f"split_summary_{batch_label}",
+                        lambda: run_yaml_rule(
+                            prompts_dir=prompts_dir,
+                            rule_name="code_summary",
+                            user_values=values,
+                            response_model=response_model,
+                            budget=cost_budget,
+                        ),
+                        priority=SUMMARY_WAKE_PRIORITY,
+                        lane=SUMMARY_LANE,
+                        payload_chars=sum(len(str(value)) for value in values.values()),
+                    )
+
+                summary_out = await _run_bounded_frame_summary(
+                    profile=profile,
+                    slot_specs=slot_specs,
+                    strategy_name=strategy.name,
+                    common=common,
+                    invoke=_invoke,
                 )
             except ModelOutputError as error:
                 summary_out = error
@@ -416,8 +566,7 @@ async def analyze_code_three_split(
             **rules_values,
             "assigned_rows": ", ".join(map(str, rows)),
             "rule_evidence": evidence_json,
-            "structural_profile": profile_prompt_json(profile),
-            "applicable_slots": slot_specs_json(assigned_specs),
+            "applicable_slots": rule_slot_specs_json(profile, assigned_specs),
         }
         return evidence, evidence_json, values, profile, assigned_specs
 
@@ -432,6 +581,8 @@ async def analyze_code_three_split(
                 budget=cost_budget,
             ),
             priority=rule_queue_priority(len(_evidence_json)),
+            lane=RULES_LANE,
+            payload_chars=sum(len(str(value)) for value in values.values()),
         )
         return normalize_frame_rules_response(
             output,
@@ -475,12 +626,23 @@ async def analyze_code_three_split(
         )
         async def _collect_insights():
             try:
+                insight_values = {
+                    **common,
+                    "structural_profile": profile_prompt_json(profile, insight_specs),
+                    "applicable_slots": slot_specs_json(insight_specs),
+                }
                 output = await _track_split(
                     "split_insights",
                     lambda: run_yaml_rule(
                         prompts_dir=prompts_dir, rule_name="code_table_insights",
-                        user_values=common, response_model=insight_model, budget=cost_budget,
+                        user_values=insight_values,
+                        response_model=insight_model,
+                        budget=cost_budget,
                     ),
+                    payload_chars=sum(
+                        len(str(value)) for value in insight_values.values()
+                    ),
+                    lane=INSIGHTS_LANE,
                 )
                 return output, None
             except ModelOutputError as error:
@@ -743,7 +905,7 @@ def _build_user_values(
             sort_keys=True,
             separators=(",", ":"),
         ),
-        "structural_profile": profile_prompt_json(profile),
+        "structural_profile": profile_prompt_json(profile, concerns["summary"]),
         "applicable_slots": slot_specs_json(concerns["summary"]),
         # spec 102: 규칙이 고를 수 있는 근거 분기 후보. 분할 3 템플릿만 참조한다.
         "branch_index": project_model_source_literals(inventory.branch_index()),

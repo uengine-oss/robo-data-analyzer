@@ -447,7 +447,8 @@ def load_gold_axes(
     routines_raw = json.loads((gold_dir / "routines.json").read_text(encoding="utf-8-sig"))
     tables_raw = json.loads((gold_dir / "tables.json").read_text(encoding="utf-8-sig"))
     relations = json.loads((gold_dir / "relationships.json").read_text(encoding="utf-8-sig"))
-    functions = json.loads((gold_dir / "functions.json").read_text(encoding="utf-8-sig"))
+    functions_raw = _optional_json(gold_dir / "functions.json", {})
+    functions = functions_raw if isinstance(functions_raw, dict) else {}
     references = _optional_json(gold_dir / "references.json", {})
     init_by = _optional_json(gold_dir / "init_by.json", [])
 

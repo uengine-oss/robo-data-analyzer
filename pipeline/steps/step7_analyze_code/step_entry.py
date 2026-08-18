@@ -16,10 +16,9 @@ from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
-from shared.concurrency.priority_semaphore import PrioritySemaphore
 from shared.config.settings import SETTINGS
 from shared.files.cache import SourceFileCache
-from pipeline.execution.analysis_handoff import AnalysisHandoff
+from pipeline.execution.analysis_handoff import AnalysisHandoff, analysis_llm_slots
 from pipeline.execution.pause_controller import NULL_PAUSE, PauseController
 from pipeline.execution.step_config import step_config
 
@@ -81,7 +80,7 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
     # 후처리와 슬롯·분할 확정 신호를 나누는 run 스코프 채널 (spec 096).
     # 없으면(단독 호출·테스트) 이 run 안에서만 쓰는 것을 만든다 — 겹칠 상대가 없어 동작 동일.
     handoff: AnalysisHandoff = cfg.get("analysis_handoff") or AnalysisHandoff(
-        PrioritySemaphore(SETTINGS.analysis_pipeline.max_concurrency)
+        analysis_llm_slots()
     )
 
     contexts = state.get("analysis_contexts", {})

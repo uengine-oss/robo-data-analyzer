@@ -84,6 +84,34 @@ class PrioritySemaphoreTest(unittest.IsolatedAsyncioTestCase):
         await asyncio.gather(*tasks)
         self.assertEqual(order, [0, 1, 2, 3, 4])
 
+    async def test_priority_cannot_bypass_one_waiter_beyond_capacity(self) -> None:
+        sem = PrioritySemaphore(1)
+        await sem.acquire()
+        order: list[str] = []
+
+        async def waiter(name: str, priority: int) -> None:
+            await sem.acquire(priority)
+            order.append(name)
+
+        low = asyncio.create_task(waiter("low", 10))
+        await asyncio.sleep(0)
+        high1 = asyncio.create_task(waiter("high1", -10))
+        await asyncio.sleep(0)
+        sem.release()
+        await high1
+
+        high2 = asyncio.create_task(waiter("high2", -10))
+        await asyncio.sleep(0)
+        # low was bypassed once, equal to capacity=1. A later critical waiter
+        # therefore cannot overtake it again.
+        sem.release()
+        await low
+        sem.release()
+        await high2
+        sem.release()
+
+        self.assertEqual(order, ["high1", "low", "high2"])
+
     async def test_cancelled_waiter_does_not_leak_a_slot(self) -> None:
         sem = PrioritySemaphore(1)
 
@@ -96,6 +124,36 @@ class PrioritySemaphoreTest(unittest.IsolatedAsyncioTestCase):
 
         # 취소된 대기자가 슬롯을 물고 가지 않았다면 다시 잡을 수 있다.
         await asyncio.wait_for(_hold(sem, 0), timeout=1)
+
+    async def test_weighted_lanes_are_fair_and_work_conserving(self) -> None:
+        sem = PrioritySemaphore(1, fair_weights={"summary": 2, "rules": 1})
+        await sem.acquire()
+        order: list[str] = []
+
+        async def waiter(name: str, lane: str) -> None:
+            async with sem.at(0, lane):
+                order.append(name)
+
+        tasks = [
+            asyncio.create_task(waiter("s1", "summary")),
+            asyncio.create_task(waiter("s2", "summary")),
+            asyncio.create_task(waiter("s3", "summary")),
+            asyncio.create_task(waiter("s4", "summary")),
+            asyncio.create_task(waiter("r1", "rules")),
+            asyncio.create_task(waiter("r2", "rules")),
+        ]
+        await asyncio.sleep(0)
+        sem.release()
+        await asyncio.gather(*tasks)
+        self.assertEqual(order[:3], ["s1", "r1", "s2"])
+        self.assertEqual(set(order), {"s1", "s2", "s3", "s4", "r1", "r2"})
+
+        rules_only = [
+            asyncio.create_task(waiter("r3", "rules")),
+            asyncio.create_task(waiter("r4", "rules")),
+        ]
+        await asyncio.gather(*rules_only)
+        self.assertEqual(order[-2:], ["r3", "r4"])
 
     async def test_default_context_manager_is_drop_in(self) -> None:
         sem = PrioritySemaphore(2)

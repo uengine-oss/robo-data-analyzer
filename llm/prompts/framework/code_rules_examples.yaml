@@ -18,7 +18,6 @@ user_template_evidence: |
   response_locale: {response_locale}
   target_id: {id}
   signature: {signature}
-  structural_profile_json: {structural_profile}
   applicable_slots_json: {applicable_slots}
   target_referenced_symbol_definitions_json: {referenced_symbols}
   target_linked_external_context_json: {external_evidence}

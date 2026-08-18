@@ -73,6 +73,7 @@ class Branch:
     assignment_pairs: tuple[tuple[str, str], ...] = ()
     # ontology statement_effect_ops 가 선언한 statement 효과 (op, 대상) — 예: GOTO 점프.
     statement_effects: tuple[tuple[str, str], ...] = ()
+    direct_evidence_lines: tuple[int, ...] = ()
     direct_terminates: bool = False
     sequence_guard_lines: tuple[int, ...] = ()
     children: list["Branch"] = field(default_factory=list)
@@ -122,6 +123,7 @@ class EffectRegion:
     assignment_pairs: tuple[tuple[str, str], ...]
     callees: frozenset[str]
     statement_effects: tuple[tuple[str, str], ...]
+    evidence_lines: tuple[int, ...]
     path_anchor: int | None
     after_control: str
     at_label: str = ""
@@ -243,6 +245,54 @@ class BranchInventory:
         )
         return effects
 
+    def direct_evidence_lines(self, absolute_line: int) -> tuple[int, ...]:
+        """Return exact absolute AST/call coordinates owned by one rule row."""
+        relative = absolute_line - self.line_offset
+        branch = self.at_line(absolute_line)
+        if branch is not None and branch.start == relative:
+            lines = branch.direct_evidence_lines
+        elif self.entry_line is not None and relative == self.entry_line:
+            if self.entry_region is None:
+                raise ValueError(f"entry region missing at line {absolute_line}")
+            lines = self.entry_region.evidence_lines
+        elif (continuation := self.continuation_at(absolute_line)) is not None:
+            lines = continuation.evidence_lines
+        else:
+            lines = (relative,)
+        return tuple(line + self.line_offset for line in lines)
+
+    def case_fallthrough_to(self, absolute_line: int) -> int | None:
+        """Return the next parser CASE label for an empty fall-through arm.
+
+        This is a structural language fact and never copies the next arm's effects.
+        """
+        if not bool(source_lexicon(self.lang).get("case_fallthrough")):
+            return None
+        relative = absolute_line - self.line_offset
+        branch = self.at_line(absolute_line)
+        if (
+            branch is None
+            or branch.start != relative
+            or branch.ntype.upper() != "CASE"
+            or branch.end != branch.start
+            or branch.children
+            or branch.direct_evidence_lines
+        ):
+            return None
+        siblings = tuple(
+            child for child in (branch.parent.children if branch.parent else self.roots)
+            if child.ntype.upper() == "CASE"
+        )
+        index = next(
+            (position for position, sibling in enumerate(siblings) if sibling is branch),
+            None,
+        )
+        if index is None:
+            return None
+        if index + 1 >= len(siblings):
+            return None
+        return siblings[index + 1].start + self.line_offset
+
     def direct_callees(self, absolute_line: int) -> frozenset[str]:
         """Return calls owned by one row, including the synthesized entry row."""
         relative = absolute_line - self.line_offset
@@ -266,7 +316,6 @@ class BranchInventory:
         본문 없는 CASE 는 언어 표(``case_fallthrough``)가 허용할 때만 다음 CASE 의 효과를
         물려받는다. 관습을 코드가 아니라 데이터로 받는다.
         """
-        fallthrough = bool(source_lexicon(self.lang).get("case_fallthrough"))
         tables: list[dict[str, frozenset[str]]] = []
         for switch in self.all_branches:
             cases = [child for child in switch.children if child.ntype == "CASE"]
@@ -276,7 +325,7 @@ class BranchInventory:
             pending: list[Branch] = []
             for case in cases:
                 pending.append(case)
-                if case.callees or not fallthrough:
+                if self.case_fallthrough_to(case.start + self.line_offset) is None:
                     for waiting in pending:
                         for label in waiting.cond_values:
                             effects[label] = case.callees
@@ -585,15 +634,29 @@ class BranchInventory:
             )
         for region in self.continuation_regions:
             line = region.start
+            termination = next(
+                (
+                    (kind, text) for term_line, kind, text in self.termination_rows
+                    if term_line == line
+                ),
+                None,
+            )
             if line in rows_by_line:
-                if any(term_line == line for term_line, _kind, _text in self.termination_rows):
+                if termination is not None:
                     rows_by_line.pop(line)
                 else:
                     raise ValueError(f"continuation row collides with branch row: {line}")
-            rows_by_line[line] = (
-                f"{line + self.line_offset}: [continuation] "
-                f"{region.at_label or region.after_control} 구조 좌표에 도달한 직접 효과"
-            )
+            if termination is not None:
+                kind, text = termination
+                rows_by_line[line] = (
+                    f"{line + self.line_offset}: [{kind}] {text} | "
+                    f"{region.at_label or region.after_control} 이후 직접 효과 소유"
+                )
+            else:
+                rows_by_line[line] = (
+                    f"{line + self.line_offset}: [continuation] "
+                    f"{region.at_label or region.after_control} 구조 좌표에 도달한 직접 효과"
+                )
         return (
             "\n".join(rows_by_line[line] for line in sorted(rows_by_line))
             or "(분기 없음)"
@@ -649,14 +712,24 @@ class BranchInventory:
                         for ancestor, state in context["outer"]
                     ],
                 }
+            if self.has_nested_control(line + self.line_offset):
+                row["nested_control"] = True
+            fallthrough_to = self.case_fallthrough_to(line + self.line_offset)
+            if fallthrough_to is not None:
+                row["fallthrough_to"] = fallthrough_to
             rows.append(row)
         if self.entry_line is not None and self.entry_line not in chosen:
             rows.append({"line": self.entry_line + self.line_offset, "role": "entry"})
+        termination_by_line = {
+            line: (kind, text) for line, kind, text in self.termination_rows
+        }
         for region in self.continuation_regions:
+            termination = termination_by_line.get(region.start)
             rows.append({
                 "line": region.start + self.line_offset,
                 "end_line": region.end + self.line_offset,
-                "role": "continuation",
+                "role": termination[0] if termination is not None else "continuation",
+                "text": termination[1] if termination is not None else "",
                 "path_anchor_line": (
                     region.path_anchor + self.line_offset
                     if region.path_anchor is not None else None
@@ -757,49 +830,51 @@ def _assignment_pair(fact: StatementFact) -> tuple[str, str]:
     return target, f"({target}) {binary} ({expression})"
 
 
-def _handler_label_lines(
-    split: SplitSource, handler_markers: Sequence[str],
-) -> tuple[tuple[int, str], ...]:
-    """live 소스에서 라벨형 handler 마커(`PFM_CATCH:`) 줄을 찾는다.
-
-    마커는 skill 이 선언한 프레임워크 사실이라 표기가 둘이다 — 호출형
-    `PFM_CATCH();` 는 parser FUNCTION_CALL 좌표로 오지만, 라벨형 `PFM_CATCH:` 는
-    C 라벨 구문이라 현재 parser 가 노드를 내보내지 않는다(2026-08-05 K run에서
-    handler 행 67개 소실로 실측). 라벨 emit 은 parser 개선 항목으로 남기고,
-    여기서는 마커 이름 exact + 콜론 형태만 인정한다(정규식 구조 추정 아님).
-    """
-    found: list[tuple[int, str]] = []
-    markers = [str(m) for m in handler_markers if str(m).strip()]
-    for marker in markers:
-        pattern = re.compile(rf"^\s*{re.escape(marker)}\s*:")
-        for index, line in enumerate(split.live_lines, start=1):
-            if pattern.match(line):
-                found.append((index, marker))
-    return tuple(found)
-
-
 def _ast_termination_rows(
     statements: Sequence[StatementFact],
     call_lines: Sequence[tuple[int, str]],
     handler_markers: Sequence[str],
-    label_lines: Sequence[tuple[int, str]] = (),
 ) -> tuple[tuple[int, str, str], ...]:
     """AST 정본에서 [exit]/[handler] 행을 만든다 — source 첫 토큰 재탐색을 대체한다.
 
-    handler 마커(PFM_CATCH 류)는 프레임워크 사실이며 두 표기를 인정한다:
-    호출형은 parser FUNCTION_CALL 좌표(call_lines), 라벨형은 live 소스의
-    마커 라벨 줄(label_lines — ``_handler_label_lines``)이다.
+    handler 마커(PFM_CATCH 류)는 프레임워크 사실이며 두 parser 표기를 인정한다:
+    호출형은 FUNCTION_CALL 좌표, 라벨형은 LABEL statement 좌표다. source 정규식
+    재탐색 폴백은 없다.
     """
     handlers = {str(marker) for marker in handler_markers if str(marker).strip()}
     rows: dict[int, tuple[int, str, str]] = {}
     for line, name in call_lines:
         if name in handlers and line not in rows:
             rows[line] = (line, "handler", name)
-    for line, name in label_lines:
-        if line not in rows:
-            rows[line] = (line, "handler", name)
+    labels = sorted(
+        (
+            fact for fact in statements
+            if fact.label == "LABEL" and str(fact.target or "") in handlers
+        ),
+        key=lambda fact: (fact.start, fact.end, str(fact.target)),
+    )
+    for fact in labels:
+        rows.setdefault(fact.start, (fact.start, "handler", str(fact.target)))
+    all_label_lines = sorted(
+        fact.start for fact in statements if fact.label == "LABEL"
+    )
+
+    def owned_by_handler_label(line: int) -> bool:
+        preceding = next((fact for fact in reversed(labels) if fact.start < line), None)
+        if preceding is None:
+            return False
+        next_label = next(
+            (candidate for candidate in all_label_lines if candidate > preceding.start),
+            None,
+        )
+        return next_label is None or line < next_label
+
     for fact in statements:
-        if fact.label not in _AST_EXIT_LABELS or fact.start in rows:
+        if (
+            fact.label not in _AST_EXIT_LABELS
+            or fact.start in rows
+            or owned_by_handler_label(fact.start)
+        ):
             continue
         keyword = fact.label.lower()
         expression = " ".join((fact.expression or "").split())
@@ -1059,6 +1134,7 @@ def _build_effect_region(
         assignment_pairs=assignments,
         callees=calls,
         statement_effects=effects,
+        evidence_lines=tuple(dict.fromkeys(effect_lines)),
         path_anchor=owner.start if owner is not None else None,
         after_control=(
             f"{preceding.ntype}@{preceding.start + line_offset}"
@@ -1195,10 +1271,7 @@ def build_inventory(
     )
     declared = {value.strip().lower() for value in declared_values if value and value.strip()}
     declared |= {v for value in declared_values for v in literal_values(value or "", lang)}
-    termination = _ast_termination_rows(
-        ast_statements, ast_calls, handler_markers,
-        _handler_label_lines(split, handler_markers),
-    )
+    termination = _ast_termination_rows(ast_statements, ast_calls, handler_markers)
     function_returns = frozenset(
         " ".join(fact.expression.split())
         for fact in ast_statements
@@ -1261,6 +1334,7 @@ def build_inventory(
         branch.assignment_pairs = first.assignment_pairs if first is not None else ()
         branch.callees = first.callees if first is not None else frozenset()
         branch.statement_effects = first.statement_effects if first is not None else ()
+        branch.direct_evidence_lines = first.evidence_lines if first is not None else ()
         branch.direct_terminates = first.terminates if first is not None else False
         branch.effect_atoms = frozenset(
             atoms(branch.direct_source, lang) if branch.direct_source else ()

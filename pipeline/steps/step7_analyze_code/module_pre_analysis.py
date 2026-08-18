@@ -153,7 +153,7 @@ async def _analyze_module(
                         "coordinate_system": "absolute-file-line",
                         "module_header": _format_header(module),
                         "code_signatures": _format_signatures(signatures),
-                        "structural_profile": profile_prompt_json(profile),
+                        "structural_profile": profile_prompt_json(profile, specs),
                         "applicable_slots": slot_specs_json(specs),
                     },
                     response_model=aggregate_response_model(

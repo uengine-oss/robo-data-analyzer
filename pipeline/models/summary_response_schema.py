@@ -135,8 +135,15 @@ def normalize_batch_summary_response(
 def frame_summary_response_model(
     strategy: str,
     slot_specs: Iterable[SlotSpec],
+    *,
+    include_stereotype: bool = True,
 ) -> type[BaseModel]:
-    """Closed summary concern: assigned slot leaves plus a closed role classification."""
+    """Closed summary concern with one optional, explicitly owned classification.
+
+    Slot batches are independently generated, but ``stereotype`` is a target-level
+    value and must therefore have exactly one producer.  Callers omit the field from
+    every non-owner schema instead of generating conflicting values and picking one.
+    """
     specs = tuple(slot_specs)
     slot_model = semantic_frame_response_model(specs)
     slots_type = slot_model.model_fields["slots"].annotation
@@ -145,13 +152,18 @@ def frame_summary_response_model(
         "strategy": strategy,
         "slots": [spec.model_dump(mode="json") for spec in specs],
         "concern": "frame-summary",
+        "include_stereotype": include_stereotype,
     })
-    return create_model(
+    fields = {"slots": (slots_type, Field(...))}
+    if include_stereotype:
+        fields["stereotype"] = (stereotype_type, Field(...))
+    model = create_model(
         f"AssignedFrameSummary_{fingerprint}",
         __config__=ConfigDict(extra="forbid"),
-        slots=(slots_type, Field(...)),
-        stereotype=(stereotype_type, Field(...)),
+        **fields,
     )
+    model.__semantic_slot_bindings__ = slot_model.__semantic_slot_bindings__
+    return model
 
 
 def normalize_frame_summary_response(

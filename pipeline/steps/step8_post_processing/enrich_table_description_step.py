@@ -21,6 +21,7 @@ from langchain_core.runnables import RunnableConfig
 
 from pipeline.execution.analysis_handoff import (
     POSTPROCESS_PRIORITY,
+    POSTPROCESS_LANE,
     AnalysisHandoffAborted,
     handoff_of,
 )
@@ -148,14 +149,16 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
 
         async def _call() -> TableDescription:
             async with track_processing("Table", table_fqn):
-                async with slots.at(POSTPROCESS_PRIORITY):
+                async with slots.at(POSTPROCESS_PRIORITY, POSTPROCESS_LANE):
                     return await run_yaml_rule(
                         prompts_dir=prompts_dir,
                         rule_name="table_description",
                         user_values={
                             "table_fqn": table_fqn,
                             "candidates_json": json.dumps(evidence, ensure_ascii=False, indent=2),
-                            "table_structural_profile": profile_prompt_json(table_plan[0]),
+                            "table_structural_profile": profile_prompt_json(
+                                table_plan[0], table_plan[1],
+                            ),
                             "table_applicable_slots": slot_specs_json(table_plan[1]),
                             "column_frame_assignments": json.dumps(
                                 {

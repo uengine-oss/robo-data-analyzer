@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+from types import SimpleNamespace
 
 from llm.runners.model_output_error import ModelOutputError
 
@@ -256,6 +257,40 @@ class BatchingContract(unittest.TestCase):
             any("창작" in reason for finding in collection.findings for reason in finding.reasons)
         )
 
+    def test_partial_semantic_slot_is_visible_and_not_published_as_trusted_rule(self):
+        fact = SimpleNamespace(kind="RULE", attributes={"anchor_line": 1})
+        slot = SimpleNamespace(
+            slot_id="SL:test:DECISION:TRUE_OUTCOME:1",
+            family="DECISION",
+            role="TRUE_OUTCOME",
+            evidence_refs=("rule",),
+            meaning="일부 결과만 확인됨",
+            status="partial",
+            missing_context=("직접 효과",),
+        )
+        frame = SimpleNamespace(
+            profile=SimpleNamespace(evidence={"rule": fact}),
+            slots={slot.slot_id: slot},
+        )
+
+        async def invoke(rows):
+            return RulesExamplesOutput.model_construct(
+                rules=[_good(line) for line in rows],
+                semantic_frame=frame if 1 in rows else None,
+            )
+
+        collection = asyncio.run(collect_rules_by_rows(
+            invoke=invoke, inventory=_inventory(), target_scope="fn", source=SOURCE,
+            rows_per_call=1,
+        ))
+
+        self.assertNotIn(1, [rule.anchor_line for rule in collection.rules])
+        finding = next(
+            item for item in collection.findings if item.coordinates == (1,)
+        )
+        self.assertEqual("unverified", finding.status)
+        self.assertIn("직접 효과", finding.reasons[0])
+
     def test_missing_row_is_unavailable_while_valid_sibling_survives(self):
         async def invoke(rows):
             return RulesExamplesOutput(rules=[_good(rows[0])])
@@ -332,6 +367,73 @@ class BatchingContract(unittest.TestCase):
             [(1,)],
             [finding.coordinates for finding in collection.findings
              if finding.status == "unavailable"],
+        )
+
+    def test_deadline_bisects_required_rows_until_all_meaning_is_recovered(self):
+        calls = []
+
+        async def invoke(rows):
+            calls.append(tuple(rows))
+            if len(rows) > 1:
+                raise ModelOutputError(
+                    rule_name="code_rules_examples",
+                    kind="deadline",
+                    detail="test deadline",
+                    original_type="ModelGenerationDeadlineExceeded",
+                )
+            return RulesExamplesOutput(rules=[_good(line) for line in rows])
+
+        collection = asyncio.run(collect_rules_by_rows(
+            invoke=invoke,
+            inventory=_inventory(),
+            target_scope="fn",
+            source=SOURCE,
+            rows_per_call=3,
+        ))
+
+        self.assertEqual([1, 5, 9], [rule.anchor_line for rule in collection.rules])
+        self.assertFalse([
+            finding for finding in collection.findings
+            if finding.status == "unavailable"
+        ])
+        self.assertEqual(5, collection.calls)
+        self.assertEqual(
+            {(1, 5, 9), (1,), (5, 9), (5,), (9,)},
+            set(calls),
+        )
+
+    def test_repetition_bisects_rows_and_keeps_bad_singleton_visible(self):
+        calls = []
+
+        async def invoke(rows):
+            calls.append(tuple(rows))
+            if len(rows) > 1 or list(rows) == [5]:
+                raise ModelOutputError(
+                    rule_name="code_rules_examples",
+                    kind="repetition",
+                    detail="test repetition",
+                    original_type="RepetitionLoopAborted",
+                )
+            return RulesExamplesOutput(rules=[_good(line) for line in rows])
+
+        collection = asyncio.run(collect_rules_by_rows(
+            invoke=invoke,
+            inventory=_inventory(),
+            target_scope="fn",
+            source=SOURCE,
+            rows_per_call=3,
+        ))
+
+        self.assertEqual([1, 9], [rule.anchor_line for rule in collection.rules])
+        self.assertEqual(
+            [(5,)],
+            [finding.coordinates for finding in collection.findings
+             if finding.status == "unavailable"],
+        )
+        self.assertEqual(5, collection.calls)
+        self.assertEqual(
+            {(1, 5, 9), (1,), (5, 9), (5,), (9,)},
+            set(calls),
         )
 
     def test_batches_run_concurrently(self):

@@ -20,6 +20,7 @@ from langchain_core.runnables import RunnableConfig
 
 from pipeline.execution.analysis_handoff import (
     POSTPROCESS_PRIORITY,
+    POSTPROCESS_LANE,
     AnalysisHandoffAborted,
     handoff_of,
 )
@@ -32,10 +33,12 @@ from shared.config.settings import SETTINGS
 from llm.fanout import gather_with_warmup
 from pipeline.models.code_analysis_output import ModuleSummaryOutput
 from pipeline.models.aggregate_semantic_frame import (
+    aggregate_member_payloads,
     aggregate_response_model,
     aggregate_slot_meaning,
     build_aggregate_semantic_plan,
     normalize_aggregate_response,
+    sealed_summary_frame_payload,
 )
 from pipeline.languages import module_stereotype_values
 from pipeline.models.semantic_frame import SemanticFrame, profile_prompt_json, slot_specs_json
@@ -149,15 +152,19 @@ async def _summarize(
             family="MODULE",
             member_frames=member_frames,
             include_responsibility=True,
+            member_roles=("RESPONSIBILITY", "INPUT_ROLE", "RESULT"),
         )
         member_text = json.dumps(
-            [frame.model_dump(mode="json", by_alias=True) for frame in member_frames],
+            aggregate_member_payloads(
+                member_frames,
+                roles=("RESPONSIBILITY", "INPUT_ROLE", "RESULT"),
+            ),
             ensure_ascii=False,
             separators=(",", ":"),
         )
         try:
             async with track_processing("Module", module.id):
-                async with slots.at(POSTPROCESS_PRIORITY):
+                async with slots.at(POSTPROCESS_PRIORITY, POSTPROCESS_LANE):
                     result: ModuleSummaryOutput = await run_yaml_rule(
                         prompts_dir=prompts_dir,
                         rule_name="module_summary",
@@ -165,7 +172,7 @@ async def _summarize(
                             "id": module.id,
                             "name": module.name,
                             "member_code_nodes": member_text,
-                            "structural_profile": profile_prompt_json(profile),
+                            "structural_profile": profile_prompt_json(profile, specs),
                             "applicable_slots": slot_specs_json(specs),
                         },
                         response_model=aggregate_response_model(
@@ -275,5 +282,7 @@ def _select_analyzed_code_nodes(
 
 
 def _member_frame_payload(node: CodeNode) -> object | None:
-    extra = node.extra or {}
-    return extra.get("semantic_frame") or extra.get("_summary_semantic_frame")
+    # The module step is released by ``handoff.summaries()``.  Reading the later merged
+    # frame here is a completion-order race: members whose Rule work finished early would
+    # contribute every branch/table slot while slower siblings contributed summary only.
+    return sealed_summary_frame_payload(node)

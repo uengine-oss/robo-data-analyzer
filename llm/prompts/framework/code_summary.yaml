@@ -15,12 +15,14 @@ user_template_specific: |
 
   ## [OUTPUT CONTRACT — frame summary concern]
 
-  최상위에는 `slots`, `stereotype`만 출력한다. `slots`는 response_format의 exact required
-  key map이고 각 값은 공통 leaf 계약을 따른다.
+  최상위에는 response_format이 required로 지정한 필드만 출력한다. `slots`는 항상 지정되는
+  exact key map이고 각 값은 공통 leaf 계약을 따른다. `stereotype`은 target 단위 소유 배치의
+  response_format에 있을 때만 출력하며, 없는 배치에서는 만들지 않는다.
 
   ## [DECISION — stereotype 역할 분류]
 
-  아래 ontology 값 중 target의 최종 관측 책임에 맞는 하나만 글자 그대로 선택한다:
+  response_format에 `stereotype`이 있을 때만 아래 ontology 값 중 target의 최종 관측 책임에
+  맞는 하나를 글자 그대로 선택한다:
   {stereotype_options}
 
   둘 이상이면 다음 우선순위를 적용한다:
@@ -36,8 +38,8 @@ user_template_specific: |
 
   ## [SELF CHECK]
 
-  - 최상위 `slots`와 `stereotype`만 썼는가
-  - stereotype이 ontology literal이고 FUNCTION.RESPONSIBILITY와 모순되지 않는가
+  - 최상위에 response_format이 요구한 필드만 썼는가
+  - `stereotype`이 요구된 배치라면 ontology literal이고 FUNCTION.RESPONSIBILITY와 모순되지 않는가
 
 user_template_evidence: |
   # [FRAME ASSIGNMENT]
