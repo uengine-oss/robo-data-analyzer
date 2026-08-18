@@ -175,6 +175,7 @@ def partition_rule_candidates(
     *,
     assigned: set[int],
     evidence_rule: str,
+    target_scope: str,
 ) -> tuple[list[RuleItem], list[AnalysisFinding]]:
     """Split a grade report into trusted rules and explicit quarantined findings.
 
@@ -202,7 +203,7 @@ def partition_rule_candidates(
             findings.append(AnalysisFinding(
                 concern="rules",
                 status="rejected",
-                target_id=f"R{rule.anchor_line}",
+                target_id=f"{target_scope}::R-{rule.anchor_line}",
                 coordinates=(rule.anchor_line,),
                 reasons=tuple(reasons),
                 candidate=candidate,
@@ -212,7 +213,7 @@ def partition_rule_candidates(
             findings.append(AnalysisFinding(
                 concern="rules",
                 status="unverified",
-                target_id=f"R{rule.anchor_line}",
+                target_id=f"{target_scope}::R-{rule.anchor_line}",
                 coordinates=(rule.anchor_line,),
                 reasons=tuple(verdict.findings),
                 candidate=candidate,
@@ -228,7 +229,7 @@ def partition_rule_candidates(
         findings.append(AnalysisFinding(
             concern="rules",
             status="unavailable",
-            target_id=f"R{row}",
+            target_id=f"{target_scope}::R-{row}",
             coordinates=(row,),
             reasons=("할당 행의 검증 통과 규칙이 없음",),
             evidence_rule=evidence_rule,

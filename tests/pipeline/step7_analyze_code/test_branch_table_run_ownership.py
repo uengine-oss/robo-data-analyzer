@@ -127,6 +127,7 @@ class DbmsRoutineAudits(unittest.TestCase):
             try:
                 written = persist_routine_audits(
                     {routine.id: inventory}, {routine.id: routine},
+                    row_plan={routine.id: ()},
                 )
             finally:
                 reset_run_dir(token)
@@ -144,8 +145,41 @@ class DbmsRoutineAudits(unittest.TestCase):
     def test_missing_routine_fails_with_coordinates(self) -> None:
         inventory = build_inventory("return 0;", (), "sql", statements=())
         with self.assertRaises(ValueError) as caught:
-            persist_routine_audits({"code:missing@1": inventory}, {})
+            persist_routine_audits(
+                {"code:missing@1": inventory}, {}, row_plan={},
+            )
         self.assertIn("code:missing@1", str(caught.exception))
+
+    def test_dbms_audit_persists_actual_child_owner_per_row(self) -> None:
+        routine = CodeNode(
+            id="code:p.sql:p@1", name="p", signature="p", file_path="p.sql",
+            start_line=1, end_line=3, label="PROCEDURE",
+        )
+        child = CodeNode(
+            id="code:p.sql:IF@1", name="", signature="", file_path="p.sql",
+            start_line=1, end_line=2, label="IF", parent_id=routine.id,
+        )
+        inventory = build_inventory(
+            "if (ready) { act(); }",
+            (ControlSubtreeNode("if", "IF", 1, 1, expression="ready"),),
+            "sql",
+            statements=(),
+            call_lines=((1, "act"),),
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            token = set_run_dir(root)
+            try:
+                persist_routine_audits(
+                    {routine.id: inventory},
+                    {routine.id: routine, child.id: child},
+                    row_plan={child.id: (1,)},
+                )
+            finally:
+                reset_run_dir(token)
+
+            record = load_rule_audit_records(root)[routine.id]
+            self.assertEqual({"R1": child.id}, record["row_owners"])
 
 
 if __name__ == "__main__":

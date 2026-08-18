@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from graph.schema.graph_nodes import CodeNode
-from pipeline.models.analysis_context import ControlSubtreeNode
+from pipeline.models.analysis_context import ControlSubtreeNode, StatementFact
 from pipeline.quality_gates.branch_inventory import build_inventory
 from pipeline.quality_gates.rule_audit_artifact import build_rule_audit_record
 from scripts.judge_run import (
@@ -19,8 +19,10 @@ from scripts.judge_run import (
     _reference_leak_count,
     _source_return_lines,
     load_gold_axes,
+    load_rule_findings,
     load_rule_obligations,
     load_rule_rows,
+    trusted_rule_rows,
 )
 
 
@@ -111,6 +113,76 @@ class JudgeRunDbmsIdentityTest(unittest.TestCase):
             self.assertEqual('F("amount > 0")', rows[(target_id, "R1")]["cond"])
             self.assertEqual(['call("approve")'], rows[(target_id, "R1")]["then"])
             self.assertEqual("", rows[(target_id, "R1")]["nl"])
+
+    def test_dbms_row_owner_and_scoped_finding_drive_trusted_graph_expectation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            run_dir = Path(temp)
+            artifact_dir = run_dir / "rule-structures"
+            artifact_dir.mkdir()
+            routine_id = "code:p.sql:p@1"
+            child_id = "code:p.sql:IF@10"
+            routine = CodeNode(
+                id=routine_id, name="p", signature="p", file_path="p.sql",
+                start_line=1, end_line=10, label="PROCEDURE",
+            )
+            inventory = build_inventory(
+                "if (ready) { raise err; }",
+                (ControlSubtreeNode("if", "IF", 1, 1, expression="ready"),),
+                "sql",
+                statements=(StatementFact("raise", "RAISE", 1, 1),),
+            )
+            record = build_rule_audit_record(
+                routine, inventory, row_owners={"R1": child_id},
+            )
+            (artifact_dir / "p.json").write_text(
+                json.dumps(record, ensure_ascii=False), encoding="utf-8",
+            )
+            (run_dir / "analysis-findings.jsonl").write_text(
+                json.dumps({
+                    "concern": "rules", "status": "unverified",
+                    "target_id": f"{child_id}::R-1", "coordinates": [1],
+                    "reasons": ["manual semantic review"],
+                }, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+
+            rows = load_rule_rows(run_dir)
+            findings = load_rule_findings(run_dir)
+
+            self.assertEqual({(child_id, "R1")}, load_rule_obligations(run_dir))
+            self.assertEqual({(child_id, "R1")}, set(rows))
+            self.assertEqual({(child_id, "R1")}, set(findings))
+            self.assertEqual({}, trusted_rule_rows(rows, findings))
+
+    def test_historical_audit_without_row_owners_ignores_unscoped_findings(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            run_dir = Path(temp)
+            artifact_dir = run_dir / "rule-structures"
+            artifact_dir.mkdir()
+            routine = CodeNode(
+                id="code:p.sql:p@1", name="p", signature="p", file_path="p.sql",
+                start_line=1, end_line=2, label="PROCEDURE",
+            )
+            inventory = build_inventory(
+                "if (ready) { approve(); }",
+                (ControlSubtreeNode("if", "IF", 1, 1, expression="ready"),),
+                "sql", call_lines=((1, "approve"),), statements=(),
+            )
+            record = build_rule_audit_record(routine, inventory)
+            record.pop("row_owners")
+            (artifact_dir / "p.json").write_text(
+                json.dumps(record, ensure_ascii=False), encoding="utf-8",
+            )
+            (run_dir / "analysis-findings.jsonl").write_text(
+                json.dumps({
+                    "concern": "rules", "status": "unverified",
+                    "target_id": "R1", "coordinates": [1],
+                    "reasons": ["historical unscoped finding"],
+                }, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual({}, load_rule_findings(run_dir))
 
     def test_ddl_table_scope_handles_quoted_and_schema_qualified_names(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

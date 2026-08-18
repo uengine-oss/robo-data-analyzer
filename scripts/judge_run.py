@@ -39,7 +39,10 @@ from pipeline.quality_gates.nl_reference_safety import (
     MIN_REFERENCE_LEAK,
     reference_leak_count,
 )
-from pipeline.quality_gates.rule_audit_artifact import load_rule_audit_records
+from pipeline.quality_gates.rule_audit_artifact import (
+    RULE_AUDIT_DIRECTORY,
+    load_rule_audit_records,
+)
 from pipeline.quality_gates.rule_prompt_evidence import render_row_condition
 from pipeline.steps.step2_load_ast.load_ast_step import ast_json_paths
 
@@ -213,7 +216,10 @@ def load_rule_obligations(run_dir: Path) -> set[tuple[str, str]]:
     audit_records = load_rule_audit_records(run_dir)
     if audit_records:
         return {
-            (target_id, str(row_key))
+            (
+                str((record.get("row_owners") or {}).get(row_key) or target_id),
+                str(row_key),
+            )
             for target_id, record in audit_records.items()
             for row_key in (record["evidence"].get("rows") or {})
         }
@@ -250,9 +256,11 @@ def load_rule_rows(run_dir: Path) -> dict[tuple[str, str], dict]:
             rules = {
                 f"R{int(rule['anchor_line'])}": rule for rule in record["rules"]
             }
+            row_owners = record.get("row_owners") or {}
             for row_key, evidence_row in evidence_rows.items():
                 rule = rules[row_key]
-                rows[(target_id, str(row_key))] = {
+                owner_id = str(row_owners.get(row_key) or target_id)
+                rows[(owner_id, str(row_key))] = {
                     "cond": rule.get("cond"),
                     "then": list(rule.get("then") or ()),
                     "nl": str(rule.get("nl") or ""),
@@ -316,6 +324,69 @@ def load_rule_rows(run_dir: Path) -> dict[tuple[str, str], dict]:
                         "direct": row.get("direct") or [],
                     }
     return rows
+
+
+def load_rule_findings(run_dir: Path) -> dict[tuple[str, str], dict]:
+    """Load current owner-scoped Rule findings keyed like deterministic audit rows."""
+    path = run_dir / "analysis-findings.jsonl"
+    if not path.exists():
+        return {}
+    audit_records = load_rule_audit_records(run_dir)
+    audit_paths = sorted((run_dir / RULE_AUDIT_DIRECTORY).glob("*.json"))
+    owner_scoped_audit = bool(audit_records) and all(
+        "row_owners" in json.loads(path.read_text(encoding="utf-8"))
+        for path in audit_paths
+    )
+    findings: dict[tuple[str, str], dict] = {}
+    with path.open(encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise ValueError(
+                    f"invalid analysis finding JSON at {path}:{line_number}: {error}"
+                ) from error
+            if value.get("concern") != "rules":
+                continue
+            status = str(value.get("status") or "")
+            if status not in {"rejected", "unverified", "unavailable"}:
+                raise ValueError(
+                    f"invalid Rule finding status at {path}:{line_number}: {status!r}"
+                )
+            target_id = str(value.get("target_id") or "")
+            head, separator, suffix = target_id.rpartition("::R-")
+            coordinates = value.get("coordinates") or []
+            try:
+                anchor = int(suffix) if separator and head else None
+                coordinate_rows = [int(row) for row in coordinates]
+            except (TypeError, ValueError):
+                anchor = None
+                coordinate_rows = []
+            if anchor is None or coordinate_rows != [anchor]:
+                if owner_scoped_audit:
+                    raise ValueError(
+                        f"unscoped Rule finding at {path}:{line_number}: {target_id!r}"
+                    )
+                # Historical provider runs did not persist graph-owner-scoped finding IDs.
+                continue
+            key = (head, f"R{anchor}")
+            if key in findings:
+                raise ValueError(f"duplicate Rule finding coordinate: {key}")
+            findings[key] = value
+    return findings
+
+
+def trusted_rule_rows(
+    rows: dict[tuple[str, str], dict],
+    findings: dict[tuple[str, str], dict],
+) -> dict[tuple[str, str], dict]:
+    """Subtract quarantined coordinates from the immutable obligation ledger."""
+    unknown = findings.keys() - rows.keys()
+    if unknown:
+        raise ValueError(f"Rule findings outside audit obligations: {sorted(unknown)[:8]}")
+    return {key: value for key, value in rows.items() if key not in findings}
 
 
 def _ast_facts(corpus_root: Path) -> dict[str, dict]:
@@ -828,8 +899,22 @@ def judge(
     print(f"run: {manifest['run_id']}  corpus: {Path(manifest['corpus_root']).name}")
 
     # [A] 회계
-    obligation = len(load_rule_obligations(run_dir))
-    print(f"\n[A] obligation(분기표 행): {obligation}")
+    obligations = load_rule_obligations(run_dir)
+    all_rows = load_rule_rows(run_dir)
+    rule_findings = load_rule_findings(run_dir)
+    rows = trusted_rule_rows(all_rows, rule_findings)
+    residual = obligations - rows.keys() - rule_findings.keys()
+    unknown = (rows.keys() | rule_findings.keys()) - obligations
+    rule_statuses = Counter(
+        str(finding.get("status") or "unknown")
+        for finding in rule_findings.values()
+    )
+    print(
+        f"\n[A] Rule 회계: obligation {len(obligations)} = trusted {len(rows)} + "
+        f"rejected/unverified {rule_statuses['rejected'] + rule_statuses['unverified']} + "
+        f"unavailable {rule_statuses['unavailable']} · residual {len(residual)} · "
+        f"unknown {len(unknown)}"
+    )
 
     # [B] findings
     findings = Counter()
@@ -841,9 +926,8 @@ def judge(
     print(f"[B] findings: {dict(findings)} · 합계 {sum(findings.values())}")
 
     # [C] nl 품질
-    rows = load_rule_rows(run_dir)
     quality = Counter()
-    for row in rows.values():
+    for row in all_rows.values():
         nl = row["nl"]
         if not nl:
             continue
@@ -862,13 +946,13 @@ def judge(
     # [D] baseline 비교 — cond==when 채점을 행 단위로 대조
     if baseline_dir is not None:
         base_rows = load_rule_rows(baseline_dir)
-        shared = rows.keys() & base_rows.keys()
+        shared = all_rows.keys() & base_rows.keys()
         def expected_path(row: dict) -> object:
             return row.get("expected_cond", row["when"])
 
         same_path = [
             k for k in shared
-            if expected_path(base_rows[k]) == expected_path(rows[k])
+            if expected_path(base_rows[k]) == expected_path(all_rows[k])
         ]
         changed_path = sorted(shared - set(same_path))
 
@@ -883,13 +967,13 @@ def judge(
 
         for label, keys in (("경로 동일", same_path), ("경로 변경", changed_path)):
             base_failed, total = failure_rate(keys, base_rows)
-            new_failed, _ = failure_rate(keys, rows)
+            new_failed, _ = failure_rate(keys, all_rows)
             if total:
                 print(f"[D] {label} {total}행 — cond 불일치"
                       f" base {base_failed} ({base_failed / total * 100:.2f}%)"
                       f" → now {new_failed} ({new_failed / total * 100:.2f}%)")
-        only_new = len(rows.keys() - base_rows.keys())
-        only_base = len(base_rows.keys() - rows.keys())
+        only_new = len(all_rows.keys() - base_rows.keys())
+        only_base = len(base_rows.keys() - all_rows.keys())
         if only_new or only_base:
             print(f"[D] 이번에만 있는 행 {only_new} · baseline 에만 있는 행 {only_base}")
 

@@ -80,6 +80,32 @@ class DeterministicRuleMaterializationTest(unittest.TestCase):
         self.assertEqual("", collection.rules[0].nl)
         self.assertEqual(0, collection.calls)
 
+    def test_unverified_row_is_scoped_and_quarantined_while_sibling_is_trusted(self):
+        source = "if (bad) { throw err; }\nif (ready) { go(); }\n"
+        inventory = build_inventory(
+            source,
+            (
+                ControlSubtreeNode("bad", "IF", 1, 1, expression="bad"),
+                ControlSubtreeNode("ready", "IF", 2, 2, expression="ready"),
+            ),
+            "java",
+            statements=(StatementFact("t1", "THROW", 1, 1),),
+            call_lines=((2, "go"),),
+        )
+
+        collection = materialize_and_validate_rules(
+            inventory=inventory,
+            target_scope="code:sample:fn",
+            source=source,
+        )
+
+        self.assertEqual([2], [rule.anchor_line for rule in collection.rules])
+        self.assertEqual(1, len(collection.findings))
+        finding = collection.findings[0]
+        self.assertEqual("unverified", finding.status)
+        self.assertEqual("code:sample:fn::R-1", finding.target_id)
+        self.assertEqual((1,), finding.coordinates)
+
     def test_post_test_loop_condition_is_not_a_body_precondition(self):
         source = "do {\n  x = 1;\n  if (flag) { y = 2; }\n} while (again);\n"
         inventory = build_inventory(

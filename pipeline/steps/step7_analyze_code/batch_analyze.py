@@ -41,9 +41,11 @@ from pipeline.steps.step7_analyze_code.control_prompt import (
     build_control_inventory,
     routine_inventory,
 )
-from pipeline.steps.step7_analyze_code.rule_row_ownership import plan_rule_row_ownership
+from pipeline.steps.step7_analyze_code.rule_row_ownership import (
+    owning_routine,
+    plan_rule_row_ownership,
+)
 from pipeline.steps.step7_analyze_code.branch_audit import persist_routine_audits
-from pipeline.quality_gates.rule_grading import grade_rules, partition_rule_candidates
 from pipeline.models.analysis_context import AnalysisContext
 from pipeline.models.data_object_usage import exact_direct_table_ids
 from pipeline.models.analysis_finding import AnalysisFinding
@@ -53,7 +55,6 @@ from pipeline.models.code_analysis_output import (
     BatchTableInsightsItem,
     BatchTableInsightsOutput,
     BatchSummaryOutput,
-    RulesExamplesOutput,
 )
 from pipeline.models.table_insight_response_schema import (
     batch_frame_table_insights_response_model,
@@ -98,6 +99,14 @@ from pipeline.models.semantic_frame import (
 )
 
 _STEP = "step7.analyze_code.batch"
+
+
+@dataclass(frozen=True)
+class DbmsRuleMaterialization:
+    """Trusted Rule items and owner-scoped quality findings from one validation boundary."""
+
+    items: dict[str, BatchRulesItem]
+    findings: dict[str, list[AnalysisFinding]]
 
 
 def _is_summary_terminal(fn: CodeNode, ctx: AnalysisContext) -> bool:
@@ -235,7 +244,7 @@ async def run_dbms_batch_analysis(
     # provider prompt 기록 대신 이 산출물이 `judge_run [A]` 회계를 소유한다.
     # 종전에 이 기록이 framework 엔진에만 있어 DBMS 는 [A] 가 항상 0 이었고,
     # 헌법 IX 2층이 DBMS 에서 성립하지 않았다(2026-08-07 실측).
-    persist_routine_audits(routine_inventories, code_by_id)
+    persist_routine_audits(routine_inventories, code_by_id, row_plan=row_plan)
     for node_id, rows in row_plan.items():
         node_ctx = contexts.get(node_id)
         if node_ctx is None:
@@ -499,12 +508,15 @@ async def _analyze_batch(
         return items, findings
 
     tasks["summary"] = _summary_concern()
-    rules = _materialize_dbms_rules(
+    rule_materialization = _materialize_dbms_rules(
         [*rule_ids, *gate_ids],
         contexts=contexts,
         code_by_id=code_by_id,
         source_cache=source_cache,
     )
+    rules = rule_materialization.items
+    for node_id, node_findings in rule_materialization.findings.items():
+        pre_findings.setdefault(node_id, []).extend(node_findings)
     if dml_ids:
         async def _insight_concern():
             try:
@@ -716,12 +728,13 @@ def _materialize_dbms_rules(
     contexts: Mapping[str, AnalysisContext],
     code_by_id: Mapping[str, CodeNode],
     source_cache: SourceFileCache,
-) -> dict[str, BatchRulesItem]:
+) -> DbmsRuleMaterialization:
     """Materialize each DBMS node's assigned routine rows with zero model calls."""
     if not node_ids:
-        return {}
+        return DbmsRuleMaterialization(items={}, findings={})
     expected = _expected_keys(node_ids, contexts)
     result: dict[str, BatchRulesItem] = {}
+    findings: dict[str, list[AnalysisFinding]] = {}
     for node_key, node_id in expected.items():
         routine, inventory = routine_inventory(
             code_by_id[node_id], contexts, code_by_id, source_cache,
@@ -748,7 +761,9 @@ def _materialize_dbms_rules(
             node_key=node_key,
             rules=collection.rules,
         )
-    return result
+        if collection.findings:
+            findings[node_id] = list(collection.findings)
+    return DbmsRuleMaterialization(items=result, findings=findings)
 
 
 def _partition_keyed_items(items, expected, *, concern: str):
@@ -989,44 +1004,42 @@ def _apply_node_analysis(
             table.semantic_frame if table else None
         )
     if "rules" in requested_parts:
-        accepted_rules = []
-        # 채점도 프롬프트와 **같은 분기표·같은 행**을 봐야 한다 (spec 117 §3, 헌법 III).
-        # 다르면 정상 응답이 통째로 finding 이 된다.
-        routine, inventory = routine_inventory(fn, contexts, code_by_id, source_cache)
+        # Rule candidates were already materialized and validated at the single common
+        # producer boundary.  This application boundary only checks immutable accounting;
+        # re-grading here previously turned an unverified row into a whole-run failure.
+        routine = owning_routine(fn, code_by_id)
         routine_ctx = contexts[routine.id]
         assigned = set(ctx.extra.get("rule_rows") or ())
         if rules is None:
             raise ValueError(f"{fn.id}: deterministic Rule result is missing")
-        # 분기표 대조 채점. 좌표계는 분기표와 같은 **루틴** 범위다.
-        source_plain = source_cache.slice(
-            routine_ctx.file_path, routine_ctx.start_line, routine_ctx.end_line
+        accepted_rules = list(rules.rules)
+        accepted_lines = [rule.anchor_line for rule in accepted_rules]
+        accepted_rows = set(accepted_lines)
+        rule_findings = [finding for finding in findings if finding.concern == "rules"]
+        invalid_findings = [
+            finding for finding in rule_findings
+            if finding.status != "unverified"
+        ]
+        finding_lines = [
+            row for finding in rule_findings for row in finding.coordinates
+        ]
+        finding_rows = set(finding_lines)
+        malformed_findings = [
+            finding for finding in rule_findings
+            if len(finding.coordinates) != 1
+            or finding.target_id
+            != f"{fn.id}::R-{finding.coordinates[0]}"
+        ]
+        accounting_invalid = (
+            len(accepted_lines) != len(accepted_rows)
+            or len(finding_lines) != len(finding_rows)
+            or bool(accepted_rows & finding_rows)
+            or accepted_rows | finding_rows != assigned
         )
-        rule_output = RulesExamplesOutput(rules=rules.rules)
-        report = grade_rules(
-            rule_output,
-            inventory,
-            source_plain,
-            assigned=assigned,
-            # 허용 테이블의 좌표계도 **루틴**이다 — 분기표·행 소유자와 같아야 한다
-            # (spec 117). 배치 노드는 입력 본문을 좁히려고 하강한 것일 뿐이다.
-            allowed_tables=set(routine_ctx.reads) | set(routine_ctx.writes),
-            read_tables=set(routine_ctx.reads),
-            write_tables=set(routine_ctx.writes),
-            table_ops=routine_ctx.extra.get("table_op") or {},
-            table_aliases=routine_ctx.extra.get("table_identity_aliases") or {},
-            require_exact_conditions=True,
-        )
-        accepted_rules, graded_findings = partition_rule_candidates(
-            rule_output,
-            report,
-            assigned=assigned,
-            evidence_rule="deterministic_rule_structure",
-        )
-        accepted_rows = {rule.anchor_line for rule in accepted_rules}
-        if graded_findings or accepted_rows != assigned:
+        if invalid_findings or malformed_findings or accounting_invalid:
             reasons = [
                 reason
-                for finding in graded_findings
+                for finding in (*invalid_findings, *malformed_findings)
                 for reason in finding.reasons
             ]
             raise ValueError(
@@ -1034,7 +1047,7 @@ def _apply_node_analysis(
                 + "; ".join(reasons or ("assigned-row coverage mismatch",))
             )
         rule_finding_records = [
-            finding.to_dict() for finding in findings if finding.concern == "rules"
+            finding.to_dict() for finding in rule_findings
         ]
         fn.extra["rule_grading"] = {
             "obligation_rows": len(assigned),

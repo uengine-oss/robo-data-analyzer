@@ -28,20 +28,40 @@ RULE_AUDIT_DIRECTORY = "rule-structures"
 def build_rule_audit_record(
     routine: CodeNode,
     inventory: BranchInventory,
+    *,
+    row_owners: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build the exact obligation/evidence/materialization record for one routine."""
     rows = required_rule_rows(inventory)
     evidence = rule_evidence(inventory, rows)
     rules = materialize_rule_items(evidence, rows)
+    expected_keys = set(evidence.get("rows") or {})
+    owners = (
+        {row_key: routine.id for row_key in expected_keys}
+        if row_owners is None else
+        {str(row_key): str(owner).strip() for row_key, owner in row_owners.items()}
+    )
+    if set(owners) != expected_keys or any(not owner for owner in owners.values()):
+        raise ValueError(
+            f"{routine.id}: Rule audit row owner coverage mismatch: "
+            f"missing={sorted(expected_keys - set(owners))}, "
+            f"extra={sorted(set(owners) - expected_keys)}"
+        )
     return {
         "schema": RULE_AUDIT_SCHEMA,
         "target_id": routine.id,
         "evidence": evidence,
+        "row_owners": owners,
         "rules": [rule.model_dump(mode="json") for rule in rules],
     }
 
 
-def persist_rule_audit(routine: CodeNode, inventory: BranchInventory) -> None:
+def persist_rule_audit(
+    routine: CodeNode,
+    inventory: BranchInventory,
+    *,
+    row_owners: Mapping[str, str] | None = None,
+) -> None:
     """Persist one routine record when an analysis run owns an output directory."""
     run_dir = active_run_dir()
     if run_dir is None:
@@ -51,7 +71,7 @@ def persist_rule_audit(routine: CodeNode, inventory: BranchInventory) -> None:
     path = directory / f"{audit_file_stem(routine.id)}.json"
     path.write_text(
         json.dumps(
-            build_rule_audit_record(routine, inventory),
+            build_rule_audit_record(routine, inventory, row_owners=row_owners),
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -110,6 +130,19 @@ def _validate_record(value: object, path: Path) -> dict[str, Any]:
     expected = [f"R{anchor}" for anchor in anchors]
     if len(anchors) != len(set(anchors)) or set(evidence_rows) != set(expected):
         raise ValueError(f"Rule audit row coverage mismatch: {path}")
+    raw_owners = value.get("row_owners")
+    if raw_owners is None:
+        # Historical deterministic artifacts predate DBMS child-owner persistence.
+        owners = {row_key: target_id for row_key in evidence_rows}
+    elif isinstance(raw_owners, Mapping):
+        owners = {
+            str(row_key): str(owner).strip()
+            for row_key, owner in raw_owners.items()
+        }
+    else:
+        raise ValueError(f"Rule audit row_owners is not an object: {path}")
+    if set(owners) != set(evidence_rows) or any(not owner for owner in owners.values()):
+        raise ValueError(f"Rule audit row owner coverage mismatch: {path}")
     rebuilt = [
         item.model_dump(mode="json")
         for item in materialize_rule_items(evidence, anchors)
@@ -120,5 +153,6 @@ def _validate_record(value: object, path: Path) -> dict[str, Any]:
         "schema": RULE_AUDIT_SCHEMA,
         "target_id": target_id,
         "evidence": dict(evidence),
+        "row_owners": owners,
         "rules": [dict(rule) for rule in rules],
     }

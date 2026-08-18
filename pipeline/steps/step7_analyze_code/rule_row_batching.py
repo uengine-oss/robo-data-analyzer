@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections import Counter
 from typing import Sequence
 
 from pipeline.models.code_analysis_output import RuleItem, RulesExamplesOutput
@@ -64,11 +65,23 @@ def materialize_and_validate_rules(
         report,
         assigned=set(assigned),
         evidence_rule="deterministic_rule_structure",
+        target_scope=target_scope,
     )
-    if findings or {rule.anchor_line for rule in accepted} != set(assigned):
+    fatal = [finding for finding in findings if finding.status != "unverified"]
+    accepted_rows = {rule.anchor_line for rule in accepted}
+    finding_counts = Counter(
+        row for finding in findings for row in finding.coordinates
+    )
+    finding_rows = set(finding_counts)
+    accounting_invalid = (
+        accepted_rows & finding_rows
+        or accepted_rows | finding_rows != set(assigned)
+        or any(count != 1 for count in finding_counts.values())
+    )
+    if fatal or accounting_invalid:
         reasons = [
             f"R{row}: {reason}"
-            for finding in findings
+            for finding in fatal
             for row in finding.coordinates
             for reason in finding.reasons
         ]
@@ -77,4 +90,4 @@ def materialize_and_validate_rules(
             + "; ".join(reasons or ("assigned-row coverage mismatch",))
         )
     accepted.sort(key=lambda rule: rule.anchor_line)
-    return RowCollection(rules=accepted, findings=[], calls=0)
+    return RowCollection(rules=accepted, findings=findings, calls=0)

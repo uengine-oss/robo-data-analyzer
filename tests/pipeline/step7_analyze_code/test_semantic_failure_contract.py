@@ -16,6 +16,7 @@ from pipeline.models.analysis_context import (
     ReferencedSymbolContext,
     StatementFact,
 )
+from pipeline.models.analysis_finding import AnalysisFinding
 from pipeline.models.code_analysis_output import (
     BatchRulesItem,
     BatchSummaryItem,
@@ -228,18 +229,6 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
         )
         with (
             patch(
-                "pipeline.steps.step7_analyze_code.batch_analyze.routine_inventory",
-                return_value=(routine, object()),
-            ),
-            patch(
-                "pipeline.steps.step7_analyze_code.batch_analyze.grade_rules",
-                return_value=object(),
-            ),
-            patch(
-                "pipeline.steps.step7_analyze_code.batch_analyze.partition_rule_candidates",
-                return_value=([accepted], []),
-            ),
-            patch(
                 "pipeline.steps.step7_analyze_code.batch_analyze.serialize_rules",
                 return_value=([], []),
             ) as serialize,
@@ -260,6 +249,46 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             {"db:RDITAG_TB": "READ"}, serialize.call_args.args[4],
         )
+
+    def test_unverified_rule_is_not_regraded_or_serialized_as_trusted(self) -> None:
+        routine = CodeNode(
+            id="routine", name="p", signature="p", file_path="p.sql",
+            start_line=1, end_line=4, label="FUNCTION",
+        )
+        context = AnalysisContext(
+            id=routine.id, signature="p", file_path="p.sql",
+            start_line=1, end_line=4,
+            extra={"rule_rows": (1,)},
+        )
+        finding = AnalysisFinding(
+            concern="rules",
+            status="unverified",
+            target_id="routine::R-1",
+            coordinates=(1,),
+            reasons=("semantic comparison required",),
+        )
+        with patch(
+            "pipeline.steps.step7_analyze_code.batch_analyze.serialize_rules",
+            return_value=([], []),
+        ) as serialize:
+            _apply_node_analysis(
+                None,
+                BatchRulesItem(node_key="1-4", rules=[]),
+                None,
+                routine,
+                context,
+                SimpleNamespace(name="dbms"),
+                SourceFileCache(),
+                contexts={routine.id: context},
+                code_by_id={routine.id: routine},
+                requested_parts={"rules"},
+                pre_findings=(finding,),
+            )
+
+        self.assertEqual([], context.extra["rules"])
+        self.assertEqual([1], routine.extra["rule_grading"]["finding_rows"])
+        self.assertEqual([], routine.extra["rule_grading"]["accepted_rows"])
+        self.assertEqual([], serialize.call_args.args[0])
 
     def test_duplicate_and_unknown_keys_leave_expected_ids_unresolved(self) -> None:
         expected = {"1-2": "a", "3-4": "b"}

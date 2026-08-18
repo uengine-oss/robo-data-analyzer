@@ -19,6 +19,8 @@ from pipeline.quality_gates.audit_artifact_paths import audit_file_stem
 from pipeline.quality_gates.branch_inventory import BranchInventory
 from pipeline.quality_gates.coverage_residue import coverage_residue
 from pipeline.quality_gates.rule_audit_artifact import persist_rule_audit
+from pipeline.quality_gates.rule_obligations import required_rule_rows
+from pipeline.steps.step7_analyze_code.rule_row_ownership import owning_routine
 
 
 def persist_branch_table(fn: CodeNode, inventory: BranchInventory) -> None:
@@ -59,6 +61,8 @@ def persist_coverage(fn: CodeNode, inventory: BranchInventory) -> None:
 def persist_routine_audits(
     inventories: Mapping[str, BranchInventory],
     code_by_id: Mapping[str, CodeNode],
+    *,
+    row_plan: Mapping[str, Iterable[int]],
 ) -> list[str]:
     """루틴별 분기표·Rule 구조·커버리지를 정확히 한 번 기록한다.
 
@@ -66,12 +70,44 @@ def persist_routine_audits(
     루틴 단위여야 회계가 맞는다.
     """
     written: list[str] = []
+    owners_by_routine: dict[str, dict[str, str]] = {
+        routine_id: {} for routine_id in inventories
+    }
+    for owner_id, rows in row_plan.items():
+        owner = code_by_id.get(owner_id)
+        if owner is None:
+            raise ValueError(f"Rule row owner가 code_by_id 에 없다: {owner_id!r}")
+        routine = owning_routine(owner, code_by_id)
+        if routine.id not in owners_by_routine:
+            raise ValueError(
+                f"Rule row owner의 routine inventory가 없다: {owner_id!r} → {routine.id!r}"
+            )
+        mapping = owners_by_routine[routine.id]
+        for row in rows:
+            row_key = f"R{int(row)}"
+            if row_key in mapping:
+                raise ValueError(
+                    f"Rule row owner가 중복됐다: {routine.id!r} {row_key} "
+                    f"({mapping[row_key]!r}, {owner_id!r})"
+                )
+            mapping[row_key] = owner_id
     for routine_id, inventory in inventories.items():
         routine = code_by_id.get(routine_id)
         if routine is None:
             raise ValueError(f"분기표 소유 루틴이 code_by_id 에 없다: {routine_id!r}")
         persist_branch_table(routine, inventory)
-        persist_rule_audit(routine, inventory)
+        expected = {f"R{row}" for row in required_rule_rows(inventory)}
+        actual = set(owners_by_routine[routine_id])
+        if actual != expected:
+            raise ValueError(
+                f"{routine_id}: Rule row owner coverage mismatch: "
+                f"missing={sorted(expected - actual)}, extra={sorted(actual - expected)}"
+            )
+        persist_rule_audit(
+            routine,
+            inventory,
+            row_owners=owners_by_routine[routine_id],
+        )
         persist_coverage(routine, inventory)
         written.append(routine_id)
     return written

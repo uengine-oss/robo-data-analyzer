@@ -103,11 +103,12 @@ class DbmsDeterministicWiringTest(unittest.TestCase):
                 source_cache=SourceFileCache(),
             )
 
-        self.assertEqual({"a"}, set(result))
-        self.assertEqual("1-3", result["a"].node_key)
-        self.assertEqual([1], [rule.anchor_line for rule in result["a"].rules])
-        self.assertEqual(['call("act")'], result["a"].rules[0].then)
-        self.assertEqual("", result["a"].rules[0].nl)
+        self.assertEqual({"a"}, set(result.items))
+        self.assertEqual({}, result.findings)
+        self.assertEqual("1-3", result.items["a"].node_key)
+        self.assertEqual([1], [rule.anchor_line for rule in result.items["a"].rules])
+        self.assertEqual(['call("act")'], result.items["a"].rules[0].then)
+        self.assertEqual("", result.items["a"].rules[0].nl)
 
 
 if __name__ == "__main__":
