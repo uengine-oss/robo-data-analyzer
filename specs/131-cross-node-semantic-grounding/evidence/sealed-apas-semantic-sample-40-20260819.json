@@ -1,0 +1,82 @@
+{
+  "schema": "sealed-semantic-sample/v1",
+  "sealed_at": "2026-08-19T16:18:00+09:00",
+  "sealed_before_actual_run": true,
+  "corpus": "D:/work/robo/분석대상모음/framework/c/apascrt00010t02_20260406",
+  "analyzer_head": "4a46df4180d3e33bdd0d7c881eca3782325a185a",
+  "parser_head": "4b849f14575b6830b82ae5ee980658100c4d8692",
+  "source_fingerprint": {
+    "files": 23,
+    "sha256": "797af415ac377351e0dbc2de7e925fb534d5ea35ad1eaa803c4278f17b244ee8"
+  },
+  "analysis_fingerprint": {
+    "files": 23,
+    "sha256": "51ac47b052bbb87ee59f6ff025adc7d22f8d9309af8ebf74f71a84f861c4f395"
+  },
+  "selection_contract": [
+    "모델 출력과 graph를 보기 전에 고정하며 결과가 나빠도 교체하지 않는다.",
+    "FUNCTION은 결정론 branch-row 수, 최대 condition 깊이, source LOC, CALL/control 수가 큰 순서에서 파일 다양성을 유지한 상위 10개다.",
+    "RULE은 deep switch complement, terminating continuation, named GOTO, handler, nested control, deep error return, call-heavy entry, inherited-path exit의 서로 다른 구조 8개다.",
+    "EXAMPLE은 선택한 8개 RULE의 accepted cond/then에서 결정론 합성되는 동일 좌표를 전부 판정한다.",
+    "TABLE은 독립 APAS gold의 7개 모집단 전수이며, COLUMN은 각 TABLE에서 조건·결과·식별·메시지 운반 역할을 가진 대표 1개씩이다.",
+    "actual graph에 TABLE/COLUMN이 생기지 않으면 표본을 바꾸지 않고 omission 또는 unavailable 원인을 판정한다."
+  ],
+  "counts": {
+    "FUNCTION": 10,
+    "RULE": 8,
+    "EXAMPLE": 8,
+    "TABLE": 7,
+    "COLUMN": 7,
+    "total": 40
+  },
+  "functions": [
+    {"id": "code:zapamcom10020.c:b000_main_proc", "file": "zapamcom10020.c", "start_line": 478, "end_line": 825, "reason": "87 rows, depth 64, switch/case 65"},
+    {"id": "code:zapamcom10100.c:b200_SMS_transfer", "file": "zapamcom10100.c", "start_line": 601, "end_line": 1368, "reason": "103 rows, 768 LOC, 54 decisions"},
+    {"id": "code:zapamcom10020.c:Bank_034_CSB_Check", "file": "zapamcom10020.c", "start_line": 3236, "end_line": 3437, "reason": "69 rows, switch/case 60"},
+    {"id": "code:zordmfax00001.c:b410_svc_proc", "file": "zordmfax00001.c", "start_line": 1200, "end_line": 1641, "reason": "65 rows, depth 25, 47 decisions"},
+    {"id": "code:zapamcom10200.c:d400_mms_transfer", "file": "zapamcom10200.c", "start_line": 833, "end_line": 1511, "reason": "76 rows, 679 LOC, 39 decisions"},
+    {"id": "code:zapamcom10020.c:Bank_020_CSB_Check", "file": "zapamcom10020.c", "start_line": 2181, "end_line": 2452, "reason": "51 rows, loop plus switch/case 39"},
+    {"id": "code:zapamcom10060.c:b000_main_proc", "file": "zapamcom10060.c", "start_line": 293, "end_line": 671, "reason": "66 rows, 16 calls, 38 decisions"},
+    {"id": "code:zordmutl00010.c:ordf_chk_iden_numb", "file": "zordmutl00010.c", "start_line": 972, "end_line": 1233, "reason": "64 rows, 42 decisions"},
+    {"id": "code:zordmfax00001.c:a000_input_validation", "file": "zordmfax00001.c", "start_line": 275, "end_line": 672, "reason": "65 rows, depth 14, loop and 37 decisions"},
+    {"id": "code:zordmutl00010.c:ordf_chk_adlt_vald", "file": "zordmutl00010.c", "start_line": 275, "end_line": 635, "reason": "61 rows, depth 12, switch/case 11"}
+  ],
+  "rules": [
+    {"owner_id": "code:zapamcom10020.c:b000_main_proc", "rule_id": "R816", "absolute_line": 816, "role": "complement", "reason": "64-level switch default; call plus break"},
+    {"owner_id": "code:zapamcom10020.c:b000_main_proc", "rule_id": "R707", "absolute_line": 707, "role": "continuation", "reason": "29-level continuation after control; break"},
+    {"owner_id": "code:zapamcom10100.c:b000_main_proc", "rule_id": "R303", "absolute_line": 303, "role": "decision", "reason": "named GOTO PFM_CATCH exact target"},
+    {"owner_id": "code:zapamcom10100.c:b000_main_proc", "rule_id": "R380", "absolute_line": 380, "role": "handler", "reason": "PFM_CATCH handler returns RC_ERR"},
+    {"owner_id": "code:zapamcom10200.c:c700_get_link_banner_info", "rule_id": "R1956", "absolute_line": 1956, "role": "decision", "reason": "nested control with loop break"},
+    {"owner_id": "code:zapamcom10100.c:b200_SMS_transfer", "rule_id": "R1167", "absolute_line": 1167, "role": "decision", "reason": "17-level path; error calls and RC_ERR return"},
+    {"owner_id": "code:apascrtu0010t02.c:c003_call_zapamcom10150", "rule_id": "R1638", "absolute_line": 1638, "role": "entry", "reason": "call-heavy input mapping and dynamic call result assignment"},
+    {"owner_id": "code:zordmfax00001.c:a000_input_validation", "rule_id": "R437", "absolute_line": 437, "role": "exit", "reason": "7-level inherited path; RC_NRM return"}
+  ],
+  "examples": [
+    {"owner_id": "code:zapamcom10020.c:b000_main_proc", "rule_id": "R816", "expected_example_id_suffix": "::R-816::E1"},
+    {"owner_id": "code:zapamcom10020.c:b000_main_proc", "rule_id": "R707", "expected_example_id_suffix": "::R-707::E1"},
+    {"owner_id": "code:zapamcom10100.c:b000_main_proc", "rule_id": "R303", "expected_example_id_suffix": "::R-303::E1"},
+    {"owner_id": "code:zapamcom10100.c:b000_main_proc", "rule_id": "R380", "expected_example_id_suffix": "::R-380::E1"},
+    {"owner_id": "code:zapamcom10200.c:c700_get_link_banner_info", "rule_id": "R1956", "expected_example_id_suffix": "::R-1956::E1"},
+    {"owner_id": "code:zapamcom10100.c:b200_SMS_transfer", "rule_id": "R1167", "expected_example_id_suffix": "::R-1167::E1"},
+    {"owner_id": "code:apascrtu0010t02.c:c003_call_zapamcom10150", "rule_id": "R1638", "expected_example_id_suffix": "::R-1638::E1"},
+    {"owner_id": "code:zordmfax00001.c:a000_input_validation", "rule_id": "R437", "expected_example_id_suffix": "::R-437::E1"}
+  ],
+  "tables": [
+    {"name": "ZNGM_COMM_CD_DTL"},
+    {"name": "ZORD_ACNT"},
+    {"name": "ZORD_JNCARD"},
+    {"name": "ZORD_PLTFM_IF_DATA_SPC"},
+    {"name": "ZPAY_AP_AUTH_REQ_TMP"},
+    {"name": "ZPAY_AP_RLTM_AUTH_HST"},
+    {"name": "ZPAY_AP_SMPAY_RGST_TMP"}
+  ],
+  "columns": [
+    {"table": "ZNGM_COMM_CD_DTL", "name": "COM_CD_VAL"},
+    {"table": "ZORD_ACNT", "name": "ACNT_NUM"},
+    {"table": "ZORD_JNCARD", "name": "BANK_CARD_NUM"},
+    {"table": "ZORD_PLTFM_IF_DATA_SPC", "name": "PLTFM_CD"},
+    {"table": "ZPAY_AP_AUTH_REQ_TMP", "name": "NGM_HDR_INFO"},
+    {"table": "ZPAY_AP_RLTM_AUTH_HST", "name": "RLTM_AUTH_RSLT_CD"},
+    {"table": "ZPAY_AP_SMPAY_RGST_TMP", "name": "MMS_SND_OBJ_NUM"}
+  ]
+}
