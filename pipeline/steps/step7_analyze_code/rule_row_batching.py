@@ -27,8 +27,9 @@ from llm.runners.model_output_error import ModelOutputError
 # describes request cost.  Pack by the exact compact evidence and forced schema size;
 # this row limit is only a last-resort guard against an unmodelled cost axis.
 DEFAULT_ROWS_PER_CALL = 24
-MAX_RULE_SEMANTIC_SLOTS = 24
-MAX_RULE_EVIDENCE_CHARS = 24_000
+MAX_RULE_SEMANTIC_SLOTS = 14
+MAX_RULE_EVIDENCE_CHARS = 16_000
+MAX_RULE_EVIDENCE_REFERENCES = 64
 SUMMARY_WAKE_PRIORITY = -10_000_000
 RowInvoke = Callable[[Sequence[int]], Awaitable[RulesExamplesOutput]]
 SemanticSlotCount = Callable[[Sequence[int]], int]
@@ -115,6 +116,7 @@ def plan_batches(
     *,
     max_semantic_slots: int = MAX_RULE_SEMANTIC_SLOTS,
     max_evidence_chars: int = MAX_RULE_EVIDENCE_CHARS,
+    max_evidence_references: int = MAX_RULE_EVIDENCE_REFERENCES,
     semantic_slot_count: SemanticSlotCount | None = None,
 ) -> list[list[int]]:
     """Pack required rows by exact input and response-shape bounds.
@@ -122,8 +124,10 @@ def plan_batches(
     ``when`` and ``direct`` are deterministic parser evidence.  They are no longer
     model output: verified ``cond``/``then`` are joined after the semantic response.
     Compact evidence chars therefore bound their input work, while the actual assigned
-    semantic-slot count bounds forced output work.  Callers that do not produce
-    semantic frames conservatively count one slot per row.
+    semantic-slot count bounds forced output work.  Reference count is not an output
+    field limit: it bounds how many exact conditions/effects those meanings must
+    interpret.  Callers that do not produce semantic frames conservatively count one
+    slot per row.
     """
     if rows_per_call < 1:
         raise ValueError("rows_per_call must be positive")
@@ -131,9 +135,15 @@ def plan_batches(
         raise ValueError("max_semantic_slots must be positive")
     if max_evidence_chars < 1:
         raise ValueError("max_evidence_chars must be positive")
+    if max_evidence_references < 1:
+        raise ValueError("max_evidence_references must be positive")
 
-    def packet_cost(lines: Sequence[int]) -> tuple[int, int]:
+    def packet_cost(lines: Sequence[int]) -> tuple[int, int, int]:
         evidence = rule_evidence(inventory, lines)
+        references = sum(
+            len(row.get("when") or ()) + len(row.get("direct") or ())
+            for row in evidence["rows"].values()
+        )
         evidence_chars = len(json.dumps(
             evidence, ensure_ascii=False, separators=(",", ":"),
         ))
@@ -143,14 +153,15 @@ def plan_batches(
         )
         if slots < 0:
             raise ValueError("semantic_slot_count must be nonnegative")
-        return evidence_chars, slots
+        return evidence_chars, references, slots
 
     def fits(lines: Sequence[int]) -> bool:
         if len(lines) > rows_per_call:
             return False
-        evidence_chars, slots = packet_cost(lines)
+        evidence_chars, references, slots = packet_cost(lines)
         return (
             evidence_chars <= max_evidence_chars
+            and references <= max_evidence_references
             and slots <= max_semantic_slots
         )
 
@@ -219,6 +230,7 @@ async def collect_rules_by_rows(
     rows_per_call: int = DEFAULT_ROWS_PER_CALL,
     max_semantic_slots: int = MAX_RULE_SEMANTIC_SLOTS,
     max_evidence_chars: int = MAX_RULE_EVIDENCE_CHARS,
+    max_evidence_references: int = MAX_RULE_EVIDENCE_REFERENCES,
     semantic_slot_count: SemanticSlotCount | None = None,
     extra_values: Sequence[str] = (),
     allowed_tables: Sequence[str] = (),
@@ -307,6 +319,7 @@ async def collect_rules_by_rows(
         rows_per_call,
         max_semantic_slots=max_semantic_slots,
         max_evidence_chars=max_evidence_chars,
+        max_evidence_references=max_evidence_references,
         semantic_slot_count=semantic_slot_count,
     )
     if not batches:

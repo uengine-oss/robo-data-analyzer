@@ -19,6 +19,7 @@ from pipeline.quality_gates.rule_prompt_evidence import (
 from pipeline.steps.step7_analyze_code.rule_row_batching import (
     DEFAULT_ROWS_PER_CALL,
     MAX_RULE_EVIDENCE_CHARS,
+    MAX_RULE_EVIDENCE_REFERENCES,
     MAX_RULE_SEMANTIC_SLOTS,
     SUMMARY_WAKE_PRIORITY,
     collect_rules_by_rows,
@@ -63,8 +64,9 @@ def _good(anchor):
 class BatchingContract(unittest.TestCase):
     def test_default_row_count_is_only_a_hard_guard_after_cost_based_packing(self):
         self.assertEqual(24, DEFAULT_ROWS_PER_CALL)
-        self.assertEqual(24, MAX_RULE_SEMANTIC_SLOTS)
-        self.assertEqual(24_000, MAX_RULE_EVIDENCE_CHARS)
+        self.assertEqual(14, MAX_RULE_SEMANTIC_SLOTS)
+        self.assertEqual(16_000, MAX_RULE_EVIDENCE_CHARS)
+        self.assertEqual(64, MAX_RULE_EVIDENCE_REFERENCES)
 
     def test_many_direct_refs_are_input_cost_not_obsolete_output_shape(self):
         class DirectHeavyInventory:
@@ -75,7 +77,7 @@ class BatchingContract(unittest.TestCase):
                 # Product table rows do not contain derived ``when``/``direct``.
                 return [
                     {"line": line, "role": "entry"}
-                    for line in range(1, 6)
+                    for line in range(1, 8)
                 ]
 
             @staticmethod
@@ -107,13 +109,15 @@ class BatchingContract(unittest.TestCase):
 
         batches = plan_batches(inventory)
 
-        self.assertEqual([[1, 2, 3, 4, 5]], batches)
+        self.assertEqual([[1, 2, 3, 4, 5, 6], [7]], batches)
 
     def test_cost_bounds_reject_invalid_configuration(self):
         with self.assertRaises(ValueError):
             plan_batches(_inventory(), max_semantic_slots=0)
         with self.assertRaises(ValueError):
             plan_batches(_inventory(), max_evidence_chars=0)
+        with self.assertRaises(ValueError):
+            plan_batches(_inventory(), max_evidence_references=0)
 
     def test_cheap_rows_pack_beyond_obsolete_eight_row_target(self):
         class CheapInventory:
