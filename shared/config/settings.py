@@ -291,9 +291,6 @@ class AnalysisPipelineSettings:
     )
     # Output-heavy Rule calls saturate the current GPU before the shared pool does.
     # Keep other lanes on the global pool while bounding only Rule in-flight work.
-    rule_max_concurrency: int = field(
-        default_factory=lambda: _getenv_int("ROBO_PIPELINE_RULE_MAX_CONCURRENCY", 16)
-    )
     # (옛 file_concurrency 삭제 — 소비처 0건. spec 046 FR-010.)
     big_context_threshold_tokens: int = field(
         default_factory=lambda: _getenv_int("ROBO_PIPELINE_BIG_CONTEXT_THRESHOLD_TOKENS", 1000)
@@ -321,7 +318,6 @@ class AnalysisPipelineSettings:
         for name in (
             "max_concurrency",
             "llm_max_concurrency",
-            "rule_max_concurrency",
             "big_context_threshold_tokens",
             "residual_sample_size",
             "residual_max_rounds",

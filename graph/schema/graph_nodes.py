@@ -295,7 +295,7 @@ class DataType:
 
 @dataclass(frozen=True)
 class Rule:
-    """구조화 비즈니스 규칙 — JSON 봉투 + 파이썬 표현식 leaf (spec 116).
+    """결정론 구조 규칙 — JSON 봉투 + 파이썬 표현식 leaf (spec 131).
 
     정체성 ``id`` = ``<function id>::R<anchor>`` — anchor 가 파일 절대 줄이라 함수 내
     유일하다(폐기된 statement 해시 공유 개념을 사용하지 않는다).
@@ -305,7 +305,7 @@ class Rule:
     anchor_line: int = 0                     # 절대 파일 줄 — 채점·배칭의 단일 좌표
     cond: str = ""                           # 파이썬 불리언 표현식 leaf ("" = 무조건)
     then: tuple[str, ...] = ()               # 파이썬 효과 호출문 목록 — 유일한 채점 대상
-    nl: str = ""                             # 사람용 한 문장 (표시 전용)
+    nl: str = ""                             # 빈 호환 필드 — 사람용 의미 생산 금지
     when: str = ""                           # 실행 가능 단위 심볼 — 코드가 채움
 
 

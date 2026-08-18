@@ -202,23 +202,28 @@ frame planner는 실제 구조 fact가 요구하는 family만 shallow하게 만�
 속성 자체가 완전한 fact에 LLM slot을 강제하지 않는다. 전체 흐름을 한 문자열로 다시 만들면
 좌표별 의미와 중복되고, 대형 함수에서는 문자열 상한 때문에 뒤쪽 흐름이 조용히 누락된다.
 
-### 6.2 Rule semantic delta family
+### 6.2 Rule structural family — LLM 0
 
-| family | slot role | 적용 조건 | LLM 소유 범위 |
-|---|---|---|---|
-| `RULE` | `BUSINESS_MEANING` | 결정론 branch inventory의 required row | 조건·효과를 다시 열거하지 않고, 현재 행 전체가 함수 문맥에서 갖는 근거 있는 업무 의미 한 문장 |
+Rule은 semantic slot family가 아니다. 모든 required row는 parser/linker가 소유한 RULE fact와
+연결 CONTROL/STATEMENT/CALL/DATA_OBJECT fact에서 `cond/then/when`을 결정론 물질화한다. legacy
+`Rule.nl`은 빈 문자열이다. 검색·표시용 사람이 읽는 텍스트가 필요하면 같은 `cond/then`을 해석이나
+업무 용어 추가 없이 렌더하며 별도 저장 의미가 되지 않는다.
 
-각 required row는 `RULE.BUSINESS_MEANING`을 정확히 하나만 가진다. decision의 condition/극성,
+실제 APAS code-only row를 대상으로 한 고정 replay에서 모델은 `strncmp(...,"N")==RC_NRM`의 극성을
+바꾸고, 분기에 없는 `gubun` 조건과 opaque identifier의 업무 뜻을 창작했다. schema와 기존 grader는
+문장 의미 진실을 증명하지 못했다. 반면 Architect는 exact RULE evidence ID, condition/effects, Example,
+callee/table/column claim을 소비하며 Rule prose를 요구하지 않는다. 따라서 중복 prose 생성과 이를 위한
+provider wire/schema/normalizer/batch는 계약에서 제외한다.
+
+decision의 condition/극성,
 true·false path, loop timing/termination, handler/propagation, entry/continuation/exit의 직접 효과는
 이미 같은 anchor의 `RULE` fact attributes와 연결된 `CONTROL`/`STATEMENT` facts가 소유한다.
 이를 `DECISION.ROLE`, `TRUE_OUTCOME`, `FALSE_OUTCOME`, `LOOP.*`, `EXCEPTION.*`,
 `STATEMENT.DIRECT_ACTION` 같은 여러 prose slot으로 다시 생성하지 않는다.
 
-LLM은 parser 사실을 대신 쓰는 것이 아니라 그 사실들로 입증되는 행 전체의 업무 해석만 쓴다.
-업무 의미를 확정할 근거가 부족하면 `partial|insufficient`와 `missing_context`로 남긴다.
 `Rule.cond/then/when`, EXAMPLE, 행 type/timing/complement/nesting/fallthrough/label/continuation은
-계속 결정론 사실이 소유하며 의미 slot의 성공 여부와 무관하게 유실되지 않는다. `Rule.nl`은
-검증된 이 단일 slot의 projection이므로 같은 행의 여러 의미 문장을 합치지 않는다.
+모두 결정론 사실이 소유한다. callee/table/column의 업무 의미는 각각의 원래 semantic slot에 한 번만
+존재하고 Rule evidence가 ID로 연결한다. Rule이 그 의미를 복사해 두 번째 claim을 만들지 않는다.
 
 ### 6.3 call family
 
@@ -276,13 +281,16 @@ population에서 빠지면 제품 결함이다.
 
 순서는 고정한다.
 
-1. dynamic schema가 required slot key와 leaf union을 강제한다.
-2. provider key는 canonical ID가 아닌 request-local private key다. key namespace는 현재 slot
+1. branch inventory의 모든 required row는 `required_rule_rows` 단일 소유자에서 계산하고,
+   `materialize_rule_items`가 exact `cond/then/when` Rule을 LLM 0으로 물질화한다.
+   `rule-structures/deterministic-rule-v1` 감사 산출물은 row coverage, 중복, 재물질화 동등성을
+   검증한다. 기존 산출물에 이 디렉터리가 없으면 역사 run으로만 읽을 수 있지만, 디렉터리가
+   존재하면서 비었거나 손상됐으면 실패한다.
+2. Rule 이외의 semantic slot은 dynamic schema가 required slot key와 leaf union을 강제한다.
+3. provider key는 canonical ID가 아닌 request-local private key다. key namespace는 현재 slot
    assignment digest를 포함해 source의 일반 코드값과 충돌하지 않게 하며, meaning 또는
    missing_context에 현재 요청의 exact private key가 나타나면 그 leaf만 `insufficient`로 격리하고
    좌표 있는 quality finding으로 표면화한다. 문자열 치환으로 정상 문장처럼 만들지 않는다.
-3. Rule 전용 normalizer는 해당 행에 실제 노출된 private C/E reference만 기존 ambiguity-aware
-   grounding으로 canonical meaning에 먼저 치환한다. 실제 source literal인 `C1` 같은 값은 보존한다.
 4. normalizer가 `SlotSpec` metadata와 validated `SlotValue`를 결합한다.
 5. identity validator: target/profile/slot/evidence ID uniqueness와 exact coverage
 6. ownership validator: 모든 evidence owner가 target 또는 명시된 aggregate/member 관계인지 검사
@@ -302,7 +310,7 @@ population에서 빠지면 제품 결함이다.
 | `CodeNode.summary` | target-level FUNCTION/STATEMENT slots + control/call/data-operation meanings을 ordered evidence 순서로 dedupe해 조립 |
 | `CodeNode.stereotype` | frame target role classification. write contradiction gate 유지 |
 | summary status/missing | required target projection slot의 least-sufficient aggregate와 deduped missing |
-| `Rule.nl` | 해당 rule anchor의 단일 `RULE.BUSINESS_MEANING` |
+| `Rule.nl` | 빈 호환 필드. 사람용 표시는 RULE fact의 cond/then 구조 렌더링 |
 | `Question` | partial/insufficient slot의 missing_context를 `(slot_id, evidence kind)`에 묶은 projection |
 | table `usage_summary` | 해당 target의 data-operation slot projection |
 | Table/Column `logical_name/description` | DISPLAY_NAME/ROLE slot projection |

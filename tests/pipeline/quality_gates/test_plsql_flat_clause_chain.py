@@ -12,7 +12,7 @@ import unittest
 from pipeline.models.analysis_context import ControlSubtreeNode, StatementFact
 from pipeline.quality_gates.branch_inventory import build_inventory
 from pipeline.quality_gates.rule_prompt_evidence import rule_evidence
-from pipeline.steps.step7_analyze_code.rule_row_batching import required_rule_rows
+from pipeline.quality_gates.rule_obligations import required_rule_rows
 
 # PROCEDURE p IS
 # BEGIN

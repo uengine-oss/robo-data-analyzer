@@ -31,15 +31,11 @@ from pipeline.models.summary_response_schema import (
     frame_summary_response_model,
     normalize_frame_summary_response,
 )
-from pipeline.models.rule_response_schema import (
-    frame_rules_response_model,
-    normalize_frame_rules_response,
-)
+from pipeline.models.rule_materialization import materialize_rule_items
 from pipeline.quality_gates.branch_inventory import build_inventory
 from pipeline.quality_gates.rule_prompt_evidence import rule_evidence
 from pipeline.steps.step7_analyze_code.semantic_frame_planner import (
     build_code_semantic_plan,
-    rule_slot_specs_json,
     semantic_concern_slots,
 )
 from pipeline.steps.step7_analyze_code.three_split_llm_fanout import (
@@ -118,7 +114,6 @@ class StableIdentityTest(unittest.TestCase):
         )
         self.assertNotIn("reserve", evidence_id(target, "CALL", {"line": 13, "name": "reserve"}))
 
-
 class SemanticFramePlannerTest(unittest.TestCase):
     def test_rule_fact_links_owned_effects_and_structural_relations(self):
         fn = CodeNode(
@@ -195,33 +190,16 @@ class SemanticFramePlannerTest(unittest.TestCase):
         handler_refs = rules[104].attributes["source_refs"]
         self.assertEqual(1, len(handler_refs))
         self.assertEqual("RETURN", profile.evidence[handler_refs[0]].attributes["type"])
-        handler_slots = [
-            spec for spec in _specs if rules[104].id in spec.evidence_refs
-        ]
-        self.assertTrue(handler_slots)
-        self.assertTrue(all(handler_refs[0] in spec.evidence_refs for spec in handler_slots))
-
-        rule_specs = tuple(
-            spec for spec in _specs
-            if any(profile.evidence[ref].kind == "RULE" for ref in spec.evidence_refs)
-        )
-        compact_specs = json.loads(rule_slot_specs_json(profile, rule_specs))
-        self.assertTrue(compact_specs)
         self.assertEqual(
-            {"wire_id", "anchor_line", "family", "role"},
-            set(compact_specs[0]),
+            (),
+            tuple(
+                spec for spec in _specs
+                if any(
+                    profile.evidence[ref].kind == "RULE"
+                    for ref in spec.evidence_refs
+                )
+            ),
         )
-        self.assertEqual(
-            [
-                f"{compact_specs[0]['wire_id'].rsplit('_', 1)[0]}_{index}"
-                for index in range(len(compact_specs))
-            ],
-            [item["wire_id"] for item in compact_specs],
-        )
-        self.assertRegex(compact_specs[0]["wire_id"], r"^W[0-9a-f]{10}_0$")
-        self.assertTrue(all(isinstance(item["anchor_line"], int) for item in compact_specs))
-        self.assertNotIn("EV:", json.dumps(compact_specs))
-        self.assertNotIn("SL:", json.dumps(compact_specs))
 
     def test_planner_uses_actual_structure_and_does_not_invent_call_argument_slots(self):
         source = """int save(int order_id, int qty) {
@@ -254,7 +232,7 @@ return rc;
         self.assertIn(("FUNCTION", "INPUT_ROLE"), roles)
         self.assertIn(("FUNCTION", "RESULT"), roles)
         self.assertNotIn(("FUNCTION", "ORDERED_FLOW"), roles)
-        self.assertIn(("RULE", "BUSINESS_MEANING"), roles)
+        self.assertFalse(any(family == "RULE" for family, _role in roles))
         self.assertFalse(any(
             family in {"DECISION", "LOOP", "EXCEPTION"}
             for family, _role in roles
@@ -473,21 +451,18 @@ return 0;
             call_lines=(),
         )
         profile, specs = build_code_semantic_plan(_routine(), context, inventory=inventory)
-        rule_slot = next(
-            spec for spec in specs
-            if spec.family == "RULE" and spec.role == "BUSINESS_MEANING"
-            and any(
-                profile.evidence[ref].kind == "STATEMENT"
-                for ref in spec.evidence_refs
-            )
+        rule_fact = next(
+            fact for fact in profile.evidence.values()
+            if fact.kind == "RULE" and fact.attributes["anchor_line"] == 11
         )
         statement_facts = [
-            profile.evidence[ref] for ref in rule_slot.evidence_refs
+            profile.evidence[ref] for ref in rule_fact.attributes["source_refs"]
             if profile.evidence[ref].kind == "STATEMENT"
         ]
         self.assertEqual([11], [fact.start_line for fact in statement_facts])
+        self.assertEqual([], semantic_concern_slots(specs).get("rules", []))
 
-    def test_rule_rows_bound_the_slots_required_from_the_rule_concern(self):
+    def test_rule_rows_are_structural_facts_not_semantic_slots(self):
         source = """int save(int order_id, int qty) {
 if (qty > ORDER_LIMIT) {
   return -1;
@@ -518,156 +493,24 @@ return 0;
 
         all_rows = [int(row["line"]) for row in inventory.table_rows()]
         self.assertGreaterEqual(len(all_rows), 2)
-        allowed_rows = (all_rows[0],)
+        allowed_rows = tuple(all_rows)
         profile, specs = build_code_semantic_plan(
             _routine(), context, inventory=inventory, rule_rows=allowed_rows,
         )
-        rule_slots = semantic_concern_slots(specs)["rules"]
+        self.assertEqual([], semantic_concern_slots(specs).get("rules", []))
         anchors = {
-            int(profile.evidence[ref].attributes["anchor_line"])
-            for spec in rule_slots
-            for ref in spec.evidence_refs
-            if profile.evidence[ref].kind == "RULE"
+            int(fact.attributes["anchor_line"])
+            for fact in profile.evidence.values()
+            if fact.kind == "RULE"
         }
-
         self.assertEqual(set(allowed_rows), anchors)
-        self.assertTrue(set(all_rows) - anchors)
 
-    def test_rule_frame_and_legacy_narrative_share_grounded_row_meaning(self):
-        source = """int decide(int status) {
-if (status == PAID) {
-  return RC_OK;
-}
-return RC_ERR;
-}"""
-        fn = CodeNode(
-            id="code:orders.decide", signature="decide(status) -> int",
-            file_path="src/orders.c", start_line=10, end_line=15,
-            label="FUNCTION", name="decide", owner_id="code:orders",
-            params="status", return_type="int",
+        rules = materialize_rule_items(
+            rule_evidence(inventory, allowed_rows), allowed_rows,
         )
-        statements = (
-            StatementFact("ret-ok", "RETURN", 3, 3, expression="RC_OK"),
-            StatementFact("ret-err", "RETURN", 5, 5, expression="RC_ERR"),
-        )
-        context = AnalysisContext(
-            id=fn.id, signature=fn.signature, file_path=fn.file_path,
-            start_line=fn.start_line, end_line=fn.end_line,
-            extra={"ast_statements": statements, "ast_call_lines": ()},
-        )
-        inventory = build_inventory(
-            source,
-            [ControlSubtreeNode(
-                node_id="if-paid", ntype="IF", start=2, end=4,
-                expression="status == PAID",
-            )],
-            "c", line_offset=9, statements=statements, call_lines=(),
-        )
-        row = next(
-            int(item["line"]) for item in inventory.table_rows()
-            if item["role"] == "decision"
-        )
-        profile, specs = build_code_semantic_plan(
-            fn, context, inventory=inventory, rule_rows=(row,),
-        )
-        rule_specs = semantic_concern_slots(specs)["rules"]
-        self.assertEqual(
-            [("RULE", "BUSINESS_MEANING")],
-            [(spec.family, spec.role) for spec in rule_specs],
-        )
-        model = frame_rules_response_model(rule_specs)
-        wire_id = semantic_slot_wire_ids(rule_specs)[0]
-        parsed = model.model_validate({"slots": {wire_id: {
-            "meaning": "C11 조건이면 E1을 수행한다",
-            "status": "sufficient",
-            "missing_context": [],
-        }}})
-        normalized = normalize_frame_rules_response(
-            parsed, profile, rule_specs, (row,), rule_evidence(inventory, (row,)),
-        )
-        slot = next(iter(normalized.semantic_frame.slots.values()))
-        self.assertEqual(slot.meaning, normalized.rules[0].nl)
-        self.assertNotIn("C11", slot.meaning)
-        self.assertNotIn("E1", slot.meaning)
-        self.assertIn("status == PAID", slot.meaning)
-        self.assertIn("ret", slot.meaning)
-
-        partial = model.model_validate({"slots": {wire_id: {
-            "meaning": "결제 상태 판정의 일부 의미만 확인했다",
-            "status": "partial",
-            "missing_context": ["C11과 연결된 외부 계약"],
-        }}})
-        partial_frame = normalize_frame_rules_response(
-            partial, profile, rule_specs, (row,), rule_evidence(inventory, (row,)),
-        ).semantic_frame
-        missing = next(iter(partial_frame.slots.values())).missing_context[0]
-        self.assertNotIn("C11", missing)
-        self.assertIn("status == PAID", missing)
-
-    def test_rule_wire_rejects_historical_multi_prose_roles(self):
-        with self.assertRaisesRegex(
-            ValueError, "only RULE.BUSINESS_MEANING",
-        ):
-            frame_rules_response_model((SlotSpec(
-                slot_id="SL:0123456789ab:DECISION:TRUE_OUTCOME:11",
-                family="DECISION",
-                role="TRUE_OUTCOME",
-                target_ref="EV:target",
-                evidence_refs=("EV:target",),
-            ),))
-
-    def test_rule_frame_preserves_ambiguous_business_c1_literal(self):
-        source = """int decide(int status) {
-if (status == C1) {
-  return RC_OK;
-}
-return RC_ERR;
-}"""
-        fn = CodeNode(
-            id="code:orders.decide", signature="decide(status) -> int",
-            file_path="src/orders.c", start_line=10, end_line=15,
-            label="FUNCTION", name="decide", owner_id="code:orders",
-            params="status", return_type="int",
-        )
-        statements = (
-            StatementFact("ret-ok", "RETURN", 3, 3, expression="RC_OK"),
-            StatementFact("ret-err", "RETURN", 5, 5, expression="RC_ERR"),
-        )
-        context = AnalysisContext(
-            id=fn.id, signature=fn.signature, file_path=fn.file_path,
-            start_line=fn.start_line, end_line=fn.end_line,
-            extra={"ast_statements": statements, "ast_call_lines": ()},
-        )
-        inventory = build_inventory(
-            source,
-            [ControlSubtreeNode(
-                node_id="if-c1", ntype="IF", start=2, end=4,
-                expression="status == C1",
-            )],
-            "c", line_offset=9, statements=statements, call_lines=(),
-        )
-        row = next(
-            int(item["line"]) for item in inventory.table_rows()
-            if item["role"] == "decision"
-        )
-        profile, specs = build_code_semantic_plan(
-            fn, context, inventory=inventory, rule_rows=(row,),
-        )
-        rule_specs = semantic_concern_slots(specs)["rules"]
-        model = frame_rules_response_model(rule_specs)
-        wire_id = semantic_slot_wire_ids(rule_specs)[0]
-        parsed = model.model_validate({"slots": {wire_id: {
-            "meaning": "상태 C1이면 승인 경로로 처리한다",
-            "status": "sufficient",
-            "missing_context": [],
-        }}})
-        normalized = normalize_frame_rules_response(
-            parsed, profile, rule_specs, (row,), rule_evidence(inventory, (row,)),
-        )
-        self.assertEqual(
-            "상태 C1이면 승인 경로로 처리한다",
-            next(iter(normalized.semantic_frame.slots.values())).meaning,
-        )
+        self.assertEqual(list(allowed_rows), [rule.anchor_line for rule in rules])
+        self.assertTrue(all(rule.nl == "" for rule in rules))
+        self.assertTrue(any(rule.cond for rule in rules))
 
     def test_exception_propagation_uses_the_owned_branch_termination_fact(self):
         source = """BEGIN
@@ -698,20 +541,25 @@ END;"""
             if row["role"] == "handler"
         )
 
-        _profile, specs = build_code_semantic_plan(
+        profile, specs = build_code_semantic_plan(
             _routine(), context, inventory=inventory, rule_rows=(handler_row,),
         )
-
-        rule_slots = [
-            spec for spec in specs
-            if (spec.family, spec.role) == ("RULE", "BUSINESS_MEANING")
-        ]
-        self.assertEqual(1, len(rule_slots))
+        self.assertEqual([], semantic_concern_slots(specs).get("rules", []))
+        rule_fact = next(
+            fact for fact in profile.evidence.values()
+            if fact.kind == "RULE"
+            and int(fact.attributes["anchor_line"]) == handler_row
+        )
         self.assertTrue(any(
-            _profile.evidence[ref].kind == "STATEMENT"
-            and _profile.evidence[ref].attributes["type"] == "RETURN"
-            for ref in rule_slots[0].evidence_refs
+            profile.evidence[ref].kind == "STATEMENT"
+            and profile.evidence[ref].attributes["type"] == "RETURN"
+            for ref in rule_fact.attributes["source_refs"]
         ))
+        rule = materialize_rule_items(
+            rule_evidence(inventory, (handler_row,)), (handler_row,),
+        )[0]
+        self.assertEqual("", rule.nl)
+        self.assertIn("ret", " ".join(rule.then))
 
     def test_direct_child_structure_participates_in_ordered_flow(self):
         child = CodeNode(

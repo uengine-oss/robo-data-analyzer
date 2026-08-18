@@ -23,11 +23,7 @@ from graph.schema.graph_nodes import CodeNode
 from pipeline.models.analysis_context import AnalysisContext, ControlSubtreeNode
 from pipeline.steps.step7_analyze_code.batch_prompt_values import (
     _build_batch_values,
-    build_rule_batch_values,
     build_table_insight_batch_values,
-)
-from pipeline.steps.step7_analyze_code.semantic_frame_planner import (
-    build_code_semantic_plan,
 )
 from pipeline.steps.step7_analyze_code.batch_planner import Batch
 from shared.files.cache import SourceFileCache
@@ -235,50 +231,6 @@ def test_framework_and_dbms_use_the_same_serializer() -> None:
     assert "linked_table_operations_json:" in common_prompt
     assert "{table_ops}" in common_prompt
     assert "{data_object_usages}" in common_prompt
-
-
-def test_dbms_rule_prompt_uses_routine_table_scope_for_owned_row() -> None:
-    """spec117: 배분 노드가 아니라 분기표 소유 루틴의 R/W가 허용 좌표다."""
-    routine_id = "code:p.sql:p@1"
-    child_id = f"{routine_id}:ASSIGNMENT@28"
-    contexts = {
-        routine_id: AnalysisContext(
-            id=routine_id, signature="p", file_path="p.sql",
-            start_line=1, end_line=40, reads=("db:RDITAG_TB",),
-        ),
-        child_id: AnalysisContext(
-            id=child_id, signature="ASSIGNMENT", file_path="p.sql",
-            start_line=28, end_line=28,
-        ),
-    }
-    code_by_id = {
-        routine_id: CodeNode(
-            id=routine_id, signature="p", file_path="p.sql",
-            start_line=1, end_line=40, label="FUNCTION",
-        ),
-        child_id: CodeNode(
-            id=child_id, signature="ASSIGNMENT", file_path="p.sql",
-            start_line=28, end_line=28, label="ASSIGNMENT",
-            parent_id=routine_id,
-        ),
-    }
-    values = build_rule_batch_values(
-        expected={"28-28": child_id},
-        assignments={"28-28": (28,)},
-        evidences={"28-28": {"conditions": {}, "effects": {}, "rows": {}}},
-        owner_ids={"28-28": routine_id},
-        contexts=contexts,
-        code_by_id=code_by_id,
-        table_descriptions={"db:RDITAG_TB": {}},
-        frame_assignments={
-            "28-28": build_code_semantic_plan(
-                code_by_id[child_id], contexts[child_id],
-            )
-        },
-    )
-    assert '"table_id":"db:RDITAG_TB"' in values["rule_nodes"]
-    assert values["unit_id"] == routine_id
-    assert f"owner_id: {routine_id}" in values["rule_nodes"]
 
 
 if __name__ == "__main__":

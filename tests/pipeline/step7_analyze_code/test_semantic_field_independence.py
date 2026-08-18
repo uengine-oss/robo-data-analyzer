@@ -24,7 +24,6 @@ from pipeline.steps.step7_analyze_code.range_body import (
 from pipeline.steps.step7_analyze_code.summary_quality import normalize_canonical_summary
 from pipeline.steps.step7_analyze_code.three_split_llm_fanout import (
     _format_callee_summaries,
-    _grounded_external_values,
 )
 from pipeline.steps.step8_post_processing.embed_step import (
     _collect_column_texts,
@@ -253,44 +252,6 @@ class DownstreamEvidenceIndependenceTest(unittest.TestCase):
         rendered = _format_callee_summaries(caller, {"callee": callee})
         self.assertNotIn("returns", rendered)
         self.assertNotIn("RC_ERR", rendered)
-
-    def test_grounded_external_values_match_rendered_non_callee_evidence(self) -> None:
-        # Canonical callee summary is the only callee payload. Hidden return lists must not
-        # widen the grader's value pool beyond evidence the model actually received.
-        caller = AnalysisContext(
-            id="caller", signature="caller", file_path="x", start_line=1, end_line=1,
-            callees=("callee",),
-            extra={"api_contracts": (
-                {"name": "mpfmdbio", "arg_roles": {0: "sql_key"},
-                 "success_value": "RC_NRM"},
-            )},
-        )
-        callee = AnalysisContext(
-            id="callee", signature="callee", file_path="x", start_line=1, end_line=1,
-            summary="검색 근거",
-            extra={"return_expressions": ["RC_ERR"]},
-        )
-        facts = _grounded_external_values(caller, {"callee": callee})
-        self.assertEqual(frozenset({"RC_NRM"}), facts)
-
-    def test_hidden_callee_return_values_do_not_join_pool(self) -> None:
-        caller = AnalysisContext(
-            id="caller", signature="caller", file_path="x", start_line=1, end_line=1,
-            callees=("callee",),
-        )
-        callee = AnalysisContext(
-            id="callee", signature="callee", file_path="x", start_line=1, end_line=1,
-            summary="검색 근거",
-            extra={"return_expressions": ['"00"']},
-        )
-        facts = _grounded_external_values(caller, {"callee": callee})
-        self.assertEqual(frozenset(), facts)
-
-    def test_grounded_external_values_empty_without_evidence(self) -> None:
-        caller = AnalysisContext(
-            id="caller", signature="caller", file_path="x", start_line=1, end_line=1,
-        )
-        self.assertEqual(frozenset(), _grounded_external_values(caller, {}))
 
 class SourceDescriptionExceptionTest(unittest.TestCase):
     def test_table_source_description_precedes_analyzed_description(self) -> None:

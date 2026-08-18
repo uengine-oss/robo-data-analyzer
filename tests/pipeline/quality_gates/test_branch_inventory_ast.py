@@ -12,7 +12,7 @@ from pipeline.quality_gates.rule_prompt_evidence import (
     expected_rule_condition,
     rule_evidence,
 )
-from pipeline.steps.step7_analyze_code.rule_row_batching import required_rule_rows
+from pipeline.quality_gates.rule_obligations import required_rule_rows
 
 _SOURCE = "\n".join([
     "long f(long x) {",          # 1

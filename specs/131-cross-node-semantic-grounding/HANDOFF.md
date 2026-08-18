@@ -50,11 +50,48 @@
   provider key는 `W<assignment-digest>_<index>`이고 exact key가 meaning/missing_context에 나오면
   해당 leaf만 insufficient/finding으로 격리된다. 실제 source literal `S0`와 ambiguous `C1`은 보존하며,
   현재 행의 private C/E ref는 canonical frame과 `Rule.nl` 양쪽에서 같은 근거로 grounding한다.
-- 검증은 관련 62건, 연관 prompt/quality/MCP 76건, Analyzer 전체 1,056건(5 skipped), prompt ledger
-  29/29, Architect RULE.BUSINESS_MEANING 소비 집중 29건과 전체 1,382건(2 skipped)이 통과했다.
-  이는 자동 회귀층이며 actual APAS 의미·성능 합격은 아니다.
-- 현재 첫 미완료는 T131-37 실제 APAS slice 비교다. 전체 run·3층·Architect
-  actual·보고·commit/push는 아직 완료가 아니다.
+- 위 1,056/29/1,382 수치는 폐기 전 중간 후보의 역사 자동 회귀다. T131-36c의 현행 Rule LLM 0
+  경로는 `rule-structures/deterministic-rule-v1` 감사 산출물, graph의 빈 `nl`, 검색/MCP 구조 렌더링,
+  Architect exact evidence 소비까지 구현했다. 충돌 가능한 audit 파일명도 원본 ID digest를 포함하는
+  공통 함수로 교체해 조용한 덮어쓰기를 막았다. Analyzer 전체 `1,029 tests, 5 skipped`, prompt ledger
+  `23/23`, Architect 집중 `62 passed`와 전체 `1,383 passed, 2 skipped`가 통과했다. 현재 실제 코드의
+  자동 회귀 정본은 이 수치다.
+- 현재 첫 미완료는 T131-37 실제 APAS concern/scheduling 측정이다. APAS 전체
+  cold run·3층·Architect actual·보고·commit/push는 아직 완료가 아니다.
+- 봉인 4-record current replay는 병렬 18.046초, output 3,158→1,929 token으로 빨라졌지만 의미
+  결함 때문에 아직 채택하지 않았다. 다행 batch에서 `R961(ret=='E')`가 “N/E가 아니면 진행”으로
+  뒤집히고, 직접 효과가 빈 `R2357/R2445`가 “즉시 종료”로 창작됐다. 같은 8개 오행을 exact singleton
+  closure로 1회 역실험하자 23.149초 안에 행 소유권이 모두 복구됐다. actual prompt의 output wire 목록과
+  `rule_evidence.rows`가 분리된 두 표여서 인접 행 의미가 교차한 것이 공통 원인이다. T131-36b는
+  singleton 남발 대신 각 row가 자기 `output_wire_id`를 직접 한 번 소유하는 packet으로 고친다.
+- row-owned-wire 4-record replay는 19.857초·4콜·deadline/retry 0으로 wire 교차는 제거했지만 아직
+  기각 상태다. `R396`은 inherited path 극성을 뒤집었고 `R399`는 child `rc != RC_ERR`를 부모 의미에
+  섞었다. `R2357/R2445`의 actual source는 `if (rc != RC_NRM) { ; }`이고 direct/nested/termination이
+  모두 비어 있는데도 종료 동작을 창작했다. 이는 모델 문구가 아니라 모든 required row에 non-empty
+  의미 slot을 강제한 applicability 계약 결함이다.
+- T131-36b의 확정 설계는 직접 statement/call/effect ref가 있는 행만 semantic slot과 provider wire를
+  갖게 하는 것이다. 구조 전용 행은 full condition/좌표/관계를 잃지 않은 결정론 Rule(`nl=""`, 빈
+  outcome)로 남긴다. 모델 packet은 semantic row의 focus condition/direct/source만 보며 full inherited
+  path와 nested child 구조는 canonical profile·채점·graph/MCP에만 남긴다. Framework와 DBMS 양쪽
+  producer/normalizer/batch를 함께 바꾼 뒤 같은 봉인 4-record를 한 번만 재실행한다.
+- 그 구현의 봉인 replay는 old 37→current 17 slot, input 26,211→19,311, output 3,158→1,493,
+  E2E 1.3/5.0/1.9/3.0초로 구조·속도는 개선됐다. direct-empty 7행의 종료 창작과 wire 교차도
+  사라졌다. 하지만 `strncmp(...,"N")==RC_NRM`을 “N이 아닌 경우”로 뒤집은 모순과 `bar_cd`를
+  “은행 코드”로 확장한 창작이 남아 후보는 아직 기각이다.
+- actual prompt에는 row packet 바깥에 target 전체 symbol/callee/RW/external/API와 target 이름이
+  남아 있었다. 다른 행의 callee 의미와 opaque identifier 번역이 들어온 두 번째 문맥 경로다.
+  T131-36b의 마지막 범용 수정은 target-wide 목록을 없애고 direct CALL/DATA_OBJECT 또는 exact
+  matched key로 연결된 보조 근거만 row에 결속한다. sentinel 의미가 입증되지 않으면 비교식을
+  문자 그대로 보존하고 opaque 이름은 확장하지 않는 안전 출력을 고정한 뒤 봉인 4건을 최종 1회 판정한다.
+- 그 최종 replay는 4콜 병렬 wall 16.809초, input 26,211→16,393, output 3,158→1,605,
+  deadline/retry 0으로 구조·속도는 통과했다. 그러나 `R399`에서 OR 범위를 AND처럼 합친 조건 모순,
+  `R2335`에서 source에 없는 `gubun` 분기 창작, `R2425`에서 source에 없는 “다시 호출” 순서 창작이
+  남았다. normalizer는 slot 구조만, grader는 cond/then만 검사해 이 prose를 trusted로 통과시킨다.
+- 같은 공통 원인의 prompt/packet 수정 1회 종료선을 소진했으므로 문구 반복은 중단했다. 전수 소비자
+  감사에서 Architect는 RULE evidence ID·condition/effects·Example·callee/table/column claim을 사용하고
+  `RULE.BUSINESS_MEANING`을 요구하지 않는다. 따라서 T131-36c는 Rule prose와 전용 LLM 경로를 제거하고
+  모든 required row를 결정론 Rule로 물질화한다. 이는 의미 삭제가 아니라 검증 불가능한 중복 claim을
+  제거하고 원래 semantic owner와 exact 구조를 한 번씩 전달하는 계약 정리다.
 
 ## 완료 결과
 
@@ -378,5 +415,6 @@ source → parser AST → Analyzer context/결정론 frame 조립
 9. Analyzer 합격 뒤 Architect 두 실제 경로를 최소 실행해 GWT와 evidence refs를 원문에 대조한다.
 10. 작업보고의 실제 전후 데이터·테스트 결과를 교체하고 임시 실행물을 정리한 뒤 요청 범위만 commit/push한다.
 
-첫 미완료 작업은 2번 `StructuralProfile`과 `semantic-frame/v1` 계약 고정이다. inventory의
-생산자·소비자·WIP 판정을 구현 범위의 단일 영향표로 재사용한다.
+위 실행 순서는 2026-08-12 시작 snapshot이다. 현재 2~6번과 T131-36c까지 완료됐으며,
+첫 미완료는 T131-37 실제 APAS concern/scheduling 측정이다. inventory의 생산자·소비자·WIP
+판정은 현행 Rule LLM 0 override를 적용해 재사용한다.

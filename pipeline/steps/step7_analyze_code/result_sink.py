@@ -1,4 +1,4 @@
-"""step7_analyze_code — 모듈 사전분석 + Bottom-up DAG + 3 분할 fan-out.
+"""step7_analyze_code — 모듈 사전분석 + Bottom-up DAG + 관심사 fan-out.
 
 순서:
 0. 모듈 사전분석 (Framework 전용) — 모듈마다 LLM 1회로 헤더 주석 → 모듈 의도.
@@ -6,7 +6,7 @@
 1. prompt 수신자 ``ctx.callees`` + PARENT_OF → 공용 summary 의존 계획.
 2. dataflow 스케줄링 — callee 의존이 풀린 코드노드부터 즉시 분석 (라운드 배리어 없음),
    끝나는 순서대로 즉시 Neo4j 영속화 + NDJSON emit.
-3. 각 코드노드 = ``analyze_code_three_split`` (3 분할 fan-out, RadixAttention 95%+).
+3. 각 코드노드 = summary/table LLM concern + 결정론 Rule 물질화.
 
 결합 SCC 내부 코드노드 → 순환 callee summary 없이 분석 (``is_in_cycle=True`` 메타).
 """

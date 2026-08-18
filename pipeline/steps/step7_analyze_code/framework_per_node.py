@@ -1,4 +1,4 @@
-"""step7_analyze_code — 모듈 사전분석 + Bottom-up DAG + 3 분할 fan-out.
+"""step7_analyze_code — 모듈 사전분석 + Bottom-up DAG + 관심사 fan-out.
 
 순서:
 0. 모듈 사전분석 (Framework 전용) — 모듈마다 LLM 1회로 헤더 주석 → 모듈 의도.
@@ -9,7 +9,7 @@
    CALLS와 PARENT_OF 모두 하위 summary 확정 신호로 조기 해제한다. Rule/table 완료는
    상위 입력 계약이 아니다. 투입 순서는 critical-path
    rank 내림차순(긴 사슬·큰 노드 우선) — 전부 산출물 불변인 스케줄 결정이다.
-3. 각 코드노드 = ``analyze_code_three_split`` (3 분할 fan-out, RadixAttention 95%+).
+3. 각 코드노드 = summary/table LLM concern + 결정론 Rule 물질화.
 
 결합 SCC 내부 코드노드 → 순환 callee summary 없이 분석 (``is_in_cycle=True`` 메타).
 """

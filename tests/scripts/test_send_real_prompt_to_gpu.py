@@ -11,8 +11,10 @@ from scripts.send_real_prompt_to_gpu import (
     _current_contract_response_schema,
     _current_summary_response_schema,
     _extract_raw_text,
+    _format_compact_parsed_payload,
     _format_parsed_payload,
     _recorded_response_schema,
+    _require_current_contract_rule,
     _replace_recorded_summary_contract,
     _replace_recorded_fixed_contract,
     _upgrade_recorded_input_markers,
@@ -173,6 +175,39 @@ new contract
             upgraded,
         )
         self.assertNotIn("[CONTEXT_SUMMARY", upgraded)
+
+    def test_current_rule_contract_cannot_resurrect_retired_provider_paths(self) -> None:
+        for rule in (
+            "code_rules_examples",
+            "code_rules_examples_batch",
+            "code_gate_rules_batch",
+        ):
+            with self.subTest(rule=rule), self.assertRaisesRegex(
+                SystemExit, "Rule 모델 계약은 폐기",
+            ):
+                _require_current_contract_rule(rule)
+
+        _require_current_contract_rule("code_table_insights")
+
+    def test_compact_payload_keeps_every_semantic_review_field(self) -> None:
+        rendered = _format_compact_parsed_payload({
+            "slots": {
+                "Wabc_0": {
+                    "status": "partial",
+                    "meaning": "주문을 검증한다.",
+                    "missing_context": ["정책 정의"],
+                },
+                "Wabc_1": {
+                    "status": "sufficient",
+                    "meaning": "처리를 종료한다.",
+                    "missing_context": [],
+                },
+            },
+        })
+        payload = json.loads(rendered)
+        self.assertEqual(["Wabc_0", "Wabc_1"], [item["wire_id"] for item in payload])
+        self.assertEqual("partial", payload[0]["status"])
+        self.assertEqual(["정책 정의"], payload[0]["missing_context"])
 
     def test_current_fixed_contract_rejects_ambiguous_input_boundaries(self) -> None:
         for recorded in ("no boundary", "# [INPUT — one]\n# [INPUT — two]\n"):

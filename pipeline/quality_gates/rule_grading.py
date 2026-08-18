@@ -1,6 +1,6 @@
-"""구조화 Rule·Example 행 단위 결정론 채점기 (spec 116 4단계 — LLM 0).
+"""구조화 Rule·Example 행 단위 결정론 불변식 검사기 (LLM 0).
 
-정답지(분기표)와 모델 출력을 행 단위로 대조한다. 판정 원칙:
+정답지(분기표)와 물질화 결과를 행 단위로 대조한다. 판정 원칙:
 
 - **확실한 위반만 거절한다**: 행 echo 위반(창작·중복·할당 밖), 파이썬 문법 오류,
   닫힌 어휘 밖 함수, 소스에 없는 값(창작), 모순 AND, else_of 형식·참조 위반.
@@ -26,7 +26,6 @@ from pipeline.models.rule_expression import (
     COND_HELPERS,
     LeafSyntaxError,
     LeafVocabularyError,
-    NL_MAX_CHARS,
     condition_call_names,
     parse_condition,
     parse_effect,
@@ -620,7 +619,6 @@ def grade_rules(
         _grade_rule_content(
             rule,
             verdict,
-            projected_from_semantic_frame=output.semantic_frame is not None,
             pool=pool,
             source=source,
             table_lines=table_lines,
@@ -834,7 +832,6 @@ def _grade_rule_content(
     rule: RuleItem,
     verdict: RowVerdict,
     *,
-    projected_from_semantic_frame: bool,
     pool: set[str],
     source: str,
     table_lines: set[int],
@@ -851,12 +848,6 @@ def _grade_rule_content(
         verdict.reasons.append("cond는 한 줄 Python 표현식이어야 함")
     if any("\n" in statement for statement in rule.then):
         verdict.reasons.append("then 효과는 각각 한 줄 Python 표현식이어야 함")
-    if "\n" in rule.nl or (
-        not projected_from_semantic_frame and len(rule.nl) > NL_MAX_CHARS
-    ):
-        verdict.reasons.append(
-            f"nl은 개행 없는 {NL_MAX_CHARS}자 이하 한 문장이어야 함"
-        )
     if rule.cond:
         try:
             tree = parse_condition(rule.cond)

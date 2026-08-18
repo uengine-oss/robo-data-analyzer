@@ -224,7 +224,7 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
         )
         accepted = RuleItem(
             anchor_line=28, cond=None,
-            then=['select("RDITAG_TB")'], nl="RDITAG_TB를 조회한다.",
+            then=['select("RDITAG_TB")'], nl="",
         )
         with (
             patch(
@@ -246,8 +246,7 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
         ):
             _apply_node_analysis(
                 None, BatchRulesItem(
-                    node_key="28-28", rules=[],
-                    semantic_frame=_semantic_frame(child, child_ctx),
+                    node_key="28-28", rules=[accepted],
                 ), None,
                 child, child_ctx, SimpleNamespace(name="dbms"),
                 SourceFileCache(),
@@ -349,7 +348,7 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
                 )
         self.assertEqual(1, run.await_count)
 
-    async def test_empty_rules_are_visible_findings_not_silent_success(self) -> None:
+    async def test_missing_deterministic_rule_is_a_fatal_invariant(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             source = Path(temp) / "sample.c"
             source.write_text('if (flag == "1")\n{\n  act();\n}\n', encoding="utf-8")
@@ -367,25 +366,19 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
             context.extra.setdefault("ast_statements", ())
             # spec 117 — 채점이 기대하는 의무 행은 run 시작 때 배분된 값이다.
             context.extra["rule_rows"] = (1,)
-            _apply_node_analysis(
-                None,
-                BatchRulesItem(
-                    node_key="1-4", rules=[],
-                    semantic_frame=_semantic_frame(node, context),
-                ),
-                None,
-                node,
-                context,
-                SimpleNamespace(name="dbms"),
-                SourceFileCache(),
-                contexts={"fn": context},
-                code_by_id={"fn": node},
-                requested_parts={"rules"},
-            )
-            self.assertEqual([], node.extra["rules"])
-            self.assertEqual("completed_with_findings", node.extra["analysis_status"])
-            self.assertEqual("unavailable", node.extra["analysis_findings"][0]["status"])
-            self.assertEqual([1], node.extra["analysis_findings"][0]["coordinates"])
+            with self.assertRaisesRegex(ValueError, "deterministic Rule invariant"):
+                _apply_node_analysis(
+                    None,
+                    BatchRulesItem(node_key="1-4", rules=[]),
+                    None,
+                    node,
+                    context,
+                    SimpleNamespace(name="dbms"),
+                    SourceFileCache(),
+                    contexts={"fn": context},
+                    code_by_id={"fn": node},
+                    requested_parts={"rules"},
+                )
 
     async def test_invalid_stereotype_does_not_partially_mutate_dbms_node(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -616,12 +609,12 @@ class FrameworkFailureContractTest(unittest.IsolatedAsyncioTestCase):
                 )
 
         self.assertIs(result, node)
-        self.assertEqual(["code_summary", "code_rules_examples"], calls)
+        self.assertEqual(["code_summary"], calls)
         self.assertIsNone(node.summary)
-        self.assertEqual([], node.extra["rules"])
+        self.assertEqual(1, len(node.extra["rules"]))
         self.assertEqual("completed_with_findings", node.extra["analysis_status"])
         self.assertEqual(
-            {"summary", "rules", "semantic_frame"},
+            {"summary", "semantic_frame"},
             {finding["concern"] for finding in node.extra["analysis_findings"]},
         )
 
@@ -689,7 +682,7 @@ class FrameworkFailureContractTest(unittest.IsolatedAsyncioTestCase):
                     )
         self.assertEqual(1, run.await_count)
 
-    async def test_rules_failure_does_not_regenerate_summary_or_store_partial(self) -> None:
+    async def test_deterministic_rules_do_not_invoke_a_second_provider(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             source = Path(temp) / "sample.py"
             source.write_text("def work():\n    return 0\n", encoding="utf-8")
@@ -714,22 +707,21 @@ class FrameworkFailureContractTest(unittest.IsolatedAsyncioTestCase):
                         meaning="작업을 수행해 그 결과를 호출자에게 반환한다.",
                         stereotype="Helper",
                     ))
-                raise ValueError("rules invalid")
+                raise AssertionError(f"unexpected provider concern: {rule_name}")
 
             with patch(
                 "pipeline.steps.step7_analyze_code.three_split_llm_fanout.run_yaml_rule",
                 side_effect=fake_rule,
             ):
-                with self.assertRaisesRegex(ValueError, "rules invalid"):
-                    await analyze_code_three_split(
-                        "fn", {"fn": context}, {"fn": node},
-                        SimpleNamespace(name="framework", prompts_dir="."),
-                        source_cache=SourceFileCache(),
-                        llm_slots=PrioritySemaphore(1),
-                    )
+                await analyze_code_three_split(
+                    "fn", {"fn": context}, {"fn": node},
+                    SimpleNamespace(name="framework", prompts_dir="."),
+                    source_cache=SourceFileCache(),
+                    llm_slots=PrioritySemaphore(1),
+                )
         self.assertEqual(1, calls.count("code_summary"))
-        self.assertEqual(1, calls.count("code_rules_examples"))
-        self.assertNotIn("rules", node.extra)
+        self.assertEqual(["code_summary"], calls)
+        self.assertEqual(1, len(node.extra["rules"]))
         self.assertEqual([], node.extra["questions"])
 
 

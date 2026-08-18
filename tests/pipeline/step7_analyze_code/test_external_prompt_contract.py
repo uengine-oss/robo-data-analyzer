@@ -15,7 +15,7 @@ from llm.runners.prompt_values import _safe_format
 
 
 PROMPTS_DIR = Path("llm/prompts/framework")
-RULES = ("code_summary", "code_rules_examples", "code_table_insights")
+RULES = ("code_summary", "code_table_insights")
 
 
 class ExternalPromptContractTest(unittest.TestCase):

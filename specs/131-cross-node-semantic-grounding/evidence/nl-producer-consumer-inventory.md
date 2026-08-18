@@ -1,8 +1,8 @@
 # Analyzer 자연어 의미 생산·소비 인벤토리
 
 **Task**: T131-19
-**Snapshot**: Analyzer `507ea7f9358e95f501546c624313d14521516183`, Architect
-`30e7dd645d27a7d9eb1e41c5e84ea1dd508cff10`, 2026-08-12
+**Snapshot**: 최초 inventory는 Analyzer `507ea7f...`, Architect `30e7dd6...`, 2026-08-12.
+Rule 경로는 2026-08-19 현행 계약으로 갱신했다.
 **범위**: Framework와 DBMS의 분석 시점 자연어 의미, 그 의미에 영향을 주는 임시 자연어,
 그래프·검색·API·MCP·Architect 소비 경로
 
@@ -28,7 +28,7 @@
 parser / graph facts / DDL / external evidence
   -> ScanResult.codebase_notes (Framework만)
   -> module_pre_analysis.intent (임시)
-  -> step7 code summary | rules.nl | table usage
+  -> step7 code summary | deterministic Rule structure | table usage
   -> normalizer + deterministic quality gates
   -> CodeNode / Rule / Question + table-insight state
   -> step8 Module summary | Component name | Table/Column meaning
@@ -37,7 +37,7 @@ parser / graph facts / DDL / external evidence
   -> Architect provenance / Define / Tactical / Plan
 ```
 
-현재 결함은 각 자연어 필드가 서로 독립된 생산자라는 점이다. `summary`, `rule.nl`,
+최초 결함은 각 자연어 필드가 서로 독립된 생산자였다는 점이다. `summary`, 과거 `rule.nl`,
 `usage_summary`, 최종 `description`, 모듈 요약과 컴포넌트 이름이 동일 구조 사실을 서로 다른
 prompt에서 다시 해석한다. 필드별 schema는 출력 형태를 제한하지만, 전체 구조에서 요구되는
 의미 slot의 population과 교차 필드 일관성을 보장하는 공통 정본은 없다.
@@ -46,12 +46,12 @@ prompt에서 다시 해석한다. 필드별 schema는 출력 형태를 제한하
 
 | # | 생산자 / 전략 | 현재 호출·schema | LLM 자연어 | 코드 소유 사실·검증 | 저장·직접 소비 | 전환 결정 |
 |---|---|---|---|---|---|---|
-| P01 | Scan agent / Framework | `agents.scan.run_structured_agent` → `ScanResult` | `codebase_notes`; `no_match_reason` | skill contract 주입, regex compile, exclusion 검증, confidence 경계 | `scan_result` state; `codebase_notes`가 Framework step7의 summary/rule/table prompt 공통 prefix | `codebase_notes`는 프레임 근거가 아닌 **run context**로 KEEP/ADAPT. 사실 ID를 참조하는 bounded context로 제한. `no_match_reason`은 운영 진단으로 제외 |
+| P01 | Scan agent / Framework | `agents.scan.run_structured_agent` → `ScanResult` | `codebase_notes`; `no_match_reason` | skill contract 주입, regex compile, exclusion 검증, confidence 경계 | `scan_result` state; `codebase_notes`가 Framework step7 summary/table prompt context에 사용. Rule은 LLM 입력 없음 | `codebase_notes`는 프레임 근거가 아닌 **run context**로 KEEP/ADAPT. 사실 ID를 참조하는 bounded context로 제한. `no_match_reason`은 운영 진단으로 제외 |
 | P02 | Module pre-analysis / 공통 | `module_pre_analysis.yaml` → `ModulePreAnalysisOutput` | `intent` 0~2문장 | 모듈 ID·헤더 주석·imports·exports는 코드가 선택; schema는 빈 intent 허용 | run-local `{module_id: intent}`; 모든 step7 prompt context. 그래프 저장 안 함 | 독립 의미 생산자 제거. 구조·주석 근거에서 만든 module-level frame projection 또는 근거 context로 ADAPT |
 | P03 | Code summary / Framework | `code_summary.yaml` → 동적 `summary_response_model(strategy)` → `SummaryOutput` | `summary`, `stereotype`, `questions[].text/reason`, `missing_context[]` | exact target schema; status 조합 validator; summary format normalize; physical identity 누락, callee 복사, 비교 피연산자 변경, write/stereotype 모순 gate | `CodeNode.summary/stereotype`; status/missing JSON; `Question` + `HAS_QUESTION`; caller callee context; parent range 압축; module/component naming; embedding/search/API/MCP/Architect | frame slot meaning/status/missing의 주 생산 경로로 REPLACE. `summary`, `stereotype`, questions는 frame projection. 기존 gates는 KEEP/ADAPT |
 | P04 | Code summary batch / DBMS | `code_summary_batch.yaml` → 동적 `batch_summary_response_model` → `BatchSummaryOutput` | P03과 동일, node별 | exact `node_key`·전략 stereotype; P03과 동일한 normalize/gates | P03과 동일한 graph/storage 계약 | P03과 같은 frame assembler/schema를 batch envelope 안에서 사용. batch scheduling은 KEEP |
-| P05 | Rule narrative / Framework | `code_rules_examples.yaml` → 동적 `rules_response_model(rows)` → `RulesExamplesOutput` | `RuleItem.nl` | branch table이 exact `R<anchor>` keys와 `cond/then`을 선결정; normalizer가 condition/effects/anchor 복원; grading은 `nl` 제외; Example은 accepted Rule에서 Python으로 파생 | `Rule.nl/cond/then/when`; `Example.given/then`; compact rule/API/MCP/Architect | condition/effects/Example 결정 경로 KEEP. `nl` 독립 생산 제거 후 rule/decision slot projection으로 REPLACE |
-| P06 | Rule narrative batch / DBMS | `code_rules_examples_batch.yaml` 또는 gate prompt → `BatchRulesOutput` | `RuleItem.nl` | node/rule 좌표와 cond/then 검증은 P05와 동일 | P05와 동일 | P05와 동일. DBMS batch envelope·gate·priority는 KEEP |
+| P05 | Rule structure / Framework | provider·response schema 없음 | LLM 자연어 없음, `RuleItem.nl=""` | branch table의 exact required row를 공통 물질화기가 cond/then/when으로 만들고 영구 audit가 coverage·중복·재물질화를 검사; Example은 accepted Rule에서 파생 | Rule/Example, compact search/API/MCP/Architect의 구조 렌더링 | 현행 단일 경로. 옛 Rule prompt/schema/normalizer 삭제 |
+| P06 | Rule structure / DBMS | provider·response schema 없음 | LLM 자연어 없음, `RuleItem.nl=""` | unit/gate는 행의 유일 owner만 정하고 P05와 같은 공통 물질화·audit를 사용 | P05와 동일 | 현행 단일 경로. Rule batch/admission/retry/split 없음 |
 | P07 | Per-code table insight / Framework | `code_table_insights.yaml` → 동적 exact table schema | table별 `usage_summary` | direct READ/WRITE table set과 role은 코드가 고정; columns/source coordinates는 결정론 주입; table identity exact-key validation | run-local table insight collection; 최종 table description prompt 근거 | 별도 문장 생산 제거. READ/WRITE/SELECT/UPDATE frame slot으로 REPLACE하고 최종 TABLE/COLUMN projection의 evidence ref로 사용 |
 | P08 | Per-code table insight batch / DBMS | `code_table_insights_batch.yaml` → 동적 batch schema | P07과 동일 | exact node/table keys; direct R/W gate | P07과 동일 | P07과 동일. batch scheduling KEEP |
 | P09 | Module summary / 공통 step8 | `module_summary.yaml` → 동적 `module_summary_response_model(strategy)` | `summary`, `stereotype`, `logical_name` | 대상 Module와 전체 분석 멤버를 코드가 고정; 멤버 summary 하나라도 없으면 fail-closed; strategy stereotype literal | `Module.summary/stereotype/logical_name`; graph delta/UI/search 계열 | 멤버 frame의 deduplicated projection으로 ADAPT. 독립 source 재해석 금지, module slot과 coverage/status 추가 |
@@ -66,7 +66,7 @@ prompt에서 다시 해석한다. 필드별 schema는 출력 형태를 제한하
 | `CodeNode.stereotype` | property + ontology label | UI/filter, Module/Component context, API | summary와 같은 호출이 고르며 write 모순만 부분 검증 | target-level frame classification projection |
 | summary status/missing | code-node property/JSON + state | parent/callee context, node detail, 검토 finding | 코드노드 전체 단일 상태라 부분 slot 누락 위치를 알 수 없음 | slot별 status/missing에서 target aggregate를 결정론 계산 |
 | `Question.text/reason` | `Question` node + `HAS_QUESTION` | graph delta, search/detail, Architect 감사 가능 | 질문이 어떤 구조 slot과 근거 결손에 대응하는지 ID가 없음 | missing slot ID와 required evidence kind의 projection |
-| `Rule.nl` | `Rule` node | compact rules, API/MCP, Architect GWT | 검증 대상 `cond/then`과 별개로 다시 생성되어 의미 드리프트 가능 | accepted decision/rule slot의 한 문장 projection |
+| `Rule.nl` | graph 호환 property는 빈 문자열, delta/MCP에서는 생략 가능 | compact rules, API/MCP, Architect GWT | 비어 있지 않으면 계약 위반으로 graph 전 실패 | cond/then을 해석 없이 구조 렌더링; 별도 저장 의미 없음 |
 | `Example.given/then` | `Example` node | MCP/Architect scenario 근거 | 자연어는 아니며 Rule 구조에서 파생됨 | 현 결정론 경로 KEEP, rule/effect evidence ID 연결 강화 |
 | table `usage_summary` | step7 run-local collection | final table description prompt | 코드노드별로 같은 table 의미를 반복 생성 | code operation slot 자체가 정본; table frame이 참조 |
 | Table/Column names/descriptions | graph properties | embeddings, ranking, detail/MCP, Architect | 물리명 번역·추정과 실제 DDL/usage 근거의 경계가 필드에 보이지 않음 | evidence refs/status를 가진 TABLE/COLUMN slots의 projection |
@@ -87,7 +87,7 @@ T131-20의 `StructuralProfile`은 새 추출기를 병렬로 만들지 않고 �
 | CALL/callee/argument/result | CALL nodes, step5 linking, context callees/outbound edges | call purpose/argument role/result use/side-effect slots |
 | direct/effective READ/WRITE | table linker, exact direct table helpers, routine context | SELECT/UPDATE/table role slots; direct와 aggregate 구분 |
 | table/column identity와 source coordinates | DDL/catalog graph, table evidence, deterministic column injection | TABLE/COLUMN slots; 물리명 재생성 금지 |
-| Rule anchor/cond/effects | branch table + dynamic rule schema normalizer | rule/decision slots; Rule/Example projections |
+| Rule anchor/cond/effects | branch table + 공통 결정론 materializer + `rule-structures` audit | Rule/Example 구조 projection; semantic slot 없음 |
 | transaction/exception 구조 | parser labels/constructs와 source evidence | 해당 근거가 있을 때만 bounded family 생성 |
 | callee summary 의존 순서 | existing dependency planner/handoff | 프레임 공개 신호에 재사용; 스케줄러 변경 금지 |
 
@@ -149,8 +149,9 @@ T131-20의 `StructuralProfile`은 새 추출기를 병렬로 만들지 않고 �
    applicable slot 집합이다.
 2. 모든 자연어 meaning은 `slot_id`, `slot_type`, `target_ref`, `evidence_refs`,
    `status`, `missing_context`에 묶인다.
-3. `summary`, `description`, `logical_name`, `rule.nl`, 질문은 같은 frame에서 결정론적으로
-   선택·조립되는 projection이어야 하며 별도 source-reading producer가 될 수 없다.
+3. `summary`, `description`, `logical_name`, 질문은 같은 frame에서 결정론적으로 선택·조립되는
+   projection이어야 하며 별도 source-reading producer가 될 수 없다. Rule은 frame 자연어가 아니라
+   branch fact의 exact 구조 산출물이고 `nl`은 absent/empty다.
 4. graph는 frame 정본을 저장하고 legacy properties는 호환 projection으로만 저장한다.
 5. MCP normal packet은 complete source body와 새 source excerpt를 포함하지 않는다. 좌표·ID는
    감사 경로에서 원문을 찾기 위한 포인터이지 원문 복제 허가가 아니다.

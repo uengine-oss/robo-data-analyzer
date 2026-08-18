@@ -111,18 +111,18 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
                 self.assertIn("[INPUT", text)
                 self.assertLess(text.index("[TASK"), text.rindex("[INPUT"))
 
-    def test_rule_prompts_share_one_exact_leaf_contract(self) -> None:
-        shared = (ROOT / "llm/prompts/common/rule_leaf_contract.md").read_text(
-            encoding="utf-8",
-        ).strip()
-        for strategy, name in (
-            ("framework", "code_rules_examples"),
-            ("dbms", "code_rules_examples_batch"),
-        ):
-            rule = _load_rule(ROOT / "llm/prompts" / strategy, name)
-            with self.subTest(strategy=strategy):
-                self.assertEqual(shared, rule["static_values"]["rule_leaf_contract"])
-                self.assertIn("semantic slot meaning", rule["user_template"])
+    def test_rule_provider_prompts_are_physically_retired(self) -> None:
+        retired = (
+            "common/rule_leaf_contract.md",
+            "framework/_rule_common.yaml",
+            "framework/code_rules_examples.yaml",
+            "dbms/_rule_common.yaml",
+            "dbms/code_rules_examples_batch.yaml",
+            "dbms/code_gate_rules_batch.yaml",
+        )
+        for relative in retired:
+            with self.subTest(relative=relative):
+                self.assertFalse((ROOT / "llm/prompts" / relative).exists())
 
     def test_summary_and_table_usage_keep_distinct_evidence_scopes(self) -> None:
         summary = self._expanded(_load_rule(

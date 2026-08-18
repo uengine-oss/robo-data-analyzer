@@ -5,12 +5,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from graph.schema.graph_nodes import CodeNode
+from pipeline.models.analysis_context import ControlSubtreeNode
+from pipeline.quality_gates.branch_inventory import build_inventory
+from pipeline.quality_gates.rule_audit_artifact import build_rule_audit_record
 from scripts.judge_run import (
     VAGUE,
     _ast_facts,
     _ddl_table_names,
     _ddl_axes,
     _delivered_nl_quality,
+    _graph_rule_structure_delta,
     _reference_leak_count,
     _source_return_lines,
     load_gold_axes,
@@ -50,6 +55,63 @@ def _record(node_key: str, target_id: str, row_key: str) -> dict:
 
 
 class JudgeRunDbmsIdentityTest(unittest.TestCase):
+    def test_graph_rule_structure_delta_detects_missing_extra_and_changed_values(self) -> None:
+        expected = {
+            ("code:a", "R1"): {"cond": 'F("ready")', "then": ['call("go")'], "nl": ""},
+            ("code:a", "R2"): {"cond": None, "then": [], "nl": ""},
+        }
+        graph = [
+            {
+                "target_id": "code:a", "anchor_line": 1,
+                "cond": 'F("wrong")', "effects": ['call("go")'], "nl": "",
+            },
+            {
+                "target_id": "code:a", "anchor_line": 3,
+                "cond": None, "effects": [], "nl": "",
+            },
+        ]
+
+        delta = _graph_rule_structure_delta(graph, expected)
+
+        self.assertEqual([("code:a", "R2")], delta["missing"])
+        self.assertEqual([("code:a", "R3")], delta["extra"])
+        self.assertEqual([("code:a", "R1")], delta["mismatches"])
+
+    def test_current_deterministic_rule_artifact_replaces_retired_prompt_records(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            run_dir = Path(temp)
+            artifact_dir = run_dir / "rule-structures"
+            artifact_dir.mkdir()
+            target_id = "code:order.c:validate"
+            routine = CodeNode(
+                id=target_id,
+                name="validate",
+                signature="validate()",
+                file_path="order.c",
+                start_line=1,
+                end_line=1,
+                label="FUNCTION",
+            )
+            inventory = build_inventory(
+                "if (amount > 0) { approve(); }",
+                (ControlSubtreeNode(
+                    "if", "IF", 1, 1, expression="amount > 0",
+                ),),
+                "c",
+                statements=(),
+                call_lines=((1, "approve"),),
+            )
+            record = build_rule_audit_record(routine, inventory)
+            (artifact_dir / "validate.json").write_text(
+                json.dumps(record, ensure_ascii=False), encoding="utf-8",
+            )
+
+            self.assertEqual({(target_id, "R1")}, load_rule_obligations(run_dir))
+            rows = load_rule_rows(run_dir)
+            self.assertEqual('F("amount > 0")', rows[(target_id, "R1")]["cond"])
+            self.assertEqual(['call("approve")'], rows[(target_id, "R1")]["then"])
+            self.assertEqual("", rows[(target_id, "R1")]["nl"])
+
     def test_ddl_table_scope_handles_quoted_and_schema_qualified_names(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "scope.sql"

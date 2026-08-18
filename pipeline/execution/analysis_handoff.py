@@ -30,8 +30,8 @@ from shared.concurrency.priority_semaphore import PrioritySemaphore
 # 슬롯 우선순위 — 낮을수록 먼저. step7 이 임계경로라 항상 앞선다.
 STEP7_PRIORITY = 0
 POSTPROCESS_PRIORITY = 1
+SUMMARY_WAKE_PRIORITY = -10_000_000
 SUMMARY_LANE = "summary"
-RULES_LANE = "rules"
 INSIGHTS_LANE = "insights"
 POSTPROCESS_LANE = "postprocess"
 
@@ -40,7 +40,6 @@ POSTPROCESS_LANE = "postprocess"
 # shares under contention, not reservations: an idle lane lends all capacity.
 ANALYSIS_LLM_LANE_WEIGHTS = {
     SUMMARY_LANE: 4,
-    RULES_LANE: 3,
     INSIGHTS_LANE: 1,
     POSTPROCESS_LANE: 1,
 }
@@ -55,12 +54,6 @@ def analysis_llm_slots() -> PrioritySemaphore:
     return PrioritySemaphore(
         llm_capacity,
         fair_weights=ANALYSIS_LLM_LANE_WEIGHTS,
-        lane_caps={
-            RULES_LANE: min(
-                SETTINGS.analysis_pipeline.rule_max_concurrency,
-                llm_capacity,
-            ),
-        },
     )
 
 

@@ -1,8 +1,8 @@
-"""DBMS step7 배치 3분할 분석 (🅕) — 같은 유효 부모 형제 그룹을 관심사별 콜로 분석.
+"""DBMS step7 관심사 배치 분석 — 같은 유효 부모 형제 그룹을 책임별로 처리.
 
 ``analyze_code_step`` 의 DBMS 분기 (Framework 는 ``three_split_llm_fanout`` per-node 유지).
-framework 와 같은 3 관심사(①요약 ②테이블 ③비즈니스로직), 단 dbms 는 같은 유효부모 형제
-N 노드를 **배치(그룹)** 로 묶어 던진다 — 관심사별 1콜씩 총 3콜, ``node_key``(줄범위) 로 분배.
+summary와 table insight는 같은 유효부모 형제 N개를 관심사별 LLM batch로 묶고,
+Rule은 routine branch inventory에서 LLM 0으로 물질화해 ``node_key``(줄범위)에 분배한다.
 
 - skip 노드(괄호 DECLARE/TRY/TRIGGER_BLOCK)는 분석 제외 + 컨텍스트 투명(E).
 - 바텀업 라운드(유효 트리+CALLS)·persist·EM 누적은 ``analyze_code_step`` 헬퍼 재사용.
@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
@@ -29,11 +30,9 @@ from pipeline.steps.step7_analyze_code.batch_planner import (
 )
 from pipeline.steps.step7_analyze_code.batch_prompt_values import (
     _build_batch_values,
-    build_rule_batch_values,
     build_table_insight_batch_values,
 )
 from pipeline.steps.step7_analyze_code.batch_node_identity import batch_node_keys
-from pipeline.steps.step7_analyze_code.range_body import skeleton_body
 from pipeline.languages import ROUTINE_LABELS
 from pipeline.steps.step7_analyze_code.rw_table_filter import (
     serialize_rules,
@@ -45,22 +44,16 @@ from pipeline.steps.step7_analyze_code.control_prompt import (
 from pipeline.steps.step7_analyze_code.rule_row_ownership import plan_rule_row_ownership
 from pipeline.steps.step7_analyze_code.branch_audit import persist_routine_audits
 from pipeline.quality_gates.rule_grading import grade_rules, partition_rule_candidates
-from pipeline.quality_gates.rule_prompt_evidence import rule_evidence
 from pipeline.models.analysis_context import AnalysisContext
 from pipeline.models.data_object_usage import exact_direct_table_ids
 from pipeline.models.analysis_finding import AnalysisFinding
 from pipeline.models.code_analysis_output import (
     BatchRulesItem,
-    BatchRulesOutput,
     BatchSummaryItem,
     BatchTableInsightsItem,
     BatchTableInsightsOutput,
     BatchSummaryOutput,
     RulesExamplesOutput,
-)
-from pipeline.models.rule_response_schema import (
-    batch_frame_rules_response_model,
-    normalize_batch_frame_rules_response,
 )
 from pipeline.models.table_insight_response_schema import (
     batch_frame_table_insights_response_model,
@@ -71,8 +64,7 @@ from pipeline.models.summary_response_schema import (
     normalize_batch_frame_summary_response,
 )
 from pipeline.steps.step7_analyze_code.rule_row_batching import (
-    rule_queue_priority,
-    SUMMARY_WAKE_PRIORITY,
+    materialize_and_validate_rules,
 )
 from graph.schema.graph_nodes import CodeNode
 from shared.config.settings import SETTINGS
@@ -95,12 +87,11 @@ from shared.files.cache import SourceFileCache
 from pipeline.execution.analysis_handoff import (
     AnalysisHandoff,
     INSIGHTS_LANE,
-    RULES_LANE,
     SUMMARY_LANE,
+    SUMMARY_WAKE_PRIORITY,
 )
 from pipeline.execution.pause_controller import PauseController
 from pipeline.steps.step7_analyze_code.quality_findings import apply_analysis_findings
-from pipeline.steps.step7_analyze_code.semantic_frame_planner import rule_slot_specs
 from pipeline.models.semantic_frame import (
     mark_semantic_frame_insufficient,
     merge_semantic_frames,
@@ -240,7 +231,8 @@ async def run_dbms_batch_analysis(
     row_plan = plan_rule_row_ownership(
         sorted(rule_units | rule_gates), code_by_id, _routine_inventory,
     )
-    # 분기표 정답지를 **루틴당 한 번** 남긴다 — `judge_run [A]` 회계가 읽는 산출물이다.
+    # 분기표와 exact Rule 구조 정답지를 **루틴당 한 번** 남긴다. Rule은 LLM 0이라
+    # provider prompt 기록 대신 이 산출물이 `judge_run [A]` 회계를 소유한다.
     # 종전에 이 기록이 framework 엔진에만 있어 DBMS 는 [A] 가 항상 0 이었고,
     # 헌법 IX 2층이 DBMS 에서 성립하지 않았다(2026-08-07 실측).
     persist_routine_audits(routine_inventories, code_by_id)
@@ -506,52 +498,13 @@ async def _analyze_batch(
         on_summaries_ready(node_ids)
         return items, findings
 
-    async def _rule_concern(ids, rule_name, *, body_fn=None):
-        kwargs = {"body_fn": body_fn} if body_fn is not None else {}
-        try:
-            items = await _collect_keyed_concern(
-                parent_id=batch.parent_id,
-                node_ids=ids,
-                concern="rules",
-                rule_name=rule_name,
-                response_model=BatchRulesOutput,
-                prompts_dir=prompts_dir,
-                contexts=contexts,
-                code_by_id=code_by_id,
-                cost_budget=cost_budget,
-                codebase_notes=codebase_notes,
-                module_intents=module_intents,
-                table_descriptions=table_descriptions,
-                source_cache=source_cache,
-                llm_slots=llm_slots,
-                strategy_name=strategy.name,
-                **kwargs,
-            )
-            return items, {}
-        except ModelOutputError as error:
-            findings: dict[str, list[AnalysisFinding]] = {}
-            for node_id in ids:
-                # 프롬프트가 요구한 행과 같은 집합이어야 한다 (spec 117 — 세 경로 동일 답).
-                findings[node_id] = [
-                    AnalysisFinding(
-                        concern="rules",
-                        status="unavailable",
-                        target_id=f"{node_id}::R{row}",
-                        coordinates=(row,),
-                        reasons=(str(error),),
-                        evidence_rule=error.rule_name,
-                    )
-                    for row in contexts[node_id].extra.get("rule_rows") or ()
-                ]
-            return {}, findings
-
     tasks["summary"] = _summary_concern()
-    if rule_ids:
-        tasks["rules"] = _rule_concern(rule_ids, "code_rules_examples_batch")
-    if gate_ids:
-        tasks["gate_rules"] = _rule_concern(
-            gate_ids, "code_gate_rules_batch", body_fn=skeleton_body,
-        )
+    rules = _materialize_dbms_rules(
+        [*rule_ids, *gate_ids],
+        contexts=contexts,
+        code_by_id=code_by_id,
+        source_cache=source_cache,
+    )
     if dml_ids:
         async def _insight_concern():
             try:
@@ -594,23 +547,12 @@ async def _analyze_batch(
     for node_id, findings in summary_findings.items():
         pre_findings.setdefault(node_id, []).extend(findings)
 
-    rules: dict[str, BatchRulesItem] = {}
-    rule_findings: dict[str, list[AnalysisFinding]] = {}
-    for name in ("rules", "gate_rules"):
-        if name in done:
-            items, findings = done[name]
-            rules.update(items)
-            for node_id, node_findings in findings.items():
-                rule_findings.setdefault(node_id, []).extend(node_findings)
     if "insights" in done:
         insights, insight_findings = done["insights"]
         for node_id, findings in insight_findings.items():
             pre_findings.setdefault(node_id, []).extend(findings)
     else:
         insights = {}
-    for node_id, findings in rule_findings.items():
-        pre_findings.setdefault(node_id, []).extend(findings)
-
     applied: list[CodeNode] = []
     for fid in node_ids:
         requested: set[str] = set()
@@ -629,7 +571,6 @@ async def _analyze_batch(
             contexts=contexts,
             code_by_id=code_by_id,
             requested_parts=requested,
-            is_gate=fid in rule_gates,
             pre_findings=pre_findings.get(fid, ()),
         ))
     return applied
@@ -677,10 +618,6 @@ async def _collect_keyed_concern(
         **kwargs,
         include_column_usage=(concern == "insights"),
     )
-    rule_assignments = None
-    rule_evidences = None
-    rule_owner_ids = None
-    rule_frame_assignments = None
     insight_assignments = None
     effective_response_model = response_model
     if concern == "summary":
@@ -693,50 +630,6 @@ async def _collect_keyed_concern(
         }
         effective_response_model = batch_frame_summary_response_model(
             strategy_name, frame_assignments,
-        )
-    elif concern == "rules":
-        rule_assignments = {}
-        rule_evidences = {}
-        rule_owner_ids = {}
-        for node_key, node_id in expected.items():
-            # 분기표는 소유 루틴이 만들고(경로 조건이 루틴 문맥에서 계산돼야 한다),
-            # 이 노드는 배분받은 행만 답한다 (spec 117). 배분은 run 시작 때 한 번
-            # 계산돼 ctx.extra["rule_rows"] 에 있다 — 프롬프트·오류·채점 세 경로가
-            # 같은 답을 봐야 하므로 여기서 다시 계산하지 않는다(헌법 III).
-            routine, inventory = routine_inventory(
-                code_by_id[node_id], contexts, code_by_id, source_cache,
-            )
-            rule_owner_ids[node_key] = routine.id
-            rule_assignments[node_key] = list(
-                contexts[node_id].extra.get("rule_rows") or ()
-            )
-            evidence = rule_evidence(
-                inventory, rule_assignments[node_key],
-            )
-            rule_evidences[node_key] = evidence
-        rule_frame_assignments = {}
-        for node_key, node_id in expected.items():
-            profile, _all_specs, concerns = contexts[node_id].extra[
-                "_semantic_frame_plan"
-            ]
-            rule_frame_assignments[node_key] = (
-                profile,
-                rule_slot_specs(
-                    profile, concerns["rules"], rule_assignments[node_key],
-                ),
-            )
-        effective_response_model = batch_frame_rules_response_model(
-            rule_frame_assignments
-        )
-        values = build_rule_batch_values(
-            expected=expected,
-            assignments=rule_assignments,
-            evidences=rule_evidences,
-            owner_ids=rule_owner_ids,
-            contexts=contexts,
-            code_by_id=code_by_id,
-            table_descriptions=table_descriptions,
-            frame_assignments=rule_frame_assignments,
         )
     elif concern == "insights":
         insight_assignments = {}
@@ -765,8 +658,6 @@ async def _collect_keyed_concern(
     # the shared capacity; Rule/table work remains ahead of post-processing priority 1.
     if concern == "summary":
         queue_priority = SUMMARY_WAKE_PRIORITY
-    elif concern == "rules":
-        queue_priority = rule_queue_priority(sum(len(str(value)) for value in values.values()))
     else:
         queue_priority = 0
     queued_at = time.monotonic()
@@ -774,7 +665,6 @@ async def _collect_keyed_concern(
     payload_chars = sum(len(str(value)) for value in values.values())
     queue_lane = {
         "summary": SUMMARY_LANE,
-        "rules": RULES_LANE,
         "insights": INSIGHTS_LANE,
     }[concern]
     async with llm_slots.at(queue_priority, queue_lane):
@@ -801,13 +691,6 @@ async def _collect_keyed_concern(
         )
     if concern == "summary":
         output = normalize_batch_frame_summary_response(output, frame_assignments)
-    elif rule_assignments is not None:
-        output = normalize_batch_frame_rules_response(
-            output,
-            rule_frame_assignments,
-            rule_assignments,
-            rule_evidences,
-        )
     elif insight_assignments is not None:
         output = normalize_batch_frame_table_insights_response(
             output, insight_assignments,
@@ -825,6 +708,47 @@ async def _collect_keyed_concern(
 
 def _expected_keys(node_ids, contexts) -> dict[str, str]:
     return batch_node_keys(node_ids, contexts)
+
+
+def _materialize_dbms_rules(
+    node_ids: list[str],
+    *,
+    contexts: Mapping[str, AnalysisContext],
+    code_by_id: Mapping[str, CodeNode],
+    source_cache: SourceFileCache,
+) -> dict[str, BatchRulesItem]:
+    """Materialize each DBMS node's assigned routine rows with zero model calls."""
+    if not node_ids:
+        return {}
+    expected = _expected_keys(node_ids, contexts)
+    result: dict[str, BatchRulesItem] = {}
+    for node_key, node_id in expected.items():
+        routine, inventory = routine_inventory(
+            code_by_id[node_id], contexts, code_by_id, source_cache,
+        )
+        assigned = tuple(int(row) for row in (
+            contexts[node_id].extra.get("rule_rows") or ()
+        ))
+        routine_ctx = contexts[routine.id]
+        source = source_cache.slice(
+            routine_ctx.file_path, routine_ctx.start_line, routine_ctx.end_line,
+        )
+        collection = materialize_and_validate_rules(
+            inventory=inventory,
+            target_scope=node_id,
+            source=source,
+            rows=assigned,
+            allowed_tables=sorted(set(routine_ctx.reads) | set(routine_ctx.writes)),
+            read_tables=sorted(set(routine_ctx.reads)),
+            write_tables=sorted(set(routine_ctx.writes)),
+            table_ops=routine_ctx.extra.get("table_op") or {},
+            table_aliases=routine_ctx.extra.get("table_identity_aliases") or {},
+        )
+        result[node_id] = BatchRulesItem(
+            node_key=node_key,
+            rules=collection.rules,
+        )
+    return result
 
 
 def _partition_keyed_items(items, expected, *, concern: str):
@@ -1046,10 +970,9 @@ def _apply_node_analysis(
     contexts: Mapping[str, AnalysisContext],
     code_by_id: Mapping[str, CodeNode],
     requested_parts: set[str],
-    is_gate: bool = False,
     pre_findings=(),
 ) -> CodeNode:
-    """3 배치 분할 결과(요약/비즈로직/테이블) → CodeNode + ctx 반영 (three_split fan-in 동일).
+    """summary/결정론 Rule/table 결과를 CodeNode와 context에 반영한다.
 
     rules/table 은 해당 관심사를 요청하지 않은 노드에서만 None이다.
     """
@@ -1072,40 +995,44 @@ def _apply_node_analysis(
         routine, inventory = routine_inventory(fn, contexts, code_by_id, source_cache)
         routine_ctx = contexts[routine.id]
         assigned = set(ctx.extra.get("rule_rows") or ())
-        if rules is not None:
-            if rules.semantic_frame is None:
-                raise ValueError(f"frame-first DBMS rules missing semantic frame: {fn.id}")
-            fn.extra["_rule_semantic_frame"] = rules.semantic_frame
-            # 분기표 대조 채점. 빈 rules도 의무 행 누락으로 검증하며 건너뛰지 않는다.
-            # 좌표계는 분기표와 같은 **루틴** 범위다.
-            source_plain = source_cache.slice(
-                routine_ctx.file_path, routine_ctx.start_line, routine_ctx.end_line
+        if rules is None:
+            raise ValueError(f"{fn.id}: deterministic Rule result is missing")
+        # 분기표 대조 채점. 좌표계는 분기표와 같은 **루틴** 범위다.
+        source_plain = source_cache.slice(
+            routine_ctx.file_path, routine_ctx.start_line, routine_ctx.end_line
+        )
+        rule_output = RulesExamplesOutput(rules=rules.rules)
+        report = grade_rules(
+            rule_output,
+            inventory,
+            source_plain,
+            assigned=assigned,
+            # 허용 테이블의 좌표계도 **루틴**이다 — 분기표·행 소유자와 같아야 한다
+            # (spec 117). 배치 노드는 입력 본문을 좁히려고 하강한 것일 뿐이다.
+            allowed_tables=set(routine_ctx.reads) | set(routine_ctx.writes),
+            read_tables=set(routine_ctx.reads),
+            write_tables=set(routine_ctx.writes),
+            table_ops=routine_ctx.extra.get("table_op") or {},
+            table_aliases=routine_ctx.extra.get("table_identity_aliases") or {},
+            require_exact_conditions=True,
+        )
+        accepted_rules, graded_findings = partition_rule_candidates(
+            rule_output,
+            report,
+            assigned=assigned,
+            evidence_rule="deterministic_rule_structure",
+        )
+        accepted_rows = {rule.anchor_line for rule in accepted_rules}
+        if graded_findings or accepted_rows != assigned:
+            reasons = [
+                reason
+                for finding in graded_findings
+                for reason in finding.reasons
+            ]
+            raise ValueError(
+                f"{fn.id}: deterministic Rule invariant failed: "
+                + "; ".join(reasons or ("assigned-row coverage mismatch",))
             )
-            report = grade_rules(
-                RulesExamplesOutput(
-                    rules=rules.rules
-                ),
-                inventory,
-                source_plain,
-                assigned=assigned,
-                # 허용 테이블의 좌표계도 **루틴**이다 — 분기표·행 소유자와 같아야 한다
-                # (spec 117). 배치 노드는 입력 본문을 좁히려고 하강한 것일 뿐이라
-                # 그 노드의 자기 줄 R/W 로 채점하면, 자손 DML 에서 온 정당한 효과가
-                # "결정론 R/W 집합에 없음"으로 거절된다(2026-08-08 실측 21건).
-                allowed_tables=set(routine_ctx.reads) | set(routine_ctx.writes),
-                read_tables=set(routine_ctx.reads),
-                write_tables=set(routine_ctx.writes),
-                table_ops=routine_ctx.extra.get("table_op") or {},
-                table_aliases=routine_ctx.extra.get("table_identity_aliases") or {},
-                require_exact_conditions=True,
-            )
-            accepted_rules, graded_findings = partition_rule_candidates(
-                RulesExamplesOutput(rules=rules.rules),
-                report,
-                assigned=assigned,
-                evidence_rule="code_gate_rules_batch" if is_gate else "code_rules_examples_batch",
-            )
-            findings.extend(graded_findings)
         rule_finding_records = [
             finding.to_dict() for finding in findings if finding.concern == "rules"
         ]
@@ -1131,7 +1058,7 @@ def _apply_node_analysis(
                 f"{sorted(set(unresolved_tables))[:8]}"
             )
     try:
-        _finalize_batch_semantic_frame(fn, ctx, rules, table)
+        _finalize_batch_semantic_frame(fn, ctx, table)
     except ValueError as error:
         findings.append(AnalysisFinding(
             concern="semantic_frame",
@@ -1155,7 +1082,6 @@ def _apply_node_analysis(
 def _finalize_batch_semantic_frame(
     fn: CodeNode,
     ctx: AnalysisContext,
-    rules: BatchRulesItem | None,
     table: BatchTableInsightsItem | None,
 ) -> None:
     plan = ctx.extra.get("_semantic_frame_plan")
@@ -1164,7 +1090,6 @@ def _finalize_batch_semantic_frame(
     _profile, all_specs, _concerns = plan
     merged = merge_semantic_frames(
         fn.extra.get("_summary_semantic_frame"),
-        rules.semantic_frame if rules is not None else None,
         table.semantic_frame if table is not None else None,
         required_slot_ids=(spec.slot_id for spec in all_specs),
     )

@@ -189,7 +189,7 @@ class EarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
 
 
 class BatchEarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
-    async def test_dbms_summary_is_published_while_rule_concern_is_running(self):
+    async def test_dbms_summary_is_published_while_table_concern_is_running(self):
         node = CodeNode(
             id="n", signature="n()", file_path="sample.sql",
             start_line=1, end_line=3, label="PROCEDURE",
@@ -197,9 +197,10 @@ class BatchEarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
         ctx = AnalysisContext(
             id="n", signature="n()", file_path="sample.sql",
             start_line=1, end_line=3,
+            direct_reads=("db:APP.ORDERS",),
         )
         summary_ready = asyncio.Event()
-        rule_hold = asyncio.Event()
+        table_hold = asyncio.Event()
 
         async def _fake_collect(**kwargs):
             if kwargs["concern"] == "summary":
@@ -217,7 +218,7 @@ class BatchEarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
                         ),
                     )
                 }
-            await rule_hold.wait()
+            await table_hold.wait()
             return {}
 
         def _on_summaries_ready(node_ids):
@@ -234,7 +235,7 @@ class BatchEarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
                 {"n": ctx}, {"n": node},
                 strategy,
                 None, "", {}, {}, mock.Mock(), PrioritySemaphore(64),
-                {"n"}, set(), _on_summaries_ready,
+                set(), set(), _on_summaries_ready,
             ))
             try:
                 ready_waiter = asyncio.create_task(summary_ready.wait())
@@ -250,7 +251,7 @@ class BatchEarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
                     "상태 코드의 업무 의미는 무엇인가?",
                     node.extra["questions"][0]["text"],
                 )
-                self.assertFalse(task.done(), "Rule tail should still be running")
+                self.assertFalse(task.done(), "table-insight tail should still be running")
             finally:
                 if 'ready_waiter' in locals() and not ready_waiter.done():
                     ready_waiter.cancel()

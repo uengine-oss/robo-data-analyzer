@@ -18,6 +18,8 @@ from typing import Any, Iterable
 from dotenv import load_dotenv
 from neo4j import GraphDatabase
 
+from pipeline.quality_gates.rule_audit_artifact import load_rule_audit_records
+
 
 def _args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -72,15 +74,21 @@ def _prompt_inventory(run_dir: Path) -> tuple[dict[str, Any], set[str], set[str]
             else:
                 summaries.append(parsed)
 
-    rules: list[dict[str, Any]] = []
-    for path in sorted(prompt_dir.glob("code_rules_examples*.jsonl")):
-        for record in _records(path):
-            parsed = (record.get("response") or {}).get("parsed") or {}
-            if "nodes" in parsed:
-                for node in (parsed.get("nodes") or {}).values():
-                    rules.extend((node.get("rules") or {}).values())
-            else:
-                rules.extend((parsed.get("rules") or {}).values())
+    audit_records = load_rule_audit_records(run_dir)
+    rules: list[dict[str, Any]] = [
+        rule
+        for record in audit_records.values()
+        for rule in record["rules"]
+    ]
+    if not audit_records:
+        for path in sorted(prompt_dir.glob("code_rules_examples*.jsonl")):
+            for record in _records(path):
+                parsed = (record.get("response") or {}).get("parsed") or {}
+                if "nodes" in parsed:
+                    for node in (parsed.get("nodes") or {}).values():
+                        rules.extend((node.get("rules") or {}).values())
+                else:
+                    rules.extend((parsed.get("rules") or {}).values())
 
     tables: list[dict[str, Any]] = []
     columns: list[dict[str, Any]] = []
@@ -169,7 +177,15 @@ def _prompt_inventory(run_dir: Path) -> tuple[dict[str, Any], set[str], set[str]
     )
 
 
-def _rule_evidence(prompt_dir: Path) -> dict[str, dict[str, Any]]:
+def _rule_evidence(run_dir: Path) -> dict[str, dict[str, Any]]:
+    audit_records = load_rule_audit_records(run_dir)
+    if audit_records:
+        return {
+            f"{target_id}::R-{str(rule_id).removeprefix('R')}": dict(row)
+            for target_id, record in audit_records.items()
+            for rule_id, row in (record["evidence"].get("rows") or {}).items()
+        }
+    prompt_dir = run_dir / "llm-prompts"
     decoder = json.JSONDecoder()
     evidence: dict[str, dict[str, Any]] = {}
     paths = list(prompt_dir.glob("code_rules_examples*.jsonl"))
@@ -385,7 +401,7 @@ def main() -> int:
     args = _args()
     run_dir = args.run_dir.resolve()
     prompts, table_ids, column_ids = _prompt_inventory(run_dir)
-    rule_evidence = _rule_evidence(run_dir / "llm-prompts")
+    rule_evidence = _rule_evidence(run_dir)
     result = {
         "run_dir": str(run_dir),
         "database": args.database,

@@ -23,6 +23,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from llm.tracing import load_rule_records
+from pipeline.quality_gates.rule_audit_artifact import load_rule_audit_records
 
 
 CONCERNS = (
@@ -149,6 +150,31 @@ def record_evidence(concern: str, record: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def deterministic_rule_evidence(record: dict[str, Any]) -> dict[str, Any]:
+    """Represent LLM-0 Rule structure in the same review-stage envelope."""
+    evidence_text = canonical_json(record["evidence"])
+    return {
+        "concern": "deterministic_rule_structure",
+        "target_id": record["target_id"],
+        "sort_key": record["target_id"],
+        "prompt": {
+            "system_sha256": sha256_bytes(b""),
+            "user_sha256": sha256_bytes(evidence_text.encode("utf-8")),
+            "system_chars": 0,
+            "user_chars": len(evidence_text),
+        },
+        "response": {
+            "parsed": {"rules": record["rules"]},
+            "raw_sha256": sha256_bytes(b""),
+            "raw_chars": 0,
+        },
+        "metadata": {
+            "schema": record["schema"],
+            "llm_calls": 0,
+        },
+    }
+
+
 def main() -> int:
     args = parse_args()
     run_output = args.run_output.resolve()
@@ -179,13 +205,20 @@ def main() -> int:
     concern_rows: dict[str, list[dict[str, Any]]] = {}
     concern_records_by_target: dict[str, dict[str, list[dict[str, Any]]]] = {}
     outputs: dict[str, Any] = {}
+    deterministic_rules = load_rule_audit_records(run_output)
 
     for concern in CONCERNS:
-        path = prompt_dir / f"{concern}.jsonl"
-        records = [
-            record_evidence(concern, record)
-            for record in load_rule_records(path)
-        ]
+        if concern == "code_rules_examples" and deterministic_rules:
+            records = [
+                deterministic_rule_evidence(record)
+                for record in deterministic_rules.values()
+            ]
+        else:
+            path = prompt_dir / f"{concern}.jsonl"
+            records = [
+                record_evidence(concern, record)
+                for record in load_rule_records(path)
+            ]
         concern_rows[concern] = records
         by_target: dict[str, list[dict[str, Any]]] = {}
         for record in records:

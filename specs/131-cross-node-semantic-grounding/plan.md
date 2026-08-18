@@ -39,9 +39,20 @@
     FW/DBMS별 owner와 호출 단위까지 파일:행으로 다시 고정한다.
 14. 잘못된 Framework occurrence-owned CALL slot과 고정 8-slot microbatch를 제거하고, owner당
     bounded slot invariant를 producer에서 실패시키는 계약 테스트를 둔다.
-15. Rule의 parser-owned role/outcome/action prose를 행당 단일 `RULE.BUSINESS_MEANING` semantic delta로
-    교체하고, digest-scoped private wire key 누출을 slot 단위로 격리한다. graph/MCP/Architect에는
-    기존 condition/effects/Example/좌표를 손실 없이 유지한다.
+15. Rule의 parser-owned role/outcome/action prose와 `RULE.BUSINESS_MEANING`을 production에서 제거한다.
+    모든 required row를 LLM 0의 condition/effects Rule로 물질화하고, graph/MCP/Architect에는 모든
+    row의 condition/effects/Example/좌표와 연결 semantic claims를 손실 없이 유지한다.
+15a. 다행 Rule prompt의 별도 slot-assignment↔row 조인을 제거하고 각 row가 자기 output wire를 직접
+     소유하게 한다. 모델 packet은 semantic row의 focus condition/direct/source만 담고 full inherited
+     path와 nested child 구조는 결정론 정본에만 둔다. singleton 증설 없이 같은 batch에서 exact
+     row/wire 정렬을 강제한다.
+15b. Rule target 전체에 붙던 symbol/callee/RW/external/API 목록을 제거하고, direct CALL·DATA_OBJECT
+     좌표와 exact matched key로 연결된 보조 근거만 해당 row에 결속한다. 의미 근거 없는 identifier와
+     sentinel 비교는 확장 번역하지 않는 provider 계약과 반대 fixture를 고정한다.
+15c. 15a~15b의 최종 고정 replay에서도 조건 극성 모순과 무근거 이름 확장이 남았고 후단 validator가
+     이를 잡지 못함을 source→actual response→grade 사슬로 확정한다. Rule prose의 소비자 0을 감사한 뒤
+     Rule 전용 provider/schema/normalizer/batch를 제거하고 exact cond/then/Example projection 하나로
+     정리한다. 검색 표시가 필요하면 같은 구조 facts를 해석 없이 렌더한다.
 16. 현재 concern 분리, 함수 concern 통합, 다중 target, work-conserving fair scheduling 후보를 실제
     APAS 봉인 slice에서 비교한다. 과거 반증된 고정 5/6행, input-length-only split, 의미 축소 prompt는
     재실험하지 않는다.

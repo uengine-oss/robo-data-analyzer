@@ -67,6 +67,11 @@ def _collect_rule(
     fid: str, ordinal: int, r: dict, result: ExampleMappingResult,
 ) -> None:
     """구조화 규칙 1행 → Rule 노드(함수별 고유) + HAS_RULE + Example + 규칙 단위 AFFECTS."""
+    if str(r.get("nl") or ""):
+        raise ValueError(
+            f"structured rule prose is retired for {fid} {r.get('rule_id')!r}; "
+            "Rule.nl must be the empty compatibility field"
+        )
     anchor_line = r.get("anchor_line")
     if (
         isinstance(anchor_line, bool)
@@ -83,7 +88,7 @@ def _collect_rule(
         anchor_line=anchor_line,
         cond=str(r.get("cond") or ""),
         then=tuple(str(s) for s in (r.get("then") or [])),
-        nl=str(r.get("nl") or ""),
+        nl="",
         when=str(r.get("when") or ""),
     ))
     result.has_rule.append(HasRule(

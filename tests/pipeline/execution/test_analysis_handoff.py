@@ -13,7 +13,9 @@ from dataclasses import dataclass, field
 from pipeline.execution.analysis_handoff import (
     AnalysisHandoff,
     AnalysisHandoffAborted,
-    RULES_LANE,
+    ANALYSIS_LLM_LANE_WEIGHTS,
+    INSIGHTS_LANE,
+    SUMMARY_LANE,
     analysis_llm_slots,
     handoff_of,
 )
@@ -137,11 +139,9 @@ class SharedLlmAdmissionTest(unittest.TestCase):
                 SETTINGS.analysis_pipeline.llm_max_concurrency,
             ),
         )
-        self.assertLessEqual(
-            SETTINGS.analysis_pipeline.rule_max_concurrency,
-            slots.capacity,
-        )
-        self.assertEqual(slots.in_use_for(RULES_LANE), 0)
+        self.assertEqual({SUMMARY_LANE, INSIGHTS_LANE, "postprocess"}, set(ANALYSIS_LLM_LANE_WEIGHTS))
+        self.assertNotIn("rules", ANALYSIS_LLM_LANE_WEIGHTS)
+        self.assertEqual(slots.in_use_for(SUMMARY_LANE), 0)
 
 
 if __name__ == "__main__":

@@ -4,16 +4,23 @@
 우선한다. “공통 semantic-frame/v1”은 출력 계약이 공통이라는 뜻이지 입력 노드와 호출 단위까지
 같다는 뜻이 아니다.
 
+> **2026-08-19 현행 override**: 아래 6~8절은 Rule LLM 제거 전 원인·실험 이력이다.
+> 현재 Rule은 Framework/DBMS 모두 branch inventory의 required row를
+> `required_rule_rows → materialize_rule_items → materialize_and_validate_rules` 한 경로로
+> 물질화하는 LLM 0 산출물이다. `rule-structures/deterministic-rule-v1`이 원 분기표 대비
+> row coverage·중복·재물질화 동등성을 보존하고, graph/MCP/Architect에는 exact cond/then,
+> 좌표, Example, 연결 evidence만 전달한다. Rule 호출·입력·출력 token은 모두 0이다.
+
 ## 1. 전략별 단일 표
 
 | 전략·concern | 의미 owner | 모델 입력 | 정상 호출/배치 | 출력·검증 | graph 소비 |
 |---|---|---|---|---|---|
 | FW summary | routine만 | routine 정확 범위, structural profile, target-owned FUNCTION slot, 내부 CALL/CONTROL/RETURN evidence, callee summary | routine 1개, 최대 responsibility/input/result 3 slot을 한 요청 | dynamic exact-slot schema → canonical ID 복원 → grounding/contradiction | CodeNode summary/stereotype/frame |
-| FW Rule | routine의 branch inventory 행 | full routine prose 재전송이 아니라 assigned row source, 구조 profile, symbol/external, R/W, callee interface | inventory의 obligation row를 의미가 닫히는 batch로 병렬 실행 | exact assigned row·slot·evidence 검증, partial은 finding | Rule, HAS_RULE, AFFECTS |
+| FW Rule | routine의 branch inventory 행 | LLM 입력 없음. RULE fact·condition/effects·row source는 결정론 감사 입력 | required row 전수 동기 물질화, LLM 0 | exact row coverage·중복 0·audit 재물질화 동등 | Rule, HAS_RULE, AFFECTS |
 | FW TABLE | routine에서 확인된 direct/effective data usage | direct table evidence와 frame data slot | 독립 table concern | 허용 table/column과 evidence 검증 | TABLE/COLUMN 관계·설명 |
 | FW Example | accepted Rule | LLM 입력 없음 | 결정론 0 LLM call | Rule cond/then projection | Example, HAS_EXAMPLE |
 | DBMS summary | effective AST의 각 non-skip CodeNode | target별 key/range/AST/summary slot/source, 구조·callee·직접 evidence | 같은 effective parent의 sibling을 token budget까지 묶음; root는 solo | key별 exact dynamic schema, missing/extra/duplicate 거부 | 각 CodeNode summary/stereotype/frame |
-| DBMS Rule | routine branch row를 배정받은 unit/gate CodeNode | assigned row evidence와 그 slot만. whole source/ancestor/summary 중복 없음 | budget descent unit 또는 skeleton gate; 행은 정확히 한 node에 소유 | assigned row/slot/evidence exact 검증 | routine Rule/Example에 연결 |
+| DBMS Rule | routine branch row를 배정받은 unit/gate CodeNode | LLM 입력 없음. unit/gate는 행 소유권만 정하며 구조 fact를 물질화기에 전달 | 행은 정확히 한 node/range가 소유, required row 전수 동기 물질화 | exact row coverage·중복 0·audit 재물질화 동등 | routine Rule/Example에 연결 |
 | DBMS TABLE | direct R/W를 소유한 statement CodeNode | direct reads/writes/op/column 후보와 정확 source | 현재 sibling batch 중 direct R/W node만 별도 concern | direct ownership과 exact slot 검증 | TABLE/COLUMN 관계·설명 |
 | DBMS Example | accepted Rule | LLM 입력 없음 | 결정론 0 LLM call | Rule cond/then projection | Example, HAS_EXAMPLE |
 
@@ -21,10 +28,13 @@
 
 - FW target 필터·DAG: `framework_per_node.py:52-59, 97-142, 155-252`
 - DBMS effective tree·sibling batch: `batch_planner.py:33-99`
-- DBMS Rule unit/gate·row ownership: `batch_analyze.py:125-154, 208-252`
+- required row 단일 소유자: `pipeline/quality_gates/rule_obligations.py::required_rule_rows`
+- 공통 물질화: `pipeline/models/rule_materialization.py::materialize_rule_items`
+- FW/DBMS 공통 검증: `rule_row_batching.py::materialize_and_validate_rules`
+- DBMS Rule unit/gate·row ownership: `batch_analyze.py::_plan_rule_units`, `_materialize_dbms_rules`
 - DBMS concern 동시 시작: `batch_analyze.py:435-575`
 - DBMS target별 입력 블록: `batch_prompt_values.py:34-164`
-- DBMS Rule 전용 최소 packet: `batch_prompt_values.py:167-233`
+- 영구 감사 산출물: `rule_audit_artifact.py`, `branch_audit.py::persist_routine_audits`
 - DBMS TABLE direct packet: `batch_prompt_values.py:236-303`
 - exact keyed schema·복원: `summary_response_schema.py:178-231`, `batch_analyze.py:640-785`
 - routine 최대 3 summary slot: `three_split_llm_fanout.py:106-134`
@@ -50,7 +60,8 @@ field로 강제하고 정규화 단계가 key를 canonical CodeNode로 복원한
 - `plan_batches`는 현재 `AnalysisContext.token_count` 합만 보는 greedy sibling packing이다. 동적 schema
   크기, 예상 output token, evidence reference 수, 실제 cache hit와 queue wait는 admission에 쓰지 않는다.
 - shared `PrioritySemaphore`는 총 동시성을 제한하고 독립 DAG work를 실행하지만, summary priority가
-  `-10,000,000`으로 절대 우선이다. summary backlog 동안 Rule/TABLE starvation 가능성이 있다.
+  `-10,000,000`으로 절대 우선이다. Rule은 더 이상 LLM waiter가 아니므로 현재 starvation 비교축은
+  summary와 TABLE 및 후처리 concern이다.
 - Step 8 일부는 summary/analysis handoff로 겹치지만 dependency와 공유 slot 때문에 실제 overlap과
   critical path 감소는 actual timeline으로 확인해야 한다.
 - 따라서 채택 조건은 단순 wall 감소가 아니라 concern별 queue wait, GPU idle, calls/input/output/cache,
@@ -68,7 +79,7 @@ field로 강제하고 정규화 단계가 key를 canonical CodeNode로 복원한
 고정 5/6행, input-length-only split, 의미 삭제 prompt, 동일 payload retry는 과거 반증됐으므로 재실험하지
 않는다. 최종 구현에는 승자 한 경로만 남긴다.
 
-## 6. 2026-08-19 실제 APAS 기준선과 발견 결함
+## 6. 2026-08-19 실제 APAS 기준선과 발견 결함 — Rule LLM 제거 전 역사
 
 - 대상: `분석대상모음/framework/c/apascrt00010t02_20260406`, DB `framework`
 - run: `20260818_152935_fd1526e9f5ac`, 동시성 32, response cache off
@@ -124,7 +135,7 @@ slot/evidence가 무거우면 8행 미만도 나눈다. 같은 요청 재시도 
 12로 한 단계 더 낮췄다. 반복 생성 1건은 11-slot에서 29.2초에 guard가 중단했으며, 동일 payload
 retry 없이 서로 다른 작은 schema로 분할되는 계약을 유지한다.
 
-## 7. Rule 의미 중복과 private key 누출의 양끝 영향 판정
+## 7. Rule 의미 중복과 private key 누출의 양끝 영향 판정 — 폐기 경로 역사
 
 중단 run `20260818_173654_12656da7f405`의 저장 Rule 응답을 전수 매핑했다.
 
@@ -163,7 +174,7 @@ exact key가 meaning/missing_context에 나오면 문자열을 지워 정상처�
 `insufficient`로 바꾸고 quality finding으로 표면화한다. C/E ref는 현재 행에 실제 노출된 ID와 source
 literal을 함께 아는 기존 ambiguity-aware grounding을 canonical frame 전에 적용한다.
 
-## 8. 2026-08-19 구현·자동 검증
+## 8. 2026-08-19 중간 후보 구현·자동 검증 — 현행 아님
 
 - planner는 required row마다 `RULE.BUSINESS_MEANING`을 정확히 한 개만 만든다. Rule response 경계도
   다른 historical family를 거부하고 assigned row↔slot exact 1:1 coverage를 검증한다.

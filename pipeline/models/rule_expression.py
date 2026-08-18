@@ -29,22 +29,12 @@ COND_HELPERS: tuple[str, ...] = (
     "F", "else_of", "after_control", "at_label", "len",
 )
 
-# 문자열 leaf 의 형태 제약 — 개행 금지 + 길이 상한 = 문법 강제 디코딩의 끝 경계.
-# Rule cond/then are model outputs constrained to grounded structural spellings. Source
-# predicates and statements have no honest language-neutral 500-character ceiling; truncating
-# one changes meaning. EXAMPLE leaves remain compact derived test vectors.
+# 구조 leaf의 형태 제약. Rule cond/then은 parser-owned facts에서 결정론 생성되며,
+# source predicate나 statement를 임의 길이에서 자르면 의미가 달라진다.
+# EXAMPLE leaves remain compact derived test vectors.
 RULE_LEAF_PATTERN = r"^[^\n]+$"
 EXAMPLE_LEAF_MAX_CHARS = 500
 EXAMPLE_LEAF_PATTERN = rf"^[^\n]{{1,{EXAMPLE_LEAF_MAX_CHARS}}}$"
-# nl(사람용 표시 전용)의 형태 제약 — 개방형 필드가 마지막에 와도 끝 경계가 있다.
-# 300자는 깊은 구조 경로를 잘못 나열한 한 응답에서 현재 직접 효과까지 잘라 의미를
-# 손상시켰다. 평상시 prompt 목표는 240자지만, 완결 문장을 보존할 안전 상한은 분리한다.
-NL_MAX_CHARS = 600
-NL_PATTERN = rf"^[^\n]{{0,{NL_MAX_CHARS}}}$"
-# Semantic-frame projections are deterministic compatibility data, not decoder output.
-# Multiple independently bounded meanings may legitimately exceed the old single-leaf
-# wire limit; keep only the one-line display invariant at that boundary.
-PROJECTED_NL_PATTERN = r"^[^\n]*$"
 
 
 class LeafSyntaxError(ValueError):

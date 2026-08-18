@@ -18,7 +18,10 @@ from pipeline.models.rule_expression import (
     LeafVocabularyError,
     parse_effect,
 )
-from pipeline.models.rule_response_schema import AssignedEffect, _render_effect
+from pipeline.models.rule_materialization import (
+    StructuralEffect,
+    render_structural_effect,
+)
 from pipeline.quality_gates.branch_inventory import build_inventory
 from pipeline.quality_gates.rule_prompt_evidence import rule_evidence
 from pipeline.steps.step6_build_context.control_subtree import build_statement_facts
@@ -44,9 +47,9 @@ class JumpVocabularyTest(unittest.TestCase):
             parse_effect('jump(F("PFM_CATCH"))')
 
     def test_jump_renders_canonically(self):
-        effect = AssignedEffect(
+        effect = StructuralEffect(
             op="jump", target="PFM_CATCH", value=None, from_source=None)
-        self.assertEqual('jump("PFM_CATCH")', _render_effect(effect))
+        self.assertEqual('jump("PFM_CATCH")', render_structural_effect(effect))
 
 
 class TransactionEffectTest(unittest.TestCase):
@@ -59,7 +62,7 @@ class TransactionEffectTest(unittest.TestCase):
             parse_effect('rollback("transaction")')
         self.assertEqual(
             "rollback()",
-            _render_effect(AssignedEffect(
+            render_structural_effect(StructuralEffect(
                 op="rollback", target=None, value=None, from_source=None,
             )),
         )
@@ -85,7 +88,7 @@ class TransactionEffectTest(unittest.TestCase):
         payload = rule_evidence(inventory, (3,))
         direct = payload["rows"]["R3"].get("direct") or []
         rendered = [
-            _render_effect(AssignedEffect.model_validate(payload["effects"][ref]))
+            render_structural_effect(StructuralEffect.model_validate(payload["effects"][ref]))
             for ref in direct
         ]
         self.assertIn("rollback()", rendered, payload)
@@ -107,7 +110,7 @@ class LoopExitEffectTest(unittest.TestCase):
         payload = rule_evidence(inventory, (2,))
         direct = payload["rows"]["R2"].get("direct") or []
         rendered = [
-            _render_effect(AssignedEffect.model_validate(payload["effects"][ref]))
+            render_structural_effect(StructuralEffect.model_validate(payload["effects"][ref]))
             for ref in direct
         ]
         self.assertEqual(["exit_loop()"], rendered)
@@ -126,7 +129,7 @@ class FunctionExitEffectTest(unittest.TestCase):
         payload = rule_evidence(inventory, (2,))
         direct = payload["rows"]["R2"].get("direct") or []
         rendered = [
-            _render_effect(AssignedEffect.model_validate(payload["effects"][ref]))
+            render_structural_effect(StructuralEffect.model_validate(payload["effects"][ref]))
             for ref in direct
         ]
         self.assertEqual(['ret(F("RET_OK"))'], rendered)
@@ -144,7 +147,7 @@ class FunctionExitEffectTest(unittest.TestCase):
         payload = rule_evidence(inventory, (2,))
         direct = payload["rows"]["R2"].get("direct") or []
         rendered = [
-            _render_effect(AssignedEffect.model_validate(payload["effects"][ref]))
+            render_structural_effect(StructuralEffect.model_validate(payload["effects"][ref]))
             for ref in direct
         ]
         self.assertEqual(["ret(None)"], rendered)
@@ -166,7 +169,7 @@ class FunctionExitEffectTest(unittest.TestCase):
         payload = rule_evidence(inventory, (2,))
         direct = payload["rows"]["R2"].get("direct") or []
         rendered = [
-            _render_effect(AssignedEffect.model_validate(payload["effects"][ref]))
+            render_structural_effect(StructuralEffect.model_validate(payload["effects"][ref]))
             for ref in direct
         ]
         self.assertEqual(["raise_error()"], rendered)

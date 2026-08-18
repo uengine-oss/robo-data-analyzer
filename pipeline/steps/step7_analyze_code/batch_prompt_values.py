@@ -24,7 +24,6 @@ from pipeline.models.data_object_usage import dump_data_object_usages, exact_dir
 from pipeline.models.semantic_frame import profile_prompt_json, slot_specs_json
 from pipeline.steps.step7_analyze_code.semantic_frame_planner import (
     build_code_semantic_plan,
-    rule_slot_specs_json,
     semantic_concern_slots,
 )
 from pipeline.steps.step7_analyze_code.batch_node_identity import batch_node_keys
@@ -163,74 +162,6 @@ def _build_batch_values(
         "nodes": "\n\n".join(blocks),
     }
     return values, key_to_id
-
-
-def build_rule_batch_values(
-    *,
-    expected: dict[str, str],
-    assignments: dict[str, tuple[int, ...] | list[int]],
-    evidences: dict[str, dict[str, object]],
-    owner_ids: dict[str, str],
-    contexts: dict[str, AnalysisContext],
-    code_by_id: dict[str, CodeNode],
-    table_descriptions: dict[str, dict],
-    frame_assignments: dict[str, tuple[object, tuple[object, ...]]],
-) -> dict[str, str]:
-    """Render only evidence consumed by the DBMS Rule contract.
-
-    Summary, ancestor prose, control indexes and full node SOURCE were previously repeated in
-    every concern.  Rule rows already have exact active source in ``rule_evidence_json``; only
-    facts outside that row source are added here.
-    """
-    blocks: list[str] = []
-    for node_key, node_id in expected.items():
-        ctx = contexts[node_id]
-        # RULE 행의 좌표계는 배분받은 하강 노드가 아니라 분기표 소유 루틴이다
-        # (spec 117). 행 증거·채점·직렬화와 같은 허용 R/W를 prompt에도 제공한다.
-        owner_ctx = contexts[owner_ids[node_key]]
-        fn = code_by_id[node_id]
-        callee_summaries = []
-        for callee_id in sorted(ctx.callees):
-            callee = contexts.get(callee_id)
-            if callee is None or not (callee.summary or "").strip():
-                continue
-            callee_summaries.append({
-                "relation": "TARGET_CALLS_CALLEE",
-                "callee_id": callee_id,
-                "summary": callee.summary.strip(),
-                "evidence_status": callee.extra.get("summary_evidence_status") or "sufficient",
-                "missing_context": list(callee.extra.get("summary_missing_context") or ()),
-            })
-        rows = tuple(int(row) for row in assignments[node_key])
-        profile, slot_specs = frame_assignments[node_key]
-        blocks.append(
-            f"### [RULE_TARGET {node_key}]\n"
-            f"target_id: {node_id}\n"
-            f"owner_id: {owner_ids[node_key]}\n"
-            f"signature: {fn.signature}\n"
-            f"assigned_rows: {','.join(map(str, rows))}\n"
-            f"applicable_slots_json: {rule_slot_specs_json(profile, slot_specs, assigned_rows=rows)}\n"
-            f"owner_effective_reads_json: {dump_table_refs(owner_ctx.reads, table_descriptions, include_columns=False)}\n"
-            f"owner_effective_writes_json: {dump_table_refs(owner_ctx.writes, table_descriptions, include_columns=False)}\n"
-            f"owner_linked_table_operations_json: "
-            f"{json.dumps(owner_ctx.extra.get('table_op') or {}, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}\n"
-            f"target_referenced_symbol_definitions_json: {dump_referenced_symbols(ctx.referenced_symbols)}\n"
-            f"target_linked_external_context_json: {dump_external_evidence(ctx.external_evidence)}\n"
-            f"callee_interfaces_json: "
-            f"{json.dumps(callee_summaries, ensure_ascii=False, separators=(',', ':'))}\n"
-            f"api_contracts_json: "
-            f"{json.dumps([dict(item) for item in ctx.extra.get('api_contracts') or ()], ensure_ascii=False, separators=(',', ':'))}\n"
-            f"rule_evidence_json: "
-            f"{json.dumps(evidences[node_key], ensure_ascii=False, separators=(',', ':'))}"
-        )
-    unique_owners = tuple(dict.fromkeys(owner_ids.values()))
-    return {
-        # Runner trace identity is not part of the rendered prompt, but actual jsonl must never
-        # say target=unknown.  The block-level owner_id remains the checker source when a batch
-        # ever spans more than one routine.
-        "unit_id": unique_owners[0] if len(unique_owners) == 1 else "batch:multiple-rule-owners",
-        "rule_nodes": "\n\n".join(blocks),
-    }
 
 
 def build_table_insight_batch_values(

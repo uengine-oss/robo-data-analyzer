@@ -10,10 +10,7 @@ from pipeline.models.aggregate_semantic_frame import (
     aggregate_response_model,
     build_aggregate_semantic_plan,
 )
-from pipeline.models.rule_response_schema import (
-    batch_rules_response_model,
-    rules_response_model,
-)
+from pipeline.models.code_analysis_output import RuleItem
 from pipeline.models.summary_response_schema import (
     batch_summary_response_model,
     summary_response_model,
@@ -72,8 +69,6 @@ class LlmResponseBoundaryInventoryTest(unittest.TestCase):
         boundaries = (
             (summary_response_model("framework"), {"result"}),
             (batch_summary_response_model(("1-2",), "dbms"), {"nodes"}),
-            (rules_response_model([1]), {"rules"}),
-            (batch_rules_response_model({"1-2": [1]}), {"nodes"}),
             (table_insights_response_model(("db:orders",), ()), {"table_insights"}),
             (batch_table_insights_response_model({
                 "1-2": {"reads": ("db:orders",), "writes": (),
@@ -91,19 +86,13 @@ class LlmResponseBoundaryInventoryTest(unittest.TestCase):
             with self.subTest(model=model.__name__):
                 _assert_closed_required(self, model, required)
 
-    def test_rule_narrative_is_the_only_model_owned_rule_leaf(self) -> None:
-        model = rules_response_model([7])
-        valid = {"rules": {"R7": {"nl": "근거 행의 업무 의미"}}}
-        model.model_validate(valid)
-        for structural_field, value in (
-            ("cond", ["C7"]), ("then", ["E1"]), ("extra", []),
-        ):
-            with self.subTest(field=structural_field), self.assertRaises(ValidationError):
-                model.model_validate({
-                    "rules": {"R7": {"nl": "근거 행의 업무 의미", structural_field: value}},
-                })
+    def test_rule_is_a_closed_deterministic_projection_not_an_llm_boundary(self) -> None:
+        valid = {"anchor_line": 7, "cond": 'F("ready")', "then": [], "nl": ""}
+        RuleItem.model_validate(valid)
         with self.assertRaises(ValidationError):
-            model.model_validate({**valid, "unexpected": "value"})
+            RuleItem.model_validate({**valid, "nl": "근거 행의 업무 의미"})
+        with self.assertRaises(ValidationError):
+            RuleItem.model_validate({**valid, "business_meaning": "invented"})
 
     def test_matched_scan_omissions_are_explicit_deterministic_hydration(self) -> None:
         schema = ScanResult.model_json_schema()

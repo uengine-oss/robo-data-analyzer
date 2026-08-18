@@ -43,6 +43,19 @@
 - [x] T131-36 FW/DBMS producer·consumer·호출/batch 영향표와 과거 탈락안·server 공식 research 기록
 - [x] T131-36a Rule 행당 단일 `RULE.BUSINESS_MEANING`, 결정론 structure 무손실, digest-scoped private
   wire key 격리 계약을 producer/normalizer/projection/graph/MCP/Architect 양끝에 구현
+- [x] T131-36b actual APAS 오행 역추적으로 확인한 별도 wire↔row 조인을 제거하고, 직접 의미 근거가
+  있는 행만 `output_wire_id + focus condition + direct/source`를 소유하게 한다. 구조 전용 행은 LLM
+  slot 없이 결정론 Rule로 물질화한다. target-wide 보조 목록도 direct CALL/DATA_OBJECT/exact matched
+  key 기반 row-local context로 교체하고 의미 없는 이름·sentinel 확장 번역을 막으며 Framework/DBMS
+  producer·normalizer·replay·checker를 정합. 구현·최종 replay는 완료했으나 모델이 지시를 위반해
+  조건 극성 모순과 이름 확장 창작이 남았으므로 이 후보 자체는 기각
+- [x] T131-36c Rule prose 소비자 0과 후단 semantic validation 공백을 전수 감사하고,
+  `RULE.BUSINESS_MEANING` provider/schema/normalizer/batch를 제거한다. 모든 required row를 exact
+  cond/then Rule로 결정론 물질화하고 Example 및 graph/MCP/Architect evidence refs 무손실을 반증.
+  `rule-structures/deterministic-rule-v1` 영구 감사 산출물, graph 비어 있는 `nl`, 구조 렌더링,
+  Architect 소비자까지 닫았고 collision-safe audit 파일명까지 포함해 Analyzer 1,029 tests/5 skipped,
+  prompt 23/23,
+  Architect 집중 62 및 전체 1,383 tests/2 skipped로 검증
 - [ ] T131-37 APAS 봉인 slice에서 concern/scheduling 후보를 calls/tokens/cache/latency/accuracy로 비교·채택
 - [ ] T131-38 채택 구조의 정상·실패·경계·중복·순서·취소/종료 회귀 및 전체 자동 테스트
 - [ ] T131-39 새 격리 DB의 실제 APAS 전체 cold run, judge_run+graph, 봉인 30~40 의미 직접 판정

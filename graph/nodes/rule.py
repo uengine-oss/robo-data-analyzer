@@ -1,4 +1,4 @@
-"""RULE 노드 Cypher — 구조화 비즈니스 규칙 (Example Mapping, spec 116).
+"""RULE 노드 Cypher — 결정론 구조 규칙 (Example Mapping, spec 131).
 
 id = ``<function id>::R<anchor>`` — anchor 좌표가 정체성이라 statement 해시 공유는 없다.
 """
@@ -25,7 +25,10 @@ SET r:ANALYZER_OWNED,
 
 
 async def upsert_rules(client: Neo4jClient, rules: Iterable[Rule]) -> None:
-    """RULE 노드 MERGE — 구조화 속성 전체 적재 (then 은 문자열 배열 속성)."""
+    """RULE 노드 MERGE — 구조 속성 전체와 빈 ``nl`` 호환 필드를 적재한다."""
+    rules = list(rules)
+    if any(str(rule.nl or "") for rule in rules):
+        raise ValueError("Rule.nl must remain empty; Rule prose generation is retired")
     items = [
         {
             "id": r.id,

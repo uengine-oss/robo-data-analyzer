@@ -16,7 +16,7 @@ from pipeline.steps.step6_build_context.control_subtree import (
     build_control_subtrees,
     build_statement_facts,
 )
-from pipeline.steps.step7_analyze_code.rule_row_batching import required_rule_rows
+from pipeline.quality_gates.rule_obligations import required_rule_rows
 from pipeline.steps.step7_analyze_code.rule_row_ownership import (
     assign_rule_rows,
     owning_routine,

@@ -36,7 +36,6 @@ class StructuredRuleTransportContract(unittest.TestCase):
                 anchor_line=5,
                 cond='F("a") == "1"',
                 then=['set(F("dst"), "0000")', 'select("zord_acnt")', 'ret("rc")'],
-                nl="a가 1이면 결과를 설정한다",
             ),
         ]
         serialized, unresolved = serialize_rules(
@@ -78,6 +77,12 @@ class StructuredRuleTransportContract(unittest.TestCase):
     def test_non_object_rule_fails_loudly(self):
         with self.assertRaisesRegex(TypeError, "rule transport entry"):
             build_example_mapping([_fn(["not-an-object"])])
+
+    def test_nonempty_rule_prose_fails_loudly(self):
+        serialized, _ = self._serialized()
+        serialized[0]["nl"] = "조건을 해석한 문장"
+        with self.assertRaisesRegex(ValueError, "Rule.nl must be the empty"):
+            build_example_mapping([_fn(serialized)])
 
     def test_invalid_derived_example_fails_loudly(self):
         serialized, _ = self._serialized()

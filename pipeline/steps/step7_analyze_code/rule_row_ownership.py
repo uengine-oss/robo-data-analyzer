@@ -20,7 +20,7 @@ from typing import Callable, Iterable, Mapping, Sequence
 from graph.schema.graph_nodes import CodeNode
 from pipeline.languages import ROUTINE_LABELS
 from pipeline.quality_gates.branch_inventory import BranchInventory
-from pipeline.steps.step7_analyze_code.rule_row_batching import required_rule_rows
+from pipeline.quality_gates.rule_obligations import required_rule_rows
 
 
 def owning_routine(node: CodeNode, code_by_id: Mapping[str, CodeNode]) -> CodeNode:

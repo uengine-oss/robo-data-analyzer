@@ -98,3 +98,33 @@ def test_stored_rows_include_gate_and_non_gate_prompt_families(tmp_path: Path) -
     stored = _stored_rows(tmp_path)
 
     assert set(stored["code:p.sql:r@1"]) == {"R11", "R22"}
+
+
+def test_current_stored_rows_come_from_deterministic_rule_artifact(tmp_path: Path) -> None:
+    directory = tmp_path / "rule-structures"
+    directory.mkdir()
+    record = {
+        "schema": "deterministic-rule/v1",
+        "target_id": "code:order.c:validate",
+        "evidence": {
+            "conditions": {"C1": "ready"},
+            "effects": {},
+            "rows": {"R1": {"role": "decision", "when": ["C1"]}},
+        },
+        "rules": [{"anchor_line": 1, "cond": 'F("ready")', "then": [], "nl": ""}],
+    }
+    (directory / "validate.json").write_text(
+        json.dumps(record), encoding="utf-8",
+    )
+
+    stored = _stored_rows(tmp_path)
+
+    assert stored == {
+        "code:order.c:validate": {
+            "R1": {
+                "role": "decision",
+                "when_evidence": [{"holds": True, "source": "ready"}],
+                "direct_evidence": [],
+            },
+        },
+    }

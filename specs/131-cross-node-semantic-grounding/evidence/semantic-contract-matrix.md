@@ -10,6 +10,11 @@
 아니다. 업무 의미는 GPU가 source evidence로 생성하고, 결정론 코드는 구조·좌표·소유권·CALL/RW·
 전달·검증만 담당한다.
 
+> **2026-08-19 현행 override**: 아래 RULE prompt/bytes 표는 역사 기준선이다. 현재 RULE은
+> semantic slot이나 GPU 출력이 없고, branch inventory의 모든 required row를 공통 결정론
+> materializer가 exact cond/then/when으로 만든다. `Rule.nl`은 absent/empty이며 검색·MCP·Architect는
+> 같은 구조를 해석 없이 렌더한다. `rule-structures/deterministic-rule-v1`이 전수 회계를 소유한다.
+
 ## 1. 의미 종류별 계약
 
 | 종류 | 필수 입력 | 선택 입력 | 제외하거나 축소할 노이즈 | 현재 GPU 출력 | validator / normalizer | 저장·소비자 |

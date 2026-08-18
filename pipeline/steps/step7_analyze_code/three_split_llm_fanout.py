@@ -1,19 +1,18 @@
-"""3 분할 fan-out 헬퍼 — ``analyze_code_step`` 이 코드노드당 1 회 호출.
+"""관심사 fan-out 헬퍼 — ``analyze_code_step`` 이 코드노드당 1회 호출.
 
-코드노드 1개당 LLM 호출 (병렬, 2~3 번):
+코드노드 1개당 LLM 호출 (병렬, 1~2 번):
 - ``code_summary``        → canonical summary + stereotype + questions (항상)
-- ``code_rules_examples`` → branch-coordinate rules (항상 — framework 는 함수 단위)
 - ``code_table_insights`` → table_insights (R/W 테이블 있을 때만 — 없으면 skip)
 
-각 concern은 필요한 증거만 받는다. Rule은 행별 직접 증거와 callee summary를 받고,
-자식 Rule·question을 부모 입력에 다시 복사하지 않는다.
+Rule/Example은 parser-owned branch evidence에서 결정론으로 물질화한다(LLM 0).
+모델 concern은 summary와 direct table insight뿐이며, 각 concern은 필요한 증거만 받는다.
 
 **KV 캐시 흐름**:
 서버 KV cache는 동작하지만 API cached-token 필드는 0만 보고한다. 저장 prompt의 실제
-바이트를 대조하면 세 concern은 공통 system prefix만 공유하고 user prompt는 concern별로
+바이트를 대조하면 두 LLM concern은 공통 system prefix만 공유하고 user prompt는 concern별로
 갈라진다. 따라서 첫 summary 한 번으로 전역 system prefix를 워밍하되, 이후 코드노드에서
-summary를 기다려도 node-specific prefix는 늘지 않는다. 각 노드의 summary/rules/insights는
-동시에 시작하고, summary가 끝나는 즉시 caller 의존만 조기 해제한다.
+summary를 기다려도 node-specific prefix는 늘지 않는다. summary/table insight는 독립 실행하고
+Rule은 같은 inventory에서 즉시 결정론 물질화한다. summary가 끝나는 즉시 caller 의존만 조기 해제한다.
 
 DBMS 부모 range 는 본문이 ``compact_body`` (자식 구간 → 자식 summary 치환) — 자식이
 먼저 분석되어 그 결과가 부모 입력으로 합류. Framework 는 평면이라 raw 본문.
@@ -53,12 +52,7 @@ from pipeline.languages import (
 )
 from llm.usage.cost_budget import CostBudget
 from pipeline.models.code_analysis_output import (
-    RulesExamplesOutput,
     SummaryOutput,
-)
-from pipeline.models.rule_response_schema import (
-    frame_rules_response_model,
-    normalize_frame_rules_response,
 )
 from pipeline.models.summary_response_schema import (
     frame_summary_response_model,
@@ -73,21 +67,14 @@ from pipeline.models.semantic_frame import (
 from pipeline.models.semantic_frame_projection import project_summary
 from pipeline.steps.step7_analyze_code.semantic_frame_planner import (
     build_code_semantic_plan,
-    rule_slot_specs,
-    rule_slot_specs_json,
     semantic_concern_slots,
 )
 from pipeline.models.table_insight_response_schema import (
     frame_table_insights_response_model,
     normalize_frame_table_insights_response,
 )
-from pipeline.steps.step7_analyze_code.rule_row_batching import (
-    collect_rules_by_rows,
-    plan_batches,
-    required_rule_rows,
-    rule_queue_priority,
-    SUMMARY_WAKE_PRIORITY,
-)
+from pipeline.quality_gates.rule_obligations import required_rule_rows
+from pipeline.steps.step7_analyze_code.rule_row_batching import materialize_and_validate_rules
 from llm.runners.yaml_llm_runner import run_yaml_rule
 from llm.runners.model_output_error import ModelOutputError
 from shared.events.runtime_logger import log_info, log_warning
@@ -96,8 +83,8 @@ from shared.files.cache import SourceFileCache
 from shared.concurrency.priority_semaphore import PrioritySemaphore
 from pipeline.execution.analysis_handoff import (
     INSIGHTS_LANE,
-    RULES_LANE,
     SUMMARY_LANE,
+    SUMMARY_WAKE_PRIORITY,
 )
 from pipeline.steps.step7_analyze_code.control_prompt import build_control_inventory
 from pipeline.steps.step7_analyze_code.model_source_projection import (
@@ -107,8 +94,8 @@ from pipeline.steps.step7_analyze_code.branch_audit import (
     persist_branch_table,
     persist_coverage,
 )
+from pipeline.quality_gates.rule_audit_artifact import persist_rule_audit
 from pipeline.steps.step7_analyze_code.quality_findings import apply_analysis_findings
-from pipeline.quality_gates.rule_prompt_evidence import rule_evidence
 
 _STEP = "step7.analyze_code.three_split"
 _MAX_TARGET_SUMMARY_SLOTS = 3
@@ -293,11 +280,11 @@ async def analyze_code_three_split(
     on_summary_ready: Optional[Callable[[str], None]] = None,
     llm_slots: Optional[PrioritySemaphore] = None,
 ) -> CodeNode:
-    """코드노드 1개의 3 분할 분석 — 결과를 ``CodeNode`` 에 적용해 반환.
+    """코드노드 1개의 관심사 분석 결과를 ``CodeNode``에 적용해 반환.
 
-    흐름: #1 summary + #2 rules + #3 insights 동시. ``precomputed_summary`` 가 있으면
-    #1만 재호출하지 않는다. 확정된 callee summary는 공통 입력에 남지만 현재 노드
-    summary 결과를 rules에 다시 주입하지 않아 concern 간 순환 의존을 만들지 않는다.
+    흐름: summary/table insight LLM과 결정론 Rule 물질화를 독립 실행한다.
+    ``precomputed_summary``가 있으면 summary만 재호출하지 않는다. 확정된 callee summary는
+    summary/table 입력에 남고 Rule은 parser-owned inventory만 사용한다.
 
     Args:
         codebase_notes: ``ScanResult.codebase_notes`` — prefix 공유로 캐시 적중.
@@ -307,7 +294,7 @@ async def analyze_code_three_split(
         precomputed_summary_supplied: 워밍 호출이 이미 끝났는지 표시. 워밍 실패(None)도
             여기서 다시 호출하지 않아 concern 최대 2회 계약을 지킨다.
         on_summary_ready: summary 확정(경계 검사 후) 직후 호출되는 스케줄러 신호 —
-            CALLS 의존 caller 를 #2/#3 완료를 기다리지 않고 조기 투입하게 한다.
+            caller를 table concern 완료를 기다리지 않고 조기 투입하게 한다.
 
     Returns:
         검증된 관심사는 보존하고 모델 내용/schema 실패 관심사는 finding으로 격리한 CodeNode.
@@ -329,22 +316,13 @@ async def analyze_code_three_split(
             f"ctx_missing={ctx is None}, node_missing={fn is None}"
         )
 
-    # 대상 사실의 한 정의처. 각 concern template은 여기서 자기 책임 필드만 선택하며 Rule은
-    # raw SOURCE 대신 compact 행 evidence를 사용한다. inventory는 배칭·채점의 구조 정답지다.
+    # 대상 사실의 한 정의처. 각 LLM concern template은 자기 책임 필드만 선택하고,
+    # inventory는 Rule 물질화·감사의 구조 정답지다.
     common, inventory = _build_user_values(
         ctx, fn, contexts, code_by_id, codebase_notes,
         module_intents or {}, table_descriptions or {},
         source_cache or SourceFileCache(),
     )
-    # Rule prompts consume row-owned facts only.  Keeping the summary/table/source
-    # packet here repeated tens of thousands of unused characters per row batch.
-    rules_values = {
-        key: common[key]
-        for key in (
-            "id", "signature", "referenced_symbols", "external_evidence",
-            "reads", "writes", "table_ops", "callee_summaries",
-        )
-    }
     prompts_dir = Path(strategy.prompts_dir)
 
     # split 단위 wrapper — code_id 캡처 closure (응집 ★).
@@ -376,7 +354,7 @@ async def analyze_code_three_split(
                 )
                 return await invoke()
 
-    # Server logs confirm KV caching, but recorded prompt bytes show that summary/rules
+    # Server logs confirm KV caching, but recorded prompt bytes show that summary/table
     # share only the global system prompt; their user prompts diverge after 3 chars.
     # The one global warmup remains, while per-node concerns can start independently.
     async def _collect_summary():
@@ -565,68 +543,19 @@ async def analyze_code_three_split(
             on_summary_ready(code_id)
         return findings
 
-    def _rule_values(rows):
-        evidence = rule_evidence(inventory, rows)
-        evidence_json = json.dumps(
-            evidence, ensure_ascii=False, separators=(",", ":"),
-        )
-        profile, _all_specs, concerns = ctx.extra["_semantic_frame_plan"]
-        assigned_specs = rule_slot_specs(profile, concerns["rules"], rows)
-        values = {
-            **rules_values,
-            "assigned_rows": ", ".join(map(str, rows)),
-            "rule_evidence": evidence_json,
-            "applicable_slots": rule_slot_specs_json(profile, assigned_specs),
-        }
-        return evidence, evidence_json, values, profile, assigned_specs
-
-    async def _invoke_rules(rows):
-        evidence, _evidence_json, values, profile, assigned_specs = _rule_values(rows)
-        output = await _track_split(
-            "split_rules",
-            lambda: run_yaml_rule(
-                prompts_dir=prompts_dir, rule_name="code_rules_examples",
-                user_values=values,
-                response_model=frame_rules_response_model(assigned_specs),
-                budget=cost_budget,
-            ),
-            priority=rule_queue_priority(len(_evidence_json)),
-            lane=RULES_LANE,
-            payload_chars=sum(len(str(value)) for value in values.values()),
-        )
-        return normalize_frame_rules_response(
-            output,
-            profile,
-            assigned_specs,
-            rows,
-            evidence,
-        )
-
-    async def _collect_rules():
-        profile, _all_specs, concerns = ctx.extra["_semantic_frame_plan"]
-
-        def _semantic_slot_count(rows):
-            return len(rule_slot_specs(profile, concerns["rules"], rows))
-
-        return await collect_rules_by_rows(
-            invoke=_invoke_rules,
-            inventory=inventory,
-            target_scope=code_id,
-            source=common["raw_code_body"],
-            semantic_slot_count=_semantic_slot_count,
-            # 주입한 근거(callee 반환 표현식·API 계약값)를 창작 검사 풀에
-            # 합류 — 모델에게 준 증거를 창작으로 오탐하지 않게 (spec 116 §19).
-            extra_values=sorted(_grounded_external_values(ctx, contexts)),
-            allowed_tables=sorted(set(ctx.reads) | set(ctx.writes)),
-            read_tables=sorted(set(ctx.reads)),
-            write_tables=sorted(set(ctx.writes)),
-            table_ops=ctx.extra.get("table_op") or {},
-            table_aliases=ctx.extra.get("table_identity_aliases") or {},
-        )
+    collection = materialize_and_validate_rules(
+        inventory=inventory,
+        target_scope=code_id,
+        source=common["raw_code_body"],
+        allowed_tables=sorted(set(ctx.reads) | set(ctx.writes)),
+        read_tables=sorted(set(ctx.reads)),
+        write_tables=sorted(set(ctx.writes)),
+        table_ops=ctx.extra.get("table_op") or {},
+        table_aliases=ctx.extra.get("table_identity_aliases") or {},
+    )
 
     gather_map: dict[str, Any] = {
         "summary": _collect_summary(),
-        "rules": _collect_rules(),
     }
     insight_reads = exact_direct_table_ids(ctx, "READ")
     insight_writes = exact_direct_table_ids(ctx, "WRITE")
@@ -682,7 +611,6 @@ async def analyze_code_three_split(
         raise
     done = dict(zip(gather_tasks, results))
     quality_findings: list[AnalysisFinding] = done["summary"]
-    collection = done.get("rules")
     insights_result = done.get("insights")
     insights_out = insights_result[0] if insights_result is not None else None
     if insights_result is not None and insights_result[1] is not None:
@@ -704,7 +632,7 @@ async def analyze_code_three_split(
             ctx.extra.get("column_usage_candidates") or {},
         )
 
-    obligation_rows = sum(len(batch) for batch in plan_batches(inventory))
+    obligation_rows = len(required_rule_rows(inventory))
 
     # fan-in 머지 → CodeNode 에 적용 (#1 의미 + 결정론 검색 필드는 이미 확정됐다).
     # 자연어 규칙 시절의 품질·근거성 사후 관측은 은퇴 — 결정론 채점(grade_rules)이
@@ -720,10 +648,9 @@ async def analyze_code_three_split(
         ctx.extra.get("table_op"), ctx.extra.get("table_identity_aliases") or {},
     )
     fn.extra["rules"] = serialized
-    fn.extra["_rule_semantic_frames"] = list(collection.semantic_frames)
     quality_findings.extend(collection.findings)
     try:
-        _finalize_semantic_frame(fn, ctx, collection, insights_out)
+        _finalize_semantic_frame(fn, ctx, insights_out)
     except ValueError as error:
         quality_findings.append(AnalysisFinding(
             concern="semantic_frame",
@@ -751,7 +678,7 @@ async def analyze_code_three_split(
             f"{code_id}: then 테이블 효과가 결정론 R/W와 불일치: "
             f"{sorted(set(unresolved_tables))[:8]}"
         )
-    # ctx 에 나머지 분석 결과 부착 — 부모(PARENT_OF)의 #3 분할 입력.
+    # ctx 에 나머지 분석 결과 부착 — 부모(PARENT_OF)의 table 입력.
     # (summary 는 자기 concern 완료 시 즉시 공개됨 — CALLS 의존 조기 해제.)
     ctx.extra["rules"] = fn.extra["rules"]
     ctx.extra["questions"] = fn.extra["questions"]
@@ -827,7 +754,6 @@ def _degrade_summary_semantic_frame(
 def _finalize_semantic_frame(
     fn: CodeNode,
     ctx: AnalysisContext,
-    collection: object,
     insights_out: object | None,
 ) -> None:
     plan = ctx.extra.get("_semantic_frame_plan")
@@ -835,7 +761,6 @@ def _finalize_semantic_frame(
         raise ValueError(f"semantic frame plan missing: {fn.id}")
     _profile, all_specs, _concerns = plan
     frames = [fn.extra.get("_summary_semantic_frame")]
-    frames.extend(getattr(collection, "semantic_frames", ()) or ())
     if insights_out is not None:
         frames.append(getattr(insights_out, "semantic_frame", None))
     merged = merge_semantic_frames(
@@ -875,6 +800,7 @@ def _build_user_values(
     # 상태 추적 없이 소스에 직접 쓰인 반환 표현식만 bottom-up 인터페이스로 전달한다.
     ctx.extra["return_expressions"] = sorted(inventory.return_expressions)
     persist_branch_table(fn, inventory)
+    persist_rule_audit(fn, inventory)
     persist_coverage(fn, inventory)
     profile, slot_specs = build_code_semantic_plan(
         fn,
@@ -971,31 +897,6 @@ def _callee_interface_items(
                 "missing_context": list(c.extra.get("summary_missing_context") or ()),
             })
     return items
-
-
-def _grounded_external_values(
-    ctx: AnalysisContext,
-    contexts: dict[str, AnalysisContext],
-) -> frozenset[str]:
-    """프롬프트의 외부 근거 값 집합 — 채점기 창작 검사 풀 확장분.
-
-    렌더(_callee_interface_items·api_contracts)와 같은 데이터에서 뽑는다. 필드 원문
-    (F() 검사)은 여기 넣지 않는다 — callee 동작 복사 금지 계약은 채점기가 계속 강제.
-    """
-    facts: set[str] = set()
-
-    def add(value: str) -> None:
-        facts.add(value)
-        # C 원문 인용은 따옴표째 온다(`"00"`) — 모델은 값 글자("00")로 쓰므로
-        # 짝이 맞는 인용부호를 벗긴 표기도 같은 증거로 인정한다.
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
-            facts.add(value[1:-1])
-
-    for contract in ctx.extra.get("api_contracts") or ():
-        success_value = contract.get("success_value")
-        if success_value:
-            add(success_value)
-    return frozenset(facts)
 
 
 def _format_callee_summaries(

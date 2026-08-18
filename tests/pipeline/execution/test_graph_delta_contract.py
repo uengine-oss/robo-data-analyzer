@@ -100,7 +100,7 @@ class GraphDeltaContractTests(unittest.IsolatedAsyncioTestCase):
             Rule(
                 id="fn:1::R-19", rule_id="R-19", anchor_line=19,
                 cond='F("stock") == 0', then=('call("reject")',),
-                nl="재고가 부족하면 주문을 거절한다", when="order(itf)",
+                nl="", when="order(itf)",
             ),
             Example(
                 id="fn:1::R-19::E1", kind="satisfy",
@@ -113,12 +113,19 @@ class GraphDeltaContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([event["label"] for event in stream.events[:3]], [
             "RULE", "EXAMPLE", "QUESTION",
         ])
-        self.assertEqual(stream.events[0]["props"]["nl"], "재고가 부족하면 주문을 거절한다")
+        # Rule prose is retired.  Neo4j keeps the empty compatibility property,
+        # while the live display delta intentionally omits empty properties.
+        self.assertNotIn("nl", stream.events[0]["props"])
         self.assertEqual(stream.events[0]["props"]["anchor_line"], 19)
         self.assertEqual(list(stream.events[0]["props"]["then"]), ['call("reject")'])
         self.assertEqual(stream.events[1]["props"]["kind"], "satisfy")
         self.assertEqual(stream.events[2]["props"]["reason"], "판단 근거")
         self.assertEqual(stream.events[3]["props"], {})
+
+    async def test_rule_prose_never_enters_live_graph_delta(self) -> None:
+        stream = _CaptureStream()
+        await emit_nodes(stream, [Rule(id="rule:1", nl="retired narrative")])
+        self.assertNotIn("nl", stream.events[0]["props"])
 
     async def test_reads_properties_match_persisted_graph(self) -> None:
         stream = _CaptureStream()

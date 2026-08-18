@@ -9,7 +9,8 @@ from graph.nodes.db_schema import MERGE_QUERY as SCHEMA_MERGE_QUERY
 from graph.nodes.example import _UPSERT_QUERY as EXAMPLE_MERGE_QUERY
 from graph.nodes.package import MERGE_QUERY as PACKAGE_MERGE_QUERY
 from graph.nodes.question import _UPSERT_QUERY as QUESTION_MERGE_QUERY
-from graph.nodes.rule import _UPSERT_QUERY as RULE_MERGE_QUERY
+from graph.nodes.rule import _UPSERT_QUERY as RULE_MERGE_QUERY, upsert_rules
+from graph.schema.graph_nodes import Rule
 from graph.nodes.external import EXTERNAL_NODE_LABELS
 from graph.nodes.table import MERGE_QUERY as TABLE_MERGE_QUERY
 from graph.schema.constraints import (
@@ -54,6 +55,9 @@ class _RecordingClient:
     async def run_query(self, query: str, params: dict | None = None):
         self.calls.append((query, params))
 
+    async def run_batch_unwind(self, query: str, items: list[dict]):
+        self.calls.append((query, {"items": items}))
+
 
 async def _verify_wipe_graph_is_owner_scoped() -> None:
     client = _RecordingClient()
@@ -84,9 +88,25 @@ def test_wipe_graph_is_owner_scoped() -> None:
     asyncio.run(_verify_wipe_graph_is_owner_scoped())
 
 
+async def _verify_rule_prose_is_rejected_at_graph_writer() -> None:
+    client = _RecordingClient()
+    try:
+        await upsert_rules(client, [Rule(id="rule:1", nl="retired narrative")])  # type: ignore[arg-type]
+    except ValueError as error:
+        assert "Rule.nl must remain empty" in str(error)
+    else:
+        raise AssertionError("non-empty Rule.nl reached the graph writer")
+    assert client.calls == []
+
+
+def test_rule_prose_is_rejected_at_graph_writer() -> None:
+    asyncio.run(_verify_rule_prose_is_rejected_at_graph_writer())
+
+
 if __name__ == "__main__":
     test_every_node_creation_query_stamps_analyzer_owner()
     test_wipe_graph_is_owner_scoped()
+    test_rule_prose_is_rejected_at_graph_writer()
     print("[OK] analyzer graph ownership")
 
 

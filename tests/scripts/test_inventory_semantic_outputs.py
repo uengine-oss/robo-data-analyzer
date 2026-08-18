@@ -7,11 +7,46 @@ import unittest
 
 from scripts.inventory_semantic_outputs import (
     _prompt_inventory,
+    _rule_evidence,
     _split_coordinate_groups,
 )
 
 
 class PromptSemanticInventoryTest(unittest.TestCase):
+    def test_current_rule_inventory_reads_llm_zero_structure_artifact(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            run_dir = Path(temporary_directory)
+            directory = run_dir / "rule-structures"
+            directory.mkdir()
+            record = {
+                "schema": "deterministic-rule/v1",
+                "target_id": "code:order.c:validate",
+                "evidence": {
+                    "conditions": {"C1": "ready"},
+                    "effects": {},
+                    "rows": {"R1": {"role": "decision", "when": ["C1"]}},
+                },
+                "rules": [{
+                    "anchor_line": 1,
+                    "cond": 'F("ready")',
+                    "then": [],
+                    "nl": "",
+                }],
+            }
+            (directory / "validate.json").write_text(
+                json.dumps(record), encoding="utf-8",
+            )
+
+            inventory, _, _ = _prompt_inventory(run_dir)
+            evidence = _rule_evidence(run_dir)
+
+        self.assertEqual(1, inventory["rule"]["outputs"])
+        self.assertEqual(1, inventory["rule"]["empty_nl"])
+        self.assertEqual(
+            {"code:order.c:validate::R-1"},
+            set(evidence),
+        )
+
     def test_current_nested_summary_table_and_column_wire_are_counted(self) -> None:
         with TemporaryDirectory() as temporary_directory:
             run_dir = Path(temporary_directory)

@@ -83,32 +83,3 @@ def _questions(slots: Iterable[SemanticSlot]) -> list[QuestionItem]:
             seen.add(key)
             result.append(QuestionItem(text=text, reason=reason))
     return result
-
-
-_RULE_ROLE_ORDER = {
-    ("RULE", "BUSINESS_MEANING"): 0,
-}
-
-
-def project_rule_narrative(frame: SemanticFrame, anchor_line: int) -> str:
-    slots = []
-    for slot in frame.slots.values():
-        anchors = {
-            int(fact.attributes["anchor_line"])
-            for ref in slot.evidence_refs
-            if (fact := frame.profile.evidence[ref]).kind == "RULE"
-            and fact.attributes.get("anchor_line") is not None
-        }
-        if anchor_line in anchors:
-            slots.append(slot)
-    slots.sort(key=lambda slot: (
-        _RULE_ROLE_ORDER.get((slot.family, slot.role), 99), slot.slot_id,
-    ))
-    meanings = _dedupe_meanings(slot.meaning for slot in slots if slot.meaning.strip())
-    if not meanings:
-        missing = [item for slot in slots for item in slot.missing_context]
-        if missing:
-            return "현재 근거만으로 이 경로의 의미를 확정할 수 없다."
-        raise ValueError(f"rule row lacks semantic meaning: {anchor_line}")
-    narrative = " ".join(meanings)
-    return narrative

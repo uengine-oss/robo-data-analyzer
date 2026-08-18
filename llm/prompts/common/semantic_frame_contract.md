@@ -42,8 +42,6 @@
 - `FUNCTION.RESULT`: 반환, 출력 구조, 외부 상태 변화 중 target이 실제 보장하는 결과.
 - `STATEMENT.DIRECT_ACTION`: DBMS effective AST의 독립 분석 target이 직접 하는 동작만 쓴다.
   Framework Rule 행의 구조 동작을 이 family로 중복 생성하지 않는다.
-- `RULE.BUSINESS_MEANING`: parser가 이미 보존한 condition/effects/type/timing/flow를 다시 열거하지
-  않고, 한 required row 전체가 현재 함수에서 갖는 입증된 업무 의미만 한 문장으로 쓴다.
 - `CALL.PURPOSE`: 현재 target이 callee를 호출하는 경계 목적만 쓴다. callee 내부 흐름을 복사하지 않는다.
 - `SELECT.PURPOSE`: 조회 대상·filter·현재 범위의 사용 목적까지만 쓴다. 보이지 않는 후속 DML을 만들지 않는다.
 - `INSERT/UPDATE/DELETE/UPSERT.TARGET`: exact table에 하는 구조 연산과 입증된 역할을 쓴다.

@@ -9,11 +9,18 @@ from pathlib import Path
 from unittest.mock import patch
 
 from graph.schema.graph_nodes import CodeNode
+from pipeline.models.analysis_context import ControlSubtreeNode
 from pipeline.execution.run_output_context import reset_run_dir, set_run_dir
+from pipeline.quality_gates.audit_artifact_paths import audit_file_stem
 from pipeline.quality_gates.branch_inventory import build_inventory
 from pipeline.steps.step7_analyze_code.branch_audit import (
     persist_branch_table,
     persist_routine_audits,
+)
+from pipeline.quality_gates.rule_audit_artifact import (
+    RULE_AUDIT_SCHEMA,
+    load_rule_audit_records,
+    persist_rule_audit,
 )
 
 
@@ -38,9 +45,29 @@ class BranchTableRunOwnership(unittest.TestCase):
                 persist_branch_table(_node(), build_inventory("return 0;", (), "c", statements=()))
             finally:
                 reset_run_dir(token)
-            output = root / "branch-tables" / "code_sample.fn.json"
+            output = root / "branch-tables" / f"{audit_file_stem(_node().id)}.json"
             self.assertTrue(output.is_file())
             self.assertIsInstance(json.loads(output.read_text(encoding="utf-8")), list)
+
+    def test_active_run_receives_validated_deterministic_rule_record(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            inventory = build_inventory(
+                "if (ready) { ; }",
+                (ControlSubtreeNode("if", "IF", 1, 1, expression="ready"),),
+                "c",
+                statements=(),
+            )
+            token = set_run_dir(root)
+            try:
+                persist_rule_audit(_node(), inventory)
+            finally:
+                reset_run_dir(token)
+            records = load_rule_audit_records(root)
+            self.assertEqual(["code:sample.fn"], list(records))
+            self.assertEqual(RULE_AUDIT_SCHEMA, records["code:sample.fn"]["schema"])
+            self.assertEqual(1, len(records["code:sample.fn"]["rules"]))
+            self.assertEqual("", records["code:sample.fn"]["rules"][0]["nl"])
 
     def test_active_run_write_failure_is_not_downgraded_to_success(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -55,6 +82,30 @@ class BranchTableRunOwnership(unittest.TestCase):
                     )
             finally:
                 reset_run_dir(token)
+
+    def test_sanitized_name_collision_cannot_overwrite_audit_records(self) -> None:
+        first = CodeNode(
+            id="code:a:b", name="a", signature="a()", file_path="a.c",
+            start_line=1, end_line=1, label="FUNCTION",
+        )
+        second = CodeNode(
+            id="code:a/b", name="b", signature="b()", file_path="b.c",
+            start_line=1, end_line=1, label="FUNCTION",
+        )
+        inventory = build_inventory("return 0;", (), "c", statements=())
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            token = set_run_dir(root)
+            try:
+                persist_rule_audit(first, inventory)
+                persist_rule_audit(second, inventory)
+            finally:
+                reset_run_dir(token)
+            self.assertNotEqual(audit_file_stem(first.id), audit_file_stem(second.id))
+            self.assertEqual(
+                {first.id, second.id}, set(load_rule_audit_records(root)),
+            )
+            self.assertEqual(2, len(list((root / "rule-structures").glob("*.json"))))
 
 
 class DbmsRoutineAudits(unittest.TestCase):
@@ -82,8 +133,10 @@ class DbmsRoutineAudits(unittest.TestCase):
             self.assertEqual([routine.id], written)
             tables = list((root / "branch-tables").glob("*.json"))
             coverage = list((root / "coverage").glob("*.json"))
+            rule_structures = list((root / "rule-structures").glob("*.json"))
             self.assertEqual(1, len(tables), "루틴 하나에 파일 하나여야 회계가 맞는다")
             self.assertEqual(1, len(coverage))
+            self.assertEqual(1, len(rule_structures))
             self.assertIsInstance(
                 json.loads(tables[0].read_text(encoding="utf-8")), list,
             )

@@ -1,7 +1,6 @@
 """Project existing parser/linker facts into bounded semantic frame slots."""
 from __future__ import annotations
 
-import json
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -17,9 +16,9 @@ from pipeline.models.semantic_frame import (
     evidence_id,
     slot_id,
     stable_digest,
-    semantic_slot_wire_ids,
 )
 from pipeline.quality_gates.branch_inventory import BranchInventory
+from pipeline.quality_gates.rule_prompt_evidence import rule_evidence
 
 
 _WRITE_FAMILY = {
@@ -274,6 +273,7 @@ def build_code_semantic_plan(
         ))
 
     data_usages = tuple(ctx.extra.get("data_object_usages") or ())
+    data_refs_by_line: dict[int, list[str]] = {}
     for index, usage in enumerate(data_usages):
         if not isinstance(usage, DataObjectUsageEvidence):
             raise TypeError(f"unexpected data object usage: {type(usage).__name__}")
@@ -304,6 +304,7 @@ def build_code_semantic_plan(
             },
         ))
         data_refs.append(ref)
+        data_refs_by_line.setdefault(usage.evidence_line, []).append(ref)
         ordered.append(ref)
         family = "SELECT" if usage.access == "READ" else _WRITE_FAMILY.get(
             operation.upper(), "UPDATE",
@@ -319,23 +320,28 @@ def build_code_semantic_plan(
             evidence_refs=(target_ref, ref),
         )
 
-    rule_refs: list[str] = []
     if inventory is not None:
         allowed_rule_rows = (
             {int(line) for line in rule_rows}
             if rule_rows is not None else None
         )
-        for row in inventory.table_rows():
+        planned_rows = [
+            row for row in inventory.table_rows()
+            if allowed_rule_rows is None or int(row["line"]) in allowed_rule_rows
+        ]
+        canonical_rule_evidence = rule_evidence(
+            inventory, [int(row["line"]) for row in planned_rows],
+        )
+        canonical_effects = canonical_rule_evidence["effects"]
+        canonical_rows = canonical_rule_evidence["rows"]
+        for row in planned_rows:
             line = int(row["line"])
-            if allowed_rule_rows is not None and line not in allowed_rule_rows:
-                continue
             role = str(row.get("role") or "")
             branch = inventory.at_line(line)
             condition = str(row.get("condition") or "")
-            effects = [
-                {"op": op, "target": target}
-                for op, target in inventory.direct_statement_effects(line)
-            ]
+            canonical_row = canonical_rows[f"R{line}"]
+            direct_effect_refs = tuple(canonical_row.get("direct") or ())
+            effects = [dict(canonical_effects[ref]) for ref in direct_effect_refs]
             owned_lines = set(inventory.direct_evidence_lines(line))
             owned_statement_refs = tuple(
                 item for item in statement_refs if item[2] in owned_lines
@@ -346,6 +352,10 @@ def build_code_semantic_plan(
                 ref
                 for owned_line in sorted(owned_lines)
                 for ref in call_refs_by_line.get(owned_line, ())
+            ) + tuple(
+                ref
+                for owned_line in sorted(owned_lines)
+                for ref in data_refs_by_line.get(owned_line, ())
             )
             # A controller with no direct statement still has one exact outcome:
             # control enters its immediate parser-owned child branches.  Preserve
@@ -405,16 +415,7 @@ def build_code_semantic_plan(
                     "after_control": str(row.get("after_control") or ""),
                 },
             ))
-            rule_refs.append(ref)
             ordered.append(ref)
-            _rule_meaning_slot(
-                slots,
-                target_id=fn.id,
-                target_ref=target_ref,
-                row=row,
-                rule_ref=ref,
-                direct_refs=supporting_refs,
-            )
 
     ordered = sorted(
         dict.fromkeys(ordered),
@@ -509,16 +510,11 @@ def semantic_concern_slots(
     """Assign every applicable slot to exactly one existing parallel concern."""
     result: dict[str, list[SlotSpec]] = {
         "summary": [],
-        "rules": [],
         "insights": [],
     }
     for spec in slot_specs:
         if spec.family in {"SELECT", "INSERT", "UPDATE", "DELETE", "UPSERT"}:
             concern = "insights"
-        elif spec.family == "RULE":
-            concern = "rules"
-        elif spec.family == "STATEMENT" and not spec.slot_id.endswith(":TARGET"):
-            concern = "rules"
         else:
             concern = "summary"
         result[concern].append(spec)
@@ -527,84 +523,6 @@ def semantic_concern_slots(
     if len(assigned) != len(set(assigned)) or set(assigned) != set(expected):
         raise ValueError("semantic concern partition lost or duplicated a slot")
     return {name: tuple(specs) for name, specs in result.items()}
-
-
-def rule_slot_specs(
-    profile: StructuralProfile,
-    slot_specs: Iterable[SlotSpec],
-    rows: Iterable[int],
-) -> tuple[SlotSpec, ...]:
-    assigned = {int(row) for row in rows}
-    result: list[SlotSpec] = []
-    covered: set[int] = set()
-    for spec in slot_specs:
-        anchors = {
-            int(fact.attributes["anchor_line"])
-            for ref in spec.evidence_refs
-            if (fact := profile.evidence[ref]).kind == "RULE"
-            and fact.attributes.get("anchor_line") is not None
-        }
-        if anchors & assigned:
-            result.append(spec)
-            covered.update(anchors & assigned)
-    missing = assigned - covered
-    if missing:
-        raise ValueError(f"assigned rule rows lack semantic slots: {sorted(missing)}")
-    return tuple(result)
-
-
-def slot_rule_anchor(profile: StructuralProfile, spec: SlotSpec) -> int | None:
-    anchors = {
-        int(fact.attributes["anchor_line"])
-        for ref in spec.evidence_refs
-        if (fact := profile.evidence[ref]).kind == "RULE"
-        and fact.attributes.get("anchor_line") is not None
-    }
-    if len(anchors) > 1:
-        raise ValueError(f"semantic slot spans multiple rule anchors: {spec.slot_id}")
-    return next(iter(anchors), None)
-
-
-def rule_slot_specs_json(
-    profile: StructuralProfile,
-    slot_specs: Iterable[SlotSpec],
-    *,
-    assigned_rows: Iterable[int] = (),
-) -> str:
-    """Render the minimal request-local Rule assignment.
-
-    Canonical evidence IDs remain in ``SlotSpec`` and are restored after the model
-    returns.  The Rule model only needs to know which wire slot belongs to which
-    parser-owned anchor and semantic role; exact conditions/effects/source are already
-    supplied once by ``rule_evidence_json``.
-    """
-    specs = tuple(slot_specs)
-    assigned = tuple(dict.fromkeys(int(row) for row in assigned_rows))
-    wire_ids = semantic_slot_wire_ids(specs)
-    payload: list[dict[str, object]] = []
-    for spec, wire_id in zip(specs, wire_ids, strict=True):
-        anchor = slot_rule_anchor(profile, spec)
-        if anchor is None:
-            # DBMS owns semantics at every effective AST node.  A statement node's
-            # slot therefore references its TARGET/STATEMENT facts rather than a
-            # synthetic RULE fact, while the surrounding routine inventory still
-            # assigns the exact row.  Preserve that ownership instead of fabricating
-            # a Rule fact solely for prompt transport.
-            if profile.target.start_line in assigned:
-                anchor = profile.target.start_line
-            elif len(assigned) == 1:
-                anchor = assigned[0]
-            else:
-                raise ValueError(
-                    f"Rule slot lacks one unambiguous assigned row: {spec.slot_id}"
-                )
-        payload.append({
-            "wire_id": wire_id,
-            "anchor_line": anchor,
-            "family": spec.family,
-            "role": spec.role,
-        })
-    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
 def _statement_effects(statement: StatementFact) -> list[dict[str, str]]:
@@ -626,33 +544,3 @@ def _statement_effects(statement: StatementFact) -> list[dict[str, str]]:
         "ROLLBACK": "rollback",
     }.get(statement.label)
     return [{"op": op, "target": statement.target, "value": statement.expression}] if op else []
-
-
-def _rule_meaning_slot(
-    slots: dict[str, SlotSpec],
-    *,
-    target_id: str,
-    target_ref: str,
-    row: Mapping[str, Any],
-    rule_ref: str,
-    direct_refs: Iterable[str],
-) -> None:
-    """Create one model-owned semantic delta for one parser-owned Rule row.
-
-    Condition polarity, outcomes, loop/handler topology and direct effects already live
-    in the RULE/CONTROL/STATEMENT facts.  Replicating those facts as separate prose
-    slots made model work scale with syntax rather than meaning and allowed cross-slot
-    wire references.  One row owns one human business interpretation; structure stays
-    lossless and deterministic beside it.
-    """
-    line = int(row["line"])
-    refs = (target_ref, rule_ref, *tuple(direct_refs))
-    _add_slot(
-        slots,
-        target_id=target_id,
-        family="RULE",
-        role="BUSINESS_MEANING",
-        anchor=line,
-        target_ref=target_ref,
-        evidence_refs=refs,
-    )

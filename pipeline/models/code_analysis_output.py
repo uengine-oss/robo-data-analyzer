@@ -4,7 +4,7 @@
 각 yaml 의 ``response_format`` 으로 강제 — 자유 텍스트 응답 X.
 
 사용처:
-- ``pipeline/steps/step7_analyze_code``: SummaryOutput / TableInsightsOutput / RulesExamplesOutput
+- ``pipeline/steps/step7_analyze_code``: SummaryOutput / TableInsightsOutput 및 결정론 Rule projection
 - ``pipeline/steps/step8_post_processing``: ModuleSummaryOutput / TableDescription
 
 호출 모드 (단일 진실):
@@ -33,7 +33,6 @@ from pydantic import (
 
 from pipeline.models.rule_expression import (
     EXAMPLE_LEAF_PATTERN,
-    PROJECTED_NL_PATTERN,
     RULE_LEAF_PATTERN,
 )
 from pipeline.models.semantic_frame import SemanticFrame
@@ -203,7 +202,7 @@ class TableInsightsOutput(BaseModel):
     semantic_frame: SemanticFrame | None = Field(default=None, exclude=True)
 
 
-# ── 3 분할 #3: code_rules_examples — 구조화 파이썬 표현식 leaf (spec 116) ──
+# ── 결정론 Rule/Example projection ──
 
 
 class QuestionItem(BaseModel):
@@ -247,13 +246,13 @@ class ExampleItem(BaseModel):
 
 
 class RuleItem(BaseModel):
-    """Canonical Rule after the outer required key restores its anchor coordinate."""
+    """Canonical parser-owned Rule with deterministic condition/effects."""
 
     model_config = ConfigDict(extra="forbid")
 
     anchor_line: int = Field(
         ..., strict=True, gt=0,
-        description="분기표 행 번호 — wire의 R<행> key에서 코드가 복원",
+        description="분기표의 절대 파일 행 좌표",
     )
     cond: _RuleLeafStr | None = Field(
         None,
@@ -262,21 +261,16 @@ class RuleItem(BaseModel):
     then: list[_RuleLeafStr] = Field(
         default_factory=list, description="효과 호출문 목록 — 유일한 채점 대상"
     )
-    # examples 는 LLM 이 내지 않는다 — 결정론 합성 (spec 116 §21, 헌법 I).
-    # This is a deterministic projection from validated semantic slots.  The model
-    # wire leaf remains bounded separately; combining several slots must not discard
-    # meaning merely to fit that obsolete single-leaf decoder limit.
-    nl: str = Field(
-        "", pattern=PROJECTED_NL_PATTERN,
-        description="사람용 한 줄 표시 — semantic frame에서 결정론적으로 투영, 채점 제외",
-    )
+    # Rule prose는 생성하지 않는다. 검색/화면은 cond/then을 구조적으로 렌더한다.
+    nl: Literal[""] = Field("", description="빈 호환 필드 — 의미 정본이 아님")
 
 
 class RulesExamplesOutput(BaseModel):
-    """Rule 봉투 — 개수 상한 없음(유한성은 분기표 행수+토큰예산+반복가드가 보증)."""
+    """Deterministic Rule collection; finite by branch-inventory obligations."""
+
+    model_config = ConfigDict(extra="forbid")
 
     rules: list[RuleItem] = Field(default_factory=list)
-    semantic_frame: SemanticFrame | None = Field(default=None, exclude=True)
 
 
 # ── DBMS 배치 3분할 (🅕 — 같은 유효부모 형제 N 노드를 관심사별 1콜) ──
@@ -331,19 +325,11 @@ class BatchSummaryOutput(BaseModel):
 
 
 class BatchRulesItem(BaseModel):
-    """배치 규칙 계약 — 노드 1개의 파이썬 leaf 규칙 (spec 116 5단계).
+    """One DBMS node's deterministically assigned routine Rule rows."""
+    model_config = ConfigDict(extra="forbid")
 
-    canonical 모델은 동적 required-key schema 검증 뒤의 정규화 결과만 받는다.
-    규칙 내용은 RuleItem(anchor 복창 + leaf)이며 상한은 없다 —
-    유한성은 분기표 행수+토큰예산+반복가드(결정 원장).
-    """
     node_key: str = Field(..., description="입력 줄범위 '<start>-<end>' 그대로 echo")
     rules: list[RuleItem] = Field(default_factory=list)
-    semantic_frame: SemanticFrame | None = Field(default=None, exclude=True)
-
-
-class BatchRulesOutput(BaseModel):
-    nodes: list[BatchRulesItem] = Field(default_factory=list)
 
 
 class BatchTableInsightsItem(BaseModel):

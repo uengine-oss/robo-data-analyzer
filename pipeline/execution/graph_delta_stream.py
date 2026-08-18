@@ -41,7 +41,7 @@ _DISPLAY_PROP_KEYS = (
     "name", "logical_name", "signature", "summary", "stereotype",
     "file_path", "start_line", "end_line", "owner_id", "dtype",
     # RULE/EXAMPLE 파이썬 leaf 계약 (spec 116)
-    "rule_id", "anchor_line", "cond", "nl", "kind",
+    "rule_id", "anchor_line", "cond", "kind",
     "given", "when", "then", "text", "reason",
     "keys", "semantic_kind", "provenance", "status", "category",
     "raw_reference", "schema", "database_link", "datasource",

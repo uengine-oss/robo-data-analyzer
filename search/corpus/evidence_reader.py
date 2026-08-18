@@ -11,13 +11,13 @@ from graph.ownership import ANALYZER_GRAPH_OWNER
 
 
 def compact_rules(rules: list[dict]) -> list[dict]:
-    """Architect 선택/GWT가 공유하는 최소 RULE 좌표·의미·테이블 projection."""
+    """Architect 선택/GWT가 공유하는 최소 RULE 구조 projection."""
     out: list[dict] = []
     seen: set[tuple[int, str]] = set()
     for rule in rules or []:
         line = int(rule.get("anchor_line") or 0)
-        text = str(rule.get("nl") or "").strip()
-        if line <= 0 or not text:
+        text = render_rule_structure(rule)
+        if line <= 0:
             continue
         key = (line, text)
         if key in seen:
@@ -35,14 +35,14 @@ def gwt_rules(rules: list[dict], *, node_id: str) -> list[dict]:
     """Preserve the analyzed Rule contract for downstream semantic decisions.
 
     ``compact_rules`` is intentionally a search-list projection.  Architect GWT
-    generation is a semantic consumer and must receive the parser/validator-backed
-    condition/effect structure in addition to the model-owned Korean narrative.
+    generation is a semantic consumer and receives the parser/validator-backed
+    condition/effect structure plus an interpretation-free rendering of those facts.
     """
     out: list[dict] = []
     seen: set[tuple[int, str]] = set()
     for rule in rules or []:
         line = int(rule.get("anchor_line") or 0)
-        narrative = str(rule.get("nl") or "").strip()
+        narrative = render_rule_structure(rule)
         if line <= 0:
             continue
         rule_id = str(rule.get("rule_id") or f"R-{line}")
@@ -59,8 +59,8 @@ def gwt_rules(rules: list[dict], *, node_id: str) -> list[dict]:
             "when": str(rule.get("when") or ""),
             "narrative": {
                 "text": narrative,
-                "authority": "analyzer_llm",
-                "role": "human_readable_explanation",
+                "authority": "deterministic_structure",
+                "role": "structural_rendering",
             },
             "examples": list(rule.get("examples") or []),
             "tables": list(rule.get("tables") or []),
@@ -70,6 +70,23 @@ def gwt_rules(rules: list[dict], *, node_id: str) -> list[dict]:
             },
         })
     return out
+
+
+def render_rule_structure(rule: dict) -> str:
+    """Render canonical cond/then without adding business interpretation."""
+    condition = " ".join(str(rule.get("cond") or "").split())
+    effects = [
+        " ".join(str(effect).split())
+        for effect in (rule.get("then") or [])
+        if str(effect).strip()
+    ]
+    if condition and effects:
+        return f"조건: {condition} → 효과: {'; '.join(effects)}"
+    if condition:
+        return f"조건: {condition}"
+    if effects:
+        return f"효과: {'; '.join(effects)}"
+    return "구조: 직접 조건·효과 없음"
 
 
 def read_rules(session, node_id: str) -> list[dict]:
@@ -83,7 +100,7 @@ def read_rules(session, node_id: str) -> list[dict]:
         "OPTIONAL MATCH (r)-[:HAS_EXAMPLE]->(e:EXAMPLE {graph_owner:$graph_owner}) "
         "RETURN r.id AS rule_node_id, r.rule_id AS rule_id, "
         "  coalesce(hr.ordinal,0) AS ordinal, r.anchor_line AS anchor_line, "
-        "  r.cond AS cond, r.then AS effects, r.nl AS nl, r.when AS when, "
+        "  r.cond AS cond, r.then AS effects, r.when AS when, "
         "  e.id AS example_id, e.kind AS kind, e.given AS given, e.then AS example_effects, "
         "  [x IN tbs WHERE x IS NOT NULL] AS tables "
         "ORDER BY ordinal, anchor_line, size(coalesce(e.id,'')), e.id",
@@ -102,7 +119,7 @@ def read_rules(session, node_id: str) -> list[dict]:
                 "anchor_line": row.get("anchor_line") or 0,
                 "cond": row.get("cond") or "",
                 "then": list(row.get("effects") or []),
-                "nl": row.get("nl") or "",
+                "nl": "",
                 "when": row.get("when") or "",
                 "tables": [
                     {

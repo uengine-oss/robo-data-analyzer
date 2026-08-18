@@ -39,12 +39,16 @@ from pipeline.quality_gates.nl_reference_safety import (
     MIN_REFERENCE_LEAK,
     reference_leak_count,
 )
-from pipeline.models.rule_response_schema import RULE_NL_MAX_LENGTH
+from pipeline.quality_gates.rule_audit_artifact import load_rule_audit_records
+from pipeline.quality_gates.rule_prompt_evidence import render_row_condition
 from pipeline.steps.step2_load_ast.load_ast_step import ast_json_paths
 
 RUN_DIR_NAME = re.compile(r"^\d{8}_\d{6}_[0-9a-f]{12}$")
 VAGUE = re.compile(r"해당 케이스를 처리한다|다음 단계로 진행한다$|처리하고 종료한다$")
-NL_LIMIT = RULE_NL_MAX_LENGTH
+# Historical provider-backed runs used a 600-character Rule narrative leaf.  Current
+# deterministic Rules have ``nl=""`` and are audited through ``rule-structures``.
+LEGACY_RULE_NL_MAX_LENGTH = 600
+NL_LIMIT = LEGACY_RULE_NL_MAX_LENGTH
 STRING_LITERAL = re.compile(
     r'"(?:\\.|[^"\\])*"|\'(?:\'\'|\\.|[^\'\\])*\'|`(?:``|[^`])*`'
 )
@@ -90,6 +94,38 @@ def _delivered_nl_quality(
         if len(narrative) == NL_LIMIT:
             quality["at_limit"] += 1
     return quality
+
+
+def _graph_rule_structure_delta(
+    graph_rows: list[dict], expected_rows: dict[tuple[str, str], dict],
+) -> dict[str, object]:
+    """Compare consumer-visible Rule structure with the immutable run artifact."""
+    actual = {
+        (
+            str(row.get("target_id") or ""),
+            f"R{int(row.get('anchor_line') or 0)}",
+        ): row
+        for row in graph_rows
+    }
+    missing = sorted(expected_rows.keys() - actual.keys())
+    extra = sorted(actual.keys() - expected_rows.keys())
+    mismatches: list[tuple[str, str]] = []
+    for key in sorted(expected_rows.keys() & actual.keys()):
+        expected = expected_rows[key]
+        delivered = actual[key]
+        if (
+            (delivered.get("cond") or None) != (expected.get("cond") or None)
+            or list(delivered.get("effects") or ()) != list(expected.get("then") or ())
+            or str(delivered.get("nl") or "") != str(expected.get("nl") or "")
+        ):
+            mismatches.append(key)
+    return {
+        "expected": len(expected_rows),
+        "actual": len(actual),
+        "missing": missing,
+        "extra": extra,
+        "mismatches": mismatches,
+    }
 
 
 def latest_run_dir(root: Path) -> Path:
@@ -174,6 +210,13 @@ def _rule_target_blocks(content: str) -> list[tuple[str, str, dict[str, dict]]]:
 
 def load_rule_obligations(run_dir: Path) -> set[tuple[str, str]]:
     """저장 prompt가 요구한 모든 RULE 행의 실제 신원 집합."""
+    audit_records = load_rule_audit_records(run_dir)
+    if audit_records:
+        return {
+            (target_id, str(row_key))
+            for target_id, record in audit_records.items()
+            for row_key in (record["evidence"].get("rows") or {})
+        }
     obligations: set[tuple[str, str]] = set()
     for record_path in sorted((run_dir / "llm-prompts").glob("*rules*.jsonl")):
         with record_path.open(encoding="utf-8") as fh:
@@ -197,6 +240,27 @@ def load_rule_obligations(run_dir: Path) -> set[tuple[str, str]]:
 
 def load_rule_rows(run_dir: Path) -> dict[tuple[str, str], dict]:
     """record 에서 (target_id, R키) → {cond, then, nl, when, direct} 를 전수 수집."""
+    audit_records = load_rule_audit_records(run_dir)
+    if audit_records:
+        rows: dict[tuple[str, str], dict] = {}
+        for target_id, record in audit_records.items():
+            evidence = record["evidence"]
+            conditions = evidence.get("conditions") or {}
+            evidence_rows = evidence.get("rows") or {}
+            rules = {
+                f"R{int(rule['anchor_line'])}": rule for rule in record["rules"]
+            }
+            for row_key, evidence_row in evidence_rows.items():
+                rule = rules[row_key]
+                rows[(target_id, str(row_key))] = {
+                    "cond": rule.get("cond"),
+                    "then": list(rule.get("then") or ()),
+                    "nl": str(rule.get("nl") or ""),
+                    "when": list(evidence_row.get("when") or ()),
+                    "direct": list(evidence_row.get("direct") or ()),
+                    "expected_cond": render_row_condition(evidence_row, conditions),
+                }
+        return rows
     rows: dict[tuple[str, str], dict] = {}
     for record_path in sorted((run_dir / "llm-prompts").glob("*rules*.jsonl")):
         with record_path.open(encoding="utf-8") as fh:
@@ -332,6 +396,22 @@ def _evidence_effects(run_dir: Path) -> tuple[Counter, dict[str, set[str]]]:
     """행 증거의 효과를 집계한다 — op 별 개수와 target별 호출 대상 집합."""
     ops: Counter = Counter()
     calls_by_target: dict[str, set[str]] = defaultdict(set)
+    audit_records = load_rule_audit_records(run_dir)
+    if audit_records:
+        for target_id, record in audit_records.items():
+            evidence = record["evidence"]
+            effects = evidence.get("effects") or {}
+            routine = _routine_from_target_id(target_id)
+            for row in (evidence.get("rows") or {}).values():
+                for reference in row.get("direct") or ():
+                    effect = effects.get(str(reference)) or {}
+                    op = str(effect.get("op") or "")
+                    ops[op] += 1
+                    if op == "call" and effect.get("target"):
+                        calls_by_target[routine].add(
+                            str(effect["target"]).casefold()
+                        )
+        return ops, calls_by_target
     for record_path in sorted((run_dir / "llm-prompts").glob("*rules*.jsonl")):
         with record_path.open(encoding="utf-8") as fh:
             for line in fh:
@@ -720,9 +800,10 @@ async def _graph_axes(database: str | None) -> dict[str, object]:
             "MATCH (e:EXAMPLE) WHERE NOT ()-[:HAS_EXAMPLE]->(e) "
             "RETURN count(e) AS orphans"
         )
-        rule_narratives = await one(
+        rule_rows = await one(
             "MATCH (c)-[:HAS_RULE]->(r:RULE) "
-            "RETURN c.id AS target_id, r.anchor_line AS anchor_line, r.nl AS nl"
+            "RETURN c.id AS target_id, r.anchor_line AS anchor_line, "
+            "r.cond AS cond, r.then AS effects, r.nl AS nl"
         )
         return {
             "database": getattr(client, "_database", None),
@@ -730,7 +811,7 @@ async def _graph_axes(database: str | None) -> dict[str, object]:
             "relations": rels,
             "rule_example": rule_example[0] if rule_example else {},
             "orphan_example": orphan_example[0] if orphan_example else {},
-            "rule_narratives": rule_narratives,
+            "rule_rows": rule_rows,
         }
     finally:
         await client.close()
@@ -782,13 +863,22 @@ def judge(
     if baseline_dir is not None:
         base_rows = load_rule_rows(baseline_dir)
         shared = rows.keys() & base_rows.keys()
-        same_path = [k for k in shared if base_rows[k]["when"] == rows[k]["when"]]
+        def expected_path(row: dict) -> object:
+            return row.get("expected_cond", row["when"])
+
+        same_path = [
+            k for k in shared
+            if expected_path(base_rows[k]) == expected_path(rows[k])
+        ]
         changed_path = sorted(shared - set(same_path))
 
         def failure_rate(keys: list, table: dict) -> tuple[int, int]:
-            failed = sum(
-                1 for k in keys if set(table[k]["cond"]) != set(table[k]["when"])
-            )
+            def mismatched(row: dict) -> bool:
+                if "expected_cond" in row:
+                    return row["cond"] != row["expected_cond"]
+                return set(row["cond"]) != set(row["when"])
+
+            failed = sum(1 for k in keys if mismatched(table[k]))
             return failed, len(keys)
 
         for label, keys in (("경로 동일", same_path), ("경로 변경", changed_path)):
@@ -845,7 +935,22 @@ def judge(
     if expected_db and actual_db and expected_db != actual_db:
         print(f"\n⚠ run 은 DB '{expected_db}' 에 썼는데 지금 '{actual_db}' 를 읽고 있다 — "
               "ROBO_NEO4J_DATABASE 를 맞춰라 (04 §4.6)")
-    delivered_quality = _delivered_nl_quality(graph["rule_narratives"], rows)
+    structure_delta = _graph_rule_structure_delta(graph["rule_rows"], rows)
+    print(
+        "[G] RULE 구조 — expected "
+        f"{structure_delta['expected']} · graph {structure_delta['actual']} · "
+        f"누락 {len(structure_delta['missing'])} · "
+        f"추가 {len(structure_delta['extra'])} · "
+        f"값 불일치 {len(structure_delta['mismatches'])}"
+    )
+    for label, values in (
+        ("missing", structure_delta["missing"]),
+        ("extra", structure_delta["extra"]),
+        ("mismatch", structure_delta["mismatches"]),
+    ):
+        if values:
+            print(f"    ⚠ {label} sample: {values[:3]}")
+    delivered_quality = _delivered_nl_quality(graph["rule_rows"], rows)
     delivered_n = delivered_quality["n"] or 1
     print(
         f"[C-delivery] graph nl {delivered_quality['n']}행 — "

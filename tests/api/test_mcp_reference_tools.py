@@ -21,12 +21,22 @@ from pipeline.models.semantic_frame import (
 
 
 def _clusters() -> list:
-    rule = {"anchor_line": 17, "nl": "재고 부족 시 거절한다", "tables": [
+    rule = {
+        "anchor_line": 17,
+        "cond": 'F("stock") < F("required")',
+        "then": ['call("reject_order")'],
+        "nl": "",
+        "tables": [
         {"name": "orders", "op": "READ"},
     ], "examples": [
         {"given": "g1", "when": "w1", "then": "t1", "tables": [{"name": "orders", "op": "R"}]},
     ]}
-    rule_dup = {"anchor_line": 17, "nl": "재고 부족 시 거절한다", "tables": [
+    rule_dup = {
+        "anchor_line": 17,
+        "cond": 'F("stock") < F("required")',
+        "then": ['call("reject_order")'],
+        "nl": "",
+        "tables": [
         {"name": "orders", "op": "READ"},
     ], "examples": [
         {"given": "g2", "when": "w2", "then": "t2", "tables": []},
@@ -143,7 +153,7 @@ class ListProfileTests(unittest.TestCase):
         self.assertEqual("기능A", anchor["logical_name"])
         self.assertEqual([{
             "line": 17,
-            "text": "재고 부족 시 거절한다",
+            "text": '조건: F("stock") < F("required") → 효과: call("reject_order")',
             "tables": [{"name": "orders", "op": "READ"}],
         }], anchor["rules"])
         self.assertEqual([], evidence["rules"])

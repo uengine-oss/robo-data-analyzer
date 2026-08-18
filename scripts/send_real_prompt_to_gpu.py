@@ -9,10 +9,10 @@
 3. ``replay`` — 실행 기록(``<run-dir>/llm-prompts/<rule>.jsonl``)에 남은 **실제
    프롬프트 전문**을 실제 호출 경로 그대로 재전송하고 공백 폭주를 관측 (절차 4단계의
    단건 재현). 합성 예제가 아니라 파이프라인이 보낸 것과 동일한 시스템·유저 메시지,
-   동일 Pydantic 스키마, 동일 sampling/extra_body, 동일 폭주 가드를 사용한다.
-   ``--current-contract``를 주면 저장된 가변 INPUT은 byte 그대로 두고 해당 rule의 현재 고정
-   지시 prefix만 메모리에서 교체한다. ``--current-summary-contract``는 과거 summary wire schema
-   이관을 위한 호환 옵션이다.
+   동일 Pydantic 스키마, 동일 sampling/extra_body, 동일 rule max_tokens, 동일 폭주 가드를 사용한다.
+   ``--current-contract``를 주면 저장된 가변 evidence는 유지하되 해당 rule의 현재 system/user
+   고정 지시와 변경된 dynamic wire assignment/schema를 한 계약으로 교체한다.
+   ``--current-summary-contract``는 과거 summary wire schema 이관을 위한 호환 옵션이다.
 
 실제 호출 경로 재사용 범위 — ``run_yaml_rule`` 의 전송 구간과 글자 단위 동일:
 ``build_llm_client(streaming=...)`` → provider canonical JSON Schema 구조화 출력 →
@@ -207,6 +207,23 @@ def _format_parsed_payload(parsed: Any) -> str:
     return json.dumps(dump, ensure_ascii=False, indent=2)
 
 
+def _format_compact_parsed_payload(parsed: Any) -> str:
+    """Render row-owned slot results without hiding semantic review fields."""
+    dump = parsed.model_dump() if hasattr(parsed, "model_dump") else parsed
+    if not isinstance(dump, dict) or not isinstance(dump.get("slots"), dict):
+        return json.dumps(dump, ensure_ascii=False, separators=(",", ":"))
+    compact = [
+        {
+            "wire_id": wire_id,
+            "status": value.get("status"),
+            "meaning": value.get("meaning"),
+            "missing_context": value.get("missing_context"),
+        }
+        for wire_id, value in dump["slots"].items()
+    ]
+    return json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+
+
 async def _send(
     system_prompt: str,
     user_content: str,
@@ -216,6 +233,7 @@ async def _send(
     max_tokens: Optional[int],
     use_guard: bool,
     structured_method: str | None = None,
+    compact_payload: bool = False,
 ) -> str:
     """run_yaml_rule 의 전송 구간과 동일한 경로로 1회 호출하고 결과를 보고."""
     cfg = load_llm_config(SETTINGS.analysis_llm.config)
@@ -229,7 +247,7 @@ async def _send(
     )
     validation_schema = provider_schema
     schema_name = (
-        "recorded canonical JSON Schema"
+        "canonical JSON Schema"
         if response_schema is not None
         else response_model.__name__ if response_model else "(없음 — raw)"
     )
@@ -301,9 +319,14 @@ async def _send(
     usage = getattr(raw_msg, "usage_metadata", None) or {}
     print(f"[{label}] ✅ 완료 {elapsed:.1f}s — "
           f"input {usage.get('input_tokens', '?')} tok / output {usage.get('output_tokens', '?')} tok")
+    print(f"  usage: {json.dumps(usage, ensure_ascii=False, separators=(',', ':'))}")
 
     raw_text = _extract_raw_text(raw_msg)
     if raw_text:
+        print(
+            "  raw: "
+            f"chars={len(raw_text)} sha256={hashlib.sha256(raw_text.encode('utf-8')).hexdigest()}"
+        )
         _report_whitespace(_analyze_whitespace(raw_text))
     else:
         print("  (raw 원문 없음 — 공백 분석 생략)")
@@ -312,7 +335,11 @@ async def _send(
         dump = parsed.model_dump() if hasattr(parsed, "model_dump") else parsed
         print(f"  파싱 결과 키: {list(dump)[:10] if isinstance(dump, dict) else type(dump).__name__}")
         print("  파싱 결과:")
-        print(_format_parsed_payload(parsed))
+        print(
+            _format_compact_parsed_payload(parsed)
+            if compact_payload
+            else _format_parsed_payload(parsed)
+        )
     elif structured:
         print("  ⚠ 스키마 파싱 실패 (parsed=None) — raw 원문을 직접 확인할 것")
     return raw_text
@@ -480,6 +507,8 @@ def cmd_replay(args: argparse.Namespace) -> None:
     if args.current_contract and args.current_summary_contract:
         raise SystemExit("--current-contract와 --current-summary-contract는 함께 쓸 수 없음")
     if args.current_contract:
+        _require_current_contract_rule(args.rule)
+        system_prompt = _current_system_contract(args.rule)
         current_fixed = _current_fixed_contract(args.rule)
         recorded_sha256 = hashlib.sha256(user_content.encode("utf-8")).hexdigest()
         user_content = _replace_recorded_fixed_contract(user_content, current_fixed)
@@ -535,13 +564,18 @@ def cmd_replay(args: argparse.Namespace) -> None:
     response_schema = None if args.no_schema else (
         _current_summary_response_schema(args.rule, user_content)
         if args.current_summary_contract
-        else _current_contract_response_schema(args.rule, record)
+        else _current_contract_response_schema(
+            args.rule, record, user_content=user_content,
+        )
         if args.current_contract
         else _recorded_response_schema(record)
     )
     structured_method = _resolve_replay_method(
         record, override=args.method, no_schema=args.no_schema,
     )
+    max_tokens = args.max_tokens
+    if max_tokens is None and args.current_contract:
+        max_tokens = _current_rule_max_tokens(args.rule)
 
     print(f"재전송 대상: {record_path.name} → target_id={record.get('target_id')!r} "
           f"(records {len(records)}건 중 1건)")
@@ -558,9 +592,10 @@ def cmd_replay(args: argparse.Namespace) -> None:
             response_model=None,
             response_schema=response_schema,
             label=f"replay:{args.rule}",
-            max_tokens=args.max_tokens,
+            max_tokens=max_tokens,
             use_guard=not args.no_guard,
             structured_method=structured_method,
+            compact_payload=args.compact_payload,
         )
     )
     if args.no_schema and raw_text:
@@ -592,11 +627,31 @@ def _recorded_response_schema(record: dict) -> dict:
     return schema
 
 
-def _current_contract_response_schema(rule: str, record: dict) -> dict:
+def _require_current_contract_rule(rule: str) -> None:
+    """Reject current replays for provider concerns removed from production."""
+    if rule in {
+        "code_rules_examples",
+        "code_rules_examples_batch",
+        "code_gate_rules_batch",
+    }:
+        raise SystemExit(
+            "Rule 모델 계약은 폐기됐다. 저장된 historical record는 원형 replay만 "
+            "가능하며 --current-contract로 되살릴 수 없다."
+        )
+
+
+def _current_contract_response_schema(
+    rule: str,
+    record: dict,
+    *,
+    user_content: str = "",
+) -> dict:
     """Align a fixed-prefix replay with current wire changes for supported concerns."""
     recorded = _recorded_response_schema(record)
     if rule not in {"code_table_insights", "code_table_insights_batch"}:
-        return recorded
+        raise SystemExit(
+            f"--current-contract schema 이관이 지원되지 않는 rule: {rule}"
+        )
     # Column meaning moved to the final TABLE/COLUMN concern.  Dynamic node/table keys and
     # closed role enums stay byte-for-byte from the record; only the retired intermediate
     # ``columns`` field and its now-unreferenced map definitions are removed.
@@ -643,6 +698,49 @@ def _current_fixed_contract(rule_name: str) -> str:
     if any(candidate != candidates[0] for candidate in candidates[1:]):
         raise SystemExit(
             f"framework/dbms의 {rule_name} 고정 계약이 다름 — strategy가 유일한 rule로 replay할 것"
+        )
+    return candidates[0]
+
+
+def _current_system_contract(rule_name: str) -> str:
+    """Render the current exact system prompt for the recorded rule owner."""
+    candidates: list[str] = []
+    for strategy in ("framework", "dbms"):
+        prompts_dir = REPO_ROOT / "llm" / "prompts" / strategy
+        if not (prompts_dir / f"{rule_name}.yaml").is_file():
+            continue
+        rule = _load_rule(prompts_dir, rule_name)
+        system_prompt = _safe_format(
+            str(rule.get("system") or ""), rule.get("static_values") or {},
+        )
+        if not system_prompt.strip():
+            raise SystemExit(f"현재 {strategy}/{rule_name} system prompt가 비어 있음")
+        candidates.append(system_prompt)
+    if not candidates:
+        raise SystemExit(f"현재 prompt rule을 찾지 못함: {rule_name}")
+    if any(candidate != candidates[0] for candidate in candidates[1:]):
+        raise SystemExit(
+            f"framework/dbms의 {rule_name} system 계약이 다름 — strategy가 유일한 rule로 replay할 것"
+        )
+    return candidates[0]
+
+
+def _current_rule_max_tokens(rule_name: str) -> int:
+    """Resolve the exact current YAML token ceiling for a uniquely owned rule."""
+    candidates: list[int] = []
+    for strategy in ("framework", "dbms"):
+        prompts_dir = REPO_ROOT / "llm" / "prompts" / strategy
+        if not (prompts_dir / f"{rule_name}.yaml").is_file():
+            continue
+        value = _load_rule(prompts_dir, rule_name).get("max_tokens")
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise SystemExit(f"현재 {strategy}/{rule_name} max_tokens가 양의 정수가 아님")
+        candidates.append(value)
+    if not candidates:
+        raise SystemExit(f"현재 prompt rule을 찾지 못함: {rule_name}")
+    if any(candidate != candidates[0] for candidate in candidates[1:]):
+        raise SystemExit(
+            f"framework/dbms의 {rule_name} max_tokens 계약이 다름 — strategy가 유일한 rule로 replay할 것"
         )
     return candidates[0]
 
@@ -815,7 +913,7 @@ def main() -> None:
         help="required_node_keys의 정확한 key로 record를 좁힘 (--target과 조합 권장)",
     )
     p_replay.add_argument("--max-tokens", type=int, default=None,
-                          help="비상 브레이크 override (기본 config yaml 값)")
+                          help="비상 브레이크 override (current-contract 기본: rule YAML)")
     p_replay.add_argument("--no-schema", action="store_true",
                           help="constrained JSON 없이 raw 재전송 (문법 제약 효과 분리용)")
     p_replay.add_argument(
@@ -835,6 +933,10 @@ def main() -> None:
         default=None, help="recorded provider 강제 방식 override (기본: record metadata)",
     )
     p_replay.add_argument("--no-guard", action="store_true", help="폭주 가드 없이 전송")
+    p_replay.add_argument(
+        "--compact-payload", action="store_true",
+        help="semantic review 필드는 보존하고 parsed payload를 한 줄 slot 목록으로 출력",
+    )
     p_replay.set_defaults(func=cmd_replay)
 
     args = parser.parse_args()

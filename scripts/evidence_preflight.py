@@ -52,7 +52,8 @@ from pipeline.steps.step6_build_context.build_context_step import (
 from pipeline.steps.step6_build_context.control_subtree import (
     build_control_subtrees, build_statement_facts,
 )
-from pipeline.steps.step7_analyze_code.rule_row_batching import required_rule_rows
+from pipeline.quality_gates.rule_obligations import required_rule_rows
+from pipeline.quality_gates.rule_audit_artifact import load_rule_audit_records
 from pipeline.steps.step7_analyze_code.analysis_order import (
     bottom_up_rounds,
     plan_summary_dependencies,
@@ -393,7 +394,17 @@ def _resolved_rows(payload: dict) -> dict[str, dict]:
 
 
 def _stored_rows(run_dir: Path) -> dict[str, dict]:
-    """저장된 run 프롬프트에서 (target_id → resolved rows) 를 뽑는다."""
+    """저장 run에서 ``target_id → resolved rows``를 읽는다.
+
+    Current runs own a dedicated deterministic Rule artifact.  Prompt parsing remains
+    only for historical provider-backed runs.
+    """
+    audit_records = load_rule_audit_records(run_dir)
+    if audit_records:
+        return {
+            target_id: _resolved_rows(record["evidence"])
+            for target_id, record in audit_records.items()
+        }
     out: dict[str, dict] = {}
     prompt_paths = {
         *sorted((run_dir / "llm-prompts").glob("code_rules_examples*.jsonl")),

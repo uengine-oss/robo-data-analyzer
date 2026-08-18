@@ -76,12 +76,23 @@ ID 기준으로 중복 제거해 소비하며 정상 생성 경로에서 레거�
     사용한다. 대기 중 다른 concern이 있는데 한 concern만 전체 wall 동안 실행되는 상태는 결함이다.
 14. 성능 후보는 동일 source/prompt/schema hash의 cold/warm replay에서 calls, input/output/cache tokens,
     TTFT/E2E p95, wall, schema/repetition/deadline, 의미 판정을 함께 측정한다.
-15. branch inventory required row마다 모델 소유 의미는 `RULE.BUSINESS_MEANING` 한 칸뿐이다.
-    condition/effects/type/timing/complement/nesting/fallthrough/handler/continuation과 EXAMPLE은
-    결정론 구조 사실로 그대로 보존하며, 이를 role/outcome/action prose로 다시 생성하지 않는다.
+15. branch inventory의 모든 required row는 parser-owned condition/effects/type/timing/complement/
+    nesting/fallthrough/handler/continuation을 가진 **결정론 Rule**로 물질화한다. Rule별 자연어
+    `BUSINESS_MEANING`은 만들지 않는다. 실제 APAS 고정 replay에서 code-only row의 prose가 조건
+    극성을 바꾸고 opaque identifier를 업무 용어로 창작했으며, 후단 소비자는 이 prose를 요구하지
+    않고 exact RULE evidence와 condition/effects/Example을 사용한다. Rule의 `nl`은 빈 표시용
+    호환 필드이고, 검색/화면이 문장을 필요로 하면 동일 cond/then을 해석 없이 구조적으로 렌더한다.
+    EXAMPLE은 실제 outcome이 있을 때만 accepted Rule에서 결정론 합성한다.
 16. provider response의 request-local private key가 meaning/missing_context에 나타나면 문자열 치환으로
     숨기지 않는다. 해당 slot만 신뢰 대상에서 격리하고 좌표 있는 finding으로 남기며, 다른 slot과
     결정론 Rule/Example은 보존한다.
+17. Rule provider wire·assignment·row packet·Rule 전용 LLM batch는 production 경로에 존재하지
+    않아야 한다. Rule 구조를 이미 가진 상태에서 같은 행을 prose로 다시 생성하는 두 번째 의미
+    생산자와 그 schema/normalizer/retry/split 경로를 남기지 않는다.
+18. Rule의 CALL/DATA_OBJECT/SYMBOL/EXTERNAL 연결은 canonical profile의 exact evidence refs로만
+    보존한다. callee/table의 의미는 각 원래 semantic slot을 ID로 참조하며 Rule 문장에 복사하지 않는다.
+19. library return/sentinel, opaque identifier, target 이름을 Rule 문장으로 번역하지 않는다. 의미가
+    필요한 최종 소비자는 함수 summary와 callee/table/column claim을 RULE 구조 evidence와 함께 사용한다.
 
 ## 폐기된 요구
 
