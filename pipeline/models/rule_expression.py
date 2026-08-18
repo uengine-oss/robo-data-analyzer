@@ -29,12 +29,12 @@ COND_HELPERS: tuple[str, ...] = (
     "F", "else_of", "after_control", "at_label", "len",
 )
 
-# 구조 leaf의 형태 제약. Rule cond/then은 parser-owned facts에서 결정론 생성되며,
-# source predicate나 statement를 임의 길이에서 자르면 의미가 달라진다.
-# EXAMPLE leaves remain compact derived test vectors.
+# 구조 leaf의 형태 제약. Rule cond/then과 EXAMPLE은 parser-owned facts에서 결정론 생성되며,
+# source predicate나 statement를 임의 길이에서 자르거나 버리면 의미가 달라진다. 과거
+# LLM-generated Example의 폭주를 막던 별도 500자 상한은 Example이 LLM 0이 된 뒤에는
+# 정확한 조건을 조용히 누락시키므로 적용하지 않는다.
 RULE_LEAF_PATTERN = r"^[^\n]+$"
-EXAMPLE_LEAF_MAX_CHARS = 500
-EXAMPLE_LEAF_PATTERN = rf"^[^\n]{{1,{EXAMPLE_LEAF_MAX_CHARS}}}$"
+EXAMPLE_LEAF_PATTERN = RULE_LEAF_PATTERN
 
 
 class LeafSyntaxError(ValueError):

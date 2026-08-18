@@ -68,5 +68,7 @@
   finding/unavailable 잔차와 graph 기대 trusted row를 전수 대조
 - [ ] T131-38 채택 구조의 정상·실패·경계·중복·순서·취소/종료 회귀 및 전체 자동 테스트
 - [ ] T131-39 새 격리 DB의 실제 APAS 전체 cold run, judge_run+graph, 봉인 30~40 의미 직접 판정
+- [x] T131-39a actual graph에서 발견된 긴 Rule 조건 EXAMPLE 12건 누락을 과거 LLM-era 500자 상한의
+  잔재로 확정하고, 결정론 Rule truth 무손실 계약·반대 테스트·상설 judge 재판정으로 누락 0 검증
 - [ ] T131-40 작은 실제 MCP 질의→Architect Opus 5 GWT, Analyzer optional 두 경로 검증
 - [ ] T131-41 2026-08-18 작업보고·HANDOFF·GPU server 문서 갱신, diff 감사, selective commit/push, 임시 자원 정리

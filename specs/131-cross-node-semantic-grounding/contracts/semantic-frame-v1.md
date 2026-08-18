@@ -225,6 +225,11 @@ true·false path, loop timing/termination, handler/propagation, entry/continuati
 모두 결정론 사실이 소유한다. callee/table/column의 업무 의미는 각각의 원래 semantic slot에 한 번만
 존재하고 Rule evidence가 ID로 연결한다. Rule이 그 의미를 복사해 두 번째 claim을 만들지 않는다.
 
+EXAMPLE leaf는 accepted Rule의 검증된 `cond/then` truth를 그대로 보존한다. 과거 provider가 Example을
+생성하던 시절의 출력 길이 상한을 결정론 산출물에 재사용하지 않는다. 조건을 길이로 자르거나 버리지
+않으며, opaque source predicate를 Analyzer 문자열 분해로 짧은 조건처럼 재해석하지 않는다. 조건 또는
+직접 outcome이 없는 Rule만 EXAMPLE을 만들지 않는다.
+
 ### 6.3 call family
 
 | family | slot role | 적용 조건 |

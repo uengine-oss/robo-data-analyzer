@@ -102,6 +102,10 @@ ID 기준으로 중복 제거해 소비하며 정상 생성 경로에서 레거�
 22. Rule 영구 감사는 routine 전체 obligation뿐 아니라 각 row의 실제 graph owner를 보존한다. 상설
     `judge_run.py`는 `obligation = trusted + rejected/unverified + unavailable`, 중복·잔차 0을 전수 판정하고,
     graph 구조 기대값에서는 finding row를 제외한다. routine owner와 DBMS child owner를 혼동하지 않는다.
+23. EXAMPLE은 accepted Rule의 결정론 `cond/then`에서만 합성한다. 모델 출력 폭주를 막기 위해 존재했던
+    leaf 길이 상한을 parser-owned Rule truth에 적용해 조건을 자르거나 예시를 조용히 누락하지 않는다.
+    긴 opaque source predicate는 Analyzer가 언어별 연산자로 재파싱하지 않고 Rule과 동일한 leaf를 무손실
+    보존한다. 조건 또는 직접 결과가 없는 Rule만 EXAMPLE 비생성의 정상 사유다.
 
 ## 폐기된 요구
 

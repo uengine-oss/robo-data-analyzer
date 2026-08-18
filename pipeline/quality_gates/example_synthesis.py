@@ -19,8 +19,6 @@ from __future__ import annotations
 
 import ast
 
-from pipeline.models.rule_expression import EXAMPLE_LEAF_MAX_CHARS
-
 _ELSE_OF = "else_of"
 # 부정 시 뒤집는 비교 — 그 외 형태는 not(...) 로 감싼다.
 _FLIP = {
@@ -185,7 +183,9 @@ def _falsify_terms(
 
 
 def _fits(term: str) -> bool:
-    return bool(term) and "\n" not in term and len(term) <= EXAMPLE_LEAF_MAX_CHARS
+    # Example은 검증된 Rule truth의 결정론 projection이다. 길이로 버리면 source의 긴
+    # opaque predicate가 조건+outcome을 가졌는데도 Example만 조용히 사라진다.
+    return bool(term) and "\n" not in term
 
 
 def synthesize_examples(rules) -> dict[int, list[dict]]:

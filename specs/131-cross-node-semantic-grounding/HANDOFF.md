@@ -41,6 +41,22 @@
 - parser 전체 회귀는 154 tests, failure/error 0, skipped 8이다. 새 AST에 대한 Analyzer preflight는
   routine 416, resolved GOTO 5, missing/duplicate 0, Rule obligation 4,810, evidence 4,202(87%)로
   통과했다. 검증용 parser 8401만 종료했고 기존 Analyzer 15502와 Neo4j 7687은 유지했다.
+- 실제 APAS cold 기준 run `20260818_224211_94292c026804`은 cache 0, 567 LLM calls,
+  710.9초에 완료됐다. Rule 4,810/4,810과 graph 구조는 일치했지만, 조건과 직접 결과가 있는
+  Rule 12개가 Example을 갖지 않았다. source/Rule은 정상이었고 결정론 Example 합성기의
+  LLM-era `500자` leaf 상한이 575~1,976자 predicate를 조용히 버린 것이 정확한 원인이었다.
+- Example은 accepted Rule truth의 projection이므로 위 상한을 제거하고 개행 금지만 유지했다.
+  긴 opaque predicate를 Analyzer가 언어 문법으로 쪼개는 경로는 추가하지 않았다. 표적·전체 회귀
+  `1,038 tests, 5 skipped`와 prompt ledger `23/23`을 통과한 뒤 같은 `framework` DB를 새로 적재한
+  final run `20260818_230556_56dd57726596`이 cache 0, 567 calls, 647.7초에 완료됐다.
+- final graph는 Rule 4,810, HAS_EXAMPLE 3,391, conditional+outcome Example missing 0,
+  orphan 0이다. 이전 graph의 HAS_EXAMPLE 3,379에서 정확히 12개가 복구됐고, 12좌표 모두
+  Rule/Example 존재·outcome exact·긴 given 무손실을 직접 조회했다. preflight diff도 target 416,
+  row 4,810, difference 0이다. 상세 증거는
+  `evidence/example-long-predicate-revalidation-20260819.md`가 소유한다.
+- final run에는 summary `unverified` finding 4건이 있다. Rule finding은 0이며 Rule 회계에는 섞이지
+  않는다. 이 4건은 다음 직접 의미 판정에서 source→actual prompt→candidate→finding을 열어 정당성까지
+  판정한다. 따라서 APAS 전체 의미 40과 Architect actual은 아직 완료가 아니다.
 - 따라서 T131-31은 완료다. 현재 다음 순서는 Analyzer 전체 회귀·prompt ledger와 actual 실행 환경을
   다시 고정한 뒤 T131-37 concern/scheduling 측정 및 새 APAS full cold run으로 넘어가는 것이다.
 - 사용자가 Framework는 함수 단위, DBMS는 effective AST의 모든 입력 노드 단위라고 정정했다.

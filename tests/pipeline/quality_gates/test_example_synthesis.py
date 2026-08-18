@@ -9,7 +9,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from pipeline.models.code_analysis_output import RuleItem
+from pipeline.models.code_analysis_output import ExampleItem, RuleItem
 from pipeline.quality_gates import example_synthesis
 from pipeline.quality_gates.example_synthesis import synthesize_examples
 
@@ -125,7 +125,7 @@ class SynthesisTable(unittest.TestCase):
 
 
 class SynthesisStaysInsideLeafContract(unittest.TestCase):
-    """합성물도 leaf 계약(개행 없음·500자)을 지킨다 — 저장·재채점이 같은 규격이다."""
+    """합성물은 개행 없는 Rule truth를 길이로 버리지 않는다."""
 
     def test_every_synthesized_leaf_fits_the_contract(self):
         cond = 'F("%s") == "01" and F("b") == "02"' % ("x" * 400)
@@ -133,13 +133,22 @@ class SynthesisStaysInsideLeafContract(unittest.TestCase):
         self.assertTrue(got)
         for example in got:
             for leaf in (*example["given"], *example["then"]):
-                self.assertLessEqual(len(leaf), 500)
                 self.assertNotIn("\n", leaf)
 
     def test_long_but_valid_satisfying_leaf_is_not_truncated(self):
         cond = 'F("%s") == "03"' % ("x" * 466)
         got = synthesize_examples([_rule(1, cond, ['ret("RC")'])])[1]
         self.assertEqual(["satisfy"], [example["kind"] for example in got])
+
+    def test_long_parser_owned_predicate_is_not_silently_dropped(self):
+        source_predicate = " || ".join(f"code == {index}" for index in range(80))
+        cond = f'F("{source_predicate}")'
+
+        got = synthesize_examples([_rule(1, cond, ['ret("RC")'])])[1]
+
+        self.assertEqual(1, len(got))
+        self.assertEqual(source_predicate, got[0]["given"][0][3:-2])
+        ExampleItem.model_validate(got[0])
 
 
 if __name__ == "__main__":

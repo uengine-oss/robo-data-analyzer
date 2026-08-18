@@ -215,10 +215,11 @@ class QuestionItem(BaseModel):
 
 # ── 구조화 Rule·Example — JSON 봉투 + 파이썬 표현식 leaf (spec 116 3단계) ──
 #
-# 스키마는 **형태만** 강제한다(개행 금지·길이 상한 pattern = 문법 강제 디코딩의 끝 경계,
-# 헌법 VI 절제·폭주 방어). 파이썬 문법·어휘·분기표 의미 대조는 채점기(rule_grading)가
-# 한 번 수행한다. 위반 후보는 행 좌표가 있는 finding으로 격리하고 검증된 sibling은
-# 보존한다. 어휘·pattern의 정의처는 pipeline/models/rule_expression.py 하나다.
+# 스키마는 **형태만** 강제한다(개행 금지). Rule과 Example은 모두 parser-owned facts에서
+# 결정론 생성되므로 source predicate를 길이로 자르거나 버리지 않는다. 파이썬 문법·어휘·
+# 분기표 의미 대조는 채점기(rule_grading)가 한 번 수행한다. 위반 후보는 행 좌표가 있는
+# finding으로 격리하고 검증된 sibling은 보존한다. 어휘·pattern의 정의처는
+# pipeline/models/rule_expression.py 하나다.
 
 _ExampleLeafStr = Annotated[str, StringConstraints(pattern=EXAMPLE_LEAF_PATTERN)]
 _RuleLeafStr = Annotated[str, StringConstraints(pattern=RULE_LEAF_PATTERN)]
