@@ -45,6 +45,16 @@ ANALYSIS_LLM_LANE_WEIGHTS = {
     POSTPROCESS_LANE: 1,
 }
 
+# Admission units reflect measured generation occupancy, not request count.  The
+# shared pool remains work-conserving, while a 440-token Rule response cannot be
+# treated like a short module pre-analysis call.
+ANALYSIS_LLM_LANE_COSTS = {
+    SUMMARY_LANE: 2,
+    RULES_LANE: 4,
+    INSIGHTS_LANE: 2,
+    POSTPROCESS_LANE: 2,
+}
+
 
 def analysis_llm_slots() -> PrioritySemaphore:
     from shared.config.settings import SETTINGS
@@ -57,6 +67,10 @@ def analysis_llm_slots() -> PrioritySemaphore:
                 SETTINGS.analysis_pipeline.rule_max_concurrency,
                 SETTINGS.analysis_pipeline.max_concurrency,
             ),
+        },
+        lane_costs={
+            lane: min(cost, SETTINGS.analysis_pipeline.max_concurrency)
+            for lane, cost in ANALYSIS_LLM_LANE_COSTS.items()
         },
     )
 
