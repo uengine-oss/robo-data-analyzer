@@ -46,6 +46,7 @@ class PrioritySemaphore:
         value: int,
         *,
         fair_weights: Optional[Mapping[str, int]] = None,
+        lane_caps: Optional[Mapping[str, int]] = None,
     ) -> None:
         if value < 1:
             raise ValueError(f"PrioritySemaphore value must be >= 1; got {value}")
@@ -58,6 +59,15 @@ class PrioritySemaphore:
         self._fair_weights = dict(fair_weights or {})
         if any(not lane or weight < 1 for lane, weight in self._fair_weights.items()):
             raise ValueError("fair_weights require non-empty lanes and weights >= 1")
+        self._lane_caps = dict(lane_caps or {})
+        if any(
+            not lane or cap < 1 or cap > value
+            for lane, cap in self._lane_caps.items()
+        ):
+            raise ValueError(
+                "lane_caps require non-empty lanes and values between 1 and capacity"
+            )
+        self._lane_in_use: dict[str, int] = {}
         self._lane_current: dict[str, int] = {
             lane: 0 for lane in self._fair_weights
         }
@@ -71,6 +81,10 @@ class PrioritySemaphore:
     def in_use(self) -> int:
         """현재 실제로 발급된 슬롯 수(대기자는 제외)."""
         return self._in_use
+
+    def in_use_for(self, lane: str) -> int:
+        """Return granted slots for one lane (queued waiters are excluded)."""
+        return self._lane_in_use.get(lane or "default", 0)
 
     @property
     def peak_in_use(self) -> int:
@@ -86,10 +100,18 @@ class PrioritySemaphore:
         return sum(1 for waiter in self._waiters if not waiter.future.cancelled())
 
     async def acquire(self, priority: int = 0, lane: Optional[str] = None) -> None:
-        if self._value > 0 and not self._waiters:
+        selected_lane = lane or "default"
+        if (
+            self._value > 0
+            and not any(
+                not waiter.future.cancelled()
+                and self._lane_has_capacity(waiter.lane)
+                for waiter in self._waiters
+            )
+            and self._lane_has_capacity(selected_lane)
+        ):
             self._value -= 1
-            self._in_use += 1
-            self._peak_in_use = max(self._peak_in_use, self._in_use)
+            self._grant(selected_lane)
             return
         # 슬롯이 있어도 **대기자가 있으면 줄을 선다** — 뒤늦게 온 낮은 우선순위가
         # 새치기해 높은 우선순위 대기자를 굶기지 않게(그리고 순서 계약을 지키게).
@@ -100,7 +122,7 @@ class PrioritySemaphore:
                 priority=priority,
                 seq=next(self._seq),
                 future=future,
-                lane=lane or "default",
+                lane=selected_lane,
             ),
         )
         try:
@@ -108,21 +130,33 @@ class PrioritySemaphore:
         except asyncio.CancelledError:
             # 이미 슬롯을 받은 뒤 취소됐다면 반납해야 한다 — 안 그러면 슬롯이 샌다.
             if future.done() and not future.cancelled():
-                self.release()
+                self.release(selected_lane)
             else:
                 self._drop(future)
             raise
 
-    def release(self) -> None:
+    def release(self, lane: Optional[str] = None) -> None:
         """슬롯 1개 반납 — 대기자가 있으면 그중 최우선에게 바로 넘긴다."""
-        waiter = self._pop_next_waiter()
-        if waiter is not None:
-            waiter.future.set_result(True)
-            return
-        if self._in_use < 1:
+        selected_lane = lane or "default"
+        if self._in_use < 1 or self._lane_in_use.get(selected_lane, 0) < 1:
             raise RuntimeError("PrioritySemaphore released without an acquired slot")
         self._in_use -= 1
+        self._lane_in_use[selected_lane] -= 1
+        waiter = self._pop_next_waiter()
+        if waiter is not None:
+            self._grant(waiter.lane)
+            waiter.future.set_result(True)
+            return
         self._value += 1
+
+    def _grant(self, lane: str) -> None:
+        self._in_use += 1
+        self._lane_in_use[lane] = self._lane_in_use.get(lane, 0) + 1
+        self._peak_in_use = max(self._peak_in_use, self._in_use)
+
+    def _lane_has_capacity(self, lane: str) -> bool:
+        cap = self._lane_caps.get(lane)
+        return cap is None or self._lane_in_use.get(lane, 0) < cap
 
     def _drop(self, future: asyncio.Future) -> None:
         """취소된 대기자를 힙에서 제거 — 힙이 죽은 항목으로 자라지 않게."""
@@ -132,33 +166,35 @@ class PrioritySemaphore:
     def _pop_next_waiter(self) -> Optional[_Waiter]:
         """Choose strict priority unless a waiter reached the overtaking bound."""
         self._waiters = [w for w in self._waiters if not w.future.cancelled()]
-        if not self._waiters:
+        eligible = [w for w in self._waiters if self._lane_has_capacity(w.lane)]
+        if not eligible:
             return None
         heapq.heapify(self._waiters)
 
         if self._fair_weights:
-            return self._pop_weighted_waiter()
+            return self._pop_weighted_waiter({waiter.lane for waiter in eligible})
 
-        bounded = [w for w in self._waiters if w.bypasses >= self._capacity]
+        bounded = [w for w in eligible if w.bypasses >= self._capacity]
         if bounded:
             selected = min(bounded, key=lambda w: (-w.bypasses, w.seq))
             self._waiters.remove(selected)
             heapq.heapify(self._waiters)
         else:
-            selected = heapq.heappop(self._waiters)
+            selected = min(eligible)
+            self._waiters.remove(selected)
+            heapq.heapify(self._waiters)
 
         for waiting in self._waiters:
             waiting.bypasses += 1
         return selected
 
-    def _pop_weighted_waiter(self) -> _Waiter:
+    def _pop_weighted_waiter(self, active_lanes: set[str]) -> _Waiter:
         """Smooth weighted round-robin across active lanes, priority/FIFO within one.
 
         Inactive lanes receive no credit, so a lane cannot accumulate an unbounded
         burst while idle. Unknown lanes use weight 1. If only one lane is active it
         borrows every slot; capacity is never reserved or left idle.
         """
-        active_lanes = {waiter.lane for waiter in self._waiters}
         for lane in list(self._lane_current):
             if lane not in active_lanes:
                 self._lane_current[lane] = 0
@@ -196,7 +232,7 @@ class PrioritySemaphore:
         return self
 
     async def __aexit__(self, *exc_info) -> None:
-        self.release()
+        self.release("default")
 
 
 class _PrioritySlot:
@@ -219,4 +255,4 @@ class _PrioritySlot:
         return self._sem
 
     async def __aexit__(self, *exc_info) -> None:
-        self._sem.release()
+        self._sem.release(self._lane)

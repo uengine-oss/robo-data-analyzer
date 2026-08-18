@@ -52,6 +52,12 @@ def analysis_llm_slots() -> PrioritySemaphore:
     return PrioritySemaphore(
         SETTINGS.analysis_pipeline.max_concurrency,
         fair_weights=ANALYSIS_LLM_LANE_WEIGHTS,
+        lane_caps={
+            RULES_LANE: min(
+                SETTINGS.analysis_pipeline.rule_max_concurrency,
+                SETTINGS.analysis_pipeline.max_concurrency,
+            ),
+        },
     )
 
 

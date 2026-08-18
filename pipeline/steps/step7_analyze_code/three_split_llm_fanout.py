@@ -370,6 +370,7 @@ async def analyze_code_three_split(
                     queue_wait_ms=round((time.monotonic() - queued_at) * 1000, 3),
                     waiting_before=waiting_before,
                     slots_in_use=llm_slots.in_use,
+                    lane_slots_in_use=llm_slots.in_use_for(lane),
                     slots_capacity=llm_slots.capacity,
                 )
                 return await invoke()

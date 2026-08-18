@@ -161,6 +161,47 @@ class PrioritySemaphoreTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(sem.free, 1)
         self.assertEqual(sem.free, 2)
 
+    async def test_lane_cap_limits_heavy_lane_without_blocking_other_lanes(self) -> None:
+        sem = PrioritySemaphore(
+            4,
+            fair_weights={"summary": 2, "rules": 1},
+            lane_caps={"rules": 2},
+        )
+        release_rules = asyncio.Event()
+        live_rules = 0
+        peak_rules = 0
+        summary_ran = asyncio.Event()
+
+        async def rule_worker() -> None:
+            nonlocal live_rules, peak_rules
+            async with sem.at(0, "rules"):
+                live_rules += 1
+                peak_rules = max(peak_rules, live_rules)
+                await release_rules.wait()
+                live_rules -= 1
+
+        async def summary_worker() -> None:
+            async with sem.at(0, "summary"):
+                summary_ran.set()
+
+        rules = [asyncio.create_task(rule_worker()) for _ in range(4)]
+        await asyncio.sleep(0)
+        summary = asyncio.create_task(summary_worker())
+        await asyncio.wait_for(summary_ran.wait(), timeout=1)
+        self.assertEqual(peak_rules, 2)
+        self.assertEqual(sem.in_use, 2)
+        self.assertEqual(sem.in_use_for("rules"), 2)
+        self.assertEqual(sem.in_use_for("summary"), 0)
+
+        release_rules.set()
+        await asyncio.gather(*rules, summary)
+        self.assertEqual(sem.in_use, 0)
+        self.assertEqual(sem.free, 4)
+
+    def test_lane_cap_must_fit_total_capacity(self) -> None:
+        with self.assertRaisesRegex(ValueError, "lane_caps"):
+            PrioritySemaphore(2, lane_caps={"rules": 3})
+
 
 async def _hold(sem: PrioritySemaphore, priority: int) -> None:
     async with sem.at(priority):
