@@ -442,3 +442,39 @@ def merge_semantic_frames(
         profile=first.profile,
         slots=slots,
     )
+
+
+def mark_semantic_frame_insufficient(
+    frame: SemanticFrame,
+    missing_context: Iterable[str],
+) -> SemanticFrame:
+    """Preserve a closed frame after its generated meaning is rejected.
+
+    Structural ownership, slot IDs and evidence coordinates remain authoritative.  The
+    rejected prose must not survive, but dropping the whole fragment makes an otherwise
+    valid target disappear from source-free consumers.  Replace only the model-owned
+    leaves with an explicit insufficient state so consumers can see the gap without
+    receiving fabricated or rejected meaning.
+    """
+    reasons = tuple(dict.fromkeys(
+        " ".join(str(item).split()) for item in missing_context if str(item).strip()
+    ))[:8]
+    if not reasons:
+        raise ValueError("insufficient semantic frame requires missing_context")
+    return SemanticFrame(
+        target=frame.target,
+        profile=frame.profile,
+        slots={
+            slot_id: SemanticSlot(
+                slot_id=slot.slot_id,
+                family=slot.family,
+                role=slot.role,
+                target_ref=slot.target_ref,
+                evidence_refs=slot.evidence_refs,
+                meaning="",
+                status="insufficient",
+                missing_context=reasons,
+            )
+            for slot_id, slot in frame.slots.items()
+        },
+    )

@@ -571,6 +571,12 @@ class FrameworkFailureContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("completed_with_findings", node.extra["analysis_status"])
         self.assertEqual("summary", node.extra["analysis_findings"][0]["concern"])
         self.assertEqual("rejected", node.extra["analysis_findings"][0]["status"])
+        frame = node.extra["semantic_frame"]
+        self.assertTrue(frame["slots"])
+        self.assertTrue(all(
+            slot["status"] == "insufficient" and slot["meaning"] == ""
+            for slot in frame["slots"].values()
+        ))
 
     async def test_model_output_failures_become_visible_findings_and_run_continues(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

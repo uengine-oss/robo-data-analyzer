@@ -84,7 +84,10 @@ def _delivered_nl_quality(
             quality["leak"] += 1
         if VAGUE.search(narrative):
             quality["vague"] += 1
-        if len(narrative) >= NL_LIMIT:
+        # Frame projections deliberately preserve complete meaning beyond the old
+        # 600-character model wire limit.  Only landing exactly on that legacy limit
+        # is a truncation signal; a longer projection is not evidence of cutting.
+        if len(narrative) == NL_LIMIT:
             quality["at_limit"] += 1
     return quality
 
@@ -204,6 +207,14 @@ def load_rule_rows(run_dir: Path) -> dict[tuple[str, str], dict]:
                 payload = _response_payload(record.get("response"))
                 if blocks:
                     for node_key, target_id, evidence_rows in blocks:
+                        for row_key, evidence in evidence_rows.items():
+                            rows[(target_id, row_key)] = {
+                                "cond": list(evidence.get("when") or []),
+                                "then": list(evidence.get("direct") or []),
+                                "nl": "",
+                                "when": evidence.get("when") or [],
+                                "direct": evidence.get("direct") or [],
+                            }
                         node = (payload.get("nodes") or {}).get(node_key) or {}
                         for row_key, rule in (node.get("rules") or {}).items():
                             row = evidence_rows.get(row_key)
@@ -220,11 +231,20 @@ def load_rule_rows(run_dir: Path) -> dict[tuple[str, str], dict]:
                 evidence_rows = _evidence_rows(content)
                 if not evidence_rows:
                     continue
+                target_id = str(record.get("target_id") or "unknown")
+                for row_key, evidence in evidence_rows.items():
+                    rows[(target_id, row_key)] = {
+                        "cond": list(evidence.get("when") or []),
+                        "then": list(evidence.get("direct") or []),
+                        "nl": "",
+                        "when": evidence.get("when") or [],
+                        "direct": evidence.get("direct") or [],
+                    }
                 for row_key, rule in _response_rules(record.get("response")).items():
                     row = evidence_rows.get(row_key)
                     if row is None:
                         continue
-                    rows[(str(record.get("target_id") or "unknown"), row_key)] = {
+                    rows[(target_id, row_key)] = {
                         "cond": rule.get("cond") or [],
                         "then": rule.get("then") or [],
                         "nl": (rule.get("nl") or "").strip(),
@@ -751,7 +771,7 @@ def judge(
             quality["leak"] += 1
         if VAGUE.search(nl):
             quality["vague"] += 1
-        if len(nl) >= NL_LIMIT:
+        if len(nl) == NL_LIMIT:
             quality["at_limit"] += 1
     n = quality["n"] or 1
     print(f"[C] nl {quality['n']}행 — 누출 {quality['leak']} ({quality['leak'] / n * 100:.1f}%)"

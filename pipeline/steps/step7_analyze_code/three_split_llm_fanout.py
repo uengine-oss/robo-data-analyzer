@@ -64,6 +64,7 @@ from pipeline.models.summary_response_schema import (
     frame_summary_response_model,
 )
 from pipeline.models.semantic_frame import (
+    mark_semantic_frame_insufficient,
     merge_semantic_frames,
     normalize_semantic_frame_response,
     profile_prompt_json,
@@ -462,7 +463,9 @@ async def analyze_code_three_split(
                 fn.extra["questions"] = []
                 ctx.summary = ""
                 ctx.extra["summary_status"] = "rejected"
-                _discard_summary_semantic_frame(fn, ctx)
+                _degrade_summary_semantic_frame(
+                    fn, ctx, "validated summary unavailable: callee summary copy rejected",
+                )
                 findings.append(AnalysisFinding(
                     concern="summary",
                     status="rejected",
@@ -487,7 +490,10 @@ async def analyze_code_three_split(
                     fn.extra["questions"] = []
                     ctx.summary = ""
                     ctx.extra["summary_status"] = "rejected"
-                    _discard_summary_semantic_frame(fn, ctx)
+                    _degrade_summary_semantic_frame(
+                        fn, ctx,
+                        "validated summary unavailable: direct AST identities omitted",
+                    )
                     findings.append(AnalysisFinding(
                         concern="summary",
                         status="rejected",
@@ -518,7 +524,10 @@ async def analyze_code_three_split(
                         fn.extra["questions"] = []
                         ctx.summary = ""
                         ctx.extra["summary_status"] = "rejected"
-                        _discard_summary_semantic_frame(fn, ctx)
+                        _degrade_summary_semantic_frame(
+                            fn, ctx,
+                            "validated summary unavailable: comparison operands changed",
+                        )
                         findings.append(AnalysisFinding(
                             concern="summary",
                             status="rejected",
@@ -800,9 +809,19 @@ def _publish_semantic_frame(
     ctx.extra["_summary_semantic_frame"] = frame
 
 
-def _discard_summary_semantic_frame(fn: CodeNode, ctx: AnalysisContext) -> None:
-    fn.extra.pop("_summary_semantic_frame", None)
-    ctx.extra.pop("_summary_semantic_frame", None)
+def _degrade_summary_semantic_frame(
+    fn: CodeNode, ctx: AnalysisContext, reason: str,
+) -> None:
+    frame = fn.extra.get("_summary_semantic_frame")
+    if frame is None:
+        raise ValueError(f"summary semantic frame missing while rejecting output: {fn.id}")
+    degraded = mark_semantic_frame_insufficient(frame, (reason,))
+    fn.extra["_summary_semantic_frame"] = degraded
+    ctx.extra["_summary_semantic_frame"] = degraded
+    fn.extra["summary_evidence_status"] = "insufficient"
+    fn.extra["summary_missing_context"] = [reason]
+    ctx.extra["summary_evidence_status"] = "insufficient"
+    ctx.extra["summary_missing_context"] = [reason]
 
 
 def _finalize_semantic_frame(

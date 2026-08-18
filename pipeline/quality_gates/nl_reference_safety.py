@@ -54,3 +54,34 @@ def replace_leaked_references(
         if match.group(0) in leaked_set else match.group(0),
         narrative,
     )
+
+
+def replace_groundable_references(
+    narrative: str,
+    row: Mapping[str, object],
+    conditions: Mapping[str, str],
+    replacement: Callable[[str], str],
+) -> str:
+    """Ground every unambiguous private coordinate, including a single one.
+
+    Counting two occurrences is useful for a judge that only has the row coordinate
+    list, but it is too weak at the producer boundary.  Here the parser-owned
+    condition text is also available, so a ``C3`` token is preserved only when that
+    exact token occurs in the source condition and can therefore be a real business
+    identifier/value.  Effect coordinates are never source literals and are always
+    grounded.  This avoids both leaking a lone prompt coordinate and rewriting a
+    legitimate legacy code that happens to have the same spelling.
+    """
+    exposed = exposed_reference_ids(row)
+
+    def grounded(match: re.Match[str]) -> str:
+        reference = match.group(0)
+        if reference not in exposed:
+            return reference
+        if reference.startswith("C"):
+            source = str(conditions.get(reference) or "")
+            if REFERENCE_ID.search(source) and reference in REFERENCE_ID.findall(source):
+                return reference
+        return replacement(reference)
+
+    return REFERENCE_ID.sub(grounded, narrative)

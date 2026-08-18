@@ -101,7 +101,10 @@ from pipeline.execution.analysis_handoff import (
 from pipeline.execution.pause_controller import PauseController
 from pipeline.steps.step7_analyze_code.quality_findings import apply_analysis_findings
 from pipeline.steps.step7_analyze_code.semantic_frame_planner import rule_slot_specs
-from pipeline.models.semantic_frame import merge_semantic_frames
+from pipeline.models.semantic_frame import (
+    mark_semantic_frame_insufficient,
+    merge_semantic_frames,
+)
 
 _STEP = "step7.analyze_code.batch"
 
@@ -908,7 +911,9 @@ def _apply_batch_summary(
         # 부모 compact_body가 아직 미분석인 race와 명시적 품질 거절을 구분한다.
         # 거절 후보를 전달하지 않고 해당 child 원문만 1차 증거로 보존한다.
         ctx.extra["summary_status"] = "rejected"
-        _discard_batch_summary_semantic_frame(fn, ctx)
+        _degrade_batch_summary_semantic_frame(
+            fn, ctx, "validated summary unavailable: callee summary copy rejected",
+        )
         return AnalysisFinding(
             concern="summary",
             status="rejected",
@@ -930,7 +935,9 @@ def _apply_batch_summary(
         fn.extra["questions"] = []
         ctx.summary = ""
         ctx.extra["summary_status"] = "rejected"
-        _discard_batch_summary_semantic_frame(fn, ctx)
+        _degrade_batch_summary_semantic_frame(
+            fn, ctx, "validated summary unavailable: direct AST identities omitted",
+        )
         return AnalysisFinding(
             concern="summary",
             status="rejected",
@@ -954,7 +961,9 @@ def _apply_batch_summary(
         fn.extra["questions"] = []
         ctx.summary = ""
         ctx.extra["summary_status"] = "rejected"
-        _discard_batch_summary_semantic_frame(fn, ctx)
+        _degrade_batch_summary_semantic_frame(
+            fn, ctx, "validated summary unavailable: comparison operands changed",
+        )
         return AnalysisFinding(
             concern="summary",
             status="rejected",
@@ -1010,11 +1019,19 @@ def _apply_batch_summary(
     )
 
 
-def _discard_batch_summary_semantic_frame(
-    fn: CodeNode, ctx: AnalysisContext,
+def _degrade_batch_summary_semantic_frame(
+    fn: CodeNode, ctx: AnalysisContext, reason: str,
 ) -> None:
-    fn.extra.pop("_summary_semantic_frame", None)
-    ctx.extra.pop("_summary_semantic_frame", None)
+    frame = fn.extra.get("_summary_semantic_frame")
+    if frame is None:
+        raise ValueError(f"summary semantic frame missing while rejecting output: {fn.id}")
+    degraded = mark_semantic_frame_insufficient(frame, (reason,))
+    fn.extra["_summary_semantic_frame"] = degraded
+    ctx.extra["_summary_semantic_frame"] = degraded
+    fn.extra["summary_evidence_status"] = "insufficient"
+    fn.extra["summary_missing_context"] = [reason]
+    ctx.extra["summary_evidence_status"] = "insufficient"
+    ctx.extra["summary_missing_context"] = [reason]
 
 
 def _apply_node_analysis(

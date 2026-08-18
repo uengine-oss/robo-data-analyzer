@@ -21,7 +21,7 @@ from pipeline.models.code_analysis_output import (
     RulesExamplesOutput,
 )
 from pipeline.models.rule_expression import NL_MAX_CHARS, NL_PATTERN
-from pipeline.quality_gates.nl_reference_safety import replace_leaked_references
+from pipeline.quality_gates.nl_reference_safety import replace_groundable_references
 from pipeline.quality_gates.rule_prompt_evidence import render_row_condition
 from pipeline.models.semantic_frame import (
     SlotSpec,
@@ -263,12 +263,10 @@ def _ground_narrative_references(
             return _render_selected_effect(reference, effects)
         return reference
 
-    result = replace_leaked_references(narrative, row, grounded)
-    if len(result) > RULE_NL_MAX_LENGTH:
-        # Truncation would change meaning.  Keep the schema-validated original and let
-        # the judge surface the coordinate leak instead of silently corrupting prose.
-        return narrative
-    return result
+    # Grounding can expand a legacy-coordinate response beyond its old wire limit.
+    # The semantic frame remains the lossless contract, and this compatibility
+    # projection must prefer exact source text over either truncation or leaked IDs.
+    return replace_groundable_references(narrative, row, conditions, grounded)
 
 
 def _render_selected_effect(

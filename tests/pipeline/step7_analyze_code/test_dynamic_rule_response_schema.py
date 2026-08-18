@@ -276,6 +276,36 @@ class FrameworkAssignedSchemaTest(unittest.TestCase):
         })
         self.assertEqual("상태 C3이면 주문을 확인한다", canonical.rules[0].nl)
 
+    def test_single_private_reference_is_grounded_when_not_a_source_literal(self):
+        model = rules_response_model([5])
+        parsed = model.model_validate({
+            "rules": {"R5": _rule(text="C3 조건이면 E1을 수행한다")},
+        })
+        canonical = normalize_rules_response(parsed, [5], {
+            "conditions": {"C3": "status == PAID"},
+            "rows": {"R5": {"when": ["C3"], "direct": ["E1"]}},
+            "effects": {"E1": _effect("call", target="confirm_order")},
+        })
+        self.assertNotIn("C3", canonical.rules[0].nl)
+        self.assertNotIn("E1", canonical.rules[0].nl)
+        self.assertIn("status == PAID", canonical.rules[0].nl)
+        self.assertIn('call("confirm_order")', canonical.rules[0].nl)
+
+    def test_grounding_never_reverts_to_private_ids_when_projection_expands(self):
+        model = rules_response_model([5])
+        parsed = model.model_validate({
+            "rules": {"R5": _rule(text="C3 조건이면 E1을 수행한다")},
+        })
+        long_condition = "status == " + "A" * RULE_NL_MAX_LENGTH
+        canonical = normalize_rules_response(parsed, [5], {
+            "conditions": {"C3": long_condition},
+            "rows": {"R5": {"when": ["C3"], "direct": ["E1"]}},
+            "effects": {"E1": _effect("call", target="confirm_order")},
+        })
+        self.assertGreater(len(canonical.rules[0].nl), RULE_NL_MAX_LENGTH)
+        self.assertNotIn("C3", canonical.rules[0].nl)
+        self.assertNotIn("E1", canonical.rules[0].nl)
+
 
 class DbmsAssignedSchemaTest(unittest.TestCase):
     def test_node_and_row_keys_are_both_required(self):

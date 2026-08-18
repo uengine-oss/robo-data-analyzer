@@ -80,6 +80,17 @@ class JudgeRunDbmsIdentityTest(unittest.TestCase):
         self.assertEqual(0, quality["leak"])
         self.assertEqual(0, quality["unmatched"])
 
+    def test_complete_frame_projection_beyond_legacy_wire_limit_is_not_truncation(self) -> None:
+        evidence = {("code:payment:update_order_paid", "R538"): {
+            "when": [], "direct": [], "nl": "",
+        }}
+        quality = _delivered_nl_quality([{
+            "target_id": "code:payment:update_order_paid",
+            "anchor_line": 538,
+            "nl": "A" * 618,
+        }], evidence)
+        self.assertEqual(0, quality["at_limit"])
+
     def test_concrete_condition_and_effect_narrative_is_not_vague(self) -> None:
         narrative = "안전 재고 근접 조건이 성립하면 경고 로그와 감사 로그를 기록한다."
         self.assertIsNone(VAGUE.search(narrative))
@@ -149,6 +160,39 @@ class JudgeRunDbmsIdentityTest(unittest.TestCase):
 
             self.assertEqual(2, len(load_rule_obligations(Path(temp))))
             self.assertEqual(2, len(load_rule_rows(Path(temp))))
+
+    def test_frame_only_response_keeps_prompt_evidence_for_graph_nl_judging(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            prompt_dir = Path(temp) / "llm-prompts"
+            prompt_dir.mkdir()
+            target_id = "code:order.c:validate"
+            evidence = {
+                "conditions": {"C10": "amount > 0"},
+                "effects": {"E1": {"op": "ret", "value": "RC_NRM"}},
+                "rows": {"R10": {"when": ["C10"], "direct": ["E1"]}},
+            }
+            record = {
+                "target_id": target_id,
+                "user_content": "rule_evidence_json:\n" + json.dumps(
+                    evidence, separators=(",", ":"),
+                ),
+                "response": {"parsed": {"slots": {
+                    "S0": {"meaning": "positive amount", "status": "sufficient",
+                           "missing_context": []},
+                }}},
+            }
+            (prompt_dir / "code_rules_examples.jsonl").write_text(
+                json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8",
+            )
+
+            rows = load_rule_rows(Path(temp))
+            self.assertEqual(["C10"], rows[(target_id, "R10")]["when"])
+            quality = _delivered_nl_quality([{
+                "target_id": target_id, "anchor_line": 10,
+                "nl": "amount가 0보다 크면 RC_NRM을 반환한다.",
+            }], rows)
+            self.assertEqual(1, quality["n"])
+            self.assertEqual(0, quality["unmatched"])
 
     def test_strict_function_rw_overrides_consolidated_relationships(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
