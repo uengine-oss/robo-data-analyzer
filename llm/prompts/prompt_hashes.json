@@ -18,7 +18,7 @@
   "prompts/framework/_common.yaml": "2e5be2548b3105e98675f1ea14d998f83d549e4f97d8bc93d63ddce56316f64c",
   "prompts/framework/_rule_common.yaml": "b3c3cea500acb1847dcdd5e30f2b78c93d94a0316367e4e56b36f86eb48a8781",
   "prompts/framework/code_rules_examples.yaml": "fde8c2902f4506f241da2eed621efce1cebc78efd4d4091028030d7079e3c949",
-  "prompts/framework/code_summary.yaml": "d18a587f46fb6d2c977632157a7bb05933232ca9dffeb677a86e98fcb221d8e5",
+  "prompts/framework/code_summary.yaml": "a14e3109c21a8fd529d332ec5e9cc4f985dbc7cad0aae792b201e827a9b9fc6b",
   "prompts/framework/code_table_insights.yaml": "d03905e8ef422a299ca66a07d35359b09c9262fc0b00e80da07d249eebecff2b",
   "prompts/framework/component_naming.yaml": "34039ea66e6383f9a03d43b5ac2696d2d220c5b9b00419a810ea8c3e495586c7",
   "prompts/framework/module_pre_analysis.yaml": "8fe3cf890a7dc0881a90959893228cf2d10ef9a773dcf2aa5a31d88990798988",

@@ -11,6 +11,7 @@ fixture 는 parser AST 계약(spec 016)을 그대로 제공한다: 조건은
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 
 from pipeline.models.analysis_context import ControlSubtreeNode, StatementFact
 from pipeline.models.code_analysis_output import (
@@ -19,6 +20,7 @@ from pipeline.models.code_analysis_output import (
     RuleItem,
 )
 from pipeline.models.rule_expression import NL_MAX_CHARS
+from pipeline.models.semantic_frame_projection import project_rule_narrative
 from pipeline.quality_gates.branch_inventory import build_inventory
 from pipeline.quality_gates.rule_prompt_evidence import expected_rule_condition
 from pipeline.quality_gates.rule_grading import (
@@ -226,6 +228,36 @@ class NarrativeLengthContract(unittest.TestCase):
             "자 이하 한 문장" in reason
             for reason in report.verdicts[0].reasons
         ), report.verdicts[0].reasons)
+
+    def test_frame_projection_preserves_all_meanings_beyond_legacy_wire_limit(self):
+        fact = SimpleNamespace(kind="RULE", attributes={"anchor_line": 9})
+        frame = SimpleNamespace(
+            profile=SimpleNamespace(evidence={"rule": fact}),
+            slots={
+                "role": SimpleNamespace(
+                    family="DECISION", role="ROLE", slot_id="role",
+                    evidence_refs=("rule",), meaning="A" * 140,
+                    missing_context=(),
+                ),
+                "outcome": SimpleNamespace(
+                    family="DECISION", role="TRUE_OUTCOME", slot_id="outcome",
+                    evidence_refs=("rule",), meaning="B" * 600,
+                    missing_context=(),
+                ),
+            },
+        )
+
+        narrative = project_rule_narrative(frame, 9)
+
+        self.assertEqual(741, len(narrative))
+        output = RulesExamplesOutput.model_construct(
+            rules=[RuleItem.model_construct(
+                anchor_line=9, cond=None, then=['ret(F("rc"))'], nl=narrative,
+            )],
+            semantic_frame=frame,
+        )
+        report = grade_rules(output, _inventory(), SOURCE, assigned={9})
+        self.assertFalse(report.rejected, report.failure_message())
 
 
 class InjectedDefectsAreCaught(unittest.TestCase):

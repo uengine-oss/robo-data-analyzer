@@ -121,6 +121,4 @@ def project_rule_narrative(frame: SemanticFrame, anchor_line: int) -> str:
             return "현재 근거만으로 이 경로의 의미를 확정할 수 없다."
         raise ValueError(f"rule row lacks semantic meaning: {anchor_line}")
     narrative = " ".join(meanings)
-    if len(narrative) > 600:
-        raise ValueError(f"rule frame projection exceeds 600 characters: {anchor_line}")
     return narrative

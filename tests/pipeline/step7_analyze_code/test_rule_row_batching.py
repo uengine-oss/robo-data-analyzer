@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import unittest
 from types import SimpleNamespace
 
@@ -17,7 +18,8 @@ from pipeline.quality_gates.rule_prompt_evidence import (
 )
 from pipeline.steps.step7_analyze_code.rule_row_batching import (
     DEFAULT_ROWS_PER_CALL,
-    MAX_RULE_OUTPUT_REFERENCES,
+    MAX_RULE_EVIDENCE_CHARS,
+    MAX_RULE_SEMANTIC_SLOTS,
     SUMMARY_WAKE_PRIORITY,
     collect_rules_by_rows,
     plan_batches,
@@ -59,10 +61,12 @@ def _good(anchor):
 
 
 class BatchingContract(unittest.TestCase):
-    def test_default_row_count_matches_measured_microbatch_boundary(self):
-        self.assertEqual(8, DEFAULT_ROWS_PER_CALL)
+    def test_default_row_count_is_only_a_hard_guard_after_cost_based_packing(self):
+        self.assertEqual(24, DEFAULT_ROWS_PER_CALL)
+        self.assertEqual(24, MAX_RULE_SEMANTIC_SLOTS)
+        self.assertEqual(24_000, MAX_RULE_EVIDENCE_CHARS)
 
-    def test_oversize_response_shape_uses_real_evidence_not_table_row_keys(self):
+    def test_many_direct_refs_are_input_cost_not_obsolete_output_shape(self):
         class DirectHeavyInventory:
             lang = "c"
 
@@ -103,12 +107,76 @@ class BatchingContract(unittest.TestCase):
 
         batches = plan_batches(inventory)
 
-        self.assertEqual([[1, 2, 3, 4], [5]], batches)
-        self.assertEqual(48, MAX_RULE_OUTPUT_REFERENCES)
+        self.assertEqual([[1, 2, 3, 4, 5]], batches)
 
-    def test_output_bound_rejects_invalid_configuration(self):
+    def test_cost_bounds_reject_invalid_configuration(self):
         with self.assertRaises(ValueError):
-            plan_batches(_inventory(), max_output_references=0)
+            plan_batches(_inventory(), max_semantic_slots=0)
+        with self.assertRaises(ValueError):
+            plan_batches(_inventory(), max_evidence_chars=0)
+
+    def test_cheap_rows_pack_beyond_obsolete_eight_row_target(self):
+        class CheapInventory:
+            lang = "c"
+
+            @staticmethod
+            def table_rows():
+                return [
+                    {"line": line, "role": "entry", "end_line": line}
+                    for line in range(1, 13)
+                ]
+
+            @staticmethod
+            def at_line(_line):
+                return None
+
+            @staticmethod
+            def direct_evidence(line):
+                return f"x{line}();", frozenset(), ((f"x{line}", ""),)
+
+            @staticmethod
+            def direct_callees(_line):
+                return set()
+
+            @staticmethod
+            def direct_statement_effects(_line):
+                return ()
+
+            @staticmethod
+            def has_nested_control(_line):
+                return False
+
+        self.assertEqual(
+            [list(range(1, 13))],
+            plan_batches(
+                CheapInventory(),
+                semantic_slot_count=lambda lines: len(lines),
+            ),
+        )
+
+    def test_slot_heavy_rows_split_even_below_row_guard(self):
+        self.assertEqual(
+            [[1], [5], [9]],
+            plan_batches(
+                _inventory(),
+                max_semantic_slots=3,
+                semantic_slot_count=lambda lines: 2 * len(lines),
+            ),
+        )
+
+    def test_evidence_heavy_rows_split_by_exact_compact_packet_size(self):
+        single_chars = len(json.dumps(
+            rule_evidence(_inventory(), [1]),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ))
+        self.assertEqual(
+            [[1], [5], [9]],
+            plan_batches(
+                _inventory(),
+                max_evidence_chars=single_chars,
+            ),
+        )
 
     def test_rule_lpt_priority_never_overtakes_summary(self):
         small = rule_queue_priority(100)

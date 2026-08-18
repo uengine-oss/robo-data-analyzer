@@ -620,6 +620,7 @@ def grade_rules(
         _grade_rule_content(
             rule,
             verdict,
+            projected_from_semantic_frame=output.semantic_frame is not None,
             pool=pool,
             source=source,
             table_lines=table_lines,
@@ -833,6 +834,7 @@ def _grade_rule_content(
     rule: RuleItem,
     verdict: RowVerdict,
     *,
+    projected_from_semantic_frame: bool,
     pool: set[str],
     source: str,
     table_lines: set[int],
@@ -849,7 +851,9 @@ def _grade_rule_content(
         verdict.reasons.append("cond는 한 줄 Python 표현식이어야 함")
     if any("\n" in statement for statement in rule.then):
         verdict.reasons.append("then 효과는 각각 한 줄 Python 표현식이어야 함")
-    if "\n" in rule.nl or len(rule.nl) > NL_MAX_CHARS:
+    if "\n" in rule.nl or (
+        not projected_from_semantic_frame and len(rule.nl) > NL_MAX_CHARS
+    ):
         verdict.reasons.append(
             f"nl은 개행 없는 {NL_MAX_CHARS}자 이하 한 문장이어야 함"
         )

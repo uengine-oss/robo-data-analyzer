@@ -33,7 +33,7 @@ from pydantic import (
 
 from pipeline.models.rule_expression import (
     EXAMPLE_LEAF_PATTERN,
-    NL_PATTERN,
+    PROJECTED_NL_PATTERN,
     RULE_LEAF_PATTERN,
 )
 from pipeline.models.semantic_frame import SemanticFrame
@@ -263,9 +263,12 @@ class RuleItem(BaseModel):
         default_factory=list, description="효과 호출문 목록 — 유일한 채점 대상"
     )
     # examples 는 LLM 이 내지 않는다 — 결정론 합성 (spec 116 §21, 헌법 I).
-    # 개방형 자연어가 마지막이어도 NL_PATTERN 길이 상한이 결정론 끝 경계를 준다.
+    # This is a deterministic projection from validated semantic slots.  The model
+    # wire leaf remains bounded separately; combining several slots must not discard
+    # meaning merely to fit that obsolete single-leaf decoder limit.
     nl: str = Field(
-        "", pattern=NL_PATTERN, description="사람용 한국어 한 문장 — 표시 전용, 채점 제외"
+        "", pattern=PROJECTED_NL_PATTERN,
+        description="사람용 한 줄 표시 — semantic frame에서 결정론적으로 투영, 채점 제외",
     )
 
 

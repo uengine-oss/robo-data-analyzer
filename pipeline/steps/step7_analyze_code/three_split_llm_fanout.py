@@ -593,11 +593,17 @@ async def analyze_code_three_split(
         )
 
     async def _collect_rules():
+        profile, _all_specs, concerns = ctx.extra["_semantic_frame_plan"]
+
+        def _semantic_slot_count(rows):
+            return len(rule_slot_specs(profile, concerns["rules"], rows))
+
         return await collect_rules_by_rows(
             invoke=_invoke_rules,
             inventory=inventory,
             target_scope=code_id,
             source=common["raw_code_body"],
+            semantic_slot_count=_semantic_slot_count,
             # 주입한 근거(callee 반환 표현식·API 계약값)를 창작 검사 풀에
             # 합류 — 모델에게 준 증거를 창작으로 오탐하지 않게 (spec 116 §19).
             extra_values=sorted(_grounded_external_values(ctx, contexts)),

@@ -41,6 +41,10 @@ EXAMPLE_LEAF_PATTERN = rf"^[^\n]{{1,{EXAMPLE_LEAF_MAX_CHARS}}}$"
 # 손상시켰다. 평상시 prompt 목표는 240자지만, 완결 문장을 보존할 안전 상한은 분리한다.
 NL_MAX_CHARS = 600
 NL_PATTERN = rf"^[^\n]{{0,{NL_MAX_CHARS}}}$"
+# Semantic-frame projections are deterministic compatibility data, not decoder output.
+# Multiple independently bounded meanings may legitimately exceed the old single-leaf
+# wire limit; keep only the one-line display invariant at that boundary.
+PROJECTED_NL_PATTERN = r"^[^\n]*$"
 
 
 class LeafSyntaxError(ValueError):

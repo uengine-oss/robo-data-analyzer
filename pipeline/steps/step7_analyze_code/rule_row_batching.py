@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field, replace
+import json
 from typing import Awaitable, Callable, Sequence
 
 from pipeline.models.code_analysis_output import RulesExamplesOutput, RuleItem
@@ -21,13 +22,16 @@ from llm.runners.model_output_error import ModelOutputError
 
 # Product evidence (2026-08-04, response cache off): response tokens and latency had
 # correlation 0.96. A blanket five-row bound produced 988 attempts, repeated fixed
-# output overhead, and a 22-minute wall. Keep the compact eight-row default that reached
-# 15m14s, but split only batches whose actual evidence exposes more than 48 cond/then
-# references. This is a source-language/name/value-independent response-shape bound.
-DEFAULT_ROWS_PER_CALL = 8
-MAX_RULE_OUTPUT_REFERENCES = 48
+# output overhead, and a 22-minute wall.  The Rule packet was subsequently compacted
+# by 77.3% in measured input tokens, so the old fixed eight-row target no longer
+# describes request cost.  Pack by the exact compact evidence and forced schema size;
+# this row limit is only a last-resort guard against an unmodelled cost axis.
+DEFAULT_ROWS_PER_CALL = 24
+MAX_RULE_SEMANTIC_SLOTS = 24
+MAX_RULE_EVIDENCE_CHARS = 24_000
 SUMMARY_WAKE_PRIORITY = -10_000_000
 RowInvoke = Callable[[Sequence[int]], Awaitable[RulesExamplesOutput]]
+SemanticSlotCount = Callable[[Sequence[int]], int]
 
 
 def _semantic_rule_findings(
@@ -109,23 +113,45 @@ def plan_batches(
     inventory: BranchInventory,
     rows_per_call: int = DEFAULT_ROWS_PER_CALL,
     *,
-    max_output_references: int = MAX_RULE_OUTPUT_REFERENCES,
+    max_semantic_slots: int = MAX_RULE_SEMANTIC_SLOTS,
+    max_evidence_chars: int = MAX_RULE_EVIDENCE_CHARS,
+    semantic_slot_count: SemanticSlotCount | None = None,
 ) -> list[list[int]]:
-    """Split required rows by measured response-shape bounds.
+    """Pack required rows by exact input and response-shape bounds.
 
-    ``when`` and ``direct`` are deterministic evidence references that may be copied
-    into the forced ``cond``/``then`` arrays.  They predict response work without
-    interpreting source language, names, or business values.
+    ``when`` and ``direct`` are deterministic parser evidence.  They are no longer
+    model output: verified ``cond``/``then`` are joined after the semantic response.
+    Compact evidence chars therefore bound their input work, while the actual assigned
+    semantic-slot count bounds forced output work.  Callers that do not produce
+    semantic frames conservatively count one slot per row.
     """
     if rows_per_call < 1:
         raise ValueError("rows_per_call must be positive")
-    if max_output_references < 1:
-        raise ValueError("max_output_references must be positive")
-    def output_references(lines: Sequence[int]) -> int:
+    if max_semantic_slots < 1:
+        raise ValueError("max_semantic_slots must be positive")
+    if max_evidence_chars < 1:
+        raise ValueError("max_evidence_chars must be positive")
+
+    def packet_cost(lines: Sequence[int]) -> tuple[int, int]:
         evidence = rule_evidence(inventory, lines)
-        return sum(
-            len(row.get("when") or ()) + len(row.get("direct") or ())
-            for row in evidence["rows"].values()
+        evidence_chars = len(json.dumps(
+            evidence, ensure_ascii=False, separators=(",", ":"),
+        ))
+        slots = (
+            semantic_slot_count(lines)
+            if semantic_slot_count is not None else len(lines)
+        )
+        if slots < 0:
+            raise ValueError("semantic_slot_count must be nonnegative")
+        return evidence_chars, slots
+
+    def fits(lines: Sequence[int]) -> bool:
+        if len(lines) > rows_per_call:
+            return False
+        evidence_chars, slots = packet_cost(lines)
+        return (
+            evidence_chars <= max_evidence_chars
+            and slots <= max_semantic_slots
         )
 
     obligation = required_rule_rows(inventory)
@@ -148,10 +174,7 @@ def plan_batches(
                 item for item in obligation[index:]
                 if item <= end_line
             ]
-            if (
-                len(candidate) <= rows_per_call
-                and output_references(candidate) <= max_output_references
-            ):
+            if fits(candidate):
                 group = candidate
         groups.append(group)
         index += len(group)
@@ -160,10 +183,7 @@ def plan_batches(
     batch: list[int] = []
     for group in groups:
         candidate = [*batch, *group]
-        if batch and (
-            len(candidate) > rows_per_call
-            or output_references(candidate) > max_output_references
-        ):
+        if batch and not fits(candidate):
             batches.append(batch)
             batch = list(group)
         else:
@@ -197,6 +217,9 @@ async def collect_rules_by_rows(
     target_scope: str,
     source: str,
     rows_per_call: int = DEFAULT_ROWS_PER_CALL,
+    max_semantic_slots: int = MAX_RULE_SEMANTIC_SLOTS,
+    max_evidence_chars: int = MAX_RULE_EVIDENCE_CHARS,
+    semantic_slot_count: SemanticSlotCount | None = None,
     extra_values: Sequence[str] = (),
     allowed_tables: Sequence[str] = (),
     read_tables: Sequence[str] | None = None,
@@ -282,6 +305,9 @@ async def collect_rules_by_rows(
     batches = plan_batches(
         inventory,
         rows_per_call,
+        max_semantic_slots=max_semantic_slots,
+        max_evidence_chars=max_evidence_chars,
+        semantic_slot_count=semantic_slot_count,
     )
     if not batches:
         return RowCollection(rules=[], findings=[], calls=0)
