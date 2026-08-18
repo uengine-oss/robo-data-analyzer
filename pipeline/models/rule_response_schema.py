@@ -24,6 +24,7 @@ from pipeline.models.rule_expression import NL_MAX_CHARS, NL_PATTERN
 from pipeline.quality_gates.nl_reference_safety import replace_groundable_references
 from pipeline.quality_gates.rule_prompt_evidence import render_row_condition
 from pipeline.models.semantic_frame import (
+    SemanticFrame,
     SlotSpec,
     StructuralProfile,
     normalize_semantic_frame_response,
@@ -327,6 +328,7 @@ def _effect_positions_valid(effect: AssignedEffect | AssignedExtraEffect) -> boo
 
 def frame_rules_response_model(slot_specs: Sequence[SlotSpec]) -> type[BaseModel]:
     """Require every rule-owned semantic slot and expose no coordinate leaf fields."""
+    _require_business_meaning_specs(slot_specs)
     return semantic_frame_response_model(slot_specs)
 
 
@@ -338,8 +340,13 @@ def normalize_frame_rules_response(
     evidence: Mapping[str, object],
 ) -> RulesExamplesOutput:
     assigned = _assigned_rows(rows)
+    _require_business_meaning_specs(slot_specs)
     frame = normalize_semantic_frame_response(output, profile, slot_specs)
+    _require_one_rule_slot_per_row(frame, assigned)
     conditions, effects, evidence_rows = _evidence_maps(evidence)
+    frame = _ground_rule_frame_references(
+        frame, conditions=conditions, effects=effects, evidence_rows=evidence_rows,
+    )
     rules: list[RuleItem] = []
     for row in assigned:
         row_evidence = _evidence_row(evidence_rows, row)
@@ -359,6 +366,81 @@ def normalize_frame_rules_response(
     return RulesExamplesOutput(rules=rules, semantic_frame=frame)
 
 
+def _require_business_meaning_specs(slot_specs: Sequence[SlotSpec]) -> None:
+    invalid = [
+        spec.slot_id for spec in slot_specs
+        if (spec.family, spec.role) != ("RULE", "BUSINESS_MEANING")
+    ]
+    if invalid:
+        raise ValueError(
+            "Rule response accepts only RULE.BUSINESS_MEANING slots: "
+            f"{invalid}"
+        )
+
+
+def _require_one_rule_slot_per_row(
+    frame: SemanticFrame,
+    assigned_rows: Sequence[int],
+) -> None:
+    anchors: list[int] = []
+    for slot in frame.slots.values():
+        row_anchors = {
+            int(fact.attributes["anchor_line"])
+            for ref in slot.evidence_refs
+            if (fact := frame.profile.evidence[ref]).kind == "RULE"
+            and fact.attributes.get("anchor_line") is not None
+        }
+        if len(row_anchors) != 1:
+            raise ValueError(f"Rule semantic slot lacks one anchor: {slot.slot_id}")
+        anchors.append(next(iter(row_anchors)))
+    expected = list(assigned_rows)
+    if sorted(anchors) != sorted(expected) or len(anchors) != len(set(anchors)):
+        raise ValueError(
+            "Rule semantic slots must cover every assigned row exactly once: "
+            f"assigned={expected}, anchors={anchors}"
+        )
+
+
+def _ground_rule_frame_references(
+    frame: SemanticFrame,
+    *,
+    conditions: Mapping[str, str],
+    effects: Mapping[str, Mapping[str, object]],
+    evidence_rows: Mapping[str, object],
+) -> SemanticFrame:
+    """Ground prompt-private C/E coordinates before the frame becomes canonical.
+
+    ``Rule.nl`` already used the ambiguity-aware renderer, but Architect consumes the
+    frame itself.  Ground the same exact row-owned references in the slot so the two
+    projections cannot disagree.  Legitimate source literals such as ``C1`` remain
+    untouched by ``replace_groundable_references``.
+    """
+    slots = {}
+    for slot_id, slot in frame.slots.items():
+        anchors = {
+            int(fact.attributes["anchor_line"])
+            for ref in slot.evidence_refs
+            if (fact := frame.profile.evidence[ref]).kind == "RULE"
+            and fact.attributes.get("anchor_line") is not None
+        }
+        if len(anchors) != 1:
+            raise ValueError(f"Rule semantic slot lacks one anchor: {slot_id}")
+        row = next(iter(anchors))
+        row_evidence = _evidence_row(evidence_rows, row)
+        meaning = _ground_narrative_references(
+            slot.meaning, row_evidence, conditions, effects,
+        ) if slot.meaning else ""
+        missing_context = tuple(
+            _ground_narrative_references(item, row_evidence, conditions, effects)
+            for item in slot.missing_context
+        )
+        slots[slot_id] = slot.model_copy(update={
+            "meaning": meaning,
+            "missing_context": missing_context,
+        })
+    return frame.model_copy(update={"slots": slots})
+
+
 def batch_frame_rules_response_model(
     assignments: Mapping[str, tuple[StructuralProfile, tuple[SlotSpec, ...]]],
 ) -> type[BaseModel]:
@@ -370,6 +452,7 @@ def batch_frame_rules_response_model(
     })
     fields = {}
     for node_key, (_profile, specs) in assignments.items():
+        _require_business_meaning_specs(specs)
         slot_model = semantic_frame_response_model(specs)
         slots_type = slot_model.model_fields["slots"].annotation
         item_model = create_model(

@@ -20,11 +20,14 @@
 
 ## [SLOT DECISION]
 
-- `DECISION.ROLE`: 이 좌표가 무엇을 가르는 판정인지 정확한 조건·극성으로 쓴다.
-- `DECISION.TRUE_OUTCOME/FALSE_OUTCOME`: 해당 극성에서 직접 실행되거나 건너뛰는 결과만 쓴다.
-- `LOOP.ITERATION_TARGET/PER_ITEM_ACTION/TERMINATION`: 반복 대상·매회 동작·종료를 분리한다.
-- `EXCEPTION.FAILURE/HANDLING/PROPAGATION`: 실패 계기·가장 가까운 처리·명시적 전파를 분리한다.
-- `STATEMENT.DIRECT_ACTION`: entry/continuation/exit/complement 좌표의 직접 동작만 쓴다.
+- 각 required row는 `RULE.BUSINESS_MEANING` 한 칸만 가진다.
+- condition/극성, direct effects, type/timing, nested/fallthrough/handler/continuation은 이미
+  parser 구조 fact가 소유하므로 meaning에서 코드·호출·대입 목록을 다시 열거하지 않는다.
+- 이 행 전체가 현재 함수에서 갖는 업무 의미를 근거 있는 한 문장으로 설명한다.
+- 단순 조건식이나 effect 철자를 한국어로 옮긴 것뿐이면 의미가 아니다. 현재 SOURCE, symbol,
+  callee interface, external/API, R/W 근거로 입증되는 판정 목적·업무 결과를 연결한다.
+- 업무 해석을 확정할 근거가 없으면 코드를 그대로 복사해 칸을 채우지 말고
+  `partial|insufficient`와 필요한 evidence kind를 남긴다.
 - `direct`가 없고 `nested_control=true`이면 이 행의 완전한 결과는 자식 제어로 진입해
   자식 행들이 판정·효과를 소유한다는 구조 경계다. 자식 효과를 복사하지 않으며, 그 이유만으로
   partial/insufficient로 낮추지 않는다.
@@ -38,10 +41,12 @@
 ## [GROUNDING]
 
 - C##/E## 같은 private ref를 meaning에 쓰지 말고 실제 condition/effect를 사람이 읽게 표현한다.
+- response_format과 `applicable_slots_json`의 request-local `wire_id`도 meaning이나
+  missing_context에 절대 쓰지 않는다. 이는 응답 조립용 key일 뿐 코드·업무 의미가 아니다.
 - 조건의 좌변·연산자·우변, literal, call/table 식별자를 바꾸지 않는다.
 - 서로 다른 원인/결과를 교차 결합하지 않는다.
 - 주석·이름 상식·보이지 않는 후속 효과를 만들지 않는다.
-- 긴 선행 경로는 묶을 수 있지만 현재 row의 판정과 모든 직접 효과는 남긴다.
+- 정확한 판정과 직접 효과는 시스템의 Rule fact/cond/then에 이미 남으므로 meaning에서 중복하지 않는다.
 - 근거가 부족하면 일반적인 말로 메우지 말고 partial/insufficient로 둔다.
 
 ## [SELF CHECK]

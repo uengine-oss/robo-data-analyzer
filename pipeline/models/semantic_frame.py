@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Iterable, Mapping
 from typing import Annotated, Any, Literal, Union
 
@@ -19,7 +20,7 @@ EvidenceKind = Literal[
     "EXTERNAL", "RULE", "TABLE", "COLUMN", "MODULE",
 ]
 SlotFamily = Literal[
-    "FUNCTION", "STATEMENT", "DECISION", "LOOP", "EXCEPTION", "CALL",
+    "FUNCTION", "STATEMENT", "RULE", "DECISION", "LOOP", "EXCEPTION", "CALL",
     "SELECT", "INSERT", "UPDATE", "DELETE", "UPSERT", "TABLE", "COLUMN",
     "MODULE", "COMPONENT",
 ]
@@ -285,15 +286,26 @@ def semantic_slot_wire_ids(slot_specs: Iterable[SlotSpec]) -> tuple[str, ...]:
     Canonical ``SL:...`` identifiers belong to the Analyzer frame, graph and MCP
     boundaries.  Echoing them through every constrained model response wastes decode
     tokens and made the dynamic frame materially slower than the legacy pipeline.  The
-    provider only needs an unambiguous key inside one request, so the wire uses bounded
-    ``S0..Sn`` keys and the normalizer restores the canonical identifiers by this exact
-    assignment.  The closed response model still rejects missing, duplicate and extra
-    values; no response order is trusted.
+    provider only needs an unambiguous key inside one request.  A plain ``S0`` namespace
+    collides with real legacy literals and was copied into APAS Rule meanings.  Include
+    the exact assignment digest in every private key so ordinary source values cannot be
+    confused with provider coordinates, then restore canonical identifiers by the model's
+    closed binding.  Missing, duplicate and extra values remain rejected; no response
+    order is trusted.
     """
     specs = tuple(slot_specs)
     if not specs or len({spec.slot_id for spec in specs}) != len(specs):
         raise ValueError("semantic frame slot specs must be non-empty and unique")
-    return tuple(f"S{index}" for index in range(len(specs)))
+    namespace = stable_digest([spec.slot_id for spec in specs], length=10)
+    return tuple(f"W{namespace}_{index}" for index in range(len(specs)))
+
+
+def _mentions_private_wire_id(text: str, wire_ids: Iterable[str]) -> bool:
+    value = str(text or "")
+    return any(re.search(
+        rf"(?<![A-Za-z0-9_]){re.escape(wire_id)}(?![A-Za-z0-9_])",
+        value,
+    ) for wire_id in wire_ids)
 
 
 def semantic_frame_response_model(slot_specs: Iterable[SlotSpec]) -> type[BaseModel]:
@@ -339,15 +351,32 @@ def normalize_semantic_frame_response(
         if missing:
             raise ValueError(f"slot spec references unknown evidence: {sorted(missing)}")
         leaf = getattr(output.slots, wire_id)
+        leaf_texts = (leaf.meaning, *leaf.missing_context)
+        leaked_private_key = any(
+            _mentions_private_wire_id(text, wire_ids) for text in leaf_texts
+        )
+        if leaked_private_key:
+            # The raw provider artifact still owns the exact bad output.  Canonical
+            # meaning must not carry request-local coordinates, and pretending that a
+            # string replacement repaired the meaning would create a quiet success.
+            meaning = ""
+            status = "insufficient"
+            missing_context = (
+                "model output referenced a request-local private response key",
+            )
+        else:
+            meaning = leaf.meaning.strip()
+            status = leaf.status
+            missing_context = tuple(item.strip() for item in leaf.missing_context)
         slots[spec.slot_id] = SemanticSlot(
             slot_id=spec.slot_id,
             family=spec.family,
             role=spec.role,
             target_ref=spec.target_ref,
             evidence_refs=spec.evidence_refs,
-            meaning=leaf.meaning.strip(),
-            status=leaf.status,
-            missing_context=tuple(item.strip() for item in leaf.missing_context),
+            meaning=meaning,
+            status=status,
+            missing_context=missing_context,
         )
     return SemanticFrame(
         target=profile.target,

@@ -407,14 +407,12 @@ def build_code_semantic_plan(
             ))
             rule_refs.append(ref)
             ordered.append(ref)
-            _control_slots(
+            _rule_meaning_slot(
                 slots,
                 target_id=fn.id,
                 target_ref=target_ref,
                 row=row,
-                branch=branch,
                 rule_ref=ref,
-                statement_refs=owned_statement_refs,
                 direct_refs=supporting_refs,
             )
 
@@ -517,7 +515,7 @@ def semantic_concern_slots(
     for spec in slot_specs:
         if spec.family in {"SELECT", "INSERT", "UPDATE", "DELETE", "UPSERT"}:
             concern = "insights"
-        elif spec.family in {"DECISION", "LOOP", "EXCEPTION"}:
+        elif spec.family == "RULE":
             concern = "rules"
         elif spec.family == "STATEMENT" and not spec.slot_id.endswith(":TARGET"):
             concern = "rules"
@@ -630,80 +628,31 @@ def _statement_effects(statement: StatementFact) -> list[dict[str, str]]:
     return [{"op": op, "target": statement.target, "value": statement.expression}] if op else []
 
 
-def _control_slots(
+def _rule_meaning_slot(
     slots: dict[str, SlotSpec],
     *,
     target_id: str,
     target_ref: str,
     row: Mapping[str, Any],
-    branch: object | None,
     rule_ref: str,
-    statement_refs: Iterable[tuple[StatementFact, str, int, int]],
     direct_refs: Iterable[str],
 ) -> None:
+    """Create one model-owned semantic delta for one parser-owned Rule row.
+
+    Condition polarity, outcomes, loop/handler topology and direct effects already live
+    in the RULE/CONTROL/STATEMENT facts.  Replicating those facts as separate prose
+    slots made model work scale with syntax rather than meaning and allowed cross-slot
+    wire references.  One row owns one human business interpretation; structure stays
+    lossless and deterministic beside it.
+    """
     line = int(row["line"])
-    role = str(row.get("role") or "")
-    ntype = str(row.get("ntype") or "").upper()
     refs = (target_ref, rule_ref, *tuple(direct_refs))
-    direct_terminates = bool(getattr(branch, "direct_terminates", False))
-
-    if role == "handler" or ntype in {"CATCH", "EXCEPTION"}:
-        _add_slot(
-            slots, target_id=target_id, family="EXCEPTION", role="FAILURE",
-            anchor=line, target_ref=target_ref, evidence_refs=refs,
-        )
-        _add_slot(
-            slots, target_id=target_id, family="EXCEPTION", role="HANDLING",
-            anchor=line, target_ref=target_ref, evidence_refs=refs,
-        )
-        if direct_terminates or any(
-            statement.label in {"THROW", "RAISE", "RETURN", "GOTO"}
-            for statement, _ref, _start, _end in statement_refs
-        ):
-            _add_slot(
-                slots, target_id=target_id, family="EXCEPTION", role="PROPAGATION",
-                anchor=line, target_ref=target_ref, evidence_refs=refs,
-            )
-        return
-
-    if ntype == "LOOP":
-        condition = str(row.get("condition") or "")
-        if condition:
-            _add_slot(
-                slots, target_id=target_id, family="LOOP", role="ITERATION_TARGET",
-                anchor=line, target_ref=target_ref, evidence_refs=refs,
-            )
-        _add_slot(
-            slots, target_id=target_id, family="LOOP", role="PER_ITEM_ACTION",
-            anchor=line, target_ref=target_ref, evidence_refs=refs,
-        )
-        if str(row.get("condition_timing") or "") or direct_terminates or any(
-            statement.label in {"BREAK", "RETURN", "EXIT"}
-            for statement, _ref, _start, _end in statement_refs
-        ):
-            _add_slot(
-                slots, target_id=target_id, family="LOOP", role="TERMINATION",
-                anchor=line, target_ref=target_ref, evidence_refs=refs,
-            )
-        return
-
-    if role == "decision":
-        _add_slot(
-            slots, target_id=target_id, family="DECISION", role="ROLE",
-            anchor=line, target_ref=target_ref, evidence_refs=refs,
-        )
-        _add_slot(
-            slots, target_id=target_id, family="DECISION", role="TRUE_OUTCOME",
-            anchor=line, target_ref=target_ref, evidence_refs=refs,
-        )
-        condition = str(row.get("condition") or "")
-        if row.get("complement_of") or "implicit_false" in condition:
-            _add_slot(
-                slots, target_id=target_id, family="DECISION", role="FALSE_OUTCOME",
-                anchor=line, target_ref=target_ref, evidence_refs=refs,
-            )
-    elif role in {"entry", "continuation", "exit", "controller", "complement"}:
-        _add_slot(
-            slots, target_id=target_id, family="STATEMENT", role="DIRECT_ACTION",
-            anchor=line, target_ref=target_ref, evidence_refs=refs,
-        )
+    _add_slot(
+        slots,
+        target_id=target_id,
+        family="RULE",
+        role="BUSINESS_MEANING",
+        anchor=line,
+        target_ref=target_ref,
+        evidence_refs=refs,
+    )

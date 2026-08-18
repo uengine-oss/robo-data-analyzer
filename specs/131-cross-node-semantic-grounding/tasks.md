@@ -26,7 +26,25 @@
 ## 불변
 
 - A Python 관계식은 KEEP이며 수정·재실험하지 않는다.
-- 병렬 처리·priority·round planning·batch scheduling·semaphore·concurrency를 변경하지 않는다.
 - 기존 dirty WIP·보존 DB·logs를 reset/checkout/clean/overwrite하지 않는다.
 - Architect 정상 생성 packet에 complete source나 새 source 조각을 넣지 않는다.
 - `accept/apply`를 호출하지 않는다.
+
+## 2026-08-18 APAS 재개
+
+- [x] T131-31 최신 parser AST로 APAS 23파일 EXACT를 재생성하고 old/new node·좌표 delta를 감사
+- [x] T131-32 중단 actual run에서 summary 741요청·5,293 slot 중 CALL.PURPOSE 4,349개와
+  deadline/repetition retry 0을 실측해 원인을 owner 생산자로 확정
+- [x] T131-33 Framework CALL occurrence를 evidence-only로 되돌리고 DBMS CALL CodeNode만
+  CALL.PURPOSE를 소유하도록 planner와 반대 fixture 수정
+- [x] T131-34 canonical slot ID를 request-local compact wire ID로 바꾸되 normalizer가 exact ID로
+  복원하고 1/7/8/9/24/65 경계 누락·추가·중복을 거부
+- [x] T131-35 정상 summary의 고정 8-slot microbatch를 제거하고 target-owned 최대 3 slot invariant 적용
+- [x] T131-36 FW/DBMS producer·consumer·호출/batch 영향표와 과거 탈락안·server 공식 research 기록
+- [x] T131-36a Rule 행당 단일 `RULE.BUSINESS_MEANING`, 결정론 structure 무손실, digest-scoped private
+  wire key 격리 계약을 producer/normalizer/projection/graph/MCP/Architect 양끝에 구현
+- [ ] T131-37 APAS 봉인 slice에서 concern/scheduling 후보를 calls/tokens/cache/latency/accuracy로 비교·채택
+- [ ] T131-38 채택 구조의 정상·실패·경계·중복·순서·취소/종료 회귀 및 전체 자동 테스트
+- [ ] T131-39 새 격리 DB의 실제 APAS 전체 cold run, judge_run+graph, 봉인 30~40 의미 직접 판정
+- [ ] T131-40 작은 실제 MCP 질의→Architect Opus 5 GWT, Analyzer optional 두 경로 검증
+- [ ] T131-41 2026-08-18 작업보고·HANDOFF·GPU server 문서 갱신, diff 감사, selective commit/push, 임시 자원 정리

@@ -4,8 +4,57 @@
 > 복구하는 단일 진실이다. 상태가 바뀌면 기존 현재 상태를 교체한다. 과거 실행 이력과 수치는
 > canonical 문서와 `evidence/`가 소유하며, 현재 코드·actual logs·실행 결과가 문서보다 우선한다.
 
-**Status**: Complete — 구현, 실제 Analyzer/Architect 검증, 회귀 완료
-**Updated**: 2026-08-12
+**Status**: In Progress — 2026-08-19 APAS actual ownership/performance revalidation
+**Updated**: 2026-08-19
+
+## 2026-08-18 현재 상태 — 이 절이 아래 2026-08-12 완료 snapshot보다 우선
+
+- 사용자가 Framework는 함수 단위, DBMS는 effective AST의 모든 입력 노드 단위라고 정정했다.
+  TABLE/COLUMN·RULE·EXAMPLE은 공통 산출물이며 EXAMPLE은 accepted Rule에서 결정론 합성한다.
+- 최신 parser AST의 APAS 23파일은 EXACT이며 기존 좌표 누락 0이다. parser source는 변경하지 않았다.
+- 첫 전체 run은 DB 생성 전 실패 1회 후 시작됐고, 19.6분 시점에도 summary만 진행돼 폐기했다.
+  저장 prompt 741건/5,293 slot 중 Framework 내부 CALL occurrence의 `CALL.PURPOSE`가 4,349개였다.
+  deadline/repetition/동일 request retry는 모두 0이므로 지연 원인은 retry가 아니라 잘못된 의미 owner와
+  그 위의 고정 8-slot microbatch다.
+- planner는 Framework occurrence CALL을 exact evidence로만 보존하고, 실제 DBMS CALL CodeNode만
+  CALL 의미를 소유하도록 수정했다. Framework 함수 summary는 responsibility/input/result 최대 3개다.
+- 정상 8-slot 분할은 제거했다. deadline/repetition 때만 서로 다른 schema/evidence closure로 이분하며
+  singleton 실패는 finding으로 드러낸다.
+- compact provider wire는 canonical slot ID를 보내지 않고 request-local `S0..Sn`을 사용한 뒤 exact
+  mapping으로 복원한다. 8-slot 표본에서 provider schema -22.4%, assignment -10.3%였다.
+- 중단했다고 판단했던 run의 `uv/python` 3개가 2026-08-18 22:58에도 살아 있음을 발견해 정확한
+  command line/PID를 확인하고 종료했다. 새 benchmark 전 `/get_load` 실행0/대기0을 확인했다.
+- server 실측과 공식 자료 기반 후보는 workspace root
+  `GPU-서버-SGLang-APAS-분석-최적화.md`가 소유한다. 실제 server A/B 전에는 후보일 뿐이다.
+- 새 APAS cold run `20260818_173654_12656da7f405`은 완주 전에 중단했다. 저장된 Rule
+  104요청/1,009 slot을 전수 매핑한 결과 `DECISION.ROLE 350`, `DECISION.TRUE_OUTCOME 350`,
+  `STATEMENT.DIRECT_ACTION 309`였고, outcome/action의 상당수가 parser-owned condition/effect를
+  자연어로 다시 쓰고 있었다. 이는 헌법 I의 "LLM은 진짜 의미만" 경계를 다시 정립해야 하는
+  구조 신호이며, 이 incomplete run의 graph/수치를 합격 근거로 쓰지 않는다.
+- 같은 run의 실제 좌표 `code:zordmfax00001.c:b200_conn_fax`에서 response wire key `S0..S4`를
+  뒤의 outcome slot이 `조건 S0이 참이면`처럼 사람용 meaning에 복사했다. 현재 prompt는 private
+  `C##/E##`만 금지하고, normalizer는 `S##` key를 canonical slot ID로 복원할 뿐 leaf meaning의
+  request-local ID를 거부하지 않는다. 따라서 canonical frame과 legacy `Rule.nl`까지 누출될 수 있다.
+  단순 문자열 치환으로 닫지 않고, 구조 결과를 의미 slot에서 제거할 수 있는지와 모든 graph/MCP/
+  Architect 소비자를 함께 감사한 뒤 semantic-delta 계약과 provider-boundary 검증을 고정한다.
+- 소비자 전수 감사 결과 Architect의 GWT 검증기는 semantic frame의 exact RULE evidence와
+  condition/effects/Example/TABLE/좌표를 사용하며 `DECISION.TRUE_OUTCOME`이나
+  `STATEMENT.DIRECT_ACTION`의 복수 prose slot을 필수로 요구하지 않는다. 따라서 구조 정보는 하나도
+  버리지 않고, required row마다 LLM은 `RULE.BUSINESS_MEANING` 한 칸만 소유하게 계약을 교체한다.
+  `Rule.nl`은 이 단일 의미의 projection이다. request-local key는 assignment digest를 포함한 private
+  namespace로 바꾸고, exact key가 leaf에 복사되면 해당 slot만 insufficient/finding으로 격리한다.
+  Rule의 C/E private ref는 실제 행 evidence를 아는 기존 ambiguity-aware grounding을 canonical frame
+  앞에서 적용해 실제 업무 코드 `C1` 같은 값은 보존한다.
+- T131-36/36a 구현과 국소·전체 회귀를 완료했다. Rule wire는 오직
+  `RULE.BUSINESS_MEANING`만 받으며, assigned row와 slot은 1:1 exact coverage를 강제한다.
+  provider key는 `W<assignment-digest>_<index>`이고 exact key가 meaning/missing_context에 나오면
+  해당 leaf만 insufficient/finding으로 격리된다. 실제 source literal `S0`와 ambiguous `C1`은 보존하며,
+  현재 행의 private C/E ref는 canonical frame과 `Rule.nl` 양쪽에서 같은 근거로 grounding한다.
+- 검증은 관련 62건, 연관 prompt/quality/MCP 76건, Analyzer 전체 1,056건(5 skipped), prompt ledger
+  29/29, Architect RULE.BUSINESS_MEANING 소비 집중 29건과 전체 1,382건(2 skipped)이 통과했다.
+  이는 자동 회귀층이며 actual APAS 의미·성능 합격은 아니다.
+- 현재 첫 미완료는 T131-37 실제 APAS slice 비교다. 전체 run·3층·Architect
+  actual·보고·commit/push는 아직 완료가 아니다.
 
 ## 완료 결과
 

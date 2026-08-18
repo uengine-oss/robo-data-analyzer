@@ -28,7 +28,24 @@
 - IV: 누락/grounding 실패는 finding으로 보존하고 조용한 빈 성공을 금지한다.
 - V/VII: byte-identical prefix와 검증된 structured channel을 유지한다.
 - IX/X: 3층 검증과 source부터 시작하는 원인 추적을 수행한다.
-- II/Cost: Framework/DBMS strategy와 병렬 엔진을 보존하고 새 격리 DB/output만 사용한다.
+- II/Cost: Framework/DBMS strategy 선언은 보존하되 각 전략의 실제 AST owner에 맞는 analyzer를 쓴다.
+- I/VI: occurrence 수를 prose slot 수로 복제하지 않고 구조 사실은 evidence로 보존한다.
+- IV/IX: starvation, deadline singleton, partial finding과 미검증 성능축을 조용히 숨기지 않는다.
 
-12단계까지 구현·실제 실행·검증을 완료했다. 최종 증거는
-`evidence/actual-validation-20260812.md`가 소유한다.
+2026-08-12의 12단계 결과는 `evidence/actual-validation-20260812.md`가 소유한다. 2026-08-18
+재개 작업은 아래 순서로 수행하며 그 과거 결과를 새 APAS 전체 검증으로 일반화하지 않는다.
+
+13. 현재 source→AST→profile/slot→summary/Rule/table→Example→graph/API/MCP→Architect 배선을
+    FW/DBMS별 owner와 호출 단위까지 파일:행으로 다시 고정한다.
+14. 잘못된 Framework occurrence-owned CALL slot과 고정 8-slot microbatch를 제거하고, owner당
+    bounded slot invariant를 producer에서 실패시키는 계약 테스트를 둔다.
+15. Rule의 parser-owned role/outcome/action prose를 행당 단일 `RULE.BUSINESS_MEANING` semantic delta로
+    교체하고, digest-scoped private wire key 누출을 slot 단위로 격리한다. graph/MCP/Architect에는
+    기존 condition/effects/Example/좌표를 손실 없이 유지한다.
+16. 현재 concern 분리, 함수 concern 통합, 다중 target, work-conserving fair scheduling 후보를 실제
+    APAS 봉인 slice에서 비교한다. 과거 반증된 고정 5/6행, input-length-only split, 의미 축소 prompt는
+    재실험하지 않는다.
+17. 채택 구조만 남기고 옛 경로·실험 flag 없이 producer/scheduler/validator를 한 경로로 정리한다.
+18. 전체 자동 회귀와 prompt hash, 실제 APAS cold 전체 run, 3층 검증, Stage 8 delta를 수행한다.
+19. Analyzer 합격 후 작은 실제 MCP 질의만 Architect Opus 5 high/no-Fable 경로에 전달해 legacy 있음/없음
+    GWT를 검증하고, 작업보고·commit/push·임시 자원 정리를 완료한다.

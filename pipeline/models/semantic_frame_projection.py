@@ -10,8 +10,7 @@ from pipeline.models.semantic_frame import SemanticFrame, SemanticSlot
 _SUMMARY_ROLE_ORDER = {
     ("FUNCTION", "RESPONSIBILITY"): 0,
     ("FUNCTION", "INPUT_ROLE"): 1,
-    ("FUNCTION", "ORDERED_FLOW"): 2,
-    ("FUNCTION", "RESULT"): 3,
+    ("FUNCTION", "RESULT"): 2,
     ("STATEMENT", "DIRECT_ACTION"): 0,
 }
 
@@ -87,16 +86,7 @@ def _questions(slots: Iterable[SemanticSlot]) -> list[QuestionItem]:
 
 
 _RULE_ROLE_ORDER = {
-    ("DECISION", "ROLE"): 0,
-    ("DECISION", "TRUE_OUTCOME"): 1,
-    ("DECISION", "FALSE_OUTCOME"): 2,
-    ("LOOP", "ITERATION_TARGET"): 0,
-    ("LOOP", "PER_ITEM_ACTION"): 1,
-    ("LOOP", "TERMINATION"): 2,
-    ("EXCEPTION", "FAILURE"): 0,
-    ("EXCEPTION", "HANDLING"): 1,
-    ("EXCEPTION", "PROPAGATION"): 2,
-    ("STATEMENT", "DIRECT_ACTION"): 0,
+    ("RULE", "BUSINESS_MEANING"): 0,
 }
 
 

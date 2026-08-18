@@ -31,6 +31,10 @@ from pipeline.models.summary_response_schema import (
     frame_summary_response_model,
     normalize_frame_summary_response,
 )
+from pipeline.models.rule_response_schema import (
+    frame_rules_response_model,
+    normalize_frame_rules_response,
+)
 from pipeline.quality_gates.branch_inventory import build_inventory
 from pipeline.quality_gates.rule_prompt_evidence import rule_evidence
 from pipeline.steps.step7_analyze_code.semantic_frame_planner import (
@@ -208,9 +212,13 @@ class SemanticFramePlannerTest(unittest.TestCase):
             set(compact_specs[0]),
         )
         self.assertEqual(
-            [f"S{index}" for index in range(len(compact_specs))],
+            [
+                f"{compact_specs[0]['wire_id'].rsplit('_', 1)[0]}_{index}"
+                for index in range(len(compact_specs))
+            ],
             [item["wire_id"] for item in compact_specs],
         )
+        self.assertRegex(compact_specs[0]["wire_id"], r"^W[0-9a-f]{10}_0$")
         self.assertTrue(all(isinstance(item["anchor_line"], int) for item in compact_specs))
         self.assertNotIn("EV:", json.dumps(compact_specs))
         self.assertNotIn("SL:", json.dumps(compact_specs))
@@ -246,8 +254,11 @@ return rc;
         self.assertIn(("FUNCTION", "INPUT_ROLE"), roles)
         self.assertIn(("FUNCTION", "RESULT"), roles)
         self.assertNotIn(("FUNCTION", "ORDERED_FLOW"), roles)
-        self.assertIn(("DECISION", "ROLE"), roles)
-        self.assertIn(("DECISION", "TRUE_OUTCOME"), roles)
+        self.assertIn(("RULE", "BUSINESS_MEANING"), roles)
+        self.assertFalse(any(
+            family in {"DECISION", "LOOP", "EXCEPTION"}
+            for family, _role in roles
+        ))
         self.assertNotIn(("CALL", "PURPOSE"), roles)
         self.assertTrue(any(fact.kind == "CALL" for fact in profile.evidence.values()))
         self.assertIn(("SELECT", "PURPOSE"), roles)
@@ -341,6 +352,64 @@ return rc;
         self.assertTrue(all(spec.slot_id not in schema_text for spec in specs))
         self.assertTrue(all("slot_id" not in item for item in assignment))
 
+    def test_private_wire_leak_is_quarantined_without_rewriting_business_s0(self):
+        profile, specs = build_code_semantic_plan(_routine(), _context())
+        model = semantic_frame_response_model(specs)
+        wire_ids = semantic_slot_wire_ids(specs)
+
+        safe_payload = {"slots": {
+            wire_id: {
+                "meaning": "업무 상태 S0을 유지한다",
+                "status": "sufficient",
+                "missing_context": [],
+            }
+            for wire_id in wire_ids
+        }}
+        safe_frame = normalize_semantic_frame_response(
+            model.model_validate(safe_payload), profile, specs,
+        )
+        self.assertTrue(all(
+            slot.meaning == "업무 상태 S0을 유지한다"
+            and slot.status == "sufficient"
+            for slot in safe_frame.slots.values()
+        ))
+
+        leaked_payload = {"slots": dict(safe_payload["slots"])}
+        leaked_payload["slots"][wire_ids[0]] = {
+            "meaning": f"조건 {wire_ids[-1]}이면 처리한다",
+            "status": "sufficient",
+            "missing_context": [],
+        }
+        leaked_frame = normalize_semantic_frame_response(
+            model.model_validate(leaked_payload), profile, specs,
+        )
+        leaked_slot = leaked_frame.slots[specs[0].slot_id]
+        self.assertEqual("insufficient", leaked_slot.status)
+        self.assertEqual("", leaked_slot.meaning)
+        self.assertEqual(
+            ("model output referenced a request-local private response key",),
+            leaked_slot.missing_context,
+        )
+        self.assertTrue(all(
+            slot.status == "sufficient"
+            for slot_id, slot in leaked_frame.slots.items()
+            if slot_id != specs[0].slot_id
+        ))
+
+        missing_leak_payload = {"slots": dict(safe_payload["slots"])}
+        missing_leak_payload["slots"][wire_ids[0]] = {
+            "meaning": "확인된 일부 의미",
+            "status": "partial",
+            "missing_context": [f"{wire_ids[0]}의 계약"],
+        }
+        missing_leak_frame = normalize_semantic_frame_response(
+            model.model_validate(missing_leak_payload), profile, specs,
+        )
+        self.assertEqual(
+            "insufficient",
+            missing_leak_frame.slots[specs[0].slot_id].status,
+        )
+
     def test_compact_wire_is_total_and_unique_across_boundary_sizes(self):
         for size in (1, 7, 8, 9, 24, 65):
             with self.subTest(size=size):
@@ -366,7 +435,13 @@ return rc;
                 }}
                 model.model_validate(payload)
                 self.assertEqual(size, len(set(wire_ids)))
-                self.assertEqual(f"S{size - 1}", wire_ids[-1])
+                namespace = wire_ids[0].rsplit("_", 1)[0]
+                self.assertRegex(namespace, r"^W[0-9a-f]{10}$")
+                self.assertEqual(
+                    tuple(f"{namespace}_{index}" for index in range(size)),
+                    wire_ids,
+                )
+                self.assertEqual(wire_ids, semantic_slot_wire_ids(specs))
 
                 missing = {"slots": dict(payload["slots"])}
                 missing["slots"].pop(wire_ids[size // 2])
@@ -398,12 +473,16 @@ return 0;
             call_lines=(),
         )
         profile, specs = build_code_semantic_plan(_routine(), context, inventory=inventory)
-        decision = next(
+        rule_slot = next(
             spec for spec in specs
-            if spec.family == "DECISION" and spec.role == "TRUE_OUTCOME"
+            if spec.family == "RULE" and spec.role == "BUSINESS_MEANING"
+            and any(
+                profile.evidence[ref].kind == "STATEMENT"
+                for ref in spec.evidence_refs
+            )
         )
         statement_facts = [
-            profile.evidence[ref] for ref in decision.evidence_refs
+            profile.evidence[ref] for ref in rule_slot.evidence_refs
             if profile.evidence[ref].kind == "STATEMENT"
         ]
         self.assertEqual([11], [fact.start_line for fact in statement_facts])
@@ -454,6 +533,142 @@ return 0;
         self.assertEqual(set(allowed_rows), anchors)
         self.assertTrue(set(all_rows) - anchors)
 
+    def test_rule_frame_and_legacy_narrative_share_grounded_row_meaning(self):
+        source = """int decide(int status) {
+if (status == PAID) {
+  return RC_OK;
+}
+return RC_ERR;
+}"""
+        fn = CodeNode(
+            id="code:orders.decide", signature="decide(status) -> int",
+            file_path="src/orders.c", start_line=10, end_line=15,
+            label="FUNCTION", name="decide", owner_id="code:orders",
+            params="status", return_type="int",
+        )
+        statements = (
+            StatementFact("ret-ok", "RETURN", 3, 3, expression="RC_OK"),
+            StatementFact("ret-err", "RETURN", 5, 5, expression="RC_ERR"),
+        )
+        context = AnalysisContext(
+            id=fn.id, signature=fn.signature, file_path=fn.file_path,
+            start_line=fn.start_line, end_line=fn.end_line,
+            extra={"ast_statements": statements, "ast_call_lines": ()},
+        )
+        inventory = build_inventory(
+            source,
+            [ControlSubtreeNode(
+                node_id="if-paid", ntype="IF", start=2, end=4,
+                expression="status == PAID",
+            )],
+            "c", line_offset=9, statements=statements, call_lines=(),
+        )
+        row = next(
+            int(item["line"]) for item in inventory.table_rows()
+            if item["role"] == "decision"
+        )
+        profile, specs = build_code_semantic_plan(
+            fn, context, inventory=inventory, rule_rows=(row,),
+        )
+        rule_specs = semantic_concern_slots(specs)["rules"]
+        self.assertEqual(
+            [("RULE", "BUSINESS_MEANING")],
+            [(spec.family, spec.role) for spec in rule_specs],
+        )
+        model = frame_rules_response_model(rule_specs)
+        wire_id = semantic_slot_wire_ids(rule_specs)[0]
+        parsed = model.model_validate({"slots": {wire_id: {
+            "meaning": "C11 조건이면 E1을 수행한다",
+            "status": "sufficient",
+            "missing_context": [],
+        }}})
+        normalized = normalize_frame_rules_response(
+            parsed, profile, rule_specs, (row,), rule_evidence(inventory, (row,)),
+        )
+        slot = next(iter(normalized.semantic_frame.slots.values()))
+        self.assertEqual(slot.meaning, normalized.rules[0].nl)
+        self.assertNotIn("C11", slot.meaning)
+        self.assertNotIn("E1", slot.meaning)
+        self.assertIn("status == PAID", slot.meaning)
+        self.assertIn("ret", slot.meaning)
+
+        partial = model.model_validate({"slots": {wire_id: {
+            "meaning": "결제 상태 판정의 일부 의미만 확인했다",
+            "status": "partial",
+            "missing_context": ["C11과 연결된 외부 계약"],
+        }}})
+        partial_frame = normalize_frame_rules_response(
+            partial, profile, rule_specs, (row,), rule_evidence(inventory, (row,)),
+        ).semantic_frame
+        missing = next(iter(partial_frame.slots.values())).missing_context[0]
+        self.assertNotIn("C11", missing)
+        self.assertIn("status == PAID", missing)
+
+    def test_rule_wire_rejects_historical_multi_prose_roles(self):
+        with self.assertRaisesRegex(
+            ValueError, "only RULE.BUSINESS_MEANING",
+        ):
+            frame_rules_response_model((SlotSpec(
+                slot_id="SL:0123456789ab:DECISION:TRUE_OUTCOME:11",
+                family="DECISION",
+                role="TRUE_OUTCOME",
+                target_ref="EV:target",
+                evidence_refs=("EV:target",),
+            ),))
+
+    def test_rule_frame_preserves_ambiguous_business_c1_literal(self):
+        source = """int decide(int status) {
+if (status == C1) {
+  return RC_OK;
+}
+return RC_ERR;
+}"""
+        fn = CodeNode(
+            id="code:orders.decide", signature="decide(status) -> int",
+            file_path="src/orders.c", start_line=10, end_line=15,
+            label="FUNCTION", name="decide", owner_id="code:orders",
+            params="status", return_type="int",
+        )
+        statements = (
+            StatementFact("ret-ok", "RETURN", 3, 3, expression="RC_OK"),
+            StatementFact("ret-err", "RETURN", 5, 5, expression="RC_ERR"),
+        )
+        context = AnalysisContext(
+            id=fn.id, signature=fn.signature, file_path=fn.file_path,
+            start_line=fn.start_line, end_line=fn.end_line,
+            extra={"ast_statements": statements, "ast_call_lines": ()},
+        )
+        inventory = build_inventory(
+            source,
+            [ControlSubtreeNode(
+                node_id="if-c1", ntype="IF", start=2, end=4,
+                expression="status == C1",
+            )],
+            "c", line_offset=9, statements=statements, call_lines=(),
+        )
+        row = next(
+            int(item["line"]) for item in inventory.table_rows()
+            if item["role"] == "decision"
+        )
+        profile, specs = build_code_semantic_plan(
+            fn, context, inventory=inventory, rule_rows=(row,),
+        )
+        rule_specs = semantic_concern_slots(specs)["rules"]
+        model = frame_rules_response_model(rule_specs)
+        wire_id = semantic_slot_wire_ids(rule_specs)[0]
+        parsed = model.model_validate({"slots": {wire_id: {
+            "meaning": "상태 C1이면 승인 경로로 처리한다",
+            "status": "sufficient",
+            "missing_context": [],
+        }}})
+        normalized = normalize_frame_rules_response(
+            parsed, profile, rule_specs, (row,), rule_evidence(inventory, (row,)),
+        )
+        self.assertEqual(
+            "상태 C1이면 승인 경로로 처리한다",
+            next(iter(normalized.semantic_frame.slots.values())).meaning,
+        )
+
     def test_exception_propagation_uses_the_owned_branch_termination_fact(self):
         source = """BEGIN
   SELECT status_cd INTO v_status_cd FROM order_status;
@@ -487,10 +702,16 @@ END;"""
             _routine(), context, inventory=inventory, rule_rows=(handler_row,),
         )
 
-        self.assertIn(
-            ("EXCEPTION", "PROPAGATION"),
-            {(spec.family, spec.role) for spec in specs},
-        )
+        rule_slots = [
+            spec for spec in specs
+            if (spec.family, spec.role) == ("RULE", "BUSINESS_MEANING")
+        ]
+        self.assertEqual(1, len(rule_slots))
+        self.assertTrue(any(
+            _profile.evidence[ref].kind == "STATEMENT"
+            and _profile.evidence[ref].attributes["type"] == "RETURN"
+            for ref in rule_slots[0].evidence_refs
+        ))
 
     def test_direct_child_structure_participates_in_ordered_flow(self):
         child = CodeNode(
@@ -725,7 +946,7 @@ END;"""
         )
         payload = {
             "slots": {
-                "S0": {
+                semantic_slot_wire_ids(non_owner)[0]: {
                     "meaning": "직접 동작을 수행한다",
                     "status": "sufficient",
                     "missing_context": [],

@@ -2,9 +2,31 @@
 
 현재 상태·폐기 결정·다음 행동의 단일 진입점은 `HANDOFF.md`다.
 
-**Status**: Complete
+**Status**: In Progress — 2026-08-18 actual APAS ownership/performance revalidation
 **Created**: 2026-08-11
 **Reframed**: 2026-08-12
+**Reopened**: 2026-08-18
+
+## 2026-08-18 재개 요구
+
+2026-08-12의 frame 전환은 보존하되, 실제 APAS 전체 재분석에서 Framework 내부 CALL occurrence를
+독립 의미 slot으로 만든 소유권 오류와 고정 8-slot 분할의 성능 퇴행이 확인됐다. 다음 계약이 과거
+`병렬 처리/priority/batch scheduling 비범위` 문구를 대체한다.
+
+- Framework의 LLM 의미 소유자는 routine(`FUNCTION|PROCEDURE|METHOD|TRIGGER`)뿐이다. 내부
+  CALL/CONTROL/STATEMENT/RETURN은 함수 summary와 Rule을 판단하는 구조 근거이며 독립 summary
+  대상이 아니다.
+- DBMS는 skip-transparent effective AST에 남은 각 CodeNode가 자기 summary 의미를 소유한다.
+  summary는 유효 형제 batch, Rule은 routine 분기표에서 node range로 배분한 unit/gate batch,
+  table insight는 direct R/W 소유 node batch를 사용한다.
+- TABLE/COLUMN, RULE, EXAMPLE, MODULE/COMPONENT는 공통 graph 산출물이다. EXAMPLE은 accepted
+  Rule의 cond/then에서 결정론으로 합성하며 LLM이 별도 생성하지 않는다.
+- 고정된 작은 batch는 해법이 아니다. 의미가 닫히는 소유권 경계를 먼저 세우고, 실제 prompt/schema
+  output과 server queue/cache 지표로 concern 통합·분리·다중 target·공정 scheduling을 비교한다.
+- deadline/repetition의 recursive split은 정상 경로가 아니라 서로 다른 schema/evidence로 실패 slot을
+  격리하는 최후 경로다. 동일 request content retry는 계속 0회다.
+- 실제 APAS cold wall은 10분 이내를 우선 목표로 하되, 정확도·근거·의무 회계를 맞바꾸지 않는다.
+  10분을 못 맞추면 실제 병목과 측정값을 남기며 임시 생략·특수 경로로 숫자를 맞추지 않는다.
 
 ## 목적
 
@@ -23,7 +45,6 @@ ID 기준으로 중복 제거해 소비하며 정상 생성 경로에서 레거�
 범위 밖:
 
 - A Python 관계식 변경·재실험
-- 병렬 처리, priority, round planning, batch scheduling, semaphore, concurrency 재설계
 - `accept/apply`
 - 특정 corpus 정답의 하드코딩
 
@@ -44,8 +65,23 @@ ID 기준으로 중복 제거해 소비하며 정상 생성 경로에서 레거�
 8. TABLE/COLUMN은 DDL/comment/code usage/sample로 입증된 역할만 설명한다. 이름 번역은 금지한다.
 9. Analyzer MCP는 target/claims/callees/data objects를 ID로 한 번씩 제공하고 scenario는 evidence refs로
    연결한다. 부족한 Analyzer 의미를 Architect의 원문 재독해로 메우지 않는다.
-10. 공통 prefix byte identity와 기존 병렬 엔진을 보존한다. schema 폭주는 의미 삭제가 아니라
-    flattening/frame-family partition/batch 조정으로 해결한다.
+10. 공통 prefix byte identity는 보존한다. 병렬 엔진은 실제 APAS 비교에서 정확도·처리량·공정성을
+    함께 통과한 단일 경로만 남기며, schema 폭주는 의미 삭제가 아니라 flattening, 의미가 닫히는
+    owner 경계, 입력·출력 비용 기반 batch/admission으로 해결한다.
+11. Framework/DBMS의 의미 owner와 호출 batch는 위 재개 요구의 서로 다른 계약을 따른다. 공통
+    semantic frame을 같은 호출 단위로 오해하지 않는다.
+12. 의미 owner당 summary slot은 target-owned responsibility/input/result 또는 target direct action만
+    갖는다. evidence occurrence 수에 비례해 summary slot 수가 늘어나면 producer invariant 실패다.
+13. summary가 dependency critical이어도 Rule/table을 무기한 굶기지 않는 work-conserving scheduling을
+    사용한다. 대기 중 다른 concern이 있는데 한 concern만 전체 wall 동안 실행되는 상태는 결함이다.
+14. 성능 후보는 동일 source/prompt/schema hash의 cold/warm replay에서 calls, input/output/cache tokens,
+    TTFT/E2E p95, wall, schema/repetition/deadline, 의미 판정을 함께 측정한다.
+15. branch inventory required row마다 모델 소유 의미는 `RULE.BUSINESS_MEANING` 한 칸뿐이다.
+    condition/effects/type/timing/complement/nesting/fallthrough/handler/continuation과 EXAMPLE은
+    결정론 구조 사실로 그대로 보존하며, 이를 role/outcome/action prose로 다시 생성하지 않는다.
+16. provider response의 request-local private key가 meaning/missing_context에 나타나면 문자열 치환으로
+    숨기지 않는다. 해당 slot만 신뢰 대상에서 격리하고 좌표 있는 finding으로 남기며, 다른 slot과
+    결정론 Rule/Example은 보존한다.
 
 ## 폐기된 요구
 

@@ -133,7 +133,7 @@ property key, graph claim identity, MCP/Architect reference에서 끝까지 보�
 | `DATA_OBJECT` | `table_id`, `access`, `operation`, `direct`, `resolution`, `qualified_columns` |
 | `SYMBOL` | `symbol_id`, `name`, `scope`, `data_type`, `declared_value`, `value_semantics`, `initialization_sources` |
 | `EXTERNAL` | `chunk_id`, `semantic_kind`, `provenance`, `matched_key` |
-| `RULE` | `anchor_line`, `role`, `condition`, `effects`, `when`, `source_refs` |
+| `RULE` | `anchor_line`, `role`, `condition`, `effects`, `when`, `source_refs`, `type`, `condition_timing`, `complement_of`, `implicit_false`, `nested_control`, `fallthrough_to`, `at_label`, `after_control` |
 | `TABLE` | `table_id`, `db`, `schema`, `name`, `source_description`, `sample_refs` |
 | `COLUMN` | `table_id`, `name`, `source_description`, `usage_lines`, `ownership` |
 | `MODULE` | `module_id`, `type`, `member_refs`, `comment_ref` |
@@ -194,26 +194,31 @@ frame planner는 실제 구조 fact가 요구하는 family만 shallow하게 만�
 | `FUNCTION` | `RESPONSIBILITY` | routine target | TARGET + direct 구조 facts |
 | `FUNCTION` | `INPUT_ROLE` | params 또는 입력 symbol 존재 | TARGET + relevant SYMBOL |
 | `FUNCTION` | `RESULT` | return type/expression/output mutation 존재 | TARGET + RETURN/SET facts |
-| `FUNCTION` | `ORDERED_FLOW` | ordered direct facts 2개 이상 | ordered fact refs |
 | `STATEMENT` | `DIRECT_ACTION` | routine이 아닌 분석 target 또는 단일 structural action | target statement fact |
 
-### 6.2 control family
+`FUNCTION.ORDERED_FLOW` aggregate meaning slot은 만들지 않는다. 실행 순서의 단일 진실은
+`profile.ordered_flow`이고, 배열의 모든 ID는 `profile.evidence`의 exact 구조 fact로 해소되어야
+한다. 추가 자연어 해석이 적용되는 fact만 세부 semantic slot을 가지며, 단순 대입처럼 구조
+속성 자체가 완전한 fact에 LLM slot을 강제하지 않는다. 전체 흐름을 한 문자열로 다시 만들면
+좌표별 의미와 중복되고, 대형 함수에서는 문자열 상한 때문에 뒤쪽 흐름이 조용히 누락된다.
 
-| family | slot role | 적용 조건 |
-|---|---|---|
-| `DECISION` | `ROLE` | condition을 가진 decision row |
-| `DECISION` | `TRUE_OUTCOME` | decision의 direct/nested true path가 존재 |
-| `DECISION` | `FALSE_OUTCOME` | explicit complement 또는 parser `implicit_false`가 존재 |
-| `LOOP` | `ITERATION_TARGET` | LOOP condition/body에서 대상이 입증됨. 아니면 만들지 않음 |
-| `LOOP` | `PER_ITEM_ACTION` | loop-owned direct/nested action 존재 |
-| `LOOP` | `TERMINATION` | condition timing, EXIT/BREAK/RETURN 근거 존재 |
-| `EXCEPTION` | `FAILURE` | THROW/RAISE/CATCH/EXCEPTION/handler fact 존재 |
-| `EXCEPTION` | `HANDLING` | handler-owned direct effect 존재 |
-| `EXCEPTION` | `PROPAGATION` | rethrow/raise/return/goto가 parser statement로 입증됨 |
+### 6.2 Rule semantic delta family
 
-decision row마다 기존 `Rule.nl` 호환 projection을 위해 `DECISION:ROLE` 또는 해당 row의 가장
-구체적인 outcome slot이 정확히 하나의 narrative source가 된다. `cond/then/when`은 계속
-결정론 Rule 사실이 소유한다.
+| family | slot role | 적용 조건 | LLM 소유 범위 |
+|---|---|---|---|
+| `RULE` | `BUSINESS_MEANING` | 결정론 branch inventory의 required row | 조건·효과를 다시 열거하지 않고, 현재 행 전체가 함수 문맥에서 갖는 근거 있는 업무 의미 한 문장 |
+
+각 required row는 `RULE.BUSINESS_MEANING`을 정확히 하나만 가진다. decision의 condition/극성,
+true·false path, loop timing/termination, handler/propagation, entry/continuation/exit의 직접 효과는
+이미 같은 anchor의 `RULE` fact attributes와 연결된 `CONTROL`/`STATEMENT` facts가 소유한다.
+이를 `DECISION.ROLE`, `TRUE_OUTCOME`, `FALSE_OUTCOME`, `LOOP.*`, `EXCEPTION.*`,
+`STATEMENT.DIRECT_ACTION` 같은 여러 prose slot으로 다시 생성하지 않는다.
+
+LLM은 parser 사실을 대신 쓰는 것이 아니라 그 사실들로 입증되는 행 전체의 업무 해석만 쓴다.
+업무 의미를 확정할 근거가 부족하면 `partial|insufficient`와 `missing_context`로 남긴다.
+`Rule.cond/then/when`, EXAMPLE, 행 type/timing/complement/nesting/fallthrough/label/continuation은
+계속 결정론 사실이 소유하며 의미 slot의 성공 여부와 무관하게 유실되지 않는다. `Rule.nl`은
+검증된 이 단일 slot의 projection이므로 같은 행의 여러 의미 문장을 합치지 않는다.
 
 ### 6.3 call family
 
@@ -263,21 +268,29 @@ population에서 빠지면 제품 결함이다.
 - repeated callee/table/symbol identity는 evidence fact 한 개 + 좌표 occurrence refs로 표현한다.
 - batch token cap은 source node cap과 별개다. frame 수 때문에 batch가 넘치면 기존 planner가
   node 단위로 분할하며 slot을 자르거나 생략하지 않는다.
-- schema가 provider 한계를 넘으면 node/batch를 더 작게 나누고 같은 slot IDs로 재요청한다.
+- schema가 provider 한계를 넘으면 node/batch를 더 작게 나눈다. 각 호출은 서로 다른
+  schema/evidence closure와 request-local key를 가지며, canonical slot ID로 exact merge한다.
+  동일 payload를 내용 재시도하지 않는다.
 
 ## 8. normalizer와 validator
 
 순서는 고정한다.
 
 1. dynamic schema가 required slot key와 leaf union을 강제한다.
-2. normalizer가 `SlotSpec` metadata와 validated `SlotValue`를 결합한다.
-3. identity validator: target/profile/slot/evidence ID uniqueness와 exact coverage
-4. ownership validator: 모든 evidence owner가 target 또는 명시된 aggregate/member 관계인지 검사
-5. grounding validator: slot type에 허용된 evidence kind만 참조하는지 검사
-6. completeness validator: planner의 applicable slot이 모두 terminal인지 검사
-7. contradiction validator: READ/WRITE, condition operand/operator/literal, return/effect,
+2. provider key는 canonical ID가 아닌 request-local private key다. key namespace는 현재 slot
+   assignment digest를 포함해 source의 일반 코드값과 충돌하지 않게 하며, meaning 또는
+   missing_context에 현재 요청의 exact private key가 나타나면 그 leaf만 `insufficient`로 격리하고
+   좌표 있는 quality finding으로 표면화한다. 문자열 치환으로 정상 문장처럼 만들지 않는다.
+3. Rule 전용 normalizer는 해당 행에 실제 노출된 private C/E reference만 기존 ambiguity-aware
+   grounding으로 canonical meaning에 먼저 치환한다. 실제 source literal인 `C1` 같은 값은 보존한다.
+4. normalizer가 `SlotSpec` metadata와 validated `SlotValue`를 결합한다.
+5. identity validator: target/profile/slot/evidence ID uniqueness와 exact coverage
+6. ownership validator: 모든 evidence owner가 target 또는 명시된 aggregate/member 관계인지 검사
+7. grounding validator: slot type에 허용된 evidence kind만 참조하는지 검사
+8. completeness validator: planner의 applicable slot이 모두 terminal인지 검사
+9. contradiction validator: READ/WRITE, condition operand/operator/literal, return/effect,
    transaction/exception 구조와 meaning의 구조 토큰 변경을 검사
-8. projection validator: legacy field가 frame 밖 자연어를 추가하지 않았는지 검사
+10. projection validator: legacy field가 frame 밖 자연어를 추가하지 않았는지 검사
 
 검증 실패는 해당 slot/target을 `rejected` analysis finding으로 남기며 조용히 빈 projection을
 저장하지 않는다. provider transport 실패와 `insufficient`는 다른 상태다.
@@ -289,7 +302,7 @@ population에서 빠지면 제품 결함이다.
 | `CodeNode.summary` | target-level FUNCTION/STATEMENT slots + control/call/data-operation meanings을 ordered evidence 순서로 dedupe해 조립 |
 | `CodeNode.stereotype` | frame target role classification. write contradiction gate 유지 |
 | summary status/missing | required target projection slot의 least-sufficient aggregate와 deduped missing |
-| `Rule.nl` | 해당 rule anchor에 연결된 가장 구체적인 decision/loop/exception meaning |
+| `Rule.nl` | 해당 rule anchor의 단일 `RULE.BUSINESS_MEANING` |
 | `Question` | partial/insufficient slot의 missing_context를 `(slot_id, evidence kind)`에 묶은 projection |
 | table `usage_summary` | 해당 target의 data-operation slot projection |
 | Table/Column `logical_name/description` | DISPLAY_NAME/ROLE slot projection |

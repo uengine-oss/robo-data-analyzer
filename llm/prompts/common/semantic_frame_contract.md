@@ -40,13 +40,10 @@
   fact의 속성에 있고, 추가 자연어 의미가 적용된 fact만 해당 family slot에서 채운다. 전체 흐름을
   별도 장문 slot으로 복제하지 않는다.
 - `FUNCTION.RESULT`: 반환, 출력 구조, 외부 상태 변화 중 target이 실제 보장하는 결과.
-- `STATEMENT.DIRECT_ACTION`: 이 구조 문장이 직접 하는 한 동작만 쓴다. 부모 업무 목적을 붙이지 않는다.
-- `DECISION.ROLE`: 무엇을 어떤 조건으로 가르는 판정인지 쓴다.
-- `DECISION.TRUE_OUTCOME/FALSE_OUTCOME`: 해당 극성에서 실제로 실행·건너뛰는 결과만 쓴다.
-  ELSE 없는 false path를 exception/rollback과 합치지 않는다.
-- `LOOP.ITERATION_TARGET/PER_ITEM_ACTION/TERMINATION`: 반복 대상, 매회 동작, 종료 조건을 서로
-  섞지 않는다. post-condition은 본문 진입 전 조건으로 바꾸지 않는다.
-- `EXCEPTION.FAILURE/HANDLING/PROPAGATION`: 실패 계기, 가장 가까운 처리, 명시적 재전파를 분리한다.
+- `STATEMENT.DIRECT_ACTION`: DBMS effective AST의 독립 분석 target이 직접 하는 동작만 쓴다.
+  Framework Rule 행의 구조 동작을 이 family로 중복 생성하지 않는다.
+- `RULE.BUSINESS_MEANING`: parser가 이미 보존한 condition/effects/type/timing/flow를 다시 열거하지
+  않고, 한 required row 전체가 현재 함수에서 갖는 입증된 업무 의미만 한 문장으로 쓴다.
 - `CALL.PURPOSE`: 현재 target이 callee를 호출하는 경계 목적만 쓴다. callee 내부 흐름을 복사하지 않는다.
 - `SELECT.PURPOSE`: 조회 대상·filter·현재 범위의 사용 목적까지만 쓴다. 보이지 않는 후속 DML을 만들지 않는다.
 - `INSERT/UPDATE/DELETE/UPSERT.TARGET`: exact table에 하는 구조 연산과 입증된 역할을 쓴다.
@@ -83,3 +80,4 @@
 - CALL/RW/exception의 소유자를 바꾸거나 callee 내부를 복사하지 않았는가
 - 모든 부족한 의미를 창작 대신 status/missing_context로 드러냈는가
 - ID·좌표·evidence refs를 출력 leaf 안에 다시 만들지 않았는가
+- request-local wire key를 meaning/missing_context에 복사하지 않았는가
