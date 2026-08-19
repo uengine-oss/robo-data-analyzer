@@ -17,7 +17,8 @@
    동기화한다.
 9. Framework/DBMS 반대 fixture와 schema 크기·출력량·반복·prefix는 변경 묶음별 한 번 검증하고,
    전체 생산자·소비자 정합 후 전체 자동 회귀를 한 번 수행한다.
-10. preflight 뒤 새 격리 DB/output root에서 최소 actual Analyzer 실행과 봉인 직접 판정을 수행한다.
+10. preflight 뒤 재사용 DB `framework|dbms`와 `_runs/<strategy>`에서 최소 actual Analyzer 실행과 봉인
+    직접 판정을 수행한다. 검증마다 새 DB/output 이름을 만들지 않는다.
 11. Analyzer 합격 뒤 Architect 실제 두 경로를 최소 실행해 GWT/evidence refs를 원문과 대조한다.
 12. HANDOFF·작업보고를 결과로 교체하고 불필요한 임시 실행물만 정리한 뒤 요청 범위만 commit/push한다.
 
@@ -67,3 +68,10 @@
 22. deterministic Rule audit에 routine row→graph owner를 기록하고 `judge_run.py`가 finding 좌표를
     빼서 trusted graph를 대조하도록 고친 뒤, parser 회귀→APAS 23 AST 재생성→old/new vocabulary·좌표·
     jump 해소 delta→preflight 순으로 GPU 이전 게이트를 닫는다.
+23. final APAS summary finding 4건과 봉인 FUNCTION 10건을 source→actual slot→response→finding으로
+    다시 판정한다. raw parameter 문자열을 지우거나 Parser에 불완전한 alias/data-flow 추론을 넣지 않고,
+    target-owned summary를 최대 5개 역할로 분해해 no-op/unused/output-only와 주요 guard/call/state/result
+    흐름의 적용 가능성을 결정론으로 고정한다.
+24. 새 역할의 population·projection 순서·최대치·빈/unused/분기/호출/반환 반대 fixture를 먼저 통과시킨
+    뒤 전체 회귀와 prompt byte 원장을 실행한다. 실제 APAS full cold에서 같은 봉인 FUNCTION 10을
+    재판정해 omission/contradiction이 남으면 prompt 문구 반복 대신 첫 오좌표의 입력·slot 경계를 다시 연다.

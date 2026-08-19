@@ -4,13 +4,18 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from pipeline.models.code_analysis_output import QuestionItem, SummaryOutput
-from pipeline.models.semantic_frame import SemanticFrame, SemanticSlot
+from pipeline.models.semantic_frame import (
+    FUNCTION_SUMMARY_ROLES,
+    SemanticFrame,
+    SemanticSlot,
+)
 
 
 _SUMMARY_ROLE_ORDER = {
-    ("FUNCTION", "RESPONSIBILITY"): 0,
-    ("FUNCTION", "INPUT_ROLE"): 1,
-    ("FUNCTION", "RESULT"): 2,
+    **{
+        ("FUNCTION", role): index
+        for index, role in enumerate(FUNCTION_SUMMARY_ROLES)
+    },
     ("STATEMENT", "DIRECT_ACTION"): 0,
 }
 

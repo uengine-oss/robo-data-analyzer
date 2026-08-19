@@ -24,6 +24,18 @@ def _routine_frame():
     )
     frame = semantic_frame_for_node(node, meaning="검증된 루틴 의미")
     source_slot = next(iter(frame.slots.values()))
+    complete_flow_slots = {
+        slot_id(node.id, "FUNCTION", role, "TARGET"): source_slot.model_copy(update={
+            "slot_id": slot_id(node.id, "FUNCTION", role, "TARGET"),
+            "family": "FUNCTION",
+            "role": role,
+            "meaning": f"{role} 의미",
+        })
+        for role in (
+            "GUARDS_AND_BRANCHES",
+            "PROCESSING_EFFECTS",
+        )
+    }
     rule_id = slot_id(node.id, "DECISION", "ROLE", 10)
     rule_slot = source_slot.model_copy(update={
         "slot_id": rule_id,
@@ -32,7 +44,7 @@ def _routine_frame():
         "meaning": "aggregate 입력에 들어가면 안 되는 분기 의미",
     })
     return frame.model_copy(update={
-        "slots": {**frame.slots, rule_id: rule_slot},
+        "slots": {**frame.slots, **complete_flow_slots, rule_id: rule_slot},
     }), rule_id
 
 
@@ -40,7 +52,10 @@ def test_aggregate_projection_excludes_full_rule_frame_payload() -> None:
     frame, rule_id = _routine_frame()
 
     payload = aggregate_member_payloads(
-        [frame], roles=("RESPONSIBILITY", "INPUT_ROLE", "RESULT"),
+        [frame], roles=(
+            "RESPONSIBILITY", "INPUT_ROLE", "GUARDS_AND_BRANCHES",
+            "PROCESSING_EFFECTS", "RESULT",
+        ),
     )
     rendered = str(payload)
 
@@ -49,8 +64,13 @@ def test_aggregate_projection_excludes_full_rule_frame_payload() -> None:
     assert "profile" not in rendered
     assert "evidence" not in rendered
     assert {slot["role"] for slot in payload[0]["slots"]} == {
-        "RESPONSIBILITY", "INPUT_ROLE", "RESULT",
+        "RESPONSIBILITY", "INPUT_ROLE", "GUARDS_AND_BRANCHES",
+        "PROCESSING_EFFECTS", "RESULT",
     }
+    assert [slot["role"] for slot in payload[0]["slots"]] == [
+        "RESPONSIBILITY", "INPUT_ROLE", "GUARDS_AND_BRANCHES",
+        "PROCESSING_EFFECTS", "RESULT",
+    ]
 
 
 def test_aggregate_plan_references_only_selected_member_slots() -> None:

@@ -110,11 +110,16 @@ def aggregate_member_payloads(
     profile made aggregate input depend on whether Rule work happened to finish before
     the summary handoff and expanded one 34-routine component request to 272k tokens.
     """
-    allowed = set(roles)
-    if not allowed:
+    role_order = {role: index for index, role in enumerate(roles)}
+    allowed = set(role_order)
+    if not role_order:
         raise ValueError("aggregate member projection requires at least one role")
     payloads: list[dict[str, object]] = []
     for frame in member_frames:
+        selected_slots = sorted(
+            (slot for slot in frame.slots.values() if slot.role in allowed),
+            key=lambda slot: (role_order[slot.role], slot.slot_id),
+        )
         slots = [
             {
                 "slot_id": slot.slot_id,
@@ -124,8 +129,7 @@ def aggregate_member_payloads(
                 "status": slot.status,
                 "missing_context": list(slot.missing_context),
             }
-            for slot in frame.slots.values()
-            if slot.role in allowed
+            for slot in selected_slots
         ]
         if not slots:
             raise ValueError(

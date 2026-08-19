@@ -230,6 +230,8 @@ return rc;
         roles = {(spec.family, spec.role) for spec in specs}
         self.assertIn(("FUNCTION", "RESPONSIBILITY"), roles)
         self.assertIn(("FUNCTION", "INPUT_ROLE"), roles)
+        self.assertIn(("FUNCTION", "GUARDS_AND_BRANCHES"), roles)
+        self.assertIn(("FUNCTION", "PROCESSING_EFFECTS"), roles)
         self.assertIn(("FUNCTION", "RESULT"), roles)
         self.assertNotIn(("FUNCTION", "ORDERED_FLOW"), roles)
         self.assertFalse(any(family == "RULE" for family, _role in roles))
@@ -638,7 +640,7 @@ END;"""
         assigned = [spec.slot_id for batch in batches for spec in batch]
 
         self.assertEqual(1, len(batches))
-        self.assertLessEqual(len(summary_specs), 3)
+        self.assertLessEqual(len(summary_specs), 5)
         self.assertEqual({spec.slot_id for spec in summary_specs}, set(assigned))
         self.assertEqual(len(assigned), len(set(assigned)))
         self.assertTrue(any(spec.family == "FUNCTION" for spec in batches[0]))
@@ -647,6 +649,147 @@ END;"""
             for fact in profile.evidence.values()
         ))
         self.assertFalse(any(spec.family == "CALL" for spec in specs))
+
+    def test_routine_summary_roles_follow_actual_structure_and_stay_bounded(self):
+        source = "int check(void *ctx) {\nreturn RC_NRM;\n}"
+        fn = CodeNode(
+            id="code:noop.check", signature="int check(void *ctx)",
+            file_path="src/noop.c", start_line=1, end_line=3,
+            label="FUNCTION", name="check", owner_id="code:noop",
+            params="void *ctx", return_type="int",
+        )
+        context = AnalysisContext(
+            id=fn.id, signature=fn.signature, file_path=fn.file_path,
+            start_line=fn.start_line, end_line=fn.end_line,
+        )
+        context.extra["ast_statements"] = (
+            StatementFact(
+                node_id="code:noop.check:RETURN@2", label="RETURN",
+                start=2, end=2, expression="RC_NRM",
+            ),
+        )
+        context.extra["ast_call_lines"] = ()
+        inventory = build_inventory(
+            source, [], "c", statements=context.extra["ast_statements"],
+        )
+
+        _profile, specs = build_code_semantic_plan(
+            fn, context, inventory=inventory,
+        )
+        roles = [
+            spec.role for spec in semantic_concern_slots(specs)["summary"]
+            if spec.family == "FUNCTION"
+        ]
+
+        self.assertEqual(
+            {"RESPONSIBILITY", "INPUT_ROLE", "RESULT"}, set(roles),
+        )
+        self.assertNotIn("GUARDS_AND_BRANCHES", roles)
+        self.assertNotIn("PROCESSING_EFFECTS", roles)
+        self.assertLessEqual(len(roles), 5)
+
+    def test_guard_and_processing_roles_are_independently_applicable(self):
+        fn = CodeNode(
+            id="code:roles.f", signature="int f(int value)",
+            file_path="src/roles.c", start_line=1, end_line=4,
+            label="FUNCTION", name="f", owner_id="code:roles",
+            params="int value", return_type="int",
+        )
+
+        guard_context = AnalysisContext(
+            id=fn.id, signature=fn.signature, file_path=fn.file_path,
+            start_line=fn.start_line, end_line=fn.end_line,
+        )
+        guard_context.extra["ast_statements"] = (
+            StatementFact("return@2", "RETURN", 2, 2, expression="RC_ERR"),
+        )
+        guard_context.extra["ast_call_lines"] = ()
+        guard_inventory = build_inventory(
+            "int f(int value) {\nif (value < 0) return RC_ERR;\nreturn RC_NRM;\n}",
+            [ControlSubtreeNode(
+                "if@2", "IF", 2, 2, expression="value < 0",
+            )],
+            "c", statements=guard_context.extra["ast_statements"],
+        )
+
+        _profile, guard_specs = build_code_semantic_plan(
+            fn, guard_context, inventory=guard_inventory,
+        )
+        guard_roles = {spec.role for spec in guard_specs if spec.family == "FUNCTION"}
+        self.assertIn("GUARDS_AND_BRANCHES", guard_roles)
+        self.assertNotIn("PROCESSING_EFFECTS", guard_roles)
+
+        effect_context = AnalysisContext(
+            id=fn.id, signature=fn.signature, file_path=fn.file_path,
+            start_line=fn.start_line, end_line=fn.end_line,
+        )
+        effect_context.extra["ast_statements"] = (
+            StatementFact(
+                "set@2", "ASSIGNMENT", 2, 2,
+                expression="value + 1", target="result", operator="=",
+            ),
+            StatementFact("return@3", "RETURN", 3, 3, expression="result"),
+        )
+        effect_context.extra["ast_call_lines"] = ()
+
+        _profile, effect_specs = build_code_semantic_plan(fn, effect_context)
+        effect_roles = {spec.role for spec in effect_specs if spec.family == "FUNCTION"}
+        self.assertNotIn("GUARDS_AND_BRANCHES", effect_roles)
+        self.assertIn("PROCESSING_EFFECTS", effect_roles)
+
+    def test_summary_projection_uses_complete_flow_role_order(self):
+        source = """int save(int qty) {
+if (qty <= 0) return RC_ERR;
+reserve(qty);
+return RC_NRM;
+}"""
+        context = _context()
+        inventory = build_inventory(
+            source,
+            [ControlSubtreeNode(
+                node_id="code:orders.save:IF@11", ntype="IF",
+                start=2, end=2, expression="qty <= 0",
+            )],
+            "c", line_offset=9,
+            statements=context.extra["ast_statements"],
+            call_lines=context.extra["ast_call_lines"],
+        )
+        profile, specs = build_code_semantic_plan(
+            _routine(), context, inventory=inventory,
+        )
+        summary_specs = semantic_concern_slots(specs)["summary"]
+        model = frame_summary_response_model("framework", summary_specs)
+        meanings = {
+            "RESPONSIBILITY": "1 책임",
+            "INPUT_ROLE": "2 입력",
+            "GUARDS_AND_BRANCHES": "3 조건",
+            "PROCESSING_EFFECTS": "4 처리",
+            "RESULT": "5 결과",
+        }
+        payload = {
+            "slots": {
+                wire_id: {
+                    "meaning": meanings[spec.role],
+                    "status": "sufficient",
+                    "missing_context": [],
+                }
+                for spec, wire_id in zip(
+                    summary_specs,
+                    semantic_slot_wire_ids(summary_specs),
+                    strict=True,
+                )
+            },
+            "stereotype": "ApplicationService",
+        }
+
+        summary = normalize_frame_summary_response(
+            model.model_validate(payload), profile, summary_specs,
+        )
+
+        self.assertEqual(
+            ["1 책임", "2 입력", "3 조건", "4 처리", "5 결과"],
+            summary.summary.splitlines(),
+        )
 
     def test_summary_rejects_internal_meaning_ownership_expansion(self):
         primary = tuple(

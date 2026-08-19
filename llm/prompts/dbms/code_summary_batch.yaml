@@ -3,6 +3,7 @@ extends: _common
 max_tokens: 6000
 shared_values:
   semantic_frame_contract: ../common/semantic_frame_contract.md
+  function_summary_contract: ../common/function_summary_contract.md
 user_template_specific: |
   # [TASK — 각 TARGET_NODE의 applicable semantic slot 의미와 충분성]
 
@@ -11,6 +12,8 @@ user_template_specific: |
   검증된 frame에서 시스템이 투영한다.
 
   {semantic_frame_contract}
+
+  {function_summary_contract}
 
   ## [OUTPUT CONTRACT — batch frame summary concern]
 

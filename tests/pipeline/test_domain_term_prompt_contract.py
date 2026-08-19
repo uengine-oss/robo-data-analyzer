@@ -61,6 +61,32 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
         ):
             self.assertIn(marker, shared)
 
+    def test_function_summary_contract_closes_noop_and_complete_flow_roles(self) -> None:
+        shared = (ROOT / "llm/prompts/common/function_summary_contract.md").read_text(
+            encoding="utf-8",
+        )
+        for marker in (
+            "FUNCTION.GUARDS_AND_BRANCHES",
+            "FUNCTION.PROCESSING_EFFECTS",
+            "다른 FUNCTION role이 소유한 입력·분기·처리·결과 세부를 여기서 다시",
+            "사용되지 않는 파라미터",
+            "output-only",
+            "즉시 상수 반환",
+            "호출자 문맥을 missing_context로 요구하지 않는다",
+        ):
+            self.assertIn(marker, shared)
+        for strategy, rule_name in SUMMARY_CASES:
+            with self.subTest(strategy=strategy):
+                rule = _load_rule(ROOT / "llm/prompts" / strategy, rule_name)
+                self.assertEqual(
+                    shared.strip(),
+                    rule["static_values"]["function_summary_contract"],
+                )
+                self.assertEqual(
+                    1,
+                    rule["user_template"].count("{function_summary_contract}"),
+                )
+
     def test_model_visible_source_explains_literal_and_coordinate_projection(self) -> None:
         for strategy, rule_name in SUMMARY_CASES:
             text = self._expanded(_load_rule(

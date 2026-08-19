@@ -15,7 +15,7 @@
 
 | 전략·concern | 의미 owner | 모델 입력 | 정상 호출/배치 | 출력·검증 | graph 소비 |
 |---|---|---|---|---|---|
-| FW summary | routine만 | routine 정확 범위, structural profile, target-owned FUNCTION slot, 내부 CALL/CONTROL/RETURN evidence, callee summary | routine 1개, 최대 responsibility/input/result 3 slot을 한 요청 | dynamic exact-slot schema → canonical ID 복원 → grounding/contradiction | CodeNode summary/stereotype/frame |
+| FW summary | routine만 | routine 정확 범위, structural profile, target-owned FUNCTION slot, 내부 CALL/CONTROL/RETURN evidence, callee summary | routine 1개, 실제 구조축에 따른 최대 5 role을 한 요청 | dynamic exact-slot schema → canonical ID 복원 → grounding/contradiction | CodeNode summary/stereotype/frame |
 | FW Rule | routine의 branch inventory 행 | LLM 입력 없음. RULE fact·condition/effects·row source는 결정론 감사 입력 | required row 전수 동기 물질화, LLM 0 | exact row coverage·중복 0·audit 재물질화 동등 | Rule, HAS_RULE, AFFECTS |
 | FW TABLE | routine에서 확인된 direct/effective data usage | direct table evidence와 frame data slot | 독립 table concern | 허용 table/column과 evidence 검증 | TABLE/COLUMN 관계·설명 |
 | FW Example | accepted Rule | LLM 입력 없음 | 결정론 0 LLM call | Rule cond/then projection | Example, HAS_EXAMPLE |
@@ -37,7 +37,8 @@
 - 영구 감사 산출물: `rule_audit_artifact.py`, `branch_audit.py::persist_routine_audits`
 - DBMS TABLE direct packet: `batch_prompt_values.py:236-303`
 - exact keyed schema·복원: `summary_response_schema.py:178-231`, `batch_analyze.py:640-785`
-- routine 최대 3 summary slot: `three_split_llm_fanout.py:106-134`
+- routine 최대 5 summary role: `semantic_frame.py::FUNCTION_SUMMARY_ROLES`,
+  `three_split_llm_fanout.py::_summary_slot_batches`
 - owner·concern partition: `semantic_frame_planner.py:396-496`
 - Example graph projection: `example_mapping_builder.py:69-147`
 

@@ -10,6 +10,7 @@ from pipeline.models.data_object_usage import DataObjectUsageEvidence
 from pipeline.languages import callsite_labels, control_structure_labels
 from pipeline.models.semantic_frame import (
     EvidenceFact,
+    FUNCTION_SUMMARY_ROLES,
     SlotSpec,
     StructuralProfile,
     StructuralTarget,
@@ -106,6 +107,7 @@ def build_code_semantic_plan(
     callee_refs: list[str] = []
     data_refs: list[str] = []
     symbol_refs: list[str] = []
+    planned_rows: list[dict[str, Any]] = []
 
     target_ref = _add_fact(evidence, _fact(
         target_id=fn.id,
@@ -451,6 +453,46 @@ def build_code_semantic_plan(
                 target_ref=target_ref,
                 evidence_refs=(target_ref, *symbol_refs),
             )
+        if any(
+            str(row.get("role") or "")
+            in {"decision", "complement", "handler"}
+            for row in planned_rows
+        ):
+            _add_slot(
+                slots,
+                target_id=fn.id,
+                family="FUNCTION",
+                role="GUARDS_AND_BRANCHES",
+                anchor="TARGET",
+                target_ref=target_ref,
+                # Full SOURCE and branch_index already carry the exact flow. Keep the
+                # aggregate claim bounded instead of serializing every RULE fact twice.
+                evidence_refs=(target_ref,),
+            )
+        statement_effect_ops = {
+            str(effect.get("op") or "")
+            for statement in statements
+            for effect in _statement_effects(statement)
+        }
+        if (
+            call_refs_by_line
+            or ctx.callees
+            or data_refs
+            or ctx.direct_reads
+            or ctx.direct_writes
+            or statement_effect_ops & {"set", "commit", "rollback"}
+        ):
+            _add_slot(
+                slots,
+                target_id=fn.id,
+                family="FUNCTION",
+                role="PROCESSING_EFFECTS",
+                anchor="TARGET",
+                target_ref=target_ref,
+                # Applicability is structural. Detailed CALL/RW/statement facts retain
+                # their own canonical IDs and are not duplicated into this aggregate.
+                evidence_refs=(target_ref,),
+            )
         return_refs = [
             ref for statement, ref, _start, _end in statement_refs
             if statement.label == "RETURN"
@@ -464,6 +506,17 @@ def build_code_semantic_plan(
                 anchor="TARGET",
                 target_ref=target_ref,
                 evidence_refs=(target_ref, *return_refs),
+            )
+        function_roles = {
+            spec.role for spec in slots.values() if spec.family == "FUNCTION"
+        }
+        if (
+            not function_roles.issubset(FUNCTION_SUMMARY_ROLES)
+            or len(function_roles) > len(FUNCTION_SUMMARY_ROLES)
+        ):
+            raise ValueError(
+                "routine summary exceeded canonical target-owned role boundary: "
+                f"{sorted(function_roles)}"
             )
     elif fn.label in callsite_labels():
         # Framework FUNCTION_CALL values are occurrences owned by their routine and stay

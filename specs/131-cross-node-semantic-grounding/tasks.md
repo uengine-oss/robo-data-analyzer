@@ -42,7 +42,8 @@
   CALL.PURPOSE를 소유하도록 planner와 반대 fixture 수정
 - [x] T131-34 canonical slot ID를 request-local compact wire ID로 바꾸되 normalizer가 exact ID로
   복원하고 1/7/8/9/24/65 경계 누락·추가·중복을 거부
-- [x] T131-35 정상 summary의 고정 8-slot microbatch를 제거하고 target-owned 최대 3 slot invariant 적용
+- [x] T131-35 정상 summary의 고정 8-slot microbatch를 제거하고 당시 target-owned 최대 3 slot invariant
+  적용. T131-39b에서 실제 흐름 완전성 결함을 근거로 최대 5개 구조 적용 역할로 대체
 - [x] T131-36 FW/DBMS producer·consumer·호출/batch 영향표와 과거 탈락안·server 공식 research 기록
 - [x] T131-36a Rule 행당 단일 `RULE.BUSINESS_MEANING`, 결정론 structure 무손실, digest-scoped private
   wire key 격리 계약을 producer/normalizer/projection/graph/MCP/Architect 양끝에 구현
@@ -67,8 +68,14 @@
 - [x] T131-37c Rule audit에 routine row→실제 graph owner를 보존하고 judge_run의 obligation/trusted/
   finding/unavailable 잔차와 graph 기대 trusted row를 전수 대조
 - [ ] T131-38 채택 구조의 정상·실패·경계·중복·순서·취소/종료 회귀 및 전체 자동 테스트
-- [ ] T131-39 새 격리 DB의 실제 APAS 전체 cold run, judge_run+graph, 봉인 30~40 의미 직접 판정
+- [ ] T131-39 재사용 `framework` DB와 `_runs/framework`의 실제 APAS 전체 cold run,
+  judge_run+graph, 봉인 30~40 의미 직접 판정
 - [x] T131-39a actual graph에서 발견된 긴 Rule 조건 EXAMPLE 12건 누락을 과거 LLM-era 500자 상한의
   잔재로 확정하고, 결정론 Rule truth 무손실 계약·반대 테스트·상설 judge 재판정으로 누락 0 검증
+- [x] T131-39b final summary finding 4건과 봉인 FUNCTION 10건의 공통 원인을 3-slot 과압축과
+  no-op/unused/output-only 충분성 계약 부재로 고정. routine summary를 최대 5개 target-owned 역할로
+  분해하고 population/projection/prompt 반대 fixture 및 전체 회귀 검증
+- [ ] T131-39c 새 APAS full cold에서 FUNCTION 10을 동일 봉인 ID로 재판정하고 Rule/Example/Table/Column
+  30건과 합쳐 40건 직접 의미 판정 완료. omission/fabrication/contradiction과 needs_context를 분리 기록
 - [ ] T131-40 작은 실제 MCP 질의→Architect Opus 5 GWT, Analyzer optional 두 경로 검증
 - [ ] T131-41 2026-08-18 작업보고·HANDOFF·GPU server 문서 갱신, diff 감사, selective commit/push, 임시 자원 정리

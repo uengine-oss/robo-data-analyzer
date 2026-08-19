@@ -192,9 +192,21 @@ frame planner는 실제 구조 fact가 요구하는 family만 shallow하게 만�
 | family | slot role | 적용 조건 | evidence 최소 집합 |
 |---|---|---|---|
 | `FUNCTION` | `RESPONSIBILITY` | routine target | TARGET + direct 구조 facts |
-| `FUNCTION` | `INPUT_ROLE` | params 또는 입력 symbol 존재 | TARGET + relevant SYMBOL |
+| `FUNCTION` | `INPUT_ROLE` | 선언 interface 또는 읽기 dependency 존재 | TARGET + relevant SYMBOL |
+| `FUNCTION` | `GUARDS_AND_BRANCHES` | live decision/complement/handler/early-exit 존재 | TARGET; 적용 여부는 결정론 branch inventory |
+| `FUNCTION` | `PROCESSING_EFFECTS` | direct CALL/RW/assignment/transaction/output mutation 존재 | TARGET; 적용 여부는 direct 구조 facts |
 | `FUNCTION` | `RESULT` | return type/expression/output mutation 존재 | TARGET + RETURN/SET facts |
 | `STATEMENT` | `DIRECT_ACTION` | routine이 아닌 분석 target 또는 단일 structural action | target statement fact |
+
+routine target의 위 다섯 역할은 최대치이며, 실제 구조축이 없으면 해당 slot을 만들지 않는다.
+`RESPONSIBILITY`는 목적 경계, `INPUT_ROLE`은 실제 interface 사용, `GUARDS_AND_BRANCHES`는 결과를
+바꾸는 조건별 흐름, `PROCESSING_EFFECTS`는 호출·조회·변경·transaction과 외부 상태 변화,
+`RESULT`는 반환/출력과 그 정확한 조건을 소유한다. 같은 사실을 여러 role에 복제하지 않는다.
+
+선언됐지만 body에서 사용되지 않는 파라미터와 write-only/output-only 파라미터는 현재 source가
+입증한 완전한 interface 사실이다. `INPUT_ROLE`은 이를 그대로 밝히고 `sufficient`로 종료하며,
+호출자 문맥이나 원래 의도한 업무 역할을 요구하지 않는다. 즉시 상수 반환만 하는 no-op routine도
+현재 동작이 완전하므로 이름에서 예상한 검증 로직을 `missing_context`로 만들지 않는다.
 
 `FUNCTION.ORDERED_FLOW` aggregate meaning slot은 만들지 않는다. 실행 순서의 단일 진실은
 `profile.ordered_flow`이고, 배열의 모든 ID는 `profile.evidence`의 exact 구조 fact로 해소되어야
@@ -312,7 +324,7 @@ population에서 빠지면 제품 결함이다.
 
 | legacy 필드 | frame source |
 |---|---|
-| `CodeNode.summary` | target-level FUNCTION/STATEMENT slots + control/call/data-operation meanings을 ordered evidence 순서로 dedupe해 조립 |
+| `CodeNode.summary` | summary concern의 target-owned FUNCTION 5역할 또는 STATEMENT slot을 고정 순서로 dedupe해 조립. 상세 data-operation claim은 별도 slot로 남고 summary 완료 뒤 재투영하지 않음 |
 | `CodeNode.stereotype` | frame target role classification. write contradiction gate 유지 |
 | summary status/missing | required target projection slot의 least-sufficient aggregate와 deduped missing |
 | `Rule.nl` | 빈 호환 필드. 사람용 표시는 RULE fact의 cond/then 구조 렌더링 |
@@ -390,5 +402,6 @@ projection 함수 외의 LLM call이 위 필드를 직접 쓰면 계약 위반�
 3. 직접 의미 판정: 봉인된 Framework/DBMS 혼합 30~40개에서 omission/fabrication/contradiction과
    slot sufficiency를 원문에 대조
 
-실제 Analyzer는 새 격리 DB/output에서만 실행한다. Analyzer가 세 층 모두 합격한 뒤에만
+실제 Analyzer는 전략별 재사용 DB(`framework|dbms`)와 `_runs/<strategy>`에서만 실행하며 검증마다
+새 DB 이름을 만들지 않는다. Analyzer가 세 층 모두 합격한 뒤에만
 Architect Simplified/Detailed actual 경로를 실행하며 `accept/apply`는 호출하지 않는다.

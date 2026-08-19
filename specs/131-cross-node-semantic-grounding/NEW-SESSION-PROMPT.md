@@ -98,7 +98,7 @@ session-limit 분류는 새 계약에 맞게 살릴 수 있습니다. 폐기 WIP
 기존 봉인40 39/40=97.5%, fabrication 0, contradiction 0과 이전 Architect GWT 21/21은 과거 계약의
 기준선일 뿐 새 semantic-frame 결과가 아닙니다. 새 정확도는 자동 테스트, 결정론 구조 대조, 원문 직접
 의미 판정의 3층을 모두 수행한 뒤에만 주장하세요. 실제 LLM 실행은 구조 계약·validator·fixture·preflight·
-새 격리 DB/output root를 확정한 뒤 Framework/DBMS에 필요한 최소 횟수만 수행하세요. Architect 실제
+재사용 DB `framework|dbms`와 `_runs/<strategy>`를 확정한 뒤 Framework/DBMS에 필요한 최소 횟수만 수행하세요. Architect 실제
 실행은 Analyzer가 닫힌 뒤 Simplified/Detailed 실제 경로로 하며 ROBO_CLUSTER_MCP_URL=http://127.0.0.1:15502/robo/mcp를
 사용하고 accept/apply는 호출하지 마세요.
 

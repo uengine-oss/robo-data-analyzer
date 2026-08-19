@@ -26,6 +26,18 @@ SlotFamily = Literal[
 ]
 
 
+# This order is part of the legacy summary and aggregate-member projection contract.
+# Keeping it beside the canonical frame types prevents planner, projection, batching,
+# and aggregate consumers from drifting into different definitions of completeness.
+FUNCTION_SUMMARY_ROLES = (
+    "RESPONSIBILITY",
+    "INPUT_ROLE",
+    "GUARDS_AND_BRANCHES",
+    "PROCESSING_EFFECTS",
+    "RESULT",
+)
+
+
 _ALLOWED_EVIDENCE_ATTRIBUTES: dict[str, frozenset[str]] = {
     "TARGET": frozenset({
         "type", "signature", "name", "params", "return_type",

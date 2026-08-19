@@ -2,7 +2,7 @@
 
 현재 상태·폐기 결정·다음 행동의 단일 진입점은 `HANDOFF.md`다.
 
-**Status**: In Progress — 2026-08-18 actual APAS ownership/performance revalidation
+**Status**: In Progress — 2026-08-19 APAS summary completeness actual revalidation
 **Created**: 2026-08-11
 **Reframed**: 2026-08-12
 **Reopened**: 2026-08-18
@@ -70,8 +70,9 @@ ID 기준으로 중복 제거해 소비하며 정상 생성 경로에서 레거�
     owner 경계, 입력·출력 비용 기반 batch/admission으로 해결한다.
 11. Framework/DBMS의 의미 owner와 호출 batch는 위 재개 요구의 서로 다른 계약을 따른다. 공통
     semantic frame을 같은 호출 단위로 오해하지 않는다.
-12. 의미 owner당 summary slot은 target-owned responsibility/input/result 또는 target direct action만
-    갖는다. evidence occurrence 수에 비례해 summary slot 수가 늘어나면 producer invariant 실패다.
+12. 의미 owner당 summary slot은 routine의 최대 5개 target-owned flow role 또는 non-routine target의
+    direct action만 갖는다. evidence occurrence 수에 비례해 summary slot 수가 늘어나면 producer
+    invariant 실패다.
 13. summary가 dependency critical이어도 Rule/table을 무기한 굶기지 않는 work-conserving scheduling을
     사용한다. 대기 중 다른 concern이 있는데 한 concern만 전체 wall 동안 실행되는 상태는 결함이다.
 14. 성능 후보는 동일 source/prompt/schema hash의 cold/warm replay에서 calls, input/output/cache tokens,
@@ -106,6 +107,14 @@ ID 기준으로 중복 제거해 소비하며 정상 생성 경로에서 레거�
     leaf 길이 상한을 parser-owned Rule truth에 적용해 조건을 자르거나 예시를 조용히 누락하지 않는다.
     긴 opaque source predicate는 Analyzer가 언어별 연산자로 재파싱하지 않고 Rule과 동일한 leaf를 무손실
     보존한다. 조건 또는 직접 결과가 없는 Rule만 EXAMPLE 비생성의 정상 사유다.
+24. routine summary는 `RESPONSIBILITY/INPUT_ROLE/RESULT` 세 칸에 전체 흐름을 압축하지 않는다.
+    live source와 결정론 inventory에 실제로 존재하는 축만 최대 다섯 칸
+    (`RESPONSIBILITY`, `INPUT_ROLE`, `GUARDS_AND_BRANCHES`, `PROCESSING_EFFECTS`, `RESULT`)으로
+    미리 배정한다. 각 칸은 서로 다른 질문에 답하며 legacy summary는 이 순서의 frame projection이다.
+25. 선언됐지만 사용되지 않는 파라미터, write-only/output-only 파라미터, 즉시 상수 반환 no-op routine은
+    현재 source만으로 완전히 확정되는 동작이다. 이를 의도된 업무 로직이나 호출자 문맥이 없다는 이유로
+    `partial|insufficient`로 낮추지 않는다. 반대로 이름만 보고 입력 역할·검사 목적을 만들지 않는다.
+    parser는 grammar fact를 계속 소유하며 alias/data-flow 의미를 불완전한 새 AST 속성으로 추측하지 않는다.
 
 ## 폐기된 요구
 
@@ -123,7 +132,8 @@ object evidence와 scenario refs는 semantic-frame에 맞게 재사용할 수 �
 - prompt/schema bytes, input/output tokens, 반복/실패, latency, 가능한 cache 관측을 전후 비교한다.
 - 전체 자동 회귀, 결정론 구조 전수 대조, 봉인 표본 직접 의미 판정의 3층을 통과한다.
 - 봉인 의미 목표 약 90% 이상, fabrication/contradiction 각각 0건을 별도 보고한다.
-- 새 격리 DB/output root의 Framework·DBMS 최소 actual 실행 뒤에만 새 frame 정확도를 주장한다.
+- 재사용 DB `framework|dbms`와 `_runs/<strategy>`의 Framework·DBMS 최소 actual 실행 뒤에만 새 frame
+  정확도를 주장한다. 실행 전 해당 전략 DB를 비우되 `neo4j|test`와 다른 전략 DB는 건드리지 않는다.
 - Analyzer 합격 뒤 Architect Simplified/Detailed 실제 경로에서 GWT와 evidence refs를 원문에 직접 대조한다.
 
 ## 보존 사실

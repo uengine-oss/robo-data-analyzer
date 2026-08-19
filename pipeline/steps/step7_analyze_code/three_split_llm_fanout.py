@@ -98,16 +98,16 @@ from pipeline.quality_gates.rule_audit_artifact import persist_rule_audit
 from pipeline.steps.step7_analyze_code.quality_findings import apply_analysis_findings
 
 _STEP = "step7.analyze_code.three_split"
-_MAX_TARGET_SUMMARY_SLOTS = 3
+_MAX_TARGET_SUMMARY_SLOTS = 5
 
 
 def _summary_slot_batches(slot_specs):
     """Return the single target-owned summary assignment.
 
-    A Framework routine owns only responsibility/input/result and a DBMS statement or
-    CALL target owns one direct meaning.  RULE, data-object and nested occurrence meaning
-    belong to their own concerns.  More than three summary slots is therefore a producer
-    ownership regression, not a reason to hide the expansion behind micro-batching.
+    A Framework routine owns at most the five canonical target-level flow roles and a
+    DBMS statement or CALL target owns one direct meaning.  RULE, data-object and nested
+    occurrence meaning belong to their own concerns.  More than five summary slots is a
+    producer ownership regression, not a reason to hide expansion behind micro-batching.
     """
     specs = tuple(slot_specs)
     if not specs:

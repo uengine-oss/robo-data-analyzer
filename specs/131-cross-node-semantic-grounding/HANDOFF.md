@@ -7,6 +7,29 @@
 **Status**: In Progress — 2026-08-19 APAS actual ownership/performance revalidation
 **Updated**: 2026-08-19
 
+## 2026-08-19 summary 의미 직접 판정에서 확인한 현재 첫 결함
+
+- final finding 4건을 source와 actual candidate로 다시 열었다. `a110_get_req_dt_swgs`와
+  `z000_norm_exit_proc`는 모델이 파라미터 미사용을 정확히 썼지만 호출자 문맥을 요구해 `partial`로
+  낮췄고, `Bank_266_CSB_Check`는 실제로 즉시 `RC_NRM`만 반환하는데 이름에서 기대한 검사 로직을
+  요구했다. `Bank_287_CSB_Check`도 현재 source가 보여 주는 global read와 output write만으로 물리
+  동작은 충분하다. 따라서 4건은 source/AST 부재가 아니라 no-op·unused·output-only를 충분한 결과로
+  인정하지 않은 summary 계약 결함이다.
+- raw `fn.params` 조건을 삭제하면 실제 입력 interface까지 함께 사라지며, Parser에 read/write/pass를
+  성급히 추가하면 C alias와 언어별 data-flow를 grammar fact처럼 오인한다. 이 두 방향은 채택하지 않는다.
+- 봉인 FUNCTION 10건의 현행 3-slot 출력은 잠정 exact 3, omission 2, contradiction 5다. 공통 패턴은
+  early bypass/fallback/major branch가 `RESPONSIBILITY`에서 빠지고 `RESULT`가 일부 오류 반환을 전체
+  오류 정책으로 과장한 것이다. 최종 판정표는 40건 전체와 함께 evidence 문서로 확정한다.
+- T131-39b는 routine summary를 실제 구조축에 따라 최대 다섯 target-owned 역할
+  (`RESPONSIBILITY/INPUT_ROLE/GUARDS_AND_BRANCHES/PROCESSING_EFFECTS/RESULT`)로 분해한다.
+  Rule prose를 되살리거나 내부 CALL occurrence를 독립 의미 owner로 만들지 않는다. legacy summary는
+  이 다섯 칸의 한 projection이며 Architect는 기존 exact Rule/Example/data claim을 계속 별도로 소비한다.
+- T131-39b 구현과 자동 반증을 완료했다. 실제 inventory가 있는 no-op에서 정상 최종 `exit`가 guard
+  역할을 만들던 테스트 공백을 red로 재현해, 조건 분기/handler만 guard 적용 근거가 되고 최종 반환은
+  RESULT만 소유하도록 교정했다. pytest `1098 passed, 5 skipped, 378 subtests`, 권위 unittest
+  `1042 tests, 5 skipped`, prompt ledger `24/24`가 통과했다. 다음은 기존 봉인 ID를 유지한 APAS full
+  cold와 40건 직접 재판정이며, actual 의미와 wall은 아직 미검증이다.
+
 ## 2026-08-18 현재 상태 — 이 절이 아래 2026-08-12 완료 snapshot보다 우선
 
 - **2026-08-19 정정**: 아래의 “최신 parser AST의 APAS 23파일 EXACT”와 T131-31 완료 표시는
@@ -67,7 +90,8 @@
   deadline/repetition/동일 request retry는 모두 0이므로 지연 원인은 retry가 아니라 잘못된 의미 owner와
   그 위의 고정 8-slot microbatch다.
 - planner는 Framework occurrence CALL을 exact evidence로만 보존하고, 실제 DBMS CALL CodeNode만
-  CALL 의미를 소유하도록 수정했다. Framework 함수 summary는 responsibility/input/result 최대 3개다.
+  CALL 의미를 소유하도록 수정했다. 당시 함수 summary 최대 3개 계약은 T131-39b에서 확인한 의미
+  완전성 결함 때문에 현재 최대 5개 구조 적용 역할로 대체됐다.
 - 정상 8-slot 분할은 제거했다. deadline/repetition 때만 서로 다른 schema/evidence closure로 이분하며
   singleton 실패는 finding으로 드러낸다.
 - compact provider wire는 canonical slot ID를 보내지 않고 request-local `S0..Sn`을 사용한 뒤 exact
@@ -406,11 +430,11 @@ source → parser AST → Analyzer context/결정론 frame 조립
 - grammar/repetition 폭주를 token cap이나 의미 삭제로 숨기지 않는다. frame family 분할, schema 깊이,
   batch 크기, 중복 필드를 진단해 해결한다.
 - KV hit는 추측하지 않고 실제 prefix diff와 가능한 사용량 로그로 검증한다.
-- dirty WIP, 보존 DB/log는 사용자 자산이다. `reset/checkout/clean`, 범위 밖 되돌리기, 기본 DB
-  초기화, 기존 격리 DB/output 덮어쓰기를 금지한다.
-- 보존 DB: `spec131fw1520260812`, `spec131db920260812`, Architect 과거 DB
-  `spec055b20260812`. 새 실험은 별도 이름을 사용한다.
-- 임시 실행물은 `_runs/` 아래에 두고 최종에는 최소 증거와 작업보고 문서만 남긴다.
+- dirty WIP와 과거 evidence 문서는 사용자 자산이다. `reset/checkout/clean`, 범위 밖 되돌리기,
+  `neo4j|test` DB 초기화를 금지한다.
+- Neo4j 일반 DB는 `neo4j`, `test`, `framework`, `dbms` 네 개만 유지한다(`system`은 관리 DB).
+  Framework 검증은 `framework`, DBMS 검증은 `dbms`를 비워 재사용하며 새 이름을 만들지 않는다.
+- 실행물은 `_runs/<strategy>` 한 경로만 쓰고 보고서 반영 뒤 불필요한 임시 산출물을 정리한다.
 
 ### 11.1 정확도를 희생하지 않는 최대 작업 효율
 
@@ -461,7 +485,8 @@ source → parser AST → Analyzer context/결정론 frame 조립
 6. Architect MCP packet과 Simplified/Detailed prompt를 deduplicated semantic-frame 소비로 전환한다.
 7. Framework/DBMS 반대 fixture와 schema 크기·출력량·반복·prefix를 변경 묶음 단위로 검증하고,
    모든 생산자·소비자가 정합해진 뒤 전체 회귀를 한 번 수행한다.
-8. preflight 뒤 새 격리 DB/output root에서 최소 actual Analyzer 실행 및 봉인 직접 판정을 한다.
+8. preflight 뒤 재사용 `framework|dbms` DB와 `_runs/<strategy>`에서 최소 actual Analyzer 실행 및
+   봉인 직접 판정을 한다.
 9. Analyzer 합격 뒤 Architect 두 실제 경로를 최소 실행해 GWT와 evidence refs를 원문에 대조한다.
 10. 작업보고의 실제 전후 데이터·테스트 결과를 교체하고 임시 실행물을 정리한 뒤 요청 범위만 commit/push한다.
 

@@ -4,6 +4,7 @@ max_tokens: 6000
 structured_output_method: function_calling
 shared_values:
   semantic_frame_contract: ../common/semantic_frame_contract.md
+  function_summary_contract: ../common/function_summary_contract.md
 user_template_specific: |
   # [TASK — TARGET의 applicable semantic slot 의미와 충분성]
 
@@ -12,6 +13,8 @@ user_template_specific: |
   question은 이 frame에서 시스템이 투영한다.
 
   {semantic_frame_contract}
+
+  {function_summary_contract}
 
   ## [OUTPUT CONTRACT — frame summary concern]
 

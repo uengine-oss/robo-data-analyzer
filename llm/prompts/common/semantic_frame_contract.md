@@ -33,13 +33,9 @@
 
 ## [FAMILY GUIDE]
 
-- `FUNCTION.RESPONSIBILITY`: 호출자가 관측하는 target의 전체 책임. 이름 번역이나 제목 한 줄이
-  아니라 입력→주요 처리→외부 효과/결과의 경계를 말한다.
-- `FUNCTION.INPUT_ROLE`: 입력값이 target에서 맡는 입증된 역할. 식별자 모양으로 업무 뜻을 만들지 않는다.
 - 전체 흐름 순서는 `STRUCTURAL_PROFILE.ordered_flow`가 소유한다. exact 구조 의미는 각 profile
   fact의 속성에 있고, 추가 자연어 의미가 적용된 fact만 해당 family slot에서 채운다. 전체 흐름을
   별도 장문 slot으로 복제하지 않는다.
-- `FUNCTION.RESULT`: 반환, 출력 구조, 외부 상태 변화 중 target이 실제 보장하는 결과.
 - `STATEMENT.DIRECT_ACTION`: DBMS effective AST의 독립 분석 target이 직접 하는 동작만 쓴다.
   Framework Rule 행의 구조 동작을 이 family로 중복 생성하지 않는다.
 - `CALL.PURPOSE`: 현재 target이 callee를 호출하는 경계 목적만 쓴다. callee 내부 흐름을 복사하지 않는다.

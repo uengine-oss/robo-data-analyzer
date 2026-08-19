@@ -41,7 +41,12 @@ from pipeline.models.aggregate_semantic_frame import (
     sealed_summary_frame_payload,
 )
 from pipeline.languages import module_stereotype_values
-from pipeline.models.semantic_frame import SemanticFrame, profile_prompt_json, slot_specs_json
+from pipeline.models.semantic_frame import (
+    FUNCTION_SUMMARY_ROLES,
+    SemanticFrame,
+    profile_prompt_json,
+    slot_specs_json,
+)
 from pipeline.languages import require_module_stereotype
 from llm.runners.yaml_llm_runner import run_yaml_rule
 from llm.runners.model_output_error import ModelOutputError
@@ -152,12 +157,12 @@ async def _summarize(
             family="MODULE",
             member_frames=member_frames,
             include_responsibility=True,
-            member_roles=("RESPONSIBILITY", "INPUT_ROLE", "RESULT"),
+            member_roles=FUNCTION_SUMMARY_ROLES,
         )
         member_text = json.dumps(
             aggregate_member_payloads(
                 member_frames,
-                roles=("RESPONSIBILITY", "INPUT_ROLE", "RESULT"),
+                roles=FUNCTION_SUMMARY_ROLES,
             ),
             ensure_ascii=False,
             separators=(",", ":"),
