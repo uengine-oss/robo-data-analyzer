@@ -68,9 +68,6 @@ from pipeline.steps.step5_linking.link_tables.link_dbms_tables_step import link_
 from pipeline.steps.step5_linking.link_calls.link_calls_by_ast_step import (
     link_calls_by_ast_step,
 )
-from pipeline.steps.step8_post_processing.enrich_lineage_from_catalog_step import (
-    enrich_lineage_from_catalog_step,
-)
 
 
 @dataclass(frozen=True)
@@ -177,7 +174,6 @@ DBMS_PIPELINE = Strategy(
             build_components_step,            # 게이트: 전 노드 요약
             build_glossary_step,              # 사람 제공 glossary 독립 적재
             enrich_table_description_step,    # 게이트: 전 노드 완료
-            enrich_lineage_from_catalog_step, # ★ DBMS 만 — catalog lineage (HTTP, step7 무관)
             health_metrics_step,              # 게이트 없음 — 결정론 그래프(step2·5)만 읽는다
         ),
         embed_step,

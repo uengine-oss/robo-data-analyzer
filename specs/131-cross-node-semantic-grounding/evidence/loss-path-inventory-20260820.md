@@ -95,7 +95,16 @@
 - 현재 APAS Framework run은 table description 7개라 1000 경계에 도달하지 않았다.
 - current Framework graph table은 7개 전부 TABLE이며 view는 0개다.
 - 유입: `bc699ee`.
-- 현재 판정: **Framework 구조/의미 손실 설계**. `sample_limit=5`는 별도 sampling 분류를 계속 조사한다.
+- 해결(2026-08-21): provider 응답의 `truncated`를 non-negative integer로 검증하고 1건이라도
+  생략됐으면 `_merge`와 graph write 전에 run을 fail-closed한다. Catalog 계약에는 cursor/page가 없으므로
+  Analyzer가 숫자를 키우거나 incomplete prefix를 정상 inventory로 게시하지 않는다. 완전한 pageable
+  provider 계약이 생기기 전까지 partial success는 허용하지 않는다.
+- red/green: `truncated=37`과 prefix table 1개인 응답에서 `_merge`가 호출되지 않고 명시 예외가 나는
+  계약을 먼저 실패시킨 뒤 green으로 고정했다. 현재 APAS의 실제 table 7개는 경계 미도달이라 기준 실행
+  값은 불변이다. 관련 집중 37건과 Analyzer 전체 `1122 tests, 6 skipped`가 통과했다. Catalog WIP
+  파일은 수정·stage하지 않았다.
+- 현재 판정: **해결**. `sample_limit=5`는 의미 정본이 아닌 table prompt용 sample row이며 별도 sampling
+  분류를 유지한다.
 
 ### C-005/C-009a — DBMS parent source compaction
 
@@ -173,7 +182,16 @@
 - 따라서 일부 record shape만 잡은 skill이 미포착 잔차 없이 완료로 승인될 수 있다. preview 4,000자와
   range/grep 표시 상한 자체보다 이 전수 coverage 부재가 근본 원인이다.
 - 유입: 외부 agent 표본 `30828f7`, 구조 마이너 `5175a3d`.
-- 현재 판정: **실제 external 구조/근거 손실 설계, 기준 실행 미발동**.
+- 해결(2026-08-21): 모든 positive/held-out source마다 rule match span을 source order로 정렬하고,
+  서로 겹치면 거부하며, match 사이와 tail의 모든 non-whitespace 문자가 정확히 한 번 덮였는지 검증한다.
+  unknown format에서 whitespace만 문법적으로 무의미하다고 제한적으로 인정하며 다른 문자는 일부
+  record shape의 증거로 삭제하지 않는다. 이 closure를 통과한 skill만 ProjectFile을 `analyzed`로 바꾼다.
+- red/green: 기존 `CFG[...]` rule이 첫 행만 잡고 둘째 `ALT{...}` 행을 놓치는 positive source를
+  승인하던 반례를 먼저 실패시켰고, 이제 uncovered `ALT` 좌표와 함께 거부한다. overlap과 whitespace
+  separator 기존 계약도 함께 회귀했다. 기준 Framework에는 external file/chunk가 0이라 actual 영향은
+  원래 미발동이다.
+- 현재 판정: **해결**. proposal 탐색의 preview 크기는 권위 완료 조건이 아니며 최종 exact source
+  coverage validator가 전수 관문이다.
 
 ### C-018 — unknown/custom Scan Agent 탐색 표본을 완전한 ScanResult로 승인
 
@@ -354,7 +372,15 @@
 - 이 단계는 code semantic frame 생성 뒤 실행돼 누락/추가 lineage가 해당 frame의 table obligation을
   갱신하지도 않는다. `_runs/dbms`가 없어 actual 영향은 미검증이다.
 - 유입: Catalog lineage step과 `__catalog__` fallback 모두 `30828f7`.
-- 현재 판정: **실제 Neo4j relationship 손실 및 불충분한 degraded 처리**.
+- 추가 producer/consumer 추적(2026-08-21): Catalog `/lineage/` 응답은 Analyzer graph의
+  `nodes/edges` projection을 읽는 소비자 view인데, 이 단계는 존재하지 않는 `flows`를 기대했다. 즉 외부
+  독립 lineage producer가 아니라 Analyzer 산출을 다시 읽는 순환 dead wiring이며 실제 응답에서는 항상
+  flow 0건이었다. 반면 DBMS READS/WRITES의 권위 생산자는 Parser DML AST와 step5 exact linker다.
+- 해결(2026-08-21): 숫자나 fallback node를 보강하지 않고 DBMS pipeline에서 이 단계를 제거했으며,
+  구현 파일과 그 죽은 route 단위 테스트도 삭제했다. pipeline contract는 nested parallel group까지
+  펼쳐 `enrich_lineage_from_catalog_step` 부재를 검증한다. Catalog API/WIP는 변경하지 않았다.
+- 현재 판정: **죽은 순환 배선 제거로 해결**. 기준/actual graph에 추가 lineage를 만들던 경로가 아니므로
+  값 영향은 0이며, Parser/step5 grammar-owned R/W만 정본으로 남는다.
 
 ### C-032 — 실패·중단·진행 중 partial graph를 정상 소비자가 읽음
 

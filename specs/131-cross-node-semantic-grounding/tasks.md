@@ -46,6 +46,9 @@
       회계, strict UTF-8, malformed/unknown AST fail-closed, Neo4j mutation 전 immutable closure artifact
     - [x] A131-04d-GENERATION same-DB completed generation 원자 publish와 API/MCP/search consumer guard
   - [ ] A131-04e 남은 구조 closure(C-004/C-017~021/C-031/C-034~C-042) 책임 슬라이스별 해결
+    - [x] A131-04e-C004-C017-C031 Catalog truncated inventory pre-merge fail-closed, unknown external
+      non-whitespace source span exact-once closure, 순환 dead Catalog lineage consumer 제거 — red 3건,
+      집중 37 tests와 전체 1122/6 green, 보호 WIP/Neo4j 무변경
     - [x] A131-04e-C024 Parser listener inheritance AST field 보존·Neo4j 투영과 cycle-safe finite graph 전수 closure
     - [x] A131-04e-C028 Parser `2e33720` evidence v2 unqualified SQL identifier exact-once 생산과
       Analyzer sqlglot tokenizer/alias heuristic/silent-empty fallback 제거 — cross-repo red 3건 green

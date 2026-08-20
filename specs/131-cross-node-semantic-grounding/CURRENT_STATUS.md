@@ -266,5 +266,17 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
     ObjectReference 4개와 READS 4개, `dbms` rollback에서 동명 Schema 2개, 각 residue 0을 확인했다.
     `test`의 legacy `(db,name)` Schema constraint actual failure도 `ensure_schema` 제거 목록에 반영했으며
     검증 중 영구 DB schema 변경은 하지 않았다.
-22. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
-23. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.
+22. 완료(C-004/C-017/C-031): Catalog discovery가 `truncated>0`인 incomplete prefix를 merge하기 전에
+    fail-closed하고, unknown external skill은 positive source의 모든 non-whitespace span을 overlap 없이
+    exact-once 덮어야 승인한다. Catalog lineage 단계는 독립 producer가 아니라 Analyzer graph의
+    `nodes/edges` view를 존재하지 않는 `flows`로 재수입하던 순환 dead wiring이라 DBMS pipeline과 구현을
+    제거했다. formal red 3건을 확인한 뒤 집중 `37 tests`, Analyzer 전체 `1122 tests, 6 skipped`가
+    green이다. APAS table 7개, external chunk 0,
+    Catalog lineage flow 0이라 세 결함 모두 기준 actual 영향은 0이다. Catalog·Fabric·Architect WIP는
+    무변경이며 Neo4j write도 수행하지 않았다.
+23. 진행(C-018 및 신규 C-046 계열): Analyzer 전역에서 언어별 source를 재파싱하는 경로를 다시 전수
+    조사한다. Framework 의미 owner=routine, DBMS owner=effective AST CodeNode 계약은 공통화하지 않는다.
+    구문 차이는 Parser grammar/listener가 공통 AST evidence를 생산하고 Analyzer는 그 evidence만 소비하는
+    방향이며, 현재 Parser 호출 evidence WIP는 grammar/corpus/consumer 근거 확정 전 미커밋 상태다.
+24. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
+25. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.

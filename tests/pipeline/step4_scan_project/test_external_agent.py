@@ -32,7 +32,10 @@ class ExternalAgentTest(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as temp:
             return await run_external_agent(
                 extension=".cfgx",
-                samples=samples or ["CFG[shop.title] = 쇼핑몰\nALT[other.key] = v"],
+                # The default accepted fixture has one declared record grammar and
+                # every non-whitespace source span belongs to it.  Mixed CFG/ALT
+                # input is a partial-parser rejection contract, not a valid proposal.
+                samples=samples or ["CFG[shop.title] = 쇼핑몰\nCFG[other.key] = v"],
                 negative_samples=[],
                 run_dir=Path(temp),
                 cost_budget=CostBudget(limit_usd=10),

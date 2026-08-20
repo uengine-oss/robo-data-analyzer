@@ -212,14 +212,23 @@ def validate_external_skill(
     timeout_seconds: float | None = None,
     max_matches: int | None = None,
 ) -> ValidatedExternalSkill:
-    """Validate compile/safety/timeout/positive/negative/overfit contracts."""
+    """Validate safety and exact non-whitespace source coverage.
+
+    A custom parser is accepted only when its rule spans form a non-overlapping
+    closure over every positive source.  Whitespace between records is the sole
+    permitted gap; any other byte remains semantic because an unknown format has
+    no grammar that could prove it ignorable.
+    """
     if not positive_samples:
         raise ExternalSkillValidationError("at least one positive sample is required")
     all_matches: list[ExternalRuleMatch] = []
-    for text in positive_samples:
+    for sample_index, text in enumerate(positive_samples):
+        sample_matches: list[ExternalRuleMatch] = []
         for rule in skill.rules:
             matches = _apply_rule(rule, text, timeout_seconds=timeout_seconds, max_matches=max_matches)
             all_matches.extend(matches)
+            sample_matches.extend(matches)
+        _require_exact_source_coverage(text, sample_matches, sample_index=sample_index)
     if not all_matches:
         raise ExternalSkillValidationError("skill produced no keys from positive samples")
     for rule in skill.rules:
@@ -231,6 +240,38 @@ def validate_external_skill(
             if _apply_rule(rule, text, timeout_seconds=timeout_seconds, max_matches=max_matches):
                 raise ExternalSkillValidationError(f"rule {rule.name} matched a negative sample")
     return ValidatedExternalSkill(skill=skill, fingerprint=_fingerprint(skill))
+
+
+def _require_exact_source_coverage(
+    text: str,
+    matches: list[ExternalRuleMatch],
+    *,
+    sample_index: int,
+) -> None:
+    """Require exact-once coverage of every non-whitespace source character."""
+    ordered = sorted(matches, key=lambda item: (item.start, item.end, item.rule_name))
+    cursor = 0
+    for match in ordered:
+        if match.start < cursor:
+            raise ExternalSkillValidationError(
+                f"overlapping source spans in positive sample[{sample_index}] "
+                f"at [{match.start}:{match.end}]"
+            )
+        gap = text[cursor:match.start]
+        if gap and not gap.isspace():
+            excerpt = gap.strip().replace("\r", "\\r").replace("\n", "\\n")[:120]
+            raise ExternalSkillValidationError(
+                f"uncovered source in positive sample[{sample_index}] "
+                f"at [{cursor}:{match.start}]: {excerpt}"
+            )
+        cursor = match.end
+    tail = text[cursor:]
+    if tail and not tail.isspace():
+        excerpt = tail.strip().replace("\r", "\\r").replace("\n", "\\n")[:120]
+        raise ExternalSkillValidationError(
+            f"uncovered source in positive sample[{sample_index}] "
+            f"at [{cursor}:{len(text)}]: {excerpt}"
+        )
 
 
 def apply_validated_external_skill(

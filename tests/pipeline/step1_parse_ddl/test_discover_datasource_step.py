@@ -128,6 +128,24 @@ class DatasourceStepTest(unittest.IsolatedAsyncioTestCase):
             {"columns", "sample_rows"}, set(result["table_sample_data"][table_id]),
         )
 
+    async def test_truncated_catalog_inventory_fails_before_partial_merge(self):
+        async def fake_discovery(_http, _base, _datasource, **_kwargs):
+            return {
+                "datasource": "prod_main",
+                "tables": [{"name": "ONLY_PREFIX", "columns": [], "sample_rows": []}],
+                "truncated": 37,
+            }
+
+        with (
+            patch.object(step_module, "catalog_base_url_or_skip", return_value="http://cat"),
+            patch.object(step_module, "get_table_discovery", side_effect=fake_discovery),
+            patch.object(step_module, "_merge", wraps=step_module._merge) as merge,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "truncated.*37"):
+                await discover_datasource_step({"tables": []}, _cfg())
+
+        merge.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

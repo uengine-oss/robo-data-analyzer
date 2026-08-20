@@ -90,6 +90,18 @@ class ExternalSkillContractTest(unittest.TestCase):
             [key], [match.key for match in apply_validated_external_skill(validated, text)]
         )
 
+    def test_positive_source_with_uncovered_non_whitespace_is_rejected(self) -> None:
+        source = (
+            "CFG[shop.title] = exact\n"
+            "ALT{shop.locale}: ko\n"
+        )
+
+        with self.assertRaisesRegex(
+            ExternalSkillValidationError,
+            "uncovered source.*ALT",
+        ):
+            validate_external_skill(_skill(), [source])
+
     def test_default_timeout_scales_with_text_size_and_is_capped(self) -> None:
         self.assertAlmostEqual(0.25, _effective_timeout(0))
         self.assertLess(_effective_timeout(21_269), _effective_timeout(5_000_000))

@@ -72,14 +72,24 @@ async def discover_datasource_step(state: dict, config: Optional[RunnableConfig]
         emit_message(stream, f"⚠️ 데이터소스 '{datasource}' 미등록 — DDL 단어장만 사용")
         return {}
 
+    truncated = payload.get("truncated", 0)
+    if isinstance(truncated, bool) or not isinstance(truncated, int) or truncated < 0:
+        raise RuntimeError(
+            f"catalog discovery returned invalid truncated count: {truncated!r}"
+        )
+    if truncated:
+        # A prefix of the datasource is not a valid physical dictionary.  In
+        # particular it cannot be merged and published as if the omitted table
+        # identities did not exist.  The provider contract currently has no
+        # cursor, so stop the generation instead of raising the numeric cap.
+        raise RuntimeError(
+            f"catalog discovery truncated {truncated} table(s); "
+            "lossless discovery requires a complete pageable provider response"
+        )
+
     merged, new_tables, new_columns, new_edges, sample_data = _merge(
         ddl_tables, payload, datasource,
     )
-
-    if payload.get("truncated"):
-        log_warning(_STEP, "truncated",
-                    f"실DB 테이블 {payload['truncated']}건이 상한 초과로 절단됨",
-                    max_tables=_MAX_TABLES)
     degraded = sum(1 for t in payload.get("tables") or [] if t.get("degraded"))
     if degraded:
         log_warning(_STEP, "degraded",
