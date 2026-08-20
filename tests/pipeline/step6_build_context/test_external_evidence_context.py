@@ -1,7 +1,7 @@
 """Step6 external evidence selection contracts (spec 078).
 
-Outgoing REFER_TO only; whole-chunk-or-skip; hash re-verification fail-closed;
-no leak of other routines' evidence into prompt values.
+Outgoing REFER_TO only; every linked chunk is preserved whole; hash re-verification
+fails closed; no leak of other routines' evidence into prompt values.
 """
 from __future__ import annotations
 
@@ -74,7 +74,7 @@ class ExternalEvidenceContextTest(unittest.IsolatedAsyncioTestCase):
                 ReferTo(code.id, linked.id, matched_key="ORDER.API"),
             ],
         }
-        result = build_external_evidence_context(state, [code], char_budget=3000)
+        result = build_external_evidence_context(state, [code])
         self.assertEqual(1, len(result[code.id]))
         evidence = result[code.id][0]
         self.assertEqual("A" * 1300, evidence.text)
@@ -90,7 +90,7 @@ class ExternalEvidenceContextTest(unittest.IsolatedAsyncioTestCase):
         }
         self.assertEqual({}, build_external_evidence_context(state, [code]))
 
-    def test_oversize_chunk_is_skipped_whole_never_truncated(self) -> None:
+    def test_large_chunk_is_preserved_whole_for_downstream_obligation_splitting(self) -> None:
         code = _code()
         big = _chunk("BIG.KEY", "Z" * 1000, "big.cfgx")
         small = _chunk("SMALL.KEY", "s" * 50, "small.cfgx")
@@ -101,10 +101,31 @@ class ExternalEvidenceContextTest(unittest.IsolatedAsyncioTestCase):
                 ReferTo(code.id, small.id, matched_key="SMALL.KEY"),
             ],
         }
-        result = build_external_evidence_context(state, [code], char_budget=300)
+        result = build_external_evidence_context(state, [code])
         texts = [item.text for item in result[code.id]]
-        # 큰 청크는 통째로 생략, 작은 청크는 전문 포함 — 부분 절단은 존재하지 않는다.
-        self.assertEqual(["s" * 50], texts)
+        self.assertEqual(["Z" * 1000, "s" * 50], texts)
+
+    def test_more_than_eight_linked_chunks_are_all_preserved(self) -> None:
+        code = _code()
+        chunks = [
+            _chunk(f"KEY.{index:02d}", f"payload-{index}", f"{index:02d}.cfgx")
+            for index in range(12)
+        ]
+        state = {
+            "external_chunks": chunks,
+            "external_edges": [
+                ReferTo(code.id, chunk.id, matched_key=chunk.keys[0])
+                for chunk in chunks
+            ],
+        }
+
+        result = build_external_evidence_context(state, [code])
+
+        self.assertEqual(12, len(result[code.id]))
+        self.assertEqual(
+            [f"payload-{index}" for index in range(12)],
+            [item.text for item in result[code.id]],
+        )
 
     def test_damaged_hash_fails_before_context_injection(self) -> None:
         code = _code()

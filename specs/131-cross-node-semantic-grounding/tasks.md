@@ -30,6 +30,11 @@
     - [x] A131-04b-DBMS 기존 node batch envelope를 effective AST CodeNode별 exact
       source/evidence fragment runner로 교체
   - [ ] A131-04c 중간 prose 권위 입력·source literal 비가역 projection·SCC dependency 누락 제거
+    - [x] A131-04c-EXT linked external chunk 8건/6000자 canonical 선택 상한 제거,
+      chunk별 exact evidence obligation과 downstream token 분할 회계 연결
+    - [ ] A131-04c-PROSE module/component·agent 중간 prose 권위 입력 제거
+    - [ ] A131-04c-SOURCE source literal 비가역 projection 제거
+    - [ ] A131-04c-SCC cycle 내부 unavailable callee obligation 명시·회계
   - [ ] A131-04d source/AST/diagnostic closure와 completed generation 원자 publish/consumer guard
 - [ ] A131-05 자동 회귀·결정론 전수 회계·봉인 직접 의미 판정 3층 완료
 

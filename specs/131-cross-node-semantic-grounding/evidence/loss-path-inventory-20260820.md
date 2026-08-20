@@ -445,3 +445,15 @@
 - 집중 회귀는 `49 passed, 6 subtests passed`, step7 전체는 `213 passed, 115 subtests passed`,
   pipeline 전체+MCP는 `794 passed, 1 skipped, 290 subtests passed`다. prompt hash baseline은 의도된
   25개 파일로 갱신 후 byte-identical 검사 통과. graph/DB 변경은 0이다.
+
+### 2026-08-20 C-003 linked external exact closure
+
+- 변경 전 red는 연결 chunk 12개 중 8개만 canonical context에 남아 `12 != 8`로 실패했다.
+  6000자 budget을 넘는 chunk도 뒤쪽 evidence와 함께 조용히 제외될 수 있었다.
+- step6 canonical owner에서 item/character 선택 상한을 제거했다. 모든 outgoing `REFER_TO` chunk는
+  결정론 순서로 hash를 재검증한 뒤 전문과 좌표를 보존한다.
+- 각 external chunk는 routine의 독립 `FUNCTION.PROCESSING_EFFECTS` obligation과 exact evidence ref를
+  하나씩 소유한다. 실제 summary 호출은 배정된 chunk의 exact text/hash/좌표만 받고, 이 payload의
+  크기도 기존 token-derived 실행 분할 계산에 포함한다. 배정 ref에 payload가 없으면 즉시 실패한다.
+- red는 green으로 전환됐고 step6 전체 `23 passed`, step7 전체 `214 passed`다. Neo4j와 actual LLM은
+  실행하지 않았으므로 새 external corpus의 직접 의미 품질은 아직 `미검증`이다.

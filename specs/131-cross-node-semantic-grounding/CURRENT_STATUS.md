@@ -1,8 +1,8 @@
 # Analyzer 의미 무손실 감사 현재상태
 
 **Updated**: 2026-08-20
-**Status**: Analyzer 전체 의미 손실 경로 전수조사 완료 — 계약/red test 고정 직전
-**Product-code baseline HEAD**: `c216e674cbac43386f9826632097ca2661395d7d` (`main`, clean)
+**Status**: A131-04c 근본 구현 진행 중 — external exact evidence closure 완료
+**Product-code baseline HEAD**: `c216e674cbac43386f9826632097ca2661395d7d`
 
 이 문서는 현재 진행 위치만 소유한다. 영구 규칙은 `ABSOLUTE_RULES.md`, 상세 역사와 기존 수치는 `HANDOFF.md`와 `evidence/`가 소유한다.
 
@@ -20,8 +20,8 @@
 
 - Neo4j `127.0.0.1:7687`: 현재 세션에서 인증과 `SHOW DATABASES` 재확인 성공.
   `neo4j|test|framework|dbms|system`만 존재하고 모두 online이다. 허용 목록 밖 DB는 0개다.
-- Analyzer current HEAD `9d919c4`; 제품 코드 기준선은
-  `c216e674cbac43386f9826632097ca2661395d7d`, 조사 착수 전 dirty 0이었다.
+- Analyzer 재개 기준 HEAD `afcd125d50ce3c95c9fde12d7f247d4e685a45f2`; 제품 코드 기준선은
+  `c216e674cbac43386f9826632097ca2661395d7d`, 재개 시 dirty 0이었다.
 - Parser HEAD `4b849f14575b6830b82ae5ee980658100c4d8692`, dirty 0.
 - Catalog HEAD `1f1aaa608a3d7ef8b01ce15c3df962cf0f1cfefb`, 기존 dirty 12개가 있다.
 - Fabric HEAD `83c9604e2d6ec3f1ececa47d2e2264a74257843d`, 기존 dirty 7개가 있다.
@@ -150,7 +150,10 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
    red→green으로 고정했다. 파생 module/callee/codebase prose도 Framework 권위 packet에서 제거했다.
 5. 완료(DBMS): effective AST CodeNode별 exact source/evidence fragment runner로 교체했고 CALL을 포함한
    non-routine owner와 full-source comparison validator를 고정했다. A131-04b는 완료했다.
-6. 현재: Framework/DBMS summary 밖에 남은 module/aggregate prose handoff, SCC unavailable dependency,
-   external evidence/source literal projection을 C-003/C-009/C-010/C-016/C-022/C-030 순으로 제거한다.
-7. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
-8. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.
+6. 완료(C-003): linked external chunk의 8건/6000자 canonical 선택 상한을 제거했다. 모든 chunk를
+   해시 검증 후 보존하고 chunk별 FUNCTION processing obligation과 exact prompt payload로 연결했으며,
+   외부 payload도 token-derived 실행 분할 계산에 포함했다. step6 23 tests와 step7 214 tests가 통과했다.
+7. 현재: module/component·agent prose handoff, source literal projection, SCC unavailable dependency를
+   C-009/C-010/C-016/C-022/C-030 순으로 제거한다.
+8. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
+9. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.

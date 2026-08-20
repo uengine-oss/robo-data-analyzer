@@ -72,6 +72,23 @@ class ExternalEvidenceContext:
     end_line: int
     content_hash: str
 
+    def as_exact_prompt_dict(self) -> dict:
+        """Return the reversible external source packet used by semantic calls."""
+        return {
+            "relation": "TARGET_REFER_TO_EXTERNAL_CHUNK",
+            "id": self.id,
+            "file_path": self.file_path,
+            "matched_key": self.matched_key,
+            "semantic_kind": self.semantic_kind,
+            "provenance": self.provenance,
+            "text": self.text,
+            "start_line": self.start_line,
+            "end_line": self.end_line,
+            "coordinate_system": "absolute-file-line",
+            "evidence_scope": "linked-external-context",
+            "content_hash": self.content_hash,
+        }
+
     def as_prompt_dict(self) -> dict:
         return {
             "relation": "TARGET_REFER_TO_EXTERNAL_CHUNK",

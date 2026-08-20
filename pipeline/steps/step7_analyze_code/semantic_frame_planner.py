@@ -105,6 +105,7 @@ def build_code_semantic_plan(
     child_refs: list[str] = []
     callee_refs: list[str] = []
     linked_callee_refs: list[str] = []
+    external_refs: list[str] = []
     data_refs: list[str] = []
     symbol_refs: list[str] = []
     parameter_refs: list[str] = []
@@ -263,7 +264,7 @@ def build_code_semantic_plan(
             parameter_refs.append(ref)
 
     for external in ctx.external_evidence:
-        _add_fact(evidence, _fact(
+        external_refs.append(_add_fact(evidence, _fact(
             target_id=fn.id,
             kind="EXTERNAL",
             identity={"chunk": external.id},
@@ -277,7 +278,7 @@ def build_code_semantic_plan(
                 "provenance": external.provenance,
                 "matched_key": external.matched_key,
             },
-        ))
+        )))
 
     data_usages = tuple(ctx.extra.get("data_object_usages") or ())
     data_refs_by_line: dict[int, list[str]] = {}
@@ -490,6 +491,7 @@ def build_code_semantic_plan(
         if not call_refs_by_line:
             processing_refs.extend(linked_callee_refs)
         processing_refs.extend(data_refs)
+        processing_refs.extend(external_refs)
         processing_refs.extend(
             ref
             for statement, ref, _start, _end in statement_refs

@@ -137,7 +137,8 @@ def _summary_slot_batches(
             variable_tokens = _estimate_prompt_tokens("\n".join(
                 str(values[name]) for name in (
                     "structural_profile", "applicable_slots", "code_body",
-                    "referenced_symbols", "data_object_usages", "branch_index",
+                    "referenced_symbols", "external_evidence",
+                    "data_object_usages", "branch_index",
                 )
             ))
             if pending and variable_tokens > limit:
@@ -173,6 +174,10 @@ def _summary_batch_values(profile, batch_specs, common: dict) -> dict:
     }
     facts = [profile.evidence[ref] for ref in sorted(assigned_refs)]
     source_text = str(common.get("raw_code_body") or "")
+    external_by_chunk = dict(common.get("_external_evidence_by_chunk") or {})
+    public_common = {
+        key: value for key, value in common.items() if not str(key).startswith("_")
+    }
     # Split only on LF so CR and a trailing empty physical line remain exact payload data.
     source_lines = source_text.split("\n") if source_text else []
     target_start = max(int(profile.target.start_line), 1)
@@ -186,7 +191,7 @@ def _summary_batch_values(profile, batch_specs, common: dict) -> dict:
     else:
         selected_indexes: set[int] = set()
         for fact in facts:
-            if fact.kind == "TARGET" or fact.start_line <= 0:
+            if fact.kind in {"TARGET", "EXTERNAL"} or fact.start_line <= 0:
                 continue
             start = max(fact.start_line - target_start, 0)
             stop = min(fact.end_line - target_start + 1, len(source_lines))
@@ -212,6 +217,15 @@ def _summary_batch_values(profile, batch_specs, common: dict) -> dict:
             fact.model_dump(mode="json")
         )
     data_facts = by_kind.get("DATA_OBJECT", [])
+    external_payloads: list[dict] = []
+    for fact in by_kind.get("EXTERNAL", []):
+        chunk_id = str(fact["attributes"].get("chunk_id") or "")
+        payload = external_by_chunk.get(chunk_id)
+        if payload is None:
+            raise ValueError(
+                f"assigned external evidence payload is missing: {chunk_id or fact['id']}"
+            )
+        external_payloads.append(dict(payload))
     reads = [
         fact for fact in data_facts
         if str(fact["attributes"].get("access") or "").upper() == "READ"
@@ -232,7 +246,7 @@ def _summary_batch_values(profile, batch_specs, common: dict) -> dict:
         )
     selected_text = "\n".join(record["text"] for record in source_records)
     return {
-        **common,
+        **public_common,
         "id": profile.target.id,
         "signature": str(
             profile.evidence[next(
@@ -255,7 +269,7 @@ def _summary_batch_values(profile, batch_specs, common: dict) -> dict:
         "data_object_usages": _dump(data_facts),
         "column_usage_candidates": "{}",
         "referenced_symbols": _dump(by_kind.get("SYMBOL", [])),
-        "external_evidence": _dump(by_kind.get("EXTERNAL", [])),
+        "external_evidence": _dump(external_payloads),
         "callee_summaries": _dump(by_kind.get("CALL", [])),
         "branch_index": _dump([
             *by_kind.get("CONTROL", []), *by_kind.get("RULE", []),
@@ -971,6 +985,10 @@ def _build_user_values(
         "module_intent": module_intents.get(fn.owner_id) or "(없음)",
         "referenced_symbols": dump_referenced_symbols(ctx.referenced_symbols),
         "external_evidence": dump_external_evidence(ctx.external_evidence),
+        "_external_evidence_by_chunk": {
+            item.id: item.as_exact_prompt_dict()
+            for item in ctx.external_evidence
+        },
         "callee_summaries": _format_callee_summaries(ctx, contexts),
         "ancestor_context": ancestor_context(ctx, contexts, cache),
         "reads": dump_table_refs(ctx.reads, table_descriptions, include_columns=False),

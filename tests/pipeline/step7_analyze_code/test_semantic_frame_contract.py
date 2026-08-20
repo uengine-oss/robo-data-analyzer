@@ -13,6 +13,7 @@ from llm.runners.model_output_error import ModelOutputError
 from pipeline.models.analysis_context import (
     AnalysisContext,
     ControlSubtreeNode,
+    ExternalEvidenceContext,
     ReferencedSymbolContext,
     StatementFact,
 )
@@ -736,6 +737,79 @@ END;"""
         self.assertEqual(len(call_refs), len(processing_refs))
         self.assertEqual(70, len(call_refs))
         self.assertFalse(any(spec.family == "CALL" for spec in specs))
+
+    def test_each_external_chunk_owns_one_exact_processing_obligation(self):
+        context = _context()
+        external = tuple(
+            ExternalEvidenceContext(
+                id=f"external:{index}",
+                file_path=f"contracts/{index}.txt",
+                matched_key=f"KEY.{index}",
+                semantic_kind="contract",
+                provenance="source_span",
+                text=(f"exact external payload {index} " + "X" * 900),
+                start_line=10 * index + 1,
+                end_line=10 * index + 1,
+                content_hash=f"hash-{index}",
+            )
+            for index in range(10)
+        )
+        context.external_evidence = external
+        profile, specs = build_code_semantic_plan(_routine(), context)
+        summary_specs = semantic_concern_slots(specs)["summary"]
+        external_refs = {
+            ref for ref, fact in profile.evidence.items() if fact.kind == "EXTERNAL"
+        }
+        assigned_refs = [
+            ref
+            for spec in summary_specs
+            if spec.role == "PROCESSING_EFFECTS"
+            for ref in spec.evidence_refs
+            if ref in external_refs
+        ]
+
+        self.assertEqual(10, len(external_refs))
+        self.assertEqual(external_refs, set(assigned_refs))
+        self.assertEqual(10, len(assigned_refs))
+
+        observed_payloads: list[str] = []
+
+        async def invoke(values, response_model, _batch_label):
+            payload = json.loads(values["external_evidence"])
+            observed_payloads.extend(item["text"] for item in payload)
+            response = {
+                "slots": {
+                    wire_id: {
+                        "meaning": "grounded meaning",
+                        "status": "sufficient",
+                        "missing_context": [],
+                    }
+                    for wire_id, _spec in response_model.__semantic_slot_bindings__
+                },
+            }
+            if "stereotype" in response_model.model_fields:
+                response["stereotype"] = "Validator"
+            return response_model.model_validate(response)
+
+        asyncio.run(_run_bounded_frame_summary(
+            profile=profile,
+            slot_specs=summary_specs,
+            strategy_name="framework",
+            common={
+                "raw_code_body": "\n".join(f"line {line}" for line in range(10, 17)),
+                "_external_evidence_by_chunk": {
+                    item.id: item.as_exact_prompt_dict()
+                    for item in external
+                },
+            },
+            invoke=invoke,
+            max_input_tokens=1,
+        ))
+
+        self.assertCountEqual(
+            [item.text for item in external],
+            observed_payloads,
+        )
 
     def test_each_model_call_receives_exact_assigned_evidence_and_source_closure(self):
         profile, specs = build_code_semantic_plan(_routine(), _context())

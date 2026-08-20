@@ -652,6 +652,10 @@ async def _collect_keyed_concern(
                 "raw_code_body": raw_body_for(context, contexts, source_cache),
                 "source_status": excerpt.status,
                 "coordinate_system": excerpt.coordinate_system,
+                "_external_evidence_by_chunk": {
+                    item.id: item.as_exact_prompt_dict()
+                    for item in context.external_evidence
+                },
             }
             inventory = build_control_inventory(
                 code_by_id[node_id], context, source_cache,
