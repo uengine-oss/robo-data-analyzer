@@ -748,7 +748,7 @@
 | C-008 | summary role 최대 5 | 5는 닫힌 target-role taxonomy; actual 417건 중 398건이 5 slot이고 28 leaf가 600 경계 도달 | **taxonomy 자체는 안전**, role 내부 fact obligation/closure 부재와 600자 leaf는 **실제 의미 손실**. F-001 근본 설계로 통합 |
 | C-011/C-012 | unknown external scan/miner sampling | C-017로 통합 | closed |
 | C-013 | human glossary 상한 | payload/term/alias/string 초과는 whole-input `ValueError`, 절단 없음 | **fail-closed 입력 계약** |
-| C-014 | agent sampling/max-calls/max-rounds | residual은 원래 잔여 전건을 보존, call-review 미열거 항목은 유지 | scan/external만 C-017/C-018; 나머지는 **명시 degraded/안전** |
+| C-014 | agent sampling/max-calls/max-rounds | residual은 원래 잔여 전건을 보존하고 call-review 미열거 항목도 유지하지만, 2026-08-19 actual run에서 call-review가 “확신 부족이므로 드롭하지 않음”이라고 쓴 4개 이름을 schema 위치만 보고 승인해 46개 CALLS를 삭제함 | sampling 자체의 미열거 보존만 안전. call-review의 권위 삭제 경로는 **실제 의미 손실 C-047로 재분류** |
 | C-015 | timeout/retry/cache/batch/concurrency | retry/cache/batch/semaphore의 exactness 확인 | concern 단위 finding/exact split/실패 전파는 **안전 또는 명시 degraded**. run 전체 공개 원자성 결함은 C-032 |
 
 ## 5. Rule/Example owner 중간 판정
@@ -777,7 +777,8 @@
   상한은 graph truth를 바꾸지 않고 검색 recall/선택 목록만 제한한다. 정확도 주장이 아니라 search degraded다.
 - **명시적 degraded/fail-closed**: human glossary와 document adapter hard limit는 부분 결과가 아니라 입력/파일
   전체를 거절한다. residual 30개 sample/3 round는 최종 미해결 원래 case를 전부 보존하고 agent 실패 finding을
-  남긴다. call-review top 300은 미열거 call을 보존하며 실패 시 전부 보존한다.
+  남긴다. call-review top 300의 미열거 call 보존과 실패 시 전량 보존만 안전하다. 열거 항목은 LLM의
+  `drops[]`가 canonical CALLS를 삭제하며 reason의 부정 의미를 검증하지 않아 실제 C-047을 발동했다.
 - **샘플 evidence**: Catalog `sample_limit=5`는 canonical table identity가 아니라 관측 row snapshot이다.
   이를 table 전체 분포로 일반화하지 않는 prompt/validator 계약은 별도 의미 봉인에서 확인한다.
 

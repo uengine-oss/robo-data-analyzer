@@ -274,9 +274,18 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
     green이다. APAS table 7개, external chunk 0,
     Catalog lineage flow 0이라 세 결함 모두 기준 actual 영향은 0이다. Catalog·Fabric·Architect WIP는
     무변경이며 Neo4j write도 수행하지 않았다.
-23. 진행(C-018 및 신규 C-046 계열): Analyzer 전역에서 언어별 source를 재파싱하는 경로를 다시 전수
-    조사한다. Framework 의미 owner=routine, DBMS owner=effective AST CodeNode 계약은 공통화하지 않는다.
-    구문 차이는 Parser grammar/listener가 공통 AST evidence를 생산하고 Analyzer는 그 evidence만 소비하는
-    방향이며, 현재 Parser 호출 evidence WIP는 grammar/corpus/consumer 근거 확정 전 미커밋 상태다.
+23. 진행(C-018 및 신규 C-046~C-051): Analyzer 전역의 언어별 source 재파싱과 중간 LLM 경로를
+    `evidence/analyzer-syntax-ownership-audit-20260821.md`에 생산자·소비자·actual 값·유입 계열까지 누적했다.
+    Framework 의미 owner=routine, DBMS owner=effective AST CodeNode 계약은 공통화하지 않는다. 구문 차이는
+    Parser grammar/listener가 versioned exact evidence IR을 생산하고 Analyzer는 언어 중립 resolution만 하는
+    경계로 확정 중이다. Scan/Deep Agent는 제거하지 않고 normalized fact pattern 제안자로 유지한다.
+    기준 actual에서 call-review LLM은 reason에 “확신 부족이라 드롭하지 않음”이라고 쓴 4개 이름을 schema
+    위치만으로 승인해 21 routine의 CALLS 46개를 실제 삭제했다(C-047). 따라서 C-014의 종전 안전 판정을
+    철회했다. table residual 193개가 이후 의미/API에 전혀 소비되지 않는 C-048, REFERENCES 8,113/INIT_BY 97과
+    Rule grounding/table/external/column prompt를 Analyzer host lexer가 생산하는 C-049, DBMS dual source fallback과
+    Oracle 전용 column evidence C-050, call occurrence 12,112개의 arg/range/identity 축소 C-051도 분리했다.
+    현재 Parser 호출 WIP는 PL/pgSQL regex 잔존, Python trailer range, version/source hash/import/symbol/literal/
+    embedded evidence 공백 때문에 계약으로 승인하거나 commit하지 않는다. 먼저 이 조사 보고를 완료하고
+    common evidence IR·coverage matrix·C-047 red부터 고정한다.
 24. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
 25. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.
