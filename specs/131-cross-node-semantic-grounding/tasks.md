@@ -45,13 +45,19 @@
     - [x] A131-04d-CLOSURE parser-supported source↔AST↔EXACT diagnostic SHA/status 전수 one-to-one
       회계, strict UTF-8, malformed/unknown AST fail-closed, Neo4j mutation 전 immutable closure artifact
     - [x] A131-04d-GENERATION same-DB completed generation 원자 publish와 API/MCP/search consumer guard
-  - [ ] A131-04e 남은 구조 closure(C-004/C-017~021/C-031/C-034) 책임 슬라이스별 해결
+  - [ ] A131-04e 남은 구조 closure(C-004/C-017~021/C-031/C-034~C-039) 책임 슬라이스별 해결
     - [x] A131-04e-C024 Parser listener inheritance AST field 보존·Neo4j 투영과 cycle-safe finite graph 전수 closure
     - [x] A131-04e-C028 Parser `2e33720` evidence v2 unqualified SQL identifier exact-once 생산과
       Analyzer sqlglot tokenizer/alias heuristic/silent-empty fallback 제거 — cross-repo red 3건 green
     - [x] A131-04e-C033 quoted DDL column identity를 Column/Neo4j/step7/MCP detail까지 보존하고
       case-sensitive exact identity로 투영 — DDL/parser red 2건 green, Neo4j rollback 검증
-    - [ ] A131-04e-C034 quoted DDL PK/UNIQUE/FK/comment 별도 lower identity 손실 red-first 해결
+    - [x] A131-04e-C034 quoted DDL PK/UNIQUE/FK/comment exact AST identity와 literal 보존 — red 4건 green,
+      Neo4j rollback 저장·조회/잔여 0
+    - [x] A131-04e-C035 step8 quoted column source-line focus를 공통 exact identity로 투영 — red 1건 green
+    - [ ] A131-04e-C036 Catalog/Fabric 응답→DDL Table 재결합 quoted/schema identity 손실 red-first 해결
+    - [x] A131-04e-C037 Oracle physical-option/VARCHAR/slash normalization을 token 구조 위치로 제한
+    - [x] A131-04e-C038 dialect marker의 string/comment 오인을 syntax token detector로 제거
+    - [ ] A131-04e-C039 quoted SET search_path schema identity drop red-first 해결
 - [ ] A131-05 자동 회귀·결정론 전수 회계·봉인 직접 의미 판정 3층 완료
 
 ## 보존된 기준선

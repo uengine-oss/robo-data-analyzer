@@ -152,12 +152,48 @@ class TableSemanticGroundingTest(unittest.TestCase):
                 "text": "SUM(A.COM_UNIT * DECODE(COMPUTE, '+', 1, '-', -1)) -- old COMPUTE",
                 "source_id": "select:9", "ownership": "derived_output_unique",
             }],
-        }], target_name="COM_UNIT", allowed_names=["COM_UNIT", "COMPUTE", "TAGSN"])
+        }], target_name="COM_UNIT", target_quoted=False, allowed_columns=[
+            ("COM_UNIT", False), ("COMPUTE", False), ("TAGSN", False),
+        ])
         line = focused[0]["source_lines"][0]
         self.assertNotIn("text", line)
         self.assertEqual(
             "SUM(A.[TARGET_COLUMN] * DECODE([OTHER_COLUMN], '+', 1, '-', -1))",
             line["focus_text"],
+        )
+
+    def test_column_focus_keeps_quoted_case_sensitive_siblings_separate(self):
+        candidate = [{
+            "relation": "CODE_NODE_USES_COLUMN", "source_id": "select:10",
+            "ownership": "parser_unqualified_identifier", "evidence_lines": [10],
+            "source_lines": [{
+                "line": 10, "text": 'SELECT "Foo" FROM "T"',
+                "source_id": "select:10",
+                "ownership": "parser_unqualified_identifier",
+            }],
+        }]
+        identities = [("Foo", True), ("foo", True)]
+
+        upper = _focus_column_candidates(
+            candidate,
+            target_name="Foo",
+            target_quoted=True,
+            allowed_columns=identities,
+        )
+        lower = _focus_column_candidates(
+            candidate,
+            target_name="foo",
+            target_quoted=True,
+            allowed_columns=identities,
+        )
+
+        self.assertEqual(
+            'SELECT "[TARGET_COLUMN]" FROM "T"',
+            upper[0]["source_lines"][0]["focus_text"],
+        )
+        self.assertEqual(
+            'SELECT "[OTHER_COLUMN]" FROM "T"',
+            lower[0]["source_lines"][0]["focus_text"],
         )
 
     def test_final_column_ownership_uses_has_column_edges(self):

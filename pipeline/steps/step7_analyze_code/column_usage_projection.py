@@ -15,6 +15,7 @@ from typing import Any
 from graph.schema.graph_nodes import CodeNode
 from pipeline.models.analysis_context import AnalysisContext
 from pipeline.models.data_object_usage import exact_direct_table_ids
+from pipeline.models.sql_identifier import sql_identifier_key
 from shared.files.cache import SourceFileCache
 
 
@@ -65,7 +66,7 @@ def build_column_usage_projections(
                 continue
             allowed = _allowed_columns(ddl_columns.get(table_id) or ())
             for column in getattr(usage, "qualified_columns", ()) or ():
-                actual_name = allowed.get(_identifier_key(
+                actual_name = allowed.get(sql_identifier_key(
                     getattr(column, "name", ""),
                     bool(getattr(column, "name_quoted", False)),
                 ))
@@ -95,7 +96,7 @@ def build_column_usage_projections(
                 for table_id in tables
             }
             for name, name_quoted, line in _parser_unqualified_identifiers(context):
-                identity = _identifier_key(name, name_quoted)
+                identity = sql_identifier_key(name, name_quoted)
                 owners = [
                     (table_id, allowed[identity])
                     for table_id, allowed in allowed_by_table.items()
@@ -203,7 +204,7 @@ def _project_derived_output_uses(
                             (child_id, table_id, column_name)
                         )
         for name, name_quoted, line in _parser_unqualified_identifiers(context):
-            owners = owner_by_column.get(_identifier_key(name, name_quoted), ())
+            owners = owner_by_column.get(sql_identifier_key(name, name_quoted), ())
             if len(owners) != 1:
                 continue
             child_id, table_id, column_name = owners[0]
@@ -228,22 +229,15 @@ def _allowed_columns(columns: object) -> dict[tuple[str, str], str]:
         name = str(getattr(column, "name", "") or "").strip()
         if not name:
             raise ValueError(f"DDL column identity is missing name: {column!r}")
-        identity = _identifier_key(name, bool(getattr(column, "name_quoted", False)))
+        identity = sql_identifier_key(
+            name, bool(getattr(column, "name_quoted", False)),
+        )
         if identity in result:
             raise ValueError(
                 f"duplicate canonical DDL column identity: {identity!r}"
             )
         result[identity] = name
     return result
-
-
-def _identifier_key(value: object, quoted: bool) -> tuple[str, str]:
-    text = str(value or "").strip()
-    if quoted:
-        if len(text) >= 2 and text.startswith('"') and text.endswith('"'):
-            text = text[1:-1].replace('""', '"')
-        return "Q", text
-    return "U", text.upper()
 
 
 def _parser_unqualified_identifiers(

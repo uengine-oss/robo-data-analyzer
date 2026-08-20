@@ -59,6 +59,138 @@ COMMENT ON COLUMN ORDERS.STATUS_CD IS '주문 상태 코드';
             [(column.name, column.name_quoted) for column in result.columns],
         )
 
+    def test_quoted_primary_key_and_comments_bind_only_exact_siblings(self) -> None:
+        ddl = '''\
+CREATE TABLE "T" (
+    "Foo" NUMBER,
+    "foo" NUMBER,
+    CONSTRAINT PK_T PRIMARY KEY ("Foo")
+);
+COMMENT ON COLUMN "T"."Foo" IS 'upper column';
+COMMENT ON COLUMN "T"."foo" IS 'lower column';
+'''
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "quoted.sql"
+            path.write_text(ddl, encoding="utf-8")
+            result = parse_ddl_file(path, db="db", dialect="oracle")
+
+        self.assertEqual(
+            [
+                ("Foo", True, "upper column"),
+                ("foo", False, "lower column"),
+            ],
+            [
+                (column.name, column.is_primary_key, column.description)
+                for column in result.columns
+            ],
+        )
+
+    def test_formal_comments_are_scoped_by_exact_schema_and_table_identity(self) -> None:
+        ddl = '''\
+CREATE TABLE "S1"."T" ("C" NUMBER);
+CREATE TABLE "S2"."T" ("C" NUMBER);
+COMMENT ON TABLE "S1"."T" IS 'first table';
+COMMENT ON TABLE "S2"."T" IS 'second table';
+COMMENT ON COLUMN "S1"."T"."C" IS 'first column';
+COMMENT ON COLUMN "S2"."T"."C" IS 'second column';
+'''
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "schemas.sql"
+            path.write_text(ddl, encoding="utf-8")
+            result = parse_ddl_file(path, db="db", dialect="oracle")
+
+        self.assertEqual(
+            [("S1", "first table"), ("S2", "second table")],
+            [(table.schema, table.description) for table in result.tables],
+        )
+        self.assertEqual(
+            [("db:db.S1.T.C", "first column"), ("db:db.S2.T.C", "second column")],
+            [(column.id, column.description) for column in result.columns],
+        )
+
+    def test_sqlplus_separator_and_physical_words_do_not_rewrite_comment_literal(self) -> None:
+        ddl = '''\
+CREATE TABLE T (C VARCHAR2(10 BYTE)) TABLESPACE USERS NOLOGGING;
+/
+COMMENT ON COLUMN T.C IS 'TABLESPACE USERS; NOLOGGING is business text';
+'''
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "oracle.sql"
+            path.write_text(ddl, encoding="utf-8")
+            result = parse_ddl_file(path, db="db", dialect="oracle")
+
+        self.assertEqual(1, len(result.columns))
+        self.assertEqual(
+            "TABLESPACE USERS; NOLOGGING is business text",
+            result.columns[0].description,
+        )
+
+    def test_oracle_physical_normalization_does_not_rewrite_identifiers_or_defaults(self) -> None:
+        ddl = '''\
+CREATE TABLE T (
+    C VARCHAR2(10 BYTE) DEFAULT 'NOLOGGING',
+    "NOLOGGING" VARCHAR2(20 CHAR) DEFAULT 'TABLESPACE USERS'
+) TABLESPACE USERS STORAGE (INITIAL 1M) PCTFREE 10 NOLOGGING;
+'''
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "oracle.sql"
+            path.write_text(ddl, encoding="utf-8")
+            result = parse_ddl_file(path, db="db", dialect="oracle")
+
+        self.assertEqual(
+            [
+                ("C", False, "'NOLOGGING'"),
+                ("NOLOGGING", True, "'TABLESPACE USERS'"),
+            ],
+            [
+                (column.name, column.name_quoted, column.default_value)
+                for column in result.columns
+            ],
+        )
+
+    def test_sqlplus_slash_normalization_does_not_rewrite_multiline_default(self) -> None:
+        ddl = "CREATE TABLE T (C VARCHAR2(20) DEFAULT 'first\n/\nlast');"
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "oracle.sql"
+            path.write_text(ddl, encoding="utf-8")
+            result = parse_ddl_file(path, db="db", dialect="oracle")
+
+        self.assertEqual("'first\n/\nlast'", result.columns[0].default_value)
+
+    def test_dialect_detection_ignores_marker_words_inside_default_literals(self) -> None:
+        ddl = """\
+CREATE TABLE `orders` (
+    `id` INT,
+    note TEXT DEFAULT 'TABLESPACE USERS NOLOGGING'
+) ENGINE=InnoDB;
+"""
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "mysql.sql"
+            path.write_text(ddl, encoding="utf-8")
+            result = parse_ddl_file(path, db="db")
+
+        self.assertEqual(["orders"], [table.name for table in result.tables])
+        self.assertEqual(
+            "'TABLESPACE USERS NOLOGGING'",
+            next(column.default_value for column in result.columns if column.name == "note"),
+        )
+
+    def test_oracle_physical_options_after_global_temporary_table_are_structural(self) -> None:
+        ddl = """\
+CREATE GLOBAL TEMPORARY TABLE SESSION_ITEMS (
+    ITEM_ID NUMBER,
+    NOTE VARCHAR2(10 BYTE) DEFAULT 'NOLOGGING'
+) TABLESPACE USERS NOLOGGING;
+"""
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "oracle.sql"
+            path.write_text(ddl, encoding="utf-8")
+            result = parse_ddl_file(path, db="db", dialect="oracle")
+
+        self.assertEqual(["SESSION_ITEMS"], [table.name for table in result.tables])
+        self.assertEqual(["ITEM_ID", "NOTE"], [column.name for column in result.columns])
+        self.assertEqual("'NOLOGGING'", result.columns[1].default_value)
+
 
 if __name__ == "__main__":
     unittest.main()

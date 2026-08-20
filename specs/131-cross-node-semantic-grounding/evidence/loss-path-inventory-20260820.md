@@ -422,9 +422,116 @@
 - 따라서 `"Foo"`/`"foo"` sibling에서 PK/UNIQUE/FK cardinality나 formal column comment가 다른
   column에 복제·오귀속될 수 있다. 이는 step1 Column/FK→Neo4j→table/column prompt→API/MCP까지
   구조·의미 근거를 오염시키며, `_runs/dbms`가 없어 actual 발동은 미검증이다.
+- 실제 값(2026-08-20): `"Foo"`만 table PK/UNIQUE이고 `"foo"`가 FK인 Oracle DDL을 현재 parser에
+  넣으면 두 Column 모두 `is_primary_key=true`, 두 description 모두 마지막 `COMMENT ON "foo"`의
+  `lower`, FK는 실제로 unique하지 않은 `"foo"`인데 `fk_type=one_to_one`이 된다. sqlglot dump에서는
+  Create/PrimaryKey/Unique/ForeignKey/Comment의 각 `Identifier.quoted=true`와 exact `Foo|foo`가 모두
+  남아 있으므로 source/AST 부족이 아니라 Analyzer의 identity projection 결함이다.
+- 배선: step1이 오염된 `Column.is_primary_key/description`과 `Fk.fk_type`을 생산하고 column/FK writer와
+  graph delta가 그대로 Neo4j에 저장한다. step8 `table_description`은 Column description을
+  `source_description` 권위 입력으로 받으며, 공용 `node_detail`은 PK·description 및 관계 properties의
+  FK cardinality를 REST/MCP에 노출한다. 이 전/후 LLM raw/parsed validator에는 DDL constraint/comment
+  identity 모집단이 없어 오염을 관측할 수 없다.
 - 유입: COMMENT/PK 원형 `6956d02`, UNIQUE/FK cardinality `1aef9a3`.
-- 현재 판정: **실제 구조/의미 손실·오귀속, 후속 red-first 책임 슬라이스 대기**. C-033의 step7
-  owner identity와 섞어 정상 처리된 것으로 주장하지 않는다.
+- red(2026-08-20): quoted PK/comment sibling exact binding, schema-qualified table/column COMMENT,
+  quoted UNIQUE/FK cardinality를 계약으로 고정했다. 관련 집중 20건에서 기존 16건은 green이고 신규
+  3건만 예상대로 실패했다.
+- 추가 경계 red: SQL*Plus 단독 `/` 뒤 COMMENT와 comment literal 안의 `TABLESPACE ...; NOLOGGING`을
+  exact 보존하는 반례가 현재 빈 description으로 실패했다. AST identity 수정이 물리옵션 정규식으로
+  COMMENT literal을 다시 쓰거나 `/`와 한 statement로 묶는 우회 손실을 남기지 않도록 같은 계약에 넣었다.
+- 해결(2026-08-20): 공통 `sql_identifier_key`가 quoted는 exact inner spelling, unquoted는 uppercase와
+  quote-kind를 함께 보존한다. PK/UNIQUE/FK, CREATE/ALTER table map, schema/table/column COMMENT가 모두
+  sqlglot `Identifier.quoted`에서 같은 canonical key를 만들며, COMMENT는 regex identifier 재해석 대신
+  exact source의 sqlglot token statement 경계와 Comment AST를 사용한다. SQL*Plus `/`는 명시 separator로
+  처리하고 COMMENT literal은 물리옵션 정규화에서 완전히 제외한다.
+- 검증: 최초 신규 red 3건과 추가 `/`/literal red 1건이 green, C-035/C-037/C-038 포함 집중
+  `36 tests` green, Analyzer 전체 `1102 tests, 6 skipped`, prompt ledger `17/17`이다. Neo4j `test`
+  transaction에서 writer
+  실제 저장·조회로 `Foo PK=true/upper`, `foo PK=false/lower`, FK `many_to_one`을 확인하고 rollback 뒤
+  node/relationship residue 0을 확인했다.
+- 현재 판정: C-034는 **해결**, actual DBMS corpus raw/parsed 발동은 `_runs/dbms` 부재로 **미검증**이다.
+
+### C-035 — step8 quoted column source-line focus의 재-casefold 오귀속
+
+- C-034 consumer 추적에서 발견했다. C-033이 step7 candidate owner를 `Q:exact|U:uppercase`로 고쳤지만,
+  step8 `_focus_column_candidates`는 target/allowed 이름 문자열을 다시 모두 `casefold()`한다.
+  allowed가 `Foo|foo`이면 sibling set이 비고, source의 `"Foo"` token은 두 target 모두에서
+  `[TARGET_COLUMN]`으로 바뀐다.
+- 배선/영향: Parser v2 exact identifier→step7 exact candidate까지는 정상이나, step8이 같은 exact
+  source line을 case-sensitive sibling Column 두 개의 LLM 권위 근거로 복제한다. 그 raw/parsed response는
+  각각 자기 target 이름에 맞기 때문에 response validator가 교차 귀속을 검출할 수 없고, 결과는 Column
+  analyzed description/frame→Neo4j→REST/MCP로 노출된다.
+- 분류: **실제 의미 오귀속**. preview가 아니라 model-visible authority projection이다.
+- red(2026-08-20): `"Foo"` source token이 `Foo` target에서만 `[TARGET_COLUMN]`, `foo` target에서는
+  `[OTHER_COLUMN]`이 되어야 하는 계약을 추가했다. 제품 함수가 quoted identity 인자를 아직 받지 않아
+  관련 집중 20건 중 이 신규 1건만 TypeError로 red다.
+- 해결(2026-08-20): step8이 DDL `Column.name_quoted`를 target/sibling identity와 함께 받아 공통
+  `sql_identifier_key`로 source token을 표시한다. quoted `"Foo"`는 `Foo` prompt에서만 target이고 `foo`
+  prompt에서는 sibling이며, unquoted 기존 동작도 같은 canonical key로 유지된다. 최초 red는 green,
+  위 집중/전체/prompt/Neo4j 검증에 포함됐다.
+- 현재 판정: C-035는 **해결**, `_runs/dbms`가 없어 actual DBMS raw/parsed 발동은 **미검증**이다.
+
+### C-036 — Catalog/Fabric 응답을 DDL Table에 재결합할 때 quoted/schema identity 손실
+
+- C-034/C-035 owner 역검색에서 발견했다. reference-scoped resolver는 Parser AST의
+  `schema_quoted|name_quoted|column.name_quoted`를 보고 Catalog/Fabric 요청에
+  `case_sensitive_identifiers=true`를 보내지만, confirmed 응답을 Analyzer state Table과 합칠 때
+  `(db.upper(), schema.upper(), name.upper())`로 다시 축약한다. legacy datasource discovery `_merge`는
+  schema도 제외하고 `table.name.upper()` 하나만 사용한다.
+- 영향: quoted `"Foo"`/`"foo"` Table 또는 서로 다른 schema의 동명 Table이 하나의 DDL Table로 오귀속되어
+  resolved table ID, discovered columns, HAS_COLUMN, sample snapshot이 다른 object에 연결될 수 있다.
+  그 state/Neo4j는 step7 table/column prompt와 API/MCP sample·relationship consumer의 권위 입력이다.
+- 유입: datasource discovery `bc699ee2`, reference-scoped resolver `d4986087`. Catalog·Fabric의 현재 사용자
+  WIP는 수정하지 않고 Analyzer 계약/fixture부터 별도 책임 슬라이스로 고정한다.
+- 분류/상태: **실제 구조·의미 오귀속, pending red-first**. `_runs/dbms` 부재로 actual corpus 발동은 미검증이다.
+
+### C-037 — Oracle 물리옵션 전역 regex가 DDL identifier/default literal을 재작성
+
+- C-034 COMMENT literal 보호 경계를 역검색하며 발견했다. `_normalize_ddl`은 `_VARCHAR_LEN_UNIT`과
+  `_STORAGE_OPTS`를 SQL 원문 전체에 적용하므로 구조 위치뿐 아니라 quoted identifier와 DEFAULT string
+  안의 `BYTE|CHAR|TABLESPACE|STORAGE|PCTFREE|NOLOGGING`도 일치하면 삭제한다.
+- 실제 값: `C DEFAULT 'NOLOGGING'`, `"NOLOGGING" DEFAULT 'TABLESPACE USERS'`와 실제 table physical option을
+  함께 넣으면 현재 parser는 quoted identifier를 빈 이름으로 바꿔 `ValueError`가 난다. 조용한 오귀속뿐
+  아니라 정상 DDL 전체 분석을 막는 source rewrite다. `_SLASH_TERMINATOR`도 multiline DEFAULT string 안
+  단독 `/` line을 SQL*Plus terminator로 오인해 실제 값에서 slash를 삭제한다.
+- 배선/영향: exact DDL source→전역 regex→sqlglot AST 이전에 identifier/default가 변형되고,
+  Column.name/default_value→Neo4j→table/column prompt→API/MCP까지 원문과 다른 값이 생산되거나 run이
+  중단된다. LLM raw/parsed validator는 이전 단계라 관측할 수 없다.
+- 분류/상태: **실제 구조·값 손실, red 고정·근본 구현 대기**. 물리 option과 VARCHAR length unit만
+  sqlglot token type/구조 위치로 제거하고 STRING/IDENTIFIER token은 rewrite하지 않으며, SQL*Plus `/`도
+  STRING 밖의 standalone SLASH token일 때만 제거하는 계약으로 해결한다.
+- 해결(2026-08-21): 전역 `_VARCHAR_LEN_UNIT`, `_STORAGE_OPTS`, `_SLASH_TERMINATOR` regex를 제거했다.
+  VARCHAR unit은 exact token shape, table physical option은 CREATE TABLE outer schema close 뒤 option token,
+  SQL*Plus `/`는 STRING 밖 standalone SLASH token에서만 제거한다. DEFAULT/quoted identifier/multiline
+  slash와 `CREATE GLOBAL TEMPORARY TABLE` red 3건은 green이며 집중 36/전체 1102/prompt 17 검증에
+  포함됐다.
+- 현재 판정: C-037은 **해결**이다.
+
+### C-038 — dialect marker regex가 string/comment 단어를 실제 구문으로 오인
+
+- C-037 source rewrite 역검색에서 발견했다. `_detect_dialect`는 원문 전체 regex를 Oracle→Postgres→MySQL
+  순서로 검사해 DEFAULT/comment string의 `TABLESPACE|NOLOGGING|SERIAL|ENGINE=`도 방언 구문으로 센다.
+- 실제 반례: MySQL `ENGINE=InnoDB` CREATE의 DEFAULT가 `'TABLESPACE USERS NOLOGGING'`이면 Oracle marker가
+  먼저 이겨 Oracle parser가 CREATE를 구조 AST가 아닌 fallback Command로 만들고 Table/Column 모집단이
+  빈 결과가 될 수 있다.
+- 배선/영향: exact DDL source→잘못된 dialect→sqlglot AST 모집단 손실→Neo4j/step7/step8/API/MCP 전체 누락.
+  LLM 이전 실제 구조 손실이며 명시 degraded도 아니다.
+- 분류/상태: **실제 구조 손실, red 고정·근본 구현 대기**. sqlglot token에서 STRING/quoted IDENTIFIER를
+  제외하고 실제 type/option token shape로만 dialect를 결정한다.
+- 해결(2026-08-21): dialect detector가 sqlglot token을 사용해 STRING/quoted IDENTIFIER를 제외하고
+  Oracle/Postgres/MySQL의 type/option token shape만 센다. backtick MySQL CREATE + Oracle marker literal
+  red는 green이며 Table/DEFAULT가 exact 보존된다. 집중 36/전체 1102/prompt 17 검증에 포함됐다.
+- 현재 판정: C-038은 **해결**이다.
+
+### C-039 — quoted `SET search_path` schema identity 제거
+
+- C-038 이후 남은 DDL identity 검색에서 발견했다. `_extract_search_path`는 sqlglot Set AST를 다시
+  `.sql()` regex로 읽고 quote를 strip한 문자열만 반환한다. 이후 unqualified CREATE의 table key는 이를
+  unquoted schema로 재분류한다.
+- 영향: quoted search-path schema의 Table/COMMENT/ALTER identity가 explicit quoted schema reference와
+  불일치하거나 case sibling에 오귀속될 수 있다. 이는 C-036의 Table model/Catalog 재결합 quoted identity와
+  함께 닫아야 하며 LLM 이전 구조 손실이다.
+- 유입: `6956d02`. 분류/상태: **실제 구조·의미 오귀속 가능, pending red-first**.
 
 ## 4. 최초 후보 C-006~C-015 종결 분류
 
@@ -528,11 +635,14 @@
 | C-032 | run-start public graph wipe `0f54111` |
 | C-033 | DDL quoted bit drop 원형 `6956d02`; step7 casefold `d498608` |
 | C-034 | COMMENT/PK lower `6956d02`; UNIQUE/FK lower `1aef9a3` |
+| C-035 | step8 source focus casefold `d498608` |
+| C-036 | datasource discovery name-only upper `bc699ee2`; scoped resolver db/schema/name upper `d498608` |
+| C-037/C-038/C-039 | DDL global normalization/dialect/search-path regex `6956d02` |
 
 - 검증됨: 기준선/DB 상태, F-001 actual schema·경계 수량, 위 정적 producer/caller 배선.
 - 검증됨: 각 F/C 경계의 유입 commit 축. "부재" 결함은 해당 owner가 생긴 최초 계열과 현재까지
   closure가 추가되지 않았음을 함께 기록했다.
-- 미검증: DBMS actual run, sealed 직접 의미 판정, 남은 C-004/C-017~021/C-031/C-034 계약/red test.
+- 미검증: DBMS actual run, sealed 직접 의미 판정, 남은 C-004/C-017~021/C-031/C-036/C-039 계약/red test.
 - 아직 제품 정확도나 완료를 주장하지 않는다.
 
 ### 2026-08-20 계약 고정 및 첫 red test

@@ -20,10 +20,16 @@ from pathlib import Path
 
 import sqlglot
 import sqlglot.expressions as exp
+from sqlglot.tokens import Token, TokenType
 
 from graph.schema.graph_edges import BelongsTo, Fk, HasColumn
 from graph.schema.graph_nodes import Column, Schema, Table
 from graph.schema.node_ids import db_id, fqn
+from pipeline.models.sql_identifier import SqlIdentifierKey, sql_identifier_key
+
+
+TableIdentity = tuple[SqlIdentifierKey, SqlIdentifierKey]
+ColumnIdentity = tuple[SqlIdentifierKey, SqlIdentifierKey, SqlIdentifierKey]
 
 
 @dataclass
@@ -39,41 +45,26 @@ class DDLParseResult:
 
 # ── DDL 정규화 / dialect 감지 (정규식) ─────────────────────
 
-# dialect 마커 — sqlglot 자동감지 의존 탈피 (plan M6).
-_DIALECT_MARKERS: list[tuple[str, re.Pattern]] = [
-    ("oracle",   re.compile(r"\bN?VARCHAR2\b|\bNUMBER\s*\(|\bTABLESPACE\b|\bNOLOGGING\b", re.I)),
-    ("postgres", re.compile(r"\bSERIAL\b|\bBIGSERIAL\b|\bBYTEA\b", re.I)),
-    ("mysql",    re.compile(r"\bENGINE\s*=|\bAUTO_INCREMENT\b", re.I)),
-]
-
-# 파싱 전 제거 — COMMENT ON 은 정규식으로 별도 처리, 물리옵션은 분석 무가치.
-_COMMENT_ON_STMT = re.compile(
-    r"COMMENT\s+ON\s+(?:TABLE|VIEW|COLUMN)\s+[\w.\"]+\s+IS\s+'(?:[^']|'')*'\s*;?", re.I,
-)
-_VARCHAR_LEN_UNIT = re.compile(r"(N?VARCHAR2?\s*\(\s*\d+)\s+(?:BYTE|CHAR)\s*\)", re.I)
-_STORAGE_OPTS = re.compile(
-    r"\bTABLESPACE\s+\"?\w+\"?"
-    r"|\bSTORAGE\s*\([^)]*\)"
-    r"|\bPCT(?:FREE|USED)\s+\d+"
-    r"|\b(?:INI|MAX)TRANS\s+\d+"
-    r"|\b(?:NO)?LOGGING\b",
-    re.I,
-)
-_SLASH_TERMINATOR = re.compile(r"^\s*/\s*$", re.M)
-
-# COMMENT ON 추출 — VIEW 도 테이블과 동일 취급 (description 의 출처).
-_COMMENT_TABLE = re.compile(
-    r"COMMENT\s+ON\s+(?:TABLE|VIEW)\s+([\w.\"]+)\s+IS\s+'((?:[^']|'')*)'", re.I,
-)
-_COMMENT_COLUMN = re.compile(
-    r"COMMENT\s+ON\s+COLUMN\s+([\w.\"]+)\s+IS\s+'((?:[^']|'')*)'", re.I,
-)
-
+# dialect 마커와 파싱 전 제거는 sqlglot token이 소유한다.
 
 def _detect_dialect(sql: str) -> str | None:
-    """DDL 본문 마커로 방언 감지 — 없으면 None (sqlglot 기본)."""
-    for name, pattern in _DIALECT_MARKERS:
-        if pattern.search(sql):
+    """Detect dialect from syntax tokens, excluding literals and quoted identifiers."""
+    tokens = sqlglot.tokenize(sql)
+    oracle = False
+    postgres = False
+    mysql = False
+    for index, token in enumerate(tokens):
+        if token.token_type in (TokenType.STRING, TokenType.IDENTIFIER):
+            continue
+        value = token.text.upper()
+        following = tokens[index + 1].token_type if index + 1 < len(tokens) else None
+        oracle = oracle or value in {"VARCHAR2", "NVARCHAR2", "TABLESPACE", "NOLOGGING"}
+        oracle = oracle or (value == "NUMBER" and following == TokenType.L_PAREN)
+        postgres = postgres or value in {"SERIAL", "BIGSERIAL", "BYTEA"}
+        mysql = mysql or value == "AUTO_INCREMENT"
+        mysql = mysql or (value == "ENGINE" and following == TokenType.EQ)
+    for name, matched in (("oracle", oracle), ("postgres", postgres), ("mysql", mysql)):
+        if matched:
             return name
     return None
 
@@ -81,34 +72,198 @@ def _detect_dialect(sql: str) -> str | None:
 def _normalize_ddl(sql: str, dialect: str | None) -> tuple[str, str | None]:
     """파싱 전처리 — COMMENT ON·물리옵션·BYTE 단위·``/`` 종결자 제거 + dialect 결정."""
     effective = dialect or _detect_dialect(sql)
-    sql = _COMMENT_ON_STMT.sub("", sql)          # COMMENT ON 은 regex 로 별도 처리
-    sql = _VARCHAR_LEN_UNIT.sub(r"\1)", sql)     # VARCHAR2(n BYTE) → VARCHAR2(n)
-    sql = _STORAGE_OPTS.sub("", sql)             # 물리 저장옵션 제거 (분석 무가치)
-    sql = _SLASH_TERMINATOR.sub("", sql)         # SQL*Plus / 종결자 제거
+    sql = _strip_comment_statements(sql, effective)  # identity/literal은 별도 AST가 소유
+    if effective == "oracle":
+        sql = _normalize_oracle_physical_syntax(sql, effective)
+    sql = _strip_sqlplus_terminators(sql, effective)
     return sql, effective
 
 
-def _ref_segments(ref: str) -> list[str]:
-    """``"SCHEMA".TABLE`` → ``["schema", "table"]`` (따옴표 제거·소문자)."""
-    return [seg.strip('"').lower() for seg in ref.split(".") if seg.strip('"')]
+def _identifier_ast_key(identifier: exp.Expression) -> SqlIdentifierKey:
+    if not isinstance(identifier, exp.Identifier) or not identifier.name:
+        raise ValueError(f"expected SQL Identifier, got {identifier!r}")
+    return sql_identifier_key(identifier.name, bool(identifier.args.get("quoted")))
 
 
-def _extract_comment_on(sql: str) -> tuple[dict[str, str], dict[tuple[str, str], str]]:
-    """``COMMENT ON`` → (table_comments, column_comments).
+def _schema_key(identifier: object, default_schema: str) -> SqlIdentifierKey:
+    if isinstance(identifier, exp.Identifier):
+        return _identifier_ast_key(identifier)
+    return sql_identifier_key(default_schema, False)
 
-    키는 소문자 — table 이름 / (table, column). escape 된 ``''`` 는 ``'`` 로 복원.
+
+def _table_identity(table: exp.Table, default_schema: str) -> TableIdentity:
+    return (
+        _schema_key(table.args.get("db"), default_schema),
+        _identifier_ast_key(table.this),
+    )
+
+
+def _is_sqlplus_slash_terminator(sql: str, token: Token) -> bool:
+    if token.token_type != TokenType.SLASH:
+        return False
+    line_start = sql.rfind("\n", 0, token.start) + 1
+    line_end = sql.find("\n", token.end + 1)
+    if line_end < 0:
+        line_end = len(sql)
+    return sql[line_start:line_end].strip() == "/"
+
+
+def _strip_sqlplus_terminators(sql: str, dialect: str | None) -> str:
+    """Remove standalone SQL*Plus slash tokens, never slash text inside a literal."""
+    intervals = [
+        (token.start, token.end)
+        for token in sqlglot.tokenize(sql, dialect=dialect)
+        if _is_sqlplus_slash_terminator(sql, token)
+    ]
+    return _remove_source_intervals(sql, intervals)
+
+
+def _statement_token_groups(sql: str, dialect: str | None) -> list[list[Token]]:
+    """Return exact sqlglot-token statement groups, treating SQL*Plus ``/`` as a separator."""
+    groups: list[list[Token]] = []
+    current: list[Token] = []
+    for token in sqlglot.tokenize(sql, dialect=dialect):
+        if _is_sqlplus_slash_terminator(sql, token):
+            if current:
+                groups.append(current)
+                current = []
+            continue
+        current.append(token)
+        if token.token_type == TokenType.SEMICOLON:
+            groups.append(current)
+            current = []
+    if current:
+        groups.append(current)
+    return groups
+
+
+def _strip_comment_statements(sql: str, dialect: str | None) -> str:
+    """Remove complete COMMENT statements without inspecting or rewriting their literals."""
+    intervals = [
+        (tokens[0].start, tokens[-1].end + 1)
+        for tokens in _statement_token_groups(sql, dialect)
+        if tokens and tokens[0].token_type == TokenType.COMMENT
+    ]
+    for start, end in reversed(intervals):
+        sql = sql[:start] + sql[end:]
+    return sql
+
+
+def _remove_source_intervals(sql: str, intervals: list[tuple[int, int]]) -> str:
+    """Remove non-overlapping inclusive source intervals from right to left."""
+    for start, end in sorted(set(intervals), reverse=True):
+        sql = sql[:start] + sql[end + 1:]
+    return sql
+
+
+def _schema_close_index(tokens: list[Token]) -> int | None:
+    """Return the outer CREATE TABLE column-list closing parenthesis token index."""
+    depth = 0
+    opened = False
+    for index, token in enumerate(tokens):
+        if token.token_type == TokenType.L_PAREN:
+            depth += 1
+            opened = True
+        elif token.token_type == TokenType.R_PAREN and opened:
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def _normalize_oracle_physical_syntax(sql: str, dialect: str | None) -> str:
+    """Remove only structural Oracle DDL syntax identified by sqlglot tokens.
+
+    STRING and quoted IDENTIFIER tokens are never inspected by text regexes. VARCHAR length
+    units are removed only from the token shape ``VARCHAR*(number BYTE|CHAR)``. Table physical
+    options are removed only after the outer CREATE TABLE column list.
     """
-    table_comments: dict[str, str] = {}
-    column_comments: dict[tuple[str, str], str] = {}
-    for m in _COMMENT_TABLE.finditer(sql):
-        ref = _ref_segments(m.group(1))
-        if ref:
-            table_comments[ref[-1]] = m.group(2).replace("''", "'")
-    for m in _COMMENT_COLUMN.finditer(sql):
-        ref = _ref_segments(m.group(1))
-        if len(ref) >= 2:
-            column_comments[(ref[-2], ref[-1])] = m.group(2).replace("''", "'")
-    return table_comments, column_comments
+    intervals: list[tuple[int, int]] = []
+    length_types = {"VARCHAR", "VARCHAR2", "NVARCHAR", "NVARCHAR2"}
+    option_with_value = {"TABLESPACE", "PCTFREE", "PCTUSED", "INITRANS", "MAXTRANS"}
+
+    for tokens in _statement_token_groups(sql, dialect):
+        for index in range(len(tokens) - 4):
+            type_token, left, size, unit, right = tokens[index:index + 5]
+            if (
+                type_token.text.upper() in length_types
+                and left.token_type == TokenType.L_PAREN
+                and size.token_type == TokenType.NUMBER
+                and unit.text.upper() in {"BYTE", "CHAR"}
+                and unit.token_type != TokenType.IDENTIFIER
+                and right.token_type == TokenType.R_PAREN
+            ):
+                intervals.append((unit.start, unit.end))
+
+        if len(tokens) < 3 or tokens[0].token_type != TokenType.CREATE:
+            continue
+        first_paren = next(
+            (index for index, token in enumerate(tokens)
+             if token.token_type == TokenType.L_PAREN),
+            len(tokens),
+        )
+        if not any(
+            token.token_type == TokenType.TABLE for token in tokens[:first_paren]
+        ):
+            continue
+        close_index = _schema_close_index(tokens)
+        if close_index is None:
+            continue
+        index = close_index + 1
+        while index < len(tokens):
+            token = tokens[index]
+            option = token.text.upper()
+            if option in option_with_value and token.token_type != TokenType.IDENTIFIER:
+                if index + 1 >= len(tokens):
+                    raise ValueError(f"Oracle {option} option is missing its value")
+                intervals.append((token.start, tokens[index + 1].end))
+                index += 2
+                continue
+            if option == "STORAGE" and token.token_type != TokenType.IDENTIFIER:
+                if index + 1 >= len(tokens) or tokens[index + 1].token_type != TokenType.L_PAREN:
+                    raise ValueError("Oracle STORAGE option is missing its parenthesized value")
+                depth = 0
+                end_index = None
+                for cursor in range(index + 1, len(tokens)):
+                    if tokens[cursor].token_type == TokenType.L_PAREN:
+                        depth += 1
+                    elif tokens[cursor].token_type == TokenType.R_PAREN:
+                        depth -= 1
+                        if depth == 0:
+                            end_index = cursor
+                            break
+                if end_index is None:
+                    raise ValueError("Oracle STORAGE option has an unclosed parenthesis")
+                intervals.append((token.start, tokens[end_index].end))
+                index = end_index + 1
+                continue
+            if option in {"LOGGING", "NOLOGGING"} and token.token_type != TokenType.IDENTIFIER:
+                intervals.append((token.start, token.end))
+            index += 1
+
+    return _remove_source_intervals(sql, intervals)
+
+
+def _metadata_statements(
+    sql: str, dialect: str | None,
+) -> list[exp.Expression]:
+    """Parse SET/COMMENT from exact source token boundaries.
+
+    Oracle physical CREATE options are normalized separately. They must not rewrite COMMENT
+    literals. sqlglot tokens provide exact statement boundaries, including semicolons inside
+    string literals, and sqlglot AST remains the owner of identifier spelling and quoted bits.
+    """
+    statements: list[exp.Expression] = []
+    for tokens in _statement_token_groups(sql, dialect):
+        first = tokens[0]
+        if first.token_type not in (TokenType.SET, TokenType.COMMENT):
+            continue
+        source = sql[first.start:tokens[-1].end + 1]
+        parsed = sqlglot.parse_one(source, dialect=dialect)
+        if not isinstance(parsed, (exp.Set, exp.Comment)):
+            raise ValueError(f"metadata statement parsed as {type(parsed).__name__}")
+        statements.append(parsed)
+    return statements
 
 
 # ── search_path / 일반주석 ────────────────────────────────────
@@ -125,6 +280,43 @@ def _extract_search_path(stmt: exp.Expression) -> str:
     if not m:
         return ""
     return m.group(1).strip().strip('"').strip("'")
+
+
+def _extract_comment_on(
+    sql: str,
+    *,
+    dialect: str | None,
+    default_schema: str,
+) -> tuple[dict[TableIdentity, str], dict[ColumnIdentity, str]]:
+    """Extract formal comments from sqlglot AST with exact qualified identity."""
+    table_comments: dict[TableIdentity, str] = {}
+    column_comments: dict[ColumnIdentity, str] = {}
+    current_schema = default_schema
+    for stmt in _metadata_statements(sql, dialect):
+        if isinstance(stmt, exp.Set):
+            current_schema = _extract_search_path(stmt) or current_schema
+            continue
+        target = stmt.this
+        literal = stmt.args.get("expression")
+        if not isinstance(literal, exp.Literal) or not literal.is_string:
+            raise ValueError("COMMENT ON requires a string literal")
+        kind = str(stmt.args.get("kind") or "").upper()
+        if kind in ("TABLE", "VIEW"):
+            if not isinstance(target, exp.Table):
+                raise ValueError("COMMENT ON TABLE/VIEW target must be a Table AST")
+            table_comments[_table_identity(target, current_schema)] = literal.this
+        elif kind == "COLUMN":
+            if not isinstance(target, exp.Column):
+                raise ValueError("COMMENT ON COLUMN target must be a Column AST")
+            table_identifier = target.args.get("table")
+            if not isinstance(table_identifier, exp.Identifier):
+                raise ValueError("COMMENT ON COLUMN target must include a table")
+            table_key = (
+                _schema_key(target.args.get("db"), current_schema),
+                _identifier_ast_key(table_identifier),
+            )
+            column_comments[(*table_key, _identifier_ast_key(target.this))] = literal.this
+    return table_comments, column_comments
 
 
 def _join_comments(comments: list[str] | None) -> str:
@@ -177,13 +369,17 @@ def parse_ddl_file(
         ``DDLParseResult`` — 호출자가 모아서 Neo4j 업서트.
     """
     sql = path.read_text(encoding="utf-8")
-    table_comments, column_comments = _extract_comment_on(sql)
     norm_sql, effective_dialect = _normalize_ddl(sql, dialect)
+    table_comments, column_comments = _extract_comment_on(
+        sql, dialect=effective_dialect, default_schema=default_schema,
+    )
 
     result = DDLParseResult()
-    seen_schemas: set[str] = set()
-    seen_tables: set[tuple[str, str]] = set()
-    unique_keys_by_table: dict[tuple[str, str], set[frozenset[str]]] = {}
+    seen_schemas: set[SqlIdentifierKey] = set()
+    seen_tables: set[TableIdentity] = set()
+    unique_keys_by_table: dict[
+        TableIdentity, set[frozenset[SqlIdentifierKey]]
+    ] = {}
 
     statements = sqlglot.parse(norm_sql, dialect=effective_dialect)
     # 비수식 테이블의 소속 스키마 — SET search_path 가 구문 순서대로 갱신.
@@ -207,12 +403,14 @@ def _handle_create(
     stmt: exp.Create,
     db: str,
     default_schema: str,
-    table_comments: dict[str, str],
-    column_comments: dict[tuple[str, str], str],
+    table_comments: dict[TableIdentity, str],
+    column_comments: dict[ColumnIdentity, str],
     result: DDLParseResult,
-    seen_schemas: set[str],
-    seen_tables: set[tuple[str, str]],
-    unique_keys_by_table: dict[tuple[str, str], set[frozenset[str]]],
+    seen_schemas: set[SqlIdentifierKey],
+    seen_tables: set[TableIdentity],
+    unique_keys_by_table: dict[
+        TableIdentity, set[frozenset[SqlIdentifierKey]]
+    ],
 ) -> None:
     """CREATE 구문 처리 — kind 로 SCHEMA / TABLE / VIEW 분기.
 
@@ -242,20 +440,21 @@ def _handle_create(
 
     table_name = tab.name
     schema_name = tab.db or default_schema or ""
+    table_key = _table_identity(tab, default_schema)
+    schema_key = table_key[0]
 
     # Schema (중복 제거)
-    if schema_name and schema_name not in seen_schemas:
-        seen_schemas.add(schema_name)
+    if schema_name and schema_key not in seen_schemas:
+        seen_schemas.add(schema_key)
         result.schemas.append(Schema(db=db, name=schema_name))
 
     # Table — 정식 COMMENT ON만 description. 일반 주석은 comment에만 보존한다.
     raw_comment = _join_comments(stmt.comments)
     description, description_source = _resolve_description(
-        table_comments.get(table_name.lower(), ""), raw_comment,
+        table_comments.get(table_key, ""), raw_comment,
     )
-    tkey = (schema_name, table_name)
-    if tkey not in seen_tables:
-        seen_tables.add(tkey)
+    if table_key not in seen_tables:
+        seen_tables.add(table_key)
         # VIEW 정의 SELECT 원문 보관 (spec 112) — 종전엔 버리던 "뷰의 레시피".
         # 기저 테이블 추적(뷰 펼치기)의 유일한 재료다. sqlglot expression 이 곧 정의.
         view_definition = ""
@@ -283,10 +482,12 @@ def _handle_create(
     table_fqn = db_id(db, schema_name, table_name)
     pk_cols = _table_pk_columns(col_container)
     unique_keys = _declared_unique_keys(col_container)
-    unique_keys_by_table[(schema_name.lower(), table_name.lower())] = unique_keys
+    unique_keys_by_table[table_key] = unique_keys
     for col_expr in col_container.expressions:
         if isinstance(col_expr, exp.ColumnDef):
-            _handle_column(col_expr, table_name, table_fqn, pk_cols, column_comments, result)
+            _handle_column(
+                col_expr, table_key, table_fqn, pk_cols, column_comments, result,
+            )
     for fk_expr in col_container.find_all(exp.ForeignKey):
         _handle_inline_fk(
             fk_expr, db, schema_name, table_name, default_schema, result, unique_keys,
@@ -297,7 +498,7 @@ def _handle_create_schema(
     stmt: exp.Create,
     db: str,
     result: DDLParseResult,
-    seen_schemas: set[str],
+    seen_schemas: set[SqlIdentifierKey],
 ) -> None:
     """``CREATE SCHEMA x`` → Schema 노드 (중복 제거).
 
@@ -310,26 +511,36 @@ def _handle_create_schema(
         name = node.db or node.name
     elif node is not None:
         name = getattr(node, "name", "") or ""
-    if name and name not in seen_schemas:
-        seen_schemas.add(name)
+    identifier = None
+    if isinstance(node, exp.Table):
+        identifier = node.args.get("db") or node.args.get("this")
+    identity = (
+        _identifier_ast_key(identifier)
+        if isinstance(identifier, exp.Identifier)
+        else sql_identifier_key(name, False)
+    )
+    if name and identity not in seen_schemas:
+        seen_schemas.add(identity)
         result.schemas.append(Schema(db=db, name=name))
 
 
-def _table_pk_columns(table_expr: exp.Schema) -> set[str]:
-    """테이블 레벨 ``PRIMARY KEY (a, b)`` → PK 컬럼 이름 집합 (소문자).
+def _table_pk_columns(table_expr: exp.Schema) -> set[SqlIdentifierKey]:
+    """Return exact identities named by table-level ``PRIMARY KEY`` constraints.
 
     명명 ``CONSTRAINT pk_x PRIMARY KEY (...)`` 는 ``exp.Constraint`` 래퍼 안에
     있으므로 ``find_all`` 로 평면·명명 둘 다 잡는다 (컬럼 레벨 PK 는
     ColumnConstraint 라 여기 안 걸림 — 무관).
     """
-    pk_cols: set[str] = set()
+    pk_cols: set[SqlIdentifierKey] = set()
     for pk in table_expr.find_all(exp.PrimaryKey):
         for ident in pk.expressions:
-            pk_cols.add(ident.name.lower())
+            pk_cols.add(_identifier_ast_key(ident))
     return pk_cols
 
 
-def _declared_unique_keys(table_expr: exp.Schema) -> set[frozenset[str]]:
+def _declared_unique_keys(
+    table_expr: exp.Schema,
+) -> set[frozenset[SqlIdentifierKey]]:
     """Return exact local column sets declared unique by PRIMARY KEY or UNIQUE.
 
     Cardinality belongs to the complete constraint, not to each member: a
@@ -337,10 +548,12 @@ def _declared_unique_keys(table_expr: exp.Schema) -> set[frozenset[str]]:
     unique key. Column-level constraints are represented separately by
     sqlglot and become singleton keys.
     """
-    keys: set[frozenset[str]] = set()
+    keys: set[frozenset[SqlIdentifierKey]] = set()
 
     for pk in table_expr.find_all(exp.PrimaryKey):
-        names = frozenset(ident.name.lower() for ident in pk.expressions if ident.name)
+        names = frozenset(
+            _identifier_ast_key(ident) for ident in pk.expressions if ident.name
+        )
         if names:
             keys.add(names)
 
@@ -348,7 +561,8 @@ def _declared_unique_keys(table_expr: exp.Schema) -> set[frozenset[str]]:
         target = unique.this
         if isinstance(target, exp.Schema):
             names = frozenset(
-                ident.name.lower() for ident in target.expressions if ident.name
+                _identifier_ast_key(ident)
+                for ident in target.expressions if ident.name
             )
             if names:
                 keys.add(names)
@@ -359,17 +573,17 @@ def _declared_unique_keys(table_expr: exp.Schema) -> set[frozenset[str]]:
         for constraint in col.args.get("constraints") or []:
             kind = getattr(constraint, "kind", None)
             if isinstance(kind, (exp.PrimaryKeyColumnConstraint, exp.UniqueColumnConstraint)):
-                keys.add(frozenset((col.name.lower(),)))
+                keys.add(frozenset((_identifier_ast_key(col.this),)))
 
     return keys
 
 
 def _handle_column(
     col: exp.ColumnDef,
-    table_name: str,
+    table_identity: TableIdentity,
     table_fqn: str,
-    pk_cols: set[str],
-    column_comments: dict[tuple[str, str], str],
+    pk_cols: set[SqlIdentifierKey],
+    column_comments: dict[ColumnIdentity, str],
     result: DDLParseResult,
 ) -> None:
     """ColumnDef → Column 노드 + HAS_COLUMN 엣지. 제약·DEFAULT·설명 추출.
@@ -382,10 +596,11 @@ def _handle_column(
     name_quoted = bool(
         isinstance(identifier, exp.Identifier) and identifier.args.get("quoted")
     )
+    column_key = _identifier_ast_key(identifier)
     dtype = col.args.get("kind")
     dtype_str = dtype.sql() if dtype is not None else "UNKNOWN"
 
-    is_pk = name.lower() in pk_cols
+    is_pk = column_key in pk_cols
     is_unique = False
     is_not_null = False
     default_value: str | None = None
@@ -403,7 +618,7 @@ def _handle_column(
 
     raw_comment = _join_comments(col.comments)
     description, description_source = _resolve_description(
-        column_comments.get((table_name.lower(), name.lower()), ""), raw_comment,
+        column_comments.get((*table_identity, column_key), ""), raw_comment,
     )
     col_fqn = fqn(table_fqn, name)
     result.columns.append(Column(
@@ -429,7 +644,7 @@ def _handle_inline_fk(
     from_table: str,
     default_schema: str,
     result: DDLParseResult,
-    source_unique_keys: set[frozenset[str]],
+    source_unique_keys: set[frozenset[SqlIdentifierKey]],
 ) -> None:
     """테이블 레벨 FK (``FOREIGN KEY`` 절 — 명명 ``CONSTRAINT`` 포함) → Fk 엣지.
 
@@ -448,14 +663,24 @@ def _handle_inline_fk(
     to_schema = target_tab.db or default_schema or ""
     to_table = target_tab.name
 
-    from_cols = [c.name for c in fk_expr.expressions if isinstance(c, exp.Identifier)]
-    to_cols = [c.name for c in ref_table.expressions if isinstance(c, exp.Identifier)]
+    from_identifiers = [
+        column for column in fk_expr.expressions
+        if isinstance(column, exp.Identifier)
+    ]
+    to_identifiers = [
+        column for column in ref_table.expressions
+        if isinstance(column, exp.Identifier)
+    ]
+    from_cols = [column.name for column in from_identifiers]
+    to_cols = [column.name for column in to_identifiers]
     if not from_cols or not to_cols or len(from_cols) != len(to_cols):
         return
 
     fk_type = (
         "one_to_one"
-        if frozenset(col.lower() for col in from_cols) in source_unique_keys
+        if frozenset(
+            _identifier_ast_key(column) for column in from_identifiers
+        ) in source_unique_keys
         else "many_to_one"
     )
     for from_col, to_col in zip(from_cols, to_cols):
@@ -474,7 +699,9 @@ def _handle_alter(
     db: str,
     default_schema: str,
     result: DDLParseResult,
-    unique_keys_by_table: dict[tuple[str, str], set[frozenset[str]]],
+    unique_keys_by_table: dict[
+        TableIdentity, set[frozenset[SqlIdentifierKey]]
+    ],
 ) -> None:
     """ALTER TABLE ADD CONSTRAINT FOREIGN KEY 처리."""
     table_expr = stmt.this
@@ -483,7 +710,7 @@ def _handle_alter(
     from_schema = table_expr.db or default_schema or ""
     from_table = table_expr.name
     unique_keys = unique_keys_by_table.get(
-        (from_schema.lower(), from_table.lower()), set(),
+        _table_identity(table_expr, default_schema), set(),
     )
 
     for action in stmt.args.get("actions", []) or []:

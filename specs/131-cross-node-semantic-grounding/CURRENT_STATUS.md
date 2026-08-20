@@ -205,6 +205,22 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
     `Column`→Neo4j→step7→MCP detail까지 보존해 `"Foo"`/`"foo"`를 exact case로 분리한다. red 5건은
     green이며 Parser `157/0/0/8`, Analyzer `1093 passed, 6 skipped`, prompt `17/17`, Neo4j rollback
     저장·조회/잔여 0을 통과했다. `_runs/dbms`가 없어 actual DBMS raw/parsed 표본은 미검증이다.
-    후속 추적에서 DDL PK/UNIQUE/FK/comment가 별도로 lower하는 C-034를 새 pending으로 분리했다.
-16. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
-17. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.
+    후속 추적에서 DDL PK/UNIQUE/FK/comment가 별도로 lower하는 C-034와 step8 source-line focus가
+    quoted sibling을 다시 casefold하는 C-035를 새 pending으로 분리했다. C-034 실제 최소 반례는
+    `"Foo"` PK/comment가 `"foo"`에 복제되고 non-unique FK가 `one_to_one`이 되는 것을 확인했다.
+    이어 Catalog/Fabric confirmed 응답 재결합이 `(db/schema/name).upper()`이고 legacy discovery는
+    `name.upper()`뿐인 C-036도 발견해 별도 pending으로 기록했다.
+    COMMENT literal 경계 추적에서는 Oracle 물리옵션 전역 regex가 quoted identifier/DEFAULT literal까지
+    재작성하는 C-037을 추가 발견했고 red를 고정했다.
+    같은 원문 regex의 dialect 감지가 string marker를 실제 방언 구문으로 오인하는 C-038도 red로 분리했다.
+16. 완료(C-034/C-035/C-037/C-038): DDL PK/UNIQUE/FK/COMMENT와 step8 source focus가 공통
+    `Q:exact|U:uppercase` identity를 사용한다. COMMENT identity/literal은 exact source token 경계의
+    sqlglot AST가 소유하며 regex 재해석을 제거했다. Oracle physical option/VARCHAR unit/SQL*Plus `/`와
+    dialect 감지도 syntax token 위치만 사용해 DEFAULT·quoted identifier를 rewrite하지 않는다.
+    최초 red 9건은 green, 집중 `36 tests`, Analyzer 전체 `1102 tests, 6 skipped`, prompt `17/17`을
+    통과했다. Neo4j `test`
+    rollback 저장·조회에서 quoted sibling PK/comment/FK를 확인했고 node/relationship residue는 0이다.
+    `_runs/dbms`가 없어 actual DBMS raw/parsed 표본은 계속 미검증이다.
+    잔여 quoted `SET search_path` schema drop은 C-039 pending으로 분리했다.
+17. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
+18. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.

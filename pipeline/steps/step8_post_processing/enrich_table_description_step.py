@@ -37,6 +37,7 @@ from pipeline.models.table_description_frame import (
     table_description_frame_response_model,
 )
 from pipeline.models.semantic_frame import profile_prompt_json, slot_specs_json
+from pipeline.models.sql_identifier import SqlIdentifierKey, sql_identifier_key
 from llm.runners.yaml_llm_runner import run_yaml_rule
 from llm.runners.model_output_error import ModelOutputError
 from pipeline.models.analysis_finding import AnalysisFinding
@@ -106,19 +107,24 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
         # 누락하거나 추가해도 최종 prompt의 컬럼 소유권을 바꾸지 않는다.
         source_columns = source_columns_by_table.get(table, [])
         ordered_names = [column.name for column in source_columns]
+        allowed_column_identities = [
+            (column.name, bool(getattr(column, "name_quoted", False)))
+            for column in source_columns
+        ]
         allowed_column_names[table] = set(ordered_names)
         columns = []
-        for name in ordered_names:
-            source = source_columns_by_id.get(fqn(table, name))
+        for source in source_columns:
+            name = source.name
             columns.append({
                 "name": name,
-                "source_logical_name": getattr(source, "logical_name", "") if source else "",
-                "source_description": getattr(source, "description", "") if source else "",
-                "source_comment": getattr(source, "comment", "") if source else "",
+                "source_logical_name": getattr(source, "logical_name", ""),
+                "source_description": getattr(source, "description", ""),
+                "source_comment": getattr(source, "comment", ""),
                 "candidates": _focus_column_candidates(
                     column_candidates.get(table, {}).get(name, []),
                     target_name=name,
-                    allowed_names=ordered_names,
+                    target_quoted=bool(getattr(source, "name_quoted", False)),
+                    allowed_columns=allowed_column_identities,
                 ),
             })
         prompt_evidence[table] = {
@@ -334,7 +340,8 @@ def _focus_column_candidates(
     candidates: list[dict[str, object]],
     *,
     target_name: str,
-    allowed_names: list[str],
+    target_quoted: bool,
+    allowed_columns: list[tuple[str, bool]],
 ) -> list[dict[str, object]]:
     """Project raw coordinate evidence into one-column-at-a-time prompt text.
 
@@ -342,10 +349,13 @@ def _focus_column_candidates(
     the owned column and masks sibling DDL column identifiers so one source line cannot license
     semantic claims for a sibling candidate.  This creates no business meaning.
     """
-    sibling_names = {
-        str(name).casefold() for name in allowed_names
-        if str(name).casefold() != str(target_name).casefold()
+    target_identity = sql_identifier_key(target_name, target_quoted)
+    allowed_identities = {
+        sql_identifier_key(name, quoted) for name, quoted in allowed_columns
     }
+    if target_identity not in allowed_identities:
+        raise ValueError(f"target column is not in DDL identities: {target_identity!r}")
+    sibling_identities = allowed_identities - {target_identity}
     focused: list[dict[str, object]] = []
     for candidate in candidates:
         item = {key: value for key, value in candidate.items() if key != "source_lines"}
@@ -355,8 +365,8 @@ def _focus_column_candidates(
             } | {
                 "focus_text": _focus_column_source_text(
                     str(source_line.get("text") or ""),
-                    target_name=target_name,
-                    sibling_names=sibling_names,
+                    target_identity=target_identity,
+                    sibling_identities=sibling_identities,
                 ),
             }
             for source_line in candidate.get("source_lines", []) or []
@@ -368,11 +378,10 @@ def _focus_column_candidates(
 def _focus_column_source_text(
     text: str,
     *,
-    target_name: str,
-    sibling_names: set[str],
+    target_identity: SqlIdentifierKey,
+    sibling_identities: set[SqlIdentifierKey],
 ) -> str:
     """Label exact identifier tokens outside literals and discard comment-only suffixes."""
-    target = str(target_name).casefold()
     result: list[str] = []
     index = 0
     while index < len(text):
@@ -407,10 +416,12 @@ def _focus_column_source_text(
                         continue
                     break
                 end += 1
-            token = text[index + 1:end].replace('""', '"').casefold()
+            token = sql_identifier_key(
+                text[index + 1:end].replace('""', '"'), True,
+            )
             replacement = (
-                '"[TARGET_COLUMN]"' if token == target
-                else '"[OTHER_COLUMN]"' if token in sibling_names
+                '"[TARGET_COLUMN]"' if token == target_identity
+                else '"[OTHER_COLUMN]"' if token in sibling_identities
                 else text[index:min(end + 1, len(text))]
             )
             result.append(replacement)
@@ -420,10 +431,10 @@ def _focus_column_source_text(
             end = index + 1
             while end < len(text) and (text[end].isalnum() or text[end] in "_$#"):
                 end += 1
-            token = text[index:end].casefold()
+            token = sql_identifier_key(text[index:end], False)
             result.append(
-                "[TARGET_COLUMN]" if token == target
-                else "[OTHER_COLUMN]" if token in sibling_names
+                "[TARGET_COLUMN]" if token == target_identity
+                else "[OTHER_COLUMN]" if token in sibling_identities
                 else text[index:end]
             )
             index = end

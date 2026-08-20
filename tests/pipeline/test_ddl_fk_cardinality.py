@@ -52,6 +52,28 @@ class DdlFkCardinalityTest(unittest.TestCase):
         )
         self.assertEqual([e.fk_type for e in edges], ["many_to_one"])
 
+    def test_quoted_unique_identity_does_not_change_sibling_fk_cardinality(self):
+        ddl = '''
+        CREATE TABLE "parent" ("Id" INT PRIMARY KEY);
+        CREATE TABLE "child" (
+            "Foo" INT,
+            "foo" INT,
+            CONSTRAINT UQ_CHILD UNIQUE ("Foo"),
+            CONSTRAINT FK_LOWER FOREIGN KEY ("foo") REFERENCES "parent"("Id")
+        );
+        ALTER TABLE "child" ADD CONSTRAINT FK_UPPER
+            FOREIGN KEY ("Foo") REFERENCES "parent"("Id");
+        '''
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "quoted.sql"
+            path.write_text(ddl, encoding="utf-8")
+            edges = parse_ddl_file(path, db="fixture", dialect="oracle").fk_edges
+
+        self.assertEqual(
+            [("foo", "many_to_one"), ("Foo", "one_to_one")],
+            [(edge.from_column, edge.fk_type) for edge in edges],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
