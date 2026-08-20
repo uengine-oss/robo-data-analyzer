@@ -8,9 +8,20 @@
 - [x] D131-04 문서 참조·중복 현재상태·diff 최종 감사
 - [x] D131-04a 정본 handoff·raw 실험·루트 `_runs`를 spec 131 아래로 이동하고
   `docs/핸드오프`에는 링크 README만 유지
-- [ ] D131-05 상황·배경·확정/미확정·권장 방향 설명 후 사용자 피드백 반영
+- [x] D131-05 상황·배경·확정/미확정·권장 방향 설명 후 사용자 피드백 반영
 
-이 단계에서는 코드·prompt·schema·테스트·분석 실행·DB 내용·Architect를 변경하지 않는다.
+사용자가 2026-08-20 전체 목표와 방향을 승인해 이 단계는 종료됐다.
+
+## 2026-08-20 의미 무손실 전수조사
+
+- [ ] A131-01 Analyzer 전체 상한·절단·Top-N·sampling·skip/fallback·중간 LLM·summary-of-summary·
+  timeout/retry/cache/batch/concurrency 생산자·소비자 inventory 완성
+- [ ] A131-02 각 후보의 source→AST→actual prompt→raw/parsed→validator→Neo4j→API/MCP 배선,
+  실제 값, 유입 commit 확정
+- [ ] A131-03 실제 의미 손실/안전한 실행 분할/표시 preview/검색 파생 제한/명시적 degraded 분류와
+  원인·영향도 보고
+- [ ] A131-04 계약·실패/경계/과대 입력 red test 고정 후 책임 슬라이스별 근본 구현·검증·commit/push
+- [ ] A131-05 자동 회귀·결정론 전수 회계·봉인 직접 의미 판정 3층 완료
 
 ## 보존된 기준선
 

@@ -1,14 +1,16 @@
 # Analyzer 의미 무손실 감사 현재상태
 
 **Updated**: 2026-08-20
-**Status**: 문서 메모리 위치 통합·무결성 검증 완료 — 상황·방향 사용자 피드백 대기
-**Product-code baseline HEAD**: `7c91721eb9a8f21f2cdffb0f1c61be71aebc2c78` (`main`, 문서 정리 전)
+**Status**: 사용자 방향 승인 완료 — Analyzer 전체 의미 손실 경로 전수조사 진행 중
+**Product-code baseline HEAD**: `c216e674cbac43386f9826632097ca2661395d7d` (`main`, clean)
 
 이 문서는 현재 진행 위치만 소유한다. 영구 규칙은 `ABSOLUTE_RULES.md`, 상세 역사와 기존 수치는 `HANDOFF.md`와 `evidence/`가 소유한다.
 
 ## 1. 현재 범위
 
-- 2026-08-20 현재는 사용자 피드백 전 **문서 메모리 정리만** 수행한다.
+- 2026-08-20 사용자가 전체 목표와 방향을 승인해 피드백 대기 단계는 종료됐다.
+- 제품 수정 전 Analyzer 전체의 상한·절단·표본·skip/fallback·중간 LLM·summary-of-summary·
+  timeout/retry/cache/batch/concurrency 경로를 전수조사하고 실제 배선·값·원인·영향도를 먼저 확정한다.
 - Analyzer 전체 의미 생산·검증·저장 경로
 - 직접 upstream인 Parser·Catalog·Fabric 계약
 - Analyzer Neo4j 저장과 Analyzer API/MCP 출력 경계
@@ -16,13 +18,15 @@
 
 ## 2. 현재 환경·WIP
 
-- Neo4j `127.0.0.1:7687`: 2026-08-20 인증과 `SHOW DATABASES` 성공.
+- Neo4j `127.0.0.1:7687`: 현재 세션에서 인증과 `SHOW DATABASES` 재확인 성공.
   `neo4j|test|framework|dbms|system`만 존재하고 모두 online이다. 허용 목록 밖 DB는 0개다.
-- Analyzer WIP는 문서 메모리 정리와 경로 이동, 검증 도구의 문서 경로 1줄 정정뿐이다.
-  제품 실행 로직 WIP는 0개다.
-- Architect에는 별도 사용자 WIP 4개가 있으며 건드리지 않는다.
-- Parser HEAD `4b849f1`, dirty 0.
-- 현재 단계에서 DB 생성·삭제·분석 실행·서비스 변경은 0회다.
+- Analyzer HEAD `c216e674cbac43386f9826632097ca2661395d7d`, 조사 착수 전 dirty 0.
+- Parser HEAD `4b849f14575b6830b82ae5ee980658100c4d8692`, dirty 0.
+- Catalog HEAD `1f1aaa608a3d7ef8b01ce15c3df962cf0f1cfefb`, 기존 dirty 12개가 있다.
+- Fabric HEAD `83c9604e2d6ec3f1ececa47d2e2264a74257843d`, 기존 dirty 7개가 있다.
+- Architect HEAD `7b771ac2e7338d03ac8238db5c307d97080232c1`, 기존 dirty 4개가 있다.
+  Catalog·Fabric·Architect의 기존 WIP는 읽기만 하고 수정·stage하지 않는다.
+- 현재 세션에서 DB 생성·삭제·내용 변경·분석 실행·서비스 변경은 0회다.
 
 ### 문서 메모리 무결성
 
@@ -108,11 +112,14 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
 
 각 후보마다 `git blame/log/show`로 유입 commit과 당시 테스트·근거를 확인하고, 새 결함/기존 결함/기존 결함 통과를 분리한다.
 
-## 9. 문서 정리 뒤 다음 행동 — 사용자 피드백 전 실행 금지
+## 9. 현재 실행 순서
 
-1. Analyzer 전체의 숫자 상한·slice·truncate·sampling·fallback·중간 LLM consumer inventory를 완성한다.
+1. Analyzer 전체의 숫자 상한·slice·truncate·Top-N·sampling·skip/fallback·중간 LLM·
+   summary-of-summary·timeout/retry/cache/batch/concurrency inventory를 완성한다.
 2. 각 후보를 source→AST→actual prompt→raw/parsed→validator→graph/API/MCP로 추적한다.
-3. 영향도와 원인 사슬을 spec/contract/plan/tasks에 고정한다.
-4. 실패·경계·과대 입력 red test를 먼저 만든 뒤 근본 수정한다.
-5. 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 검증한다.
-6. 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.
+3. 각 항목을 실제 의미 손실, 안전한 실행 분할, 표시 전용 preview, 검색 파생 제한,
+   명시적 degraded 처리로 분류하고 실제 값·유입 commit·영향도를 기록한다.
+4. 배선·실제 값·원인·영향도 확정 결과를 사용자에게 한 번 보고한다.
+5. 계약과 실패·경계·과대 입력 red test를 먼저 고정한 뒤 숫자 증설 없이 근본 수정한다.
+6. 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 검증한다.
+7. 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.
