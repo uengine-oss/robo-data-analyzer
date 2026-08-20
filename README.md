@@ -765,9 +765,9 @@ YAML 프롬프트를 `yaml_llm_runner`가 실행합니다. 전략별 디렉터�
 
 | 위치 | 내용 |
 |---|---|
-| `prompts/framework/` | `code_summary` · `code_table_insights` · `module_summary` · `component_naming` · `table_description` · `_common` |
-| `prompts/dbms/` | `code_summary_batch` · `code_table_insights_batch` · `module_summary` · `component_naming` · `table_description` · `_common` |
-| `prompts/common/*.md` | 산출물 계약 문서 — summary · structured rule · empty domain terms · component naming · module intent/summary · search text · table description |
+| `prompts/framework/` | `code_summary` · `code_table_insights` · `table_description` · `_common` |
+| `prompts/dbms/` | `code_summary_batch` · `code_table_insights_batch` · `table_description` · `_common` |
+| `prompts/common/*.md` | 산출물 계약 문서 — function summary · semantic frame · summary · table description |
 | `prompts/prompt_hashes.json` | 프롬프트 prefix 캐시 계약 검증용 해시 |
 
 ### 9.3 호출 인프라

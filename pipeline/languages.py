@@ -684,23 +684,8 @@ def _module_stereotype_values() -> dict[str, tuple[str, ...]]:
 
 
 def module_stereotype_values(strategy: str) -> tuple[str, ...]:
-    """모듈 prompt와 parser가 함께 쓰는 순서 보존 폐쇄형 라벨 목록."""
+    """Legacy module role labels retained only so graph cleanup can remove them."""
     values = _module_stereotype_values().get(strategy)
     if values is None:
         raise ValueError(f"unknown module stereotype strategy: {strategy!r}")
     return values
-
-
-def module_stereotype_prompt_options(strategy: str) -> str:
-    return ", ".join(f"`{value}`" for value in module_stereotype_values(strategy))
-
-
-def require_module_stereotype(stereotype: str, strategy: str) -> str:
-    """Return one strategy-owned module stereotype or fail visibly."""
-    allowed = frozenset(module_stereotype_values(strategy))
-    if not stereotype or stereotype not in allowed:
-        raise ValueError(
-            f"invalid {strategy} module stereotype: {stereotype!r}; "
-            f"allowed={list(module_stereotype_values(strategy))!r}"
-        )
-    return stereotype

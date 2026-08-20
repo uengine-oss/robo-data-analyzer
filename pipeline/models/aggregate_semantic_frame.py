@@ -4,19 +4,58 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, create_model
-
 from pipeline.models.semantic_frame import (
     EvidenceFact,
     SemanticFrame,
+    SemanticSlot,
     SlotSpec,
     StructuralProfile,
     StructuralTarget,
     evidence_id,
-    normalize_semantic_frame_response,
-    semantic_frame_response_model,
     slot_id,
 )
+
+
+def _selected_member_slots(
+    member_frames: Iterable[SemanticFrame],
+    roles: tuple[str, ...] | None,
+) -> tuple[SemanticSlot, ...]:
+    frames = tuple(member_frames)
+    if not frames:
+        raise ValueError("aggregate projection requires member frames")
+    role_order = (
+        {role: index for index, role in enumerate(roles)}
+        if roles is not None
+        else None
+    )
+    selected: list[SemanticSlot] = []
+    seen_slot_ids: set[str] = set()
+    for frame in frames:
+        frame_slots = sorted(
+            (
+                slot for slot in frame.slots.values()
+                if role_order is None or slot.role in role_order
+            ),
+            key=(
+                (lambda item: item.slot_id)
+                if role_order is None
+                else (lambda item: (role_order[item.role], item.slot_id))
+            ),
+        )
+        if not frame_slots:
+            raise ValueError(
+                "aggregate member has no selected semantic slot: "
+                f"target={frame.profile.target.id}"
+            )
+        for slot in frame_slots:
+            if slot.slot_id in seen_slot_ids:
+                raise ValueError(
+                    "aggregate member slot must occur exactly once: "
+                    f"slot_id={slot.slot_id}"
+                )
+            seen_slot_ids.add(slot.slot_id)
+            selected.append(slot)
+    return tuple(selected)
 
 
 def build_aggregate_semantic_plan(
@@ -35,13 +74,8 @@ def build_aggregate_semantic_plan(
     comment_ref: str = "",
 ) -> tuple[StructuralProfile, tuple[SlotSpec, ...]]:
     frames = tuple(member_frames)
-    selected_roles = set(member_roles or ())
-    member_slot_refs = tuple(dict.fromkeys(
-        slot_id_
-        for frame in frames
-        for slot_id_, slot in frame.slots.items()
-        if not selected_roles or slot.role in selected_roles
-    ))
+    member_slots = _selected_member_slots(frames, member_roles)
+    member_slot_refs = tuple(slot.slot_id for slot in member_slots)
     target = StructuralTarget(
         id=target_id,
         type=target_type,
@@ -97,86 +131,85 @@ def build_aggregate_semantic_plan(
     return profile, specs
 
 
-def aggregate_member_payloads(
+def project_aggregate_frame(
+    profile: StructuralProfile,
+    specs: Iterable[SlotSpec],
     member_frames: Iterable[SemanticFrame],
     *,
-    roles: tuple[str, ...],
-) -> list[dict[str, object]]:
-    """Project validated member meaning without copying source/profile/rule evidence.
+    member_roles: tuple[str, ...],
+    physical_name: str,
+) -> SemanticFrame:
+    """Project member claims exactly once without another semantic LLM.
 
-    Aggregate targets consume the canonical summary handoff, not a member's full merged
-    semantic frame.  The child slot already owns and validates its source lineage, so the
-    parent needs the slot identity and accepted meaning only.  Copying the entire child
-    profile made aggregate input depend on whether Rule work happened to finish before
-    the summary handoff and expanded one 34-routine component request to 272k tokens.
+    Member meanings remain canonical leaves owned by their source-grounded frames.  The
+    aggregate responsibility is a deterministic, ordered concatenation; it does not
+    paraphrase, deduplicate or choose a Top-N subset.  A physical module/component name
+    may be retained as an explicitly partial display value, never promoted to an inferred
+    domain name.
     """
-    role_order = {role: index for index, role in enumerate(roles)}
-    allowed = set(role_order)
-    if not role_order:
-        raise ValueError("aggregate member projection requires at least one role")
-    payloads: list[dict[str, object]] = []
-    for frame in member_frames:
-        selected_slots = sorted(
-            (slot for slot in frame.slots.values() if slot.role in allowed),
-            key=lambda slot: (role_order[slot.role], slot.slot_id),
+    selected = _selected_member_slots(member_frames, member_roles)
+    if not selected:
+        raise ValueError("aggregate projection requires selected member slots")
+    member_fact = next(
+        (fact for fact in profile.evidence.values() if fact.kind == "MODULE"),
+        None,
+    )
+    if member_fact is None:
+        raise ValueError("aggregate profile has no member evidence")
+    expected_refs = tuple(member_fact.attributes.get("member_refs") or ())
+    actual_refs = tuple(slot.slot_id for slot in selected)
+    if actual_refs != expected_refs:
+        raise ValueError(
+            "aggregate member projection differs from canonical member refs"
         )
-        slots = [
-            {
-                "slot_id": slot.slot_id,
-                "family": slot.family,
-                "role": slot.role,
-                "meaning": slot.meaning,
-                "status": slot.status,
-                "missing_context": list(slot.missing_context),
-            }
-            for slot in selected_slots
-        ]
-        if not slots:
-            raise ValueError(
-                "aggregate member summary has no selected semantic slot: "
-                f"target={frame.profile.target.id}, roles={sorted(allowed)}"
+
+    slots: dict[str, SemanticSlot] = {}
+    for spec in specs:
+        if spec.role == "RESPONSIBILITY":
+            meanings = [slot.meaning for slot in selected if slot.meaning]
+            missing: list[str] = []
+            for slot in selected:
+                if slot.status == "sufficient" and slot.meaning:
+                    continue
+                reasons = slot.missing_context or (
+                    "member semantic meaning is unavailable",
+                )
+                missing.extend(
+                    f"member slot {slot.slot_id}: {reason}" for reason in reasons
+                )
+            meaning = "\n".join(meanings)
+            status = (
+                "sufficient" if meaning and not missing
+                else "partial" if meaning
+                else "insufficient"
             )
-        payloads.append({
-            "target_id": frame.profile.target.id,
-            "slots": slots,
-        })
-    return payloads
+            missing_context = tuple(missing)
+        elif spec.role == "DISPLAY_NAME":
+            meaning = str(physical_name or "").strip()
+            status = "partial" if meaning else "insufficient"
+            missing_context = (
+                "source-owned aggregate display meaning unavailable; "
+                "physical identifier preserved only",
+            )
+        else:
+            raise ValueError(f"unsupported deterministic aggregate role: {spec.role}")
+        slots[spec.slot_id] = SemanticSlot(
+            slot_id=spec.slot_id,
+            family=spec.family,
+            role=spec.role,
+            target_ref=spec.target_ref,
+            evidence_refs=spec.evidence_refs,
+            meaning=meaning,
+            status=status,
+            missing_context=missing_context,
+        )
+    return SemanticFrame(target=profile.target, profile=profile, slots=slots)
 
 
 def sealed_summary_frame_payload(node: object) -> object | None:
     """Return only the immutable summary handoff owned by aggregate consumers."""
     extra = getattr(node, "extra", None) or {}
     return extra.get("_summary_semantic_frame")
-
-
-def aggregate_response_model(
-    name: str,
-    specs: Iterable[SlotSpec],
-    *,
-    stereotype_values: tuple[str, ...] | None = None,
-) -> type[BaseModel]:
-    frame_wire = semantic_frame_response_model(specs)
-    fields: dict[str, tuple[object, object]] = {
-        "slots": (frame_wire.model_fields["slots"].annotation, Field(...)),
-    }
-    if stereotype_values is not None:
-        fields["stereotype"] = (
-            Literal.__getitem__(stereotype_values),
-            Field(...),
-        )
-    return create_model(
-        name,
-        __config__=ConfigDict(extra="forbid"),
-        **fields,
-    )
-
-
-def normalize_aggregate_response(
-    output: BaseModel,
-    profile: StructuralProfile,
-    specs: Iterable[SlotSpec],
-) -> SemanticFrame:
-    return normalize_semantic_frame_response(output, profile, specs)
 
 
 def aggregate_slot_meaning(frame: SemanticFrame, role: str) -> str:

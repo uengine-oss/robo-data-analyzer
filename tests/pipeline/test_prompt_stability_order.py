@@ -37,7 +37,6 @@ class PromptStabilityOrderTest(unittest.TestCase):
         automatic_static = {
             "stereotype_options",
             "stereotype_priority",
-            "module_stereotype_options",
         }
         for path in PROMPT_FILES:
             with self.subTest(path=path.relative_to(ROOT)):

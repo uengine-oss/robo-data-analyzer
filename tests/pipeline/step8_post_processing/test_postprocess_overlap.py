@@ -22,14 +22,15 @@ from langgraph.checkpoint.memory import MemorySaver
 from pipeline.execution.analysis_handoff import AnalysisHandoff
 from pipeline.execution.langgraph_builder import build_langgraph_workflow
 from pipeline.steps.step8_post_processing.summarize_module_step import (
+    _match_code_to_modules,
     _select_analyzed_code_nodes,
     summarize_module_step,
 )
-from shared.concurrency.priority_semaphore import PrioritySemaphore
-from tests.pipeline.semantic_frame_fixtures import (
-    frame_wire_for_response_model,
-    semantic_frame_for_node,
+from pipeline.models.aggregate_semantic_frame import (
+    project_aggregate_frame as deterministic_aggregate_projection,
 )
+from shared.concurrency.priority_semaphore import PrioritySemaphore
+from tests.pipeline.semantic_frame_fixtures import semantic_frame_for_node
 
 
 @dataclass
@@ -71,6 +72,17 @@ class _Strategy:
 
 
 class PostprocessOverlapTest(unittest.IsolatedAsyncioTestCase):
+    def test_module_member_projection_order_is_source_order_not_state_order(self) -> None:
+        later = _Node("code:later", start_line=20, end_line=29)
+        earlier = _Node("code:earlier", start_line=2, end_line=9)
+
+        matched = _match_code_to_modules([later, earlier], [_Module()])
+
+        self.assertEqual(
+            [node.id for node in matched["mod:m.c"]],
+            ["code:earlier", "code:later"],
+        )
+
     def test_module_summary_uses_strategy_analysis_targets(self) -> None:
         routine = _Node("code:f", label="FUNCTION")
         control = _Node("code:f:IF@2", label="IF")
@@ -106,15 +118,19 @@ class PostprocessOverlapTest(unittest.IsolatedAsyncioTestCase):
 
         seen_summaries: list[str] = []
 
-        async def fake_rule(**kwargs) -> object:
-            timeline.append("postprocess:llm_call")
-            seen_summaries.append(kwargs["user_values"]["member_code_nodes"])
+        def fake_projection(profile, specs, member_frames, **kwargs):
+            timeline.append("postprocess:projection")
+            seen_summaries.extend(
+                slot.meaning
+                for frame in member_frames
+                for slot in frame.slots.values()
+            )
             self.assertFalse(
                 step7_done.is_set(),
-                "후처리 LLM 콜이 step7 완료 뒤에야 나갔다 — 겹치지 않았다",
+                "후처리 projection이 step7 완료 뒤에야 시작됐다 — 겹치지 않았다",
             )
-            return frame_wire_for_response_model(
-                kwargs["response_model"], meaning="모듈 요약", stereotype="Service",
+            return deterministic_aggregate_projection(
+                profile, specs, member_frames, **kwargs,
             )
 
         state = {
@@ -123,7 +139,7 @@ class PostprocessOverlapTest(unittest.IsolatedAsyncioTestCase):
             "code_nodes": [_Node("code:f")],     # state 사본 — 확정본은 handoff 가 갖는다
         }
         target = "pipeline.steps.step8_post_processing.summarize_module_step"
-        with mock.patch(f"{target}.run_yaml_rule", side_effect=fake_rule), \
+        with mock.patch(f"{target}.project_aggregate_frame", side_effect=fake_projection), \
              mock.patch(f"{target}.upsert_modules", mock.AsyncMock()), \
              mock.patch(f"{target}.emit_nodes", mock.AsyncMock()):
             strategy = _Strategy(steps=((fake_analyze_code_step, summarize_module_step),))
@@ -143,13 +159,13 @@ class PostprocessOverlapTest(unittest.IsolatedAsyncioTestCase):
             timeline[0], "step7:summary_published",
             "후처리가 #1 확정 전에 시작했다 — 부분 입력으로 프롬프트가 만들어진다",
         )
-        self.assertIn("postprocess:llm_call", timeline)
+        self.assertIn("postprocess:projection", timeline)
         self.assertLess(
-            timeline.index("postprocess:llm_call"), timeline.index("step7:done"),
+            timeline.index("postprocess:projection"), timeline.index("step7:done"),
             "후처리가 step7 완료 뒤에 시작했다 — 배리어가 남아 있다",
         )
         self.assertIn(
-            "확정된 요약", seen_summaries[0],
+            "확정된 요약", seen_summaries,
             "후처리가 state 의 미확정 사본을 읽었다 — merge 계약 위반",
         )
 
@@ -193,15 +209,8 @@ class PostprocessOverlapTest(unittest.IsolatedAsyncioTestCase):
         handoff.resolve(available.id)
         handoff.resolve(missing.id)
         handoff.close()
-        seen: list[str] = []
-
-        async def fake_rule(**kwargs) -> object:
-            seen.append(kwargs["user_values"]["member_code_nodes"])
-            return mock.Mock(summary="가용 멤버 기반 요약", stereotype="Service", logical_name="모듈")
-
         target = "pipeline.steps.step8_post_processing.summarize_module_step"
-        with mock.patch(f"{target}.run_yaml_rule", side_effect=fake_rule), \
-             mock.patch(f"{target}.upsert_modules", mock.AsyncMock()), \
+        with mock.patch(f"{target}.upsert_modules", mock.AsyncMock()), \
              mock.patch(f"{target}.emit_nodes", mock.AsyncMock()):
             result = await summarize_module_step(
                 {
@@ -219,7 +228,6 @@ class PostprocessOverlapTest(unittest.IsolatedAsyncioTestCase):
                 },
             )
 
-        self.assertEqual([], seen)
         self.assertIsNone(result["modules"][0].summary)
 
 

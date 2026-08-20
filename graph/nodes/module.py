@@ -21,7 +21,7 @@ from graph.node_upsert import join_notes, nonempty
 
 
 def to_item(mod: Module) -> dict:
-    return nonempty({
+    item = nonempty({
         "id": mod.id,
         "type": mod.label,
         "name": mod.name,
@@ -30,12 +30,19 @@ def to_item(mod: Module) -> dict:
         "end_line": mod.end_line,
         "notes": join_notes(mod.comment, mod.annotations),
         "code_text": mod.code_text,
-        "summary": mod.summary,
-        "stereotype": mod.stereotype,
-        "logical_name": mod.logical_name,
-        "semantic_frame_schema": mod.semantic_frame_schema,
-        "semantic_frame_json": mod.semantic_frame_json,
     })
+    # These are Analyzer-derived properties, so an empty value is authoritative:
+    # Neo4j ``SET n += item`` removes a property whose map value is null.  Keeping
+    # them out via ``nonempty`` would leak a prior run's LLM inference after the
+    # current run explicitly degraded that meaning to unavailable.
+    item.update({
+        "summary": mod.summary or None,
+        "stereotype": mod.stereotype or None,
+        "logical_name": mod.logical_name or None,
+        "semantic_frame_schema": mod.semantic_frame_schema or None,
+        "semantic_frame_json": mod.semantic_frame_json or None,
+    })
+    return item
 
 
 async def upsert_modules(client: Neo4jClient, modules: Iterable[Module]) -> None:

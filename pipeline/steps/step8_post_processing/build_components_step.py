@@ -2,8 +2,8 @@
 
 robo 가 이미 만든 호출그래프(state 의 `code_nodes`/`calls_edges`)만으로:
 1. **나누기(결정론, LLM 0):** 내부 호출 그래프에 Leiden 군집화 → 코드노드들을 군집(부품)으로.
-2. **이름(LLM, 군집당 1콜·전부 병렬):** 멤버 코드노드의 canonical summary 첫 줄만
-   모아 → `run_yaml_rule("component_naming")` 로 이름 생성.
+2. **표시 상태(결정론, LLM 0):** canonical member slot ID를 exact-once 참조하고
+   source-owned 이름이 없음을 explicit partial frame으로 보존.
 3. **적재:** 각 멤버 FUNCTION 노드에 `component_id`·`component_name` 속성을 SET
    (health_metrics 와 동일한 배치 UNWIND SET 패턴).
 
@@ -17,41 +17,26 @@ robo 가 이미 만든 호출그래프(state 의 `code_nodes`/`calls_edges`)만�
 from __future__ import annotations
 
 import time
-import json
-from pathlib import Path
 from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
 from pipeline.steps.step5_linking.link_calls.call_linker import routine_call_pairs
-from pipeline.models.code_analysis_output import ComponentNamingOutput
 from pipeline.models.aggregate_semantic_frame import (
-    aggregate_member_payloads,
-    aggregate_response_model,
-    aggregate_slot_meaning,
     build_aggregate_semantic_plan,
-    normalize_aggregate_response,
+    project_aggregate_frame,
     sealed_summary_frame_payload,
 )
-from pipeline.models.semantic_frame import SemanticFrame, profile_prompt_json, slot_specs_json
+from pipeline.models.semantic_frame import SemanticFrame
 from graph.schema.graph_edges import Calls
 from graph.schema.graph_nodes import CodeNode
-from shared.config.settings import SETTINGS
-from llm.fanout import gather_with_warmup
-from llm.runners.yaml_llm_runner import run_yaml_rule
-from llm.runners.model_output_error import ModelOutputError
 from pipeline.models.analysis_finding import AnalysisFinding
 from pipeline.execution.quality_finding_log import record_analysis_findings
 from shared.events.runtime_logger import log_info, log_warning
-from shared.events.processing_events import step_processing_scope, track_processing
+from shared.events.processing_events import step_processing_scope
 from graph.neo4j_client import Neo4jClient
 from graph.ownership import ANALYZER_GRAPH_OWNER
-from pipeline.execution.analysis_handoff import (
-    POSTPROCESS_PRIORITY,
-    POSTPROCESS_LANE,
-    AnalysisHandoffAborted,
-    handoff_of,
-)
+from pipeline.execution.analysis_handoff import AnalysisHandoffAborted, handoff_of
 from pipeline.execution.step_config import step_config
 from pipeline.execution.pause_controller import PauseController
 from pipeline.steps.step8_post_processing.handoff_skip import log_handoff_skip
@@ -73,10 +58,9 @@ SET node.component_id = item.component_id,
 
 
 async def build_components_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
-    """호출그래프 → Leiden 군집 → 병렬 이름 → FUNCTION 노드에 component_id/name SET."""
+    """호출그래프 → Leiden 군집 → degraded display → FUNCTION membership SET."""
     cfg = step_config(config)
     strategy = cfg.get("strategy")
-    cost_budget = cfg.get("cost_budget")
     neo: Neo4jClient | None = cfg.get("neo_client")
     stream = cfg.get("stream")
     pause: PauseController = cfg.get("pause") or PauseController()
@@ -84,8 +68,8 @@ async def build_components_step(state: dict, config: Optional[RunnableConfig] = 
         log_warning(_STEP, "config_missing", "strategy 누락 — step skip")
         return {}
 
-    # 군집은 결정론 호출그래프(step5)로 만들고, 이름은 코드노드의 canonical summary
-    # 한 줄만 읽는다. rules·insights 는 안 읽는다.
+    # 군집은 결정론 호출그래프(step5)로 만들고 canonical summary handoff는
+    # exact member slot identity를 component frame에 연결하는 데만 사용한다.
     handoff = handoff_of(cfg)
     try:
         await handoff.summaries()
@@ -105,16 +89,12 @@ async def build_components_step(state: dict, config: Optional[RunnableConfig] = 
     if not clusters:
         log_info(_STEP, "skip", reason="군집 없음 (내부 호출 부족)")
         return {}
-    log_info(_STEP, "start", code_nodes=len(code_nodes), components=len(clusters),
-             concurrency=SETTINGS.analysis_pipeline.max_concurrency)
+    log_info(_STEP, "start", code_nodes=len(code_nodes), components=len(clusters))
 
-    # 2. 이름 (LLM, 병렬) — 군집당 사람이 읽을 이름 하나.
-    prompts_dir = Path(strategy.prompts_dir)
-    # run 공유 슬롯 — step7 과 같은 세마포어를 낮은 우선순위로 쓴다 (spec 096).
-    slots = handoff.slots
+    # 2. source-grounded 이름 producer가 없으므로 membership과 explicit partial만 보존한다.
     fn_by_id = {f.id: f for f in code_nodes}
 
-    async def _name_one(component_id: str, members: list[str]) -> ComponentNamingOutput | None:
+    def _project_one(component_id: str, members: list[str]) -> SemanticFrame | None:
         member_fns = [fn_by_id[m] for m in members if m in fn_by_id]
         # This step is released by the summary handoff.  Always consume that sealed
         # snapshot; ``semantic_frame`` may already contain Rule/table slots for faster
@@ -127,6 +107,22 @@ async def build_components_step(state: dict, config: Optional[RunnableConfig] = 
             if sealed_summary_frame_payload(fn)
         ]
         if len(member_frames) != len(member_fns):
+            missing = [
+                fn.id for fn in member_fns
+                if not sealed_summary_frame_payload(fn)
+            ]
+            record_analysis_findings([AnalysisFinding(
+                concern="component_name",
+                status="unavailable",
+                target_id=component_id,
+                reasons=(f"canonical member semantic frame unavailable: {missing}",),
+                evidence_rule="deterministic_component_projection",
+            )])
+            log_warning(
+                _STEP, "quality_finding",
+                "component semantic frame omitted because a canonical member frame is unavailable",
+                component_id=component_id, missing_count=len(missing),
+            )
             return None
         profile, specs = build_aggregate_semantic_plan(
             target_id=component_id,
@@ -140,66 +136,42 @@ async def build_components_step(state: dict, config: Optional[RunnableConfig] = 
             include_responsibility=False,
             member_roles=("RESPONSIBILITY",),
         )
-        members_text = json.dumps(
-            aggregate_member_payloads(
-                member_frames, roles=("RESPONSIBILITY",),
+        frame = project_aggregate_frame(
+            profile,
+            specs,
+            member_frames,
+            member_roles=("RESPONSIBILITY",),
+            physical_name=component_id,
+        )
+        record_analysis_findings([AnalysisFinding(
+            concern="component_name",
+            status="unverified",
+            target_id=component_id,
+            reasons=(
+                "source-owned component display meaning unavailable; "
+                "deterministic membership ID preserved only",
             ),
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-        try:
-            async with track_processing("Component", component_id):
-                async with slots.at(POSTPROCESS_PRIORITY, POSTPROCESS_LANE):
-                    wire = await run_yaml_rule(
-                        prompts_dir=prompts_dir,
-                        rule_name="component_naming",
-                        user_values={
-                            "component_id": component_id,
-                            "members": members_text,
-                            "structural_profile": profile_prompt_json(profile, specs),
-                            "applicable_slots": slot_specs_json(specs),
-                        },
-                        response_model=aggregate_response_model(
-                            "ComponentFrameOutput", specs,
-                        ),
-                        budget=cost_budget,
-                    )
-        except ModelOutputError as error:
-            finding = AnalysisFinding(
-                concern="component_name",
-                status="unavailable",
-                target_id=component_id,
-                reasons=(str(error),),
-                evidence_rule=error.rule_name,
-            )
-            record_analysis_findings([finding])
-            log_warning(
-                _STEP, "quality_finding",
-                "컴포넌트 이름 후보를 검증할 수 없어 결정론 component_id만 보존함",
-                component_id=component_id, error=str(error),
-            )
-            return None
-        frame = normalize_aggregate_response(wire, profile, specs)
-        return ComponentNamingOutput(
-            name=aggregate_slot_meaning(frame, "DISPLAY_NAME"),
-            semantic_frame=frame,
-        )
+            evidence_rule="deterministic_component_projection",
+        )])
+        return frame
 
-    async def _run_fanout() -> list:
-        return await gather_with_warmup(
-            [_name_one(cid, members) for cid, members in clusters],
-        )
+    async def _run_projection() -> list[SemanticFrame | None]:
+        projected: list[SemanticFrame | None] = []
+        for component_id, members in clusters:
+            await pause.gate()
+            projected.append(_project_one(component_id, members))
+        return projected
 
     with step_processing_scope(_STEP, stream):
-        results = await pause.run_restartable_during_pause(_run_fanout)
+        results = await pause.run_restartable_during_pause(_run_projection)
     names = {
-        cid: (result.name if result is not None else None)
-        for (cid, _members), result in zip(clusters, results)
+        cid: None
+        for cid, _members in clusters
     }
     component_frames = {
-        cid: result.semantic_frame.model_dump(mode="json", by_alias=True)
+        cid: result.model_dump(mode="json", by_alias=True)
         for (cid, _members), result in zip(clusters, results)
-        if result is not None and result.semantic_frame is not None
+        if result is not None
     }
 
     # 3. 적재 — 각 멤버 FUNCTION 노드에 component_id/name 속성 SET (합성 노드/엣지 없음).
@@ -271,18 +243,3 @@ def _cluster(code_nodes: list[CodeNode], calls: list[Calls]) -> list[tuple[str, 
             continue                    # 고립/초소 군집 = 노이즈 → 군집 X
         out.append((f"COMPONENT:{members[0]}", members))
     return out
-
-
-def _headline(fn: Optional[CodeNode]) -> str:
-    """코드노드의 압축 표현 — canonical summary 첫 줄.
-
-    군집 이름 입력은 노드당 한 줄만 → 멤버 많아도 토큰 안전.
-    """
-    if fn is None:
-        return ""
-    summary = fn.summary or ""
-    for line in summary.splitlines():
-        line = line.strip()
-        if line:
-            return line
-    return fn.signature or fn.id

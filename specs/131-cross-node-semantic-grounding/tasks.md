@@ -34,7 +34,9 @@
       chunk별 exact evidence obligation과 downstream token 분할 회계 연결
     - [ ] A131-04c-PROSE module/component·agent 중간 prose 권위 입력 제거
       - [x] C-010 Framework module pre-analysis producer·prompt·23회 호출·module_intents 배선 제거
-      - [ ] step8 module/component aggregate와 Agent context compaction 제거
+      - [x] C-009c step8 module/component 후속 LLM·prompt·response model 제거, canonical member slot
+        source-order exact-once 결정론 projection과 display/stereotype explicit degraded 계약 고정
+      - [ ] C-016 Agent context compaction 제거
     - [x] A131-04c-SOURCE source literal 비가역 projection producer·호출·replay switch 제거,
       Framework/DBMS prompt literal/escape exact-text 계약과 반대 fixture 고정
     - [x] A131-04c-SCC suppressed `(caller, callee)`를 canonical CALL unavailable evidence로

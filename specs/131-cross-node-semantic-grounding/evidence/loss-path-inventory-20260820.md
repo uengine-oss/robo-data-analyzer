@@ -505,3 +505,23 @@
   `215 passed`, 전체 `1051 passed, 5 skipped`, prompt hash `23/23 byte-identical`이다. 기준 Framework
   관측값은 cycle 0이므로
   actual LLM/Neo4j 재실행은 0회이며 기준 corpus 직접 의미 영향은 `미발동`이다.
+
+### 2026-08-20 C-009c step8 module/component summary-of-summary 제거
+
+- 구조 red는 `summarize_module_step.py`와 `build_components_step.py`가 `run_yaml_rule`을 호출하고
+  `module_summary.yaml`·`component_naming.yaml`이 존재해 실패했다. 전자는 member canonical slot prose를
+  다시 요약·명명·분류했고, 후자는 member RESPONSIBILITY prose에서 component 이름을 새로 만들었다.
+  두 경로 모두 원문/AST가 아니라 이전 LLM 산출물을 다음 LLM의 권위 입력으로 사용했다.
+- 두 LLM producer·전략별 prompt·공통 contract·응답 model·verification packet 항목을 삭제했다.
+  module은 strategy가 고른 routine의 canonical summary slot을 member/source 순서대로 정확히 한 번
+  이어 붙이고, component는 결정론 membership과 member RESPONSIBILITY slot ID만 보존한다. 의미 문자열을
+  dedupe·Top-N·재서술하지 않는다.
+- duplicate canonical slot이나 선택 role이 하나도 없는 member는 조용히 제거하지 않고 실패한다.
+  member frame 하나라도 없으면 기존 fail-closed를 유지한다. source-owned aggregate display/stereotype이
+  없으므로 물리 ID만 `partial` slot에 남기고 `unverified` finding을 기록하며 이름·분류를 추측하지 않는다.
+- Neo4j module writer는 empty Analyzer-derived field도 null map으로 전달해 과거 실행의 `stereotype`,
+  `logical_name`, summary/frame이 잔존하지 않게 했다. component writer의 `component_name=null`도 같은
+  제거 계약이다. pause/stop restartable 실행 경계와 step7 summary handoff overlap은 유지했다.
+- 최초 구조 red는 green으로 전환됐다. 집중 projection 7개, overlap 5개, graph stale-clear 5개와 전체
+  `1057 passed, 5 skipped`, prompt hash `17/17 byte-identical`을 통과했다. actual LLM/Neo4j 실행은
+  0회이므로 새 aggregate 표시 품질은 `명시적 degraded`, 전체 봉인 직접 의미 영향은 아직 `미검증`이다.

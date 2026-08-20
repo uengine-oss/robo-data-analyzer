@@ -9,7 +9,6 @@ from llm.runners.prompt_values import _safe_format
 from pipeline.execution.run_output_context import get_response_locale
 
 from pipeline.languages import (
-    module_stereotype_prompt_options,
     stereotype_priority_text,
     stereotype_prompt_options,
 )
@@ -49,11 +48,6 @@ def _load_rule(prompts_dir: Path, rule_name: str) -> dict:
         static_values["stereotype_options"] = stereotype_prompt_options(prompts_dir.name)
     if "{stereotype_priority}" in rendered_templates:
         static_values["stereotype_priority"] = stereotype_priority_text()
-    if "{module_stereotype_options}" in rendered_templates:
-        static_values["module_stereotype_options"] = module_stereotype_prompt_options(
-            prompts_dir.name
-        )
-
     fixed_template = str(rule.get("user_template_specific", ""))
     fixed_placeholders = set(re.findall(
         r"\{([A-Za-z_][A-Za-z0-9_]*)\}", fixed_template

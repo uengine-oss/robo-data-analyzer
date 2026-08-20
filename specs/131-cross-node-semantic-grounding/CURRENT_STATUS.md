@@ -1,7 +1,7 @@
 # Analyzer 의미 무손실 감사 현재상태
 
 **Updated**: 2026-08-20
-**Status**: A131-04c 근본 구현 진행 중 — external exact evidence closure 완료
+**Status**: A131-04c 근본 구현 진행 중 — step8 summary-of-summary 제거 완료, Agent compaction 조사 중
 **Product-code baseline HEAD**: `c216e674cbac43386f9826632097ca2661395d7d`
 
 이 문서는 현재 진행 위치만 소유한다. 영구 규칙은 `ABSOLUTE_RULES.md`, 상세 역사와 기존 수치는 `HANDOFF.md`와 `evidence/`가 소유한다.
@@ -20,7 +20,7 @@
 
 - Neo4j `127.0.0.1:7687`: 현재 세션에서 인증과 `SHOW DATABASES` 재확인 성공.
   `neo4j|test|framework|dbms|system`만 존재하고 모두 online이다. 허용 목록 밖 DB는 0개다.
-- Analyzer latest verified slice HEAD `ca05e1f924e68442660de2e280cf07e38f22b778`; 제품 코드 기준선은
+- Analyzer latest verified slice HEAD `43455e4c92b0fa3418a0da3e9e2c6d12c3ea4c01`; 제품 코드 기준선은
   `c216e674cbac43386f9826632097ca2661395d7d`, 재개 시 dirty 0이었다.
 - Parser HEAD `4b849f14575b6830b82ae5ee980658100c4d8692`, dirty 0.
 - Catalog HEAD `1f1aaa608a3d7ef8b01ce15c3df962cf0f1cfefb`, 기존 dirty 12개가 있다.
@@ -163,7 +163,12 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
    explicit unavailable dependency로 물질화한다. planner는 이를 CALL fact와 별도 semantic obligation으로
    실제 prompt에 넣고 normalizer는 canonical callee ID를 보존한 `partial/insufficient`만 허용한다.
    전체 `1051 passed, 5 skipped`, prompt 23/23이다.
-10. 현재: module/component·agent prose handoff C-009/C-016을 제거한다. C-023 strict source decode는
-    A131-04d closure에서 함께 처리한다.
-11. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
-12. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.
+10. 완료(C-009c): module/component가 member summary prose를 다음 LLM에 보내던 두 prompt와 response
+    model을 제거했다. canonical member slot은 source-order로 정확히 한 번 투영하며 중복 slot 또는 필수
+    role 없는 member는 즉시 실패한다. source-owned display/stereotype은 추측하지 않고 partial/unverified로
+    남기며 Neo4j의 이전 실행 파생 속성도 null map으로 제거한다. 전체 `1057 passed, 5 skipped`, prompt
+    hash `17/17 byte-identical`이다.
+11. 현재: C-016 Agent context compaction을 source/evidence closure 기반으로 제거한다. C-023 strict source
+    decode는 A131-04d closure에서 함께 처리한다.
+12. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
+13. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.

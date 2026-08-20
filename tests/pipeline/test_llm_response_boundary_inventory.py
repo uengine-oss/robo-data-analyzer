@@ -6,10 +6,6 @@ import unittest
 from pydantic import ValidationError
 
 from agents.contracts import ExternalCallReview, ResidualPatternResult, ScanResult
-from pipeline.models.aggregate_semantic_frame import (
-    aggregate_response_model,
-    build_aggregate_semantic_plan,
-)
 from pipeline.models.code_analysis_output import RuleItem
 from pipeline.models.summary_response_schema import (
     batch_summary_response_model,
@@ -54,11 +50,6 @@ class LlmResponseBoundaryInventoryTest(unittest.TestCase):
                 _assert_closed_required(self, model, required)
 
     def test_dynamic_semantic_envelopes_are_closed_and_required(self) -> None:
-        _profile, module_specs = build_aggregate_semantic_plan(
-            target_id="module:orders", target_type="MODULE", owner_id="",
-            file="orders.py", start_line=1, end_line=10, family="MODULE",
-            member_frames=(), include_responsibility=True,
-        )
         table_evidence = {
             "table": {"db": "db", "schema": "public", "name": "orders"},
             "columns": [{"name": "order_id"}],
@@ -74,10 +65,6 @@ class LlmResponseBoundaryInventoryTest(unittest.TestCase):
                 "1-2": {"reads": ("db:orders",), "writes": (),
                         "table_ops": {"db:orders": "SELECT"}},
             }), {"nodes"}),
-            (aggregate_response_model(
-                "ModuleFrameBoundary", module_specs,
-                stereotype_values=("DomainModule", "UtilityModule"),
-            ), {"slots", "stereotype"}),
             (table_description_frame_response_model(
                 table_evidence, table_plan, column_plans,
             ), {"db", "schema", "name", "slots", "columns"}),

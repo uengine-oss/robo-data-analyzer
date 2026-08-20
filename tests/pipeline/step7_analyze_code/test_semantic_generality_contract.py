@@ -9,7 +9,6 @@ from llm.runners.prompt_rules import _load_rule
 from llm.runners.prompt_values import _safe_format
 from pipeline.models.code_analysis_output import RuleItem
 from pipeline.languages import (
-    module_stereotype_prompt_options,
     require_stereotype,
     stereotype_prompt_options,
     stereotype_values,
@@ -263,46 +262,12 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
         ):
             self.assertIn(required, contract)
 
-    def test_component_naming_contract_is_shared_and_closed(self) -> None:
-        rendered = []
-        contracts = []
+    def test_no_module_or_component_summary_of_summary_prompt_exists(self) -> None:
         for strategy in ("framework", "dbms"):
-            rule = _load_rule(
-                ROOT / "llm" / "prompts" / strategy, "component_naming"
-            )
-            contracts.append(rule["static_values"]["semantic_frame_contract"])
-            text = _safe_format(
-                rule["user_template"],
-                {
-                    **rule["static_values"],
-                    "component_id": "component:generic",
-                    "members": "- 요청 검증\n- 요청 접수",
-                    "structural_profile": "{}",
-                    "applicable_slots": "[]",
-                },
-            )
-            self.assertIn("잘못:", text)
-            self.assertIn("좋음:", text)
-            self.assertIn("COMPONENT.DISPLAY_NAME", text)
-            self.assertNotIn("허용 stereotype:", text)
-            rendered.append(text)
-        self.assertEqual(contracts[0], contracts[1])
-
-    def test_module_summary_contract_uses_strategy_closed_pool(self) -> None:
-        for strategy in ("framework", "dbms"):
-            rule = _load_rule(ROOT / "llm" / "prompts" / strategy, "module_summary")
-            rendered = _safe_format(
-                rule["user_template"],
-                {
-                    **rule["static_values"],
-                    "id": "module:generic",
-                    "name": "generic",
-                    "member_code_nodes": "- 요청을 검증한다.",
-                    "structural_profile": "{}",
-                    "applicable_slots": "[]",
-                },
-            )
-            self.assertIn(module_stereotype_prompt_options(strategy), rendered)
+            for rule_name in ("module_summary", "component_naming"):
+                self.assertFalse(
+                    (ROOT / "llm" / "prompts" / strategy / f"{rule_name}.yaml").exists()
+                )
 
     def test_prompts_have_no_observed_corpus_identifiers(self) -> None:
         forbidden = re.compile(r"(?i)\b(?:skt|apas|zpay|sk-van)\b")
@@ -315,13 +280,9 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
         cases = (
             ("framework", "code_summary"),
             ("framework", "code_table_insights"),
-            ("framework", "module_summary"),
-            ("framework", "component_naming"),
             ("framework", "table_description"),
             ("dbms", "code_summary_batch"),
             ("dbms", "code_table_insights_batch"),
-            ("dbms", "module_summary"),
-            ("dbms", "component_naming"),
             ("dbms", "table_description"),
         )
         for strategy, rule_name in cases:

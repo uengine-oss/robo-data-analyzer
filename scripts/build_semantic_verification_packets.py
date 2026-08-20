@@ -30,9 +30,7 @@ CONCERNS = (
     "code_summary",
     "code_table_insights",
     "code_rules_examples",
-    "module_summary",
     "table_description",
-    "component_naming",
 )
 FUNCTION_CONCERNS = {
     "code_summary",

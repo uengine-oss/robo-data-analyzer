@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from graph.nodes.module import upsert_modules
+from graph.nodes.module import to_item as module_to_item, upsert_modules
 from graph.nodes.code_node import update_summaries
 from graph.nodes.stereotype_label import apply_stereotype_labels
 from graph.schema.graph_nodes import CodeNode, Module
@@ -14,6 +14,22 @@ GRAPH_DIRECTORY = Path(__file__).resolve().parents[2] / "graph"
 
 
 class NodeOwnerAndIterableContractTest(unittest.IsolatedAsyncioTestCase):
+    def test_empty_module_derived_meaning_clears_stale_graph_properties(self) -> None:
+        module = Module(
+            id="code:orders.c",
+            name="orders.c",
+            file_path="orders.c",
+            label="FILE",
+        )
+
+        item = module_to_item(module)
+
+        self.assertIsNone(item["summary"])
+        self.assertIsNone(item["stereotype"])
+        self.assertIsNone(item["logical_name"])
+        self.assertIsNone(item["semantic_frame_schema"])
+        self.assertIsNone(item["semantic_frame_json"])
+
     async def test_stereotype_replacement_clears_stale_labels_even_for_empty_role(self) -> None:
         client = AsyncMock()
 

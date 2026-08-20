@@ -3,8 +3,8 @@
 현재 상태는 `CURRENT_STATUS.md`, 영구 규칙은 `ABSOLUTE_RULES.md`, 요구 계약은 `spec.md`, 실행
 체크포인트는 `tasks.md`가 소유한다. 전체 진입점은 `specs/131-cross-node-semantic-grounding/README.md`다.
 
-> **2026-08-20 실행 보류:** 사용자 피드백 전에는 문서 메모리 정리만 수행한다. 아래 구현 순서는
-> 재개 후 계획이며, Architect 단계는 사용자가 다시 열기 전까지 보류한다.
+> **2026-08-20 실행 재개:** 사용자가 전체 목표와 방향을 승인해 Analyzer 구현·검증을 진행한다.
+> Architect 단계만 사용자가 다시 열기 전까지 보류한다.
 
 1. 모든 Framework/DBMS 자연어 의미 생산자, 현재 response schema, normalizer, validator, 저장 필드,
    graph/API/MCP projection, Architect 소비자를 한 번 전수 inventory해 재사용 가능한 단일 영향표로 만든다.

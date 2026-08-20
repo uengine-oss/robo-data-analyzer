@@ -5,7 +5,7 @@
 
 사용처:
 - ``pipeline/steps/step7_analyze_code``: SummaryOutput / TableInsightsOutput 및 결정론 Rule projection
-- ``pipeline/steps/step8_post_processing``: ModuleSummaryOutput / TableDescription
+- ``pipeline/steps/step8_post_processing``: TableDescription
 
 호출 모드 (단일 진실):
 runner가 이 모델의 canonical JSON Schema를 provider 구조화 출력에 전달하고, raw/usage를
@@ -338,27 +338,6 @@ class BatchTableInsightsItem(BaseModel):
 
 class BatchTableInsightsOutput(BaseModel):
     nodes: list[BatchTableInsightsItem] = Field(default_factory=list)
-
-
-# ── 모듈 요약 (summarize_module_step) ─────────────────────
-
-
-class ModuleSummaryOutput(BaseModel):
-    summary: str = Field(..., min_length=1, description="모듈 전체 의미 (~2 단락)")
-    stereotype: str = Field("", description="예: 'Service' / 'Repository' / 'Controller'")
-    logical_name: str = Field("", description="모듈 도메인 표시명 한 줄 (코드 식별자 X)")
-    semantic_frame: SemanticFrame | None = Field(default=None, exclude=True)
-
-
-# ── 컴포넌트 이름 (build_components_step) ─────────────────
-
-
-class ComponentNamingOutput(BaseModel):
-    """코드노드 군집의 사용자용 이름. 실제 저장 경로가 소비하는 단일 출력."""
-    model_config = ConfigDict(extra="forbid")
-
-    name: str = Field(..., min_length=1, description="부품 도메인 이름 한 줄 (코드 식별자 X)")
-    semantic_frame: SemanticFrame | None = Field(default=None, exclude=True)
 
 
 # ── 테이블 description 통합 (enrich_table_description_step) ──
