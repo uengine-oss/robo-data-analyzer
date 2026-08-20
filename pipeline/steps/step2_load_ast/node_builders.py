@@ -67,6 +67,8 @@ class ParseResult:
     # Exact decoded source is retained once per file; occurrence rows reference ranges.
     evidence_sources: list[dict] = field(default_factory=list)
     evidence_completeness: list[dict] = field(default_factory=list)
+    # C build/trace closure, exactly once per C source; no source-level duplication per call.
+    preprocessing_contexts: list[dict] = field(default_factory=list)
     # ontology 미등록 타입: {type, file, line} — 조용한 서브트리 소실 금지(골키퍼 계약).
     # reader 는 기록·자식 재귀만 하고, 표면화(log)는 dispatch 가 한다.
     unknown_nodes: list[dict] = field(default_factory=list)

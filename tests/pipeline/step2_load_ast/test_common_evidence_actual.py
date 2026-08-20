@@ -52,10 +52,13 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
         source_cache=cache,
     )
 
-    def consume() -> tuple[list[dict], list[dict], list[dict], list, float, int]:
+    def consume() -> tuple[
+        list[dict], list[dict], list[dict], list[dict], list, float, int,
+    ]:
         sites: list[dict] = []
         macros: list[dict] = []
         completeness: list[dict] = []
+        preprocessing: list[dict] = []
         nodes = []
         tracemalloc.start()
         started = time.perf_counter()
@@ -70,14 +73,18 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
             sites.extend(result.call_sites)
             macros.extend(result.macro_facts)
             completeness.extend(result.evidence_completeness)
+            preprocessing.extend(result.preprocessing_contexts)
             nodes.extend(result.code_nodes)
         elapsed = time.perf_counter() - started
         _, peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
-        return sites, macros, completeness, nodes, elapsed, peak
+        return sites, macros, completeness, preprocessing, nodes, elapsed, peak
 
-    first, macros, completeness, nodes, elapsed, peak = consume()
-    repeated, repeated_macros, _, _, repeated_elapsed, repeated_peak = consume()
+    first, macros, completeness, preprocessing, nodes, elapsed, peak = consume()
+    (
+        repeated, repeated_macros, _, repeated_preprocessing, _,
+        repeated_elapsed, repeated_peak,
+    ) = consume()
     parser_report = json.loads(parser_report_path.read_text(encoding="utf-8"))
     expected_ids = [site["call_id"] for site in first]
     repeated_ids = [site["call_id"] for site in repeated]
@@ -89,6 +96,7 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
     assert [fact["fact_id"] for fact in macros] == [
         fact["fact_id"] for fact in repeated_macros
     ]
+    assert preprocessing == repeated_preprocessing
     assert _ledger_hash(expected_ids) == parser_report["callFactIdLedgerSha256"]
     assert _ledger_hash(
         [fact["fact_id"] for fact in macros]
@@ -106,6 +114,35 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
     assert sum(owner.values()) == len(first)
     assert all(site["call_id"] and site["source_id"] for site in first)
 
+    assert len(preprocessing) == len(closure.artifacts) == 23
+    assert len({row["source_id"] for row in preprocessing}) == 23
+    assert all(
+        row["status"] == "unresolved"
+        and row["trust"] == "unresolved"
+        and row["build"]["status"] == "unresolved"
+        and row["build"]["population"] == 1
+        and row["build"]["emitted"] == 0
+        and row["build"]["explicitlyUnresolved"] == 1
+        and row["build"]["reasons"]
+            == ["insufficient_compilation_database"]
+        and row["trace"]["status"] == "unresolved"
+        and row["trace"]["population"] == 1
+        and row["trace"]["emitted"] == 0
+        and row["trace"]["explicitlyUnresolved"] == 1
+        and row["trace"]["reasons"]
+            == ["insufficient_preprocessing_build_context"]
+        for row in preprocessing
+    )
+    preprocessing_ids = [
+        evidence_id
+        for row in preprocessing
+        for evidence_id in (
+            row["build"]["unresolvedEvidenceIds"]
+            + row["trace"]["evidenceIds"]
+        )
+    ]
+    assert len(preprocessing_ids) == len(set(preprocessing_ids)) == 46
+
     contract = load_skill_contract("proframe-c-pfm-dbio")
     classification = classify_call_sites(
         first,
@@ -113,6 +150,7 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
         framework_names=contract["framework_runtime_functions"],
         wrappers=contract["call_wrappers"],
         macro_facts=macros,
+        preprocessing_contexts=preprocessing,
     )
     assert classification.accounted == len(first)
     repeated_classification = classify_call_sites(
@@ -121,6 +159,7 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
         framework_names=contract["framework_runtime_functions"],
         wrappers=contract["call_wrappers"],
         macro_facts=repeated_macros,
+        preprocessing_contexts=repeated_preprocessing,
     )
     assert classification.ledger == repeated_classification.ledger
     resolution_rows = [
@@ -128,19 +167,32 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
         for row in classification.ledger
     ]
     resolution_outcomes = Counter(row["outcome"] for row in classification.ledger)
-    macro_unresolved = [
-        row for row in classification.ledger
-        if row.get("reason") == "insufficient_conditional_macro_definition"
-    ]
-    assert len(macro_unresolved) == classification.unresolved_macro == 76
+    assert len(classification.edges) == 0
+    assert classification.unresolved_preprocessing == len(first) == 12_113
+    assert classification.dropped_stdlib == 0
+    assert classification.dropped_framework == 0
+    assert classification.dropped_macro == 0
+    assert classification.preserved_inactive == 0
+    assert classification.unresolved_presence == 0
+    assert classification.unresolved_expression == 0
+    assert classification.unresolved_owner == 0
+    assert classification.unresolved_macro == 0
+    assert classification.wrapper_unresolved == 0
+    assert resolution_outcomes == Counter(unresolved=12_113)
     assert {
-        tuple(row["macro_fact_ids"]) for row in macro_unresolved
-    } == {("bc5446c0cb047dee5a8f7ed1ef83f6a981e767660ef6ed7eb4914b8d3d803a48",)}
+        row["reason"] for row in classification.ledger
+    } == {"insufficient_preprocessing_build_context"}
+    preprocessing_ids_by_source = {
+        row["source_id"]: sorted(
+            row["build"]["unresolvedEvidenceIds"]
+            + row["trace"]["evidenceIds"]
+        )
+        for row in preprocessing
+    }
     assert all(
-        by_site["source_id"] == "source/zordmfax00001.c"
-        and by_site["call_text"] == "PFM_DBG"
-        for row in macro_unresolved
-        for by_site in (next(site for site in first if site["call_id"] == row["call_id"]),)
+        row["preprocessing_evidence_ids"]
+            == preprocessing_ids_by_source[site["source_id"]]
+        for row, site in zip(classification.ledger, first, strict=True)
     )
 
     sealed = parser_report["sealedDirectJudgmentPopulation"]
@@ -153,6 +205,7 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
     by_id = {site["call_id"]: site for site in first}
     macro_by_id = {fact["fact_id"]: fact for fact in macros}
     node_by_id = {node.id: node for node in nodes}
+    ledger_by_id = {row["call_id"]: row for row in classification.ledger}
     assert len(sealed_calls) == 526
     assert len(sealed_macros) == 34
     for selected in sealed_calls:
@@ -175,6 +228,64 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
         assert macro["variadic"] == payload["variadic"]
         assert macro["replacement_range"] == payload["replacementRange"]
         assert macro["presence"] == selected["presence"]
+
+    # Fixed, source-range-sealed examples cover calls that the former raw-source
+    # classifier would have treated as unrelated semantic categories.  Without
+    # configured preprocessing, every one must stop at the earlier evidence gate.
+    direct_expectations = {
+        "framework_runtime": (
+            "5975501d007c95d8e41c77757db52f240a83723c51d82b77cd9e88800d14f0ff",
+            "apascrtu0010t02.c", "PFM_TRY", "active",
+        ),
+        "stdlib": (
+            "c06c20c586026157f709dd4bb2c3c365372c5ebe914d5ce2c4a75fd799ce0e40",
+            "apascrtu0010t02.c", "strncpy", "active",
+        ),
+        "function_macro": (
+            "e3c796a28b0fe9ab80645b96736736a24511eac0d0e6d3999e0e8b39ab9c656d",
+            "zapamcom10090.c", "PFM_DBG", "active",
+        ),
+        "inactive_source_branch": (
+            "66465ddc80d18aa10e4b4bad1c82a42c69e375ae7fef8865e0e6055f7faf6140",
+            "zapamcom10020.c", "strncpy", "inactive",
+        ),
+        "argument_wrapper": (
+            "bfd07393bf60d77993986769a53ae928c9106d411f0b31ef718c6ab6a2149dd8",
+            "zapamcom10110.c", "mpfm_dlcall", "inactive",
+        ),
+        "workspace_named_routine": (
+            "d1be6aa1b5327e31ace0ceac874adafebbf8183c162ed673b1d6dad0166ae348",
+            "zapamcom10200.c", "swgf_snprintf", "active",
+        ),
+    }
+    sealed_call_ids = {selected["factId"] for selected in sealed_calls}
+    sealed_preprocessing_judgment = []
+    for category, (fact_id, source_id, call_text, presence_status) in (
+        direct_expectations.items()
+    ):
+        assert fact_id in sealed_call_ids
+        site = by_id[fact_id]
+        assert (
+            site["source_id"], site["call_text"], site["presence_status"],
+        ) == (source_id, call_text, presence_status)
+        resolution = ledger_by_id[fact_id]
+        assert resolution["outcome"] == "unresolved"
+        assert resolution["reason"] == "insufficient_preprocessing_build_context"
+        assert resolution["preprocessing_evidence_ids"] \
+            == preprocessing_ids_by_source[source_id]
+        sealed_preprocessing_judgment.append({
+            "category": category,
+            "fact_id": fact_id,
+            "source_id": source_id,
+            "range": site["range"],
+            "call_text": call_text,
+            "raw_presence_status": presence_status,
+            "semantic_outcome": resolution["outcome"],
+            "semantic_reason": resolution["reason"],
+            "preprocessing_evidence_ids": resolution[
+                "preprocessing_evidence_ids"
+            ],
+        })
 
     call_completeness = [row for row in completeness if row["kind"] == "call"]
     completeness_status = Counter(row["status"] for row in call_completeness)
@@ -221,6 +332,18 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
         "macro_kind": dict(sorted(macro_kind.items())),
         "macro_presence_status": dict(sorted(macro_presence.items())),
         "call_completeness": dict(sorted(completeness_status.items())),
+        "configured_preprocessing": {
+            "source_population": len(preprocessing),
+            "status": dict(sorted(Counter(
+                row["status"] for row in preprocessing
+            ).items())),
+            "trust": dict(sorted(Counter(
+                row["trust"] for row in preprocessing
+            ).items())),
+            "evidence_id_population": len(preprocessing_ids),
+            "unique_evidence_ids": len(set(preprocessing_ids)),
+            "evidence_id_ledger_sha256": _ledger_hash(preprocessing_ids),
+        },
         "call_resolution_accounting": {
             "input": len(first),
             "accounted": classification.accounted,
@@ -232,6 +355,7 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
             "unresolved_presence": classification.unresolved_presence,
             "unresolved_expression": classification.unresolved_expression,
             "unresolved_owner": classification.unresolved_owner,
+            "unresolved_preprocessing": classification.unresolved_preprocessing,
             "unresolved_macro": classification.unresolved_macro,
             "wrapper_unresolved": classification.wrapper_unresolved,
         },
@@ -239,6 +363,9 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
         "call_resolution_ledger_sha256": _ledger_hash(resolution_rows),
         "sealed_call_direct_judgment_matched": len(sealed_calls),
         "sealed_macro_direct_judgment_matched": len(sealed_macros),
+        "sealed_preprocessing_direct_judgment_population": (
+            sealed_preprocessing_judgment
+        ),
         "sealed_owner_judgment_population": sealed_owner_judgment,
         "deterministic_replay": expected_ids == repeated_ids,
         "first_pass_seconds": round(elapsed, 6),

@@ -43,6 +43,7 @@ class CallClassifyResult:
     unresolved_presence: int = 0
     unresolved_expression: int = 0
     unresolved_owner: int = 0
+    unresolved_preprocessing: int = 0
     unresolved_macro: int = 0
     wrapper_unresolved: int = 0
     unresolved: list[dict[str, str]] = field(default_factory=list)
@@ -59,6 +60,7 @@ class CallClassifyResult:
             + self.unresolved_presence
             + self.unresolved_expression
             + self.unresolved_owner
+            + self.unresolved_preprocessing
             + self.unresolved_macro
             + self.wrapper_unresolved
         )
@@ -101,6 +103,7 @@ def classify_call_sites(
     framework_names: frozenset[str] = frozenset(),
     wrappers: Iterable[dict] = (),
     macro_facts: Iterable[dict] = (),
+    preprocessing_contexts: Iterable[dict] = (),
 ) -> CallClassifyResult:
     """call_sites 를 결정론 분류 → ``Calls`` 엣지 + 드롭 집계.
 
@@ -134,6 +137,9 @@ def classify_call_sites(
 
     # Parser grammar evidence only; Analyzer never reads/reparses source for macros.
     function_macros = _function_macro_candidates(macro_facts)
+    preprocessing_by_source = _configured_preprocessing_by_source(
+        preprocessing_contexts,
+    )
 
     result = CallClassifyResult()
     ids = [str(site.get("call_id") or "") for site in call_sites]
@@ -143,6 +149,43 @@ def classify_call_sites(
         )
     for cs in call_sites:
         call_id = str(cs["call_id"])
+        if cs.get("configured_preprocessing_required") is True:
+            source_id = str(cs.get("source_id") or "")
+            preprocessing = preprocessing_by_source.get(source_id)
+            if preprocessing is None:
+                raise CallClassificationInvariantError(
+                    f"call {call_id} requires configured preprocessing context for "
+                    f"source_id={source_id!r}"
+                )
+            trace = preprocessing["trace"]
+            if (
+                preprocessing.get("status") != "exact"
+                or preprocessing.get("trust") != "authoritative"
+                or trace.get("status") != "exact"
+            ):
+                result.unresolved_preprocessing += 1
+                build = preprocessing["build"]
+                reason = _preprocessing_reason(preprocessing)
+                evidence_ids = sorted(set(
+                    list(build.get("commandOccurrenceIds", []))
+                    + list(build.get("unresolvedEvidenceIds", []))
+                    + list(trace.get("evidenceIds", []))
+                ))
+                row = {
+                    "call_id": call_id,
+                    "outcome": "unresolved",
+                    "reason": reason,
+                    "preprocessing_evidence_ids": evidence_ids,
+                }
+                result.unresolved.append({
+                    key: row[key] for key in ("call_id", "reason")
+                })
+                result.ledger.append(row)
+                continue
+            raise CallClassificationInvariantError(
+                "configured preprocessing v1 cannot bind a raw-source call fact; "
+                "consume a configured semantic occurrence instead"
+            )
         presence = cs.get("presence_status")
         if presence == "inactive":
             result.preserved_inactive += 1
@@ -305,6 +348,43 @@ def classify_call_sites(
             "call occurrence result ledger must preserve every canonical ID exactly once"
         )
     return result
+
+
+def _configured_preprocessing_by_source(
+    contexts: Iterable[dict],
+) -> dict[str, dict]:
+    result: dict[str, dict] = {}
+    for context in contexts:
+        if not isinstance(context, dict):
+            raise CallClassificationInvariantError(
+                "configured preprocessing context object required"
+            )
+        source_id = str(context.get("source_id") or "")
+        if not source_id or source_id in result:
+            raise CallClassificationInvariantError(
+                "configured preprocessing contexts require unique source_id"
+            )
+        if not isinstance(context.get("build"), dict) or not isinstance(
+            context.get("trace"), dict
+        ):
+            raise CallClassificationInvariantError(
+                f"configured preprocessing context is incomplete for {source_id}"
+            )
+        result[source_id] = context
+    return result
+
+
+def _preprocessing_reason(context: dict) -> str:
+    trace = context["trace"]
+    trace_reasons = trace.get("reasons")
+    if isinstance(trace_reasons, list) and trace_reasons:
+        return str(trace_reasons[0])
+    if context.get("trust") == "compatible_replay":
+        return "insufficient_compatible_preprocessing_replay"
+    build_reasons = context["build"].get("reasons")
+    if isinstance(build_reasons, list) and build_reasons:
+        return str(build_reasons[0])
+    return "insufficient_configured_preprocessing_trace"
 
 
 def _function_macro_candidates(

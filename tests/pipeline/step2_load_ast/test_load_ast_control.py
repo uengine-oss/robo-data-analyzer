@@ -18,6 +18,29 @@ from pipeline.steps.step2_load_ast.dbms_reader import _read_dbms
 
 
 class LoadAstControlTest(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _c_result(ordinal: int) -> ParseResult:
+        source_id = f"file-{ordinal}.c"
+        build_evidence_id = f"{ordinal:064x}"
+        trace_evidence_id = f"{ordinal + 100:064x}"
+        return ParseResult(
+            evidence_sources=[{
+                "source_id": source_id,
+                "decoded_text_sha256": str(ordinal) * 64,
+                "decoded_text": "",
+            }],
+            preprocessing_contexts=[{
+                "source_id": source_id,
+                "status": "unresolved",
+                "trust": "unresolved",
+                "build": {
+                    "emittedCommandOccurrenceIds": [],
+                    "unresolvedEvidenceIds": [build_evidence_id],
+                },
+                "trace": {"evidenceIds": [trace_evidence_id]},
+            }],
+        )
+
     def test_explicit_corpus_root_owns_source_and_ast_roots(self):
         with tempfile.TemporaryDirectory() as temp:
             corpus = Path(temp) / "corpus"
@@ -74,11 +97,7 @@ class LoadAstControlTest(unittest.IsolatedAsyncioTestCase):
             reads += 1
             if reads == 1:
                 pause.request_stop()
-            return ParseResult(evidence_sources=[{
-                "source_id": f"file-{reads}.c",
-                "decoded_text_sha256": str(reads) * 64,
-                "decoded_text": "",
-            }])
+            return self._c_result(reads)
 
         config = {"configurable": {"codebase": project, "pause": pause}}
         with (
@@ -103,11 +122,7 @@ class LoadAstControlTest(unittest.IsolatedAsyncioTestCase):
             if reads == 1:
                 pause.request_pause()
                 first_read.set()
-            return ParseResult(evidence_sources=[{
-                "source_id": f"file-{reads}.c",
-                "decoded_text_sha256": str(reads) * 64,
-                "decoded_text": "",
-            }])
+            return self._c_result(reads)
 
         config = {"configurable": {"codebase": project, "pause": pause}}
         with (

@@ -73,7 +73,7 @@ def add_common_evidence(
             "population": emitted, "emitted": emitted,
             "explicitlyUnresolved": 0,
         })
-    raw["evidence"] = {
+    evidence = {
         "version": "1.0.0",
         "sourceId": source_id,
         "rawSourceSha256": decoded_hash,
@@ -90,4 +90,42 @@ def add_common_evidence(
         "presences": presences if facts else [],
         "completeness": completeness,
     }
+    if source_id.lower().endswith((".c", ".h")):
+        evidence["configuredPreprocessing"] = _unresolved_c_preprocessing(source_id)
+    raw["evidence"] = evidence
     return raw
+
+
+def _unresolved_c_preprocessing(source_id: str) -> dict[str, Any]:
+    build_id = hashlib.sha256(
+        f"fixture-build\0{source_id}".encode("utf-8")
+    ).hexdigest()
+    trace_id = hashlib.sha256(
+        f"fixture-trace\0{source_id}".encode("utf-8")
+    ).hexdigest()
+    return {
+        "version": "1.0.0",
+        "status": "unresolved",
+        "trust": "unresolved",
+        "build": {
+            "status": "unresolved",
+            "population": 1,
+            "emitted": 0,
+            "explicitlyUnresolved": 1,
+            "commandOccurrenceIds": [],
+            "emittedCommandOccurrenceIds": [],
+            "unresolvedCommandOccurrenceIds": [],
+            "unresolvedEvidenceIds": [build_id],
+            "reasons": ["insufficient_compilation_database"],
+        },
+        "trace": {
+            "status": "unresolved",
+            "population": 1,
+            "emitted": 0,
+            "explicitlyUnresolved": 1,
+            "evidenceIds": [trace_id],
+            "emittedEvidenceIds": [],
+            "unresolvedEvidenceIds": [trace_id],
+            "reasons": ["insufficient_preprocessing_build_context"],
+        },
+    }

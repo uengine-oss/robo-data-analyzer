@@ -45,6 +45,7 @@ async def link_calls_by_name_step(state: dict, config: Optional[RunnableConfig] 
         call_sites, state.get("code_nodes", []),
         framework_names=framework_names, wrappers=call_wrappers,
         macro_facts=state.get("macro_facts", []),
+        preprocessing_contexts=state.get("preprocessing_contexts", []),
     )
 
     if neo is not None and result.edges:

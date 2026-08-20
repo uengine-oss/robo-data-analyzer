@@ -110,6 +110,7 @@ class WorkflowState(TypedDict, total=False):
     # Parser common evidence: exact decoded source once/file + kind completeness ledger.
     evidence_sources: list[dict]
     evidence_completeness: list[dict]
+    preprocessing_contexts: list[dict]
 
     # ── step3_load_external + step5_linking 결과 (spec 078) ──
     project_files: list[ProjectFile]

@@ -25,6 +25,10 @@ _PRESENCE_STATUSES = frozenset({
 })
 _CALLEE_KINDS = frozenset({"named", "constructor", "expression"})
 _MACRO_KINDS = frozenset({"object", "function"})
+_BUILD_STATUSES = frozenset({"exact", "partial", "unresolved"})
+_PREPROCESSING_TRUST = frozenset({
+    "authoritative", "compatible_replay", "unresolved",
+})
 _ENCODINGS = {
     "UTF-8": "utf-8",
     "EUC-KR": "euc_kr",
@@ -105,6 +109,7 @@ class ValidatedCommonEvidence:
     call_facts: tuple[CallEvidenceFact, ...]
     macro_facts: tuple[MacroEvidenceFact, ...]
     completeness: Mapping[str, Mapping[str, Any]]
+    configured_preprocessing: Mapping[str, Any] | None
 
     def source_record(self) -> dict[str, str]:
         return {
@@ -118,6 +123,14 @@ class ValidatedCommonEvidence:
             {"source_id": self.source_id, **dict(self.completeness[kind])}
             for kind in _KINDS
         ]
+
+    def preprocessing_record(self) -> dict[str, Any] | None:
+        if self.configured_preprocessing is None:
+            return None
+        return {
+            "source_id": self.source_id,
+            **dict(self.configured_preprocessing),
+        }
 
 
 def _fail(field: str, detail: str) -> CommonEvidenceContractError:
@@ -144,6 +157,24 @@ def _integer(value: Any, *, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise _fail(field, f"integer required, got {value!r}")
     return value
+
+
+def _string_array(value: Any, *, field: str) -> list[str]:
+    if not isinstance(value, list) or not all(
+        isinstance(item, str) and item for item in value
+    ):
+        raise _fail(field, "nonblank string array required")
+    return list(value)
+
+
+def _evidence_ids(value: Any, *, field: str) -> list[str]:
+    values = _string_array(value, field=field)
+    if len(values) != len(set(values)) or any(
+        len(item) != 64 or any(char not in "0123456789abcdef" for char in item)
+        for item in values
+    ):
+        raise _fail(field, "unique lowercase SHA-256 IDs required")
+    return values
 
 
 def _range(value: Any, *, field: str, source_length: int) -> EvidenceRange:
@@ -505,6 +536,211 @@ def _validate_completeness(
     return result
 
 
+def _require_exact_fields(
+    value: Mapping[str, Any], expected: set[str], *, field: str,
+) -> None:
+    actual = set(value)
+    if actual != expected:
+        raise _fail(
+            field,
+            f"exact fields required; missing={sorted(expected - actual)}, "
+            f"unexpected={sorted(actual - expected)}",
+        )
+
+
+def _validate_build_context(value: Any) -> dict[str, Any]:
+    field = "configuredPreprocessing.build"
+    if not isinstance(value, dict):
+        raise _fail(field, "object required")
+    _require_exact_fields(value, {
+        "status", "population", "emitted", "explicitlyUnresolved",
+        "commandOccurrenceIds", "emittedCommandOccurrenceIds",
+        "unresolvedCommandOccurrenceIds", "unresolvedEvidenceIds", "reasons",
+    }, field=field)
+    status = value.get("status")
+    if status not in _BUILD_STATUSES:
+        raise _fail(f"{field}.status", f"invalid {status!r}")
+    population = _integer(value.get("population"), field=f"{field}.population")
+    emitted = _integer(value.get("emitted"), field=f"{field}.emitted")
+    unresolved = _integer(
+        value.get("explicitlyUnresolved"),
+        field=f"{field}.explicitlyUnresolved",
+    )
+    if min(population, emitted, unresolved) < 0 or population != emitted + unresolved:
+        raise _fail(
+            f"{field}.population",
+            f"expected emitted + explicitlyUnresolved, got "
+            f"{population}!={emitted}+{unresolved}",
+        )
+    command_ids = _evidence_ids(
+        value.get("commandOccurrenceIds"), field=f"{field}.commandOccurrenceIds",
+    )
+    emitted_ids = _evidence_ids(
+        value.get("emittedCommandOccurrenceIds"),
+        field=f"{field}.emittedCommandOccurrenceIds",
+    )
+    unresolved_command_ids = _evidence_ids(
+        value.get("unresolvedCommandOccurrenceIds"),
+        field=f"{field}.unresolvedCommandOccurrenceIds",
+    )
+    unresolved_ids = _evidence_ids(
+        value.get("unresolvedEvidenceIds"),
+        field=f"{field}.unresolvedEvidenceIds",
+    )
+    if len(emitted_ids) != emitted or len(unresolved_ids) != unresolved:
+        raise _fail(field, "evidence ID populations do not match accounting")
+    if set(command_ids) != set(emitted_ids) | set(unresolved_command_ids):
+        raise _fail(field, "command occurrence IDs are not an exact emitted/unresolved partition")
+    if not set(unresolved_command_ids).issubset(unresolved_ids):
+        raise _fail(field, "unresolved command IDs must be unresolved evidence IDs")
+    reasons = _string_array(value.get("reasons"), field=f"{field}.reasons")
+    expected_status = (
+        "exact" if emitted > 0 and unresolved == 0
+        else "partial" if emitted > 0 and unresolved > 0
+        else "unresolved"
+    )
+    if status != expected_status:
+        raise _fail(
+            f"{field}.status",
+            f"accounting requires {expected_status!r}, got {status!r}",
+        )
+    if (status == "exact") != (not reasons):
+        raise _fail(field, "exact requires no reasons; non-exact requires reasons")
+    return {
+        "status": status,
+        "population": population,
+        "emitted": emitted,
+        "explicitlyUnresolved": unresolved,
+        "commandOccurrenceIds": command_ids,
+        "emittedCommandOccurrenceIds": emitted_ids,
+        "unresolvedCommandOccurrenceIds": unresolved_command_ids,
+        "unresolvedEvidenceIds": unresolved_ids,
+        "reasons": reasons,
+    }
+
+
+def _validate_trace_context(value: Any) -> dict[str, Any]:
+    field = "configuredPreprocessing.trace"
+    if not isinstance(value, dict):
+        raise _fail(field, "object required")
+    _require_exact_fields(value, {
+        "status", "population", "emitted", "explicitlyUnresolved",
+        "evidenceIds", "emittedEvidenceIds", "unresolvedEvidenceIds", "reasons",
+    }, field=field)
+    status = value.get("status")
+    if status not in _BUILD_STATUSES:
+        raise _fail(f"{field}.status", f"invalid {status!r}")
+    population = _integer(value.get("population"), field=f"{field}.population")
+    emitted = _integer(value.get("emitted"), field=f"{field}.emitted")
+    unresolved = _integer(
+        value.get("explicitlyUnresolved"),
+        field=f"{field}.explicitlyUnresolved",
+    )
+    ids = _evidence_ids(value.get("evidenceIds"), field=f"{field}.evidenceIds")
+    emitted_ids = _evidence_ids(
+        value.get("emittedEvidenceIds"), field=f"{field}.emittedEvidenceIds",
+    )
+    unresolved_ids = _evidence_ids(
+        value.get("unresolvedEvidenceIds"), field=f"{field}.unresolvedEvidenceIds",
+    )
+    reasons = _string_array(value.get("reasons"), field=f"{field}.reasons")
+    if (
+        min(population, emitted, unresolved) < 0
+        or population != emitted + unresolved
+        or population != len(ids)
+        or emitted != len(emitted_ids)
+        or unresolved != len(unresolved_ids)
+    ):
+        raise _fail(field, "trace accounting and evidence ID population differ")
+    if set(ids) != set(emitted_ids) | set(unresolved_ids):
+        raise _fail(field, "trace evidence IDs are not an exact emitted/unresolved partition")
+    expected_status = (
+        "exact" if emitted > 0 and unresolved == 0
+        else "partial" if emitted > 0 and unresolved > 0
+        else "unresolved"
+    )
+    if status != expected_status:
+        raise _fail(
+            f"{field}.status",
+            f"accounting requires {expected_status!r}, got {status!r}",
+        )
+    if (status == "exact") != (not reasons):
+        raise _fail(field, "exact requires no reasons; non-exact requires reasons")
+    return {
+        "status": status,
+        "population": population,
+        "emitted": emitted,
+        "explicitlyUnresolved": unresolved,
+        "evidenceIds": ids,
+        "emittedEvidenceIds": emitted_ids,
+        "unresolvedEvidenceIds": unresolved_ids,
+        "reasons": reasons,
+    }
+
+
+def _validate_configured_preprocessing(
+    evidence: Mapping[str, Any], *, source_id: str,
+) -> dict[str, Any] | None:
+    value = evidence.get("configuredPreprocessing")
+    is_c_source = PurePosixPath(source_id).suffix.lower() in {".c", ".h"}
+    if value is None:
+        if is_c_source:
+            raise _fail(
+                "configuredPreprocessing",
+                "C source requires explicit build and preprocessing trace closure",
+            )
+        return None
+    if not is_c_source:
+        raise _fail(
+            "configuredPreprocessing",
+            "C preprocessing contract is forbidden for non-C source",
+        )
+    if not isinstance(value, dict):
+        raise _fail("configuredPreprocessing", "object required")
+    _require_exact_fields(value, {"version", "status", "trust", "build", "trace"},
+                          field="configuredPreprocessing")
+    if value.get("version") != "1.0.0":
+        raise _fail("configuredPreprocessing.version", "expected '1.0.0'")
+    status = value.get("status")
+    trust = value.get("trust")
+    if status not in _BUILD_STATUSES:
+        raise _fail("configuredPreprocessing.status", f"invalid {status!r}")
+    if trust not in _PREPROCESSING_TRUST:
+        raise _fail("configuredPreprocessing.trust", f"invalid {trust!r}")
+    build = _validate_build_context(value.get("build"))
+    trace = _validate_trace_context(value.get("trace"))
+
+    if build["status"] != "exact":
+        expected_status, expected_trust = "unresolved", "unresolved"
+    elif trace["status"] == "unresolved":
+        expected_status, expected_trust = "unresolved", "unresolved"
+    elif trust == "compatible_replay":
+        expected_status, expected_trust = "partial", "compatible_replay"
+    elif trace["status"] == "exact":
+        expected_status, expected_trust = "exact", "authoritative"
+    else:
+        expected_status, expected_trust = "partial", "authoritative"
+    if (status, trust) != (expected_status, expected_trust):
+        raise _fail(
+            "configuredPreprocessing",
+            f"build/trace closure requires status={expected_status!r}, "
+            f"trust={expected_trust!r}; got status={status!r}, trust={trust!r}",
+        )
+    if status == "exact":
+        raise _fail(
+            "configuredPreprocessing",
+            "v1 cannot authorize raw-source semantic occurrences; "
+            "a v2 configured semantic occurrence contract is required",
+        )
+    return {
+        "version": "1.0.0",
+        "status": status,
+        "trust": trust,
+        "build": build,
+        "trace": trace,
+    }
+
+
 def validate_common_evidence(
     raw: Mapping[str, Any],
     *,
@@ -518,6 +754,9 @@ def validate_common_evidence(
     expected = _source_id(expected_source_id, field="expectedSourceId")
     source_id, decoded_hash, source = _validate_envelope(
         evidence, source_bytes=source_bytes, expected_source_id=expected,
+    )
+    configured_preprocessing = _validate_configured_preprocessing(
+        evidence, source_id=source_id,
     )
     grammar_rules, presences = _validate_tables(evidence)
     facts = evidence.get("facts")
@@ -589,4 +828,5 @@ def validate_common_evidence(
         call_facts=tuple(calls),
         macro_facts=tuple(macros),
         completeness=completeness,
+        configured_preprocessing=configured_preprocessing,
     )

@@ -36,6 +36,28 @@ def _range(source: str, expression: str) -> dict[str, int]:
     return {"charOffset": offset, "charLength": len(expression)}
 
 
+def _configured_preprocessing(source_id: str) -> dict:
+    build_id = hashlib.sha256(f"build\0{source_id}".encode()).hexdigest()
+    trace_id = hashlib.sha256(f"trace\0{source_id}".encode()).hexdigest()
+    return {
+        "version": "1.0.0", "status": "unresolved", "trust": "unresolved",
+        "build": {
+            "status": "unresolved", "population": 1, "emitted": 0,
+            "explicitlyUnresolved": 1, "commandOccurrenceIds": [],
+            "emittedCommandOccurrenceIds": [],
+            "unresolvedCommandOccurrenceIds": [],
+            "unresolvedEvidenceIds": [build_id],
+            "reasons": ["insufficient_compilation_database"],
+        },
+        "trace": {
+            "status": "unresolved", "population": 1, "emitted": 0,
+            "explicitlyUnresolved": 1, "evidenceIds": [trace_id],
+            "emittedEvidenceIds": [], "unresolvedEvidenceIds": [trace_id],
+            "reasons": ["insufficient_preprocessing_build_context"],
+        },
+    }
+
+
 def _artifact(source: str, *, second_presence: str = "active") -> dict:
     source_id = "sample.c"
     decoded_hash = hashlib.sha256(source.encode("utf-8")).hexdigest()
@@ -107,6 +129,7 @@ def _artifact(source: str, *, second_presence: str = "active") -> dict:
             "rangeConvention": "half-open",
             "rangeEncoding": "char-offset-length",
             "parseStatus": "exact",
+            "configuredPreprocessing": _configured_preprocessing(source_id),
             "facts": calls,
             "grammarRules": ["postfixExpression"],
             "presences": [active, second],
@@ -172,6 +195,7 @@ def _macro_artifact(source: str) -> dict:
         "rangeConvention": "half-open",
         "rangeEncoding": "char-offset-length",
         "parseStatus": "exact",
+        "configuredPreprocessing": _configured_preprocessing(source_id),
         "facts": [fact],
         "grammarRules": ["functionDefine"],
         "presences": [{
@@ -204,6 +228,10 @@ def test_framework_calls_use_canonical_fact_ids_ranges_and_routine_owner() -> No
             "source_id": "sample.c",
             "decoded_text_sha256": hashlib.sha256(source.encode()).hexdigest(),
             "decoded_text": source,
+        }]
+        assert result.preprocessing_contexts == [{
+            "source_id": "sample.c",
+            **_configured_preprocessing("sample.c"),
         }]
     finally:
         temporary.cleanup()
@@ -242,6 +270,7 @@ def test_macro_payload_is_bound_to_exact_grammar_ranges() -> None:
     assert source[
         macro.replacement_range.char_offset:macro.replacement_range.end
     ] == "log_trace(value, __VA_ARGS__)"
+    assert validated.configured_preprocessing == _configured_preprocessing("sample.c")
 
 
 @pytest.mark.parametrize(
@@ -284,6 +313,28 @@ def test_invalid_macro_payload_fails_closed(mutate, message) -> None:
     ("mutate", "message"),
     (
         (lambda raw: raw.pop("evidence"), "evidence"),
+        (
+            lambda raw: raw["evidence"].pop("configuredPreprocessing"),
+            "configuredPreprocessing",
+        ),
+        (
+            lambda raw: raw["evidence"]["configuredPreprocessing"]["build"].update(
+                unresolvedEvidenceIds=[],
+            ),
+            "evidence ID populations",
+        ),
+        (
+            lambda raw: raw["evidence"]["configuredPreprocessing"]["trace"].update(
+                evidenceIds=[],
+            ),
+            "trace accounting",
+        ),
+        (
+            lambda raw: raw["evidence"]["configuredPreprocessing"].update(
+                status="exact", trust="authoritative",
+            ),
+            "build/trace closure",
+        ),
         (lambda raw: raw["evidence"].update(rawSourceSha256="0" * 64), "rawSourceSha256"),
         (lambda raw: raw["evidence"]["facts"][0].update(factId="0" * 64), "factId"),
         (lambda raw: raw["evidence"]["facts"][0]["range"].update(charLength=10_000), "range"),
@@ -328,6 +379,31 @@ def test_corrupt_or_incomplete_evidence_fails_closed_before_publish(mutate, mess
             read_antlr_json(artifact, root)
 
 
+def test_v1_preprocessing_closure_cannot_authorize_raw_source_occurrences() -> None:
+    source = "void run(void) { service->handler(1); (*callback)(2); }\n"
+    raw = _artifact(source)
+    configured = raw["evidence"]["configuredPreprocessing"]
+    build_id = configured["build"]["unresolvedEvidenceIds"][0]
+    trace_id = configured["trace"]["evidenceIds"][0]
+    configured.update(status="exact", trust="authoritative")
+    configured["build"].update(
+        status="exact", population=1, emitted=1, explicitlyUnresolved=0,
+        commandOccurrenceIds=[build_id], emittedCommandOccurrenceIds=[build_id],
+        unresolvedCommandOccurrenceIds=[], unresolvedEvidenceIds=[], reasons=[],
+    )
+    configured["trace"].update(
+        status="exact", population=1, emitted=1, explicitlyUnresolved=0,
+        evidenceIds=[trace_id], emittedEvidenceIds=[trace_id],
+        unresolvedEvidenceIds=[], reasons=[],
+    )
+
+    with pytest.raises(CommonEvidenceContractError, match="v1 cannot authorize"):
+        validate_common_evidence(
+            raw, source_bytes=source.encode("utf-8"),
+            expected_source_id="sample.c",
+        )
+
+
 def test_legacy_call_population_must_match_canonical_facts_exactly_once() -> None:
     source = "void run(void) { service->handler(1); (*callback)(2); }\n"
     raw = _artifact(source)
@@ -354,8 +430,10 @@ def test_parser_owned_exact_euc_kr_decode_is_reused_by_source_cache() -> None:
             "decodedTextSha256": decoded_hash, "decodedText": source,
             "sourceEncoding": "EUC-KR", "decodeStatus": "exact",
             "positionEncoding": "unicode-code-point",
-            "rangeConvention": "half-open", "rangeEncoding": "char-offset-length",
-            "parseStatus": "exact", "facts": [], "grammarRules": [], "presences": [],
+                "rangeConvention": "half-open", "rangeEncoding": "char-offset-length",
+                "parseStatus": "exact",
+                "configuredPreprocessing": _configured_preprocessing("sample.c"),
+                "facts": [], "grammarRules": [], "presences": [],
             "completeness": [
                 {
                     "kind": kind,

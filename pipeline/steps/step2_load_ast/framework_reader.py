@@ -83,6 +83,11 @@ def _read_framework(
         result.macro_facts.extend(fact.as_record() for fact in evidence.macro_facts)
         result.evidence_sources.append(evidence.source_record())
         result.evidence_completeness.extend(evidence.completeness_records())
+        preprocessing = evidence.preprocessing_record()
+        if preprocessing is not None:
+            result.preprocessing_contexts.append(preprocessing)
+            for site in result.call_sites:
+                site["configured_preprocessing_required"] = True
     _derive_structure_edges(result, package_id)
     return result
 

@@ -7,6 +7,39 @@ from pipeline.steps.step5_linking.link_calls.call_classifier import classify_cal
 
 
 class FunctionMacroCallTests(unittest.TestCase):
+    def test_missing_configured_trace_precedes_every_raw_source_classification(self) -> None:
+        caller = _caller()
+        call = _call(caller, "customer_hook")
+        call["configured_preprocessing_required"] = True
+        result = classify_call_sites(
+            [call], [caller],
+            preprocessing_contexts=[{
+                "source_id": "sample.c",
+                "version": "1.0.0",
+                "status": "unresolved",
+                "trust": "unresolved",
+                "build": {
+                    "status": "unresolved",
+                    "unresolvedEvidenceIds": ["a" * 64],
+                    "reasons": ["insufficient_compilation_database"],
+                },
+                "trace": {
+                    "status": "unresolved",
+                    "evidenceIds": ["b" * 64],
+                    "reasons": ["insufficient_preprocessing_build_context"],
+                },
+            }],
+        )
+
+        self.assertEqual([], result.edges)
+        self.assertEqual(1, result.unresolved_preprocessing)
+        self.assertEqual([{
+            "call_id": "trace-call",
+            "outcome": "unresolved",
+            "reason": "insufficient_preprocessing_build_context",
+            "preprocessing_evidence_ids": ["a" * 64, "b" * 64],
+        }], result.ledger)
+
     def test_declaration_alone_cannot_claim_macro_expansion(self) -> None:
         caller = _caller()
         result = classify_call_sites([_call(caller, "TRACE")], [caller], macro_facts=[{

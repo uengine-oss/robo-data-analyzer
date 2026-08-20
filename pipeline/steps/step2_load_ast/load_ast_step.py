@@ -159,7 +159,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
     parent_of = []
     has_member, belongs_to, statement_next = [], [], []
     call_sites, macro_facts, import_refs = [], [], []
-    evidence_sources, evidence_completeness = [], []
+    evidence_sources, evidence_completeness, preprocessing_contexts = [], [], []
     parsed_files = 0
     await pause.gate()
     # 파일 순차 유지 — 제어 계약(정지 시 다음 파일을 읽지 않음)이 파일 단위 gate 를
@@ -187,6 +187,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         import_refs.extend(result.import_refs)
         evidence_sources.extend(result.evidence_sources)
         evidence_completeness.extend(result.evidence_completeness)
+        preprocessing_contexts.extend(result.preprocessing_contexts)
         parsed_files += 1
         await pause.gate()
 
@@ -206,6 +207,32 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
             "common evidence source envelopes are not exactly one per parsed file: "
             f"parsed={parsed_files}, envelopes={len(source_ids)}, "
             f"unique={len(set(source_ids))}"
+        )
+    c_source_ids = {
+        str(source_id) for source_id in source_ids
+        if Path(str(source_id)).suffix.lower() in {".c", ".h"}
+    }
+    preprocessing_source_ids = [
+        str(item.get("source_id") or "") for item in preprocessing_contexts
+    ]
+    if (
+        set(preprocessing_source_ids) != c_source_ids
+        or len(preprocessing_source_ids) != len(set(preprocessing_source_ids))
+    ):
+        raise ValueError(
+            "configured preprocessing contexts are not exactly one per C source: "
+            f"expected={sorted(c_source_ids)}, actual={sorted(preprocessing_source_ids)}"
+        )
+    preprocessing_evidence_ids: list[str] = []
+    for context in preprocessing_contexts:
+        build = context["build"]
+        trace = context["trace"]
+        preprocessing_evidence_ids.extend(build["emittedCommandOccurrenceIds"])
+        preprocessing_evidence_ids.extend(build["unresolvedEvidenceIds"])
+        preprocessing_evidence_ids.extend(trace["evidenceIds"])
+    if len(preprocessing_evidence_ids) != len(set(preprocessing_evidence_ids)):
+        raise ValueError(
+            "configured preprocessing evidence IDs are not globally exact-once"
         )
 
     await pause.gate()
@@ -357,4 +384,5 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         "import_refs": import_refs,
         "evidence_sources": evidence_sources,
         "evidence_completeness": evidence_completeness,
+        "preprocessing_contexts": preprocessing_contexts,
     }
