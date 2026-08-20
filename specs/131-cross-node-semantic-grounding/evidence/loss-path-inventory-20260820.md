@@ -457,3 +457,14 @@
   크기도 기존 token-derived 실행 분할 계산에 포함한다. 배정 ref에 payload가 없으면 즉시 실패한다.
 - red는 green으로 전환됐고 step6 전체 `23 passed`, step7 전체 `214 passed`다. Neo4j와 actual LLM은
   실행하지 않았으므로 새 external corpus의 직접 의미 품질은 아직 `미검증`이다.
+
+### 2026-08-20 C-010 module pre-analysis producer 제거
+
+- 구조 red는 `module_pre_analysis.py`와 Framework prompt가 존재해 실패했다. 이 producer는 module당
+  signature 앞 80개만 읽어 intent prose를 만들었고 과거 APAS에서 23회 호출·2,568 signature 생략을
+  기록했지만, 현재 exact summary runner는 해당 prose를 이미 권위 입력에서 제거한 상태였다.
+- 죽은 LLM producer·prompt·응답 model·prompt hash·verification packet 목록·README와 모든
+  `module_intents` parameter/call 배선을 제거했다. static jump preflight는 이제 실제 strategy analyzer가
+  호출되기 전 실패하는지를 직접 검증한다.
+- 구조 red는 green, step7 전체 `213 passed`, 전체 회귀 `1049 passed, 5 skipped`, prompt hash
+  `23/23 byte-identical`이다. 별도 LLM/DB 실행은 0회다.

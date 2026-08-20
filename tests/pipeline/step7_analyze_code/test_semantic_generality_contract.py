@@ -236,19 +236,19 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
             with self.subTest(boundary=decision_boundary):
                 self.assertIn(decision_boundary, text)
 
-    def test_module_intent_does_not_infer_business_meaning_from_signatures(self) -> None:
-        rule = _load_rule(
-            ROOT / "llm" / "prompts" / "framework", "module_pre_analysis"
+    def test_no_module_preanalysis_prose_producer_exists(self) -> None:
+        self.assertFalse(
+            (ROOT / "pipeline" / "steps" / "step7_analyze_code"
+             / "module_pre_analysis.py").exists()
         )
-        contract = rule["static_values"]["semantic_frame_contract"]
-        self.assertIn("MODULE.RESPONSIBILITY/DISPLAY_NAME/INTENT", contract)
-        self.assertIn("insufficient", contract)
-        self.assertIn("잘못:", contract)
-        self.assertIn("좋음:", contract)
-        self.assertLess(
-            rule["user_template"].index("{semantic_frame_contract}"),
-            rule["user_template"].index("module_header_metadata:"),
+        self.assertFalse(
+            (ROOT / "llm" / "prompts" / "framework"
+             / "module_pre_analysis.yaml").exists()
         )
+        step_entry = (
+            ROOT / "pipeline" / "steps" / "step7_analyze_code" / "step_entry.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("run_module_pre_analysis", step_entry)
 
     def test_table_description_preserves_authoritative_semantic_head(self) -> None:
         contract = (
@@ -315,7 +315,6 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
         cases = (
             ("framework", "code_summary"),
             ("framework", "code_table_insights"),
-            ("framework", "module_pre_analysis"),
             ("framework", "module_summary"),
             ("framework", "component_naming"),
             ("framework", "table_description"),

@@ -170,14 +170,13 @@ class ExternalEvidenceContextTest(unittest.IsolatedAsyncioTestCase):
             context.file_path = str(source)
             framework_values, _inventory = _build_user_values(
                 context, prompt_code, {code.id: context}, {code.id: prompt_code},
-                "", {}, {}, SourceFileCache(),
+                "", {}, SourceFileCache(),
             )
             batch_values, _ = _build_batch_values(
                 Batch(None, (code.id,)),
                 {code.id: context},
                 {code.id: prompt_code},
                 "",
-                {},
                 {},
                 SourceFileCache(),
                 body_fn=lambda *_: code.code_text,

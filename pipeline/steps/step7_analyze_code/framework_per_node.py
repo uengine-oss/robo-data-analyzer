@@ -68,7 +68,6 @@ async def run_framework_per_node_analysis(
     neo: Neo4jClient | None,
     stream: Optional[NDJSONStream],
     codebase_notes: str,
-    module_intents: dict[str, str],
     table_descriptions: dict[str, dict],
     pause: PauseController,
     source_cache: SourceFileCache,
@@ -183,7 +182,7 @@ async def run_framework_per_node_analysis(
                     first_summary = await pause.run_restartable_during_pause(
                         lambda: run_summary(
                             warm_id, contexts, code_by_id, strategy, cost_budget,
-                            codebase_notes, module_intents, table_descriptions, source_cache,
+                            codebase_notes, table_descriptions, source_cache,
                             llm_slots=semaphore,
                         )
                     )
@@ -194,7 +193,7 @@ async def run_framework_per_node_analysis(
                             fn_id,
                             _analyze_one(
                                 fn_id, contexts, code_by_id, strategy, cost_budget,
-                                semaphore, codebase_notes, module_intents, table_descriptions,
+                                semaphore, codebase_notes, table_descriptions,
                             source_cache,
                             precomputed_summary=(first_summary if fn_id == warm_id else None),
                             precomputed_summary_supplied=(fn_id == warm_id),
@@ -382,7 +381,6 @@ async def _analyze_one(
     cost_budget,
     semaphore: PrioritySemaphore,
     codebase_notes: str,
-    module_intents: dict[str, str],
     table_descriptions: dict[str, dict],
     source_cache: SourceFileCache,
     precomputed_summary: Optional[SummaryOutput | ModelOutputError] = None,
@@ -395,7 +393,6 @@ async def _analyze_one(
             fn_id, contexts, code_by_id, strategy,
             cost_budget=cost_budget,
             codebase_notes=codebase_notes,
-            module_intents=module_intents,
             table_descriptions=table_descriptions,
             source_cache=source_cache,
             precomputed_summary=precomputed_summary,

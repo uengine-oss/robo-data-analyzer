@@ -26,7 +26,6 @@ from pipeline.execution.pause_controller import NULL_PAUSE, PauseController
 from pipeline.execution.step_config import step_config
 
 # (dbms 엔진은 여기서 import 하지 않는다 — 전략이 주입한다(analysis_pipelines). 헌법 II.)
-from pipeline.steps.step7_analyze_code.module_pre_analysis import run_module_pre_analysis
 from pipeline.steps.step7_analyze_code.column_usage_projection import (
     build_column_usage_projections,
 )
@@ -175,15 +174,6 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
     source_cache = cfg.get("source_cache") or SourceFileCache()
     _validate_structural_ast_contract(contexts, code_by_id, source_cache)
 
-    # 0. 모듈 사전분석 — 모듈당 LLM 1회로 헤더 주석 → 모듈 의도 (최대 2줄).
-    # intent 는 코드노드 3분할 공통 context prefix 로만 사용 — 영구 그래프 속성 X.
-    # module_pre_analysis 가 자체 step_processing_scope 진입 → 가시성 자동.
-    module_intents = await run_module_pre_analysis(
-        state.get("modules", []), code_node_list, strategy, cost_budget,
-        handoff.slots,
-        stream=stream,
-    )
-
     # ★ 분석 엔진은 **전략이 주입**한다 (헌법 II "분기 0" / spec 046 FR-001).
     #   framework = per-node 3분할 / dbms = 형제 배치 1콜.
     #   종전엔 여기에 `strategy.name == "dbms"` 하드분기가 있었다 — graph_builder 규약이
@@ -207,7 +197,7 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
         with step_processing_scope(_STEP, stream):
             result = await strategy.code_analyzer(
                 state, contexts, code_by_id, strategy, cost_budget, neo, stream,
-                codebase_notes, module_intents, table_descriptions, pause, source_cache,
+                codebase_notes, table_descriptions, pause, source_cache,
                 handoff,
             )
     except BaseException as error:

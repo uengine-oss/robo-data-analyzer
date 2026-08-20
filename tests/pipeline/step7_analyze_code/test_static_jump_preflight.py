@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 from graph.schema.graph_nodes import CodeNode
 from pipeline.models.analysis_context import AnalysisContext, StatementFact
@@ -14,7 +14,7 @@ from shared.files.cache import SourceFileCache
 
 
 class StaticJumpPreflightTest(unittest.IsolatedAsyncioTestCase):
-    async def test_stale_goto_ast_fails_before_module_llm(self) -> None:
+    async def test_stale_goto_ast_fails_before_semantic_analyzer(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             source = Path(temp) / "sample.c"
             source.write_text("goto done;\ndone:\n", encoding="utf-8")
@@ -31,29 +31,28 @@ class StaticJumpPreflightTest(unittest.IsolatedAsyncioTestCase):
                 StatementFact("goto", "GOTO", 1, 1, target="done"),
             )
 
-            with patch(
-                "pipeline.steps.step7_analyze_code.step_entry.run_module_pre_analysis",
-                new_callable=AsyncMock,
-            ) as module_llm:
-                with self.assertRaisesRegex(
-                    ValueError,
-                    r"static jump target contract failed.*code:sample.c:f.*GOTO@1",
-                ):
-                    await analyze_code_step(
-                        {
-                            "analysis_contexts": {node.id: context},
-                            "code_nodes": [node],
-                            "tables": [],
-                            "columns": [],
-                            "has_column_edges": [],
-                            "modules": [],
-                        },
-                        {"configurable": {
-                            "strategy": SimpleNamespace(name="framework"),
-                        }},
-                    )
+            code_analyzer = AsyncMock()
+            with self.assertRaisesRegex(
+                ValueError,
+                r"static jump target contract failed.*code:sample.c:f.*GOTO@1",
+            ):
+                await analyze_code_step(
+                    {
+                        "analysis_contexts": {node.id: context},
+                        "code_nodes": [node],
+                        "tables": [],
+                        "columns": [],
+                        "has_column_edges": [],
+                        "modules": [],
+                    },
+                    {"configurable": {
+                        "strategy": SimpleNamespace(
+                            name="framework", code_analyzer=code_analyzer,
+                        ),
+                    }},
+                )
 
-            module_llm.assert_not_awaited()
+            code_analyzer.assert_not_awaited()
 
     async def test_standalone_preflight_uses_the_same_jump_contract(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

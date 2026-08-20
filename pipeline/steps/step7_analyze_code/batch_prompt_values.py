@@ -36,7 +36,6 @@ def _build_batch_values(
     contexts: dict[str, AnalysisContext],
     code_by_id: dict[str, CodeNode],
     codebase_notes: str,
-    module_intents: dict[str, str],
     table_descriptions: dict[str, dict],
     cache: SourceFileCache,
     body_fn=body_for,
@@ -154,7 +153,7 @@ def _build_batch_values(
     values = {
         "unit_id": root.id if root else first_ctx.id,
         "unit_signature": root.signature if root else first_ctx.signature,
-        "module_intent": module_intents.get(root.owner_id if root else "") or "(없음)",
+        "module_intent": "(없음: 파생 prose는 의미 근거로 전달하지 않음)",
         "codebase_notes": codebase_notes or "(없음)",
         "ancestor_context": ancestor,
         "node_count": str(len(batch.node_ids)),

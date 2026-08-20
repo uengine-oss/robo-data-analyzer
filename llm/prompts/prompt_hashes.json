@@ -1,7 +1,6 @@
 {
   "prompts/common/component_naming_contract.md": "b07da6b54b59d0985300c7873b7a3f2ef86450f87a275cbb8de8db6bbaa5e35a",
   "prompts/common/function_summary_contract.md": "02a6230694ffc89356fe1f0d52bf291ac5dd944887f48ce939347be632879d77",
-  "prompts/common/module_intent_contract.md": "7bc8c779a357cfa5f8fcf6774eb529fa19210c91921e0c579acb3c9d53b4ad0f",
   "prompts/common/module_summary_contract.md": "7b51ee8465db653e6d0ccd4df87c6780707966e931bec1c0e16a82106cd2fb83",
   "prompts/common/semantic_frame_contract.md": "817a073fcb171b0f268b796aab879bdc677dbe668622645b65ea4a53094aa70c",
   "prompts/common/summary_contract.md": "9e1ee03c60195f4e8174031106f2ba9444f44875b15830fab8639b7aa15a3946",
@@ -17,7 +16,6 @@
   "prompts/framework/code_summary.yaml": "8e28e4281200d0407ce15090e6e0471fdd65a8a31f7d72f54da7f7171498ff15",
   "prompts/framework/code_table_insights.yaml": "d03905e8ef422a299ca66a07d35359b09c9262fc0b00e80da07d249eebecff2b",
   "prompts/framework/component_naming.yaml": "34039ea66e6383f9a03d43b5ac2696d2d220c5b9b00419a810ea8c3e495586c7",
-  "prompts/framework/module_pre_analysis.yaml": "8fe3cf890a7dc0881a90959893228cf2d10ef9a773dcf2aa5a31d88990798988",
   "prompts/framework/module_summary.yaml": "81166b1dff98ecb3087ef303bb6f19fc5769cc765ae4a8a122ce82da16f5a6d2",
   "prompts/framework/table_description.yaml": "1c88e5a46371f6face05f46a6de5c4b38bafc2d0042c129ab3b2f962ee7d97cb",
   "agents/call_review.md": "286a606a2bd0d0e1a923c3777f7fa242f1abc7dd8a82c70e922eb952f95fb36e",

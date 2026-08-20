@@ -33,6 +33,8 @@
     - [x] A131-04c-EXT linked external chunk 8건/6000자 canonical 선택 상한 제거,
       chunk별 exact evidence obligation과 downstream token 분할 회계 연결
     - [ ] A131-04c-PROSE module/component·agent 중간 prose 권위 입력 제거
+      - [x] C-010 Framework module pre-analysis producer·prompt·23회 호출·module_intents 배선 제거
+      - [ ] step8 module/component aggregate와 Agent context compaction 제거
     - [ ] A131-04c-SOURCE source literal 비가역 projection 제거
     - [ ] A131-04c-SCC cycle 내부 unavailable callee obligation 명시·회계
   - [ ] A131-04d source/AST/diagnostic closure와 completed generation 원자 publish/consumer guard

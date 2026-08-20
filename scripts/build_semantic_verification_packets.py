@@ -27,7 +27,6 @@ from pipeline.quality_gates.rule_audit_artifact import load_rule_audit_records
 
 
 CONCERNS = (
-    "module_pre_analysis",
     "code_summary",
     "code_table_insights",
     "code_rules_examples",

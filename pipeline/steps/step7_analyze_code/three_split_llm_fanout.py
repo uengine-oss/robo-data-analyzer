@@ -358,7 +358,6 @@ async def run_summary(
     strategy: Any,
     cost_budget: Optional[CostBudget] = None,
     codebase_notes: str = "",
-    module_intents: Optional[dict[str, str]] = None,
     table_descriptions: Optional[dict[str, dict]] = None,
     source_cache: Optional[SourceFileCache] = None,
     llm_slots: Optional[PrioritySemaphore] = None,
@@ -390,7 +389,7 @@ async def run_summary(
 
     common, _inventory = _build_user_values(
         ctx, fn, contexts, code_by_id, codebase_notes,
-        module_intents or {}, table_descriptions or {},
+        table_descriptions or {},
         source_cache or SourceFileCache(),
     )
     async def _call() -> SummaryOutput:
@@ -429,7 +428,6 @@ async def analyze_code_three_split(
     strategy: Any,
     cost_budget: Optional[CostBudget] = None,
     codebase_notes: str = "",
-    module_intents: Optional[dict[str, str]] = None,
     table_descriptions: Optional[dict[str, dict]] = None,
     source_cache: Optional[SourceFileCache] = None,
     precomputed_summary: Optional[SummaryOutput | ModelOutputError] = None,
@@ -445,7 +443,6 @@ async def analyze_code_three_split(
 
     Args:
         codebase_notes: ``ScanResult.codebase_notes`` — prefix 공유로 캐시 적중.
-        module_intents: ``{module_id: intent}`` — module_pre_analysis(M9) 결과.
         table_descriptions: ``{table_fqn: DDL 설명}`` — reads/writes 렌더에 의미 부여.
         precomputed_summary: Round 첫 코드노드의 워밍 결과.
         precomputed_summary_supplied: 워밍 호출이 이미 끝났는지 표시. 워밍 실패(None)도
@@ -477,7 +474,7 @@ async def analyze_code_three_split(
     # inventory는 Rule 물질화·감사의 구조 정답지다.
     common, inventory = _build_user_values(
         ctx, fn, contexts, code_by_id, codebase_notes,
-        module_intents or {}, table_descriptions or {},
+        table_descriptions or {},
         source_cache or SourceFileCache(),
     )
     prompts_dir = Path(strategy.prompts_dir)
@@ -937,7 +934,6 @@ def _build_user_values(
     contexts: dict[str, AnalysisContext],
     code_by_id: dict[str, CodeNode],
     codebase_notes: str,
-    module_intents: dict[str, str],
     table_descriptions: dict[str, dict],
     cache: SourceFileCache,
 ) -> tuple[dict, object]:
@@ -982,7 +978,7 @@ def _build_user_values(
         "source_status": excerpt.status,
         "coordinate_system": excerpt.coordinate_system,
         "codebase_notes": codebase_notes or "(없음)",
-        "module_intent": module_intents.get(fn.owner_id) or "(없음)",
+        "module_intent": "(없음: 파생 prose는 의미 근거로 전달하지 않음)",
         "referenced_symbols": dump_referenced_symbols(ctx.referenced_symbols),
         "external_evidence": dump_external_evidence(ctx.external_evidence),
         "_external_evidence_by_chunk": {

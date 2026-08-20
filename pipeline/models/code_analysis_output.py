@@ -340,23 +340,6 @@ class BatchTableInsightsOutput(BaseModel):
     nodes: list[BatchTableInsightsItem] = Field(default_factory=list)
 
 
-# ── 모듈 사전분석 (module_pre_analysis — 코드노드 분석 전 1회) ──
-
-
-class ModulePreAnalysisOutput(BaseModel):
-    """모듈 헤더 주석 → 정제된 모듈 의도(intent). 코드노드 분석 3분할 context 에 주입.
-
-    표시명(logical_name)은 여기서 만들지 X — 헤더 주석이 아니라 분석 결과에서
-    도출해야 하므로 summarize_module 이 담당 (M11).
-    """
-    model_config = ConfigDict(extra="forbid")
-
-    intent: str = Field(
-        ...,
-        description="헤더가 입증하는 현재 모듈 의도 0~2문장. 시그니처만으로 추측하지 않으며 근거 없으면 빈 문자열",
-    )
-
-
 # ── 모듈 요약 (summarize_module_step) ─────────────────────
 
 

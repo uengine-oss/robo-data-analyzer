@@ -543,7 +543,6 @@ flowchart LR
 | `rw_table_filter.py` | 읽기/쓰기 테이블 후보 정제 |
 | `rule_quality.py` · `summary_quality.py` · `concern_retry.py` | 산출물 품질 검사와 부분 재시도 |
 | `human_glossary.py` | 사람 제공 `analysis/glossary.yaml` 폐쇄 입력·provenance 검증 |
-| `module_pre_analysis.py` | 모듈 헤더·의도 사전 분석 (framework) |
 | `result_sink.py` | 결과를 상태·그래프로 흘림 |
 
 #### step8 — 후처리 (`step8_post_processing`)
@@ -766,7 +765,7 @@ YAML 프롬프트를 `yaml_llm_runner`가 실행합니다. 전략별 디렉터�
 
 | 위치 | 내용 |
 |---|---|
-| `prompts/framework/` | `code_summary` · `code_table_insights` · `module_pre_analysis` · `module_summary` · `component_naming` · `table_description` · `_common` |
+| `prompts/framework/` | `code_summary` · `code_table_insights` · `module_summary` · `component_naming` · `table_description` · `_common` |
 | `prompts/dbms/` | `code_summary_batch` · `code_table_insights_batch` · `module_summary` · `component_naming` · `table_description` · `_common` |
 | `prompts/common/*.md` | 산출물 계약 문서 — summary · structured rule · empty domain terms · component naming · module intent/summary · search text · table description |
 | `prompts/prompt_hashes.json` | 프롬프트 prefix 캐시 계약 검증용 해시 |
@@ -1188,7 +1187,7 @@ robo-data-analyzer/
 │       │                            three_split_llm_fanout · batch_planner
 │       │                            example_mapping_builder · rw_table_filter
 │       │                            rule_quality · summary_quality · concern_retry
-│       │                            module_pre_analysis · result_sink
+│       │                            result_sink
 │       └── step8_post_processing/   summarize_module · build_components · build_glossary
 │                                    enrich_table_description · enrich_lineage_from_catalog
 │                                    health_metrics · embed_step

@@ -164,7 +164,7 @@ class Module:
     start_line: int = 0                      # 0 = 파일 전체 (file-level module)
     end_line: int = 0                        # 0 = 파일 전체
 
-    # antlr JSON 풍부 필드 (load_ast 가 채움) — module_pre_analysis(M9) 의 LLM 입력 ────
+    # antlr JSON 풍부 필드 (load_ast 가 채움) ─────────────────────────────
     comment: str = ""                        # 모듈/파일 헤더 주석 (변경이력·작성자 노이즈 포함 — 원본)
     annotations: str = ""                    # 클래스 어노테이션 (Java @Annotation 등)
     code_text: str = ""                      # 원문 슬라이스 (step2 가 채움 — 라인 범위 기준)
