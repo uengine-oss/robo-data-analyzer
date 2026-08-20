@@ -80,6 +80,14 @@ families MUST include only slots supported by the actual AST/evidence and MUST b
 flattened when grammar size or repetition grows. Display/search summaries MAY be projections of the
 canonical frame, but MUST NOT become a second semantic producer.
 
+"Bounded" constrains the schema shape and one execution unit; it MUST NOT impose an arbitrary
+character, item, Top-N, or fact-count ceiling on canonical meaning, source, missing context, or
+results. The complete source/AST obligation set MUST be enumerated first. Oversized work is split by
+stable obligation and exact source/evidence closure, then merged exactly once with zero omission,
+duplication, reordering, or unclassified residual. A prose summary of source or child output MUST NOT
+replace canonical source/evidence for a later semantic decision. Provider limits surface an explicit
+partial/needs-context result; they never authorize truncation or silent skipping.
+
 **Rationale**: the 2026-05-30 incident proved that deeply nested/repeated schemas can cause
 repetition and whitespace blowups. The 2026-08-12 semantic audit also proved that one free summary
 string cannot expose missing decisions, outcomes, call purposes, or transaction effects. A bounded
@@ -132,7 +140,7 @@ No layer substitutes for another.
 
 Any axis not measured MUST be reported as `미검증`, never folded into a pass. Passing tests
 is not evidence of semantic accuracy. Procedure detail lives in
-`docs/handovers/analysis-performance-validation-canonical/04-검증방법.md`, which this
+`specs/131-cross-node-semantic-grounding/history/handovers/04-검증방법.md`, which this
 principle makes binding rather than advisory.
 
 **Rationale**: on 2026-08-07 a prompt overhaul was declared "all axes passed" after only
@@ -190,8 +198,10 @@ This constitution supersedes ad-hoc convention. New features go through
 verifying compliance with the principles above. A principle is amended only by editing this
 file and bumping the version, with the rationale recorded.
 
-**Version**: 1.5.0 | **Ratified**: 2026-06-15 | **Last Amended**: 2026-08-12
-(1.5.0 — VI replaced the single-free-string rule with bounded dynamic semantic frames and the
+**Version**: 1.6.0 | **Ratified**: 2026-06-15 | **Last Amended**: 2026-08-20
+(1.6.0 — VI clarifies that bounded means finite schema/execution shape, never an arbitrary content or
+result cap; large contexts require exact obligation/source partitioning and lossless merge, and
+summary-of-summary cannot replace canonical evidence. 1.5.0 — VI replaced the single-free-string rule with bounded dynamic semantic frames and the
 Analyzer→Architect semantic-frame boundary was made explicit. Complete source remains authoritative
 inside Analyzer analysis and for audit, but is not a normal Architect generation payload. 1.4.0 —
 IX and X added: three-layer verification made binding and root-cause order fixed,

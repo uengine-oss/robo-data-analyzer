@@ -1,11 +1,38 @@
 # spec 131 — 동적 의미 프레임 전환 현재 작업 정본
 
-> 이 문서는 누적 일지가 아니라 새 세션이 현재 규칙·확정 사실·폐기 결정·미해결·다음 행동을
-> 복구하는 단일 진실이다. 상태가 바뀌면 기존 현재 상태를 교체한다. 과거 실행 이력과 수치는
-> canonical 문서와 `evidence/`가 소유하며, 현재 코드·actual logs·실행 결과가 문서보다 우선한다.
+> **2026-08-20 문서 역할 분리:** 새 세션·컨텍스트 요약 뒤에는 먼저
+> `ABSOLUTE_RULES.md`와 `CURRENT_STATUS.md`를 읽는다. 이 파일은 기존 상세 설계·실행·역사
+> 기록을 보존하며, 현재 진행률이나 최신 절대규칙의 단일 진실이 아니다. 전략 A/B 상세와 과거
+> 검증 수치를 삭제하거나 최신 완료 근거로 자동 승격하지 않는다.
+
+> 아래의 과거 “현재” 문구는 각 날짜의 상세 스냅숏이다. 현재 규칙·확정 사실·폐기 결정·미해결·
+> 다음 행동의 단일 진실로 사용하지 않는다. 현재 작업은 `specs/131-cross-node-semantic-grounding/README.md`에서 시작한다.
+> 과거 실행 이력과 수치는 canonical 문서와 `evidence/`가 소유하며, 현재 코드·actual logs·실행
+> 결과가 문서보다 우선한다.
 
 **Status**: In Progress — 2026-08-19 APAS actual ownership/performance revalidation
-**Updated**: 2026-08-19
+**Updated**: 2026-08-20
+
+## 2026-08-20 추론 모델 교체 — 이후 실행의 새 기준
+
+- 사용자는 서버 내부 모델이 더 성능 좋은 모델로 교체됐다고 알렸고, 이후 작업은 이를 **성능이
+  향상된 새 모델**로 취급한다. 구 모델의 한계를 전제로 한 특례·완화·우회 경로를 제품에 넣지 않는다.
+- 실제 read-only server info는 외부 endpoint와 served alias `frentis-ai-model`은 그대로이고,
+  내부 `model_path`가 `Qwen/Qwen3.8-27B-FP8`로 바뀐 것을 확인했다. 동시에 context는 262,144,
+  server max running requests는 16, SGLang build는 `0.0.0.dev1+gc0b6474b4.d20260818`이다.
+- 따라서 접속 코드나 전역 모델 설정은 바꾸지 않는다. 과거 APAS run과 replay는 구 모델 기준
+  역사 증거로만 보존하고, 이후 bounded replay·final APAS cold·Architect 검증은 새 모델 기준으로
+  새 성능/의미 기준선을 만든다.
+- 작은 JSON Schema 확인은 0.5초에 통과했다. 이전 600자 경계 finding 좌표의 동일 function-calling
+  replay는 104.7초/partial에서 8.2초/sufficient로 개선됐다. 그러나 가장 큰 좌표 replay는 8.8초에도
+  `GUARDS_AND_BRANCHES`가 600자 상한에서 partial이므로, 모델 교체를 제품 계약 결함의 자동 해결로
+  간주하지 않는다. 원문 의미 판정과 일반 계약 수리는 계속한다.
+- 새 모델이 더 똑똑하다는 사용자 전제는 성능·품질 개선 기대값으로 유지하되, 검증 없이 자동 합격이나
+  과거 표본 전체 대체로 확대하지 않는다.
+- 리서치는 막힌 뒤의 일회성 수단이 아니다. 현재 코드·actual log·server 실측과 공식 문서·논문·공식
+  source 같은 1차 자료를 계속 교차 조사한다. 외부 일반 결론과 현재 배포 실측은 분리해 기록한다.
+  여러 출처의 깊은 조사가 필요하거나 접근할 수 없는 내부 정보가 실제 설계 결정을 가를 때만 사용자에게
+  `조사 질문 / 필요한 이유 / 답에 따라 갈리는 결정`을 명시해 도움을 요청하고, 독립 작업은 계속한다.
 
 ## 2026-08-19 summary 의미 직접 판정에서 확인한 현재 첫 결함
 
@@ -189,7 +216,7 @@
 2. `C:\Users\roede\.codex\memories\manual.md`
 3. `C:\Users\roede\.codex\memories\speckit.md`
 4. `D:\work\robo\project\robo-data-analyzer\.specify\memory\constitution.md`
-5. `D:\work\robo\project\robo-data-analyzer\docs\handovers\analysis-performance-validation-canonical\04-검증방법.md`
+5. `D:\work\robo\project\robo-data-analyzer\specs\131-cross-node-semantic-grounding\history\handovers\04-검증방법.md`
 6. 같은 폴더의 `11-핵심압축-인계정본.md` 전체
 7. `08-단일인계-정본.md` §12
 8. 이 spec의 `HANDOFF.md`, `spec.md`, `plan.md`, `tasks.md`,

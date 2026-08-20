@@ -4,10 +4,15 @@
 **Status**: Normative
 **Applies to**: Framework, DBMS, Analyzer graph/API/MCP, Architect normal generation path
 
+> **2026-08-20 무손실 정정:** `bounded`는 schema의 유한한 형태와 한 번의 실행 단위를 뜻한다.
+> 의미 문자열·missing context·사실 의무·결과 개수의 임의 상한을 허용하지 않는다. 원문이 크면
+> LLM 요약으로 대체하지 않고, exact source/evidence closure를 obligation 단위로 분해해 canonical ID로
+> 정확히 한 번씩 합친다. Architect 관련 조항은 현재 보류되어 Analyzer 경계까지만 적용·검증한다.
+
 ## 1. 목적과 권위
 
 `semantic-frame/v1`은 Analyzer가 만든 자연어 의미의 단일 정본이다. parser·linker·결정론
-코드가 구조와 적용 가능한 의미 칸을 먼저 확정하고, LLM은 그 칸의 짧은 의미와 충분성만
+코드가 구조와 적용 가능한 의미 칸을 먼저 확정하고, LLM은 그 칸의 근거 있는 의미와 충분성만
 채운다.
 
 권위 순서는 다음과 같다.
@@ -144,8 +149,9 @@ property key, graph claim identity, MCP/Architect reference에서 끝까지 보�
 보고 인자나 결과를 추측하지 않는다.
 
 `EXTERNAL` fact에는 normal MCP packet용 본문을 넣지 않는다. Analyzer 내부 LLM prompt는 이미
-연결된 chunk의 bounded text를 별도 evidence payload로 볼 수 있지만, 저장 frame에는 chunk ID,
-kind, provenance, 좌표만 남긴다.
+연결된 exact chunk text를 별도 evidence payload로 볼 수 있지만 문자 상한에서 자르거나 oversize
+chunk를 조용히 버리지 않는다. context를 넘으면 chunk/evidence obligation을 분할하고 누락·중복 0을
+검사한다. 저장 frame에는 chunk ID, kind, provenance, 좌표를 남겨 원문으로 역추적할 수 있어야 한다.
 
 ## 5. `SlotSpec`과 `SlotValue`
 
@@ -177,8 +183,8 @@ LLM wire에는 required slot key 아래 세 필드만 노출한다.
 교차 필드 계약:
 
 - `sufficient`: `meaning` non-empty, `missing_context=[]`
-- `partial`: grounded `meaning` non-empty, `missing_context` 1~8개
-- `insufficient`: `meaning=""`, `missing_context` 1~8개
+- `partial`: grounded `meaning` non-empty, `missing_context` 1개 이상이며 실제 누락 의무 전부
+- `insufficient`: `meaning=""`, `missing_context` 1개 이상이며 실제 누락 의무 전부
 - `missing_context`는 필요한 evidence kind와 대상을 구체적으로 말한다.
 - LLM은 `slot_id/family/role/target_ref/evidence_refs`를 출력하지 않는다.
 
@@ -198,7 +204,10 @@ frame planner는 실제 구조 fact가 요구하는 family만 shallow하게 만�
 | `FUNCTION` | `RESULT` | return type/expression/output mutation 존재 | TARGET + RETURN/SET facts |
 | `STATEMENT` | `DIRECT_ACTION` | routine이 아닌 분석 target 또는 단일 structural action | target statement fact |
 
-routine target의 위 다섯 역할은 최대치이며, 실제 구조축이 없으면 해당 slot을 만들지 않는다.
+routine target의 위 다섯 역할은 **분류 taxonomy의 최대치**이며 실제 구조축이 없으면 해당 role을
+만들지 않는다. 이는 role 안의 사실 수나 문장 길이 상한이 아니다. 한 role의 의무가 provider 한계를
+넘으면 obligation-derived fragment로 나누고 canonical role 아래 exact-once로 합치며, projection은
+모든 fragment를 보존해야 한다.
 `RESPONSIBILITY`는 목적 경계, `INPUT_ROLE`은 실제 interface 사용, `GUARDS_AND_BRANCHES`는 결과를
 바꾸는 조건별 흐름, `PROCESSING_EFFECTS`는 호출·조회·변경·transaction과 외부 상태 변화,
 `RESULT`는 반환/출력과 그 정확한 조건을 소유한다. 같은 사실을 여러 role에 복제하지 않는다.
@@ -334,6 +343,11 @@ population에서 빠지면 제품 결함이다.
 | Module summary/name/role | MODULE slots |
 | Component name | COMPONENT:DISPLAY_NAME slot |
 
+`CodeNode.summary`는 사람이 읽기 위한 비권위 projection이다. 모든 required summary slot/fragment가
+summary clause 또는 별도 상세 claim에 exact-once로 대응되는지 projection validator가 검사해야 한다.
+화면·로그용 짧은 preview가 필요하면 별도 필드로 만들고 canonical frame이나 전체 summary를 덮어쓰지
+않는다. 이 summary를 다음 LLM 의미 판정의 source 대체물로 사용하는 것도 금지한다.
+
 projection 함수 외의 LLM call이 위 필드를 직접 쓰면 계약 위반이다.
 
 ## 10. 저장 계약
@@ -402,6 +416,6 @@ projection 함수 외의 LLM call이 위 필드를 직접 쓰면 계약 위반�
 3. 직접 의미 판정: 봉인된 Framework/DBMS 혼합 30~40개에서 omission/fabrication/contradiction과
    slot sufficiency를 원문에 대조
 
-실제 Analyzer는 전략별 재사용 DB(`framework|dbms`)와 `_runs/<strategy>`에서만 실행하며 검증마다
+실제 Analyzer는 전략별 재사용 DB(`framework|dbms`)와 이 spec의 `_runs/<strategy>`에서만 실행하며 검증마다
 새 DB 이름을 만들지 않는다. Analyzer가 세 층 모두 합격한 뒤에만
 Architect Simplified/Detailed actual 경로를 실행하며 `accept/apply`는 호출하지 않는다.

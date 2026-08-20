@@ -1,6 +1,6 @@
 """run 판정 도구 — 헌법 IX 3층 중 1·2층(자동 검사 가능한 축)의 상설 소유자.
 
-절차 정본은 `docs/handovers/analysis-performance-validation-canonical/04-검증방법.md`.
+절차 정본은 `specs/131-cross-node-semantic-grounding/history/handovers/04-검증방법.md`.
 새 검증 축이 생기면 일회용 스크립트를 쓰지 말고 여기에 추가해 매 run 상시로 돌게 한다.
 
 사용:

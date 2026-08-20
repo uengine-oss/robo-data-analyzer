@@ -1,7 +1,7 @@
 # spec 118 — 조건 없는 행의 역할과 PL/SQL 분기 커버리지
 
 **Status**: Draft (2026-08-08)
-**선행 문서**: `docs/handovers/analysis-performance-validation-canonical/10-검증체계-정립-인계정본.md`
+**선행 문서**: `specs/131-cross-node-semantic-grounding/history/handovers/10-검증체계-정립-인계정본.md`
 §6.C-4 **F-C7 · F-C8 · F-C9** · §17 순서 **2-b**. spec 117(의무 행 소유권)의 후속 트랙이며
 117 의 범위(소유권 배선)와 섞지 않는다.
 **헌법**: II(분기 0) · III(단일 진실) · IV(빈 성공 금지) · IX(3층 검증) · X(원인 추적 순서)

@@ -1,6 +1,10 @@
 # Implementation Plan: Dynamic Semantic Frame
 
-상세 현재 상태는 `HANDOFF.md`, 요구 계약은 `spec.md`, 실행 체크포인트는 `tasks.md`가 소유한다.
+현재 상태는 `CURRENT_STATUS.md`, 영구 규칙은 `ABSOLUTE_RULES.md`, 요구 계약은 `spec.md`, 실행
+체크포인트는 `tasks.md`가 소유한다. 전체 진입점은 `specs/131-cross-node-semantic-grounding/README.md`다.
+
+> **2026-08-20 실행 보류:** 사용자 피드백 전에는 문서 메모리 정리만 수행한다. 아래 구현 순서는
+> 재개 후 계획이며, Architect 단계는 사용자가 다시 열기 전까지 보류한다.
 
 1. 모든 Framework/DBMS 자연어 의미 생산자, 현재 response schema, normalizer, validator, 저장 필드,
    graph/API/MCP projection, Architect 소비자를 한 번 전수 inventory해 재사용 가능한 단일 영향표로 만든다.
@@ -17,9 +21,10 @@
    동기화한다.
 9. Framework/DBMS 반대 fixture와 schema 크기·출력량·반복·prefix는 변경 묶음별 한 번 검증하고,
    전체 생산자·소비자 정합 후 전체 자동 회귀를 한 번 수행한다.
-10. preflight 뒤 재사용 DB `framework|dbms`와 `_runs/<strategy>`에서 최소 actual Analyzer 실행과 봉인
+10. preflight 뒤 재사용 DB `framework|dbms`와 이 spec의 `_runs/<strategy>`에서 최소 actual Analyzer 실행과 봉인
     직접 판정을 수행한다. 검증마다 새 DB/output 이름을 만들지 않는다.
-11. Analyzer 합격 뒤 Architect 실제 두 경로를 최소 실행해 GWT/evidence refs를 원문과 대조한다.
+11. **보류:** 사용자가 Architect 범위를 다시 연 뒤에만 실제 두 경로를 최소 실행해 GWT/evidence
+    refs를 원문과 대조한다.
 12. HANDOFF·작업보고를 결과로 교체하고 불필요한 임시 실행물만 정리한 뒤 요청 범위만 commit/push한다.
 
 ## Constitution Check
@@ -39,7 +44,7 @@
 13. 현재 source→AST→profile/slot→summary/Rule/table→Example→graph/API/MCP→Architect 배선을
     FW/DBMS별 owner와 호출 단위까지 파일:행으로 다시 고정한다.
 14. 잘못된 Framework occurrence-owned CALL slot과 고정 8-slot microbatch를 제거하고, owner당
-    bounded slot invariant를 producer에서 실패시키는 계약 테스트를 둔다.
+    finite taxonomy와 obligation-derived 무손실 분할 불변식을 producer 계약 테스트로 고정한다.
 15. Rule의 parser-owned role/outcome/action prose와 `RULE.BUSINESS_MEANING`을 production에서 제거한다.
     모든 required row를 LLM 0의 condition/effects Rule로 물질화하고, graph/MCP/Architect에는 모든
     row의 condition/effects/Example/좌표와 연결 semantic claims를 손실 없이 유지한다.
@@ -59,8 +64,8 @@
     재실험하지 않는다.
 17. 채택 구조만 남기고 옛 경로·실험 flag 없이 producer/scheduler/validator를 한 경로로 정리한다.
 18. 전체 자동 회귀와 prompt hash, 실제 APAS cold 전체 run, 3층 검증, Stage 8 delta를 수행한다.
-19. Analyzer 합격 후 작은 실제 MCP 질의만 Architect Opus 5 high/no-Fable 경로에 전달해 legacy 있음/없음
-    GWT를 검증하고, 작업보고·commit/push·임시 자원 정리를 완료한다.
+19. **보류:** 사용자가 Architect 범위를 다시 열고 Analyzer가 합격한 뒤에만 작은 실제 MCP 질의를
+    Architect Opus 5 high/no-Fable 경로에 전달해 legacy 있음/없음 GWT를 검증한다.
 20. APAS cold 실패의 첫 좌표에서 source GOTO→저장 AST→branch inventory→grader를 역추적하고,
     모든 routine의 active named jump target exact 해소를 module pre-analysis 전 공통 계약으로 승격한다.
 21. 공통 Rule 물질화기가 fatal deterministic defect와 quarantined unverified finding을 한 번만 분류하게
@@ -70,8 +75,9 @@
     jump 해소 delta→preflight 순으로 GPU 이전 게이트를 닫는다.
 23. final APAS summary finding 4건과 봉인 FUNCTION 10건을 source→actual slot→response→finding으로
     다시 판정한다. raw parameter 문자열을 지우거나 Parser에 불완전한 alias/data-flow 추론을 넣지 않고,
-    target-owned summary를 최대 5개 역할로 분해해 no-op/unused/output-only와 주요 guard/call/state/result
-    흐름의 적용 가능성을 결정론으로 고정한다.
-24. 새 역할의 population·projection 순서·최대치·빈/unused/분기/호출/반환 반대 fixture를 먼저 통과시킨
+    target-owned summary를 5개 역할 taxonomy로 분류해 no-op/unused/output-only와 주요
+    guard/call/state/result 흐름의 적용 가능성을 결정론으로 고정한다. 역할 안의 사실 개수는 자르지 않는다.
+24. 새 역할의 population·projection 순서·taxonomy 최대치·사실 obligation 잔차·빈/unused/분기/호출/
+    반환 반대 fixture를 먼저 통과시킨
     뒤 전체 회귀와 prompt byte 원장을 실행한다. 실제 APAS full cold에서 같은 봉인 FUNCTION 10을
     재판정해 omission/contradiction이 남으면 prompt 문구 반복 대신 첫 오좌표의 입력·slot 경계를 다시 연다.

@@ -3,14 +3,14 @@
 > **현행 보정(2026-08-05):** 아래 §1~§18 전체는 구현 과정의 기준선·실험·당시 실행 계획을
 > 보존한 역사 기록이다. 이후 실측에서 값·객체 추적, arbitrary Python leaf의 결정론 의미 비교,
 > 내용 재요청, 후보 한 건의 전체 호출 실패가 원칙/정확도/성능에 맞지 않아 폐기됐다.
-> 현재 재개 순서는 `docs/handovers/analysis-performance-validation-canonical/06-재개절차와-현재상태.md`,
+> 현재 재개 순서는 `specs/131-cross-node-semantic-grounding/history/handovers/06-재개절차와-현재상태.md`,
 > 책임 경계는 `02-현재설계와-책임경계.md`, 폐기 목록은 `05-spec116-정정표.md`가 명시한다.
 > 이 문서의 과거 체크와 명령형 문장을 현재 구현 지시로 되살리지 않는다. 현재 계획은 바로
 > 아래 §0만 권위로 사용한다.
 
 spec: `specs/116-structured-rule-output/spec.md`
 
-operational handoff: `docs/handovers/analysis-performance-validation-canonical/README.md`
+operational handoff: `specs/131-cross-node-semantic-grounding/history/handovers/README.md`
 
 ## 0. 현재 실행 계획 — 2026-08-05
 

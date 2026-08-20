@@ -1,5 +1,8 @@
 # 새 세션 복붙용 대사
 
+> **SUPERSEDED (2026-08-20):** 이 파일은 2026-08-12 당시 상세 지침을 원문 그대로 보존한다.
+> 현재 단일 진입점은 `specs/131-cross-node-semantic-grounding/README.md`이며, 아래 블록은 현재 지시로 사용하지 않는다.
+
 아래 코드 블록 전체를 새 세션의 첫 메시지로 붙여 넣는다.
 
 ```text
@@ -12,7 +15,7 @@ robo Analyzer 동적 의미 프레임 작업을 이어서 진행합니다. 이�
 2. C:\Users\roede\.codex\memories\manual.md
 3. C:\Users\roede\.codex\memories\speckit.md
 4. D:\work\robo\project\robo-data-analyzer\.specify\memory\constitution.md
-5. D:\work\robo\project\robo-data-analyzer\docs\handovers\analysis-performance-validation-canonical\04-검증방법.md
+5. D:\work\robo\project\robo-data-analyzer\specs\131-cross-node-semantic-grounding\history\handovers\04-검증방법.md
 6. 같은 폴더의 11-핵심압축-인계정본.md 전체
 7. 08-단일인계-정본.md §12
 8. D:\work\robo\project\robo-data-analyzer\specs\131-cross-node-semantic-grounding\HANDOFF.md 전체

@@ -1,7 +1,7 @@
 # spec 120 — callee summary 의존 소유권 정합
 
 **Status**: Draft (2026-08-10)
-**선행 문서**: `docs/handovers/analysis-performance-validation-canonical/11-핵심압축-인계정본.md`
+**선행 문서**: `specs/131-cross-node-semantic-grounding/history/handovers/11-핵심압축-인계정본.md`
 §5.1, `10-검증체계-정립-인계정본.md` F-C48
 **대체 계약**: spec 023 FR-013 중 **step7 summary 분석순서를 프로시저 단위 parity로 정한다는 부분만** 대체한다.
 그래프 CALLS 저장·컴포넌트·건강 지표 계약은 대체하지 않는다.

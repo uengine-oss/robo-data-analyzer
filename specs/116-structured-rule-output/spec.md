@@ -5,13 +5,13 @@
 > **현재 계약 정정 — 먼저 읽을 것.** 이 문서에는 구현 과정의 폐기된 목표와 실험 원장이
 > 함께 남아 있다. 특히 값·객체 추적, arbitrary Python leaf를 결정론 정답처럼 해석하는 설계,
 > 내용 재요청, 후보 한 건의 전체 호출 실패는 현재 계약이 아니다. 현재 책임 경계·성능 실측·
-> 검증법·정정표는 `docs/handovers/analysis-performance-validation-canonical/README.md`에서
+> 검증법·정정표는 `specs/131-cross-node-semantic-grounding/history/handovers/README.md`에서
 > 시작한다. **아래 §1~§80은 모두 역사 원장**이며, 그 안의 “최종/현행/권위”라는 이름도 당시
 > 시점 표현이다. 현재 계약은 §0과 마지막 §81만 사용한다. 과거 절과 충돌하면 현재 코드·로그,
 > 헌법 1.3.2, 정정표 순으로 재검증하며 `05-spec116-정정표.md`의 폐기 표를 우선 적용한다.
 
-**운영 핸드오프**: `D:\work\robo\docs\핸드오프\분석시간-정확도-검증-정본`
-**증거 실물**: `D:\work\robo\docs\핸드오프\evidence-구조화출력-실측-20260803\v2test\`
+**운영 핸드오프**: `D:\work\robo\project\robo-data-analyzer\specs\131-cross-node-semantic-grounding\history\handovers`
+**증거 실물**: `D:\work\robo\project\robo-data-analyzer\specs\131-cross-node-semantic-grounding\_artifacts\history-experiments\structured-output-20260803\v2test\`
 (harness.py sha16 `93179c886e4e4cd0` — SYSTEM_PY·grade_py가 3·4단계의 실행 명세)
 **선행 spec**: 110 (고정 20함수 의미 정확도). 110의 §5.8 JSON DNF 제안은 본 spec이 실측 근거로 대체한다.
 
@@ -1877,5 +1877,5 @@ required 완전성, 창작, input/output token, p50/p95/max latency 중 하나�
 ## 81. 현재 권위 포인터 — 2026-08-05
 
 현재 계약은 이 문서 §0과
-`docs/handovers/analysis-performance-validation-canonical/README.md`에서 시작한다.
+`specs/131-cross-node-semantic-grounding/history/handovers/README.md`에서 시작한다.
 §1~§80의 명령형 문장·완료 체크·“최종/현행” 표기는 역사 증거일 뿐 현재 구현 지시가 아니다.

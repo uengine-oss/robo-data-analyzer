@@ -5,16 +5,16 @@
 
 > **현재 작업 진입점(2026-08-05):** 이 파일의 과거 완료 체크에는 이후 반증·폐기된 설계가
 > 포함된다. 현재 계약과 재개 순서는
-> `docs/handovers/analysis-performance-validation-canonical/README.md` 및
+> `specs/131-cross-node-semantic-grounding/history/handovers/README.md` 및
 > `05-spec116-정정표.md`를 먼저 따른다. 특히 값·객체 추적, 내용 재요청, 전체 호출 fatal,
 > arbitrary Python 의미의 결정론 자동 판정은 되살리지 않는다.
 
 ## 현재 활성 작업 — 2026-08-05 정본 동기화 이후
 
 - [x] TA-145 **단일 운영 정본 생성 및 spec/plan/tasks 오인 방지 배너 동기화.**
-      `docs/handovers/analysis-performance-validation-canonical/`에 절대 계약, 책임 경계,
+      `specs/131-cross-node-semantic-grounding/history/handovers/`에 절대 계약, 책임 경계,
       성능 실측, 직접 검증법, spec 정정표, 재개 절차를 분리 기록했다. 사용자 진입 경로
-      `D:\work\robo\docs\핸드오프\분석시간-정확도-검증-정본`은 동일 Git 정본을 가리킨다.
+      `D:\work\robo\project\robo-data-analyzer\specs\131-cross-node-semantic-grounding\history\handovers`은 동일 Git 정본을 가리킨다.
 - [ ] TA-146 **Rule compact regex의 의미 동등성 판정과 공식 자료 조사.**
       실제 probe에서 output 25.5~52.6% 감소가 확인됐으나 한 extra 후보가 1→0으로 달라졌다.
       source/DDL/evidence와 grader를 직접 대조해 어느 후보가 맞는지 판정하고, SGLang 공식
@@ -236,7 +236,7 @@
       extends _common 유지) + prompt_hashes 갱신(사유: v2 계약 교체) + 고정 테스트 4종
       v2 갱신(dbms v1 고정은 유지)
 - [x] TS-6 **완료**: 대형 배칭 실측 — z10020 전 행(b200 소실 대체): 의무 79행→4배치,
-      5콜(재요청 2), **수확 78/79**, unresolved [687](축퇴율 1.27% — §11.1 근거 데이터).
+      5콜(재요청 2), **수확 78/79**, unresolved `687`(축퇴율 1.27% — §11.1 근거 데이터).
       행 687 서사가 계약 실증: 파싱실패→구체사유 재요청→창작 함수명 검출→pattern 위반→
       상한 소진→누락 표면화. 발견: **array items pattern은 xgrammar 미강제 정황**(클라이언트
       Pydantic이 차단) — 서버 안건 근거 병기. 증거: evidence v2test/py3_full_*. §18-3 해소
@@ -1360,7 +1360,7 @@ rules 2변종(`code_rules_examples_batch` + `code_gate_rules_batch`(skeleton_bod
       안정됐다. 그 예를 추상 비교로 바꾼 세 번째 범용 probe는 b200의 서비스 코드 C/D에 다시
       유선/무선을 추측하고 한 callee를 `정보 없음`으로 채웠다. required key는 누락을 막지만
       source operand의 업무 뜻을 증명하지 못한다. 같은 prompt 조정은 종료하며 이 라벨을 trusted
-      cond/nl로 저장하지 않는다. 증거는 `docs/핸드오프/evidence-좌표템플릿-20260804/run{,2,3}`.
+      cond/nl로 저장하지 않는다. 증거는 `project/robo-data-analyzer/specs/131-cross-node-semantic-grounding/_artifacts/history-experiments/coordinate-template-20260804/run{,2,3}`.
 - [x] TA-113 **구현·회귀·8행 실호출 완료(2026-08-04 20:55), cold 판정은 TA-121 — RULE 구조화 빈칸 채우기 복원.**
       required `R<anchor>` 아래에서 모델이 source-condition ref/극성, 고정형 effect 객체, `nl`을
       채우고 시스템은 선택된 구조를 canonical Python Rule 표기로만 직렬화한다. 결정론 코드는

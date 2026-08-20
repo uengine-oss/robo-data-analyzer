@@ -1,7 +1,7 @@
 # spec 117 — DBMS rule 의무 행 소유권: 루틴이 소유하고 배치에 배분한다
 
 **Status**: Draft (2026-08-07)
-**선행 문서**: `docs/handovers/analysis-performance-validation-canonical/10-검증체계-정립-인계정본.md`
+**선행 문서**: `specs/131-cross-node-semantic-grounding/history/handovers/10-검증체계-정립-인계정본.md`
 §6.C **F-C5**(원인 정정) · §17 순서 2. 09 §"DBMS 미해결 2건"에도 같은 정정을 적었다.
 **헌법**: II(분기 0) · III(단일 진실) · IV(빈 성공 금지) · IX(3층 검증) · X(원인 추적 순서)
 

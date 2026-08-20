@@ -1,6 +1,7 @@
 # Feature Specification: Framework·DBMS 동적 의미 프레임
 
-현재 상태·폐기 결정·다음 행동의 단일 진입점은 `HANDOFF.md`다.
+문서 단일 진입점은 `specs/131-cross-node-semantic-grounding/README.md`다. 영구 규칙은 `ABSOLUTE_RULES.md`, 현재
+상태·폐기 결정·다음 행동은 `CURRENT_STATUS.md`가 소유하며, `HANDOFF.md`는 상세 역사다.
 
 **Status**: In Progress — 2026-08-19 APAS summary completeness actual revalidation
 **Created**: 2026-08-11
@@ -55,8 +56,9 @@ ID 기준으로 중복 제거해 소비하며 정상 생성 경로에서 레거�
 2. 결정론 코드는 node type, children, ownership, order, coordinates, condition, CALL/RW,
    TABLE/COLUMN identity, transaction, applicable slot만 만든다. 업무 의미는 만들지 않는다.
 3. LLM은 preassigned slot의 자연어 의미와 `sufficient|partial|insufficient`, `missing_context`만 채운다.
-4. frame은 실제 구조 의무에 따라 동적으로 선택된 shallow/bounded family다. 하나의 자유 summary와
-   거대한 universal recursive schema를 모두 금지한다.
+4. frame은 실제 구조 의무에 따라 동적으로 선택된 shallow/finite family다. 하나의 자유 summary와
+   거대한 universal recursive schema를 모두 금지한다. finite는 schema 형태와 실행 단위이지 의미
+   문자열·사실 의무·결과 수 상한이 아니다.
 5. 모든 의미 값은 slot type, target/evidence refs, status에 연결된다. 필수 slot 누락, 알 수 없는 ID,
    다른 owner 근거, 구조 사실 변조는 fail-closed 또는 quality finding이다.
 6. 기존 summary/description/nl은 canonical frame의 표시·검색 projection일 뿐 별도 의미 생산자가 아니다.
@@ -70,9 +72,10 @@ ID 기준으로 중복 제거해 소비하며 정상 생성 경로에서 레거�
     owner 경계, 입력·출력 비용 기반 batch/admission으로 해결한다.
 11. Framework/DBMS의 의미 owner와 호출 batch는 위 재개 요구의 서로 다른 계약을 따른다. 공통
     semantic frame을 같은 호출 단위로 오해하지 않는다.
-12. 의미 owner당 summary slot은 routine의 최대 5개 target-owned flow role 또는 non-routine target의
-    direct action만 갖는다. evidence occurrence 수에 비례해 summary slot 수가 늘어나면 producer
-    invariant 실패다.
+12. routine의 5개 target-owned flow role은 taxonomy이며 사실 개수 상한이 아니다. non-routine은
+    direct action role을 갖는다. 적용 role은 실제 구조축으로 결정하고, 한 role이 큰 경우 의무별
+    fragment로 나눠 exact-once merge한다. evidence occurrence를 의미 없는 중복 prose slot로 복제하는
+    것과 서로 다른 필수 사실을 보존하는 것을 구분한다.
 13. summary가 dependency critical이어도 Rule/table을 무기한 굶기지 않는 work-conserving scheduling을
     사용한다. 대기 중 다른 concern이 있는데 한 concern만 전체 wall 동안 실행되는 상태는 결함이다.
 14. 성능 후보는 동일 source/prompt/schema hash의 cold/warm replay에서 calls, input/output/cache tokens,
@@ -108,13 +111,19 @@ ID 기준으로 중복 제거해 소비하며 정상 생성 경로에서 레거�
     긴 opaque source predicate는 Analyzer가 언어별 연산자로 재파싱하지 않고 Rule과 동일한 leaf를 무손실
     보존한다. 조건 또는 직접 결과가 없는 Rule만 EXAMPLE 비생성의 정상 사유다.
 24. routine summary는 `RESPONSIBILITY/INPUT_ROLE/RESULT` 세 칸에 전체 흐름을 압축하지 않는다.
-    live source와 결정론 inventory에 실제로 존재하는 축만 최대 다섯 칸
+    live source와 결정론 inventory에 실제로 존재하는 축만 다섯 역할 taxonomy
     (`RESPONSIBILITY`, `INPUT_ROLE`, `GUARDS_AND_BRANCHES`, `PROCESSING_EFFECTS`, `RESULT`)으로
     미리 배정한다. 각 칸은 서로 다른 질문에 답하며 legacy summary는 이 순서의 frame projection이다.
 25. 선언됐지만 사용되지 않는 파라미터, write-only/output-only 파라미터, 즉시 상수 반환 no-op routine은
     현재 source만으로 완전히 확정되는 동작이다. 이를 의도된 업무 로직이나 호출자 문맥이 없다는 이유로
     `partial|insufficient`로 낮추지 않는다. 반대로 이름만 보고 입력 역할·검사 목적을 만들지 않는다.
     parser는 grammar fact를 계속 소유하며 alias/data-flow 의미를 불완전한 새 AST 속성으로 추측하지 않는다.
+26. 원문 source bytes/hash는 불변 권위다. 장문 입력은 AST owner와 의미 obligation으로 분해하되 exact
+    span의 합집합·순서·dependency closure가 원문 의무와 같아야 하고 누락·중복·미분류가 0이어야 한다.
+    child/기존 summary를 원문 대신 다음 LLM의 권위 입력으로 사용하는 summary-of-summary를 금지한다.
+27. context 한계를 넘는 경우 내용 절단·Top-N·oversize skip·LLM 요약 대체로 성공시키지 않는다.
+    obligation별 exact source/evidence 요청으로 분할하고 canonical ID로 병합한다. 경계 의미가 닫히지
+    않으면 필요한 좌표를 남긴 `partial|needs_context`이며 `sufficient`가 아니다.
 
 ## 폐기된 요구
 
@@ -131,10 +140,14 @@ object evidence와 scenario refs는 semantic-frame에 맞게 재사용할 수 �
   validator와 population inventory에 드러난다.
 - prompt/schema bytes, input/output tokens, 반복/실패, latency, 가능한 cache 관측을 전후 비교한다.
 - 전체 자동 회귀, 결정론 구조 전수 대조, 봉인 표본 직접 의미 판정의 3층을 통과한다.
-- 봉인 의미 목표 약 90% 이상, fabrication/contradiction 각각 0건을 별도 보고한다.
-- 재사용 DB `framework|dbms`와 `_runs/<strategy>`의 Framework·DBMS 최소 actual 실행 뒤에만 새 frame
-  정확도를 주장한다. 실행 전 해당 전략 DB를 비우되 `neo4j|test`와 다른 전략 DB는 건드리지 않는다.
-- Analyzer 합격 뒤 Architect Simplified/Detailed 실제 경로에서 GWT와 evidence refs를 원문에 직접 대조한다.
+- 봉인 의미의 이상적 목표는 100%다. exact/partial/omission/needs_context 실측을 그대로 공개하며
+  90%나 그보다 낮은 결과를 숨기지 않는다. 어떤 수치도 나머지 의무를 버려도 되는 허용 손실률로
+  쓰지 않고 fabrication/contradiction은 각각 별도 보고한다.
+- 재사용 DB `framework|dbms`와 이 spec의 `_runs/<strategy>`를 사용한 Framework·DBMS 최소 actual
+  실행 뒤에만 새 frame 정확도를 주장한다. 실행 전 해당 전략 DB를 비우되 `neo4j|test`와 다른 전략
+  DB는 건드리지 않는다.
+- Architect 검증은 현재 보류한다. 사용자가 범위를 다시 열면 Analyzer 합격 뒤 Simplified/Detailed
+  실제 경로에서 GWT와 evidence refs를 원문에 직접 대조한다.
 
 ## 보존 사실
 

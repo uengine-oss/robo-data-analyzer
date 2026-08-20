@@ -2,7 +2,7 @@
 
 **Status**: Draft (2026-08-08)
 **선행**: spec 118(분기 커버리지)이 의무 행을 25 → 59 로 회수한 뒤 드러난 다음 결함.
-`docs/handovers/analysis-performance-validation-canonical/10-…-인계정본.md` §6.C-5.
+`specs/131-cross-node-semantic-grounding/history/handovers/10-…-인계정본.md` §6.C-5.
 **헌법**: I(결정론 우선) · II(분기 0) · III(단일 진실) · IV(빈 성공 금지) · IX · X
 
 ---

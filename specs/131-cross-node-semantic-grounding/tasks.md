@@ -1,5 +1,17 @@
 # spec 131 현재 Tasks
 
+## 2026-08-20 문서 메모리 정리
+
+- [x] D131-01 Codex 단일 진입점과 원문 손상 경고 작성
+- [x] D131-02 절대규칙·현재상태·역사·evidence의 단일 소유권 분리
+- [x] D131-03 handoff 00/NEW-SESSION/HANDOFF의 낡은 현재 진입점 표시 제거
+- [x] D131-04 문서 참조·중복 현재상태·diff 최종 감사
+- [x] D131-04a 정본 handoff·raw 실험·루트 `_runs`를 spec 131 아래로 이동하고
+  `docs/핸드오프`에는 링크 README만 유지
+- [ ] D131-05 상황·배경·확정/미확정·권장 방향 설명 후 사용자 피드백 반영
+
+이 단계에서는 코드·prompt·schema·테스트·분석 실행·DB 내용·Architect를 변경하지 않는다.
+
 ## 보존된 기준선
 
 - [x] C131-01 봉인40과 source/prompt/output/stored 직접 판정 기준선 보존
@@ -61,6 +73,9 @@
   prompt 23/23,
   Architect 집중 62 및 전체 1,383 tests/2 skipped로 검증
 - [ ] T131-37 APAS 봉인 slice에서 concern/scheduling 후보를 calls/tokens/cache/latency/accuracy로 비교·채택
+- [ ] T131-37d 2026-08-20 교체된 향상 모델의 server identity/structured-output 계약을 기록하고,
+  구 모델 run은 역사 기준선으로 분리한다. 새 모델 bounded replay에서 남은 600자 summary 경계를
+  범용 계약으로 해결한 뒤 final cold의 calls/tokens/wall/의미를 새 기준으로 판정
 - [x] T131-37a module/summary GPU 호출 전 static named jump target preflight를 제품·상설 preflight에
   같은 함수로 구현하고 missing/duplicate/blank target 반대 fixture와 resolved fixture를 검증
 - [x] T131-37b 공통 deterministic Rule 경계에서 rejected/unavailable/회계 잔차만 fatal로 유지하고
@@ -68,7 +83,7 @@
 - [x] T131-37c Rule audit에 routine row→실제 graph owner를 보존하고 judge_run의 obligation/trusted/
   finding/unavailable 잔차와 graph 기대 trusted row를 전수 대조
 - [ ] T131-38 채택 구조의 정상·실패·경계·중복·순서·취소/종료 회귀 및 전체 자동 테스트
-- [ ] T131-39 재사용 `framework` DB와 `_runs/framework`의 실제 APAS 전체 cold run,
+- [ ] T131-39 재사용 `framework` DB와 이 spec의 `_runs/framework`의 실제 APAS 전체 cold run,
   judge_run+graph, 봉인 30~40 의미 직접 판정
 - [x] T131-39a actual graph에서 발견된 긴 Rule 조건 EXAMPLE 12건 누락을 과거 LLM-era 500자 상한의
   잔재로 확정하고, 결정론 Rule truth 무손실 계약·반대 테스트·상설 judge 재판정으로 누락 0 검증
@@ -77,5 +92,6 @@
   분해하고 population/projection/prompt 반대 fixture 및 전체 회귀 검증
 - [ ] T131-39c 새 APAS full cold에서 FUNCTION 10을 동일 봉인 ID로 재판정하고 Rule/Example/Table/Column
   30건과 합쳐 40건 직접 의미 판정 완료. omission/fabrication/contradiction과 needs_context를 분리 기록
-- [ ] T131-40 작은 실제 MCP 질의→Architect Opus 5 GWT, Analyzer optional 두 경로 검증
+- [ ] T131-40 **보류** — Architect 사용자 승인 전 수정·실행 없음. 이후 작은 실제 MCP 질의→
+  Architect Opus 5 GWT, Analyzer optional 두 경로 검증
 - [ ] T131-41 2026-08-18 작업보고·HANDOFF·GPU server 문서 갱신, diff 감사, selective commit/push, 임시 자원 정리
