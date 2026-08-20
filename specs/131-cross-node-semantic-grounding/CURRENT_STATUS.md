@@ -1,7 +1,7 @@
 # Analyzer 의미 무손실 감사 현재상태
 
 **Updated**: 2026-08-20
-**Status**: 사용자 방향 승인 완료 — Analyzer 전체 의미 손실 경로 전수조사 진행 중
+**Status**: Analyzer 전체 의미 손실 경로 전수조사 완료 — 계약/red test 고정 직전
 **Product-code baseline HEAD**: `c216e674cbac43386f9826632097ca2661395d7d` (`main`, clean)
 
 이 문서는 현재 진행 위치만 소유한다. 영구 규칙은 `ABSOLUTE_RULES.md`, 상세 역사와 기존 수치는 `HANDOFF.md`와 `evidence/`가 소유한다.
@@ -20,7 +20,8 @@
 
 - Neo4j `127.0.0.1:7687`: 현재 세션에서 인증과 `SHOW DATABASES` 재확인 성공.
   `neo4j|test|framework|dbms|system`만 존재하고 모두 online이다. 허용 목록 밖 DB는 0개다.
-- Analyzer HEAD `c216e674cbac43386f9826632097ca2661395d7d`, 조사 착수 전 dirty 0.
+- Analyzer current HEAD `9d919c4`; 제품 코드 기준선은
+  `c216e674cbac43386f9826632097ca2661395d7d`, 조사 착수 전 dirty 0이었다.
 - Parser HEAD `4b849f14575b6830b82ae5ee980658100c4d8692`, dirty 0.
 - Catalog HEAD `1f1aaa608a3d7ef8b01ce15c3df962cf0f1cfefb`, 기존 dirty 12개가 있다.
 - Fabric HEAD `83c9604e2d6ec3f1ececa47d2e2264a74257843d`, 기존 dirty 7개가 있다.
@@ -54,7 +55,7 @@
 - 판정: 표시 제한이 아니라 provider schema의 실제 의미 상한이므로 무손실 계약 위반.
 - 상태: 원인 확정, 수정 전. 숫자 증설이 아닌 obligation-derived 분할·완전성 회계가 필요하다.
 
-## 4. 강한 결함 후보 — 영향 확정 전
+## 4. 최초 결함 후보와 전수조사 종결 판정
 
 | ID | 위치 | 현재 동작 | 위험 |
 |---|---|---|---|
@@ -63,12 +64,36 @@
 | C-003 | `external_evidence.py` | 외부 근거 8개/6000자 초과를 skip | 로그만 남고 semantic sufficiency에 누락이 연결되지 않을 수 있음 |
 | C-004 | `discover_datasource_step.py` | Framework 실DB table 최대 1000개 후 계속 | 1001번째 이후 Table/Column/샘플이 그래프에서 빠질 수 있음 |
 | C-005 | `range_body.py` | DBMS 큰 부모의 child source를 child LLM summary로 치환 | summary-of-summary와 cross-child 흐름 손실 가능 |
-| C-006 | `branch_inventory.py` | exit statement를 160자로 절단 | 긴 RETURN/RAISE/EXIT 표현이 Rule evidence에서 손실될 수 있음 |
+| C-006 | `branch_inventory.py` | exit 보조 표기만 160자로 절단 | Rule/Example 정본은 full AST effect를 사용하므로 Framework에서는 preview; DBMS parent compaction 결합만 남음 |
 | C-007 | `llm/embedder.py` | 긴 canonical 검색 text를 문자 상한에서 절단 | graph truth는 남아도 검색 recall/의미가 열화될 수 있음 |
 | C-008 | semantic summary role 최대 5 | 다섯 역할에 대형 함수 전체 의미를 집약 | 역할 수 자체는 닫힌 taxonomy지만 사실 의무가 과밀·누락될 수 있음 |
 | C-009 | parent/module context와 장문 source 경로 | child/기존 summary 또는 손실 압축이 다음 LLM 의미 입력이 될 수 있음 | summary-of-summary 누적 열화, cross-boundary 조건·순서·효과 누락 가능 |
 
+전수조사에서 추가로 확정한 범주는 다음과 같다. 상세 수량·배선·유입 commit은 evidence 원장이 소유한다.
+
+- C-010: module pre가 최대 80개 signature에서 만든 prose intent를 모든 member LLM에 재주입한다.
+- C-016: Agent middleware가 tool evidence를 삭제하고 대화 요약을 최종 구조 결과의 입력으로 쓴다.
+- C-017/C-018: unknown external/scan 경로는 관측 표본 밖의 미발견 구조 completeness를 회계하지 않는다.
+- C-019~C-021: view depth 3, wrapper promotion 2 hop, external value 240자가 canonical link를 조용히 끊는다.
+- C-022/C-023: model-visible source literal projection은 raw와 일대일이 아니며 source decode는 invalid UTF-8을
+  `ignore`한다.
+- C-024~C-027: inheritance depth 3, malformed AST의 빈 결과 계속 진행, unknown AST type, source read failure가
+  구조/관계/근거 incomplete 상태를 semantic 결과와 충분히 연결하지 않는다.
+- C-028/C-029: DBMS column tokenizer 실패가 빈 projection이 되고, source↔AST↔diagnostic hash/status 전수
+  closure가 run invariant가 아니다.
+- C-030: call-cycle SCC에서 suppressed callee obligation이 prompt/missing-context에 나타나지 않는다.
+- C-031: DBMS Catalog lineage의 virtual-source fallback은 graph에 저장되지 않는 edge를 state에 반환한다.
+- C-032: run 시작 시 기존 graph를 삭제한 뒤 공개 DB에 단계별로 직접 쓰며 graph completion/epoch 표식과
+  consumer guard가 없어 진행 중·중단·실패 partial graph가 API/MCP의 정상 결과처럼 노출될 수 있다.
+
+기준 Framework 실행에는 F-001/C-001~002와 module-intent 재주입이 실제 배선됐다. external/view/inheritance/
+malformed-source 계열은 실행 자료·로그·graph상 미발동이다. 설계 결함과 기준 실행 영향은 분리한다.
+
 각 후보는 `안전한 실행 분할 / 표시 전용 / 명시적 degraded / 실제 semantic loss` 중 하나로 실제 caller·consumer·run을 따라 판정한다. 후보라는 이유만으로 즉시 삭제하거나 숫자만 늘리지 않는다.
+
+상세 배선·실측·분류·유입 commit 원장은 `evidence/loss-path-inventory-20260820.md`에 누적했다.
+F-001과 C-001~C-032를 모두 종결 분류했으며 C-011/C-012는 C-017로 통합했다. 제품 코드는 아직
+수정하지 않았고, DBMS actual run과 새 sealed 직접 의미 판정은 미검증으로 남겼다.
 
 장문 context의 목표 해법은 원문 요약이 아니라 `전체 의무 inventory → 의무별 exact source/evidence
 closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아직 최종 설계로 확정하지 않았으며,
@@ -114,12 +139,9 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
 
 ## 9. 현재 실행 순서
 
-1. Analyzer 전체의 숫자 상한·slice·truncate·Top-N·sampling·skip/fallback·중간 LLM·
-   summary-of-summary·timeout/retry/cache/batch/concurrency inventory를 완성한다.
-2. 각 후보를 source→AST→actual prompt→raw/parsed→validator→graph/API/MCP로 추적한다.
-3. 각 항목을 실제 의미 손실, 안전한 실행 분할, 표시 전용 preview, 검색 파생 제한,
-   명시적 degraded 처리로 분류하고 실제 값·유입 commit·영향도를 기록한다.
-4. 배선·실제 값·원인·영향도 확정 결과를 사용자에게 한 번 보고한다.
-5. 계약과 실패·경계·과대 입력 red test를 먼저 고정한 뒤 숫자 증설 없이 근본 수정한다.
-6. 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 검증한다.
-7. 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.
+1. 완료: Analyzer 전체 상한·절단·표본·skip/fallback·중간 LLM·summary-of-summary·
+   timeout/retry/cache/batch/concurrency inventory와 producer→consumer 추적·유입 commit closure.
+2. 현재: 확정 결과를 사용자에게 한 번 보고한다.
+3. 다음: 계약과 실패·경계·과대 입력 red test를 먼저 고정한 뒤 숫자 증설 없이 근본 수정한다.
+4. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
+5. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.
