@@ -2,7 +2,8 @@
 
 호출은 코드 목록 대조만으로 분류된다 (LLM·에이전트 0):
 프로젝트 루틴 → internal / stdlib·프레임워크 → 드롭 / 그 외 → external.
-"미해결" 개념 없음 — ``unresolved_cases`` 에 아무것도 안 넣는다.
+inactive는 occurrence ledger에 보존하고 조건부·expression·owner·wrapper target 증거 부족은
+``call_resolution_ledger``에 명시한다.
 """
 from __future__ import annotations
 
@@ -32,18 +33,18 @@ async def link_calls_by_name_step(state: dict, config: Optional[RunnableConfig] 
     call_sites = state.get("call_sites", [])
     if not call_sites:
         log_info(_STEP, "done", call_sites=0, calls_edges=0, note="no call sites")
-        return {"calls_edges": []}
+        return {"calls_edges": [], "call_resolution_ledger": []}
 
     started = time.monotonic()
-    # framework 루틴 = drop 대상 (SKILL). call_wrappers = 인자가 실제 호출 대상인
-    # 루틴 (SKILL) — call_classifier 가 라인 본문에서 인자 추출 후 internal/external 분류.
+    # framework 루틴 = drop 대상 (SKILL). call_wrappers는 argument가 동적 target인
+    # 루틴이다. literal/symbol fact 전에는 target을 재파싱하지 않고 unresolved로 보존한다.
     scan_result = require_scan_result(state)
     framework_names = frozenset(scan_result.framework_runtime_functions)
     call_wrappers = scan_result.call_wrappers
     result = classify_call_sites(
         call_sites, state.get("code_nodes", []),
         framework_names=framework_names, wrappers=call_wrappers,
-        # run 스코프 공유 캐시 (executor 주입) — wrapper 인자 추출이 소스를 읽는다 (FR-008).
+        # C macro compatibility 경로만 아직 이 캐시를 사용한다(C-055 pending).
         source_cache=cfg.get("source_cache"),
     )
 
@@ -56,18 +57,17 @@ async def link_calls_by_name_step(state: dict, config: Optional[RunnableConfig] 
     await emit_calls(stream, result.edges)
     emit_message(stream, f"✅ 호출 이름 분류 완료 — {len(result.edges)}건")
 
-    # call_text / caller 누락 = AST 불완전 — 드롭하되 조용히 묻지 않는다.
-    if result.dropped_incomplete:
-        log_warning(
-            _STEP, "incomplete_call_sites",
-            "call_text / caller 누락 call site — 분류 불가, 드롭",
-            count=result.dropped_incomplete,
-        )
     if result.wrapper_unresolved:
         log_warning(
             _STEP, "wrapper_unresolved",
-            "wrapper 매치했으나 본문에서 인자 추출 실패 (라인/정규식 불일치 가능)",
+            "wrapper target literal/symbol evidence 미지원 — source를 재파싱하지 않고 unresolved 보존",
             count=result.wrapper_unresolved,
+        )
+    if result.unresolved:
+        log_warning(
+            _STEP, "call_occurrences_unresolved",
+            "canonical call occurrence 중 target/owner/presence가 확정되지 않은 항목",
+            count=len(result.unresolved),
         )
 
     internal = sum(1 for e in result.edges if e.scope == "internal")
@@ -78,9 +78,16 @@ async def link_calls_by_name_step(state: dict, config: Optional[RunnableConfig] 
         dropped_stdlib=result.dropped_stdlib,
         dropped_framework=result.dropped_framework,
         dropped_macro=result.dropped_macro,
-        dropped_incomplete=result.dropped_incomplete,
+        preserved_inactive=result.preserved_inactive,
+        unresolved_presence=result.unresolved_presence,
+        unresolved_expression=result.unresolved_expression,
+        unresolved_owner=result.unresolved_owner,
         wrapper_unresolved=result.wrapper_unresolved or None,
+        accounted=result.accounted,
         calls_edges=len(result.edges),
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
-    return {"calls_edges": result.edges}
+    return {
+        "calls_edges": result.edges,
+        "call_resolution_ledger": result.ledger,
+    }

@@ -175,14 +175,8 @@ def verify_source_ast_closure(
             continue
         source_id = path.resolve().relative_to(source_root).as_posix()
         payload = source_cache.read_bytes(path)
-        # Analyzer prompt/range coordinates are Unicode text. Invalid bytes must not
-        # disappear under errors=ignore; reject the whole source before graph mutation.
-        try:
-            payload.decode("utf-8", errors="strict")
-        except UnicodeDecodeError as error:
-            raise SourceAstClosureError(
-                f"source is not exact UTF-8 text: {source_id}: {error}"
-            ) from error
+        # Decoding belongs to the Parser evidence envelope.  The later AST read binds
+        # these exact bytes to sourceEncoding/decodedText before any graph mutation.
         expected[source_id] = (path.resolve(), _sha256(payload))
 
     if not expected:

@@ -74,7 +74,11 @@ class LoadAstControlTest(unittest.IsolatedAsyncioTestCase):
             reads += 1
             if reads == 1:
                 pause.request_stop()
-            return ParseResult()
+            return ParseResult(evidence_sources=[{
+                "source_id": f"file-{reads}.c",
+                "decoded_text_sha256": str(reads) * 64,
+                "decoded_text": "",
+            }])
 
         config = {"configurable": {"codebase": project, "pause": pause}}
         with (
@@ -99,7 +103,11 @@ class LoadAstControlTest(unittest.IsolatedAsyncioTestCase):
             if reads == 1:
                 pause.request_pause()
                 first_read.set()
-            return ParseResult()
+            return ParseResult(evidence_sources=[{
+                "source_id": f"file-{reads}.c",
+                "decoded_text_sha256": str(reads) * 64,
+                "decoded_text": "",
+            }])
 
         config = {"configurable": {"codebase": project, "pause": pause}}
         with (

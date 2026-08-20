@@ -106,6 +106,9 @@ class WorkflowState(TypedDict, total=False):
     # step2 가 파일별 partial 로 여러 dict 반환 → 누적 필요 (다른 키는 한 번에 반환).
     call_sites: Annotated[list[dict], operator.add]
     import_refs: Annotated[list[dict], operator.add]
+    # Parser common evidence: exact decoded source once/file + kind completeness ledger.
+    evidence_sources: list[dict]
+    evidence_completeness: list[dict]
 
     # ── step3_load_external + step5_linking 결과 (spec 078) ──
     project_files: list[ProjectFile]
@@ -122,6 +125,7 @@ class WorkflowState(TypedDict, total=False):
     # → ``operator.add``로 누적 (중복은 Neo4j MERGE·step6 set 변환이 자동 dedup).
     reads_writes_edges: Annotated[list[ReadsWrites], operator.add]
     calls_edges: list[Calls]
+    call_resolution_ledger: list[dict]
     # 잔여 루프가 결정론 단계의 raw 를 '최종 잔여'로 덮는 게 의도 — default replace 유지.
     unresolved_cases: list[dict]
 

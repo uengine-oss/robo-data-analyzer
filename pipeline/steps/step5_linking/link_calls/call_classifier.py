@@ -1,13 +1,13 @@
 """호출(call site) 결정론 분류 — 프로젝트 루틴 / stdlib / 프레임워크 / external.
 
-호출엔 "미해결"이 없다. call_text 를 세 목록과 대조해 분류한다 (LLM·에이전트 0):
+Parser의 active named/constructor occurrence만 이름 목록과 대조한다(LLM·에이전트 0).
+inactive는 보존하고 conditional/expression/owner·wrapper 증거 부족은 명시 unresolved다.
 - 프로젝트 루틴 → ``CALLS{internal}`` (callee 확정). **먼저 검사** — 우리 루틴이
   stdlib 동명에 가려지지 않게.
 - stdlib 심볼 → 드롭.
 - 프레임워크 루틴(skill 이 알려준 목록) → 드롭.
-- **호출 wrapper**(skill 이 알려준 — 인자가 실제 호출 대상) → 라인 본문에서 인자
-  추출 후 ``CALLS{internal|external}``. 추출 인자를 직접 호출과 동일 리졸버(_resolve_internal)로
-  해소 — 분석대상 내부 루틴(모듈 엔트리 함수 등)과 매치되면 internal, 아니면 인자 이름 external.
+- **호출 wrapper**(skill 이 알려준 — 인자가 실제 호출 대상) → call occurrence는 보존하되
+  literal/symbol evidence가 아직 없으면 target을 만들지 않고 explicit unresolved로 회계.
 - 그 외 → ``CALLS{external}`` (분석 범위 밖 — 호출 사실만 기록).
 
 ``framework_runtime_functions`` 의 각 항목은 **글로브 패턴** (``fnmatchcase``) 으로 해석.
@@ -23,7 +23,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 from graph.schema.graph_edges import Calls
 from graph.schema.graph_nodes import CodeNode
@@ -45,12 +45,31 @@ class CallClassifyResult:
     dropped_stdlib: int = 0
     dropped_framework: int = 0
     dropped_macro: int = 0
-    dropped_incomplete: int = 0
-    wrapper_unresolved: int = 0          # wrapper 매치했으나 본문에서 인자 추출 실패
+    preserved_inactive: int = 0
+    unresolved_presence: int = 0
+    unresolved_expression: int = 0
+    unresolved_owner: int = 0
+    wrapper_unresolved: int = 0
+    unresolved: list[dict[str, str]] = field(default_factory=list)
+    ledger: list[dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def accounted(self) -> int:
+        return (
+            len(self.edges)
+            + self.dropped_stdlib
+            + self.dropped_framework
+            + self.dropped_macro
+            + self.preserved_inactive
+            + self.unresolved_presence
+            + self.unresolved_expression
+            + self.unresolved_owner
+            + self.wrapper_unresolved
+        )
 
 
 class CallClassificationInvariantError(RuntimeError):
-    """A workspace-defined function was emitted as external."""
+    """Canonical call occurrence/accounting or target resolution invariant failed."""
 
 
 @lru_cache(maxsize=None)
@@ -80,36 +99,6 @@ def _should_drop_as_framework(name: str, patterns: Iterable[str]) -> bool:
     return False
 
 
-# ── wrapper 인자 추출 — callee_from 별 정규식 (단일 진실) ──
-
-def _wrapper_arg_pattern(wrapper: str, callee_from: str) -> Optional[re.Pattern]:
-    """``callee_from`` 종류에 따라 wrapper 호출 본문에서 인자를 추출하는 정규식.
-
-    지원 callee_from:
-    - ``first_arg_string``: 첫 인자가 큰따옴표 문자열 — 예: ``wrap("name", ...)``
-    - ``first_arg_identifier``: 첫 인자가 식별자 — 예: ``wrap(name, ...)``
-
-    미지원 callee_from → None (호출자가 wrapper_unresolved 카운트).
-    """
-    w = re.escape(wrapper)
-    if callee_from == "first_arg_string":
-        return re.compile(rf"{w}\s*\(\s*\"([^\"]+)\"")
-    if callee_from == "first_arg_identifier":
-        return re.compile(rf"{w}\s*\(\s*([A-Za-z_]\w*)")
-    return None
-
-
-def _extract_wrapper_callee(
-    file_path: str, line: int, pattern: re.Pattern, file_cache: SourceFileCache,
-) -> Optional[str]:
-    """``file_path`` 의 ``line`` 본문에서 wrapper 정규식으로 인자 추출 — 없으면 None."""
-    lines = file_cache.lines(file_path)
-    if not lines or line < 1 or line > len(lines):
-        return None
-    m = pattern.search(lines[line - 1])
-    return m.group(1).strip() if m else None
-
-
 def classify_call_sites(
     call_sites: list[dict],
     code_nodes: list[CodeNode],
@@ -124,8 +113,7 @@ def classify_call_sites(
         code_nodes: 같은 프로젝트 CodeNode 노드 — internal 매칭 대상.
         framework_names: 프레임워크 루틴 패턴 집합 (skill 출처) — glob 허용.
         wrappers: 호출 wrapper 명시 — ``[{wrapper, callee_from}, ...]``. SKILL 정의.
-                  wrapper 호출은 라인 본문에서 인자 추출 후 분류 — 모듈 entry 루틴과
-                  매치되면 internal, 아니면 external.
+                  argument literal/symbol fact가 구현되기 전에는 target을 추측하지 않는다.
     """
     # statement 노드(GOTO 라벨 등)는 호출 대상이 아니다 — `goto PFM_CATCH;` 의 GOTO
     # 노드가 PFM_CATCH() 호출의 internal 대상으로 오해석되던 실측 결함(2026-08-05).
@@ -141,17 +129,14 @@ def classify_call_sites(
         by_name[name].append(fn.id)
         module_of[fn.id] = fn.owner_id
 
-    wrapper_patterns: dict[str, re.Pattern] = {}
+    wrapper_names: set[str] = set()
     for w in wrappers:
         name = w.get("wrapper") if isinstance(w, dict) else getattr(w, "wrapper", None)
-        callee_from = w.get("callee_from") if isinstance(w, dict) else getattr(w, "callee_from", "first_arg_string")
         if not name:
             continue
-        pat = _wrapper_arg_pattern(name, callee_from or "first_arg_string")
-        if pat is not None:
-            wrapper_patterns[name] = pat
+        wrapper_names.add(str(name))
 
-    # 캐시는 호출부가 주입(run 스코프 공유) — wrapper 본문과 C 매크로 선언이 함께 사용한다.
+    # C macro compatibility 경로만 사용한다. Parser macro evidence로 교체 예정(C-055).
     file_cache = source_cache or SourceFileCache()
     macros_by_file = {
         file_path: _function_macros_in_file(file_path, file_cache)
@@ -161,11 +146,66 @@ def classify_call_sites(
     }
 
     result = CallClassifyResult()
+    ids = [str(site.get("call_id") or "") for site in call_sites]
+    if any(not fact_id for fact_id in ids) or len(ids) != len(set(ids)):
+        raise CallClassificationInvariantError(
+            "call occurrence ledger requires unique nonblank canonical call_id"
+        )
     for cs in call_sites:
+        call_id = str(cs["call_id"])
+        presence = cs.get("presence_status")
+        if presence == "inactive":
+            result.preserved_inactive += 1
+            result.ledger.append({
+                "call_id": call_id,
+                "outcome": "preserved",
+                "reason": "inactive_presence",
+            })
+            continue
+        if presence in {"conditional", "unknown"}:
+            result.unresolved_presence += 1
+            row = {
+                "call_id": call_id,
+                "outcome": "unresolved",
+                "reason": "insufficient_conditional_presence",
+            }
+            result.unresolved.append({key: row[key] for key in ("call_id", "reason")})
+            result.ledger.append(row)
+            continue
+        if presence != "active":
+            raise CallClassificationInvariantError(
+                f"call {call_id} has invalid/missing presence_status={presence!r}"
+            )
+        callee_kind = cs.get("callee_kind")
+        if callee_kind == "expression":
+            result.unresolved_expression += 1
+            row = {
+                "call_id": call_id,
+                "outcome": "unresolved",
+                "reason": "insufficient_expression_target_resolution",
+            }
+            result.unresolved.append({key: row[key] for key in ("call_id", "reason")})
+            result.ledger.append(row)
+            continue
+        if callee_kind not in {"named", "constructor"}:
+            raise CallClassificationInvariantError(
+                f"call {call_id} has invalid/missing callee_kind={callee_kind!r}"
+            )
         name = (cs.get("call_text") or "").strip()
         caller = cs.get("caller_id", "")
-        if not name or not caller:
-            result.dropped_incomplete += 1
+        if not name:
+            raise CallClassificationInvariantError(
+                f"call {call_id} has no grammar-owned terminal name"
+            )
+        if not caller:
+            result.unresolved_owner += 1
+            row = {
+                "call_id": call_id,
+                "outcome": "unresolved",
+                "reason": "insufficient_framework_routine_owner",
+            }
+            result.unresolved.append({key: row[key] for key in ("call_id", "reason")})
+            result.ledger.append(row)
             continue
 
         callee = _resolve_internal(name, caller, by_name, module_of)
@@ -176,44 +216,53 @@ def classify_call_sites(
                 scope="internal",
                 recursive=caller == callee,
             ))
+            result.ledger.append({
+                "call_id": call_id,
+                "outcome": "edge",
+                "scope": "internal",
+                "callee_id": callee,
+            })
             continue
 
-        # wrapper 매치 — 라인 본문에서 인자 추출 후 internal/external 분류.
-        if name in wrapper_patterns:
-            file_path = cs.get("file", "")
-            line = int(cs.get("line", 0) or 0)
-            extracted = _extract_wrapper_callee(
-                file_path, line, wrapper_patterns[name], file_cache,
-            )
-            if not extracted:
-                result.wrapper_unresolved += 1
-                continue
-            # 추출 대상도 직접 호출과 동일 리졸버로 — 내부 모듈이면 엔트리 함수 정식 id, 아니면 None(external).
-            internal_id = _resolve_internal(extracted, caller, by_name, module_of)
-            if internal_id is not None:
-                result.edges.append(Calls(
-                    caller_id=caller,
-                    callee_id=internal_id,
-                    scope="internal",
-                    recursive=caller == internal_id,
-                ))
-            else:
-                result.edges.append(Calls(
-                    caller_id=caller, callee_id=extracted, scope="external",
-                ))
+        # Wrapper target is encoded in an argument expression.  Until Parser literal/
+        # symbol evidence binds that argument, source-line regex would be a second parser.
+        if name in wrapper_names:
+            result.wrapper_unresolved += 1
+            row = {
+                "call_id": call_id,
+                "outcome": "unresolved",
+                "reason": "insufficient_wrapper_argument_syntax_evidence",
+            }
+            result.unresolved.append({key: row[key] for key in ("call_id", "reason")})
+            result.ledger.append(row)
             continue
 
         file_path = str(cs.get("file", ""))
         if name in macros_by_file.get(file_path, frozenset()):
             result.dropped_macro += 1
+            result.ledger.append({
+                "call_id": call_id, "outcome": "excluded", "reason": "function_macro",
+            })
         elif name in _stdlib_set(_lang_of(file_path)):
             result.dropped_stdlib += 1
+            result.ledger.append({
+                "call_id": call_id, "outcome": "excluded", "reason": "stdlib",
+            })
         elif _should_drop_as_framework(name, framework_names):
             result.dropped_framework += 1
+            result.ledger.append({
+                "call_id": call_id, "outcome": "excluded", "reason": "framework_runtime",
+            })
         else:
             result.edges.append(Calls(
                 caller_id=caller, callee_id=name, scope="external",
             ))
+            result.ledger.append({
+                "call_id": call_id,
+                "outcome": "edge",
+                "scope": "external",
+                "callee_id": name,
+            })
     leaked = [
         edge for edge in result.edges
         if edge.scope == "external" and edge.callee_id in defined_names
@@ -225,6 +274,16 @@ def classify_call_sites(
         )
         raise CallClassificationInvariantError(
             "workspace-defined functions were classified as external: " + details
+        )
+    if result.accounted != len(call_sites):
+        raise CallClassificationInvariantError(
+            f"call occurrence accounting mismatch: input={len(call_sites)}, "
+            f"accounted={result.accounted}"
+        )
+    ledger_ids = [str(row.get("call_id") or "") for row in result.ledger]
+    if ledger_ids != ids or len(ledger_ids) != len(set(ledger_ids)):
+        raise CallClassificationInvariantError(
+            "call occurrence result ledger must preserve every canonical ID exactly once"
         )
     return result
 

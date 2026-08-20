@@ -30,6 +30,7 @@ from pipeline.languages import ROUTINE_LABELS, role_of
 from pipeline.languages import DBMS_EXTS, EXT_TO_LANG
 from graph.schema.node_ids import child_id, code_file_id, code_ns_id, positioned
 from shared.events.runtime_logger import log_error, log_warning
+from shared.files.cache import SourceFileCache
 
 _COMPONENT = "pipeline.steps.step2_load_ast.antlr_json_reader"
 
@@ -48,6 +49,10 @@ _DBMS_VAR_TYPES: frozenset[str] = frozenset({
 from pipeline.steps.step2_load_ast.node_builders import ParseResult
 from pipeline.steps.step2_load_ast.framework_reader import _read_framework
 from pipeline.steps.step2_load_ast.dbms_reader import _read_dbms
+from pipeline.steps.step2_load_ast.evidence_ir import (
+    CommonEvidenceContractError,
+    validate_common_evidence,
+)
 
 def ast_and_source_roots(
     source_path: Path,
@@ -96,6 +101,7 @@ def read_antlr_json(
     *,
     expected_sha256: str | None = None,
     source_language: str | None = None,
+    source_cache: SourceFileCache | None = None,
 ) -> ParseResult:
     """antlr JSON 파일 1개 → ParseResult.
 
@@ -129,11 +135,46 @@ def read_antlr_json(
     if str(raw.get("type") or "").strip() != "FILE":
         raise ValueError(f"invalid AST artifact {json_path}: root type FILE required")
 
+    file_path = str(raw.get("filePath") or "").strip().replace("\\", "/")
+    source_base = source_root.resolve()
+    source_path = (source_base / file_path).resolve()
+    try:
+        source_path.relative_to(source_base)
+    except ValueError as error:
+        raise CommonEvidenceContractError(
+            f"common evidence sourceId: source path outside root: {file_path!r}"
+        ) from error
+    try:
+        source_bytes = (
+            source_cache.read_bytes(source_path)
+            if source_cache is not None else source_path.read_bytes()
+        )
+    except OSError as error:
+        raise CommonEvidenceContractError(
+            f"common evidence source: cannot read {source_path}: {error}"
+        ) from error
+    evidence = validate_common_evidence(
+        raw,
+        source_bytes=source_bytes,
+        expected_source_id=file_path,
+    )
+    if source_cache is not None:
+        source_cache.register_exact_text(
+            source_path, source_bytes, evidence.decoded_text,
+        )
+
     file_name = raw.get("fileName") or json_path.name
     ext = Path(file_name).suffix.lstrip(".").lower()
 
     if ext in DBMS_EXTS:
+        if evidence.call_facts:
+            raise CommonEvidenceContractError(
+                "common evidence DBMS call consumer is not implemented; "
+                f"refusing to drop {len(evidence.call_facts)} facts from {evidence.source_id}"
+            )
         result = _read_dbms(raw, source_root, json_path)
+        result.evidence_sources.append(evidence.source_record())
+        result.evidence_completeness.extend(evidence.completeness_records())
         if source_language is None:
             source_language = _parser_source_language(raw, source_root)
         for node in result.code_nodes:
@@ -147,7 +188,7 @@ def read_antlr_json(
             f"unsupported parser AST extension at {json_path}: {ext!r}"
         )
 
-    result = _read_framework(raw, lang, source_root, json_path)
+    result = _read_framework(raw, lang, source_root, json_path, evidence=evidence)
     if result.unknown_nodes:
         counts: dict[str, int] = {}
         for unknown in result.unknown_nodes:

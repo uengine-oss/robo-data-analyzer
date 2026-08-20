@@ -218,6 +218,41 @@ target 후보에 사용하되 project symbol resolution은 계속 Analyzer가 �
 member call, anonymous class constructor, 함수 포인터, lambda callable을 포함했고, APAS 12,113건은
 named 12,113 / constructor 0 / expression 0으로 exact partition됐다.
 
+### C-057 — Analyzer closure가 Parser보다 먼저 UTF-8을 의미 인코딩으로 고정
+
+`source_ast_closure.py`는 `a64b5ab1`에서 source bytes를 무손실 확인하려고 strict UTF-8 decode를
+선행했다. 그러나 Parser envelope가 `sourceEncoding`, exact decoded text, raw/decoded hash를 소유하는
+경계에서는 유효한 EUC-KR/cp949 source도 Analyzer가 먼저 거부한다. 언어 문법뿐 아니라 source decode owner도
+둘로 갈라지는 결함이다.
+
+판정: **실행 거부에 의한 의미 모집단 손실**. closure는 raw bytes/hash만 닫고, Analyzer v1 validator가
+Parser encoding으로 strict decode한 결과와 envelope text/hash를 대조한다. Parser가 검증한 동일 bytes/text를
+공유 cache에 등록해 downstream이 UTF-8로 재해석하지 않는다. EUC-KR red→green으로 고정했다.
+
+### C-058 — AST JSON을 evidence envelope 없이 성공 처리해 source↔fact closure가 없음
+
+`read_antlr_json`의 최초 경계는 `1aef9a30`, Framework call 수집은 `bc699ee2`, artifact hash 강화는
+`a64b5ab1` 계열이지만, current baseline까지 Parser evidence `version/sourceId/raw+decoded hash/range/factId/
+completeness`를 검증하는 consumer가 없었다. 따라서 coarse AST가 존재하면 missing/corrupt/partial evidence를
+구별하지 못하고 graph 생산을 계속할 수 있었다.
+
+판정: **잠재 silent meaning loss**. FILE envelope 부재·source path escape·hash/decode/range/canonical ID·
+grammar/presence table·completeness 불일치를 모두 step2에서 fail-closed한다. compatibility AST call과 canonical
+fact의 population/order/line/terminal도 exact-once 대조하고 Framework routine owner만 별도 mapping으로 더한다.
+actual APAS는 23파일, 12,113 call fact, unique 12,113, routine owner resolved 12,113으로 닫혔다. 상세는
+`analyzer-call-consumer-validation-20260821.md`다.
+
+### C-059 — call 분류 합계만 맞고 canonical fact별 outcome 원장이 없음
+
+첫 Analyzer consumer green은 edge/drop/unresolved category 합계 12,113을 닫았지만 edge와 drop 결과가 어느
+canonical call ID에서 나온 것인지 전건 보존하지 않았다. aggregate edge는 동일 caller/callee occurrence를
+합칠 수 있으므로 count equality만으로 exact-once 소비를 증명할 수 없다.
+
+판정: **후단 검증 가능성 손실**. classifier가 input source order의 모든 canonical ID에 대해
+`edge|excluded|preserved|unresolved` outcome과 target/reason을 정확히 한 행 남기고, ledger ID 순서·유일성·
+population을 invariant로 검증한다. actual 12,113행의 replay는 byte-equivalent canonical JSON이며 ledger
+SHA-256은 `2ba765b1eebd16de73890ef496f423c0a9103884333d6d2679e5c028c9521c5e`다.
+
 ## 4. 안전/preview/search/degraded와의 구분
 
 - `branch_inventory._ast_termination_rows` 160자는 display/prompt preview이며 Rule cond/then 정본은 아니다.
@@ -340,9 +375,10 @@ grammar/build-context red 없이 문자열 규칙을 확대하지 않는다(C-05
    C-052/C-053/C-056과
    구현 중 발견한 recovery complete 세탁, non-workspace evidence skip, nested effective-presence 결함을
    red→green 고정했다. actual은 12,113 call facts, 봉인 526/526이며 상세는 common IR 검증 원장에 있다.
-3. **진행 — Analyzer call consumer 슬라이스**: Analyzer의 wrapper/call source reparse를 v1 IR 소비로
-   교체한다. APAS 12,113 call fact와 기존 aggregate CALLS를 owner routine별 exact-once 비교한다. import/symbol은
-   아직 v1 unsupported이므로 call과 한꺼번에 성공 처리하지 않고 다음 Parser kind slice로 분리한다.
+3. **완료 — Analyzer call consumer 슬라이스**: v1 envelope와 call fact를 fail-closed 검증하고 Framework
+   routine owner에 exact-once 귀속했다. wrapper source-line regex를 제거했고 evidence 부재 target은 명시
+   unresolved다. actual APAS 12,113/12,113, owner 12,113/12,113, 봉인 owner 직접 판정 40/40이다. import/symbol은
+   아직 v1 unsupported이므로 call과 한꺼번에 성공 처리하지 않는다.
 4. **literal/embedded SQL 슬라이스**: Scanning Agent는 유지하되 normalized fact pattern만 제안한다.
    291 후보의 exact accounting과 193 explicit residual ownership을 고정한다.
 5. **branch/DBMS/column 슬라이스**: active/literal/call/SQL evidence를 Parser/dedicated parser로 넘기고

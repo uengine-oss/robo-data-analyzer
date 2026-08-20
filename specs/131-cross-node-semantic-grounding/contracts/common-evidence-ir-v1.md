@@ -133,6 +133,21 @@ CodeNode에 resolve한 뒤 별도 owner mapping을 만든다.
 - 모든 expression text는 파일당 한 번인 `decodedText`에서 range로 exact 복원한다.
 - Parser의 terminal name은 구문 사실일 뿐 project target resolution이 아니다.
 
+Analyzer Framework consumer는 compatibility AST와 canonical call fact의 population·traversal order·line을
+exact-once 대조한 뒤 enclosing routine ID를 별도 owner mapping으로 더한다. compatibility AST가 없거나
+개수가 다르면 canonical fact를 source에서 복원하지 않고 publish를 중단한다. call fact ID는 임시
+`owner:line:index`를 완전히 대체한다. inactive occurrence도 ledger에 남고, conditional/unknown presence,
+expression callee, routine owner 부재, wrapper argument evidence 부재는 각각 명시 unresolved다.
+분류 후에도 모든 canonical call ID에 대해 `edge|excluded|preserved|unresolved` 중 정확히 한 outcome을
+source order로 남긴다. aggregate CALLS edge나 category count만 맞는 것은 exact-once 승인 근거가 아니다.
+
+exact decoded source는 envelope에 파일당 한 번만 있으며 Analyzer source cache는 Parser가 hash 검증한
+동일 bytes/text 결합을 재사용한다. Analyzer가 별도 UTF-8 decode나 언어별 source lexer를 적용하지 않는다.
+
+DBMS call consumer가 effective AST CodeNode owner를 구현하기 전에는 nonempty DBMS call fact를 받으면
+publish를 중단한다. Framework routine owner로 대신 귀속하거나 fact를 보존했다는 이유로 소비를 생략하지
+않는다.
+
 ### import/include, symbol, literal, assignment, parameter, macro
 
 - 각 문법 단위 exact range와 file-level source/hash binding
@@ -168,6 +183,10 @@ population = emitted + explicitlyUnresolved
 이 등식과 exact ID set hash가 맞지 않으면 publish 실패다. 지원하지 않는 언어/문법을 빈 배열로 성공 처리하지
 않는다. Framework와 DBMS owner 차이는 유지하고, consumer는 필요한 kind가 complete가 아니면 해당 의미를
 `partial/insufficient`로 표시한다.
+
+`reasons[]`가 있으면 호환 `reason`은 반드시 첫 항목과 같아야 한다. `unresolvedScopeFactIds`는 같은
+envelope에 존재하는 `conditional_region` fact만 참조할 수 있다. 다른 kind의 fact ID나 외부 ID를 scope로
+가장하면 consumer는 publish를 거부한다.
 
 조건부 region은 call occurrence와 단위가 다르므로 `explicitlyUnresolved` call로 더하지 않는다. 관측된
 source call occurrence는 그대로 `population=emitted`로 회계하고, configuration 때문에 active set이

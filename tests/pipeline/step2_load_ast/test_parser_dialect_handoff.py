@@ -6,9 +6,30 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from pipeline.steps.step2_load_ast.dispatch import read_antlr_json
+from pipeline.steps.step2_load_ast.evidence_ir import CommonEvidenceContractError
+from tests.pipeline.step2_load_ast.evidence_fixture import add_common_evidence
 
 
 class ParserDialectHandoffTest(unittest.TestCase):
+    def test_dbms_call_facts_fail_until_effective_code_node_consumer_exists(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            source_text = "BEGIN work(); END;\n"
+            (root / "sample.sql").write_bytes(source_text.encode("utf-8"))
+            raw = add_common_evidence({
+                "type": "FILE", "fileName": "sample.sql", "filePath": "sample.sql",
+                "children": [],
+            }, source_text, calls=[{
+                "expression": "work()", "callee": "work", "terminal_name": "work",
+            }])
+            artifact = root / "sample.json"
+            artifact.write_text(json.dumps(raw), encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                CommonEvidenceContractError, "DBMS call consumer is not implemented",
+            ):
+                read_antlr_json(artifact, root)
+
     def test_dbms_nodes_receive_parser_owned_language_from_diagnostic(self) -> None:
         with TemporaryDirectory() as temp:
             data = Path(temp)
@@ -18,16 +39,17 @@ class ParserDialectHandoffTest(unittest.TestCase):
             source.mkdir()
             analysis.mkdir()
             diagnostics.mkdir()
-            (source / "sample.sql").write_text("SELECT ID FROM A;\n", encoding="utf-8")
+            source_text = "SELECT ID FROM A;\n"
+            (source / "sample.sql").write_bytes(source_text.encode("utf-8"))
             ast = analysis / "sample.json"
-            ast.write_text(json.dumps({
+            ast.write_text(json.dumps(add_common_evidence({
                 "type": "FILE",
                 "fileName": "sample.sql",
                 "filePath": "sample.sql",
                 "children": [{
                     "type": "SELECT", "startLine": 1, "endLine": 1, "children": [],
                 }],
-            }), encoding="utf-8")
+            }, source_text, call_supported=False)), encoding="utf-8")
             (diagnostics / "sample.sql.parse.json").write_text(json.dumps({
                 "sourcePath": "sample.sql", "language": "oracle",
             }), encoding="utf-8")
@@ -43,16 +65,17 @@ class ParserDialectHandoffTest(unittest.TestCase):
             analysis = data / "analysis"
             source.mkdir()
             analysis.mkdir()
-            (source / "sample.sql").write_text("SELECT ID FROM A;\n", encoding="utf-8")
+            source_text = "SELECT ID FROM A;\n"
+            (source / "sample.sql").write_bytes(source_text.encode("utf-8"))
             ast = analysis / "sample.json"
-            ast.write_text(json.dumps({
+            ast.write_text(json.dumps(add_common_evidence({
                 "type": "FILE",
                 "fileName": "sample.sql",
                 "filePath": "sample.sql",
                 "children": [{
                     "type": "SELECT", "startLine": 1, "endLine": 1, "children": [],
                 }],
-            }), encoding="utf-8")
+            }, source_text, call_supported=False)), encoding="utf-8")
 
             result = read_antlr_json(ast, source)
 

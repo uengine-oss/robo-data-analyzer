@@ -1,8 +1,8 @@
 # Analyzer 의미 무손실 감사 현재상태
 
 **Updated**: 2026-08-21
-**Status**: Parser common evidence IR 책임 슬라이스 완료 — Analyzer language-neutral consumer red 준비
-**Analyzer main HEAD**: `19498989434a7a7f033afc478341227d79f5030a`
+**Status**: Analyzer common call evidence consumer 3층 검증 완료 — commit/push 전 최종 감사
+**Analyzer slice base**: `e298cae8f4cb0c35a48b18cad68e0445fe0c7f77`
 
 이 문서는 현재 진행 위치만 소유한다. 영구 규칙은 `ABSOLUTE_RULES.md`, 상세 역사와 기존 수치는 `HANDOFF.md`와 `evidence/`가 소유한다.
 
@@ -20,10 +20,10 @@
 
 - Neo4j `127.0.0.1:7687`: 현재 세션에서 인증과 `SHOW DATABASES` 재확인 성공.
   `neo4j|test|framework|dbms|system`만 존재하고 모두 online이다. 허용 목록 밖 DB는 0개다.
-- Analyzer main HEAD `19498989434a7a7f033afc478341227d79f5030a`; 제품 코드 기준선
-  `c216e674cbac43386f9826632097ca2661395d7d` 이후 C-047까지 독립 책임 슬라이스로 push됐다.
-- Parser main HEAD `48de7f82f310c522d35edc697ba53d7857cd4264`; common evidence IR와 grammar-owned
-  callee syntax 책임 슬라이스가
+- Analyzer 이 책임 슬라이스의 base HEAD는 `e298cae8f4cb0c35a48b18cad68e0445fe0c7f77`; 제품 코드 기준선
+  `c216e674cbac43386f9826632097ca2661395d7d` 이후 C-047과 spec 문서까지 독립 push됐다.
+- Parser main HEAD `4f2154ed1b228df7c2d45cd6ded35fff599602bd`; common evidence IR와 grammar-owned
+  callee syntax, Analyzer actual fixture export harness 책임 슬라이스가
   자동 회귀·actual 전수 회계·봉인 직접 판정·성능 비교 후 push됐고 Parser working tree는 clean이다.
 - Catalog HEAD `1f1aaa608a3d7ef8b01ce15c3df962cf0f1cfefb`, 기존 dirty 12개가 있다.
 - Fabric HEAD `83c9604e2d6ec3f1ececa47d2e2264a74257843d`, 기존 dirty 7개가 있다.
@@ -318,9 +318,21 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
     like-for-like 기준선 대비 output +288.17%, wall +46.44%, peak heap +5.73%이며 성능 우월은 주장하지
     않는다. 반복 text 제거로 최초 시제품보다 줄였고 cap/sample은 없다.
     세부 원장은 `evidence/common-evidence-ir-validation-20260821.md`다.
-25c. 다음 책임 슬라이스는 Analyzer가 v1 envelope/source/hash/range/completeness/callee syntax를 fail-closed
-    검증하고,
-    Framework routine owner 기준 call occurrence를 exact-once 소비해 C-046/C-051 source 재파싱을 제거하는
-    red다. Neo4j/API/MCP replay 전까지 전체 파이프라인 정확도 합격은 미검증이다.
+25c. 완료(Analyzer call consumer, C-046/C-051/C-057~C-059): v1 envelope/source/hash/strict Parser decode/
+    Unicode range/canonical ID/grammar·presence table/completeness/callee syntax를 step2에서 fail-closed한다.
+    compatibility AST call population/order/line/terminal과 canonical fact를 exact-once 대조하고 Framework
+    routine owner를 별도 mapping으로 더했다. wrapper 한 줄 source regex와 Analyzer 선행 UTF-8 decode를
+    제거했으며, evidence 없는 wrapper target은 발명하지 않고 explicit unresolved다. 분류 뒤에도 canonical
+    call ID 전건에 outcome ledger를 남겨 aggregate count만 맞는 C-059를 닫았다.
+25d. actual APAS 23파일은 call 12,113/unique 12,113/owner resolved 12,113, duplicate 0이다. resolution
+    12,113행은 edge 869, excluded 11,126, inactive preserved 33, active wrapper unresolved 85이며 replay ledger
+    SHA-256 `2ba765b1eebd16de73890ef496f423c0a9103884333d6d2679e5c028c9521c5e`로 동일하다. Parser 봉인 526/526을
+    Analyzer fact/range/presence/owner boundary와 대조했고, owner 40건을 주 에이전트가 직접 판독해 40/40
+    enclosing routine과 일치했다. 집중 `28 passed, 10 subtests`, actual opt-in `1 passed`, 권위 unittest
+    `1121 tests OK, skipped 6`, 전체 pytest `1194 passed, 7 skipped, 367 subtests`다. 상세는
+    `evidence/analyzer-call-consumer-validation-20260821.md`다.
+25e. 다음 책임 슬라이스는 C-055 Parser macro evidence와 wrapper target에 필요한 literal/symbol argument
+    evidence다. 그 뒤 DBMS effective CodeNode owner 및 Neo4j/API/MCP actual replay를 별도 승인한다. 따라서
+    현재 결과를 전체 파이프라인 정확도 합격으로 확대하지 않는다.
 26. 검증: 자동 회귀→결정론 전수 회계→봉인 직접 의미 판정→실제 APAS 순으로 계속 수행한다.
 27. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.

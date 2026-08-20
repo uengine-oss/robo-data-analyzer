@@ -66,6 +66,8 @@ class CallGraphAuthorityContractTest(unittest.TestCase):
                 "call_id": f"site-{index}",
                 "caller_id": caller.id,
                 "call_text": name,
+                "callee_kind": "named",
+                "presence_status": "active",
                 "file": "missing-source.c",
                 "line": index + 1,
             }

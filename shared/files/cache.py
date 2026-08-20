@@ -19,12 +19,29 @@ _LOG = "shared.files.cache"
 
 
 class SourceFileCache:
-    """파일 경로 → exact UTF-8 텍스트 라인 캐시. read/decode 실패는 fail-closed."""
+    """파일 경로 → Parser-verified exact text cache. read/decode 실패는 fail-closed."""
 
     def __init__(self) -> None:
         self._bytes: dict[str, bytes] = {}
         self._read_errors: dict[str, SourceFileReadError] = {}
         self._lines: dict[str, list[str]] = {}
+
+    def register_exact_text(
+        self, file_path: str | Path, raw_bytes: bytes, decoded_text: str,
+    ) -> None:
+        """Register text already proven by the Parser evidence envelope.
+
+        This is the only non-UTF-8 path.  It cannot replace different cached bytes,
+        so later consumers observe the same immutable source revision.
+        """
+        key = str(file_path)
+        cached = self._bytes.get(key)
+        if cached is not None and cached != raw_bytes:
+            raise SourceFileReadError(
+                key, OSError("Parser evidence bytes differ from run source cache"),
+            )
+        self._bytes[key] = raw_bytes
+        self._lines[key] = decoded_text.splitlines()
 
     def read_bytes(self, file_path: str | Path) -> bytes:
         """Return exact file bytes, cached for the run; read failures stay explicit.
@@ -57,7 +74,11 @@ class SourceFileCache:
         return raw
 
     def lines(self, file_path: str) -> list[str]:
-        """파일 텍스트 라인 목록. invalid UTF-8 byte를 삭제하지 않고 예외로 드러낸다."""
+        """파일 텍스트 라인 목록.
+
+        Parser evidence registration preserves its strict exact charset.  Files not
+        registered by that boundary remain strict UTF-8 and never delete bad bytes.
+        """
         cached = self._lines.get(file_path)
         if cached is not None:
             return cached

@@ -159,6 +159,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
     parent_of = []
     has_member, belongs_to, statement_next = [], [], []
     call_sites, import_refs = [], []
+    evidence_sources, evidence_completeness = [], []
     parsed_files = 0
     await pause.gate()
     # 파일 순차 유지 — 제어 계약(정지 시 다음 파일을 읽지 않음)이 파일 단위 gate 를
@@ -169,6 +170,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
             source_root,
             expected_sha256=artifact.ast_sha256,
             source_language=artifact.language,
+            source_cache=source_cache,
         )
         code_nodes.extend(result.code_nodes)
         modules.extend(result.modules)
@@ -182,8 +184,22 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         statement_next.extend(result.statement_next_edges)
         call_sites.extend(result.call_sites)
         import_refs.extend(result.import_refs)
+        evidence_sources.extend(result.evidence_sources)
+        evidence_completeness.extend(result.evidence_completeness)
         parsed_files += 1
         await pause.gate()
+
+    await pause.gate()
+    call_fact_ids = [site.get("call_id") for site in call_sites]
+    if len(call_fact_ids) != len(set(call_fact_ids)):
+        raise ValueError("common evidence call fact IDs are not globally exact-once")
+    source_ids = [item.get("source_id") for item in evidence_sources]
+    if len(source_ids) != parsed_files or len(source_ids) != len(set(source_ids)):
+        raise ValueError(
+            "common evidence source envelopes are not exactly one per parsed file: "
+            f"parsed={parsed_files}, envelopes={len(source_ids)}, "
+            f"unique={len(set(source_ids))}"
+        )
 
     await pause.gate()
     try:
@@ -330,4 +346,6 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         "init_by_edges": init_by,
         "call_sites": call_sites,
         "import_refs": import_refs,
+        "evidence_sources": evidence_sources,
+        "evidence_completeness": evidence_completeness,
     }

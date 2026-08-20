@@ -23,8 +23,11 @@ class FunctionMacroCallTests(unittest.TestCase):
                 end_line=2, label="FUNCTION",
             )
             result = classify_call_sites([{
+                "call_id": "trace-call",
                 "caller_id": caller.id,
                 "call_text": "TRACE",
+                "callee_kind": "named",
+                "presence_status": "active",
                 "file": str(path),
                 "line": 2,
             }], [caller])
@@ -46,8 +49,10 @@ class FunctionMacroCallTests(unittest.TestCase):
                 end_line=2, label="FUNCTION",
             )
             sites = [
-                {"caller_id": caller.id, "call_text": name, "file": str(path), "line": 2}
-                for name in ("CALLBACK", "customer_hook")
+                {"call_id": f"call-{index}", "caller_id": caller.id,
+                 "call_text": name, "callee_kind": "named",
+                 "presence_status": "active", "file": str(path), "line": 2}
+                for index, name in enumerate(("CALLBACK", "customer_hook"))
             ]
             result = classify_call_sites(sites, [caller])
 

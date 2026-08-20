@@ -12,6 +12,7 @@ import unittest
 
 from pipeline.steps.step2_load_ast.dispatch import read_antlr_json
 from pipeline.steps.step2_load_ast.framework_reader import _read_framework
+from tests.pipeline.step2_load_ast.evidence_fixture import add_common_evidence
 
 
 def _raw_with_unknown_container():
@@ -54,9 +55,19 @@ class UnknownNodeTypeContractTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "sample.c"
-            source.write_text("void f(void) {}\n", encoding="utf-8")
+            source_text = (
+                "void f(void) {\n\n\n\ncleanup();\nreturn;\n}\n"
+            )
+            source.write_bytes(source_text.encode("utf-8"))
             artifact = root / "sample.json"
-            artifact.write_text(json.dumps(_raw_with_unknown_container()), encoding="utf-8")
+            raw = add_common_evidence(
+                _raw_with_unknown_container(), source_text,
+                calls=[{
+                    "expression": "cleanup()", "callee": "cleanup",
+                    "terminal_name": "cleanup",
+                }],
+            )
+            artifact.write_text(json.dumps(raw), encoding="utf-8")
 
             with self.assertRaisesRegex(ValueError, "LABEL_BLOCK"):
                 read_antlr_json(artifact, root)

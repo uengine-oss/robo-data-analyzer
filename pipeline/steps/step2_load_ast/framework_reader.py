@@ -30,6 +30,10 @@ from pipeline.steps.step2_load_ast.node_builders import (
     _folder_package, _make_code_node, _make_constant, _make_data_type,
     _make_module, _make_variable, _node_id, _src_path, _unique_id,
 )
+from pipeline.steps.step2_load_ast.evidence_ir import (
+    CommonEvidenceContractError,
+    ValidatedCommonEvidence,
+)
 
 @dataclass
 class _FwCtx:
@@ -43,6 +47,7 @@ class _FwCtx:
 
 def _read_framework(
     raw: dict, lang: str, source_root: Path, json_path: Path,
+    *, evidence: ValidatedCommonEvidence | None = None,
 ) -> ParseResult:
     """Framework 파일 → Module / CodeNode / Variable / Constant / DataType 노드.
 
@@ -73,6 +78,10 @@ def _read_framework(
     ctx = _FwCtx(lang=lang, package=package_id, src_path=src_path, result=result, seen=set())
     # 파일(FILE) 진입 — 아직 구조 부모도 소유 routine 도 없다(둘 다 None). 함수 진입 시 갱신.
     _walk_framework(raw, ctx, module_id, None, None)
+    if evidence is not None:
+        _bind_call_evidence(result, evidence)
+        result.evidence_sources.append(evidence.source_record())
+        result.evidence_completeness.extend(evidence.completeness_records())
     _derive_structure_edges(result, package_id)
     return result
 
@@ -285,10 +294,10 @@ def _collect_internal(
     """
     ctype = node.get("type", "")
     sl = int(node.get("startLine") or 0)
-    if ctype == "FUNCTION_CALL" and owner_routine_id is not None:
+    if ctype == "FUNCTION_CALL":
         result.call_sites.append({
             "call_id": f"{owner_routine_id}:{sl}:{len(result.call_sites)}",
-            "caller_id": owner_routine_id,
+            "caller_id": owner_routine_id or "",
             "call_text": node.get("name") or "",
             "file": src_path,
             "line": sl,
@@ -299,6 +308,64 @@ def _collect_internal(
             "file": src_path,
             "line": sl,
         })
+
+
+def _bind_call_evidence(
+    result: ParseResult,
+    evidence: ValidatedCommonEvidence,
+) -> None:
+    """Bind grammar occurrences to enclosing routines without source reparsing.
+
+    Parser listener traversal produces both the compatibility FUNCTION_CALL tree and
+    evidence candidates.  Their traversal populations/order must agree exactly; the
+    Analyzer only adds its owner mapping.
+    """
+    legacy = list(result.call_sites)
+    facts = list(evidence.call_facts)
+    if len(legacy) != len(facts):
+        raise CommonEvidenceContractError(
+            "common evidence call population: "
+            f"legacy={len(legacy)}, canonical={len(facts)}, source={evidence.source_id}"
+        )
+    bound: list[dict] = []
+    for index, (observed, fact) in enumerate(zip(legacy, facts, strict=True)):
+        line = evidence.decoded_text.count("\n", 0, fact.call_range.char_offset) + 1
+        if int(observed.get("line") or 0) != line:
+            raise CommonEvidenceContractError(
+                "common evidence call traversal: "
+                f"line mismatch at index={index}, legacy={observed.get('line')}, "
+                f"canonical={line}, factId={fact.fact_id}"
+            )
+        legacy_name = str(observed.get("call_text") or "")
+        if fact.callee_kind == "named" and legacy_name != fact.terminal_name:
+            raise CommonEvidenceContractError(
+                "common evidence call traversal: "
+                f"terminal mismatch at index={index}, legacy={legacy_name!r}, "
+                f"canonical={fact.terminal_name!r}, factId={fact.fact_id}"
+            )
+        bound.append({
+            "call_id": fact.fact_id,
+            "caller_id": str(observed.get("caller_id") or ""),
+            "owner_status": "resolved" if observed.get("caller_id")
+            else "unresolved_no_routine",
+            "call_text": fact.terminal_name or "",
+            "callee_kind": fact.callee_kind,
+            "source_id": evidence.source_id,
+            "file": observed.get("file", ""),
+            "line": line,
+            "range": fact.call_range.as_dict(),
+            "callee_range": fact.callee_range.as_dict(),
+            "argument_ranges": [item.as_dict() for item in fact.argument_ranges],
+            "grammar_rule": fact.grammar_rule,
+            "presence_status": fact.presence["status"],
+            "presence": dict(fact.presence),
+        })
+    ids = [site["call_id"] for site in bound]
+    if len(ids) != len(set(ids)):
+        raise CommonEvidenceContractError(
+            f"common evidence call population: duplicate fact IDs in {evidence.source_id}"
+        )
+    result.call_sites[:] = bound
 
 
 # ── DBMS (plsql / plpgsql) ────────────────────────────────────
