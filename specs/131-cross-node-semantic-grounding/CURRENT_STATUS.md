@@ -369,5 +369,24 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
     `#define/#undef` lifetime, include closure, build predefined macro와 call 위치를 Parser가 canonical evidence로
     생산해야만 `function_macro` definitive exclusion을 재승인할 수 있다. 현재 actual 76건의 explicit
     unresolved는 이 생산자 의무를 숨기지 않는 degraded 결과이며 최종 해결로 오인하지 않는다.
+25l. C-064 배선·입력·1차 근거 조사: Parser에는 compile database/compiler frontend 계약이 없고 Java 17 +
+    ANTLR raw-source parse만 있다. actual APAS는 23 C source/header 0, compile command 0, include 450회/고유
+    284개가 전부 미해결이며 host/WSL compiler와 Docker CLI도 없다. 따라서 현재 자료로 configuration-specific
+    expansion을 증명할 수 없다. Clang JSON compilation DB/PPCallbacks/SourceManager/TokenBuffer, GCC·MSVC
+    preprocessor output 정본을 교차 검토했다. 특정 frontend를 모든 compiler의 정답으로 승격하지 않고,
+    actual-toolchain trace=`authoritative`, 대체/text-only replay=`compatible_replay`, 입력·capability 결손=
+    `unresolved`의 provider 계약을 채택한다. ANTLR은 expanded token AST/call syntax owner로 유지한다.
+    v2 identity는 compile action/configuration/include instance/expansion instance/expanded semantic occurrence를
+    포함하며 source range만으로 합치지 않는다. 상세와 red/rollback 경계는
+    `evidence/c-preprocessor-expansion-closure-research-20260821.md`가 소유한다. actual authoritative 판정은
+    build command와 284 header closure가 공급되기 전까지 명시 미검증이다.
+25m. 완료(C-064 build-input 계약 1차): Parser `a531060`은 JSON compilation database를 shell 실행/분해 없이
+    exact argv와 literal/resolved path로 보존한다. 동일 TU 다중 configuration을 합치지 않고 shell-only,
+    malformed field/source/database 결손을 typed unresolved로 회계하며 canonical object ID + duplicate ordinal로
+    exact-once를 닫는다. 최초 symbol 부재 red와 `PARTIAL`/`UNRESOLVED` 경계 실패를 확인한 뒤 집중 7/7,
+    Parser 전체 49 suites/177 tests(failure 0, error 0, skipped 10)를 통과했다. entry 순서와 object field 순서를
+    바꾼 replay ID 원장이 동일하고 봉인 fixture 7종을 직접 대조했다. 이 커밋은 trace producer/expanded-token
+    ANTLR/Analyzer v2 배선을 포함하지 않으므로 actual 의미 정확도 승격 근거가 아니다. 상세는
+    `evidence/parser-compilation-database-contract-validation-20260821.md`다.
 26. 검증: 자동 회귀→결정론 전수 회계→봉인 직접 의미 판정→실제 APAS 순으로 계속 수행한다.
 27. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.
