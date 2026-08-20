@@ -120,7 +120,7 @@ class EarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
                 state=state, contexts=contexts, code_by_id=code_by_id,
                 strategy=mock.Mock(prompts_dir="llm/prompts/framework", name="framework"),
                 cost_budget=None, neo=None, stream=None,
-                codebase_notes="", table_descriptions={},
+                table_descriptions={},
                 pause=PauseController(), source_cache=mock.Mock(),
                 handoff=AnalysisHandoff(PrioritySemaphore(64)),
             )
@@ -179,7 +179,7 @@ class EarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
                 state=state, contexts=contexts, code_by_id=code_by_id,
                 strategy=mock.Mock(prompts_dir="llm/prompts/framework", name="framework"),
                 cost_budget=None, neo=None, stream=None,
-                codebase_notes="", table_descriptions={},
+                table_descriptions={},
                 pause=PauseController(), source_cache=mock.Mock(),
                 handoff=AnalysisHandoff(PrioritySemaphore(64)),
             )
@@ -234,7 +234,7 @@ class BatchEarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
                 Batch(parent_id=None, node_ids=("n",)),
                 {"n": ctx}, {"n": node},
                 strategy,
-                None, "", {}, mock.Mock(), PrioritySemaphore(64),
+                None, {}, mock.Mock(), PrioritySemaphore(64),
                 set(), set(), _on_summaries_ready,
             ))
             try:

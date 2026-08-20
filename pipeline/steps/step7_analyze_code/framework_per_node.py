@@ -67,7 +67,6 @@ async def run_framework_per_node_analysis(
     cost_budget,
     neo: Neo4jClient | None,
     stream: Optional[NDJSONStream],
-    codebase_notes: str,
     table_descriptions: dict[str, dict],
     pause: PauseController,
     source_cache: SourceFileCache,
@@ -176,8 +175,10 @@ async def run_framework_per_node_analysis(
                     warm_id = ready[0]
                     first_summary = await pause.run_restartable_during_pause(
                         lambda: run_summary(
-                            warm_id, contexts, code_by_id, strategy, cost_budget,
-                            codebase_notes, table_descriptions, source_cache,
+                            warm_id, contexts, code_by_id, strategy,
+                            cost_budget=cost_budget,
+                            table_descriptions=table_descriptions,
+                            source_cache=source_cache,
                             llm_slots=semaphore,
                         )
                     )
@@ -188,11 +189,11 @@ async def run_framework_per_node_analysis(
                             fn_id,
                             _analyze_one(
                                 fn_id, contexts, code_by_id, strategy, cost_budget,
-                                semaphore, codebase_notes, table_descriptions,
-                            source_cache,
-                            precomputed_summary=(first_summary if fn_id == warm_id else None),
-                            precomputed_summary_supplied=(fn_id == warm_id),
-                            on_summary_ready=_mark_summary_ready,
+                                semaphore, table_descriptions,
+                                source_cache,
+                                precomputed_summary=(first_summary if fn_id == warm_id else None),
+                                precomputed_summary_supplied=(fn_id == warm_id),
+                                on_summary_ready=_mark_summary_ready,
                             ),
                         )
                     )
@@ -375,7 +376,6 @@ async def _analyze_one(
     strategy: Any,
     cost_budget,
     semaphore: PrioritySemaphore,
-    codebase_notes: str,
     table_descriptions: dict[str, dict],
     source_cache: SourceFileCache,
     precomputed_summary: Optional[SummaryOutput | ModelOutputError] = None,
@@ -387,7 +387,6 @@ async def _analyze_one(
         return await analyze_code_three_split(
             fn_id, contexts, code_by_id, strategy,
             cost_budget=cost_budget,
-            codebase_notes=codebase_notes,
             table_descriptions=table_descriptions,
             source_cache=source_cache,
             precomputed_summary=precomputed_summary,

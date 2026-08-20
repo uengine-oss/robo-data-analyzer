@@ -382,8 +382,8 @@ def _complete_finalization(
         verdict, [*merged_patterns, *embedded_rules], draft.no_match_reason,
     )
 
-    # codebase_notes — HTML entity (&lt; / &gt; / &amp;) 가 박힌 채 나오면 코드노드 분석
-    # LLM 이 그대로 prefix 로 받음. unescape 로 영구 차단 (모든 SKILL 적용).
+    # codebase_notes는 호환·진단 metadata일 뿐 downstream LLM 입력이 아니다. 기존
+    # SKILL 계약의 표시 문자열만 정상화하며 의미 계약은 구조화 필드가 소유한다.
     # Copy the complete validated contract, then replace only fields finalized
     # here. A handwritten constructor previously dropped hydrated handler/API
     # facts whenever ScanResult gained or retained fields not listed here.

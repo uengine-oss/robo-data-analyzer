@@ -221,7 +221,6 @@ class DbmsTableInsightWiringTest(unittest.IsolatedAsyncioTestCase):
                     contexts={"node": context},
                     code_by_id={"node": node},
                     cost_budget=None,
-                    codebase_notes="",
                     table_descriptions={},
                     source_cache=SourceFileCache(),
                     llm_slots=slots,

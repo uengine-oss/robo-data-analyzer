@@ -43,6 +43,7 @@ def _scan() -> ScanResult:
         confidence=1.0,
         evidence="test",
         evidence_locations=["sample.c:1", "sample.c:2", "sample.c:3"],
+        codebase_notes="LLM-derived prose must not reach the residual LLM",
         no_match_reason="residual test has no initial pattern",
     )
 
@@ -215,6 +216,12 @@ class ResidualResilienceTest(IsolatedAsyncioTestCase):
         self.assertNotIn('"regex"', values["residual_cases"])
         self.assertIn('"entity": "ORDERS"', values["residual_cases"])
         self.assertIn("1 | SQL_CALL", values["residual_cases"])
+        self.assertNotIn("codebase_notes", values)
+        residual_prompt = (
+            Path(__file__).resolve().parents[3]
+            / "agents" / "prompts" / "residual.yaml"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("{codebase_notes}", residual_prompt)
         exclusions = json.loads(values["confirmed_exclusions"])
         self.assertEqual("non_table_key", exclusions[0]["id"])
         self.assertEqual("_seq", exclusions[0]["entity_suffix"])

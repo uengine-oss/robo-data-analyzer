@@ -46,9 +46,6 @@ user_template_inputs: |
   {external_evidence}
 
   ## [NON-AUTHORITATIVE CONTEXT STATUS]
-  codebase_notes:
-  {codebase_notes}
-
   module_intent:
   {module_intent}
 

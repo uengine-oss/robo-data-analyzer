@@ -26,9 +26,9 @@ Rule 경로는 2026-08-19 현행 계약으로 갱신했다.
 
 ```text
 parser / graph facts / DDL / external evidence
-  -> ScanResult.codebase_notes (Framework만)
-  -> module_pre_analysis.intent (임시)
-  -> step7 code summary | deterministic Rule structure | table usage
+  -> ScanResult deterministic contracts + diagnostic metadata
+  -> exact source/evidence closure
+  -> step7 code semantic slots | deterministic Rule/Example | table usage
   -> normalizer + deterministic quality gates
   -> CodeNode / Rule / Question + table-insight state
   -> step8 Module summary | Component name | Table/Column meaning
@@ -46,8 +46,8 @@ prompt에서 다시 해석한다. 필드별 schema는 출력 형태를 제한하
 
 | # | 생산자 / 전략 | 현재 호출·schema | LLM 자연어 | 코드 소유 사실·검증 | 저장·직접 소비 | 전환 결정 |
 |---|---|---|---|---|---|---|
-| P01 | Scan agent / Framework | `agents.scan.run_structured_agent` → `ScanResult` | `codebase_notes`; `no_match_reason` | skill contract 주입, regex compile, exclusion 검증, confidence 경계 | `scan_result` state; `codebase_notes`가 Framework step7 summary/table prompt context에 사용. Rule은 LLM 입력 없음 | `codebase_notes`는 프레임 근거가 아닌 **run context**로 KEEP/ADAPT. 사실 ID를 참조하는 bounded context로 제한. `no_match_reason`은 운영 진단으로 제외 |
-| P02 | Module pre-analysis / 공통 | `module_pre_analysis.yaml` → `ModulePreAnalysisOutput` | `intent` 0~2문장 | 모듈 ID·헤더 주석·imports·exports는 코드가 선택; schema는 빈 intent 허용 | run-local `{module_id: intent}`; 모든 step7 prompt context. 그래프 저장 안 함 | 독립 의미 생산자 제거. 구조·주석 근거에서 만든 module-level frame projection 또는 근거 context로 ADAPT |
+| P01 | Scan agent / Framework | `agents.scan.run_structured_agent` → `ScanResult` | `codebase_notes`; `no_match_reason` | skill contract 주입, regex compile, exclusion 검증, confidence 경계 | `scan_result` state의 진단 metadata만 유지. residual/Framework/DBMS LLM 소비는 제거; Rule은 LLM 입력 없음 | 완료: 자유문은 다음 LLM 권위 입력에서 제거. downstream은 구조화·검증된 regex/exclusion/runtime/API 계약만 소비 |
+| P02 | Module pre-analysis / 공통 | 생산자·prompt·schema 제거됨 | 없음 | module/header/import/export exact facts는 downstream structural evidence가 소유 | run-local intent 및 step7 prompt 소비 없음 | 완료: C-010에서 독립 prose 생산자 제거 |
 | P03 | Code summary / Framework | `code_summary.yaml` → 동적 `summary_response_model(strategy)` → `SummaryOutput` | `summary`, `stereotype`, `questions[].text/reason`, `missing_context[]` | exact target schema; status 조합 validator; summary format normalize; physical identity 누락, callee 복사, 비교 피연산자 변경, write/stereotype 모순 gate | `CodeNode.summary/stereotype`; status/missing JSON; `Question` + `HAS_QUESTION`; caller callee context; parent range 압축; module/component naming; embedding/search/API/MCP/Architect | frame slot meaning/status/missing의 주 생산 경로로 REPLACE. `summary`, `stereotype`, questions는 frame projection. 기존 gates는 KEEP/ADAPT |
 | P04 | Code summary batch / DBMS | `code_summary_batch.yaml` → 동적 `batch_summary_response_model` → `BatchSummaryOutput` | P03과 동일, node별 | exact `node_key`·전략 stereotype; P03과 동일한 normalize/gates | P03과 동일한 graph/storage 계약 | P03과 같은 frame assembler/schema를 batch envelope 안에서 사용. batch scheduling은 KEEP |
 | P05 | Rule structure / Framework | provider·response schema 없음 | LLM 자연어 없음, `RuleItem.nl=""` | branch table의 exact required row를 공통 물질화기가 cond/then/when으로 만들고 영구 audit가 coverage·중복·재물질화를 검사; Example은 accepted Rule에서 파생 | Rule/Example, compact search/API/MCP/Architect의 구조 렌더링 | 현행 단일 경로. 옛 Rule prompt/schema/normalizer 삭제 |
@@ -73,7 +73,7 @@ prompt에서 다시 해석한다. 필드별 schema는 출력 형태를 제한하
 | Module summary/name/role | Module graph properties | UI/search/상위 설계 맥락 | member summary의 누락과 중복을 다시 압축 | member frame refs와 module slots의 projection |
 | Component name | member code-node properties | UI/component grouping | summary 첫 줄을 다시 해석한 별도 자연어 | deterministic membership + frame-grounded display projection |
 | `module_intent` | run-local only | step7 prompts | 헤더 주석 해석이 모든 하위 의미에 보이지 않게 영향 | evidence-ref run context 또는 module frame claim |
-| `codebase_notes` | `scan_result` state | Framework step7 prompts | 프로젝트 전역 자유문이 모든 대상 의미에 전파 | 제한된 run context; slot 근거로 자동 승격 금지 |
+| `codebase_notes` | `scan_result` state | 진단 metadata 외 직접 소비 없음 | 과거에는 프로젝트 전역 자유문이 residual/step7 의미에 전파 | 완료: 모든 downstream LLM prompt/value/signature에서 제거 |
 
 ## 5. 공통 deterministic 사실과 현재 책임처
 

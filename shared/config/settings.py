@@ -189,9 +189,6 @@ class LlmResponseCacheSettings:
 class AnalysisAgentSettings:
     """ROBO_AGENT_* — 도구형 Agent 호출 한도와 검증 임계."""
     scan_max_calls: int = field(default_factory=lambda: _getenv_int("ROBO_AGENT_SCAN_MAX_CALLS", 30))
-    context_editing_trigger_tokens: int = field(
-        default_factory=lambda: _getenv_int("ROBO_AGENT_CONTEXT_EDITING_TRIGGER_TOKENS", 80000)
-    )
     # Scan Agent 의 table_access_patterns 검증 — 매치된 call site 중 op_token 이
     # op_mappings 에 인식된 비율의 최소 통과선. 틀린 정규식(op_token 이 변수명)은 0 → 탈락.
     scan_regex_min_op_ratio: float = field(
@@ -220,10 +217,6 @@ class AnalysisAgentSettings:
 
     def __post_init__(self) -> None:
         _require_positive_int("AnalysisAgentSettings.scan_max_calls", self.scan_max_calls)
-        _require_positive_int(
-            "AnalysisAgentSettings.context_editing_trigger_tokens",
-            self.context_editing_trigger_tokens,
-        )
         _require_finite_number(
             "AnalysisAgentSettings.scan_regex_min_op_ratio",
             self.scan_regex_min_op_ratio,

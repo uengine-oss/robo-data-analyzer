@@ -144,10 +144,9 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
             for table_id in dict.fromkeys((*ctx.reads, *ctx.writes))
         }
 
-    # ScanResult.codebase_notes — 3분할 모든 호출이 공통 prefix 로 사용 (캐시 친화).
-    # Framework 만 채움 — DBMS 는 빈 문자열 (Scan Agent 안 씀).
+    # ScanResult의 결정론적 계약만 downstream에 전달한다. Scan Agent가 만든 자유문
+    # codebase_notes는 다른 LLM의 의미 근거가 될 수 없으므로 여기서 소비하지 않는다.
     scan_result = state.get("scan_result") or {}
-    codebase_notes = scan_result.get("codebase_notes", "")
 
     # SKILL 계약의 핸들러 마커(PFM_CATCH 류) — 분기표 [handler] 행의 원천 (spec 116).
     # 언어 표가 아니라 프레임워크 계약이 소유하므로 ctx 를 통해 주입한다.
@@ -197,7 +196,7 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
         with step_processing_scope(_STEP, stream):
             result = await strategy.code_analyzer(
                 state, contexts, code_by_id, strategy, cost_budget, neo, stream,
-                codebase_notes, table_descriptions, pause, source_cache,
+                table_descriptions, pause, source_cache,
                 handoff,
             )
     except BaseException as error:

@@ -109,15 +109,11 @@ SKILL 매칭 여부와 미매칭일 때 필요한 custom 접근 규칙을 `ScanR
 - **★ 누락 사고**: SKILL 에 절이 있는데 빈 배열로 두면 → wrapper 호출이 framework 드롭으로
   빠져 호출 그래프에서 사라짐 → 모듈 간 의존관계 손실 (실측 사례: mpfm_dlcall 11 건 누락).
 
-**codebase_notes** (★ 필수 포함):
+**codebase_notes** (출력하지 않음):
 
-- 매칭된 SKILL에서는 코드가 `ScanResult contract.codebase_notes`를 직접 주입한다. Skill이
-  없을 때만 직접 1단락을 작성한다. 이 단락은 함수 분석 LLM 호출마다 prefix로 주입되므로
-  짧고 정확해야 한다.
-- **op 결정 신호 반드시 포함** — `table_access_patterns.op_mappings` 의 token →
-  표준 SQL op (SELECT/INSERT/UPDATE/DELETE) 매핑을 1줄로 풀어쓴다
-  (예: "메서드명 `find`/`save`/`delete` 가 SELECT/INSERT/DELETE 결정",
-   "SQL_KEY `<op>` 의 `s`/`i`/`u`/`d` 가 SELECT/INSERT/UPDATE/DELETE 결정").
+- 이 필드는 과거 호환·진단 metadata이며 다른 LLM의 의미 입력으로 사용되지 않는다.
+- 매칭된 SKILL의 기존 값은 코드가 보존할 수 있지만 Agent는 새 prose를 만들지 않는다.
+- op 결정은 자연어 설명이 아니라 `table_access_patterns.op_mappings` 구조 계약에만 둔다.
 - 누락 시 함수 분석 LLM 이 코드 주석에 끌려 op 를 잘못 해석한다 (실측 사례 — DBIO
   주석이 SELECT 함수를 "Insert처리" 로 잘못 적어 LLM 이 등록으로 판단).
 
@@ -156,7 +152,7 @@ SKILL 매칭 여부와 미매칭일 때 필요한 custom 접근 규칙을 `ScanR
 | `table_access_exclusion_rules` | **항상 출력 금지/빈 배열**. 검토 가능한 matched SKILL만 소유하며 코드가 주입 |
 | `table_access_patterns` | **SKILL 미매칭일 때만** 4종 DSL로 표현 불가한 raw 정규식 탈출구. 매칭이면 생략 |
 | `ddl_transform` | **SKILL 미매칭일 때만** entity→DDL 변환. 매칭이면 생략 |
-| `codebase_notes` | **SKILL 미매칭일 때만** 프로젝트 성격과 op 결정 신호 1단락 |
+| `codebase_notes` | **항상 출력 금지/빈 문자열**. downstream 의미 입력이 아닌 호환·진단 metadata |
 | `framework_runtime_functions` | **SKILL 미매칭일 때만** 근거로 확인한 런타임 함수. 없으면 생략 |
 | `call_wrappers` | **SKILL 미매칭일 때만** 근거로 확인한 호출 wrapper. 없으면 생략 |
 | `no_match_reason` | SKILL 매칭 X 또는 정규식 미산출 시 사유. 정상이면 null |

@@ -16,9 +16,6 @@ user_template_inputs: |
   # 라운드 공통 확정 맥락
   matched_skill: {matched_skill}
 
-  codebase_notes:
-  {codebase_notes}
-
   confirmed_non_table_shapes (이 형식과 겹치는 TABLE 패턴 제안 금지):
   {confirmed_exclusions}
 

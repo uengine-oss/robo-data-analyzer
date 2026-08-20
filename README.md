@@ -1111,7 +1111,6 @@ run 출력 루트에는 소유 마커 파일이 놓여 다른 도구의 디렉�
 | 변수 | 기본값 | 설명 |
 |---|---|---|
 | `ROBO_AGENT_SCAN_MAX_CALLS` | `30` | Scan Agent 호출 상한 |
-| `ROBO_AGENT_CONTEXT_EDITING_TRIGGER_TOKENS` | `80000` | 컨텍스트 편집 발동 임계 |
 | `ROBO_AGENT_SCAN_REGEX_MIN_OP_RATIO` | `0.5` | 정규식 검증 통과선 (0~1) |
 
 ### 비용·카탈로그·데이터·로깅

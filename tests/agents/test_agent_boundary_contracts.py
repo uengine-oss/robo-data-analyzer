@@ -58,6 +58,52 @@ class _DefaultedBoundaryResponse(BaseModel):
 
 
 class LlmBoundaryContractTest(unittest.TestCase):
+    def test_agent_stack_has_no_lossy_context_rewrite_or_summary(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        stack_source = (root / "agents" / "middleware" / "stack.py").read_text(
+            encoding="utf-8"
+        )
+        for forbidden in (
+            "ClearToolUsesEdit",
+            "ContextEditingMiddleware",
+            "SummarizationMiddleware",
+            "context_editing_trigger_tokens",
+            "_TOOL_RESULT_KEEP_LAST",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, stack_source)
+        settings_source = (root / "shared" / "config" / "settings.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("context_editing_trigger_tokens", settings_source)
+        self.assertNotIn(
+            "ROBO_AGENT_CONTEXT_EDITING_TRIGGER_TOKENS",
+            (root / ".env.example").read_text(encoding="utf-8"),
+        )
+
+        # Scan Agent prose is metadata, never authoritative input to another LLM.
+        for relative_path in (
+            "agents/prompts/residual.yaml",
+            "llm/prompts/framework/_common.yaml",
+            "llm/prompts/dbms/_common.yaml",
+        ):
+            with self.subTest(relative_path=relative_path):
+                self.assertNotIn(
+                    "{codebase_notes}",
+                    (root / relative_path).read_text(encoding="utf-8"),
+                )
+        for relative_path in (
+            "agents/residual.py",
+            "pipeline/steps/step7_analyze_code/step_entry.py",
+            "pipeline/steps/step7_analyze_code/batch_prompt_values.py",
+            "pipeline/steps/step7_analyze_code/three_split_llm_fanout.py",
+        ):
+            with self.subTest(relative_path=relative_path):
+                self.assertNotIn(
+                    '"codebase_notes":',
+                    (root / relative_path).read_text(encoding="utf-8"),
+                )
+
     def test_agent_transcript_preserves_first_human_then_only_new_tool_message(self) -> None:
         usage = SimpleNamespace(
             input_tokens=10, output_tokens=2, cached_tokens=0,

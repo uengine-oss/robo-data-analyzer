@@ -1,7 +1,7 @@
 # Analyzer 의미 무손실 감사 현재상태
 
 **Updated**: 2026-08-20
-**Status**: A131-04c 근본 구현 진행 중 — step8 summary-of-summary 제거 완료, Agent compaction 조사 중
+**Status**: A131-04d 근본 구현 진행 중 — 중간 prose/Agent compaction 제거 완료, source·AST·diagnostic closure 착수
 **Product-code baseline HEAD**: `c216e674cbac43386f9826632097ca2661395d7d`
 
 이 문서는 현재 진행 위치만 소유한다. 영구 규칙은 `ABSOLUTE_RULES.md`, 상세 역사와 기존 수치는 `HANDOFF.md`와 `evidence/`가 소유한다.
@@ -20,7 +20,7 @@
 
 - Neo4j `127.0.0.1:7687`: 현재 세션에서 인증과 `SHOW DATABASES` 재확인 성공.
   `neo4j|test|framework|dbms|system`만 존재하고 모두 online이다. 허용 목록 밖 DB는 0개다.
-- Analyzer latest verified slice HEAD `43455e4c92b0fa3418a0da3e9e2c6d12c3ea4c01`; 제품 코드 기준선은
+- Analyzer latest verified slice HEAD `f91f90d`; 제품 코드 기준선은
   `c216e674cbac43386f9826632097ca2661395d7d`, 재개 시 dirty 0이었다.
 - Parser HEAD `4b849f14575b6830b82ae5ee980658100c4d8692`, dirty 0.
 - Catalog HEAD `1f1aaa608a3d7ef8b01ce15c3df962cf0f1cfefb`, 기존 dirty 12개가 있다.
@@ -72,7 +72,8 @@
 전수조사에서 추가로 확정한 범주는 다음과 같다. 상세 수량·배선·유입 commit은 evidence 원장이 소유한다.
 
 - C-010: module pre가 최대 80개 signature에서 만든 prose intent를 모든 member LLM에 재주입한다.
-- C-016: Agent middleware가 tool evidence를 삭제하고 대화 요약을 최종 구조 결과의 입력으로 쓴다.
+- C-016: Agent middleware가 tool evidence를 삭제하고 대화 요약을 최종 구조 결과의 입력으로 쓰며,
+  Scan Agent 자유문 `codebase_notes`도 residual/step7 LLM의 권위 맥락으로 재사용했다. 두 배선 모두 제거 완료.
 - C-017/C-018: unknown external/scan 경로는 관측 표본 밖의 미발견 구조 completeness를 회계하지 않는다.
 - C-019~C-021: view depth 3, wrapper promotion 2 hop, external value 240자가 canonical link를 조용히 끊는다.
 - C-022/C-023: model-visible source literal projection은 raw와 일대일이 아니며 source decode는 invalid UTF-8을
@@ -168,7 +169,13 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
     role 없는 member는 즉시 실패한다. source-owned display/stereotype은 추측하지 않고 partial/unverified로
     남기며 Neo4j의 이전 실행 파생 속성도 null map으로 제거한다. 전체 `1057 passed, 5 skipped`, prompt
     hash `17/17 byte-identical`이다.
-11. 현재: C-016 Agent context compaction을 source/evidence closure 기반으로 제거한다. C-023 strict source
-    decode는 A131-04d closure에서 함께 처리한다.
-12. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
-13. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.
+11. 완료(C-016): 모든 structured agent의 50,000-token tool-result clear와 75,000-token 대화 LLM 요약을
+    제거했다. 과거 transcript/tool evidence는 exact하게 유지하고 context 초과는 명시적 실패로 드러낸다.
+    `ScanResult.codebase_notes`도 residual 및 Framework/DBMS step7 prompt와 호출 시그니처에서 제거해
+    한 LLM의 자유문이 다음 LLM의 의미 근거가 되는 경로를 닫았다. C-017/C-018의 큰 탐색 exact partition은
+    별도 미완 의무다. 변경 전 red 2건, focused 회귀 118건, 전체 `1058 passed, 5 skipped`, prompt hash
+    `17/17 byte-identical`을 확인했다.
+12. 현재: A131-04d source/AST/diagnostic closure와 completed generation 원자 publish/consumer guard를
+    구현한다. C-023 strict source decode도 이 closure에서 함께 처리한다.
+13. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
+14. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.

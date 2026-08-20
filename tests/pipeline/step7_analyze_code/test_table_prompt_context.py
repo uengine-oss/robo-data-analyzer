@@ -134,7 +134,7 @@ def test_dbms_batch_prompt_carries_exact_alias_column_evidence() -> None:
         }
 
         values, _ = _build_batch_values(
-            Batch(None, (node.id,)), {node.id: context}, {node.id: node}, "",
+            Batch(None, (node.id,)), {node.id: context}, {node.id: node},
             {"db:RWIS.RDD01DD_TB": {}}, SourceFileCache(),
         )
 
@@ -182,7 +182,7 @@ def test_dbms_summary_prompt_projects_false_and_error_paths_explicitly() -> None
 
         values, _ = _build_batch_values(
             Batch(None, (node.id,)), {node.id: context}, {node.id: node},
-            "", {}, SourceFileCache(),
+            {}, SourceFileCache(),
         )
 
         assert "[implicit_false]" in values["nodes"]

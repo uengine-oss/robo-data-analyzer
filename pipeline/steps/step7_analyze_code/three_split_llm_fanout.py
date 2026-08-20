@@ -272,7 +272,6 @@ def _summary_batch_values(profile, batch_specs, common: dict) -> dict:
             *by_kind.get("CONTROL", []), *by_kind.get("RULE", []),
         ]),
         "api_contracts": "[]",
-        "codebase_notes": "(없음: 파생 prose는 의미 근거로 전달하지 않음)",
         "module_intent": "(없음: 파생 prose는 의미 근거로 전달하지 않음)",
         "ancestor_context": "(없음: 현재 evidence closure 밖)",
     }
@@ -354,7 +353,6 @@ async def run_summary(
     code_by_id: dict[str, CodeNode],
     strategy: Any,
     cost_budget: Optional[CostBudget] = None,
-    codebase_notes: str = "",
     table_descriptions: Optional[dict[str, dict]] = None,
     source_cache: Optional[SourceFileCache] = None,
     llm_slots: Optional[PrioritySemaphore] = None,
@@ -385,7 +383,7 @@ async def run_summary(
         )
 
     common, _inventory = _build_user_values(
-        ctx, fn, contexts, code_by_id, codebase_notes,
+        ctx, fn, contexts, code_by_id,
         table_descriptions or {},
         source_cache or SourceFileCache(),
     )
@@ -424,7 +422,6 @@ async def analyze_code_three_split(
     code_by_id: dict[str, CodeNode],
     strategy: Any,
     cost_budget: Optional[CostBudget] = None,
-    codebase_notes: str = "",
     table_descriptions: Optional[dict[str, dict]] = None,
     source_cache: Optional[SourceFileCache] = None,
     precomputed_summary: Optional[SummaryOutput | ModelOutputError] = None,
@@ -439,7 +436,6 @@ async def analyze_code_three_split(
     summary/table 입력에 남고 Rule은 parser-owned inventory만 사용한다.
 
     Args:
-        codebase_notes: ``ScanResult.codebase_notes`` — prefix 공유로 캐시 적중.
         table_descriptions: ``{table_fqn: DDL 설명}`` — reads/writes 렌더에 의미 부여.
         precomputed_summary: Round 첫 코드노드의 워밍 결과.
         precomputed_summary_supplied: 워밍 호출이 이미 끝났는지 표시. 워밍 실패(None)도
@@ -470,7 +466,7 @@ async def analyze_code_three_split(
     # 대상 사실의 한 정의처. 각 LLM concern template은 자기 책임 필드만 선택하고,
     # inventory는 Rule 물질화·감사의 구조 정답지다.
     common, inventory = _build_user_values(
-        ctx, fn, contexts, code_by_id, codebase_notes,
+        ctx, fn, contexts, code_by_id,
         table_descriptions or {},
         source_cache or SourceFileCache(),
     )
@@ -930,7 +926,6 @@ def _build_user_values(
     fn: CodeNode,
     contexts: dict[str, AnalysisContext],
     code_by_id: dict[str, CodeNode],
-    codebase_notes: str,
     table_descriptions: dict[str, dict],
     cache: SourceFileCache,
 ) -> tuple[dict, object]:
@@ -974,7 +969,6 @@ def _build_user_values(
         "source_range": f"{ctx.start_line}-{ctx.end_line}",
         "source_status": excerpt.status,
         "coordinate_system": excerpt.coordinate_system,
-        "codebase_notes": codebase_notes or "(없음)",
         "module_intent": "(없음: 파생 prose는 의미 근거로 전달하지 않음)",
         "referenced_symbols": dump_referenced_symbols(ctx.referenced_symbols),
         "external_evidence": dump_external_evidence(ctx.external_evidence),

@@ -173,7 +173,6 @@ async def run_dbms_batch_analysis(
     cost_budget,
     neo,
     stream,
-    codebase_notes: str,
     table_descriptions: dict[str, dict],
     pause: PauseController,
     source_cache: SourceFileCache,
@@ -314,7 +313,7 @@ async def run_dbms_batch_analysis(
                         b,
                         _analyze_batch_guarded(
                             b, contexts, code_by_id, strategy, cost_budget,
-                            codebase_notes, table_descriptions, source_cache, semaphore,
+                            table_descriptions, source_cache, semaphore,
                             rule_units, rule_gates, _mark_summaries_ready,
                         ),
                     )
@@ -425,21 +424,21 @@ async def _run_batch_with_ref(batch: Batch, coro):
 
 async def _analyze_batch_guarded(
     batch: Batch, contexts, code_by_id, strategy, cost_budget,
-    codebase_notes, table_descriptions, source_cache, semaphore,
+    table_descriptions, source_cache, semaphore,
     rule_units: set[str], rule_gates: set[str], on_summaries_ready,
 ):
     """배치 1개 분석. 운영·결정론 실패만 상위 step까지 전파한다."""
     async with track_processing("Batch", batch.parent_id or batch.node_ids[0]):
         return await _analyze_batch(
             batch, contexts, code_by_id, strategy, cost_budget,
-            codebase_notes, table_descriptions, source_cache,
+            table_descriptions, source_cache,
             semaphore, rule_units, rule_gates, on_summaries_ready,
         )
 
 
 async def _analyze_batch(
     batch: Batch, contexts, code_by_id, strategy, cost_budget,
-    codebase_notes, table_descriptions, source_cache, llm_slots,
+    table_descriptions, source_cache, llm_slots,
     rule_units, rule_gates, on_summaries_ready,
 ) -> list[CodeNode]:
     """배치 형제들을 관심사별로 한 번 분석하고 모델 품질 finding은 격리한다."""
@@ -464,7 +463,6 @@ async def _analyze_batch(
                 contexts=contexts,
                 code_by_id=code_by_id,
                 cost_budget=cost_budget,
-                codebase_notes=codebase_notes,
                 table_descriptions=table_descriptions,
                 source_cache=source_cache,
                 llm_slots=llm_slots,
@@ -525,7 +523,6 @@ async def _analyze_batch(
                     contexts=contexts,
                     code_by_id=code_by_id,
                     cost_budget=cost_budget,
-                    codebase_notes=codebase_notes,
                     table_descriptions=table_descriptions,
                     source_cache=source_cache,
                     llm_slots=llm_slots,
@@ -607,7 +604,6 @@ async def _collect_keyed_concern(
     contexts,
     code_by_id,
     cost_budget,
-    codebase_notes,
     table_descriptions,
     source_cache,
     llm_slots,
@@ -627,7 +623,7 @@ async def _collect_keyed_concern(
 
         kwargs["body_fn"] = _exact_numbered_body
     values, _ = _build_batch_values(
-        Batch(parent_id, tuple(node_ids)), contexts, code_by_id, codebase_notes,
+        Batch(parent_id, tuple(node_ids)), contexts, code_by_id,
         table_descriptions, source_cache,
         **kwargs,
         include_column_usage=(concern == "insights"),

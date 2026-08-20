@@ -181,7 +181,6 @@ async def run_structured_agent(
         max_calls=max_calls,
         run_dir=run_dir,
         cost_budget=cost_budget,
-        llm_model=llm_model,
         stream_emit=stream_emit,
         tool_messages=TOOL_MESSAGES,
     )

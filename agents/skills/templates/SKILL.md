@@ -48,8 +48,9 @@ ddl_transform:
 
 ## codebase_notes 예시
 
-Scan Agent 가 `ScanResult.codebase_notes` 에 박을 한 단락 예. 이 단락은 함수 분석
-LLM 호출마다 prefix 로 반복 주입되므로 — 핵심 사실만 짧게, 그러나 **op 결정 신호는 반드시**:
+과거 `ScanResult.codebase_notes` 호환·진단 표시에 쓰던 한 단락 예. spec 131 C-016 이후
+다른 LLM의 의미 prompt에는 전달하지 않는다. 의미 계약은 아래 prose가 아니라 구조화된
+`table_access_patterns.op_mappings`와 runtime/API 계약이 소유한다:
 
 > 이 프로젝트는 ``<wrapper>`` 패턴으로 DB 접근. 엔티티 이름은 camelCase 로 코드에
 > 등장하지만 DDL 은 snake_case_upper. 회사 표준 prefix ``T_`` 가 모든 테이블에 붙음.
@@ -57,9 +58,8 @@ LLM 호출마다 prefix 로 반복 주입되므로 — 핵심 사실만 짧게, 
 > **메서드명·SQL_KEY ``<op>`` 토큰이 함수의 DB 작업 종류(SELECT/INSERT/UPDATE/DELETE) 결정**
 > — 정확한 매핑은 ``table_access_patterns.op_mappings`` 와 일치.
 
-★ **op 의미는 codebase_notes 에 명시 필수** — Agent 가 이 단락만 보고 코드 주석에
-끌려 잘못 해석하는 사례 발생. 식별 단서 챕터에 op 의미가 있어도 codebase_notes
-단락에 빠지면 다음 단계 LLM 까지 안 전달됨 (단락은 SKILL 본문이 아닌 1단락 추출이라).
+이 단락은 진단 표시만 담당한다. 다음 단계가 자연어 op 설명에 의존하도록 만들지 말고,
+기계 검증 가능한 `op_mappings`를 완전하게 작성한다.
 
 ## 한계
 

@@ -279,7 +279,6 @@ def _residual_prompt_values(
     return {
         "id": f"residual-round-{round_no}",
         "matched_skill": scan.matched_skill or "(없음)",
-        "codebase_notes": scan.codebase_notes or "(없음)",
         "framework_runtime_functions": (
             ", ".join(scan.framework_runtime_functions) or "(없음)"
         ),

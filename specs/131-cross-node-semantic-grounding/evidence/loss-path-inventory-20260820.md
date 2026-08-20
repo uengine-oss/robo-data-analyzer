@@ -144,7 +144,24 @@
 - 기준 Framework run은 registered skill을 결정론으로 선택해 Scan Agent LLM 0회였고 ExternalChunk도
   0개다. 유일 agent usage인 call-review는 입력 2,928/output 246 token이라 임계 미도달이다.
 - 최초 계열 유입: `ContextEditingMiddleware` `c4363f5`, 현재 stack의 두 middleware는 `30828f7` 계열.
-- 현재 판정: **summary-of-summary 실제 손실 설계, 기준 실행 미발동**.
+- 추가 실제 배선: unknown/custom Scan Agent의 `ScanResult.codebase_notes` 자유문은
+  `agents/residual._residual_prompt_values`를 거쳐 residual LLM에, `step_entry`→Framework per-node/DBMS
+  batch prompt values를 거쳐 step7 LLM에 다시 입력됐다. validator는 제안 regex나 결과 schema를 검사하지만
+  이 자유문의 source/evidence closure를 증명하지 않으므로 중간 LLM 권위 입력이었다.
+- 설치된 LangChain 구현의 실제 값: clear는 50,000 approximate token에서 마지막 ToolMessage 3개만 남기고
+  이전 결과를 `[cleared]`로 바꿨다. summary는 75,000 token에서 기본 마지막 20 messages만 보존하고,
+  요약 LLM 자체 입력도 기본 4,000 token으로 trim한 뒤 앞 대화를 `HumanMessage` 자연어 요약으로 치환했다.
+- red 계약: stack/settings/example env 어디에도 lossy context rewrite 구성요소가 없어야 하며, residual 및
+  Framework/DBMS prompt와 prompt-value producer에 `{codebase_notes}`/`"codebase_notes":`가 없어야 한다.
+  변경 전 middleware 5개 symbol/setting과 residual prompt-value가 실제 red로 실패했다.
+- 구현: context editing/summarization middleware와 설정·문서·runtime model 배선을 제거했다. transcript와
+  tool evidence는 exact하게 유지하며 provider context 초과는 성공으로 위장하지 않고 명시적으로 실패한다.
+  `codebase_notes`는 `ScanResult` 진단 metadata로 남지만 downstream LLM prompt·value·호출 시그니처에서는
+  제거했다. 큰 unknown 탐색의 무손실 partition/completeness는 C-017/C-018로 남는다.
+- 검증: 변경 전 structural red와 residual prompt red를 각각 확인한 뒤 focused 118건 및 전체
+  `1058 passed, 5 skipped`, prompt ledger `17/17 byte-identical`, `git diff --check`를 통과했다. 실제 LLM,
+  분석 run, DB write는 수행하지 않았다.
+- 현재 판정: **실제 손실 설계 제거 완료; 기준 실행에서는 원래 미발동. C-017/C-018 미완을 성공으로 주장하지 않음**.
 
 ### C-017 — unknown external format의 부분 일치를 파일 전체 분석으로 승인
 

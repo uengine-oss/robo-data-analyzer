@@ -8,7 +8,7 @@ plan §4 M2/M3 명시 자체 미들웨어** 를 모두 묶음:
 
 | 출처 | 미들웨어 |
 |---|---|
-| 원본 (LangChain 표준) | TodoListMiddleware / ContextEditingMiddleware / SummarizationMiddleware |
+| 원본 (LangChain 표준) | TodoListMiddleware |
 | 원본 (deepagents) | PatchToolCallsMiddleware |
 | plan + 자체 구현 | TodoTracker / ToolEventEmitter / CostTracking / ModelCallLimit / StripAnthropicCacheControl / StripDynamicSystemPrompt / CacheFriendlyOrder |
 
@@ -49,17 +49,11 @@ https://github.com/langchain-ai/deepagents
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
-from langchain.agents.middleware import (
-    ClearToolUsesEdit,
-    ContextEditingMiddleware,
-    SummarizationMiddleware,
-    TodoListMiddleware,
-)
+from langchain.agents.middleware import TodoListMiddleware
 
-from shared.config.settings import SETTINGS
 from llm.usage.cost_budget import CostBudget
 from agents.middleware.cache_friendly_order import CacheFriendlyOrderMiddleware
 from agents.middleware.call_limit import ModelCallLimitMiddleware
@@ -71,19 +65,11 @@ from agents.middleware.tool_events import ToolEventEmitterMiddleware
 from llm.usage.token_usage import LatencyBasedCacheEstimator
 
 
-# 도구 결과 정리 / 요약 임계 — SETTINGS 단일 진입점.
-# ``ROBO_AGENT_CONTEXT_EDITING_TRIGGER_TOKENS`` (default 80K) = clear trigger.
-# Summarize 는 clear trigger 의 1.5 배 (그보다 위에서 자동 요약 — 사실상 거의 안 걸림).
-# 모델 context window 보다 충분히 작게 잡아야 작동 (qwen3.6-35b 128K → 80K 적정).
-_TOOL_RESULT_KEEP_LAST = 3
-
-
 def build_standard_stack(
     agent_name: str,
     max_calls: int,
     run_dir: Path,
     cost_budget: CostBudget,
-    llm_model: Any,
     stream_emit: Optional[Callable[[dict], None]] = None,
     tool_messages: Optional[dict[str, str]] = None,
     cache_estimator: Optional[LatencyBasedCacheEstimator] = None,
@@ -95,7 +81,6 @@ def build_standard_stack(
         max_calls: 이 Agent 의 LLM 호출 한도.
         run_dir: run 로그 디렉토리 (``logs/``).
         cost_budget: run 1회의 ``CostBudget``.
-        llm_model: ``SummarizationMiddleware`` 가 컨텍스트 요약에 사용할 LLM.
         stream_emit: 프론트 NDJSON 스트림 emit 함수.
         tool_messages: 도구 이름 → 친화 메시지 template.
         cache_estimator: ``cached_tokens`` 안 보이는 환경의 fallback.
@@ -104,21 +89,12 @@ def build_standard_stack(
         미들웨어 인스턴스 list — Agent 정의에 그대로 전달.
     """
     return [
-        # 원본 LangChain 표준 ────────────────────────────────
+        # LangChain 표준 ─────────────────────────────────────
         # write_todos 도구 자동 제공 + state.todos 누적
         TodoListMiddleware(),
-        # 도구 결과 누적 시 정리 — SETTINGS (ROBO_AGENT_CONTEXT_EDITING_TRIGGER_TOKENS) 기반.
-        ContextEditingMiddleware(edits=[
-            ClearToolUsesEdit(
-                trigger=SETTINGS.analysis_agents.context_editing_trigger_tokens,
-                keep=_TOOL_RESULT_KEEP_LAST,
-            ),
-        ]),
-        # 컨텍스트 임계 초과 시 자동 요약 — clear trigger 의 1.5 배.
-        SummarizationMiddleware(
-            model=llm_model,
-            trigger=("tokens", int(SETTINGS.analysis_agents.context_editing_trigger_tokens * 1.5)),
-        ),
+        # 탐색 transcript와 tool evidence는 원문 그대로 보존한다. 컨텍스트 초과는
+        # 명시적 실패로 드러내며, 과거 evidence 삭제/LLM 요약으로 성공처럼 바꾸지 않는다.
+        # 큰 탐색의 무손실 분할·exact-once closure는 spec 131 C-017/C-018 책임이다.
         # deepagents 도구 호출 패치 (LangChain create_agent 와 도구 호출 호환)
         PatchToolCallsMiddleware(),
 

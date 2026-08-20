@@ -38,7 +38,7 @@ class ModelSourceFidelityContractTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             source_text, node, context = self._target(directory)
             values, _inventory = _build_user_values(
-                context, node, {node.id: context}, {node.id: node}, "", {},
+                context, node, {node.id: context}, {node.id: node}, {},
                 SourceFileCache(),
             )
 
@@ -51,7 +51,7 @@ class ModelSourceFidelityContractTest(unittest.TestCase):
             source_text, node, context = self._target(directory)
             values, _mapping = _build_batch_values(
                 Batch(None, (node.id,)), {node.id: context}, {node.id: node},
-                "", {}, SourceFileCache(),
+                {}, SourceFileCache(),
             )
 
         for line in source_text.splitlines():

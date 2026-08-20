@@ -63,7 +63,7 @@ class StructuralLeafSummaryTest(unittest.IsolatedAsyncioTestCase):
             result = await _analyze_batch(
                 Batch(parent_id=None, node_ids=tuple(node.id for node in nodes)),
                 contexts, code_by_id, strategy,
-                None, "", {}, mock.Mock(), PrioritySemaphore(64),
+                None, {}, mock.Mock(), PrioritySemaphore(64),
                 set(), set(), mock.Mock(),
             )
 

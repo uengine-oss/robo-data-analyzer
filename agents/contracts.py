@@ -298,15 +298,13 @@ class ScanResult(StrictAgentOutput):
     # ``call_classifier`` 가 wrapper 호출을 만나면 인자를 추출해 Calls 엣지로 정합.
     call_wrappers: list[CallWrapper] = Field(default_factory=list)
 
-    # 분석용 텍스트 (step7_analyze_code 컨텍스트 + 잔여 패턴 루프 prefix)
+    # 호환·진단 metadata. downstream LLM 의미 입력으로 사용하지 않는다 (spec 131 C-016).
     codebase_notes: str = Field(
         "",
         description=(
-            "프로젝트 성격 / wrapper / 명명 컨벤션 + op 결정 신호 1단락. "
-            "함수 분석 LLM 호출마다 prefix 로 주입되므로 짧고 정확해야 한다. "
-            "★ op_mappings 의 token→표준 SQL op (SELECT/INSERT/UPDATE/DELETE) 매핑을 "
-            "1줄로 풀어 반드시 포함 (예: 'SQL_KEY <op>: s=SELECT, i=INSERT...'). "
-            "누락 시 함수 분석 LLM 이 코드 주석에 끌려 op 를 잘못 해석."
+            "과거 프로젝트 성격 / wrapper / 명명 convention 진단 1단락. "
+            "구조화·검증된 table_access_patterns와 API/runtime 계약만 downstream 의미를 소유하며, "
+            "이 자유문은 다른 LLM prompt에 전달되지 않는다."
         ),
     )
 

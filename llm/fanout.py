@@ -2,7 +2,7 @@
 
 병렬 LLM 배치(함수 분석·모듈 요약 등)를 cold 상태에서 한꺼번에 보내면 —
 서버의 prefix 캐시(RadixAttention 등)가 **전부 미스**한다. 아직 공유 prefix
-(system 프롬프트·codebase_notes 등)를 캐시에 올린 요청이 하나도 없기 때문이다.
+(system 프롬프트 등)를 캐시에 올린 요청이 하나도 없기 때문이다.
 
 해결 = **"1건 워밍 → 나머지 병렬"**: 첫 작업 하나를 단독 실행해 공유 prefix 를
 캐시에 올린 뒤, 나머지를 병렬로 보낸다. 나머지는 그 prefix 에 적중한다.
@@ -20,7 +20,7 @@ async def gather_with_warmup(coros: Iterable) -> list:
     """첫 1건으로 prefix 캐시를 데운 뒤 나머지를 병렬 실행 → 결과 list.
 
     ``coros`` 는 prefix 를 공유하는 LLM 작업들 (보통 같은 yaml rule 을 여러 대상에
-    적용). 첫 작업이 system·codebase_notes 같은 공유 prefix 를 캐시에 올리면 —
+    적용). 첫 작업이 system 같은 공유 prefix 를 캐시에 올리면 —
     나머지 병렬 작업이 그 캐시에 적중한다.
 
     동시성 상한은 각 coro 안의 ``Semaphore`` 가 책임진다 (이 헬퍼는 워밍 순서만 관여).
