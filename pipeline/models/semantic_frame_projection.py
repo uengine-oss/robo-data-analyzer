@@ -17,6 +17,7 @@ _SUMMARY_ROLE_ORDER = {
         for index, role in enumerate(FUNCTION_SUMMARY_ROLES)
     },
     ("STATEMENT", "DIRECT_ACTION"): 0,
+    ("CALL", "PURPOSE"): 0,
 }
 
 

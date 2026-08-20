@@ -177,7 +177,8 @@ def _summary_batch_values(profile, batch_specs, common: dict) -> dict:
     source_lines = source_text.split("\n") if source_text else []
     target_start = max(int(profile.target.start_line), 1)
     owns_whole_target = any(
-        spec.family == "FUNCTION" and spec.role == "RESPONSIBILITY"
+        (spec.family == "FUNCTION" and spec.role == "RESPONSIBILITY")
+        or spec.family in {"STATEMENT", "CALL"}
         for spec in specs
     )
     if owns_whole_target:
@@ -274,11 +275,14 @@ async def _run_bounded_frame_summary(
         spec for spec in slot_specs
         if spec.family == "FUNCTION" and spec.role == "RESPONSIBILITY"
     )
-    if len(stereotype_owners) != 1:
+    if len(stereotype_owners) > 1:
         raise ValueError(
-            "summary stereotype requires exactly one FUNCTION.RESPONSIBILITY owner"
+            "summary stereotype has multiple FUNCTION.RESPONSIBILITY owners"
         )
-    stereotype_owner_id = stereotype_owners[0].slot_id
+    stereotype_owner_id = (
+        stereotype_owners[0].slot_id
+        if stereotype_owners else tuple(slot_specs)[0].slot_id
+    )
 
     async def _collect(batch_specs, batch_label):
         owns_stereotype = any(

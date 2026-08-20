@@ -1,0 +1,53 @@
+## DBMS single effective-AST node — exact evidence-closure semantic fragments.
+extends: ../framework/_common
+max_tokens: 6000
+shared_values:
+  semantic_frame_contract: ../common/semantic_frame_contract.md
+  function_summary_contract: ../common/function_summary_contract.md
+user_template_specific: |
+  # [TASK — effective AST TARGET의 assigned semantic slot 의미와 충분성]
+
+  parser/linker가 미리 지정한 각 slot에 현재 DBMS CodeNode가 직접 소유한 입증된 의미만 채운다.
+  자유형 summary나 question을 별도로 만들지 않는다. legacy 필드는 검증된 frame에서 투영한다.
+
+  {semantic_frame_contract}
+
+  {function_summary_contract}
+
+  ## [OUTPUT CONTRACT — exact node fragment]
+
+  최상위에는 response_format이 required로 지정한 필드만 출력한다. `slots`는 exact key map이다.
+  `stereotype`은 target 단위 owner fragment의 response_format에 있을 때만 출력한다.
+
+  ## [DECISION — DBMS stereotype]
+
+  response_format에 `stereotype`이 있을 때만 아래 ontology 값 중 effective AST target의 최종 관측
+  책임에 맞는 하나를 선택한다:
+  {stereotype_options}
+
+  둘 이상이면 다음 우선순위를 적용한다:
+  {stereotype_priority}
+
+  - 부수 SELECT·DML·검증 하나가 아니라 현재 node 범위의 최종 책임을 본다.
+  - 상태 변경 없는 조회 결과가 산출물이면 `DataQuery`, DML 상태 변경이면 `DataMutator`다.
+  - 코드·마스터·설정 조회 자체가 목적이면 `MetadataLookup`, 허용/정합 판정이면 `Validator`다.
+  - 다수 행 일괄 처리가 골격이면 `BatchProcessor`, 커서 순회·행별 위임이 골격이면 `CursorLooper`다.
+
+  ## [SELF CHECK]
+
+  - required slot을 전부 정확히 한 번 썼는가
+  - 각 meaning은 assigned evidence refs와 exact SOURCE line만 설명하는가
+  - stereotype이 요구된 fragment에서만 한 번 출력했는가
+
+user_template_evidence: |
+  # [FRAME ASSIGNMENT]
+
+  structural_profile_json:
+  {structural_profile}
+
+  applicable_slots_json:
+  {applicable_slots}
+
+  # [ASSIGNED CONTROL/RULE FACTS]
+
+  {branch_index}

@@ -33,6 +33,10 @@ from pipeline.steps.step7_analyze_code.batch_prompt_values import (
     build_table_insight_batch_values,
 )
 from pipeline.steps.step7_analyze_code.batch_node_identity import batch_node_keys
+from pipeline.steps.step7_analyze_code.range_body import raw_body_for
+from pipeline.steps.step7_analyze_code.three_split_llm_fanout import (
+    _run_bounded_frame_summary,
+)
 from pipeline.languages import ROUTINE_LABELS
 from pipeline.steps.step7_analyze_code.rw_table_filter import (
     serialize_rules,
@@ -59,10 +63,6 @@ from pipeline.models.code_analysis_output import (
 from pipeline.models.table_insight_response_schema import (
     batch_frame_table_insights_response_model,
     normalize_batch_frame_table_insights_response,
-)
-from pipeline.models.summary_response_schema import (
-    batch_frame_summary_response_model,
-    normalize_batch_frame_summary_response,
 )
 from pipeline.steps.step7_analyze_code.rule_row_batching import (
     materialize_and_validate_rules,
@@ -462,7 +462,7 @@ async def _analyze_batch(
                 parent_id=batch.parent_id,
                 node_ids=node_ids,
                 concern="summary",
-                rule_name="code_summary_batch",
+                rule_name="code_summary_node",
                 response_model=BatchSummaryOutput,
                 prompts_dir=prompts_dir,
                 contexts=contexts,
@@ -624,26 +624,85 @@ async def _collect_keyed_concern(
     """DBMS 키 봉투를 한 번 호출하고 결정론 키 불변식 위반은 실패시킨다."""
     expected = _expected_keys(node_ids, contexts)
     kwargs = {"body_fn": body_fn} if body_fn is not None else {}
+    if concern == "summary" and body_fn is None:
+        # Planning still shares the established inventory builder, but its discarded
+        # compatibility envelope must not compact child source into model prose.
+        def _exact_numbered_body(context, _contexts, cache):
+            return cache.excerpt(
+                context.file_path, context.start_line, context.end_line,
+            ).numbered_text
+
+        kwargs["body_fn"] = _exact_numbered_body
     values, _ = _build_batch_values(
         Batch(parent_id, tuple(node_ids)), contexts, code_by_id, codebase_notes,
         module_intents, table_descriptions, source_cache,
         **kwargs,
         include_column_usage=(concern == "insights"),
     )
+    if concern == "summary":
+        accepted: dict[str, Any] = {}
+        for node_id in node_ids:
+            context = contexts[node_id]
+            profile, _all_specs, concerns = context.extra["_semantic_frame_plan"]
+            slot_specs = concerns["summary"]
+            excerpt = source_cache.excerpt(
+                context.file_path, context.start_line, context.end_line,
+            )
+            common = {
+                "raw_code_body": raw_body_for(context, contexts, source_cache),
+                "source_status": excerpt.status,
+                "coordinate_system": excerpt.coordinate_system,
+            }
+            inventory = build_control_inventory(
+                code_by_id[node_id], context, source_cache,
+            )
+            context.extra["summary_comparison_evidence"] = "\n".join((
+                common["raw_code_body"], inventory.branch_index(),
+                code_by_id[node_id].expression or "",
+            ))
+
+            async def _invoke(fragment_values, fragment_model, batch_label):
+                queued_at = time.monotonic()
+                waiting_before = llm_slots.waiting
+                async with llm_slots.at(SUMMARY_WAKE_PRIORITY, SUMMARY_LANE):
+                    log_info(
+                        _STEP,
+                        "llm_slot_acquired",
+                        concern="summary",
+                        lane=SUMMARY_LANE,
+                        parent_id=parent_id,
+                        node_count=1,
+                        node_id=node_id,
+                        fragment=batch_label,
+                        priority=SUMMARY_WAKE_PRIORITY,
+                        payload_chars=sum(
+                            len(str(value)) for value in fragment_values.values()
+                        ),
+                        queue_wait_ms=round((time.monotonic() - queued_at) * 1000, 3),
+                        waiting_before=waiting_before,
+                        slots_in_use=llm_slots.in_use,
+                        slots_capacity=llm_slots.capacity,
+                    )
+                    return await run_yaml_rule(
+                        prompts_dir=prompts_dir,
+                        rule_name="code_summary_node",
+                        user_values=fragment_values,
+                        response_model=fragment_model,
+                        budget=cost_budget,
+                    )
+
+            accepted[node_id] = await _run_bounded_frame_summary(
+                profile=profile,
+                slot_specs=slot_specs,
+                strategy_name=strategy_name,
+                common=common,
+                invoke=_invoke,
+            )
+        return accepted
+
     insight_assignments = None
     effective_response_model = response_model
-    if concern == "summary":
-        frame_assignments = {
-            node_key: (
-                contexts[node_id].extra["_semantic_frame_plan"][0],
-                contexts[node_id].extra["_semantic_frame_plan"][2]["summary"],
-            )
-            for node_key, node_id in expected.items()
-        }
-        effective_response_model = batch_frame_summary_response_model(
-            strategy_name, frame_assignments,
-        )
-    elif concern == "insights":
+    if concern == "insights":
         insight_assignments = {}
         for node_key, node_id in expected.items():
             ctx = contexts[node_id]
@@ -701,9 +760,7 @@ async def _collect_keyed_concern(
             response_model=effective_response_model,
             budget=cost_budget,
         )
-    if concern == "summary":
-        output = normalize_batch_frame_summary_response(output, frame_assignments)
-    elif insight_assignments is not None:
+    if insight_assignments is not None:
         output = normalize_batch_frame_table_insights_response(
             output, insight_assignments,
         )
@@ -831,7 +888,7 @@ def _apply_batch_summary(
             target_id=fn.id,
             reasons=tuple(summary.missing_context),
             candidate=summary.model_dump(),
-            evidence_rule="code_summary_batch",
+            evidence_rule="code_summary_node",
         )
     summary_text = normalize_canonical_summary(summary.summary)
     copied_from = copied_callee_summary_id(
@@ -865,7 +922,7 @@ def _apply_batch_summary(
                 "summary": summary_text,
                 "copied_callee_id": copied_from,
             },
-            evidence_rule="code_summary_batch",
+            evidence_rule="code_summary_node",
         )
     missing_identities = missing_structural_summary_identities(summary_text, fn)
     if missing_identities:
@@ -889,7 +946,7 @@ def _apply_batch_summary(
                 "summary": summary_text,
                 "missing_structural_identities": list(missing_identities),
             },
-            evidence_rule="code_summary_batch",
+            evidence_rule="code_summary_node",
         )
     unsupported_comparisons = unsupported_code_comparison_claims(
         summary_text, evidence_text, ctx.referenced_symbols,
@@ -915,7 +972,7 @@ def _apply_batch_summary(
                 "summary": summary_text,
                 "unsupported_code_comparisons": list(unsupported_comparisons),
             },
-            evidence_rule="code_summary_batch",
+            evidence_rule="code_summary_node",
         )
     stereotype, violation = exclude_contradicted_stereotype(
         require_stereotype(summary.stereotype, strategy.name),
@@ -944,7 +1001,7 @@ def _apply_batch_summary(
             target_id=fn.id,
             reasons=tuple(reasons),
             candidate=summary.model_dump(),
-            evidence_rule="code_summary_batch",
+            evidence_rule="code_summary_node",
         )
     if not violation:
         return None
@@ -954,7 +1011,7 @@ def _apply_batch_summary(
         target_id=fn.id,
         reasons=(violation,),
         candidate={"stereotype": summary.stereotype},
-        evidence_rule="code_summary_batch",
+        evidence_rule="code_summary_node",
     )
 
 

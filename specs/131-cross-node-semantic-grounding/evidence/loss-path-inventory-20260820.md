@@ -425,3 +425,23 @@
   아직 사용하므로 C-005/C-009의 DBMS closure는 다음 슬라이스이며 완료로 판정하지 않는다.
 - step7 전체 회귀는 `212 passed, 114 subtests passed`, pipeline 전체+MCP 집중 회귀는
   `793 passed, 1 skipped, 286 subtests passed`; graph/DB 변경은 0이다.
+
+### 2026-08-20 DBMS effective-AST exact fragment 전환
+
+- DBMS summary runtime은 여러 node의 source와 slot을 한 `code_summary_batch` 자연어 envelope로 보내는
+  경로를 더 이상 호출하지 않는다. scheduler batch 안에서도 effective AST CodeNode가 각각 자기
+  canonical plan과 raw source를 `_run_bounded_frame_summary`에 넘기며, 1,500-token variable closure
+  분할과 canonical ID merge 계약을 Framework와 공유한다.
+- 새 `code_summary_node` prompt는 DBMS ontology를 사용하지만 입력 envelope는 reversible
+  `source-closure/v1`, assigned profile/slot, assigned CONTROL/RULE/CALL fact만 받는다. module intent,
+  callee summary, codebase notes, compact child summary는 실제 호출 값에서 제거했다.
+- `STATEMENT.DIRECT_ACTION`과 `CALL.PURPOSE` 같은 non-routine effective AST도 첫 canonical slot이
+  stereotype owner가 되고, legacy summary projection은 CALL.PURPOSE를 보존한다.
+- DBMS CALL fixture `do_work('A\\tB')`에서 prompt line text가 원문과 동일하고
+  `QUOTED_LITERAL` 비가역 marker가 없으며 parsed→frame→summary까지 닫힘을 검증했다. 기존 batch
+  missing-key test는 single-node required-slot schema failure test로 전환했다.
+- planning 호환 envelope가 실제 prompt와 무관하게 child compaction을 실행하지 않도록 exact numbered
+  body를 주입하고, 비교 validator도 full raw source+branch index를 사용한다.
+- 집중 회귀는 `49 passed, 6 subtests passed`, step7 전체는 `213 passed, 115 subtests passed`,
+  pipeline 전체+MCP는 `794 passed, 1 skipped, 290 subtests passed`다. prompt hash baseline은 의도된
+  25개 파일로 갱신 후 byte-identical 검사 통과. graph/DB 변경은 0이다.

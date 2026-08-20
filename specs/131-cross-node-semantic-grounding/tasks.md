@@ -23,11 +23,12 @@
 - [ ] A131-04 계약·실패/경계/과대 입력 red test 고정 후 책임 슬라이스별 근본 구현·검증·commit/push
   - [x] A131-04a F-001/C-001/C-002 및 동일 canonical diagnostic leaf의 문자·항목 상한 제거,
     red→green과 step7/schema/API 집중 회귀 검증
-  - [ ] A131-04b FUNCTION role taxonomy와 evidence-anchor obligation slot 분리, exact source/evidence
+  - [x] A131-04b FUNCTION role taxonomy와 evidence-anchor obligation slot 분리, exact source/evidence
     closure call 및 canonical ID exact-once merge
     - [x] A131-04b-FW 공통 planner evidence-anchor 귀속, Framework token-derived exact closure 분할,
       source-order projection, length/deadline/repetition exact-once merge
-    - [ ] A131-04b-DBMS 기존 node batch envelope를 exact source/evidence fragment batch로 교체
+    - [x] A131-04b-DBMS 기존 node batch envelope를 effective AST CodeNode별 exact
+      source/evidence fragment runner로 교체
   - [ ] A131-04c 중간 prose 권위 입력·source literal 비가역 projection·SCC dependency 누락 제거
   - [ ] A131-04d source/AST/diagnostic closure와 completed generation 원자 publish/consumer guard
 - [ ] A131-05 자동 회귀·결정론 전수 회계·봉인 직접 의미 판정 3층 완료

@@ -148,7 +148,9 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
 4. 완료(Framework): FUNCTION taxonomy를 evidence-anchor obligation slot으로 분리하고, Framework
    call별 exact profile/source closure, token-derived 분할, source-order/canonical ID exact-once merge를
    red→green으로 고정했다. 파생 module/callee/codebase prose도 Framework 권위 packet에서 제거했다.
-5. 현재(DBMS): 같은 planner의 다수 obligation을 기존 node batch/compacted child prose에 싣는 경로를
-   exact source/evidence fragment batch로 교체한다. 이 단계 전에는 A131-04b 완료를 주장하지 않는다.
-6. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
-7. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.
+5. 완료(DBMS): effective AST CodeNode별 exact source/evidence fragment runner로 교체했고 CALL을 포함한
+   non-routine owner와 full-source comparison validator를 고정했다. A131-04b는 완료했다.
+6. 현재: Framework/DBMS summary 밖에 남은 module/aggregate prose handoff, SCC unavailable dependency,
+   external evidence/source literal projection을 C-003/C-009/C-010/C-016/C-022/C-030 순으로 제거한다.
+7. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
+8. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.

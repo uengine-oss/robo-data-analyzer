@@ -2,6 +2,7 @@
 """모델 품질 finding은 격리·표면화하고 운영/schema 호출 경계는 명시 전파한다."""
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -317,7 +318,7 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({"a"}, set(accepted))
         self.assertEqual(set(), unresolved)
 
-    async def test_missing_key_fails_in_schema_after_one_model_call(self) -> None:
+    async def test_missing_fragment_slot_fails_in_schema_after_one_model_call(self) -> None:
         contexts = {
             "a": AnalysisContext(id="a", signature="a", file_path="x.sql", start_line=1, end_line=2),
             "b": AnalysisContext(id="b", signature="b", file_path="x.sql", start_line=3, end_line=4),
@@ -339,13 +340,9 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
                 profile, specs, semantic_concern_slots(specs),
             )
         async def invalid_output(*, response_model, **_kwargs):
-            item_type = response_model.model_fields["nodes"].annotation.model_fields["1-2"].annotation
             return response_model.model_validate({
-                "nodes": {
-                    "1-2": _frame_wire_payload(
-                        item_type, meaning="a", stereotype="Helper",
-                    ),
-                },
+                "slots": {},
+                "stereotype": "Helper",
             })
         with (
             patch(
@@ -376,6 +373,75 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
                     strategy_name="dbms",
                 )
         self.assertEqual(1, run.await_count)
+
+    async def test_dbms_call_node_uses_exact_single_node_source_closure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "call.sql"
+            source_text = "do_work('A\\tB');"
+            source.write_text(source_text, encoding="utf-8", newline="")
+            node = CodeNode(
+                id="call", signature="do_work('A\\tB')", file_path=str(source),
+                start_line=1, end_line=1, label="CALL", name="do_work",
+            )
+            context = AnalysisContext(
+                id=node.id, signature=node.signature, file_path=node.file_path,
+                start_line=1, end_line=1,
+            )
+            context.extra["ast_statements"] = ()
+            context.extra["ast_call_lines"] = ()
+            profile, specs = build_code_semantic_plan(node, context)
+            context.extra["_semantic_frame_plan"] = (
+                profile, specs, semantic_concern_slots(specs),
+            )
+
+            async def valid_output(*, rule_name, user_values, response_model, **_kwargs):
+                self.assertEqual("code_summary_node", rule_name)
+                packet = json.loads(user_values["code_body"])
+                self.assertEqual([{"line": 1, "text": source_text}], packet["lines"])
+                self.assertNotIn("QUOTED_LITERAL", user_values["code_body"])
+                bindings = dict(response_model.__semantic_slot_bindings__)
+                return response_model.model_validate({
+                    "slots": {
+                        wire_id: {
+                            "meaning": "'A\\tB'를 do_work에 전달해 호출한다",
+                            "status": "sufficient",
+                            "missing_context": [],
+                        }
+                        for wire_id in bindings
+                    },
+                    "stereotype": "Helper",
+                })
+
+            with (
+                patch(
+                    "pipeline.steps.step7_analyze_code.batch_analyze._build_batch_values",
+                    return_value=({"unit_id": "unit"}, {}),
+                ),
+                patch(
+                    "pipeline.steps.step7_analyze_code.batch_analyze.run_yaml_rule",
+                    side_effect=valid_output,
+                ) as run,
+            ):
+                result = await _collect_keyed_concern(
+                    parent_id=None,
+                    node_ids=[node.id],
+                    concern="summary",
+                    rule_name="code_summary_batch",
+                    response_model=BatchSummaryOutput,
+                    prompts_dir=Path("llm/prompts/dbms"),
+                    contexts={node.id: context},
+                    code_by_id={node.id: node},
+                    cost_budget=None,
+                    codebase_notes="derived notes",
+                    module_intents={"": "derived intent"},
+                    table_descriptions={},
+                    source_cache=SourceFileCache(),
+                    llm_slots=PrioritySemaphore(1),
+                    strategy_name="dbms",
+                )
+
+            self.assertEqual(1, run.await_count)
+            self.assertIn("do_work", result[node.id].summary)
 
     async def test_missing_deterministic_rule_is_a_fatal_invariant(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
