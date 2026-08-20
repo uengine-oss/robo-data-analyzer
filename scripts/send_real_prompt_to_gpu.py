@@ -537,30 +537,6 @@ def cmd_replay(args: argparse.Namespace) -> None:
             f"replay_user_sha256={current_sha256}"
         )
 
-    if args.project_source_literals:
-        from pipeline.steps.step7_analyze_code.model_source_projection import (
-            project_model_source_literals,
-        )
-
-        source_pattern = re.compile(
-            r"(## \[SOURCE\][\s\S]*?```\r?\n)([\s\S]*?)(\r?\n```)",
-        )
-        projected_count = 0
-
-        def _project(match: re.Match[str]) -> str:
-            nonlocal projected_count
-            projected_count += 1
-            return (
-                match.group(1)
-                + project_model_source_literals(match.group(2))
-                + match.group(3)
-            )
-
-        user_content = source_pattern.sub(_project, user_content)
-        if projected_count == 0:
-            raise SystemExit("projection할 [SOURCE] fenced block이 없음")
-        print(f"SOURCE 리터럴 투영: {projected_count}개 fenced block")
-
     response_schema = None if args.no_schema else (
         _current_summary_response_schema(args.rule, user_content)
         if args.current_summary_contract
@@ -923,10 +899,6 @@ def main() -> None:
     p_replay.add_argument(
         "--current-contract", action="store_true",
         help="저장 가변 INPUT은 유지하고 해당 rule의 현재 고정 지시 prefix만 교체",
-    )
-    p_replay.add_argument(
-        "--project-source-literals", action="store_true",
-        help="저장 [SOURCE] code fence에 현재 JSON-safe 리터럴 투영을 적용",
     )
     p_replay.add_argument(
         "--method", choices=("json_schema", "function_calling"),

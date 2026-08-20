@@ -183,7 +183,10 @@
 
 ### C-022/C-023 — model-visible source projection과 UTF-8 ignore
 
-- C-022: summary prompt의 source는 exact raw가 아니라 `project_model_source_literals`를 거친다.
+- C-022 조사 당시 Framework 공통 prompt value와 DBMS 공통 batch precursor의 source는 exact raw가
+  아니라 `project_model_source_literals`를 거쳤다. 이후 exact summary fragment runner는 summary의
+  실제 호출 값을 덮어썼지만 Framework table-insight는 이 공통 값을 그대로 소비했고, 진단 replay에도
+  같은 변환 switch가 남아 있었다.
   quote 종류를 없애고 escape를 설명 문자열로 바꾸므로 서로 다른 raw literal이 같은 projection이 될
   수 있다. AST profile이 보완 근거지만 전체 literal expression 의무가 없고 exact source가 모델에 없다.
   유입 `d498608`.
@@ -194,8 +197,9 @@
   finding 없이 제거한 뒤 source/링커/validator가 같은 손상 문자열을 공유한다. `git blame` 유입
   `30828f7`.
 - 기준 corpus source 23개는 strict UTF-8 decode가 모두 성공해 C-023은 미발동이다. C-022 projection은
-  실제 prompt에 사용됐으나 봉인 의미 판정 전에는 개별 오의미를 주장하지 않는다.
-- 현재 판정: C-022/C-023 모두 **실제 source evidence 손실 설계**.
+  실제 Framework table-insight prompt에 사용됐으나 봉인 의미 판정 전에는 개별 오의미를 주장하지 않는다.
+- 현재 판정: C-022는 아래 책임 슬라이스에서 **해결**, C-023은 **실제 source evidence 손실 설계**로
+  A131-04d source/AST/diagnostic closure에 남긴다.
 
 ### C-024~C-027 — AST/reference/source 경계의 계속 진행
 
@@ -468,3 +472,18 @@
   호출되기 전 실패하는지를 직접 검증한다.
 - 구조 red는 green, step7 전체 `213 passed`, 전체 회귀 `1049 passed, 5 skipped`, prompt hash
   `23/23 byte-identical`이다. 별도 LLM/DB 실행은 0회다.
+
+### 2026-08-20 C-022 source literal 비가역 projection 제거
+
+- 먼저 source의 `"00000000"`, `'\\t'`, SQL doubled quote를 Framework/DBMS 실제 prompt-value
+  producer에 넣고 원문 line text와 marker 부재를 요구했다. 두 producer fixture와 projection 파일·replay
+  switch 부재 fixture가 모두 red였고, 실제 값에서 delimiter와 escape가 설명 marker로 바뀜을 확인했다.
+- 유입 commit은 `d498608`이다. `model_source_projection.py`, production의 두 호출, replay 변환 옵션을
+  삭제했다. 숫자 상한을 늘리거나 새 escape 형식을 만든 것이 아니라 source 변환 계층 자체를 없앴다.
+  Framework/DBMS table-insight prompt에는 번호 prefix 외 literal delimiter·escape가 exact text라는 계약을
+  명시했다. summary fragment의 `source-closure/v1`은 기존처럼 JSON escape만 쓰며 역변환 가능하다.
+- red 3개는 green, step7 `213 passed`, replay script `21 passed`, 전체 `1049 passed, 5 skipped`, prompt
+  hash `23/23 byte-identical`이다. 처음 `discover -s tests`만 사용한 명령은 tests package shadowing으로
+  import error를 냈고, 정본 실행인 `discover -s tests -t .`로 바로잡아 전부 통과했다.
+- LLM/Neo4j 실행은 0회다. 자동 회귀로 전달 byte 계약은 검증했지만 C-022가 과거 봉인 결과에 만든 실제
+  의미 왜곡 건수는 직접 판정 전이므로 `미검증`이다.

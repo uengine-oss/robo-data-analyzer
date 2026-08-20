@@ -89,9 +89,6 @@ from pipeline.execution.analysis_handoff import (
     SUMMARY_WAKE_PRIORITY,
 )
 from pipeline.steps.step7_analyze_code.control_prompt import build_control_inventory
-from pipeline.steps.step7_analyze_code.model_source_projection import (
-    project_model_source_literals,
-)
 from pipeline.steps.step7_analyze_code.branch_audit import (
     persist_branch_table,
     persist_coverage,
@@ -948,7 +945,7 @@ def _build_user_values(
     """
     excerpt = cache.excerpt(ctx.file_path, ctx.start_line, ctx.end_line)
     raw_body = raw_body_for(ctx, contexts, cache)
-    prompt_body = project_model_source_literals(body_for(ctx, contexts, cache))
+    prompt_body = body_for(ctx, contexts, cache)
     inventory = build_control_inventory(fn, ctx, cache)
     # 상태 추적 없이 소스에 직접 쓰인 반환 표현식만 bottom-up 인터페이스로 전달한다.
     ctx.extra["return_expressions"] = sorted(inventory.return_expressions)
@@ -1017,7 +1014,7 @@ def _build_user_values(
         "structural_profile": profile_prompt_json(profile, concerns["summary"]),
         "applicable_slots": slot_specs_json(concerns["summary"]),
         # spec 102: 규칙이 고를 수 있는 근거 분기 후보. 분할 3 템플릿만 참조한다.
-        "branch_index": project_model_source_literals(inventory.branch_index()),
+        "branch_index": inventory.branch_index(),
         # spec 116 §19: SKILL 문서 보증 API 값 계약 — 분할 3 템플릿만 참조한다.
         "api_contracts": (
             json.dumps(

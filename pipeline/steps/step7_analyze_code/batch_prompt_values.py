@@ -17,9 +17,6 @@ from pipeline.steps.step7_analyze_code.control_prompt import (
     build_control_inventory,
     routine_inventory,
 )
-from pipeline.steps.step7_analyze_code.model_source_projection import (
-    project_model_source_literals,
-)
 from pipeline.models.data_object_usage import dump_data_object_usages, exact_direct_table_ids
 from pipeline.models.semantic_frame import profile_prompt_json, slot_specs_json
 from pipeline.steps.step7_analyze_code.semantic_frame_planner import (
@@ -59,7 +56,7 @@ def _build_batch_values(
     for nid in batch.node_ids:
         ctx = contexts[nid]
         key = id_to_key[nid]
-        body = project_model_source_literals(body_fn(ctx, contexts, cache))
+        body = body_fn(ctx, contexts, cache)
         fn = code_by_id[nid]
         inventory = build_control_inventory(fn, ctx, cache)
         if fn.label in ROUTINE_LABELS or "rule_rows" not in ctx.extra:
@@ -147,7 +144,7 @@ def _build_batch_values(
             f"api_contracts_json: "
             f"{json.dumps([dict(item) for item in ctx.extra.get('api_contracts') or ()], ensure_ascii=False, separators=(',', ':'))}\n\n"
             f"#### [CONTROL_FLOW_INDEX]\n"
-            f"{project_model_source_literals(branch_index)}\n\n"
+            f"{branch_index}\n\n"
             f"#### [SOURCE]\n```\n{body}\n```"
         )
     values = {

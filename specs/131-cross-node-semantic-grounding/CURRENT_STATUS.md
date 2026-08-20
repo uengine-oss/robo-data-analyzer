@@ -20,7 +20,7 @@
 
 - Neo4j `127.0.0.1:7687`: 현재 세션에서 인증과 `SHOW DATABASES` 재확인 성공.
   `neo4j|test|framework|dbms|system`만 존재하고 모두 online이다. 허용 목록 밖 DB는 0개다.
-- Analyzer latest verified slice HEAD `86f71a432e4296cdfe7cc915c1ff603b9928061d`; 제품 코드 기준선은
+- Analyzer latest verified slice HEAD `3c9073699c44b397fb36fb0c5754c76d29342d30`; 제품 코드 기준선은
   `c216e674cbac43386f9826632097ca2661395d7d`, 재개 시 dirty 0이었다.
 - Parser HEAD `4b849f14575b6830b82ae5ee980658100c4d8692`, dirty 0.
 - Catalog HEAD `1f1aaa608a3d7ef8b01ce15c3df962cf0f1cfefb`, 기존 dirty 12개가 있다.
@@ -156,7 +156,10 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
 7. 완료(C-010): 잘린 signature에서 intent를 만들던 Framework module pre-analysis producer와 prompt,
    23회 호출 및 `module_intents` 배선을 제거했다. 전체 `1049 passed, 5 skipped`,
    prompt byte baseline 23/23이 통과했다.
-8. 현재: module/component·agent prose handoff, source literal projection, SCC unavailable dependency를
-   C-009/C-016/C-022/C-030 순으로 제거한다.
-9. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
-10. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.
+8. 완료(C-022): quote delimiter·escape를 설명 marker로 바꾸던 비가역 source projection producer와
+   production/replay 호출을 제거했다. Framework/DBMS prompt가 번호 외 source line text를 그대로
+   전달한다는 계약과 반대 fixture를 고정했다. 전체 `1049 passed, 5 skipped`, prompt 23/23이다.
+9. 현재: module/component·agent prose handoff와 SCC unavailable dependency를 C-009/C-016/C-030
+   순으로 제거한다. C-023 strict source decode는 A131-04d closure에서 함께 처리한다.
+10. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
+11. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.

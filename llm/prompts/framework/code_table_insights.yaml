@@ -54,6 +54,7 @@ user_template_evidence: |
   target_linked_external_context_json: {external_evidence}
 
   ## [SOURCE]
+  아래 번호가 붙은 각 source line은 원문 literal delimiter와 escape를 치환하지 않은 exact text다.
   ```
   {code_body}
   ```
