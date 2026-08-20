@@ -194,7 +194,11 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
     generation만 읽는다. red 5/5는 green, failure injection·transaction 테스트 포함 전체
     `1083 passed, 6 skipped`, prompt `17/17`, 실제 Neo4j
     rollback publish 1/1과 composite constraint `EXPLAIN`을 통과했다. 영속 DB 변경은 0이다.
-14. 현재: A131-04e의 남은 구조 closure(C-004/C-017~021/C-024/C-028/C-031)를 실제 producer/consumer와
-    기준 실행 영향으로 다시 좁혀 책임 슬라이스 순서를 확정한다.
-15. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
-16. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.
+14. 완료(C-024): Parser listener가 내는 exact `extendsType/implementsTypes`를 Analyzer Module·Neo4j에
+    보존하고 원문 선언 정규식과 depth 3을 제거했다. generic comma를 보존하는 AST field parser, Java
+    visited-set closure, Python exact C3 MRO로 4-hop/cycle/multiple-interface를 닫았고, invalid C3는 fail-closed한다.
+    `REFERENCES → prompt JSON → SYMBOL evidence`까지 검증했다. 최초 red 2건과 C3 오순서 red 1건은 green이며
+    Analyzer `1089 passed, 6 skipped`, prompt `17/17`, Parser current report `154 passed, 8 skipped`다.
+15. 현재: A131-04e의 남은 구조 closure(C-004/C-017~021/C-028/C-031)를 다음 책임 슬라이스로 좁힌다.
+16. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
+17. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.

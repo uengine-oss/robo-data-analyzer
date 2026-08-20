@@ -416,14 +416,23 @@ def _reference_inheritance_profiles() -> dict[str, dict]:
     extra = set(profiles) - known
     if extra:
         raise ValueError(f"미등록 언어의 reference_inheritance: {sorted(extra)}")
+    allowed_fields = {"extends_type", "implements_types"}
     for lang, profile in profiles.items():
-        if not isinstance(profile, dict) or not str(profile.get("pattern") or "").strip():
-            raise ValueError(f"reference_inheritance.{lang}.pattern 가 필요하다")
+        fields = profile.get("ast_fields") if isinstance(profile, dict) else None
+        if (
+            not isinstance(fields, list)
+            or not fields
+            or any(str(field) not in allowed_fields for field in fields)
+            or len(fields) != len(set(map(str, fields)))
+        ):
+            raise ValueError(
+                f"reference_inheritance.{lang}.ast_fields 가 유효해야 한다"
+            )
     return profiles
 
 
 def reference_inheritance_profile(lang: str) -> dict | None:
-    """Return an explicitly declared inheritance grammar, or None for no such syntax."""
+    """Return declared parser-AST inheritance fields, or None for no such syntax."""
     return _reference_inheritance_profiles().get(lang)
 
 

@@ -220,8 +220,18 @@
 
 ### C-024~C-027 — AST/reference/source 경계의 계속 진행
 
-- C-024: inheritance REFERENCES/INIT_BY 탐색은 ancestor depth 3에서 남은 frontier를 버린다. cycle set과
-  finite module graph가 있는데도 incomplete 상태를 남기지 않는다. 유입 `bc699ee`.
+- C-024: Parser는 Java grammar의 `classExtends/classImplements/interfaceExtends`와 Python
+  `classdef.arglist`를 listener에서 읽어 AST JSON `extendsType/implementsTypes`로 이미 낸다. Parser 유입은
+  Java `48cd05a0`, Python 최초 `04eb7d40`이다. 그러나 Analyzer `_make_module`은 두 필드를 버린 뒤
+  `Module.start_line`의 원문 한 줄을 정규식으로 재파싱한다(`1aef9a3`→`bc699ee`). 따라서 multiline 선언은
+  listener의 정확한 구문 결과가 있어도 부모가 사라질 수 있다. 이어 REFERENCES/INIT_BY 조상 탐색은
+  ancestor depth 3에서 남은 frontier를 상태 없이 버린다. cycle set과 finite module graph가 있는데도
+  incomplete 상태를 남기지 않는다. 깊이 상한·재파싱 유입은 `bc699ee`.
+- 빠진 조상 `REFERENCES/INIT_BY`는 step6 `referenced_symbols`에서 사라져 Framework 실제 prompt의
+  `target_referenced_symbol_definitions_json`과 semantic-frame planner의 `SYMBOL` evidence obligation에
+  모두 들어가지 않는다. LLM raw/parsed와 validator는 이 부재를 관찰할 수 없고, Neo4j relationship 및
+  API/MCP/search consumer에도 복구할 원천이 없다. 현재 봉인 Framework C corpus에는 Java/Python 상속이
+  없어 기준 run에서는 미발동이지만 지원 언어에서는 실제 semantic loss다.
 - C-025: 손상/비객체 AST JSON은 `read_antlr_json`이 빈 `ParseResult`로 바꿔 해당 파일 노드를 0개로
   만들고 run은 계속한다. `parsed_files`는 호출 횟수로 증가해 성공 회계에서도 구분되지 않는다.
   최초 계열 유입 `1d0a504`.
@@ -231,9 +241,34 @@
   보기는 하지만 slot을 자동 insufficient로 내리거나 finding으로 연결하는 validator 계약이 없다.
 - 기준 Framework log에는 read_antlr_json/unknown/source_read/code_text/path fallback 관련 event가 모두
   0건이다.
-- 현재 판정: C-024는 후속 exact graph closure에 남는다. C-025/C-026/C-027은
+- 현재 판정: C-024는 **실제 의미 손실**이며 listener AST 필드 보존·소비와 finite internal inheritance
+  graph의 cycle-safe 무상한 closure 계약으로 진행한다. C-025/C-026/C-027은
   A131-04d-CLOSURE에서 **해결**: malformed AST, unknown ontology wrapper, source read/decode 실패는
   정상 semantic population을 publish하지 않고 run 전체를 fail-closed한다.
+- C-024 초기 red(2026-08-20): 기존 상속 회귀 5건은 통과한 채 새 계약 2건만 실패했다.
+  `test_parser_owned_inheritance_fields_survive_ast_module_conversion`은 Parser AST의 exact
+  `extendsType/implementsTypes`가 `Module`에 없음을, `test_listener_ast_closes_ancestor_beyond_three_hops_without_source_reparse`는
+  원문 재파싱 단서 없이 listener AST로만 준 4-hop 조상이 연결되지 않음을 각각 재현했다.
+- C-024 추가 red: 임의 depth를 제거한 단순 BFS도 Python C3 MRO와 다르다. `Child(Left, Right)`와
+  `Left(Root)`에서 `Root.POLICY`와 `Right.POLICY`가 함께 있을 때 Python의 exact MRO는 Root를 선택하지만
+  BFS 구현은 Right를 연결했다. `test_python_multiple_inheritance_uses_exact_c3_mro_not_breadth_first`가
+  기대 `Root.POLICY`, 실제 `Right.POLICY`로 1 failure를 재현했다.
+- C-024 해결(2026-08-20): Analyzer `Module`이 listener AST의 exact `extendsType/implementsTypes`를
+  `extends_type/implements_types`로 보존하고 Neo4j에도 저장한다. inheritance resolver는 원문 선언 정규식을
+  완전히 제거하고 ontology가 지정한 AST field만 읽는다. generic/call 내부 comma를 깨지 않는 top-level
+  분리와 정규화된 단독 내부 후보만 사용한다. Java finite parent graph는 visited set으로 frontier가
+  없어질 때까지 전수 closure하고, Python 다중상속은 exact C3 linearization을 적용하며 cycle/inconsistent
+  hierarchy는 fail-closed한다. 임의 depth와 summary handoff는 없다.
+- 4-hop 조상 상수는 `REFERENCES → referenced_symbols JSON → semantic-frame SYMBOL evidence`까지 한 계약
+  테스트에서 닫혔다. generic type argument의 comma, multiple interface, 상속 cycle, own-field shadowing,
+  ambiguous parent 거부와 Python C3 오순서·inconsistent hierarchy도 green이다. Analyzer 전체
+  **1089 tests / 6 skipped**, prompt ledger **17/17**,
+  `git diff --check`를 통과했다. Parser는 제품 파일 변경 없이 현 HEAD `4b849f1`의 이번 Maven report
+  **154 tests / 0 failures / 0 errors / 8 skipped**를 통과했다. surefire 디렉터리의 2026-08-12
+  `Spec131ExactReturnProbeTest` failure XML 1개는 이번 실행에서 갱신되지 않은 stale report라 현재 실행 합계에서
+  제외했다.
+- 현재 판정: C-024 **해결**. 봉인 C corpus에는 상속 경로가 없어 실제 Framework run 의미 변화는 없으며,
+  Java/Python synthetic exact-source 계약으로 직접 경로를 검증했다.
 - A131-04d 초기 red(2026-08-20): supported source의 AST/diagnostic 누락, stale source SHA,
   non-EXACT parser diagnostic, invalid UTF-8 source, malformed AST JSON, ontology unknown container를
   각각 반례로 고정했다. 변경 전 `8 tests` 중 기존 자식 보존 계약 2건만 통과하고 위 6건은 모두

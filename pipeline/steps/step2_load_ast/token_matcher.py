@@ -18,9 +18,9 @@ Variable/Constant 이름과 매칭한다. LLM 0회 — 순수 결정론.
 
 오탐 차단: 주석·문자열 리터럴 제거 후 식별자 토큰 단위 정확 일치. import 로 범위를
 좁히므로 동명이인(타 모듈 같은 이름)을 오연결하지 않는다.
-상속 조상 매칭 (spec 111): Java ``extends``/``implements``·Python ``class B(A)`` 선언을
-ontology의 import profile로 선언을 파싱해 조상 모듈의 필드/상수까지 맨이름 매칭 (자기 모듈
-우선 섀도잉, 깊이 상한, 단독 후보만 — 과대근사 금지).
+상속 조상 매칭 (spec 111): Java ``extends``/``implements``·Python ``class B(A)``를
+Parser listener AST 필드에서 읽어 조상 모듈의 필드/상수까지 맨이름 매칭 (자기 모듈
+우선 섀도잉, finite graph cycle-safe 전수 closure, 단독 후보만 — 과대근사 금지).
 ※ 못 잡는 것(설계상 범위, silent fail 아님): Python 인스턴스 속성 접근
   (``self._cfg.x`` — 선언 없는 속성은 Variable 노드 자체가 없음, 타입 추론 필요).
 """
@@ -42,8 +42,6 @@ from pipeline.languages import (
 )
 from pipeline.quality_gates.lexing import split_source, without_string_literals
 from shared.files.cache import SourceFileCache
-
-_INHERIT_DEPTH = 3                          # 조상 탐색 상한 — 순환·폭주 차단
 
 # module_id → {식별자 이름: [(node_id, 라벨)]}
 _Targets = dict[str, dict[str, list[tuple[str, str]]]]
@@ -97,7 +95,7 @@ async def link_references(
     modules_by_file, basename_index = _file_indexes(variables, constants)
     scopes = _build_scopes(import_refs, targets, modules_by_file, basename_index)
     cache = source_cache or SourceFileCache()
-    ancestors = _ancestor_map(list(modules), scopes, cache)
+    ancestors = _ancestor_map(list(modules), scopes)
     if checkpoint is not None:
         await checkpoint()
     return (
@@ -112,16 +110,19 @@ async def link_references(
 
 
 def _ancestor_map(
-    modules: list[Module], scopes: dict[str, "_Scope"], cache: SourceFileCache,
+    modules: list[Module], scopes: dict[str, "_Scope"],
 ) -> dict[str, list[str]]:
-    """module_id → 조상 module_id 목록 (가까운 순, 깊이 상한).
+    """module_id → every reachable internal ancestor (nearest-first, cycle-safe).
 
     부모 해소 순서 = 같은 파일의 동명 모듈 → import 소유자 맵의 **단독** 후보.
     복수 후보·미발견은 포기 (과대근사 금지). C 등 명단 밖 언어는 자연히 빈 맵.
+    Parent syntax is owned by Parser listener AST fields; Analyzer never reparses a source line.
     """
     by_name_in_file: dict[tuple[str, str], list[str]] = defaultdict(list)
+    lang_by_id: dict[str, str] = {}
     for m in modules:
         by_name_in_file[(m.file_path, m.name)].append(m.id)
+        lang_by_id[m.id] = lang_of(Path(m.file_path).suffix)
 
     parents: dict[str, list[str]] = {}
     for m in modules:
@@ -129,30 +130,8 @@ def _ancestor_map(
         profile = reference_inheritance_profile(lang)
         if profile is None:
             continue
-        decl_re = re.compile(str(profile["pattern"]))
-        # 원문 주입(step2 후반)보다 먼저 호출되므로 캐시에서 선언 라인을 직접 읽는다.
-        lines = cache.lines(m.file_path)
-        idx = max(m.start_line, 1) - 1
-        decl_line = lines[idx].strip() if idx < len(lines) else ""
-        match = decl_re.search(decl_line)
-        if match is None:
-            continue
         resolved: list[str] = []
-        parents_text = match.groupdict().get("parents")
-        if parents_text is None:
-            raise ValueError(
-                f"reference_imports.{lang}.inheritance_pattern 에 parents 그룹이 없다"
-            )
-        parent_separator = str(profile.get("parent_separator") or ",")
-        owner_separator = str(profile.get("separator") or ".")
-        generic_open = str(profile.get("generic_open") or "")
-        ignored = {str(name) for name in (profile.get("ignored_parents") or ())}
-        for raw_name in parents_text.split(parent_separator):
-            name = raw_name.strip().rsplit(owner_separator, 1)[-1]
-            if generic_open:
-                name = name.split(generic_open, 1)[0].strip()
-            if not name or name in ignored:
-                continue
+        for name in _parent_names(m, lang, profile):
             same_file = by_name_in_file.get((m.file_path, name), [])
             if len(same_file) == 1:
                 resolved.append(same_file[0])
@@ -165,22 +144,155 @@ def _ancestor_map(
             parents[m.id] = resolved
 
     ancestors: dict[str, list[str]] = {}
+    python_mro_cache: dict[str, tuple[str, ...]] = {}
     for mid in parents:
+        if lang_by_id.get(mid) == "python":
+            ancestors[mid] = list(
+                _python_c3_linearization(
+                    mid, parents, python_mro_cache, visiting=set(),
+                )[1:]
+            )
+            continue
         chain: list[str] = []
         frontier = list(parents.get(mid, []))
-        depth = 0
-        while frontier and depth < _INHERIT_DEPTH:
-            next_frontier: list[str] = []
-            for pid in frontier:
-                if pid == mid or pid in chain:
-                    continue                                # 순환 차단
-                chain.append(pid)
-                next_frontier.extend(parents.get(pid, []))
-            frontier = next_frontier
-            depth += 1
+        seen = {mid}
+        while frontier:
+            pid = frontier.pop(0)
+            if pid in seen:
+                continue
+            seen.add(pid)
+            chain.append(pid)
+            frontier.extend(parents.get(pid, []))
         if chain:
             ancestors[mid] = chain
     return ancestors
+
+
+def _python_c3_linearization(
+    module_id: str,
+    parents: dict[str, list[str]],
+    memo: dict[str, tuple[str, ...]],
+    *,
+    visiting: set[str],
+) -> tuple[str, ...]:
+    """Return Python's exact local C3 MRO; invalid/cyclic hierarchies fail closed."""
+    cached = memo.get(module_id)
+    if cached is not None:
+        return cached
+    if module_id in visiting:
+        raise ValueError(f"cyclic Python inheritance at {module_id!r}")
+    direct = list(parents.get(module_id, ()))
+    if not direct:
+        result = (module_id,)
+        memo[module_id] = result
+        return result
+
+    active = visiting | {module_id}
+    sequences = [
+        list(_python_c3_linearization(parent, parents, memo, visiting=active))
+        for parent in direct
+    ]
+    sequences.append(list(direct))
+    merged: list[str] = []
+    while any(sequences):
+        sequences = [sequence for sequence in sequences if sequence]
+        candidate = next((
+            sequence[0]
+            for sequence in sequences
+            if all(sequence[0] not in other[1:] for other in sequences)
+        ), None)
+        if candidate is None:
+            raise ValueError(
+                f"inconsistent Python C3 inheritance at {module_id!r}: {direct!r}"
+            )
+        merged.append(candidate)
+        for sequence in sequences:
+            if sequence and sequence[0] == candidate:
+                sequence.pop(0)
+    result = (module_id, *merged)
+    memo[module_id] = result
+    return result
+
+
+def _parent_names(module: Module, lang: str, profile: dict) -> list[str]:
+    """Normalize only listener-emitted type names; dynamic expressions stay unresolved."""
+    separator = str(profile.get("parent_separator") or ",")
+    owner_separator = str(profile.get("separator") or ".")
+    generic_open = str(profile.get("generic_open") or "")
+    ignored = {str(name) for name in (profile.get("ignored_parents") or ())}
+    identifier = str(source_lexicon(lang)["identifier_pattern"])
+    qualified = re.compile(
+        rf"{identifier}(?:\s*{re.escape(owner_separator)}\s*{identifier})*"
+    )
+    names: list[str] = []
+    for field_name in profile["ast_fields"]:
+        raw_value = str(getattr(module, str(field_name), "") or "")
+        for raw_name in _split_top_level(raw_value, separator):
+            candidate = raw_name.strip()
+            if not candidate or _has_top_level(candidate, "="):
+                continue
+            if generic_open:
+                generic_index = _first_top_level(candidate, generic_open)
+                if generic_index >= 0:
+                    candidate = candidate[:generic_index].strip()
+            if not qualified.fullmatch(candidate):
+                continue
+            name = candidate.rsplit(owner_separator, 1)[-1].strip()
+            if name and name not in ignored and name not in names:
+                names.append(name)
+    return names
+
+
+def _split_top_level(value: str, separator: str) -> list[str]:
+    """Split one parser-owned type list without breaking generic/call arguments."""
+    if not value:
+        return []
+    if len(separator) != 1:
+        raise ValueError("inheritance parent_separator must be one character")
+    parts: list[str] = []
+    start = 0
+    stack: list[str] = []
+    quote = ""
+    escaped = False
+    pairs = {"(": ")", "[": "]", "{": "}", "<": ">"}
+    for index, char in enumerate(value):
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+            continue
+        if char in {"'", '"'}:
+            quote = char
+        elif char in pairs:
+            stack.append(pairs[char])
+        elif stack and char == stack[-1]:
+            stack.pop()
+        elif char == separator and not stack:
+            parts.append(value[start:index])
+            start = index + 1
+    parts.append(value[start:])
+    return parts
+
+
+def _first_top_level(value: str, token: str) -> int:
+    """Return a top-level token position while respecting earlier nested groups."""
+    stack: list[str] = []
+    pairs = {"(": ")", "[": "]", "{": "}", "<": ">"}
+    for index, char in enumerate(value):
+        if char == token and not stack:
+            return index
+        if char in pairs:
+            stack.append(pairs[char])
+        elif stack and char == stack[-1]:
+            stack.pop()
+    return -1
+
+
+def _has_top_level(value: str, token: str) -> bool:
+    return _first_top_level(value, token) >= 0
 
 
 # ── 인덱스 빌드 ──────────────────────────────────────────────

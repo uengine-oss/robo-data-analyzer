@@ -30,6 +30,8 @@ def to_item(mod: Module) -> dict:
         "end_line": mod.end_line,
         "notes": join_notes(mod.comment, mod.annotations),
         "code_text": mod.code_text,
+        "extends_type": mod.extends_type,
+        "implements_types": mod.implements_types,
     })
     # These are Analyzer-derived properties, so an empty value is authoritative:
     # Neo4j ``SET n += item`` removes a property whose map value is null.  Keeping

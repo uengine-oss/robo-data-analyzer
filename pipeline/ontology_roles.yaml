@@ -303,20 +303,21 @@ reference_imports:
     file_extension: py
     from_pattern: '^from\s+(?P<relative>\.*)(?P<module>[\w.]*)\s+import\s+(?P<members>.+)$'
 
-# 상속은 import 유무와 다른 능력이다. 선언 문법만 데이터로 두고, 부모 해소는 같은 파일과
-# 위 import 소유권 신호의 단독 후보만 사용한다. 미등록 언어는 상속 해석을 주장하지 않는다.
+# 상속은 import 유무와 다른 능력이다. Parser listener가 소유하는 AST 필드만 데이터로 읽고,
+# 부모 해소는 같은 파일과 위 import 소유권 신호의 단독 후보만 사용한다. 미등록 언어는
+# 상속 해석을 주장하지 않는다.
 reference_inheritance:
   java:
     separator: '.'
-    pattern: '\b(?:extends|implements)\s+(?P<parents>[\w.,\s]+?)(?:\{|$)'
+    ast_fields: [extends_type, implements_types]
     parent_separator: ','
     generic_open: '<'
     ignored_parents: []
   python:
     separator: '.'
-    pattern: '^\s*class\s+\w+\s*\((?P<parents>[^)]*)\)'
+    ast_fields: [extends_type]
     parent_separator: ','
-    generic_open: ''
+    generic_open: '['
     ignored_parents: [object]
 
 # 외부 산출물 연결의 구조 지식. 코드에는 이름·형식별 분기를 두지 않는다.

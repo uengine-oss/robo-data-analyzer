@@ -169,6 +169,10 @@ class Module:
     annotations: str = ""                    # 클래스 어노테이션 (Java @Annotation 등)
     code_text: str = ""                      # 원문 슬라이스 (step2 가 채움 — 라인 범위 기준)
     raw_code_text: str = ""                  # 결정론 분석 전용 정확한 원문 (Neo4j 비저장)
+    # Parser listener-owned inheritance syntax.  Keep the exact AST fields instead of
+    # reparsing one declaration line in Analyzer (multiline declarations are valid).
+    extends_type: str = ""
+    implements_types: str = ""
 
     # 분석 결과 ────
     summary: str = ""                        # summarize_module 가 채움

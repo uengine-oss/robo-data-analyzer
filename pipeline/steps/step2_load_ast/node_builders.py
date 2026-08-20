@@ -76,6 +76,8 @@ def _make_module(
         label=node["type"], start_line=start_line, end_line=end_line,
         annotations=node.get("annotations") or "",
         comment=node.get("comment") or "",
+        extends_type=node.get("extendsType") or "",
+        implements_types=node.get("implementsTypes") or "",
     )
 
 
