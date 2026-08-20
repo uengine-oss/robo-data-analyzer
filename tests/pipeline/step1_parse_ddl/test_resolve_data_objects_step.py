@@ -108,6 +108,33 @@ class ResolveDataObjectsStepTest(unittest.IsolatedAsyncioTestCase):
         assert all(usage.datasource == "water" for usage in node.extra["data_object_usages"])
         assert len(node.extra["unresolved_data_object_usages"]) == 2
 
+    async def test_confirmed_quoted_request_without_provider_quote_proof_fails_closed(self):
+        node = _select()
+        quoted = DataObjectUsageEvidence(
+            source_id=node.id, raw_reference='"App"."Orders"', schema="App",
+            schema_quoted=True, name="Orders", name_quoted=True, access="READ",
+            evidence_file="p.sql", evidence_line=241,
+        )
+        node.extra["data_object_usages"] = (quoted,)
+
+        async def fake_resolve(_http, _base, _datasource, references, **_kwargs):
+            self.assertTrue(references[0]["case_sensitive_identifiers"])
+            return {"results": [{
+                "key": references[0]["key"], "status": "confirmed",
+                "schema_name": "App", "object_name": "Orders",
+                "columns": [], "sample_rows": [],
+            }]}
+
+        with (
+            patch.object(subject, "catalog_base_url_or_skip", return_value="http://catalog/robo"),
+            patch.object(subject, "post_object_resolution_context", side_effect=fake_resolve),
+            self.assertRaisesRegex(ValueError, "quoted identifier.*provider.*proof"),
+        ):
+            await subject.resolve_data_objects_step({
+                "code_nodes": [node], "tables": [], "columns": [],
+                "has_column_edges": [],
+            }, _config())
+
 
 if __name__ == "__main__":
     unittest.main()

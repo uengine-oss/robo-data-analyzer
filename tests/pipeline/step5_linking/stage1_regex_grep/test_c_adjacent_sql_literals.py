@@ -66,7 +66,7 @@ class CAdjacentSqlLiteralTests(unittest.TestCase):
         self.assertEqual(1, len(outcome.edges))
         edge = outcome.edges[0]
         self.assertEqual("READS", edge.relation)
-        self.assertEqual("db:sample.orders", edge.target_id)
+        self.assertEqual(Table(db="sample", schema="", name="orders").id, edge.target_id)
         self.assertEqual(3, edge.evidence_line)
 
     def test_non_adjacent_literals_are_not_synthetically_joined(self) -> None:
@@ -87,8 +87,8 @@ class CAdjacentSqlLiteralTests(unittest.TestCase):
             '}\n'
         )
         self.assertEqual(
-            [("READS", "db:sample.order_item", 3),
-             ("WRITES", "db:sample.product_stock", 2)],
+            [("READS", Table(db="sample", schema="", name="order_item").id, 3),
+             ("WRITES", Table(db="sample", schema="", name="product_stock").id, 2)],
             sorted((edge.relation, edge.target_id, edge.evidence_line)
             for edge in outcome.edges),
         )
@@ -128,7 +128,7 @@ class CAdjacentSqlLiteralTests(unittest.TestCase):
             ))
 
         self.assertEqual(
-            [("WRITES", "db:sample.cart")],
+            [("WRITES", Table(db="sample", schema="", name="cart").id)],
             [(edge.relation, edge.target_id) for edge in outcome.edges],
         )
 
@@ -141,8 +141,8 @@ class CAdjacentSqlLiteralTests(unittest.TestCase):
             '}\n'
         )
         self.assertEqual(
-            [("READS", "db:sample.order_item"),
-             ("WRITES", "db:sample.product_stock")],
+            [("READS", Table(db="sample", schema="", name="order_item").id),
+             ("WRITES", Table(db="sample", schema="", name="product_stock").id)],
             sorted((edge.relation, edge.target_id) for edge in outcome.edges),
         )
 
@@ -155,7 +155,7 @@ class CAdjacentSqlLiteralTests(unittest.TestCase):
             '}\n'
         )
         self.assertEqual(
-            [("READS", "db:sample.order_item", 4)],
+            [("READS", Table(db="sample", schema="", name="order_item").id, 4)],
             [(edge.relation, edge.target_id, edge.evidence_line) for edge in outcome.edges],
         )
 
@@ -173,7 +173,7 @@ class CAdjacentSqlLiteralTests(unittest.TestCase):
             sorted(
                 edge.evidence_line
                 for edge in outcome.edges
-                if edge.target_id == "db:sample.orders"
+                if edge.target_id == Table(db="sample", schema="", name="orders").id
             ),
         )
 

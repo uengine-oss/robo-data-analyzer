@@ -68,6 +68,20 @@ class DatasourceMergeTest(unittest.TestCase):
         self.assertEqual(["BROKEN"], [table.name for table in merged])
         self.assertEqual({}, samples)
 
+    def test_same_table_name_in_different_schemas_receives_only_its_own_sample(self):
+        public = Table(db="prod_main", schema="PUBLIC", name="ORDERS")
+        tenant = Table(db="prod_main", schema="TENANT", name="ORDERS")
+
+        _, _, _, _, samples = _merge(
+            [tenant, public], _payload([{
+                "name": "orders", "schema": "tenant", "columns": [{"name": "ID"}],
+                "sample_rows": [{"ID": 7}], "degraded": False,
+            }]), "prod_main",
+        )
+
+        self.assertEqual({tenant.id}, set(samples))
+        self.assertEqual([{"ID": 7}], samples[tenant.id]["sample_rows"])
+
 
 class DatasourceStepTest(unittest.IsolatedAsyncioTestCase):
     async def test_skips_without_datasource(self):

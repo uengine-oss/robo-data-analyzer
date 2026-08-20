@@ -38,6 +38,7 @@ from pipeline.models.data_object_usage import (
     database_link_components_json,
     object_reference_id,
 )
+from pipeline.models.sql_identifier import SqlIdentifierKey, sql_identifier_key
 from shared.events.runtime_logger import log_info
 from graph.edges.reads_writes import upsert_reads_writes
 from graph.neo4j_client import Neo4jClient
@@ -99,10 +100,21 @@ def _link(
     file_cache: SourceFileCache, *, datasource: str = "",
 ) -> list[ReadsWrites]:
     """모든 노드의 자기 줄(자기 범위 − 자식 줄범위) 에서 DDL 테이블명 검색 → ReadsWrites."""
-    name_to_id = {t.name.upper(): t.id for t in tables}
-    tables_by_name: dict[str, list[Table]] = {}
+    tables_by_name: dict[SqlIdentifierKey, list[Table]] = {}
+    legacy_ids_by_name: dict[str, set[str]] = {}
     for table in tables:
-        tables_by_name.setdefault(table.name.upper(), []).append(table)
+        tables_by_name.setdefault(
+            sql_identifier_key(table.name, table.name_quoted), [],
+        ).append(table)
+        if not table.name_quoted:
+            legacy_ids_by_name.setdefault(
+                sql_identifier_key(table.name, False)[1], set(),
+            ).add(table.id)
+    name_to_id = {
+        name: next(iter(ids))
+        for name, ids in legacy_ids_by_name.items()
+        if len(ids) == 1
+    }
     # 긴 이름 우선 — 부분매칭 방지. 단어경계.
     table_re = re.compile(
         r"\b(" + "|".join(re.escape(n) for n in sorted(name_to_id, key=len, reverse=True)) + r")\b",
@@ -234,7 +246,7 @@ def _unresolved_object_references(
 
 def _resolve_ast_usage(
     usage: DataObjectUsageEvidence,
-    tables_by_name: dict[str, list[Table]],
+    tables_by_name: dict[SqlIdentifierKey, list[Table]],
 ) -> Table | None:
     """Resolve only identities proven exact by the parser and local DDL set.
 
@@ -243,11 +255,14 @@ def _resolve_ast_usage(
     """
     if usage.database_link:
         return None
-    candidates = list(tables_by_name.get(usage.name.upper(), ()))
+    candidates = list(tables_by_name.get(
+        sql_identifier_key(usage.name, usage.name_quoted), (),
+    ))
     if usage.schema:
         candidates = [
             table for table in candidates
-            if table.schema.upper() == usage.schema.upper()
+            if sql_identifier_key(table.schema, table.schema_quoted)
+            == sql_identifier_key(usage.schema, usage.schema_quoted)
         ]
     return candidates[0] if len(candidates) == 1 else None
 

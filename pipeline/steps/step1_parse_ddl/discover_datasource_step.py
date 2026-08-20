@@ -24,9 +24,11 @@ from graph.nodes.column import upsert_columns
 from graph.nodes.table import upsert_tables, update_sample_snapshots
 from graph.schema.graph_edges import HasColumn
 from graph.schema.graph_nodes import Column, Table
+from graph.schema.node_ids import sql_column_id
 from integrations.catalog import catalog_base_url_or_skip, get_table_discovery
 from pipeline.execution.step_config import step_config
 from pipeline.execution.graph_delta_stream import emit_message
+from pipeline.models.sql_identifier import sql_identifier_key
 from shared.config.settings import SETTINGS
 from shared.events.processing_events import step_processing_scope
 from shared.events.runtime_logger import log_info, log_warning
@@ -116,7 +118,13 @@ def _merge(
 
     Returns: (병합 단어장, 신규 Table, 신규 Column, 신규 HAS_COLUMN, table_sample_data)
     """
-    by_name = {t.name.upper(): t for t in ddl_tables}
+    by_identity = {
+        (
+            sql_identifier_key(t.schema, t.schema_quoted),
+            sql_identifier_key(t.name, t.name_quoted),
+        ): t
+        for t in ddl_tables
+    }
     merged = list(ddl_tables)
     new_tables: list[Table] = []
     new_columns: list[Column] = []
@@ -127,17 +135,22 @@ def _merge(
         name = (item.get("name") or "").strip()
         if not name:
             continue
-        existing = by_name.get(name.upper())
+        schema = (item.get("schema") or "").strip()
+        identity = (
+            sql_identifier_key(schema, False),
+            sql_identifier_key(name, False),
+        )
+        existing = by_identity.get(identity)
         if existing is not None:
             table = existing                     # DDL 정의 우선 — 샘플만 보강
         else:
             table = Table(
                 db=datasource,
-                schema=(item.get("schema") or "").strip(),
+                schema=schema,
                 name=name,
                 description_source="catalog",    # 출처 추적 — DDL 유래와 구분 (FR-005)
             )
-            by_name[name.upper()] = table
+            by_identity[identity] = table
             merged.append(table)
             new_tables.append(table)
             for col in item.get("columns") or []:
@@ -145,7 +158,7 @@ def _merge(
                 if not col_name:
                     continue
                 column = Column(
-                    id=f"{table.id.removeprefix('db:')}.{col_name}",
+                    id=sql_column_id(table.id, col_name),
                     name=col_name,
                     dtype=str(col.get("dtype") or col.get("type") or ""),
                     nullable=bool(col.get("nullable", True)),

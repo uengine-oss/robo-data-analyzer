@@ -79,7 +79,10 @@ class TableAccessExclusionTest(unittest.IsolatedAsyncioTestCase):
             ddl_transform=self.transform,
         )
 
-        self.assertEqual(["orders"], [edge.target_id.rsplit(".", 1)[-1] for edge in outcome.edges])
+        self.assertEqual(
+            [Table(db="d", schema="s", name="orders").id],
+            [edge.target_id for edge in outcome.edges],
+        )
         self.assertEqual(["missing"], [case["attempted_patterns"][0]["groups"]["entity"] for case in outcome.unresolved])
         self.assertEqual(1, outcome.exclusion_stats["sequence_object_key"].matched_sites)
 

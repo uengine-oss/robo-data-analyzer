@@ -59,6 +59,43 @@ COMMENT ON COLUMN ORDERS.STATUS_CD IS '주문 상태 코드';
             [(column.name, column.name_quoted) for column in result.columns],
         )
 
+    def test_quoted_search_path_preserves_schema_identity_and_comment_binding(self) -> None:
+        ddl = '''\
+SET search_path TO "App";
+CREATE TABLE "Orders" ("Id" INTEGER);
+COMMENT ON TABLE "App"."Orders" IS 'upper schema';
+SET search_path TO "app";
+CREATE TABLE "Orders" ("Id" INTEGER);
+COMMENT ON TABLE "app"."Orders" IS 'lower schema';
+'''
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "quoted-search-path.sql"
+            path.write_text(ddl, encoding="utf-8")
+            result = parse_ddl_file(path, db="db", dialect="postgres")
+
+        self.assertEqual(
+            [("App", True, "upper schema"), ("app", True, "lower schema")],
+            [(table.schema, table.schema_quoted, table.description)
+             for table in result.tables],
+        )
+        self.assertEqual(2, len({table.id for table in result.tables}))
+        self.assertEqual(
+            [("App", True), ("app", True)],
+            [(schema.name, schema.name_quoted) for schema in result.schemas],
+        )
+
+    def test_quoted_and_unquoted_same_spelling_have_distinct_table_ids(self) -> None:
+        ddl = 'CREATE TABLE FOO (ID INTEGER); CREATE TABLE "FOO" (ID INTEGER);'
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "quoted-table.sql"
+            path.write_text(ddl, encoding="utf-8")
+            result = parse_ddl_file(path, db="db", dialect="oracle")
+
+        self.assertEqual([(False, "FOO"), (True, "FOO")], [
+            (table.name_quoted, table.name) for table in result.tables
+        ])
+        self.assertEqual(2, len({table.id for table in result.tables}))
+
     def test_quoted_primary_key_and_comments_bind_only_exact_siblings(self) -> None:
         ddl = '''\
 CREATE TABLE "T" (
@@ -104,7 +141,8 @@ COMMENT ON COLUMN "S2"."T"."C" IS 'second column';
             [(table.schema, table.description) for table in result.tables],
         )
         self.assertEqual(
-            [("db:db.S1.T.C", "first column"), ("db:db.S2.T.C", "second column")],
+            [("db:db.Q~S1.Q~T.Q~C", "first column"),
+             ("db:db.Q~S2.Q~T.Q~C", "second column")],
             [(column.id, column.description) for column in result.columns],
         )
 

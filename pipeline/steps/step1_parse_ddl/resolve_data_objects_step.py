@@ -15,10 +15,12 @@ from graph.nodes.column import upsert_columns
 from graph.nodes.table import upsert_tables, update_sample_snapshots
 from graph.schema.graph_edges import HasColumn
 from graph.schema.graph_nodes import CodeNode, Column, Table
+from graph.schema.node_ids import sql_column_id
 from integrations.catalog import catalog_base_url_or_skip, post_object_resolution_context
 from pipeline.execution.graph_delta_stream import emit_edges, emit_message, emit_nodes
 from pipeline.execution.step_config import step_config
 from pipeline.models.data_object_usage import DataObjectUsageEvidence
+from pipeline.models.sql_identifier import sql_identifier_key
 from shared.config.settings import SETTINGS
 from shared.events.runtime_logger import log_info, log_warning
 
@@ -89,7 +91,11 @@ async def resolve_data_objects_step(
     columns: list[Column] = list(state.get("columns") or ())
     has_columns: list[HasColumn] = list(state.get("has_column_edges") or ())
     table_by_identity = {
-        (table.db.upper(), table.schema.upper(), table.name.upper()): table
+        (
+            table.db.upper(),
+            sql_identifier_key(table.schema, table.schema_quoted),
+            sql_identifier_key(table.name, table.name_quoted),
+        ): table
         for table in tables
     }
     column_ids = {column.id for column in columns}
@@ -110,9 +116,20 @@ async def resolve_data_objects_step(
         if result.get("status") != "confirmed":
             unresolved += 1
             continue
+        if (
+            usage.schema_quoted or usage.name_quoted
+            or any(column.name_quoted for column in usage.qualified_columns)
+        ):
+            raise ValueError(
+                "quoted identifier confirmed without provider identity proof"
+            )
         schema = str(result.get("schema_name") or usage.schema)
         name = str(result.get("object_name") or usage.name)
-        identity = (datasource.upper(), schema.upper(), name.upper())
+        identity = (
+            datasource.upper(),
+            sql_identifier_key(schema, False),
+            sql_identifier_key(name, False),
+        )
         table = table_by_identity.get(identity)
         if table is None:
             table = Table(
@@ -128,7 +145,7 @@ async def resolve_data_objects_step(
             column_name = str(raw_column.get("name") or "").strip()
             if not column_name:
                 continue
-            column_id = f"{table.id.removeprefix('db:')}.{column_name}"
+            column_id = sql_column_id(table.id, column_name)
             if column_id not in column_ids:
                 column = Column(
                     id=column_id,

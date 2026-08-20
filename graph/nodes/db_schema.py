@@ -19,13 +19,17 @@ MERGE (s:ANALYZER_OWNED:SCHEMA {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNE
 SET s:ANALYZER_OWNED,
     s.db = item.db,
     s.name = item.name,
+    s.name_quoted = item.name_quoted,
     s.graph_owner = '{ANALYZER_GRAPH_OWNER}'
 RETURN count(s) AS created
 """
 
 
 def to_item(schema: Schema) -> dict:
-    return {"id": schema.id, "db": schema.db, "name": schema.name}
+    return {
+        "id": schema.id, "db": schema.db, "name": schema.name,
+        "name_quoted": schema.name_quoted,
+    }
 
 
 async def upsert_schemas(client: Neo4jClient, schemas: Iterable[Schema]) -> None:

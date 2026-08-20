@@ -484,6 +484,17 @@
 - 유입: datasource discovery `bc699ee2`, reference-scoped resolver `d4986087`. Catalog·Fabric의 현재 사용자
   WIP는 수정하지 않고 Analyzer 계약/fixture부터 별도 책임 슬라이스로 고정한다.
 - 분류/상태: **실제 구조·의미 오귀속, pending red-first**. `_runs/dbms` 부재로 actual corpus 발동은 미검증이다.
+- red(2026-08-21): `PUBLIC.ORDERS`, `TENANT.ORDERS`를 역순으로 선언하고 TENANT용 Catalog payload를
+  병합하면 기존 name-only map이 PUBLIC table에 sample/column을 붙였다. quoted identity를 요청한 뒤
+  provider가 quote provenance 없이 `confirmed`를 반환해도 기존 resolver가 정상 확정으로 승격하는
+  계약도 예상대로 실패했다.
+- 해결: legacy bulk merge는 `(schema Q/U key, table Q/U key)`를 사용하고 Catalog payload는 quote proof가
+  없는 unquoted identity로만 취급한다. reference-scoped resolver는 schema/table/qualified-column 중
+  하나라도 case-sensitive identity인데 provider confirmed 응답에 quote proof가 없으면 파일·객체를
+  추측하지 않고 fail-closed한다. 현재 Fabric WIP의 unresolved 응답 계약은 그대로 보존했으며
+  Catalog·Fabric 파일 변경은 0회다.
+- 현재 판정: C-036은 **해결**. 향후 provider가 quoted object를 confirmed로 반환하려면 응답 계약에
+  component별 quote provenance를 먼저 추가해야 한다. `_runs/dbms` 부재로 actual corpus 발동은 미검증이다.
 
 ### C-037 — Oracle 물리옵션 전역 regex가 DDL identifier/default literal을 재작성
 
@@ -532,6 +543,14 @@
   불일치하거나 case sibling에 오귀속될 수 있다. 이는 C-036의 Table model/Catalog 재결합 quoted identity와
   함께 닫아야 하며 LLM 이전 구조 손실이다.
 - 유입: `6956d02`. 분류/상태: **실제 구조·의미 오귀속 가능, pending red-first**.
+- red(2026-08-21): quoted `SET search_path TO "App"`와 `"app"` 뒤 같은 quoted table/comment를
+  선언하면 기존 `.sql()` regex 경로가 두 schema의 quote provenance를 제거해 identity가 충돌했다.
+- 해결: DDL 전체를 만든 sqlglot AST와 exact source token statement group을 one-to-one 검증하고,
+  search-path 값은 source token에서 직접 읽는다. `TokenType.IDENTIFIER`만 quoted로 판정하며 AST를 다시
+  문자열화한 regex는 사용하지 않는다. Schema/Table/Column과 BELONGS_TO/HAS_COLUMN ID는 unquoted
+  uppercase, quoted `Q~` + exact spelling인 공통 SQL identifier ID를 사용하고 quote bit를 graph writer까지
+  보존한다. leading COMMENT도 exact token group에 남는 회귀를 함께 고정했다.
+- 현재 판정: C-039는 **해결**, `_runs/dbms`가 없어 actual corpus 발동은 **미검증**이다.
 
 ### C-040 — Parser AST usage를 DDL Table에 재결합할 때 quoted/schema identity casefold
 
@@ -547,6 +566,20 @@
   따라서 exact AST 경로와 legacy fuzzy 경로의 발동 조건을 나눠 계약화한다.
 - 유입: `d4986087` exact AST linker, `6956d02` legacy name scanner. 분류/상태:
   **실제 의미 오귀속, pending red-first**. C-036/C-039의 Table/schema quoted model 보존과 함께 닫는다.
+- red(2026-08-21): exact Parser AST usage의 quoted `"App"."Foo"`/`"App"."foo"`가 서로의 DDL
+  Table로 casefold binding되고, legacy bare `ORDERS` scanner가 서로 다른 schema의 동명 Table 중 하나를
+  임의 선택하는 두 계약이 예상대로 실패했다.
+- 해결: exact AST linker는 Parser가 생산한 schema/table Q/U identity를 DDL Table의 보존된 quote bit와
+  직접 비교한다. legacy fuzzy scanner는 quote proof가 없는 unquoted Table만 대상으로 삼고, 전체 schema에서
+  하나의 distinct Table ID로 유일한 bare name만 후보화한다. quoted 또는 schema-ambiguous name은 추측해서
+  READS/WRITES를 만들지 않는다.
+- 회귀 보정: canonical SQL ID를 문자열 `rsplit`하거나 lowercase 상수로 가정하던 테스트 8곳은 실제
+  `Table.id` 비교로 바꿨다. 제품 코드에서 DB ID를 문자열 분해하는 추가 consumer는 발견되지 않았다.
+- 검증: 신규 red 6건 green, 관련 집중 `34 passed`, Analyzer 전체 `1109 tests, 6 skipped`, prompt ledger
+  `17/17`, `git diff --check` 오류 0이다. Neo4j `test` transaction에서 quoted `App/app` schema·table·column
+  두 집합과 BELONGS_TO/HAS_COLUMN, quote property를 actual writer query로 조회했고 rollback 뒤 node/relationship
+  residue 0이다. Catalog·Fabric·Architect 사용자 WIP는 변경하지 않았다.
+- 현재 판정: C-040은 **해결**, `_runs/dbms`가 없어 actual corpus 발동은 **미검증**이다.
 
 ### C-041 — quoted unresolved ObjectReference canonical ID 충돌
 
@@ -713,7 +746,7 @@
 - 검증됨: 기준선/DB 상태, F-001 actual schema·경계 수량, 위 정적 producer/caller 배선.
 - 검증됨: 각 F/C 경계의 유입 commit 축. "부재" 결함은 해당 owner가 생긴 최초 계열과 현재까지
   closure가 추가되지 않았음을 함께 기록했다.
-- 미검증: DBMS actual run, sealed 직접 의미 판정, 남은 C-004/C-017~021/C-031/C-036/C-039/C-040 계약/red test.
+- 미검증: DBMS actual run, sealed 직접 의미 판정, 남은 C-004/C-017~021/C-031 계약/red test.
 - 아직 제품 정확도나 완료를 주장하지 않는다.
 
 ### 2026-08-20 계약 고정 및 첫 red test

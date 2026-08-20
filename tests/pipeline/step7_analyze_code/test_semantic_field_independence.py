@@ -268,8 +268,8 @@ class SourceDescriptionExceptionTest(unittest.TestCase):
         ]
         self.assertEqual(
             [
-                ("db:db.public.orders", "orders: DDL 원본 설명"),
-                ("db:db.public.items", "items: LLM 대체 설명"),
+                (tables[0].id, "orders: DDL 원본 설명"),
+                (tables[1].id, "items: LLM 대체 설명"),
             ],
             _collect_table_texts(tables),
         )

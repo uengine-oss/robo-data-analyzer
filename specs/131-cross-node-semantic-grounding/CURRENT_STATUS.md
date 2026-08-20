@@ -239,5 +239,13 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
     없는 v1/v2/v3 link AST는 좌표·version과 함께 fail-closed한다. Parser `158/0/0/8`, Analyzer 집중
     `99 passed, 1 skipped`, 전체 `1103 tests, 6 skipped`, prompt `17/17`, Neo4j rollback 두 quoted
     link node/두 READS/잔여 0을 통과했다. `_runs/dbms` 부재로 actual corpus 발동은 미검증이다.
-19. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
-20. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.
+19. 완료(C-036/C-039/C-040): exact source token의 quoted `SET search_path` identity를
+    DDL Schema/Table/Column/FK ID와 writer까지 보존한다. unquoted ID는 uppercase, quoted segment는
+    `Q~exact` canonical ID다. Catalog bulk merge는 schema+table `Q/U` key를 쓰고, scoped provider가
+    quoted proof 없이 confirmed를 반환하면 fail-closed한다. step5 Parser AST linker도 schema/table
+    quoted key를 사용하며 legacy bare-name scanner는 schema 동명 또는 quoted table을 추측하지 않는다.
+    최초 red 6건 green, 집중 `34 passed`, Analyzer 전체 `1109 tests, 6 skipped`, prompt `17/17`이다.
+    Neo4j `test` rollback에서 quoted schema sibling 두 Schema/Table/Column과 BELONGS_TO/HAS_COLUMN,
+    quoted properties, 서로 다른 canonical ID, residue 0을 확인했다. Catalog·Fabric WIP는 무변경이다.
+20. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
+21. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.

@@ -31,7 +31,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal, Optional
 
-from graph.schema.node_ids import db_id
+from graph.schema.node_ids import sql_schema_id, sql_table_id
 
 
 # ── DB 객체 (DDL 파싱에서만 생성, 이후 단계는 신규 생성 X) ──
@@ -45,11 +45,12 @@ class Schema:
     """
     db: str                                  # datasource 이름 (예: "prod_main")
     name: str                                # 스키마 이름 (예: "PUBLIC")
+    name_quoted: bool = False
 
     @property
     def id(self) -> str:
         """``db:<db>.<name>`` — DB 네임스페이스 (코드 id 와 절대 안 겹침, spec 047)."""
-        return db_id(self.db, self.name)
+        return sql_schema_id(self.db, self.name, self.name_quoted)
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,8 @@ class Table:
     # embed_step 이 채우는 의미 벡터. metadata={"vector": True} = 직렬화 소비자용
     # "dim 만 표시" 계약 표식.
     embedding: tuple[float, ...] = field(default=(), metadata={"vector": True})
+    schema_quoted: bool = False               # SQL quoted schema면 exact case identity
+    name_quoted: bool = False                 # SQL quoted table/view면 exact case identity
 
     @property
     def id(self) -> str:
@@ -87,7 +90,11 @@ class Table:
 
         종전엔 db·schema 가 빈값이면 ``"cart"`` 가 되어 **소스 파일 cart.c 의 id 와 충돌**했다.
         """
-        return db_id(self.db, self.schema, self.name)
+        return sql_table_id(
+            self.db, self.schema, self.name,
+            schema_quoted=self.schema_quoted,
+            table_quoted=self.name_quoted,
+        )
 
 
 @dataclass(frozen=True)

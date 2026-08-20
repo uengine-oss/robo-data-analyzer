@@ -129,6 +129,39 @@ def db_id(*parts: object) -> str:
     return DB_NS + fqn(*parts)
 
 
+def sql_identifier_id_part(value: object, quoted: bool) -> str:
+    """Canonical opaque ID segment for one SQL identifier."""
+    text = unicodedata.normalize("NFC", str(value or "").strip())
+    if quoted and len(text) >= 2 and text.startswith('"') and text.endswith('"'):
+        text = text[1:-1].replace('""', '"')
+    canonical = text if quoted else text.upper()
+    encoded = quote(canonical, safe="").replace(".", "%2E")
+    return f"Q~{encoded}" if quoted else encoded
+
+
+def sql_schema_id(db: object, schema: object, schema_quoted: bool = False) -> str:
+    return db_id(db, sql_identifier_id_part(schema, schema_quoted))
+
+
+def sql_table_id(
+    db: object,
+    schema: object,
+    table: object,
+    *,
+    schema_quoted: bool = False,
+    table_quoted: bool = False,
+) -> str:
+    return db_id(
+        db,
+        sql_identifier_id_part(schema, schema_quoted) if str(schema or "").strip() else "",
+        sql_identifier_id_part(table, table_quoted),
+    )
+
+
+def sql_column_id(table_id: str, column: object, column_quoted: bool = False) -> str:
+    return fqn(table_id, sql_identifier_id_part(column, column_quoted))
+
+
 def code_file_id(rel_path: str) -> str:
     """소스 파일 노드 id — ``code:`` + **확장자를 포함한** 소스 상대경로.
 

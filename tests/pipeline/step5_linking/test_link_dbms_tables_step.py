@@ -148,6 +148,38 @@ class LinkDbmsTablesTest(unittest.TestCase):
         self.assertEqual([usage.datasource for usage in usages], ["shop", "shop"])
         self.assertEqual(usages[0].qualified_columns[0].name, "ORDER_ID")
 
+    def test_versioned_ast_evidence_resolves_only_exact_quoted_table_identity(self) -> None:
+        node = self.nodes[0]
+        node.extra["data_object_evidence_version"] = 3
+        node.extra["data_object_usages"] = (DataObjectUsageEvidence(
+            source_id=node.id, raw_reference='"App"."foo"', schema="App",
+            schema_quoted=True, name="foo", name_quoted=True, access="READ",
+            evidence_file=str(self.source), evidence_line=1,
+        ),)
+        tables = [
+            Table(db="shop", schema="App", schema_quoted=True,
+                  name="Foo", name_quoted=True),
+            Table(db="shop", schema="App", schema_quoted=True,
+                  name="foo", name_quoted=True),
+        ]
+
+        edges = _link([node], tables, [], SourceFileCache(), datasource="shop")
+
+        self.assertEqual([(tables[1].id, "READS")], [
+            (edge.target_id, edge.relation) for edge in edges
+        ])
+
+    def test_legacy_bare_name_scanner_does_not_guess_between_schema_siblings(self) -> None:
+        tables = [
+            Table(db="shop", schema="PUBLIC", name="ORDERS"),
+            Table(db="shop", schema="TENANT", name="ORDERS"),
+        ]
+
+        self.assertEqual(
+            [],
+            _link(self.nodes, tables, [], SourceFileCache(), datasource="shop"),
+        )
+
     def test_versioned_evidence_does_not_guess_ambiguous_or_database_linked_objects(self) -> None:
         node = self.nodes[0]
         node.extra["data_object_evidence_version"] = 1

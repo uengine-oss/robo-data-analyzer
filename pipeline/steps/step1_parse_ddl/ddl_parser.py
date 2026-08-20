@@ -24,7 +24,7 @@ from sqlglot.tokens import Token, TokenType
 
 from graph.schema.graph_edges import BelongsTo, Fk, HasColumn
 from graph.schema.graph_nodes import Column, Schema, Table
-from graph.schema.node_ids import db_id, fqn
+from graph.schema.node_ids import sql_column_id, sql_schema_id, sql_table_id
 from pipeline.models.sql_identifier import SqlIdentifierKey, sql_identifier_key
 
 
@@ -85,15 +85,29 @@ def _identifier_ast_key(identifier: exp.Expression) -> SqlIdentifierKey:
     return sql_identifier_key(identifier.name, bool(identifier.args.get("quoted")))
 
 
-def _schema_key(identifier: object, default_schema: str) -> SqlIdentifierKey:
+def _identifier_ast_parts(identifier: exp.Expression) -> tuple[str, bool]:
+    if not isinstance(identifier, exp.Identifier) or not identifier.name:
+        raise ValueError(f"expected SQL Identifier, got {identifier!r}")
+    return identifier.name, bool(identifier.args.get("quoted"))
+
+
+def _schema_key(
+    identifier: object,
+    default_schema: str,
+    default_schema_quoted: bool = False,
+) -> SqlIdentifierKey:
     if isinstance(identifier, exp.Identifier):
         return _identifier_ast_key(identifier)
-    return sql_identifier_key(default_schema, False)
+    return sql_identifier_key(default_schema, default_schema_quoted)
 
 
-def _table_identity(table: exp.Table, default_schema: str) -> TableIdentity:
+def _table_identity(
+    table: exp.Table,
+    default_schema: str,
+    default_schema_quoted: bool = False,
+) -> TableIdentity:
     return (
-        _schema_key(table.args.get("db"), default_schema),
+        _schema_key(table.args.get("db"), default_schema, default_schema_quoted),
         _identifier_ast_key(table.this),
     )
 
@@ -246,14 +260,14 @@ def _normalize_oracle_physical_syntax(sql: str, dialect: str | None) -> str:
 
 def _metadata_statements(
     sql: str, dialect: str | None,
-) -> list[exp.Expression]:
+) -> list[tuple[exp.Expression, list[Token]]]:
     """Parse SET/COMMENT from exact source token boundaries.
 
     Oracle physical CREATE options are normalized separately. They must not rewrite COMMENT
     literals. sqlglot tokens provide exact statement boundaries, including semicolons inside
     string literals, and sqlglot AST remains the owner of identifier spelling and quoted bits.
     """
-    statements: list[exp.Expression] = []
+    statements: list[tuple[exp.Expression, list[Token]]] = []
     for tokens in _statement_token_groups(sql, dialect):
         first = tokens[0]
         if first.token_type not in (TokenType.SET, TokenType.COMMENT):
@@ -262,24 +276,41 @@ def _metadata_statements(
         parsed = sqlglot.parse_one(source, dialect=dialect)
         if not isinstance(parsed, (exp.Set, exp.Comment)):
             raise ValueError(f"metadata statement parsed as {type(parsed).__name__}")
-        statements.append(parsed)
+        statements.append((parsed, tokens))
     return statements
+
+
+def _parsed_statement_groups(
+    sql: str, dialect: str | None,
+) -> list[tuple[exp.Expression, list[Token]]]:
+    token_groups = _statement_token_groups(sql, dialect)
+    parsed = [statement for statement in sqlglot.parse(sql, dialect=dialect)
+              if statement is not None]
+    if len(parsed) != len(token_groups):
+        raise ValueError(
+            "SQL AST/token statement population mismatch: "
+            f"ast={len(parsed)} tokens={len(token_groups)}"
+        )
+    return list(zip(parsed, token_groups))
 
 
 # ── search_path / 일반주석 ────────────────────────────────────
 
-_SEARCH_PATH_RE = re.compile(r"search_path\s*(?:=|TO)\s*([^\s,;]+)", re.I)
-
-
-def _extract_search_path(stmt: exp.Expression) -> str:
-    """``SET search_path TO x`` → 스키마 이름. 매칭 없으면 빈 문자열.
-
-    sqlglot 의 SET 표현은 dialect 별로 갈려 — 구조 의존 대신 ``.sql()`` 텍스트를 regex.
-    """
-    m = _SEARCH_PATH_RE.search(stmt.sql())
-    if not m:
-        return ""
-    return m.group(1).strip().strip('"').strip("'")
+def _extract_search_path(tokens: list[Token]) -> tuple[str, bool] | None:
+    """Return the first search_path identifier from exact source tokens."""
+    for index, token in enumerate(tokens):
+        if token.text.lower() != "search_path":
+            continue
+        if index + 2 >= len(tokens):
+            return None
+        operator = tokens[index + 1]
+        if operator.token_type != TokenType.EQ and operator.text.upper() != "TO":
+            return None
+        value = tokens[index + 2]
+        if value.token_type in (TokenType.COMMA, TokenType.SEMICOLON):
+            return None
+        return value.text, value.token_type == TokenType.IDENTIFIER
+    return None
 
 
 def _extract_comment_on(
@@ -291,10 +322,10 @@ def _extract_comment_on(
     """Extract formal comments from sqlglot AST with exact qualified identity."""
     table_comments: dict[TableIdentity, str] = {}
     column_comments: dict[ColumnIdentity, str] = {}
-    current_schema = default_schema
-    for stmt in _metadata_statements(sql, dialect):
+    current_schema = (default_schema, False)
+    for stmt, tokens in _metadata_statements(sql, dialect):
         if isinstance(stmt, exp.Set):
-            current_schema = _extract_search_path(stmt) or current_schema
+            current_schema = _extract_search_path(tokens) or current_schema
             continue
         target = stmt.this
         literal = stmt.args.get("expression")
@@ -304,7 +335,7 @@ def _extract_comment_on(
         if kind in ("TABLE", "VIEW"):
             if not isinstance(target, exp.Table):
                 raise ValueError("COMMENT ON TABLE/VIEW target must be a Table AST")
-            table_comments[_table_identity(target, current_schema)] = literal.this
+            table_comments[_table_identity(target, *current_schema)] = literal.this
         elif kind == "COLUMN":
             if not isinstance(target, exp.Column):
                 raise ValueError("COMMENT ON COLUMN target must be a Column AST")
@@ -312,7 +343,7 @@ def _extract_comment_on(
             if not isinstance(table_identifier, exp.Identifier):
                 raise ValueError("COMMENT ON COLUMN target must include a table")
             table_key = (
-                _schema_key(target.args.get("db"), current_schema),
+                _schema_key(target.args.get("db"), *current_schema),
                 _identifier_ast_key(table_identifier),
             )
             column_comments[(*table_key, _identifier_ast_key(target.this))] = literal.this
@@ -381,21 +412,20 @@ def parse_ddl_file(
         TableIdentity, set[frozenset[SqlIdentifierKey]]
     ] = {}
 
-    statements = sqlglot.parse(norm_sql, dialect=effective_dialect)
     # 비수식 테이블의 소속 스키마 — SET search_path 가 구문 순서대로 갱신.
-    current_schema = default_schema
-    for stmt in statements:
-        if stmt is None:
-            continue
+    current_schema = (default_schema, False)
+    for stmt, tokens in _parsed_statement_groups(norm_sql, effective_dialect):
         if isinstance(stmt, (exp.Set, exp.Command)):
-            current_schema = _extract_search_path(stmt) or current_schema
+            current_schema = _extract_search_path(tokens) or current_schema
         elif isinstance(stmt, exp.Create):
             _handle_create(
-                stmt, db, current_schema, table_comments, column_comments,
+                stmt, db, *current_schema, table_comments, column_comments,
                 result, seen_schemas, seen_tables, unique_keys_by_table,
             )
         elif isinstance(stmt, exp.Alter):
-            _handle_alter(stmt, db, current_schema, result, unique_keys_by_table)
+            _handle_alter(
+                stmt, db, *current_schema, result, unique_keys_by_table,
+            )
     return result
 
 
@@ -403,6 +433,7 @@ def _handle_create(
     stmt: exp.Create,
     db: str,
     default_schema: str,
+    default_schema_quoted: bool,
     table_comments: dict[TableIdentity, str],
     column_comments: dict[ColumnIdentity, str],
     result: DDLParseResult,
@@ -438,15 +469,21 @@ def _handle_create(
     if not isinstance(tab, exp.Table):
         return
 
-    table_name = tab.name
-    schema_name = tab.db or default_schema or ""
-    table_key = _table_identity(tab, default_schema)
+    table_name, table_name_quoted = _identifier_ast_parts(tab.this)
+    schema_identifier = tab.args.get("db")
+    if isinstance(schema_identifier, exp.Identifier):
+        schema_name, schema_name_quoted = _identifier_ast_parts(schema_identifier)
+    else:
+        schema_name, schema_name_quoted = default_schema or "", default_schema_quoted
+    table_key = _table_identity(tab, default_schema, default_schema_quoted)
     schema_key = table_key[0]
 
     # Schema (중복 제거)
     if schema_name and schema_key not in seen_schemas:
         seen_schemas.add(schema_key)
-        result.schemas.append(Schema(db=db, name=schema_name))
+        result.schemas.append(Schema(
+            db=db, name=schema_name, name_quoted=schema_name_quoted,
+        ))
 
     # Table — 정식 COMMENT ON만 description. 일반 주석은 comment에만 보존한다.
     raw_comment = _join_comments(stmt.comments)
@@ -460,7 +497,7 @@ def _handle_create(
         view_definition = ""
         if kind == "VIEW" and stmt.args.get("expression") is not None:
             view_definition = stmt.args["expression"].sql()
-        result.tables.append(Table(
+        table = Table(
             db=db,
             schema=schema_name,
             name=table_name,
@@ -469,17 +506,24 @@ def _handle_create(
             comment=raw_comment,
             table_type=kind,
             view_definition=view_definition,
-        ))
+            schema_quoted=schema_name_quoted,
+            name_quoted=table_name_quoted,
+        )
+        result.tables.append(table)
         if schema_name:
             result.belongs_to_edges.append(BelongsTo(
-                child_id=db_id(db, schema_name, table_name),
-                parent_id=db_id(db, schema_name),
+                child_id=table.id,
+                parent_id=sql_schema_id(db, schema_name, schema_name_quoted),
             ))
 
     # Columns + 테이블 레벨 PK + FK — 컬럼목록 있는 경우만 (평범한 VIEW 는 skip)
     if col_container is None:
         return
-    table_fqn = db_id(db, schema_name, table_name)
+    table_fqn = sql_table_id(
+        db, schema_name, table_name,
+        schema_quoted=schema_name_quoted,
+        table_quoted=table_name_quoted,
+    )
     pk_cols = _table_pk_columns(col_container)
     unique_keys = _declared_unique_keys(col_container)
     unique_keys_by_table[table_key] = unique_keys
@@ -490,7 +534,9 @@ def _handle_create(
             )
     for fk_expr in col_container.find_all(exp.ForeignKey):
         _handle_inline_fk(
-            fk_expr, db, schema_name, table_name, default_schema, result, unique_keys,
+            fk_expr, db, schema_name, schema_name_quoted, table_name,
+            table_name_quoted, default_schema, default_schema_quoted,
+            result, unique_keys,
         )
 
 
@@ -521,7 +567,10 @@ def _handle_create_schema(
     )
     if name and identity not in seen_schemas:
         seen_schemas.add(identity)
-        result.schemas.append(Schema(db=db, name=name))
+        quoted = bool(
+            isinstance(identifier, exp.Identifier) and identifier.args.get("quoted")
+        )
+        result.schemas.append(Schema(db=db, name=name, name_quoted=quoted))
 
 
 def _table_pk_columns(table_expr: exp.Schema) -> set[SqlIdentifierKey]:
@@ -620,7 +669,7 @@ def _handle_column(
     description, description_source = _resolve_description(
         column_comments.get((*table_identity, column_key), ""), raw_comment,
     )
-    col_fqn = fqn(table_fqn, name)
+    col_fqn = sql_column_id(table_fqn, name, name_quoted)
     result.columns.append(Column(
         id=col_fqn,
         name=name,
@@ -641,8 +690,11 @@ def _handle_inline_fk(
     fk_expr: exp.ForeignKey,
     db: str,
     from_schema: str,
+    from_schema_quoted: bool,
     from_table: str,
+    from_table_quoted: bool,
     default_schema: str,
+    default_schema_quoted: bool,
     result: DDLParseResult,
     source_unique_keys: set[frozenset[SqlIdentifierKey]],
 ) -> None:
@@ -660,8 +712,12 @@ def _handle_inline_fk(
     if not isinstance(target_tab, exp.Table):
         return
 
-    to_schema = target_tab.db or default_schema or ""
-    to_table = target_tab.name
+    to_table, to_table_quoted = _identifier_ast_parts(target_tab.this)
+    target_schema_identifier = target_tab.args.get("db")
+    if isinstance(target_schema_identifier, exp.Identifier):
+        to_schema, to_schema_quoted = _identifier_ast_parts(target_schema_identifier)
+    else:
+        to_schema, to_schema_quoted = default_schema or "", default_schema_quoted
 
     from_identifiers = [
         column for column in fk_expr.expressions
@@ -685,8 +741,16 @@ def _handle_inline_fk(
     )
     for from_col, to_col in zip(from_cols, to_cols):
         result.fk_edges.append(Fk(
-            from_id=db_id(db, from_schema, from_table),
-            to_id=db_id(db, to_schema, to_table),
+            from_id=sql_table_id(
+                db, from_schema, from_table,
+                schema_quoted=from_schema_quoted,
+                table_quoted=from_table_quoted,
+            ),
+            to_id=sql_table_id(
+                db, to_schema, to_table,
+                schema_quoted=to_schema_quoted,
+                table_quoted=to_table_quoted,
+            ),
             from_column=from_col,
             to_column=to_col,
             fk_type=fk_type,
@@ -698,6 +762,7 @@ def _handle_alter(
     stmt: exp.Alter,
     db: str,
     default_schema: str,
+    default_schema_quoted: bool,
     result: DDLParseResult,
     unique_keys_by_table: dict[
         TableIdentity, set[frozenset[SqlIdentifierKey]]
@@ -707,14 +772,20 @@ def _handle_alter(
     table_expr = stmt.this
     if not isinstance(table_expr, exp.Table):
         return
-    from_schema = table_expr.db or default_schema or ""
-    from_table = table_expr.name
+    from_table, from_table_quoted = _identifier_ast_parts(table_expr.this)
+    schema_identifier = table_expr.args.get("db")
+    if isinstance(schema_identifier, exp.Identifier):
+        from_schema, from_schema_quoted = _identifier_ast_parts(schema_identifier)
+    else:
+        from_schema, from_schema_quoted = default_schema or "", default_schema_quoted
     unique_keys = unique_keys_by_table.get(
-        _table_identity(table_expr, default_schema), set(),
+        _table_identity(table_expr, default_schema, default_schema_quoted), set(),
     )
 
     for action in stmt.args.get("actions", []) or []:
         for fk_expr in action.find_all(exp.ForeignKey):
             _handle_inline_fk(
-                fk_expr, db, from_schema, from_table, default_schema, result, unique_keys,
+                fk_expr, db, from_schema, from_schema_quoted,
+                from_table, from_table_quoted,
+                default_schema, default_schema_quoted, result, unique_keys,
             )

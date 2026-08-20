@@ -54,11 +54,12 @@
     - [x] A131-04e-C034 quoted DDL PK/UNIQUE/FK/comment exact AST identity와 literal 보존 — red 4건 green,
       Neo4j rollback 저장·조회/잔여 0
     - [x] A131-04e-C035 step8 quoted column source-line focus를 공통 exact identity로 투영 — red 1건 green
-    - [ ] A131-04e-C036 Catalog/Fabric 응답→DDL Table 재결합 quoted/schema identity 손실 red-first 해결
+    - [x] A131-04e-C036 Catalog/Fabric 응답→DDL Table 재결합 schema/quoted identity 해결 —
+      bulk schema+table exact key, scoped quoted proof 없는 confirmed fail-closed
     - [x] A131-04e-C037 Oracle physical-option/VARCHAR/slash normalization을 token 구조 위치로 제한
     - [x] A131-04e-C038 dialect marker의 string/comment 오인을 syntax token detector로 제거
-    - [ ] A131-04e-C039 quoted SET search_path schema identity drop red-first 해결
-    - [ ] A131-04e-C040 Parser AST usage→DDL Table exact linker의 quoted/schema identity 손실 red-first 해결
+    - [x] A131-04e-C039 quoted SET search_path exact token→Schema/Table canonical identity 보존
+    - [x] A131-04e-C040 Parser AST usage→DDL Table Q/U exact linker와 ambiguous legacy scanner fail-closed
     - [x] A131-04e-C041 quoted unresolved ObjectReference canonical ID·edge·node 충돌 해결 —
       red 2건 green, Neo4j rollback 두 node/두 READS/잔여 0
     - [x] A131-04e-C042 Parser `de4e792` evidence v3 database-link component exact identity 생산과
