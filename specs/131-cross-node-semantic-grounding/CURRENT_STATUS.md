@@ -1,7 +1,7 @@
 # Analyzer 의미 무손실 감사 현재상태
 
 **Updated**: 2026-08-21
-**Status**: C-061 Analyzer strict import binding 3층 검증 완료, commit/push 직전
+**Status**: C-066 canonical import downstream scope/provenance 결함 확정, 계약·red 고정 중
 **Analyzer HEAD**: `d83c91e42eb49cfb214597b85a48a1acb57c221f`
 
 이 문서는 현재 진행 위치만 소유한다. 영구 규칙은 `ABSOLUTE_RULES.md`, 상세 역사와 기존 수치는 `HANDOFF.md`와 `evidence/`가 소유한다.
@@ -467,5 +467,16 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
     `b44da9a357854b65c59ed83d8c6df0aaa1792ddb734791180eba072ab1728337`이다. 전체 회귀는
     1,228 passed, 7 skipped, 367 subtests다. DB/Neo4j write는 0회다. 다음 감사는 canonical import가
     `import_scopes -> REFERENCES -> graph/API/MCP`에서 어떻게 소비·소실되는지이며 아직 E2E 공개를 주장하지 않는다.
+25t. 조사 중(C-066): `framework_reader`가 보존한 canonical import ID/range/target kind/presence/completeness를
+    `import_scopes._imports_by_file()`가 `{file:[name]}`으로 축약한 뒤 C/Python regex와 Java 문자열 분해로
+    다시 해석한다. `unsupported` Java/Python과 inactive/degraded occurrence도 scope authority에서 구분되지
+    않으며 `References`/Neo4j/API/MCP에는 Parser fact ID와 presence가 남지 않는다. 유입은 최초 문자열
+    resolver `6956d02c`, ontology profile 이동 `bc699ee2`다. actual APAS 450 import는 모두 angle이고 header
+    target 0이라 현 C quoted-only regex가 450/450을 배제하되 actual edge 영향은 우연히 0이다. inactive 1건도
+    angle이라 비발동했을 뿐 quoted 반례에서는 거짓 scope가 된다. Parser grammar/listener의 구조화
+    module/path/member/alias/wildcard/local-system-relative fact, Analyzer의 language-neutral resolution outcome
+    ledger, import occurrence provenance를 가진 derived REFERENCES 계약과 formal red를 고정한다. Java
+    classpath/module path·Python import environment·C build include resolution이 없으면 basename/path 추측 없이
+    explicit unresolved다. 상세는 `evidence/import-scope-provenance-audit-20260821.md`가 소유한다.
 26. 검증: 자동 회귀→결정론 전수 회계→봉인 직접 의미 판정→실제 APAS 순으로 계속 수행한다.
 27. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.
