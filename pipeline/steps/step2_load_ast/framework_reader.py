@@ -80,6 +80,7 @@ def _read_framework(
     _walk_framework(raw, ctx, module_id, None, None)
     if evidence is not None:
         _bind_call_evidence(result, evidence)
+        result.macro_facts.extend(fact.as_record() for fact in evidence.macro_facts)
         result.evidence_sources.append(evidence.source_record())
         result.evidence_completeness.extend(evidence.completeness_records())
     _derive_structure_edges(result, package_id)

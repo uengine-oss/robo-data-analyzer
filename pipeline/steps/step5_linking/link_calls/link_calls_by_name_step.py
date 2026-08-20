@@ -44,8 +44,7 @@ async def link_calls_by_name_step(state: dict, config: Optional[RunnableConfig] 
     result = classify_call_sites(
         call_sites, state.get("code_nodes", []),
         framework_names=framework_names, wrappers=call_wrappers,
-        # C macro compatibility 경로만 아직 이 캐시를 사용한다(C-055 pending).
-        source_cache=cfg.get("source_cache"),
+        macro_facts=state.get("macro_facts", []),
     )
 
     if neo is not None and result.edges:
@@ -82,6 +81,7 @@ async def link_calls_by_name_step(state: dict, config: Optional[RunnableConfig] 
         unresolved_presence=result.unresolved_presence,
         unresolved_expression=result.unresolved_expression,
         unresolved_owner=result.unresolved_owner,
+        unresolved_macro=result.unresolved_macro,
         wrapper_unresolved=result.wrapper_unresolved or None,
         accounted=result.accounted,
         calls_edges=len(result.edges),

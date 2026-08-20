@@ -18,23 +18,17 @@ from __future__ import annotations
 
 import fnmatch
 import json
-import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable
 
 from graph.schema.graph_edges import Calls
 from graph.schema.graph_nodes import CodeNode
 from pipeline.languages import EXT_TO_LANG, statement_labels
-from shared.files.cache import SourceFileCache
 
 _STDLIB_DIR = Path(__file__).resolve().parent / "stdlib"
-_C_LIKE_SUFFIXES = frozenset({"c", "h", "cc", "cpp", "cxx", "hpp"})
-_FUNCTION_MACRO_RE = re.compile(
-    r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)\(", re.MULTILINE,
-)
 
 
 
@@ -49,6 +43,7 @@ class CallClassifyResult:
     unresolved_presence: int = 0
     unresolved_expression: int = 0
     unresolved_owner: int = 0
+    unresolved_macro: int = 0
     wrapper_unresolved: int = 0
     unresolved: list[dict[str, str]] = field(default_factory=list)
     ledger: list[dict[str, Any]] = field(default_factory=list)
@@ -64,6 +59,7 @@ class CallClassifyResult:
             + self.unresolved_presence
             + self.unresolved_expression
             + self.unresolved_owner
+            + self.unresolved_macro
             + self.wrapper_unresolved
         )
 
@@ -104,7 +100,7 @@ def classify_call_sites(
     code_nodes: list[CodeNode],
     framework_names: frozenset[str] = frozenset(),
     wrappers: Iterable[dict] = (),
-    source_cache: Optional[SourceFileCache] = None,
+    macro_facts: Iterable[dict] = (),
 ) -> CallClassifyResult:
     """call_sites 를 결정론 분류 → ``Calls`` 엣지 + 드롭 집계.
 
@@ -136,14 +132,8 @@ def classify_call_sites(
             continue
         wrapper_names.add(str(name))
 
-    # C macro compatibility 경로만 사용한다. Parser macro evidence로 교체 예정(C-055).
-    file_cache = source_cache or SourceFileCache()
-    macros_by_file = {
-        file_path: _function_macros_in_file(file_path, file_cache)
-        for file_path in {str(cs.get("file", "")) for cs in call_sites}
-        if file_path and Path(file_path).is_file()
-        and Path(file_path).suffix.lstrip(".").lower() in _C_LIKE_SUFFIXES
-    }
+    # Parser grammar evidence only; Analyzer never reads/reparses source for macros.
+    function_macros = _function_macro_candidates(macro_facts)
 
     result = CallClassifyResult()
     ids = [str(site.get("call_id") or "") for site in call_sites]
@@ -208,6 +198,40 @@ def classify_call_sites(
             result.ledger.append(row)
             continue
 
+        # A declaration does not prove the effective macro state at this call.
+        # Ordered #undef/redefinition/include events and build defines remain Parser
+        # responsibilities.  Preserve that uncertainty before claiming any edge.
+        macro_candidates = function_macros.get(
+            (str(cs.get("source_id") or ""), name), (),
+        )
+        effective_candidates = [
+            fact for fact in macro_candidates
+            if fact["presence_status"] != "inactive"
+        ]
+        if effective_candidates:
+            result.unresolved_macro += 1
+            reason = (
+                "insufficient_conditional_macro_definition"
+                if any(
+                    fact["presence_status"] in {"conditional", "unknown"}
+                    for fact in effective_candidates
+                )
+                else "insufficient_macro_expansion_state"
+            )
+            row = {
+                "call_id": call_id,
+                "outcome": "unresolved",
+                "reason": reason,
+                "macro_fact_ids": sorted(
+                    str(fact["fact_id"]) for fact in effective_candidates
+                ),
+            }
+            result.unresolved.append({
+                key: row[key] for key in ("call_id", "reason")
+            })
+            result.ledger.append(row)
+            continue
+
         callee = _resolve_internal(name, caller, by_name, module_of)
         if callee is not None:
             result.edges.append(Calls(
@@ -238,12 +262,7 @@ def classify_call_sites(
             continue
 
         file_path = str(cs.get("file", ""))
-        if name in macros_by_file.get(file_path, frozenset()):
-            result.dropped_macro += 1
-            result.ledger.append({
-                "call_id": call_id, "outcome": "excluded", "reason": "function_macro",
-            })
-        elif name in _stdlib_set(_lang_of(file_path)):
+        if name in _stdlib_set(_lang_of(file_path)):
             result.dropped_stdlib += 1
             result.ledger.append({
                 "call_id": call_id, "outcome": "excluded", "reason": "stdlib",
@@ -288,17 +307,39 @@ def classify_call_sites(
     return result
 
 
-def _function_macros_in_file(
-    file_path: str, file_cache: SourceFileCache,
-) -> frozenset[str]:
-    """Return function-like macros declared in one C-family source file.
-
-    C requires ``(`` to immediately follow the macro name, so object-like
-    definitions whose replacement happens to begin with a parenthesis are not
-    suppressed as calls.
-    """
-    text = "\n".join(file_cache.lines(file_path))
-    return frozenset(_FUNCTION_MACRO_RE.findall(text))
+def _function_macro_candidates(
+    macro_facts: Iterable[dict],
+) -> dict[tuple[str, str], tuple[dict, ...]]:
+    """Index validated grammar declarations without interpreting source text."""
+    grouped: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    seen: set[str] = set()
+    for fact in macro_facts:
+        if not isinstance(fact, dict):
+            raise CallClassificationInvariantError("macro fact object required")
+        fact_id = str(fact.get("fact_id") or "")
+        source_id = str(fact.get("source_id") or "")
+        name = str(fact.get("terminal_name") or "")
+        kind = fact.get("macro_kind")
+        presence = fact.get("presence_status")
+        if not fact_id or fact_id in seen:
+            raise CallClassificationInvariantError(
+                "macro evidence requires unique nonblank canonical fact_id"
+            )
+        if not source_id or not name or kind not in {"object", "function"}:
+            raise CallClassificationInvariantError(
+                f"macro {fact_id} has invalid canonical identity/kind"
+            )
+        if presence not in {"active", "inactive", "conditional", "unknown"}:
+            raise CallClassificationInvariantError(
+                f"macro {fact_id} has invalid presence_status={presence!r}"
+            )
+        seen.add(fact_id)
+        if kind == "function":
+            grouped[(source_id, name)].append(fact)
+    return {
+        key: tuple(sorted(items, key=lambda item: str(item["fact_id"])))
+        for key, items in grouped.items()
+    }
 
 
 def _resolve_internal(

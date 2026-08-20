@@ -24,6 +24,7 @@ _PRESENCE_STATUSES = frozenset({
     "active", "inactive", "conditional", "unknown",
 })
 _CALLEE_KINDS = frozenset({"named", "constructor", "expression"})
+_MACRO_KINDS = frozenset({"object", "function"})
 _ENCODINGS = {
     "UTF-8": "utf-8",
     "EUC-KR": "euc_kr",
@@ -63,11 +64,46 @@ class CallEvidenceFact:
 
 
 @dataclass(frozen=True)
+class MacroEvidenceFact:
+    fact_id: str
+    source_id: str
+    macro_range: EvidenceRange
+    name_range: EvidenceRange
+    macro_kind: str
+    terminal_name: str
+    parameter_ranges: tuple[EvidenceRange, ...]
+    variadic: bool
+    replacement_range: EvidenceRange | None
+    grammar_rule: str
+    presence: Mapping[str, Any]
+
+    def as_record(self) -> dict[str, Any]:
+        return {
+            "fact_id": self.fact_id,
+            "source_id": self.source_id,
+            "range": self.macro_range.as_dict(),
+            "name_range": self.name_range.as_dict(),
+            "macro_kind": self.macro_kind,
+            "terminal_name": self.terminal_name,
+            "parameter_ranges": [item.as_dict() for item in self.parameter_ranges],
+            "variadic": self.variadic,
+            "replacement_range": (
+                self.replacement_range.as_dict()
+                if self.replacement_range is not None else None
+            ),
+            "grammar_rule": self.grammar_rule,
+            "presence_status": self.presence["status"],
+            "presence": dict(self.presence),
+        }
+
+
+@dataclass(frozen=True)
 class ValidatedCommonEvidence:
     source_id: str
     decoded_text_sha256: str
     decoded_text: str
     call_facts: tuple[CallEvidenceFact, ...]
+    macro_facts: tuple[MacroEvidenceFact, ...]
     completeness: Mapping[str, Mapping[str, Any]]
 
     def source_record(self) -> dict[str, str]:
@@ -296,6 +332,100 @@ def _validate_call(
     )
 
 
+def _validate_macro(
+    fact: Mapping[str, Any],
+    *,
+    source_id: str,
+    fact_range: EvidenceRange,
+    grammar_rule: str,
+    presence: Mapping[str, Any],
+    source: str,
+) -> MacroEvidenceFact:
+    if fact_range.char_length == 0:
+        raise _fail("macro.range", "nonempty directive range required")
+    payload = fact.get("payload")
+    if not isinstance(payload, dict):
+        raise _fail("macro.payload", "object required")
+    name_range = _range(
+        payload.get("nameRange"), field="macro.payload.nameRange",
+        source_length=len(source),
+    )
+    if (
+        name_range.char_length == 0
+        or name_range.char_offset < fact_range.char_offset
+        or name_range.end > fact_range.end
+    ):
+        raise _fail("macro.payload.nameRange", "nonempty subrange of macro required")
+    terminal_name = payload.get("terminalName")
+    if not isinstance(terminal_name, str) or not terminal_name:
+        raise _fail("macro.payload.terminalName", "nonempty grammar terminal required")
+    if source[name_range.char_offset:name_range.end] != terminal_name:
+        raise _fail(
+            "macro.payload.terminalName",
+            "must exactly equal the decoded source name range",
+        )
+    macro_kind = payload.get("macroKind")
+    if macro_kind not in _MACRO_KINDS:
+        raise _fail("macro.payload.macroKind", f"invalid value {macro_kind!r}")
+    variadic = payload.get("variadic")
+    if not isinstance(variadic, bool):
+        raise _fail("macro.payload.variadic", "boolean required")
+    parameter_values = payload.get("parameterRanges")
+    if not isinstance(parameter_values, list):
+        raise _fail("macro.payload.parameterRanges", "array required")
+    parameters: list[EvidenceRange] = []
+    previous_end = name_range.end
+    for index, value in enumerate(parameter_values):
+        parameter = _range(
+            value, field=f"macro.payload.parameterRanges[{index}]",
+            source_length=len(source),
+        )
+        if (
+            parameter.char_length == 0
+            or parameter.char_offset < previous_end
+            or parameter.end > fact_range.end
+        ):
+            raise _fail(
+                f"macro.payload.parameterRanges[{index}]",
+                "ordered nonempty macro subrange after name required",
+            )
+        previous_end = parameter.end
+        parameters.append(parameter)
+    if macro_kind == "object" and (parameters or variadic):
+        raise _fail(
+            "macro.payload.macroKind",
+            "object macro cannot declare parameters or variadic form",
+        )
+    replacement_value = payload.get("replacementRange")
+    replacement = None
+    if replacement_value is not None:
+        replacement = _range(
+            replacement_value, field="macro.payload.replacementRange",
+            source_length=len(source),
+        )
+        if (
+            replacement.char_offset < previous_end
+            or replacement.end > fact_range.end
+        ):
+            raise _fail(
+                "macro.payload.replacementRange",
+                "macro subrange after name/parameters required",
+            )
+    return MacroEvidenceFact(
+        fact_id=str(fact.get("factId") or ""),
+        source_id=source_id,
+        macro_range=fact_range,
+        name_range=name_range,
+        macro_kind=str(macro_kind),
+        terminal_name=terminal_name,
+        parameter_ranges=tuple(parameters),
+        variadic=variadic,
+        replacement_range=replacement,
+        grammar_rule=grammar_rule,
+        presence=dict(presence),
+    )
+
+
 def _validate_completeness(
     evidence: Mapping[str, Any],
     *,
@@ -398,6 +528,7 @@ def validate_common_evidence(
     fact_kinds: dict[str, str] = {}
     emitted_by_kind = {kind: 0 for kind in _KINDS}
     calls: list[CallEvidenceFact] = []
+    macros: list[MacroEvidenceFact] = []
     for index, fact in enumerate(facts):
         if not isinstance(fact, dict):
             raise _fail(f"facts[{index}]", "object required")
@@ -436,6 +567,15 @@ def validate_common_evidence(
                 presence=presence,
                 source=source,
             ))
+        elif kind == "macro":
+            macros.append(_validate_macro(
+                fact,
+                source_id=source_id,
+                fact_range=fact_range,
+                grammar_rule=grammar_rule,
+                presence=presence,
+                source=source,
+            ))
 
     completeness = _validate_completeness(
         evidence,
@@ -447,5 +587,6 @@ def validate_common_evidence(
         decoded_text_sha256=decoded_hash,
         decoded_text=source,
         call_facts=tuple(calls),
+        macro_facts=tuple(macros),
         completeness=completeness,
     )

@@ -158,7 +158,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
     variables, constants, data_types = [], [], []
     parent_of = []
     has_member, belongs_to, statement_next = [], [], []
-    call_sites, import_refs = [], []
+    call_sites, macro_facts, import_refs = [], [], []
     evidence_sources, evidence_completeness = [], []
     parsed_files = 0
     await pause.gate()
@@ -183,6 +183,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         belongs_to.extend(result.belongs_to_edges)
         statement_next.extend(result.statement_next_edges)
         call_sites.extend(result.call_sites)
+        macro_facts.extend(result.macro_facts)
         import_refs.extend(result.import_refs)
         evidence_sources.extend(result.evidence_sources)
         evidence_completeness.extend(result.evidence_completeness)
@@ -193,6 +194,12 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
     call_fact_ids = [site.get("call_id") for site in call_sites]
     if len(call_fact_ids) != len(set(call_fact_ids)):
         raise ValueError("common evidence call fact IDs are not globally exact-once")
+    macro_fact_ids = [fact.get("fact_id") for fact in macro_facts]
+    if (
+        any(not fact_id for fact_id in macro_fact_ids)
+        or len(macro_fact_ids) != len(set(macro_fact_ids))
+    ):
+        raise ValueError("common evidence macro fact IDs are not globally exact-once")
     source_ids = [item.get("source_id") for item in evidence_sources]
     if len(source_ids) != parsed_files or len(source_ids) != len(set(source_ids)):
         raise ValueError(
@@ -329,6 +336,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         statement_next=len(statement_next),
         references=len(references), init_by=len(init_by),
         call_sites=len(call_sites), import_refs=len(import_refs),
+        macro_facts=len(macro_facts),
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
     return {
@@ -345,6 +353,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         "references_edges": references,
         "init_by_edges": init_by,
         "call_sites": call_sites,
+        "macro_facts": macro_facts,
         "import_refs": import_refs,
         "evidence_sources": evidence_sources,
         "evidence_completeness": evidence_completeness,

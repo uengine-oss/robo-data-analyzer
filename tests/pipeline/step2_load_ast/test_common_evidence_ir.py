@@ -9,7 +9,10 @@ from tempfile import TemporaryDirectory
 import pytest
 
 from pipeline.steps.step2_load_ast.dispatch import read_antlr_json
-from pipeline.steps.step2_load_ast.evidence_ir import CommonEvidenceContractError
+from pipeline.steps.step2_load_ast.evidence_ir import (
+    CommonEvidenceContractError,
+    validate_common_evidence,
+)
 from shared.files.cache import SourceFileCache
 
 
@@ -121,6 +124,64 @@ def _read(raw: dict, source: str):
     return temporary, read_antlr_json(artifact, root)
 
 
+def _macro_artifact(source: str) -> dict:
+    source_id = "sample.c"
+    decoded_hash = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    definition = source.rstrip("\n")
+    fact_range = _range(source, definition)
+    fact = {
+        "factId": _fact_id(
+            source_id, decoded_hash, "macro",
+            fact_range["charOffset"], fact_range["charLength"],
+        ),
+        "kind": "macro",
+        "range": fact_range,
+        "grammarRuleRef": 0,
+        "presenceRef": 0,
+        "payload": {
+            "nameRange": _range(source, "TRACE"),
+            "macroKind": "function",
+            "terminalName": "TRACE",
+            "parameterRanges": [_range(source, "value")],
+            "variadic": True,
+            "replacementRange": _range(
+                source, "log_trace(value, __VA_ARGS__)"
+            ),
+        },
+    }
+    completeness = []
+    for kind in KINDS:
+        emitted = 1 if kind == "macro" else 0
+        completeness.append({
+            "kind": kind,
+            "status": "complete" if kind in {"macro", "conditional_region"}
+            else "unsupported",
+            "population": emitted,
+            "emitted": emitted,
+            "explicitlyUnresolved": 0,
+        })
+    return {"evidence": {
+        "version": "1.0.0",
+        "sourceId": source_id,
+        "rawSourceSha256": decoded_hash,
+        "decodedTextSha256": decoded_hash,
+        "decodedText": source,
+        "sourceEncoding": "UTF-8",
+        "decodeStatus": "exact",
+        "positionEncoding": "unicode-code-point",
+        "rangeConvention": "half-open",
+        "rangeEncoding": "char-offset-length",
+        "parseStatus": "exact",
+        "facts": [fact],
+        "grammarRules": ["functionDefine"],
+        "presences": [{
+            "status": "active", "condition": None,
+            "configurationId": None, "provenance": "unconditional",
+        }],
+        "completeness": completeness,
+    }}
+
+
 def test_framework_calls_use_canonical_fact_ids_ranges_and_routine_owner() -> None:
     source = "void run(void) { service->handler(1); (*callback)(2); }\n"
     temporary, result = _read(_artifact(source), source)
@@ -160,6 +221,63 @@ def test_inactive_call_is_preserved_in_occurrence_ledger() -> None:
         assert len(result.call_sites) == 2
     finally:
         temporary.cleanup()
+
+
+def test_macro_payload_is_bound_to_exact_grammar_ranges() -> None:
+    source = "#define TRACE(value, ...) log_trace(value, __VA_ARGS__)\n"
+    validated = validate_common_evidence(
+        _macro_artifact(source), source_bytes=source.encode("utf-8"),
+        expected_source_id="sample.c",
+    )
+
+    assert len(validated.macro_facts) == 1
+    macro = validated.macro_facts[0]
+    assert macro.terminal_name == "TRACE"
+    assert macro.macro_kind == "function"
+    assert macro.variadic is True
+    assert source[macro.name_range.char_offset:macro.name_range.end] == "TRACE"
+    assert [
+        source[item.char_offset:item.end] for item in macro.parameter_ranges
+    ] == ["value"]
+    assert source[
+        macro.replacement_range.char_offset:macro.replacement_range.end
+    ] == "log_trace(value, __VA_ARGS__)"
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    (
+        (
+            lambda fact: fact["payload"].update(terminalName="TRAC"),
+            "macro.payload.terminalName",
+        ),
+        (
+            lambda fact: fact["payload"].update(macroKind="procedure"),
+            "macro.payload.macroKind",
+        ),
+        (
+            lambda fact: fact["payload"].update(
+                nameRange={"charOffset": 0, "charLength": 6},
+            ),
+            "macro.payload.terminalName",
+        ),
+        (
+            lambda fact: fact["payload"].update(
+                replacementRange={"charOffset": 0, "charLength": 7},
+            ),
+            "macro.payload.replacementRange",
+        ),
+    ),
+)
+def test_invalid_macro_payload_fails_closed(mutate, message) -> None:
+    source = "#define TRACE(value, ...) log_trace(value, __VA_ARGS__)\n"
+    raw = _macro_artifact(source)
+    mutate(raw["evidence"]["facts"][0])
+    with pytest.raises(CommonEvidenceContractError, match=message):
+        validate_common_evidence(
+            raw, source_bytes=source.encode("utf-8"),
+            expected_source_id="sample.c",
+        )
 
 
 @pytest.mark.parametrize(

@@ -125,17 +125,12 @@ def test_non_active_expression_and_missing_owner_are_explicitly_accounted() -> N
 def test_wrapper_target_is_not_reparsed_from_source_line() -> None:
     caller = _fn("code:sample.c:run", "run", "code:sample.c")
 
-    class SourceMustNotBeRead:
-        def lines(self, _path):
-            raise AssertionError("wrapper classification reparsed source")
-
     wrapper_site = _canonical_site("wrapper", caller.id, "mpfm_dlcall")
     wrapper_site["file"] = "sample.py"
     result = classify_call_sites(
         [wrapper_site],
         [caller],
         wrappers=[{"wrapper": "mpfm_dlcall", "callee_from": "first_arg_string"}],
-        source_cache=SourceMustNotBeRead(),
     )
 
     assert result.edges == []

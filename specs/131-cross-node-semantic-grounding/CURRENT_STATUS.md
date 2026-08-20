@@ -334,5 +334,40 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
 25e. 다음 책임 슬라이스는 C-055 Parser macro evidence와 wrapper target에 필요한 literal/symbol argument
     evidence다. 그 뒤 DBMS effective CodeNode owner 및 Neo4j/API/MCP actual replay를 별도 승인한다. 따라서
     현재 결과를 전체 파이프라인 정확도 합격으로 확대하지 않는다.
+25f. C-055 착수 조사에서 pinned C grammar가 preprocessing-file 문법을 비워 두고 directive 전체를 hidden
+    token 하나로 만드는 것이 확인됐다. Parser listener와 Analyzer가 각각 regex로 `#define`을 재파싱하는
+    이중 owner다. WG14 N3096 §6.10과 ANTLR 공식 lexer/parser 계약을 대조해 별도 pinned C-preprocessor
+    grammar + logical/physical range mapping을 채택했다. macro 6종 formal red는 `expected 6, actual 0`으로
+    확인됐다. 근거와 rollback 경계는 `evidence/c-preprocessor-grammar-research-20260821.md`다.
+25g. 완료(Parser C macro producer, C-055/C-060): 별도 pinned ANTLR lexer/parser, phase-2 logical↔physical
+    code-point mapping, block-comment lexer mode, malformed/unclosed explicit unresolved, object/function·variadic·
+    digraph 계약을 구현했다. `CAstListener`의 `#define` regex는 제거하고 legacy DEFINE은 grammar fact에서만
+    투영한다. Parser 전체 48 suites/170 tests(실패 0, error 0, skipped 10), APAS 23파일 deterministic replay는
+    macro 183 = object 182 + function 1 = active 182 + conditional 1, unresolved/duplicate 0이다. macro ledger는
+    `b1f51f924272511d019adc6ff3bf831aa1445c66e113da1742fc278ee41ae42a`, 봉인 직접 판정은 34/34 일치다.
+    상세는 `evidence/parser-c-macro-evidence-validation-20260821.md`다. Analyzer consumer와 `_FUNCTION_MACRO_RE`
+    제거는 아직 pending이며 Parser 성공을 E2E 성공으로 확대하지 않는다.
+25h. 같은 조사에서 C include/conditional 문자열 재파싱 C-061, project type-name regex prepass C-062,
+    UCN/dialect canonical preprocessing identifier C-063을 새로 분리했다. 모두 범용 syntax/identity owner 원칙
+    위반 가능성이 있어 숨기지 않되, 근거 없는 삭제로 parser 정확도를 낮추지 않고 각 red와 actual을 고정해
+    후속 grammar-owned 책임으로 교체한다.
+25i. 완료(Analyzer C macro consumer, C-055): v1 macro payload의 exact name/range/kind/parameter/variadic/
+    replacement/presence를 strict 검증하고 step2 state에 canonical ID exact-once로 보존한다. Analyzer의
+    `_FUNCTION_MACRO_RE`, source line read, C identifier 재파싱을 제거했다. declaration만으로 call 시점
+    expansion을 단정하는 것도 금지했다. define/undef/redefinition/include/build define의 ordered effective
+    state가 아직 없으므로 active declaration은 `insufficient_macro_expansion_state`, conditional declaration은
+    `insufficient_conditional_macro_definition`으로 macro fact ID와 함께 명시 unresolved다.
+25j. actual APAS 두 replay는 call 12,113 + macro 183, duplicate 0, macro ledger
+    `b1f51f924272511d019adc6ff3bf831aa1445c66e113da1742fc278ee41ae42a`로 동일하다. 종전 regex가 제외한
+    `zordmfax00001.c`의 `PFM_DBG` 76건은 유일한 조건부 function macro fact와 exact-once 결합해 unresolved로
+    보존됐다. outcome은 edge 869 / excluded 11,050 / preserved 33 / unresolved 161, resolution ledger는
+    `61f6c05cf1efe59a76e5a693b52b791e9534a30a2aacb06437f0a8d702d74429`다. Parser 봉인 call 526/526 + macro
+    34/34를 Analyzer payload와 대조했다. 집중 `210 passed, 1 skipped, 19 subtests`, actual `1 passed`, 권위
+    unittest `1122 tests OK, skipped 6`, 전체 pytest `1200 passed, 7 skipped, 367 subtests`다. 상세는
+    `evidence/analyzer-c-macro-consumer-validation-20260821.md`다.
+25k. 신규 C-064: macro declaration completeness는 invocation resolution completeness가 아니다. ordered
+    `#define/#undef` lifetime, include closure, build predefined macro와 call 위치를 Parser가 canonical evidence로
+    생산해야만 `function_macro` definitive exclusion을 재승인할 수 있다. 현재 actual 76건의 explicit
+    unresolved는 이 생산자 의무를 숨기지 않는 degraded 결과이며 최종 해결로 오인하지 않는다.
 26. 검증: 자동 회귀→결정론 전수 회계→봉인 직접 의미 판정→실제 APAS 순으로 계속 수행한다.
 27. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.

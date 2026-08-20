@@ -1,66 +1,98 @@
 from __future__ import annotations
 
-import tempfile
 import unittest
-from pathlib import Path
 
 from graph.schema.graph_nodes import CodeNode
 from pipeline.steps.step5_linking.link_calls.call_classifier import classify_call_sites
 
 
 class FunctionMacroCallTests(unittest.TestCase):
-    def test_declared_function_macro_is_not_external_call(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "sample.c"
-            path.write_text(
-                "#define TRACE(...) log_trace(__VA_ARGS__)\n"
-                "void run(void) { TRACE(\"running\"); }\n",
-                encoding="utf-8",
-            )
-            caller = CodeNode(
-                id="code:sample.c:run", name="run", owner_id="code:sample.c",
-                signature="void run(void)", file_path=str(path), start_line=2,
-                end_line=2, label="FUNCTION",
-            )
-            result = classify_call_sites([{
-                "call_id": "trace-call",
-                "caller_id": caller.id,
-                "call_text": "TRACE",
-                "callee_kind": "named",
-                "presence_status": "active",
-                "file": str(path),
-                "line": 2,
-            }], [caller])
+    def test_declaration_alone_cannot_claim_macro_expansion(self) -> None:
+        caller = _caller()
+        result = classify_call_sites([_call(caller, "TRACE")], [caller], macro_facts=[{
+            "fact_id": "macro-trace",
+            "source_id": "sample.c",
+            "macro_kind": "function",
+            "terminal_name": "TRACE",
+            "presence_status": "active",
+        }])
 
         self.assertEqual([], result.edges)
-        self.assertEqual(1, result.dropped_macro)
+        self.assertEqual(0, result.dropped_macro)
+        self.assertEqual(1, result.unresolved_macro)
+        self.assertEqual([{
+            "call_id": "trace-call",
+            "outcome": "unresolved",
+            "reason": "insufficient_macro_expansion_state",
+            "macro_fact_ids": ["macro-trace"],
+        }], result.ledger)
 
-    def test_object_macro_and_undeclared_name_remain_external(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "sample.c"
-            path.write_text(
-                "#define CALLBACK (runtime_callback)\n"
-                "void run(void) { CALLBACK(); customer_hook(); }\n",
-                encoding="utf-8",
-            )
-            caller = CodeNode(
-                id="code:sample.c:run", name="run", owner_id="code:sample.c",
-                signature="void run(void)", file_path=str(path), start_line=2,
-                end_line=2, label="FUNCTION",
-            )
-            sites = [
-                {"call_id": f"call-{index}", "caller_id": caller.id,
-                 "call_text": name, "callee_kind": "named",
-                 "presence_status": "active", "file": str(path), "line": 2}
-                for index, name in enumerate(("CALLBACK", "customer_hook"))
-            ]
-            result = classify_call_sites(sites, [caller])
+    def test_conditional_definition_is_explicitly_unresolved(self) -> None:
+        caller = _caller()
+        result = classify_call_sites([_call(caller, "PFM_DBG")], [caller], macro_facts=[{
+            "fact_id": "macro-pfm-dbg",
+            "source_id": "sample.c",
+            "macro_kind": "function",
+            "terminal_name": "PFM_DBG",
+            "presence_status": "conditional",
+        }])
+
+        self.assertEqual([], result.edges)
+        self.assertEqual(1, result.unresolved_macro)
+        self.assertEqual(
+            "insufficient_conditional_macro_definition", result.ledger[0]["reason"],
+        )
+
+    def test_object_and_inactive_function_macro_do_not_suppress_call(self) -> None:
+        caller = _caller()
+        sites = [
+            _call(caller, "CALLBACK", call_id="call-object"),
+            _call(caller, "TRACE", call_id="call-inactive"),
+            _call(caller, "customer_hook", call_id="call-external"),
+        ]
+        result = classify_call_sites(sites, [caller], macro_facts=[
+            {
+                "fact_id": "macro-object", "source_id": "sample.c",
+                "macro_kind": "object", "terminal_name": "CALLBACK",
+                "presence_status": "active",
+            },
+            {
+                "fact_id": "macro-inactive", "source_id": "sample.c",
+                "macro_kind": "function", "terminal_name": "TRACE",
+                "presence_status": "inactive",
+            },
+        ])
 
         self.assertEqual(
-            [("CALLBACK", "external"), ("customer_hook", "external")],
+            [
+                ("CALLBACK", "external"),
+                ("TRACE", "external"),
+                ("customer_hook", "external"),
+            ],
             [(edge.callee_id, edge.scope) for edge in result.edges],
         )
         self.assertEqual(0, result.dropped_macro)
+
+
+def _caller() -> CodeNode:
+    return CodeNode(
+        id="code:sample.c:run", name="run", owner_id="code:sample.c",
+        signature="void run(void)", file_path="sample.c", start_line=2,
+        end_line=2, label="FUNCTION",
+    )
+
+
+def _call(caller: CodeNode, name: str, *, call_id: str = "trace-call") -> dict:
+    return {
+        "call_id": call_id,
+        "caller_id": caller.id,
+        "call_text": name,
+        "callee_kind": "named",
+        "presence_status": "active",
+        "source_id": "sample.c",
+        "file": "sample.c",
+        "line": 2,
+    }
 
 
 if __name__ == "__main__":
