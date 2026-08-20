@@ -96,9 +96,10 @@ async def cluster_retrieve(
         from search.service import run_search
         try:
             clusters, meta = run_search(q)
+            corpus = load_corpus(generation_id=meta.get("generation_id"))
         except SearchUnavailable as e:
             return {"error": {"code": "SEARCH_UNAVAILABLE", "message": str(e)}}
-        return {"clusters": _list_clusters(clusters, load_corpus().by_id), "meta": meta}
+        return {"clusters": _list_clusters(clusters, corpus.by_id), "meta": meta}
 
     result = await asyncio.to_thread(_run)
     # compact·비이스케이프 1벌 — dict 반환 시 SDK 의 escape+indent+이중 전송이 크기를

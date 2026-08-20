@@ -14,10 +14,11 @@ from graph.schema.rel_types import REFERENCES
 
 MERGE_QUERY = f"""
 UNWIND $items AS item
-MATCH (node:ANALYZER_OWNED {{id: item.source_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-MATCH (t:ANALYZER_OWNED {{id: item.target_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (node:ANALYZER_OWNED {{id: item.source_id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
+MATCH (t:ANALYZER_OWNED {{id: item.target_id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
 MERGE (node)-[r:{REFERENCES}]->(t)
-SET r.evidence_line = item.evidence_line
+SET r.evidence_line = item.evidence_line,
+    r.generation_id = $generation_id
 """
 
 

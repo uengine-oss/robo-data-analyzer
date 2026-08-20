@@ -20,31 +20,20 @@ from graph.ownership import ANALYZER_GRAPH_OWNER
 # ★코드 노드 라벨은 antlr type **열린 집합**이라 종류별 제약 열거 불가 →
 #   전 노드 공통 마커 ``:ANALYZER_OWNED`` 에 id 유니크 제약을 건다. 이 인덱스가 없으면
 #   무라벨 MATCH by id 가 AllNodesScan — AST 적재 159초의 원인이었다 (run6 실측).
+LEGACY_ID_CONSTRAINT_NAMES: tuple[str, ...] = (
+    "uniq_analyzer_owned", "uniq_schema", "uniq_table", "uniq_object_reference",
+    "uniq_column", "uniq_package", "uniq_rule", "uniq_example", "uniq_question",
+    "uniq_project_file", "uniq_external_chunk",
+)
+
 CONSTRAINTS: list[str] = [
-    "CREATE CONSTRAINT uniq_analyzer_owned IF NOT EXISTS "
-    "FOR (n:ANALYZER_OWNED) REQUIRE n.id IS UNIQUE",
-    "CREATE CONSTRAINT uniq_schema IF NOT EXISTS "
-    "FOR (s:SCHEMA) REQUIRE s.id IS UNIQUE",
-    "CREATE CONSTRAINT uniq_table IF NOT EXISTS "
-    "FOR (t:TABLE) REQUIRE t.id IS UNIQUE",
-    "CREATE CONSTRAINT uniq_object_reference IF NOT EXISTS "
-    "FOR (n:OBJECT_REFERENCE) REQUIRE n.id IS UNIQUE",
-    "CREATE CONSTRAINT uniq_column IF NOT EXISTS "
-    "FOR (c:COLUMN) REQUIRE c.id IS UNIQUE",
-    "CREATE CONSTRAINT uniq_package IF NOT EXISTS "
-    "FOR (p:PACKAGE) REQUIRE p.id IS UNIQUE",
-    # Example Mapping 노드 (analyze_code 3분할 → EM 빌더)
-    "CREATE CONSTRAINT uniq_rule IF NOT EXISTS "
-    "FOR (r:RULE) REQUIRE r.id IS UNIQUE",
-    "CREATE CONSTRAINT uniq_example IF NOT EXISTS "
-    "FOR (e:EXAMPLE) REQUIRE e.id IS UNIQUE",
-    "CREATE CONSTRAINT uniq_question IF NOT EXISTS "
-    "FOR (q:QUESTION) REQUIRE q.id IS UNIQUE",
-    *[
-        f"CREATE CONSTRAINT uniq_{label.lower()} IF NOT EXISTS FOR (n:{label}) REQUIRE n.id IS UNIQUE"
-        for label in ("PROJECT_FILE", "EXTERNAL_CHUNK")
-    ],
-    # 컴포넌트는 합성 노드(:COMPONENT)가 없으므로 제약 불필요 — 멤버십은 component_id 속성.
+    "CREATE CONSTRAINT uniq_analyzer_owned_generation IF NOT EXISTS "
+    "FOR (n:ANALYZER_OWNED) "
+    "REQUIRE (n.graph_owner, n.generation_id, n.id) IS UNIQUE",
+    "CREATE CONSTRAINT uniq_analyzer_generation_manifest IF NOT EXISTS "
+    "FOR (g:ANALYZER_GENERATION) REQUIRE (g.graph_owner, g.run_id) IS UNIQUE",
+    "CREATE CONSTRAINT uniq_analyzer_active_generation IF NOT EXISTS "
+    "FOR (g:ANALYZER_ACTIVE_GENERATION) REQUIRE (g.graph_owner, g.key) IS UNIQUE",
 ]
 
 # 조회 인덱스 (안정 라벨만 — 코드 노드는 열린 antlr type 라벨이라 id 키로 조회).
@@ -86,6 +75,8 @@ async def ensure_schema(client: Neo4jClient) -> None:
     drop-all 은 남의 스키마까지 파괴). 단 옛 버전 잔재 인덱스가 제약 자리를 차지하면
     충돌하므로 — analyzer 는 깨끗한 전용 DB 를 써야 한다.
     """
+    for name in LEGACY_ID_CONSTRAINT_NAMES:
+        await client.run_query(f"DROP CONSTRAINT {name} IF EXISTS")
     for stmt in CONSTRAINTS + INDEXES:
         await client.run_query(stmt)
 

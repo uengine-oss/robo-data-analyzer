@@ -153,7 +153,7 @@ class RunInitializationContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("이미 활성", records[0]["message"])
         self.assertEqual(("run:first", first), run_registry.get_active())
 
-    async def test_source_ast_closure_failure_precedes_neo4j_client_and_wipe(self) -> None:
+    async def test_source_ast_closure_failure_precedes_neo4j_client(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             corpus = Path(temporary) / "corpus"
             source = corpus / "source"
@@ -163,13 +163,9 @@ class RunInitializationContractTest(unittest.IsolatedAsyncioTestCase):
             (source / "missing.c").write_text(
                 "int f(void) { return 0; }\n", encoding="utf-8"
             )
-            wipe = AsyncMock()
             strategy = SimpleNamespace(name="framework", prompts_dir="llm/prompts/framework")
 
-            with (
-                patch.object(run_executor, "Neo4jClient") as neo4j_client,
-                patch.object(run_executor, "wipe_graph", new=wipe),
-            ):
+            with patch.object(run_executor, "Neo4jClient") as neo4j_client:
                 with self.assertRaisesRegex(ValueError, "missing.c"):
                     await run_executor.execute_run(
                         strategy=strategy,
@@ -182,7 +178,59 @@ class RunInitializationContractTest(unittest.IsolatedAsyncioTestCase):
                     )
 
             neo4j_client.assert_not_called()
-            wipe.assert_not_awaited()
+
+    async def test_pipeline_failure_quarantines_staging_without_publish(self) -> None:
+        class Closure:
+            artifacts: tuple = ()
+
+            @staticmethod
+            def as_dict() -> dict:
+                return {"schema_version": "source-ast-closure/v1", "artifacts": []}
+
+        class FailingApp:
+            async def astream(self, *_args, **_kwargs):
+                yield {"step1": {}}
+                raise RuntimeError("injected pipeline failure")
+
+        neo = SimpleNamespace(close=AsyncMock())
+        ensure = AsyncMock()
+        begin = AsyncMock()
+        publish = AsyncMock()
+        terminate = AsyncMock()
+        strategy = SimpleNamespace(name="framework", prompts_dir="llm/prompts/framework")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            with (
+                patch.object(run_executor, "verify_source_ast_closure", return_value=Closure()),
+                patch.object(
+                    run_executor, "ast_and_source_roots",
+                    return_value=(Path(temporary), Path(temporary)),
+                ),
+                patch.object(run_executor, "Neo4jClient", return_value=neo),
+                patch.object(run_executor, "ensure_schema", new=ensure),
+                patch.object(run_executor, "begin_generation", new=begin),
+                patch.object(run_executor, "publish_generation", new=publish),
+                patch.object(run_executor, "terminate_generation", new=terminate),
+                patch.object(run_executor, "build_langgraph_workflow", return_value=FailingApp()),
+                patch.object(run_executor.response_cache, "sweep"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "injected pipeline failure"):
+                    await run_executor.execute_run(
+                        strategy=strategy,
+                        codebase=Codebase(
+                            root=Path(temporary),
+                            strategy="framework",
+                            corpus_root=Path(temporary),
+                        ),
+                        run_output_root=Path(temporary) / "runs",
+                    )
+
+        ensure.assert_awaited_once_with(neo)
+        begin.assert_awaited_once()
+        publish.assert_not_awaited()
+        terminate.assert_awaited_once()
+        self.assertEqual("failed", terminate.await_args.kwargs["status"])
+        neo.close.assert_awaited_once()
 
 
 if __name__ == "__main__":

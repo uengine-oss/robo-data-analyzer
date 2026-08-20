@@ -20,6 +20,7 @@ VECTOR_INDEX_NAME = "embedded_code_vec"  # (:EMBEDDED).embedding 벡터 인덱�
 FETCH_MATERIAL = f"""
 MATCH (n)
 WHERE n.graph_owner = '{ANALYZER_GRAPH_OWNER}'
+  AND n.generation_id = $generation_id
   AND n.summary IS NOT NULL AND n.summary <> ''
   AND NOT n:FILE AND NOT n:MODULE AND NOT n:PACKAGE
 RETURN n.id AS id,

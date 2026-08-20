@@ -14,9 +14,10 @@ from graph.schema.rel_types import INIT_BY
 
 MERGE_QUERY = f"""
 UNWIND $items AS item
-MATCH (f:ANALYZER_OWNED {{id: item.from_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-MATCH (s:ANALYZER_OWNED {{id: item.source_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-MERGE (f)-[:{INIT_BY}]->(s)
+MATCH (f:ANALYZER_OWNED {{id: item.from_id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
+MATCH (s:ANALYZER_OWNED {{id: item.source_id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
+MERGE (f)-[rel:{INIT_BY}]->(s)
+SET rel.generation_id = $generation_id
 """
 
 

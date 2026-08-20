@@ -11,6 +11,7 @@ from dataclasses import replace
 from search.config import DEFAULT
 from search.corpus.corpus import load_corpus
 from search.corpus.neo4j_reader import read_driver
+from search.corpus.generation import completed_generation_session
 from search.ranking.retriever import Retriever
 
 
@@ -21,17 +22,18 @@ def run_search(
     if top_n is not None and not 1 <= top_n <= 100:
         raise ValueError(f"top_n must be between 1 and 100: {top_n!r}")
     cfg = replace(DEFAULT, cluster_top_n=top_n) if top_n is not None else DEFAULT
-    corpus = load_corpus()
     meta: dict = {}
     drv, db = read_driver()
     try:
-        with drv.session(database=db) as session:
+        with completed_generation_session(drv, db) as session:
+            corpus = load_corpus(generation_id=session.generation_id)
             nodes = Retriever(session, corpus).retrieve(
                 query, cfg, on_progress=on_progress, meta=meta)
     finally:
         drv.close()
 
     meta["coverage"] = {"corpus_nodes": len(corpus.ids)}
+    meta["generation_id"] = corpus.generation_id
     if not nodes:
         return [], meta
     score = max(n["relevance"] for n in nodes)

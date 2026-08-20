@@ -15,9 +15,10 @@ from graph.schema.rel_types import BELONGS_TO
 
 MERGE_QUERY = f"""
 UNWIND $items AS item
-MATCH (child:ANALYZER_OWNED {{id: item.child_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-MATCH (parent:ANALYZER_OWNED {{id: item.parent_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-MERGE (child)-[:{BELONGS_TO}]->(parent)
+MATCH (child:ANALYZER_OWNED {{id: item.child_id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
+MATCH (parent:ANALYZER_OWNED {{id: item.parent_id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
+MERGE (child)-[rel:{BELONGS_TO}]->(parent)
+SET rel.generation_id = $generation_id
 """
 
 

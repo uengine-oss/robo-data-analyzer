@@ -15,11 +15,12 @@ from graph.schema.rel_types import AFFECTS_TABLE
 
 _UPSERT_QUERY = f"""
 UNWIND $items AS item
-MATCH (r:RULE {{id: item.source_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-MATCH (t:TABLE {{id: item.target_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (r:RULE {{id: item.source_id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
+MATCH (t:TABLE {{id: item.target_id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
 MERGE (r)-[a:{AFFECTS_TABLE} {{op: item.op}}]->(t)
 SET a.access = item.access,
-    a.op_source = item.op_source
+    a.op_source = item.op_source,
+    a.generation_id = $generation_id
 """
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -58,11 +59,19 @@ class SearchRequestContractTest(unittest.IsolatedAsyncioTestCase):
                 observed.append(cfg.cluster_top_n)
                 return []
 
+        @contextmanager
+        def scoped_session(_driver, _database):
+            yield SimpleNamespace(generation_id="generation:1")
+
         default_limit = service.DEFAULT.cluster_top_n
         with (
-            patch.object(service, "load_corpus", return_value=SimpleNamespace(ids=[])),
+            patch.object(
+                service, "load_corpus",
+                return_value=SimpleNamespace(ids=[], generation_id="generation:1"),
+            ),
             patch.object(service, "read_driver", return_value=(Driver(), "neo4j")),
             patch.object(service, "Retriever", Retriever),
+            patch.object(service, "completed_generation_session", scoped_session),
         ):
             service.run_search("inventory", top_n=3)
 

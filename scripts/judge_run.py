@@ -726,24 +726,34 @@ def _actual_source_file(value: str, source_root: Path) -> str:
 async def _graph_gold_axes(source_root: Path) -> dict[str, set]:
     """Read the graph axes comparable to the strict independent shop gold."""
     from graph.neo4j_client import Neo4jClient
+    from graph.generation import bind_active_completed_generation
+    from graph.ownership import ANALYZER_GRAPH_OWNER
 
     client = Neo4jClient()
     try:
+        await bind_active_completed_generation(client)
         async def rows(query: str) -> list[dict]:
             return await client.run_read_query(query, {})
 
         routine_rows = await rows(
-            "MATCH (n) WHERE n.file_path IS NOT NULL AND "
+            f"MATCH (n:ANALYZER_OWNED {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
+            "WHERE n.file_path IS NOT NULL AND "
             "any(label IN labels(n) WHERE label IN ['FUNCTION','PROCEDURE','METHOD','TRIGGER']) "
             "RETURN n.file_path AS file, n.name AS name"
         )
-        table_rows = await rows("MATCH (n:TABLE) RETURN n.name AS name")
+        table_rows = await rows(
+            f"MATCH (n:TABLE {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
+            "RETURN n.name AS name"
+        )
         column_rows = await rows(
-            "MATCH (t:TABLE)-[:HAS_COLUMN]->(c:COLUMN) "
+            f"MATCH (t:TABLE {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})"
+            f"-[:HAS_COLUMN]->(c:COLUMN {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
             "RETURN t.name AS table_name, c.name AS column_name"
         )
         call_rows = await rows(
-            "MATCH (routine)-[:PARENT_OF*0..]->(a)-[:CALLS]->(b) "
+            f"MATCH (routine:ANALYZER_OWNED {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})"
+            "-[:PARENT_OF*0..]->(a)-[:CALLS]->"
+            f"(b:ANALYZER_OWNED {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
             "WHERE routine.file_path IS NOT NULL AND b.file_path IS NOT NULL AND "
             "any(label IN labels(routine) WHERE "
             "label IN ['FUNCTION','PROCEDURE','METHOD','TRIGGER']) "
@@ -752,7 +762,9 @@ async def _graph_gold_axes(source_root: Path) -> dict[str, set]:
         )
         rw_rows = {
             relation: await rows(
-                f"MATCH (routine)-[:PARENT_OF*0..]->(a)-[:{relation}]->(b) "
+                f"MATCH (routine:ANALYZER_OWNED {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})"
+                f"-[:PARENT_OF*0..]->(a)-[:{relation}]->"
+                f"(b:ANALYZER_OWNED {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
                 "WHERE any(label IN labels(routine) WHERE "
                 "label IN ['FUNCTION','PROCEDURE','METHOD','TRIGGER']) "
                 "AND (b:TABLE OR b:OBJECT_REFERENCE) "
@@ -762,13 +774,17 @@ async def _graph_gold_axes(source_root: Path) -> dict[str, set]:
             for relation in ("READS", "WRITES")
         }
         reference_rows = await rows(
-            "MATCH (a)-[:REFERENCES]->(b) WHERE a.file_path IS NOT NULL AND b.file_path IS NOT NULL AND "
+            f"MATCH (a:ANALYZER_OWNED {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})"
+            f"-[:REFERENCES]->(b:ANALYZER_OWNED {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
+            "WHERE a.file_path IS NOT NULL AND b.file_path IS NOT NULL AND "
             "any(label IN labels(a) WHERE label IN ['FUNCTION','PROCEDURE','METHOD','TRIGGER']) "
             "RETURN a.file_path AS afile, a.name AS aname, b.file_path AS bfile, "
             "b.name AS bname, labels(b) AS labels"
         )
         init_rows = await rows(
-            "MATCH (a)-[:INIT_BY]->(b) WHERE a.file_path IS NOT NULL AND b.file_path IS NOT NULL "
+            f"MATCH (a:ANALYZER_OWNED {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})"
+            f"-[:INIT_BY]->(b:ANALYZER_OWNED {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
+            "WHERE a.file_path IS NOT NULL AND b.file_path IS NOT NULL "
             "RETURN a.file_path AS afile, a.name AS aname, labels(a) AS alabels, "
             "b.file_path AS bfile, b.name AS bname, labels(b) AS blabels"
         )
@@ -837,25 +853,32 @@ def _print_gold_comparison(gold: dict[str, set], actual: dict[str, set]) -> None
 async def _graph_axes(database: str | None) -> dict[str, object]:
     """그래프에서 CALL/RW/EXAMPLE 축의 실측값을 읽는다 (읽기 전용)."""
     from graph.neo4j_client import Neo4jClient
+    from graph.generation import bind_active_completed_generation
+    from graph.ownership import ANALYZER_GRAPH_OWNER
 
     client = Neo4jClient()
     try:
+        await bind_active_completed_generation(client)
         async def one(query: str) -> list[dict]:
             return await client.run_read_query(query, {})
 
         counts = await one(
-            "MATCH (n) RETURN labels(n)[0] AS label, count(*) AS n "
+            f"MATCH (n:ANALYZER_OWNED {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
+            "RETURN labels(n)[0] AS label, count(*) AS n "
             "ORDER BY n DESC LIMIT 12"
         )
         rels = await one(
-            "MATCH ()-[r]->() RETURN type(r) AS rel, count(*) AS n "
+            f"MATCH (:ANALYZER_OWNED {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})"
+            "-[r]->"
+            f"(:ANALYZER_OWNED {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
+            "RETURN type(r) AS rel, count(*) AS n "
             "ORDER BY n DESC LIMIT 12"
         )
         # cond 가 빈 규칙(무조건 실행 행)과 direct outcome이 없는 nested-control 행은 예시를
         # 만들지 않는 것이 계약이다(example_synthesis). 둘을 위반으로 세면 진짜 신호가 묻힌다.
         rule_example = await one(
-            "MATCH (r:RULE) "
-            "OPTIONAL MATCH (r)-[:HAS_EXAMPLE]->(e:EXAMPLE) "
+            f"MATCH (r:RULE {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
+            f"OPTIONAL MATCH (r)-[:HAS_EXAMPLE]->(e:EXAMPLE {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
             "WITH r, count(e) AS examples, "
             "     (r.cond IS NULL OR r.cond = '') AS unconditional, "
             "     (r.then IS NOT NULL AND size(r.then) > 0) AS has_outcome "
@@ -868,11 +891,13 @@ async def _graph_axes(database: str | None) -> dict[str, object]:
             "       sum(examples) AS example_links"
         )
         orphan_example = await one(
-            "MATCH (e:EXAMPLE) WHERE NOT ()-[:HAS_EXAMPLE]->(e) "
+            f"MATCH (e:EXAMPLE {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
+            "WHERE NOT ()-[:HAS_EXAMPLE]->(e) "
             "RETURN count(e) AS orphans"
         )
         rule_rows = await one(
-            "MATCH (c)-[:HAS_RULE]->(r:RULE) "
+            f"MATCH (c:ANALYZER_OWNED {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})"
+            f"-[:HAS_RULE]->(r:RULE {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
             "RETURN c.id AS target_id, r.anchor_line AS anchor_line, "
             "r.cond AS cond, r.then AS effects, r.nl AS nl"
         )

@@ -50,7 +50,7 @@ TABLE_COUPLING_THRESHOLD = 5   # 이만큼 많은 테이블을 만지면 데이�
 # 계산·리포트엔 쓰되 노드에 안 박는다. fan 은 CALLS 관계로 즉석 파생. 루틴 노드에만 SET.
 _SET_QUERY = f"""
 UNWIND $items AS item
-MATCH (node:ANALYZER_OWNED {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (node:ANALYZER_OWNED {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
 SET node += item
 """
 

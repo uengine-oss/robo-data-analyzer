@@ -45,7 +45,7 @@ class Retriever:
         if not missing:
             return
         rows = self.s.run(
-            "MATCH (n {graph_owner:$graph_owner}) "
+            "MATCH (n {graph_owner:$graph_owner, generation_id:$generation_id}) "
             "WHERE n.id IN $ids AND n.embedding IS NOT NULL "
             "RETURN n.id AS id, n.embedding AS v",
             ids=list(missing), graph_owner=ANALYZER_GRAPH_OWNER,
@@ -94,8 +94,8 @@ class Retriever:
 
     def _node_row(self, cid: str, cfg, qv, score: dict, callees: list[dict], role: str) -> dict:
         rec = self.s.run(
-            "MATCH (x {id:$id, graph_owner:$graph_owner}) "
-            "OPTIONAL MATCH (x)-[r]->(t:TABLE {graph_owner:$graph_owner}) "
+            "MATCH (x {id:$id, graph_owner:$graph_owner, generation_id:$generation_id}) "
+            "OPTIONAL MATCH (x)-[r]->(t:TABLE {graph_owner:$graph_owner, generation_id:$generation_id}) "
             "WHERE type(r) IN $rels "
             "RETURN elementId(x) AS eid, collect({rel:type(r), t:t.name}) AS tb",
             id=cid, rels=list(_TABLE_RELS), graph_owner=ANALYZER_GRAPH_OWNER,
@@ -176,8 +176,8 @@ class Retriever:
             if not frontier:
                 break
             rows = self.s.run(
-                "MATCH (x {graph_owner:$graph_owner})-[:CALLS]-"
-                "(y {graph_owner:$graph_owner}) "
+                "MATCH (x {graph_owner:$graph_owner, generation_id:$generation_id})-[:CALLS]-"
+                "(y {graph_owner:$graph_owner, generation_id:$generation_id}) "
                 "WHERE x.id IN $ids AND y.id IS NOT NULL "
                 "RETURN DISTINCT y.id AS id",
                 ids=list(frontier), graph_owner=ANALYZER_GRAPH_OWNER,

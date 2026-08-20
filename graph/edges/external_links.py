@@ -17,7 +17,7 @@ _EDGE_SPECS: dict[type, tuple[str, tuple[str, ...]]] = {
 
 _ENDPOINT_QUERY = f"""
 UNWIND $ids AS id
-MATCH (node:ANALYZER_OWNED {{id: id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (node:ANALYZER_OWNED {{id: id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
 RETURN node.id AS id
 """
 
@@ -27,12 +27,13 @@ class ExternalGraphContractError(ValueError):
 
 
 def _merge_query(rel_type: str, properties: tuple[str, ...]) -> str:
-    assignments = ",\n    ".join(f"r.{name} = item.{name}" for name in properties)
-    set_clause = f"\nSET {assignments}" if assignments else ""
+    assignments = ["r.generation_id = $generation_id"]
+    assignments.extend(f"r.{name} = item.{name}" for name in properties)
+    set_clause = "\nSET " + ",\n    ".join(assignments)
     return f"""
 UNWIND $items AS item
-MATCH (source:ANALYZER_OWNED {{id: item.source_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-MATCH (target:ANALYZER_OWNED {{id: item.target_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (source:ANALYZER_OWNED {{id: item.source_id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
+MATCH (target:ANALYZER_OWNED {{id: item.target_id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
 MERGE (source)-[r:{rel_type}]->(target){set_clause}
 """
 

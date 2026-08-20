@@ -9,9 +9,15 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import sys
 
 from dotenv import dotenv_values
 from neo4j import GraphDatabase
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from graph.ownership import ANALYZER_GRAPH_OWNER
+from search.corpus.generation import completed_generation_session
 
 
 SEED = "spec131-cross-node-semantic-v1"
@@ -25,7 +31,7 @@ QUOTAS = {
 
 QUERIES = {
     "function_summary": """
-        MATCH (n)
+        MATCH (n:ANALYZER_OWNED {graph_owner:$graph_owner, generation_id:$generation_id})
         WHERE (n:FUNCTION OR n:PROCEDURE)
           AND NOT n:EXTERNAL
           AND n.analysis_status = 'completed'
@@ -34,22 +40,30 @@ QUERIES = {
                n.file_path AS source_file, n.start_line AS source_line
     """,
     "rule": """
-        MATCH (owner)-[:HAS_RULE]->(n:RULE)
+        MATCH (owner:ANALYZER_OWNED {graph_owner:$graph_owner, generation_id:$generation_id})
+              -[:HAS_RULE]->
+              (n:RULE {graph_owner:$graph_owner, generation_id:$generation_id})
         RETURN n.id AS id, owner.id AS owner_id,
                owner.file_path AS source_file, n.anchor_line AS source_line
     """,
     "example": """
-        MATCH (owner)-[:HAS_RULE]->(rule:RULE)-[:HAS_EXAMPLE]->(n:EXAMPLE)
+        MATCH (owner:ANALYZER_OWNED {graph_owner:$graph_owner, generation_id:$generation_id})
+              -[:HAS_RULE]->
+              (rule:RULE {graph_owner:$graph_owner, generation_id:$generation_id})
+              -[:HAS_EXAMPLE]->
+              (n:EXAMPLE {graph_owner:$graph_owner, generation_id:$generation_id})
         RETURN n.id AS id, owner.id AS owner_id, rule.id AS rule_id,
                owner.file_path AS source_file, rule.anchor_line AS source_line
     """,
     "table": """
-        MATCH (n:TABLE)
+        MATCH (n:TABLE {graph_owner:$graph_owner, generation_id:$generation_id})
         WHERE n.analyzed_description IS NOT NULL
         RETURN n.id AS id, null AS owner_id, null AS source_file, null AS source_line
     """,
     "column": """
-        MATCH (table:TABLE)-[:HAS_COLUMN]->(n:COLUMN)
+        MATCH (table:TABLE {graph_owner:$graph_owner, generation_id:$generation_id})
+              -[:HAS_COLUMN]->
+              (n:COLUMN {graph_owner:$graph_owner, generation_id:$generation_id})
         WHERE n.analyzed_description IS NOT NULL
         RETURN n.id AS id, table.id AS owner_id, null AS source_file, null AS source_line
     """,
@@ -80,8 +94,10 @@ def seal() -> dict:
         for category, per_database in QUOTAS.items():
             populations[category] = {}
             for database, quota in per_database.items():
-                with driver.session(database=database) as session:
-                    rows = [dict(row) for row in session.run(QUERIES[category])]
+                with completed_generation_session(driver, database) as session:
+                    rows = [dict(row) for row in session.run(
+                        QUERIES[category], graph_owner=ANALYZER_GRAPH_OWNER,
+                    )]
                 unique = {str(row["id"]): row for row in rows if row.get("id")}
                 ranked = sorted(
                     unique.values(), key=lambda item: _rank(database, category, item)

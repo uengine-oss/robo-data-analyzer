@@ -307,9 +307,31 @@
   canonical graph 상태에 연결하지 않는 실행 원자성 결함이다.
 - 해결은 임시 DB 생성이 아니라 같은 허용 DB 안의 run epoch/generation staging, expected/actual closure와
   completed marker를 원자적으로 publish하고 모든 consumer가 completed generation만 읽는 계약이어야 한다.
-- current graph는 기존 완료 run의 수량과 맞지만, 제품상 failure injection으로 partial 공개를 재현하는 red
-  test는 아직 실행하지 않았다. `wipe_graph` 실행 경계의 유입은 `0f54111`이다.
-- 현재 판정: **실제 canonical graph 손실/혼합 및 불충분한 degraded 처리 설계**.
+- current graph는 기존 완료 run의 수량과 맞지만, 제품상 failure injection/guard red contract를
+  2026-08-20에 고정했다. `tests.graph.test_generation_isolation_contract`의 최초 실행은
+  **5 tests / 5 failures**였고, generation 없는 node identity, id-only uniqueness, 성공 전
+  `wipe_graph`, completion guard 없는 search corpus, completion guard 없는 MCP node detail을 각각
+  독립적으로 재현했다. `wipe_graph` 실행 경계의 유입은 `0f54111`이다.
+- 해결(2026-08-20): 모든 Analyzer node의 저장 identity를
+  `(graph_owner, generation_id, canonical id)`로 바꾸고 relationship에도 generation ID를 기록했다.
+  `execute_run`은 더 이상 시작 시 공개 graph를 wipe하지 않는다. 새 run은 같은 허용 DB의 고유
+  generation에 staging하고 source/AST/diagnostic expected closure와 graph node/edge/semantic-slot actual
+  identity count/hash를 닫은 뒤, 단일 transaction에서 generation을
+  `completed|completed_with_findings`로 terminal 처리하고 active pointer를 교체한다. 같은 transaction의
+  pointer 교체 뒤에만 검증된 legacy와 이전 Analyzer generation을 삭제한다.
+- 실패·사용자 중단은 `failed|stopped` manifest와 staging delete를 한 transaction으로 처리하며 active
+  completed pointer를 건드리지 않는다. REST semantic search, MCP cluster/node detail, vector/BM25/graph
+  traversal, glossary와 검증·reembed 스크립트는 모두 active completed generation session을 요구한다.
+  marker가 없거나 실행 도중 바뀌면 빈 성공이 아니라 명시 오류다. relationship generation 누락·불일치와
+  동일 canonical edge 중복은 publish를 차단하고, pinned reader가 다른 generation을 지정해 빠져나가는 것도
+  차단한다.
+- 검증: 최초 red **5/5 failure→green**, failure injection과 closure/publish/reader 단위 계약,
+  전체 **1083 tests / 6 skipped**, prompt ledger **17/17**, `git diff --check`를 통과했다. 실제 `test` DB에서는
+  고유 staging data와 active pointer publish/legacy cleanup Cypher를 한 transaction에서 실행하고 전부
+  rollback한 뒤 generation 흔적 0을 확인했다. composite uniqueness는 실제 서버에서 `EXPLAIN`만 통과해
+  영속 DB 내용/schema 변경은 0이다.
+- 현재 판정: **해결**. 실제 Framework/DBMS full run의 결정론 graph 전수 회계와 봉인 의미 판정은
+  A131-05가 소유한다.
 
 ## 4. 최초 후보 C-006~C-015 종결 분류
 

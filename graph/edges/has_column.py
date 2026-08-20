@@ -11,9 +11,10 @@ from graph.schema.rel_types import HAS_COLUMN
 
 MERGE_QUERY = f"""
 UNWIND $items AS item
-MATCH (t:TABLE {{id: item.parent_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-MATCH (c:COLUMN {{id: item.child_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-MERGE (t)-[:{HAS_COLUMN}]->(c)
+MATCH (t:TABLE {{id: item.parent_id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
+MATCH (c:COLUMN {{id: item.child_id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
+MERGE (t)-[rel:{HAS_COLUMN}]->(c)
+SET rel.generation_id = $generation_id
 """
 
 

@@ -11,7 +11,7 @@ from graph.schema.graph_nodes import ObjectReference
 
 MERGE_QUERY = f"""
 UNWIND $items AS item
-MERGE (n:OBJECT_REFERENCE {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MERGE (n:ANALYZER_OWNED:OBJECT_REFERENCE {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
 SET n:ANALYZER_OWNED,
     n += item,
     n.graph_owner = '{ANALYZER_GRAPH_OWNER}'
@@ -32,4 +32,3 @@ async def upsert_object_references(
     }) for node in nodes]
     if items:
         await client.run_batch_unwind(MERGE_QUERY, items)
-

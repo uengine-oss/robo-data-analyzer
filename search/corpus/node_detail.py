@@ -10,10 +10,14 @@ from typing import Any
 
 from search.corpus.evidence_reader import compact_rules, gwt_rules, read_columns, read_rules
 from search.corpus.neo4j_reader import read_driver
+from search.corpus.generation import (
+    CompletedGenerationUnavailable,
+    completed_generation_session,
+)
 from graph.ownership import ANALYZER_GRAPH_OWNER
 from pipeline.models.semantic_frame import SemanticFrame
 
-_INTERNAL_PROPERTIES = {"embedding", "graph_owner", "element_id"}
+_INTERNAL_PROPERTIES = {"embedding", "graph_owner", "generation_id", "element_id"}
 _SOURCE_PROPERTIES = {"file_path", "start_line", "end_line", "code_text"}
 _CODE_LABELS = {"FUNCTION", "PROCEDURE", "METHOD", "TRIGGER"}
 
@@ -238,7 +242,7 @@ def _table_context(
     props = properties
     if props is None:
         rows = session.run(
-            "MATCH (t:TABLE {id:$id, graph_owner:$graph_owner}) "
+            "MATCH (t:TABLE {id:$id, graph_owner:$graph_owner, generation_id:$generation_id}) "
             "RETURN properties(t) AS props",
             id=table_id,
             graph_owner=ANALYZER_GRAPH_OWNER,
@@ -304,9 +308,9 @@ def read_node_detail(node_id: str, *, view: str = "full") -> dict:
 
     driver, database = read_driver()
     try:
-        with driver.session(database=database) as session:
+        with completed_generation_session(driver, database) as session:
             node_rows = session.run(
-                "MATCH (n {id:$id, graph_owner:$graph_owner}) "
+                "MATCH (n {id:$id, graph_owner:$graph_owner, generation_id:$generation_id}) "
                 "RETURN labels(n) AS labels, properties(n) AS props",
                 id=requested_id,
                 graph_owner=ANALYZER_GRAPH_OWNER,
@@ -315,8 +319,8 @@ def read_node_detail(node_id: str, *, view: str = "full") -> dict:
                 return build_node_detail(node_rows, [], [], [], node_id=requested_id)
 
             relationships = session.run(
-                "MATCH (n {id:$id, graph_owner:$graph_owner})-[r]-"
-                "(other {graph_owner:$graph_owner}) "
+                "MATCH (n {id:$id, graph_owner:$graph_owner, generation_id:$generation_id})-[r]-"
+                "(other {graph_owner:$graph_owner, generation_id:$generation_id}) "
                 "RETURN type(r) AS type, "
                 "CASE WHEN startNode(r) = n THEN 'out' ELSE 'in' END AS direction, "
                 "coalesce(other.id,'') AS other_id, coalesce(other.name,'') AS other_name, "
@@ -351,5 +355,7 @@ def read_node_detail(node_id: str, *, view: str = "full") -> dict:
             except ValueError as exc:
                 return _error("SAMPLE_SNAPSHOT_INVALID", str(exc))
             return build_gwt_detail(detail, tables)
+    except CompletedGenerationUnavailable as error:
+        return _error("GRAPH_NOT_PUBLISHED", str(error))
     finally:
         driver.close()

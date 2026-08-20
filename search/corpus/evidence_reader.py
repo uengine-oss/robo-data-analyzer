@@ -92,12 +92,12 @@ def render_rule_structure(rule: dict) -> str:
 def read_rules(session, node_id: str) -> list[dict]:
     """코드 노드의 RULE(leaf 계약) → EXAMPLE → 규칙 단위 AFFECTS_TABLE 을 순서 보존 반환."""
     rows = session.run(
-        "MATCH (x {id:$id, graph_owner:$graph_owner})-[hr:HAS_RULE]->"
-        "(r:RULE {graph_owner:$graph_owner}) "
-        "OPTIONAL MATCH (r)-[at:AFFECTS_TABLE]->(t:TABLE {graph_owner:$graph_owner}) "
+        "MATCH (x {id:$id, graph_owner:$graph_owner, generation_id:$generation_id})-[hr:HAS_RULE]->"
+        "(r:RULE {graph_owner:$graph_owner, generation_id:$generation_id}) "
+        "OPTIONAL MATCH (r)-[at:AFFECTS_TABLE]->(t:TABLE {graph_owner:$graph_owner, generation_id:$generation_id}) "
         "WITH hr, r, collect(DISTINCT CASE WHEN t IS NULL THEN NULL "
         "  ELSE {name: t.name, access: at.access, op: at.op, op_source: at.op_source} END) AS tbs "
-        "OPTIONAL MATCH (r)-[:HAS_EXAMPLE]->(e:EXAMPLE {graph_owner:$graph_owner}) "
+        "OPTIONAL MATCH (r)-[:HAS_EXAMPLE]->(e:EXAMPLE {graph_owner:$graph_owner, generation_id:$generation_id}) "
         "RETURN r.id AS rule_node_id, r.rule_id AS rule_id, "
         "  coalesce(hr.ordinal,0) AS ordinal, r.anchor_line AS anchor_line, "
         "  r.cond AS cond, r.then AS effects, r.when AS when, "
@@ -155,8 +155,8 @@ def read_rules(session, node_id: str) -> list[dict]:
 def read_columns(session, table_id: str) -> list[dict]:
     """TABLE의 컬럼을 graph id 순서로 반환한다. 컬럼 미수집은 정상 빈 배열이다."""
     return session.run(
-        f"MATCH (t:TABLE {{id:$id, graph_owner:$graph_owner}})-[:{HAS_COLUMN}]->"
-        "(c:COLUMN {graph_owner:$graph_owner}) "
+        f"MATCH (t:TABLE {{id:$id, graph_owner:$graph_owner, generation_id:$generation_id}})-[:{HAS_COLUMN}]->"
+        "(c:COLUMN {graph_owner:$graph_owner, generation_id:$generation_id}) "
         "RETURN c.id AS id, c.name AS name, coalesce(c.dtype,'') AS dtype, "
         "coalesce(c.is_primary_key,false) AS is_primary_key, "
         "coalesce(c.logical_name,'') AS logical_name, "

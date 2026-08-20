@@ -27,11 +27,12 @@ class CallRelationshipInvariantError(ValueError):
 # internal — 콜리 정의 노드가 이미 존재 → MATCH 로 연결 (없으면 자연 제외).
 INTERNAL_QUERY = f"""
 UNWIND $items AS item
-MATCH (caller:ANALYZER_OWNED {{id: item.caller_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-MATCH (callee:ANALYZER_OWNED {{id: item.callee_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (caller:ANALYZER_OWNED {{id: item.caller_id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
+MATCH (callee:ANALYZER_OWNED {{id: item.callee_id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
 MERGE (caller)-[r:{CALLS}]->(callee)
 SET r.scope = item.scope,
-    r.recursive = item.recursive
+    r.recursive = item.recursive,
+    r.generation_id = $generation_id
 """
 
 # external — 콜리 정의 노드 없음 → stub(:FUNCTION:EXTERNAL) + 소유 컨테이너(:MODULE:EXTERNAL)
@@ -41,26 +42,29 @@ SET r.scope = item.scope,
 #   (분석 범위 밖) — 실제 파싱한 그릇만 정체대로(FILE/CLASS), 외부 stub 은 중립 합성 라벨.
 EXTERNAL_QUERY = f"""
 UNWIND $items AS item
-MATCH (caller:ANALYZER_OWNED {{id: item.caller_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-MERGE (callee:FUNCTION:EXTERNAL {{id: item.callee_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (caller:ANALYZER_OWNED {{id: item.caller_id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
+MERGE (callee:ANALYZER_OWNED:FUNCTION:EXTERNAL {{id: item.callee_id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
   SET callee:ANALYZER_OWNED,
       callee.name = coalesce(callee.name, item.callee_name),
       callee.type = coalesce(callee.type, 'FUNCTION'),
       callee.graph_owner = '{ANALYZER_GRAPH_OWNER}'
-MERGE (m:MODULE:EXTERNAL {{id: item.callee_module, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MERGE (m:ANALYZER_OWNED:MODULE:EXTERNAL {{id: item.callee_module, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
   SET m:ANALYZER_OWNED,
       m.name = coalesce(m.name, item.callee_name),
       m.type = coalesce(m.type, 'MODULE'),
       m.graph_owner = '{ANALYZER_GRAPH_OWNER}'
-MERGE (m)-[:{HAS_MEMBER}]->(callee)
+MERGE (m)-[member_rel:{HAS_MEMBER}]->(callee)
+SET member_rel.generation_id = $generation_id
 FOREACH (_ IN CASE WHEN item.callee_package <> '' THEN [1] ELSE [] END |
-  MERGE (p:PACKAGE {{id: item.callee_package, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+  MERGE (p:ANALYZER_OWNED:PACKAGE {{id: item.callee_package, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
   SET p:ANALYZER_OWNED, p.graph_owner = '{ANALYZER_GRAPH_OWNER}'
-  MERGE (m)-[:{BELONGS_TO}]->(p)
+  MERGE (m)-[package_rel:{BELONGS_TO}]->(p)
+  SET package_rel.generation_id = $generation_id
 )
 MERGE (caller)-[r:{CALLS}]->(callee)
 SET r.scope = item.scope,
-    r.recursive = item.recursive
+    r.recursive = item.recursive,
+    r.generation_id = $generation_id
 """
 
 

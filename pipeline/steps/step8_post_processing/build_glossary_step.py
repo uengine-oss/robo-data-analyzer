@@ -23,7 +23,7 @@ _STEP = "step8.build_glossary"
 
 _UPSERT_QUERY = f"""
 UNWIND $items AS item
-MERGE (g:GLOSSARY {{id: "glossary", graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MERGE (g:ANALYZER_OWNED:GLOSSARY {{id: "glossary", graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
 SET g:ANALYZER_OWNED,
     g.terms_json = item.terms_json,
     g.n_terms = item.n_terms,

@@ -35,8 +35,10 @@ class PostProcessingAndSearchOwnerScopeTest(unittest.TestCase):
         for query in queries:
             self.assertIn("graph_owner", query)
             self.assertIn(ANALYZER_GRAPH_OWNER, query)
-        self.assertIn("MERGE (g:GLOSSARY {id: \"glossary\", graph_owner:", GLOSSARY_UPSERT_QUERY)
-        self.assertIn("MERGE (m:EMBED_META {graph_owner:", _metadata_upsert_query())
+        self.assertIn("MERGE (g:ANALYZER_OWNED:GLOSSARY {id: \"glossary\", graph_owner:", GLOSSARY_UPSERT_QUERY)
+        self.assertIn("generation_id", GLOSSARY_UPSERT_QUERY)
+        self.assertIn("MERGE (m:ANALYZER_OWNED:EMBED_META", _metadata_upsert_query())
+        self.assertIn("generation_id", _metadata_upsert_query())
 
     def test_search_material_and_vector_queries_are_owner_scoped(self) -> None:
         self.assertIn("n.graph_owner", FETCH_MATERIAL)

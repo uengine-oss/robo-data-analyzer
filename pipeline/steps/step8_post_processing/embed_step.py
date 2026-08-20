@@ -133,7 +133,7 @@ def _embedded_code_query() -> str:
     """코드노드 벡터 SET + ``:EMBEDDED`` 마커. ``:ANALYZER_OWNED`` + id 시크(코드 라벨은 antlr 열린집합)."""
     return (
         "UNWIND $items AS item "
-        f"MATCH (n:ANALYZER_OWNED {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}}) "
+        f"MATCH (n:ANALYZER_OWNED {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
         f"SET n.embedding = item.vector, n:{EMBEDDED_LABEL}"
     )
 
@@ -143,8 +143,9 @@ def _embedded_code_query() -> str:
 def _metadata_upsert_query() -> str:
     """임베딩 인덱스 지문도 Analyzer 소유권 경계를 따른다."""
     return (
-        f"MERGE (m:{EMBED_META_LABEL} {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}}) "
-        "SET m:ANALYZER_OWNED, m.fingerprint = $fp, m.dim = $dim"
+        f"MERGE (m:ANALYZER_OWNED:{EMBED_META_LABEL} "
+        f"{{id: 'embed-meta', graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
+        "SET m.fingerprint = $fp, m.dim = $dim"
     )
 
 async def _ensure_vector_index(neo: Neo4jClient, code_updates: list[dict]) -> None:
@@ -203,7 +204,7 @@ def _embedding_query(label: str, key: str) -> str:
     """``embedding`` property SET UNWIND 쿼리(Table/Column — 마커 없음)."""
     return (
         f"UNWIND $items AS item "
-        f"MATCH (n:{label} {{{key}: item.{key}, graph_owner: '{ANALYZER_GRAPH_OWNER}'}}) "
+        f"MATCH (n:{label} {{{key}: item.{key}, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
         f"SET n.embedding = item.vector"
     )
 

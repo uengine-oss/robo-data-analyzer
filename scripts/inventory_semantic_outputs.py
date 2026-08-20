@@ -19,6 +19,8 @@ from dotenv import load_dotenv
 from neo4j import GraphDatabase
 
 from pipeline.quality_gates.rule_audit_artifact import load_rule_audit_records
+from graph.ownership import ANALYZER_GRAPH_OWNER
+from search.corpus.generation import completed_generation_session
 
 
 def _args() -> argparse.Namespace:
@@ -270,44 +272,66 @@ def _graph_inventory(
         auth=(os.environ["ROBO_NEO4J_USER"], os.environ["ROBO_NEO4J_PASSWORD"]),
     )
     try:
-        with driver.session(database=database) as session:
+        with completed_generation_session(driver, database) as session:
             summaries = [
                 record["props"]
                 for record in session.run(
-                    "MATCH (n) WHERE n.analysis_status IS NOT NULL "
-                    "RETURN properties(n) AS props"
+                    "MATCH (n:ANALYZER_OWNED {graph_owner:$graph_owner, generation_id:$generation_id}) "
+                    "WHERE n.analysis_status IS NOT NULL "
+                    "RETURN properties(n) AS props",
+                    graph_owner=ANALYZER_GRAPH_OWNER,
                 )
             ]
             rules = [
                 record["props"]
-                for record in session.run("MATCH (n:RULE) RETURN properties(n) AS props")
+                for record in session.run(
+                    "MATCH (n:RULE {graph_owner:$graph_owner, generation_id:$generation_id}) "
+                    "RETURN properties(n) AS props",
+                    graph_owner=ANALYZER_GRAPH_OWNER,
+                )
             ]
             examples = [
                 record["props"]
-                for record in session.run("MATCH (n:EXAMPLE) RETURN properties(n) AS props")
+                for record in session.run(
+                    "MATCH (n:EXAMPLE {graph_owner:$graph_owner, generation_id:$generation_id}) "
+                    "RETURN properties(n) AS props",
+                    graph_owner=ANALYZER_GRAPH_OWNER,
+                )
             ]
             tables = [
                 record["props"]
-                for record in session.run("MATCH (n:TABLE) RETURN properties(n) AS props")
+                for record in session.run(
+                    "MATCH (n:TABLE {graph_owner:$graph_owner, generation_id:$generation_id}) "
+                    "RETURN properties(n) AS props",
+                    graph_owner=ANALYZER_GRAPH_OWNER,
+                )
             ]
             columns = [
                 record["props"]
-                for record in session.run("MATCH (n:COLUMN) RETURN properties(n) AS props")
+                for record in session.run(
+                    "MATCH (n:COLUMN {graph_owner:$graph_owner, generation_id:$generation_id}) "
+                    "RETURN properties(n) AS props",
+                    graph_owner=ANALYZER_GRAPH_OWNER,
+                )
             ]
             duplicate_coordinates = [
                 dict(record)
                 for record in session.run(
-                    "MATCH (n) WHERE n.analysis_status IS NOT NULL "
+                    "MATCH (n:ANALYZER_OWNED {graph_owner:$graph_owner, generation_id:$generation_id}) "
+                    "WHERE n.analysis_status IS NOT NULL "
                     "WITH n.file_path AS file, n.start_line AS start, n.end_line AS end, "
                     "collect({id:n.id,summary:n.summary,stereotype:n.stereotype}) AS nodes "
-                    "WHERE size(nodes)>1 RETURN file,start,end,nodes ORDER BY file,start,end"
+                    "WHERE size(nodes)>1 RETURN file,start,end,nodes ORDER BY file,start,end",
+                    graph_owner=ANALYZER_GRAPH_OWNER,
                 )
             ]
             parent_edges = [
                 (str(record["parent_id"]), str(record["child_id"]))
                 for record in session.run(
-                    "MATCH (p)-[:PARENT_OF]->(c) "
-                    "RETURN p.id AS parent_id,c.id AS child_id"
+                    "MATCH (p:ANALYZER_OWNED {graph_owner:$graph_owner, generation_id:$generation_id})"
+                    "-[:PARENT_OF]->(c:ANALYZER_OWNED {graph_owner:$graph_owner, generation_id:$generation_id}) "
+                    "RETURN p.id AS parent_id,c.id AS child_id",
+                    graph_owner=ANALYZER_GRAPH_OWNER,
                 )
             ]
     finally:

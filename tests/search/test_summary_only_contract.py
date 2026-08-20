@@ -59,7 +59,7 @@ class SummaryOnlyContractTest(unittest.TestCase):
             ),
             _row("other", "completely unrelated"),
         ]
-        corpus = Corpus(rows, {})
+        corpus = Corpus(rows, {}, "run:test")
         scores = corpus.bm25.get_scores(["needle"])
         self.assertGreater(scores[0], scores[1])
         self.assertEqual([("summary-hit", 1.0)], _structural(corpus, "needle", 10))

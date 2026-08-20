@@ -1,7 +1,7 @@
 # Analyzer 의미 무손실 감사 현재상태
 
 **Updated**: 2026-08-20
-**Status**: A131-04d 근본 구현 진행 중 — source·AST·diagnostic closure 완료, completed generation 원자 publish 조사
+**Status**: A131-04e 진행 중 — source closure와 completed generation 원자 publish 완료, 남은 구조 손실 경로 조사
 **Product-code baseline HEAD**: `c216e674cbac43386f9826632097ca2661395d7d`
 
 이 문서는 현재 진행 위치만 소유한다. 영구 규칙은 `ABSOLUTE_RULES.md`, 상세 역사와 기존 수치는 `HANDOFF.md`와 `evidence/`가 소유한다.
@@ -20,14 +20,16 @@
 
 - Neo4j `127.0.0.1:7687`: 현재 세션에서 인증과 `SHOW DATABASES` 재확인 성공.
   `neo4j|test|framework|dbms|system`만 존재하고 모두 online이다. 허용 목록 밖 DB는 0개다.
-- Analyzer latest verified slice HEAD `b26b5222c9be945b5d77b9087f495c98b9a130d7`; 제품 코드 기준선은
+- Analyzer latest pushed slice HEAD `a64b5ab15da138fa7f7b2d588407d96f51488cbf`; 제품 코드 기준선은
   `c216e674cbac43386f9826632097ca2661395d7d`, 재개 시 dirty 0이었다.
 - Parser HEAD `4b849f14575b6830b82ae5ee980658100c4d8692`, dirty 0.
 - Catalog HEAD `1f1aaa608a3d7ef8b01ce15c3df962cf0f1cfefb`, 기존 dirty 12개가 있다.
 - Fabric HEAD `83c9604e2d6ec3f1ececa47d2e2264a74257843d`, 기존 dirty 7개가 있다.
 - Architect HEAD `7b771ac2e7338d03ac8238db5c307d97080232c1`, 기존 dirty 4개가 있다.
   Catalog·Fabric·Architect의 기존 WIP는 읽기만 하고 수정·stage하지 않는다.
-- 현재 세션에서 DB 생성·삭제·내용 변경·분석 실행·서비스 변경은 0회다.
+- 현재 세션에서 DB 생성·삭제·분석 실행·서비스 변경은 0회다. `test` DB에서 generation publish
+  transaction 통합 검증 1회를 수행했지만 명시 transaction을 전부 rollback했고 해당 generation
+  node/property 잔존은 0이다. composite constraint는 `EXPLAIN`만 수행해 schema 변경도 0이다.
 
 ### 문서 메모리 무결성
 
@@ -93,8 +95,8 @@ malformed-source 계열은 실행 자료·로그·graph상 미발동이다. 설�
 각 후보는 `안전한 실행 분할 / 표시 전용 / 명시적 degraded / 실제 semantic loss` 중 하나로 실제 caller·consumer·run을 따라 판정한다. 후보라는 이유만으로 즉시 삭제하거나 숫자만 늘리지 않는다.
 
 상세 배선·실측·분류·유입 commit 원장은 `evidence/loss-path-inventory-20260820.md`에 누적했다.
-F-001과 C-001~C-032를 모두 종결 분류했으며 C-011/C-012는 C-017로 통합했다. 제품 코드는 아직
-수정하지 않았고, DBMS actual run과 새 sealed 직접 의미 판정은 미검증으로 남겼다.
+F-001과 C-001~C-032를 모두 종결 분류했으며 C-011/C-012는 C-017로 통합했다. 검증된 책임
+슬라이스는 제품 코드에 반영했고, DBMS actual run과 새 sealed 직접 의미 판정은 미검증으로 남겼다.
 
 장문 context의 목표 해법은 원문 요약이 아니라 `전체 의무 inventory → 의무별 exact source/evidence
 closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아직 최종 설계로 확정하지 않았으며,
@@ -182,7 +184,17 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
     ontology unknown wrapper는 run 전체를 fail-closed한다. 같은 source byte cache와 검증된 AST hash/language를
     step2가 재사용하고 `source-ast-closure.json`을 atomic write한다. 현재 corpus는 23→23→23, mismatch 0이며
     변경 전 red 6건→green, 전체 `1067 passed, 5 skipped`다.
-13. 현재: A131-04d-GENERATION same-DB completed generation 원자 publish와 API/MCP/search consumer guard를
-    구현한다. 임시 DB는 만들지 않는다.
-14. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
-15. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.
+13. 완료(C-032): node identity를 `(owner, generation, canonical id)`로 격리하고 모든 relationship에도
+    generation을 기록한다. run 시작 wipe를 제거했으며 입력 source/AST/diagnostic expected closure와
+    graph node/edge/semantic-slot actual identity count/hash ledger를 닫은 뒤 한 transaction에서
+    `completed|completed_with_findings` manifest, active pointer 교체, 검증된 legacy/이전 generation 정리를
+    commit한다. 실패·중단은 staging만 terminal 처리·삭제하고 직전 completed pointer는 유지한다.
+    relationship의 generation 누락·불일치와 동일 canonical edge 중복은 publish 전에 거부하며, pinned
+    reader의 generation override도 거부한다. REST/MCP/search와 검증·reembed 스크립트는 active completed
+    generation만 읽는다. red 5/5는 green, failure injection·transaction 테스트 포함 전체
+    `1083 passed, 6 skipped`, prompt `17/17`, 실제 Neo4j
+    rollback publish 1/1과 composite constraint `EXPLAIN`을 통과했다. 영속 DB 변경은 0이다.
+14. 현재: A131-04e의 남은 구조 closure(C-004/C-017~021/C-024/C-028/C-031)를 실제 producer/consumer와
+    기준 실행 영향으로 다시 좁혀 책임 슬라이스 순서를 확정한다.
+15. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
+16. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.

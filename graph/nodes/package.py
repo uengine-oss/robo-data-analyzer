@@ -10,7 +10,7 @@ from graph.ownership import ANALYZER_GRAPH_OWNER
 
 MERGE_QUERY = f"""
 UNWIND $items AS item
-MERGE (p:PACKAGE {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MERGE (p:ANALYZER_OWNED:PACKAGE {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
 SET p:ANALYZER_OWNED,
     p.name = item.name,
     p.graph_owner = '{ANALYZER_GRAPH_OWNER}'

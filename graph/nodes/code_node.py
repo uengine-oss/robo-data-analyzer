@@ -28,7 +28,7 @@ from graph.nodes.stereotype_label import apply_stereotype_labels
 # enrich_table_description_step 이 Table/Column.analyzed_description 으로 분배(제자리, spec 020).
 SET_SUMMARY_QUERY = f"""
 UNWIND $items AS item
-MATCH (node:ANALYZER_OWNED {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (node:ANALYZER_OWNED {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
 // 자동 용어 생성 폐기 전 graph 속성은 동일 노드 재분석에서도 남지 않게 제거한다.
 REMOVE node.domain_terms, node.domain_terms_json, node.logical_name,
        node.summary, node.stereotype, node.summary_evidence_status,

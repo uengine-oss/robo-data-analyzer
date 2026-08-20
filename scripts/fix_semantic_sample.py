@@ -85,12 +85,15 @@ def per_function_findings(run_dir: Path) -> dict[tuple[str, str], int]:
 
 async def graph_traits() -> dict[tuple[str, str], dict]:
     from graph.neo4j_client import Neo4jClient
+    from graph.generation import bind_active_completed_generation
+    from graph.ownership import ANALYZER_GRAPH_OWNER
 
     client = Neo4jClient()
     try:
+        await bind_active_completed_generation(client)
         rows = await client.run_read_query(
-            "MATCH (f:FUNCTION) "
-            "OPTIONAL MATCH (f)-[rw:READS|WRITES]->(:TABLE) "
+            f"MATCH (f:FUNCTION {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
+            f"OPTIONAL MATCH (f)-[rw:READS|WRITES]->(:TABLE {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
             "RETURN f.name AS name, f.id AS id, f.stereotype AS stereotype, count(rw) AS rw",
             {},
         )

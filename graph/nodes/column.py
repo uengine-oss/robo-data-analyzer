@@ -15,7 +15,7 @@ from graph.node_upsert import nonempty
 
 MERGE_QUERY = f"""
 UNWIND $items AS item
-MERGE (c:COLUMN {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MERGE (c:ANALYZER_OWNED:COLUMN {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
 SET c:ANALYZER_OWNED,
     c.name = item.name,
     c.dtype = item.dtype,
@@ -36,7 +36,7 @@ RETURN count(c) AS created
 # 있으면 유지. 옛 'source' → 'code' (db prefix 와 단어 충돌 회피).
 SET_ANALYZED_QUERY = f"""
 UNWIND $items AS item
-MATCH (c:COLUMN {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (c:COLUMN {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
 SET c.analyzed_description = item.analyzed_description,
     c.logical_name = item.logical_name,
     c.semantic_evidence_status = item.semantic_evidence_status,
@@ -50,7 +50,7 @@ SET c.analyzed_description = item.analyzed_description,
 """
 
 MATCH_ANALYZED_TARGETS_QUERY = f"""
-MATCH (c:COLUMN {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (c:COLUMN {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
 WHERE c.id IN $ids
 RETURN count(c) AS matched
 """

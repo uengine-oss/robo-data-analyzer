@@ -39,7 +39,7 @@ class Neo4jClient:
         await client.close()
     """
 
-    def __init__(self):
+    def __init__(self, *, generation_id: str | None = None):
         override = get_override()
         if override is not None:
             uri, user, password = override.uri, override.user, override.password
@@ -49,6 +49,7 @@ class Neo4jClient:
             self._database = SETTINGS.graph_database.database
         self._driver = AsyncGraphDatabase.driver(uri, auth=(user, password))
         self._closed = False
+        self.generation_id = generation_id
 
         # SIGTERM graceful close (메인 스레드에서만 가능 — 백그라운드 thread 면 실패).
         # 실패해도 운영 진행 가능 (서버 강제 종료 시 driver 자동 정리됨) — 그러나 사유는 명시.
@@ -99,7 +100,9 @@ class Neo4jClient:
         ):
             with attempt:
                 async with self._driver.session(database=self._database) as session:
-                    result = await session.run(query, items=items)
+                    result = await session.run(
+                        query, items=items, generation_id=getattr(self, "generation_id", None),
+                    )
                     return await result.consume()
 
     async def run_guarded_batch_unwind(
@@ -124,14 +127,18 @@ class Neo4jClient:
             raise ValueError("guarded batch contains duplicate update IDs")
 
         async def _write(transaction) -> int:
-            result = await transaction.run(guard_query, ids=ids)
+            result = await transaction.run(
+                guard_query, ids=ids, generation_id=getattr(self, "generation_id", None),
+            )
             record = await result.single(strict=True)
             matched = int(record["matched"])
             if matched != len(items):
                 raise ValueError(
                     f"guarded batch matched {matched} of {len(items)} update IDs"
                 )
-            result = await transaction.run(write_query, items=items)
+            result = await transaction.run(
+                write_query, items=items, generation_id=getattr(self, "generation_id", None),
+            )
             await result.consume()
             return matched
 
@@ -141,11 +148,20 @@ class Neo4jClient:
     async def run_query(self, query: str, params: Optional[dict] = None) -> Any:
         """단발 쿼리 (인덱스 / 제약 / 1회성 lookup)."""
         async with self._driver.session(database=self._database) as session:
-            result = await session.run(query, **(params or {}))
+            arguments = dict(params or {})
+            arguments.setdefault("generation_id", getattr(self, "generation_id", None))
+            result = await session.run(query, **arguments)
             return await result.consume()
 
     async def run_read_query(self, query: str, params: Optional[dict] = None) -> list[dict]:
         """읽기 쿼리 — record 들을 dict list 로 반환 (graph 도구가 사용)."""
         async with self._driver.session(database=self._database) as session:
-            result = await session.run(query, **(params or {}))
+            arguments = dict(params or {})
+            arguments.setdefault("generation_id", getattr(self, "generation_id", None))
+            result = await session.run(query, **arguments)
             return await result.data()
+
+    async def execute_write(self, work) -> Any:
+        """Execute one managed transaction (used for generation publish/terminate)."""
+        async with self._driver.session(database=self._database) as session:
+            return await session.execute_write(work)

@@ -10,30 +10,36 @@ import json
 
 from graph.ownership import ANALYZER_GRAPH_OWNER
 
-# (uri, db) -> glossary dict
-_cache: dict[tuple[str, str], dict] = {}
+# (uri, db, generation) -> glossary dict
+_cache: dict[tuple[str, str, str], dict] = {}
 
 
 def build() -> dict:
     """요청 DB 의 용어사전(캐시). ``:GLOSSARY`` 노드 없으면 빈 사전."""
     from search.corpus.neo4j_reader import read_driver, resolve_target
+    from search.corpus.generation import (
+        CompletedGenerationUnavailable,
+        completed_generation_session,
+    )
 
     uri = resolve_target()[0]
     drv, db = read_driver()
-    key = (uri, db)
-    if key in _cache:
-        return _cache[key]
     glo = {"terms": [], "actions": [], "meta": {"db": db, "source": "none"}}
     try:
-        with drv.session(database=db) as s:
+        with completed_generation_session(drv, db) as s:
+            key = (uri, db, s.generation_id)
+            if key in _cache:
+                return _cache[key]
             row = s.run(
-                'MATCH (g:GLOSSARY {id:"glossary", graph_owner:$graph_owner}) '
+                'MATCH (g:GLOSSARY {id:"glossary", graph_owner:$graph_owner, generation_id:$generation_id}) '
                 "RETURN g.terms_json AS tj",
                 graph_owner=ANALYZER_GRAPH_OWNER,
             ).single()
         if row and row["tj"]:
             glo = json.loads(row["tj"])
             glo["meta"] = {"db": db, "source": "graph"}
+    except CompletedGenerationUnavailable:
+        key = (uri, db, "unpublished")
     finally:
         drv.close()
     _cache[key] = glo

@@ -15,12 +15,17 @@ from search.ranking.recall import tokenize
 from shared.config.settings import SETTINGS
 from llm import embedder
 from graph.ownership import ANALYZER_GRAPH_OWNER
+from search.corpus.generation import (
+    CompletedGenerationUnavailable,
+    completed_generation_session,
+)
 
 _NO_EMBED_MSG = "이 그래프에는 검색 임베딩이 없습니다 (분석을 다시 실행하세요)"
 
 _CORPUS_QUERY = f"""
 MATCH (n)
 WHERE n.graph_owner = '{ANALYZER_GRAPH_OWNER}'
+  AND n.generation_id = $generation_id
   AND n.summary IS NOT NULL AND n.summary <> ''
   AND NOT n:FILE AND NOT n:MODULE AND NOT n:PACKAGE
 RETURN n.id AS id, coalesce(n.type, head(labels(n))) AS label,
@@ -29,8 +34,8 @@ RETURN n.id AS id, coalesce(n.type, head(labels(n))) AS label,
        coalesce(n.stereotype,'') AS stereotype
 ORDER BY id
 """
-_FAN_IN_QUERY = (f"MATCH (a {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}})-[:CALLS]->"
-                 f"(n {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}}) WHERE n.id IS NOT NULL "
+_FAN_IN_QUERY = (f"MATCH (a {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})-[:CALLS]->"
+                 f"(n {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) WHERE n.id IS NOT NULL "
                  "RETURN n.id AS id, count(DISTINCT a) AS fi")
 
 # (uri, db) -> (signature, Corpus)
@@ -44,11 +49,12 @@ class SearchUnavailable(RuntimeError):
 class Corpus:
     """요청 DB 한 벌의 코퍼스 — bm25/structural 재료 + by_id 메타 + fan_in (+scan 벡터)."""
 
-    def __init__(self, rows: list[dict], fan_in: dict, vecs=None):
+    def __init__(self, rows: list[dict], fan_in: dict, generation_id: str, vecs=None):
         self.rows = rows
         self.by_id = {r["id"]: r for r in rows}
         self.ids = [r["id"] for r in rows]
         self.fan_in = fan_in
+        self.generation_id = generation_id
         self._vecs = vecs
         from rank_bm25 import BM25Okapi
         texts = [(r.get("summary") or "").strip() for r in rows]
@@ -59,16 +65,19 @@ class Corpus:
         return self._vecs
 
 
-def load_corpus() -> Corpus:
+def load_corpus(*, generation_id: str | None = None) -> Corpus:
     """요청 DB 코퍼스(캐시). 지문 대조 후 서명 일치 시 재사용, 아니면 재로드."""
     from search.corpus.neo4j_reader import read_driver, resolve_target
 
     uri = resolve_target()[0]
     drv, db = read_driver()
     try:
-        with drv.session(database=db) as s:
+        with completed_generation_session(
+            drv, db, expected_generation_id=generation_id,
+        ) as s:
+            generation_id = s.generation_id
             meta = s.run(
-                f"MATCH (m:{EMBED_META_LABEL} {{graph_owner: $graph_owner}}) "
+                f"MATCH (m:{EMBED_META_LABEL} {{graph_owner: $graph_owner, generation_id: $generation_id}}) "
                 "RETURN m.fingerprint AS fp",
                 graph_owner=ANALYZER_GRAPH_OWNER,
             ).single()
@@ -79,13 +88,13 @@ def load_corpus() -> Corpus:
             if fp != want:
                 raise SearchUnavailable(f"임베딩 모델 불일치 (그래프={fp}, 질의={want}) — 재분석 필요")
             count = s.run(
-                f"MATCH (n:{EMBEDDED_LABEL} {{graph_owner: $graph_owner}}) RETURN count(n) AS c",
+                f"MATCH (n:{EMBEDDED_LABEL} {{graph_owner: $graph_owner, generation_id: $generation_id}}) RETURN count(n) AS c",
                 graph_owner=ANALYZER_GRAPH_OWNER,
             ).single()["c"]
             if count == 0:
                 raise SearchUnavailable(_NO_EMBED_MSG)
 
-            sig = (fp, count)
+            sig = (generation_id, fp, count)
             key = (uri, db)
             cached = _cache.get(key)
             if cached is not None and cached[0] == sig:
@@ -94,9 +103,11 @@ def load_corpus() -> Corpus:
             rows = s.run(_CORPUS_QUERY).data()
             fan_in = {r["id"]: r["fi"] for r in s.run(_FAN_IN_QUERY).data()}
             vecs = _load_vectors(s, [r["id"] for r in rows]) if SETTINGS.semantic_search.dense_impl == "scan" else None
-        corpus = Corpus(rows, fan_in, vecs)
+            corpus = Corpus(rows, fan_in, generation_id, vecs)
         _cache[key] = (sig, corpus)
         return corpus
+    except CompletedGenerationUnavailable as error:
+        raise SearchUnavailable(str(error)) from error
     finally:
         drv.close()
 
@@ -106,7 +117,7 @@ def _load_vectors(session, ids: list[str]):
     import numpy as np
 
     m = {r["id"]: r["v"] for r in session.run(
-        "MATCH (n {graph_owner: $graph_owner}) "
+        "MATCH (n {graph_owner: $graph_owner, generation_id: $generation_id}) "
         "WHERE n.id IN $ids AND n.embedding IS NOT NULL "
         "RETURN n.id AS id, n.embedding AS v",
         ids=ids,

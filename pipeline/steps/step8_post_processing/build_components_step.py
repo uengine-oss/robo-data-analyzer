@@ -51,7 +51,7 @@ LEIDEN_SEED = 42           # 결정론 — 같은 그래프 → 같은 군집
 # 멤버 FUNCTION 노드에 군집 멤버십을 속성으로 SET (합성 노드 없음). health_metrics 와 동일 패턴.
 _SET_QUERY = f"""
 UNWIND $items AS item
-MATCH (node:ANALYZER_OWNED {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (node:ANALYZER_OWNED {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
 SET node.component_id = item.component_id,
     node.component_name = item.component_name
 """

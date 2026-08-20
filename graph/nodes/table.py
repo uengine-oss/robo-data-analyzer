@@ -19,7 +19,7 @@ from graph.node_upsert import nonempty
 # id 단일 식별 (schema_constraints.py 의 UNIQUE 제약과 통일) — 값 = "db.schema.name"
 MERGE_QUERY = f"""
 UNWIND $items AS item
-MERGE (t:TABLE {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MERGE (t:ANALYZER_OWNED:TABLE {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
 SET t:ANALYZER_OWNED,
     t.db = item.db,
     t.schema = item.schema,
@@ -39,7 +39,7 @@ RETURN count(t) AS created
 # 회피 + "어디서 왔는지" 의미를 더 명확히 (ddl / code / catalog).
 SET_ANALYZED_QUERY = f"""
 UNWIND $items AS item
-MATCH (t:TABLE {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (t:TABLE {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
 SET t.analyzed_description = item.analyzed_description,
     t.logical_name = item.logical_name,
     t.semantic_evidence_status = item.semantic_evidence_status,
@@ -53,20 +53,20 @@ SET t.analyzed_description = item.analyzed_description,
 """
 
 MATCH_ANALYZED_TARGETS_QUERY = f"""
-MATCH (t:TABLE {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (t:TABLE {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
 WHERE t.id IN $ids
 RETURN count(t) AS matched
 """
 
 SET_SAMPLE_SNAPSHOT_QUERY = f"""
 UNWIND $items AS item
-MATCH (t:TABLE {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (t:TABLE {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
 SET t.sample_snapshot_json = item.sample_snapshot_json,
     t.sample_snapshot_source = 'datasource'
 """
 
 MATCH_SAMPLE_TARGETS_QUERY = f"""
-MATCH (t:TABLE {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (t:TABLE {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
 WHERE t.id IN $ids
 RETURN count(t) AS matched
 """

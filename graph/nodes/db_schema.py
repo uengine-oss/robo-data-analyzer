@@ -15,7 +15,7 @@ from graph.ownership import ANALYZER_GRAPH_OWNER
 
 MERGE_QUERY = f"""
 UNWIND $items AS item
-MERGE (s:SCHEMA {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MERGE (s:ANALYZER_OWNED:SCHEMA {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
 SET s:ANALYZER_OWNED,
     s.db = item.db,
     s.name = item.name,

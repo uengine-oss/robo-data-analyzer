@@ -10,10 +10,11 @@ from graph.schema.rel_types import HAS_EXAMPLE
 
 _UPSERT_QUERY = f"""
 UNWIND $items AS item
-MATCH (r:RULE {{id: item.source_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-MATCH (e:EXAMPLE {{id: item.target_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (r:RULE {{id: item.source_id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
+MATCH (e:EXAMPLE {{id: item.target_id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
 MERGE (r)-[rel:{HAS_EXAMPLE} {{occurrence_id: item.occurrence_id}}]->(e)
-SET rel.ordinal = item.ordinal
+SET rel.ordinal = item.ordinal,
+    rel.generation_id = $generation_id
 """
 
 

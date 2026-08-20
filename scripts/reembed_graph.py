@@ -33,24 +33,25 @@ from search.corpus.embed_material import EMBED_META_LABEL, EMBEDDED_LABEL, VECTO
 from shared.config.settings import SETTINGS
 from graph.connection_context import Neo4jOverride, set_override
 from graph.neo4j_client import Neo4jClient
+from graph.generation import bind_active_completed_generation
 from graph.ownership import ANALYZER_GRAPH_OWNER
 
 
 async def _verify(neo: Neo4jClient) -> None:
     """재구성 결과 실측 — EMBEDDED 수·차원 분포·인덱스 상태·지문 (손실/차원 점검)."""
     total = (await neo.run_read_query(
-        f"MATCH (n {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}}) "
+        f"MATCH (n {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
         "WHERE n.summary IS NOT NULL AND n.summary <> '' "
         "AND NOT n:FILE AND NOT n:MODULE AND NOT n:PACKAGE RETURN count(n) AS c"))[0]["c"]
     embedded = (await neo.run_read_query(
-        f"MATCH (n:{EMBEDDED_LABEL} {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}}) "
+        f"MATCH (n:{EMBEDDED_LABEL} {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
         "RETURN count(n) AS c"))[0]["c"]
     dims = await neo.run_read_query(
-        f"MATCH (n:{EMBEDDED_LABEL} {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}}) "
+        f"MATCH (n:{EMBEDDED_LABEL} {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
         "WITH size(n.embedding) AS d "
         "RETURN d AS dim, count(*) AS c ORDER BY dim")
     meta = await neo.run_read_query(
-        f"MATCH (m:{EMBED_META_LABEL} {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}}) "
+        f"MATCH (m:{EMBED_META_LABEL} {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
         "RETURN m.fingerprint AS fp, m.dim AS dim")
     idx = await neo.run_read_query(
         "SHOW INDEXES YIELD name, state, type WHERE name = $n", {"n": VECTOR_INDEX_NAME})
@@ -75,6 +76,7 @@ async def _run(database: str | None) -> None:
     started = time.monotonic()
     print(f"[{db}] 재임베딩 시작 (backend={SETTINGS.embedding.provider}:{SETTINGS.embedding.model})")
     try:
+        await bind_active_completed_generation(neo)
         # code_nodes 는 embed_step 이 그래프에서 직접 읽음. tables/columns 는 검색 무관 → 스킵.
         await embed_step({"tables": [], "columns": [], "code_nodes": []},
                          {"configurable": {"neo_client": neo, "stream": None}})

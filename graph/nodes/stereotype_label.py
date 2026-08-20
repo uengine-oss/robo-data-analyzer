@@ -57,7 +57,7 @@ def _set_label_query(label: str) -> str:
     # label 은 검증풀 파생 UPPER_SNAKE — 백틱으로 한 번 더 방어(특수문자 시에도 안전).
     return f"""
 UNWIND $items AS item
-MATCH (node:ANALYZER_OWNED {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (node:ANALYZER_OWNED {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
 REMOVE {_role_label_removals()}
 SET node:`{label}`
 """
@@ -67,7 +67,7 @@ def _clear_role_labels_query() -> str:
     """Remove every ontology-owned role label before applying the current one."""
     return f"""
 UNWIND $items AS item
-MATCH (node:ANALYZER_OWNED {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MATCH (node:ANALYZER_OWNED {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
 REMOVE {_role_label_removals()}
 """
 

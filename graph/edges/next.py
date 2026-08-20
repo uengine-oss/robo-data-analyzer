@@ -15,9 +15,10 @@ from graph.schema.rel_types import NEXT
 
 MERGE_QUERY = f"""
 UNWIND $items AS item
-MATCH (prev:ANALYZER_OWNED {{id: item.prev_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-MATCH (next:ANALYZER_OWNED {{id: item.next_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-MERGE (prev)-[:{NEXT}]->(next)
+MATCH (prev:ANALYZER_OWNED {{id: item.prev_id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
+MATCH (next:ANALYZER_OWNED {{id: item.next_id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
+MERGE (prev)-[rel:{NEXT}]->(next)
+SET rel.generation_id = $generation_id
 """
 
 

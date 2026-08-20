@@ -48,7 +48,8 @@ from shared.events.runtime_logger import (
 )
 from shared.events.ndjson_event_stream import NDJSONStream
 from graph.neo4j_client import Neo4jClient
-from graph.schema.constraints import ensure_schema, wipe_graph
+from graph.schema.constraints import ensure_schema
+from graph.generation import begin_generation, publish_generation, terminate_generation
 from graph.connection_context import get_override
 from shared.files.cache import SourceFileCache
 from pipeline.execution.analysis_handoff import AnalysisHandoff, analysis_llm_slots
@@ -192,13 +193,25 @@ async def execute_run(
             ast_artifacts=len(source_ast_closure.artifacts),
             diagnostics=len(source_ast_closure.artifacts),
         )
-        neo_client = Neo4jClient()
+        neo_client = Neo4jClient(generation_id=run.run_id)
+        generation_started = False
+        generation_terminal = False
         try:
-            # 매 run 시작 — 옛 노드/엣지 wipe (테스트 정책: 깨끗 상태).
-            # schema (제약/인덱스) 는 wipe 무관 — ensure_schema 가 idempotent.
-            await wipe_graph(neo_client)
             await ensure_schema(neo_client)
-            log_info("run", "neo4j_ready", database=_resolved_neo4j_database(), wiped=True)
+            await begin_generation(
+                neo_client,
+                generation_id=run.run_id,
+                strategy=getattr(strategy, "name", "?"),
+                source_ast_closure=source_ast_closure.as_dict(),
+            )
+            generation_started = True
+            _update_run_manifest(run.run_dir, status="building")
+            log_info(
+                "run", "neo4j_ready",
+                database=_resolved_neo4j_database(),
+                generation_id=run.run_id,
+                wiped=False,
+            )
 
             # 응답 캐시 정리 — 프롬프트를 고칠 때마다 다시는 안 읽히는 항목이 쌓인다.
             # run 시작 1회, 상한 초과 시에만 실제로 지운다.
@@ -285,6 +298,25 @@ async def execute_run(
             if not stopped:
                 _summarize_usage(run.run_dir)
                 quality_summary = _summarize_analysis_findings(run.run_dir)
+                graph_closure = await publish_generation(
+                    neo_client,
+                    generation_id=run.run_id,
+                    quality_status=quality_summary["run_quality_status"],
+                )
+                generation_terminal = True
+                try:
+                    _write_graph_generation_closure(run.run_dir, graph_closure)
+                    _update_run_manifest(
+                        run.run_dir,
+                        status=quality_summary["run_quality_status"],
+                        graph_closure=graph_closure,
+                    )
+                except Exception as artifact_error:
+                    log_error(
+                        "run", "write_published_generation_artifact_failed", artifact_error,
+                        stream_emit=stream.emit if stream is not None else None,
+                        run_id=run.run_id,
+                    )
 
                 if stream is not None:
                     stream.emit({
@@ -304,10 +336,46 @@ async def execute_run(
                     analysis_findings=quality_summary["total"],
                 )
 
+            if stopped:
+                await terminate_generation(
+                    neo_client,
+                    generation_id=run.run_id,
+                    status="stopped",
+                    reason="user stop",
+                )
+                generation_terminal = True
+                _update_run_manifest(run.run_dir, status="stopped")
+
+        except BaseException as run_error:
+            if generation_started and not generation_terminal:
+                try:
+                    await terminate_generation(
+                        neo_client,
+                        generation_id=run.run_id,
+                        status="failed",
+                        reason=f"{type(run_error).__name__}: {run_error}",
+                    )
+                    generation_terminal = True
+                    _update_run_manifest(run.run_dir, status="failed")
+                except Exception as terminal_error:
+                    log_error(
+                        "run", "terminate_failed_generation_failed", terminal_error,
+                        stream_emit=stream.emit if stream is not None else None,
+                        run_id=run.run_id,
+                    )
+            raise
         finally:
             await neo_client.close()
     except Exception as e:
         # 파이프라인 실패 — 스트림 consumer 가 알도록 에러 emit (조용한 실패 차단).
+        try:
+            _update_run_manifest(run.run_dir, status="failed")
+        except Exception as manifest_error:
+            log_error(
+                "run", "write_failed_run_manifest_failed", manifest_error,
+                stream_emit=stream.emit if stream is not None else None,
+                run_id=run.run_id,
+            )
         log_error(
             "run", "run_failed", e,
             stream_emit=stream.emit if stream is not None else None,
@@ -495,6 +563,8 @@ def _write_initial_manifest(
     manifest = {
         "schema_version": "1.0",
         "run_id": run.run_id,
+        "generation_id": run.run_id,
+        "status": "initializing",
         "started_at": run.started_at.isoformat(),
         "corpus_root": str(corpus_root),
         "source_root": str(source_root),
@@ -520,6 +590,44 @@ def _write_source_ast_closure(run_dir: Path, closure: SourceAstClosure) -> None:
     temporary = target.with_suffix(".json.tmp")
     temporary.write_text(
         json.dumps(closure.as_dict(), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(target)
+
+
+def _write_graph_generation_closure(run_dir: Path, closure: dict[str, Any]) -> None:
+    """Persist the full canonical node/edge/slot identity ledger after publish."""
+    target = run_dir / "graph-generation-closure.json"
+    temporary = target.with_suffix(".json.tmp")
+    temporary.write_text(
+        json.dumps(closure, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(target)
+
+
+def _update_run_manifest(
+    run_dir: Path,
+    *,
+    status: str,
+    graph_closure: dict[str, Any] | None = None,
+) -> None:
+    """Atomically add the terminal generation status to the run manifest."""
+    target = run_dir / "manifest.json"
+    manifest = json.loads(target.read_text(encoding="utf-8"))
+    manifest["status"] = status
+    manifest["generation_id"] = manifest["run_id"]
+    if graph_closure is not None:
+        manifest["graph_closure"] = {
+            key: {
+                "count": graph_closure[key]["count"],
+                "sha256": graph_closure[key]["sha256"],
+            }
+            for key in ("nodes", "edges", "slots")
+        }
+    temporary = target.with_suffix(".json.tmp")
+    temporary.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
     temporary.replace(target)

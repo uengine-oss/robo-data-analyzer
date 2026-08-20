@@ -78,10 +78,13 @@ async def _export(args: argparse.Namespace) -> None:
     )
     client = Neo4jClient()
     try:
+        from graph.generation import bind_active_completed_generation
+        await bind_active_completed_generation(client)
         code_records = await client.run_read_query(
             f"""
             MATCH (n:ANALYZER_OWNED)
-            WHERE n.graph_owner = '{ANALYZER_GRAPH_OWNER}' AND n.id IN $ids
+            WHERE n.graph_owner = '{ANALYZER_GRAPH_OWNER}'
+              AND n.generation_id = $generation_id AND n.id IN $ids
             RETURN n.id AS id, n.summary AS summary,
                    n.stereotype AS stereotype
             """,
@@ -90,8 +93,10 @@ async def _export(args: argparse.Namespace) -> None:
         rule_records = await client.run_read_query(
             f"""
             MATCH (n:ANALYZER_OWNED)-[hr:HAS_RULE]->(r:RULE)
-            WHERE n.graph_owner = '{ANALYZER_GRAPH_OWNER}' AND n.id IN $ids
-            OPTIONAL MATCH (r)-[he:HAS_EXAMPLE]->(e:EXAMPLE)
+            WHERE n.graph_owner = '{ANALYZER_GRAPH_OWNER}'
+              AND n.generation_id = $generation_id AND n.id IN $ids
+              AND r.generation_id = $generation_id
+            OPTIONAL MATCH (r)-[he:HAS_EXAMPLE]->(e:EXAMPLE {{generation_id: $generation_id}})
             RETURN n.id AS id, r.id AS occurrence_id,
                    coalesce(hr.ordinal, 0) AS rule_ordinal,
                    r.anchor_line AS anchor_line, r.cond AS cond, r.then AS effects,
@@ -105,7 +110,9 @@ async def _export(args: argparse.Namespace) -> None:
         question_records = await client.run_read_query(
             f"""
             MATCH (n:ANALYZER_OWNED)-[:HAS_QUESTION]->(q:QUESTION)
-            WHERE n.graph_owner = '{ANALYZER_GRAPH_OWNER}' AND n.id IN $ids
+            WHERE n.graph_owner = '{ANALYZER_GRAPH_OWNER}'
+              AND n.generation_id = $generation_id AND n.id IN $ids
+              AND q.generation_id = $generation_id
             RETURN n.id AS id, q.id AS question_id, q.text AS text,
                    q.reason AS reason
             ORDER BY id, question_id
@@ -115,14 +122,15 @@ async def _export(args: argparse.Namespace) -> None:
         schema_records = await client.run_read_query(
             f"""
             MATCH (n:ANALYZER_OWNED)
-            WHERE n.graph_owner = '{ANALYZER_GRAPH_OWNER}' AND n.id IN $ids
+            WHERE n.graph_owner = '{ANALYZER_GRAPH_OWNER}'
+              AND n.generation_id = $generation_id AND n.id IN $ids
             RETURN n.id AS id, properties(n) AS props
             """,
             {"ids": schema_ids},
         )
         glossary_records = await client.run_read_query(
             f"""
-            MATCH (g:GLOSSARY {{id: "glossary", graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+            MATCH (g:GLOSSARY {{id: "glossary", graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
             RETURN g.terms_json AS terms_json, g.n_terms AS n_terms,
                    g.source_kind AS source_kind, g.source_sha256 AS source_sha256,
                    g.schema_version AS schema_version

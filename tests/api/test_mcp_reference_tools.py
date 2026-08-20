@@ -140,7 +140,10 @@ class ListProfileTests(unittest.TestCase):
         return _list_clusters(_clusters(), _BY_ID)
 
     def test_list_has_no_detail_or_internal_fields(self):
-        forbidden = {"code_text", "columns", "embedding", "element_id", "graph_owner"}
+        forbidden = {
+            "code_text", "columns", "embedding", "element_id", "graph_owner",
+            "generation_id",
+        }
         for node in self._listed()[0]["nodes"]:
             self.assertFalse(forbidden & set(node))
 
@@ -176,6 +179,7 @@ class DetailPayloadTests(unittest.TestCase):
                 "file_path": "a.c", "start_line": 10, "end_line": 20,
                 "code_text": "int fa(){}", "embedding": [1.0],
                 "graph_owner": "analyzer",
+                "generation_id": "run:published",
             }}],
             [{"type": "CALLS", "direction": "out", "other_id": "code:a.c:fa",
               "other_name": "fa", "other_labels": ["FUNCTION"], "properties": {}}],
@@ -188,7 +192,9 @@ class DetailPayloadTests(unittest.TestCase):
         self.assertEqual("CALLS", node["relationships"][0]["type"])
         self.assertEqual("code:a.c:fa", node["relationships"][0]["node"]["id"])
         self.assertEqual([{"statement": "규칙", "examples": []}], node["rules"])
-        self.assertFalse({"embedding", "graph_owner"} & set(node["properties"]))
+        self.assertFalse(
+            {"embedding", "graph_owner", "generation_id"} & set(node["properties"])
+        )
 
     def test_table_has_explicit_unavailable_source_and_columns(self):
         payload = build_node_detail(
