@@ -13,7 +13,6 @@ from collections import defaultdict
 from graph.schema.graph_edges import References
 from graph.schema.graph_nodes import Constant
 from pipeline.steps.step5_linking.link_external.key_index import quoted_literals
-from pipeline.steps.step5_linking.link_external.target_index import MAX_VALUE_LENGTH
 
 
 class LiteralConstantIndex:
@@ -58,4 +57,4 @@ def _complete_literal(expression: str) -> str | None:
     if len(literals) != 1 or literals[0].start != 0 or literals[0].end != len(raw):
         return None
     value = literals[0].value
-    return value if 0 < len(value) <= MAX_VALUE_LENGTH else None
+    return value if value else None

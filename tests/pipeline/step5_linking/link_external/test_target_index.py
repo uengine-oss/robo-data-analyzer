@@ -86,8 +86,12 @@ class TargetLookupTest(unittest.TestCase):
         index = TargetIndex([], [_file("f9", "docs/Makefile")])
         self.assertEqual([], index.lookup("Makefile"))
 
-    def test_oversized_value_is_rejected(self) -> None:
-        self.assertEqual([], self.index.lookup("x" * 241))
+    def test_exact_key_longer_than_legacy_limit_resolves(self) -> None:
+        key = "x" * 241
+        chunk = _chunk("long", (key,), "conf/long.xml")
+        index = TargetIndex([chunk], [])
+
+        self.assertEqual(["long"], [hit.target_id for hit in index.lookup(key)])
 
 
 if __name__ == "__main__":

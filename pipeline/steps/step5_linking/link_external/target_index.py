@@ -16,8 +16,6 @@ from graph.schema.graph_nodes import ExternalChunk, ProjectFile
 from pipeline.steps.step3_load_external.parsers.span_common import is_reference_key
 
 
-MAX_VALUE_LENGTH = 240
-
 # 키에 못 들어가는 문자 = 구분자. ``_KEY_PATTERN`` 의 허용 집합에서 기계적으로 유도한다.
 _DELIMITER = re.compile(r"[^\w.\-\[\]가-힣]")
 
@@ -91,7 +89,7 @@ class TargetIndex:
         설정 등)이며, 어느 하나를 임의로 고르는 것보다 전부 잇는 것이 정직하다.
         """
         raw = value.strip()
-        if not raw or len(raw) > MAX_VALUE_LENGTH:
+        if not raw:
             return []
         if "/" in raw or "\\" in raw:
             hit = self._by_path(_normalized_path(raw), source_file)

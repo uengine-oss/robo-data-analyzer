@@ -25,10 +25,7 @@ from pipeline.steps.step5_linking.link_external.resolver_catalog import (
 from pipeline.steps.step5_linking.link_external.literal_constants import LiteralConstantIndex
 from shared.files.source_excerpt import raw_node_text
 from pipeline.languages import external_resolvers
-from pipeline.steps.step5_linking.link_external.target_index import (
-    MAX_VALUE_LENGTH,
-    TargetIndex,
-)
+from pipeline.steps.step5_linking.link_external.target_index import TargetIndex
 
 
 class ExternalLinkContractError(ValueError):
@@ -136,7 +133,7 @@ def _determined_value(
     literals = quoted_literals(raw)
     if len(literals) == 1 and literals[0].start == 0 and literals[0].end == len(raw):
         value = literals[0].value
-        return value if 0 < len(value) <= MAX_VALUE_LENGTH else None
+        return value if value else None
     name = _symbol_name(raw)
     if not name:
         return None

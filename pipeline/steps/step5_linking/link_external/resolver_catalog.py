@@ -22,8 +22,6 @@ from pipeline.steps.step5_linking.link_external.key_index import mask_comments_a
 from shared.files.source_excerpt import raw_node_text
 
 
-MAX_PROMOTION_HOPS = 2                       # 콜체인 무한 추적 금지 — 여기서 끊는다
-
 _PARAMETERS = re.compile(r"\(([^)]*)\)")
 _TRAILING_NAME = re.compile(r"([A-Za-z_]\w*)\s*$")
 _PLAIN_NAME = re.compile(r"[A-Za-z_]\w*")
@@ -124,13 +122,13 @@ def promote_wrappers(routines: list[CodeNode]) -> dict[str, tuple[int, ...]]:
     다른 쪽은 행 값 꺼내기인 이름이 섞이는 것을 막는다.
     """
     catalog = dict(external_resolvers())
-    for _hop in range(MAX_PROMOTION_HOPS):
+    # Every successful round adds at least one previously absent routine name. The routine
+    # population is finite, so this monotone fixpoint terminates without a semantic hop cap.
+    while True:
         qualified: dict[str, set[int]] = {}
-        seen_names: set[str] = set()
         for node in routines:
             if not node.name:
                 continue
-            seen_names.add(node.name)
             positions = _forwarded_positions(node, catalog)
             if positions:
                 qualified.setdefault(node.name, set()).update(positions)

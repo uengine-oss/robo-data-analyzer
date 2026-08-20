@@ -31,6 +31,7 @@ SET t:ANALYZER_OWNED,
     t.comment = coalesce(t.comment, item.comment),
     t.analyzed_description = coalesce(t.analyzed_description, item.analyzed_description),
     t.table_type = item.table_type,
+    t.view_dependency_ids = item.view_dependency_ids,
     t.graph_owner = '{ANALYZER_GRAPH_OWNER}'
 RETURN count(t) AS created
 """
@@ -97,6 +98,7 @@ def to_item(table: Table) -> dict:
         "comment": table.comment,
         "analyzed_description": table.analyzed_description,
         "table_type": table.table_type,
+        "view_dependency_ids": list(table.view_dependency_ids),
     }
 
 

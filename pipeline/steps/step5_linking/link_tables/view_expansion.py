@@ -1,22 +1,19 @@
 """뷰 펼치기 (spec 112) — VIEW 를 향한 R/W 엣지에 기저 테이블 엣지를 추가한다.
 
-코드가 뷰를 읽으면 지금은 "뷰까지만" 기록된다. 이 모듈은 뷰의 정의 SELECT
-(``Table.view_definition`` — step1 이 보관)를 **DML 의미표(spec 106)** 로 다시 판정해
-기저 테이블 READS 를 뷰 경유 엣지로 추가한다.
+코드가 뷰를 읽으면 지금은 "뷰까지만" 기록된다. 이 모듈은 step1이 CREATE VIEW
+AST scope에서 보존한 ``Table.view_dependency_ids``를 따라 기저 테이블 READS를
+뷰 경유 엣지로 추가한다.
 
-- 판정 로직은 의미표 하나 (sqlglot lineage 미사용 결정 — 방언 민감성·정의 재파싱이
-  테이블 단위엔 과함. 컬럼 단위 요구가 생기면 sqlglot 로 승격, spec 문서 참조).
-- 뷰의 뷰(중첩)는 깊이 상한까지 재귀. 순환은 방문집합으로 차단.
-- 뷰를 향한 WRITES(updatable view)는 기저 **write 대상**에만 WRITES 전파, 그 외 READS.
+- 문자열/regex 재파싱은 하지 않는다. schema/name quoted identity와 CTE-vs-physical
+  구분은 producer AST가 소유한다.
+- 뷰의 뷰(중첩)는 유한 view 집합의 방문집합 closure로 전개한다. 숫자 깊이 상한은 없다.
+- 뷰를 향한 WRITES는 정의 query가 읽는 기저에 보수적으로 READS를 추가한다.
 - 전략 무관 — 두 레인의 링킹 산출(ReadsWrites)에 동일 적용 (엣지 후처리, LLM 0).
 """
 from __future__ import annotations
 
 from graph.schema.graph_nodes import Table
 from graph.schema.graph_edges import ReadsWrites
-from pipeline.dml_semantics import dml_semantics
-
-_MAX_VIEW_DEPTH = 3
 
 
 def expand_view_edges(
@@ -29,35 +26,24 @@ def expand_view_edges(
     """
     views = {
         t.id: t for t in tables
-        if t.table_type in ("VIEW", "MATERIALIZED_VIEW") and t.view_definition
+        if t.table_type in ("VIEW", "MATERIALIZED_VIEW")
     }
     if not views:
         return []
-    lookup = {t.name.upper(): t.id for t in tables}
-    semantics = dml_semantics()
+    table_ids = {table.id for table in tables}
 
-    def base_targets(view_id: str, visited: frozenset[str], depth: int) -> dict[str, str]:
-        """뷰 정의 → {기저 fqn: 'read'|'write'} (중첩 뷰 재귀, 순환·깊이 차단)."""
-        if depth > _MAX_VIEW_DEPTH or view_id in visited:
-            return {}
-        definition = views[view_id].view_definition
-        write_names = {
-            m.group("entity").upper() for m, _ in semantics.iter_write_targets(definition)
-        }
-        read_names = {
-            m.group("entity").upper()
-            for m in semantics.read_target_regex.finditer(definition)
-        }
-        out: dict[str, str] = {}
-        for name in read_names | write_names:
-            fqn = lookup.get(name)
-            if fqn is None or fqn == view_id:
+    def base_targets(view_id: str, visited: frozenset[str]) -> set[str]:
+        """View ID → known physical leaf Table IDs (cycle-safe finite closure)."""
+        if view_id in visited:
+            return set()
+        out: set[str] = set()
+        for dependency_id in views[view_id].view_dependency_ids:
+            if dependency_id == view_id or dependency_id not in table_ids:
                 continue
-            mode = "write" if name in write_names else "read"
-            if fqn in views:                     # 뷰의 뷰 — 재귀 전개
-                out.update(base_targets(fqn, visited | {view_id}, depth + 1))
+            if dependency_id in views:
+                out.update(base_targets(dependency_id, visited | {view_id}))
             else:
-                out[fqn] = mode
+                out.add(dependency_id)
         return out
 
     added: list[ReadsWrites] = []
@@ -65,9 +51,8 @@ def expand_view_edges(
     for edge in edges:
         if edge.target_id not in views:
             continue
-        for base_fqn, mode in base_targets(edge.target_id, frozenset(), 1).items():
-            # 코드가 뷰에 WRITES 했고 그 기저가 정의상 write 대상일 때만 WRITES 전파.
-            relation = "WRITES" if (edge.relation == "WRITES" and mode == "write") else "READS"
+        for base_fqn in sorted(base_targets(edge.target_id, frozenset())):
+            relation = "READS"
             key = (edge.source_id, base_fqn, relation)
             if key in seen:
                 continue

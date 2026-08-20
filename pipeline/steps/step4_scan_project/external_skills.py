@@ -160,8 +160,6 @@ def _apply_rule(
             key = (match.group(rule.key_group) or "").strip()
             if not key:
                 raise ExternalSkillValidationError(f"rule {rule.name} produced an empty key")
-            if len(key) > 240:
-                raise ExternalSkillValidationError(f"rule {rule.name} produced an oversized key")
             if match.end() <= match.start():
                 raise ExternalSkillValidationError(f"rule {rule.name} produced a zero-width span")
             line = text.count("\n", 0, match.start()) + 1

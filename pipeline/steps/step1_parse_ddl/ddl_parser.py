@@ -20,6 +20,7 @@ from pathlib import Path
 
 import sqlglot
 import sqlglot.expressions as exp
+from sqlglot.optimizer.scope import traverse_scope
 from sqlglot.tokens import Token, TokenType
 
 from graph.schema.graph_edges import BelongsTo, Fk, HasColumn
@@ -110,6 +111,39 @@ def _table_identity(
         _schema_key(table.args.get("db"), default_schema, default_schema_quoted),
         _identifier_ast_key(table.this),
     )
+
+
+def _view_dependency_ids(
+    expression: exp.Expression,
+    db: str,
+    default_schema: str,
+    default_schema_quoted: bool,
+) -> tuple[str, ...]:
+    """Return exact physical Table IDs from the CREATE VIEW query AST.
+
+    ``Scope.sources`` distinguishes a physical ``exp.Table`` from a CTE or derived-query
+    ``Scope``. Every nested scope is traversed so physical sources inside CTEs remain
+    obligations, while the CTE aliases themselves never become database targets.
+    """
+    dependencies: set[str] = set()
+    for scope in traverse_scope(expression):
+        for source in scope.sources.values():
+            if not isinstance(source, exp.Table):
+                continue
+            table_name, table_quoted = _identifier_ast_parts(source.this)
+            schema_identifier = source.args.get("db")
+            if isinstance(schema_identifier, exp.Identifier):
+                schema_name, schema_quoted = _identifier_ast_parts(schema_identifier)
+            else:
+                schema_name, schema_quoted = default_schema, default_schema_quoted
+            dependencies.add(sql_table_id(
+                db,
+                schema_name,
+                table_name,
+                schema_quoted=schema_quoted,
+                table_quoted=table_quoted,
+            ))
+    return tuple(sorted(dependencies))
 
 
 def _is_sqlplus_slash_terminator(sql: str, token: Token) -> bool:
@@ -492,11 +526,16 @@ def _handle_create(
     )
     if table_key not in seen_tables:
         seen_tables.add(table_key)
-        # VIEW 정의 SELECT 원문 보관 (spec 112) — 종전엔 버리던 "뷰의 레시피".
-        # 기저 테이블 추적(뷰 펼치기)의 유일한 재료다. sqlglot expression 이 곧 정의.
+        # VIEW 정의 문자열은 감사/표시용이다. relationship의 권위 입력은 같은 AST scope에서
+        # physical source만 뽑은 canonical dependency ID다.
         view_definition = ""
+        view_dependency_ids: tuple[str, ...] = ()
         if kind == "VIEW" and stmt.args.get("expression") is not None:
-            view_definition = stmt.args["expression"].sql()
+            view_expression = stmt.args["expression"]
+            view_definition = view_expression.sql()
+            view_dependency_ids = _view_dependency_ids(
+                view_expression, db, schema_name, schema_name_quoted,
+            )
         table = Table(
             db=db,
             schema=schema_name,
@@ -508,6 +547,7 @@ def _handle_create(
             view_definition=view_definition,
             schema_quoted=schema_name_quoted,
             name_quoted=table_name_quoted,
+            view_dependency_ids=view_dependency_ids,
         )
         result.tables.append(table)
         if schema_name:

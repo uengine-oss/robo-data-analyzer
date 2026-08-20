@@ -80,6 +80,16 @@ class ExternalSkillContractTest(unittest.TestCase):
         validated = validate_external_skill(_skill(), [text])
         self.assertEqual(150, len(apply_validated_external_skill(validated, text)))
 
+    def test_long_exact_key_is_not_rejected_by_character_budget(self) -> None:
+        key = "K" * 241
+        text = f"CFG[{key}] = exact"
+
+        validated = validate_external_skill(_skill(), [text])
+
+        self.assertEqual(
+            [key], [match.key for match in apply_validated_external_skill(validated, text)]
+        )
+
     def test_default_timeout_scales_with_text_size_and_is_capped(self) -> None:
         self.assertAlmostEqual(0.25, _effective_timeout(0))
         self.assertLess(_effective_timeout(21_269), _effective_timeout(5_000_000))

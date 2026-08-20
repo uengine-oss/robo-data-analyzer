@@ -14,6 +14,7 @@ from graph.schema.graph_nodes import CodeNode, Constant, ExternalChunk
 from graph.schema.node_ids import external_chunk_id, project_file_id
 from pipeline.steps.step3_load_external.span_verifier import sha256_text
 from pipeline.steps.step5_linking.link_external.linker import link_external
+from pipeline.steps.step5_linking.link_external.resolver_catalog import promote_wrappers
 
 
 GOLD_PATH = Path(__file__).resolve().parent / "gold" / "linking_cases.json"
@@ -47,6 +48,31 @@ def _chunks_for(keys_spec: dict[str, int], addressable: bool = True) -> list[Ext
 
 
 class LinkerGoldTest(unittest.TestCase):
+    def test_pass_through_wrapper_promotion_reaches_finite_fixpoint(self) -> None:
+        routines: list[CodeNode] = []
+        callee = "lookup"
+        for index in range(1, 5):
+            name = f"wrapper{index}"
+            routines.append(CodeNode(
+                id=f"code:shop:Wrappers:{name}",
+                signature=f"{name}(String key)",
+                file_path="Wrappers.java",
+                start_line=index,
+                end_line=index,
+                label="METHOD",
+                name=name,
+                code_text=f"void {name}(String key) {{ {callee}(key); }}",
+                owner_id="code:shop:Wrappers",
+            ))
+            callee = name
+
+        promoted = promote_wrappers(routines)
+
+        self.assertEqual(
+            {f"wrapper{index}" for index in range(1, 5)},
+            {name for name in promoted if name.startswith("wrapper")},
+        )
+
     def test_every_gold_case_matches_exactly(self) -> None:
         cases = json.loads(GOLD_PATH.read_text(encoding="utf-8"))["cases"]
         self.assertGreaterEqual(len(cases), 8)
@@ -148,6 +174,45 @@ class LinkerGoldTest(unittest.TestCase):
         )
         self.assertEqual([], outcome.external_edges)
         self.assertEqual(1, outcome.dynamic_key_sites)
+
+    def test_long_exact_literal_key_is_linked_without_character_budget(self) -> None:
+        key = "K" * 241
+        chunks = _chunks_for({key: 1})
+        code = CodeNode(
+            id="code:shop:Svc:longLiteral", signature="longLiteral()",
+            file_path="Svc.java", start_line=1, end_line=2, label="METHOD",
+            name="longLiteral", code_text=f'fopen("{key}");',
+            owner_id="code:shop:Svc",
+        )
+
+        outcome = link_external(
+            code_nodes=[code], constants=[], chunks=chunks, routine_ids={code.id},
+        )
+
+        self.assertEqual([(code.id, chunks[0].id)], [
+            (edge.source_id, edge.target_id) for edge in outcome.external_edges
+        ])
+
+    def test_long_exact_referenced_constant_key_is_linked(self) -> None:
+        key = "C" * 241
+        chunks = _chunks_for({key: 1})
+        code = CodeNode(
+            id="code:shop:Svc:longConstant", signature="longConstant()",
+            file_path="Svc.java", start_line=1, end_line=2, label="METHOD",
+            name="longConstant", code_text="fopen(KEY);", owner_id="code:shop:Svc",
+        )
+        constant = Constant(
+            id="code:shop:Svc:KEY", owner_id=code.owner_id, name="KEY",
+            file_path=code.file_path, start_line=1, end_line=1,
+            label="CONSTANT_FIELD", value=f'"{key}"',
+        )
+
+        outcome = link_external(
+            code_nodes=[code], constants=[constant], chunks=chunks,
+            routine_ids={code.id}, references_edges=[References(code.id, constant.id, 1)],
+        )
+
+        self.assertEqual([chunks[0].id], [edge.target_id for edge in outcome.external_edges])
 
 
 if __name__ == "__main__":

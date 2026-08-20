@@ -197,6 +197,21 @@
 - current Framework graph는 TABLE 7개, view 0개, table-to-table R/W 0개, ExternalChunk/REFER_TO 0개라
   세 경로 모두 기준 실행에는 영향이 없다.
 - 현재 판정: **실제 canonical relationship 손실 설계, 기준 실행 미발동**.
+- 재현(2026-08-21): base 뒤 view 5개를 직렬 연결하고 최상위 view를 READS하면 현재 기저 edge는
+  0개다. declared resolver 뒤 pass-through wrapper 4개를 직렬 연결하면 앞 2개만 승격된다. source-span
+  chunk와 호출 literal을 같은 241자 exact key로 주어도 TargetIndex lookup은 0건이다. C-021의 240자
+  gate는 unknown external regex producer, direct literal, referenced Constant, target lookup 네 곳에 있다.
+- red/해결: 위 view depth, wrapper fixpoint, 긴 key 네 producer/consumer 계약을 포함한 formal red 7건을
+  고정했고 모두 예상 위치에서 실패했다. view는 C-043의 AST dependency ID를 따라 cycle visited-set만으로
+  유한 closure한다. wrapper 승격은 매 round 최소 한 routine 이름을 추가하는 monotone fixpoint라 유한
+  모집단에서 종료한다. 긴 exact key는 empty/구문/주소성 검증을 그대로 통과해야 하며 임의 문자 수로
+  producer, literal/Constant, lookup 어느 곳에서도 버리지 않는다. 파일 전체 hard limit와 regex timeout/
+  match 폭주 검증은 유지된다.
+- 검증: red 7건 green, 관련 집중 `34 passed, 13 subtests`, Analyzer 전체 `1115 tests, 6 skipped`,
+  prompt ledger `17/17`. Neo4j 사전조건 재확인 뒤 `test` rollback에서 actual Table/READS writer로
+  dependency property와 기저 READS를 조회했고 rollback residue node/relationship 0이다.
+- 현재 판정: C-019/C-020/C-021은 **해결**, 기준 Framework graph에는 view/REFER_TO가 없어 actual
+  기준선 영향은 원래 미발동이다.
 
 ### C-022/C-023 — model-visible source projection과 UTF-8 ignore
 
@@ -634,6 +649,47 @@
   OBJECT_REFERENCE·두 READS와 서로 다른 component JSON, rollback residue 0을 확인했다.
 - 현재 판정: C-042는 **해결**, `_runs/dbms`가 없어 actual DBMS corpus 발동은 **미검증**이다.
 
+### C-043 — VIEW dependency AST를 문자열화한 뒤 bare-name regex로 재파싱
+
+- C-019의 depth gate를 원문→AST부터 다시 추적하며 발견했다. DDL parser는 CREATE VIEW의 sqlglot
+  expression을 이미 가지고도 `.sql()` 문자열만 `Table.view_definition`에 남긴다. step5
+  `view_expansion`은 그 문자열을 DML regex로 다시 읽고 `{table.name.upper(): table.id}`에 결합한다.
+- 실제 값: `SELECT * FROM A.ORDERS`는 schema를 capture하지 않아 table 입력 순서상 마지막
+  `B.ORDERS`에 READS를 만들고, `SELECT * FROM "App"."Foo"`는 regex가 quoted identifier를
+  인식하지 못해 edge 0건이다. C-039/C-040에서 보존한 schema/table quote identity가 이 경로에서 다시
+  사라진다. CTE alias도 physical table과 분리하는 AST scope 계약이 없다.
+- 배선/영향: exact DDL source→sqlglot CREATE VIEW AST→normalized `view_definition`→bare-name regex→
+  view-expanded READS/WRITES→step6/7 table context→Neo4j→API/MCP. LLM 이전 실제 relationship 누락·오귀속이다.
+- 유입: view recipe 저장과 expansion `bc699ee`. 분류/상태: **실제 canonical relationship 손실,
+  pending red-first**. CREATE VIEW AST scope에서 physical Table source만 추출하고 schema/name quoted bit로
+  canonical Table ID를 exact-once 보존한 뒤, C-019의 visited-set closure가 이 ID만 소비해야 한다.
+- 해결(2026-08-21): DDL parser가 이미 가진 sqlglot query의 모든 scope를 순회하되
+  `Scope.sources` 값이 physical `exp.Table`인 항목만 canonical dependency ID로 생산한다. CTE/derived
+  Scope alias는 제외되고 nested CTE 안 physical source는 포함된다. ID tuple은 정렬·dedupe되어 Table
+  state와 Neo4j `view_dependency_ids` property에 보존된다. view expansion은 `view_definition` 문자열을
+  관계 권위 입력으로 재파싱하지 않고 이 ID만 소비한다.
+- red/검증: quoted `App.Foo/App.foo` + Other schema sibling + CTE alias 계약과 5-view chain 계약이
+  예상대로 각각 0 edge로 red였고 해결 뒤 exact 두 physical sibling 및 최종 base 1건으로 green이다.
+  위 C-019~C-021 집중/전체/prompt/Neo4j rollback 검증에 포함됐다.
+- 현재 판정: C-043은 **해결**이다.
+
+### C-044 — SQL 3-part catalog component를 datasource `db` namespace와 혼동해 제거
+
+- C-043 AST scope producer를 더 추적하며 발견했다. sqlglot `exp.Table`은
+  `catalog`, `db`(schema), `this`(table)와 각 Identifier quoted bit를 이미 제공한다. 그러나 Analyzer
+  `Table.db`는 SQL catalog가 아니라 분석 datasource namespace이고 별도 catalog field가 없다.
+  `_table_identity`, Schema/Table/Column ID, COMMENT/FK/view dependency 모두 AST `catalog`를 읽지 않는다.
+- 실제 반례: 같은 datasource DDL의 `CREATE TABLE CAT1.S.T`, `CREATE TABLE CAT2.S.T`는 결과 Table이
+  하나뿐이며 ID도 `db:datasource.S.T` 하나다. `CAT1.S.V`가 양쪽 T를 JOIN해도 새 AST dependency tuple은
+  같은 ID 하나로 dedupe된다. quoted catalog sibling도 같은 이유로 표현할 수 없다.
+- 배선/영향: exact DDL source→sqlglot catalog/schema/table AST→2-part Analyzer identity→Table/Column/FK/
+  COMMENT/view dependency collision→READS/WRITES→step6/7 prompt→Neo4j→API/MCP. LLM 이전 실제 구조·관계
+  손실이며 C-043의 scope extraction 자체가 아니라 공통 graph identity model의 차원 부재다.
+- 유입: Table 3-part 미지원 모델 `1d0a504`, DDL identity 계열 `6956d02`. 분류/상태:
+  **실제 canonical identity 손실, pending red-first**. datasource namespace와 SQL catalog를 별도 field로
+  보존하고 catalog/schema/table component별 Q/U key를 공통 Schema/Table/Column ID와 모든 결합 경로가
+  소비해야 한다. 이미 AST에 있는 구문이므로 Parser listener 추가나 문자열 재파싱은 필요 없다.
+
 ## 4. 최초 후보 C-006~C-015 종결 분류
 
 | ID | 경로 | 확인된 사실 | 최종 분류 |
@@ -746,7 +802,7 @@
 - 검증됨: 기준선/DB 상태, F-001 actual schema·경계 수량, 위 정적 producer/caller 배선.
 - 검증됨: 각 F/C 경계의 유입 commit 축. "부재" 결함은 해당 owner가 생긴 최초 계열과 현재까지
   closure가 추가되지 않았음을 함께 기록했다.
-- 미검증: DBMS actual run, sealed 직접 의미 판정, 남은 C-004/C-017~021/C-031 계약/red test.
+- 미검증: DBMS actual run, sealed 직접 의미 판정, 남은 C-004/C-017/C-018/C-031/C-044 계약/red test.
 - 아직 제품 정확도나 완료를 주장하지 않는다.
 
 ### 2026-08-20 계약 고정 및 첫 red test

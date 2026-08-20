@@ -83,6 +83,9 @@ class Table:
     embedding: tuple[float, ...] = field(default=(), metadata={"vector": True})
     schema_quoted: bool = False               # SQL quoted schema면 exact case identity
     name_quoted: bool = False                 # SQL quoted table/view면 exact case identity
+    # CREATE VIEW AST scope가 생산한 physical dependency Table ID. view_definition 문자열은
+    # 표시/감사용이고 relationship expansion의 권위 입력으로 재파싱하지 않는다.
+    view_dependency_ids: tuple[str, ...] = ()
 
     @property
     def id(self) -> str:
