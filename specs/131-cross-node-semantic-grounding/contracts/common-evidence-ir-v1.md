@@ -125,9 +125,13 @@ CodeNode에 resolve한 뒤 별도 owner mapping을 만든다.
 
 - fact `range`가 full call expression을 가리킨다.
 - `payload.calleeRange`가 exact callee expression을 가리킨다.
+- `payload.calleeKind`는 grammar가 확정한 `named|constructor|expression` 중 하나다.
+- `payload.terminalName`은 `named|constructor`에서 grammar terminal의 exact text이고,
+  `expression`에서는 반드시 `null`이다. Analyzer는 callee source를 정규식·split으로 재파싱해 terminal을
+  만들지 않는다.
 - `payload.argumentRanges[]`는 배열 순서 자체가 grammar argument order다.
 - 모든 expression text는 파일당 한 번인 `decodedText`에서 range로 exact 복원한다.
-- Parser는 name convenience field를 낼 수 있지만 project target resolution은 하지 않는다.
+- Parser의 terminal name은 구문 사실일 뿐 project target resolution이 아니다.
 
 ### import/include, symbol, literal, assignment, parameter, macro
 

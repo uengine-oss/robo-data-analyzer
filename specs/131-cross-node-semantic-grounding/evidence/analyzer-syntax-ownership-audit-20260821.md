@@ -11,7 +11,7 @@
 - 최초 조사는 Analyzer `b448c7be27c54cdca1369ece7c6bd0a670311ec3`, Parser
   `e5fbf6b2e2a20dfc1bf42a665d19960715a6e2dd`에서 시작했다. 이후 C-047 Analyzer slice는
   `19498989434a7a7f033afc478341227d79f5030a`, common evidence IR Parser slice는
-  `d8dca383f681a6111e1788d6506fa052beb6dd1e`까지 각각 독립 push됐다.
+  `48de7f82f310c522d35edc697ba53d7857cd4264`까지 각각 독립 push됐다.
 
 ## 2. actual 기준선
 
@@ -204,6 +204,20 @@ source hash/version, 명시 position encoding, half-open code-point offset/lengt
 canonical occurrence ID를 공통 sealer가 검증하고 언어 listener는 grammar context 경계만 제공해야 한다.
 구현에서는 decoded source hash와 range가 slice를 이미 결박하므로 fact별 slice hash 반복은 제거했다.
 
+### C-056 — exact callee range만으로 terminal target을 만들면 Analyzer source 재파싱이 재발함
+
+`calleeRange`는 `service.repo().find`, `(*callback)`, `(lambda x: x)` 같은 exact expression을 무손실로
+보존하지만, 공통 Analyzer가 이 문자열에서 `find`나 `callback`을 정규식·split으로 다시 뽑으면 C-046과 같은
+언어별 구문 소유 위반이 반복된다. 반대로 모든 expression을 이름처럼 취급하면 함수 포인터·람다·연산 결과
+호출에 거짓 target을 만든다.
+
+판정: **잠재 의미 손실/거짓 연결**. Parser `48de7f8`에서 각 grammar listener가 구문적으로 이름이 있는
+호출, 생성자 호출, 임의 expression 호출을 `calleeKind=named|constructor|expression`으로 분류하고,
+앞의 두 종류만 grammar terminal `terminalName`을 발행하도록 red→green 고정했다. Analyzer는 이를 검증해
+target 후보에 사용하되 project symbol resolution은 계속 Analyzer가 소유한다. C/Java/Python 계약에는
+member call, anonymous class constructor, 함수 포인터, lambda callable을 포함했고, APAS 12,113건은
+named 12,113 / constructor 0 / expression 0으로 exact partition됐다.
+
 ## 4. 안전/preview/search/degraded와의 구분
 
 - `branch_inventory._ast_termination_rows` 160자는 display/prompt preview이며 Rule cond/then 정본은 아니다.
@@ -303,7 +317,8 @@ Analyzer는 이 fact를 언어 중립으로 resolve/own/dedup한다. unknown/amb
 
 초기 WIP의 legacy node별 call text/argument/offset은 승인하지 않았다. full-callee Python 경계, position
 encoding, source binding, conditional provenance, recovery rebase/completeness가 없고 같은 source text를
-노드마다 중복했기 때문이다. 이를 `d8dca38`에서 listener의 grammar range 후보와 공통 sealer로 교체했다.
+노드마다 중복했기 때문이다. 이를 `d8dca38`에서 listener의 grammar range 후보와 공통 sealer로 교체했고,
+`48de7f8`에서 grammar-owned callee kind/terminal을 추가했다.
 
 - C/Java/Python call facts와 C conditional-region facts는 canonical v1로 발행한다.
 - Oracle/PostgreSQL call kind는 구현 전 `unsupported`이며 빈 complete가 아니다.
@@ -321,10 +336,11 @@ grammar/build-context red 없이 문자열 규칙을 확대하지 않는다(C-05
 1. **완료 — C-047 독립 제거 슬라이스**: 증거 없는 call-review 생산자 전체를 제거했다. baseline
    958 occurrence-derived edge와 46개 모순 사례를 자동 회귀·결정론 전수 회계·봉인 직접 판정으로
    red→green 고정했다. Neo4j actual replay만 후속 evidence IR 통합 검증에 남아 있다.
-2. **완료 — Evidence envelope/range + conditional provenance 슬라이스**: Parser `d8dca38`. C-052/C-053과
+2. **완료 — Evidence envelope/range + conditional provenance/callee syntax 슬라이스**: Parser `48de7f8`.
+   C-052/C-053/C-056과
    구현 중 발견한 recovery complete 세탁, non-workspace evidence skip, nested effective-presence 결함을
    red→green 고정했다. actual은 12,113 call facts, 봉인 526/526이며 상세는 common IR 검증 원장에 있다.
-3. **진행 예정 — Analyzer call consumer 슬라이스**: Analyzer의 wrapper/call source reparse를 v1 IR 소비로
+3. **진행 — Analyzer call consumer 슬라이스**: Analyzer의 wrapper/call source reparse를 v1 IR 소비로
    교체한다. APAS 12,113 call fact와 기존 aggregate CALLS를 owner routine별 exact-once 비교한다. import/symbol은
    아직 v1 unsupported이므로 call과 한꺼번에 성공 처리하지 않고 다음 Parser kind slice로 분리한다.
 4. **literal/embedded SQL 슬라이스**: Scanning Agent는 유지하되 normalized fact pattern만 제안한다.

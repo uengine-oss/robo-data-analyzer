@@ -42,7 +42,7 @@ resolution owner이므로 이 단계에서 추측하지 않는다.
 
 ## 3. actual 전수 회계
 
-최종 Parser `d8dca383f681a6111e1788d6506fa052beb6dd1e`에서 APAS C/H 23파일을 두 번씩 parse했다.
+최종 Parser `48de7f82f310c522d35edc697ba53d7857cd4264`에서 APAS C/H 23파일을 두 번씩 parse했다.
 두 실행의 AST JSON은 파일별 byte-identical이고,
 source inventory와 모든 fact/call ID를 source order로 ledger hash에 봉인했다.
 
@@ -52,6 +52,7 @@ source inventory와 모든 fact/call ID를 source order로 ledger hash에 봉인
 | legacy `FUNCTION_CALL` | 12,113 |
 | common IR `call` facts | 12,113 |
 | active / inactive / conditional·unknown calls | 12,080 / 33 / 0 |
+| named / constructor / expression callees | 12,113 / 0 / 0 |
 | conditional regions | 17 |
 | diagnostics / ANTLR recoveries | 0 / 0 |
 | deterministic replay | true |
@@ -101,11 +102,12 @@ serialization harness로 비교했다. benchmark 자체는 의미 모집단을 s
 | 항목 | baseline | current | 변화 |
 |---|---:|---:|---:|
 | call occurrences/facts | 12,112 | 12,113 | +1 exact occurrence |
-| output bytes | 2,536,164 | 9,255,156 | +264.93% |
-| two-pass wall ms | 2,948 | 3,583 | +21.54% |
-| peak heap bytes | 216,242,240 | 261,754,888 | +21.05% |
+| output bytes | 2,536,164 | 9,844,733 | +288.17% |
+| two-pass wall ms | 2,948 | 4,317 | +46.44% |
+| peak heap bytes | 216,242,240 | 228,634,496 | +5.73% |
 
-최초 반복-text 시제품은 output 약 21.91 MiB, peak heap 약 339.1 MiB였다. 이를 source-once + range reference,
+현재 수치는 grammar-owned `calleeKind/terminalName`까지 포함한다. 최초 반복-text 시제품은 output 약
+21.91 MiB, peak heap 약 339.1 MiB였다. 이를 source-once + range reference,
 grammar/presence table, streaming fact serialization로 교체하고 legacy node의 임시 중복 call text/argument/
 offset 필드를 제거해 의미 fact를 줄이지 않고 최종 8.83 MiB, 249.63 MiB로 낮췄다. baseline보다 여전히 큰
 값은 새 exact source/evidence ledger의 비용이다. 이 한 회차

@@ -22,7 +22,8 @@
   `neo4j|test|framework|dbms|system`만 존재하고 모두 online이다. 허용 목록 밖 DB는 0개다.
 - Analyzer main HEAD `19498989434a7a7f033afc478341227d79f5030a`; 제품 코드 기준선
   `c216e674cbac43386f9826632097ca2661395d7d` 이후 C-047까지 독립 책임 슬라이스로 push됐다.
-- Parser main HEAD `d8dca383f681a6111e1788d6506fa052beb6dd1e`; common evidence IR 책임 슬라이스가
+- Parser main HEAD `48de7f82f310c522d35edc697ba53d7857cd4264`; common evidence IR와 grammar-owned
+  callee syntax 책임 슬라이스가
   자동 회귀·actual 전수 회계·봉인 직접 판정·성능 비교 후 push됐고 Parser working tree는 clean이다.
 - Catalog HEAD `1f1aaa608a3d7ef8b01ce15c3df962cf0f1cfefb`, 기존 dirty 12개가 있다.
 - Fabric HEAD `83c9604e2d6ec3f1ececa47d2e2264a74257843d`, 기존 dirty 7개가 있다.
@@ -311,10 +312,14 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
 25b. actual APAS 23파일은 `12,113 call facts = 12,080 active + 33 inactive`, conditional region 17,
     diagnostics/recoveries 0, 두 replay byte-identical이다. fact/call ledger hash가 닫혔고 봉인 합집합 526/526,
     conditional 내부 81/81을 직접 대조했다. legacy의 거짓 active 33개를 inactive evidence로 보존하고 삭제됐던
-    active else call 1개를 복구했다. like-for-like 기준선 대비 output +264.93%, wall +21.54%, peak heap
-    +21.05%이며 성능 우월은 주장하지 않는다. 반복 text 제거로 최초 시제품보다 줄였고 cap/sample은 없다.
+    active else call 1개를 복구했다. Parser `48de7f8`에서는 exact callee range만 보고 Analyzer가 terminal을
+    재파싱하지 않도록 grammar listener가 `calleeKind=named|constructor|expression`과 nullable
+    `terminalName`을 발행한다(C-056). APAS는 named 12,113 / constructor 0 / expression 0으로 전수 분할됐다.
+    like-for-like 기준선 대비 output +288.17%, wall +46.44%, peak heap +5.73%이며 성능 우월은 주장하지
+    않는다. 반복 text 제거로 최초 시제품보다 줄였고 cap/sample은 없다.
     세부 원장은 `evidence/common-evidence-ir-validation-20260821.md`다.
-25c. 다음 책임 슬라이스는 Analyzer가 v1 envelope/source/hash/range/completeness를 fail-closed 검증하고,
+25c. 다음 책임 슬라이스는 Analyzer가 v1 envelope/source/hash/range/completeness/callee syntax를 fail-closed
+    검증하고,
     Framework routine owner 기준 call occurrence를 exact-once 소비해 C-046/C-051 source 재파싱을 제거하는
     red다. Neo4j/API/MCP replay 전까지 전체 파이프라인 정확도 합격은 미검증이다.
 26. 검증: 자동 회귀→결정론 전수 회계→봉인 직접 의미 판정→실제 APAS 순으로 계속 수행한다.
