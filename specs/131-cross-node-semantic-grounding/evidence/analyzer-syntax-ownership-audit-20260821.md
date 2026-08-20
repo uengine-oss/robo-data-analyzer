@@ -8,9 +8,10 @@
 - Architect는 조회·수정·stage·실행하지 않았다.
 - Neo4j `verify_connectivity`와 `SHOW DATABASES`를 다시 확인했고 `neo4j/test/framework/dbms/system`만
   존재하며 모두 online이었다. 이 조사에서 DB write는 0회다.
-- Analyzer main HEAD는 `b448c7be27c54cdca1369ece7c6bd0a670311ec3`, clean에서 조사했다.
-- Parser main HEAD는 `e5fbf6b2e2a20dfc1bf42a665d19960715a6e2dd`이며 C/Java/Python call text/argument/
-  offset을 추가한 미커밋 WIP 7개 파일이 있다. 아래 §8 때문에 현재 형태를 계약으로 승인하거나 commit하지 않는다.
+- 최초 조사는 Analyzer `b448c7be27c54cdca1369ece7c6bd0a670311ec3`, Parser
+  `e5fbf6b2e2a20dfc1bf42a665d19960715a6e2dd`에서 시작했다. 이후 C-047 Analyzer slice는
+  `19498989434a7a7f033afc478341227d79f5030a`, common evidence IR Parser slice는
+  `d8dca383f681a6111e1788d6506fa052beb6dd1e`까지 각각 독립 push됐다.
 
 ## 2. actual 기준선
 
@@ -166,6 +167,43 @@ branch/source range는 graph/API에서 복구할 수 없다.
 aggregate CALLS 자체는 dependency view로 유효하지만 source occurrence의 대체물이 아니다. exact call-site
 ledger를 별도 보존하고 aggregate CALLS는 그 ledger에서 결정론적으로 파생해야 한다.
 
+### C-052 — C frontend가 build configuration 없이 조건부 컴파일의 첫 분기를 무조건 활성화
+
+Parser `CLanguageModule.preprocessSource`는 `#if/#ifdef/#ifndef` 조건을 평가하거나 build configuration을
+받지 않는다. 그런데 directive 뒤 첫 분기는 항상 남기고 첫 `#else/#elif`부터 `#endif`까지 공백으로
+바꾼다. 이는 조건을 모르면 `conditional/unknown`으로 보존해야 하는데 임의의 concrete build를 만든다.
+최초 유입은 Parser commit `99fdc5f`이고 현재 위치로의 이동 외 의미 변경은 없었다.
+
+기준 APAS에는 7파일, directive 36행, 조건 블록 17개(상수 16, 외부 macro 의존 1)가 있다. 실제 AST 대조 결과:
+
+- `#if 0`인데 AST가 active처럼 보존한 구간은 최소 69 node다. `zapamcom13010.c:499-528` 17개,
+  `zapamcom10020.c:4496-4535` 27개, `zapamcom10110.c`의 50/330-335/1283-1352 구간 25개이며,
+  여기에는 비활성 함수 `c800_ngmf_spcl_pwd_chk`와 그 호출까지 포함된다.
+- `#if 0 ... #else`의 실제 else 분기는 반대로 사라졌다. `zordmutl00010.c:588-591`과
+  `zapamcom10110.c:788`의 source statement는 AST node 0개다.
+- `#ifdef PFM_DBG`처럼 외부 build macro에 달린 구간도 정의 상태를 모른 채 첫 분기로 확정한다.
+
+판정: **실제 의미 손실과 거짓 의미 생산이 동시에 발생**한다. 단순히 `#if 0/1`만 고치는 것은 또 다른
+happy path다. Parser frontend가 실제 compilation database/build macro set을 받으면 concrete active view를,
+없으면 모든 branch를 condition provenance와 함께 `conditional/unknown` evidence로 보존해야 한다. Analyzer는
+이를 다시 평가하지 않고 owner별 의무/명시 degraded로 소비해야 한다.
+
+### C-053 — offset 인코딩과 recovery rebase가 정의되지 않아 WIP call range가 범용 exact range가 아님
+
+당시 Parser WIP는 C/Java/Python `FUNCTION_CALL`에 token `startIndex/stopIndex+1`을 직접 넣고 테스트에서 Java
+`String.substring`으로 검증한다. ANTLR 4.13 `CharStreams.fromString` token index는 Unicode code point 좌표인
+반면 Java substring은 UTF-16 code unit 좌표라 supplementary character가 앞에 있으면 동일 source slice가
+아니다. `positionEncoding`, line/column half-open range, source hash도 없다.
+
+또한 Python은 `TrailerContext`만 범위로 삼아 `repo.find(...)` 중 `.find(...)` 또는 `(args)`만 담고 callee
+expression 전체를 소유하지 못한다. localized recovery는 `AstCoordinates.rebaseChildren`에서 line만 옮기고
+offset은 옮기지 않으며, unit substring/context-prefix 경로의 offset base도 계약에 없다.
+
+판정: **잠재 또는 recovery 실제 의미 손실**. 숫자형 offset 네 필드를 추가하는 방식은 승인하지 않는다.
+source hash/version, 명시 position encoding, half-open code-point offset/length, full-source rebase,
+canonical occurrence ID를 공통 sealer가 검증하고 언어 listener는 grammar context 경계만 제공해야 한다.
+구현에서는 decoded source hash와 range가 slice를 이미 결박하므로 fact별 slice hash 반복은 제거했다.
+
 ## 4. 안전/preview/search/degraded와의 구분
 
 - `branch_inventory._ast_termination_rows` 160자는 display/prompt preview이며 Rule cond/then 정본은 아니다.
@@ -232,24 +270,25 @@ Parser listener가 언어별인 것은 위반이 아니다. 새 언어 문법과
 - https://sourcegraph.com/docs/code-navigation/writing-an-indexer
 - https://codeql.github.com/codeql-standard-libraries/java/semmle/code/java/Expr.qll/type.Expr%24Call.html
 
-## 7. 권고 common evidence IR 최소 계약
+## 7. 확정 common evidence IR v1 경계
 
 큰 단일 AST schema를 새로 만드는 대신 versioned evidence envelope과 작은 typed fact를 둔다.
 
 공통 envelope:
 
-- `evidenceVersion`, `sourceId`, `sourceSha256`, parser diagnostic closure
-- `range={startLine,startColumn,endLine,endColumn,startOffset,endOffset,positionEncoding}`; half-open
-- `canonicalOccurrenceId = hash(sourceId, sourceSha256, kind, range, ordinal-within-identical-range)`
-- `activeStatus = active|inactive|conditional|unknown`와 알려진 경우 condition/provenance
-- exact raw slice hash와 Parser가 생산한 normalized fields를 함께 보존
+- `version`, corpus-relative `sourceId`, raw/decoded SHA-256, exact `decodedText`, strict decode와 parse status
+- `positionEncoding=unicode-code-point`, `rangeConvention=half-open`,
+  `rangeEncoding=char-offset-length`
+- `factId = SHA-256(sourceId, decodedTextSha256, kind, range, same-kind/range ordinal)`
+- file-local `grammarRules[]`, `presences[]` table과 fact의 reference
+- source text는 파일당 한 번만 보존하고 call/callee/ordered argument는 exact range로 참조
+- kind별 `population/emitted/explicitlyUnresolved`, reason과 `unresolvedScopeFactIds`
 
 typed fact:
 
 - symbol declaration/occurrence: canonical/local symbol ID, role(definition/reference/import/read/write), owner
 - import/include: module/path components, imported members, aliases, wildcard/local/system, exact range
-- call site: exact callee expression, resolved/ambiguous/unresolved target set, ordered argument evidence,
-  enclosing routine/control/statement occurrence
+- call site: exact call/callee/ordered argument range. target set과 enclosing semantic owner는 Analyzer가 resolve
 - literal group: raw segments, decoded logical value가 완전할 때만 decoded value, concat/escape status
 - assignment/parameter/macro declaration: target/source occurrence와 exact expression ranges
 - embedded-language span: host literal segment mapping + declared/detected language + parse status; SQL은 dedicated
@@ -260,27 +299,34 @@ Analyzer는 이 fact를 언어 중립으로 resolve/own/dedup한다. unknown/amb
 제안하고, verifier는 전 occurrence에 재적용해 exact coverage를 증명한다. raw source regex는 preview나
 진단 후보로만 허용하며 canonical edge producer가 될 수 없다.
 
-## 8. 현재 Parser WIP를 그대로 commit하지 않는 이유
+## 8. Parser WIP 판정과 교체 결과
 
-- C/Java/Python 세 listener만 고쳤고 PL/pgSQL `emitInitializerCall`은 여전히 regex로 첫 call만 뽑는다.
-- `ParserUtils.emitInitializerCall`은 ordered args/range가 없고 whitespace가 소실된 `getText()` 입력을 받는다.
-- Python listener의 `TrailerContext` range는 `f(...)` 전체가 아니라 `(…)` 또는 `.method(…)` trailer일 수 있어
-  callee expression의 exact range가 아니다. 현 red test는 source substring 일치만 검사해 이 결함을 못 잡는다.
-- `startOffset/endOffset`의 position encoding/source hash/version/active status가 없다.
-- import, identifier, literal group, parameter, assignment, macro, embedded span 소비자를 닫지 못한다.
+초기 WIP의 legacy node별 call text/argument/offset은 승인하지 않았다. full-callee Python 경계, position
+encoding, source binding, conditional provenance, recovery rebase/completeness가 없고 같은 source text를
+노드마다 중복했기 때문이다. 이를 `d8dca38`에서 listener의 grammar range 후보와 공통 sealer로 교체했다.
 
-따라서 WIP는 증거 보존 대상으로 두되, 위 IR 계약과 per-language completeness matrix를 먼저 red로 고정한
-뒤 교체한다. 숫자 상한 증설이나 multiline regex 확장으로 C-046만 막지 않는다.
+- C/Java/Python call facts와 C conditional-region facts는 canonical v1로 발행한다.
+- Oracle/PostgreSQL call kind는 구현 전 `unsupported`이며 빈 complete가 아니다.
+- parser recovery/lossy decode/unknown build context는 각각 explicit partial reason으로 남는다.
+- workspace 밖 공개 full-file parse도 absolute path를 쓰거나 evidence를 생략하지 않고 content-addressed
+  `unscoped/...` source ID를 쓴다.
+- C first/alternate branch 추측은 제거했다. nested region은 effective parent presence를 합성한다.
+
+Parser legacy C type-name 수집, include/define 추출, PL/pgSQL initializer call에는 기존 heuristic이 남아 있다.
+이들은 v1 지원 kind가 아니며 canonical evidence로 승격하지 않는다. import/symbol/macro/DBMS call slice에서
+grammar/build-context red 없이 문자열 규칙을 확대하지 않는다(C-055 pending).
 
 ## 9. 되돌릴 수 있는 책임 슬라이스와 비교 계약
 
 1. **완료 — C-047 독립 제거 슬라이스**: 증거 없는 call-review 생산자 전체를 제거했다. baseline
    958 occurrence-derived edge와 46개 모순 사례를 자동 회귀·결정론 전수 회계·봉인 직접 판정으로
    red→green 고정했다. Neo4j actual replay만 후속 evidence IR 통합 검증에 남아 있다.
-2. **Evidence envelope/range 슬라이스**: source hash/position encoding/exact range/canonical occurrence ID를
-   Parser에 추가하고 C/Java/Python/PLSQL/PLpgSQL/PostgreSQL 지원 matrix를 고정한다.
-3. **Call/import/symbol 슬라이스**: Analyzer의 wrapper/import/token reparse를 IR 소비로 교체한다. 기존
-   APAS 12,112 call/450 import/8,210 ref-init 모집단과 새 multiline/nested/unicode/ambiguous corpus를 비교한다.
+2. **완료 — Evidence envelope/range + conditional provenance 슬라이스**: Parser `d8dca38`. C-052/C-053과
+   구현 중 발견한 recovery complete 세탁, non-workspace evidence skip, nested effective-presence 결함을
+   red→green 고정했다. actual은 12,113 call facts, 봉인 526/526이며 상세는 common IR 검증 원장에 있다.
+3. **진행 예정 — Analyzer call consumer 슬라이스**: Analyzer의 wrapper/call source reparse를 v1 IR 소비로
+   교체한다. APAS 12,113 call fact와 기존 aggregate CALLS를 owner routine별 exact-once 비교한다. import/symbol은
+   아직 v1 unsupported이므로 call과 한꺼번에 성공 처리하지 않고 다음 Parser kind slice로 분리한다.
 4. **literal/embedded SQL 슬라이스**: Scanning Agent는 유지하되 normalized fact pattern만 제안한다.
    291 후보의 exact accounting과 193 explicit residual ownership을 고정한다.
 5. **branch/DBMS/column 슬라이스**: active/literal/call/SQL evidence를 Parser/dedicated parser로 넘기고
@@ -294,4 +340,6 @@ Analyzer는 이 fact를 언어 중립으로 resolve/own/dedup한다. unknown/amb
 - DBMS actual run/graph가 없어 C-050과 새 DBMS evidence IR의 실코퍼스 영향은 미검증이다.
 - 193 residual 각각이 “DDL 미제공”인지 “pattern/transform 결함”인지는 현 run이 cases를 artifact로 남기지 않아
   아직 분해 불가다. 다음 replay 전부터 exact residual artifact를 생산해야 한다.
-- 새 IR의 모든 지원 언어 coverage와 performance는 red/구현/replay 전이므로 아직 정확도 향상을 주장하지 않는다.
+- Parser v1 자체의 C/Java/Python call, C conditional actual/성능은 검증했다. Analyzer consumer,
+  routine/effective-CodeNode owner mapping, Neo4j/API/MCP replay와 Oracle/PostgreSQL call은 미검증이므로 전체
+  파이프라인 정확도 향상을 아직 주장하지 않는다.
