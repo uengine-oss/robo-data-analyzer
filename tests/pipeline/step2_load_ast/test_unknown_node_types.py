@@ -6,8 +6,11 @@ framework 실측(2026-08-05): `_walk_framework` 는 ontology 에 없는 타입�
 ②자식으로 재귀해 내부의 아는 사실(호출·statement)을 보존한다.
 """
 from pathlib import Path
+import json
+import tempfile
 import unittest
 
+from pipeline.steps.step2_load_ast.dispatch import read_antlr_json
 from pipeline.steps.step2_load_ast.framework_reader import _read_framework
 
 
@@ -46,6 +49,26 @@ class UnknownNodeTypeContractTest(unittest.TestCase):
         self.assertEqual(["cleanup"], [c["call_text"] for c in result.call_sites])
         # statement 도 CodeNode 로 보존되어야 한다.
         self.assertIn("RETURN", {n.label for n in result.code_nodes})
+
+    def test_unknown_container_cannot_be_published_as_complete_ast(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "sample.c"
+            source.write_text("void f(void) {}\n", encoding="utf-8")
+            artifact = root / "sample.json"
+            artifact.write_text(json.dumps(_raw_with_unknown_container()), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "LABEL_BLOCK"):
+                read_antlr_json(artifact, root)
+
+    def test_malformed_ast_artifact_is_fatal_not_empty_parse_result(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifact = root / "sample.json"
+            artifact.write_text("{not-json", encoding="utf-8")
+
+            with self.assertRaises((ValueError, json.JSONDecodeError)):
+                read_antlr_json(artifact, root)
 
 
 if __name__ == "__main__":

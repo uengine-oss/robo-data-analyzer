@@ -6,7 +6,8 @@ import json
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from pipeline.models import analysis_meta
 from pipeline.models.analysis_context import ControlSubtreeNode, ReferencedSymbolContext
@@ -151,6 +152,37 @@ class RunInitializationContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(["error", "stream_end"], [record["type"] for record in records])
         self.assertIn("이미 활성", records[0]["message"])
         self.assertEqual(("run:first", first), run_registry.get_active())
+
+    async def test_source_ast_closure_failure_precedes_neo4j_client_and_wipe(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            corpus = Path(temporary) / "corpus"
+            source = corpus / "source"
+            (corpus / "analysis").mkdir(parents=True)
+            (corpus / "diagnostics").mkdir()
+            source.mkdir()
+            (source / "missing.c").write_text(
+                "int f(void) { return 0; }\n", encoding="utf-8"
+            )
+            wipe = AsyncMock()
+            strategy = SimpleNamespace(name="framework", prompts_dir="llm/prompts/framework")
+
+            with (
+                patch.object(run_executor, "Neo4jClient") as neo4j_client,
+                patch.object(run_executor, "wipe_graph", new=wipe),
+            ):
+                with self.assertRaisesRegex(ValueError, "missing.c"):
+                    await run_executor.execute_run(
+                        strategy=strategy,
+                        codebase=Codebase(
+                            root=source,
+                            strategy="framework",
+                            corpus_root=corpus,
+                        ),
+                        run_output_root=Path(temporary) / "runs",
+                    )
+
+            neo4j_client.assert_not_called()
+            wipe.assert_not_awaited()
 
 
 if __name__ == "__main__":

@@ -57,15 +57,19 @@ class LoadAstControlTest(unittest.IsolatedAsyncioTestCase):
         (ast_dir / "a.json").write_text("{}", encoding="utf-8")
         (ast_dir / "b.json").write_text("{}", encoding="utf-8")
         project = SimpleNamespace(root=source_root)
-        return temporary, ast_dir, source_root, project
+        closure = SimpleNamespace(artifacts=tuple(
+            SimpleNamespace(ast_path=path, ast_sha256="", language="")
+            for path in sorted(ast_dir.glob("*.json"))
+        ))
+        return temporary, ast_dir, source_root, project, closure
 
     async def test_stop_after_first_file_prevents_second_file_read(self):
-        temporary, ast_dir, source_root, project = self._fixture()
+        temporary, ast_dir, source_root, project, closure = self._fixture()
         self.addCleanup(temporary.cleanup)
         pause = PauseController()
         reads = 0
 
-        def read_one(*_args):
+        def read_one(*_args, **_kwargs):
             nonlocal reads
             reads += 1
             if reads == 1:
@@ -75,6 +79,7 @@ class LoadAstControlTest(unittest.IsolatedAsyncioTestCase):
         config = {"configurable": {"codebase": project, "pause": pause}}
         with (
             patch.object(subject, "ast_and_source_roots", return_value=(ast_dir, source_root)),
+            patch.object(subject, "verify_source_ast_closure", return_value=closure),
             patch.object(subject, "read_antlr_json", side_effect=read_one),
         ):
             with self.assertRaises(RunStopped):
@@ -82,13 +87,13 @@ class LoadAstControlTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reads, 1)
 
     async def test_pause_after_first_file_waits_then_resumes_second_file(self):
-        temporary, ast_dir, source_root, project = self._fixture()
+        temporary, ast_dir, source_root, project, closure = self._fixture()
         self.addCleanup(temporary.cleanup)
         pause = PauseController()
         first_read = asyncio.Event()
         reads = 0
 
-        def read_one(*_args):
+        def read_one(*_args, **_kwargs):
             nonlocal reads
             reads += 1
             if reads == 1:
@@ -99,6 +104,7 @@ class LoadAstControlTest(unittest.IsolatedAsyncioTestCase):
         config = {"configurable": {"codebase": project, "pause": pause}}
         with (
             patch.object(subject, "ast_and_source_roots", return_value=(ast_dir, source_root)),
+            patch.object(subject, "verify_source_ast_closure", return_value=closure),
             patch.object(subject, "read_antlr_json", side_effect=read_one),
         ):
             runner = asyncio.create_task(subject.load_ast_step({}, config))

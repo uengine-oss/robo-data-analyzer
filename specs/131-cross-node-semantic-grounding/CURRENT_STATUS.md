@@ -1,7 +1,7 @@
 # Analyzer 의미 무손실 감사 현재상태
 
 **Updated**: 2026-08-20
-**Status**: A131-04d 근본 구현 진행 중 — 중간 prose/Agent compaction 제거 완료, source·AST·diagnostic closure 착수
+**Status**: A131-04d 근본 구현 진행 중 — source·AST·diagnostic closure 완료, completed generation 원자 publish 조사
 **Product-code baseline HEAD**: `c216e674cbac43386f9826632097ca2661395d7d`
 
 이 문서는 현재 진행 위치만 소유한다. 영구 규칙은 `ABSOLUTE_RULES.md`, 상세 역사와 기존 수치는 `HANDOFF.md`와 `evidence/`가 소유한다.
@@ -20,7 +20,7 @@
 
 - Neo4j `127.0.0.1:7687`: 현재 세션에서 인증과 `SHOW DATABASES` 재확인 성공.
   `neo4j|test|framework|dbms|system`만 존재하고 모두 online이다. 허용 목록 밖 DB는 0개다.
-- Analyzer latest verified slice HEAD `f91f90d`; 제품 코드 기준선은
+- Analyzer latest verified slice HEAD `b26b5222c9be945b5d77b9087f495c98b9a130d7`; 제품 코드 기준선은
   `c216e674cbac43386f9826632097ca2661395d7d`, 재개 시 dirty 0이었다.
 - Parser HEAD `4b849f14575b6830b82ae5ee980658100c4d8692`, dirty 0.
 - Catalog HEAD `1f1aaa608a3d7ef8b01ce15c3df962cf0f1cfefb`, 기존 dirty 12개가 있다.
@@ -175,7 +175,14 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
     한 LLM의 자유문이 다음 LLM의 의미 근거가 되는 경로를 닫았다. C-017/C-018의 큰 탐색 exact partition은
     별도 미완 의무다. 변경 전 red 2건, focused 회귀 118건, 전체 `1058 passed, 5 skipped`, prompt hash
     `17/17 byte-identical`을 확인했다.
-12. 현재: A131-04d source/AST/diagnostic closure와 completed generation 원자 publish/consumer guard를
-    구현한다. C-023 strict source decode도 이 closure에서 함께 처리한다.
-13. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
-14. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.
+12. 완료(C-023/C-025/C-026/C-027/C-029): parser-supported source 전건을 AST `FILE.filePath`와
+    parser diagnostic에 source-order exact-once로 대응시키고 source/AST/diagnostic SHA-256, diagnostic
+    `EXACT`, `knownAndComplete`, missing declaration 0, lexer/parser error와 recovery 0을 Neo4j mutation 전에
+    검증한다. invalid UTF-8, missing/orphan/duplicate AST, stale/missing/non-EXACT diagnostic, malformed AST,
+    ontology unknown wrapper는 run 전체를 fail-closed한다. 같은 source byte cache와 검증된 AST hash/language를
+    step2가 재사용하고 `source-ast-closure.json`을 atomic write한다. 현재 corpus는 23→23→23, mismatch 0이며
+    변경 전 red 6건→green, 전체 `1067 passed, 5 skipped`다.
+13. 현재: A131-04d-GENERATION same-DB completed generation 원자 publish와 API/MCP/search consumer guard를
+    구현한다. 임시 DB는 만들지 않는다.
+14. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
+15. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.

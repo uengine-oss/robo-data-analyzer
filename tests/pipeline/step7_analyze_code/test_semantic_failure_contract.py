@@ -319,13 +319,17 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(), unresolved)
 
     async def test_missing_fragment_slot_fails_in_schema_after_one_model_call(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        source = Path(temporary.name) / "x.sql"
+        source.write_text("one\ntwo\nthree\nfour\n", encoding="utf-8")
         contexts = {
-            "a": AnalysisContext(id="a", signature="a", file_path="x.sql", start_line=1, end_line=2),
-            "b": AnalysisContext(id="b", signature="b", file_path="x.sql", start_line=3, end_line=4),
+            "a": AnalysisContext(id="a", signature="a", file_path=str(source), start_line=1, end_line=2),
+            "b": AnalysisContext(id="b", signature="b", file_path=str(source), start_line=3, end_line=4),
         }
         code_by_id = {
             node_id: CodeNode(
-                id=node_id, signature=node_id, file_path="x.sql",
+                id=node_id, signature=node_id, file_path=str(source),
                 start_line=context.start_line, end_line=context.end_line,
                 label="PROCEDURE",
             )
@@ -576,13 +580,17 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
 
 class FrameworkFailureContractTest(unittest.IsolatedAsyncioTestCase):
     async def test_insufficient_framework_summary_is_not_published(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        source = Path(temporary.name) / "x.py"
+        source.write_text("def work(): pass\n", encoding="utf-8")
         node = CodeNode(
-            id="fn", name="work", signature="work()", file_path="x.py",
+            id="fn", name="work", signature="work()", file_path=str(source),
             start_line=1, end_line=1, label="FUNCTION", summary="stale",
             stereotype="Helper",
         )
         context = AnalysisContext(
-            id="fn", signature="work()", file_path="x.py",
+            id="fn", signature="work()", file_path=str(source),
             start_line=1, end_line=1, summary="stale",
         )
         context.extra["ast_statements"] = ()

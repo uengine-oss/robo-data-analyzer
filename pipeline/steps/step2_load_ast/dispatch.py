@@ -13,6 +13,7 @@ ontology ``role_of`` 는 분류 전용 — 어느 dataclass/엣지/internal 인�
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -89,7 +90,13 @@ def ast_and_source_roots(
     return analysis_root / rel, source_base   # CLI 단일 대상 — 그 프로젝트로 스코프
 
 
-def read_antlr_json(json_path: Path, source_root: Path) -> ParseResult:
+def read_antlr_json(
+    json_path: Path,
+    source_root: Path,
+    *,
+    expected_sha256: str | None = None,
+    source_language: str | None = None,
+) -> ParseResult:
     """antlr JSON 파일 1개 → ParseResult.
 
     Args:
@@ -97,31 +104,38 @@ def read_antlr_json(json_path: Path, source_root: Path) -> ParseResult:
         source_root: 원본 소스 디렉토리 (``data/source``) — JSON 의 ``filePath`` 를
             절대 소스 경로로 풀어 ``file_path``에 박는다(step7 본문 슬라이싱용).
 
-    Returns:
-        ParseResult. JSON 파싱 실패 시 빈 결과 (오류 로깅 후 — 다른 파일은 계속).
+    Invalid/malformed artifacts and unsupported ontology containers are fatal.  Returning an
+    empty result would remove a source file from the semantic population while counting it as
+    parsed.
     """
     try:
-        raw = json.loads(json_path.read_text(encoding="utf-8"))
+        payload = json_path.read_bytes()
+        if expected_sha256 is not None:
+            actual_sha256 = hashlib.sha256(payload).hexdigest()
+            if actual_sha256 != expected_sha256:
+                raise ValueError(
+                    f"AST artifact changed after closure: {json_path} "
+                    f"expected={expected_sha256} actual={actual_sha256}"
+                )
+        raw = json.loads(payload.decode("utf-8", errors="strict"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
-        # antlr JSON 은 정상이라면 항상 유효 — 깨졌다면 antlr-parser 산출물 문제.
-        # 절대원칙 #3: silent 금지. 오류 기록 후 이 파일만 건너뜀.
         log_error(_COMPONENT, "read_antlr_json", e, json_path=str(json_path))
-        return ParseResult()
+        raise ValueError(f"invalid AST artifact {json_path}: {e}") from e
 
     if not isinstance(raw, dict):
-        log_warning(
-            _COMPONENT, "read_antlr_json",
-            "JSON 루트가 객체(FILE 노드)가 아님 — 건너뜀",
-            json_path=str(json_path),
+        raise ValueError(
+            f"invalid AST artifact {json_path}: root object required"
         )
-        return ParseResult()
+    if str(raw.get("type") or "").strip() != "FILE":
+        raise ValueError(f"invalid AST artifact {json_path}: root type FILE required")
 
     file_name = raw.get("fileName") or json_path.name
     ext = Path(file_name).suffix.lstrip(".").lower()
 
     if ext in DBMS_EXTS:
         result = _read_dbms(raw, source_root, json_path)
-        source_language = _parser_source_language(raw, source_root)
+        if source_language is None:
+            source_language = _parser_source_language(raw, source_root)
         for node in result.code_nodes:
             if source_language:
                 node.extra["source_language"] = source_language
@@ -129,12 +143,9 @@ def read_antlr_json(json_path: Path, source_root: Path) -> ParseResult:
 
     lang = EXT_TO_LANG.get(ext)
     if lang is None:
-        log_warning(
-            _COMPONENT, "read_antlr_json",
-            "지원하지 않는 확장자 — 건너뜀 (antlr-parser 미지원 언어)",
-            json_path=str(json_path), ext=ext,
+        raise ValueError(
+            f"unsupported parser AST extension at {json_path}: {ext!r}"
         )
-        return ParseResult()
 
     result = _read_framework(raw, lang, source_root, json_path)
     if result.unknown_nodes:
@@ -146,6 +157,9 @@ def read_antlr_json(json_path: Path, source_root: Path) -> ParseResult:
             "ontology 미등록 AST 타입 — 자식 사실은 보존했고 타입 분류는 지원 한계",
             json_path=str(json_path), lang=lang, counts=counts,
             samples=[f"{u['type']}@{u['line']}" for u in result.unknown_nodes[:5]],
+        )
+        raise ValueError(
+            f"ontology-unregistered AST node types in {json_path}: {counts}"
         )
     return result
 

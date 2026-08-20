@@ -211,12 +211,12 @@
   함수에 직접 넣었고 두 쌍 모두 같은 projection을 만들었다. 따라서 이름과 달리 역변환 가능한
   lossless projection이 아님은 재현됐다.
 - C-023: `SourceFileCache.lines()`는 UTF-8 decode에 `errors="ignore"`를 사용해 invalid byte를 상태나
-  finding 없이 제거한 뒤 source/링커/validator가 같은 손상 문자열을 공유한다. `git blame` 유입
-  `30828f7`.
+  finding 없이 제거한 뒤 source/링커/validator가 같은 손상 문자열을 공유했다. `git blame` 유입
+  `30828f7`. A131-04d-CLOSURE에서 strict UTF-8 whole-source fail-closed로 교체했다.
 - 기준 corpus source 23개는 strict UTF-8 decode가 모두 성공해 C-023은 미발동이다. C-022 projection은
   실제 Framework table-insight prompt에 사용됐으나 봉인 의미 판정 전에는 개별 오의미를 주장하지 않는다.
-- 현재 판정: C-022는 아래 책임 슬라이스에서 **해결**, C-023은 **실제 source evidence 손실 설계**로
-  A131-04d source/AST/diagnostic closure에 남긴다.
+- 현재 판정: C-022/C-023 모두 **해결**. invalid byte는 제거·대체하지 않고 graph mutation 전에 run을
+  실패시킨다.
 
 ### C-024~C-027 — AST/reference/source 경계의 계속 진행
 
@@ -231,7 +231,13 @@
   보기는 하지만 slot을 자동 insufficient로 내리거나 finding으로 연결하는 validator 계약이 없다.
 - 기준 Framework log에는 read_antlr_json/unknown/source_read/code_text/path fallback 관련 event가 모두
   0건이다.
-- 현재 판정: C-024/C-025는 **실제 구조/관계 손실**, C-026/C-027은 **불충분한 degraded 처리**.
+- 현재 판정: C-024는 후속 exact graph closure에 남는다. C-025/C-026/C-027은
+  A131-04d-CLOSURE에서 **해결**: malformed AST, unknown ontology wrapper, source read/decode 실패는
+  정상 semantic population을 publish하지 않고 run 전체를 fail-closed한다.
+- A131-04d 초기 red(2026-08-20): supported source의 AST/diagnostic 누락, stale source SHA,
+  non-EXACT parser diagnostic, invalid UTF-8 source, malformed AST JSON, ontology unknown container를
+  각각 반례로 고정했다. 변경 전 `8 tests` 중 기존 자식 보존 계약 2건만 통과하고 위 6건은 모두
+  실패해 silent skip/byte 삭제/정상 publish 배선을 재현했다.
 
 ### C-028/C-029 — column projection과 source→AST closure 부재
 
@@ -244,7 +250,11 @@
 - 기준 corpus는 source/AST/diagnostic이 각각 23개이고 filePath one-to-one, diagnostic status EXACT 23,
   source SHA-256 mismatch 0, invalid AST 0이라 C-029는 미발동이다. `_runs/dbms`가 없어 C-028 실제 영향은
   아직 측정할 수 없다.
-- 현재 판정: C-028은 **불충분한 degraded 처리**, C-029는 **실제 source→AST 구조 손실 설계**.
+- 현재 판정: C-028은 후속 DBMS 책임 슬라이스에 남는다. C-029는 **해결**: parser-supported source
+  모집단과 AST `FILE.filePath` 모집단을 exact set equality로 비교하고 missing/orphan/duplicate를 거부한다.
+  각 source의 exact bytes SHA-256을 diagnostic `sourceSha256`과 비교하며 `EXACT`, `knownAndComplete`,
+  missing declaration 0, lexer/parser error와 recovery 0을 함께 강제한다. 현재 corpus 23건은
+  source 23 = AST 23 = diagnostic 23, hash/status mismatch 0으로 재확인했다.
 
 ### C-030 — call-cycle 내부 callee 의미를 prompt에서 제거
 

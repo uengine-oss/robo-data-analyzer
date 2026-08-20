@@ -42,6 +42,9 @@
     - [x] A131-04c-SCC suppressed `(caller, callee)`를 canonical CALL unavailable evidence로
       exact-once 물질화하고 prompt·normalizer·missing_context까지 연결
   - [ ] A131-04d source/AST/diagnostic closure와 completed generation 원자 publish/consumer guard
+    - [x] A131-04d-CLOSURE parser-supported source↔AST↔EXACT diagnostic SHA/status 전수 one-to-one
+      회계, strict UTF-8, malformed/unknown AST fail-closed, Neo4j mutation 전 immutable closure artifact
+    - [ ] A131-04d-GENERATION same-DB completed generation 원자 publish와 API/MCP/search consumer guard
 - [ ] A131-05 자동 회귀·결정론 전수 회계·봉인 직접 의미 판정 3층 완료
 
 ## 보존된 기준선

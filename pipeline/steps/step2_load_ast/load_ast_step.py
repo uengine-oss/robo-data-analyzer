@@ -17,6 +17,11 @@ from langchain_core.runnables import RunnableConfig
 from pipeline.execution.step_config import step_config
 
 from pipeline.steps.step2_load_ast.dispatch import ast_and_source_roots, read_antlr_json
+from pipeline.steps.step2_load_ast.source_ast_closure import (
+    SourceAstClosure,
+    ast_json_paths,
+    verify_source_ast_closure,
+)
 from pipeline.steps.step2_load_ast.token_matcher import link_references
 from shared.events.runtime_logger import log_error, log_info, log_warning
 from pipeline.steps.step2_load_ast.node_identity_registry import NodeIdentityCollision, canonicalize_node_lists
@@ -40,11 +45,6 @@ from pipeline.execution.pause_controller import NULL_PAUSE, PauseController
 _STEP = "step2.load_ast"
 
 _N = TypeVar("_N")
-
-
-def ast_json_paths(ast_root: Path) -> list[Path]:
-    """Return every parser artifact using the production recursive boundary."""
-    return sorted(path for path in ast_root.rglob("*.json") if path.is_file())
 
 
 def _with_code_text(nodes: list[_N], cache: SourceFileCache) -> list[_N]:
@@ -142,6 +142,16 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         log_error(_STEP, "start", err, root=str(project.root))
         raise err
 
+    source_cache = cfg.get("source_cache") or SourceFileCache()
+    closure: SourceAstClosure | None = cfg.get("source_ast_closure")
+    if closure is None:
+        closure = verify_source_ast_closure(
+            project_root=Path(project.root),
+            ast_root=ast_dir,
+            source_root=source_root,
+            source_cache=source_cache,
+        )
+
     log_info(_STEP, "start", root=str(project.root), ast_dir=str(ast_dir))
 
     code_nodes, modules, packages = [], [], []
@@ -153,8 +163,13 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
     await pause.gate()
     # 파일 순차 유지 — 제어 계약(정지 시 다음 파일을 읽지 않음)이 파일 단위 gate 를
     # 요구한다. 이 단계의 시간 지배는 파싱이 아니라 Neo4j 업서트다.
-    for json_path in ast_json_paths(ast_dir):
-        result = read_antlr_json(json_path, source_root)
+    for artifact in closure.artifacts:
+        result = read_antlr_json(
+            artifact.ast_path,
+            source_root,
+            expected_sha256=artifact.ast_sha256,
+            source_language=artifact.language,
+        )
         code_nodes.extend(result.code_nodes)
         modules.extend(result.modules)
         packages.extend(result.packages)
@@ -194,8 +209,6 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
     # run 스코프 공유 캐시 (executor 주입) — 없으면 단독 생성(CLI/테스트 경로). FR-008.
     # ★ reference_linker 와 **같은 인스턴스**를 쓴다 — 종전엔 둘이 각자 캐시를 만들어
     #   step2 안에서만 같은 파일을 두 번 읽었다.
-    source_cache = cfg.get("source_cache") or SourceFileCache()
-
     # REFERENCES / INIT_BY — 전 파일 노드가 모인 뒤 결정론 식별자 매칭.
     # import_refs 를 넘겨 모듈 너머 참조까지 (계획 §2.8 Pass 2).
     references, init_by = await link_references(

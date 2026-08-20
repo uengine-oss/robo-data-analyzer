@@ -4,10 +4,8 @@
 DBMS(DML 본문)·step5(컨텍스트 빌드)·step6(range 본문)가 공유한다. 모듈 전역 캐시는
 쓰지 않아 장수명 API 서버의 run 사이 stale 데이터를 막는다.
 
-read 실패는 **조용히 넘기지 않는다** (헌법 IV / spec 045 FR-004): 실패하면 code_text 가
-빈 문자열 → ``props.nonempty()`` 가 키를 제거 → 노드에 속성 자체가 부재 → 화면 빈 패널 +
-검색 코퍼스 재료 소실인데 run 은 "성공"으로 끝난다. "못 읽었다" 와 "원래 본문이 없다" 를
-구분할 수 있도록 경고로 표면화한다.
+read/decode 실패는 **조용히 넘기지 않는다** (헌법 IV / spec 131 C-023/C-027).
+원문을 exact하게 읽지 못하면 source↔AST closure가 성립하지 않으므로 예외를 전파한다.
 """
 from __future__ import annotations
 
@@ -21,7 +19,7 @@ _LOG = "shared.files.cache"
 
 
 class SourceFileCache:
-    """파일 경로 → 텍스트 라인 캐시. read 실패는 빈 리스트 + 경고 (경로당 1회만 시도)."""
+    """파일 경로 → exact UTF-8 텍스트 라인 캐시. read/decode 실패는 fail-closed."""
 
     def __init__(self) -> None:
         self._bytes: dict[str, bytes] = {}
@@ -59,14 +57,11 @@ class SourceFileCache:
         return raw
 
     def lines(self, file_path: str) -> list[str]:
-        """파일 텍스트 라인 목록 — 캐시 적중 시 즉시. 실패 시 빈 리스트 + ``log_warning``."""
+        """파일 텍스트 라인 목록. invalid UTF-8 byte를 삭제하지 않고 예외로 드러낸다."""
         cached = self._lines.get(file_path)
         if cached is not None:
             return cached
-        try:
-            lines = self.read_bytes(file_path).decode("utf-8", errors="ignore").splitlines()
-        except SourceFileReadError:
-            lines = []
+        lines = self.read_bytes(file_path).decode("utf-8", errors="strict").splitlines()
         self._lines[file_path] = lines
         return lines
 

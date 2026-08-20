@@ -63,6 +63,11 @@ from pipeline.execution.run_output_context import (
     set_response_locale,
     set_run_dir,
 )
+from pipeline.steps.step2_load_ast.dispatch import ast_and_source_roots
+from pipeline.steps.step2_load_ast.source_ast_closure import (
+    SourceAstClosure,
+    verify_source_ast_closure,
+)
 
 
 _RUN_OUTPUT_OWNER_MARKER = ".robo-data-analyzer-output"
@@ -167,6 +172,26 @@ async def execute_run(
             strategy=getattr(strategy, "name", "?"),
             run_id=run.run_id,
         )
+        # Canonical source/AST/diagnostic population must close before any graph
+        # mutation, including the destructive replacement of the previous graph.
+        source_cache = SourceFileCache()
+        ast_root, parser_source_root = ast_and_source_roots(
+            codebase.root, codebase.corpus_root,
+        )
+        source_ast_closure = verify_source_ast_closure(
+            project_root=codebase.root,
+            ast_root=ast_root,
+            source_root=parser_source_root,
+            source_cache=source_cache,
+        )
+        _write_source_ast_closure(run.run_dir, source_ast_closure)
+        log_info(
+            "run",
+            "source_ast_closure_verified",
+            sources=len(source_ast_closure.artifacts),
+            ast_artifacts=len(source_ast_closure.artifacts),
+            diagnostics=len(source_ast_closure.artifacts),
+        )
         neo_client = Neo4jClient()
         try:
             # 매 run 시작 — 옛 노드/엣지 wipe (테스트 정책: 깨끗 상태).
@@ -212,11 +237,12 @@ async def execute_run(
                     "llm_semaphore": llm_semaphore,   # run 공유 동시성 한도 (총량 단일 진실)
                     "analysis_handoff": analysis_handoff,  # step7 분할 확정 → 후처리 인계
                     "human_glossary": human_glossary,
+                    "source_ast_closure": source_ast_closure,
                     # ★ run 스코프 소스 캐시 (spec 046 FR-008) — 파일당 디스크 read 1회.
                     #   종전엔 step 마다 새 인스턴스를 만들어 캐시가 무력화됐고, 같은 파일을
                     #   한 run 에서 5~8회 읽었다 (step2 안에서만 2회).
                     #   run 스코프라 "장수명 서버의 stale" 위험(SourceFileCache docstring)도 없다.
-                    "source_cache": SourceFileCache(),
+                    "source_cache": source_cache,
                 }
             }
 
@@ -486,6 +512,17 @@ def _write_initial_manifest(
     with manifest_path.open("x", encoding="utf-8") as file:
         json.dump(manifest, file, ensure_ascii=False, indent=2)
         file.write("\n")
+
+
+def _write_source_ast_closure(run_dir: Path, closure: SourceAstClosure) -> None:
+    """Persist the exact closed population before graph mutation."""
+    target = run_dir / "source-ast-closure.json"
+    temporary = target.with_suffix(".json.tmp")
+    temporary.write_text(
+        json.dumps(closure.as_dict(), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(target)
 
 
 def _summarize_usage(run_dir: Path) -> None:
