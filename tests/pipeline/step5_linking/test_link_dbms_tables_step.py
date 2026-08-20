@@ -169,6 +169,30 @@ class LinkDbmsTablesTest(unittest.TestCase):
             (edge.target_id, edge.relation) for edge in edges
         ])
 
+    def test_versioned_ast_evidence_resolves_only_exact_catalog_identity(self) -> None:
+        node = self.nodes[0]
+        node.extra["data_object_evidence_version"] = 4
+        node.extra["data_object_usages"] = (DataObjectUsageEvidence(
+            source_id=node.id,
+            raw_reference='"warehouse"."App"."Orders"',
+            catalog="warehouse", catalog_quoted=True,
+            schema="App", schema_quoted=True,
+            name="Orders", name_quoted=True,
+            access="READ", evidence_file=str(self.source), evidence_line=1,
+        ),)
+        tables = [
+            Table(db="shop", catalog="Warehouse", catalog_quoted=True,
+                  schema="App", schema_quoted=True, name="Orders", name_quoted=True),
+            Table(db="shop", catalog="warehouse", catalog_quoted=True,
+                  schema="App", schema_quoted=True, name="Orders", name_quoted=True),
+        ]
+
+        edges = _link([node], tables, [], SourceFileCache(), datasource="shop")
+
+        self.assertEqual([(tables[1].id, "READS")], [
+            (edge.target_id, edge.relation) for edge in edges
+        ])
+
     def test_legacy_bare_name_scanner_does_not_guess_between_schema_siblings(self) -> None:
         tables = [
             Table(db="shop", schema="PUBLIC", name="ORDERS"),

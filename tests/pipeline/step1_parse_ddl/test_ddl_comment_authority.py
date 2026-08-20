@@ -84,6 +84,68 @@ COMMENT ON TABLE "app"."Orders" IS 'lower schema';
             [(schema.name, schema.name_quoted) for schema in result.schemas],
         )
 
+    def test_three_part_catalog_identity_is_preserved_across_tables_comments_and_views(self) -> None:
+        ddl = '''\
+CREATE TABLE "Warehouse"."App"."Orders" ("Id" INTEGER);
+CREATE TABLE "warehouse"."App"."Orders" ("Id" INTEGER);
+COMMENT ON TABLE "Warehouse"."App"."Orders" IS 'upper catalog';
+COMMENT ON TABLE "warehouse"."App"."Orders" IS 'lower catalog';
+CREATE VIEW "Warehouse"."App"."Both" AS
+SELECT * FROM "Warehouse"."App"."Orders"
+UNION ALL SELECT * FROM "warehouse"."App"."Orders";
+CREATE TABLE "Warehouse"."App"."Child" (
+  "Id" INTEGER,
+  "OrderId" INTEGER,
+  FOREIGN KEY ("OrderId") REFERENCES "warehouse"."App"."Orders" ("Id")
+);
+'''
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "three-part.sql"
+            path.write_text(ddl, encoding="utf-8")
+            result = parse_ddl_file(path, db="shop", dialect="postgres")
+
+        orders = [table for table in result.tables if table.name == "Orders"]
+        view = next(table for table in result.tables if table.name == "Both")
+        self.assertEqual(
+            [("Warehouse", True, "upper catalog"),
+             ("warehouse", True, "lower catalog")],
+            [(table.catalog, table.catalog_quoted, table.description) for table in orders],
+        )
+        self.assertEqual(2, len({table.id for table in orders}))
+        self.assertEqual(2, len({
+            column.id for column in result.columns if column.name == "Id"
+            and column.id.endswith("Q~Id") and "Q~Orders" in column.id
+        }))
+        self.assertEqual({table.id for table in orders}, set(view.view_dependency_ids))
+        self.assertEqual(
+            {("Warehouse", True, "App"), ("warehouse", True, "App")},
+            {(schema.catalog, schema.catalog_quoted, schema.name)
+             for schema in result.schemas},
+        )
+        fk = result.fk_edges[0]
+        self.assertIn("Q~Warehouse.Q~App.Q~Child", fk.from_id)
+        self.assertIn("Q~warehouse.Q~App.Q~Orders", fk.to_id)
+
+    def test_unqualified_fk_target_inherits_source_catalog_and_schema(self) -> None:
+        ddl = '''\
+CREATE TABLE CAT.S.PARENT (ID INTEGER PRIMARY KEY);
+CREATE TABLE CAT.S.CHILD (
+  ID INTEGER,
+  PARENT_ID INTEGER,
+  FOREIGN KEY (PARENT_ID) REFERENCES PARENT (ID)
+);
+'''
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "fk-default-namespace.sql"
+            path.write_text(ddl, encoding="utf-8")
+            result = parse_ddl_file(path, db="shop", dialect="postgres")
+
+        parent = next(table for table in result.tables if table.name == "PARENT")
+        child = next(table for table in result.tables if table.name == "CHILD")
+        self.assertEqual([(child.id, parent.id)], [
+            (edge.from_id, edge.to_id) for edge in result.fk_edges
+        ])
+
     def test_quoted_and_unquoted_same_spelling_have_distinct_table_ids(self) -> None:
         ddl = 'CREATE TABLE FOO (ID INTEGER); CREATE TABLE "FOO" (ID INTEGER);'
         with TemporaryDirectory() as tmp:

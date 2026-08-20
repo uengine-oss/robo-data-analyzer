@@ -60,11 +60,11 @@ def test_legacy_ast_is_explicitly_distinguished_from_complete_empty_evidence() -
 
 
 def test_unknown_parser_evidence_version_fails_closed_at_its_coordinate() -> None:
-    with pytest.raises(ValueError, match=r"dataObjectEvidenceVersion=4 at p\.sql:9"):
+    with pytest.raises(ValueError, match=r"dataObjectEvidenceVersion=5 at p\.sql:9"):
         _make_code_node(
             {
                 "type": "SELECT", "startLine": 9, "endLine": 9,
-                "dataObjectEvidenceVersion": 4,
+                "dataObjectEvidenceVersion": 5,
             },
             "newer", "module", "", "p.sql", None,
         )
@@ -181,6 +181,53 @@ def test_parser_evidence_v3_preserves_database_link_component_identity() -> None
     assert json.loads(dump_data_object_usages(usages))[0]["database_link_components"] == [{
         "role": "database", "name": '"Link"', "name_quoted": True,
     }]
+
+
+def test_parser_evidence_v4_preserves_catalog_component_identity() -> None:
+    node = _make_code_node(
+        {
+            "type": "SELECT", "startLine": 9, "endLine": 10,
+            "dataObjectEvidenceVersion": 4,
+            "dataObjectReferences": [
+                {
+                    "rawReference": '"Warehouse"."App"."Orders"',
+                    "catalog": '"Warehouse"', "catalogQuoted": True,
+                    "schema": '"App"', "schemaQuoted": True,
+                    "name": '"Orders"', "nameQuoted": True,
+                    "access": "READ", "startLine": 9,
+                },
+                {
+                    "rawReference": '"warehouse"."App"."Orders"',
+                    "catalog": '"warehouse"', "catalogQuoted": True,
+                    "schema": '"App"', "schemaQuoted": True,
+                    "name": '"Orders"', "nameQuoted": True,
+                    "access": "READ", "startLine": 10,
+                },
+            ],
+        },
+        "select:catalog", "module", "", "p.sql", "procedure:1",
+    )
+
+    usages = node.extra["data_object_usages"]
+    assert usages[0].catalog == '"Warehouse"'
+    assert usages[0].catalog_quoted is True
+    assert object_reference_id("shop", usages[0]) != object_reference_id("shop", usages[1])
+    assert json.loads(dump_data_object_usages(usages))[0]["catalog"] == '"Warehouse"'
+
+
+def test_catalog_component_in_older_evidence_version_fails_closed() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"catalog identity requires.*p\.sql:9",
+    ):
+        usages_from_parser_ast(
+            source_id="select:catalog", evidence_file="p.sql",
+            references=({
+                "rawReference": "warehouse.app.orders", "catalog": "warehouse",
+                "schema": "app", "name": "orders", "access": "READ", "startLine": 9,
+            },),
+            qualified_columns=(), evidence_version=3,
+        )
 
 
 @pytest.mark.parametrize("version", [1, 2, 3])

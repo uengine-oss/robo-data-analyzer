@@ -76,6 +76,8 @@ class DataObjectUsageEvidence:
     evidence_line: int
     datasource: str = ""
     producer: Producer = "parser_ast"
+    catalog: str = ""
+    catalog_quoted: bool = False
     schema: str = ""
     schema_quoted: bool = False
     name_quoted: bool = False
@@ -97,8 +99,10 @@ class DataObjectUsageEvidence:
             "producer": self.producer,
             "datasource": self.datasource or None,
             "raw_reference": self.raw_reference,
+            "catalog": self.catalog or None,
             "schema": self.schema or None,
             "name": self.name,
+            "catalog_quoted": self.catalog_quoted,
             "schema_quoted": self.schema_quoted,
             "name_quoted": self.name_quoted,
             "database_link": self.database_link or None,
@@ -123,14 +127,26 @@ def object_reference_id(datasource: str, usage: DataObjectUsageEvidence) -> str:
         raise ValueError(
             "database-link identity requires parser databaseLinkComponents"
         )
-    identity = json.dumps(
+    object_identity = (
         (
+            "v4",
+            datasource.strip().upper(),
+            sql_identifier_key(usage.catalog, usage.catalog_quoted),
+            sql_identifier_key(usage.schema, usage.schema_quoted),
+            sql_identifier_key(usage.name, usage.name_quoted),
+            link_identity,
+        )
+        if usage.catalog
+        else (
             "v3",
             datasource.strip().upper(),
             sql_identifier_key(usage.schema, usage.schema_quoted),
             sql_identifier_key(usage.name, usage.name_quoted),
             link_identity,
-        ),
+        )
+    )
+    identity = json.dumps(
+        object_identity,
         ensure_ascii=False,
         separators=(",", ":"),
     )
@@ -160,6 +176,18 @@ def usages_from_parser_ast(
     matched: set[int] = set()
     for raw in references:
         name = _required_text(raw, "name")
+        catalog = str(raw.get("catalog") or "")
+        catalog_quoted = bool(raw.get("catalogQuoted", False))
+        if catalog and evidence_version < 4:
+            raise ValueError(
+                "catalog identity requires dataObjectEvidenceVersion >= 4 "
+                f"at {evidence_file}:{_positive_int(raw, 'startLine')}"
+            )
+        if catalog_quoted and not catalog:
+            raise ValueError(
+                "catalogQuoted present without catalog "
+                f"at {evidence_file}:{_positive_int(raw, 'startLine')}"
+            )
         access = _required_text(raw, "access").upper()
         if access not in ("READ", "WRITE"):
             raise ValueError(f"invalid parser data-object access: {access!r}")
@@ -194,6 +222,8 @@ def usages_from_parser_ast(
         usages.append(DataObjectUsageEvidence(
             source_id=source_id,
             raw_reference=_required_text(raw, "rawReference"),
+            catalog=catalog,
+            catalog_quoted=catalog_quoted,
             schema=str(raw.get("schema") or ""),
             schema_quoted=bool(raw.get("schemaQuoted", False)),
             name=name,

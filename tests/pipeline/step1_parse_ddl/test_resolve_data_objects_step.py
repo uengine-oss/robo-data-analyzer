@@ -135,6 +135,32 @@ class ResolveDataObjectsStepTest(unittest.IsolatedAsyncioTestCase):
                 "has_column_edges": [],
             }, _config())
 
+    async def test_confirmed_catalog_request_without_provider_catalog_proof_fails_closed(self):
+        node = _select()
+        usage = DataObjectUsageEvidence(
+            source_id=node.id, raw_reference="warehouse.app.orders",
+            catalog="warehouse", schema="app", name="orders", access="READ",
+            evidence_file="p.sql", evidence_line=241,
+        )
+        node.extra["data_object_usages"] = (usage,)
+
+        async def fake_resolve(_http, _base, _datasource, references, **_kwargs):
+            return {"results": [{
+                "key": references[0]["key"], "status": "confirmed",
+                "schema_name": "app", "object_name": "orders",
+                "columns": [], "sample_rows": [],
+            }]}
+
+        with (
+            patch.object(subject, "catalog_base_url_or_skip", return_value="http://catalog/robo"),
+            patch.object(subject, "post_object_resolution_context", side_effect=fake_resolve),
+            self.assertRaisesRegex(ValueError, "catalog/quoted identifier.*provider.*proof"),
+        ):
+            await subject.resolve_data_objects_step({
+                "code_nodes": [node], "tables": [], "columns": [],
+                "has_column_edges": [],
+            }, _config())
+
 
 if __name__ == "__main__":
     unittest.main()

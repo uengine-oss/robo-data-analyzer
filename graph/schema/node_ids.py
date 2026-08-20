@@ -139,8 +139,20 @@ def sql_identifier_id_part(value: object, quoted: bool) -> str:
     return f"Q~{encoded}" if quoted else encoded
 
 
-def sql_schema_id(db: object, schema: object, schema_quoted: bool = False) -> str:
-    return db_id(db, sql_identifier_id_part(schema, schema_quoted))
+def sql_schema_id(
+    db: object,
+    schema: object,
+    schema_quoted: bool = False,
+    *,
+    catalog: object = "",
+    catalog_quoted: bool = False,
+) -> str:
+    return db_id(
+        db,
+        sql_identifier_id_part(catalog, catalog_quoted)
+        if str(catalog or "").strip() else "",
+        sql_identifier_id_part(schema, schema_quoted),
+    )
 
 
 def sql_table_id(
@@ -150,9 +162,13 @@ def sql_table_id(
     *,
     schema_quoted: bool = False,
     table_quoted: bool = False,
+    catalog: object = "",
+    catalog_quoted: bool = False,
 ) -> str:
     return db_id(
         db,
+        sql_identifier_id_part(catalog, catalog_quoted)
+        if str(catalog or "").strip() else "",
         sql_identifier_id_part(schema, schema_quoted) if str(schema or "").strip() else "",
         sql_identifier_id_part(table, table_quoted),
     )

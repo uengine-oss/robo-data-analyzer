@@ -55,7 +55,7 @@ async def resolve_data_objects_step(
                 "object_name": usage.name,
                 "database_link": usage.database_link,
                 "case_sensitive_identifiers": bool(
-                    usage.schema_quoted or usage.name_quoted
+                    usage.catalog_quoted or usage.schema_quoted or usage.name_quoted
                     or any(column.name_quoted for column in usage.qualified_columns)
                 ),
                 "qualified_columns": sorted({
@@ -93,6 +93,7 @@ async def resolve_data_objects_step(
     table_by_identity = {
         (
             table.db.upper(),
+            sql_identifier_key(table.catalog, table.catalog_quoted),
             sql_identifier_key(table.schema, table.schema_quoted),
             sql_identifier_key(table.name, table.name_quoted),
         ): table
@@ -117,16 +118,18 @@ async def resolve_data_objects_step(
             unresolved += 1
             continue
         if (
-            usage.schema_quoted or usage.name_quoted
+            usage.catalog or usage.catalog_quoted
+            or usage.schema_quoted or usage.name_quoted
             or any(column.name_quoted for column in usage.qualified_columns)
         ):
             raise ValueError(
-                "quoted identifier confirmed without provider identity proof"
+                "catalog/quoted identifier confirmed without provider identity proof"
             )
         schema = str(result.get("schema_name") or usage.schema)
         name = str(result.get("object_name") or usage.name)
         identity = (
             datasource.upper(),
+            sql_identifier_key("", False),
             sql_identifier_key(schema, False),
             sql_identifier_key(name, False),
         )

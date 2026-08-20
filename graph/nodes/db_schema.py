@@ -18,6 +18,8 @@ UNWIND $items AS item
 MERGE (s:ANALYZER_OWNED:SCHEMA {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
 SET s:ANALYZER_OWNED,
     s.db = item.db,
+    s.catalog = item.catalog,
+    s.catalog_quoted = item.catalog_quoted,
     s.name = item.name,
     s.name_quoted = item.name_quoted,
     s.graph_owner = '{ANALYZER_GRAPH_OWNER}'
@@ -27,7 +29,9 @@ RETURN count(s) AS created
 
 def to_item(schema: Schema) -> dict:
     return {
-        "id": schema.id, "db": schema.db, "name": schema.name,
+        "id": schema.id, "db": schema.db,
+        "catalog": schema.catalog, "catalog_quoted": schema.catalog_quoted,
+        "name": schema.name,
         "name_quoted": schema.name_quoted,
     }
 

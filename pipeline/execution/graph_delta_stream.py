@@ -44,7 +44,7 @@ _DISPLAY_PROP_KEYS = (
     "rule_id", "anchor_line", "cond", "kind",
     "given", "when", "then", "text", "reason",
     "keys", "semantic_kind", "provenance", "status", "category",
-    "raw_reference", "schema", "schema_quoted", "name_quoted",
+    "raw_reference", "catalog", "catalog_quoted", "schema", "schema_quoted", "name_quoted",
     "database_link", "database_link_components_json", "datasource",
 )
 

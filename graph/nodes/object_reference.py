@@ -26,6 +26,8 @@ async def upsert_object_references(
         "datasource": node.datasource,
         "raw_reference": node.raw_reference,
         "name": node.name,
+        "catalog": node.catalog,
+        "catalog_quoted": node.catalog_quoted,
         "schema": node.schema,
         "schema_quoted": node.schema_quoted,
         "name_quoted": node.name_quoted,

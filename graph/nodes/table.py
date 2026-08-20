@@ -22,6 +22,8 @@ UNWIND $items AS item
 MERGE (t:ANALYZER_OWNED:TABLE {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
 SET t:ANALYZER_OWNED,
     t.db = item.db,
+    t.catalog = item.catalog,
+    t.catalog_quoted = item.catalog_quoted,
     t.schema = item.schema,
     t.schema_quoted = item.schema_quoted,
     t.name = item.name,
@@ -89,6 +91,8 @@ def to_item(table: Table) -> dict:
     return {
         "id": table.id,
         "db": table.db,
+        "catalog": table.catalog,
+        "catalog_quoted": table.catalog_quoted,
         "schema": table.schema,
         "schema_quoted": table.schema_quoted,
         "name": table.name,

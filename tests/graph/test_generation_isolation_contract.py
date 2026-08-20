@@ -26,6 +26,9 @@ class GenerationIsolationRedContractTests(unittest.TestCase):
         )
         self.assertNotIn("REQUIRE n.id IS UNIQUE", analyzer_constraints)
 
+    def test_legacy_schema_constraint_cannot_collapse_catalog_siblings(self) -> None:
+        self.assertIn("schema_db_name", constraints.LEGACY_ID_CONSTRAINT_NAMES)
+
     def test_run_does_not_destroy_published_graph_before_success(self) -> None:
         source = inspect.getsource(run_executor.execute_run)
         self.assertNotIn("wipe_graph", source)

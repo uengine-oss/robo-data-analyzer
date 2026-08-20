@@ -255,9 +255,16 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
     green, 집중 `34 passed, 13 subtests`, Analyzer 전체 `1115 tests, 6 skipped`, prompt `17/17`이다.
     Neo4j `test` rollback에서 actual Table/READS writer의 dependency property와 기저 READS, residue 0을
     확인했다. 기준 Framework graph에는 view/REFER_TO가 없어 actual 기준선 영향은 원래 미발동이다.
-21. 발견(C-044, pending): sqlglot AST가 이미 가진 3-part SQL catalog component를 Analyzer Table/
-    Schema/Column identity가 표현하지 못한다. `CAT1.S.T`/`CAT2.S.T` 실제 반례가 한 Table ID로 합쳐지고
-    view dependency도 하나로 충돌한다. datasource namespace와 SQL catalog를 분리한 모델·canonical ID,
-    quoted provenance를 red-first로 고정해야 한다.
+21. 완료(C-044/C-045): PostgreSQL Parser `e5fbf6b` evidence v4 listener가 grammar `qualified_name`의
+    catalog/schema/table과 component별 quote bit를 분리 생산한다. Analyzer는 v4를 fail-closed 소비하고
+    datasource namespace와 SQL catalog를 분리한 Schema/Table/Column/ObjectReference canonical ID,
+    COMMENT/FK/view dependency, exact linker, prompt/live graph/Neo4j property까지 보존한다. provider에
+    catalog proof가 없으므로 catalog-qualified confirmed 응답은 정상 승격하지 않는다. unqualified FK
+    target은 source table의 catalog/schema를 상속한다. 최초 Parser red 1 + Analyzer red 3 + FK red 1은
+    green, Parser 전체 `159 tests, failures 0, errors 0, skipped 8`, Analyzer 집중 `50 passed` 후 전체
+    `1120 tests, 6 skipped`, prompt `17/17`이다. Neo4j `test` rollback에서 catalog sibling Table/
+    ObjectReference 4개와 READS 4개, `dbms` rollback에서 동명 Schema 2개, 각 residue 0을 확인했다.
+    `test`의 legacy `(db,name)` Schema constraint actual failure도 `ensure_schema` 제거 목록에 반영했으며
+    검증 중 영구 DB schema 변경은 하지 않았다.
 22. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
 23. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.

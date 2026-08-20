@@ -46,11 +46,16 @@ class Schema:
     db: str                                  # datasource 이름 (예: "prod_main")
     name: str                                # 스키마 이름 (예: "PUBLIC")
     name_quoted: bool = False
+    catalog: str = ""                        # SQL catalog (datasource namespace와 별개)
+    catalog_quoted: bool = False
 
     @property
     def id(self) -> str:
         """``db:<db>.<name>`` — DB 네임스페이스 (코드 id 와 절대 안 겹침, spec 047)."""
-        return sql_schema_id(self.db, self.name, self.name_quoted)
+        return sql_schema_id(
+            self.db, self.name, self.name_quoted,
+            catalog=self.catalog, catalog_quoted=self.catalog_quoted,
+        )
 
 
 @dataclass(frozen=True)
@@ -83,6 +88,8 @@ class Table:
     embedding: tuple[float, ...] = field(default=(), metadata={"vector": True})
     schema_quoted: bool = False               # SQL quoted schema면 exact case identity
     name_quoted: bool = False                 # SQL quoted table/view면 exact case identity
+    catalog: str = ""                         # SQL catalog (datasource namespace와 별개)
+    catalog_quoted: bool = False
     # CREATE VIEW AST scope가 생산한 physical dependency Table ID. view_definition 문자열은
     # 표시/감사용이고 relationship expansion의 권위 입력으로 재파싱하지 않는다.
     view_dependency_ids: tuple[str, ...] = ()
@@ -97,6 +104,8 @@ class Table:
             self.db, self.schema, self.name,
             schema_quoted=self.schema_quoted,
             table_quoted=self.name_quoted,
+            catalog=self.catalog,
+            catalog_quoted=self.catalog_quoted,
         )
 
 
@@ -107,6 +116,8 @@ class ObjectReference:
     datasource: str
     raw_reference: str
     name: str
+    catalog: str = ""
+    catalog_quoted: bool = False
     schema: str = ""
     schema_quoted: bool = False
     name_quoted: bool = False

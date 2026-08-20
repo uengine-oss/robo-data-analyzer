@@ -234,6 +234,8 @@ def _unresolved_object_references(
                 id=node_id,
                 datasource=datasource,
                 raw_reference=usage.raw_reference,
+                catalog=usage.catalog,
+                catalog_quoted=usage.catalog_quoted,
                 schema=usage.schema,
                 schema_quoted=usage.schema_quoted,
                 name=usage.name,
@@ -263,6 +265,12 @@ def _resolve_ast_usage(
             table for table in candidates
             if sql_identifier_key(table.schema, table.schema_quoted)
             == sql_identifier_key(usage.schema, usage.schema_quoted)
+        ]
+    if usage.catalog:
+        candidates = [
+            table for table in candidates
+            if sql_identifier_key(table.catalog, table.catalog_quoted)
+            == sql_identifier_key(usage.catalog, usage.catalog_quoted)
         ]
     return candidates[0] if len(candidates) == 1 else None
 

@@ -29,8 +29,11 @@ from graph.schema.node_ids import sql_column_id, sql_schema_id, sql_table_id
 from pipeline.models.sql_identifier import SqlIdentifierKey, sql_identifier_key
 
 
-TableIdentity = tuple[SqlIdentifierKey, SqlIdentifierKey]
-ColumnIdentity = tuple[SqlIdentifierKey, SqlIdentifierKey, SqlIdentifierKey]
+SchemaIdentity = tuple[SqlIdentifierKey, SqlIdentifierKey]
+TableIdentity = tuple[SqlIdentifierKey, SqlIdentifierKey, SqlIdentifierKey]
+ColumnIdentity = tuple[
+    SqlIdentifierKey, SqlIdentifierKey, SqlIdentifierKey, SqlIdentifierKey,
+]
 
 
 @dataclass
@@ -108,6 +111,7 @@ def _table_identity(
     default_schema_quoted: bool = False,
 ) -> TableIdentity:
     return (
+        _schema_key(table.args.get("catalog"), "", False),
         _schema_key(table.args.get("db"), default_schema, default_schema_quoted),
         _identifier_ast_key(table.this),
     )
@@ -116,6 +120,8 @@ def _table_identity(
 def _view_dependency_ids(
     expression: exp.Expression,
     db: str,
+    default_catalog: str,
+    default_catalog_quoted: bool,
     default_schema: str,
     default_schema_quoted: bool,
 ) -> tuple[str, ...]:
@@ -131,6 +137,11 @@ def _view_dependency_ids(
             if not isinstance(source, exp.Table):
                 continue
             table_name, table_quoted = _identifier_ast_parts(source.this)
+            catalog_identifier = source.args.get("catalog")
+            if isinstance(catalog_identifier, exp.Identifier):
+                catalog_name, catalog_quoted = _identifier_ast_parts(catalog_identifier)
+            else:
+                catalog_name, catalog_quoted = default_catalog, default_catalog_quoted
             schema_identifier = source.args.get("db")
             if isinstance(schema_identifier, exp.Identifier):
                 schema_name, schema_quoted = _identifier_ast_parts(schema_identifier)
@@ -142,6 +153,8 @@ def _view_dependency_ids(
                 table_name,
                 schema_quoted=schema_quoted,
                 table_quoted=table_quoted,
+                catalog=catalog_name,
+                catalog_quoted=catalog_quoted,
             ))
     return tuple(sorted(dependencies))
 
@@ -377,6 +390,7 @@ def _extract_comment_on(
             if not isinstance(table_identifier, exp.Identifier):
                 raise ValueError("COMMENT ON COLUMN target must include a table")
             table_key = (
+                _schema_key(target.args.get("catalog"), "", False),
                 _schema_key(target.args.get("db"), *current_schema),
                 _identifier_ast_key(table_identifier),
             )
@@ -440,7 +454,7 @@ def parse_ddl_file(
     )
 
     result = DDLParseResult()
-    seen_schemas: set[SqlIdentifierKey] = set()
+    seen_schemas: set[SchemaIdentity] = set()
     seen_tables: set[TableIdentity] = set()
     unique_keys_by_table: dict[
         TableIdentity, set[frozenset[SqlIdentifierKey]]
@@ -471,7 +485,7 @@ def _handle_create(
     table_comments: dict[TableIdentity, str],
     column_comments: dict[ColumnIdentity, str],
     result: DDLParseResult,
-    seen_schemas: set[SqlIdentifierKey],
+    seen_schemas: set[SchemaIdentity],
     seen_tables: set[TableIdentity],
     unique_keys_by_table: dict[
         TableIdentity, set[frozenset[SqlIdentifierKey]]
@@ -504,19 +518,25 @@ def _handle_create(
         return
 
     table_name, table_name_quoted = _identifier_ast_parts(tab.this)
+    catalog_identifier = tab.args.get("catalog")
+    if isinstance(catalog_identifier, exp.Identifier):
+        catalog_name, catalog_name_quoted = _identifier_ast_parts(catalog_identifier)
+    else:
+        catalog_name, catalog_name_quoted = "", False
     schema_identifier = tab.args.get("db")
     if isinstance(schema_identifier, exp.Identifier):
         schema_name, schema_name_quoted = _identifier_ast_parts(schema_identifier)
     else:
         schema_name, schema_name_quoted = default_schema or "", default_schema_quoted
     table_key = _table_identity(tab, default_schema, default_schema_quoted)
-    schema_key = table_key[0]
+    schema_key = table_key[:2]
 
     # Schema (중복 제거)
     if schema_name and schema_key not in seen_schemas:
         seen_schemas.add(schema_key)
         result.schemas.append(Schema(
-            db=db, name=schema_name, name_quoted=schema_name_quoted,
+            db=db, catalog=catalog_name, catalog_quoted=catalog_name_quoted,
+            name=schema_name, name_quoted=schema_name_quoted,
         ))
 
     # Table — 정식 COMMENT ON만 description. 일반 주석은 comment에만 보존한다.
@@ -534,10 +554,13 @@ def _handle_create(
             view_expression = stmt.args["expression"]
             view_definition = view_expression.sql()
             view_dependency_ids = _view_dependency_ids(
-                view_expression, db, schema_name, schema_name_quoted,
+                view_expression, db, catalog_name, catalog_name_quoted,
+                schema_name, schema_name_quoted,
             )
         table = Table(
             db=db,
+            catalog=catalog_name,
+            catalog_quoted=catalog_name_quoted,
             schema=schema_name,
             name=table_name,
             description=description,
@@ -553,7 +576,10 @@ def _handle_create(
         if schema_name:
             result.belongs_to_edges.append(BelongsTo(
                 child_id=table.id,
-                parent_id=sql_schema_id(db, schema_name, schema_name_quoted),
+                parent_id=sql_schema_id(
+                    db, schema_name, schema_name_quoted,
+                    catalog=catalog_name, catalog_quoted=catalog_name_quoted,
+                ),
             ))
 
     # Columns + 테이블 레벨 PK + FK — 컬럼목록 있는 경우만 (평범한 VIEW 는 skip)
@@ -563,6 +589,8 @@ def _handle_create(
         db, schema_name, table_name,
         schema_quoted=schema_name_quoted,
         table_quoted=table_name_quoted,
+        catalog=catalog_name,
+        catalog_quoted=catalog_name_quoted,
     )
     pk_cols = _table_pk_columns(col_container)
     unique_keys = _declared_unique_keys(col_container)
@@ -574,9 +602,9 @@ def _handle_create(
             )
     for fk_expr in col_container.find_all(exp.ForeignKey):
         _handle_inline_fk(
-            fk_expr, db, schema_name, schema_name_quoted, table_name,
-            table_name_quoted, default_schema, default_schema_quoted,
-            result, unique_keys,
+            fk_expr, db, catalog_name, catalog_name_quoted,
+            schema_name, schema_name_quoted, table_name,
+            table_name_quoted, result, unique_keys,
         )
 
 
@@ -584,7 +612,7 @@ def _handle_create_schema(
     stmt: exp.Create,
     db: str,
     result: DDLParseResult,
-    seen_schemas: set[SqlIdentifierKey],
+    seen_schemas: set[SchemaIdentity],
 ) -> None:
     """``CREATE SCHEMA x`` → Schema 노드 (중복 제거).
 
@@ -593,24 +621,40 @@ def _handle_create_schema(
     """
     node = stmt.this
     name = ""
+    catalog = ""
     if isinstance(node, exp.Table):
         name = node.db or node.name
+        catalog = node.catalog or ""
     elif node is not None:
         name = getattr(node, "name", "") or ""
     identifier = None
     if isinstance(node, exp.Table):
         identifier = node.args.get("db") or node.args.get("this")
-    identity = (
+    schema_identity = (
         _identifier_ast_key(identifier)
         if isinstance(identifier, exp.Identifier)
         else sql_identifier_key(name, False)
     )
+    catalog_identifier = node.args.get("catalog") if isinstance(node, exp.Table) else None
+    catalog_identity = (
+        _identifier_ast_key(catalog_identifier)
+        if isinstance(catalog_identifier, exp.Identifier)
+        else sql_identifier_key(catalog, False)
+    )
+    identity = (catalog_identity, schema_identity)
     if name and identity not in seen_schemas:
         seen_schemas.add(identity)
         quoted = bool(
             isinstance(identifier, exp.Identifier) and identifier.args.get("quoted")
         )
-        result.schemas.append(Schema(db=db, name=name, name_quoted=quoted))
+        catalog_quoted = bool(
+            isinstance(catalog_identifier, exp.Identifier)
+            and catalog_identifier.args.get("quoted")
+        )
+        result.schemas.append(Schema(
+            db=db, catalog=catalog, catalog_quoted=catalog_quoted,
+            name=name, name_quoted=quoted,
+        ))
 
 
 def _table_pk_columns(table_expr: exp.Schema) -> set[SqlIdentifierKey]:
@@ -729,12 +773,12 @@ def _handle_column(
 def _handle_inline_fk(
     fk_expr: exp.ForeignKey,
     db: str,
+    from_catalog: str,
+    from_catalog_quoted: bool,
     from_schema: str,
     from_schema_quoted: bool,
     from_table: str,
     from_table_quoted: bool,
-    default_schema: str,
-    default_schema_quoted: bool,
     result: DDLParseResult,
     source_unique_keys: set[frozenset[SqlIdentifierKey]],
 ) -> None:
@@ -753,11 +797,16 @@ def _handle_inline_fk(
         return
 
     to_table, to_table_quoted = _identifier_ast_parts(target_tab.this)
+    target_catalog_identifier = target_tab.args.get("catalog")
+    if isinstance(target_catalog_identifier, exp.Identifier):
+        to_catalog, to_catalog_quoted = _identifier_ast_parts(target_catalog_identifier)
+    else:
+        to_catalog, to_catalog_quoted = from_catalog, from_catalog_quoted
     target_schema_identifier = target_tab.args.get("db")
     if isinstance(target_schema_identifier, exp.Identifier):
         to_schema, to_schema_quoted = _identifier_ast_parts(target_schema_identifier)
     else:
-        to_schema, to_schema_quoted = default_schema or "", default_schema_quoted
+        to_schema, to_schema_quoted = from_schema, from_schema_quoted
 
     from_identifiers = [
         column for column in fk_expr.expressions
@@ -785,11 +834,15 @@ def _handle_inline_fk(
                 db, from_schema, from_table,
                 schema_quoted=from_schema_quoted,
                 table_quoted=from_table_quoted,
+                catalog=from_catalog,
+                catalog_quoted=from_catalog_quoted,
             ),
             to_id=sql_table_id(
                 db, to_schema, to_table,
                 schema_quoted=to_schema_quoted,
                 table_quoted=to_table_quoted,
+                catalog=to_catalog,
+                catalog_quoted=to_catalog_quoted,
             ),
             from_column=from_col,
             to_column=to_col,
@@ -813,6 +866,11 @@ def _handle_alter(
     if not isinstance(table_expr, exp.Table):
         return
     from_table, from_table_quoted = _identifier_ast_parts(table_expr.this)
+    catalog_identifier = table_expr.args.get("catalog")
+    if isinstance(catalog_identifier, exp.Identifier):
+        from_catalog, from_catalog_quoted = _identifier_ast_parts(catalog_identifier)
+    else:
+        from_catalog, from_catalog_quoted = "", False
     schema_identifier = table_expr.args.get("db")
     if isinstance(schema_identifier, exp.Identifier):
         from_schema, from_schema_quoted = _identifier_ast_parts(schema_identifier)
@@ -825,7 +883,8 @@ def _handle_alter(
     for action in stmt.args.get("actions", []) or []:
         for fk_expr in action.find_all(exp.ForeignKey):
             _handle_inline_fk(
-                fk_expr, db, from_schema, from_schema_quoted,
+                fk_expr, db, from_catalog, from_catalog_quoted,
+                from_schema, from_schema_quoted,
                 from_table, from_table_quoted,
-                default_schema, default_schema_quoted, result, unique_keys,
+                result, unique_keys,
             )

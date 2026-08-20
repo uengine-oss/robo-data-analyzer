@@ -117,7 +117,7 @@ def _make_code_node(
         operator=node.get("operator") or "",
     )
     evidence_version = int(node.get("dataObjectEvidenceVersion") or 0)
-    if evidence_version not in (0, 1, 2, 3):
+    if evidence_version not in (0, 1, 2, 3, 4):
         raise ValueError(
             f"unsupported dataObjectEvidenceVersion={evidence_version} "
             f"at {src_path}:{sl}"

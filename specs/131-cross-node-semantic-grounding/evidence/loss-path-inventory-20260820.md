@@ -689,6 +689,29 @@
   **실제 canonical identity 손실, pending red-first**. datasource namespace와 SQL catalog를 별도 field로
   보존하고 catalog/schema/table component별 Q/U key를 공통 Schema/Table/Column ID와 모든 결합 경로가
   소비해야 한다. 이미 AST에 있는 구문이므로 Parser listener 추가나 문자열 재파싱은 필요 없다.
+- Parser 추가 확인/red: PostgreSQL grammar `qualified_name`은 3-part를 이미 분리하지만 listener v1은
+  마지막 전 prefix를 `"Warehouse"."App"` schema 문자열 하나로 합쳤다. exact source fixture가 evidence
+  v4 `catalog/catalogQuoted`, 독립 schema/name을 요구하는 red 1건으로 실패했다. PL/SQL grammar
+  `tableview_name`은 schema.table까지만 지원하므로 catalog를 창작하지 않는다.
+- Analyzer red: v4 AST coordinate 거부, DDL Table catalog field 부재, exact linker catalog field 부재의
+  3건이 예상대로 실패했다. 구현 중 명시 `CAT.S.CHILD`의 unqualified `REFERENCES PARENT`가 source
+  schema S가 아니라 빈 default schema로 결합되는 C-045도 분리했고, 실제 FK target ID 반례 1건을
+  red→green으로 고정했다.
+- 해결: Parser `e5fbf6b`는 PostgreSQL DML evidence를 v4로 생산하고 catalog/schema/table component와
+  quote bit를 개별 필드로 보존하며 3개 초과 physical component는 fail-closed한다. Analyzer는 v4보다
+  새 version과 v4 이전 catalog field를 좌표와 함께 거부한다. datasource는 graph namespace로 유지하고
+  SQL catalog는 별도 Q/U segment로 Schema/Table/Column/ObjectReference ID, DDL COMMENT/FK/view
+  dependency, source AST exact linker, structured prompt/live graph/Neo4j writer에 전달한다. catalog proof가
+  없는 현재 Catalog/Fabric confirmed 응답은 추측 승격하지 않는다.
+- Neo4j 저장 역검증: 첫 `test` Schema writer는 기존 `schema_db_name(db,name)` constraint 때문에 실제
+  constraint error로 red였고 transaction residue는 0이었다. generation canonical ID 제약과 충돌하는
+  이 legacy constraint를 제품 `ensure_schema` 제거 목록에 추가했다. DB schema는 검증 중 변경하지
+  않았다. `test` rollback에서 quoted catalog sibling Table/ObjectReference 4개와 READS 4개를, 해당 legacy
+  constraint가 없는 허용 `dbms` rollback에서 동명 Schema 2개를 actual writer query로 조회했고 양쪽
+  node/relationship residue는 0이다.
+- 검증: Parser 전체 `159 tests, failures 0, errors 0, skipped 8`; Analyzer 관련 `50 passed`, 최종 전체
+  `1120 tests, 6 skipped`, prompt ledger `17/17`, `git diff --check` 오류 0이다.
+- 현재 판정: C-044/C-045는 **해결**, `_runs/dbms`가 없어 actual corpus 발동은 **미검증**이다.
 
 ## 4. 최초 후보 C-006~C-015 종결 분류
 
@@ -802,7 +825,7 @@
 - 검증됨: 기준선/DB 상태, F-001 actual schema·경계 수량, 위 정적 producer/caller 배선.
 - 검증됨: 각 F/C 경계의 유입 commit 축. "부재" 결함은 해당 owner가 생긴 최초 계열과 현재까지
   closure가 추가되지 않았음을 함께 기록했다.
-- 미검증: DBMS actual run, sealed 직접 의미 판정, 남은 C-004/C-017/C-018/C-031/C-044 계약/red test.
+- 미검증: DBMS actual run, sealed 직접 의미 판정, 남은 C-004/C-017/C-018/C-031 계약/red test.
 - 아직 제품 정확도나 완료를 주장하지 않는다.
 
 ### 2026-08-20 계약 고정 및 첫 red test

@@ -24,6 +24,9 @@ LEGACY_ID_CONSTRAINT_NAMES: tuple[str, ...] = (
     "uniq_analyzer_owned", "uniq_schema", "uniq_table", "uniq_object_reference",
     "uniq_column", "uniq_package", "uniq_rule", "uniq_example", "uniq_question",
     "uniq_project_file", "uniq_external_chunk",
+    # Pre-generation schema used (db, name), which cannot represent two SQL catalogs
+    # containing the same schema. The generation-scoped canonical id constraint supersedes it.
+    "schema_db_name",
 )
 
 CONSTRAINTS: list[str] = [

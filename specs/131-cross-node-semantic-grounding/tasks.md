@@ -67,8 +67,9 @@
     - [x] A131-04e-C019-C021-C043 CREATE VIEW AST physical dependency canonical ID·무상한 finite closure,
       external wrapper monotone fixpoint, 240자 exact key producer/consumer gate 제거 — red 7건 green,
       전체 1115/6, Neo4j rollback dependency property·기저 READS·잔여 0
-    - [ ] A131-04e-C044 sqlglot 3-part catalog component를 datasource namespace와 분리해 Table/Schema/
-      Column/view dependency canonical identity와 quoted provenance에 보존
+    - [x] A131-04e-C044-C045 Parser v4 3-part catalog producer와 Analyzer datasource/catalog 분리
+      Schema/Table/Column/ObjectReference/FK/view/linker/writer 소비, unqualified FK source namespace 상속 —
+      Parser 159/0/0/8, Analyzer 1120/6, Neo4j test/dbms rollback 잔여 0
 - [ ] A131-05 자동 회귀·결정론 전수 회계·봉인 직접 의미 판정 3층 완료
 
 ## 보존된 기준선

@@ -120,6 +120,7 @@ def _merge(
     """
     by_identity = {
         (
+            sql_identifier_key(t.catalog, t.catalog_quoted),
             sql_identifier_key(t.schema, t.schema_quoted),
             sql_identifier_key(t.name, t.name_quoted),
         ): t
@@ -136,7 +137,9 @@ def _merge(
         if not name:
             continue
         schema = (item.get("schema") or "").strip()
+        catalog = (item.get("catalog") or item.get("catalog_name") or "").strip()
         identity = (
+            sql_identifier_key(catalog, False),
             sql_identifier_key(schema, False),
             sql_identifier_key(name, False),
         )
@@ -146,6 +149,7 @@ def _merge(
         else:
             table = Table(
                 db=datasource,
+                catalog=catalog,
                 schema=schema,
                 name=name,
                 description_source="catalog",    # 출처 추적 — DDL 유래와 구분 (FR-005)
