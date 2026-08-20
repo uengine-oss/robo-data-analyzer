@@ -65,11 +65,19 @@ class CallGraphAuthorityContractTest(unittest.TestCase):
             {
                 "call_id": f"site-{index}",
                 "caller_id": caller.id,
+                "owner_status": "resolved",
                 "call_text": name,
                 "callee_kind": "named",
+                "source_id": "source:missing-source.c",
                 "presence_status": "active",
+                "presence": {"status": "active", "condition": None,
+                             "configurationId": None, "provenance": "unconditional"},
                 "file": "missing-source.c",
                 "line": index + 1,
+                "range": {"char_offset": index * 10, "char_length": 8},
+                "callee_range": {"char_offset": index * 10, "char_length": 4},
+                "argument_ranges": [],
+                "grammar_rule": "postfixExpression",
             }
             for index, name in enumerate(
                 name

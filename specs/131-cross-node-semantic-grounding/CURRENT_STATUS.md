@@ -1,8 +1,8 @@
 # Analyzer 의미 무손실 감사 현재상태
 
 **Updated**: 2026-08-21
-**Status**: Analyzer common call evidence consumer 3층 검증 완료 — commit/push 전 최종 감사
-**Analyzer slice base**: `e298cae8f4cb0c35a48b18cad68e0445fe0c7f77`
+**Status**: C-065 Framework call occurrence exact closure 3층 검증 완료, commit/push 직전
+**Analyzer HEAD**: `2d5f4c4c2e85ddb43f183dc1060dfffc2284c56d`
 
 이 문서는 현재 진행 위치만 소유한다. 영구 규칙은 `ABSOLUTE_RULES.md`, 상세 역사와 기존 수치는 `HANDOFF.md`와 `evidence/`가 소유한다.
 
@@ -20,18 +20,20 @@
 
 - Neo4j `127.0.0.1:7687`: 현재 세션에서 인증과 `SHOW DATABASES` 재확인 성공.
   `neo4j|test|framework|dbms|system`만 존재하고 모두 online이다. 허용 목록 밖 DB는 0개다.
-- Analyzer 이 책임 슬라이스의 base HEAD는 `e298cae8f4cb0c35a48b18cad68e0445fe0c7f77`; 제품 코드 기준선
-  `c216e674cbac43386f9826632097ca2661395d7d` 이후 C-047과 spec 문서까지 독립 push됐다.
-- Parser main HEAD `4f2154ed1b228df7c2d45cd6ded35fff599602bd`; common evidence IR와 grammar-owned
-  callee syntax, Analyzer actual fixture export harness 책임 슬라이스가
-  자동 회귀·actual 전수 회계·봉인 직접 판정·성능 비교 후 push됐고 Parser working tree는 clean이다.
+- Analyzer main HEAD `2d5f4c4c2e85ddb43f183dc1060dfffc2284c56d`; 제품 코드 기준선
+  `c216e674cbac43386f9826632097ca2661395d7d` 이후 검증된 책임 슬라이스가 독립 push됐고
+  working tree는 C-065 문서 갱신 전 clean이었다.
+- Parser main HEAD `00fdf2a7c4ed7749110a61c6311396089e10c449`; common evidence IR, grammar-owned
+  callee/macro syntax, compilation command와 configured preprocessing closure 책임 슬라이스가
+  자동 회귀·actual 전수 회계·봉인 직접 판정 후 push됐고 Parser working tree는 clean이다.
 - Catalog HEAD `1f1aaa608a3d7ef8b01ce15c3df962cf0f1cfefb`, 기존 dirty 12개가 있다.
 - Fabric HEAD `83c9604e2d6ec3f1ececa47d2e2264a74257843d`, 기존 dirty 7개가 있다.
 - Architect HEAD `7b771ac2e7338d03ac8238db5c307d97080232c1`, 기존 dirty 4개가 있다.
   Catalog·Fabric·Architect의 기존 WIP는 읽기만 하고 수정·stage하지 않는다.
-- 현재 세션에서 DB 생성·삭제·분석 실행·서비스 변경은 0회다. `test` DB에서 generation publish
-  transaction 통합 검증 1회를 수행했지만 명시 transaction을 전부 rollback했고 해당 generation
-  node/property 잔존은 0이다. composite constraint는 `EXPLAIN`만 수행해 schema 변경도 0이다.
+- 현재 세션에서 DB 생성·삭제·Analyzer/Architect 서비스 실행은 0회다. `test` DB actual 검증 전에
+  production `ensure_schema`를 실행해 구형 Analyzer 단일-ID constraint를 제거하고 generation-scoped
+  composite constraint를 보장했다. APAS generation graph transaction은 반복 실패분을 포함해 매번 전부
+  rollback했으며 최종 residue 0, active pointer 불변이다. Architect DB/코드/서비스는 건드리지 않았다.
 
 ### 문서 메모리 무결성
 
@@ -388,5 +390,38 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
     바꾼 replay ID 원장이 동일하고 봉인 fixture 7종을 직접 대조했다. 이 커밋은 trace producer/expanded-token
     ANTLR/Analyzer v2 배선을 포함하지 않으므로 actual 의미 정확도 승격 근거가 아니다. 상세는
     `evidence/parser-compilation-database-contract-validation-20260821.md`다.
+25n. 완료(C-064 preprocessing closure producer): Parser `00fdf2a`는 workspace 아래 모든
+    `compile_commands.json`을 cap 없이 재귀 발견하고, source별 build/trace population과 canonical evidence
+    ID를 `configuredPreprocessing/v1`으로 발행한다. literal/resolved source가 exact하게 일치하는 command만
+    결합하며 basename/content 추측은 금지한다. 실제 APAS 23파일은 build command/header/toolchain trace
+    결손 때문에 23/23 `unresolved|unresolved`이고 preprocessing ID 46개가 exact-once다. Parser 전체
+    50 suites/182 tests, independent r1/r2 ledger hash 동일, 봉인 call 526/526·macro 34/34를 통과했다.
+25o. 완료(C-064 Analyzer fail-closed consumer): Analyzer `2d5f4c4`는 C source의 preprocessing context를
+    strict 검증하고 v1 raw-source call을 authoritative semantic occurrence로 승격하지 않는다. actual APAS
+    `12,113 = unresolved_preprocessing 12,113`, CALLS edge 0, 입력/회계 잔차 0이며 ledger hash
+    `01590fb9e31b8e934907f1a994f8261d92216e10c086778baf1b5678dcec850a`가 replay에서 동일하다. 봉인 직접
+    preprocessing 판정 6/6과 Analyzer 전체 `1206 passed, 7 skipped, 367 subtests`를 통과했다.
+25p. 완료(C-065): `classify_call_sites`는 canonical call ID 전건 outcome ledger를 만들지만
+    `run_executor`가 LangGraph update payload를 버리고, generation publish는 node/edge/semantic slot만
+    닫는다. quality status도 `analysis-findings.jsonl`만 세므로 actual처럼 12,113건 전부 unresolved인 run이
+    일반 `completed`, CALLS 0인 graph로 공개될 수 있다. REST/MCP/search는 generation quality와 call
+    occurrence ledger를 읽지 않아 `호출 없음`과 `호출 12,113건 전부 미해결`을 구별하지 못한다.
+    유입 경계는 ledger=`b914a28`, generation publish=`bdaf7ae`, update discard=`4d0d25b` 계열이다.
+    해결 계약은 Framework routine 의미 owner를 유지하면서 각 canonical call을 `CALL_OCCURRENCE` 증거
+    노드로 exact-once 저장하고 `HAS_CALL_OCCURRENCE`로 owner에 연결하는 것이다. aggregate CALLS는 계속
+    파생 dependency view다. generation은 occurrence count/hash/outcome/reason closure를 닫고 unresolved가
+    하나라도 있으면 `completed_with_findings`로 공개한다. REST/MCP search meta와 node detail/GWT packet은
+    generation summary와 owner별 occurrence를 명시하되 source prose나 별도 의미 claim으로 승격하지 않는다.
+    구현은 Parser camelCase range를 strict canonical 내부형으로 결합하고, workflow update의 유일 producer를
+    캡처해 `CALL_OCCURRENCE`/`HAS_CALL_OCCURRENCE`, generation closure v2, quality, search meta, owner
+    detail/GWT까지 연결했다. actual APAS는 23 source, 12,113 unique occurrence, routine owner 412,
+    occurrence/owner edge 12,113/12,113이며 Neo4j/API/MCP 세 경계 SHA가 모두
+    `2ab333f8c9e38e67a7c84d9c8d3bf8153c40b0b1bd1f1495040789aa62966d23`이다. 봉인 6/6,
+    `completed_with_findings`, rollback residue 0, active pointer 불변을 확인했다. 최종 actual 전수 wall time은
+    201.58초다. 이 검증에서 실제 Neo4j aggregation 정렬 오류, 구형 열린 AST label 단일-ID constraint,
+    generation이 저장 정본 `slots` 대신 MCP `claims`를 읽던 결함도 함께 찾아 근본 수정했다. 상세 배선,
+    최종 Analyzer 전체 1,134 tests(failure 0, skipped 6)와 prompt 16/16 byte identity도 통과했다. 상세 배선,
+    formal red/green, 반대 설계, actual rollback 원장은
+    `evidence/framework-call-occurrence-publish-audit-20260821.md`가 소유한다.
 26. 검증: 자동 회귀→결정론 전수 회계→봉인 직접 의미 판정→실제 APAS 순으로 계속 수행한다.
 27. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.

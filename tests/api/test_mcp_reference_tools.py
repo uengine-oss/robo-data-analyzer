@@ -196,6 +196,45 @@ class DetailPayloadTests(unittest.TestCase):
             {"embedding", "graph_owner", "generation_id"} & set(node["properties"])
         )
 
+    def test_code_detail_separates_exact_call_occurrences_from_aggregate_calls(self):
+        payload = build_node_detail(
+            [{"labels": ["FUNCTION"], "props": {
+                "id": "code:a.c:fa", "name": "fa", "file_path": "a.c",
+                "start_line": 1, "end_line": 4, "code_text": "int fa(){}",
+            }}],
+            [{"type": "HAS_CALL_OCCURRENCE", "direction": "out",
+              "other_id": "call-occurrence:call-1", "other_name": "",
+              "other_labels": ["CALL_OCCURRENCE"], "properties": {},
+              "other_properties": {
+                  "id": "call-occurrence:call-1", "call_id": "call-1",
+                  "ordinal": 0, "source_id": "source:a.c", "caller_id": "code:a.c:fa",
+                  "owner_status": "resolved", "file": "a.c", "line": 3,
+                  "range_char_offset": 12, "range_char_length": 8,
+                  "callee_range_char_offset": 12, "callee_range_char_length": 4,
+                  "argument_ranges_json": "[]", "callee_kind": "named",
+                  "terminal_name": "work", "grammar_rule": "postfixExpression",
+                  "presence_status": "active",
+                  "presence_json": '{"status":"active"}',
+                  "configured_preprocessing_required": False,
+                  "outcome": "unresolved", "reason": "missing_trace",
+                  "preprocessing_evidence_ids": [], "macro_fact_ids": [],
+                  "graph_owner": "analyzer", "generation_id": "run:published",
+              }}],
+            [], [],
+        )
+
+        self.assertEqual([], payload["node"]["relationships"])
+        self.assertEqual("call-1", payload["node"]["call_resolution"]["occurrences"][0]["call_id"])
+        self.assertEqual("unresolved",
+                         payload["node"]["call_resolution"]["occurrences"][0]["outcome"])
+
+        compact = build_gwt_detail({**payload, "node": {
+            **payload["node"],
+            "properties": {"semantic_frame_json": _frame_json()},
+        }}, [])
+        self.assertEqual("call-1",
+                         compact["node"]["linked_context"]["call_occurrences"][0]["call_id"])
+
     def test_table_has_explicit_unavailable_source_and_columns(self):
         payload = build_node_detail(
             [{"labels": ["TABLE"], "props": {"id": "db:orders", "name": "orders"}}],

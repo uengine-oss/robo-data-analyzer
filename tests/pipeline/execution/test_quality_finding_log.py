@@ -14,6 +14,25 @@ from graph.schema.graph_nodes import CodeNode
 
 
 class QualityFindingLedgerTest(unittest.TestCase):
+    @staticmethod
+    def _call_row(call_id: str, outcome: str, reason: str) -> dict:
+        return {
+            "call_id": call_id,
+            "ordinal": int(call_id.rsplit("-", 1)[-1]) - 1,
+            "source_id": "source:a.c", "caller_id": "code:f",
+            "owner_status": "resolved", "file": "a.c", "line": 3,
+            "range": {"char_offset": 12, "char_length": 8},
+            "callee_range": {"char_offset": 12, "char_length": 4},
+            "argument_ranges": [], "callee_kind": "named", "terminal_name": "work",
+            "grammar_rule": "postfixExpression", "presence_status": "active",
+            "presence": {"status": "active", "condition": None,
+                         "configurationId": None, "provenance": "unconditional"},
+            "configured_preprocessing_required": False,
+            "outcome": outcome, "reason": reason,
+            "scope": None, "callee_id": "",
+            "preprocessing_evidence_ids": [], "macro_fact_ids": [],
+        }
+
     def test_records_and_summarizes_visible_partial_quality(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             run_dir = Path(temp)
@@ -58,6 +77,20 @@ class QualityFindingLedgerTest(unittest.TestCase):
             self.assertEqual("completed", summary["run_quality_status"])
             self.assertEqual(0, summary["total"])
             self.assertEqual(summary, returned)
+
+    def test_unresolved_call_occurrence_is_visible_run_finding(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            run_dir = Path(temp)
+            returned = _summarize_analysis_findings(run_dir, call_resolution_ledger=[
+                self._call_row("call-1", "unresolved", "missing_trace"),
+                self._call_row("call-2", "excluded", "stdlib"),
+            ])
+
+        self.assertEqual("completed_with_findings", returned["run_quality_status"])
+        self.assertEqual(2, returned["call_resolution"]["total"])
+        self.assertEqual(1, returned["call_resolution"]["unresolved"])
+        self.assertEqual({"unresolved": 1, "excluded": 1},
+                         returned["call_resolution"]["by_outcome"])
 
     def test_corrupt_ledger_is_fatal_not_silent(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

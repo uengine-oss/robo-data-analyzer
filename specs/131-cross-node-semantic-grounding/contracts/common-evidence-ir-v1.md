@@ -141,6 +141,19 @@ expression callee, routine owner 부재, wrapper argument evidence 부재는 각
 분류 후에도 모든 canonical call ID에 대해 `edge|excluded|preserved|unresolved` 중 정확히 한 outcome을
 source order로 남긴다. aggregate CALLS edge나 category count만 맞는 것은 exact-once 승인 근거가 아니다.
 
+Framework call occurrence 원장은 workflow 임시 state에서 끝나지 않는다. 각 canonical call ID는
+`CALL_OCCURRENCE` **증거 노드**로 같은 generation에 정확히 한 번 저장하고, enclosing routine이 확정된
+경우에만 `HAS_CALL_OCCURRENCE`로 연결한다. 이 노드와 관계는 routine의 의미 소유권을 나누지 않으며,
+source/grammar 좌표와 resolution outcome을 보존하는 evidence projection이다. owner가 없는 unresolved도
+generation occurrence closure에는 남아야 한다.
+
+저장 행은 최소 `call_id/source_id/caller_id/file/line/range/callee_range/argument_ranges/callee_kind/
+terminal_name/presence_status/outcome`과 outcome별 `reason|scope|callee_id`, preprocessing/macro evidence ID를
+보존한다. source text를 재파싱하거나 ledger용 summary를 새로 만들지 않는다. generation publish는 canonical
+call ID의 중복·누락, owner membership, outcome/reason population, canonical hash를 active pointer 교체 전에
+검증한다. unresolved가 하나라도 있으면 run quality는 `completed_with_findings`이며, REST/MCP/search는
+generation summary와 owner별 exact occurrence를 `호출 없음`과 구별해 노출한다.
+
 exact decoded source는 envelope에 파일당 한 번만 있으며 Analyzer source cache는 Parser가 hash 검증한
 동일 bytes/text 결합을 재사용한다. Analyzer가 별도 UTF-8 decode나 언어별 source lexer를 적용하지 않는다.
 

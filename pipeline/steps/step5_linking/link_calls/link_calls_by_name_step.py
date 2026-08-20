@@ -18,6 +18,7 @@ from pipeline.steps.step5_linking.link_calls.call_classifier import classify_cal
 from pipeline.steps.step4_scan_project.scan_result_contract import require_scan_result
 from shared.events.runtime_logger import log_info, log_warning
 from graph.edges.calls import upsert_calls, emit_calls
+from graph.nodes.call_occurrence import upsert_call_occurrences
 from graph.neo4j_client import Neo4jClient
 from pipeline.execution.graph_delta_stream import emit_message
 
@@ -50,6 +51,8 @@ async def link_calls_by_name_step(state: dict, config: Optional[RunnableConfig] 
 
     if neo is not None and result.edges:
         await upsert_calls(neo, result.edges)
+    if neo is not None:
+        await upsert_call_occurrences(neo, result.ledger)
 
     # 라이브 스트림 — 호출 관계를 step 완료 즉시 화면으로. external 은 stub 노드까지 함께
     # 발신(emit_calls = upsert_calls 와 동일 그래프) → 라이브=neo4j (외부호출 끝점 일치).

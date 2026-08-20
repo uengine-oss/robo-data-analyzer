@@ -47,6 +47,42 @@ class RunRegistryContractTest(unittest.TestCase):
         self.assertIn(ReferencedSymbolContext, run_executor._STATE_MSGPACK_ALLOWLIST)
         self.assertIn(ControlSubtreeNode, run_executor._STATE_MSGPACK_ALLOWLIST)
 
+    def test_call_resolution_workflow_update_is_captured_exactly_once(self) -> None:
+        row = {
+            "call_id": "call:1", "ordinal": 0, "source_id": "sample.c",
+            "caller_id": "code:sample.c:run", "owner_status": "resolved",
+            "file": "sample.c", "line": 3,
+            "range": {"char_offset": 10, "char_length": 5},
+            "callee_range": {"char_offset": 10, "char_length": 3},
+            "argument_ranges": [], "callee_kind": "named",
+            "terminal_name": "run", "grammar_rule": "postfixExpression",
+            "presence_status": "active", "presence": {
+                "status": "active", "condition": None,
+                "configurationId": None, "provenance": "unconditional",
+            },
+            "configured_preprocessing_required": False,
+            "outcome": "edge", "reason": "", "scope": "internal",
+            "callee_id": "code:sample.c:run",
+            "preprocessing_evidence_ids": [], "macro_fact_ids": [],
+        }
+
+        ledger, seen = run_executor._capture_call_resolution_update(
+            [], False, {"call_resolution_ledger": [row]},
+        )
+
+        self.assertTrue(seen)
+        self.assertEqual([row], ledger)
+        with self.assertRaisesRegex(ValueError, "more than one workflow producer"):
+            run_executor._capture_call_resolution_update(
+                ledger, seen, {"call_resolution_ledger": [row]},
+            )
+
+    def test_framework_requires_even_an_explicitly_empty_call_ledger(self) -> None:
+        with self.assertRaisesRegex(ValueError, "did not produce"):
+            run_executor._require_call_resolution_producer("framework", False)
+        run_executor._require_call_resolution_producer("framework", True)
+        run_executor._require_call_resolution_producer("dbms", False)
+
 
 class UsageSummaryContractTest(unittest.TestCase):
     """캐시 적중은 호출로 세되 토큰이 0 이라, 집계가 둘을 구분해야 통계가 오해를 안 만든다."""

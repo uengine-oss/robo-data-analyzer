@@ -1,19 +1,40 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
 import time
 import tracemalloc
+import uuid
 from collections import Counter
 from pathlib import Path
 
 import pytest
+from neo4j import AsyncGraphDatabase
 
 from agents.skills.catalog import load_skill_contract
+from graph.generation import publish_generation
+from graph.nodes.call_occurrence import upsert_call_occurrences
+from graph.ownership import ANALYZER_GRAPH_OWNER
+from graph.schema.constraints import ensure_schema
+from pipeline.models.call_resolution import (
+    call_resolution_from_storage,
+    normalize_call_resolution_subset,
+    summarize_call_resolution_ledger,
+)
+from pipeline.models.semantic_frame import (
+    EvidenceFact,
+    SemanticFrame,
+    StructuralProfile,
+    StructuralTarget,
+    evidence_id,
+)
+from search.corpus.node_detail import build_gwt_detail, build_node_detail
 from pipeline.steps.step2_load_ast.dispatch import read_antlr_json
 from pipeline.steps.step2_load_ast.source_ast_closure import verify_source_ast_closure
 from pipeline.steps.step5_linking.link_calls.call_classifier import classify_call_sites
+from shared.config.settings import SETTINGS
 from shared.files.cache import SourceFileCache
 
 
@@ -29,6 +50,266 @@ def _ledger_hash(rows: list[str]) -> str:
 def _allowed_report(path: Path) -> bool:
     normalized = path.resolve().as_posix()
     return "/specs/131-cross-node-semantic-grounding/_runs/framework/" in normalized
+
+
+def _source_free_test_frame(node_id: str) -> str:
+    target = StructuralTarget(
+        id=node_id, type="FUNCTION", owner_id="", file="(rollback-proof)",
+        start_line=1, end_line=1,
+    )
+    target_ref = evidence_id(node_id, "TARGET", 0)
+    profile = StructuralProfile(
+        target=target,
+        evidence={target_ref: EvidenceFact(
+            id=target_ref, kind="TARGET", owner_id=node_id,
+            file=target.file, start_line=1, end_line=1,
+            attributes={
+                "type": "FUNCTION", "signature": "", "name": node_id,
+                "params": "", "return_type": "",
+            },
+        )},
+    )
+    return SemanticFrame(target=target, profile=profile, slots={}).canonical_json()
+
+
+class _SharedTransactionClient:
+    def __init__(self, transaction, generation_id: str):
+        self.transaction = transaction
+        self.generation_id = generation_id
+
+    async def execute_write(self, callback):
+        return await callback(self.transaction)
+
+
+class _TestDatabaseSchemaClient:
+    def __init__(self, driver):
+        self.driver = driver
+
+    async def run_query(self, query: str, params: dict | None = None):
+        async with self.driver.session(database="test") as session:
+            result = await session.run(query, **(params or {}))
+            return await result.consume()
+
+    async def run_read_query(
+        self, query: str, params: dict | None = None,
+    ) -> list[dict]:
+        async with self.driver.session(database="test") as session:
+            result = await session.run(query, **(params or {}))
+            return await result.data()
+
+
+async def _prove_actual_occurrence_graph_rollback(
+    ledger: list[dict], sealed_ids: list[str],
+) -> dict:
+    """Publish the full actual ledger in one test-DB transaction, then erase it."""
+    settings = SETTINGS.graph_database
+    generation_id = f"spec131-call-occurrence-{uuid.uuid4().hex}"
+    owner_ids = sorted({row["caller_id"] for row in ledger})
+    owner_items = [
+        {"id": owner_id, "semantic_frame_json": _source_free_test_frame(owner_id)}
+        for owner_id in owner_ids
+    ]
+    driver = AsyncGraphDatabase.driver(
+        settings.uri,
+        auth=(settings.user, settings.password),
+    )
+    await ensure_schema(_TestDatabaseSchemaClient(driver))
+
+    async def active_rows() -> list[dict]:
+        async with driver.session(database="test") as session:
+            result = await session.run(
+                """
+MATCH (active:ANALYZER_ACTIVE_GENERATION {
+  graph_owner: $graph_owner,
+  key: 'active'
+})
+RETURN active.current_generation_id AS generation_id
+""",
+                graph_owner=ANALYZER_GRAPH_OWNER,
+            )
+            return await result.data()
+
+    active_before = await active_rows()
+    closure = None
+    persisted_counts = None
+    sealed_rows: list[dict] = []
+    try:
+        async with driver.session(database="test") as session:
+            transaction = await session.begin_transaction()
+            try:
+                await transaction.run(
+                    """
+CREATE (:ANALYZER_GENERATION {
+  graph_owner: $graph_owner,
+  run_id: $generation_id,
+  status: 'building'
+})
+WITH 1 AS ignored
+UNWIND $owners AS owner
+CREATE (:ANALYZER_OWNED:FUNCTION {
+  graph_owner: $graph_owner,
+  generation_id: $generation_id,
+  id: owner.id,
+  semantic_frame_json: owner.semantic_frame_json
+})
+""",
+                    graph_owner=ANALYZER_GRAPH_OWNER,
+                    generation_id=generation_id,
+                    owners=owner_items,
+                )
+                client = _SharedTransactionClient(transaction, generation_id)
+                assert await upsert_call_occurrences(client, ledger) == len(ledger)
+                closure = await publish_generation(
+                    client,
+                    generation_id=generation_id,
+                    quality_status="completed",
+                    call_resolution_ledger=ledger,
+                )
+                count_result = await transaction.run(
+                    """
+MATCH (occurrence:ANALYZER_OWNED:CALL_OCCURRENCE {
+  graph_owner: $graph_owner,
+  generation_id: $generation_id
+})
+OPTIONAL MATCH (owner:ANALYZER_OWNED)-[relation:HAS_CALL_OCCURRENCE]->(occurrence)
+RETURN count(DISTINCT occurrence) AS occurrences,
+       count(relation) AS owner_edges
+""",
+                    graph_owner=ANALYZER_GRAPH_OWNER,
+                    generation_id=generation_id,
+                )
+                persisted_counts = dict(await count_result.single(strict=True))
+                projection_result = await transaction.run(
+                    """
+MATCH (owner:ANALYZER_OWNED:FUNCTION {
+  graph_owner: $graph_owner,
+  generation_id: $generation_id
+})-[relation:HAS_CALL_OCCURRENCE]->
+      (occurrence:ANALYZER_OWNED:CALL_OCCURRENCE {
+        graph_owner: $graph_owner,
+        generation_id: $generation_id
+      })
+RETURN owner.id AS owner_id,
+       labels(owner) AS owner_labels,
+       properties(owner) AS owner_properties,
+       properties(relation) AS relation_properties,
+       occurrence.id AS occurrence_id,
+       labels(occurrence) AS occurrence_labels,
+       properties(occurrence) AS occurrence_properties
+ORDER BY owner.id, occurrence.ordinal
+""",
+                    graph_owner=ANALYZER_GRAPH_OWNER,
+                    generation_id=generation_id,
+                )
+                projection_rows = await projection_result.data()
+                by_owner: dict[str, dict] = {}
+                for row in projection_rows:
+                    owner_id = row["owner_id"]
+                    packet = by_owner.setdefault(owner_id, {
+                        "node_rows": [{
+                            "labels": row["owner_labels"],
+                            "props": row["owner_properties"],
+                        }],
+                        "relationships": [],
+                    })
+                    packet["relationships"].append({
+                        "type": "HAS_CALL_OCCURRENCE",
+                        "direction": "out",
+                        "properties": row["relation_properties"],
+                        "other_id": row["occurrence_id"],
+                        "other_name": "",
+                        "other_labels": row["occurrence_labels"],
+                        "other_properties": row["occurrence_properties"],
+                    })
+                api_occurrences: list[dict] = []
+                mcp_occurrences: list[dict] = []
+                for owner_id, packet in sorted(by_owner.items()):
+                    detail = build_node_detail(
+                        packet["node_rows"], packet["relationships"], [], [],
+                        node_id=owner_id, require_complete_source=False,
+                    )
+                    assert "error" not in detail
+                    owner_occurrences = detail["node"]["call_resolution"]["occurrences"]
+                    api_occurrences.extend(owner_occurrences)
+                    gwt = build_gwt_detail(detail, [])
+                    assert "error" not in gwt
+                    mcp_occurrences.extend(
+                        gwt["node"]["linked_context"]["call_occurrences"]
+                    )
+                api_occurrences = normalize_call_resolution_subset(api_occurrences)
+                mcp_occurrences = normalize_call_resolution_subset(mcp_occurrences)
+                assert api_occurrences == ledger
+                assert mcp_occurrences == ledger
+                sealed_result = await transaction.run(
+                    """
+MATCH (occurrence:ANALYZER_OWNED:CALL_OCCURRENCE {
+  graph_owner: $graph_owner,
+  generation_id: $generation_id
+})
+WHERE occurrence.call_id IN $sealed_ids
+RETURN properties(occurrence) AS properties
+ORDER BY occurrence.call_id
+""",
+                    graph_owner=ANALYZER_GRAPH_OWNER,
+                    generation_id=generation_id,
+                    sealed_ids=sealed_ids,
+                )
+                sealed_rows = [
+                    call_resolution_from_storage(row["properties"])
+                    for row in await sealed_result.data()
+                ]
+            finally:
+                await transaction.rollback()
+
+        async with driver.session(database="test") as session:
+            residue_result = await session.run(
+                """
+MATCH (n)
+WHERE n.run_id = $generation_id OR n.generation_id = $generation_id
+RETURN count(n) AS count
+""",
+                generation_id=generation_id,
+            )
+            residue = int((await residue_result.single(strict=True))["count"])
+        active_after = await active_rows()
+    finally:
+        await driver.close()
+
+    assert closure is not None and persisted_counts is not None
+    assert persisted_counts == {
+        "occurrences": len(ledger), "owner_edges": len(ledger),
+    }
+    assert closure["quality_status"] == "completed_with_findings"
+    assert closure["call_occurrences"]["identities"] == ledger
+    assert residue == 0
+    assert active_after == active_before
+    sealed_by_id = {row["call_id"]: row for row in ledger if row["call_id"] in sealed_ids}
+    assert sealed_rows == [sealed_by_id[call_id] for call_id in sorted(sealed_ids)]
+    return {
+        "database": "test",
+        "schema_contract": "ensured",
+        "transaction": "rolled_back",
+        "routine_owner_ids": len(owner_ids),
+        "occurrence_nodes": persisted_counts["occurrences"],
+        "owner_edges": persisted_counts["owner_edges"],
+        "api_owner_packets": len(by_owner),
+        "api_occurrences": len(api_occurrences),
+        "api_ledger_sha256": summarize_call_resolution_ledger(
+            api_occurrences
+        )["sha256"],
+        "mcp_owner_packets": len(by_owner),
+        "mcp_occurrences": len(mcp_occurrences),
+        "mcp_ledger_sha256": summarize_call_resolution_ledger(
+            mcp_occurrences
+        )["sha256"],
+        "generation_node_count": closure["nodes"]["count"],
+        "generation_edge_count": closure["edges"]["count"],
+        "quality_status": closure["quality_status"],
+        "ledger_sha256": closure["call_occurrences"]["sha256"],
+        "sealed_direct_judgment_matched": len(sealed_rows),
+        "residual_nodes": residue,
+        "active_pointer_unchanged": active_after == active_before,
+    }
 
 
 @pytest.mark.skipif(
@@ -287,6 +568,13 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
             ],
         })
 
+    graph_proof = {"status": "not_run"}
+    if os.environ.get("ROBO_RUN_NEO4J_INTEGRATION") == "1":
+        graph_proof = asyncio.run(_prove_actual_occurrence_graph_rollback(
+            classification.ledger,
+            [expectation[0] for expectation in direct_expectations.values()],
+        ))
+
     call_completeness = [row for row in completeness if row["kind"] == "call"]
     completeness_status = Counter(row["status"] for row in call_completeness)
     assert sum(completeness_status.values()) == len(closure.artifacts)
@@ -366,6 +654,7 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
         "sealed_preprocessing_direct_judgment_population": (
             sealed_preprocessing_judgment
         ),
+        "neo4j_call_occurrence_rollback_proof": graph_proof,
         "sealed_owner_judgment_population": sealed_owner_judgment,
         "deterministic_replay": expected_ids == repeated_ids,
         "first_pass_seconds": round(elapsed, 6),

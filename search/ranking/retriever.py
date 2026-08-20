@@ -18,6 +18,12 @@ from search.ranking.rerank import passage, predict_cached
 from search.corpus.evidence_reader import read_rules
 from llm import embedder
 from graph.ownership import ANALYZER_GRAPH_OWNER
+from graph.schema.rel_types import (
+    AFFECTS_TABLE,
+    HAS_CALL_OCCURRENCE,
+    READS,
+    WRITES,
+)
 from search.ranking.anchors import merge_clusters
 from search.ranking.graph_access import (
     callees,
@@ -28,7 +34,7 @@ from search.ranking.graph_access import (
 from search.ranking.row_builder import table_row
 from search.ranking.selection_policy import support_plan
 
-_TABLE_RELS = ("READS", "WRITES", "AFFECTS_TABLE")
+_TABLE_RELS = (READS, WRITES, AFFECTS_TABLE)
 
 
 class Retriever:
@@ -95,9 +101,13 @@ class Retriever:
     def _node_row(self, cid: str, cfg, qv, score: dict, callees: list[dict], role: str) -> dict:
         rec = self.s.run(
             "MATCH (x {id:$id, graph_owner:$graph_owner, generation_id:$generation_id}) "
+            f"CALL {{ WITH x OPTIONAL MATCH (x)-[:{HAS_CALL_OCCURRENCE}]->(occ:CALL_OCCURRENCE) "
+            "RETURN count(occ) AS call_total, "
+            "sum(CASE WHEN occ.outcome = 'unresolved' THEN 1 ELSE 0 END) AS call_unresolved } "
             "OPTIONAL MATCH (x)-[r]->(t:TABLE {graph_owner:$graph_owner, generation_id:$generation_id}) "
             "WHERE type(r) IN $rels "
-            "RETURN elementId(x) AS eid, collect({rel:type(r), t:t.name}) AS tb",
+            "RETURN elementId(x) AS eid, collect({rel:type(r), t:t.name}) AS tb, "
+            "call_total, call_unresolved",
             id=cid, rels=list(_TABLE_RELS), graph_owner=ANALYZER_GRAPH_OWNER,
         ).single()
         rw: dict[str, list] = {}
@@ -114,6 +124,11 @@ class Retriever:
             "writes": sorted(set(rw.get("WRITES", []))),
             "reads": sorted(set(rw.get("READS", []) + rw.get("AFFECTS_TABLE", []))),
             "calls": calls,
+            "call_resolution": {
+                "status": "insufficient" if rec and rec["call_unresolved"] else "sufficient",
+                "total": int(rec["call_total"] or 0) if rec else 0,
+                "unresolved": int(rec["call_unresolved"] or 0) if rec else 0,
+            },
             "rules": self._rules_for(cid),
             "relevance": round(score[cid][1], 3), "role": role,
         }

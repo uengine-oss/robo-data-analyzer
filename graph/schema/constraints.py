@@ -71,6 +71,31 @@ RETURN count(n) AS migrated
 """
 
 
+def _legacy_analyzer_id_constraint_names(
+    constraints: list[dict], analyzer_labels: set[str],
+) -> list[str]:
+    """Select only obsolete single-id constraints on observed Analyzer labels."""
+    names: list[str] = []
+    for row in constraints:
+        labels = list(row.get("labelsOrTypes") or [])
+        properties = list(row.get("properties") or [])
+        name = str(row.get("name") or "")
+        if (
+            row.get("type") == "NODE_PROPERTY_UNIQUENESS"
+            and len(labels) == 1
+            and labels[0] in analyzer_labels
+            and properties == ["id"]
+            and name
+            and name != "uniq_analyzer_owned_generation"
+        ):
+            names.append(name)
+    return sorted(set(names))
+
+
+def _quoted_schema_name(name: str) -> str:
+    return "`" + name.replace("`", "``") + "`"
+
+
 async def ensure_schema(client: Neo4jClient) -> None:
     """제약 + 인덱스 생성 (``IF NOT EXISTS`` — 이미 있으면 무시). run 시작 시 1회.
 
@@ -78,8 +103,37 @@ async def ensure_schema(client: Neo4jClient) -> None:
     drop-all 은 남의 스키마까지 파괴). 단 옛 버전 잔재 인덱스가 제약 자리를 차지하면
     충돌하므로 — analyzer 는 깨끗한 전용 DB 를 써야 한다.
     """
-    for name in LEGACY_ID_CONSTRAINT_NAMES:
-        await client.run_query(f"DROP CONSTRAINT {name} IF EXISTS")
+    owned_label_rows = await client.run_read_query(
+        """
+MATCH (n)
+WHERE n.graph_owner = $graph_owner
+   OR any(label IN labels(n) WHERE label IN $stable_labels)
+   OR (n.file_path IS NOT NULL AND n.start_line IS NOT NULL AND n.end_line IS NOT NULL)
+UNWIND labels(n) AS label
+RETURN DISTINCT label
+""",
+        {
+            "graph_owner": ANALYZER_GRAPH_OWNER,
+            "stable_labels": list(LEGACY_ANALYZER_STABLE_LABELS),
+        },
+    )
+    analyzer_labels = {
+        str(row.get("label") or "") for row in owned_label_rows if row.get("label")
+    }
+    constraint_rows = await client.run_read_query(
+        """
+SHOW CONSTRAINTS
+YIELD name, type, labelsOrTypes, properties
+RETURN name, type, labelsOrTypes, properties
+"""
+    )
+    dynamic_legacy_names = _legacy_analyzer_id_constraint_names(
+        constraint_rows, analyzer_labels,
+    )
+    for name in sorted(set(LEGACY_ID_CONSTRAINT_NAMES) | set(dynamic_legacy_names)):
+        await client.run_query(
+            f"DROP CONSTRAINT {_quoted_schema_name(name)} IF EXISTS"
+        )
     for stmt in CONSTRAINTS + INDEXES:
         await client.run_query(stmt)
 

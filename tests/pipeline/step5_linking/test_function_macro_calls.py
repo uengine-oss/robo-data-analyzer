@@ -33,12 +33,16 @@ class FunctionMacroCallTests(unittest.TestCase):
 
         self.assertEqual([], result.edges)
         self.assertEqual(1, result.unresolved_preprocessing)
-        self.assertEqual([{
-            "call_id": "trace-call",
-            "outcome": "unresolved",
-            "reason": "insufficient_preprocessing_build_context",
-            "preprocessing_evidence_ids": ["a" * 64, "b" * 64],
-        }], result.ledger)
+        self.assertEqual(1, len(result.ledger))
+        self.assertEqual("trace-call", result.ledger[0]["call_id"])
+        self.assertEqual("unresolved", result.ledger[0]["outcome"])
+        self.assertEqual(
+            "insufficient_preprocessing_build_context", result.ledger[0]["reason"],
+        )
+        self.assertEqual(
+            ["a" * 64, "b" * 64],
+            result.ledger[0]["preprocessing_evidence_ids"],
+        )
 
     def test_declaration_alone_cannot_claim_macro_expansion(self) -> None:
         caller = _caller()
@@ -53,12 +57,13 @@ class FunctionMacroCallTests(unittest.TestCase):
         self.assertEqual([], result.edges)
         self.assertEqual(0, result.dropped_macro)
         self.assertEqual(1, result.unresolved_macro)
-        self.assertEqual([{
-            "call_id": "trace-call",
-            "outcome": "unresolved",
-            "reason": "insufficient_macro_expansion_state",
-            "macro_fact_ids": ["macro-trace"],
-        }], result.ledger)
+        self.assertEqual(1, len(result.ledger))
+        self.assertEqual("trace-call", result.ledger[0]["call_id"])
+        self.assertEqual("unresolved", result.ledger[0]["outcome"])
+        self.assertEqual(
+            "insufficient_macro_expansion_state", result.ledger[0]["reason"],
+        )
+        self.assertEqual(["macro-trace"], result.ledger[0]["macro_fact_ids"])
 
     def test_conditional_definition_is_explicitly_unresolved(self) -> None:
         caller = _caller()
@@ -119,12 +124,23 @@ def _call(caller: CodeNode, name: str, *, call_id: str = "trace-call") -> dict:
     return {
         "call_id": call_id,
         "caller_id": caller.id,
+        "owner_status": "resolved",
         "call_text": name,
         "callee_kind": "named",
         "presence_status": "active",
+        "presence": {
+            "status": "active",
+            "condition": None,
+            "configurationId": None,
+            "provenance": "unconditional",
+        },
         "source_id": "sample.c",
         "file": "sample.c",
         "line": 2,
+        "range": {"char_offset": 10, "char_length": len(name) + 2},
+        "callee_range": {"char_offset": 10, "char_length": len(name)},
+        "argument_ranges": [],
+        "grammar_rule": "postfixExpression",
     }
 
 

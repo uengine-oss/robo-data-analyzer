@@ -16,6 +16,12 @@ from search.corpus.generation import (
 )
 from graph.ownership import ANALYZER_GRAPH_OWNER
 from pipeline.models.semantic_frame import SemanticFrame
+from pipeline.models.call_resolution import (
+    call_resolution_from_storage,
+    normalize_call_resolution_subset,
+    summarize_call_resolution_subset,
+)
+from graph.schema.rel_types import HAS_CALL_OCCURRENCE
 
 _INTERNAL_PROPERTIES = {"embedding", "graph_owner", "generation_id", "element_id"}
 _SOURCE_PROPERTIES = {"file_path", "start_line", "end_line", "code_text"}
@@ -105,8 +111,24 @@ def build_node_detail(
         }
 
     public_relationships = []
+    call_occurrences = []
     for relationship in relationships:
         other_properties = dict(relationship.get("other_properties") or {})
+        if (
+            relationship.get("type") == HAS_CALL_OCCURRENCE
+            and relationship.get("direction") == "out"
+        ):
+            try:
+                occurrence = call_resolution_from_storage(other_properties)
+            except ValueError as error:
+                return _error("CALL_OCCURRENCE_INVALID", str(error))
+            if occurrence["caller_id"] != actual_id:
+                return _error(
+                    "CALL_OCCURRENCE_OWNER_MISMATCH",
+                    "call occurrence owner does not match requested node",
+                )
+            call_occurrences.append(occurrence)
+            continue
         related_source = None
         if relationship.get("type") == "REFERENCES":
             related_source = {
@@ -128,6 +150,11 @@ def build_node_detail(
             },
         })
 
+    try:
+        call_occurrences = normalize_call_resolution_subset(call_occurrences)
+        call_resolution = summarize_call_resolution_subset(call_occurrences)
+    except ValueError as error:
+        return _error("CALL_OCCURRENCE_INVALID", str(error))
     return {"node": {
         "id": actual_id,
         "labels": labels,
@@ -137,6 +164,11 @@ def build_node_detail(
         "rules": rules,
         "columns": columns,
         "relationships": public_relationships,
+        **({"call_resolution": {
+            "status": "insufficient" if call_resolution["unresolved"] else "sufficient",
+            **call_resolution,
+            "occurrences": call_occurrences,
+        }} if is_code else {}),
     }}
 
 
@@ -206,6 +238,9 @@ def build_gwt_detail(detail: dict, table_contexts: list[dict]) -> dict:
         ],
         "linked_context": {
             "callees": calls,
+            "call_occurrences": list(
+                (node.get("call_resolution") or {}).get("occurrences") or []
+            ),
             "symbols": symbols,
             "data_objects": [
             {
@@ -342,6 +377,12 @@ def read_node_detail(node_id: str, *, view: str = "full") -> dict:
                 require_complete_source=view == "full",
             )
             if view == "full" or "error" in detail:
+                if "error" not in detail:
+                    detail["meta"] = {
+                        "generation_id": session.generation_id,
+                        "quality_status": session.quality_status,
+                        "call_resolution": session.call_resolution,
+                    }
                 return detail
             try:
                 if "TABLE" in labels:
@@ -354,7 +395,14 @@ def read_node_detail(node_id: str, *, view: str = "full") -> dict:
                     tables = _related_table_contexts(session, relationships)
             except ValueError as exc:
                 return _error("SAMPLE_SNAPSHOT_INVALID", str(exc))
-            return build_gwt_detail(detail, tables)
+            packet = build_gwt_detail(detail, tables)
+            if "error" not in packet:
+                packet["meta"] = {
+                    "generation_id": session.generation_id,
+                    "quality_status": session.quality_status,
+                    "call_resolution": session.call_resolution,
+                }
+            return packet
     except CompletedGenerationUnavailable as error:
         return _error("GRAPH_NOT_PUBLISHED", str(error))
     finally:

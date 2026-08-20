@@ -383,6 +383,10 @@ callee와 module 문맥은 canonical frame/evidence ID와 terminal status만 전
 - 같은 허용 DB 안에서 새 run은 고유 generation ID로 staging한다. 임시 DB를 만들지 않는다.
 - generation은 입력 source/AST/diagnostic expected identity와 node/edge/slot actual identity의 exact
   closure, quality status를 가진 manifest를 graph에 저장한다.
+- Framework call occurrence는 routine-owned semantic claim이 아니라 generation-scoped evidence node로
+  저장한다. manifest는 occurrence count/hash/outcome/reason을 exact closure에 포함하고, aggregate CALLS
+  edge는 occurrence ledger를 대체하지 않는다. unresolved occurrence는 `completed_with_findings`와
+  REST/MCP/search degraded metadata에 반영한다.
 - 모든 writer는 generation ID를 기록하고, 모든 REST/MCP/search reader는 원자적으로 publish된
   `completed|completed_with_findings` generation만 읽는다.
 - timeout, cost stop, fatal error, 사용자 stop은 generation을 `failed|stopped`로 terminal 처리하며
@@ -428,6 +432,8 @@ callee와 module 문맥은 canonical frame/evidence ID와 terminal status만 전
 
 - complete source body, source hash, 새 excerpt는 없다.
 - 같은 claim/evidence/callee/table identity는 한 번만 있고 GWT scenario가 ID로 참조한다.
+- routine의 call occurrence evidence는 source-free linked context에서 canonical call ID와 좌표/outcome으로
+  제공한다. aggregate callee 목록만으로 대체하거나 별도 자연어 의미 claim으로 승격하지 않는다.
 - Architect의 Given/When/Then scalar는 cited claim/evidence로 입증돼야 한다.
 - `partial|insufficient` claim은 동일 packet에서 source를 다시 읽어 보완하지 않는다.
 - 별도 audit/debug 도구는 좌표로 source를 조회할 수 있으나 정상 생성 prompt와 provenance에

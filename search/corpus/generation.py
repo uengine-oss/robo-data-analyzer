@@ -10,6 +10,8 @@ from graph.generation import (
     GENERATION_LABEL,
 )
 from graph.ownership import ANALYZER_GRAPH_OWNER
+from pipeline.models.call_resolution import validate_call_resolution_summary
+import json
 
 
 class CompletedGenerationUnavailable(RuntimeError):
@@ -19,9 +21,14 @@ class CompletedGenerationUnavailable(RuntimeError):
 class GenerationScopedSession:
     """Neo4j session proxy that supplies the resolved generation parameter."""
 
-    def __init__(self, session, generation_id: str):
+    def __init__(
+        self, session, generation_id: str, quality_status: str,
+        call_resolution: dict,
+    ):
         self._session = session
         self.generation_id = generation_id
+        self.quality_status = quality_status
+        self.call_resolution = call_resolution
 
     def run(self, query: str, **parameters):
         supplied_generation = parameters.get("generation_id")
@@ -56,7 +63,8 @@ MATCH (generation:{GENERATION_LABEL} {{
   run_id: active.current_generation_id
 }})
 WHERE generation.status IN $completed_statuses
-RETURN generation.run_id AS generation_id, generation.status AS status
+RETURN generation.run_id AS generation_id, generation.status AS status,
+       generation.call_resolution_summary_json AS call_resolution_summary_json
 """,
             graph_owner=ANALYZER_GRAPH_OWNER,
             active_key=ACTIVE_GENERATION_KEY,
@@ -68,8 +76,22 @@ RETURN generation.run_id AS generation_id, generation.status AS status
             )
         row = rows[0]
         generation_id = str(row["generation_id"])
+        quality_status = str(row.get("status") or "")
+        raw_summary = row.get("call_resolution_summary_json")
+        if not isinstance(raw_summary, str) or not raw_summary:
+            raise CompletedGenerationUnavailable(
+                "완료 generation에 call resolution closure가 없습니다"
+            )
+        try:
+            call_resolution = validate_call_resolution_summary(json.loads(raw_summary))
+        except (json.JSONDecodeError, ValueError) as error:
+            raise CompletedGenerationUnavailable(
+                f"완료 generation의 call resolution closure가 유효하지 않습니다: {error}"
+            ) from error
         if expected_generation_id is not None and generation_id != expected_generation_id:
             raise CompletedGenerationUnavailable(
                 "검색 중 active graph generation이 변경되었습니다; 요청을 다시 시도하세요"
             )
-        yield GenerationScopedSession(session, generation_id)
+        yield GenerationScopedSession(
+            session, generation_id, quality_status, call_resolution,
+        )

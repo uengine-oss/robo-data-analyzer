@@ -12,6 +12,15 @@ from graph.schema.constraints import (
     LEGACY_ANALYZER_STABLE_LABELS,
     LEGACY_OWNER_MIGRATION_QUERY,
 )
+from graph.nodes.call_occurrence import CALL_OCCURRENCE_LABEL
+from graph.schema.rel_types import HAS_CALL_OCCURRENCE
+from pipeline.models.call_resolution import (
+    call_occurrence_node_id,
+    call_resolution_from_storage,
+    normalize_call_resolution_ledger,
+    summarize_call_resolution_ledger,
+)
+from pipeline.models.semantic_frame import SemanticFrame
 
 
 GENERATION_LABEL = "ANALYZER_GENERATION"
@@ -176,22 +185,12 @@ def _slot_identities(rows: list[dict]) -> list[dict]:
             continue
         node_id = str(row.get("id") or "")
         try:
-            frame = json.loads(raw)
-        except (TypeError, json.JSONDecodeError) as error:
+            frame = SemanticFrame.model_validate_json(raw)
+        except (TypeError, ValueError) as error:
             raise GraphGenerationError(
                 f"invalid semantic_frame_json at {node_id}"
             ) from error
-        claims = frame.get("claims") if isinstance(frame, dict) else None
-        if not isinstance(claims, list):
-            raise GraphGenerationError(
-                f"semantic frame claims are not a list at {node_id}"
-            )
-        for claim in claims:
-            if not isinstance(claim, dict):
-                raise GraphGenerationError(f"invalid semantic claim at {node_id}")
-            slot_id = str(claim.get("slotId") or claim.get("slot_id") or "")
-            if not slot_id:
-                raise GraphGenerationError(f"semantic claim has no slot id at {node_id}")
+        for slot_id, slot in frame.slots.items():
             key = (node_id, slot_id)
             if key in seen:
                 raise GraphGenerationError(
@@ -201,11 +200,45 @@ def _slot_identities(rows: list[dict]) -> list[dict]:
             identities.append({
                 "node_id": node_id,
                 "slot_id": slot_id,
-                "type": str(claim.get("type") or ""),
-                "status": str(claim.get("status") or ""),
-                "evidence_refs": sorted(str(value) for value in claim.get("evidenceRefs") or []),
+                "type": f"{slot.family}.{slot.role}",
+                "status": slot.status,
+                "evidence_refs": sorted(slot.evidence_refs),
             })
     return sorted(identities, key=lambda item: (item["node_id"], item["slot_id"]))
+
+
+def _call_occurrence_identities(
+    rows: list[dict], node_ids: set[str], expected: list[dict],
+) -> list[dict]:
+    identities: list[dict] = []
+    for row in rows:
+        try:
+            occurrence = call_resolution_from_storage(row.get("properties") or {})
+        except ValueError as error:
+            raise GraphGenerationError(f"invalid persisted call occurrence: {error}") from error
+        evidence_node_id = call_occurrence_node_id(occurrence["call_id"])
+        if evidence_node_id not in node_ids:
+            raise GraphGenerationError(
+                f"call occurrence evidence node is outside node closure: {evidence_node_id}"
+            )
+        owner_ids = sorted(str(value) for value in row.get("owner_ids") or [])
+        required_owners = [occurrence["caller_id"]] if occurrence["caller_id"] else []
+        if owner_ids != required_owners:
+            raise GraphGenerationError(
+                f"call occurrence owner edge mismatch: {occurrence['call_id']}"
+            )
+        if occurrence["caller_id"] and occurrence["caller_id"] not in node_ids:
+            raise GraphGenerationError(
+                f"call occurrence owner is outside node closure: {occurrence['caller_id']}"
+            )
+        identities.append(occurrence)
+    try:
+        normalized = normalize_call_resolution_ledger(identities)
+    except ValueError as error:
+        raise GraphGenerationError(f"invalid call occurrence ledger: {error}") from error
+    if normalized != expected:
+        raise GraphGenerationError("call occurrence ledger differs between workflow and Neo4j")
+    return normalized
 
 
 async def publish_generation(
@@ -213,11 +246,18 @@ async def publish_generation(
     *,
     generation_id: str,
     quality_status: Literal["completed", "completed_with_findings"],
+    call_resolution_ledger: list[dict],
 ) -> dict[str, Any]:
     """Close actual graph identities and flip the active pointer in one transaction."""
     _require_generation_client(client, generation_id)
     if quality_status not in COMPLETED_STATUSES:
         raise GraphGenerationError(f"invalid publish status: {quality_status}")
+    try:
+        expected_call_occurrences = normalize_call_resolution_ledger(
+            call_resolution_ledger
+        )
+    except ValueError as error:
+        raise GraphGenerationError(f"invalid expected call occurrence ledger: {error}") from error
     completed_at = _utc_now()
 
     async def _publish(transaction) -> dict[str, Any]:
@@ -263,20 +303,56 @@ RETURN a.id AS source_id, type(r) AS rel_type, b.id AS target_id,
         node_ids = {item["id"] for item in nodes}
         edges = _edge_identities(edge_rows, node_ids, generation_id)
         slots = _slot_identities(node_rows)
+        call_result = await transaction.run(
+            f"""
+MATCH (occurrence:ANALYZER_OWNED:{CALL_OCCURRENCE_LABEL} {{
+  graph_owner: $graph_owner,
+  generation_id: $generation_id
+}})
+OPTIONAL MATCH (owner:ANALYZER_OWNED {{
+  graph_owner: $graph_owner,
+  generation_id: $generation_id
+}})-[:{HAS_CALL_OCCURRENCE}]->(occurrence)
+RETURN properties(occurrence) AS properties,
+       collect(owner.id) AS owner_ids
+ORDER BY properties.ordinal
+""",
+            graph_owner=ANALYZER_GRAPH_OWNER,
+            generation_id=generation_id,
+        )
+        call_rows = await call_result.data()
+        call_occurrences = _call_occurrence_identities(
+            call_rows, node_ids, expected_call_occurrences,
+        )
+        call_summary = summarize_call_resolution_ledger(call_occurrences)
+        resolved_quality_status = (
+            "completed_with_findings"
+            if quality_status == "completed_with_findings" or call_summary["unresolved"]
+            else "completed"
+        )
         closure = {
-            "schema_version": "graph-generation-closure/v1",
+            "schema_version": "graph-generation-closure/v2",
             "generation_id": generation_id,
-            "quality_status": quality_status,
+            "quality_status": resolved_quality_status,
             "nodes": {"count": len(nodes), "sha256": _sha256(nodes), "identities": nodes},
             "edges": {"count": len(edges), "sha256": _sha256(edges), "identities": edges},
             "slots": {"count": len(slots), "sha256": _sha256(slots), "identities": slots},
+            "call_occurrences": {
+                "count": call_summary["total"],
+                "unresolved": call_summary["unresolved"],
+                "by_outcome": call_summary["by_outcome"],
+                "by_reason": call_summary["by_reason"],
+                "sha256": call_summary["sha256"],
+                "identities": call_occurrences,
+            },
         }
         manifest_json = _canonical_json({
-            key: value if key not in {"nodes", "edges", "slots"} else {
-                "count": value["count"], "sha256": value["sha256"]
+            key: value if key not in {"nodes", "edges", "slots", "call_occurrences"} else {
+                field: value[field] for field in value if field != "identities"
             }
             for key, value in closure.items()
         })
+        call_resolution_summary_json = _canonical_json(call_summary)
 
         publish_result = await transaction.run(
             f"""
@@ -284,7 +360,11 @@ MATCH (g:{GENERATION_LABEL} {{graph_owner: $graph_owner, run_id: $generation_id}
 WHERE g.status = 'building'
 SET g.status = $quality_status,
     g.completed_at = $completed_at,
-    g.graph_closure_json = $graph_closure_json
+    g.graph_closure_json = $graph_closure_json,
+    g.call_resolution_summary_json = $call_resolution_summary_json,
+    g.call_resolution_ledger_sha256 = $call_resolution_ledger_sha256,
+    g.call_resolution_population = $call_resolution_population,
+    g.call_resolution_unresolved = $call_resolution_unresolved
 MERGE (active:{ACTIVE_GENERATION_LABEL} {{
   graph_owner: $graph_owner,
   key: $active_key
@@ -295,9 +375,13 @@ RETURN g.run_id AS run_id, active.current_generation_id AS active_generation_id
 """,
             graph_owner=ANALYZER_GRAPH_OWNER,
             generation_id=generation_id,
-            quality_status=quality_status,
+            quality_status=resolved_quality_status,
             completed_at=completed_at,
             graph_closure_json=manifest_json,
+            call_resolution_summary_json=call_resolution_summary_json,
+            call_resolution_ledger_sha256=call_summary["sha256"],
+            call_resolution_population=call_summary["total"],
+            call_resolution_unresolved=call_summary["unresolved"],
             active_key=ACTIVE_GENERATION_KEY,
         )
         record = await publish_result.single(strict=True)

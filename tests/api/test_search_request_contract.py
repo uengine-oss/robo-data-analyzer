@@ -61,7 +61,11 @@ class SearchRequestContractTest(unittest.IsolatedAsyncioTestCase):
 
         @contextmanager
         def scoped_session(_driver, _database):
-            yield SimpleNamespace(generation_id="generation:1")
+            yield SimpleNamespace(
+                generation_id="generation:1",
+                quality_status="completed_with_findings",
+                call_resolution={"total": 2, "unresolved": 1},
+            )
 
         default_limit = service.DEFAULT.cluster_top_n
         with (
@@ -73,10 +77,12 @@ class SearchRequestContractTest(unittest.IsolatedAsyncioTestCase):
             patch.object(service, "Retriever", Retriever),
             patch.object(service, "completed_generation_session", scoped_session),
         ):
-            service.run_search("inventory", top_n=3)
+            _clusters, meta = service.run_search("inventory", top_n=3)
 
         self.assertEqual([3], observed)
         self.assertEqual(default_limit, service.DEFAULT.cluster_top_n)
+        self.assertEqual("completed_with_findings", meta["quality_status"])
+        self.assertEqual(1, meta["call_resolution"]["unresolved"])
 
     def test_top_n_boundary_is_explicit(self) -> None:
         self.assertEqual(1, SearchRequest(query="q", top_n=1).top_n)

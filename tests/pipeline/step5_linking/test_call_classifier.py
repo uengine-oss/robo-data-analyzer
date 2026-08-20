@@ -85,12 +85,23 @@ def _canonical_site(
     return {
         "call_id": call_id,
         "caller_id": caller_id,
+        "owner_status": "resolved" if caller_id else "unresolved_no_routine",
         "call_text": name,
         "callee_kind": callee_kind,
+        "source_id": "source:sample.c",
         "presence_status": presence_status,
+        "presence": {
+            "status": presence_status,
+            "condition": None,
+            "configurationId": None,
+            "provenance": "unconditional",
+        },
         "file": "sample.c",
         "line": 1,
+        "range": {"charOffset": 10, "charLength": 8},
+        "callee_range": {"charOffset": 10, "charLength": 4},
         "argument_ranges": [],
+        "grammar_rule": "postfixExpression",
     }
 
 
@@ -119,6 +130,13 @@ def test_non_active_expression_and_missing_owner_are_explicitly_accounted() -> N
     assert [row["outcome"] for row in result.ledger] == [
         "preserved", "unresolved", "unresolved", "unresolved",
     ]
+    assert [row["ordinal"] for row in result.ledger] == [0, 1, 2, 3]
+    assert result.ledger[0]["range"] == {"char_offset": 10, "char_length": 8}
+    assert result.ledger[0]["callee_range"] == {
+        "char_offset": 10, "char_length": 4,
+    }
+    assert result.ledger[0]["terminal_name"] == "hidden"
+    assert result.ledger[0]["presence"]["status"] == "inactive"
     assert result.accounted == len(sites)
 
 
@@ -139,11 +157,12 @@ def test_wrapper_target_is_not_reparsed_from_source_line() -> None:
         "call_id": "wrapper",
         "reason": "insufficient_wrapper_argument_syntax_evidence",
     }]
-    assert result.ledger == [{
-        "call_id": "wrapper",
-        "outcome": "unresolved",
-        "reason": "insufficient_wrapper_argument_syntax_evidence",
-    }]
+    assert result.ledger[0]["call_id"] == "wrapper"
+    assert result.ledger[0]["outcome"] == "unresolved"
+    assert result.ledger[0]["reason"] == (
+        "insufficient_wrapper_argument_syntax_evidence"
+    )
+    assert result.ledger[0]["file"] == "sample.py"
 
 
 def load_tests(_loader, standard_tests, _pattern):

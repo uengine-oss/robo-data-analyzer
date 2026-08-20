@@ -45,6 +45,9 @@
     - [x] A131-04d-CLOSURE parser-supported source↔AST↔EXACT diagnostic SHA/status 전수 one-to-one
       회계, strict UTF-8, malformed/unknown AST fail-closed, Neo4j mutation 전 immutable closure artifact
     - [x] A131-04d-GENERATION same-DB completed generation 원자 publish와 API/MCP/search consumer guard
+    - [x] A131-04d-C065 Framework canonical call occurrence를 evidence node로 exact-once 저장하고
+      generation count/hash/outcome/reason closure, unresolved run quality, REST/MCP search meta와 owner detail까지
+      보존 — aggregate CALLS와 routine 의미 owner는 유지
   - [ ] A131-04e 남은 구조 closure(C-004/C-017~021/C-031/C-034~C-042) 책임 슬라이스별 해결
     - [x] A131-04e-C004-C017-C031 Catalog truncated inventory pre-merge fail-closed, unknown external
       non-whitespace source span exact-once closure, 순환 dead Catalog lineage consumer 제거 — red 3건,

@@ -50,6 +50,7 @@ from shared.events.ndjson_event_stream import NDJSONStream
 from graph.neo4j_client import Neo4jClient
 from graph.schema.constraints import ensure_schema
 from graph.generation import begin_generation, publish_generation, terminate_generation
+from pipeline.models.call_resolution import normalize_call_resolution_ledger, summarize_call_resolution_ledger
 from graph.connection_context import get_override
 from shared.files.cache import SourceFileCache
 from pipeline.execution.analysis_handoff import AnalysisHandoff, analysis_llm_slots
@@ -73,6 +74,26 @@ from pipeline.steps.step2_load_ast.source_ast_closure import (
 
 _RUN_OUTPUT_OWNER_MARKER = ".robo-data-analyzer-output"
 _RUN_OUTPUT_OWNER_MARKER_CONTENT = "robo-data-analyzer\n"
+
+
+def _capture_call_resolution_update(
+    current: list[dict],
+    seen: bool,
+    update: Any,
+) -> tuple[list[dict], bool]:
+    """Capture the workflow's sole complete call ledger without merging partial state."""
+    if not isinstance(update, dict) or "call_resolution_ledger" not in update:
+        return current, seen
+    if seen:
+        raise ValueError("call_resolution_ledger has more than one workflow producer")
+    return normalize_call_resolution_ledger(update["call_resolution_ledger"]), True
+
+
+def _require_call_resolution_producer(strategy_name: str, seen: bool) -> None:
+    if strategy_name == "framework" and not seen:
+        raise ValueError(
+            "Framework workflow did not produce a complete call_resolution_ledger"
+        )
 
 
 def _state_msgpack_allowlist() -> tuple[type, ...]:
@@ -266,10 +287,19 @@ async def execute_run(
             # step 경계마다 pause.gate() — paused 면 다음 step 앞에서 hold, stopped 면
             # RunStopped. stop 은 사용자 의도된 종료라 실패가 아님 → 정상 경로로 마무리.
             stopped = False
+            call_resolution_ledger: list[dict] = []
+            call_resolution_seen = False
             try:
                 async for chunk in app.astream(initial_state, config=config, stream_mode="updates"):
                     if isinstance(chunk, dict):
-                        for node_name in chunk:
+                        for node_name, update in chunk.items():
+                            call_resolution_ledger, call_resolution_seen = (
+                                _capture_call_resolution_update(
+                                    call_resolution_ledger,
+                                    call_resolution_seen,
+                                    update,
+                                )
+                            )
                             if stream is not None:
                                 stream.emit({"type": "phase_event", "event": "node_done", "node": node_name})
                     await pause.gate()
@@ -281,7 +311,10 @@ async def execute_run(
                     # — 선택된 logs 루트에는 로그·jsonl·llm-prompts만 둔다).
                     try:
                         _summarize_usage(run.run_dir)
-                        _summarize_analysis_findings(run.run_dir)
+                        _summarize_analysis_findings(
+                            run.run_dir,
+                            call_resolution_ledger=call_resolution_ledger,
+                        )
                         log_info("run", "failure_usage_summarized", run_dir=str(run.run_dir))
                     except Exception as artifact_error:
                         log_error(
@@ -296,13 +329,19 @@ async def execute_run(
                 log_info("run", "stopped", run_id=run.run_id)
 
             if not stopped:
+                _require_call_resolution_producer(strategy.name, call_resolution_seen)
                 _summarize_usage(run.run_dir)
-                quality_summary = _summarize_analysis_findings(run.run_dir)
+                quality_summary = _summarize_analysis_findings(
+                    run.run_dir,
+                    call_resolution_ledger=call_resolution_ledger,
+                )
                 graph_closure = await publish_generation(
                     neo_client,
                     generation_id=run.run_id,
                     quality_status=quality_summary["run_quality_status"],
+                    call_resolution_ledger=call_resolution_ledger,
                 )
+                quality_summary["run_quality_status"] = graph_closure["quality_status"]
                 generation_terminal = True
                 try:
                     _write_graph_generation_closure(run.run_dir, graph_closure)
@@ -703,7 +742,11 @@ def _summarize_usage(run_dir: Path) -> None:
     )
 
 
-def _summarize_analysis_findings(run_dir: Path) -> dict:
+def _summarize_analysis_findings(
+    run_dir: Path,
+    *,
+    call_resolution_ledger: list[dict] | None = None,
+) -> dict:
     """Strictly aggregate the append-only quality ledger for run-level visibility."""
     path = run_dir / "analysis-findings.jsonl"
     counts = {
@@ -739,8 +782,14 @@ def _summarize_analysis_findings(run_dir: Path) -> dict:
                 counts["by_concern"][concern] = counts["by_concern"].get(concern, 0) + 1
                 targets.add(target)
     counts["affected_targets"] = len(targets)
+    call_resolution = summarize_call_resolution_ledger(
+        call_resolution_ledger or []
+    )
+    counts["call_resolution"] = call_resolution
     counts["run_quality_status"] = (
-        "completed_with_findings" if counts["total"] else "completed"
+        "completed_with_findings"
+        if counts["total"] or call_resolution["unresolved"]
+        else "completed"
     )
     (run_dir / "analysis_findings_summary.json").write_text(
         json.dumps(counts, ensure_ascii=False, indent=2) + "\n",

@@ -9,14 +9,16 @@ from neo4j import AsyncGraphDatabase
 
 from graph.generation import publish_generation
 from graph.ownership import ANALYZER_GRAPH_OWNER
+from pipeline.models.call_resolution import call_resolution_storage_item
 from shared.config.settings import SETTINGS
 
 
 class _RollbackPublishClient:
-    def __init__(self, driver, database: str, generation_id: str):
+    def __init__(self, driver, database: str, generation_id: str, ledger: list[dict]):
         self.driver = driver
         self.database = database
         self.generation_id = generation_id
+        self.ledger = ledger
 
     async def execute_write(self, callback):
         async with self.driver.session(database=self.database) as session:
@@ -46,11 +48,34 @@ CREATE (source)-[:READS {generation_id: $generation_id}]->(target)
                     generation_id=self.generation_id,
                     source_id=f"integration:{self.generation_id}:source",
                     target_id=f"integration:{self.generation_id}:target",
-                    semantic_frame_json=(
-                        '{"claims":[{"slotId":"SL:test","type":"TEST",'
-                        '"status":"sufficient","evidenceRefs":["EV:test"]}]}'
-                    ),
+                    semantic_frame_json=None,
                 )
+                occurrence_items = [
+                    call_resolution_storage_item(row) for row in self.ledger
+                ]
+                if occurrence_items:
+                    await transaction.run(
+                        """
+UNWIND $items AS item
+MATCH (owner:ANALYZER_OWNED {
+  graph_owner: $graph_owner,
+  generation_id: $generation_id,
+  id: item.caller_id
+})
+CREATE (occurrence:ANALYZER_OWNED:CALL_OCCURRENCE)
+SET occurrence = item,
+    occurrence.graph_owner = $graph_owner,
+    occurrence.generation_id = $generation_id
+CREATE (owner)-[:HAS_CALL_OCCURRENCE {
+  generation_id: $generation_id,
+  call_id: item.call_id,
+  ordinal: item.ordinal
+}]->(occurrence)
+""",
+                        graph_owner=ANALYZER_GRAPH_OWNER,
+                        generation_id=self.generation_id,
+                        items=occurrence_items,
+                    )
                 closure = await callback(transaction)
                 row = await (
                     await transaction.run(
@@ -84,6 +109,37 @@ class Neo4jGenerationIntegrationTests(unittest.IsolatedAsyncioTestCase):
             auth=(settings.user, settings.password),
         )
         try:
+            source_id = f"integration:{generation_id}:source"
+            ledger = [{
+                "call_id": f"integration:{generation_id}:call:0",
+                "ordinal": 0,
+                "source_id": f"integration:{generation_id}:file",
+                "caller_id": source_id,
+                "owner_status": "resolved",
+                "file": "integration.c",
+                "line": 7,
+                "range": {"char_offset": 20, "char_length": 6},
+                "callee_range": {"char_offset": 20, "char_length": 3},
+                "argument_ranges": [],
+                "callee_kind": "named",
+                "terminal_name": "run",
+                "grammar_rule": "postfixExpression",
+                "presence_status": "active",
+                "presence": {
+                    "status": "active",
+                    "condition": None,
+                    "configurationId": None,
+                    "provenance": "unconditional",
+                },
+                "configured_preprocessing_required": True,
+                "outcome": "unresolved",
+                "reason": "insufficient_preprocessing_build_context",
+                "scope": None,
+                "callee_id": "",
+                "preprocessing_evidence_ids": ["a" * 64],
+                "macro_fact_ids": [],
+            }]
+
             async def active_rows() -> list[dict]:
                 async with driver.session(database="test") as session:
                     result = await session.run(
@@ -100,13 +156,18 @@ RETURN active.current_generation_id AS generation_id
 
             active_before = await active_rows()
             closure = await publish_generation(
-                _RollbackPublishClient(driver, "test", generation_id),
+                _RollbackPublishClient(driver, "test", generation_id, ledger),
                 generation_id=generation_id,
                 quality_status="completed",
+                call_resolution_ledger=ledger,
             )
-            self.assertEqual(2, closure["nodes"]["count"])
-            self.assertEqual(1, closure["edges"]["count"])
-            self.assertEqual(1, closure["slots"]["count"])
+            self.assertEqual(3, closure["nodes"]["count"])
+            self.assertEqual(2, closure["edges"]["count"])
+            self.assertEqual(0, closure["slots"]["count"])
+            self.assertEqual("completed_with_findings", closure["quality_status"])
+            self.assertEqual(1, closure["call_occurrences"]["count"])
+            self.assertEqual(1, closure["call_occurrences"]["unresolved"])
+            self.assertEqual(ledger, closure["call_occurrences"]["identities"])
 
             async with driver.session(database="test") as session:
                 result = await session.run(

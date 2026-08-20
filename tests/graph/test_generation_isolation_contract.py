@@ -29,6 +29,30 @@ class GenerationIsolationRedContractTests(unittest.TestCase):
     def test_legacy_schema_constraint_cannot_collapse_catalog_siblings(self) -> None:
         self.assertIn("schema_db_name", constraints.LEGACY_ID_CONSTRAINT_NAMES)
 
+    def test_observed_analyzer_code_labels_drop_only_legacy_single_id_constraints(self) -> None:
+        rows = [
+            {
+                "name": "uniq_function", "type": "NODE_PROPERTY_UNIQUENESS",
+                "labelsOrTypes": ["FUNCTION"], "properties": ["id"],
+            },
+            {
+                "name": "architect_ui_id", "type": "NODE_PROPERTY_UNIQUENESS",
+                "labelsOrTypes": ["UI"], "properties": ["id"],
+            },
+            {
+                "name": "function_generation", "type": "NODE_PROPERTY_UNIQUENESS",
+                "labelsOrTypes": ["FUNCTION"],
+                "properties": ["generation_id", "id"],
+            },
+        ]
+
+        self.assertEqual(
+            ["uniq_function"],
+            constraints._legacy_analyzer_id_constraint_names(
+                rows, {"ANALYZER_OWNED", "FUNCTION"},
+            ),
+        )
+
     def test_run_does_not_destroy_published_graph_before_success(self) -> None:
         source = inspect.getsource(run_executor.execute_run)
         self.assertNotIn("wipe_graph", source)

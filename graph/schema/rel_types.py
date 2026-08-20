@@ -10,6 +10,7 @@ from __future__ import annotations
 
 # 코드 구조 (antlr JSON 에서 도출)
 CALLS = "CALLS"              # CodeNode → CodeNode
+HAS_CALL_OCCURRENCE = "HAS_CALL_OCCURRENCE"  # routine → grammar-owned call evidence
 PARENT_OF = "PARENT_OF"      # 부모 노드 → 중첩 자식 노드 (AST 트리 — 구문 중첩·중첩함수)
 HAS_MEMBER = "HAS_MEMBER"    # 그릇(FILE/CLASS/PACKAGE/DataType) → 멤버 (루틴/변수/상수/필드)
                              #   "가지다" — 멤버 종류는 노드 라벨로 구분. 구문은 멤버 아님(PARENT_OF/NEXT 만).

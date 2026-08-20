@@ -27,6 +27,7 @@ from typing import Any, Iterable
 from graph.schema.graph_edges import Calls
 from graph.schema.graph_nodes import CodeNode
 from pipeline.languages import EXT_TO_LANG, statement_labels
+from pipeline.models.call_resolution import build_call_resolution_ledger
 
 _STDLIB_DIR = Path(__file__).resolve().parent / "stdlib"
 
@@ -347,6 +348,10 @@ def classify_call_sites(
         raise CallClassificationInvariantError(
             "call occurrence result ledger must preserve every canonical ID exactly once"
         )
+    try:
+        result.ledger = build_call_resolution_ledger(call_sites, result.ledger)
+    except ValueError as error:
+        raise CallClassificationInvariantError(str(error)) from error
     return result
 
 
