@@ -219,7 +219,9 @@ def _unresolved_object_references(
                 datasource=datasource,
                 raw_reference=usage.raw_reference,
                 schema=usage.schema,
+                schema_quoted=usage.schema_quoted,
                 name=usage.name,
+                name_quoted=usage.name_quoted,
                 database_link=usage.database_link,
             ))
     return [by_id[node_id] for node_id in sorted(by_id)]

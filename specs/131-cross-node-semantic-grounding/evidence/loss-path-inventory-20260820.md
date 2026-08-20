@@ -533,6 +533,61 @@
   함께 닫아야 하며 LLM 이전 구조 손실이다.
 - 유입: `6956d02`. 분류/상태: **실제 구조·의미 오귀속 가능, pending red-first**.
 
+### C-040 — Parser AST usage를 DDL Table에 재결합할 때 quoted/schema identity casefold
+
+- C-036의 downstream을 source→Parser AST에서 다시 추적하며 발견했다. Parser listener가 생산한
+  `DataObjectUsageEvidence.schema_quoted|name_quoted`는 step5까지 보존되지만,
+  `link_dbms_tables_step._resolve_ast_usage`는 table 후보와 schema를 각각 `name.upper()`와
+  `schema.upper()`로 비교한다. `Table` 자체에도 schema/table quoted bit가 없다.
+- 영향: versioned Parser evidence가 local DDL Table을 exact resolve하는 권위 경로에서 quoted
+  `"Foo"`/`"foo"` 또는 quoted/unquoted sibling을 잘못 결합하거나, 후보 충돌 때문에 실제 exact owner도
+  unresolved로 낮출 수 있다. 이 결과는 READS/WRITES→step6/7 prompt→Neo4j→API/MCP 소비자로 전달된다.
+- legacy source scanner도 `name_to_id = {t.name.upper(): t.id}`라 schema가 다른 동명 테이블 중 마지막
+  하나를 선택한다. 다만 Parser evidence version이 있는 grammar node는 이 scanner를 사용하지 않는다.
+  따라서 exact AST 경로와 legacy fuzzy 경로의 발동 조건을 나눠 계약화한다.
+- 유입: `d4986087` exact AST linker, `6956d02` legacy name scanner. 분류/상태:
+  **실제 의미 오귀속, pending red-first**. C-036/C-039의 Table/schema quoted model 보존과 함께 닫는다.
+
+### C-041 — quoted unresolved ObjectReference canonical ID 충돌
+
+- C-040의 unresolved 분기를 따라가며 발견했다. `object_reference_id()`는 quote boolean을 identity에
+  넣지만 `schema`, `name`, `raw_reference`를 먼저 모두 `.upper()`한다. 따라서 quote flag가 같은
+  `"Foo"`와 `"foo"`는 완전히 동일한 SHA identity가 된다.
+- 실제 배선: Parser listener exact source/AST→`DataObjectUsageEvidence`→step5 unresolved branch에서
+  같은 target ID가 만들어지고 `(source_id, target_id, relation)` edge dedupe가 한 근거를 제거한다.
+  이어 `_unresolved_object_references`의 `by_id`도 하나의 `ObjectReference`만 남겨 Neo4j
+  `OBJECT_REFERENCE`와 step6 prompt alias/step7 unresolved 입력이 서로 다른 물리 객체를 구분하지 못한다.
+- 현재 Fabric은 case-sensitive identifier metadata를 증명할 수 없으면 명시적으로 unresolved를
+  반환하므로, 이는 향후 provider 가능성에만 걸린 결함이 아니라 quoted source에서 현재 발동하는 경로다.
+  raw reference와 quote bit는 producer에 이미 있으므로 Parser/listener 추가가 아니라 Analyzer canonical
+  identity projection 결함이다.
+- 유입: `d4986087`. 분류/상태: **LLM 이전 실제 의미 손실, pending red-first**. 공통
+  `Q:exact|U:uppercase` identifier key로 canonical ID를 만들고 ObjectReference node/Neo4j에도 quoted
+  provenance를 보존하며, 두 usage→두 edge→두 node exact-once를 계약으로 고정한다.
+- red/해결(2026-08-21): canonical ID 자체의 불일치 계약과 두 quoted usage가 두 edge·두
+  ObjectReference로 남는 end-to-end 계약이 각각 예상대로 실패했다. ID는 raw text casefold가 아니라
+  versioned datasource + 공통 schema/name identifier key + database-link key의 canonical JSON SHA로
+  만들며, ObjectReference dataclass/writer/live graph에도 `schema_quoted|name_quoted`를 보존한다.
+- 검증: 최초 red 2건 green, 집중 `78 passed, 1 skipped`, Analyzer 전체 `1103 tests, 6 skipped`, prompt
+  ledger `17/17`이다. 실제 Neo4j `test` transaction에서 `Foo|foo` 두 OBJECT_REFERENCE와 두 READS,
+  quoted provenance를 조회했고 rollback 뒤 node/relationship residue 0이다.
+- 현재 판정: C-041은 **해결**. database-link quote identity는 C-042로 분리해 완료 범위에서 제외한다.
+
+### C-042 — Parser Oracle database-link component quoted identity 생산 부재
+
+- C-041 canonical key 구성요소를 원문→grammar→listener→AST로 역추적하며 발견했다. Oracle grammar의
+  `link_name`은 `database ('.' domain)*`이고 각 `database|domain`은 quoted `DELIMITED_ID`를 허용하는
+  `id_expression`이다. 그러나 Parser `DataObjectReference`는 `databaseLink` 문자열만 제공하고
+  schema/name과 달리 component별 quoted bit/identity를 제공하지 않는다.
+- Analyzer는 AST 없이 link string의 quote 구조를 다시 파싱해서는 안 된다. 현재 `.upper()` key는
+  quoted `@"Link"`/`@"link"`를 합칠 수 있고, exact raw만 쓰면 unquoted `@LINK`/`@link`를 반대로
+  분리한다. 어느 쪽도 lossless canonical identity가 아니다.
+- 배선/영향: source→PL/SQL listener `table.link_name().getText()`→`databaseLink`→Analyzer
+  `DataObjectUsageEvidence.database_link`→ObjectReference ID/READS·WRITES→Neo4j→prompt/API/MCP.
+  database link가 있으면 local DDL Table에는 resolve하지 않으므로 unresolved identity 경로에서 발동한다.
+- 분류/상태: **구문 생산자 필드 부재, pending red-first**. Parser listener가 component별 exact value와
+  quoted 여부를 구조화해 exact-once 생산하고 Analyzer가 그 canonical AST identity만 소비해야 한다.
+
 ## 4. 최초 후보 C-006~C-015 종결 분류
 
 | ID | 경로 | 확인된 사실 | 최종 분류 |
@@ -638,11 +693,14 @@
 | C-035 | step8 source focus casefold `d498608` |
 | C-036 | datasource discovery name-only upper `bc699ee2`; scoped resolver db/schema/name upper `d498608` |
 | C-037/C-038/C-039 | DDL global normalization/dialect/search-path regex `6956d02` |
+| C-040 | exact AST linker casefold `d498608`; legacy name-only scanner `6956d02` |
+| C-041 | ObjectReference ID/edge/node casefold `d498608` |
+| C-042 | Parser databaseLink 문자열-only producer `2e33720`; Analyzer link casefold `d498608` |
 
 - 검증됨: 기준선/DB 상태, F-001 actual schema·경계 수량, 위 정적 producer/caller 배선.
 - 검증됨: 각 F/C 경계의 유입 commit 축. "부재" 결함은 해당 owner가 생긴 최초 계열과 현재까지
   closure가 추가되지 않았음을 함께 기록했다.
-- 미검증: DBMS actual run, sealed 직접 의미 판정, 남은 C-004/C-017~021/C-031/C-036/C-039 계약/red test.
+- 미검증: DBMS actual run, sealed 직접 의미 판정, 남은 C-004/C-017~021/C-031/C-036/C-039/C-040/C-042 계약/red test.
 - 아직 제품 정확도나 완료를 주장하지 않는다.
 
 ### 2026-08-20 계약 고정 및 첫 red test

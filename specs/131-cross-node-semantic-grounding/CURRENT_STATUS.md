@@ -222,5 +222,16 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
     rollback 저장·조회에서 quoted sibling PK/comment/FK를 확인했고 node/relationship residue는 0이다.
     `_runs/dbms`가 없어 actual DBMS raw/parsed 표본은 계속 미검증이다.
     잔여 quoted `SET search_path` schema drop은 C-039 pending으로 분리했다.
-17. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
-18. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.
+    후속 source→Parser AST→step5 추적에서 exact AST 사용을 DDL Table과 다시 결합할 때
+    `name/schema.upper()`를 쓰는 C-040과, 현재 unresolved 경로에서 quoted `"Foo"`/`"foo"`의
+    `ObjectReference` ID·edge·node를 하나로 합치는 C-041을 추가 발견했다. 둘 다 LLM 이전 실제
+    의미 손실이며 유입은 `d4986087`이다. C-041은 현재 Fabric의 quoted unresolved 계약에서도
+    즉시 발동하고 C-040은 DDL Table quoted identity가 model에 없는 상태와 함께 닫아야 한다.
+17. 완료(C-041): unresolved physical object ID가 공통 `Q:exact|U:uppercase` schema/name key를
+    사용하고 `ObjectReference`→Neo4j/live graph에 quoted provenance를 보존한다. 최초 red 2건은
+    green, 집중 `78 passed, 1 skipped`, Analyzer 전체 `1103 tests, 6 skipped`, prompt `17/17`이다.
+    Neo4j `test` rollback 저장·조회에서 quoted sibling 두 node/두 READS와 residue 0을 확인했다.
+    같은 역추적에서 Oracle database link는 grammar상 quoted component를 허용하지만 Parser AST가
+    quote identity를 내지 않는 C-042를 발견했다. 이는 Parser listener 확장 전까지 미해결이다.
+18. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
+19. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.

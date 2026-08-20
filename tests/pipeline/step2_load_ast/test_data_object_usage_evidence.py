@@ -4,7 +4,11 @@ import json
 
 import pytest
 
-from pipeline.models.data_object_usage import dump_data_object_usages
+from pipeline.models.data_object_usage import (
+    DataObjectUsageEvidence,
+    dump_data_object_usages,
+    object_reference_id,
+)
 from pipeline.models.data_object_usage import usages_from_parser_ast
 from pipeline.steps.step2_load_ast.node_builders import _make_code_node
 
@@ -126,3 +130,18 @@ def test_quoted_physical_identifiers_are_preserved_as_case_sensitive_evidence() 
     assert usages[0].schema_quoted is True
     assert usages[0].name_quoted is True
     assert usages[0].qualified_columns[0].name_quoted is True
+
+
+def test_quoted_unresolved_object_reference_ids_preserve_exact_case_identity() -> None:
+    upper = DataObjectUsageEvidence(
+        source_id="select:quoted", raw_reference='"App"."Foo"', schema="App",
+        schema_quoted=True, name="Foo", name_quoted=True, access="READ",
+        evidence_file="p.sql", evidence_line=3,
+    )
+    lower = DataObjectUsageEvidence(
+        source_id="select:quoted", raw_reference='"App"."foo"', schema="App",
+        schema_quoted=True, name="foo", name_quoted=True, access="READ",
+        evidence_file="p.sql", evidence_line=4,
+    )
+
+    assert object_reference_id("shop", upper) != object_reference_id("shop", lower)

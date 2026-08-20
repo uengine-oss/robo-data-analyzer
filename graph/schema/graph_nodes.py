@@ -98,6 +98,8 @@ class ObjectReference:
     raw_reference: str
     name: str
     schema: str = ""
+    schema_quoted: bool = False
+    name_quoted: bool = False
     database_link: str = ""
     status: str = "unresolved"
 

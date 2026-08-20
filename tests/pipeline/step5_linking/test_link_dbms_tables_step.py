@@ -13,7 +13,10 @@ from tempfile import TemporaryDirectory
 from graph.schema.graph_edges import ParentOf
 from graph.schema.graph_nodes import CodeNode, Table
 from shared.files.cache import SourceFileCache
-from pipeline.steps.step5_linking.link_tables.link_dbms_tables_step import _link
+from pipeline.steps.step5_linking.link_tables.link_dbms_tables_step import (
+    _link,
+    _unresolved_object_references,
+)
 from pipeline.models.data_object_usage import DataObjectUsageEvidence, QualifiedColumnUsage
 
 
@@ -80,6 +83,30 @@ class LinkDbmsTablesTest(unittest.TestCase):
         self.assertEqual(len(edges), 1)
         self.assertEqual(edges[0].relation, "READS")
         self.assertTrue(edges[0].target_id.startswith("object-ref:"))
+
+    def test_quoted_unresolved_siblings_remain_two_edges_and_two_nodes(self) -> None:
+        node = self.nodes[0]
+        node.extra["data_object_evidence_version"] = 1
+        node.extra["data_object_usages"] = tuple(
+            DataObjectUsageEvidence(
+                source_id=node.id, raw_reference=f'"App"."{name}"', schema="App",
+                schema_quoted=True, name=name, name_quoted=True, access="READ",
+                evidence_file=str(self.source), evidence_line=line,
+            )
+            for name, line in (("Foo", 1), ("foo", 2))
+        )
+
+        edges = _link([node], [], [], SourceFileCache(), datasource="shop")
+        references = _unresolved_object_references([node], "shop")
+
+        self.assertEqual(len(edges), 2)
+        self.assertEqual(len({edge.target_id for edge in edges}), 2)
+        self.assertEqual(len(references), 2)
+        self.assertEqual(
+            {(reference.schema, reference.schema_quoted,
+              reference.name, reference.name_quoted) for reference in references},
+            {("App", True, "Foo", True), ("App", True, "foo", True)},
+        )
 
     def test_versioned_ast_evidence_resolves_schema_and_preserves_alias_columns(self) -> None:
         node = self.nodes[0]

@@ -6,6 +6,8 @@ import hashlib
 from dataclasses import dataclass, replace
 from typing import Iterable, Literal, Mapping, Sequence
 
+from pipeline.models.sql_identifier import sql_identifier_key
+
 
 Access = Literal["READ", "WRITE"]
 Resolution = Literal["unresolved", "exact"]
@@ -93,11 +95,17 @@ class DataObjectUsageEvidence:
 
 
 def object_reference_id(datasource: str, usage: DataObjectUsageEvidence) -> str:
-    identity = "\0".join((
-        datasource.upper(), usage.schema.upper(), usage.name.upper(),
-        usage.database_link.upper(), usage.raw_reference.upper(),
-        str(usage.schema_quoted), str(usage.name_quoted),
-    ))
+    identity = json.dumps(
+        (
+            "v2",
+            datasource.strip().upper(),
+            sql_identifier_key(usage.schema, usage.schema_quoted),
+            sql_identifier_key(usage.name, usage.name_quoted),
+            usage.database_link.strip().upper(),
+        ),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
     return f"{OBJECT_REFERENCE_ID_PREFIX}{hashlib.sha256(identity.encode('utf-8')).hexdigest()}"
 
 
