@@ -24,6 +24,7 @@ _PRESENCE_STATUSES = frozenset({
     "active", "inactive", "conditional", "unknown",
 })
 _CALLEE_KINDS = frozenset({"named", "constructor", "expression"})
+_IMPORT_TARGET_KINDS = frozenset({"quoted", "angle", "computed"})
 _MACRO_KINDS = frozenset({"object", "function"})
 _BUILD_STATUSES = frozenset({"exact", "partial", "unresolved"})
 _PREPROCESSING_TRUST = frozenset({
@@ -68,6 +69,18 @@ class CallEvidenceFact:
 
 
 @dataclass(frozen=True)
+class ImportEvidenceFact:
+    fact_id: str
+    source_id: str
+    directive_range: EvidenceRange
+    target_range: EvidenceRange
+    directive_kind: str
+    target_kind: str
+    grammar_rule: str
+    presence: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
 class MacroEvidenceFact:
     fact_id: str
     source_id: str
@@ -107,6 +120,7 @@ class ValidatedCommonEvidence:
     decoded_text_sha256: str
     decoded_text: str
     call_facts: tuple[CallEvidenceFact, ...]
+    import_facts: tuple[ImportEvidenceFact, ...]
     macro_facts: tuple[MacroEvidenceFact, ...]
     completeness: Mapping[str, Mapping[str, Any]]
     configured_preprocessing: Mapping[str, Any] | None
@@ -457,6 +471,59 @@ def _validate_macro(
     )
 
 
+def _validate_import(
+    fact: Mapping[str, Any],
+    *,
+    source_id: str,
+    fact_range: EvidenceRange,
+    grammar_rule: str,
+    presence: Mapping[str, Any],
+    source: str,
+) -> ImportEvidenceFact:
+    if fact_range.char_length == 0:
+        raise _fail("import.range", "nonempty directive range required")
+    payload = fact.get("payload")
+    if not isinstance(payload, dict):
+        raise _fail("import.payload", "object required")
+    _require_exact_fields(payload, {
+        "directiveKind", "targetKind", "targetRange",
+    }, field="import.payload")
+    directive_kind = payload.get("directiveKind")
+    if directive_kind != "include":
+        raise _fail(
+            "import.payload.directiveKind",
+            f"expected 'include', got {directive_kind!r}",
+        )
+    target_kind = payload.get("targetKind")
+    if target_kind not in _IMPORT_TARGET_KINDS:
+        raise _fail(
+            "import.payload.targetKind", f"invalid value {target_kind!r}",
+        )
+    target_range = _range(
+        payload.get("targetRange"), field="import.payload.targetRange",
+        source_length=len(source),
+    )
+    if (
+        target_range.char_length == 0
+        or target_range.char_offset < fact_range.char_offset
+        or target_range.end > fact_range.end
+    ):
+        raise _fail(
+            "import.payload.targetRange",
+            "nonempty subrange of import directive required",
+        )
+    return ImportEvidenceFact(
+        fact_id=str(fact.get("factId") or ""),
+        source_id=source_id,
+        directive_range=fact_range,
+        target_range=target_range,
+        directive_kind=str(directive_kind),
+        target_kind=str(target_kind),
+        grammar_rule=grammar_rule,
+        presence=dict(presence),
+    )
+
+
 def _validate_completeness(
     evidence: Mapping[str, Any],
     *,
@@ -767,6 +834,7 @@ def validate_common_evidence(
     fact_kinds: dict[str, str] = {}
     emitted_by_kind = {kind: 0 for kind in _KINDS}
     calls: list[CallEvidenceFact] = []
+    imports: list[ImportEvidenceFact] = []
     macros: list[MacroEvidenceFact] = []
     for index, fact in enumerate(facts):
         if not isinstance(fact, dict):
@@ -806,6 +874,15 @@ def validate_common_evidence(
                 presence=presence,
                 source=source,
             ))
+        elif kind == "import":
+            imports.append(_validate_import(
+                fact,
+                source_id=source_id,
+                fact_range=fact_range,
+                grammar_rule=grammar_rule,
+                presence=presence,
+                source=source,
+            ))
         elif kind == "macro":
             macros.append(_validate_macro(
                 fact,
@@ -826,6 +903,7 @@ def validate_common_evidence(
         decoded_text_sha256=decoded_hash,
         decoded_text=source,
         call_facts=tuple(calls),
+        import_facts=tuple(imports),
         macro_facts=tuple(macros),
         completeness=completeness,
         configured_preprocessing=configured_preprocessing,

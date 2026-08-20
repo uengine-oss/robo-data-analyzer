@@ -1,8 +1,8 @@
 # Analyzer 의미 무손실 감사 현재상태
 
 **Updated**: 2026-08-21
-**Status**: C-061 Parser directive grammar ownership commit/push 완료, Analyzer import consumer 조사 중
-**Analyzer HEAD**: `2b003706b30ea1f41d88922bfccbad8e2498096c`
+**Status**: C-061 Analyzer strict import binding 3층 검증 완료, commit/push 직전
+**Analyzer HEAD**: `d83c91e42eb49cfb214597b85a48a1acb57c221f`
 
 이 문서는 현재 진행 위치만 소유한다. 영구 규칙은 `ABSOLUTE_RULES.md`, 상세 역사와 기존 수치는 `HANDOFF.md`와 `evidence/`가 소유한다.
 
@@ -452,5 +452,20 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
     `7d4dd20b852f1662694805d8a42ebcee43e50a9588261269ee12402274293b36`이다. Analyzer import strict consumer,
     build-configured macro expansion/type environment(C-062/C-064), UCN identity(C-063)는 별도 미완료 slice다.
     상세는 `evidence/parser-c-directive-grammar-audit-20260821.md`다.
+25s. Analyzer strict consumer 완료(C-061, commit/push 직전): `validate_common_evidence()`가 language-neutral
+    `ImportEvidenceFact`로 canonical ID, directive/target exact range, directive/target kind, grammar rule, presence를
+    strict validation한다. Parser 소유 targetKind를 Analyzer regex로 재해석하지 않는다. `framework_reader`는
+    canonical fact와 legacy projection의 population/order/target/start-end physical line을 exact-once 결합하고
+    mismatch/duplicate는 import scope 전에 fail closed한다. Parser가 import evidence를 `unsupported`/
+    `not_applicable`로 명시한 다른 언어는 빈 canonical ID와 degraded reason을 남겨 canonical로 위장하지 않는다.
+    formal fixture는 angle/quoted/phase-2-spliced/Unicode와 corrupt payload/projection을 포함하며 red의
+    `import_facts` 부재를 green으로 전환했다. actual 23 source에서 import 450, unique 450, ledger SHA
+    `2e1a6bef42fa6d2954a516126d71473f101fc6da0f29c50cb27e4816dc2c8a0c`가 Parser와 byte-identical하고,
+    target kind angle 450, presence active 449/inactive 1, evidence status complete 450, sealed direct judgment
+    450/450이다. inactive 1건은 `zapamcom10110.c`의 `<zngmmcap20020.h>`로 `#if 0` presence를 보존한다.
+    Analyzer actual 보고서는 `_runs/framework/analyzer-directive-import-consumer-20260821-r1.json`, SHA-256
+    `b44da9a357854b65c59ed83d8c6df0aaa1792ddb734791180eba072ab1728337`이다. 전체 회귀는
+    1,228 passed, 7 skipped, 367 subtests다. DB/Neo4j write는 0회다. 다음 감사는 canonical import가
+    `import_scopes -> REFERENCES -> graph/API/MCP`에서 어떻게 소비·소실되는지이며 아직 E2E 공개를 주장하지 않는다.
 26. 검증: 자동 회귀→결정론 전수 회계→봉인 직접 의미 판정→실제 APAS 순으로 계속 수행한다.
 27. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.

@@ -334,10 +334,12 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
     )
 
     def consume() -> tuple[
-        list[dict], list[dict], list[dict], list[dict], list, float, int,
+        list[dict], list[dict], list[dict], list[dict], list[dict], list,
+        float, int,
     ]:
         sites: list[dict] = []
         macros: list[dict] = []
+        imports: list[dict] = []
         completeness: list[dict] = []
         preprocessing: list[dict] = []
         nodes = []
@@ -353,17 +355,24 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
             )
             sites.extend(result.call_sites)
             macros.extend(result.macro_facts)
+            imports.extend(result.import_refs)
             completeness.extend(result.evidence_completeness)
             preprocessing.extend(result.preprocessing_contexts)
             nodes.extend(result.code_nodes)
         elapsed = time.perf_counter() - started
         _, peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
-        return sites, macros, completeness, preprocessing, nodes, elapsed, peak
+        return (
+            sites, macros, imports, completeness, preprocessing, nodes,
+            elapsed, peak,
+        )
 
-    first, macros, completeness, preprocessing, nodes, elapsed, peak = consume()
     (
-        repeated, repeated_macros, _, repeated_preprocessing, _,
+        first, macros, imports, completeness, preprocessing, nodes,
+        elapsed, peak,
+    ) = consume()
+    (
+        repeated, repeated_macros, repeated_imports, _, repeated_preprocessing, _,
         repeated_elapsed, repeated_peak,
     ) = consume()
     parser_report = json.loads(parser_report_path.read_text(encoding="utf-8"))
@@ -372,26 +381,48 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
     assert len(closure.artifacts) == parser_report["sourceFiles"] == 23
     assert len(first) == parser_report["callFacts"] == 12_113
     assert len(macros) == parser_report["macroFacts"] == 183
+    assert len(imports) == parser_report["importFacts"] == 450
     assert len(expected_ids) == len(set(expected_ids))
     assert expected_ids == repeated_ids
     assert [fact["fact_id"] for fact in macros] == [
         fact["fact_id"] for fact in repeated_macros
     ]
+    import_ids = [ref["import_id"] for ref in imports]
+    assert import_ids == [ref["import_id"] for ref in repeated_imports]
+    assert len(import_ids) == len(set(import_ids))
     assert preprocessing == repeated_preprocessing
     assert _ledger_hash(expected_ids) == parser_report["callFactIdLedgerSha256"]
     assert _ledger_hash(
         [fact["fact_id"] for fact in macros]
     ) == parser_report["macroFactIdLedgerSha256"]
+    assert _ledger_hash(import_ids) == parser_report["importFactIdLedgerSha256"]
 
     presence = Counter(site["presence_status"] for site in first)
     callee_kind = Counter(site["callee_kind"] for site in first)
     owner = Counter(site["owner_status"] for site in first)
     macro_presence = Counter(fact["presence_status"] for fact in macros)
     macro_kind = Counter(fact["macro_kind"] for fact in macros)
+    import_presence = Counter(ref["presence_status"] for ref in imports)
+    import_target_kind = Counter(ref["target_kind"] for ref in imports)
+    import_evidence_status = Counter(ref["evidence_status"] for ref in imports)
     assert presence == Counter(active=12_080, inactive=33)
     assert callee_kind == Counter(named=12_113)
     assert macro_presence == Counter(active=182, conditional=1)
     assert macro_kind == Counter(object=182, function=1)
+    assert import_presence == Counter(active=449, inactive=1)
+    assert import_target_kind == Counter(angle=450)
+    assert import_evidence_status == Counter(complete=450)
+    inactive_imports = [
+        ref for ref in imports if ref["presence_status"] == "inactive"
+    ]
+    assert [
+        (ref["import_id"], ref["source_id"], ref["name"])
+        for ref in inactive_imports
+    ] == [(
+        "4cb06d86a857bc112715b599876cb23dc52b831190eaf294ad26f57f3ea8ff7d",
+        "zapamcom10110.c",
+        "<zngmmcap20020.h>",
+    )]
     assert sum(owner.values()) == len(first)
     assert all(site["call_id"] and site["source_id"] for site in first)
 
@@ -483,12 +514,17 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
     sealed_macros = [
         selected for selected in sealed if "macroKind" in selected["payload"]
     ]
+    sealed_imports = [
+        selected for selected in sealed if "targetRange" in selected["payload"]
+    ]
     by_id = {site["call_id"]: site for site in first}
     macro_by_id = {fact["fact_id"]: fact for fact in macros}
+    import_by_id = {ref["import_id"]: ref for ref in imports}
     node_by_id = {node.id: node for node in nodes}
     ledger_by_id = {row["call_id"]: row for row in classification.ledger}
     assert len(sealed_calls) == 526
     assert len(sealed_macros) == 34
+    assert len(sealed_imports) == 450
     for selected in sealed_calls:
         site = by_id[selected["factId"]]
         assert site["range"] == selected["range"]
@@ -509,6 +545,15 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
         assert macro["variadic"] == payload["variadic"]
         assert macro["replacement_range"] == payload["replacementRange"]
         assert macro["presence"] == selected["presence"]
+    for selected in sealed_imports:
+        ref = import_by_id[selected["factId"]]
+        payload = selected["payload"]
+        assert ref["range"] == selected["range"]
+        assert ref["target_range"] == payload["targetRange"]
+        assert ref["directive_kind"] == payload["directiveKind"]
+        assert ref["target_kind"] == payload["targetKind"]
+        assert ref["name"] == selected["displayPreview"]["target"]
+        assert ref["presence"] == selected["presence"]
 
     # Fixed, source-range-sealed examples cover calls that the former raw-source
     # classifier would have treated as unrelated semantic categories.  Without
@@ -607,18 +652,23 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
         "code_nodes": len(nodes),
         "call_facts": len(first),
         "macro_facts": len(macros),
+        "import_facts": len(imports),
         "unique_call_fact_ids": len(set(expected_ids)),
         "duplicate_call_fact_ids": len(expected_ids) - len(set(expected_ids)),
         "call_fact_id_ledger_sha256": _ledger_hash(expected_ids),
         "macro_fact_id_ledger_sha256": _ledger_hash(
             [fact["fact_id"] for fact in macros]
         ),
+        "import_fact_id_ledger_sha256": _ledger_hash(import_ids),
         "owner_ledger_sha256": _ledger_hash(owner_rows),
         "owner_status": dict(sorted(owner.items())),
         "presence_status": dict(sorted(presence.items())),
         "callee_kind": dict(sorted(callee_kind.items())),
         "macro_kind": dict(sorted(macro_kind.items())),
         "macro_presence_status": dict(sorted(macro_presence.items())),
+        "import_target_kind": dict(sorted(import_target_kind.items())),
+        "import_presence_status": dict(sorted(import_presence.items())),
+        "import_evidence_status": dict(sorted(import_evidence_status.items())),
         "call_completeness": dict(sorted(completeness_status.items())),
         "configured_preprocessing": {
             "source_population": len(preprocessing),
@@ -651,6 +701,7 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
         "call_resolution_ledger_sha256": _ledger_hash(resolution_rows),
         "sealed_call_direct_judgment_matched": len(sealed_calls),
         "sealed_macro_direct_judgment_matched": len(sealed_macros),
+        "sealed_import_direct_judgment_matched": len(sealed_imports),
         "sealed_preprocessing_direct_judgment_population": (
             sealed_preprocessing_judgment
         ),

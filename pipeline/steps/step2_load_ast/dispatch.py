@@ -172,6 +172,12 @@ def read_antlr_json(
                 "common evidence DBMS call consumer is not implemented; "
                 f"refusing to drop {len(evidence.call_facts)} facts from {evidence.source_id}"
             )
+        if evidence.import_facts:
+            raise CommonEvidenceContractError(
+                "common evidence DBMS import consumer is not implemented; "
+                f"refusing to drop {len(evidence.import_facts)} facts from "
+                f"{evidence.source_id}"
+            )
         result = _read_dbms(raw, source_root, json_path)
         result.macro_facts.extend(fact.as_record() for fact in evidence.macro_facts)
         result.evidence_sources.append(evidence.source_record())

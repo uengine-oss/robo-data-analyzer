@@ -14,6 +14,7 @@ ontology ``role_of`` 는 분류 전용 — 어느 dataclass/엣지/internal 인�
 """
 from __future__ import annotations
 
+from bisect import bisect_right
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -80,6 +81,7 @@ def _read_framework(
     _walk_framework(raw, ctx, module_id, None, None)
     if evidence is not None:
         _bind_call_evidence(result, evidence)
+        _bind_import_evidence(result, evidence)
         result.macro_facts.extend(fact.as_record() for fact in evidence.macro_facts)
         result.evidence_sources.append(evidence.source_record())
         result.evidence_completeness.extend(evidence.completeness_records())
@@ -313,6 +315,7 @@ def _collect_internal(
             "name": node.get("name") or "",
             "file": src_path,
             "line": sl,
+            "end_line": int(node.get("endLine") or sl),
         })
 
 
@@ -333,9 +336,10 @@ def _bind_call_evidence(
             "common evidence call population: "
             f"legacy={len(legacy)}, canonical={len(facts)}, source={evidence.source_id}"
         )
+    line_starts = _physical_line_starts(evidence.decoded_text)
     bound: list[dict] = []
     for index, (observed, fact) in enumerate(zip(legacy, facts, strict=True)):
-        line = evidence.decoded_text.count("\n", 0, fact.call_range.char_offset) + 1
+        line = _physical_line(line_starts, fact.call_range.char_offset)
         if int(observed.get("line") or 0) != line:
             raise CommonEvidenceContractError(
                 "common evidence call traversal: "
@@ -372,6 +376,94 @@ def _bind_call_evidence(
             f"common evidence call population: duplicate fact IDs in {evidence.source_id}"
         )
     result.call_sites[:] = bound
+
+
+def _bind_import_evidence(
+    result: ParseResult,
+    evidence: ValidatedCommonEvidence,
+) -> None:
+    """Bind Parser import facts to their compatibility AST projection exactly once."""
+    legacy = list(result.import_refs)
+    facts = list(evidence.import_facts)
+    completeness = evidence.completeness["import"]
+    status = str(completeness.get("status") or "")
+    if status in {"unsupported", "not_applicable"}:
+        for observed in legacy:
+            observed.update({
+                "import_id": "",
+                "source_id": evidence.source_id,
+                "evidence_status": status,
+                "evidence_reason": "parser_import_evidence_not_available",
+            })
+        return
+    if len(legacy) != len(facts):
+        raise CommonEvidenceContractError(
+            "common evidence import population: "
+            f"legacy={len(legacy)}, canonical={len(facts)}, source={evidence.source_id}"
+        )
+    line_starts = _physical_line_starts(evidence.decoded_text)
+    bound: list[dict] = []
+    for index, (observed, fact) in enumerate(zip(legacy, facts, strict=True)):
+        line = _physical_line(line_starts, fact.directive_range.char_offset)
+        end_line = _physical_line(
+            line_starts,
+            max(fact.directive_range.char_offset, fact.directive_range.end - 1),
+        )
+        target = evidence.decoded_text[
+            fact.target_range.char_offset:fact.target_range.end
+        ]
+        if (
+            str(observed.get("name") or "") != target
+            or int(observed.get("line") or 0) != line
+            or int(observed.get("end_line") or 0) != end_line
+        ):
+            raise CommonEvidenceContractError(
+                "common evidence import traversal: "
+                f"mismatch at index={index}, legacyName={observed.get('name')!r}, "
+                f"canonicalTarget={target!r}, legacyLines="
+                f"{observed.get('line')}-{observed.get('end_line')}, "
+                f"canonicalLines={line}-{end_line}, factId={fact.fact_id}"
+            )
+        bound.append({
+            "import_id": fact.fact_id,
+            "name": target,
+            "source_id": evidence.source_id,
+            "file": observed.get("file", ""),
+            "line": line,
+            "end_line": end_line,
+            "range": fact.directive_range.as_dict(),
+            "target_range": fact.target_range.as_dict(),
+            "directive_kind": fact.directive_kind,
+            "target_kind": fact.target_kind,
+            "grammar_rule": fact.grammar_rule,
+            "presence_status": fact.presence["status"],
+            "presence": dict(fact.presence),
+            "evidence_status": status,
+        })
+    ids = [ref["import_id"] for ref in bound]
+    if len(ids) != len(set(ids)):
+        raise CommonEvidenceContractError(
+            f"common evidence import population: duplicate fact IDs in {evidence.source_id}"
+        )
+    result.import_refs[:] = bound
+
+
+def _physical_line_starts(source: str) -> tuple[int, ...]:
+    starts = [0]
+    index = 0
+    while index < len(source):
+        if source[index] == "\r":
+            if index + 1 < len(source) and source[index + 1] == "\n":
+                index += 1
+            starts.append(index + 1)
+        elif source[index] == "\n":
+            starts.append(index + 1)
+        index += 1
+    return tuple(starts)
+
+
+def _physical_line(line_starts: tuple[int, ...], offset: int) -> int:
+    return bisect_right(line_starts, offset)
 
 
 # ── DBMS (plsql / plpgsql) ────────────────────────────────────

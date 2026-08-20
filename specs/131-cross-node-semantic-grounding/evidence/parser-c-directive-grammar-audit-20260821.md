@@ -139,3 +139,72 @@ population 2 = emitted 1 + explicitlyUnresolved 1, status `partial`을 통과한
 
 Parser producer는 `d690e51adfc4cc74e923fddce52425d43431f91b`
 (`fix(parser): make C directives grammar-owned`)로 `origin/main`에 push했다.
+
+## 9. Analyzer consumer formal red
+
+Parser producer push 뒤 Analyzer 배선을 조사한 결과 `validate_common_evidence()`의 generic fact loop는 import의
+canonical ID와 emitted count만 확인하고 payload를 폐기한다. `ValidatedCommonEvidence`는 call/macro만 반환하며,
+`framework_reader._collect_internal()`은 legacy INCLUDE/IMPORT의 name/line을 직접 `import_refs`로 승격한다.
+따라서 Parser canonical import target/range/presence와 AST projection이 달라도 downstream scope/reference가 이를
+검출하지 못한다.
+
+formal red는 angle, quoted, phase-2 line-spliced, Unicode target 4건을 한 fixture에 넣고 다음을 요구한다.
+
+- language-neutral `ImportEvidenceFact`가 canonical ID, directive/target range, target kind, grammar rule, presence를
+  보존한다.
+- payload field/value와 빈/out-of-range target은 fail closed한다. Analyzer는 target text를 regex로 재파싱하지
+  않고 Parser 소유 `targetKind` enum과 exact source slice만 검증한다.
+- canonical fact와 legacy projection의 population/order/target/start/end physical line을 exact-once로 결합한다.
+- mismatch나 duplicate는 downstream import scope 전에 실패한다.
+
+최초 집중 실행은 `AttributeError: ValidatedCommonEvidence has no attribute import_facts`로 실패했다. 이 red를
+green으로 만든 뒤 actual Parser report 450건을 Analyzer reader에 직접 통과시켜 producer/consumer ledger를
+재대조한다.
+
+## 10. Analyzer strict binding 구현과 검증
+
+Analyzer는 language-neutral `ImportEvidenceFact`를 추가해 canonical ID, source ID, directive/target exact range,
+directive/target kind, grammar rule, presence를 immutable contract로 검증한다. payload는
+`directiveKind/targetKind/targetRange` exact fields만 허용하고 빈/out-of-range target이나 알 수 없는 enum은 fail
+closed한다. 단, target 문자열이 angle/quoted인지 Analyzer가 regex나 prefix로 다시 판정하지 않는다. 그 syntax
+소유자는 Parser grammar이며 Analyzer는 exact range의 source slice와 legacy projection 동일성만 검증한다.
+
+Framework binding은 다음을 보장한다.
+
+- supported import completeness에서는 canonical fact 수 = legacy INCLUDE/IMPORT 수여야 한다.
+- traversal order, exact target text, physical start/end line가 각 occurrence에서 같아야 한다.
+- canonical import ID는 전부 unique여야 하고 downstream `import_refs`는 range/targetRange/kind/rule/presence를
+  보존한다.
+- Parser가 다른 언어에서 import를 `unsupported` 또는 `not_applicable`로 명시하면 legacy projection을 버리거나
+  canonical인 척하지 않고 `import_id=""`, 해당 evidence status,
+  `parser_import_evidence_not_available` reason으로 명시적 degraded 처리한다.
+- DBMS envelope가 import fact를 생산했는데 DBMS consumer가 없으면 조용히 버리지 않고 fail closed한다.
+
+formal fixture는 angle, quoted, phase-2 line-spliced, Unicode target과 corrupt kind/range/extra field,
+population/target/end-line mismatch를 고정했다. 최초 red는 `ValidatedCommonEvidence.import_facts` 부재였고 이후
+34 tests가 green이다. step2 전체는 97 passed, 1 skipped다.
+
+actual은 Parser `d690e51` 산출물 23개를
+`_runs/framework/parser-directive-analyzer-fixture-20260821-r1`에 봉인 export해 production
+`verify_source_ast_closure -> read_antlr_json -> validate_common_evidence -> framework_reader`를 두 번 통과시켰다.
+결과는 import 450/unique 450, duplicate 0, Parser/Analyzer import ledger SHA 동일
+`2e1a6bef42fa6d2954a516126d71473f101fc6da0f29c50cb27e4816dc2c8a0c`, target kind angle 450,
+presence active 449/inactive 1, evidence status complete 450, deterministic replay 동일이다. call 12,113와 macro
+183 ledger도 그대로 통과했다. 봉인 import 450건 전부의 range/targetRange/kind/presence/source target을 Analyzer
+결과와 대조했다.
+
+직접 판정에서는 단순 `<pfmcom.h>`, 긴 trailing comment가 붙은
+`<pdb_dual_zord_stl_dmb_if_log_s_s0001.h>`, 그리고 inactive fact
+`4cb06d86a857bc112715b599876cb23dc52b831190eaf294ad26f57f3ea8ff7d`의
+`<zngmmcap20020.h>`를 원문 directive/target/presence와 대조했다. trailing comment는 directive range에는
+보존되지만 target range에는 섞이지 않았고, inactive include는 `#if 0` 아래라는 사실이 active로 변조되지
+않았다.
+
+Analyzer actual 보고서는
+`_runs/framework/analyzer-directive-import-consumer-20260821-r1.json`, SHA-256
+`b44da9a357854b65c59ed83d8c6df0aaa1792ddb734791180eba072ab1728337`이다. 전체 회귀는 1,228 passed,
+7 skipped, 367 subtests다. 이번 검증은 `ROBO_RUN_NEO4J_INTEGRATION=0`으로 수행해 DB write 0회다.
+
+이 책임 slice는 strict ingestion/binding까지만 닫는다. `import_refs`가 다음 `import_scopes -> REFERENCES`에서
+canonical occurrence ID/presence를 보존하는지, Neo4j/API/MCP가 import 자체를 공개해야 하는지는 아직 조사
+중이며 E2E 공개 완료로 주장하지 않는다.

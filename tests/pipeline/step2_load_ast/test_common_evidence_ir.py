@@ -206,6 +206,201 @@ def _macro_artifact(source: str) -> dict:
     }}
 
 
+def _import_artifact() -> tuple[str, dict]:
+    source_id = "sample.c"
+    source = (
+        "#include <local.h>\n"
+        "#include \"quoted.h\"\n"
+        "#inc\\\nlude <spliced.h>\n"
+        "#include <한글.h>\n"
+    )
+    decoded_hash = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    active = {
+        "status": "active", "condition": None,
+        "configurationId": None, "provenance": "unconditional",
+    }
+    inputs = (
+        ("#include <local.h>", "<local.h>", "angle", 1, 1),
+        ('#include "quoted.h"', '"quoted.h"', "quoted", 2, 2),
+        ("#inc\\\nlude <spliced.h>", "<spliced.h>", "angle", 3, 4),
+        ("#include <한글.h>", "<한글.h>", "angle", 5, 5),
+    )
+    facts = []
+    children = []
+    for directive, target, target_kind, start_line, end_line in inputs:
+        fact_range = _range(source, directive)
+        facts.append({
+            "factId": _fact_id(
+                source_id, decoded_hash, "import",
+                fact_range["charOffset"], fact_range["charLength"],
+            ),
+            "kind": "import",
+            "range": fact_range,
+            "grammarRuleRef": 0,
+            "presenceRef": 0,
+            "payload": {
+                "directiveKind": "include",
+                "targetKind": target_kind,
+                "targetRange": _range(source, target),
+            },
+        })
+        children.append({
+            "type": "INCLUDE", "name": target,
+            "startLine": start_line, "endLine": end_line, "children": [],
+        })
+    completeness = []
+    for kind in KINDS:
+        emitted = len(facts) if kind == "import" else 0
+        completeness.append({
+            "kind": kind,
+            "status": "complete" if kind in {
+                "call", "import", "macro", "conditional_region",
+            } else "unsupported",
+            "population": emitted,
+            "emitted": emitted,
+            "explicitlyUnresolved": 0,
+        })
+    return source, {
+        "type": "FILE", "fileName": "sample.c", "filePath": source_id,
+        "children": children,
+        "evidence": {
+            "version": "1.0.0", "sourceId": source_id,
+            "rawSourceSha256": decoded_hash,
+            "decodedTextSha256": decoded_hash, "decodedText": source,
+            "sourceEncoding": "UTF-8", "decodeStatus": "exact",
+            "positionEncoding": "unicode-code-point",
+            "rangeConvention": "half-open",
+            "rangeEncoding": "char-offset-length", "parseStatus": "exact",
+            "configuredPreprocessing": _configured_preprocessing(source_id),
+            "facts": facts, "grammarRules": ["includeLine"],
+            "presences": [active], "completeness": completeness,
+        },
+    }
+
+
+def test_import_facts_are_strict_exact_source_occurrences() -> None:
+    source, raw = _import_artifact()
+    validated = validate_common_evidence(
+        raw, source_bytes=source.encode("utf-8"), expected_source_id="sample.c",
+    )
+
+    assert len(validated.import_facts) == 4
+    assert [fact.fact_id for fact in validated.import_facts] == [
+        fact["factId"] for fact in raw["evidence"]["facts"]
+    ]
+    assert [
+        source[fact.target_range.char_offset:fact.target_range.end]
+        for fact in validated.import_facts
+    ] == ["<local.h>", '"quoted.h"', "<spliced.h>", "<한글.h>"]
+    assert [fact.target_kind for fact in validated.import_facts] == [
+        "angle", "quoted", "angle", "angle",
+    ]
+
+
+def test_framework_imports_bind_canonical_ids_ranges_and_physical_lines() -> None:
+    source, raw = _import_artifact()
+    temporary, result = _read(raw, source)
+    try:
+        assert [ref["import_id"] for ref in result.import_refs] == [
+            fact["factId"] for fact in raw["evidence"]["facts"]
+        ]
+        assert [ref["name"] for ref in result.import_refs] == [
+            "<local.h>", '"quoted.h"', "<spliced.h>", "<한글.h>",
+        ]
+        assert [(ref["line"], ref["end_line"]) for ref in result.import_refs] == [
+            (1, 1), (2, 2), (3, 4), (5, 5),
+        ]
+        assert len({ref["import_id"] for ref in result.import_refs}) == 4
+        assert all(ref["grammar_rule"] == "includeLine" for ref in result.import_refs)
+        assert all(ref["presence_status"] == "active" for ref in result.import_refs)
+    finally:
+        temporary.cleanup()
+
+
+@pytest.mark.parametrize("status", ("unsupported", "not_applicable"))
+def test_parser_unsupported_import_projection_stays_explicitly_degraded(
+    status: str,
+) -> None:
+    source, raw = _import_artifact()
+    raw["evidence"]["facts"] = []
+    row = next(
+        item for item in raw["evidence"]["completeness"]
+        if item["kind"] == "import"
+    )
+    row.update(status=status, population=0, emitted=0, explicitlyUnresolved=0)
+    temporary, result = _read(raw, source)
+    try:
+        assert len(result.import_refs) == 4
+        assert all(ref["import_id"] == "" for ref in result.import_refs)
+        assert all(ref["evidence_status"] == status for ref in result.import_refs)
+        assert all(
+            ref["evidence_reason"] == "parser_import_evidence_not_available"
+            for ref in result.import_refs
+        )
+    finally:
+        temporary.cleanup()
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    (
+        (
+            lambda fact: fact["payload"].update(directiveKind="require"),
+            "import.payload.directiveKind",
+        ),
+        (
+            lambda fact: fact["payload"].update(targetKind="path"),
+            "import.payload.targetKind",
+        ),
+        (
+            lambda fact: fact["payload"].update(
+                targetRange={"charOffset": 0, "charLength": 0},
+            ),
+            "import.payload.targetRange",
+        ),
+        (
+            lambda fact: fact["payload"].update(extra="not canonical"),
+            "import.payload",
+        ),
+    ),
+)
+def test_invalid_import_payload_fails_closed(mutate, message) -> None:
+    source, raw = _import_artifact()
+    mutate(raw["evidence"]["facts"][0])
+    with pytest.raises(CommonEvidenceContractError, match=message):
+        validate_common_evidence(
+            raw, source_bytes=source.encode("utf-8"), expected_source_id="sample.c",
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    (
+        (lambda raw: raw["children"].pop(), "import population"),
+        (
+            lambda raw: raw["children"][0].update(name="<different.h>"),
+            "import traversal",
+        ),
+        (
+            lambda raw: raw["children"][2].update(endLine=3),
+            "import traversal",
+        ),
+    ),
+)
+def test_legacy_import_projection_must_match_canonical_facts_exactly_once(
+    mutate, message,
+) -> None:
+    source, raw = _import_artifact()
+    mutate(raw)
+    with TemporaryDirectory() as temp:
+        root = Path(temp)
+        (root / "sample.c").write_text(source, encoding="utf-8", newline="")
+        artifact = root / "sample.json"
+        artifact.write_text(json.dumps(raw), encoding="utf-8")
+        with pytest.raises(CommonEvidenceContractError, match=message):
+            read_antlr_json(artifact, root)
+
+
 def test_framework_calls_use_canonical_fact_ids_ranges_and_routine_owner() -> None:
     source = "void run(void) { service->handler(1); (*callback)(2); }\n"
     temporary, result = _read(_artifact(source), source)
