@@ -1,7 +1,9 @@
 """Canonical bounded semantic-frame contracts.
 
 Deterministic code owns target, evidence and slot metadata.  The model owns only a
-short meaning plus the evidence sufficiency state for every preassigned slot.
+meaning plus the evidence sufficiency state for every preassigned slot.  Boundedness
+comes from deterministic evidence-closure partitioning, never from truncating a
+canonical meaning or diagnostic leaf.
 """
 from __future__ import annotations
 
@@ -216,7 +218,7 @@ class SlotSpec(BaseModel):
 class SufficientSlotValue(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    meaning: str = Field(..., min_length=1, max_length=600)
+    meaning: str = Field(..., min_length=1)
     status: Literal["sufficient"]
     missing_context: list[str] = Field(..., max_length=0)
 
@@ -224,9 +226,9 @@ class SufficientSlotValue(BaseModel):
 class PartialSlotValue(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    meaning: str = Field(..., min_length=1, max_length=600)
+    meaning: str = Field(..., min_length=1)
     status: Literal["partial"]
-    missing_context: list[str] = Field(..., min_length=1, max_length=8)
+    missing_context: list[str] = Field(..., min_length=1)
 
 
 class InsufficientSlotValue(BaseModel):
@@ -234,7 +236,7 @@ class InsufficientSlotValue(BaseModel):
 
     meaning: Literal[""]
     status: Literal["insufficient"]
-    missing_context: list[str] = Field(..., min_length=1, max_length=8)
+    missing_context: list[str] = Field(..., min_length=1)
 
 
 SlotValue = Annotated[
@@ -499,7 +501,7 @@ def mark_semantic_frame_insufficient(
     """
     reasons = tuple(dict.fromkeys(
         " ".join(str(item).split()) for item in missing_context if str(item).strip()
-    ))[:8]
+    ))
     if not reasons:
         raise ValueError("insufficient semantic frame requires missing_context")
     return SemanticFrame(

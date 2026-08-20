@@ -14,13 +14,19 @@
 
 ## 2026-08-20 의미 무손실 전수조사
 
-- [ ] A131-01 Analyzer 전체 상한·절단·Top-N·sampling·skip/fallback·중간 LLM·summary-of-summary·
+- [x] A131-01 Analyzer 전체 상한·절단·Top-N·sampling·skip/fallback·중간 LLM·summary-of-summary·
   timeout/retry/cache/batch/concurrency 생산자·소비자 inventory 완성
-- [ ] A131-02 각 후보의 source→AST→actual prompt→raw/parsed→validator→Neo4j→API/MCP 배선,
+- [x] A131-02 각 후보의 source→AST→actual prompt→raw/parsed→validator→Neo4j→API/MCP 배선,
   실제 값, 유입 commit 확정
-- [ ] A131-03 실제 의미 손실/안전한 실행 분할/표시 preview/검색 파생 제한/명시적 degraded 분류와
+- [x] A131-03 실제 의미 손실/안전한 실행 분할/표시 preview/검색 파생 제한/명시적 degraded 분류와
   원인·영향도 보고
 - [ ] A131-04 계약·실패/경계/과대 입력 red test 고정 후 책임 슬라이스별 근본 구현·검증·commit/push
+  - [x] A131-04a F-001/C-001/C-002 및 동일 canonical diagnostic leaf의 문자·항목 상한 제거,
+    red→green과 step7/schema/API 집중 회귀 검증
+  - [ ] A131-04b FUNCTION role taxonomy와 evidence-anchor obligation slot 분리, exact source/evidence
+    closure call 및 canonical ID exact-once merge
+  - [ ] A131-04c 중간 prose 권위 입력·source literal 비가역 projection·SCC dependency 누락 제거
+  - [ ] A131-04d source/AST/diagnostic closure와 completed generation 원자 publish/consumer guard
 - [ ] A131-05 자동 회귀·결정론 전수 회계·봉인 직접 의미 판정 3층 완료
 
 ## 보존된 기준선

@@ -91,12 +91,10 @@ class SummaryOutput(BaseModel):
     )
     missing_context: list[str] = Field(
         default_factory=list,
-        max_length=8,
         description="partial/insufficient 판단을 해소하는 데 필요한 구체적 근거",
     )
     questions: list["QuestionItem"] = Field(
         default_factory=list,
-        max_length=15,
         description="코드와 제공 근거만으로 답할 수 없는 실제 질문",
     )
     semantic_frame: SemanticFrame | None = Field(default=None, exclude=True)
@@ -158,7 +156,7 @@ class GroundedColumnDescription(BaseModel):
     logical_name: str = ""
     description: str = ""
     evidence_status: EvidenceStatus
-    missing_context: list[str] = Field(default_factory=list, max_length=8)
+    missing_context: list[str] = Field(default_factory=list)
     semantic_frame: SemanticFrame | None = Field(default=None, exclude=True)
 
     @model_validator(mode="after")
@@ -294,12 +292,10 @@ class BatchSummaryItem(BaseModel):
     )
     missing_context: list[str] = Field(
         default_factory=list,
-        max_length=8,
         description=SummaryOutput.model_fields["missing_context"].description,
     )
     questions: list[QuestionItem] = Field(
         default_factory=list,
-        max_length=15,
         description="코드와 제공 근거만으로 답할 수 없는 실제 질문",
     )
     semantic_frame: SemanticFrame | None = Field(default=None, exclude=True)
@@ -394,7 +390,7 @@ class TableDescription(BaseModel):
     logical_name: str = Field(...)   # 짧은 도메인 표시명(물리명과 별개, 근거없으면 빈값) — spec 025
     description: str
     evidence_status: EvidenceStatus
-    missing_context: list[str] = Field(default_factory=list, max_length=8)
+    missing_context: list[str] = Field(default_factory=list)
     columns: list[GroundedColumnDescription] = Field(
         ...,
         description="입력 허용 컬럼별 통합 논리명·설명. 이름은 입력 컬럼을 정확히 한 번씩 보존",

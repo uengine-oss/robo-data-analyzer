@@ -36,7 +36,7 @@ def _wire_item_type(strategy: str, fingerprint: str) -> object:
     common = {
         "questions": (
             list[QuestionItem],
-            Field(..., max_length=15, description=SummaryOutput.model_fields["questions"].description),
+            Field(..., description=SummaryOutput.model_fields["questions"].description),
         ),
     }
     sufficient = create_model(
@@ -54,7 +54,7 @@ def _wire_item_type(strategy: str, fingerprint: str) -> object:
         summary=(str, Field(..., min_length=1, description=SummaryOutput.model_fields["summary"].description)),
         stereotype=(stereotype_type, Field(..., description=SummaryOutput.model_fields["stereotype"].description)),
         evidence_status=(Literal["partial"], Field(...)),
-        missing_context=(list[str], Field(..., min_length=1, max_length=8)),
+        missing_context=(list[str], Field(..., min_length=1)),
         **common,
     )
     insufficient = create_model(
@@ -63,7 +63,7 @@ def _wire_item_type(strategy: str, fingerprint: str) -> object:
         summary=(Literal[""], Field(..., description=SummaryOutput.model_fields["summary"].description)),
         stereotype=(Literal[""], Field(..., description=SummaryOutput.model_fields["stereotype"].description)),
         evidence_status=(Literal["insufficient"], Field(...)),
-        missing_context=(list[str], Field(..., min_length=1, max_length=8)),
+        missing_context=(list[str], Field(..., min_length=1)),
         **common,
     )
     return Annotated[Union[sufficient, partial, insufficient], Field(discriminator="evidence_status")]

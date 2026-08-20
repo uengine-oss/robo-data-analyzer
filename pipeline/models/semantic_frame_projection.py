@@ -36,7 +36,7 @@ def project_summary(frame: SemanticFrame, *, stereotype: str) -> SummaryOutput:
         for slot in candidates
         for item in slot.missing_context
         if item.strip()
-    )[:8]
+    )
 
     if candidates and all(slot.status == "sufficient" for slot in candidates):
         status = "sufficient"
@@ -51,7 +51,7 @@ def project_summary(frame: SemanticFrame, *, stereotype: str) -> SummaryOutput:
         if not missing:
             raise ValueError("insufficient semantic frame projection lacks missing_context")
 
-    questions = _questions(candidates)[:15]
+    questions = _questions(candidates)
     return SummaryOutput(
         summary="\n".join(meanings),
         stereotype=stereotype if status != "insufficient" else "",

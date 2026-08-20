@@ -19,14 +19,16 @@ from pipeline.models.data_object_usage import DataObjectUsageEvidence
 from pipeline.models.semantic_frame import (
     SlotSpec,
     evidence_id,
+    mark_semantic_frame_insufficient,
+    merge_semantic_frames,
     normalize_semantic_frame_response,
+    profile_prompt_json,
     semantic_frame_response_model,
     semantic_slot_wire_ids,
-    target_digest,
-    merge_semantic_frames,
-    profile_prompt_json,
     slot_specs_json,
+    target_digest,
 )
+from pipeline.models.semantic_frame_projection import project_summary
 from pipeline.models.summary_response_schema import (
     frame_summary_response_model,
     normalize_frame_summary_response,
@@ -315,6 +317,68 @@ return rc;
         }
         with self.assertRaises(ValidationError):
             model.model_validate(extra)
+
+    def test_semantic_leaf_has_no_arbitrary_character_or_diagnostic_cap(self):
+        profile, specs = build_code_semantic_plan(_routine(), _context())
+        model = semantic_frame_response_model(specs)
+        wire_ids = semantic_slot_wire_ids(specs)
+        long_meaning = "근거문장" * 400
+        missing = [f"근거 의무 {index}" for index in range(24)]
+        payload = {"slots": {
+            wire_id: ({
+                "meaning": long_meaning,
+                "status": "partial",
+                "missing_context": missing,
+            } if index == 0 else {
+                "meaning": f"{spec.family}.{spec.role}",
+                "status": "sufficient",
+                "missing_context": [],
+            })
+            for index, (spec, wire_id) in enumerate(zip(
+                specs, wire_ids, strict=True,
+            ))
+        }}
+
+        schema_text = json.dumps(model.model_json_schema(), sort_keys=True)
+        self.assertNotIn('"maxLength": 600', schema_text)
+        self.assertNotIn('"maxItems": 8', schema_text)
+        frame = normalize_semantic_frame_response(
+            model.model_validate(payload), profile, specs,
+        )
+        slot = frame.slots[specs[0].slot_id]
+        self.assertEqual(long_meaning, slot.meaning)
+        self.assertEqual(tuple(missing), slot.missing_context)
+
+    def test_projection_and_rejection_preserve_every_distinct_diagnostic(self):
+        profile, specs = build_code_semantic_plan(_routine(), _context())
+        model = semantic_frame_response_model(specs)
+        wire_ids = semantic_slot_wire_ids(specs)
+        missing = [f"근거 의무 {index}" for index in range(24)]
+        parsed = model.model_validate({"slots": {
+            wire_id: ({
+                "meaning": "확정된 일부 의미",
+                "status": "partial",
+                "missing_context": missing,
+            } if index == 0 else {
+                "meaning": f"{spec.family}.{spec.role}",
+                "status": "sufficient",
+                "missing_context": [],
+            })
+            for index, (spec, wire_id) in enumerate(zip(
+                specs, wire_ids, strict=True,
+            ))
+        }})
+        frame = normalize_semantic_frame_response(parsed, profile, specs)
+
+        projected = project_summary(frame, stereotype="ApplicationService")
+        self.assertEqual(missing, projected.missing_context)
+        self.assertEqual(missing, [question.text for question in projected.questions])
+
+        rejected = mark_semantic_frame_insufficient(frame, missing)
+        self.assertTrue(all(
+            slot.missing_context == tuple(missing)
+            for slot in rejected.slots.values()
+        ))
 
     def test_provider_wire_uses_only_compact_local_keys_and_prompt_closes_mapping(self):
         _profile, specs = build_code_semantic_plan(_routine(), _context())

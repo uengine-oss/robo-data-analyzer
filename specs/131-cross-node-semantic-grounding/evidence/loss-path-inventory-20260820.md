@@ -386,3 +386,19 @@
   closure가 추가되지 않았음을 함께 기록했다.
 - 미검증: DBMS actual run, sealed 직접 의미 판정, 새 계약/red test.
 - 아직 제품 정확도나 완료를 주장하지 않는다.
+
+### 2026-08-20 계약 고정 및 첫 red test
+
+- `semantic-frame-v1`에 canonical `meaning`/`missing_context`/`Question` 무상한 계약,
+  evidence-anchor obligation 분할, 자연어 중간 요약 권위 금지, completed generation publish 계약을 고정했다.
+- 제품 변경 전에 다음 두 red test를 실행했고 `2 failed`를 재현했다.
+  - `test_semantic_leaf_has_no_arbitrary_character_or_diagnostic_cap`: provider schema에
+    `meaning.maxLength=600`과 `missing_context.maxItems=8`이 남아 실패.
+  - `test_projection_and_rejection_preserve_every_distinct_diagnostic`: 24개 distinct obligation이
+    projection 전에 wire validator의 `maxItems=8`에서 거부되어 실패.
+- 이 기록 시점에는 아직 제품 수정 후 회귀나 실제 graph 재실행을 검증하지 않았다.
+- 첫 책임 슬라이스 구현 후 같은 두 테스트는 `2 passed`로 전환됐다. semantic frame leaf,
+  legacy summary/batch/table projection model, provider-visible summary schema에서 임의 600/8/15 상한을
+  제거했고 whitespace/dedup 정상화와 sufficient의 empty-missing 불변식만 유지했다.
+- 관련 step7/schema/API 집중 회귀는 `231 passed, 134 subtests passed`, `git diff --check`는 오류 0이다.
+  이 결과는 해당 leaf/diagnostic 보존 슬라이스만 검증하며 전체 의미 정확도나 graph 실행 합격 근거가 아니다.

@@ -187,6 +187,10 @@ LLM wire에는 required slot key 아래 세 필드만 노출한다.
 - `insufficient`: `meaning=""`, `missing_context` 1개 이상이며 실제 누락 의무 전부
 - `missing_context`는 필요한 evidence kind와 대상을 구체적으로 말한다.
 - LLM은 `slot_id/family/role/target_ref/evidence_refs`를 출력하지 않는다.
+- `meaning`과 `missing_context`에는 문자 수·항목 수의 임의 상한을 두지 않는다. provider 출력
+  한계는 leaf를 자르는 근거가 아니며, 아래 obligation fragment 분할과 exact merge로 처리한다.
+- wire/validator가 정상화할 수 있는 것은 leading/trailing whitespace와 중복 diagnostic뿐이다.
+  의미 문자, 서로 다른 missing obligation, question을 개수 때문에 버리지 않는다.
 
 ## 6. bounded dynamic family
 
@@ -205,9 +209,11 @@ frame planner는 실제 구조 fact가 요구하는 family만 shallow하게 만�
 | `STATEMENT` | `DIRECT_ACTION` | routine이 아닌 분석 target 또는 단일 structural action | target statement fact |
 
 routine target의 위 다섯 역할은 **분류 taxonomy의 최대치**이며 실제 구조축이 없으면 해당 role을
-만들지 않는다. 이는 role 안의 사실 수나 문장 길이 상한이 아니다. 한 role의 의무가 provider 한계를
-넘으면 obligation-derived fragment로 나누고 canonical role 아래 exact-once로 합치며, projection은
-모든 fragment를 보존해야 한다.
+만들지 않는다. 이는 slot 수, role 안의 사실 수, 문장 길이 상한이 아니다. 같은 role이 여러 구조 사실을
+소유하면 target-wide 한 slot으로 압축하지 않고 `CONTROL/RULE/CALL/STATEMENT/DATA_OBJECT/SYMBOL`의
+canonical evidence anchor별 obligation slot을 만든다. 한 role의 의무가 provider 한계를 넘으면 이
+obligation-derived fragment를 더 작은 exact evidence closure로 나누고 canonical slot ID로 exact-once
+합치며, projection은 모든 fragment를 보존해야 한다.
 `RESPONSIBILITY`는 목적 경계, `INPUT_ROLE`은 실제 interface 사용, `GUARDS_AND_BRANCHES`는 결과를
 바꾸는 조건별 흐름, `PROCESSING_EFFECTS`는 호출·조회·변경·transaction과 외부 상태 변화,
 `RESULT`는 반환/출력과 그 정확한 조건을 소유한다. 같은 사실을 여러 role에 복제하지 않는다.
@@ -296,6 +302,11 @@ population에서 빠지면 제품 결함이다.
 - target/profile은 direct facts만 담는다. child frame 본문을 재귀 inline하지 않는다.
 - 동일 `(family, role, anchor)` slot은 정확히 한 번만 존재한다.
 - family별 role 수는 위 닫힌 목록의 부분집합이다.
+- 동일 role의 obligation slot 수는 실제 canonical evidence 수에서 유도하며 고정 숫자로 제한하지 않는다.
+- TARGET을 제외한 의미 의무 evidence는 정확히 하나의 model-owned slot fragment에 배정한다. 구조만으로
+  의미가 완결되는 evidence는 LLM slot을 만들지 않고 그 deterministic fact가 직접 terminal이다.
+- 각 model call은 자신에게 배정된 slot의 evidence closure와 그 좌표의 exact source만 받는다. 전체 source를
+  임의 길이 projection으로 바꾸거나 앞 N개 fact만 골라 주지 않는다.
 - repeated callee/table/symbol identity는 evidence fact 한 개 + 좌표 occurrence refs로 표현한다.
 - batch token cap은 source node cap과 별개다. frame 수 때문에 batch가 넘치면 기존 planner가
   node 단위로 분할하며 slot을 자르거나 생략하지 않는다.
@@ -350,6 +361,13 @@ summary clause 또는 별도 상세 claim에 exact-once로 대응되는지 proje
 
 projection 함수 외의 LLM call이 위 필드를 직접 쓰면 계약 위반이다.
 
+`missing_context`와 `Question` projection은 모든 non-sufficient fragment의 deduped diagnostic을
+보존한다. UI preview는 별도 필드로만 만들 수 있고 canonical diagnostic list를 덮어쓰지 않는다.
+
+callee와 module 문맥은 canonical frame/evidence ID와 terminal status만 전달한다. `callee.summary`,
+`module_intent`, child summary 같은 자연어 projection을 다음 LLM의 권위 입력으로 넣지 않는다. cycle에서
+아직 terminal이 아닌 callee obligation은 누락하지 않고 explicit unavailable dependency로 남긴다.
+
 ## 10. 저장 계약
 
 - CodeNode, Table, Column, Module에는 `semantic_frame_json`과 `semantic_frame_schema`를 저장한다.
@@ -360,15 +378,29 @@ projection 함수 외의 LLM call이 위 필드를 직접 쓰면 계약 위반�
 - run artifact에는 profile, model raw/parsed, normalized frame, validation findings를 target ID로
   연결한다. raw source는 기존 input/audit artifact가 소유하며 frame에 복제하지 않는다.
 
+### 10.1 run generation publish
+
+- 같은 허용 DB 안에서 새 run은 고유 generation ID로 staging한다. 임시 DB를 만들지 않는다.
+- generation은 입력 source/AST/diagnostic expected identity와 node/edge/slot actual identity의 exact
+  closure, quality status를 가진 manifest를 graph에 저장한다.
+- 모든 writer는 generation ID를 기록하고, 모든 REST/MCP/search reader는 원자적으로 publish된
+  `completed|completed_with_findings` generation만 읽는다.
+- timeout, cost stop, fatal error, 사용자 stop은 generation을 `failed|stopped`로 terminal 처리하며
+  직전 completed generation을 계속 제공한다. partial generation은 정상 consumer에 노출하지 않는다.
+- publish는 closure 검증 뒤 단일 transaction으로 active generation pointer를 교체한다. 그 다음에만
+  이전 completed generation을 정리할 수 있다.
+
 ## 11. prompt와 structured output
 
 - system prefix: TASK/authority/relation/decision/examples/self-check와 닫힌 family 의미를 안정적으로 유지
-- variable suffix: TARGET, profile evidence, applicable slot specs, bounded source/internal evidence
+- variable suffix: TARGET, profile evidence, applicable slot specs, exact source/internal evidence closure
 - 모델은 slot leaf만 출력하며 target/evidence/condition/table/callee ID를 다시 생성하지 않는다.
 - JSON Schema/function calling은 구조를 강제할 뿐 의미 진실을 보장하지 않으므로 deterministic
   validators와 3층 검증을 생략하지 않는다.
 - stable prefix 여부는 실제 serialized prompt bytes로 검증한다. 서버 metrics가 없으면 cache hit을
   추정하지 않는다.
+- source literal은 원문과 byte/character identity를 잃는 설명 marker로 바꾸지 않는다. JSON 전달을 위해
+  escape하더라도 역변환 가능한 canonical encoding과 source hash/coordinates를 함께 검증한다.
 
 ## 12. MCP/Architect projection
 

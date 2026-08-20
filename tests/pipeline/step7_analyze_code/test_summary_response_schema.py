@@ -110,6 +110,25 @@ class SummaryResponseSchemaTest(unittest.TestCase):
                 missing_context=["호출 대상의 계약 원문"],
             )}))
 
+    def test_wire_preserves_all_distinct_missing_obligations_and_questions(self) -> None:
+        model = summary_response_model("framework")
+        missing = [f"근거 의무 {index}" for index in range(24)]
+        questions = [
+            {"text": f"확인 질문 {index}", "reason": f"부재 사유 {index}"}
+            for index in range(24)
+        ]
+        normalized = normalize_summary_response(model.model_validate({"result": _summary(
+            evidence_status="partial",
+            missing_context=missing,
+            questions=questions,
+        )}))
+
+        self.assertEqual(missing, normalized.missing_context)
+        self.assertEqual(
+            [item["text"] for item in questions],
+            [item.text for item in normalized.questions],
+        )
+
     def test_batch_key_contract_rejects_empty_or_duplicate_input(self) -> None:
         for keys in ((), ("",), ("1-2", "1-2")):
             with self.subTest(keys=keys), self.assertRaises(ValueError):
