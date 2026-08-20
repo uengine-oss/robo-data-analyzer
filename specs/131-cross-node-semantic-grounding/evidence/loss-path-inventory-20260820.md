@@ -239,7 +239,7 @@
   물질화하고 canonical ID로 병합하는 방식이어야 한다.
 - 기준 Framework step7 start는 code node 416, summary dependency edge 517을 기록했으며 in-cycle 값은
   0이라 logger에서 생략됐다. 기준 실행 영향은 없다.
-- 현재 판정: **실제 cross-node 의미 손실 설계, 기준 실행 미발동**.
+- 현재 판정: 아래 책임 슬라이스에서 **해결, 기준 실행 미발동**.
 
 ### C-031 — Catalog lineage fallback이 저장되지 않는 edge를 정상 state로 반환
 
@@ -487,3 +487,21 @@
   import error를 냈고, 정본 실행인 `discover -s tests -t .`로 바로잡아 전부 통과했다.
 - LLM/Neo4j 실행은 0회다. 자동 회귀로 전달 byte 계약은 검증했지만 C-022가 과거 봉인 결과에 만든 실제
   의미 왜곡 건수는 직접 판정 전이므로 `미검증`이다.
+
+### 2026-08-20 C-030 cycle callee unavailable obligation 물질화
+
+- red 1은 cycle context를 planner에 직접 넣어도 semantic profile에 `unavailable_cycle` CALL fact가 0개라
+  실패했다. red 2는 DBMS self-recursion과 Framework mutual recursion에서 suppressed edge는 계산되지만
+  caller context에 `unavailable_callee_dependencies`가 없어 두 fixture 모두 KeyError였다.
+- 공통 `plan_summary_dependencies`가 suppressed `(caller, callee)`를 정렬·중복 제거해 caller context에
+  붙이는 단일 owner가 됐다. 두 엔진의 중복 cycle flag 배선을 제거했고, semantic planner는 해당 callee를
+  target-level CALL fact와 정확히 1개 slot obligation으로 만든다. Framework routine은
+  `FUNCTION.PROCESSING_EFFECTS`, DBMS effective CALL CodeNode는 `CALL.PURPOSE`가 owner다.
+- `dependency_status=unavailable_cycle` fact는 assigned profile에 실제 포함된다. 모델이 충분하다고 답해도
+  normalizer가 현재 source가 입증한 meaning은 보존하되 status를 `partial`로 낮추고 canonical callee ID를
+  `missing_context`에 넣는다. meaning도 없으면 `insufficient`다. private wire leak 같은 다른 rejection과
+  겹쳐도 이 dependency diagnostic은 삭제되지 않는다.
+- cycle/normalizer 계약 red는 green이고 임의 `dependency_status`도 schema에서 거부한다. step7
+  `215 passed`, 전체 `1051 passed, 5 skipped`, prompt hash `23/23 byte-identical`이다. 기준 Framework
+  관측값은 cycle 0이므로
+  actual LLM/Neo4j 재실행은 0회이며 기준 corpus 직접 의미 영향은 `미발동`이다.

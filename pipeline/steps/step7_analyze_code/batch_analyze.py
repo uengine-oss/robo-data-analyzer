@@ -208,9 +208,6 @@ async def run_dbms_batch_analysis(
     analysis_contexts = {node_id: contexts[node_id] for node_id in analysis_ids}
     dependency_plan = plan_summary_dependencies(analysis_contexts, structural_edges)
     edges = list(dependency_plan.schedule_edges)
-    for fn_id in dependency_plan.cycle_nodes:
-        if fn_id in contexts:
-            contexts[fn_id].is_in_cycle = True
     rounds = bottom_up_rounds(edges, analysis_ids)
 
     start_of = {fid: contexts[fid].start_line for fid in analysis_ids if fid in contexts}

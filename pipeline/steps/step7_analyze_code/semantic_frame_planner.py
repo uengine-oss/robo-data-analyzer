@@ -105,6 +105,7 @@ def build_code_semantic_plan(
     child_refs: list[str] = []
     callee_refs: list[str] = []
     linked_callee_refs: list[str] = []
+    unavailable_callee_refs: list[str] = []
     external_refs: list[str] = []
     data_refs: list[str] = []
     symbol_refs: list[str] = []
@@ -225,7 +226,20 @@ def build_code_semantic_plan(
 
     # Linked callee identities are target-level facts because the current common context
     # does not assign every edge to an exact source occurrence.  Never guess that mapping.
+    unavailable_callees = {
+        str(callee_id)
+        for callee_id in ctx.extra.get("unavailable_callee_dependencies") or ()
+    }
+    unknown_unavailable = unavailable_callees - set(ctx.callees)
+    if unknown_unavailable:
+        raise ValueError(
+            "unavailable callee dependency is not linked from target: "
+            f"{sorted(unknown_unavailable)}"
+        )
     for callee_id in ctx.callees:
+        dependency_status = (
+            "unavailable_cycle" if callee_id in unavailable_callees else "linked"
+        )
         ref = _add_fact(evidence, _fact(
             target_id=fn.id,
             kind="CALL",
@@ -238,10 +252,13 @@ def build_code_semantic_plan(
                 "recursive": callee_id == fn.id,
                 "arguments_source": "",
                 "result_target": "",
+                "dependency_status": dependency_status,
             },
         ))
         callee_refs.append(ref)
         linked_callee_refs.append(ref)
+        if dependency_status == "unavailable_cycle":
+            unavailable_callee_refs.append(ref)
 
     for symbol in ctx.referenced_symbols:
         ref = _add_fact(evidence, _fact(
@@ -490,6 +507,8 @@ def build_code_semantic_plan(
         )
         if not call_refs_by_line:
             processing_refs.extend(linked_callee_refs)
+        else:
+            processing_refs.extend(unavailable_callee_refs)
         processing_refs.extend(data_refs)
         processing_refs.extend(external_refs)
         processing_refs.extend(
@@ -557,7 +576,7 @@ def build_code_semantic_plan(
             role="PURPOSE",
             anchor="TARGET",
             target_ref=target_ref,
-            evidence_refs=(target_ref,),
+            evidence_refs=(target_ref, *unavailable_callee_refs),
         )
     else:
         _add_slot(

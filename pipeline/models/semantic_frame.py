@@ -54,7 +54,7 @@ _ALLOWED_EVIDENCE_ATTRIBUTES: dict[str, frozenset[str]] = {
     }),
     "CALL": frozenset({
         "callee_id", "callee_name", "scope", "recursive", "arguments_source",
-        "result_target",
+        "result_target", "dependency_status",
     }),
     "DATA_OBJECT": frozenset({
         "table_id", "access", "operation", "direct", "resolution",
@@ -166,6 +166,10 @@ class EvidenceFact(BaseModel):
         unknown = set(self.attributes) - _ALLOWED_EVIDENCE_ATTRIBUTES[self.kind]
         if unknown:
             raise ValueError(f"unsupported {self.kind} evidence attributes: {sorted(unknown)}")
+        if self.kind == "CALL" and self.attributes.get("dependency_status") not in {
+            None, "linked", "unavailable_cycle",
+        }:
+            raise ValueError("unsupported CALL dependency_status")
         return self
 
 
@@ -366,6 +370,13 @@ def normalize_semantic_frame_response(
             raise ValueError(f"slot spec references unknown evidence: {sorted(missing)}")
         leaf = getattr(output.slots, wire_id)
         leaf_texts = (leaf.meaning, *leaf.missing_context)
+        unavailable_callees = sorted({
+            str(fact.attributes.get("callee_id") or "")
+            for ref in spec.evidence_refs
+            if (fact := profile.evidence[ref]).kind == "CALL"
+            and fact.attributes.get("dependency_status") == "unavailable_cycle"
+            and str(fact.attributes.get("callee_id") or "")
+        })
         leaked_private_key = any(
             _mentions_private_wire_id(text, wire_ids) for text in leaf_texts
         )
@@ -382,6 +393,15 @@ def normalize_semantic_frame_response(
             meaning = leaf.meaning.strip()
             status = leaf.status
             missing_context = tuple(item.strip() for item in leaf.missing_context)
+        if unavailable_callees:
+            dependency_reasons = tuple(
+                f"callee semantic dependency unavailable in call cycle: {callee_id}"
+                for callee_id in unavailable_callees
+            )
+            missing_context = tuple(dict.fromkeys((
+                *missing_context, *dependency_reasons,
+            )))
+            status = "partial" if meaning else "insufficient"
         slots[spec.slot_id] = SemanticSlot(
             slot_id=spec.slot_id,
             family=spec.family,

@@ -103,11 +103,6 @@ async def run_framework_per_node_analysis(
     ]
     dependency_plan = plan_summary_dependencies(contexts, parent_edges)
 
-    # cycle 메타 ctx 에 부착
-    for fn_id in dependency_plan.cycle_nodes:
-        if fn_id in contexts:
-            contexts[fn_id].is_in_cycle = True
-
     # 2. 의존 그래프 — CALLS/PARENT_OF 모두 summary 확정 즉시 해제한다.
     # CALLS and PARENT_OF both consume only the dependency's canonical summary.
     # Rule/table completion is not a scheduling dependency.

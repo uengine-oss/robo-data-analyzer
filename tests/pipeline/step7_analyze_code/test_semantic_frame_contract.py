@@ -19,6 +19,7 @@ from pipeline.models.analysis_context import (
 )
 from pipeline.models.data_object_usage import DataObjectUsageEvidence
 from pipeline.models.semantic_frame import (
+    EvidenceFact,
     SlotSpec,
     evidence_id,
     mark_semantic_frame_insufficient,
@@ -117,6 +118,15 @@ class StableIdentityTest(unittest.TestCase):
             evidence_id(target, "CALL", {"name": "reserve", "line": 13}),
         )
         self.assertNotIn("reserve", evidence_id(target, "CALL", {"line": 13, "name": "reserve"}))
+
+    def test_call_dependency_status_is_closed(self):
+        with self.assertRaisesRegex(ValidationError, "dependency_status"):
+            EvidenceFact(
+                id=evidence_id("code:orders.save", "CALL", {"callee": "x"}),
+                kind="CALL",
+                owner_id="code:orders.save",
+                attributes={"dependency_status": "quietly_skipped"},
+            )
 
 class SemanticFramePlannerTest(unittest.TestCase):
     def test_rule_fact_links_owned_effects_and_structural_relations(self):
@@ -287,6 +297,54 @@ return rc;
             (spec.family, spec.role) for spec in specs
         })
         self.assertFalse(profile.callee_refs)
+
+    def test_cycle_callee_is_an_explicit_obligation_and_cannot_close_sufficient(self):
+        context = _context()
+        context.extra["unavailable_callee_dependencies"] = (
+            "code:stock.reserve",
+        )
+        profile, specs = build_code_semantic_plan(_routine(), context)
+
+        unavailable_refs = {
+            fact.id
+            for fact in profile.evidence.values()
+            if fact.kind == "CALL"
+            and fact.attributes.get("dependency_status") == "unavailable_cycle"
+        }
+        self.assertEqual(1, len(unavailable_refs))
+        dependency_specs = tuple(
+            spec for spec in specs
+            if unavailable_refs.intersection(spec.evidence_refs)
+        )
+        self.assertEqual(1, len(dependency_specs))
+        prompt_profile = json.loads(profile_prompt_json(profile, dependency_specs))
+        self.assertEqual(
+            "unavailable_cycle",
+            next(
+                fact["attributes"]["dependency_status"]
+                for fact in prompt_profile["evidence"].values()
+                if fact["id"] in unavailable_refs
+            ),
+        )
+
+        model = semantic_frame_response_model(specs)
+        bindings = tuple(model.__semantic_slot_bindings__)
+        output = model.model_validate({
+            "slots": {
+                wire_id: {
+                    "meaning": f"{spec.family}.{spec.role} 의미",
+                    "status": "sufficient",
+                    "missing_context": [],
+                }
+                for wire_id, spec in bindings
+            },
+        })
+        frame = normalize_semantic_frame_response(output, profile, specs)
+        dependency_slot = frame.slots[dependency_specs[0].slot_id]
+
+        self.assertEqual("partial", dependency_slot.status)
+        self.assertIn("code:stock.reserve", " ".join(dependency_slot.missing_context))
+        self.assertIn("call cycle", " ".join(dependency_slot.missing_context))
 
     def test_wire_requires_every_preassigned_slot_and_binds_metadata_outside_model(self):
         profile, specs = build_code_semantic_plan(_routine(), _context())

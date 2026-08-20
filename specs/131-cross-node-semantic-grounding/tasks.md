@@ -37,7 +37,8 @@
       - [ ] step8 module/component aggregate와 Agent context compaction 제거
     - [x] A131-04c-SOURCE source literal 비가역 projection producer·호출·replay switch 제거,
       Framework/DBMS prompt literal/escape exact-text 계약과 반대 fixture 고정
-    - [ ] A131-04c-SCC cycle 내부 unavailable callee obligation 명시·회계
+    - [x] A131-04c-SCC suppressed `(caller, callee)`를 canonical CALL unavailable evidence로
+      exact-once 물질화하고 prompt·normalizer·missing_context까지 연결
   - [ ] A131-04d source/AST/diagnostic closure와 completed generation 원자 publish/consumer guard
 - [ ] A131-05 자동 회귀·결정론 전수 회계·봉인 직접 의미 판정 3층 완료
 

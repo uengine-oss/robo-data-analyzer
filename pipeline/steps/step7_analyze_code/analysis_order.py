@@ -23,7 +23,9 @@ class SummaryDependencyPlan:
     ``call_edges`` comes only from the prompt receiver's ``ctx.callees``.
     ``structural_edges`` carries child-summary handoff.  A summary dependency SCC
     means no member can provide its callee summary first, so only call edges inside
-    that SCC are suppressed; structural child-before-parent ordering remains.
+    that SCC are suppressed; structural child-before-parent ordering remains.  The
+    suppressed caller/callee IDs are also attached to their contexts as explicit
+    unavailable semantic dependencies before either engine builds a prompt.
     """
 
     call_edges: tuple[tuple[str, str], ...]
@@ -43,7 +45,9 @@ def plan_summary_dependencies(
     (external or not analyzed) is not a summary dependency.  Cyclic call summaries
     are unavailable by definition.  Removing structural edges to break those cycles
     would let a parent run before its child and can make compact-body assembly read a
-    missing summary, therefore only same-SCC call edges are removed.
+    missing summary, therefore only same-SCC call edges are removed.  This planner
+    also owns the deterministic cycle/unavailable annotations consumed by the semantic
+    frame planner; callers must not reconstruct them from prose or scheduler timing.
     """
     nodes = set(contexts)
     mismatches = sorted(
@@ -83,6 +87,17 @@ def plan_summary_dependencies(
             "structural summary dependency cycle remains after suppressing "
             f"cyclic call edges: {sorted(remaining_cycles)[:10]}"
         )
+
+    unavailable_by_caller: dict[str, list[str]] = defaultdict(list)
+    for caller_id, callee_id in suppressed:
+        unavailable_by_caller[caller_id].append(callee_id)
+    for context_id, context in contexts.items():
+        context.is_in_cycle = context_id in cycle_groups
+        unavailable = tuple(sorted(set(unavailable_by_caller.get(context_id, ()))))
+        if unavailable:
+            context.extra["unavailable_callee_dependencies"] = unavailable
+        else:
+            context.extra.pop("unavailable_callee_dependencies", None)
 
     return SummaryDependencyPlan(
         call_edges=call_edges,

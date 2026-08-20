@@ -2,7 +2,7 @@
   "prompts/common/component_naming_contract.md": "b07da6b54b59d0985300c7873b7a3f2ef86450f87a275cbb8de8db6bbaa5e35a",
   "prompts/common/function_summary_contract.md": "02a6230694ffc89356fe1f0d52bf291ac5dd944887f48ce939347be632879d77",
   "prompts/common/module_summary_contract.md": "7b51ee8465db653e6d0ccd4df87c6780707966e931bec1c0e16a82106cd2fb83",
-  "prompts/common/semantic_frame_contract.md": "817a073fcb171b0f268b796aab879bdc677dbe668622645b65ea4a53094aa70c",
+  "prompts/common/semantic_frame_contract.md": "7ea50628cecc6ba78d7042fdd853ad5818615efc6155541c794684b8cc4198c3",
   "prompts/common/summary_contract.md": "9e1ee03c60195f4e8174031106f2ba9444f44875b15830fab8639b7aa15a3946",
   "prompts/common/table_description_contract.md": "780f5604050370717f610fff09c0a44e524f29ad08d7631578fa28a2a6541d91",
   "prompts/dbms/_common.yaml": "4de6956bba436d5c5027afab1cb64a23c6339252496852c46d7ae7abddcf91d3",

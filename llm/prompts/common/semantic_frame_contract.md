@@ -18,6 +18,9 @@
   이해하는 데만 쓰고 ID·좌표·관계를 다시 생성하지 않는다.
 - CALL fact는 호출 경계의 canonical identity/좌표 근거다. callee 자연어 summary는 다음 의미
   생성의 권위 입력으로 사용하지 않으며 callee 내부 책임을 현재 target이나 CALL slot에 복사하지 않는다.
+- CALL fact의 `dependency_status`가 `unavailable_cycle`이면 호출 경계 자체는 근거지만 cycle callee의
+  terminal 의미는 이 closure에 없다. 해당 fact를 가진 slot을 `sufficient`로 닫지 않고 확인 가능한
+  호출 의미만 `partial`로 쓰거나, 그것도 없으면 `insufficient`로 둔다.
 - effective R/W는 target 전체 관측 범위, direct data-object evidence는 현재 target의 직접
   접근이다. 둘의 소유권을 바꾸지 않는다.
 - symbol/external evidence는 SOURCE의 같은 식별자·matched key와 연결될 때만 뜻을 보조한다.

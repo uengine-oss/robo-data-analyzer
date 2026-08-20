@@ -58,6 +58,11 @@ class SummaryDependencyPlanTest(unittest.TestCase):
         self.assertEqual(plan.schedule_edges, (("owner", "call"),))
         self.assertEqual(plan.suppressed_call_edges, (("call", "owner"),))
         self.assertEqual(plan.cycle_nodes, frozenset({"owner", "call"}))
+        self.assertEqual(
+            ("owner",),
+            contexts["call"].extra["unavailable_callee_dependencies"],
+        )
+        self.assertTrue(contexts["call"].is_in_cycle)
         self.assertLess(rounds["call"], rounds["owner"])
 
     def test_dbms_mutual_recursion_keeps_children_before_routines(self) -> None:
@@ -95,6 +100,12 @@ class SummaryDependencyPlanTest(unittest.TestCase):
         self.assertEqual(
             plan.suppressed_call_edges,
             (("a", "b"), ("b", "a")),
+        )
+        self.assertEqual(
+            ("b",), contexts["a"].extra["unavailable_callee_dependencies"],
+        )
+        self.assertEqual(
+            ("a",), contexts["b"].extra["unavailable_callee_dependencies"],
         )
         self.assertEqual(rounds["a"], rounds["b"])
 
