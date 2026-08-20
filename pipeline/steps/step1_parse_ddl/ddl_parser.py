@@ -378,6 +378,10 @@ def _handle_column(
     (컬럼 레벨) + 테이블 레벨 ``pk_cols`` 합집합.
     """
     name = col.name
+    identifier = col.this
+    name_quoted = bool(
+        isinstance(identifier, exp.Identifier) and identifier.args.get("quoted")
+    )
     dtype = col.args.get("kind")
     dtype_str = dtype.sql() if dtype is not None else "UNKNOWN"
 
@@ -406,6 +410,7 @@ def _handle_column(
         id=col_fqn,
         name=name,
         dtype=dtype_str,
+        name_quoted=name_quoted,
         nullable=not (is_not_null or is_pk),   # PK 는 항상 NOT NULL
         is_primary_key=is_pk,
         is_unique=is_unique,

@@ -1,9 +1,9 @@
 """Project structurally owned column coordinates for the table-insight concern.
 
-This module never writes natural-language meaning.  It preserves parser-qualified columns and,
-for a parser-confirmed Oracle leaf node, exact DDL identifiers tokenized from the node's own SQL
-source.  Ambiguous dialect, multi-table, overlapping-child, and same-range cases fail closed
-instead of assigning a column by name similarity.
+This module never writes natural-language meaning. It preserves parser-qualified columns and
+projects grammar-owned unqualified Oracle identifiers only when the DDL/query scope proves one
+physical owner. Ambiguous dialect, multi-table, overlapping-child, and same-range cases fail
+closed instead of assigning a column by name similarity.
 """
 
 from __future__ import annotations
@@ -12,15 +12,10 @@ from collections import defaultdict
 from collections.abc import Mapping
 from typing import Any
 
-from sqlglot import Tokenizer, TokenType
-
 from graph.schema.graph_nodes import CodeNode
 from pipeline.models.analysis_context import AnalysisContext
 from pipeline.models.data_object_usage import exact_direct_table_ids
 from shared.files.cache import SourceFileCache
-
-
-_IDENTIFIER_TOKENS = frozenset({TokenType.VAR, TokenType.IDENTIFIER})
 
 
 def build_column_usage_projections(
@@ -70,7 +65,10 @@ def build_column_usage_projections(
                 continue
             allowed = _allowed_columns(ddl_columns.get(table_id) or ())
             for column in getattr(usage, "qualified_columns", ()) or ():
-                actual_name = allowed.get(_canonical(getattr(column, "name", "")))
+                actual_name = allowed.get(_identifier_key(
+                    getattr(column, "name", ""),
+                    bool(getattr(column, "name_quoted", False)),
+                ))
                 line = int(getattr(column, "evidence_line", 0) or 0)
                 if actual_name and context.start_line <= line <= context.end_line:
                     _merge_candidate(
@@ -84,24 +82,24 @@ def build_column_usage_projections(
                     )
 
         coordinate = (context.file_path, context.start_line, context.end_line)
-        allow_lexical_projection = (
+        allow_unqualified_projection = (
             strategy_name == "dbms"
             and context.extra.get("source_language") == "oracle"
             and bool(tables)
             and node_id not in blocked_by_descendant
             and coordinate_counts[coordinate] == 1
         )
-        if allow_lexical_projection:
+        if allow_unqualified_projection:
             allowed_by_table = {
                 table_id: _allowed_columns(ddl_columns.get(table_id) or ())
                 for table_id in tables
             }
-            for name, line in _sql_identifiers(context, source_cache):
-                canonical = _canonical(name)
+            for name, name_quoted, line in _parser_unqualified_identifiers(context):
+                identity = _identifier_key(name, name_quoted)
                 owners = [
-                    (table_id, allowed[canonical])
+                    (table_id, allowed[identity])
                     for table_id, allowed in allowed_by_table.items()
-                    if canonical in allowed
+                    if identity in allowed
                 ]
                 if len(owners) == 1:
                     table_id, actual_name = owners[0]
@@ -185,25 +183,27 @@ def _project_derived_output_uses(
         ]
         if not owned_children:
             continue
-        excluded = [
-            (contexts[child_id].start_line, contexts[child_id].end_line)
-            for child_id in owned_children
-        ]
-        owner_by_column: dict[str, list[tuple[str, str, str]]] = defaultdict(list)
+        owner_by_column: dict[tuple[str, str], list[tuple[str, str, str]]] = defaultdict(list)
         parent_ddl = context.extra.get("ddl_columns_by_table") or {}
         for table_id in direct_tables.get(parent_id, ()):
-            for column_name in _allowed_columns(parent_ddl.get(table_id) or ()).values():
-                owner_by_column[_canonical(column_name)].append(
+            for identity, column_name in _allowed_columns(
+                parent_ddl.get(table_id) or (),
+            ).items():
+                owner_by_column[identity].append(
                     (parent_id, table_id, column_name)
                 )
         for child_id in owned_children:
             for table_id, columns in raw_result[child_id].items():
-                for column_name in columns:
-                    owner_by_column[_canonical(column_name)].append(
-                        (child_id, table_id, column_name)
-                    )
-        for name, line in _sql_identifiers(context, source_cache, excluded=excluded):
-            owners = owner_by_column.get(_canonical(name), ())
+                child_ddl = contexts[child_id].extra.get("ddl_columns_by_table") or {}
+                for identity, column_name in _allowed_columns(
+                    child_ddl.get(table_id) or (),
+                ).items():
+                    if column_name in columns:
+                        owner_by_column[identity].append(
+                            (child_id, table_id, column_name)
+                        )
+        for name, name_quoted, line in _parser_unqualified_identifiers(context):
+            owners = owner_by_column.get(_identifier_key(name, name_quoted), ())
             if len(owners) != 1:
                 continue
             child_id, table_id, column_name = owners[0]
@@ -222,103 +222,54 @@ def _project_derived_output_uses(
             )
 
 
-def _allowed_columns(columns: object) -> dict[str, str]:
-    return {
-        _canonical(name): str(name)
-        for name in columns if str(name).strip()
-    }
+def _allowed_columns(columns: object) -> dict[tuple[str, str], str]:
+    result: dict[tuple[str, str], str] = {}
+    for column in columns:
+        name = str(getattr(column, "name", "") or "").strip()
+        if not name:
+            raise ValueError(f"DDL column identity is missing name: {column!r}")
+        identity = _identifier_key(name, bool(getattr(column, "name_quoted", False)))
+        if identity in result:
+            raise ValueError(
+                f"duplicate canonical DDL column identity: {identity!r}"
+            )
+        result[identity] = name
+    return result
 
 
-def _canonical(value: object) -> str:
-    return str(value or "").strip().casefold()
+def _identifier_key(value: object, quoted: bool) -> tuple[str, str]:
+    text = str(value or "").strip()
+    if quoted:
+        if len(text) >= 2 and text.startswith('"') and text.endswith('"'):
+            text = text[1:-1].replace('""', '"')
+        return "Q", text
+    return "U", text.upper()
 
 
-def _sql_identifiers(
+def _parser_unqualified_identifiers(
     context: AnalysisContext,
-    source_cache: SourceFileCache,
-    *,
-    excluded: list[tuple[int, int]] | None = None,
-) -> tuple[tuple[str, int], ...]:
-    source = source_cache.slice(context.file_path, context.start_line, context.end_line)
-    if not source.strip():
-        return ()
-    try:
-        tokens = Tokenizer().tokenize(source)
-    except Exception:
-        return ()
-    excluded = excluded or []
-    alias_indexes = _select_output_alias_indexes(tokens)
-    return tuple(
-        (token.text, context.start_line + token.line - 1)
-        for index, token in enumerate(tokens)
-        if token.token_type in _IDENTIFIER_TOKENS
-        # A SELECT output alias is a new result name, not a read of a same-named
-        # physical column.  DDL-unique fallback must not turn ``COUNT(*) AS CNT``
-        # or ``1 AS CNT`` into table.CNT evidence.
-        and index not in alias_indexes
-        and context.start_line <= context.start_line + token.line - 1 <= context.end_line
-        and not any(
-            start <= context.start_line + token.line - 1 <= end
-            for start, end in excluded
-        )
-    )
+) -> tuple[tuple[str, bool, int], ...]:
+    """Return evidence-v2 syntax or reject an incomplete Oracle AST.
 
-
-def _select_output_alias_indexes(tokens: list[Any]) -> set[int]:
-    """Return explicit and Oracle implicit SELECT-output alias token positions.
-
-    Oracle permits ``expression alias`` without ``AS``.  These names define the
-    derived result row and must never be attributed to a same-named DDL column.
-    The scan is lexical only: it marks the last identifier of each top-level
-    SELECT-list item when the preceding token already completes an expression.
+    An absent key means the Parser did not account for unqualified SQL identifiers. Empty is a
+    valid, explicit v2 result. Treating both states as ``()`` would recreate C-028.
     """
-    aliases = {
-        index for index, token in enumerate(tokens)
-        if token.token_type in _IDENTIFIER_TOKENS
-        and index > 0
-        and tokens[index - 1].token_type == TokenType.ALIAS
-    }
-    expression_end_types = {
-        TokenType.NUMBER,
-        TokenType.STRING,
-        TokenType.R_PAREN,
-        TokenType.VAR,
-        TokenType.IDENTIFIER,
-        TokenType.END,
-    }
-    for select_index, token in enumerate(tokens):
-        if token.token_type != TokenType.SELECT:
-            continue
-        depth = 0
-        item_start = select_index + 1
-        index = item_start
-        while index < len(tokens):
-            current = tokens[index]
-            if current.token_type == TokenType.L_PAREN:
-                depth += 1
-            elif current.token_type == TokenType.R_PAREN:
-                if depth == 0:
-                    break
-                depth -= 1
-            boundary = depth == 0 and current.token_type in {
-                TokenType.COMMA, TokenType.FROM,
-            }
-            if boundary:
-                segment = list(range(item_start, index))
-                if len(segment) >= 2:
-                    alias_index = segment[-1]
-                    previous_index = segment[-2]
-                    if (
-                        tokens[alias_index].token_type in _IDENTIFIER_TOKENS
-                        and tokens[previous_index].token_type != TokenType.DOT
-                        and tokens[previous_index].token_type in expression_end_types
-                    ):
-                        aliases.add(alias_index)
-                if current.token_type == TokenType.FROM:
-                    break
-                item_start = index + 1
-            index += 1
-    return aliases
+    if "unqualified_identifier_references" not in context.extra:
+        raise ValueError(
+            "Oracle column projection requires parser data-object evidence v2: "
+            f"{context.id} at {context.file_path}:{context.start_line}-{context.end_line}"
+        )
+    result: list[tuple[str, bool, int]] = []
+    for reference in context.extra["unqualified_identifier_references"] or ():
+        name = str(getattr(reference, "name", "") or "").strip()
+        line = int(getattr(reference, "evidence_line", 0) or 0)
+        if not name or not context.start_line <= line <= context.end_line:
+            raise ValueError(
+                "invalid parser unqualified identifier evidence: "
+                f"{context.id} name={name!r} line={line}"
+            )
+        result.append((name, bool(getattr(reference, "name_quoted", False)), line))
+    return tuple(result)
 
 
 def _merge_candidate(

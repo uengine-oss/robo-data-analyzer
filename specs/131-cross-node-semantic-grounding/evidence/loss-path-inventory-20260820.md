@@ -285,7 +285,32 @@
 - 기준 corpus는 source/AST/diagnostic이 각각 23개이고 filePath one-to-one, diagnostic status EXACT 23,
   source SHA-256 mismatch 0, invalid AST 0이라 C-029는 미발동이다. `_runs/dbms`가 없어 C-028 실제 영향은
   아직 측정할 수 없다.
-- 현재 판정: C-028은 후속 DBMS 책임 슬라이스에 남는다. C-029는 **해결**: parser-supported source
+- C-028 확정 배선: Parser `4b849f1`은 grammar가 구분하는 물리 객체와 명시 qualified column만
+  evidence v1 AST로 내고, Analyzer `d4986087`이 빠진 unqualified identifier를 exact source에서
+  sqlglot으로 재토큰화한다. tokenizer 예외는 `()`가 되어 `column_usage_candidates_json`의 exact
+  direct table 아래 빈 map으로 실제 `code_table_insights_batch` prompt에 들어간다. 이 response의
+  dynamic validator는 table role/semantic slot만 닫고 column은 입력 assignment에서 normalizer가
+  재결합하므로 raw/parsed/validator가 누락을 관측할 수 없다. step8은 해당 DDL column을
+  `candidates=[]`로 `table_description` prompt에 보내고, 결과를 Neo4j COLUMN semantic properties,
+  Analyzer MCP `node_detail`, Catalog API `analyzed_description` consumer가 읽는다.
+- C-028 분류/결정: 표시 preview나 안전한 실행 분할이 아니라 실제 의미 근거의 silent-loss fallback이다.
+  Parser listener가 query/DML owner별 grammar-owned `unqualifiedIdentifierReferences`를 소유권 창작 없이
+  evidence v2 AST로 exact-once 생산하고, Analyzer는 DDL allowlist와 유일 query-scope owner만 결정한다.
+  Analyzer의 sqlglot tokenizer·SELECT alias lexical heuristic·예외 fallback은 제거한다. ambiguous owner는
+  계속 비우며 finding 없이 tokenizer failure를 정상 빈값으로 바꾸는 경로 자체를 없앤다.
+- C-028 red(2026-08-20): Parser 계약은 v2/새 reference 부재로 1건 실패했고, Analyzer loader는 v2를
+  거부했으며, tokenizer 강제 실패 시 parser-owned `TAGSN` 후보가 사라져 2건 실패했다. Parser
+  `10 tests` 중 기존 9건 green/신규 1건 red, Analyzer 관련 `15 tests` 중 13건 green/신규 2건 red다.
+  `_runs/dbms`가 없으므로 actual DBMS raw/parsed 발동 표본은 여전히 **미검증**이다.
+- 해결(C-028, 2026-08-20): Parser `2e33720` evidence v2 listener가 function name, SELECT output
+  alias, 물리 object name, qualified prefix, nested query owner를 제외하고 unqualified
+  `general_element|column_name` occurrence를 token 시작점 기준 exact-once 생산한다. Analyzer는 v2의
+  명시 empty와 v1/누락을 구별하고, DDL/query-scope exact unique owner만 투영한다. sqlglot tokenizer,
+  source lexical alias heuristic, tokenizer-exception empty fallback은 제품 경로에서 제거됐다.
+  최초 red 3건은 green이고 Parser 전체 `157 tests, 8 skipped`, Analyzer 전체
+  `1093 tests, 6 skipped`, prompt ledger `17/17`을 통과했다.
+- 현재 판정: C-028은 **해결**, actual DBMS raw/parsed 표본은 `_runs/dbms` 부재로 **미검증**이다.
+  C-029는 **해결**: parser-supported source
   모집단과 AST `FILE.filePath` 모집단을 exact set equality로 비교하고 missing/orphan/duplicate를 거부한다.
   각 source의 exact bytes SHA-256을 diagnostic `sourceSha256`과 비교하며 `EXACT`, `knownAndComplete`,
   missing declaration 0, lexer/parser error와 recovery 0을 함께 강제한다. 현재 corpus 23건은
@@ -367,6 +392,39 @@
   영속 DB 내용/schema 변경은 0이다.
 - 현재 판정: **해결**. 실제 Framework/DBMS full run의 결정론 graph 전수 회계와 봉인 의미 판정은
   A131-05가 소유한다.
+
+### C-033 — quoted DDL column identity를 버린 casefold owner projection
+
+- C-028 listener v2 배선을 추적하면서 새로 발견했다. sqlglot Oracle DDL AST의 `Identifier.quoted`는
+  `"Foo"=quoted true`, `"foo"=quoted true`, `BAR=false`를 정확히 구분하지만 `_handle_column`은
+  `col.name`만 `Column`에 보존한다. step7은 그 이름들을 전부 casefold한 dict로 만들어 quoted
+  `"Foo"`/`"foo"`를 충돌시키고 Parser의 `nameQuoted`도 owner 결정에 쓰지 않는다.
+- 영향: quoted reference가 DDL column과 매칭되지 않거나 case-sensitive sibling에 잘못 귀속되어
+  column usage candidate와 후속 TABLE/COLUMN prompt·Neo4j·API/MCP 의미가 누락/오염될 수 있다.
+  현재 `_runs/dbms`가 없어 actual 발동 표본은 미검증이다.
+- red(2026-08-20): DDL parser가 quoted identity를 보존해야 하는 fixture와 Parser quoted reference가
+  같은 case의 quoted DDL column 하나에만 귀속돼야 하는 projection fixture를 추가했다.
+- 판정/방향: 실제 의미 손실·오귀속. DDL AST의 quoted bit를 `Column`→Neo4j→step7 owner identity까지
+  보존하고, unquoted는 Oracle uppercase canonical identity, quoted는 내부 exact case identity로 비교한다.
+  이름 문자열 casefold fallback은 만들지 않는다.
+- 해결(2026-08-20): DDL `Column.name_quoted`를 state/artifact와 Neo4j에 저장하고 MCP/REST 공용
+  `node_detail` column payload에도 노출한다. step7의 DDL allowlist는 문자열이 아니라 exact Column
+  identity를 받으며 Parser qualified/unqualified의 `nameQuoted`와 `Q:exact-case|U:uppercase`로 비교한다.
+  `"Foo"`/`"foo"` 반대 fixture와 실제 Neo4j `test` transaction rollback에서 `Foo:true` 저장·조회,
+  rollback residue 0을 확인했다. 최초 red 2건은 green이다.
+- 현재 판정: C-033은 **해결**, 실제 DBMS corpus 발동은 **미검증**이다.
+
+### C-034 — quoted DDL constraint/comment identity의 별도 casefold 손실
+
+- C-033 후속 정적 추적에서 DDL column owner와 별개인 기존 경로를 발견했다. sqlglot AST는 constraint
+  identifier의 quoted bit를 보존하지만 `_table_pk_columns`, `_declared_unique_keys`, FK cardinality는
+  column 이름을 `.lower()`하고 `COMMENT ON`의 `_ref_segments`도 quote를 제거한 뒤 lower한다.
+- 따라서 `"Foo"`/`"foo"` sibling에서 PK/UNIQUE/FK cardinality나 formal column comment가 다른
+  column에 복제·오귀속될 수 있다. 이는 step1 Column/FK→Neo4j→table/column prompt→API/MCP까지
+  구조·의미 근거를 오염시키며, `_runs/dbms`가 없어 actual 발동은 미검증이다.
+- 유입: COMMENT/PK 원형 `6956d02`, UNIQUE/FK cardinality `1aef9a3`.
+- 현재 판정: **실제 구조/의미 손실·오귀속, 후속 red-first 책임 슬라이스 대기**. C-033의 step7
+  owner identity와 섞어 정상 처리된 것으로 주장하지 않는다.
 
 ## 4. 최초 후보 C-006~C-015 종결 분류
 
@@ -464,15 +522,17 @@
 | C-024/C-026 | inheritance depth/unknown AST reporting `bc699ee` |
 | C-025/C-029 | AST-only 모집단 원형 `1d0a504` 계열; source↔AST↔diagnostic closure는 현재도 부재 |
 | C-027 | source-read warning `c557efc`, code-text audit `79831ff`, prompt status `d498608` |
-| C-028 | 현재 column tokenizer fallback `d498608` |
+| C-028 | column tokenizer fallback `d498608`; Parser v2 replacement `2e33720` |
 | C-030 | current SCC suppression/packet `d498608` |
 | C-031 | Catalog lineage/fallback `30828f7` |
 | C-032 | run-start public graph wipe `0f54111` |
+| C-033 | DDL quoted bit drop 원형 `6956d02`; step7 casefold `d498608` |
+| C-034 | COMMENT/PK lower `6956d02`; UNIQUE/FK lower `1aef9a3` |
 
 - 검증됨: 기준선/DB 상태, F-001 actual schema·경계 수량, 위 정적 producer/caller 배선.
 - 검증됨: 각 F/C 경계의 유입 commit 축. "부재" 결함은 해당 owner가 생긴 최초 계열과 현재까지
   closure가 추가되지 않았음을 함께 기록했다.
-- 미검증: DBMS actual run, sealed 직접 의미 판정, 새 계약/red test.
+- 미검증: DBMS actual run, sealed 직접 의미 판정, 남은 C-004/C-017~021/C-031/C-034 계약/red test.
 - 아직 제품 정확도나 완료를 주장하지 않는다.
 
 ### 2026-08-20 계약 고정 및 첫 red test

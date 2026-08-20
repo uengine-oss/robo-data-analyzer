@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from graph.schema.graph_nodes import CodeNode
 from pipeline.models.analysis_context import AnalysisContext
@@ -26,6 +28,21 @@ class ColumnUsageProjectionTest(unittest.TestCase):
         path.write_text(text, encoding="utf-8")
         return path
 
+    @staticmethod
+    def _identifiers(*items: tuple[str, int]) -> tuple[SimpleNamespace, ...]:
+        return tuple(
+            SimpleNamespace(
+                raw_reference=name, name=name, evidence_line=line, name_quoted=False,
+            )
+            for name, line in items
+        )
+
+    @staticmethod
+    def _columns(*names: str) -> tuple[SimpleNamespace, ...]:
+        return tuple(
+            SimpleNamespace(name=name, name_quoted=False) for name in names
+        )
+
     def test_single_direct_table_projects_unqualified_ddl_identifiers(self) -> None:
         source = self._source(
             "SELECT TAGSN, COMPUTE\n"
@@ -41,7 +58,12 @@ class ColumnUsageProjectionTest(unittest.TestCase):
             start_line=1, end_line=3, direct_reads=("db:CALC_TB",),
             extra={
                 "source_language": "oracle",
-                "ddl_columns_by_table": {"db:CALC_TB": ("TAGSN", "COMPUTE", "ETC")},
+                "ddl_columns_by_table": {
+                    "db:CALC_TB": self._columns("TAGSN", "COMPUTE", "ETC"),
+                },
+                "unqualified_identifier_references": self._identifiers(
+                    ("TAGSN", 1), ("COMPUTE", 1), ("TAGSN", 3), ("tagNo", 3),
+                ),
             },
         )
 
@@ -54,6 +76,57 @@ class ColumnUsageProjectionTest(unittest.TestCase):
         self.assertEqual([1], got["COMPUTE"]["evidence_lines"])
         self.assertNotIn("ETC", got)
         self.assertEqual("sole_direct_table", got["TAGSN"]["ownership"])
+
+    def test_parser_identifier_evidence_survives_sql_tokenizer_failure(self) -> None:
+        source = self._source("SELECT TAGSN FROM CALC_TB;\n")
+        node = CodeNode(
+            id="select:parser-owned", name="SELECT", signature="SELECT",
+            file_path=str(source), start_line=1, end_line=1, label="SELECT",
+        )
+        context = AnalysisContext(
+            id=node.id, signature=node.signature, file_path=str(source),
+            start_line=1, end_line=1, direct_reads=("db:CALC_TB",),
+            extra={
+                "source_language": "oracle",
+                "ddl_columns_by_table": {"db:CALC_TB": self._columns("TAGSN")},
+                "unqualified_identifier_references": (
+                    SimpleNamespace(
+                        raw_reference="TAGSN", name="TAGSN",
+                        evidence_line=1, name_quoted=False,
+                    ),
+                ),
+            },
+        )
+
+        with patch("sqlglot.Tokenizer.tokenize", side_effect=RuntimeError("tokenizer unavailable")):
+            got = build_column_usage_projections(
+                {node.id: context}, {node.id: node},
+                strategy_name="dbms", source_cache=SourceFileCache(),
+            )[node.id]["db:CALC_TB"]
+
+        self.assertEqual([1], got["TAGSN"]["evidence_lines"])
+        self.assertEqual("sole_direct_table", got["TAGSN"]["ownership"])
+
+    def test_oracle_leaf_without_parser_v2_identifier_accounting_fails_closed(self) -> None:
+        source = self._source("SELECT TAGSN FROM CALC_TB;\n")
+        node = CodeNode(
+            id="select:v1", name="SELECT", signature="SELECT",
+            file_path=str(source), start_line=1, end_line=1, label="SELECT",
+        )
+        context = AnalysisContext(
+            id=node.id, signature=node.signature, file_path=str(source),
+            start_line=1, end_line=1, direct_reads=("db:CALC_TB",),
+            extra={
+                "source_language": "oracle",
+                "ddl_columns_by_table": {"db:CALC_TB": self._columns("TAGSN")},
+            },
+        )
+
+        with self.assertRaisesRegex(ValueError, "requires parser data-object evidence v2"):
+            build_column_usage_projections(
+                {node.id: context}, {node.id: node},
+                strategy_name="dbms", source_cache=SourceFileCache(),
+            )
 
     def test_multiple_tables_keep_qualified_and_ddl_unique_ownership(self) -> None:
         source = self._source("SELECT A.ID, B.STATUS, NAME FROM A JOIN B ON A.ID=B.ID;\n")
@@ -68,9 +141,10 @@ class ColumnUsageProjectionTest(unittest.TestCase):
             extra={
                 "source_language": "oracle",
                 "ddl_columns_by_table": {
-                    "db:A": ("ID", "NAME"),
-                    "db:B": ("ID", "STATUS"),
+                    "db:A": self._columns("ID", "NAME"),
+                    "db:B": self._columns("ID", "STATUS"),
                 },
+                "unqualified_identifier_references": self._identifiers(("NAME", 1)),
                 "data_object_usages": (
                     DataObjectUsageEvidence(
                         source_id=node.id, raw_reference="A", name="A", alias="A",
@@ -114,9 +188,12 @@ class ColumnUsageProjectionTest(unittest.TestCase):
             extra={
                 "source_language": "oracle",
                 "ddl_columns_by_table": {
-                    "db:A": ("ID", "SHARED_ID"),
-                    "db:B": ("ID", "SHARED_ID", "COMPUTE"),
+                    "db:A": self._columns("ID", "SHARED_ID"),
+                    "db:B": self._columns("ID", "SHARED_ID", "COMPUTE"),
                 },
+                "unqualified_identifier_references": self._identifiers(
+                    ("SHARED_ID", 1), ("COMPUTE", 1),
+                ),
             },
         )
 
@@ -128,6 +205,39 @@ class ColumnUsageProjectionTest(unittest.TestCase):
         self.assertNotIn("SHARED_ID", got["db:A"])
         self.assertNotIn("SHARED_ID", got["db:B"])
         self.assertEqual("ddl_unique_in_scope", got["db:B"]["COMPUTE"]["ownership"])
+
+    def test_quoted_identifier_matches_only_the_exact_quoted_ddl_column(self) -> None:
+        source = self._source('SELECT "Foo" FROM T;\n')
+        node = CodeNode(
+            id="select:quoted-column", name="SELECT", signature="SELECT",
+            file_path=str(source), start_line=1, end_line=1, label="SELECT",
+        )
+        context = AnalysisContext(
+            id=node.id, signature=node.signature, file_path=str(source),
+            start_line=1, end_line=1, direct_reads=("db:T",),
+            extra={
+                "source_language": "oracle",
+                "ddl_columns_by_table": {
+                    "db:T": (
+                        SimpleNamespace(name="Foo", name_quoted=True),
+                        SimpleNamespace(name="foo", name_quoted=True),
+                    ),
+                },
+                "unqualified_identifier_references": (
+                    SimpleNamespace(
+                        raw_reference='"Foo"', name='"Foo"',
+                        evidence_line=1, name_quoted=True,
+                    ),
+                ),
+            },
+        )
+
+        got = build_column_usage_projections(
+            {node.id: context}, {node.id: node},
+            strategy_name="dbms", source_cache=SourceFileCache(),
+        )[node.id]["db:T"]
+
+        self.assertEqual(["Foo"], list(got))
 
     def test_select_output_alias_is_not_projected_as_a_physical_column(self) -> None:
         source = self._source(
@@ -144,11 +254,12 @@ class ColumnUsageProjectionTest(unittest.TestCase):
             extra={
                 "source_language": "oracle",
                 "ddl_columns_by_table": {
-                    "db:A": (
+                    "db:A": self._columns(
                         "VAL", "TOTAL", "CNT", "FIXED_VALUE",
                         "CNT_IMPLICIT", "FIXED_IMPLICIT",
                     ),
                 },
+                "unqualified_identifier_references": self._identifiers(("VAL", 1)),
             },
         )
 
@@ -179,7 +290,10 @@ class ColumnUsageProjectionTest(unittest.TestCase):
                 start_line=1, end_line=1, direct_reads=(f"db:{node_id}",),
                 extra={
                     "source_language": "oracle",
-                    "ddl_columns_by_table": {f"db:{node_id}": ("ID",)},
+                    "ddl_columns_by_table": {
+                        f"db:{node_id}": self._columns("ID"),
+                    },
+                    "unqualified_identifier_references": self._identifiers(("ID", 1)),
                 },
             )
             for node_id in nodes
@@ -211,7 +325,10 @@ class ColumnUsageProjectionTest(unittest.TestCase):
                 start_line=1, end_line=2, direct_reads=("db:OTHER_TB",),
                 extra={
                     "source_language": "oracle",
-                    "ddl_columns_by_table": {"db:OTHER_TB": ("OTHER_VALUE",)},
+                    "ddl_columns_by_table": {
+                        "db:OTHER_TB": self._columns("OTHER_VALUE"),
+                    },
+                    "unqualified_identifier_references": self._identifiers(("COMPUTE", 1)),
                 },
             ),
             child.id: AnalysisContext(
@@ -219,7 +336,10 @@ class ColumnUsageProjectionTest(unittest.TestCase):
                 start_line=2, end_line=2, direct_reads=("db:CALC_TB",),
                 extra={
                     "source_language": "oracle",
-                    "ddl_columns_by_table": {"db:CALC_TB": ("COMPUTE",)},
+                    "ddl_columns_by_table": {
+                        "db:CALC_TB": self._columns("COMPUTE"),
+                    },
+                    "unqualified_identifier_references": (),
                     "data_object_usages": (
                         DataObjectUsageEvidence(
                             source_id=child.id, raw_reference="CALC_TB", name="CALC_TB",
@@ -254,7 +374,7 @@ class ColumnUsageProjectionTest(unittest.TestCase):
         context = AnalysisContext(
             id=node.id, signature=node.signature, file_path=str(source),
             start_line=1, end_line=1, direct_reads=("db:A",),
-            extra={"ddl_columns_by_table": {"db:A": ("ID",)}},
+            extra={"ddl_columns_by_table": {"db:A": self._columns("ID")}},
         )
 
         got = build_column_usage_projections(
@@ -275,7 +395,7 @@ class ColumnUsageProjectionTest(unittest.TestCase):
             start_line=1, end_line=1, direct_reads=("db:A",),
             extra={
                 "source_language": "postgresql",
-                "ddl_columns_by_table": {"db:A": ("ID",)},
+                "ddl_columns_by_table": {"db:A": self._columns("ID")},
             },
         )
 

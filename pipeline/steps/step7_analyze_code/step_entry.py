@@ -127,12 +127,14 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
     #   종전엔 id 문자열을 잘라 테이블 id 를 얻었다. 그러면 소비자가
     #   id 의 **모양**에 묶여, id 규칙을 바꿀 수 없고 겹침도 못 고친다(그게 이 스펙 이전의 상태).
     #   id 는 불투명한 열쇠일 뿐이다 — 소속은 관계가 말해준다.
-    name_by_col: dict[str, str] = {c.id: c.name for c in state.get("columns", [])}
+    column_by_id = {c.id: c for c in state.get("columns", [])}
     columns_by_table: dict[str, list[str]] = {}
+    column_identities_by_table: dict[str, list[object]] = {}
     for e in state.get("has_column_edges", []):
-        cname = name_by_col.get(e.child_id)
-        if cname:
-            columns_by_table.setdefault(e.parent_id, []).append(cname)
+        column = column_by_id.get(e.child_id)
+        if column is not None and column.name:
+            columns_by_table.setdefault(e.parent_id, []).append(column.name)
+            column_identities_by_table.setdefault(e.parent_id, []).append(column)
     table_descriptions = _build_table_contexts(
         state.get("tables", []), state.get("table_sample_data", {}), columns_by_table,
     )
@@ -140,7 +142,7 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
     # 각 코드노드는 자기 R/W 테이블만 보유하므로 다른 테이블 컬럼이 섞일 수 없다.
     for ctx in contexts.values():
         ctx.extra["ddl_columns_by_table"] = {
-            table_id: tuple(columns_by_table.get(table_id, ()))
+            table_id: tuple(column_identities_by_table.get(table_id, ()))
             for table_id in dict.fromkeys((*ctx.reads, *ctx.writes))
         }
 

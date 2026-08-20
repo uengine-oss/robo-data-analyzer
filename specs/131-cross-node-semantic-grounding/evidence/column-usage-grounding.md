@@ -11,7 +11,7 @@ normalizer가 full identity와 source를 다시 결합하며 step8은 이를 fin
 집계한다.
 
 ```text
-parser qualified column / DBMS SQL token
+parser qualified column / parser v2 unqualified SQL identifier
   + exact direct TABLE owner + DDL HAS_COLUMN
   + full code node id + absolute source line
     → column_usage_candidates
@@ -26,23 +26,24 @@ parser qualified column / DBMS SQL token
 
 1. parser가 `alias.column`을 exact table에 귀속한 경우 `qualified`다.
 2. parser diagnostic의 `language=oracle`인 DBMS leaf node의 exact direct table이 하나뿐이고
-   DDL column token이 그 node SOURCE에 있으면
+   Parser v2 unqualified identifier가 그 table의 DDL column이면
    `sole_direct_table`이다.
 3. 같은 DBMS query scope에 direct table이 여러 개여도 그 token이 한 table의 DDL에만 존재하면
    `ddl_unique_in_scope`다.
 4. 여러 table에 존재하는 unqualified column, descendant DML/query source가 겹치는 container,
-   같은 file/start/end를 공유하는 node는 lexical ownership을 만들지 않는다.
+   같은 file/start/end를 공유하는 node는 unqualified ownership을 만들지 않는다.
 5. Framework 문자열 SQL은 현재 parser가 column AST를 생산하지 않으므로 source 문자열을 다시
    정규식 파싱하지 않는다. qualified producer가 없으면 후보를 비우고 final needs_context로 닫는다.
-6. Oracle outer SELECT가 child SELECT의 projected column을 exact identifier로 소비하고 그 physical
+6. Oracle outer SELECT가 child SELECT의 projected column을 Parser-owned exact identifier로 소비하고 그 physical
    owner가 하나뿐이면 `derived_output_unique` def-use를 child candidate에 연결한다. parent full node
    id와 line/text를 source line별로 보존한다. 동명 owner가 둘 이상이면 연결하지 않는다.
 7. `.sql` 확장자로 방언을 추측하지 않는다. step2가 immutable
    `diagnostics/<source>.parse.json`의 sourcePath/language 일치를 검사해 `source_language`를 넘기며,
-   PostgreSQL/diagnostic 부재·불일치에서는 unqualified/derived lexical projection을 닫는다.
+   PostgreSQL/diagnostic 부재·불일치에서는 unqualified/derived projection을 닫는다.
 
-이 코드는 column 이름의 업무 뜻을 만들지 않는다. SQL tokenizer는 comment/string을 제외한 exact
-identifier coordinate를 찾고 DDL allowlist와 query-scope owner를 검증하는 데만 쓴다. 자연어
+이 코드는 column 이름의 업무 뜻을 만들지 않는다. PL/SQL grammar/listener가 function name, SELECT
+output alias, 물리 object name, qualified prefix와 nested-query 소유자를 제외한 exact identifier
+coordinate를 evidence v2 AST로 낸다. Analyzer는 DDL allowlist와 query-scope owner만 검증한다. 자연어
 `usage_summary`는 GPU가 SOURCE에서 생성한다.
 
 ## 최소 출력 계약
@@ -77,7 +78,7 @@ column name·owner·line·source를 GPU가 반복 출력하지 않는다. dynami
 | `SUB_TAGSN` | qualified `B` | 90, 99 | projection 및 `C.TAGSN` join |
 | `TAGSN` | qualified `B` | 97, 104 | `A.TAGSN` join과 하위 TAGSN filter |
 
-별도 단일-table node `FN_CALC_RDF01HH_TRNS_TB.sql:10-15`도 DDL token projection으로
+별도 단일-table node `FN_CALC_RDF01HH_TRNS_TB.sql:10-15`도 Parser v2 identifier projection으로
 `TAGSN:10,15`, `SUB_TAGSN:11`, `COM_UNIT:12`, `COMPUTE:13`을 정확히 복구한다. `ETC`처럼
 SOURCE에 없는 DDL column은 후보에 생기지 않는다.
 
@@ -96,4 +97,7 @@ column이 비는 이전 단절을 제거한다. T131-13 bounded replay에서 COM
 - dynamic schema는 exact column key required/extra-forbid와 normalizer evidence 결합을 검증한다.
 - step8 집계 테스트는 full source id/line/text가 final candidate까지 유지됨을 검증한다.
 - 관련 국소 회귀와 bounded replay는 `semantic-generation-design.md`가 소유한다.
-- 보존 DB/log는 수정하지 않았고 Analyzer 전체 재분석은 아직 실행하지 않았다.
+- C-028/C-033 책임 슬라이스는 Parser 전체 `157 tests, 8 skipped`, Analyzer 전체
+  `1093 tests, 6 skipped`, prompt ledger `17/17`을 통과했다. Neo4j `test` transaction에서 quoted
+  COLUMN을 저장·조회한 뒤 rollback해 잔여 0을 확인했다.
+- 보존 DB/log는 수정하지 않았고 실제 DBMS raw/parsed replay는 `_runs/dbms` 부재로 미검증이다.

@@ -199,6 +199,12 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
     visited-set closure, Python exact C3 MRO로 4-hop/cycle/multiple-interface를 닫았고, invalid C3는 fail-closed한다.
     `REFERENCES → prompt JSON → SYMBOL evidence`까지 검증했다. 최초 red 2건과 C3 오순서 red 1건은 green이며
     Analyzer `1089 passed, 6 skipped`, prompt `17/17`, Parser current report `154 passed, 8 skipped`다.
-15. 현재: A131-04e의 남은 구조 closure(C-004/C-017~021/C-028/C-031)를 다음 책임 슬라이스로 좁힌다.
+15. 완료(C-028/C-033): Parser `2e33720` evidence v2 listener가 owner별 unqualified SQL identifier를
+    exact-once 생산하고 Analyzer는 v2 명시 empty와 누락을 구분해 DDL/query-scope unique owner만
+    투영한다. sqlglot source tokenizer/alias heuristic/silent-empty fallback을 제거했다. DDL quoted bit도
+    `Column`→Neo4j→step7→MCP detail까지 보존해 `"Foo"`/`"foo"`를 exact case로 분리한다. red 5건은
+    green이며 Parser `157/0/0/8`, Analyzer `1093 passed, 6 skipped`, prompt `17/17`, Neo4j rollback
+    저장·조회/잔여 0을 통과했다. `_runs/dbms`가 없어 actual DBMS raw/parsed 표본은 미검증이다.
+    후속 추적에서 DDL PK/UNIQUE/FK/comment가 별도로 lower하는 C-034를 새 pending으로 분리했다.
 16. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
 17. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.

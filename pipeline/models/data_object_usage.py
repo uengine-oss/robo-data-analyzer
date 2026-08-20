@@ -32,6 +32,24 @@ class QualifiedColumnUsage:
 
 
 @dataclass(frozen=True)
+class UnqualifiedIdentifierUsage:
+    """Parser-owned SQL identifier syntax without a claimed physical table owner."""
+
+    raw_reference: str
+    name: str
+    evidence_line: int
+    name_quoted: bool = False
+
+    def as_prompt_dict(self) -> dict:
+        return {
+            "raw_reference": self.raw_reference,
+            "name": self.name,
+            "evidence_line": self.evidence_line,
+            "name_quoted": self.name_quoted,
+        }
+
+
+@dataclass(frozen=True)
 class DataObjectUsageEvidence:
     source_id: str
     raw_reference: str
@@ -135,6 +153,21 @@ def usages_from_parser_ast(
         ))
     unresolved = tuple(column for index, column in enumerate(columns) if index not in matched)
     return tuple(usages), unresolved
+
+
+def unqualified_identifiers_from_parser_ast(
+    references: Sequence[Mapping[str, object]],
+) -> tuple[UnqualifiedIdentifierUsage, ...]:
+    """Normalize parser evidence v2 without assigning any table ownership."""
+    return tuple(
+        UnqualifiedIdentifierUsage(
+            raw_reference=_required_text(raw, "rawReference"),
+            name=_required_text(raw, "name"),
+            evidence_line=_positive_int(raw, "startLine"),
+            name_quoted=bool(raw.get("nameQuoted", False)),
+        )
+        for raw in references
+    )
 
 
 def dump_data_object_usages(usages: Iterable[DataObjectUsageEvidence]) -> str:

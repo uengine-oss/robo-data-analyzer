@@ -157,7 +157,8 @@ def read_columns(session, table_id: str) -> list[dict]:
     return session.run(
         f"MATCH (t:TABLE {{id:$id, graph_owner:$graph_owner, generation_id:$generation_id}})-[:{HAS_COLUMN}]->"
         "(c:COLUMN {graph_owner:$graph_owner, generation_id:$generation_id}) "
-        "RETURN c.id AS id, c.name AS name, coalesce(c.dtype,'') AS dtype, "
+        "RETURN c.id AS id, c.name AS name, coalesce(c.name_quoted,false) AS name_quoted, "
+        "coalesce(c.dtype,'') AS dtype, "
         "coalesce(c.is_primary_key,false) AS is_primary_key, "
         "coalesce(c.logical_name,'') AS logical_name, "
         "coalesce(c.semantic_evidence_status,'') AS evidence_status, "

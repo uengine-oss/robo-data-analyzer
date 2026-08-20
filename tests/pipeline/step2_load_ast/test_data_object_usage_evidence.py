@@ -56,14 +56,36 @@ def test_legacy_ast_is_explicitly_distinguished_from_complete_empty_evidence() -
 
 
 def test_unknown_parser_evidence_version_fails_closed_at_its_coordinate() -> None:
-    with pytest.raises(ValueError, match=r"dataObjectEvidenceVersion=2 at p\.sql:9"):
+    with pytest.raises(ValueError, match=r"dataObjectEvidenceVersion=3 at p\.sql:9"):
         _make_code_node(
             {
                 "type": "SELECT", "startLine": 9, "endLine": 9,
-                "dataObjectEvidenceVersion": 2,
+                "dataObjectEvidenceVersion": 3,
             },
             "newer", "module", "", "p.sql", None,
         )
+
+
+def test_parser_evidence_v2_preserves_unqualified_identifier_coordinates() -> None:
+    node = _make_code_node(
+        {
+            "type": "SELECT",
+            "startLine": 9,
+            "endLine": 11,
+            "dataObjectEvidenceVersion": 2,
+            "unqualifiedIdentifierReferences": [
+                {"rawReference": "ORDER_ID", "name": "ORDER_ID", "startLine": 9},
+                {"rawReference": '"CaseSensitive"', "name": '"CaseSensitive"',
+                 "nameQuoted": True, "startLine": 10},
+            ],
+        },
+        "select:9", "module", "", "p.sql", "procedure:1",
+    )
+
+    references = node.extra["unqualified_identifier_references"]
+    assert [reference.name for reference in references] == ["ORDER_ID", '"CaseSensitive"']
+    assert [reference.evidence_line for reference in references] == [9, 10]
+    assert references[1].name_quoted is True
 
 
 def test_quoted_aliases_with_different_case_do_not_cross_bind_columns() -> None:

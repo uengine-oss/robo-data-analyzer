@@ -35,7 +35,7 @@ column 업무 설명을 렌더하지 않는다.
   cross-field 의미 상태는 discriminator union으로 별도 닫았다.  
   <https://json-schema.org/understanding-json-schema/reference/object>
 - Oracle PL/SQL SQL 문에서 column과 local variable 이름이 충돌하면 column이 우선한다. Oracle
-  unqualified lexical projection은 이 방언 근거와 DDL allowlist가 함께 있을 때만 허용한다.  
+  Parser v2 unqualified identifier projection은 이 방언 근거와 DDL allowlist가 함께 있을 때만 허용한다.
   <https://docs.oracle.com/en/database/oracle/oracle-database/26/lnpls/column-name-precedence.html>
 - PostgreSQL PL/pgSQL은 variable conflict 기본 동작이 같지 않고 `use_column` 설정이 필요하다.
   parser diagnostic이 PostgreSQL이면 unqualified projection을 하지 않고 qualified evidence만 쓴다.  

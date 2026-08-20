@@ -44,6 +44,21 @@ COMMENT ON COLUMN ORDERS.STATUS_CD IS '주문 상태 코드';
         self.assertEqual("주문 상태 코드", result.columns[0].description)
         self.assertEqual("ddl", result.columns[0].description_source)
 
+    def test_quoted_column_identity_is_preserved_for_case_sensitive_resolution(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "quoted.sql"
+            path.write_text(
+                'CREATE TABLE T ("Foo" NUMBER, "foo" NUMBER, BAR NUMBER);',
+                encoding="utf-8",
+            )
+
+            result = parse_ddl_file(path, db="db", dialect="oracle")
+
+        self.assertEqual(
+            [("Foo", True), ("foo", True), ("BAR", False)],
+            [(column.name, column.name_quoted) for column in result.columns],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

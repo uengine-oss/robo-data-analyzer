@@ -29,7 +29,10 @@ from pipeline.languages import ROUTINE_LABELS, role_of
 from pipeline.languages import DBMS_EXTS, EXT_TO_LANG
 from graph.schema.node_ids import child_id, code_file_id, code_ns_id, positioned
 from shared.events.runtime_logger import log_error, log_warning
-from pipeline.models.data_object_usage import usages_from_parser_ast
+from pipeline.models.data_object_usage import (
+    unqualified_identifiers_from_parser_ast,
+    usages_from_parser_ast,
+)
 
 _COMPONENT = "pipeline.steps.step2_load_ast.antlr_json_reader"
 
@@ -114,7 +117,7 @@ def _make_code_node(
         operator=node.get("operator") or "",
     )
     evidence_version = int(node.get("dataObjectEvidenceVersion") or 0)
-    if evidence_version not in (0, 1):
+    if evidence_version not in (0, 1, 2):
         raise ValueError(
             f"unsupported dataObjectEvidenceVersion={evidence_version} "
             f"at {src_path}:{sl}"
@@ -129,6 +132,12 @@ def _make_code_node(
         code_node.extra["data_object_evidence_version"] = evidence_version
         code_node.extra["data_object_usages"] = usages
         code_node.extra["unresolved_qualified_columns"] = unresolved_columns
+        if evidence_version >= 2:
+            code_node.extra["unqualified_identifier_references"] = (
+                unqualified_identifiers_from_parser_ast(
+                    node.get("unqualifiedIdentifierReferences") or (),
+                )
+            )
     return code_node
 
 

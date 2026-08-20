@@ -116,6 +116,7 @@ class Column:
     id: str                                  # "prod_main.PUBLIC.USERS.user_id"
     name: str                                # "user_id"
     dtype: str                               # "VARCHAR(32)" 등
+    name_quoted: bool = False                # SQL quoted identifier면 exact case identity
     nullable: bool = True
     is_primary_key: bool = False
     is_unique: bool = False

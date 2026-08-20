@@ -321,6 +321,10 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
             ctx.extra["unresolved_qualified_columns"] = tuple(
                 fn.extra.get("unresolved_qualified_columns") or ()
             )
+            if int(fn.extra.get("data_object_evidence_version") or 0) >= 2:
+                ctx.extra["unqualified_identifier_references"] = tuple(
+                    fn.extra.get("unqualified_identifier_references") or ()
+                )
             ctx.extra["unresolved_data_object_usages"] = tuple(
                 fn.extra.get("unresolved_data_object_usages") or ()
             )

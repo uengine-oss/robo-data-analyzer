@@ -18,6 +18,7 @@ UNWIND $items AS item
 MERGE (c:ANALYZER_OWNED:COLUMN {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
 SET c:ANALYZER_OWNED,
     c.name = item.name,
+    c.name_quoted = item.name_quoted,
     c.dtype = item.dtype,
     c.nullable = item.nullable,
     c.is_primary_key = item.is_primary_key,
@@ -60,6 +61,7 @@ def to_item(col: Column) -> dict:
     return {
         "id": col.id,
         "name": col.name,
+        "name_quoted": col.name_quoted,
         "dtype": col.dtype,
         "nullable": col.nullable,
         "is_primary_key": col.is_primary_key,
