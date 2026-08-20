@@ -1,6 +1,12 @@
 # Feature Specification: external 호출 LLM 재검증 — 후보 필터 + 결정론 게이트
 
-**Created**: 2026-07-30 | **Status**: Implemented (동세션·실 LLM 미검증)
+**Created**: 2026-07-30 | **Status**: Superseded by spec 131 C-047 (removed)
+
+> 2026-08-21 actual evidence: 모델이 네 항목의 reason에 “실제 호출일 수도 있어 확신이
+> 부족하므로 드롭하지 않음”이라고 썼지만, 구조상 `drops[]`에 들어간 것만으로 21 routine의
+> 실제 CALLS 46개를 삭제했다. 이름/비율 게이트는 내용 모순을 막지 못했고, LLM이 canonical
+> 호출 그래프를 삭제하는 권한 자체가 원칙 위반이라 spec 131 C-047 슬라이스에서 기능 전체를
+> 제거했다. 이후 이 문서는 유입 이력만 보존한다.
 
 ## 무엇/왜
 이름 매칭이 external 로 뭉갠 호출(미제공 헤더의 매크로 등 가짜 포함)을 LLM 이 심사해

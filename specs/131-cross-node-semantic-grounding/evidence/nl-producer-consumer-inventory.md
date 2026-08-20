@@ -96,7 +96,7 @@ T131-20의 `StructuralProfile`은 새 추출기를 병렬로 만들지 않고 �
 | 산출물 | 이유 | 처리 |
 |---|---|---|
 | `ExternalSkill` proposal | table-access regex/transform 구조를 발견하는 제어 출력. 검증 통과 후 구조 추출기에 편입됨 | 의미 프레임 제외; 현 validator KEEP |
-| `ExternalCallReview.drops[].reason` | 외부 호출 후보 정화를 위한 운영 판정이며 graph 의미로 저장되지 않음 | 제외; deterministic drop gates KEEP |
+| `ExternalCallReview.drops[].reason` | C-047 actual에서 부정 reason과 반대로 canonical CALLS 46개를 삭제 | **제거**; LLM call-review 생산자·schema·prompt·설정·배선을 없애고 Parser/skill 결정론 증거만 CALLS를 변경 |
 | `ResidualPatternResult.no_pattern_reason` 및 제안 설명 | 잔여 table-linking 패턴 탐색/실패 진단 | 제외; 승인된 구조 결과만 StructuralProfile 입력 |
 | Scan `no_match_reason`, exclusion verdict text | project scan 운영·감사 데이터 | 제외; 로그/감사 경로 유지 |
 | query rewrite/judge 답변 | 분석 후 사용자의 검색 질의를 해석하는 runtime 결과 | 이 spec 범위 제외 |

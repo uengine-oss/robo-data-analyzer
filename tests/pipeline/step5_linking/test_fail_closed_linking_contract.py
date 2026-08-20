@@ -1,19 +1,11 @@
 from pathlib import Path
-from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, patch
 
-from agents import call_review
-from graph.schema.graph_edges import Calls
 from graph.schema.graph_nodes import CodeNode
-from llm.usage.cost_budget import CostBudget
 from agents.contracts import DdlTransform, OpMapping, TableAccessPattern
 from pipeline.steps.step4_scan_project.scan_result_contract import (
     ScanResultContractError,
     require_scan_result,
-)
-from pipeline.steps.step5_linking.link_calls.link_calls_by_name_step import (
-    _maybe_review_externals,
 )
 from pipeline.steps.step5_linking.link_tables.regex_table_linker import (
     RegexTableLinker,
@@ -29,36 +21,6 @@ class ScanResultContractTest(unittest.TestCase):
     def test_invalid_scan_result_is_rejected(self) -> None:
         with self.assertRaisesRegex(ScanResultContractError, "violates"):
             require_scan_result({"scan_result": {"confidence": "invalid"}})
-
-
-class ExternalCallReviewFailureTest(unittest.IsolatedAsyncioTestCase):
-    async def test_review_failure_is_not_converted_to_kept_edges(self) -> None:
-        edge = Calls(caller_id="caller", callee_id="external_fn", scope="external")
-        cfg = {
-            "run": SimpleNamespace(run_dir=Path(".")),
-            "cost_budget": CostBudget(limit_usd=1.0),
-        }
-        settings = SimpleNamespace(
-            analysis_agents=SimpleNamespace(call_review_enabled=True)
-        )
-        with (
-            patch("shared.config.settings.SETTINGS", settings),
-            patch.object(
-                call_review, "review_external_calls",
-                new=AsyncMock(side_effect=RuntimeError("review failed")),
-            ),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "review failed"):
-                await _maybe_review_externals([edge], [], cfg)
-
-    async def test_enabled_review_requires_runtime_contract(self) -> None:
-        edge = Calls(caller_id="caller", callee_id="external_fn", scope="external")
-        settings = SimpleNamespace(
-            analysis_agents=SimpleNamespace(call_review_enabled=True)
-        )
-        with patch("shared.config.settings.SETTINGS", settings):
-            with self.assertRaisesRegex(RuntimeError, "requires run and cost_budget"):
-                await _maybe_review_externals([edge], [], {})
 
 
 class RegexTableLinkerFailureTest(unittest.IsolatedAsyncioTestCase):

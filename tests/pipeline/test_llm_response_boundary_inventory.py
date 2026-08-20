@@ -5,7 +5,7 @@ import unittest
 
 from pydantic import ValidationError
 
-from agents.contracts import ExternalCallReview, ResidualPatternResult, ScanResult
+from agents.contracts import ResidualPatternResult, ScanResult
 from pipeline.models.code_analysis_output import RuleItem
 from pipeline.models.summary_response_schema import (
     batch_summary_response_model,
@@ -36,7 +36,6 @@ def _assert_closed_required(case: unittest.TestCase, model, required: set[str]) 
 class LlmResponseBoundaryInventoryTest(unittest.TestCase):
     def test_non_semantic_simple_outputs_require_every_prompt_owned_key(self) -> None:
         boundaries = (
-            (ExternalCallReview, {"drops"}),
             (ResidualPatternResult, {
                 "table_access_patterns", "ddl_transform_override", "no_pattern_reason",
             }),

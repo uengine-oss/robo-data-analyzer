@@ -12,7 +12,6 @@
   "prompts/framework/code_summary.yaml": "8e28e4281200d0407ce15090e6e0471fdd65a8a31f7d72f54da7f7171498ff15",
   "prompts/framework/code_table_insights.yaml": "968c51c4b720b02799e781cab3aea2bd77f3b6452bc230153c1042f63a3e681c",
   "prompts/framework/table_description.yaml": "1c88e5a46371f6face05f46a6de5c4b38bafc2d0042c129ab3b2f962ee7d97cb",
-  "agents/call_review.md": "286a606a2bd0d0e1a923c3777f7fa242f1abc7dd8a82c70e922eb952f95fb36e",
   "agents/external.md": "3d8de3c36bb3a2ffd793f32c611e0cba5854ef9a15a474587a22a9d0f0809033",
   "agents/residual.yaml": "258820dec7c922aed42c97110e8acc15f320c26ea156e672b4972b2444d34a23",
   "agents/scan.md": "57b146f872371b88b8b76bd76294a0e11b8db9a09c8a0da546b649479db682c2"

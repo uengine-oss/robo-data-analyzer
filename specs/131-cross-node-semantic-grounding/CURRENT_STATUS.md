@@ -1,7 +1,7 @@
 # Analyzer 의미 무손실 감사 현재상태
 
-**Updated**: 2026-08-20
-**Status**: A131-04e 진행 중 — source closure와 completed generation 원자 publish 완료, 남은 구조 손실 경로 조사
+**Updated**: 2026-08-21
+**Status**: C-047 완료 — 증거 없는 LLM CALLS 삭제 권한 제거, common evidence IR 계약 red 준비
 **Product-code baseline HEAD**: `c216e674cbac43386f9826632097ca2661395d7d`
 
 이 문서는 현재 진행 위치만 소유한다. 영구 규칙은 `ABSOLUTE_RULES.md`, 상세 역사와 기존 수치는 `HANDOFF.md`와 `evidence/`가 소유한다.
@@ -20,9 +20,10 @@
 
 - Neo4j `127.0.0.1:7687`: 현재 세션에서 인증과 `SHOW DATABASES` 재확인 성공.
   `neo4j|test|framework|dbms|system`만 존재하고 모두 online이다. 허용 목록 밖 DB는 0개다.
-- Analyzer latest pushed slice HEAD `a64b5ab15da138fa7f7b2d588407d96f51488cbf`; 제품 코드 기준선은
-  `c216e674cbac43386f9826632097ca2661395d7d`, 재개 시 dirty 0이었다.
-- Parser HEAD `4b849f14575b6830b82ae5ee980658100c4d8692`, dirty 0.
+- Analyzer 직전 pushed 조사 slice HEAD `ed12a09cc506dd90d9228de5cc75d4d11e568193`; 제품 코드 기준선은
+  `c216e674cbac43386f9826632097ca2661395d7d`이다. 현재 C-047 책임 슬라이스만 변경 중이다.
+- Parser HEAD `e5fbf6b2e2a20dfc1bf42a665d19960715a6e2dd`; 호출 evidence 실험 WIP 7파일은
+  기존 미커밋 상태로 보존하며 아직 승인·stage·commit하지 않는다.
 - Catalog HEAD `1f1aaa608a3d7ef8b01ce15c3df962cf0f1cfefb`, 기존 dirty 12개가 있다.
 - Fabric HEAD `83c9604e2d6ec3f1ececa47d2e2264a74257843d`, 기존 dirty 7개가 있다.
 - Architect HEAD `7b771ac2e7338d03ac8238db5c307d97080232c1`, 기존 dirty 4개가 있다.
@@ -274,7 +275,7 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
     green이다. APAS table 7개, external chunk 0,
     Catalog lineage flow 0이라 세 결함 모두 기준 actual 영향은 0이다. Catalog·Fabric·Architect WIP는
     무변경이며 Neo4j write도 수행하지 않았다.
-23. 진행(C-018 및 신규 C-046~C-051): Analyzer 전역의 언어별 source 재파싱과 중간 LLM 경로를
+23. 완료(조사 C-018 및 신규 C-046~C-051): Analyzer 전역의 언어별 source 재파싱과 중간 LLM 경로를
     `evidence/analyzer-syntax-ownership-audit-20260821.md`에 생산자·소비자·actual 값·유입 계열까지 누적했다.
     Framework 의미 owner=routine, DBMS owner=effective AST CodeNode 계약은 공통화하지 않는다. 구문 차이는
     Parser grammar/listener가 versioned exact evidence IR을 생산하고 Analyzer는 언어 중립 resolution만 하는
@@ -285,7 +286,15 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
     Rule grounding/table/external/column prompt를 Analyzer host lexer가 생산하는 C-049, DBMS dual source fallback과
     Oracle 전용 column evidence C-050, call occurrence 12,112개의 arg/range/identity 축소 C-051도 분리했다.
     현재 Parser 호출 WIP는 PL/pgSQL regex 잔존, Python trailer range, version/source hash/import/symbol/literal/
-    embedded evidence 공백 때문에 계약으로 승인하거나 commit하지 않는다. 먼저 이 조사 보고를 완료하고
-    common evidence IR·coverage matrix·C-047 red부터 고정한다.
-24. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
-25. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.
+    embedded evidence 공백 때문에 계약으로 승인하거나 commit하지 않는다.
+24. 완료(C-047): 이름/빈도만 받은 중간 LLM이 canonical CALLS를 삭제하던 생산자·prompt·schema·validator·
+    설정·배선을 전부 제거했다. red `5 failed, 2 passed`에서 집중 `16 passed, 43 subtests`, 전체
+    `1178 passed, 6 skipped, 367 subtests`, prompt `16/16 byte-identical`로 전환했다. actual APAS를 현재
+    reader+실제 skill 계약으로 read-only 전수 재분류해 `12,112 = 958 + 6,935 + 4,143 + 76`, incomplete/
+    wrapper unresolved 0을 확인했다. 모순 대상 46건은 6파일/21 routine의 source↔Parser AST↔external edge가
+    모두 일치했고 exact-once 보존됐다. 봉인 판정은 전부 `occurrence=true, semantics=unknown, external 보존`이다.
+    Neo4j write/replay는 하지 않아 `framework` DB의 과거 삭제 상태는 아직 교정되지 않았다.
+25. 다음: common evidence IR envelope·언어별 coverage matrix를 red로 고정하고 Parser WIP를 계약에 맞게
+    교체한 뒤 Analyzer의 C-046/C-049/C-051 source 재파싱 소비자를 순차 제거한다.
+26. 검증: 자동 회귀→결정론 전수 회계→봉인 직접 의미 판정→실제 APAS 순으로 수행한다.
+27. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.

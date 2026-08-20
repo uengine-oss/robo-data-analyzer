@@ -79,6 +79,43 @@ Rule/Example의 직접 call fact는 별도 AST call-line 경로라 남았지만 
 판정: **실제 의미 손실**. LLM은 unknown external을 삭제하는 권위자가 될 수 없다. 구조화 parser/skill
 증거가 없으면 호출을 explicit unresolved/external로 보존해야 한다.
 
+#### C-047 교정 슬라이스 검증 결과
+
+call-review를 단순 prompt 보정이나 더 큰 drop gate로 고치지 않았다. 이 경계에는 이름과 빈도밖에 없어서
+실제 호출인지 판정할 exact syntax/runtime 증거가 없고, finding으로 남겨도 소비 계약이 없다. 따라서
+생산자·prompt·schema·validator·설정·배선을 모두 제거하고 Parser AST와 검증된 skill 계약의 결정론 분류만
+canonical CALLS를 바꾸도록 했다.
+
+3층 검증 결과는 다음과 같다.
+
+1. **자동 회귀**: 제거 계약 red는 기존 배선/산출물 때문에 `5 failed, 2 passed`였고 구현 뒤 집중
+   `16 passed, 43 subtests passed`, 전체 `1178 passed, 6 skipped, 367 subtests passed`가 green이다.
+   prompt ledger도 `16/16 byte-identical`이다.
+2. **결정론 전수 회계**: 기준 APAS AST 23파일을 현재 reader와 실제
+   `proframe-c-pfm-dbio` skill 계약으로 다시 분류했다. `12,112 = edge 958 + stdlib 6,935 + framework
+   4,143 + source macro 76`, incomplete 0, wrapper unresolved 0이다. edge 958은 internal 679/external
+   279이고, 네 이름의 AST 46 occurrence가 external edge 46개로 exact-once 보존됐다.
+3. **봉인 직접 의미 판정**: 표본이 아니라 46개 전부의 source line, Parser `FUNCTION_CALL`, owner routine,
+   분류 edge를 대조했다. 6파일/21 routine의 exact 위치는 아래와 같고 source와 AST 불일치는 0이다.
+
+| 파일 | exact source line | 이름/건수 |
+|---|---|---|
+| `apascrtu0010t02.c` | 290-297, 788, 861, 874, 946, 1005, 2155-2159, 3376, 3473, 3511 | `PFM_DSP` 16, `PFM_MSGN` 3, `PFM_MSG_CLEAR` 2 |
+| `zapamcom10090.c` | 2973, 3027, 3665, 4396, 4427 | `PFM_DSP` 3, `PFM_ERRB` 2 |
+| `zapamcom10100.c` | 688 | `PFM_DSP` 1 |
+| `zapamcom10200.c` | 790, 802, 1006, 1406, 1759 | `PFM_DSP` 5 |
+| `zapamcom20010.c` | 271, 355, 573, 584, 591, 1144, 1626, 1639, 1679, 1811, 1817, 1858, 2048 | `PFM_DSP` 13 |
+| `zordmfax00001.c` | 2113 | `PFM_DSP` 1 |
+
+이름과 문자열 인자만 보면 logging/message/error 계열로 보이는 항목도 있지만, 그것은 삭제 근거가 아니다.
+특히 `PFM_MSG_CLEAR()`처럼 상태 효과 가능성이 있는 호출을 source/Parser 또는 framework 계약 없이 무효화할
+수 없다. 따라서 이 슬라이스의 봉인 판정은 네 이름 모두 **호출 occurrence=true, target semantics=unknown,
+scope=external, 보존**이다. 이후 Parser/공식 framework 계약이 더 강한 증거를 제공하면 occurrence ledger를
+남긴 채 파생 aggregate의 분류만 바꿀 수 있다.
+
+이 검증은 read-only였고 Neo4j replay/write는 하지 않았다. 그러므로 현재 `framework` DB에는 과거 실행의
+46개 삭제 상태가 그대로이며, DB 교정은 evidence IR 슬라이스가 실제 replay 3층 검증을 통과할 때만 수행한다.
+
 ### C-048 — 193개 table residual의 상태가 routine 의미/API에 도달하지 않음
 
 기준 실행은 known skill pattern 후보 291건 중 98 edge, 193 residual을 만들었다. known skill 경로는
@@ -237,8 +274,9 @@ Analyzer는 이 fact를 언어 중립으로 resolve/own/dedup한다. unknown/amb
 
 ## 9. 되돌릴 수 있는 책임 슬라이스와 비교 계약
 
-1. **C-047 독립 제거 슬라이스**: call-review는 삭제 권한을 잃고 finding/proposal만 생산한다. baseline
-   958 occurrence-derived edge가 보존되고 46개 모순 사례가 red→green이어야 한다.
+1. **완료 — C-047 독립 제거 슬라이스**: 증거 없는 call-review 생산자 전체를 제거했다. baseline
+   958 occurrence-derived edge와 46개 모순 사례를 자동 회귀·결정론 전수 회계·봉인 직접 판정으로
+   red→green 고정했다. Neo4j actual replay만 후속 evidence IR 통합 검증에 남아 있다.
 2. **Evidence envelope/range 슬라이스**: source hash/position encoding/exact range/canonical occurrence ID를
    Parser에 추가하고 C/Java/Python/PLSQL/PLpgSQL/PostgreSQL 지원 matrix를 고정한다.
 3. **Call/import/symbol 슬라이스**: Analyzer의 wrapper/import/token reparse를 IR 소비로 교체한다. 기존

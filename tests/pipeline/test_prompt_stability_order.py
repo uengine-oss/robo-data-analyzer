@@ -72,7 +72,7 @@ class PromptStabilityOrderTest(unittest.TestCase):
                 self.assertEqual(expected, loaded["user_template"])
 
     def test_agent_system_prompts_are_separate_from_volatile_user_messages(self) -> None:
-        for module in ("call_review.py", "external.py", "scan.py"):
+        for module in ("external.py", "scan.py"):
             with self.subTest(module=module):
                 source = (ROOT / "agents" / module).read_text(encoding="utf-8")
                 self.assertIn(

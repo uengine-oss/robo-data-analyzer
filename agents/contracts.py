@@ -380,24 +380,6 @@ class ScanResult(StrictAgentOutput):
 # 라운드에서 에이전트가 발견한 패턴이다.
 
 
-class CallDropVerdict(StrictAgentOutput):
-    """가짜 외부 호출 1건의 드롭 판정 (spec 113)."""
-    callee: str = Field(..., description="드롭할 external 콜리 이름 — 목록에 있는 이름 그대로")
-    reason: str = Field(..., description="왜 실제 호출이 아닌가 1문장 (로그 매크로/키워드 오인 등)")
-
-
-class ExternalCallReview(StrictAgentOutput):
-    """external 호출 재검증 출력 (spec 113) — 확실한 가짜만 드롭, 불확실은 유지.
-
-    결정론 게이트가 후처리: 프로젝트 정의 루틴은 절대 드롭 불가, 드롭 비율 상한 초과 시
-    전체 무시(환각 신호), 목록 밖 이름 무시.
-    """
-    drops: list[CallDropVerdict] = Field(
-        ...,
-        description="실제 호출이 아니라고 확신하는 external 이름만. 불확실하면 넣지 말 것",
-    )
-
-
 class ResidualPatternResult(StrictAgentOutput):
     """잔여 패턴 루프 — 단일 구조화 제안의 출력.
 

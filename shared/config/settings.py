@@ -203,18 +203,6 @@ class AnalysisAgentSettings:
     scan_regex_max_ambiguity_ratio: float = field(
         default_factory=lambda: _getenv_float("ROBO_AGENT_SCAN_REGEX_MAX_AMBIGUITY_RATIO", 0.2)
     )
-    # external 호출 LLM 재검증 (spec 113) — 가짜 외부 호출(미제공 헤더 매크로 등) 필터.
-    call_review_enabled: bool = field(
-        default_factory=lambda: _getenv_bool("ROBO_AGENT_CALL_REVIEW_ENABLED", True)
-    )
-    call_review_max_calls: int = field(
-        default_factory=lambda: _getenv_int("ROBO_AGENT_CALL_REVIEW_MAX_CALLS", 3)
-    )
-    # LLM 드롭 판정의 상한 — 초과 시 전체 무시 (과도 드롭 = 환각 신호).
-    call_review_max_drop_ratio: float = field(
-        default_factory=lambda: _getenv_float("ROBO_AGENT_CALL_REVIEW_MAX_DROP_RATIO", 0.5)
-    )
-
     def __post_init__(self) -> None:
         _require_positive_int("AnalysisAgentSettings.scan_max_calls", self.scan_max_calls)
         _require_finite_number(
