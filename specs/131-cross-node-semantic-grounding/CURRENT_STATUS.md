@@ -1,8 +1,8 @@
 # Analyzer 의미 무손실 감사 현재상태
 
 **Updated**: 2026-08-21
-**Status**: C-065 Framework call occurrence exact closure 3층 검증 완료, commit/push 직전
-**Analyzer HEAD**: `2d5f4c4c2e85ddb43f183dc1060dfffc2284c56d`
+**Status**: C-061 Parser directive grammar ownership commit/push 완료, Analyzer import consumer 조사 중
+**Analyzer HEAD**: `2b003706b30ea1f41d88922bfccbad8e2498096c`
 
 이 문서는 현재 진행 위치만 소유한다. 영구 규칙은 `ABSOLUTE_RULES.md`, 상세 역사와 기존 수치는 `HANDOFF.md`와 `evidence/`가 소유한다.
 
@@ -423,5 +423,34 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
     최종 Analyzer 전체 1,134 tests(failure 0, skipped 6)와 prompt 16/16 byte identity도 통과했다. 상세 배선,
     formal red/green, 반대 설계, actual rollback 원장은
     `evidence/framework-call-occurrence-publish-audit-20260821.md`가 소유한다.
+25q. 조사 중(C-062): Parser `CLanguageModule.prepareProjectContext()`가 source tree의 모든 C/H를 먼저 읽고
+    5개 declaration regex와 5개 usage-shape regex 결과를 project-global predefined type으로 C parser semantic
+    predicate에 등록한다. 유입은 declaration 계열 `99fdc5f`, usage 추론 `4633f5f`, 수동 오탐 제외
+    `c68f31e`다. actual APAS 23 C source/header 0에서 Parser log는 428개를 type으로 등록했다. 현 구현과 같은
+    패턴을 독립 재계산한 결과 declaration 후보 11, usage 후보 421, usage-only 416, 합집합 427이었다
+    (Java/.NET regex의 한 후보 차이는 아직 미분해). 따라서 대부분은 include/header/compilation evidence가
+    아니라 사용 모양에서 추측한 이름이며, 이 집합이 `IsTypedefName`/`IsCast` 등 grammar semantic predicate와
+    최종 AST를 바꾼 뒤 parse/evidence를 `exact`로 봉인한다. 단순 보조 preview가 아니라 실제 syntax truth
+    producer다. 하지만 regex만 제거하면 현재 결손인 450 include와 284 unique header/build closure를 숨긴 채
+    parse population을 줄일 수 있으므로 아직 구현하지 않았다. grammar-owned declaration, include/build별
+    visible type environment, 증거 없는 이름의 explicit unresolved 경계를 formal red와 actual 비교로 고정한
+    뒤 독립 Parser slice로 교체한다. 상세는 `evidence/parser-c-type-name-ownership-audit-20260821.md`다.
+25r. Parser producer 완료(C-061, commit/push `d690e51`): pinned C preprocessing grammar가
+    include/if/ifdef/ifndef/elif/else/endif/undef와 constant-expression precedence, digraph, phase-2 line splice를
+    소유한다. 단일 grammar/listener extraction에서 canonical import/conditional evidence와 legacy INCLUDE를
+    파생하고, main C parser에는 같은 directive range를 줄 수 보존 공백으로 투영했다.
+    `CAstListener.extractIncludes()`의 `startsWith/replaceFirst`와 conditional 자체 directive lexer/parser는
+    제거했으며 fallback으로 남기지 않았다. formal red의 comment-separated/digraph/spliced include와 conditional은
+    green이고, malformed `#include`가 조용히 complete가 되던 추가 red도 explicit unresolved로 green이다.
+    actual APAS 23 source는 import fact 450 = legacy INCLUDE 450이며 target text와 시작/끝 line 전건 일치,
+    conditional region 17, call 12,113, macro 183, diagnostics/recoveries 0이다. 450 import와 17 conditional region
+    전부를 봉인 직접 판정 집합에 넣었다. import ledger SHA는
+    `2e1a6bef42fa6d2954a516126d71473f101fc6da0f29c50cb27e4816dc2c8a0c`, 전체 fact ledger SHA는
+    기존과 동일한 `0829b440ec777845e9a413a7292ad22c31083ba9fdd997a4b8eb3bf65dc9da34`다. Parser 전체
+    184 tests(failure/error 0, skipped 10)를 통과했다. actual 보고서는
+    `_runs/framework/parser-directive-grammar-20260821-r3.json`, SHA-256
+    `7d4dd20b852f1662694805d8a42ebcee43e50a9588261269ee12402274293b36`이다. Analyzer import strict consumer,
+    build-configured macro expansion/type environment(C-062/C-064), UCN identity(C-063)는 별도 미완료 slice다.
+    상세는 `evidence/parser-c-directive-grammar-audit-20260821.md`다.
 26. 검증: 자동 회귀→결정론 전수 회계→봉인 직접 의미 판정→실제 APAS 순으로 계속 수행한다.
 27. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.
