@@ -30,6 +30,7 @@ async def upsert_object_references(
         "schema_quoted": node.schema_quoted,
         "name_quoted": node.name_quoted,
         "database_link": node.database_link,
+        "database_link_components_json": node.database_link_components_json,
         "status": node.status,
     }) for node in nodes]
     if items:

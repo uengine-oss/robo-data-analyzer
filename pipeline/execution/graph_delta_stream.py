@@ -45,7 +45,7 @@ _DISPLAY_PROP_KEYS = (
     "given", "when", "then", "text", "reason",
     "keys", "semantic_kind", "provenance", "status", "category",
     "raw_reference", "schema", "schema_quoted", "name_quoted",
-    "database_link", "datasource",
+    "database_link", "database_link_components_json", "datasource",
 )
 
 # 관계 dataclass → (rel_type, from 필드, to 필드). ReadsWrites는 relation 필드가 동적 → 별도.

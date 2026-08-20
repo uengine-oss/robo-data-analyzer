@@ -61,7 +61,8 @@
     - [ ] A131-04e-C040 Parser AST usage→DDL Table exact linker의 quoted/schema identity 손실 red-first 해결
     - [x] A131-04e-C041 quoted unresolved ObjectReference canonical ID·edge·node 충돌 해결 —
       red 2건 green, Neo4j rollback 두 node/두 READS/잔여 0
-    - [ ] A131-04e-C042 Parser Oracle database-link component quoted identity 생산 부재 red-first 해결
+    - [x] A131-04e-C042 Parser `de4e792` evidence v3 database-link component exact identity 생산과
+      Analyzer fail-closed 소비 — Parser 158/0/0/8, Neo4j rollback 두 node/두 READS/잔여 0
 - [ ] A131-05 자동 회귀·결정론 전수 회계·봉인 직접 의미 판정 3층 완료
 
 ## 보존된 기준선

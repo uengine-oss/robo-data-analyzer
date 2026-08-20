@@ -21,7 +21,11 @@ from pipeline.steps.step6_build_context.framework_context_builder import (
 from pipeline.steps.step7_analyze_code.framework_per_node import (
     framework_analysis_targets,
 )
-from pipeline.models.data_object_usage import DataObjectUsageEvidence, object_reference_id
+from pipeline.models.data_object_usage import (
+    DatabaseLinkComponentEvidence,
+    DataObjectUsageEvidence,
+    object_reference_id,
+)
 
 
 def _routine(node_id: str) -> CodeNode:
@@ -180,10 +184,12 @@ class AuthoritativeTableOpTest(unittest.IsolatedAsyncioTestCase):
         )
         usage = DataObjectUsageEvidence(
             source_id=insert.id, raw_reference="ORDERS@REMOTE", name="ORDERS",
-            database_link="REMOTE", access="WRITE", evidence_file="sample.sql",
+            database_link="REMOTE", database_link_components=(
+                DatabaseLinkComponentEvidence(role="database", name="REMOTE"),
+            ), access="WRITE", evidence_file="sample.sql",
             evidence_line=3, datasource="shop",
         )
-        insert.extra["data_object_evidence_version"] = 1
+        insert.extra["data_object_evidence_version"] = 3
         insert.extra["data_object_usages"] = (usage,)
         target_id = object_reference_id("shop", usage)
         strategy = SimpleNamespace(

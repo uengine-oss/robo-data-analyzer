@@ -101,6 +101,7 @@ class ObjectReference:
     schema_quoted: bool = False
     name_quoted: bool = False
     database_link: str = ""
+    database_link_components_json: str = ""
     status: str = "unresolved"
 
 

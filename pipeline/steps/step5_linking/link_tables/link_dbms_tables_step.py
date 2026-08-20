@@ -33,7 +33,11 @@ from pipeline.execution.step_config import step_config
 from graph.schema.graph_edges import ReadsWrites
 from graph.schema.graph_nodes import CodeNode, ObjectReference, Table
 from graph.nodes.object_reference import upsert_object_references
-from pipeline.models.data_object_usage import DataObjectUsageEvidence, object_reference_id
+from pipeline.models.data_object_usage import (
+    DataObjectUsageEvidence,
+    database_link_components_json,
+    object_reference_id,
+)
 from shared.events.runtime_logger import log_info
 from graph.edges.reads_writes import upsert_reads_writes
 from graph.neo4j_client import Neo4jClient
@@ -223,6 +227,7 @@ def _unresolved_object_references(
                 name=usage.name,
                 name_quoted=usage.name_quoted,
                 database_link=usage.database_link,
+                database_link_components_json=database_link_components_json(usage),
             ))
     return [by_id[node_id] for node_id in sorted(by_id)]
 

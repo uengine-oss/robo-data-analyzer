@@ -117,7 +117,7 @@ def _make_code_node(
         operator=node.get("operator") or "",
     )
     evidence_version = int(node.get("dataObjectEvidenceVersion") or 0)
-    if evidence_version not in (0, 1, 2):
+    if evidence_version not in (0, 1, 2, 3):
         raise ValueError(
             f"unsupported dataObjectEvidenceVersion={evidence_version} "
             f"at {src_path}:{sl}"
@@ -128,6 +128,7 @@ def _make_code_node(
             evidence_file=src_path,
             references=node.get("dataObjectReferences") or (),
             qualified_columns=node.get("qualifiedColumnReferences") or (),
+            evidence_version=evidence_version,
         )
         code_node.extra["data_object_evidence_version"] = evidence_version
         code_node.extra["data_object_usages"] = usages

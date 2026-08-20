@@ -232,6 +232,12 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
     green, 집중 `78 passed, 1 skipped`, Analyzer 전체 `1103 tests, 6 skipped`, prompt `17/17`이다.
     Neo4j `test` rollback 저장·조회에서 quoted sibling 두 node/두 READS와 residue 0을 확인했다.
     같은 역추적에서 Oracle database link는 grammar상 quoted component를 허용하지만 Parser AST가
-    quote identity를 내지 않는 C-042를 발견했다. 이는 Parser listener 확장 전까지 미해결이다.
-18. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
-19. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.
+    quote identity를 내지 않는 C-042를 발견했다.
+18. 완료(C-042): Parser `de4e792` evidence v3 listener가 database link의 database/domain/
+    connection-qualifier를 exact token·quoted bit·grammar 순서로 생산한다. Analyzer는 이 구조만 canonical
+    identity와 prompt/ObjectReference/Neo4j에 사용하고 link 문자열을 재파싱하지 않는다. component가
+    없는 v1/v2/v3 link AST는 좌표·version과 함께 fail-closed한다. Parser `158/0/0/8`, Analyzer 집중
+    `99 passed, 1 skipped`, 전체 `1103 tests, 6 skipped`, prompt `17/17`, Neo4j rollback 두 quoted
+    link node/두 READS/잔여 0을 통과했다. `_runs/dbms` 부재로 actual corpus 발동은 미검증이다.
+19. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
+20. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.

@@ -14,6 +14,7 @@ from pipeline.steps.step7_analyze_code.table_prompt_context import (
     dump_table_refs,
 )
 from pipeline.models.data_object_usage import (
+    DatabaseLinkComponentEvidence,
     DataObjectUsageEvidence,
     QualifiedColumnUsage,
     dump_data_object_usages,
@@ -207,7 +208,9 @@ def test_unresolved_object_reference_is_not_scheduled_as_exact_table_insight() -
         ),
         DataObjectUsageEvidence(
             source_id=context.id, raw_reference="REMOTE_T@LINK", name="REMOTE_T",
-            database_link="LINK", access="READ", evidence_file="p.sql", evidence_line=1,
+            database_link="LINK", database_link_components=(
+                DatabaseLinkComponentEvidence(role="database", name="LINK"),
+            ), access="READ", evidence_file="p.sql", evidence_line=1,
         ),
     )
 

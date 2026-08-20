@@ -17,7 +17,11 @@ from pipeline.steps.step5_linking.link_tables.link_dbms_tables_step import (
     _link,
     _unresolved_object_references,
 )
-from pipeline.models.data_object_usage import DataObjectUsageEvidence, QualifiedColumnUsage
+from pipeline.models.data_object_usage import (
+    DatabaseLinkComponentEvidence,
+    DataObjectUsageEvidence,
+    QualifiedColumnUsage,
+)
 
 
 def _statement(node_id: str, file_path: str, start_line: int, end_line: int) -> CodeNode:
@@ -71,22 +75,29 @@ class LinkDbmsTablesTest(unittest.TestCase):
 
     def test_no_ddl_tables_preserves_versioned_reference_as_object_reference_edge(self) -> None:
         node = self.nodes[0]
-        node.extra["data_object_evidence_version"] = 1
+        node.extra["data_object_evidence_version"] = 3
         node.extra["data_object_usages"] = (DataObjectUsageEvidence(
             source_id=node.id, raw_reference="ORDERS@REMOTE", name="ORDERS",
-            database_link="REMOTE", access="READ", evidence_file=str(self.source),
+            database_link="REMOTE", database_link_components=(
+                DatabaseLinkComponentEvidence(role="database", name="REMOTE"),
+            ), access="READ", evidence_file=str(self.source),
             evidence_line=1,
         ),)
 
         edges = _link([node], [], [], SourceFileCache(), datasource="shop")
+        references = _unresolved_object_references([node], "shop")
 
         self.assertEqual(len(edges), 1)
         self.assertEqual(edges[0].relation, "READS")
         self.assertTrue(edges[0].target_id.startswith("object-ref:"))
+        self.assertEqual(
+            references[0].database_link_components_json,
+            '[{"role":"database","name":"REMOTE","name_quoted":false}]',
+        )
 
     def test_quoted_unresolved_siblings_remain_two_edges_and_two_nodes(self) -> None:
         node = self.nodes[0]
-        node.extra["data_object_evidence_version"] = 1
+        node.extra["data_object_evidence_version"] = 3
         node.extra["data_object_usages"] = tuple(
             DataObjectUsageEvidence(
                 source_id=node.id, raw_reference=f'"App"."{name}"', schema="App",
@@ -147,7 +158,9 @@ class LinkDbmsTablesTest(unittest.TestCase):
             ),
             DataObjectUsageEvidence(
                 source_id=node.id, raw_reference="ORDER_ITEM@REMOTE", name="ORDER_ITEM",
-                database_link="REMOTE", access="WRITE", evidence_file=str(self.source),
+                database_link="REMOTE", database_link_components=(
+                    DatabaseLinkComponentEvidence(role="database", name="REMOTE"),
+                ), access="WRITE", evidence_file=str(self.source),
                 evidence_line=1,
             ),
         )

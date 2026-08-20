@@ -60,11 +60,11 @@ def test_legacy_ast_is_explicitly_distinguished_from_complete_empty_evidence() -
 
 
 def test_unknown_parser_evidence_version_fails_closed_at_its_coordinate() -> None:
-    with pytest.raises(ValueError, match=r"dataObjectEvidenceVersion=3 at p\.sql:9"):
+    with pytest.raises(ValueError, match=r"dataObjectEvidenceVersion=4 at p\.sql:9"):
         _make_code_node(
             {
                 "type": "SELECT", "startLine": 9, "endLine": 9,
-                "dataObjectEvidenceVersion": 3,
+                "dataObjectEvidenceVersion": 4,
             },
             "newer", "module", "", "p.sql", None,
         )
@@ -145,3 +145,58 @@ def test_quoted_unresolved_object_reference_ids_preserve_exact_case_identity() -
     )
 
     assert object_reference_id("shop", upper) != object_reference_id("shop", lower)
+
+
+def test_parser_evidence_v3_preserves_database_link_component_identity() -> None:
+    node = _make_code_node(
+        {
+            "type": "SELECT", "startLine": 9, "endLine": 10,
+            "dataObjectEvidenceVersion": 3,
+            "dataObjectReferences": [
+                {
+                    "rawReference": 'ORDERS@"Link"', "name": "ORDERS",
+                    "databaseLink": '"Link"',
+                    "databaseLinkComponents": [
+                        {"role": "database", "name": '"Link"', "nameQuoted": True},
+                    ],
+                    "access": "READ", "startLine": 9,
+                },
+                {
+                    "rawReference": 'ORDERS@"link"', "name": "ORDERS",
+                    "databaseLink": '"link"',
+                    "databaseLinkComponents": [
+                        {"role": "database", "name": '"link"', "nameQuoted": True},
+                    ],
+                    "access": "READ", "startLine": 10,
+                },
+            ],
+        },
+        "select:link", "module", "", "p.sql", "procedure:1",
+    )
+
+    usages = node.extra["data_object_usages"]
+    assert usages[0].database_link_components[0].role == "database"
+    assert usages[0].database_link_components[0].name_quoted is True
+    assert object_reference_id("shop", usages[0]) != object_reference_id("shop", usages[1])
+    assert json.loads(dump_data_object_usages(usages))[0]["database_link_components"] == [{
+        "role": "database", "name": '"Link"', "name_quoted": True,
+    }]
+
+
+@pytest.mark.parametrize("version", [1, 2, 3])
+def test_database_link_without_component_identity_fails_closed(version: int) -> None:
+    with pytest.raises(
+        ValueError,
+        match=rf"databaseLinkComponents.*p\.sql:9.*version={version}",
+    ):
+        _make_code_node(
+            {
+                "type": "SELECT", "startLine": 9, "endLine": 9,
+                "dataObjectEvidenceVersion": version,
+                "dataObjectReferences": [{
+                    "rawReference": "ORDERS@REMOTE", "name": "ORDERS",
+                    "databaseLink": "REMOTE", "access": "READ", "startLine": 9,
+                }],
+            },
+            "select:link", "module", "", "p.sql", "procedure:1",
+        )

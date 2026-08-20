@@ -587,6 +587,19 @@
   database link가 있으면 local DDL Table에는 resolve하지 않으므로 unresolved identity 경로에서 발동한다.
 - 분류/상태: **구문 생산자 필드 부재, pending red-first**. Parser listener가 component별 exact value와
   quoted 여부를 구조화해 exact-once 생산하고 Analyzer가 그 canonical AST identity만 소비해야 한다.
+- red(2026-08-21): exact source `APP.ORDERS@"Prod"."East"@"Conn"`이 Parser evidence v3와
+  ordered `database/domain/connection_qualifier` component를 생산해야 하는 listener 계약이 기존 v2에서
+  실패했다. Analyzer에는 v3 quoted `@"Link"|@"link"` ID 분리와 component 없는 v1/v2/v3 link AST의
+  좌표 포함 fail-closed 계약 4건을 추가했고 모두 예상 위치에서 red였다.
+- 해결: Parser `de4e792`가 evidence version 3과 `databaseLinkComponents(role,name,nameQuoted)`를
+  grammar listener에서 생산한다. Analyzer는 component sequence의 role과 공통 `Q:exact|U:uppercase`
+  identifier key만 ObjectReference canonical ID에 사용하고 raw/link 문자열 파싱 fallback을 두지 않는다.
+  component 구조는 prompt dict와 ObjectReference `database_link_components_json`을 거쳐 Neo4j/live graph에
+  보존된다. component가 없는 database link는 evidence version에 관계없이 정상 결과로 승격하지 않는다.
+- 검증: Parser clean `158 tests, failures 0, errors 0, skipped 8`; Analyzer 관련 `99 passed, 1 skipped`,
+  전체 `1103 tests, 6 skipped`, prompt `17/17`. Neo4j `test` rollback에서 quoted link sibling 두
+  OBJECT_REFERENCE·두 READS와 서로 다른 component JSON, rollback residue 0을 확인했다.
+- 현재 판정: C-042는 **해결**, `_runs/dbms`가 없어 actual DBMS corpus 발동은 **미검증**이다.
 
 ## 4. 최초 후보 C-006~C-015 종결 분류
 
@@ -695,12 +708,12 @@
 | C-037/C-038/C-039 | DDL global normalization/dialect/search-path regex `6956d02` |
 | C-040 | exact AST linker casefold `d498608`; legacy name-only scanner `6956d02` |
 | C-041 | ObjectReference ID/edge/node casefold `d498608` |
-| C-042 | Parser databaseLink 문자열-only producer `2e33720`; Analyzer link casefold `d498608` |
+| C-042 | Parser databaseLink 문자열-only producer `2e33720`; Analyzer link casefold `d498608`; listener closure `de4e792` |
 
 - 검증됨: 기준선/DB 상태, F-001 actual schema·경계 수량, 위 정적 producer/caller 배선.
 - 검증됨: 각 F/C 경계의 유입 commit 축. "부재" 결함은 해당 owner가 생긴 최초 계열과 현재까지
   closure가 추가되지 않았음을 함께 기록했다.
-- 미검증: DBMS actual run, sealed 직접 의미 판정, 남은 C-004/C-017~021/C-031/C-036/C-039/C-040/C-042 계약/red test.
+- 미검증: DBMS actual run, sealed 직접 의미 판정, 남은 C-004/C-017~021/C-031/C-036/C-039/C-040 계약/red test.
 - 아직 제품 정확도나 완료를 주장하지 않는다.
 
 ### 2026-08-20 계약 고정 및 첫 red test

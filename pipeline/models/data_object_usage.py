@@ -12,6 +12,7 @@ from pipeline.models.sql_identifier import sql_identifier_key
 Access = Literal["READ", "WRITE"]
 Resolution = Literal["unresolved", "exact"]
 Producer = Literal["parser_ast", "linked_edges"]
+DatabaseLinkRole = Literal["database", "domain", "connection_qualifier"]
 OBJECT_REFERENCE_ID_PREFIX = "object-ref:"
 
 
@@ -52,6 +53,20 @@ class UnqualifiedIdentifierUsage:
 
 
 @dataclass(frozen=True)
+class DatabaseLinkComponentEvidence:
+    role: DatabaseLinkRole
+    name: str
+    name_quoted: bool = False
+
+    def as_prompt_dict(self) -> dict:
+        return {
+            "role": self.role,
+            "name": self.name,
+            "name_quoted": self.name_quoted,
+        }
+
+
+@dataclass(frozen=True)
 class DataObjectUsageEvidence:
     source_id: str
     raw_reference: str
@@ -65,6 +80,7 @@ class DataObjectUsageEvidence:
     schema_quoted: bool = False
     name_quoted: bool = False
     database_link: str = ""
+    database_link_components: tuple[DatabaseLinkComponentEvidence, ...] = ()
     alias: str = ""
     qualified_columns: tuple[QualifiedColumnUsage, ...] = ()
     table_id: str = ""
@@ -86,6 +102,10 @@ class DataObjectUsageEvidence:
             "schema_quoted": self.schema_quoted,
             "name_quoted": self.name_quoted,
             "database_link": self.database_link or None,
+            "database_link_components": [
+                component.as_prompt_dict()
+                for component in self.database_link_components
+            ],
             "alias": self.alias or None,
             "access": self.access,
             "evidence_file": self.evidence_file,
@@ -95,13 +115,21 @@ class DataObjectUsageEvidence:
 
 
 def object_reference_id(datasource: str, usage: DataObjectUsageEvidence) -> str:
+    link_identity = tuple(
+        (component.role, sql_identifier_key(component.name, component.name_quoted))
+        for component in usage.database_link_components
+    )
+    if usage.database_link and not link_identity:
+        raise ValueError(
+            "database-link identity requires parser databaseLinkComponents"
+        )
     identity = json.dumps(
         (
-            "v2",
+            "v3",
             datasource.strip().upper(),
             sql_identifier_key(usage.schema, usage.schema_quoted),
             sql_identifier_key(usage.name, usage.name_quoted),
-            usage.database_link.strip().upper(),
+            link_identity,
         ),
         ensure_ascii=False,
         separators=(",", ":"),
@@ -119,6 +147,7 @@ def usages_from_parser_ast(
     evidence_file: str,
     references: Sequence[Mapping[str, object]],
     qualified_columns: Sequence[Mapping[str, object]],
+    evidence_version: int = 1,
 ) -> tuple[tuple[DataObjectUsageEvidence, ...], tuple[QualifiedColumnUsage, ...]]:
     """Normalize parser spec 017 evidence and bind only exact visible qualifiers.
 
@@ -134,6 +163,23 @@ def usages_from_parser_ast(
         access = _required_text(raw, "access").upper()
         if access not in ("READ", "WRITE"):
             raise ValueError(f"invalid parser data-object access: {access!r}")
+        database_link = str(raw.get("databaseLink") or "")
+        database_link_components = _database_link_components(
+            raw.get("databaseLinkComponents"),
+        )
+        if database_link and (
+            evidence_version < 3 or not database_link_components
+        ):
+            raise ValueError(
+                "databaseLinkComponents missing for database link "
+                f"at {evidence_file}:{_positive_int(raw, 'startLine')} "
+                f"(version={evidence_version})"
+            )
+        if not database_link and database_link_components:
+            raise ValueError(
+                "databaseLinkComponents present without databaseLink "
+                f"at {evidence_file}:{_positive_int(raw, 'startLine')}"
+            )
         accepted_qualifiers = {
             _canonical(name),
             _canonical(str(raw.get("alias") or "")),
@@ -152,7 +198,8 @@ def usages_from_parser_ast(
             schema_quoted=bool(raw.get("schemaQuoted", False)),
             name=name,
             name_quoted=bool(raw.get("nameQuoted", False)),
-            database_link=str(raw.get("databaseLink") or ""),
+            database_link=database_link,
+            database_link_components=database_link_components,
             alias=str(raw.get("alias") or ""),
             access=access,  # type: ignore[arg-type]
             evidence_file=evidence_file,
@@ -161,6 +208,43 @@ def usages_from_parser_ast(
         ))
     unresolved = tuple(column for index, column in enumerate(columns) if index not in matched)
     return tuple(usages), unresolved
+
+
+def database_link_components_json(usage: DataObjectUsageEvidence) -> str:
+    if not usage.database_link_components:
+        return ""
+    return json.dumps(
+        [component.as_prompt_dict() for component in usage.database_link_components],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _database_link_components(raw: object) -> tuple[DatabaseLinkComponentEvidence, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        raise ValueError("databaseLinkComponents must be an array")
+    components: list[DatabaseLinkComponentEvidence] = []
+    for item in raw:
+        if not isinstance(item, Mapping):
+            raise ValueError("databaseLinkComponents items must be objects")
+        role = _required_text(item, "role")
+        if role not in ("database", "domain", "connection_qualifier"):
+            raise ValueError(f"invalid database-link component role: {role!r}")
+        components.append(DatabaseLinkComponentEvidence(
+            role=role,  # type: ignore[arg-type]
+            name=_required_text(item, "name"),
+            name_quoted=bool(item.get("nameQuoted", False)),
+        ))
+    roles = [component.role for component in components]
+    if not roles or roles[0] != "database":
+        raise ValueError("databaseLinkComponents must start with database")
+    if any(role == "database" for role in roles[1:]):
+        raise ValueError("databaseLinkComponents contains duplicate database")
+    if "connection_qualifier" in roles[:-1] or roles.count("connection_qualifier") > 1:
+        raise ValueError("databaseLinkComponents connection_qualifier must be last and unique")
+    return tuple(components)
 
 
 def unqualified_identifiers_from_parser_ast(
