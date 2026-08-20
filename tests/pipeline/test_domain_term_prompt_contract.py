@@ -93,9 +93,15 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
                 ROOT / "llm/prompts" / strategy, rule_name,
             ))
             with self.subTest(strategy=strategy):
-                self.assertIn("QUOTED_LITERAL value=", text)
-                self.assertIn("결정론 투영", text)
-                self.assertIn("절대 줄 좌표", text)
+                if strategy == "framework":
+                    self.assertIn("source-closure/v1", text)
+                    self.assertIn("target_sha256", text)
+                    self.assertIn("JSON escape는 역변환 가능", text)
+                    self.assertNotIn("QUOTED_LITERAL value=", text)
+                else:
+                    self.assertIn("QUOTED_LITERAL value=", text)
+                    self.assertIn("결정론 투영", text)
+                    self.assertIn("절대 줄 좌표", text)
 
     def test_framework_stereotype_keeps_low_level_string_work_as_util(self) -> None:
         text = _load_rule(
@@ -158,11 +164,11 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
             ROOT / "llm/prompts/framework", "code_table_insights",
         ))
         self.assertIn("effective_reads_json", summary)
-        self.assertIn("CALLEE_INTERFACES", summary)
+        self.assertIn("ASSIGNED CALL FACTS", summary)
         self.assertIn("direct_reads_json", table)
         self.assertIn("direct_data_object_usages_json", table)
         self.assertNotIn("effective_reads_json", table)
-        self.assertNotIn("CALLEE_INTERFACES", table)
+        self.assertNotIn("ASSIGNED CALL FACTS", table)
 
     def test_column_meaning_is_deferred_to_final_table_frame(self) -> None:
         for strategy, name in (

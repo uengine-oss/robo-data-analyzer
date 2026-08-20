@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import unittest
 
@@ -192,16 +193,21 @@ class SemanticFramePlannerTest(unittest.TestCase):
         handler_refs = rules[104].attributes["source_refs"]
         self.assertEqual(1, len(handler_refs))
         self.assertEqual("RETURN", profile.evidence[handler_refs[0]].attributes["type"])
-        self.assertEqual(
-            (),
-            tuple(
-                spec for spec in _specs
-                if any(
-                    profile.evidence[ref].kind == "RULE"
-                    for ref in spec.evidence_refs
-                )
-            ),
-        )
+        guarded_rule_refs = [
+            ref
+            for spec in _specs
+            if spec.family == "FUNCTION" and spec.role == "GUARDS_AND_BRANCHES"
+            for ref in spec.evidence_refs
+            if profile.evidence[ref].kind == "RULE"
+        ]
+        expected_guard_refs = {
+            ref for ref, fact in profile.evidence.items()
+            if fact.kind == "RULE"
+            and fact.attributes["role"] in {"decision", "complement", "handler"}
+        }
+        self.assertEqual(expected_guard_refs, set(guarded_rule_refs))
+        self.assertEqual(len(expected_guard_refs), len(guarded_rule_refs))
+        self.assertFalse(any(spec.family == "RULE" for spec in _specs))
 
     def test_planner_uses_actual_structure_and_does_not_invent_call_argument_slots(self):
         source = """int save(int order_id, int qty) {
@@ -641,7 +647,7 @@ END;"""
         self.assertIn(profile.child_refs[0], profile.ordered_flow)
         self.assertEqual("CONTROL", profile.evidence[profile.child_refs[0]].kind)
 
-    def test_prompt_profile_is_bounded_to_assigned_slot_evidence(self):
+    def test_every_processing_statement_is_assigned_to_exactly_one_summary_obligation(self):
         context = _context()
         context.extra["ast_statements"] = tuple(
             StatementFact(
@@ -664,14 +670,22 @@ END;"""
             for spec in summary_specs
             for ref in (spec.target_ref, *spec.evidence_refs)
         }
+        statement_refs = {
+            ref for ref, fact in profile.evidence.items()
+            if fact.kind == "STATEMENT" and fact.attributes["type"] == "ASSIGNMENT"
+        }
+        processing_refs = [
+            ref
+            for spec in summary_specs
+            if spec.family == "FUNCTION" and spec.role == "PROCESSING_EFFECTS"
+            for ref in spec.evidence_refs
+            if ref in statement_refs
+        ]
 
         self.assertEqual(assigned_refs, set(projected["evidence"]))
         self.assertGreater(len(full["evidence"]), 500)
-        self.assertLess(len(projected["evidence"]), 20)
-        self.assertLess(
-            len(profile_prompt_json(profile, summary_specs)),
-            len(profile_prompt_json(profile)) // 4,
-        )
+        self.assertEqual(statement_refs, set(processing_refs))
+        self.assertEqual(len(statement_refs), len(processing_refs))
 
     def test_routine_responsibility_uses_target_range_without_duplicate_lineage(self):
         profile, specs = build_code_semantic_plan(_routine(), _context())
@@ -692,7 +706,7 @@ END;"""
             for spec in specs
         ))
 
-    def test_framework_call_occurrences_remain_evidence_without_expanding_summary(self):
+    def test_framework_call_occurrences_each_own_one_processing_obligation(self):
         context = _context()
         context.extra["ast_call_lines"] = tuple(
             (line, f"call_{line}") for line in range(1, 71)
@@ -703,16 +717,102 @@ END;"""
         batches = _summary_slot_batches(summary_specs)
         assigned = [spec.slot_id for batch in batches for spec in batch]
 
-        self.assertEqual(1, len(batches))
-        self.assertLessEqual(len(summary_specs), 5)
+        call_refs = {
+            ref for ref, fact in profile.evidence.items()
+            if fact.kind == "CALL" and fact.start_line > 0
+        }
+        processing_refs = [
+            ref
+            for spec in summary_specs
+            if spec.family == "FUNCTION" and spec.role == "PROCESSING_EFFECTS"
+            for ref in spec.evidence_refs
+            if ref in call_refs
+        ]
+
+        self.assertGreater(len(summary_specs), 5)
         self.assertEqual({spec.slot_id for spec in summary_specs}, set(assigned))
         self.assertEqual(len(assigned), len(set(assigned)))
-        self.assertTrue(any(spec.family == "FUNCTION" for spec in batches[0]))
-        self.assertEqual(70, sum(
-            fact.kind == "CALL" and fact.start_line > 0
-            for fact in profile.evidence.values()
-        ))
+        self.assertEqual(call_refs, set(processing_refs))
+        self.assertEqual(len(call_refs), len(processing_refs))
+        self.assertEqual(70, len(call_refs))
         self.assertFalse(any(spec.family == "CALL" for spec in specs))
+
+    def test_each_model_call_receives_exact_assigned_evidence_and_source_closure(self):
+        profile, specs = build_code_semantic_plan(_routine(), _context())
+        summary_specs = semantic_concern_slots(specs)["summary"]
+        source_lines = [f"source line {line}" for line in range(10, 17)]
+        source_lines[3] = r'''call("\\t", 'quoted');'''
+        source = "\n".join(source_lines)
+        observed_ids: list[str] = []
+
+        async def invoke(values, response_model, _batch_label):
+            bindings = dict(response_model.__semantic_slot_bindings__)
+            assigned_specs = tuple(bindings.values())
+            assigned_refs = {
+                ref
+                for spec in assigned_specs
+                for ref in (spec.target_ref, *spec.evidence_refs)
+            }
+            prompt_profile = json.loads(values["structural_profile"])
+            self.assertEqual(assigned_refs, set(prompt_profile["evidence"]))
+
+            packet = json.loads(values["code_body"])
+            self.assertEqual("source-closure/v1", packet["schema"])
+            self.assertEqual(
+                hashlib.sha256(source.encode("utf-8")).hexdigest(),
+                packet["target_sha256"],
+            )
+            owns_target = any(
+                spec.family == "FUNCTION" and spec.role == "RESPONSIBILITY"
+                for spec in assigned_specs
+            )
+            if owns_target:
+                expected_lines = list(range(10, 17))
+            else:
+                expected_lines = sorted({
+                    line
+                    for ref in assigned_refs
+                    for fact in (profile.evidence[ref],)
+                    if fact.kind != "TARGET" and fact.start_line > 0
+                    for line in range(fact.start_line, fact.end_line + 1)
+                    if 10 <= line <= 16
+                })
+            self.assertEqual(expected_lines, [item["line"] for item in packet["lines"]])
+            self.assertEqual(
+                [source_lines[line - 10] for line in expected_lines],
+                [item["text"] for item in packet["lines"]],
+            )
+            self.assertEqual(
+                "(없음: 파생 prose는 의미 근거로 전달하지 않음)",
+                values["module_intent"],
+            )
+            observed_ids.extend(spec.slot_id for spec in assigned_specs)
+            payload = {
+                "slots": {
+                    wire_id: {
+                        "meaning": f"meaning for {spec.slot_id}",
+                        "status": "sufficient",
+                        "missing_context": [],
+                    }
+                    for wire_id, spec in bindings.items()
+                },
+            }
+            if "stereotype" in response_model.model_fields:
+                payload["stereotype"] = "Validator"
+            return response_model.model_validate(payload)
+
+        result = asyncio.run(_run_bounded_frame_summary(
+            profile=profile,
+            slot_specs=summary_specs,
+            strategy_name="framework",
+            common={"raw_code_body": source, "module_intent": "derived intent"},
+            invoke=invoke,
+            max_input_tokens=1,
+        ))
+
+        self.assertTrue(result.summary)
+        self.assertEqual({spec.slot_id for spec in summary_specs}, set(observed_ids))
+        self.assertEqual(len(summary_specs), len(observed_ids))
 
     def test_routine_summary_roles_follow_actual_structure_and_stay_bounded(self):
         source = "int check(void *ctx) {\nreturn RC_NRM;\n}"
@@ -855,7 +955,58 @@ return RC_NRM;
             summary.summary.splitlines(),
         )
 
-    def test_summary_rejects_internal_meaning_ownership_expansion(self):
+    def test_repeated_role_fragments_project_in_exact_source_order(self):
+        context = _context()
+        context.extra["ast_statements"] = (
+            StatementFact(
+                "set@2", "ASSIGNMENT", 2, 2,
+                expression="first", target="a", operator="=",
+            ),
+            StatementFact(
+                "set@3", "ASSIGNMENT", 3, 3,
+                expression="second", target="b", operator="=",
+            ),
+            StatementFact("return@7", "RETURN", 7, 7, expression="b"),
+        )
+        context.extra["ast_call_lines"] = ()
+        context.extra["data_object_usages"] = ()
+        context.callees = ()
+        profile, specs = build_code_semantic_plan(_routine(), context)
+        summary_specs = semantic_concern_slots(specs)["summary"]
+        model = frame_summary_response_model("framework", summary_specs)
+
+        def meaning(spec):
+            if spec.role != "PROCESSING_EFFECTS":
+                return f"{spec.role}"
+            line = min(
+                profile.evidence[ref].start_line
+                for ref in spec.evidence_refs
+                if profile.evidence[ref].kind != "TARGET"
+                and profile.evidence[ref].start_line > 0
+            )
+            return f"processing line {line}"
+
+        parsed = model.model_validate({
+            "slots": {
+                wire_id: {
+                    "meaning": meaning(spec),
+                    "status": "sufficient",
+                    "missing_context": [],
+                }
+                for spec, wire_id in zip(
+                    summary_specs, semantic_slot_wire_ids(summary_specs), strict=True,
+                )
+            },
+            "stereotype": "Validator",
+        })
+        projected = normalize_frame_summary_response(parsed, profile, summary_specs)
+
+        self.assertEqual(
+            ["processing line 11", "processing line 12"],
+            [line for line in projected.summary.splitlines() if line.startswith("processing")],
+        )
+
+    def test_summary_execution_batches_preserve_unbounded_obligation_count(self):
         primary = tuple(
             SlotSpec(
                 slot_id=f"SL:0123456789ab:STATEMENT:DIRECT_ACTION:s{i}",
@@ -867,14 +1018,17 @@ return RC_NRM;
             for i in range(30)
         )
 
-        with self.assertRaisesRegex(
-            ValueError, "summary concern exceeded target-owned semantic boundary",
-        ):
-            _summary_slot_batches(primary)
+        batches = _summary_slot_batches(primary)
+        assigned = [spec.slot_id for batch in batches for spec in batch]
+
+        self.assertEqual({spec.slot_id for spec in primary}, set(assigned))
+        self.assertEqual(len(primary), len(assigned))
+        self.assertEqual(len(assigned), len(set(assigned)))
 
     def test_summary_deadline_splits_schema_without_repeating_or_losing_slots(self):
         profile, specs = build_code_semantic_plan(_routine(), _context())
         summary_specs = semantic_concern_slots(specs)["summary"]
+        source = "\n".join(f"source line {line}" for line in range(10, 17))
         successful_ids: list[str] = []
         observed_common: list[tuple[str, str]] = []
         stereotype_batches: list[list[str]] = []
@@ -913,7 +1067,7 @@ return RC_NRM;
             profile=profile,
             slot_specs=summary_specs,
             strategy_name="framework",
-            common={"raw_code_body": "same complete source", "module_intent": "same intent"},
+            common={"raw_code_body": source, "module_intent": "derived intent"},
             invoke=invoke,
         ))
 
@@ -924,10 +1078,15 @@ return RC_NRM;
         )
         self.assertEqual(len(successful_ids), len(set(successful_ids)))
         self.assertTrue(observed_common)
-        self.assertEqual(
-            {("same complete source", "same intent")},
-            set(observed_common),
-        )
+        self.assertIn(source, {body for body, _intent in observed_common})
+        self.assertTrue(all(
+            intent == "(없음: 파생 prose는 의미 근거로 전달하지 않음)"
+            for _body, intent in observed_common
+        ))
+        self.assertTrue(all(
+            all(line in source.splitlines() for line in body.splitlines())
+            for body, _intent in observed_common
+        ))
         self.assertEqual(1, len(stereotype_batches))
         self.assertTrue(any(
             spec.family == "FUNCTION" and spec.role == "RESPONSIBILITY"
@@ -938,6 +1097,7 @@ return RC_NRM;
     def test_summary_repetition_splits_without_losing_shared_context_or_slots(self):
         profile, specs = build_code_semantic_plan(_routine(), _context())
         summary_specs = semantic_concern_slots(specs)["summary"]
+        source = "\n".join(f"source line {line}" for line in range(10, 17))
         successful_ids: list[str] = []
         observed_common: list[tuple[str, str]] = []
         stereotype_batches: list[list[str]] = []
@@ -976,17 +1136,22 @@ return RC_NRM;
             profile=profile,
             slot_specs=summary_specs,
             strategy_name="framework",
-            common={"raw_code_body": "same complete source", "module_intent": "same intent"},
+            common={"raw_code_body": source, "module_intent": "derived intent"},
             invoke=invoke,
         ))
 
         self.assertTrue(result.summary)
         self.assertEqual({spec.slot_id for spec in summary_specs}, set(successful_ids))
         self.assertEqual(len(successful_ids), len(set(successful_ids)))
-        self.assertEqual(
-            {("same complete source", "same intent")},
-            set(observed_common),
-        )
+        self.assertIn(source, {body for body, _intent in observed_common})
+        self.assertTrue(all(
+            intent == "(없음: 파생 prose는 의미 근거로 전달하지 않음)"
+            for _body, intent in observed_common
+        ))
+        self.assertTrue(all(
+            all(line in source.splitlines() for line in body.splitlines())
+            for body, _intent in observed_common
+        ))
         self.assertEqual(1, len(stereotype_batches))
 
     def test_non_owner_summary_schema_forbids_stereotype(self):

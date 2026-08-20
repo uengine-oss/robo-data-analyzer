@@ -145,7 +145,10 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
 3. 완료: 계약을 고정했고 첫 실패·경계·과대 입력 red test 2건을 red→green으로 전환했다.
    F-001/C-001/C-002와 동일 canonical diagnostic 상한을 제거했으며 집중 회귀는
    `231 passed, 134 subtests passed`다.
-4. 현재: FUNCTION role taxonomy를 실제 evidence-anchor obligation slot으로 분리하고 call별 exact
-   source/evidence closure와 canonical ID exact-once merge를 red test로 고정한다.
-5. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
-6. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.
+4. 완료(Framework): FUNCTION taxonomy를 evidence-anchor obligation slot으로 분리하고, Framework
+   call별 exact profile/source closure, token-derived 분할, source-order/canonical ID exact-once merge를
+   red→green으로 고정했다. 파생 module/callee/codebase prose도 Framework 권위 packet에서 제거했다.
+5. 현재(DBMS): 같은 planner의 다수 obligation을 기존 node batch/compacted child prose에 싣는 경로를
+   exact source/evidence fragment batch로 교체한다. 이 단계 전에는 A131-04b 완료를 주장하지 않는다.
+6. 검증: 자동 회귀→결정론 전수 회계→봉인 의미 표본→실제 APAS 순으로 수행한다.
+7. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.

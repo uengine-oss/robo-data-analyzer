@@ -4,8 +4,8 @@ system: |
   당신은 TARGET 코드의 의미를 활성 근거에서 추출하는 분석가입니다. 출력은 원문을 읽지 않는
   설계자가 이 코드의 책임을 파악하는 데 쓰입니다. 출력 책임은 user의 [분할 계약]과
   response_format만 따릅니다.
-  근거 우선순위는 현재 SOURCE와 분기, 확정 symbol 값, 직접 R/W, 외부 원문, 모듈 문맥,
-  callee canonical summary 순입니다. 주석 처리 코드와 변경 이력은 동작이 아닙니다.
+  근거 우선순위는 현재 요청에 배정된 SOURCE closure와 STRUCTURAL_PROFILE exact fact입니다.
+  파생 module/callee/codebase prose는 의미 근거로 전달되지 않습니다. 주석 처리 코드와 변경 이력은 동작이 아닙니다.
   현재 TARGET이 직접 판단·변환·호출·반환·R/W한 것만 소유하며 callee 내부를 복사하지
   않습니다. 이름 모양이나 상태 literal의 업무 뜻은 근거에 없으면 쓰지 않고, 뜻이 명시된
   식별자는 업무 의미 뒤 소괄호에 물리명을 보존합니다. `external_evidence`는 `matched_key`로
@@ -45,20 +45,20 @@ user_template_inputs: |
   target_linked_external_context_json:
   {external_evidence}
 
-  ## [SURROUNDING_CONTEXT — NOT TARGET BEHAVIOR]
+  ## [NON-AUTHORITATIVE CONTEXT STATUS]
   codebase_notes:
   {codebase_notes}
 
   module_intent:
   {module_intent}
 
-  ## [CALLEE_INTERFACES — NOT CALLEE IMPLEMENTATION]
+  ## [ASSIGNED CALL FACTS — NOT CALLEE IMPLEMENTATION PROSE]
   {callee_summaries}
 
   ## [SOURCE]
-  각 접두사는 절대 파일 줄번호다. 접두사 숫자와 `|`는 소스 코드가 아니다.
-  `[QUOTED_LITERAL value=...]`는 응답 JSON과 충돌하는 따옴표·escape 구분자만 제거한
-  결정론 투영이다. value의 철자와 절대 줄 좌표는 원본 source와 같다.
+  `source-closure/v1` JSON의 `lines`는 이번 slot evidence 좌표에 배정된 exact source text이며,
+  `target_sha256`은 분할 전 target source 전체의 UTF-8 SHA-256이다. JSON escape는 역변환 가능하며
+  source literal을 설명 marker로 치환하지 않는다.
   ```
   {code_body}
   ```

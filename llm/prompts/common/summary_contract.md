@@ -5,10 +5,8 @@
   아니면 SOURCE 부재를 정상 코드처럼 읽지 말고 sufficiency에 반영한다.
 - `SOURCE`의 일반 줄은 이 범위에서 실행되는 활성 코드 원문이며 동작·조건·순서 판정의 최우선
   근거다. 줄번호 접두사는 좌표일 뿐 코드가 아니다. 단, 긴 부모 범위에서
-  `[CHILD_SUMMARY_CANDIDATE ... authority=non_source]`로 표시된 줄은 명시된 자식 범위를 대신한
-  이전 모델의 비권위 요약 후보이지 원문이 아니다. 후보의 효과 표현은 누락 점검에만 쓰고,
-  조건식·비교 연산자·극성·좌표는 같은 TARGET의 결정론적 `CONTROL_FLOW_INDEX`를 따른다.
-  후보가 index나 남아 있는 원문과 충돌하면 후보를 버린다.
+  모델 prose로 치환된 자식 범위는 권위 입력으로 사용하지 않는다. 현재 호출에 배정되지 않은
+  source/evidence obligation은 다른 canonical fragment가 소유한다.
 - `EFFECTIVE_FLOW_EVIDENCE`의 `effective_reads_json`·`effective_writes_json`은 TARGET 전체
   흐름에서 관측되는 테이블 방향이다. summary의 CALL/RW 누락 방지와 stereotype 모순 검사에
   쓰되, 한 하위 문장이 직접 소유한 접근이라고 재귀속하지 않는다. 각 table record의 source

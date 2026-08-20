@@ -402,3 +402,26 @@
   제거했고 whitespace/dedup 정상화와 sufficient의 empty-missing 불변식만 유지했다.
 - 관련 step7/schema/API 집중 회귀는 `231 passed, 134 subtests passed`, `git diff --check`는 오류 0이다.
   이 결과는 해당 leaf/diagnostic 보존 슬라이스만 검증하며 전체 의미 정확도나 graph 실행 합격 근거가 아니다.
+
+### 2026-08-20 FUNCTION obligation 및 Framework exact closure
+
+- 제품 변경 전 red test 4축을 고정했다.
+  - 500 assignment와 70 call fact가 profile에는 있으나 target-only `PROCESSING_EFFECTS`의
+    `evidence_refs`에는 하나도 귀속되지 않는 실패.
+  - summary slot 30개가 `_MAX_TARGET_SUMMARY_SLOTS=5` gate에서 거부되는 실패.
+  - 같은 role fragment 두 개가 canonical source 11→12가 아니라 slot hash 12→11 순서로 투영되는 실패.
+- 공통 planner는 parameter, 의미가 필요한 RULE, source CALL, DATA_OBJECT, 효과 STATEMENT, RETURN을
+  canonical evidence anchor별 FUNCTION obligation slot에 정확히 한 번 귀속한다. Rule/Example 자체는
+  계속 결정론 LLM 0이며 FUNCTION guard leaf만 RULE exact fact의 의미 projection을 소유한다.
+- Framework는 전체 obligation을 먼저 확정한 뒤 assigned profile/source packet의 실제 추정 token을
+  기존 실행 분할 예산 1,500에 맞춰 분할한다. 총 slot 수/문자 수는 제한하지 않는다. 각 packet은
+  assigned refs만 가진 profile과 좌표 source line, 분할 전 target UTF-8 SHA-256을 포함한 reversible
+  `source-closure/v1` JSON이다. quote/backslash literal 왕복과 refs/line exact set을 테스트했다.
+- deadline/repetition뿐 아니라 length 실패도 multi-slot이면 canonical ID 반분 exact merge하며 singleton
+  실패는 기존처럼 unavailable이다. projection은 role 다음 source 좌표 순이며 좌표 없는 interface만
+  stable slot ID로 tie-break한다.
+- Framework summary 권위 packet의 `module_intent`, callee summary, codebase prose는 제거하고 assigned
+  CALL fact만 전달한다. 다만 DBMS는 같은 planner 결과를 받지만 기존 batch prompt/source compaction을
+  아직 사용하므로 C-005/C-009의 DBMS closure는 다음 슬라이스이며 완료로 판정하지 않는다.
+- step7 전체 회귀는 `212 passed, 114 subtests passed`, pipeline 전체+MCP 집중 회귀는
+  `793 passed, 1 skipped, 286 subtests passed`; graph/DB 변경은 0이다.

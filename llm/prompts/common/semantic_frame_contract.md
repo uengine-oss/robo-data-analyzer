@@ -4,8 +4,8 @@
 - 각 slot 값은 `meaning`, `status`, `missing_context`만 가진다. canonical slot ID, family, role,
   target/evidence refs, 좌표, 조건, callee, table identity는 코드가 이미 소유하므로 출력하지 않는다.
 - `sufficient`: meaning non-empty + missing_context 빈 배열
-- `partial`: 현재 근거로 확정한 meaning non-empty + 부족한 근거 1~8개
-- `insufficient`: meaning 빈 문자열 + 필요한 근거 1~8개
+- `partial`: 현재 근거로 확정한 meaning non-empty + 부족한 근거 전부
+- `insufficient`: meaning 빈 문자열 + 필요한 근거 전부
 - 입력에 없는 slot을 추가하거나 required slot을 생략하지 않는다.
 
 ## [INPUT GUIDE — profile, slot, source의 관계]
@@ -16,19 +16,19 @@
   `target_ref`와 `evidence_refs`로 허용 근거를 지정한다.
 - SOURCE는 Analyzer 내부 의미 생성용 활성 원문이다. profile fact와 함께 slot의 meaning을
   이해하는 데만 쓰고 ID·좌표·관계를 다시 생성하지 않는다.
-- callee summary는 호출 경계의 interface 근거다. callee 내부 책임을 현재 target이나 CALL
-  slot의 동작으로 복사하지 않는다.
+- CALL fact는 호출 경계의 canonical identity/좌표 근거다. callee 자연어 summary는 다음 의미
+  생성의 권위 입력으로 사용하지 않으며 callee 내부 책임을 현재 target이나 CALL slot에 복사하지 않는다.
 - effective R/W는 target 전체 관측 범위, direct data-object evidence는 현재 target의 직접
   접근이다. 둘의 소유권을 바꾸지 않는다.
 - symbol/external evidence는 SOURCE의 같은 식별자·matched key와 연결될 때만 뜻을 보조한다.
-- surrounding context와 module intent는 범위·용어 보조일 뿐 target 동작의 증거가 아니다.
+- 파생 surrounding context와 module intent는 권위 의미 입력에서 제외한다.
 
 ## [DECISION PROCEDURE]
 
 1. `wire_id` key를 고정하고 같은 APPLICABLE_SLOTS 항목의 `family.role`이 묻는 의미만 확인한다.
 2. slot의 `evidence_refs`를 profile의 exact fact에 연결한다.
 3. 같은 좌표의 SOURCE에서 조건·호출·대입·반환·R/W와 순서를 확인한다.
-4. 입력이 입증한 의미만 짧고 구체적으로 쓰고, 부족하면 status/missing_context로 드러낸다.
+4. 입력이 입증한 의미를 구체적으로 쓰고, 부족하면 status/missing_context로 전부 드러낸다.
 5. 모든 slot을 채운 뒤 target/callee/형제/table 간 소유권 누출과 조건 반전을 검사한다.
 
 ## [FAMILY GUIDE]

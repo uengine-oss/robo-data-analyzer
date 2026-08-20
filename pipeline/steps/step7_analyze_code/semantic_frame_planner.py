@@ -16,7 +16,6 @@ from pipeline.models.semantic_frame import (
     StructuralTarget,
     evidence_id,
     slot_id,
-    stable_digest,
 )
 from pipeline.quality_gates.branch_inventory import BranchInventory
 from pipeline.quality_gates.rule_prompt_evidence import rule_evidence
@@ -105,9 +104,12 @@ def build_code_semantic_plan(
     ordered: list[str] = []
     child_refs: list[str] = []
     callee_refs: list[str] = []
+    linked_callee_refs: list[str] = []
     data_refs: list[str] = []
     symbol_refs: list[str] = []
+    parameter_refs: list[str] = []
     planned_rows: list[dict[str, Any]] = []
+    planned_rule_refs: list[tuple[dict[str, Any], str, tuple[str, ...]]] = []
 
     target_ref = _add_fact(evidence, _fact(
         target_id=fn.id,
@@ -238,6 +240,7 @@ def build_code_semantic_plan(
             },
         ))
         callee_refs.append(ref)
+        linked_callee_refs.append(ref)
 
     for symbol in ctx.referenced_symbols:
         ref = _add_fact(evidence, _fact(
@@ -256,6 +259,8 @@ def build_code_semantic_plan(
             },
         ))
         symbol_refs.append(ref)
+        if symbol.kind == "parameter":
+            parameter_refs.append(ref)
 
     for external in ctx.external_evidence:
         _add_fact(evidence, _fact(
@@ -418,6 +423,7 @@ def build_code_semantic_plan(
                 },
             ))
             ordered.append(ref)
+            planned_rule_refs.append((row, ref, tuple(dict.fromkeys(supporting_refs))))
 
     ordered = sorted(
         dict.fromkeys(ordered),
@@ -438,74 +444,93 @@ def build_code_semantic_plan(
             role="RESPONSIBILITY",
             anchor="TARGET",
             target_ref=target_ref,
-            # TARGET spans the exact routine range.  Fine-grained CALL/RULE/DATA slots
-            # retain their own coordinates; repeating all of them here is duplicate
-            # lineage and makes the dynamic assignment unbounded on real routines.
             evidence_refs=(target_ref,),
         )
-        if fn.params.strip() or any(symbol.kind == "parameter" for symbol in ctx.referenced_symbols):
+        if parameter_refs:
+            for ref in parameter_refs:
+                _add_slot(
+                    slots,
+                    target_id=fn.id,
+                    family="FUNCTION",
+                    role="INPUT_ROLE",
+                    anchor={"evidence": ref},
+                    target_ref=target_ref,
+                    evidence_refs=(target_ref, ref),
+                )
+        elif fn.params.strip():
             _add_slot(
                 slots,
                 target_id=fn.id,
                 family="FUNCTION",
                 role="INPUT_ROLE",
-                anchor="TARGET",
+                anchor="INTERFACE",
                 target_ref=target_ref,
-                evidence_refs=(target_ref, *symbol_refs),
+                evidence_refs=(target_ref,),
             )
-        if any(
-            str(row.get("role") or "")
-            in {"decision", "complement", "handler"}
-            for row in planned_rows
-        ):
+
+        for row, rule_ref, supporting_refs in planned_rule_refs:
+            if str(row.get("role") or "") not in {
+                "decision", "complement", "handler",
+            }:
+                continue
             _add_slot(
                 slots,
                 target_id=fn.id,
                 family="FUNCTION",
                 role="GUARDS_AND_BRANCHES",
-                anchor="TARGET",
+                anchor={"evidence": rule_ref},
                 target_ref=target_ref,
-                # Full SOURCE and branch_index already carry the exact flow. Keep the
-                # aggregate claim bounded instead of serializing every RULE fact twice.
-                evidence_refs=(target_ref,),
+                evidence_refs=(target_ref, rule_ref, *supporting_refs),
             )
-        statement_effect_ops = {
-            str(effect.get("op") or "")
-            for statement in statements
-            for effect in _statement_effects(statement)
-        }
-        if (
-            call_refs_by_line
-            or ctx.callees
-            or data_refs
-            or ctx.direct_reads
-            or ctx.direct_writes
-            or statement_effect_ops & {"set", "commit", "rollback"}
-        ):
+
+        processing_refs: list[str] = []
+        processing_refs.extend(
+            ref for refs in call_refs_by_line.values() for ref in refs
+        )
+        if not call_refs_by_line:
+            processing_refs.extend(linked_callee_refs)
+        processing_refs.extend(data_refs)
+        processing_refs.extend(
+            ref
+            for statement, ref, _start, _end in statement_refs
+            if any(
+                str(effect.get("op") or "") in {"set", "commit", "rollback"}
+                for effect in _statement_effects(statement)
+            )
+        )
+        for ref in dict.fromkeys(processing_refs):
             _add_slot(
                 slots,
                 target_id=fn.id,
                 family="FUNCTION",
                 role="PROCESSING_EFFECTS",
-                anchor="TARGET",
+                anchor={"evidence": ref},
                 target_ref=target_ref,
-                # Applicability is structural. Detailed CALL/RW/statement facts retain
-                # their own canonical IDs and are not duplicated into this aggregate.
-                evidence_refs=(target_ref,),
+                evidence_refs=(target_ref, ref),
             )
         return_refs = [
             ref for statement, ref, _start, _end in statement_refs
             if statement.label == "RETURN"
         ]
-        if fn.return_type.strip() or return_refs:
+        for ref in return_refs:
             _add_slot(
                 slots,
                 target_id=fn.id,
                 family="FUNCTION",
                 role="RESULT",
-                anchor="TARGET",
+                anchor={"evidence": ref},
                 target_ref=target_ref,
-                evidence_refs=(target_ref, *return_refs),
+                evidence_refs=(target_ref, ref),
+            )
+        if fn.return_type.strip() and not return_refs:
+            _add_slot(
+                slots,
+                target_id=fn.id,
+                family="FUNCTION",
+                role="RESULT",
+                anchor="INTERFACE",
+                target_ref=target_ref,
+                evidence_refs=(target_ref,),
             )
         function_roles = {
             spec.role for spec in slots.values() if spec.family == "FUNCTION"

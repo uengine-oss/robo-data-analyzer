@@ -76,8 +76,11 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
                 self.assertIn(f"response_locale: {locale}", rendered)
                 self.assertIn("## [TARGET]", rendered)
                 self.assertIn("## [EFFECTIVE_FLOW_EVIDENCE]", rendered)
-                self.assertIn("## [SURROUNDING_CONTEXT — NOT TARGET BEHAVIOR]", rendered)
-                self.assertIn("## [CALLEE_INTERFACES — NOT CALLEE IMPLEMENTATION]", rendered)
+                self.assertIn("## [NON-AUTHORITATIVE CONTEXT STATUS]", rendered)
+                self.assertIn(
+                    "## [ASSIGNED CALL FACTS — NOT CALLEE IMPLEMENTATION PROSE]",
+                    rendered,
+                )
                 self.assertIn("coordinate_system: absolute-file-line", rendered)
                 self.assertIn("잘못:", rendered)
                 self.assertIn("좋음:", rendered)

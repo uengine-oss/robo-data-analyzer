@@ -22,6 +22,7 @@ DBMS 부모 range 는 본문이 ``compact_body`` (자식 구간 → 자식 summa
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -81,6 +82,7 @@ from shared.events.runtime_logger import log_info, log_warning
 from shared.events.processing_events import track_processing
 from shared.files.cache import SourceFileCache
 from shared.concurrency.priority_semaphore import PrioritySemaphore
+from shared.config.settings import SETTINGS
 from pipeline.execution.analysis_handoff import (
     INSIGHTS_LANE,
     SUMMARY_LANE,
@@ -98,16 +100,20 @@ from pipeline.quality_gates.rule_audit_artifact import persist_rule_audit
 from pipeline.steps.step7_analyze_code.quality_findings import apply_analysis_findings
 
 _STEP = "step7.analyze_code.three_split"
-_MAX_TARGET_SUMMARY_SLOTS = 5
 
 
-def _summary_slot_batches(slot_specs):
-    """Return the single target-owned summary assignment.
+def _summary_slot_batches(
+    slot_specs,
+    *,
+    profile=None,
+    common: dict | None = None,
+    max_input_tokens: int | None = None,
+):
+    """Return the complete target-owned summary assignment without a semantic cap.
 
-    A Framework routine owns at most the five canonical target-level flow roles and a
-    DBMS statement or CALL target owns one direct meaning.  RULE, data-object and nested
-    occurrence meaning belong to their own concerns.  More than five summary slots is a
-    producer ownership regression, not a reason to hide expansion behind micro-batching.
+    The five FUNCTION roles are a closed taxonomy, not a limit on evidence-anchored
+    obligations.  Transport-sized partitioning is applied with the exact profile/source
+    closure at invocation time; this helper only proves exact-once assignment.
     """
     specs = tuple(slot_specs)
     if not specs:
@@ -115,12 +121,33 @@ def _summary_slot_batches(slot_specs):
     primary = tuple(spec for spec in specs if spec.family in {"FUNCTION", "STATEMENT"})
     remaining = tuple(spec for spec in specs if spec not in primary)
     ordered = (*primary, *remaining)
-    if len(ordered) > _MAX_TARGET_SUMMARY_SLOTS:
-        raise ValueError(
-            "summary concern exceeded target-owned semantic boundary: "
-            f"{len(ordered)} > {_MAX_TARGET_SUMMARY_SLOTS}"
-        )
-    batches = (tuple(ordered),)
+    if (profile is None) != (common is None):
+        raise ValueError("summary batching requires profile and common together")
+    if profile is None:
+        batches = (tuple(ordered),)
+    else:
+        limit = max_input_tokens or SETTINGS.analysis_pipeline.batch_max_tokens
+        if limit <= 0:
+            raise ValueError("summary batch input token budget must be positive")
+        groups: list[tuple] = []
+        pending: list = []
+        for spec in ordered:
+            candidate = (*pending, spec)
+            values = _summary_batch_values(profile, candidate, common or {})
+            variable_tokens = _estimate_prompt_tokens("\n".join(
+                str(values[name]) for name in (
+                    "structural_profile", "applicable_slots", "code_body",
+                    "referenced_symbols", "data_object_usages", "branch_index",
+                )
+            ))
+            if pending and variable_tokens > limit:
+                groups.append(tuple(pending))
+                pending = [spec]
+            else:
+                pending.append(spec)
+        if pending:
+            groups.append(tuple(pending))
+        batches = tuple(groups)
     assigned = [spec.slot_id for spec in ordered]
     if len(assigned) != len(set(assigned)) or set(assigned) != {
         spec.slot_id for spec in specs
@@ -129,8 +156,119 @@ def _summary_slot_batches(slot_specs):
     return batches
 
 
+def _estimate_prompt_tokens(text: str) -> int:
+    """Conservative deterministic estimate used only to split exact input closures."""
+    ascii_count = sum(1 for char in text if ord(char) < 128)
+    other_count = len(text) - ascii_count
+    return (ascii_count + 3) // 4 + (other_count * 2 + 2) // 3
+
+
+def _summary_batch_values(profile, batch_specs, common: dict) -> dict:
+    """Build one model packet from only its assigned evidence and exact source lines."""
+    specs = tuple(batch_specs)
+    assigned_refs = {
+        ref
+        for spec in specs
+        for ref in (spec.target_ref, *spec.evidence_refs)
+    }
+    facts = [profile.evidence[ref] for ref in sorted(assigned_refs)]
+    source_text = str(common.get("raw_code_body") or "")
+    # Split only on LF so CR and a trailing empty physical line remain exact payload data.
+    source_lines = source_text.split("\n") if source_text else []
+    target_start = max(int(profile.target.start_line), 1)
+    owns_whole_target = any(
+        spec.family == "FUNCTION" and spec.role == "RESPONSIBILITY"
+        for spec in specs
+    )
+    if owns_whole_target:
+        selected_indexes = set(range(len(source_lines)))
+    else:
+        selected_indexes: set[int] = set()
+        for fact in facts:
+            if fact.kind == "TARGET" or fact.start_line <= 0:
+                continue
+            start = max(fact.start_line - target_start, 0)
+            stop = min(fact.end_line - target_start + 1, len(source_lines))
+            selected_indexes.update(range(start, stop))
+    source_records = [
+        {"line": target_start + index, "text": source_lines[index]}
+        for index in sorted(selected_indexes)
+    ]
+    source_packet = json.dumps(
+        {
+            "schema": "source-closure/v1",
+            "target_sha256": hashlib.sha256(source_text.encode("utf-8")).hexdigest(),
+            "lines": source_records,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+    by_kind: dict[str, list[dict]] = {}
+    for fact in facts:
+        by_kind.setdefault(fact.kind, []).append(
+            fact.model_dump(mode="json")
+        )
+    data_facts = by_kind.get("DATA_OBJECT", [])
+    reads = [
+        fact for fact in data_facts
+        if str(fact["attributes"].get("access") or "").upper() == "READ"
+    ]
+    writes = [
+        fact for fact in data_facts
+        if str(fact["attributes"].get("access") or "").upper() == "WRITE"
+    ]
+    table_ops = {
+        str(fact["attributes"].get("table_id") or ""): fact["attributes"].get("operation")
+        for fact in data_facts
+        if str(fact["attributes"].get("table_id") or "")
+    }
+
+    def _dump(value: object) -> str:
+        return json.dumps(
+            value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        )
+    selected_text = "\n".join(record["text"] for record in source_records)
+    return {
+        **common,
+        "id": profile.target.id,
+        "signature": str(
+            profile.evidence[next(
+                ref for ref in assigned_refs
+                if profile.evidence[ref].kind == "TARGET"
+            )].attributes.get("signature") or ""
+        ),
+        "source_file": profile.target.file,
+        "source_range": f"{profile.target.start_line}-{profile.target.end_line}",
+        "code_body": source_packet,
+        "raw_code_body": selected_text,
+        "numbered_raw_code_body": source_packet,
+        "structural_profile": profile_prompt_json(profile, specs),
+        "applicable_slots": slot_specs_json(specs),
+        "reads": _dump(reads),
+        "writes": _dump(writes),
+        "direct_reads": _dump(reads),
+        "direct_writes": _dump(writes),
+        "table_ops": _dump(table_ops),
+        "data_object_usages": _dump(data_facts),
+        "column_usage_candidates": "{}",
+        "referenced_symbols": _dump(by_kind.get("SYMBOL", [])),
+        "external_evidence": _dump(by_kind.get("EXTERNAL", [])),
+        "callee_summaries": _dump(by_kind.get("CALL", [])),
+        "branch_index": _dump([
+            *by_kind.get("CONTROL", []), *by_kind.get("RULE", []),
+        ]),
+        "api_contracts": "[]",
+        "codebase_notes": "(없음: 파생 prose는 의미 근거로 전달하지 않음)",
+        "module_intent": "(없음: 파생 prose는 의미 근거로 전달하지 않음)",
+        "ancestor_context": "(없음: 현재 evidence closure 밖)",
+    }
+
+
 async def _run_bounded_frame_summary(
     *, profile, slot_specs, strategy_name: str, common: dict, invoke,
+    max_input_tokens: int | None = None,
 ) -> SummaryOutput:
     stereotype_owners = tuple(
         spec for spec in slot_specs
@@ -146,11 +284,7 @@ async def _run_bounded_frame_summary(
         owns_stereotype = any(
             spec.slot_id == stereotype_owner_id for spec in batch_specs
         )
-        values = {
-            **common,
-            "structural_profile": profile_prompt_json(profile, batch_specs),
-            "applicable_slots": slot_specs_json(batch_specs),
-        }
+        values = _summary_batch_values(profile, batch_specs, common)
         try:
             output = await invoke(
                 values,
@@ -167,7 +301,7 @@ async def _run_bounded_frame_summary(
             # response.  Splitting changes both the required schema and prompt evidence
             # closure, so each smaller request is independently validated.  A failing
             # singleton remains an explicit model-output failure.
-            if error.kind not in {"deadline", "repetition"} or len(batch_specs) == 1:
+            if error.kind not in {"deadline", "length", "repetition"} or len(batch_specs) == 1:
                 raise
             midpoint = len(batch_specs) // 2
             return (
@@ -178,7 +312,12 @@ async def _run_bounded_frame_summary(
         return ((frame, str(getattr(output, "stereotype", ""))),)
 
     collected = []
-    for batch_index, batch_specs in enumerate(_summary_slot_batches(slot_specs), start=1):
+    for batch_index, batch_specs in enumerate(_summary_slot_batches(
+        slot_specs,
+        profile=profile,
+        common=common,
+        max_input_tokens=max_input_tokens,
+    ), start=1):
         collected.extend(await _collect(batch_specs, str(batch_index)))
     frames = [frame for frame, _stereotype in collected]
     stereotypes = [value for _frame, value in collected if value]

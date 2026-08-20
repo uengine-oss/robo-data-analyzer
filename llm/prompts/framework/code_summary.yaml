@@ -55,7 +55,7 @@ user_template_evidence: |
 
   # [Summary 전용 제어 구조]
 
-  아래 branch_index는 profile의 control/rule 좌표를 사람이 읽기 쉽게 표시한 보조 인덱스다.
+  아래 branch_index는 이번 slot evidence closure의 control/rule fact만 담은 보조 인덱스다.
   `[decision]`은 판정, `[complement]`는 같은 층의 나머지, `[controller]`는 하위 결정 문맥,
   `[implicit_false]`는 ELSE 없는 정상 거짓 경로, `[error_only]`는 실행 중 오류 경로다.
 

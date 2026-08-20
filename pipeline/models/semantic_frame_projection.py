@@ -26,8 +26,20 @@ def project_summary(frame: SemanticFrame, *, stereotype: str) -> SummaryOutput:
         slot for slot in frame.slots.values()
         if (slot.family, slot.role) in _SUMMARY_ROLE_ORDER
     ]
+    def _source_order(slot: SemanticSlot) -> tuple[int, int, str]:
+        coordinates = [
+            (fact.start_line, fact.end_line)
+            for ref in slot.evidence_refs
+            for fact in (frame.profile.evidence[ref],)
+            if fact.kind != "TARGET" and fact.start_line > 0
+        ]
+        if not coordinates:
+            return (2**31, 2**31, slot.slot_id)
+        start, end = min(coordinates)
+        return (start, end, slot.slot_id)
+
     candidates.sort(key=lambda slot: (
-        _SUMMARY_ROLE_ORDER[(slot.family, slot.role)], slot.slot_id,
+        _SUMMARY_ROLE_ORDER[(slot.family, slot.role)], *_source_order(slot),
     ))
     grounded = [slot for slot in candidates if slot.meaning.strip()]
     meanings = _dedupe_meanings(slot.meaning for slot in grounded)
