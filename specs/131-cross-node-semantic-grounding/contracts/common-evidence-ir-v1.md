@@ -1,4 +1,4 @@
-# Common Evidence IR v1 계약 (1.0.0 / 1.1.0 / 1.2.0 / 1.3.0)
+# Common Evidence IR 계약 (역사 1.0.0~1.3.0 / 현행 2.0.0)
 
 ## 1. 목적과 owner
 
@@ -7,11 +7,12 @@
 
 - Framework semantic owner: enclosing routine.
 - DBMS semantic owner: effective AST `CodeNode`.
-- Parser language adapter owner: source decoding, grammar/token boundary, conditional presence, exact occurrence,
-  언어의 scope/visibility/type/overload 규칙으로 증명한 call binding key와 declaration/definition identity.
-- Analyzer owner: adapter-owned opaque key의 strict corpus join, framework/DB object resolution, owner mapping,
-  occurrence ledger와 aggregate graph 파생. Analyzer는 host-language 문법·이름·확장자 규칙으로 key를
-  만들거나 보정하지 않는다.
+- Parser language frontend owner: source decoding, grammar/token boundary, conditional presence, exact occurrence,
+  declaration/definition과 lexical scope/declarator/specifier의 typed syntax fact. Parser는 final call binding,
+  internal/external, linkage/type compatibility key를 생산하지 않는다.
+- Analyzer owner: versioned language semantic adapter와 language-neutral resolution core, framework/DB object
+  resolution, owner mapping, occurrence ledger와 aggregate graph 파생. 언어별 판단은 adapter 경계 밖으로
+  흩어지지 않으며 이름·확장자·정렬상 첫 후보로 보정하지 않는다.
 - Scan/Deep Agent owner: 검증할 fact-field/relationship pattern 제안. source syntax truth 생산 금지.
 
 기존 `FILE.children` AST는 migration 동안 유지하지만 canonical 소비자는 versioned `evidence.facts`다.
@@ -164,7 +165,12 @@ DBMS call consumer가 effective AST CodeNode owner를 구현하기 전에는 non
 publish를 중단한다. Framework routine owner로 대신 귀속하거나 fact를 보존했다는 이유로 소비를 생략하지
 않는다.
 
-### callable declaration/definition과 call binding (`1.3.0`)
+### callable declaration/definition과 call binding (`1.3.0`, 역사·소비 금지)
+
+> **2026-08-21 정정:** 이 절은 Parser commit `5dd6410`과 당시 r14 evidence를 재현하기 위한 역사 계약이다.
+> 실제 구현은 별도 language adapter가 아니라 `CAstListener.bindCall()`에서 final binding/type/linkage를
+> 판정했다. Analyzer product가 이 wire를 소비하기 전에 책임 위반이 확인됐으므로 현행 authority가 아니다.
+> Analyzer는 IR 1.3 call binding을 canonical target으로 승격하지 않으며, forward wire는 아래 IR 2.0을 따른다.
 
 IR `1.3.0`은 call occurrence와 target binding을 분리한다. 기존 call fact의 range/callee/argument는
 그대로 syntax 정본이고, callable declaration/definition은 별도 `callable` fact다. call fact는 같은
@@ -306,6 +312,119 @@ payload가 있으므로 `emitted=population`이다. `unsupported` 또는 증거 
 `unresolvedFactIds`로 보존한다.
 IR `1.0.0|1.1.0|1.2.0` call은 binding capability가 없는 legacy input이며 Analyzer는 이를 name-only target으로
 승격하지 않는다.
+
+### structural callable/call evidence와 Analyzer semantic resolution (`2.0.0`)
+
+IR 2.0은 Parser의 syntax authority와 Analyzer의 semantic authority를 물리적으로 분리하는 breaking wire다.
+IR 1.3의 callable syntax population은 보존하지만 final binding fields는 제거한다.
+
+Envelope에는 파일 확장자로 언어를 추측하지 않도록 다음 identity가 필수다.
+
+```json
+{
+  "version": "2.0.0",
+  "language": "c",
+  "frontendSchema": "antlr-c/v1"
+}
+```
+
+`language`와 `frontendSchema`는 Parser registry가 발행한 closed identity다. Analyzer는 명시 등록된 adapter를
+고르기 위해서만 사용하고, 파일 suffix나 source spelling으로 다른 adapter에 fallback하지 않는다.
+
+Call fact는 syntax만 가진다.
+
+```json
+{
+  "kind": "call",
+  "range": {"charOffset": 40, "charLength": 8},
+  "payload": {
+    "calleeKind": "named|constructor|expression",
+    "calleeRange": {"charOffset": 40, "charLength": 3},
+    "receiverRange": null,
+    "terminalName": "foo",
+    "argumentRanges": []
+  }
+}
+```
+
+Callable fact도 syntax만 가진다.
+
+```json
+{
+  "kind": "callable",
+  "range": {"charOffset": 0, "charLength": 24},
+  "payload": {
+    "role": "declaration|definition",
+    "nameRange": {"charOffset": 4, "charLength": 3},
+    "astNodeRange": null,
+    "scopePath": ["... canonical scope fact id ..."],
+    "scopeRange": {"charOffset": 0, "charLength": 100},
+    "declarationPoint": 24,
+    "syntax": {
+      "schema": "c-callable-syntax/v1",
+      "declarationSpecifiers": [],
+      "declarator": {},
+      "attributes": []
+    }
+  }
+}
+```
+
+- `syntax`는 universal type schema가 아니라 frontend별 versioned typed component다. 각 component는 grammar
+  kind와 exact half-open range를 보존하며, Analyzer adapter가 source를 regex/split으로 재파싱하지 않게 한다.
+- C frontend는 최소 storage/type/qualifier/function/alignment specifier, pointer/direct declarator,
+  parameter declaration, array/function suffix, variadic marker, attribute의 grammar kind/range를 보존한다.
+- Java frontend는 receiver/type argument/argument/member/constructor syntax와 enclosing scope identity를,
+  Python frontend는 Name/Attribute/Call, lexical scope, global/nonlocal/import/assignment syntax를 보존한다.
+- grammar가 인식한 새 component를 기존 필드에 억지로 평탄화하지 않는다. frontend schema를 올리고 exact
+  range/completeness를 확장한다.
+- `payload.binding`, `adapterSchema`, `bindingKey`, `compatibilityKey`, `compatibilityStatus`,
+  `compatibilityScope`, `definitionStatus`, `targetScope`, `resolutionMode`, `externalIdentityKey`는 IR 2.0 Parser
+  fact에 존재하면 계약 오류다.
+
+Analyzer language semantic adapter의 출력은 Parser wire와 분리된 내부 canonical record다.
+
+```json
+{
+  "callId": "canonical call fact id",
+  "adapterSchema": "analyzer-c-binding/v1",
+  "resolution": "internal|external|dynamic|configuration_dependent|ambiguous|unsupported|inactive",
+  "declarationFactId": null,
+  "targetFactId": null,
+  "candidateFactIds": [],
+  "configurationId": null,
+  "externalIdentityKey": null,
+  "reason": "... or null"
+}
+```
+
+1. Adapter는 Parser structural fact, corpus index, supplied build/classpath/import/runtime trace만 소비한다.
+2. actual toolchain/compiler trace가 입력 configuration과 exact하게 결합되면 authoritative다. 다른 toolchain의
+   결과로 일반화하지 않는다.
+3. source-only adapter는 현재 structural evidence로 증명 가능한 결론만 낸다. 증거가 없으면 이름·arity·대문자·
+   stdlib 목록·framework glob으로 메우지 않는다.
+4. 분석 입력에서 unique internal target을 증명하지 못하고 동적/모호/configuration/unsupported 원인이 없는
+   grammar-known call은 부분 업로드의 정상 `external`이다. collision-free external identity가 없으면 aggregate
+   external target node/CALLS edge를 만들지 않는다.
+5. common resolution core는 adapter output을 바꾸지 않고 call ID 전수, evidence reference, target 0/1/N,
+   configuration 격리, exact-once ledger를 검증한다. internal만 exact target CodeNode에 aggregate CALLS를 만든다.
+6. adapter 미등록, structural completeness partial, provider 결손은 좌표와 missing capability가 있는
+   `unsupported|configuration_dependent|dynamic`으로 분류하거나 graph mutation 전에 fail closed한다. legacy
+   name resolver로 돌아가지 않는다.
+7. Framework owner는 enclosing routine, DBMS owner는 effective AST CodeNode다. owner 차이를 binding adapter가
+   합치지 않는다.
+
+IR 2.0 completeness는 syntax kind만 회계한다. `call_binding` row는 Parser envelope에서 제거한다.
+Analyzer run은 별도 resolution ledger에서 다음 합격식을 강제한다.
+
+```text
+Parser call population = Analyzer resolution population
+                       = internal + external + dynamic + configuration_dependent
+                         + ambiguous + unsupported + inactive
+```
+
+누락·중복·미분류 잔차는 0이어야 한다. Parser callable fact는 별도 graph entity가 아니며, Analyzer가 target
+선택 근거로 참조할 때 occurrence evidence ID로만 보존한다.
 
 ### import/include
 
@@ -476,10 +595,11 @@ Lookup fact:
 
 ## 8. completeness matrix
 
-파일마다 `call|call_binding|callable|import|symbol|literal|assignment|parameter|macro|embedded_language|
-conditional_region` 각 kind/capability에 대해 `complete|not_applicable|partial|unsupported`와
-`population/emitted/explicitlyUnresolved`를 기록한다. `call_binding`은 call fact에 결속된 capability row이고
-나머지는 같은 kind fact population이다.
+IR 1.x 역사 envelope는 파일마다 `call|call_binding|callable|import|symbol|literal|assignment|parameter|macro|
+embedded_language|conditional_region` 각 kind/capability를 기록했다. IR 2.0 Parser envelope는 final semantic
+capability인 `call_binding`을 제거하고 syntax kind만 `complete|not_applicable|partial|unsupported`와
+`population/emitted/explicitlyUnresolved`로 기록한다. binding population은 Analyzer run resolution ledger가
+별도로 소유한다.
 
 ```text
 population = emitted + explicitlyUnresolved

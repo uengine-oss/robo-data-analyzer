@@ -1,7 +1,7 @@
 # Analyzer 의미 무손실 감사 현재상태
 
 **Updated**: 2026-08-21
-**Status**: C-067 Parser IR 1.3 producer commit/push 완료; Analyzer 최종 wire formal red 9/9 고정, strict consumer 구현 전
+**Status**: Strategy A 실제 데이터 4함수 progressive pilot 우선; C-080 IR 2.0 구조개편은 TODO로 봉인해 후속 재개
 **Analyzer C-066 product commit**: `15fcec8eb77c16a282f30e90df396a09c7fa7eff`
 **Analyzer C-062 product commit**: `cd7110d3e7103ff264d6ce041136ab01e96c412f`
 **Analyzer C-062 evidence commit**: `f44bc530fad96fd2314b27dea3dc98a33a20ff3e`
@@ -24,10 +24,11 @@
 
 - Neo4j `127.0.0.1:7687`: 현재 세션에서 인증과 `SHOW DATABASES` 재확인 성공.
   `neo4j|test|framework|dbms|system`만 존재하고 모두 online이다. 허용 목록 밖 DB는 0개다.
-- Analyzer C-062 product HEAD `cd7110d3e7103ff264d6ce041136ab01e96c412f`; 제품·테스트와 정본
-  `f44bc530fad96fd2314b27dea3dc98a33a20ff3e`은 3층 검증 후 `origin/main`에 push됐다.
-- Parser main HEAD `e28be6aa026ff005b5d4adb447459409cdecf34f`; IR 1.2 grammar-owned C type-name
-  definition/lookup producer와 formal/actual test 변경은 `origin/main`에 push됐다.
+- Analyzer main HEAD `174f47f0cf46ce249bae22f9f4a11c050bd710b5`, `origin/main`과 일치한다.
+  `pipeline/steps/step2_load_ast/evidence_ir.py`에는 IR 1.3 consumer 시도의 보존된 미완성 WIP가 있고,
+  spec 131 문서는 현재 결정/검증 슬라이스로 수정 중이다. decoder WIP는 이 문서 커밋에 stage하지 않는다.
+- Parser main HEAD `5dd64106540674a4aebfdb37ad897a375950d335`, `origin/main`과 일치하며 clean이다.
+  IR 1.3은 역사 evidence로 보존하고 IR 2.0 forward 교정 전까지 제품 binding authority로 확대하지 않는다.
 - Catalog HEAD `1f1aaa608a3d7ef8b01ce15c3df962cf0f1cfefb`, 기존 dirty 12개가 있다.
 - Fabric HEAD `83c9604e2d6ec3f1ececa47d2e2264a74257843d`, 기존 dirty 7개가 있다.
 - Architect HEAD `7b771ac2e7338d03ac8238db5c307d97080232c1`, 기존 dirty 4개가 있다.
@@ -61,7 +62,19 @@
 - 유입: `cd9d63b`(2026-08-12)
 - 실제 현상: 복잡한 APAS summary가 정확히 600자에서 끝나며 일부는 `partial`, 일부는 `sufficient`로 통과할 수 있다.
 - 판정: 표시 제한이 아니라 provider schema의 실제 의미 상한이므로 무손실 계약 위반.
-- 상태: 원인 확정, 수정 전. 숫자 증설이 아닌 obligation-derived 분할·완전성 회계가 필요하다.
+- 상태: 해결됨. 숫자 증설이 아니라 canonical diagnostic/meaning 상한 제거와 obligation-derived 분할·
+  exact-once merge 계약으로 교체했고 최초 red 2건과 집중 `231 passed, 134 subtests`를 통과했다.
+
+### C-080 — Parser listener가 final call binding/type/linkage를 소유
+
+- 코드: Parser `CAstListener.callableEvidenceExtraction/bindCall/effectiveTargetScope/
+  functionCompatibility/canonicalBuiltinType`
+- 유입: Parser `5dd6410`(2026-08-21)
+- 실제 현상: grammar listener가 syntax fact를 넘어 call별 final binding status와 compatibility/scope를 결정한다.
+  별도 language adapter는 없고 `CLanguageModule`이 listener 결과를 sealer에 직결한다.
+- actual 한계: r14 bound 57건은 전부 same translation unit이며 cross-TU positive 0이다.
+- 판정: Parser structural authority와 Analyzer semantic authority 위반. IR 1.3을 Analyzer canonical consumer로
+  완성하지 않고 IR 2.0 structural fact + Analyzer internal adapter/core로 forward 교체한다.
 
 ## 4. 최초 결함 후보와 전수조사 종결 판정
 
@@ -662,5 +675,40 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
     node 0, unsupported candidate 보존, missing referenced fact와 missing binding fail-closed를 고정했다. 권위
     unittest는 9 tests 모두 `classify_call_sites() got an unexpected keyword argument 'callable_facts'`로 error다.
     이는 제품에 Parser-owned callable/binding 소비 경계가 아직 없다는 formal red이며 구현 성공으로 해석하지 않는다.
+25an. 사용자 아키텍처 정정과 source 재감사로 C-080을 확정했다. Parser `5dd6410`의 별도 language adapter는
+    실제로 존재하지 않고 `CAstListener.callableEvidenceExtraction()`이 `bindCall()`을 직접 실행한다. 같은 listener가
+    `effectiveTargetScope()`, `functionCompatibility()`, `canonicalBuiltinType()`으로 C linkage/type compatibility와
+    `declaration_bound|external|dynamic|configuration_dependent|unsupported`를 최종 결정한 뒤 `CLanguageModule`이
+    결과를 sealer에 직결한다. r14 bound 57건은 direct 17+compatible 40이며 전부 same translation unit,
+    cross-TU positive 0이라 범용 cross-TU 정확도를 증명하지 않는다. Analyzer strict consumer를 이 wire에 맞추면
+    잘못된 ownership을 고착하므로 IR 1.3은 역사 evidence로만 보존하고 canonical consumer 계약에서 폐기한다.
+    상세 원인 사슬·공식 근거·rollback·미검증은
+    `evidence/call-binding-ownership-correction-20260821.md`가 소유한다.
+25ao. forward 목표는 두 서비스 그대로 `Parser structural evidence → Analyzer internal language semantic adapter
+    → language-neutral resolution core`다. Parser IR 2.0은 explicit language/frontend identity, call/callee/receiver/
+    argument range, callable declaration/definition, lexical scope/order, typed specifier/declarator/parameter/attribute
+    syntax와 presence만 생산하고 final binding/status/key/completeness를 제거한다. Analyzer가 C/Java/Python/SQL
+    adapter와 authoritative provider capability를 소유하며 common core는 target 0/1/N과 exact-once ledger만
+    검증한다. product external은 부분 업로드의 정상 경계이고 unresolved graph entity는 만들지 않는다.
+    `ontology_roles.yaml.roles`는 primary graph materialization 분류로 유지하고 call binding에는 사용하지 않는다.
+    SQL `EXIT`의 control/statement 중복은 현재 DBMS CodeNode와 별도 `exit_loop` effect를 잃지는 않지만
+    `role_of()` 첫 항목 순서에 의존하므로 독립 facet 계약에서 순서 의존을 제거한다.
+25ap. 현재 Analyzer working tree의 `pipeline/steps/step2_load_ast/evidence_ir.py`는 이전 IR 1.3 strict decoder
+    시도의 보존된 미완성 diff다. 삭제한 `_KINDS` 참조, callable 수집/version 전달/생성자 결합이 닫히지 않아
+    제품 합격 상태가 아니다. 이 diff를 잃거나 IR 1.3 consumer로 완성하지 않고 IR 2.0 structural decoder로
+    forward 교체한다. Parser tree는 clean이고 Analyzer 외 Catalog/Fabric/Architect WIP와 DB는 무변경이다.
+25aq. 사용자 우선순위 변경으로 C-080 구현은 폐기하지 않고 TODO/contract/red 대상으로 봉인한 채 Strategy A
+    실제 데이터 검증을 먼저 수행한다. 기존 shopmall source 11파일은 sealed hash 11/11 일치하고, 20함수
+    모집단은 77 actual prompt record/519 exact row다. 1단계는 결과 열람 전 complex=`member_authenticate`,
+    medium=`apply_point_balance`, state-transition=`next_ship_status`, negative-control=`db_commit`의 4함수로
+    고정했다. 합계는 15 record/104 row/18 gold cases이고 selected ledger SHA-256은
+    `75292142cb95b9980b1d3064857a517cbfbfcb4dd43ab4fbebe36a224ee4182e`다.
+25ar. Strategy A 역사 script는 tracked `strategy-a-v3-results.jsonl`을 먼저 truncate하고 3 repeats/16 workers/
+    231호출, meaning maxLength 500/1000, output 4096 token을 고정하므로 그대로 실행하지 않는다. 원본과 역사
+    결과 hash는 불변으로 보존한다. 새 runner는 spec 131 `_runs/framework/strategy-a`만 쓰고 1회 15호출의
+    actual system/user/schema/raw/parsed/usage/finish reason을 보존한다. 자동 계약·104행 exact-once·18 gold
+    직접 의미 판정을 모두 통과해야 20함수/77호출로 확대한다. 이전 모델 3회와 현재 1회는 동일 입력 정확도와
+    역사 변동 범위를 비교하되 현재 반복 안정성은 미검증으로 분리한다. 비교 결과는
+    `D:\work\robo\docs\작업보고내용`에 2026-08-21 쉬운 보고서로 작성한다.
 26. 검증: 자동 회귀→결정론 전수 회계→봉인 직접 의미 판정→실제 APAS 순으로 계속 수행한다.
 27. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.

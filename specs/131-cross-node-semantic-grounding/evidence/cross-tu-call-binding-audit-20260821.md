@@ -1,6 +1,12 @@
 # C-067 call binding 생산자·소비자 감사
 
-**Status**: Parser IR 1.3 producer implemented and actual-accounted; Analyzer consumer pending
+**Status**: Historical IR 1.3 producer evidence; Analyzer consumer rejected after ownership correction
+
+> **2026-08-21 supersession:** 이 문서의 IR 1.3 Parser-owned binding 설계는 실제 별도 adapter가 아니라
+> `CAstListener` 안의 final semantic decision이었다. Analyzer product가 소비하기 전에 폐기했으며 forward
+> 계약은 [call binding 책임 경계 정정](call-binding-ownership-correction-20260821.md)과
+> `contracts/common-evidence-ir-v1.md`의 IR 2.0 절이 소유한다. 아래 r14 수치와 실패 교훈은 역사 증거로
+> 보존하며 현재 합격 근거로 승격하지 않는다.
 **Date**: 2026-08-21
 **Scope**: Parser call/declaration evidence → Analyzer CALL 분류 → Neo4j → REST/MCP/search. Architect 제외.
 

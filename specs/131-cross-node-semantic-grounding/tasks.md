@@ -12,6 +12,26 @@
 
 사용자가 2026-08-20 전체 목표와 방향을 승인해 이 단계는 종료됐다.
 
+## 2026-08-21 Strategy A 실제 데이터 단계 검증
+
+- [x] A131-SA-01 기존 shopmall 20함수 source/sample/gold와 prompt ledger 원본 SHA-256을 재검증한다.
+  - actual source 11/11 hash 일치, sample/gold hash 일치, selected 20함수 77 record/519 row 확인
+- [x] A131-SA-02 결과 열람 전 1단계 영역과 확대 조건을 봉인한다.
+  - complex `member_authenticate`, medium `apply_point_balance`, state-transition `next_ship_status`,
+    negative control `db_commit`
+  - 4함수/15 actual prompt records/104 exact rows/18 sealed gold cases
+  - `evidence/strategy-a-progressive-pilot-seal-20260821.json`
+- [ ] A131-SA-03 tracked 역사 결과를 덮어쓰지 않고 spec 131 `_runs/framework/strategy-a`에만 쓰는
+  안전 runner와 preflight/red test를 고정한다. 임의 meaning maxLength와 content retry는 두지 않는다.
+- [ ] A131-SA-04 현재 모델 1회 15호출을 실행하고 raw/parsed/usage/finish reason/actual system-user-schema
+  hash와 transport/schema/row/Python/grounding ledger를 exact-once 보존한다.
+- [ ] A131-SA-05 동일 15입력의 이전 모델 3회 역사 결과와 현재 1회를 비교한다. 반복 안정성은 미검증으로
+  분리하고, 18 gold 의미 사례를 주 에이전트가 직접 판정한다.
+- [ ] A131-SA-06 세 층 전부 통과할 때만 20함수/77호출/519행 1회로 확대한다. 한 축이라도 실패하면
+  첫 오좌표 원인을 확정하기 전 확대하지 않는다.
+- [ ] A131-SA-07 `D:\work\robo\docs\작업보고내용`에 2026-08-21 쉬운 비교 보고서를 작성한다.
+  기존 C-080/IR 2.0 개선 작업은 항목별 한 줄 상태만 남긴다.
+
 ## 2026-08-20 의미 무손실 전수조사
 
 - [x] A131-01 Analyzer 전체 상한·절단·Top-N·sampling·skip/fallback·중간 LLM·summary-of-summary·
@@ -63,11 +83,12 @@
         10건 green, actual 23파일 symbol 4,659 exact-once, syntax ambiguity 0, 봉인 40/40 exact,
         NodeBuildResult/CodeNode projection 0·Neo4j/API/MCP 생산 배선 검색 0·DB write 0,
         전체 1,258 passed/7 skipped
-    - [ ] A131-04d-C067 language-adapter call binding과 opaque-key Analyzer join으로 name-only binder를 제거한다.
+    - [ ] A131-04d-C067 Parser structural facts→Analyzer language adapter/core로 name-only binder를 제거한다.
       - [x] C-067~C-072 source→Parser→Analyzer→Neo4j→API/MCP 배선, actual 값, 유입 commit, 공식 근거,
         원인·영향도 전수 감사
-      - [x] Common Evidence IR 1.3 callable/call-binding wire, C/Java/Python capability 경계, target 0/1/N,
-        product external·dynamic·ambiguous·unsupported occurrence 계약 고정
+      - [x] 역사 Common Evidence IR 1.3 callable/call-binding wire와 C listener 실험을 고정했다.
+        2026-08-21 책임 재감사에서 Parser listener가 final binding/type/linkage를 소유한 결함이 확인되어
+        Analyzer canonical consumer 계약으로는 폐기하고 IR 2.0 forward wire로 교체한다.
       - [x] Parser C callable/binding formal red: direct visible declaration, cross-TU external linkage,
         same-TU static, declaration 부재, incompatible/duplicate/configuration, supplied header, conditional/macro
         — 최초 6 tests/6 failures, callable/binding/version/header 결손 확인
@@ -75,7 +96,7 @@
         source/configuration 격리, name/language fallback 0, external occurrence와 unresolved graph entity 0,
         unsupported candidate 보존, missing binding/reference fail-closed
         — final wire 권위 unittest 9 tests/9 errors, `callable_facts` 계약 부재 확인
-      - [ ] Parser 1.3 producer 구현·전체/actual exact-once 회계·봉인 직접 판정·commit/push
+      - [x] Parser 1.3 역사 producer 구현·전체/actual exact-once 회계·봉인 직접 판정·commit/push
         - [x] C grammar/listener callable/binding producer, header definition 보존, function-pointer dynamic,
           macro configuration-dependent, block visibility, exact-once sealer 구현
         - [x] typedef/tag 및 general token-equality의 거짓 compatibility, inactive/conditional callable,
@@ -95,7 +116,22 @@
           accepted AST 23/23, sealed direct 40/40 exact
         - [x] Parser 전체 회귀·diff 감사·commit/push — `5dd6410`, 전체 223/0/0/10,
           golden 5/5 exact, origin/main 일치, clean
-      - [ ] Analyzer strict consumer, generation/Neo4j/REST/MCP/search 이행·3층 검증·commit/push
+      - [x] Parser IR 1.3 ownership correction 조사: `CAstListener.bindCall/effectiveTargetScope/
+        functionCompatibility/canonicalBuiltinType`가 final semantic decision을 수행하고 별도 adapter가 없음을
+        source→sealer→Analyzer red까지 확인. actual r14 bound 57건이 전부 same-source이고 cross-TU positive
+        0임을 분리. `evidence/call-binding-ownership-correction-20260821.md`
+      - [ ] Common Evidence IR 2.0 structural callable/call syntax 계약과 Parser red 고정
+        - [ ] explicit language/frontend schema와 typed scope/specifier/declarator/parameter/attribute range
+        - [ ] call payload binding/status/key 0, Parser semantic completeness 0
+        - [ ] function-pointer/object shadowing, conditional/header/parenthesized declarator 반대 fixture
+      - [ ] Parser IR 2.0 producer로 listener semantic binding을 제거하고 전체/actual/봉인 3층 검증·commit/push
+      - [ ] Analyzer language adapter registry와 C/Java/Python/SQL capability contract red 고정
+        - [ ] direct/compatible/external/internal-linkage/ambiguous/unsupported/dynamic/configuration/inactive 전수
+        - [ ] name/extension/stdlib/framework glob/scan wrapper/정렬 첫 후보 fallback 0
+      - [ ] Analyzer C adapter와 language-neutral resolution core 구현
+      - [ ] `astNodeRange→CodeNode` exact 결합, occurrence/generation/Neo4j/REST/MCP/search 동일 ledger 이행
+      - [ ] Framework/DBMS actual과 자동 회귀·결정론 전수 회계·봉인 직접 의미 판정·commit/push
+      - [ ] ontology primary role과 독립 callable/control/effect facet 계약을 분리하고 SQL EXIT 순서 의존을 제거
   - [ ] A131-04e 남은 구조 closure(C-004/C-017~021/C-031/C-034~C-042) 책임 슬라이스별 해결
     - [x] A131-04e-C004-C017-C031 Catalog truncated inventory pre-merge fail-closed, unknown external
       non-whitespace source span exact-once closure, 순환 dead Catalog lineage consumer 제거 — red 3건,

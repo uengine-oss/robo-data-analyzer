@@ -3,7 +3,7 @@
 문서 단일 진입점은 `specs/131-cross-node-semantic-grounding/README.md`다. 영구 규칙은 `ABSOLUTE_RULES.md`, 현재
 상태·폐기 결정·다음 행동은 `CURRENT_STATUS.md`가 소유하며, `HANDOFF.md`는 상세 역사다.
 
-**Status**: In Progress — 2026-08-19 APAS summary completeness actual revalidation
+**Status**: In Progress — 2026-08-21 Strategy A actual-data progressive pilot; C-080 forward correction queued
 **Created**: 2026-08-11
 **Reframed**: 2026-08-12
 **Reopened**: 2026-08-18
@@ -144,23 +144,34 @@ ID 기준으로 중복 제거해 소비하며 정상 생성 경로에서 레거�
     corpus 안의 unique external definition이 결합되면 파일이 달라도 내부 사용자 정의 CALL이다. header는
     declaration 전달 수단일 뿐 필수가 아니다. static/internal linkage, typedef(no linkage), incompatible/
     duplicate definition, declaration 부재는 이름 일치만으로 결합하지 않는다.
-30. 모든 언어의 call binding은 Parser language adapter가 versioned callable declaration/definition fact와
-    call-site binding 판정으로 생산한다. Analyzer는 adapter-owned opaque binding/type/configuration key의
-    exact join만 수행하고 언어, 확장자, 대문자, stdlib 이름 목록, framework glob, 같은 파일 우선, 정렬상
-    첫 ID로 target을 만들거나 제외하지 않는다. 증명된 exact definition 하나만 internal CALLS이며 target이
-    없으면 product external, 동적/모호/미지원은 call occurrence 진단이다. 어떤 상태도 별도 Unresolved
-    graph entity나 owner property ledger가 아니며, collision-free external identity가 없으면 aggregate
-    external target node도 만들지 않는다.
-    같은 typedef/tag 철자는 translation unit 경계를 넘는 type compatibility 증거가 아니므로 adapter는
-    compatibility proof scope를 source/configuration/corpus로 명시하고 Analyzer는 그 scope까지 exact join한다.
-    C non-static inline처럼 dialect·declaration·attribute에 따라 definition eligibility가 달라지면 configured
-    trace 없이 exact target으로 승격하지 않는다. token spelling equality를 canonical C type compatibility로
-    가장하지 않으며, grammar AST로 완전히 정규화한 지원 subset만 exact이고 나머지는 unavailable이다.
-    call-site에 직접 보이는 exact definition은 별도 compatibility 검색 없이 그 definition fact를 가리키고,
-    declaration-only binding만 exact compatibility로 definition을 찾는다. inactive callable은 visibility 후보에서
-    제외하며 conditional/unknown callable 영향은 configuration-dependent occurrence로 전수 보존한다.
-    visible declaration은 있으나 type/dispatch compatibility를 증명하지 못한 `unsupported` 판정도 원인이 된
-    callable fact ID를 버리지 않고 occurrence의 candidate evidence로 보존한다.
+30. 모든 언어의 Parser frontend는 versioned callable declaration/definition과 call syntax fact만 생산한다.
+    final binding 판정, linkage/type compatibility, internal/external/dynamic/ambiguous 결과는 Analyzer 내부의
+    versioned language semantic adapter가 소유한다. Analyzer의 language-neutral resolution core는 adapter
+    결과의 canonical fact reference, target 0/1/N, configuration 격리와 exact-once 회계만 검증한다.
+    언어별 판단은 adapter 밖의 확장자·대문자·stdlib 이름 목록·framework glob·같은 파일 우선·정렬상 첫 ID로
+    만들거나 제외하지 않는다. 증명된 exact definition 하나만 internal CALLS이며, 동적/모호/configuration-dependent/
+    미지원은 call occurrence 상태다. 분석 대상 안에서 target을 증명하지 못한 grammar-known call은 부분 업로드의
+    정상 product external이다. 어떤 상태도 별도 Unresolved graph entity나 owner property ledger가 아니며,
+    collision-free external identity가 없으면 aggregate external target node도 만들지 않는다.
+    Parser fact는 lexical scope/range, declaration order, storage/type/qualifier/function specifier, declarator/
+    parameter/attribute 구조와 conditional presence를 exact source range로 보존한다. Analyzer C adapter는 이
+    구조와 supplied configuration/toolchain trace로 linkage와 type compatibility를 판정한다. 같은 typedef/tag
+    철자나 token sequence만으로 translation unit을 넘는 compatibility를 가장하지 않는다. Java는 receiver/
+    accessibility/overload/selected declaration, Python은 lexical/global/nonlocal/import/rebinding을 각각 adapter가
+    소유한다. authoritative provider가 없으면 증명 가능한 source-only 단위만 확정하고 나머지는 근거 fact ID와
+    missing capability를 가진 explicit 상태로 전수 보존한다.
+31. `ontology_roles.yaml`의 AST role은 primary graph materialization handler 하나를 고르는 분류 계약이다.
+    call binding/type/import 해석을 넣지 않는다. 하나의 Parser AST node는 하나의 primary CodeNode로 보존하고,
+    callable/call/control/effect는 별도 evidence facet으로 연결한다. Parser-supported source를 Analyzer가
+    `source_lexicon` 정규식으로 재파싱하거나 scan hint/runtime 이름을 call target authority로 사용하는 경로는
+    grammar fact와 semantic adapter 계약으로 교체한다.
+32. 의미 전략의 새 검증은 장난감 fixture만으로 채택하지 않는다. 실제 코퍼스를 결과 열람 전에 영역별로
+    층화하고 source/sample/gold/prompt ledger hash와 대상 ID를 봉인한 뒤 작은 pilot부터 시작한다. pilot은
+    자동 계약 검사, 결정론 의무 exact-once 회계, 주 에이전트 직접 의미 판정을 모두 통과해야 다음 규모로
+    확대할 수 있다. 작은 표본 통과를 전체 코퍼스·다른 언어·반복 안정성으로 일반화하지 않는다. 실패하면
+    호출 수·문자 수·재시도 수를 늘리지 않고 첫 오좌표의 source→evidence→actual prompt→raw/parsed→validator
+    사슬에서 원인을 확정한다. 이전 모델과 비교할 때는 동일한 봉인 입력·system/user/schema를 사용하고,
+    반복 수가 다르면 단발 정확도와 반복 변동을 별도 축으로 보고한다.
 
 ## 폐기된 요구
 

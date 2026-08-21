@@ -81,25 +81,38 @@
     반환 반대 fixture를 먼저 통과시킨
     뒤 전체 회귀와 prompt byte 원장을 실행한다. 실제 APAS full cold에서 같은 봉인 FUNCTION 10을
     재판정해 omission/contradiction이 남으면 prompt 문구 반복 대신 첫 오좌표의 입력·slot 경계를 다시 연다.
-25. C-067~C-072의 call target 배선을 source→Parser callable/call binding→Analyzer join→CALLS/occurrence→
-    semantic context/order→Neo4j→REST/MCP/search로 고정한다. Java JLS overload/dispatch, Python lexical/
-    runtime binding, C linkage/type compatibility를 각 공식 명세와 현재 listener capability에 대조하되,
-    특정 compiler/frontend를 모든 configuration의 truth로 승격하지 않는다.
-26. Common Evidence IR 1.3에 `callable` fact와 call별 binding 판정, 별도 `call_binding` completeness를
-    추가한다. C adapter부터 visible declaration/linkage/type/configuration을 생산하고 Java/Python은 같은
-    wire에서 증명된 capability와 `unsupported|dynamic` 경계를 명시한다. Analyzer name-only fallback은 없다.
-    type compatibility key는 proof scope까지 포함하며 같은 typedef/tag 철자만으로 translation unit을 넘지
-    않는다. non-static inline definition eligibility처럼 dialect/configuration이 필요한 축은 exact target이
-    아니라 callable/call-binding completeness의 명시적 partial로 남긴다. token sequence는 canonical type이
-    아니므로 grammar AST로 완전히 정규화 가능한 builtin subset만 exact로 봉인하고 named/unspecified/complex
-    type은 unavailable로 둔다. visible exact definition은 fact-direct, declaration-only는 compatibility join으로
-    분리하며 inactive/conditional callable presence를 binding 후보와 completeness에 반영한다. exact
-    compatibility를 지원하지 못해 `unsupported`가 된 visible declaration도 판정 근거 fact ID를 occurrence에서
-    잃지 않도록 evidence closure를 닫는다.
-27. Parser red는 direct declaration+cross-TU definition, same-TU static, declaration 부재, incompatible/
-    duplicate/configuration 분리, supplied-header definition, macro/conditional 경계를 고정한다. Analyzer red는
-    opaque-key exact join, target 0/1/N, 언어·이름 독립성, external occurrence와 unresolved graph entity 0,
-    stdlib/framework name-only exclusion 0을 고정한다.
-28. Parser producer를 전체/actual 전수 회계와 봉인 직접 판정 후 commit/push하고, Analyzer strict consumer와
-    occurrence/generation/graph/API/MCP를 별도 검증 슬라이스로 commit/push한다. 마지막에 framework rollback
-    publish와 자동 회귀·결정론 전수 회계·봉인 직접 의미 판정 3층을 수행한다.
+25. Strategy A Python 관계식을 실제 shopmall 봉인 자료로 단계 검증한다. 1단계는 기존 20함수 모집단의
+    복잡/중간/상태전이/음성대조 4함수, 실제 prompt record 15개, 구조 의무 104행, gold 의미 사례 18건이다.
+    원본 source 11파일·sample/gold·prompt ledger·역사 결과는 byte 불변으로 두고 새 raw/result는
+    `specs/131-cross-node-semantic-grounding/_runs/framework/strategy-a/` 아래에만 쓴다. arbitrary maxLength와
+    tracked output truncate를 제거한 안전 runner를 red로 고정한 뒤 current model 1회를 실행한다.
+26. 1단계 결과를 동일 15입력의 이전 모델 3회 역사 결과와 비교한다. JSON/schema, exact row coverage,
+    Python AST parse, source evidence symbol/literal grounding, status/failure, 18개 gold 의미의 exact/partial/
+    contradiction/fabrication/omission/needs_context를 분리한다. 현재 1회 결과로 반복 안정성을 주장하지 않는다.
+    세 층이 모두 통과할 때만 20함수·77입력·519행 1회로 확대한다.
+27. 비교 결과와 확대/중단 판정을 `D:\work\robo\docs\작업보고내용`의 2026-08-21 보고서에 비개발자가
+    읽을 수 있는 말로 기록한다. C-080을 포함한 기존 개선 작업은 각각 한 줄 상태로만 덧붙인다.
+28. C-067~C-072의 call target 배선을 source→Parser structural call/callable facts→Analyzer language semantic
+    adapter→common resolution core→CALLS/occurrence→semantic context/order→Neo4j→REST/MCP/search로 고정한다.
+    Java compiler symbol/overload/dispatch, Python lexical/runtime binding, C linkage/type compatibility를 공식
+    명세와 actual provider capability에 대조하되 특정 compiler/frontend를 모든 configuration의 truth로
+    승격하지 않는다.
+29. pushed Parser IR 1.3과 r14는 역사 evidence로 보존하되 final binding authority로 소비하지 않는다.
+    Common Evidence IR 2.0은 explicit language/frontend identity, call/callee/receiver/argument range,
+    callable declaration/definition, lexical scope/order, specifier/declarator/parameter/attribute typed syntax를
+    생산한다. Parser listener의 `bindCall/effectiveTargetScope/functionCompatibility/canonicalBuiltinType`과
+    binding key/status/completeness를 제거한다. Parser syntax population과 Analyzer resolution population은
+    각각 exact-once로 닫는다.
+30. Analyzer 내부에 adapter registry와 C/Java/Python/SQL semantic adapter 경계를 둔다. adapter는 Parser
+    structural fact, corpus index, supplied build/classpath/import/runtime trace만 소비하고, common core는
+    `internal|external|dynamic|configuration_dependent|ambiguous|unsupported|inactive` 전수 ledger와 target
+    0/1/N을 검증한다. 이름/extension/stdlib/framework/scan-wrapper fallback은 제거한다. Framework owner=routine,
+    DBMS owner=effective AST CodeNode는 공통화하지 않는다.
+31. Parser red는 final binding field 0, syntax component/source range closure, shadowing/conditional/header/
+    declarator 보존을 고정한다. Analyzer red는 direct local definition, visible declaration+unique compatible
+    definition, declaration 부재 external, internal linkage isolation, duplicate ambiguity, incomplete type
+    unsupported, dynamic expression, adapter 미등록, unresolved graph entity 0을 고정한다. decoder actual wire,
+    `astNodeRange→CodeNode` exact 결합, occurrence/generation/Neo4j/REST/MCP 동일 ledger도 계약 테스트로 닫는다.
+32. Parser IR 2.0 producer와 Analyzer adapter/common core를 각각 전체/actual 전수 회계·봉인 직접 판정 후
+    책임별 commit/push한다. 마지막에 framework/dbms 허용 DB rollback publish와 자동 회귀·결정론 전수 회계·
+    봉인 직접 의미 판정 3층을 수행한다.
