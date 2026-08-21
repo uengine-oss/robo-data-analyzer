@@ -1,4 +1,4 @@
-"""Strict consumer for Parser common evidence IR v1.
+"""Strict consumer for versioned Parser common evidence IR.
 
 The Parser owns decoding and grammar boundaries.  This module verifies that wire
 contract against the exact source bytes; it does not search or reparse source.
@@ -11,7 +11,7 @@ from pathlib import PurePosixPath
 from typing import Any, Mapping
 
 
-_VERSION = "1.0.0"
+_SUPPORTED_VERSIONS = frozenset({"1.0.0", "1.1.0"})
 _ID_DOMAIN = "robo-evidence-v1"
 _KINDS = (
     "call", "import", "symbol", "literal", "assignment", "parameter",
@@ -24,7 +24,12 @@ _PRESENCE_STATUSES = frozenset({
     "active", "inactive", "conditional", "unknown",
 })
 _CALLEE_KINDS = frozenset({"named", "constructor", "expression"})
-_IMPORT_TARGET_KINDS = frozenset({"quoted", "angle", "computed"})
+_IMPORT_KINDS = frozenset({
+    "source_file", "computed", "type", "namespace", "static_member",
+    "module", "module_member",
+})
+_IMPORT_TARGET_KINDS = frozenset({"quoted", "angle", "computed", "qualified"})
+_IMPORT_LOCALITIES = frozenset({"local", "system", "unspecified"})
 _MACRO_KINDS = frozenset({"object", "function"})
 _BUILD_STATUSES = frozenset({"exact", "partial", "unresolved"})
 _PREPROCESSING_TRUST = frozenset({
@@ -69,13 +74,25 @@ class CallEvidenceFact:
 
 
 @dataclass(frozen=True)
+class ImportBindingFact:
+    import_kind: str
+    target_range: EvidenceRange
+    target_kind: str
+    path_component_ranges: tuple[EvidenceRange, ...]
+    member_range: EvidenceRange | None
+    alias_range: EvidenceRange | None
+    relative_level: int
+    wildcard: bool
+    locality: str
+
+
+@dataclass(frozen=True)
 class ImportEvidenceFact:
     fact_id: str
     source_id: str
     directive_range: EvidenceRange
-    target_range: EvidenceRange
     directive_kind: str
-    target_kind: str
+    entries: tuple[ImportBindingFact, ...]
     grammar_rule: str
     presence: Mapping[str, Any]
 
@@ -116,6 +133,7 @@ class MacroEvidenceFact:
 
 @dataclass(frozen=True)
 class ValidatedCommonEvidence:
+    version: str
     source_id: str
     decoded_text_sha256: str
     decoded_text: str
@@ -235,9 +253,13 @@ def _validate_envelope(
     *,
     source_bytes: bytes,
     expected_source_id: str,
-) -> tuple[str, str, str]:
-    if evidence.get("version") != _VERSION:
-        raise _fail("version", f"expected {_VERSION!r}, got {evidence.get('version')!r}")
+) -> tuple[str, str, str, str]:
+    version = evidence.get("version")
+    if version not in _SUPPORTED_VERSIONS:
+        raise _fail(
+            "version",
+            f"supported versions={sorted(_SUPPORTED_VERSIONS)!r}, got {version!r}",
+        )
     source_id = _source_id(evidence.get("sourceId"), field="sourceId")
     if source_id.startswith("unscoped/") or source_id != expected_source_id:
         raise _fail(
@@ -279,7 +301,7 @@ def _validate_envelope(
             raise _fail(field, f"expected {expected!r}, got {evidence.get(field)!r}")
     if evidence.get("parseStatus") not in {"exact", "recovered", "partial", "unresolved"}:
         raise _fail("parseStatus", f"invalid value {evidence.get('parseStatus')!r}")
-    return source_id, decoded_hash, decoded
+    return str(version), source_id, decoded_hash, decoded
 
 
 def _validate_tables(evidence: Mapping[str, Any]) -> tuple[list[str], list[dict[str, Any]]]:
@@ -471,9 +493,177 @@ def _validate_macro(
     )
 
 
+def _import_subrange(
+    value: Any,
+    *,
+    field: str,
+    source_length: int,
+    directive_range: EvidenceRange,
+) -> EvidenceRange:
+    result = _range(value, field=field, source_length=source_length)
+    if (
+        result.char_length == 0
+        or result.char_offset < directive_range.char_offset
+        or result.end > directive_range.end
+    ):
+        raise _fail(field, "nonempty subrange of import directive required")
+    return result
+
+
+def _optional_import_subrange(
+    value: Any,
+    *,
+    field: str,
+    source_length: int,
+    directive_range: EvidenceRange,
+) -> EvidenceRange | None:
+    if value is None:
+        return None
+    return _import_subrange(
+        value, field=field, source_length=source_length,
+        directive_range=directive_range,
+    )
+
+
+def _validate_import_binding(
+    raw: Any,
+    *,
+    index: int,
+    source: str,
+    directive_range: EvidenceRange,
+) -> ImportBindingFact:
+    field = f"import.payload.entries[{index}]"
+    if not isinstance(raw, dict):
+        raise _fail(field, "object required")
+    _require_exact_fields(raw, {
+        "importKind", "targetKind", "targetRange", "pathComponentRanges",
+        "memberRange", "aliasRange", "relativeLevel", "wildcard", "locality",
+    }, field=field)
+    import_kind = raw.get("importKind")
+    if import_kind not in _IMPORT_KINDS:
+        raise _fail(f"{field}.importKind", f"invalid value {import_kind!r}")
+    target_kind = raw.get("targetKind")
+    if target_kind not in _IMPORT_TARGET_KINDS:
+        raise _fail(f"{field}.targetKind", f"invalid value {target_kind!r}")
+    target_range = _import_subrange(
+        raw.get("targetRange"), field=f"{field}.targetRange",
+        source_length=len(source), directive_range=directive_range,
+    )
+    raw_components = raw.get("pathComponentRanges")
+    if not isinstance(raw_components, list):
+        raise _fail(f"{field}.pathComponentRanges", "array required")
+    components: list[EvidenceRange] = []
+    previous_end = -1
+    for component_index, raw_component in enumerate(raw_components):
+        component = _import_subrange(
+            raw_component,
+            field=f"{field}.pathComponentRanges[{component_index}]",
+            source_length=len(source), directive_range=directive_range,
+        )
+        if component.char_offset < previous_end:
+            raise _fail(
+                f"{field}.pathComponentRanges[{component_index}]",
+                "ordered non-overlapping ranges required",
+            )
+        previous_end = component.end
+        components.append(component)
+    member = _optional_import_subrange(
+        raw.get("memberRange"), field=f"{field}.memberRange",
+        source_length=len(source), directive_range=directive_range,
+    )
+    alias = _optional_import_subrange(
+        raw.get("aliasRange"), field=f"{field}.aliasRange",
+        source_length=len(source), directive_range=directive_range,
+    )
+    relative_level = _integer(
+        raw.get("relativeLevel"), field=f"{field}.relativeLevel",
+    )
+    if relative_level < 0:
+        raise _fail(f"{field}.relativeLevel", "non-negative integer required")
+    wildcard = raw.get("wildcard")
+    if not isinstance(wildcard, bool):
+        raise _fail(f"{field}.wildcard", "boolean required")
+    locality = raw.get("locality")
+    if locality not in _IMPORT_LOCALITIES:
+        raise _fail(f"{field}.locality", f"invalid value {locality!r}")
+
+    paths_inside_target = all(
+        target_range.char_offset <= component.char_offset
+        and component.end <= target_range.end
+        for component in components
+    )
+    member_inside_target = (
+        member is None
+        or target_range.char_offset <= member.char_offset <= member.end <= target_range.end
+    )
+    alias_inside_target = (
+        alias is None
+        or target_range.char_offset <= alias.char_offset <= alias.end <= target_range.end
+    )
+    if import_kind == "computed":
+        valid = (
+            target_kind == "computed" and not components and member is None
+            and alias is None and not wildcard and relative_level == 0
+            and locality == "unspecified"
+        )
+    elif import_kind == "source_file":
+        expected_locality = "local" if target_kind == "quoted" else "system"
+        delimiters = ('"', '"') if target_kind == "quoted" else ("<", ">")
+        target = source[target_range.char_offset:target_range.end]
+        valid = (
+            target_kind in {"quoted", "angle"} and len(components) == 1
+            and member is None and alias is None and not wildcard
+            and relative_level == 0 and locality == expected_locality
+            and target.startswith(delimiters[0]) and target.endswith(delimiters[1])
+            and components[0].char_offset == target_range.char_offset + 1
+            and components[0].end == target_range.end - 1
+        )
+    elif import_kind == "type":
+        valid = (
+            target_kind == "qualified" and bool(components) and paths_inside_target
+            and member is None and alias is None and not wildcard
+            and relative_level == 0 and locality == "unspecified"
+        )
+    elif import_kind == "namespace":
+        valid = (
+            target_kind == "qualified" and bool(components) and paths_inside_target
+            and member is None and alias is None and wildcard
+            and relative_level == 0 and locality == "unspecified"
+        )
+    elif import_kind == "static_member":
+        valid = (
+            target_kind == "qualified" and bool(components) and paths_inside_target
+            and alias is None and (wildcard != (member is not None))
+            and member_inside_target and relative_level == 0
+            and locality == "unspecified"
+        )
+    elif import_kind == "module":
+        valid = (
+            target_kind == "qualified" and bool(components) and paths_inside_target
+            and member is None and not wildcard and relative_level == 0
+            and alias_inside_target and locality == "unspecified"
+        )
+    else:
+        valid = (
+            target_kind == "qualified" and (wildcard != (member is not None))
+            and member_inside_target and alias_inside_target
+            and (alias is None or member is not None)
+            and locality == "unspecified"
+        )
+    if not valid:
+        raise _fail(field, f"invalid {import_kind} binding contract")
+    return ImportBindingFact(
+        import_kind=str(import_kind), target_range=target_range,
+        target_kind=str(target_kind), path_component_ranges=tuple(components),
+        member_range=member, alias_range=alias, relative_level=relative_level,
+        wildcard=wildcard, locality=str(locality),
+    )
+
+
 def _validate_import(
     fact: Mapping[str, Any],
     *,
+    version: str,
     source_id: str,
     fact_range: EvidenceRange,
     grammar_rule: str,
@@ -485,40 +675,68 @@ def _validate_import(
     payload = fact.get("payload")
     if not isinstance(payload, dict):
         raise _fail("import.payload", "object required")
-    _require_exact_fields(payload, {
-        "directiveKind", "targetKind", "targetRange",
-    }, field="import.payload")
+    if version == "1.0.0":
+        _require_exact_fields(payload, {
+            "directiveKind", "targetKind", "targetRange",
+        }, field="import.payload")
+    else:
+        _require_exact_fields(payload, {
+            "directiveKind", "entries",
+        }, field="import.payload")
     directive_kind = payload.get("directiveKind")
-    if directive_kind != "include":
+    if directive_kind not in {"include", "import"}:
         raise _fail(
             "import.payload.directiveKind",
-            f"expected 'include', got {directive_kind!r}",
+            f"invalid value {directive_kind!r}",
         )
-    target_kind = payload.get("targetKind")
-    if target_kind not in _IMPORT_TARGET_KINDS:
-        raise _fail(
-            "import.payload.targetKind", f"invalid value {target_kind!r}",
+    if version == "1.0.0":
+        if directive_kind != "include":
+            raise _fail(
+                "import.payload.directiveKind",
+                "v1.0 import evidence only supports include",
+            )
+        target_kind = payload.get("targetKind")
+        if target_kind not in {"quoted", "angle", "computed"}:
+            raise _fail(
+                "import.payload.targetKind", f"invalid value {target_kind!r}",
+            )
+        target_range = _import_subrange(
+            payload.get("targetRange"), field="import.payload.targetRange",
+            source_length=len(source), directive_range=fact_range,
         )
-    target_range = _range(
-        payload.get("targetRange"), field="import.payload.targetRange",
-        source_length=len(source),
-    )
-    if (
-        target_range.char_length == 0
-        or target_range.char_offset < fact_range.char_offset
-        or target_range.end > fact_range.end
-    ):
-        raise _fail(
-            "import.payload.targetRange",
-            "nonempty subrange of import directive required",
+        entries = (ImportBindingFact(
+            import_kind="computed" if target_kind == "computed" else "source_file",
+            target_range=target_range, target_kind=str(target_kind),
+            path_component_ranges=(), member_range=None, alias_range=None,
+            relative_level=0, wildcard=False,
+            locality={"quoted": "local", "angle": "system"}.get(
+                str(target_kind), "unspecified",
+            ),
+        ),)
+    else:
+        raw_entries = payload.get("entries")
+        if not isinstance(raw_entries, list) or not raw_entries:
+            raise _fail("import.payload.entries", "nonempty array required")
+        entries = tuple(
+            _validate_import_binding(
+                raw, index=index, source=source, directive_range=fact_range,
+            )
+            for index, raw in enumerate(raw_entries)
         )
+        allowed = {"source_file", "computed"} if directive_kind == "include" else {
+            "type", "namespace", "static_member", "module", "module_member",
+        }
+        if any(entry.import_kind not in allowed for entry in entries):
+            raise _fail(
+                "import.payload.entries",
+                f"{directive_kind} contains an incompatible binding kind",
+            )
     return ImportEvidenceFact(
         fact_id=str(fact.get("factId") or ""),
         source_id=source_id,
         directive_range=fact_range,
-        target_range=target_range,
         directive_kind=str(directive_kind),
-        target_kind=str(target_kind),
+        entries=entries,
         grammar_rule=grammar_rule,
         presence=dict(presence),
     )
@@ -819,7 +1037,7 @@ def validate_common_evidence(
     if not isinstance(evidence, dict):
         raise _fail("evidence", "FILE root requires a v1 object")
     expected = _source_id(expected_source_id, field="expectedSourceId")
-    source_id, decoded_hash, source = _validate_envelope(
+    version, source_id, decoded_hash, source = _validate_envelope(
         evidence, source_bytes=source_bytes, expected_source_id=expected,
     )
     configured_preprocessing = _validate_configured_preprocessing(
@@ -877,6 +1095,7 @@ def validate_common_evidence(
         elif kind == "import":
             imports.append(_validate_import(
                 fact,
+                version=version,
                 source_id=source_id,
                 fact_range=fact_range,
                 grammar_rule=grammar_rule,
@@ -899,6 +1118,7 @@ def validate_common_evidence(
         fact_kinds=fact_kinds,
     )
     return ValidatedCommonEvidence(
+        version=version,
         source_id=source_id,
         decoded_text_sha256=decoded_hash,
         decoded_text=source,

@@ -369,45 +369,6 @@ def alternative_clause_types(lang: str) -> frozenset[str]:
 
 
 @lru_cache(maxsize=1)
-def _reference_import_profiles() -> dict[str, dict]:
-    """Validate language→module-ownership profiles against parser import roles."""
-    data = _load_ontology()
-    profiles = data.get("reference_imports") or {}
-    if not isinstance(profiles, dict):
-        raise ValueError("reference_imports 는 mapping 이어야 한다")
-    internal = (data.get("roles") or {}).get("internal") or {}
-    expected = {
-        str(lang)
-        for lang, labels in internal.items()
-        if {"IMPORT", "INCLUDE"} & set(labels or ())
-    }
-    actual = set(profiles)
-    if actual != expected:
-        raise ValueError(
-            "reference_imports 와 roles.internal import 언어 불일치: "
-            f"missing={sorted(expected - actual)}, extra={sorted(actual - expected)}"
-        )
-    for lang, profile in profiles.items():
-        if not isinstance(profile, dict) or not str(profile.get("resolver") or "").strip():
-            raise ValueError(f"reference_imports.{lang}.resolver 가 필요하다")
-        pattern = source_lexicon(str(lang)).get("identifier_pattern")
-        if not isinstance(pattern, str) or not pattern.strip():
-            raise ValueError(f"source_lexicon.{lang}.identifier_pattern 가 필요하다")
-    return profiles
-
-
-def reference_import_profile(lang: str) -> dict:
-    """Return the declared import ownership profile; never silently degrade."""
-    profile = _reference_import_profiles().get(lang)
-    if profile is None:
-        raise ValueError(
-            f"import 단서를 emit하는 미등록 언어: {lang!r} — "
-            "ontology_roles.yaml reference_imports에 resolver 계약이 필요하다"
-        )
-    return profile
-
-
-@lru_cache(maxsize=1)
 def _reference_inheritance_profiles() -> dict[str, dict]:
     profiles = _load_ontology().get("reference_inheritance") or {}
     if not isinstance(profiles, dict):

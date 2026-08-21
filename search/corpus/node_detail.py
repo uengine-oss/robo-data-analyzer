@@ -21,6 +21,11 @@ from pipeline.models.call_resolution import (
     normalize_call_resolution_subset,
     summarize_call_resolution_subset,
 )
+from pipeline.models.import_resolution import (
+    import_resolution_from_storage,
+    normalize_import_resolution_subset,
+    summarize_import_resolution_subset,
+)
 from graph.schema.rel_types import HAS_CALL_OCCURRENCE
 
 _INTERNAL_PROPERTIES = {"embedding", "graph_owner", "generation_id", "element_id"}
@@ -68,6 +73,7 @@ def build_node_detail(
     *,
     node_id: str | None = None,
     require_complete_source: bool = True,
+    import_occurrences: list[dict] | None = None,
 ) -> dict:
     """조회 행을 공개 계약으로 직렬화한다. 테스트와 live reader가 같은 검사를 쓴다."""
     requested_id = (node_id or "").strip()
@@ -155,6 +161,13 @@ def build_node_detail(
         call_resolution = summarize_call_resolution_subset(call_occurrences)
     except ValueError as error:
         return _error("CALL_OCCURRENCE_INVALID", str(error))
+    try:
+        file_import_occurrences = normalize_import_resolution_subset(
+            import_occurrences or []
+        )
+        import_resolution = summarize_import_resolution_subset(file_import_occurrences)
+    except ValueError as error:
+        return _error("IMPORT_OCCURRENCE_INVALID", str(error))
     return {"node": {
         "id": actual_id,
         "labels": labels,
@@ -168,6 +181,12 @@ def build_node_detail(
             "status": "insufficient" if call_resolution["unresolved"] else "sufficient",
             **call_resolution,
             "occurrences": call_occurrences,
+        }} if is_code else {}),
+        **({"import_resolution": {
+            "scope": "source_file",
+            "status": "insufficient" if import_resolution["unresolved"] else "sufficient",
+            **import_resolution,
+            "occurrences": file_import_occurrences,
         }} if is_code else {}),
     }}
 
@@ -240,6 +259,9 @@ def build_gwt_detail(detail: dict, table_contexts: list[dict]) -> dict:
             "callees": calls,
             "call_occurrences": list(
                 (node.get("call_resolution") or {}).get("occurrences") or []
+            ),
+            "import_occurrences": list(
+                (node.get("import_resolution") or {}).get("occurrences") or []
             ),
             "symbols": symbols,
             "data_objects": [
@@ -366,6 +388,24 @@ def read_node_detail(node_id: str, *, view: str = "full") -> dict:
                 graph_owner=ANALYZER_GRAPH_OWNER,
             ).data()
             labels = set(node_rows[0].get("labels") or [])
+            node_properties = dict(node_rows[0].get("props") or {})
+            import_occurrences: list[dict] = []
+            source_file = str(node_properties.get("file_path") or "").strip()
+            if labels & _CODE_LABELS and source_file:
+                import_rows = session.run(
+                    "MATCH (occ:IMPORT_OCCURRENCE {graph_owner:$graph_owner, "
+                    "generation_id:$generation_id, file:$file}) "
+                    "RETURN properties(occ) AS props ORDER BY occ.ordinal",
+                    graph_owner=ANALYZER_GRAPH_OWNER,
+                    file=source_file,
+                ).data()
+                try:
+                    import_occurrences = [
+                        import_resolution_from_storage(dict(row.get("props") or {}))
+                        for row in import_rows
+                    ]
+                except ValueError as error:
+                    return _error("IMPORT_OCCURRENCE_INVALID", str(error))
             rules = read_rules(session, requested_id)
             columns = read_columns(session, requested_id) if "TABLE" in labels else []
             detail = build_node_detail(
@@ -375,6 +415,7 @@ def read_node_detail(node_id: str, *, view: str = "full") -> dict:
                 columns,
                 node_id=requested_id,
                 require_complete_source=view == "full",
+                import_occurrences=import_occurrences,
             )
             if view == "full" or "error" in detail:
                 if "error" not in detail:
@@ -382,6 +423,7 @@ def read_node_detail(node_id: str, *, view: str = "full") -> dict:
                         "generation_id": session.generation_id,
                         "quality_status": session.quality_status,
                         "call_resolution": session.call_resolution,
+                        "import_resolution": session.import_resolution,
                     }
                 return detail
             try:
@@ -401,6 +443,7 @@ def read_node_detail(node_id: str, *, view: str = "full") -> dict:
                     "generation_id": session.generation_id,
                     "quality_status": session.quality_status,
                     "call_resolution": session.call_resolution,
+                    "import_resolution": session.import_resolution,
                 }
             return packet
     except CompletedGenerationUnavailable as error:

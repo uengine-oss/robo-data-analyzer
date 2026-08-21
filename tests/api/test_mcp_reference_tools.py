@@ -235,6 +235,49 @@ class DetailPayloadTests(unittest.TestCase):
         self.assertEqual("call-1",
                          compact["node"]["linked_context"]["call_occurrences"][0]["call_id"])
 
+    def test_code_detail_exposes_file_scoped_import_occurrences_without_claiming_scope(self):
+        import_id = "a" * 64
+        occurrence = {
+            "occurrence_id": f"{import_id}:0", "import_id": import_id,
+            "ordinal": 0, "entry_ordinal": 0, "evidence_version": "1.1.0",
+            "source_id": "source:a.c", "file": "a.c", "line": 1, "end_line": 1,
+            "range": {"char_offset": 0, "char_length": 20},
+            "directive_kind": "include", "grammar_rule": "includeLine",
+            "presence_status": "active",
+            "presence": {"status": "active", "provenance": "unconditional"},
+            "evidence_status": "complete", "import_kind": "source_file",
+            "target_kind": "quoted", "target": '"common.h"',
+            "target_range": {"char_offset": 9, "char_length": 10},
+            "path_components": ["common.h"],
+            "path_component_ranges": [{"char_offset": 10, "char_length": 8}],
+            "member": None, "member_range": None, "alias": None,
+            "alias_range": None, "relative_level": 0, "wildcard": False,
+            "locality": "local", "outcome": "unresolved",
+            "reason": "insufficient_import_binding_environment",
+            "resolved_module_ids": [],
+        }
+        payload = build_node_detail(
+            [{"labels": ["FUNCTION"], "props": {
+                "id": "code:a.c:fa", "name": "fa", "file_path": "a.c",
+                "start_line": 1, "end_line": 4, "code_text": "int fa(){}",
+            }}],
+            [], [], [], import_occurrences=[occurrence],
+        )
+
+        resolution = payload["node"]["import_resolution"]
+        self.assertEqual("source_file", resolution["scope"])
+        self.assertEqual("insufficient", resolution["status"])
+        self.assertEqual(1, resolution["total"])
+        self.assertEqual([], resolution["occurrences"][0]["resolved_module_ids"])
+
+        compact = build_gwt_detail({**payload, "node": {
+            **payload["node"],
+            "properties": {"semantic_frame_json": _frame_json()},
+        }}, [])
+        [published] = compact["node"]["linked_context"]["import_occurrences"]
+        self.assertEqual(f"{import_id}:0", published["occurrence_id"])
+        self.assertEqual("insufficient_import_binding_environment", published["reason"])
+
     def test_table_has_explicit_unavailable_source_and_columns(self):
         payload = build_node_detail(
             [{"labels": ["TABLE"], "props": {"id": "db:orders", "name": "orders"}}],

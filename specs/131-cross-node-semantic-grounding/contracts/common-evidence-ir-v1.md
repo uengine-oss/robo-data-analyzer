@@ -1,4 +1,4 @@
-# Common Evidence IR v1 계약
+# Common Evidence IR v1 계약 (1.0.0 / 1.1.0)
 
 ## 1. 목적과 owner
 
@@ -162,6 +162,43 @@ publish를 중단한다. Framework routine owner로 대신 귀속하거나 fact�
 않는다.
 
 ### import/include, symbol, literal, assignment, parameter, macro
+
+IR `1.1.0`의 import/include는 statement 하나에 `payload.entries[]`를 source order로 둔다. 한 statement에
+여러 binding이 있어도 fact를 복제하지 않으며, Analyzer occurrence identity는
+`(factId, entryOrdinal)`이다.
+
+```json
+{
+  "directiveKind": "include|import",
+  "entries": [{
+    "importKind": "source_file|computed|type|namespace|static_member|module|module_member",
+    "targetKind": "quoted|angle|computed|qualified",
+    "targetRange": {"charOffset": 0, "charLength": 1},
+    "pathComponentRanges": [],
+    "memberRange": null,
+    "aliasRange": null,
+    "relativeLevel": 0,
+    "wildcard": false,
+    "locality": "local|system|unspecified"
+  }]
+}
+```
+
+- `target`, path component, member, alias text는 `decodedText`와 exact range에서 복원한다. Parser가 별도
+  정규화 문자열을 semantic authority로 발행하지 않는다.
+- C include search, Java class/module path, Python import system의 target binding은 grammar syntax fact가
+  증명하지 않는다. 검증된 환경-aware binder가 없으면 Analyzer는 basename/path/name 후보를 고르지 않고
+  `insufficient_import_binding_environment`로 unresolved 처리한다.
+- legacy IR `1.0.0` import는 singular target을 명시적으로 legacy binding 하나로 정규화하되 resolved scope를
+  승인할 수 없다. `unsupported|not_applicable|partial`을 legacy AST name으로 보충하지 않는다.
+- inactive는 `excluded/inactive_import`, conditional·unknown은 unresolved, computed target은 별도 unresolved다.
+  모든 entry가 정확히 한 outcome을 가져야 하며 duplicate/missing/out-of-order entry는 publish 실패다.
+- complete ledger는 generation-owned `IMPORT_OCCURRENCE` evidence node로 call ledger와 같은 transaction에
+  저장한다. 의미 owner를 새로 발명하거나 source file의 모든 routine에 owner edge를 만들지 않는다.
+- generation closure와 REST/search/MCP는 population, outcome/reason, canonical hash를 노출한다. code node
+  detail의 import context는 `scope=source_file`인 evidence projection이며 resolved semantic edge 주장이 아니다.
+- 향후 authoritative binder가 만든 derived `REFERENCES`는 근거 import occurrence ID와 resolved module ID를
+  보존해야 한다. 현재 unresolved import에서 aggregate edge를 먼저 만드는 것은 금지한다.
 
 - 각 문법 단위 exact range와 file-level source/hash binding
 - symbol role은 `definition|reference|import|read|write`; target resolution은 Analyzer 소유

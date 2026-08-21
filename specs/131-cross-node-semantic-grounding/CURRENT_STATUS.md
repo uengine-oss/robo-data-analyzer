@@ -1,8 +1,8 @@
 # Analyzer 의미 무손실 감사 현재상태
 
 **Updated**: 2026-08-21
-**Status**: C-066 canonical import downstream scope/provenance 결함 확정, 계약·red 고정 중
-**Analyzer HEAD**: `d83c91e42eb49cfb214597b85a48a1acb57c221f`
+**Status**: C-066 canonical import downstream scope/provenance 근본 구현·3층 검증 완료, commit/push 전
+**Analyzer base HEAD**: `43227473c1dab669bbc88db0c54d0ccdb81b912c`
 
 이 문서는 현재 진행 위치만 소유한다. 영구 규칙은 `ABSOLUTE_RULES.md`, 상세 역사와 기존 수치는 `HANDOFF.md`와 `evidence/`가 소유한다.
 
@@ -20,20 +20,18 @@
 
 - Neo4j `127.0.0.1:7687`: 현재 세션에서 인증과 `SHOW DATABASES` 재확인 성공.
   `neo4j|test|framework|dbms|system`만 존재하고 모두 online이다. 허용 목록 밖 DB는 0개다.
-- Analyzer main HEAD `2d5f4c4c2e85ddb43f183dc1060dfffc2284c56d`; 제품 코드 기준선
-  `c216e674cbac43386f9826632097ca2661395d7d` 이후 검증된 책임 슬라이스가 독립 push됐고
-  working tree는 C-065 문서 갱신 전 clean이었다.
-- Parser main HEAD `00fdf2a7c4ed7749110a61c6311396089e10c449`; common evidence IR, grammar-owned
-  callee/macro syntax, compilation command와 configured preprocessing closure 책임 슬라이스가
-  자동 회귀·actual 전수 회계·봉인 직접 판정 후 push됐고 Parser working tree는 clean이다.
+- Analyzer main base HEAD `43227473c1dab669bbc88db0c54d0ccdb81b912c`; C-066 제품·테스트·정본
+  변경은 위 3층 검증을 통과했고 commit/push 전 working tree에만 있다.
+- Parser main base HEAD `d690e51adfc4cc74e923fddce52425d43431f91b`; IR 1.1 structured import
+  grammar/listener/sealer와 formal/actual test 변경은 Analyzer 호환 소비 검증을 통과했고 commit/push 전이다.
 - Catalog HEAD `1f1aaa608a3d7ef8b01ce15c3df962cf0f1cfefb`, 기존 dirty 12개가 있다.
 - Fabric HEAD `83c9604e2d6ec3f1ececa47d2e2264a74257843d`, 기존 dirty 7개가 있다.
 - Architect HEAD `7b771ac2e7338d03ac8238db5c307d97080232c1`, 기존 dirty 4개가 있다.
   Catalog·Fabric·Architect의 기존 WIP는 읽기만 하고 수정·stage하지 않는다.
-- 현재 세션에서 DB 생성·삭제·Analyzer/Architect 서비스 실행은 0회다. `test` DB actual 검증 전에
-  production `ensure_schema`를 실행해 구형 Analyzer 단일-ID constraint를 제거하고 generation-scoped
-  composite constraint를 보장했다. APAS generation graph transaction은 반복 실패분을 포함해 매번 전부
-  rollback했으며 최종 residue 0, active pointer 불변이다. Architect DB/코드/서비스는 건드리지 않았다.
+- 현재 세션에서 DB 생성·삭제·Analyzer/Architect 서비스 실행은 0회다. 기존 `framework` DB에서
+  `ensure_schema`를 확인하고 APAS generation graph transaction을 반복 실패분까지 매번 전부 rollback했다.
+  최종 residue 0, active pointer 불변이며 공개 generation 변경은 없다. Architect DB/코드/서비스는
+  건드리지 않았다.
 
 ### 문서 메모리 무결성
 
@@ -478,5 +476,20 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
     ledger, import occurrence provenance를 가진 derived REFERENCES 계약과 formal red를 고정한다. Java
     classpath/module path·Python import environment·C build include resolution이 없으면 basename/path 추측 없이
     explicit unresolved다. 상세는 `evidence/import-scope-provenance-audit-20260821.md`가 소유한다.
+25u. 완료(C-066, commit/push 전): Parser IR 1.1 structured import entry를 Analyzer가 strict 소비하고,
+    `(import_id,entry_ordinal)` exact-once outcome ledger로 닫는다. Analyzer의 C/Python regex, Java 문자열 분해,
+    ontology language profile, basename/suffix target 추측을 제거했다. authoritative environment binder가 없는
+    active import는 `insufficient_import_binding_environment`, inactive는 `excluded/inactive_import`다.
+    `IMPORT_OCCURRENCE` generation evidence node, closure v3, run quality, search/REST/MCP generation summary와
+    source-file detail projection까지 배선했다. actual APAS는 fact/entry 450/450, resolved/unresolved/excluded
+    0/449/1, sealed direct judgment 450/450, deterministic replay identical다. Neo4j `framework` rollback에서
+    12,113 call+450 import를 함께 publish해 graph/API/MCP import population 450과 SHA-256
+    `6f02336ced795b64178a97febf1f75665cd9ff86a49753a0bfc7a2ea1a67e81d` 일치, residue 0, active pointer
+    불변을 확인했다. Analyzer pytest 1,247 passed/7 skipped/367 subtests, unittest 1,140 OK/6 skipped,
+    Parser Maven 185 tests/failure·error 0/skipped 10이다. positive cross-module edge는 authoritative binder와
+    target corpus가 없어 미검증이며 추측 edge를 만들지 않는다. 상세는 같은 C-066 evidence 원장과
+    `_runs/framework/parser-structured-import-evidence-20260821-r2.json`,
+    `_runs/framework/analyzer-structured-import-consumer-20260821-r3.json`(report SHA-256
+    `e9b7e4fad9efbef396199520ce95782d28bc0169dd55a0b3dbcfbe86d5c439cc`)이 소유한다.
 26. 검증: 자동 회귀→결정론 전수 회계→봉인 직접 의미 판정→실제 APAS 순으로 계속 수행한다.
 27. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.

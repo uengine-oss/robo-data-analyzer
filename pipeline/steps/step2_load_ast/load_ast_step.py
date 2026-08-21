@@ -23,6 +23,7 @@ from pipeline.steps.step2_load_ast.source_ast_closure import (
     verify_source_ast_closure,
 )
 from pipeline.steps.step2_load_ast.token_matcher import link_references
+from pipeline.models.import_resolution import normalize_import_resolution_ledger
 from shared.events.runtime_logger import log_error, log_info, log_warning
 from pipeline.steps.step2_load_ast.node_identity_registry import NodeIdentityCollision, canonicalize_node_lists
 from shared.files.cache import SourceFileCache
@@ -39,6 +40,7 @@ from graph.nodes.code_node import upsert_code_nodes
 from graph.nodes.module import upsert_modules
 from graph.nodes.package import upsert_packages
 from graph.nodes.variable import upsert_variables
+from graph.nodes.import_occurrence import upsert_import_occurrences
 from pipeline.execution.graph_delta_stream import emit_edges, emit_message, emit_nodes
 from pipeline.execution.pause_controller import NULL_PAUSE, PauseController
 
@@ -260,12 +262,17 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
     # ★ reference_linker 와 **같은 인스턴스**를 쓴다 — 종전엔 둘이 각자 캐시를 만들어
     #   step2 안에서만 같은 파일을 두 번 읽었다.
     # REFERENCES / INIT_BY — 전 파일 노드가 모인 뒤 결정론 식별자 매칭.
-    # import_refs 를 넘겨 모듈 너머 참조까지 (계획 §2.8 Pass 2).
+    # import_refs는 문자열 scope가 아니라 canonical entry outcome ledger로 닫는다.
     references, init_by = await link_references(
         code_nodes, variables, constants, import_refs, source_cache,
         checkpoint=pause.gate,
         modules=modules,        # 상속 조상 매칭 (spec 111 — Java extends / Python bases)
     )
+    import_resolution_ledger = normalize_import_resolution_ledger([
+        row
+        for ref in import_refs
+        for row in ref.get("resolution_entries") or []
+    ])
 
     await pause.gate()
     # 원문 코드 — **파일·라인이 있는 모든 노드**에 붙이는 단일 지점. 노드 종류로 분기하지 않는다.
@@ -292,6 +299,8 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
             upsert_constants(neo, constants),
             upsert_data_types(neo, data_types),
         )
+        await pause.gate()
+        await upsert_import_occurrences(neo, import_resolution_ledger)
         await pause.gate()
         await upsert_parent_of(neo, parent_of)
         await pause.gate()
@@ -363,6 +372,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         statement_next=len(statement_next),
         references=len(references), init_by=len(init_by),
         call_sites=len(call_sites), import_refs=len(import_refs),
+        import_occurrences=len(import_resolution_ledger),
         macro_facts=len(macro_facts),
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
@@ -382,6 +392,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         "call_sites": call_sites,
         "macro_facts": macro_facts,
         "import_refs": import_refs,
+        "import_resolution_ledger": import_resolution_ledger,
         "evidence_sources": evidence_sources,
         "evidence_completeness": evidence_completeness,
         "preprocessing_contexts": preprocessing_contexts,

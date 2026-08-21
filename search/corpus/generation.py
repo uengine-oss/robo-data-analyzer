@@ -11,6 +11,7 @@ from graph.generation import (
 )
 from graph.ownership import ANALYZER_GRAPH_OWNER
 from pipeline.models.call_resolution import validate_call_resolution_summary
+from pipeline.models.import_resolution import validate_import_resolution_summary
 import json
 
 
@@ -23,12 +24,13 @@ class GenerationScopedSession:
 
     def __init__(
         self, session, generation_id: str, quality_status: str,
-        call_resolution: dict,
+        call_resolution: dict, import_resolution: dict,
     ):
         self._session = session
         self.generation_id = generation_id
         self.quality_status = quality_status
         self.call_resolution = call_resolution
+        self.import_resolution = import_resolution
 
     def run(self, query: str, **parameters):
         supplied_generation = parameters.get("generation_id")
@@ -64,7 +66,8 @@ MATCH (generation:{GENERATION_LABEL} {{
 }})
 WHERE generation.status IN $completed_statuses
 RETURN generation.run_id AS generation_id, generation.status AS status,
-       generation.call_resolution_summary_json AS call_resolution_summary_json
+       generation.call_resolution_summary_json AS call_resolution_summary_json,
+       generation.import_resolution_summary_json AS import_resolution_summary_json
 """,
             graph_owner=ANALYZER_GRAPH_OWNER,
             active_key=ACTIVE_GENERATION_KEY,
@@ -88,10 +91,23 @@ RETURN generation.run_id AS generation_id, generation.status AS status,
             raise CompletedGenerationUnavailable(
                 f"완료 generation의 call resolution closure가 유효하지 않습니다: {error}"
             ) from error
+        raw_import_summary = row.get("import_resolution_summary_json")
+        if not isinstance(raw_import_summary, str) or not raw_import_summary:
+            raise CompletedGenerationUnavailable(
+                "completed generation has no import resolution closure"
+            )
+        try:
+            import_resolution = validate_import_resolution_summary(
+                json.loads(raw_import_summary)
+            )
+        except (json.JSONDecodeError, ValueError) as error:
+            raise CompletedGenerationUnavailable(
+                f"completed generation import resolution closure is invalid: {error}"
+            ) from error
         if expected_generation_id is not None and generation_id != expected_generation_id:
             raise CompletedGenerationUnavailable(
                 "검색 중 active graph generation이 변경되었습니다; 요청을 다시 시도하세요"
             )
         yield GenerationScopedSession(
-            session, generation_id, quality_status, call_resolution,
+            session, generation_id, quality_status, call_resolution, import_resolution,
         )

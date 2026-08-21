@@ -10,11 +10,9 @@ Variable/Constant 이름과 매칭한다. LLM 0회 — 순수 결정론.
              antlr (C parser) 가 size 표현식까지 ``initValue`` 에 통합해 출력하므로
              reader 는 ``Variable.init_value`` / ``Constant.value`` 만 보면 끝.
 
-2단 패스 (계획 §2.8):
-- **Pass 1 — 같은 파일(모듈) 안.** 전 언어 공통.
-- **Pass 2 — 모듈 너머.** "코드에 명시된 소유권 신호(import)" 만 따라간다 — 추측 안 함.
-  구문·식별자·상속은 ontology profile, 실행은 범용 namespace/source-module/local-file
-  resolver가 소유한다. import 단서를 emit하면서 profile이 없으면 명시 실패한다.
+같은 파일과 Parser-owned 상속만 연결한다. 모듈 너머 참조는 import 문장만으로 대상을
+추측하지 않는다. build/module/import environment가 증명한 binding이 들어오기 전까지
+canonical import occurrence ledger에 unresolved로 남는다.
 
 오탐 차단: 주석·문자열 리터럴 제거 후 식별자 토큰 단위 정확 일치. import 로 범위를
 좁히므로 동명이인(타 모듈 같은 이름)을 오연결하지 않는다.
@@ -36,7 +34,6 @@ from graph.schema.graph_edges import InitBy, References
 from graph.schema.graph_nodes import Constant, CodeNode, Module, Variable
 from pipeline.languages import (
     lang_of,
-    reference_import_profile,
     reference_inheritance_profile,
     source_lexicon,
 )
@@ -49,8 +46,26 @@ _Targets = dict[str, dict[str, list[tuple[str, str]]]]
 # Pass 2 미지원 언어 — 언어당 1회만 log (노이즈 차단).
 
 from pipeline.steps.step2_load_ast.import_scopes import (
-    _Scope, _Targets, _build_scopes, _file_indexes, _targets_by_module,
+    build_import_scope_plan,
 )
+
+
+def _targets_by_module(
+    variables: list[Variable], constants: list[Constant],
+) -> _Targets:
+    """Module ID → exact same-file declared symbol names and graph identities."""
+    by_module: _Targets = defaultdict(lambda: defaultdict(list))
+    for variable in variables:
+        if variable.name:
+            by_module[variable.owner_id][variable.name].append(
+                (variable.id, "VARIABLE")
+            )
+    for constant in constants:
+        if constant.name:
+            by_module[constant.owner_id][constant.name].append(
+                (constant.id, "CONSTANT")
+            )
+    return by_module
 
 
 @lru_cache(maxsize=None)
@@ -61,18 +76,6 @@ def _identifier_regex(lang: str) -> re.Pattern:
     return re.compile(pattern)
 
 
-@lru_cache(maxsize=None)
-def _qualified_regex(lang: str) -> re.Pattern:
-    profile = reference_import_profile(lang)
-    separator = str(profile.get("separator") or "")
-    if not separator:
-        # direct-name resolver는 qualified lookup을 사용하지 않는다.
-        return re.compile(r"(?!)")
-    identifier = source_lexicon(lang)["identifier_pattern"]
-    return re.compile(
-        rf"({identifier})\s*{re.escape(separator)}\s*({identifier})"
-    )
-
 async def link_references(
     code_nodes: list[CodeNode],
     variables: list[Variable],
@@ -82,40 +85,52 @@ async def link_references(
     checkpoint: Callable[[], Awaitable[None]] | None = None,
     modules: list[Module] = (),
 ) -> tuple[list[References], list[InitBy]]:
-    """본문 → REFERENCES, 변수/상수 ``initValue`` → INIT_BY (같은 모듈 + import 한 모듈).
+    """본문 → REFERENCES, 변수/상수 ``initValue`` → INIT_BY.
 
     INIT_BY 는 변수+상수 모두 출발 가능 — 정의 시 외부 토큰 참조하면 잡힌다.
-    ``modules`` 가 주어지면 상속 조상 모듈의 필드/상수까지 맨이름 매칭한다 (spec 111 —
-    Java ``extends``/``implements``·Python ``class B(A)``, 자기 모듈 우선 섀도잉).
+    ``modules`` 가 주어지면 같은 파일에서 exact하게 소유된 상속 조상의 필드/상수까지
+    맨이름 매칭한다. 모듈 너머 부모는 import 이름으로 추측하지 않는다.
 
     ``source_cache`` 는 호출부(step2)가 주입 — 같은 step 안에서 캐시를 **두 벌** 만들면
     파일을 두 번 읽는다 (spec 046 FR-008: 종전엔 여기와 load_ast_step 이 각자 만들었다).
     """
     targets = _targets_by_module(variables, constants)
-    modules_by_file, basename_index = _file_indexes(variables, constants)
-    scopes = _build_scopes(import_refs, targets, modules_by_file, basename_index)
+    import_plan = build_import_scope_plan(import_refs)
+    _bind_import_resolution_entries(import_refs, import_plan.ledger)
     cache = source_cache or SourceFileCache()
-    ancestors = _ancestor_map(list(modules), scopes)
+    ancestors = _ancestor_map(list(modules))
     if checkpoint is not None:
         await checkpoint()
     return (
         await _link_code_bodies(
-            code_nodes, targets, scopes, cache, checkpoint, ancestors,
+            code_nodes, targets, cache, checkpoint, ancestors,
         ),
-        await _link_init_values(variables, constants, targets, scopes, checkpoint, ancestors),
+        await _link_init_values(variables, constants, targets, checkpoint, ancestors),
     )
+
+
+def _bind_import_resolution_entries(
+    import_refs: list[dict], ledger: list[dict],
+) -> None:
+    """Attach the canonical entry ledger without flattening statement evidence."""
+    by_fact: dict[str, list[dict]] = defaultdict(list)
+    for row in ledger:
+        by_fact[row["import_id"]].append(row)
+    for ref in import_refs:
+        import_id = str(ref.get("import_id") or "")
+        ref["resolution_entries"] = list(by_fact.get(import_id, ()))
 
 
 # ── 상속 조상 맵 (spec 111) ─────────────────────────────────
 
 
 def _ancestor_map(
-    modules: list[Module], scopes: dict[str, "_Scope"],
+    modules: list[Module],
 ) -> dict[str, list[str]]:
-    """module_id → every reachable internal ancestor (nearest-first, cycle-safe).
+    """module_id → every same-file internal ancestor (nearest-first, cycle-safe).
 
-    부모 해소 순서 = 같은 파일의 동명 모듈 → import 소유자 맵의 **단독** 후보.
-    복수 후보·미발견은 포기 (과대근사 금지). C 등 명단 밖 언어는 자연히 빈 맵.
+    모듈 너머 부모는 build/import environment 증거 없이 이름으로 해소하지 않는다.
+    복수 후보·미발견은 포기한다. C 등 명단 밖 언어는 자연히 빈 맵이다.
     Parent syntax is owned by Parser listener AST fields; Analyzer never reparses a source line.
     """
     by_name_in_file: dict[tuple[str, str], list[str]] = defaultdict(list)
@@ -136,10 +151,6 @@ def _ancestor_map(
             if len(same_file) == 1:
                 resolved.append(same_file[0])
                 continue
-            scope = scopes.get(m.file_path)
-            owner_hits = list(getattr(scope, "owner_map", {}).get(name, ())) if scope else []
-            if len(owner_hits) == 1:                       # 단독 후보만 — 중의는 포기
-                resolved.append(owner_hits[0])
         if resolved:
             parents[m.id] = resolved
 
@@ -299,7 +310,7 @@ def _has_top_level(value: str, token: str) -> bool:
 
 async def _link_code_bodies(
     code_nodes: list[CodeNode], targets: _Targets,
-    scopes: dict[str, _Scope], cache: SourceFileCache,
+    cache: SourceFileCache,
     checkpoint: Callable[[], Awaitable[None]] | None,
     ancestors: dict[str, list[str]] | None = None,
 ) -> list[References]:
@@ -314,8 +325,7 @@ async def _link_code_bodies(
             await checkpoint()
         own = targets.get(fn.owner_id) or {}
         chain = _lookup_chain(fn.owner_id, own, targets, ancestors)
-        scope = scopes.get(fn.file_path)
-        if not chain and scope is None:
+        if not chain:
             continue
         lines = cache.lines(fn.file_path)
         start = max(fn.start_line - 1, 0)
@@ -330,9 +340,6 @@ async def _link_code_bodies(
             evidence = start + offset + 1
             for tid, _ in _chain_hits(text, chain, seen, identifier_re):
                 out.append(References(fn.id, tid, evidence))
-            if scope is not None:
-                for tid, _ in _pass2_hits(text, scope, targets, seen):
-                    out.append(References(fn.id, tid, evidence))
     return out
 
 
@@ -363,11 +370,11 @@ def _chain_hits(
     return hits
 async def _link_init_values(
     variables: list[Variable], constants: list[Constant],
-    targets: _Targets, scopes: dict[str, _Scope],
+    targets: _Targets,
     checkpoint: Callable[[], Awaitable[None]] | None,
     ancestors: dict[str, list[str]] | None = None,
 ) -> list[InitBy]:
-    """변수/상수 ``initValue`` 의 식별자 → 출처 노드 INIT_BY (같은 모듈 + 상속 + import).
+    """변수/상수 ``initValue`` 의 식별자 → 같은 모듈/상속 출처 INIT_BY.
 
     Variable.init_value / Constant.value 둘 다 antlr 가 통합 출력 — size 표현식
     (``[LEN +1]``) · ``=`` 우변 · 상수 식 모두 포함. reader 는 그 텍스트만 본다.
@@ -383,11 +390,8 @@ async def _link_init_values(
         identifier_re = _identifier_regex(lang)
         own = targets.get(node.owner_id) or {}
         chain = _lookup_chain(node.owner_id, own, targets, ancestors)
-        scope = scopes.get(node.file_path)
         seen: set[str] = {from_id}                       # 자기참조 제외
         hits = _chain_hits(text, chain, seen, identifier_re)
-        if scope is not None:
-            hits += _pass2_hits(text, scope, targets, seen)
         for source_id, _ in hits:
             out.append(InitBy(from_id, source_id))
     return out
@@ -403,33 +407,6 @@ def _init_iter(variables: list[Variable], constants: list[Constant]):
         yield v, v.id, v.init_value
     for c in constants:
         yield c, c.id, c.value
-
-
-def _bare_hits(
-    text: str, names: dict[str, list[tuple[str, str]]], seen: set[str],
-    identifier_re: re.Pattern,
-) -> list[tuple[str, str]]:
-    """텍스트의 식별자 토큰을 ``names`` 테이블과 정확 일치 — 미방문분만."""
-    hits: list[tuple[str, str]] = []
-    for token in sorted(set(identifier_re.findall(text))):
-        hits += _collect(names.get(token, ()), seen)
-    return hits
-
-
-def _pass2_hits(
-    text: str, scope: _Scope, targets: _Targets, seen: set[str],
-) -> list[tuple[str, str]]:
-    """Match normalized direct, qualified-owner, and direct-member ownership."""
-    identifier_re = _identifier_regex(scope.lang)
-    hits = _bare_hits(text, scope.direct_names, seen, identifier_re)
-    for owner, member in _qualified_regex(scope.lang).findall(text):
-        for mid in scope.owner_map.get(owner, ()):
-            hits += _collect(targets.get(mid, {}).get(member, ()), seen)
-    if scope.bare_map:
-        for token in sorted(set(identifier_re.findall(text))):
-            for mid in scope.bare_map.get(token, ()):
-                hits += _collect(targets.get(mid, {}).get(token, ()), seen)
-    return hits
 
 
 def _collect(

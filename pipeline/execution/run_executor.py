@@ -51,6 +51,10 @@ from graph.neo4j_client import Neo4jClient
 from graph.schema.constraints import ensure_schema
 from graph.generation import begin_generation, publish_generation, terminate_generation
 from pipeline.models.call_resolution import normalize_call_resolution_ledger, summarize_call_resolution_ledger
+from pipeline.models.import_resolution import (
+    normalize_import_resolution_ledger,
+    summarize_import_resolution_ledger,
+)
 from graph.connection_context import get_override
 from shared.files.cache import SourceFileCache
 from pipeline.execution.analysis_handoff import AnalysisHandoff, analysis_llm_slots
@@ -93,6 +97,28 @@ def _require_call_resolution_producer(strategy_name: str, seen: bool) -> None:
     if strategy_name == "framework" and not seen:
         raise ValueError(
             "Framework workflow did not produce a complete call_resolution_ledger"
+        )
+
+
+def _capture_import_resolution_update(
+    current: list[dict],
+    seen: bool,
+    update: Any,
+) -> tuple[list[dict], bool]:
+    """Capture step2's sole complete import-entry ledger."""
+    if not isinstance(update, dict) or "import_resolution_ledger" not in update:
+        return current, seen
+    if seen:
+        raise ValueError("import_resolution_ledger has more than one workflow producer")
+    return normalize_import_resolution_ledger(
+        update["import_resolution_ledger"]
+    ), True
+
+
+def _require_import_resolution_producer(seen: bool) -> None:
+    if not seen:
+        raise ValueError(
+            "workflow did not produce a complete import_resolution_ledger"
         )
 
 
@@ -289,6 +315,8 @@ async def execute_run(
             stopped = False
             call_resolution_ledger: list[dict] = []
             call_resolution_seen = False
+            import_resolution_ledger: list[dict] = []
+            import_resolution_seen = False
             try:
                 async for chunk in app.astream(initial_state, config=config, stream_mode="updates"):
                     if isinstance(chunk, dict):
@@ -297,6 +325,13 @@ async def execute_run(
                                 _capture_call_resolution_update(
                                     call_resolution_ledger,
                                     call_resolution_seen,
+                                    update,
+                                )
+                            )
+                            import_resolution_ledger, import_resolution_seen = (
+                                _capture_import_resolution_update(
+                                    import_resolution_ledger,
+                                    import_resolution_seen,
                                     update,
                                 )
                             )
@@ -314,6 +349,7 @@ async def execute_run(
                         _summarize_analysis_findings(
                             run.run_dir,
                             call_resolution_ledger=call_resolution_ledger,
+                            import_resolution_ledger=import_resolution_ledger,
                         )
                         log_info("run", "failure_usage_summarized", run_dir=str(run.run_dir))
                     except Exception as artifact_error:
@@ -330,16 +366,19 @@ async def execute_run(
 
             if not stopped:
                 _require_call_resolution_producer(strategy.name, call_resolution_seen)
+                _require_import_resolution_producer(import_resolution_seen)
                 _summarize_usage(run.run_dir)
                 quality_summary = _summarize_analysis_findings(
                     run.run_dir,
                     call_resolution_ledger=call_resolution_ledger,
+                    import_resolution_ledger=import_resolution_ledger,
                 )
                 graph_closure = await publish_generation(
                     neo_client,
                     generation_id=run.run_id,
                     quality_status=quality_summary["run_quality_status"],
                     call_resolution_ledger=call_resolution_ledger,
+                    import_resolution_ledger=import_resolution_ledger,
                 )
                 quality_summary["run_quality_status"] = graph_closure["quality_status"]
                 generation_terminal = True
@@ -746,6 +785,7 @@ def _summarize_analysis_findings(
     run_dir: Path,
     *,
     call_resolution_ledger: list[dict] | None = None,
+    import_resolution_ledger: list[dict] | None = None,
 ) -> dict:
     """Strictly aggregate the append-only quality ledger for run-level visibility."""
     path = run_dir / "analysis-findings.jsonl"
@@ -786,9 +826,16 @@ def _summarize_analysis_findings(
         call_resolution_ledger or []
     )
     counts["call_resolution"] = call_resolution
+    import_resolution = summarize_import_resolution_ledger(
+        import_resolution_ledger or []
+    )
+    counts["import_resolution"] = import_resolution
     counts["run_quality_status"] = (
         "completed_with_findings"
-        if counts["total"] or call_resolution["unresolved"]
+        if (
+            counts["total"] or call_resolution["unresolved"]
+            or import_resolution["unresolved"]
+        )
         else "completed"
     )
     (run_dir / "analysis_findings_summary.json").write_text(

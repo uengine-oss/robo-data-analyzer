@@ -13,7 +13,7 @@ from pipeline.steps.step2_load_ast.node_builders import ParseResult
 from pipeline.steps.step2_load_ast import load_ast_step as subject
 from pipeline.steps.step2_load_ast.dispatch import ast_and_source_roots
 from pipeline.steps.step2_load_ast.token_matcher import link_references
-from pipeline.steps.step2_load_ast.import_scopes import _build_scopes
+from pipeline.steps.step2_load_ast.import_scopes import build_import_scope_plan
 from pipeline.steps.step2_load_ast.dbms_reader import _read_dbms
 
 
@@ -60,15 +60,16 @@ class LoadAstControlTest(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(ValueError, "corpus_root 밖"):
                 ast_and_source_roots(foreign, corpus)
 
-    async def test_split_import_scope_retains_language_resolution(self):
-        scopes = _build_scopes(
-            [{"name": '"shopmall.h"', "file": "order.c"}],
-            {},
-            {},
-            {},
+    async def test_import_without_canonical_fact_cannot_create_a_scope(self):
+        plan = build_import_scope_plan(
+            [{
+                "name": '"shopmall.h"', "file": "order.c",
+                "import_id": "", "evidence_status": "unsupported",
+            }],
         )
 
-        self.assertEqual(scopes["order.c"].lang, "c")
+        self.assertEqual({}, plan.scopes)
+        self.assertEqual([], plan.ledger)
 
     def _fixture(self):
         temporary = tempfile.TemporaryDirectory()

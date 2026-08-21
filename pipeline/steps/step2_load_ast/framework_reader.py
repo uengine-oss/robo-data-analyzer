@@ -409,32 +409,76 @@ def _bind_import_evidence(
             line_starts,
             max(fact.directive_range.char_offset, fact.directive_range.end - 1),
         )
-        target = evidence.decoded_text[
-            fact.target_range.char_offset:fact.target_range.end
-        ]
         if (
-            str(observed.get("name") or "") != target
-            or int(observed.get("line") or 0) != line
+            int(observed.get("line") or 0) != line
             or int(observed.get("end_line") or 0) != end_line
         ):
             raise CommonEvidenceContractError(
                 "common evidence import traversal: "
-                f"mismatch at index={index}, legacyName={observed.get('name')!r}, "
-                f"canonicalTarget={target!r}, legacyLines="
+                f"mismatch at index={index}, legacyLines="
                 f"{observed.get('line')}-{observed.get('end_line')}, "
                 f"canonicalLines={line}-{end_line}, factId={fact.fact_id}"
             )
+        entries = []
+        for entry_index, entry in enumerate(fact.entries):
+            target = evidence.decoded_text[
+                entry.target_range.char_offset:entry.target_range.end
+            ]
+            entries.append({
+                "entry_ordinal": entry_index,
+                "import_kind": entry.import_kind,
+                "target_kind": entry.target_kind,
+                "target": target,
+                "target_range": entry.target_range.as_dict(),
+                "path_components": [
+                    evidence.decoded_text[item.char_offset:item.end]
+                    for item in entry.path_component_ranges
+                ],
+                "path_component_ranges": [
+                    item.as_dict() for item in entry.path_component_ranges
+                ],
+                "member": (
+                    evidence.decoded_text[
+                        entry.member_range.char_offset:entry.member_range.end
+                    ] if entry.member_range is not None else None
+                ),
+                "member_range": (
+                    entry.member_range.as_dict()
+                    if entry.member_range is not None else None
+                ),
+                "alias": (
+                    evidence.decoded_text[
+                        entry.alias_range.char_offset:entry.alias_range.end
+                    ] if entry.alias_range is not None else None
+                ),
+                "alias_range": (
+                    entry.alias_range.as_dict()
+                    if entry.alias_range is not None else None
+                ),
+                "relative_level": entry.relative_level,
+                "wildcard": entry.wildcard,
+                "locality": entry.locality,
+            })
+        if evidence.version == "1.0.0":
+            target = entries[0]["target"]
+            if str(observed.get("name") or "") != target:
+                raise CommonEvidenceContractError(
+                    "common evidence import traversal: "
+                    f"mismatch at index={index}, legacyName={observed.get('name')!r}, "
+                    f"canonicalTarget={target!r}, factId={fact.fact_id}"
+                )
         bound.append({
             "import_id": fact.fact_id,
-            "name": target,
+            "evidence_version": evidence.version,
+            "legacy_name": str(observed.get("name") or ""),
+            "name": str(observed.get("name") or ""),
             "source_id": evidence.source_id,
             "file": observed.get("file", ""),
             "line": line,
             "end_line": end_line,
             "range": fact.directive_range.as_dict(),
-            "target_range": fact.target_range.as_dict(),
             "directive_kind": fact.directive_kind,
-            "target_kind": fact.target_kind,
+            "entries": entries,
             "grammar_rule": fact.grammar_rule,
             "presence_status": fact.presence["status"],
             "presence": dict(fact.presence),

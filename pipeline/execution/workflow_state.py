@@ -107,6 +107,7 @@ class WorkflowState(TypedDict, total=False):
     call_sites: Annotated[list[dict], operator.add]
     macro_facts: list[dict]
     import_refs: Annotated[list[dict], operator.add]
+    import_resolution_ledger: list[dict]
     # Parser common evidence: exact decoded source once/file + kind completeness ledger.
     evidence_sources: list[dict]
     evidence_completeness: list[dict]

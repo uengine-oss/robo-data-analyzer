@@ -278,6 +278,200 @@ def _import_artifact() -> tuple[str, dict]:
     }
 
 
+def _structured_import_artifact(
+    *, source_id: str, source: str, directive_kind: str,
+    entries: list[dict], legacy_name: str,
+) -> dict:
+    decoded_hash = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    statement = source.rstrip("\n")
+    fact_range = _range(source, statement)
+    fact = {
+        "factId": _fact_id(
+            source_id, decoded_hash, "import",
+            fact_range["charOffset"], fact_range["charLength"],
+        ),
+        "kind": "import",
+        "range": fact_range,
+        "grammarRuleRef": 0,
+        "presenceRef": 0,
+        "payload": {
+            "directiveKind": directive_kind,
+            "entries": entries,
+        },
+    }
+    completeness = []
+    for kind in KINDS:
+        emitted = 1 if kind == "import" else 0
+        completeness.append({
+            "kind": kind,
+            "status": "complete",
+            "population": emitted,
+            "emitted": emitted,
+            "explicitlyUnresolved": 0,
+        })
+    evidence = {
+        "version": "1.1.0", "sourceId": source_id,
+        "rawSourceSha256": decoded_hash,
+        "decodedTextSha256": decoded_hash, "decodedText": source,
+        "sourceEncoding": "UTF-8", "decodeStatus": "exact",
+        "positionEncoding": "unicode-code-point",
+        "rangeConvention": "half-open",
+        "rangeEncoding": "char-offset-length", "parseStatus": "exact",
+        "facts": [fact], "grammarRules": ["importStatement"],
+        "presences": [{
+            "status": "active", "condition": None,
+            "configurationId": None, "provenance": "unconditional",
+        }],
+        "completeness": completeness,
+    }
+    if source_id.endswith((".c", ".h")):
+        evidence["configuredPreprocessing"] = _configured_preprocessing(source_id)
+    return {
+        "type": "FILE", "fileName": Path(source_id).name,
+        "filePath": source_id,
+        "children": [{
+            "type": "INCLUDE" if directive_kind == "include" else "IMPORT",
+            "name": legacy_name, "startLine": 1, "endLine": 1,
+            "children": [],
+        }],
+        "evidence": evidence,
+    }
+
+
+def _structured_import_cases() -> list[tuple[str, str, dict, str]]:
+    c_source = '#include "local/config.h"\n'
+    c_entry = {
+        "importKind": "source_file", "targetKind": "quoted",
+        "targetRange": _range(c_source, '"local/config.h"'),
+        "pathComponentRanges": [_range(c_source, "local/config.h")],
+        "memberRange": None, "aliasRange": None, "relativeLevel": 0,
+        "wildcard": False, "locality": "local",
+    }
+    java_source = "import static pkg.Constants.VALUE;\n"
+    java_entry = {
+        "importKind": "static_member", "targetKind": "qualified",
+        "targetRange": _range(java_source, "pkg.Constants.VALUE"),
+        "pathComponentRanges": [
+            _range(java_source, "pkg"), _range(java_source, "Constants"),
+        ],
+        "memberRange": _range(java_source, "VALUE"), "aliasRange": None,
+        "relativeLevel": 0, "wildcard": False, "locality": "unspecified",
+    }
+    python_source = "from ..base.tools import first as one\n"
+    python_entry = {
+        "importKind": "module_member", "targetKind": "qualified",
+        "targetRange": _range(python_source, "first as one"),
+        "pathComponentRanges": [
+            _range(python_source, "base"), _range(python_source, "tools"),
+        ],
+        "memberRange": _range(python_source, "first"),
+        "aliasRange": _range(python_source, "one"), "relativeLevel": 2,
+        "wildcard": False, "locality": "unspecified",
+    }
+    return [
+        ("sample.c", c_source, c_entry, '"local/config.h"'),
+        ("Sample.java", java_source, java_entry, "static pkg.Constants.VALUE"),
+        ("sample.py", python_source, python_entry,
+         "from ..base.tools import first as one"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("source_id", "source", "entry", "legacy_name"),
+    _structured_import_cases(),
+)
+def test_v11_import_bindings_preserve_grammar_owned_structure(
+    source_id: str, source: str, entry: dict, legacy_name: str,
+) -> None:
+    raw = _structured_import_artifact(
+        source_id=source_id, source=source,
+        directive_kind="include" if source_id.endswith(".c") else "import",
+        entries=[entry], legacy_name=legacy_name,
+    )
+    validated = validate_common_evidence(
+        raw, source_bytes=source.encode("utf-8"),
+        expected_source_id=source_id,
+    )
+
+    assert validated.version == "1.1.0"
+    assert len(validated.import_facts) == 1
+    fact = validated.import_facts[0]
+    assert len(fact.entries) == 1
+    binding = fact.entries[0]
+    assert binding.import_kind == entry["importKind"]
+    assert binding.target_kind == entry["targetKind"]
+    assert source[binding.target_range.char_offset:binding.target_range.end] == source[
+        entry["targetRange"]["charOffset"]:
+        entry["targetRange"]["charOffset"] + entry["targetRange"]["charLength"]
+    ]
+    assert [
+        source[item.char_offset:item.end] for item in binding.path_component_ranges
+    ] == [
+        source[item["charOffset"]:item["charOffset"] + item["charLength"]]
+        for item in entry["pathComponentRanges"]
+    ]
+    assert binding.relative_level == entry["relativeLevel"]
+    assert binding.wildcard is entry["wildcard"]
+    assert binding.locality == entry["locality"]
+
+
+@pytest.mark.parametrize(
+    ("source_id", "source", "entry", "legacy_name"),
+    _structured_import_cases(),
+)
+def test_v11_framework_binding_keeps_entry_ranges_without_reparsing_legacy_name(
+    source_id: str, source: str, entry: dict, legacy_name: str,
+) -> None:
+    raw = _structured_import_artifact(
+        source_id=source_id, source=source,
+        directive_kind="include" if source_id.endswith(".c") else "import",
+        entries=[entry], legacy_name=f"preview-only:{legacy_name}",
+    )
+    with TemporaryDirectory() as temp:
+        root = Path(temp)
+        source_path = root / source_id
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.write_text(source, encoding="utf-8", newline="")
+        artifact = root / f"{source_path.name}.json"
+        artifact.write_text(json.dumps(raw), encoding="utf-8")
+        result = read_antlr_json(artifact, root)
+
+    assert len(result.import_refs) == 1
+    ref = result.import_refs[0]
+    assert ref["evidence_version"] == "1.1.0"
+    assert ref["legacy_name"] == f"preview-only:{legacy_name}"
+    assert ref["entries"][0]["import_kind"] == entry["importKind"]
+    assert ref["entries"][0]["target_kind"] == entry["targetKind"]
+    assert ref["entries"][0]["entry_ordinal"] == 0
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    (
+        (lambda payload, entry: payload.update(extra="not canonical"), "import.payload"),
+        (lambda payload, entry: payload.update(entries=[]), "import.payload.entries"),
+        (lambda payload, entry: entry.update(importKind="package"), "importKind"),
+        (lambda payload, entry: entry.update(targetKind="text"), "targetKind"),
+        (lambda payload, entry: entry.update(pathComponentRanges=[]), "source_file"),
+        (lambda payload, entry: entry.update(wildcard=True), "source_file"),
+        (lambda payload, entry: entry.update(extra="not canonical"), "unexpected"),
+    ),
+)
+def test_v11_malformed_import_binding_fails_closed(mutate, message) -> None:
+    source_id, source, entry, legacy_name = _structured_import_cases()[0]
+    raw = _structured_import_artifact(
+        source_id=source_id, source=source, directive_kind="include",
+        entries=[copy.deepcopy(entry)], legacy_name=legacy_name,
+    )
+    payload = raw["evidence"]["facts"][0]["payload"]
+    mutate(payload, payload["entries"][0])
+    with pytest.raises(CommonEvidenceContractError, match=message):
+        validate_common_evidence(
+            raw, source_bytes=source.encode("utf-8"),
+            expected_source_id=source_id,
+        )
+
+
 def test_import_facts_are_strict_exact_source_occurrences() -> None:
     source, raw = _import_artifact()
     validated = validate_common_evidence(
@@ -289,10 +483,10 @@ def test_import_facts_are_strict_exact_source_occurrences() -> None:
         fact["factId"] for fact in raw["evidence"]["facts"]
     ]
     assert [
-        source[fact.target_range.char_offset:fact.target_range.end]
+        source[fact.entries[0].target_range.char_offset:fact.entries[0].target_range.end]
         for fact in validated.import_facts
     ] == ["<local.h>", '"quoted.h"', "<spliced.h>", "<한글.h>"]
-    assert [fact.target_kind for fact in validated.import_facts] == [
+    assert [fact.entries[0].target_kind for fact in validated.import_facts] == [
         "angle", "quoted", "angle", "angle",
     ]
 

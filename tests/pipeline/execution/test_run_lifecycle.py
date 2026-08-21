@@ -83,6 +83,42 @@ class RunRegistryContractTest(unittest.TestCase):
         run_executor._require_call_resolution_producer("framework", True)
         run_executor._require_call_resolution_producer("dbms", False)
 
+    def test_import_resolution_workflow_update_is_captured_exactly_once(self) -> None:
+        import_id = "a" * 64
+        row = {
+            "occurrence_id": f"{import_id}:0", "import_id": import_id,
+            "ordinal": 0, "entry_ordinal": 0, "evidence_version": "1.1.0",
+            "source_id": "sample.c", "file": "sample.c", "line": 1,
+            "end_line": 1, "range": {"char_offset": 0, "char_length": 20},
+            "directive_kind": "include", "grammar_rule": "includeLine",
+            "presence_status": "active",
+            "presence": {"status": "active", "provenance": "unconditional"},
+            "evidence_status": "complete", "import_kind": "source_file",
+            "target_kind": "quoted", "target": '"common.h"',
+            "target_range": {"char_offset": 9, "char_length": 10},
+            "path_components": ["common.h"],
+            "path_component_ranges": [{"char_offset": 10, "char_length": 8}],
+            "member": None, "member_range": None, "alias": None,
+            "alias_range": None, "relative_level": 0, "wildcard": False,
+            "locality": "local", "outcome": "unresolved",
+            "reason": "insufficient_import_binding_environment",
+            "resolved_module_ids": [],
+        }
+
+        ledger, seen = run_executor._capture_import_resolution_update(
+            [], False, {"import_resolution_ledger": [row]},
+        )
+
+        self.assertTrue(seen)
+        self.assertEqual([row], ledger)
+        with self.assertRaisesRegex(ValueError, "more than one workflow producer"):
+            run_executor._capture_import_resolution_update(
+                ledger, seen, {"import_resolution_ledger": [row]},
+            )
+        with self.assertRaisesRegex(ValueError, "did not produce"):
+            run_executor._require_import_resolution_producer(False)
+        run_executor._require_import_resolution_producer(True)
+
 
 class UsageSummaryContractTest(unittest.TestCase):
     """캐시 적중은 호출로 세되 토큰이 0 이라, 집계가 둘을 구분해야 통계가 오해를 안 만든다."""

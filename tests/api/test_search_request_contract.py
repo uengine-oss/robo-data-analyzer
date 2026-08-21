@@ -65,6 +65,7 @@ class SearchRequestContractTest(unittest.IsolatedAsyncioTestCase):
                 generation_id="generation:1",
                 quality_status="completed_with_findings",
                 call_resolution={"total": 2, "unresolved": 1},
+                import_resolution={"total": 3, "unresolved": 2},
             )
 
         default_limit = service.DEFAULT.cluster_top_n
@@ -83,6 +84,7 @@ class SearchRequestContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(default_limit, service.DEFAULT.cluster_top_n)
         self.assertEqual("completed_with_findings", meta["quality_status"])
         self.assertEqual(1, meta["call_resolution"]["unresolved"])
+        self.assertEqual(2, meta["import_resolution"]["unresolved"])
 
     def test_top_n_boundary_is_explicit(self) -> None:
         self.assertEqual(1, SearchRequest(query="q", top_n=1).top_n)

@@ -16,12 +16,20 @@ from neo4j import AsyncGraphDatabase
 from agents.skills.catalog import load_skill_contract
 from graph.generation import publish_generation
 from graph.nodes.call_occurrence import upsert_call_occurrences
+from graph.nodes.import_occurrence import upsert_import_occurrences
 from graph.ownership import ANALYZER_GRAPH_OWNER
 from graph.schema.constraints import ensure_schema
 from pipeline.models.call_resolution import (
     call_resolution_from_storage,
     normalize_call_resolution_subset,
     summarize_call_resolution_ledger,
+)
+from pipeline.models.import_resolution import (
+    build_import_resolution_ledger,
+    import_resolution_from_storage,
+    normalize_import_resolution_ledger,
+    normalize_import_resolution_subset,
+    summarize_import_resolution_ledger,
 )
 from pipeline.models.semantic_frame import (
     EvidenceFact,
@@ -81,42 +89,49 @@ class _SharedTransactionClient:
         return await callback(self.transaction)
 
 
-class _TestDatabaseSchemaClient:
+class _FrameworkDatabaseSchemaClient:
     def __init__(self, driver):
         self.driver = driver
 
     async def run_query(self, query: str, params: dict | None = None):
-        async with self.driver.session(database="test") as session:
+        async with self.driver.session(database="framework") as session:
             result = await session.run(query, **(params or {}))
             return await result.consume()
 
     async def run_read_query(
         self, query: str, params: dict | None = None,
     ) -> list[dict]:
-        async with self.driver.session(database="test") as session:
+        async with self.driver.session(database="framework") as session:
             result = await session.run(query, **(params or {}))
             return await result.data()
 
 
 async def _prove_actual_occurrence_graph_rollback(
-    ledger: list[dict], sealed_ids: list[str],
+    ledger: list[dict], import_ledger: list[dict], sealed_ids: list[str],
 ) -> dict:
-    """Publish the full actual ledger in one test-DB transaction, then erase it."""
+    """Publish complete call/import ledgers in one test-DB transaction, then erase it."""
     settings = SETTINGS.graph_database
     generation_id = f"spec131-call-occurrence-{uuid.uuid4().hex}"
-    owner_ids = sorted({row["caller_id"] for row in ledger})
+    owner_files = {
+        row["caller_id"]: row["file"] for row in ledger if row["caller_id"]
+    }
+    owner_ids = sorted(owner_files)
     owner_items = [
-        {"id": owner_id, "semantic_frame_json": _source_free_test_frame(owner_id)}
+        {
+            "id": owner_id,
+            "file_path": owner_files[owner_id],
+            "semantic_frame_json": _source_free_test_frame(owner_id),
+        }
         for owner_id in owner_ids
     ]
     driver = AsyncGraphDatabase.driver(
         settings.uri,
         auth=(settings.user, settings.password),
     )
-    await ensure_schema(_TestDatabaseSchemaClient(driver))
+    await ensure_schema(_FrameworkDatabaseSchemaClient(driver))
 
     async def active_rows() -> list[dict]:
-        async with driver.session(database="test") as session:
+        async with driver.session(database="framework") as session:
             result = await session.run(
                 """
 MATCH (active:ANALYZER_ACTIVE_GENERATION {
@@ -134,7 +149,7 @@ RETURN active.current_generation_id AS generation_id
     persisted_counts = None
     sealed_rows: list[dict] = []
     try:
-        async with driver.session(database="test") as session:
+        async with driver.session(database="framework") as session:
             transaction = await session.begin_transaction()
             try:
                 await transaction.run(
@@ -150,6 +165,7 @@ CREATE (:ANALYZER_OWNED:FUNCTION {
   graph_owner: $graph_owner,
   generation_id: $generation_id,
   id: owner.id,
+  file_path: owner.file_path,
   semantic_frame_json: owner.semantic_frame_json
 })
 """,
@@ -159,11 +175,15 @@ CREATE (:ANALYZER_OWNED:FUNCTION {
                 )
                 client = _SharedTransactionClient(transaction, generation_id)
                 assert await upsert_call_occurrences(client, ledger) == len(ledger)
+                assert await upsert_import_occurrences(
+                    client, import_ledger,
+                ) == len(import_ledger)
                 closure = await publish_generation(
                     client,
                     generation_id=generation_id,
                     quality_status="completed",
                     call_resolution_ledger=ledger,
+                    import_resolution_ledger=import_ledger,
                 )
                 count_result = await transaction.run(
                     """
@@ -258,10 +278,58 @@ ORDER BY occurrence.call_id
                     call_resolution_from_storage(row["properties"])
                     for row in await sealed_result.data()
                 ]
+                import_result = await transaction.run(
+                    """
+MATCH (occurrence:ANALYZER_OWNED:IMPORT_OCCURRENCE {
+  graph_owner: $graph_owner,
+  generation_id: $generation_id
+})
+RETURN properties(occurrence) AS properties
+ORDER BY occurrence.ordinal
+""",
+                    graph_owner=ANALYZER_GRAPH_OWNER,
+                    generation_id=generation_id,
+                )
+                persisted_imports = normalize_import_resolution_ledger([
+                    import_resolution_from_storage(row["properties"])
+                    for row in await import_result.data()
+                ])
+                assert persisted_imports == import_ledger
+
+                api_imports: list[dict] = []
+                mcp_imports: list[dict] = []
+                imports_by_file: dict[str, list[dict]] = {}
+                for occurrence in persisted_imports:
+                    imports_by_file.setdefault(occurrence["file"], []).append(occurrence)
+                owner_by_file: dict[str, str] = {}
+                for owner_id, file_name in owner_files.items():
+                    owner_by_file.setdefault(file_name, owner_id)
+                assert set(imports_by_file) <= set(owner_by_file)
+                for file_name, file_imports in sorted(imports_by_file.items()):
+                    owner_id = owner_by_file[file_name]
+                    detail = build_node_detail(
+                        by_owner[owner_id]["node_rows"],
+                        [], [], [], node_id=owner_id,
+                        require_complete_source=False,
+                        import_occurrences=file_imports,
+                    )
+                    assert "error" not in detail
+                    api_imports.extend(
+                        detail["node"]["import_resolution"]["occurrences"]
+                    )
+                    packet = build_gwt_detail(detail, [])
+                    assert "error" not in packet
+                    mcp_imports.extend(
+                        packet["node"]["linked_context"]["import_occurrences"]
+                    )
+                api_imports = normalize_import_resolution_subset(api_imports)
+                mcp_imports = normalize_import_resolution_subset(mcp_imports)
+                assert api_imports == import_ledger
+                assert mcp_imports == import_ledger
             finally:
                 await transaction.rollback()
 
-        async with driver.session(database="test") as session:
+        async with driver.session(database="framework") as session:
             residue_result = await session.run(
                 """
 MATCH (n)
@@ -281,12 +349,13 @@ RETURN count(n) AS count
     }
     assert closure["quality_status"] == "completed_with_findings"
     assert closure["call_occurrences"]["identities"] == ledger
+    assert closure["import_occurrences"]["identities"] == import_ledger
     assert residue == 0
     assert active_after == active_before
     sealed_by_id = {row["call_id"]: row for row in ledger if row["call_id"] in sealed_ids}
     assert sealed_rows == [sealed_by_id[call_id] for call_id in sorted(sealed_ids)]
     return {
-        "database": "test",
+        "database": "framework",
         "schema_contract": "ensured",
         "transaction": "rolled_back",
         "routine_owner_ids": len(owner_ids),
@@ -302,10 +371,20 @@ RETURN count(n) AS count
         "mcp_ledger_sha256": summarize_call_resolution_ledger(
             mcp_occurrences
         )["sha256"],
+        "import_occurrence_nodes": len(persisted_imports),
+        "api_import_occurrences": len(api_imports),
+        "api_import_ledger_sha256": summarize_import_resolution_ledger(
+            api_imports
+        )["sha256"],
+        "mcp_import_occurrences": len(mcp_imports),
+        "mcp_import_ledger_sha256": summarize_import_resolution_ledger(
+            mcp_imports
+        )["sha256"],
         "generation_node_count": closure["nodes"]["count"],
         "generation_edge_count": closure["edges"]["count"],
         "quality_status": closure["quality_status"],
         "ledger_sha256": closure["call_occurrences"]["sha256"],
+        "import_ledger_sha256": closure["import_occurrences"]["sha256"],
         "sealed_direct_judgment_matched": len(sealed_rows),
         "residual_nodes": residue,
         "active_pointer_unchanged": active_after == active_before,
@@ -390,6 +469,9 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
     import_ids = [ref["import_id"] for ref in imports]
     assert import_ids == [ref["import_id"] for ref in repeated_imports]
     assert len(import_ids) == len(set(import_ids))
+    import_ledger = build_import_resolution_ledger(imports)
+    repeated_import_ledger = build_import_resolution_ledger(repeated_imports)
+    assert import_ledger == repeated_import_ledger
     assert preprocessing == repeated_preprocessing
     assert _ledger_hash(expected_ids) == parser_report["callFactIdLedgerSha256"]
     assert _ledger_hash(
@@ -403,7 +485,9 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
     macro_presence = Counter(fact["presence_status"] for fact in macros)
     macro_kind = Counter(fact["macro_kind"] for fact in macros)
     import_presence = Counter(ref["presence_status"] for ref in imports)
-    import_target_kind = Counter(ref["target_kind"] for ref in imports)
+    import_entries = [entry for ref in imports for entry in ref["entries"]]
+    import_target_kind = Counter(entry["target_kind"] for entry in import_entries)
+    import_kind = Counter(entry["import_kind"] for entry in import_entries)
     import_evidence_status = Counter(ref["evidence_status"] for ref in imports)
     assert presence == Counter(active=12_080, inactive=33)
     assert callee_kind == Counter(named=12_113)
@@ -411,18 +495,28 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
     assert macro_kind == Counter(object=182, function=1)
     assert import_presence == Counter(active=449, inactive=1)
     assert import_target_kind == Counter(angle=450)
+    assert import_kind == Counter(source_file=450)
+    assert len(import_entries) == len(import_ledger) == 450
     assert import_evidence_status == Counter(complete=450)
     inactive_imports = [
         ref for ref in imports if ref["presence_status"] == "inactive"
     ]
     assert [
-        (ref["import_id"], ref["source_id"], ref["name"])
+        (ref["import_id"], ref["source_id"], ref["entries"][0]["target"])
         for ref in inactive_imports
     ] == [(
         "4cb06d86a857bc112715b599876cb23dc52b831190eaf294ad26f57f3ea8ff7d",
         "zapamcom10110.c",
         "<zngmmcap20020.h>",
     )]
+    import_outcomes = Counter(row["outcome"] for row in import_ledger)
+    import_reasons = Counter(row["reason"] for row in import_ledger)
+    assert import_outcomes == Counter(unresolved=449, excluded=1)
+    assert import_reasons == Counter({
+        "insufficient_import_binding_environment": 449,
+        "inactive_import": 1,
+    })
+    assert all(not row["resolved_module_ids"] for row in import_ledger)
     assert sum(owner.values()) == len(first)
     assert all(site["call_id"] and site["source_id"] for site in first)
 
@@ -515,7 +609,7 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
         selected for selected in sealed if "macroKind" in selected["payload"]
     ]
     sealed_imports = [
-        selected for selected in sealed if "targetRange" in selected["payload"]
+        selected for selected in sealed if "entries" in selected["payload"]
     ]
     by_id = {site["call_id"]: site for site in first}
     macro_by_id = {fact["fact_id"]: fact for fact in macros}
@@ -549,10 +643,21 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
         ref = import_by_id[selected["factId"]]
         payload = selected["payload"]
         assert ref["range"] == selected["range"]
-        assert ref["target_range"] == payload["targetRange"]
         assert ref["directive_kind"] == payload["directiveKind"]
-        assert ref["target_kind"] == payload["targetKind"]
-        assert ref["name"] == selected["displayPreview"]["target"]
+        assert len(ref["entries"]) == len(payload["entries"])
+        for entry_ordinal, (entry, sealed_entry) in enumerate(zip(
+            ref["entries"], payload["entries"], strict=True,
+        )):
+            assert entry["entry_ordinal"] == entry_ordinal
+            assert entry["import_kind"] == sealed_entry["importKind"]
+            assert entry["target_kind"] == sealed_entry["targetKind"]
+            assert entry["target_range"] == sealed_entry["targetRange"]
+            assert entry["path_component_ranges"] == sealed_entry["pathComponentRanges"]
+            assert entry["member_range"] == sealed_entry.get("memberRange")
+            assert entry["alias_range"] == sealed_entry.get("aliasRange")
+            assert entry["relative_level"] == sealed_entry["relativeLevel"]
+            assert entry["wildcard"] == sealed_entry["wildcard"]
+            assert entry["locality"] == sealed_entry["locality"]
         assert ref["presence"] == selected["presence"]
 
     # Fixed, source-range-sealed examples cover calls that the former raw-source
@@ -617,6 +722,7 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
     if os.environ.get("ROBO_RUN_NEO4J_INTEGRATION") == "1":
         graph_proof = asyncio.run(_prove_actual_occurrence_graph_rollback(
             classification.ledger,
+            import_ledger,
             [expectation[0] for expectation in direct_expectations.values()],
         ))
 
@@ -647,7 +753,7 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
             "owner_end_line": owner_node.end_line,
         })
     report = {
-        "contract_version": "1.0.0",
+        "contract_version": "1.1.0",
         "source_files": len(closure.artifacts),
         "code_nodes": len(nodes),
         "call_facts": len(first),
@@ -667,6 +773,7 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
         "macro_kind": dict(sorted(macro_kind.items())),
         "macro_presence_status": dict(sorted(macro_presence.items())),
         "import_target_kind": dict(sorted(import_target_kind.items())),
+        "import_kind": dict(sorted(import_kind.items())),
         "import_presence_status": dict(sorted(import_presence.items())),
         "import_evidence_status": dict(sorted(import_evidence_status.items())),
         "call_completeness": dict(sorted(completeness_status.items())),
@@ -699,6 +806,18 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
         },
         "call_resolution_outcomes": dict(sorted(resolution_outcomes.items())),
         "call_resolution_ledger_sha256": _ledger_hash(resolution_rows),
+        "import_resolution_accounting": {
+            "input_facts": len(imports),
+            "input_entries": len(import_entries),
+            "accounted": len(import_ledger),
+            "resolved": import_outcomes["resolved"],
+            "excluded": import_outcomes["excluded"],
+            "unresolved": import_outcomes["unresolved"],
+            "by_reason": dict(sorted(import_reasons.items())),
+        },
+        "import_resolution_ledger_sha256": summarize_import_resolution_ledger(
+            import_ledger
+        )["sha256"],
         "sealed_call_direct_judgment_matched": len(sealed_calls),
         "sealed_macro_direct_judgment_matched": len(sealed_macros),
         "sealed_import_direct_judgment_matched": len(sealed_imports),

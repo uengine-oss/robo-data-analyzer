@@ -93,3 +93,59 @@ target resolution은 Analyzer 소유를 유지하되 unknown/ambiguous/missing b
 - APAS에는 header target population이 없으므로 실제 cross-file positive edge는 별도 sealed fixture와 향후
   build trace가 있는 actual corpus에서 검증해야 한다.
 
+## 구현 및 검증 결과
+
+2026-08-21 C-066 책임 슬라이스는 위 red를 다음과 같이 green으로 전환했다.
+
+- Parser common evidence IR `1.1.0`은 C/Java/Python grammar/listener에서 statement별 structured
+  `entries[]`를 발행한다. C source-file, Java type/namespace/static-member, Python module/module-member와
+  path component/member/alias/relative/wildcard/locality exact range를 공통 sealer가 검증한다.
+- Analyzer strict consumer는 IR `1.0.0|1.1.0`을 명시적으로 구분한다. 1.1의 exact structured entry만
+  `(import_id, entry_ordinal)` occurrence로 만들고 legacy `IMPORT.name`은 compatibility preview로만 남긴다.
+- 기존 `ontology_roles.yaml.reference_imports`, C/Python regex, Java split/static/wildcard 문자열 해석,
+  basename/suffix target 추측을 제거했다. 현재 입력에는 authoritative C include search/classpath/module
+  path/Python import environment가 없으므로 active structured import는 resolved edge가 아니라
+  `insufficient_import_binding_environment`다.
+- 각 import entry는 `resolved|excluded|unresolved` 중 정확히 하나로 source order ledger에 기록된다.
+  inactive는 `excluded/inactive_import`, incomplete/legacy/conditional/computed는 각각 별도 reason으로 닫힌다.
+- ledger는 generation-owned `IMPORT_OCCURRENCE` node로 call occurrence와 같은 transaction에 저장되고,
+  generation closure v3가 workflow ledger와 Neo4j population/identity/hash를 active pointer 교체 전에 대조한다.
+  구현 중 import writer가 generation transaction 밖 단발 write를 사용하던 결함을 actual rollback red가
+  검출했고, `execute_write` 공유 transaction 계약으로 수정했다.
+- search/REST/MCP는 generation 전체 import summary를 fail-closed로 읽고, code node detail과
+  semantic-frame packet은 해당 source file occurrence 전부를 evidence context로 공개한다. source-file
+  context를 routine owner 관계나 resolved semantic scope로 가장하지 않는다.
+
+actual APAS 3층 검증 결과:
+
+| 항목 | 값 |
+|---|---:|
+| source files | 23 |
+| import facts / entries / unique occurrence IDs | 450 / 450 / 450 |
+| active / inactive | 449 / 1 |
+| resolved / unresolved / excluded | 0 / 449 / 1 |
+| unresolved binding-environment / inactive reason | 449 / 1 |
+| sealed structured import direct judgment | 450 / 450 |
+| deterministic replay | identical |
+| import ledger SHA-256 | `6f02336ced795b64178a97febf1f75665cd9ff86a49753a0bfc7a2ea1a67e81d` |
+| Neo4j/API/MCP import population | 450 / 450 / 450 |
+| Neo4j/API/MCP hash | 모두 동일 |
+| rollback residue / active pointer change | 0 / 없음 |
+
+Neo4j 검증은 기존 `framework` DB의 단일 transaction에서 12,113 call occurrence와 450 import occurrence를
+함께 닫은 뒤 rollback했다. generation quality는 unresolved 때문에 `completed_with_findings`였고, rollback 뒤
+residual node 0과 active pointer 불변을 재조회했다. 임시 DB를 만들지 않았다.
+
+자동 회귀는 Analyzer pytest `1247 passed, 7 skipped, 367 subtests`, authoritative unittest
+`1140 tests, skipped 6, OK`, Parser Maven `185 tests, failures/errors 0, skipped 10`이다. 이 수치는 직접 의미
+판정을 대신하지 않는다.
+
+실행물:
+
+- `_runs/framework/parser-structured-import-evidence-20260821-r2.json`
+- `_runs/framework/parser-structured-import-analyzer-fixture-20260821-r1/`
+- `_runs/framework/analyzer-structured-import-consumer-20260821-r3.json` (report SHA-256
+  `e9b7e4fad9efbef396199520ce95782d28bc0169dd55a0b3dbcfbe86d5c439cc`)
+
+남은 경계는 authoritative environment binder와 positive cross-module derived-reference provenance다. APAS
+source inventory에는 header target이 없으므로 이 slice는 cross-file positive edge 정확도를 주장하지 않는다.

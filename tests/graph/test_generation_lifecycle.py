@@ -17,6 +17,10 @@ from pipeline.models.call_resolution import (
     call_occurrence_node_id,
     call_resolution_storage_item,
 )
+from pipeline.models.import_resolution import (
+    import_occurrence_node_id,
+    import_resolution_storage_item,
+)
 from pipeline.models.semantic_frame import (
     EvidenceFact,
     SemanticFrame,
@@ -43,6 +47,29 @@ def _call_row(*, outcome="unresolved", reason="missing") -> dict:
         "outcome": outcome, "reason": reason,
         "scope": None, "callee_id": "",
         "preprocessing_evidence_ids": [], "macro_fact_ids": [],
+    }
+
+
+def _import_row() -> dict:
+    import_id = "a" * 64
+    return {
+        "occurrence_id": f"{import_id}:0", "import_id": import_id,
+        "ordinal": 0, "entry_ordinal": 0, "evidence_version": "1.1.0",
+        "source_id": "a.c", "file": "a.c", "line": 1, "end_line": 1,
+        "range": {"char_offset": 0, "char_length": 20},
+        "directive_kind": "include", "grammar_rule": "includeLine",
+        "presence_status": "active",
+        "presence": {"status": "active", "provenance": "unconditional"},
+        "evidence_status": "complete", "import_kind": "source_file",
+        "target_kind": "quoted", "target": '"common.h"',
+        "target_range": {"char_offset": 9, "char_length": 10},
+        "path_components": ["common.h"],
+        "path_component_ranges": [{"char_offset": 10, "char_length": 8}],
+        "member": None, "member_range": None, "alias": None,
+        "alias_range": None, "relative_level": 0, "wildcard": False,
+        "locality": "local", "outcome": "unresolved",
+        "reason": "insufficient_import_binding_environment",
+        "resolved_module_ids": [],
     }
 
 
@@ -100,10 +127,14 @@ class _AsyncResult:
 
 
 class _PublishTransaction:
-    def __init__(self, *, semantic_frame=None, call_occurrences=None):
+    def __init__(
+        self, *, semantic_frame=None, call_occurrences=None,
+        import_occurrences=None,
+    ):
         self.calls: list[str] = []
         self.semantic_frame = semantic_frame or _semantic_frame()
         self.call_occurrences = list(call_occurrences or [])
+        self.import_occurrences = list(import_occurrences or [])
 
     async def run(self, query, **parameters):
         del parameters
@@ -128,6 +159,13 @@ class _PublishTransaction:
                 "labels": ["ANALYZER_OWNED", "CALL_OCCURRENCE"],
                 "semantic_frame_json": None,
             } for row in self.call_occurrences)
+            rows.extend({
+                "id": import_occurrence_node_id(
+                    row["import_id"], row["entry_ordinal"],
+                ),
+                "labels": ["ANALYZER_OWNED", "IMPORT_OCCURRENCE"],
+                "semantic_frame_json": None,
+            } for row in self.import_occurrences)
             return _AsyncResult(rows=rows)
         if "properties(r) AS properties" in query:
             rows = [{
@@ -154,6 +192,10 @@ class _PublishTransaction:
                 "properties": call_resolution_storage_item(row),
                 "owner_ids": [row["caller_id"]] if row["caller_id"] else [],
             } for row in self.call_occurrences])
+        if "IMPORT_OCCURRENCE" in query and "AS properties" in query:
+            return _AsyncResult(rows=[{
+                "properties": import_resolution_storage_item(row),
+            } for row in self.import_occurrences])
         if "active.current_generation_id AS active_generation_id" in query:
             return _AsyncResult(record={
                 "run_id": "run:new",
@@ -203,8 +245,9 @@ class GraphGenerationLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, closure["nodes"]["count"])
         self.assertEqual(1, closure["edges"]["count"])
         self.assertEqual(1, closure["slots"]["count"])
-        self.assertEqual("graph-generation-closure/v2", closure["schema_version"])
+        self.assertEqual("graph-generation-closure/v3", closure["schema_version"])
         self.assertEqual(0, closure["call_occurrences"]["count"])
+        self.assertEqual(0, closure["import_occurrences"]["count"])
         self.assertEqual(
             sorted(next(iter(_semantic_frame()["slots"].values()))["evidence_refs"]),
             closure["slots"]["identities"][0]["evidence_refs"],
@@ -286,6 +329,22 @@ class GraphGenerationLifecycleTests(unittest.IsolatedAsyncioTestCase):
             "active.current_generation_id" in query for query in transaction.calls
         ))
 
+    async def test_unresolved_import_occurrence_upgrades_quality_and_closes_hash(self) -> None:
+        ledger = [_import_row()]
+        transaction = _PublishTransaction(import_occurrences=ledger)
+
+        closure = await publish_generation(
+            _Client(transaction), generation_id="run:new",
+            quality_status="completed", call_resolution_ledger=[],
+            import_resolution_ledger=ledger,
+        )
+
+        self.assertEqual("completed_with_findings", closure["quality_status"])
+        self.assertEqual(1, closure["import_occurrences"]["count"])
+        self.assertEqual(
+            {"unresolved": 1}, closure["import_occurrences"]["by_outcome"],
+        )
+
     async def test_failure_terminal_status_and_staging_delete_share_transaction(self) -> None:
         transaction = _TerminateTransaction()
 
@@ -347,6 +406,10 @@ class CompletedGenerationReaderTests(unittest.TestCase):
                 "total": 0, "unresolved": 0,
                 "by_outcome": {}, "by_reason": {}, "sha256": "0" * 64,
             }),
+            "import_resolution_summary_json": json.dumps({
+                "total": 0, "unresolved": 0,
+                "by_outcome": {}, "by_reason": {}, "sha256": "0" * 64,
+            }),
         }
 
     def test_scoped_session_injects_resolved_generation_into_every_read(self) -> None:
@@ -356,6 +419,7 @@ class CompletedGenerationReaderTests(unittest.TestCase):
             session.run("MATCH (n {generation_id:$generation_id}) RETURN n")
             self.assertEqual("completed", session.quality_status)
             self.assertEqual(0, session.call_resolution["total"])
+            self.assertEqual(0, session.import_resolution["total"])
 
         self.assertEqual(
             "run:published",
@@ -378,6 +442,14 @@ class CompletedGenerationReaderTests(unittest.TestCase):
     def test_generation_without_call_resolution_closure_fails_closed(self) -> None:
         driver = _SyncDriver({"generation_id": "run:published", "status": "completed"})
         with self.assertRaisesRegex(CompletedGenerationUnavailable, "call resolution"):
+            with completed_generation_session(driver, "neo4j"):
+                pass
+
+    def test_generation_without_import_resolution_closure_fails_closed(self) -> None:
+        record = self._record()
+        del record["import_resolution_summary_json"]
+        driver = _SyncDriver(record)
+        with self.assertRaisesRegex(CompletedGenerationUnavailable, "import resolution"):
             with completed_generation_session(driver, "neo4j"):
                 pass
 

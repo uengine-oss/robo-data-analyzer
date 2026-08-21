@@ -3,75 +3,89 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 from graph.schema.graph_nodes import CodeNode, Constant
-from graph.schema.node_ids import child_id, code_ns_id
-from pipeline.steps.step2_load_ast.import_scopes import _build_scopes
-from pipeline.steps.step2_load_ast.token_matcher import _pass2_hits, link_references
+from pipeline.steps.step2_load_ast.import_scopes import build_import_scope_plan
+from pipeline.steps.step2_load_ast.token_matcher import link_references
 
 
 class ImportProfileTest(unittest.TestCase):
-    def test_local_file_profile_exposes_only_imported_file_names(self) -> None:
-        targets = {
-            "header": {"LIMIT": [("header:LIMIT", "CONSTANT")]},
-            "other": {"OTHER": [("other:OTHER", "CONSTANT")]},
+    @staticmethod
+    def _ref(
+        *, import_id: str = "a" * 64, evidence_version: str = "1.1.0",
+        presence_status: str = "active", evidence_status: str = "complete",
+        import_kind: str = "source_file", target_kind: str = "quoted",
+        entries: list[dict] | None = None,
+    ) -> dict:
+        binding = {
+            "entry_ordinal": 0, "import_kind": import_kind,
+            "target_kind": target_kind, "target": '"common.h"',
+            "target_range": {"charOffset": 9, "charLength": 10},
+            "path_components": ["common.h"],
+            "path_component_ranges": [{"charOffset": 10, "charLength": 8}],
+            "member": None, "member_range": None,
+            "alias": None, "alias_range": None,
+            "relative_level": 0, "wildcard": False,
+            "locality": "local",
         }
-        scope = _build_scopes(
-            [{"name": '"common.h"', "file": "main.c"}],
-            targets, {}, {"common.h": {"header"}, "other.h": {"other"}},
-        )["main.c"]
-        self.assertEqual(
-            [("header:LIMIT", "CONSTANT")],
-            _pass2_hits("use(LIMIT, OTHER)", scope, targets, set()),
+        return {
+            "import_id": import_id, "evidence_version": evidence_version,
+            "legacy_name": "preview only", "name": "preview only",
+            "source_id": "main.c", "file": "main.c", "line": 1,
+            "end_line": 1, "range": {"charOffset": 0, "charLength": 20},
+            "directive_kind": "include", "entries": entries or [binding],
+            "grammar_rule": "includeLine", "presence_status": presence_status,
+            "presence": {"status": presence_status, "provenance": "fixture"},
+            "evidence_status": evidence_status,
+        }
+
+    def test_internal_filename_candidate_does_not_replace_missing_binding_environment(self) -> None:
+        plan = build_import_scope_plan(
+            [self._ref()],
         )
 
-    def test_namespace_profile_supports_qualified_and_direct_member_imports(self) -> None:
-        module_id = child_id(code_ns_id("pkg"), "Constants")
-        targets = {module_id: {"MAX": [("constant:max", "CONSTANT")]}}
-        scope = _build_scopes(
-            [
-                {"name": "pkg.Constants", "file": "Order.java"},
-                {"name": "static pkg.Constants.MAX", "file": "Order.java"},
-            ],
-            targets, {}, {},
-        )["Order.java"]
+        self.assertEqual({}, plan.scopes)
+        self.assertEqual(1, len(plan.ledger))
+        self.assertEqual("unresolved", plan.ledger[0]["outcome"])
         self.assertEqual(
-            [("constant:max", "CONSTANT")],
-            _pass2_hits("Constants.MAX + MAX", scope, targets, set()),
+            "insufficient_import_binding_environment", plan.ledger[0]["reason"],
+        )
+        self.assertEqual([], plan.ledger[0]["resolved_module_ids"])
+
+    def test_inactive_import_is_excluded_not_used_as_scope(self) -> None:
+        plan = build_import_scope_plan(
+            [self._ref(presence_status="inactive")],
         )
 
-    def test_source_module_profile_supports_from_import(self) -> None:
-        targets = {"module:config": {"LIMIT": [("config:LIMIT", "CONSTANT")]}}
-        scope = _build_scopes(
-            [{"name": "from pkg.config import LIMIT", "file": "pkg/use.py"}],
-            targets, {"pkg/config.py": {"module:config"}}, {},
-        )["pkg/use.py"]
-        self.assertEqual(
-            [("config:LIMIT", "CONSTANT")],
-            _pass2_hits("return LIMIT", scope, targets, set()),
+        self.assertEqual({}, plan.scopes)
+        self.assertEqual("excluded", plan.ledger[0]["outcome"])
+        self.assertEqual("inactive_import", plan.ledger[0]["reason"])
+
+    def test_legacy_import_evidence_stays_explicitly_unresolved(self) -> None:
+        plan = build_import_scope_plan(
+            [self._ref(evidence_version="1.0.0")],
         )
 
-    def test_source_module_profile_supports_relative_from_import(self) -> None:
-        targets = {"module:config": {"LIMIT": [("config:LIMIT", "CONSTANT")]}}
-        scope = _build_scopes(
-            [{"name": "from .config import LIMIT", "file": "pkg/use.py"}],
-            targets, {"pkg/config.py": {"module:config"}}, {},
-        )["pkg/use.py"]
+        self.assertEqual({}, plan.scopes)
+        self.assertEqual("unresolved", plan.ledger[0]["outcome"])
         self.assertEqual(
-            [("config:LIMIT", "CONSTANT")],
-            _pass2_hits("return LIMIT", scope, targets, set()),
+            "insufficient_structured_import_evidence", plan.ledger[0]["reason"],
         )
 
-    def test_unknown_resolver_fails_instead_of_degrading_to_same_file(self) -> None:
-        with patch(
-            "pipeline.steps.step2_load_ast.import_scopes.reference_import_profile",
-            return_value={"resolver": "unknown"},
-        ):
-            with self.assertRaisesRegex(ValueError, "지원하지 않는 reference import resolver"):
-                _build_scopes(
-                    [{"name": '"common.h"', "file": "main.c"}], {}, {}, {},
-                )
+    def test_every_binding_entry_has_one_source_ordered_outcome(self) -> None:
+        first = self._ref()["entries"][0]
+        second = {**first, "entry_ordinal": 1, "target": '"other.h"'}
+        plan = build_import_scope_plan(
+            [self._ref(entries=[first, second])],
+        )
+
+        self.assertEqual([0, 1], [row["ordinal"] for row in plan.ledger])
+        self.assertEqual([0, 1], [row["entry_ordinal"] for row in plan.ledger])
+        self.assertEqual(2, len({row["occurrence_id"] for row in plan.ledger}))
+
+    def test_duplicate_canonical_import_fact_fails_closed(self) -> None:
+        with self.assertRaisesRegex(ValueError, "duplicate canonical import"):
+            build_import_scope_plan([self._ref(), self._ref()])
 
 
 class ReferenceLexingContractTest(unittest.IsolatedAsyncioTestCase):

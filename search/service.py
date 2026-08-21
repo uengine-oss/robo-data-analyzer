@@ -36,6 +36,7 @@ def run_search(
     meta["generation_id"] = corpus.generation_id
     meta["quality_status"] = session.quality_status
     meta["call_resolution"] = session.call_resolution
+    meta["import_resolution"] = session.import_resolution
     if not nodes:
         return [], meta
     score = max(n["relevance"] for n in nodes)
