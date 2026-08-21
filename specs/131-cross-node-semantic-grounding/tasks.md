@@ -48,6 +48,23 @@
     - [x] A131-04d-C065 Framework canonical call occurrence를 evidence node로 exact-once 저장하고
       generation count/hash/outcome/reason closure, unresolved run quality, REST/MCP search meta와 owner detail까지
       보존 — aggregate CALLS와 routine 의미 owner는 유지
+    - [x] A131-04d-C062 C translation-unit type-name environment를 grammar declaration/scope와 configured
+      preprocessing evidence가 소유하도록 전환하고, project-global regex 및 header/platform hardcode seed를
+      제거한다. unresolved type-dependent parse choice는 Parser AST JSON의 exact coordinate·parse/completeness
+      진단으로 보존하고 Analyzer는 graph mutation 전에 strict validation/run finding 또는 fail-closed한다.
+      Neo4j/API/MCP symbol 진단 객체·owner property ledger는 만들지 않는다.
+      - [x] Parser 1차 formal red와 grammar-local definition/lookup producer focused 10/10
+      - [x] actual APAS AST 23/23 변경·대형 recovery 회귀를 막는 declaration-only/true-ambiguity/cast/
+        external-return red 및 grammar-owned 구조 보존 구현 — formal 18/18, Parser 전체 203/0/0/10,
+        accepted 의미 node count 동일, diagnostics/recovery 0/0, 유일 delta는 source typedef 4개
+      - [x] Parser 전체/actual APAS 전수 회계와 층화 봉인 직접 판정 — full 203/0/0/10,
+        accepted baseline 23/23 비-TYPEDEF delta 0, symbol exact-once 4,659, 봉인 40/40 exact
+      - [x] Analyzer IR 1.2 strict consumer→run finding/fail-closed, graph mutation 0 검증 — formal red
+        10건 green, actual 23파일 symbol 4,659 exact-once, syntax ambiguity 0, 봉인 40/40 exact,
+        NodeBuildResult/CodeNode projection 0·Neo4j/API/MCP 생산 배선 검색 0·DB write 0,
+        전체 1,258 passed/7 skipped
+    - [ ] A131-04d-C067 C cross-TU call binder가 visible declaration→C linkage/type compatibility→unique corpus
+      definition을 실제로 보존하는지 전수 감사하고, product external과 C external linkage를 분리한다.
   - [ ] A131-04e 남은 구조 closure(C-004/C-017~021/C-031/C-034~C-042) 책임 슬라이스별 해결
     - [x] A131-04e-C004-C017-C031 Catalog truncated inventory pre-merge fail-closed, unknown external
       non-whitespace source span exact-once closure, 순환 dead Catalog lineage consumer 제거 — red 3건,

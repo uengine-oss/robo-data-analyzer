@@ -124,6 +124,26 @@ ID 기준으로 중복 제거해 소비하며 정상 생성 경로에서 레거�
 27. context 한계를 넘는 경우 내용 절단·Top-N·oversize skip·LLM 요약 대체로 성공시키지 않는다.
     obligation별 exact source/evidence 요청으로 분할하고 canonical ID로 병합한다. 경계 의미가 닫히지
     않으면 필요한 좌표를 남긴 `partial|needs_context`이며 `sufficient`가 아니다.
+28. C type-name syntax authority는 translation-unit별 configured preprocessing과 ANTLR grammar의 declaration
+    point/lexical scope/order다. Parser가 project source regex, suffix, POSIX/Windows/header 이름 목록으로
+    semantic predicate를 선결정하지 않는다. 미해소 lookup은 exact source coordinate와 grammar decision을
+    common evidence에 남기고 Analyzer가 graph mutation 전에 strict validation한다. syntax-dependent AST/owner가
+    닫히지 않으면 해당 분석 단위를 좌표가 있는 run finding으로 격리하거나 fail-closed한다. ANTLR
+    grammar/listener는 유지하며, external compiler frontend는 configuration-bound trace
+    provider일 뿐 모든 toolchain의 무조건적 대체 truth가 아니다.
+    같은 token의 반복 predicate 평가는 한 fact로 합치되, recovery 중 서로 다른 token에 실제로 수행된
+    decision은 source coordinate별로 보존하고 partial parse/symbol completeness 밖의 canonical meaning으로
+    승격하지 않는다.
+    grammar 대안 비교는 현재 candidate identifier 한 좌표만 type-name으로 시험하며 뒤 source의 다른 unknown
+    identifier를 같은 결정으로 오염시키지 않는다. 두 대안이 모두 성립하면 어느 쪽도 exact truth로 만들지 않는다.
+    부분 업로드에서 grammar role이 확정된 사용의 definition 부재는 제품 external 경계다. typedef-sensitive
+    ambiguity는 target 분류가 아니라 Parser AST JSON 진단이다. 이 symbol 진단을 Neo4j node/label/relationship,
+    기존 owner property ledger, API/MCP 객체로 만들지 않는다. LLM은 AST/type/linkage/CALL/REFERENCE를
+    생성·변경하지 않고 별도 natural-language semantic frame만 채운다.
+29. C `external linkage`와 Analyzer external target을 구분한다. call-site에 보이는 compatible declaration과
+    corpus 안의 unique external definition이 결합되면 파일이 달라도 내부 사용자 정의 CALL이다. header는
+    declaration 전달 수단일 뿐 필수가 아니다. static/internal linkage, typedef(no linkage), incompatible/
+    duplicate definition, declaration 부재는 이름 일치만으로 결합하지 않는다.
 
 ## 폐기된 요구
 

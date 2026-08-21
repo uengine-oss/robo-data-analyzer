@@ -1,4 +1,4 @@
-# Common Evidence IR v1 계약 (1.0.0 / 1.1.0)
+# Common Evidence IR v1 계약 (1.0.0 / 1.1.0 / 1.2.0)
 
 ## 1. 목적과 owner
 
@@ -20,7 +20,7 @@
 ```json
 {
   "evidence": {
-    "version": "1.0.0",
+    "version": "1.2.0",
     "sourceId": "normalized/relative/path.c",
     "rawSourceSha256": "...",
     "decodedTextSha256": "...",
@@ -161,11 +161,15 @@ DBMS call consumer가 effective AST CodeNode owner를 구현하기 전에는 non
 publish를 중단한다. Framework routine owner로 대신 귀속하거나 fact를 보존했다는 이유로 소비를 생략하지
 않는다.
 
-### import/include, symbol, literal, assignment, parameter, macro
+### import/include
 
 IR `1.1.0`의 import/include는 statement 하나에 `payload.entries[]`를 source order로 둔다. 한 statement에
 여러 binding이 있어도 fact를 복제하지 않으며, Analyzer occurrence identity는
 `(factId, entryOrdinal)`이다.
+
+IR `1.2.0`은 symbol payload를 추가할 뿐 위 structured import payload를 바꾸지 않는다. import consumer와
+저장/API/MCP occurrence 모델은 `1.1.0|1.2.0`을 같은 structured import 계약으로 처리해야 하며, 상위
+envelope version이라는 이유로 legacy/unresolved 계약으로 낮추거나 거부하지 않는다.
 
 ```json
 {
@@ -200,8 +204,111 @@ IR `1.1.0`의 import/include는 statement 하나에 `payload.entries[]`를 sourc
 - 향후 authoritative binder가 만든 derived `REFERENCES`는 근거 import occurrence ID와 resolved module ID를
   보존해야 한다. 현재 unresolved import에서 aggregate edge를 먼저 만드는 것은 금지한다.
 
+### C type-name symbol decision (`1.2.0`)
+
+C의 `Identifier`가 typedef-name인지 ordinary identifier인지는 lexer text나 이름 모양이 아니라
+translation-unit의 declaration point, lexical scope, configured preprocessing environment로 결정한다.
+Parser는 grammar semantic predicate가 실제로 사용한 definition과 lookup을 `symbol` fact로 발행한다.
+
+Definition fact:
+
+```json
+{
+  "factId": "...",
+  "kind": "symbol",
+  "range": {"charOffset": 12, "charLength": 1},
+  "grammarRuleRef": 0,
+  "presenceRef": 0,
+  "payload": {
+    "role": "definition",
+    "symbolKind": "typedef_name|ordinary_identifier",
+    "scopeKind": "file|block|function_prototype",
+    "scopeRange": {"charOffset": 0, "charLength": 40},
+    "visibilityStartOffset": 13
+  }
+}
+```
+
+Lookup fact:
+
+```json
+{
+  "factId": "...",
+  "kind": "symbol",
+  "range": {"charOffset": 24, "charLength": 1},
+  "grammarRuleRef": 1,
+  "presenceRef": 0,
+  "payload": {
+    "role": "lookup",
+    "lookupKind": "type_name",
+    "parserDecision": "type_name|ordinary_identifier",
+    "resolutionStatus": "resolved|unresolved",
+    "provenance": "source_declaration|configured_preprocessing|grammar_context|unresolved_environment",
+    "definitionFactId": null,
+    "configuredEvidenceId": null,
+    "predicateContexts": ["typedef_name"]
+  }
+}
+```
+
+- fact range는 definition/lookup identifier terminal 자체다. 이름 text를 payload에 복제하지 않는다.
+- source definition은 identifier를 포함한 declarator가 끝난 직후의 `visibilityStartOffset`과 scope/order를
+  grammar action이 소유하고, listener가 declarator terminal과 enclosing file/block/prototype range를 발행한다.
+  definition range는 scope 안에 있고 `range.end <= visibilityStartOffset <= scopeRange.end`여야 한다. project
+  전체 파일에서 이름을 미리 모으지 않는다.
+- `definitionFactId`는 같은 envelope의 definition fact만 참조한다. `source_declaration` resolved lookup은
+  반드시 이 ID를 가지며 lookup 위치가 definition의 선언 지점 이후이면서 scope range 안이어야 한다.
+- `configured_preprocessing` resolved lookup은 compile-action별 authoritative expanded-token/source-map
+  SHA-256 evidence ID를 `configuredEvidenceId`로 참조하고 `definitionFactId`는 null이어야 한다. trace가
+  없으면 이 provenance를 사용할 수 없다.
+- `grammar_context` resolved lookup은 앞선 builtin/type specifier처럼 현재 parse rule 자체가 ordinary
+  declarator 결정을 완전히 닫을 때만 사용하며 definition/configured evidence ID는 모두 null이다.
+- environment가 닫히지 않은 상태에서 semantic predicate가 선택을 요구한 unknown identifier는 parser가
+  compatibility tree에서 택한 `parserDecision`과 별개로 `resolutionStatus=unresolved`,
+  `provenance=unresolved_environment`, `definitionFactId=null`이다. ordinary identifier로 확정하지 않는다.
+- 같은 token에 predicate가 여러 번 평가돼도 symbol lookup fact는 token range+decision당 하나이며
+  `predicateContexts`를 중복 없이 grammar evaluation order로 합친다. speculation/retry 수를 occurrence로
+  부풀리지 않는다.
+- declaration/statement 또는 cast/expression 대안 비교는 같은 source token의 grammar parse 결과로만
+  수행한다. unknown 이름 전체를 type으로 seed하지 않고 현재 candidate identifier 좌표 하나만 대안 입력으로
+  바꾸며, 양쪽이 동일하게 완주하면 어느 쪽도 exact environment truth로 승격하지 않는다.
+- 미해소 첫 identifier 때문에 ANTLR recovery가 뒤 identifier에도 type-name predicate를 실제 평가했다면
+  서로 다른 source token decision이므로 각각 fact로 남긴다. 이 후속 fact를 사람이 예상한 타입명 목록에
+  맞춰 숨기지 않으며, 반대로 canonical symbol meaning으로 승격하지도 않는다. envelope `parseStatus=partial`과
+  symbol unresolved ledger가 recovery 영향을 함께 드러내야 한다.
+- header/POSIX/Windows/library typedef, macro(`NULL` 포함), 고객 naming suffix를 language builtin type으로
+  하드코딩하지 않는다. C keyword/builtin terminal은 grammar token/rule이 직접 소유하므로 symbol lookup
+  seed가 아니다.
+- symbol completeness는 관측된 definition/lookup fact 전부를 `population=emitted`로 회계한다. unresolved
+  lookup이 있으면 `status=partial`, reason=`insufficient_type_name_environment`이고 같은 envelope의 unresolved
+  lookup만 `unresolvedFactIds`로 전수 참조한다. 알 수 없는 occurrence 수를 `explicitlyUnresolved`로 발명하지
+  않는다.
+- 분석 대상에 definition이 없는 것은 정상적인 부분 업로드 경계다. call/tag처럼 grammar role이 이미
+  확정된 사용은 결정론 linker가 corpus definition 유무에 따라 내부 target 또는 제품 external로 분류한다.
+  typedef 여부가 문법 자체를 바꾸는 경우의 `unresolved_environment`는 그 target 분류가 아니라 Parser AST
+  JSON의 parse/evidence 진단이다. 이를 `Unresolved`나 `external_unbound` 도메인 entity로 승격하지 않는다.
+- C의 `external linkage`와 Analyzer의 `external target`은 다른 개념이다. 현재 corpus에 다른 translation
+  unit의 unique compatible function/object definition이 있고 call-site에 보이는 declaration이 그 definition과
+  external linkage로 결합되면 Analyzer에서는 내부 사용자 정의 target이다. header include는 declaration 전달의
+  일반적 수단일 뿐 필수 형식이 아니며 직접 declaration도 가능하다. 반대로 `static` internal linkage,
+  incompatible/duplicate definitions, declaration 부재를 이름만으로 project-global 결합하지 않는다.
+- typedef name에는 linkage가 없다. 다른 `.c`에 같은 typedef definition이 있다는 이유만으로 현재 translation
+  unit의 type environment나 내부 binding이 되지 않는다. configured include/preprocessing으로 현재 unit에
+  실제 유입된 declaration만 사용할 수 있다.
+- Parser source envelope의 exact definition/lookup fact와 parse/completeness 진단이 이 경계의 정본이다.
+  Analyzer는 IR population·ID·range·status를 strict validation하고, syntax-dependent AST/owner가 닫히지 않은
+  분석 단위는 좌표가 있는 run finding으로 격리하거나 fail-closed한다. compatibility AST를 canonical exact로
+  승격하지 않는다.
+- 이 symbol 진단을 Neo4j node/label/relationship 또는 기존 owner의 누적 property ledger로 저장하지 않으며
+  API/MCP 도메인 객체로도 투영하지 않는다. 확정된 함수·object의 cross-translation-unit 연결은 별도
+  결정론 linker가 declaration/linkage/type/definition 근거로 처리한다.
+- LLM은 승인된 owner의 exact AST/source/evidence를 받아 별도 natural-language semantic frame만 채운다.
+  symbol definition/lookup, AST node/type, linkage, CALL/REFERENCE를 만들거나 변경할 수 없다.
+
 - 각 문법 단위 exact range와 file-level source/hash binding
-- symbol role은 `definition|reference|import|read|write`; target resolution은 Analyzer 소유
+- 일반 symbol role의 향후 definition/reference/import/read/write 확장은 exact grammar terminal과 별도
+  versioned payload를 요구한다. IR 1.2의 현재 승인 symbol payload는 위 C `definition|lookup` type-name
+  decision뿐이며 project target resolution은 Analyzer 소유다.
 - literal은 raw segments와 concat/escape decode status를 분리한다. decode가 불완전하면 raw만 canonical이다.
 - assignment는 target/source expression range를 분리한다.
 - macro는 object/function-like, parameter, replacement token range, presence를 보존한다.
@@ -237,6 +344,10 @@ population = emitted + explicitlyUnresolved
 `reasons[]`가 있으면 호환 `reason`은 반드시 첫 항목과 같아야 한다. `unresolvedScopeFactIds`는 같은
 envelope에 존재하는 `conditional_region` fact만 참조할 수 있다. 다른 kind의 fact ID나 외부 ID를 scope로
 가장하면 consumer는 publish를 거부한다.
+
+IR `1.2.0`의 `unresolvedFactIds`는 해당 completeness row와 같은 kind의 fact만 참조한다. symbol row에서는
+`resolutionStatus=unresolved` lookup fact의 전수 집합과 정확히 같아야 하고, resolved/definition/다른 kind ID가
+섞이거나 누락·중복되면 publish를 거부한다.
 
 조건부 region은 call occurrence와 단위가 다르므로 `explicitlyUnresolved` call로 더하지 않는다. 관측된
 source call occurrence는 그대로 `population=emitted`로 회계하고, configuration 때문에 active set이

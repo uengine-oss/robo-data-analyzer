@@ -1,8 +1,10 @@
 # Analyzer 의미 무손실 감사 현재상태
 
 **Updated**: 2026-08-21
-**Status**: C-066 canonical import downstream scope/provenance 근본 구현·3층 검증·push 완료; 다음 손실 경로 감사 계속
+**Status**: C-062 Parser grammar-owned type-name producer와 Analyzer IR 1.2 strict consumer·3층 검증·제품 commit 완료; 정본 commit/push 직전
 **Analyzer C-066 product commit**: `15fcec8eb77c16a282f30e90df396a09c7fa7eff`
+**Analyzer C-062 product commit**: `cd7110d3e7103ff264d6ce041136ab01e96c412f`
+**Parser C-062 product commit**: `e28be6aa026ff005b5d4adb447459409cdecf34f`
 
 이 문서는 현재 진행 위치만 소유한다. 영구 규칙은 `ABSOLUTE_RULES.md`, 상세 역사와 기존 수치는 `HANDOFF.md`와 `evidence/`가 소유한다.
 
@@ -20,10 +22,10 @@
 
 - Neo4j `127.0.0.1:7687`: 현재 세션에서 인증과 `SHOW DATABASES` 재확인 성공.
   `neo4j|test|framework|dbms|system`만 존재하고 모두 online이다. 허용 목록 밖 DB는 0개다.
-- Analyzer C-066 product commit `15fcec8eb77c16a282f30e90df396a09c7fa7eff`; 제품·테스트·정본
-  변경은 위 3층 검증 후 `origin/main`에 push됐다.
-- Parser main HEAD `df78583b5ac1c89fe85bf333b7c6d6354299db92`; IR 1.1 structured import
-  grammar/listener/sealer와 formal/actual test 변경은 Analyzer 호환 소비 검증 후 `origin/main`에 push됐다.
+- Analyzer 현재 HEAD `cd7110d3e7103ff264d6ce041136ab01e96c412f`; C-062 strict consumer 제품·테스트는
+  3층 검증 후 commit됐고 정본 문서 commit과 push 직전이다.
+- Parser main HEAD `e28be6aa026ff005b5d4adb447459409cdecf34f`; IR 1.2 grammar-owned C type-name
+  definition/lookup producer와 formal/actual test 변경은 `origin/main`에 push됐다.
 - Catalog HEAD `1f1aaa608a3d7ef8b01ce15c3df962cf0f1cfefb`, 기존 dirty 12개가 있다.
 - Fabric HEAD `83c9604e2d6ec3f1ececa47d2e2264a74257843d`, 기존 dirty 7개가 있다.
 - Architect HEAD `7b771ac2e7338d03ac8238db5c307d97080232c1`, 기존 dirty 4개가 있다.
@@ -491,5 +493,83 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
     `_runs/framework/parser-structured-import-evidence-20260821-r2.json`,
     `_runs/framework/analyzer-structured-import-consumer-20260821-r3.json`(report SHA-256
     `e9b7e4fad9efbef396199520ce95782d28bc0169dd55a0b3dbcfbe86d5c439cc`)이 소유한다.
+25v. 조사 갱신(C-062): project-global declaration/usage regex 10개뿐 아니라 `SymbolTable`의 POSIX/Windows/
+    header 이름과 `NULL` predefined type도 source/config evidence 없이 같은 grammar predicate를 바꾼다.
+    따라서 regex만 삭제하는 수정은 결함을 남긴다. WG14 scope/translation-unit 규칙, Clang compilation DB와
+    preprocessor/parser 책임, 현행 ANTLR C semantic predicate를 대조해 `grammar-local declaration+lexical
+    scope/order`, `configuration-specific authoritative trace`, `exact unresolved syntax decision`의 세 경계로
+    계약을 확장했다. formal red는 cross-TU leak, comment/ordinary declarator, platform/NULL seed, local typedef/
+    shadowing, unresolved coordinate exact-once를 고정한다. 상세는
+    `evidence/parser-c-type-name-ownership-audit-20260821.md`다. Architect·DB write는 없다.
+25w. C-062 formal red 고정: Parser `CTypeNameEnvironmentContractTest` 4건은 구현 전 4/4 실패했다.
+    기대 symbol definition/lookup은 0건이고 IR은 1.1이었다. 같은 실행에서 project-global seed가 2→3→7개로
+    변하며 `size_t`/`HANDLE`, 다른 TU typedef, multiline comment/ordinary declarator 이름까지 실제 등록됐다.
+    red는 regex 삭제뿐 아니라 evidence-free `SymbolTable` seed 제거, grammar scope/order, unresolved lookup
+    exact-once가 함께 필요함을 고정한다. 제품 구현·DB write는 아직 0회다.
+25x. C-062 Parser producer 구현 중간 상태: project-global regex와 evidence-free platform/header/`NULL` seed를
+    제거하고 grammar declarator·parameter·enumerator scope/order에서 IR 1.2 definition/lookup fact를 생산한다.
+    focused는 4 failures → 2 → 1 → 0으로 전환됐고 declaration point, function parameter body shadow,
+    prototype scope 종료, enum block shadow를 더한 8/8이 통과했다. 마지막 불일치는
+    `size_t count_29ac;`의 `count_29ac`을 ANTLR recovery가 실제 type-name predicate로 질의한 fact였다.
+    `parseStatus=partial`, ordinary+unresolved인 서로 다른 token decision을 숨기지 않는 것으로 계약을 정정했다.
+    이어 유효한 grammar type specifier 뒤 ordinary declarator 반례를 red로 추가해 `grammar_context`와
+    source definition을 분리했고 최신 focused 9/9가 통과했다. Parser 전체 회귀·actual APAS·Analyzer IR 1.2
+    consumer는 아직 미검증이고 commit/push 전이다. symbol 진단의 graph/API/MCP projection은 비범위다.
+    Architect·Catalog·Fabric 수정과 DB write는 0회다.
+25y. 사용자 정정(부분 업로드 정상성): call/tag처럼 grammar role이 확정된 사용은 분석 대상 definition 유무에
+    따라 내부 target 또는 제품 external로 결정론 분류한다. typedef 여부가 syntax를 바꾸는 경우는 target
+    분류가 아니라 Parser AST JSON의 exact parse/evidence 진단이다. 다른 `.c`의 함수는 visible declaration+
+    external linkage로 header 없이도 연결될 수 있지만 다른 `.c`의 typedef는 현재 translation unit에 자동
+    유입되지 않는다. 추가 red의 유효한 `int member;` 과다 unresolved는 수정 후 9/9 green이다.
+25z. 사용자 정정(C linkage): C의 external linkage는 Analyzer의 external target이 아니다. `a.c` definition과
+    `a.h`/직접 declaration을 쓰는 `b.c`가 모두 분석 대상이고 linkage/type이 compatible하면 내부 CALL로
+    연결해야 한다. header 형식은 필수가 아니다. static/typedef/duplicate/incompatible/declaration 부재는
+    project-global 이름으로 결합하면 안 된다. 현 cross-TU call binder의 declaration→linkage→definition
+    실제 배선은 C-067 후보로 추가 조사하며 Architect는 계속 보류한다.
+25aa. 사용자 최종 정정(단순 소유권): C type-name 판정 결손은 Parser AST JSON의 exact fact와 parse/
+    completeness 진단으로만 유지한다. Analyzer는 IR을 strict validation하고 syntax-dependent AST/owner가
+    닫히지 않으면 좌표가 있는 run finding으로 격리하거나 graph mutation 전에 fail-closed한다. Neo4j의 별도
+    label/node/relationship은 물론 기존 owner의 symbol-binding property ledger와 API/MCP projection도 만들지
+    않는다. LLM은 AST/type/linkage/CALL/REFERENCE를 보정하지 않고 별도 natural-language semantic frame만
+    채운다. 25y의 owner property 설계는 이 정정으로 폐기한다.
+25ab. C-062 actual 반증: 현재 Parser working tree는 focused 10/10, 관련 계약 23/23, 전체 195 tests가
+    통과했지만 accepted export와 APAS 23개 AST 본문을 비교하면 동일 0/23이다. FUNCTION 416→883,
+    FUNCTION_CALL 12,113→11,680, ASSIGNMENT 2,038→1,941, IF 1,922→1,833, RETURN 1,444→1,383이다.
+    가장 큰 `zapamcom10200.c`는 929→271 node이며 unknown parameter type이 있는 file-scope prototype에서
+    function name 대신 parameter `itf`를 FUNCTION으로 만들고 뒤 실제 body를 연쇄 손실했다. 따라서
+    project-global seed 삭제-only 구현은 미승인이고 commit하지 않는다. actual symbol facts는 5,949
+    (definition 1,339 / lookup 4,610 / resolved 1,718 / unresolved 2,892), partial 22/exact 1,
+    diagnostics 1,938/recoveries 5,414이며 replay ledger는 동일하다. 봉인 40은 전부 unresolved로 편향돼
+    층화 직접 판정 미완이다. declaration-only grammar context의 구조 보존, expression 확정 내부 predicate
+    제거, true block ambiguity exact 진단, 뒤 statement 비연쇄 손실을 새 red로 고정한 뒤 설계를 교체한다.
+    blanket exact-parse unresolved filter는 진짜 missing-type fact 3건도 지워 폐기했다. Tree-sitter GLR은
+    독립 반증 후보일 뿐 ANTLR 대체로 채택하지 않았다. DB/Architect 변경은 0회다.
+25ac. 완료(C-062 Parser, commit/push `e28be6a`): block declaration/statement와 cast/type-expression을 ANTLR
+    speculative parse로 비교하되 이름/regex가 아니라 candidate identifier 한 좌표만 type-name으로 시험한다.
+    speculative stream의 token 객체 재사용이 원본 token index를 바꾸는 원인도 확인해 token copy로 교체했다.
+    parameter/member/file-scope declaration-only, 진짜 ambiguity, expression negative predicate, cast, unknown
+    return type, 반환형 생략 구형 C를 포함한 formal 18/18과 IR 포함 30/30, Parser 전체 203 tests
+    (failure/error 0, skipped 10)가 통과했다. actual r5는 APAS 23 source에서 FUNCTION 416, FUNCTION_CALL
+    12,113, ASSIGNMENT 2,038, IF 1,922, ELSE 763, RETURN 1,444로 accepted와 일치하고 diagnostics/recovery는
+    0/0이다. accepted AST `children`은 20/23 exact, 나머지 3파일의 유일 delta는 원문 직접 대조한 TYPEDEF
+    4개다. symbol 4,659 = definition 2,624 + lookup 2,035(resolved 755/unresolved 1,280), ledger
+    `5d8b1f5ec3b77a01e705cc5b73e4be80cecf116a46027e2b945e0734d002b793`다. 층화 봉인 직접 판정과 Analyzer
+    IR 1.2 consumer는 이 시점에 아직 미검증이었다. 최종 actual r7의 상설 baseline 비교는 23/23,
+    비-TYPEDEF delta 0/typedef +4이고, 결과 열람 전 층화 봉인 symbol 40건은 주 에이전트 직접 판정
+    40/40 exact였다. Parser 전체 변경은 `origin/main`에 push됐다. DB/Architect 변경은 0회다.
+25ad. 완료(C-062 Analyzer product, commit `cd7110d`): IR 1.2 symbol definition/lookup의 canonical ID/range,
+    exact payload, lexical definition reference/decision, predicate context, configured trace provenance와
+    completeness unresolved 전수 집합을 graph mutation 전에 strict validation한다. declaration-only unresolved는
+    AST JSON 진단으로만 소비 후 폐기하고, unresolved ordinary 또는 `ambiguous_*` syntax decision은 좌표와 함께
+    fail-closed한다. NodeBuildResult/CodeNode symbol 진단 projection과 Neo4j/API/MCP 생산 배선은 0이다.
+    actual r6 fixture 23파일은 symbol 4,659 = definition 2,624 + lookup 2,035(resolved 755/unresolved 1,280),
+    syntax ambiguity 0, Parser/Analyzer ledger SHA 동일, 봉인 40/40 exact다. IR 1.2가 기존 import 450건을
+    거부하던 downstream version 고정도 1.1/1.2 structured import 계약으로 교정했다. focused 107 passed/
+    2 subtests, actual 1 passed, 권위 unittest 1,141 OK/6 skipped, 전체 pytest 1,258 passed/7 skipped/
+    367 subtests, prompt 16/16이다. actual report는
+    `_runs/framework/analyzer-c-type-name-consumer-20260821-r2.json`, SHA-256
+    `e22050b73d773559e50dbc40748b1ae2d1e6e462a08fe10357c61eb46fbee1f2`다. Neo4j write와
+    Architect/Catalog/Fabric 수정은 0회다. configured authoritative trace, 다른 언어, C-067 cross-TU binder,
+    전체 LLM/graph 재분석 정확도는 미검증이다.
 26. 검증: 자동 회귀→결정론 전수 회계→봉인 직접 의미 판정→실제 APAS 순으로 계속 수행한다.
 27. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.
