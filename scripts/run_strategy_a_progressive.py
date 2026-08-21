@@ -66,6 +66,7 @@ CONTRACT = """# Strategy A v3 — 검증 가능한 Python 관계식
 _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _IDENTIFIER = re.compile(r"[^\W\d]\w*", re.UNICODE)
 _NUMBER = re.compile(r"(?<![\w.])[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?![\w.])")
+_QUOTED_LITERAL = re.compile(r'''(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')''')
 _LEAF_FIELDS = {"given", "then_relation", "semantic_status"}
 _STATUSES = {"exact", "needs_context", "unreachable"}
 _DSL_NAMES = {"called"}
@@ -400,6 +401,15 @@ def _grounding_failures(expression: str, evidence: Any) -> list[dict[str, Any]]:
     strings = _string_values(evidence)
     identifiers = {token for value in strings for token in _IDENTIFIER.findall(value)}
     numbers = {token for value in strings for token in _NUMBER.findall(value)}
+    decoded_literals: set[str] = set()
+    for value in strings:
+        for token in _QUOTED_LITERAL.findall(value):
+            try:
+                decoded = ast.literal_eval(token)
+            except (SyntaxError, ValueError):
+                continue
+            if isinstance(decoded, str):
+                decoded_literals.add(decoded)
     failures: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
 
@@ -418,7 +428,7 @@ def _grounding_failures(expression: str, evidence: Any) -> list[dict[str, Any]]:
             if node.value is None or isinstance(node.value, bool):
                 continue
             if isinstance(node.value, str):
-                if not any(node.value in value for value in strings):
+                if node.value not in decoded_literals and not any(node.value in value for value in strings):
                     add("string_literal", node.value)
             elif isinstance(node.value, (int, float)) and str(node.value) not in numbers:
                 add("number_literal", node.value)

@@ -25,16 +25,19 @@
   안전 runner와 preflight/red test를 고정한다. 임의 meaning maxLength와 content retry는 두지 않는다.
   - 구현 전 `ModuleNotFoundError` red 확인 후 7/7 green, preflight source 11/11·record 15·row 104·gold 18·
     history mismatch 0, output root escape/existing run 거부, duplicate JSON/row/Python/grounding failure 검사
-- [ ] A131-SA-04 현재 모델에서 역사 wire control 15호출과 maxLength를 제거한 candidate 15호출을 실행하고
+- [x] A131-SA-04 현재 모델에서 역사 wire control 15호출과 maxLength를 제거한 candidate 15호출을 실행하고
   raw/parsed/usage/finish reason/actual system-user-schema hash와 transport/schema/row/Python/grounding ledger를
   exact-once 보존한다.
-- [ ] A131-SA-05 동일 15입력의 이전 모델 3회↔현재 control 1회로 모델 변화를, 현재 control↔candidate로
+- [x] A131-SA-05 동일 15입력의 이전 모델 3회↔현재 control 1회로 모델 변화를, 현재 control↔candidate로
   계약 변화를 비교한다. 반복 안정성은 미검증으로 분리하고, candidate의 18 gold 의미 사례를 주 에이전트가
   직접 판정한다.
-- [ ] A131-SA-06 세 층 전부 통과할 때만 20함수/77호출/519행 1회로 확대한다. 한 축이라도 실패하면
+- [x] A131-SA-06 세 층 전부 통과할 때만 20함수/77호출/519행 1회로 확대한다. 한 축이라도 실패하면
   첫 오좌표 원인을 확정하기 전 확대하지 않는다.
-- [ ] A131-SA-07 `D:\work\robo\docs\작업보고내용`에 2026-08-21 쉬운 비교 보고서를 작성한다.
+  - 확대 거부: candidate 7/15 valid, 직접 판정 exact 6/18·contradiction 2·omission 1
+  - 첫 원인 좌표 `R730`: 호출 전/후 `rc` 조건을 한 시점으로 합친 deterministic evidence 결함
+- [x] A131-SA-07 `D:\work\robo\docs\작업보고내용`에 2026-08-21 쉬운 비교 보고서를 작성한다.
   기존 C-080/IR 2.0 개선 작업은 항목별 한 줄 상태만 남긴다.
+  - `2026-08-21-Strategy-A-모델변경-비교.md`
 
 ## 2026-08-20 의미 무손실 전수조사
 

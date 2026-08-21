@@ -112,6 +112,25 @@ class StrategyAProgressiveRunnerTest(unittest.TestCase):
         self.assertEqual(len(result["python_parse_failures"]), 1)
         self.assertGreaterEqual(len(result["grounding_failures"]), 1)
 
+    def test_grounding_compares_decoded_quoted_literal_value(self) -> None:
+        evidence = {
+            "conditions": {},
+            "effects": {"E1": {"op": "set", "target": "out[0]", "value": "'\\0'"}},
+            "rows": {"R1": {"when": [], "direct": ["E1"], "source": "out[0] = '\\0';"}},
+        }
+        response = json.dumps({
+            "rules": {"R1": {
+                "given": "True",
+                "then_relation": "out[0] == '\\0'",
+                "semantic_status": "exact",
+            }}
+        })
+
+        result = validate_response(response, evidence, ["R1"])
+
+        self.assertEqual(result["python_parse_failures"], [])
+        self.assertEqual(result["grounding_failures"], [])
+
     def test_output_directory_is_fixed_below_sealed_root_and_must_be_new(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

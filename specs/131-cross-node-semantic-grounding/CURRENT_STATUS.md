@@ -1,7 +1,7 @@
 # Analyzer 의미 무손실 감사 현재상태
 
 **Updated**: 2026-08-21
-**Status**: Strategy A 실제 데이터 4함수 progressive pilot 우선; C-080 IR 2.0 구조개편은 TODO로 봉인해 후속 재개
+**Status**: Strategy A 실제 데이터 4함수 pilot 실패·확대 거부; C-080 IR 2.0 구조개편은 TODO로 봉인해 후속 재개
 **Analyzer C-066 product commit**: `15fcec8eb77c16a282f30e90df396a09c7fa7eff`
 **Analyzer C-062 product commit**: `cd7110d3e7103ff264d6ce041136ab01e96c412f`
 **Analyzer C-062 evidence commit**: `f44bc530fad96fd2314b27dea3dc98a33a20ff3e`
@@ -24,9 +24,9 @@
 
 - Neo4j `127.0.0.1:7687`: 현재 세션에서 인증과 `SHOW DATABASES` 재확인 성공.
   `neo4j|test|framework|dbms|system`만 존재하고 모두 online이다. 허용 목록 밖 DB는 0개다.
-- Analyzer main HEAD `174f47f0cf46ce249bae22f9f4a11c050bd710b5`, `origin/main`과 일치한다.
-  `pipeline/steps/step2_load_ast/evidence_ir.py`에는 IR 1.3 consumer 시도의 보존된 미완성 WIP가 있고,
-  spec 131 문서는 현재 결정/검증 슬라이스로 수정 중이다. decoder WIP는 이 문서 커밋에 stage하지 않는다.
+- Strategy A actual run의 Analyzer HEAD는 `2bc4c7fce70a5cc3c87edcc0c2dfca774a4063a8`이고 당시
+  `origin/main`과 일치했다. `pipeline/steps/step2_load_ast/evidence_ir.py`에는 IR 1.3 consumer 시도의
+  보존된 미완성 WIP가 있다. decoder WIP는 Strategy A 결과·checker 커밋에 stage하지 않는다.
 - Parser main HEAD `5dd64106540674a4aebfdb37ad897a375950d335`, `origin/main`과 일치하며 clean이다.
   IR 1.3은 역사 evidence로 보존하고 IR 2.0 forward 교정 전까지 제품 binding authority로 확대하지 않는다.
 - Catalog HEAD `1f1aaa608a3d7ef8b01ce15c3df962cf0f1cfefb`, 기존 dirty 12개가 있다.
@@ -717,7 +717,19 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
     exact equality를 강제하고 candidate만 maxLength를 제거한다. JSON duplicate key, exact row coverage,
     Python AST parse, row evidence symbol/literal grounding, output root escape/existing run을 fail-closed한다.
     실행은 variant별 record 파일, actual system/user/schema, raw response, finish reason, usage와 summary를 새
-    run directory에만 보존하며 content retry/LLM repair/Neo4j/Analyzer/Architect 실행은 없다. current-model
-    실제 호출은 아직 0회다.
+    run directory에만 보존하며 content retry/LLM repair/Neo4j/Analyzer/Architect 실행은 없다.
+25at. Strategy A current-model actual은 `strategy-a-stage1-current-20260821-r1`에서 정확히 30호출, retry 0으로
+    완료했다. 두 variant 모두 HTTP/stop/JSON/row closure는 15/15, 104/104이나 완전 유효 record는 7/15다.
+    current control과 maxLength 제거 candidate는 Python failure 12, grounding failure 18로 동일해 상한 제거가
+    정확도를 개선하지 않았다. 이전 모델의 같은 wire 3회 valid는 8/15, 11/15, 9/15로 현재 7/15보다 모두 높다.
+25au. 최초 candidate grounding 19 중 `R596` NUL literal 1건은 checker가 source quoted literal을 decode하지
+    않은 오탐이었다. `ast.literal_eval` 기반 red를 추가해 8/8 green으로 교정하고 저장 raw만 재판정했으며
+    최종 grounding failure는 18이다. 모델 재호출과 run 파일 변경은 0회다.
+25av. 봉인 18 gold case 직접 판정은 exact 6, partial 9, contradiction 2, omission 1, fabrication 0,
+    needs_context 0이다. `R730`은 SMS 실패가 실제 도달 가능한데 unreachable, `R224`는 앞선 상태 complement
+    대신 `given=True`, 배송 네 전이의 destination 값은 전부 누락됐다. 이전·현재·상한 제거가 모두 R730을
+    동일하게 틀려 model/cap 단독 원인이 아니며 deterministic evidence의 시간순서/complement/call-argument
+    손실이 upstream 원인이다. 확대 조건에 실패해 20함수/77호출/519행 실행을 금지했다. 상세 판정은
+    `evidence/strategy-a-progressive-pilot-result-20260821.md`가 소유한다.
 26. 검증: 자동 회귀→결정론 전수 회계→봉인 직접 의미 판정→실제 APAS 순으로 계속 수행한다.
 27. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.
