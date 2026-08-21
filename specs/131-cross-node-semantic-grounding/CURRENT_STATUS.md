@@ -1,8 +1,8 @@
 # Analyzer 의미 무손실 감사 현재상태
 
 **Updated**: 2026-08-21
-**Status**: C-066 canonical import downstream scope/provenance 근본 구현·3층 검증 완료, commit/push 전
-**Analyzer base HEAD**: `43227473c1dab669bbc88db0c54d0ccdb81b912c`
+**Status**: C-066 canonical import downstream scope/provenance 근본 구현·3층 검증·push 완료; 다음 손실 경로 감사 계속
+**Analyzer HEAD**: `15fcec8eb77c16a282f30e90df396a09c7fa7eff`
 
 이 문서는 현재 진행 위치만 소유한다. 영구 규칙은 `ABSOLUTE_RULES.md`, 상세 역사와 기존 수치는 `HANDOFF.md`와 `evidence/`가 소유한다.
 
@@ -20,10 +20,10 @@
 
 - Neo4j `127.0.0.1:7687`: 현재 세션에서 인증과 `SHOW DATABASES` 재확인 성공.
   `neo4j|test|framework|dbms|system`만 존재하고 모두 online이다. 허용 목록 밖 DB는 0개다.
-- Analyzer main base HEAD `43227473c1dab669bbc88db0c54d0ccdb81b912c`; C-066 제품·테스트·정본
-  변경은 위 3층 검증을 통과했고 commit/push 전 working tree에만 있다.
-- Parser main base HEAD `d690e51adfc4cc74e923fddce52425d43431f91b`; IR 1.1 structured import
-  grammar/listener/sealer와 formal/actual test 변경은 Analyzer 호환 소비 검증을 통과했고 commit/push 전이다.
+- Analyzer main HEAD `15fcec8eb77c16a282f30e90df396a09c7fa7eff`; C-066 제품·테스트·정본
+  변경은 위 3층 검증 후 `origin/main`에 push됐다.
+- Parser main HEAD `df78583b5ac1c89fe85bf333b7c6d6354299db92`; IR 1.1 structured import
+  grammar/listener/sealer와 formal/actual test 변경은 Analyzer 호환 소비 검증 후 `origin/main`에 push됐다.
 - Catalog HEAD `1f1aaa608a3d7ef8b01ce15c3df962cf0f1cfefb`, 기존 dirty 12개가 있다.
 - Fabric HEAD `83c9604e2d6ec3f1ececa47d2e2264a74257843d`, 기존 dirty 7개가 있다.
 - Architect HEAD `7b771ac2e7338d03ac8238db5c307d97080232c1`, 기존 dirty 4개가 있다.
@@ -476,7 +476,7 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
     ledger, import occurrence provenance를 가진 derived REFERENCES 계약과 formal red를 고정한다. Java
     classpath/module path·Python import environment·C build include resolution이 없으면 basename/path 추측 없이
     explicit unresolved다. 상세는 `evidence/import-scope-provenance-audit-20260821.md`가 소유한다.
-25u. 완료(C-066, commit/push 전): Parser IR 1.1 structured import entry를 Analyzer가 strict 소비하고,
+25u. 완료(C-066, Analyzer `15fcec8`, Parser `df78583`, 양쪽 push): Parser IR 1.1 structured import entry를 Analyzer가 strict 소비하고,
     `(import_id,entry_ordinal)` exact-once outcome ledger로 닫는다. Analyzer의 C/Python regex, Java 문자열 분해,
     ontology language profile, basename/suffix target 추측을 제거했다. authoritative environment binder가 없는
     active import는 `insufficient_import_binding_environment`, inactive는 `excluded/inactive_import`다.

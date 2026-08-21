@@ -97,6 +97,9 @@ target resolution은 Analyzer 소유를 유지하되 unknown/ambiguous/missing b
 
 2026-08-21 C-066 책임 슬라이스는 위 red를 다음과 같이 green으로 전환했다.
 
+- Analyzer: `15fcec8eb77c16a282f30e90df396a09c7fa7eff` (`origin/main` push)
+- Parser: `df78583b5ac1c89fe85bf333b7c6d6354299db92` (`origin/main` push)
+
 - Parser common evidence IR `1.1.0`은 C/Java/Python grammar/listener에서 statement별 structured
   `entries[]`를 발행한다. C source-file, Java type/namespace/static-member, Python module/module-member와
   path component/member/alias/relative/wildcard/locality exact range를 공통 sealer가 검증한다.
