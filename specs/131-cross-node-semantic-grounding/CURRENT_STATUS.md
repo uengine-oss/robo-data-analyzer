@@ -2,7 +2,7 @@
 
 **Updated**: 2026-08-21
 **Status**: C-066 canonical import downstream scope/provenance 근본 구현·3층 검증·push 완료; 다음 손실 경로 감사 계속
-**Analyzer HEAD**: `15fcec8eb77c16a282f30e90df396a09c7fa7eff`
+**Analyzer C-066 product commit**: `15fcec8eb77c16a282f30e90df396a09c7fa7eff`
 
 이 문서는 현재 진행 위치만 소유한다. 영구 규칙은 `ABSOLUTE_RULES.md`, 상세 역사와 기존 수치는 `HANDOFF.md`와 `evidence/`가 소유한다.
 
@@ -20,7 +20,7 @@
 
 - Neo4j `127.0.0.1:7687`: 현재 세션에서 인증과 `SHOW DATABASES` 재확인 성공.
   `neo4j|test|framework|dbms|system`만 존재하고 모두 online이다. 허용 목록 밖 DB는 0개다.
-- Analyzer main HEAD `15fcec8eb77c16a282f30e90df396a09c7fa7eff`; C-066 제품·테스트·정본
+- Analyzer C-066 product commit `15fcec8eb77c16a282f30e90df396a09c7fa7eff`; 제품·테스트·정본
   변경은 위 3층 검증 후 `origin/main`에 push됐다.
 - Parser main HEAD `df78583b5ac1c89fe85bf333b7c6d6354299db92`; IR 1.1 structured import
   grammar/listener/sealer와 formal/actual test 변경은 Analyzer 호환 소비 검증 후 `origin/main`에 push됐다.
