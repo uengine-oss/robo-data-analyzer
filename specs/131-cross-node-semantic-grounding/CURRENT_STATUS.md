@@ -711,5 +711,13 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
     exact-once·18 gold 직접 의미 판정을 모두 통과해야 20함수/77호출로 확대한다. 현재 variant별 반복 안정성은
     미검증으로 분리한다. 비교 결과는
     `D:\work\robo\docs\작업보고내용`에 2026-08-21 쉬운 보고서로 작성한다.
+25as. 안전 runner `scripts/run_strategy_a_progressive.py`와 formal test를 고정했다. 구현 전 import red 1건은
+    예상대로 실패했고 구현 후 7/7 green이다. preflight는 source 11/11, logical record 15, row 104, gold 18,
+    selected ledger/history mismatch 0을 재검증한다. historical control의 system/user/schema는 기존 runner와
+    exact equality를 강제하고 candidate만 maxLength를 제거한다. JSON duplicate key, exact row coverage,
+    Python AST parse, row evidence symbol/literal grounding, output root escape/existing run을 fail-closed한다.
+    실행은 variant별 record 파일, actual system/user/schema, raw response, finish reason, usage와 summary를 새
+    run directory에만 보존하며 content retry/LLM repair/Neo4j/Analyzer/Architect 실행은 없다. current-model
+    실제 호출은 아직 0회다.
 26. 검증: 자동 회귀→결정론 전수 회계→봉인 직접 의미 판정→실제 APAS 순으로 계속 수행한다.
 27. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.

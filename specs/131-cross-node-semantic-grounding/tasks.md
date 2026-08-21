@@ -21,8 +21,10 @@
     negative control `db_commit`
   - 4함수/15 actual prompt records/104 exact rows/18 sealed gold cases
   - `evidence/strategy-a-progressive-pilot-seal-20260821.json`
-- [ ] A131-SA-03 tracked 역사 결과를 덮어쓰지 않고 spec 131 `_runs/framework/strategy-a`에만 쓰는
+- [x] A131-SA-03 tracked 역사 결과를 덮어쓰지 않고 spec 131 `_runs/framework/strategy-a`에만 쓰는
   안전 runner와 preflight/red test를 고정한다. 임의 meaning maxLength와 content retry는 두지 않는다.
+  - 구현 전 `ModuleNotFoundError` red 확인 후 7/7 green, preflight source 11/11·record 15·row 104·gold 18·
+    history mismatch 0, output root escape/existing run 거부, duplicate JSON/row/Python/grounding failure 검사
 - [ ] A131-SA-04 현재 모델에서 역사 wire control 15호출과 maxLength를 제거한 candidate 15호출을 실행하고
   raw/parsed/usage/finish reason/actual system-user-schema hash와 transport/schema/row/Python/grounding ledger를
   exact-once 보존한다.
