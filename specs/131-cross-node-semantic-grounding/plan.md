@@ -93,6 +93,14 @@
     주장하지 않는다. candidate의 세 층이 모두 통과할 때만 20함수·77입력·519행 1회로 확대한다.
 27. 비교 결과와 확대/중단 판정을 `D:\work\robo\docs\작업보고내용`의 2026-08-21 보고서에 비개발자가
     읽을 수 있는 말로 기록한다. C-080을 포함한 기존 개선 작업은 각각 한 줄 상태로만 덧붙인다.
+27a. 사용자 정정에 따라 현재 모델도 동일 4함수·104행을 독립 3회로 맞춘다. 저장된 current 1회는
+    workers=8이고 과거 3회는 workers=16이므로 예비 결과로만 보존한다. 정식 current historical wire와
+    프롬프트 개선 후보를 같은 workers=16에서 각각 3회 312행 실행한다. 개선 후보는 actual 결과를 보기 전
+    별도 계약/hash로 고정하고 byte/canonical JSON/Python AST/status/의미 반복 동일성을 각각 전수 회계한다.
+27b. prompt 감사는 저장 actual의 Python 실패 12행과 직접 의미 오좌표에서 시작한다. 직접 효과 없음,
+    source-language syntax 복사, symbolic constant 치환, temporal value version, complement, call argument/order를
+    분리한다. prompt로 해결 가능한 표현 계약만 후보에 넣고, 이미 결손인 deterministic row evidence는 문구로
+    메우거나 model에게 source 재파싱을 맡기지 않는다.
 28. C-067~C-072의 call target 배선을 source→Parser structural call/callable facts→Analyzer language semantic
     adapter→common resolution core→CALLS/occurrence→semantic context/order→Neo4j→REST/MCP/search로 고정한다.
     Java compiler symbol/overload/dispatch, Python lexical/runtime binding, C linkage/type compatibility를 공식

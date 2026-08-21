@@ -38,6 +38,22 @@
 - [x] A131-SA-07 `D:\work\robo\docs\작업보고내용`에 2026-08-21 쉬운 비교 보고서를 작성한다.
   기존 C-080/IR 2.0 개선 작업은 항목별 한 줄 상태만 남긴다.
   - `2026-08-21-Strategy-A-모델변경-비교.md`
+- [x] A131-SA-08 사용자 지적대로 `92/104` 1회와 `284/312` 3회를 정식 모델 비교로 쓴 오류를 철회하고,
+  동일 4함수·104행·3회인 `312 대 312`와 회차별 `104 대 104` 계약으로 고친다.
+- [x] A131-SA-09 actual prompt와 Python 실패 12행을 전수 감사해 prompt 개선이 끝나지 않았음을 확정한다.
+  - 직접 효과 없는 행은 14개이며 현재 9개가 `exact+빈 then_relation`으로 실패했다.
+  - 나머지 3개 실패 record는 `0L`, 주소 연산, source-language cast를 Python에 복사했다.
+  - row-local symbolic identity 대신 전역 선언값을 쓴 grounding 실패 18건이 있다.
+  - 시간순서/같은 target 여러 write, final complement, call argument/value 결손은 upstream evidence owner다.
+- [x] A131-SA-10 범용 prompt 후보와 반복 동일성 evaluator를 formal red→green으로 고정한다.
+  - `no_direct_effect()`, symbolic identity 보존, source-language syntax fail-closed,
+    value-version 없는 unreachable 금지, temporal/argument 결손 `needs_context`
+  - raw/canonical JSON/status/Python AST/직접 의미의 3회 동일성 축
+- [ ] A131-SA-11 workers=8인 기존 current 1회는 예비 결과로 보존하고, 과거와 같은 workers=16에서
+  current historical wire 3회와 개선 prompt 3회를 새로 실행해 각각 312행을 만든다. content retry 0·
+  actual prompt/raw/usage/finish reason을 한 run에 보존한다.
+- [ ] A131-SA-12 이전 312↔현재 control 312↔현재 개선 312를 자동 회계·봉인 직접 의미 판정하고
+  작업보고와 CURRENT_STATUS를 수정한 뒤 검증된 슬라이스만 commit/push한다.
 
 ## 2026-08-20 의미 무손실 전수조사
 

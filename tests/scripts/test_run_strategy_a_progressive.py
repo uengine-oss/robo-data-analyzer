@@ -10,11 +10,13 @@ from scripts.run_strategy_a_progressive import (
     CANDIDATE_VARIANT,
     CONTROL_VARIANT,
     DEFAULT_SEAL,
+    PROMPT_CANDIDATE_VARIANT,
     build_request,
     build_schema,
     load_preflight,
     parse_json_no_duplicates,
     resolve_output_dir,
+    summarize_repeat_stability,
     validate_response,
 )
 
@@ -61,6 +63,133 @@ class StrategyAProgressiveRunnerTest(unittest.TestCase):
         self.assertEqual(control["top_k"], candidate["top_k"])
         self.assertEqual(control["max_tokens"], 4096)
         self.assertEqual(candidate["max_tokens"], 30000)
+
+    def test_prompt_candidate_changes_only_the_user_contract_and_has_no_content_cap(self) -> None:
+        config = SimpleNamespace(
+            model="current-model",
+            max_tokens=30000,
+            sampling=SimpleNamespace(temperature=0.1, top_p=1.0),
+            extra_body={"top_k": 20},
+        )
+        historical = build_request("historical contract\nresponse_locale: ko\n", ["R1"], config,
+                                   CONTROL_VARIANT)
+        candidate = build_request("historical contract\nresponse_locale: ko\n", ["R1"], config,
+                                  PROMPT_CANDIDATE_VARIANT)
+
+        self.assertEqual(historical["messages"][0], candidate["messages"][0])
+        self.assertNotEqual(historical["messages"][1], candidate["messages"][1])
+        candidate_user = candidate["messages"][1]["content"]
+        self.assertIn("no_direct_effect()", candidate_user)
+        self.assertIn("동일 value version", candidate_user)
+        self.assertIn("symbolic", candidate_user)
+        self.assertNotIn("member_authenticate", candidate_user)
+        leaf = candidate["response_format"]["json_schema"]["schema"]["properties"]["rules"][
+            "properties"]["R1"]
+        self.assertNotIn("maxLength", leaf["properties"]["given"])
+        self.assertNotIn("maxLength", leaf["properties"]["then_relation"])
+
+    def test_prompt_candidate_requires_explicit_no_direct_effect_relation(self) -> None:
+        evidence = {
+            "conditions": {"C1": "ready == 1"},
+            "effects": {},
+            "rows": {"R1": {"role": "complement", "when": ["C1"], "direct": []}},
+        }
+        explicit = json.dumps({
+            "rules": {"R1": {
+                "given": "ready == 1",
+                "then_relation": "no_direct_effect()",
+                "semantic_status": "exact",
+            }}
+        })
+        unconstrained = json.dumps({
+            "rules": {"R1": {
+                "given": "ready == 1",
+                "then_relation": "True",
+                "semantic_status": "exact",
+            }}
+        })
+
+        accepted = validate_response(explicit, evidence, ["R1"], PROMPT_CANDIDATE_VARIANT)
+        rejected = validate_response(unconstrained, evidence, ["R1"], PROMPT_CANDIDATE_VARIANT)
+
+        self.assertEqual(accepted["python_parse_failures"], [])
+        self.assertEqual(accepted["grounding_failures"], [])
+        self.assertEqual(accepted["semantic_contract_failures"], [])
+        self.assertEqual(rejected["semantic_contract_failures"], [
+            {"row": "R1", "reason": "missing_no_direct_effect_relation"}
+        ])
+
+    def test_prompt_candidate_cannot_mark_unversioned_or_non_python_effects_exact(self) -> None:
+        evidence = {
+            "conditions": {"C1": "rc < 0", "C2": "rc < 0"},
+            "effects": {
+                "E1": {"op": "set", "target": "rc", "value": "RET_OK"},
+                "E2": {"op": "set", "target": "rc", "value": "call(&value)"},
+            },
+            "rows": {"R1": {"when": ["!C1", "C2"], "direct": ["E1", "E2"]}},
+        }
+        response = json.dumps({
+            "rules": {"R1": {
+                "given": "not (rc < 0) and rc < 0",
+                "then_relation": "rc == RET_OK",
+                "semantic_status": "unreachable",
+            }}
+        })
+
+        result = validate_response(response, evidence, ["R1"], PROMPT_CANDIDATE_VARIANT)
+
+        reasons = {item["reason"] for item in result["semantic_contract_failures"]}
+        self.assertIn("unreachable_without_value_version_proof", reasons)
+        self.assertIn("multiple_writes_without_ordered_versions", reasons)
+        self.assertIn("non_python_effect_without_typed_normalization", reasons)
+
+    def test_prompt_candidate_allows_empty_affected_expression_only_when_degraded(self) -> None:
+        evidence = {
+            "conditions": {"C1": {"op": "source_token", "value": "flag && ready"}},
+            "effects": {},
+            "rows": {"R1": {"when": ["C1"], "direct": []}},
+        }
+        response = json.dumps({
+            "rules": {"R1": {
+                "given": "",
+                "then_relation": "",
+                "semantic_status": "needs_context",
+            }}
+        })
+
+        result = validate_response(response, evidence, ["R1"], PROMPT_CANDIDATE_VARIANT)
+
+        self.assertEqual(result["python_parse_failures"], [])
+        self.assertEqual(result["semantic_contract_failures"], [])
+
+    def test_repeat_stability_separates_text_ast_and_relation_normalization(self) -> None:
+        results = []
+        expressions = ["not (rc == RET_OK)", "rc != RET_OK", "not (rc == RET_OK)"]
+        for repeat, given in enumerate(expressions, 1):
+            content = json.dumps({
+                "rules": {"R1": {
+                    "given": given,
+                    "then_relation": "ret == RET_FAIL",
+                    "semantic_status": "exact",
+                }}
+            }, ensure_ascii=False, separators=(",", ":") if repeat != 2 else (", ", ": "))
+            results.append({
+                "variant": PROMPT_CANDIDATE_VARIANT,
+                "record_key": "record-1",
+                "repeat": repeat,
+                "expected_rows": ["R1"],
+                "raw_content": content,
+            })
+
+        summary = summarize_repeat_stability(results, expected_repeats=3)
+
+        self.assertEqual(summary["complete_record_groups"], 1)
+        self.assertEqual(summary["record_raw_content_identical"], 0)
+        self.assertEqual(summary["record_canonical_json_identical"], 0)
+        self.assertEqual(summary["row_text_identical"], 0)
+        self.assertEqual(summary["row_python_ast_identical"], 0)
+        self.assertEqual(summary["row_relation_normalized_identical"], 1)
+        self.assertEqual(summary["row_status_identical"], 1)
 
     def test_duplicate_json_keys_fail_before_parsing(self) -> None:
         text = '{"rules":{"R1":{"given":"True"},"R1":{"given":"False"}}}'

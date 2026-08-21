@@ -32,7 +32,9 @@ HISTORICAL_SUMMARY = SPEC127 / "evidence" / "strategy-a-v3-summary.json"
 
 CONTROL_VARIANT = "historical_wire_control"
 CANDIDATE_VARIANT = "lossless_candidate"
+PROMPT_CANDIDATE_VARIANT = "evidence_closed_prompt_candidate"
 VARIANTS = (CONTROL_VARIANT, CANDIDATE_VARIANT)
+AVAILABLE_VARIANTS = (*VARIANTS, PROMPT_CANDIDATE_VARIANT)
 
 HISTORICAL_HASHES = {
     HISTORICAL_RUNNER: "db5ea924ae3193644527d907b157e3f370d179ebcecbb9adf6099dd370a0aa58",
@@ -63,13 +65,49 @@ CONTRACT = """# Strategy A v3 — 검증 가능한 Python 관계식
 [동일 증거 payload]
 """
 
+PROMPT_CANDIDATE_CONTRACT = """# Strategy A v4 — evidence-closed Python 관계식
+
+아래 evidence의 `rows` 각 키를 입력 순서대로 정확히 한 번 출력한다. row의 `when`/`direct`와 그 키가
+가리키는 `conditions`/`effects`만 해당 row의 권위 근거다. row `source`는 감사 좌표이며 누락된 구조를
+다시 파싱하거나 새 effect를 만드는 근거가 아니다.
+
+- `given`: row의 `when`이 입증한 도달 조건을 Python expression으로 쓴다. 조건이 없다는 사실만으로
+  앞선 종료 분기의 여집합까지 입증됐다고 보지 않는다.
+- `then_relation`: row의 모든 `direct` effect를 정확히 한 번 표현한다. 대입은 `target == source`,
+  반환은 `ret == value`, 호출 occurrence는 `called("callee")`다. 직접 effect가 0개면 빈 문자열이나
+  무제약 `True`가 아니라 `no_direct_effect()`를 쓴다.
+- 여러 `and` 항은 같은 post-state에서 동시에 참인 관계만 뜻한다. source 순서가 없거나 같은 target을
+  여러 번 쓰거나 call argument/value가 닫히지 않으면 서로 다른 시점을 `and`로 합치지 않는다.
+- evidence의 symbolic identifier는 그대로 보존한다. symbolic constant를 전역 선언의 literal 값으로
+  바꾸거나 입력에 없는 이름·값·업무 뜻을 만들지 않는다.
+- source-language token을 Python에 복사하지 않는다. evidence가 value-preserving typed normalization을
+  제공하지 않아 Python expression으로 정확히 옮길 수 없으면 `needs_context`와 빈 `then_relation`을 쓴다.
+- `unreachable`은 상반된 조건이 **동일 value version**에 적용된다는 근거가 있을 때만 쓴다. 같은 변수
+  철자가 서로 다른 program point에 반복된 것만으로 모순이라고 판정하지 않는다.
+- `nested_control`의 자식 effect를 부모로 복사하지 않는다. `post_condition`은 본문 진입 조건이 아니다.
+- `semantic_status=exact`는 두 식이 Python `eval` expression으로 parse되고, 모든 symbol/literal/effect가
+  row evidence에 닫히며, 누락·중복·시간순서 손실이 없을 때만 허용한다. 그 외에는 `needs_context`다.
+- `needs_context`이면 안전하게 옮길 수 없는 해당 식만 빈 문자열로 둔다. 근거가 닫힌 다른 식까지
+  지우거나, 빈 문자열 대신 추측 식을 넣지 않는다.
+
+결정 순서는 (1) row가 참조한 condition/effect closure 확인, (2) Python typed normalization과 value
+version/source order의 충분성 확인, (3) 충분한 식만 렌더링, (4) 아래 자체검사다. 예를 들어 direct가
+비어 있으면 `no_direct_effect()`이고, `source_value`만 있고 Python typed value가 없으면 그 effect 식은
+빈 문자열+`needs_context`다. symbolic `STATUS_OK`가 있으면 선언부 literal로 바꾸지 않고 그대로 쓴다.
+
+출력 전 각 row에서 direct 개수와 표현한 effect 개수가 같은지, condition/effect reference가 모두 그 row
+closure에 있는지, 두 식이 비어 있지 않다면 Python `eval` expression으로 parse되는지 확인한다.
+
+[동일 증거 payload]
+"""
+
 _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _IDENTIFIER = re.compile(r"[^\W\d]\w*", re.UNICODE)
 _NUMBER = re.compile(r"(?<![\w.])[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?![\w.])")
 _QUOTED_LITERAL = re.compile(r'''(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')''')
 _LEAF_FIELDS = {"given", "then_relation", "semantic_status"}
 _STATUSES = {"exact", "needs_context", "unreachable"}
-_DSL_NAMES = {"called"}
+_DSL_NAMES = {"called", "no_direct_effect"}
 
 
 @dataclass(frozen=True)
@@ -143,7 +181,7 @@ def _payload(record: dict[str, Any]) -> tuple[str, dict[str, Any], list[str]]:
 
 
 def build_schema(rows: Iterable[str], variant: str) -> dict[str, Any]:
-    if variant not in VARIANTS:
+    if variant not in AVAILABLE_VARIANTS:
         raise ValueError(f"unsupported Strategy A variant: {variant}")
     given: dict[str, Any] = {"type": "string"}
     relation: dict[str, Any] = {"type": "string"}
@@ -196,7 +234,7 @@ def build_request(user_content: str, rows: Iterable[str], config: Any, variant: 
         "model": config.model,
         "messages": [
             {"role": "system", "content": SYSTEM},
-            {"role": "user", "content": user_content},
+            {"role": "user", "content": _variant_user_content(user_content, variant)},
         ],
         "temperature": config.sampling.temperature,
         "top_p": config.sampling.top_p,
@@ -204,6 +242,17 @@ def build_request(user_content: str, rows: Iterable[str], config: Any, variant: 
         "response_format": {"type": "json_schema", "json_schema": build_schema(rows, variant)},
         **extra,
     }
+
+
+def _variant_user_content(user_content: str, variant: str) -> str:
+    if variant != PROMPT_CANDIDATE_VARIANT:
+        return user_content
+    marker = "response_locale:"
+    try:
+        evidence_start = user_content.index(marker)
+    except ValueError as error:
+        raise ValueError("prompt evidence marker missing from selected record") from error
+    return PROMPT_CANDIDATE_CONTRACT + user_content[evidence_start:]
 
 
 def _record_manifest_hash(records: Iterable[dict[str, Any]]) -> str:
@@ -435,7 +484,69 @@ def _grounding_failures(expression: str, evidence: Any) -> list[dict[str, Any]]:
     return failures
 
 
-def validate_response(text: str, evidence: dict[str, Any], expected_rows: Iterable[str]) -> dict[str, Any]:
+def _is_no_direct_effect(expression: str) -> bool:
+    try:
+        node = ast.parse(expression, mode="eval").body
+    except (SyntaxError, ValueError):
+        return False
+    return bool(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "no_direct_effect"
+        and not node.args
+        and not node.keywords
+    )
+
+
+def _has_value_version_proof(evidence: dict[str, Any], row: dict[str, Any]) -> bool:
+    conditions = evidence.get("conditions") if isinstance(evidence.get("conditions"), dict) else {}
+    refs = list(row.get("when") or ())
+    if not refs:
+        return False
+    for reference in refs:
+        key = reference[1:] if isinstance(reference, str) and reference.startswith("!") else reference
+        condition = conditions.get(key)
+        if not isinstance(condition, dict) or not condition.get("value_version"):
+            return False
+    return True
+
+
+def _row_evidence_limitations(evidence: dict[str, Any], row: dict[str, Any]) -> list[str]:
+    effects = evidence.get("effects") if isinstance(evidence.get("effects"), dict) else {}
+    writes: dict[str, int] = {}
+    non_python_effect = False
+    for reference in row.get("direct") or ():
+        effect = effects.get(reference)
+        if not isinstance(effect, dict):
+            continue
+        target = effect.get("target")
+        if effect.get("op") == "set" and isinstance(target, str) and target:
+            writes[target] = writes.get(target, 0) + 1
+        if effect.get("op") not in {"set", "ret"}:
+            continue
+        value = effect.get("value")
+        if not isinstance(value, str) or not value:
+            continue
+        try:
+            ast.parse(value, mode="eval")
+        except (SyntaxError, ValueError):
+            non_python_effect = True
+    limitations: list[str] = []
+    if any(count > 1 for count in writes.values()):
+        limitations.append("multiple_writes_without_ordered_versions")
+    if non_python_effect:
+        limitations.append("non_python_effect_without_typed_normalization")
+    return limitations
+
+
+def validate_response(
+    text: str,
+    evidence: dict[str, Any],
+    expected_rows: Iterable[str],
+    variant: str = CONTROL_VARIANT,
+) -> dict[str, Any]:
+    if variant not in AVAILABLE_VARIANTS:
+        raise ValueError(f"unsupported Strategy A variant: {variant}")
     expected = list(expected_rows)
     result: dict[str, Any] = {
         "json_valid": False,
@@ -447,6 +558,7 @@ def validate_response(text: str, evidence: dict[str, Any], expected_rows: Iterab
         "schema_failures": [],
         "python_parse_failures": [],
         "grounding_failures": [],
+        "semantic_contract_failures": [],
         "parsed_rows": 0,
     }
     try:
@@ -484,13 +596,36 @@ def validate_response(text: str, evidence: dict[str, Any], expected_rows: Iterab
         status = leaf.get("semantic_status")
         if status not in _STATUSES:
             result["schema_failures"].append({"row": row_key, "reason": "semantic_status", "value": status})
+        row = evidence.get("rows", {}).get(row_key, {})
         closure = _row_closure(evidence, row_key)
+        if variant == PROMPT_CANDIDATE_VARIANT:
+            direct = list(row.get("direct") or ()) if isinstance(row, dict) else []
+            relation = leaf.get("then_relation")
+            if not direct and status == "exact" and (
+                not isinstance(relation, str) or not _is_no_direct_effect(relation)
+            ):
+                result["semantic_contract_failures"].append({
+                    "row": row_key, "reason": "missing_no_direct_effect_relation",
+                })
+            elif direct and isinstance(relation, str) and _is_no_direct_effect(relation):
+                result["semantic_contract_failures"].append({
+                    "row": row_key, "reason": "unexpected_no_direct_effect_relation",
+                })
+            if status == "unreachable" and not _has_value_version_proof(evidence, row):
+                result["semantic_contract_failures"].append({
+                    "row": row_key, "reason": "unreachable_without_value_version_proof",
+                })
+            if status != "needs_context":
+                for reason in _row_evidence_limitations(evidence, row):
+                    result["semantic_contract_failures"].append({"row": row_key, "reason": reason})
         for field in ("given", "then_relation"):
             expression = leaf.get(field)
             if not isinstance(expression, str):
                 result["schema_failures"].append({"row": row_key, "field": field, "reason": "not_string"})
                 continue
-            required = field == "given" or status == "exact"
+            required = status == "exact" or (
+                field == "given" and variant != PROMPT_CANDIDATE_VARIANT
+            )
             if not expression:
                 if required:
                     result["python_parse_failures"].append({"row": row_key, "field": field, "reason": "empty"})
@@ -505,6 +640,147 @@ def validate_response(text: str, evidence: dict[str, Any], expected_rows: Iterab
             for failure in _grounding_failures(expression, closure):
                 result["grounding_failures"].append({"row": row_key, "field": field, **failure})
     return result
+
+
+class _RelationNormalizer(ast.NodeTransformer):
+    _NEGATED_COMPARISONS = {
+        ast.Eq: ast.NotEq,
+        ast.NotEq: ast.Eq,
+        ast.Lt: ast.GtE,
+        ast.LtE: ast.Gt,
+        ast.Gt: ast.LtE,
+        ast.GtE: ast.Lt,
+        ast.Is: ast.IsNot,
+        ast.IsNot: ast.Is,
+        ast.In: ast.NotIn,
+        ast.NotIn: ast.In,
+    }
+
+    def visit_UnaryOp(self, node: ast.UnaryOp) -> ast.AST:  # noqa: N802 - ast visitor API
+        node = self.generic_visit(node)
+        operand = node.operand
+        if not isinstance(node.op, ast.Not) or not isinstance(operand, ast.Compare):
+            return node
+        if len(operand.ops) != 1 or len(operand.comparators) != 1:
+            return node
+        replacement = self._NEGATED_COMPARISONS.get(type(operand.ops[0]))
+        if replacement is None:
+            return node
+        return ast.copy_location(
+            ast.Compare(left=operand.left, ops=[replacement()], comparators=operand.comparators),
+            node,
+        )
+
+
+def _expression_fingerprint(expression: Any, *, normalize_relation: bool) -> str | None:
+    if not isinstance(expression, str) or not expression:
+        return None
+    try:
+        tree = ast.parse(expression, mode="eval")
+    except (SyntaxError, ValueError):
+        return None
+    if normalize_relation:
+        tree = ast.fix_missing_locations(_RelationNormalizer().visit(tree))
+    return ast.dump(tree, include_attributes=False)
+
+
+def summarize_repeat_stability(
+    results: Iterable[dict[str, Any]],
+    *,
+    expected_repeats: int,
+) -> dict[str, Any]:
+    if expected_repeats <= 0:
+        raise ValueError("expected_repeats must be positive")
+    groups: dict[tuple[str, str], dict[int, dict[str, Any]]] = {}
+    for result in results:
+        key = (str(result.get("variant") or ""), str(result.get("record_key") or ""))
+        repeat = result.get("repeat")
+        if not isinstance(repeat, int) or repeat <= 0:
+            raise ValueError(f"result repeat is invalid for {key}: {repeat!r}")
+        group = groups.setdefault(key, {})
+        if repeat in group:
+            raise ValueError(f"duplicate repeat {repeat} for {key}")
+        group[repeat] = result
+
+    expected_set = set(range(1, expected_repeats + 1))
+    summary = {
+        "expected_repeats": expected_repeats,
+        "record_groups": len(groups),
+        "complete_record_groups": 0,
+        "record_raw_content_identical": 0,
+        "record_canonical_json_identical": 0,
+        "logical_rows": 0,
+        "row_status_identical": 0,
+        "row_text_identical": 0,
+        "row_python_ast_identical": 0,
+        "row_relation_normalized_identical": 0,
+        "row_residual": 0,
+    }
+    for group in groups.values():
+        if set(group) != expected_set:
+            continue
+        ordered = [group[repeat] for repeat in range(1, expected_repeats + 1)]
+        summary["complete_record_groups"] += 1
+        raw = [item.get("raw_content") for item in ordered]
+        summary["record_raw_content_identical"] += int(
+            all(isinstance(item, str) for item in raw) and len(set(raw)) == 1
+        )
+        parsed: list[dict[str, Any]] = []
+        for item in raw:
+            if not isinstance(item, str):
+                parsed = []
+                break
+            try:
+                value = parse_json_no_duplicates(item)
+            except (json.JSONDecodeError, ValueError):
+                parsed = []
+                break
+            if not isinstance(value, dict):
+                parsed = []
+                break
+            parsed.append(value)
+        if not parsed:
+            summary["row_residual"] += len(ordered[0].get("expected_rows") or ())
+            continue
+        canonical = [_canonical_json(item) for item in parsed]
+        summary["record_canonical_json_identical"] += int(len(set(canonical)) == 1)
+        expected_rows = list(ordered[0].get("expected_rows") or ())
+        for row_key in expected_rows:
+            leaves = []
+            for value in parsed:
+                rules = value.get("rules")
+                leaf = rules.get(row_key) if isinstance(rules, dict) else None
+                if not isinstance(leaf, dict):
+                    leaves = []
+                    break
+                leaves.append(leaf)
+            if not leaves:
+                summary["row_residual"] += 1
+                continue
+            summary["logical_rows"] += 1
+            statuses = [leaf.get("semantic_status") for leaf in leaves]
+            summary["row_status_identical"] += int(len(set(statuses)) == 1)
+            fields = ("given", "then_relation")
+            text_same = all(len({leaf.get(field) for leaf in leaves}) == 1 for field in fields)
+            summary["row_text_identical"] += int(text_same)
+            ast_same = True
+            normalized_same = True
+            for field in fields:
+                ast_values = [
+                    _expression_fingerprint(leaf.get(field), normalize_relation=False) for leaf in leaves
+                ]
+                normalized_values = [
+                    _expression_fingerprint(leaf.get(field), normalize_relation=True) for leaf in leaves
+                ]
+                ast_same = ast_same and None not in ast_values and len(set(ast_values)) == 1
+                normalized_same = (
+                    normalized_same
+                    and None not in normalized_values
+                    and len(set(normalized_values)) == 1
+                )
+            summary["row_python_ast_identical"] += int(ast_same)
+            summary["row_relation_normalized_identical"] += int(normalized_same)
+    return summary
 
 
 def resolve_output_dir(root: Path, run_id: str) -> Path:
@@ -579,10 +855,14 @@ def _history_summary(prepared: PreparedPilot) -> dict[str, Any]:
     return metrics
 
 
-def _variant_summary(results: list[dict[str, Any]], records: tuple[SelectedRecord, ...]) -> dict[str, Any]:
-    expected_rows = sum(len(record.rows) for record in records)
+def _variant_summary(
+    results: list[dict[str, Any]],
+    records: tuple[SelectedRecord, ...],
+    repeats: int = 1,
+) -> dict[str, Any]:
+    expected_rows = sum(len(record.rows) for record in records) * repeats
     summary = {
-        "expected_records": len(records),
+        "expected_records": len(records) * repeats,
         "records": len(results),
         "http_ok": 0,
         "finish_stop": 0,
@@ -594,6 +874,7 @@ def _variant_summary(results: list[dict[str, Any]], records: tuple[SelectedRecor
         "schema_failures": 0,
         "python_parse_failures": 0,
         "grounding_failures": 0,
+        "semantic_contract_failures": 0,
         "input_tokens": 0,
         "output_tokens": 0,
         "latency_ms": 0,
@@ -609,6 +890,9 @@ def _variant_summary(results: list[dict[str, Any]], records: tuple[SelectedRecor
         summary["schema_failures"] += len(validation.get("schema_failures") or [])
         summary["python_parse_failures"] += len(validation.get("python_parse_failures") or [])
         summary["grounding_failures"] += len(validation.get("grounding_failures") or [])
+        summary["semantic_contract_failures"] += len(
+            validation.get("semantic_contract_failures") or []
+        )
         usage = result.get("usage") or {}
         summary["input_tokens"] += int(usage.get("prompt_tokens") or 0)
         summary["output_tokens"] += int(usage.get("completion_tokens") or 0)
@@ -621,6 +905,7 @@ def _variant_summary(results: list[dict[str, Any]], records: tuple[SelectedRecor
 def _invoke(
     record: SelectedRecord,
     variant: str,
+    repeat: int,
     config: Any,
     url: str,
     api_key: str,
@@ -628,21 +913,24 @@ def _invoke(
     timeout_seconds: float,
 ) -> dict[str, Any]:
     request = build_request(record.user_content, record.rows, config, variant)
+    actual_system = request["messages"][0]["content"]
+    actual_user = request["messages"][1]["content"]
     started = time.perf_counter()
     result: dict[str, Any] = {
         "schema": "strategy-a-progressive-result/v1",
         "variant": variant,
+        "repeat": repeat,
         "ledger_ordinal": record.ledger_ordinal,
         "record_key": record.record_key,
         "target_id": record.target_id,
         "function": record.function_name,
         "expected_rows": list(record.rows),
-        "prompt_sha256": record.prompt_sha256,
-        "system_sha256": _sha256_bytes(SYSTEM.encode("utf-8")),
-        "user_sha256": _sha256_bytes(record.user_content.encode("utf-8")),
+        "prompt_sha256": _sha256_bytes((actual_system + "\0" + actual_user).encode("utf-8")),
+        "system_sha256": _sha256_bytes(actual_system.encode("utf-8")),
+        "user_sha256": _sha256_bytes(actual_user.encode("utf-8")),
         "schema_sha256": _sha256_bytes(_canonical_json(request["response_format"]).encode("utf-8")),
-        "system": SYSTEM,
-        "user": record.user_content,
+        "system": actual_system,
+        "user": actual_user,
         "response_schema": request["response_format"],
         "request_parameters": {
             key: value for key, value in request.items()
@@ -673,7 +961,9 @@ def _invoke(
             result["usage"] = raw.get("usage") or {}
             if isinstance(content, str):
                 result["raw_content"] = content
-                result["validation"] = validate_response(content, record.evidence, record.rows)
+                result["validation"] = validate_response(
+                    content, record.evidence, record.rows, variant,
+                )
             else:
                 result["validation"] = {
                     "json_valid": False,
@@ -685,6 +975,7 @@ def _invoke(
                     "schema_failures": [],
                     "python_parse_failures": [],
                     "grounding_failures": [],
+                    "semantic_contract_failures": [],
                     "parsed_rows": 0,
                 }
         else:
@@ -702,12 +993,28 @@ def _invoke(
         and not validation.get("schema_failures")
         and not validation.get("python_parse_failures")
         and not validation.get("grounding_failures")
+        and not validation.get("semantic_contract_failures")
     )
     return result
 
 
-def execute_pilot(seal_path: Path, run_id: str, workers: int) -> Path:
+def execute_pilot(
+    seal_path: Path,
+    run_id: str,
+    workers: int,
+    variants: Iterable[str] = VARIANTS,
+    repeats: int = 1,
+    repeat_start: int = 1,
+) -> Path:
     prepared = _prepare_pilot(seal_path)
+    selected_variants = tuple(variants)
+    if not selected_variants or len(set(selected_variants)) != len(selected_variants):
+        raise ValueError("run variants must be non-empty and unique")
+    unsupported = sorted(set(selected_variants) - set(AVAILABLE_VARIANTS))
+    if unsupported:
+        raise ValueError(f"unsupported Strategy A variants: {unsupported}")
+    if repeats <= 0 or repeat_start <= 0:
+        raise ValueError("repeats and repeat_start must be positive")
     sealed_root = _repo_path(prepared.seal["output_root"])
     if sealed_root != ALLOWED_OUTPUT_ROOT:
         raise ValueError(f"sealed output root is not allowed: {sealed_root}")
@@ -736,17 +1043,25 @@ def execute_pilot(seal_path: Path, run_id: str, workers: int) -> Path:
         "git": _git_state(),
         "model": config.model,
         "provider": config.provider,
-        "workers": min(workers, len(prepared.records) * len(VARIANTS)),
-        "variants": list(VARIANTS),
+        "workers": min(workers, len(prepared.records) * len(selected_variants) * repeats),
+        "variants": list(selected_variants),
+        "repeats": repeats,
+        "repeat_start": repeat_start,
         "timeout_seconds": config.timeout_seconds,
         "candidate_max_tokens": config.max_tokens,
     }
     _atomic_json(output / "manifest.json", manifest)
-    jobs = [(record, variant) for variant in VARIANTS for record in prepared.records]
+    jobs = [
+        (record, variant, repeat)
+        for repeat in range(repeat_start, repeat_start + repeats)
+        for record in prepared.records
+        for variant in selected_variants
+    ]
     results: list[dict[str, Any]] = []
-    invoke: Callable[[SelectedRecord, str], dict[str, Any]] = lambda record, variant: _invoke(
+    invoke: Callable[[SelectedRecord, str, int], dict[str, Any]] = lambda record, variant, repeat: _invoke(
         record,
         variant,
+        repeat,
         config,
         url,
         SETTINGS.analysis_llm.api_key,
@@ -754,27 +1069,37 @@ def execute_pilot(seal_path: Path, run_id: str, workers: int) -> Path:
         config.timeout_seconds,
     )
     with ThreadPoolExecutor(max_workers=manifest["workers"]) as executor:
-        futures = {executor.submit(invoke, record, variant): (record, variant) for record, variant in jobs}
+        futures = {
+            executor.submit(invoke, record, variant, repeat): (record, variant, repeat)
+            for record, variant, repeat in jobs
+        }
         for future in as_completed(futures):
-            record, variant = futures[future]
+            record, variant, repeat = futures[future]
             result = future.result()
             results.append(result)
-            filename = f"{variant}-{record.ledger_ordinal:04d}-{record.record_key[:16]}.json"
+            filename = (
+                f"{variant}-r{repeat:02d}-{record.ledger_ordinal:04d}-{record.record_key[:16]}.json"
+            )
             _atomic_json(records_dir / filename, result)
             print(
-                f"{variant} {record.function_name} {record.record_key[:10]} "
+                f"{variant} r{repeat} {record.function_name} {record.record_key[:10]} "
                 f"{'valid' if result['record_valid'] else 'FAILED'} {result['latency_ms']}ms",
                 flush=True,
             )
 
-    results.sort(key=lambda item: (VARIANTS.index(item["variant"]), item["ledger_ordinal"], item["record_key"]))
+    results.sort(key=lambda item: (
+        AVAILABLE_VARIANTS.index(item["variant"]), item["repeat"],
+        item["ledger_ordinal"], item["record_key"],
+    ))
     (output / "results.jsonl").write_text(
         "".join(json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n" for item in results),
         encoding="utf-8",
     )
     by_variant = {
-        variant: _variant_summary([item for item in results if item["variant"] == variant], prepared.records)
-        for variant in VARIANTS
+        variant: _variant_summary(
+            [item for item in results if item["variant"] == variant], prepared.records, repeats,
+        )
+        for variant in selected_variants
     }
     summary = {
         "schema": "strategy-a-progressive-summary/v1",
@@ -782,19 +1107,43 @@ def execute_pilot(seal_path: Path, run_id: str, workers: int) -> Path:
         "preflight": prepared.summary,
         "historical_model_historical_wire": _history_summary(prepared),
         "current_model": by_variant,
-        "candidate_automatic_gate_passed": all((
-            by_variant[CANDIDATE_VARIANT]["record_residual"] == 0,
-            by_variant[CANDIDATE_VARIANT]["row_residual"] == 0,
-            by_variant[CANDIDATE_VARIANT]["records"] == by_variant[CANDIDATE_VARIANT]["http_ok"],
-            by_variant[CANDIDATE_VARIANT]["records"] == by_variant[CANDIDATE_VARIANT]["finish_stop"],
-            by_variant[CANDIDATE_VARIANT]["records"] == by_variant[CANDIDATE_VARIANT]["record_valid"],
-            by_variant[CANDIDATE_VARIANT]["schema_failures"] == 0,
-            by_variant[CANDIDATE_VARIANT]["python_parse_failures"] == 0,
-            by_variant[CANDIDATE_VARIANT]["grounding_failures"] == 0,
-        )),
+        "automatic_gates": {
+            variant: all((
+                values["record_residual"] == 0,
+                values["row_residual"] == 0,
+                values["records"] == values["http_ok"],
+                values["records"] == values["finish_stop"],
+                values["records"] == values["record_valid"],
+                values["schema_failures"] == 0,
+                values["python_parse_failures"] == 0,
+                values["grounding_failures"] == 0,
+                values["semantic_contract_failures"] == 0,
+            ))
+            for variant, values in by_variant.items()
+        },
+        "repeat_stability": {
+            variant: (
+                summarize_repeat_stability(
+                    [item for item in results if item["variant"] == variant],
+                    expected_repeats=repeats,
+                )
+                if repeat_start == 1
+                else {
+                    "status": "requires_repeat_1_aggregate",
+                    "available_repeats": list(range(repeat_start, repeat_start + repeats)),
+                }
+            )
+            for variant in selected_variants
+        },
         "direct_semantic_adjudication": "pending",
         "expansion_allowed": False,
     }
+    summary["candidate_automatic_gate_passed"] = summary["automatic_gates"].get(
+        CANDIDATE_VARIANT, False,
+    )
+    summary["prompt_candidate_automatic_gate_passed"] = summary["automatic_gates"].get(
+        PROMPT_CANDIDATE_VARIANT, False,
+    )
     _atomic_json(output / "summary.json", summary)
     manifest.update({
         "status": "completed_with_findings" if any(not item["record_valid"] for item in results) else "completed",
@@ -815,6 +1164,9 @@ def _parse_args() -> argparse.Namespace:
     run = subparsers.add_parser("run")
     run.add_argument("--run-id", required=True)
     run.add_argument("--workers", type=int, default=8)
+    run.add_argument("--variant", action="append", choices=AVAILABLE_VARIANTS)
+    run.add_argument("--repeats", type=int, default=1)
+    run.add_argument("--repeat-start", type=int, default=1)
     return parser.parse_args()
 
 
@@ -823,7 +1175,14 @@ def main() -> None:
     if args.command == "preflight":
         print(json.dumps(load_preflight(args.seal), ensure_ascii=False, indent=2))
         return
-    output = execute_pilot(args.seal, args.run_id, args.workers)
+    output = execute_pilot(
+        args.seal,
+        args.run_id,
+        args.workers,
+        variants=tuple(args.variant) if args.variant else VARIANTS,
+        repeats=args.repeats,
+        repeat_start=args.repeat_start,
+    )
     print(output)
 
 

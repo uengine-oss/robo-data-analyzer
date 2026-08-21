@@ -45,7 +45,8 @@ ID 기준으로 중복 제거해 소비하며 정상 생성 경로에서 레거�
 
 범위 밖:
 
-- A Python 관계식 변경·재실험
+- A Python 관계식의 제품 pipeline·Neo4j·API/MCP 승격. 동일 실제 자료의 제한 실험과 모델/프롬프트
+  비교는 범위 안이지만, 그 결과를 제품 정확도로 일반화하지 않는다.
 - `accept/apply`
 - 특정 corpus 정답의 하드코딩
 
@@ -175,6 +176,18 @@ ID 기준으로 중복 제거해 소비하며 정상 생성 경로에서 레거�
     이전 wire에 의미 상한이 있었다면 동일 wire의 진단용 control과 상한을 제거한 candidate를 현재 모델에서
     따로 실행해 `이전 모델↔현재 control`의 모델 변화와 `현재 control↔현재 candidate`의 계약 변화를 분리한다.
     control 결과는 역사 비교용일 뿐 canonical 제품 계약으로 승격하지 않는다.
+33. 모델 변경 비교는 같은 봉인 4함수·15 prompt record·104행을 양쪽 모두 독립 3회 실행한
+    `312행 대 312행`으로 판정한다. 회차별 `104 대 104`도 함께 공개한다. 반복 동일성은 record raw bytes,
+    canonical JSON, 행별 status, Python AST, 의미 동등성을 분리하며 한 번의 현재 결과를 세 번의 역사 결과와
+    반복 안정성 근거로 비교하지 않는다. 과거 실행과 workers가 다른 예비 current run은 보존하되 정식
+    3회에 포함하지 않고, current control과 prompt 후보를 모두 과거와 같은 workers=16에서 실행한다.
+34. Strategy A prompt 후보는 결과를 보기 전에 계약과 hash를 봉인한다. 직접 효과가 없는 행은 빈 문자열이나
+    무제약 `True`로 가장하지 않고 계약된 `no_direct_effect()`로 표현한다. symbolic constant는 행 evidence의
+    identity를 보존하고 선언값으로 치환하지 않는다. source-language token을 Python 문자열에 복사하지 않으며,
+    값 보존 변환·근거 closure·Python parse를 모두 증명할 수 없으면 `needs_context`로 남긴다. 같은 변수 철자가
+    다른 program point에서 나온 것만으로 `unreachable`을 만들지 않고, 동일 value version의 모순 근거가
+    있어야 한다. 한 행의 effect가 순서·argument·같은 target의 여러 write를 잃었다면 prompt가 원문을
+    재파싱해 복구하지 않고 upstream evidence 결손으로 판정한다.
 
 ## 폐기된 요구
 

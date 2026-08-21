@@ -1,7 +1,7 @@
 # Analyzer 의미 무손실 감사 현재상태
 
 **Updated**: 2026-08-21
-**Status**: Strategy A 실제 데이터 4함수 pilot 실패·확대 거부; C-080 IR 2.0 구조개편은 TODO로 봉인해 후속 재개
+**Status**: Strategy A 동일 4함수 312행 모델/프롬프트 재비교 계약 고정 중; C-080 IR 2.0 구조개편은 후속 재개
 **Analyzer C-066 product commit**: `15fcec8eb77c16a282f30e90df396a09c7fa7eff`
 **Analyzer C-062 product commit**: `cd7110d3e7103ff264d6ce041136ab01e96c412f`
 **Analyzer C-062 evidence commit**: `f44bc530fad96fd2314b27dea3dc98a33a20ff3e`
@@ -24,8 +24,8 @@
 
 - Neo4j `127.0.0.1:7687`: 현재 세션에서 인증과 `SHOW DATABASES` 재확인 성공.
   `neo4j|test|framework|dbms|system`만 존재하고 모두 online이다. 허용 목록 밖 DB는 0개다.
-- Strategy A actual run의 Analyzer HEAD는 `2bc4c7fce70a5cc3c87edcc0c2dfca774a4063a8`이고 당시
-  `origin/main`과 일치했다. `pipeline/steps/step2_load_ast/evidence_ir.py`에는 IR 1.3 consumer 시도의
+- 현재 Analyzer HEAD와 `origin/main`은 `fb38cf79c760145bc970367d8a8816094dc25dd4`로 일치한다.
+  Strategy A 최초 actual run의 HEAD는 manifest가 별도로 보존한다. `pipeline/steps/step2_load_ast/evidence_ir.py`에는 IR 1.3 consumer 시도의
   보존된 미완성 WIP가 있다. decoder WIP는 Strategy A 결과·checker 커밋에 stage하지 않는다.
 - Parser main HEAD `5dd64106540674a4aebfdb37ad897a375950d335`, `origin/main`과 일치하며 clean이다.
   IR 1.3은 역사 evidence로 보존하고 IR 2.0 forward 교정 전까지 제품 binding authority로 확대하지 않는다.
@@ -734,5 +734,29 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
     동일하게 틀려 model/cap 단독 원인이 아니며 deterministic evidence의 시간순서/complement/call-argument
     손실이 upstream 원인이다. 확대 조건에 실패해 20함수/77호출/519행 실행을 금지했다. 상세 판정은
     `evidence/strategy-a-progressive-pilot-result-20260821.md`가 소유한다.
+25aw. 사용자 정정으로 25at의 `현재 92/104`와 `이전 284/312` 차이는 단회 비율 참고치일 뿐 정식
+    모델 변경 비교가 아님을 확정했다. 새 모델도 같은 4함수·104행을 독립 3회로 맞춰 `312 대 312`,
+    회차별 `104 대 104`로 판정한다. 기존 새 모델 1회는 workers=8, 과거 3회는 workers=16이라 동시성
+    조건이 다르다. 기존 run은 예비 결과로 보존하고 정식 current control과 개선 후보를 모두 workers=16,
+    각 3회로 새로 실행한다.
+25ax. prompt 감사 결과 현재 candidate는 prompt를 개선한 것이 아니라 역사 system/user를 그대로 두고
+    schema `maxLength`만 제거했다. 실제 Python 실패 12건은 직접 효과 없는 행의 `exact+빈 문자열` 9건과
+    source-language `0L`/주소 연산/cast 복사 3건이다. 선택 104행에는 direct effect 0인 행 14개,
+    Python-invalid source effect value 7개, 같은 target 다중 write 행 1개가 있다. 전역 symbolic constant의
+    literal 치환으로 row closure가 끊긴 건도 18건이다. 따라서 prompt 개선은 끝나지 않았다.
+25ay. prompt가 책임질 수 있는 범위는 `no_direct_effect()`의 명시적 표기, symbolic identity 보존,
+    source-language syntax의 fail-closed 처리, value-version proof 없는 false unreachable 금지다. R730의
+    call 전후 `rc` version, R224의 final complement, R542의 source-order/같은 target 여러 write와
+    배송 destination/call argument 결손은 deterministic evidence producer가 잃은 정보라 prompt로 복구하지 않는다.
+    개선 후보는 actual 결과 열람 전 formal test/hash로 봉인하고 current control 3회와 후보 3회를
+    한 묶음 90호출로 실행한다. 반복 동일성은 raw/canonical JSON/status/Python AST/직접 의미를 분리한다.
+25az. 동일 4함수·15 record·104행을 3회 반복하는 비교 계약을 결과 열람 전에
+    `evidence/strategy-a-repeat-prompt-seal-20260821.json`으로 봉인했다. 이전·현재 비교 단위는 variant별
+    45 record/312행이고 workers=16, content retry 0, 새 호출은 control 45+개선 prompt 45=90이다.
+    prompt 후보는 직접 효과 없음, symbolic identity, source-language token, value version, 다중 write/순서
+    결손을 범용 계약으로 다루며 특정 함수·값은 넣지 않았다. 반복 evaluator는 raw content, canonical JSON,
+    status, Python AST, 보수적 관계 정규화 동일성을 분리한다. 구현 전 import red 1건을 확인했고 현재 집중
+    unittest 13/13과 source 11/11·record 15·row 104·gold 18 preflight가 green이다. system/prompt/runner/test/
+    source seal SHA-256은 봉인 원장과 일치한다. 새 모델 formal 90호출은 아직 실행 전이다.
 26. 검증: 자동 회귀→결정론 전수 회계→봉인 직접 의미 판정→실제 APAS 순으로 계속 수행한다.
 27. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.
