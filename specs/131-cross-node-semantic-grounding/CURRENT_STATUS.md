@@ -721,7 +721,10 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
 25at. Strategy A current-model actual은 `strategy-a-stage1-current-20260821-r1`에서 정확히 30호출, retry 0으로
     완료했다. 두 variant 모두 HTTP/stop/JSON/row closure는 15/15, 104/104이나 완전 유효 record는 7/15다.
     current control과 maxLength 제거 candidate는 Python failure 12, grounding failure 18로 동일해 상한 제거가
-    정확도를 개선하지 않았다. 이전 모델의 같은 wire 3회 valid는 8/15, 11/15, 9/15로 현재 7/15보다 모두 높다.
+    정확도를 개선하지 않았다. 옛 A row 채점식의 Python 표기 성공률은 현재 두 variant 모두 92/104=88.46%다.
+    이전 모델의 같은 4함수는 93/104, 99/104, 92/104, 합계 284/312=91.03%라 현재가 2.57%p 낮다.
+    역사 20함수 전체 82.97%는 모집단이 달라 직접 증감으로 쓰지 않는다. 이전 모델의 같은 wire 3회 valid는
+    8/15, 11/15, 9/15로 현재 7/15보다 모두 높다.
 25au. 최초 candidate grounding 19 중 `R596` NUL literal 1건은 checker가 source quoted literal을 decode하지
     않은 오탐이었다. `ast.literal_eval` 기반 red를 추가해 8/8 green으로 교정하고 저장 raw만 재판정했으며
     최종 grounding failure는 18이다. 모델 재호출과 run 파일 변경은 0회다.

@@ -43,7 +43,7 @@ spec131-evidence	semantic-review-40.md	7351	0038d437eb3a54c990643aa5a65a2312efe9
 spec131-evidence	structured-output-primary-research.md	2561	c4430055de0e4f6ca2a3579b28181581360165fd843e5c0e1ec6555c8ecb7fcf
 spec131-evidence	strategy-a-progressive-pilot-contract-20260821.md	4693	f87bc4ae5679cc336f1132680d0c521c53c3bea6927f7134e4595e3f563616da
 spec131-evidence	strategy-a-progressive-pilot-seal-20260821.json	2061	9f818c377451cf3c82defb95c4794e84f0470ef79b2dd931ca075941604e4641
-spec131-evidence	strategy-a-progressive-pilot-result-20260821.md	7607	36bc4cc834b86aa30a9c3899b5444b974b1eb7727c9d31b84738df4c87c51593
+spec131-evidence	strategy-a-progressive-pilot-result-20260821.md	8199	467fcda2e36d6e98ebdb9f3209583809d4a2a5d158b38ef39c564b9494070845
 spec131-evidence	summary-completeness-root-cause-20260819.md	4363	1cfafa67d0db9859991c2d491a74d4d8a51074ef205d0d9be9f9fc1e06de7202
 spec131-local-coordinate-20260804	harness.py	9794	e35d02d7ccf53acb5ae566f9f9264b576149e4a0fdd5d72dc1d79b50ff2822d3
 spec131-local-coordinate-20260804	run/llm-prompts/semantic_labels.jsonl	248180	3e55836c8bea0ea781309cd6a8b8b10b91361ab10c9a257cd7dd7023c16a7901
@@ -232,5 +232,5 @@ work-reports	2026-08-12-evidence/architect/simplified-proposal-final.json	153232
 work-reports	2026-08-18-APAS-의미판정-표본20.json	2387	b7d4829f4b05994b0d9a2adc6940e906a42b24557cf9f7815498e23a9773924b
 work-reports	2026-08-18-Analyzer-Architect-GWT-분석결과-활용-작업보고.md	6445	6e519634ed96c6acf5e39228901c3bf9da579843f9d4dda1c1159c82e25e9971
 work-reports	2026-08-20-추론모델-변경-개선점.md	3583	131d133dcc115a191fbb4083a20e951d23ed3e48310283c18d62b564407ff57f
-work-reports	2026-08-21-Strategy-A-모델변경-비교.md	3408	620dc86e6d4111a7defa94ad214eac21f3f0519cb8b1a818737e3a4ec546e66b
-# files=228 bytes=11434655
+work-reports	2026-08-21-Strategy-A-모델변경-비교.md	4015	5ec8dc6db5715b914a94a2565f8f87fc1b460ca57a854aae8499658acd25b046
+# files=228 bytes=11435854
