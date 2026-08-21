@@ -1,4 +1,4 @@
-# Common Evidence IR v1 계약 (1.0.0 / 1.1.0 / 1.2.0)
+# Common Evidence IR v1 계약 (1.0.0 / 1.1.0 / 1.2.0 / 1.3.0)
 
 ## 1. 목적과 owner
 
@@ -7,8 +7,11 @@
 
 - Framework semantic owner: enclosing routine.
 - DBMS semantic owner: effective AST `CodeNode`.
-- Parser owner: source decoding, grammar/token boundary, conditional presence, exact occurrence.
-- Analyzer owner: project symbol resolution, framework/DB object resolution, owner mapping, aggregate graph 파생.
+- Parser language adapter owner: source decoding, grammar/token boundary, conditional presence, exact occurrence,
+  언어의 scope/visibility/type/overload 규칙으로 증명한 call binding key와 declaration/definition identity.
+- Analyzer owner: adapter-owned opaque key의 strict corpus join, framework/DB object resolution, owner mapping,
+  occurrence ledger와 aggregate graph 파생. Analyzer는 host-language 문법·이름·확장자 규칙으로 key를
+  만들거나 보정하지 않는다.
 - Scan/Deep Agent owner: 검증할 fact-field/relationship pattern 제안. source syntax truth 생산 금지.
 
 기존 `FILE.children` AST는 migration 동안 유지하지만 canonical 소비자는 versioned `evidence.facts`다.
@@ -20,7 +23,7 @@
 ```json
 {
   "evidence": {
-    "version": "1.2.0",
+    "version": "1.3.0",
     "sourceId": "normalized/relative/path.c",
     "rawSourceSha256": "...",
     "decodedTextSha256": "...",
@@ -160,6 +163,149 @@ exact decoded source는 envelope에 파일당 한 번만 있으며 Analyzer sour
 DBMS call consumer가 effective AST CodeNode owner를 구현하기 전에는 nonempty DBMS call fact를 받으면
 publish를 중단한다. Framework routine owner로 대신 귀속하거나 fact를 보존했다는 이유로 소비를 생략하지
 않는다.
+
+### callable declaration/definition과 call binding (`1.3.0`)
+
+IR `1.3.0`은 call occurrence와 target binding을 분리한다. 기존 call fact의 range/callee/argument는
+그대로 syntax 정본이고, callable declaration/definition은 별도 `callable` fact다. call fact는 같은
+occurrence에 대한 adapter 판정 `payload.binding`을 정확히 하나 가진다. C type-name `symbol` fact는 문법
+predicate 진단 전용이므로 이 계약에 재사용하지 않는다.
+
+Callable fact:
+
+```json
+{
+  "factId": "...",
+  "kind": "callable",
+  "range": {"charOffset": 0, "charLength": 24},
+  "grammarRuleRef": 0,
+  "presenceRef": 0,
+  "payload": {
+    "role": "declaration|definition",
+    "nameRange": {"charOffset": 4, "charLength": 6},
+    "adapterSchema": "c-source-binding/v1",
+    "bindingKey": "64 lowercase hex",
+    "compatibilityKey": "64 lowercase hex or null",
+    "compatibilityStatus": "exact|configuration_bound|unavailable",
+    "compatibilityScope": "source_file|corpus|configuration|unavailable",
+    "definitionStatus": "exact|configuration_dependent|not_applicable",
+    "targetScope": "source_file|corpus|runtime",
+    "configurationId": null,
+    "astNodeRange": null,
+    "visibilityRange": {"charOffset": 0, "charLength": 100},
+    "visibilityStartOffset": 24
+  }
+}
+```
+
+- `bindingKey`와 `compatibilityKey`는 language adapter가 자기 언어의 namespace/scope/type 규칙으로 만든
+  불투명 SHA-256이다. Analyzer는 내용을 split/regex/case-fold하지 않고 equality만 검사한다.
+- `role=definition`은 compatibility AST CodeNode와 exact `astNodeRange`로 일대일 결합된다.
+  declaration-only fact는 `astNodeRange=null`이다. supplied header의 inline/static definition을 파일
+  확장자만 보고 버리지 않는다.
+- `visibilityRange`와 `visibilityStartOffset`은 declaration이 call-site에서 보이는 source 범위와 선언
+  지점을 exact 좌표로 증명한다. Analyzer는 source text를 재파싱해 visibility를 보충하지 않는다.
+- `targetScope=source_file`은 같은 source/configuration 안에서만, `corpus`는 corpus 전체에서,
+  `runtime`은 정적 aggregate target 없이 occurrence에서만 사용할 수 있다.
+- `compatibilityStatus=unavailable`인 callable은 이름이 같아도 internal target 후보가 아니다. Analyzer가
+  signature text나 파라미터 수를 재해석해 보충하지 않는다.
+- `compatibilityScope=source_file` key에는 source identity가 포함되고 같은 translation unit 안에서만
+  비교한다. 그러나 같은 source의 같은 typedef/tag spelling도 shadow/prototype scope 때문에 semantic identity
+  증거가 아닐 수 있으므로 raw token equality만으로 이 scope를 발행하지 않는다. 현재 C source adapter는
+  grammar AST로 specifier 동치와 parameter top-level qualifier를 완전히 canonicalize한 제한 builtin scalar
+  function type만 `corpus` exact로 낸다. typedef/tag/unspecified-parameter/array·function parameter/복합
+  declarator/ABI extension은 `unavailable`이다. configured semantic provider가 실제 canonical type과 scope
+  identity를 증명할 때만 `source_file|configuration|corpus`로 확장한다.
+- `definitionStatus=exact`인 definition만 aggregate target 후보가 된다. declaration은 `not_applicable`이다.
+  C의 non-static inline definition은 C99/GNU dialect·declaration/attribute에 따라 external visibility가
+  달라지므로 configured trace 없이는 `configuration_dependent`이며 이름이 같다는 이유로 target이 되지 않는다.
+- configuration별 semantic trace가 facts를 내면 `configurationId`가 필수다. source-view fact와 configured
+  fact를 덮어쓰거나 서로 join하지 않는다.
+
+Call binding payload:
+
+```json
+{
+  "binding": {
+    "adapterSchema": "c-source-binding/v1",
+    "status": "declaration_bound|external|configuration_dependent|dynamic|ambiguous|unsupported",
+    "resolutionMode": "direct_definition|compatible_definition|none",
+    "declarationFactId": "64 lowercase hex or null",
+    "bindingKey": "64 lowercase hex or null",
+    "compatibilityKey": "64 lowercase hex or null",
+    "compatibilityScope": "source_file|corpus|configuration|unavailable or null",
+    "targetScope": "source_file|corpus|runtime",
+    "dispatch": "exact|virtual|dynamic",
+    "configurationId": null,
+    "externalIdentityKey": "64 lowercase hex or null",
+    "candidateFactIds": [],
+    "provenance": "grammar_scope|configured_semantic_trace|runtime_semantics|unsupported_adapter",
+    "reason": null
+  }
+}
+```
+
+- `declaration_bound`는 call-site에서 실제로 보이는 declaration/definition을 adapter가 증명한 상태다.
+  `declarationFactId`와 `bindingKey`는 필수이며 참조 callable fact와 같아야 한다.
+  `resolutionMode=direct_definition`이면 참조 fact 자체가 `role=definition`, `definitionStatus=exact`여야 하고
+  Analyzer는 그 fact의 CodeNode만 사용한다. 이때 별도 type 재매칭이 필요 없으므로 compatibility가 unavailable이면
+  `compatibilityKey=null`, `compatibilityScope=unavailable`을 허용한다.
+  `resolutionMode=compatible_definition`이면 참조 fact는 declaration-only이고 `compatibilityStatus=exact`,
+  non-null `compatibilityKey`/지원 scope가 필수다. 나머지 binding status의 mode는 `none`이다.
+- `external`은 grammar-known call이지만 현재 분석 입력에서 corpus definition으로 결합할 선언 증거가
+  없다는 **제품 경계**다. 부분 업로드의 정상 상태이며 `Unresolved` graph entity가 아니다.
+- `configuration_dependent`는 macro expansion, conditional presence, include/build variant 때문에 exact target이
+  compile action별로 달라질 수 있는 상태다. 필요한 preprocessing/build evidence ID를 `candidateFactIds`에
+  남기며 file 전체의 unrelated call을 같은 상태로 낮추지 않는다.
+- `dynamic`은 runtime rebinding/dispatch 없이는 exact target을 정할 수 있음을 완전히 판정한 상태다.
+  `ambiguous`는 exact 후보를 둘 이상 증명했으나 하나로 고를 수 없는 상태이고 `candidateFactIds`를
+  source order로 전부 보존한다. 정렬상 첫 후보를 선택하지 않는다.
+- `unsupported`는 해당 language adapter의 binding capability가 아직 없거나, visible callable은 찾았지만
+  exact type/dispatch compatibility를 증명할 수 없다는 명시 상태다. 후자의 경우 판정을 막은 callable
+  fact ID를 `candidateFactIds`에 source order로 전부 보존한다. Analyzer의 과거 name-only binder로
+  fallback하거나 후보를 버리지 않는다.
+- `externalIdentityKey`는 adapter/provider가 collision-free 외부 identity를 증명한 경우에만 존재한다.
+  값이 없으면 occurrence는 external이지만 external FUNCTION aggregate node/CALLS edge를 발명하지 않는다.
+- `dispatch=virtual|dynamic`은 compile-time declaration 하나를 실제 runtime callee 하나로 승격하지 않는다.
+  가능한 target 집합용 별도 검증된 관계 계약이 생기기 전에는 occurrence evidence로만 남긴다.
+
+Analyzer의 language-neutral join은 다음 순서 하나뿐이다.
+
+1. 모든 call fact와 call-binding 판정을 source order로 exact-once 검증한다.
+2. `declaration_bound + dispatch=exact + direct_definition`은 `declarationFactId`가 가리키는 exact definition
+   CodeNode를 직접 사용한다. `compatible_definition`만 `(adapterSchema, configurationId, targetScope,
+   bindingKey, compatibilityScope, compatibilityKey)`로 `definitionStatus=exact` definition fact를 조회한다.
+3. direct target 또는 eligible definition과 CodeNode가 정확히 하나면 internal CALLS를 만든다. compatible
+   lookup이 0개면 product external,
+   2개 이상이면 ambiguous occurrence다. 같은 file 우선이나 ID 정렬 첫 후보는 없다.
+4. 나머지 status는 occurrence에 그대로 보존한다. 별도 unresolved node/label/relationship, owner 누적
+   property, LLM 보정은 만들지 않는다.
+5. occurrence resolution 값은 `internal|external|inactive|configuration_dependent|dynamic|ambiguous|unsupported`
+   중 하나다.
+   aggregate edge는 그 결과에서 파생되며 occurrence 원장을 대체하지 않는다.
+
+언어 adapter의 최소 책임은 다음과 같다.
+
+- C: ordinary identifier namespace, declaration point/scope, `static` internal linkage와 external linkage,
+  function type compatibility, configuration identity와 callable conditional presence를 소유한다. visible
+  compatible declaration 없이 다른
+  translation unit의 동명 definition만 있는 call은 external이다. direct declaration도 유효하므로 header는
+  필수 형식이 아니다. missing compile/include trace가 unconditional source-view call 전체를 막지 않으며,
+  macro/conditional 영향을 받는 occurrence만 해당 configuration reason을 가진다.
+- Java: receiver/type-to-search, accessibility, overload applicability/most-specific declaration, invocation
+  mode를 증명해야 한다. name/arity만으로 `declaration_bound`를 발행하지 않는다. virtual dispatch는
+  compile-time declaration과 runtime target을 구분한다.
+- Python: lexical block/global/nonlocal/import binding과 call 전까지의 rebinding 가능성을 소유한다.
+  대문자 시작, initializer 정규식, 함수 이름만으로 constructor/function target을 확정하지 않는다.
+  runtime attribute/descriptor/monkey-patch 가능성이 남으면 `dynamic`이다.
+
+`completeness`에는 `call_binding` row를 별도로 둔다. `population`은 call fact 수와 같고 모든 call에 binding
+payload가 있으므로 `emitted=population`이다. `unsupported` 또는 증거 누락이 하나라도 있으면 `partial`과
+해당 call fact ID 전수 집합을 남긴다. call syntax `complete`와 binding `partial`을 서로 덮어쓰지 않는다.
+`callable` row도 type compatibility unavailable 또는 definition configuration-dependent fact ID 전수를
+`unresolvedFactIds`로 보존한다.
+IR `1.0.0|1.1.0|1.2.0` call은 binding capability가 없는 legacy input이며 Analyzer는 이를 name-only target으로
+승격하지 않는다.
 
 ### import/include
 
@@ -330,8 +476,10 @@ Lookup fact:
 
 ## 8. completeness matrix
 
-파일마다 `call|import|symbol|literal|assignment|parameter|macro|embedded_language|conditional_region` 각 kind에
-대해 `complete|not_applicable|partial|unsupported`와 `population/emitted/explicitlyUnresolved`를 기록한다.
+파일마다 `call|call_binding|callable|import|symbol|literal|assignment|parameter|macro|embedded_language|
+conditional_region` 각 kind/capability에 대해 `complete|not_applicable|partial|unsupported`와
+`population/emitted/explicitlyUnresolved`를 기록한다. `call_binding`은 call fact에 결속된 capability row이고
+나머지는 같은 kind fact population이다.
 
 ```text
 population = emitted + explicitlyUnresolved

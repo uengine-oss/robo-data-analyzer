@@ -81,3 +81,25 @@
     반환 반대 fixture를 먼저 통과시킨
     뒤 전체 회귀와 prompt byte 원장을 실행한다. 실제 APAS full cold에서 같은 봉인 FUNCTION 10을
     재판정해 omission/contradiction이 남으면 prompt 문구 반복 대신 첫 오좌표의 입력·slot 경계를 다시 연다.
+25. C-067~C-072의 call target 배선을 source→Parser callable/call binding→Analyzer join→CALLS/occurrence→
+    semantic context/order→Neo4j→REST/MCP/search로 고정한다. Java JLS overload/dispatch, Python lexical/
+    runtime binding, C linkage/type compatibility를 각 공식 명세와 현재 listener capability에 대조하되,
+    특정 compiler/frontend를 모든 configuration의 truth로 승격하지 않는다.
+26. Common Evidence IR 1.3에 `callable` fact와 call별 binding 판정, 별도 `call_binding` completeness를
+    추가한다. C adapter부터 visible declaration/linkage/type/configuration을 생산하고 Java/Python은 같은
+    wire에서 증명된 capability와 `unsupported|dynamic` 경계를 명시한다. Analyzer name-only fallback은 없다.
+    type compatibility key는 proof scope까지 포함하며 같은 typedef/tag 철자만으로 translation unit을 넘지
+    않는다. non-static inline definition eligibility처럼 dialect/configuration이 필요한 축은 exact target이
+    아니라 callable/call-binding completeness의 명시적 partial로 남긴다. token sequence는 canonical type이
+    아니므로 grammar AST로 완전히 정규화 가능한 builtin subset만 exact로 봉인하고 named/unspecified/complex
+    type은 unavailable로 둔다. visible exact definition은 fact-direct, declaration-only는 compatibility join으로
+    분리하며 inactive/conditional callable presence를 binding 후보와 completeness에 반영한다. exact
+    compatibility를 지원하지 못해 `unsupported`가 된 visible declaration도 판정 근거 fact ID를 occurrence에서
+    잃지 않도록 evidence closure를 닫는다.
+27. Parser red는 direct declaration+cross-TU definition, same-TU static, declaration 부재, incompatible/
+    duplicate/configuration 분리, supplied-header definition, macro/conditional 경계를 고정한다. Analyzer red는
+    opaque-key exact join, target 0/1/N, 언어·이름 독립성, external occurrence와 unresolved graph entity 0,
+    stdlib/framework name-only exclusion 0을 고정한다.
+28. Parser producer를 전체/actual 전수 회계와 봉인 직접 판정 후 commit/push하고, Analyzer strict consumer와
+    occurrence/generation/graph/API/MCP를 별도 검증 슬라이스로 commit/push한다. 마지막에 framework rollback
+    publish와 자동 회귀·결정론 전수 회계·봉인 직접 의미 판정 3층을 수행한다.

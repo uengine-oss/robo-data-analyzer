@@ -63,8 +63,39 @@
         10건 green, actual 23파일 symbol 4,659 exact-once, syntax ambiguity 0, 봉인 40/40 exact,
         NodeBuildResult/CodeNode projection 0·Neo4j/API/MCP 생산 배선 검색 0·DB write 0,
         전체 1,258 passed/7 skipped
-    - [ ] A131-04d-C067 C cross-TU call binder가 visible declaration→C linkage/type compatibility→unique corpus
-      definition을 실제로 보존하는지 전수 감사하고, product external과 C external linkage를 분리한다.
+    - [ ] A131-04d-C067 language-adapter call binding과 opaque-key Analyzer join으로 name-only binder를 제거한다.
+      - [x] C-067~C-072 source→Parser→Analyzer→Neo4j→API/MCP 배선, actual 값, 유입 commit, 공식 근거,
+        원인·영향도 전수 감사
+      - [x] Common Evidence IR 1.3 callable/call-binding wire, C/Java/Python capability 경계, target 0/1/N,
+        product external·dynamic·ambiguous·unsupported occurrence 계약 고정
+      - [x] Parser C callable/binding formal red: direct visible declaration, cross-TU external linkage,
+        same-TU static, declaration 부재, incompatible/duplicate/configuration, supplied header, conditional/macro
+        — 최초 6 tests/6 failures, callable/binding/version/header 결손 확인
+      - [x] Analyzer formal red: opaque key exact join, direct-definition fact 직접 결합, target 0/1/N,
+        source/configuration 격리, name/language fallback 0, external occurrence와 unresolved graph entity 0,
+        unsupported candidate 보존, missing binding/reference fail-closed
+        — final wire 권위 unittest 9 tests/9 errors, `callable_facts` 계약 부재 확인
+      - [ ] Parser 1.3 producer 구현·전체/actual exact-once 회계·봉인 직접 판정·commit/push
+        - [x] C grammar/listener callable/binding producer, header definition 보존, function-pointer dynamic,
+          macro configuration-dependent, block visibility, exact-once sealer 구현
+        - [x] typedef/tag 및 general token-equality의 거짓 compatibility, inactive/conditional callable,
+          non-static inline dialect 의존을 C-073~C-076 반례로 고정하고 canonical builtin/direct-definition/
+          explicit unavailable/configuration-dependent 경계로 교체 — 최초 17건 중 6 red, 교체 후 19/19 green
+        - [x] C-077 `unsupported` 판정이 원인이 된 visible callable fact ID를 버리는 증거 closure 누락 교정
+          — formal 19건 중 1 red(`candidateFactIds` expected 1, actual 0) → 19/19 green
+        - [x] C-078 봉인 직접 판정의 `declaration_bound` 단일 층이 direct-definition만 뽑고
+          compatible-definition 40건을 0개 뽑는 표본 공백 교정 — resolution mode별 별도 층 r13/r14 재봉인
+        - [x] C-079 parenthesized C function declarator에서 callable 이름은 보존되지만 legacy FUNCTION AST
+          이름이 바깥 Identifier 조회로 누락되는 producer 불일치 red/교정 — 20건 중 1 red,
+          callable/direct binding은 exact지만 FUNCTION name absent 재현 → grammar name owner 통합 후 20/20 green
+        - [x] 교체 후 formal/actual 전수 회계·새 봉인 직접 판정 재실행:
+          actual 23 source call 12,113/callable 796, binding 57 bound + 11,493 external +
+          76 configuration-dependent + 487 unsupported, target join
+          `57 = unique 57 + zero 0 + ambiguous 0`, same-source 57/cross-source 0,
+          accepted AST 23/23, sealed direct 40/40 exact
+        - [x] Parser 전체 회귀·diff 감사·commit/push — `5dd6410`, 전체 223/0/0/10,
+          golden 5/5 exact, origin/main 일치, clean
+      - [ ] Analyzer strict consumer, generation/Neo4j/REST/MCP/search 이행·3층 검증·commit/push
   - [ ] A131-04e 남은 구조 closure(C-004/C-017~021/C-031/C-034~C-042) 책임 슬라이스별 해결
     - [x] A131-04e-C004-C017-C031 Catalog truncated inventory pre-merge fail-closed, unknown external
       non-whitespace source span exact-once closure, 순환 dead Catalog lineage consumer 제거 — red 3건,

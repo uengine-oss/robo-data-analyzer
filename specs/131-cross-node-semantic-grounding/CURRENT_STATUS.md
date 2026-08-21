@@ -1,11 +1,12 @@
 # Analyzer 의미 무손실 감사 현재상태
 
 **Updated**: 2026-08-21
-**Status**: C-062 Parser grammar-owned type-name producer와 Analyzer IR 1.2 strict consumer·3층 검증·commit/push 완료; 다음 손실 경로 감사 계속
+**Status**: C-067 Parser IR 1.3 producer commit/push 완료; Analyzer 최종 wire formal red 9/9 고정, strict consumer 구현 전
 **Analyzer C-066 product commit**: `15fcec8eb77c16a282f30e90df396a09c7fa7eff`
 **Analyzer C-062 product commit**: `cd7110d3e7103ff264d6ce041136ab01e96c412f`
 **Analyzer C-062 evidence commit**: `f44bc530fad96fd2314b27dea3dc98a33a20ff3e`
 **Parser C-062 product commit**: `e28be6aa026ff005b5d4adb447459409cdecf34f`
+**Parser C-067 product commit**: `5dd64106540674a4aebfdb37ad897a375950d335`
 
 이 문서는 현재 진행 위치만 소유한다. 영구 규칙은 `ABSOLUTE_RULES.md`, 상세 역사와 기존 수치는 `HANDOFF.md`와 `evidence/`가 소유한다.
 
@@ -572,5 +573,94 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
     `e22050b73d773559e50dbc40748b1ae2d1e6e462a08fe10357c61eb46fbee1f2`다. Neo4j write와
     Architect/Catalog/Fabric 수정은 0회다. configured authoritative trace, 다른 언어, C-067 cross-TU binder,
     전체 LLM/graph 재분석 정확도는 미검증이다.
+25ae. C-067 전수 감사 확정: Analyzer `call_classifier.py`는 모든 언어의 call target을
+    `name -> CodeNode IDs`와 같은 file 우선/정렬상 첫 ID만으로 고른다. C call-site visible declaration,
+    linkage, compatible function type, unique definition은 입력에 없고 Java receiver/overload와 Python lexical/
+    dynamic binding도 없다. Parser C listener는 FUNCTION definition의 `static`을 내지만 Analyzer CodeNode가
+    버리고, file-scope function prototype은 grammar로 감지한 직후 버린다. actual APAS 23 C source의
+    definition 416개 중 static 380/non-static 36, call 12,113개다. name-only counterfactual의 internal
+    637개는 same-file 543/cross-file non-static 94이며, cross-file 94는 3개 target에 51/34/9로 집중된다.
+    uploaded header/build trace가 없어 이 94건의 visible declaration/type compatibility는 현재 증명되지 않았다.
+    현재 C-064 blanket gate는 반대로 12,113건 전부를 `unresolved_preprocessing`으로 덮어 CALLS 0을 만든다.
+    따라서 C-068로 source-view grammar occurrence/binding과 configuration-specific preprocessing authority를
+    분리한다. stdlib JSON과 scan-agent glob이 origin proof 없이 canonical edge를 제외하는 C-069, Python
+    대문자/initializer regex constructor 추측 C-070, C prototype/header definition 손실 C-071, Java
+    receiver/overload/declaration identity 손실 C-072도 분리했다. 목표는 언어 adapter가 versioned exact binding
+    evidence를 생산하고 Analyzer가 language/name 규칙 없이 canonical ID를 strict join하는 구조다. named call에
+    proven corpus target이 없으면 제품 external이며 reason은 occurrence에 남기고, unresolved graph entity는
+    만들지 않는다. 상세 배선·공식 근거·소비자·미검증은
+    `evidence/cross-tu-call-binding-audit-20260821.md`가 소유한다. Architect/DB write는 0회다.
+25af. C-067 계약/formal red 고정: Common Evidence IR 1.3은 type-name `symbol` 진단과 분리된
+    `callable` declaration/definition fact, call별 binding 판정, 별도 `call_binding` completeness를 소유한다.
+    Analyzer는 adapter/configuration/scope/opaque binding+compatibility key equality와 target 0/1/N만 처리하고
+    언어·확장자·name list를 해석하지 않는다. Parser red 6건은 구현 전 6/6 실패했다: IR 1.2, callable 0,
+    call binding 부재, header FUNCTION 폐기다. Analyzer 최초 red 6건은 `callable_facts` 계약 부재로
+    6/6 error였고, 최종 Parser wire와 fail-closed 경계를 반영한 9건도 같은 원인으로 9/9 error다.
+    red는 direct prototype→cross-TU definition, TU-scoped static, declaration 부재 external, incompatible type,
+    supplied header definition, function-like macro, opaque key, duplicate ambiguous, source-file scope,
+    unsupported adapter no-fallback을 고정한다. 제품 구현·DB/Architect 변경은 아직 0회다.
+25ag. C-067 Parser producer 1차 구현/검증 후 diff 재감사 중(commit/push 전): C grammar/listener가 prototype·definition·call
+    visibility/linkage를 생산하고 sealer가 IR 1.3 callable/call-binding/completeness와 opaque key를 봉인한다.
+    header definition 확장자 폐기, member/named function pointer name-target 추측을 제거했고 macro는 exact macro
+    fact를 가진 configuration-dependent로 보존한다. diff 감사에서 같은 typedef/tag 토큰을 cross-TU compatible
+    type으로 과대 증명하는 C-073과 non-static inline external visibility가 dialect/configuration에 의존하는
+    C-074를 추가 발견했다. builtin function type만 corpus compatibility, file-scope typedef/tag/unspecified
+    parameter는 source identity를 포함한 source-file compatibility, block-local/지원 밖 declarator는 unavailable,
+    non-static inline definition은 configuration-dependent로 고쳤다. formal 13/13, 관련 43/43, Parser 전체
+    216 tests(failure/error 0, skipped 10), golden 5개 중 C만 의도 변경을 확인했다. actual r7은 23 source,
+    FUNCTION/callable-definition 416/416, FUNCTION_CALL/call 12,113/12,113, binding 545 declaration-bound +
+    11,492 external + 76 configuration-dependent이고 target join은 545 unique/0 zero/0 ambiguous, 전부 same-source다.
+    callable 796의 compatibility scope는 source-file 780/corpus 16/unavailable 0이다. accepted AST 23/23,
+    diagnostics/recovery 0/0, 봉인 40/40 exact다. 정본 report SHA-256은
+    `d382ba59686ec5c7e50dd55dedffbc394a998ae9069fb9125be80bacc264d434`다. full suite의 Surefire native-stream
+    warning은 Spring test logging을 dumpstream으로 기록한 기존 실행 노이즈이고 XML 회계 216/0/0/10과
+    BUILD SUCCESS를 바꾸지 않는다. DB/Architect/Catalog/Fabric 변경은 0회다.
+25ah. C-067 commit 전 자기반증에서 C-075/C-076을 추가 발견했다. 파라미터 이름만 뺀 token sequence는
+    WG14 function type compatibility의 builtin specifier 동치, parameter qualifier 제거, array/function adjustment를
+    canonicalize하지 못하며, inactive/conditional callable도 binder가 visible로 사용했다. formal을 17건으로
+    확장·기존 기대를 엄격화한 구현 전 실행은 6 failures/0 errors다. 목표 계약은 grammar로 완전히 canonicalize한
+    제한 builtin scalar만 exact compatibility, named/unspecified/complex type은 explicit unavailable, visible exact
+    definition은 fact-direct, conditional callable은 candidate fact를 가진 configuration-dependent다. 따라서 25ag의
+    216/full·actual r7·봉인 40은 1차 구현 증거로 보존하되 최종 합격이나 commit 근거로 사용하지 않는다.
+25ai. C-075/C-076 교체 후 formal 19/19와 관련 49/49가 green이고 actual r10은 source 23, call 12,113,
+    callable 796, binding은 declaration-bound 57(`direct_definition` 17 + `compatible_definition` 40),
+    external 11,493, configuration-dependent 76, unsupported 487이다. join은 57 unique/zero 0/ambiguous 0,
+    diagnostics/recovery 0/0, accepted AST 23/23이다. 그러나 봉인 직접 판정 착수 중 C-077을 발견했다.
+    visible prototype의 named/지원 밖 parameter type 때문에 `unsupported`가 된 487 occurrence가 reason은
+    보존하지만 그 판정 근거 callable fact ID를 `candidateFactIds`에서 버린다. formal assertion 추가 후
+    `19 tests, 1 failure, 0 errors`로 red를 재현했다(expected 1, actual 0). unresolved graph entity를 만드는
+    문제가 아니라 이미 존재하는 Parser callable fact와 call occurrence 사이 exact evidence closure 누락이다.
+    r10 report SHA-256은 `0c613168db0f0c05633bf661dbdd371f5586ed286cf088c86959835d2bc399e4`이며
+    C-077 교정 전 자료이므로 최종 합격/commit 근거로 사용하지 않는다. DB/Architect/Catalog/Fabric 변경은 0회다.
+25aj. C-077은 새 graph entity 없이 기존 call occurrence→callable fact 참조만 복구했다. Parser C adapter는
+    `unsupported/insufficient_callable_type_compatibility`에 visible declaration `nameRange`를 전달하고,
+    공통 candidate invariant는 configuration-dependent 필수 후보, ambiguous 복수 callable 후보,
+    unsupported 선택적 callable 후보, bound/external/dynamic 후보 0을 상태별로 검증한다. formal red 1건은
+    교정 후 19/19 green이다. actual r11·전체 회귀·봉인 직접 판정은 아직 미검증이다.
+25ak. actual r11/r12는 독립 실행에서 count·fact/call/binding/callable ledger와 봉인 40 selection이
+    deterministic하게 동일했다. 새 actual checker는 unsupported 487건 전부에 대해 candidate 존재/중복 0,
+    callable kind, 같은 terminal name, unavailable compatibility, active presence, call-site visibility를 전수
+    검증해 green이다. 직접 판정 착수 후 C-078 검증 결함을 발견했다. 기존 `binding:declaration_bound` 층의
+    5건이 전부 `direct_definition`이라 actual `compatible_definition` 40건을 직접 표본 0개로 놓쳤다.
+    제품 합격을 선언하지 않고 resolution mode별 별도 층으로 표본을 다시 봉인한다.
+25al. r13은 resolution mode별 층을 포함한 40건을 다시 봉인했고 compatible 5/direct 4를 포함해 주 에이전트
+    source→callable/declaration/definition→binding 직접 판정 40/40 exact다. Parser 전체도 222 tests,
+    failures/errors 0, skipped 10이다. 이어 diff 감사에서 합법적인 parenthesized function declarator의 재귀
+    name token은 callable fact에 쓰지만 legacy FUNCTION AST 이름은 바깥 Identifier만 읽는 C-079 후보를
+    발견해 callable→AST identity 반례를 formal red로 추가했다. 실행 결과 20 tests 중 1 failure이며 callable
+    fact와 direct binding은 exact지만 첫 FUNCTION의 `name`만 absent였다. 재귀 grammar name token을 AST와
+    callable의 단일 생산자로 쓰는 교정 후 20/20 green이다. final actual r14는 r13과 selection/fact/call-binding/
+    callable ledger가 동일하고 봉인 40건 판정을 그대로 재현한다. report SHA-256은
+    `29d7ace44058b9317dfa750baa735625552c0558c6def5c27226ca60233892ad`, two-pass wall 37,580ms다.
+    최종 Parser 전체는 223 tests/failures 0/errors 0/skipped 10, golden 5언어 resource/generated hash 5/5
+    동일이다. Parser commit `5dd64106540674a4aebfdb37ad897a375950d335`는 `origin/main`에 push됐고
+    working tree는 clean이다. Analyzer consumer는 아직 전이다.
+25am. Analyzer red fixture를 final Parser IR 1.3 wire와 일치시켰다. `resolutionMode`,
+    `compatibilityScope`, declaration/definition의 `compatibilityStatus|Scope`, `definitionStatus`, 실제 존재하는
+    `declarationFactId`, unsupported candidate reference를 모두 포함한다. compatible/direct를 분리하고 direct가
+    같은 key의 다른 definition을 검색하지 않는 경계, target 0/1/N, source/configuration 격리, external aggregate
+    node 0, unsupported candidate 보존, missing referenced fact와 missing binding fail-closed를 고정했다. 권위
+    unittest는 9 tests 모두 `classify_call_sites() got an unexpected keyword argument 'callable_facts'`로 error다.
+    이는 제품에 Parser-owned callable/binding 소비 경계가 아직 없다는 formal red이며 구현 성공으로 해석하지 않는다.
 26. 검증: 자동 회귀→결정론 전수 회계→봉인 직접 의미 판정→실제 APAS 순으로 계속 수행한다.
 27. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.

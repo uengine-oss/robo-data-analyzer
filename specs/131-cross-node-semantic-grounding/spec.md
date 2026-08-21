@@ -144,6 +144,23 @@ ID 기준으로 중복 제거해 소비하며 정상 생성 경로에서 레거�
     corpus 안의 unique external definition이 결합되면 파일이 달라도 내부 사용자 정의 CALL이다. header는
     declaration 전달 수단일 뿐 필수가 아니다. static/internal linkage, typedef(no linkage), incompatible/
     duplicate definition, declaration 부재는 이름 일치만으로 결합하지 않는다.
+30. 모든 언어의 call binding은 Parser language adapter가 versioned callable declaration/definition fact와
+    call-site binding 판정으로 생산한다. Analyzer는 adapter-owned opaque binding/type/configuration key의
+    exact join만 수행하고 언어, 확장자, 대문자, stdlib 이름 목록, framework glob, 같은 파일 우선, 정렬상
+    첫 ID로 target을 만들거나 제외하지 않는다. 증명된 exact definition 하나만 internal CALLS이며 target이
+    없으면 product external, 동적/모호/미지원은 call occurrence 진단이다. 어떤 상태도 별도 Unresolved
+    graph entity나 owner property ledger가 아니며, collision-free external identity가 없으면 aggregate
+    external target node도 만들지 않는다.
+    같은 typedef/tag 철자는 translation unit 경계를 넘는 type compatibility 증거가 아니므로 adapter는
+    compatibility proof scope를 source/configuration/corpus로 명시하고 Analyzer는 그 scope까지 exact join한다.
+    C non-static inline처럼 dialect·declaration·attribute에 따라 definition eligibility가 달라지면 configured
+    trace 없이 exact target으로 승격하지 않는다. token spelling equality를 canonical C type compatibility로
+    가장하지 않으며, grammar AST로 완전히 정규화한 지원 subset만 exact이고 나머지는 unavailable이다.
+    call-site에 직접 보이는 exact definition은 별도 compatibility 검색 없이 그 definition fact를 가리키고,
+    declaration-only binding만 exact compatibility로 definition을 찾는다. inactive callable은 visibility 후보에서
+    제외하며 conditional/unknown callable 영향은 configuration-dependent occurrence로 전수 보존한다.
+    visible declaration은 있으나 type/dispatch compatibility를 증명하지 못한 `unsupported` 판정도 원인이 된
+    callable fact ID를 버리지 않고 occurrence의 candidate evidence로 보존한다.
 
 ## 폐기된 요구
 
