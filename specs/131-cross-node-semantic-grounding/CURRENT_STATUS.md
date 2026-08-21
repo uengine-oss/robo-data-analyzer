@@ -1,9 +1,10 @@
 # Analyzer 의미 무손실 감사 현재상태
 
 **Updated**: 2026-08-21
-**Status**: C-062 Parser grammar-owned type-name producer와 Analyzer IR 1.2 strict consumer·3층 검증·제품 commit 완료; 정본 commit/push 직전
+**Status**: C-062 Parser grammar-owned type-name producer와 Analyzer IR 1.2 strict consumer·3층 검증·commit/push 완료; 다음 손실 경로 감사 계속
 **Analyzer C-066 product commit**: `15fcec8eb77c16a282f30e90df396a09c7fa7eff`
 **Analyzer C-062 product commit**: `cd7110d3e7103ff264d6ce041136ab01e96c412f`
+**Analyzer C-062 evidence commit**: `f44bc530fad96fd2314b27dea3dc98a33a20ff3e`
 **Parser C-062 product commit**: `e28be6aa026ff005b5d4adb447459409cdecf34f`
 
 이 문서는 현재 진행 위치만 소유한다. 영구 규칙은 `ABSOLUTE_RULES.md`, 상세 역사와 기존 수치는 `HANDOFF.md`와 `evidence/`가 소유한다.
@@ -22,8 +23,8 @@
 
 - Neo4j `127.0.0.1:7687`: 현재 세션에서 인증과 `SHOW DATABASES` 재확인 성공.
   `neo4j|test|framework|dbms|system`만 존재하고 모두 online이다. 허용 목록 밖 DB는 0개다.
-- Analyzer 현재 HEAD `cd7110d3e7103ff264d6ce041136ab01e96c412f`; C-062 strict consumer 제품·테스트는
-  3층 검증 후 commit됐고 정본 문서 commit과 push 직전이다.
+- Analyzer C-062 product HEAD `cd7110d3e7103ff264d6ce041136ab01e96c412f`; 제품·테스트와 정본
+  `f44bc530fad96fd2314b27dea3dc98a33a20ff3e`은 3층 검증 후 `origin/main`에 push됐다.
 - Parser main HEAD `e28be6aa026ff005b5d4adb447459409cdecf34f`; IR 1.2 grammar-owned C type-name
   definition/lookup producer와 formal/actual test 변경은 `origin/main`에 push됐다.
 - Catalog HEAD `1f1aaa608a3d7ef8b01ce15c3df962cf0f1cfefb`, 기존 dirty 12개가 있다.
