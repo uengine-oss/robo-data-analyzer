@@ -84,12 +84,13 @@
 25. Strategy A Python 관계식을 실제 shopmall 봉인 자료로 단계 검증한다. 1단계는 기존 20함수 모집단의
     복잡/중간/상태전이/음성대조 4함수, 실제 prompt record 15개, 구조 의무 104행, gold 의미 사례 18건이다.
     원본 source 11파일·sample/gold·prompt ledger·역사 결과는 byte 불변으로 두고 새 raw/result는
-    `specs/131-cross-node-semantic-grounding/_runs/framework/strategy-a/` 아래에만 쓴다. arbitrary maxLength와
-    tracked output truncate를 제거한 안전 runner를 red로 고정한 뒤 current model 1회를 실행한다.
-26. 1단계 결과를 동일 15입력의 이전 모델 3회 역사 결과와 비교한다. JSON/schema, exact row coverage,
+    `specs/131-cross-node-semantic-grounding/_runs/framework/strategy-a/` 아래에만 쓴다. 안전 runner를 red로
+    고정한 뒤 current model에서 역사 wire control 15회와 arbitrary maxLength를 제거한 candidate 15회를 실행한다.
+26. 1단계 control을 동일 15입력의 이전 모델 3회 역사 결과와 비교하고, 같은 current model의 control과
+    candidate를 다시 비교한다. JSON/schema, exact row coverage,
     Python AST parse, source evidence symbol/literal grounding, status/failure, 18개 gold 의미의 exact/partial/
-    contradiction/fabrication/omission/needs_context를 분리한다. 현재 1회 결과로 반복 안정성을 주장하지 않는다.
-    세 층이 모두 통과할 때만 20함수·77입력·519행 1회로 확대한다.
+    contradiction/fabrication/omission/needs_context를 분리한다. 각 current variant 1회 결과로 반복 안정성을
+    주장하지 않는다. candidate의 세 층이 모두 통과할 때만 20함수·77입력·519행 1회로 확대한다.
 27. 비교 결과와 확대/중단 판정을 `D:\work\robo\docs\작업보고내용`의 2026-08-21 보고서에 비개발자가
     읽을 수 있는 말로 기록한다. C-080을 포함한 기존 개선 작업은 각각 한 줄 상태로만 덧붙인다.
 28. C-067~C-072의 call target 배선을 source→Parser structural call/callable facts→Analyzer language semantic

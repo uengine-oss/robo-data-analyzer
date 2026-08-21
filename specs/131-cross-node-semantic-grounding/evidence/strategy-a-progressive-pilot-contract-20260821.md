@@ -41,8 +41,12 @@ SHA-256은 `75292142cb95b9980b1d3064857a517cbfbfcb4dd43ab4fbebe36a224ee4182e`다
 
 - 출력은 `specs/131-cross-node-semantic-grounding/_runs/framework/strategy-a/` 아래 새 run directory에만 쓴다.
 - 기존 `run_strategy_a_v3.py`와 tracked 역사 evidence를 수정·truncate하지 않는다.
-- repeats=1, selected actual records=15, 중복·누락=0이다.
-- schema에는 exact row key만 두고 arbitrary `maxLength`를 두지 않는다.
+- selected actual records=15를 current model의 두 variant에서 각 repeats=1로 실행한다. 총 호출은 30이고,
+  variant별 중복·누락은 0이다.
+- `historical_wire_control`은 모델 변화 격리를 위해 역사 system/user/schema와 `max_tokens=4096`를 그대로
+  재현한다. 진단용이며 canonical 제품 결과로 승격하지 않는다.
+- `lossless_candidate`는 같은 system/user와 exact row key를 쓰되 arbitrary `maxLength`를 제거하고 현재 provider
+  config의 output budget을 사용한다.
 - provider output 한계를 content cap으로 성공 처리하지 않는다. finish reason, raw/partial, exact record/row를
   보존하고 해당 record를 실패 또는 unavailable로 회계한다.
 - content retry와 LLM repair/judge는 없다. transport 이전 실패만 호출 전 상태로 구분하고 조용히 재호출하지 않는다.
@@ -59,8 +63,9 @@ SHA-256은 `75292142cb95b9980b1d3064857a517cbfbfcb4dd43ab4fbebe36a224ee4182e`다
 5. fabrication 또는 contradiction이 하나라도 있거나, required row omission/residual이 하나라도 있으면 확대하지 않는다.
 6. 네 조건을 모두 통과할 때만 stage 2의 20 functions/77 records/519 rows를 current model 1회 실행한다.
 
-이전 모델은 같은 stage 1 입력의 역사 3회 결과를 잘라 비교한다. 현재 모델은 1회이므로 동일 입력의 단발
-정확도는 비교할 수 있지만 현재 모델의 반복 안정성은 미검증이다.
+이전 모델은 같은 stage 1 입력의 역사 3회 결과를 잘라 `historical_wire_control`과 비교한다. 이 축은 wire가
+같으므로 모델 변화다. 같은 current model의 control과 candidate 차이는 출력 계약 변화다. current variant는
+각 1회이므로 반복 안정성은 미검증이다. 확대 판정은 lossless candidate만 대상으로 한다.
 
 ## 보고서
 

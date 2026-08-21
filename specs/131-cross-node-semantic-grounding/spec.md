@@ -172,6 +172,9 @@ ID 기준으로 중복 제거해 소비하며 정상 생성 경로에서 레거�
     호출 수·문자 수·재시도 수를 늘리지 않고 첫 오좌표의 source→evidence→actual prompt→raw/parsed→validator
     사슬에서 원인을 확정한다. 이전 모델과 비교할 때는 동일한 봉인 입력·system/user/schema를 사용하고,
     반복 수가 다르면 단발 정확도와 반복 변동을 별도 축으로 보고한다.
+    이전 wire에 의미 상한이 있었다면 동일 wire의 진단용 control과 상한을 제거한 candidate를 현재 모델에서
+    따로 실행해 `이전 모델↔현재 control`의 모델 변화와 `현재 control↔현재 candidate`의 계약 변화를 분리한다.
+    control 결과는 역사 비교용일 뿐 canonical 제품 계약으로 승격하지 않는다.
 
 ## 폐기된 요구
 

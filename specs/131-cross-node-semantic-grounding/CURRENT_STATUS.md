@@ -705,10 +705,11 @@ closure → 필요 시 의무 분할 → canonical ID exact-once merge`다. 아�
     `75292142cb95b9980b1d3064857a517cbfbfcb4dd43ab4fbebe36a224ee4182e`다.
 25ar. Strategy A 역사 script는 tracked `strategy-a-v3-results.jsonl`을 먼저 truncate하고 3 repeats/16 workers/
     231호출, meaning maxLength 500/1000, output 4096 token을 고정하므로 그대로 실행하지 않는다. 원본과 역사
-    결과 hash는 불변으로 보존한다. 새 runner는 spec 131 `_runs/framework/strategy-a`만 쓰고 1회 15호출의
-    actual system/user/schema/raw/parsed/usage/finish reason을 보존한다. 자동 계약·104행 exact-once·18 gold
-    직접 의미 판정을 모두 통과해야 20함수/77호출로 확대한다. 이전 모델 3회와 현재 1회는 동일 입력 정확도와
-    역사 변동 범위를 비교하되 현재 반복 안정성은 미검증으로 분리한다. 비교 결과는
+    결과 hash는 불변으로 보존한다. 새 runner는 spec 131 `_runs/framework/strategy-a`만 쓰고 current model의
+    역사 wire control 15호출과 maxLength를 제거한 candidate 15호출을 각각 1회 실행한다. 이전 모델↔current
+    control은 모델 변화, current control↔candidate는 계약 변화로 분리한다. candidate의 자동 계약·104행
+    exact-once·18 gold 직접 의미 판정을 모두 통과해야 20함수/77호출로 확대한다. 현재 variant별 반복 안정성은
+    미검증으로 분리한다. 비교 결과는
     `D:\work\robo\docs\작업보고내용`에 2026-08-21 쉬운 보고서로 작성한다.
 26. 검증: 자동 회귀→결정론 전수 회계→봉인 직접 의미 판정→실제 APAS 순으로 계속 수행한다.
 27. 실행: 임시 DB를 만들지 않고 `framework|dbms`만 재사용하며 종료 시 임시 자원을 정리한다.

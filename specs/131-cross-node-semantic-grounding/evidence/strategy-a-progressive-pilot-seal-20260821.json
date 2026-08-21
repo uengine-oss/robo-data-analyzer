@@ -11,14 +11,17 @@
     "selected_prompt_ledger_sha256": "75292142cb95b9980b1d3064857a517cbfbfcb4dd43ab4fbebe36a224ee4182e"
   },
   "stage": 1,
-  "repeats": 1,
+  "variants": [
+    {"name": "historical_wire_control", "repeats": 1, "records": 15, "max_length_contract": "historical_500_1000", "max_tokens": 4096, "promotion_eligible": false},
+    {"name": "lossless_candidate", "repeats": 1, "records": 15, "max_length_contract": "absent", "max_tokens": "provider_config", "promotion_eligible": true}
+  ],
   "functions": [
     {"name": "member_authenticate", "area": "complex", "records": 8, "rows": 62, "gold_cases": 8},
     {"name": "apply_point_balance", "area": "medium", "records": 4, "rows": 30, "gold_cases": 6},
     {"name": "next_ship_status", "area": "state_transition", "records": 2, "rows": 10, "gold_cases": 3},
     {"name": "db_commit", "area": "negative_control", "records": 1, "rows": 2, "gold_cases": 1}
   ],
-  "totals": {"functions": 4, "records": 15, "rows": 104, "gold_cases": 18},
+  "totals": {"functions": 4, "logical_records": 15, "logical_rows": 104, "current_model_calls": 30, "gold_cases": 18},
   "output_root": "specs/131-cross-node-semantic-grounding/_runs/framework/strategy-a",
   "expand_only_if": {
     "transport_and_schema_failures": 0,
