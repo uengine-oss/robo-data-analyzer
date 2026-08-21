@@ -11,7 +11,7 @@ from pathlib import PurePosixPath
 from typing import Any, Mapping
 
 
-_SUPPORTED_VERSIONS = frozenset({"1.0.0", "1.1.0"})
+_SUPPORTED_VERSIONS = frozenset({"1.0.0", "1.1.0", "1.2.0"})
 _ID_DOMAIN = "robo-evidence-v1"
 _KINDS = (
     "call", "import", "symbol", "literal", "assignment", "parameter",
@@ -31,6 +31,13 @@ _IMPORT_KINDS = frozenset({
 _IMPORT_TARGET_KINDS = frozenset({"quoted", "angle", "computed", "qualified"})
 _IMPORT_LOCALITIES = frozenset({"local", "system", "unspecified"})
 _MACRO_KINDS = frozenset({"object", "function"})
+_SYMBOL_KINDS = frozenset({"typedef_name", "ordinary_identifier"})
+_SYMBOL_SCOPES = frozenset({"file", "block", "function_prototype"})
+_SYMBOL_DECISIONS = frozenset({"type_name", "ordinary_identifier"})
+_SYMBOL_PROVENANCE = frozenset({
+    "source_declaration", "configured_preprocessing", "grammar_context",
+    "unresolved_environment",
+})
 _BUILD_STATUSES = frozenset({"exact", "partial", "unresolved"})
 _PREPROCESSING_TRUST = frozenset({
     "authoritative", "compatible_replay", "unresolved",
@@ -132,6 +139,25 @@ class MacroEvidenceFact:
 
 
 @dataclass(frozen=True)
+class SymbolEvidenceFact:
+    fact_id: str
+    symbol_range: EvidenceRange
+    role: str
+    grammar_rule: str
+    presence: Mapping[str, Any]
+    symbol_kind: str | None = None
+    scope_kind: str | None = None
+    scope_range: EvidenceRange | None = None
+    visibility_start_offset: int | None = None
+    parser_decision: str | None = None
+    resolution_status: str | None = None
+    provenance: str | None = None
+    definition_fact_id: str | None = None
+    configured_evidence_id: str | None = None
+    predicate_contexts: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class ValidatedCommonEvidence:
     version: str
     source_id: str
@@ -140,6 +166,8 @@ class ValidatedCommonEvidence:
     call_facts: tuple[CallEvidenceFact, ...]
     import_facts: tuple[ImportEvidenceFact, ...]
     macro_facts: tuple[MacroEvidenceFact, ...]
+    symbol_facts: tuple[SymbolEvidenceFact, ...]
+    syntax_ambiguities: tuple[SymbolEvidenceFact, ...]
     completeness: Mapping[str, Mapping[str, Any]]
     configured_preprocessing: Mapping[str, Any] | None
 
@@ -490,6 +518,236 @@ def _validate_macro(
         replacement_range=replacement,
         grammar_rule=grammar_rule,
         presence=dict(presence),
+    )
+
+
+def _optional_evidence_id(value: Any, *, field: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or len(value) != 64 or any(
+        char not in "0123456789abcdef" for char in value
+    ):
+        raise _fail(field, "null or lowercase SHA-256 ID required")
+    return value
+
+
+def _validate_symbol(
+    fact: Mapping[str, Any],
+    *,
+    fact_range: EvidenceRange,
+    grammar_rule: str,
+    presence: Mapping[str, Any],
+    source_length: int,
+) -> SymbolEvidenceFact:
+    field = "symbol.payload"
+    if fact_range.char_length == 0:
+        raise _fail("symbol.range", "nonempty identifier range required")
+    payload = fact.get("payload")
+    if not isinstance(payload, dict):
+        raise _fail(field, "object required")
+    role = payload.get("role")
+    if role == "definition":
+        _require_exact_fields(payload, {
+            "role", "symbolKind", "scopeKind", "scopeRange",
+            "visibilityStartOffset",
+        }, field=field)
+        symbol_kind = payload.get("symbolKind")
+        if symbol_kind not in _SYMBOL_KINDS:
+            raise _fail(f"{field}.symbolKind", f"invalid {symbol_kind!r}")
+        scope_kind = payload.get("scopeKind")
+        if scope_kind not in _SYMBOL_SCOPES:
+            raise _fail(f"{field}.scopeKind", f"invalid {scope_kind!r}")
+        scope_range = _range(
+            payload.get("scopeRange"), field=f"{field}.scopeRange",
+            source_length=source_length,
+        )
+        visibility = _integer(
+            payload.get("visibilityStartOffset"),
+            field=f"{field}.visibilityStartOffset",
+        )
+        if not (
+            scope_range.char_offset <= fact_range.char_offset
+            and fact_range.end <= visibility <= scope_range.end
+        ):
+            raise _fail(
+                f"{field}.visibilityStartOffset",
+                "definition range <= visibility <= lexical scope end required",
+            )
+        return SymbolEvidenceFact(
+            fact_id=str(fact.get("factId") or ""),
+            symbol_range=fact_range,
+            role="definition",
+            grammar_rule=grammar_rule,
+            presence=dict(presence),
+            symbol_kind=str(symbol_kind),
+            scope_kind=str(scope_kind),
+            scope_range=scope_range,
+            visibility_start_offset=visibility,
+        )
+    if role != "lookup":
+        raise _fail(f"{field}.role", f"invalid {role!r}")
+    _require_exact_fields(payload, {
+        "role", "lookupKind", "parserDecision", "resolutionStatus",
+        "provenance", "definitionFactId", "configuredEvidenceId",
+        "predicateContexts",
+    }, field=field)
+    if payload.get("lookupKind") != "type_name":
+        raise _fail(f"{field}.lookupKind", "expected 'type_name'")
+    decision = payload.get("parserDecision")
+    if decision not in _SYMBOL_DECISIONS:
+        raise _fail(f"{field}.parserDecision", f"invalid {decision!r}")
+    status = payload.get("resolutionStatus")
+    if status not in {"resolved", "unresolved"}:
+        raise _fail(f"{field}.resolutionStatus", f"invalid {status!r}")
+    provenance = payload.get("provenance")
+    if provenance not in _SYMBOL_PROVENANCE:
+        raise _fail(f"{field}.provenance", f"invalid {provenance!r}")
+    definition_id = _optional_evidence_id(
+        payload.get("definitionFactId"), field=f"{field}.definitionFactId",
+    )
+    configured_id = _optional_evidence_id(
+        payload.get("configuredEvidenceId"),
+        field=f"{field}.configuredEvidenceId",
+    )
+    contexts = _string_array(
+        payload.get("predicateContexts"),
+        field=f"{field}.predicateContexts",
+    )
+    if not contexts or len(contexts) != len(set(contexts)):
+        raise _fail(
+            f"{field}.predicateContexts",
+            "nonempty unique values required",
+        )
+    expected_shape = {
+        "source_declaration": ("resolved", True, False),
+        "configured_preprocessing": ("resolved", False, True),
+        "grammar_context": ("resolved", False, False),
+        "unresolved_environment": ("unresolved", False, False),
+    }[str(provenance)]
+    if (
+        status != expected_shape[0]
+        or (definition_id is not None) != expected_shape[1]
+        or (configured_id is not None) != expected_shape[2]
+    ):
+        raise _fail(
+            field,
+            f"{provenance} requires status/definition/configured shape "
+            f"{expected_shape!r}",
+        )
+    return SymbolEvidenceFact(
+        fact_id=str(fact.get("factId") or ""),
+        symbol_range=fact_range,
+        role="lookup",
+        grammar_rule=grammar_rule,
+        presence=dict(presence),
+        parser_decision=str(decision),
+        resolution_status=str(status),
+        provenance=str(provenance),
+        definition_fact_id=definition_id,
+        configured_evidence_id=configured_id,
+        predicate_contexts=tuple(contexts),
+    )
+
+
+def _validate_symbol_closure(
+    symbols: list[SymbolEvidenceFact],
+    *,
+    completeness: Mapping[str, Mapping[str, Any]],
+    configured_preprocessing: Mapping[str, Any] | None,
+) -> tuple[SymbolEvidenceFact, ...]:
+    definitions = {
+        fact.fact_id: fact for fact in symbols if fact.role == "definition"
+    }
+    for fact in symbols:
+        if fact.definition_fact_id is None:
+            continue
+        definition = definitions.get(fact.definition_fact_id)
+        if definition is None:
+            raise _fail(
+                "symbol.payload.definitionFactId",
+                f"missing definition {fact.definition_fact_id!r}",
+            )
+        assert definition.scope_range is not None
+        assert definition.visibility_start_offset is not None
+        if not (
+            definition.visibility_start_offset <= fact.symbol_range.char_offset
+            and definition.scope_range.char_offset <= fact.symbol_range.char_offset
+            and fact.symbol_range.end <= definition.scope_range.end
+        ):
+            raise _fail(
+                "symbol.payload.definitionFactId",
+                "lookup must follow its definition inside the same lexical scope",
+            )
+        expected_decision = (
+            "type_name"
+            if definition.symbol_kind == "typedef_name"
+            else "ordinary_identifier"
+        )
+        if fact.parser_decision != expected_decision:
+            raise _fail(
+                "symbol.payload.parserDecision",
+                "source declaration kind and lookup decision differ",
+            )
+    for fact in symbols:
+        if fact.provenance == "grammar_context" and (
+            fact.parser_decision != "ordinary_identifier"
+        ):
+            raise _fail(
+                "symbol.payload.parserDecision",
+                "grammar context can only close an ordinary declarator decision",
+            )
+        if fact.configured_evidence_id is None:
+            continue
+        if configured_preprocessing is None:
+            raise _fail(
+                "symbol.payload.configuredEvidenceId",
+                "configured preprocessing closure is absent",
+            )
+        trace = configured_preprocessing["trace"]
+        if (
+            configured_preprocessing["build"]["status"] != "exact"
+            or configured_preprocessing["trust"] != "authoritative"
+            or fact.configured_evidence_id not in trace["emittedEvidenceIds"]
+        ):
+            raise _fail(
+                "symbol.payload.configuredEvidenceId",
+                "authoritative emitted preprocessing trace evidence required",
+            )
+    unresolved_ids = [
+        fact.fact_id for fact in symbols
+        if fact.role == "lookup" and fact.resolution_status == "unresolved"
+    ]
+    symbol_completeness = completeness["symbol"]
+    if unresolved_ids and "unresolvedFactIds" not in symbol_completeness:
+        raise _fail(
+            "completeness[symbol].unresolvedFactIds", "array required",
+        )
+    declared_ids = symbol_completeness.get("unresolvedFactIds", [])
+    if declared_ids != unresolved_ids:
+        raise _fail(
+            "completeness[symbol].unresolvedFactIds",
+            "must exactly equal unresolved symbol lookup facts in source order",
+        )
+    if unresolved_ids and (
+        symbol_completeness.get("status") != "partial"
+        or symbol_completeness.get("reason")
+            != "insufficient_type_name_environment"
+    ):
+        raise _fail(
+            "completeness[symbol]",
+            "unresolved lookup facts require partial insufficient-type context",
+        )
+    return tuple(
+        fact for fact in symbols
+        if fact.role == "lookup"
+        and fact.resolution_status == "unresolved"
+        and (
+            fact.parser_decision == "ordinary_identifier"
+            or any(
+                context.startswith("ambiguous_")
+                for context in fact.predicate_contexts
+            )
+        )
     )
 
 
@@ -1054,6 +1312,7 @@ def validate_common_evidence(
     calls: list[CallEvidenceFact] = []
     imports: list[ImportEvidenceFact] = []
     macros: list[MacroEvidenceFact] = []
+    symbols: list[SymbolEvidenceFact] = []
     for index, fact in enumerate(facts):
         if not isinstance(fact, dict):
             raise _fail(f"facts[{index}]", "object required")
@@ -1111,12 +1370,30 @@ def validate_common_evidence(
                 presence=presence,
                 source=source,
             ))
+        elif kind == "symbol":
+            if version != "1.2.0":
+                raise _fail(
+                    f"facts[{index}].kind",
+                    "symbol payload requires common evidence 1.2.0",
+                )
+            symbols.append(_validate_symbol(
+                fact,
+                fact_range=fact_range,
+                grammar_rule=grammar_rule,
+                presence=presence,
+                source_length=len(source),
+            ))
 
     completeness = _validate_completeness(
         evidence,
         emitted_by_kind=emitted_by_kind,
         fact_kinds=fact_kinds,
     )
+    syntax_ambiguities = _validate_symbol_closure(
+        symbols,
+        completeness=completeness,
+        configured_preprocessing=configured_preprocessing,
+    ) if version == "1.2.0" else ()
     return ValidatedCommonEvidence(
         version=version,
         source_id=source_id,
@@ -1125,6 +1402,8 @@ def validate_common_evidence(
         call_facts=tuple(calls),
         import_facts=tuple(imports),
         macro_facts=tuple(macros),
+        symbol_facts=tuple(symbols),
+        syntax_ambiguities=tuple(syntax_ambiguities),
         completeness=completeness,
         configured_preprocessing=configured_preprocessing,
     )

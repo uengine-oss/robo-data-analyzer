@@ -338,6 +338,240 @@ def _structured_import_artifact(
     }
 
 
+def _symbol_artifact(*, ambiguous: bool = False) -> tuple[str, dict]:
+    source_id = "sample.c"
+    source = (
+        "typedef int KnownType;\n"
+        "KnownType value;\n"
+        "void run(void) { MaybeType *local; }\n"
+    )
+    decoded_hash = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    known_definition_range = _range(source, "KnownType")
+    known_lookup_offset = source.index(
+        "KnownType",
+        known_definition_range["charOffset"] + known_definition_range["charLength"],
+    )
+    known_lookup_range = {
+        "charOffset": known_lookup_offset,
+        "charLength": len("KnownType"),
+    }
+    missing_range = _range(source, "MaybeType")
+    definition_id = _fact_id(
+        source_id, decoded_hash, "symbol",
+        known_definition_range["charOffset"], known_definition_range["charLength"],
+    )
+    facts = [
+        {
+            "factId": definition_id,
+            "kind": "symbol",
+            "range": known_definition_range,
+            "grammarRuleRef": 0,
+            "presenceRef": 0,
+            "payload": {
+                "role": "definition",
+                "symbolKind": "typedef_name",
+                "scopeKind": "file",
+                "scopeRange": {"charOffset": 0, "charLength": len(source)},
+                "visibilityStartOffset": source.index(";") + 1,
+            },
+        },
+        {
+            "factId": _fact_id(
+                source_id, decoded_hash, "symbol",
+                known_lookup_range["charOffset"], known_lookup_range["charLength"],
+            ),
+            "kind": "symbol",
+            "range": known_lookup_range,
+            "grammarRuleRef": 1,
+            "presenceRef": 0,
+            "payload": {
+                "role": "lookup",
+                "lookupKind": "type_name",
+                "parserDecision": "type_name",
+                "resolutionStatus": "resolved",
+                "provenance": "source_declaration",
+                "definitionFactId": definition_id,
+                "configuredEvidenceId": None,
+                "predicateContexts": ["typedef_name"],
+            },
+        },
+        {
+            "factId": _fact_id(
+                source_id, decoded_hash, "symbol",
+                missing_range["charOffset"], missing_range["charLength"],
+            ),
+            "kind": "symbol",
+            "range": missing_range,
+            "grammarRuleRef": 1,
+            "presenceRef": 0,
+            "payload": {
+                "role": "lookup",
+                "lookupKind": "type_name",
+                "parserDecision": (
+                    "ordinary_identifier" if ambiguous else "type_name"
+                ),
+                "resolutionStatus": "unresolved",
+                "provenance": "unresolved_environment",
+                "definitionFactId": None,
+                "configuredEvidenceId": None,
+                "predicateContexts": [
+                    "ambiguous_block_item" if ambiguous
+                    else "declaration_only_parse"
+                ],
+            },
+        },
+    ]
+    unresolved_id = facts[-1]["factId"]
+    completeness = []
+    for kind in KINDS:
+        emitted = len(facts) if kind == "symbol" else 0
+        row = {
+            "kind": kind,
+            "status": (
+                "partial" if kind == "symbol"
+                else "complete" if kind in {
+                    "call", "import", "macro", "conditional_region",
+                } else "unsupported"
+            ),
+            "population": emitted,
+            "emitted": emitted,
+            "explicitlyUnresolved": 0,
+        }
+        if kind == "symbol":
+            row.update(
+                reason="insufficient_type_name_environment",
+                reasons=["insufficient_type_name_environment"],
+                unresolvedFactIds=[unresolved_id],
+            )
+        completeness.append(row)
+    return source, {
+        "type": "FILE", "fileName": "sample.c", "filePath": source_id,
+        "children": [{
+            "type": "FUNCTION", "name": "run", "signature": "void run(void)",
+            "startLine": 3, "endLine": 3, "children": [],
+        }],
+        "evidence": {
+            "version": "1.2.0", "sourceId": source_id,
+            "rawSourceSha256": decoded_hash,
+            "decodedTextSha256": decoded_hash, "decodedText": source,
+            "sourceEncoding": "UTF-8", "decodeStatus": "exact",
+            "positionEncoding": "unicode-code-point",
+            "rangeConvention": "half-open",
+            "rangeEncoding": "char-offset-length", "parseStatus": "partial",
+            "configuredPreprocessing": _configured_preprocessing(source_id),
+            "facts": facts,
+            "grammarRules": ["declarator", "typedefNameDecision"],
+            "presences": [{
+                "status": "active", "condition": None,
+                "configurationId": None, "provenance": "unconditional",
+            }],
+            "completeness": completeness,
+        },
+    }
+
+
+def test_v12_symbol_facts_are_strict_diagnostics_not_graph_entities() -> None:
+    source, raw = _symbol_artifact()
+    validated = validate_common_evidence(
+        raw, source_bytes=source.encode("utf-8"), expected_source_id="sample.c",
+    )
+
+    assert validated.version == "1.2.0"
+    assert len(validated.symbol_facts) == 3
+    assert [fact.role for fact in validated.symbol_facts] == [
+        "definition", "lookup", "lookup",
+    ]
+    assert validated.syntax_ambiguities == ()
+    temporary, result = _read(raw, source)
+    try:
+        assert not hasattr(result, "symbol_facts")
+        assert result.evidence_completeness[-7]["kind"] == "symbol"
+    finally:
+        temporary.cleanup()
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    (
+        (
+            lambda raw: raw["evidence"]["facts"][1].update(
+                payload={
+                    **raw["evidence"]["facts"][1]["payload"],
+                    "definitionFactId": "f" * 64,
+                },
+            ),
+            "definitionFactId",
+        ),
+        (
+            lambda raw: next(
+                row for row in raw["evidence"]["completeness"]
+                if row["kind"] == "symbol"
+            ).update(unresolvedFactIds=[]),
+            "unresolvedFactIds",
+        ),
+        (
+            lambda raw: raw["evidence"]["facts"][0]["payload"].update(
+                visibilityStartOffset=0,
+            ),
+            "visibilityStartOffset",
+        ),
+        (
+            lambda raw: raw["evidence"]["facts"][1]["payload"].update(
+                predicateContexts=[],
+            ),
+            "predicateContexts",
+        ),
+        (
+            lambda raw: raw["evidence"]["facts"][0]["payload"].update(
+                symbolKind="ordinary_identifier",
+            ),
+            "parserDecision",
+        ),
+        (
+            lambda raw: next(
+                row for row in raw["evidence"]["completeness"]
+                if row["kind"] == "symbol"
+            ).update(status="complete"),
+            "completeness\\[symbol\\]",
+        ),
+        (
+            lambda raw: raw["evidence"]["facts"][1]["payload"].update(
+                provenance="configured_preprocessing",
+                definitionFactId=None,
+                configuredEvidenceId="a" * 64,
+            ),
+            "configuredEvidenceId",
+        ),
+        (
+            lambda raw: raw["evidence"]["facts"][1]["payload"].update(
+                provenance="grammar_context",
+                definitionFactId=None,
+            ),
+            "parserDecision",
+        ),
+    ),
+)
+def test_v12_malformed_symbol_contract_fails_closed(mutate, message) -> None:
+    source, raw = _symbol_artifact()
+    mutate(raw)
+    with pytest.raises(CommonEvidenceContractError, match=message):
+        validate_common_evidence(
+            raw, source_bytes=source.encode("utf-8"),
+            expected_source_id="sample.c",
+        )
+
+
+def test_v12_ambiguous_type_name_decision_fails_before_ast_projection() -> None:
+    source, raw = _symbol_artifact(ambiguous=True)
+    with TemporaryDirectory() as temp:
+        root = Path(temp)
+        (root / "sample.c").write_text(source, encoding="utf-8", newline="")
+        artifact = root / "sample.json"
+        artifact.write_text(json.dumps(raw), encoding="utf-8")
+        with pytest.raises(CommonEvidenceContractError, match="syntax ambiguity"):
+            read_antlr_json(artifact, root)
+
+
 def _structured_import_cases() -> list[tuple[str, str, dict, str]]:
     c_source = '#include "local/config.h"\n'
     c_entry = {

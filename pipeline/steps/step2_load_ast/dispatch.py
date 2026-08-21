@@ -158,6 +158,17 @@ def read_antlr_json(
         source_bytes=source_bytes,
         expected_source_id=file_path,
     )
+    if evidence.syntax_ambiguities:
+        samples = [
+            f"{fact.fact_id}@{fact.symbol_range.char_offset}:"
+            f"{fact.symbol_range.char_length}"
+            for fact in evidence.syntax_ambiguities[:5]
+        ]
+        raise CommonEvidenceContractError(
+            "common evidence C type-name syntax ambiguity: "
+            f"source={evidence.source_id!r}, "
+            f"count={len(evidence.syntax_ambiguities)}, samples={samples}"
+        )
     if source_cache is not None:
         source_cache.register_exact_text(
             source_path, source_bytes, evidence.decoded_text,

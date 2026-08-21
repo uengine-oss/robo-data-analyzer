@@ -40,6 +40,10 @@ from pipeline.models.semantic_frame import (
 )
 from search.corpus.node_detail import build_gwt_detail, build_node_detail
 from pipeline.steps.step2_load_ast.dispatch import read_antlr_json
+from pipeline.steps.step2_load_ast.evidence_ir import (
+    SymbolEvidenceFact,
+    validate_common_evidence,
+)
 from pipeline.steps.step2_load_ast.source_ast_closure import verify_source_ast_closure
 from pipeline.steps.step5_linking.link_calls.call_classifier import classify_call_sites
 from shared.config.settings import SETTINGS
@@ -53,6 +57,28 @@ PARSER_REPORT = os.getenv("ROBO_SPEC131_PARSER_REPORT", "")
 
 def _ledger_hash(rows: list[str]) -> str:
     return hashlib.sha256("\n".join(rows).encode("utf-8")).hexdigest()
+
+
+def _symbol_payload(fact: SymbolEvidenceFact) -> dict:
+    if fact.role == "definition":
+        assert fact.scope_range is not None
+        return {
+            "role": "definition",
+            "symbolKind": fact.symbol_kind,
+            "scopeKind": fact.scope_kind,
+            "scopeRange": fact.scope_range.as_dict(),
+            "visibilityStartOffset": fact.visibility_start_offset,
+        }
+    return {
+        "role": "lookup",
+        "lookupKind": "type_name",
+        "parserDecision": fact.parser_decision,
+        "resolutionStatus": fact.resolution_status,
+        "provenance": fact.provenance,
+        "definitionFactId": fact.definition_fact_id,
+        "configuredEvidenceId": fact.configured_evidence_id,
+        "predicateContexts": list(fact.predicate_contexts),
+    }
 
 
 def _allowed_report(path: Path) -> bool:
@@ -414,13 +440,15 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
 
     def consume() -> tuple[
         list[dict], list[dict], list[dict], list[dict], list[dict], list,
-        float, int,
+        list[tuple[str, SymbolEvidenceFact]], dict[str, str], float, int,
     ]:
         sites: list[dict] = []
         macros: list[dict] = []
         imports: list[dict] = []
         completeness: list[dict] = []
         preprocessing: list[dict] = []
+        symbols: list[tuple[str, SymbolEvidenceFact]] = []
+        symbol_sources: dict[str, str] = {}
         nodes = []
         tracemalloc.start()
         started = time.perf_counter()
@@ -431,6 +459,27 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
                 expected_sha256=artifact.ast_sha256,
                 source_language=artifact.language,
                 source_cache=cache,
+            )
+            raw = json.loads(artifact.ast_path.read_text(encoding="utf-8"))
+            validated = validate_common_evidence(
+                raw,
+                source_bytes=cache.read_bytes(artifact.source_path),
+                expected_source_id=artifact.source_id,
+            )
+            assert validated.syntax_ambiguities == ()
+            symbols.extend(
+                (validated.source_id, fact)
+                for fact in validated.symbol_facts
+            )
+            symbol_sources[validated.source_id] = validated.decoded_text
+            assert not hasattr(result, "symbol_facts")
+            assert all(
+                not {
+                    "definitionFactId", "configuredEvidenceId",
+                    "predicateContexts", "parserDecision",
+                    "resolutionStatus", "visibilityStartOffset", "scopeKind",
+                }.intersection(node.extra)
+                for node in result.code_nodes
             )
             sites.extend(result.call_sites)
             macros.extend(result.macro_facts)
@@ -443,15 +492,16 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
         tracemalloc.stop()
         return (
             sites, macros, imports, completeness, preprocessing, nodes,
-            elapsed, peak,
+            symbols, symbol_sources, elapsed, peak,
         )
 
     (
         first, macros, imports, completeness, preprocessing, nodes,
-        elapsed, peak,
+        symbols, symbol_sources, elapsed, peak,
     ) = consume()
     (
         repeated, repeated_macros, repeated_imports, _, repeated_preprocessing, _,
+        repeated_symbols, repeated_symbol_sources,
         repeated_elapsed, repeated_peak,
     ) = consume()
     parser_report = json.loads(parser_report_path.read_text(encoding="utf-8"))
@@ -461,6 +511,31 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
     assert len(first) == parser_report["callFacts"] == 12_113
     assert len(macros) == parser_report["macroFacts"] == 183
     assert len(imports) == parser_report["importFacts"] == 450
+    symbol_ids = [fact.fact_id for _, fact in symbols]
+    repeated_symbol_ids = [fact.fact_id for _, fact in repeated_symbols]
+    assert len(symbols) == parser_report["symbolFacts"] == 4_659
+    assert len(symbol_ids) == len(set(symbol_ids))
+    assert symbol_ids == repeated_symbol_ids
+    assert symbol_sources == repeated_symbol_sources
+    assert _ledger_hash(symbol_ids) == parser_report["symbolFactIdLedgerSha256"]
+    assert Counter(fact.role for _, fact in symbols) == Counter(
+        definition=2_624, lookup=2_035,
+    )
+    assert Counter(
+        fact.resolution_status for _, fact in symbols if fact.role == "lookup"
+    ) == Counter(resolved=755, unresolved=1_280)
+    unresolved_symbols = [
+        fact for _, fact in symbols if fact.resolution_status == "unresolved"
+    ]
+    assert Counter(
+        fact.predicate_contexts for fact in unresolved_symbols
+    ) == Counter({
+        ("declaration_only_context",): 694,
+        ("declaration_only_parse",): 584,
+        ("cast_only_parse",): 1,
+        ("external_declaration_only_parse",): 1,
+    })
+    assert {fact.parser_decision for fact in unresolved_symbols} == {"type_name"}
     assert len(expected_ids) == len(set(expected_ids))
     assert expected_ids == repeated_ids
     assert [fact["fact_id"] for fact in macros] == [
@@ -478,6 +553,20 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
         [fact["fact_id"] for fact in macros]
     ) == parser_report["macroFactIdLedgerSha256"]
     assert _ledger_hash(import_ids) == parser_report["importFactIdLedgerSha256"]
+
+    symbol_completeness = [
+        row for row in completeness if row["kind"] == "symbol"
+    ]
+    assert len(symbol_completeness) == len(closure.artifacts) == 23
+    assert sum(row["population"] for row in symbol_completeness) == len(symbols)
+    completeness_unresolved_ids = [
+        fact_id
+        for row in symbol_completeness
+        for fact_id in row.get("unresolvedFactIds", [])
+    ]
+    assert completeness_unresolved_ids == [
+        fact.fact_id for fact in unresolved_symbols
+    ]
 
     presence = Counter(site["presence_status"] for site in first)
     callee_kind = Counter(site["callee_kind"] for site in first)
@@ -505,8 +594,8 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
         (ref["import_id"], ref["source_id"], ref["entries"][0]["target"])
         for ref in inactive_imports
     ] == [(
-        "4cb06d86a857bc112715b599876cb23dc52b831190eaf294ad26f57f3ea8ff7d",
-        "zapamcom10110.c",
+        "213be4df83a31036ede95626a803da153adbeddc6f46a5cea2ca05becd65e852",
+        "source/zapamcom10110.c",
         "<zngmmcap20020.h>",
     )]
     import_outcomes = Counter(row["outcome"] for row in import_ledger)
@@ -611,14 +700,19 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
     sealed_imports = [
         selected for selected in sealed if "entries" in selected["payload"]
     ]
+    sealed_symbols = parser_report["sealedSymbolDirectJudgmentPopulation"]
     by_id = {site["call_id"]: site for site in first}
     macro_by_id = {fact["fact_id"]: fact for fact in macros}
     import_by_id = {ref["import_id"]: ref for ref in imports}
+    symbol_by_id = {
+        fact.fact_id: (source_id, fact) for source_id, fact in symbols
+    }
     node_by_id = {node.id: node for node in nodes}
     ledger_by_id = {row["call_id"]: row for row in classification.ledger}
     assert len(sealed_calls) == 526
     assert len(sealed_macros) == 34
     assert len(sealed_imports) == 450
+    assert len(sealed_symbols) == 40
     for selected in sealed_calls:
         site = by_id[selected["factId"]]
         assert site["range"] == selected["range"]
@@ -659,34 +753,43 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
             assert entry["wildcard"] == sealed_entry["wildcard"]
             assert entry["locality"] == sealed_entry["locality"]
         assert ref["presence"] == selected["presence"]
+    for selected in sealed_symbols:
+        source_id, fact = symbol_by_id[selected["factId"]]
+        assert source_id == selected["sourceId"]
+        assert fact.symbol_range.as_dict() == selected["range"]
+        assert fact.grammar_rule == selected["grammarRule"]
+        assert _symbol_payload(fact) == selected["payload"]
+        start = fact.symbol_range.char_offset
+        assert symbol_sources[source_id][start:fact.symbol_range.end] \
+            == selected["sourceSlice"]
 
     # Fixed, source-range-sealed examples cover calls that the former raw-source
     # classifier would have treated as unrelated semantic categories.  Without
     # configured preprocessing, every one must stop at the earlier evidence gate.
     direct_expectations = {
         "framework_runtime": (
-            "5975501d007c95d8e41c77757db52f240a83723c51d82b77cd9e88800d14f0ff",
-            "apascrtu0010t02.c", "PFM_TRY", "active",
+            "0d268f10c575f808cd15e9fbe8c89b8e5cf8a2c69fba80ec4534b118391e7923",
+            "source/apascrtu0010t02.c", "PFM_TRY", "active",
         ),
         "stdlib": (
-            "c06c20c586026157f709dd4bb2c3c365372c5ebe914d5ce2c4a75fd799ce0e40",
-            "apascrtu0010t02.c", "strncpy", "active",
+            "66552cea60760867e5b419d5f6ffb966e73fd0875cb6b1e65f5ec71936cdb03e",
+            "source/apascrtu0010t02.c", "strncpy", "active",
         ),
         "function_macro": (
-            "e3c796a28b0fe9ab80645b96736736a24511eac0d0e6d3999e0e8b39ab9c656d",
-            "zapamcom10090.c", "PFM_DBG", "active",
+            "f2a48f3034c7ee18ea2af8d8f0e1b5b2f0c777d28ffcb016a21a873b1c47b1f5",
+            "source/zapamcom10090.c", "PFM_DBG", "active",
         ),
         "inactive_source_branch": (
-            "66465ddc80d18aa10e4b4bad1c82a42c69e375ae7fef8865e0e6055f7faf6140",
-            "zapamcom10020.c", "strncpy", "inactive",
+            "d34161e98059b2dd2232b9658cc603756ef00f95fe74c9a92cf24a013731bffa",
+            "source/zapamcom10020.c", "strncpy", "inactive",
         ),
         "argument_wrapper": (
-            "bfd07393bf60d77993986769a53ae928c9106d411f0b31ef718c6ab6a2149dd8",
-            "zapamcom10110.c", "mpfm_dlcall", "inactive",
+            "b887ac8dea6d83fdff40a823bcbc18f80a7dd81a22549d0198225b160476cf55",
+            "source/zapamcom10110.c", "mpfm_dlcall", "inactive",
         ),
         "workspace_named_routine": (
-            "d1be6aa1b5327e31ace0ceac874adafebbf8183c162ed673b1d6dad0166ae348",
-            "zapamcom10200.c", "swgf_snprintf", "active",
+            "14f5ec567211e3720d49f1f456188499c799f50d66b1e1d765e77a601468613f",
+            "source/zapamcom10200.c", "swgf_snprintf", "active",
         ),
     }
     sealed_call_ids = {selected["factId"] for selected in sealed_calls}
@@ -753,12 +856,24 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
             "owner_end_line": owner_node.end_line,
         })
     report = {
-        "contract_version": "1.1.0",
+        "contract_version": parser_report["contractVersion"],
         "source_files": len(closure.artifacts),
         "code_nodes": len(nodes),
         "call_facts": len(first),
         "macro_facts": len(macros),
         "import_facts": len(imports),
+        "symbol_facts": len(symbols),
+        "symbol_definitions": sum(
+            fact.role == "definition" for _, fact in symbols
+        ),
+        "symbol_lookups": sum(fact.role == "lookup" for _, fact in symbols),
+        "symbol_resolved_lookups": sum(
+            fact.resolution_status == "resolved" for _, fact in symbols
+        ),
+        "symbol_unresolved_lookups": len(unresolved_symbols),
+        "symbol_fact_id_ledger_sha256": _ledger_hash(symbol_ids),
+        "symbol_syntax_ambiguities": 0,
+        "symbol_graph_domain_projection": "none",
         "unique_call_fact_ids": len(set(expected_ids)),
         "duplicate_call_fact_ids": len(expected_ids) - len(set(expected_ids)),
         "call_fact_id_ledger_sha256": _ledger_hash(expected_ids),
@@ -821,6 +936,7 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
         "sealed_call_direct_judgment_matched": len(sealed_calls),
         "sealed_macro_direct_judgment_matched": len(sealed_macros),
         "sealed_import_direct_judgment_matched": len(sealed_imports),
+        "sealed_symbol_direct_judgment_matched": len(sealed_symbols),
         "sealed_preprocessing_direct_judgment_population": (
             sealed_preprocessing_judgment
         ),

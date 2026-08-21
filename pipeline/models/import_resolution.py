@@ -15,6 +15,8 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 
 ImportOutcome = Literal["resolved", "excluded", "unresolved"]
+ImportEvidenceVersion = Literal["1.0.0", "1.1.0", "1.2.0"]
+_STRUCTURED_IMPORT_EVIDENCE_VERSIONS = frozenset({"1.1.0", "1.2.0"})
 
 
 def _canonical_json(value: Any) -> str:
@@ -60,7 +62,7 @@ class ImportResolutionOccurrence(BaseModel):
     import_id: str = Field(..., min_length=64, max_length=64)
     ordinal: int = Field(..., ge=0)
     entry_ordinal: int = Field(..., ge=0)
-    evidence_version: Literal["1.0.0", "1.1.0"]
+    evidence_version: ImportEvidenceVersion
     source_id: str = Field(..., min_length=1)
     file: str = Field(..., min_length=1)
     line: int = Field(..., ge=1)
@@ -161,7 +163,7 @@ def _outcome(ref: Mapping[str, Any], entry: Mapping[str, Any]) -> tuple[str, str
     version = str(ref.get("evidence_version") or "")
     status = str(ref.get("evidence_status") or "")
     presence = str(ref.get("presence_status") or "")
-    if version != "1.1.0":
+    if version not in _STRUCTURED_IMPORT_EVIDENCE_VERSIONS:
         return "unresolved", "insufficient_structured_import_evidence"
     if status != "complete":
         return "unresolved", "insufficient_import_evidence_completeness"
