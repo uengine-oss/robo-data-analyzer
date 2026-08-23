@@ -28,7 +28,9 @@
 
 ## 2. 현재 환경과 보존 WIP
 
-- Analyzer HEAD/origin: `281ab3d885e7f7b84b0f920ce56a91a3708bc021`.
+- Strategy A 실행·증거 baseline commit: `281ab3d885e7f7b84b0f920ce56a91a3708bc021`.
+- 현재 Analyzer HEAD/origin은 다음 세션 시작 시 Git에서 한 번 확인한다. 이 문서를 커밋할 때마다 낡는
+  동적 HEAD 값을 현재상태 문서에 반복 복사하지 않는다.
 - Analyzer 보존 WIP:
   - modified `pipeline/steps/step2_load_ast/evidence_ir.py`: 미완성 IR 1.3 decoder 시도.
     잃거나 IR 1.3 consumer로 완성하지 말고 IR 2.0 방향으로 교체한다.
@@ -109,6 +111,14 @@
 
 ## 6. 토큰·시간 절약 규칙
 
+- 원인이 확정되지 않은 상태에서는 추론·추정으로 제품을 수정하지 않는다. 가설은 다음 판별 검사를
+  고르는 용도일 뿐이며, source→실제 값→출력의 인과 고리를 닫아야 구현 단계로 넘어간다.
+- 처음부터 모든 경로를 깊게 파지 않는다. 봉인된 ledger/hash와 기존 actual 확인부터 시작하고 원인이
+  남을 때만 영향 좌표→집중 계측→최소 재현·역실험→Git history/bisect→외부 1차 근거 순으로 깊어진다.
+- 필요한 경우 rollback 가능한 진단용 계측·실험 수정이나 관련 경로 전수조사로 원인을 찾는다. 제품
+  동작 수정은 인과 고리를 닫은 뒤 한다. 원인 불명을 이유로 임의 제한·fallback·우회를 넣지 않는다.
+  외부 정보 없이는 인과 고리를 닫을 수 없을 때만 사용자에게 확인된 사실·배제된 가설·필요한 deep
+  research 질문을 전달한다.
 - 입력·설정·모델·prompt·정답지·계약의 hash를 시작할 때 한 번 봉인한다. dependency hash가 그대로면
   같은 원문과 분석물을 다시 읽거나 만들지 않고 재사용한다.
 - 각 수정은 원인, 바뀐 producer/consumer, 영향 좌표, 기대 변화, 미영향 범위를 짧은 change ledger에 남긴다.

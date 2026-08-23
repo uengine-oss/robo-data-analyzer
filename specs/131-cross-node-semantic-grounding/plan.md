@@ -6,6 +6,11 @@
 > **2026-08-20 실행 재개:** 사용자가 전체 목표와 방향을 승인해 Analyzer 구현·검증을 진행한다.
 > Architect 단계만 사용자가 다시 열기 전까지 보류한다.
 
+모든 단계에는 원인 확정 gate를 적용한다. 가설은 다음 판별 검사를 선택하는 데만 쓰며 추론·추정으로
+제품을 수정하지 않는다. 봉인 baseline과 actual 값 같은 값싼 증거부터 확인하고, 원인이 남을 때만 영향
+좌표·집중 계측·최소 재현/역실험·Git history/bisect·외부 1차 근거 순으로 깊어진다. 관련 원인을 닫은
+수정을 한 책임 슬라이스로 모은 뒤 작은 실제 데이터→확대 영역→최종 전체 재분석 1회 순으로 검증한다.
+
 1. 모든 Framework/DBMS 자연어 의미 생산자, 현재 response schema, normalizer, validator, 저장 필드,
    graph/API/MCP projection, Architect 소비자를 한 번 전수 inventory해 재사용 가능한 단일 영향표로 만든다.
 2. 전략별 AST를 공통 structural role과 stable evidence ID로 바꾸는 `StructuralProfile`을 설계한다.

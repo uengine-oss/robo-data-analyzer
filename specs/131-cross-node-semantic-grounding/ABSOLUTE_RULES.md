@@ -1,7 +1,7 @@
 # Analyzer 의미 무손실 작업 절대규칙
 
 **Status**: Active
-**Updated**: 2026-08-20
+**Updated**: 2026-08-23
 **Purpose**: 컨텍스트 요약·새 세션마다 가장 먼저 읽는 짧은 불변식 정본
 
 이 문서는 과거 실험 이력이나 진행률을 소유하지 않는다. 현재 작업 위치는 `CURRENT_STATUS.md`, 상세 검증 절차는 `specs/131-cross-node-semantic-grounding/history/handovers/04-검증방법.md`, 전략 A/B 역사와 실패 교훈은 `11-핵심압축-인계정본.md`, 실제 수치는 각 `evidence/`가 소유한다.
@@ -86,6 +86,14 @@
 - checker·gold·좌표계·occurrence/unique 집계를 제품보다 먼저 반증한다.
 - 원문에는 있으나 prompt에 없으면 upstream/context 결함, prompt에는 있으나 raw에서 빠지면 provider/prompt/schema 결함, raw에는 있으나 후단에서 사라지면 normalizer/storage/projection 결함이다.
 - 원인 고리마다 `파일:행`, 실제 입력값, 변환값, 출력값을 남긴다. 추측 고리가 하나라도 있으면 수정 단계로 넘어가지 않는다.
+- 원인 불명 상태의 추론·추정은 구현 근거가 아니다. 가설은 서로 다른 원인을 판별할 다음 확인 대상을
+  고르는 데만 쓰고, 실제 source/data flow·입출력·재현 결과로 반증하거나 확정한다.
+- 조사는 가장 값싼 판별 증거부터 시작한다. 기존 봉인 hash/ledger와 코드·actual 값 확인으로 원인이
+  닫히지 않을 때만 영향 좌표 추적→집중 로그/계측→최소 재현·역실험→Git bisect/history→외부 1차 근거
+  순으로 필요한 만큼 깊어진다. 이미 불변으로 봉인된 입력과 무관한 경로를 매번 다시 읽지 않는다.
+- rollback 가능한 진단용 로직 수정, instrumentation, 더 깊은 전수조사 중 필요한 수단을 사용해
+  producer→consumer 인과 고리를 닫은 뒤 제품 수정을 구현한다. 원인을 못 찾았다는 이유로 임의 상한·
+  fallback·우회·그럴듯한 수정을 넣지 않는다.
 - 막히면 코드·로그·Git·최소 재현·역실험을 먼저 하고, 저장소 밖 사실은 공식 문서·논문·공식 source를 조사한다. 그래도 설계가 갈리면 필요한 질문과 이유를 적어 사용자에게 딥리서치 도움을 요청한다.
 
 ## 6. 검증
