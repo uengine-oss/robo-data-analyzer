@@ -1,4 +1,4 @@
-# Generated: 2026-08-20
+# Generated: 2026-08-23
 # Scope: spec131 history handoffs, all spec127 files, spec131 contract/evidence, spec-local ignored raw experiment archives, work reports.
 # Purpose: byte-integrity inventory only; a listed file is not automatically valid, current, or semantically approved.
 source	relative_path	bytes	sha256
@@ -14,7 +14,8 @@ canonical-handovers	08-단일인계-정본.md	66930	ade0f9b10a6056b84894f61fc7db
 canonical-handovers	09-nl품질-지침반증-인계정본.md	60106	8099ce11b52e1b5e2d2bda33baffa113fab8b42d05f74c76ef89ef6ce1ac1462
 canonical-handovers	10-검증체계-정립-인계정본.md	140800	602afc3dbe5868e32b927c8610a9edc1b6a6834591ac797afa3406759bfd0fa1
 canonical-handovers	11-핵심압축-인계정본.md	74101	93b846bda617463d142106c8c800df2fd2f2896c9c82c21d59bf95882e35743a
-canonical-handovers	README.md	3362	3a8772119b0b19b42c55fbd937306742847d93f6c8964096b47716fe965321e6
+canonical-handovers	12-20260821-current-status-snapshot-pointer.md	962	3f972b2416dbc1b565e6ec89b2ad23db9574d234bccda92de8dca747b4580e6c
+canonical-handovers	README.md	3467	d905ec5a91e19af143bd0e8b420b36aecbdf55c06f8bcf8309970403f82c9350
 spec127	evidence/strategy-a-v3-results.jsonl	508443	8c14d1928a6fea3afe4720a6cd343fe5eacff8b772f4d43bd9009a7b1d24f962
 spec127	evidence/strategy-a-v3-summary.json	2406	9c01436e3602da477555f66503ea7fc8faff9f7ecf6326a3c8b1858bcaf4c45d
 spec127	evidence/strategy-b-semantic-review-20.json	6603	4f0770a6d0940054e28159926fabc6b207da0dd11a50d1a8ed2df18b66ad75c7
@@ -45,6 +46,7 @@ spec131-evidence	strategy-a-progressive-pilot-contract-20260821.md	4693	f87bc4ae
 spec131-evidence	strategy-a-progressive-pilot-seal-20260821.json	2061	9f818c377451cf3c82defb95c4794e84f0470ef79b2dd931ca075941604e4641
 spec131-evidence	strategy-a-progressive-pilot-result-20260821.md	8199	467fcda2e36d6e98ebdb9f3209583809d4a2a5d158b38ef39c564b9494070845
 spec131-evidence	strategy-a-repeat-prompt-seal-20260821.json	2344	6d6562e457a6a581372c6dd5371339f4327bdaad46c0e2dc34783e0f46b8a04a
+spec131-evidence	strategy-a-notation-comparison-20260821.md	2688	105ed9f14781f68f91325243f586df9ff6c5dff7552f8010a0931f5bdc4c22c4
 spec131-evidence	summary-completeness-root-cause-20260819.md	4363	1cfafa67d0db9859991c2d491a74d4d8a51074ef205d0d9be9f9fc1e06de7202
 spec131-local-coordinate-20260804	harness.py	9794	e35d02d7ccf53acb5ae566f9f9264b576149e4a0fdd5d72dc1d79b50ff2822d3
 spec131-local-coordinate-20260804	run/llm-prompts/semantic_labels.jsonl	248180	3e55836c8bea0ea781309cd6a8b8b10b91361ab10c9a257cd7dd7023c16a7901
@@ -233,5 +235,5 @@ work-reports	2026-08-12-evidence/architect/simplified-proposal-final.json	153232
 work-reports	2026-08-18-APAS-의미판정-표본20.json	2387	b7d4829f4b05994b0d9a2adc6940e906a42b24557cf9f7815498e23a9773924b
 work-reports	2026-08-18-Analyzer-Architect-GWT-분석결과-활용-작업보고.md	6445	6e519634ed96c6acf5e39228901c3bf9da579843f9d4dda1c1159c82e25e9971
 work-reports	2026-08-20-추론모델-변경-개선점.md	3583	131d133dcc115a191fbb4083a20e951d23ed3e48310283c18d62b564407ff57f
-work-reports	2026-08-21-Strategy-A-모델변경-비교.md	4015	5ec8dc6db5715b914a94a2565f8f87fc1b460ca57a854aae8499658acd25b046
-# files=229 bytes=11438198
+work-reports	2026-08-21-Strategy-A-모델변경-비교.md	2025	b348fd700b6929035f39fe69d811b11f93975aebc5875c51741bfff72c065d9c
+# files=234 bytes=11458179

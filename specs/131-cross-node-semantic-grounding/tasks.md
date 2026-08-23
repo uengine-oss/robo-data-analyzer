@@ -49,11 +49,14 @@
   - `no_direct_effect()`, symbolic identity 보존, source-language syntax fail-closed,
     value-version 없는 unreachable 금지, temporal/argument 결손 `needs_context`
   - raw/canonical JSON/status/Python AST/직접 의미의 3회 동일성 축
-- [ ] A131-SA-11 workers=8인 기존 current 1회는 예비 결과로 보존하고, 과거와 같은 workers=16에서
+- [x] A131-SA-11 workers=8인 기존 current 1회는 예비 결과로 보존하고, 과거와 같은 workers=16에서
   current historical wire 3회와 개선 prompt 3회를 새로 실행해 각각 312행을 만든다. content retry 0·
   actual prompt/raw/usage/finish reason을 한 run에 보존한다.
-- [ ] A131-SA-12 이전 312↔현재 control 312↔현재 개선 312를 자동 회계·봉인 직접 의미 판정하고
-  작업보고와 CURRENT_STATUS를 수정한 뒤 검증된 슬라이스만 commit/push한다.
+- [x] A131-SA-12 이전 312↔현재 control 312↔현재 개선 312의 Python 표기 자동 회계와 반복 동일성을
+  봉인하고, 표기 전용 작업보고와 CURRENT_STATUS를 수정한다.
+  - `evidence/strategy-a-notation-comparison-20260821.md`
+- [ ] A131-SA-13 의미 정확도는 upstream evidence producer 수정 뒤 자동 회귀·결정론 전수 회계·봉인 직접
+  의미 판정의 3층으로 별도 검증한다. 표기 결과를 의미 정확도나 제품 합격으로 승격하지 않는다.
 
 ## 2026-08-20 의미 무손실 전수조사
 

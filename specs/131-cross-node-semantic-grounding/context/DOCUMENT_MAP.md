@@ -52,6 +52,7 @@
 | `09-nl품질-지침반증-인계정본.md` | `HISTORY` | NL 지침 실험과 반증 수치 |
 | `10-검증체계-정립-인계정본.md` | `HISTORY` | 검증 체계·프롬프트 개편 상세 이력 |
 | `11-핵심압축-인계정본.md` | `HISTORY` | 전략 A/B, 절대규칙 계보, 실패 교훈의 최신 역사 원문 |
+| `12-20260821-current-status-snapshot-pointer.md` | `HISTORY` | 2026-08-21 상세 상태 원장의 immutable Git 객체·hash 포인터 |
 | `README.md` | `ACTIVE` | 이 폴더 내부의 역사 문서 안내 |
 
 역사 권위 계보 `11 > 10 > 09 > 08`은 **역사 안에서만** 유효하다. 현재 규칙과 현재상태는 각각
@@ -93,8 +94,9 @@ Git 제외 로컬 `_runs/_artifacts`는 이 수치에서 제외한다. 이는 00
 ## 5. 핵심 evidence 원문
 
 전체 파일 무결성은 `EVIDENCE_INVENTORY.tsv`가 소유한다. canonical handoff, spec127, spec131
-contract/evidence, spec-local raw 실험 3개 트리, 날짜별 작업보고를 합쳐 226개 파일·11,423,640 bytes를
-파일별 SHA-256으로 고정했다. 이 원장은 원문 변형·누락을 찾기 위한 것이며 evidence의 타당성이나
+contract/evidence, spec-local raw 실험 3개 트리, 날짜별 작업보고를 합친 최신 파일·byte 수는
+원장 마지막 줄이 소유한다. 각 파일은 SHA-256으로 고정했다. 이 원장은 원문 변형·누락을 찾기 위한
+것이며 evidence의 타당성이나
 현재성을 자동 승인하지 않는다.
 
 | 경로 | 상태 | 소유하는 증거 |
