@@ -160,7 +160,9 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
     variables, constants, data_types = [], [], []
     parent_of = []
     has_member, belongs_to, statement_next = [], [], []
-    call_sites, callable_facts, macro_facts, import_refs = [], [], [], []
+    call_sites, callable_facts, structural_expression_facts = [], [], []
+    semantic_expression_facts = []
+    macro_facts, import_refs = [], []
     evidence_sources, evidence_completeness, preprocessing_contexts = [], [], []
     parsed_files = 0
     await pause.gate()
@@ -186,6 +188,8 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         statement_next.extend(result.statement_next_edges)
         call_sites.extend(result.call_sites)
         callable_facts.extend(result.callable_facts)
+        structural_expression_facts.extend(result.structural_expression_facts)
+        semantic_expression_facts.extend(result.semantic_expression_facts)
         macro_facts.extend(result.macro_facts)
         import_refs.extend(result.import_refs)
         evidence_sources.extend(result.evidence_sources)
@@ -204,6 +208,23 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         or len(callable_fact_ids) != len(set(callable_fact_ids))
     ):
         raise ValueError("common evidence callable fact IDs are not globally exact-once")
+    expression_fact_ids = [
+        fact.get("fact_id") for fact in structural_expression_facts
+    ]
+    if (
+        any(not fact_id for fact_id in expression_fact_ids)
+        or len(expression_fact_ids) != len(set(expression_fact_ids))
+    ):
+        raise ValueError(
+            "common evidence structural expression fact IDs are not globally exact-once"
+        )
+    semantic_expression_ids = [
+        fact.get("fact_id") for fact in semantic_expression_facts
+    ]
+    if semantic_expression_ids != expression_fact_ids:
+        raise ValueError(
+            "Analyzer semantic expression ledger is not a 1:1 ordered projection"
+        )
     macro_fact_ids = [fact.get("fact_id") for fact in macro_facts]
     if (
         any(not fact_id for fact_id in macro_fact_ids)
@@ -381,6 +402,8 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         call_sites=len(call_sites), import_refs=len(import_refs),
         import_occurrences=len(import_resolution_ledger),
         macro_facts=len(macro_facts),
+        structural_expression_facts=len(structural_expression_facts),
+        semantic_expression_facts=len(semantic_expression_facts),
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
     return {
@@ -398,6 +421,8 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         "init_by_edges": init_by,
         "call_sites": call_sites,
         "callable_facts": callable_facts,
+        "structural_expression_facts": structural_expression_facts,
+        "semantic_expression_facts": semantic_expression_facts,
         "macro_facts": macro_facts,
         "import_refs": import_refs,
         "import_resolution_ledger": import_resolution_ledger,

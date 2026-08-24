@@ -106,6 +106,8 @@ class WorkflowState(TypedDict, total=False):
     # step2 가 파일별 partial 로 여러 dict 반환 → 누적 필요 (다른 키는 한 번에 반환).
     call_sites: Annotated[list[dict], operator.add]
     callable_facts: list[dict]
+    structural_expression_facts: list[dict]
+    semantic_expression_facts: list[dict]
     macro_facts: list[dict]
     import_refs: Annotated[list[dict], operator.add]
     import_resolution_ledger: list[dict]

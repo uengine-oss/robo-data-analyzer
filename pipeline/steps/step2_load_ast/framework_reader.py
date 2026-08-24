@@ -35,6 +35,10 @@ from pipeline.steps.step2_load_ast.evidence_ir import (
     CommonEvidenceContractError,
     ValidatedCommonEvidence,
 )
+from pipeline.steps.step2_load_ast.c_structural_expression_adapter import (
+    StructuralExpressionAdapterError,
+    adapt_c_structural_expression,
+)
 
 @dataclass
 class _FwCtx:
@@ -82,6 +86,8 @@ def _read_framework(
     if evidence is not None:
         _bind_call_evidence(result, evidence)
         _bind_callable_evidence(result, evidence)
+        if "structural_expression" in evidence.completeness:
+            _bind_structural_expression_evidence(result, evidence)
         _bind_import_evidence(result, evidence)
         result.macro_facts.extend(fact.as_record() for fact in evidence.macro_facts)
         result.evidence_sources.append(evidence.source_record())
@@ -429,6 +435,93 @@ def _bind_callable_evidence(
             f"common evidence callable population: duplicate fact IDs in {evidence.source_id}"
         )
     result.callable_facts.extend(records)
+
+
+def _bind_structural_expression_evidence(
+    result: ParseResult,
+    evidence: ValidatedCommonEvidence,
+) -> None:
+    """Project exact expression facts onto compatibility AST fields once.
+
+    The correspondence is listener traversal order plus an exact source-slice
+    equality check.  Lines are diagnostics only; they are never used to choose a
+    match, so multiple expressions on one physical line remain distinct.
+    """
+    expected: list[tuple[object, str, str | None]] = []
+    for node in result.code_nodes:
+        if node.label in {"IF", "SWITCH", "LOOP"} and node.expression:
+            expected.append((node, "condition", node.expression))
+        elif node.label == "CASE" and node.expression:
+            expected.append((node, "case_value", node.expression))
+        elif node.label == "RETURN" and node.expression:
+            expected.append((node, "return_value", node.expression))
+        elif node.label == "ASSIGNMENT":
+            if not node.target or not node.expression:
+                raise CommonEvidenceContractError(
+                    "common evidence structural expression projection: "
+                    f"incomplete legacy assignment {node.id}"
+                )
+            if node.statement_origin == "declaration_initializer":
+                expected.append((node, "initializer_value", node.expression))
+            elif node.statement_origin in {"prefix_update", "postfix_update"}:
+                expected.append((node, "update_expression", None))
+            else:
+                expected.extend((
+                    (node, "assignment_target", node.target),
+                    (node, "assignment_value", node.expression),
+                ))
+
+    facts = list(evidence.structural_expression_facts)
+    if len(expected) != len(facts):
+        raise CommonEvidenceContractError(
+            "common evidence structural expression population: "
+            f"legacy={len(expected)}, canonical={len(facts)}, "
+            f"source={evidence.source_id}"
+        )
+    source = evidence.decoded_text
+    line_starts = _physical_line_starts(source)
+    records: list[dict] = []
+    semantic_records: list[dict] = []
+    for index, ((node, expected_role, expected_source), fact) in enumerate(
+        zip(expected, facts, strict=True)
+    ):
+        start = fact.expression_range.char_offset
+        expression_source = source[start:fact.expression_range.end]
+        owner_line = _physical_line(line_starts, fact.owner_range.char_offset)
+        if (
+            fact.role != expected_role
+            or (expected_source is not None and expression_source != expected_source)
+            or owner_line != node.start_line
+        ):
+            raise CommonEvidenceContractError(
+                "common evidence structural expression traversal: "
+                f"index={index}, factId={fact.fact_id}, "
+                f"expected=({expected_role},{expected_source!r},line {node.start_line}), "
+                f"actual=({fact.role},{expression_source!r},line {owner_line})"
+            )
+        records.append(fact.as_record(
+            code_node_id=node.id,
+            expression_source=expression_source,
+        ))
+        try:
+            semantic_records.append(adapt_c_structural_expression(
+                fact,
+                frontend_schema=evidence.frontend_schema or "",
+                code_node_id=node.id,
+            ).as_record())
+        except StructuralExpressionAdapterError as error:
+            raise CommonEvidenceContractError(
+                "common evidence structural expression adapter: "
+                f"factId={fact.fact_id}, {error}"
+            ) from error
+    ids = [record["fact_id"] for record in records]
+    if len(ids) != len(set(ids)):
+        raise CommonEvidenceContractError(
+            f"common evidence structural expression population: duplicate fact IDs "
+            f"in {evidence.source_id}"
+        )
+    result.structural_expression_facts.extend(records)
+    result.semantic_expression_facts.extend(semantic_records)
 
 
 def _bind_import_evidence(

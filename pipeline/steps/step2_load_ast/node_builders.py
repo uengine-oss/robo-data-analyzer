@@ -63,6 +63,8 @@ class ParseResult:
     statement_next_edges: list[StatementNext] = field(default_factory=list)  # 구문 → 다음 구문 (DBMS 실행 흐름)
     call_sites: list[dict] = field(default_factory=list)   # canonical call occurrence ledger
     callable_facts: list[dict] = field(default_factory=list)  # IR 2 structural declarations
+    structural_expression_facts: list[dict] = field(default_factory=list)
+    semantic_expression_facts: list[dict] = field(default_factory=list)
     macro_facts: list[dict] = field(default_factory=list)  # grammar-owned macro declarations
     import_refs: list[dict] = field(default_factory=list)  # canonical import occurrence/degraded projection
     # Exact decoded source is retained once per file; occurrence rows reference ranges.
@@ -122,6 +124,7 @@ def _make_code_node(
         condition_timing=node.get("conditionTiming") or "",
         target=node.get("target") or "",
         operator=node.get("operator") or "",
+        statement_origin=node.get("statementOrigin") or "",
     )
     evidence_version = int(node.get("dataObjectEvidenceVersion") or 0)
     if evidence_version not in (0, 1, 2, 3, 4):

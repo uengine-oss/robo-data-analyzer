@@ -19,9 +19,13 @@ _LEGACY_KINDS = (
 )
 _FACT_KINDS = (
     "call", "callable", "import", "symbol", "literal", "assignment",
-    "parameter", "macro", "embedded_language", "conditional_region",
+    "parameter", "structural_expression", "macro", "embedded_language",
+    "conditional_region",
 )
-_V2_COMPLETENESS_KINDS = _FACT_KINDS
+_V2_COMPLETENESS_KINDS = tuple(
+    kind for kind in _FACT_KINDS if kind != "structural_expression"
+)
+_V2_OPTIONAL_COMPLETENESS_KINDS = ("structural_expression",)
 _COMPLETENESS_STATUSES = frozenset({
     "complete", "not_applicable", "partial", "unsupported",
 })
@@ -30,6 +34,11 @@ _PRESENCE_STATUSES = frozenset({
 })
 _CALLEE_KINDS = frozenset({"named", "constructor", "expression"})
 _CALLABLE_ROLES = frozenset({"declaration", "definition"})
+_STRUCTURAL_EXPRESSION_ROLES = frozenset({
+    "condition", "case_value", "return_value",
+    "assignment_target", "assignment_value", "initializer_value",
+    "update_expression",
+})
 _SCOPE_KINDS = frozenset({
     "translation_unit", "function", "block", "function_prototype",
 })
@@ -37,6 +46,8 @@ _IR2_FORBIDDEN_SEMANTIC_FIELDS = frozenset({
     "binding", "adapterSchema", "bindingKey", "compatibilityKey",
     "compatibilityStatus", "compatibilityScope", "definitionStatus",
     "targetScope", "resolutionMode", "externalIdentityKey",
+    "type", "linkage", "meaning", "valueKind", "operatorMeaning",
+    "resolvedTarget", "resolutionStatus",
 })
 _IMPORT_KINDS = frozenset({
     "source_file", "computed", "type", "namespace", "static_member",
@@ -193,6 +204,46 @@ class CallableEvidenceFact:
 
 
 @dataclass(frozen=True)
+class StructuralExpressionSyntaxEvidence:
+    schema: str
+    root: SyntaxComponentEvidence
+
+    def as_record(self) -> dict[str, Any]:
+        return {"schema": self.schema, "root": self.root.as_record()}
+
+
+@dataclass(frozen=True)
+class StructuralExpressionEvidenceFact:
+    fact_id: str
+    source_id: str
+    expression_range: EvidenceRange
+    owner_range: EvidenceRange
+    role: str
+    scope_path: tuple[ScopeEvidence, ...]
+    syntax: StructuralExpressionSyntaxEvidence
+    grammar_rule: str
+    presence: Mapping[str, Any]
+
+    def as_record(
+        self, *, code_node_id: str, expression_source: str,
+    ) -> dict[str, Any]:
+        return {
+            "fact_id": self.fact_id,
+            "source_id": self.source_id,
+            "code_node_id": code_node_id,
+            "role": self.role,
+            "range": self.expression_range.as_dict(),
+            "owner_range": self.owner_range.as_dict(),
+            "expression_source": expression_source,
+            "scope_path": [item.as_record() for item in self.scope_path],
+            "syntax": self.syntax.as_record(),
+            "grammar_rule": self.grammar_rule,
+            "presence_status": self.presence["status"],
+            "presence": dict(self.presence),
+        }
+
+
+@dataclass(frozen=True)
 class ImportBindingFact:
     import_kind: str
     target_range: EvidenceRange
@@ -279,6 +330,7 @@ class ValidatedCommonEvidence:
     decoded_text: str
     call_facts: tuple[CallEvidenceFact, ...]
     callable_facts: tuple[CallableEvidenceFact, ...]
+    structural_expression_facts: tuple[StructuralExpressionEvidenceFact, ...]
     import_facts: tuple[ImportEvidenceFact, ...]
     macro_facts: tuple[MacroEvidenceFact, ...]
     symbol_facts: tuple[SymbolEvidenceFact, ...]
@@ -822,6 +874,70 @@ def _validate_callable(
         scope_range=scope_range,
         declaration_point=declaration_point,
         syntax=syntax,
+        grammar_rule=grammar_rule,
+        presence=dict(presence),
+    )
+
+
+def _validate_structural_expression(
+    fact: Mapping[str, Any],
+    *,
+    source_id: str,
+    fact_range: EvidenceRange,
+    grammar_rule: str,
+    presence: Mapping[str, Any],
+    source: str,
+) -> StructuralExpressionEvidenceFact:
+    field = "structural_expression.payload"
+    payload = fact.get("payload")
+    if fact_range.char_length == 0 or not isinstance(payload, dict):
+        raise _fail(field, "nonempty expression range and object payload required")
+    _require_exact_fields(
+        payload, {"role", "ownerRange", "scopePath", "syntax"}, field=field,
+    )
+    forbidden = set(payload) & _IR2_FORBIDDEN_SEMANTIC_FIELDS
+    if forbidden:
+        raise _fail(field, f"Parser semantic fields forbidden: {sorted(forbidden)}")
+    role = payload.get("role")
+    if role not in _STRUCTURAL_EXPRESSION_ROLES:
+        raise _fail(f"{field}.role", f"invalid value {role!r}")
+    owner_range = _range(
+        payload.get("ownerRange"), field=f"{field}.ownerRange",
+        source_length=len(source),
+    )
+    if owner_range.char_length == 0 or not _contains(owner_range, fact_range):
+        raise _fail(f"{field}.ownerRange", "must contain the expression range")
+    scope_path = _validate_scope_path(
+        payload.get("scopePath"), field=f"{field}.scopePath",
+        source_length=len(source), occurrence_range=fact_range,
+    )
+    raw_syntax = payload.get("syntax")
+    if not isinstance(raw_syntax, dict):
+        raise _fail(f"{field}.syntax", "object required")
+    _require_exact_fields(raw_syntax, {"schema", "root"}, field=f"{field}.syntax")
+    schema = raw_syntax.get("schema")
+    if not isinstance(schema, str) or not schema:
+        raise _fail(f"{field}.syntax.schema", "nonblank string required")
+    token_coordinates: set[tuple[int, int]] = set()
+    root = _validate_syntax_component(
+        raw_syntax.get("root"), field=f"{field}.syntax.root",
+        source=source, outer=fact_range, token_coordinates=token_coordinates,
+    )
+    if root.range != fact_range:
+        raise _fail(f"{field}.syntax.root.range", "must equal the fact range")
+    if root.grammar_rule != grammar_rule:
+        raise _fail(
+            f"{field}.syntax.root.grammarRule",
+            "must equal grammarRuleRef",
+        )
+    return StructuralExpressionEvidenceFact(
+        fact_id=str(fact.get("factId") or ""),
+        source_id=source_id,
+        expression_range=fact_range,
+        owner_range=owner_range,
+        role=str(role),
+        scope_path=scope_path,
+        syntax=StructuralExpressionSyntaxEvidence(schema=schema, root=root),
         grammar_rule=grammar_rule,
         presence=dict(presence),
     )
@@ -1413,12 +1529,15 @@ def _validate_completeness(
     expected_kinds = (
         _V2_COMPLETENESS_KINDS if version == "2.0.0" else _LEGACY_KINDS
     )
+    allowed_kinds = expected_kinds + (
+        _V2_OPTIONAL_COMPLETENESS_KINDS if version == "2.0.0" else ()
+    )
     result: dict[str, dict[str, Any]] = {}
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
             raise _fail(f"completeness[{index}]", "object required")
         kind = row.get("kind")
-        if kind not in expected_kinds or kind in result:
+        if kind not in allowed_kinds or kind in result:
             raise _fail(f"completeness[{index}].kind", f"invalid/duplicate {kind!r}")
         status = row.get("status")
         if status not in _COMPLETENESS_STATUSES:
@@ -1493,6 +1612,10 @@ def _validate_completeness(
             )
         result[str(kind)] = dict(row)
     missing = [kind for kind in expected_kinds if kind not in result]
+    missing.extend(
+        kind for kind in _V2_OPTIONAL_COMPLETENESS_KINDS
+        if emitted_by_kind.get(kind, 0) and kind not in result
+    )
     if missing:
         raise _fail("completeness", f"missing kinds {missing}")
     return result
@@ -1744,6 +1867,7 @@ def validate_common_evidence(
     emitted_by_kind = {kind: 0 for kind in allowed_kinds}
     calls: list[CallEvidenceFact] = []
     callables: list[CallableEvidenceFact] = []
+    structural_expressions: list[StructuralExpressionEvidenceFact] = []
     imports: list[ImportEvidenceFact] = []
     macros: list[MacroEvidenceFact] = []
     symbols: list[SymbolEvidenceFact] = []
@@ -1793,6 +1917,20 @@ def validate_common_evidence(
                     "callable structural payload requires common evidence 2.0.0",
                 )
             callables.append(_validate_callable(
+                fact,
+                source_id=source_id,
+                fact_range=fact_range,
+                grammar_rule=grammar_rule,
+                presence=presence,
+                source=source,
+            ))
+        elif kind == "structural_expression":
+            if version != "2.0.0":
+                raise _fail(
+                    f"facts[{index}].kind",
+                    "structural expression payload requires common evidence 2.0.0",
+                )
+            structural_expressions.append(_validate_structural_expression(
                 fact,
                 source_id=source_id,
                 fact_range=fact_range,
@@ -1853,6 +1991,7 @@ def validate_common_evidence(
         decoded_text=source,
         call_facts=tuple(calls),
         callable_facts=tuple(callables),
+        structural_expression_facts=tuple(structural_expressions),
         import_facts=tuple(imports),
         macro_facts=tuple(macros),
         symbol_facts=tuple(symbols),

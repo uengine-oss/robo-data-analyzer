@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pytest
 
@@ -9,11 +12,13 @@ from pipeline.steps.step2_load_ast.evidence_ir import (
     CommonEvidenceContractError,
     validate_common_evidence,
 )
+from pipeline.steps.step2_load_ast.dispatch import read_antlr_json
 
 
 KINDS = (
     "call", "callable", "import", "symbol", "literal", "assignment",
-    "parameter", "macro", "embedded_language", "conditional_region",
+    "parameter", "structural_expression", "macro", "embedded_language",
+    "conditional_region",
 )
 
 
@@ -70,6 +75,7 @@ def _artifact() -> tuple[str, dict]:
     name_range = _range(source, "target")
     call_range = _range(source, "target(1)", last=True)
     call_name_range = _range(source, "target", last=True)
+    return_owner_range = _range(source, "return target(1);")
     facts = [
         {
             "factId": _fact_id(source_id, digest, "callable", declaration_range),
@@ -134,21 +140,112 @@ def _artifact() -> tuple[str, dict]:
                 "scopePath": [{"kind": "translation_unit", "range": unit_range}],
             },
         },
+        {
+            "factId": _fact_id(
+                source_id, digest, "structural_expression", call_range,
+            ),
+            "kind": "structural_expression",
+            "range": call_range,
+            "grammarRuleRef": 2,
+            "presenceRef": 0,
+            "payload": {
+                "role": "return_value",
+                "ownerRange": return_owner_range,
+                "scopePath": [{"kind": "translation_unit", "range": unit_range}],
+                "syntax": {
+                    "schema": "c-expression-syntax/v1",
+                    "root": {
+                        "grammarRule": "expression",
+                        "range": call_range,
+                        "directTokens": [],
+                        "children": [{
+                            "grammarRule": "postfixExpression",
+                            "range": call_range,
+                            "directTokens": [
+                                {
+                                    "tokenKind": "LeftParen",
+                                    "range": {
+                                        "charOffset": call_range["charOffset"] + 6,
+                                        "charLength": 1,
+                                    },
+                                },
+                                {
+                                    "tokenKind": "RightParen",
+                                    "range": {
+                                        "charOffset": call_range["charOffset"] + 8,
+                                        "charLength": 1,
+                                    },
+                                },
+                            ],
+                            "children": [
+                                {
+                                    "grammarRule": "primaryExpression",
+                                    "range": call_name_range,
+                                    "directTokens": [{
+                                        "tokenKind": "Identifier",
+                                        "range": call_name_range,
+                                    }],
+                                    "children": [],
+                                },
+                                {
+                                    "grammarRule": "primaryExpression",
+                                    "range": _range(source, "1"),
+                                    "directTokens": [{
+                                        "tokenKind": "Constant",
+                                        "range": _range(source, "1"),
+                                    }],
+                                    "children": [],
+                                },
+                            ],
+                        }],
+                    },
+                },
+            },
+        },
     ]
     completeness = []
     for kind in KINDS:
-        emitted = 1 if kind in {"call", "callable"} else 0
+        emitted = 1 if kind in {
+            "call", "callable", "structural_expression",
+        } else 0
         completeness.append({
             "kind": kind,
             "status": "complete" if kind in {
                 "call", "callable", "import", "symbol", "macro",
-                "conditional_region",
+                "structural_expression", "conditional_region",
             } else "unsupported",
             "population": emitted,
             "emitted": emitted,
             "explicitlyUnresolved": 0,
         })
-    return source, {"evidence": {
+    return source, {
+        "type": "FILE",
+        "fileName": "slice.c",
+        "filePath": source_id,
+        "children": [{
+            "type": "FUNCTION",
+            "name": "caller",
+            "signature": "int caller(void)",
+            "startLine": 2,
+            "endLine": 2,
+            "children": [
+                {
+                    "type": "RETURN",
+                    "startLine": 2,
+                    "endLine": 2,
+                    "expression": "target(1)",
+                    "children": [],
+                },
+                {
+                    "type": "FUNCTION_CALL",
+                    "name": "target",
+                    "startLine": 2,
+                    "endLine": 2,
+                    "children": [],
+                },
+            ],
+        }],
+        "evidence": {
         "version": "2.0.0",
         "language": "c",
         "frontendSchema": "antlr-c/v1",
@@ -164,13 +261,14 @@ def _artifact() -> tuple[str, dict]:
         "parseStatus": "exact",
         "configuredPreprocessing": _configured_preprocessing(source_id),
         "facts": facts,
-        "grammarRules": ["declaration", "postfixExpression"],
+        "grammarRules": ["declaration", "postfixExpression", "expression"],
         "presences": [{
             "status": "active", "condition": None,
             "configurationId": None, "provenance": "unconditional",
         }],
         "completeness": completeness,
-    }}
+        },
+    }
 
 
 def _validate(raw: dict, source: str):
@@ -185,12 +283,16 @@ def test_ir2_decodes_structural_evidence_without_parser_semantics() -> None:
 
     assert (evidence.language, evidence.frontend_schema) == ("c", "antlr-c/v1")
     assert len(evidence.call_facts) == len(evidence.callable_facts) == 1
+    assert len(evidence.structural_expression_facts) == 1
     assert evidence.call_facts[0].scope_path[0].kind == "translation_unit"
     callable_fact = evidence.callable_facts[0]
     assert callable_fact.terminal_name == "target"
     assert callable_fact.syntax.declaration_specifiers[0].direct_tokens[0].text == "static"
     record = callable_fact.as_record(code_node_id=None)
     assert "binding" not in record and "binding_key" not in record
+    expression = evidence.structural_expression_facts[0]
+    assert expression.role == "return_value"
+    assert expression.syntax.root.children[0].direct_tokens[0].text == "("
 
 
 def test_ir2_rejects_parser_owned_final_semantics() -> None:
@@ -210,6 +312,28 @@ def test_ir2_rejects_duplicate_direct_terminal_coordinates() -> None:
 
     with pytest.raises(CommonEvidenceContractError, match="direct terminal"):
         _validate(raw, source)
+
+
+def test_ir2_binds_structural_expression_to_exact_legacy_field_once() -> None:
+    source, raw = _artifact()
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        (root / "slice.c").write_text(source, encoding="utf-8", newline="")
+        artifact = root / "slice.json"
+        artifact.write_text(json.dumps(raw), encoding="utf-8")
+
+        result = read_antlr_json(artifact, root, source_language="c")
+
+    assert len(result.structural_expression_facts) == 1
+    fact = result.structural_expression_facts[0]
+    return_node = next(node for node in result.code_nodes if node.label == "RETURN")
+    assert fact["code_node_id"] == return_node.id
+    assert fact["role"] == "return_value"
+    assert fact["expression_source"] == "target(1)"
+    assert [item["fact_id"] for item in result.semantic_expression_facts] == [
+        fact["fact_id"],
+    ]
+    assert result.semantic_expression_facts[0]["root"]["form"] == "root"
 
 
 def test_ir13_parser_semantic_wire_is_not_a_supported_fallback() -> None:

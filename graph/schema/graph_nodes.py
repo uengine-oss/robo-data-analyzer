@@ -250,6 +250,7 @@ class CodeNode:
     embedding: tuple[float, ...] = field(default=(), metadata={"vector": True})
 
     # strategy 별 확장 필드 (dict — 새 필드 추가 시 base 무변경) ────
+    statement_origin: str = ""
     extra: dict = field(default_factory=dict)
 
     def own_ast_type(self) -> str:
