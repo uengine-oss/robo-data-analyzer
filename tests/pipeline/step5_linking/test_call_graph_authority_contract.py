@@ -86,17 +86,36 @@ class CallGraphAuthorityContractTest(unittest.TestCase):
             )
         ]
 
-        result = classify_call_sites(call_sites, [caller])
+        result = classify_call_sites(
+            call_sites,
+            [caller],
+            evidence_sources=[{
+                "source_id": "source:missing-source.c", "language": "c",
+                "frontend_schema": "antlr-c/v1",
+            }],
+            evidence_completeness=[{
+                "source_id": "source:missing-source.c", "kind": kind,
+                "status": "complete", "population": len(call_sites),
+                "emitted": len(call_sites), "explicitlyUnresolved": 0,
+            } for kind in ("call", "callable")],
+        )
 
-        self.assertEqual(46, len(result.edges))
+        self.assertEqual([], result.edges)
         self.assertEqual(
             population,
             {
-                name: sum(edge.callee_id == name for edge in result.edges)
+                name: sum(
+                    row["terminal_name"] == name
+                    and row["resolution_status"] == "external"
+                    for row in result.ledger
+                )
                 for name in population
             },
         )
-        self.assertTrue(all(edge.scope == "external" for edge in result.edges))
+        self.assertTrue(all(
+            row["external_identity_key"] and row["outcome"] == "preserved"
+            for row in result.ledger
+        ))
 
 
 if __name__ == "__main__":

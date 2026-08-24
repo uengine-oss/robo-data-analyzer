@@ -85,6 +85,19 @@ class ImportProfileTest(unittest.TestCase):
             "insufficient_import_binding_environment", plan.ledger[0]["reason"],
         )
 
+    def test_v20_envelope_preserves_structural_import_without_claiming_binding(self) -> None:
+        plan = build_import_scope_plan(
+            [self._ref(evidence_version="2.0.0")],
+        )
+
+        self.assertEqual({}, plan.scopes)
+        self.assertEqual(1, len(plan.ledger))
+        self.assertEqual("2.0.0", plan.ledger[0]["evidence_version"])
+        self.assertEqual("unresolved", plan.ledger[0]["outcome"])
+        self.assertEqual(
+            "insufficient_import_binding_environment", plan.ledger[0]["reason"],
+        )
+
     def test_every_binding_entry_has_one_source_ordered_outcome(self) -> None:
         first = self._ref()["entries"][0]
         second = {**first, "entry_ordinal": 1, "target": '"other.h"'}

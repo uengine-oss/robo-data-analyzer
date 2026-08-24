@@ -24,10 +24,15 @@ def _row(call_id: str = "call-1", caller_id: str = "code:f") -> dict:
         "presence": {"status": "active", "condition": None,
                      "configurationId": None, "provenance": "unconditional"},
         "configured_preprocessing_required": False,
+        "resolution_status": "dynamic",
+        "adapter_schema": "language-neutral-resolution/v1",
         "outcome": "unresolved",
         "reason": "insufficient_wrapper_argument_syntax_evidence",
         "preprocessing_evidence_ids": [],
         "macro_fact_ids": [],
+        "external_identity_key": "",
+        "declaration_fact_id": "",
+        "candidate_fact_ids": [],
     }
 
 

@@ -11,12 +11,17 @@ from pathlib import PurePosixPath
 from typing import Any, Mapping
 
 
-_SUPPORTED_VERSIONS = frozenset({"1.0.0", "1.1.0", "1.2.0"})
+_SUPPORTED_VERSIONS = frozenset({"1.0.0", "1.1.0", "1.2.0", "2.0.0"})
 _ID_DOMAIN = "robo-evidence-v1"
-_KINDS = (
+_LEGACY_KINDS = (
     "call", "import", "symbol", "literal", "assignment", "parameter",
     "macro", "embedded_language", "conditional_region",
 )
+_FACT_KINDS = (
+    "call", "callable", "import", "symbol", "literal", "assignment",
+    "parameter", "macro", "embedded_language", "conditional_region",
+)
+_V2_COMPLETENESS_KINDS = _FACT_KINDS
 _COMPLETENESS_STATUSES = frozenset({
     "complete", "not_applicable", "partial", "unsupported",
 })
@@ -24,6 +29,15 @@ _PRESENCE_STATUSES = frozenset({
     "active", "inactive", "conditional", "unknown",
 })
 _CALLEE_KINDS = frozenset({"named", "constructor", "expression"})
+_CALLABLE_ROLES = frozenset({"declaration", "definition"})
+_SCOPE_KINDS = frozenset({
+    "translation_unit", "function", "block", "function_prototype",
+})
+_IR2_FORBIDDEN_SEMANTIC_FIELDS = frozenset({
+    "binding", "adapterSchema", "bindingKey", "compatibilityKey",
+    "compatibilityStatus", "compatibilityScope", "definitionStatus",
+    "targetScope", "resolutionMode", "externalIdentityKey",
+})
 _IMPORT_KINDS = frozenset({
     "source_file", "computed", "type", "namespace", "static_member",
     "module", "module_member",
@@ -69,15 +83,113 @@ class EvidenceRange:
 
 
 @dataclass(frozen=True)
+class ScopeEvidence:
+    kind: str
+    range: EvidenceRange
+
+    def as_record(self) -> dict[str, Any]:
+        return {"kind": self.kind, "range": self.range.as_dict()}
+
+
+@dataclass(frozen=True)
+class SyntaxTokenEvidence:
+    token_kind: str
+    range: EvidenceRange
+    text: str
+
+    def as_record(self) -> dict[str, Any]:
+        return {
+            "token_kind": self.token_kind,
+            "range": self.range.as_dict(),
+            "text": self.text,
+        }
+
+
+@dataclass(frozen=True)
+class SyntaxComponentEvidence:
+    grammar_rule: str
+    range: EvidenceRange
+    direct_tokens: tuple[SyntaxTokenEvidence, ...]
+    children: tuple["SyntaxComponentEvidence", ...]
+
+    def as_record(self) -> dict[str, Any]:
+        return {
+            "grammar_rule": self.grammar_rule,
+            "range": self.range.as_dict(),
+            "direct_tokens": [item.as_record() for item in self.direct_tokens],
+            "children": [item.as_record() for item in self.children],
+        }
+
+
+@dataclass(frozen=True)
+class CallableSyntaxEvidence:
+    schema: str
+    declaration_specifiers: tuple[SyntaxComponentEvidence, ...]
+    declarator: SyntaxComponentEvidence
+    attributes: tuple[SyntaxComponentEvidence, ...]
+
+    def as_record(self) -> dict[str, Any]:
+        return {
+            "schema": self.schema,
+            "declaration_specifiers": [
+                item.as_record() for item in self.declaration_specifiers
+            ],
+            "declarator": self.declarator.as_record(),
+            "attributes": [item.as_record() for item in self.attributes],
+        }
+
+
+@dataclass(frozen=True)
 class CallEvidenceFact:
     fact_id: str
     call_range: EvidenceRange
     callee_range: EvidenceRange
     callee_kind: str
     terminal_name: str | None
+    receiver_range: EvidenceRange | None
     argument_ranges: tuple[EvidenceRange, ...]
+    scope_path: tuple[ScopeEvidence, ...]
     grammar_rule: str
     presence: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class CallableEvidenceFact:
+    fact_id: str
+    source_id: str
+    callable_range: EvidenceRange
+    name_range: EvidenceRange
+    terminal_name: str
+    role: str
+    ast_node_range: EvidenceRange | None
+    scope_path: tuple[ScopeEvidence, ...]
+    scope_range: EvidenceRange
+    declaration_point: int
+    syntax: CallableSyntaxEvidence
+    grammar_rule: str
+    presence: Mapping[str, Any]
+
+    def as_record(self, *, code_node_id: str | None) -> dict[str, Any]:
+        return {
+            "fact_id": self.fact_id,
+            "role": self.role,
+            "code_node_id": code_node_id,
+            "source_id": self.source_id,
+            "range": self.callable_range.as_dict(),
+            "name_range": self.name_range.as_dict(),
+            "terminal_name": self.terminal_name,
+            "ast_node_range": (
+                self.ast_node_range.as_dict()
+                if self.ast_node_range is not None else None
+            ),
+            "scope_path": [item.as_record() for item in self.scope_path],
+            "scope_range": self.scope_range.as_dict(),
+            "declaration_point": self.declaration_point,
+            "syntax": self.syntax.as_record(),
+            "grammar_rule": self.grammar_rule,
+            "presence_status": self.presence["status"],
+            "presence": dict(self.presence),
+        }
 
 
 @dataclass(frozen=True)
@@ -160,10 +272,13 @@ class SymbolEvidenceFact:
 @dataclass(frozen=True)
 class ValidatedCommonEvidence:
     version: str
+    language: str | None
+    frontend_schema: str | None
     source_id: str
     decoded_text_sha256: str
     decoded_text: str
     call_facts: tuple[CallEvidenceFact, ...]
+    callable_facts: tuple[CallableEvidenceFact, ...]
     import_facts: tuple[ImportEvidenceFact, ...]
     macro_facts: tuple[MacroEvidenceFact, ...]
     symbol_facts: tuple[SymbolEvidenceFact, ...]
@@ -171,17 +286,22 @@ class ValidatedCommonEvidence:
     completeness: Mapping[str, Mapping[str, Any]]
     configured_preprocessing: Mapping[str, Any] | None
 
-    def source_record(self) -> dict[str, str]:
-        return {
+    def source_record(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
             "source_id": self.source_id,
             "decoded_text_sha256": self.decoded_text_sha256,
             "decoded_text": self.decoded_text,
         }
+        if self.language is not None:
+            result["language"] = self.language
+        if self.frontend_schema is not None:
+            result["frontend_schema"] = self.frontend_schema
+        return result
 
     def completeness_records(self) -> list[dict[str, Any]]:
         return [
             {"source_id": self.source_id, **dict(self.completeness[kind])}
-            for kind in _KINDS
+            for kind in self.completeness
         ]
 
     def preprocessing_record(self) -> dict[str, Any] | None:
@@ -276,6 +396,24 @@ def _fact_id(
     return _sha256(value.encode("utf-8"))
 
 
+def _nullable_nonblank(value: Any, *, field: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise _fail(field, "null or nonblank string required")
+    return value
+
+
+def _nullable_evidence_id(value: Any, *, field: str) -> str | None:
+    item = _nullable_nonblank(value, field=field)
+    if item is not None and (
+        len(item) != 64
+        or any(char not in "0123456789abcdef" for char in item)
+    ):
+        raise _fail(field, "null or lowercase SHA-256 ID required")
+    return item
+
+
 def _validate_envelope(
     evidence: Mapping[str, Any],
     *,
@@ -355,9 +493,124 @@ def _validate_tables(evidence: Mapping[str, Any]) -> tuple[list[str], list[dict[
     return grammar_rules, presences
 
 
+def _contains(outer: EvidenceRange, inner: EvidenceRange) -> bool:
+    return outer.char_offset <= inner.char_offset and inner.end <= outer.end
+
+
+def _validate_scope_path(
+    raw: Any,
+    *,
+    field: str,
+    source_length: int,
+    occurrence_range: EvidenceRange,
+) -> tuple[ScopeEvidence, ...]:
+    if not isinstance(raw, list) or not raw:
+        raise _fail(field, "nonempty lexical scope path required")
+    scopes: list[ScopeEvidence] = []
+    for index, value in enumerate(raw):
+        item_field = f"{field}[{index}]"
+        if not isinstance(value, dict):
+            raise _fail(item_field, "object required")
+        _require_exact_fields(value, {"kind", "range"}, field=item_field)
+        kind = value.get("kind")
+        if kind not in _SCOPE_KINDS:
+            raise _fail(f"{item_field}.kind", f"invalid value {kind!r}")
+        scope_range = _range(
+            value.get("range"), field=f"{item_field}.range",
+            source_length=source_length,
+        )
+        if scope_range.char_length == 0:
+            raise _fail(f"{item_field}.range", "nonempty scope range required")
+        if scopes and not _contains(scopes[-1].range, scope_range):
+            raise _fail(item_field, "scope must be contained by its parent")
+        scopes.append(ScopeEvidence(kind=str(kind), range=scope_range))
+    if scopes[0].kind != "translation_unit":
+        raise _fail(field, "first scope must be translation_unit")
+    if not _contains(scopes[-1].range, occurrence_range):
+        raise _fail(field, "innermost scope must contain the occurrence")
+    return tuple(scopes)
+
+
+def _validate_syntax_component(
+    raw: Any,
+    *,
+    field: str,
+    source: str,
+    outer: EvidenceRange,
+    token_coordinates: set[tuple[int, int]],
+) -> SyntaxComponentEvidence:
+    if not isinstance(raw, dict):
+        raise _fail(field, "object required")
+    _require_exact_fields(
+        raw, {"grammarRule", "range", "directTokens", "children"}, field=field,
+    )
+    grammar_rule = raw.get("grammarRule")
+    if not isinstance(grammar_rule, str) or not grammar_rule:
+        raise _fail(f"{field}.grammarRule", "nonblank string required")
+    component_range = _range(
+        raw.get("range"), field=f"{field}.range", source_length=len(source),
+    )
+    if component_range.char_length == 0 or not _contains(outer, component_range):
+        raise _fail(f"{field}.range", "nonempty enclosing component range required")
+    raw_tokens = raw.get("directTokens")
+    raw_children = raw.get("children")
+    if not isinstance(raw_tokens, list) or not isinstance(raw_children, list):
+        raise _fail(field, "directTokens and children arrays required")
+    tokens: list[SyntaxTokenEvidence] = []
+    previous_token_end = component_range.char_offset
+    for index, value in enumerate(raw_tokens):
+        token_field = f"{field}.directTokens[{index}]"
+        if not isinstance(value, dict):
+            raise _fail(token_field, "object required")
+        _require_exact_fields(value, {"tokenKind", "range"}, field=token_field)
+        token_kind = value.get("tokenKind")
+        if not isinstance(token_kind, str) or not token_kind:
+            raise _fail(f"{token_field}.tokenKind", "nonblank string required")
+        token_range = _range(
+            value.get("range"), field=f"{token_field}.range",
+            source_length=len(source),
+        )
+        coordinate = (token_range.char_offset, token_range.char_length)
+        if (
+            token_range.char_length == 0
+            or not _contains(component_range, token_range)
+            or token_range.char_offset < previous_token_end
+            or coordinate in token_coordinates
+        ):
+            raise _fail(token_field, "exact ordered direct terminal required once")
+        previous_token_end = token_range.end
+        token_coordinates.add(coordinate)
+        tokens.append(SyntaxTokenEvidence(
+            token_kind=token_kind,
+            range=token_range,
+            text=source[token_range.char_offset:token_range.end],
+        ))
+    children: list[SyntaxComponentEvidence] = []
+    previous_child_start = component_range.char_offset
+    for index, value in enumerate(raw_children):
+        child = _validate_syntax_component(
+            value,
+            field=f"{field}.children[{index}]",
+            source=source,
+            outer=component_range,
+            token_coordinates=token_coordinates,
+        )
+        if child.range.char_offset < previous_child_start:
+            raise _fail(f"{field}.children[{index}]", "source order required")
+        previous_child_start = child.range.char_offset
+        children.append(child)
+    return SyntaxComponentEvidence(
+        grammar_rule=grammar_rule,
+        range=component_range,
+        direct_tokens=tuple(tokens),
+        children=tuple(children),
+    )
+
+
 def _validate_call(
     fact: Mapping[str, Any],
     *,
+    version: str,
     fact_range: EvidenceRange,
     grammar_rule: str,
     presence: Mapping[str, Any],
@@ -368,6 +621,14 @@ def _validate_call(
     payload = fact.get("payload")
     if not isinstance(payload, dict):
         raise _fail("call.payload", "object required")
+    if version == "2.0.0":
+        _require_exact_fields(payload, {
+            "calleeRange", "calleeKind", "terminalName", "receiverRange",
+            "argumentRanges", "scopePath",
+        }, field="call.payload")
+        forbidden = set(payload) & _IR2_FORBIDDEN_SEMANTIC_FIELDS
+        if forbidden:
+            raise _fail("call.payload", f"Parser semantic fields forbidden: {sorted(forbidden)}")
     callee_range = _range(
         payload.get("calleeRange"), field="call.payload.calleeRange",
         source_length=len(source),
@@ -415,13 +676,152 @@ def _validate_call(
             )
         previous_end = argument.end
         arguments.append(argument)
+    if "binding" in payload:
+        raise _fail(
+            "call.payload.binding", "Parser final binding is forbidden",
+        )
+    receiver_value = payload.get("receiverRange")
+    receiver_range = None if receiver_value is None else _range(
+        receiver_value, field="call.payload.receiverRange", source_length=len(source),
+    )
+    if receiver_range is not None and (
+        receiver_range.char_length == 0
+        or not _contains(callee_range, receiver_range)
+    ):
+        raise _fail("call.payload.receiverRange", "invalid receiver subrange")
+    scope_path = (
+        _validate_scope_path(
+            payload.get("scopePath"), field="call.payload.scopePath",
+            source_length=len(source), occurrence_range=fact_range,
+        )
+        if version == "2.0.0" else ()
+    )
     return CallEvidenceFact(
         fact_id=str(fact.get("factId") or ""),
         call_range=fact_range,
         callee_range=callee_range,
         callee_kind=str(callee_kind),
         terminal_name=terminal_name,
+        receiver_range=receiver_range,
         argument_ranges=tuple(arguments),
+        scope_path=scope_path,
+        grammar_rule=grammar_rule,
+        presence=dict(presence),
+    )
+
+
+def _validate_callable(
+    fact: Mapping[str, Any],
+    *,
+    source_id: str,
+    fact_range: EvidenceRange,
+    grammar_rule: str,
+    presence: Mapping[str, Any],
+    source: str,
+) -> CallableEvidenceFact:
+    field = "callable.payload"
+    payload = fact.get("payload")
+    if fact_range.char_length == 0 or not isinstance(payload, dict):
+        raise _fail(field, "nonempty callable range and object payload required")
+    _require_exact_fields(payload, {
+        "role", "nameRange", "astNodeRange", "scopePath", "scopeRange",
+        "declarationPoint", "syntax",
+    }, field=field)
+    forbidden = set(payload) & _IR2_FORBIDDEN_SEMANTIC_FIELDS
+    if forbidden:
+        raise _fail(field, f"Parser semantic fields forbidden: {sorted(forbidden)}")
+    name_range = _range(
+        payload.get("nameRange"), field=f"{field}.nameRange",
+        source_length=len(source),
+    )
+    if (
+        name_range.char_length == 0
+        or name_range.char_offset < fact_range.char_offset
+        or name_range.end > fact_range.end
+    ):
+        raise _fail(f"{field}.nameRange", "nonempty callable subrange required")
+    terminal_name = source[name_range.char_offset:name_range.end]
+    role = payload.get("role")
+    if role not in _CALLABLE_ROLES:
+        raise _fail(f"{field}.role", f"invalid value {role!r}")
+    ast_node_value = payload.get("astNodeRange")
+    ast_node_range = (
+        None if ast_node_value is None else _range(
+            ast_node_value, field=f"{field}.astNodeRange",
+            source_length=len(source),
+        )
+    )
+    if (role == "definition") != (ast_node_range is not None):
+        raise _fail(field, "only definitions require astNodeRange")
+    if role == "definition" and ast_node_range != fact_range:
+        raise _fail(field, "definition astNodeRange must equal callable range")
+    scope_path = _validate_scope_path(
+        payload.get("scopePath"), field=f"{field}.scopePath",
+        source_length=len(source), occurrence_range=name_range,
+    )
+    scope_range = _range(
+        payload.get("scopeRange"), field=f"{field}.scopeRange",
+        source_length=len(source),
+    )
+    if scope_range != scope_path[-1].range:
+        raise _fail(f"{field}.scopeRange", "must equal the innermost scope range")
+    declaration_point = _integer(
+        payload.get("declarationPoint"), field=f"{field}.declarationPoint",
+    )
+    if not name_range.end <= declaration_point <= scope_range.end:
+        raise _fail(f"{field}.declarationPoint", "invalid declaration boundary")
+    raw_syntax = payload.get("syntax")
+    if not isinstance(raw_syntax, dict):
+        raise _fail(f"{field}.syntax", "object required")
+    _require_exact_fields(
+        raw_syntax,
+        {"schema", "declarationSpecifiers", "declarator", "attributes"},
+        field=f"{field}.syntax",
+    )
+    schema = raw_syntax.get("schema")
+    if not isinstance(schema, str) or not schema:
+        raise _fail(f"{field}.syntax.schema", "nonblank string required")
+    raw_specifiers = raw_syntax.get("declarationSpecifiers")
+    raw_attributes = raw_syntax.get("attributes")
+    if not isinstance(raw_specifiers, list) or not isinstance(raw_attributes, list):
+        raise _fail(f"{field}.syntax", "specifier and attribute arrays required")
+    token_coordinates: set[tuple[int, int]] = set()
+    specifiers = tuple(
+        _validate_syntax_component(
+            value, field=f"{field}.syntax.declarationSpecifiers[{index}]",
+            source=source, outer=fact_range, token_coordinates=token_coordinates,
+        )
+        for index, value in enumerate(raw_specifiers)
+    )
+    declarator = _validate_syntax_component(
+        raw_syntax.get("declarator"), field=f"{field}.syntax.declarator",
+        source=source, outer=fact_range, token_coordinates=token_coordinates,
+    )
+    attributes = tuple(
+        _validate_syntax_component(
+            value, field=f"{field}.syntax.attributes[{index}]",
+            source=source, outer=fact_range, token_coordinates=token_coordinates,
+        )
+        for index, value in enumerate(raw_attributes)
+    )
+    syntax = CallableSyntaxEvidence(
+        schema=schema,
+        declaration_specifiers=specifiers,
+        declarator=declarator,
+        attributes=attributes,
+    )
+    return CallableEvidenceFact(
+        fact_id=str(fact.get("factId") or ""),
+        source_id=source_id,
+        callable_range=fact_range,
+        name_range=name_range,
+        terminal_name=terminal_name,
+        role=str(role),
+        ast_node_range=ast_node_range,
+        scope_path=scope_path,
+        scope_range=scope_range,
+        declaration_point=declaration_point,
+        syntax=syntax,
         grammar_rule=grammar_rule,
         presence=dict(presence),
     )
@@ -1003,18 +1403,22 @@ def _validate_import(
 def _validate_completeness(
     evidence: Mapping[str, Any],
     *,
+    version: str,
     emitted_by_kind: Mapping[str, int],
     fact_kinds: Mapping[str, str],
 ) -> dict[str, dict[str, Any]]:
     rows = evidence.get("completeness")
     if not isinstance(rows, list):
         raise _fail("completeness", "array required")
+    expected_kinds = (
+        _V2_COMPLETENESS_KINDS if version == "2.0.0" else _LEGACY_KINDS
+    )
     result: dict[str, dict[str, Any]] = {}
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
             raise _fail(f"completeness[{index}]", "object required")
         kind = row.get("kind")
-        if kind not in _KINDS or kind in result:
+        if kind not in expected_kinds or kind in result:
             raise _fail(f"completeness[{index}].kind", f"invalid/duplicate {kind!r}")
         status = row.get("status")
         if status not in _COMPLETENESS_STATUSES:
@@ -1072,8 +1476,23 @@ def _validate_completeness(
                 f"completeness[{kind}].unresolvedScopeFactIds",
                 "every scope ID must reference a conditional-region fact in this envelope",
             )
+        unresolved_facts = row.get("unresolvedFactIds", [])
+        expected_fact_kind = "call" if kind == "call_binding" else kind
+        if (
+            not isinstance(unresolved_facts, list)
+            or len(unresolved_facts) != len(set(unresolved_facts))
+            or not all(
+                isinstance(item, str)
+                and fact_kinds.get(item) == expected_fact_kind
+                for item in unresolved_facts
+            )
+        ):
+            raise _fail(
+                f"completeness[{kind}].unresolvedFactIds",
+                f"every ID must reference a {expected_fact_kind!r} fact in this envelope",
+            )
         result[str(kind)] = dict(row)
-    missing = [kind for kind in _KINDS if kind not in result]
+    missing = [kind for kind in expected_kinds if kind not in result]
     if missing:
         raise _fail("completeness", f"missing kinds {missing}")
     return result
@@ -1298,6 +1717,19 @@ def validate_common_evidence(
     version, source_id, decoded_hash, source = _validate_envelope(
         evidence, source_bytes=source_bytes, expected_source_id=expected,
     )
+    language: str | None = None
+    frontend_schema: str | None = None
+    if version == "2.0.0":
+        language_value = evidence.get("language")
+        frontend_value = evidence.get("frontendSchema")
+        if not isinstance(language_value, str) or not language_value:
+            raise _fail("language", "IR 2.0 requires a nonblank language identity")
+        if not isinstance(frontend_value, str) or not frontend_value:
+            raise _fail(
+                "frontendSchema", "IR 2.0 requires a nonblank frontend identity",
+            )
+        language = language_value
+        frontend_schema = frontend_value
     configured_preprocessing = _validate_configured_preprocessing(
         evidence, source_id=source_id,
     )
@@ -1308,8 +1740,10 @@ def validate_common_evidence(
 
     ordinals: dict[tuple[str, int, int], int] = {}
     fact_kinds: dict[str, str] = {}
-    emitted_by_kind = {kind: 0 for kind in _KINDS}
+    allowed_kinds = _FACT_KINDS if version == "2.0.0" else _LEGACY_KINDS
+    emitted_by_kind = {kind: 0 for kind in allowed_kinds}
     calls: list[CallEvidenceFact] = []
+    callables: list[CallableEvidenceFact] = []
     imports: list[ImportEvidenceFact] = []
     macros: list[MacroEvidenceFact] = []
     symbols: list[SymbolEvidenceFact] = []
@@ -1317,7 +1751,7 @@ def validate_common_evidence(
         if not isinstance(fact, dict):
             raise _fail(f"facts[{index}]", "object required")
         kind = fact.get("kind")
-        if kind not in _KINDS:
+        if kind not in allowed_kinds:
             raise _fail(f"facts[{index}].kind", f"unsupported value {kind!r}")
         fact_range = _range(
             fact.get("range"), field=f"facts[{index}].range", source_length=len(source),
@@ -1346,6 +1780,21 @@ def validate_common_evidence(
         if kind == "call":
             calls.append(_validate_call(
                 fact,
+                version=version,
+                fact_range=fact_range,
+                grammar_rule=grammar_rule,
+                presence=presence,
+                source=source,
+            ))
+        elif kind == "callable":
+            if version != "2.0.0":
+                raise _fail(
+                    f"facts[{index}].kind",
+                    "callable structural payload requires common evidence 2.0.0",
+                )
+            callables.append(_validate_callable(
+                fact,
+                source_id=source_id,
                 fact_range=fact_range,
                 grammar_rule=grammar_rule,
                 presence=presence,
@@ -1371,7 +1820,7 @@ def validate_common_evidence(
                 source=source,
             ))
         elif kind == "symbol":
-            if version != "1.2.0":
+            if version not in {"1.2.0", "2.0.0"}:
                 raise _fail(
                     f"facts[{index}].kind",
                     "symbol payload requires common evidence 1.2.0",
@@ -1386,6 +1835,7 @@ def validate_common_evidence(
 
     completeness = _validate_completeness(
         evidence,
+        version=version,
         emitted_by_kind=emitted_by_kind,
         fact_kinds=fact_kinds,
     )
@@ -1393,13 +1843,16 @@ def validate_common_evidence(
         symbols,
         completeness=completeness,
         configured_preprocessing=configured_preprocessing,
-    ) if version == "1.2.0" else ()
+    ) if version in {"1.2.0", "2.0.0"} else ()
     return ValidatedCommonEvidence(
         version=version,
+        language=language,
+        frontend_schema=frontend_schema,
         source_id=source_id,
         decoded_text_sha256=decoded_hash,
         decoded_text=source,
         call_facts=tuple(calls),
+        callable_facts=tuple(callables),
         import_facts=tuple(imports),
         macro_facts=tuple(macros),
         symbol_facts=tuple(symbols),

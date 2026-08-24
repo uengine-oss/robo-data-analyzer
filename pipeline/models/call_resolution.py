@@ -15,6 +15,10 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 
 CallOutcome = Literal["edge", "excluded", "preserved", "unresolved"]
+ResolutionStatus = Literal[
+    "internal", "external", "dynamic", "configuration_dependent",
+    "ambiguous", "unsupported", "inactive",
+]
 
 
 class CallEvidenceRange(BaseModel):
@@ -51,10 +55,15 @@ class CallResolutionOccurrence(BaseModel):
     presence_status: Literal["active", "inactive", "conditional", "unknown"]
     presence: dict[str, Any]
     configured_preprocessing_required: bool = False
+    resolution_status: ResolutionStatus
+    adapter_schema: str = Field(..., min_length=1)
     outcome: CallOutcome
     reason: str = ""
     scope: Literal["internal", "external"] | None = None
     callee_id: str = ""
+    external_identity_key: str = ""
+    declaration_fact_id: str = ""
+    candidate_fact_ids: tuple[str, ...] = ()
     preprocessing_evidence_ids: tuple[str, ...] = ()
     macro_fact_ids: tuple[str, ...] = ()
 
@@ -98,7 +107,21 @@ class CallResolutionOccurrence(BaseModel):
             raise ValueError(
                 "non-edge outcome requires reason and cannot claim scope/callee_id"
             )
+        if self.resolution_status == "internal":
+            if self.outcome != "edge" or self.scope != "internal":
+                raise ValueError("internal resolution requires one internal edge")
+            if self.external_identity_key:
+                raise ValueError("internal resolution cannot claim external identity")
+        elif self.resolution_status == "external":
+            if self.outcome != "preserved" or not self.external_identity_key:
+                raise ValueError("external resolution requires preserved collision-free identity")
+        elif self.resolution_status == "inactive":
+            if self.outcome != "preserved" or self.reason != "inactive_presence":
+                raise ValueError("inactive resolution requires preserved inactive evidence")
+        elif self.outcome != "unresolved":
+            raise ValueError(f"{self.resolution_status} resolution must remain unresolved")
         for name, values in (
+            ("candidate_fact_ids", self.candidate_fact_ids),
             ("preprocessing_evidence_ids", self.preprocessing_evidence_ids),
             ("macro_fact_ids", self.macro_fact_ids),
         ):
@@ -155,10 +178,19 @@ def build_call_resolution_ledger(
             "configured_preprocessing_required": (
                 site.get("configured_preprocessing_required") is True
             ),
+            "resolution_status": outcome.get("resolution_status"),
+            "adapter_schema": str(outcome.get("adapter_schema") or ""),
             "outcome": outcome.get("outcome"),
             "reason": str(outcome.get("reason") or ""),
             "scope": outcome.get("scope"),
             "callee_id": str(outcome.get("callee_id") or ""),
+            "external_identity_key": str(
+                outcome.get("external_identity_key") or ""
+            ),
+            "declaration_fact_id": str(outcome.get("declaration_fact_id") or ""),
+            "candidate_fact_ids": sorted(set(
+                str(value) for value in outcome.get("candidate_fact_ids") or []
+            )),
             "preprocessing_evidence_ids": sorted(set(
                 str(value) for value in outcome.get("preprocessing_evidence_ids") or []
             )),
@@ -294,10 +326,15 @@ def call_resolution_storage_item(row: Mapping[str, Any]) -> dict[str, Any]:
         "presence_status": occurrence.presence_status,
         "presence_json": canonical_json(occurrence.presence),
         "configured_preprocessing_required": occurrence.configured_preprocessing_required,
+        "resolution_status": occurrence.resolution_status,
+        "adapter_schema": occurrence.adapter_schema,
         "outcome": occurrence.outcome,
         "reason": occurrence.reason,
         "scope": occurrence.scope or "",
         "callee_id": occurrence.callee_id,
+        "external_identity_key": occurrence.external_identity_key,
+        "declaration_fact_id": occurrence.declaration_fact_id,
+        "candidate_fact_ids": list(occurrence.candidate_fact_ids),
         "preprocessing_evidence_ids": list(occurrence.preprocessing_evidence_ids),
         "macro_fact_ids": list(occurrence.macro_fact_ids),
     }
@@ -334,10 +371,15 @@ def call_resolution_from_storage(properties: Mapping[str, Any]) -> dict[str, Any
         "configured_preprocessing_required": (
             properties.get("configured_preprocessing_required") is True
         ),
+        "resolution_status": properties.get("resolution_status"),
+        "adapter_schema": properties.get("adapter_schema"),
         "outcome": properties.get("outcome"),
         "reason": properties.get("reason") or "",
         "scope": properties.get("scope") or None,
         "callee_id": properties.get("callee_id") or "",
+        "external_identity_key": properties.get("external_identity_key") or "",
+        "declaration_fact_id": properties.get("declaration_fact_id") or "",
+        "candidate_fact_ids": list(properties.get("candidate_fact_ids") or []),
         "preprocessing_evidence_ids": list(
             properties.get("preprocessing_evidence_ids") or []
         ),

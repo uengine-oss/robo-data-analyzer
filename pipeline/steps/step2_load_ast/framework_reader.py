@@ -81,6 +81,7 @@ def _read_framework(
     _walk_framework(raw, ctx, module_id, None, None)
     if evidence is not None:
         _bind_call_evidence(result, evidence)
+        _bind_callable_evidence(result, evidence)
         _bind_import_evidence(result, evidence)
         result.macro_facts.extend(fact.as_record() for fact in evidence.macro_facts)
         result.evidence_sources.append(evidence.source_record())
@@ -89,7 +90,9 @@ def _read_framework(
         if preprocessing is not None:
             result.preprocessing_contexts.append(preprocessing)
             for site in result.call_sites:
-                site["configured_preprocessing_required"] = True
+                site["configured_preprocessing_required"] = (
+                    site.get("presence_status") in {"conditional", "unknown"}
+                )
     _derive_structure_edges(result, package_id)
     return result
 
@@ -337,6 +340,12 @@ def _bind_call_evidence(
             f"legacy={len(legacy)}, canonical={len(facts)}, source={evidence.source_id}"
         )
     line_starts = _physical_line_starts(evidence.decoded_text)
+    source = evidence.decoded_text
+
+    def exact_source(source_range) -> str:
+        start = source_range.char_offset
+        return source[start:start + source_range.char_length]
+
     bound: list[dict] = []
     for index, (observed, fact) in enumerate(zip(legacy, facts, strict=True)):
         line = _physical_line(line_starts, fact.call_range.char_offset)
@@ -364,8 +373,21 @@ def _bind_call_evidence(
             "file": observed.get("file", ""),
             "line": line,
             "range": fact.call_range.as_dict(),
+            "call_source": exact_source(fact.call_range),
             "callee_range": fact.callee_range.as_dict(),
+            "callee_source": exact_source(fact.callee_range),
             "argument_ranges": [item.as_dict() for item in fact.argument_ranges],
+            "argument_sources": [
+                exact_source(item) for item in fact.argument_ranges
+            ],
+            "receiver_range": (
+                fact.receiver_range.as_dict() if fact.receiver_range is not None else None
+            ),
+            "receiver_source": (
+                exact_source(fact.receiver_range)
+                if fact.receiver_range is not None else None
+            ),
+            "scope_path": [item.as_record() for item in fact.scope_path],
             "grammar_rule": fact.grammar_rule,
             "presence_status": fact.presence["status"],
             "presence": dict(fact.presence),
@@ -376,6 +398,37 @@ def _bind_call_evidence(
             f"common evidence call population: duplicate fact IDs in {evidence.source_id}"
         )
     result.call_sites[:] = bound
+
+
+def _bind_callable_evidence(
+    result: ParseResult,
+    evidence: ValidatedCommonEvidence,
+) -> None:
+    """Bind structural definition facts to their exact compatibility AST node."""
+    line_starts = _physical_line_starts(evidence.decoded_text)
+    records: list[dict] = []
+    for fact in evidence.callable_facts:
+        code_node_id: str | None = None
+        if fact.role == "definition":
+            line = _physical_line(line_starts, fact.callable_range.char_offset)
+            matches = [
+                node for node in result.code_nodes
+                if node.name == fact.terminal_name and node.start_line == line
+            ]
+            if len(matches) != 1:
+                raise CommonEvidenceContractError(
+                    "common evidence callable definition projection: "
+                    f"factId={fact.fact_id}, name={fact.terminal_name!r}, "
+                    f"line={line}, codeNodes={len(matches)}"
+                )
+            code_node_id = matches[0].id
+        records.append(fact.as_record(code_node_id=code_node_id))
+    ids = [record["fact_id"] for record in records]
+    if len(ids) != len(set(ids)):
+        raise CommonEvidenceContractError(
+            f"common evidence callable population: duplicate fact IDs in {evidence.source_id}"
+        )
+    result.callable_facts.extend(records)
 
 
 def _bind_import_evidence(

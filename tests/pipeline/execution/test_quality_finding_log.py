@@ -28,8 +28,14 @@ class QualityFindingLedgerTest(unittest.TestCase):
             "presence": {"status": "active", "condition": None,
                          "configurationId": None, "provenance": "unconditional"},
             "configured_preprocessing_required": False,
+            "resolution_status": (
+                "external" if outcome == "preserved" else "unsupported"
+            ),
+            "adapter_schema": "language-neutral-resolution/v1",
             "outcome": outcome, "reason": reason,
             "scope": None, "callee_id": "",
+            "external_identity_key": "e" * 64 if outcome == "preserved" else "",
+            "declaration_fact_id": "", "candidate_fact_ids": [],
             "preprocessing_evidence_ids": [], "macro_fact_ids": [],
         }
 
@@ -83,13 +89,13 @@ class QualityFindingLedgerTest(unittest.TestCase):
             run_dir = Path(temp)
             returned = _summarize_analysis_findings(run_dir, call_resolution_ledger=[
                 self._call_row("call-1", "unresolved", "missing_trace"),
-                self._call_row("call-2", "excluded", "stdlib"),
+                self._call_row("call-2", "preserved", "stdlib"),
             ])
 
         self.assertEqual("completed_with_findings", returned["run_quality_status"])
         self.assertEqual(2, returned["call_resolution"]["total"])
         self.assertEqual(1, returned["call_resolution"]["unresolved"])
-        self.assertEqual({"unresolved": 1, "excluded": 1},
+        self.assertEqual({"unresolved": 1, "preserved": 1},
                          returned["call_resolution"]["by_outcome"])
 
     def test_corrupt_ledger_is_fatal_not_silent(self) -> None:

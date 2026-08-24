@@ -61,8 +61,12 @@ class RunRegistryContractTest(unittest.TestCase):
                 "configurationId": None, "provenance": "unconditional",
             },
             "configured_preprocessing_required": False,
+            "resolution_status": "internal",
+            "adapter_schema": "analyzer-c-semantics/v1",
             "outcome": "edge", "reason": "", "scope": "internal",
             "callee_id": "code:sample.c:run",
+            "external_identity_key": "", "declaration_fact_id": "def:run",
+            "candidate_fact_ids": ["def:run"],
             "preprocessing_evidence_ids": [], "macro_fact_ids": [],
         }
 

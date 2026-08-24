@@ -1,42 +1,25 @@
-"""호출(call site) 결정론 분류 — 프로젝트 루틴 / stdlib / 프레임워크 / external.
-
-Parser의 active named/constructor occurrence만 이름 목록과 대조한다(LLM·에이전트 0).
-inactive는 보존하고 conditional/expression/owner·wrapper 증거 부족은 명시 unresolved다.
-- 프로젝트 루틴 → ``CALLS{internal}`` (callee 확정). **먼저 검사** — 우리 루틴이
-  stdlib 동명에 가려지지 않게.
-- stdlib 심볼 → 드롭.
-- 프레임워크 루틴(skill 이 알려준 목록) → 드롭.
-- **호출 wrapper**(skill 이 알려준 — 인자가 실제 호출 대상) → call occurrence는 보존하되
-  literal/symbol evidence가 아직 없으면 target을 만들지 않고 explicit unresolved로 회계.
-- 그 외 → ``CALLS{external}`` (분석 범위 밖 — 호출 사실만 기록).
-
-``framework_runtime_functions`` 의 각 항목은 **글로브 패턴** (``fnmatchcase``) 으로 해석.
-
-stdlib 목록 = 인접 ``stdlib/{c,java,python}_stdlib.json``.
-"""
+"""IR 2.0 call classification through semantic adapters and one common core."""
 from __future__ import annotations
 
-import fnmatch
-import json
-from collections import defaultdict
+from collections import Counter
 from dataclasses import dataclass, field
-from functools import lru_cache
-from pathlib import Path
 from typing import Any, Iterable
 
 from graph.schema.graph_edges import Calls
 from graph.schema.graph_nodes import CodeNode
-from pipeline.languages import EXT_TO_LANG, statement_labels
 from pipeline.models.call_resolution import build_call_resolution_ledger
-
-_STDLIB_DIR = Path(__file__).resolve().parent / "stdlib"
-
+from pipeline.steps.step5_linking.link_calls.resolution_core import (
+    ResolutionInvariantError,
+    resolve_call_sites,
+)
 
 
 @dataclass
 class CallClassifyResult:
-    """``classify_call_sites`` 결과 — 엣지 + 드롭 집계 (조용한 실패 표면화용)."""
     edges: list[Calls] = field(default_factory=list)
+    ledger: list[dict[str, Any]] = field(default_factory=list)
+    resolution_counts: dict[str, int] = field(default_factory=dict)
+    unresolved: list[dict[str, str]] = field(default_factory=list)
     dropped_stdlib: int = 0
     dropped_framework: int = 0
     dropped_macro: int = 0
@@ -47,55 +30,14 @@ class CallClassifyResult:
     unresolved_preprocessing: int = 0
     unresolved_macro: int = 0
     wrapper_unresolved: int = 0
-    unresolved: list[dict[str, str]] = field(default_factory=list)
-    ledger: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def accounted(self) -> int:
-        return (
-            len(self.edges)
-            + self.dropped_stdlib
-            + self.dropped_framework
-            + self.dropped_macro
-            + self.preserved_inactive
-            + self.unresolved_presence
-            + self.unresolved_expression
-            + self.unresolved_owner
-            + self.unresolved_preprocessing
-            + self.unresolved_macro
-            + self.wrapper_unresolved
-        )
+        return len(self.ledger)
 
 
 class CallClassificationInvariantError(RuntimeError):
     """Canonical call occurrence/accounting or target resolution invariant failed."""
-
-
-@lru_cache(maxsize=None)
-def _stdlib_set(lang: str) -> frozenset[str]:
-    """언어별 stdlib 심볼 집합 — 1회 로딩 캐시. 목록 파일 없으면 빈 집합."""
-    path = _STDLIB_DIR / f"{lang}_stdlib.json"
-    if not path.is_file():
-        return frozenset()
-    return frozenset(json.loads(path.read_text(encoding="utf-8")))
-
-
-def _lang_of(file_path: str) -> str:
-    return EXT_TO_LANG.get(Path(file_path).suffix.lstrip(".").lower(), "")
-
-
-def _should_drop_as_framework(name: str, patterns: Iterable[str]) -> bool:
-    """이 호출 이름을 호출 그래프에서 드롭할 것인지 — framework 패턴 매칭.
-
-    True 면 그래프에 박지 않음 (PFM_TRY / PRINT_* 같은 디버그·런타임 매크로).
-    False 면 다음 분류 단계 (external) 로 진행.
-
-    패턴은 glob — ``PRINT_*`` 한 줄이 시리즈 23 개 다 드롭.
-    """
-    for pat in patterns:
-        if fnmatch.fnmatchcase(name, pat):
-            return True
-    return False
 
 
 def classify_call_sites(
@@ -105,342 +47,123 @@ def classify_call_sites(
     wrappers: Iterable[dict] = (),
     macro_facts: Iterable[dict] = (),
     preprocessing_contexts: Iterable[dict] = (),
+    *,
+    callable_facts: Iterable[dict] = (),
+    evidence_sources: Iterable[dict] = (),
+    evidence_completeness: Iterable[dict] = (),
 ) -> CallClassifyResult:
-    """call_sites 를 결정론 분류 → ``Calls`` 엣지 + 드롭 집계.
+    """Resolve every canonical call exactly once without name-only fallback.
 
-    Args:
-        call_sites: ``[{call_id, caller_id, call_text, file, line}, ...]``.
-        code_nodes: 같은 프로젝트 CodeNode 노드 — internal 매칭 대상.
-        framework_names: 프레임워크 루틴 패턴 집합 (skill 출처) — glob 허용.
-        wrappers: 호출 wrapper 명시 — ``[{wrapper, callee_from}, ...]``. SKILL 정의.
-                  argument literal/symbol fact가 구현되기 전에는 target을 추측하지 않는다.
+    ``code_nodes`` and ``framework_names`` remain accepted at the workflow boundary,
+    but neither is searched by spelling.  Definition targets come only from structural
+    callable facts already projected to exact CodeNode IDs.
     """
-    # statement 노드(GOTO 라벨 등)는 호출 대상이 아니다 — `goto PFM_CATCH;` 의 GOTO
-    # 노드가 PFM_CATCH() 호출의 internal 대상으로 오해석되던 실측 결함(2026-08-05).
-    stmt_labels = statement_labels()
-    callables = [fn for fn in code_nodes if fn.label not in stmt_labels]
-    defined_names = {(fn.name or "").strip() for fn in callables if (fn.name or "").strip()}
-    by_name: dict[str, list[str]] = defaultdict(list)
-    module_of: dict[str, str] = {}
-    for fn in callables:
-        name = (fn.name or "").strip()
-        if not name:
-            continue
-        by_name[name].append(fn.id)
-        module_of[fn.id] = fn.owner_id
-
-    wrapper_names: set[str] = set()
-    for w in wrappers:
-        name = w.get("wrapper") if isinstance(w, dict) else getattr(w, "wrapper", None)
-        if not name:
-            continue
-        wrapper_names.add(str(name))
-
-    # Parser grammar evidence only; Analyzer never reads/reparses source for macros.
-    function_macros = _function_macro_candidates(macro_facts)
-    preprocessing_by_source = _configured_preprocessing_by_source(
-        preprocessing_contexts,
+    del code_nodes, framework_names
+    wrapper_names = frozenset(
+        str(item.get("wrapper") if isinstance(item, dict) else getattr(item, "wrapper", ""))
+        for item in wrappers
+        if (item.get("wrapper") if isinstance(item, dict) else getattr(item, "wrapper", ""))
     )
-
-    result = CallClassifyResult()
-    ids = [str(site.get("call_id") or "") for site in call_sites]
-    if any(not fact_id for fact_id in ids) or len(ids) != len(set(ids)):
-        raise CallClassificationInvariantError(
-            "call occurrence ledger requires unique nonblank canonical call_id"
+    sites = [dict(item) for item in call_sites]
+    _mark_preprocessing_affected_calls(sites, preprocessing_contexts)
+    _mark_macro_affected_calls(sites, macro_facts)
+    try:
+        resolved = resolve_call_sites(
+            sites,
+            list(callable_facts),
+            evidence_sources=evidence_sources,
+            evidence_completeness=evidence_completeness,
+            wrapper_names=wrapper_names,
         )
-    for cs in call_sites:
-        call_id = str(cs["call_id"])
-        if cs.get("configured_preprocessing_required") is True:
-            source_id = str(cs.get("source_id") or "")
-            preprocessing = preprocessing_by_source.get(source_id)
-            if preprocessing is None:
-                raise CallClassificationInvariantError(
-                    f"call {call_id} requires configured preprocessing context for "
-                    f"source_id={source_id!r}"
-                )
-            trace = preprocessing["trace"]
-            if (
-                preprocessing.get("status") != "exact"
-                or preprocessing.get("trust") != "authoritative"
-                or trace.get("status") != "exact"
-            ):
-                result.unresolved_preprocessing += 1
-                build = preprocessing["build"]
-                reason = _preprocessing_reason(preprocessing)
-                evidence_ids = sorted(set(
-                    list(build.get("commandOccurrenceIds", []))
-                    + list(build.get("unresolvedEvidenceIds", []))
-                    + list(trace.get("evidenceIds", []))
-                ))
-                row = {
-                    "call_id": call_id,
-                    "outcome": "unresolved",
-                    "reason": reason,
-                    "preprocessing_evidence_ids": evidence_ids,
-                }
-                result.unresolved.append({
-                    key: row[key] for key in ("call_id", "reason")
-                })
-                result.ledger.append(row)
-                continue
-            raise CallClassificationInvariantError(
-                "configured preprocessing v1 cannot bind a raw-source call fact; "
-                "consume a configured semantic occurrence instead"
-            )
-        presence = cs.get("presence_status")
-        if presence == "inactive":
-            result.preserved_inactive += 1
-            result.ledger.append({
-                "call_id": call_id,
-                "outcome": "preserved",
-                "reason": "inactive_presence",
-            })
-            continue
-        if presence in {"conditional", "unknown"}:
-            result.unresolved_presence += 1
-            row = {
-                "call_id": call_id,
-                "outcome": "unresolved",
-                "reason": "insufficient_conditional_presence",
-            }
-            result.unresolved.append({key: row[key] for key in ("call_id", "reason")})
-            result.ledger.append(row)
-            continue
-        if presence != "active":
-            raise CallClassificationInvariantError(
-                f"call {call_id} has invalid/missing presence_status={presence!r}"
-            )
-        callee_kind = cs.get("callee_kind")
-        if callee_kind == "expression":
-            result.unresolved_expression += 1
-            row = {
-                "call_id": call_id,
-                "outcome": "unresolved",
-                "reason": "insufficient_expression_target_resolution",
-            }
-            result.unresolved.append({key: row[key] for key in ("call_id", "reason")})
-            result.ledger.append(row)
-            continue
-        if callee_kind not in {"named", "constructor"}:
-            raise CallClassificationInvariantError(
-                f"call {call_id} has invalid/missing callee_kind={callee_kind!r}"
-            )
-        name = (cs.get("call_text") or "").strip()
-        caller = cs.get("caller_id", "")
-        if not name:
-            raise CallClassificationInvariantError(
-                f"call {call_id} has no grammar-owned terminal name"
-            )
-        if not caller:
-            result.unresolved_owner += 1
-            row = {
-                "call_id": call_id,
-                "outcome": "unresolved",
-                "reason": "insufficient_framework_routine_owner",
-            }
-            result.unresolved.append({key: row[key] for key in ("call_id", "reason")})
-            result.ledger.append(row)
-            continue
+        ledger = build_call_resolution_ledger(sites, resolved.outcomes)
+    except (ResolutionInvariantError, ValueError) as error:
+        raise CallClassificationInvariantError(str(error)) from error
 
-        # A declaration does not prove the effective macro state at this call.
-        # Ordered #undef/redefinition/include events and build defines remain Parser
-        # responsibilities.  Preserve that uncertainty before claiming any edge.
-        macro_candidates = function_macros.get(
-            (str(cs.get("source_id") or ""), name), (),
-        )
-        effective_candidates = [
-            fact for fact in macro_candidates
-            if fact["presence_status"] != "inactive"
-        ]
-        if effective_candidates:
-            result.unresolved_macro += 1
-            reason = (
-                "insufficient_conditional_macro_definition"
-                if any(
-                    fact["presence_status"] in {"conditional", "unknown"}
-                    for fact in effective_candidates
-                )
-                else "insufficient_macro_expansion_state"
-            )
-            row = {
-                "call_id": call_id,
-                "outcome": "unresolved",
-                "reason": reason,
-                "macro_fact_ids": sorted(
-                    str(fact["fact_id"]) for fact in effective_candidates
-                ),
-            }
-            result.unresolved.append({
-                key: row[key] for key in ("call_id", "reason")
-            })
-            result.ledger.append(row)
-            continue
-
-        callee = _resolve_internal(name, caller, by_name, module_of)
-        if callee is not None:
-            result.edges.append(Calls(
-                caller_id=caller,
-                callee_id=callee,
-                scope="internal",
-                recursive=caller == callee,
-            ))
-            result.ledger.append({
-                "call_id": call_id,
-                "outcome": "edge",
-                "scope": "internal",
-                "callee_id": callee,
-            })
-            continue
-
-        # Wrapper target is encoded in an argument expression.  Until Parser literal/
-        # symbol evidence binds that argument, source-line regex would be a second parser.
-        if name in wrapper_names:
-            result.wrapper_unresolved += 1
-            row = {
-                "call_id": call_id,
-                "outcome": "unresolved",
-                "reason": "insufficient_wrapper_argument_syntax_evidence",
-            }
-            result.unresolved.append({key: row[key] for key in ("call_id", "reason")})
-            result.ledger.append(row)
-            continue
-
-        file_path = str(cs.get("file", ""))
-        if name in _stdlib_set(_lang_of(file_path)):
-            result.dropped_stdlib += 1
-            result.ledger.append({
-                "call_id": call_id, "outcome": "excluded", "reason": "stdlib",
-            })
-        elif _should_drop_as_framework(name, framework_names):
-            result.dropped_framework += 1
-            result.ledger.append({
-                "call_id": call_id, "outcome": "excluded", "reason": "framework_runtime",
-            })
-        else:
-            result.edges.append(Calls(
-                caller_id=caller, callee_id=name, scope="external",
-            ))
-            result.ledger.append({
-                "call_id": call_id,
-                "outcome": "edge",
-                "scope": "external",
-                "callee_id": name,
-            })
-    leaked = [
-        edge for edge in result.edges
-        if edge.scope == "external" and edge.callee_id in defined_names
-    ]
-    if leaked:
-        details = ", ".join(
-            f"caller={edge.caller_id!r} callee={edge.callee_id!r}"
-            for edge in leaked[:10]
-        )
-        raise CallClassificationInvariantError(
-            "workspace-defined functions were classified as external: " + details
-        )
+    reasons = Counter(str(row.get("reason") or "") for row in ledger)
+    counts = Counter(str(row["resolution_status"]) for row in ledger)
+    result = CallClassifyResult(
+        edges=resolved.edges,
+        ledger=ledger,
+        resolution_counts=dict(counts),
+        unresolved=[
+            {"call_id": str(row["call_id"]), "reason": str(row["reason"])}
+            for row in ledger if row["outcome"] == "unresolved"
+        ],
+        preserved_inactive=counts["inactive"],
+        unresolved_presence=reasons["insufficient_conditional_presence"],
+        unresolved_expression=reasons["c_runtime_callable_expression"],
+        unresolved_owner=reasons["insufficient_framework_routine_owner"],
+        unresolved_preprocessing=sum(
+            count for reason, count in reasons.items()
+            if "preprocessing" in reason or "configuration" in reason
+        ),
+        unresolved_macro=reasons["insufficient_macro_expansion_state"]
+        + reasons["insufficient_conditional_macro_definition"],
+        wrapper_unresolved=reasons["runtime_wrapper_target"],
+    )
     if result.accounted != len(call_sites):
-        raise CallClassificationInvariantError(
-            f"call occurrence accounting mismatch: input={len(call_sites)}, "
-            f"accounted={result.accounted}"
-        )
-    ledger_ids = [str(row.get("call_id") or "") for row in result.ledger]
-    if ledger_ids != ids or len(ledger_ids) != len(set(ledger_ids)):
         raise CallClassificationInvariantError(
             "call occurrence result ledger must preserve every canonical ID exactly once"
         )
-    try:
-        result.ledger = build_call_resolution_ledger(call_sites, result.ledger)
-    except ValueError as error:
-        raise CallClassificationInvariantError(str(error)) from error
     return result
 
 
-def _configured_preprocessing_by_source(
-    contexts: Iterable[dict],
-) -> dict[str, dict]:
-    result: dict[str, dict] = {}
-    for context in contexts:
-        if not isinstance(context, dict):
-            raise CallClassificationInvariantError(
-                "configured preprocessing context object required"
-            )
-        source_id = str(context.get("source_id") or "")
-        if not source_id or source_id in result:
-            raise CallClassificationInvariantError(
-                "configured preprocessing contexts require unique source_id"
-            )
-        if not isinstance(context.get("build"), dict) or not isinstance(
-            context.get("trace"), dict
-        ):
-            raise CallClassificationInvariantError(
-                f"configured preprocessing context is incomplete for {source_id}"
-            )
-        result[source_id] = context
-    return result
-
-
-def _preprocessing_reason(context: dict) -> str:
-    trace = context["trace"]
-    trace_reasons = trace.get("reasons")
-    if isinstance(trace_reasons, list) and trace_reasons:
-        return str(trace_reasons[0])
-    if context.get("trust") == "compatible_replay":
-        return "insufficient_compatible_preprocessing_replay"
-    build_reasons = context["build"].get("reasons")
-    if isinstance(build_reasons, list) and build_reasons:
-        return str(build_reasons[0])
-    return "insufficient_configured_preprocessing_trace"
-
-
-def _function_macro_candidates(
-    macro_facts: Iterable[dict],
-) -> dict[tuple[str, str], tuple[dict, ...]]:
-    """Index validated grammar declarations without interpreting source text."""
-    grouped: dict[tuple[str, str], list[dict]] = defaultdict(list)
+def _mark_macro_affected_calls(
+    call_sites: list[dict], macro_facts: Iterable[dict],
+) -> None:
+    grouped: dict[tuple[str, str], list[dict]] = {}
     seen: set[str] = set()
     for fact in macro_facts:
         if not isinstance(fact, dict):
             raise CallClassificationInvariantError("macro fact object required")
         fact_id = str(fact.get("fact_id") or "")
-        source_id = str(fact.get("source_id") or "")
-        name = str(fact.get("terminal_name") or "")
-        kind = fact.get("macro_kind")
-        presence = fact.get("presence_status")
         if not fact_id or fact_id in seen:
             raise CallClassificationInvariantError(
                 "macro evidence requires unique nonblank canonical fact_id"
             )
-        if not source_id or not name or kind not in {"object", "function"}:
-            raise CallClassificationInvariantError(
-                f"macro {fact_id} has invalid canonical identity/kind"
-            )
-        if presence not in {"active", "inactive", "conditional", "unknown"}:
-            raise CallClassificationInvariantError(
-                f"macro {fact_id} has invalid presence_status={presence!r}"
-            )
         seen.add(fact_id)
-        if kind == "function":
-            grouped[(source_id, name)].append(fact)
-    return {
-        key: tuple(sorted(items, key=lambda item: str(item["fact_id"])))
-        for key, items in grouped.items()
+        if fact.get("macro_kind") == "function" and fact.get("presence_status") != "inactive":
+            key = (str(fact.get("source_id") or ""), str(fact.get("terminal_name") or ""))
+            grouped.setdefault(key, []).append(fact)
+    for call in call_sites:
+        candidates = grouped.get((
+            str(call.get("source_id") or ""), str(call.get("call_text") or ""),
+        ), ())
+        if candidates:
+            call["macro_resolution_reason"] = (
+                "insufficient_conditional_macro_definition"
+                if any(
+                    fact.get("presence_status") in {"conditional", "unknown"}
+                    for fact in candidates
+                )
+                else "insufficient_macro_expansion_state"
+            )
+            call["macro_fact_ids"] = sorted(str(fact["fact_id"]) for fact in candidates)
+
+
+def _mark_preprocessing_affected_calls(
+    call_sites: list[dict], contexts: Iterable[dict],
+) -> None:
+    by_source = {
+        str(context.get("source_id") or ""): context
+        for context in contexts if isinstance(context, dict)
     }
-
-
-def _resolve_internal(
-    name: str,
-    caller: str,
-    by_name: dict[str, list[str]],
-    module_of: dict[str, str],
-) -> str | None:
-    """call_text → 프로젝트 루틴 code_id. 프로젝트 루틴 아니면 None.
-
-    동명 루틴 다수면 호출한 루틴과 같은 모듈 후보 우선 (C ``static`` 은 파일 스코프).
-    """
-    matches = by_name.get(name)
-    if not matches:
-        return None
-    if len(matches) == 1:
-        return matches[0]
-    same_module = [m for m in matches if module_of.get(m) == module_of.get(caller)]
-    return sorted(same_module)[0] if same_module else sorted(matches)[0]
+    for call in call_sites:
+        if call.get("configured_preprocessing_required") is not True:
+            continue
+        context = by_source.get(str(call.get("source_id") or ""))
+        if context is None:
+            continue
+        build = context.get("build") or {}
+        trace = context.get("trace") or {}
+        reasons = list(trace.get("reasons") or ()) or list(build.get("reasons") or ())
+        call["preprocessing_resolution_reason"] = str(
+            reasons[0] if reasons else "insufficient_configured_preprocessing_trace"
+        )
+        call["preprocessing_evidence_ids"] = sorted(set(
+            str(value) for value in (
+                list(build.get("commandOccurrenceIds") or ())
+                + list(build.get("unresolvedEvidenceIds") or ())
+                + list(trace.get("evidenceIds") or ())
+            )
+        ))

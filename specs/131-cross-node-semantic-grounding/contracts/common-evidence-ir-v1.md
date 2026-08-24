@@ -342,7 +342,13 @@ Call fact는 syntax만 가진다.
     "calleeRange": {"charOffset": 40, "charLength": 3},
     "receiverRange": null,
     "terminalName": "foo",
-    "argumentRanges": []
+    "argumentRanges": [],
+    "scopePath": [
+      {
+        "kind": "translation_unit|function|block|function_prototype",
+        "range": {"charOffset": 0, "charLength": 100}
+      }
+    ]
   }
 }
 ```
@@ -357,19 +363,60 @@ Callable fact도 syntax만 가진다.
     "role": "declaration|definition",
     "nameRange": {"charOffset": 4, "charLength": 3},
     "astNodeRange": null,
-    "scopePath": ["... canonical scope fact id ..."],
+    "scopePath": [
+      {
+        "kind": "translation_unit|function|block|function_prototype",
+        "range": {"charOffset": 0, "charLength": 100}
+      }
+    ],
     "scopeRange": {"charOffset": 0, "charLength": 100},
     "declarationPoint": 24,
     "syntax": {
       "schema": "c-callable-syntax/v1",
-      "declarationSpecifiers": [],
-      "declarator": {},
+      "declarationSpecifiers": [
+        {
+          "grammarRule": "declarationSpecifier",
+          "range": {"charOffset": 0, "charLength": 3},
+          "directTokens": [],
+          "children": []
+        }
+      ],
+      "declarator": {
+        "grammarRule": "declarator",
+        "range": {"charOffset": 4, "charLength": 19},
+        "directTokens": [],
+        "children": []
+      },
       "attributes": []
     }
   }
 }
 ```
 
+- `scopePath`는 별도 scope fact ID를 참조하지 않는다. 같은 file/hash 안의 grammar scope를 바깥에서
+  안쪽 순서로 직접 담은 배열이다. 첫 component는 `translation_unit`이며, 뒤 component의 range는 바로
+  앞 component range에 포함되어야 한다. call/callable range는 마지막 component range에 포함되어야 한다.
+  callable의 `scopeRange`는 이름이 선언되는 binding scope이며 `scopePath`의 마지막 range와 같아야 한다.
+- call과 callable의 lexical order는 각각 fact range 시작점과 `declarationPoint`로 결정한다. Parser는
+  visible-before-use, shadowing, linkage를 판정하지 않는다.
+- `declarationSpecifiers[]`, `declarator`, `attributes[]`의 원소는 같은 재귀 component schema를 쓴다.
+  `grammarRule`은 `frontendSchema`가 명명한 ANTLR parser rule, `range`는 해당 context의 exact half-open
+  source range, `children[]`는 direct child parser context의 source order다. `directTokens[]`에는 해당
+  context의 direct terminal만 다음 형식으로 한 번 기록한다.
+
+```json
+{
+  "tokenKind": "Identifier|Static|Star|LeftParen|...",
+  "range": {"charOffset": 4, "charLength": 3}
+}
+```
+
+- `tokenKind`는 `frontendSchema`의 lexer vocabulary symbolic name이다. source text, 정규식 분류, canonical
+  type/linkage 이름을 Parser payload에 복제하지 않는다. synthetic/recovered token처럼 exact source range가
+  없는 component는 complete 사실로 승격하지 않고 envelope parse/completeness 진단에 남긴다.
+- C declarator component tree는 storage/type/qualifier/function/alignment specifier, pointer/direct declarator,
+  parameter declaration, array/function suffix, variadic marker, attribute context와 terminal을 구조 그대로
+  보존한다. parent/child와 source order는 `children[]`로 표현하며 임의 depth/element cap을 두지 않는다.
 - `syntax`는 universal type schema가 아니라 frontend별 versioned typed component다. 각 component는 grammar
   kind와 exact half-open range를 보존하며, Analyzer adapter가 source를 regex/split으로 재파싱하지 않게 한다.
 - C frontend는 최소 storage/type/qualifier/function/alignment specifier, pointer/direct declarator,

@@ -847,6 +847,12 @@ def test_framework_calls_use_canonical_fact_ids_ranges_and_routine_owner() -> No
         assert result.call_sites[0]["argument_ranges"] == [
             _range(source, "1")
         ]
+        assert result.call_sites[0]["call_source"] == "service->handler(1)"
+        assert result.call_sites[0]["callee_source"] == "service->handler"
+        assert result.call_sites[0]["argument_sources"] == ["1"]
+        assert result.call_sites[0]["receiver_source"] is None
+        assert result.call_sites[1]["call_source"] == "(*callback)(2)"
+        assert result.call_sites[1]["argument_sources"] == ["2"]
         assert result.evidence_sources == [{
             "source_id": "sample.c",
             "decoded_text_sha256": hashlib.sha256(source.encode()).hexdigest(),

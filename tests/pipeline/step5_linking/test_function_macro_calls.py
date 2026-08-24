@@ -11,7 +11,7 @@ class FunctionMacroCallTests(unittest.TestCase):
         caller = _caller()
         call = _call(caller, "customer_hook")
         call["configured_preprocessing_required"] = True
-        result = classify_call_sites(
+        result = _classify(
             [call], [caller],
             preprocessing_contexts=[{
                 "source_id": "sample.c",
@@ -46,7 +46,7 @@ class FunctionMacroCallTests(unittest.TestCase):
 
     def test_declaration_alone_cannot_claim_macro_expansion(self) -> None:
         caller = _caller()
-        result = classify_call_sites([_call(caller, "TRACE")], [caller], macro_facts=[{
+        result = _classify([_call(caller, "TRACE")], [caller], macro_facts=[{
             "fact_id": "macro-trace",
             "source_id": "sample.c",
             "macro_kind": "function",
@@ -67,7 +67,7 @@ class FunctionMacroCallTests(unittest.TestCase):
 
     def test_conditional_definition_is_explicitly_unresolved(self) -> None:
         caller = _caller()
-        result = classify_call_sites([_call(caller, "PFM_DBG")], [caller], macro_facts=[{
+        result = _classify([_call(caller, "PFM_DBG")], [caller], macro_facts=[{
             "fact_id": "macro-pfm-dbg",
             "source_id": "sample.c",
             "macro_kind": "function",
@@ -88,7 +88,7 @@ class FunctionMacroCallTests(unittest.TestCase):
             _call(caller, "TRACE", call_id="call-inactive"),
             _call(caller, "customer_hook", call_id="call-external"),
         ]
-        result = classify_call_sites(sites, [caller], macro_facts=[
+        result = _classify(sites, [caller], macro_facts=[
             {
                 "fact_id": "macro-object", "source_id": "sample.c",
                 "macro_kind": "object", "terminal_name": "CALLBACK",
@@ -101,13 +101,10 @@ class FunctionMacroCallTests(unittest.TestCase):
             },
         ])
 
+        self.assertEqual([], result.edges)
         self.assertEqual(
-            [
-                ("CALLBACK", "external"),
-                ("TRACE", "external"),
-                ("customer_hook", "external"),
-            ],
-            [(edge.callee_id, edge.scope) for edge in result.edges],
+            ["external", "external", "external"],
+            [row["resolution_status"] for row in result.ledger],
         )
         self.assertEqual(0, result.dropped_macro)
 
@@ -142,6 +139,26 @@ def _call(caller: CodeNode, name: str, *, call_id: str = "trace-call") -> dict:
         "argument_ranges": [],
         "grammar_rule": "postfixExpression",
     }
+
+
+def _classify(call_sites, code_nodes, **kwargs):
+    return classify_call_sites(
+        call_sites,
+        code_nodes,
+        evidence_sources=[{
+            "source_id": "sample.c", "language": "c",
+            "frontend_schema": "antlr-c/v1",
+        }],
+        evidence_completeness=[
+            {
+                "source_id": "sample.c", "kind": kind, "status": "complete",
+                "population": len(call_sites), "emitted": len(call_sites),
+                "explicitlyUnresolved": 0,
+            }
+            for kind in ("call", "callable")
+        ],
+        **kwargs,
+    )
 
 
 if __name__ == "__main__":

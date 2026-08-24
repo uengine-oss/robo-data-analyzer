@@ -160,7 +160,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
     variables, constants, data_types = [], [], []
     parent_of = []
     has_member, belongs_to, statement_next = [], [], []
-    call_sites, macro_facts, import_refs = [], [], []
+    call_sites, callable_facts, macro_facts, import_refs = [], [], [], []
     evidence_sources, evidence_completeness, preprocessing_contexts = [], [], []
     parsed_files = 0
     await pause.gate()
@@ -185,6 +185,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         belongs_to.extend(result.belongs_to_edges)
         statement_next.extend(result.statement_next_edges)
         call_sites.extend(result.call_sites)
+        callable_facts.extend(result.callable_facts)
         macro_facts.extend(result.macro_facts)
         import_refs.extend(result.import_refs)
         evidence_sources.extend(result.evidence_sources)
@@ -197,6 +198,12 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
     call_fact_ids = [site.get("call_id") for site in call_sites]
     if len(call_fact_ids) != len(set(call_fact_ids)):
         raise ValueError("common evidence call fact IDs are not globally exact-once")
+    callable_fact_ids = [fact.get("fact_id") for fact in callable_facts]
+    if (
+        any(not fact_id for fact_id in callable_fact_ids)
+        or len(callable_fact_ids) != len(set(callable_fact_ids))
+    ):
+        raise ValueError("common evidence callable fact IDs are not globally exact-once")
     macro_fact_ids = [fact.get("fact_id") for fact in macro_facts]
     if (
         any(not fact_id for fact_id in macro_fact_ids)
@@ -390,6 +397,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         "references_edges": references,
         "init_by_edges": init_by,
         "call_sites": call_sites,
+        "callable_facts": callable_facts,
         "macro_facts": macro_facts,
         "import_refs": import_refs,
         "import_resolution_ledger": import_resolution_ledger,

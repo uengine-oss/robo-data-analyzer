@@ -44,8 +44,12 @@ def _call_row(*, outcome="unresolved", reason="missing") -> dict:
         "presence": {"status": "active", "condition": None,
                      "configurationId": None, "provenance": "unconditional"},
         "configured_preprocessing_required": False,
+        "resolution_status": "unsupported",
+        "adapter_schema": "language-neutral-resolution/v1",
         "outcome": outcome, "reason": reason,
         "scope": None, "callee_id": "",
+        "external_identity_key": "", "declaration_fact_id": "",
+        "candidate_fact_ids": [],
         "preprocessing_evidence_ids": [], "macro_fact_ids": [],
     }
 

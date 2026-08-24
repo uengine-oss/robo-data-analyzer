@@ -47,6 +47,9 @@ async def link_calls_by_name_step(state: dict, config: Optional[RunnableConfig] 
         framework_names=framework_names, wrappers=call_wrappers,
         macro_facts=state.get("macro_facts", []),
         preprocessing_contexts=state.get("preprocessing_contexts", []),
+        callable_facts=state.get("callable_facts", []),
+        evidence_sources=state.get("evidence_sources", []),
+        evidence_completeness=state.get("evidence_completeness", []),
     )
 
     if neo is not None and result.edges:
@@ -73,11 +76,19 @@ async def link_calls_by_name_step(state: dict, config: Optional[RunnableConfig] 
             count=len(result.unresolved),
         )
 
-    internal = sum(1 for e in result.edges if e.scope == "internal")
+    internal = result.resolution_counts.get("internal", 0)
     log_info(
         _STEP, "done",
         call_sites=len(call_sites),
-        internal=internal, external=len(result.edges) - internal,
+        internal=internal,
+        external=result.resolution_counts.get("external", 0),
+        dynamic=result.resolution_counts.get("dynamic", 0),
+        configuration_dependent=result.resolution_counts.get(
+            "configuration_dependent", 0,
+        ),
+        ambiguous=result.resolution_counts.get("ambiguous", 0),
+        unsupported=result.resolution_counts.get("unsupported", 0),
+        inactive=result.resolution_counts.get("inactive", 0),
         dropped_stdlib=result.dropped_stdlib,
         dropped_framework=result.dropped_framework,
         dropped_macro=result.dropped_macro,

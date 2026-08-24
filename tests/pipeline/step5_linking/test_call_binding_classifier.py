@@ -1,463 +1,260 @@
-"""Formal red contract for language-neutral call binding (spec 131 C-067)."""
+"""Formal contract for IR 2.0 adapter-owned semantic resolution (C-080)."""
 from __future__ import annotations
+
+import pytest
 
 from graph.schema.graph_nodes import CodeNode
 from pipeline.steps.step5_linking.link_calls.call_classifier import (
     CallClassificationInvariantError,
     classify_call_sites,
 )
-from tests.unittest_function_cases import load_function_cases
 
 
 def _node(node_id: str, name: str, file_path: str) -> CodeNode:
     return CodeNode(
-        id=node_id,
-        name=name,
-        owner_id=f"code:{file_path}",
-        signature=f"int {name}(int value)",
-        file_path=file_path,
-        start_line=1,
-        end_line=2,
-        label="FUNCTION",
+        id=node_id, name=name, owner_id=f"code:{file_path}",
+        signature=f"int {name}(int value)", file_path=file_path,
+        start_line=1, end_line=2, label="FUNCTION",
     )
 
 
-def _call(
-    call_id: str,
-    caller: CodeNode,
-    terminal_name: str,
-    *,
-    status: str,
-    resolution_mode: str = "none",
-    binding_key: str | None = None,
-    compatibility_key: str | None = None,
-    compatibility_scope: str | None = None,
-    target_scope: str = "corpus",
-    dispatch: str = "exact",
-    declaration_fact_id: str | None = None,
-    external_identity_key: str | None = None,
-    candidate_fact_ids: tuple[str, ...] = (),
-    reason: str | None = None,
-    configuration_id: str | None = None,
-) -> dict:
+def _range(start: int, length: int) -> dict[str, int]:
+    return {"char_offset": start, "char_length": length}
+
+
+def _scope(source_length: int = 200) -> list[dict]:
+    return [{"kind": "translation_unit", "range": _range(0, source_length)}]
+
+
+def _component(rule: str, tokens: list[tuple[str, str, int]]) -> dict:
     return {
-        "call_id": call_id,
-        "caller_id": caller.id,
-        "owner_status": "resolved",
-        "call_text": terminal_name,
-        "callee_kind": "named",
-        "source_id": caller.file_path,
-        "presence_status": "active",
-        "presence": {
-            "status": "active",
-            "condition": None,
-            "configurationId": configuration_id,
-            "provenance": "unconditional",
-        },
-        "file": caller.file_path,
-        "line": 1,
-        "range": {"char_offset": 10, "char_length": 8},
-        "callee_range": {"char_offset": 10, "char_length": 4},
-        "argument_ranges": [],
-        "grammar_rule": "postfixExpression",
-        "binding": {
-            "adapter_schema": "fixture-binding/v1",
-            "status": status,
-            "resolution_mode": resolution_mode,
-            "declaration_fact_id": declaration_fact_id,
-            "binding_key": binding_key,
-            "compatibility_key": compatibility_key,
-            "compatibility_scope": compatibility_scope,
-            "target_scope": target_scope,
-            "dispatch": dispatch,
-            "configuration_id": configuration_id,
-            "external_identity_key": external_identity_key,
-            "candidate_fact_ids": list(candidate_fact_ids),
-            "provenance": (
-                "unsupported_adapter" if status == "unsupported" else "grammar_scope"
-            ),
-            "reason": reason,
-        },
+        "grammar_rule": rule,
+        "range": _range(min(item[2] for item in tokens), 20),
+        "direct_tokens": [
+            {"token_kind": kind, "text": text, "range": _range(offset, len(text))}
+            for kind, text, offset in tokens
+        ],
+        "children": [],
     }
 
 
 def _callable(
     fact_id: str,
+    name: str,
+    source_id: str,
     *,
     role: str,
-    source_id: str,
-    binding_key: str,
-    compatibility_key: str | None,
-    compatibility_status: str,
-    compatibility_scope: str,
-    definition_status: str,
-    target_scope: str = "corpus",
-    node: CodeNode | None = None,
-    configuration_id: str | None = None,
+    static: bool = False,
+    code_node_id: str | None = None,
+    declaration_point: int = 30,
 ) -> dict:
+    name_start = 10
+    specifiers = [_component("typeSpecifier", [("Int", "int", 4)])]
+    if static:
+        specifiers.insert(0, _component(
+            "storageClassSpecifier", [("Static", "static", 0)],
+        ))
     return {
         "fact_id": fact_id,
         "role": role,
-        "code_node_id": node.id if node is not None else None,
+        "code_node_id": code_node_id,
         "source_id": source_id,
-        "adapter_schema": "fixture-binding/v1",
-        "binding_key": binding_key,
-        "compatibility_key": compatibility_key,
-        "compatibility_status": compatibility_status,
-        "compatibility_scope": compatibility_scope,
-        "definition_status": definition_status,
-        "target_scope": target_scope,
-        "configuration_id": configuration_id,
+        "range": _range(0, 40),
+        "name_range": _range(name_start, len(name)),
+        "terminal_name": name,
+        "ast_node_range": _range(0, 40) if role == "definition" else None,
+        "scope_path": _scope(),
+        "scope_range": _range(0, 200),
+        "declaration_point": declaration_point,
+        "syntax": {
+            "schema": "c-callable-syntax/v1",
+            "declaration_specifiers": specifiers,
+            "declarator": _component(
+                "declarator", [("Identifier", name, name_start)],
+            ),
+            "attributes": [],
+        },
+        "grammar_rule": "functionDefinition" if role == "definition" else "declaration",
         "presence_status": "active",
+        "presence": {"status": "active"},
     }
 
 
-def _declaration(
-    fact_id: str,
-    source_id: str,
-    binding_key: str,
-    compatibility_key: str | None,
-    *,
-    compatibility_status: str = "exact",
-    compatibility_scope: str = "corpus",
-    target_scope: str = "corpus",
-    configuration_id: str | None = None,
-) -> dict:
-    return _callable(
-        fact_id,
-        role="declaration",
-        source_id=source_id,
-        binding_key=binding_key,
-        compatibility_key=compatibility_key,
-        compatibility_status=compatibility_status,
-        compatibility_scope=compatibility_scope,
-        definition_status="not_applicable",
-        target_scope=target_scope,
-        configuration_id=configuration_id,
+def _call(call_id: str, caller: CodeNode, name: str, *, kind: str = "named") -> dict:
+    terminal = "" if kind == "expression" else name
+    return {
+        "call_id": call_id,
+        "caller_id": caller.id,
+        "owner_status": "resolved",
+        "call_text": terminal,
+        "callee_kind": kind,
+        "source_id": caller.file_path,
+        "presence_status": "active",
+        "presence": {"status": "active"},
+        "file": caller.file_path,
+        "line": 2,
+        "range": _range(50, 10),
+        "callee_range": _range(50, 6),
+        "receiver_range": None,
+        "argument_ranges": [],
+        "scope_path": _scope(),
+        "grammar_rule": "postfixExpression",
+    }
+
+
+def _context(*source_ids: str, language: str = "c") -> tuple[list[dict], list[dict]]:
+    sources = [
+        {
+            "source_id": source_id,
+            "language": language,
+            "frontend_schema": "antlr-c/v1" if language == "c" else "antlr-python/v1",
+        }
+        for source_id in source_ids
+    ]
+    completeness = [
+        {
+            "source_id": source_id, "kind": kind, "status": "complete",
+            "population": 1, "emitted": 1, "explicitlyUnresolved": 0,
+        }
+        for source_id in source_ids for kind in ("call", "callable")
+    ]
+    return sources, completeness
+
+
+def _classify(calls, nodes, callables, *source_ids, language: str = "c"):
+    sources, completeness = _context(*source_ids, language=language)
+    return classify_call_sites(
+        calls, nodes, callable_facts=callables,
+        evidence_sources=sources, evidence_completeness=completeness,
     )
 
 
-def _definition(
-    fact_id: str,
-    node: CodeNode,
-    binding_key: str,
-    compatibility_key: str | None,
-    *,
-    compatibility_status: str = "exact",
-    compatibility_scope: str = "corpus",
-    target_scope: str = "corpus",
-    configuration_id: str | None = None,
-) -> dict:
-    return _callable(
-        fact_id,
-        role="definition",
-        source_id=node.file_path,
-        binding_key=binding_key,
-        compatibility_key=compatibility_key,
-        compatibility_status=compatibility_status,
-        compatibility_scope=compatibility_scope,
-        definition_status="exact",
-        target_scope=target_scope,
-        node=node,
-        configuration_id=configuration_id,
-    )
-
-
-def test_compatible_target_uses_only_adapter_owned_opaque_keys() -> None:
+def test_visible_external_declaration_joins_one_compatible_definition() -> None:
     caller = _node("code:a.c:caller", "caller", "a.c")
-    target = _node("code:b.c:actual_name", "actual_name", "b.c")
-    declaration_id = "c" * 64
-    definition_id = "d" * 64
-    result = classify_call_sites(
-        [_call(
-            "call-1",
-            caller,
-            "different_spelling",
-            status="declaration_bound",
-            resolution_mode="compatible_definition",
-            binding_key="a" * 64,
-            compatibility_key="b" * 64,
-            compatibility_scope="corpus",
-            declaration_fact_id=declaration_id,
-        )],
-        [caller, target],
-        callable_facts=[
-            _declaration(
-                declaration_id, caller.file_path, "a" * 64, "b" * 64,
+    target = _node("code:b.c:target", "target", "b.c")
+    result = _classify(
+        [_call("call-1", caller, "target")], [caller, target],
+        [
+            _callable("decl-1", "target", "a.c", role="declaration"),
+            _callable(
+                "def-1", "target", "b.c", role="definition",
+                code_node_id=target.id,
             ),
-            _definition(definition_id, target, "a" * 64, "b" * 64),
         ],
+        "a.c", "b.c",
     )
 
     assert [(edge.callee_id, edge.scope) for edge in result.edges] == [
         (target.id, "internal"),
     ]
-    assert result.ledger[0]["resolution"] == "internal"
-    assert result.ledger[0]["declaration_fact_id"] == declaration_id
-    assert result.ledger[0]["target_fact_id"] == definition_id
+    assert result.ledger[0]["resolution_status"] == "internal"
+    assert result.resolution_counts == {"internal": 1}
 
 
-def test_direct_definition_uses_exact_referenced_fact_not_compatible_lookup() -> None:
-    caller = _node("code:a.c:caller", "caller", "a.c")
-    direct = _node("code:a.c:direct", "direct", "a.c")
-    duplicate = _node("code:b.c:duplicate", "duplicate", "b.c")
-    direct_id = "1" * 64
-    result = classify_call_sites(
-        [_call(
-            "call-direct",
-            caller,
-            "different_spelling",
-            status="declaration_bound",
-            resolution_mode="direct_definition",
-            binding_key="2" * 64,
-            compatibility_scope="unavailable",
-            target_scope="source_file",
-            declaration_fact_id=direct_id,
-        )],
-        [caller, direct, duplicate],
-        callable_facts=[
-            _definition(
-                direct_id,
-                direct,
-                "2" * 64,
-                None,
-                compatibility_status="unavailable",
-                compatibility_scope="unavailable",
-                target_scope="source_file",
-            ),
-            _definition(
-                "3" * 64,
-                duplicate,
-                "2" * 64,
-                None,
-                compatibility_status="unavailable",
-                compatibility_scope="unavailable",
-                target_scope="source_file",
-            ),
-        ],
-    )
-
-    assert [(edge.callee_id, edge.scope) for edge in result.edges] == [
-        (direct.id, "internal"),
-    ]
-    assert result.ledger[0]["target_fact_id"] == direct_id
-
-
-def test_same_name_without_visible_declaration_is_external_occurrence_only() -> None:
+def test_same_name_without_visible_declaration_is_external_without_stub_edge() -> None:
     caller = _node("code:a.c:caller", "caller", "a.c")
     same_name = _node("code:b.c:target", "target", "b.c")
-    result = classify_call_sites(
-        [_call(
-            "call-2",
-            caller,
-            "target",
-            status="external",
-            reason="missing_visible_declaration",
+    result = _classify(
+        [_call("call-2", caller, "target")], [caller, same_name],
+        [_callable(
+            "def-2", "target", "b.c", role="definition",
+            code_node_id=same_name.id,
         )],
-        [caller, same_name],
-        callable_facts=[_definition(
-            "e" * 64, same_name, "f" * 64, "1" * 64,
-        )],
+        "a.c", "b.c",
     )
 
     assert result.edges == []
-    assert result.ledger[0]["resolution"] == "external"
-    assert result.ledger[0]["reason"] == "missing_visible_declaration"
-    assert result.ledger[0]["external_identity_key"] is None
+    assert result.ledger[0]["resolution_status"] == "external"
+    assert len(result.ledger[0]["external_identity_key"]) == 64
 
 
 def test_duplicate_compatible_definitions_are_ambiguous_not_first_sorted() -> None:
     caller = _node("code:a.c:caller", "caller", "a.c")
     first = _node("code:b.c:target", "target", "b.c")
     second = _node("code:c.c:target", "target", "c.c")
-    declaration_id = "4" * 64
-    result = classify_call_sites(
-        [_call(
-            "call-3",
-            caller,
-            "target",
-            status="declaration_bound",
-            resolution_mode="compatible_definition",
-            binding_key="2" * 64,
-            compatibility_key="3" * 64,
-            compatibility_scope="corpus",
-            declaration_fact_id=declaration_id,
-        )],
-        [caller, first, second],
-        callable_facts=[
-            _declaration(
-                declaration_id, caller.file_path, "2" * 64, "3" * 64,
-            ),
-            _definition("5" * 64, first, "2" * 64, "3" * 64),
-            _definition("6" * 64, second, "2" * 64, "3" * 64),
+    result = _classify(
+        [_call("call-3", caller, "target")], [caller, first, second],
+        [
+            _callable("decl-3", "target", "a.c", role="declaration"),
+            _callable("def-3a", "target", "b.c", role="definition", code_node_id=first.id),
+            _callable("def-3b", "target", "c.c", role="definition", code_node_id=second.id),
         ],
+        "a.c", "b.c", "c.c",
     )
 
     assert result.edges == []
-    assert result.ledger[0]["resolution"] == "ambiguous"
-    assert result.ledger[0]["candidate_fact_ids"] == ["5" * 64, "6" * 64]
+    assert result.ledger[0]["resolution_status"] == "ambiguous"
+    assert result.ledger[0]["candidate_fact_ids"] == ["def-3a", "def-3b"]
 
 
-def test_source_file_scope_never_crosses_translation_units() -> None:
+def test_static_linkage_does_not_cross_translation_units() -> None:
     caller = _node("code:a.c:caller", "caller", "a.c")
-    static_other_file = _node("code:b.c:local", "local", "b.c")
-    declaration_id = "9" * 64
-    result = classify_call_sites(
-        [_call(
-            "call-4",
-            caller,
-            "local",
-            status="declaration_bound",
-            resolution_mode="compatible_definition",
-            binding_key="7" * 64,
-            compatibility_key="8" * 64,
-            compatibility_scope="source_file",
-            target_scope="source_file",
-            declaration_fact_id=declaration_id,
-        )],
-        [caller, static_other_file],
-        callable_facts=[
-            _declaration(
-                declaration_id,
-                caller.file_path,
-                "7" * 64,
-                "8" * 64,
-                compatibility_scope="source_file",
-                target_scope="source_file",
-            ),
-            _definition(
-                "a" * 64,
-                static_other_file,
-                "7" * 64,
-                "8" * 64,
-                compatibility_scope="source_file",
-                target_scope="source_file",
+    other = _node("code:b.c:target", "target", "b.c")
+    result = _classify(
+        [_call("call-4", caller, "target")], [caller, other],
+        [
+            _callable("decl-4", "target", "a.c", role="declaration", static=True),
+            _callable(
+                "def-4", "target", "b.c", role="definition",
+                static=True, code_node_id=other.id,
             ),
         ],
+        "a.c", "b.c",
     )
 
     assert result.edges == []
-    assert result.ledger[0]["resolution"] == "external"
+    assert result.ledger[0]["resolution_status"] == "external"
 
 
-def test_unsupported_adapter_preserves_candidates_without_name_fallback() -> None:
-    caller = _node("code:sample.py:caller", "caller", "sample.py")
-    same_name = _node("code:other.py:printf", "printf", "other.py")
-    candidate_id = "b" * 64
+def test_expression_callee_is_dynamic_without_name_guessing() -> None:
+    caller = _node("code:a.c:caller", "caller", "a.c")
+    result = _classify(
+        [_call("call-5", caller, "", kind="expression")], [caller], [], "a.c",
+    )
+
+    assert result.edges == []
+    assert result.ledger[0]["resolution_status"] == "dynamic"
+
+
+def test_unregistered_language_is_unsupported_without_name_fallback() -> None:
+    caller = _node("code:a.py:caller", "caller", "a.py")
+    same_name = _node("code:b.py:target", "target", "b.py")
+    result = _classify(
+        [_call("call-6", caller, "target")], [caller, same_name], [],
+        "a.py", "b.py", language="python",
+    )
+
+    assert result.edges == []
+    assert result.ledger[0]["resolution_status"] == "unsupported"
+    assert result.ledger[0]["reason"] == "unsupported_language_adapter"
+
+
+def test_partial_callable_evidence_fails_closed_at_affected_source() -> None:
+    caller = _node("code:a.c:caller", "caller", "a.c")
+    sources, completeness = _context("a.c")
+    callable_row = next(row for row in completeness if row["kind"] == "callable")
+    callable_row.update({
+        "status": "partial", "population": 1, "emitted": 0,
+        "explicitlyUnresolved": 1,
+        "reason": "insufficient_parser_recovery",
+        "reasons": ["insufficient_parser_recovery"],
+    })
     result = classify_call_sites(
-        [_call(
-            "call-5",
-            caller,
-            "printf",
-            status="unsupported",
-            dispatch="dynamic",
-            target_scope="runtime",
-            candidate_fact_ids=(candidate_id,),
-            reason="insufficient_callable_type_compatibility",
-        )],
-        [caller, same_name],
-        framework_names=frozenset({"print*"}),
-        callable_facts=[_declaration(
-            candidate_id,
-            caller.file_path,
-            "c" * 64,
-            None,
-            compatibility_status="unavailable",
-            compatibility_scope="unavailable",
-            target_scope="source_file",
-        )],
+        [_call("call-7", caller, "target")], [caller], callable_facts=[],
+        evidence_sources=sources, evidence_completeness=completeness,
     )
 
-    assert result.edges == []
-    assert result.dropped_stdlib == 0
-    assert result.dropped_framework == 0
-    assert result.ledger[0]["resolution"] == "unsupported"
-    assert result.ledger[0]["candidate_fact_ids"] == [candidate_id]
+    assert result.ledger[0]["resolution_status"] == "unsupported"
+    assert result.ledger[0]["reason"] == "insufficient_parser_recovery"
 
 
-def test_same_opaque_keys_from_different_configurations_never_join() -> None:
+def test_duplicate_call_id_rejects_before_resolution() -> None:
     caller = _node("code:a.c:caller", "caller", "a.c")
-    target = _node("code:b.c:target", "target", "b.c")
-    declaration_id = "1" * 64
-    result = classify_call_sites(
-        [_call(
-            "call-6",
-            caller,
-            "target",
-            status="declaration_bound",
-            resolution_mode="compatible_definition",
-            binding_key="e" * 64,
-            compatibility_key="f" * 64,
-            compatibility_scope="configuration",
-            declaration_fact_id=declaration_id,
-            configuration_id="configuration-a",
-        )],
-        [caller, target],
-        callable_facts=[
-            _declaration(
-                declaration_id,
-                caller.file_path,
-                "e" * 64,
-                "f" * 64,
-                compatibility_scope="configuration",
-                configuration_id="configuration-a",
-            ),
-            _definition(
-                "2" * 64,
-                target,
-                "e" * 64,
-                "f" * 64,
-                compatibility_scope="configuration",
-                configuration_id="configuration-b",
-            ),
-        ],
-    )
+    call = _call("duplicate", caller, "target")
+    sources, completeness = _context("a.c")
 
-    assert result.edges == []
-    assert result.ledger[0]["resolution"] == "external"
-
-
-def test_missing_or_unknown_referenced_callable_fact_fails_closed() -> None:
-    caller = _node("code:a.c:caller", "caller", "a.c")
-    call = _call(
-        "call-invalid",
-        caller,
-        "target",
-        status="declaration_bound",
-        resolution_mode="compatible_definition",
-        binding_key="a" * 64,
-        compatibility_key="b" * 64,
-        compatibility_scope="corpus",
-        declaration_fact_id="c" * 64,
-    )
-
-    try:
-        classify_call_sites([call], [caller], callable_facts=[])
-    except CallClassificationInvariantError:
-        pass
-    else:
-        raise AssertionError("missing declarationFactId target must fail closed")
-
-
-def test_missing_binding_never_reenters_legacy_name_resolution() -> None:
-    caller = _node("code:a.c:caller", "caller", "a.c")
-    same_name = _node("code:b.c:target", "target", "b.c")
-    call = _call(
-        "call-legacy",
-        caller,
-        "target",
-        status="external",
-        reason="missing_visible_declaration",
-    )
-    del call["binding"]
-
-    try:
-        classify_call_sites([call], [caller, same_name], callable_facts=[])
-    except CallClassificationInvariantError:
-        pass
-    else:
-        raise AssertionError("missing binding must not fall back to routine name")
-
-
-def load_tests(_loader, standard_tests, _pattern):
-    return load_function_cases(standard_tests, globals())
+    with pytest.raises(CallClassificationInvariantError, match="exact-once"):
+        classify_call_sites(
+            [call, dict(call)], [caller], evidence_sources=sources,
+            evidence_completeness=completeness,
+        )
