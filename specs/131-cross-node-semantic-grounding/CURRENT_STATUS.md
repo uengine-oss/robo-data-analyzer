@@ -1,7 +1,7 @@
 # Analyzer 의미 무손실 작업 현재상태
 
 **Updated**: 2026-08-24
-**Status**: C-080 호출 결합과 C-081 구조식 transport/중립 IR actual 검증 완료. 다음은 discriminated semantic schema와 결정론 projection이다
+**Status**: C-080 호출 결합, C-081 구조식 transport, C-082 discriminated expression IR actual 검증 완료. 다음은 exact slot closure와 결정론 projection이다
 **Role**: 현재 HEAD·환경·보존 WIP·미해결·바로 다음 행동의 유일한 정본
 
 상세 조사 원장은 `history/handovers/12-20260821-current-status-snapshot-pointer.md`로 정확히
@@ -293,3 +293,27 @@ language-neutral semantic IR로 변환하게 하는 것이다.
   다음 책임 슬라이스는 neutral IR을 Analyzer-owned discriminated semantic schema가 소비하고
   Python/Rule/Example을 결정론적으로 렌더링하는 것이다.
 - 상세 evidence: `evidence/c081-structural-expression-ir-20260824.md`.
+
+## 11. 2026-08-24 C-082 discriminated expression IR 실제 검증
+
+- C-081의 `semantic_expression_facts`는 Step 2 state까지 생산됐지만 downstream consumer가 0이었다.
+  또한 `binary/postfix/unary` grammar-normalized tree는 구조를 보존할 뿐 call/member/operator 의미
+  종류를 직접 구분하지 않았다. 이 두 사실을 다음 책임 슬라이스의 시작점으로 고정했다.
+- Analyzer language-neutral core가 structural token/range만 사용해 expression을
+  `reference/literal/group/member/subscript/call/unary/binary/conditional/assignment/cast/sequence`
+  variant로 분류한다. C source 정규식 재파싱, binding/type/linkage 추측, 의미 fallback은 없다.
+  지원하지 않는 구조·연산자는 `ExpressionSemanticError`로 fail-closed다.
+- 봉인 SKT 578건은 모두 기존 CodeNode에 귀속되고 부모 체인으로 46개 routine에 578/578 배정된다.
+  orphan은 0이며 별도 unresolved graph node/label은 만들지 않았다.
+- 동일 Parser artifact actual 결과는 structural 578 / grammar-neutral 578 / discriminated 578이다.
+  top-level variant는 reference 212, binary 173, member 127, call 44, group 10, unary 6,
+  literal 4, cast 2이고 누락·중복·첫 실패는 0이다.
+- discriminated ledger 결정론 SHA-256은
+  `589e09e7cd60b454ecd48f1ac2cf37e393428a6cfead577e8c1f2f4f989ef58f`이다.
+  focused Step 2 regression은 131 passed/2 skipped, sealed SKT replay는 1 passed다.
+- 이는 구조식의 Analyzer 내부 분류와 exact-once ledger 검증이다. 아직 LLM 의미 입력이나
+  Python/Rule/Example 출력에 승격하지 않았고 의미 정확도·제품 합격도 주장하지 않는다.
+- 다음 책임 슬라이스는 46개 routine 소유권을 formal contract로 고정하고, 각 semantic slot이
+  참조하는 expression fact만 evidence closure에 넣은 뒤 Python/Rule/Example을 결정론적으로
+  projection하는 것이다. 전체 함수의 verbose grammar tree를 prompt에 복제하지 않는다.
+- 상세 evidence: `evidence/c082-discriminated-expression-ir-20260824.md`.

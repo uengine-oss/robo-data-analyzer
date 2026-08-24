@@ -39,6 +39,10 @@ from pipeline.steps.step2_load_ast.c_structural_expression_adapter import (
     StructuralExpressionAdapterError,
     adapt_c_structural_expression,
 )
+from pipeline.steps.step2_load_ast.expression_semantic_core import (
+    ExpressionSemanticError,
+    resolve_semantic_expression,
+)
 
 @dataclass
 class _FwCtx:
@@ -482,6 +486,7 @@ def _bind_structural_expression_evidence(
     line_starts = _physical_line_starts(source)
     records: list[dict] = []
     semantic_records: list[dict] = []
+    resolved_records: list[dict] = []
     for index, ((node, expected_role, expected_source), fact) in enumerate(
         zip(expected, facts, strict=True)
     ):
@@ -504,12 +509,16 @@ def _bind_structural_expression_evidence(
             expression_source=expression_source,
         ))
         try:
-            semantic_records.append(adapt_c_structural_expression(
+            semantic = adapt_c_structural_expression(
                 fact,
                 frontend_schema=evidence.frontend_schema or "",
                 code_node_id=node.id,
-            ).as_record())
-        except StructuralExpressionAdapterError as error:
+            )
+            semantic_records.append(semantic.as_record())
+            resolved_records.append(
+                resolve_semantic_expression(semantic).as_record()
+            )
+        except (StructuralExpressionAdapterError, ExpressionSemanticError) as error:
             raise CommonEvidenceContractError(
                 "common evidence structural expression adapter: "
                 f"factId={fact.fact_id}, {error}"
@@ -522,6 +531,7 @@ def _bind_structural_expression_evidence(
         )
     result.structural_expression_facts.extend(records)
     result.semantic_expression_facts.extend(semantic_records)
+    result.resolved_expression_facts.extend(resolved_records)
 
 
 def _bind_import_evidence(

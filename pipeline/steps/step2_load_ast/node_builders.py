@@ -65,6 +65,7 @@ class ParseResult:
     callable_facts: list[dict] = field(default_factory=list)  # IR 2 structural declarations
     structural_expression_facts: list[dict] = field(default_factory=list)
     semantic_expression_facts: list[dict] = field(default_factory=list)
+    resolved_expression_facts: list[dict] = field(default_factory=list)
     macro_facts: list[dict] = field(default_factory=list)  # grammar-owned macro declarations
     import_refs: list[dict] = field(default_factory=list)  # canonical import occurrence/degraded projection
     # Exact decoded source is retained once per file; occurrence rows reference ranges.

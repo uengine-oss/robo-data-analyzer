@@ -108,6 +108,7 @@ class WorkflowState(TypedDict, total=False):
     callable_facts: list[dict]
     structural_expression_facts: list[dict]
     semantic_expression_facts: list[dict]
+    resolved_expression_facts: list[dict]
     macro_facts: list[dict]
     import_refs: Annotated[list[dict], operator.add]
     import_resolution_ledger: list[dict]

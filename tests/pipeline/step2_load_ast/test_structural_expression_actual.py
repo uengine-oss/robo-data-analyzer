@@ -94,9 +94,11 @@ def test_sealed_skt_structural_expression_replay_is_exact_and_deterministic() ->
 
     structural_ids = [item["fact_id"] for item in first.structural_expression_facts]
     semantic_ids = [item["fact_id"] for item in first.semantic_expression_facts]
+    resolved_ids = [item["fact_id"] for item in first.resolved_expression_facts]
     assert len(structural_ids) == 578
     assert len(structural_ids) == len(set(structural_ids))
     assert semantic_ids == structural_ids
+    assert resolved_ids == structural_ids
     first_ledger = json.dumps(
         first.semantic_expression_facts,
         ensure_ascii=False,
@@ -110,6 +112,19 @@ def test_sealed_skt_structural_expression_replay_is_exact_and_deterministic() ->
         separators=(",", ":"),
     ).encode()
     assert first_ledger == second_ledger
+    first_resolved_ledger = json.dumps(
+        first.resolved_expression_facts,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    second_resolved_ledger = json.dumps(
+        second.resolved_expression_facts,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    assert first_resolved_ledger == second_resolved_ledger
 
     first_fact = first.structural_expression_facts[0]
     offset = first_fact["range"]["charOffset"]
@@ -117,6 +132,8 @@ def test_sealed_skt_structural_expression_replay_is_exact_and_deterministic() ->
     print(
         "C081_ANALYZER "
         f"structural={len(structural_ids)} semantic={len(semantic_ids)} "
-        f"ledgerSha256={hashlib.sha256(first_ledger).hexdigest()} "
+        f"resolved={len(resolved_ids)} "
+        f"semanticLedgerSha256={hashlib.sha256(first_ledger).hexdigest()} "
+        f"resolvedLedgerSha256={hashlib.sha256(first_resolved_ledger).hexdigest()} "
         f"first={source.name}:{line}:{first_fact['role']}"
     )

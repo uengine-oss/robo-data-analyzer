@@ -334,6 +334,10 @@ def test_ir2_binds_structural_expression_to_exact_legacy_field_once() -> None:
         fact["fact_id"],
     ]
     assert result.semantic_expression_facts[0]["root"]["form"] == "root"
+    assert [item["fact_id"] for item in result.resolved_expression_facts] == [
+        fact["fact_id"],
+    ]
+    assert result.resolved_expression_facts[0]["expression"]["kind"] == "call"
 
 
 def test_ir13_parser_semantic_wire_is_not_a_supported_fallback() -> None:

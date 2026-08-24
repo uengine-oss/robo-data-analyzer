@@ -162,6 +162,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
     has_member, belongs_to, statement_next = [], [], []
     call_sites, callable_facts, structural_expression_facts = [], [], []
     semantic_expression_facts = []
+    resolved_expression_facts = []
     macro_facts, import_refs = [], []
     evidence_sources, evidence_completeness, preprocessing_contexts = [], [], []
     parsed_files = 0
@@ -190,6 +191,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         callable_facts.extend(result.callable_facts)
         structural_expression_facts.extend(result.structural_expression_facts)
         semantic_expression_facts.extend(result.semantic_expression_facts)
+        resolved_expression_facts.extend(result.resolved_expression_facts)
         macro_facts.extend(result.macro_facts)
         import_refs.extend(result.import_refs)
         evidence_sources.extend(result.evidence_sources)
@@ -224,6 +226,13 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
     if semantic_expression_ids != expression_fact_ids:
         raise ValueError(
             "Analyzer semantic expression ledger is not a 1:1 ordered projection"
+        )
+    resolved_expression_ids = [
+        fact.get("fact_id") for fact in resolved_expression_facts
+    ]
+    if resolved_expression_ids != expression_fact_ids:
+        raise ValueError(
+            "Analyzer resolved expression ledger is not a 1:1 ordered projection"
         )
     macro_fact_ids = [fact.get("fact_id") for fact in macro_facts]
     if (
@@ -404,6 +413,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         macro_facts=len(macro_facts),
         structural_expression_facts=len(structural_expression_facts),
         semantic_expression_facts=len(semantic_expression_facts),
+        resolved_expression_facts=len(resolved_expression_facts),
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
     return {
@@ -423,6 +433,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         "callable_facts": callable_facts,
         "structural_expression_facts": structural_expression_facts,
         "semantic_expression_facts": semantic_expression_facts,
+        "resolved_expression_facts": resolved_expression_facts,
         "macro_facts": macro_facts,
         "import_refs": import_refs,
         "import_resolution_ledger": import_resolution_ledger,
