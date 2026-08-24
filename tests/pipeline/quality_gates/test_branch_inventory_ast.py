@@ -6,8 +6,14 @@ multiline return 이 AST 경로에서 보존되는 반증을 포함한다.
 """
 import unittest
 
-from pipeline.models.analysis_context import ControlSubtreeNode, StatementFact
+from pipeline.models.analysis_context import (
+    CallOccurrenceFact,
+    ControlSubtreeNode,
+    StatementFact,
+)
+from pipeline.models.rule_materialization import materialize_rule_items
 from pipeline.quality_gates.branch_inventory import build_inventory
+from pipeline.quality_gates.example_synthesis import synthesize_examples
 from pipeline.quality_gates.rule_prompt_evidence import (
     expected_rule_condition,
     rule_evidence,
@@ -115,6 +121,56 @@ class BranchInventoryAstContractTest(unittest.TestCase):
         self.assertEqual((("rc", "init()"),), assignments)
         self.assertEqual(frozenset(), returns)  # 최상위 return 은 [exit] 행 소유
         self.assertEqual(frozenset({"init"}), inventory.direct_callees(3))
+
+    def test_repeated_callee_occurrences_keep_exact_arguments_and_identity(self):
+        source = "\n".join((
+            "int f(int flag) {",       # 1
+            "  copy(dst0, src0);",     # 2 entry
+            "  if (flag) {",           # 3 decision
+            "    copy(dst1, src1);",   # 4 same callee, occurrence 2
+            "    copy(dst2, src2);",   # 5 same callee, occurrence 3
+            "  }",                     # 6
+            "  return 0;",             # 7
+            "}",                        # 8
+        ))
+        occurrences = (
+            CallOccurrenceFact(
+                "call-1", 2, "copy", "copy(dst0, src0)", ("dst0", "src0"),
+            ),
+            CallOccurrenceFact(
+                "call-2", 4, "copy", "copy(dst1, src1)", ("dst1", "src1"),
+            ),
+            CallOccurrenceFact(
+                "call-3", 5, "copy", "copy(dst2, src2)", ("dst2", "src2"),
+            ),
+        )
+        inventory = build_inventory(
+            source,
+            [ControlSubtreeNode("if@3", "IF", 3, 6, expression="flag")],
+            "c",
+            statements=(StatementFact("r7", "RETURN", 7, 7, expression="0"),),
+            call_lines=((2, "copy"), (4, "copy"), (5, "copy")),
+            call_occurrences=occurrences,
+        )
+
+        evidence = rule_evidence(inventory, (2, 3))
+        entry_refs = evidence["rows"]["R2"]["direct"]
+        branch_refs = evidence["rows"]["R3"]["direct"]
+        self.assertEqual(1, len(entry_refs))
+        self.assertEqual(2, len(branch_refs))
+        self.assertEqual(3, len(set(entry_refs + branch_refs)))
+        self.assertEqual(
+            [["dst1", "src1"], ["dst2", "src2"]],
+            [evidence["effects"][ref]["argument_sources"] for ref in branch_refs],
+        )
+        self.assertEqual(
+            ["call-2", "call-3"],
+            [evidence["effects"][ref]["occurrence_id"] for ref in branch_refs],
+        )
+        rules = materialize_rule_items(evidence, (2, 3))
+        examples = synthesize_examples(rules)
+        self.assertEqual(rules[1].then, examples[3][0]["then"])
+        self.assertEqual(['call("copy")', 'call("copy")'], rules[1].then)
 
     def test_exit_row_direct_evidence_from_ast(self):
         inventory = self._build()

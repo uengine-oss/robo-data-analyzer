@@ -1,11 +1,16 @@
 """Project existing parser/linker facts into bounded semantic frame slots."""
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Iterable, Mapping
 from typing import Any
 
 from graph.schema.graph_nodes import CodeNode
-from pipeline.models.analysis_context import AnalysisContext, StatementFact
+from pipeline.models.analysis_context import (
+    AnalysisContext,
+    CallOccurrenceFact,
+    StatementFact,
+)
 from pipeline.models.data_object_usage import DataObjectUsageEvidence
 from pipeline.languages import callsite_labels, control_structure_labels
 from pipeline.models.rule_condition_ir import attach_rule_condition_projection
@@ -273,28 +278,101 @@ def build_code_semantic_plan(
         ordered.append(ref)
 
     call_refs_by_line: dict[int, list[str]] = {}
-    for relative_line, call_name in tuple(ctx.extra.get("ast_call_lines") or ()):
-        absolute_line = fn.start_line + int(relative_line) - 1
-        ref = _add_fact(evidence, _fact(
-            target_id=fn.id,
-            kind="CALL",
-            identity={"line": absolute_line, "name": call_name},
-            owner_id=owner_id,
-            file=fn.file_path,
-            start_line=absolute_line,
-            end_line=absolute_line,
-            attributes={
-                "callee_id": "",
-                "callee_name": str(call_name),
-                "scope": "",
-                "recursive": False,
-                "arguments_source": "",
-                "result_target": "",
-            },
-        ))
-        call_refs_by_line.setdefault(absolute_line, []).append(ref)
-        callee_refs.append(ref)
-        ordered.append(ref)
+    condition_call_refs_by_fact: dict[str, list[str]] = {}
+    effect_call_refs: list[str] = []
+    call_lines = tuple(ctx.extra.get("ast_call_lines") or ())
+    call_occurrences = tuple(ctx.extra.get("ast_call_occurrences") or ())
+    if call_occurrences:
+        if not all(isinstance(item, CallOccurrenceFact) for item in call_occurrences):
+            raise ValueError("ast_call_occurrences requires CallOccurrenceFact values")
+        occurrence_ids = [item.call_id for item in call_occurrences]
+        if len(occurrence_ids) != len(set(occurrence_ids)):
+            raise ValueError("ast_call_occurrences requires unique occurrence IDs")
+        active_occurrences = tuple(
+            item for item in call_occurrences
+            if item.context_role in {"condition", "effect"}
+        )
+        if Counter(
+            (item.line, item.callee.lower()) for item in active_occurrences
+        ) != Counter(
+            (int(line), str(name).lower()) for line, name in call_lines
+        ):
+            raise ValueError(
+                "semantic call occurrence population differs from call-line ledger"
+            )
+        for occurrence in call_occurrences:
+            absolute_line = fn.start_line + occurrence.line - 1
+            attributes: dict[str, Any] = {
+                "callee_name": occurrence.callee,
+                "occurrence_id": occurrence.call_id,
+                "callee_source": occurrence.callee_source,
+                "callee_kind": occurrence.callee_kind,
+                "argument_sources": list(occurrence.argument_sources),
+                "source_range": list(occurrence.source_range or ()),
+                "context_role": occurrence.context_role,
+                "presence_status": occurrence.presence_status,
+                "resolution_status": occurrence.resolution_status,
+                "resolution_outcome": occurrence.resolution_outcome,
+            }
+            if occurrence.receiver_source is not None:
+                attributes["receiver_source"] = occurrence.receiver_source
+            if occurrence.condition_fact_id is not None:
+                attributes["condition_fact_id"] = occurrence.condition_fact_id
+            if occurrence.resolution_scope is not None:
+                attributes["scope"] = occurrence.resolution_scope
+            if occurrence.resolution_reason:
+                attributes["resolution_reason"] = occurrence.resolution_reason
+            if occurrence.callee_id:
+                attributes["callee_id"] = occurrence.callee_id
+                attributes["recursive"] = occurrence.callee_id == fn.id
+            if occurrence.external_identity_key:
+                attributes["external_identity_key"] = (
+                    occurrence.external_identity_key
+                )
+            ref = _add_fact(evidence, _fact(
+                target_id=fn.id,
+                kind="CALL",
+                identity={"occurrence_id": occurrence.call_id},
+                owner_id=owner_id,
+                file=fn.file_path,
+                start_line=absolute_line,
+                end_line=absolute_line,
+                attributes=attributes,
+            ))
+            callee_refs.append(ref)
+            ordered.append(ref)
+            if occurrence.context_role != "non_active":
+                call_refs_by_line.setdefault(absolute_line, []).append(ref)
+            if occurrence.context_role == "condition":
+                condition_call_refs_by_fact.setdefault(
+                    str(occurrence.condition_fact_id), [],
+                ).append(ref)
+            if occurrence.context_role == "effect":
+                effect_call_refs.append(ref)
+    else:
+        for relative_line, call_name in call_lines:
+            absolute_line = fn.start_line + int(relative_line) - 1
+            ref = _add_fact(evidence, _fact(
+                target_id=fn.id,
+                kind="CALL",
+                identity={"line": absolute_line, "name": call_name},
+                owner_id=owner_id,
+                file=fn.file_path,
+                start_line=absolute_line,
+                end_line=absolute_line,
+                attributes={
+                    "callee_id": "",
+                    "callee_name": str(call_name),
+                    "scope": "",
+                    "recursive": False,
+                    "arguments_source": "",
+                    "result_target": "",
+                },
+            ))
+            call_refs_by_line.setdefault(absolute_line, []).append(ref)
+            effect_call_refs.append(ref)
+            callee_refs.append(ref)
+            ordered.append(ref)
 
     # Linked callee identities are target-level facts because the current common context
     # does not assign every edge to an exact source occurrence.  Never guess that mapping.
@@ -525,10 +603,19 @@ def build_code_semantic_plan(
                 branch_expression_refs = tuple(dict.fromkeys((
                     *parent_condition_refs, *own_expression_refs,
                 )))
+            branch_condition_call_refs = tuple(
+                call_ref
+                for expression_ref in branch_expression_refs
+                for call_ref in condition_call_refs_by_fact.get(
+                    str(evidence[expression_ref].attributes.get("fact_id") or ""),
+                    (),
+                )
+            )
             supporting_refs = (
                 *direct_refs,
                 *direct_expression_refs,
                 *branch_expression_refs,
+                *branch_condition_call_refs,
                 *nested_control_refs,
             )
             ref = _add_fact(evidence, _fact(
@@ -618,9 +705,7 @@ def build_code_semantic_plan(
             )
 
         processing_refs: list[str] = []
-        processing_refs.extend(
-            ref for refs in call_refs_by_line.values() for ref in refs
-        )
+        processing_refs.extend(effect_call_refs)
         if not call_refs_by_line:
             processing_refs.extend(linked_callee_refs)
         else:

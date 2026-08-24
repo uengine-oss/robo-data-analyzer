@@ -54,7 +54,11 @@ _ALLOWED_EVIDENCE_ATTRIBUTES: dict[str, frozenset[str]] = {
     }),
     "CALL": frozenset({
         "callee_id", "callee_name", "scope", "recursive", "arguments_source",
-        "result_target", "dependency_status",
+        "result_target", "dependency_status", "occurrence_id", "callee_source",
+        "callee_kind", "argument_sources", "receiver_source", "source_range",
+        "context_role", "condition_fact_id", "presence_status",
+        "resolution_status", "resolution_outcome", "resolution_reason",
+        "external_identity_key",
     }),
     "DATA_OBJECT": frozenset({
         "table_id", "access", "operation", "direct", "resolution",
@@ -174,6 +178,35 @@ class EvidenceFact(BaseModel):
             None, "linked", "unavailable_cycle",
         }:
             raise ValueError("unsupported CALL dependency_status")
+        if self.kind == "CALL" and self.attributes.get("occurrence_id") is not None:
+            occurrence_id = self.attributes.get("occurrence_id")
+            source_range = self.attributes.get("source_range")
+            context_role = self.attributes.get("context_role")
+            presence_status = self.attributes.get("presence_status")
+            condition_fact_id = self.attributes.get("condition_fact_id")
+            if not isinstance(occurrence_id, str) or not occurrence_id:
+                raise ValueError("CALL occurrence_id must be nonblank")
+            if (
+                not isinstance(source_range, (list, tuple))
+                or len(source_range) != 2
+                or not all(
+                    isinstance(value, int) and not isinstance(value, bool)
+                    for value in source_range
+                )
+                or source_range[0] < 0
+                or source_range[1] <= 0
+            ):
+                raise ValueError("CALL occurrence source_range must be exact")
+            if context_role not in {"condition", "effect", "non_active"}:
+                raise ValueError("unsupported CALL occurrence context_role")
+            if presence_status not in {
+                "active", "inactive", "conditional", "unknown",
+            }:
+                raise ValueError("unsupported CALL occurrence presence_status")
+            if (context_role == "non_active") != (presence_status != "active"):
+                raise ValueError("CALL occurrence role differs from presence")
+            if (context_role == "condition") != bool(condition_fact_id):
+                raise ValueError("CALL occurrence condition ownership is incomplete")
         return self
 
 

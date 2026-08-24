@@ -26,7 +26,8 @@ from pipeline.steps.step6_build_context.referenced_symbols import _build_referen
 from pipeline.steps.step6_build_context.external_evidence import build_external_evidence_context
 from pipeline.languages import ROUTINE_LABELS, callsite_labels, dml_effect_ops
 from pipeline.quality_gates.evidence_matching import identity_leaf
-from pipeline.models.analysis_context import AnalysisContext
+from pipeline.models.analysis_context import AnalysisContext, CallOccurrenceFact
+from pipeline.models.call_resolution import normalize_call_resolution_ledger
 from pipeline.models.data_object_usage import (
     is_object_reference_id,
     object_reference_id,
@@ -172,6 +173,295 @@ def _data_object_identity_aliases(
     return aliases, unresolved_names
 
 
+def _canonical_call_range(value: object) -> tuple[int, int] | None:
+    if not isinstance(value, dict):
+        return None
+    offset = value.get("char_offset", value.get("charOffset"))
+    length = value.get("char_length", value.get("charLength"))
+    if not isinstance(offset, int) or isinstance(offset, bool):
+        return None
+    if not isinstance(length, int) or isinstance(length, bool):
+        return None
+    return offset, length
+
+
+def build_parser_call_evidence(
+    call_sites: list[dict],
+    call_resolution_ledger: list[dict],
+    code_nodes: list[CodeNode],
+) -> tuple[
+    dict[str, list[tuple[int, str]]],
+    dict[str, list[CallOccurrenceFact]],
+]:
+    """Join Parser call structure, Analyzer binding, and expression-owned context."""
+    normalized_ledger = normalize_call_resolution_ledger(call_resolution_ledger)
+    if len(call_sites) != len(normalized_ledger):
+        raise ValueError(
+            "parser call projection population mismatch: "
+            f"sites={len(call_sites)}, resolutions={len(normalized_ledger)}"
+        )
+    site_ids = [str(site.get("call_id") or "") for site in call_sites]
+    resolution_ids = [
+        str(item.get("call_id") or "") for item in normalized_ledger
+    ]
+    if (
+        not all(site_ids)
+        or len(site_ids) != len(set(site_ids))
+        or site_ids != resolution_ids
+    ):
+        raise ValueError("parser call projection requires exact ordered call IDs")
+    routines = {
+        fn.id: fn for fn in code_nodes if fn.label in ROUTINE_LABELS
+    }
+    call_lines_by_fn: dict[str, list[tuple[int, str]]] = {}
+    call_occurrences_by_fn: dict[str, list[CallOccurrenceFact]] = {}
+    accounted = 0
+    for ordinal, (site, resolution) in enumerate(zip(
+        call_sites, normalized_ledger, strict=True,
+    )):
+        call_id = site_ids[ordinal]
+        caller = str(site.get("caller_id") or "")
+        site_owner_status = str(site.get("owner_status") or "")
+        owner_status = str(resolution.get("owner_status") or "")
+        structural_pairs = (
+            ("source_id", str(site.get("source_id") or ""), resolution["source_id"]),
+            ("caller_id", caller, resolution["caller_id"]),
+            ("owner_status", site_owner_status, owner_status),
+            ("file", str(site.get("file") or ""), resolution["file"]),
+            ("line", site.get("line"), resolution["line"]),
+            ("callee_kind", site.get("callee_kind"), resolution["callee_kind"]),
+            (
+                "terminal_name", str(site.get("call_text") or ""),
+                resolution["terminal_name"],
+            ),
+            (
+                "grammar_rule", str(site.get("grammar_rule") or ""),
+                resolution["grammar_rule"],
+            ),
+            (
+                "presence_status", site.get("presence_status"),
+                resolution["presence_status"],
+            ),
+            ("presence", site.get("presence"), resolution["presence"]),
+        )
+        mismatched = [
+            name for name, parser_value, analyzer_value in structural_pairs
+            if parser_value != analyzer_value
+        ]
+        if mismatched:
+            raise ValueError(
+                "parser call structure differs from resolution ledger: "
+                f"call_id={call_id!r}, fields={mismatched}"
+            )
+        site_argument_ranges = site.get("argument_ranges")
+        if not isinstance(site_argument_ranges, list):
+            raise ValueError(
+                f"invalid parser call argument ranges: call_id={call_id!r}"
+            )
+        range_pairs = (
+            (
+                "range", _canonical_call_range(site.get("range")),
+                _canonical_call_range(resolution["range"]),
+            ),
+            (
+                "callee_range",
+                _canonical_call_range(site.get("callee_range")),
+                _canonical_call_range(resolution["callee_range"]),
+            ),
+            (
+                "argument_ranges",
+                tuple(
+                    _canonical_call_range(value) for value in site_argument_ranges
+                ),
+                tuple(
+                    _canonical_call_range(value)
+                    for value in resolution["argument_ranges"]
+                ),
+            ),
+        )
+        mismatched_ranges = [
+            name for name, parser_value, analyzer_value in range_pairs
+            if parser_value != analyzer_value
+        ]
+        if mismatched_ranges or any(
+            value is None for value in (
+                range_pairs[0][1], range_pairs[1][1], *range_pairs[2][1],
+            )
+        ):
+            raise ValueError(
+                "parser call ranges differ from resolution ledger: "
+                f"call_id={call_id!r}, fields={mismatched_ranges}"
+            )
+
+        argument_sources = site.get("argument_sources")
+        if (
+            not isinstance(argument_sources, list)
+            or len(argument_sources) != len(site_argument_ranges)
+        ):
+            raise ValueError(
+                "parser call argument source/range population mismatch: "
+                f"call_id={call_id!r}"
+            )
+        receiver_source = site.get("receiver_source")
+        receiver_range = _canonical_call_range(site.get("receiver_range"))
+        if (receiver_source is None) != (receiver_range is None):
+            raise ValueError(
+                "parser call receiver source/range presence mismatch: "
+                f"call_id={call_id!r}"
+            )
+        raw_scope_path = site.get("scope_path")
+        if not isinstance(raw_scope_path, list) or not raw_scope_path:
+            raise ValueError(
+                f"parser call scope path is missing: call_id={call_id!r}"
+            )
+        scope_path: list[tuple[str, tuple[int, int]]] = []
+        for scope in raw_scope_path:
+            if not isinstance(scope, dict):
+                raise ValueError(
+                    f"parser call scope path is invalid: call_id={call_id!r}"
+                )
+            kind = scope.get("kind")
+            scope_range = _canonical_call_range(scope.get("range"))
+            if (
+                not isinstance(kind, str)
+                or not kind
+                or scope_range is None
+                or scope_range[1] <= 0
+            ):
+                raise ValueError(
+                    f"parser call scope path is invalid: call_id={call_id!r}"
+                )
+            if scope_path:
+                parent_offset, parent_length = scope_path[-1][1]
+                if not (
+                    parent_offset <= scope_range[0]
+                    and scope_range[0] + scope_range[1]
+                    <= parent_offset + parent_length
+                ):
+                    raise ValueError(
+                        "parser call scope nesting is invalid: "
+                        f"call_id={call_id!r}"
+                    )
+            scope_path.append((kind, scope_range))
+        call_offset, call_length = range_pairs[0][1]
+        inner_offset, inner_length = scope_path[-1][1]
+        if not (
+            inner_offset <= call_offset
+            and call_offset + call_length <= inner_offset + inner_length
+        ):
+            raise ValueError(
+                f"parser call escapes scope path: call_id={call_id!r}"
+            )
+        if owner_status == "unresolved_no_routine":
+            if caller:
+                raise ValueError("ownerless call projection claims a caller")
+            accounted += 1
+            continue
+        routine = routines.get(caller)
+        if owner_status != "resolved" or routine is None:
+            raise ValueError(
+                f"resolved parser call owner is missing: {call_id!r}"
+            )
+        absolute_line = int(site.get("line") or 0)
+        line = absolute_line - routine.start_line + 1
+        if line < 1 or absolute_line > routine.end_line:
+            raise ValueError(
+                f"parser call range escapes routine: {call_id!r}"
+            )
+        call_source = site.get("call_source")
+        callee_source = site.get("callee_source")
+        callee_kind = str(resolution.get("callee_kind") or "")
+        terminal_name = str(resolution.get("terminal_name") or "")
+        name = terminal_name or str(callee_source or "")
+        if (
+            not isinstance(call_source, str)
+            or not call_source
+            or not isinstance(callee_source, str)
+            or not callee_source
+            or callee_kind not in {"named", "constructor", "expression"}
+            or not name
+        ):
+            raise ValueError(
+                f"incomplete parser call occurrence projection: call_id={call_id!r}"
+            )
+        if not all(isinstance(value, str) for value in argument_sources):
+            raise ValueError(
+                f"invalid parser call argument source: call_id={call_id!r}"
+            )
+        if receiver_source is not None and not isinstance(receiver_source, str):
+            raise ValueError(
+                f"invalid parser call receiver source: call_id={call_id!r}"
+            )
+        offset, length = range_pairs[0][1]
+        if offset < 0 or length <= 0:
+            raise ValueError(f"parser call range is invalid: call_id={call_id!r}")
+        condition_owners = []
+        for fact in routine.extra.get("_resolved_expression_facts") or ():
+            if str(fact.get("role") or "") not in {"condition", "case_value"}:
+                continue
+            fact_range = fact.get("source_range") or {}
+            fact_offset = int(fact_range.get("char_offset") or 0)
+            fact_length = int(fact_range.get("char_length") or 0)
+            if (
+                fact_length > 0
+                and fact_offset <= offset
+                and offset + length <= fact_offset + fact_length
+            ):
+                condition_owners.append(str(fact.get("fact_id") or ""))
+        if len(condition_owners) > 1 or any(not value for value in condition_owners):
+            raise ValueError(
+                f"parser call condition ownership is ambiguous: call_id={call_id!r}"
+            )
+        presence_status = str(resolution.get("presence_status") or "")
+        if presence_status not in {"active", "inactive", "conditional", "unknown"}:
+            raise ValueError(f"parser call presence is invalid: call_id={call_id!r}")
+        context_role = (
+            "non_active"
+            if presence_status != "active"
+            else "condition" if condition_owners else "effect"
+        )
+        occurrence = CallOccurrenceFact(
+                call_id=call_id,
+                line=line,
+                callee=name.lower(),
+                call_source=call_source,
+                argument_sources=tuple(argument_sources),
+                receiver_source=receiver_source,
+                source_range=(offset, length),
+                callee_range=range_pairs[1][1],
+                argument_ranges=range_pairs[2][1],
+                receiver_range=receiver_range,
+                scope_path=tuple(scope_path),
+                grammar_rule=str(resolution.get("grammar_rule") or ""),
+                callee_source=callee_source,
+                callee_kind=callee_kind,
+                context_role=context_role,
+                condition_fact_id=(condition_owners[0] if condition_owners else None),
+                presence_status=presence_status,
+                resolution_status=str(resolution.get("resolution_status") or ""),
+                resolution_outcome=str(resolution.get("outcome") or ""),
+                resolution_scope=resolution.get("scope"),
+                resolution_reason=str(resolution.get("reason") or ""),
+                callee_id=str(resolution.get("callee_id") or ""),
+                external_identity_key=str(
+                    resolution.get("external_identity_key") or ""
+                ),
+            )
+        if context_role != "non_active":
+            call_lines_by_fn.setdefault(caller, []).append((line, occurrence.callee))
+        call_occurrences_by_fn.setdefault(caller, []).append(
+            occurrence
+        )
+        accounted += 1
+    if accounted != len(call_sites):
+        raise ValueError("parser call projection is not exact-once")
+    for lines in call_lines_by_fn.values():
+        lines.sort()
+    for occurrences in call_occurrences_by_fn.values():
+        occurrences.sort(key=lambda item: (item.line, item.call_id))
+    return call_lines_by_fn, call_occurrences_by_fn
+
+
 async def build_context_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
     """모든 CodeNode 에 ``AnalysisContext`` 생성."""
     cfg = step_config(config)
@@ -259,17 +549,11 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
     )
     # parser FUNCTION_CALL 좌표 (spec 016) — branch 직접 호출 귀속의 AST 정본.
     # (routine 상대 1-based line, 호출명) 쌍. source 정규식 `이름(` 재탐색을 대체한다.
-    routine_start = {fn.id: fn.start_line for fn in code_nodes}
-    call_lines_by_fn: dict[str, list[tuple[int, str]]] = {}
-    for site in state.get("call_sites", []) or []:
-        caller = str(site.get("caller_id") or "")
-        start = routine_start.get(caller)
-        name = str(site.get("call_text") or "")
-        if not caller or start is None or not name:
-            continue
-        line = int(site.get("line") or 0) - start + 1
-        if line >= 1:
-            call_lines_by_fn.setdefault(caller, []).append((line, name))
+    call_lines_by_fn, call_occurrences_by_fn = build_parser_call_evidence(
+        list(state.get("call_sites", []) or []),
+        list(state.get("call_resolution_ledger", []) or []),
+        code_nodes,
+    )
     # CodeNode 자체가 호출 자리인 언어(DBMS `CALL`)의 좌표 — ontology 가 라벨을 소유한다.
     # framework 는 이 집합이 비어 있어 아무것도 더해지지 않는다(증거 불변, spec 119).
     node_callsite_labels = callsite_labels()
@@ -346,6 +630,9 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
         # "없음"이 사실이므로 빈 튜플을 명시 제공한다(source 재탐색 금지).
         ctx.extra["ast_statements"] = tuple(statement_facts.get(fn.id, ()))
         ctx.extra["ast_call_lines"] = tuple(call_lines_by_fn.get(fn.id, ()))
+        ctx.extra["ast_call_occurrences"] = tuple(
+            call_occurrences_by_fn.get(fn.id, ())
+        )
         # DBMS DML 효과 좌표 (spec 119) — step5 링커가 DML 노드마다 이미 만든
         # (테이블, dml_type) 을 소유 routine 상대 줄로 옮긴다. framework 는 DML 노드가
         # 없어 항상 빈 튜플이며 증거가 달라지지 않는다.

@@ -368,3 +368,29 @@ language-neutral semantic IR로 변환하게 하는 것이다.
   개선 종료 시 한 번만 수행한다.
 - 이 결과는 Rule/Example 구조 의미 개선이며 LLM business meaning이나 제품 전체 합격으로 승격하지
   않는다. 상세 evidence: `evidence/c084-rule-condition-expression-projection-20260824.md`.
+
+## 14. 2026-08-24 C-085 call-occurrence semantic closure
+
+- 원인은 Parser 누락이 아니라 Analyzer Step 6가 exact call occurrence를 `(line, callee)`로
+  축약하고, branch consumer가 condition source를 이름 정규식으로 다시 읽으며,
+  semantic-frame가 `(line, callee)`를 identity로 사용한 것이었다. 같은 줄의 condition/body가
+  같은 callee를 호출하면 body occurrence가 사라지는 formal red로 인과를 닫았다.
+- Parser의 call/callee/receiver/argument range와 source fragment, scope path, grammar rule,
+  presence를 보존하고 Analyzer final resolution ledger와 ordered call ID로 exact join한다.
+  중복 구조 필드가 하나라도 다르면 fail-closed하며 source 재파싱이나 이름 추측은 없다.
+- sealed SKT 한 파일 actual은 Parser/해석/context/semantic-frame가 모두 1,157/1,157이며,
+  condition 183, effect 974이다. Rule effect 974/974, processing slot 974/974,
+  condition-to-guard slot 183/183을 unique occurrence ID로 보존했고 deterministic replay도
+  동일했다. 첫 누락·중복 좌표는 없다.
+- partial upload는 external resolution으로 남고 unresolved/dynamic 상태도 occurrence ledger에
+  보존한다. unresolved graph node/label은 만들지 않았다. Python 표기나 이 구조 검증을
+  business meaning 정확도 또는 제품 합격으로 승격하지 않는다.
+- sparse prompt projection 후 sealed 44-routine summary payload는 2,382,537 bytes,
+  최대 routine payload는 273,144 bytes다. 이는 임의 cap·skip 없이 얻은 정확성 baseline이며,
+  다음 성능 개선은 dependency projection과 중복 제거로만 수행한다.
+- focused 회귀는 149 passed/20 subtests, staged blob hash 일치가 확인된 staged-only 전체
+  회귀는 1,299 passed/8 skipped/367 subtests다. 금지된 Strategy A progressive 재실행은
+  명시적으로 제외했다.
+- 전체 SKT 23파일 run은 아직 수행하지 않았다. call argument/effect 표현과 prompt 효율 관련
+  변경을 모두 닫은 마지막에 정확도·성능 전수 회계를 한 번 수행한다.
+- 상세 evidence: `evidence/c085-call-occurrence-semantic-closure-20260824.md`.

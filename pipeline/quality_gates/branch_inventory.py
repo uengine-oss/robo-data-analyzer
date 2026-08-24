@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Sequence
 
@@ -19,7 +20,11 @@ from pipeline.languages import (
     source_lexicon,
     statement_effect_ops,
 )
-from pipeline.models.analysis_context import ControlSubtreeNode, StatementFact
+from pipeline.models.analysis_context import (
+    CallOccurrenceFact,
+    ControlSubtreeNode,
+    StatementFact,
+)
 from pipeline.quality_gates.lexing import (
     SplitSource,
     atoms,
@@ -27,7 +32,6 @@ from pipeline.quality_gates.lexing import (
     split_source,
 )
 
-_CALL = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _OCTAL = re.compile(r"^0[0-7]+$")
 _HEX = re.compile(r"^0[xX][0-9A-Fa-f]+$")
@@ -253,6 +257,7 @@ class BranchInventory:
     # framework 는 제공하지 않으므로 빈 튜플이고 증거가 달라지지 않는다.
     ast_table_ops: tuple[tuple[int, str, str], ...] = ()
     ast_call_lines: tuple[tuple[int, str], ...] = ()
+    ast_call_occurrences: tuple[CallOccurrenceFact, ...] = ()
     entry_region: EffectRegion | None = None
     continuation_regions: tuple[EffectRegion, ...] = ()
 
@@ -387,6 +392,23 @@ class BranchInventory:
         return frozenset(
             name.lower() for line, name in self.ast_call_lines if line == relative
         )
+
+    def direct_call_occurrences(
+        self, absolute_line: int,
+    ) -> tuple[CallOccurrenceFact, ...]:
+        """Return distinct parser call occurrences owned by one Rule row."""
+        owned_lines = frozenset(self.direct_evidence_lines(absolute_line))
+        owned_callees = self.direct_callees(absolute_line)
+        return tuple(sorted(
+            (
+                occurrence
+                for occurrence in self.ast_call_occurrences
+                if occurrence.context_role == "effect"
+                if occurrence.line + self.line_offset in owned_lines
+                and occurrence.callee.lower() in owned_callees
+            ),
+            key=lambda item: (item.line, item.call_id),
+        ))
 
     def dispatch_tables(self) -> list[dict[str, frozenset[str]]]:
         """SWITCH 마다 ``라벨 코드값 → 효과(호출 집합)`` 대응.
@@ -868,14 +890,6 @@ def _symbol_like(values: set[str], body: str, lang: str) -> set[str]:
     return {v for v in values if v.lower() not in names}
 
 
-def _calls(text: str, lang: str) -> frozenset[str]:
-    """``이름(`` 중 실제 호출만. 예약어 목록은 언어 표(데이터)에서 온다."""
-    keywords = {k.lower() for k in (source_lexicon(lang).get("control_keywords") or [])}
-    return frozenset(
-        m.group(1).lower() for m in _CALL.finditer(text) if m.group(1).lower() not in keywords
-    )
-
-
 # AST statement label → 의미 축 (parser spec 016). 언어별 라벨 차이는 ontology roles 가
 # 소유하고, 여기는 언어 중립 canonical 라벨만 안다.
 _AST_EXIT_LABELS = frozenset({"RETURN", "THROW", "RAISE"})
@@ -1161,8 +1175,6 @@ def _build_effect_region(
         exclusions,
         table_ops,
     )
-    if owner is not None and start == owner.start:
-        calls = calls - _calls(owner.condition, lang)
     source = "\n".join(
         line
         for number, line in enumerate(
@@ -1170,7 +1182,6 @@ def _build_effect_region(
         )
         if number not in termination_lines
     )
-    condition_calls = _calls(owner.condition, lang) if owner is not None else frozenset()
     effect_labels = set(statement_effect_ops()) | {_AST_ASSIGN_LABEL, *_AST_EXIT_LABELS}
     effect_lines = [
         fact.start
@@ -1183,7 +1194,6 @@ def _build_effect_region(
         line for line, name in call_lines
         if start <= line <= end
         and line not in termination_lines
-        and not (owner is not None and line == owner.start and name.lower() in condition_calls)
     )
     effect_lines.extend(
         line for line, _op, _table in table_ops
@@ -1249,6 +1259,7 @@ def build_inventory(
     *,
     statements: Sequence[StatementFact],
     call_lines: Sequence[tuple[int, str]] = (),
+    call_occurrences: Sequence[CallOccurrenceFact] = (),
     table_ops: Sequence[tuple[int, str, str]] = (),
     split: SplitSource | None = None,
     declared_values: Sequence[str] = (),
@@ -1284,9 +1295,53 @@ def build_inventory(
         split=split,
         line_offset=line_offset,
     )
-    ast_calls: tuple[tuple[int, str], ...] = tuple(
+    raw_ast_calls: tuple[tuple[int, str], ...] = tuple(
         (line, name) for line, name in call_lines if _live_line(line)
     )
+    ast_call_occurrences = tuple(
+        occurrence for occurrence in call_occurrences
+        if _live_line(occurrence.line)
+    )
+    occurrence_ids = [item.call_id for item in ast_call_occurrences]
+    if len(occurrence_ids) != len(set(occurrence_ids)):
+        raise ValueError("parser call occurrences require unique call_id values")
+    call_population = {
+        (line, name.lower()) for line, name in raw_ast_calls
+    }
+    missing_occurrences = [
+        (item.call_id, item.line, item.callee)
+        for item in ast_call_occurrences
+        if item.context_role in {"condition", "effect"}
+        if (item.line, item.callee.lower()) not in call_population
+    ]
+    if missing_occurrences:
+        raise ValueError(
+            "parser call occurrence absent from call-line population: "
+            f"{missing_occurrences[:5]}"
+        )
+    if ast_call_occurrences:
+        occurrence_population = Counter(
+            (item.line, item.callee.lower()) for item in ast_call_occurrences
+            if item.context_role in {"condition", "effect"}
+        )
+        call_population = Counter(
+            (line, name.lower()) for line, name in raw_ast_calls
+        )
+        if occurrence_population != call_population:
+            raise ValueError(
+                "parser call occurrence population differs from call lines: "
+                f"occurrences={sum(occurrence_population.values())}, "
+                f"lines={sum(call_population.values())}"
+            )
+        ast_calls = tuple(
+            (item.line, item.callee)
+            for item in ast_call_occurrences
+            if item.context_role == "effect"
+        )
+    else:
+        # CodeNode-call adapters (for example DBMS CALL) already provide only statement
+        # callsites.  They are a distinct structural producer, not a source-text fallback.
+        ast_calls = raw_ast_calls
     # DML 효과 좌표도 같은 live/blank 경계를 공유한다 — 비활성 구간의 DML 은 의무가 아니다.
     ast_table_ops: tuple[tuple[int, str, str], ...] = tuple(
         (line, op, table) for line, op, table in table_ops if _live_line(line)
@@ -1332,7 +1387,7 @@ def build_inventory(
             condition=condition,
             condition_timing=node.condition_timing,
             cond_values=frozenset(cond_values),
-            callees=call_names - _calls(condition, lang),
+            callees=call_names,
             effect_atoms=frozenset(atoms(direct_body, lang)),
             direct_source=direct_body,
             return_expressions=returns,
@@ -1510,6 +1565,7 @@ def build_inventory(
         source_lines=tuple(split.live_lines),
         ast_statements=ast_statements,
         ast_call_lines=ast_calls,
+        ast_call_occurrences=ast_call_occurrences,
         ast_table_ops=ast_table_ops,
         entry_region=entry_region,
         continuation_regions=tuple(sorted(

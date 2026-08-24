@@ -140,6 +140,43 @@ class StatementFact:
     operator: str = ""
 
 
+@dataclass(frozen=True)
+class CallOccurrenceFact:
+    """One exact call occurrence joined to Analyzer-owned resolution.
+
+    Parser-owned coordinates and source fragments stay unchanged.  Final binding
+    fields come only from the Analyzer resolution ledger.  ``line`` is
+    routine-relative so it shares the coordinate system used by ``StatementFact``
+    and ``BranchInventory``.
+    """
+
+    call_id: str
+    line: int
+    callee: str
+    call_source: str
+    argument_sources: tuple[str, ...] = ()
+    receiver_source: str | None = None
+    source_range: tuple[int, int] | None = None
+    callee_range: tuple[int, int] | None = None
+    argument_ranges: tuple[tuple[int, int], ...] = ()
+    receiver_range: tuple[int, int] | None = None
+    scope_path: tuple[tuple[str, tuple[int, int]], ...] = ()
+    grammar_rule: str = ""
+    callee_source: str = ""
+    callee_kind: Literal["named", "constructor", "expression"] = "named"
+    context_role: Literal["condition", "effect", "non_active"] = "effect"
+    condition_fact_id: str | None = None
+    presence_status: Literal["active", "inactive", "conditional", "unknown"] = (
+        "active"
+    )
+    resolution_status: str = ""
+    resolution_outcome: str = ""
+    resolution_scope: str | None = None
+    resolution_reason: str = ""
+    callee_id: str = ""
+    external_identity_key: str = ""
+
+
 def dump_referenced_symbols(symbols: tuple[ReferencedSymbolContext, ...]) -> str:
     """Serialize the single prompt-input contract without delimiter parsing."""
     return json.dumps(

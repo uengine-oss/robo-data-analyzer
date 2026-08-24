@@ -31,6 +31,23 @@ class StructuralEffect(BaseModel):
     target: str | None
     value: str | None
     from_source: bool | None
+    occurrence_id: str | None = None
+    source_line: int | None = None
+    call_source: str | None = None
+    argument_sources: tuple[str, ...] = ()
+    receiver_source: str | None = None
+    source_range: tuple[int, int] | None = None
+    callee_source: str = ""
+    callee_kind: str = ""
+    context_role: str = ""
+    condition_fact_id: str | None = None
+    presence_status: str = ""
+    resolution_status: str = ""
+    resolution_outcome: str = ""
+    resolution_scope: str | None = None
+    resolution_reason: str = ""
+    callee_id: str = ""
+    external_identity_key: str = ""
 
 
 def materialize_rule_items(
@@ -149,17 +166,73 @@ def render_structural_effect(
 
 
 def _effect_positions_valid(effect: StructuralEffect) -> bool:
+    has_call_metadata = any((
+        effect.occurrence_id is not None,
+        effect.source_line is not None,
+        effect.call_source is not None,
+        bool(effect.argument_sources),
+        effect.receiver_source is not None,
+        effect.source_range is not None,
+        bool(effect.callee_source),
+        bool(effect.callee_kind),
+        bool(effect.context_role),
+        effect.condition_fact_id is not None,
+        bool(effect.presence_status),
+        bool(effect.resolution_status),
+        bool(effect.resolution_outcome),
+        effect.resolution_scope is not None,
+        bool(effect.resolution_reason),
+        bool(effect.callee_id),
+        bool(effect.external_identity_key),
+    ))
     if effect.op == "set":
-        return bool(effect.target) and bool(effect.value) and effect.from_source is not None
+        return (
+            not has_call_metadata
+            and bool(effect.target)
+            and bool(effect.value)
+            and effect.from_source is not None
+        )
     if effect.op == "ret":
-        return effect.target is None and (
+        return not has_call_metadata and effect.target is None and (
             (bool(effect.value) and effect.from_source is not None)
             or (effect.value is None and effect.from_source is None)
         )
-    if effect.op in {
-        "call", "jump", "select", "insert", "update", "delete", "upsert",
-    }:
+    if effect.op == "call":
+        metadata_valid = (
+            not has_call_metadata
+            or (
+                bool(effect.occurrence_id)
+                and effect.source_line is not None
+                and effect.source_line > 0
+                and bool(effect.call_source)
+                and effect.context_role in {"", "effect"}
+                and effect.condition_fact_id is None
+                and effect.presence_status in {"", "active"}
+                and (
+                    effect.source_range is None
+                    or (
+                        len(effect.source_range) == 2
+                        and effect.source_range[0] >= 0
+                        and effect.source_range[1] > 0
+                    )
+                )
+            )
+        )
+        return (
+            metadata_valid
+            and bool(effect.target)
+            and effect.value is None
+            and effect.from_source is None
+        )
+    if effect.op in {"jump", "select", "insert", "update", "delete", "upsert"}:
+        if has_call_metadata:
+            return False
         return bool(effect.target) and effect.value is None and effect.from_source is None
     if effect.op in {"raise_error", "exit_loop", "commit", "rollback"}:
-        return effect.target is None and effect.value is None and effect.from_source is None
+        return (
+            not has_call_metadata
+            and effect.target is None
+            and effect.value is None
+            and effect.from_source is None
+        )
     return False
