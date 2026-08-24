@@ -141,6 +141,19 @@ def render_structural_effect(
             "invalid parser-owned Rule effect shape: " + effect.model_dump_json()
         )
     if effect.op == "call":
+        if effect.occurrence_id is not None:
+            receiver = (
+                "None"
+                if effect.receiver_source is None
+                else f"F({_quoted(effect.receiver_source)})"
+            )
+            arguments = ", ".join(
+                f"F({_quoted(argument)})"
+                for argument in effect.argument_sources
+            )
+            return (
+                f"call({_quoted(effect.target)}, {receiver}, [{arguments}])"
+            )
         return f"call({_quoted(effect.target)})"
     if effect.op == "jump":
         return f"jump({_quoted(effect.target)})"

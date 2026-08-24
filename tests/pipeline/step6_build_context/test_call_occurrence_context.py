@@ -8,6 +8,11 @@ from pipeline.models.analysis_context import (
     CallOccurrenceFact,
     ControlSubtreeNode,
 )
+from pipeline.models.rule_expression import parse_effect
+from pipeline.models.rule_materialization import (
+    StructuralEffect,
+    render_structural_effect,
+)
 from pipeline.quality_gates.branch_inventory import build_inventory
 from pipeline.quality_gates.rule_prompt_evidence import rule_evidence
 from pipeline.steps.step6_build_context.build_context_step import (
@@ -267,3 +272,64 @@ def test_semantic_frame_preserves_occurrences_and_assigns_only_effect_call() -> 
         profile.evidence[ref].attributes["occurrence_id"]
         for ref in guard_refs
     } == {"condition-call"}
+
+
+def test_same_line_call_effects_follow_source_range_not_hash_id() -> None:
+    occurrences = (
+        CallOccurrenceFact(
+            call_id="z-first",
+            line=1,
+            callee="copy",
+            call_source="copy(dst0, src0)",
+            argument_sources=("dst0", "src0"),
+            source_range=(10, 16),
+            context_role="effect",
+        ),
+        CallOccurrenceFact(
+            call_id="a-second",
+            line=1,
+            callee="copy",
+            call_source="copy(dst1, src1)",
+            argument_sources=("dst1", "src1"),
+            source_range=(30, 16),
+            context_role="effect",
+        ),
+    )
+    inventory = build_inventory(
+        "copy(dst0, src0); copy(dst1, src1);",
+        (),
+        "c",
+        statements=(),
+        call_lines=((1, "copy"), (1, "copy")),
+        call_occurrences=occurrences,
+    )
+
+    evidence = rule_evidence(inventory, (1,))
+    refs = evidence["rows"]["R1"]["direct"]
+
+    assert [evidence["effects"][ref]["occurrence_id"] for ref in refs] == [
+        "z-first", "a-second",
+    ]
+
+
+def test_occurrence_call_leaf_preserves_receiver_and_ordered_arguments() -> None:
+    rendered = render_structural_effect(StructuralEffect(
+        op="call",
+        target="handler",
+        value=None,
+        from_source=None,
+        occurrence_id="call-1",
+        source_line=10,
+        call_source="ctx->handler(a, b)",
+        argument_sources=("a", "b"),
+        receiver_source="ctx",
+        source_range=(100, 18),
+        callee_source="ctx->handler",
+        callee_kind="named",
+        context_role="effect",
+        presence_status="active",
+    ))
+
+    assert rendered == 'call("handler", F("ctx"), [F("a"), F("b")])'
+    parsed = parse_effect(rendered)
+    assert parsed.args[0].value == "handler"

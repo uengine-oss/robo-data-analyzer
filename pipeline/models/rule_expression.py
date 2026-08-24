@@ -109,8 +109,22 @@ def _validate_effect_arguments(node: ast.Call, statement: str) -> None:
     name = node.func.id
     args = node.args
     if name == "call":
-        valid = len(args) == 1 and _is_string(args[0])
-        expected = 'call("함수명")'
+        legacy = len(args) == 1 and _is_string(args[0])
+        occurrence = (
+            len(args) == 3
+            and _is_string(args[0])
+            and (
+                isinstance(args[1], ast.Constant) and args[1].value is None
+                or _is_f_reference(args[1])
+            )
+            and isinstance(args[2], ast.List)
+            and all(_is_f_reference(item) for item in args[2].elts)
+        )
+        valid = legacy or occurrence
+        expected = (
+            'call("함수명") 또는 '
+            'call("함수명", F("수신자")/None, [F("인자"), ...])'
+        )
     elif name == "jump":
         valid = len(args) == 1 and _is_string(args[0])
         expected = 'jump("라벨명")'

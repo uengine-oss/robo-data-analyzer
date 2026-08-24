@@ -407,7 +407,12 @@ class BranchInventory:
                 if occurrence.line + self.line_offset in owned_lines
                 and occurrence.callee.lower() in owned_callees
             ),
-            key=lambda item: (item.line, item.call_id),
+            key=lambda item: (
+                item.line,
+                item.source_range[0]
+                if item.source_range is not None else 2**63,
+                item.call_id,
+            ),
         ))
 
     def dispatch_tables(self) -> list[dict[str, frozenset[str]]]:

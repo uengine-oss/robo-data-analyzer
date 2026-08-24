@@ -134,7 +134,7 @@ property key, graph claim identity, MCP/Architect reference에서 끝까지 보�
 | `TARGET` | `type`, `signature`, `name`, `params`, `return_type` |
 | `CONTROL` | `node_id`, `type`, `role`, `condition`, `condition_timing`, `parent_ref`, `complement_of`, `implicit_false` |
 | `STATEMENT` | `node_id`, `type`, `expression`, `target`, `operator`, `effects`, `terminates` |
-| `CALL` | `callee_id`, `callee_name`, `scope`, `recursive`, `arguments_source`, `result_target` |
+| `CALL` | legacy `callee_id`, `callee_name`, `scope`, `recursive`, `arguments_source`, `result_target`; occurrence projection `occurrence_id`, `callee_source`, `callee_kind`, `argument_sources`, `receiver_source`, `source_range`, `context_role`, `condition_fact_id`, `presence_status`, `resolution_status`, `resolution_outcome`, `resolution_reason`, `external_identity_key`, `dependency_status` |
 | `DATA_OBJECT` | `table_id`, `access`, `operation`, `direct`, `resolution`, `qualified_columns` |
 | `SYMBOL` | `symbol_id`, `name`, `scope`, `data_type`, `declared_value`, `value_semantics`, `initialization_sources` |
 | `EXTERNAL` | `chunk_id`, `semantic_kind`, `provenance`, `matched_key` |
@@ -143,10 +143,11 @@ property key, graph claim identity, MCP/Architect reference에서 끝까지 보�
 | `COLUMN` | `table_id`, `name`, `source_description`, `usage_lines`, `ownership` |
 | `MODULE` | `module_id`, `type`, `member_refs`, `comment_ref` |
 
-`arguments_source`와 `result_target`은 parser 또는 이미 검증된 statement ownership이 제공할 때만
-채운다. 현재 parser가 호출명·좌표만 제공하면 CALL 자체는 만들되 두 필드는 빈 값이며,
-`ARGUMENT_ROLE`/`RESULT_USE` slot은 source evidence가 해당 범위에 있을 때만 적용한다. 이름을
-보고 인자나 결과를 추측하지 않는다.
+`argument_sources`와 `receiver_source`는 canonical Parser range에서 복원한 exact fragment일 때만
+채운다. occurrence projection은 Parser 구조와 Analyzer final resolution ledger를 exact call ID로
+join하며, 중복 구조 필드가 다르면 실패한다. legacy `arguments_source`와 `result_target`은 Parser 또는
+이미 검증된 statement ownership이 제공할 때만 채운다. `ARGUMENT_ROLE`/`RESULT_USE` slot은 source
+evidence가 해당 범위에 있을 때만 적용하며, 이름을 보고 인자나 결과를 추측하지 않는다.
 
 `EXTERNAL` fact에는 normal MCP packet용 본문을 넣지 않는다. Analyzer 내부 LLM prompt는 이미
 연결된 exact chunk text를 별도 evidence payload로 볼 수 있지만 문자 상한에서 자르거나 oversize
@@ -256,6 +257,17 @@ EXAMPLE leaf는 accepted Rule의 검증된 `cond/then` truth를 그대로 보존
 생성하던 시절의 출력 길이 상한을 결정론 산출물에 재사용하지 않는다. 조건을 길이로 자르거나 버리지
 않으며, opaque source predicate를 Analyzer 문자열 분해로 짧은 조건처럼 재해석하지 않는다. 조건 또는
 직접 outcome이 없는 Rule만 EXAMPLE을 만들지 않는다.
+
+Parser call occurrence가 있는 Rule effect는 다음 고정 Python leaf를 사용한다.
+
+```text
+call("target", F("receiver") | None, [F("argument0"), ...])
+```
+
+receiver와 argument는 exact Parser source fragment이고 argument 배열 순서는 grammar argument order다.
+같은 행의 여러 call effect는 exact source range 순서로 물질화한다. 이것은 언어별 runtime evaluation
+order를 새로 주장하지 않는다. occurrence metadata가 없는 legacy/DBMS structural producer의
+`call("target")`은 호환 입력으로 유지한다. Example은 accepted Rule leaf를 byte-for-byte 복사한다.
 
 ### 6.3 call family
 

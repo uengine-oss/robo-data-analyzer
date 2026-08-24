@@ -394,3 +394,21 @@ language-neutral semantic IR로 변환하게 하는 것이다.
 - 전체 SKT 23파일 run은 아직 수행하지 않았다. call argument/effect 표현과 prompt 효율 관련
   변경을 모두 닫은 마지막에 정확도·성능 전수 회계를 한 번 수행한다.
 - 상세 evidence: `evidence/c085-call-occurrence-semantic-closure-20260824.md`.
+
+## 15. 2026-08-24 C-086 call effect source order와 ordered arguments
+
+- C-085 이후에도 같은 줄 call effect가 source range가 아니라 hash ID로 정렬될 수 있었고 최종
+  `Rule.then`은 `call("target")`만 남겨 서로 다른 인자를 표시하지 못했다.
+- occurrence effect를 `(routine line, exact call range offset, canonical ID)`로 정렬하고
+  `call("target", F("receiver") | None, [F("argument0"), ...])` 고정 Python leaf로
+  물질화한다. argument 배열은 Parser grammar order이며 source fragment를 재파싱하지 않는다.
+- sealed SKT 한 파일에서 974개 call effect가 모두 확장 표기, Python parse, exact source-order
+  ledger, Rule↔Example 동일성을 통과했다. `R232`의 네 `pfm_try`는 서로 다른 nested-call
+  argument를 보존한다.
+- 이는 source order이며 언어별 runtime argument evaluation order를 추측한 것이 아니다.
+  occurrence metadata가 없는 legacy/DBMS `call("target")`은 호환 유지한다.
+- focused 회귀는 168 passed/20 subtests, staged blob hash 일치가 확인된 staged-only 전체
+  회귀는 1,301 passed/8 skipped/367 subtests다. 금지된 Strategy A progressive 재실행은
+  명시적으로 제외했다.
+- 전체 SKT 23파일 run은 아직 수행하지 않았다. 상세 evidence:
+  `evidence/c086-call-effect-order-arguments-20260824.md`.

@@ -170,7 +170,10 @@ class BranchInventoryAstContractTest(unittest.TestCase):
         rules = materialize_rule_items(evidence, (2, 3))
         examples = synthesize_examples(rules)
         self.assertEqual(rules[1].then, examples[3][0]["then"])
-        self.assertEqual(['call("copy")', 'call("copy")'], rules[1].then)
+        self.assertEqual([
+            'call("copy", None, [F("dst1"), F("src1")])',
+            'call("copy", None, [F("dst2"), F("src2")])',
+        ], rules[1].then)
 
     def test_exit_row_direct_evidence_from_ast(self):
         inventory = self._build()

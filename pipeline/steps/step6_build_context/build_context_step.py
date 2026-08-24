@@ -458,7 +458,12 @@ def build_parser_call_evidence(
     for lines in call_lines_by_fn.values():
         lines.sort()
     for occurrences in call_occurrences_by_fn.values():
-        occurrences.sort(key=lambda item: (item.line, item.call_id))
+        occurrences.sort(key=lambda item: (
+            item.line,
+            item.source_range[0]
+            if item.source_range is not None else 2**63,
+            item.call_id,
+        ))
     return call_lines_by_fn, call_occurrences_by_fn
 
 
