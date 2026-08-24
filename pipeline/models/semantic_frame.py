@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 EvidenceStatus = Literal["sufficient", "partial", "insufficient"]
 EvidenceKind = Literal[
     "TARGET", "CONTROL", "STATEMENT", "CALL", "DATA_OBJECT", "SYMBOL",
-    "EXTERNAL", "RULE", "TABLE", "COLUMN", "MODULE",
+    "EXTERNAL", "EXPRESSION", "RULE", "TABLE", "COLUMN", "MODULE",
 ]
 SlotFamily = Literal[
     "FUNCTION", "STATEMENT", "RULE", "DECISION", "LOOP", "EXCEPTION", "CALL",
@@ -66,6 +66,10 @@ _ALLOWED_EVIDENCE_ATTRIBUTES: dict[str, frozenset[str]] = {
     }),
     "EXTERNAL": frozenset({
         "chunk_id", "semantic_kind", "provenance", "matched_key",
+    }),
+    "EXPRESSION": frozenset({
+        "fact_id", "source_id", "code_node_id", "role", "source_range",
+        "expression",
     }),
     "RULE": frozenset({
         "anchor_line", "role", "condition", "effects", "when", "source_refs",
@@ -186,6 +190,7 @@ class StructuralProfile(BaseModel):
     callee_refs: list[str] = Field(default_factory=list)
     data_object_refs: list[str] = Field(default_factory=list)
     symbol_refs: list[str] = Field(default_factory=list)
+    expression_refs: list[str] = Field(default_factory=list)
     unsupported: list[dict[str, Any]] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -199,6 +204,7 @@ class StructuralProfile(BaseModel):
             raise ValueError("evidence id belongs to a different target")
         for name in (
             "child_refs", "ordered_flow", "callee_refs", "data_object_refs", "symbol_refs",
+            "expression_refs",
         ):
             refs = list(getattr(self, name))
             if len(refs) != len(set(refs)):
@@ -318,6 +324,22 @@ def semantic_slot_wire_ids(slot_specs: Iterable[SlotSpec]) -> tuple[str, ...]:
     return tuple(f"W{namespace}_{index}" for index in range(len(specs)))
 
 
+def semantic_expression_wire_bindings(
+    slot_specs: Iterable[SlotSpec],
+) -> dict[str, str]:
+    """Map canonical EXPRESSION evidence IDs to request-local prompt keys."""
+    refs = sorted({
+        ref
+        for spec in slot_specs
+        for ref in spec.evidence_refs
+        if ":EXPRESSION:" in ref
+    })
+    if not refs:
+        return {}
+    namespace = stable_digest(refs, length=10)
+    return {ref: f"Q{namespace}_{index}" for index, ref in enumerate(refs)}
+
+
 def _mentions_private_wire_id(text: str, wire_ids: Iterable[str]) -> bool:
     value = str(text or "")
     return any(re.search(
@@ -362,6 +384,10 @@ def normalize_semantic_frame_response(
     if target_ref not in evidence_ids:
         raise ValueError("profile target evidence is missing")
     slots: dict[str, SemanticSlot] = {}
+    private_wire_ids = (
+        *wire_ids,
+        *semantic_expression_wire_bindings(specs).values(),
+    )
     for spec, wire_id in zip(specs, wire_ids, strict=True):
         if spec.target_ref != target_ref:
             raise ValueError(f"slot target_ref differs from canonical target: {spec.slot_id}")
@@ -378,7 +404,7 @@ def normalize_semantic_frame_response(
             and str(fact.attributes.get("callee_id") or "")
         })
         leaked_private_key = any(
-            _mentions_private_wire_id(text, wire_ids) for text in leaf_texts
+            _mentions_private_wire_id(text, private_wire_ids) for text in leaf_texts
         )
         if leaked_private_key:
             # The raw provider artifact still owns the exact bad output.  Canonical
@@ -422,16 +448,98 @@ def normalize_semantic_frame_response(
 def slot_specs_json(slot_specs: Iterable[SlotSpec]) -> str:
     specs = tuple(slot_specs)
     wire_ids = semantic_slot_wire_ids(specs)
+    expression_bindings = semantic_expression_wire_bindings(specs)
     return _canonical([
         {
             "wire_id": wire_id,
             "family": spec.family,
             "role": spec.role,
             "target_ref": spec.target_ref,
-            "evidence_refs": spec.evidence_refs,
+            "evidence_refs": tuple(
+                expression_bindings.get(ref, ref) for ref in spec.evidence_refs
+            ),
         }
         for spec, wire_id in zip(specs, wire_ids, strict=True)
     ])
+
+
+def _compact_prompt_expression(value: Mapping[str, Any]) -> list[Any]:
+    """Project a full canonical expression to a compact, lossless semantic tree.
+
+    Nested coordinates stay in the canonical frame.  The enclosing EXPRESSION fact
+    already carries the exact line and character range used by the model call, so
+    repeating a range object at every wrapper more than doubled the measured SKT input.
+    """
+    kind = str(value.get("kind") or "")
+
+    def child(name: str) -> list[Any]:
+        item = value.get(name)
+        if not isinstance(item, Mapping):
+            raise ValueError(f"{kind} expression requires mapping field {name!r}")
+        return _compact_prompt_expression(item)
+
+    def children(name: str) -> list[list[Any]]:
+        items = value.get(name)
+        if not isinstance(items, list):
+            raise ValueError(f"{kind} expression requires list field {name!r}")
+        if any(not isinstance(item, Mapping) for item in items):
+            raise ValueError(f"{kind} expression has invalid {name!r} child")
+        return [_compact_prompt_expression(item) for item in items]
+
+    if kind == "reference":
+        return ["ref", str(value.get("name") or "")]
+    if kind == "literal":
+        return ["lit", str(value.get("spelling") or "")]
+    if kind == "group":
+        return ["group", child("value")]
+    if kind == "member":
+        return [
+            "member", str(value.get("access") or ""),
+            child("base"), str(value.get("member") or ""),
+        ]
+    if kind == "subscript":
+        return ["subscript", child("base"), child("index")]
+    if kind == "call":
+        return ["call", child("callee"), children("arguments")]
+    if kind == "unary":
+        return ["unary", str(value.get("operator") or ""), child("operand")]
+    if kind == "binary":
+        return ["binary", str(value.get("operator") or ""), children("operands")]
+    if kind == "conditional":
+        return [
+            "conditional", child("condition"), child("when_true"),
+            child("when_false"),
+        ]
+    if kind == "assignment":
+        return [
+            "assignment", str(value.get("operator") or ""),
+            child("target"), child("value"),
+        ]
+    if kind == "cast":
+        type_tokens = value.get("type_tokens")
+        if not isinstance(type_tokens, list):
+            raise ValueError("cast expression requires type_tokens")
+        return ["cast", [str(token) for token in type_tokens], child("value")]
+    if kind == "sequence":
+        return ["sequence", children("values")]
+    raise ValueError(f"unsupported prompt expression kind: {kind!r}")
+
+
+def _prompt_expression_entry(fact: EvidenceFact) -> list[Any]:
+    if fact.kind != "EXPRESSION":
+        raise ValueError(f"expected EXPRESSION fact, got {fact.kind!r}")
+    expression = fact.attributes.get("expression")
+    if not isinstance(expression, Mapping):
+        raise ValueError(f"EXPRESSION fact has invalid expression: {fact.id}")
+    # The applicable slot already carries the exact statement/control coordinate,
+    # while the canonical EXPRESSION fact retains its complete line and character
+    # provenance.  Repeating those coordinates in the model-only view adds no
+    # semantic distinction.  Keep only the role needed to distinguish, for example,
+    # assignment target from value, plus the lossless structural tree.
+    return [
+        str(fact.attributes.get("role") or ""),
+        _compact_prompt_expression(expression),
+    ]
 
 
 def profile_prompt_json(
@@ -445,8 +553,10 @@ def profile_prompt_json(
     child, rule, call and symbol in every concern made large real routines exceed provider
     context limits before inference began.
     """
-    if slot_specs is None:
+    projected = slot_specs is not None
+    if not projected:
         prompt_profile = profile
+        specs: tuple[SlotSpec, ...] = ()
     else:
         specs = tuple(slot_specs)
         refs = {
@@ -469,9 +579,33 @@ def profile_prompt_json(
             callee_refs=[ref for ref in profile.callee_refs if ref in evidence],
             data_object_refs=[ref for ref in profile.data_object_refs if ref in evidence],
             symbol_refs=[ref for ref in profile.symbol_refs if ref in evidence],
+            expression_refs=[ref for ref in profile.expression_refs if ref in evidence],
             unsupported=profile.unsupported,
         )
-    return _canonical(prompt_profile.model_dump(mode="json", by_alias=True))
+    payload = prompt_profile.model_dump(mode="json", by_alias=True)
+    expression_facts = {
+        ref: fact for ref, fact in prompt_profile.evidence.items()
+        if fact.kind == "EXPRESSION"
+    }
+    if expression_facts and projected:
+        expression_bindings = semantic_expression_wire_bindings(specs)
+        if set(expression_facts) != set(expression_bindings):
+            raise ValueError(
+                "prompt expression closure differs from assigned expression refs"
+            )
+        payload["evidence"] = {
+            ref: record for ref, record in payload["evidence"].items()
+            if ref not in expression_facts
+        }
+        payload["ordered_flow"] = [
+            ref for ref in payload["ordered_flow"] if ref not in expression_facts
+        ]
+        payload.pop("expression_refs", None)
+        payload["expression_closure"] = {
+            expression_bindings[ref]: _prompt_expression_entry(fact)
+            for ref, fact in expression_facts.items()
+        }
+    return _canonical(payload)
 
 
 def merge_semantic_frames(

@@ -29,6 +29,15 @@ _WRITE_FAMILY = {
     "MERGE": "UPSERT",
 }
 
+_EXPRESSION_ROLES = frozenset({
+    "condition", "case_value", "return_value", "assignment_target",
+    "assignment_value", "initializer_value", "update_expression",
+})
+_EXPRESSION_KINDS = frozenset({
+    "reference", "literal", "group", "member", "subscript", "call", "unary",
+    "binary", "conditional", "assignment", "cast", "sequence",
+})
+
 
 def _fact(
     *, target_id: str, kind: str, identity: object, owner_id: str,
@@ -109,6 +118,8 @@ def build_code_semantic_plan(
     external_refs: list[str] = []
     data_refs: list[str] = []
     symbol_refs: list[str] = []
+    expression_refs: list[str] = []
+    expression_refs_by_node: dict[str, list[str]] = {}
     parameter_refs: list[str] = []
     planned_rows: list[dict[str, Any]] = []
     planned_rule_refs: list[tuple[dict[str, Any], str, tuple[str, ...]]] = []
@@ -129,6 +140,63 @@ def build_code_semantic_plan(
             "return_type": fn.return_type,
         },
     ))
+
+    raw_expression_facts = fn.extra.get("_resolved_expression_facts")
+    if raw_expression_facts is not None and not isinstance(
+        raw_expression_facts, (tuple, list),
+    ):
+        raise TypeError("routine resolved expression facts must be a sequence")
+    seen_expression_ids: set[str] = set()
+    for record in raw_expression_facts or ():
+        if not isinstance(record, Mapping):
+            raise TypeError(
+                f"unexpected resolved expression fact: {type(record).__name__}"
+            )
+        fact_id = str(record.get("fact_id") or "")
+        code_node_id = str(record.get("code_node_id") or "")
+        role = str(record.get("role") or "")
+        start_line = int(record.get("start_line") or 0)
+        end_line = int(record.get("end_line") or 0)
+        source_range = record.get("source_range")
+        expression = record.get("expression")
+        if not fact_id or fact_id in seen_expression_ids:
+            raise ValueError("routine expression fact IDs must be non-empty and unique")
+        if not code_node_id or role not in _EXPRESSION_ROLES:
+            raise ValueError(
+                f"invalid routine expression ownership/role: {fact_id!r}"
+            )
+        if not (
+            fn.start_line <= start_line <= end_line <= fn.end_line
+        ):
+            raise ValueError(
+                f"routine expression line range is outside target: {fact_id!r} "
+                f"{start_line}-{end_line} vs {fn.start_line}-{fn.end_line}"
+            )
+        if not isinstance(source_range, Mapping) or not isinstance(expression, Mapping):
+            raise TypeError(f"routine expression range/value is invalid: {fact_id!r}")
+        if str(expression.get("kind") or "") not in _EXPRESSION_KINDS:
+            raise ValueError(f"unsupported routine expression kind: {fact_id!r}")
+        ref = _add_fact(evidence, _fact(
+            target_id=fn.id,
+            kind="EXPRESSION",
+            identity={"fact_id": fact_id},
+            owner_id=owner_id,
+            file=fn.file_path,
+            start_line=start_line,
+            end_line=end_line,
+            attributes={
+                "fact_id": fact_id,
+                "source_id": str(record.get("source_id") or ""),
+                "code_node_id": code_node_id,
+                "role": role,
+                "source_range": dict(source_range),
+                "expression": dict(expression),
+            },
+        ))
+        expression_refs.append(ref)
+        expression_refs_by_node.setdefault(code_node_id, []).append(ref)
+        ordered.append(ref)
+        seen_expression_ids.add(fact_id)
 
     control_labels = control_structure_labels()
     for child in sorted(child_nodes, key=lambda item: (item.start_line, item.end_line, item.id)):
@@ -382,6 +450,14 @@ def build_code_semantic_plan(
                 for owned_line in sorted(owned_lines)
                 for ref in data_refs_by_line.get(owned_line, ())
             )
+            direct_expression_refs = tuple(
+                expression_ref
+                for evidence_ref in direct_refs
+                for expression_ref in expression_refs_by_node.get(
+                    str(evidence[evidence_ref].attributes.get("node_id") or ""),
+                    (),
+                )
+            )
             # A controller with no direct statement still has one exact outcome:
             # control enters its immediate parser-owned child branches.  Preserve
             # child ownership by projecting only child CONTROL coordinates and
@@ -414,7 +490,37 @@ def build_code_semantic_plan(
                     for child in branch.children
                 )
                 ordered.extend(nested_control_refs)
-            supporting_refs = (*direct_refs, *nested_control_refs)
+            branch_expression_refs: tuple[str, ...] = ()
+            if branch is not None:
+                own_expression_refs = tuple(
+                    expression_refs_by_node.get(branch.node_id, ())
+                )
+                # A case-value expression has meaning only in relation to its
+                # structurally owning controller subject.  Use Parser roles and the
+                # parent edge; do not reparse a switch keyword or infer from source.
+                owns_case_value = any(
+                    evidence[ref].attributes.get("role") == "case_value"
+                    for ref in own_expression_refs
+                )
+                parent_condition_refs = (
+                    tuple(
+                        ref
+                        for ref in expression_refs_by_node.get(
+                            branch.parent.node_id, (),
+                        )
+                        if evidence[ref].attributes.get("role") == "condition"
+                    )
+                    if owns_case_value and branch.parent is not None else ()
+                )
+                branch_expression_refs = tuple(dict.fromkeys((
+                    *parent_condition_refs, *own_expression_refs,
+                )))
+            supporting_refs = (
+                *direct_refs,
+                *direct_expression_refs,
+                *branch_expression_refs,
+                *nested_control_refs,
+            )
             ref = _add_fact(evidence, _fact(
                 target_id=fn.id,
                 kind="RULE",
@@ -520,6 +626,7 @@ def build_code_semantic_plan(
             )
         )
         for ref in dict.fromkeys(processing_refs):
+            node_id = str(evidence[ref].attributes.get("node_id") or "")
             _add_slot(
                 slots,
                 target_id=fn.id,
@@ -527,13 +634,16 @@ def build_code_semantic_plan(
                 role="PROCESSING_EFFECTS",
                 anchor={"evidence": ref},
                 target_ref=target_ref,
-                evidence_refs=(target_ref, ref),
+                evidence_refs=(
+                    target_ref, ref, *expression_refs_by_node.get(node_id, ()),
+                ),
             )
         return_refs = [
             ref for statement, ref, _start, _end in statement_refs
             if statement.label == "RETURN"
         ]
         for ref in return_refs:
+            node_id = str(evidence[ref].attributes.get("node_id") or "")
             _add_slot(
                 slots,
                 target_id=fn.id,
@@ -541,7 +651,9 @@ def build_code_semantic_plan(
                 role="RESULT",
                 anchor={"evidence": ref},
                 target_ref=target_ref,
-                evidence_refs=(target_ref, ref),
+                evidence_refs=(
+                    target_ref, ref, *expression_refs_by_node.get(node_id, ()),
+                ),
             )
         if fn.return_type.strip() and not return_refs:
             _add_slot(
@@ -597,6 +709,7 @@ def build_code_semantic_plan(
         callee_refs=list(dict.fromkeys(callee_refs)),
         data_object_refs=list(dict.fromkeys(data_refs)),
         symbol_refs=list(dict.fromkeys(symbol_refs)),
+        expression_refs=list(dict.fromkeys(expression_refs)),
         unsupported=[dict(item) for item in unsupported],
     )
     ordered_slots = tuple(sorted(slots.values(), key=lambda item: item.slot_id))

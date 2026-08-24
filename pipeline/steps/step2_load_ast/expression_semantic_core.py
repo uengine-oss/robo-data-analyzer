@@ -278,7 +278,12 @@ def _resolve(node: SemanticExpressionNode) -> ResolvedExpression:
     raise ExpressionSemanticError(f"unsupported semantic expression form {node.form!r}")
 
 
-def resolve_semantic_expression(fact: SemanticExpressionFact) -> ResolvedExpressionFact:
+def resolve_semantic_expression(
+    fact: SemanticExpressionFact,
+    *,
+    start_line: int,
+    end_line: int,
+) -> ResolvedExpressionFact:
     expression = _resolve(fact.root)
     if expression.source_range != fact.source_range:
         expression = GroupExpression(fact.source_range, expression)
@@ -287,6 +292,8 @@ def resolve_semantic_expression(fact: SemanticExpressionFact) -> ResolvedExpress
         source_id=fact.source_id,
         code_node_id=fact.code_node_id,
         role=fact.role,
+        start_line=start_line,
+        end_line=end_line,
         source_range=fact.source_range,
         expression=expression,
     )

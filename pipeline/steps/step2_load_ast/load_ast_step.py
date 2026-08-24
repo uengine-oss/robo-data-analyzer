@@ -23,6 +23,9 @@ from pipeline.steps.step2_load_ast.source_ast_closure import (
     verify_source_ast_closure,
 )
 from pipeline.steps.step2_load_ast.token_matcher import link_references
+from pipeline.steps.step2_load_ast.expression_ownership import (
+    attach_routine_expression_ledger,
+)
 from pipeline.models.import_resolution import normalize_import_resolution_ledger
 from shared.events.runtime_logger import log_error, log_info, log_warning
 from pipeline.steps.step2_load_ast.node_identity_registry import NodeIdentityCollision, canonicalize_node_lists
@@ -325,6 +328,19 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
     #   (DB 노드는 step1 이 만들지만 네임스페이스가 달라(`db:`) 코드 노드와 겹칠 수 없다.)
     _assert_unique_ids(code_nodes, modules, packages, variables, constants, data_types)
 
+    # Analyzer-resolved expressions remain internal facts.  Assign them to the nearest
+    # routine by the canonical parent chain so Step 7 can build target-local closures
+    # without scanning every file-wide fact or reparsing source text.
+    expression_ledger = attach_routine_expression_ledger(
+        code_nodes, resolved_expression_facts,
+    )
+    assigned_expression_facts = sum(map(len, expression_ledger.values()))
+    if assigned_expression_facts != len(resolved_expression_facts):
+        raise ValueError(
+            "routine expression ownership is not exact-once: "
+            f"facts={len(resolved_expression_facts)}, assigned={assigned_expression_facts}"
+        )
+
     if neo is not None:
         # 노드는 라벨이 달라 동시쓰기 안전 → 병렬. 엣지는 노드 선행 필요 +
         # 같은 노드 락 경합 가능 → 순차.
@@ -414,6 +430,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         structural_expression_facts=len(structural_expression_facts),
         semantic_expression_facts=len(semantic_expression_facts),
         resolved_expression_facts=len(resolved_expression_facts),
+        expression_routines=sum(bool(items) for items in expression_ledger.values()),
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
     return {

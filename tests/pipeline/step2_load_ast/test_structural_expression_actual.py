@@ -9,6 +9,7 @@ import pytest
 
 from pipeline.steps.step2_load_ast.dispatch import read_antlr_json
 from pipeline.steps.step2_load_ast.evidence_ir import validate_common_evidence
+from pipeline.steps.step2_load_ast.expression_ownership import routine_expression_ledger
 
 
 def _sha256(path: Path) -> str:
@@ -125,6 +126,14 @@ def test_sealed_skt_structural_expression_replay_is_exact_and_deterministic() ->
         separators=(",", ":"),
     ).encode()
     assert first_resolved_ledger == second_resolved_ledger
+    routine_ledger = routine_expression_ledger(
+        first.code_nodes, first.resolved_expression_facts,
+    )
+    populated_routines = {
+        routine_id: facts for routine_id, facts in routine_ledger.items() if facts
+    }
+    assert len(populated_routines) == 46
+    assert sum(map(len, populated_routines.values())) == 578
 
     first_fact = first.structural_expression_facts[0]
     offset = first_fact["range"]["charOffset"]

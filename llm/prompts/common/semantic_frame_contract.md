@@ -14,6 +14,17 @@
   읽기 전용 정본이다. `evidence` key와 각 fact의 `id`는 같은 값이다.
 - `APPLICABLE_SLOTS`는 이번 요청에서 의미를 채울 유일한 칸 목록이다. 각 slot은
   `target_ref`와 `evidence_refs`로 허용 근거를 지정한다.
+- `EXPRESSION` fact는 Parser 구조를 Analyzer가 분류한 exact expression variant다. `role`,
+  operator, ordered operands, member access, call arguments를 구조 그대로
+  사용한다. identifier의 binding/type/linkage나 호출의 업무 목적은 이 fact가 선언하지 않으므로
+  이름 모양으로 보충하지 않는다. 현재 slot의 `evidence_refs`에 없는 expression은 읽거나 복사하지 않는다.
+  prompt view에서는 이 fact들이 `expression_closure` 한 맵에 모이고 slot의 request-local `Q…` evidence
+  ref가 그 key를 가리킨다. `Q…`는 연결용 좌표이므로 meaning/missing_context에 복사하지 않는다.
+  각 값은 `[role, compact tagged JSON tree]`다. exact line/range와 중첩 provenance는 같은
+  slot의 canonical fact와 SOURCE가 소유하며 model view에 중복하지 않는다.
+  tree tag는 `ref`, `lit`, `group`, `member`, `subscript`, `call`, `unary`, `binary`, `conditional`,
+  `assignment`, `cast`, `sequence`이며 배열 순서는 operand와 argument의 원문 순서다. 중첩 좌표와
+  parser fact identity는 canonical ledger가 소유하므로 tree 배열 위치를 새 좌표나 새 의미로 해석하지 않는다.
 - SOURCE는 Analyzer 내부 의미 생성용 활성 원문이다. profile fact와 함께 slot의 meaning을
   이해하는 데만 쓰고 ID·좌표·관계를 다시 생성하지 않는다.
 - CALL fact는 호출 경계의 canonical identity/좌표 근거다. callee 자연어 summary는 다음 의미

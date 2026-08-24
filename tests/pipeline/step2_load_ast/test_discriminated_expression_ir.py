@@ -69,7 +69,7 @@ def test_resolves_c_call_comparison_without_source_reparsing() -> None:
         root=root,
     )
 
-    resolved = resolve_semantic_expression(fact)
+    resolved = resolve_semantic_expression(fact, start_line=7, end_line=7)
 
     assert resolved.fact_id == fact.fact_id
     assert resolved.expression.as_record() == {

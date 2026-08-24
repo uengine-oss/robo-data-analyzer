@@ -1,7 +1,7 @@
 # Analyzer 의미 무손실 작업 현재상태
 
 **Updated**: 2026-08-24
-**Status**: C-080 호출 결합, C-081 구조식 transport, C-082 discriminated expression IR actual 검증 완료. 다음은 exact slot closure와 결정론 projection이다
+**Status**: C-080 호출 결합, C-081 구조식 transport, C-082 discriminated expression IR, C-083 exact slot closure actual 검증 완료. 다음은 결정론 Rule/Python projection이다
 **Role**: 현재 HEAD·환경·보존 WIP·미해결·바로 다음 행동의 유일한 정본
 
 상세 조사 원장은 `history/handovers/12-20260821-current-status-snapshot-pointer.md`로 정확히
@@ -317,3 +317,33 @@ language-neutral semantic IR로 변환하게 하는 것이다.
   참조하는 expression fact만 evidence closure에 넣은 뒤 Python/Rule/Example을 결정론적으로
   projection하는 것이다. 전체 함수의 verbose grammar tree를 prompt에 복제하지 않는다.
 - 상세 evidence: `evidence/c082-discriminated-expression-ir-20260824.md`.
+
+## 12. 2026-08-24 C-083 routine ownership와 exact expression slot closure
+
+- C-082까지의 578개 discriminated expression은 Step 2 state에 있었지만 LLM semantic slot의
+  근거 closure에는 연결되지 않았다. nearest routine parent chain을 정본으로 46개 routine에
+  578/578을 exact-once 배정하고, orphan·중복·parent cycle·범위 이탈은 fail-closed로 고정했다.
+- 첫 실제 slot 회계는 578개 중 575개만 참조했고 residue 3개였다. 첫 좌표는
+  `apascrtu0010t02.c:544`이며, 나머지는 1366, 1833행의 SWITCH subject `rc`였다.
+  Parser는 SWITCH `condition`과 CASE `case_value`를 모두 정확히 생산했지만 Analyzer의 CASE guard가
+  case value만 연결한 것이 원인이었다. source keyword 재파싱 없이 Parser parent edge와 role로
+  두 fact를 같은 guard closure에 연결한 뒤 578/578, residue 0이 되었다.
+- canonical EvidenceFact에는 exact line/character range와 전체 discriminated tree를 보존한다.
+  모델 view는 해당 slot에 필요한 fact만 request-local `Q…` key로 연결하고 값은
+  `[role, compact tagged tree]`만 전달한다. `Q…`가 meaning/missing_context에 누출되면 해당 slot을
+  insufficient로 격리한다.
+- 동일 46개 routine summary 입력의 추정 token은 기존 175,447에서 196,514로 +21,066
+  (+12.01%)이다. 최초 full canonical 전개 +104.11%는 폐기했다. 최대 증가는
+  `c000_main_proc` +2,214 추정 token이다. 절단·건수 상한·skip·fallback은 넣지 않았다.
+- actual ledger는 structural/grammar-neutral/discriminated 578/578/578, routine 46,
+  expression slot closure 578/578이다. resolved ledger SHA-256은
+  `a365bf42bdca47e754ba0c3f52be733272978ee0ac1f1f9f95839e4e6ce45db6`이다.
+- 집중 회귀는 40 passed와 6 subtests passed, staged-only 전체 회귀는
+  1,278 passed/7 skipped/367 subtests passed다. prompt hash 16개 byte-identical이며
+  `semantic_frame_contract.md` SHA-256은
+  `501bfacb3542d2fbfb6271dab35c3e718a678b4c6fb892c5feab6dcbdfb755c4`이다.
+- 이 슬라이스는 LLM semantic input의 구조·소유권·누락을 닫은 것이다. 기존 deterministic Rule의
+  CASE 조건은 아직 `case_value`만 렌더링하여 `rc == RC_NFD`가 아니라 `RC_NFD`로 남으므로
+  Rule/Python 의미 정확도나 제품 합격으로 승격하지 않는다. 다음 책임 슬라이스에서 canonical
+  expression IR로 Rule/Python/Example을 결정론 투영한다.
+- 상세 evidence: `evidence/c083-expression-slot-closure-20260824.md`.

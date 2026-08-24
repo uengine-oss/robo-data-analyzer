@@ -515,8 +515,16 @@ def _bind_structural_expression_evidence(
                 code_node_id=node.id,
             )
             semantic_records.append(semantic.as_record())
+            expression_line = _physical_line(line_starts, start)
+            expression_end_line = _physical_line(
+                line_starts, max(start, fact.expression_range.end - 1),
+            )
             resolved_records.append(
-                resolve_semantic_expression(semantic).as_record()
+                resolve_semantic_expression(
+                    semantic,
+                    start_line=expression_line,
+                    end_line=expression_end_line,
+                ).as_record()
             )
         except (StructuralExpressionAdapterError, ExpressionSemanticError) as error:
             raise CommonEvidenceContractError(

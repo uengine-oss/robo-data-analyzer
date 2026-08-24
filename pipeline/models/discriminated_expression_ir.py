@@ -203,10 +203,14 @@ class ResolvedExpressionFact:
     source_id: str
     code_node_id: str
     role: str
+    start_line: int
+    end_line: int
     source_range: SemanticSourceRange
     expression: ResolvedExpression
 
     def __post_init__(self) -> None:
+        if self.start_line <= 0 or self.end_line < self.start_line:
+            raise ValueError("resolved expression requires an exact positive line range")
         if self.expression.source_range != self.source_range:
             raise ValueError("resolved expression root must equal its fact range")
 
@@ -216,6 +220,8 @@ class ResolvedExpressionFact:
             "source_id": self.source_id,
             "code_node_id": self.code_node_id,
             "role": self.role,
+            "start_line": self.start_line,
+            "end_line": self.end_line,
             "source_range": self.source_range.as_record(),
             "expression": self.expression.as_record(),
         }

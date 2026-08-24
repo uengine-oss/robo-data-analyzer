@@ -1,6 +1,6 @@
 {
   "prompts/common/function_summary_contract.md": "02a6230694ffc89356fe1f0d52bf291ac5dd944887f48ce939347be632879d77",
-  "prompts/common/semantic_frame_contract.md": "7ea50628cecc6ba78d7042fdd853ad5818615efc6155541c794684b8cc4198c3",
+  "prompts/common/semantic_frame_contract.md": "501bfacb3542d2fbfb6271dab35c3e718a678b4c6fb892c5feab6dcbdfb755c4",
   "prompts/common/summary_contract.md": "9e1ee03c60195f4e8174031106f2ba9444f44875b15830fab8639b7aa15a3946",
   "prompts/common/table_description_contract.md": "780f5604050370717f610fff09c0a44e524f29ad08d7631578fa28a2a6541d91",
   "prompts/dbms/_common.yaml": "bbe585a8ca83345302fdeaa2d7d3c969ab3a725d841e51d780dc750e31dd8e02",
