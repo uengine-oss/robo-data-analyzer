@@ -7,9 +7,27 @@ from pathlib import Path
 
 import pytest
 
+from pipeline.languages import ROUTINE_LABELS
+from pipeline.models.analysis_context import AnalysisContext
 from pipeline.steps.step2_load_ast.dispatch import read_antlr_json
 from pipeline.steps.step2_load_ast.evidence_ir import validate_common_evidence
 from pipeline.steps.step2_load_ast.expression_ownership import routine_expression_ledger
+from pipeline.steps.step2_load_ast.rule_condition_projection import (
+    build_routine_rule_condition_bundles,
+)
+from pipeline.models.rule_condition_ir import attach_rule_condition_projection
+from pipeline.models.rule_materialization import materialize_rule_items
+from pipeline.quality_gates.example_synthesis import synthesize_examples
+from pipeline.quality_gates.rule_obligations import required_rule_rows
+from pipeline.steps.step6_build_context.control_subtree import (
+    build_control_subtrees,
+    build_statement_facts,
+)
+from pipeline.steps.step7_analyze_code.control_prompt import build_control_inventory
+from pipeline.steps.step7_analyze_code.rule_row_batching import (
+    materialize_and_validate_rules,
+)
+from shared.files.cache import SourceFileCache
 
 
 def _sha256(path: Path) -> str:
@@ -134,6 +152,115 @@ def test_sealed_skt_structural_expression_replay_is_exact_and_deterministic() ->
     }
     assert len(populated_routines) == 46
     assert sum(map(len, populated_routines.values())) == 578
+    condition_bundles = build_routine_rule_condition_bundles(
+        first.code_nodes,
+        first.resolved_expression_facts,
+        first.structural_expression_facts,
+    )
+    relevant_expression_count = sum(
+        fact["role"] in {"condition", "case_value"}
+        for fact in first.resolved_expression_facts
+    )
+    assert sum(
+        len(bundle["conditions"]) for bundle in condition_bundles.values()
+    ) == relevant_expression_count
+    case_bundle = next(
+        bundle for bundle in condition_bundles.values()
+        if "C546" in bundle["conditions"]
+    )
+    projected_case = attach_rule_condition_projection({
+        "conditions": {"C546": "RC_NFD"},
+        "effects": {},
+        "rows": {"R546": {"role": "decision", "when": ["C546"]}},
+    }, case_bundle)
+    assert materialize_rule_items(projected_case, (546,))[0].cond == (
+        'F("rc") == F("RC_NFD")'
+    )
+
+    control_subtrees = build_control_subtrees(first.code_nodes)
+    statement_facts = build_statement_facts(
+        first.code_nodes, first.variables, first.constants,
+    )
+    source_cache = SourceFileCache()
+    projected_rules = []
+    projected_examples = 0
+    examples_by_anchor = {}
+    changed_conditions = []
+    for routine in first.code_nodes:
+        if routine.label not in ROUTINE_LABELS:
+            continue
+        context = AnalysisContext(
+            id=routine.id,
+            signature=routine.signature,
+            file_path=routine.file_path,
+            start_line=routine.start_line,
+            end_line=routine.end_line,
+            extra={
+                "control_subtree": control_subtrees.get(routine.id, []),
+                "ast_statements": tuple(statement_facts.get(routine.id, ())),
+            },
+        )
+        inventory = build_control_inventory(routine, context, source_cache)
+        rows = tuple(required_rule_rows(inventory))
+        collection = materialize_and_validate_rules(
+            inventory=inventory,
+            target_scope=routine.id,
+            source=source_cache.slice(
+                routine.file_path, routine.start_line, routine.end_line,
+            ),
+            rows=rows,
+            condition_bundle=condition_bundles.get(routine.id),
+        )
+        baseline = materialize_and_validate_rules(
+            inventory=inventory,
+            target_scope=routine.id,
+            source=source_cache.slice(
+                routine.file_path, routine.start_line, routine.end_line,
+            ),
+            rows=rows,
+        )
+        assert [rule.anchor_line for rule in collection.rules] == list(rows)
+        assert [rule.anchor_line for rule in baseline.rules] == list(rows)
+        changed_conditions.extend(
+            (routine.id, current.anchor_line, previous.cond, current.cond)
+            for previous, current in zip(
+                baseline.rules, collection.rules, strict=True,
+            )
+            if previous.cond != current.cond
+        )
+        projected_rules.extend(collection.rules)
+        examples = synthesize_examples(collection.rules)
+        examples_by_anchor.update(examples)
+        for rule in collection.rules:
+            for example in examples[rule.anchor_line]:
+                assert example["then"] == list(rule.then)
+                assert example["given"]
+                projected_examples += 1
+    assert len({rule.anchor_line for rule in projected_rules}) == len(projected_rules)
+    actual_case = next(
+        rule for rule in projected_rules
+        if rule.anchor_line == 546
+        and rule.cond == 'F("rc") == F("RC_NFD")'
+    )
+    assert actual_case.anchor_line == 546
+    first_case_change = next(
+        item for item in changed_conditions if item[1] == 546
+    )
+    assert first_case_change[2:] == (
+        'F("RC_NFD")', 'F("rc") == F("RC_NFD")',
+    )
+    effect_case = next(
+        rule for rule in projected_rules
+        if rule.anchor_line == 549
+    )
+    assert effect_case.cond == (
+        'not (F("rc") == F("RC_NRM")) and F("rc") == F("RC_ERR")'
+    )
+    assert examples_by_anchor[549][0]["given"] == [
+        "F('rc') != F('RC_NRM')",
+        "F('rc') == F('RC_ERR')",
+    ]
+    assert examples_by_anchor[549][0]["then"] == list(effect_case.then)
 
     first_fact = first.structural_expression_facts[0]
     offset = first_fact["range"]["charOffset"]
@@ -142,6 +269,10 @@ def test_sealed_skt_structural_expression_replay_is_exact_and_deterministic() ->
         "C081_ANALYZER "
         f"structural={len(structural_ids)} semantic={len(semantic_ids)} "
         f"resolved={len(resolved_ids)} "
+        f"conditionRelations={relevant_expression_count} "
+        f"rules={len(projected_rules)} examples={projected_examples} "
+        f"changedConditions={len(changed_conditions)} "
+        f"firstChanged={changed_conditions[0][1]} "
         f"semanticLedgerSha256={hashlib.sha256(first_ledger).hexdigest()} "
         f"resolvedLedgerSha256={hashlib.sha256(first_resolved_ledger).hexdigest()} "
         f"first={source.name}:{line}:{first_fact['role']}"

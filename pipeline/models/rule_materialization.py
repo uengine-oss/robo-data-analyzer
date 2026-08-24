@@ -14,7 +14,9 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from pipeline.models.code_analysis_output import RuleItem
-from pipeline.quality_gates.rule_prompt_evidence import render_row_condition
+from pipeline.quality_gates.rule_condition_rendering import (
+    render_projected_row_condition,
+)
 
 
 class StructuralEffect(BaseModel):
@@ -56,8 +58,8 @@ def materialize_rule_items(
     return [
         RuleItem(
             anchor_line=row,
-            cond=render_row_condition(
-                _evidence_row(evidence_rows, row), conditions,
+            cond=render_projected_row_condition(
+                _evidence_row(evidence_rows, row), evidence,
             ),
             then=[
                 _render_selected_effect(effect_ref, effects)

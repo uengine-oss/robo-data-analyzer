@@ -8,6 +8,7 @@ from graph.schema.graph_nodes import CodeNode
 from pipeline.models.analysis_context import AnalysisContext, StatementFact
 from pipeline.models.data_object_usage import DataObjectUsageEvidence
 from pipeline.languages import callsite_labels, control_structure_labels
+from pipeline.models.rule_condition_ir import attach_rule_condition_projection
 from pipeline.models.semantic_frame import (
     EvidenceFact,
     FUNCTION_SUMMARY_ROLES,
@@ -19,6 +20,9 @@ from pipeline.models.semantic_frame import (
 )
 from pipeline.quality_gates.branch_inventory import BranchInventory
 from pipeline.quality_gates.rule_prompt_evidence import rule_evidence
+from pipeline.quality_gates.rule_condition_rendering import (
+    render_projected_row_condition,
+)
 
 
 _WRITE_FAMILY = {
@@ -422,8 +426,11 @@ def build_code_semantic_plan(
             row for row in inventory.table_rows()
             if allowed_rule_rows is None or int(row["line"]) in allowed_rule_rows
         ]
-        canonical_rule_evidence = rule_evidence(
-            inventory, [int(row["line"]) for row in planned_rows],
+        canonical_rule_evidence = attach_rule_condition_projection(
+            rule_evidence(
+                inventory, [int(row["line"]) for row in planned_rows],
+            ),
+            fn.extra.get("_resolved_rule_condition_bundle"),
         )
         canonical_effects = canonical_rule_evidence["effects"]
         canonical_rows = canonical_rule_evidence["rows"]
@@ -433,6 +440,9 @@ def build_code_semantic_plan(
             branch = inventory.at_line(line)
             condition = str(row.get("condition") or "")
             canonical_row = canonical_rows[f"R{line}"]
+            projected_condition = render_projected_row_condition(
+                canonical_row, canonical_rule_evidence,
+            )
             direct_effect_refs = tuple(canonical_row.get("direct") or ())
             effects = [dict(canonical_effects[ref]) for ref in direct_effect_refs]
             owned_lines = set(inventory.direct_evidence_lines(line))
@@ -532,9 +542,9 @@ def build_code_semantic_plan(
                 attributes={
                     "anchor_line": line,
                     "role": role,
-                    "condition": condition,
+                    "condition": projected_condition or "",
                     "effects": effects,
-                    "when": [],
+                    "when": list(canonical_row.get("when") or ()),
                     "source_refs": list(dict.fromkeys(supporting_refs)),
                     "type": str(row.get("ntype") or ""),
                     "condition_timing": str(row.get("condition_timing") or ""),

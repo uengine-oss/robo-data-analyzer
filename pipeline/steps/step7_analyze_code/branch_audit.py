@@ -107,6 +107,7 @@ def persist_routine_audits(
             routine,
             inventory,
             row_owners=owners_by_routine[routine_id],
+            condition_bundle=routine.extra.get("_resolved_rule_condition_bundle"),
         )
         persist_coverage(routine, inventory)
         written.append(routine_id)

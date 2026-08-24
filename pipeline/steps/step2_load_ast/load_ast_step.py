@@ -26,6 +26,9 @@ from pipeline.steps.step2_load_ast.token_matcher import link_references
 from pipeline.steps.step2_load_ast.expression_ownership import (
     attach_routine_expression_ledger,
 )
+from pipeline.steps.step2_load_ast.rule_condition_projection import (
+    attach_routine_rule_condition_bundles,
+)
 from pipeline.models.import_resolution import normalize_import_resolution_ledger
 from shared.events.runtime_logger import log_error, log_info, log_warning
 from pipeline.steps.step2_load_ast.node_identity_registry import NodeIdentityCollision, canonicalize_node_lists
@@ -340,6 +343,9 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
             "routine expression ownership is not exact-once: "
             f"facts={len(resolved_expression_facts)}, assigned={assigned_expression_facts}"
         )
+    rule_condition_bundles = attach_routine_rule_condition_bundles(
+        code_nodes, resolved_expression_facts, structural_expression_facts,
+    )
 
     if neo is not None:
         # 노드는 라벨이 달라 동시쓰기 안전 → 병렬. 엣지는 노드 선행 필요 +
@@ -431,6 +437,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         semantic_expression_facts=len(semantic_expression_facts),
         resolved_expression_facts=len(resolved_expression_facts),
         expression_routines=sum(bool(items) for items in expression_ledger.values()),
+        rule_condition_routines=len(rule_condition_bundles),
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
     return {

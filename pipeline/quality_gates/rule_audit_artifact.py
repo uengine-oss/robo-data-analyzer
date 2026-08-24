@@ -14,6 +14,7 @@ from typing import Any
 
 from graph.schema.graph_nodes import CodeNode
 from pipeline.execution.run_output_context import active_run_dir
+from pipeline.models.rule_condition_ir import attach_rule_condition_projection
 from pipeline.models.rule_materialization import materialize_rule_items
 from pipeline.quality_gates.audit_artifact_paths import audit_file_stem
 from pipeline.quality_gates.branch_inventory import BranchInventory
@@ -21,7 +22,8 @@ from pipeline.quality_gates.rule_obligations import required_rule_rows
 from pipeline.quality_gates.rule_prompt_evidence import rule_evidence
 
 
-RULE_AUDIT_SCHEMA = "deterministic-rule/v1"
+RULE_AUDIT_SCHEMA = "deterministic-rule/v2"
+_RULE_AUDIT_SCHEMAS = frozenset({"deterministic-rule/v1", RULE_AUDIT_SCHEMA})
 RULE_AUDIT_DIRECTORY = "rule-structures"
 
 
@@ -30,10 +32,13 @@ def build_rule_audit_record(
     inventory: BranchInventory,
     *,
     row_owners: Mapping[str, str] | None = None,
+    condition_bundle: Mapping[str, object] | None = None,
 ) -> dict[str, Any]:
     """Build the exact obligation/evidence/materialization record for one routine."""
     rows = required_rule_rows(inventory)
-    evidence = rule_evidence(inventory, rows)
+    evidence = attach_rule_condition_projection(
+        rule_evidence(inventory, rows), condition_bundle,
+    )
     rules = materialize_rule_items(evidence, rows)
     expected_keys = set(evidence.get("rows") or {})
     owners = (
@@ -61,6 +66,7 @@ def persist_rule_audit(
     inventory: BranchInventory,
     *,
     row_owners: Mapping[str, str] | None = None,
+    condition_bundle: Mapping[str, object] | None = None,
 ) -> None:
     """Persist one routine record when an analysis run owns an output directory."""
     run_dir = active_run_dir()
@@ -71,7 +77,12 @@ def persist_rule_audit(
     path = directory / f"{audit_file_stem(routine.id)}.json"
     path.write_text(
         json.dumps(
-            build_rule_audit_record(routine, inventory, row_owners=row_owners),
+            build_rule_audit_record(
+                routine,
+                inventory,
+                row_owners=row_owners,
+                condition_bundle=condition_bundle,
+            ),
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -109,7 +120,7 @@ def load_rule_audit_records(run_dir: Path) -> dict[str, dict[str, Any]]:
 
 
 def _validate_record(value: object, path: Path) -> dict[str, Any]:
-    if not isinstance(value, dict) or value.get("schema") != RULE_AUDIT_SCHEMA:
+    if not isinstance(value, dict) or value.get("schema") not in _RULE_AUDIT_SCHEMAS:
         raise ValueError(f"invalid Rule audit schema: {path}")
     target_id = str(value.get("target_id") or "").strip()
     evidence = value.get("evidence")
@@ -150,7 +161,7 @@ def _validate_record(value: object, path: Path) -> dict[str, Any]:
     if rebuilt != [dict(rule) for rule in rules]:
         raise ValueError(f"Rule audit materialization mismatch: {path}")
     return {
-        "schema": RULE_AUDIT_SCHEMA,
+        "schema": value["schema"],
         "target_id": target_id,
         "evidence": dict(evidence),
         "row_owners": owners,

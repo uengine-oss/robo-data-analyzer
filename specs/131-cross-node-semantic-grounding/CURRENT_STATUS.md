@@ -1,7 +1,7 @@
 # Analyzer 의미 무손실 작업 현재상태
 
 **Updated**: 2026-08-24
-**Status**: C-080 호출 결합, C-081 구조식 transport, C-082 discriminated expression IR, C-083 exact slot closure actual 검증 완료. 다음은 결정론 Rule/Python projection이다
+**Status**: C-080 호출 결합, C-081 구조식 transport, C-082 discriminated expression IR, C-083 exact slot closure, C-084 Rule condition projection 검증 완료. 다음은 남은 IR 2.0 producer→consumer 결손 좌표다
 **Role**: 현재 HEAD·환경·보존 WIP·미해결·바로 다음 행동의 유일한 정본
 
 상세 조사 원장은 `history/handovers/12-20260821-current-status-snapshot-pointer.md`로 정확히
@@ -347,3 +347,24 @@ language-neutral semantic IR로 변환하게 하는 것이다.
   Rule/Python 의미 정확도나 제품 합격으로 승격하지 않는다. 다음 책임 슬라이스에서 canonical
   expression IR로 Rule/Python/Example을 결정론 투영한다.
 - 상세 evidence: `evidence/c083-expression-slot-closure-20260824.md`.
+
+## 13. 2026-08-24 C-084 Rule condition expression projection
+
+- 확정 원인은 Parser 누락이 아니라 Analyzer의 기존 Rule evidence가 CASE label만 소비하여 SWITCH
+  selector와의 관계를 잃은 것이다. 실제 `apascrtu0010t02.c:544/546`에서 Parser는 `rc`와
+  `RC_NFD` 및 parent edge를 모두 생산했고, 기존 Rule은 `F("RC_NFD")`만 만들었다.
+- Analyzer adapter가 resolved expression role과 Parser parent edge로 `predicate`/`case_match`
+  relation을 만들고, language-neutral core가 exact source atom과 operator shell을 결정론 렌더링한다.
+  source 정규식 재파싱·binding/type/linkage 추측·프로젝트 이름 특화는 없다.
+- 봉인 actual은 expression 578/578/578, condition relation 192/192, Rule 362, Example 89다.
+  baseline 대비 조건 253개가 바뀌었고 첫 좌표는 300행이다. `R546`은
+  `F("rc") == F("RC_NFD")`로 닫혔으며, 효과가 있는 `R549`는 Rule 조건과 Example `given`, Rule/Example
+  `then` 동일성을 직접 판정했다.
+- bundle이 있는 경로에서 relation/expression 누락은 fail-closed한다. audit schema v2가 embedded
+  condition closure와 결과를 함께 보존하고 replay 시 재물질화하여 불일치를 거부한다. 기존 v1 audit은
+  읽기 호환한다.
+- 집중 회귀는 113 passed/17 subtests, actual 포함 집중 검증은 89 passed/17 subtests,
+  staged-only 전체 회귀는 1,285 passed/7 skipped/367 subtests다. 전체 SKT 23파일 성능 run은 관련
+  개선 종료 시 한 번만 수행한다.
+- 이 결과는 Rule/Example 구조 의미 개선이며 LLM business meaning이나 제품 전체 합격으로 승격하지
+  않는다. 상세 evidence: `evidence/c084-rule-condition-expression-projection-20260824.md`.

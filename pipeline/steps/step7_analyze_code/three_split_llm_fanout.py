@@ -699,6 +699,7 @@ async def analyze_code_three_split(
         write_tables=sorted(set(ctx.writes)),
         table_ops=ctx.extra.get("table_op") or {},
         table_aliases=ctx.extra.get("table_identity_aliases") or {},
+        condition_bundle=fn.extra.get("_resolved_rule_condition_bundle"),
     )
 
     gather_map: dict[str, Any] = {
@@ -945,7 +946,11 @@ def _build_user_values(
     # 상태 추적 없이 소스에 직접 쓰인 반환 표현식만 bottom-up 인터페이스로 전달한다.
     ctx.extra["return_expressions"] = sorted(inventory.return_expressions)
     persist_branch_table(fn, inventory)
-    persist_rule_audit(fn, inventory)
+    persist_rule_audit(
+        fn,
+        inventory,
+        condition_bundle=fn.extra.get("_resolved_rule_condition_bundle"),
+    )
     persist_coverage(fn, inventory)
     profile, slot_specs = build_code_semantic_plan(
         fn,

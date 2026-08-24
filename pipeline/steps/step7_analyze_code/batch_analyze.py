@@ -806,6 +806,7 @@ def _materialize_dbms_rules(
             write_tables=sorted(set(routine_ctx.writes)),
             table_ops=routine_ctx.extra.get("table_op") or {},
             table_aliases=routine_ctx.extra.get("table_identity_aliases") or {},
+            condition_bundle=routine.extra.get("_resolved_rule_condition_bundle"),
         )
         result[node_id] = BatchRulesItem(
             node_key=node_key,

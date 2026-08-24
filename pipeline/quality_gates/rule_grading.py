@@ -18,7 +18,7 @@ from __future__ import annotations
 import ast
 import re
 from dataclasses import dataclass, field
-from typing import Iterable
+from typing import Iterable, Mapping
 
 from pipeline.models.code_analysis_output import RulesExamplesOutput, RuleItem
 from pipeline.models.analysis_finding import AnalysisFinding
@@ -525,6 +525,7 @@ def grade_rules(
     table_ops: dict[str, str] | None = None,
     table_aliases: dict[str, str] | None = None,
     require_exact_conditions: bool = False,
+    expected_conditions: Mapping[int, str | None] | None = None,
 ) -> GradeReport:
     """행 단위 채점. ``assigned`` 는 배칭 시 이번 호출의 할당 행(절대 줄) 집합.
 
@@ -598,7 +599,15 @@ def grade_rules(
                     "구조 좌표만으로 완전 증명할 수 없음"
                 )
             if require_exact_conditions:
-                expected_cond = expected_rule_condition(inventory, anchor)
+                if expected_conditions is not None and anchor not in expected_conditions:
+                    raise ValueError(
+                        f"expected condition is missing for assigned row: R{anchor}"
+                    )
+                expected_cond = (
+                    expected_conditions[anchor]
+                    if expected_conditions is not None
+                    else expected_rule_condition(inventory, anchor)
+                )
                 if expected_cond is None:
                     if rule.cond is not None:
                         verdict.reasons.append(

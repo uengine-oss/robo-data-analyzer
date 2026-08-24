@@ -69,6 +69,61 @@ class BranchTableRunOwnership(unittest.TestCase):
             self.assertEqual(1, len(records["code:sample.fn"]["rules"]))
             self.assertEqual("", records["code:sample.fn"]["rules"][0]["nl"])
 
+    def test_rule_record_replays_embedded_condition_expression_evidence(self) -> None:
+        inventory = build_inventory(
+            "if (x == 0) { ; }",
+            (ControlSubtreeNode("if", "IF", 1, 1, expression="x == 0"),),
+            "c",
+            statements=(),
+        )
+        root_range = {"char_offset": 4, "char_length": 6}
+        condition_bundle = {
+            "schema": "rule-condition-expression/v1",
+            "conditions": {
+                "C1": {"kind": "predicate", "expression_refs": ["predicate"]},
+            },
+            "expressions": {
+                "predicate": {
+                    "fact_id": "predicate",
+                    "source_range": root_range,
+                    "source_text": "x == 0",
+                    "expression": {
+                        "kind": "binary",
+                        "source_range": root_range,
+                        "operator": "equal",
+                        "operands": [
+                            {
+                                "kind": "reference",
+                                "source_range": {"char_offset": 4, "char_length": 1},
+                            },
+                            {
+                                "kind": "literal",
+                                "source_range": {"char_offset": 9, "char_length": 1},
+                            },
+                        ],
+                    },
+                },
+            },
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            token = set_run_dir(root)
+            try:
+                persist_rule_audit(
+                    _node(), inventory, condition_bundle=condition_bundle,
+                )
+            finally:
+                reset_run_dir(token)
+
+            record = load_rule_audit_records(root)[_node().id]
+            self.assertEqual(
+                "rule-condition-expression/v1",
+                record["evidence"]["condition_expression_schema"],
+            )
+            self.assertEqual(
+                'F("x") == F("0")', record["rules"][0]["cond"],
+            )
+
     def test_active_run_write_failure_is_not_downgraded_to_success(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             token = set_run_dir(Path(temp))
