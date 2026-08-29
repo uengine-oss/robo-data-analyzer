@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from llm.runners.prompt_values import _safe_format
+from llm.runners.prompt_values import _extract_target_and_sort, _safe_format
 
 
 class SafeFormatTest(unittest.TestCase):
@@ -28,6 +28,15 @@ class SafeFormatTest(unittest.TestCase):
         self.assertEqual(
             "free {unknown:key} text",
             _safe_format("free {unknown:key} text", {"known": "value"}),
+        )
+
+    def test_explicit_target_id_is_trace_metadata(self) -> None:
+        self.assertEqual(
+            ("code:sample.c:validate", "code:sample.c:validate"),
+            _extract_target_and_sort({
+                "target_id": "code:sample.c:validate",
+                "rule_packet": "opaque",
+            }),
         )
 
 

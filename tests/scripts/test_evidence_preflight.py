@@ -169,7 +169,6 @@ def test_current_stored_rows_come_from_deterministic_rule_artifact(tmp_path: Pat
             "anchor_line": 1,
             "structural_condition": 'F("ready")',
             "structural_effects": [],
-            "business_condition": None,
             "business_effects": [],
         }],
     }

@@ -1095,10 +1095,10 @@ language-neutral semantic IR로 변환하게 하는 것이다.
 - Rule의 실제 제품 경로를 추적한 결과 행의 `business_rule | implementation_detail | insufficient`
   분류는 제품 Rule 생성 여부를 결정하는 필수 의미 판정이었다. 반면 각 condition/effect의 `status`는
   별도 구조 사실과 연결되지 않은 모델 자기평가였고 `{meaning,status}` 객체가 atom마다 반복됐다.
-- provider-visible Rule 응답은 `conditions: {C-key: 의미 문자열}`, `effects: {E-key: 의미 문자열}`,
+- 당시 provider-visible Rule 응답은 `conditions: {C-key: 의미 문자열}`, `effects: {E-key: 의미 문자열}`,
   `rows: {R-key: 분류 문자열}`의 세 exact map만 가진다. 모든 key는 그대로 required이며 extra·누락은
   거부한다. atom 의미를 입증할 수 없으면 빈 문자열로 두고, Analyzer가 필요한 atom 중 하나라도 비었으면
-  해당 행을 `insufficient`로 닫는다.
+  해당 행을 `insufficient`로 닫았다. 이 condition 자연어 응답은 실제 반례 뒤 §110에서 폐기됐다.
 - 행 분류 자체는 강제로 양자택일시키지 않기 위해 `insufficient`를 유지한다. `implementation_detail`은
   제품 Rule을 만들지 않고, `business_rule`이면서 모든 필요 atom 의미가 있을 때만 Analyzer가 Python
   Rule/Example을 결정론적으로 한 번 투영한다. 추가 judge·repair·Example LLM 호출은 없다.
@@ -1959,9 +1959,10 @@ language-neutral semantic IR로 변환하게 하는 것이다.
   의미를 냈다. 효과 우선+모순 금지 지침만 `입력이 유효하지 않은 상태`로 실제 효과와 일치했다.
   지침은 효과를 먼저 판단하라고 했지만 response schema는 `conditions→effects→rows`를 강제한 것이
   직접 원인이었다.
-- 수정: Framework와 DBMS가 공유하는 Rule 의미 response schema를 `effects→conditions→rows`로
+- 당시 수정: Framework와 DBMS가 공유하는 Rule 의미 response schema를 `effects→conditions→rows`로
   바꾸고, condition은 참일 때 실행되는 row effects 및 원문 주석과 모순될 수 없다는 언어 중립 계약을
-  추가했다. 호출 수, 3분할, Parser/Analyzer 책임 경계, Python 결정론 투영은 바꾸지 않았다.
+  추가했다. 이 prompt-only 수정은 후속 실제 generation에서 같은 반례를 막지 못해 §110의
+  `effects→rows` 계약으로 대체됐다.
 - 검증: 같은 실제 packet의 2×2 단일 호출 4건으로 원인을 분리했고, response order·closed schema·
   prompt/LLM/cache 관련 집중 회귀 91건을 통과했다. 이 4건은 제품 generation 밖 진단 호출이므로
   generation usage ledger에는 포함되지 않는다. active generation은 수정 전 결과이므로 의미 합격으로
@@ -1976,7 +1977,8 @@ language-neutral semantic IR로 변환하게 하는 것이다.
 - 중간보고 HTML은 27,951 bytes, section 7·details 4, SHA-256
   `1ed348268f3707a2b22956b8c5216090d0296f6dddc4a657707ff758abc5b842`다.
 - 두 문서는 실제 1,503줄 생성 수치, Neo4j 공개 수치, 캐시 alias 원인, 86·94행 의미 반례와
-  `effects→conditions→rows` 최종 계약을 현재 코드에 맞춰 갱신했다.
+  당시 `effects→conditions→rows` 계약을 반영했다. 현재 최종 계약은 §110과 최종 HTML의
+  `effects→rows`다.
 
 ## 109. staged 책임 경계 확인 (2026-08-29)
 
@@ -1987,3 +1989,36 @@ language-neutral semantic IR로 변환하게 하는 것이다.
   출처 미확정 untracked 보호 대상 그대로 남겼다.
 - Architect·goal-verify·Fabric는 읽기·실행·수정·stage하지 않았다. `_runs` 실제 입력과 generation
   산출물도 commit 대상에 넣지 않았다.
+
+## 110. 최종 Rule/Example 단일 의미 경로와 SKT 선택 범위 폐쇄 (2026-08-29)
+
+- 원인 확정: generation `20260829_003719_eabfbb2ec37c`의 86·94행 반대 조건 의미는 Parser,
+  Analyzer 조립, Neo4j 저장 중 생긴 변형이 아니라 모델 원시 응답 자체였다. 입력에는 오류 기록·메시지·
+  `RC_ERR` 효과가 있었고 prompt도 효과와 모순하지 말라고 명시했지만 모델은 opaque framework predicate
+  `mpfm_isnull(...) == RC_NRM`을 `비어 있지 않음`으로 잘못 번역했다. 프레임워크 계약에는 이 API의
+  반환 의미가 없으므로 Analyzer가 반대 극성을 추측해 고치는 것도 금지된다.
+- 제품 수정: Rule 모델 응답에서 중복·미검증 `conditions` 자연어 map을 제거했다. 모델은 exact
+  `effects`와 `rows`만 한 번 반환한다. Rule 조건은 Parser 사실에서 Analyzer가 만든
+  `structural_condition` 하나만 유지하고, 제품 `business_condition` 필드와 모든 소비처를 제거했다.
+  `target_id`는 모델 입력이 아니라 prompt 감사 기록에만 명시적으로 전달해 최종 17건의 `unknown`을 0으로
+  닫았다.
+- Example 직선화: 기존 합성기는 이미 확정된 Rule 조건을 다시 Python AST로 parse/unparse하면서 따옴표를
+  바꾸고 conjunction을 여러 항목으로 분해했다. 이 232줄 두 번째 변환을 제거하고 Rule의
+  `structural_condition` 문자열과 `business_effects` 배열을 그대로 재사용한다. 최종 Example 95건의
+  Rule↔Example byte 불일치는 0이다.
+- 최종 실제 실행: 기존 `framework` DB에서 SKT 2파일 1,503줄만 generation
+  `20260829_005638_ac5f8999f742`로 공개했다. 17.4초, 논리 호출 40건, 응답 캐시 23건, 새 Rule 호출
+  17건의 입력 90,003·출력 8,996 token, 비용 `$0.10798425`다. 함수 17, Rule 114, Example 95,
+  SearchSegment 17, generation-owned node 615, relationship 635다. 새 DB와 Docker는 사용하지 않았다.
+- 전수 회계: Rule 후보 164행은 공개 114·`excluded` 39·`unverified` 11로 정확히 한 번씩 닫혔다.
+  AnalysisHealth `missing=0`, `duplicate=0`, unresolved call 12는 선택 범위 밖 정의다. 이전 generation
+  대비 Rule은 제거 18·추가 11, Example은 제거 3·추가 12다. 첫 새 격리 좌표는
+  `zapamcom10150.c:b000_main_proc::R-119`이며 모델이 구현 상세로 판정해 제품 Rule에서 제외했다.
+- 직접 의미: 86·94행 제품 Rule에는 정확한 구조 조건과 입력 오류 기록·메시지·`RC_ERR` 업무 효과가
+  있으며 자연어 조건 속성은 0건이다. Python 구문 성공을 의미 합격으로 승격한 것이 아니라, 거짓 극성을
+  만들던 미검증 출력 경로 자체를 제거하고 실제 효과를 직접 대조했다.
+- 자동 회귀: 전체 `1433 passed, 4 skipped, 319 subtests passed`. 최초 실행 시 잘못된 runtime hash
+  환경변수명으로 model/DB 전에 끝난 generation과, `.env` key 전달 순서로 401이 난 generation은 제품
+  node 0건이고 active publication을 바꾸지 않았다. 최종 active generation만 위 수치의 제품 결과다.
+- 남은 한계: 약 5만 LOC SKT 전체 성능은 GPU 복구 후 마지막 한 번만 측정한다. Catalog pagination은
+  snapshot/cursor/page closure 외부 계약이 생기기 전까지 C05로 남으며 기존 Catalog WIP를 수정하지 않는다.

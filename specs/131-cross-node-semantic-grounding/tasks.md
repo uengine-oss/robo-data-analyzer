@@ -352,9 +352,12 @@
   - generation `20260829_000846_8fc97de13e9a`, 19.3초, 논리 호출 40·캐시 적중 38,
     함수 17·Rule 145·Example 100·SearchSegment 17로 기존 framework DB에 공개했다.
 
-- [ ] **C03 선택 범위 전수 회계와 직접 의미 판정**
+- [x] **C03 선택 범위 전수 회계와 직접 의미 판정**
   - 선택 source baseline diff, exact-once completeness/property ledger, 새 실패 좌표를 먼저 확인한다.
   - 자동 회귀·결정론 전수 회계·봉인 직접 의미 판정 3층을 모두 통과한다.
+  - 최종 generation `20260829_005638_ac5f8999f742`: Rule 후보 164행 = 공개 114 +
+    구현 상세 제외 39 + 의미 불충분 11, 누락·중복 0. Example 95건은 Rule 구조 조건·업무 효과와
+    byte 불일치 0건이다. 86·94행은 구조 조건과 오류 효과만 공개하며 검증되지 않은 자연어 조건은 없다.
 
 - [x] **C04 제품 규모 성능 미검증 명시**
   - 약 5만 LOC 전체 재분석은 수행하지 않는다.
@@ -370,5 +373,5 @@
 
 - [x] **D01 최종 문서 동기화와 diff 감사**
 - [x] **D02 보호 WIP 제외 staged allowlist 확인**
-- [ ] **D03 검증된 Analyzer 책임 slice commit/push**
+- [x] **D03 검증된 Analyzer 책임 slice commit/push**
 - [x] A02-3 Residual table-pattern LLM packet에서 소비되지 않는 case/file/line/source/coordinate 상태를 제거하고, 정확한 줄번호 원문을 읽지 못하면 모델 호출 전에 fail-closed한다. (`18 passed, 9 subtests passed`)

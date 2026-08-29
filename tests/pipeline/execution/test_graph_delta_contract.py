@@ -62,7 +62,6 @@ class GraphDeltaContractTests(unittest.IsolatedAsyncioTestCase):
                 id="fn:1::R-19", anchor_line=19,
                 structural_condition='F("stock") == 0',
                 structural_effects=('call("reject", None, [])',),
-                business_condition='meaning_when("stock == 0", "재고가 없다")',
                 business_effects=('meaning_call("reject", None, [], "주문을 거절한다")',),
             ),
             Example(

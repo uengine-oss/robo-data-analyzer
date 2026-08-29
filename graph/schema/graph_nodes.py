@@ -316,7 +316,6 @@ class Rule:
     anchor_line: int = 0                     # 절대 파일 줄 — 채점·배칭의 단일 좌표
     structural_condition: str = ""           # 원문에서 결정론 생성한 Python 조건
     structural_effects: tuple[str, ...] = () # 원문에서 결정론 생성한 Python 효과
-    business_condition: str = ""             # Strategy-B 업무 의미 Python 조건
     business_effects: tuple[str, ...] = ()   # Strategy-B 업무 의미 Python 효과
 
 
@@ -327,5 +326,5 @@ class Example:
     정체성 ``id`` = ``<rule id>::E<idx>``. given/then 은 파이썬 leaf 목록.
     """
     id: str
-    given_conditions: tuple[str, ...] = ()   # 참이어야 하는 업무 조건 목록
+    given_conditions: tuple[str, ...] = ()   # Rule에서 그대로 재사용한 구조 조건 목록
     expected_effects: tuple[str, ...] = ()   # 조건이 참일 때 발생할 업무 효과 목록

@@ -234,7 +234,11 @@ def test_sealed_skt_structural_expression_replay_is_exact_and_deterministic() ->
             if previous.structural_condition != current.structural_condition
         )
         projected_rules.extend(collection.rules)
-        examples = synthesize_examples(collection.rules)
+        example_ready_rules = [
+            rule.model_copy(update={"business_effects": rule.structural_effects})
+            for rule in collection.rules
+        ]
+        examples = synthesize_examples(example_ready_rules)
         examples_by_anchor.update(examples)
         for rule in collection.rules:
             for example in examples[rule.anchor_line]:
@@ -262,8 +266,7 @@ def test_sealed_skt_structural_expression_replay_is_exact_and_deterministic() ->
         'not (F("rc") == F("RC_NRM")) and F("rc") == F("RC_ERR")'
     )
     assert examples_by_anchor[549][0]["given_conditions"] == [
-        "F('rc') != F('RC_NRM')",
-        "F('rc') == F('RC_ERR')",
+        'not (F("rc") == F("RC_NRM")) and F("rc") == F("RC_ERR")',
     ]
     assert examples_by_anchor[549][0]["expected_effects"] == list(
         effect_case.structural_effects

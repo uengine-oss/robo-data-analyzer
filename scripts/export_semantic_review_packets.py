@@ -102,7 +102,6 @@ async def _export(args: argparse.Namespace) -> None:
                    r.anchor_line AS anchor_line,
                    r.structural_condition AS structural_condition,
                    r.structural_effects AS structural_effects,
-                   r.business_condition AS business_condition,
                    r.business_effects AS business_effects,
                    e.id AS example_id,
                    coalesce(he.ordinal, 0) AS example_ordinal,
@@ -173,12 +172,9 @@ async def _export(args: argparse.Namespace) -> None:
                 business_effects = ", ".join(
                     str(s) for s in (record.get("business_effects") or [])
                 )
-                business_condition = (
-                    str(record.get("business_condition") or "").strip() or "미분석"
-                )
                 text = (
                     f"구조: {structural_condition} → {structural_effects}; "
-                    f"업무 의미: {business_condition} → {business_effects}"
+                    f"업무 효과: {business_effects}"
                 )
                 fields["RULE"].append(_text_item(f"RULE:{occurrence_id}", text))
                 seen_rules.add(occurrence_id)

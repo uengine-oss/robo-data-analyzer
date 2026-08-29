@@ -137,11 +137,6 @@ def _prompt_inventory(run_dir: Path) -> tuple[dict[str, Any], set[str], set[str]
                 "empty_structural_effects": sum(
                     _blank(item.get("structural_effects")) for item in rules
                 ),
-                "structural_condition_without_business_condition": sum(
-                    not _blank(item.get("structural_condition"))
-                    and _blank(item.get("business_condition"))
-                    for item in rules
-                ),
                 "structural_effects_without_business_effects": sum(
                     not _blank(item.get("structural_effects"))
                     and _blank(item.get("business_effects"))
@@ -416,11 +411,6 @@ def _graph_inventory(
             "empty_structural_effects": len(empty_structural_effect_rules),
             "empty_structural_effects_evidence_class": dict(
                 structural_effect_classes
-            ),
-            "structural_condition_without_business_condition": sum(
-                not _blank(item.get("structural_condition"))
-                and _blank(item.get("business_condition"))
-                for item in rules
             ),
             "structural_effects_without_business_effects": sum(
                 not _blank(item.get("structural_effects"))

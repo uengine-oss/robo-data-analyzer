@@ -874,7 +874,6 @@ class FrameworkFailureContractTest(unittest.IsolatedAsyncioTestCase):
                     ))
                 if rule_name == "code_rule_meanings":
                     return response_model.model_validate({
-                        "conditions": {},
                         "effects": {"E1": "작업 결과를 호출자에게 반환한다"},
                         "rows": {"R2": "business_rule"},
                     })

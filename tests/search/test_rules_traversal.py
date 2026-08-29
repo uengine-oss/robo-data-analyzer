@@ -40,7 +40,6 @@ def _row(rule, anchor, **overrides):
         "anchor_line": anchor,
         "structural_condition": f'F("cd") == "{anchor}"',
         "structural_effects": ['ret("0")'],
-        "business_condition": f'meaning_when("cd == {anchor}", "처리 대상")',
         "business_effects": ['meaning_return("0", "정상 결과")'],
         "owner_signature": "fn(itf)",
         "example_id": None,

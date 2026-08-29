@@ -659,27 +659,23 @@ Analyzer는 Parser 구조, containment, binding으로 R row·source closure·con
 ```yaml
 effects:
   E1: <현재 함수의 업무 흐름에서 이 직접 효과 atom이 뜻하는 한 가지 의미 또는 빈 문자열>
-conditions:
-  C1: <이 조건이 참이어서 위 효과가 실행되는 업무 상태 또는 빈 문자열>
 rows:
   R1: business_rule | implementation_detail | insufficient
 ```
 
-세 map은 response schema가 열거한 key를 빠짐없이 정확히 한 번 가져야 하고 extra key는 거부한다.
-응답 schema는 `effects→conditions→rows` 순서를 강제한다. condition 의미는 같은 row의 원문 주석과
-직접 effects를 함께 대조하며 오류·성공·상태 변경 방향과 모순될 수 없다. 모순 없이 확정할 수 없으면
-반대 의미를 추측하지 않고 빈 문자열로 둔다.
-모델은 condition/effect 결합, Python, Rule, Example, reason 문장, confidence, question, evidence ID를
-작성하지 않는다. Analyzer가 구조와 충분한 atom 의미를 결합한다.
+두 map은 response schema가 열거한 key를 빠짐없이 정확히 한 번 가져야 하고 extra key는 거부한다.
+입력의 `conditions`는 행의 구조와 실행 경로를 이해하는 데만 사용한다. 모델이 opaque framework
+predicate를 자연어로 다시 번역하면 실제 효과와 반대 극성을 만들 수 있으므로 condition 의미는 응답
+대상이 아니다. 모델은 condition/effect 결합, Python, Rule, Example, reason 문장, confidence,
+question, evidence ID를 작성하지 않는다. Analyzer가 정확한 구조 조건과 충분한 effect 의미를 결합한다.
 
-`business_rule`이면서 해당 행에 필요한 모든 atom 의미가 비어 있지 않은 행만 다음 제품 Rule이 된다.
+`business_rule`이면서 해당 행의 직접 effect 의미가 모두 비어 있지 않은 행만 다음 제품 Rule이 된다.
 소유 함수는 `HAS_RULE` 관계로 알 수 있으므로 Rule property로 복제하지 않는다.
 
 ```yaml
 anchor_line: <근거 시작 줄>
 structural_condition: <Analyzer 구조 Python 또는 null>
 structural_effects: [<Analyzer 구조 Python effect>]
-business_condition: <Analyzer가 atom 의미와 구조를 결합한 restricted Python 또는 null>
 business_effects: [<Analyzer가 atom 의미와 구조를 결합한 restricted Python effect>]
 ```
 
@@ -716,15 +712,15 @@ callee 내부 상태 변경을 caller Rule에 복사하지 않는다. Python par
 
 ### 7.3 Example
 
-검증된 Rule마다 LLM 0회로 만든다.
+검증된 Rule 중 구조 조건과 업무 효과가 모두 있는 Rule마다 LLM 0회로 만든다. 조건 없는 직접 효과
+Rule은 제품 Rule로 유지하지만, 참이어야 할 입력 상태가 없는 Example을 만들지 않는다.
 
 ```text
-given = []                           if Rule.condition is null
-given = [Rule.condition]             otherwise
-then  = Rule.effects                 preserving array order
+given = [Rule.structural_condition]  byte-identical
+then  = Rule.business_effects        byte-identical array order
 ```
 
-문자열과 배열 순서는 Rule과 byte-identical이어야 한다.
+조건 문자열과 효과 배열은 Rule을 다시 parse·정규화·분해하지 않고 byte-identical로 재사용한다.
 
 ## 8. 독립 실행과 호출 회계
 

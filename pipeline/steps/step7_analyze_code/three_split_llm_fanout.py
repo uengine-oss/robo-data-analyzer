@@ -562,6 +562,9 @@ async def analyze_code_three_split(
             api_contracts=tuple(ctx.extra.get("api_contracts") or ()),
         )
         values = {
+            # Audit identity is consumed by the prompt recorder only.  Because the
+            # Rule template has no {target_id} placeholder, it never reaches the model.
+            "target_id": code_id,
             "rule_packet": json.dumps(
                 packet,
                 ensure_ascii=False,

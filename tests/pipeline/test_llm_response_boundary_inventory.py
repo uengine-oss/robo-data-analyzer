@@ -125,7 +125,7 @@ class LlmResponseBoundaryInventoryTest(unittest.TestCase):
                 table_evidence, table_plan, column_plans,
             ), {"slots", "columns"}),
             (rule_meaning_response_model(("C1",), ("E1",), ("R1",)), {
-                "conditions", "effects", "rows",
+                "effects", "rows",
             }),
             (batch_rule_meaning_response_model({
                 "1-2": {

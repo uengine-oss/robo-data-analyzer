@@ -4,7 +4,7 @@ from __future__ import annotations
 # Prompt rules use different identifier names. Keep the precedence alongside the
 # extractor so the final-tree split cannot leave the helper without its data.
 _TARGET_ID_KEYS = (
-    "id", "component_id", "unit_id", "table_fqn", "case_id", "term", "name", "file",
+    "target_id", "id", "component_id", "unit_id", "table_fqn", "case_id", "term", "name", "file",
 )
 
 def _safe_format(template: str, values: dict) -> str:

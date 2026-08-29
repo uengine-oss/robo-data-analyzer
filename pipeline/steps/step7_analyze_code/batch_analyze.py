@@ -889,6 +889,8 @@ async def _collect_dbms_rule_meanings(
     model_error: ModelOutputError | None = None
     if active_assignments:
         values = {
+            # Batch owner is trace metadata, not model input.
+            "target_id": parent_id or next(iter(active_assignments)),
             "rule_packets": json.dumps(
                 packets,
                 ensure_ascii=False,

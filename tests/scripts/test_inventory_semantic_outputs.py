@@ -30,7 +30,6 @@ class PromptSemanticInventoryTest(unittest.TestCase):
                     "anchor_line": 1,
                     "structural_condition": 'F("ready")',
                     "structural_effects": [],
-                    "business_condition": None,
                     "business_effects": [],
                 }],
             }
@@ -43,10 +42,6 @@ class PromptSemanticInventoryTest(unittest.TestCase):
 
         self.assertEqual(1, inventory["rule"]["outputs"])
         self.assertEqual(1, inventory["rule"]["empty_structural_effects"])
-        self.assertEqual(
-            1,
-            inventory["rule"]["structural_condition_without_business_condition"],
-        )
         self.assertEqual(
             {"code:order.c:validate::R-1"},
             set(evidence),

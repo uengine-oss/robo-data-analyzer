@@ -137,7 +137,6 @@ def apply_rule_meaning_projections(
             and projection.status == "sufficient"
         ):
             rules.append(rule.model_copy(update={
-                "business_condition": projection.condition,
                 "business_effects": list(projection.effects),
             }))
             continue
@@ -155,7 +154,6 @@ def apply_rule_meaning_projections(
             ),),
             candidate={
                 "row_disposition": projection.disposition,
-                "business_condition": projection.condition,
                 "business_effects": list(projection.effects),
                 "atom_coverage_status": projection.status,
             },

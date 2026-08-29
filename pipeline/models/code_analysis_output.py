@@ -174,7 +174,7 @@ class ExampleItem(BaseModel):
 
     given_conditions: list[_ExampleLeafStr] = Field(
         default_factory=list,
-        description="이 예시에서 참이어야 하는 업무 조건 목록",
+        description="이 예시에서 참이어야 하는 Analyzer 구조 조건 목록",
     )
     expected_effects: list[_ExampleLeafStr] = Field(
         default_factory=list, description="조건이 참일 때 발생해야 하는 업무 효과 목록"
@@ -182,7 +182,7 @@ class ExampleItem(BaseModel):
 
 
 class RuleItem(BaseModel):
-    """Structural Rule facts plus the independently bounded business-meaning layer."""
+    """Exact Rule structure plus independently bounded business-effect meanings."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -196,10 +196,6 @@ class RuleItem(BaseModel):
     )
     structural_effects: list[_RuleLeafStr] = Field(
         default_factory=list, description="효과 호출문 목록 — 유일한 채점 대상"
-    )
-    business_condition: _RuleLeafStr | None = Field(
-        None,
-        description="Analyzer가 구조와 atom 의미를 결합한 Strategy-B Python 조건",
     )
     business_effects: list[_RuleLeafStr] = Field(
         default_factory=list,

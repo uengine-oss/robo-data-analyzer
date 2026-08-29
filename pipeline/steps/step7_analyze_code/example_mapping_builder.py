@@ -47,7 +47,7 @@ def _collect_rules(fid: str, rules: list, result: ExampleMappingResult) -> None:
     ordinal = 0
     allowed_fields = {
         "anchor_line", "structural_condition", "structural_effects",
-        "business_condition", "business_effects",
+        "business_effects",
         "examples", "affected_tables",
     }
     for r in rules:
@@ -78,13 +78,12 @@ def _collect_rule(
             f"structured rule requires positive anchor_line: {fid}"
         )
     rid = f"{fid}::R-{anchor_line}"
-    business_condition = str(r.get("business_condition") or "")
     business_effects = tuple(
         str(s) for s in (r.get("business_effects") or [])
     )
-    if not business_condition and not business_effects:
+    if not business_effects:
         raise ValueError(
-            f"product Rule requires validated business condition or effect: {rid}"
+            f"product Rule requires at least one validated business effect: {rid}"
         )
     result.rules.append(Rule(
         id=rid,
@@ -93,7 +92,6 @@ def _collect_rule(
         structural_effects=tuple(
             str(s) for s in (r.get("structural_effects") or [])
         ),
-        business_condition=business_condition,
         business_effects=business_effects,
     ))
     result.has_rule.append(HasRule(

@@ -3,7 +3,9 @@
 Parser and deterministic Analyzer stages own source coordinates, condition polarity,
 effect identity, row ownership, and Rule/Example completeness.  The model sees a
 compact projection of those facts and may fill only one meaning string for each exact
-condition/effect key and one bounded disposition string for each exact row.
+effect key and one bounded disposition string for each exact row. Conditions remain
+Analyzer-owned Python structure: asking the model to paraphrase them duplicates an
+exact fact and can invent an unsupported polarity for opaque framework predicates.
 
 This module deliberately does not call an LLM.  It defines the provider wire,
 noise-free prompt packet, and deterministic Python projection used by both
@@ -49,11 +51,6 @@ def rule_meaning_response_model(
             + "\2" + "\0".join(rows)
         ).encode("utf-8")
     ).hexdigest()[:12]
-    condition_model = create_model(
-        f"ExactRuleConditionMeanings_{digest}",
-        __config__=ConfigDict(extra="forbid"),
-        **{key: (str, Field(...)) for key in conditions},
-    )
     effect_model = create_model(
         f"ExactRuleEffectMeanings_{digest}",
         __config__=ConfigDict(extra="forbid"),
@@ -68,10 +65,8 @@ def rule_meaning_response_model(
         f"RuleMeaningResponse_{digest}",
         __config__=ConfigDict(extra="forbid"),
         effects=(effect_model, Field(...)),
-        conditions=(condition_model, Field(...)),
         rows=(row_model, Field(...)),
     )
-    model.__condition_keys__ = conditions
     model.__effect_keys__ = effects
     model.__row_keys__ = rows
     return model
@@ -331,7 +326,6 @@ class RuleMeaningProjection:
 
     row_key: str
     anchor_line: int
-    condition: str | None
     effects: tuple[str, ...]
     disposition: RuleRowDispositionValue
     status: RuleProjectionStatus
@@ -343,10 +337,6 @@ def project_rule_meanings(
 ) -> tuple[RuleMeaningProjection, ...]:
     """Combine model-owned atom text with Analyzer-owned structure exactly once."""
     condition_sources, effect_sources, rows = _evidence_maps(evidence)
-    conditions = {
-        key: str(value).strip()
-        for key, value in output.conditions.model_dump().items()
-    }
     effects = {
         key: str(value).strip()
         for key, value in output.effects.model_dump().items()
@@ -355,8 +345,6 @@ def project_rule_meanings(
         key: str(value)
         for key, value in output.rows.model_dump().items()
     }
-    if tuple(conditions) != tuple(condition_sources):
-        raise ValueError("Rule condition meaning coverage mismatch")
     if tuple(effects) != tuple(effect_sources):
         raise ValueError("Rule effect meaning coverage mismatch")
     if tuple(dispositions) != tuple(rows):
@@ -369,7 +357,6 @@ def project_rule_meanings(
             projected.append(RuleMeaningProjection(
                 row_key=row_key,
                 anchor_line=int(row_key[1:]),
-                condition=None,
                 effects=(),
                 disposition=disposition,
                 status=(
@@ -379,20 +366,13 @@ def project_rule_meanings(
                 ),
             ))
             continue
-        condition_parts: list[str] = []
         row_leaves: list[str] = []
         for signed_ref in row.get("when") or ():
             signed_ref = str(signed_ref)
             negated = signed_ref.startswith("!")
             ref = signed_ref[1:] if negated else signed_ref
-            if ref not in condition_sources or ref not in conditions:
+            if ref not in condition_sources:
                 raise ValueError(f"{row_key}: unknown Rule condition ref {signed_ref!r}")
-            leaf = conditions[ref]
-            row_leaves.append(leaf)
-            if not leaf:
-                continue
-            atom = "meaning_when(" + _quoted(condition_sources[ref], leaf) + ")"
-            condition_parts.append(f"not ({atom})" if negated else atom)
         rendered_effects: list[str] = []
         for raw_ref in row.get("direct") or ():
             ref = str(raw_ref)
@@ -405,11 +385,9 @@ def project_rule_meanings(
                 continue
             rendered_effects.append(_render_meaning_effect(payload, leaf))
         status = _combined_status(row_leaves)
-        condition = " and ".join(condition_parts) or None
         projected.append(RuleMeaningProjection(
             row_key=row_key,
             anchor_line=int(row_key[1:]),
-            condition=condition,
             effects=tuple(rendered_effects),
             disposition=disposition,
             status=status,

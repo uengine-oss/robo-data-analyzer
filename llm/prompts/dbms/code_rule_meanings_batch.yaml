@@ -11,10 +11,10 @@ user_template_specific: |
 
   ## [OUTPUT CONTRACT]
 
-  최상위 `nodes`는 response_format이 지정한 exact node key map이다. 각 node는 `conditions`,
-  `effects`, `rows` exact required key를 빠짐없이 한 번 채운다. node 사이의 의미를 합치거나
-  부모·형제의 효과를 현재 node에 복사하지 않는다. 풍부한 직접 효과 의미를 먼저 판단한 뒤 조건
-  의미와 행 전체의 업무 Rule 여부를 판단한다.
+  최상위 `nodes`는 response_format이 지정한 exact node key map이다. 각 node는 `effects`,
+  `rows` exact required key를 빠짐없이 한 번 채운다. node 사이의 의미를 합치거나 부모·형제의
+  효과를 현재 node에 복사하지 않는다. 풍부한 직접 효과 의미를 먼저 판단한 뒤 행 전체의 업무 Rule
+  여부를 판단한다. 입력의 `conditions`는 이해에만 쓰며 응답에서 번역하거나 복창하지 않는다.
 
 user_template_evidence: |
   # [INPUT — BATCH RULE meaning packets]

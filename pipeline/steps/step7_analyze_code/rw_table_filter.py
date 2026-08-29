@@ -111,7 +111,6 @@ def serialize_rules(
             "anchor_line": rule.anchor_line,
             "structural_condition": rule.structural_condition or "",
             "structural_effects": structural_effects,
-            "business_condition": rule.business_condition or "",
             "business_effects": list(rule.business_effects),
             "examples": examples_by_anchor.get(rule.anchor_line, []),
             "affected_tables": affected,

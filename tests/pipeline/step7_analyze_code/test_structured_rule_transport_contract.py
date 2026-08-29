@@ -38,7 +38,6 @@ class StructuredRuleTransportContract(unittest.TestCase):
                 structural_effects=[
                     'set(F("dst"), "0000")', 'select("zord_acnt")', 'ret("rc")'
                 ],
-                business_condition='meaning_when("a == 1", "처리 대상이다")',
                 business_effects=[
                     'meaning_set(F("dst"), F("0000"), "정상 코드를 설정한다")',
                 ],
@@ -60,16 +59,12 @@ class StructuredRuleTransportContract(unittest.TestCase):
         self.assertEqual("code:a.c:b100::R-5", rule.id)
         self.assertEqual(5, rule.anchor_line)
         self.assertEqual('F("a") == "1"', rule.structural_condition)
-        self.assertEqual(
-            'meaning_when("a == 1", "처리 대상이다")',
-            rule.business_condition,
-        )
         # EXAMPLE 은 LLM 이 아니라 cond/then 에서 결정론 합성된다 (spec 116 §21) —
         # 규칙을 만족하는 한 시나리오만 함께 실린다. 형제 else 규칙과 중복되는
         # 조건 불만족 산출물은 계약에서 제거됐다.
         self.assertEqual(1, len(result.examples))
         self.assertEqual(
-            ["meaning_when('a == 1', '처리 대상이다')"],
+            ['F("a") == "1"'],
             list(result.examples[0].given_conditions),
         )
         # 규칙 단위 AFFECTS(결정론 귀속: select → READ, 권위 op=SCANNER)
@@ -88,12 +83,11 @@ class StructuredRuleTransportContract(unittest.TestCase):
             build_example_mapping([_fn(["not-an-object"])])
 
     def test_structure_only_candidate_cannot_cross_product_graph_boundary(self):
-        with self.assertRaisesRegex(ValueError, "validated business condition or effect"):
+        with self.assertRaisesRegex(ValueError, "at least one validated business effect"):
             build_example_mapping([_fn([{
                 "anchor_line": 5,
                 "structural_condition": 'F("ready")',
                 "structural_effects": ['call("work", None, [])'],
-                "business_condition": "",
                 "business_effects": [],
                 "examples": [],
                 "affected_tables": [],

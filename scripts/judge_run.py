@@ -826,13 +826,13 @@ async def _graph_axes(database: str | None) -> dict[str, object]:
             "RETURN type(r) AS rel, count(*) AS n "
             "ORDER BY n DESC LIMIT 12"
         )
-        # Example은 충분한 업무 조건과 업무 효과가 모두 있는 Rule에서만 생성된다.
+        # Example은 정확한 구조 조건과 충분한 업무 효과가 모두 있는 Rule에서만 생성된다.
         rule_example = await one(
             f"MATCH (r:RULE {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
             f"OPTIONAL MATCH (r)-[:HAS_EXAMPLE]->(e:EXAMPLE {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
             "WITH r, count(e) AS examples, "
-            "     (r.business_condition IS NOT NULL "
-            "      AND r.business_condition <> '' "
+            "     (r.structural_condition IS NOT NULL "
+            "      AND r.structural_condition <> '' "
             "      AND r.business_effects IS NOT NULL "
             "      AND size(r.business_effects) > 0) AS expects_example "
             "RETURN count(r) AS rules, "
@@ -845,10 +845,6 @@ async def _graph_axes(database: str | None) -> dict[str, object]:
         rule_business_projection = await one(
             f"MATCH (r:RULE {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
             "RETURN count(*) AS n, "
-            "       sum(CASE WHEN r.structural_condition IS NOT NULL "
-            "                 AND r.structural_condition <> '' "
-            "                 AND (r.business_condition IS NULL OR r.business_condition = '') "
-            "                THEN 1 ELSE 0 END) AS missing_business_condition, "
             "       sum(CASE WHEN r.structural_effects IS NOT NULL "
             "                 AND size(r.structural_effects) > 0 "
             "                 AND (r.business_effects IS NULL OR size(r.business_effects) = 0) "
@@ -1031,7 +1027,6 @@ def judge(
     for projection_row in graph["rule_business_projection"]:
         print(
             f"    Rule {projection_row['n']} · "
-            f"조건 투영 누락 {projection_row['missing_business_condition']} · "
             f"효과 투영 누락 {projection_row['missing_business_effects']}"
         )
     print(f"\n[G] 그래프 관계 (DB={actual_db})")

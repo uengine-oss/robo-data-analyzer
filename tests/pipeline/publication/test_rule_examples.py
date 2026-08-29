@@ -34,7 +34,6 @@ def _rule(function: CodeNode, anchor: int = 21) -> Rule:
         anchor_line=anchor,
         structural_condition="ctx.status == 'READY'",
         structural_effects=("return 0",),
-        business_condition="order.status == 'ready'",
         business_effects=("order.accept()",),
     )
 

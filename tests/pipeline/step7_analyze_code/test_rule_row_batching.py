@@ -121,15 +121,15 @@ class DeterministicRuleMaterializationTest(unittest.TestCase):
         )
         projections = (
             RuleMeaningProjection(
-                "R1", 1, 'meaning_when("a", "첫 업무 조건")',
+                "R1", 1,
                 ('meaning_call("x", None, [], "첫 업무 처리")',),
                 "business_rule", "sufficient",
             ),
             RuleMeaningProjection(
-                "R5", 5, None, (), "implementation_detail", "not_business",
+                "R5", 5, (), "implementation_detail", "not_business",
             ),
             RuleMeaningProjection(
-                "R9", 9, 'meaning_when("a", "불완전한 조건")', (),
+                "R9", 9, (),
                 "business_rule", "partial",
             ),
         )

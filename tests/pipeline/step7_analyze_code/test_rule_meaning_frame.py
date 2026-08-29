@@ -45,19 +45,18 @@ _EVIDENCE = {
 class RuleMeaningFrameTest(unittest.TestCase):
     def test_provider_schema_requires_every_exact_atom_once(self) -> None:
         model = rule_meaning_response_model(("C17",), ("E1",), ("R17",))
-        self.assertEqual(["effects", "conditions", "rows"], list(model.model_fields))
+        self.assertEqual(["effects", "rows"], list(model.model_fields))
         self.assertEqual(
-            ["effects", "conditions", "rows"],
+            ["effects", "rows"],
             list(model.model_json_schema()["properties"]),
         )
         valid = {
-            "conditions": {"C17": "USIM 사용 대상이 아니다"},
             "effects": {"E1": "MMS 가능 여부를 확인한다"},
             "rows": {"R17": "business_rule"},
         }
         model.model_validate(valid)
         with self.assertRaises(ValidationError):
-            model.model_validate({**valid, "conditions": {}})
+            model.model_validate({**valid, "conditions": {"C17": "복창"}})
         with self.assertRaises(ValidationError):
             model.model_validate({
                 **valid,
@@ -68,11 +67,6 @@ class RuleMeaningFrameTest(unittest.TestCase):
             })
         with self.assertRaises(ValidationError):
             model.model_validate({**valid, "rows": {}})
-        with self.assertRaises(ValidationError):
-            model.model_validate({
-                **valid,
-                "conditions": {"C17": {"meaning": "중복 포장"}},
-            })
 
     def test_prompt_packet_omits_private_ids_and_attaches_consumed_context(self) -> None:
         packet = build_rule_meaning_packet(
@@ -148,7 +142,6 @@ class RuleMeaningFrameTest(unittest.TestCase):
     def test_rule_and_example_are_one_deterministic_python_projection(self) -> None:
         model = rule_meaning_response_model(("C17",), ("E1",), ("R17",))
         output = model.model_validate({
-            "conditions": {"C17": "USIM 사용 대상이 아니다"},
             "effects": {"E1": "MMS 가능 여부를 확인한다"},
             "rows": {"R17": "business_rule"},
         })
@@ -157,32 +150,28 @@ class RuleMeaningFrameTest(unittest.TestCase):
         self.assertEqual(17, row.anchor_line)
         self.assertEqual("sufficient", row.status)
         self.assertEqual("business_rule", row.disposition)
-        ast.parse(row.condition or "", mode="eval")
         for effect in row.effects:
             ast.parse(effect, mode="eval")
 
     def test_insufficient_atom_never_becomes_an_accepted_example(self) -> None:
         model = rule_meaning_response_model(("C17",), ("E1",), ("R17",))
         output = model.model_validate({
-            "conditions": {"C17": ""},
-            "effects": {"E1": "MMS 가능 여부를 확인한다"},
+            "effects": {"E1": ""},
             "rows": {"R17": "business_rule"},
         })
         [row] = project_rule_meanings(output, _EVIDENCE)
         self.assertEqual("insufficient", row.status)
-        self.assertIsNone(row.condition)
+        self.assertEqual((), row.effects)
 
     def test_implementation_detail_is_classified_without_projecting_python(self) -> None:
         model = rule_meaning_response_model(("C17",), ("E1",), ("R17",))
         output = model.model_validate({
-            "conditions": {"C17": "포인터가 유효하다"},
             "effects": {"E1": "진단 로그를 남긴다"},
             "rows": {"R17": "implementation_detail"},
         })
         [row] = project_rule_meanings(output, _EVIDENCE)
         self.assertEqual("implementation_detail", row.disposition)
         self.assertEqual("not_business", row.status)
-        self.assertIsNone(row.condition)
         self.assertEqual((), row.effects)
 
     def test_dbms_batch_uses_exact_node_maps_without_echo_fields(self) -> None:
@@ -192,7 +181,6 @@ class RuleMeaningFrameTest(unittest.TestCase):
         }
         model = batch_rule_meaning_response_model(assignments)
         node = {
-            "conditions": {"C17": "USIM 사용 대상이 아니다"},
             "effects": {"E1": "MMS 가능 여부를 확인한다"},
             "rows": {"R17": "business_rule"},
         }

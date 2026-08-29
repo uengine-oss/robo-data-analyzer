@@ -25,7 +25,6 @@ def _clusters() -> list:
         "anchor_line": 17,
         "structural_condition": 'F("stock") < F("required")',
         "structural_effects": ['call("reject_order", None, [])'],
-        "business_condition": 'meaning_when("stock < required", "재고가 부족하다")',
         "business_effects": ['meaning_call("reject_order", None, [], "주문을 거절한다")'],
         "owner_signature": "checkout()",
         "tables": [
@@ -37,7 +36,6 @@ def _clusters() -> list:
         "anchor_line": 17,
         "structural_condition": 'F("stock") < F("required")',
         "structural_effects": ['call("reject_order", None, [])'],
-        "business_condition": 'meaning_when("stock < required", "재고가 부족하다")',
         "business_effects": ['meaning_call("reject_order", None, [], "주문을 거절한다")'],
         "owner_signature": "checkout()",
         "tables": [
@@ -191,7 +189,7 @@ class ListProfileTests(unittest.TestCase):
         self.assertEqual([{
             "line": 17,
             "text": (
-                '조건: meaning_when("stock < required", "재고가 부족하다") → 효과: '
+                '조건: F("stock") < F("required") → 효과: '
                 'meaning_call("reject_order", None, [], "주문을 거절한다")'
             ),
             "tables": [{"name": "orders", "op": "READ"}],
@@ -276,7 +274,6 @@ class DetailPayloadTests(unittest.TestCase):
             [{"rule_id": "R-12", "anchor_line": 12,
               "structural_condition": 'F("status == PAID")',
               "structural_effects": ['select("orders")'],
-              "business_condition": 'meaning_when("status == PAID", "결제 완료 상태다")',
               "business_effects": ['meaning_select("orders", "주문을 조회한다")'],
               "owner_signature": "fa", "tables": [
                 {"name": "orders", "op": "select"},

@@ -32,7 +32,7 @@ class ClosedRuleProjectionTest(unittest.TestCase):
         self.assertEqual(
             {
                 "anchor_line", "structural_condition", "structural_effects",
-                "business_condition", "business_effects",
+                "business_effects",
             },
             set(schema["properties"]),
         )
@@ -166,10 +166,6 @@ class DbmsRuleMeaningWiringTest(unittest.IsolatedAsyncioTestCase):
                 return response_model.model_validate({
                     "nodes": {
                         "1-3": {
-                            "conditions": {
-                                key: "처리 대상이다"
-                                for key in evidence["conditions"]
-                            },
                             "effects": {
                                 key: "업무 처리를 호출한다"
                                 for key in evidence["effects"]
@@ -199,7 +195,7 @@ class DbmsRuleMeaningWiringTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(1, run.await_count)
         [rule] = completed.items["a"].rules
-        self.assertTrue(rule.business_condition)
+        self.assertTrue(rule.structural_condition)
         self.assertTrue(rule.business_effects)
 
 

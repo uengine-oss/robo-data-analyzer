@@ -55,7 +55,6 @@ def gwt_rules(rules: list[dict], *, node_id: str) -> list[dict]:
             "line": line,
             "structural_condition": str(rule.get("structural_condition") or ""),
             "structural_effects": list(rule.get("structural_effects") or []),
-            "business_condition": str(rule.get("business_condition") or ""),
             "business_effects": list(rule.get("business_effects") or []),
             "owner_signature": str(rule.get("owner_signature") or ""),
             "examples": list(rule.get("examples") or []),
@@ -70,8 +69,7 @@ def gwt_rules(rules: list[dict], *, node_id: str) -> list[dict]:
 
 def render_rule_structure(rule: dict) -> str:
     """Render accepted business meaning, otherwise its explicit structural facts."""
-    selected_condition = rule.get("business_condition")
-    condition = " ".join(str(selected_condition or "").split())
+    condition = " ".join(str(rule.get("structural_condition") or "").split())
     effects = [
         " ".join(str(effect).split())
         for effect in (
@@ -101,7 +99,6 @@ def read_rules(session, node_id: str) -> list[dict]:
         "  coalesce(hr.ordinal,0) AS ordinal, r.anchor_line AS anchor_line, "
         "  r.structural_condition AS structural_condition, "
         "  r.structural_effects AS structural_effects, "
-        "  r.business_condition AS business_condition, "
         "  r.business_effects AS business_effects, "
         "  x.signature AS owner_signature, "
         "  e.id AS example_id, "
@@ -124,7 +121,6 @@ def read_rules(session, node_id: str) -> list[dict]:
                 "anchor_line": row.get("anchor_line") or 0,
                 "structural_condition": row.get("structural_condition") or "",
                 "structural_effects": list(row.get("structural_effects") or []),
-                "business_condition": row.get("business_condition") or "",
                 "business_effects": list(row.get("business_effects") or []),
                 "owner_signature": row.get("owner_signature") or "",
                 "tables": [

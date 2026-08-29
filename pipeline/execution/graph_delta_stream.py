@@ -41,7 +41,7 @@ _DISPLAY_PROP_KEYS = (
     "file_path", "start_line", "end_line", "owner_id", "dtype",
     # RULE/EXAMPLE 파이썬 leaf 계약 (spec 116)
     "anchor_line", "structural_condition", "structural_effects",
-    "business_condition", "business_effects",
+    "business_effects",
     "given_conditions", "expected_effects", "text", "reason",
     "keys", "semantic_kind", "provenance", "status", "category",
     "raw_reference", "catalog", "catalog_quoted", "schema", "schema_quoted", "name_quoted",

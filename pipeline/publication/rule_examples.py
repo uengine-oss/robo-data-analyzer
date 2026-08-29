@@ -28,7 +28,6 @@ RULE_PROPERTY_KEYS = frozenset({
     "anchor_line",
     "structural_condition",
     "structural_effects",
-    "business_condition",
     "business_effects",
 })
 EXAMPLE_PROPERTY_KEYS = frozenset({
@@ -133,7 +132,7 @@ def build_rule_meanings_write_batch(
             raise RuleExamplesProjectionError(
                 f"Rule anchor_line must be positive: {rule_id!r}"
             )
-        if "\n" in rule.structural_condition or "\n" in rule.business_condition:
+        if "\n" in rule.structural_condition:
             raise RuleExamplesProjectionError(
                 f"Rule condition must be one restricted-Python expression: {rule_id!r}"
             )
@@ -143,9 +142,9 @@ def build_rule_meanings_write_batch(
             raise RuleExamplesProjectionError(
                 f"Rule effect must be a non-blank one-line restricted-Python leaf: {rule_id!r}"
             )
-        if not rule.business_condition.strip() and not rule.business_effects:
+        if not rule.business_effects:
             raise RuleExamplesProjectionError(
-                f"Rule has no verified business condition or effect: {rule_id!r}"
+                f"Rule has no verified business effect: {rule_id!r}"
             )
         owner = owner_by_rule[rule_id]
         expected_id = f"{owner.source_id}::R-{rule.anchor_line}"
@@ -162,8 +161,6 @@ def build_rule_meanings_write_batch(
         }
         if rule.structural_condition.strip():
             properties["structural_condition"] = rule.structural_condition
-        if rule.business_condition.strip():
-            properties["business_condition"] = rule.business_condition
         identity = NodeIdentity("Rule", rule_id)
         node_operations.append(NodeCreateOperation.from_properties(identity, properties))
         expectations.append(ProductRecordExpectation.from_properties(
