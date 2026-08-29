@@ -1,6 +1,6 @@
 # Analyzer 의미 무손실 Parser→Graph 제품 명세
 
-**Status**: Active — SKT 1,503줄 실제 생성 완료, 첫 직접 의미 반례 수정 후 최종 회귀 진행 중
+**Status**: Active — SKT 1,503줄 실제 생성·3층 검증·책임 slice push 완료. Catalog pagination 외부 계약과 GPU 복구 후 약 5만 LOC 최종 성능 검증이 남아 있음
 **Updated**: 2026-08-29
 **Entry point**: `specs/131-cross-node-semantic-grounding/README.md`
 
@@ -125,16 +125,17 @@ Analyzer가 확정한 직접 `(function, table, access_mode)`만 설명한다. c
 ### 7.3 Rule과 Example
 
 Analyzer가 R-row, condition/effect atom, 직접 효과, source closure를 먼저 확정한다. Rule LLM은 같은
-한 응답에서 exact atom key마다 의미 문자열 하나를 채우고 각 행을 다음 하나의 분류 문자열로 판정한다.
-atom 의미가 비면 Analyzer가 그 행을 `insufficient`로 닫는다.
+한 응답에서 exact effect atom key마다 업무 의미 문자열 하나를 채우고 각 행을 다음 하나의 분류 문자열로
+판정한다. 필요한 effect 의미가 비면 Analyzer가 그 행을 `insufficient`로 닫는다. 구조 condition은 모델이
+자연어로 다시 번역하지 않고 Analyzer가 원문 구조에서 만든 값을 그대로 사용한다.
 
 - `business_rule`
 - `implementation_detail`
 - `insufficient`
 
-모델은 새 row·symbol·effect를 발견하거나 Python·Rule·Example을 작성하지 않는다. Analyzer는
-`business_rule`이면서 필요한 atom이 모두 `sufficient`인 행만 restricted Python의 업무 조건·효과로
-투영해 제품 Rule로 공개한다. Example은 그 동일 값에서 LLM 없이 생성한다.
+모델은 새 row·symbol·effect를 발견하거나 condition 의미·Python·Rule·Example을 작성하지 않는다.
+Analyzer는 `business_rule`이면서 필요한 effect 의미가 모두 존재하는 행만 구조 condition과 restricted
+Python 업무 효과를 결합해 제품 Rule로 공개한다. Example은 그 동일 값에서 LLM 없이 생성한다.
 
 구현 세부는 `excluded`, 의미 partial/insufficient는 `unverified`, 호출 실패는 `unavailable` finding으로
 행마다 정확히 한 번 남긴다. 제품 Rule의 존재 자체가 충분한 업무 의미 검증 완료를 뜻하므로 모든
@@ -151,16 +152,17 @@ exact-once ledger를 같은 generation에서 다시 읽어 검증한 뒤 active 
 Component·GlossaryTerm·SearchSegment와 계약된 관계만 둔다. occurrence, unresolved, candidate, raw response,
 local key map, finding은 graph node가 아니라 run artifact다.
 
-Rule property는 `anchor_line`, 구조 조건·효과, 업무 조건·효과만 보존한다. 소유 함수, rule id, 항상 같은
-status는 관계와 anchor에서 복원하므로 중복 저장하지 않는다. Example은 `given_conditions`와
+Rule property는 `anchor_line`, `structural_condition`, `structural_effects`, `business_effects`만 보존한다.
+소유 함수, rule id, 항상 같은 status와 검증되지 않은 자연어 condition은 관계·anchor 또는 구조 정본에서
+복원되거나 제품 정확도를 해치므로 중복 저장하지 않는다. Example은 `given_conditions`와
 `expected_effects`만 보존한다.
 
 ## 9. 성능과 검증
 
-수정은 formal red와 작은 실제 SKT 좌표에서 먼저 닫고 영향 범위를 점진 확대한다. 이번 실제 유료
-검증은 `zapamcom13010.c`와 `zapamcom10150.c`, 합계 1,503줄만 분석한다. 이 선택 범위에서 정확도,
-누락, partial-upload external 분류, 단계별 시간·token·cache를 판정한다. 약 5만 LOC 전체 재분석은
-수행하지 않으며, 따라서 제품 규모 처리 속도는 미검증으로 남긴다.
+수정은 formal red와 작은 실제 SKT 좌표에서 먼저 닫고 영향 범위를 점진 확대한다. 실제 유료 검증은
+`zapamcom13010.c`와 `zapamcom10150.c`, 합계 1,503줄을 분석해 정확도, 누락, partial-upload external
+분류, 단계별 시간·token·cache를 판정했다. 약 5만 LOC 전체 재분석은 GPU 복구 뒤 모든 관련 수정의
+마지막에 한 번만 수행하며, 그 전까지 제품 규모 처리 속도는 미검증이다.
 
 최종 합격에는 세 층이 모두 필요하다.
 
@@ -190,7 +192,8 @@ status는 관계와 anchor에서 복원하므로 중복 저장하지 않는다. 
 - graph stage/property/endpoint ledger와 active generation 불일치 0
 - 자동 회귀·결정론 전수 회계·봉인 직접 의미 판정 통과
 - 봉인한 SKT 2파일 1,503줄의 정확도·누락·external 분류·실행 비용 결과 공개
-- 실행하지 않은 약 5만 LOC 제품 규모 성능은 미검증으로 명시
+- GPU 복구 전에는 실행하지 않은 약 5만 LOC 제품 규모 성능을 미검증으로 명시하고, 복구 뒤 마지막 한 번의
+  동일 required-population 실행으로 baseline·단계별 시간·token·cache·누락 회계를 검증
 - constitution·spec·contracts·code·tests·최종 HTML 일치
 - 보호 WIP가 staged diff에 포함되지 않고 Analyzer origin/main과 검증 commit이 일치
 
@@ -210,5 +213,6 @@ status는 관계와 anchor에서 복원하므로 중복 저장하지 않는다. 
   격리 삭제한다. 이전 active generation과 control record는 삭제하지 않는다.
 - 정적 집중 회귀는 `79/79` 통과했다. 기존 `test` DB의 UUID 격리 scope와 단일 transaction에서
   실제 Neo4j rollback integration도 `1 passed in 9.01s`로 통과했다. transaction 안에서 active pointer와
-  14개 stage closure를 확인한 뒤 rollback했으며 새 DB와 잔존 데이터는 만들지 않았다. SKT generation의
-  실제 commit·공개와 의미 정확도 축은 여전히 미검증이다.
+  14개 stage closure를 확인한 뒤 rollback했으며 새 DB와 잔존 데이터는 만들지 않았다. 이후 기존
+  `framework` DB에 SKT 1,503줄 generation `20260829_005638_ac5f8999f742`를 실제 공개해 선택 범위의
+  atomic publication과 3층 검증을 닫았다. 약 5만 LOC 제품 규모 성능은 아직 미검증이다.

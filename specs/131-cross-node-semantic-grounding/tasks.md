@@ -64,7 +64,8 @@
   - 선택 순서만 다른 동일 집합은 같은 scope가 되어 반복 실행 안정성을 보존한다.
 
 - [x] **A04 Strategy B Rule/Example 정적 구현**
-  - 한 Rule 호출에서 exact atom 의미 문자열과 row 분류 문자열만 받는다. atom별 모델 자체
+  - 한 Rule 호출에서 exact effect atom의 업무 의미 문자열과 row 분류 문자열만 받는다. 구조 condition은
+    모델이 다시 번역하지 않는다. effect atom별 모델 자체
     status와 `meaning`·`disposition` 포장 객체는 출력하지 않는다.
   - Parser 종료문 식을 Rule 행에 옮길 때 160자 절단 없이 전체 식을 보존한다.
   - Analyzer가 Python·제품 공개를 소유하고 Example은 0-call로 만든다.
@@ -184,8 +185,8 @@
   - 모든 실제 LLM prompt의 완전한 입력·출력 shape와 각 필드 존재 이유를 보여 준다. 모델-visible
     W/E/FT/C/E/R/줄범위 key는 실제 요청 전용 결합 key로 기록하고 내부 canonical ID와 혼동하지 않는다.
   - 과거 목표 함수·가짜 경로·모델이 Python을 작성한다는 설명을 제거한다.
-  - 현재 파일은 52,684 bytes, 14개 순차 단계, LLM 경계 8종이며 SHA-256은
-    `04655c391b9676f5f32758994f3454ee0b44db2e5dcbcbe0aa1849dd743c5e69`다.
+  - 현재 파일은 59,087 bytes, 14개 순차 단계, LLM 경계 8종이며 SHA-256은
+    `e6e9ee0daf97b37b67bd7dad74c2ede576c892a28c0bad7e3cfd26db721b1cc6`다.
 
 - [x] **B06 전체 자동 회귀**
   - 실제 LLM·SKT·Neo4j 제품 쓰기 없이 현재 정적 구현 전체를 한 번 검증했다.
@@ -339,9 +340,9 @@
 
 - [x] **C01 작은 SKT Rule 의미 직접 판정**
   - Python syntax와 업무 의미·Rule↔Example 동일성을 분리 판정했다.
-  - 첫 실패는 10150의 86·94행 조건 의미가 오류 효과와 반대로 생성된 좌표다. 응답 순서와 모순
-    계약을 수정한 같은 packet에서는 정확한 의미를 확인했다. active generation은 수정 전 결과이므로
-    전체 제품 합격으로 승격하지 않는다.
+  - 첫 실패는 10150의 86·94행 조건 의미가 오류 효과와 반대로 생성된 좌표다. 응답 순서와 지시 보강만으로
+    막히지 않았고 framework predicate의 반환 의미도 계약에 없었다. 검증되지 않은 condition 자연어 생성
+    경로를 제거하고 구조 condition과 업무 effect만 제품에 공개해 같은 실제 좌표를 닫았다.
 
 - [x] **C02 봉인 SKT 2파일 1,503줄 실제 생성 검증**
   - `zapamcom13010.c` 1,259줄과 `zapamcom10150.c` 244줄만 분석한다.
@@ -360,7 +361,7 @@
     byte 불일치 0건이다. 86·94행은 구조 조건과 오류 효과만 공개하며 검증되지 않은 자연어 조건은 없다.
 
 - [x] **C04 제품 규모 성능 미검증 명시**
-  - 약 5만 LOC 전체 재분석은 수행하지 않는다.
+  - GPU 복구 전에는 약 5만 LOC 전체 재분석을 수행하지 않는다.
   - 선택 1,503줄 결과를 전체 SKT 처리 시간이나 처리량으로 일반화하지 않는다.
 
 - [ ] **C05 Catalog 전체 테이블 pagination 계약 연결**
@@ -368,6 +369,11 @@
     `truncated>0` datasource를 제품 합격으로 승격하지 않는다.
   - 계약 제공 뒤 Analyzer는 모든 page를 누락·중복 0으로 병합하고 기존 DDL 합집합·sample 의미를
     유지한다. 기존 Catalog WIP는 이 작업에서 수정하거나 stage하지 않는다.
+
+- [ ] **C06 GPU 복구 후 약 5만 LOC SKT 최종 성능·전수 회계**
+  - 모든 관련 수정과 C05 외부 계약 연결 뒤 같은 봉인 required population을 마지막에 한 번만 분석한다.
+  - baseline diff, 단계별 wall time·queue·token·KV cache·publication, exact-once 누락·중복, 새 실패 좌표를
+    함께 판정한다. 임의 cap·truncation·skip·fallback으로 시간을 줄이지 않는다.
 
 ## D. 인도
 

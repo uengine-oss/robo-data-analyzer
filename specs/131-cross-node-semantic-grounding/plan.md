@@ -1,6 +1,6 @@
 # Analyzer 의미 무손실 구현 계획
 
-**Updated**: 2026-08-28
+**Updated**: 2026-08-29
 **Requirements**: `spec.md`
 **Current state**: `CURRENT_STATUS.md`
 
@@ -12,7 +12,8 @@
 4. 닫히지 않을 때만 영향 좌표→집중 계측→최소 재현→history/bisect→외부 1차 근거 순으로 깊어진다.
 5. 원인이 확정된 관련 수정만 한 책임 slice로 묶는다.
 6. formal red와 작은 실제 데이터에서 통과한 뒤 점진 확대한다.
-7. 마지막 실제 생성 검증은 봉인한 SKT 2파일 1,503줄만 한 번 수행한다. 전체 SKT 재분석은 하지 않는다.
+7. 작은 실제 생성 검증은 봉인한 SKT 2파일 1,503줄로 먼저 닫는다. 모든 관련 수정이 끝나고 GPU가
+   복구되면 약 5만 LOC SKT 전체 성능·전수 회계를 마지막에 한 번만 수행한다.
 
 ## 2. 구현 순서
 
@@ -48,8 +49,9 @@
 ### P5. Strategy B
 
 - Analyzer가 structural row와 atom을 exact-once 생성한다.
-- Rule 호출 한 번에서 atom 의미와 row disposition만 받는다.
-- Analyzer가 충분한 business row만 restricted Python Rule로 공개한다.
+- Rule 호출 한 번에서 직접 effect atom의 업무 의미와 row disposition만 받는다. 구조 condition 의미는
+  모델에게 다시 생성시키지 않는다.
+- Analyzer가 충분한 business row만 구조 condition과 restricted Python 업무 effect를 결합해 Rule로 공개한다.
 - Example은 승인 Rule에서 0-call로 생성한다.
 - published/excluded/unverified/unavailable 행 합집합이 후보 집합과 정확히 같은지 검사한다.
 
@@ -73,13 +75,13 @@
 2. 영향받은 작은 실제 SKT 파일·함수 좌표
 3. 같은 언어·같은 concern의 확대 slice
 4. 전체 정적 회귀와 prompt hash
-5. GPU 복구 뒤 봉인 작은 SKT 직접 의미 판정
-6. 모든 수정 종료 뒤 봉인한 SKT 2파일 1,503줄 실제 생성 run 1회
-7. 선택 source의 baseline diff, exact-once ledger, 새 실패 좌표부터 전수 감사
+5. 봉인한 SKT 2파일 1,503줄 실제 생성과 직접 의미 판정
+6. 선택 source의 baseline diff, exact-once ledger, 새 실패 좌표부터 전수 감사
+7. GPU 복구와 Catalog pagination 계약 연결 뒤 약 5만 LOC SKT 전체 성능·전수 회계 1회
 
-이번 실행의 속도 판정은 같은 1,503줄 required population을 손실 없이 처리한 단계별 시간과 token으로만
-한정한다. 전체 5만 LOC를 실행하지 않으므로 제품 규모 성능은 미검증이다. 결과 수를 줄이는 cap이나
-skip은 성능 개선으로 인정하지 않는다.
+현재 완료된 속도 판정은 같은 1,503줄 required population을 손실 없이 처리한 단계별 시간과 token으로만
+한정한다. 약 5만 LOC 최종 실행 전까지 제품 규모 성능은 미검증이다. 결과 수를 줄이는 cap이나 skip은
+성능 개선으로 인정하지 않는다.
 
 ## 4. 최종 인도
 

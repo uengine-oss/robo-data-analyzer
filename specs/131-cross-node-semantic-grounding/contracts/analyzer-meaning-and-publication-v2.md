@@ -1,10 +1,10 @@
 # Analyzer Meaning and Publication v2 계약
 
-**Status**: 2026-08-26 Target SDD Feedback Draft
+**Status**: Active — implemented Analyzer wire; current acceptance is owned by `spec.md` and `CURRENT_STATUS.md`
 **Requirements**: `SDD-DET-001~011`, `SDD-LLM-001~015`, `SDD-GRA-001~011`, `SDD-PERF-001~005`, `SDD-VER-001~004`
 **Implementation tasks**: `T131-N01`, `T131-N03~N04`, `T131-N06~N17`
 
-이 계약은 `parser-structural-facts-v2.md`가 넘긴 언어별 구조 사실을 Analyzer가 의미 후보·연결·모델 입력·제품 graph로 바꾸는 현재 목표 계약이다. 제품 구현 완료를 뜻하지 않는다. `docs/archive/semantic-grounding/contracts/`의 v1 계약과 충돌하면 이 계약과 `spec.md`가 우선하며, 작업보고 HTML은 아래 wire를 실제 값과 쉬운 설명으로 보여 주는 사람용 정본이다.
+이 계약은 `parser-structural-facts-v2.md`가 넘긴 언어별 구조 사실을 Analyzer가 의미 후보·연결·모델 입력·제품 graph로 바꾸는 현행 실행 계약이다. 구현·실행의 완료와 미검증 상태는 `CURRENT_STATUS.md`가 소유한다. 과거 v1 계약과 충돌하면 이 계약과 `spec.md`가 우선하며, 작업보고 HTML은 아래 wire를 실제 값과 쉬운 설명으로 보여 주는 사람용 문서다.
 
 ## 1. 소유권과 실행 가능한 생산자
 
@@ -458,7 +458,8 @@ EG/ED: external shape/document
 각 response root는 해당 관심사가 실제 소비하는 필드만 가지며 required local key를 정확히 한 번
 포함하고 `additionalProperties:false`다. Summary의 `slots`와 TableDescription의 TABLE/COLUMN
 `slots` 값은 내부 객체가 아닌 의미 문자열 하나다. FunctionTableUsage는 FT key→의미 문자열의
-strict root이고 Rule은 condition/effect/row의 세 exact map이다. Scanning·external adapter proposal은
+strict root이고 Rule은 effect/row의 두 exact map이다. 입력의 condition map은 실행 경로를 이해하는
+문맥일 뿐 응답 대상이 아니다. Scanning·external adapter proposal은
 작업보고 HTML §7에 정의된 별도
 strict root를 사용한다. 어느 family든 모델 출력에는 evidence, confidence, question, 내부 ID/hash,
 임의 extra, 자유형식 missing-context가 없다.
@@ -849,8 +850,8 @@ Neo4j에 저장하는 property value는 `boolean | integer | finite float | stri
 의미가 있을 때만 `summary`와 `stereotype`이 존재하고, `missing_context_artifact_hash`는 count가 1 이상일
 때만 존재한다. 비function CodeNode에는 이 의미 property가 없어야 한다. 같은 presence 규칙을 Rule,
 Table/Column, READS/WRITES의 optional 의미 property에도 적용한다. 상세 missing-context 목록은 graph에
-복제하지 않는다. Rule은 condition/effects와 의미 count/hash를, Example은 given/then을 소유한다. owner와
-source Rule 정체성은 `HAS_RULE`, `HAS_EXAMPLE` 관계가 소유한다.
+복제하지 않는다. Rule은 `anchor_line`, 구조 condition/effects와 업무 effects를, Example은 given/then을
+소유한다. owner와 source Rule 정체성은 `HAS_RULE`, `HAS_EXAMPLE` 관계가 소유한다.
 
 ### 10.4 외부 조각과 검색·health의 필수 provenance
 

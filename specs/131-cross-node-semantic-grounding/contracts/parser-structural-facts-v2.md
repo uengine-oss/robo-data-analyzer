@@ -1,12 +1,12 @@
 # Parser Structural Facts v2 계약
 
-**Status**: 2026-08-26 Target SDD Feedback Draft
+**Status**: Active — implemented structural wire; current acceptance is owned by `spec.md` and `CURRENT_STATUS.md`
 **Requirements**: `SDD-PAR-001~009`, `SDD-DET-003~005`
 **Implementation task**: `T131-N02`, `T131-N05`
 
 이 계약은 Parser가 언어별 구문·구조를 손실 없이 내보내고 Analyzer가 final 의미 판정을 소유하게 하는
-경계다. 현재 제품 구현 완료를 뜻하지 않는다. 기존 `docs/archive/semantic-grounding/contracts/common-evidence-ir-v1.md`는 역사·이관 입력이며 이
-계약과 충돌하는 필드를 실행 정본으로 사용하지 않는다.
+현행 경계다. 구조 wire 구현과 회귀 범위, 실제 제품 검증의 완료·미검증 상태는 `CURRENT_STATUS.md`가
+소유한다. 과거 v1 wire가 이 계약과 충돌하면 실행 정본으로 사용하지 않는다.
 
 ## 1. 책임
 

@@ -1,11 +1,12 @@
 # Analyzer 의미 무손실 작업 현재상태
 
 **Updated**: 2026-08-29
-**Status**: Analyzer 정적 리팩터링 진행 중 — Parser/Analyzer 경계, LLM 입력 경계, Strategy B Rule 공개 회계와 Oracle/PostgreSQL 공통 호출 runtime을 코드·계약·정적 회귀에 반영했다. GPU 비가용으로 실제 SKT 의미 판정·성능 측정·마지막 전체 재분석·3층 제품 검증은 보류 중이다.
+**Status**: Analyzer 리팩터링의 작은 실제 SKT 책임 slice 완료 — 기존 `framework` DB에 1,503줄 generation을 공개하고 자동 회귀·exact-once 전수 회계·직접 의미 판정 3층과 commit/push를 닫았다. Catalog pagination 외부 계약과 GPU 복구 후 약 5만 LOC 최종 성능·전수 회계는 남아 있다.
 **Role**: 현재 HEAD·환경·보존 WIP·미해결·바로 다음 행동의 유일한 정본
 
-상세 조사 원장은 `docs/archive/semantic-grounding/history/handovers/12-20260821-current-status-snapshot-pointer.md`로 정확히
-복원한다. 다음 세션은 이 파일을 먼저 읽고, 필요한 evidence만 찾아 읽는다.
+이 파일의 번호 절은 원인과 검증의 시간순 기록이다. 과거 절의 당시 계획·수치·미검증 표시는 삭제하거나
+현재화하지 않으며, 맨 위 Status와 가장 마지막 번호 절이 현재 인도 지점과 다음 행동을 소유한다. 삭제된
+archive나 과거 실행물을 현재 정본으로 참조하지 않는다.
 
 ## 1. 목표와 고정 원칙
 
@@ -2022,3 +2023,21 @@ language-neutral semantic IR로 변환하게 하는 것이다.
   node 0건이고 active publication을 바꾸지 않았다. 최종 active generation만 위 수치의 제품 결과다.
 - 남은 한계: 약 5만 LOC SKT 전체 성능은 GPU 복구 후 마지막 한 번만 측정한다. Catalog pagination은
   snapshot/cursor/page closure 외부 계약이 생기기 전까지 C05로 남으며 기존 Catalog WIP를 수정하지 않는다.
+
+## 111. 현재 인도 지점과 다음 실행 조건 (2026-08-29)
+
+- 검증된 Analyzer 책임 slice는 `f993ac949a0ec395881adfb307fac06796cd87f5`로 `origin/main`에 push됐고,
+  push 직후 `HEAD == origin/main`을 확인했다. 보호 대상 `integrations/catalog.py`,
+  `pipeline/steps/step2_load_ast/evidence_ir.py`, `scripts/recompute_strategy_a_notation.py`는 staged diff에
+  포함하지 않았다.
+- 현행 Rule 계약은 모델 응답 `effects + rows`, 제품 Rule의 `anchor_line + structural_condition +
+  structural_effects + business_effects`, Example의 byte-identical projection 하나다. 폐기된
+  `business_condition` 소비자는 0건이다.
+- 사람용 최종 HTML은 59,087 bytes, SHA-256
+  `e6e9ee0daf97b37b67bd7dad74c2ede576c892a28c0bad7e3cfd26db721b1cc6`이고, 중간보고 HTML은
+  27,733 bytes, SHA-256 `f80528afb441f2e59a18ba0ee59624dbfa8889fb62fbe0baf10bf6809ab95f35`다.
+- 바로 다음 제품 변경은 두 외부 조건 중 하나가 충족된 뒤에만 시작한다. Catalog가 안정 snapshot ID,
+  deterministic order, cursor/page와 마지막 page closure를 제공하면 C05를 연결한다. GPU가 복구되면
+  모든 관련 수정 종료 뒤 약 5만 LOC SKT를 한 번 실행해 제품 규모 성능과 전수 회계를 판정한다.
+- 그 전에는 작은 실제 generation을 반복하지 않고 정적 계약·문서 불일치만 수정한다. 1,503줄의
+  17.4초를 약 5만 LOC 성능으로 일반화하지 않는다.
