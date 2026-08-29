@@ -2033,11 +2033,25 @@ language-neutral semantic IR로 변환하게 하는 것이다.
 - 현행 Rule 계약은 모델 응답 `effects + rows`, 제품 Rule의 `anchor_line + structural_condition +
   structural_effects + business_effects`, Example의 byte-identical projection 하나다. 폐기된
   `business_condition` 소비자는 0건이다.
-- 사람용 최종 HTML은 59,087 bytes, SHA-256
-  `e6e9ee0daf97b37b67bd7dad74c2ede576c892a28c0bad7e3cfd26db721b1cc6`이고, 중간보고 HTML은
+- 사람용 최종 HTML은 59,644 bytes, SHA-256
+  `d305ab9daf070fb8ec2292a348d689af20e4ea0bcb5b3a632d339371e6e3f916`이고, 중간보고 HTML은
   27,733 bytes, SHA-256 `f80528afb441f2e59a18ba0ee59624dbfa8889fb62fbe0baf10bf6809ab95f35`다.
 - 바로 다음 제품 변경은 두 외부 조건 중 하나가 충족된 뒤에만 시작한다. Catalog가 안정 snapshot ID,
   deterministic order, cursor/page와 마지막 page closure를 제공하면 C05를 연결한다. GPU가 복구되면
   모든 관련 수정 종료 뒤 약 5만 LOC SKT를 한 번 실행해 제품 규모 성능과 전수 회계를 판정한다.
 - 그 전에는 작은 실제 generation을 반복하지 않고 정적 계약·문서 불일치만 수정한다. 1,503줄의
   17.4초를 약 5만 LOC 성능으로 일반화하지 않는다.
+
+## 112. 여러 파일 정답지·baseline 전체 봉인 (2026-08-29)
+
+- 원인: 공식 analysis profile은 validation ref를 단일 파일로만 제한했고, 실행 봉인도 그 파일 bytes만
+  검사했다. SKT gold의 `manifest.json`은 하위 정답 파일의 content hash를 소유하지 않으므로 manifest만
+  고정해도 routines·tables·relationships·claims가 바뀌는 재현성 구멍이 있었다.
+- 수정: validation ref가 파일 또는 디렉터리를 받는다. 파일은 기존 bytes SHA-256을 유지하고, 디렉터리는
+  모든 하위 파일의 정렬된 상대 경로와 원본 bytes로 canonical tree SHA-256을 만든다. 봉인에는 파일별
+  상대 경로·hash·크기와 총 파일 수가 남는다. 빈 디렉터리와 root 이탈은 실패한다.
+- 검증: formal red 2건을 먼저 확인한 뒤 profile·봉인 집중 회귀 `7 passed, 4 subtests passed`, 전체 자동
+  회귀 `1435 passed, 4 skipped, 319 subtests passed`를 통과했다. 실제 LLM 호출, SKT 재분석, Neo4j
+  쓰기, 새 DB 생성은 수행하지 않았다.
+- 사람용 최종 HTML의 입력 봉인 예시도 단일 파일과 전체 directory tree 형식으로 동기화했다. 현재 크기는
+  59,644 bytes, SHA-256은 `d305ab9daf070fb8ec2292a348d689af20e4ea0bcb5b3a632d339371e6e3f916`이다.

@@ -129,8 +129,8 @@ def _optional_validation_reference(
     if not isinstance(raw_hash, str) or not _SHA256.fullmatch(raw_hash.strip()):
         raise ValueError(f"analysis profile {hash_key!r} must be a SHA-256 hex digest")
     path = _profile_path(base, raw_ref.strip())
-    if not path.is_file():
-        raise ValueError(f"validation reference file not found: {path}")
+    if not path.exists() or not (path.is_file() or path.is_dir()):
+        raise ValueError(f"validation reference not found: {path}")
     return path, raw_hash.strip().lower()
 
 

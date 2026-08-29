@@ -134,7 +134,7 @@ def _tree_seal(
     }
 
 
-def _content_reference(
+def _sealed_validation_reference(
     *,
     ref: Path | None,
     expected_sha256: str | None,
@@ -148,22 +148,50 @@ def _content_reference(
             f"{field_name}_ref and {field_name}_sha256 must be supplied together"
         )
     path = ref.expanduser().resolve()
-    try:
-        payload = content_cache.read_bytes(path)
-    except OSError as error:
-        raise SealedAnalysisInputsError(f"cannot read {field_name}: {path}: {error}") from error
-    actual = _sha256(payload)
+    if path.is_file():
+        try:
+            payload = content_cache.read_bytes(path)
+        except OSError as error:
+            raise SealedAnalysisInputsError(
+                f"cannot read {field_name}: {path}: {error}"
+            ) from error
+        reference = {
+            "supplied": True,
+            "kind": "file",
+            "ref": str(path),
+            "sha256": _sha256(payload),
+            "size_bytes": len(payload),
+        }
+    elif path.is_dir():
+        files = tuple(item for item in path.rglob("*") if item.is_file())
+        if not files:
+            raise SealedAnalysisInputsError(
+                f"{field_name} directory contains no files: {path}"
+            )
+        try:
+            tree = _tree_seal(root=path, paths=files, content_cache=content_cache)
+        except OSError as error:
+            raise SealedAnalysisInputsError(
+                f"cannot read {field_name}: {path}: {error}"
+            ) from error
+        reference = {
+            "supplied": True,
+            "kind": "directory",
+            "ref": str(path),
+            "sha256": tree["tree_sha256"],
+            "file_count": tree["file_count"],
+            "total_bytes": tree["total_bytes"],
+            "files": tree["files"],
+        }
+    else:
+        raise SealedAnalysisInputsError(f"{field_name} not found: {path}")
+    actual = reference["sha256"]
     expected = expected_sha256.strip().lower()
     if actual != expected:
         raise SealedAnalysisInputsError(
             f"{field_name} SHA-256 mismatch: expected={expected} actual={actual} ref={path}"
         )
-    return {
-        "supplied": True,
-        "ref": str(path),
-        "sha256": actual,
-        "size_bytes": len(payload),
-    }
+    return reference
 
 
 def _implementation_paths(repository_root: Path) -> list[Path]:
@@ -290,13 +318,13 @@ def build_sealed_analysis_inputs(
             "sha256": model_runtime.artifact_sha256,
             **model_runtime.sealed_values(),
         },
-        "validation_baseline": _content_reference(
+        "validation_baseline": _sealed_validation_reference(
             ref=codebase.validation_baseline_ref,
             expected_sha256=codebase.validation_baseline_sha256,
             field_name="validation_baseline",
             content_cache=source_cache,
         ),
-        "validation_answer_key": _content_reference(
+        "validation_answer_key": _sealed_validation_reference(
             ref=codebase.validation_answer_key_ref,
             expected_sha256=codebase.validation_answer_key_sha256,
             field_name="validation_answer_key",

@@ -19,7 +19,8 @@ binding·type·linkage·호출·데이터 사용·업무 의미를 결정한 뒤
 - 원인이 실제 입력→변환→출력으로 확정되기 전 제품 로직을 수정하지 않는다.
 - 임의 개수·길이·시간 상한, 조용한 truncation·skip·fallback, 이름 모양 기반 추측으로 속도나
   정확도를 가장하지 않는다.
-- 입력·설정·계약·정답지·모델 runtime은 한 번 hash로 봉인하고 같은 hash의 원문이나 결과를
+- 입력·설정·계약·정답지·baseline·모델 runtime은 한 번 hash로 봉인한다. 여러 파일로 된 정답지와
+  baseline은 manifest 한 파일이 아니라 전체 하위 파일의 canonical tree hash로 봉인하고, 같은 hash의 원문이나 결과를
   반복 생성·재분석하지 않는다.
 - partial upload는 정상이다. 분석 범위 밖 정의는 `external`로 닫는다.
 - 전체 source population과 각 partial source population은 서로 다른 안정 scope를 사용한다. 같은 선택 집합의

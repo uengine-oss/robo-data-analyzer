@@ -336,6 +336,13 @@
   - Analyzer 자체의 의미 population을 조용히 자르는 경로는 0건이다. Catalog discovery의 eager
     `max_tables`만 외부 완전성 한계이며 현재는 partial 공개 전 fail-closed한다.
 
+- [x] **B28 여러 파일 정답지·baseline 전체 tree 봉인**
+  - 실행 profile의 validation ref가 단일 파일뿐 아니라 전체 디렉터리를 받을 수 있게 했다.
+  - 디렉터리는 정렬된 상대 경로와 모든 원본 bytes로 canonical tree SHA-256을 만들고 파일별 ledger를
+    봉인한다. 하위 파일 하나의 변경, 빈 디렉터리, root 이탈, 기대 hash 불일치는 실행 전에 실패한다.
+  - profile·봉인 집중 회귀 `7 passed, 4 subtests passed`, 전체 자동 회귀
+    `1435 passed, 4 skipped, 319 subtests passed`다. 실제 LLM·SKT 재분석·Neo4j 쓰기는 0회다.
+
 ## C. 작은 실제 SKT 검증
 
 - [x] **C01 작은 SKT Rule 의미 직접 판정**
@@ -371,7 +378,8 @@
     유지한다. 기존 Catalog WIP는 이 작업에서 수정하거나 stage하지 않는다.
 
 - [ ] **C06 GPU 복구 후 약 5만 LOC SKT 최종 성능·전수 회계**
-  - 모든 관련 수정과 C05 외부 계약 연결 뒤 같은 봉인 required population을 마지막에 한 번만 분석한다.
+  - 모든 관련 수정과 C05 외부 계약 연결 뒤 전체 tree로 봉인한 같은 required population과 정답지를
+    마지막에 한 번만 분석한다.
   - baseline diff, 단계별 wall time·queue·token·KV cache·publication, exact-once 누락·중복, 새 실패 좌표를
     함께 판정한다. 임의 cap·truncation·skip·fallback으로 시간을 줄이지 않는다.
 

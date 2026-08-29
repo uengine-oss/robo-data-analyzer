@@ -73,6 +73,36 @@ class AnalysisProfileContractTest(unittest.TestCase):
             self.assertIn("selected_source_ids: ['a.c', 'z/b.c']", rendered)
             self.assertIn(f"validation_baseline: {baseline}", rendered)
 
+    def test_validation_references_may_be_complete_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            self._tree(root)
+            baseline = root / "baseline-run"
+            answer = root / "gold"
+            baseline.mkdir()
+            answer.mkdir()
+            (baseline / "manifest.json").write_text("baseline", encoding="utf-8")
+            (answer / "routines.json").write_text("answer", encoding="utf-8")
+            profile_path = root / "profile.yaml"
+            profile_path.write_text(
+                "\n".join((
+                    "data_dir: corpus",
+                    "strategy: framework",
+                    "neo4j_database: test",
+                    "locale: ko",
+                    "validation_baseline_ref: baseline-run",
+                    f"validation_baseline_sha256: {'a' * 64}",
+                    "validation_answer_key_ref: gold",
+                    f"validation_answer_key_sha256: {'b' * 64}",
+                )),
+                encoding="utf-8",
+            )
+
+            profile = load_analysis_profile(profile_path)
+
+            self.assertEqual(baseline, profile.validation_baseline_ref)
+            self.assertEqual(answer, profile.validation_answer_key_ref)
+
     def test_unknown_missing_system_and_unpaired_hash_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

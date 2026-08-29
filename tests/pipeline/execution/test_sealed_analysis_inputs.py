@@ -51,6 +51,18 @@ def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _tree_sha(root: Path) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+        relative_bytes = path.relative_to(root).as_posix().encode("utf-8")
+        payload = path.read_bytes()
+        digest.update(len(relative_bytes).to_bytes(8, "big"))
+        digest.update(relative_bytes)
+        digest.update(len(payload).to_bytes(8, "big"))
+        digest.update(payload)
+    return digest.hexdigest()
+
+
 def _runtime_document() -> dict:
     return {
         "sealed_model_runtime_capabilities": {
@@ -223,6 +235,62 @@ class SealedAnalysisInputsTest(unittest.TestCase):
                     settings=_Settings(),
                     repository_root=repository,
                 )
+
+    def test_directory_answer_key_seals_every_file_and_rejects_child_change(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repository, prompts, project, ddl, closure, runtime, baseline, _ = (
+                self._repository(root)
+            )
+            answer_key = root / "gold"
+            claims = answer_key / "claims"
+            claims.mkdir(parents=True)
+            (answer_key / "routines.json").write_text('{"routines":[]}', encoding="utf-8")
+            claim = claims / "c010.json"
+            claim.write_text('{"claim":"approved"}', encoding="utf-8")
+            expected_answer_key = _tree_sha(answer_key)
+            model_runtime = load_model_runtime_capabilities(str(runtime), _sha(runtime))
+
+            def build():
+                return build_sealed_analysis_inputs(
+                    codebase=Codebase(
+                        root=project,
+                        corpus_root=root / "data",
+                        ddl_dir=ddl,
+                        strategy="framework",
+                        validation_baseline_ref=baseline,
+                        validation_baseline_sha256=_sha(baseline),
+                        validation_answer_key_ref=answer_key,
+                        validation_answer_key_sha256=expected_answer_key,
+                    ),
+                    neo4j_database="framework",
+                    project_input_paths=tuple(
+                        path for path in project.rglob("*") if path.is_file()
+                    ),
+                    source_ast_closure_ref=closure,
+                    source_ast_closure_bytes=closure.read_bytes(),
+                    source_ast_closure_sha256=_sha(closure),
+                    strategy_prompts_dir=prompts,
+                    human_glossary_manifest={"supplied": False},
+                    source_cache=SourceFileCache(),
+                    model_runtime=model_runtime,
+                    settings=_Settings(),
+                    repository_root=repository,
+                )
+
+            sealed = build()
+            answer = sealed.payload["validation_answer_key"]
+            self.assertEqual("directory", answer["kind"])
+            self.assertEqual(expected_answer_key, answer["sha256"])
+            self.assertEqual(2, answer["file_count"])
+            self.assertEqual(
+                ["claims/c010.json", "routines.json"],
+                [item["relative_path"] for item in answer["files"]],
+            )
+
+            claim.write_text('{"claim":"changed"}', encoding="utf-8")
+            with self.assertRaisesRegex(SealedAnalysisInputsError, "validation_answer_key"):
+                build()
 
 
 if __name__ == "__main__":

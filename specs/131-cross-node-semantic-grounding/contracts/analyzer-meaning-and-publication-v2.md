@@ -68,9 +68,15 @@ analyzer_contracts               현재 SDD 계약 bytes
 analyzer_implementation          실행 코드·고정 ontology·lockfile bytes
 human_glossary                    사람이 제공한 용어집의 content identity
 model_runtime_capabilities        model·tokenizer·serving runtime·GPU identity와 hard limits
-validation_baseline               비교 기준 bytes ref·hash, 없으면 supplied=false
-validation_answer_key             직접 의미 정답지 bytes ref·hash, 없으면 supplied=false
+validation_baseline               비교 기준 파일 또는 전체 디렉터리 tree ref·hash, 없으면 supplied=false
+validation_answer_key             직접 의미 정답지 파일 또는 전체 디렉터리 tree ref·hash, 없으면 supplied=false
 ```
+
+단일 파일 ref의 hash는 그 파일의 원본 bytes SHA-256이다. 디렉터리 ref는 하위의 모든 파일을 정규화된
+상대 POSIX 경로로 정렬하고, 각 상대 경로와 원본 bytes의 길이·내용을 순서대로 묶은 canonical tree
+SHA-256이다. 봉인에는 전체 파일별 상대 경로·bytes hash·크기와 총 파일 수를 함께 남긴다. 따라서 여러
+파일로 구성된 gold 또는 baseline은 manifest 하나만 봉인해서 나머지 파일 변경을 놓칠 수 없다. 빈
+디렉터리, root 밖으로 빠지는 파일, 기대 hash 불일치는 모델 호출과 graph 쓰기 전에 실패한다.
 
 비어 있지 않은 `selected_source_ids`는 partial upload의 정확한 source 경계다. 이때 선택하지 않은
 Parser-supported source는 봉인·외부 inventory·Scan Agent 도구에서 읽지 않는다. root manifest와 source가
