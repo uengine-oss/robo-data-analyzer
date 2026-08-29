@@ -1,4 +1,4 @@
-## DBMS single effective-AST node — complete evidence-closure semantic frame.
+## DBMS single effective-AST node — complete structural-fact semantic frame.
 extends: ../framework/_common
 inherit_inputs: false
 shared_values:
@@ -40,11 +40,11 @@ user_template_specific: |
   ## [SELF CHECK]
 
   - required slot을 전부 정확히 한 번 썼는가
-  - 각 meaning은 assigned evidence refs와 exact SOURCE line만 설명하는가
+  - 각 meaning은 assigned fact refs와 exact SOURCE line만 설명하는가
   - summary는 현재 TARGET 전체의 자연스러운 한 흐름인가
   - stereotype을 ontology 값 하나로 정확히 한 번 출력했는가
 
-user_template_evidence: |
+user_template_dynamic_inputs: |
   # [INPUT — SUMMARY meaning packet]
 
   response_locale: {response_locale}
@@ -57,10 +57,10 @@ user_template_evidence: |
   {applicable_slots}
 
   linked_callee_outcomes_json:
-  {callee_contexts}
+  {linked_callee_outcomes}
 
   linked_external_source_json:
-  {external_evidence}
+  {linked_external_sources}
 
   ## [SOURCE]
   각 줄은 `절대 파일 줄번호 | 원문`이다. 줄번호는 근거를 맞추는 좌표일 뿐 실행 코드가 아니다.

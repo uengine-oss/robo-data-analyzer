@@ -20,12 +20,12 @@ def _load_rule(prompts_dir: Path, rule_name: str) -> dict:
     """yaml 룰 로딩 + ``extends`` 처리 → ``{system, user_template, model}`` 반환.
 
     ``extends: <name>`` 가 있으면 ``<name>.yaml`` 의 byte-identical ``system`` 다음에
-    **분할별 고정 지침**, 공통 대상 입력, 분할별 고변동 증거 순으로 둔다.
+    **분할별 고정 지침**, 공통 대상 입력, 분할별 고변동 입력 순으로 둔다.
 
     KV prefix 캐시는 앞에서 처음 달라지는 지점까지만 재사용한다. 대상별 SOURCE를 고정 지침
     앞에 두면 같은 rule의 수백 호출이 target_id에서 갈라져 긴 고정 지침을 매번 prefill한다.
     같은 노드의 서로 다른 concern 2~3개가 입력을 공유하는 국소 이득보다, 같은 concern의 전체
-    대상이 고정 지침을 공유하는 전역 이득이 우선이다. 변동성이 큰 행 할당·분기 증거는 항상
+    대상이 고정 지침을 공유하는 전역 이득이 우선이다. 변동성이 큰 행 할당·분기 입력은 항상
     맨 뒤에 둔다. 실제 서버 reuse와 벽시계 효과는 API input/cached_tokens가 아니라 서버 로그와
     cold run으로 판정한다.
 
@@ -45,7 +45,7 @@ def _load_rule(prompts_dir: Path, rule_name: str) -> dict:
     rendered_templates = "".join(str(rule.get(key, "")) for key in (
         "user_template_specific",
         "user_template_inputs",
-        "user_template_evidence",
+        "user_template_dynamic_inputs",
         "user_template",
     ))
     if "{stereotype_options}" in rendered_templates:
@@ -68,7 +68,7 @@ def _load_rule(prompts_dir: Path, rule_name: str) -> dict:
         split_keys = {
             "user_template_specific",
             "user_template_inputs",
-            "user_template_evidence",
+            "user_template_dynamic_inputs",
         } & set(rule)
         if split_keys:
             if "user_template" in rule:
@@ -78,7 +78,7 @@ def _load_rule(prompts_dir: Path, rule_name: str) -> dict:
             rule["user_template"] = (
                 rule.get("user_template_specific", "")
                 + rule.get("user_template_inputs", "")
-                + rule.get("user_template_evidence", "")
+                + rule.get("user_template_dynamic_inputs", "")
             )
         rule["static_values"] = static_values
         return rule
@@ -94,7 +94,7 @@ def _load_rule(prompts_dir: Path, rule_name: str) -> dict:
         "user_template": (
             rule.get("user_template_specific", "")
             + (common.get("user_template_inputs", "") if inherit_inputs else "")
-            + rule.get("user_template_evidence", "")
+            + rule.get("user_template_dynamic_inputs", "")
         ),
         "model": rule.get("model") or common.get("model"),
         "max_tokens": rule.get("max_tokens") or common.get("max_tokens"),

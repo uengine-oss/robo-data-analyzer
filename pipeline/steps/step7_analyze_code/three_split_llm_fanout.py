@@ -64,7 +64,7 @@ from pipeline.models.semantic_frame import (
     merge_semantic_frames,
     normalize_semantic_frame_response,
     profile_prompt_json,
-    semantic_evidence_wire_bindings,
+    semantic_fact_wire_bindings,
     slot_specs_json,
 )
 from pipeline.models.semantic_frame_projection import project_summary
@@ -118,14 +118,14 @@ def _assigned_external_source_texts(
     slot_specs,
     external_by_chunk: dict,
 ) -> dict[str, str]:
-    """Map request-local evidence keys to their exact external source text."""
+    """Map request-local fact keys to their exact external source text."""
     specs = tuple(slot_specs)
     assigned_refs = {
         ref
         for spec in specs
         for ref in (spec.target_ref, *spec.evidence_refs)
     }
-    evidence_bindings = semantic_evidence_wire_bindings(specs)
+    fact_bindings = semantic_fact_wire_bindings(specs)
     source_texts: dict[str, str] = {}
     for ref in sorted(assigned_refs):
         fact = profile.evidence[ref]
@@ -135,9 +135,9 @@ def _assigned_external_source_texts(
         source_text = external_by_chunk.get(chunk_id)
         if source_text is None:
             raise ValueError(
-                f"assigned external evidence payload is missing: {chunk_id or fact.id}"
+                f"assigned linked external source is missing: {chunk_id or fact.id}"
             )
-        source_texts[evidence_bindings[ref]] = str(source_text)
+        source_texts[fact_bindings[ref]] = str(source_text)
     return source_texts
 
 
@@ -162,7 +162,7 @@ def _direct_callee_outcomes_by_id(
 
 
 def _summary_prompt_values(profile, slot_specs, analysis_inputs: dict) -> dict:
-    """Build one model packet from only its assigned evidence and exact source lines."""
+    """Build one model packet from only its assigned facts and exact source lines."""
     specs = tuple(slot_specs)
     assigned_refs = {
         ref
@@ -191,7 +191,7 @@ def _summary_prompt_values(profile, slot_specs, analysis_inputs: dict) -> dict:
         external_by_chunk,
     )
     callee_meanings_by_id = dict(analysis_inputs.get("callee_outcomes_by_id") or {})
-    callee_contexts = list(callee_meanings_by_id.values())
+    linked_callee_outcomes = list(callee_meanings_by_id.values())
     def _dump(value: object) -> str:
         return json.dumps(
             value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
@@ -200,8 +200,8 @@ def _summary_prompt_values(profile, slot_specs, analysis_inputs: dict) -> dict:
         "code_body": source_packet,
         "structural_profile": profile_prompt_json(profile, specs),
         "applicable_slots": slot_specs_json(specs),
-        "callee_contexts": _dump(callee_contexts),
-        "external_evidence": _dump(external_source_texts),
+        "linked_callee_outcomes": _dump(linked_callee_outcomes),
+        "linked_external_sources": _dump(external_source_texts),
     }
 
 

@@ -11,7 +11,7 @@ from pipeline.models.analysis_context import (
 from pipeline.models.semantic_frame import (
     normalize_semantic_frame_response,
     profile_prompt_json,
-    semantic_expression_wire_bindings,
+    semantic_expression_fact_wire_bindings,
     semantic_frame_response_model,
     semantic_slot_wire_ids,
     slot_specs_json,
@@ -117,13 +117,13 @@ def test_processing_slot_receives_only_its_structural_expression_closure() -> No
     ]
     expression_keys = set(prompt["expression_closure"])
     assert expression_keys == set(
-        semantic_expression_wire_bindings((effect,)).values()
+        semantic_expression_fact_wire_bindings((effect,)).values()
     )
     assigned = json.loads(slot_specs_json((effect,)))
     assigned_slot = next(iter(assigned.values()))
-    assert expression_keys.issubset(set(assigned_slot["evidence"]))
+    assert expression_keys.issubset(set(assigned_slot["fact_refs"]))
     assert not any(
-        fact["kind"] == "EXPRESSION" for fact in prompt["evidence"].values()
+        fact["kind"] == "EXPRESSION" for fact in prompt["facts"].values()
     )
     # Full nested provenance remains canonical and is not overwritten by the prompt view.
     assert profile.evidence[profile.expression_refs[0]].attributes["expression"][

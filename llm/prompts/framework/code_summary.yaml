@@ -50,7 +50,7 @@ user_template_specific: |
   - `summary`는 slot 나열이 아니라 TARGET 전체의 자연스러운 한 흐름인가
   - `stereotype`은 ontology literal이고 FUNCTION.RESPONSIBILITY와 모순되지 않는가
 
-user_template_evidence: |
+user_template_dynamic_inputs: |
   # [INPUT — SUMMARY meaning packet]
 
   response_locale: {response_locale}
@@ -63,10 +63,10 @@ user_template_evidence: |
   {applicable_slots}
 
   linked_callee_outcomes_json:
-  {callee_contexts}
+  {linked_callee_outcomes}
 
   linked_external_source_json:
-  {external_evidence}
+  {linked_external_sources}
 
   ## [SOURCE]
   각 줄은 `절대 파일 줄번호 | 원문`이다. 줄번호는 근거를 맞추는 좌표일 뿐 실행 코드가 아니다.

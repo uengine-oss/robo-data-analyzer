@@ -11,11 +11,11 @@
 ## [INPUT GUIDE — 구조, 칸, 원문의 연결]
 
 - `structural_profile_json`은 Parser와 Analyzer가 확정한 이번 관심사의 구조 사실이다.
-  `target`은 출력 소유 범위이며, `evidence`의 `kind`, `line|lines`와 나머지 직접 속성이
+  `target`은 출력 소유 범위이며, `facts`의 `kind`, `line|lines`와 나머지 직접 속성이
   의미 판정 근거다.
-  `E…` key는 이 요청 안에서 사실을 연결하는 짧은 표식일 뿐 제품 ID가 아니다.
+  `E…` key는 이 요청 안에서 구조 사실을 연결하는 짧은 표식일 뿐 제품 ID나 증거 메타데이터가 아니다.
 - `applicable_slots_json`은 이번 응답이 채울 유일한 칸 맵이다. 각 칸의 `kind`는
-  `FAMILY.ROLE`, `evidence`는 그 칸이 읽을 수 있는 정확한 `E…` 목록이다.
+  `FAMILY.ROLE`, `fact_refs`는 그 칸이 읽을 수 있는 정확한 `E…` 목록이다.
 - `SOURCE`는 활성 원문이다. 각 줄의 절대 줄번호는 구조 사실과 원문을 맞추는 좌표이며
   실행 코드가 아니다. 현재 칸의 evidence와 같은 범위만 의미 판정에 사용한다.
 - `expression_closure`가 있으면 각 값은 `[role, tagged expression tree]`다. tag는 `ref`,
@@ -26,7 +26,7 @@
 ## [DECISION PROCEDURE]
 
 1. 응답 key와 `applicable_slots_json`의 칸을 1:1로 고정한다.
-2. 그 칸에 지정된 `E…`만 `structural_profile_json`에서 찾는다.
+2. 그 칸의 `fact_refs`에 지정된 `E…`만 `structural_profile_json.facts`에서 찾는다.
 3. 같은 절대 줄의 SOURCE에서 조건, 호출, 대입, 반환, 읽기·쓰기와 실행 순서를 대조한다.
 4. 입력이 직접 입증한 의미만 쓰고, 입증할 수 없으면 빈 문자열로 둔다.
 5. 모든 칸을 채운 뒤 조건 극성, 소유 범위, 대상과 결과가 원문과 같은지 확인한다.
@@ -39,7 +39,7 @@
 - 현재 칸에 지정되지 않은 형제 사실이나 다른 대상의 효과를 복사하지 않는다.
 - 짧은 구조 동작도 그 자체로 완전할 수 있다. 상위 업무 문맥이 없다는 이유만으로 비우지 않는다.
   반대로 결과를 바꾸는 근거가 실제로 빠졌으면 일반 문장으로 메우지 않는다.
-- request-local key, 줄번호, evidence 목록을 meaning에 복사하지 않는다.
+- request-local key, 줄번호, fact reference 목록을 meaning에 복사하지 않는다.
 
 ### 같은 입력을 다르게 왜곡하는 예
 
@@ -51,6 +51,6 @@
 ## [SELF CHECK]
 
 - required key를 모두 정확히 한 번 썼는가
-- 각 meaning이 자기 칸의 evidence와 SOURCE에만 답하는가
+- 각 meaning이 자기 칸의 구조 사실과 SOURCE에만 답하는가
 - 조건 극성·대상·결과·순서와 소유자가 원문과 같은가
 - 입력에 없는 의미를 만들거나 입력 메타데이터를 출력에 복창하지 않았는가

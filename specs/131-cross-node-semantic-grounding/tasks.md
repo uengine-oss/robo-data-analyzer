@@ -343,6 +343,17 @@
   - profile·봉인 집중 회귀 `7 passed, 4 subtests passed`, 전체 자동 회귀
     `1435 passed, 4 skipped, 319 subtests passed`다. 실제 LLM·SKT 재분석·Neo4j 쓰기는 0회다.
 
+- [x] **B29 Summary 모델 wire의 내부 evidence 명칭 제거**
+  - canonical evidence와 좌표는 Analyzer exact-once ledger에 유지하되 모델용 최소 구조 투영은
+    `facts`, 칸별 연결은 `fact_refs`로 명명했다. 모델은 내부 evidence ID·occurrence ID·producer identity를
+    받지 않으며 각 구조 사실은 한 번만 전달된다.
+  - 하위 함수와 외부 원문 입력도 실제 역할이 드러나는 `linked_callee_outcomes`와
+    `linked_external_sources`로 통일했다. 호환 alias는 남기지 않았다.
+  - TABLE/COLUMN의 실제 사용 원문도 `direct_usage_sources`로 명명하고, prompt loader의 고변동 section을
+    `user_template_dynamic_inputs`로 통일했다. Summary·Table·prompt 집중 회귀
+    `94 passed, 132 subtests passed`, 전체 자동 회귀 `1435 passed, 4 skipped, 319 subtests passed`다.
+    실제 LLM·SKT 재분석·Neo4j 쓰기는 0회다.
+
 ## C. 작은 실제 SKT 검증
 
 - [x] **C01 작은 SKT Rule 의미 직접 판정**

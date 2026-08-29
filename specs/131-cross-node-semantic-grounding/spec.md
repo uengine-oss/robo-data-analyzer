@@ -86,7 +86,8 @@ section에 복제하지 않는다. 모델에 전달 가능한 동적 문맥은 �
 7. 검증된 프로젝트·framework 계약 중 현재 코드가 실제로 소비하는 부분
 
 graph ID, hash, file path, occurrence ID, source range 숫자, resolution 진단, confidence, question,
-evidence 복창은 모델 입력·출력에서 제외한다. 결합과 감사에 필요한 좌표는 Analyzer 내부에만 둔다.
+evidence 복창은 모델 입력·출력에서 제외한다. 모델에는 구조 사실을 `facts`로 한 번만 보내고 필요한
+출력 칸이 `fact_refs`로 참조한다. 결합과 감사에 필요한 canonical evidence와 좌표는 Analyzer 내부에만 둔다.
 
 ## 6. LLM 호출 계약
 

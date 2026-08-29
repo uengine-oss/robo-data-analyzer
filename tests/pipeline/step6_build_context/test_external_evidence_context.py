@@ -215,11 +215,13 @@ class ExternalEvidenceContextTest(unittest.IsolatedAsyncioTestCase):
             '"matched_key":"ORDER.API"',
             summary_values["structural_profile"],
         )
-        self.assertNotIn("matched_key", summary_values["external_evidence"])
-        self.assertIn("/orders", summary_values["external_evidence"])
-        self.assertNotIn("must-not-leak", summary_values["external_evidence"])
+        self.assertNotIn("matched_key", summary_values["linked_external_sources"])
+        self.assertIn("/orders", summary_values["linked_external_sources"])
+        self.assertNotIn("must-not-leak", summary_values["linked_external_sources"])
         self.assertNotIn("domain_term_evidence", framework_values)
-        self.assertNotIn("[DOMAIN_TERM_EVIDENCE]", summary_values["external_evidence"])
+        self.assertNotIn(
+            "[DOMAIN_TERM_EVIDENCE]", summary_values["linked_external_sources"],
+        )
 
 
 if __name__ == "__main__":

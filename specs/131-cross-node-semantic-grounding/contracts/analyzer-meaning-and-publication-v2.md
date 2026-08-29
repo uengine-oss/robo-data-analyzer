@@ -381,30 +381,46 @@ output:
 
 ### 2.2 모델에 보내는 함수 입력
 
-참조를 푼 `ResolvedFunctionMeaningInput`은 아래 의미 자료를 소유한다.
+참조를 푼 `ResolvedFunctionMeaningInput`은 내부에서 canonical evidence ID와 원문 좌표를 소유한다.
+Summary 모델에는 그 장부를 그대로 보내지 않고 아래 request-local wire만 보낸다.
 
 ```yaml
-target_function_id: <내부 결합용 stable ID; 모델에는 local F key로 치환>
-numbered_source_lines: ["1119: ...", "1120: ..."]
-compact_structure_items:
-  - source_item_ref: S1
-    kind: decision
-    source_lines: [1135, 1150]
-    parent_source_item_ref: null
-referenced_external_values:
-  - name: RC_NRM
-    kind: constant
-    declared_value: 0
-resolved_direct_data_usages: [<확정 직접 table/column/access 사실>]
-linked_external_chunks: [<exact key로 연결된 필요한 원문 조각>]
-internal_callee_effects:
-  - callee_name: c520_mms_psbl_yn_check
-    return_outcomes: [<직접 구조 return 사실>]
-    state_changes: [<직접 외부 상태 변경 사실>]
-    direct_data_effects: [<callee 자신의 확정 직접 data 효과>]
-    unresolved_data_effects: [<callee 자신의 미확정 직접 data 효과>]
-applicable_project_rules: [<검증된 프로젝트 고유 wrapper·data-access 규칙>]
+response_locale: ko
+structural_profile_json:
+  target:
+    kind: FUNCTION
+    name: c010
+    params: context_t *ctx
+    return_type: int
+    signature: c010(context_t *ctx)
+  facts:
+    E<request-digest>_0:
+      kind: CALL
+      line: 1138
+      callee: c520_mms_psbl_yn_check
+      arguments: [ctx]
+      role: effect
+  ordered_flow: [E<request-digest>_0]
+  expression_closure: {}  # 이 요청에 배정된 expression fact가 있을 때만 존재
+applicable_slots_json:
+  W<request-digest>_0:
+    kind: FUNCTION.PROCESSING_EFFECTS
+    fact_refs: [E<request-digest>_0]
+linked_callee_outcomes_json:
+  - callee: c520_mms_psbl_yn_check(context_t *ctx)
+    meaning: <caller가 관측하는 검증된 직접 결과>
+linked_external_source_json: {}
+source: |
+  1135 | if (ctx->gc_usim_yn != "Y") {
+  1138 |   c520_mms_psbl_yn_check(ctx);
+  1139 | }
 ```
+
+`facts`는 Parser/Analyzer가 확정한 구조 사실의 모델 전용 최소 투영이다. canonical evidence ID, fact ID,
+occurrence ID와 producer identity를 포함하지 않는다. `E…`와 `W…`는 한 요청 안에서만 쓰는 짧은 결합
+key이며 제품 ID가 아니다. 각 구조 사실은 `facts`에 한 번만 존재하고 slot은 `fact_refs`로 참조하므로
+source나 구조를 slot마다 복제하지 않는다. 모델 응답에는 `W…` key와 의미 문자열만 있으며 `E…` key,
+구조 사실, 좌표는 복창하지 않는다.
 
 다음 값은 내부 결합·검증에는 필요하지만 모델에는 보내지 않는다.
 
@@ -415,7 +431,9 @@ standard-library/framework call occurrence 장부, exact-once count,
 다른 section에 이미 존재하는 source·symbol·table·callee 값
 ```
 
-원문에 그대로 보이는 값은 별도 section에 반복하지 않는다. 원문만으로 알 수 없는 확정 사실 중 현재 concern의 정확도에 실제 영향을 주는 것만 보낸다. 빈 선택 section은 보내지 않는다.
+원문에 그대로 보이는 값은 별도 section에 반복하지 않는다. 원문만으로 알 수 없는 확정 사실 중 현재
+concern의 정확도에 실제 영향을 주는 것만 보낸다. 선택 항목이 없는 map/list는 닫힌 wire shape를
+유지해야 할 때만 빈 값으로 존재한다.
 
 ## 3. 모든 생성 요청의 공통 전송 계약
 

@@ -16,7 +16,7 @@ user_template_specific: |
   그 결과를 바탕으로 행 전체의 업무 Rule 여부를 판단한다. 입력의 `conditions`는 행의 실행 조건을
   이해하기 위한 Analyzer 구조이며 응답에서 번역하거나 복창하지 않는다.
 
-user_template_evidence: |
+user_template_dynamic_inputs: |
   # [INPUT — RULE meaning packet]
 
   response_locale: {response_locale}

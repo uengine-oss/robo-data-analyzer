@@ -2033,8 +2033,8 @@ language-neutral semantic IR로 변환하게 하는 것이다.
 - 현행 Rule 계약은 모델 응답 `effects + rows`, 제품 Rule의 `anchor_line + structural_condition +
   structural_effects + business_effects`, Example의 byte-identical projection 하나다. 폐기된
   `business_condition` 소비자는 0건이다.
-- 사람용 최종 HTML은 59,644 bytes, SHA-256
-  `d305ab9daf070fb8ec2292a348d689af20e4ea0bcb5b3a632d339371e6e3f916`이고, 중간보고 HTML은
+- 사람용 최종 HTML은 60,060 bytes, SHA-256
+  `cca80c5c276b3bca96d36479c03938cfc1346c45bf116c348f0d51f96f2bddba`이고, 중간보고 HTML은
   27,733 bytes, SHA-256 `f80528afb441f2e59a18ba0ee59624dbfa8889fb62fbe0baf10bf6809ab95f35`다.
 - 바로 다음 제품 변경은 두 외부 조건 중 하나가 충족된 뒤에만 시작한다. Catalog가 안정 snapshot ID,
   deterministic order, cursor/page와 마지막 page closure를 제공하면 C05를 연결한다. GPU가 복구되면
@@ -2053,5 +2053,22 @@ language-neutral semantic IR로 변환하게 하는 것이다.
 - 검증: formal red 2건을 먼저 확인한 뒤 profile·봉인 집중 회귀 `7 passed, 4 subtests passed`, 전체 자동
   회귀 `1435 passed, 4 skipped, 319 subtests passed`를 통과했다. 실제 LLM 호출, SKT 재분석, Neo4j
   쓰기, 새 DB 생성은 수행하지 않았다.
-- 사람용 최종 HTML의 입력 봉인 예시도 단일 파일과 전체 directory tree 형식으로 동기화했다. 현재 크기는
-  59,644 bytes, SHA-256은 `d305ab9daf070fb8ec2292a348d689af20e4ea0bcb5b3a632d339371e6e3f916`이다.
+- 사람용 최종 HTML의 입력 봉인 예시도 단일 파일과 전체 directory tree 형식으로 동기화했다.
+
+## 113. 모델 입력의 내부 evidence 명칭과 모호한 고변동 section 제거 (2026-08-29)
+
+- 원인: canonical `StructuralProfile.evidence`는 Analyzer의 exact-once·원문 좌표 결합에 필요한 내부 장부인데,
+  모델용 최소 projection도 `evidence`와 slot별 `evidence`라는 같은 이름을 썼다. 실제 payload는 이미 내부
+  ID·hash·절대 경로를 제거한 구조 사실이었지만 이름 때문에 내부 증거 메타데이터 전달처럼 보였고 계약의
+  “모델에는 evidence를 보내지 않는다”와 불일치했다.
+- 수정: 내부 canonical ledger는 그대로 보존하고 모델 wire만 `facts`와 `fact_refs`로 바꿨다. 각 구조 사실은
+  한 번만 존재하며 칸이 request-local E key로 참조한다. 하위 함수와 외부 원문은
+  `linked_callee_outcomes`·`linked_external_sources`, COLUMN 실제 사용 원문은 `direct_usage_sources`, prompt
+  loader의 고변동 section은 `user_template_dynamic_inputs`로 통일했다. 옛 alias는 남기지 않았다.
+- 미영향: 모델 출력 schema는 `slots + summary + stereotype` 그대로이고, canonical evidence ID·좌표,
+  exact-once ledger, Rule/Table/Summary 3분할과 LLM 호출 수는 바뀌지 않는다.
+- 검증: 최초 Summary import/key formal red와 TABLE `usage_evidence` formal red를 확인한 뒤 집중 회귀
+  `94 passed, 132 subtests passed`, 전체 자동 회귀 `1435 passed, 4 skipped, 319 subtests passed`를
+  통과했다. 실제 LLM 호출, SKT 재분석, Neo4j 쓰기, 새 DB 생성은 0회다.
+- 사람용 최종 HTML도 같은 완전한 Summary와 TABLE/COLUMN 입력 예시로 동기화했다. 현재 크기는
+  60,060 bytes, SHA-256은 `cca80c5c276b3bca96d36479c03938cfc1346c45bf116c348f0d51f96f2bddba`다.

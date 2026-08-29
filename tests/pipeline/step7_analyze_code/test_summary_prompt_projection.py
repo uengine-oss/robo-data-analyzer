@@ -6,7 +6,7 @@ from graph.schema.graph_nodes import CodeNode
 from pipeline.models.analysis_context import AnalysisContext, CallOccurrenceFact
 from pipeline.models.semantic_frame import (
     profile_prompt_json,
-    semantic_evidence_wire_bindings,
+    semantic_fact_wire_bindings,
 )
 from pipeline.steps.step7_analyze_code.semantic_frame_planner import (
     build_code_semantic_plan,
@@ -67,15 +67,16 @@ def test_summary_packet_keeps_one_canonical_copy_of_assigned_facts() -> None:
     projected = json.loads(values["structural_profile"])
     assert "file" not in projected["target"]
     assert "lines" not in projected["target"]
-    assert all("file" not in fact for fact in projected["evidence"].values())
-    assigned_bindings = semantic_evidence_wire_bindings(summary_specs)
-    assert set(projected["evidence"]) == set(assigned_bindings.values())
+    assert "evidence" not in projected
+    assert all("file" not in fact for fact in projected["facts"].values())
+    assigned_bindings = semantic_fact_wire_bindings(summary_specs)
+    assert set(projected["facts"]) == set(assigned_bindings.values())
     assert sum(
         fact["kind"] == "CALL"
-        for fact in projected["evidence"].values()
+        for fact in projected["facts"].values()
     ) == 1
     projected_call = next(
-        fact for fact in projected["evidence"].values() if fact["kind"] == "CALL"
+        fact for fact in projected["facts"].values() if fact["kind"] == "CALL"
     )
     assert projected_call == {
         "kind": "CALL",
@@ -93,7 +94,10 @@ def test_summary_packet_keeps_one_canonical_copy_of_assigned_facts() -> None:
     assert "occurrence_id" not in values["structural_profile"]
     assert "call-1" not in values["structural_profile"]
     assert len(values["structural_profile"]) < len(profile_prompt_json(profile))
-    assert json.loads(values["callee_contexts"]) == [{
+    slots = json.loads(values["applicable_slots"])
+    assert all("evidence" not in spec for spec in slots.values())
+    assert all("fact_refs" in spec for spec in slots.values())
+    assert json.loads(values["linked_callee_outcomes"]) == [{
         "callee": "int send(int value)",
         "meaning": "값을 전송하고 성공 여부를 반환한다.",
     }]
@@ -101,6 +105,6 @@ def test_summary_packet_keeps_one_canonical_copy_of_assigned_facts() -> None:
         "code_body",
         "structural_profile",
         "applicable_slots",
-        "callee_contexts",
-        "external_evidence",
+        "linked_callee_outcomes",
+        "linked_external_sources",
     }

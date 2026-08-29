@@ -56,7 +56,7 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
             encoding="utf-8",
         )
         for marker in (
-            "applicable_slots_json", "evidence",
+            "applicable_slots_json", "facts", "fact_refs", "증거 메타데이터",
             "식별자", "조건 극성", "형제", "소유 범위",
             "의미 충분성은 모델이 판정하지 않는다",
         ):
@@ -152,7 +152,7 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
             with self.subTest(relative=relative):
                 self.assertFalse((ROOT / "llm/prompts" / relative).exists())
 
-    def test_summary_and_table_usage_keep_distinct_evidence_scopes(self) -> None:
+    def test_summary_and_table_usage_keep_distinct_input_scopes(self) -> None:
         summary = self._expanded(_load_rule(
             ROOT / "llm/prompts/framework", "code_summary",
         ))

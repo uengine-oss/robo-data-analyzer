@@ -17,7 +17,7 @@ user_template_specific: |
   다시 출력하지 않는다.
 
 user_template_inputs: |
-  # [INPUT — TABLE/COLUMN evidence packet]
+  # [INPUT — TABLE/COLUMN structural-fact packet]
 
   table_and_column_meaning_inputs_json:
   {table_and_column_meaning_inputs}

@@ -25,7 +25,7 @@ from pipeline.models.semantic_frame import (
     merge_semantic_frames,
     normalize_semantic_frame_response,
     profile_prompt_json,
-    semantic_evidence_wire_bindings,
+    semantic_fact_wire_bindings,
     semantic_frame_response_model,
     semantic_slot_wire_ids,
     slot_specs_json,
@@ -322,7 +322,7 @@ return rc;
             "unavailable_cycle",
             next(
                 fact["dependency_status"]
-                for fact in prompt_profile["evidence"].values()
+                for fact in prompt_profile["facts"].values()
                 if fact["kind"] == "CALL"
                 and fact.get("dependency_status")
             ),
@@ -701,8 +701,8 @@ END;"""
         ]
 
         self.assertEqual(
-            set(semantic_evidence_wire_bindings(summary_specs).values()),
-            set(projected["evidence"]),
+            set(semantic_fact_wire_bindings(summary_specs).values()),
+            set(projected["facts"]),
         )
         self.assertGreater(len(full["evidence"]), 500)
         self.assertEqual(statement_refs, set(processing_refs))
@@ -795,7 +795,7 @@ END;"""
         observed_external_refs: list[str] = []
 
         async def invoke(values, response_model):
-            payload = json.loads(values["external_evidence"])
+            payload = json.loads(values["linked_external_sources"])
             self.assertTrue(all(key.startswith("E") for key in payload))
             observed_payloads.extend(payload.values())
             observed_external_refs.extend(payload)
@@ -848,8 +848,8 @@ END;"""
             }
             prompt_profile = json.loads(values["structural_profile"])
             self.assertEqual(
-                set(semantic_evidence_wire_bindings(assigned_specs).values()),
-                set(prompt_profile["evidence"]),
+                set(semantic_fact_wire_bindings(assigned_specs).values()),
+                set(prompt_profile["facts"]),
             )
 
             owns_target = any(
@@ -874,7 +874,7 @@ END;"""
             self.assertEqual(
                 {
                     "code_body", "structural_profile", "applicable_slots",
-                    "callee_contexts", "external_evidence",
+                    "linked_callee_outcomes", "linked_external_sources",
                 },
                 set(values),
             )

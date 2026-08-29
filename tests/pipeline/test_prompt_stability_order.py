@@ -54,7 +54,7 @@ class PromptStabilityOrderTest(unittest.TestCase):
                 static = set((raw.get("shared_values") or {})) | automatic_static
                 self.assertEqual(set(), placeholders - static)
 
-    def test_loader_composes_fixed_then_input_then_evidence(self) -> None:
+    def test_loader_composes_fixed_then_input_then_dynamic_input(self) -> None:
         for path in PROMPT_FILES:
             with self.subTest(path=path.relative_to(ROOT)):
                 raw = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -72,7 +72,7 @@ class PromptStabilityOrderTest(unittest.TestCase):
                 expected = (
                     raw.get("user_template_specific", "")
                     + inputs
-                    + raw.get("user_template_evidence", "")
+                    + raw.get("user_template_dynamic_inputs", "")
                 )
                 loaded = _load_rule(path.parent, path.stem)
                 self.assertEqual(expected, loaded["user_template"])

@@ -22,7 +22,7 @@ user_template_specific: |
 
   {function_table_usage_contract}
 
-user_template_evidence: |
+user_template_dynamic_inputs: |
   # [INPUT — TABLE usage frame packet]
 
   response_locale: {response_locale}

@@ -35,7 +35,8 @@
 
 - 함수 원문은 한 번 번호 붙이고 Parser 범위로 자른다.
 - source, 구조 지도, symbol, table, callee outcome, 검증 project contract를 비중복 section으로 조립한다.
-- 모델에 내부 ID/hash/range/status/evidence/question/confidence가 노출되지 않는 정적 계약을 둔다.
+- 모델에 내부 ID/hash/range/status/evidence/question/confidence가 노출되지 않게 하고, 구조 사실은
+  request-local `facts`에 한 번만 두며 출력 칸은 `fact_refs`로 참조하는 정적 계약을 둔다.
 - 모든 이름은 producer→consumer→storage→search에서 같은 개념을 표현하도록 통일한다.
 
 ### P4. LLM 실행 경계

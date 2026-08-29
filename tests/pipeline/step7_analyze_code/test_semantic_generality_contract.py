@@ -44,8 +44,8 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
             {
                 **rule["static_values"],
                 "response_locale": locale,
-                "external_evidence": "[]",
-                "callee_contexts": "[]",
+                "linked_external_sources": "[]",
+                "linked_callee_outcomes": "[]",
                 "code_body": body,
                 "structural_profile": "{}",
                 "applicable_slots": "[]",
@@ -84,8 +84,8 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
                 "response_locale": "fr",
                 "structural_profile": "{}",
                 "applicable_slots": "{}",
-                "callee_contexts": "[]",
-                "external_evidence": "[]",
+                "linked_callee_outcomes": "[]",
+                "linked_external_sources": "[]",
                 "code_body": body,
             },
         )

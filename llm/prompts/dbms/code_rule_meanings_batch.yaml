@@ -16,7 +16,7 @@ user_template_specific: |
   효과를 현재 node에 복사하지 않는다. 풍부한 직접 효과 의미를 먼저 판단한 뒤 행 전체의 업무 Rule
   여부를 판단한다. 입력의 `conditions`는 이해에만 쓰며 응답에서 번역하거나 복창하지 않는다.
 
-user_template_evidence: |
+user_template_dynamic_inputs: |
   # [INPUT — BATCH RULE meaning packets]
 
   response_locale: {response_locale}
